@@ -558,7 +558,8 @@ describe('panel header — the session chip and its one action', () => {
 describe('세션 정보 — the complete numbers, live, behind one summary line', () => {
   const info = (s: Record<string, unknown>, open: boolean) =>
     load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
-      ['esc', 'escAttr', 'toNum', 'ctxLevel', 'panelInfoHtml'],
+      // contextBlockHtml: the context block at the top of the open body (re-context-window D5) — empty without contextParts.
+      ['esc', 'escAttr', 'toNum', 'ctxLevel', 'contextBlockHtml', 'panelInfoHtml'],
       ['PI_CHEV_SVG'],
       {
         formatTokens: (n: number) => `${n}`,
@@ -580,7 +581,9 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
     expect(html).not.toContain('class="pi-body"');
   });
 
-  it('open: every token kind, cost, the context bar with the autocompact line, Σ · compactions · sessions, merge', () => {
+  // re-context-window D5/D17/D18: the 4px bar and its "autocompact" line gave way to the context block
+  // (dashboard-affectui-context-window-client.test.ts); the token rows say they are session totals.
+  it('open: every token kind (cumulative), cost, Σ · compactions · sessions, merge — no old context bar', () => {
     const html = info(card(), true);
     expect(html).toContain('aria-expanded="true"');
     const b = html.slice(html.indexOf('class="pi-body"'));
@@ -594,8 +597,7 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
       '캐시 쓰기',
       '300000',
       '$12.40',
-      'autocompact 750000',
-      'class="context-bar"',
+      '누적 입력',
       '720000ms',
       '압축 2',
       '세션 3',
@@ -603,6 +605,7 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
     ]) {
       expect(b, want).toContain(want);
     }
+    expect(b).not.toContain('context-bar');
   });
 });
 
@@ -1406,7 +1409,14 @@ describe('collapsed face — the context level is a warning, the panel bar uses 
   });
 
   it('one threshold table for both surfaces', () => {
-    expect(clientFn('panelInfoHtml')).toContain('var cls = ctxLevel(ctx);');
+    // re-context-window D9/D16: the same ctxLevel, given the auto-compact point, on the face, the summary and the block.
+    expect(clientFn('panelInfoHtml')).toContain(
+      'ctxLevel(ctx, s.contextTokens, s.autoCompactTokens, s.compactPending)',
+    );
+    expect(clientFn('contextBlockHtml')).toContain('ctxLevel(pct, used, auto, s.compactPending)');
+    expect(clientFn('renderCardFace')).toContain(
+      'ctxLevel(ctxPct, s.contextTokens, s.autoCompactTokens, s.compactPending)',
+    );
     expect(TEMPLATE).toMatch(/\.card-metrics \.metric\.ctx-warn svg \{[^}]*var\(--st-wait\)/);
     expect(TEMPLATE).toMatch(/\.card-metrics \.metric\.ctx-danger \{[^}]*var\(--st-fail-text\)/);
   });

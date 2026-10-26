@@ -199,6 +199,26 @@ export interface KanbanSession {
   autoCompactTokens?: number;
   pendingModel?: string;
   /**
+   * re-context-window D1/D2 — what the last request read, by the SDK's cache
+   * categories (`usage.current*`), and the window they are measured against:
+   * the same committed sample as `contextTokens` and `contextUsagePercent`.
+   * `unsplit` — the four counters hold one total, not a split: `compact` when
+   * it is a compaction's `post_tokens` (applyPostCompactOccupancy), else
+   * `unknown`. Live sessions with a known window only.
+   */
+  contextParts?: {
+    window: number;
+    cacheRead: number;
+    cacheWrite: number;
+    input: number;
+    output: number;
+    unsplit?: 'compact' | 'unknown';
+  };
+  /** D3 — the turn-end check scheduled a compaction: the next user turn starts with `/compact`. */
+  compactPending?: boolean;
+  /** D4 — the latest compaction's SDK counts (runtime only; cleared when the next one starts). */
+  lastCompact?: { preTokens: number; postTokens: number; trigger?: 'manual' | 'auto' };
+  /**
    * Task list — the model's latest TodoWrite list, from the session's task
    * ledger (SSOT 2026-10-22 T7/T8): each task has its own id (`T<n>`), its
    * elapsed time and the tool calls made while it ran.
@@ -1311,6 +1331,46 @@ function modelFields(s: any): Pick<KanbanSession, 'contextTokens' | 'autoCompact
   return out;
 }
 
+type ContextFields = Pick<KanbanSession, 'contextParts' | 'compactPending' | 'lastCompact'>;
+/** A token counter as the card shows it: a finite count, else 0. */
+function tokenCount(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0;
+}
+/**
+ * re-context-window D1–D4 — what fills the context now (the committed sample
+ * `contextUsagePercent` reads, by cache category), a scheduled auto-compact,
+ * and the latest compaction's SDK counts. Nothing is inferred: a missing
+ * window sends no parts, a missing count no `lastCompact`.
+ */
+function contextFields(s: any): ContextFields {
+  const out: ContextFields = {};
+  const u = s.usage;
+  const window = tokenCount(u?.contextWindow);
+  if (u && window > 0) {
+    const parts: NonNullable<KanbanSession['contextParts']> = {
+      window,
+      cacheRead: tokenCount(u.currentCacheReadTokens),
+      cacheWrite: tokenCount(u.currentCacheCreateTokens),
+      input: tokenCount(u.currentInputTokens),
+      output: tokenCount(u.currentOutputTokens),
+    };
+    if (parts.input > 0 && parts.cacheRead === 0 && parts.cacheWrite === 0 && parts.output === 0) {
+      // applyPostCompactOccupancy (session-usage-math.ts) writes post_tokens here with the rest zeroed.
+      const post = finiteNumber(s.compactPostTokens);
+      parts.unsplit = post !== undefined && Math.round(post) === parts.input ? 'compact' : 'unknown';
+    }
+    out.contextParts = parts;
+  }
+  if (s.autoCompactPending === true) out.compactPending = true;
+  const pre = finiteNumber(s.compactPreTokens);
+  const post = finiteNumber(s.compactPostTokens);
+  if (pre !== undefined && post !== undefined) {
+    out.lastCompact = { preTokens: pre, postTokens: post };
+    if (s.compactTrigger === 'manual' || s.compactTrigger === 'auto') out.lastCompact.trigger = s.compactTrigger;
+  }
+  return out;
+}
+
 /** T11 — when a live session's work finished; undefined while it works or waits. */
 function liveDoneAt(s: any): number | undefined {
   const state = s.activityState || 'idle';
@@ -1451,6 +1511,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     waitingSince: liveWaitingSince(s, permissions),
     finishedAt: liveFinishedAt(s),
     ...modelFields(s),
+    ...contextFields(s),
     tasks: normalizeTaskProgress(taskView?.current, sessionHasCurrentTask(s, autoResume)),
     earlierTasks: taskView?.earlier.length ? taskView.earlier : undefined,
     ...agentsToKanban(s.agents, true),
@@ -4010,11 +4071,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card .context-bar-fill { width: 100%; height: 100%; border-radius: 2px; transform-origin: left center; transition: transform 0.3s var(--ease-out); background: var(--st-run); }
 .card .context-bar-fill.ctx-warn { background: var(--st-wait); }
 .card .context-bar-fill.ctx-danger { background: var(--st-fail); }
-/* The same bar in the panel's 세션 정보 (spec 13). */
-.pi-ctx .context-bar { height: 4px; background: var(--ib-pill); border-radius: 2px; overflow: hidden; }
-.pi-ctx .context-bar-fill { width: 100%; height: 100%; border-radius: 2px; transform-origin: left center; transition: transform 0.3s var(--ease-out); background: var(--st-run); }
-.pi-ctx .context-bar-fill.ctx-warn { background: var(--st-wait); }
-.pi-ctx .context-bar-fill.ctx-danger { background: var(--st-fail); }
 
 /* ── TASK TIMELINE — dot + step + time; only the current step's dot is solid ── */
 .tl-wrap { margin-top: 10px; }
@@ -4921,9 +4977,78 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .pi-grid dt { font-size: 11px; font-weight: 700; color: var(--text-tertiary); letter-spacing: 0.02em; }
 .pi-grid dd { margin: 1px 0 0; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .pi-muted { color: var(--text-tertiary); font-weight: 400; }
-.pi-ctx { display: flex; flex-direction: column; gap: 4px; font-variant-numeric: tabular-nums; }
 .pi-thread { font-variant-numeric: tabular-nums; }
 .pi-resume { color: var(--st-wait); overflow-wrap: anywhere; }
+/* The summary line's ctx % carries the context level (re-context-window D16). */
+.pi-cs.ctx-warn { color: var(--cw-warn); }
+.pi-cs.ctx-danger { color: var(--st-fail-text); font-weight: 600; }
+/* ── 컨텍스트 블록 (.prd/affectui/re-context-window.md D5–D19) — what fills the context:
+   one cell per window/216 tokens, the request's cache categories in prompt order, the
+   auto-compact point on the field, the level against that point, one owner-gated action.
+   A flat section of the panel (no card in a card). ── */
+:root { --cw-c1: var(--accent); --cw-c2: color-mix(in srgb, var(--accent) 45%, var(--ib-pill)); --cw-c3: var(--purple); --cw-c4: var(--green); --cw-free: var(--ib-pill); --cw-warn: var(--st-wait); --cw-warn-bg: rgba(245,165,36,0.14); --cw-full-bg: rgba(242,107,107,0.13); --cw-ok: var(--green); }
+[data-theme="light"] { --cw-c1: var(--accent); --cw-c2: color-mix(in srgb, var(--accent) 38%, #ffffff); --cw-c3: var(--purple); --cw-c4: var(--green); --cw-free: #e7e7ea; --cw-warn: var(--yellow); --cw-warn-bg: rgba(194,120,10,0.12); --cw-full-bg: rgba(212,58,58,0.1); --cw-ok: var(--green); }
+.cw { container: cw / inline-size; max-width: 560px; position: relative; padding-bottom: 2px; font-size: 12.5px; color: var(--text-secondary); }
+.cw-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 22px; }
+.cw-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.cw-model { flex: none; max-width: 62%; height: 20px; padding: 0 7px; border-radius: 5px; background: var(--ib-pill); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; line-height: 20px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cw-figure { display: flex; align-items: baseline; gap: 7px; margin-top: 6px; }
+.cw-big { font-size: 24px; font-weight: 600; line-height: 30px; letter-spacing: -0.02em; color: var(--text); font-variant-numeric: tabular-nums; }
+.cw-of { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-tertiary); }
+.cw-pill { flex: none; padding: 0 6px; border-radius: 5px; line-height: 20px; font-variant-numeric: tabular-nums; color: var(--text-secondary); transition: color 300ms ease, background-color 300ms ease; }
+.cw[data-level="warn"] .cw-pill { color: var(--cw-warn); background: var(--cw-warn-bg); }
+.cw[data-level="full"] .cw-pill { color: var(--st-fail-text); background: var(--cw-full-bg); font-weight: 600; }
+.cw-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.cw-field { display: grid; grid-template-columns: repeat(36, minmax(0, 1fr)); gap: 2px; margin-top: 10px; }
+.cw-cell { display: block; aspect-ratio: 1; border-radius: 2px; background: var(--c, var(--cw-free)); transition: background-color 380ms var(--ease-out), opacity 220ms ease, transform var(--dur-move) var(--ease-out), box-shadow 380ms var(--ease-out); transition-delay: calc(var(--i) * 2ms), 0s, 0s, 0s; }
+/* Past the auto-compact point an empty cell is a hollow square: the session compacts before it fills. */
+.cw-cell[data-past]:not([data-part]) { background: transparent; box-shadow: inset 0 0 0 1px var(--border); }
+.cw-field[data-hot] .cw-cell[data-part]:not([data-on]) { opacity: 0.22; }
+.cw-cell[data-on] { transform: scale(1.12); }
+.cw-cell[data-busy] { opacity: 0.5; }
+@keyframes cw-wave { 0%, 100% { opacity: 1; transform: none; } 50% { opacity: 0.28; transform: scale(0.72); } }
+@keyframes cw-swap-in { from { opacity: 0; filter: blur(2px); } }
+@keyframes cw-leave { to { opacity: 0; filter: blur(3px); transform: scale(0.92); } }
+@keyframes cw-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: no-preference) {
+  .cw-cell[data-busy] { animation: cw-wave 900ms ease-in-out infinite; animation-delay: calc(var(--i) * 15ms); }
+  .cw-spin { animation: cw-spin 700ms linear infinite; }
+}
+.cw-parts { list-style: none; margin: 8px 0 0; padding: 0; }
+.cw-part, .cw-mark { display: flex; align-items: center; gap: 9px; min-height: 30px; margin: 0 -8px; padding: 0 8px; border-radius: 8px; transition: background-color var(--dur-press) ease, opacity 220ms ease; }
+.cw-part[data-hot] { background: var(--ib-pill); }
+.cw-part[data-dim], .cw-mark[data-dim] { opacity: 0.55; }
+.cw-sw { flex: none; width: 7px; height: 7px; border-radius: 2px; }
+.cw-sw.is-mark { background: transparent; box-shadow: inset 0 0 0 1px var(--text-tertiary); }
+.cw-label { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; color: var(--text); }
+.cw-mark .cw-label { color: var(--text-secondary); }
+.cw-val { flex: none; min-width: 52px; text-align: right; font-size: 13px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.cw-foot { display: flex; align-items: center; gap: 8px; min-height: 38px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
+.cw-say { flex: 1; min-width: 0; display: grid; }
+.cw-say-t { grid-area: 1 / 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-secondary); font-variant-numeric: tabular-nums; animation: cw-swap-in 320ms ease both; }
+.cw-say-t b { font-weight: 600; color: var(--text); }
+.cw-say-t.is-warn { color: var(--cw-warn); }
+.cw-say-t.is-full, .cw-say-t.is-fail { color: var(--st-fail-text); }
+.cw-say-t.is-ok, .cw-say-t.is-ok b { color: var(--cw-ok); }
+.cw-compact { display: inline-flex; flex: none; align-items: center; gap: 5px; min-height: 28px; padding: 0 9px 0 7px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font: inherit; font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; cursor: pointer; transition: background-color var(--dur-press) ease, color var(--dur-press) ease, border-color var(--dur-press) ease; }
+.cw-compact:hover:not(:disabled) { background: var(--surface-raised); }
+.cw-compact:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cw-compact:disabled { cursor: default; opacity: 0.5; }
+.cw-compact[data-state="armed"] { border-color: var(--cw-warn); color: var(--cw-warn); }
+.cw-compact[data-state="busy"], .cw-compact[data-state="done"] { opacity: 1; }
+.cw-compact[data-state="done"] { border-color: transparent; background: transparent; color: var(--cw-ok); }
+.cw-compact[data-leaving] { animation: cw-leave 400ms var(--ease-out) both; }
+.cw-ci, .cw-ct { display: inline-flex; align-items: center; animation: cw-swap-in 300ms ease both; }
+.cw-ci svg { width: 12px; height: 12px; }
+.cw-spin { display: block; width: 12px; height: 12px; border: 1.5px solid var(--border); border-top-color: var(--text); border-radius: 50%; }
+@container cw (max-width: 309px) {
+  .cw-field { grid-template-columns: repeat(24, minmax(0, 1fr)); }
+  .cw-model { max-width: 42%; }
+  .cw-compact { padding: 0 8px; }
+  .cw-ct { display: none; }
+}
+@container cw (min-width: 520px) { .cw-field { grid-template-columns: repeat(54, minmax(0, 1fr)); } }
+@media (pointer: coarse), (max-width: 639px) { .cw-compact { min-height: 44px; } .cw-part, .cw-mark { min-height: 36px; } }
 /* ── GOAL — the editor's home (spec 13) ── */
 .panel-goal { padding: 8px 16px; border-bottom: 1px solid var(--border); outline: none; }
 .panel-goal .card-goal { margin-top: 0; }
@@ -8332,10 +8457,17 @@ function renderCardUsage(s) {
   return parts.length ? '<div class="card-usage">' + parts.join('<span class="cu-sep" aria-hidden="true">&middot;</span>') + '</div>' : '';
 }
 
-// Context level (spec 13 §3.7), one table for the face metric and the panel
-// bar: bands of the window used — over 60% a warning, over 80% danger. (Not
-// the compaction threshold, which a session may set lower or higher.)
-function ctxLevel(pct) {
+// Context level, one table for the face metric, the 세션 정보 summary and the
+// context block. With the session's auto-compact point (re-context-window D9):
+// from 0.8 of it a warning, from 0.95 danger — the point is where the history
+// is cut to a summary, and it differs per session (750K of a Claude 1M window,
+// 160K of a 200K one), so window bands never warned there. A scheduled
+// compaction is danger. Point unknown (one argument, as before): bands of the
+// window used — over 60% a warning, over 80% danger (spec 13 §3.7).
+function ctxLevel(pct, used, auto, pending) {
+  if (pending) return 'ctx-danger';
+  var u = toNum(used), a = toNum(auto);
+  if (u > 0 && a > 0) return u / a >= 0.95 ? 'ctx-danger' : u / a >= 0.8 ? 'ctx-warn' : '';
   var n = toNum(pct);
   return n > 80 ? 'ctx-danger' : n > 60 ? 'ctx-warn' : '';
 }
@@ -8381,8 +8513,16 @@ function renderCardFace(s, col) {
   }
   var ctxPct = s.tokenUsage ? (s.tokenUsage.contextUsagePercent || 0) : 0;
   if (dhShow('contextwindow') && ctxPct > 0) {
-    var ctxLv = ctxLevel(ctxPct);
-    metrics.push('<span class="metric' + (ctxLv ? ' ' + ctxLv : '') + '" title="Context window used' + (ctxLv === 'ctx-danger' ? ' — 80% 넘게 찼다' : '') + '">'
+    // re-context-window D16: the level against the auto-compact point when known, the tooltip says how far.
+    var ctxLv = ctxLevel(ctxPct, s.contextTokens, s.autoCompactTokens, s.compactPending);
+    var ctxAuto = toNum(s.autoCompactTokens), ctxUsed = toNum(s.contextTokens);
+    var ctxTip = 'Context window used' + (ctxLv === 'ctx-danger' ? ' — 80% 넘게 찼다' : '');
+    if (ctxAuto > 0 && ctxUsed > 0) {
+      ctxTip = '컨텍스트 ' + Math.round(Math.min(Number(ctxPct) || 0, 100)) + '% · ' + (s.compactPending ? '다음 입력 때 자동 압축'
+        : ctxUsed >= ctxAuto ? '자동 압축 지점을 넘음'
+        : '자동 압축 ' + formatTokens(ctxAuto).replace(/\\.0(?=[KMBT]$)/, '') + '까지 ' + formatTokens(ctxAuto - ctxUsed).replace(/\\.0(?=[KMBT]$)/, ''));
+    }
+    metrics.push('<span class="metric' + (ctxLv ? ' ' + ctxLv : '') + '" title="' + escAttr(ctxTip) + '">'
       + CTX_SVG + Math.round(Math.min(Number(ctxPct) || 0, 100)) + '%</span>');
   }
   // User media (SSOT 2026-10-25): a paperclip count, no image on the board.
@@ -9429,7 +9569,10 @@ function panelInfoHtml(s, open) {
   if (s.ownerName) sum.push(esc(s.ownerName));
   if (s.workflow) sum.push(esc(s.workflow));
   if (u) sum.push(formatTokens(cardTotalTokens(u)) + ' tok', '$' + toNum(u.totalCostUsd).toFixed(2));
-  if (ctx > 0) sum.push('ctx ' + Math.round(ctx) + '%');
+  if (ctx > 0) {
+    var ctxCls = ctxLevel(ctx, s.contextTokens, s.autoCompactTokens, s.compactPending);
+    sum.push('<span class="pi-cs' + (ctxCls ? ' ' + ctxCls : '') + '">ctx ' + Math.round(ctx) + '%</span>');
+  }
   sum.push('<span class="rel-time" data-ts="' + (new Date(s.lastActivity).getTime() || 0) + '"></span>');
   var html = '<button type="button" class="pi-head" aria-expanded="' + (open ? 'true' : 'false') + '"' + (open ? ' aria-controls="panel-info-body"' : '') + ' onclick="togglePanelInfo()">'
     + '<span class="pi-title">세션 정보</span><span class="pi-sum">' + sum.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</span>'
@@ -9445,33 +9588,408 @@ function panelInfoHtml(s, open) {
   if (s.workflow) rows.push(['워크플로', esc(s.workflow)]);
   if (s.environment && s.environment.instanceName) rows.push(['환경', esc(s.environment.instanceName) + ' <span class="pi-muted">' + esc((s.environment.host || '') + ':' + (s.environment.port || '')) + '</span>']);
   if (u) {
-    rows.push(['입력', formatTokens(u.totalInputTokens)]);
-    rows.push(['출력', formatTokens(u.totalOutputTokens)]);
-    rows.push(['캐시 읽기', formatTokens(u.totalCacheReadTokens)]);
-    rows.push(['캐시 쓰기', formatTokens(u.totalCacheCreateTokens)]);
+    rows.push(['누적 입력', formatTokens(u.totalInputTokens)]);
+    rows.push(['누적 출력', formatTokens(u.totalOutputTokens)]);
+    rows.push(['누적 캐시 읽기', formatTokens(u.totalCacheReadTokens)]);
+    rows.push(['누적 캐시 쓰기', formatTokens(u.totalCacheCreateTokens)]);
     rows.push(['비용', '$' + toNum(u.totalCostUsd).toFixed(2)]);
   }
   var body = '<dl class="pi-grid">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
-  if (u) {
-    var cls = ctxLevel(ctx);
-    body += '<div class="pi-ctx"><div class="context-bar" title="Context ' + Math.round(ctx) + '%"><div class="context-bar-fill ' + cls + '" style="transform:scaleX(' + (Math.min(ctx, 100) / 100).toFixed(2) + ')"></div></div>'
-      + '<span>컨텍스트 ' + Math.round(ctx) + '%' + (toNum(s.autoCompactTokens) > 0 ? ' &middot; autocompact ' + formatTokens(s.autoCompactTokens) : '') + '</span></div>';
-  }
   var thread = ['&Sigma; ' + formatNmSSs(toNum(s.threadTotalActiveMs)), '압축 ' + toNum(s.compactionCount), '세션 ' + toNum(s.threadSessionCount)];
   if (s.mergeStats) thread.push('+' + toNum(s.mergeStats.totalLinesAdded) + ' / -' + toNum(s.mergeStats.totalLinesDeleted));
   body += '<div class="pi-thread">' + thread.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</div>';
   if (s.autoResume && s.autoResume.reason) body += '<div class="pi-resume">오류: ' + esc(s.autoResume.reason) + '</div>';
-  return html + '<div class="pi-body" id="panel-info-body">' + body + '</div>';
+  return html + '<div class="pi-body" id="panel-info-body">' + contextBlockHtml(s) + body + '</div>';
 }
 function renderPanelInfo() {
   var el = document.getElementById('panel-info');
   if (!el) return;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  writePanelPart(el, s ? panelInfoHtml(s, _panelInfoOpen) : '');
+  if (s) cwObserve(s, Date.now());
+  if (writePanelPart(el, s ? panelInfoHtml(s, _panelInfoOpen) : '')) cwApply(el);
+  cwBind(el);
 }
 function togglePanelInfo() {
   _panelInfoOpen = !_panelInfoOpen;
   renderPanelInfo();
+}
+
+// ── 컨텍스트 블록 (.prd/affectui/re-context-window.md D5–D20) ──
+// What fills the context now: the last request's tokens by the SDK's cache
+// categories (contextParts, D1) in prompt order, as a field of 216 cells (one
+// per window/216 tokens, every non-empty part at least one), the auto-compact
+// point on it, the level against that point (ctxLevel, D9), and one action —
+// 지금 압축, the owner's own 'compact --yes' through the command route the
+// model switch already uses, confirmed by a second press like Slack's yes/no.
+var CW_CELLS = 216;
+var CW_ROLL_MS = 640;
+var CW_ARM_MS = 4000;
+var CW_DONE_MS = 1500;
+var CW_LEAVE_MS = 400;
+var CW_SAVED_MS = 3200;
+var CW_FAIL_MS = 4000;
+var CW_CEIL_MS = 300000;
+var CW_PARTS = [['read', 'cacheRead', '이전 맥락 (캐시 읽기)', 'var(--cw-c1)'], ['write', 'cacheWrite', '새로 캐시 (캐시 쓰기)', 'var(--cw-c2)'], ['input', 'input', '캐시 안 된 입력', 'var(--cw-c3)'], ['output', 'output', '마지막 출력', 'var(--cw-c4)']];
+var CW_UNSPLIT = { compact: '압축 후 맥락', unknown: '맥락 (분류 없음)' };
+var CW_ANNOUNCE = { sending: 1, sent: 1, queued: 1, armed: 1, fail: 1, timeout: 1, observed: 1, saved: 1, pending: 1 }; // tray states read out (transitions, not distances)
+var CW_COMPACT_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3l4 3.5L12 3M4 13l4-3.5 4 3.5"/></svg>';
+var CW_CHECK_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>';
+var _cwHot = '';
+var _cw = { key: '', count: 0, armedAt: 0, busySince: 0, sentAt: 0, queued: false, doneAt: 0, observedAt: 0, savedWait: 0, usedAtRise: 0, lcSeen: '', lcAtRise: '', savedAt: 0, failAt: 0, timedOutAt: 0 };
+var _cwRoll = { el: null, key: '', shown: -1, raf: 0 };
+// A token count without a trailing .0 (750.0K → 750K): the tray and the marker.
+function cwShort(n) {
+  return formatTokens(n).replace(/\\.0(?=[KMBT]$)/, '');
+}
+// The parts in prompt order (cached prefix → newly cached → uncached tail →
+// the response); a part at zero is left out. One unsplit total (D2) is said as
+// what it is, never as a cache category.
+function cwParts(cp) {
+  if (!cp) return [];
+  if (cp.unsplit) {
+    var total = toNum(cp.input);
+    return total > 0 ? [{ key: 'total', label: CW_UNSPLIT[cp.unsplit] || CW_UNSPLIT.unknown, tokens: total, color: 'var(--cw-c1)' }] : [];
+  }
+  var out = [];
+  for (var i = 0; i < CW_PARTS.length; i++) {
+    var t = toNum(cp[CW_PARTS[i][1]]);
+    if (t > 0) out.push({ key: CW_PARTS[i][0], label: CW_PARTS[i][2], tokens: t, color: CW_PARTS[i][3] });
+  }
+  return out;
+}
+// Cell → part index (-1 free), D7: cumulative rounding in part order, every
+// non-empty part at least one cell; past the window every cell is filled.
+function cwCells(parts, limit, cells) {
+  var out = [];
+  var per = limit > 0 ? limit / cells : 0;
+  var start = 0;
+  var cum = 0;
+  for (var i = 0; i < parts.length && per > 0; i++) {
+    cum += parts[i].tokens;
+    var end = Math.min(cells, Math.max(parts[i].tokens > 0 ? start + 1 : start, Math.round(cum / per)));
+    for (var j = start; j < end; j++) out[j] = i;
+    start = Math.max(start, end);
+  }
+  for (var k = start; k < cells; k++) out[k] = -1;
+  return out;
+}
+// The first cell past the auto-compact point (-1: none inside the window).
+function cwMarkIndex(auto, limit, cells) {
+  var a = toNum(auto), l = toNum(limit);
+  if (a <= 0 || l <= 0 || a >= l) return -1;
+  return Math.max(0, Math.min(cells, Math.round(a / (l / cells))));
+}
+// Where the action is (D12): armed for 4s after the first press; sending, then
+// sent (the request was taken) until a compaction is observed — the count rises
+// — then done 1.5s and leaving 0.4s. A count rise is "a compaction happened",
+// never "yours": a running turn queues the request and another compaction (auto,
+// Slack) can land first; the card carries no correlation to tell them apart.
+function cwPhase(s, now) {
+  var c = _cw.key === s.key ? _cw : null;
+  if (!c) return 'idle';
+  if (c.busySince) return c.sentAt ? 'sent' : 'sending';
+  if (c.doneAt && now - c.doneAt < CW_DONE_MS) return 'done';
+  if (c.doneAt && now - c.doneAt < CW_DONE_MS + CW_LEAVE_MS) return 'leaving';
+  if (c.armedAt && now - c.armedAt < CW_ARM_MS) return 'armed';
+  return 'idle';
+}
+// The tray line (D10): one state at a time, the most urgent first; the
+// distance is to the auto-compact point (where the history is cut), else to
+// the end of the window. Only the transitions (CW_ANNOUNCE) are read out — a
+// distance changes with every usage update and would chatter.
+function cwSay(s, used, auto, win, lv, phase, now) {
+  var c = _cw.key === s.key ? _cw : null;
+  if (phase === 'sending') return { id: 'sending', tone: '', html: '압축 요청 보내는 중…' };
+  if (phase === 'sent') return c && c.queued ? { id: 'queued', tone: '', html: '압축 요청 보냄 — 지금 턴이 끝나면 압축' } : { id: 'sent', tone: '', html: '압축 요청 보냄 — 압축을 기다리는 중' };
+  if (phase === 'armed') return { id: 'armed', tone: 'warn', html: '지난 대화가 요약으로 줄어듭니다', sr: '한 번 더 누르면 압축 — 지난 대화가 요약으로 줄어듭니다' };
+  if (c && c.failAt && now - c.failAt < CW_FAIL_MS) return { id: 'fail', tone: 'fail', html: '압축 요청 실패' };
+  if (c && c.timedOutAt && now - c.timedOutAt < CW_FAIL_MS) return { id: 'timeout', tone: 'fail', html: '압축 결과를 아직 받지 못함' };
+  var lc = s.lastCompact;
+  if (c && c.savedAt && now - c.savedAt < CW_SAVED_MS && lc && toNum(lc.preTokens) > toNum(lc.postTokens)) {
+    return { id: 'saved', tone: 'ok', html: '새 압축 관측됨 · <b>' + cwShort(toNum(lc.preTokens) - toNum(lc.postTokens)) + '</b> 줄임 (' + cwShort(lc.preTokens) + ' → ' + cwShort(lc.postTokens) + ')' };
+  }
+  if (c && (c.savedWait || (c.observedAt && now - c.observedAt < CW_SAVED_MS))) return { id: 'observed', tone: 'ok', html: '새 압축 관측됨' };
+  if (s.compactPending) return { id: 'pending', tone: 'full', html: '다음 입력 때 자동 압축' };
+  var tone = lv === 'ctx-danger' ? 'full' : lv === 'ctx-warn' ? 'warn' : '';
+  if (auto > 0) {
+    if (used >= auto) return { id: 'over', tone: 'full', html: '자동 압축 지점을 넘음' };
+    if (lv === 'ctx-danger') return { id: 'soon', tone: 'full', html: '자동 압축 임박 · ' + cwShort(auto - used) + ' 남음' };
+    return { id: 'left', tone: tone, html: '자동 압축까지 ' + cwShort(auto - used) };
+  }
+  return { id: 'free', tone: tone, html: '창에 ' + cwShort(Math.max(0, win - used)) + ' 남음' };
+}
+// Why this viewer cannot compact this session now ('' = can). The server's
+// requireSessionOwner is the guard; this is UX and fails closed on a missing
+// owner. A switch waiting on a compact, or one already scheduled, compacts anyway.
+function cwCanCompact(s) {
+  if (!s || s.terminated) return '종료된 세션';
+  var env = s.environment;
+  if (isSiblingSession(s)) return 'Open ' + env.instanceName + ' (' + (env.host || '') + ':' + (env.port || '') + ') to act on this session';
+  if (!s.ownerId || s.ownerId !== currentUserId) return READ_ONLY_MSG;
+  if (s.pendingModel) return '모델 전환이 압축을 기다리는 중';
+  if (s.compactPending) return '다음 입력 때 자동 압축됩니다';
+  return '';
+}
+// The tray's action: 지금 압축 → 한 번 더 눌러 압축 → 보내는 중 / 요청 보냄 (spinner)
+// → ✓ 압축 관측됨, which leaves; hidden while nothing was added since the last
+// compaction (or its counts are still on the way). Keyed spans swap in.
+function cwCompactHtml(s, phase, used) {
+  if (s.terminated || !(used > 0)) return '';
+  var waiting = _cw.key === s.key && _cw.savedWait;
+  var lc = s.lastCompact;
+  if (phase === 'idle' && (waiting || (lc && used <= toNum(lc.postTokens)))) return '';
+  var st = phase === 'leaving' ? 'done' : phase === 'sending' || phase === 'sent' ? 'busy' : phase;
+  var label = phase === 'sending' ? '보내는 중' : phase === 'sent' ? '요청 보냄' : st === 'done' ? '압축 관측됨' : st === 'armed' ? '한 번 더 눌러 압축' : '지금 압축';
+  var icon = st === 'busy' ? '<span class="cw-spin" aria-hidden="true"></span>' : st === 'done' ? CW_CHECK_SVG : CW_COMPACT_SVG;
+  var why = st === 'idle' || st === 'armed' ? cwCanCompact(s) : '';
+  var off = st === 'busy' || st === 'done' || !!why;
+  var mk = st === 'busy' ? phase : st;
+  return '<button type="button" class="cw-compact" data-state="' + st + '"' + (phase === 'leaving' ? ' data-leaving' : '') + (off ? ' disabled' : '')
+    + (st === 'busy' ? ' aria-busy="true"' : '') + (why ? ' title="' + escAttr(why) + '"' : '')
+    + ' aria-label="' + escAttr(label + ' — 컨텍스트 압축') + '" onclick="cwCompact()">'
+    + '<span class="cw-ci" data-mk="ci-' + st + '">' + icon + '</span><span class="cw-ct" data-mk="ct-' + mk + '">' + label + '</span></button>';
+}
+// The block (D5): head (title · model) / figure (rolling number · of the window ·
+// % · one sentence for screen readers) / the field / the parts and the
+// auto-compact point / the tray (live line · action). Empty without parts.
+function contextBlockHtml(s, now) {
+  var cp = s.contextParts;
+  var win = cp ? toNum(cp.window) : 0;
+  if (!(win > 0)) return '';
+  now = now || Date.now();
+  var parts = cwParts(cp);
+  var used = 0;
+  for (var i = 0; i < parts.length; i++) used += parts[i].tokens;
+  var auto = toNum(s.autoCompactTokens);
+  var pct = s.tokenUsage ? toNum(s.tokenUsage.contextUsagePercent) : (used / win) * 100;
+  var lv = ctxLevel(pct, used, auto, s.compactPending);
+  var phase = cwPhase(s, now);
+  var map = cwCells(parts, win, CW_CELLS);
+  var mark = cwMarkIndex(auto, win, CW_CELLS);
+  var cells = '';
+  for (var n = 0; n < CW_CELLS; n++) {
+    var p = map[n] >= 0 ? parts[map[n]] : null;
+    cells += '<i class="cw-cell" style="--i:' + n + (p ? ';--c:' + p.color : '') + '"' + (p ? ' data-part="' + p.key + '"' : '')
+      + (mark >= 0 && n >= mark ? ' data-past' : '') + (p && (phase === 'sending' || phase === 'sent') ? ' data-busy' : '') + '></i>';
+  }
+  var rows = '';
+  for (var r = 0; r < parts.length; r++) {
+    var share = (parts[r].tokens / win) * 100;
+    var ofTxt = parts[r].label + ' · 창의 ' + share.toFixed(share < 10 ? 1 : 0) + '%';
+    rows += '<li class="cw-part" data-part="' + parts[r].key + '" data-tok="' + parts[r].tokens + '" data-of="' + escAttr(ofTxt) + '">'
+      + '<i class="cw-sw" style="background:' + parts[r].color + '"></i><span class="cw-label">' + esc(parts[r].label) + '</span><span class="cw-val">' + formatTokens(parts[r].tokens) + '</span></li>';
+  }
+  if (mark >= 0) rows += '<li class="cw-mark"><i class="cw-sw is-mark"></i><span class="cw-label">자동 압축 지점</span><span class="cw-val">' + cwShort(auto) + '</span></li>';
+  var model = String(s.model || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
+  var pctTxt = Math.round(Math.min(pct, 100)) + '%';
+  var ofTotal = '/ ' + cwShort(win) + ' 토큰';
+  var say = cwSay(s, used, auto, win, lv, phase, now);
+  return '<section class="cw" role="group" aria-labelledby="cw-title" data-level="' + (lv === 'ctx-danger' ? 'full' : lv === 'ctx-warn' ? 'warn' : 'ok') + '">'
+    + '<div class="cw-head"><span class="cw-title" id="cw-title">컨텍스트</span>' + (model && model !== 'unknown' ? '<span class="cw-model">' + esc(model) + '</span>' : '') + '</div>'
+    + '<div class="cw-figure"><span class="cw-big" aria-hidden="true" data-to="' + used + '">' + formatTokens(used) + '</span>'
+    + '<span class="cw-of" aria-hidden="true" data-total="' + escAttr(ofTotal) + '">' + esc(ofTotal) + '</span>'
+    + '<span class="cw-pill" aria-hidden="true">' + pctTxt + '</span>'
+    + '<span class="cw-sr">컨텍스트 ' + formatTokens(used) + ' / ' + cwShort(win) + ' 토큰 사용, ' + pctTxt + (auto > 0 ? ', 자동 압축 ' + cwShort(auto) : '') + '</span></div>'
+    + '<div class="cw-field" aria-hidden="true">' + cells + '</div>'
+    + '<ul class="cw-parts">' + rows + '</ul>'
+    + '<div class="cw-foot"><span class="cw-say"><span class="cw-say-t' + (say.tone ? ' is-' + say.tone : '') + '" data-mk="say-' + say.id + '">' + say.html + '</span></span>'
+    + '<span class="cw-sr" aria-live="polite">' + (CW_ANNOUNCE[say.id] ? say.sr || say.html : '') + '</span>'
+    + cwCompactHtml(s, phase, used) + '</div></section>';
+}
+// What the session did since the last render (D12/D20): a new panel session
+// resets the block; a rise of its compaction count is a compaction observed —
+// it ends a sent request (done) and waits for THAT compaction's SDK counts
+// (lastCompact differs from what the card held before the rise; they are stored
+// just after the boundary's broadcast) or the next context sample; a request
+// never answered ends at 5 min.
+function cwObserve(s, now) {
+  var n = toNum(s.compactionCount);
+  var lc = s.lastCompact;
+  var sig = lc ? toNum(lc.preTokens) + '/' + toNum(lc.postTokens) : '';
+  if (_cw.key !== s.key) {
+    _cw = { key: s.key, count: n, armedAt: 0, busySince: 0, sentAt: 0, queued: false, doneAt: 0, observedAt: 0, savedWait: 0, usedAtRise: 0, lcSeen: sig, lcAtRise: '', savedAt: 0, failAt: 0, timedOutAt: 0 };
+    _cwHot = '';
+    return;
+  }
+  if (n > _cw.count) {
+    _cw.count = n;
+    _cw.observedAt = now;
+    _cw.savedWait = now;
+    _cw.usedAtRise = toNum(s.contextTokens);
+    // Counts already on the card before this rise belong to an earlier compaction.
+    _cw.lcAtRise = _cw.lcSeen;
+    cwLater(CW_SAVED_MS);
+    if (_cw.busySince) {
+      _cw.busySince = 0;
+      _cw.sentAt = 0;
+      _cw.doneAt = now;
+      cwLater(CW_DONE_MS);
+      cwLater(CW_DONE_MS + CW_LEAVE_MS);
+    }
+  }
+  if (_cw.savedWait) {
+    if (sig && sig !== _cw.lcAtRise) {
+      // The new compaction's own SDK counts (recorded just after its boundary broadcast).
+      _cw.savedWait = 0;
+      _cw.savedAt = now;
+      cwLater(CW_SAVED_MS);
+    } else if (toNum(s.contextTokens) !== _cw.usedAtRise || now - _cw.savedWait >= CW_CEIL_MS) {
+      _cw.savedWait = 0;
+    }
+  }
+  _cw.lcSeen = sig;
+  if (_cw.busySince && now - _cw.busySince >= CW_CEIL_MS) {
+    _cw.busySince = 0;
+    _cw.sentAt = 0;
+    _cw.timedOutAt = now;
+    cwLater(CW_FAIL_MS);
+  }
+}
+// Repaint the open panel's 세션 정보 once a timed state (armed, done, saved, failed) ends.
+function cwLater(ms) {
+  setTimeout(function() { if (panelOpen) renderPanelInfo(); }, ms + 20);
+}
+// The big number rolls to its target both ways (640ms, ease-out quart); the
+// first paint, another session, a background tab and reduced motion set it at once.
+function cwRoll(el, to) {
+  if (!el) return;
+  var r = _cwRoll;
+  if (r.raf) { cancelAnimationFrame(r.raf); r.raf = 0; }
+  var from = r.el === el && r.key === _cw.key && r.shown >= 0 ? r.shown : to;
+  r.el = el;
+  r.key = _cw.key;
+  if (from === to || reduceMotion() || !canAnimate()) {
+    r.shown = to;
+    el.textContent = formatTokens(to);
+    return;
+  }
+  el.textContent = formatTokens(from);
+  var t0 = performance.now();
+  function step(t) {
+    var p = Math.min(1, (t - t0) / CW_ROLL_MS);
+    r.shown = from + (to - from) * (1 - Math.pow(1 - p, 4));
+    el.textContent = formatTokens(r.shown);
+    r.raf = p < 1 ? requestAnimationFrame(step) : 0;
+  }
+  r.raf = requestAnimationFrame(step);
+}
+// Hover lives outside the markup (D11): every write strips it (domMorph follows
+// the fresh attributes), so it is put back — the hot part's cells lift and its
+// row lights, the rest dims, the figure rolls to the part and says its share.
+function cwApply(root) {
+  var cw = root && root.querySelector ? root.querySelector('.cw') : null;
+  if (!cw) return;
+  var key = _cwHot;
+  var row = key ? cw.querySelector('.cw-part[data-part="' + key + '"]') : null;
+  if (!row) key = '';
+  var field = cw.querySelector('.cw-field');
+  if (field && key) field.setAttribute('data-hot', '');
+  else if (field) field.removeAttribute('data-hot');
+  var cells = cw.querySelectorAll('.cw-cell[data-part]');
+  for (var i = 0; i < cells.length; i++) {
+    if (key && cells[i].getAttribute('data-part') === key) cells[i].setAttribute('data-on', '');
+    else cells[i].removeAttribute('data-on');
+  }
+  var rows = cw.querySelectorAll('.cw-part, .cw-mark');
+  for (var j = 0; j < rows.length; j++) {
+    var mine = !!key && rows[j].getAttribute('data-part') === key;
+    if (mine) rows[j].setAttribute('data-hot', '');
+    else rows[j].removeAttribute('data-hot');
+    if (key && !mine) rows[j].setAttribute('data-dim', '');
+    else rows[j].removeAttribute('data-dim');
+  }
+  var ofEl = cw.querySelector('.cw-of');
+  if (ofEl) {
+    var txt = key ? row.getAttribute('data-of') : ofEl.getAttribute('data-total');
+    if (ofEl.textContent !== txt) ofEl.textContent = txt;
+  }
+  var big = cw.querySelector('.cw-big');
+  if (big) cwRoll(big, toNum(key ? row.getAttribute('data-tok') : big.getAttribute('data-to')));
+}
+// Bound once on #panel-info. Mouse only (touch has no hover): a part's row or
+// one of its cells makes it hot, anything else clears it. Escape or leaving
+// the armed button disarms it — Escape then stays here, the panel stays open.
+function cwBind(el) {
+  if (!el || el._cwBound) return;
+  el._cwBound = true;
+  el.addEventListener('pointerover', function(e) {
+    if (e.pointerType !== 'mouse') return;
+    var inBlock = e.target && e.target.closest ? e.target.closest('.cw') : null;
+    var part = inBlock ? e.target.closest('.cw-part[data-part], .cw-cell[data-part]') : null;
+    var key = part ? part.getAttribute('data-part') : '';
+    if (key !== _cwHot) {
+      _cwHot = key;
+      cwApply(el);
+    }
+  });
+  el.addEventListener('pointerleave', function() {
+    if (!_cwHot) return;
+    _cwHot = '';
+    cwApply(el);
+  });
+  el.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && _cw.armedAt) {
+      e.stopPropagation();
+      _cw.armedAt = 0;
+      renderPanelInfo();
+    }
+  });
+  el.addEventListener('focusout', function(e) {
+    if (!_cw.armedAt || !e.target || !e.target.classList || !e.target.classList.contains('cw-compact')) return;
+    _cw.armedAt = 0;
+    renderPanelInfo();
+  });
+}
+// 지금 압축 (D12): the first press arms it for 4s, the second sends the owner's
+// own 'compact --yes' — the owner-gated command route (requireSessionOwner) and
+// the text the model switch already sends (index.ts dispatchCompact); a running
+// turn queues it. Sending, then sent, until a compaction is observed (cwObserve),
+// the request fails, or the 5-minute ceiling.
+async function cwCompact() {
+  var key = panelSessionKey;
+  var s = key ? _sessionCache[key] : null;
+  if (!s || cwCanCompact(s)) return;
+  var now = Date.now();
+  cwObserve(s, now);
+  if (_cw.busySince) return;
+  if (!_cw.armedAt || now - _cw.armedAt >= CW_ARM_MS) {
+    _cw.armedAt = now;
+    cwLater(CW_ARM_MS);
+    renderPanelInfo();
+    return;
+  }
+  _cw.armedAt = 0;
+  _cw.busySince = now;
+  _cw.sentAt = 0;
+  _cw.queued = s.activityState === 'working';
+  _cw.failAt = 0;
+  _cw.timedOutAt = 0;
+  cwLater(CW_CEIL_MS);
+  renderPanelInfo();
+  var ok = false;
+  try {
+    var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/command';
+    var body = JSON.stringify({ message: 'compact --yes' });
+    var headers = { 'Content-Type': 'application/json' };
+    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+    var res = await fetch(url, { method: 'POST', headers: headers, body: body });
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      headers = { 'Content-Type': 'application/json' };
+      if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+      res = await fetch(url, { method: 'POST', headers: headers, body: body });
+    }
+    ok = !!res.ok;
+  } catch (e) {
+    ok = false;
+  }
+  if (_cw.key === key && _cw.busySince && ok) _cw.sentAt = Date.now();
+  if (!ok && _cw.key === key && _cw.busySince) {
+    _cw.busySince = 0;
+    _cw.failAt = Date.now();
+    cwLater(CW_FAIL_MS);
+  }
+  if (panelSessionKey === key) renderPanelInfo();
 }
 
 // The goal's home (spec 13, moved from the card): the shared goal component —
