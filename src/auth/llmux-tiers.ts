@@ -104,6 +104,16 @@ const UPSTREAM_TIERS: Record<string, LlmuxTierId> = {
 };
 
 /**
+ * Codex plan words llmux ≥ 0.2.26 reports (`plan_type`, the access token's
+ * `chatgpt_plan_type` claim — measured 2026-10-26: `pro` = Pro $200,
+ * `promax` = Pro $500). Any other word is not a guess.
+ */
+const UPSTREAM_CODEX_PLANS: Record<string, LlmuxTierId> = {
+  pro: 'chatgpt-pro-200',
+  promax: 'chatgpt-pro-500',
+};
+
+/**
  * Parse `SOMA_LLMUX_ACCOUNT_TIERS`: entries separated by `,` or `;`, each
  * `group:name=tier` (one group) or `name=tier` (any group). Malformed entries
  * are reported, never guessed.
@@ -143,6 +153,8 @@ export interface TierLookupAccount {
   group?: string;
   /** An exact plan string llmux may report (Anthropic `rate_limit_tier`). */
   rate_limit_tier?: string;
+  /** The Codex plan word llmux may report (`pro`, `promax`). */
+  plan_type?: string;
   /** llmux's own coarse tier ("max") — read by nothing here: it cannot tell x5 from x20. */
   tier?: string;
 }
@@ -189,5 +201,8 @@ export function resolveAccountTier(
   const upstream =
     typeof account.rate_limit_tier === 'string' ? UPSTREAM_TIERS[account.rate_limit_tier.toLowerCase()] : undefined;
   if (fits(upstream)) return upstream;
+  const plan =
+    typeof account.plan_type === 'string' ? UPSTREAM_CODEX_PLANS[account.plan_type.toLowerCase()] : undefined;
+  if (fits(plan)) return plan;
   return lookup(defaults);
 }

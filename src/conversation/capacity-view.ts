@@ -421,7 +421,12 @@ function buildGroup(
   const refreshes: number[] = [];
   for (const [i, account] of accounts.entries()) {
     const known = resolveAccountTier(
-      { name: account.name, group: accountGroup(account), rate_limit_tier: account.rate_limit_tier },
+      {
+        name: account.name,
+        group: accountGroup(account),
+        rate_limit_tier: account.rate_limit_tier,
+        plan_type: account.plan_type,
+      },
       tiers,
     );
     const tier = known ?? ASSUMED_TIER[group];
