@@ -163,6 +163,9 @@ const AQ_FNS = [
   'capProvPill',
   'capProvHead',
   'capUnitKey',
+  'capDupNames',
+  'capRemapKey',
+  'capSelectionAfter',
   'capMark',
   'capAccountCard',
   'capWorkers',
@@ -605,6 +608,94 @@ describe('D10–D12 — identity is the place in the server order, never the (ma
     expect(clientFn('capAccountCard')).toContain('capUnitKey(g, i, x) === key');
     expect(clientFn('capWorkers')).toContain('keys.push(capUnitKey(g, i, u));');
     expect(clientFn('paintCapacity')).toContain('aqRestoreFocus(view, focusKey);');
+  });
+});
+
+describe('D10–D12 — a new response re-decides the selection (final review R3)', () => {
+  // Two real successive llmux responses, 60 s apart. llmux orders a group by `order` (the
+  // scheduler's pick order — it changes), then name (slack/auth/capacity.ts groupAccounts).
+  const blocked = (order: number) =>
+    a({
+      name: 'claude:ai1@corp.example',
+      group: 'claude',
+      order,
+      blocked: '5h 100.0% > 99%',
+      five_hour: w(1, 40 * 60),
+      seven_day: w(0.5, 3 * D),
+    });
+  const usable = (order: number) =>
+    a({ name: 'claude:ai2@corp.example', group: 'claude', order, five_hour: w(0.2, H), seven_day: w(0.1, 3 * D) });
+  const respond = (anonymous: boolean, accounts: Record<string, unknown>[], atMs: number) =>
+    buildCapacityView({ current: null, email_anonymous: anonymous, accounts } as never, {} as never, atMs) as any;
+  const r1 = respond(true, [blocked(1), usable(2)], NOW);
+  const OPEN = 'claude|0|a***'; // the blocked ai1, picked by the reader
+  const FOCUS = { 'cap:claude': OPEN, 'cron-queue': 'id:job-qa' };
+  it('the masked pool reads a*** twice — position is the only handle', () => {
+    expect(r1.groups[0].units.map((u: any) => u.name)).toEqual(['a***', 'a***']);
+    expect(cap.capDupNames(r1, 'claude')).toBe(true);
+  });
+  it('(a) the two a*** swap places → the card closes and the tab stop resets, never showing the other account', () => {
+    const r2 = respond(true, [blocked(2), usable(1)], NOW + 60_000);
+    // the hazard: the kept key now opens the OTHER account's card
+    const stale = cap.capWorkers(r2.groups[0], NOW, false, OPEN, null);
+    expect(stale.slice(stale.indexOf('<div class="aq-pop"'))).toContain('<dt>상태</dt><dd>사용 가능</dd>');
+    const sel = cap.capSelectionAfter(r1, r2, OPEN, FOCUS);
+    expect(sel.open).toBeNull();
+    expect(sel.focus['cap:claude']).toBeUndefined();
+    expect(sel.focus['cron-queue']).toBe('id:job-qa'); // other strips untouched
+    expect(cap.capWorkers(r2.groups[0], NOW, false, sel.open, sel.focus['cap:claude'])).not.toContain('class="aq-pop"');
+  });
+  it('(b) the first a*** is gone → the card closes (the survivor also reads a*** at place 0)', () => {
+    const r2 = respond(true, [usable(2)], NOW + 60_000);
+    expect(r2.groups[0].units.map((u: any) => u.name)).toEqual(['a***']);
+    expect(cap.capRemapKey(r1, r2, OPEN)).toBeNull();
+    expect(cap.capSelectionAfter(r1, r2, OPEN, FOCUS).open).toBeNull();
+  });
+  it('(c) unique names: the selection survives a refresh, and follows its account when the order changes', () => {
+    const u1 = respond(false, [blocked(1), usable(2)], NOW);
+    expect(u1.groups[0].units.map((u: any) => u.name)).toEqual(['ai1', 'ai2']);
+    const same = respond(false, [blocked(1), usable(2)], NOW + 60_000);
+    expect(cap.capSelectionAfter(u1, same, 'claude|0|ai1', { 'cap:claude': 'claude|0|ai1' })).toEqual({
+      open: 'claude|0|ai1',
+      focus: { 'cap:claude': 'claude|0|ai1' },
+    });
+    const swapped = respond(false, [blocked(2), usable(1)], NOW + 60_000);
+    const sel = cap.capSelectionAfter(u1, swapped, 'claude|0|ai1', { 'cap:claude': 'claude|0|ai1' });
+    expect(sel.open).toBe('claude|1|ai1');
+    expect(sel.focus['cap:claude']).toBe('claude|1|ai1');
+    const card = cap.capWorkers(swapped.groups[0], NOW, false, sel.open, sel.focus['cap:claude']);
+    expect(card.slice(card.indexOf('<div class="aq-pop"'))).toContain('<dt>상태</dt><dd>5시간 한도</dd>');
+    // gone → closed
+    expect(cap.capRemapKey(u1, respond(false, [usable(2)], NOW + 60_000), 'claude|0|ai1')).toBeNull();
+  });
+  it('a repaint of the same response keeps everything; the folded usable list survives a new one', () => {
+    expect(cap.capSelectionAfter(r1, { ...r1 }, OPEN, FOCUS)).toEqual({ open: OPEN, focus: FOCUS });
+    const r2 = respond(true, [blocked(2), usable(1)], NOW + 60_000);
+    expect(cap.capRemapKey(r1, r2, 'claude|*ok')).toBe('claude|*ok');
+    expect(cap.capRemapKey(r1, { ...r2, groups: [] }, 'claude|*ok')).toBeNull();
+  });
+  it('the page wires it: load re-decides, paint forgets a key with no card, focus never lands on another account', () => {
+    const load = clientFn('loadCapacity');
+    expect(load).toContain('var sel = capSelectionAfter(prev, next, _aqOpen, _aqFocusKey);');
+    expect(load).toContain('_aqOpen = sel.open;');
+    expect(load).toContain('_aqFocusKey = sel.focus;');
+    expect(load).toContain('aqRefocusCapacity(view, fk, capRemapKey(prev, next, fk));');
+    expect(load).not.toMatch(/aqAnnounce\([^)]*(닫|close)/);
+    const paint = clientFn('paintCapacity');
+    expect(paint).toContain("if (_aqOpen && !view.querySelector('.aq-pop')) _aqOpen = null;");
+  });
+  it('focus falls back to the group’s first mark, else the section toggle', () => {
+    const focus = vi.fn();
+    const toggleFocus = vi.fn();
+    const mark = { focus, getAttribute: () => 'claude|0|a***' };
+    const box = { getAttribute: () => 'cap:claude', querySelector: () => mark };
+    const view = { querySelectorAll: (sel: string) => (sel === '[data-aq-rove]' ? [box] : []) };
+    const doc = { getElementById: (id: string) => (id === 'capacity-toggle' ? { focus: toggleFocus } : null) };
+    const f = load<Cap>(['aqFocusKey', 'aqRefocusCapacity'], [], { document: doc });
+    f.aqRefocusCapacity(view, 'claude|0|a***', null);
+    expect(focus).toHaveBeenCalled();
+    f.aqRefocusCapacity({ querySelectorAll: () => [] }, 'codex|0|x', null);
+    expect(toggleFocus).toHaveBeenCalled();
   });
 });
 

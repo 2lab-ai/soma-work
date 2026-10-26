@@ -220,7 +220,13 @@ Status: 구현 [SHIPPED] · 2026-10-26 · 기준 main `ff6c9ac` · 이슈 #444 (
   - 정체는 이름이 아니라 **서버 순서의 자리**다 (최종 리뷰): `capUnitKey(g, i, u)` = 그룹 · `units[]` 안의 자리 i · 보이는 이름.
     `email_anonymous`이면 llmux 이름이 가려져(`ai1@corp.example`·`ai2@corp.example` → 둘 다 `a***`, capacity-view.ts `accountLabels`) 이름만으로는
     겹친다. `CapacityUnit`에는 id가 없고, 서버 필드를 더하지 않는다 — 원래 이메일은 클라이언트에 오지 않는다. 같은 키가 마크, 카드 조회,
-    roving 정지점, 포커스 복원을 모두 묶는다. 순서가 바뀌어 그 자리에 다른 이름이 오면 열린 카드는 다른 계정을 보이지 않고 닫힌다.
+    roving 정지점, 포커스 복원을 모두 묶는다.
+  - 새 응답(다른 `fetchedAtMs`)이 오면 열린 카드와 roving 정지점을 다시 정한다(`capSelectionAfter` · `capRemapKey`, 최종 리뷰 R3).
+    - 그룹 안 이름이 모두 다르면 키는 그 계정을 따라 새 자리로 간다(순서가 바뀌어도 같은 계정의 카드). 계정이 사라졌으면 버린다.
+    - 이전 또는 새 응답에서 그 그룹에 같은 보이는 이름이 둘 이상이면(`a***`) 자리로는 순서 바뀜·삭제를 구별할 수 없다 — 그 그룹의 열린 카드와
+      정지점을 버린다(카드 닫힘, 아무것도 알리지 않음).
+    - 접힌 `사용 가능` 목록 키(`{group}|*ok`)는 계정 하나를 가리키지 않으므로 그룹이 있는 한 남긴다.
+    - 같은 응답을 다시 그릴 때(30초 repaint)는 아무것도 바꾸지 않는다.
   - 상태는 unit 자신의 필드로 정한다 (R1). `binding`은 "어느 창이 먼저 닿나"(5h/7d)일 뿐이고, ok 마크의 점 색과 카드의 `먼저 닿는 창`에만 쓴다.
 
   | state | 조건(`CapacityUnit`, `capUnitState`) | 보이는 것 |
@@ -244,9 +250,12 @@ Status: 구현 [SHIPPED] · 2026-10-26 · 기준 main `ff6c9ac` · 이슈 #444 (
   - 접힌 ok 마크의 카드는 `이름 · 지금 % · 이번 주 %` 목록이다. "계정분"·"상한"은 쓰지 않는다.
   - 한 번에 하나만 연다(`_aqOpen` = D10 키). 카드는 그 키로 unit을 찾는다(`capUnitKey(g, i, x) === key`) — 가려진 이름이 겹쳐도 고른 계정의 카드다.
     30초 다시 그리기에도 열려 있고, `paintCapacity`가 포커스를 되돌린다(`aqFocusedKey` → `aqRestoreFocus`).
+  - 그린 결과에 카드가 없으면(계정이 빠짐, narrow로 접힘) `_aqOpen`을 지운다 — 나중에 저절로 다시 열리지 않는다(R3, fable P3).
   - 바깥 클릭·Esc·닫기로 닫힌다. Esc와 닫기는 포커스를 마크로 돌린다.
 - **D12 roving focus [SHIPPED].** `[data-aq-rove]` 위에 위임 keydown `aqRove(e, box)` 하나가 있다.
   - 정지점은 하나다: 마지막에 포커스한 항목(`focusin` → `_aqFocusKey`, D10 키), 없으면 첫 항목이 `tabindex=0`이다.
+  - 새 응답이 포커스가 있던 키를 옮기거나 버리면(D10) 포커스는 그 계정의 새 마크로, 없으면 그 그룹의 첫 마크로, 그것도 없으면 가용량 접기 버튼으로
+    간다(`aqRefocusCapacity`) — 옛 자리에 온 다른 계정으로는 가지 않는다.
   - ←·↑ 이전, →·↓ 다음, Home·End 끝이다. Enter·Space는 native button으로 카드를 여닫는다. D17 칩도 같은 도우미를 쓴다.
 - **D13 모두 막힘 구간 [SHIPPED].** `state === 'empty'`이면 `capTimeline`이 지금부터 첫 상승(`dNow`, has5h가 아니면 `dWeek` > 0)까지 그린다.
   - `<rect class="cap-tl-lim">`(`--st-fail` 12%) + 빗금 패턴, `<title>모두 막힘 — {HH:MM}까지</title>`. 상승이 없으면 7일 끝까지 그린다
@@ -318,7 +327,7 @@ Status: 구현 [SHIPPED] · 2026-10-26 · 기준 main `ff6c9ac` · 이슈 #444 (
 
 ## 5. 시험 [SHIPPED]
 
-새 파일 `src/conversation/__tests__/dashboard-affectui-agent-queue-client.test.ts`(시험 61건)를 만들었다.
+새 파일 `src/conversation/__tests__/dashboard-affectui-agent-queue-client.test.ts`(시험 68건)를 만들었다.
 - 하네스는 `dashboard-cron-capacity-client.test.ts` 1–60의 cook·clientFn·load다. 함수는 처음 쓸 때 잘라 온다(결정마다 따로 RED). `beforeAll`이
   한 번 미리 불러온다(부하가 큰 기계에서 5초 예산 보호).
 - 가용량 입력은 실제 `buildCapacityView` 출력이다(하네스 `fixtures-agent-queue.ts`와 같은 모양).
@@ -336,6 +345,7 @@ Status: 구현 [SHIPPED] · 2026-10-26 · 기준 main `ff6c9ac` · 이슈 #444 (
 | D9 | `D9 — the 20% line on each bar`(+ `CAP_LOW_PCT === CAPACITY_LOW_PCT`) |
 | D10 | `D10 — account marks (workers)`(순서, 6상태, 실제 조건 counted·blocked·unmeasured5h·now (R1), §7 금지어, 정지점, narrow 접기) |
 | D10–D12 | `D10–D12 — identity is the place in the server order, never the (masked) name`(최종 리뷰: `email_anonymous` 두 계정이 모두 `a***` — 키가 따로, 정지점·`aria-expanded` 하나씩, 막힌 첫 계정을 고르면 그 계정의 카드, 원래 이메일 없음, 자리가 바뀐 키는 카드 없음) |
+| D10–D12 | `D10–D12 — a new response re-decides the selection`(최종 리뷰 R3, 실제 연속 응답 둘: (a) 두 `a***`의 순서가 바뀜 → 카드 닫힘·정지점 초기화, 그대로 두면 다른 계정 카드가 열리는 위험을 함께 확인 (b) 첫 `a***`가 사라짐 → 카드 닫힘 (c) 이름이 다르면 새로 고쳐도 유지·순서가 바뀌면 같은 계정을 따라감. 같은 응답 repaint는 그대로, `*ok` 목록 유지, 배선, 포커스 대체 순서) |
 | D11 | `D11 — the account card` |
 | D12 | `D12 — roving focus` |
 | D13 | `D13 — the all-blocked stretch on the timeline`(+ 이벤트 없는 empty 풀: 축과 7일 끝까지 음영, 최종 리뷰) |
@@ -364,11 +374,13 @@ Status: 구현 [SHIPPED] · 2026-10-26 · 기준 main `ff6c9ac` · 이슈 #444 (
 
 ## 7. 검증
 
-- RED → GREEN: 새 파일 48건 모두 RED(구현 전) → GREEN. 교차 리뷰 R1, PR 리뷰 R1, trinity R2, 최종 리뷰를 반영한 뒤 61건이다.
+- RED → GREEN: 새 파일 48건 모두 RED(구현 전) → GREEN. 교차 리뷰 R1, PR 리뷰 R1, trinity R2, 최종 리뷰와 그 R3을 반영한 뒤 68건이다.
 - 기준: `affectui-base`(origin/main `299a601` 위, PR #445의 플랜별 가중 `capacity-view.ts` 포함)로 rebase한 뒤 다시 돌렸다.
   - cron/capacity 묶음(`-affectui-agent-queue-client`·`-cron-capacity-client`·`-cron-capacity`·`capacity-view`·`-responsive`): 203/203.
 - 게이트:
-  - `npx vitest run src/conversation/__tests__/ --testTimeout=60000 --hookTimeout=60000`: 최종 리뷰 반영 뒤 63/63 파일, 1710/1710.
+  - `npx vitest run src/conversation/__tests__/ --testTimeout=60000 --hookTimeout=60000`: 최종 리뷰 R3 뒤 1716/1717 — 남은 1건은
+    `dashboard-permission.test.ts`의 자체 30초 훅 시간 초과(load average 124–138)였고, 단독 실행 25/25 통과. cron/capacity 묶음 215/215.
+    최종 리뷰 반영 뒤 63/63 파일, 1710/1710.
     PR 리뷰 R1 뒤 63/63 파일, 1705/1705.
     trinity R2 뒤 1694/1705 — 남은 11건은 모두 서버 라우트 시험의 60초 훅·시험 시간 초과(load average 92)였고, 그 11개 파일만 다시 돌려
     258/258 통과했다. 기계 부하(load average 90–110, 18코어)로 기본 5초 한도에서는 무관한 서버 시험 훅이 시간 초과한다.

@@ -16278,6 +16278,20 @@ function aqPlacePops(root) {
     pop.style.top = (mark.offsetTop + mark.offsetHeight + 6) + 'px';
   }
 }
+// After the key the keyboard was on moved or was dropped: its new place, else the first mark
+// of its group, else the section toggle — never another account at the old place (R3).
+function aqRefocusCapacity(view, from, to) {
+  if (!view) return;
+  if (to) { aqFocusKey(view, to); return; }
+  var group = String(from || '').split('|')[0];
+  var boxes = view.querySelectorAll('[data-aq-rove]');
+  var first = null;
+  for (var i = 0; i < boxes.length && !first; i++) {
+    if (boxes[i].getAttribute('data-aq-rove') === 'cap:' + group) first = boxes[i].querySelector('[data-aq-key]');
+  }
+  var el = first || document.getElementById('capacity-toggle');
+  if (el && typeof el.focus === 'function') el.focus();
+}
 function aqRepaintCapacity() {
   var view = document.getElementById('capacity-view');
   if (view) view._html = null;
@@ -16636,6 +16650,55 @@ function capProvHead(g, nowMs) {
 function capUnitKey(g, i, u) {
   return g.group + '|' + i + '|' + u.name;
 }
+// Does a group show the same display name twice (anonymous llmux masks names to "a***")?
+function capDupNames(v, group) {
+  var seen = {};
+  var dup = false;
+  ((v && v.groups) || []).forEach(function(g) {
+    if (g.group !== group) return;
+    (g.units || []).forEach(function(u) {
+      if (seen['#' + u.name]) dup = true;
+      seen['#' + u.name] = true;
+    });
+  });
+  return dup;
+}
+// Where a key points in a NEW capacity response (final review R3), or null when it cannot be
+// trusted. The folded usable mark (group|*ok) is a list, kept while its group exists. A unit
+// key is position + display name: with unique names it follows its account to its new place
+// (null when the account is gone); with a duplicate display name in the previous OR the new
+// response, position cannot tell two accounts apart across a reorder or a removal — dropped.
+function capRemapKey(prev, next, key) {
+  if (!key) return null;
+  var bar = key.indexOf('|');
+  if (bar < 0) return null;
+  var group = key.slice(0, bar);
+  var rest = key.slice(bar + 1);
+  var ng = null;
+  ((next && next.groups) || []).forEach(function(g) { if (g.group === group) ng = g; });
+  if (!ng) return null;
+  if (rest === '*ok') return key;
+  if (capDupNames(prev, group) || capDupNames(next, group)) return null;
+  var name = rest.slice(rest.indexOf('|') + 1);
+  var to = null;
+  (ng.units || []).forEach(function(u, i) { if (u.name === name) to = capUnitKey(ng, i, u); });
+  return to;
+}
+// The open card and every capacity roving stop after a capacity response. A NEW response
+// (another fetchedAtMs) remaps them (capRemapKey); a repaint of the same response keeps them.
+function capSelectionAfter(prev, next, open, focus) {
+  var fresh = !!(prev && next && prev.fetchedAtMs !== next.fetchedAtMs);
+  var out = { open: open || null, focus: {} };
+  for (var k in focus || {}) {
+    if (!fresh || k.indexOf('cap:') !== 0) out.focus[k] = focus[k];
+    else {
+      var f = capRemapKey(prev, next, focus[k]);
+      if (f) out.focus[k] = f;
+    }
+  }
+  if (fresh && out.open) out.open = capRemapKey(prev, next, out.open);
+  return out;
+}
 function capMark(g, u, key, nowMs, open, stop) {
   var st = capUnitState(u);
   var why = capReason(u);
@@ -16839,10 +16902,15 @@ function paintCapacity() {
     Array.prototype.forEach.call(view.querySelectorAll('details[data-cap-key][open]'), function(d) { opened[d.getAttribute('data-cap-key')] = true; });
     // …nor drop the keyboard: an account mark or its open card keeps the focus (#444 D11).
     var focusKey = aqFocusedKey(view);
+    var openWas = _aqOpen;
     view.innerHTML = html;
     view._html = html;
     Array.prototype.forEach.call(view.querySelectorAll('details[data-cap-key]'), function(d) { if (opened[d.getAttribute('data-cap-key')]) d.open = true; });
-    aqRestoreFocus(view, focusKey);
+    // An open key with no card any more (its account left, the strip folded) is forgotten, so
+    // it never reopens on its own (final review R3, fable P3) — and the keyboard is not lost.
+    if (_aqOpen && !view.querySelector('.aq-pop')) _aqOpen = null;
+    if (focusKey === 'pop' && !_aqOpen) aqRefocusCapacity(view, openWas, null);
+    else aqRestoreFocus(view, focusKey);
     aqPlacePops(view);
     // The section sits above the board, outside #inbox: no observer sees the board
     // move when it appears or changes height, so the shift cache learns it here.
@@ -16858,8 +16926,21 @@ async function loadCapacity() {
     var next = data.capacity || null;
     // One polite sentence when a pool's state changes (#444 D4); the first load is the baseline.
     var news = capAnnounceDiff(_capacityView, next, Date.now());
+    // A new response re-decides the open card and the roving stops (final review R3): a key
+    // follows its account, or is dropped where masked names make position ambiguous. Nothing
+    // is announced for it — the closed card is not news.
+    var prev = _capacityView;
+    var view = document.getElementById('capacity-view');
+    var fk = view ? aqFocusedKey(view) : null;
+    var wasPop = fk === 'pop';
+    if (wasPop) fk = _aqOpen;
+    var sel = capSelectionAfter(prev, next, _aqOpen, _aqFocusKey);
+    _aqOpen = sel.open;
+    _aqFocusKey = sel.focus;
     _capacityView = next;
     paintCapacity();
+    var fresh = !!(prev && next && prev.fetchedAtMs !== next.fetchedAtMs);
+    if (fresh && fk && !(wasPop && _aqOpen)) aqRefocusCapacity(view, fk, capRemapKey(prev, next, fk));
     if (news) aqAnnounce(news);
   } catch (e) { console.error('Failed to load capacity', e); }
 }
