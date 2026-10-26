@@ -41,7 +41,8 @@ const SDK_PRICED_GROUP = 'claude';
 export function createHostPricing(catalog: PricingCatalog): HostPricing {
   const canonical = (model: string): string | null => {
     try {
-      return catalog.resolveInput(model);
+      // The SDK may report an id without the `[1m]` suffix the catalog lists it under.
+      return catalog.resolveInput(model) ?? (/\[1m\]$/i.test(model) ? null : catalog.resolveInput(`${model}[1m]`));
     } catch {
       return null;
     }
@@ -64,4 +65,49 @@ export function createHostPricing(catalog: PricingCatalog): HostPricing {
       return calculateTokenCost(id, inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens);
     },
   };
+}
+
+/** One model's saved SDK running total (`@soma/slack/session-usage-math` `ModelUsageCounters`). */
+interface RunningTotal {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadInputTokens: number;
+  cacheCreationInputTokens: number;
+  costUsd: number;
+}
+
+/**
+ * A saved SDK running total (`sdkUsageBaseline`) with every host-priced
+ * model's cost recomputed from its saved tokens. Run on load: a total saved
+ * while the SDK still priced an llmux model would make the next result's delta
+ * carry the repricing of the whole history — up into one turn (astra), or a
+ * turn read as 0 and the old price kept for good (grok). Host pricing is
+ * linear in tokens, so after this the delta is the new price of the new tokens
+ * only. A copy; the input is not changed.
+ */
+export function repriceBaseline<B extends { models: Record<string, RunningTotal> }>(
+  baseline: B | undefined,
+  pricing: HostPricing,
+): B | undefined {
+  if (!baseline) return baseline;
+  const models: Record<string, RunningTotal> = {};
+  for (const [model, c] of Object.entries(baseline.models)) {
+    let cost = c.costUsd;
+    try {
+      if (pricing.hostPriced(model)) {
+        const p = pricing.calculateTokenCost(
+          model,
+          c.inputTokens,
+          c.outputTokens,
+          c.cacheReadInputTokens,
+          c.cacheCreationInputTokens,
+        );
+        if (Number.isFinite(p) && p >= 0) cost = p;
+      }
+    } catch {
+      // Pricing is a display number: a failure keeps the saved cost.
+    }
+    models[model] = { ...c, costUsd: cost };
+  }
+  return { ...baseline, models };
 }

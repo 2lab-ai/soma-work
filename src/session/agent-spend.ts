@@ -567,7 +567,10 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
         (await allUnchanged(reads))
       ) {
         agent.spendFinal = true;
-        for (const r of reads) files.delete(r.file);
+        for (const r of reads) {
+          files.delete(r.file);
+          metas.delete(r.file.replace(/\.jsonl$/, '.meta.json'));
+        }
         readAt.delete(id);
         changed = true;
       }

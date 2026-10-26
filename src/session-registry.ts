@@ -12,6 +12,8 @@ import { decodeSlackEntities } from './dispatch-service';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
+import { repriceBaseline } from './metrics/host-pricing';
+import { hostPricing } from './metrics/host-pricing-catalog';
 import { normalizeTmpPath } from './path-utils';
 import { loseRunningAgents, sanitizeAgentRegistry } from './session/agent-registry';
 import { sanitizeCronJob } from './session/cron-job';
@@ -2292,7 +2294,8 @@ export class SessionRegistry {
               : finiteStamp(serialized.activityStateChangedAt),
           // Cached completed-summary (may be stale — block builder validates via hash).
           instructionsCompletedSummary: serialized.instructionsCompletedSummary,
-          sdkUsageBaseline: sanitizeSdkUsageBaseline(serialized.sdkUsageBaseline),
+          // Repriced: llmux models moved from the SDK's default rate to the host table (`metrics/host-pricing.ts`).
+          sdkUsageBaseline: repriceBaseline(sanitizeSdkUsageBaseline(serialized.sdkUsageBaseline), hostPricing),
           taskUsage: restoreTaskUsage(serialized),
           // Dashboard v2.1 — restore aggregate snapshot
           compactionCount: typeof serialized.compactionCount === 'number' ? serialized.compactionCount : 0,
