@@ -1,0 +1,36 @@
+#!/bin/bash
+# Test stand-in for dseditgroup (install.test.ts): membership is a space-separated list in
+# $SHIM_STATE/Groups/<group>/GroupMembership (the dscl shim's layout).
+set -euo pipefail
+{ printf 'dseditgroup'; printf ' %s' "$@"; printf '\n'; } >>"$SHIM_LOG"
+
+operation='' member='' add='' group=''
+while [ $# -gt 0 ]; do
+  case $1 in
+    -o) operation=$2; shift 2 ;;
+    -m) member=$2; shift 2 ;;
+    -a) add=$2; shift 2 ;;
+    -t) shift 2 ;;
+    -*) echo "dseditgroup shim: unsupported option $1" >&2; exit 2 ;;
+    *) group=$1; shift ;;
+  esac
+done
+record="$SHIM_STATE/Groups/$group"
+[ -d "$record" ] || { echo 'Group not found.' >&2; exit 64; }
+members=$(cat "$record/GroupMembership" 2>/dev/null || true)
+case $operation in
+  checkmember)
+    case " $members " in
+      *" $member "*) echo "yes $member is a member of $group" ;;
+      *) echo "no $member is NOT a member of $group"; exit 67 ;;
+    esac
+    ;;
+  edit)
+    [ -n "$add" ] || { echo 'dseditgroup shim: only -a is supported' >&2; exit 2; }
+    printf '%s\n' "${members:+$members }$add" >"$record/GroupMembership"
+    ;;
+  *)
+    echo "dseditgroup shim: unsupported operation $operation" >&2
+    exit 2
+    ;;
+esac

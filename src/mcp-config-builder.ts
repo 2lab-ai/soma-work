@@ -5,7 +5,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
+import type { McpSdkServerConfigWithInstance, McpStdioServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { createPermissionPromptHandler, type PermissionRequestContext } from '@soma/mcp-server-permission';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
@@ -41,6 +41,12 @@ const NATIVE_INTERACTIVE_TOOLS = ['AskUserQuestion'];
  * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 1
  */
 const NATIVE_CRON_TOOLS = ['CronCreate', 'CronDelete', 'CronList'];
+
+/**
+ * devops-tools calls can wait on an admin approval card: the MCP server stops waiting at 355 s at the
+ * latest, so the SDK's per-call wall clock must stay above that.
+ */
+const DEVOPS_TOOLS_CALL_TIMEOUT_MS = 360_000;
 
 /** True when the bot was mentioned inside an existing thread (not at the root). */
 export function isMidThreadMention(ctx?: { mentionTs?: string; threadTs?: string } | null): boolean {
@@ -170,6 +176,12 @@ export class McpConfigBuilder {
     // Conditionally add server-tools when config.json has server-tools section
     if (this.hasServerToolsConfig()) {
       internalServers['server-tools'] = this.buildServerToolsServer();
+    }
+
+    // devops-tools relays to the devops broker, which holds the keys and posts the approval cards;
+    // the bot side only registers it (.prd/16-devops-tools-architecture.md §2, §8).
+    if (slackContext && this.hasDevopsToolsConfig()) {
+      internalServers['devops-tools'] = this.buildDevopsToolsServer(slackContext);
     }
 
     // Add mcp-tool-permission server for permission request/check/revoke
@@ -615,6 +627,42 @@ export class McpConfigBuilder {
     if (!serverTools || typeof serverTools !== 'object') return false;
     const serverKeys = Object.keys(serverTools).filter((k) => k !== 'permission');
     return serverKeys.length > 0;
+  }
+
+  /**
+   * Check if config.json has a devops-tools section with a non-empty `permission` map. Unlike
+   * server-tools the section carries no server keys. Without the map the server would not be
+   * grant-gated (`applyPermissionGating` and the PreToolUse deny tier only gate servers that have
+   * one), so it is not registered at all.
+   */
+  private hasDevopsToolsConfig(): boolean {
+    const devopsTools = this.getRawConfig()?.['devops-tools'];
+    if (!devopsTools || typeof devopsTools !== 'object') return false;
+    if (!this.loadToolPermissions()['devops-tools']) {
+      this.logger.warn('devops-tools section has no valid permission map — server not registered');
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Build devops-tools MCP server configuration. The env carries the requester context and,
+   * optionally, the broker socket path — never a token: the broker alone holds the keys.
+   */
+  private buildDevopsToolsServer(slackContext: SlackContext): McpStdioServerConfig {
+    const command = this.getInternalServerCommand('devops-tools');
+    const env: Record<string, string> = { SLACK_CONTEXT: JSON.stringify(slackContext) };
+    const socketPath = this.getRawConfig()?.['devops-tools']?.socketPath;
+    if (typeof socketPath === 'string' && path.isAbsolute(socketPath)) {
+      // = BROKER_SOCKET_ENV in packages/process-shared/src/devops/protocol.ts
+      env.SOMA_DEVOPS_BROKER_SOCKET = socketPath;
+    }
+    return {
+      command: command.command,
+      args: command.args,
+      env,
+      timeout: DEVOPS_TOOLS_CALL_TIMEOUT_MS,
+    };
   }
 
   /**

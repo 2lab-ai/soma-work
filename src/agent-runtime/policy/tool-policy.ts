@@ -38,6 +38,7 @@ import {
   type SensitivePathResult,
 } from '../../sensitive-path-filter';
 import type { HandoffContext } from '../../types';
+import { checkDevopsSecretCommand, checkDevopsSecretGlob, checkDevopsSecretPath } from './devops-secret-guard';
 import type { PermissionMode } from './permission-mode';
 
 const PR_CREATE_MCP_TOOL = 'mcp__github__create_pull_request';
@@ -55,9 +56,9 @@ export interface ToolPolicyResult {
   /** Human-readable reason, prefixed with the guard that decided. For audit logs. */
   reason: string;
   /**
-   * Only set for the PR-issue deny — the SDK surfaces this to the model via
-   * `permissionDecisionReason`. Other denies intentionally carry no surfaced
-   * message (parity with the prior hooks, which only the PR-issue guard set).
+   * Only set for the PR-issue and devops-secret denies — the SDK surfaces this to
+   * the model via `permissionDecisionReason`. Other denies intentionally carry no
+   * surfaced message (parity with the prior hooks, which only the PR-issue guard set).
    */
   denyMessage?: string;
   /**
@@ -152,6 +153,31 @@ function checkSensitiveForTool(toolName: string, input: Record<string, unknown>)
   }
 }
 
+const DEVOPS_SECRET_DENY_MESSAGE =
+  'Blocked: reading GitHub or keychain credentials and touching the devops broker files is denied in every permission mode.';
+
+/**
+ * Devops-secret check dispatch — Bash→command, Read/Edit/Write→file_path, Grep→path,
+ * Glob→pattern+path; any other tool → null. Defense in depth: the real boundary is the devops
+ * broker's separate OS user, not this check.
+ */
+function checkDevopsSecretForTool(toolName: string, input: Record<string, unknown>): string | null {
+  switch (toolName) {
+    case 'Bash':
+      return checkDevopsSecretCommand(asStr(input.command));
+    case 'Read':
+    case 'Edit':
+    case 'Write':
+      return checkDevopsSecretPath(asStr(input.file_path));
+    case 'Grep':
+      return checkDevopsSecretPath(asStr(input.path));
+    case 'Glob':
+      return checkDevopsSecretGlob(asStr(input.pattern), asStr(input.path));
+    default:
+      return null;
+  }
+}
+
 /**
  * Incident READ-ONLY decision — allow the exactly-named read-only MCP tools,
  * deny everything else. Never returns `pass` or falls through: an unknown tool
@@ -192,6 +218,13 @@ export function evaluateToolPolicy(
   //    SDK fire-and-forget writes.
   if (toolName === 'Bash' && ctx.aborted) {
     return { decision: 'deny', reason: 'abort-guard: session aborted' };
+  }
+
+  // 1b. devops-secret (every mode, admins too): stored GitHub/keychain credentials and the devops
+  //     broker's paths. Not a dangerous-command rule, which auto mode classifies and bypass allows.
+  const devopsSecret = checkDevopsSecretForTool(toolName, input);
+  if (devopsSecret !== null) {
+    return { decision: 'deny', reason: `devops-secret: ${devopsSecret}`, denyMessage: DEVOPS_SECRET_DENY_MESSAGE };
   }
 
   // 2-4. Admins bypass the ssh / sensitive / mcp guards; an incident session gets no admin privilege.
