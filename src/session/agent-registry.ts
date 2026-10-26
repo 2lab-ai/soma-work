@@ -512,7 +512,7 @@ export function sanitizeAgentRegistry(raw: unknown): AgentRegistry | undefined {
       const calls = finiteNonNegative((a.spend as Record<string, unknown>).calls);
       rec.spend = { ...spend, calls: Math.floor(calls ?? 0) };
       const est = finiteNonNegative((a.spend as Record<string, unknown>).estimatedCalls);
-      if (est) rec.spend.estimatedCalls = Math.floor(est);
+      if (est) rec.spend.estimatedCalls = Math.min(Math.floor(est), rec.spend.calls);
       const unpriced = (a.spend as Record<string, unknown>).unpricedModels;
       if (Array.isArray(unpriced)) {
         const names = unpriced.filter((m): m is string => typeof m === 'string' && m.length > 0).slice(0, 10);

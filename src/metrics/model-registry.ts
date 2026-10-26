@@ -108,17 +108,6 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
       maxOutput: 128_000,
     },
   ],
-  // Claude Opus 5 (2026-08-26) — Opus tier, same rates as the 4.x opus rows
-  // ($5 in / $25 out / $0.5 cache-read; 5min write 1.25×input, 1hr 2×input).
-  // Cross-checked against llmux, which is the component that actually bills
-  // this traffic: `llmux/src/pricing.rs:103-105` maps `claude-opus-5` to
-  // `OPUS_TIER` = ModelPrice::new(5.0, 25.0, 0.5, 6.25).
-  //
-  // MUST stay above the generic `sonnet-4-` / `haiku-4-` fallbacks — and it
-  // must exist at all: `claude-opus-5` matches NO other pattern in this table
-  // (`opus-4-8`, `opus-4-5`, … all carry a `4-`), so without this row every
-  // Opus 5 turn was priced at FALLBACK_SPEC's Sonnet rates. `opus-5` does not
-  // collide with `claude-opus-4-5-*` either — that id spells `opus-4-5`.
   // Claude Opus 5.5 — successor to Opus 5 at a lower price: $4 in / $20 out /
   // $0.20 cache read per MTok; 5min write 1.25×input, 1hr 2×input. Official
   // first-party rates (claude-api reference, 2026-09-25), the same the Agent
@@ -139,6 +128,17 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
       maxOutput: 128_000,
     },
   ],
+  // Claude Opus 5 (2026-08-26) — Opus tier, same rates as the 4.x opus rows
+  // ($5 in / $25 out / $0.5 cache-read; 5min write 1.25×input, 1hr 2×input).
+  // Cross-checked against llmux, which is the component that actually bills
+  // this traffic: `llmux/src/pricing.rs:103-105` maps `claude-opus-5` to
+  // `OPUS_TIER` = ModelPrice::new(5.0, 25.0, 0.5, 6.25).
+  //
+  // MUST stay above the generic `sonnet-4-` / `haiku-4-` fallbacks — and it
+  // must exist at all: `claude-opus-5` matches NO other pattern in this table
+  // (`opus-4-8`, `opus-4-5`, … all carry a `4-`), so without this row every
+  // Opus 5 turn was priced at FALLBACK_SPEC's Sonnet rates. `opus-5` does not
+  // collide with `claude-opus-4-5-*` either — that id spells `opus-4-5`.
   [
     'opus-5',
     {
