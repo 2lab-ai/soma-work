@@ -52,7 +52,7 @@ src/
 │   ├── actions/     # 인터랙티브 액션 핸들러
 │   ├── pipeline/    # 스트림 처리 파이프라인
 │   ├── commands/    # 명령어 핸들러
-│   ├── directives/  # 채널/세션 링크·배포 완료 디렉티브
+│   ├── directives/  # 채널/세션 링크 디렉티브
 │   ├── formatters/  # 출력 포맷터
 │   └── z/           # /z 명령어 surface + 비-admin DM 입력 게이트
 ├── agent-runtime/   # Claude Agent SDK 실행 런타임

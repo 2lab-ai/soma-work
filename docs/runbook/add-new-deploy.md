@@ -479,20 +479,20 @@ Deploy 스텝은 이 스크립트를 두 번 부른다:
   마켓플레이스라면 그 호스트의 `gh` 인증이 그 레포를 읽을 수 있어야 한다. **fetch 실패는 배포를 실패시키지
   않는다** (PluginManager는 로그만 남기고 뜬다) — 첫 배포 뒤 다음 deploy 스레드의 프리플라이트 줄을 확인하라:
   `ℹ️ no post-deploy QA on this host`가 나오면 플러그인이 로드되지 않은 것이고, ⚠️ 줄이면 프로필이 덜 찼다.
-- 호스트를 `onDeploy` QA 레인(크론 잡 또는 `deploy-lanes.json`)에서 환경 플러그인으로 옮길 때는 그 레인을
-  지운다 — 남겨 두면 레인과 8단계가 같은 배포를 두 번 QA한다.
 
 **환경 플러그인 규약 — `post-deploy` 스킬.** 배포 워크플로우(`src/prompt/workflows/deploy.prompt`)는
 환경 값을 모르고, 이름이 고정된 스킬 하나만 찾는다:
 
 - 1단계(Pre-Validation): `<plugin>:post-deploy --preflight repo=<owner/repo> target=<branch>` → 정확히
-  하나를 답한다: `applies` / `not-applicable` / `missing: <fields>`. 아무것도 쓰지 않는다. 다른 답이나
-  스킬 오류는 `missing`과 같게 처리된다 (⚠️ 한 줄 + 요청자 대기).
-- 8단계(Post-Deploy QA): 모든 repo의 배포 결과가 정해진 뒤, 프리플라이트가 `applies`였고 7단계
-  `deploy_completed`가 confirmed인 repo마다 하나씩 `<plugin>:post-deploy repo=<owner/repo> target=<branch>
+  하나를 답한다: `applies` / `partial: <checks>` / `not-applicable` / `missing: <fields>`. 잠금·스크린샷
+  폴더 생성 말고는 아무것도 쓰지 않는다. `partial`이면 ⚠️ 한 줄 뒤 축소 모드로 QA를 돌리고, `missing`·다른 답·
+  스킬 오류는 ⚠️ 한 줄 뒤 배포만 계속한다(그 repo = `deployed, QA not run`). 어떤 답도 배포를 멈추거나 요청자를
+  기다리게 하지 않는다.
+- 7단계(Post-Deploy QA): 모든 repo의 배포 결과가 정해진 뒤, 프리플라이트가 `applies`나 `partial`이었고 배포가
+  확인된(confirmed) repo마다 하나씩 `<plugin>:post-deploy repo=<owner/repo> target=<branch>
   before=<sha> after=<sha>` — 같은 세션에서 배포 후 QA를 끝까지 하고 최종 리포트를 그 스레드에 올린다.
   QA를 안 한 repo는 이유를 한 줄씩 적는다. 스킬이 오류로 끝나거나 최종 리포트 없이 끝나면 워크플로우가
-  직접 `deployed, QA incomplete`와 재실행 인자를 보고한다. 레인이 아니라 워크플로우 자신의 일이다.
+  직접 `deployed, QA incomplete`를 보고한다(재실행 인자는 관리자용 참고 한 줄).
 - 스킬 본문은 그 호스트의 적용표·프로필(`## Environment`)·정책(`## Policy`)을 들고, 절차는
   soma-work 번들 `zworkflow` 스킬 `deploy-qa` / `qa-issue` / `qa-report`를 호출한다.
 - 이 스킬이 없는 호스트에서는 배포가 `ℹ️ no post-deploy QA on this host` 한 줄을 남기고 QA 없이 진행한다.
