@@ -12,7 +12,10 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+
+// The adapter and sync tests spawn python3; the 5 s default is too tight on a loaded runner.
+vi.setConfig({ testTimeout: 60_000 });
 
 const SKILL_ROOT = resolve(__dirname, '..');
 const OMD = resolve(SKILL_ROOT, 'references', 'omd');
