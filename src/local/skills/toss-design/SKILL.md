@@ -377,3 +377,5 @@ TDS is a mobile system. Pick the layout with this rule [inferred]:
 ## Use from the `html` skill
 
 The two themes are registered in `ui-ux/references/index.json` as `toss-blue` and `toss-black` (`family: toss-design`). Their `path` and `tokens` fields point at this skill's `themes/<name>/design.md` and `tokens.css`; nothing is copied. `html` selects them with `design=toss-blue` or `design=toss-black` (or when the user names a Toss style), reads this SKILL.md in programmatic mode, and builds with these tokens and recipes. The ui-ux registry default stays `openai`; this skill's own default theme is `toss-blue`.
+
+On that path the `html` skill owns two things: its single audit comment (`<!-- ui-ux: driver=reference · reference=<name> · theme=<name> · … -->`, which replaces this skill's own comment) and its Step 3.7 Lottie layer. Lottie animations there must each have a job (a title draw-in, a status cue) and stay palette-locked and reduced-motion safe; this skill's "no decorative loops" rule still governs the UI components themselves.

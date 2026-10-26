@@ -45,7 +45,7 @@ critical path of a Slack request.
 | **Content** | The raw text, markdown, JSON, CSV, SQL, or notes the user pasted into the thread. Always required. |
 | **Template name** (optional) | One of the entries under [`templates/index.json`](./templates/index.json). If omitted, the classifier in Step 2 picks one. |
 | **Override viewport** (optional) | The user can override `width`/`height`/`fullPage` for the render step. |
-| **Design** (optional) | `design=<value>` picks the design driver: `default` (the registry default reference, currently `openai`), any reference name registered in `ui-ux/references/index.json` (`openai`, `claude`, `il-capo-production`, `toss-blue`, `toss-black`, …), or `impeccable`. Callers such as `autoz` pass it explicitly; users may also just name a reference. Resolved in Step 3.4 — an unknown value stops the run. |
+| **Design** (optional) | `design=<value>` picks the design driver: `default` (the registry default reference, currently `openai`), any reference name registered in `ui-ux/references/index.json` (`openai`, `claude`, `il-capo-production`, `toss-blue`, `toss-black`, …), or `impeccable`. Callers (for example `autoz`) can pass it explicitly; users may also just name a reference. Resolved in Step 3.4 — an unknown value stops the run. |
 
 ## Workflow
 
@@ -126,11 +126,14 @@ How the order becomes a driver:
   registry default must not override the user's own brand.
 - Rule 4 → run the resolver with `DESIGN` unset (it means `default`).
 
-Bot shells do not set `CLAUDE_PLUGIN_ROOT`; export it first in every bash
-call (`export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<this skill's base directory>/../..}"`).
+Bot shells do not set `CLAUDE_PLUGIN_ROOT`, and every Bash call starts a
+fresh shell, so the block sets it itself. `<base directory>` is the path in
+this skill's `Base directory for this skill: …` header
+(`<plugin root>/skills/html`).
 
 ```bash
-UIUX="${CLAUDE_PLUGIN_ROOT:-}/skills/ui-ux"
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
+UIUX="$CLAUDE_PLUGIN_ROOT/skills/ui-ux"
 [ -d "$UIUX" ] || UIUX="$(git rev-parse --show-toplevel 2>/dev/null)/src/local/skills/ui-ux"
 python3 - "$UIUX" "${DESIGN:-default}" <<'RESOLVE'
 import json, os, sys
@@ -181,7 +184,9 @@ content preservation (real data only, nothing invented).
    `family` is `toss-design`, also read
    `$CLAUDE_PLUGIN_ROOT/skills/toss-design/SKILL.md` in its programmatic mode
    and build with its component recipes (Top, ListRow, Badge, Button,
-   BottomCTA …). The toss tokens and components have final visual authority —
+   BottomCTA …). The toss `theme` is the reference name (`design=toss-black`
+   → `theme=toss-black`), and the html audit comment below records it as
+   `theme=<name>` — write that one comment, not toss-design's own. The toss tokens and components have final visual authority —
    generic engine output never overrides them.
 4. **Honor ui-ux quality gates.** The reference sets aesthetic direction, never
    permission to break ui-ux Quick Reference §1–§3 (accessibility, touch targets,

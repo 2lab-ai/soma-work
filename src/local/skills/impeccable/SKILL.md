@@ -4,7 +4,7 @@ description: "Use when the user wants to design, redesign, shape, critique, audi
 version: 4.7.1
 user-invocable: true
 argument-hint: "[shape · audit|critique · animate|bolder|colorize|delight|layout|overdrive|quieter|typeset · adapt|clarify|distill · harden|onboard|optimize|polish · init|document|extract|live|generate] [target]"
-allowed-tools: Read, Write, Edit, Bash, Glob, Grep, WebFetch
+allowed-tools: Read, Write, Edit, Glob, Grep
 license: Apache 2.0
 ---
 

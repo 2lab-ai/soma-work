@@ -82,6 +82,14 @@ describe('local:html — deterministic design driver (`design=` input)', () => {
     expect(s34).toMatch(/driver=brand/);
   });
 
+  it('the Step 3.4 bash block sets the plugin root itself (bot shells do not)', () => {
+    const s34 = section(md(), /^### 3\.4\./m);
+    const block = s34.split('```bash')[1] ?? '';
+    expect(block.trimStart()).toMatch(
+      /^export CLAUDE_PLUGIN_ROOT="\$\{CLAUDE_PLUGIN_ROOT:-<base directory>\/\.\.\/\.\.\}"/,
+    );
+  });
+
   it('Step 6 checks the fonts actually used, not only the ones loaded', () => {
     const text = md();
     expect(text).toMatch(/`fonts used:/);
