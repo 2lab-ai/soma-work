@@ -646,7 +646,7 @@ describe('D10 — one primary button per open card', () => {
         'cardGoalLine',
         'renderCardBody',
       ],
-      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'SESSION_ACTION_ARIA', '_busy', '_cardModelOpen'],
+      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'SESSION_ACTION_ARIA', '_busy'],
       { ...STUBS, ...inject },
     ).renderCardBody(s, col);
   const card = (over: Record<string, unknown> = {}) => ({

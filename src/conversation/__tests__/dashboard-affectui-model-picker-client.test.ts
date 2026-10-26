@@ -1103,16 +1103,16 @@ describe('D13–D15 — motion, tokens, responsive', () => {
     expect(names(light)).toEqual(names(dark));
   });
 
+  // The menu's own touch block (#441's context block shares the media string with a one-line block of its own).
+  const MP_TOUCH = '@media (pointer: coarse), (max-width: 639px) {\n  .mp-trigger';
   it('narrow container, narrow or touch screens — in the menu’s own block (the shared 44px block stays as it was)', () => {
     expect(STYLE).toMatch(/@container \(max-width: 300px\) \{[^@]*\.mp-keys/);
-    const own = STYLE.slice(STYLE.indexOf('@media (pointer: coarse), (max-width: 639px) {'));
+    const own = STYLE.slice(STYLE.indexOf(MP_TOUCH));
     const block = own.slice(0, own.indexOf('\n}\n'));
     expect(block).toContain('.mp-trigger, .mp-seg-btn { min-height: 44px; }');
     expect(block).toContain('.mp-opt { min-height: 54px; }');
     // After the shared blocks: tests (and readers) take the first touch / reduced-motion block as the board's.
-    expect(STYLE.indexOf('@media (pointer: coarse), (max-width: 639px) {')).toBeGreaterThan(
-      STYLE.indexOf('@media (max-width: 639px), (pointer: coarse) {'),
-    );
+    expect(STYLE.indexOf(MP_TOUCH)).toBeGreaterThan(STYLE.indexOf('@media (max-width: 639px), (pointer: coarse) {'));
     expect(STYLE.indexOf('@media all and (prefers-reduced-motion: reduce) {')).toBeGreaterThan(
       STYLE.indexOf('@media (prefers-reduced-motion: reduce) {'),
     );
