@@ -2,7 +2,7 @@
 name: ui-ux-reference
 description: "Capture a real-world website's visual design language as a reusable design.md reference for the `ui-ux` skill. Point it at any URL (an Awwwards page, a live site, a portfolio) plus a short name; it extracts the palette, typography, layout, motion, imagery, tone, and signature techniques into references/<name>/design.md and registers it in references/index.json so the `ui-ux` skill can apply it by name. Triggers on: 'add a ui-ux reference', 'ui-ux-reference', '레퍼런스 추가', '이 사이트를 레퍼런스로', 'extract design from <url>', 'design reference from this site', 'capture this site's design', 'use <site> as a design reference'."
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep, WebFetch, WebSearch
-version: 0.1.0
+version: 0.2.0
 license: MIT
 ---
 
@@ -79,7 +79,23 @@ Extract, as concretely as the source allows:
 - **Meta** (if Awwwards) — score, tags/category, observed stack, studio/designer.
 
 If a field can't be determined from the source, say so explicitly in the file
-(don't invent hex codes) — mark it as "inferred" vs. "observed".
+(don't invent hex codes) — mark it as "inferred" vs. "observed". A value nobody
+could confirm stays blank; it is not filled with a plausible guess. Anything a
+consumer later derives (a muted tone, a contrast fix) must be disclosed as
+derived on the page that uses it, never presented as the brand's own value.
+
+Fonts have three separate layers — record each one by name and never merge
+them: the **brand face** (what the brand uses; note whether it is publicly
+distributable), a **substitute** (a named stand-in per script, labelled "not the
+brand face"), and a **safe default** (Noto Sans / KR / JP / SC / TC by script).
+A consumer may load a substitute or a safe default, never a proprietary brand
+face.
+
+Machine-readable alternative: when the source is already a Google DESIGN.md /
+DESIGN.md v3 file (for example an oh-my-design archive entry), do not rewrite it
+into this template — add it to the `omd` set by re-running
+`references/omd/sync.py`, or register it with `format: design-md-v3` so the
+`html` skill runs `scripts/designmd_tokens.py` on it.
 
 ### Step 2 — Write `design.md`
 

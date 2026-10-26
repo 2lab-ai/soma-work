@@ -1,0 +1,175 @@
+#!/usr/bin/env node
+/**
+ * batch-qa.mjs — hard QA gate for html batch mode output.
+ *
+ *   node batch-qa.mjs <out-dir> [--concurrency 4]
+ *
+ * Reads <out>/results.json (the expected set) and checks, before any browser starts, that the
+ * directory holds exactly those pages (missing / extra → exit 2). Then, per page in headless Chromium:
+ *   - loads without console errors or failed requests;
+ *   - the text of <main> is identical across all pages (content preserved; only tokens differ);
+ *   - no horizontal overflow at 1440 px and 390 px;
+ *   - every visible text element meets WCAG 1.4.3 against its real background
+ *     (4.5:1, or 3:1 for ≥ 24 px / ≥ 18.66 px bold);
+ *   - the face that drew the Korean text is a Hangul-capable face (CDP getPlatformFontsForNode);
+ *   - every in-page #anchor points at an existing id.
+ * Writes <out>/qa.json. Exit 0 only when every page passes; 1 when any page fails.
+ */
+import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+
+const out = resolve(process.argv[2] ?? '');
+const conc = Number(process.argv[process.argv.indexOf('--concurrency') + 1]) || 4;
+const resultsPath = join(out, 'results.json');
+if (!process.argv[2] || !existsSync(resultsPath)) {
+  console.error('usage: node batch-qa.mjs <out-dir>  (needs <out>/results.json from batch.py)');
+  process.exit(2);
+}
+const expected = JSON.parse(readFileSync(resultsPath, 'utf8')).references.map((r) => r.file);
+const present = readdirSync(out).filter((f) => f.endsWith('.html') && f !== 'index.html');
+const missing = expected.filter((f) => !present.includes(f));
+const extra = present.filter((f) => !expected.includes(f));
+if (missing.length || extra.length) {
+  if (missing.length) console.log(`missing: ${missing.map((f) => f.replace(/\.html$/, '')).join(', ')}`);
+  if (extra.length) console.log(`extra: ${extra.join(', ')}`);
+  process.exit(2);
+}
+
+const here = dirname(fileURLToPath(import.meta.url));
+let chromium;
+try {
+  ({ chromium } = createRequire(`${here}/`)('playwright'));
+} catch {
+  ({ chromium } = await import('playwright'));
+}
+
+const HANGUL_FACE = /Pretendard|Noto Sans (KR|CJK)|Apple SD Gothic|Nanum|Spoqa|SUIT|IBM Plex Sans KR|Malgun|Source Han Sans K/i;
+
+async function checkPage(browser, file) {
+  const problems = [];
+  const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+  const page = await ctx.newPage();
+  page.on('console', (m) => {
+    if (m.type() === 'error') problems.push(`console: ${m.text().slice(0, 80)}`);
+  });
+  page.on('requestfailed', (r) => problems.push(`request failed: ${r.url().slice(0, 80)}`));
+  let mainText = '';
+  let fontsUsed = [];
+  try {
+    await page.goto(pathToFileURL(join(out, file)).toString(), { waitUntil: 'networkidle', timeout: 60000 });
+    await page.evaluate(() => document.fonts.ready);
+    const info = await page.evaluate(() => {
+      const rgba = (s) => (s.match(/[\d.]+/g) || []).map(Number);
+      const lum = ([r, g, b]) => {
+        const c = (v) => ((v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4);
+        return 0.2126 * c(r) + 0.7152 * c(g) + 0.0722 * c(b);
+      };
+      const ratio = (a, b) => {
+        const [x, y] = [lum(a), lum(b)].sort((p, q) => q - p);
+        return (x + 0.05) / (y + 0.05);
+      };
+      const over = (fg, bg) => {
+        const a = fg[3] ?? 1;
+        return [0, 1, 2].map((i) => fg[i] * a + bg[i] * (1 - a));
+      };
+      const bgOf = (el) => {
+        const stack = [];
+        for (let e = el; e; e = e.parentElement) stack.push(rgba(getComputedStyle(e).backgroundColor));
+        let bg = [255, 255, 255];
+        for (const c of stack.reverse()) if ((c[3] ?? 1) > 0) bg = over(c, bg);
+        return bg;
+      };
+      const fails = [];
+      let checked = 0;
+      for (const el of document.querySelectorAll('body *')) {
+        const own = [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim());
+        if (!own) continue;
+        const cs = getComputedStyle(el);
+        if (cs.visibility === 'hidden' || cs.display === 'none' || el.getClientRects().length === 0) continue;
+        const bg = bgOf(el);
+        const fg = over(rgba(cs.color), bg);
+        const size = parseFloat(cs.fontSize);
+        const large = size >= 24 || (size >= 18.66 && Number(cs.fontWeight) >= 700);
+        const r = ratio(fg, bg);
+        checked++;
+        if (r < (large ? 3 : 4.5)) fails.push(`${el.tagName.toLowerCase()}.${el.className || ''} ${r.toFixed(2)}:1 @${size}px`);
+      }
+      const ids = new Set([...document.querySelectorAll('[id]')].map((e) => e.id));
+      const deadLinks = [...document.querySelectorAll('a[href^="#"]')]
+        .map((a) => a.getAttribute('href').slice(1))
+        .filter((h) => h && !ids.has(h));
+      return {
+        main: (document.querySelector('main')?.innerText ?? '').replace(/\s+/g, ' ').trim(),
+        overflow: document.documentElement.scrollWidth - window.innerWidth,
+        contrastFails: fails.slice(0, 3),
+        contrastFailCount: fails.length,
+        checked,
+        deadLinks,
+      };
+    });
+    mainText = info.main;
+    if (!mainText) problems.push('empty <main>');
+    if (info.overflow > 1) problems.push(`overflow ${info.overflow}px @1440`);
+    if (info.contrastFailCount) problems.push(`contrast ×${info.contrastFailCount}: ${info.contrastFails.join(' | ')}`);
+    if (info.deadLinks.length) problems.push(`dead anchors: ${info.deadLinks.join(', ')}`);
+    const cdp = await ctx.newCDPSession(page);
+    await cdp.send('DOM.enable');
+    await cdp.send('CSS.enable');
+    const { root } = await cdp.send('DOM.getDocument', { depth: 0 });
+    const names = new Set();
+    for (const sel of ['h1', 'main p', 'main td', 'main li']) {
+      const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector: sel });
+      if (!nodeId) continue;
+      const { fonts } = await cdp.send('CSS.getPlatformFontsForNode', { nodeId });
+      for (const f of fonts) names.add(f.familyName);
+    }
+    fontsUsed = [...names].sort();
+    if (!fontsUsed.some((n) => HANGUL_FACE.test(n))) problems.push(`no Hangul face drew the text (${fontsUsed.join(', ')})`);
+    await page.setViewportSize({ width: 390, height: 844 });
+    const ov = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    if (ov > 1) problems.push(`overflow ${ov}px @390`);
+  } catch (e) {
+    problems.push(`load: ${String(e.message).slice(0, 100)}`);
+  } finally {
+    await ctx.close();
+  }
+  return { name: file.replace(/\.html$/, ''), file, ok: problems.length === 0, problems, fontsUsed, mainText };
+}
+
+const browser = await chromium.launch({ headless: true });
+const pages = [];
+let next = 0;
+await Promise.all(
+  Array.from({ length: conc }, async () => {
+    while (next < expected.length) {
+      const file = expected[next++];
+      pages.push(await checkPage(browser, file));
+      if (pages.length % 50 === 0) console.log(`${pages.length}/${expected.length}`);
+    }
+  }),
+);
+await browser.close();
+
+// Content preservation: <main> text must be identical on every page.
+const counts = new Map();
+for (const p of pages) counts.set(p.mainText, (counts.get(p.mainText) ?? 0) + 1);
+const canonical = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '';
+for (const p of pages) {
+  if (p.mainText !== canonical) {
+    p.ok = false;
+    p.problems.push('main text differs from the other pages');
+  }
+  delete p.mainText;
+}
+const order = new Map(expected.map((f, i) => [f, i]));
+pages.sort((a, b) => order.get(a.file) - order.get(b.file));
+const failed = pages.filter((p) => !p.ok);
+writeFileSync(
+  join(out, 'qa.json'),
+  JSON.stringify({ checked: pages.length, passed: pages.length - failed.length, pages }, null, 1),
+);
+console.log(`checked ${pages.length}, passed ${pages.length - failed.length}, failed ${failed.length}`);
+for (const f of failed.slice(0, 25)) console.log(`FAIL ${f.name}: ${f.problems.join('; ')}`);
+process.exit(failed.length ? 1 : 0);
