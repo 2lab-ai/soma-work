@@ -82,6 +82,9 @@ def write_index(out, title):
     results = json.load(open(os.path.join(out, "results.json"), encoding="utf-8"))
     qa_path = os.path.join(out, "qa.json")
     qa = {q["name"]: q for q in json.load(open(qa_path, encoding="utf-8"))["pages"]} if os.path.isfile(qa_path) else {}
+    # Trust a QA record only for the exact page bytes it checked.
+    qa = {n: q for n, q in qa.items()
+          if q.get("page_sha256") == next((r["page_sha256"] for r in results["references"] if r["name"] == n), None)}
     rows, passed = [], 0
     for r in results["references"]:
         q = qa.get(r["name"])
@@ -138,8 +141,10 @@ def main():
     from designmd_tokens import ADAPTER_VERSION, build, css  # noqa: E402
 
     src = resolver_source()
-    omd_ix = json.load(open(os.path.join(a.uiux, "references", "omd", "index.json"), encoding="utf-8"))
-    by_name = {r["name"]: r for r in omd_ix["references"]}
+    omd_path = os.path.join(a.uiux, "references", "omd", "index.json")
+    omd_ix = json.load(open(omd_path, encoding="utf-8")) if os.path.isfile(omd_path) else {"upstream": {"commit": ""}, "references": []}
+    hand = json.load(open(os.path.join(a.uiux, "references", "index.json"), encoding="utf-8"))["references"]
+    by_name = {r["name"]: r for r in hand + omd_ix["references"]}
     if a.refs.strip() == "omd-*":
         names = [r["name"] for r in omd_ix["references"]]
     else:
@@ -148,15 +153,22 @@ def main():
         raise SystemExit("duplicate names in --refs")
     content_sha = sha256(data=template.encode("utf-8"))
     os.makedirs(a.out, exist_ok=True)
+    stale = os.path.join(a.out, "qa.json")
+    if os.path.isfile(stale):  # a QA result never carries over to regenerated pages
+        os.remove(stale)
     scripts = tuple(s for s in a.scripts.split(",") if s)
-    results = []
+    # Resolve every name before writing anything, so a bad name never leaves a partial batch behind.
+    resolved = []
     for name in names:
         info = resolve(a.uiux, name, src)  # same resolver as a single run; unknown names stop here
         if info.get("format") != "design-md-v3":
             raise SystemExit(f"{name}: batch mode needs a design-md-v3 reference (machine-readable tokens); got format={info.get('format', 'none')}")
+        resolved.append((name, info))
+    results = []
+    for name, info in resolved:
         res = build(info["design_md"], scripts)
         entry = by_name.get(name, {})
-        company = re.sub(r"\s*\(oh-my-design archive\)$", "", entry.get("title", name))
+        company = re.sub(r"\s*\(oh-my-design archive\)$", "", entry.get("title", name)).split(" — ")[0]
         design_sha = sha256(info["design_md"])
         audit = (
             f"<!-- ui-ux: driver=reference · reference={name} · format=design-md-v3 · upstream={info.get('upstream', '')} · "
@@ -175,13 +187,16 @@ def main():
         file = f"{name}.html"
         with open(os.path.join(a.out, file), "w", encoding="utf-8") as f:
             f.write(page)
+        page_sha = sha256(data=page.encode("utf-8"))
         results.append({
             "name": name, "file": file, "company": company, "country": entry.get("country"),
             "category": entry.get("category"), "accent": res["tokens"]["--color-accent"], "dark": res["dark"],
-            "design_sha256": design_sha, "derived": res["derivedCount"], "contrast": res["contrast"],
+            "design_sha256": design_sha, "page_sha256": page_sha, "derived": res["derivedCount"], "contrast": res["contrast"],
         })
     with open(os.path.join(a.out, "results.json"), "w", encoding="utf-8") as f:
-        json.dump({"upstream": omd_ix["upstream"]["commit"], "content_sha256": content_sha,
+        json.dump({"upstream": omd_ix["upstream"]["commit"], "content_sha256": content_sha, "refs": a.refs.strip(),
+                   "page": os.path.abspath(a.page),
+                   "omdIndex": omd_path if os.path.isfile(omd_path) else None,
                    "adapter": ADAPTER_VERSION, "references": results}, f, ensure_ascii=False, indent=1)
     write_index(a.out, a.title)
     print(f"{len(results)} pages → {a.out}")

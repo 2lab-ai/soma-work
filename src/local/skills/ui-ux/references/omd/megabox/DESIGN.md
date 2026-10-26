@@ -158,4 +158,4 @@ fonts:
 
 # MEGABOX
 
-Tokens only (frontmatter, verbatim from oh-my-design `c71ca8d`). The design described here belongs to MEGABOX; reproduced for educational reference. Full prose: https://oh-my-design.kr/megabox/design.md
+Tokens only (frontmatter, verbatim from oh-my-design `c71ca8d`). The design described here belongs to MEGABOX; reproduced for educational reference. Full prose at the same commit: https://github.com/kwakseongjae/oh-my-design/blob/c71ca8d8a530fde51c7b03967fdaf45dceedb254/design-md/megabox/DESIGN.md

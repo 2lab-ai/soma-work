@@ -125,6 +125,55 @@ body{background:var(--color-bg);color:var(--color-text);font-family:var(--font-s
     expect(r.stderr).toMatch(/unknown design=omd-nope/);
   });
 
+  it('batch-qa passes clean pages (no false-red from its own CDP probes)', () => {
+    const out = join(scratch, 'clean');
+    const b = spawnSync(
+      'python3',
+      [BATCH, '--page', tpl, '--refs', 'omd-toss,omd-pixiv', '--out', out, '--uiux', UIUX_ROOT],
+      {
+        encoding: 'utf8',
+      },
+    );
+    expect(b.status, b.stderr).toBe(0);
+    const r = spawnSync('node', [BATCH_QA, out, '--concurrency', '2'], { encoding: 'utf8', timeout: 120000 });
+    expect(r.status, r.stdout + r.stderr).toBe(0);
+    expect(r.stdout).toMatch(/checked 2, passed 2, failed 0/);
+  }, 150_000);
+
+  it('regenerating a batch drops the old QA record, so the list never shows a stale pass', () => {
+    const out = join(scratch, 'clean');
+    expect(existsSync(join(out, 'qa.json'))).toBe(true);
+    const b = spawnSync(
+      'python3',
+      [BATCH, '--page', tpl, '--refs', 'omd-toss,omd-pixiv', '--out', out, '--uiux', UIUX_ROOT],
+      {
+        encoding: 'utf8',
+      },
+    );
+    expect(b.status, b.stderr).toBe(0);
+    expect(existsSync(join(out, 'qa.json'))).toBe(false);
+    expect(readFileSync(join(out, 'index.html'), 'utf8')).toMatch(/QA 전/);
+  });
+
+  it('batch-qa compares <main> with the authored page, not with the pages under test', () => {
+    const out = join(scratch, 'tampered');
+    const b = spawnSync(
+      'python3',
+      [BATCH, '--page', tpl, '--refs', 'omd-toss,omd-pixiv', '--out', out, '--uiux', UIUX_ROOT],
+      {
+        encoding: 'utf8',
+      },
+    );
+    expect(b.status, b.stderr).toBe(0);
+    for (const f of ['omd-toss.html', 'omd-pixiv.html']) {
+      const p = join(out, f);
+      writeFileSync(p, readFileSync(p, 'utf8').replace('본문', '잘림'));
+    }
+    const r = spawnSync('node', [BATCH_QA, out, '--concurrency', '2'], { encoding: 'utf8', timeout: 120000 });
+    expect(r.status).not.toBe(0);
+    expect(r.stdout).toMatch(/main text differs from the authored page/);
+  }, 150_000);
+
   it('batch-qa exits non-zero when the output set differs from the expected set', () => {
     const out = join(scratch, 'out');
     rmSync(join(out, 'omd-pixiv.html'));

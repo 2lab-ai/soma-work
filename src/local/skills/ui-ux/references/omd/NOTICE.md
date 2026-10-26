@@ -10,8 +10,9 @@ verbatim, plus a three-line stub that names the company and links the full upstr
 names are `omd-<id>` (upstream ids with dots, such as `linear.app`, become `linear-app`).
 
 What is not here: the DESIGN.md prose, `reference.json`, research notes, logos, screenshots and font
-files. Read the prose at `https://oh-my-design.kr/<id>/design.md` when a design decision needs it; do
-not mix a newer prose file with these pinned tokens.
+files. No skill fetches anything at run time. Each stub links the full DESIGN.md at the same pinned
+upstream commit (a GitHub blob URL), so a reader who needs the prose reads the version these tokens
+came from — never the mutable `oh-my-design.kr` copy.
 
 Rights. Each DESIGN.md describes a company's design, which belongs to that company; oh-my-design
 reproduces it for educational reference (upstream README). Neither MIT nor "educational reference"

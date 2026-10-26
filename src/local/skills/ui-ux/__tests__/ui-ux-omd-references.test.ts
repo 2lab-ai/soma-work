@@ -1,6 +1,16 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -44,6 +54,8 @@ describe('local:ui-ux — oh-my-design reference set (format design-md-v3)', () 
     expect(ix.upstream.repo).toBe('https://github.com/kwakseongjae/oh-my-design');
     expect(ix.upstream.commit).toMatch(/^[0-9a-f]{40}$/);
     expect(readFileSync(resolve(OMD, 'UPSTREAM'), 'utf8').trim()).toBe(ix.upstream.commit);
+    // Pinned upstream c71ca8d has exactly 521 design-md references; a re-sync must update this number.
+    if (ix.upstream.commit.startsWith('c71ca8d')) expect(ix.references.length).toBe(521);
     expect(ix.references.length).toBeGreaterThanOrEqual(500);
     const names = ix.references.map((e) => e.name);
     expect(new Set(names).size).toBe(names.length);
@@ -143,5 +155,42 @@ print(json.dumps(bad))`;
     const brand = r.fonts.layers.find((l) => l.layer === 'brand face');
     expect(brand?.family).toBe('Toss Product Sans');
     expect(r.fonts.layers.some((l) => l.layer === 'substitute')).toBe(true);
+    // The safe default stays its own layer even when a substitute exists.
+    expect(r.fonts.layers.some((l) => l.layer === 'safe default')).toBe(true);
+    const order = r.fonts.layers.map((l) => l.layer);
+    expect(order.indexOf('brand face')).toBeLessThan(order.indexOf('substitute'));
+    expect(order.indexOf('substitute')).toBeLessThan(order.indexOf('safe default'));
+  });
+});
+
+describe('local:ui-ux — omd sync.py safety', () => {
+  it('refuses an upstream that would silently drop vendored references, before touching any file', () => {
+    const up = mkdtempSync(resolve(tmpdir(), 'omd-up-'));
+    try {
+      mkdirSync(resolve(up, 'design-md', 'toss'), { recursive: true });
+      writeFileSync(resolve(up, 'LICENSE'), 'MIT License\n');
+      writeFileSync(
+        resolve(up, 'design-md', 'toss', 'DESIGN.md'),
+        "---\nname: Toss\ncolors:\n  primary: '#3182f6'\n---\n",
+      );
+      const git = (...a: string[]) => spawnSync('git', ['-C', up, ...a], { encoding: 'utf8' });
+      git('init', '-q');
+      git('add', '-A');
+      git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'one');
+      const before = readFileSync(resolve(OMD, 'MANIFEST.json'), 'utf8');
+      const r = spawnSync('python3', [resolve(OMD, 'sync.py'), up], { encoding: 'utf8' });
+      expect(r.status).not.toBe(0);
+      expect(r.stderr).toMatch(/no longer has 520 vendored references/);
+      expect(readFileSync(resolve(OMD, 'MANIFEST.json'), 'utf8')).toBe(before);
+    } finally {
+      rmSync(up, { recursive: true, force: true });
+    }
+  });
+
+  it('every stub links the prose at the pinned commit, never the mutable site', () => {
+    const commit = index().upstream.commit;
+    const md = readFileSync(resolve(OMD, 'toss', 'DESIGN.md'), 'utf8');
+    expect(md).toContain(`https://github.com/kwakseongjae/oh-my-design/blob/${commit}/design-md/toss/DESIGN.md`);
+    expect(md).not.toMatch(/oh-my-design\.kr/);
   });
 });

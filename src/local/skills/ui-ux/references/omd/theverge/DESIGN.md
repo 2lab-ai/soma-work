@@ -167,4 +167,4 @@ fonts:
 
 # The Verge
 
-Tokens only (frontmatter, verbatim from oh-my-design `c71ca8d`). The design described here belongs to The Verge; reproduced for educational reference. Full prose: https://oh-my-design.kr/theverge/design.md
+Tokens only (frontmatter, verbatim from oh-my-design `c71ca8d`). The design described here belongs to The Verge; reproduced for educational reference. Full prose at the same commit: https://github.com/kwakseongjae/oh-my-design/blob/c71ca8d8a530fde51c7b03967fdaf45dceedb254/design-md/theverge/DESIGN.md

@@ -27,7 +27,7 @@ import json
 import re
 import sys
 
-ADAPTER_VERSION = "1.0.0"
+ADAPTER_VERSION = "1.3.0"
 
 try:
     import yaml  # PyYAML ships with every soma-work host (playwright/python toolchain)
@@ -53,7 +53,7 @@ def parse_hex(v):
     a = int(h[6:8], 16) / 255 if len(h) == 8 else 1.0
     if a < 1:  # a translucent token is composited over white to get a page colour
         r, g, b = (a * c + (1 - a) * 255 for c in (r, g, b))
-    return (r, g, b)
+    return q((r, g, b))
 
 
 def hexify(rgb):
@@ -73,12 +73,19 @@ def ratio(a, b):
     return (x + 0.05) / (y + 0.05)
 
 
+def q(rgb):
+    """Quantise to the 8-bit value the page will actually carry (hexify → parse)."""
+    return tuple(max(0, min(255, round(c))) for c in rgb)
+
+
 def mix(a, b, t):
-    return tuple(a[i] * (1 - t) + b[i] * t for i in range(3))
+    """Mix t of b into a, quantised so every contrast check sees the emitted colour."""
+    return q(tuple(a[i] * (1 - t) + b[i] * t for i in range(3)))
 
 
 def reach(fg, grounds, target=4.5):
     """Move fg toward the pole that gains contrast until it clears target on every ground."""
+    fg = q(fg)
     if min(ratio(fg, g) for g in grounds) >= target:
         return fg
     pole = (0, 0, 0) if lum(grounds[0]) > 0.18 else (255, 255, 255)
@@ -230,8 +237,12 @@ def build(path, scripts=("hangul", "latin")):
         tk.derived("--color-accent", hexify(accent), "no brand/primary colour stated → ink (monochrome)")
 
     acc_text = reach(accent, grounds)
-    (tk.stated("--color-accent-text", hexify(accent), a_p) if acc_text == accent else
-     tk.derived("--color-accent-text", hexify(acc_text), "accent adjusted to reach 4.5:1 for text on canvas and surface", hexify(accent)))
+    if acc_text != accent:
+        tk.derived("--color-accent-text", hexify(acc_text), "accent adjusted to reach 4.5:1 for text on canvas and surface", hexify(accent))
+    elif a_p:
+        tk.stated("--color-accent-text", hexify(accent), a_p)
+    else:
+        tk.derived("--color-accent-text", hexify(acc_text), "no brand/primary colour stated → ink (monochrome)")
 
     on_acc, o_p = pick(colors, "on_accent")
     if not on_acc and btn and parse_hex(btn.get("textColor")):
@@ -364,10 +375,9 @@ def build(path, scripts=("hangul", "latin")):
 
     layers += face_layers(text_face, "text")
     disp_layers = face_layers(display_face, "display") if display_face and display_face != text_face else []
-    covered = {x.get("script") for x in layers if x["layer"] == "substitute"}
+    # The safe default is always its own layer (after any substitute), so a page can fall back to it
+    # when the substitute fails to load; it is never merged into the substitute.
     for script in scripts:
-        if script in covered:
-            continue
         stated = [f for f in (safe.get(script) or []) if isinstance(f, str)]
         if stated:
             layers += [{"family": f, "layer": "safe default", "script": script, "note": f"fonts.safeDefaults.{script}"} for f in stated]
@@ -394,12 +404,15 @@ def build(path, scripts=("hangul", "latin")):
     tk.values["--font-display"], tk.prov["--font-display"] = display, (
         {"from": "fonts.roles.display"} if disp_layers else {"derived": "no display face stated → same stack as text"})
 
+    v = lambda k: parse_hex(tk.values[k])  # measured on the emitted hex values, as a browser sees them
     checks = {
-        "text/bg": ratio(parse_hex(tk.values["--color-text"]), bg),
-        "text/surface": ratio(parse_hex(tk.values["--color-text"]), surface),
-        "muted/bg": ratio(muted, bg), "muted/surface": ratio(muted, surface),
-        "accent-text/bg": ratio(acc_text, bg), "accent-text/surface": ratio(acc_text, surface),
-        "button-text/button-bg": ratio(label, btn_bg),
+        "text/bg": ratio(v("--color-text"), v("--color-bg")),
+        "text/surface": ratio(v("--color-text"), v("--color-surface")),
+        "muted/bg": ratio(v("--color-text-muted"), v("--color-bg")),
+        "muted/surface": ratio(v("--color-text-muted"), v("--color-surface")),
+        "accent-text/bg": ratio(v("--color-accent-text"), v("--color-bg")),
+        "accent-text/surface": ratio(v("--color-accent-text"), v("--color-surface")),
+        "button-text/button-bg": ratio(v("--button-text"), v("--button-bg")),
     }
     return {
         "adapterVersion": ADAPTER_VERSION, "name": fm.get("name"), "dark": dark,
