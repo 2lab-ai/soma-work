@@ -82,6 +82,17 @@ class FakeEl {
   querySelector() {
     return null;
   }
+  listeners: Record<string, Array<(e: unknown) => void>> = {};
+  addEventListener(type: string, fn: (e: unknown) => void) {
+    (this.listeners[type] ||= []).push(fn);
+  }
+  dispatch(type: string, e: Record<string, unknown>) {
+    for (const fn of this.listeners[type] || []) fn({ type, ...e });
+  }
+  // a node "inside" this element: itself, or any object marked inside (enough for focusin / focusout)
+  contains(node: unknown) {
+    return node === this || (!!node && (node as { inside?: boolean }).inside === true);
+  }
   get innerHTML() {
     return this.html;
   }
@@ -199,6 +210,11 @@ const PANEL_FNS = [
   'l1SearchKey',
   'l1FocusAfterDelete',
   'l1KeyGuard',
+  'l1Say',
+  'l1Held',
+  'l1Unsay',
+  'l1TrayHeld',
+  'l1PanelFocus',
 ];
 
 interface Panel {
@@ -491,12 +507,12 @@ describe('D9 · D10 — delete folds at once; the tray offers undo for 5 s', () 
       await p.fns.l1Delete('memory', 1); // a fresh delete (the store answers with the same list)
       await vi.advanceTimersByTimeAsync(3000);
       p.fns.l1TrayHold('hover', true);
-      p.fns.l1TrayHold('focus', true);
+      p.fns.l1TrayHold('panel', true);
       await vi.advanceTimersByTimeAsync(10000);
       p.fns.l1TrayHold('hover', false);
       await vi.advanceTimersByTimeAsync(10000);
       expect(p.peek()._memUndo).not.toBeNull(); // still focused
-      p.fns.l1TrayHold('focus', false);
+      p.fns.l1TrayHold('panel', false);
       await vi.advanceTimersByTimeAsync(1999);
       expect(p.peek()._memUndo).not.toBeNull();
 
@@ -758,6 +774,95 @@ describe('PR review R1 (#443)', () => {
     expect(isShut(q.el('l1-f-memory-0'))).toBe(true); // folded to the view, not forced open
     expect(q.el('l1-f-memory-0').hasAttribute('data-leaving')).toBe(false);
     expect(isOpen(q.el('l1-f-memory-1'))).toBe(true);
+  });
+});
+
+describe('PR review R2 (#443)', () => {
+  it('R2-1 a successful L1 write clears the L1 alert it follows; a message from another section stays', async () => {
+    const apiWrite = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 409, error: 'changed' })
+      .mockResolvedValueOnce({ ok: true, data: { l1: block(['edited', ...MEM.slice(1)], 2200, 660, 'rm2') } })
+      .mockResolvedValueOnce({ ok: true, data: { l1: block(['edited again', ...MEM.slice(1)], 2200, 660, 'rm3') } });
+    const p = panel({ apiWrite });
+    p.fns.paintL1();
+    p.fns.l1EditStart('memory', 0);
+    p.el('l1-edit-memory').value = 'edited';
+    await p.fns.l1Save('memory', 0); // 409: the alert, the draft back in its editor
+    expect(p.el('mem-status').textContent).toContain('그사이 다른 곳');
+    await p.fns.l1Save('memory', 0); // saved
+    expect(p.el('mem-status').textContent).toBe('');
+    expect(p.el('mem-status').getAttribute('role')).toBe('status');
+
+    p.fns.memStatus('지식 페이지를 저장하지 못했습니다', true); // another section's message
+    p.fns.l1EditStart('memory', 0);
+    p.el('l1-edit-memory').value = 'edited again';
+    await p.fns.l1Save('memory', 0);
+    expect(p.el('mem-status').textContent).toBe('지식 페이지를 저장하지 못했습니다');
+  });
+
+  it('R2-2 a pointer already resting on the tray when the delete lands holds the undo from the start', async () => {
+    vi.useFakeTimers();
+    try {
+      const apiWrite = vi.fn(async () => ({
+        ok: true,
+        data: { l1: block([MEM[0], ...MEM.slice(2)], 2200, 660, 'rm2') },
+      }));
+      const p = panel({ apiWrite, reduced: true });
+      p.fns.paintL1();
+      p.fns.l1TrayHold('hover', true); // before there is anything to undo
+      await p.fns.l1Delete('memory', 1);
+      await vi.advanceTimersByTimeAsync(10000);
+      expect(p.peek()._memUndo).not.toBeNull();
+      p.fns.l1TrayHold('hover', false);
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(p.peek()._memUndo).not.toBeNull(); // the full 5 s from the release
+      await vi.advanceTimersByTimeAsync(1);
+      expect(p.peek()._memUndo).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('R2-3 while focus is anywhere in the panel the undo waits; it counts down once focus leaves (keyboard / screen reader reach)', async () => {
+    vi.useFakeTimers();
+    try {
+      const apiWrite = vi.fn(async () => ({
+        ok: true,
+        data: { l1: block([MEM[0], ...MEM.slice(2)], 2200, 660, 'rm2') },
+      }));
+      const p = panel({ apiWrite, reduced: true });
+      p.fns.paintL1();
+      const panelEl = p.el('l1-panel');
+      expect(panelEl.listeners.focusin).toHaveLength(1);
+      expect(panelEl.listeners.focusout).toHaveLength(1);
+      p.fns.paintL1(); // listeners are bound once
+      expect(panelEl.listeners.focusin).toHaveLength(1);
+
+      panelEl.dispatch('focusin', { target: { inside: true } }); // the 삭제 that was pressed
+      await p.fns.l1Delete('memory', 1); // focus moves to the next row: still inside
+      panelEl.dispatch('focusout', { relatedTarget: { inside: true } });
+      panelEl.dispatch('focusin', { target: { inside: true } });
+      await vi.advanceTimersByTimeAsync(60000); // tabbing through the rows to 되돌리기 takes as long as it takes
+      expect(p.peek()._memUndo).not.toBeNull();
+      expect(p.el('l1-undo').hasAttribute('hidden')).toBe(false);
+
+      panelEl.dispatch('focusout', { relatedTarget: null }); // focus left the panel
+      await vi.advanceTimersByTimeAsync(4999);
+      expect(p.peek()._memUndo).not.toBeNull();
+      await vi.advanceTimersByTimeAsync(1);
+      expect(p.peek()._memUndo).toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('R2-4 folded rows clip their overflow: the add line leaves room for a 2px + 1px focus ring; chips too', () => {
+    expect(MEMORY_TAB_CSS).toMatch(/\.mm-addline \{[^}]*padding: 3px 3px 8px;/);
+    expect(MEMORY_TAB_CSS).toMatch(/\.mm-chips \{[^}]*margin: -3px -4px; padding: 3px 4px;/);
+    expect(MEMORY_TAB_CSS).toContain(
+      '.mm :is(button, input, textarea):focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }',
+    );
   });
 });
 

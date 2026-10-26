@@ -51,6 +51,11 @@ const L1_PANEL_FNS = [
   'l1AddClose',
   'l1Reveal',
   'l1FocusAfterDelete',
+  'l1Say',
+  'l1Held',
+  'l1Unsay',
+  'l1TrayHeld',
+  'l1TrayHold',
 ];
 
 function block(over: Record<string, unknown> = {}) {

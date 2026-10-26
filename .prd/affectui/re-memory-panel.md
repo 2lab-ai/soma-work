@@ -182,8 +182,11 @@ muted `#8f8f8f/#8b8b92`, well `#f4f4f5/#222225`, hover `#ececee/#2c2c30`, red `#
   다음 행의 `삭제`(지운 자리 이후 첫 보이는 행) → 보이는 이전 행 → 그룹이 보이면 그 추가 버튼 → 검색 중이면 검색 칸, 아니면 선택된 칩. 길게 누른
   Enter는 다음 행 `삭제`로 옮겨 간 포커스에서 다시 눌리지 않는다(`l1KeyGuard`: `event.repeat`면 기본 동작 취소).
 - **D10 트레이 되돌리기. [SHIPPED]** 성공한 삭제는 `_memUndo = {target, text, key, left: 5000}` + 트레이 `삭제함 “<b>text</b>”`(따옴표 안만 말줄임)
-  + `#l1-undo 되돌리기`. 5,000ms 뒤 `_memUndo`를 비우고 기본 문구로. 포인터가 트레이 위(`mouseenter`)에 있거나 `되돌리기`에 포커스가 있으면
-  (`l1TrayHold('hover'|'focus')`) 타이머를 멈추고, 둘 다 떠나면 남은 시간부터. 새 삭제가 덮는다. polite 문장의 항목은 40자에서 자른다(행 버튼 이름과 같게; 캡션은 CSS 말줄임). `되돌리기` = 기존 `l1Undo`(`restore:true`) — 성공하면
+  + `#l1-undo 되돌리기`. 5,000ms 뒤 `_memUndo`를 비우고 기본 문구로. 포인터가 트레이 위(`mouseenter`)에 있거나 **포커스가 패널 안 어디든** 있으면
+  (`l1TrayHold('hover'|'panel')`, 패널의 `focusin`/`focusout`을 `l1Sync`가 한 번 묶는다) 시계가 서고, 둘 다 떠나면 남은 시간부터 간다 — 삭제 뒤
+  포커스는 다음 행으로 가므로 키보드·스크린 리더 사용자는 시간 압박 없이 Tab으로 `되돌리기`에 닿는다(레퍼런스의 5초는 포커스가 패널 밖일 때,
+  포인터 사용자도 패널 안에 포커스가 남아 있는 동안은 같다 — 의도한 차이, WCAG 2.2.1). 멈춤은 되돌릴 항목과 따로 기억한다: 응답 전에 시작된
+  hover·포커스도 응답이 오는 순간부터 시계를 세운다(`l1UndoArm`이 `l1TrayHeld()`를 본다). 새 삭제가 덮는다. polite 문장의 항목은 40자에서 자른다(행 버튼 이름과 같게; 캡션은 CSS 말줄임). `되돌리기` = 기존 `l1Undo`(`restore:true`) — 성공하면
   복원된 행(그룹 끝)이 0fr에서 다시 펼쳐지고 120ms 뒤 `scrollIntoView({block:'nearest'})`, 포커스는 그 행 `수정`, 트레이 `되돌렸습니다 — 목록 끝에
   다시 넣었습니다`. 보이지 않는 보기(다른 칩·맞지 않는 검색)면 보기를 `전체`로 되돌린다. 거절은 기존대로 원문을 추가 칸/복구 상자로(그 편집기가 열린다).
   `모두 지우기`는 되돌리기 없음(기존 확인 대화).
@@ -197,7 +200,8 @@ muted `#8f8f8f/#8b8b92`, well `#f4f4f5/#222225`, hover `#ececee/#2c2c30`, red `#
   (3s: `저장했습니다`·`추가했습니다`·`되돌렸습니다 — …`·`모두 지웠습니다`) > 편집 중 `Enter 저장 · Shift+Enter 줄바꿈 · Esc 취소` > 추가 중
   `Enter 추가 · Shift+Enter 줄바꿈 · Esc 닫기` > 기본 `<b>8</b>개 항목<span class="mm-cap"> · 에이전트 노트 297 / 2,200자 · 사용자 프로필 107 / 1,375자</span>`.
   상태가 바뀔 때만 교체(들어옴 320ms / 나감 220ms 교차 페이드), 같은 기본 상태에서는 숫자만 롤. L1 성공 문구는 `#mem-status` 대신 트레이로(오류·409는
-  `#mem-status` 그대로 — `role=alert`).
+  `#mem-status` 그대로 — `role=alert`). L1이 `#mem-status`에 쓴 문장(409·거절·`저장 중`)은 `l1Say`/`l1Held`가 기억하고, 다음 L1 쓰기 성공이
+  지운다(`l1Unsay`) — 그사이 다른 섹션이 쓴 문장은 두고.
 - **D13 숫자 롤. [SHIPPED]** `#l1-total`과 트레이 개수(`l1Roll`)는 이전 값에서 새 값으로 520ms `1−(1−t)^4`(rAF). 첫 값·reduced-motion이면 즉시. 같은 값으로 굴러가는 중에 다시 그리면(쓰기 응답 뒤
   `l1AddClose`·알림 등) 끊지 않는다 — 목표가 바뀔 때만 취소한다.
 - **D14 모션. [SHIPPED]** fold `grid-template-rows 0fr↔1fr` `.mm` 범위 변수 `--mm-fold: 320ms` + `var(--ease-out)`(레퍼런스 420ms → 대시보드 `--dur-move`
@@ -212,7 +216,8 @@ muted `#8f8f8f/#8b8b92`, well `#f4f4f5/#222225`, hover `#ececee/#2c2c30`, red `#
   `@container (max-width: 340px)`: `.mm-chip-n` 숨김. 칩 줄은 넘치면 가로 스크롤(스크롤바 숨김, 끝 14px 페이드). `(pointer: coarse)`: 액션 늘
   보임, 행 액션·칩·`모두 지우기` 32px, 아이콘 32×32, meta 32, `.mm-add`·`.mm-undo` 36px(설정 페이지의 coarse 16px 입력 규칙 유지).
 - **D17 접근성. [SHIPPED]** D3 radiogroup, D6 이름 붙은 section, 걸러지거나 접히는 것은 `inert`, D7 액션 이름에 항목 문장(보이는 라벨이 먼저 — 2.5.3),
-  D12 polite 상태 문장, D8–D11 포커스 복귀, Enter의 IME 가드, 되돌리기 시간은 hover·focus 동안 멈춤(2.2.1).
+  D12 polite 상태 문장, D8–D11 포커스 복귀, Enter의 IME 가드, 되돌리기 시간은 트레이 hover와 패널 안 포커스 동안 멈춤(2.2.1 — D10). 접히는
+  영역(`overflow: hidden`) 안의 버튼은 2px + 1px 포커스 링이 잘리지 않게 3px 여유(`.mm-addline` 3px, `.mm-chips` 3px).
 
 ## 5. 시험
 
@@ -239,6 +244,10 @@ muted `#8f8f8f/#8b8b92`, well `#f4f4f5/#222225`, hover `#ececee/#2c2c30`, red `#
 | R1-3 | 리뷰 R1 P2: 추가 칸이 입력·다시 그리기 복원·409 뒤 옮겨 온 초안에서 내용만큼 자란다 | D11 |
 | R1-4 | 리뷰 R1 P2: 검색 중 삭제 뒤 포커스 = 보이는 다음 행 → 보이는 이전 행 → 검색 칸, 빈 저장소면 추가 버튼 | D9 |
 | R1-5 | 리뷰 R1 P3: `l1KeyGuard`(반복 키 취소)가 `삭제`에 걸려 있다; 거절된 삭제는 보기대로 접힌다 | D9 |
+| R2-1 | 리뷰 R2: 409 경고 뒤 L1 저장 성공이 `#mem-status`를 비운다(role=status); 다른 섹션이 쓴 문장은 남는다 | D12 |
+| R2-2 | 리뷰 R2: 응답 전에 트레이에 올라간 포인터도 멈춤으로 센다 — 떼는 순간부터 5초 | D10 |
+| R2-3 | 리뷰 R2: 패널 `focusin`/`focusout` 한 번 묶임, 포커스가 패널 안이면 60초가 지나도 되돌리기가 남고, 나가면 5초 | D10 · D17 |
+| R2-4 | 리뷰 R2 P3: `.mm-addline` 3px · `.mm-chips` 3px 여유, 포커스 링 2px + 1px | D17 |
 | T13 | 회귀: `settings-memory-tab.test.ts` 전체(카드 마크업, R5 undo, R9–R13 초안·hold·잠금, 쓰기 경로) | D2 · D6 |
 
 T13 유지 방법: 기존 시험은 함수 목록을 골라 불러오므로, L1 함수가 부르는 패널 도우미를 `L1_PANEL_FNS`로 한 번 정의해 네 목록에 더했고, `l1Clear`만
@@ -260,9 +269,11 @@ T13 유지 방법: 기존 시험은 함수 목록을 골라 불러오므로, L1 
 
 - RED(구현 전, 2026-10-26): `dashboard-affectui-memory-panel.test.ts` 13건 모두 실패 — `client function l1El not found` 10건, `<div id="l1-panel"
   class="mp">`·radiogroup 마크업 없음 2건, CSS 마커 없음 1건(당시 접두 `mp-`; 리뷰 반영으로 `mm-`).
+- 리뷰 R2(astra + 추가 리뷰어) 반영: R2-1…R2-4 구현 전 4건 실패 + T8(멈춤 종류 `panel`) 1건 실패 확인 → 구현 뒤 통과. 브라우저 확인: 키보드
+  Enter 삭제 뒤 6초가 지나도 되돌리기가 남고, 포커스를 패널 밖으로 옮기면 5.6초 뒤 사라진다; 포커스 링이 추가 버튼 둘레에 온전히 보인다.
 - 리뷰 R1(grok REJECT · fable APPROVE) 반영: 새 시험 R1-1…R1-5 구현 전 5건 실패 + T7(live 문장 40자) 1건 실패 확인 → 구현 뒤 통과.
-- GREEN: 새 시험 18/18, `settings-memory-tab.test.ts` 73/73, `settings-page.test.ts`·`memory-routes.test.ts` 통과. `npx vitest run src/conversation/__tests__/`
-  63 파일 · 1,666건 통과(병렬 작업 7개가 도는 기계라 `--maxWorkers=3 --testTimeout=60000 --hookTimeout=60000` — 기본 시간 제한으로는 서버 시험 87건이
+- GREEN: 새 시험 22/22, `settings-memory-tab.test.ts` 73/73, `settings-page.test.ts`·`memory-routes.test.ts` 통과. `npx vitest run src/conversation/__tests__/`
+  63 파일 · 1,670건 통과(병렬 작업 7개가 도는 기계라 `--maxWorkers=3 --testTimeout=60000 --hookTimeout=60000` — 기본 시간 제한으로는 서버 시험 87건이
   hook·test timeout과 그 여파(시간 안에 import되지 못한 모듈의 `undefined`)로 떨어졌고, 단언 실패는 없었다). `npx tsc --noEmit` 오류 없음. `npx biome check src/conversation/` 오류 0(경고는 기존과 같은
   `noExplicitAny` 종류).
 - 화면(하네스, 픽스처 응답 — `GET /api/memory`와 L1 쓰기를 page.route로 답한다): 라이트/다크 × 1440/390 × 기본 · hover · 칩 `사용자 프로필` · 검색
