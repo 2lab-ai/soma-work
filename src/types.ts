@@ -36,7 +36,7 @@ export type {
   WorkflowType,
 } from 'somalib/model-commands/session-types';
 
-import type { SdkUsageBaseline } from '@soma/slack/session-usage-math';
+import type { SdkUsageBaseline, TaskUsage } from '@soma/slack/session-usage-math';
 import type {
   HandoffContext,
   RenewState,
@@ -407,6 +407,12 @@ export interface ConversationSession {
    * counts only the growth past this — see `toTurnUsage`.
    */
   sdkUsageBaseline?: SdkUsageBaseline;
+  /**
+   * SSOT 2026-10-26 T3 — what the whole task spent (main agent + every
+   * subagent), across SDK sessions, restarts and resets. Fed the same per-turn
+   * spend as `usage.total*`; persisted, never reset. The dashboard card's total.
+   */
+  taskUsage?: TaskUsage;
   // Renew command state
   renewState?: RenewState;
   // User message to execute after renew (e.g., "/renew PR 리뷰해줘" → "PR 리뷰해줘")

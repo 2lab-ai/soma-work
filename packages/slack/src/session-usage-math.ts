@@ -395,3 +395,124 @@ export function settleFoldedLiveUsage(
     folded: undefined,
   };
 }
+
+/**
+ * SSOT 2026-10-26 T3 — what the whole task (the dashboard card) spent: the
+ * main agent and every subagent, across SDK sessions, restarts, `/new` and
+ * CONTINUE_SESSION. It takes exactly the per-turn spend the session totals
+ * take (a result's growth — `modelUsage` already holds the subagents' calls —
+ * and a result-less turn's folded calls), but unlike the runtime-only
+ * `session.usage` it is persisted and never reset.
+ */
+export interface TaskUsage {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
+  costUsd: number;
+  /**
+   * The task had already spent when this total started (a session saved
+   * before it existed): it counts from this time, not from the task's start.
+   */
+  partialSince?: number;
+  /**
+   * Calls a result-less turn folded into this total that the SDK session's
+   * next result will carry again — kept here (persisted) so a restart in
+   * between cannot count them twice (`settleFoldedLiveUsage`).
+   */
+  pendingFold?: FoldedLiveUsage;
+}
+
+function emptyTaskUsage(): TaskUsage {
+  return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, costUsd: 0 };
+}
+
+function spendCount(v: number): number {
+  return Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+/**
+ * Credit a turn's spend to the task total, settling the task's own pending
+ * fold first: the result of the SDK session the fold belongs to carries those
+ * calls again. Mutates and returns `holder.taskUsage`.
+ */
+export function creditTaskSpend(
+  holder: { taskUsage?: TaskUsage; sessionId?: string },
+  turn: TurnUsageInput,
+): TaskUsage {
+  const task = holder.taskUsage ?? emptyTaskUsage();
+  const pending = task.pendingFold;
+  const { spend, folded } = settleFoldedLiveUsage(
+    turn,
+    pending && pending.sdkSessionId === holder.sessionId ? pending : undefined,
+  );
+  task.inputTokens += spendCount(spend.inputTokens);
+  task.outputTokens += spendCount(spend.outputTokens);
+  task.cacheReadTokens += spendCount(spend.cacheReadInputTokens);
+  task.cacheCreateTokens += spendCount(spend.cacheCreationInputTokens);
+  task.costUsd += spendCount(spend.totalCostUsd);
+  if (folded) task.pendingFold = folded;
+  else delete task.pendingFold;
+  holder.taskUsage = task;
+  return task;
+}
+
+/**
+ * A result-less turn's calls, folded into the task total (`foldLiveUsage`):
+ * added now and remembered as pending for `sdkSessionId`. A pending fold of a
+ * different SDK session is dropped — that session is never resumed again.
+ */
+export function foldTaskSpend(
+  holder: { taskUsage?: TaskUsage },
+  t: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number; costUsd: number },
+  sdkSessionId: string | undefined,
+): void {
+  const task = holder.taskUsage ?? emptyTaskUsage();
+  task.inputTokens += spendCount(t.inputTokens);
+  task.outputTokens += spendCount(t.outputTokens);
+  task.cacheReadTokens += spendCount(t.cacheReadTokens);
+  task.cacheCreateTokens += spendCount(t.cacheCreateTokens);
+  task.costUsd += spendCount(t.costUsd);
+  const prev = task.pendingFold && task.pendingFold.sdkSessionId === sdkSessionId ? task.pendingFold : undefined;
+  task.pendingFold = {
+    inputTokens: (prev?.inputTokens ?? 0) + spendCount(t.inputTokens),
+    outputTokens: (prev?.outputTokens ?? 0) + spendCount(t.outputTokens),
+    cacheReadTokens: (prev?.cacheReadTokens ?? 0) + spendCount(t.cacheReadTokens),
+    cacheCreateTokens: (prev?.cacheCreateTokens ?? 0) + spendCount(t.cacheCreateTokens),
+    costUsd: (prev?.costUsd ?? 0) + spendCount(t.costUsd),
+    ...(sdkSessionId ? { sdkSessionId } : {}),
+  };
+  holder.taskUsage = task;
+}
+
+const TASK_FIELDS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreateTokens', 'costUsd'] as const;
+
+/** Restore a persisted task total; anything malformed is dropped rather than trusted. */
+export function sanitizeTaskUsage(raw: unknown): TaskUsage | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  const out = emptyTaskUsage();
+  for (const f of TASK_FIELDS) {
+    const v = r[f];
+    if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return undefined;
+    out[f] = v;
+  }
+  if (typeof r.partialSince === 'number' && Number.isFinite(r.partialSince) && r.partialSince > 0)
+    out.partialSince = r.partialSince;
+  const p = r.pendingFold as Record<string, unknown> | undefined;
+  if (
+    p &&
+    typeof p === 'object' &&
+    TASK_FIELDS.every((f) => typeof p[f] === 'number' && Number.isFinite(p[f]) && (p[f] as number) >= 0)
+  ) {
+    out.pendingFold = {
+      inputTokens: p.inputTokens as number,
+      outputTokens: p.outputTokens as number,
+      cacheReadTokens: p.cacheReadTokens as number,
+      cacheCreateTokens: p.cacheCreateTokens as number,
+      costUsd: p.costUsd as number,
+      ...(typeof p.sdkSessionId === 'string' && p.sdkSessionId ? { sdkSessionId: p.sdkSessionId } : {}),
+    };
+  }
+  return out;
+}

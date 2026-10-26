@@ -10,6 +10,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import type { TaskUsage } from '@soma/slack/session-usage-math';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import type { AgentRegistry } from './session/agent-registry';
@@ -74,6 +75,8 @@ export interface ArchivedSession {
 
   // Usage snapshot at time of archive
   usage?: SessionUsage;
+  /** SSOT 2026-10-26 T3 — what the whole task spent (the closed card's total). */
+  taskUsage?: TaskUsage;
 
   // State at time of archive
   finalState?: SessionState;
@@ -151,6 +154,7 @@ function sessionToArchive(
     instructions: session.instructions ? JSON.parse(JSON.stringify(session.instructions)) : undefined,
     mergeStats: session.mergeStats ? JSON.parse(JSON.stringify(session.mergeStats)) : undefined,
     usage: session.usage ? JSON.parse(JSON.stringify(session.usage)) : undefined,
+    taskUsage: session.taskUsage ? JSON.parse(JSON.stringify(session.taskUsage)) : undefined,
 
     finalState: session.state,
     finalActivityState: session.activityState,

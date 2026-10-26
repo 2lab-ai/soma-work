@@ -55,6 +55,7 @@ import {
 import {
   accumulateModelTotals,
   applyPostCompactOccupancy,
+  creditTaskSpend,
   selectCurrentContextTokens,
   settleFoldedLiveUsage,
   toTurnUsage,
@@ -5223,6 +5224,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       });
       // Calls folded before the seed are inside the seeded running total now.
       session.usage.foldedLiveUsage = undefined;
+      if (session.taskUsage) delete session.taskUsage.pendingFold;
     }
     const { turn: usage, baseline } = toTurnUsage(reported, baselineIn, session.sessionId);
     session.sdkUsageBaseline = baseline;
@@ -5309,6 +5311,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     session.usage.totalCacheCreateTokens += spend.cacheCreationInputTokens;
     session.usage.totalCostUsd += spend.totalCostUsd;
     session.usage.lastUpdated = Date.now();
+    // SSOT 2026-10-26 T3 — the task total takes the same turn spend, settled
+    // against its own (persisted) fold so a restart in between cannot count a
+    // folded call twice. It outlives restarts and resets; `usage` does not.
+    creditTaskSpend(session, usage);
     // The turn's calls are in the totals now — the live view stops adding them,
     // and the turn's end never folds them a second time.
     markLiveUsageSettled(session, turnId);
