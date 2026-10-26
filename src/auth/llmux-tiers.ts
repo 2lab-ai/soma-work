@@ -12,7 +12,9 @@
  * remaining is counted in "max accounts' worth" (계정분), the provider's top
  * plan = 1. Max x5 is a quarter of x20 (Anthropic's plan multiples 5/20).
  * Pro $200 is 0.4 of $500 — a price ratio, an estimate: OpenAI publishes no
- * usage multiple. An unknown tier has no weight and stays out of the totals.
+ * usage multiple. An unknown tier has no weight here; the capacity view counts an
+ * untiered Claude account as Max x20 (`ASSUMED_TIER`, flagged) and leaves an
+ * untiered Codex account out of the totals.
  */
 
 export type LlmuxTierId = 'claude-max-5x' | 'claude-max-20x' | 'chatgpt-pro-200' | 'chatgpt-pro-500';
@@ -60,8 +62,9 @@ export const LLMUX_TIERS: Record<LlmuxTierId, LlmuxTierInfo> = {
 
 /**
  * Operator-supplied defaults (2026-10-23): Codex ai5 · ai6 are ChatGPT Pro
- * ($500), ai1 · ai2 Pro ($200). Claude accounts have no default — an unmapped
- * one shows as "티어 미지정" until SOMA_LLMUX_ACCOUNT_TIERS names it.
+ * ($500), ai1 · ai2 Pro ($200). Claude accounts have no default here — the
+ * capacity view assumes Max x20 for an unmapped one and says so ("티어 미지정 N(x20
+ * 가정)") until SOMA_LLMUX_ACCOUNT_TIERS names it.
  */
 export const DEFAULT_LLMUX_ACCOUNT_TIERS: Readonly<Record<string, LlmuxTierId>> = Object.freeze({
   'codex:ai1': 'chatgpt-pro-200',

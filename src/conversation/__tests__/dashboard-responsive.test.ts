@@ -548,6 +548,7 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
         'capAdvance',
         'capCount',
         'capDur',
+        'capAssumed',
         'renderCapacitySummary',
       ],
       ['CAP_CAUSE', 'CAP_WORD', 'CAP_5H', 'CAP_7D'],
@@ -632,6 +633,7 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
         'capAdvance',
         'capCount',
         'capDur',
+        'capAssumed',
         'renderCapacitySummary',
       ],
       ['CAP_CAUSE', 'CAP_WORD', 'CAP_5H', 'CAP_7D'],
@@ -657,6 +659,8 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
           g({ label: 'Codex', countedAccounts: 3, oldestRefreshAt: nowS - 5 * 86400 - 3600 }),
           g({ label: 'Claude', has5h: true, total: 16, now: 5.2, week: 5.6, accountCount: 17, countedAccounts: 16 }),
           g({ label: 'Gemini', oldestRefreshAt: nowS - 2 * 3600 }),
+          g({ label: 'Partial', countedAccounts: 3 }),
+          g({ label: 'Assumed', tierAssumed: 2, oldestRefreshAt: nowS - 5 * 86400 - 3600 }),
         ],
       },
       nowS * 1000,
@@ -670,6 +674,10 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
     // one held account out of 17 and a two-hour-old reading are the card's business, not the chip's
     expect(chip('Claude')).not.toContain('cap-chip-flag');
     expect(chip('Gemini')).not.toContain('cap-chip-flag');
+    // any flag leads with ⚠; an assumed plan joins the same flag (review P2)
+    expect(html).toMatch(/>Partial [\s\S]*?<i class="cap-chip-flag">⚠ 3\/5 반영<\/i><\/span>/);
+    expect(html).toMatch(/>Assumed [\s\S]*?<i class="cap-chip-flag">⚠ 5일 전 · x20 가정 2<\/i><\/span>/);
+    expect(html).toMatch(/aria-label="Assumed [^"]*측정 5일 전 · 티어 미지정 2\(x20 가정\)/);
     expect(TEMPLATE).toContain('.cap-chip .cap-chip-flag { color: var(--st-wait); font-weight: 600; }');
   });
 
