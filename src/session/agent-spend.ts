@@ -48,6 +48,8 @@ export interface AgentSpendReaderOptions {
   now?: () => number;
   /** A running agent is re-read at most this often (default 10 s). */
   minIntervalMs?: number;
+  /** Read chunk size (default 8 MiB); a read always continues to the file's end. */
+  chunkBytes?: number;
 }
 
 export interface AgentSpendHolder {
@@ -68,8 +70,8 @@ export interface AgentSpendReader {
 const TASK_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 const SYNTHETIC_MODEL = '<synthetic>';
 const DEFAULT_MIN_INTERVAL_MS = 10_000;
-/** A read never pulls more than this per call — a runaway file cannot stall the daemon. */
-const MAX_READ_BYTES = 64 * 1024 * 1024;
+/** One read chunk — a big transcript is read in pieces, never held whole in memory. */
+const DEFAULT_CHUNK_BYTES = 8 * 1024 * 1024;
 
 interface CallUsage extends TokenCounts {
   model?: string;
@@ -77,12 +79,17 @@ interface CallUsage extends TokenCounts {
 
 interface FileState {
   offset: number;
-  /** Bytes after the last newline — a line still being written. */
-  carry: string;
+  /** Bytes after the last newline — a line still being written (kept as bytes: a chunk may split a character). */
+  carry: Buffer;
   calls: Map<string, CallUsage>;
 }
 
 const ENDED = new Set<AgentRecord['status']>(['completed', 'failed', 'stopped']);
+/**
+ * Sealed at a turn end: ended, or out of sight (`unknown` — its turn or the
+ * process ended). Any later activity unseals it (`agent-registry.ts`).
+ */
+const SEALABLE = new Set<AgentRecord['status']>(['completed', 'failed', 'stopped', 'unknown']);
 
 function count(v: unknown): number {
   return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0;
@@ -179,6 +186,7 @@ async function isRealDir(p: string): Promise<boolean> {
 export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpendReader {
   const now = opts.now ?? Date.now;
   const minInterval = opts.minIntervalMs ?? DEFAULT_MIN_INTERVAL_MS;
+  const chunkBytes = Math.max(1, opts.chunkBytes ?? DEFAULT_CHUNK_BYTES);
   /** sdkSessionId → its subagents directory (scanning the projects dir is not free). */
   const dirs = new Map<string, string>();
   const files = new Map<string, FileState>();
@@ -198,8 +206,14 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
     return dir;
   }
 
-  /** The agent's spend from its transcript, or undefined when there is nothing (safe) to read. */
-  async function read(sid: string, taskId: string): Promise<{ spend: AgentSpend; file: string } | undefined> {
+  /**
+   * The agent's spend from its transcript, or undefined when there is nothing
+   * (safe) to read. `complete` = no half-written line is pending.
+   */
+  async function read(
+    sid: string,
+    taskId: string,
+  ): Promise<{ spend: AgentSpend; file: string; complete: boolean } | undefined> {
     if (!TASK_ID_RE.test(taskId)) return undefined;
     const dir = await subagentsDir(sid);
     if (!dir) return undefined;
@@ -213,31 +227,30 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
     if (!st.isFile() || st.isSymbolicLink()) return undefined;
     let state = files.get(file);
     if (!state || st.size < state.offset) {
-      state = { offset: 0, carry: '', calls: new Map() };
+      state = { offset: 0, carry: Buffer.alloc(0), calls: new Map() };
       files.set(file, state);
     }
     if (st.size > state.offset) {
-      const length = Math.min(st.size - state.offset, MAX_READ_BYTES);
-      const buf = Buffer.alloc(length);
+      // Read to the size seen now, chunk by chunk — a sealed spend must hold every call.
       const fh = await fs.promises.open(file, 'r');
-      let got = 0;
       try {
-        while (got < length) {
-          const { bytesRead } = await fh.read(buf, got, length - got, state.offset + got);
+        while (state.offset < st.size) {
+          const length = Math.min(st.size - state.offset, chunkBytes);
+          const buf = Buffer.alloc(length);
+          const { bytesRead } = await fh.read(buf, 0, length, state.offset);
           if (bytesRead === 0) break;
-          got += bytesRead;
+          // Only whole lines are parsed; a half-written line waits (in `carry`) for its end.
+          const bytes = Buffer.concat([state.carry, buf.subarray(0, bytesRead)]);
+          const cut = bytes.lastIndexOf(0x0a);
+          state.offset += bytesRead;
+          state.carry = cut >= 0 ? Buffer.from(bytes.subarray(cut + 1)) : bytes;
+          if (cut >= 0) collectCalls(bytes.subarray(0, cut).toString('utf8'), state.calls);
         }
       } finally {
         await fh.close();
       }
-      // Only whole lines move the offset; a half-written line is read again with its end.
-      const text = state.carry + buf.subarray(0, got).toString('utf8');
-      const cut = text.lastIndexOf('\n');
-      state.offset += got;
-      state.carry = cut >= 0 ? text.slice(cut + 1) : text;
-      if (cut >= 0) collectCalls(text.slice(0, cut), state.calls);
     }
-    return { spend: priceCalls(state.calls, opts), file };
+    return { spend: priceCalls(state.calls, opts), file, complete: state.carry.length === 0 };
   }
 
   async function run(holder: AgentSpendHolder, force: boolean): Promise<boolean> {
@@ -254,7 +267,7 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
       const last = readAt.get(id);
       if (!force && !ended && last !== undefined && now() - last < minInterval) continue;
       readAt.set(id, now());
-      let got: { spend: AgentSpend; file: string } | undefined;
+      let got: { spend: AgentSpend; file: string; complete: boolean } | undefined;
       try {
         got = await read(sid, taskId);
       } catch {
@@ -271,8 +284,9 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
         agent.spend = got.spend;
         changed = true;
       }
-      // Sealed only at a turn end, after the agent ended: its transcript is complete.
-      if (force && ENDED.has(agent.status)) {
+      // Sealed only at a turn end, after the agent ended or went out of sight,
+      // and only on a whole transcript (no half-written last line).
+      if (force && SEALABLE.has(agent.status) && got.complete) {
         agent.spendFinal = true;
         files.delete(got.file);
         readAt.delete(id);
@@ -285,6 +299,14 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
   return {
     async refresh(holder, refreshOpts) {
       const force = refreshOpts?.force === true;
+      // The SDK session an agent runs in is the session's current one while it
+      // runs — taken now, before its transcript exists, so a later /new cannot
+      // send the search to the wrong session.
+      if (holder.sessionId) {
+        for (const a of holder.agents?.agents ?? []) {
+          if (!a.sdkSessionId && a.status === 'running') a.sdkSessionId = holder.sessionId;
+        }
+      }
       const busy = inFlight.get(holder);
       if (busy) {
         // One more pass after the current one, with the strongest request seen.

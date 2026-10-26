@@ -275,6 +275,20 @@ describe('Dashboard — agent tree payload (spec 12 §3)', () => {
       expect(card.tokenUsage.partialSince).toBe(T0);
     });
 
+    it('review r1 — after /new (no SDK session yet) a task with spend stays on the board', async () => {
+      const s = liveSession({
+        sessionId: undefined,
+        taskUsage: { inputTokens: 9, outputTokens: 9, cacheReadTokens: 0, cacheCreateTokens: 0, costUsd: 0.5 },
+      });
+      const b = await board(new Map([['C1:t1', s]]));
+      const all = [...b.working, ...b.waiting, ...b.idle, ...b.closed];
+      expect(all).toHaveLength(1);
+      expect(all[0].tokenUsage.totalCostUsd).toBeCloseTo(0.5);
+      // Without any history it is still a not-yet-started session: not shown.
+      const empty = await board(new Map([['C1:t2', liveSession({ sessionId: undefined })]]));
+      expect([...empty.working, ...empty.waiting, ...empty.idle, ...empty.closed]).toHaveLength(0);
+    });
+
     it('a closed card shows the task total it archived', async () => {
       archives.push({
         archivedAt: T0 + 120_000,

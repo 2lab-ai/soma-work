@@ -1675,12 +1675,21 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
   };
 }
 
+/**
+ * A session the board shows: one that has run an SDK session — or, after a
+ * `/new` cleared that, one whose task has already spent (SSOT 2026-10-26 T3:
+ * the task total outlives the reset, so the card does too).
+ */
+function onBoard(s: { sessionId?: string; taskUsage?: unknown }): boolean {
+  return !!s.sessionId || !!s.taskUsage;
+}
+
 function buildKanbanBoard(userId?: string): KanbanBoard {
   const sessions = getAllSessions();
   const board: KanbanBoard = { working: [], waiting: [], idle: [], closed: [] };
 
   for (const [key, session] of sessions.entries()) {
-    if (!session.sessionId) continue;
+    if (!onBoard(session)) continue;
     if (userId && session.ownerId !== userId) continue;
     if (session.trashed === true) continue;
 
@@ -1716,7 +1725,7 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
     const liveThreadKeys = new Set<string>();
     const liveConversationIds = new Set<string>();
     for (const [, s] of sessions.entries()) {
-      if (!s.sessionId) continue;
+      if (!onBoard(s)) continue;
       if (s.trashed === true) continue;
       if (s.channelId && s.threadTs) liveThreadKeys.add(`${s.channelId}:${s.threadTs}`);
       if (s.conversationId) liveConversationIds.add(s.conversationId);
@@ -1732,7 +1741,7 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
     for (const archived of sortedArchives) {
       // Fix #438: Skip archives without sessionId — these sessions were terminated
       // before any Claude interaction (e.g., bot-thread migration source sessions)
-      if (!archived.sessionId) continue;
+      if (!onBoard(archived)) continue;
       if (userId && archived.ownerId !== userId) continue;
       // Skip if a live session exists in the same thread
       if (archived.channelId && archived.threadTs && liveThreadKeys.has(`${archived.channelId}:${archived.threadTs}`)) {
@@ -2047,7 +2056,7 @@ export function broadcastSingleSessionUpdate(sessionKey: string): void {
   if (wsClients.size === 0) return;
   try {
     const session = _getSessionsFn?.().get(sessionKey);
-    if (!session || !session.sessionId) return;
+    if (!session || !onBoard(session)) return;
     const kanban = sessionToKanban(sessionKey, session);
     const payload = JSON.stringify({ type: 'sessionUpdated', session: kanban });
     for (const client of wsClients) {
@@ -9118,7 +9127,7 @@ function renderAgentFocus(node, s) {
     if (tk > 0) bits.push('<span title="메인 + 서브에이전트 전체 — API 환산 비용">task 합계 ' + spendText(tk, tu.totalCostUsd, false) + '</span>');
     var sub = s && s.subagentSpend;
     if (sub && toNum(sub.agents) > 0) {
-      bits.push('<span title="서브에이전트 자신의 호출 합 — task 합계에 들어 있다">서브 ' + toNum(sub.agents) + '개 ' + spendText(spendTotal(sub), sub.costUsd, sub.unpriced) + '</span>');
+      bits.push('<span title="서브에이전트들 자신의 API 호출 합">서브 ' + toNum(sub.agents) + '개 ' + spendText(spendTotal(sub), sub.costUsd, sub.unpriced) + '</span>');
     }
   } else if (spendLabel(node.spend)) {
     bits.push('<span title="' + escAttr(spendTitle(node.spend)) + '">' + esc(spendLabel(node.spend)) + '</span>');

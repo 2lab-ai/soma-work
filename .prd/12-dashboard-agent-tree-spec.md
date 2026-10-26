@@ -114,7 +114,9 @@ interface AgentRegistry { nextN; agents: AgentRecord[] /* 오래된 순 */ }
 재시작·`resetSessionContext`(/new, CONTINUE_SESSION)에서 0이 되고, `taskUsage`는 `sessions.json`·아카이브에 남고 리셋되지 않는다.
 result 없이 끝난 턴의 호출(`foldLiveUsage`)은 `taskUsage`에도 더하고, 그 SDK 세션의 다음 result가 다시 싣는 만큼 `taskUsage.pendingFold`
 (영속)로 정산한다 — 재시작이 사이에 있어도 두 번 세지 않는다. 이 필드가 생기기 전에 저장돼 이미 지출이 있던 세션은 로드 때
-`partialSince`(그 시각부터 집계)를 단 0짜리 합계로 시작하고, 카드가 그렇다고 말한다(소급 복원 없음).
+`partialSince`(그 시각부터 집계)를 단 0짜리 합계로 시작하고, 카드가 그렇다고 말한다(소급 복원 없음 — SDK 세션이 있던 세션은
+baseline이 없어도 부분 합계다). 아카이브 스냅샷의 `taskUsage`는 확정 합계 + 진행 중 턴의 호출(`liveUsage`, 세션 모델 단가) — 턴 도중 닫힌
+카드도 그 턴의 지출을 잃지 않는다. `/new`가 `sessionId`를 지워도 `taskUsage`가 있는 세션은 보드에 남는다(`onBoard`).
 
 **서브별 지출.** SDK의 `total_tokens`(`AgentRecord.tokens`)는 마지막 컨텍스트 크기이지 지출이 아니다(실측 2026-10-26: 서브 194개
 표시 Σ 23.9M vs transcript 지출 Σ 389.6M). `forwardSubagentText`가 꺼져 있으면 서브의 텍스트 전용 호출(최종 보고)은 호스트에 오지
@@ -124,9 +126,13 @@ agent id, 중첩 서브도 같은 폴더). API 호출 하나 = `message.id` 하�
 `calculateTokenCost`로 환산하고, 단가표에 없는 모델(`hasModelPricing` 거짓 — grok 등)은 기본 단가로 추정하며 `unpricedModels`로 표시한다.
 결과는 `AgentRecord.spend{inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens, costUsd, calls, unpricedModels?}` +
 `sdkSessionId` + `spendFinal`(영속).
-- 읽기: 증분(파일별 오프셋 + 호출 맵, 개행으로 끝난 줄만 소비). 갱신 계기 = `index.ts` `recordAgentEvent`와 서브의 작업 로그 항목
-  (실행 중 에이전트는 10초에 1회), `turn_end`는 봉인 안 된 전부를 다시 읽고 끝난 에이전트를 `spendFinal`로 봉인한다. 비동기 — 바뀌면
+- 읽기: 증분(파일별 오프셋 + 호출 맵, 청크 단위로 그 시점 파일 끝까지, 개행으로 끝난 줄만 소비 — 미완성 줄은 바이트로 보관). 갱신 계기 =
+  `index.ts` `recordAgentEvent`와 서브의 작업 로그 항목(실행 중 에이전트는 10초에 1회), `turn_end`는 봉인 안 된 전부를 다시 읽고 끝났거나
+  시야에서 사라진(`unknown`) 에이전트를 `spendFinal`로 봉인한다 — 미완성 마지막 줄이 남아 있으면 봉인하지 않는다. 봉인된 에이전트에
+  어떤 이벤트·작업 로그 항목이든 오면(SendMessage 재개, 되살아남, 늦은 보고) 봉인을 푼다. `sdkSessionId`는 에이전트가 실행 중일 때 처음
+  본 순간 세션의 현재 SDK 세션으로 기록한다(transcript가 생기기 전 — 이후 `/new`가 검색 위치를 바꾸지 못한다). 비동기 — 바뀌면
   `scheduleLiveSessionUpdate`. await 뒤에는 레코드를 id로 다시 찾는다(리셋이 레지스트리를 바꿀 수 있다).
+- 상한 100의 정리 순서: 오래된 순이되, 지출이 확정된 레코드(봉인됐거나 transcript가 없는)를 아직 읽을 것이 남은 레코드보다 먼저 지운다.
 - 경로 봉쇄: 세션 id는 UUID(`findTranscriptPath`), `taskId`는 `[A-Za-z0-9_-]{1,128}`, 세션 폴더·`subagents`·transcript 어느 것도
   심볼릭 링크면 읽지 않는다.
 - 서브 합계 `subagentSpendOf` = 레코드별 지출 합 + `AgentRegistry.prunedSpend`(상한 100이 지운 레코드의 지출, 영속) — 상한이 합을 줄이지
