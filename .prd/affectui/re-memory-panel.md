@@ -1,6 +1,6 @@
 # affectUI Memory Panel → 설정 › 기억 › 개인 메모리 (L1)
 
-Status: 계약(Phase A) · 작성 2026-10-26 · 기준 main `ff6c9ac` · 에픽 #437 / 서브이슈 #443 · SSOT [`ssot.md`](ssot.md)
+Status: 구현(Phase B) · 작성 2026-10-26 · 기준 main `ff6c9ac` · 에픽 #437 / 서브이슈 #443 · SSOT [`ssot.md`](ssot.md)
 앞선 계약: SSOT 2026-10-23 T3/T5(기억 탭 — 항목마다 한 행, 저장소마다 용량 미터, 한 항목 삭제는 즉시 + 되돌리기, `모두 지우기`는 개수를
 말하는 확인, 모든 편집은 불러온 revision 조건부 · 409면 초안 보존) — 조사 원문 [`docs/misc/research/2026-10-23-dashboard-settings-memory-ui.md`](../../docs/misc/research/2026-10-23-dashboard-settings-memory-ui.md)
 
@@ -144,86 +144,95 @@ muted `#8f8f8f/#8b8b92`, well `#f4f4f5/#222225`, hover `#ececee/#2c2c30`, red `#
 
 ## 4. 계약 (TO-BE)
 
-범위 규칙: 바뀌는 곳은 `settings-memory-tab.ts`의 L1 블록뿐 — HTML `:31-34`, CSS `:65-81`, 클라이언트 `:202-423`(새 상태 변수도 이 블록
-안에 둔다, `:109-113` 근처 금지 — PR #380과 인접 hunk 충돌). `settings-page.ts`·서버·지식 페이지·관찰 기록은 그대로.
+범위 규칙: 바뀌는 곳은 `settings-memory-tab.ts`의 L1 블록뿐 — HTML `:31-54`(기준 `:32-33`), CSS `:85-176`(기준 `:65-81`, 마커 주석
+`개인 메모리 (L1) — memory panel` ~ `end 개인 메모리 (L1)`), 클라이언트 `:297-925`(기준 `:203-421`). 새 상태는 변수가 아니라 `paintL1`의 속성
+(`paintL1.view`·`paintL1.adding`, 기존 `paintL1.open`과 같은 방식)이라 `:109-113`(PR #380의 `PAGE_GROUPS` 줄) 근처는 손대지 않았다.
+`settings-page.ts`·서버·지식 페이지·관찰 기록은 그대로. **[SHIPPED]**
 
-- **D1 구조.** `#mem-l1-body`의 클래스 `l1-grid` → `mp`(`container-type: inline-size`). h2에 `<span id="l1-total" class="mp-count" aria-hidden="true">`.
-  본문 = `.mp-filters` → `.mp-list` → `.mp-foot`. 모든 새 클래스는 `mp-` 접두(설정의 `.chip(s)`·`.switch`와 충돌 금지).
-- **D2 단일 다시 그리기 유지.** `paintL1`이 여전히 유일한 전체 렌더 경로이고 R9–R13 계약(초안·편집기 재부착·hold·잠금)을 그대로 지킨다. id
-  `l1-edit-<t>`·`l1-new-<t>`·`l1-count-<t>`·`mem-l1-body` 유지. 필터·검색·편집기 열고 닫기는 다시 그리지 않고 속성만 바꾼다(`l1ApplyView()` —
-  `data-open`·`inert`·`aria-*`). 새 코드는 `getElementById`로 찾는다(시험 가짜 DOM, `querySelector` 없음에도 안전).
-- **D3 저장소 칩.** `.mp-chips role=radiogroup aria-label="저장소"` 안에 `button.mp-chip role=radio` 3개 — `전체` · `에이전트 노트` ·
-  `사용자 프로필`, 각 `<span class="mp-chip-n">n</span>`(검색과 무관한 저장소 전체 개수). 기본 `전체`. 상태 `_l1View.target ∈ {null,'memory','user'}`.
-- **D4 칩 키보드.** 로빙 tabindex(선택만 0), ←/↑ 이전 · →/↓ 다음(순환) · Home/End, 선택이 포커스를 따른다.
-- **D5 검색.** `.mp-search-open`(aria-label `개인 메모리 검색`, aria-expanded, aria-controls) → 칩 자리에 `input type=search`(placeholder
-  `항목 검색`) + `×`(`검색 닫기`). 열면 `target=null`, 입력에 포커스. 일치 = `text.toLowerCase()` 또는 저장소 라벨에 `q.trim().toLowerCase()`
-  포함. Esc / `×` = 닫고 비우고 포커스는 돋보기로. 검색 중 칩은 `inert`.
-- **D6 그룹.** `section.mp-group#l1-g-<t> aria-labelledby="l1-h-<t>"`(fold). 머리 = `h3#l1-h-<t>` 라벨 + `.sub` 파일명 + 기존 `.meter-line`
-  (`<meter min=0 max=charLimit …>` + `x / y자`, ≥80% `is-warn`, ≥100% `is-full · 가득 참`). `<ol class="mp-items">`의 `<li>`는 속성 없는
-  `<li>`(접힘은 안쪽 `.mp-fold#l1-f-<t>-<i>`). 걸러진 그룹·행은 접히고 `inert`. 빈 그룹: `비어 있음 — Slack에서 "기억해줘"라고 하거나 아래에서
-  추가하세요.` 검색 일치 없음(목록 전체): `“q”가 들어간 항목이 없습니다`.
-- **D7 행.** `.mp-row#l1-row-<t>-<i>`: `.mp-text`(pre-wrap, `esc`) · `.mp-meta` = `#N · L자`(+ `· 한 항목 한도 초과`, `L > perEntryCap`) ·
-  `.mp-acts` = `수정`·`삭제` 텍스트 버튼(onclick `l1EditStart('t',i)` / `l1Delete('t',i)` 유지, `data-act`, aria-label `수정: “앞 40자…”`).
+- **D1 구조. [SHIPPED]** 정적 크롬 `#l1-panel.mm`(`container-type: inline-size`, 첫 그림 뒤 `data-ready`) = `.mm-filters`(칩 · 검색) →
+  `#mem-l1-body.mm-list`(그룹 — `paintL1`이 그리는 유일한 곳) → `.mm-foot`(트레이). h2에 `<span id="l1-total" class="mm-count" aria-hidden="true">`.
+  모든 새 클래스는 `mm-`(memory) 접두 — `mp-`는 대시보드 모델 선택기(#442) 것이고, 설정의 `.chip(s)`·`.switch`와도 겹치지 않는다.
+- **D2 단일 다시 그리기 유지. [SHIPPED]** `paintL1`이 여전히 유일한 전체 렌더 경로이고 R9–R13 계약(초안·편집기 재부착·hold·잠금)을 그대로
+  지킨다. id `l1-edit-<t>`·`l1-new-<t>`·`l1-count-<t>`·`mem-l1-body` 유지. 칩·검색·추가 편집기 열고 닫기는 다시 그리지 않고 속성만 바꾼다
+  (`l1ApplyView()`·`l1Fold()` — `data-open`·`inert`·`aria-*`). 새 코드는 `l1El(id)`(= `getElementById` + `setAttribute`/`removeAttribute`가 있는
+  요소만)로 찾는다 — 시험의 부분 가짜 DOM에서도 안전.
+- **D3 저장소 칩. [SHIPPED]** `#l1-chips.mm-chips role=radiogroup aria-label="저장소"` 안에 `button.mm-chip role=radio` 3개(`#l1-chip-all|memory|user`)
+  — `전체` · `에이전트 노트` · `사용자 프로필`, 각 `span.mm-chip-n`(검색과 무관한 저장소 전체 개수). 기본 `전체`. 상태 `paintL1.view.target`.
+- **D4 칩 키보드. [SHIPPED]** 로빙 tabindex(선택만 0), ←/↑ 이전 · →/↓ 다음(순환) · Home/End, 선택이 포커스를 따른다(`l1ChipKey`).
+- **D5 검색. [SHIPPED]** `#l1-search-open`(aria-label `개인 메모리 검색`, aria-expanded, aria-controls) → 칩 자리에 `#l1-q type=search`(placeholder
+  `항목 검색`) + `×`(`검색 닫기`). 열면 `target=null`, 입력에 포커스. 일치 = 항목 텍스트 또는 저장소 라벨·파일명에 `q.trim()` 포함(소문자).
+  Esc / `×` = 닫고 비우고 포커스는 돋보기로. 검색 중 칩은 `inert`, 검색 칸은 포커스 때 테두리(입력 자체 outline 없음).
+- **D6 그룹. [SHIPPED]** `renderL1Card(target, block, editing, ctx)` — **이름과 앞 세 인자는 그대로**(`settings-memory-tab.test.ts`가 직접 불러 카드
+  마크업을 고정한다), `ctx = {view, adding}`은 선택. 결과 `section#l1-g-<t>.mm-group.mm-fold aria-labelledby="l1-h-<t>"`: 머리 = `h3#l1-h-<t>` 라벨
+  + `.sub` 파일명 + 기존 `.meter-line`(`<meter min=0 max=charLimit …>` + `x / y자`, ≥80% `is-warn`, ≥100% `is-full · 가득 참`). `<ol class="mm-items">`의
+  `<li>`는 속성 없는 `<li>`(접힘은 안쪽 `.mm-fold#l1-f-<t>-<i>`). 걸러진 그룹·행은 접히고 `inert`. 빈 그룹: `비어 있음 — Slack에서 "기억해줘"라고
+  하거나 아래에서 추가하세요.` 검색 일치 없음(목록 전체 `#l1-nomatch`): `“q” 검색 결과가 없습니다`(받침과 무관한 문형).
+- **D7 행. [SHIPPED]** `.mm-row`: `p.mm-text`(pre-wrap, `esc`) · `.mm-meta` = `#N · L자`(+ `· 한 항목 한도 초과`, `L > perEntryCap`) · `.mm-acts` =
+  `수정`(`#l1-ed-<t>-<i>`)·`삭제`(`#l1-del-<t>-<i>`) 텍스트 버튼(onclick `l1EditStart('t',i)` / `l1Delete('t',i)` 유지, aria-label `수정: “앞 40자…”`).
   액션은 hover·`:focus-within`에서 보이고(opacity 180ms), coarse에서는 늘 보인다. `§`는 어디에도 없다.
-- **D8 제자리 편집.** 텍스트 자리에 `textarea#l1-edit-<t>.mp-edit`(rows 1, 내용 높이 자동, 커서 끝, 테두리 없음, 행 배경 `--surface-raised`).
-  meta에 실시간 `L / 상한자`(초과 `is-over`) + `취소`·`저장`. Enter(조합 중 아님 — `isComposing`/keyCode 229 제외) = `l1Save`, Shift+Enter = 줄바꿈,
-  Esc = `l1Cancel`. 공백을 접지 않는다. 원문과 같으면 요청 없이 닫는다. 빈 값은 기존 오류 문구. 저장·취소 후 포커스는 그 행의 `수정`.
-- **D9 삭제(잊기).** `l1Delete`는 지금처럼 즉시 `l1Write('DELETE', …)`(hold·이중 클릭 차단 그대로)를 보내고, 같은 순간 그 행에
-  `data-leaving`(접힘 320ms + opacity 200ms + blur 2px). 응답이 접힘보다 빠르면 접힘이 끝난 뒤 다시 그린다. 실패면 행을 다시 펴고 기존
-  `#mem-status` 오류. 성공 후 포커스: 같은 그룹 다음 행의 `삭제` → 이전 행 → 그룹 추가 버튼.
-- **D10 트레이 되돌리기.** 성공한 삭제는 `_memUndo = {target, text}` + 트레이 `삭제함 “<b>text</b>”`(따옴표 안만 말줄임) + `되돌리기` 버튼.
-  5,000ms 뒤 `_memUndo`를 비우고 트레이는 기본 문구로. 포인터가 트레이 위에 있거나 포커스가 트레이 안이면 타이머를 멈추고, 떠나면 남은
-  시간부터. 새 삭제가 덮는다. `되돌리기` = 기존 `l1Undo`(`restore:true`) — 성공하면 복원된 행이 그룹 끝에서 펼쳐지고(`data-entering`) 화면
-  밖이면 120ms 뒤 스크롤(−8px), 포커스는 그 행 `수정`, 트레이 `되돌렸습니다 — 목록 끝에 다시 넣었습니다`. 거절은 기존대로 원문을 추가 칸/복구 상자로.
+- **D8 제자리 편집. [SHIPPED]** 텍스트 자리에 `textarea#l1-edit-<t>.mm-edit`(rows 1, 내용 높이 자동 `l1Grow`, 커서 끝, 테두리 없음, 행 배경
+  `--surface-raised` + 포커스 때 안쪽 1px `--border-focus`). meta에 실시간 `L / 상한자`(`#l1-ecount-<t>`, 초과 `is-over`) + `취소`·`저장`.
+  Enter(`isComposing`/keyCode 229 제외) = `l1Save`, Shift+Enter = 줄바꿈, Esc = `l1Cancel`. 공백을 접지 않는다. 원문과 같으면 요청 없이 닫는다.
+  빈 값은 기존 오류 문구. 저장·취소 후 포커스는 그 행의 `수정`(저장 중 다른 편집기를 열었으면 옮기지 않는다).
+- **D9 삭제. [SHIPPED]** `l1Delete`는 지금처럼 즉시 `l1Write('DELETE', …)`(hold·이중 클릭 차단 그대로)를 보내고, 같은 순간 그 행에
+  `data-leaving` + 접힘(320ms + opacity 200ms + blur 2px). `l1Write`의 새 인자 `settle`(접힘 320ms 약속, reduced-motion이면 없음)이 끝날 때까지
+  성공 응답의 다시 그리기를 미룬다. 실패면 행을 다시 펴고 기존 `#mem-status` 오류. 성공 후 포커스: 다음 행의 `삭제` → 이전 행 → 그룹 추가 버튼.
+- **D10 트레이 되돌리기. [SHIPPED]** 성공한 삭제는 `_memUndo = {target, text, key, left: 5000}` + 트레이 `삭제함 “<b>text</b>”`(따옴표 안만 말줄임)
+  + `#l1-undo 되돌리기`. 5,000ms 뒤 `_memUndo`를 비우고 기본 문구로. 포인터가 트레이 위(`mouseenter`)에 있거나 `되돌리기`에 포커스가 있으면
+  (`l1TrayHold('hover'|'focus')`) 타이머를 멈추고, 둘 다 떠나면 남은 시간부터. 새 삭제가 덮는다. `되돌리기` = 기존 `l1Undo`(`restore:true`) — 성공하면
+  복원된 행(그룹 끝)이 0fr에서 다시 펼쳐지고 120ms 뒤 `scrollIntoView({block:'nearest'})`, 포커스는 그 행 `수정`, 트레이 `되돌렸습니다 — 목록 끝에
+  다시 넣었습니다`. 보이지 않는 보기(다른 칩·맞지 않는 검색)면 보기를 `전체`로 되돌린다. 거절은 기존대로 원문을 추가 칸/복구 상자로(그 편집기가 열린다).
   `모두 지우기`는 되돌리기 없음(기존 확인 대화).
-- **D11 저장소별 추가.** 그룹 끝 `.mp-addrow`: `button.mp-add`(`+ 에이전트 노트에 추가`, aria-expanded, aria-controls=`l1-newbox-<t>`) ⇄
-  fold `#l1-newbox-<t>`(`label` `새 항목 (한 항목 최대 N자)` · `textarea#l1-new-<t>` · `.counter#l1-count-<t>`(`l1Count` 그대로) · `취소`·`추가`).
-  접혀도 textarea는 DOM에 있다(inert). Enter = `l1Add`, Shift+Enter 줄바꿈, Esc/취소 = 접기(초안 유지, 포커스는 추가 버튼). 초안이 있는
-  편집기는 다시 그려도 열린 채다. 추가 성공 → 칸 비움(기존 `clearAdd`) + 접기 + 새 행 펼침·스크롤 + 포커스 추가 버튼. 오른쪽 `모두 지우기`
-  (항목이 있을 때만, 기존 `l1Clear`).
-- **D12 트레이 문구.** `.mp-foot` → `span.mp-caption aria-live="polite"` + (되돌리기 창 동안만) `button.mp-undo`. 상태 우선순위: 삭제함(D10) >
-  알림(성공 문구 3s: `저장했습니다`·`추가했습니다`·`되돌렸습니다 — …`·`모두 지웠습니다`) > 편집 중 `Enter 저장 · Shift+Enter 줄바꿈 · Esc 취소`
-  > 추가 중 `Enter 추가 · Shift+Enter 줄바꿈 · Esc 닫기` > 기본 `<b>8</b>개 항목<span class="mp-cap"> · 에이전트 노트 297 / 2,200자 · 사용자 프로필
-  107 / 1,375자</span>`. 문구가 바뀔 때만 교체(들어옴 320ms / 나감 220ms 교차 페이드). L1 성공 문구는 `#mem-status` 대신 트레이로(오류·409는
+- **D11 저장소별 추가. [SHIPPED]** 그룹 끝 fold `#l1-addbtn-<t>`(`button#l1-add-<t>.mm-add` `+ 에이전트 노트에 추가`, aria-expanded,
+  aria-controls=`l1-newbox-<t>` · 오른쪽 `모두 지우기`(항목이 있을 때만, 기존 `l1Clear`)) ⇄ fold `#l1-newbox-<t>`(`label` `새 항목 (한 항목 최대 N자)`
+  · `textarea#l1-new-<t>` · `.counter#l1-count-<t>`(`l1Count` 그대로) · `취소`·`추가`). 접혀도 textarea는 DOM에 있다(inert). Enter = `l1Add`,
+  Shift+Enter 줄바꿈, Esc/취소 = 접기(초안 유지, 포커스는 추가 버튼). 초안이 든 칸은 다시 그리거나 초안이 옮겨 오면(409·잃을 편집·거절된 되돌리기 —
+  `l1OpenDrafts`) 열린다. 추가 성공 → 칸 비움(기존 `clearAdd`) + 접기 + 포커스 추가 버튼 + 새 행 펼침·스크롤.
+- **D12 트레이 문구. [SHIPPED]** `.mm-foot` = 보이는 `#l1-caption.mm-caption`(aria-hidden — 롤하는 숫자를 읽지 않게) + 따로 `#l1-live.mm-sr role=status
+  aria-live=polite aria-atomic=true`(최종 문장만, 바뀔 때만) + (되돌리기 창 동안만) `#l1-undo`. 상태 우선순위(`l1TrayState`): 삭제함(D10) > 알림
+  (3s: `저장했습니다`·`추가했습니다`·`되돌렸습니다 — …`·`모두 지웠습니다`) > 편집 중 `Enter 저장 · Shift+Enter 줄바꿈 · Esc 취소` > 추가 중
+  `Enter 추가 · Shift+Enter 줄바꿈 · Esc 닫기` > 기본 `<b>8</b>개 항목<span class="mm-cap"> · 에이전트 노트 297 / 2,200자 · 사용자 프로필 107 / 1,375자</span>`.
+  상태가 바뀔 때만 교체(들어옴 320ms / 나감 220ms 교차 페이드), 같은 기본 상태에서는 숫자만 롤. L1 성공 문구는 `#mem-status` 대신 트레이로(오류·409는
   `#mem-status` 그대로 — `role=alert`).
-- **D13 숫자 롤.** `#l1-total`과 트레이 개수는 이전 값에서 새 값으로 520ms `1−(1−t)^4`(rAF). reduced-motion이면 즉시.
-- **D14 모션.** fold `grid-template-rows 0fr↔1fr` `.mp` 범위 변수 `--mp-fold: 320ms` + `var(--ease-out)`(레퍼런스 420ms → 대시보드 `--dur-move` 리듬, 설정 `:root`에는 없어 범위 변수로), opacity 열림 240ms
-  (60ms 지연)·닫힘 `var(--dur-fade)` 180ms; 잊는 행 D9; 행 배경 `var(--dur-press)` 160ms; 검색 교차 220ms + blur 2px. 움직이는 것은
-  opacity · filter · grid rows뿐(목록을 가로질러 미끄러지지 않는다). `@media (prefers-reduced-motion: reduce)`에서 `.mp` 안 transition·animation
-  없음, 스크롤 `auto`.
-- **D15 토큰 · 테마.** 설정 토큰만 쓴다: 카드 `--surface`, well(선택 칩·hot 행·편집기) `--surface-raised`, 선 `--border`, 잉크 `--text`, 본문
-  `--text-secondary`, 흐림 `--text-tertiary`, 삭제 hover `--red`/`--danger-bg`, 포커스 2px `--border-focus` offset 1px, 트레이 배경 `--bg`.
-  반경: 행·칩·편집기·버튼 8, 개수 배지 5. 글자: 본문 13/20, meta·칩 12, 그룹 제목 13/600. 라이트의 `is-warn`은 `.mp` 범위 변수
-  `--mp-warn`(라이트 `#9a6700`, 다크 `var(--yellow)`)로 4.5:1 이상. 레퍼런스 CSS·SVG·클래스명(`ui-mp`)은 쓰지 않는다 — 아이콘은 돋보기 하나(자체 원 + 선).
-- **D16 반응형.** 내부 스크롤 없음. `@container (max-width: 480px)`: `.mp-cap` 숨김, 그룹 머리의 미터 줄이 제목 아래 한 줄로.
-  `@container (max-width: 340px)`: `.mp-chip-n` 숨김. 칩 줄은 넘치면 가로 스크롤(스크롤바 숨김, 끝 14px 페이드). `(pointer: coarse)`: 액션 늘
-  보임, 행 액션·칩·검색 버튼 32px, `.mp-add`·`.mp-undo` 36px(설정 페이지의 coarse 16px 입력 규칙 유지).
-- **D17 접근성.** D3 radiogroup, D6 이름 붙은 section, 걸러지거나 접히는 것은 `inert`, D7 액션 이름에 항목 문장(보이는 라벨이 먼저 — 2.5.3),
-  D12 polite 트레이, D8–D11 포커스 복귀, Enter의 IME 가드.
+- **D13 숫자 롤. [SHIPPED]** `#l1-total`과 트레이 개수(`l1Roll`)는 이전 값에서 새 값으로 520ms `1−(1−t)^4`(rAF). 첫 값·reduced-motion이면 즉시.
+- **D14 모션. [SHIPPED]** fold `grid-template-rows 0fr↔1fr` `.mm` 범위 변수 `--mm-fold: 320ms` + `var(--ease-out)`(레퍼런스 420ms → 대시보드 `--dur-move`
+  리듬, 설정 `:root`에는 없어 범위 변수로), opacity 열림 240ms(60ms 지연)·닫힘 `var(--dur-fade)` 180ms; 잊는 행 D9; 행 배경 `var(--dur-press)`
+  160ms; 검색 교차 220ms + blur 2px. 움직이는 것은 opacity · filter · grid rows뿐. `@media (prefers-reduced-motion: reduce)`에서 `.mm` 안
+  transition·animation 없음, JS도 접힘 대기·롤·부드러운 스크롤 없음(`l1Reduced`).
+- **D15 토큰 · 테마. [SHIPPED]** 설정 토큰만 쓴다: 카드 `--surface`, well(선택 칩·hover 행·편집기) `--surface-raised`, 선 `--border`, 잉크 `--text`,
+  본문 `--text-secondary`, 흐림 `--text-tertiary`, 삭제 hover `--red`/`--danger-bg`, 포커스 2px `--border-focus` offset 1px, 트레이 배경 `--bg`.
+  반경: 행·칩·편집기·버튼 8, 개수 배지 5. 글자: 본문 13/20, meta 12, 칩·트레이 12.5, 그룹 제목 13/600. 라이트의 `is-warn`·한도 초과는 범위 변수
+  `--mm-warn`(라이트 `#9a6700`, 다크 `var(--yellow)`). 레퍼런스 CSS·SVG·클래스명(`ui-mp`)은 쓰지 않는다 — 아이콘은 돋보기 하나(자체 원 + 선), 닫기는 `×`.
+- **D16 반응형. [SHIPPED]** 내부 스크롤 없음. `@container (max-width: 480px)`: `.mm-cap` 숨김, 그룹 머리의 미터 줄이 제목 아래 한 줄로.
+  `@container (max-width: 340px)`: `.mm-chip-n` 숨김. 칩 줄은 넘치면 가로 스크롤(스크롤바 숨김, 끝 14px 페이드). `(pointer: coarse)`: 액션 늘
+  보임, 행 액션·칩·`모두 지우기` 32px, 아이콘 32×32, meta 32, `.mm-add`·`.mm-undo` 36px(설정 페이지의 coarse 16px 입력 규칙 유지).
+- **D17 접근성. [SHIPPED]** D3 radiogroup, D6 이름 붙은 section, 걸러지거나 접히는 것은 `inert`, D7 액션 이름에 항목 문장(보이는 라벨이 먼저 — 2.5.3),
+  D12 polite 상태 문장, D8–D11 포커스 복귀, Enter의 IME 가드, 되돌리기 시간은 hover·focus 동안 멈춤(2.2.1).
 
 ## 5. 시험
 
-새 파일 `src/conversation/__tests__/dashboard-affectui-memory-panel.test.ts` — `settings-memory-tab.test.ts`의 `clientFn`/`clientVar`/`load`
-하네스(String.raw라 cook 단계 없음) + 가짜 DOM(`getElementById`만) + `vi.useFakeTimers`. 구현 전 T1–T12는 RED(함수·마크업 없음), T13은 GREEN 유지.
+새 파일 `src/conversation/__tests__/dashboard-affectui-memory-panel.test.ts` — `settings-memory-tab.test.ts`의 `clientFn`/`clientVar` 하네스
+(String.raw라 cook 단계 없음) + 마크업을 파싱하는 작은 가짜 DOM(id·속성·textarea 값·포커스) + `vi.useFakeTimers`.
 
 | T | 내용 | D |
 |---|---|---|
-| T1 | `MEMORY_TAB_HTML`: `#mem-l1-body`가 `class="mp"`, h2에 `id="l1-total"`·`aria-hidden="true"`; 지식 페이지·관찰 기록 마크업(`mem-page-list`·`mem-page-detail`·`mem-ep-date`·`mem-ep-body`·`mem-ep-new`)은 그대로 | D1 · D2 |
-| T2 | 패널 렌더: radiogroup `aria-label="저장소"`, 칩 3개 `전체 8 · 에이전트 노트 5 · 사용자 프로필 3`, 선택만 `aria-checked="true"`·`tabindex="0"` | D3 |
-| T3 | 칩 키: → / ← 순환, Home/End, 선택이 포커스를 따름 → 다른 그룹·행 fold `data-open` 없음 + `inert` | D4 · D6 |
-| T4 | 검색: 대소문자 무시 일치, 저장소 라벨 일치, 일치 없음 문구, Esc가 닫고 비움 · 포커스 돋보기 | D5 |
-| T5 | 행: 속성 없는 `<li>`, `#2 · 18자`, 상한 초과 문구, `aria-label="수정: “…”"`·`삭제: “…”`, onclick 문자열 유지, `esc` 적용, `§` 없음 | D6 · D7 |
-| T6 | 편집 키: Enter → PUT, Shift+Enter → 요청 없음, Esc → 닫힘, `isComposing` → 요청 없음, 같은 텍스트 → 요청 없이 닫힘, 포커스 `수정` | D8 |
-| T7 | 삭제: DELETE 즉시 1회(두 번째 클릭 무시), 행 `data-leaving`, 성공 → 트레이 `삭제함 “…”` + `되돌리기`, 실패 → 행 다시 펼침 + 오류 | D9 · D10 |
-| T8 | 되돌리기 창: 5,000ms 뒤 사라짐, 트레이 hover/focus 동안 멈춤, 되돌리기 → `POST … restore:true`, 문구 `목록 끝에` | D10 · D12 |
-| T9 | 추가: `aria-expanded`, 접혀도 `l1-new-<t>` 존재, Enter → POST, Esc → 접힘 + 초안 유지, 초안 있으면 다시 그려도 열림, 성공 → 접힘 | D11 |
-| T10 | 트레이: 기본 문구(개수 + 두 저장소 `x / y자`), 편집·추가 힌트, `aria-live="polite"`, L1 성공 문구가 `#mem-status`로 가지 않음 | D12 |
-| T11 | 숫자 롤: reduced-motion이면 즉시, 아니면 rAF로 중간값을 거쳐 최종값 | D13 |
-| T12 | CSS: `.mp` 안 reduced-motion·coarse·`@container 480/340` 블록, 설정 토큰만(16진 색은 `--mp-warn` 라이트 값뿐), `ui-mp` 문자열 없음 | D14–D16 |
-| T13 | 회귀: `settings-memory-tab.test.ts` 전체(R5 undo, R9–R13 초안·hold·잠금, 쓰기 경로) 그대로 통과 — 카드 단위 문구 시험이 바뀌면 이유를 보고 | D2 |
+| T1 | `MEMORY_TAB_HTML`: `#l1-panel.mm` > `#mem-l1-body.mm-list`, h2 `#l1-total`(aria-hidden), `#l1-live`(status·polite·atomic), `l1-grid` 없음; 지식 페이지·관찰 기록 id 그대로; 첫 그림 뒤 `data-ready` | D1 · D2 |
+| T2 | radiogroup `aria-label="저장소"`, 칩 개수 8 · 5 · 3, 선택만 `aria-checked="true"`·`tabindex="0"`, 머리 개수 8 | D3 |
+| T3 | 칩 키: → / ↓ / ← 순환, Home/End, 선택이 포커스를 따름, 다른 그룹 fold 닫힘 + `inert`, 다른 키는 무시 | D4 · D6 |
+| T4 | 검색: 칩 필터 해제, 대소문자 무시 일치, 저장소 라벨 일치, 일치 없음 문구, Esc가 닫고 비움 · 포커스 돋보기 | D5 |
+| T5 | 그룹 section·h3·meter, 속성 없는 `<li>`, `#1 · 9자`, 상한 초과 문구, `aria-label="수정: “…”"`·40자 말줄임, onclick 유지, `esc`, `§` 없음, 빈 그룹 문구 | D6 · D7 |
+| T6 | 편집 키: 같은 텍스트 Enter → 요청 없이 닫힘, 카운터 `6 / 660자`, Shift+Enter·`isComposing`·229 → 요청 없음, Enter → PUT, Esc → 닫힘, 포커스 `수정`, 높이 자동 | D8 |
+| T7 | 삭제: DELETE 즉시 1회(두 번째 클릭 무시), 행 `data-leaving` + 닫힘, 응답 뒤에도 320ms 접힘 동안 그대로, 그 뒤 트레이 `삭제함 “…”` + `되돌리기` + polite 문장, 포커스 다음 행 `삭제` | D9 · D10 |
+| T7b | 거절된 삭제: 행 다시 펼침, `#mem-status` 오류, 되돌리기 없음 | D9 |
+| T8 | 5,000ms 경계(4,999 남음 / 5,000 사라짐), hover+focus 동안 멈춤·남은 시간부터, 되돌리기 → `POST … restore:true` + 문구 `목록 끝에` + 포커스 복원 행 `수정` | D10 · D12 |
+| T9 | 추가: aria-expanded·aria-controls, 접혀도 칸 존재, 열기·포커스, Esc → 접힘 + 초안 유지 + 포커스 버튼, 초안 있으면 다시 그려도 열림, IME 가드, Enter → POST, 성공 → 비움·접힘·포커스·알림 | D11 |
+| T10 | 트레이 기본 문장(개수 + 두 저장소 `x / y자`) = `#l1-live`, 캡션 aria-hidden, 편집 힌트, 저장 알림이 `#mem-status`로 가지 않음 | D12 |
+| T11 | 숫자 롤: 첫 값 즉시, rAF 중간값(8→4에서 t=.25 → 5), 끝값, reduced-motion이면 즉시 | D13 |
+| T12 | CSS 마커 구간: `.mm` container, `--mm-fold`, fold·leaving 전이, reduced-motion·coarse·`@container 480/340`, 16진 색은 `#9a6700`뿐, `ui-mp`·`mp-` 없음 | D14–D16 |
+| T13 | 회귀: `settings-memory-tab.test.ts` 전체(카드 마크업, R5 undo, R9–R13 초안·hold·잠금, 쓰기 경로) | D2 · D6 |
 
-게이트: `npx vitest run src/conversation/__tests__/` · `npx tsc --noEmit` · `npx biome check src/conversation/`. 화면: 하네스(포트 34106)에서
-라이트/다크 × 1440/390, 기본 · 칩 선택 · 검색 · hover · 편집 · 추가 · 삭제 직후 트레이.
+T13 유지 방법: 기존 시험은 함수 목록을 골라 불러오므로, L1 함수가 부르는 패널 도우미를 `L1_PANEL_FNS`로 한 번 정의해 네 목록에 더했고, `l1Clear`만
+불러오는 시험 하나에 `_memUndo: null`을 주입했다(트레이가 되돌리기 상태를 읽는다). **단언은 하나도 바꾸지 않았다.**
 
 ## 6. 범위 밖 · 후속
 
@@ -233,3 +242,18 @@ muted `#8f8f8f/#8b8b92`, well `#f4f4f5/#222225`, hover `#ececee/#2c2c30`, red `#
 - 항목 출처·날짜(언제 어디서 기억했나)는 저장소가 문자열만 들고 있어 없다 — 메타데이터를 저장하려면 포맷 변경(별 이슈).
 - 기억 켜고 끄기, 항목 일시정지 — 프롬프트 빌더에 경로가 생기면 그때 스위치·Pause를 붙인다.
 - 대시보드 본문(`dashboard.ts`)은 이 이슈와 무관(기억은 설정 페이지에만 있다).
+- 머지 순서: 에픽 7개 중 마지막(agent-inbox → context-window → agent-run → model-picker → ai-answer → agent-queue → memory-panel). PR #380이
+  먼저 들어오면 그 위로 rebase한다 — #380의 `settings-memory-tab.ts` 변경은 `:113` 한 줄(`PAGE_GROUPS`)이고 이 변경의 가장 가까운 hunk는 `:203`
+  이후라 겹치지 않는다.
+
+## 7. 검증
+
+- RED(구현 전, 2026-10-26): `dashboard-affectui-memory-panel.test.ts` 13건 모두 실패 — `client function l1El not found` 10건, `<div id="l1-panel"
+  class="mp">`·radiogroup 마크업 없음 2건, CSS 마커 없음 1건(당시 접두 `mp-`; 리뷰 반영으로 `mm-`).
+- GREEN: 새 시험 13/13, `settings-memory-tab.test.ts` 73/73, `settings-page.test.ts` 통과. `npx vitest run src/conversation/__tests__/` 63 파일 ·
+  1,661건 통과(병렬 작업 7개가 도는 기계라 `--maxWorkers=3 --testTimeout=60000 --hookTimeout=60000` — 기본 시간 제한으로는 서버 시험 87건이
+  hook·test timeout과 그 여파(시간 안에 import되지 못한 모듈의 `undefined`)로 떨어졌고, 단언 실패는 없었다). `npx tsc --noEmit` 오류 없음. `npx biome check src/conversation/` 오류 0(경고는 기존과 같은
+  `noExplicitAny` 종류).
+- 화면(하네스, 픽스처 응답 — `GET /api/memory`와 L1 쓰기를 page.route로 답한다): 라이트/다크 × 1440/390 × 기본 · hover · 칩 `사용자 프로필` · 검색
+  `deploy` · 일치 없음 · 편집 중 · 추가 편집기 · 삭제 뒤 트레이 되돌리기 · 되돌린 뒤(`harness/shots-memory-panel/after-*.png`, 변경 전 `before-*.png`).
+  폰 캡처는 요소 스크린샷 대신 뷰포트 clip — 요소 스크린샷은 페이지 크기를 바꿔 `(pointer: coarse)` 에뮬레이션을 잃는다.
