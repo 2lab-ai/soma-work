@@ -76,8 +76,16 @@ describe('deploy-qa preflight and reduced mode', () => {
     expect(md).toMatch(/Any GitHub, tracker, or bundled-file check fails → `missing: <checks>`/);
   });
 
-  it('confirms a deploy the same two ways deploy.prompt does, within a fixed budget', () => {
+  it('owns the deploy confirmation for its repo, within a fixed budget, with no event filter', () => {
     const step1 = md.slice(md.indexOf('1. **Confirm the deploy**'), md.indexOf('2. **Commits.**'));
+    expect(step1).toContain('the deploy workflow does not confirm a repo with QA itself');
+    expect(md).not.toContain('event=push');
+    expect(step1).toContain('actions/workflows/<CD workflow>/runs?head_sha=<after>&branch=<target>` (paged)');
+    // A run not registered yet is pending, never "no CD".
+    expect(step1).toContain(
+      'An empty listing within the budget means the run is not registered yet: pending, never "no CD"',
+    );
+    expect(step1).toContain('`deploy failed, QA not run: <run> concluded <conclusion>`');
     expect(step1).toContain('When `deploy` names a CD workflow for `repo` and `target`');
     expect(step1).toContain('When `deploy` declares no CD workflow');
     expect(step1).toContain('every 30 s for at most 30 min');
