@@ -51,6 +51,13 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
+/** A multi-line `var NAME = [ … ];` (clientVar only matches one line). */
+function clientArrayVar(name: string): string {
+  const start = TEMPLATE.indexOf(`\nvar ${name} = [`);
+  if (start < 0) throw new Error(`client var ${name} not found`);
+  const end = TEMPLATE.indexOf('\n];\n', start);
+  return cook(TEMPLATE.slice(start + 1, end + 4));
+}
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
@@ -352,6 +359,49 @@ describe('D5 — applyLaneHolds: a held card stays in its container with its new
     expect(timers[0].ms).toBeGreaterThanOrEqual(900);
   });
 
+  it('two cards leaving one column together keep their order there during the hold (astra P2)', () => {
+    const c = container('cards-waiting');
+    const w = container('cards-working');
+    const els: Record<string, { _colId: string; parentNode: unknown }> = {};
+    for (const k of ['a', 'b', 'c']) {
+      els[k] = { _colId: 'waiting', parentNode: c };
+      c.children.push(els[k]);
+    }
+    const fns = load<{ applyLaneHolds(slots: unknown[], counts: Record<string, number>): void }>(
+      ['holdLanes', 'applyLaneHolds'],
+      ['BOARD_HOLD_MS'],
+      {
+        _cardEls: els,
+        _laneHolds: Object.create(null),
+        _laneHoldTimer: 0,
+        _lastBoardData: null,
+        canAnimate: () => true,
+        reduceMotion: () => false,
+        renderBoard: () => {},
+        Date: { now: () => T0 },
+        setTimeout: () => 1,
+        clearTimeout: () => {},
+      },
+    );
+    // a and b both start running — in either order in the RUNNING data.
+    for (const order of [
+      ['a', 'b'],
+      ['b', 'a'],
+    ]) {
+      const slots = [
+        { colId: 'waiting', container: c, items: [{ s: { key: 'c' }, col: 'waiting' }] },
+        { colId: 'working', container: w, items: order.map((k) => ({ s: { key: k }, col: 'working' })) },
+      ];
+      const counts = { waiting: 1, working: 2 };
+      fns.applyLaneHolds(slots, counts);
+      expect(
+        (slots[0].items as Array<{ s: { key: string } }>).map((i) => i.s.key),
+        order.join(''),
+      ).toEqual(['a', 'b', 'c']);
+      expect(counts).toEqual({ waiting: 3, working: 0 });
+    }
+  });
+
   it('without motion the card moves at once and nothing is scheduled', () => {
     const { fns, slots, counts, timers, sa } = setup(T0, false);
     fns.applyLaneHolds(slots, counts);
@@ -634,11 +684,43 @@ describe('D10 — one primary button per open card', () => {
     expect(worklog(body(s, 'waiting', sibling))).toBe('btn-action btn-primary');
   });
 
-  it("the multi-question 답변하기 is the primary in the owner's card only (fable P2)", () => {
+  it("a recommended answer is ink only where this viewer can answer it: the owner's card on this instance (astra P1)", () => {
+    const rec = {
+      type: 'user_choice',
+      question: 'Ship it?',
+      recommendedChoiceId: '1',
+      choices: [
+        { id: '1', label: 'Yes' },
+        { id: '2', label: 'No' },
+      ],
+    };
+    const inject = { resolveRecommendedId: (id: string) => id };
+    const recClass = (html: string) => /<button class="(btn-choice btn-choice-recommended[^"]*)"/.exec(html)?.[1];
+    // Mine, here: the recommended answer is the ink primary, 작업 로그 steps back.
+    const mine = body(card({ pendingQuestion: rec }), 'waiting', inject);
+    expect(recClass(mine)).toBe('btn-choice btn-choice-recommended');
+    expect(worklog(mine)).toBe('btn-action');
+    // Mine on a sibling instance: 작업 로그 is the primary, the recommended answer is quiet.
+    const sib = { ...inject, SELF_INSTANCE_NAME: 'a', isSiblingSession: () => true };
+    const there = body(
+      card({ pendingQuestion: rec, environment: { instanceName: 'b', host: 'h', port: 1 } }),
+      'waiting',
+      sib,
+    );
+    expect(recClass(there)).toBe('btn-choice btn-choice-recommended is-quiet');
+    expect(worklog(there)).toBe('btn-action btn-primary');
+    // Someone else's question: quiet (and disabled), 작업 로그 the primary.
+    const theirs = body(card({ ownerId: 'U2', pendingQuestion: rec }), 'waiting', inject);
+    expect(recClass(theirs)).toBe('btn-choice btn-choice-recommended is-quiet');
+    expect(worklog(theirs)).toBe('btn-action btn-primary');
+  });
+
+  it("the multi-question 답변하기 is the primary in the owner's card only (fable P2), never on a sibling instance (astra P1)", () => {
+    let sibling = false;
     const { renderMultiChoiceCard } = load<{ renderMultiChoiceCard(s: unknown, f: string): string }>(
       ['esc', 'escJs', 'renderMultiChoiceCard'],
       [],
-      { _mcState: {}, console, currentUserId: 'U1' },
+      { _mcState: {}, console, currentUserId: 'U1', isSiblingSession: () => sibling },
     );
     const q = { type: 'user_choices', title: 'Pick', questions: [{ id: 'q1' }] };
     expect(renderMultiChoiceCard({ key: 'k', ownerId: 'U1', pendingQuestion: q }, '')).toContain(
@@ -649,5 +731,61 @@ describe('D10 — one primary button per open card', () => {
         '<button class="btn-choice" onclick=',
       );
     }
+    sibling = true;
+    expect(renderMultiChoiceCard({ key: 'k', ownerId: 'U1', pendingQuestion: q }, '')).toContain(
+      '<button class="btn-choice" onclick=',
+    );
+  });
+});
+
+// ── D10 — the card's lead Approve (astra P1): one ink even with two answerable prompts ──
+describe('D10 — renderPermissionBlock marks only the first Approve this viewer can press, in the card only', () => {
+  function client(viewer: string, sibling = false) {
+    const names = ['esc', 'escAttr', 'isPermissionRequester', 'renderPermissionBlock'];
+    const env: Record<string, unknown> = {
+      currentUserId: viewer,
+      isSiblingSession: () => sibling,
+      loadPermissionDetail: () => {},
+      _permDetails: { ap1: { input: 'ls' }, ap2: { input: 'rm -rf build' } },
+      _permNotes: {},
+    };
+    const keys = Object.keys(env);
+    const src = `${clientArrayVar('PERM_DECISIONS')}\n${names.map(clientFn).join('\n')}\nreturn { renderPermissionBlock };`;
+    return new Function(...keys, src)(...keys.map((k) => env[k])) as {
+      renderPermissionBlock(s: unknown, where: string): string;
+    };
+  }
+  const two = (requester: string) => ({
+    key: 'inst::C1:t1',
+    pendingPermissions: [
+      { approvalId: 'ap1', toolName: 'Bash', requesterId: requester, rules: [] },
+      { approvalId: 'ap2', toolName: 'Bash', requesterId: requester, rules: [] },
+    ],
+  });
+  const approves = (html: string) =>
+    [...html.matchAll(/<button type="button" class="([^"]*btn-perm-approve[^"]*)"[^>]*data-perm-id="([^"]+)"/g)].map(
+      (m) => [m[2], m[1]],
+    );
+
+  it('two prompts from the same requester: the first Approve is the lead, the second is not', () => {
+    expect(approves(client('U1').renderPermissionBlock(two('U1'), 'card'))).toEqual([
+      ['ap1', 'btn-perm btn-perm-approve is-lead'],
+      ['ap2', 'btn-perm btn-perm-approve'],
+    ]);
+  });
+
+  it('a prompt the viewer cannot answer is skipped: the lead is the first answerable one', () => {
+    const s = two('U1');
+    s.pendingPermissions[0].requesterId = 'U2';
+    expect(approves(client('U1').renderPermissionBlock(s, 'card'))).toEqual([
+      ['ap1', 'btn-perm btn-perm-approve'],
+      ['ap2', 'btn-perm btn-perm-approve is-lead'],
+    ]);
+  });
+
+  it('no lead in the panel, for another viewer, or on a sibling instance', () => {
+    expect(client('U1').renderPermissionBlock(two('U1'), 'panel')).not.toContain('is-lead');
+    expect(client('U2').renderPermissionBlock(two('U1'), 'card')).not.toContain('is-lead');
+    expect(client('U1', true).renderPermissionBlock(two('U1'), 'card')).not.toContain('is-lead');
   });
 });
