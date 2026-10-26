@@ -1,0 +1,11 @@
+#!/bin/bash
+# Test stand-in for chown (install.test.ts): records the ownership the installer asks for and
+# changes nothing (a test run cannot hand files to root or the broker user).
+# SHIM_CHOWN_TAMPER="<mode>:<path under the target>[;...]": after a recursive chown, set those modes — a stand-in
+# for anything that changes the staged code after the installer set it, so the checklist has something to catch.
+set -euo pipefail
+{ printf 'chown'; printf ' %s' "$@"; printf '\n'; } >>"$SHIM_LOG"
+if [ "${1:-}" = -R ] && [ -n "${SHIM_CHOWN_TAMPER:-}" ]; then
+  IFS=';' read -r -a items <<<"$SHIM_CHOWN_TAMPER"
+  for item in "${items[@]}"; do chmod "${item%%:*}" "$3/${item#*:}"; done
+fi

@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  soma devops broker LaunchDaemon. install.sh fills the placeholder fields and writes the result to
+  /Library/LaunchDaemons (root:wheel 0644); edit this template, not the installed copy.
+  Umask is decimal (launchd.plist(5)): 63 = 0o077, so whatever the broker creates without an explicit mode
+  is private to the broker user. The broker binds its socket under umask 0o117 and then sets it to 0660.
+  ExitTimeOut: on SIGTERM the broker waits up to 30 s for running requests, and one gh run can take 60 s.
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>@@LABEL@@</string>
+  <key>UserName</key>
+  <string>@@USER@@</string>
+  <key>GroupName</key>
+  <string>@@GROUP@@</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@@NODE@@</string>
+    <string>@@CLI@@</string>
+    <string>serve</string>
+    <string>--gh</string>
+    <string>@@GH@@</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>SOMA_DEVOPS_ROOT</key>
+    <string>@@DATA_ROOT@@</string>
+  </dict>
+  <key>WorkingDirectory</key>
+  <string>/</string>
+  <key>Umask</key>
+  <integer>@@UMASK@@</integer>
+  <key>ExitTimeOut</key>
+  <integer>90</integer>
+  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>10</integer>
+  <key>StandardOutPath</key>
+  <string>@@LOG_DIR@@/broker.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>@@LOG_DIR@@/broker.err.log</string>
+</dict>
+</plist>
