@@ -1,0 +1,16 @@
+{
+  "name": "@soma/devops-broker",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/cli.js",
+  "bin": {
+    "soma-devops-broker": "./dist/cli.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p ../process-shared/tsconfig.json && tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@soma/process-shared": "*"
+  }
+}
