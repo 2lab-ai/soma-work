@@ -15,8 +15,8 @@ Upstream commit referenced: `5c457437c8c83524308aad3b7443e81adcc13153`
 - `SKILL.md` — upstream body verbatim, with the local changes below.
 - `templates/scene-dialog.js`, `templates/base.css` — verbatim.
 - `adapters/claude-motion.md` — verbatim (kept for claude.ai users).
-- `adapters/headless/render.mjs`, `player.html`, `package.json`, `README.md` —
-  verbatim.
+- `adapters/headless/player.html`, `package.json`, `README.md` — verbatim.
+- `adapters/headless/render.mjs` — verbatim except one local change below.
 
 ## Local changes
 
@@ -27,3 +27,8 @@ Upstream commit referenced: `5c457437c8c83524308aad3b7443e81adcc13153`
   in this runtime, run in place from the plugin directory (Playwright resolves
   from the soma-work install), never `npm install` into the shared plugin
   directory.
+- `adapters/headless/render.mjs`: the upstream renderer ignored the encoder's
+  exit code, so a failed ffmpeg still printed `N frames → film.mp4` and exited
+  0 with no file written. It now exits 1 with the ffmpeg exit code or signal.
+  Covered by `__tests__/headless-render-exit.test.ts` (stub `playwright`, fake
+  encoder). Worth sending upstream.
