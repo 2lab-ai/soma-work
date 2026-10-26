@@ -138,12 +138,66 @@ describe('D10 — one ink primary per open card: the decision', () => {
   });
 
   it("in the card a permission prompt's Approve is the ink primary and Deny a secondary; the panel keeps its own", () => {
-    expect(CSS).toContain(`.card .btn-perm.btn-perm-approve { ${INK} }`);
+    // Ink only when this viewer can press it (fable P2): a disabled Approve is a plain secondary.
+    expect(CSS).toContain(`.card .btn-perm.btn-perm-approve:not(:disabled) { ${INK} }`);
+    expect(CSS).toContain(
+      '.card .btn-perm.btn-perm-approve:disabled { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--ib-text); }',
+    );
+    expect(CSS).not.toContain(`.card .btn-perm.btn-perm-approve { ${INK} }`);
     expect(CSS).toContain(
       '.card .btn-perm.btn-perm-deny { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--st-fail-text); }',
     );
     // The unscoped rules (the panel's prompt) are unchanged.
     expect(CSS).toContain('.btn-perm-approve { color: #fff; background: #1f8f4e; border-color: #1f8f4e; }');
     expect(CSS).toContain('.btn-perm-deny { color: #fff; background: #c43c3c; border-color: #c43c3c; }');
+  });
+});
+
+// PR #450 review R1 P1: the card's Approve stays the one ink primary in every state.
+describe('D10 — the card permission answers keep their weight on hover, and stay the only ink', () => {
+  /** Class-level specificity of a simple selector list item: classes, attributes, pseudo-classes (`:not(x)` = x). */
+  function classSpecificity(sel: string): number {
+    const flat = sel.replace(/:not\(([^)]*)\)/g, ' $1');
+    return (flat.match(/\.[\w-]+|\[[^\]]+\]|:(?!:)[\w-]+/g) ?? []).length;
+  }
+  const SHARED = '.btn-perm:not(:disabled):hover { filter: brightness(1.12); }';
+  const APPROVE =
+    '.card .btn-perm.btn-perm-approve:not(:disabled):hover { filter: none; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }';
+  const DENY =
+    '.card .btn-perm.btn-perm-deny:not(:disabled):hover { filter: none; background: var(--ib-card); border-color: var(--st-fail-text); color: var(--st-fail-text); }';
+
+  it('Approve / Deny hover rules come after the shared hover rule, inside a hover-capable media block, and outrank it', () => {
+    const shared = CSS.indexOf(SHARED);
+    expect(shared).toBeGreaterThan(-1);
+    for (const rule of [APPROVE, DENY]) {
+      const at = CSS.indexOf(rule);
+      expect(at, rule).toBeGreaterThan(shared);
+      const media = CSS.lastIndexOf('@media', at);
+      expect(CSS.slice(media, at)).toMatch(/^@media \(hover: hover\) and \(pointer: fine\) \{\n(?:[^\n]*\n)*? {2}$/);
+      const sel = rule.slice(0, rule.indexOf(' {'));
+      expect(classSpecificity(sel), sel).toBeGreaterThanOrEqual(
+        classSpecificity(SHARED.slice(0, SHARED.indexOf(' {'))),
+      );
+    }
+  });
+
+  it('a card whose viewer can answer a permission prompt shows the question answers as secondaries', () => {
+    expect(CSS).toContain(
+      '.card .card-body:has(.btn-perm-approve:not(:disabled)) .btn-choice.btn-choice-recommended, .card .card-body:has(.btn-perm-approve:not(:disabled)) .btn-choice.btn-choice-primary { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--ib-text); }',
+    );
+    // It outranks the card's recommended-choice rules, resting and hovered.
+    const demote = '.card .card-body:has(.btn-perm-approve:not(:disabled)) .btn-choice.btn-choice-recommended';
+    const hasArg = (sel: string) => sel.replace(/:has\(([^)]*\)?)\)/, ' $1');
+    expect(classSpecificity(hasArg(demote))).toBeGreaterThan(
+      classSpecificity('.card .btn-choice-recommended:hover:not(:disabled)'),
+    );
+  });
+});
+
+describe('P2 — the tone expression says its precedence', () => {
+  it('parenthesises the resume-or-waiting test', () => {
+    expect(TEMPLATE).toContain(
+      "var tone = (pendingAutoResume(s, col) || col === 'waiting') ? 'wait' : col === 'working' ? 'run' : col === 'closed' ? 'rest' : 'done';",
+    );
   });
 });

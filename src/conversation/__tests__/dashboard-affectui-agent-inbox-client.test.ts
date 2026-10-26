@@ -364,7 +364,18 @@ describe('D5 — applyLaneHolds: a held card stays in its container with its new
 // ── D6 — the announcer ──
 describe('D6 — a polite announcement of the board', () => {
   function announcer() {
-    const live = { textContent: '' };
+    // The region counts its writes, so "said once" and "said nothing" are observable.
+    const live = {
+      text: '',
+      writes: [] as string[],
+      get textContent() {
+        return this.text;
+      },
+      set textContent(v: string) {
+        this.text = v;
+        this.writes.push(v);
+      },
+    };
     const timers: Array<{ fn: () => void }> = [];
     const fns = load<{ boardAnnounceText(w: number, r: number): string; announceBoard(w: number, r: number): void }>(
       ['setTextIfChanged', 'boardAnnounceText', 'announceBoard'],
@@ -383,26 +394,51 @@ describe('D6 — a polite announcement of the board', () => {
     };
     return { fns, live, timers, flush };
   }
+  const say = (w: number, r: number) => `응답이 필요한 세션 ${w}개, 실행 중 ${r}개`;
 
   it('says how many need you and how many run', () => {
-    expect(announcer().fns.boardAnnounceText(2, 3)).toBe('응답이 필요한 세션 2개, 실행 중 3개');
+    expect(announcer().fns.boardAnnounceText(2, 3)).toBe(say(2, 3));
   });
 
-  it('a burst within a second writes once — the last text', () => {
+  it('the first sentence goes into the empty region at once — the same counts again inside the window keep it (PR #450 R1 P1)', () => {
+    const { fns, live, timers, flush } = announcer();
+    fns.announceBoard(2, 1);
+    fns.announceBoard(2, 1); // loadSessions / a WS push re-render with the same counts
+    expect(live.textContent).toBe(say(2, 1));
+    expect(timers.length).toBe(0);
+    flush();
+    expect(live.textContent).toBe(say(2, 1));
+    expect(live.writes).toEqual([say(2, 1)]);
+  });
+
+  it('a burst of real changes within a second is said once — the last text', () => {
     const { fns, live, timers, flush } = announcer();
     fns.announceBoard(1, 0);
     fns.announceBoard(2, 0);
     fns.announceBoard(2, 1);
     expect(timers.length).toBe(1);
-    expect(live.textContent).toBe('');
+    expect(live.textContent).toBe(say(1, 0));
     flush();
-    expect(live.textContent).toBe('응답이 필요한 세션 2개, 실행 중 1개');
+    expect(live.textContent).toBe(say(2, 1));
+    expect(live.writes).toEqual([say(1, 0), say(2, 1)]);
+  });
+
+  it('a change that returns before the flush says nothing new; the next change is said', () => {
+    const { fns, live, timers, flush } = announcer();
+    fns.announceBoard(2, 1);
+    fns.announceBoard(3, 1);
+    fns.announceBoard(2, 1);
+    flush();
+    expect(live.writes).toEqual([say(2, 1)]);
+    fns.announceBoard(3, 1);
+    expect(timers.length).toBe(1);
+    flush();
+    expect(live.textContent).toBe(say(3, 1));
   });
 
   it('the same counts again schedule nothing', () => {
-    const { fns, timers, flush } = announcer();
+    const { fns, timers } = announcer();
     fns.announceBoard(2, 1);
-    flush();
     fns.announceBoard(2, 1);
     expect(timers.length).toBe(0);
   });
@@ -414,7 +450,7 @@ describe('D6 — a polite announcement of the board', () => {
 
 // ── D7 — Escape ──
 describe('D7 — Escape closes the open card and puts focus back on its face', () => {
-  function setup(targetInCard: boolean, open = true) {
+  function setup(targetInCard: boolean, open = true, extra: Record<string, unknown> = {}) {
     const focus: unknown[] = [];
     const toggled: Array<[string, boolean]> = [];
     const faceEl = { focus: (o: unknown) => focus.push(o) };
@@ -423,7 +459,7 @@ describe('D7 — Escape closes the open card and puts focus back on its face', (
       getAttribute: (n: string) => (n === 'data-session-key' ? 'k1' : null),
     };
     const root = { contains: (n: unknown) => n === card };
-    const target = { closest: (sel: string) => (targetInCard && sel === '.card.is-expanded' ? card : null) };
+    const target = { closest: (sel: string) => (targetInCard && sel === '.card.is-expanded' ? card : null), ...extra };
     let stopped = 0;
     const e = { key: 'Escape', target, stopPropagation: () => stopped++ };
     const env = {
@@ -444,6 +480,22 @@ describe('D7 — Escape closes the open card and puts focus back on its face', (
     expect(t.toggled).toEqual([['k1', true]]);
     expect(t.focus).toEqual([{ preventScroll: true }]);
     expect(t.stopped()).toBe(1);
+  });
+
+  it('a text field, a select or an editable region keeps its own Escape — the card stays open (fable P2)', () => {
+    for (const extra of [
+      { tagName: 'INPUT' },
+      { tagName: 'textarea' },
+      { tagName: 'SELECT' },
+      { tagName: 'DIV', isContentEditable: true },
+    ]) {
+      const t = setup(true, true, extra);
+      expect(t.run(), JSON.stringify(extra)).toBe(false);
+      expect(t.toggled).toEqual([]);
+      expect(t.stopped()).toBe(0);
+    }
+    // A button inside the open card still closes it.
+    expect(setup(true, true, { tagName: 'BUTTON' }).run()).toBe(true);
   });
 
   it('outside an open card: untouched (the panel handler still sees it)', () => {
@@ -582,16 +634,20 @@ describe('D10 — one primary button per open card', () => {
     expect(worklog(body(s, 'waiting', sibling))).toBe('btn-action btn-primary');
   });
 
-  it('the multi-question 답변하기 is the primary in the card', () => {
+  it("the multi-question 답변하기 is the primary in the owner's card only (fable P2)", () => {
     const { renderMultiChoiceCard } = load<{ renderMultiChoiceCard(s: unknown, f: string): string }>(
       ['esc', 'escJs', 'renderMultiChoiceCard'],
       [],
-      { _mcState: {}, console },
+      { _mcState: {}, console, currentUserId: 'U1' },
     );
-    const html = renderMultiChoiceCard(
-      { key: 'k', pendingQuestion: { type: 'user_choices', title: 'Pick', questions: [{ id: 'q1' }] } },
-      '',
+    const q = { type: 'user_choices', title: 'Pick', questions: [{ id: 'q1' }] };
+    expect(renderMultiChoiceCard({ key: 'k', ownerId: 'U1', pendingQuestion: q }, '')).toContain(
+      '<button class="btn-choice btn-choice-primary"',
     );
-    expect(html).toContain('<button class="btn-choice btn-choice-primary"');
+    for (const ownerId of ['U2', undefined]) {
+      expect(renderMultiChoiceCard({ key: 'k', ownerId, pendingQuestion: q }, ''), String(ownerId)).toContain(
+        '<button class="btn-choice" onclick=',
+      );
+    }
   });
 });
