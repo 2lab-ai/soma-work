@@ -68,9 +68,10 @@ def footer(company, name, res, src_url):
         for k, p in res["provenance"].items()
         if "derived" in p
     )
+    origin = f'<a href="{E(src_url)}">oh-my-design</a>' if src_url else "oh-my-design"
     return f"""<footer class="omd-attribution" lang="ko">
   <p><strong>레퍼런스 토큰 적용본</strong> — 디자인 토큰 출처: {E(company)} DESIGN.md
-  (<a href="{E(src_url)}">oh-my-design</a>, MIT). 이 디자인은 {E(company)}의 것이며 교육용 참고로 재현했다.
+  ({origin}, MIT). 이 디자인은 {E(company)}의 것이며 교육용 참고로 재현했다.
   <code>design={E(name)}</code> · html 스킬 batch 모드 · 동일 페이지에 토큰만 적용.</p>
   <p>서체 계층</p><ul>{layers}</ul>
   <p>파일에 없어 유도했거나 보정한 값 ({res['derivedCount']}개) — 브랜드 값으로 읽지 말 것</p>
@@ -82,9 +83,15 @@ def write_index(out, title):
     results = json.load(open(os.path.join(out, "results.json"), encoding="utf-8"))
     qa_path = os.path.join(out, "qa.json")
     qa = {q["name"]: q for q in json.load(open(qa_path, encoding="utf-8"))["pages"]} if os.path.isfile(qa_path) else {}
-    # Trust a QA record only for the exact page bytes it checked.
-    qa = {n: q for n, q in qa.items()
-          if q.get("page_sha256") == next((r["page_sha256"] for r in results["references"] if r["name"] == n), None)}
+
+    def on_disk(r):
+        p = os.path.join(out, r["file"])
+        return sha256(p) if os.path.isfile(p) else None
+
+    # Trust a QA record only for the exact page bytes it checked AND that are on disk now: a page edited
+    # or removed after QA drops back to "QA 대기".
+    qa = {r["name"]: qa[r["name"]] for r in results["references"]
+          if r["name"] in qa and qa[r["name"]].get("page_sha256") == r["page_sha256"] == on_disk(r)}
     rows, passed = [], 0
     for r in results["references"]:
         q = qa.get(r["name"])
