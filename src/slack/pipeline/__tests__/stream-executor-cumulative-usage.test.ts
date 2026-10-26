@@ -166,7 +166,7 @@ function resultFrame(
   };
 }
 
-async function runTurn(session: any, frame: any, initSessionId?: string): Promise<void> {
+async function runTurn(session: any, frame: any, initSessionId?: string, persisted?: string[]): Promise<void> {
   async function* stream() {
     // What `ClaudeHandler.streamQuery` does on the turn's `system`/`init`
     // frame (same function): the SDK session id lands on the session BEFORE the result.
@@ -174,7 +174,12 @@ async function runTurn(session: any, frame: any, initSessionId?: string): Promis
     adoptSdkSessionId(session, initSessionId ?? session.sessionId ?? 'sdk-session-A');
     yield frame;
   }
-  const executor = new StreamExecutor(createDeps(stream));
+  const deps = createDeps(stream);
+  if (persisted) {
+    const reg = deps.claudeHandler.getSessionRegistry();
+    reg.persistAndBroadcast = (key: string) => persisted.push(key);
+  }
+  const executor = new StreamExecutor(deps);
   await executor.execute({
     session,
     sessionKey: buildWorkSessionKey(CHANNEL, THREAD_TS),
@@ -573,6 +578,32 @@ describe('StreamExecutor — the task total (taskUsage) outlives restarts and re
     );
     expect(session.taskUsage.inputTokens).toBe(1300);
     expect(session.taskUsage.outputTokens).toBe(130);
+  });
+
+  it('review r2 — a fold is saved at once (a crash before the next save cannot lose it)', async () => {
+    const session = newSession();
+    await runTurn(
+      session,
+      resultFrame({ [OPUS]: { input: 1000, output: 100, cacheRead: 0, cacheCreate: 0, cost: 1 } }),
+    );
+    const persisted: string[] = [];
+    await runTurn(
+      session,
+      {
+        type: 'assistant',
+        message: {
+          id: 'msg-cut-2',
+          model: OPUS,
+          role: 'assistant',
+          content: [{ type: 'text', text: 'working' }],
+          usage: { input_tokens: 50, output_tokens: 5, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+        },
+      },
+      undefined,
+      persisted,
+    );
+    expect(session.taskUsage.pendingFold).toBeDefined();
+    expect(persisted).toEqual([buildWorkSessionKey(CHANNEL, THREAD_TS)]);
   });
 
   it('a restart between a result-less turn and the next result still counts the folded calls once (review r1)', async () => {

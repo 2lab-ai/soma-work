@@ -132,7 +132,11 @@ agent id, 중첩 서브도 같은 폴더). API 호출 하나 = `message.id` 하�
   어떤 이벤트·작업 로그 항목이든 오면(SendMessage 재개, 되살아남, 늦은 보고) 봉인을 푼다. `sdkSessionId`는 에이전트가 실행 중일 때 처음
   본 순간 세션의 현재 SDK 세션으로 기록한다(transcript가 생기기 전 — 이후 `/new`가 검색 위치를 바꾸지 못한다). 비동기 — 바뀌면
   `scheduleLiveSessionUpdate`. await 뒤에는 레코드를 id로 다시 찾는다(리셋이 레지스트리를 바꿀 수 있다).
-- 상한 100의 정리 순서: 오래된 순이되, 지출이 확정된 레코드(봉인됐거나 transcript가 없는)를 아직 읽을 것이 남은 레코드보다 먼저 지운다.
+- 상한 100의 정리: 오래된 순으로, 지출이 확정된 레코드(봉인됐거나 transcript가 없는)만 지운다. 아직 읽을 것이 남은 레코드는 턴 끝 봉인까지
+  상한을 넘어서도 남는다(끝난 지 하루가 지나도 못 읽은 것은 지운다). 봉인은 읽기를 마친 뒤 파일 크기가 그대로일 때만 한다(그사이 추가된 호출이
+  있으면 다음 턴 끝에).
+- fold 정산(rev 3 r2): fold는 세션 모델 단가로 추정한 값이다. 그 SDK 세션의 다음 result가 오면 task 합계는 result 증가분과 fold의 부호 있는 차이로
+  고친다 — 과대 추정은 되돌린다. fold 직후 세션을 바로 저장한다(유휴 저장은 이미 끝났다).
 - 경로 봉쇄: 세션 id는 UUID(`findTranscriptPath`), `taskId`는 `[A-Za-z0-9_-]{1,128}`, 세션 폴더·`subagents`·transcript 어느 것도
   심볼릭 링크면 읽지 않는다.
 - 서브 합계 `subagentSpendOf` = 레코드별 지출 합 + `AgentRegistry.prunedSpend`(상한 100이 지운 레코드의 지출, 영속) — 상한이 합을 줄이지

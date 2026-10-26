@@ -423,6 +423,8 @@ export interface TaskUsage {
   pendingFold?: FoldedLiveUsage;
 }
 
+const TASK_FIELDS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreateTokens', 'costUsd'] as const;
+
 function emptyTaskUsage(): TaskUsage {
   return { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, costUsd: 0 };
 }
@@ -442,15 +444,28 @@ export function creditTaskSpend(
 ): TaskUsage {
   const task = holder.taskUsage ?? emptyTaskUsage();
   const pending = task.pendingFold;
-  const { spend, folded } = settleFoldedLiveUsage(
-    turn,
-    pending && pending.sdkSessionId === holder.sessionId ? pending : undefined,
-  );
-  task.inputTokens += spendCount(spend.inputTokens);
-  task.outputTokens += spendCount(spend.outputTokens);
-  task.cacheReadTokens += spendCount(spend.cacheReadInputTokens);
-  task.cacheCreateTokens += spendCount(spend.cacheCreationInputTokens);
-  task.costUsd += spendCount(spend.totalCostUsd);
+  const own = pending && pending.sdkSessionId === holder.sessionId ? pending : undefined;
+  const { spend, folded } = settleFoldedLiveUsage(turn, own);
+  if (own && !folded && turn.modelBreakdown) {
+    // Settled: the result's growth is authoritative for the folded calls too.
+    // The fold was an estimate (priced at the session model, while a subagent
+    // may run a cheaper one), so the total takes the signed difference — an
+    // over-estimate is taken back, never kept.
+    const growth = {
+      inputTokens: spendCount(turn.inputTokens),
+      outputTokens: spendCount(turn.outputTokens),
+      cacheReadTokens: spendCount(turn.cacheReadInputTokens),
+      cacheCreateTokens: spendCount(turn.cacheCreationInputTokens),
+      costUsd: spendCount(turn.totalCostUsd),
+    };
+    for (const f of TASK_FIELDS) task[f] = Math.max(0, task[f] + growth[f] - spendCount(own[f]));
+  } else {
+    task.inputTokens += spendCount(spend.inputTokens);
+    task.outputTokens += spendCount(spend.outputTokens);
+    task.cacheReadTokens += spendCount(spend.cacheReadInputTokens);
+    task.cacheCreateTokens += spendCount(spend.cacheCreationInputTokens);
+    task.costUsd += spendCount(spend.totalCostUsd);
+  }
   if (folded) task.pendingFold = folded;
   else delete task.pendingFold;
   holder.taskUsage = task;
@@ -484,8 +499,6 @@ export function foldTaskSpend(
   };
   holder.taskUsage = task;
 }
-
-const TASK_FIELDS = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreateTokens', 'costUsd'] as const;
 
 /** Restore a persisted task total; anything malformed is dropped rather than trusted. */
 export function sanitizeTaskUsage(raw: unknown): TaskUsage | undefined {

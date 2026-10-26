@@ -213,6 +213,27 @@ describe('agent spend — read from the subagent transcript (T2)', () => {
     expect(h.agents!.agents[0].spend!.calls).toBe(2);
   });
 
+  it('review r2 — a transcript that grew while it was being read is not sealed', async () => {
+    const f = writeAgent('aaaa1111', [assistant('m1', 'claude-opus-5-5', [1, 0, 0, 0])]);
+    const h = holder();
+    applyAgentEvent(h, { kind: 'returned', agentId: 'toolu_a', ok: true, ack: false, ts: T0 + 5 });
+    let appended = false;
+    const growing = (model: string | undefined, t: Parameters<typeof price>[1]) => {
+      // The agent writes another call while the read is being priced.
+      if (!appended) {
+        appended = true;
+        fs.appendFileSync(f, `${assistant('m2', 'claude-opus-5-5', [1, 0, 0, 0])}\n`);
+      }
+      return price(model, t);
+    };
+    const reader = createAgentSpendReader({ configDir, price: growing, isPriced, now: () => T0 });
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spendFinal).toBeUndefined();
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spend!.calls).toBe(2);
+    expect(h.agents!.agents[0].spendFinal).toBe(true);
+  });
+
   it('a model the price table does not know is still priced, and named so the UI can say it is an estimate', async () => {
     writeAgent('aaaa1111', [
       assistant('m1', 'grok-4.7-build', [100, 10, 0, 0]),
@@ -322,6 +343,17 @@ describe('agent spend — registry: persisted, and the subagent sum survives the
     }
     expect(h.agents!.agents.some((a) => a.id === 'toolu_unread')).toBe(true);
     expect(subagentSpendOf(h.agents)!.agents).toBe(100);
+  });
+
+  it('review r2 — with no settled record to drop, an unread one is kept over the cap (its spend is not lost)', () => {
+    const h: { agents?: AgentRegistry } = {};
+    for (let i = 0; i < 101; i++) {
+      applyAgentEvent(h, { kind: 'spawn', agentId: `toolu_u${i}`, ts: Date.now() + i });
+      h.agents!.agents[h.agents!.agents.length - 1].taskId = `task${i}`;
+      applyAgentEvent(h, { kind: 'returned', agentId: `toolu_u${i}`, ok: true, ack: false, ts: Date.now() + i });
+    }
+    expect(h.agents!.agents).toHaveLength(101);
+    expect(h.agents!.agents[0].id).toBe('toolu_u0');
   });
 
   it('review r1 — work-log activity of a sealed agent unseals it', () => {
