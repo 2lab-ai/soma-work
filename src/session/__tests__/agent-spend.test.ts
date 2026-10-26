@@ -689,6 +689,37 @@ describe('agent spend — subagents a subagent started in the foreground (never 
     expect(h.agents!.agents[0].spendFinal).toBe(true);
   });
 
+  it('review #472 r2 — a listed child whose transcript is not there yet keeps the agent from being sealed', async () => {
+    writeAgent('aaaa1111', [assistant('p1', 'claude-opus-5-5', [10, 0, 0, 0])]);
+    writeMeta('bbbb2222', { agentType: 'general-purpose', parentAgentId: 'aaaa1111', spawnDepth: 2 });
+    const h = holder();
+    h.agents!.agents[0].status = 'completed';
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => T0 });
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spend).toMatchObject({ inputTokens: 10, calls: 1 });
+    expect(h.agents!.agents[0].spendFinal).toBeUndefined();
+    writeAgent('bbbb2222', [assistant('c1', 'claude-opus-5-5', [5, 0, 0, 0])]);
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spend).toMatchObject({ inputTokens: 15, calls: 2, nestedAgents: 1 });
+    expect(h.agents!.agents[0].spendFinal).toBe(true);
+  });
+
+  it('review #472 r2 — a meta still being written holds the seal; one broken for good does not', async () => {
+    writeAgent('aaaa1111', [assistant('p1', 'claude-opus-5-5', [10, 0, 0, 0])]);
+    const meta = path.join(subDir, 'agent-bbbb2222.meta.json');
+    fs.writeFileSync(meta, '{"agentType":"general-pur'); // half-written, just now
+    const h = holder();
+    h.agents!.agents[0].status = 'completed';
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => T0 });
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spendFinal).toBeUndefined();
+    // Long broken (older than the settle window): no longer holds anything.
+    const old = (Date.now() - 10 * 60_000) / 1000;
+    fs.utimesSync(meta, old, old);
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spendFinal).toBe(true);
+  });
+
   it('a nested transcript that appears after a read is picked up by the next one', async () => {
     writeAgent('aaaa1111', [assistant('p1', 'claude-opus-5-5', [10, 0, 0, 0])]);
     const h = holder();

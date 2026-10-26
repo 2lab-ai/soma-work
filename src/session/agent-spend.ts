@@ -88,6 +88,8 @@ const META_MAX_BYTES = 64 * 1024;
 const META_RE = /^agent-([A-Za-z0-9_-]{1,128})\.meta\.json$/;
 /** How far up a chain of record-less subagents is followed to find a registered one. */
 const MAX_NEST_DEPTH = 16;
+/** A meta file this young that does not parse may still be being written: no seal until it settles. */
+const META_SETTLE_MS = 60_000;
 
 interface CallUsage extends TokenCounts {
   model?: string;
@@ -297,18 +299,33 @@ async function unchangedSince(file: string, size: number): Promise<boolean> {
   }
 }
 
-/** A meta file's parent task id and whether it names a tool use; undefined when it is not a (safe) meta file. */
-async function readMeta(file: string): Promise<{ parent?: string; toolUse: boolean } | undefined> {
+interface MetaInfo {
+  parent?: string;
+  toolUse: boolean;
+}
+
+/**
+ * A meta file's parent task id and whether it names a tool use. `settling` =
+ * a young regular file that does not parse yet (still being written); any
+ * other file that is not a (safe) meta reads as nothing.
+ */
+async function readMeta(file: string): Promise<MetaInfo | 'settling' | undefined> {
+  let st: fs.Stats;
   try {
-    const st = await fs.promises.lstat(file);
-    if (!st.isFile() || st.isSymbolicLink() || st.size > META_MAX_BYTES) return undefined;
+    st = await fs.promises.lstat(file);
+  } catch {
+    return undefined;
+  }
+  if (!st.isFile() || st.isSymbolicLink() || st.size > META_MAX_BYTES) return undefined;
+  try {
     const j = JSON.parse(await fs.promises.readFile(file, 'utf8')) as Record<string, unknown> | null;
     if (!j || typeof j !== 'object') return undefined;
     const parent =
       typeof j.parentAgentId === 'string' && TASK_ID_RE.test(j.parentAgentId) ? j.parentAgentId : undefined;
     return { parent, toolUse: typeof j.toolUseId === 'string' && j.toolUseId.length > 0 };
   } catch {
-    return undefined;
+    // File time against the wall clock (not the reader's injectable clock).
+    return Date.now() - st.mtimeMs < META_SETTLE_MS ? 'settling' : undefined;
   }
 }
 
@@ -333,9 +350,13 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
   /** agent id → when its transcript was last read. */
   const readAt = new Map<string, number>();
   /** meta file → what it says (a meta is written once, at spawn). */
-  const metas = new Map<string, { parent?: string; toolUse: boolean }>();
-  /** sdkSessionId → its record-less subagents (task id → parent task id), and when the dir was listed. */
-  const scans = new Map<string, { at: number; children: Map<string, string> }>();
+  const metas = new Map<string, MetaInfo>();
+  /**
+   * sdkSessionId → its record-less subagents (task id → parent task id), when
+   * the dir was listed, and whether the listing was whole (no failed listing,
+   * no meta still being written) — only a whole one lets an agent be sealed.
+   */
+  const scans = new Map<string, { at: number; children: Map<string, string>; whole: boolean }>();
   const inFlight = new WeakMap<AgentSpendHolder, { running: Promise<boolean>; again: boolean; force: boolean }>();
 
   async function subagentsDir(sid: string): Promise<string | null> {
@@ -362,32 +383,40 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
    * a parent and no tool use id): task id → parent task id. The directory is
    * listed again at most once per interval, or on a forced read.
    */
-  async function foregroundChildren(sid: string, force: boolean): Promise<Map<string, string>> {
+  async function foregroundChildren(
+    sid: string,
+    force: boolean,
+  ): Promise<{ children: Map<string, string>; whole: boolean }> {
     const cached = scans.get(sid);
-    if (cached && !force && now() - cached.at < minInterval) return cached.children;
+    if (cached && !force && now() - cached.at < minInterval) return cached;
     const dir = await subagentsDir(sid);
-    if (!dir) return new Map();
+    if (!dir) return { children: new Map(), whole: true };
     let names: string[];
     try {
       names = await fs.promises.readdir(dir);
     } catch {
-      return cached?.children ?? new Map();
+      return { children: cached?.children ?? new Map(), whole: false };
     }
     const children = new Map<string, string>();
+    let whole = true;
     for (const name of names) {
       const m = META_RE.exec(name);
       if (!m) continue;
       const file = path.join(dir, name);
       let meta = metas.get(file);
       if (!meta) {
-        meta = await readMeta(file);
-        if (!meta) continue; // not (yet) a whole meta: looked at again on the next listing
+        const got = await readMeta(file);
+        // Not a whole meta: looked at again on the next listing; one still being written holds every seal.
+        if (got === 'settling') whole = false;
+        if (!got || got === 'settling') continue;
+        meta = got;
         metas.set(file, meta);
       }
       if (!meta.toolUse && meta.parent) children.set(m[1], meta.parent);
     }
-    scans.set(sid, { at: now(), children });
-    return children;
+    const scan = { at: now(), children, whole };
+    scans.set(sid, scan);
+    return scan;
   }
 
   /**
@@ -464,14 +493,15 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
       .filter((a) => a.taskId && !a.spendFinal)
       .map((a) => ({ id: a.id, taskId: a.taskId as string, sid: a.sdkSessionId ?? holder.sessionId }));
     // Per SDK session, listed once per pass and only when an agent of it is read.
-    const nestedBySid = new Map<string, Map<string, string[]>>();
-    const nestedOf = async (sid: string, taskId: string): Promise<string[]> => {
+    const nestedBySid = new Map<string, { of: Map<string, string[]>; whole: boolean }>();
+    const nestedOf = async (sid: string, taskId: string): Promise<{ list: string[]; whole: boolean }> => {
       let m = nestedBySid.get(sid);
       if (!m) {
-        m = attribute(await foregroundChildren(sid, force), registered);
+        const scan = await foregroundChildren(sid, force);
+        m = { of: attribute(scan.children, registered), whole: scan.whole };
         nestedBySid.set(sid, m);
       }
-      return m.get(taskId) ?? [];
+      return { list: m.of.get(taskId) ?? [], whole: m.whole };
     };
     for (const { id, taskId, sid } of ids) {
       if (!sid) continue;
@@ -489,13 +519,16 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
         got = undefined;
       }
       if (!got) continue;
-      // Its record-less subagents. One that fails to read is left out of the
-      // number and keeps the agent from being sealed (a later read adds it).
+      // Its record-less subagents. One that fails to read, or whose transcript
+      // is not there yet (its meta is written at spawn), is left out of the
+      // number and keeps the agent from being sealed — a later read adds it.
       const nested: Array<{ spend: AgentSpend; file: string; complete: boolean; size: number }> = [];
       let nestedWhole = true;
       let children: string[] = [];
       try {
-        children = await nestedOf(sid, taskId);
+        const n = await nestedOf(sid, taskId);
+        children = n.list;
+        nestedWhole = n.whole;
       } catch {
         nestedWhole = false;
       }
@@ -503,6 +536,7 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
         try {
           const n = await read(sid, child);
           if (n) nested.push(n);
+          else nestedWhole = false;
         } catch {
           nestedWhole = false;
         }
