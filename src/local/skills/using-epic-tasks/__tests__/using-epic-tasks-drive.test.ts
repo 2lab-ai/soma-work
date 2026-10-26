@@ -15,6 +15,11 @@ import { describe, expect, it } from 'vitest';
  *        a 역할 section, the 12 공통 규칙 rows and the per-PR receipt table.
  *  - T3: the drive loop is a contract, not a session log — no absolute dates.
  *  - T4: the Anti-patterns list names "PR만 올리고 멈추기".
+ *  - T5: epic-drive.md opens with a `## 0. 진입` entry contract (its heading is
+ *        followed by the marker line a calling wrapper checks for); a handed-over
+ *        existing epic enters there without re-creating issues or re-judging the
+ *        tier, SKILL.md names that path in 전제 and Integration, restacking is
+ *        limited to unpushed branches, and the drive contract names roles only.
  */
 
 const SKILL_ROOT = resolve(__dirname, '..');
@@ -146,5 +151,42 @@ describe('local:using-epic-tasks — contract, not a session log (T3)', () => {
 describe('local:using-epic-tasks — Anti-patterns (T4)', () => {
   it('names PR-and-stop', () => {
     expect(section(skill(), /^## Anti-patterns$/m)).toMatch(/^- PR만 올리고 멈추기/m);
+  });
+});
+
+const ENTRY_HEADING_LINE = '## 0. 진입';
+const ENTRY_HEADING = /^## 0\. 진입$/m;
+// A calling wrapper checks for this exact line under the heading — keep the bytes in sync.
+const ENTRY_MARKER = '<!-- 이 제목은 호출하는 래퍼가 존재 확인에 쓴다 — 바꾸면 래퍼도 함께 바꾼다 -->';
+const HANDED_OVER = '넘겨받은 기존 에픽';
+const ENGINE_OR_AGENT_NAME = /gpt|reviewer|astra|grok|fable|opus|sonnet|codex/gi;
+
+describe('local:using-epic-tasks — existing-epic entry and lifted rules (T5)', () => {
+  it('epic-drive.md has `## 0. 진입` before step 1, with the wrapper marker on the next line', () => {
+    const md = drive();
+    expectAscending(md, [ENTRY_HEADING, /^## 1\. 목표·계기판 고정/m]);
+    const lines = md.split('\n');
+    const at = lines.indexOf(ENTRY_HEADING_LINE);
+    expect(at).toBeGreaterThan(-1);
+    expect(lines[at + 1]).toBe(ENTRY_MARKER);
+  });
+
+  it('the entry section lets a handed-over epic skip creation and tier re-judging', () => {
+    const sec = section(drive(), ENTRY_HEADING);
+    expect(sec).toContain('넘겨받');
+    expect(sec).toContain('재판정');
+  });
+
+  it('SKILL.md names the handed-over epic in both 전제 and Integration', () => {
+    expect(section(skill(), /^## Integration$/m)).toContain(HANDED_OVER);
+    expect(section(skill(), /^## 전제$/m)).toContain(HANDED_OVER);
+  });
+
+  it('limits restacking to branches not yet pushed', () => {
+    expect(drive()).toContain('아직 푸시하지 않은 브랜치');
+  });
+
+  it('epic-drive.md names roles, never an engine or agent', () => {
+    expect(drive().match(ENGINE_OR_AGENT_NAME) ?? []).toEqual([]);
   });
 });
