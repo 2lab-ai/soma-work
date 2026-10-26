@@ -14,7 +14,13 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { type AgentRegistry, applyAgentEvent, sanitizeAgentRegistry, subagentSpendOf } from '../agent-registry';
+import {
+  type AgentRegistry,
+  applyAgentEvent,
+  sanitizeAgentRegistry,
+  stampWorkLogAgent,
+  subagentSpendOf,
+} from '../agent-registry';
 import { createAgentSpendReader } from '../agent-spend';
 
 const SID = '11111111-2222-4333-8444-555555555555';
@@ -132,6 +138,81 @@ describe('agent spend — read from the subagent transcript (T2)', () => {
     expect(h.agents!.agents[0].spend).toMatchObject({ calls: 2, inputTokens: 3, cacheReadTokens: 300 });
   });
 
+  it('a transcript bigger than one read chunk is read to its end before it is sealed (review r1)', async () => {
+    const lines = Array.from({ length: 20 }, (_, i) => assistant(`m${i}`, 'claude-opus-5-5', [1, 1, 1, 1]));
+    writeAgent('aaaa1111', lines);
+    const h = holder();
+    applyAgentEvent(h, { kind: 'returned', agentId: 'toolu_a', ok: true, ack: false, ts: T0 + 5 });
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => T0, chunkBytes: 97 });
+    await reader.refresh(h, { force: true });
+    const a = h.agents!.agents[0];
+    expect(a.spend!.calls).toBe(20);
+    expect(a.spendFinal).toBe(true);
+  });
+
+  it('review r1 — the SDK session is taken when the agent is first seen, before its transcript exists', async () => {
+    const h = holder();
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => T0 });
+    await reader.refresh(h);
+    expect(h.agents!.agents[0].sdkSessionId).toBe(SID);
+    // A later /new moves the session on; the agent's file is still found under its own SDK session.
+    h.sessionId = '99999999-2222-4333-8444-555555555555';
+    writeAgent('aaaa1111', [assistant('m1', 'claude-opus-5-5', [1, 1, 1, 1])]);
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spend!.calls).toBe(1);
+  });
+
+  it('review r1 — a half-written last line is never sealed away', async () => {
+    const f = writeAgent('aaaa1111', [assistant('m1', 'claude-opus-5-5', [1, 1, 1, 1])]);
+    const tail = assistant('m2', 'claude-opus-5-5', [2, 2, 2, 2]);
+    fs.appendFileSync(f, tail.slice(0, 30));
+    const h = holder();
+    applyAgentEvent(h, { kind: 'returned', agentId: 'toolu_a', ok: true, ack: false, ts: T0 + 5 });
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => T0 });
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spendFinal).toBeUndefined();
+    fs.appendFileSync(f, `${tail.slice(30)}\n`);
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spend!.calls).toBe(2);
+    expect(h.agents!.agents[0].spendFinal).toBe(true);
+  });
+
+  it('review r1 — a multi-byte character split across read chunks is decoded whole', async () => {
+    const line = JSON.stringify({
+      type: 'assistant',
+      message: {
+        id: 'm1',
+        model: 'claude-opus-5-5',
+        content: [{ type: 'text', text: '한글한글한글' }],
+        usage: { input_tokens: 3, output_tokens: 4, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      },
+    });
+    writeAgent('aaaa1111', [line, assistant('m2', 'claude-opus-5-5', [1, 0, 0, 0])]);
+    const h = holder();
+    for (const chunkBytes of [7, 11, 13]) {
+      const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => T0, chunkBytes });
+      delete h.agents!.agents[0].spend;
+      await reader.refresh(h, { force: true });
+      expect(h.agents!.agents[0].spend).toMatchObject({ calls: 2, inputTokens: 4, outputTokens: 4 });
+    }
+  });
+
+  it('review r1 — an agent we lost sight of is sealed at turn end, and any later activity unseals it', async () => {
+    const f = writeAgent('aaaa1111', [assistant('m1', 'claude-opus-5-5', [1, 0, 0, 0])]);
+    const h = holder();
+    applyAgentEvent(h, { kind: 'turn_end', ts: T0 + 5 });
+    h.agents!.agents[0].status = 'unknown';
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => T0, minIntervalMs: 0 });
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spendFinal).toBe(true);
+    // Resumed (SendMessage) or alive again: its new calls count.
+    fs.appendFileSync(f, `${assistant('m2', 'claude-opus-5-5', [1, 0, 0, 0])}\n`);
+    applyAgentEvent(h, { kind: 'lifecycle', agentId: 'toolu_a', taskId: 'aaaa1111', phase: 'progress', ts: T0 + 9 });
+    expect(h.agents!.agents[0].spendFinal).toBeUndefined();
+    await reader.refresh(h);
+    expect(h.agents!.agents[0].spend!.calls).toBe(2);
+  });
+
   it('a model the price table does not know is still priced, and named so the UI can say it is an estimate', async () => {
     writeAgent('aaaa1111', [
       assistant('m1', 'grok-4.7-build', [100, 10, 0, 0]),
@@ -225,6 +306,29 @@ describe('agent spend — registry: persisted, and the subagent sum survives the
     })!;
     expect(bad.agents[0].spend).toBeUndefined();
     expect(bad.prunedSpend).toBeUndefined();
+  });
+
+  it('review r1 — the cap drops sealed records first, never one whose spend is still being read', () => {
+    const h: { agents?: AgentRegistry } = {};
+    applyAgentEvent(h, { kind: 'spawn', agentId: 'toolu_unread', ts: T0 });
+    h.agents!.agents[0].taskId = 'unread1';
+    applyAgentEvent(h, { kind: 'returned', agentId: 'toolu_unread', ok: true, ack: false, ts: T0 + 1 });
+    for (let i = 0; i < 100; i++) {
+      applyAgentEvent(h, { kind: 'spawn', agentId: `toolu_${i}`, ts: T0 + 10 + i });
+      const rec = h.agents!.agents[h.agents!.agents.length - 1];
+      rec.spend = spend(1);
+      rec.spendFinal = true;
+      applyAgentEvent(h, { kind: 'returned', agentId: `toolu_${i}`, ok: true, ack: false, ts: T0 + 11 + i });
+    }
+    expect(h.agents!.agents.some((a) => a.id === 'toolu_unread')).toBe(true);
+    expect(subagentSpendOf(h.agents)!.agents).toBe(100);
+  });
+
+  it('review r1 — work-log activity of a sealed agent unseals it', () => {
+    const h = holder();
+    h.agents!.agents[0].spendFinal = true;
+    stampWorkLogAgent(h, { kind: 'tool', tool: 'Read', agentId: 'toolu_a' }, T0 + 9);
+    expect(h.agents!.agents[0].spendFinal).toBeUndefined();
   });
 
   it('subagentSpendOf sums every subagent — including those the 100-record cap dropped', () => {

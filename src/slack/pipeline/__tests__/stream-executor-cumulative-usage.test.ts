@@ -574,4 +574,35 @@ describe('StreamExecutor — the task total (taskUsage) outlives restarts and re
     expect(session.taskUsage.inputTokens).toBe(1300);
     expect(session.taskUsage.outputTokens).toBe(130);
   });
+
+  it('a restart between a result-less turn and the next result still counts the folded calls once (review r1)', async () => {
+    const session = newSession();
+    await runTurn(
+      session,
+      resultFrame({ [OPUS]: { input: 1000, output: 100, cacheRead: 0, cacheCreate: 0, cost: 1 } }),
+    );
+    await runTurn(session, {
+      type: 'assistant',
+      message: {
+        id: 'msg-cut',
+        model: OPUS,
+        role: 'assistant',
+        content: [{ type: 'text', text: 'working' }],
+        usage: { input_tokens: 200, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      },
+    });
+    // The fold is remembered against the SDK session it ran in, on the persisted total.
+    expect(session.taskUsage.pendingFold).toMatchObject({ inputTokens: 200, sdkSessionId: 'sdk-session-A' });
+
+    // Restart: the runtime fold receipt is gone; the persisted task total keeps its own.
+    const restored = JSON.parse(JSON.stringify(session));
+    restored.usage = undefined;
+    await runTurn(
+      restored,
+      resultFrame({ [OPUS]: { input: 1300, output: 130, cacheRead: 0, cacheCreate: 0, cost: 1.3 } }),
+    );
+    expect(restored.taskUsage.inputTokens).toBe(1300);
+    expect(restored.taskUsage.outputTokens).toBe(130);
+    expect(restored.taskUsage.pendingFold).toBeUndefined();
+  });
 });

@@ -10,6 +10,7 @@ vi.mock('../env-paths', () => ({
   ),
 }));
 
+import { getArchiveStore, SessionArchiveStore } from '../session-archive';
 import { SessionRegistry } from '../session-registry';
 
 const TEST_DATA_DIR = path.join(process.env.TMPDIR ?? os.tmpdir(), 'soma-work-session-registry-task-usage-test');
@@ -64,6 +65,58 @@ describe('SessionRegistry — taskUsage persistence', () => {
     const t = reader.getSession('C1', '171.203')?.taskUsage;
     expect(t).toMatchObject({ inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, costUsd: 0 });
     expect(t?.partialSince).toBeGreaterThanOrEqual(before);
+  });
+
+  it('a session archived while loading keeps its task total for the closed card (review r1)', () => {
+    const writer = new SessionRegistry();
+    const s = writer.createSession('U1', 'Tester', 'C1', '171.205');
+    s.sessionId = 'sdk-arch';
+    s.state = 'MAIN';
+    s.taskUsage = { ...total };
+    writer.saveSessions();
+    // Asleep since an unknown time: past the archive limit, so load archives it.
+    const file = path.join(TEST_DATA_DIR, 'sessions.json');
+    const saved = JSON.parse(fs.readFileSync(file, 'utf-8'));
+    for (const x of saved) {
+      x.state = 'SLEEPING';
+      delete x.sleepStartedAt;
+    }
+    fs.writeFileSync(file, JSON.stringify(saved));
+    new SessionRegistry().loadSessions();
+    const archived = getArchiveStore()
+      .listRecent(24 * 60 * 60 * 1000)
+      .find((a) => a.sessionId === 'sdk-arch');
+    expect(archived?.taskUsage).toEqual(total);
+  });
+
+  it('review r1 — a session saved before baselines existed (SDK session, no baseline) also loads a partial total', () => {
+    const writer = new SessionRegistry();
+    const s = writer.createSession('U1', 'Tester', 'C1', '171.206');
+    s.sessionId = 'sdk-old';
+    writer.saveSessions();
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    expect(reader.getSession('C1', '171.206')?.taskUsage?.partialSince).toBeGreaterThan(0);
+  });
+
+  it('review r1 — archiving a session mid-turn keeps the calls its running turn already made', () => {
+    const reg = new SessionRegistry();
+    const s = reg.createSession('U1', 'Tester', 'C1', '171.207');
+    s.sessionId = 'sdk-live';
+    s.model = 'claude-opus-5-5[1m]';
+    s.taskUsage = { ...total };
+    (s as any).liveUsage = { 'm:a': { inputTokens: 5, outputTokens: 6, cacheReadTokens: 7, cacheCreateTokens: 8 } };
+    // A store of its own: the shared one remembers a directory beforeEach removed.
+    const store = new SessionArchiveStore(path.join(TEST_DATA_DIR, 'archives-mid-turn'));
+    store.archive(s as any, 'C1:171.207', 'terminated');
+    const archived = store.listRecent(24 * 60 * 60 * 1000).find((a) => a.sessionId === 'sdk-live');
+    expect(archived?.taskUsage).toMatchObject({
+      inputTokens: 15,
+      outputTokens: 26,
+      cacheReadTokens: 307,
+      cacheCreateTokens: 48,
+    });
+    expect(archived!.taskUsage!.costUsd).toBeGreaterThan(1.5);
   });
 
   it('resetSessionContext clears the runtime usage but keeps the task total', () => {

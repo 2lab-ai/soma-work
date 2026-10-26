@@ -211,7 +211,24 @@ export function applyAgentEvent(h: AgentHolder, event: AgentTreeEvent): boolean 
   return changed;
 }
 
+/**
+ * The agent is active again (resumed by SendMessage, alive after we lost
+ * sight of it, or reporting late): its transcript may grow, so a sealed spend
+ * is read again (`agent-spend.ts`).
+ */
+function unseal(agent: AgentRecord): boolean {
+  if (!agent.spendFinal) return false;
+  delete agent.spendFinal;
+  return true;
+}
+
 function applyOne(h: AgentHolder, event: AgentTreeEvent): boolean {
+  if (event.kind !== 'turn_end' && h.agents) {
+    const seen =
+      agentById(h.agents, event.agentId) ??
+      (event.kind === 'lifecycle' && event.taskId ? agentByTaskId(h.agents, event.taskId) : undefined);
+    if (seen) unseal(seen);
+  }
   switch (event.kind) {
     case 'spawn': {
       const { agent, created } = ensureAgent(h, event.agentId, event.ts);
@@ -338,6 +355,7 @@ export function stampWorkLogAgent<E extends { kind: string; tool?: string; agent
     return stampWorkLogTask(h.taskLedger, entry);
   }
   const { agent, created } = ensureAgent(h, entry.agentId, now);
+  unseal(agent);
   if (entry.kind === 'tool') {
     setTools(agent, (agent.loggedTools ?? 0) + 1, undefined);
     if (entry.tool) agent.lastTool = clip(String(entry.tool), TYPE_MAX);
@@ -381,14 +399,24 @@ function enforceBounds(reg: AgentRegistry): void {
       cur = cur.parentId ? byId.get(cur.parentId) : undefined;
     }
   }
+  // Oldest first, but a record whose spend is settled (sealed, or never had a
+  // transcript) goes before one whose final spend is still to be read.
+  const settled = (a: AgentRecord) => a.spendFinal === true || !a.taskId;
+  const drop = new Set<string>();
   let excess = reg.agents.length - AGENT_REGISTRY_MAX;
-  reg.agents = reg.agents.filter((a) => {
-    if (excess > 0 && !pinned.has(a.id)) {
+  for (const pass of [true, false]) {
+    for (const a of reg.agents) {
+      if (excess <= 0) break;
+      if (pinned.has(a.id) || drop.has(a.id) || settled(a) !== pass) continue;
+      drop.add(a.id);
       excess--;
-      if (a.spend) reg.prunedSpend = addSpend(reg.prunedSpend, a.spend, a.spend.unpricedModels?.length ? 1 : 0);
-      return false;
     }
-    return true;
+  }
+  if (!drop.size) return;
+  reg.agents = reg.agents.filter((a) => {
+    if (!drop.has(a.id)) return true;
+    if (a.spend) reg.prunedSpend = addSpend(reg.prunedSpend, a.spend, a.spend.unpricedModels?.length ? 1 : 0);
+    return false;
   });
 }
 
@@ -414,28 +442,8 @@ function addSpend(sum: SubagentSpendSum | undefined, s: SpendTotals, unpriced: n
  */
 export function subagentSpendOf(reg: AgentRegistry | undefined): SubagentSpendSum | undefined {
   if (!reg) return undefined;
-  let sum: SubagentSpendSum | undefined;
+  let sum: SubagentSpendSum | undefined = reg.prunedSpend ? { ...reg.prunedSpend } : undefined;
   for (const a of reg.agents) if (a.spend) sum = addSpend(sum, a.spend, a.spend.unpricedModels?.length ? 1 : 0);
-  if (reg.prunedSpend) {
-    const p = reg.prunedSpend;
-    const base = sum ?? {
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheCreateTokens: 0,
-      costUsd: 0,
-      agents: 0,
-    };
-    sum = {
-      inputTokens: base.inputTokens + p.inputTokens,
-      outputTokens: base.outputTokens + p.outputTokens,
-      cacheReadTokens: base.cacheReadTokens + p.cacheReadTokens,
-      cacheCreateTokens: base.cacheCreateTokens + p.cacheCreateTokens,
-      costUsd: base.costUsd + p.costUsd,
-      agents: base.agents + p.agents,
-      ...(base.unpriced || p.unpriced ? { unpriced: true as const } : {}),
-    };
-  }
   return sum;
 }
 

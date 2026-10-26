@@ -2073,8 +2073,9 @@ export class SessionRegistry {
         taskLedger: sanitizeTaskLedger(serialized.taskLedger),
         // Spec 12: nothing that ran before this process is watched any more.
         agents: loseRunningAgents(sanitizeAgentRegistry(serialized.agents), Date.now()),
-        // SSOT 2026-10-26 T3 — the closed card keeps the task's total.
-        taskUsage: sanitizeTaskUsage(serialized.taskUsage),
+        // SSOT 2026-10-26 T3 — the closed card keeps the task's total (partial
+        // when the session spent before the total existed).
+        taskUsage: restoreTaskUsage(serialized),
         // A cron run archived while the process was down stays filed under its job.
         cronJob: sanitizeCronJob(serialized.cronJob),
         activityState: serialized.activityState || 'idle',
@@ -2486,14 +2487,20 @@ export class SessionRegistry {
  * not empty) starts a partial total: it counts from now, and the card says so
  * instead of passing it off as the whole task.
  */
-function restoreTaskUsage(serialized: { taskUsage?: unknown; sdkUsageBaseline?: unknown }): TaskUsage | undefined {
+function restoreTaskUsage(serialized: {
+  taskUsage?: unknown;
+  sdkUsageBaseline?: unknown;
+  sessionId?: string;
+}): TaskUsage | undefined {
   const kept = sanitizeTaskUsage(serialized.taskUsage);
   if (kept) return kept;
   const models = sanitizeSdkUsageBaseline(serialized.sdkUsageBaseline)?.models ?? {};
   const spent = Object.values(models).some(
     (m) => m.inputTokens + m.outputTokens + m.cacheReadInputTokens + m.cacheCreationInputTokens > 0 || m.costUsd > 0,
   );
-  if (!spent) return undefined;
+  // A session with an SDK session has run a turn — one saved before running
+  // totals were kept at all has no baseline to show it.
+  if (!spent && !serialized.sessionId) return undefined;
   return {
     inputTokens: 0,
     outputTokens: 0,
