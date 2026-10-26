@@ -743,8 +743,10 @@ describe('D16 — four numbers, each from a named field', () => {
     expect(stats()).toMatch(
       /<dt>실행 중<\/dt><dd title="[^"]*다른 인스턴스 그룹 포함[^"]*">1<span class="aq-of is-n">\/5<\/span><\/dd>/,
     );
-    expect(stats()).toMatch(/<dt>24시간 실행 기록<\/dt><dd title="[^"]*성공 4 · 실패 1 ·[^"]*">≥5<\/dd>/);
-    expect(stats()).not.toContain('진행 중');
+    // success = the fire went out (stamped at fire time); 진행 중 = its own session still runs
+    expect(stats()).toMatch(
+      /<dt>24시간 실행 기록<\/dt><dd title="지난 24시간 발화 기록 5건\(대기열 항목 제외\): 성공\(발화 후 끝남\) 3 · 실패\(발화 실패\) 1 · 진행 중\(발화 후 세션이 아직 실행 중\) 1[^"]*">≥5<\/dd>/,
+    );
     expect(stats()).toMatch(
       /<div class="aq-stat" data-kind="failed"><dt>실패 · 24시간<\/dt><dd title="[^"]*">≥1<\/dd>/,
     );
@@ -753,9 +755,9 @@ describe('D16 — four numbers, each from a named field', () => {
     expect(stats()).toMatch(/title="[^"]*dependency-audit 기록은 보관 한도 3회라 \d\d:\d\d부터[^"]*">≥5</);
     const d = cron.cronDayRuns(plan(), NOW);
     // records only: qa 1h ok + 2h failed · deps 15m + 45m ok (the queue entry is not a run) ·
-    // digest 22m ok — a success record stays a success whatever its session does now (PR review
-    // R1). The running qa card has no record yet.
-    expect([d.n, d.ok, d.f, d.run, d.pending, d.unknown]).toEqual([5, 4, 1, 0, 1, 0]);
+    // digest 22m in progress — fired, and the session it created still waits (the strip's rule,
+    // trinity R2). The running qa card has no record yet.
+    expect([d.n, d.ok, d.f, d.run, d.pending, d.unknown]).toEqual([5, 3, 1, 1, 1, 0]);
     expect(stats()).toMatch(/기록 전 카드 1개\(실행 중 1 · 결과 미확인 0\)는 세지 않음/);
     expect(d.cutFrom).toBe(NOW - 45 * M);
   });
@@ -770,32 +772,38 @@ describe('D16 — four numbers, each from a named field', () => {
     const idle = card('k-old', 'job-qa', 'nightly-qa', { lastActivity: new Date(NOW - 3 * HR).toISOString() });
     const p = cron.planCronLane({ ...BOARD, idle: [idle] }, JOBS, null);
     const d = cron.cronDayRuns(p, NOW);
-    expect([d.n, d.ok, d.unknown]).toEqual([5, 4, 1]);
+    expect([d.n, d.ok, d.unknown]).toEqual([5, 3, 1]);
     expect(cron.cronStats(p, NOW)).toMatch(/">≥5<span class="aq-of">\+미확인 1<\/span><\/dd>/);
     const ch = cron.cronRunChart(p, NOW);
-    const sums = [...ch.matchAll(/title="\d\d:\d\d부터 1시간 · 성공 (\d+) · 실패 (\d+)"/g)];
-    expect(sums.reduce((t, m) => t + Number(m[1]), 0)).toBe(4);
+    const sums = [...ch.matchAll(/title="\d\d:\d\d부터 1시간 · 성공 (\d+) · 실패 (\d+) · 진행 중 (\d+)"/g)];
+    expect(sums.reduce((t, m) => t + Number(m[1]), 0)).toBe(3);
     expect(ch).toContain('기록 전 카드 2개는 세지 않음.');
   });
-  it('a success record whose session is live and working is still a success, never 진행 중 (PR review R1)', () => {
-    // An injected run keeps live:true while a human works in that thread (cron-view.ts) —
-    // live means "in the registry", not "this job runs now".
-    const busy = [
-      job('job-i', 'injected', 30 * M, [
-        run(10 * M, { session: { headline: 'h', boardKey: 'k-human', live: true, activityState: 'working' } }),
-      ]),
+  it('the tiles and the chart agree with the strip on every record shape the server emits (trinity R2)', () => {
+    // cron-view.ts buildCronJobsView: an injected run (someone else's session) comes back
+    // live:true but idle; an earlier run in a reused thread and a queued fire come back
+    // live:false, idle. Only the newest run of a thread this job created keeps working/waiting.
+    const shape = (session: Record<string, unknown>) => [
+      job('job-s', 'shape', 30 * M, [run(10 * M, { session: { headline: 'h', boardKey: 'k-x', ...session } })]),
     ];
-    const p = cron.planCronLane({ working: [], waiting: [], idle: [], closed: [] }, busy, null);
-    const d = cron.cronDayRuns(p, NOW);
-    expect([d.n, d.ok, d.run]).toEqual([1, 1, 0]);
-    expect(cron.cronStats(p, NOW)).not.toContain('진행 중');
-    const ch = cron.cronRunChart(p, NOW);
-    expect(ch).not.toContain('진행 중');
-    // only a recorded status that is not finished is in progress
-    const open = [job('job-o', 'open', 30 * M, [run(10 * M, { status: 'running' })])];
-    const po = cron.planCronLane({ working: [], waiting: [], idle: [], closed: [] }, open, null);
-    expect(cron.cronDayRuns(po, NOW).run).toBe(1);
-    expect(cron.cronRunChart(po, NOW)).toContain('<i class="is-run" aria-hidden="true"></i>진행 중');
+    const empty = { working: [], waiting: [], idle: [], closed: [] };
+    const cases: [Record<string, unknown>, 'ok' | 'run'][] = [
+      [{ live: true, activityState: 'idle' }, 'ok'], // injected into a human session
+      [{ live: false, activityState: 'idle', earlierInThread: true }, 'ok'], // an earlier run of the thread
+      [{ live: true, activityState: 'working' }, 'run'], // its own session still runs
+      [{ live: true, activityState: 'waiting' }, 'run'], // its own session waits for a reply
+    ];
+    for (const [session, kind] of cases) {
+      const p = cron.planCronLane(empty, shape(session), null);
+      const d = cron.cronDayRuns(p, NOW);
+      expect([d.ok, d.run]).toEqual(kind === 'ok' ? [1, 0] : [0, 1]);
+      // the strip's glyph for the same record says the same thing
+      const glyph = cron.cronRunGlyph(p.groups[0].job.runs[0]).cls;
+      expect(kind === 'run' ? ['run', 'wait'] : ['ok']).toContain(glyph);
+    }
+    const running = cron.planCronLane(empty, shape({ live: true, activityState: 'working' }), null);
+    expect(cron.cronRunChart(running, NOW)).toMatch(/<i class="aq-ch-run" style="height:[1-9][\d.]*%"><\/i>/);
+    expect(cron.cronStats(running, NOW)).toContain('진행 중(발화 후 세션이 아직 실행 중) 1');
   });
 });
 
@@ -847,15 +855,23 @@ describe('D19 — 24 hours of runs', () => {
   const chart = once(() => cron.cronRunChart(plan(), NOW));
   it('24 rolling-hour columns, each labelled by its start, that add up to the 24h tile', () => {
     expect(chart().match(/class="aq-ch-col"/g)?.length).toBe(24);
-    const sums = [...chart().matchAll(/title="(\d\d:\d\d)부터 1시간 · 성공 (\d+) · 실패 (\d+)"/g)];
+    const sums = [...chart().matchAll(/title="(\d\d:\d\d)부터 1시간 · 성공 (\d+) · 실패 (\d+) · 진행 중 (\d+)"/g)];
     expect(sums.length).toBe(24);
     // a column is the hour from its start, not a clock hour (PR review R1)
     expect(sums[0][1]).toBe(hhmm(NOW - 24 * HR));
     expect(sums[23][1]).toBe(hhmm(NOW - HR));
-    expect(sums.reduce((t, m) => t + Number(m[2]) + Number(m[3]), 0)).toBe(5);
+    expect(sums.reduce((t, m) => t + Number(m[2]) + Number(m[3]) + Number(m[4]), 0)).toBe(5);
     expect(sums.reduce((t, m) => t + Number(m[3]), 0)).toBe(1);
+    expect(sums.reduce((t, m) => t + Number(m[4]), 0)).toBe(1);
     expect(chart()).toMatch(/<i class="aq-ch-fail" style="height:[1-9][\d.]*%"><\/i>/);
-    expect(chart()).not.toContain('진행 중');
+    expect(chart()).toMatch(/<i class="aq-ch-run" style="height:[1-9][\d.]*%"><\/i>/);
+    // the legend defines its words: success = fired and done
+    expect(chart()).toContain(
+      '<span class="aq-ch-key" title="발화 성공, 세션 끝남"><i class="is-ok" aria-hidden="true"></i>성공</span>',
+    );
+    expect(chart()).toContain(
+      '<span class="aq-ch-key" title="발화 성공, 세션 아직 실행 중"><i class="is-run" aria-hidden="true"></i>진행 중</span>',
+    );
   });
   it('hatches the stretch a truncated history cannot speak for', () => {
     expect(chart()).toContain(
@@ -865,7 +881,7 @@ describe('D19 — 24 hours of runs', () => {
   it('is an image with a sentence', () => {
     expect(chart()).toContain('<span class="aq-chart-title">실행 기록 · 24시간</span>');
     expect(chart()).toMatch(
-      /<div class="aq-plot" role="img" aria-label="지난 24시간 크론 실행 기록 5건, 실패 1건, 가장 많은 1시간 \d\d:\d\d부터 4건\. \d\d:\d\d 이전은 일부 잡 기록이 잘림\. 기록 전 카드 1개는 세지 않음\.">/,
+      /<div class="aq-plot" role="img" aria-label="지난 24시간 크론 발화 기록 5건: 끝남 3건, 실패 1건, 진행 중 1건, 가장 많은 1시간 \d\d:\d\d부터 4건\. \d\d:\d\d 이전은 일부 잡 기록이 잘림\. 기록 전 카드 1개는 세지 않음\.">/,
     );
     expect(chart()).toContain(
       '<div class="aq-ch-axis"><span>24시간 전</span><span>12시간 전</span><span>지금</span></div>',
