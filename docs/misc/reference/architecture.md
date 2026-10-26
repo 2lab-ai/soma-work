@@ -20,7 +20,7 @@ soma-work (Slack multi-tenant AI Assistant) 아키텍처 문서. 2026-06-10 기�
 | AgentManager | 멀티 에이전트 인스턴스 기동 | `src/agent-manager.ts`, `src/agent-instance.ts` |
 | Claude Child Registry | Agent SDK 자식 프로세스 소유, 종료 시 bounded TERM→KILL 회수 | `src/agent-runtime/claude-child-process-registry.ts` |
 | A2T Service | 음성→텍스트 (Python worker) | `services/a2t/worker.py` |
-| CronScheduler | 예약 synthetic 메시지 트리거. `onDeploy` 잡은 배포 세션의 `deploy_completed` 디렉티브로도 발동(`StreamExecutor.onDeployCompleted` → `DeployLaneTrigger` → `runJobNow`); `deploy-lanes.json`의 배포 전용 레인(크론 잡 아님)은 `DeployLaneTrigger` → `fireDeployLane`. 발동 note가 배포 스레드(채널 + 스레드 ts)를 알려 주고, 레인이 세션의 Slack 접근 수단(예: 환경의 봇 토큰으로 Slack Web API)으로 직접 올린다. `send_thread_message`는 레인 자신의 스레드에만 올리며 하네스는 대신 올리지 않음 | `src/cron-scheduler.ts`, `src/deploy-lanes.ts` |
+| CronScheduler | 예약 synthetic 메시지 트리거 | `src/cron-scheduler.ts` |
 | Release notes | deploy 워크플로우의 `release_notes` 디렉티브 → `StreamExecutor` (deploy 세션만 `routeReleaseNotes` 조회) → `postReleaseNotes`: 채널 루트 헤더 + 스레드 전문. 채널은 `SOMA_RELEASE_NOTES_CHANNELS` (`config.getReleaseNotesChannels` → `routeReleaseNotes`) | `packages/slack/src/directives/release-notes-directive.ts`, `packages/slack/src/release-notes-poster.ts`, `src/release-notes-routes.ts` |
 | Conversation Recorder | 대화 기록 + 리플레이 웹 대시보드 | `src/conversation/` |
 | Metrics Schedulers | 토큰/비용 텔레메트리 집계·리포트 | `src/metrics/` |
