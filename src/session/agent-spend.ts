@@ -174,6 +174,15 @@ function sameSpend(a: AgentSpend | undefined, b: AgentSpend): boolean {
   );
 }
 
+/** The transcript still ends where the read stopped — nothing was appended after it. */
+async function unchangedSince(file: string, size: number): Promise<boolean> {
+  try {
+    return (await fs.promises.lstat(file)).size === size;
+  } catch {
+    return false;
+  }
+}
+
 async function isRealDir(p: string): Promise<boolean> {
   try {
     const st = await fs.promises.lstat(p);
@@ -213,7 +222,7 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
   async function read(
     sid: string,
     taskId: string,
-  ): Promise<{ spend: AgentSpend; file: string; complete: boolean } | undefined> {
+  ): Promise<{ spend: AgentSpend; file: string; complete: boolean; size: number } | undefined> {
     if (!TASK_ID_RE.test(taskId)) return undefined;
     const dir = await subagentsDir(sid);
     if (!dir) return undefined;
@@ -250,7 +259,7 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
         await fh.close();
       }
     }
-    return { spend: priceCalls(state.calls, opts), file, complete: state.carry.length === 0 };
+    return { spend: priceCalls(state.calls, opts), file, complete: state.carry.length === 0, size: state.offset };
   }
 
   async function run(holder: AgentSpendHolder, force: boolean): Promise<boolean> {
@@ -267,7 +276,7 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
       const last = readAt.get(id);
       if (!force && !ended && last !== undefined && now() - last < minInterval) continue;
       readAt.set(id, now());
-      let got: { spend: AgentSpend; file: string; complete: boolean } | undefined;
+      let got: { spend: AgentSpend; file: string; complete: boolean; size: number } | undefined;
       try {
         got = await read(sid, taskId);
       } catch {
@@ -286,7 +295,7 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
       }
       // Sealed only at a turn end, after the agent ended or went out of sight,
       // and only on a whole transcript (no half-written last line).
-      if (force && SEALABLE.has(agent.status) && got.complete) {
+      if (force && SEALABLE.has(agent.status) && got.complete && (await unchangedSince(got.file, got.size))) {
         agent.spendFinal = true;
         files.delete(got.file);
         readAt.delete(id);

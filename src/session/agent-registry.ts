@@ -132,6 +132,8 @@ export interface AgentRegistry {
 
 export const AGENT_REGISTRY_MAX = 100;
 export const AGENT_LEDGER_KEEP = 40;
+/** How long an ended record whose spend was never read is kept over the cap. */
+const UNREAD_KEEP_MS = 24 * 60 * 60 * 1000;
 const TEXT_MAX = 300;
 const TYPE_MAX = 80;
 const STATUSES = new Set<AgentStatus>(['running', 'completed', 'failed', 'stopped', 'unknown']);
@@ -399,18 +401,20 @@ function enforceBounds(reg: AgentRegistry): void {
       cur = cur.parentId ? byId.get(cur.parentId) : undefined;
     }
   }
-  // Oldest first, but a record whose spend is settled (sealed, or never had a
-  // transcript) goes before one whose final spend is still to be read.
-  const settled = (a: AgentRecord) => a.spendFinal === true || !a.taskId;
+  // Oldest first, and only a record whose spend is settled (sealed, or never
+  // had a transcript): one whose final spend is still to be read stays until
+  // the turn end seals it — dropping it would lose that spend for good. A
+  // record unread a day after it ended (its transcript cannot be read) goes.
+  const now = Date.now();
+  const settled = (a: AgentRecord) =>
+    a.spendFinal === true || !a.taskId || (a.endedAt !== undefined && now - a.endedAt > UNREAD_KEEP_MS);
   const drop = new Set<string>();
   let excess = reg.agents.length - AGENT_REGISTRY_MAX;
-  for (const pass of [true, false]) {
-    for (const a of reg.agents) {
-      if (excess <= 0) break;
-      if (pinned.has(a.id) || drop.has(a.id) || settled(a) !== pass) continue;
-      drop.add(a.id);
-      excess--;
-    }
+  for (const a of reg.agents) {
+    if (excess <= 0) break;
+    if (pinned.has(a.id) || !settled(a)) continue;
+    drop.add(a.id);
+    excess--;
   }
   if (!drop.size) return;
   reg.agents = reg.agents.filter((a) => {
