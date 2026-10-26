@@ -85,10 +85,10 @@ What to check after a deploy depends on the environment, so it is not written in
 - **The skill exists**: for each repo, invoke it with `--preflight repo=<owner/repo> target=<branch>`, using the normalized `owner/repo` and the target branch you just verified (the same strings the QA step will use). It only reads, apart from creating the QA lock and screenshot directories and one probe file it removes, and answers with exactly one of:
   - `applies` → step 7 runs for this repo after the deploy.
   - `partial: <checks>` → post one ⚠️ line in the thread naming the checks that failed, and continue. Step 7 still runs for this repo, in the reduced mode the skill defines, and its report says what was not run and why.
-  - `not-applicable` → continue; step 7 does not run for this repo.
-  - `missing: <fields>` (the environment profile itself is incomplete, or a check that QA cannot run without failed) → post one ⚠️ line in the thread naming them, and continue the deploy. Step 7 does not run for this repo, and its final status is `deployed, QA not run: <reason>` — never "done".
+  - `not-applicable` → continue; step 7 runs no QA for this repo (it only confirms the deployment).
+  - `missing: <fields>` (the environment profile itself is incomplete, or a check that QA cannot run without failed) → post one ⚠️ line in the thread naming them, and continue the deploy. Step 7 runs no QA for this repo, and its final status is `deployed, QA not run: <reason>` — never "done".
   - Any other answer, or an error from the skill, is handled like `missing: <fields>`: post one ⚠️ line saying the preflight did not answer, continue the deploy, and report that repo as `deployed, QA not run: <reason>`.
-- **No such skill**: post one line, `ℹ️ no post-deploy QA on this host`, and continue. Step 7 does not run.
+- **No such skill**: post one line, `ℹ️ no post-deploy QA on this host`, and continue. Step 7 runs no QA.
 
 A preflight answer never stops the deploy. Nothing the requester said before the preflight (for example "don't ask", "just merge", "묻지 말고") is consent to skip or reduce QA. Never wait for the requester because of a preflight answer: a sandbox or profile problem is not something they can fix by replying. Never tell the requester to re-run QA elsewhere, and never hand them a re-run command as their next step.
 
@@ -139,7 +139,7 @@ If CI is still running, you **must wait for it in-turn** and then merge. The mer
 
 **REQUIRED** — block synchronously, in the foreground, within this same turn:
 
-1. Read the PR's head SHA (`head.sha` of `repos/<owner/repo>/pulls/<pr-number>`). Then poll its checks in the foreground (NOT `run_in_background`), bounded so it cannot hang forever (40 rounds of 30 s):
+1. Read the PR's head SHA (`head.sha` of `repos/<owner/repo>/pulls/<pr-number>`). Then poll its checks in the foreground (NOT `run_in_background`), bounded so it cannot hang forever: up to 40 polling rounds (each request bounded by `--max-time 30`, then a 30 s sleep):
 
    ```bash
    pending() {  # pending <path with ?query> <list field> → not-completed runs over every page, or "unknown"
@@ -219,6 +219,7 @@ Summarize the results for each repo in the following format:
 - PR URL
 - Merge result (success/fail)
 - Cause of failure / next action (if failed)
+- Deployment: confirmed, unconfirmed, or failed (for a repo with QA, as its post-deploy skill's first step found it)
 - Post-deploy QA: the status step 7 gives this repo (`QA complete`, `deployed, QA incomplete: <reason>`, `deployed, QA not run: <reason>`, or not applicable)
 
 For multiple repos, present results as a table or list for readability.
@@ -273,20 +274,24 @@ If no matching server exists in server-tools, skip this step.
 
 **Prohibited**: Do not generate or post release notes by any other means — no `channel_message` directive, no Slack tool. Each repo gets exactly one `release_notes` directive per deploy. Never emit twice — not in a summary, a retry, or a later turn.
 
-### 7) Post-Deploy QA (when the preflight said `applies` or `partial: …`)
+### 7) Post-Deploy QA and Deploy Confirmation
 
-Start this step once every repo of this deploy has reached a terminal deploy outcome: deployed and confirmed, merged but unconfirmed, failed, held for a user decision, or cancelled. Then run post-deploy QA one repo at a time, for each repo whose step 1 preflight answered `applies` or `partial: …` and whose deployment is confirmed (below), so QA sees every repo of this deploy that landed. Post one line in the thread for every other repo saying QA did not run for it and why (unconfirmed, failed, held, cancelled, not applicable, or the preflight's `deployed, QA not run: <reason>`). A merged repo that needed QA and did not get it is `deployed, QA not run: <reason>`, never done. A failed or held repo is stated; it never silently skips QA for the other repos. If a held repo is deployed later in this session, run this step for it then.
+Start this step once every repo of this deploy has reached a terminal merge outcome: merged, failed, held for a user decision, or cancelled. Then go through the repos one at a time, so QA sees every repo of this deploy that landed:
 
-The deployment of the merge commit is **confirmed** when one of these holds:
+- **A merged repo whose step 1 preflight answered `applies` or `partial: …`**: do not confirm its deployment yourself — invoke `<plugin>:post-deploy` for it right away (below). One owner decides: the skill's first step confirms the deploy from the environment profile, and its result is this repo's deploy confirmation line too. A run that ends "deploy not confirmed" (in time or otherwise) is this repo's unconfirmed deploy; one that ends "deploy failed" is its failed deploy.
+- **A merged repo without QA** (preflight `not-applicable`, `missing: …`, no answer, or no post-deploy skill on this host): confirm its deployment yourself (below), and post one line saying QA did not run for it and why. If it needed QA and did not get it, it is `deployed, QA not run: <reason>`, never done.
+- **A failed, held, or cancelled repo**: post one line saying QA did not run for it and why. A failed or held repo is stated; it never silently skips QA for the other repos. If a held repo is deployed later in this session, run this step for it then.
 
-- If CD runs for the target branch, the deploy workflow's run for the merge commit concluded `success`. Find it among the runs the push of the merge commit to the target started: `repos/<owner/repo>/actions/runs?head_sha=<after_sha>&branch=<target>&event=push`, paged to the end. The CD run is the one whose workflow deploys — its `name` or `path` (e.g. `.github/workflows/deploy.yml`) says so, or its jobs deploy to the target environment; a CI-only workflow is not it. No such run means there is no CD signal (use the healthcheck below). If several runs could be the deploy run, or you cannot tell which one deploys, treat the deployment as unconfirmed and say so in the thread, naming the runs. Wait for it **in-turn**, the same way you wait for CI: poll `repos/<owner/repo>/actions/runs/<run-id>` in the foreground every 30 s for at most 30 min, until its `status` is `completed`, and read its `conclusion`. A failed or timed-out call is not a result; poll again within the budget.
+**Confirming a deployment yourself** (only for a merged repo without QA). The deployment of the merge commit is **confirmed** when one of these holds:
+
+- If CD runs for the target branch, the deploy workflow's run for the merge commit concluded `success`. Wait for it **in-turn**, the same way you wait for CI, within a 30-minute budget. List the runs for the merge commit on the target: `repos/<owner/repo>/actions/runs?head_sha=<after_sha>&branch=<target>`, paged to the end, with no event filter (a CD run can be started by a push, by `workflow_run` after another run, or by `workflow_dispatch`). The CD run is the one whose workflow deploys — its `name` or `path` (e.g. `.github/workflows/deploy.yml`) says so, or its jobs deploy to the target environment; a CI-only workflow is not it. A listing with no deploy run in it is "not registered yet": list again every 30 s for up to 5 minutes after the merge, and for as long as another run for this commit is still in progress (a run started by `workflow_run` appears only after the run it follows), within the budget. Only after that does it mean there is no CD signal (use the healthcheck below). Once a deploy run is seen, poll `repos/<owner/repo>/actions/runs/<run-id>` in the foreground every 30 s until its `status` is `completed`, and read its `conclusion`. A failed or timed-out call is not a result; poll again within the budget. If several runs could be the deploy run, or you cannot tell which one deploys, treat the deployment as unconfirmed and say so in the thread, naming the runs.
 - If there is no CD signal, step 5's healthcheck passed.
 
 With neither a CD run nor a healthcheck to confirm it, the deployment is unconfirmed. A CD run still in progress when the bounded wait ends (the 30-minute budget ran out) also counts as unconfirmed, not as success. A CD run for the merge commit that failed is a failed deploy, not an unconfirmed one.
 
-For each repo that qualifies:
+**Running post-deploy QA** (each merged repo with QA):
 
-1. Invoke `<plugin>:post-deploy repo=<owner/repo> target=<branch> before=<before_sha> after=<after_sha>` in this session: `repo` and `target` are the same strings as in step 6, `before` the target SHA before the merge (the same `before_sha` as step 6), and `after` the merge commit SHA (`merge_commit_sha` of `repos/<owner/repo>/pulls/<pr-number>`, read after the merge).
+1. Invoke `<plugin>:post-deploy repo=<owner/repo> target=<branch> before=<before_sha> after=<after_sha>` in this session, without confirming the deploy first: `repo` and `target` are the same strings as in step 6, `before` the target SHA before the merge (the same `before_sha` as step 6), and `after` the merge commit SHA (`merge_commit_sha` of `repos/<owner/repo>/pulls/<pr-number>`, read after the merge).
 2. Keep working until its final report is posted in this thread. A partial report along the way is progress, not the end. Wait the way you wait for CI: in-turn, never with `ScheduleWakeup` or a background watcher whose result nothing consumes. Write this run's deployment summary only after that report.
 3. If it ends as `deployed, QA incomplete: <reason>`, that is this repo's status: report it with what was and was not done, never as done. Put the re-run arguments it gives on one reference line for maintainers, not as a step for the requester.
 4. If the skill errors, or ends without posting its final report, report `deployed, QA incomplete: <reason>` for that repo yourself, with what was and was not done, never as done. Its reference line for maintainers is the same `<plugin>:post-deploy` invocation as in item 1.
