@@ -6702,7 +6702,7 @@ body.nt-open .new-task-fab { display: none !important; }
       <div class="cron-lane" id="cron-lane" aria-label="Cron jobs" hidden>
         <div class="cron-lane-bar">
           <div class="cron-lane-head" id="cron-lane-head"></div>
-          <button type="button" class="sec-toggle" id="cron-toggle" data-sec-toggle="cron" aria-expanded="false" aria-controls="cron-groups"><span class="sec-toggle-text">&#xD3BC;&#xCE58;&#xAE30;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
+          <button type="button" class="sec-toggle" id="cron-toggle" data-sec-toggle="cron" aria-expanded="false" aria-controls="cron-lane-top cron-queue cron-groups cron-lane-chart"><span class="sec-toggle-text">&#xD3BC;&#xCE58;&#xAE30;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
         </div>
         <!-- Agent Queue grammar (#444): four numbers, the next-fire queue beside the job
              groups, and 24 hours of runs — shown while the lane is unfolded. -->
@@ -15793,7 +15793,7 @@ function renderCronTileHead(g, nowMs) {
   var runs = cronGroupRuns(g);
   var sched = j ? cronScheduleLabel(j.expression, j.nextRunAt) : '';
   // The time left counts down live (#444 D18 — aqTick rewrites the <time>).
-  var next = j && j.nextRunAt ? '다음 ' + esc(capClockLabel(j.nextRunAt / 1000, nowMs)) + ' (' + aqTime(j.nextRunAt, nowMs) + ' 후)' : '';
+  var next = j && j.nextRunAt ? '다음 ' + esc(capClockLabel(j.nextRunAt / 1000, nowMs)) + ' (' + aqTime(j.nextRunAt, nowMs, ' 후') + ')' : '';
   var last = runs[0];
   var lastGl = last ? cronRunGlyph(last) : null;
   var status = g.waiting ? '▲ 응답 필요'
@@ -15821,11 +15821,13 @@ function renderCronLaneHead(plan) {
     + (plan.waitingCount ? aqPill('wait', '▲ 응답 필요 ' + plan.waitingCount) : '');
 }
 // ── The lane as a queue (affectUI Agent Queue, #444 D16/D17/D19) ──
-// The last 24 hours of the lane, from the run RECORDS only (review R1): each recorded fire is
-// a success, a failure, or still in progress (its session live — working or waiting). A
-// queue entry is an event, not a run. A board card with no record yet is not counted: it is
-// either running (the 실행 중 tile shows it) or of unknown result, and its time may be its
-// last activity. A job whose kept history (FIFO historyCap) starts inside the window makes
+// The last 24 hours of the lane, from the run RECORDS only (review R1): a record's own status
+// decides — success is a success, failed a failure, and only a status that is not finished
+// counts as in progress (none is recorded today). session.live means "still in the registry",
+// not "this job runs now": an injected run shares a human session that may be working (PR
+// review R1). A queue entry is an event, not a run. A board card with no record yet is not
+// counted: it is either running (the 실행 중 tile shows it — the card IS the cron session) or
+// of unknown result, and its time may be its last activity. A job whose kept history (FIFO historyCap) starts inside the window makes
 // every count there a lower bound — say which, and from when.
 function cronDayRuns(plan, nowMs) {
   var from = nowMs - 86400000;
@@ -15843,7 +15845,7 @@ function cronDayRuns(plan, nowMs) {
         else unknown++;
         return;
       }
-      runs.push({ at: r.executedAt, kind: r.status === 'failed' ? 'fail' : live ? 'run' : 'ok' });
+      runs.push({ at: r.executedAt, kind: r.status === 'failed' ? 'fail' : r.status === 'success' ? 'ok' : 'run' });
     });
     var kept = g.job && Array.isArray(g.job.runs) ? g.job.runs : [];
     var cap = (g.job && g.job.historyCap) || 20;
@@ -15873,11 +15875,11 @@ function cronStats(plan, nowMs) {
   };
   return '<dl class="aq-stats">'
     + (front
-      ? stat('다음 실행', aqTime(front.job.nextRunAt, nowMs) + ' 후<span class="aq-of">' + esc(front.name) + '</span>', 'KanbanCronJob.nextRunAt 중 가장 이른 것 — ' + front.name + ' ' + capClockLabel(front.job.nextRunAt / 1000, nowMs))
+      ? stat('다음 실행', aqTime(front.job.nextRunAt, nowMs, ' 후') + '<span class="aq-of">' + esc(front.name) + '</span>', 'KanbanCronJob.nextRunAt 중 가장 이른 것 — ' + front.name + ' ' + capClockLabel(front.job.nextRunAt / 1000, nowMs))
       : stat('다음 실행', '—', '8일 안에 없음'))
     + stat('실행 중', running + '<span class="aq-of is-n">/' + groups.length + '</span>', '레인의 잡 그룹 ' + groups.length + '개(다른 인스턴스 그룹 포함) 중 실행 중 카드가 있는 그룹 ' + running + '개 — 다음 실행 열은 이 인스턴스의 스케줄만 센다')
     + stat('24시간 실행 기록', lb + d.n + (d.unknown ? '<span class="aq-of">+미확인 ' + d.unknown + '</span>' : ''),
-      '지난 24시간 실행 기록 ' + d.n + '건(대기열 항목 제외): 성공 ' + d.ok + ' · 실패 ' + d.f + ' · 진행 중 ' + d.run
+      '지난 24시간 실행 기록 ' + d.n + '건(대기열 항목 제외): 성공 ' + d.ok + ' · 실패 ' + d.f + (d.run ? ' · 진행 중 ' + d.run : '')
       + (d.pending || d.unknown ? ' · 기록 전 카드 ' + (d.pending + d.unknown) + '개(실행 중 ' + d.pending + ' · 결과 미확인 ' + d.unknown + ')는 세지 않음' : '')
       + (cutNote ? ' · ' + cutNote : ''))
     + stat('실패 · 24시간', lb + d.f, '지난 24시간 실패 기록' + (cutNote ? ' · ' + cutNote : ''), d.f > 0 ? 'failed' : '')
@@ -15895,15 +15897,16 @@ function cronQueue(plan, nowMs, focusKey) {
   var stop = shown.some(function(g) { return g.key === focusKey; }) ? focusKey : shown[0].key;
   return head + shown.map(function(g, i) {
     var at = g.job.nextRunAt;
-    var said = g.name + ', ' + aqLeft(at, nowMs) + ' 후 실행, ' + (i + 1) + '/' + n + ' — 지난 실행 보기';
+    var said = g.name + ', ' + aqLeftSfx(at, nowMs, ' 후 실행') + ', ' + (i + 1) + '/' + n + ' — 지난 실행 보기';
     return '<button type="button" class="aq-q" data-cron-group="' + escAttr(g.key) + '" data-aq-key="' + escAttr(g.key) + '" tabindex="' + (g.key === stop ? '0' : '-1') + '" aria-label="' + escAttr(said) + '">'
       + CLOCK_SVG + '<span class="aq-q-name">' + esc(g.name) + '</span>' + aqTime(at, nowMs) + '</button>';
   }).join('') + (n > 4 ? '<span class="aq-more">+' + (n - 4) + '</span>' : '');
 }
 var AQ_NICE = [4, 6, 8, 10, 12, 16, 20, 24, 30, 40, 50, 60, 80, 100, 120, 160, 200, 300, 400, 500, 600, 800, 1000];
-// 24 hours of run records (D19): one column an hour — success, in progress and failure stacked;
-// cards with no record are not drawn; the stretch a truncated history cannot speak for is
-// hatched; an image with a sentence for screen readers.
+// 24 hours of run records (D19): one column per rolling hour ending now (so each is labelled
+// by its start, HH:MM부터 — PR review R1), success and failure stacked (in progress only for an
+// unfinished recorded status); cards with no record are not drawn; the stretch a truncated
+// history cannot speak for is hatched; an image with a sentence for screen readers.
 function cronRunChart(plan, nowMs) {
   var d = cronDayRuns(plan, nowMs);
   var hr = 3600000;
@@ -15921,21 +15924,21 @@ function cronRunChart(plan, nowMs) {
   });
   var top = Math.max(peak, 4);
   var max = AQ_NICE.filter(function(v) { return v >= top; })[0] || Math.ceil(top / 500) * 500;
-  var hh = function(ms) { return pad2(new Date(ms).getHours()); };
+  var hm = function(ms) { var t = new Date(ms); return pad2(t.getHours()) + ':' + pad2(t.getMinutes()); };
   var pct = function(v) { return ((v / max) * 100).toFixed(1) + '%'; };
   var cut = d.cutFrom > start;
-  var said = '지난 24시간 크론 실행 기록 ' + d.n + '건, 실패 ' + d.f + '건, 진행 중 ' + d.run + '건'
-    + (peak ? ', 가장 많은 시간 ' + hh(peakAt) + '시 ' + peak + '건' : '') + '.'
+  var said = '지난 24시간 크론 실행 기록 ' + d.n + '건, 실패 ' + d.f + '건' + (d.run ? ', 진행 중 ' + d.run + '건' : '')
+    + (peak ? ', 가장 많은 1시간 ' + hm(peakAt) + '부터 ' + peak + '건' : '') + '.'
     + (cut ? ' ' + capClockLabel(d.cutFrom / 1000, nowMs) + ' 이전은 일부 잡 기록이 잘림.' : '')
     + (d.pending || d.unknown ? ' 기록 전 카드 ' + (d.pending + d.unknown) + '개는 세지 않음.' : '');
   var hatch = cut
     ? '<div class="aq-ch-cut" style="left:0;width:' + (((d.cutFrom - start) / (24 * hr)) * 100).toFixed(1) + '%" title="' + escAttr('이 구간은 ' + d.cut.map(function(c) { return c.name; }).join(', ') + ' 기록이 보관 한도로 잘려 실제보다 적을 수 있음') + '"></div>'
     : '';
   var cols = bins.map(function(b) {
-    return '<i class="aq-ch-col" title="' + hh(b.at) + '시 성공 ' + b.ok + ' · 실패 ' + b.fail + ' · 진행 중 ' + b.run + '"><i class="aq-ch-ok" style="height:' + pct(b.ok) + '"></i><i class="aq-ch-run" style="height:' + pct(b.run) + '"></i><i class="aq-ch-fail" style="height:' + pct(b.fail) + '"></i></i>';
+    return '<i class="aq-ch-col" title="' + hm(b.at) + '부터 1시간 · 성공 ' + b.ok + ' · 실패 ' + b.fail + (b.run ? ' · 진행 중 ' + b.run : '') + '"><i class="aq-ch-ok" style="height:' + pct(b.ok) + '"></i><i class="aq-ch-run" style="height:' + pct(b.run) + '"></i><i class="aq-ch-fail" style="height:' + pct(b.fail) + '"></i></i>';
   }).join('');
   return '<div class="aq-chart-head"><span class="aq-chart-title">실행 기록 · 24시간</span>'
-    + '<span class="aq-ch-key"><i class="is-ok" aria-hidden="true"></i>성공</span><span class="aq-ch-key"><i class="is-run" aria-hidden="true"></i>진행 중</span><span class="aq-ch-key"><i class="is-fail" aria-hidden="true"></i>실패</span></div>'
+    + '<span class="aq-ch-key"><i class="is-ok" aria-hidden="true"></i>성공</span>' + (d.run ? '<span class="aq-ch-key"><i class="is-run" aria-hidden="true"></i>진행 중</span>' : '') + '<span class="aq-ch-key"><i class="is-fail" aria-hidden="true"></i>실패</span></div>'
     + '<div class="aq-plot" role="img" aria-label="' + escAttr(said) + '">' + hatch
     + '<div class="aq-ch-grid" aria-hidden="true"><span>' + max + '</span></div><div class="aq-ch-grid is-zero" aria-hidden="true"><span>0</span></div>'
     + cols + '</div>'
@@ -16074,7 +16077,7 @@ function renderCronDrawerMeta(g, nowMs) {
   // Values are markup (escaped here): 다음 실행 counts down live like the tile (#444 review R1).
   var rows = [
     ['스케줄', esc(cronScheduleLabel(j.expression, j.nextRunAt) + ' · ' + j.expression + ' (UTC)')],
-    ['다음 실행', j.nextRunAt ? esc(capClockLabel(j.nextRunAt / 1000, nowMs)) + ' (' + aqTime(j.nextRunAt, nowMs) + ' 후)' : '8일 안에 없음'],
+    ['다음 실행', j.nextRunAt ? esc(capClockLabel(j.nextRunAt / 1000, nowMs)) + ' (' + aqTime(j.nextRunAt, nowMs, ' 후') + ')' : '8일 안에 없음'],
     ['실행 방식', esc((j.mode === 'fastlane' ? '항상 새 스레드' : '세션이 쉬면 주입, 없으면 새 스레드') + ' · 출력 ' + j.target + ' · 모델 ' + j.model)],
   ];
   return '<dl class="cron-dmeta">' + rows.map(function(r) { return '<dt>' + esc(r[0]) + '</dt><dd>' + r[1] + '</dd>'; }).join('') + '</dl>'
@@ -16160,11 +16163,19 @@ function aqLeft(atMs, nowMs) {
   if (h) return h + '시간 ' + (m % 60) + '분';
   return m + '분';
 }
-// A countdown aqTick keeps live; role=timer is never read out on each tick.
-function aqTime(atMs, nowMs) {
+// Time left with what follows it: ' 후 복귀' reads "24분 후 복귀", and at zero "곧 복귀" — never
+// "곧 후" (PR review R1). sfx starts with ' 후' when it says "after".
+function aqLeftSfx(atMs, nowMs, sfx) {
+  var t = aqLeft(atMs, nowMs);
+  var tail = String(sfx || '');
+  return t === '곧' ? t + tail.replace(/^ 후/, '') : t + tail;
+}
+// A countdown aqTick keeps live, its suffix inside it (data-aq-sfx); role=timer is never read
+// out on each tick.
+function aqTime(atMs, nowMs, sfx) {
   var at = Math.round(Number(atMs));
   if (!isFinite(at)) return '';
-  return '<time class="aq-left" role="timer" datetime="' + new Date(at).toISOString() + '" data-aq-at="' + at + '">' + aqLeft(at, nowMs) + '</time>';
+  return '<time class="aq-left" role="timer" datetime="' + new Date(at).toISOString() + '" data-aq-at="' + at + '"' + (sfx ? ' data-aq-sfx="' + escAttr(sfx) + '"' : '') + '>' + aqLeftSfx(at, nowMs, sfx) + '</time>';
 }
 // A status pill (D2). Its first character is a glyph — colour is never the only signal —
 // and it is not a live region: the markup repaints every 30 s; aqAnnounce speaks instead.
@@ -16176,7 +16187,7 @@ function aqTickIn(root, nowMs) {
   if (!root) return;
   var els = root.querySelectorAll('[data-aq-at]');
   for (var i = 0; i < els.length; i++) {
-    var t = aqLeft(Number(els[i].getAttribute('data-aq-at')) || 0, nowMs);
+    var t = aqLeftSfx(Number(els[i].getAttribute('data-aq-at')) || 0, nowMs, els[i].getAttribute('data-aq-sfx') || '');
     if (els[i].textContent !== t) els[i].textContent = t;
   }
 }
@@ -16595,11 +16606,11 @@ function capProvPill(g, nowMs) {
   if (g.state === 'unknown' || !(g.total > 0)) return aqPill('unknown', '◌ 계산 불가');
   if (g.state === 'empty') {
     var at = capEmptyAt(g, nowMs / 1000);
-    return aqPill('empty', (p ? '✗ 모두 막힘' : '✗ 소진') + (at ? ' · ' + aqTime(capMs(at), nowMs) + ' 후 복귀' : ''));
+    return aqPill('empty', (p ? '✗ 모두 막힘' : '✗ 소진') + (at ? ' · ' + aqTime(capMs(at), nowMs, ' 후 복귀') : ''));
   }
   if (p) {
     var back = capFirstReturn(g);
-    return aqPill('paused', '⏸ 제한 ' + p + (back ? ' · ' + aqTime(capMs(back), nowMs) + ' 후 복귀' : ''));
+    return aqPill('paused', '⏸ 제한 ' + p + (back ? ' · ' + aqTime(capMs(back), nowMs, ' 후 복귀') : ''));
   }
   if (g.state === 'low') return aqPill('low', '▲ 부족');
   return aqPill('ok', '● 사용 가능');
@@ -16618,7 +16629,7 @@ function capMark(g, u, nowMs, open, stop) {
     body = '<i class="aq-wdot is-' + (u.binding === '5h' ? 'h5' : 'wk') + '" aria-hidden="true"></i>' + body;
   } else if (st === 'paused') {
     body = '⏸ ' + body + ' · ' + esc(why) + ' · ' + (u.returnAt ? aqTime(capMs(u.returnAt), nowMs) : '복귀 약속 없음');
-    said.push(u.returnAt ? aqLeft(capMs(u.returnAt), nowMs) + ' 후 복귀' : '복귀 약속 없음');
+    said.push(u.returnAt ? aqLeftSfx(capMs(u.returnAt), nowMs, ' 후 복귀') : '복귀 약속 없음');
   } else {
     body += ' · ' + esc(why);
   }
@@ -16686,7 +16697,7 @@ function capChipLim(g, nowMs) {
   var at = capFirstReturn(g);
   return {
     html: ' <i class="cap-chip-lim">⏸ ' + p + (at ? ' · ' + aqTime(capMs(at), nowMs) : '') + '</i>',
-    said: ' · 제한 ' + p + (at ? ' — ' + aqLeft(capMs(at), nowMs) + ' 후 첫 복귀' : ''),
+    said: ' · 제한 ' + p + (at ? ' — ' + aqLeftSfx(capMs(at), nowMs, ' 후 첫 복귀') : ''),
   };
 }
 // One sentence or none per capacity load (D4): all blocked > recovered > under 20%.
@@ -16700,7 +16711,7 @@ function capAnnounceDiff(prev, next, nowMs) {
     if (!p || p.state === g.state) return;
     if (g.state === 'empty') {
       var at = capEmptyAt(g, nowMs / 1000);
-      put(1, aqPlain(g.label, 40) + (capPaused(g).length ? ' 계정이 모두 막힘' : ' 쓸 수 있는 양 없음') + (at ? ' — ' + aqLeft(capMs(at), nowMs) + ' 후 복귀' : ''));
+      put(1, aqPlain(g.label, 40) + (capPaused(g).length ? ' 계정이 모두 막힘' : ' 쓸 수 있는 양 없음') + (at ? ' — ' + aqLeftSfx(capMs(at), nowMs, ' 후 복귀') : ''));
     } else if (p.state === 'empty' && g.state !== 'unknown') {
       var units = g.units || [];
       put(4, aqPlain(g.label, 40) + ' 다시 사용 가능 — 계정 ' + units.filter(function(u) { return capUnitState(u) === 'ok'; }).length + '/' + units.length);
