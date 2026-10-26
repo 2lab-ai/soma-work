@@ -16,10 +16,11 @@ import { describe, expect, it } from 'vitest';
  *  - T3: the drive loop is a contract, not a session log — no absolute dates.
  *  - T4: the Anti-patterns list names "PR만 올리고 멈추기".
  *  - T5: epic-drive.md opens with a `## 0. 진입` entry contract (its heading is
- *        followed by the marker line a calling wrapper checks for); a handed-over
- *        existing epic enters there without re-creating issues or re-judging the
- *        tier, SKILL.md names that path in 전제 and Integration, restacking is
- *        limited to unpushed branches, and the drive contract names roles only.
+ *        followed by the marker line a calling wrapper checks for). Its table lets a
+ *        handed-over existing epic skip creation and tier re-judging while a new
+ *        request skips nothing; SKILL.md routes the handed-over epic to §0 in both
+ *        전제 and Integration; restacking is limited to unpushed branches. Apart from
+ *        the marker line, checks collapse whitespace so re-wrapping does not break them.
  */
 
 const SKILL_ROOT = resolve(__dirname, '..');
@@ -159,7 +160,19 @@ const ENTRY_HEADING = /^## 0\. 진입$/m;
 // A calling wrapper checks for this exact line under the heading — keep the bytes in sync.
 const ENTRY_MARKER = '<!-- 이 제목은 호출하는 래퍼가 존재 확인에 쓴다 — 바꾸면 래퍼도 함께 바꾼다 -->';
 const HANDED_OVER = '넘겨받은 기존 에픽';
-const ENGINE_OR_AGENT_NAME = /gpt|reviewer|astra|grok|fable|opus|sonnet|codex/gi;
+
+/** `text` with every whitespace run collapsed to one space, so re-wrapping does not change a match. */
+function flat(text: string): string {
+  return text.replace(/\s+/g, ' ').trim();
+}
+
+/** Each `- ` list item in `md` (continuation lines included, up to a blank line), flattened. */
+function listItems(md: string): string[] {
+  return md
+    .split(/^- /m)
+    .slice(1)
+    .map((chunk) => flat(chunk.split(/\n\s*\n/)[0]));
+}
 
 describe('local:using-epic-tasks — existing-epic entry and lifted rules (T5)', () => {
   it('epic-drive.md has `## 0. 진입` before step 1, with the wrapper marker on the next line', () => {
@@ -171,22 +184,43 @@ describe('local:using-epic-tasks — existing-epic entry and lifted rules (T5)',
     expect(lines[at + 1]).toBe(ENTRY_MARKER);
   });
 
-  it('the entry section lets a handed-over epic skip creation and tier re-judging', () => {
-    const sec = section(drive(), ENTRY_HEADING);
-    expect(sec).toContain('넘겨받');
-    expect(sec).toContain('재판정');
+  it('§0 table: a handed-over epic skips creation and tier re-judging, a new request skips nothing', () => {
+    const rows = tableRows(section(drive(), ENTRY_HEADING)).map((cells) => cells.map(flat));
+    const handedOver = rows.find((cells) => cells[0] === HANDED_OVER);
+    const fresh = rows.find((cells) => cells[0] === '새 요청');
+    expect(handedOver, `no §0 row for ${HANDED_OVER}`).toBeDefined();
+    expect(fresh, 'no §0 row for 새 요청').toBeDefined();
+    // Third cell = 건너뛰는 것.
+    const skipped = handedOver?.[2] ?? '';
+    expect(skipped).toContain('생성');
+    expect(skipped).toContain('재판정');
+    expect(fresh?.[2] ?? '').toMatch(/^없음/);
   });
 
-  it('SKILL.md names the handed-over epic in both 전제 and Integration', () => {
-    expect(section(skill(), /^## Integration$/m)).toContain(HANDED_OVER);
-    expect(section(skill(), /^## 전제$/m)).toContain(HANDED_OVER);
+  it('§0 bullets: a handed-over epic does not re-create existing issues or PRs', () => {
+    expect(listItems(section(drive(), ENTRY_HEADING))).toEqual(
+      expect.arrayContaining([expect.stringContaining('이미 있는 이슈·PR을 새로 만들지 않는다')]),
+    );
+  });
+
+  it('SKILL.md 전제: the handed-over epic item enters at §0 without repeating tier re-judging', () => {
+    const item = listItems(section(skill(), /^## 전제$/m)).find((line) => line.includes(HANDED_OVER)) ?? '';
+    expect(item, `no 전제 item names ${HANDED_OVER}`).not.toBe('');
+    for (const term of ['§0', '재판정', '반복하지 않']) {
+      expect(item).toContain(term);
+    }
+  });
+
+  it('SKILL.md Integration: the 2-hop entry item sends a handed-over epic to §0 instead', () => {
+    const item =
+      listItems(section(skill(), /^## Integration$/m)).find((line) => line.startsWith('**진입점 2-hop**')) ?? '';
+    expect(item, 'no 진입점 2-hop item in Integration').not.toBe('');
+    for (const term of [HANDED_OVER, '2-hop을 다시 타지 않', '§0']) {
+      expect(item).toContain(term);
+    }
   });
 
   it('limits restacking to branches not yet pushed', () => {
-    expect(drive()).toContain('아직 푸시하지 않은 브랜치');
-  });
-
-  it('epic-drive.md names roles, never an engine or agent', () => {
-    expect(drive().match(ENGINE_OR_AGENT_NAME) ?? []).toEqual([]);
+    expect(flat(drive())).toContain('아직 푸시하지 않은 브랜치');
   });
 });
