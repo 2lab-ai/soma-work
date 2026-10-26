@@ -104,7 +104,7 @@ import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from '
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { startReportScheduler, stopReportScheduler } from './metrics';
-import { calculateTokenCost } from './metrics/model-registry';
+import { calculateTokenCost, hasModelPricing } from './metrics/model-registry';
 import { clampEffortToModel } from './model-catalog';
 import { bootModelCatalog } from './model-catalog-boot';
 import {
@@ -122,6 +122,7 @@ import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
 import { applyAgentEvent, stampWorkLogAgent } from './session/agent-registry';
+import { createAgentSpendReader } from './session/agent-spend';
 import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
 import { switchSessionEffort } from './session/effort-switch';
 import { productionModelCatalogDeps } from './session/model-catalog-deps';
@@ -986,6 +987,22 @@ async function start() {
     setOnWorkLogAppendedCallback(broadcastWorkLog);
     // A recorded artifact reaches every dashboard and grows its card's face row.
     getArtifactStore().onRecorded(broadcastArtifactUpdate);
+    // SSOT 2026-10-26 T2 — what each subagent spent (tokens + API-equivalent
+    // cost), read from its own transcript. Refreshed on the session's agent
+    // events and its subagents' tool entries (≤ 1 read / 10 s per running
+    // agent); a turn end reads every agent not sealed yet and seals the ended
+    // ones. Off the hot path: the card is pushed when a number changed.
+    const agentSpendReader = createAgentSpendReader({
+      price: (model, t) =>
+        calculateTokenCost(model, t.inputTokens, t.outputTokens, t.cacheReadTokens, t.cacheCreateTokens),
+      isPriced: hasModelPricing,
+    });
+    const refreshAgentSpend = (sessionKey: string, session: ConversationSession, force: boolean) => {
+      if (!session.agents?.agents.length) return;
+      void agentSpendReader.refresh(session, { force }).then((changed) => {
+        if (changed) scheduleLiveSessionUpdate(sessionKey);
+      });
+    };
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
       recordAgentEvent: (sessionKey: string, event: AgentTreeEvent) => void;
@@ -1018,6 +1035,8 @@ async function start() {
         // A node's tool count grew — a subagent's, or the main agent's (the
         // registry root): push the card (throttled, ≤ 1/s per session).
         if (entry.kind === 'tool' && ownerKey) scheduleLiveSessionUpdate(ownerKey);
+        // A subagent is working: its spend may have grown (throttled read).
+        if (entry.agentId && owner && ownerKey) refreshAgentSpend(ownerKey, owner, false);
         // SSOT 2026-10-23 T1/T7: files the model sends to Slack and its markdown
         // answers become dashboard artifacts. Before the store sees it, while
         // `entry` still has the whole final text (the work log caps it).
@@ -1030,6 +1049,7 @@ async function start() {
         const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
         if (!session) return;
         if (applyAgentEvent(session, event)) scheduleLiveSessionUpdate(sessionKey);
+        refreshAgentSpend(sessionKey, session, event.kind === 'turn_end');
       },
     };
     setStreamExecutorProviders(workLogProviders);
