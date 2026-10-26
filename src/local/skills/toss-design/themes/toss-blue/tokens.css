@@ -1,0 +1,285 @@
+/* toss-design · theme: toss-blue
+ * TDS Mobile as documented: Toss Blue blue500 #3182f6 is the primary/brand accent. Default theme.
+ * Every value traces to tds-source-notes.md (observed = TDS docs / package; inferred = marked).
+ * Swap themes by swapping this file only: semantic variable names are identical in every theme.
+ * Original distillation of publicly documented TDS design language; TDS and Toss marks belong to Viva Republica.
+ */
+:root {
+  --theme-name: "toss-blue";
+  color-scheme: light;
+
+  /* ---- Raw TDS palette, light [observed: notes §1.1, docs Colors page] ---- */
+  --tds-grey-50: #f9fafb;
+  --tds-grey-100: #f2f4f6;
+  --tds-grey-200: #e5e8eb;
+  --tds-grey-300: #d1d6db;
+  --tds-grey-400: #b0b8c1;
+  --tds-grey-500: #8b95a1;
+  --tds-grey-600: #6b7684;
+  --tds-grey-700: #4e5968;
+  --tds-grey-800: #333d4b;
+  --tds-grey-900: #191f28;
+  --tds-blue-50: #e8f3ff;
+  --tds-blue-100: #c9e2ff;
+  --tds-blue-200: #90c2ff;
+  --tds-blue-300: #64a8ff;
+  --tds-blue-400: #4593fc;
+  --tds-blue-500: #3182f6;
+  --tds-blue-600: #2272eb;
+  --tds-blue-700: #1b64da;
+  --tds-blue-800: #1957c2;
+  --tds-blue-900: #194aa6;
+  --tds-red-50: #ffeeee;
+  --tds-red-100: #ffd4d6;
+  --tds-red-200: #feafb4;
+  --tds-red-300: #fb8890;
+  --tds-red-400: #f66570;
+  --tds-red-500: #f04452;
+  --tds-red-600: #e42939;
+  --tds-red-700: #d22030;
+  --tds-red-800: #bc1b2a;
+  --tds-red-900: #a51926;
+  --tds-grey-opacity-50: rgba(0,23,51,0.02);
+  --tds-grey-opacity-100: rgba(2,32,71,0.05);
+  --tds-grey-opacity-200: rgba(0,27,55,0.1);
+  --tds-grey-opacity-300: rgba(0,29,58,0.18);
+  --tds-grey-opacity-400: rgba(0,25,54,0.31);
+  --tds-grey-opacity-500: rgba(3,24,50,0.46);
+  --tds-grey-opacity-600: rgba(0,19,43,0.58);
+  --tds-grey-opacity-700: rgba(3,18,40,0.7);
+  --tds-grey-opacity-800: rgba(0,12,30,0.8);
+  --tds-grey-opacity-900: rgba(2,9,19,0.91);
+  --tds-orange-50: #fff3e0;
+  --tds-orange-100: #ffe0b0;
+  --tds-orange-200: #ffcd80;
+  --tds-orange-300: #ffbd51;
+  --tds-orange-400: #ffa927;
+  --tds-orange-500: #fe9800;
+  --tds-orange-600: #fb8800;
+  --tds-orange-700: #f57800;
+  --tds-orange-800: #ed6700;
+  --tds-orange-900: #e45600;
+  --tds-yellow-50: #fff9e7;
+  --tds-yellow-100: #ffefbf;
+  --tds-yellow-200: #ffe69b;
+  --tds-yellow-300: #ffdd78;
+  --tds-yellow-400: #ffd158;
+  --tds-yellow-500: #ffc342;
+  --tds-yellow-600: #ffb331;
+  --tds-yellow-700: #faa131;
+  --tds-yellow-800: #ee8f11;
+  --tds-yellow-900: #dd7d02;
+  --tds-green-50: #f0faf6;
+  --tds-green-100: #aeefd5;
+  --tds-green-200: #76e4b8;
+  --tds-green-300: #3fd599;
+  --tds-green-400: #15c47e;
+  --tds-green-500: #03b26c;
+  --tds-green-600: #02a262;
+  --tds-green-700: #029359;
+  --tds-green-800: #028450;
+  --tds-green-900: #027648;
+  --tds-teal-50: #edf8f8;
+  --tds-teal-100: #bce9e9;
+  --tds-teal-200: #89d8d8;
+  --tds-teal-300: #58c7c7;
+  --tds-teal-400: #30b6b6;
+  --tds-teal-500: #18a5a5;
+  --tds-teal-600: #109595;
+  --tds-teal-700: #0c8585;
+  --tds-teal-800: #097575;
+  --tds-teal-900: #076565;
+  --tds-purple-50: #f9f0fc;
+  --tds-purple-100: #edccf8;
+  --tds-purple-200: #da9bef;
+  --tds-purple-300: #c770e4;
+  --tds-purple-400: #b44bd7;
+  --tds-purple-500: #a234c7;
+  --tds-purple-600: #9128b4;
+  --tds-purple-700: #8222a2;
+  --tds-purple-800: #73228e;
+  --tds-purple-900: #65237b;
+
+  /* ---- Raw TDS background / utility tokens [observed: notes §1.1–1.3] ---- */
+  --tds-white: #ffffff;
+  --tds-black: #000000;
+  --tds-background: #ffffff;
+  --tds-grey-background: #f2f4f6;
+  --tds-layered-background: #ffffff;
+  --tds-float-background: #ffffff;
+  --tds-hairline-border: #e5e8eb;
+  --tds-dimmed-background: rgba(0,0,0,0.2);
+  --tds-hairline: rgba(0,0,33,0.07);
+
+  /* ---- Semantic: Brand / accent (same names in all themes) ---- */
+  --color-primary: var(--tds-blue-500); /* CTA fill, brand accent. blue: TDS default primary (#3182f6). black: brandPrimaryColor #191f28 (TDS derivation keeps L<0.4 colours as-is). */
+  --color-on-primary: var(--tds-white); /* Label on primary fill. TDS: whiteOpacity900 / #fff. */
+  --color-primary-weak: rgba(100,168,255,0.15); /* Weak button bg. blue: blue300@0.15 (TDS). black: grey700@0.07 (TDS rule for brand L<0.4). */
+  --color-on-primary-weak: var(--tds-blue-700); /* Weak button label. blue: blue700 (TDS uses blue600 = 3.97:1 on the weak bg; fixed to 4.78:1). black: grey700 (TDS rule for brand L<0.4). */
+  --color-primary-text: var(--tds-blue-700); /* Primary used as body-size text/link on --color-bg. blue: blue700 (5.41:1; TDS link default blue500 is 3.71:1, see contrast notes). black: grey900, links must be underlined. */
+  --color-primary-pressed-dim: rgba(0,0,0,0.26); /* Press overlay on fill buttons: TDS dim rgb(0,0,0) at opacity 0.26. */
+  --color-selected: var(--tds-blue-500); /* Switch on, checkbox/radio checked, segmented selection. blue: TDS. black: skill extension (TDS hard-codes blue500). */
+  --color-focus: var(--tds-blue-500); /* 2px keyboard focus ring (skill rule; TDS sets outline:none). */
+  --color-tab-indicator: var(--tds-grey-800); /* Active tab underline. TDS uses grey800 (already near-black). black: brand grey900. */
+  --color-tab-text: var(--tds-grey-600); /* Unselected tab label (TDS, weight 600). */
+  --color-tab-text-selected: var(--tds-grey-800); /* Selected tab label (TDS grey800, weight 700). */
+  --color-field-focus-label: var(--tds-blue-700); /* Focused TextField label. TDS uses blue600 (4.49:1, fails 4.5); skill uses blue700. */
+  --color-field-focus-line: var(--tds-blue-400); /* Focused line/big TextField underline (TDS blue400). */
+  --color-field-focus-overlay: rgba(25,74,166,0.05); /* Focused box TextField overlay (TDS blue900 @ 0.05). */
+  --color-badge-brand-bg: rgba(49,130,246,0.16); /* Brand-emphasis badge (weak). blue: TDS blue weak. black: TDS elephant weak. */
+  --color-badge-brand-text: var(--tds-blue-800); /* Brand-emphasis badge text. blue: blue800 (TDS blue weak badge uses blue700 = 4.49:1; fixed to 5.47:1). black: TDS elephant weak grey700. */
+
+  /* ---- Semantic: Surfaces (same names in all themes) ---- */
+  --color-bg: var(--tds-background); /* Page canvas (TDS background #fff). */
+  --color-bg-grey: var(--tds-grey-background); /* Grey canvas / section gap (TDS greyBackground = grey100). */
+  --color-surface: var(--tds-layered-background); /* Sheets, cards on grey canvas (TDS layeredBackground). */
+  --color-surface-float: var(--tds-float-background); /* Dialogs, menus (TDS floatBackground). */
+  --color-border: var(--tds-hairline-border); /* Solid 1px border (TDS hairlineBorder #e5e8eb). */
+  --color-hairline: var(--tds-hairline); /* 0.5px divider ink (TDS tHairlineBackground rgba(0,0,33,0.07)). */
+  --color-dim: var(--tds-dimmed-background); /* Dialog / sheet scrim (TDS rgba(0,0,0,0.2)). */
+  --color-skeleton: var(--tds-grey-100); /* Skeleton block (TDS grey100 in light). */
+  --color-switch-off: var(--tds-grey-200); /* Switch track off / checkbox unchecked (TDS grey200). */
+  --color-toast-bg: var(--tds-white); /* Toast pill bg (TDS 2.5.1 Toast: white). */
+  --color-toast-text: var(--tds-grey-opacity-800); /* Toast text (TDS greyOpacity800). */
+
+  /* ---- Semantic: Text & icons (same names in all themes) ---- */
+  --color-text-strong: var(--tds-grey-900); /* Headlines, key numbers (TDS Paragraph default grey900). */
+  --color-text: var(--tds-grey-800); /* Titles and row titles (TDS Top/ListRow/ListHeader grey800). */
+  --color-text-secondary: var(--tds-grey-700); /* Subtitles, right-side text (TDS Top subtitle / ListHeader right grey700). */
+  --color-text-sub: var(--tds-grey-600); /* Descriptions, captions on white (TDS grey600). Not on grey bg. */
+  --color-text-sub-on-grey: var(--tds-grey-700); /* Captions on --color-bg-grey (grey600 there is 4.19:1). */
+  --color-text-placeholder: var(--tds-grey-500); /* Placeholder (TDS grey500). Hint only; never the only label. */
+  --color-text-disabled: var(--tds-grey-400); /* Disabled text (TDS grey400). Inactive UI is exempt from 1.4.3. */
+  --color-icon: var(--tds-grey-400); /* Decorative chevrons/arrows (TDS grey400). Not for meaningful icons. */
+  --color-icon-strong: var(--tds-grey-600); /* Meaningful icons (>= 3:1). */
+
+  /* ---- Semantic: Neutral ("dark") button (same names in all themes) ---- */
+  --color-neutral: var(--tds-grey-700); /* TDS Button color="dark" fill (grey700). */
+  --color-on-neutral: var(--tds-white); /* Label on neutral fill. */
+  --color-neutral-weak: var(--tds-grey-opacity-100); /* TDS dark weak bg (greyOpacity100). */
+  --color-on-neutral-weak: var(--tds-grey-700); /* TDS dark weak label (grey700). */
+
+  /* ---- Semantic: Status (same names in all themes) ---- */
+  --color-danger: var(--tds-red-500); /* Danger fill / icon (TDS red500). */
+  --color-on-danger: var(--tds-white); /* Label on danger fill. */
+  --color-danger-weak: rgba(251,136,144,0.15); /* Danger weak bg (TDS red300@0.15). */
+  --color-on-danger-weak: var(--tds-red-700); /* Danger weak label. red700 (TDS uses red600 = 3.98:1 on the weak bg; fixed to 4.66:1). */
+  --color-danger-text: var(--tds-red-700); /* Error text at body size (red700 5.26:1; TDS error help uses red600 4.49:1). */
+  --color-success: var(--tds-green-600); /* Success icon / fill (TDS green badge fill green600). */
+  --color-success-text: var(--tds-green-800); /* Success text at body size (4.75:1). */
+  --color-warning: var(--tds-yellow-500); /* Warning fill (TDS yellow badge fill). */
+  --color-on-warning: var(--tds-grey-800); /* Text on warning fill (TDS yellow badge text grey800). */
+
+  /* ---- Typography [observed: notes §2] ---- */
+  --font-sans: "Toss Product Sans", "Pretendard Variable", Pretendard, -apple-system, BlinkMacSystemFont, system-ui, "Apple SD Gothic Neo", "Noto Sans KR", "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-numeric: var(--font-sans);
+  --t1-size: 30px; --t1-lh: 40px;
+  --st1-size: 29px; --st1-lh: 38px;
+  --st2-size: 28px; --st2-lh: 37px;
+  --st3-size: 27px; --st3-lh: 36px;
+  --t2-size: 26px; --t2-lh: 35px;
+  --st4-size: 25px; --st4-lh: 34px;
+  --st5-size: 24px; --st5-lh: 33px;
+  --st6-size: 23px; --st6-lh: 32px;
+  --t3-size: 22px; --t3-lh: 31px;
+  --st7-size: 21px; --st7-lh: 30px;
+  --t4-size: 20px; --t4-lh: 29px;
+  --st8-size: 19px; --st8-lh: 28px;
+  --st9-size: 18px; --st9-lh: 27px;
+  --t5-size: 17px; --t5-lh: 25.5px;
+  --st10-size: 16px; --st10-lh: 24px;
+  --t6-size: 15px; --t6-lh: 22.5px;
+  --st11-size: 14px; --st11-lh: 21px;
+  --t7-size: 13px; --t7-lh: 19.5px;
+  --st12-size: 12px; --st12-lh: 18px;
+  --st13-size: 11px; --st13-lh: 16.5px;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+  --fw-bold: 700;
+  --lh-xs: 1.252;  /* Button, Tab */
+  --lh-s: 1.35;    /* ListRow texts */
+  --lh-m: 1.5;
+
+  /* ---- Radius [observed: notes §5] ---- */
+  --radius-button-s: 8px;
+  --radius-button-m: 10px;
+  --radius-button-l: 14px;
+  --radius-button-xl: 16px;
+  --radius-field: 14px;
+  --radius-row-touch: 12px;
+  --radius-card: 20px;        /* grey container in TDS Border docs example */
+  --radius-toast: 100px;      /* single-line toast pill */
+  --radius-toast-multi: 20px;
+  --radius-menu: 20px;
+  --radius-dialog: 24px;
+  --radius-sheet: 28px;
+  --radius-switch: 15px;
+  --radius-full: 9999px;
+
+  /* ---- Spacing [observed values; grouping inferred: notes §6] ---- */
+  --space-2: 2px;
+  --space-4: 4px;
+  --space-6: 6px;
+  --space-8: 8px;
+  --space-12: 12px;
+  --space-16: 16px;
+  --space-20: 20px;
+  --space-24: 24px;
+  --space-32: 32px;
+  --gutter: 24px;             /* Top, ListHeader, ListRow, Skeleton */
+  --gutter-cta: 20px;         /* BottomCTA sides/bottom, TextField box inner */
+  --section-gap: 16px;        /* Border variant height16 */
+
+  /* ---- Sizes [observed: notes §3] ---- */
+  --button-h-s: 32px;
+  --button-h-m: 38px;
+  --button-h-l: 48px;
+  --button-h-xl: 56px;
+  --row-min-h: 44px;
+  --touch-min: 44px;
+  --nav-h-ios: 44px;
+  --nav-h-android: 54px;
+  --icon-size: 24px;
+  --switch-w: 50px;
+  --switch-h: 30px;
+  --mobile-max: 480px;        /* [inferred] centred mobile column for desktop renders */
+
+  /* ---- Elevation [observed: notes §4] ---- */
+  --shadow-tiny: 0 1px 3px var(--tds-grey-opacity-200);
+  --shadow-weak: 0 2px 30px var(--tds-grey-opacity-200);
+  --shadow-medium: 0 16px 60px var(--tds-grey-opacity-300);
+
+  /* ---- Motion [observed curves; CSS durations for springs are inferred: notes §8] ---- */
+  --ease-out: cubic-bezier(.25,.1,.25,1);
+  --ease-expo: cubic-bezier(.16,1,.3,1);
+  --ease-back: cubic-bezier(.34,1.56,.64,1);
+  --ease-tds: cubic-bezier(.6,0,0,.6);
+  --dur-color: 100ms;          /* Button colour transitions 0.1s ease-in-out */
+  --dur-field: 200ms;          /* TextField overlay 0.2s ease */
+  --dur-tab: 300ms;            /* Tab colour 0.3s ease */
+  --dur-bezier: 500ms;         /* TDS bezier default duration */
+  --dur-spring-rapid: 150ms;   /* stiffness 1000 / damping 55 (press) */
+  --dur-spring-quick: 220ms;   /* 800 / 55 (release, indicator) */
+  --dur-spring-medium: 400ms;  /* 270 / 25 (slight overshoot) */
+  --dur-spring-basic: 530ms;   /* 200 / 30 */
+  --dur-spring-large: 660ms;   /* 100 / 15 */
+  --press-scale: 0.96;
+}
+
+/* Strict WCAG 2.x AA text mode (opt-in): <html data-contrast="aa">.
+ * Swaps the few TDS pairs that sit below 4.5:1 for normal-size text (see design.md accessibility note). */
+:root[data-contrast="aa"] {
+  --color-primary: var(--tds-blue-700);
+  --color-badge-brand-text: var(--tds-blue-800);
+  --color-on-primary-weak: var(--tds-blue-700);
+  --color-selected: var(--tds-blue-700);
+  --color-danger: var(--tds-red-700);
+  --color-on-danger-weak: var(--tds-red-700);
+  --color-text-placeholder: var(--tds-grey-600);
+}
+
+/* Reduced motion: keep feedback, drop movement. */
+@media (prefers-reduced-motion: reduce) {
+  :root { --press-scale: 1; --dur-spring-rapid: 0ms; --dur-spring-quick: 0ms; --dur-spring-medium: 0ms; --dur-spring-basic: 0ms; --dur-spring-large: 0ms; }
+}
