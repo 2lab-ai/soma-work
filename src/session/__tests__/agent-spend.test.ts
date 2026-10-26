@@ -402,6 +402,33 @@ describe('agent spend — registry: persisted, and the subagent sum survives the
   });
 });
 
+describe('agent spend — a missing SDK session is not searched again on every read (review #464)', () => {
+  it('a session with no transcript is looked up at most once a minute', async () => {
+    const OTHER = '22222222-3333-4444-8555-666666666666';
+    const h = holder();
+    h.sessionId = OTHER;
+    let now = T0;
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => now, minIntervalMs: 0 });
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spend).toBeUndefined();
+    // Its transcript appears; within the minute the lookup is not repeated.
+    const projectDir = path.join(configDir, 'projects', '-tmp-session-y');
+    fs.mkdirSync(path.join(projectDir, OTHER, 'subagents'), { recursive: true });
+    fs.writeFileSync(path.join(projectDir, `${OTHER}.jsonl`), '');
+    fs.writeFileSync(
+      path.join(projectDir, OTHER, 'subagents', 'agent-aaaa1111.jsonl'),
+      `${assistant('m1', 'claude-opus-5-5', [1, 0, 0, 0])}\n`,
+    );
+    now += 30_000;
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spend).toBeUndefined();
+    // After it, the next read finds it.
+    now += 31_000;
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spend!.calls).toBe(1);
+  });
+});
+
 describe('agent spend — startup backfill (subagents that ended before this process)', () => {
   it('reads every loaded session once, seals what ended, and names the sessions that changed', async () => {
     writeAgent('aaaa1111', [assistant('m1', 'claude-opus-5-5', [1, 2, 3, 4])]);
