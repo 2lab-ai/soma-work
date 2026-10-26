@@ -1,8 +1,8 @@
 ---
 name: html
-description: Convert any content (markdown, plain text, JSON, CSV, SQL, raw notes) into a styled single-file HTML with a Lottie motion layer and a rendered PNG, publish the HTML on the local web server (clickable access link), then upload both files to the current Slack thread. The visual design is driven by the `ui-ux` skill as the main design engine — applied by default on EVERY invocation, whether or not the user mentions design (design-system + named references; default reference `openai`); a `design=` input selects the design driver deterministically — `default`, any registered reference (for example `claude`, `toss-blue`, `toss-black`), or `impeccable` — with the `design` skill applied on top as the anti-AI-slop layer and the `motion-design`/`apple-design` standards governing all CSS motion and display typography. Pick a template name from the catalog or let the skill auto-classify. Triggers on "html로 만들어줘", "HTML로 변환", "이걸 페이지로", "render as html", "html + png", "convert to html", "to html and png", "make a card", "make a deck", "make a poster", "make a report from this data".
+description: Convert any content (markdown, plain text, JSON, CSV, SQL, raw notes) into a styled single-file HTML with a Lottie motion layer and a rendered PNG, publish the HTML on the local web server (clickable access link), then upload both files to the current Slack thread. The visual design is driven by the `ui-ux` skill as the main design engine — applied by default on EVERY invocation, whether or not the user mentions design (design-system + named references; default reference `openai`); a `design=` input selects the design driver deterministically — `default`, any registered reference (for example `claude`, `toss-blue`, `toss-black`), or `impeccable`; `omd-<id>` selects any oh-my-design archive reference, and batch mode renders one page once per reference — with the `design` skill applied on top as the anti-AI-slop layer and the `motion-design`/`apple-design` standards governing all CSS motion and display typography. Pick a template name from the catalog or let the skill auto-classify. Triggers on "html로 만들어줘", "HTML로 변환", "이걸 페이지로", "render as html", "html + png", "convert to html", "to html and png", "make a card", "make a deck", "make a poster", "make a report from this data".
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
-version: 0.5.0
+version: 0.6.0
 license: ISC
 ---
 
@@ -139,24 +139,42 @@ python3 - "$UIUX" "${DESIGN:-default}" <<'RESOLVE'
 import json, os, sys
 root, want = sys.argv[1], sys.argv[2]
 refs = json.load(open(os.path.join(root, "references", "index.json")))["references"]
+gen, upstream = [], None
+omd_ix = os.path.join(root, "references", "omd", "index.json")
+if os.path.isfile(omd_ix):  # generated oh-my-design set, names omd-<id>
+    omd = json.load(open(omd_ix))
+    gen, upstream = omd["references"], omd["upstream"]["commit"]
+seen = set()
+for r in refs + gen:
+    if r["name"] in seen:
+        sys.exit("duplicate reference name: " + r["name"])
+    seen.add(r["name"])
 if want == "impeccable":
     print("driver=impeccable"); sys.exit(0)
 if want == "default":
     want = next(r["name"] for r in refs if r.get("default"))
-hit = next((r for r in refs if r["name"] == want), None)
+hit = next((r for r in refs + gen if r["name"] == want), None)
 if hit is None:
-    sys.exit(f"unknown design={want}; valid: default, impeccable, " + ", ".join(r["name"] for r in refs))
+    sys.exit(f"unknown design={want}; valid: default, impeccable, " + ", ".join(r["name"] for r in refs)
+             + (f", and omd-<id> ({len(gen)} names in references/omd/index.json)" if gen else ""))
 print("driver=reference"); print("reference=" + hit["name"])
 print("design_md=" + os.path.normpath(os.path.join(root, hit['path'])))
 if hit.get("tokens"): print("tokens_css=" + os.path.normpath(os.path.join(root, hit["tokens"])))
 if hit.get("family"): print("family=" + hit["family"])
+if hit.get("format"): print("format=" + hit["format"])
+if hit in gen: print("upstream=" + upstream)
 RESOLVE
 ```
 
 Every reference file is resolved through the index `path` field (relative to
 the `ui-ux` skill root) — never by assembling `references/<name>/…` yourself,
 because some references live in another skill (the toss themes live in
-`toss-design`).
+`toss-design`). The resolver merges two registries: the hand-kept
+`references/index.json` and the generated oh-my-design set
+`references/omd/index.json` (names `omd-<id>`, for example `omd-toss`,
+`omd-stripe`, `omd-linear-app`). A name that appears in both is an error, never
+a silent precedence; a bare brand name such as `toss` is not an oh-my-design
+alias.
 
 **The selected design system owns font, spacing, radius and material.** Step
 4's global defaults (font stack, pure-black/white rule, rounded corners) and
@@ -191,6 +209,32 @@ content preservation (real data only, nothing invented).
 4. **Honor ui-ux quality gates.** The reference sets aesthetic direction, never
    permission to break ui-ux Quick Reference §1–§3 (accessibility, touch targets,
    performance) — verify color pairs meet the §1 contrast rules.
+5. **`format=design-md-v3` (the oh-my-design `omd-*` set).** The `design_md` file
+   is a DESIGN.md whose YAML frontmatter holds the tokens (colors, typography,
+   rounded, spacing, components, fonts) and whose rule is "a value nobody could
+   confirm stays blank". Do not read hex values out of it by hand — run the
+   adapter, which maps its free-form roles to this skill's token contract,
+   guarantees 4.5:1 for every text pair, and records the source of every value:
+   ```bash
+   python3 "$UIUX/scripts/designmd_tokens.py" "<design_md>" --scripts hangul,latin --format json
+   ```
+   Pass the writing systems the content actually uses (`hangul`, `latin`,
+   `kana`, `han-hans`, `han-hant`). Inline `tokens` as one `:root {}` block, load
+   `fonts.links`, and build only with the contract tokens (`--color-bg`,
+   `--color-surface`, `--color-text`, `--color-text-muted`, `--color-line`,
+   `--color-accent` for non-text marks, `--color-accent-text` for coloured text,
+   `--button-bg`/`--button-text` for filled labels, type, radius and space
+   scales). The page must also show, in a footer:
+   - **attribution** — the company the design belongs to, "oh-my-design (MIT),
+     reproduced for educational reference", and the label "레퍼런스 토큰 적용본"
+     (reference-token rendition) — never "<company> design";
+   - **font layers** — each `fonts.layers` entry with its layer: the
+     **brand face** (named, used only if installed; a proprietary face is never
+     loaded), each **substitute** ("not the brand face"), and each
+     **safe default**;
+   - **derived values** — every token whose `provenance` says `derived`, with
+     its reason and the before value. A page that hides a derived value fails.
+   Audit comment: `<!-- ui-ux: driver=reference · reference=omd-<id> · format=design-md-v3 · upstream=<commit> · design_sha256=<sha> · adapter=designmd_tokens.py <version> · template=<name> -->`.
 
 #### Brand-context driver (rule 3: the user supplied a palette, codebase or screenshot)
 
@@ -366,6 +410,16 @@ Contrast, real data and reduced motion are never overridden:
   source-han-sans, Inter, Manrope, system-ui, sans-serif`. For headings,
   swap in `"Noto Serif SC"` / `"Noto Serif KR"` when the template calls for
   a serif voice.
+- **CJK line breaking (hard rule, owned by this skill — reference files do not
+  carry it).** Korean must wrap between words, never inside one (`있어요` never
+  splits across lines). Set `lang` on `<html>` (and on any passage in another
+  language), then:
+  `:lang(ko) { word-break: keep-all; line-break: strict; overflow-wrap: break-word; }`
+  `:lang(ja), :lang(zh) { word-break: normal; line-break: strict; overflow-wrap: anywhere; }`
+  — never `keep-all` for Japanese or Chinese (they have no spaces, so keep-all
+  stops wrapping and overflows). Code, paths and URLs get
+  `overflow-wrap: anywhere; word-break: normal` so they never push the page
+  wider than the viewport.
 - **8 px baseline grid** — every spacing, line-height, font-size is a
   multiple of 8 (allowed mid-step: 4 for hairline details).
 - **Contrast ≥ 4.5** for any body text against its background. WCAG AA.
@@ -546,6 +600,47 @@ URL**. No preamble. No follow-up question — the classifier resolves
 ambiguity by falling through to `doc-kami-parchment`, and the user can
 re-invoke with an explicit `--template=<name>` if they want a different
 look.
+
+### Batch mode — one page, many references
+
+Use this when the user wants the same content shown in many designs ("레퍼런스마다
+하나씩 다 만들어서", every `omd-*` reference, a comparison set). Writing hundreds of
+pages by hand is not possible and would not be comparable; batch mode keeps the
+content fixed and changes only the design tokens, through the same resolver
+and adapter a single run uses.
+
+1. **Author the page once** with Steps 1–4 against the design-md-v3 token
+   contract (Step 3.4 reference driver, point 5): every colour, font, size,
+   radius and space comes from a contract token, never a raw value. Put four
+   slots in it: `<!--__AUDIT__-->` (first line), `<!--__FONT_LINKS__-->` (in
+   `<head>`), `/*__TOKENS__*/` (first thing in `<style>`) and
+   `<!--__ATTRIBUTION__-->` (before `</body>`). Small text (badges, chips, table
+   labels) uses `--color-accent-text` or `--button-text` on `--button-bg` —
+   never `--color-accent` as a text colour.
+2. **Render every reference:**
+   ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
+   python3 "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/batch.py" --page page.html --refs 'omd-*' --out "$(pwd)/batch" --scripts hangul,latin
+   ```
+   `--refs` takes `omd-*` or a comma list. Each page gets the Step 3.4 audit
+   comment (reference, upstream commit, `design_sha256`, `content_sha256`,
+   adapter version), the adapter's tokens and font links, and the footer
+   (attribution as "레퍼런스 토큰 적용본", font layers, every derived value).
+   An unknown name stops the batch; nothing is skipped.
+3. **Gate it:**
+   ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
+   node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/batch-qa.mjs" "$(pwd)/batch"
+   python3 "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/batch.py" --index-only --out "$(pwd)/batch"
+   ```
+   `batch-qa.mjs` exits non-zero on a missing or extra page, a console or load
+   error, changed `<main>` text, horizontal overflow at 1440 or 390 px, any text
+   below its WCAG contrast, Korean drawn without a Hangul face, or a dead
+   anchor. Fix the page or the adapter and re-run; never deliver while it fails.
+   The rebuilt `index.html` is the result list, with each page's QA status —
+   failed pages stay in the list, marked, and the run is not done.
+4. **Deliver** the HTML pages and `index.html` (publish the directory's files
+   with Step 7, or zip them). Say how many passed out of how many.
 
 ## Anti-patterns
 
