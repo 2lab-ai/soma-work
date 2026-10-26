@@ -149,6 +149,7 @@ const AQ_FNS = [
   'capTimeline',
   'capAdvance',
   'aqLeft',
+  'aqLeftSfx',
   'aqTime',
   'aqPill',
   'aqPlain',
@@ -200,8 +201,14 @@ beforeAll(() => {
     // reported by the tests themselves
   }
 }, 120_000);
-const timeAt = (ms: number, text: string) =>
-  `<time class="aq-left" role="timer" datetime="${new Date(ms).toISOString()}" data-aq-at="${ms}">${text}</time>`;
+/** A live countdown; its suffix (" 후 복귀") lives inside it so the tick can say "곧 복귀". */
+const timeAt = (ms: number, text: string, sfx = '') =>
+  `<time class="aq-left" role="timer" datetime="${new Date(ms).toISOString()}" data-aq-at="${ms}"${sfx ? ` data-aq-sfx="${sfx}"` : ''}>${text}${sfx}</time>`;
+/** A local "HH:MM" (the chart labels each rolling hour by its start). */
+const hhmm = (ms: number) => {
+  const t = new Date(ms);
+  return `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
+};
 
 describe('D1 — two sections, one grammar', () => {
   it('the live region is static, polite and outside both re-rendered sections', () => {
@@ -225,6 +232,8 @@ describe('D1 — two sections, one grammar', () => {
     expect(lane).toContain('<div class="aq-chart" id="cron-lane-chart"></div>');
     expect(lane.indexOf('id="cron-queue"')).toBeLessThan(lane.indexOf('id="cron-groups"'));
     expect(lane.indexOf('id="cron-groups"')).toBeLessThan(lane.indexOf('id="cron-lane-chart"'));
+    // the fold controls every part it hides (PR review R1)
+    expect(lane).toContain('aria-controls="cron-lane-top cron-queue cron-groups cron-lane-chart"');
   });
 });
 
@@ -247,12 +256,27 @@ describe('D3 — a live countdown', () => {
   it('a <time role="timer"> carries the epoch it counts to', () => {
     expect(cap.aqTime(NOW + 25 * 60_000, NOW)).toBe(timeAt(NOW + 25 * 60_000, '25분'));
   });
+  it('"곧" never reads "곧 후" (PR review R1)', () => {
+    expect(cap.aqLeftSfx(NOW, NOW, ' 후 실행')).toBe('곧 실행');
+    expect(cap.aqLeftSfx(NOW - 1, NOW, ' 후')).toBe('곧');
+    expect(cap.aqLeftSfx(NOW + 60_000, NOW, ' 후 복귀')).toBe('1분 후 복귀');
+    expect(cap.aqTime(NOW - 5000, NOW, ' 후 복귀')).toContain('>곧 복귀</time>');
+    const due = cron.planCronLane({ working: [], waiting: [], idle: [], closed: [] }, [job('j', 'due', -M, [])], null);
+    expect(cron.cronQueue(due, NOW, null)).toContain('aria-label="due, 곧 실행, 1/1');
+    expect(cron.cronStats(due, NOW)).toContain('data-aq-sfx=" 후">곧</time>');
+    for (const out of [
+      cron.cronQueue(due, NOW, null),
+      cron.cronStats(due, NOW),
+      cron.renderCronTileHead(due.groups[0], NOW),
+    ])
+      expect(out).not.toContain('곧 후');
+  });
   it('capacity speaks epoch seconds, cron epoch ms — both read "24분" (review R1)', () => {
     expect(cap.capMs(NOW_S)).toBe(NOW);
     const cool = a({ ...ai4, cooldown_until: NOW_S + 24 * 60 });
     const g = view([ai1, cool]).groups[0];
     expect(g.units[1].returnAt).toBe(NOW_S + 24 * 60); // seconds, as the server sends it
-    expect(cap.capProvHead(g, NOW)).toContain(timeAt((NOW_S + 24 * 60) * 1000, '24분'));
+    expect(cap.capProvHead(g, NOW)).toContain(timeAt((NOW_S + 24 * 60) * 1000, '24분', ' 후 복귀'));
     const q = cron.cronQueue(
       cron.planCronLane({ working: [], waiting: [], idle: [], closed: [] }, [job('j', 'soon', 24 * M, [])], null),
       NOW,
@@ -261,13 +285,13 @@ describe('D3 — a live countdown', () => {
     expect(q).toContain(timeAt(NOW + 24 * M, '24분'));
   });
   it('the tick rewrites only what changed, and rests while the tab is hidden', () => {
-    const { aqTickIn, aqTick } = load<Cap>(['aqLeft', 'aqTickIn', 'aqTick'], [], {
+    const { aqTickIn, aqTick } = load<Cap>(['aqLeft', 'aqLeftSfx', 'aqTickIn', 'aqTick'], [], {
       document: { hidden: true, getElementById: vi.fn() },
     });
     let writes = 0;
     const el = {
       _t: '',
-      getAttribute: () => String(NOW + 90_000),
+      getAttribute: (n: string) => (n === 'data-aq-at' ? String(NOW + 90_000) : null),
       get textContent() {
         return this._t;
       },
@@ -284,9 +308,21 @@ describe('D3 — a live countdown', () => {
     aqTickIn(root, NOW + 31_000);
     expect(el.textContent).toBe('59초');
     expect(writes).toBe(2);
+    // the suffix rides along, and at zero "곧" drops its "후" (PR review R1)
+    const sfx = {
+      _t: '',
+      getAttribute: (n: string) =>
+        n === 'data-aq-at' ? String(NOW + 90_000) : n === 'data-aq-sfx' ? ' 후 복귀' : null,
+      textContent: '',
+    };
+    const root2 = { querySelectorAll: () => [sfx] };
+    aqTickIn(root2, NOW);
+    expect(sfx.textContent).toBe('1분 후 복귀');
+    aqTickIn(root2, NOW + 90_000);
+    expect(sfx.textContent).toBe('곧 복귀');
     // hidden → no lookup at all
     const doc = { hidden: true, getElementById: vi.fn() };
-    load<Cap>(['aqLeft', 'aqTickIn', 'aqTick'], [], { document: doc }).aqTick();
+    load<Cap>(['aqLeft', 'aqLeftSfx', 'aqTickIn', 'aqTick'], [], { document: doc }).aqTick();
     expect(doc.getElementById).not.toHaveBeenCalled();
     expect(typeof aqTick).toBe('function');
     // one 1 Hz tick for the page (review R1): an additive call on the shared timer path
@@ -367,12 +403,12 @@ describe('D8 — the provider head says whether its workers are paused, and unti
       '<div class="aq-head"><span class="cap-pname">Claude</span><span class="aq-name">llmux · 계정 5</span>',
     );
     expect(h).toContain(
-      `<span class="aq-pill is-paused">⏸ 제한 2 · ${timeAt((NOW_S + 25 * 60) * 1000, '25분')} 후 복귀</span>`,
+      `<span class="aq-pill is-paused">⏸ 제한 2 · ${timeAt((NOW_S + 25 * 60) * 1000, '25분', ' 후 복귀')}</span>`,
     );
   });
   it('all blocked > blocked > low > ok; nothing countable reads 계산 불가', () => {
     expect(cap.capProvHead(EMPTY, NOW)).toContain(
-      `<span class="aq-pill is-empty">✗ 모두 막힘 · ${timeAt((NOW_S + 80 * 60) * 1000, '1시간 20분')} 후 복귀</span>`,
+      `<span class="aq-pill is-empty">✗ 모두 막힘 · ${timeAt((NOW_S + 80 * 60) * 1000, '1시간 20분', ' 후 복귀')}</span>`,
     );
     expect(cap.capProvHead(LOW, NOW)).toContain('<span class="aq-pill is-low">▲ 부족</span>');
     const okOnly = view([ai1, ai2]).groups[0];
@@ -657,6 +693,7 @@ const CRON_FNS = [
   'capClockLabel',
   'capDur',
   'aqLeft',
+  'aqLeftSfx',
   'aqTime',
   'aqPill',
   'aqPlain',
@@ -700,13 +737,14 @@ describe('D16 — four numbers, each from a named field', () => {
     expect(stats()).toMatch(/^<dl class="aq-stats">/);
     expect(stats()).toMatch(
       new RegExp(
-        `<dt>다음 실행</dt><dd title="[^"]*nextRunAt[^"]*">${timeAt(NOW + 12 * M, '12분').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} 후<span class="aq-of">dependency-audit</span></dd>`,
+        `<dt>다음 실행</dt><dd title="[^"]*nextRunAt[^"]*">${timeAt(NOW + 12 * M, '12분', ' 후').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}<span class="aq-of">dependency-audit</span></dd>`,
       ),
     );
     expect(stats()).toMatch(
       /<dt>실행 중<\/dt><dd title="[^"]*다른 인스턴스 그룹 포함[^"]*">1<span class="aq-of is-n">\/5<\/span><\/dd>/,
     );
-    expect(stats()).toMatch(/<dt>24시간 실행 기록<\/dt><dd title="[^"]*성공 3 · 실패 1 · 진행 중 1[^"]*">≥5<\/dd>/);
+    expect(stats()).toMatch(/<dt>24시간 실행 기록<\/dt><dd title="[^"]*성공 4 · 실패 1 ·[^"]*">≥5<\/dd>/);
+    expect(stats()).not.toContain('진행 중');
     expect(stats()).toMatch(
       /<div class="aq-stat" data-kind="failed"><dt>실패 · 24시간<\/dt><dd title="[^"]*">≥1<\/dd>/,
     );
@@ -715,8 +753,9 @@ describe('D16 — four numbers, each from a named field', () => {
     expect(stats()).toMatch(/title="[^"]*dependency-audit 기록은 보관 한도 3회라 \d\d:\d\d부터[^"]*">≥5</);
     const d = cron.cronDayRuns(plan(), NOW);
     // records only: qa 1h ok + 2h failed · deps 15m + 45m ok (the queue entry is not a run) ·
-    // digest 22m in progress (its session waits). The running qa card has no record yet.
-    expect([d.n, d.ok, d.f, d.run, d.pending, d.unknown]).toEqual([5, 3, 1, 1, 1, 0]);
+    // digest 22m ok — a success record stays a success whatever its session does now (PR review
+    // R1). The running qa card has no record yet.
+    expect([d.n, d.ok, d.f, d.run, d.pending, d.unknown]).toEqual([5, 4, 1, 0, 1, 0]);
     expect(stats()).toMatch(/기록 전 카드 1개\(실행 중 1 · 결과 미확인 0\)는 세지 않음/);
     expect(d.cutFrom).toBe(NOW - 45 * M);
   });
@@ -731,12 +770,32 @@ describe('D16 — four numbers, each from a named field', () => {
     const idle = card('k-old', 'job-qa', 'nightly-qa', { lastActivity: new Date(NOW - 3 * HR).toISOString() });
     const p = cron.planCronLane({ ...BOARD, idle: [idle] }, JOBS, null);
     const d = cron.cronDayRuns(p, NOW);
-    expect([d.n, d.ok, d.unknown]).toEqual([5, 3, 1]);
+    expect([d.n, d.ok, d.unknown]).toEqual([5, 4, 1]);
     expect(cron.cronStats(p, NOW)).toMatch(/">≥5<span class="aq-of">\+미확인 1<\/span><\/dd>/);
     const ch = cron.cronRunChart(p, NOW);
-    const sums = [...ch.matchAll(/title="\d\d시 성공 (\d+) · 실패 (\d+) · 진행 중 (\d+)"/g)];
-    expect(sums.reduce((t, m) => t + Number(m[1]), 0)).toBe(3);
+    const sums = [...ch.matchAll(/title="\d\d:\d\d부터 1시간 · 성공 (\d+) · 실패 (\d+)"/g)];
+    expect(sums.reduce((t, m) => t + Number(m[1]), 0)).toBe(4);
     expect(ch).toContain('기록 전 카드 2개는 세지 않음.');
+  });
+  it('a success record whose session is live and working is still a success, never 진행 중 (PR review R1)', () => {
+    // An injected run keeps live:true while a human works in that thread (cron-view.ts) —
+    // live means "in the registry", not "this job runs now".
+    const busy = [
+      job('job-i', 'injected', 30 * M, [
+        run(10 * M, { session: { headline: 'h', boardKey: 'k-human', live: true, activityState: 'working' } }),
+      ]),
+    ];
+    const p = cron.planCronLane({ working: [], waiting: [], idle: [], closed: [] }, busy, null);
+    const d = cron.cronDayRuns(p, NOW);
+    expect([d.n, d.ok, d.run]).toEqual([1, 1, 0]);
+    expect(cron.cronStats(p, NOW)).not.toContain('진행 중');
+    const ch = cron.cronRunChart(p, NOW);
+    expect(ch).not.toContain('진행 중');
+    // only a recorded status that is not finished is in progress
+    const open = [job('job-o', 'open', 30 * M, [run(10 * M, { status: 'running' })])];
+    const po = cron.planCronLane({ working: [], waiting: [], idle: [], closed: [] }, open, null);
+    expect(cron.cronDayRuns(po, NOW).run).toBe(1);
+    expect(cron.cronRunChart(po, NOW)).toContain('<i class="is-run" aria-hidden="true"></i>진행 중');
   });
 });
 
@@ -777,22 +836,26 @@ describe('D18 — the tile counts down live', () => {
   it('the next fire’s remaining time is a <time data-aq-at>', () => {
     const h = cron.renderCronTileHead(groupOf('job-deps'), NOW);
     expect(h).toMatch(
-      new RegExp(`다음 \\d\\d:\\d\\d \\(${timeAt(NOW + 12 * M, '12분').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')} 후\\)`),
+      new RegExp(
+        `다음 \\d\\d:\\d\\d \\(${timeAt(NOW + 12 * M, '12분', ' 후').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`,
+      ),
     );
   });
 });
 
 describe('D19 — 24 hours of runs', () => {
   const chart = once(() => cron.cronRunChart(plan(), NOW));
-  it('24 hourly columns that add up to the 24h tile', () => {
+  it('24 rolling-hour columns, each labelled by its start, that add up to the 24h tile', () => {
     expect(chart().match(/class="aq-ch-col"/g)?.length).toBe(24);
-    const sums = [...chart().matchAll(/title="\d\d시 성공 (\d+) · 실패 (\d+) · 진행 중 (\d+)"/g)];
+    const sums = [...chart().matchAll(/title="(\d\d:\d\d)부터 1시간 · 성공 (\d+) · 실패 (\d+)"/g)];
     expect(sums.length).toBe(24);
-    expect(sums.reduce((t, m) => t + Number(m[1]) + Number(m[2]) + Number(m[3]), 0)).toBe(5);
-    expect(sums.reduce((t, m) => t + Number(m[2]), 0)).toBe(1);
+    // a column is the hour from its start, not a clock hour (PR review R1)
+    expect(sums[0][1]).toBe(hhmm(NOW - 24 * HR));
+    expect(sums[23][1]).toBe(hhmm(NOW - HR));
+    expect(sums.reduce((t, m) => t + Number(m[2]) + Number(m[3]), 0)).toBe(5);
     expect(sums.reduce((t, m) => t + Number(m[3]), 0)).toBe(1);
     expect(chart()).toMatch(/<i class="aq-ch-fail" style="height:[1-9][\d.]*%"><\/i>/);
-    expect(chart()).toMatch(/<i class="aq-ch-run" style="height:[1-9][\d.]*%"><\/i>/);
+    expect(chart()).not.toContain('진행 중');
   });
   it('hatches the stretch a truncated history cannot speak for', () => {
     expect(chart()).toContain(
@@ -802,7 +865,7 @@ describe('D19 — 24 hours of runs', () => {
   it('is an image with a sentence', () => {
     expect(chart()).toContain('<span class="aq-chart-title">실행 기록 · 24시간</span>');
     expect(chart()).toMatch(
-      /<div class="aq-plot" role="img" aria-label="지난 24시간 크론 실행 기록 5건, 실패 1건, 진행 중 1건, 가장 많은 시간 \d\d시 4건\. \d\d:\d\d 이전은 일부 잡 기록이 잘림\. 기록 전 카드 1개는 세지 않음\.">/,
+      /<div class="aq-plot" role="img" aria-label="지난 24시간 크론 실행 기록 5건, 실패 1건, 가장 많은 1시간 \d\d:\d\d부터 4건\. \d\d:\d\d 이전은 일부 잡 기록이 잘림\. 기록 전 카드 1개는 세지 않음\.">/,
     );
     expect(chart()).toContain(
       '<div class="aq-ch-axis"><span>24시간 전</span><span>12시간 전</span><span>지금</span></div>',

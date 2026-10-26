@@ -72,6 +72,7 @@ const CAP_FNS = [
   'capTimeline',
   'capAdvance',
   'aqLeft',
+  'aqLeftSfx',
   'aqTime',
   'aqPill',
   'capUnitState',
