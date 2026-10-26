@@ -1,6 +1,6 @@
 # Agent Queue → LLM 가용량 · CRON 레인
 
-Status: Phase A(문서) · 2026-10-26 · 기준 main `ff6c9ac` · 이슈 #444 (에픽 #437) · SSOT [`ssot.md`](ssot.md)
+Status: 구현 [SHIPPED] · 2026-10-26 · 기준 main `ff6c9ac` · 이슈 #444 (에픽 #437) · 후속 #447 · SSOT [`ssot.md`](ssot.md)
 앞선 계약: [`../12-cron-lane-and-llm-capacity-spec.md`](../12-cron-lane-and-llm-capacity-spec.md) T4·T5·T7·T9, §6(v2), §7(단순화 카드)
 
 증거 라벨: **[REF]** = affectui.com/components/agent-queue 페이지·docs 청크·데모 CSS·번들(2026-10-26 판독, Pro 항목 — 코드·CSS 미반입) ·
@@ -132,7 +132,7 @@ Status: Phase A(문서) · 2026-10-26 · 기준 main `ff6c9ac` · 이슈 #444 (�
 | 리밋 구간 음영 | 없음 | **채택 D13**(가용량, 모두 막힘일 때) | 지금 → 첫 `dNow`·`dWeek` > 0 이벤트. 12 T9 v1 "지금→복귀 음영"의 복원 |
 | 점선 backpressure 선 | 없음 | **변형 D9**(막대의 20% 점선) | `CAPACITY_LOW_PCT` — 그 아래가 `low`(호박색) |
 | 반응형 600·560·440 | JS `is-narrow`(<600) | **채택 D7** | 레인 = 컨테이너 쿼리, 가용량 카드 = 기존 `is-narrow` |
-| Throughput /min | — | **변형 D16**(24시간 실행 n) | 잡마다 보관 창이 다르다(15분 잡 5시간, 주간 잡 20주) — 기록 창 위의 "시간당"은 무엇의 비율도 아니다. 고정 24시간 + 잘림 `≥` |
+| Throughput /min | — | **변형 D16**(24시간 실행 기록 n) | 잡마다 보관 창이 다르다(15분 잡 5시간, 주간 잡 20주) — 기록 창 위의 "시간당"은 무엇의 비율도 아니다. 고정 24시간 + 잘림 `≥` |
 | DONE · FAILED 누계 칸 | 잡별 12회 막대 | **불채택**(D16 칸 3·4가 대신) | 시작 이후 누계가 없다. 잡마다 FIFO 20이라 보관 누계는 20×잡수에서 멈춰 거짓이 된다 |
 | Wait p95 | — | **불채택** | LLM 요청의 대기 시각이 없다. 크론은 예정 분과 실행 시각의 차이를 기록하지 않는다. 소요 p95도 잡이 만든 세션에만 있어 표본이 치우친다 |
 | 종류 색(llm·tool·agent·human) | — | **불채택** | 잡 종류 데이터가 없다. mode·target은 전달 방식이지 일의 종류가 아니다 |
@@ -142,146 +142,212 @@ Status: Phase A(문서) · 2026-10-26 · 기준 main `ff6c9ac` · 이슈 #444 (�
 | Move to front / Cancel | — | **불채택** | 크론에 우선순위가 없고 대시보드에 크론 쓰기 라우트가 없다. 세션 Stop은 카드에 이미 있다 |
 | 재시도 배지 · priority 미끄러짐 | — | **불채택** | 크론은 재시도하지 않고 우선순위 필드가 없다 |
 | 떨어짐·날아감·흔들림·숫자 easing | — | **불채택** | 30–60초 폴링이라 끝난 순간을 보지 못한다. 다시 그릴 때마다 지난 전이를 되풀이하게 된다 |
-| pill 맥박 점(무한) | — | **불채택** | 제한은 몇 시간~며칠 간다. 그동안 무한히 깜빡이면 소음이다. 정지 점만 둔다 |
+| pill 맥박 점(무한) | — | **불채택** | 제한은 몇 시간~며칠 간다. 그동안 무한히 깜빡이면 소음이다. 움직이지 않는 글리프(● ⏸ ✗ ▲ ◌)만 둔다 |
 
-## 4. 계약 (TO-BE)
+## 4. 계약 (TO-BE) [SHIPPED]
+
+교차 리뷰(trinity R1 — 문서 7개 공통 + astra) 반영분은 해당 D 안에 `(R1)`로 표시했다.
+
+### 4.0 문자열 규칙 (R1) [SHIPPED]
+- 크론 잡 이름, 실행 오류, 계정·그룹 이름처럼 도구나 사람이 쓴 문자열은 모두 `esc`(본문)나 `escAttr`(속성)를 거쳐 그린다.
+- 알림 영역 `#aq-live`는 `textContent`로만 쓴다.
+- 알릴 문장에 들어가는 이름·오류는 `aqPlain(s, max)`로 한 줄 평문이 된다. 제어 문자, 줄바꿈, 연속 공백은 공백 하나로 바꾸고 길이를 자른다
+  (이름 60자·40자, 오류 80자, 넘치면 `…`).
 
 ### 4.1 구조
-- **D1 두 섹션, 한 문법.** `#capacity`(stats와 inbox 사이)와 `#cron-lane`(inbox 안, 칸 위)의 자리, 접힘 규칙(가용량 늘 접힘, CRON 840×1000),
-  리드 카드 reconciler(T4)를 그대로 둔다. 공통 클래스: `.aq-head`(이름 · `.aq-name` 흐린 이름 · `.aq-pill` · 도구), `dl.aq-stats > .aq-stat > dt+dd`,
-  `.aq-col-head`(`라벨 <b>n</b>`), `.aq-mark`(마크 button), `.aq-pop`(고정 카드), `time.aq-left`(카운트다운). 합친 패널은 불채택(§3 첫 줄).
+- **D1 두 섹션, 한 문법 [SHIPPED].** `#capacity`(stats와 inbox 사이)와 `#cron-lane`(inbox 안, 칸 위)의 자리, 접힘 규칙(가용량 늘 접힘, CRON 840×1000),
+  리드 카드 reconciler(T4)를 그대로 둔다.
+  - 공통 클래스: `.aq-head`(이름 · `.aq-name` 흐린 이름 · `.aq-pill` · 도구), `dl.aq-stats > .aq-stat > dt+dd`, `.aq-col-head`(`라벨 <b>n</b>`),
+    `.aq-mark`(마크 button), `.aq-pop`(고정 카드), `time.aq-left`(카운트다운).
+  - 레인 안 정적 자리: `#cron-lane-top`, `.aq-lane-body > #cron-queue + #cron-groups`, `#cron-lane-chart`. 정적 `#aq-live`는 서랍 다음에 있다.
+  - 합친 패널은 불채택(§3 첫 줄).
 
 ### 4.2 공통
-- **D2 pill.** `<span class="aq-pill is-{ok|paused|empty|low|unknown|run|wait}"><i class="aq-dot" aria-hidden="true"></i>문구</span>`. 색은 상태색
-  토큰, 배경 14%·테두리 45% 섞기(`.cron-badge`와 같은 공식). live region이 아니다 — 30초마다 다시 그리는 마크업이라 알림은 D4 한 곳에서만 한다.
-- **D3 카운트다운.** `<time class="aq-left" role="timer" datetime="ISO" data-aq-at="epoch ms">`. 문구 `aqLeft(atMs, nowMs)`: 하루 이상 `1일 5시간`,
-  1시간 이상 `1시간 20분`, 1분 이상 `24분`, 1분 미만 `42초`, 0 이하 `곧`. 분 단위는 버린다(12 T9). `aqTick()`(`setInterval`, 1000)이
-  `#capacity`·`#cron-lane` 안의 `[data-aq-at]`만 바뀔 때 쓴다. `document.hidden`이면 쉬고, 틱마다 낭독하지 않는다.
-- **D4 알림.** 정적 `<div class="aq-sr" id="aq-live" aria-live="polite" aria-atomic="true">` 하나를 다시 그리는 영역 밖(서랍 다음)에 둔다.
-  `aqAnnounce(msg)`. 첫 불러오기는 기준선만 잡는다. 불러오기 한 번에 문장 하나, 우선순위 모두 막힘 > 실패 > 응답 대기 > 풀림 > 20% 선:
-  `Claude 계정이 모두 막힘 — 24분 후 복귀` · `Claude 다시 사용 가능 — 계정 2/4` · `Claude 지금 20% 아래 — 0.6/3.3 계정` ·
-  `크론 dependency-audit 실패: npm audit timed out…`(오류 80자) · `크론 morning-digest 응답 필요`. 계정 하나하나의 막힘·복귀는 알리지 않는다(실풀 모양 22계정, 12 §6 검증 — 소음).
-- **D5 토큰.** 새 변수 `--aq-warn: var(--st-wait)`, `--aq-warn-text`(다크 `#f5a524`, 라이트 `#9a5b00` — 흰 바탕 5.4:1, pill 바탕 4.6:1.
-  라이트 `--st-wait` `#c2780a`는 흰 바탕 3.5:1이라 글자에 쓰지 않는다). 둘 다 `[data-theme="light"]` 블록에 덮어쓴다. 나머지는 `--ib-*`·`--st-*`·
-  `--cap-now`·`--cap-wk`. 반경: 섹션 14·카드 12(기존), 마크·칩 8, pill 999. 글자: stat dt 12 muted, dd 16/600 tabular, 마크 12.
-- **D6 모션.** 마크 상태 변화 = 배경·글자색 `--dur-fade` `--ease-out`. 고정 카드는 `opacity 0→1`·`translateY(-4px) scale(.97)→none`
-  (`--dur-fade` `--ease-out`)으로 열리고 즉시 닫힌다. 새 대기열 칩은 `--dur-fade`로 나타나고, 차트 막대 높이는 `--dur-expand`로 바뀐다.
-  무한 애니메이션은 없다. reduced-motion 블록(`:5405`)에서 `.aq-*`의 animation·transition을 모두 끈다.
-- **D7 반응형.** 가용량 카드는 기존 `is-narrow`(카드 폭 < 600)를 쓴다. CRON 레인은 `container: aqlane / inline-size`: 560 이하 `aq-stats` 2×2(홀수
-  열 구분선 없음), 600 미만 대기열 열이 잡 그리드 위로 쌓이고 차트 88, 그 밖은 대기열 `clamp(188px, 26%, 236px)` | 잡 그리드, 차트 112.
-  가로 스크롤 0, coarse 포인터에서 마크·칩 44px 이상.
+- **D2 pill [SHIPPED].** `<span class="aq-pill is-{ok|paused|empty|low|unknown|run|wait}">글리프 문구</span>`.
+  - 문서 초안의 `aq-dot` 대신 문구 첫 글자의 글리프(● ⏸ ✗ ▲ ◌)를 쓴다. 색만으로 말하지 않고, 레인 머리의 기존 문구(`● 실행 중 n`)를 그대로 둘 수 있다.
+  - 색은 상태색 토큰이다. 배경 14%·테두리 45%로 섞는다(`.cron-badge`와 같은 공식).
+  - live region이 아니다. 30초마다 다시 그리는 마크업이라 알림은 D4 한 곳에서만 한다.
+- **D3 카운트다운 [SHIPPED].** `<time class="aq-left" role="timer" datetime="ISO" data-aq-at="epoch ms">`.
+  - 문구 `aqLeft(atMs, nowMs)`: 하루 이상 `1일 5시간`, 1시간 이상 `1시간 20분`, 1분 이상 `24분`, 1분 미만 `42초`, 0 이하 `곧`. 분 단위는 버린다(12 T9).
+  - 단위 (R1): 가용량 시각(`returnAt`, `events[].at`)은 epoch **초**, 크론 시각과 모든 `aq*`는 epoch **ms**다. 가용량 값은 경계에서
+    `capMs(sec)` 하나로만 바꾼다.
+  - 틱 (R1): 따로 `setInterval`을 두지 않는다. 공유 1Hz 경로 `updateTimers()`에 `aqTick()` 호출 하나를 더했다. `aqTick`은 `#capacity`·`#cron-lane`·
+    `#cron-drawer` 안의 `[data-aq-at]`만, 바뀔 때만 쓴다. `document.hidden`이면 쉬고, 틱마다 낭독하지 않는다.
+  - 서랍의 `다음 실행`도 같은 살아 있는 `14시간 12분` 형식이다 (R1).
+- **D4 알림 [SHIPPED].** 정적 `<div class="aq-sr" id="aq-live" aria-live="polite" aria-atomic="true">` 하나를 다시 그리는 영역 밖(서랍 다음)에 둔다.
+  - `aqAnnounce(msg)`는 비운 뒤 60ms 뒤에 쓴다. 같은 문장이 두 번 와도 다시 읽힌다.
+  - 가용량은 `loadCapacity`가 받을 때마다 `capAnnounceDiff(이전, 새, now)`(모두 막힘 > 다시 사용 가능 > 20% 아래)를 부른다.
+  - 레인은 보드를 그릴 때마다 `syncCronLane`이 `cronAnnounceDiff(이전 스냅샷, 새 스냅샷)`(새 실패 기록 > 새 응답 대기)를 부른다.
+  - 첫 불러오기, 처음 보는 그룹, 처음 받는 잡 데이터는 기준선이다(알리지 않음).
+  - 문장: `Claude 계정이 모두 막힘 — 24분 후 복귀` · `Claude 다시 사용 가능 — 계정 2/4` · `Claude 지금 20% 아래 — 0.6/3.3 계정` ·
+    `크론 dependency-audit 실패: npm audit timed out…` · `크론 morning-digest 응답 필요`.
+  - 계정 하나하나의 막힘·복귀는 알리지 않는다(실풀 모양 22계정, 12 §6 검증 — 소음).
+- **D5 토큰 [SHIPPED].** 이 영역의 토큰 블록(R1 — 공유 `:root`·라이트 블록은 건드리지 않음):
+  `:root { --aq-warn: var(--st-wait); --aq-warn-text: #f5a524; }` + `[data-theme="light"] { --aq-warn-text: #9a5b00; }`.
+  - `#9a5b00`은 흰 바탕 5.4:1, pill 바탕 4.6:1이다. 라이트 `--st-wait` `#c2780a`는 흰 바탕 3.5:1이라 글자에 쓰지 않는다.
+  - 나머지는 `--ib-*`·`--st-*`·`--cap-now`·`--cap-wk`를 그대로 쓴다.
+- **D6 모션 [SHIPPED].**
+  - 마크 상태 변화는 배경·글자색 `--dur-fade` `--ease-out`이다.
+  - 고정 카드는 `opacity 0→1`·`translateY(-4px) scale(.97)→none`(`--dur-fade`)으로 열리고 즉시 닫힌다.
+  - 새 대기열 칩은 `--dur-fade`로 나타나고, 차트 막대 높이는 `--dur-expand`로 바뀐다.
+  - 무한 애니메이션은 없다. 이 영역의 reduced-motion 블록은 따로 있고(R1), `.aq-mark, .aq-q, .aq-pop, .aq-ch-ok, .aq-ch-run, .aq-ch-fail`을 끈다.
+- **D7 반응형 [SHIPPED].** 가용량 카드는 기존 `is-narrow`(카드 폭 < 600)를 쓴다.
+  - CRON 레인은 `container: aqlane / inline-size`로 판단한다.
+    - 560 이하: `aq-stats` 2×2(홀수 열 구분선 없음).
+    - 600 미만: 대기열 열이 잡 그리드 위로 쌓이고 차트가 88이다.
+    - 그 밖: 대기열 `clamp(188px, 26%, 236px)` | 잡 그리드, 차트 112.
+  - 가로 스크롤 0. coarse 포인터에서 마크·칩·닫기는 44px 이상이다.
 
 ### 4.3 LLM 가용량 = 워커
-- **D8 카드 머리.** `.cap-pname` 줄이 `.aq-head`가 된다: `Claude` + `.aq-name` `llmux · 계정 N`(N = `units.length`) + pill. 공개 줄·막대·타임라인은 12 §7 그대로.
+- **D8 카드 머리 [SHIPPED].** `.cap-pname` 줄이 `.aq-head`가 된다: `Claude` + `.aq-name` `llmux · 계정 N`(N = `units.length`) + pill.
+  공개 줄·막대·타임라인은 12 §7 그대로다.
 
   | 순위 | 조건 | pill 문구 |
   |---|---|---|
-  | 1 | `unknown` | `◌ 계산 불가` |
-  | 2 | `empty` | `✗ 모두 막힘 · {D3} 후 복귀`(가장 이른 `returnAt`, 없으면 `capNextEvent(primary).at`), 둘 다 없으면 `✗ 소진` |
+  | 1 | `unknown` 또는 합계 0 | `◌ 계산 불가` |
+  | 2 | `empty` | 막힌 계정이 있으면 `✗ 모두 막힘`, 없으면 `✗ 소진` + `· {D3} 후 복귀`(가장 이른 `returnAt`, 없으면 `capNextEvent(primary).at`) |
   | 3 | 막힌 계정 p > 0(`counted && blocked`) | `⏸ 제한 p · {D3} 후 복귀`(가장 이른 `returnAt`), 없으면 `⏸ 제한 p` |
   | 4 | `low` | `▲ 부족` |
   | 5 | 그 밖 | `● 사용 가능` |
-- **D9 20% 선.** 각 `.cap-bar` 안에 `<i class="cap-low" style="left:20%" title="20% 아래면 부족"></i>`(점선 1px `--ib-muted`). 근거 `CAPACITY_LOW_PCT`.
-  클라이언트 `var CAP_LOW_PCT = 20;`이 서버 상수와 같음을 시험이 고정한다. 막대 색은 창 색 그대로(12 §7 "색은 창에만").
-- **D10 계정 마크(WORKERS).** 막대 아래·타임라인 위 `.aq-workers`(`role="group"`, `aria-label="Claude 계정 r/N 사용 가능"`). 머리 `.aq-col-head`
-  `계정 <b>r/N</b>`, r = `binding`이 있는 unit 수. 마크는 unit마다 하나, llmux 순서 그대로(갱신해도 자리가 안 바뀐다):
-  `button.aq-mark.is-{state}` `data-aq-key="{group}|{name}"`.
+- **D9 20% 선 [SHIPPED].** 각 `.cap-bar` 안에 `<i class="cap-low" style="left:20%" title="20% 아래면 부족"></i>`(점선 1px)를 둔다.
+  근거는 `CAPACITY_LOW_PCT`다. 클라이언트 `var CAP_LOW_PCT = 20;`이 서버 상수와 같음을 시험이 고정한다. 막대 색은 창 색 그대로다(12 §7).
+- **D10 계정 마크(WORKERS) [SHIPPED].** 막대 아래·타임라인 위에 `.aq-workers`(`role="group"`, `aria-label="Claude 계정 r/N 사용 가능"`,
+  `data-aq-rove="cap:{group}"`)를 둔다.
+  - 머리 `계정 <b>r/N</b>`에서 r은 ok 상태 수, N은 `units.length`다.
+  - 마크는 unit마다 하나, llmux 순서 그대로다(갱신해도 자리가 안 바뀐다): `button.aq-mark.is-{state}` `data-aq-key="{group}|{name}"`.
+  - 상태는 unit 자신의 필드로 정한다 (R1). `binding`은 "어느 창이 먼저 닿나"(5h/7d)일 뿐이고, ok 마크의 점 색과 카드의 `먼저 닿는 창`에만 쓴다.
 
-  | state | 조건(`CapacityUnit`) | 보이는 것 |
+  | state | 조건(`CapacityUnit`, `capUnitState`) | 보이는 것 |
   |---|---|---|
-  | ok | `binding` | 이름 + 창색 점(`binding` 5h 청록 / 7d 보라) |
+  | held | `!counted && excluded === 'held'` | 회색 `이름 · {일시정지·인증 실패·보류}`(`held`) |
+  | out | `!counted`(그 밖: `noMeasure`·`unknownTier`) | 점선 테두리 `이름 · {측정 없음·티어 미지정}` |
   | paused | `counted && blocked` | 호박색 `⏸ 이름 · {사유}` + `returnAt`이면 `{D3}`, 없으면 `복귀 약속 없음` |
-  | spent | `counted && !blocked && !binding && !unmeasured5h` | `이름 · 소진` |
-  | unmeasured | `unmeasured5h` | `이름 · 5시간 미측정` |
-  | held | `excluded=held` | 회색 `이름 · {일시정지·인증 실패·보류}` |
-  | out | `excluded=noMeasure·unknownTier` | 점선 테두리 `이름 · {측정 없음·티어 미지정}` |
+  | unmeasured | `counted && !blocked && unmeasured5h` | `이름 · 5시간 미측정` |
+  | ok | `counted && !blocked && !unmeasured5h && now > 0` | 이름 + 점(`binding` 5h 청록 / 7d 보라) |
+  | spent | `counted && !blocked && !unmeasured5h && now === 0` | `이름 · 소진` |
 
-  사유: `blocks.weekly` 주간 한도 > `fiveHour` 5시간 한도 > `scopedUntil` 모델 한도 > `cooldownUntil` 쿨다운(여럿이면 이 순서의 첫째).
-  마크에 사용량 막대·%·티어는 없다 — 12 §7이 뺀 "계정별 막대"는 되살리지 않는다. narrow이면 ok 마크를 `● 사용 가능 r` 하나로 접는다(목록은
-  D11 카드). 접근 이름은 보이는 칸만 나열한다: `ai3, Max x5, 5시간 한도, 1시간 20분 후 복귀`.
-- **D11 계정 카드.** `.aq-pop[role=dialog][aria-label="ai3 세부"]`가 마크 아래에 뜬다. 폭 min(280, 줄 폭 − 16), x는 [8, W − w − 8]로 자른다
-  (narrow면 줄 폭 − 24). 머리: 이름·티어(`Max x5` / `x20 가정` / `티어 미지정`)·상태 pill·`닫기`(`aria-label="닫기"`). 2열 dl: `지금 쓸 수 있음 {now%}` ·
-  `이번 주 남음 {week%}` · `먼저 닿는 창 {5시간|일주일}`(`binding`) · `상태 {사유}` · `복귀 {HH:MM} · {D3}`(`returnAt`) · `추정`(`estimated`).
-  접힌 ok 마크의 카드는 `이름 · 지금 % · 이번 주 %` 목록이다. "계정분"·"상한"은 쓰지 않는다(12 §7 시험). 한 번에 하나만 연다(`_aqOpen = key`).
-  30초 다시 그리기에도 열려 있고, 포커스가 그 안에 있었으면 되돌린다. 바깥 클릭·Esc로 닫고 포커스는 마크로 간다.
-- **D12 roving focus.** `[data-aq-rove]` 컨테이너에 위임 keydown `aqRove(e)` 하나. 정지점 하나(마지막에 포커스한 마크, 없으면 첫 마크가 `tabindex=0`).
-  ←·↑ 이전, →·↓ 다음, Home·End 끝. Enter·Space는 native button으로 카드를 여닫고, 카드가 열리면 Tab은 `닫기`로 간다. D17 칩도 같은 도우미를 쓴다.
-- **D13 모두 막힘 구간.** `state === 'empty'`이면 `capTimeline`이 지금부터 첫 상승(`dNow`, has5h가 아니면 `dWeek` > 0)까지 `<rect class="cap-tl-lim">`
-  (`--st-fail` 12% + 빗금 — 12 T9와 `.cap-prov.is-empty` 테두리와 같은 빨강, `<title>모두 막힘 — {HH:MM}까지</title>`)을 그린다. 다른 상태에서는 그리지 않는다.
-- **D14 접힌 칩.** 막힌 계정이 있으면 측정값 뒤·`⚠` 플래그 앞에 `<i class="cap-chip-lim">⏸ p · {D3}</i>`. 툴팁·접근 이름에 `제한 p — {D3} 후 첫 복귀`.
-  기존 칩 시험의 앞부분 정규식은 그대로 맞는다.
+  - 사유는 `blocks.weekly` 주간 한도 > `fiveHour` 5시간 한도 > `scopedUntil` 모델 한도 > `cooldownUntil` 쿨다운이다. 여럿이면 이 순서의 첫째를 쓴다.
+  - 마크에 사용량 막대·%·티어는 없다. 12 §7이 뺀 "계정별 막대"는 되살리지 않는다.
+  - narrow이면 ok 마크를 `● 사용 가능 r` 하나로 접는다(목록은 D11 카드).
+  - 접근 이름은 보이는 칸만 나열한다: `ai3, Max x5, 5시간 한도, 1시간 20분 후 복귀`.
+- **D11 계정 카드 [SHIPPED].** `.aq-pop[role=dialog][aria-label="ai3 세부"][data-aq-for]`가 마크 아래에 뜬다.
+  - 위치는 그린 뒤 `aqPlacePops`가 마크 아래 6px, x를 [8, W − w − 8]로 자른다. 폭은 CSS로 min(280, 줄 폭 − 16), narrow면 줄 폭 − 24다.
+  - 머리: 이름·티어(`Max x5` / `x20 가정` / `티어 미지정`)·상태 pill·`닫기`.
+  - 2열 dl: `지금 쓸 수 있음 {now%}` · `이번 주 남음 {week%}`(counted가 아니면 `—`) · `먼저 닿는 창` · `상태` · `추정`. `복귀 {HH:MM} · {D3}`은
+    2칸을 차지한다(`is-wide`).
+  - 접힌 ok 마크의 카드는 `이름 · 지금 % · 이번 주 %` 목록이다. "계정분"·"상한"은 쓰지 않는다.
+  - 한 번에 하나만 연다(`_aqOpen`). 30초 다시 그리기에도 열려 있고, `paintCapacity`가 포커스를 되돌린다(`aqFocusedKey` → `aqRestoreFocus`).
+  - 바깥 클릭·Esc·닫기로 닫힌다. Esc와 닫기는 포커스를 마크로 돌린다.
+- **D12 roving focus [SHIPPED].** `[data-aq-rove]` 위에 위임 keydown `aqRove(e, box)` 하나가 있다.
+  - 정지점은 하나다: 마지막에 포커스한 항목(`focusin` → `_aqFocusKey`), 없으면 첫 항목이 `tabindex=0`이다.
+  - ←·↑ 이전, →·↓ 다음, Home·End 끝이다. Enter·Space는 native button으로 카드를 여닫는다. D17 칩도 같은 도우미를 쓴다.
+- **D13 모두 막힘 구간 [SHIPPED].** `state === 'empty'`이면 `capTimeline`이 지금부터 첫 상승(`dNow`, has5h가 아니면 `dWeek` > 0)까지 그린다.
+  - `<rect class="cap-tl-lim">`(`--st-fail` 12%) + 빗금 패턴, `<title>모두 막힘 — {HH:MM}까지</title>`. 상승이 없으면 7일 끝까지 그린다.
+  - 다른 상태에서는 그리지 않는다.
+- **D14 접힌 칩 [SHIPPED].** 막힌 계정이 있으면 측정값 뒤·`⚠` 플래그 앞에 `<i class="cap-chip-lim">⏸ p · {D3}</i>`를 둔다.
+  툴팁·접근 이름에 `제한 p — {D3} 후 첫 복귀`를 붙인다. 기존 칩 시험은 그대로 통과한다(units 없는 칩에는 붙지 않는다).
 
 ### 4.4 CRON 레인 = 대기열
-- **D15 레인 머리.** `CRON n` 뒤의 `● 실행 중 n` · `▲ 응답 필요 n`은 문구 그대로 `.aq-pill is-run` · `.aq-pill is-wait`가 된다.
-- **D16 숫자 4칸.** 머리 바로 아래 `#cron-lane-top`의 `.aq-stats`, 펼친 레인에서만 보인다. 각 `dd`의 `title`이 출처를 말한다.
+- **D15 레인 머리 [SHIPPED].** `CRON n` 뒤의 `● 실행 중 n` · `▲ 응답 필요 n`은 문구 그대로 `aqPill('run'|'wait', …)`이 된다.
+- **D16 숫자 4칸 [SHIPPED].** 머리 바로 아래 `#cron-lane-top`의 `.aq-stats`이고, 펼친 레인에서만 보인다. 각 `dd`의 `title`이 출처를 말한다.
+  - 세는 것은 실행 기록만이다 (R1). 24시간 창의 각 기록(`KanbanCronJob.runs[]`, `queued` 제외)은 셋 중 하나다: 성공, 실패, 진행 중
+    (세션이 살아 있고 working·waiting).
+  - 기록 없는 보드 카드(`cronCardAsRun`의 `unrecorded`)는 세지 않는다. 시각이 마지막 활동일 수 있고 결과를 모르기 때문이다.
+    살아 있으면 실행 중 칸이 보여 주고, 아니면 `결과 미확인`이다.
 
   | 칸 | 값 | 출처 · 파생 |
   |---|---|---|
   | 다음 실행 | `{D3} 후` + `.aq-of` 잡 이름, 없으면 `—`(title `8일 안에 없음`) | `min(KanbanCronJob.nextRunAt)` |
-  | 실행 중 | `r<span class="aq-of">/N</span>` | r = `plan.runningCount`, N = `plan.groups.length`(다른 인스턴스 그룹 포함) |
-  | 24시간 실행 | `n`, 잘리면 `≥n` | `cronGroupRuns(g)` 중 `status !== 'queued'`이고 `executedAt ≥ now − 24h`. `unrecorded`(기록 전 실행 중 카드) 포함 |
-  | 실패 · 24시간 | `f`, f > 0이면 `data-kind=failed`(`--st-fail-text`) | 같은 창의 `status === 'failed'` |
+  | 실행 중 | `r<span class="aq-of is-n">/N</span>` | r = `plan.runningCount`, N = `plan.groups.length`. title이 "다른 인스턴스 그룹 포함, 다음 실행 열은 이 인스턴스만"을 밝힌다 |
+  | 24시간 실행 기록 | `n`(잘리면 `≥n`) + 결과 미확인 카드가 있으면 `+미확인 u` | 기록 수 = 성공 + 실패 + 진행 중. title에 세 수, 세지 않은 기록 전 카드(실행 중 · 결과 미확인), 잘림 |
+  | 실패 · 24시간 | `f`(잘리면 `≥f`), f > 0이면 `data-kind=failed`(`--st-fail-text`) | 같은 창의 `status === 'failed'` 기록 |
 
-  잘림: `runs.length ≥ historyCap`이고 가장 오래된 `executedAt`이 24시간 안이면 그 잡의 기록은 잘린 것이다 → 값에 `≥`, title에
-  `dependency-audit 기록은 보관 한도 20회라 15:04부터`.
-- **D17 대기열 열.** `#cron-queue`(`role="group"`, `aria-label="다음 실행 순서"`). 머리 `다음 실행 <b>n</b>`(n = `nextRunAt`이 있는 잡 수). `nextRunAt`
-  오름차순 칩 4개 + `+N`(레퍼런스는 칩 3 + 칸). 칩 = `button.aq-q[data-cron-group]`(시계·이름·`{D3}`) — 기존 위임 클릭이 그 잡의 서랍을 연다.
-  roving은 D12. 접근 이름 `dependency-audit, 12분 후 실행, 1/4 — 지난 실행 보기`. 비면 `8일 안에 예정 없음`. 다른 인스턴스 그룹은 나오지 않는다.
-- **D18 잡 타일.** T5 계약 그대로. `다음 HH:MM (… 후)`의 남은 시간만 `<time class="aq-left" data-aq-at>`로 살린다. 문구는 `14h 12m` → `14시간 12분`(D3로 통일).
-- **D19 실행 기록 차트.** `#cron-lane-chart`(그룹 아래), 제목 `실행 기록 · 24시간`. 1시간 24칸(지금으로 끝남), 성공·진행 `--st-done` 위에 실패 `--st-fail`을
-  쌓는다. `queued`는 넣지 않는다(D16과 같은 집합). y 최대 = max(최고, 4)를 nice 목록으로 올림, 격자 0·최대. 축 `24시간 전 · 12시간 전 · 지금`,
-  칸마다 `<title>HH시 성공 a · 실패 b</title>`. 잘린 잡이 있으면 [24시간 전, 가장 늦은 잘림 시작)에 빗금 `.aq-ch-cut` + `<title>`
-  (`이 구간은 {잡} 기록이 보관 한도로 잘려 실제보다 적을 수 있음`) — 레퍼런스 리밋 음영 자리. `role="img"`, 접근 이름
-  `지난 24시간 크론 실행 41회, 실패 2회, 가장 많은 시간 18시 6회. 15시 이전은 일부 잡 기록이 잘림.` 높이 112(D7 조건 88).
-- **D20 고정 카드 = 기존 서랍.** role=dialog·Esc·바깥 클릭·포커스 복귀 그대로. 레퍼런스의 Position은 서랍 메타 `다음 실행`이 맡고,
-  Attempt·Priority는 없다(크론에 필드가 없다). `Move to front`·`Cancel`은 불채택(§3).
-- 접힌 레인(12 / 10-24)은 머리와 응답 대기 잡만 보인다. 숫자 칸·대기열·차트는 숨는다.
+  - 잘림: `runs.length ≥ historyCap`이고 가장 오래된 `executedAt`이 24시간 안이면 그 잡의 기록은 잘린 것이다. 값에 `≥`를 붙이고 title에
+    `dependency-audit 기록은 보관 한도 20회라 15:04부터`를 적는다.
+  - 레퍼런스의 Waiting(후속 대기열)은 없다. 바쁜 세션 뒤에 줄 선 메시지(`FollowupQueue`)를 읽는 라우트가 아직 없다 — #447.
+- **D17 대기열 열 [SHIPPED].** `#cron-queue`(`role="group"`, `aria-label="다음 실행 순서"`, `data-aq-rove="cron-queue"`).
+  - 머리 `다음 실행 <b>n</b>`에서 n은 이 인스턴스의 잡 중 `nextRunAt`이 있는 수다. 머리 title이 "다른 인스턴스 그룹은 스케줄이 없어 빠진다"를
+    밝힌다(D16 N과의 차이).
+  - `nextRunAt` 오름차순 칩 4개 + `+N`이다. 칩은 `button.aq-q[data-cron-group][data-aq-key]`(시계·이름·`{D3}`)이고, 기존 위임 클릭이 그 잡의 서랍을 연다.
+  - 접근 이름 `dependency-audit, 12분 후 실행, 1/4 — 지난 실행 보기`. 비면 `8일 안에 예정 없음`.
+- **D18 잡 타일 [SHIPPED].** T5 계약 그대로다. `다음 HH:MM (… 후)`의 남은 시간만 `<time class="aq-left" data-aq-at>`로 살린다.
+  문구는 `14h 12m` → `14시간 12분`(D3로 통일)이다.
+- **D19 실행 기록 차트 [SHIPPED].** `#cron-lane-chart`(그룹 아래), 제목 `실행 기록 · 24시간` + 범례(성공 · 진행 중 · 실패).
+  - 1시간 24칸(지금으로 끝남)이다. D16과 같은 기록 집합으로 성공 `--st-done`, 진행 중 `--st-run`, 실패 `--st-fail`을 쌓는다. 기록 없는 카드는 그리지 않는다 (R1).
+  - y 최대는 max(최고, 4)를 nice 목록으로 올린 값이고, 격자는 0·최대다. 축은 `24시간 전 · 12시간 전 · 지금`이다.
+  - 칸마다 `title="HH시 성공 a · 실패 b · 진행 중 c"`. 기록 없는 카드는 어느 칸에서도 "성공"이 되지 않는다.
+  - 잘린 잡이 있으면 [24시간 전, 가장 늦은 잘림 시작)에 빗금 `.aq-ch-cut` + title을 둔다(레퍼런스 리밋 음영 자리).
+  - `role="img"`, 접근 이름 `지난 24시간 크론 실행 기록 41건, 실패 2건, 진행 중 1건, 가장 많은 시간 18시 6건. 15:04 이전은 일부 잡 기록이 잘림. 기록 전 카드 1개는 세지 않음.`
+  - 높이 112(D7 조건 88).
+- **D20 고정 카드 = 기존 서랍 [SHIPPED].** role=dialog·Esc·바깥 클릭·포커스 복귀 그대로다.
+  - 레퍼런스의 Position은 서랍 메타 `다음 실행`(이제 살아 있는 카운트다운)이 맡는다. Attempt·Priority는 없다(크론에 필드가 없다).
+  - `Move to front`·`Cancel`은 불채택(§3).
+- 접힌 레인(12 / 10-24)은 머리와 응답 대기 잡만 보인다. 숫자 칸·대기열·차트는 쓰지 않고 CSS로 숨는다.
 
 ### 4.5 앞선 계약에서 바뀌는 것
 | 앞선 계약 | 바뀐 것 | 이유 |
 |---|---|---|
 | 12 §7 "뺀 것: … 계정별 막대, 칩 …" | 계정마다 **상태 마크**(D10). 사용량 막대·%·티어는 없고 숫자는 고정 카드(D11)에서만 | 레퍼런스의 핵심 결정은 "어느 워커가 멈췄고 언제 돌아오나"인데, 지금은 막힌 개수만 말한다. 마크는 이름·사유 한 단어·카운트다운만 실어 §7이 거부한 수치 소음을 되살리지 않는다. 좁으면 ok 마크를 하나로 접는다 |
 | 12 §7 카드 = 막대 2 + 타임라인 1 | + 머리 pill(D8), 20% 점선(D9), 모두 막힘 음영(D13) | 막대·타임라인은 그대로. 음영은 12 T9 v1 "지금→복귀 음영"의 복원 |
-| 12 T9 카운트다운은 그릴 때 고정 | 1Hz로 살아 있음(D3). 분 버림 유지, 1분 미만은 초 | 레퍼런스의 리밋 카운트다운. 1분 미만이 "1분"에 멈추지 않는다 |
-| 12 T5 타일 `다음 … (14h 12m 후)` | `14시간 12분 후`(D18) | 가용량 `capDur` 형식과 하나로 |
+| 12 T9 카운트다운은 그릴 때 고정 | 1Hz로 살아 있음(D3, 공유 틱). 분 버림 유지, 1분 미만은 초 | 레퍼런스의 리밋 카운트다운. 1분 미만이 "1분"에 멈추지 않는다 |
+| 12 T5 타일·서랍 `다음 … (14h 12m 후)` | `14시간 12분 후`, 살아 있음(D18, D3) | 가용량 `capDur` 형식과 하나로 |
 | 12 T4 레인 = 머리 + 잡 그리드 | + 숫자 4칸, 다음 실행 열, 24시간 차트(D16·D17·D19), 펼쳤을 때만 | 대기열·처리량·기록. 응답 대기 우선 정렬과 리드 카드는 그대로 |
 
-## 5. 시험
+## 5. 시험 [SHIPPED]
 
-새 파일 `src/conversation/__tests__/dashboard-affectui-agent-queue-client.test.ts`. 하네스는 `dashboard-cron-capacity-client.test.ts` 1–60의
-cook·clientFn·load, 가용량 입력은 실제 `buildCapacityView` 출력(하네스 `fixtures-agent-queue.ts`와 같은 모양). 표의 시험은 모두 구현 전 RED다
-(새 함수·클래스가 없다). 기존 시험은 바꾸지 않고 GREEN을 유지해야 한다.
+새 파일 `src/conversation/__tests__/dashboard-affectui-agent-queue-client.test.ts`(시험 54건)를 만들었다.
+- 하네스는 `dashboard-cron-capacity-client.test.ts` 1–60의 cook·clientFn·load다. 함수는 처음 쓸 때 잘라 온다(결정마다 따로 RED). `beforeAll`이
+  한 번 미리 불러온다(부하가 큰 기계에서 5초 예산 보호).
+- 가용량 입력은 실제 `buildCapacityView` 출력이다(하네스 `fixtures-agent-queue.ts`와 같은 모양).
+- 구현 전 48건이 모두 RED였다(`harness/red-agent-queue.summary.txt` — `client function aqLeft not found`, `client var CAP_LOW_PCT not found`,
+  `expected … to contain '<div class="aq-sr" id="aq-live"…'` 등). 리뷰 R1로 6건을 더했다.
 
-| # | D | 시험 |
-|---|---|---|
-| 1 | D1 | 쪽 배치 유지(기존 `page wiring` 4건) + 정적 `#aq-live[aria-live=polite]`가 `#capacity`·`#cron-lane` 밖에 있다. `#cron-lane-top`·`#cron-queue`·`#cron-lane-chart`가 레인 안에 있다 |
-| 2 | D2 | `aqPill` 마크업·클래스, `role="status"`·`aria-live` 없음 |
-| 3 | D3 | `aqLeft`: 1일 5시간 / 1시간 20분 / 24분 / 42초 / 곧, 분 버림. `aqTick`은 가짜 요소에서 바뀐 것만 쓰고 hidden이면 쉰다 |
-| 4 | D4 | `capAnnounceDiff`·`cronAnnounceDiff`: 첫 호출 ''. 모두 막힘 진입·풀림·20% 아래로·새 실패·새 응답 대기의 문장. 카운트다운만 바뀌면 ''. 한 번에 하나(우선순위) |
-| 5 | D5 | CSS: `--aq-warn-text` 다크·라이트 정의 + 라이트 블록 덮어쓰기 |
-| 6 | D6 | reduced-motion 블록에 `.aq-` 셀렉터의 `animation: none`·`transition: none`. `infinite`가 붙은 `.aq-` 규칙 없음 |
-| 7 | D7 | CSS: `@container aqlane (max-width: 560px)` `.aq-stats` 2열, `(max-width: 599px)` 대기열 쌓기 |
-| 8 | D8 | `capProvHead`: ok·제한(가장 이른 `returnAt` 카운트다운)·모두 막힘·부족·계산 불가 문구와 우선순위 |
-| 9 | D9 | `capBarRow`에 `cap-low` 20% + `CAP_LOW_PCT === CAPACITY_LOW_PCT`(서버 import) |
-| 10 | D10 | `capWorkers`: unit 순서, 상태 6종 클래스·단어, `계정 r/N`, 사유 우선순위, narrow에서 ok 접기, 마크에 width 스타일·`%` 없음, "v2 clutter" 금지어(`cap-units` 등·`계정분`·`상한`) 없음 |
-| 11 | D11 | `capAccountCard`: dialog·aria-label·닫기, dl 행이 unit 필드에서 온다. 열린 key는 다시 그려도 유지 |
-| 12 | D12 | `aqRove`: 가짜 목록에서 ←→↑↓·Home·End로 포커스·tabindex 이동. Esc로 카드를 닫으면 포커스가 마크로 |
-| 13 | D13 | `capTimeline`: empty일 때 `cap-tl-lim`이 지금부터 첫 상승까지. ok·low에는 없음 |
-| 14 | D14 | `renderCapacitySummary`: 막힌 계정이 있으면 `cap-chip-lim` + 접근 이름. 기존 칩 시험(`dashboard-responsive`) GREEN |
-| 15 | D15 | `renderCronLaneHead`: 같은 문구, `aq-pill is-run`·`is-wait` |
-| 16 | D16 | `cronStats`: 4칸 값, `≥` 잘림과 title, 실패 칸 빨강, `queued` 제외·`unrecorded` 포함, title의 출처 |
-| 17 | D17 | `cronQueue`: `nextRunAt` 순서, 칩 4 + `+N`, `data-cron-group`·`data-aq-at`, 접근 이름, 빈 문구 |
-| 18 | D18 | `renderCronTileHead`의 다음 실행에 `<time class="aq-left"`·`data-aq-at`. 나머지 T5 시험 GREEN |
-| 19 | D19 | `cronRunChart`: 24칸 합 = D16 값, 실패 쌓기, 잘림 빗금 구간, `role="img"` 요약, narrow 88 |
-| 20 | D20 | 서랍 시험(기존) GREEN + 대기열 칩 클릭이 `openCronDrawer`로(위임 경로) |
+| D | 시험(describe) |
+|---|---|
+| D1 | `D1 — two sections, one grammar`(정적 `#aq-live` 위치, 레인 자리 3개 + `#cron-groups` 유지) + 기존 `page wiring` 4건 |
+| D2 | `D2 — the pill` |
+| D3 | `D3 — a live countdown`(형식, `<time>`, 초·ms 경계 `24분` 둘 다 (R1), 틱이 바뀐 것만 쓰고 hidden이면 쉼, `updateTimers`의 `aqTick()` 하나 (R1)) |
+| D4 | `D4 — one polite sentence per load` · `D4 (lane) — …`(첫 시야 기준선, 실패 > 응답 대기, 오류 80자) |
+| D5–D7 | `D5–D7 — tokens, motion, responsive`(`:root`·라이트 블록 (R1), reduced-motion 블록, 무한 루프 없음, 컨테이너 쿼리, coarse 44px) |
+| D8 | `D8 — the provider head …` |
+| D9 | `D9 — the 20% line on each bar`(+ `CAP_LOW_PCT === CAPACITY_LOW_PCT`) |
+| D10 | `D10 — account marks (workers)`(순서, 6상태, 실제 조건 counted·blocked·unmeasured5h·now (R1), §7 금지어, 정지점, narrow 접기) |
+| D11 | `D11 — the account card` |
+| D12 | `D12 — roving focus` |
+| D13 | `D13 — the all-blocked stretch on the timeline` |
+| D14 | `D14 — the folded chip says how many are paused` + 기존 `dashboard-responsive` 칩 시험 2건 |
+| D15 | `D15 — the lane head keeps its words as pills` |
+| D16 | `D16 — four numbers, each from a named field`(기록만 셈, 잘림 `≥`, 다른 인스턴스 title, 기록 없는 idle 카드 반례 (R1)) |
+| D17 | `D17 — the next-fire queue` |
+| D18 | `D18 — the tile counts down live` |
+| D19 | `D19 — 24 hours of runs`(24칸 합 = D16, 진행 중 쌓기, 빗금, 문장) |
+| D20 | `D20 — the drawer stays the pinned card` + 기존 서랍 시험 |
+| 4.0 | `R1 — names, errors and labels are text, never markup`(`<script>`·`<img>`·따옴표 주입: 칸·대기열·차트·타일·마크·카드·머리. 오류 한 줄화. `#aq-live`는 textContent) |
 
-화면 확인: `harness/serve-agent-queue.ts`(포트 34107) + `shoot-agent-queue.mjs` → `after-*`. 라이트·다크 × 1440·390 × 접힘·펼침 + 서랍 + 계정 카드.
+갱신한 기존 시험: `dashboard-cron-capacity-client.test.ts`의 `CAP_FNS`·`CAP_VARS` 하네스 목록에 새 함수·변수 이름을 더했다
+(`renderCapacityGroup`이 그것들을 부른다). 단언은 하나도 바꾸지 않았다.
 
 ## 6. 범위 밖
 
-- **진짜 대기열**: `FollowupQueue`(바쁜 세션 뒤에 줄 선 메시지)를 노출하면 레퍼런스의 Waiting·Wait p95를 정직하게 채울 수 있다. 새 읽기
-  라우트와 서버 시험이 필요해 별도 이슈로 둔다.
+- **진짜 대기열**: `FollowupQueue`(바쁜 세션 뒤에 줄 선 메시지)를 노출하면 레퍼런스의 Waiting·Wait p95를 정직하게 채울 수 있다. 읽기 라우트와 서버
+  시험이 필요해 #447로 둔다.
 - **llmux `in_flight`·`current_by_group`**: 읽은 순간의 값이고 화면은 최대 90초(캐시 30 + 폴링 60) 늦다. "지금 처리 중"으로 그리면 거짓이다.
 - 쓰기: 일시정지, 계정 전환·추가(llmux `/switch`는 운영자 몫), 크론 지금 실행·일시정지·삭제(Slack `cron` 표면).
 - `0 9 * * 1` 같은 주간 식의 문장화(`cronScheduleLabel`), 형제 인스턴스의 크론 데이터(12 §4).
 - 에픽 스펙 `../14-dashboard-affectui-spec.md`은 디스패처가 7개 문서를 모아 쓴다.
+
+## 7. 검증
+
+- RED → GREEN: 새 파일 48건 모두 RED(구현 전) → 54건 GREEN(리뷰 반영 후). 관련 세 파일(`-affectui-agent-queue-client`, `-cron-capacity-client`,
+  `-responsive`) 150건 GREEN.
+- 게이트:
+  - `npx vitest run src/conversation/__tests__/`: 기계 부하(load average 95–110, 18코어)에서 기본 시간 한도로는 서버 시험 훅이 시간 초과했다.
+    `--maxWorkers=4 --testTimeout=60000 --hookTimeout=120000`으로 1701/1702 통과했다. 남은 1건 `work-log.test.ts`(자체 30초 한도)는 단독 실행에서
+    106/106 통과했다.
+  - `npx tsc --noEmit` 통과.
+  - `npx biome check src/conversation/` 오류 0(경고는 기존 패턴 — 새 파일은 `noExplicitAny` 9건).
+- 화면(`harness/shots-agent-queue/after-*`): 합성 데이터, 포트 34117, 라이트·다크 × 1440·390 × 접힘·펼침 + 서랍 + 계정 카드.
+  - 키보드: 마크 포커스 → Enter로 카드 열림(포커스 마크 유지) → Esc로 닫힘·포커스 마크. 네 조합 모두 같았다.
+  - 가로 스크롤 0px(네 조합).
+- 관찰: 미리보기에서 형제 인스턴스(34107)의 크론 카드가 보드에 합쳐진다. 그 카드들은 이 인스턴스의 기록에 없으므로 `+미확인 1`과 `기록 전 카드`로
+  정직하게 빠졌다(D16 반례와 같은 경로).

@@ -5863,6 +5863,107 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (max-width: 760px) {
   .cap-legend { margin-left: 0; }
 }
+/* ── Agent Queue grammar (affectUI #444, .prd/affectui/re-agent-queue.md) ──
+   Capacity = workers (llmux accounts as state marks), CRON lane = queue (the next fires,
+   four numbers, 24 hours of runs). One head pill with a live countdown, one polite region.
+   Colour is never the only signal: every state leads with a glyph or a word. */
+/* This region's own tokens (not the shared :root / light blocks): warning text that holds
+   4.5:1 — light --st-wait (#c2780a) is 3.5:1 on white, so it is never used as text. */
+:root { --aq-warn: var(--st-wait); --aq-warn-text: #f5a524; }
+[data-theme="light"] { --aq-warn-text: #9a5b00; }
+.aq-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.aq-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; min-width: 0; }
+.aq-name { font-size: 12px; color: var(--ib-muted); white-space: nowrap; }
+.aq-pill { display: inline-flex; align-items: center; gap: 4px; min-height: 22px; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; line-height: 1.3; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--aq-pc, var(--ib-text-2)); background: color-mix(in srgb, var(--aq-pc, var(--ib-muted)) 14%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--aq-pc, var(--ib-muted)) 45%, transparent); }
+.aq-pill.is-ok { --aq-pc: var(--st-done); }
+.aq-pill.is-run { --aq-pc: var(--st-run); }
+.aq-pill.is-paused, .aq-pill.is-low, .aq-pill.is-wait { --aq-pc: var(--aq-warn); color: var(--aq-warn-text); }
+.aq-pill.is-empty { --aq-pc: var(--st-fail); color: var(--st-fail-text); }
+.aq-pill.is-unknown { --aq-pc: var(--ib-muted); }
+.aq-left { font-variant-numeric: tabular-nums; }
+.aq-col-head { display: flex; align-items: baseline; gap: 6px; font-size: 12px; color: var(--ib-muted); }
+.aq-col-head b { color: var(--ib-text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.aq-workers { position: relative; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--ib-card-border); }
+.aq-marks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.aq-mark { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 0 9px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; transition: background-color var(--dur-fade) var(--ease-out), color var(--dur-fade) var(--ease-out), border-color var(--dur-fade) var(--ease-out); }
+.aq-mark b { font-weight: 600; }
+.aq-mark.is-paused { color: var(--aq-warn-text); background: color-mix(in srgb, var(--aq-warn) 12%, var(--ib-card)); border-color: color-mix(in srgb, var(--aq-warn) 50%, transparent); }
+.aq-mark.is-spent, .aq-mark.is-unmeasured, .aq-mark.is-held { color: var(--ib-text-2); background: var(--ib-pill); }
+.aq-mark.is-out { color: var(--ib-muted); background: transparent; border-style: dashed; }
+.aq-mark[aria-expanded="true"] { border-color: var(--ib-text-2); }
+.aq-mark:focus-visible, .aq-q:focus-visible, .aq-pop-close:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+@media (hover: hover) and (pointer: fine) { .aq-mark:hover, .aq-q:hover { border-color: var(--ib-muted); } }
+.aq-wdot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+.aq-wdot.is-h5 { background: var(--cap-now); }
+.aq-wdot.is-wk { background: var(--cap-wk); }
+.aq-pop { position: absolute; z-index: 6; top: 100%; left: 8px; width: min(280px, calc(100% - 16px)); display: grid; gap: 10px; padding: 12px; border-radius: 12px; background: var(--ib-card); color: var(--ib-text); box-shadow: 0 0 0 1px var(--ib-card-border), var(--ib-shadow-raised); animation: aq-open var(--dur-fade) var(--ease-out); }
+.cap-prov.is-narrow .aq-pop { width: calc(100% - 24px); }
+@keyframes aq-open { from { opacity: 0; transform: translateY(-4px) scale(0.97); } to { opacity: 1; transform: none; } }
+.aq-pop-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.aq-pop-name { font-size: 14px; font-weight: 700; }
+.aq-pop-kind { flex: 1 1 auto; min-width: 0; font-size: 12px; color: var(--ib-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aq-pop-close { flex: none; width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: none; color: var(--ib-text-2); font: inherit; font-size: 16px; line-height: 1; cursor: pointer; }
+.aq-pop-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--ib-col); }
+.aq-pop-stats dt { font-size: 11px; color: var(--ib-muted); }
+.aq-pop-stats dd { margin: 0; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+.aq-pop-stats .is-wide { grid-column: 1 / -1; }
+.cap-bar { position: relative; }
+.cap-low { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--ib-text-2); opacity: 0.7; }
+.cap-tl-lim { fill: var(--st-fail); fill-opacity: 0.12; }
+.cap-tl-hatch { stroke: var(--st-fail); stroke-opacity: 0.4; stroke-width: 1.5; }
+.cap-chip .cap-chip-lim { color: var(--aq-warn-text); font-weight: 600; white-space: nowrap; }
+.cron-lane { container: aqlane / inline-size; }
+.aq-lane-top { padding: 0 4px 10px; }
+.aq-lane-top:empty { display: none; }
+.aq-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; padding: 12px 0; border-radius: 12px; background: var(--ib-card); box-shadow: inset 0 0 0 1px var(--ib-card-border); }
+.aq-stat { display: grid; gap: 2px; min-width: 0; padding: 0 16px; }
+.aq-stat + .aq-stat { border-left: 1px solid var(--ib-card-border); }
+.aq-stat dt { font-size: 12px; color: var(--ib-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aq-stat dd { margin: 0; font-size: 16px; font-weight: 600; color: var(--ib-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.aq-stat[data-kind="failed"] dd { color: var(--st-fail-text); }
+.aq-of { margin-left: 4px; font-size: 13px; font-weight: 500; color: var(--ib-muted); }
+.aq-of.is-n { margin-left: 1px; }
+.aq-lane-body { display: grid; grid-template-columns: clamp(188px, 26%, 236px) minmax(0, 1fr); gap: 10px; align-items: start; padding: 0 4px; }
+.aq-lane-body .cron-groups { padding: 0; }
+.aq-queue { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 10px; border-radius: 12px; border: 1px solid var(--ib-card-border); background: color-mix(in srgb, var(--ib-card) 45%, transparent); }
+.aq-queue:empty { display: none; }
+.aq-q { display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; animation: aq-in var(--dur-fade) var(--ease-out); }
+.aq-q svg { flex: none; width: 12px; height: 12px; color: var(--ib-muted); }
+.aq-q-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aq-q .aq-left { flex: none; font-size: 11.5px; color: var(--ib-muted); }
+.aq-more { align-self: flex-start; padding: 1px 8px; border-radius: 6px; background: var(--ib-pill); color: var(--ib-text-2); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.aq-empty { padding: 4px 2px; font-size: 12px; color: var(--ib-muted); }
+@keyframes aq-in { from { opacity: 0; } to { opacity: 1; } }
+.aq-chart { margin: 10px 4px 0; padding: 12px 14px 10px; border-radius: 12px; background: var(--ib-card); box-shadow: inset 0 0 0 1px var(--ib-card-border); }
+.aq-chart:empty { display: none; }
+.aq-chart-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; font-size: 12px; }
+.aq-chart-title { font-weight: 500; color: var(--ib-text); }
+.aq-chart-head .aq-of { margin-left: auto; font-size: 12px; }
+.aq-plot { position: relative; height: 112px; margin-left: 26px; display: flex; align-items: stretch; gap: 2px; border-bottom: 1px solid var(--ib-card-border); }
+.aq-ch-grid { position: absolute; left: -26px; right: 0; top: 0; height: 0; border-top: 1px dashed var(--ib-pill); pointer-events: none; }
+.aq-ch-grid span { position: absolute; left: 0; top: -7px; width: 20px; text-align: right; font-size: 11px; line-height: 14px; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
+.aq-ch-cut { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(-45deg, transparent 0 5px, color-mix(in srgb, var(--ib-muted) 22%, transparent) 5px 6px); }
+.aq-ch-col { position: relative; z-index: 1; flex: 1 1 0; min-width: 0; display: flex; flex-direction: column-reverse; }
+.aq-ch-ok, .aq-ch-run, .aq-ch-fail { display: block; transition: height var(--dur-expand) var(--ease-out); }
+.aq-ch-ok { background: var(--st-done); }
+.aq-ch-run { background: var(--st-run); }
+.aq-ch-fail { background: var(--st-fail); border-radius: 2px 2px 0 0; }
+.aq-ch-axis { display: flex; justify-content: space-between; margin: 6px 0 0 26px; font-size: 11px; color: var(--ib-muted); }
+.aq-ch-grid.is-zero { top: 100%; border-top: 0; }
+.aq-ch-key { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--ib-text-2); }
+.aq-chart-title + .aq-ch-key { margin-left: auto; }
+.aq-ch-key i { width: 8px; height: 8px; border-radius: 2px; }
+.aq-ch-key i.is-ok { background: var(--st-done); }
+.aq-ch-key i.is-run { background: var(--st-run); }
+.aq-ch-key i.is-fail { background: var(--st-fail); }
+.cron-lane.is-collapsed .aq-lane-top, .cron-lane.is-collapsed .aq-queue, .cron-lane.is-collapsed .aq-chart { display: none; }
+.cron-lane.is-collapsed .aq-lane-body { display: block; }
+@container aqlane (max-width: 599px) { .aq-lane-body { grid-template-columns: minmax(0, 1fr); } .aq-plot { height: 88px; } }
+@container aqlane (max-width: 560px) { .aq-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 12px; } .aq-stat { padding: 0 12px; } .aq-stat:nth-child(odd) { border-left: 0; } .aq-stat dd { font-size: 15px; } }
+@media (pointer: coarse) { .aq-mark, .aq-q { min-height: 44px; } .aq-pop-close { width: 44px; height: 44px; } }
+@media (prefers-reduced-motion: reduce) {
+  .aq-mark, .aq-q, .aq-pop, .aq-ch-ok, .aq-ch-run, .aq-ch-fail { animation: none; transition: none; }
+}
 @media (prefers-reduced-motion: reduce) {
   .cr-tick.is-run { animation: none; }
   .cron-drawer, .cron-drawer-overlay { transition: none; }
@@ -6603,7 +6704,14 @@ body.nt-open .new-task-fab { display: none !important; }
           <div class="cron-lane-head" id="cron-lane-head"></div>
           <button type="button" class="sec-toggle" id="cron-toggle" data-sec-toggle="cron" aria-expanded="false" aria-controls="cron-groups"><span class="sec-toggle-text">&#xD3BC;&#xCE58;&#xAE30;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
         </div>
-        <div class="cron-groups" id="cron-groups"></div>
+        <!-- Agent Queue grammar (#444): four numbers, the next-fire queue beside the job
+             groups, and 24 hours of runs — shown while the lane is unfolded. -->
+        <div class="aq-lane-top" id="cron-lane-top"></div>
+        <div class="aq-lane-body">
+          <div class="aq-queue" id="cron-queue" role="group" aria-label="다음 실행 순서" data-aq-rove="cron-queue"></div>
+          <div class="cron-groups" id="cron-groups"></div>
+        </div>
+        <div class="aq-chart" id="cron-lane-chart"></div>
       </div>
       <!-- How many need you and how many run, said politely (re-agent-inbox D6). -->
       <p id="inbox-live" class="ib-sr" role="status" aria-live="polite" aria-atomic="true"></p>
@@ -6639,6 +6747,9 @@ body.nt-open .new-task-fab { display: none !important; }
     <div class="cron-drawer-meta" id="cron-drawer-meta"></div>
     <div class="cron-drawer-body" id="cron-drawer-body"></div>
   </aside>
+  <!-- Capacity + CRON announcements (#444 D4): one static polite region, outside every
+       re-rendered section, so a repaint never re-announces and a transition always is. -->
+  <div class="aq-sr" id="aq-live" aria-live="polite" aria-atomic="true"></div>
 
   <!-- Slide Panel for Session Detail -->
   <div class="slide-panel-overlay" id="panel-overlay" onclick="closePanel()"></div>
@@ -7991,7 +8102,7 @@ function updateTimersIn(root) {
     exp[x].classList.toggle('is-low', left <= 60);
   }
 }
-function updateTimers() { updateTimersIn(document); }
+function updateTimers() { updateTimersIn(document); aqTick(); }
 var _timerTick = setInterval(updateTimers, 1000);
 
 // ── User list ──
@@ -15681,7 +15792,8 @@ function renderCronTileHead(g, nowMs) {
   var j = g.job;
   var runs = cronGroupRuns(g);
   var sched = j ? cronScheduleLabel(j.expression, j.nextRunAt) : '';
-  var next = j && j.nextRunAt ? '다음 ' + capClockLabel(j.nextRunAt / 1000, nowMs) + ' (' + capCountdown((j.nextRunAt - nowMs) / 1000) + ' 후)' : '';
+  // The time left counts down live (#444 D18 — aqTick rewrites the <time>).
+  var next = j && j.nextRunAt ? '다음 ' + esc(capClockLabel(j.nextRunAt / 1000, nowMs)) + ' (' + aqTime(j.nextRunAt, nowMs) + ' 후)' : '';
   var last = runs[0];
   var lastGl = last ? cronRunGlyph(last) : null;
   var status = g.waiting ? '▲ 응답 필요'
@@ -15696,16 +15808,169 @@ function renderCronTileHead(g, nowMs) {
     + '</div>'
     + '<div class="cron-sched">'
     + (sched ? '<span class="cron-expr" title="' + escAttr((j ? j.expression : '') + ' — cron 식은 UTC 기준') + '">' + esc(sched) + '</span>' : '')
-    + (next ? '<span class="cron-next">' + esc(next) + '</span>' : '')
+    + (next ? '<span class="cron-next">' + next + '</span>' : '')
     + '</div>'
     + renderCronStrip(g, nowMs)
     + '<div class="cron-status is-' + (g.waiting ? 'wait' : g.running ? 'run' : lastGl ? lastGl.cls : 'none') + '">' + esc(status) + '</div>';
 }
 function renderCronLaneHead(plan) {
   var n = plan.groups.length;
+  // Same words as before (spec 12 T4), as the queue grammar's pills (#444 D15).
   return '<span class="col-spark" aria-hidden="true">' + CLOCK_SVG + '</span><h3>CRON</h3><span class="count">' + n + '</span>'
-    + (plan.runningCount ? '<span class="cron-lane-note is-run">● 실행 중 ' + plan.runningCount + '</span>' : '')
-    + (plan.waitingCount ? '<span class="cron-lane-note is-wait">▲ 응답 필요 ' + plan.waitingCount + '</span>' : '');
+    + (plan.runningCount ? aqPill('run', '● 실행 중 ' + plan.runningCount) : '')
+    + (plan.waitingCount ? aqPill('wait', '▲ 응답 필요 ' + plan.waitingCount) : '');
+}
+// ── The lane as a queue (affectUI Agent Queue, #444 D16/D17/D19) ──
+// The last 24 hours of the lane, from the run RECORDS only (review R1): each recorded fire is
+// a success, a failure, or still in progress (its session live — working or waiting). A
+// queue entry is an event, not a run. A board card with no record yet is not counted: it is
+// either running (the 실행 중 tile shows it) or of unknown result, and its time may be its
+// last activity. A job whose kept history (FIFO historyCap) starts inside the window makes
+// every count there a lower bound — say which, and from when.
+function cronDayRuns(plan, nowMs) {
+  var from = nowMs - 86400000;
+  var runs = [];
+  var cut = [];
+  var pending = 0;
+  var unknown = 0;
+  ((plan && plan.groups) || []).forEach(function(g) {
+    cronGroupRuns(g).forEach(function(r) {
+      if (r.status === 'queued' || !(r.executedAt >= from)) return;
+      var s = r.session;
+      var live = !!(s && s.live && (s.activityState === 'working' || s.activityState === 'waiting'));
+      if (r.status === 'unrecorded') {
+        if (live) pending++;
+        else unknown++;
+        return;
+      }
+      runs.push({ at: r.executedAt, kind: r.status === 'failed' ? 'fail' : live ? 'run' : 'ok' });
+    });
+    var kept = g.job && Array.isArray(g.job.runs) ? g.job.runs : [];
+    var cap = (g.job && g.job.historyCap) || 20;
+    if (kept.length && kept.length >= cap) {
+      var oldest = Math.min.apply(null, kept.map(function(r) { return r.executedAt; }));
+      if (oldest > from) cut.push({ name: g.name, from: oldest, cap: cap });
+    }
+  });
+  var count = function(kind) { return runs.filter(function(r) { return r.kind === kind; }).length; };
+  var cutFrom = cut.reduce(function(t, c) { return Math.max(t, c.from); }, 0);
+  return { from: from, runs: runs, n: runs.length, ok: count('ok'), f: count('fail'), run: count('run'), pending: pending, unknown: unknown, cut: cut, cutFrom: cutFrom };
+}
+// Four numbers, each from a named field (D16): the front of the queue, running r/N, and
+// the last 24 hours' runs and failures.
+function cronStats(plan, nowMs) {
+  var groups = (plan && plan.groups) || [];
+  var front = null;
+  groups.forEach(function(g) {
+    if (g.job && g.job.nextRunAt && (!front || g.job.nextRunAt < front.job.nextRunAt)) front = g;
+  });
+  var d = cronDayRuns(plan, nowMs);
+  var cutNote = d.cut.map(function(c) { return c.name + ' 기록은 보관 한도 ' + c.cap + '회라 ' + capClockLabel(c.from / 1000, nowMs) + '부터'; }).join(' · ');
+  var lb = d.cut.length ? '≥' : '';
+  var running = (plan && plan.runningCount) || 0;
+  var stat = function(label, value, title, kind) {
+    return '<div class="aq-stat"' + (kind ? ' data-kind="' + kind + '"' : '') + '><dt>' + label + '</dt><dd title="' + escAttr(title) + '">' + value + '</dd></div>';
+  };
+  return '<dl class="aq-stats">'
+    + (front
+      ? stat('다음 실행', aqTime(front.job.nextRunAt, nowMs) + ' 후<span class="aq-of">' + esc(front.name) + '</span>', 'KanbanCronJob.nextRunAt 중 가장 이른 것 — ' + front.name + ' ' + capClockLabel(front.job.nextRunAt / 1000, nowMs))
+      : stat('다음 실행', '—', '8일 안에 없음'))
+    + stat('실행 중', running + '<span class="aq-of is-n">/' + groups.length + '</span>', '레인의 잡 그룹 ' + groups.length + '개(다른 인스턴스 그룹 포함) 중 실행 중 카드가 있는 그룹 ' + running + '개 — 다음 실행 열은 이 인스턴스의 스케줄만 센다')
+    + stat('24시간 실행 기록', lb + d.n + (d.unknown ? '<span class="aq-of">+미확인 ' + d.unknown + '</span>' : ''),
+      '지난 24시간 실행 기록 ' + d.n + '건(대기열 항목 제외): 성공 ' + d.ok + ' · 실패 ' + d.f + ' · 진행 중 ' + d.run
+      + (d.pending || d.unknown ? ' · 기록 전 카드 ' + (d.pending + d.unknown) + '개(실행 중 ' + d.pending + ' · 결과 미확인 ' + d.unknown + ')는 세지 않음' : '')
+      + (cutNote ? ' · ' + cutNote : ''))
+    + stat('실패 · 24시간', lb + d.f, '지난 24시간 실패 기록' + (cutNote ? ' · ' + cutNote : ''), d.f > 0 ? 'failed' : '')
+    + '</dl>';
+}
+// The queue column (D17): this instance's jobs by their next fire, soonest first, four
+// chips then +N. A chip opens its job's drawer (the delegated [data-cron-group] click).
+function cronQueue(plan, nowMs, focusKey) {
+  var list = ((plan && plan.groups) || []).filter(function(g) { return g.job && g.job.nextRunAt; });
+  list.sort(function(a, b) { return a.job.nextRunAt - b.job.nextRunAt; });
+  var n = list.length;
+  var head = '<div class="aq-col-head" title="이 인스턴스의 잡 중 다음 실행이 8일 안에 있는 것 — 다른 인스턴스 그룹은 스케줄이 없어 빠진다"><span>다음 실행</span> <b>' + n + '</b></div>';
+  if (!n) return head + '<div class="aq-empty">8일 안에 예정 없음</div>';
+  var shown = list.slice(0, 4);
+  var stop = shown.some(function(g) { return g.key === focusKey; }) ? focusKey : shown[0].key;
+  return head + shown.map(function(g, i) {
+    var at = g.job.nextRunAt;
+    var said = g.name + ', ' + aqLeft(at, nowMs) + ' 후 실행, ' + (i + 1) + '/' + n + ' — 지난 실행 보기';
+    return '<button type="button" class="aq-q" data-cron-group="' + escAttr(g.key) + '" data-aq-key="' + escAttr(g.key) + '" tabindex="' + (g.key === stop ? '0' : '-1') + '" aria-label="' + escAttr(said) + '">'
+      + CLOCK_SVG + '<span class="aq-q-name">' + esc(g.name) + '</span>' + aqTime(at, nowMs) + '</button>';
+  }).join('') + (n > 4 ? '<span class="aq-more">+' + (n - 4) + '</span>' : '');
+}
+var AQ_NICE = [4, 6, 8, 10, 12, 16, 20, 24, 30, 40, 50, 60, 80, 100, 120, 160, 200, 300, 400, 500, 600, 800, 1000];
+// 24 hours of run records (D19): one column an hour — success, in progress and failure stacked;
+// cards with no record are not drawn; the stretch a truncated history cannot speak for is
+// hatched; an image with a sentence for screen readers.
+function cronRunChart(plan, nowMs) {
+  var d = cronDayRuns(plan, nowMs);
+  var hr = 3600000;
+  var start = nowMs - 24 * hr;
+  var bins = [];
+  for (var k = 0; k < 24; k++) bins.push({ ok: 0, fail: 0, run: 0, at: start + k * hr });
+  d.runs.forEach(function(r) {
+    var i = Math.max(0, Math.min(23, Math.floor((r.at - start) / hr)));
+    bins[i][r.kind]++;
+  });
+  var peak = 0;
+  var peakAt = 0;
+  bins.forEach(function(b) {
+    if (b.ok + b.fail + b.run > peak) { peak = b.ok + b.fail + b.run; peakAt = b.at; }
+  });
+  var top = Math.max(peak, 4);
+  var max = AQ_NICE.filter(function(v) { return v >= top; })[0] || Math.ceil(top / 500) * 500;
+  var hh = function(ms) { return pad2(new Date(ms).getHours()); };
+  var pct = function(v) { return ((v / max) * 100).toFixed(1) + '%'; };
+  var cut = d.cutFrom > start;
+  var said = '지난 24시간 크론 실행 기록 ' + d.n + '건, 실패 ' + d.f + '건, 진행 중 ' + d.run + '건'
+    + (peak ? ', 가장 많은 시간 ' + hh(peakAt) + '시 ' + peak + '건' : '') + '.'
+    + (cut ? ' ' + capClockLabel(d.cutFrom / 1000, nowMs) + ' 이전은 일부 잡 기록이 잘림.' : '')
+    + (d.pending || d.unknown ? ' 기록 전 카드 ' + (d.pending + d.unknown) + '개는 세지 않음.' : '');
+  var hatch = cut
+    ? '<div class="aq-ch-cut" style="left:0;width:' + (((d.cutFrom - start) / (24 * hr)) * 100).toFixed(1) + '%" title="' + escAttr('이 구간은 ' + d.cut.map(function(c) { return c.name; }).join(', ') + ' 기록이 보관 한도로 잘려 실제보다 적을 수 있음') + '"></div>'
+    : '';
+  var cols = bins.map(function(b) {
+    return '<i class="aq-ch-col" title="' + hh(b.at) + '시 성공 ' + b.ok + ' · 실패 ' + b.fail + ' · 진행 중 ' + b.run + '"><i class="aq-ch-ok" style="height:' + pct(b.ok) + '"></i><i class="aq-ch-run" style="height:' + pct(b.run) + '"></i><i class="aq-ch-fail" style="height:' + pct(b.fail) + '"></i></i>';
+  }).join('');
+  return '<div class="aq-chart-head"><span class="aq-chart-title">실행 기록 · 24시간</span>'
+    + '<span class="aq-ch-key"><i class="is-ok" aria-hidden="true"></i>성공</span><span class="aq-ch-key"><i class="is-run" aria-hidden="true"></i>진행 중</span><span class="aq-ch-key"><i class="is-fail" aria-hidden="true"></i>실패</span></div>'
+    + '<div class="aq-plot" role="img" aria-label="' + escAttr(said) + '">' + hatch
+    + '<div class="aq-ch-grid" aria-hidden="true"><span>' + max + '</span></div><div class="aq-ch-grid is-zero" aria-hidden="true"><span>0</span></div>'
+    + cols + '</div>'
+    + '<div class="aq-ch-axis"><span>24시간 전</span><span>12시간 전</span><span>지금</span></div>';
+}
+// What the lane would announce (D4): per group, whether it waits for a reply and its
+// newest recorded run (a queue entry is an event, not a run).
+function cronAnnounceSnap(plan) {
+  var out = { groups: {} };
+  ((plan && plan.groups) || []).forEach(function(g) {
+    var newest = null;
+    (g.job && Array.isArray(g.job.runs) ? g.job.runs : []).forEach(function(r) {
+      if (r.status !== 'queued' && (!newest || r.executedAt > newest.executedAt)) newest = r;
+    });
+    out.groups[g.key] = { name: g.name, waiting: !!g.waiting, hasJob: !!g.job, at: newest ? newest.executedAt : 0, status: newest ? newest.status : '', error: newest && newest.error ? String(newest.error) : '' };
+  });
+  return out;
+}
+// One sentence or none: a newer failed run first, then a job that starts waiting. A group
+// (or its job data) seen for the first time is not news.
+function cronAnnounceDiff(prev, next) {
+  if (!prev || !next) return '';
+  var fail = '';
+  var wait = '';
+  for (var key in next.groups) {
+    var n = next.groups[key];
+    var p = prev.groups[key];
+    if (!p) continue;
+    if (!fail && n.hasJob && p.hasJob && n.status === 'failed' && n.at > p.at) {
+      var e = aqPlain(n.error, 80);
+      fail = '크론 ' + aqPlain(n.name, 60) + ' 실패' + (e ? ': ' + e : '');
+    }
+    if (!wait && n.waiting && !p.waiting) wait = '크론 ' + aqPlain(n.name, 60) + ' 응답 필요';
+  }
+  return fail || wait;
 }
 // Keep one persistent section per job group in #cron-groups, in plan order, so
 // the reconciler can move each job's live card into its section.
@@ -15720,6 +15985,17 @@ function syncCronLane(plan, nowMs) {
   var keep = Object.create(null);
   // Folded (SSOT 2026-10-24): only the jobs whose run waits for a reply stay out.
   var folded = cronLaneFolded();
+  // The queue grammar (#444 D16/D17/D19): written only while unfolded (CSS hides them
+  // folded); the first render is the announcement baseline (D4).
+  if (!folded) {
+    aqWrite(document.getElementById('cron-lane-top'), cronStats(plan, nowMs));
+    aqWrite(document.getElementById('cron-queue'), cronQueue(plan, nowMs, _aqFocusKey['cron-queue']));
+    aqWrite(document.getElementById('cron-lane-chart'), cronRunChart(plan, nowMs));
+  }
+  var snap = cronAnnounceSnap(plan);
+  var news = cronAnnounceDiff(_aqCronSnap, snap);
+  _aqCronSnap = snap;
+  if (news) aqAnnounce(news);
   for (var i = 0; i < plan.groups.length; i++) {
     var g = plan.groups[i];
     keep[g.key] = true;
@@ -15795,12 +16071,13 @@ function renderCronRunRow(run, g, nowMs) {
 function renderCronDrawerMeta(g, nowMs) {
   var j = g.job;
   if (!j) return '<p class="cron-dmeta">이 인스턴스에 없는 잡입니다 — 삭제됐거나 다른 인스턴스의 잡이라 스케줄·실행 기록이 없습니다. 보드에 있는 실행만 보입니다.</p>';
+  // Values are markup (escaped here): 다음 실행 counts down live like the tile (#444 review R1).
   var rows = [
-    ['스케줄', cronScheduleLabel(j.expression, j.nextRunAt) + ' · ' + j.expression + ' (UTC)'],
-    ['다음 실행', j.nextRunAt ? capClockLabel(j.nextRunAt / 1000, nowMs) + ' (' + capCountdown((j.nextRunAt - nowMs) / 1000) + ' 후)' : '8일 안에 없음'],
-    ['실행 방식', (j.mode === 'fastlane' ? '항상 새 스레드' : '세션이 쉬면 주입, 없으면 새 스레드') + ' · 출력 ' + j.target + ' · 모델 ' + j.model],
+    ['스케줄', esc(cronScheduleLabel(j.expression, j.nextRunAt) + ' · ' + j.expression + ' (UTC)')],
+    ['다음 실행', j.nextRunAt ? esc(capClockLabel(j.nextRunAt / 1000, nowMs)) + ' (' + aqTime(j.nextRunAt, nowMs) + ' 후)' : '8일 안에 없음'],
+    ['실행 방식', esc((j.mode === 'fastlane' ? '항상 새 스레드' : '세션이 쉬면 주입, 없으면 새 스레드') + ' · 출력 ' + j.target + ' · 모델 ' + j.model)],
   ];
-  return '<dl class="cron-dmeta">' + rows.map(function(r) { return '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd>'; }).join('') + '</dl>'
+  return '<dl class="cron-dmeta">' + rows.map(function(r) { return '<dt>' + esc(r[0]) + '</dt><dd>' + r[1] + '</dd>'; }).join('') + '</dl>'
     + '<p class="cron-dnote">실행 기록은 잡마다 최근 ' + (j.historyCap || 20) + '회까지 보관됩니다.</p>';
 }
 function paintCronDrawer() {
@@ -15864,6 +16141,160 @@ async function loadCronJobs() {
     if (_lastBoardData) renderBoard(_lastBoardData);
   } catch (e) { console.error('Failed to load cron jobs', e); }
 }
+
+// ── Agent Queue grammar (affectUI #444, .prd/affectui/re-agent-queue.md) ──
+// Shared by the capacity cards (workers = llmux accounts) and the CRON lane (queue =
+// scheduled fires): a glyph-led pill, a live countdown, one polite region, roving focus.
+var CAP_LOW_PCT = 20;          // capacity-view.ts CAPACITY_LOW_PCT — under it a pool reads "low"
+var _aqOpen = null;            // the account card open now ('group|name'), kept across repaints
+var _aqFocusKey = {};          // the roving tab stop per strip: data-aq-rove → data-aq-key
+var _aqCronSnap = null;        // the CRON lane's last announcement snapshot (D4)
+// Time left, floored (spec 12 T9): 1일 5시간 · 1시간 20분 · 24분 · 42초 · 곧 (D3).
+function aqLeft(atMs, nowMs) {
+  var s = Math.floor((Number(atMs) - Number(nowMs)) / 1000);
+  if (!(s > 0)) return '곧';
+  if (s < 60) return s + '초';
+  var m = Math.floor(s / 60);
+  var h = Math.floor(m / 60);
+  if (h >= 24) return Math.floor(h / 24) + '일 ' + (h % 24) + '시간';
+  if (h) return h + '시간 ' + (m % 60) + '분';
+  return m + '분';
+}
+// A countdown aqTick keeps live; role=timer is never read out on each tick.
+function aqTime(atMs, nowMs) {
+  var at = Math.round(Number(atMs));
+  if (!isFinite(at)) return '';
+  return '<time class="aq-left" role="timer" datetime="' + new Date(at).toISOString() + '" data-aq-at="' + at + '">' + aqLeft(at, nowMs) + '</time>';
+}
+// A status pill (D2). Its first character is a glyph — colour is never the only signal —
+// and it is not a live region: the markup repaints every 30 s; aqAnnounce speaks instead.
+function aqPill(state, html) {
+  return '<span class="aq-pill is-' + state + '">' + html + '</span>';
+}
+// Rides the shared 1 Hz tick (updateTimers → aqTick): capacity, the CRON lane and its drawer.
+function aqTickIn(root, nowMs) {
+  if (!root) return;
+  var els = root.querySelectorAll('[data-aq-at]');
+  for (var i = 0; i < els.length; i++) {
+    var t = aqLeft(Number(els[i].getAttribute('data-aq-at')) || 0, nowMs);
+    if (els[i].textContent !== t) els[i].textContent = t;
+  }
+}
+function aqTick() {
+  if (document.hidden) return;
+  var now = Date.now();
+  aqTickIn(document.getElementById('capacity'), now);
+  aqTickIn(document.getElementById('cron-lane'), now);
+  aqTickIn(document.getElementById('cron-drawer'), now);
+}
+// Tool- or user-written text as one plain line (review R1): control characters, newlines and
+// runs of whitespace become one space, then the length is capped. Markup always goes through
+// esc / escAttr; the live region is written with textContent only.
+function aqPlain(s, max) {
+  var t = String(s == null ? '' : s).replace(/[\\u0000-\\u001f\\u007f\\s]+/g, ' ').trim();
+  return max && t.length > max ? t.slice(0, max - 1) + '…' : t;
+}
+// One polite sentence (D4). Cleared first so the same words twice are still spoken.
+function aqAnnounce(msg) {
+  var el = document.getElementById('aq-live');
+  if (!el || !msg) return;
+  el.textContent = '';
+  setTimeout(function() { el.textContent = msg; }, 60);
+}
+// Roving focus (D12): one tab stop per [data-aq-rove] strip; arrows walk, Home / End jump.
+function aqRove(e, box) {
+  var step = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1, Home: 'first', End: 'last' }[e.key];
+  if (step === undefined) return false;
+  var items = Array.prototype.slice.call(box.querySelectorAll('[data-aq-key]'));
+  var cur = e.target && e.target.closest ? e.target.closest('[data-aq-key]') : null;
+  var i = items.indexOf(cur);
+  if (i < 0) return false;
+  var j = step === 'first' ? 0 : step === 'last' ? items.length - 1 : Math.max(0, Math.min(items.length - 1, i + step));
+  e.preventDefault();
+  items.forEach(function(it, n) { it.setAttribute('tabindex', n === j ? '0' : '-1'); });
+  items[j].focus();
+  _aqFocusKey[box.getAttribute('data-aq-rove')] = items[j].getAttribute('data-aq-key');
+  return true;
+}
+// The item (data-aq-key) holding the focus inside root, 'pop' for an open card, or null.
+function aqFocusedKey(root) {
+  var a = document.activeElement;
+  if (!root || !a || a === root || !root.contains(a)) return null;
+  if (a.closest && a.closest('.aq-pop')) return 'pop';
+  return a.getAttribute ? a.getAttribute('data-aq-key') : null;
+}
+function aqFocusKey(root, key) {
+  if (!root || !key) return;
+  var els = root.querySelectorAll('[data-aq-key]');
+  for (var i = 0; i < els.length; i++) {
+    if (els[i].getAttribute('data-aq-key') === key) { els[i].focus(); return; }
+  }
+}
+function aqRestoreFocus(root, key) {
+  if (!root || !key) return;
+  if (key !== 'pop') { aqFocusKey(root, key); return; }
+  var close = root.querySelector('.aq-pop .aq-pop-close');
+  if (close) close.focus();
+}
+// Rewrite a part only when its markup changed, keeping the keyboard where it was.
+function aqWrite(el, html) {
+  if (!el || el._html === html) return;
+  var fk = aqFocusedKey(el);
+  el.innerHTML = html;
+  el._html = html;
+  aqRestoreFocus(el, fk);
+}
+// The account card sits under its mark, its left edge clamped into the strip (D11).
+function aqPlacePops(root) {
+  if (!root) return;
+  var pops = root.querySelectorAll('.aq-pop[data-aq-for]');
+  for (var i = 0; i < pops.length; i++) {
+    var pop = pops[i];
+    var box = pop.parentNode;
+    var key = pop.getAttribute('data-aq-for');
+    var marks = box.querySelectorAll('[data-aq-key]');
+    var mark = null;
+    for (var j = 0; j < marks.length; j++) if (marks[j].getAttribute('data-aq-key') === key) mark = marks[j];
+    if (!mark) continue;
+    pop.style.left = Math.max(8, Math.min(mark.offsetLeft, box.clientWidth - pop.offsetWidth - 8)) + 'px';
+    pop.style.top = (mark.offsetTop + mark.offsetHeight + 6) + 'px';
+  }
+}
+function aqRepaintCapacity() {
+  var view = document.getElementById('capacity-view');
+  if (view) view._html = null;
+  paintCapacity();
+}
+function aqToggleCard(key) {
+  _aqOpen = _aqOpen === key ? null : key;
+  aqRepaintCapacity();
+  aqFocusKey(document.getElementById('capacity-view'), key);
+}
+function aqCloseCard(refocus) {
+  var key = _aqOpen;
+  if (!key) return;
+  _aqOpen = null;
+  aqRepaintCapacity();
+  if (refocus) aqFocusKey(document.getElementById('capacity-view'), key);
+}
+document.addEventListener('click', function(e) {
+  var t = e.target && e.target.closest ? e.target : null;
+  if (!t) return;
+  var mark = t.closest('.aq-mark[data-aq-key]');
+  if (mark) { aqToggleCard(mark.getAttribute('data-aq-key')); return; }
+  if (t.closest('.aq-pop-close')) { aqCloseCard(true); return; }
+  if (_aqOpen && !t.closest('.aq-pop')) aqCloseCard(false);
+});
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && _aqOpen) { aqCloseCard(true); return; }
+  var box = e.target && e.target.closest ? e.target.closest('[data-aq-rove]') : null;
+  if (box) aqRove(e, box);
+});
+document.addEventListener('focusin', function(e) {
+  var item = e.target && e.target.closest ? e.target.closest('[data-aq-key]') : null;
+  var box = item ? item.closest('[data-aq-rove]') : null;
+  if (box) _aqFocusKey[box.getAttribute('data-aq-rove')] = item.getAttribute('data-aq-key');
+});
 
 // ── LLM capacity v2 (2026-10-25) — the server (capacity-view.ts) counts each provider in
 // max accounts' worth (tier-weighted) and replays every account's resets in time order.
@@ -15978,7 +16409,8 @@ function capBarRow(g, cls, label, sub, v, key, nowSec) {
   var who = e ? ' title="' + escAttr((CAP_WORD[e.cause] || '') + ' · ' + e.account) + '"' : '';
   return '<div class="cap-bar-row is-' + cls + '">'
     + '<div class="cap-bar-lbl">' + label + '<i>' + sub + '</i></div>'
-    + '<div class="cap-bar" role="img" aria-label="' + escAttr(said) + '"><span style="width:' + (p * 100).toFixed(1) + '%"></span></div>'
+    // The dashed line is where the pool turns "low" (#444 D9 — the reference's backpressure line).
+    + '<div class="cap-bar" role="img" aria-label="' + escAttr(said) + '"><span style="width:' + (p * 100).toFixed(1) + '%"></span><i class="cap-low" style="left:' + CAP_LOW_PCT + '%" title="' + CAP_LOW_PCT + '% 아래면 부족"></i></div>'
     + '<div class="cap-bar-val"><b>' + capCount(v, g.total) + '</b> / ' + capFmt1(g.total) + ' 계정 <em>' + capPct(v, g.total) + '</em></div>'
     + '<div class="cap-bar-next"' + who + '>' + esc(capNextShort(g, key, nowSec)) + '</div>'
     + '</div>';
@@ -16058,6 +16490,19 @@ function capTimeline(g, W, nowSec) {
     else buckets.push({ x0: p.x, x1: p.x, d: p.d, c: p.c, n: 1, names: [p.a], at: p.at });
   });
   var s = '<svg class="cap-tl" width="' + W + '" height="' + h + '" viewBox="0 0 ' + W + ' ' + h + '" role="img" aria-label="앞으로 7일 동안 돌아오는 계정">';
+  // Every account blocked (#444 D13, spec 12 T9 v1): shade now → the first refill that
+  // raises the primary measure — the reference's rate-limited stretch.
+  if (g.state === 'empty') {
+    var lift = null;
+    (g.events || []).forEach(function(e) { if (lift === null && e[g.has5h ? 'dNow' : 'dWeek'] > 0) lift = e.at; });
+    var x1 = lift === null ? W - pad : X(lift);
+    var hid = 'aqh-' + String(g.group || 'g').replace(/[^a-z0-9_-]/gi, '');
+    var span = Math.max(0, x1 - pad).toFixed(1);
+    var until = lift === null ? '7일 안에 복귀 없음' : capClockLabel(lift, nowSec * 1000) + '까지';
+    s += '<defs><pattern id="' + hid + '" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line class="cap-tl-hatch" x1="0" y1="0" x2="0" y2="6"/></pattern></defs>';
+    s += '<rect class="cap-tl-lim" x="' + pad + '" y="0" width="' + span + '" height="' + (y0 + 14) + '"><title>' + esc('모두 막힘 — ' + until) + '</title></rect>';
+    s += '<rect x="' + pad + '" y="0" width="' + span + '" height="' + (y0 + 14) + '" fill="url(#' + hid + ')" aria-hidden="true"/>';
+  }
   [[0, '지금'], [3600, '1h'], [21600, '6h'], [86400, '24h'], [3 * 86400, '3d'], [5 * 86400, '5d'], [7 * 86400, '7d']].forEach(function(t) {
     var x = pad + capAx(t[0]) * (W - 2 * pad);
     s += '<line class="cap-tl-tick" x1="' + x.toFixed(1) + '" x2="' + x.toFixed(1) + '" y1="' + (y0 - 6) + '" y2="' + (y0 + 6) + '"/>';
@@ -16090,6 +16535,180 @@ function capAdvance(g, nowSec) {
   out.week = due.reduce(function(t, e) { return t + e.dWeek; }, g.week);
   out.events = evs.filter(function(e) { return e.at > nowSec; });
   return out;
+}
+// ── Capacity as workers (affectUI Agent Queue, #444 D8–D14) ──
+// Each llmux account is a worker: usable, paused (a block with its own lift time), spent,
+// unmeasured, held or left out — read from CapacityUnit only. A mark carries a name, one
+// state word and a countdown; never a usage bar, % or tier (spec 12 §7). Numbers live in
+// the account's card.
+// Units at the boundary (review R1): capacity times (returnAt, events[].at) are epoch
+// SECONDS (capacity-view.ts); cron times and every aq* countdown are epoch MILLISECONDS.
+function capMs(atSec) {
+  return Number(atSec) * 1000;
+}
+// The state from the unit's own fields (review R1): counted / blocked / unmeasured5h / now.
+// binding only says which window binds first (5h or 7d) — it colours an ok mark's dot.
+function capUnitState(u) {
+  if (!u.counted) return u.excluded === 'held' ? 'held' : 'out';
+  if (u.blocked) return 'paused';
+  if (u.unmeasured5h) return 'unmeasured';
+  return Number(u.now) > 0 ? 'ok' : 'spent';
+}
+function capReason(u) {
+  var b = u.blocks || {};
+  if (u.excluded === 'held') return u.held === 'paused' ? '일시정지' : u.held === 'auth' ? '인증 실패' : '보류';
+  if (u.excluded === 'noMeasure') return '측정 없음';
+  if (u.excluded === 'unknownTier') return '티어 미지정';
+  if (b.weekly) return '주간 한도';
+  if (b.fiveHour) return '5시간 한도';
+  if (b.scopedUntil) return '모델 한도';
+  if (b.cooldownUntil) return '쿨다운';
+  if (u.blocked) return '차단';
+  var st = capUnitState(u);
+  return st === 'ok' ? '사용 가능' : st === 'unmeasured' ? '5시간 미측정' : '소진';
+}
+function capTierLabel(u) {
+  var t = CAP_TIERS[u.tier];
+  if (u.tierAssumed) return (t ? t.short : 'x20') + ' 가정';
+  return t ? t.label : '티어 미지정';
+}
+// Counted accounts that are blocked right now (held ones are out of the totals).
+function capPaused(g) {
+  return (g.units || []).filter(function(u) { return u.counted && u.blocked && !u.excluded; });
+}
+// The earliest return among them (epoch s), or null.
+function capFirstReturn(g) {
+  var at = null;
+  capPaused(g).forEach(function(u) { if (u.returnAt && (at === null || u.returnAt < at)) at = u.returnAt; });
+  return at;
+}
+// When an empty pool gets something back: the first return, else the first raise.
+function capEmptyAt(g, nowSec) {
+  var at = capFirstReturn(g);
+  if (at) return at;
+  var e = capNextEvent(g, g.has5h ? 'dNow' : 'dWeek', nowSec);
+  return e ? e.at : null;
+}
+// The provider pill (D8): 계산 불가 > 모두 막힘 / 소진 > 제한 p > 부족 > 사용 가능.
+function capProvPill(g, nowMs) {
+  var p = capPaused(g).length;
+  if (g.state === 'unknown' || !(g.total > 0)) return aqPill('unknown', '◌ 계산 불가');
+  if (g.state === 'empty') {
+    var at = capEmptyAt(g, nowMs / 1000);
+    return aqPill('empty', (p ? '✗ 모두 막힘' : '✗ 소진') + (at ? ' · ' + aqTime(capMs(at), nowMs) + ' 후 복귀' : ''));
+  }
+  if (p) {
+    var back = capFirstReturn(g);
+    return aqPill('paused', '⏸ 제한 ' + p + (back ? ' · ' + aqTime(capMs(back), nowMs) + ' 후 복귀' : ''));
+  }
+  if (g.state === 'low') return aqPill('low', '▲ 부족');
+  return aqPill('ok', '● 사용 가능');
+}
+function capProvHead(g, nowMs) {
+  var n = (g.units || []).length || g.accountCount || 0;
+  return '<div class="aq-head"><span class="cap-pname">' + esc(g.label) + '</span><span class="aq-name">llmux · 계정 ' + n + '</span>' + capProvPill(g, nowMs) + '</div>';
+}
+function capMark(g, u, nowMs, open, stop) {
+  var key = g.group + '|' + u.name;
+  var st = capUnitState(u);
+  var why = capReason(u);
+  var said = [u.name, capTierLabel(u), why];
+  var body = '<b>' + esc(u.name) + '</b>';
+  if (st === 'ok') {
+    body = '<i class="aq-wdot is-' + (u.binding === '5h' ? 'h5' : 'wk') + '" aria-hidden="true"></i>' + body;
+  } else if (st === 'paused') {
+    body = '⏸ ' + body + ' · ' + esc(why) + ' · ' + (u.returnAt ? aqTime(capMs(u.returnAt), nowMs) : '복귀 약속 없음');
+    said.push(u.returnAt ? aqLeft(capMs(u.returnAt), nowMs) + ' 후 복귀' : '복귀 약속 없음');
+  } else {
+    body += ' · ' + esc(why);
+  }
+  return '<button type="button" class="aq-mark is-' + st + '" data-aq-key="' + escAttr(key) + '" tabindex="' + (key === stop ? '0' : '-1') + '" aria-haspopup="dialog" aria-expanded="' + (key === open ? 'true' : 'false') + '" aria-label="' + escAttr(said.join(', ')) + '">' + body + '</button>';
+}
+// The account card (D11): every row from a CapacityUnit field. The folded usable mark's
+// card lists the usable accounts instead.
+function capAccountCard(g, key, nowMs) {
+  var units = g.units || [];
+  var row = function(dt, dd, wide) { return '<div' + (wide ? ' class="is-wide"' : '') + '><dt>' + esc(dt) + '</dt><dd>' + dd + '</dd></div>'; };
+  var pct = function(x) { return Math.round((Number(x) || 0) * 100) + '%'; };
+  var close = '<button type="button" class="aq-pop-close" aria-label="닫기">×</button>';
+  if (key === g.group + '|*ok') {
+    var ok = units.filter(function(x) { return capUnitState(x) === 'ok'; });
+    return '<div class="aq-pop" role="dialog" aria-label="사용 가능 계정 세부" data-aq-for="' + escAttr(key) + '">'
+      + '<div class="aq-pop-head"><span class="aq-pop-name">사용 가능</span><span class="aq-pop-kind">' + esc(g.label + ' · 계정 ' + ok.length) + '</span>' + close + '</div>'
+      + '<dl class="aq-pop-stats">' + ok.map(function(x) { return row(x.name, '지금 ' + pct(x.now) + ' · 이번 주 ' + pct(x.week)); }).join('') + '</dl></div>';
+  }
+  var u = null;
+  units.forEach(function(x) { if (g.group + '|' + x.name === key) u = x; });
+  if (!u) return '';
+  var st = capUnitState(u);
+  var rows = [row('지금 쓸 수 있음', u.counted ? pct(u.now) : '—'), row('이번 주 남음', u.counted ? pct(u.week) : '—')];
+  // binding = which window binds first (5h or 7d), set for a usable account only.
+  if (u.binding) rows.push(row('먼저 닿는 창', u.binding === '5h' ? '5시간' : '일주일'));
+  rows.push(row('상태', esc(capReason(u))));
+  if (u.returnAt) rows.push(row('복귀', esc(capClockLabel(u.returnAt, nowMs)) + ' · ' + aqTime(capMs(u.returnAt), nowMs), true));
+  if (u.estimated) rows.push(row('추정', '지난 리셋을 가득으로 침'));
+  var tone = st === 'ok' ? 'ok' : st === 'paused' ? 'paused' : st === 'held' || st === 'out' ? 'unknown' : 'low';
+  return '<div class="aq-pop" role="dialog" aria-label="' + escAttr(u.name + ' 세부') + '" data-aq-for="' + escAttr(key) + '">'
+    + '<div class="aq-pop-head"><span class="aq-pop-name">' + esc(u.name) + '</span><span class="aq-pop-kind">' + esc(capTierLabel(u)) + '</span>' + aqPill(tone, esc(capReason(u))) + close + '</div>'
+    + '<dl class="aq-pop-stats">' + rows.join('') + '</dl></div>';
+}
+// The workers strip (D10): one mark per account in llmux order (no re-sorting on refresh),
+// one tab stop; narrow folds the usable accounts into one mark.
+function capWorkers(g, nowMs, narrow, open, focusKey) {
+  var units = g.units || [];
+  if (!units.length) return '';
+  var okN = units.filter(function(u) { return capUnitState(u) === 'ok'; }).length;
+  var okKey = g.group + '|*ok';
+  var keys = [];
+  var list = [];
+  units.forEach(function(u) {
+    if (narrow && capUnitState(u) === 'ok') {
+      if (keys.indexOf(okKey) < 0) { keys.push(okKey); list.push(null); }
+      return;
+    }
+    keys.push(g.group + '|' + u.name);
+    list.push(u);
+  });
+  var stop = keys.indexOf(focusKey) >= 0 ? focusKey : keys[0];
+  var marks = list.map(function(u) {
+    if (u) return capMark(g, u, nowMs, open, stop);
+    return '<button type="button" class="aq-mark is-ok" data-aq-key="' + escAttr(okKey) + '" tabindex="' + (okKey === stop ? '0' : '-1') + '" aria-haspopup="dialog" aria-expanded="' + (okKey === open ? 'true' : 'false') + '" aria-label="' + escAttr('사용 가능 계정 ' + okN + '개 — 목록 보기') + '">● 사용 가능 ' + okN + '</button>';
+  }).join('');
+  var card = open && keys.indexOf(open) >= 0 ? capAccountCard(g, open, nowMs) : '';
+  return '<div class="aq-workers" role="group" aria-label="' + escAttr(g.label + ' 계정 ' + okN + '/' + units.length + ' 사용 가능') + '" data-aq-rove="' + escAttr('cap:' + g.group) + '">'
+    + '<div class="aq-col-head"><span>계정</span> <b>' + okN + '/' + units.length + '</b></div>'
+    + '<div class="aq-marks">' + marks + '</div>' + card + '</div>';
+}
+// The folded chip's paused marker (D14): { html, said } or null.
+function capChipLim(g, nowMs) {
+  var p = capPaused(g).length;
+  if (!p) return null;
+  var at = capFirstReturn(g);
+  return {
+    html: ' <i class="cap-chip-lim">⏸ ' + p + (at ? ' · ' + aqTime(capMs(at), nowMs) : '') + '</i>',
+    said: ' · 제한 ' + p + (at ? ' — ' + aqLeft(capMs(at), nowMs) + ' 후 첫 복귀' : ''),
+  };
+}
+// One sentence or none per capacity load (D4): all blocked > recovered > under 20%.
+function capAnnounceDiff(prev, next, nowMs) {
+  if (!prev || !next || !prev.available || !next.available) return '';
+  var best = null;
+  var put = function(rank, msg) { if (!best || rank < best.rank) best = { rank: rank, msg: msg }; };
+  (next.groups || []).forEach(function(g) {
+    var p = null;
+    (prev.groups || []).forEach(function(x) { if (x.group === g.group) p = x; });
+    if (!p || p.state === g.state) return;
+    if (g.state === 'empty') {
+      var at = capEmptyAt(g, nowMs / 1000);
+      put(1, aqPlain(g.label, 40) + (capPaused(g).length ? ' 계정이 모두 막힘' : ' 쓸 수 있는 양 없음') + (at ? ' — ' + aqLeft(capMs(at), nowMs) + ' 후 복귀' : ''));
+    } else if (p.state === 'empty' && g.state !== 'unknown') {
+      var units = g.units || [];
+      put(4, aqPlain(g.label, 40) + ' 다시 사용 가능 — 계정 ' + units.filter(function(u) { return capUnitState(u) === 'ok'; }).length + '/' + units.length);
+    } else if (p.state === 'ok' && g.state === 'low') {
+      put(5, aqPlain(g.label, 40) + ' ' + (g.has5h ? '지금' : '이번 주') + ' ' + CAP_LOW_PCT + '% 아래 — ' + capCount(g.has5h ? g.now : g.week, g.total) + '/' + capFmt1(g.total) + ' 계정');
+    }
+  });
+  return best ? best.msg : '';
 }
 function renderCapacitySummary(v, nowMs) {
   if (!v.available) {
@@ -16128,9 +16747,11 @@ function renderCapacitySummary(v, nowMs) {
       : (g.has5h ? '5시간(지금) ' + capCount(g.now, g.total) + '/' + t + ' 계정 (' + capPct(g.now, g.total) + '), ' : '') + '일주일 ' + capCount(g.week, g.total) + '/' + t + ' 계정 (' + capPct(g.week, g.total) + ')';
     said += [stale ? '측정 ' + stale : '', part, asm ? '티어 미지정 ' + asm.n + '(' + asm.short + ' 가정)' : ''].filter(Boolean).map(function(x) { return ' · ' + x; }).join('');
     var next = known ? capNextLine(g, g.has5h ? 'dNow' : 'dWeek', g.has5h ? CAP_5H : CAP_7D, nowSec, nowMs) : '';
-    var lead = said + (WORD[state] || '') + (next ? ' — ' + next : '');
+    // Paused workers and the first return (#444 D14), between the measures and the ⚠ flag.
+    var lim = (g.units || []).length ? capChipLim(g, nowMs) : null;
+    var lead = said + (WORD[state] || '') + (lim ? lim.said : '') + (next ? ' — ' + next : '');
     return '<span class="cap-chip is-' + state + '" title="' + escAttr(lead) + '" aria-label="' + escAttr(g.label + ' ' + lead) + '">'
-      + (GLYPH[state] || '') + esc(g.label) + ' ' + nums + flag + '</span>';
+      + (GLYPH[state] || '') + esc(g.label) + ' ' + nums + (lim ? lim.html : '') + flag + '</span>';
   }).join('') + '</div>';
 }
 function renderCapacityGroup(g, nowMs, width) {
@@ -16138,11 +16759,14 @@ function renderCapacityGroup(g, nowMs, width) {
   var W = Math.max(260, (Number(width) || 900) - 36);
   var narrow = W < 600;
   var h = '<section class="cap-prov is-' + esc(g.state || 'unknown') + (narrow ? ' is-narrow' : '') + '" data-group="' + escAttr(g.group) + '" aria-label="' + escAttr(g.label + ' 가용량') + '">'
-    + '<div class="cap-pname">' + esc(g.label) + '</div>'
+    + capProvHead(g, nowMs)
     + '<div class="cap-disc">' + capDisclosure(g, nowSec) + '</div>';
-  if (!(g.total > 0)) return h + '<div class="cap-bar-next">계산 불가 — 셀 수 있는 계정이 없음</div></section>';
+  // The accounts as workers (#444 D10/D11): state marks, the open card kept across repaints.
+  var workers = capWorkers(g, nowMs, narrow, _aqOpen, _aqFocusKey['cap:' + g.group]);
+  if (!(g.total > 0)) return h + '<div class="cap-bar-next">계산 불가 — 셀 수 있는 계정이 없음</div>' + workers + '</section>';
   if (g.has5h) h += capBarRow(g, 'h5', '5시간', '지금 쓸 수 있음', g.now, 'dNow', nowSec);
   h += capBarRow(g, 'wk', '일주일', '이번 주 남음', g.week, 'dWeek', nowSec);
+  h += workers;
   var tl = capTimeline(g, W, nowSec);
   if (tl) {
     // ● raises the 5시간 bar (a 5h reset, or a block lifting), ◆ the 일주일 bar — same colours as the bars.
@@ -16186,9 +16810,13 @@ function paintCapacity() {
     // A repaint (fresh age, new snapshot) must not fold what the reader opened.
     var opened = {};
     Array.prototype.forEach.call(view.querySelectorAll('details[data-cap-key][open]'), function(d) { opened[d.getAttribute('data-cap-key')] = true; });
+    // …nor drop the keyboard: an account mark or its open card keeps the focus (#444 D11).
+    var focusKey = aqFocusedKey(view);
     view.innerHTML = html;
     view._html = html;
     Array.prototype.forEach.call(view.querySelectorAll('details[data-cap-key]'), function(d) { if (opened[d.getAttribute('data-cap-key')]) d.open = true; });
+    aqRestoreFocus(view, focusKey);
+    aqPlacePops(view);
     // The section sits above the board, outside #inbox: no observer sees the board
     // move when it appears or changes height, so the shift cache learns it here.
     scheduleLayoutRefresh(40);
@@ -16200,8 +16828,12 @@ async function loadCapacity() {
     var res = await fetch('/api/dashboard/capacity');
     if (!res.ok) return;
     var data = await res.json();
-    _capacityView = data.capacity || null;
+    var next = data.capacity || null;
+    // One polite sentence when a pool's state changes (#444 D4); the first load is the baseline.
+    var news = capAnnounceDiff(_capacityView, next, Date.now());
+    _capacityView = next;
     paintCapacity();
+    if (news) aqAnnounce(news);
   } catch (e) { console.error('Failed to load capacity', e); }
 }
 
