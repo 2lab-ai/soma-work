@@ -477,12 +477,29 @@ describe('D2 — an anchor whose card moves closes the menu (column move, FLIP, 
     load<{
       mpSpot(a: unknown): { left: number; top: number };
       mpMoved(at: unknown, now: unknown): boolean;
-    }>(['mpSpot', 'mpMoved'], []);
+    }>(['mpSpot', 'mpMoved'], [], {
+      getComputedStyle: (n: { fixed?: boolean }) => ({ position: n.fixed ? 'fixed' : 'static' }),
+    });
   const anchor = (top: number, pageScroll: number, colScroll: number) => {
     const html = { nodeType: 1, scrollLeft: 0, scrollTop: pageScroll, parentNode: null };
     const col = { nodeType: 1, scrollLeft: 0, scrollTop: colScroll, parentNode: html };
     return { getBoundingClientRect: () => ({ left: 100, top }), parentNode: col };
   };
+  // The panel's trigger: inside the fixed slide panel, which a page scroll does not move.
+  const inPanel = (top: number, pageScroll: number, panelScroll: number) => {
+    const html = { nodeType: 1, scrollLeft: 0, scrollTop: pageScroll, parentNode: null };
+    const panel = { nodeType: 1, scrollLeft: 0, scrollTop: 0, fixed: true, parentNode: html };
+    const inner = { nodeType: 1, scrollLeft: 0, scrollTop: panelScroll, parentNode: panel };
+    return { getBoundingClientRect: () => ({ left: 1060, top }), parentNode: inner };
+  };
+  it('a fixed ancestor ends the walk: a page scroll under the panel is not a move (R1 fable P1)', () => {
+    const at = m().mpSpot(inPanel(830, 0, 0));
+    expect(m().mpMoved(at, m().mpSpot(inPanel(830, 400, 0)))).toBe(false); // the page scrolled, the panel did not move
+    expect(m().mpMoved(at, m().mpSpot(inPanel(790, 0, 40)))).toBe(false); // a scroll inside the panel
+    expect(m().mpMoved(at, m().mpSpot(inPanel(600, 0, 0)))).toBe(true); // the composer moved
+    // A wheel over the menu stays in the menu (no scroll chained to the page).
+    expect(/\.mp-pop \{[^}]*\}/.exec(STYLE)?.[0]).toContain('overscroll-behavior: contain;');
+  });
   it('the spot takes every ancestor’s scroll out: page or column scrolls keep it, a layout move changes it', () => {
     const at = m().mpSpot(anchor(500, 0, 0));
     expect(at).toEqual({ left: 100, top: 500 });
@@ -677,6 +694,179 @@ describe('D9 — keyboard: list arrows, pick, Escape, effort arrows', () => {
     expect(e.preventDefault).toHaveBeenCalled();
     m.mpTriggerKey({ key: 'Enter', preventDefault: vi.fn() }, 'BTN');
     expect(mpOpen).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('D9 — Tab moves between the menu’s two stops itself; past them focus goes home (R1 grok P1)', () => {
+  // A fake DOM in which focus() moves document.activeElement and fires the page's focusin
+  // listener (mpOutside), and an unprevented Tab does what a browser would in the worst
+  // case: focus the page's next stop, outside the menu.
+  function dom() {
+    const doc: { activeElement: unknown } = { activeElement: null };
+    let m: {
+      mpMenuKey(e: unknown): void;
+      mpOutside(e: unknown): void;
+      mpState(p?: Record<string, unknown>): Record<string, unknown>;
+    };
+    const node = (cls: string, attrs: Record<string, string> = {}) => {
+      const n: any = {
+        cls,
+        attrs: { ...attrs },
+        classList: { contains: (c: string) => c === cls, add() {}, remove() {} },
+        getAttribute(k: string) {
+          return k in n.attrs ? n.attrs[k] : null;
+        },
+        setAttribute(k: string, v: string) {
+          n.attrs[k] = v;
+        },
+        removeAttribute(k: string) {
+          delete n.attrs[k];
+        },
+        closest: (sel: string) => (sel === '.mp-seg-btn' && cls === 'mp-seg-btn' ? n : null),
+        contains: (x: unknown) => x === n,
+        focus() {
+          doc.activeElement = n;
+          m.mpOutside({ target: n });
+        },
+      };
+      return n;
+    };
+    const list = node('mp-list');
+    const level = node('mp-seg-btn', { tabindex: '0' });
+    const other = node('mp-seg-btn', { tabindex: '-1' });
+    const menu = node('mp-pop', { id: 'mp-menu' });
+    menu.contains = (x: unknown) => x === menu || x === list || x === level || x === other;
+    menu.querySelector = (sel: string) =>
+      sel === '.mp-list' ? list : sel === '.mp-seg-btn[tabindex="0"]' ? level : null;
+    const trigger = node('mp-trigger', { 'data-mp-key': 'k', 'data-mp-surface': 'panel', 'aria-expanded': 'true' });
+    const pageNext = node('cmd-input');
+    const document = {
+      getElementById: (id: string) => (id === 'mp-menu' ? menu : null),
+      querySelectorAll: (sel: string) => (sel === '.mp-trigger' ? [trigger] : []),
+      get activeElement() {
+        return doc.activeElement;
+      },
+    };
+    m = load<typeof m>(
+      ['mpAnchor', 'mpInside', 'mpOutside', 'mpClose', 'mpMenuKey'],
+      ['_mp'],
+      {
+        document,
+        refreshCard: () => {},
+        repaintPanelControlsFor: () => {},
+        clearInterval: () => {},
+        cancelAnimationFrame: () => {},
+      },
+      [STATE_FN],
+    );
+    const open = () => {
+      m.mpState({ key: 'k', surface: 'panel' });
+      trigger.attrs['aria-expanded'] = 'true';
+      doc.activeElement = list;
+    };
+    const press = (key: string, shiftKey = false) => {
+      const e = {
+        key,
+        shiftKey,
+        target: doc.activeElement,
+        defaultPrevented: false,
+        preventDefault() {
+          this.defaultPrevented = true;
+        },
+        stopPropagation() {},
+      };
+      m.mpMenuKey(e);
+      if (key === 'Tab' && !e.defaultPrevented) pageNext.focus();
+    };
+    return { m, doc, list, level, trigger, open, press };
+  }
+
+  it('list → Tab → the checked level; Shift+Tab → back on the list; the menu stays open', () => {
+    const d = dom();
+    d.open();
+    d.press('Tab');
+    expect(d.doc.activeElement).toBe(d.level);
+    expect(d.m.mpState().key).toBe('k');
+    d.press('Tab', true);
+    expect(d.doc.activeElement).toBe(d.list);
+    expect(d.m.mpState().key).toBe('k');
+  });
+
+  it('Tab past the level or Shift+Tab before the list: closed, focus on the trigger (a later Escape is the trigger’s, not the panel’s)', () => {
+    const a = dom();
+    a.open();
+    a.press('Tab');
+    a.press('Tab');
+    expect(a.m.mpState().key).toBeNull();
+    expect(a.doc.activeElement).toBe(a.trigger);
+    expect(a.trigger.attrs['aria-expanded']).toBe('false');
+    const b = dom();
+    b.open();
+    b.press('Tab', true);
+    expect(b.m.mpState().key).toBeNull();
+    expect(b.doc.activeElement).toBe(b.trigger);
+  });
+});
+
+describe('D9 — every open starts fresh; the current row closes', () => {
+  it('reopening the same session from the other surface starts on its model, unlit (R1 grok P3)', () => {
+    const menu = { removeAttribute() {}, classList: { add() {} }, querySelector: () => ({ focus() {} }) };
+    const btn = (surface: string) => ({
+      attrs: { 'data-mp-key': 'k', 'data-mp-surface': surface } as Record<string, string>,
+      getAttribute(n: string) {
+        return this.attrs[n] ?? null;
+      },
+      setAttribute(n: string, v: string) {
+        this.attrs[n] = v;
+      },
+    });
+    const m = load<{ mpOpen(b: unknown): void } & Renderers>(
+      ['mpOptions', 'mpCurrentIndex', 'mpOpen'],
+      ['_mp'],
+      {
+        REPRESENTATIVE_MODELS: MODELS,
+        _sessionCache: { k: sess({ key: 'k', model: 'claude-sonnet-4-6[1m]' }) },
+        mpHost: () => menu,
+        mpClose: function (this: unknown) {
+          (m as Renderers).mpState({ key: null, surface: null });
+        },
+        mpRepaint: () => {},
+        mpSpot: () => ({ left: 0, top: 0 }),
+        setInterval: () => 1,
+        MP_WATCH_MS: 150,
+        mpWatch: () => {},
+      },
+      [STATE_FN],
+    );
+    m.mpOpen(btn('card'));
+    expect(m.mpState()).toMatchObject({ key: 'k', surface: 'card', active: 2, pointing: false });
+    m.mpState({ active: 5, pointing: true });
+    m.mpOpen(btn('panel'));
+    expect(m.mpState()).toMatchObject({ key: 'k', surface: 'panel', active: 2, pointing: false });
+  });
+
+  it('Enter on the current row closes — also when the session’s model is outside the list (R1 fable P3)', () => {
+    const mpClose = vi.fn();
+    const changeModel = vi.fn();
+    const m = load<{ mpPick(i: number): void } & Renderers>(
+      ['isBusy', 'mpOptions', 'mpCurrentIndex', 'mpPick'],
+      ['_mp', '_busy'],
+      {
+        REPRESENTATIVE_MODELS: MODELS,
+        _sessionCache: { k: sess({ key: 'k', model: 'claude-haiku-4-5-20251001' }) },
+        mpClose,
+        changeModel,
+      },
+      [STATE_FN],
+    );
+    m.mpState({ key: 'k' });
+    m.mpPick(0);
+    expect(mpClose).toHaveBeenCalledWith(true);
+    expect(changeModel).not.toHaveBeenCalled();
+  });
+
+  it('the menu element exists from boot, so every trigger’s aria-controls names it (R1 fable P3)', () => {
+    expect(TEMPLATE).toMatch(/\nmpHost\(\);\n/);
   });
 });
 
