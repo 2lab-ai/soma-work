@@ -41,7 +41,7 @@ Memory Panel은 `settings-memory-tab.ts`만 고친다 — 열린 PR #380과 같�
 
 | 라운드 | 패널 | 결과 | 차단 항목 → 반영 |
 |---|---|---|---|
-| R1 | grok · fable (astra 진행 중) | REJECT · REJECT | `panelInfoHtml` 슬롯 충돌 → 순서 고정(위 표) · agent-run Esc 전파 → 요소 리스너 + stopPropagation · 권한 대기 카드의 주 버튼 0개 → #438이 카드 안 Approve를 주 버튼으로 · agent-queue escape 규칙 누락 → esc/escAttr/textContent + 시험 · agent-queue `binding` 오기 → 실제 조건으로 |
+| R1 | grok · fable · astra | REJECT · REJECT · REJECT | `panelInfoHtml` 슬롯 충돌 → 순서 고정(위 표) · agent-run Esc 전파 → 요소 리스너 + stopPropagation · 권한 대기 카드의 주 버튼 0개 → #438이 카드 안 Approve를 주 버튼으로 · agent-queue escape 규칙 누락 → esc/escAttr/textContent + 시험 · agent-queue `binding` 오기 → 실제 조건으로 · (astra) 가용량 초↔크론 ms 단위 → 경계에서 ×1000 · 미기록 실행을 성공으로 집계 → 기록·진행·미확인 분리 · 승인 카드의 task 귀속(근거 없음) → 제거 · 답변 링크를 "출처"로 승격 → "답변에 포함된 링크" · 압축 완료를 카운터 증가로 판정 → 요청·관측·절약량 분리 |
 
 ## 사건 기록
 - 2026-10-26 18:50 KST — 유저 지시 수신. 레퍼런스 7종 원천 수집(문서 청크·CSS·문구·캡처). 오픈소스 저장소에 7종 없음 확인(유료 항목).
