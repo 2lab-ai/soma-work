@@ -1195,22 +1195,18 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
     expect(writes).toBe(2);
     expect(fnBody('renderPanelTasks')).not.toContain('container.innerHTML =');
   });
-  it('a refused model switch puts the picker back on the session model — also the second time, when the card markup does not change (review B r4 astra)', async () => {
-    const select = {
-      value: 'sonnet',
-      disabled: false,
-      selectedIndex: 1,
-      options: [{ defaultSelected: true }, { defaultSelected: false }],
-      blur() {},
-    };
+  it('a refused model switch leaves nothing to put back — also the second time, when the card markup does not change (review B r4 astra)', async () => {
+    // The menu picks by value (.prd/affectui/re-model-picker.md D11): no control keeps the refused
+    // model, so the card shows the session's model again by re-rendering from the session.
+    const notes: Record<string, { text: string; error: boolean }> = {};
     let refreshed = 0;
-    const m = load<{ changeModel(k: string, s: unknown): Promise<void> }>(
-      ['isBusy', 'setBusy', 'resetPicker', 'modelSwitchNote', 'changeModel'],
+    const m = load<{ changeModel(k: string, n: string): Promise<void>; isBusy(k: string, op: string): boolean }>(
+      ['isBusy', 'setBusy', 'modelSwitchNote', 'changeModel'],
       ['_busy'],
       {
         repaintPanelControlsFor: () => {},
         postModelSwitch: async () => ({ ok: false, error: 'rejected' }),
-        _modelNotes: {},
+        _modelNotes: notes,
         formatTokens: String,
         refreshCard: () => {
           refreshed++; // same markup on the second refusal: the card writes nothing
@@ -1218,11 +1214,10 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
         loadSessions: () => {},
       },
     );
-    await m.changeModel('k', select);
-    expect(select.selectedIndex).toBe(0);
-    select.selectedIndex = 1;
-    await m.changeModel('k', select);
-    expect(select.selectedIndex).toBe(0);
+    await m.changeModel('k', 'sonnet[1m]');
+    expect(notes.k).toEqual({ text: 'rejected', error: true });
+    await m.changeModel('k', 'sonnet[1m]');
+    expect(m.isBusy('k', 'model')).toBe(false);
     // Each switch repaints the card as it starts (busy, spec 13) and as it settles.
     expect(refreshed).toBe(4);
   });

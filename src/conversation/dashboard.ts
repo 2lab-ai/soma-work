@@ -37,10 +37,10 @@ import { config } from '../config';
 import { displayTitle } from '../format/display-title';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
-import { calculateTokenCost } from '../metrics/model-registry';
+import { calculateTokenCost, findModelPricing } from '../metrics/model-registry';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import type { MetricsEvent } from '../metrics/types';
-import { clampEffortToModel } from '../model-catalog';
+import { clampEffortToModel, modelCatalog } from '../model-catalog';
 import {
   type AnswerPermissionPromptArgs,
   isPermissionPromptDecision,
@@ -255,6 +255,8 @@ export interface KanbanSession {
   effort?: EffortLevel;
   /** The level the session's model actually runs, when it caps `effort` (SSOT 2026-10-23 T1). */
   effortEffective?: string;
+  /** The levels the session's model runs (catalog menu ∩ EFFORT_LEVELS); absent when the catalog does not know it (re-model-picker D6). */
+  effortLevels?: EffortLevel[];
   /** Jira short key like "PROJ-123" derived from issueUrl */
   issueShortRef?: string;
   /** GitHub PR short ref like "PR-123" derived from prUrl */
@@ -1105,6 +1107,19 @@ export function extractPrShortRef(url?: string): string | undefined {
 }
 
 /**
+ * affectUI model picker D6 — the effort levels a model runs: its catalog menu
+ * ∩ EFFORT_LEVELS, in EFFORT_LEVELS order. Undefined when the catalog has no
+ * menu for the model (the picker then offers every level and the runtime
+ * clamp decides, as before).
+ */
+export function pickerEffortLevels(catalogEfforts: readonly string[] | null | undefined): EffortLevel[] | undefined {
+  if (!catalogEfforts || catalogEfforts.length === 0) return undefined;
+  const menu = new Set(catalogEfforts.map((e) => String(e).toLowerCase()));
+  const levels = EFFORT_LEVELS.filter((level) => menu.has(level));
+  return levels.length > 0 ? levels : undefined;
+}
+
+/**
  * Card-derived UI fields shared between live (sessionToKanban) and archived
  * (archivedToKanban) kanban builders. Archived sessions don't persist effort,
  * so their branch always falls back to the owner's default; live sessions
@@ -1116,7 +1131,7 @@ function cardDerivedFields(src: {
   model?: string;
   links?: { issue?: { url?: string }; pr?: { url?: string } };
   persistedEffort: boolean;
-}): Pick<KanbanSession, 'effort' | 'effortEffective' | 'issueShortRef' | 'prShortRef'> {
+}): Pick<KanbanSession, 'effort' | 'effortEffective' | 'effortLevels' | 'issueShortRef' | 'prShortRef'> {
   const effort =
     src.persistedEffort && src.effort
       ? coerceEffort(src.effort)
@@ -1124,9 +1139,12 @@ function cardDerivedFields(src: {
   // SSOT 2026-10-23 T1 — the level the model really runs (build-stream-options
   // clamps the same way); present only when the model caps the chosen level.
   const clamped = src.model ? clampEffortToModel(src.model, effort) : effort;
+  // affectUI model picker D6 — the effort control offers only what the model runs.
+  const effortLevels = src.model ? pickerEffortLevels(modelCatalog.getEffortsFor(src.model)) : undefined;
   return {
     effort,
     ...(clamped !== effort ? { effortEffective: clamped } : {}),
+    ...(effortLevels ? { effortLevels } : {}),
     issueShortRef: extractIssueShortRef(src.links?.issue?.url),
     prShortRef: extractPrShortRef(src.links?.pr?.url),
   };
@@ -3162,6 +3180,12 @@ export async function registerDashboardRoutes(
 
 // ── Dashboard HTML ─────────────────────────────────────────────────
 
+/** re-model-picker D5 — a representative model with its registry price per M tokens; unchanged when the registry does not know the id. */
+function withPickerPrice<T extends { model: string }>(m: T): T | (T & { price: { input: number; output: number } }) {
+  const pricing = findModelPricing(m.model);
+  return pricing ? { ...m, price: { input: pricing.inputPerMTok, output: pricing.outputPerMTok } } : m;
+}
+
 function renderDashboardPage(userId?: string): string {
   const initUser = userId ? JSON.stringify(userId) : 'null';
   // #814 — inject the local instance's name so the frontend can identify
@@ -3176,10 +3200,12 @@ function renderDashboardPage(userId?: string): string {
     '\\u003c',
   );
   // SSOT 2026-10-22 T4 — the representative models a card can switch to, with
-  // their window and auto-compact threshold (escaped like the header config).
+  // their window and auto-compact threshold (escaped like the header config);
+  // the model picker's tray and cost bar add the registry price per M tokens
+  // (re-model-picker D5) — only for an id the registry knows.
   let representativeModels: unknown[] = [];
   try {
-    representativeModels = listRepresentativeModels(productionModelCatalogDeps());
+    representativeModels = listRepresentativeModels(productionModelCatalogDeps()).map(withPickerPrice);
   } catch (error) {
     logger.warn('Representative models unavailable for the dashboard', error);
   }
@@ -3971,12 +3997,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card.is-expanded .card-expand-inner { opacity: 1; }
 .card.no-motion .card-expand, .card.no-motion .card-expand-inner { transition: none; }
 .card-body { margin: 0 14px; padding: 12px 0 14px; border-top: 1px solid var(--ib-card-border); font-size: 13px; color: var(--ib-text-2); }
-.cb-model { color: var(--ib-muted); font-size: 13px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; }
 /* ── CONTROL STRIP — the open card's last row (spec 13): model · effort switch · the state action · Slack · 작업 로그 ── */
 .card-foot-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--ib-card-border); }
 .card-foot-bar .card-actions { margin: 0 0 0 auto; }
-.cfb-model { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.cfb-model-toggle { display: none; font: inherit; font-size: 12.5px; color: var(--ib-text-2); background: var(--ib-seg); border: 1px solid var(--ib-card-border); border-radius: 8px; padding: 4px 10px; min-height: 32px; cursor: pointer; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.cfb-model { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; min-width: 0; color: var(--ib-muted); font-size: 13px; }
 .card-foot-bar + .cb-model-note { margin-top: 6px; }
 /* ── GOAL LINE — the goal on the open card, its home is the panel (spec 13) ── */
 .card-goal-line { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding: 6px 10px; border: 1px solid var(--ib-card-border); border-radius: 8px; background: var(--ib-card-dim); font-size: 12.5px; min-width: 0; }
@@ -3989,19 +4013,73 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .cgl-go, .card-more-link { flex-shrink: 0; font: inherit; font-size: 12px; color: var(--accent); background: none; border: 0; padding: 4px 2px; min-height: 28px; cursor: pointer; white-space: nowrap; }
 .cgl-go:hover, .card-more-link:hover { text-decoration: underline; }
 .card-more-link { display: block; margin: 4px 0 0 auto; }
-.cb-model-select { font: inherit; font-size: 13px; color: var(--ib-text); background: var(--ib-seg); border: 1px solid var(--ib-card-border); border-radius: 8px; padding: 4px 8px; min-height: 30px; max-width: 100%; cursor: pointer; }
-.cb-model-select:disabled { opacity: 0.6; cursor: progress; }
 .cb-ac { font-variant-numeric: tabular-nums; }
 .cb-model-note { margin-top: 4px; font-size: 12px; color: var(--ib-text-2); overflow-wrap: anywhere; }
 .cb-model-note.is-error { color: var(--st-fail); }
 /* Model · effort beside the composer (spec 13). */
 .panel-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 0 0 8px; font-size: 13px; }
 .panel-controls:empty { display: none; }
-.panel-controls .pc-pick { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; }
 .panel-controls .pc-scope { font-size: 12px; font-weight: 700; color: var(--text-tertiary); }
-.panel-controls .pc-toggle { display: none; font: inherit; font-size: 12.5px; color: var(--text-secondary); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px; min-height: 32px; cursor: pointer; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-.panel-controls .cb-model-select { color: var(--text); background: var(--surface-raised); border-color: var(--border); }
 .panel-controls .cb-model-note { flex-basis: 100%; margin-top: 0; }
+/* ── MODEL · EFFORT MENU — affectUI Model Picker (.prd/affectui/re-model-picker.md D1, D2, D13–D15).
+   One trigger per surface; the menu sits in <body> (position: fixed) so the open card's clip never cuts it. ── */
+:root { --mp-well: #2e2e33; --mp-bar: #5a5a62; --mp-bar-off: #35353b; }
+[data-theme="light"] { --mp-well: #f1f1f3; --mp-bar: #c9c9d0; --mp-bar-off: #e6e6ea; }
+.mp-trigger { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; min-height: 30px; padding: 0 9px 0 5px; font: inherit; font-size: 13px; font-weight: 500; color: var(--ib-text); background: var(--ib-seg); border: 1px solid var(--ib-card-border); border-radius: 8px; cursor: pointer; white-space: nowrap; transition: background-color var(--dur-press) var(--ease-out); }
+.mp-trigger:hover, .mp-trigger[aria-expanded="true"] { background: var(--mp-well); }
+.mp-trigger:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.mp-trigger[aria-busy="true"] { cursor: progress; }
+.mp-trigger .mp-glyph { width: 18px; height: 18px; border-radius: 5px; font-size: 10px; }
+.mp-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mp-level { flex: none; font-weight: 400; color: var(--ib-text-2); }
+.mp-chev { flex: none; width: 6px; height: 6px; margin: 0 1px 0 2px; border-right: 1.5px solid var(--ib-muted); border-bottom: 1.5px solid var(--ib-muted); transform: translateY(-2px) rotate(45deg); transition: transform 300ms var(--ease-out); }
+.mp-trigger[aria-expanded="true"] .mp-chev { transform: translateY(1px) rotate(225deg); }
+.mp-glyph { display: inline-grid; flex: none; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: var(--ib-card); box-shadow: inset 0 0 0 1px var(--ib-card-border); font-size: 10.5px; font-weight: 600; line-height: 1; color: var(--ib-text); }
+.mp-pop { position: fixed; z-index: 150; left: 0; top: 0; width: min(320px, calc(100vw - 32px)); max-height: calc(100vh - 24px); overflow-y: auto; container-type: inline-size; padding: 4px; border-radius: 16px; background: var(--ib-col); box-shadow: 0 0 0 1px var(--ib-card-border), var(--ib-shadow-raised); color: var(--ib-text-2); font-size: 13px; line-height: 20px; text-align: left; transform-origin: top left; opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(-4px) scale(0.96); transition: opacity 160ms ease, transform 220ms var(--ease-out), visibility 0s linear 220ms; }
+.mp-pop[data-side="top"] { transform-origin: bottom left; transform: translateY(4px) scale(0.96); }
+.mp-pop.is-open { opacity: 1; visibility: visible; transform: none; pointer-events: auto; transition: opacity 200ms ease, transform var(--dur-move) var(--ease-out), visibility 0s; }
+.mp-card { padding: 6px; border-radius: 12px; background: var(--ib-card); box-shadow: 0 0 0 1px var(--ib-card-border), var(--ib-shadow); }
+.mp-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 24px; padding: 0 10px; font-size: 11px; line-height: 16px; color: var(--ib-muted); }
+.mp-cols, .mp-bars { display: grid; flex: none; grid-template-columns: repeat(3, 34px); gap: 8px; }
+.mp-cols > span { text-align: center; white-space: nowrap; }
+.mp-wait { margin: 0 10px 4px; font-size: 12px; color: var(--st-wait); }
+.mp-list { display: grid; gap: 1px; border-radius: 10px; outline: none; }
+.mp-opt { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; grid-template-areas: "g t b" "g d d"; align-items: center; column-gap: 10px; min-height: 48px; padding: 6px 10px; border-radius: 10px; cursor: pointer; transition: background-color var(--dur-press) ease, opacity 220ms ease; }
+.mp-opt > .mp-glyph { grid-area: g; }
+.mp-opt > .mp-bars { grid-area: b; }
+.mp-opt[aria-disabled="true"] { cursor: default; }
+.mp-list[data-pointing] .mp-opt[data-active] { background: var(--mp-well); }
+.mp-list[data-pointing] .mp-opt:not([data-active]) { opacity: 0.5; }
+.mp-list:focus-visible .mp-opt[data-active] { background: var(--mp-well); box-shadow: inset 0 0 0 1.5px var(--border-focus); }
+.mp-title { grid-area: t; display: flex; align-items: center; gap: 4px; min-width: 0; font-weight: 500; color: var(--ib-text); }
+.mp-title-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.mp-check { flex: none; font-size: 12px; line-height: 1; color: var(--accent); animation: mp-pop 320ms var(--ease-out) both; }
+.mp-desc { grid-area: d; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 12px; line-height: 17px; color: var(--ib-muted); overflow-wrap: anywhere; }
+.mp-meter { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; height: 5px; }
+.mp-meter.is-none { display: block; height: auto; font-size: 11px; line-height: 1; text-align: center; color: var(--ib-muted); }
+.mp-seg { border-radius: 1.5px; background: var(--mp-bar-off); transition: background-color 180ms ease; }
+.mp-seg[data-on] { background: var(--mp-bar); }
+.mp-opt[data-lit] .mp-seg[data-on] { background: var(--accent); transition-delay: calc(var(--c) * 70ms + var(--s) * 45ms); animation: mp-fill 360ms var(--ease-out) both; animation-delay: calc(var(--c) * 70ms + var(--s) * 45ms); }
+.mp-settings { margin-top: 6px; padding: 6px 10px 4px; border-top: 1px solid var(--ib-card-border); }
+.mp-effort-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-height: 22px; }
+.mp-effort-label { flex: none; font-size: 12.5px; color: var(--ib-text-2); }
+.mp-effort-cap { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--st-wait); }
+.mp-seg-ctl { position: relative; display: grid; grid-template-columns: repeat(var(--n), 1fr); margin-top: 4px; padding: 2px; border-radius: 9px; background: var(--ib-seg); box-shadow: inset 0 0 0 1px var(--ib-card-border); }
+.mp-thumb { position: absolute; top: 2px; bottom: 2px; left: 2px; width: calc((100% - 4px) / var(--n)); border-radius: 7px; background: var(--ib-seg-on); box-shadow: 0 0 0 1px var(--ib-card-border), 0 1px 2px rgba(0, 0, 0, 0.12); transform: translateX(calc(var(--i) * 100%)); transition: transform var(--dur-move) var(--ease-out); }
+.mp-seg-btn { position: relative; min-width: 0; min-height: 26px; padding: 0 2px; font: inherit; font-size: 12px; font-weight: 500; color: var(--ib-muted); background: none; border: 0; border-radius: 7px; cursor: pointer; white-space: nowrap; transition: color 200ms ease; }
+.mp-seg-btn[aria-checked="true"], .mp-seg-btn:hover { color: var(--ib-text); }
+.mp-seg-btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
+.mp-seg-ctl[aria-disabled="true"] .mp-seg-btn { cursor: progress; }
+.mp-err { margin-top: 6px; font-size: 12px; color: var(--st-fail-text); overflow-wrap: anywhere; }
+.mp-foot { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 4px 8px 0 12px; }
+.mp-caption { flex: 1; min-width: 0; overflow: hidden; font-size: 12.5px; color: var(--ib-muted); white-space: nowrap; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.mp-caption b { font-weight: 500; color: var(--ib-text); }
+.mp-keys { display: flex; flex: none; gap: 3px; }
+.mp-keys kbd { display: grid; place-items: center; min-width: 20px; height: 18px; padding: 0 4px; border-radius: 5px; background: var(--ib-card); box-shadow: 0 0 0 1px var(--ib-card-border); font-family: inherit; font-size: 10.5px; line-height: 1; color: var(--ib-muted); }
+.mp-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@keyframes mp-pop { from { opacity: 0; transform: scale(0.6); } }
+@keyframes mp-fill { 0% { transform: scaleY(1); } 45% { transform: scaleY(1.6); } 100% { transform: scaleY(1); } }
+@container (max-width: 300px) { .mp-opt .mp-glyph, .mp-keys { display: none; } .mp-opt { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "t b" "d d"; } .mp-cols, .mp-bars { grid-template-columns: repeat(3, 30px); gap: 6px; } }
 
 /* ── SHORT REFS ROW — PROJ-123 · PR-123 ── */
 .card .card-refs {
@@ -5463,23 +5541,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens.
    Heights only, so the #800 topbar width fit is untouched; the theme toggle keeps
    its 32px square (pinned by #800) and gets a 44px-wide hit slop instead. ── */
-/* Below 640px both switches fold behind one toggle (the card's footer, the panel's composer). */
-@media (max-width: 639px) {
-  .cfb-model-toggle { display: inline-block; min-height: 44px; }
-  .card-foot-bar .cb-model:not(.is-open) { display: none; }
-  .card-foot-bar .cfb-model { flex-wrap: wrap; flex-basis: 100%; }
-}
-/* The composer's switch folds on a narrow or a short screen (a phone sideways):
-   folded, its toggle shares the input's line, so the reading area keeps its room. */
+/* The composer's model · effort trigger shares the input's line on a narrow or a
+   short screen (a phone sideways), so the reading area keeps its room; its menu opens above. */
 @media (max-width: 639px), (max-height: 560px) {
-  .panel-controls .pc-toggle { display: inline-block; min-height: 44px; }
-  .panel-controls .pc-pick:not(.is-open) { display: none; }
   .panel-command { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; }
   .panel-command .panel-controls { padding: 0; flex: 0 1 auto; max-width: 42%; }
-  .panel-command .panel-controls .pc-toggle { max-width: 100%; }
-  /* Unfolded, the pickers float above the composer: they never take the reading area's height. */
-  .panel-command { position: relative; }
-  .panel-command .panel-controls.is-open .pc-pick { display: flex; position: absolute; left: 12px; right: 12px; bottom: calc(100% + 6px); z-index: 5; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18); }
+  .panel-command .panel-controls .pc-scope { display: none; }
+  .panel-command .panel-controls .mp-trigger { max-width: 100%; }
   .panel-command .panel-controls .cb-model-note { flex-basis: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .panel-command .cmd-hint { flex-basis: 100%; }
   .panel-command .panel-command-row { flex: 1 1 160px; min-width: 0; }
@@ -5496,7 +5564,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .panel-close { width: 44px; height: 44px; }
   #panel-title-sub-regen { min-width: 44px; min-height: 44px; }
   .pi-links a, .pi-head, .panel-tasks-toggle, .turn .btn-action { min-height: 44px; }
-  .ps-actions .btn-action, .ps-slack, .cgl-go, .card-more-link, .tl-toggle, .cfb-model-toggle, .panel-controls .pc-toggle, .panel-controls .cb-model-select, .card-foot-bar .cb-model-select { min-height: 44px; }
+  .ps-actions .btn-action, .ps-slack, .cgl-go, .card-more-link, .tl-toggle { min-height: 44px; }
   .panel-worklog-header, .wl-detail-btn { min-height: 44px; }
   .worklog-list .wl-row { min-height: 44px; display: flex; flex-direction: column; justify-content: center; }
   .wl-tool > .wl-row, .wl-tool_result > .wl-row, .worklog-list .wl-row.wl-line { flex-direction: row; align-items: center; }
@@ -5515,6 +5583,17 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 @media (pointer: coarse) {
   .ap-card .btn-perm.ap-btn, .ap-card .btn-choice.ap-choice { min-height: 44px; }
+}
+/* The model · effort menu's own touch / narrow sizes and reduced motion — after the shared blocks, which stay untouched (re-model-picker D13/D15). */
+@media (pointer: coarse), (max-width: 639px) {
+  .mp-trigger, .mp-seg-btn { min-height: 44px; }
+  .mp-opt { min-height: 54px; }
+  .mp-keys { display: none; }
+}
+@media all and (prefers-reduced-motion: reduce) {
+  .mp-pop, .mp-pop[data-side="top"] { transform: none; }
+  .mp-opt[data-lit] .mp-seg[data-on] { animation: none; transition-delay: 0s; }
+  .mp-check { animation: none; }
 }
 
 /* ── Agent inbox (re-agent-inbox D3) — the board's own reduced-motion rule, after the
@@ -10856,7 +10935,6 @@ function cardGoalLine(s, col, canEdit) {
 //   Slack, 작업 로그.
 // The complete record — meta, every number, titled links, the goal editor, the
 // whole task ledger, the rich agent tree — is the panel's.
-var _cardModelOpen = Object.create(null); // card key → the footer switch unfolded (< 640px)
 function renderCardBody(s, col) {
   // Owner gating — server-side requireSessionOwner is the authoritative guard;
   // this is UX only. Fail closed: if ownerId is missing (legacy record) the
@@ -10871,20 +10949,17 @@ function renderCardBody(s, col) {
   // this instance, a permission prompt they asked for. One gate for the ink.
   const canAnswerQuestion = !isSibling && isOwner && col === 'waiting' && !!s.pendingQuestion;
 
-  // The open card's quick switch (T4/T5, 10-23 T1): model · effort, among the
-  // representative models; below 640px it folds behind one toggle.
+  // The open card's quick switch (T4/T5, 10-23 T1; re-model-picker D1): the
+  // owner's one trigger opens the model · effort menu; others read model · level.
   const modelShort = esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '');
   const canSwitchModel = isOwner && col !== 'closed' && !s.terminated && !isSiblingSession(s);
   const modelParts = [];
-  if (dhShow('model') && (modelShort || canSwitchModel)) modelParts.push(renderModelPicker(s, canSwitchModel, modelShort));
-  if (s.effort || canSwitchModel) modelParts.push(renderEffortPicker(s, canSwitchModel));
-  const modelOpen = !!_cardModelOpen[s.key];
-  const modelHtml = modelParts.length
-    ? '<span class="cfb-model">'
-      + '<button type="button" class="cfb-model-toggle" aria-expanded="' + (modelOpen ? 'true' : 'false') + '" onclick="event.stopPropagation();toggleCardModel(\\'' + escJs(s.key) + '\\')">'
-      + (modelShort || '모델') + (s.effort ? ' &middot; ' + esc(effortLabel(s.effort)) : '') + ' &#x25BE;</button>'
-      + '<span class="cb-model' + (modelOpen ? ' is-open' : '') + '">' + modelParts.join('') + '</span></span>'
-    : '';
+  if (canSwitchModel) modelParts.push(renderModelPicker(s, true, modelShort, 'card'));
+  else {
+    if (dhShow('model') && modelShort) modelParts.push(renderModelPicker(s, false, modelShort, 'card'));
+    if (s.effort) modelParts.push(renderEffortPicker(s, false));
+  }
+  const modelHtml = modelParts.length ? '<span class="cfb-model">' + modelParts.join('') + '</span>' : '';
   const modelNote = renderModelNote(s);
 
   // #814 env badge — only shown when multiple distinct envs are present in
@@ -10981,17 +11056,15 @@ function renderCardBody(s, col) {
     + footHtml
     + '</div>';
 }
-function toggleCardModel(key) {
-  if (_cardModelOpen[key]) delete _cardModelOpen[key];
-  else _cardModelOpen[key] = true;
-  refreshCard(key);
-}
 
-// ── Model switch on the open card (SSOT 2026-10-22 T4/T5) ──
-// A <select> of the representative models (REPRESENTATIVE_MODELS). An option
-// whose auto-compact threshold is below what the context holds now says the
-// switch compacts first: the server compacts on the current model and switches
-// at the compact's boundary (the card shows the waiting switch meanwhile).
+// ── Model · effort on the open card and beside the panel's composer ──
+// SSOT 2026-10-22 T4/T5 · 10-23 T1, shaped after affectUI Model Picker
+// (.prd/affectui/re-model-picker.md): the owner gets one trigger per surface
+// that opens one menu — the representative models (REPRESENTATIVE_MODELS) with
+// window · autocompact · cost bars, the effort levels the model runs, a price
+// tray. A model whose auto-compact threshold is below what the context holds
+// now says the switch compacts first: the server compacts on the current model
+// and switches at the compact's boundary (the strip shows the waiting switch).
 var _modelNotes = Object.create(null); // card key → { text, error }
 // One write in flight per session and operation (model · effort · goal ·
 // action), shared by the open card and the panel: every renderer reads it, so
@@ -11004,23 +11077,27 @@ function setBusy(key, op, on) {
   if (on) _busy[key + '|' + op] = true;
   else delete _busy[key + '|' + op];
 }
-function renderModelPicker(s, canSwitch, modelShort) {
+function renderModelPicker(s, canSwitch, modelShort, surface) {
+  if (!canSwitch) return '<span class="cb-model-name">' + modelShort + '</span>';
+  // D1 — one trigger: glyph · model · the level that runs · chevron; never disabled
+  // (effort stays switchable while a model switch waits — also with no model list), busy while a write runs.
   var models = REPRESENTATIVE_MODELS || [];
-  var current = null;
-  for (var i = 0; i < models.length; i++) if (models[i].model === s.model) current = models[i];
-  if (!canSwitch || !models.length) return '<span class="cb-model-name">' + modelShort + '</span>';
-  var used = toNum(s.contextTokens);
-  var opts = '';
-  if (!current) opts += '<option value="" selected disabled>' + (modelShort || '모델 선택') + '</option>';
-  for (var j = 0; j < models.length; j++) {
-    var m = models[j];
-    var label = m.nickname + ' · autocompact ' + formatTokens(m.autoCompactTokens)
-      + (m !== current && used > toNum(m.autoCompactTokens) ? ' · compact 후 전환' : '');
-    opts += '<option value="' + escAttr(m.nickname) + '"' + (m === current ? ' selected' : '') + '>' + esc(label) + '</option>';
-  }
-  var busy = isBusy(s.key, 'model');
-  return '<select class="cb-model-select" aria-label="모델 변경"' + (s.pendingModel || busy ? ' disabled' : '') + (busy ? ' aria-busy="true"' : '')
-    + ' onclick="event.stopPropagation()" onchange="changeModel(\\'' + escJs(s.key) + '\\',this)">' + opts + '</select>';
+  var where = surface === 'panel' ? 'panel' : 'card';
+  var cur = null;
+  for (var i = 0; i < models.length; i++) if (models[i].model === s.model) cur = models[i];
+  var name = cur ? cur.label || cur.nickname : mpShort(s) || '모델';
+  var level = s.effortEffective || s.effort;
+  var open = _mp.key === s.key && _mp.surface === where;
+  var busy = isBusy(s.key, 'model') || isBusy(s.key, 'effort');
+  return '<button type="button" class="mp-trigger" aria-haspopup="dialog" aria-expanded="' + (open ? 'true' : 'false') + '" aria-controls="mp-menu"'
+    + ' data-mp-key="' + escAttr(s.key) + '" data-mp-surface="' + where + '"'
+    + ' aria-label="' + escAttr('모델 ' + name + (level ? ', effort ' + effortLabel(level) : '') + ' — 바꾸기') + '"'
+    + (busy ? ' aria-busy="true"' : '')
+    + ' onclick="event.stopPropagation();mpToggleFrom(this)" onkeydown="mpTriggerKey(event,this)">'
+    + '<span class="mp-glyph" aria-hidden="true">' + esc((cur ? cur.nickname : name).charAt(0).toUpperCase()) + '</span>'
+    + '<span class="mp-name">' + esc(name) + '</span>'
+    + (level ? '<span class="mp-level">&middot; ' + esc(effortLabel(level)) + '</span>' : '')
+    + '<span class="mp-chev" aria-hidden="true"></span></button>';
 }
 function renderModelNote(s) {
   if (s.pendingModel) {
@@ -11054,34 +11131,19 @@ function modelSwitchNote(r) {
   if (res.status === 'unchanged') return { text: '이미 ' + res.nickname + '입니다', error: false };
   return { text: res.nickname + '(으)로 전환 · autocompact ' + formatTokens(res.autoCompactTokens), error: false };
 }
-// A refused (or refused-to-start) switch puts the picker back on the session's
-// value — the option the surface rendered as selected.
-function resetPicker(select) {
-  if (!select || !select.options) return;
-  for (var i = 0; i < select.options.length; i++) if (select.options[i].defaultSelected) select.selectedIndex = i;
-}
-async function changeModel(key, select) {
-  var nickname = select && select.value;
+async function changeModel(key, nickname) {
   if (!nickname) return;
   // One switch at a time per session, whichever surface asks (spec 13 §3.5).
-  if (isBusy(key, 'model')) { resetPicker(select); return; }
-  if (select) select.disabled = true;
+  if (isBusy(key, 'model')) return;
   setBusy(key, 'model', true);
-  // The other surface's picker shows the switch in flight at once (a focused picker is left alone).
+  // The other surface shows the switch in flight at once.
   refreshCard(key);
   repaintPanelControlsFor(key);
   var r;
   try { r = await postModelSwitch(key, nickname); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
   setBusy(key, 'model', false);
+  // A refused switch needs no undo: the surfaces render the session's model again.
   _modelNotes[key] = modelSwitchNote(r);
-  if (select) {
-    select.disabled = false;
-    select.blur();
-    // A refused switch puts the picker back on the session's model (the
-    // option the card rendered as selected) — also when the same refusal
-    // leaves the card's markup unchanged and the refresh writes nothing.
-    if (!r.ok) resetPicker(select);
-  }
   refreshCard(key);
   repaintPanelControlsFor(key);
   loadSessions();
@@ -11096,21 +11158,12 @@ function effortLabel(level) {
   return EFFORT_LABELS[level] || String(level || '');
 }
 function renderEffortPicker(s, canSwitch) {
-  var levels = EFFORT_LEVELS || [];
+  // The owner's control lives in the model menu (renderEffortControl); others read the level.
+  if (canSwitch) return renderEffortControl(s);
   var capped = s.effortEffective && s.effortEffective !== s.effort
     ? ' title="이 모델은 ' + escAttr(effortLabel(s.effortEffective)) + '까지 실행합니다"' : ' title="Reasoning effort"';
-  if (!canSwitch || !levels.length) {
-    return '<span class="meta-effort"' + capped + '>' + esc(effortLabel(s.effort))
-      + (s.effortEffective && s.effortEffective !== s.effort ? ' &rarr; ' + esc(effortLabel(s.effortEffective)) : '') + '</span>';
-  }
-  var opts = '';
-  for (var i = 0; i < levels.length; i++) {
-    opts += '<option value="' + escAttr(levels[i]) + '"' + (levels[i] === s.effort ? ' selected' : '') + '>'
-      + esc('Effort · ' + effortLabel(levels[i])) + '</option>';
-  }
-  var busy = isBusy(s.key, 'effort');
-  return '<select class="cb-model-select cb-effort-select" aria-label="Effort 변경"' + capped + (busy ? ' disabled aria-busy="true"' : '')
-    + ' onclick="event.stopPropagation()" onchange="changeEffort(\\'' + escJs(s.key) + '\\',this)">' + opts + '</select>';
+  return '<span class="meta-effort"' + capped + '>' + esc(effortLabel(s.effort))
+    + (s.effortEffective && s.effortEffective !== s.effort ? ' &rarr; ' + esc(effortLabel(s.effortEffective)) : '') + '</span>';
 }
 async function postEffortSwitch(key, effort) {
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/effort';
@@ -11136,63 +11189,524 @@ function effortSwitchNote(r) {
   var capped = res.effective && res.effective !== res.effort ? ' (이 모델은 ' + effortLabel(res.effective) + '까지 실행)' : '';
   return { text: 'effort ' + effortLabel(res.effort) + ' · 다음 턴부터 적용' + capped, error: false };
 }
-async function changeEffort(key, select) {
-  var effort = select && select.value;
+async function changeEffort(key, effort) {
   if (!effort) return;
-  if (isBusy(key, 'effort')) { resetPicker(select); return; }
-  if (select) select.disabled = true;
+  if (isBusy(key, 'effort')) return;
   setBusy(key, 'effort', true);
   refreshCard(key);
   repaintPanelControlsFor(key);
+  if (_mp.key === key) mpRepaint();
   var r;
   try { r = await postEffortSwitch(key, effort); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
   setBusy(key, 'effort', false);
   _modelNotes[key] = effortSwitchNote(r);
-  if (select) {
-    select.disabled = false;
-    select.blur();
-    // Like the model: a refusal shows the level that still runs, also when the markup does not change.
-    if (!r.ok) resetPicker(select);
-  }
+  mpApplyEffort(key, r);
   refreshCard(key);
   repaintPanelControlsFor(key);
+  if (_mp.key === key) mpRepaint();
   loadSessions();
 }
-// Model · effort beside the composer (spec 13): this session's, one click
-// each; below 640px folded behind one toggle. Their own container — the
-// message input is never inside a morph root. An open picker survives live updates.
-var _panelControlsOpen = false;
+// What the server answered is the session's level now — the open menu's thumb
+// does not wait for the next poll (a refusal changes nothing).
+function mpApplyEffort(key, r) {
+  var cs = _sessionCache[key];
+  var res = r && r.ok ? r.result : null;
+  if (!cs || !res || !res.effort) return;
+  cs.effort = res.effort;
+  if (res.effective && res.effective !== res.effort) cs.effortEffective = res.effective;
+  else delete cs.effortEffective;
+}
+// Model · effort beside the composer (spec 13): this session's — one trigger
+// for the owner (the menu opens above it), the plain text for others.
 function renderPanelControls(s) {
   var el = document.getElementById('panel-controls');
   if (!el || !s) return;
-  var a = document.activeElement;
-  if (a && el.contains(a) && a.tagName === 'SELECT') return; // an open picker survives live updates
+  // The open menu follows the session; its anchor here holds still until it closes.
+  if (_mp.key === s.key) mpRepaint();
+  if (el.querySelector('.mp-trigger[aria-expanded="true"]')) return;
   var isOwner = !!s.ownerId && s.ownerId === currentUserId;
   var canSwitch = isOwner && !s.terminated && s.sessionState !== 'SLEEPING' && !isSiblingSession(s);
   var modelShort = esc(s.model || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
-  var html = '<button type="button" class="pc-toggle" aria-expanded="' + (_panelControlsOpen ? 'true' : 'false') + '" onclick="togglePanelControls()">'
-    + '모델 ' + (modelShort || '—') + (s.effort ? ' &middot; ' + esc(effortLabel(s.effort)) : '') + ' &#x25BE;</button>'
-    + '<span class="pc-pick' + (_panelControlsOpen ? ' is-open' : '') + '"><span class="pc-scope">이 세션</span>'
-    + renderModelPicker(s, canSwitch, modelShort)
-    + renderEffortPicker(s, canSwitch) + '</span>'
+  var html = '<span class="pc-scope">이 세션</span>'
+    + renderModelPicker(s, canSwitch, modelShort, 'panel')
+    + (canSwitch ? '' : renderEffortPicker(s, false))
     + renderModelNote(s);
-  el.classList.toggle('is-open', _panelControlsOpen);
   if (el._html === html) return;
   morphInnerHtml(el, html);
   el._html = html;
 }
-function togglePanelControls() {
-  _panelControlsOpen = !_panelControlsOpen;
-  // A focused picker would keep renderPanelControls from writing: let go of it first.
-  var c = document.getElementById('panel-controls');
-  var a = document.activeElement;
-  if (c && a && a.tagName === 'SELECT' && c.contains(a) && a.blur) a.blur();
-  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  if (s) renderPanelControls(s);
-}
 // After a switch on either surface: the panel's copy follows at once.
 function repaintPanelControlsFor(key) {
   if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelControls(_sessionCache[key]);
+}
+// ── The model · effort menu (affectUI Model Picker — re-model-picker D2–D12) ──
+// One menu for both surfaces, in <body> (fixed): the open card clips its body
+// (overflow: hidden for the fold), so a menu inside it would be cut off. The
+// trigger is found again by its key + surface after any re-render.
+// The open menu: whose (session key + surface), the active row, whether the
+// pointer or the arrows point at it, the tray's shown prices (they roll).
+var _mp = { key: null, surface: null, active: 0, pointing: false, shown: null, raf: 0, placeRaf: 0, watch: 0, at: null };
+var MP_EFFORT_SHORT = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'XHigh', max: 'Max' };
+var MP_ROLL_MS = 560;
+function mpShort(s) {
+  return String((s && s.model) || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
+}
+// The rows: the representative models in server order, after the session's own
+// model when it is not one of them (current, not selectable).
+function mpOptions(s) {
+  var models = REPRESENTATIVE_MODELS || [];
+  var out = [];
+  var listed = false;
+  for (var i = 0; i < models.length; i++) if (models[i].model === s.model) listed = true;
+  if (!listed) out.push({ m: null, outside: true });
+  for (var j = 0; j < models.length; j++) out.push({ m: models[j], outside: false });
+  return out;
+}
+function mpCurrentIndex(s, opts) {
+  for (var i = 0; i < opts.length; i++) {
+    if (opts[i].outside || (opts[i].m && opts[i].m.model === s.model)) return i;
+  }
+  return 0;
+}
+// D4 — filled segments of a 5-segment meter: v against the largest of the menu;
+// 0 (no meter) when the value is unknown.
+function mpSegments(v, max) {
+  v = toNum(v);
+  max = toNum(max);
+  if (!(v > 0) || !(max > 0)) return 0;
+  return Math.max(1, Math.min(5, Math.round((5 * v) / max)));
+}
+function mpMax(models) {
+  var mx = { win: 0, ac: 0, out: 0 };
+  for (var i = 0; i < models.length; i++) {
+    var m = models[i];
+    mx.win = Math.max(mx.win, toNum(m.contextWindow));
+    mx.ac = Math.max(mx.ac, toNum(m.autoCompactTokens));
+    if (m.price) mx.out = Math.max(mx.out, toNum(m.price.output));
+  }
+  return mx;
+}
+// 창 · 압축 · 비용: context window, auto-compact threshold, output price per M tokens.
+function mpMetersHtml(m, mx) {
+  var vals = m
+    ? [mpSegments(m.contextWindow, mx.win), mpSegments(m.autoCompactTokens, mx.ac), m.price ? mpSegments(m.price.output, mx.out) : 0]
+    : [0, 0, 0];
+  var html = '<span class="mp-bars" aria-hidden="true">';
+  for (var c = 0; c < 3; c++) {
+    if (!vals[c]) {
+      html += '<span class="mp-meter is-none">&mdash;</span>';
+      continue;
+    }
+    html += '<span class="mp-meter" style="--c:' + c + '">';
+    for (var k = 0; k < 5; k++) html += '<span class="mp-seg" style="--s:' + k + '"' + (k < vals[c] ? ' data-on=""' : '') + '></span>';
+    html += '</span>';
+  }
+  return html + '</span>';
+}
+// Dollars, whole when the target is whole (a rolling value keeps the target's form).
+function mpMoney(v, ref) {
+  var n = toNum(v);
+  var t = ref === undefined ? n : toNum(ref);
+  return '$' + (Math.round(t) === t ? String(Math.round(n)) : n.toFixed(2));
+}
+function mpPriceWords(m) {
+  return m && m.price ? '입력 ' + mpMoney(m.price.input) + ' · 출력 ' + mpMoney(m.price.output) + ' / 백만 토큰' : '가격 정보 없음';
+}
+// D8 — the tray of the lit row, and the sentence the live region reads once.
+function mpTray(o) {
+  var m = o && o.m;
+  if (!m) return { html: '전환 목록 밖 모델 · 가격 정보 없음', sr: '전환 목록 밖 모델, 가격 정보 없음' };
+  var win = '창 ' + formatTokens(m.contextWindow);
+  var name = m.label || m.nickname;
+  if (!m.price) return { html: '가격 정보 없음 · ' + esc(win), sr: name + ': 가격 정보 없음, ' + win };
+  return {
+    html: '입력 <b class="mp-roll" data-mp-roll="input">' + mpMoney(m.price.input) + '</b> · 출력 <b class="mp-roll" data-mp-roll="output">'
+      + mpMoney(m.price.output) + '</b> / M · ' + esc(win),
+    sr: name + ': ' + mpPriceWords(m) + ', ' + win,
+  };
+}
+// D6/D7 — the levels the session's model runs (all of them when the catalog has no menu for it).
+function mpEffortLevels(s) {
+  var all = EFFORT_LEVELS || [];
+  var menu = s.effortLevels && s.effortLevels.length ? s.effortLevels : null;
+  var out = [];
+  for (var i = 0; i < all.length; i++) if (!menu || menu.indexOf(all[i]) >= 0) out.push(all[i]);
+  return out.length ? out : all.slice();
+}
+// D7 — effort as a radiogroup with one tab stop; checked = the level that runs.
+function renderEffortControl(s) {
+  var levels = mpEffortLevels(s);
+  var on = s.effortEffective || s.effort;
+  var idx = levels.indexOf(on);
+  var capped = !!(s.effortEffective && s.effortEffective !== s.effort);
+  var html = '<div class="mp-effort"><div class="mp-effort-head"><span class="mp-effort-label" id="mp-effort-label">Effort</span>'
+    + (capped ? '<span class="mp-effort-cap">설정 ' + esc(effortLabel(s.effort)) + ' &rarr; 이 모델은 ' + esc(effortLabel(s.effortEffective)) + '까지 실행</span>' : '')
+    + '</div><div class="mp-seg-ctl" role="radiogroup" aria-labelledby="mp-effort-label"' + (isBusy(s.key, 'effort') ? ' aria-disabled="true"' : '')
+    + ' style="--i:' + Math.max(0, idx) + ';--n:' + levels.length + '">'
+    + (idx >= 0 ? '<span class="mp-thumb" aria-hidden="true"></span>' : '');
+  for (var i = 0; i < levels.length; i++) {
+    var l = levels[i];
+    var checked = l === on;
+    html += '<button type="button" class="mp-seg-btn" role="radio" data-mp-effort="' + escAttr(l) + '" aria-checked="' + (checked ? 'true' : 'false') + '"'
+      + ' tabindex="' + (checked || (idx < 0 && i === 0) ? '0' : '-1') + '" aria-label="' + escAttr(effortLabel(l)) + '">'
+      + esc(MP_EFFORT_SHORT[l] || effortLabel(l)) + '</button>';
+  }
+  return html + '</div></div>';
+}
+// D3 — the menu's content for one session: head, list, effort, tray.
+function renderModelMenu(s) {
+  var opts = mpOptions(s);
+  var cur = mpCurrentIndex(s, opts);
+  var active = Math.max(0, Math.min(opts.length - 1, toNum(_mp.active)));
+  var lit = _mp.pointing ? active : cur;
+  var mx = mpMax(REPRESENTATIVE_MODELS || []);
+  var used = toNum(s.contextTokens);
+  var locked = !!s.pendingModel || isBusy(s.key, 'model');
+  var html = '<div class="mp-card"><div class="mp-head" aria-hidden="true"><span>이 세션 모델</span>'
+    + '<span class="mp-cols"><span>창</span><span>압축</span><span>비용</span></span></div>';
+  if (locked) html += '<div class="mp-wait">' + (s.pendingModel ? 'compact 후 ' + esc(s.pendingModel) + '(으)로 전환 대기 중' : '모델 전환 중…') + '</div>';
+  html += '<div class="mp-list" role="listbox" aria-label="모델" tabindex="0" aria-activedescendant="mp-opt-' + active + '"'
+    + (locked ? ' aria-disabled="true"' : '') + (_mp.pointing ? ' data-pointing=""' : '') + '>';
+  for (var i = 0; i < opts.length; i++) {
+    var m = opts[i].m;
+    var isCur = i === cur;
+    var name = m ? m.label || m.nickname : mpShort(s) || '모델';
+    var desc = m
+      ? m.nickname + ' · autocompact ' + formatTokens(m.autoCompactTokens) + (!isCur && used > toNum(m.autoCompactTokens) ? ' · compact 후 전환' : '')
+      : '현재 · 전환 목록 밖';
+    var label = name + ', ' + desc + (m ? '. 창 ' + formatTokens(m.contextWindow) + ', ' + mpPriceWords(m) : '');
+    html += '<div class="mp-opt" id="mp-opt-' + i + '" role="option" data-mp-i="' + i + '"' + (m ? ' data-mp-nick="' + escAttr(m.nickname) + '"' : '')
+      + ' aria-selected="' + (isCur ? 'true' : 'false') + '"' + (locked || !m ? ' aria-disabled="true"' : '')
+      + (i === active ? ' data-active=""' : '') + (i === lit ? ' data-lit=""' : '') + ' aria-label="' + escAttr(label) + '">'
+      + '<span class="mp-glyph" aria-hidden="true">' + esc((m ? m.nickname : name).charAt(0).toUpperCase()) + '</span>'
+      + '<span class="mp-title"><span class="mp-title-name">' + esc(name) + '</span>'
+      + (isCur ? '<span class="mp-check" aria-hidden="true">&#x2713;</span>' : '') + '</span>'
+      + mpMetersHtml(m, mx)
+      + '<span class="mp-desc">' + esc(desc) + '</span></div>';
+  }
+  html += '</div><div class="mp-settings">' + renderEffortControl(s);
+  var note = _modelNotes[s.key];
+  if (note && note.error) html += '<div class="mp-err">' + esc(note.text) + '</div>';
+  var tray = mpTray(opts[lit]);
+  return html + '</div></div><div class="mp-foot"><span class="mp-caption" aria-hidden="true">' + tray.html + '</span>'
+    + '<span class="mp-keys" aria-hidden="true"><kbd>&#x2191;&#x2193;</kbd><kbd>&#x21B5;</kbd></span>'
+    + '<span class="mp-sr" aria-live="polite">' + esc(tray.sr) + '</span></div>';
+}
+// The trigger the open menu hangs from (found again after any re-render).
+function mpAnchor() {
+  if (!_mp.key) return null;
+  var all = document.querySelectorAll('.mp-trigger');
+  for (var i = 0; i < all.length; i++) {
+    if (all[i].getAttribute('data-mp-key') === _mp.key && all[i].getAttribute('data-mp-surface') === _mp.surface) return all[i];
+  }
+  return null;
+}
+function mpInside(node) {
+  var menu = document.getElementById('mp-menu');
+  var a = mpAnchor();
+  return !!((menu && menu.contains(node)) || (a && a.contains(node)));
+}
+// The menu element, made once: a press or the focus outside it (and its trigger) closes it.
+function mpHost() {
+  var el = document.getElementById('mp-menu');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'mp-menu';
+  el.className = 'mp-pop';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-label', '이 세션의 모델 · effort');
+  el.setAttribute('inert', '');
+  el.addEventListener('keydown', mpMenuKey);
+  el.addEventListener('click', mpMenuClick);
+  el.addEventListener('pointerover', mpMenuPointer);
+  el.addEventListener('pointerout', mpMenuPointerOut);
+  document.body.appendChild(el);
+  document.addEventListener('pointerdown', function(e) {
+    if (_mp.key && !mpInside(e.target)) mpClose(false);
+  }, true);
+  document.addEventListener('focusin', function(e) {
+    if (_mp.key && !mpInside(e.target)) mpClose(false);
+  });
+  window.addEventListener('resize', mpQueuePlace);
+  document.addEventListener('scroll', mpQueuePlace, true);
+  return el;
+}
+function mpToggleFrom(btn) {
+  if (_mp.key === btn.getAttribute('data-mp-key') && _mp.surface === (btn.getAttribute('data-mp-surface') || 'card')) {
+    mpClose(true);
+    return;
+  }
+  mpOpen(btn);
+}
+// D9 — ↓ / ↑ on the trigger open the menu (Enter and Space are the button's own click).
+function mpTriggerKey(e, btn) {
+  if (e.key === 'Escape' && _mp.key && btn.getAttribute('aria-expanded') === 'true') {
+    e.preventDefault();
+    e.stopPropagation();
+    mpClose(true);
+    return;
+  }
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  e.preventDefault();
+  mpOpen(btn);
+}
+function mpOpen(btn) {
+  var key = btn.getAttribute('data-mp-key');
+  var where = btn.getAttribute('data-mp-surface') || 'card';
+  var s = _sessionCache[key];
+  if (!s) return;
+  var menu = mpHost();
+  if (_mp.key && (_mp.key !== key || _mp.surface !== where)) mpClose(false);
+  if (_mp.key !== key) {
+    _mp.key = key;
+    _mp.surface = where;
+    _mp.pointing = false;
+    _mp.shown = null;
+    _mp.active = mpCurrentIndex(s, mpOptions(s));
+  }
+  btn.setAttribute('aria-expanded', 'true');
+  menu.removeAttribute('inert');
+  mpRepaint();
+  menu.classList.add('is-open');
+  _mp.at = mpSpot(btn);
+  if (!_mp.watch) _mp.watch = setInterval(mpWatch, MP_WATCH_MS);
+  var list = menu.querySelector('.mp-list');
+  if (list) list.focus({ preventScroll: true });
+}
+function mpClose(returnFocus) {
+  var key = _mp.key;
+  if (!key) return;
+  var menu = document.getElementById('mp-menu');
+  var a = mpAnchor();
+  _mp.key = null;
+  _mp.surface = null;
+  _mp.pointing = false;
+  _mp.at = null;
+  if (_mp.watch) {
+    clearInterval(_mp.watch);
+    _mp.watch = 0;
+  }
+  if (_mp.raf) {
+    cancelAnimationFrame(_mp.raf);
+    _mp.raf = 0;
+  }
+  if (menu) {
+    menu.classList.remove('is-open');
+    menu.setAttribute('inert', '');
+  }
+  if (a) {
+    a.setAttribute('aria-expanded', 'false');
+    if (returnFocus && a.focus) a.focus();
+  }
+  // The anchor's card and the panel held their live updates while the menu was open.
+  refreshCard(key);
+  repaintPanelControlsFor(key);
+}
+function mpLit(s) {
+  var opts = mpOptions(s);
+  var i = _mp.pointing ? _mp.active : mpCurrentIndex(s, opts);
+  return opts[i] ? opts[i].m : null;
+}
+// D12 — the open menu follows its session (morph: the list keeps its focus).
+function mpRepaint() {
+  var menu = document.getElementById('mp-menu');
+  if (!menu || !_mp.key) return;
+  var s = _sessionCache[_mp.key];
+  if (!s) {
+    mpClose(false);
+    return;
+  }
+  morphInnerHtml(menu, renderModelMenu(s));
+  var lit = mpLit(s);
+  mpRollTray(menu, lit && lit.price ? { input: toNum(lit.price.input), output: toNum(lit.price.output) } : null);
+  mpReposition();
+}
+// D8 — the tray's prices roll from what is shown to the lit row's (ease-out-quart).
+function mpRollTray(menu, to) {
+  if (_mp.raf) {
+    cancelAnimationFrame(_mp.raf);
+    _mp.raf = 0;
+  }
+  var from = _mp.shown;
+  _mp.shown = to;
+  if (!to || !from || (from.input === to.input && from.output === to.output) || reduceMotion()) return;
+  var els = menu.querySelectorAll('.mp-roll');
+  var t0 = performance.now();
+  function step(now) {
+    var p = Math.min(1, (now - t0) / MP_ROLL_MS);
+    var e = 1 - Math.pow(1 - p, 4);
+    var cur = { input: from.input + (to.input - from.input) * e, output: from.output + (to.output - from.output) * e };
+    _mp.shown = p < 1 ? cur : to;
+    for (var i = 0; i < els.length; i++) {
+      var k = els[i].getAttribute('data-mp-roll');
+      els[i].textContent = mpMoney(cur[k], to[k]);
+    }
+    _mp.raf = p < 1 ? requestAnimationFrame(step) : 0;
+  }
+  step(t0);
+}
+// D2 — where the menu goes: under (card) or over (panel) the trigger, flipped
+// when that side has no room, its left edge on the trigger's, 12px inside the viewport.
+function mpPlace(r, w, h, vw, vh, side) {
+  var gap = 6;
+  var edge = 12;
+  var below = vh - r.bottom - gap - edge;
+  var above = r.top - gap - edge;
+  var s = side === 'top' ? (h > above && below > above ? 'bottom' : 'top') : h > below && above > below ? 'top' : 'bottom';
+  var left = Math.max(edge, Math.min(r.left, vw - edge - w));
+  var top = s === 'top' ? r.top - gap - h : r.bottom + gap;
+  top = Math.max(edge, Math.min(top, vh - edge - h));
+  return { left: Math.round(left), top: Math.round(top), side: s };
+}
+function mpReposition() {
+  var menu = document.getElementById('mp-menu');
+  if (!menu || !_mp.key) return;
+  var a = mpAnchor();
+  var r = a ? a.getBoundingClientRect() : null;
+  var vh = window.innerHeight;
+  if (!r || (!r.width && !r.height) || r.bottom < 0 || r.top > vh) {
+    mpClose(false);
+    return;
+  }
+  var p = mpPlace(r, menu.offsetWidth, menu.offsetHeight, document.documentElement.clientWidth, vh, _mp.surface === 'panel' ? 'top' : 'bottom');
+  menu.style.left = p.left + 'px';
+  menu.style.top = p.top + 'px';
+  menu.setAttribute('data-side', p.side);
+}
+function mpQueuePlace() {
+  if (!_mp.key || _mp.placeRaf) return;
+  _mp.placeRaf = requestAnimationFrame(function() {
+    _mp.placeRaf = 0;
+    mpReposition();
+  });
+}
+// The anchor's card moved — it changed column, the board reflowed, a card
+// FLIPped: the menu closes instead of pointing at the old spot. Scrolling only
+// repositions it: the spot adds back every ancestor's scroll offset, so a
+// scroll (page or column) does not count as a move.
+var MP_WATCH_MS = 150;
+function mpSpot(a) {
+  var r = a.getBoundingClientRect();
+  var x = r.left;
+  var y = r.top;
+  for (var n = a.parentNode; n && n.nodeType === 1; n = n.parentNode) {
+    x += n.scrollLeft || 0;
+    y += n.scrollTop || 0;
+  }
+  return { left: x, top: y };
+}
+function mpMoved(at, now) {
+  if (!at || !now) return false;
+  return Math.abs(now.left - at.left) > 2 || Math.abs(now.top - at.top) > 2;
+}
+function mpWatch() {
+  if (!_mp.key) return;
+  var a = mpAnchor();
+  if (!a || mpMoved(_mp.at, mpSpot(a))) mpClose(false);
+}
+// D11 — a row picks its model (the menu closes); the current or a locked row does not write.
+function mpPick(i) {
+  var s = _mp.key ? _sessionCache[_mp.key] : null;
+  if (!s) return;
+  var opts = mpOptions(s);
+  var o = opts[i];
+  if (!o || !o.m || s.pendingModel || isBusy(s.key, 'model')) return;
+  var key = s.key;
+  var nickname = o.m.nickname;
+  var same = i === mpCurrentIndex(s, opts);
+  mpClose(true);
+  if (!same) changeModel(key, nickname);
+}
+// An effort pick keeps the menu open (the level is a setting of the same choice).
+function mpPickEffort(level) {
+  var s = _mp.key ? _sessionCache[_mp.key] : null;
+  if (!s || !level || isBusy(s.key, 'effort') || level === s.effort) return;
+  changeEffort(s.key, level);
+}
+// D9 — the list: ↑ ↓ (wrapping) · Home · End point; Enter · Space pick.
+function mpListKey(e) {
+  var s = _mp.key ? _sessionCache[_mp.key] : null;
+  if (!s) return;
+  var n = mpOptions(s).length;
+  var k = e.key;
+  if (k === 'ArrowDown' || k === 'ArrowUp' || k === 'Home' || k === 'End') {
+    e.preventDefault();
+    var i = k === 'Home' ? 0 : k === 'End' ? n - 1 : toNum(_mp.active) + (k === 'ArrowDown' ? 1 : -1);
+    _mp.active = ((i % n) + n) % n;
+    _mp.pointing = true;
+    mpRepaint();
+  } else if (k === 'Enter' || k === ' ') {
+    e.preventDefault();
+    mpPick(_mp.active);
+  }
+}
+// D9 — effort: the arrows move and select at once (radio pattern); Home · End.
+function mpEffortKey(e, radio) {
+  var group = radio.parentNode;
+  if (!group) return;
+  var btns = group.querySelectorAll('.mp-seg-btn');
+  var n = btns.length;
+  var i = Array.prototype.indexOf.call(btns, radio);
+  var k = e.key;
+  var j = k === 'ArrowRight' || k === 'ArrowDown' ? i + 1 : k === 'ArrowLeft' || k === 'ArrowUp' ? i - 1 : k === 'Home' ? 0 : k === 'End' ? n - 1 : null;
+  if (j === null || !n) return;
+  e.preventDefault();
+  if (group.getAttribute('aria-disabled') === 'true') return;
+  j = ((j % n) + n) % n;
+  btns[j].focus();
+  mpPickEffort(btns[j].getAttribute('data-mp-effort'));
+}
+// Every key inside the menu stays in it (no board shortcut, no panel Escape).
+function mpMenuKey(e) {
+  if (!_mp.key) return;
+  e.stopPropagation();
+  var t = e.target;
+  var onList = !!(t && t.classList && t.classList.contains('mp-list'));
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    mpClose(true);
+  } else if (e.key === 'Tab') {
+    // The list and the checked level are the menu's two stops; past them, back on the trigger.
+    if (e.shiftKey ? onList : !onList) {
+      e.preventDefault();
+      mpClose(true);
+    }
+  } else if (onList) {
+    mpListKey(e);
+  } else {
+    var radio = t && t.closest ? t.closest('.mp-seg-btn') : null;
+    if (radio) mpEffortKey(e, radio);
+  }
+}
+function mpMenuClick(e) {
+  var t = e.target;
+  if (!t || !t.closest) return;
+  var opt = t.closest('.mp-opt');
+  if (opt) {
+    mpPick(toNum(opt.getAttribute('data-mp-i')));
+    return;
+  }
+  var b = t.closest('.mp-seg-btn');
+  if (b && b.parentNode.getAttribute('aria-disabled') !== 'true') mpPickEffort(b.getAttribute('data-mp-effort'));
+}
+// D10 — the mouse points at a row: it lights, the others step back; leaving the list lets go.
+function mpMenuPointer(e) {
+  if (!_mp.key || (e.pointerType && e.pointerType !== 'mouse')) return;
+  var opt = e.target && e.target.closest ? e.target.closest('.mp-opt') : null;
+  if (!opt) return;
+  var i = toNum(opt.getAttribute('data-mp-i'));
+  if (_mp.pointing && _mp.active === i) return;
+  _mp.active = i;
+  _mp.pointing = true;
+  mpRepaint();
+}
+function mpMenuPointerOut(e) {
+  if (!_mp.key || !_mp.pointing || (e.pointerType && e.pointerType !== 'mouse')) return;
+  var menu = document.getElementById('mp-menu');
+  var list = menu && menu.querySelector('.mp-list');
+  if (!list || !list.contains(e.target) || (e.relatedTarget && list.contains(e.relatedTarget))) return;
+  _mp.pointing = false;
+  mpRepaint();
 }
 
 // ── Goal list on the work item (SSOT 2026-10-21 T2/T3) ──
@@ -11309,10 +11823,9 @@ function isEditingGoal(root) {
   var a = document.activeElement;
   return !!(a && a.classList && a.classList.contains('cg-add-input') && root.contains(a));
 }
-// An open model <select> survives live re-renders the same way (T4).
+// An open model menu holds its anchor's card still: the trigger is where the menu hangs (re-model-picker D12).
 function isPickingModel(root) {
-  var a = document.activeElement;
-  return !!(a && a.classList && a.classList.contains('cb-model-select') && root.contains(a));
+  return !!(root && root.querySelector && root.querySelector('.mp-trigger[aria-expanded="true"]'));
 }
 function captureGoalDraft(root) {
   var input = root.querySelector('.cg-add-input');
@@ -14241,13 +14754,6 @@ function closePanel() {
 document.addEventListener('keydown', function(e) {
   // Escape in the artifact viewer closes the viewer only (the dialog's own cancel).
   // The cron drawer opens over a docked panel: Escape closes only that, the topmost.
-  // The floating model · effort pickers (narrow / short screens) close first, back on their toggle.
-  if (e.key === 'Escape' && panelOpen && _panelControlsOpen && !artModalIsOpen() && !_cronDrawerKey && window.matchMedia && window.matchMedia('(max-width: 639px), (max-height: 560px)').matches) {
-    togglePanelControls();
-    var tgl = document.querySelector('#panel-controls .pc-toggle');
-    if (tgl) tgl.focus();
-    return;
-  }
   if (e.key === 'Escape' && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closePanel();
 });
 

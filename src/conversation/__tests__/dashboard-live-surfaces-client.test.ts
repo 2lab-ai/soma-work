@@ -721,6 +721,8 @@ describe('DONE grouped by the day the work finished (T11/T12)', () => {
 });
 
 describe('model switch on the open card (T4/T5)', () => {
+  // The <select> became the model menu (.prd/affectui/re-model-picker.md D1/D3):
+  // the same six models, the same "compact 후 전환" rule, now as listbox rows.
   const MODELS = [
     { nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]', autoCompactTokens: 750_000 },
     { nickname: 'fable[1m]', model: 'claude-fable-5-1[1m]', autoCompactTokens: 750_000 },
@@ -732,6 +734,7 @@ describe('model switch on the open card (T4/T5)', () => {
   const notes: Record<string, unknown> = {};
   const m = load<{
     renderModelPicker(s: unknown, canSwitch: boolean, short: string): string;
+    renderModelMenu(s: unknown): string;
     renderModelNote(s: unknown): string;
     modelSwitchNote(r: unknown): { text: string; error: boolean };
   }>(
@@ -741,14 +744,28 @@ describe('model switch on the open card (T4/T5)', () => {
       'escJs',
       'toNum',
       'formatTokens',
+      'effortLabel',
       'isBusy',
+      'mpShort',
+      'mpOptions',
+      'mpCurrentIndex',
+      'mpSegments',
+      'mpMax',
+      'mpMetersHtml',
+      'mpMoney',
+      'mpPriceWords',
+      'mpTray',
+      'mpEffortLevels',
+      'renderEffortControl',
+      'renderModelMenu',
       'renderModelPicker',
       'renderModelNote',
       'modelSwitchNote',
     ],
-    ['_busy'],
+    ['_busy', '_mp', 'EFFORT_LABELS', 'MP_EFFORT_SHORT'],
     {
       REPRESENTATIVE_MODELS: MODELS,
+      EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max'],
       _modelNotes: notes,
     },
   );
@@ -760,16 +777,18 @@ describe('model switch on the open card (T4/T5)', () => {
   });
 
   it('offers exactly the six representative models, the current one selected', () => {
-    const html = m.renderModelPicker(s(), true, 'opus-5-5[1m]');
-    const values = [...html.matchAll(/<option value="([^"]*)"/g)].map((x) => x[1]);
+    const html = m.renderModelMenu(s());
+    const values = [...html.matchAll(/data-mp-nick="([^"]*)"/g)].map((x) => x[1]);
     expect(values).toEqual(['opus[1m]', 'fable[1m]', 'sonnet[1m]', 'sol[1m]', 'astra[1m]', 'grok[1m]']);
-    expect(html).toMatch(/<option value="opus\[1m\]" selected>/);
-    expect(html).toContain('aria-label="모델 변경"');
-    expect(html).toContain('onchange="changeModel(\'inst::C1:t1\',this)"');
+    expect(html).toMatch(/data-mp-nick="opus\[1m\]" aria-selected="true"/);
+    expect(html).toContain('role="listbox" aria-label="모델"');
+    const trigger = m.renderModelPicker(s(), true, 'opus-5-5[1m]');
+    expect(trigger).toContain('data-mp-key="inst::C1:t1"');
+    expect(trigger).toContain('onclick="event.stopPropagation();mpToggleFrom(this)"');
   });
 
   it('shows each model’s auto-compact threshold; a target below the context says it compacts first', () => {
-    const html = m.renderModelPicker(s(), true, 'opus');
+    const html = m.renderModelMenu(s());
     expect(html).toContain('grok[1m] · autocompact 450.0K · compact 후 전환');
     expect(html).toContain('fable[1m] · autocompact 750.0K<');
     // The current model never says so.
@@ -777,14 +796,15 @@ describe('model switch on the open card (T4/T5)', () => {
   });
 
   it('a model outside the list is shown as the current, unselectable entry', () => {
-    const html = m.renderModelPicker(s({ model: 'claude-haiku-4-5-20251001' }), true, 'haiku-4-5');
-    expect(html).toContain('<option value="" selected disabled>haiku-4-5</option>');
+    const html = m.renderModelMenu(s({ model: 'claude-haiku-4-5-20251001' }));
+    expect(html).toContain('id="mp-opt-0" role="option" data-mp-i="0" aria-selected="true" aria-disabled="true"');
+    expect(html).toContain('<span class="mp-title-name">haiku-4-5</span>');
   });
 
-  it('read-only viewers see the model name, no control; a waiting switch disables the control and says so', () => {
+  it('read-only viewers see the model name, no control; a waiting switch locks the list and says so', () => {
     expect(m.renderModelPicker(s(), false, 'opus-5-5[1m]')).toBe('<span class="cb-model-name">opus-5-5[1m]</span>');
-    expect(m.renderModelPicker(s({ pendingModel: 'grok[1m]' }), true, 'opus')).toContain(
-      '<select class="cb-model-select" aria-label="모델 변경" disabled',
+    expect(m.renderModelMenu(s({ pendingModel: 'grok[1m]' }))).toContain(
+      'role="listbox" aria-label="모델" tabindex="0" aria-activedescendant="mp-opt-0" aria-disabled="true"',
     );
     expect(m.renderModelNote(s({ pendingModel: 'grok[1m]' }))).toContain('compact 후 grok[1m](으)로 전환합니다');
   });
