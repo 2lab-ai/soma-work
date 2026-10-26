@@ -79,6 +79,10 @@ const NODE_FNS = [
   'agentNodeName',
   'agentNodeLine',
   'agentNodeAria',
+  'spendTotal',
+  'spendText',
+  'spendLabel',
+  'spendTitle',
   'anCompactLine',
   'anIdPart',
   'anTimeId',
@@ -798,7 +802,8 @@ describe('panel — drill-down over the same node type (path · focused node · 
     expect(out.html).toContain('<span class="ag-type">메인</span>');
     expect(out.html).toContain('대기');
     expect(out.html).toContain('툴 2');
-    expect(out.html).toContain('세션 Σ');
+    expect(out.html).toContain('task 합계 1200 tok · $0.00');
+    expect(out.html).not.toContain('세션 Σ');
     expect(out.html).not.toContain('role="tree"');
     // The root has nothing above it: no path.
     expect(out.html).not.toContain('pa-path');
@@ -849,11 +854,63 @@ describe('panel — drill-down over the same node type (path · focused node · 
     expect(folded.out.html).not.toContain('data-agent-select="c"');
   });
 
-  it("a subagent's tokens are its own span (children included) — never summed by the client", () => {
-    const agents = [{ ...AGENTS[0], tokens: 238000 }, AGENTS[1], AGENTS[2]];
+  // RED (SSOT T2/T3) — what a subagent spent (its own API calls: tokens and
+  // API-equivalent cost), never the SDK's context size; the root is the task total.
+  const SPEND = {
+    inputTokens: 100,
+    outputTokens: 200,
+    cacheReadTokens: 9700,
+    cacheCreateTokens: 0,
+    costUsd: 1.234,
+    calls: 5,
+  };
+  it("a subagent's header shows its own spend — tokens and API-equivalent cost; the SDK context size is never shown", () => {
+    const agents = [{ ...AGENTS[0], tokens: 134, spend: SPEND }, AGENTS[1], AGENTS[2]];
     const { m, out } = panel('toolu_explore', card({ agents }));
     m.renderPanelAgents();
-    expect(out.html).toContain('238000 tok · 하위 포함');
+    const head = out.html.slice(
+      out.html.indexOf('class="pa-focus'),
+      out.html.indexOf('</div>', out.html.indexOf('class="pa-sum"')),
+    );
+    expect(head).toContain('10000 tok · $1.23');
+    expect(out.html).not.toContain('134 tok');
+  });
+
+  it('every subagent row in the panel tree carries its own spend; an unpriced model reads as an estimate (≈)', () => {
+    const lib = { ...AGENTS[2], spend: { ...SPEND, costUsd: 0.5, unpricedModels: ['grok-4.7-build'] } };
+    const { m, out } = panel('', card({ agents: [{ ...AGENTS[0], spend: SPEND }, AGENTS[1], lib] }));
+    m.renderPanelAgents();
+    const row = (id: string) => {
+      const at = out.html.indexOf(`data-agent-select="${id}"`);
+      return out.html.slice(out.html.lastIndexOf('<li ', at), out.html.indexOf('</li>', at));
+    };
+    expect(row('toolu_explore')).toContain('10000 tok · $1.23');
+    expect(row('toolu_lib')).toContain('10000 tok · ≈$0.50');
+    expect(row('toolu_lib')).toContain('grok-4.7-build');
+  });
+
+  it('the root header is the task total — main and every subagent — with the subagents’ share beside it', () => {
+    const s = card({
+      tokenUsage: {
+        totalInputTokens: 1000,
+        totalOutputTokens: 1000,
+        totalCacheReadTokens: 8000,
+        totalCacheCreateTokens: 0,
+        totalCostUsd: 3.5,
+      },
+      subagentSpend: {
+        agents: 3,
+        inputTokens: 100,
+        outputTokens: 100,
+        cacheReadTokens: 800,
+        cacheCreateTokens: 0,
+        costUsd: 0.75,
+      },
+    });
+    const { m, out } = panel('', s);
+    m.renderPanelAgents();
+    expect(out.html).toContain('task 합계 10000 tok · $3.50');
+    expect(out.html).toContain('서브 3개 1000 tok · $0.75');
   });
 
   it('the current crumb is styled by the attribute it carries; a lost focus falls back to the tree stop (review r1 fable)', () => {
@@ -1231,5 +1288,60 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
     const body = fnBody('applyCardParts');
     expect(body).toContain('morphInnerHtml(el._bodyEl, p.body);');
     expect(body).not.toContain('_bodyEl.innerHTML =');
+  });
+});
+
+describe('task total on the face and in 세션 정보 (SSOT T3)', () => {
+  const u = {
+    totalInputTokens: 1000,
+    totalOutputTokens: 1000,
+    totalCacheReadTokens: 8000,
+    totalCacheCreateTokens: 0,
+    totalCostUsd: 3.5,
+  };
+  const sub = {
+    agents: 2,
+    inputTokens: 100,
+    outputTokens: 100,
+    cacheReadTokens: 800,
+    cacheCreateTokens: 0,
+    costUsd: 0.75,
+  };
+
+  it('the face total says it is the whole task — main and subagents — and when it is partial', () => {
+    const f = load<{ renderCardUsage(s: unknown): string }>(
+      ['esc', 'escAttr', 'toNum', 'cardTotalTokens', 'spendTotal', 'spendText', 'renderCardUsage'],
+      [],
+      { formatCount: (_k: string, n: number) => String(n) },
+    );
+    const whole = f.renderCardUsage({ tokenUsage: u, subagentSpend: sub });
+    expect(whole).toContain('메인 + 서브에이전트 2개');
+    expect(whole).not.toContain('부분 합계');
+    expect(f.renderCardUsage({ tokenUsage: { ...u, partialSince: 1_700_000_000_000 } })).toContain('부분 합계');
+  });
+
+  it('세션 정보 lists the subagents’ share and, for a partial total, since when it counts', () => {
+    // The token grid's rows; 세부 (cost) and the context block are their own renderers.
+    const f = load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
+      ['esc', 'escAttr', 'toNum', 'cardTotalTokens', 'spendTotal', 'spendText', 'ctxLevel', 'panelInfoHtml'],
+      ['PI_CHEV_SVG'],
+      {
+        formatNmSSs: () => '0s',
+        safeHref: (h: string) => h,
+        ctxPercent: (n: number) => String(n),
+        panelDetailsHtml: () => '',
+        contextBlockHtml: () => '',
+      },
+    );
+    const open = f.panelInfoHtml({ tokenUsage: u, subagentSpend: sub, lastActivity: new Date().toISOString() }, true);
+    expect(open).toContain('<dt>누적 입력</dt><dd>1000</dd>');
+    expect(open).toContain('<dt>서브에이전트</dt><dd>2개 · 1000 tok · $0.75</dd>');
+    expect(open).not.toContain('집계 시작');
+    const partial = f.panelInfoHtml(
+      { tokenUsage: { ...u, partialSince: 1_700_000_000_000 }, lastActivity: new Date().toISOString() },
+      true,
+    );
+    expect(partial).toContain('<dt>집계 시작</dt>');
+    expect(partial).toContain('data-ts="1700000000000"');
   });
 });
