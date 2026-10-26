@@ -37,10 +37,10 @@ import { config } from '../config';
 import { displayTitle } from '../format/display-title';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
-import { calculateTokenCost } from '../metrics/model-registry';
+import { calculateTokenCost, findModelPricing } from '../metrics/model-registry';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import type { MetricsEvent } from '../metrics/types';
-import { clampEffortToModel } from '../model-catalog';
+import { clampEffortToModel, modelCatalog } from '../model-catalog';
 import {
   type AnswerPermissionPromptArgs,
   isPermissionPromptDecision,
@@ -217,6 +217,26 @@ export interface KanbanSession {
   autoCompactTokens?: number;
   pendingModel?: string;
   /**
+   * re-context-window D1/D2 — what the last request read, by the SDK's cache
+   * categories (`usage.current*`), and the window they are measured against:
+   * the same committed sample as `contextTokens` and `contextUsagePercent`.
+   * `unsplit` — the four counters hold one total, not a split: `compact` when
+   * it is a compaction's `post_tokens` (applyPostCompactOccupancy), else
+   * `unknown`. Live sessions with a known window only.
+   */
+  contextParts?: {
+    window: number;
+    cacheRead: number;
+    cacheWrite: number;
+    input: number;
+    output: number;
+    unsplit?: 'compact' | 'unknown';
+  };
+  /** D3 — the turn-end check scheduled a compaction: the next user turn starts with `/compact`. */
+  compactPending?: boolean;
+  /** D4 — the latest compaction's SDK counts (runtime only; cleared when the next one starts). */
+  lastCompact?: { preTokens: number; postTokens: number; trigger?: 'manual' | 'auto' };
+  /**
    * Task list — the model's latest TodoWrite list, from the session's task
    * ledger (SSOT 2026-10-22 T7/T8): each task has its own id (`T<n>`), its
    * elapsed time and the tool calls made while it ran.
@@ -253,6 +273,8 @@ export interface KanbanSession {
   effort?: EffortLevel;
   /** The level the session's model actually runs, when it caps `effort` (SSOT 2026-10-23 T1). */
   effortEffective?: string;
+  /** The levels the session's model runs (catalog menu ∩ EFFORT_LEVELS); absent when the catalog does not know it (re-model-picker D6). */
+  effortLevels?: EffortLevel[];
   /** Jira short key like "PROJ-123" derived from issueUrl */
   issueShortRef?: string;
   /** GitHub PR short ref like "PR-123" derived from prUrl */
@@ -1123,6 +1145,19 @@ export function extractPrShortRef(url?: string): string | undefined {
 }
 
 /**
+ * affectUI model picker D6 — the effort levels a model runs: its catalog menu
+ * ∩ EFFORT_LEVELS, in EFFORT_LEVELS order. Undefined when the catalog has no
+ * menu for the model (the picker then offers every level and the runtime
+ * clamp decides, as before).
+ */
+export function pickerEffortLevels(catalogEfforts: readonly string[] | null | undefined): EffortLevel[] | undefined {
+  if (!catalogEfforts || catalogEfforts.length === 0) return undefined;
+  const menu = new Set(catalogEfforts.map((e) => String(e).toLowerCase()));
+  const levels = EFFORT_LEVELS.filter((level) => menu.has(level));
+  return levels.length > 0 ? levels : undefined;
+}
+
+/**
  * Card-derived UI fields shared between live (sessionToKanban) and archived
  * (archivedToKanban) kanban builders. Archived sessions don't persist effort,
  * so their branch always falls back to the owner's default; live sessions
@@ -1134,7 +1169,7 @@ function cardDerivedFields(src: {
   model?: string;
   links?: { issue?: { url?: string }; pr?: { url?: string } };
   persistedEffort: boolean;
-}): Pick<KanbanSession, 'effort' | 'effortEffective' | 'issueShortRef' | 'prShortRef'> {
+}): Pick<KanbanSession, 'effort' | 'effortEffective' | 'effortLevels' | 'issueShortRef' | 'prShortRef'> {
   const effort =
     src.persistedEffort && src.effort
       ? coerceEffort(src.effort)
@@ -1142,9 +1177,12 @@ function cardDerivedFields(src: {
   // SSOT 2026-10-23 T1 — the level the model really runs (build-stream-options
   // clamps the same way); present only when the model caps the chosen level.
   const clamped = src.model ? clampEffortToModel(src.model, effort) : effort;
+  // affectUI model picker D6 — the effort control offers only what the model runs.
+  const effortLevels = src.model ? pickerEffortLevels(modelCatalog.getEffortsFor(src.model)) : undefined;
   return {
     effort,
     ...(clamped !== effort ? { effortEffective: clamped } : {}),
+    ...(effortLevels ? { effortLevels } : {}),
     issueShortRef: extractIssueShortRef(src.links?.issue?.url),
     prShortRef: extractPrShortRef(src.links?.pr?.url),
   };
@@ -1369,6 +1407,49 @@ function modelFields(s: any): Pick<KanbanSession, 'contextTokens' | 'autoCompact
   return out;
 }
 
+type ContextFields = Pick<KanbanSession, 'contextParts' | 'compactPending' | 'lastCompact'>;
+/** A token counter as the card shows it: a finite count, else 0. */
+function tokenCount(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0;
+}
+/**
+ * re-context-window D1–D4 — what fills the context now (the committed sample
+ * `contextUsagePercent` reads, by cache category), a scheduled auto-compact,
+ * and the latest compaction's SDK counts. Nothing is inferred: a missing
+ * window sends no parts, a missing count no `lastCompact`.
+ */
+function contextFields(s: any): ContextFields {
+  const out: ContextFields = {};
+  const u = s.usage;
+  const window = tokenCount(u?.contextWindow);
+  if (u && window > 0) {
+    const parts: NonNullable<KanbanSession['contextParts']> = {
+      window,
+      cacheRead: tokenCount(u.currentCacheReadTokens),
+      cacheWrite: tokenCount(u.currentCacheCreateTokens),
+      input: tokenCount(u.currentInputTokens),
+      output: tokenCount(u.currentOutputTokens),
+    };
+    if (parts.input > 0 && parts.cacheRead === 0 && parts.cacheWrite === 0 && parts.output === 0) {
+      // applyPostCompactOccupancy (session-usage-math.ts) writes post_tokens here with the rest zeroed.
+      const post = finiteNumber(s.compactPostTokens);
+      parts.unsplit = post !== undefined && Math.round(post) === parts.input ? 'compact' : 'unknown';
+    }
+    out.contextParts = parts;
+  }
+  if (s.autoCompactPending === true) out.compactPending = true;
+  const pre = finiteNumber(s.compactPreTokens);
+  const post = finiteNumber(s.compactPostTokens);
+  // /new · /renew zero compactionCount on the same session object but keep the
+  // last cycle's counts (cleared only when the next compaction starts): no
+  // compaction in this logical session, no lastCompact.
+  if (pre !== undefined && post !== undefined && (s.compactionCount || 0) > 0) {
+    out.lastCompact = { preTokens: pre, postTokens: post };
+    if (s.compactTrigger === 'manual' || s.compactTrigger === 'auto') out.lastCompact.trigger = s.compactTrigger;
+  }
+  return out;
+}
+
 /** T11 — when a live session's work finished; undefined while it works or waits. */
 function liveDoneAt(s: any): number | undefined {
   const state = s.activityState || 'idle';
@@ -1509,6 +1590,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     waitingSince: liveWaitingSince(s, permissions),
     finishedAt: liveFinishedAt(s),
     ...modelFields(s),
+    ...contextFields(s),
     tasks: normalizeTaskProgress(taskView?.current, sessionHasCurrentTask(s, autoResume)),
     earlierTasks: taskView?.earlier.length ? taskView.earlier : undefined,
     ...agentsToKanban(s.agents, true),
@@ -3177,6 +3259,12 @@ export async function registerDashboardRoutes(
 
 // ── Dashboard HTML ─────────────────────────────────────────────────
 
+/** re-model-picker D5 — a representative model with its registry price per M tokens; unchanged when the registry does not know the id. */
+function withPickerPrice<T extends { model: string }>(m: T): T | (T & { price: { input: number; output: number } }) {
+  const pricing = findModelPricing(m.model);
+  return pricing ? { ...m, price: { input: pricing.inputPerMTok, output: pricing.outputPerMTok } } : m;
+}
+
 function renderDashboardPage(userId?: string): string {
   const initUser = userId ? JSON.stringify(userId) : 'null';
   // #814 — inject the local instance's name so the frontend can identify
@@ -3191,10 +3279,12 @@ function renderDashboardPage(userId?: string): string {
     '\\u003c',
   );
   // SSOT 2026-10-22 T4 — the representative models a card can switch to, with
-  // their window and auto-compact threshold (escaped like the header config).
+  // their window and auto-compact threshold (escaped like the header config);
+  // the model picker's tray and cost bar add the registry price per M tokens
+  // (re-model-picker D5) — only for an id the registry knows.
   let representativeModels: unknown[] = [];
   try {
-    representativeModels = listRepresentativeModels(productionModelCatalogDeps());
+    representativeModels = listRepresentativeModels(productionModelCatalogDeps()).map(withPickerPrice);
   } catch (error) {
     logger.warn('Representative models unavailable for the dashboard', error);
   }
@@ -3674,6 +3764,31 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* The inbox is the size container for the board columns (SSOT 2026-10-24): a docked
    drawer narrows it, so the column layout follows its width, not the viewport. */
 .inbox { margin-bottom: 28px; container: inbox / inline-size; }
+/* Status tag tones (.prd/affectui/re-agent-inbox.md D1): the face's status is a
+   tinted pill. Text on its tint is ≥ 4.5:1 in both themes (dark 6.5–7.8:1,
+   light 5.5–6.5:1). The board's own token blocks — the shared ones stay untouched. */
+:root {
+  --st-run-bg: #1d2a47;
+  --st-run-fg: #a3bdff;
+  --st-wait-bg: #3a2a12;
+  --st-wait-fg: #ffb35c;
+  --st-done-bg: #14301f;
+  --st-done-fg: #5fd68e;
+  --st-rest-bg: #2f2f35;
+  --st-rest-fg: #b4b4bb;
+}
+[data-theme="light"] {
+  --st-run-bg: #e8eeff;
+  --st-run-fg: #2453c7;
+  --st-wait-bg: #fff1dc;
+  --st-wait-fg: #8f5300;
+  --st-done-bg: #e3f5e9;
+  --st-done-fg: #136c39;
+  --st-rest-bg: #efefef;
+  --st-rest-fg: #555558;
+}
+/* D6: the board's polite announcement, visually hidden. */
+.ib-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .inbox-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 16px; min-width: 0; }
 .crumbs { display: flex; align-items: baseline; gap: 10px; font-size: 17px; line-height: 1.3; min-width: 0; white-space: nowrap; overflow: hidden; }
 .crumbs .crumb-root, .crumbs .crumb-sep { color: var(--ib-muted); }
@@ -3751,7 +3866,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .kanban[data-view="list"] { grid-template-columns: minmax(0, 1fr); }
 .kanban[data-view="list"] .kanban-col-header h3 { flex: 0 0 auto; text-align: left; }
 .kanban[data-view="list"] .card-summary { -webkit-line-clamp: 1; }
-.kanban[data-view="list"] .st-prefix { display: inline; }
 .kanban[data-view="list"] .col-empty { padding: 10px 8px 16px; }
 
 /* ── CARD — collapsed face + in-place expansion ── */
@@ -3775,7 +3889,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card[data-state="sleeping"] .card-summary, .card[data-state="archived"] .card-summary { color: var(--ib-muted); }
 .card.is-flying { z-index: 5; box-shadow: var(--ib-shadow-raised); }
 .card.is-exiting { position: absolute; z-index: 1; pointer-events: none; }
-.card-face { padding: 12px 14px; cursor: pointer; border-radius: 11px; }
+.card-face { padding: 12px 14px; cursor: pointer; border-radius: 11px; container: cardface / inline-size; }
 .card-face:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .card-spark { flex-shrink: 0; display: inline-flex; color: var(--st-color); }
@@ -3818,14 +3932,26 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   overflow-wrap: anywhere;
 }
 .card-foot { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 13px; color: var(--ib-text-2); min-width: 0; }
-.card-status { display: inline-flex; align-items: center; gap: 7px; min-width: 0; flex: 1 1 auto; white-space: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
+/* D1 — the status tag: a tinted pill, sized to its content (the metrics keep the
+   right edge; a narrow foot wraps them below as before). Tone from data-tone. */
+.card-status { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; flex: 0 1 auto; height: 24px; padding: 0 10px 0 8px; border-radius: 999px; font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
+.card-status[data-tone="run"] { background: var(--st-run-bg); color: var(--st-run-fg); }
+.card-status[data-tone="wait"] { background: var(--st-wait-bg); color: var(--st-wait-fg); }
+.card-status[data-tone="done"] { background: var(--st-done-bg); color: var(--st-done-fg); }
+.card-status[data-tone="rest"] { background: var(--st-rest-bg); color: var(--st-rest-fg); }
 .card-status .st-text { overflow: hidden; text-overflow: ellipsis; }
 .card-status .st-icon { flex-shrink: 0; display: inline-flex; align-items: center; color: var(--st-color); }
 .card-status .st-icon svg { width: 12px; height: 12px; }
-.st-prefix { display: none; }
+/* D2 — the state word ("Running · ", "Done in ") shows in both views and goes
+   only when the face has 300px of content or less. */
+@container cardface (max-width: 300px) {
+  .card-status .st-prefix { display: none; }
+}
 .st-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-color); display: inline-block; }
 .st-dot.is-hollow { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-color); }
 .spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--ib-pill); border-top-color: var(--st-run); border-right-color: var(--st-run); display: inline-block; animation: spin 0.9s linear infinite; }
+/* D3 — on the tint the ring's track follows the icon colour, not the grey pill token. */
+.card-status .spinner { border-color: color-mix(in srgb, currentColor 25%, transparent); border-top-color: currentColor; border-right-color: currentColor; }
 .card-metrics { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; row-gap: 4px; max-width: 100%; color: var(--ib-muted); flex-shrink: 0; margin-left: auto; font-variant-numeric: tabular-nums; }
 .card-metrics .metric { display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; }
 .card-metrics .metric + .metric { border-left: 1px solid var(--ib-card-border); }
@@ -3842,7 +3968,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card-metrics .card-pr.is-merged { color: var(--st-done); }
 .card-metrics .card-pr.is-closed { color: var(--st-fail-text); }
 .card-pr .cpr-state { font-size: 12px; white-space: nowrap; }
-.card-status .st-ago { color: var(--ib-muted); }
+.card-status .st-ago { color: inherit; }
 .card-status .st-ago::before { content: "·"; margin: 0 6px; }
 /* SSOT 2026-10-22 T3 — the task in progress on the collapsed face. */
 .card-task { margin-top: 8px; display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; color: var(--ib-text); background: var(--ib-pill); border-radius: 8px; padding: 5px 9px; }
@@ -3950,12 +4076,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card.is-expanded .card-expand-inner { opacity: 1; }
 .card.no-motion .card-expand, .card.no-motion .card-expand-inner { transition: none; }
 .card-body { margin: 0 14px; padding: 12px 0 14px; border-top: 1px solid var(--ib-card-border); font-size: 13px; color: var(--ib-text-2); }
-.cb-model { color: var(--ib-muted); font-size: 13px; display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; }
 /* ── CONTROL STRIP — the open card's last row (spec 13): model · effort switch · the state action · Slack · 작업 로그 ── */
 .card-foot-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--ib-card-border); }
 .card-foot-bar .card-actions { margin: 0 0 0 auto; }
-.cfb-model { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.cfb-model-toggle { display: none; font: inherit; font-size: 12.5px; color: var(--ib-text-2); background: var(--ib-seg); border: 1px solid var(--ib-card-border); border-radius: 8px; padding: 4px 10px; min-height: 32px; cursor: pointer; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
+.cfb-model { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; min-width: 0; color: var(--ib-muted); font-size: 13px; }
 .card-foot-bar + .cb-model-note { margin-top: 6px; }
 /* ── GOAL LINE — the goal on the open card, its home is the panel (spec 13) ── */
 .card-goal-line { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding: 6px 10px; border: 1px solid var(--ib-card-border); border-radius: 8px; background: var(--ib-card-dim); font-size: 12.5px; min-width: 0; }
@@ -3968,19 +4092,74 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .cgl-go, .card-more-link { flex-shrink: 0; font: inherit; font-size: 12px; color: var(--accent); background: none; border: 0; padding: 4px 2px; min-height: 28px; cursor: pointer; white-space: nowrap; }
 .cgl-go:hover, .card-more-link:hover { text-decoration: underline; }
 .card-more-link { display: block; margin: 4px 0 0 auto; }
-.cb-model-select { font: inherit; font-size: 13px; color: var(--ib-text); background: var(--ib-seg); border: 1px solid var(--ib-card-border); border-radius: 8px; padding: 4px 8px; min-height: 30px; max-width: 100%; cursor: pointer; }
-.cb-model-select:disabled { opacity: 0.6; cursor: progress; }
 .cb-ac { font-variant-numeric: tabular-nums; }
 .cb-model-note { margin-top: 4px; font-size: 12px; color: var(--ib-text-2); overflow-wrap: anywhere; }
 .cb-model-note.is-error { color: var(--st-fail); }
 /* Model · effort beside the composer (spec 13). */
 .panel-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 0 0 8px; font-size: 13px; }
 .panel-controls:empty { display: none; }
-.panel-controls .pc-pick { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; min-width: 0; }
 .panel-controls .pc-scope { font-size: 12px; font-weight: 700; color: var(--text-tertiary); }
-.panel-controls .pc-toggle { display: none; font: inherit; font-size: 12.5px; color: var(--text-secondary); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; padding: 4px 10px; min-height: 32px; cursor: pointer; white-space: nowrap; max-width: 100%; overflow: hidden; text-overflow: ellipsis; }
-.panel-controls .cb-model-select { color: var(--text); background: var(--surface-raised); border-color: var(--border); }
 .panel-controls .cb-model-note { flex-basis: 100%; margin-top: 0; }
+/* ── MODEL · EFFORT MENU — affectUI Model Picker (.prd/affectui/re-model-picker.md D1, D2, D13–D15).
+   One trigger per surface; the menu sits in <body> (position: fixed) so the open card's clip never cuts it. ── */
+:root { --mp-well: #2e2e33; --mp-bar: #5a5a62; --mp-bar-off: #35353b; }
+[data-theme="light"] { --mp-well: #f1f1f3; --mp-bar: #c9c9d0; --mp-bar-off: #e6e6ea; }
+.mp-trigger { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; min-width: 0; min-height: 30px; padding: 0 9px 0 5px; font: inherit; font-size: 13px; font-weight: 500; color: var(--ib-text); background: var(--ib-seg); border: 1px solid var(--ib-card-border); border-radius: 8px; cursor: pointer; white-space: nowrap; transition: background-color var(--dur-press) var(--ease-out); }
+.mp-trigger:hover, .mp-trigger[aria-expanded="true"] { background: var(--mp-well); }
+.mp-trigger:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.mp-trigger[aria-busy="true"] { cursor: progress; }
+.mp-trigger .mp-glyph { width: 18px; height: 18px; border-radius: 5px; font-size: 10px; }
+.mp-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mp-level { flex: none; font-weight: 400; color: var(--ib-text-2); }
+.mp-chev { flex: none; width: 6px; height: 6px; margin: 0 1px 0 2px; border-right: 1.5px solid var(--ib-muted); border-bottom: 1.5px solid var(--ib-muted); transform: translateY(-2px) rotate(45deg); transition: transform 300ms var(--ease-out); }
+.mp-trigger[aria-expanded="true"] .mp-chev { transform: translateY(1px) rotate(225deg); }
+.mp-glyph { display: inline-grid; flex: none; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: var(--ib-card); box-shadow: inset 0 0 0 1px var(--ib-card-border); font-size: 10.5px; font-weight: 600; line-height: 1; color: var(--ib-text); }
+.mp-pop { position: fixed; z-index: 150; left: 0; top: 0; width: min(320px, calc(100vw - 32px)); max-height: calc(100vh - 24px); overflow-y: auto; overscroll-behavior: contain; container-type: inline-size; padding: 4px; border-radius: 16px; background: var(--ib-col); box-shadow: 0 0 0 1px var(--ib-card-border), var(--ib-shadow-raised); color: var(--ib-text-2); font-size: 13px; line-height: 20px; text-align: left; transform-origin: top left; opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(-4px) scale(0.96); transition: opacity 160ms ease, transform 220ms var(--ease-out), visibility 0s linear 220ms; }
+.mp-pop[data-side="top"] { transform-origin: bottom left; transform: translateY(4px) scale(0.96); }
+.mp-pop.is-open { opacity: 1; visibility: visible; transform: none; pointer-events: auto; transition: opacity 200ms ease, transform var(--dur-move) var(--ease-out), visibility 0s; }
+.mp-card { padding: 6px; border-radius: 12px; background: var(--ib-card); box-shadow: 0 0 0 1px var(--ib-card-border), var(--ib-shadow); }
+.mp-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; height: 24px; padding: 0 10px; font-size: 11px; line-height: 16px; color: var(--ib-muted); }
+.mp-cols, .mp-bars { display: grid; flex: none; grid-template-columns: repeat(3, 34px); gap: 8px; }
+.mp-cols > span { text-align: center; white-space: nowrap; }
+.mp-wait { margin: 0 10px 4px; font-size: 12px; color: var(--st-wait); }
+.mp-list { display: grid; gap: 1px; border-radius: 10px; outline: none; }
+.mp-opt { display: grid; grid-template-columns: 22px minmax(0, 1fr) auto; grid-template-areas: "g t b" "g d d"; align-items: center; column-gap: 10px; min-height: 48px; padding: 6px 10px; border-radius: 10px; cursor: pointer; transition: background-color var(--dur-press) ease, opacity 220ms ease; }
+.mp-opt > .mp-glyph { grid-area: g; }
+.mp-opt > .mp-bars { grid-area: b; }
+.mp-opt[aria-disabled="true"] { cursor: default; }
+.mp-list[data-pointing] .mp-opt[data-active] { background: var(--mp-well); }
+.mp-list[data-pointing] .mp-opt:not([data-active]) { opacity: 0.5; }
+.mp-list:focus-visible .mp-opt[data-active] { background: var(--mp-well); box-shadow: inset 0 0 0 1.5px var(--border-focus); }
+.mp-title { grid-area: t; display: flex; align-items: center; gap: 4px; min-width: 0; font-weight: 500; color: var(--ib-text); }
+.mp-title-name { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.mp-check { flex: none; font-size: 12px; line-height: 1; color: var(--accent); animation: mp-pop 320ms var(--ease-out) both; }
+.mp-desc { grid-area: d; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; overflow: hidden; font-size: 12px; line-height: 17px; color: var(--ib-muted); overflow-wrap: anywhere; }
+.mp-meter { display: grid; grid-template-columns: repeat(5, 1fr); gap: 2px; height: 5px; }
+.mp-meter.is-none { display: block; height: auto; font-size: 11px; line-height: 1; text-align: center; color: var(--ib-muted); }
+.mp-seg { border-radius: 1.5px; background: var(--mp-bar-off); transition: background-color 180ms ease; }
+.mp-seg[data-on] { background: var(--mp-bar); }
+.mp-opt[data-lit] .mp-seg[data-on] { background: var(--accent); transition-delay: calc(var(--c) * 70ms + var(--s) * 45ms); animation: mp-fill 360ms var(--ease-out) both; animation-delay: calc(var(--c) * 70ms + var(--s) * 45ms); }
+.mp-settings { margin-top: 6px; padding: 6px 10px 4px; border-top: 1px solid var(--ib-card-border); }
+.mp-effort-head { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; min-height: 22px; }
+.mp-effort-label { flex: none; font-size: 12.5px; color: var(--ib-text-2); }
+.mp-effort-cap { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--st-wait); }
+.mp-seg-ctl { position: relative; display: grid; grid-template-columns: repeat(var(--n), 1fr); margin-top: 4px; padding: 2px; border-radius: 9px; background: var(--ib-seg); box-shadow: inset 0 0 0 1px var(--ib-card-border); }
+.mp-thumb { position: absolute; top: 2px; bottom: 2px; left: 2px; width: calc((100% - 4px) / var(--n)); border-radius: 7px; background: var(--ib-seg-on); box-shadow: 0 0 0 1px var(--ib-card-border), 0 1px 2px rgba(0, 0, 0, 0.12); transform: translateX(calc(var(--i) * 100%)); transition: transform var(--dur-move) var(--ease-out); }
+.mp-seg-btn { position: relative; min-width: 0; min-height: 26px; padding: 0 2px; font: inherit; font-size: 12px; font-weight: 500; color: var(--ib-muted); background: none; border: 0; border-radius: 7px; cursor: pointer; white-space: nowrap; transition: color 200ms ease; }
+.mp-seg-btn[aria-checked="true"], .mp-seg-btn:hover { color: var(--ib-text); }
+.mp-seg-btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
+.mp-seg-ctl[aria-disabled="true"] .mp-seg-btn { cursor: progress; }
+.mp-err { margin-top: 6px; font-size: 12px; color: var(--st-fail-text); overflow-wrap: anywhere; }
+.mp-err:empty { display: none; }
+.mp-foot { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 4px 8px 0 12px; }
+.mp-caption { flex: 1; min-width: 0; overflow: hidden; font-size: 12.5px; color: var(--ib-muted); white-space: nowrap; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.mp-caption b { font-weight: 500; color: var(--ib-text); }
+.mp-keys { display: flex; flex: none; gap: 3px; }
+.mp-keys kbd { display: grid; place-items: center; min-width: 20px; height: 18px; padding: 0 4px; border-radius: 5px; background: var(--ib-card); box-shadow: 0 0 0 1px var(--ib-card-border); font-family: inherit; font-size: 10.5px; line-height: 1; color: var(--ib-muted); }
+.mp-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+@keyframes mp-pop { from { opacity: 0; transform: scale(0.6); } }
+@keyframes mp-fill { 0% { transform: scaleY(1); } 45% { transform: scaleY(1.6); } 100% { transform: scaleY(1); } }
+@container (max-width: 300px) { .mp-opt .mp-glyph, .mp-keys { display: none; } .mp-opt { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "t b" "d d"; } .mp-cols, .mp-bars { grid-template-columns: repeat(3, 30px); gap: 6px; } }
 
 /* ── SHORT REFS ROW — PROJ-123 · PR-123 ── */
 .card .card-refs {
@@ -4053,11 +4232,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card .context-bar-fill { width: 100%; height: 100%; border-radius: 2px; transform-origin: left center; transition: transform 0.3s var(--ease-out); background: var(--st-run); }
 .card .context-bar-fill.ctx-warn { background: var(--st-wait); }
 .card .context-bar-fill.ctx-danger { background: var(--st-fail); }
-/* The same bar in the panel's 세션 정보 (spec 13). */
-.pi-ctx .context-bar { height: 4px; background: var(--ib-pill); border-radius: 2px; overflow: hidden; }
-.pi-ctx .context-bar-fill { width: 100%; height: 100%; border-radius: 2px; transform-origin: left center; transition: transform 0.3s var(--ease-out); background: var(--st-run); }
-.pi-ctx .context-bar-fill.ctx-warn { background: var(--st-wait); }
-.pi-ctx .context-bar-fill.ctx-danger { background: var(--st-fail); }
 
 /* ── TASK TIMELINE — dot + step + time; only the current step's dot is solid ── */
 .tl-wrap { margin-top: 10px; }
@@ -4291,6 +4465,25 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card .btn-choice-recommended::before { content: none; }
 .card .choice-row-recommended .btn-choice-recommended,
 .card .btn-choice-recommended { display: inline-block; width: auto; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
+.card .btn-choice.btn-choice-recommended.is-quiet { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--ib-text); font-weight: 500; }
+/* D10: one primary per open card — the decision this viewer can make here. The
+   owner's 답변하기 / recommended answer on this instance and, in the card only, the
+   lead Approve (renderPermissionBlock marks the first one this viewer can press
+   .is-lead) are ink; Deny, every other Approve and a quiet recommended answer
+   (.is-quiet: not answerable here) are secondaries. The panel's prompt keeps its own
+   styling. Doubled classes beat the shared card / hover rules later in the sheet. */
+.card .btn-choice.btn-choice-primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
+.card .btn-perm.btn-perm-approve { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--ib-text); }
+.card .btn-perm.btn-perm-approve.is-lead { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
+.card .btn-perm.btn-perm-deny { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--st-fail-text); }
+/* A card that also holds a permission prompt this viewer can answer (a lead Approve —
+   the requester, this instance) keeps that Approve as the one ink button: the
+   question's answers step back to secondaries, resting and hovered (:has() outranks
+   the card's recommended-choice rules). */
+.card .card-body:has(.btn-perm-approve.is-lead) .btn-choice.btn-choice-recommended, .card .card-body:has(.btn-perm-approve.is-lead) .btn-choice.btn-choice-primary { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--ib-text); }
+@media (hover: hover) and (pointer: fine) {
+  .card .btn-choice.btn-choice-primary:hover:not(:disabled) { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
+}
 
 /* ── PANEL PENDING QUESTION ── */
 /* ── PERMISSION PROMPT (SSOT 2026-10-24) — the Slack "🔐 Permission Request" card ── */
@@ -4345,7 +4538,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .btn-perm { min-height: 44px; }
 }
 .perm-note { margin-top: 6px; font-size: 0.74em; color: var(--red); overflow-wrap: anywhere; }
-.panel-permission { padding: 12px 16px; border-bottom: 1px solid rgba(249,115,22,0.2); }
+.panel-permission { padding: 0 16px 12px; border-bottom: 1px solid var(--border); }
 .panel-permission .perm-request { margin-top: 0; }
 .panel-permission .perm-head { font-size: 0.88em; }
 .panel-permission .btn-perm { font-size: 0.82em; }
@@ -4368,6 +4561,79 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .panel-question .btn-choice {
   font-size: 0.82em;
   padding: 6px 14px;
+}
+
+/* ── 입력 필요 — approval cards in the panel (re-agent-run D8–D17) ──
+   A head with the count; each prompt (and the single-choice question) is a card
+   in a tray: context line, icon · title · description · pill, the input as
+   key/value rows, the answers. The card is its own container. No new tokens. */
+.ar-vh { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
+.panel-needs-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px 8px; font-size: 13px; font-weight: 650; color: var(--text); }
+.panel-needs-head[hidden] { display: none; }
+.panel-needs-head:focus { outline: none; }
+.panel-needs-head:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.pn-count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: color-mix(in srgb, var(--st-wait) 24%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-wait) 55%, transparent); color: var(--text); font-size: 11px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; animation: pn-pop var(--dur-move) var(--ease-out) both; }
+@keyframes pn-pop { from { opacity: 0; transform: scale(0.6); } }
+.panel-question[data-ap="card"] { padding: 0 16px 12px; background: none; border-bottom: 1px solid var(--border); }
+/* One section: no rule between a prompt and the question card under it. */
+.panel-permission:has(+ .panel-question[data-ap="card"]:not([style*="none"])) { border-bottom: 0; }
+.ap-card { container-type: inline-size; position: relative; padding: 4px; border-radius: 14px; background: var(--ib-col); border: 1px solid var(--ib-card-border); color: var(--ib-text); outline: none; }
+.panel-permission .ap-card { margin: 0; padding: 4px; background: var(--ib-col); border: 1px solid var(--ib-card-border); border-radius: 14px; }
+.panel-permission .ap-card + .ap-card { margin-top: 10px; }
+.ap-card:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.ap-label { padding: 4px 8px 6px; font-size: 12px; line-height: 16px; color: var(--ib-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.ap-body { padding: 14px; border-radius: 11px; background: var(--ib-card); box-shadow: 0 0 0 1px var(--ib-card-border); }
+.ap-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 10px; }
+.ap-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: var(--ib-pill); color: var(--ib-text); }
+.ap-icon svg { width: 16px; height: 16px; }
+.ap-titles { min-width: 0; padding-top: 1px; }
+.ap-title { font-size: 14px; font-weight: 600; line-height: 20px; color: var(--ib-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ap-question .ap-title { white-space: pre-line; overflow: visible; overflow-wrap: anywhere; }
+.ap-desc { margin-top: 1px; font-size: 13px; line-height: 18px; color: var(--ib-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ap-pill { display: inline-flex; align-items: center; gap: 6px; height: 22px; margin-top: 1px; padding: 0 9px 0 8px; border-radius: 999px; background: var(--ib-pill); color: var(--ib-text-2); font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap; }
+.ap-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.8; }
+.ap-pill[data-kind="rule"] { background: color-mix(in srgb, var(--st-fail) 14%, transparent); color: var(--st-fail-text); }
+.ap-pill[data-kind="question"] { background: color-mix(in srgb, var(--st-wait) 16%, transparent); color: var(--st-wait); }
+.ap-details { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; max-height: 320px; overflow: auto; margin: 12px 0 0; padding: 10px 12px; border-radius: 9px; background: var(--ib-col); box-shadow: inset 0 0 0 1px var(--ib-card-border); font-size: 12.5px; line-height: 18px; }
+.ap-detail { display: contents; }
+.ap-detail dt { color: var(--ib-muted); }
+.ap-detail dd { min-width: 0; margin: 0; color: var(--ib-text); font-family: 'SF Mono','Fira Code',ui-monospace,monospace; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ap-body .perm-params { margin: 12px 0 0; }
+.ap-body .perm-truncated { margin: 4px 0 0; }
+.ap-body .perm-rules { margin: 10px 0 0; }
+.ap-alts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
+.ap-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 8px; }
+.ap-expires { font-size: 12.5px; color: var(--ib-muted); font-variant-numeric: tabular-nums; white-space: nowrap; transition: color var(--dur-fade) linear; }
+.ap-expires.is-low { color: var(--st-wait); }
+.ap-actions { display: flex; flex: 0 0 auto; gap: 4px; margin-left: auto; }
+.ap-card .btn-perm.ap-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 34px; padding: 0 12px; border: 0; border-radius: 10px; font-size: 13px; font-weight: 500; line-height: 1; white-space: nowrap; }
+.ap-card .btn-perm.ap-ghost { min-height: 28px; padding: 0 10px; border-radius: 8px; background: transparent; color: var(--ib-text-2); font-size: 12.5px; box-shadow: inset 0 0 0 1px var(--ib-card-border); }
+.ap-card .btn-perm.ap-quiet { padding-right: 8px; background: transparent; color: var(--ib-text); box-shadow: inset 0 0 0 1px var(--ib-card-border); }
+.ap-card .btn-perm.ap-primary { padding-right: 8px; background: var(--ib-text); color: var(--ib-card); }
+.ap-btn[data-kbd]::after { content: attr(data-kbd) / ""; display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 6px; background: color-mix(in srgb, currentColor 12%, transparent); font-size: 11px; font-weight: 500; opacity: 0.8; }
+.ap-btn:disabled::after { display: none; }
+.ap-card .btn-choice.ap-choice { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; min-height: 36px; padding: 8px 12px; border: 0; border-radius: 10px; background: transparent; color: var(--ib-text); box-shadow: inset 0 0 0 1px var(--ib-card-border); font-size: 13px; text-align: left; }
+.ap-card .btn-choice.ap-choice.ap-rec { position: relative; padding-right: 52px; background: var(--ib-text); color: var(--ib-card); box-shadow: none; font-weight: 500; }
+.ap-card .btn-choice.ap-rec[data-kbd]::after { content: attr(data-kbd) / ""; position: absolute; top: 8px; right: 8px; display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 6px; background: color-mix(in srgb, currentColor 14%, transparent); font-size: 11px; opacity: 0.8; }
+.ap-choices { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.ap-choice-desc { font-size: 12px; font-weight: 400; opacity: 0.75; }
+.ap-choice-tag { margin-left: 8px; padding: 1px 6px; border-radius: 6px; background: color-mix(in srgb, currentColor 14%, transparent); font-size: 11px; font-weight: 500; }
+.ap-resolved { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 10px 12px; border-radius: 11px; background: var(--ib-card); box-shadow: 0 0 0 1px var(--ib-card-border); animation: ap-in var(--dur-move) var(--ease-out) both; }
+.ap-mark { display: grid; flex: none; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: color-mix(in srgb, var(--st-done) 16%, transparent); color: var(--st-done); font-size: 12px; font-weight: 700; }
+.ap-mark svg { width: 12px; height: 12px; }
+.ap-resolved[data-decision="deny"] .ap-mark, .ap-resolved[data-decision="explain"] .ap-mark { background: var(--ib-pill); color: var(--ib-text-2); }
+.ap-row-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 500; color: var(--ib-text); }
+.ap-row-status { flex: none; color: var(--ib-muted); white-space: nowrap; font-size: 12.5px; }
+@keyframes ap-in { from { opacity: 0; transform: translateY(4px); } }
+@container (max-width: 379px) {
+  .ap-actions { flex: 1 1 100%; margin-left: 0; }
+  .ap-actions .ap-btn { flex: 1 1 0; min-width: 0; }
+  .ap-btn[data-kbd]::after, .ap-card .btn-choice.ap-rec[data-kbd]::after { display: none; }
+  .ap-card .btn-choice.ap-choice.ap-rec { padding-right: 12px; }
+}
+@container (max-width: 319px) {
+  .ap-body { padding: 12px; }
+  .ap-pill-word { display: none; }
 }
 
 /* ── MULTI-CHOICE FORM (dashboard) ── */
@@ -4778,6 +5044,42 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .panel-tasks-toggle:hover { text-decoration: underline; }
 .panel-tasks-toggle + .panel-tasks-earlier-toggle { margin-left: 14px; }
+/* ── PLAN — the panel's Tasks as a plan (re-agent-run D1–D7): a marker per step
+   (check · spinner · empty ring) on one rail, the time on the right, a sticky
+   footer with the phase. The .panel-tasks box itself is unchanged. */
+.pl-list { position: relative; margin: 0; padding: 0; list-style: none; }
+.pl-step { position: relative; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; column-gap: 10px; align-items: start; padding: 5px 0; font-size: 12.5px; line-height: 18px; }
+.pl-marker { position: relative; z-index: 1; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--surface); box-shadow: inset 0 0 0 1px var(--ib-card-border); color: var(--text-secondary); }
+.pl-step[data-step="done"] .pl-marker { background: var(--ib-pill); box-shadow: none; color: var(--text); }
+.pl-step[data-step="active"] .pl-marker { box-shadow: none; color: var(--st-run); }
+.pl-marker svg { width: 10px; height: 10px; }
+.pl-marker .spinner { width: 11px; height: 11px; }
+.pl-step.pl-pop .pl-marker > * { animation: pl-pop var(--dur-move) var(--ease-out) both; }
+@keyframes pl-pop { from { opacity: 0; transform: scale(0.6); } }
+.pl-list > .pl-step:not(:last-child)::before { content: ""; position: absolute; left: 8.5px; top: 25px; bottom: -3px; width: 1px; background: var(--ib-card-border); }
+.pl-list > .pl-step:not(:last-child)::after { content: ""; position: absolute; left: 8.5px; top: 25px; bottom: -3px; width: 1px; background: var(--text-tertiary); transform: scaleY(0); transform-origin: top; transition: transform var(--dur-move) var(--ease-out); }
+.pl-list > .pl-step[data-step="done"]:not(:last-child)::after { transform: none; }
+.pl-earlier > .pl-step::before, .pl-earlier > .pl-step::after { content: none; }
+.pl-main { min-width: 0; }
+.pl-line { display: block; overflow-wrap: anywhere; }
+.pl-line .task-id { margin-right: 6px; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.pl-step.completed .task-text { color: var(--text-secondary); opacity: 1; }
+.pl-step.in_progress .task-text { color: var(--text); font-weight: 600; }
+.pl-step.pending .task-text { color: var(--text-secondary); }
+.pl-chip { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px; background: var(--ib-pill); color: var(--text-secondary); font-size: 11px; line-height: 16px; white-space: nowrap; font-variant-numeric: tabular-nums; vertical-align: 1px; }
+.pl-sub { display: block; margin-top: 1px; font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-aside { min-height: 18px; font-size: 12px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pl-step[data-step="active"] .pl-aside { color: var(--text); }
+.pl-fold { padding: 2px 0 2px 28px; }
+.pl-earlier { opacity: 0.85; }
+.pl-foot { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; gap: 8px; margin: 4px -16px -8px; padding: 7px 16px 8px; background: var(--surface); border-top: 1px solid var(--border); font-size: 12.5px; color: var(--text-secondary); }
+.pl-foot-st { display: inline-flex; align-items: center; gap: 7px; min-width: 0; color: var(--text); font-variant-numeric: tabular-nums; }
+.pl-foot-icon { display: inline-grid; place-items: center; width: 14px; height: 14px; color: var(--text-tertiary); }
+.pl-foot[data-phase="running"] .pl-foot-icon { color: var(--st-run); }
+.pl-foot[data-phase="completed"] .pl-foot-icon { color: var(--st-done); }
+.pl-foot-icon svg { width: 12px; height: 12px; }
+.pl-foot-icon .spinner { width: 11px; height: 11px; }
+.pl-foot-time { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* Panel work log (.prd/10 §3.1-6, §3.3) — what the agent did, in order. The
    header is a disclosure button (collapsed unless the panel was opened from
    작업 로그); the count keeps counting while it is closed. Own scroll box so
@@ -4914,13 +5216,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .panel-status { flex-basis: 100%; min-width: 0; }
 .panel-status:empty { display: none; }
 .ps-row { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12.5px; color: var(--text-secondary); }
-.ps-chip { --ag-c: var(--text-tertiary); display: inline-flex; align-items: center; gap: 5px; min-width: 0; padding: 3px 9px 3px 7px; border-radius: 99px; background: var(--surface-raised); border: 1px solid var(--border); white-space: nowrap; }
+/* re-agent-run D18: the chip is a pill tinted by its status (markup unchanged). */
+.ps-chip { --ag-c: var(--text-tertiary); display: inline-flex; align-items: center; gap: 5px; min-width: 0; height: 24px; padding: 0 10px 0 8px; border-radius: 99px; background: color-mix(in srgb, var(--ag-c) 13%, transparent); border: 0; white-space: nowrap; }
 .ps-chip.is-running { --ag-c: var(--st-run); } .ps-chip.is-waiting, .ps-chip.is-resuming { --ag-c: var(--st-wait); } .ps-chip.is-completed { --ag-c: var(--st-done); }
 .ps-label { font-size: 11px; font-weight: 700; color: var(--text-tertiary); letter-spacing: 0.02em; }
 .ps-icon { display: inline-grid; place-items: center; width: 14px; height: 14px; color: var(--ag-c); }
 .ps-icon svg { width: 12px; height: 12px; } .ps-icon .spinner { width: 10px; height: 10px; }
 .ps-word { font-weight: 650; color: var(--ag-c); }
-.ps-time { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ps-time { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ps-clock { flex: none; width: 13px; height: 13px; color: var(--text-tertiary); }
+.ps-dot { color: var(--text-tertiary); }
 .ps-actions { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
 .ps-actions .btn-action { min-height: 30px; padding: 3px 12px; font-size: 12.5px; }
 .ps-slack { display: inline-flex; align-items: center; min-height: 30px; padding: 0 8px; border-radius: 8px; font-size: 12.5px; font-weight: 600; color: var(--accent); text-decoration: none; }
@@ -4945,9 +5250,83 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .pi-grid dt { font-size: 11px; font-weight: 700; color: var(--text-tertiary); letter-spacing: 0.02em; }
 .pi-grid dd { margin: 1px 0 0; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .pi-muted { color: var(--text-tertiary); font-weight: 400; }
-.pi-ctx { display: flex; flex-direction: column; gap: 4px; font-variant-numeric: tabular-nums; }
+/* 세부 (re-agent-run D19): label left, value right. */
+.pi-details { display: grid; gap: 7px; margin: 0; }
+.pi-details > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
+.pi-details dt { flex: none; color: var(--text-tertiary); font-size: 12px; }
+.pi-details dd { min-width: 0; margin: 0; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
 .pi-thread { font-variant-numeric: tabular-nums; }
 .pi-resume { color: var(--st-wait); overflow-wrap: anywhere; }
+/* The summary line's ctx % carries the context level (re-context-window D16). */
+.pi-cs.ctx-warn { color: var(--cw-warn); }
+.pi-cs.ctx-danger { color: var(--st-fail-text); font-weight: 600; }
+/* ── 컨텍스트 블록 (.prd/affectui/re-context-window.md D5–D19) — what fills the context:
+   one cell per window/216 tokens, the request's cache categories in prompt order, the
+   auto-compact point on the field, the level against that point, one owner-gated action.
+   A flat section of the panel (no card in a card). ── */
+:root { --cw-c1: var(--accent); --cw-c2: color-mix(in srgb, var(--accent) 45%, var(--ib-pill)); --cw-c3: var(--purple); --cw-c4: var(--green); --cw-free: var(--ib-pill); --cw-warn: var(--st-wait); --cw-warn-bg: rgba(245,165,36,0.14); --cw-full-bg: rgba(242,107,107,0.13); --cw-ok: var(--green); }
+[data-theme="light"] { --cw-c1: var(--accent); --cw-c2: color-mix(in srgb, var(--accent) 38%, #ffffff); --cw-c3: var(--purple); --cw-c4: var(--green); --cw-free: #e7e7ea; --cw-warn: var(--yellow); --cw-warn-bg: rgba(194,120,10,0.12); --cw-full-bg: rgba(212,58,58,0.1); --cw-ok: var(--green); }
+.cw { container: cw / inline-size; max-width: 560px; position: relative; padding-bottom: 2px; font-size: 12.5px; color: var(--text-secondary); }
+.cw-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; min-height: 22px; }
+.cw-title { font-size: 13px; font-weight: 600; color: var(--text); }
+.cw-model { flex: none; max-width: 62%; height: 20px; padding: 0 7px; border-radius: 5px; background: var(--ib-pill); font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 11px; line-height: 20px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cw-figure { display: flex; align-items: baseline; gap: 7px; margin-top: 6px; }
+.cw-big { font-size: 24px; font-weight: 600; line-height: 30px; letter-spacing: -0.02em; color: var(--text); font-variant-numeric: tabular-nums; }
+.cw-of { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-tertiary); }
+.cw-pill { flex: none; padding: 0 6px; border-radius: 5px; line-height: 20px; font-variant-numeric: tabular-nums; color: var(--text-secondary); transition: color 300ms ease, background-color 300ms ease; }
+.cw[data-level="warn"] .cw-pill { color: var(--cw-warn); background: var(--cw-warn-bg); }
+.cw[data-level="full"] .cw-pill { color: var(--st-fail-text); background: var(--cw-full-bg); font-weight: 600; }
+.cw-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.cw-field { display: grid; grid-template-columns: repeat(36, minmax(0, 1fr)); gap: 2px; margin-top: 10px; }
+.cw-cell { display: block; aspect-ratio: 1; border-radius: 2px; background: var(--c, var(--cw-free)); transition: background-color 380ms var(--ease-out), opacity 220ms ease, transform var(--dur-move) var(--ease-out), box-shadow 380ms var(--ease-out); transition-delay: calc(var(--i) * 2ms), 0s, 0s, 0s; }
+/* Past the auto-compact point an empty cell is a hollow square: the session compacts before it fills. */
+.cw-cell[data-past]:not([data-part]) { background: transparent; box-shadow: inset 0 0 0 1px var(--border); }
+.cw-field[data-hot] .cw-cell[data-part]:not([data-on]) { opacity: 0.22; }
+.cw-cell[data-on] { transform: scale(1.12); }
+.cw-cell[data-busy] { opacity: 0.5; }
+@keyframes cw-wave { 0%, 100% { opacity: 1; transform: none; } 50% { opacity: 0.28; transform: scale(0.72); } }
+@keyframes cw-swap-in { from { opacity: 0; filter: blur(2px); } }
+@keyframes cw-leave { to { opacity: 0; filter: blur(3px); transform: scale(0.92); } }
+@keyframes cw-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: no-preference) {
+  .cw-cell[data-busy] { animation: cw-wave 900ms ease-in-out infinite; animation-delay: calc(var(--i) * 15ms); }
+  .cw-spin { animation: cw-spin 700ms linear infinite; }
+}
+.cw-parts { list-style: none; margin: 8px 0 0; padding: 0; }
+.cw-part, .cw-mark { display: flex; align-items: center; gap: 9px; min-height: 30px; margin: 0 -8px; padding: 0 8px; border-radius: 8px; transition: background-color var(--dur-press) ease, opacity 220ms ease; }
+.cw-part[data-hot] { background: var(--ib-pill); }
+.cw-part[data-dim], .cw-mark[data-dim] { opacity: 0.55; }
+.cw-sw { flex: none; width: 7px; height: 7px; border-radius: 2px; }
+.cw-sw.is-mark { background: transparent; box-shadow: inset 0 0 0 1px var(--text-tertiary); }
+.cw-label { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 13px; color: var(--text); }
+.cw-mark .cw-label { color: var(--text-secondary); }
+.cw-val { flex: none; min-width: 52px; text-align: right; font-size: 13px; font-weight: 600; color: var(--text); font-variant-numeric: tabular-nums; }
+.cw-foot { display: flex; align-items: center; gap: 8px; min-height: 38px; margin-top: 6px; padding-top: 6px; border-top: 1px solid var(--border); }
+.cw-say { flex: 1; min-width: 0; display: grid; }
+.cw-say-t { grid-area: 1 / 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; color: var(--text-secondary); font-variant-numeric: tabular-nums; animation: cw-swap-in 320ms ease both; }
+.cw-say-t b { font-weight: 600; color: var(--text); }
+.cw-say-t.is-warn { color: var(--cw-warn); }
+.cw-say-t.is-full, .cw-say-t.is-fail { color: var(--st-fail-text); }
+.cw-say-t.is-ok, .cw-say-t.is-ok b { color: var(--cw-ok); }
+.cw-compact { display: inline-flex; flex: none; align-items: center; gap: 5px; min-height: 28px; padding: 0 9px 0 7px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); font: inherit; font-size: 12.5px; font-weight: 600; color: var(--text); white-space: nowrap; cursor: pointer; transition: background-color var(--dur-press) ease, color var(--dur-press) ease, border-color var(--dur-press) ease; }
+.cw-compact:hover:not(:disabled) { background: var(--surface-raised); }
+.cw-compact:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.cw-compact:disabled { cursor: default; opacity: 0.5; }
+.cw-compact[data-state="armed"] { border-color: var(--cw-warn); color: var(--cw-warn); }
+.cw-compact[data-state="busy"], .cw-compact[data-state="done"] { opacity: 1; }
+.cw-compact[data-state="done"] { border-color: transparent; background: transparent; color: var(--cw-ok); }
+.cw-compact[data-leaving] { animation: cw-leave 400ms var(--ease-out) both; }
+.cw-ci, .cw-ct { display: inline-flex; align-items: center; animation: cw-swap-in 300ms ease both; }
+.cw-ci svg { width: 12px; height: 12px; }
+.cw-spin { display: block; width: 12px; height: 12px; border: 1.5px solid var(--border); border-top-color: var(--text); border-radius: 50%; }
+@container cw (max-width: 309px) {
+  .cw-field { grid-template-columns: repeat(24, minmax(0, 1fr)); }
+  .cw-model { max-width: 42%; }
+  .cw-compact { padding: 0 8px; }
+  .cw-ct { display: none; }
+}
+@container cw (min-width: 520px) { .cw-field { grid-template-columns: repeat(54, minmax(0, 1fr)); } }
+@media (pointer: coarse), (max-width: 639px) { .cw-compact { min-height: 44px; } .cw-part, .cw-mark { min-height: 36px; } }
 /* ── GOAL — the editor's home (spec 13) ── */
 .panel-goal { padding: 8px 16px; border-bottom: 1px solid var(--border); outline: none; }
 .panel-goal .card-goal { margin-top: 0; }
@@ -4975,14 +5354,56 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .turn-content { font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 .turn-summary-title { font-weight: 700; font-size: 13px; margin-bottom: 2px; }
 .turn-summary-body { font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
-.turn-raw-details { margin-top: 6px; }
+.turn-raw-details { margin-top: 6px; container: ans / inline-size; }
 .turn-raw-details summary.turn-expand-btn { cursor: pointer; color: var(--accent); font-size: 11px; padding: 2px 0; user-select: none; list-style: none; }
 .turn-raw-details summary.turn-expand-btn::-webkit-details-marker { display: none; }
 .turn-raw-details summary.turn-expand-btn::before { content: '\\25B6 '; font-size: 9px; }
 .turn-raw-details[open] summary.turn-expand-btn::before { content: '\\25BC '; }
 .turn-raw-details summary.turn-expand-btn:hover { text-decoration: underline; }
-.turn-raw-content { margin-top: 6px; background: var(--surface); padding: 10px; border-radius: 6px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; border: 1px solid var(--border); }
-.turn-raw-loading { color: var(--text-tertiary); font-style: italic; font-size: 11px; }
+/* AI answer (.prd/affectui/re-ai-answer.md) — the opened answer: the links it
+   holds as numbered cards and chips that light each other, copy. Theme
+   variables only (no new colours); the disclosure is the size container. */
+.turn-header .ans-took { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.turn-header .ans-took:empty { display: none; }
+.ans-card { margin-top: 6px; padding: 12px 14px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.ans-card.is-in > * { animation: ans-in var(--dur-fade) var(--ease-out) both; }
+.ans-loading, .ans-empty { font-size: 12px; color: var(--text-tertiary); }
+.ans-error { margin-right: 8px; font-size: 12px; color: var(--text-secondary); }
+.ans-srcs { display: flex; gap: 8px; margin: -4px -14px 8px; padding: 4px 14px; list-style: none; overflow-x: auto; scrollbar-width: none; -webkit-mask: linear-gradient(90deg, transparent, black 12px, black calc(100% - 12px), transparent); mask: linear-gradient(90deg, transparent, black 12px, black calc(100% - 12px), transparent); }
+.ans-srcs::-webkit-scrollbar { display: none; }
+.ans-srcs > li { flex: none; display: flex; }
+.ans-src { display: flex; flex-direction: column; gap: 4px; width: 148px; min-height: 64px; padding: 8px 10px; border-radius: 10px; background: var(--surface-raised); color: inherit; text-decoration: none; transition: background-color var(--dur-press) ease, box-shadow var(--dur-press) ease; }
+.ans-card.is-in .ans-src { animation: ans-pop var(--dur-move) var(--ease-out) both; animation-delay: calc(var(--ans-i, 0) * 60ms); }
+.ans-src:hover { background: var(--ib-pill); }
+.ans-src.is-lit { box-shadow: inset 0 0 0 1.5px var(--text-tertiary); }
+.ans-src-site { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 11px; color: var(--text-secondary); }
+.ans-src-name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ans-src-num { flex: none; font-variant-numeric: tabular-nums; color: var(--text-tertiary); }
+.ans-src-title { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: 12px; line-height: 1.4; color: var(--text); word-break: break-word; }
+.ans-label { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.ans-card .ans-body { font-size: 13.5px; line-height: 1.6; }
+.ans-card .ans-body > :last-child { margin-bottom: 0; }
+.ans-card .ans-body h1, .ans-card .ans-body h2 { font-size: 1.15em; }
+.ans-card .ans-body h3, .ans-card .ans-body h4, .ans-card .ans-body h5, .ans-card .ans-body h6 { font-size: 1em; }
+.ans-body .ans-cite { display: inline-block; max-width: 16ch; height: 18px; margin: 0 1px 0 3px; padding: 0 6px; overflow: hidden; border-radius: 6px; background: var(--surface-raised); font-size: 11px; font-weight: 500; line-height: 18px; color: var(--text-secondary); text-decoration: none; white-space: nowrap; text-overflow: ellipsis; vertical-align: middle; transition: background-color var(--dur-press) ease, color var(--dur-press) ease; }
+.ans-body .ans-cite:hover { background: var(--ib-pill); color: var(--text); }
+.ans-body .ans-cite.is-lit { background: var(--text); color: var(--surface); }
+.ans-cite:focus-visible, .ans-src:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.ans-foot { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+.ans-status { font-size: 12px; color: var(--text-tertiary); }
+.ans-writing { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.ans-shimmer { color: transparent; background: linear-gradient(90deg, var(--text-tertiary) 38%, var(--text) 50%, var(--text-tertiary) 62%) 100% 0 / 300% 100% no-repeat; -webkit-background-clip: text; background-clip: text; animation: ans-sweep 1.6s linear infinite; }
+.ans-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--st-run); animation: ans-pulse 1s ease-in-out infinite; }
+@keyframes ans-in { from { opacity: 0; filter: blur(2px); transform: translateY(3px); } to { opacity: 1; filter: none; transform: none; } }
+@keyframes ans-pop { from { opacity: 0; transform: translateY(6px) scale(0.96); } to { opacity: 1; transform: none; } }
+@keyframes ans-sweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@keyframes ans-pulse { 50% { transform: scale(0.6); opacity: 0.45; } }
+@container ans (min-width: 520px) {
+  .ans-card { padding: 16px 18px 12px; }
+  .ans-srcs { margin: -4px -18px 10px; padding: 4px 18px; }
+  .ans-src { width: 172px; }
+  .ans-card .ans-body { font-size: 14px; }
+}
 /* Slack link on cards */
 .slack-link { color: var(--accent); text-decoration: none; font-size: 0.85em; margin-left: 4px; opacity: 0.7; }
 .slack-link:hover { text-decoration: underline; opacity: 1; }
@@ -5242,23 +5663,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens.
    Heights only, so the #800 topbar width fit is untouched; the theme toggle keeps
    its 32px square (pinned by #800) and gets a 44px-wide hit slop instead. ── */
-/* Below 640px both switches fold behind one toggle (the card's footer, the panel's composer). */
-@media (max-width: 639px) {
-  .cfb-model-toggle { display: inline-block; min-height: 44px; }
-  .card-foot-bar .cb-model:not(.is-open) { display: none; }
-  .card-foot-bar .cfb-model { flex-wrap: wrap; flex-basis: 100%; }
-}
-/* The composer's switch folds on a narrow or a short screen (a phone sideways):
-   folded, its toggle shares the input's line, so the reading area keeps its room. */
+/* The composer's model · effort trigger shares the input's line on a narrow or a
+   short screen (a phone sideways), so the reading area keeps its room; its menu opens above. */
 @media (max-width: 639px), (max-height: 560px) {
-  .panel-controls .pc-toggle { display: inline-block; min-height: 44px; }
-  .panel-controls .pc-pick:not(.is-open) { display: none; }
   .panel-command { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; }
   .panel-command .panel-controls { padding: 0; flex: 0 1 auto; max-width: 42%; }
-  .panel-command .panel-controls .pc-toggle { max-width: 100%; }
-  /* Unfolded, the pickers float above the composer: they never take the reading area's height. */
-  .panel-command { position: relative; }
-  .panel-command .panel-controls.is-open .pc-pick { display: flex; position: absolute; left: 12px; right: 12px; bottom: calc(100% + 6px); z-index: 5; padding: 10px 12px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18); }
+  .panel-command .panel-controls .pc-scope { display: none; }
+  .panel-command .panel-controls .mp-trigger { max-width: 100%; }
   .panel-command .panel-controls .cb-model-note { flex-basis: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .panel-command .cmd-hint { flex-basis: 100%; }
   .panel-command .panel-command-row { flex: 1 1 160px; min-width: 0; }
@@ -5275,7 +5686,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .panel-close { width: 44px; height: 44px; }
   #panel-title-sub-regen { min-width: 44px; min-height: 44px; }
   .pi-links a, .pi-head, .panel-tasks-toggle, .turn .btn-action { min-height: 44px; }
-  .ps-actions .btn-action, .ps-slack, .cgl-go, .card-more-link, .tl-toggle, .cfb-model-toggle, .panel-controls .pc-toggle, .panel-controls .cb-model-select, .card-foot-bar .cb-model-select { min-height: 44px; }
+  .ps-actions .btn-action, .ps-slack, .cgl-go, .card-more-link, .tl-toggle { min-height: 44px; }
   .panel-worklog-header, .wl-detail-btn { min-height: 44px; }
   .worklog-list .wl-row { min-height: 44px; display: flex; flex-direction: column; justify-content: center; }
   .wl-tool > .wl-row, .wl-tool_result > .wl-row, .worklog-list .wl-row.wl-line { flex-direction: row; align-items: center; }
@@ -5283,7 +5694,57 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .panel-question .btn-choice, .mc-q-choices .btn-choice, .mc-q-edit-btn, .mc-btn-submit, .mc-btn-reset { min-height: 44px; }
   .mc-custom-input input, .mc-custom-input button, .btn-send, .panel-command input { min-height: 44px; }
 }
+/* 입력 필요 approval cards (re-agent-run D12–D13): key hints only with a hover
+   pointer, quiet hovers, 44px answers on touch — after the shared touch block. */
+@media (hover: none) {
+  .ap-btn[data-kbd]::after { display: none; }
+  .ap-card .btn-choice.ap-rec[data-kbd]::after { display: none; }
+}
+@media (hover: hover) and (pointer: fine) {
+  .ap-card .btn-perm.ap-ghost:not(:disabled):hover, .ap-card .btn-perm.ap-quiet:not(:disabled):hover, .ap-card .btn-choice.ap-choice:not(.ap-rec):not(:disabled):hover { filter: none; background: var(--ib-pill); }
+}
+@media (pointer: coarse) {
+  .ap-card .btn-perm.ap-btn, .ap-card .btn-choice.ap-choice { min-height: 44px; }
+}
+/* The model · effort menu's own touch / narrow sizes and reduced motion — after the shared blocks, which stay untouched (re-model-picker D13/D15). */
+@media (pointer: coarse), (max-width: 639px) {
+  .mp-trigger, .mp-seg-btn { min-height: 44px; }
+  .mp-opt { min-height: 54px; }
+  .mp-keys { display: none; }
+}
+@media all and (prefers-reduced-motion: reduce) {
+  .mp-pop, .mp-pop[data-side="top"] { transform: none; }
+  .mp-opt[data-lit] .mp-seg[data-on] { animation: none; transition-delay: 0s; }
+  .mp-check { animation: none; }
+}
+/* AI answer (re-ai-answer D15 · D16): the chip's touch target, and reduced motion —
+   after the board's reduce block (the global rule only shortens durations, so
+   infinite loops would flicker). */
+@media (pointer: coarse) {
+  .ans-body .ans-cite { position: relative; overflow: visible; max-width: none; }
+  .ans-cite::after { content: ''; position: absolute; inset: -10px -4px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ans-shimmer, .ans-dot, .ans-src, .ans-card.is-in > * { animation: none !important; }
+  .ans-shimmer { background: none; color: var(--text-tertiary); }
+  .ans-src, .ans-body .ans-cite { transition: none; }
+}
 
+/* ── Agent inbox (re-agent-inbox D3) — the board's own reduced-motion rule, after the
+   shared reduce / touch blocks: the pill's static ring stays whole in its icon colour. ── */
+@media (prefers-reduced-motion: reduce) {
+  /* D3: the static ring (shared rule) stays whole, in the pill's icon colour. */
+  .card-status .spinner { border-color: currentColor; }
+}
+/* D10 hover, after the shared prompt's hover rule (brightness filter): in the card,
+   the lead Approve stays the ink primary and every other Approve, Deny and a quiet
+   recommended answer stay secondaries when pointed at. */
+@media (hover: hover) and (pointer: fine) {
+  .card .btn-perm.btn-perm-approve:not(:disabled):hover { filter: none; background: var(--ib-card); border-color: var(--ib-muted); color: var(--ib-text); }
+  .card .btn-perm.btn-perm-approve.is-lead:not(:disabled):hover { filter: none; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
+  .card .btn-perm.btn-perm-deny:not(:disabled):hover { filter: none; background: var(--ib-card); border-color: var(--st-fail-text); color: var(--st-fail-text); }
+  .card .btn-choice.btn-choice-recommended.is-quiet:hover:not(:disabled) { background: var(--ib-card); border-color: var(--ib-muted); color: var(--ib-text); opacity: 1; }
+}
 /* ── CRON badge · lane · drawer (SSOT 2026-10-23 T3/T4/T5) ── */
 .cron-badge {
   flex-shrink: 0;
@@ -5480,6 +5941,107 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .cap-prov.is-narrow .cap-tl-h-note { display: none; }
 @media (max-width: 760px) {
   .cap-legend { margin-left: 0; }
+}
+/* ── Agent Queue grammar (affectUI #444, .prd/affectui/re-agent-queue.md) ──
+   Capacity = workers (llmux accounts as state marks), CRON lane = queue (the next fires,
+   four numbers, 24 hours of runs). One head pill with a live countdown, one polite region.
+   Colour is never the only signal: every state leads with a glyph or a word. */
+/* This region's own tokens (not the shared :root / light blocks): warning text that holds
+   4.5:1 — light --st-wait (#c2780a) is 3.5:1 on white, so it is never used as text. */
+:root { --aq-warn: var(--st-wait); --aq-warn-text: #f5a524; }
+[data-theme="light"] { --aq-warn-text: #9a5b00; }
+.aq-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
+.aq-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; min-width: 0; }
+.aq-name { font-size: 12px; color: var(--ib-muted); white-space: nowrap; }
+.aq-pill { display: inline-flex; align-items: center; gap: 4px; min-height: 22px; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; line-height: 1.3; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--aq-pc, var(--ib-text-2)); background: color-mix(in srgb, var(--aq-pc, var(--ib-muted)) 14%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--aq-pc, var(--ib-muted)) 45%, transparent); }
+.aq-pill.is-ok { --aq-pc: var(--st-done); }
+.aq-pill.is-run { --aq-pc: var(--st-run); }
+.aq-pill.is-paused, .aq-pill.is-low, .aq-pill.is-wait { --aq-pc: var(--aq-warn); color: var(--aq-warn-text); }
+.aq-pill.is-empty { --aq-pc: var(--st-fail); color: var(--st-fail-text); }
+.aq-pill.is-unknown { --aq-pc: var(--ib-muted); }
+.aq-left { font-variant-numeric: tabular-nums; }
+.aq-col-head { display: flex; align-items: baseline; gap: 6px; font-size: 12px; color: var(--ib-muted); }
+.aq-col-head b { color: var(--ib-text); font-weight: 600; font-variant-numeric: tabular-nums; }
+.aq-workers { position: relative; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--ib-card-border); }
+.aq-marks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.aq-mark { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 0 9px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; transition: background-color var(--dur-fade) var(--ease-out), color var(--dur-fade) var(--ease-out), border-color var(--dur-fade) var(--ease-out); }
+.aq-mark b { font-weight: 600; }
+.aq-mark.is-paused { color: var(--aq-warn-text); background: color-mix(in srgb, var(--aq-warn) 12%, var(--ib-card)); border-color: color-mix(in srgb, var(--aq-warn) 50%, transparent); }
+.aq-mark.is-spent, .aq-mark.is-unmeasured, .aq-mark.is-held { color: var(--ib-text-2); background: var(--ib-pill); }
+.aq-mark.is-out { color: var(--ib-muted); background: transparent; border-style: dashed; }
+.aq-mark[aria-expanded="true"] { border-color: var(--ib-text-2); }
+.aq-mark:focus-visible, .aq-q:focus-visible, .aq-pop-close:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+@media (hover: hover) and (pointer: fine) { .aq-mark:hover, .aq-q:hover { border-color: var(--ib-muted); } }
+.aq-wdot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
+.aq-wdot.is-h5 { background: var(--cap-now); }
+.aq-wdot.is-wk { background: var(--cap-wk); }
+.aq-pop { position: absolute; z-index: 6; top: 100%; left: 8px; width: min(280px, calc(100% - 16px)); display: grid; gap: 10px; padding: 12px; border-radius: 12px; background: var(--ib-card); color: var(--ib-text); box-shadow: 0 0 0 1px var(--ib-card-border), var(--ib-shadow-raised); animation: aq-open var(--dur-fade) var(--ease-out); }
+.cap-prov.is-narrow .aq-pop { width: calc(100% - 24px); }
+@keyframes aq-open { from { opacity: 0; transform: translateY(-4px) scale(0.97); } to { opacity: 1; transform: none; } }
+.aq-pop-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.aq-pop-name { font-size: 14px; font-weight: 700; }
+.aq-pop-kind { flex: 1 1 auto; min-width: 0; font-size: 12px; color: var(--ib-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aq-pop-close { flex: none; width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: none; color: var(--ib-text-2); font: inherit; font-size: 16px; line-height: 1; cursor: pointer; }
+.aq-pop-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--ib-col); }
+.aq-pop-stats dt { font-size: 11px; color: var(--ib-muted); }
+.aq-pop-stats dd { margin: 0; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
+.aq-pop-stats .is-wide { grid-column: 1 / -1; }
+.cap-bar { position: relative; }
+.cap-low { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--ib-text-2); opacity: 0.7; }
+.cap-tl-lim { fill: var(--st-fail); fill-opacity: 0.12; }
+.cap-tl-hatch { stroke: var(--st-fail); stroke-opacity: 0.4; stroke-width: 1.5; }
+.cap-chip .cap-chip-lim { color: var(--aq-warn-text); font-weight: 600; white-space: nowrap; }
+.cron-lane { container: aqlane / inline-size; }
+.aq-lane-top { padding: 0 4px 10px; }
+.aq-lane-top:empty { display: none; }
+.aq-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; padding: 12px 0; border-radius: 12px; background: var(--ib-card); box-shadow: inset 0 0 0 1px var(--ib-card-border); }
+.aq-stat { display: grid; gap: 2px; min-width: 0; padding: 0 16px; }
+.aq-stat + .aq-stat { border-left: 1px solid var(--ib-card-border); }
+.aq-stat dt { font-size: 12px; color: var(--ib-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.aq-stat dd { margin: 0; font-size: 16px; font-weight: 600; color: var(--ib-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.aq-stat[data-kind="failed"] dd { color: var(--st-fail-text); }
+.aq-of { margin-left: 4px; font-size: 13px; font-weight: 500; color: var(--ib-muted); }
+.aq-of.is-n { margin-left: 1px; }
+.aq-lane-body { display: grid; grid-template-columns: clamp(188px, 26%, 236px) minmax(0, 1fr); gap: 10px; align-items: start; padding: 0 4px; }
+.aq-lane-body .cron-groups { padding: 0; }
+.aq-queue { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 10px; border-radius: 12px; border: 1px solid var(--ib-card-border); background: color-mix(in srgb, var(--ib-card) 45%, transparent); }
+.aq-queue:empty { display: none; }
+.aq-q { display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; animation: aq-in var(--dur-fade) var(--ease-out); }
+.aq-q svg { flex: none; width: 12px; height: 12px; color: var(--ib-muted); }
+.aq-q-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.aq-q .aq-left { flex: none; font-size: 11.5px; color: var(--ib-muted); }
+.aq-more { align-self: flex-start; padding: 1px 8px; border-radius: 6px; background: var(--ib-pill); color: var(--ib-text-2); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.aq-empty { padding: 4px 2px; font-size: 12px; color: var(--ib-muted); }
+@keyframes aq-in { from { opacity: 0; } to { opacity: 1; } }
+.aq-chart { margin: 10px 4px 0; padding: 12px 14px 10px; border-radius: 12px; background: var(--ib-card); box-shadow: inset 0 0 0 1px var(--ib-card-border); }
+.aq-chart:empty { display: none; }
+.aq-chart-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; font-size: 12px; }
+.aq-chart-title { font-weight: 500; color: var(--ib-text); }
+.aq-chart-head .aq-of { margin-left: auto; font-size: 12px; }
+.aq-plot { position: relative; height: 112px; margin-left: 26px; display: flex; align-items: stretch; gap: 2px; border-bottom: 1px solid var(--ib-card-border); }
+.aq-ch-grid { position: absolute; left: -26px; right: 0; top: 0; height: 0; border-top: 1px dashed var(--ib-pill); pointer-events: none; }
+.aq-ch-grid span { position: absolute; left: 0; top: -7px; width: 20px; text-align: right; font-size: 11px; line-height: 14px; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
+.aq-ch-cut { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(-45deg, transparent 0 5px, color-mix(in srgb, var(--ib-muted) 22%, transparent) 5px 6px); }
+.aq-ch-col { position: relative; z-index: 1; flex: 1 1 0; min-width: 0; display: flex; flex-direction: column-reverse; }
+.aq-ch-ok, .aq-ch-run, .aq-ch-fail { display: block; transition: height var(--dur-expand) var(--ease-out); }
+.aq-ch-ok { background: var(--st-done); }
+.aq-ch-run { background: var(--st-run); }
+.aq-ch-fail { background: var(--st-fail); border-radius: 2px 2px 0 0; }
+.aq-ch-axis { display: flex; justify-content: space-between; margin: 6px 0 0 26px; font-size: 11px; color: var(--ib-muted); }
+.aq-ch-grid.is-zero { top: 100%; border-top: 0; }
+.aq-ch-key { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--ib-text-2); }
+.aq-chart-title + .aq-ch-key { margin-left: auto; }
+.aq-ch-key i { width: 8px; height: 8px; border-radius: 2px; }
+.aq-ch-key i.is-ok { background: var(--st-done); }
+.aq-ch-key i.is-run { background: var(--st-run); }
+.aq-ch-key i.is-fail { background: var(--st-fail); }
+.cron-lane.is-collapsed .aq-lane-top, .cron-lane.is-collapsed .aq-queue, .cron-lane.is-collapsed .aq-chart { display: none; }
+.cron-lane.is-collapsed .aq-lane-body { display: block; }
+@container aqlane (max-width: 599px) { .aq-lane-body { grid-template-columns: minmax(0, 1fr); } .aq-plot { height: 88px; } }
+@container aqlane (max-width: 560px) { .aq-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 12px; } .aq-stat { padding: 0 12px; } .aq-stat:nth-child(odd) { border-left: 0; } .aq-stat dd { font-size: 15px; } }
+@media (pointer: coarse) { .aq-mark, .aq-q { min-height: 44px; } .aq-pop-close { width: 44px; height: 44px; } }
+@media (prefers-reduced-motion: reduce) {
+  .aq-mark, .aq-q, .aq-pop, .aq-ch-ok, .aq-ch-run, .aq-ch-fail { animation: none; transition: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   .cr-tick.is-run { animation: none; }
@@ -6219,27 +6781,36 @@ body.nt-open .new-task-fab { display: none !important; }
       <div class="cron-lane" id="cron-lane" aria-label="Cron jobs" hidden>
         <div class="cron-lane-bar">
           <div class="cron-lane-head" id="cron-lane-head"></div>
-          <button type="button" class="sec-toggle" id="cron-toggle" data-sec-toggle="cron" aria-expanded="false" aria-controls="cron-groups"><span class="sec-toggle-text">&#xD3BC;&#xCE58;&#xAE30;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
+          <button type="button" class="sec-toggle" id="cron-toggle" data-sec-toggle="cron" aria-expanded="false" aria-controls="cron-lane-top cron-queue cron-groups cron-lane-chart"><span class="sec-toggle-text">&#xD3BC;&#xCE58;&#xAE30;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
         </div>
-        <div class="cron-groups" id="cron-groups"></div>
+        <!-- Agent Queue grammar (#444): four numbers, the next-fire queue beside the job
+             groups, and 24 hours of runs — shown while the lane is unfolded. -->
+        <div class="aq-lane-top" id="cron-lane-top"></div>
+        <div class="aq-lane-body">
+          <div class="aq-queue" id="cron-queue" role="group" aria-label="다음 실행 순서" data-aq-rove="cron-queue"></div>
+          <div class="cron-groups" id="cron-groups"></div>
+        </div>
+        <div class="aq-chart" id="cron-lane-chart"></div>
       </div>
+      <!-- How many need you and how many run, said politely (re-agent-inbox D6). -->
+      <p id="inbox-live" class="ib-sr" role="status" aria-live="polite" aria-atomic="true"></p>
       <div class="kanban" id="kanban" data-view="board">
-        <div class="kanban-col" id="col-waiting" data-col="waiting">
-          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3>NEEDS YOU</h3><span class="count" id="count-waiting">0</span></div>
+        <section class="kanban-col" id="col-waiting" data-col="waiting" aria-labelledby="col-waiting-name count-waiting">
+          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-waiting-name">NEEDS YOU</h3><span class="count" id="count-waiting">0</span></div>
           <div class="cards" id="cards-waiting"></div>
           <div class="col-empty" id="empty-waiting">Nothing here</div>
-        </div>
-        <div class="kanban-col" id="col-working" data-col="working">
-          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3>RUNNING</h3><span class="count" id="count-working">0</span></div>
+        </section>
+        <section class="kanban-col" id="col-working" data-col="working" aria-labelledby="col-working-name count-working">
+          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-working-name">RUNNING</h3><span class="count" id="count-working">0</span></div>
           <div class="cards" id="cards-working"></div>
           <div class="col-empty" id="empty-working">Nothing here</div>
-        </div>
-        <div class="kanban-col" id="col-done" data-col="done">
-          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3>DONE</h3><span class="count" id="count-done">0</span></div>
+        </section>
+        <section class="kanban-col" id="col-done" data-col="done" aria-labelledby="col-done-name count-done">
+          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-done-name">DONE</h3><span class="count" id="count-done">0</span></div>
           <div class="cards" id="cards-done"></div>
           <div class="col-empty" id="empty-done">Nothing here</div>
           <div class="col-foot" id="foot-done"></div>
-        </div>
+        </section>
       </div>
     </section>
   </div>
@@ -6255,6 +6826,9 @@ body.nt-open .new-task-fab { display: none !important; }
     <div class="cron-drawer-meta" id="cron-drawer-meta"></div>
     <div class="cron-drawer-body" id="cron-drawer-body"></div>
   </aside>
+  <!-- Capacity + CRON announcements (#444 D4): one static polite region, outside every
+       re-rendered section, so a repaint never re-announces and a transition always is. -->
+  <div class="aq-sr" id="aq-live" aria-live="polite" aria-atomic="true"></div>
 
   <!-- Slide Panel for Session Detail -->
   <div class="slide-panel-overlay" id="panel-overlay" onclick="closePanel()"></div>
@@ -6287,8 +6861,13 @@ body.nt-open .new-task-fab { display: none !important; }
       <div class="panel-info" id="panel-info"></div>
       <!-- Goal (spec 13): the editor's home — current, queue, add / delete, completed goals. -->
       <div class="panel-goal" id="panel-goal" role="region" tabindex="-1" aria-label="Goal" style="display:none"></div>
-      <div class="panel-permission" id="panel-permission" style="display:none" aria-live="polite"></div>
+      <!-- 입력 필요 (re-agent-run D8–D17): a head with the count, approval cards for the
+           permission prompts and the question; one polite status line says arrivals and
+           answers (the cards themselves are not a live region — their expiry clock ticks). -->
+      <div class="panel-needs-head" id="panel-needs-head" tabindex="-1" hidden><span class="pn-title">입력 필요</span><span class="pn-count" id="panel-needs-count"></span></div>
+      <div class="panel-permission" id="panel-permission" style="display:none"></div>
       <div class="panel-question" id="panel-question" style="display:none"></div>
+      <p class="ar-vh" id="panel-needs-status" role="status" aria-live="polite"></p>
       <!-- Agent bar (.prd/12 §4.3): path 메인 › A2 …, the focused node, its subtree (rich rows); it scopes Tasks and the work log. -->
       <div class="panel-agents" id="panel-agents" style="display:none"></div>
       <div class="panel-worklog" id="panel-worklog" style="display:none">
@@ -6528,41 +7107,37 @@ function formatTaskTime(ts) {
   return new Date(ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 }
 
+// The pending question (re-agent-run D17): a single-choice question is an
+// approval card (apQuestionCardHtml), written only when it changed and morphed
+// so focus stays; the multi-question form keeps its own renderer.
 function renderPanelQuestion(s) {
   var container = document.getElementById('panel-question');
   if (!container) return;
-  if (!s || !s.pendingQuestion || s.activityState !== 'waiting') {
+  renderPanelNeedsHead(s);
+  var ae = document.activeElement;
+  var had = !!(ae && container.contains && container.contains(ae));
+  var q = s && s.activityState === 'waiting' ? s.pendingQuestion : null;
+  if (!q) {
     container.style.display = 'none';
     container.innerHTML = '';
-    return;
-  }
-  container.style.display = '';
-  var q = s.pendingQuestion;
-
-  if (q.type === 'user_choice' && q.choices) {
-    var pnlRecId = resolveRecommendedId(q.recommendedChoiceId, q.choices);
-    var pnlRecOpt = pnlRecId ? q.choices.find(function(c) { return c.id === pnlRecId; }) : null;
-    var pnlOthers = q.choices.filter(function(c) { return !pnlRecOpt || c.id !== pnlRecOpt.id; });
-    var pnlRecHtml = '';
-    if (pnlRecOpt) {
-      var recLbl = stripRecommendedMarker(pnlRecOpt.label);
-      pnlRecHtml = '<div class="choice-row-recommended">'
-        + '<button class="btn-choice btn-choice-recommended"' + choiceDataAttrs(s.key, pnlRecOpt.id, recLbl, q.question) + '>' + esc(pnlRecOpt.id) + '. ' + esc(recLbl) + (pnlRecOpt.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(pnlRecOpt.description) + '</span>' : '') + '</button>'
-        + '</div>'
-        + (pnlOthers.length > 0 ? '<hr class="choice-divider">' : '');
+    container._html = '';
+  } else if (q.type === 'user_choice' && q.choices) {
+    container.style.display = '';
+    container.setAttribute('data-ap', 'card');
+    var html = apQuestionCardHtml(s, q);
+    if (container._html !== html) {
+      morphInnerHtml(container, html);
+      container._html = html;
     }
-    var pnlOtherBtns = pnlOthers.map(function(c) {
-      var lbl2 = stripRecommendedMarker(c.label);
-      return '<button class="btn-choice"' + choiceDataAttrs(s.key, c.id, lbl2, q.question) + '>' + esc(c.id) + '. ' + esc(lbl2) + (c.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(c.description) + '</span>' : '') + '</button>';
-    }).join('');
-    container.innerHTML = '<div class="panel-question-text">&#x2753; ' + esc(q.question) + '</div>'
-      + '<div class="panel-question-choices">' + pnlRecHtml + pnlOtherBtns + '</div>';
   } else if (q.type === 'user_choices' && q.questions) {
+    container.style.display = '';
+    container.setAttribute('data-ap', 'form');
+    container._html = '';
     renderMultiChoicePanel(s);
-    return;
   } else {
     container.style.display = 'none';
   }
+  if (had && !container.contains(document.activeElement)) apSafeFocus(container, '');
 }
 
 // ── Permission prompts (SSOT 2026-10-24) ──
@@ -6595,6 +7170,9 @@ function renderPermissionBlock(s, where) {
   var list = (s && s.pendingPermissions) || [];
   if (!list.length) return '';
   var sibling = isSiblingSession(s);
+  // On the card, the first Approve this viewer can press is the card's one ink
+  // primary (.is-lead, re-agent-inbox D10); the panel has no lead.
+  var leadTaken = where !== 'card';
   return list.map(function(p) {
     var mine = isPermissionRequester(p) && !sibling;
     var detail = _permDetails[p.approvalId];
@@ -6613,7 +7191,9 @@ function renderPermissionBlock(s, where) {
       : '';
     var lockTitle = mine ? '' : ' title="' + escAttr(sibling ? '다른 인스턴스의 세션' : '이 요청의 요청자만 응답할 수 있습니다') + '"';
     var btns = PERM_DECISIONS.filter(function(d) { return !d.needsRule || p.canDisableRule; }).map(function(d) {
-      return '<button type="button" class="btn-perm' + d.cls + '"' + (mine ? '' : ' disabled') + lockTitle
+      var lead = mine && !leadTaken && d.id === 'approve';
+      if (lead) leadTaken = true;
+      return '<button type="button" class="btn-perm' + d.cls + (lead ? ' is-lead' : '') + '"' + (mine ? '' : ' disabled') + lockTitle
         + ' data-perm-key="' + escAttr(s.key) + '" data-perm-id="' + escAttr(p.approvalId) + '" data-perm-decision="' + d.id + '">'
         + esc(d.label) + '</button>';
     }).join('');
@@ -6636,22 +7216,251 @@ document.addEventListener('click', function(e) {
   answerPermission(d.permKey, d.permId, d.permDecision, btn);
 });
 
+// ── 입력 필요 — approval cards in the panel (re-agent-run D8–D17) ──
+// The panel's own renderer: the card face keeps renderPermissionBlock(s, 'card').
+// Every answer still rides the data-perm-* buttons and the delegated handler above.
+var _permAnswered = Object.create(null); // approvalId → the answer this page sent (D15)
+var AP_KBD_APPROVE = /Mac|iPhone|iPad|iPod/.test(String((window.navigator && (navigator.platform || navigator.userAgent)) || '')) ? '⌘↵' : 'Ctrl ↵';
+var AP_ANSWERED = { approve: '승인함', deny: '거부함', explain: '설명 요청함', approve_disable_rule: '승인함 · 규칙 끔' };
+var AP_SENT = { approve: '승인을 보냈습니다', deny: '거부를 보냈습니다', explain: '설명을 요청했습니다', approve_disable_rule: '승인을 보냈습니다 · 규칙 끔' };
+
+// The prompts as approval cards. A prompt that arrives while the panel is
+// open, and an answer this page sent, are said once in the status line; the
+// first render of an opening is the baseline. Unchanged markup writes nothing;
+// a change is morphed, and focus that was in a card stays on that card.
 function renderPanelPermission(s) {
   var container = document.getElementById('panel-permission');
   if (!container) return;
-  var html = s ? renderPermissionBlock(s, 'panel') : '';
+  var list = (s && s.pendingPermissions) || [];
+  var key = s ? s.key : '';
+  if (container._seenKey !== key) {
+    // A new opening (or session): the answers this page already sent are not said again.
+    container._seen = null;
+    container._said = Object.create(null);
+    for (var a = 0; a < list.length; a++) if (_permAnswered[list[a].approvalId]) container._said[list[a].approvalId] = true;
+  }
+  var seen = container._seen;
+  var ids = Object.create(null);
+  var said = [];
+  for (var i = 0; i < list.length; i++) {
+    var p = list[i];
+    ids[p.approvalId] = true;
+    if (seen && !seen[p.approvalId]) said.push('승인 요청 — ' + (p.toolName || 'tool'));
+    var done = _permAnswered[p.approvalId];
+    if (done && !container._said[p.approvalId]) {
+      container._said[p.approvalId] = true;
+      said.push((AP_SENT[done] || done) + ' — ' + (p.toolName || 'tool'));
+    }
+  }
+  container._seenKey = key;
+  container._seen = ids;
+  renderPanelNeedsHead(s);
+  var html = list.map(function(p) { return apPermissionCardHtml(s, p); }).join('');
+  var ae = document.activeElement;
+  var had = !!(ae && container.contains(ae));
+  var fcard = had && ae.closest ? ae.closest('.ap-card') : null;
+  var fid = fcard ? fcard.getAttribute('data-approval-id') : '';
   if (!html) {
     container.style.display = 'none';
     container.innerHTML = '';
     container._html = '';
-    return;
+  } else {
+    container.style.display = '';
+    if (container._html !== html) {
+      morphInnerHtml(container, html);
+      container._html = html;
+    }
+    updateTimersIn(container);
   }
-  container.style.display = '';
-  if (container._html !== html) {
-    container.innerHTML = html;
-    container._html = html;
-  }
+  if (had && !container.contains(document.activeElement)) apSafeFocus(container, fid);
+  if (said.length) apAnnounce(said.join('. '));
 }
+// Focus that was in a card whose markup just changed: its own card when it is
+// still there (its resolved row), else a place that answers nothing — the 입력
+// 필요 head, else the panel title. Never a decision button (re-agent-run D14).
+function apSafeFocus(container, fid) {
+  if (fid) {
+    var cards = container.querySelectorAll('.ap-card');
+    for (var c = 0; c < cards.length; c++) {
+      if (cards[c].getAttribute('data-approval-id') === fid) { cards[c].focus({ preventScroll: true }); return; }
+    }
+  }
+  var head = document.getElementById('panel-needs-head');
+  var to = head && !head.hidden ? head : document.getElementById('panel-title');
+  if (to && to.focus) to.focus({ preventScroll: true });
+}
+// After a failed or stale single-choice answer the button's label was written
+// back as plain text (answerChoice): draw the panel's card again from the
+// session — description, 추천 tag, key hint and all.
+function apRepaintQuestion(btnEl, key) {
+  var host = btnEl && btnEl.closest ? btnEl.closest('#panel-question') : null;
+  if (!host) return;
+  host._html = '';
+  if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelQuestion(_sessionCache[key]);
+}
+// The status line of 입력 필요 (polite, always in the page).
+function apAnnounce(msg) {
+  var el = document.getElementById('panel-needs-status');
+  if (el) el.textContent = msg;
+}
+// D9: the head of the section — 입력 필요 + how many things wait on the user.
+function panelQuestionShown(s) {
+  var q = s && s.pendingQuestion;
+  if (!q || s.activityState !== 'waiting') return false;
+  return (q.type === 'user_choice' && !!q.choices) || q.type === 'user_choices';
+}
+function renderPanelNeedsHead(s) {
+  var head = document.getElementById('panel-needs-head');
+  if (!head) return;
+  var n = s ? ((s.pendingPermissions || []).length + (panelQuestionShown(s) ? 1 : 0)) : 0;
+  head.hidden = n === 0;
+  var count = document.getElementById('panel-needs-count');
+  if (count && count.textContent !== String(n)) count.textContent = String(n);
+}
+// D12: the tool input as key/value rows when it is a JSON object (its
+// description becomes the card's description); anything else — cut at 64KB,
+// not JSON, not an object — stays the escaped <pre>.
+function apDetails(detail) {
+  var obj = null;
+  if (!detail.truncated) {
+    try { obj = JSON.parse(detail.input); } catch (_e) { obj = null; }
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return {
+      desc: '',
+      html: '<pre class="perm-params">' + esc(detail.input) + '</pre>'
+        + (detail.truncated ? '<div class="perm-truncated">앞부분만 표시합니다 (64KB 초과)</div>' : ''),
+    };
+  }
+  var desc = typeof obj.description === 'string' ? obj.description : '';
+  var rows = Object.keys(obj).filter(function(k) { return !(k === 'description' && desc); }).map(function(k) {
+    var v = obj[k];
+    return '<div class="ap-detail"><dt>' + esc(k) + '</dt><dd>' + esc(typeof v === 'string' ? v : JSON.stringify(v, null, 2)) + '</dd></div>';
+  });
+  return { desc: desc, html: rows.length ? '<dl class="ap-details">' + rows.join('') + '</dl>' : '' };
+}
+// D10–D16: one permission prompt as an approval card — label, icon, title,
+// description, the matched-rule pill, the input, the rules, the answers and the
+// expiry clock — or, once this page answered it, one resolved row.
+function apPermissionCardHtml(s, p) {
+  var id = escAttr(p.approvalId);
+  var tool = p.toolName || 'tool';
+  var title = tool + ' 실행 승인';
+  var answered = _permAnswered[p.approvalId];
+  if (answered) {
+    var mark = answered === 'deny' ? agentIconHtml('failed') : answered === 'explain' ? '?' : agentIconHtml('completed');
+    return '<div class="ap-card perm-request is-resolved" role="group" tabindex="-1" data-ap-kind="perm" data-approval-id="' + id + '" data-mk="ap|' + id + '" aria-labelledby="ap-t-' + id + '">'
+      + '<div class="ap-resolved" data-decision="' + escAttr(answered) + '">'
+      + '<span class="ap-mark" aria-hidden="true">' + mark + '</span>'
+      + '<span class="ap-row-title" id="ap-t-' + id + '">' + esc(title) + '</span>'
+      + '<span class="ap-row-status">' + esc(AP_ANSWERED[answered] || answered) + '</span>'
+      + '</div></div>';
+  }
+  var sibling = isSiblingSession(s);
+  var mine = isPermissionRequester(p) && !sibling;
+  var detail = _permDetails[p.approvalId];
+  if (mine && !detail) loadPermissionDetail(s.key, p.approvalId);
+  var desc = '';
+  var body;
+  if (!mine) body = '<div class="perm-params perm-params-hidden">' + esc(sibling ? '다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요' : '파라미터와 응답은 요청자만 볼 수 있습니다') + '</div>';
+  else if (!detail) body = '<div class="perm-params perm-params-hidden">파라미터 불러오는 중…</div>';
+  else if (detail.error) body = '<div class="perm-params perm-params-hidden">' + esc(detail.error) + '</div>';
+  else {
+    var d = apDetails(detail);
+    desc = d.desc;
+    body = d.html;
+  }
+  var rules = p.rules || [];
+  var pill = rules.length
+    ? '<span class="ap-pill" data-kind="rule">위험<span class="ap-pill-word"> 규칙</span> ' + rules.length + '</span>'
+    : '<span class="ap-pill" data-kind="tool">도구 승인</span>';
+  var rulesHtml = rules.length
+    ? '<div class="perm-rules"><span class="perm-rules-label">Matched dangerous-command rule' + (rules.length > 1 ? 's' : '') + '</span>'
+      + rules.map(function(r) { return '<span class="perm-rule"><code>' + esc(r.id) + '</code> &mdash; ' + esc(r.label) + ': ' + esc(r.description) + '</span>'; }).join('')
+      + '</div>'
+    : '';
+  var lock = mine ? '' : ' disabled title="' + escAttr(sibling ? '다른 인스턴스의 세션' : '이 요청의 요청자만 응답할 수 있습니다') + '"';
+  // data-mk = request + answer: a live morph never rebinds a focused answer to another request (domKeyOf).
+  var data = ' data-perm-key="' + escAttr(s.key) + '" data-perm-id="' + id + '"';
+  var mk = function(d) { return ' data-mk="ap|' + id + '|' + d + '"'; };
+  var alts = '<button type="button" class="btn-perm ap-btn ap-ghost"' + lock + data + ' data-perm-decision="explain"' + mk('explain') + '>Explain</button>'
+    + (p.canDisableRule ? '<button type="button" class="btn-perm ap-btn ap-ghost"' + lock + data + ' data-perm-decision="approve_disable_rule"' + mk('approve_disable_rule') + '>Approve &amp; disable rule</button>' : '');
+  var main = '<button type="button" class="btn-perm ap-btn ap-quiet ap-deny"' + lock + data + ' data-perm-decision="deny" data-kbd="Esc" aria-keyshortcuts="Escape"' + mk('deny') + '>Deny</button>'
+    + '<button type="button" class="btn-perm ap-btn ap-primary ap-approve"' + lock + data + ' data-perm-decision="approve" data-kbd="' + AP_KBD_APPROVE + '" aria-keyshortcuts="Meta+Enter Control+Enter"' + mk('approve') + '>Approve</button>';
+  var until = toNum(p.expiresAt);
+  var expires = until > 0
+    ? '<span class="ap-expires" data-until="' + until + '" aria-hidden="true"></span><span class="ar-vh" id="ap-x-' + id + '">' + esc(formatTaskTime(until)) + '에 만료</span>'
+    : '';
+  var describedBy = [desc ? 'ap-d-' + id : '', until > 0 ? 'ap-x-' + id : ''].filter(Boolean).join(' ');
+  var note = _permNotes[p.approvalId] ? '<div class="perm-note" role="alert">' + esc(_permNotes[p.approvalId]) + '</div>' : '';
+  return '<div class="ap-card perm-request" role="group" tabindex="-1" data-ap-kind="perm" data-approval-id="' + id + '" data-mk="ap|' + id + '" aria-labelledby="ap-t-' + id + '"'
+    + (describedBy ? ' aria-describedby="' + describedBy + '"' : '') + '>'
+    // Only what the prompt itself proves (no task: a subagent may have raised it).
+    + '<div class="ap-label">' + esc(tool) + (toNum(p.createdAt) > 0 ? ' &middot; ' + esc(formatTaskTime(p.createdAt)) + ' 요청' : '') + '</div>'
+    + '<div class="ap-body"><div class="ap-head">'
+    + '<span class="ap-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg></span>'
+    + '<div class="ap-titles"><div class="ap-title" id="ap-t-' + id + '">' + esc(title) + '</div>'
+    + (desc ? '<div class="ap-desc" id="ap-d-' + id + '" title="' + escAttr(desc) + '">' + esc(desc) + '</div>' : '') + '</div>'
+    + pill + '</div>'
+    + body + rulesHtml
+    + '<div class="ap-alts">' + alts + '</div>'
+    + '<div class="ap-foot">' + expires + '<div class="ap-actions">' + main + '</div></div>'
+    + note + '</div></div>';
+}
+// D17: the single-choice question in the same frame — the whole question as
+// the title, the recommended choice first (primary, ⌘↵), the rest after it.
+function apQuestionCardHtml(s, q) {
+  var recId = resolveRecommendedId(q.recommendedChoiceId, q.choices);
+  var rec = recId ? q.choices.find(function(c) { return c.id === recId; }) : null;
+  var others = q.choices.filter(function(c) { return !rec || c.id !== rec.id; });
+  var ordered = rec ? [rec].concat(others) : others;
+  // The card's key is the question's whole meaning — its text and every choice's id, label and description,
+  // serialized (JSON: no two meanings share a key). A question rewritten in place (same text, same ids, another
+  // label) is another card: the old one and its focused choice leave the page (apSafeFocus), never rebound.
+  // Inside one card a choice pairs by its id.
+  var qk = 'q|' + JSON.stringify([q.question, q.choices.map(function(c) { return [c.id, c.label, c.description || '']; })]);
+  var btns = ordered.map(function(c) {
+    var lbl = stripRecommendedMarker(c.label);
+    var isRec = !!rec && c.id === rec.id;
+    return '<button type="button" class="btn-choice ap-choice' + (isRec ? ' ap-rec' : '') + '"' + choiceDataAttrs(s.key, c.id, lbl, q.question)
+      + (isRec ? ' data-kbd="' + AP_KBD_APPROVE + '" aria-keyshortcuts="Meta+Enter Control+Enter"' : '') + ' data-mk="' + escAttr('c|' + c.id) + '">'
+      + '<span class="ap-choice-label">' + esc(c.id) + '. ' + esc(lbl) + (isRec ? '<span class="ap-choice-tag">추천</span>' : '') + '</span>'
+      + (c.description ? '<span class="ap-choice-desc">' + esc(c.description) + '</span>' : '')
+      + '</button>';
+  }).join('');
+  return '<div class="ap-card ap-question" role="group" tabindex="-1" data-ap-kind="question" data-mk="' + escAttr(qk) + '" aria-labelledby="ap-q-title">'
+    + '<div class="ap-body"><div class="ap-head">'
+    + '<span class="ap-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M6.3 6.3a1.8 1.8 0 0 1 3.4.7c0 1.2-1.7 1.5-1.7 2.6M8 11.3v.1"/></svg></span>'
+    + '<div class="ap-titles"><div class="ap-title" id="ap-q-title">' + esc(q.question) + '</div></div>'
+    + '<span class="ap-pill" data-kind="question">질문</span></div>'
+    + '<div class="panel-question-choices ap-choices">' + btns + '</div>'
+    + '</div></div>';
+}
+// D14: ⌘/Ctrl+Enter anywhere in a card answers with its primary (Approve, or a
+// question's recommended choice); Esc denies only from one of the card's
+// buttons — on the card itself (the keyboard landing) it still closes the
+// panel. A handled key stays here: the document's Escape never sees it.
+function apKeydown(e) {
+  if (e.defaultPrevented || !e.target || !e.target.closest) return;
+  var card = e.target.closest('.ap-card');
+  if (!card) return;
+  var kind = card.getAttribute('data-ap-kind');
+  var btn = null;
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+    btn = card.querySelector(kind === 'question' ? '.ap-rec' : '.ap-approve');
+  } else if (e.key === 'Escape' && kind === 'perm') {
+    var from = e.target.closest('button');
+    if (from && card.contains(from)) btn = card.querySelector('.ap-deny');
+  }
+  if (!btn || btn.disabled) return;
+  e.preventDefault();
+  e.stopPropagation();
+  btn.click();
+}
+['panel-permission', 'panel-question'].forEach(function(id) {
+  var el = document.getElementById(id);
+  if (el) el.addEventListener('keydown', apKeydown);
+});
 
 // Re-draw what shows this session's prompt (its card, the open panel).
 function repaintPermission(key) {
@@ -6708,6 +7517,10 @@ async function answerPermission(key, approvalId, decision, btnEl) {
     }
     if (res.ok) {
       btnEl.textContent = '✓ ' + label;
+      // The panel's card turns into its resolved row (re-agent-run D15); the
+      // card face keeps its locked buttons until the board push removes it.
+      _permAnswered[approvalId] = decision;
+      if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelPermission(_sessionCache[key]);
       return;
     }
     var data = {};
@@ -6725,9 +7538,12 @@ async function answerPermission(key, approvalId, decision, btnEl) {
 
 // Pinned Tasks block (.prd/10 §3.1-6): always rendered — with no tasks yet it
 // says so instead of disappearing.
-// The panel's Tasks — the whole ledger of the focused node (spec 13): the
-// current list (in progress → pending → completed, completed folded past 3)
-// and, for the main agent, the earlier lists (earlierTasks) under it.
+// The panel's Tasks as a plan (re-agent-run D1–D7): the focused node's current
+// list in its own order — a marker per step (check · spinner · empty ring) on
+// one rail, the earliest completed steps folded past 3 — then, for the main
+// agent, the earlier lists (earlierTasks), and a footer with the plan's phase.
+// The first render of a scope is the baseline; a step that completes after it
+// is announced (and its marker pops) once.
 function renderPanelTasks(tasks, scopeLabel, earlier) {
   var container = document.getElementById('panel-tasks');
   if (!container) return;
@@ -6740,58 +7556,93 @@ function renderPanelTasks(tasks, scopeLabel, earlier) {
     earlierHtml = '<button class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="' + (_panelTasksEarlier ? 'true' : 'false') + '"'
       + ' onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()">'
       + (_panelTasksEarlier ? '&#x25B2; 이전 task ' + prev.length + '개 숨기기' : '&#x25BC; 이전 task ' + prev.length + '개') + '</button>';
-    if (_panelTasksEarlier) earlierHtml += '<div class="panel-tasks-earlier">' + prev.map(renderPanelTaskItem).join('') + '</div>';
+    if (_panelTasksEarlier) earlierHtml += '<ol class="pl-list pl-earlier" aria-label="이전 task">' + prev.map(function(t) { return renderPanelTaskItem(t); }).join('') + '</ol>';
   }
   if (!tasks || tasks.length === 0) {
+    // An empty list is a baseline as well: the next list's steps are new, not changed.
+    container._planScope = scopeLabel || '';
+    container._planSeen = Object.create(null);
     writePanelTasks(container, '<div class="panel-tasks-header"><span>' + title + '</span></div><div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>' + earlierHtml);
     return;
   }
 
-  // Sort: in_progress → pending → completed
-  var inProgress = tasks.filter(function(t) { return t.status === 'in_progress'; });
-  var pending = tasks.filter(function(t) { return t.status === 'pending'; });
-  var completed = tasks.filter(function(t) { return t.status === 'completed'; });
-
-  var total = tasks.length;
-  var doneCount = completed.length;
-  var pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
-
-  var html = '<div class="panel-tasks-header">'
-    + '<span>' + title + '</span>'
-    + '<span class="tasks-progress">' + doneCount + '/' + total + ' (' + pct + '%)</span>'
-    + '</div>';
-
-  // Active + pending — always shown
-  var active = inProgress.concat(pending);
-  for (var i = 0; i < active.length; i++) {
-    html += renderPanelTaskItem(active[i]);
-  }
-
-  // Completed — show first 3, rest behind toggle
-  var COMPLETED_LIMIT = 3;
-  var visibleCompleted = _panelTasksExpanded ? completed : completed.slice(0, COMPLETED_LIMIT);
-  var hiddenCount = completed.length - COMPLETED_LIMIT;
-
-  for (var j = 0; j < visibleCompleted.length; j++) {
-    html += renderPanelTaskItem(visibleCompleted[j]);
-  }
-
-  if (hiddenCount > 0) {
-    if (_panelTasksExpanded) {
-      html += '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()">&#x25B2; Hide completed</button>';
-    } else {
-      html += '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()">&#x25BC; Show ' + hiddenCount + ' more completed</button>';
+  // D7: what changed since the last render of this scope (none on its first).
+  var scope = scopeLabel || '';
+  var seen = container._planScope === scope ? container._planSeen : null;
+  var now = Object.create(null);
+  var changed = Object.create(null);
+  var said = [];
+  for (var i = 0; i < tasks.length; i++) {
+    var t = tasks[i];
+    now[t.id] = t.status;
+    if (seen && seen[t.id] && seen[t.id] !== t.status) {
+      changed[t.id] = true;
+      if (t.status === 'completed') said.push(t.id + ' 완료: ' + t.content);
     }
   }
+  container._planScope = scope;
+  container._planSeen = now;
 
-  writePanelTasks(container, html + earlierHtml);
+  // D6: the earliest completed steps fold past 3, behind one toggle in their place.
+  var COMPLETED_LIMIT = 3;
+  var doneAt = [];
+  for (var j = 0; j < tasks.length; j++) if (tasks[j].status === 'completed') doneAt.push(j);
+  var hiddenCount = doneAt.length - COMPLETED_LIMIT;
+  var hidden = Object.create(null);
+  if (!_panelTasksExpanded) for (var k = 0; k < hiddenCount; k++) hidden[doneAt[k]] = true;
+  var rows = '';
+  for (var n = 0; n < tasks.length; n++) {
+    if (hiddenCount > 0 && n === doneAt[0]) {
+      rows += '<li class="pl-fold">' + (_panelTasksExpanded
+        ? '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()">&#x25B2; Hide completed</button>'
+        : '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()">&#x25BC; Show ' + hiddenCount + ' more completed</button>') + '</li>';
+    }
+    if (!hidden[n]) rows += renderPanelTaskItem(tasks[n], !!changed[tasks[n].id]);
+  }
+
+  var html = '<div class="panel-tasks-header"><span>' + title + '</span></div>'
+    + '<ol class="pl-list" aria-label="계획 단계">' + rows + '</ol>'
+    + earlierHtml
+    + planFootHtml(tasks)
+    + '<span class="ar-vh pl-live" role="status" aria-live="polite">' + esc(said.join('. ')) + '</span>';
+  // The clocks are filled at once (the 1 Hz tick keeps them going).
+  if (writePanelTasks(container, html)) updateTimersIn(container);
   // Same data (a session push while a subagent is shown) writes nothing; a
   // change is morphed, so the focused toggle or task row stays.
   function writePanelTasks(el, markup) {
-    if (el._html === markup) return;
+    if (el._html === markup) return false;
     morphInnerHtml(el, markup);
     el._html = markup;
+    return true;
   }
+}
+// D6: the plan's phase from its steps alone — the server already demotes an
+// idle session's in-progress task (normalizeTaskProgress) — with done/total (the
+// face's 완료/전체) and the time: since the first start while it runs, the
+// total once every step is done.
+function planFootHtml(tasks) {
+  var total = tasks.length;
+  var done = 0;
+  var running = false;
+  var first = 0;
+  var last = 0;
+  for (var i = 0; i < total; i++) {
+    var t = tasks[i];
+    if (t.status === 'completed') done++;
+    if (t.status === 'in_progress') running = true;
+    var st = Number(t.startedAt) || 0;
+    if (st && (!first || st < first)) first = st;
+    var ct = Number(t.completedAt) || 0;
+    if (ct > last) last = ct;
+  }
+  var phase = running ? 'running' : done === total ? 'completed' : 'idle';
+  var time = '';
+  if (phase === 'running' && first) time = '<span class="task-elapsed" data-since="' + first + '"></span>';
+  else if (phase === 'completed' && first && last > first) time = esc(formatDuration(last - first));
+  return '<div class="pl-foot" data-phase="' + phase + '">'
+    + '<span class="pl-foot-st"><span class="pl-foot-icon">' + agentIconHtml(phase) + '</span>' + esc(AGENT_STATUS_LABEL[phase] || '') + ' &middot; ' + done + '/' + total + '</span>'
+    + (time ? '<span class="pl-foot-time" aria-hidden="true">' + time + '</span>' : '')
+    + '</div>';
 }
 // The focused node's earlier task lists: the main agent's (s.earlierTasks); a subagent has none.
 function panelAgentEarlier() {
@@ -6803,40 +7654,33 @@ function repaintPanelTasks() {
   renderPanelTasks(panelAgentTasks(), panelAgentLabel(), panelAgentEarlier());
 }
 
-function renderPanelTaskItem(t) {
-  var icon, cls;
-  if (t.status === 'completed') { icon = '&#x2705;'; cls = 'completed'; }
-  else if (t.status === 'in_progress') { icon = '<span class="spin">&#x1F504;</span>'; cls = 'in_progress'; }
-  else { icon = '&#x25CB;'; cls = 'pending'; }
-
-  var timeInfo = '';
-  if (t.status === 'completed' && t.startedAt && t.completedAt) {
-    var dur = t.completedAt - t.startedAt;
-    timeInfo = formatDuration(dur);
-  } else if (t.status === 'in_progress' && t.startedAt) {
-    var elapsed = Date.now() - t.startedAt;
-    timeInfo = formatDuration(elapsed) + '...';
-  }
+// One plan step (D1–D5): marker · #id title [툴 N회] (+ what it is doing now) ·
+// its time — the duration once done, a 1 Hz clock while it runs (no clock in
+// the markup, so equal data renders equal HTML). pop = its state just changed.
+function renderPanelTaskItem(t, pop) {
+  var st = t.status === 'completed' ? 'done' : t.status === 'in_progress' ? 'active' : 'pending';
+  var cls = t.status === 'completed' ? 'completed' : t.status === 'in_progress' ? 'in_progress' : 'pending';
+  var marker = st === 'done' ? agentIconHtml('completed') : st === 'active' ? agentIconHtml('running') : '';
   // SSOT 2026-10-22 T7: tool calls made while the task ran.
-  if (t.status !== 'pending' && t.toolCalls !== undefined) {
-    timeInfo = (timeInfo ? timeInfo + ' · ' : '') + '툴 ' + toNum(t.toolCalls) + '회';
-  }
-
-  var timeHtml = '';
-  if (t.startedAt || t.completedAt) {
-    var parts = [];
-    if (t.startedAt) parts.push(formatTaskTime(t.startedAt));
-    if (t.completedAt) parts.push(formatTaskTime(t.completedAt));
-    timeHtml = '<div class="task-time" title="' + parts.join(' → ') + '">' + (timeInfo || parts.join('→')) + '</div>';
-  }
-
-  if (!timeHtml && timeInfo) timeHtml = '<div class="task-time">' + timeInfo + '</div>';
-  return '<div class="panel-task-item ' + cls + '">'
-    + '<span class="task-icon">' + icon + '</span>'
+  var chip = t.status !== 'pending' && t.toolCalls !== undefined ? '<span class="pl-chip">툴 ' + toNum(t.toolCalls) + '회</span>' : '';
+  var sub = st === 'active' && t.activeForm && t.activeForm !== t.content ? '<span class="pl-sub">' + esc(t.activeForm) + '</span>' : '';
+  var aside = '';
+  if (st === 'done' && t.startedAt && t.completedAt) aside = esc(formatDuration(t.completedAt - t.startedAt));
+  else if (st === 'active' && t.startedAt) aside = '<span class="task-elapsed" data-since="' + toNum(t.startedAt) + '"></span>';
+  var times = [];
+  if (t.startedAt) times.push(formatTaskTime(t.startedAt));
+  if (t.completedAt) times.push(formatTaskTime(t.completedAt));
+  return '<li class="panel-task-item pl-step ' + cls + (pop ? ' pl-pop' : '') + '" data-step="' + st + '"'
+    + (st === 'active' ? ' aria-current="step"' : '')
+    + (times.length ? ' title="' + escAttr(times.join(' → ')) + '"' : '') + '>'
+    + '<span class="pl-marker" aria-hidden="true">' + marker + '</span>'
+    + '<span class="pl-main"><span class="pl-line">'
     + (t.id ? '<span class="task-id">#' + esc(t.id) + '</span>' : '')
-    + '<span class="task-text">' + esc(t.content) + '</span>'
-    + timeHtml
-    + '</div>';
+    + '<span class="task-text">' + esc(t.content) + '</span>' + chip + '</span>'
+    + sub
+    + '<span class="ar-vh">, ' + (st === 'done' ? '완료' : st === 'active' ? '진행 중' : '대기') + '</span></span>'
+    + '<span class="pl-aside">' + aside + '</span>'
+    + '</li>';
 }
 let _csrfToken = '';
 
@@ -7332,6 +8176,7 @@ function formatNmSSs(ms) {
 //   .card-timer-live  data-leg-started / data-accumulated (renderCardStatus)
 //   .rel-time         data-ts  → "6m ago"
 //   .task-elapsed     data-since → running task duration
+//   .ap-expires       data-until → an approval card's time left
 function updateTimersIn(root) {
   var now = Date.now();
   var els = root.querySelectorAll('.card-timer-live');
@@ -7353,8 +8198,16 @@ function updateTimersIn(root) {
     var d = formatDuration(now - (Number(run[k].dataset.since) || now)) || '0s';
     if (run[k].textContent !== d) run[k].textContent = d;
   }
+  // An approval card's expiry (re-agent-run D16): m:ss left, stopping at 0:00; the last minute warns.
+  var exp = root.querySelectorAll('.ap-expires');
+  for (var x = 0; x < exp.length; x++) {
+    var left = Math.max(0, Math.ceil(((Number(exp[x].dataset.until) || 0) - now) / 1000));
+    var et = '만료까지 ' + Math.floor(left / 60) + ':' + (left % 60 < 10 ? '0' : '') + (left % 60);
+    if (exp[x].textContent !== et) exp[x].textContent = et;
+    exp[x].classList.toggle('is-low', left <= 60);
+  }
 }
-function updateTimers() { updateTimersIn(document); }
+function updateTimers() { updateTimersIn(document); aqTick(); }
 var _timerTick = setInterval(updateTimers, 1000);
 
 // ── User list ──
@@ -7530,6 +8383,16 @@ var _cardEls = Object.create(null);  // session key → persistent card shell
 var _expanded = new Set();           // keys whose card is open
 var _boardRenders = 0;
 var _ioCache = Object.create(null);  // conversationId → { state, stamp, data, dirty, fails, retryAt }
+var _cardSeq = 0; // D8 (re-agent-inbox): ids of the expand regions — never the session key
+// D5 (re-agent-inbox): a card whose column changed shows its new state where it
+// is drawn first and changes column BOARD_HOLD_MS later (at once without motion).
+var BOARD_HOLD_MS = 900;
+var _laneHolds = Object.create(null); // session key → { from, to, until }
+var _laneHoldTimer = 0;
+// D6: the board's polite announcement — a burst within ANNOUNCE_MS is said once.
+var ANNOUNCE_MS = 1000;
+var _announceTimer = 0;
+var _announceText = '';
 
 // Motion tokens come from the CSS custom properties so CSS transitions and
 // WAAPI share one source of truth (§4 table).
@@ -7668,6 +8531,9 @@ function renderBoard(board) {
   _ownerIndex = assignOwnerHues(owners);
   function tag(col) { return function(s) { return { s: s, col: col }; }; }
   _lastBoardData = board;
+  // D6: how many need you and how many run — the data as it came (CRON runs
+  // waiting on a reply included), before the lane takes its runs and any hold.
+  announceBoard((board.waiting || []).length, (board.working || []).length);
   // Cron runs leave the columns for the CRON lane, one group per job (SSOT
   // 2026-10-23 T4); the lane sections exist before the reconciler fills them.
   var cronPlan = planCronLane(board, _cronJobs, _cronRevealKey);
@@ -7737,6 +8603,10 @@ function reconcileBoard(plan, counts) {
   (plan.cron || []).forEach(function(c) {
     slots.push({ colId: 'cron', container: c.container, items: c.items });
   });
+  // D5: a card whose column changed stays where it is drawn for a beat.
+  applyLaneHolds(slots, counts);
+  var shown = Object.create(null);
+  for (var si = 0; si < slots.length; si++) shown[slots[si].colId] = (shown[slots[si].colId] || 0) + slots[si].items.length;
   for (var c = 0; c < slots.length; c++) {
     var slot = slots[c];
     var rows = [];
@@ -7756,7 +8626,7 @@ function reconcileBoard(plan, counts) {
   for (var b = 0; b < BOARD_COLS.length; b++) {
     var colId = BOARD_COLS[b];
     setTextIfChanged(document.getElementById('count-' + colId), String(counts[colId] || 0));
-    var has = colId === 'done' ? groups.length > 0 : (plan[colId] || []).length > 0;
+    var has = colId === 'done' ? groups.length > 0 : (shown[colId] || 0) > 0;
     var empty = document.getElementById('empty-' + colId);
     if (empty && empty.hidden !== has) empty.hidden = has;
   }
@@ -7766,6 +8636,111 @@ function reconcileBoard(plan, counts) {
   if (changed) applyBoardPlan(slots, wanted, doneRoot, groups, sig);
   // Open cards keep their 지시/응답 current (no DOM write unless a fetch settles).
   _expanded.forEach(function(key) { if (_cardEls[key]) ensureCardIo(key, false); });
+}
+
+// Pure (D5): the column each card is drawn in this render. want = the column
+// its data puts it in; drawn = the column it is drawn in now (cards on screen
+// only); holds = the running holds. A card whose column changed stays where it
+// is drawn until its deadline (now + BOARD_HOLD_MS when the change is first
+// seen). Data that returns to the drawn column drops the hold; a new target
+// keeps the first deadline. on = false (no motion, first paint, hidden tab)
+// moves every card at once. Returns the columns, the holds still running and
+// the earliest deadline (0 = none).
+function holdLanes(want, drawn, holds, now, on) {
+  var lanes = Object.create(null);
+  var next = Object.create(null);
+  var wakeAt = 0;
+  for (var key in want) {
+    var to = want[key];
+    var from = drawn[key];
+    lanes[key] = to;
+    if (!on || !from || from === to) continue;
+    var h = holds[key];
+    var until = h && h.from === from ? h.until : now + BOARD_HOLD_MS;
+    if (now >= until) continue;
+    lanes[key] = from;
+    next[key] = { from: from, to: to, until: until };
+    if (!wakeAt || until < wakeAt) wakeAt = until;
+  }
+  return { lanes: lanes, holds: next, wakeAt: wakeAt };
+}
+// D5 on the reconciler's slots: a held card leaves its new column's slot and
+// goes back into the slot that holds its node now, at its place there — drawn
+// with its new state (the item keeps its new col). The column badges count it
+// where it is drawn. One timer renders the board again at the earliest deadline.
+// A held card whose place is gone (a DONE day that left) moves at once.
+function applyLaneHolds(slots, counts) {
+  function isLane(c) { return c === 'waiting' || c === 'working' || c === 'done'; }
+  var want = Object.create(null);
+  var drawn = Object.create(null);
+  for (var i = 0; i < slots.length; i++) {
+    if (!isLane(slots[i].colId)) continue;
+    for (var j = 0; j < slots[i].items.length; j++) {
+      var key = slots[i].items[j].s.key;
+      want[key] = slots[i].colId;
+      var node = _cardEls[key];
+      if (node && isLane(node._colId)) drawn[key] = node._colId;
+    }
+  }
+  var r = holdLanes(want, drawn, _laneHolds, Date.now(), canAnimate() && !reduceMotion());
+  // Take every held item out of its new column first, then put them back into
+  // the slot that holds their node, in the container's order (ascending index),
+  // so cards leaving one column together keep their order there.
+  var moves = [];
+  for (var a = 0; a < slots.length; a++) {
+    var slot = slots[a];
+    if (!isLane(slot.colId)) continue;
+    for (var b = slot.items.length - 1; b >= 0; b--) {
+      var item = slot.items[b];
+      var k = item.s.key;
+      var lane = r.lanes[k];
+      if (!lane || lane === slot.colId) continue;
+      var el = _cardEls[k];
+      var home = null;
+      for (var c = 0; c < slots.length; c++) {
+        if (slots[c].colId === lane && el && slots[c].container && slots[c].container === el.parentNode) { home = slots[c]; break; }
+      }
+      if (!home) { delete r.holds[k]; continue; }
+      slot.items.splice(b, 1);
+      moves.push({ item: item, home: home, at: Array.prototype.indexOf.call(home.container.children, el) });
+      counts[lane] = (counts[lane] || 0) + 1;
+      counts[slot.colId] = Math.max(0, (counts[slot.colId] || 0) - 1);
+    }
+  }
+  moves.sort(function(x, y) { return x.at - y.at; });
+  for (var m = 0; m < moves.length; m++) {
+    var mv = moves[m];
+    mv.home.items.splice(Math.max(0, Math.min(mv.at, mv.home.items.length)), 0, mv.item);
+  }
+  _laneHolds = r.holds;
+  if (_laneHoldTimer) { clearTimeout(_laneHoldTimer); _laneHoldTimer = 0; }
+  if (r.wakeAt) {
+    _laneHoldTimer = setTimeout(function() {
+      _laneHoldTimer = 0;
+      if (_lastBoardData) renderBoard(_lastBoardData);
+    }, Math.max(0, r.wakeAt - Date.now()) + 20);
+  }
+}
+
+// D6 (re-agent-inbox): the board's polite announcement — the reference's
+// "N need you, M running", in the page's language.
+function boardAnnounceText(w, r) {
+  return '응답이 필요한 세션 ' + w + '개, 실행 중 ' + r + '개';
+}
+// The first sentence goes into the empty region at once. After that only a real
+// change is said: the same sentence arms nothing, and a burst of changes within
+// ANNOUNCE_MS is said once (the last text — nothing if it came back to what the
+// region already says), so a busy board does not chatter.
+function announceBoard(w, r) {
+  var live = document.getElementById('inbox-live');
+  if (!live) return;
+  _announceText = boardAnnounceText(w, r);
+  if (!live.textContent && !_announceTimer) { live.textContent = _announceText; return; }
+  if (_announceTimer || live.textContent === _announceText) return;
+  _announceTimer = setTimeout(function() {
+    _announceTimer = 0;
+    setTextIfChanged(document.getElementById('inbox-live'), _announceText);
+  }, ANNOUNCE_MS);
 }
 
 // What the DONE day sections look like (label, count, open) — a change re-plans.
@@ -7973,7 +8948,9 @@ function createCardShell(key) {
   face.setAttribute('aria-expanded', 'false');
   var expand = document.createElement('div');
   expand.className = 'card-expand';
+  expand.id = 'card-x-' + (++_cardSeq);
   expand.setAttribute('inert', '');
+  face.setAttribute('aria-controls', expand.id);
   var inner = document.createElement('div');
   inner.className = 'card-expand-inner';
   expand.appendChild(inner);
@@ -8010,8 +8987,9 @@ function cardPartsDiffer(el, p) {
 function applyCardParts(el, p) {
   el._cid = p.cid; // bookkeeping only (timer release), not a DOM write
   var changed = false;
+  var prevState = el.getAttribute('data-state');
   if (el.getAttribute('data-col') !== p.col) { el.setAttribute('data-col', p.col); changed = true; }
-  if (el.getAttribute('data-state') !== p.state) { el.setAttribute('data-state', p.state); changed = true; }
+  if (prevState !== p.state) { el.setAttribute('data-state', p.state); changed = true; }
   if (el._faceHtml !== p.face) {
     // A renamed card (a cron run taking its real title, SSOT 2026-10-23 T2)
     // fades the new title in instead of snapping.
@@ -8025,6 +9003,9 @@ function applyCardParts(el, p) {
     animateCountersIn(el._faceEl, el.getAttribute('data-session-key'));
     changed = true;
   }
+  // D4 (re-agent-inbox): a card on screen whose state changed pops its new
+  // status icon — never a new card, a same-state rewrite, or without motion.
+  if (prevState && prevState !== p.state && canAnimate() && !reduceMotion()) popStatusIcon(el._faceEl);
   if (el._bodyHtml !== p.body && !isEditingGoal(el._bodyEl) && !isPickingModel(el._bodyEl)) {
     var goalDraft = captureGoalDraft(el._bodyEl);
     var anCap = anFocusCapture(el._bodyEl);
@@ -8040,6 +9021,12 @@ function applyCardParts(el, p) {
     changed = true;
   }
   return changed;
+}
+// D4: scale 0.6 → 1 with a fade, the board's move duration on the entry curve.
+function popStatusIcon(face) {
+  var icon = face && face.querySelector ? face.querySelector('.card-status .st-icon') : null;
+  if (!icon || typeof icon.animate !== 'function') return;
+  icon.animate([{ opacity: 0, transform: 'scale(0.6)' }, { opacity: 1, transform: 'scale(1)' }], { duration: MOTION.move, easing: MOTION.easeOut });
 }
 // Single-card path (sessionUpdated push, title patch, 지시/응답 arrival) —
 // the same compare-then-write as the reconciler.
@@ -8105,8 +9092,9 @@ function autoResumeLabel(r) {
   return text;
 }
 
-// Status at the foot of the card. Board shows the bare timer; List adds the
-// "Running · " / "Done in " prefix via CSS — same DOM in both views.
+// Status at the foot of the card (the tinted tag, re-agent-inbox D1). The
+// "Running · " / "Done in " prefix shows in both views and hides only on a narrow
+// card (≤ 300px of face content, D2) — same DOM everywhere.
 function renderCardStatus(s, col) {
   var resume = pendingAutoResume(s, col);
   if (resume) {
@@ -8229,12 +9217,24 @@ function renderCardUsage(s) {
   return parts.length ? '<div class="card-usage">' + parts.join('<span class="cu-sep" aria-hidden="true">&middot;</span>') + '</div>' : '';
 }
 
-// Context level (spec 13 §3.7), one table for the face metric and the panel
-// bar: bands of the window used — over 60% a warning, over 80% danger. (Not
-// the compaction threshold, which a session may set lower or higher.)
-function ctxLevel(pct) {
+// Context level, one table for the face metric, the 세션 정보 summary and the
+// context block. With the session's auto-compact point (re-context-window D9):
+// from 0.8 of it a warning, from 0.95 danger — the point is where the history
+// is cut to a summary, and it differs per session (750K of a Claude 1M window,
+// 160K of a 200K one), so window bands never warned there. A scheduled
+// compaction is danger. Point unknown (one argument, as before): bands of the
+// window used — over 60% a warning, over 80% danger (spec 13 §3.7).
+function ctxLevel(pct, used, auto, pending) {
+  if (pending) return 'ctx-danger';
+  var u = toNum(used), a = toNum(auto);
+  if (u > 0 && a > 0) return u / a >= 0.95 ? 'ctx-danger' : u / a >= 0.8 ? 'ctx-warn' : '';
   var n = toNum(pct);
   return n > 80 ? 'ctx-danger' : n > 60 ? 'ctx-warn' : '';
+}
+// The context % as every surface writes it — face metric, 세션 정보 summary,
+// the block's pill: rounded, never over 100.
+function ctxPercent(pct) {
+  return Math.round(Math.min(toNum(pct), 100));
 }
 // The outcome on the face (spec 13 §3.7 — the compact tier's PR link in Copilot
 // and Devin): the PR number and its state as a badge. The face is one toggle,
@@ -8278,9 +9278,17 @@ function renderCardFace(s, col) {
   }
   var ctxPct = s.tokenUsage ? (s.tokenUsage.contextUsagePercent || 0) : 0;
   if (dhShow('contextwindow') && ctxPct > 0) {
-    var ctxLv = ctxLevel(ctxPct);
-    metrics.push('<span class="metric' + (ctxLv ? ' ' + ctxLv : '') + '" title="Context window used' + (ctxLv === 'ctx-danger' ? ' — 80% 넘게 찼다' : '') + '">'
-      + CTX_SVG + Math.round(Math.min(Number(ctxPct) || 0, 100)) + '%</span>');
+    // re-context-window D16: the level against the auto-compact point when known, the tooltip says how far.
+    var ctxLv = ctxLevel(ctxPct, s.contextTokens, s.autoCompactTokens, s.compactPending);
+    var ctxAuto = toNum(s.autoCompactTokens), ctxUsed = toNum(s.contextTokens);
+    var ctxTip = 'Context window used' + (toNum(ctxPct) > 80 ? ' — 80% 넘게 찼다' : '');
+    if (ctxAuto > 0 && ctxUsed > 0) {
+      ctxTip = '컨텍스트 ' + ctxPercent(ctxPct) + '% · ' + (s.compactPending ? '다음 입력 때 자동 압축'
+        : ctxUsed >= ctxAuto ? '자동 압축 지점을 넘음'
+        : '자동 압축 ' + formatTokens(ctxAuto).replace(/\\.0(?=[KMBT]$)/, '') + '까지 ' + formatTokens(ctxAuto - ctxUsed).replace(/\\.0(?=[KMBT]$)/, ''));
+    }
+    metrics.push('<span class="metric' + (ctxLv ? ' ' + ctxLv : '') + '" title="' + escAttr(ctxTip) + '">'
+      + CTX_SVG + ctxPercent(ctxPct) + '%</span>');
   }
   // User media (SSOT 2026-10-25): a paperclip count, no image on the board.
   var umBadge = isSiblingSession(s) ? '' : umFaceBadge(s);
@@ -8289,13 +9297,15 @@ function renderCardFace(s, col) {
   if (prBadge) metrics.push(prBadge);
   // A cron run leads with the CRON badge instead of the spark (SSOT 2026-10-23 T3).
   var lead = s.cronJob && s.cronJob.name ? renderCronBadge(s) : '<span class="card-spark">' + SPARK_SVG + '</span>';
+  // The status tag's tone (re-agent-inbox D1): an armed automatic resume waits.
+  var tone = (pendingAutoResume(s, col) || col === 'waiting') ? 'wait' : col === 'working' ? 'run' : col === 'closed' ? 'rest' : 'done';
   return '<div class="card-head">' + lead + titleHtml + renderOwnerBadge(s) + '</div>'
     + (summary ? '<div class="card-summary">' + esc(summary) + '</div>' : '')
     + renderCardTaskRow(s, col)
     + renderCardAgents(s)
     + renderCardUsage(s)
     + (isSiblingSession(s) ? '' : artFaceChips(s))
-    + '<div class="card-foot"><span class="card-status">' + renderCardStatus(s, col) + '</span>'
+    + '<div class="card-foot"><span class="card-status" data-tone="' + tone + '">' + renderCardStatus(s, col) + '</span>'
     + (metrics.length ? '<span class="card-metrics">' + metrics.join('') + '</span>' : '')
     + '</div>';
 }
@@ -9223,6 +10233,7 @@ function repaintPanelSession() {
   renderPanelControls(s);
   renderPanelComposer(s);
   repaintPanelScope();
+  syncAnsPending(); // re-ai-answer D12 — the 응답 작성 중 row follows the session state
   restorePanelLiveAnchor(anchor);
 }
 // The reader's place across a live repaint: the anchor the older-turns loader
@@ -9297,7 +10308,17 @@ function panelHeadHtml(s, col) {
   var st = rootStatusOf(s, col);
   var acc = toNum(s.activeAccumulatedMs);
   var leg = st === 'running' || st === 'waiting' ? (Number(s.activeLegStartedAtMs) || 0) : 0;
-  var timer = acc || leg ? '<span class="ps-time"><span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="' + acc + '" title="활성 시간"></span></span>' : '';
+  // re-agent-run D18: a turn in flight reads 시작 HH:MM · its own elapsed time;
+  // otherwise the session's total active time (also in 세부 — D19).
+  var timer = '';
+  if (leg) {
+    timer = '<span class="ps-time" title="이번 턴 시작 · 경과">'
+      + '<svg class="ps-clock" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.2l2 1.3"/></svg>'
+      + '시작 ' + esc(formatTaskTime(leg)) + '<span class="ps-dot" aria-hidden="true">&middot;</span>'
+      + '<span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="0"></span></span>';
+  } else if (acc) {
+    timer = '<span class="ps-time" title="활성 시간">활성 <span class="card-timer-live" data-leg-started="0" data-accumulated="' + acc + '"></span></span>';
+  }
   var resume = pendingAutoResume(s, col);
   var slack = s.slackThreadUrl
     ? '<a class="ps-slack" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener" aria-label="Slack 스레드 열기" title="Slack 스레드">Slack</a>'
@@ -9323,14 +10344,17 @@ function renderPanelHead() {
 // complete record: the card header's dhShow gates do not apply here.
 var _panelInfoOpen = false;
 var PI_CHEV_SVG = '<svg class="pi-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>';
-function panelInfoHtml(s, open) {
+function panelInfoHtml(s, open, col) {
   var u = s.tokenUsage || null;
   var ctx = u ? toNum(u.contextUsagePercent) : 0;
   var sum = [];
   if (s.ownerName) sum.push(esc(s.ownerName));
   if (s.workflow) sum.push(esc(s.workflow));
   if (u) sum.push(formatTokens(cardTotalTokens(u)) + ' tok', '$' + toNum(u.totalCostUsd).toFixed(2));
-  if (ctx > 0) sum.push('ctx ' + Math.round(ctx) + '%');
+  if (ctx > 0) {
+    var ctxCls = ctxLevel(ctx, s.contextTokens, s.autoCompactTokens, s.compactPending);
+    sum.push('<span class="pi-cs' + (ctxCls ? ' ' + ctxCls : '') + '">ctx ' + ctxPercent(ctx) + '%</span>');
+  }
   sum.push('<span class="rel-time" data-ts="' + (new Date(s.lastActivity).getTime() || 0) + '"></span>');
   var html = '<button type="button" class="pi-head" aria-expanded="' + (open ? 'true' : 'false') + '"' + (open ? ' aria-controls="panel-info-body"' : '') + ' onclick="togglePanelInfo()">'
     + '<span class="pi-title">세션 정보</span><span class="pi-sum">' + sum.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</span>'
@@ -9342,42 +10366,461 @@ function panelInfoHtml(s, open) {
   if (links.length) html += '<div class="pi-links">' + links.join('') + '</div>';
   if (!open) return html;
   var rows = [];
-  if (s.ownerName) rows.push(['소유자', esc(s.ownerName)]);
-  if (s.workflow) rows.push(['워크플로', esc(s.workflow)]);
-  if (s.environment && s.environment.instanceName) rows.push(['환경', esc(s.environment.instanceName) + ' <span class="pi-muted">' + esc((s.environment.host || '') + ':' + (s.environment.port || '')) + '</span>']);
   if (u) {
-    rows.push(['입력', formatTokens(u.totalInputTokens)]);
-    rows.push(['출력', formatTokens(u.totalOutputTokens)]);
-    rows.push(['캐시 읽기', formatTokens(u.totalCacheReadTokens)]);
-    rows.push(['캐시 쓰기', formatTokens(u.totalCacheCreateTokens)]);
-    rows.push(['비용', '$' + toNum(u.totalCostUsd).toFixed(2)]);
+    rows.push(['누적 입력', formatTokens(u.totalInputTokens)]);
+    rows.push(['누적 출력', formatTokens(u.totalOutputTokens)]);
+    rows.push(['누적 캐시 읽기', formatTokens(u.totalCacheReadTokens)]);
+    rows.push(['누적 캐시 쓰기', formatTokens(u.totalCacheCreateTokens)]);
     // SSOT 2026-10-26 T2/T3 — the numbers above are the task's (main + subagents);
     // the subagents' share, and since when a partial total counts.
     var sub = s.subagentSpend;
     if (sub && toNum(sub.agents) > 0) rows.push(['서브에이전트', toNum(sub.agents) + '개 · ' + spendText(spendTotal(sub), sub.costUsd, sub.unpriced)]);
     if (toNum(u.partialSince) > 0) rows.push(['집계 시작', '<span class="rel-time" data-ts="' + toNum(u.partialSince) + '"></span> (그 전 지출 미포함)']);
   }
-  var body = '<dl class="pi-grid">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
-  if (u) {
-    var cls = ctxLevel(ctx);
-    body += '<div class="pi-ctx"><div class="context-bar" title="Context ' + Math.round(ctx) + '%"><div class="context-bar-fill ' + cls + '" style="transform:scaleX(' + (Math.min(ctx, 100) / 100).toFixed(2) + ')"></div></div>'
-      + '<span>컨텍스트 ' + Math.round(ctx) + '%' + (toNum(s.autoCompactTokens) > 0 ? ' &middot; autocompact ' + formatTokens(s.autoCompactTokens) : '') + '</span></div>';
-  }
+  // Open body order (re-agent-run D19 · re-context-window D5): cw (prepended on return) → 세부 → token grid → thread.
+  var body = panelDetailsHtml(s, col) + '<dl class="pi-grid">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
   var thread = ['&Sigma; ' + formatNmSSs(toNum(s.threadTotalActiveMs)), '압축 ' + toNum(s.compactionCount), '세션 ' + toNum(s.threadSessionCount)];
   if (s.mergeStats) thread.push('+' + toNum(s.mergeStats.totalLinesAdded) + ' / -' + toNum(s.mergeStats.totalLinesDeleted));
   body += '<div class="pi-thread">' + thread.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</div>';
   if (s.autoResume && s.autoResume.reason) body += '<div class="pi-resume">오류: ' + esc(s.autoResume.reason) + '</div>';
-  return html + '<div class="pi-body" id="panel-info-body">' + body + '</div>';
+  return html + '<div class="pi-body" id="panel-info-body">' + contextBlockHtml(s) + body + '</div>';
+}
+// 세부 (re-agent-run D19) — who ran it, with what, how much, at what cost:
+// 에이전트 (the model) · 시작한 사람 · 도구 호출 (the main agent's every call —
+// agentRoot — plus each subagent's; a lower bound when the card carries fewer
+// subagents than there are) · 비용 · 활성 시간 (live) · 워크플로 · 환경.
+function panelDetailsHtml(s, col) {
+  var u = s.tokenUsage || null;
+  var rows = [];
+  var model = String(s.model || '').replace(/^claude-/, '');
+  if (model) rows.push(['에이전트', esc(model)]);
+  if (s.ownerName) rows.push(['시작한 사람', esc(s.ownerName)]);
+  var list = s.agents || [];
+  if (s.agentRoot || list.length) {
+    var main = toNum(s.agentRoot && s.agentRoot.toolCalls);
+    var subs = 0;
+    for (var i = 0; i < list.length; i++) subs += toNum(list[i] && list[i].toolCalls);
+    var more = toNum(s.agentsTotal) > list.length ? '+' : '';
+    rows.push(['도구 호출', '<span title="메인 ' + main + ' · 서브에이전트 ' + subs + '">' + (main + subs) + more + '</span>']);
+  }
+  if (u) rows.push(['비용', '$' + toNum(u.totalCostUsd).toFixed(2)]);
+  var acc = toNum(s.activeAccumulatedMs);
+  // The same status as the head chip (rootStatusOf): a turn in flight adds its live leg.
+  var st = rootStatusOf(s, col);
+  var leg = st === 'running' || st === 'waiting' ? (Number(s.activeLegStartedAtMs) || 0) : 0;
+  if (acc || leg) rows.push(['활성 시간', '<span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="' + acc + '"></span>']);
+  if (s.workflow) rows.push(['워크플로', esc(s.workflow)]);
+  if (s.environment && s.environment.instanceName) rows.push(['환경', esc(s.environment.instanceName) + ' <span class="pi-muted">' + esc((s.environment.host || '') + ':' + (s.environment.port || '')) + '</span>']);
+  return '<dl class="pi-details">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
 }
 function renderPanelInfo() {
   var el = document.getElementById('panel-info');
   if (!el) return;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  writePanelPart(el, s ? panelInfoHtml(s, _panelInfoOpen) : '');
+  if (s) cwObserve(s, Date.now());
+  if (writePanelPart(el, s ? panelInfoHtml(s, _panelInfoOpen, sessionColOf(panelSessionKey)) : '')) cwApply(el);
+  cwBind(el);
 }
 function togglePanelInfo() {
   _panelInfoOpen = !_panelInfoOpen;
   renderPanelInfo();
+}
+
+// ── 컨텍스트 블록 (.prd/affectui/re-context-window.md D5–D20) ──
+// What fills the context now: the last request's tokens by the SDK's cache
+// categories (contextParts, D1) in prompt order, as a field of 216 cells (one
+// per window/216 tokens, every non-empty part at least one), the auto-compact
+// point on it, the level against that point (ctxLevel, D9), and one action —
+// 지금 압축, the owner's own 'compact --yes' through the command route the
+// model switch already uses, confirmed by a second press like Slack's yes/no.
+var CW_CELLS = 216;
+var CW_ROLL_MS = 640;
+var CW_ARM_MS = 4000;
+var CW_DONE_MS = 1500;
+var CW_LEAVE_MS = 400;
+var CW_SAVED_MS = 3200;
+var CW_FAIL_MS = 4000;
+var CW_CEIL_MS = 300000;
+var CW_PARTS = [['read', 'cacheRead', '이전 맥락 (캐시 읽기)', 'var(--cw-c1)'], ['write', 'cacheWrite', '새로 캐시 (캐시 쓰기)', 'var(--cw-c2)'], ['input', 'input', '캐시 안 된 입력', 'var(--cw-c3)'], ['output', 'output', '마지막 출력', 'var(--cw-c4)']];
+var CW_UNSPLIT = { compact: '압축 후 맥락', unknown: '맥락 (분류 없음)' };
+var CW_ANNOUNCE = { sending: 1, sent: 1, queued: 1, armed: 1, fail: 1, timeout: 1, observed: 1, saved: 1, pending: 1 }; // tray states read out (transitions, not distances)
+var CW_COMPACT_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 3l4 3.5L12 3M4 13l4-3.5 4 3.5"/></svg>';
+var CW_CHECK_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>';
+var _cwHot = '';
+var _cw = { key: '', count: 0, armedAt: 0, reqId: 0, req: '', reqAt: 0, obsInReq: false, queued: false, doneAt: 0, observedAt: 0, savedWait: 0, usedAtRise: 0, lcSeen: '', lcAtRise: '', savedAt: 0, failAt: 0, timedOutAt: 0 };
+var _cwSeq = 0; // request ids: an answer only ever updates the request it belongs to
+var _cwRoll = { el: null, key: '', shown: -1, raf: 0 };
+// A token count without a trailing .0 (750.0K → 750K): the tray and the marker.
+function cwShort(n) {
+  return formatTokens(n).replace(/\\.0(?=[KMBT]$)/, '');
+}
+// The parts in prompt order (cached prefix → newly cached → uncached tail →
+// the response); a part at zero is left out. One unsplit total (D2) is said as
+// what it is, never as a cache category.
+function cwParts(cp) {
+  if (!cp) return [];
+  if (cp.unsplit) {
+    var total = toNum(cp.input);
+    return total > 0 ? [{ key: 'total', label: CW_UNSPLIT[cp.unsplit] || CW_UNSPLIT.unknown, tokens: total, color: 'var(--cw-c1)' }] : [];
+  }
+  var out = [];
+  for (var i = 0; i < CW_PARTS.length; i++) {
+    var t = toNum(cp[CW_PARTS[i][1]]);
+    if (t > 0) out.push({ key: CW_PARTS[i][0], label: CW_PARTS[i][2], tokens: t, color: CW_PARTS[i][3] });
+  }
+  return out;
+}
+// Cell → part index (-1 free), D7: cumulative rounding in part order, every
+// non-empty part at least one cell; past the window every cell is filled.
+function cwCells(parts, limit, cells) {
+  var out = [];
+  var per = limit > 0 ? limit / cells : 0;
+  var start = 0;
+  var cum = 0;
+  for (var i = 0; i < parts.length && per > 0; i++) {
+    cum += parts[i].tokens;
+    var end = Math.min(cells, Math.max(parts[i].tokens > 0 ? start + 1 : start, Math.round(cum / per)));
+    for (var j = start; j < end; j++) out[j] = i;
+    start = Math.max(start, end);
+  }
+  for (var k = start; k < cells; k++) out[k] = -1;
+  return out;
+}
+// The first cell past the auto-compact point (-1: none inside the window).
+function cwMarkIndex(auto, limit, cells) {
+  var a = toNum(auto), l = toNum(limit);
+  if (a <= 0 || l <= 0 || a >= l) return -1;
+  return Math.max(0, Math.min(cells, Math.round(a / (l / cells))));
+}
+// Where the action is (D12): armed for 4s after the first press; sending, then
+// sent (the request was taken) until a compaction is observed — the count rises
+// — then done 1.5s and leaving 0.4s. The request's own outcome (req: sending ·
+// sent · failed) is kept apart from what the card shows happened (observed). A count rise is "a compaction happened",
+// never "yours": a running turn queues the request and another compaction (auto,
+// Slack) can land first; the card carries no correlation to tell them apart.
+function cwPhase(s, now) {
+  var c = _cw.key === s.key ? _cw : null;
+  if (!c) return 'idle';
+  if (c.req === 'sending' || c.req === 'sent') return c.req;
+  if (c.doneAt && now - c.doneAt < CW_DONE_MS) return 'done';
+  if (c.doneAt && now - c.doneAt < CW_DONE_MS + CW_LEAVE_MS) return 'leaving';
+  if (c.armedAt && now - c.armedAt < CW_ARM_MS) return 'armed';
+  return 'idle';
+}
+// The tray line (D10): one state at a time, the most urgent first; the
+// distance is to the auto-compact point (where the history is cut), else to
+// the end of the window. Only the transitions (CW_ANNOUNCE) are read out — a
+// distance changes with every usage update and would chatter.
+function cwSay(s, used, auto, win, lv, phase, now) {
+  var c = _cw.key === s.key ? _cw : null;
+  if (phase === 'sending') return { id: 'sending', tone: '', html: '압축 요청 보내는 중…' };
+  if (phase === 'sent') return c && c.queued ? { id: 'queued', tone: '', html: '압축 요청 보냄 — 지금 턴이 끝나면 압축' } : { id: 'sent', tone: '', html: '압축 요청 보냄 — 압축을 기다리는 중' };
+  if (phase === 'armed') return { id: 'armed', tone: 'warn', html: '지난 대화가 요약으로 줄어듭니다', sr: '한 번 더 누르면 압축 — 지난 대화가 요약으로 줄어듭니다' };
+  if (c && c.failAt && now - c.failAt < CW_FAIL_MS) return { id: 'fail', tone: 'fail', html: '압축 요청 실패' };
+  if (c && c.timedOutAt && now - c.timedOutAt < CW_FAIL_MS) return { id: 'timeout', tone: 'fail', html: '압축 결과를 아직 받지 못함' };
+  var lc = s.lastCompact;
+  if (c && c.savedAt && now - c.savedAt < CW_SAVED_MS && lc && toNum(lc.preTokens) > toNum(lc.postTokens)) {
+    return { id: 'saved', tone: 'ok', html: '새 압축 관측됨 · <b>' + cwShort(toNum(lc.preTokens) - toNum(lc.postTokens)) + '</b> 줄임 (' + cwShort(lc.preTokens) + ' → ' + cwShort(lc.postTokens) + ')' };
+  }
+  if (c && (c.savedWait || (c.observedAt && now - c.observedAt < CW_SAVED_MS))) return { id: 'observed', tone: 'ok', html: '새 압축 관측됨' };
+  if (s.compactPending) return { id: 'pending', tone: 'full', html: '다음 입력 때 자동 압축' };
+  var tone = lv === 'ctx-danger' ? 'full' : lv === 'ctx-warn' ? 'warn' : '';
+  if (auto > 0) {
+    if (used >= auto) return { id: 'over', tone: 'full', html: '자동 압축 지점을 넘음' };
+    if (lv === 'ctx-danger') return { id: 'soon', tone: 'full', html: '자동 압축 임박 · ' + cwShort(auto - used) + ' 남음' };
+    return { id: 'left', tone: tone, html: '자동 압축까지 ' + cwShort(auto - used) };
+  }
+  return { id: 'free', tone: tone, html: '창에 ' + cwShort(Math.max(0, win - used)) + ' 남음' };
+}
+// Why this viewer cannot compact this session now ('' = can). The server's
+// requireSessionOwner is the guard; this is UX and fails closed on a missing
+// owner. A switch waiting on a compact, or one already scheduled, compacts anyway.
+// Closed is the composer's rule: terminated or sleeping (a press would wake it).
+function cwCanCompact(s) {
+  if (!s || s.terminated || s.sessionState === 'SLEEPING') return '종료된 세션';
+  var env = s.environment;
+  if (isSiblingSession(s)) return 'Open ' + env.instanceName + ' (' + (env.host || '') + ':' + (env.port || '') + ') to act on this session';
+  if (!s.ownerId || s.ownerId !== currentUserId) return READ_ONLY_MSG;
+  if (s.pendingModel) return '모델 전환이 압축을 기다리는 중';
+  if (s.compactPending) return '다음 입력 때 자동 압축됩니다';
+  return '';
+}
+// The tray's action: 지금 압축 → 한 번 더 눌러 압축 → 보내는 중 / 요청 보냄 (spinner)
+// → ✓ 압축 관측됨, which leaves; hidden while nothing was added since the last
+// compaction (or its counts are still on the way). Keyed spans swap in.
+function cwCompactHtml(s, phase, used) {
+  if (s.terminated || s.sessionState === 'SLEEPING' || !(used > 0)) return '';
+  var waiting = _cw.key === s.key && _cw.savedWait;
+  var lc = s.lastCompact;
+  if (phase === 'idle' && (waiting || (lc && used <= toNum(lc.postTokens)))) return '';
+  var st = phase === 'leaving' ? 'done' : phase === 'sending' || phase === 'sent' ? 'busy' : phase;
+  var label = phase === 'sending' ? '보내는 중' : phase === 'sent' ? '요청 보냄' : st === 'done' ? '압축 관측됨' : st === 'armed' ? '한 번 더 눌러 압축' : '지금 압축';
+  var icon = st === 'busy' ? '<span class="cw-spin" aria-hidden="true"></span>' : st === 'done' ? CW_CHECK_SVG : CW_COMPACT_SVG;
+  var why = st === 'idle' || st === 'armed' ? cwCanCompact(s) : '';
+  var off = st === 'busy' || st === 'done' || !!why;
+  var mk = st === 'busy' ? phase : st;
+  return '<button type="button" class="cw-compact" data-state="' + st + '"' + (phase === 'leaving' ? ' data-leaving' : '') + (off ? ' disabled' : '')
+    + (st === 'busy' ? ' aria-busy="true"' : '') + (why ? ' title="' + escAttr(why) + '"' : '')
+    + ' aria-label="' + escAttr(label + ' — 컨텍스트 압축') + '" onclick="cwCompact()">'
+    + '<span class="cw-ci" data-mk="ci-' + st + '">' + icon + '</span><span class="cw-ct" data-mk="ct-' + mk + '">' + label + '</span></button>';
+}
+// The block (D5): head (title · model) / figure (rolling number · of the window ·
+// % · one sentence for screen readers) / the field / the parts and the
+// auto-compact point / the tray (live line · action). Empty without parts.
+function contextBlockHtml(s, now) {
+  var cp = s.contextParts;
+  var win = cp ? toNum(cp.window) : 0;
+  if (!(win > 0)) return '';
+  now = now || Date.now();
+  var parts = cwParts(cp);
+  var used = 0;
+  for (var i = 0; i < parts.length; i++) used += parts[i].tokens;
+  var auto = toNum(s.autoCompactTokens);
+  var pct = s.tokenUsage ? toNum(s.tokenUsage.contextUsagePercent) : (used / win) * 100;
+  var lv = ctxLevel(pct, used, auto, s.compactPending);
+  var phase = cwPhase(s, now);
+  var map = cwCells(parts, win, CW_CELLS);
+  var mark = cwMarkIndex(auto, win, CW_CELLS);
+  var cells = '';
+  for (var n = 0; n < CW_CELLS; n++) {
+    var p = map[n] >= 0 ? parts[map[n]] : null;
+    cells += '<i class="cw-cell" style="--i:' + n + (p ? ';--c:' + p.color : '') + '"' + (p ? ' data-part="' + p.key + '"' : '')
+      + (mark >= 0 && n >= mark ? ' data-past' : '') + (p && (phase === 'sending' || phase === 'sent') ? ' data-busy' : '') + '></i>';
+  }
+  var rows = '';
+  for (var r = 0; r < parts.length; r++) {
+    var share = (parts[r].tokens / win) * 100;
+    var ofTxt = parts[r].label + ' · 창의 ' + share.toFixed(share < 10 ? 1 : 0) + '%';
+    rows += '<li class="cw-part" data-part="' + parts[r].key + '" data-tok="' + parts[r].tokens + '" data-of="' + escAttr(ofTxt) + '">'
+      + '<i class="cw-sw" style="background:' + parts[r].color + '"></i><span class="cw-label">' + esc(parts[r].label) + '</span><span class="cw-val">' + formatTokens(parts[r].tokens) + '</span></li>';
+  }
+  if (mark >= 0) rows += '<li class="cw-mark"><i class="cw-sw is-mark"></i><span class="cw-label">자동 압축 지점</span><span class="cw-val">' + cwShort(auto) + '</span></li>';
+  var model = String(s.model || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
+  var pctTxt = ctxPercent(pct) + '%';
+  var ofTotal = '/ ' + cwShort(win) + ' 토큰';
+  var say = cwSay(s, used, auto, win, lv, phase, now);
+  return '<section class="cw" role="group" aria-labelledby="cw-title" data-level="' + (lv === 'ctx-danger' ? 'full' : lv === 'ctx-warn' ? 'warn' : 'ok') + '">'
+    + '<div class="cw-head"><span class="cw-title" id="cw-title">컨텍스트</span>' + (model && model !== 'unknown' ? '<span class="cw-model">' + esc(model) + '</span>' : '') + '</div>'
+    + '<div class="cw-figure"><span class="cw-big" aria-hidden="true" data-to="' + used + '">' + formatTokens(used) + '</span>'
+    + '<span class="cw-of" aria-hidden="true" data-total="' + escAttr(ofTotal) + '">' + esc(ofTotal) + '</span>'
+    + '<span class="cw-pill" aria-hidden="true">' + pctTxt + '</span>'
+    + '<span class="cw-sr">컨텍스트 ' + formatTokens(used) + ' / ' + cwShort(win) + ' 토큰 사용, ' + pctTxt + (auto > 0 ? ', 자동 압축 ' + cwShort(auto) : '') + '</span></div>'
+    + '<div class="cw-field" aria-hidden="true">' + cells + '</div>'
+    + '<ul class="cw-parts">' + rows + '</ul>'
+    + '<div class="cw-foot"><span class="cw-say"><span class="cw-say-t' + (say.tone ? ' is-' + say.tone : '') + '" data-mk="say-' + say.id + '">' + say.html + '</span></span>'
+    + '<span class="cw-sr" aria-live="polite">' + (CW_ANNOUNCE[say.id] ? say.sr || say.html : '') + '</span>'
+    + cwCompactHtml(s, phase, used) + '</div></section>';
+}
+// What the session did since the last render (D12/D20): a new panel session
+// or a count that went down (the thread's session started over) resets the block; a rise of its compaction count is a compaction observed —
+// it ends a sent request (done) and waits for THAT compaction's SDK counts
+// (lastCompact differs from what the card held before the rise; they are stored
+// just after the boundary's broadcast) or the next context sample; a request
+// never answered ends at 5 min.
+function cwObserve(s, now) {
+  var n = toNum(s.compactionCount);
+  var lc = s.lastCompact;
+  var sig = lc ? toNum(lc.preTokens) + '/' + toNum(lc.postTokens) : '';
+  if (_cw.key !== s.key || n < _cw.count) {
+    // Another session, or this thread's session started over (/new · /renew
+    // zero its count): nothing carries over, an answer in flight is stale.
+    _cw = { key: s.key, count: n, armedAt: 0, reqId: 0, req: '', reqAt: 0, obsInReq: false, queued: false, doneAt: 0, observedAt: 0, savedWait: 0, usedAtRise: 0, lcSeen: sig, lcAtRise: '', savedAt: 0, failAt: 0, timedOutAt: 0 };
+    _cwHot = '';
+    return;
+  }
+  if (n > _cw.count) {
+    _cw.count = n;
+    _cw.observedAt = now;
+    _cw.savedWait = now;
+    _cw.usedAtRise = toNum(s.contextTokens);
+    // Counts already on the card before this rise belong to an earlier compaction.
+    _cw.lcAtRise = _cw.lcSeen;
+    cwLater(CW_SAVED_MS);
+    if (_cw.req === 'sent') {
+      _cw.req = '';
+      _cw.doneAt = now;
+      cwLater(CW_DONE_MS);
+      cwLater(CW_DONE_MS + CW_LEAVE_MS);
+    } else if (_cw.req === 'sending') {
+      // Seen before the request was even answered: its answer decides (cwCompact).
+      _cw.obsInReq = true;
+    }
+  }
+  if (_cw.savedWait) {
+    if (sig && sig !== _cw.lcAtRise) {
+      // The new compaction's own SDK counts (recorded just after its boundary broadcast).
+      _cw.savedWait = 0;
+      _cw.savedAt = now;
+      cwLater(CW_SAVED_MS);
+    } else if (toNum(s.contextTokens) !== _cw.usedAtRise || now - _cw.savedWait >= CW_CEIL_MS) {
+      _cw.savedWait = 0;
+    }
+  }
+  _cw.lcSeen = sig;
+  if ((_cw.req === 'sending' || _cw.req === 'sent') && now - _cw.reqAt >= CW_CEIL_MS) {
+    _cw.req = '';
+    _cw.timedOutAt = now;
+    cwLater(CW_FAIL_MS);
+  }
+}
+// Repaint the open panel's 세션 정보 once a timed state (armed, done, saved, failed) ends.
+function cwLater(ms) {
+  setTimeout(function() { if (panelOpen) renderPanelInfo(); }, ms + 20);
+}
+// The big number rolls to its target both ways (640ms, ease-out quart); the
+// first paint, another session, a background tab and reduced motion set it at once.
+function cwRoll(el, to) {
+  if (!el) return;
+  var r = _cwRoll;
+  if (r.raf) { cancelAnimationFrame(r.raf); r.raf = 0; }
+  var from = r.el === el && r.key === _cw.key && r.shown >= 0 ? r.shown : to;
+  r.el = el;
+  r.key = _cw.key;
+  if (from === to || reduceMotion() || !canAnimate()) {
+    r.shown = to;
+    el.textContent = formatTokens(to);
+    return;
+  }
+  el.textContent = formatTokens(from);
+  var t0 = performance.now();
+  function step(t) {
+    var p = Math.min(1, (t - t0) / CW_ROLL_MS);
+    r.shown = from + (to - from) * (1 - Math.pow(1 - p, 4));
+    el.textContent = formatTokens(r.shown);
+    r.raf = p < 1 ? requestAnimationFrame(step) : 0;
+  }
+  r.raf = requestAnimationFrame(step);
+}
+// Hover lives outside the markup (D11): every write strips it (domMorph follows
+// the fresh attributes), so it is put back — the hot part's cells lift and its
+// row lights, the rest dims, the figure rolls to the part and says its share.
+function cwApply(root) {
+  var cw = root && root.querySelector ? root.querySelector('.cw') : null;
+  if (!cw) return;
+  var key = _cwHot;
+  var row = key ? cw.querySelector('.cw-part[data-part="' + key + '"]') : null;
+  if (!row) key = '';
+  var field = cw.querySelector('.cw-field');
+  if (field && key) field.setAttribute('data-hot', '');
+  else if (field) field.removeAttribute('data-hot');
+  var cells = cw.querySelectorAll('.cw-cell[data-part]');
+  for (var i = 0; i < cells.length; i++) {
+    if (key && cells[i].getAttribute('data-part') === key) cells[i].setAttribute('data-on', '');
+    else cells[i].removeAttribute('data-on');
+  }
+  var rows = cw.querySelectorAll('.cw-part, .cw-mark');
+  for (var j = 0; j < rows.length; j++) {
+    var mine = !!key && rows[j].getAttribute('data-part') === key;
+    if (mine) rows[j].setAttribute('data-hot', '');
+    else rows[j].removeAttribute('data-hot');
+    if (key && !mine) rows[j].setAttribute('data-dim', '');
+    else rows[j].removeAttribute('data-dim');
+  }
+  var ofEl = cw.querySelector('.cw-of');
+  if (ofEl) {
+    var txt = key ? row.getAttribute('data-of') : ofEl.getAttribute('data-total');
+    if (ofEl.textContent !== txt) ofEl.textContent = txt;
+  }
+  var big = cw.querySelector('.cw-big');
+  if (big) cwRoll(big, toNum(key ? row.getAttribute('data-tok') : big.getAttribute('data-to')));
+}
+// Bound once on #panel-info. Mouse only (touch has no hover): a part's row or
+// one of its cells makes it hot, anything else clears it. Escape or leaving
+// the armed button disarms it — Escape then stays here, the panel stays open.
+function cwBind(el) {
+  if (!el || el._cwBound) return;
+  el._cwBound = true;
+  el.addEventListener('pointerover', function(e) {
+    if (e.pointerType !== 'mouse') return;
+    var inBlock = e.target && e.target.closest ? e.target.closest('.cw') : null;
+    var part = inBlock ? e.target.closest('.cw-part[data-part], .cw-cell[data-part]') : null;
+    var key = part ? part.getAttribute('data-part') : '';
+    if (key !== _cwHot) {
+      _cwHot = key;
+      cwApply(el);
+    }
+  });
+  el.addEventListener('pointerleave', function() {
+    if (!_cwHot) return;
+    _cwHot = '';
+    cwApply(el);
+  });
+  el.addEventListener('keydown', function(e) {
+    if (e.key === 'Escape' && _cw.armedAt) {
+      e.stopPropagation();
+      _cw.armedAt = 0;
+      renderPanelInfo();
+    }
+  });
+  el.addEventListener('focusout', function(e) {
+    if (!_cw.armedAt || !e.target || !e.target.classList || !e.target.classList.contains('cw-compact')) return;
+    _cw.armedAt = 0;
+    renderPanelInfo();
+  });
+}
+// 지금 압축 (D12): the first press arms it for 4s, the second sends the owner's
+// own 'compact --yes' — the owner-gated command route (requireSessionOwner) and
+// the text the model switch already sends (index.ts dispatchCompact); a running
+// turn queues it. Sending, then sent, until a compaction is observed (cwObserve),
+// the request fails, or the 5-minute ceiling.
+async function cwCompact() {
+  var key = panelSessionKey;
+  var s = key ? _sessionCache[key] : null;
+  if (!s || cwCanCompact(s)) return;
+  var now = Date.now();
+  cwObserve(s, now);
+  if (_cw.req === 'sending' || _cw.req === 'sent') return;
+  if (!_cw.armedAt || now - _cw.armedAt >= CW_ARM_MS) {
+    _cw.armedAt = now;
+    cwLater(CW_ARM_MS);
+    renderPanelInfo();
+    return;
+  }
+  var id = ++_cwSeq;
+  _cw.armedAt = 0;
+  _cw.reqId = id;
+  _cw.req = 'sending';
+  _cw.reqAt = now;
+  _cw.obsInReq = false;
+  _cw.queued = s.activityState === 'working' || s.activityState === 'waiting'; // a turn holds the slot: the command waits behind it
+  _cw.failAt = 0;
+  _cw.timedOutAt = 0;
+  cwLater(CW_CEIL_MS);
+  renderPanelInfo();
+  var ok = false;
+  try {
+    var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/command';
+    var body = JSON.stringify({ message: 'compact --yes' });
+    var headers = { 'Content-Type': 'application/json' };
+    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+    var res = await fetch(url, { method: 'POST', headers: headers, body: body });
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      headers = { 'Content-Type': 'application/json' };
+      if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+      res = await fetch(url, { method: 'POST', headers: headers, body: body });
+    }
+    ok = !!res.ok;
+  } catch (e) {
+    ok = false;
+  }
+  // Only this request's own state: a stale answer (another panel session, a
+  // session that started over, a newer request) touches nothing.
+  if (_cw.key === key && _cw.reqId === id && _cw.req === 'sending') {
+    if (!ok) {
+      _cw.req = 'failed';
+      _cw.failAt = Date.now();
+      cwLater(CW_FAIL_MS);
+    } else if (_cw.obsInReq) {
+      _cw.req = '';
+      _cw.doneAt = Date.now();
+      cwLater(CW_DONE_MS);
+      cwLater(CW_DONE_MS + CW_LEAVE_MS);
+    } else {
+      _cw.req = 'sent';
+    }
+  }
+  if (panelSessionKey === key) renderPanelInfo();
 }
 
 // The goal's home (spec 13, moved from the card): the shared goal component —
@@ -9779,7 +11222,6 @@ function cardGoalLine(s, col, canEdit) {
 //   Slack, 작업 로그.
 // The complete record — meta, every number, titled links, the goal editor, the
 // whole task ledger, the rich agent tree — is the panel's.
-var _cardModelOpen = Object.create(null); // card key → the footer switch unfolded (< 640px)
 function renderCardBody(s, col) {
   // Owner gating — server-side requireSessionOwner is the authoritative guard;
   // this is UX only. Fail closed: if ownerId is missing (legacy record) the
@@ -9790,21 +11232,23 @@ function renderCardBody(s, col) {
   // needs a descriptive tooltip (e.g. pending-question choices).
   const readOnlyAttrs = isOwner ? '' : ' disabled';
   const isSibling = !!(SELF_INSTANCE_NAME && s.environment && s.environment.instanceName && s.environment.instanceName !== SELF_INSTANCE_NAME);
+  // re-agent-inbox D10: what this viewer can settle here — the owner's question on
+  // this instance, a permission prompt they asked for. One gate for the ink.
+  const canAnswerQuestion = !isSibling && isOwner && col === 'waiting' && !!s.pendingQuestion;
 
-  // The open card's quick switch (T4/T5, 10-23 T1): model · effort, among the
-  // representative models; below 640px it folds behind one toggle.
+  // The open card's quick switch (T4/T5, 10-23 T1; re-model-picker D1): the
+  // owner's one trigger opens the model · effort menu; others read model · level.
+  // ui.dashboardheader 'model' gates the read-only name only — the trigger is the
+  // owner's control for effort too (the effort switch was never behind that gate).
   const modelShort = esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '');
   const canSwitchModel = isOwner && col !== 'closed' && !s.terminated && !isSiblingSession(s);
   const modelParts = [];
-  if (dhShow('model') && (modelShort || canSwitchModel)) modelParts.push(renderModelPicker(s, canSwitchModel, modelShort));
-  if (s.effort || canSwitchModel) modelParts.push(renderEffortPicker(s, canSwitchModel));
-  const modelOpen = !!_cardModelOpen[s.key];
-  const modelHtml = modelParts.length
-    ? '<span class="cfb-model">'
-      + '<button type="button" class="cfb-model-toggle" aria-expanded="' + (modelOpen ? 'true' : 'false') + '" onclick="event.stopPropagation();toggleCardModel(\\'' + escJs(s.key) + '\\')">'
-      + (modelShort || '모델') + (s.effort ? ' &middot; ' + esc(effortLabel(s.effort)) : '') + ' &#x25BE;</button>'
-      + '<span class="cb-model' + (modelOpen ? ' is-open' : '') + '">' + modelParts.join('') + '</span></span>'
-    : '';
+  if (canSwitchModel) modelParts.push(renderModelPicker(s, true, modelShort, 'card'));
+  else {
+    if (dhShow('model') && modelShort) modelParts.push(renderModelPicker(s, false, modelShort, 'card'));
+    if (s.effort) modelParts.push(renderEffortPicker(s, false));
+  }
+  const modelHtml = modelParts.length ? '<span class="cfb-model">' + modelParts.join('') + '</span>' : '';
   const modelNote = renderModelNote(s);
 
   // #814 env badge — only shown when multiple distinct envs are present in
@@ -9845,7 +11289,7 @@ function renderCardBody(s, col) {
         var recLabel = stripRecommendedMarker(recOpt.label);
         var recTitle = isOwner ? (recOpt.description || recLabel) : READ_ONLY_MSG;
         recHtml = '<div class="choice-row-recommended">'
-          + '<button class="btn-choice btn-choice-recommended"' + readOnlyAttrs + choiceDataAttrs(s.key, recOpt.id, recLabel, pq.question) + ' title="' + escAttr(recTitle) + '">' + esc(recOpt.id) + '. ' + esc(recLabel) + '</button>'
+          + '<button class="btn-choice btn-choice-recommended' + (canAnswerQuestion ? '' : ' is-quiet') + '"' + readOnlyAttrs + choiceDataAttrs(s.key, recOpt.id, recLabel, pq.question) + ' title="' + escAttr(recTitle) + '">' + esc(recOpt.id) + '. ' + esc(recLabel) + '</button>'
           + '</div>'
           + (otherOpts.length > 0 ? '<hr class="choice-divider">' : '');
       }
@@ -9878,7 +11322,12 @@ function renderCardBody(s, col) {
 
   // 작업 로그 opens the slide panel (details + message box) scrolled to the work
   // log — for every card; without a conversation the log reads "작업 로그 없음".
-  const worklogBtn = '<button type="button" class="btn-action btn-primary" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',true,\\'\\',event.detail===0)">작업 로그</button>';
+  // One primary per open card (re-agent-inbox D10): when this viewer can settle
+  // something here — the owner's pending question, a permission prompt they
+  // asked for — that decision is the primary and 작업 로그 steps back.
+  const canDecideHere = canAnswerQuestion
+    || (!isSibling && col !== 'closed' && (s.pendingPermissions || []).some(function(p) { return !!(p && p.requesterId && currentUserId && p.requesterId === currentUserId); }));
+  const worklogBtn = '<button type="button" class="btn-action' + (canDecideHere ? '' : ' btn-primary') + '" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',true,\\'\\',event.detail===0)">작업 로그</button>';
   const slackBtn = (dhShow('links') && s.slackThreadUrl)
     ? '<a class="btn-action" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>'
     : '';
@@ -9896,17 +11345,15 @@ function renderCardBody(s, col) {
     + footHtml
     + '</div>';
 }
-function toggleCardModel(key) {
-  if (_cardModelOpen[key]) delete _cardModelOpen[key];
-  else _cardModelOpen[key] = true;
-  refreshCard(key);
-}
 
-// ── Model switch on the open card (SSOT 2026-10-22 T4/T5) ──
-// A <select> of the representative models (REPRESENTATIVE_MODELS). An option
-// whose auto-compact threshold is below what the context holds now says the
-// switch compacts first: the server compacts on the current model and switches
-// at the compact's boundary (the card shows the waiting switch meanwhile).
+// ── Model · effort on the open card and beside the panel's composer ──
+// SSOT 2026-10-22 T4/T5 · 10-23 T1, shaped after affectUI Model Picker
+// (.prd/affectui/re-model-picker.md): the owner gets one trigger per surface
+// that opens one menu — the representative models (REPRESENTATIVE_MODELS) with
+// window · autocompact · cost bars, the effort levels the model runs, a price
+// tray. A model whose auto-compact threshold is below what the context holds
+// now says the switch compacts first: the server compacts on the current model
+// and switches at the compact's boundary (the strip shows the waiting switch).
 var _modelNotes = Object.create(null); // card key → { text, error }
 // One write in flight per session and operation (model · effort · goal ·
 // action), shared by the open card and the panel: every renderer reads it, so
@@ -9919,23 +11366,27 @@ function setBusy(key, op, on) {
   if (on) _busy[key + '|' + op] = true;
   else delete _busy[key + '|' + op];
 }
-function renderModelPicker(s, canSwitch, modelShort) {
+function renderModelPicker(s, canSwitch, modelShort, surface) {
+  if (!canSwitch) return '<span class="cb-model-name">' + modelShort + '</span>';
+  // D1 — one trigger: glyph · model · the level that runs · chevron; never disabled
+  // (effort stays switchable while a model switch waits — also with no model list), busy while a write runs.
   var models = REPRESENTATIVE_MODELS || [];
-  var current = null;
-  for (var i = 0; i < models.length; i++) if (models[i].model === s.model) current = models[i];
-  if (!canSwitch || !models.length) return '<span class="cb-model-name">' + modelShort + '</span>';
-  var used = toNum(s.contextTokens);
-  var opts = '';
-  if (!current) opts += '<option value="" selected disabled>' + (modelShort || '모델 선택') + '</option>';
-  for (var j = 0; j < models.length; j++) {
-    var m = models[j];
-    var label = m.nickname + ' · autocompact ' + formatTokens(m.autoCompactTokens)
-      + (m !== current && used > toNum(m.autoCompactTokens) ? ' · compact 후 전환' : '');
-    opts += '<option value="' + escAttr(m.nickname) + '"' + (m === current ? ' selected' : '') + '>' + esc(label) + '</option>';
-  }
-  var busy = isBusy(s.key, 'model');
-  return '<select class="cb-model-select" aria-label="모델 변경"' + (s.pendingModel || busy ? ' disabled' : '') + (busy ? ' aria-busy="true"' : '')
-    + ' onclick="event.stopPropagation()" onchange="changeModel(\\'' + escJs(s.key) + '\\',this)">' + opts + '</select>';
+  var where = surface === 'panel' ? 'panel' : 'card';
+  var cur = null;
+  for (var i = 0; i < models.length; i++) if (models[i].model === s.model) cur = models[i];
+  var name = cur ? cur.label || cur.nickname : mpShort(s) || '모델';
+  var level = s.effortEffective || s.effort;
+  var open = _mp.key === s.key && _mp.surface === where;
+  var busy = isBusy(s.key, 'model') || isBusy(s.key, 'effort');
+  return '<button type="button" class="mp-trigger" aria-haspopup="dialog" aria-expanded="' + (open ? 'true' : 'false') + '" aria-controls="mp-menu"'
+    + ' data-mp-key="' + escAttr(s.key) + '" data-mp-surface="' + where + '"'
+    + ' aria-label="' + escAttr('모델 ' + name + (level ? ', effort ' + effortLabel(level) : '') + ' — 바꾸기') + '"'
+    + (busy ? ' aria-busy="true"' : '')
+    + ' onclick="event.stopPropagation();mpToggleFrom(this)" onkeydown="mpTriggerKey(event,this)">'
+    + '<span class="mp-glyph" aria-hidden="true">' + esc((cur ? cur.nickname : name).charAt(0).toUpperCase()) + '</span>'
+    + '<span class="mp-name">' + esc(name) + '</span>'
+    + (level ? '<span class="mp-level">&middot; ' + esc(effortLabel(level)) + '</span>' : '')
+    + '<span class="mp-chev" aria-hidden="true"></span></button>';
 }
 function renderModelNote(s) {
   if (s.pendingModel) {
@@ -9969,34 +11420,19 @@ function modelSwitchNote(r) {
   if (res.status === 'unchanged') return { text: '이미 ' + res.nickname + '입니다', error: false };
   return { text: res.nickname + '(으)로 전환 · autocompact ' + formatTokens(res.autoCompactTokens), error: false };
 }
-// A refused (or refused-to-start) switch puts the picker back on the session's
-// value — the option the surface rendered as selected.
-function resetPicker(select) {
-  if (!select || !select.options) return;
-  for (var i = 0; i < select.options.length; i++) if (select.options[i].defaultSelected) select.selectedIndex = i;
-}
-async function changeModel(key, select) {
-  var nickname = select && select.value;
+async function changeModel(key, nickname) {
   if (!nickname) return;
   // One switch at a time per session, whichever surface asks (spec 13 §3.5).
-  if (isBusy(key, 'model')) { resetPicker(select); return; }
-  if (select) select.disabled = true;
+  if (isBusy(key, 'model')) return;
   setBusy(key, 'model', true);
-  // The other surface's picker shows the switch in flight at once (a focused picker is left alone).
+  // The other surface shows the switch in flight at once.
   refreshCard(key);
   repaintPanelControlsFor(key);
   var r;
   try { r = await postModelSwitch(key, nickname); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
   setBusy(key, 'model', false);
+  // A refused switch needs no undo: the surfaces render the session's model again.
   _modelNotes[key] = modelSwitchNote(r);
-  if (select) {
-    select.disabled = false;
-    select.blur();
-    // A refused switch puts the picker back on the session's model (the
-    // option the card rendered as selected) — also when the same refusal
-    // leaves the card's markup unchanged and the refresh writes nothing.
-    if (!r.ok) resetPicker(select);
-  }
   refreshCard(key);
   repaintPanelControlsFor(key);
   loadSessions();
@@ -10011,21 +11447,12 @@ function effortLabel(level) {
   return EFFORT_LABELS[level] || String(level || '');
 }
 function renderEffortPicker(s, canSwitch) {
-  var levels = EFFORT_LEVELS || [];
+  // The owner's control lives in the model menu (renderEffortControl); others read the level.
+  if (canSwitch) return renderEffortControl(s);
   var capped = s.effortEffective && s.effortEffective !== s.effort
     ? ' title="이 모델은 ' + escAttr(effortLabel(s.effortEffective)) + '까지 실행합니다"' : ' title="Reasoning effort"';
-  if (!canSwitch || !levels.length) {
-    return '<span class="meta-effort"' + capped + '>' + esc(effortLabel(s.effort))
-      + (s.effortEffective && s.effortEffective !== s.effort ? ' &rarr; ' + esc(effortLabel(s.effortEffective)) : '') + '</span>';
-  }
-  var opts = '';
-  for (var i = 0; i < levels.length; i++) {
-    opts += '<option value="' + escAttr(levels[i]) + '"' + (levels[i] === s.effort ? ' selected' : '') + '>'
-      + esc('Effort · ' + effortLabel(levels[i])) + '</option>';
-  }
-  var busy = isBusy(s.key, 'effort');
-  return '<select class="cb-model-select cb-effort-select" aria-label="Effort 변경"' + capped + (busy ? ' disabled aria-busy="true"' : '')
-    + ' onclick="event.stopPropagation()" onchange="changeEffort(\\'' + escJs(s.key) + '\\',this)">' + opts + '</select>';
+  return '<span class="meta-effort"' + capped + '>' + esc(effortLabel(s.effort))
+    + (s.effortEffective && s.effortEffective !== s.effort ? ' &rarr; ' + esc(effortLabel(s.effortEffective)) : '') + '</span>';
 }
 async function postEffortSwitch(key, effort) {
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/effort';
@@ -10051,63 +11478,578 @@ function effortSwitchNote(r) {
   var capped = res.effective && res.effective !== res.effort ? ' (이 모델은 ' + effortLabel(res.effective) + '까지 실행)' : '';
   return { text: 'effort ' + effortLabel(res.effort) + ' · 다음 턴부터 적용' + capped, error: false };
 }
-async function changeEffort(key, select) {
-  var effort = select && select.value;
+async function changeEffort(key, effort) {
   if (!effort) return;
-  if (isBusy(key, 'effort')) { resetPicker(select); return; }
-  if (select) select.disabled = true;
+  if (isBusy(key, 'effort')) return;
   setBusy(key, 'effort', true);
   refreshCard(key);
   repaintPanelControlsFor(key);
+  if (_mp.key === key) mpRepaint();
   var r;
   try { r = await postEffortSwitch(key, effort); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
   setBusy(key, 'effort', false);
   _modelNotes[key] = effortSwitchNote(r);
-  if (select) {
-    select.disabled = false;
-    select.blur();
-    // Like the model: a refusal shows the level that still runs, also when the markup does not change.
-    if (!r.ok) resetPicker(select);
-  }
+  mpApplyEffort(key, r);
   refreshCard(key);
   repaintPanelControlsFor(key);
+  if (_mp.key === key) mpRepaint();
   loadSessions();
 }
-// Model · effort beside the composer (spec 13): this session's, one click
-// each; below 640px folded behind one toggle. Their own container — the
-// message input is never inside a morph root. An open picker survives live updates.
-var _panelControlsOpen = false;
+// What the server answered is the session's level now — the open menu's thumb
+// does not wait for the next poll (a refusal changes nothing).
+function mpApplyEffort(key, r) {
+  var cs = _sessionCache[key];
+  var res = r && r.ok ? r.result : null;
+  if (!cs || !res || !res.effort) return;
+  cs.effort = res.effort;
+  if (res.effective && res.effective !== res.effort) cs.effortEffective = res.effective;
+  else delete cs.effortEffective;
+}
+// Model · effort beside the composer (spec 13): this session's — one trigger
+// for the owner (the menu opens above it), the plain text for others.
 function renderPanelControls(s) {
   var el = document.getElementById('panel-controls');
   if (!el || !s) return;
-  var a = document.activeElement;
-  if (a && el.contains(a) && a.tagName === 'SELECT') return; // an open picker survives live updates
+  // The open menu follows the session; its anchor here holds still until it closes.
+  if (_mp.key === s.key) mpRepaint();
+  if (el.querySelector('.mp-trigger[aria-expanded="true"]')) return;
   var isOwner = !!s.ownerId && s.ownerId === currentUserId;
   var canSwitch = isOwner && !s.terminated && s.sessionState !== 'SLEEPING' && !isSiblingSession(s);
   var modelShort = esc(s.model || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
-  var html = '<button type="button" class="pc-toggle" aria-expanded="' + (_panelControlsOpen ? 'true' : 'false') + '" onclick="togglePanelControls()">'
-    + '모델 ' + (modelShort || '—') + (s.effort ? ' &middot; ' + esc(effortLabel(s.effort)) : '') + ' &#x25BE;</button>'
-    + '<span class="pc-pick' + (_panelControlsOpen ? ' is-open' : '') + '"><span class="pc-scope">이 세션</span>'
-    + renderModelPicker(s, canSwitch, modelShort)
-    + renderEffortPicker(s, canSwitch) + '</span>'
+  var html = '<span class="pc-scope">이 세션</span>'
+    + renderModelPicker(s, canSwitch, modelShort, 'panel')
+    + (canSwitch ? '' : renderEffortPicker(s, false))
     + renderModelNote(s);
-  el.classList.toggle('is-open', _panelControlsOpen);
   if (el._html === html) return;
   morphInnerHtml(el, html);
   el._html = html;
 }
-function togglePanelControls() {
-  _panelControlsOpen = !_panelControlsOpen;
-  // A focused picker would keep renderPanelControls from writing: let go of it first.
-  var c = document.getElementById('panel-controls');
-  var a = document.activeElement;
-  if (c && a && a.tagName === 'SELECT' && c.contains(a) && a.blur) a.blur();
-  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  if (s) renderPanelControls(s);
-}
 // After a switch on either surface: the panel's copy follows at once.
 function repaintPanelControlsFor(key) {
   if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelControls(_sessionCache[key]);
+}
+// ── The model · effort menu (affectUI Model Picker — re-model-picker D2–D12) ──
+// One menu for both surfaces, in <body> (fixed): the open card clips its body
+// (overflow: hidden for the fold), so a menu inside it would be cut off. The
+// trigger is found again by its key + surface after any re-render.
+// The open menu: whose (session key + surface), the active row, whether the
+// pointer or the arrows point at it, the tray's shown prices (they roll).
+var _mp = { key: null, surface: null, activeId: null, pointing: false, shown: null, raf: 0, placeRaf: 0, watch: 0, at: null, sig: '' };
+var MP_EFFORT_SHORT = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'XHigh', max: 'Max' };
+var MP_ROLL_MS = 560;
+function mpShort(s) {
+  return String((s && s.model) || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
+}
+// The rows: the representative models in server order, after the session's own
+// model when it is not one of them (current, not selectable).
+function mpOptions(s) {
+  var models = REPRESENTATIVE_MODELS || [];
+  var out = [];
+  var listed = false;
+  for (var i = 0; i < models.length; i++) if (models[i].model === s.model) listed = true;
+  if (!listed) out.push({ m: null, outside: true });
+  for (var j = 0; j < models.length; j++) out.push({ m: models[j], outside: false });
+  return out;
+}
+function mpCurrentIndex(s, opts) {
+  for (var i = 0; i < opts.length; i++) {
+    if (opts[i].outside || (opts[i].m && opts[i].m.model === s.model)) return i;
+  }
+  return 0;
+}
+// A row is named by its model, never by its position: the list is rebuilt from
+// the latest session (a model outside the list comes and goes as the first row),
+// so an index kept across updates could name another model (R1 astra P1).
+function mpOptId(o) {
+  return o && o.m ? o.m.nickname : '';
+}
+function mpIndexOf(opts, id) {
+  for (var i = 0; i < opts.length; i++) if (mpOptId(opts[i]) === id) return i;
+  return -1;
+}
+// The active row: the one last pointed at while it is still in the list, else the session's model.
+function mpActiveIndex(s, opts) {
+  var i = _mp.activeId === null ? -1 : mpIndexOf(opts, _mp.activeId);
+  return i >= 0 ? i : mpCurrentIndex(s, opts);
+}
+// D4 — filled segments of a 5-segment meter: v against the largest of the menu;
+// 0 (no meter) when the value is unknown.
+function mpSegments(v, max) {
+  v = toNum(v);
+  max = toNum(max);
+  if (!(v > 0) || !(max > 0)) return 0;
+  return Math.max(1, Math.min(5, Math.round((5 * v) / max)));
+}
+function mpMax(models) {
+  var mx = { win: 0, ac: 0, out: 0 };
+  for (var i = 0; i < models.length; i++) {
+    var m = models[i];
+    mx.win = Math.max(mx.win, toNum(m.contextWindow));
+    mx.ac = Math.max(mx.ac, toNum(m.autoCompactTokens));
+    if (m.price) mx.out = Math.max(mx.out, toNum(m.price.output));
+  }
+  return mx;
+}
+// 창 · 압축 · 비용: context window, auto-compact threshold, output price per M tokens.
+function mpMetersHtml(m, mx) {
+  var vals = m
+    ? [mpSegments(m.contextWindow, mx.win), mpSegments(m.autoCompactTokens, mx.ac), m.price ? mpSegments(m.price.output, mx.out) : 0]
+    : [0, 0, 0];
+  var html = '<span class="mp-bars" aria-hidden="true">';
+  for (var c = 0; c < 3; c++) {
+    if (!vals[c]) {
+      html += '<span class="mp-meter is-none">&mdash;</span>';
+      continue;
+    }
+    html += '<span class="mp-meter" style="--c:' + c + '">';
+    for (var k = 0; k < 5; k++) html += '<span class="mp-seg" style="--s:' + k + '"' + (k < vals[c] ? ' data-on=""' : '') + '></span>';
+    html += '</span>';
+  }
+  return html + '</span>';
+}
+// Dollars, whole when the target is whole (a rolling value keeps the target's form).
+function mpMoney(v, ref) {
+  var n = toNum(v);
+  var t = ref === undefined ? n : toNum(ref);
+  return '$' + (Math.round(t) === t ? String(Math.round(n)) : n.toFixed(2));
+}
+function mpPriceWords(m) {
+  return m && m.price ? '입력 ' + mpMoney(m.price.input) + ' · 출력 ' + mpMoney(m.price.output) + ' / 백만 토큰' : '가격 정보 없음';
+}
+// D8 — the tray of the lit row, and the sentence the live region reads once.
+function mpTray(o) {
+  var m = o && o.m;
+  if (!m) return { html: '전환 목록 밖 모델 · 가격 정보 없음', sr: '전환 목록 밖 모델, 가격 정보 없음' };
+  var win = '창 ' + formatTokens(m.contextWindow);
+  var name = m.label || m.nickname;
+  if (!m.price) return { html: '가격 정보 없음 · ' + esc(win), sr: name + ': 가격 정보 없음, ' + win };
+  return {
+    html: '입력 <b class="mp-roll" data-mp-roll="input">' + mpMoney(m.price.input) + '</b> · 출력 <b class="mp-roll" data-mp-roll="output">'
+      + mpMoney(m.price.output) + '</b> / M · ' + esc(win),
+    sr: name + ': ' + mpPriceWords(m) + ', ' + win,
+  };
+}
+// D6/D7 — the levels the session's model runs (all of them when the catalog has no menu for it).
+function mpEffortLevels(s) {
+  var all = EFFORT_LEVELS || [];
+  var menu = s.effortLevels && s.effortLevels.length ? s.effortLevels : null;
+  var out = [];
+  for (var i = 0; i < all.length; i++) if (!menu || menu.indexOf(all[i]) >= 0) out.push(all[i]);
+  return out.length ? out : all.slice();
+}
+// D7 — effort as a radiogroup with one tab stop; checked = the level that runs.
+function renderEffortControl(s) {
+  var levels = mpEffortLevels(s);
+  var on = s.effortEffective || s.effort;
+  var idx = levels.indexOf(on);
+  var capped = !!(s.effortEffective && s.effortEffective !== s.effort);
+  var html = '<div class="mp-effort"><div class="mp-effort-head"><span class="mp-effort-label" id="mp-effort-label">Effort</span>'
+    + (capped ? '<span class="mp-effort-cap">설정 ' + esc(effortLabel(s.effort)) + ' &rarr; 이 모델은 ' + esc(effortLabel(s.effortEffective)) + '까지 실행</span>' : '')
+    + '</div><div class="mp-seg-ctl" role="radiogroup" aria-labelledby="mp-effort-label"' + (isBusy(s.key, 'effort') ? ' aria-disabled="true"' : '')
+    + ' style="--i:' + Math.max(0, idx) + ';--n:' + levels.length + '">'
+    + (idx >= 0 ? '<span class="mp-thumb" aria-hidden="true"></span>' : '');
+  for (var i = 0; i < levels.length; i++) {
+    var l = levels[i];
+    var checked = l === on;
+    html += '<button type="button" class="mp-seg-btn" role="radio" data-mp-effort="' + escAttr(l) + '" aria-checked="' + (checked ? 'true' : 'false') + '"'
+      + ' tabindex="' + (checked || (idx < 0 && i === 0) ? '0' : '-1') + '" aria-label="' + escAttr(effortLabel(l)) + '">'
+      + esc(MP_EFFORT_SHORT[l] || effortLabel(l)) + '</button>';
+  }
+  return html + '</div></div>';
+}
+// D3 — the menu's content for one session: head, list, effort, tray.
+function renderModelMenu(s) {
+  var opts = mpOptions(s);
+  var cur = mpCurrentIndex(s, opts);
+  var active = mpActiveIndex(s, opts);
+  var lit = _mp.pointing ? active : cur;
+  var mx = mpMax(REPRESENTATIVE_MODELS || []);
+  var used = toNum(s.contextTokens);
+  var locked = !!s.pendingModel || isBusy(s.key, 'model');
+  var html = '<div class="mp-card"><div class="mp-head" aria-hidden="true"><span>이 세션 모델</span>'
+    + '<span class="mp-cols"><span>창</span><span>압축</span><span>비용</span></span></div>';
+  if (locked) html += '<div class="mp-wait">' + (s.pendingModel ? 'compact 후 ' + esc(s.pendingModel) + '(으)로 전환 대기 중' : '모델 전환 중…') + '</div>';
+  html += '<div class="mp-list" role="listbox" aria-label="모델" tabindex="0" aria-activedescendant="mp-opt-' + active + '"'
+    + (locked ? ' aria-disabled="true"' : '') + (_mp.pointing ? ' data-pointing=""' : '') + '>';
+  for (var i = 0; i < opts.length; i++) {
+    var m = opts[i].m;
+    var isCur = i === cur;
+    var name = m ? m.label || m.nickname : mpShort(s) || '모델';
+    var desc = m
+      ? m.nickname + ' · autocompact ' + formatTokens(m.autoCompactTokens) + (!isCur && used > toNum(m.autoCompactTokens) ? ' · compact 후 전환' : '')
+      : '현재 · 전환 목록 밖';
+    var label = name + ', ' + desc + (m ? '. 창 ' + formatTokens(m.contextWindow) + ', ' + mpPriceWords(m) : '');
+    html += '<div class="mp-opt" id="mp-opt-' + i + '" role="option" data-mp-i="' + i + '"' + (m ? ' data-mp-nick="' + escAttr(m.nickname) + '"' : '')
+      + ' aria-selected="' + (isCur ? 'true' : 'false') + '"' + (locked || !m ? ' aria-disabled="true"' : '')
+      + (i === active ? ' data-active=""' : '') + (i === lit ? ' data-lit=""' : '') + ' aria-label="' + escAttr(label) + '">'
+      + '<span class="mp-glyph" aria-hidden="true">' + esc((m ? m.nickname : name).charAt(0).toUpperCase()) + '</span>'
+      + '<span class="mp-title"><span class="mp-title-name">' + esc(name) + '</span>'
+      + (isCur ? '<span class="mp-check" aria-hidden="true">&#x2713;</span>' : '') + '</span>'
+      + mpMetersHtml(m, mx)
+      + '<span class="mp-desc">' + esc(desc) + '</span></div>';
+  }
+  html += '</div><div class="mp-settings">' + renderEffortControl(s);
+  // One alert region, always there: a failed write while the menu is open is announced here
+  // (the strip's own alert waits until the menu closes).
+  var note = _modelNotes[s.key];
+  html += '<div class="mp-err" role="alert">' + (note && note.error ? esc(note.text) : '') + '</div>';
+  var tray = mpTray(opts[lit]);
+  return html + '</div></div><div class="mp-foot"><span class="mp-caption" aria-hidden="true">' + tray.html + '</span>'
+    + '<span class="mp-keys" aria-hidden="true"><kbd>&#x2191;&#x2193;</kbd><kbd>&#x21B5;</kbd></span>'
+    + '<span class="mp-sr" aria-live="polite">' + esc(tray.sr) + '</span></div>';
+}
+// The trigger the open menu hangs from (found again after any re-render).
+function mpAnchor() {
+  if (!_mp.key) return null;
+  var all = document.querySelectorAll('.mp-trigger');
+  for (var i = 0; i < all.length; i++) {
+    if (all[i].getAttribute('data-mp-key') === _mp.key && all[i].getAttribute('data-mp-surface') === _mp.surface) return all[i];
+  }
+  return null;
+}
+function mpInside(node) {
+  var menu = document.getElementById('mp-menu');
+  var a = mpAnchor();
+  return !!((menu && menu.contains(node)) || (a && a.contains(node)));
+}
+// A press or the focus landing outside the menu and its trigger closes it (focus stays where it went).
+function mpOutside(e) {
+  if (_mp.key && !mpInside(e.target)) mpClose(false);
+}
+// The menu element, made once.
+function mpHost() {
+  var el = document.getElementById('mp-menu');
+  if (el) return el;
+  el = document.createElement('div');
+  el.id = 'mp-menu';
+  el.className = 'mp-pop';
+  el.setAttribute('role', 'dialog');
+  el.setAttribute('aria-label', '이 세션의 모델 · effort');
+  el.setAttribute('inert', '');
+  el.addEventListener('keydown', mpMenuKey);
+  el.addEventListener('click', mpMenuClick);
+  el.addEventListener('pointerover', mpMenuPointer);
+  el.addEventListener('pointerout', mpMenuPointerOut);
+  document.body.appendChild(el);
+  document.addEventListener('pointerdown', mpOutside, true);
+  document.addEventListener('focusin', mpOutside);
+  window.addEventListener('resize', mpQueuePlace);
+  document.addEventListener('scroll', mpQueuePlace, true);
+  return el;
+}
+// Made at boot: every trigger's aria-controls="mp-menu" names an element that exists.
+mpHost();
+function mpToggleFrom(btn) {
+  if (_mp.key === btn.getAttribute('data-mp-key') && _mp.surface === (btn.getAttribute('data-mp-surface') || 'card')) {
+    mpClose(true);
+    return;
+  }
+  mpOpen(btn);
+}
+// D9 — ↓ / ↑ on the trigger open the menu (Enter and Space are the button's own click).
+function mpTriggerKey(e, btn) {
+  if (e.key === 'Escape' && _mp.key && btn.getAttribute('aria-expanded') === 'true') {
+    e.preventDefault();
+    e.stopPropagation();
+    mpClose(true);
+    return;
+  }
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  e.preventDefault();
+  mpOpen(btn);
+}
+function mpOpen(btn) {
+  var key = btn.getAttribute('data-mp-key');
+  var where = btn.getAttribute('data-mp-surface') || 'card';
+  var s = _sessionCache[key];
+  if (!s) return;
+  var menu = mpHost();
+  var reopen = _mp.key === key && _mp.surface === where;
+  if (_mp.key && !reopen) mpClose(false);
+  if (!reopen) {
+    // Every open starts on the session's model, unlit — also the same session from the other surface.
+    _mp.key = key;
+    _mp.surface = where;
+    _mp.pointing = false;
+    _mp.shown = null;
+    _mp.activeId = null;
+  }
+  btn.setAttribute('aria-expanded', 'true');
+  menu.removeAttribute('inert');
+  mpRepaint();
+  menu.classList.add('is-open');
+  _mp.at = mpSpot(btn);
+  if (!_mp.watch) _mp.watch = setInterval(mpWatch, MP_WATCH_MS);
+  var list = menu.querySelector('.mp-list');
+  if (list) list.focus({ preventScroll: true });
+}
+function mpClose(returnFocus) {
+  var key = _mp.key;
+  if (!key) return;
+  var menu = document.getElementById('mp-menu');
+  var a = mpAnchor();
+  // Focus goes home first, while the trigger still counts as the menu's (no focusin close, no
+  // focus lost to <body> when the menu turns inert under it).
+  if (a) {
+    a.setAttribute('aria-expanded', 'false');
+    if (returnFocus && a.focus) a.focus();
+  }
+  _mp.key = null;
+  _mp.surface = null;
+  _mp.pointing = false;
+  _mp.at = null;
+  if (_mp.watch) {
+    clearInterval(_mp.watch);
+    _mp.watch = 0;
+  }
+  if (_mp.raf) {
+    cancelAnimationFrame(_mp.raf);
+    _mp.raf = 0;
+  }
+  if (menu) {
+    menu.classList.remove('is-open');
+    menu.setAttribute('inert', '');
+  }
+  // The anchor's card and the panel held their live updates while the menu was open.
+  refreshCard(key);
+  repaintPanelControlsFor(key);
+}
+function mpLit(s) {
+  var opts = mpOptions(s);
+  var i = _mp.pointing ? mpActiveIndex(s, opts) : mpCurrentIndex(s, opts);
+  return opts[i] ? opts[i].m : null;
+}
+// D12 — the open menu follows its session (morph: the list keeps its focus).
+function mpRepaint() {
+  var menu = document.getElementById('mp-menu');
+  if (!menu || !_mp.key) return;
+  var s = _sessionCache[_mp.key];
+  if (!s) {
+    mpClose(false);
+    return;
+  }
+  morphInnerHtml(menu, renderModelMenu(s));
+  _mp.sig = mpSig(s);
+  var lit = mpLit(s);
+  mpRollTray(menu, lit && lit.price ? { input: toNum(lit.price.input), output: toNum(lit.price.output) } : null);
+  mpReposition();
+}
+// D8 — the tray's prices roll from what is shown to the lit row's (ease-out-quart).
+function mpRollTray(menu, to) {
+  if (_mp.raf) {
+    cancelAnimationFrame(_mp.raf);
+    _mp.raf = 0;
+  }
+  var from = _mp.shown;
+  _mp.shown = to;
+  if (!to || !from || (from.input === to.input && from.output === to.output) || reduceMotion()) return;
+  var els = menu.querySelectorAll('.mp-roll');
+  var t0 = performance.now();
+  var step = function(now) {
+    var p = Math.min(1, (now - t0) / MP_ROLL_MS);
+    var e = 1 - Math.pow(1 - p, 4);
+    var cur = { input: from.input + (to.input - from.input) * e, output: from.output + (to.output - from.output) * e };
+    _mp.shown = p < 1 ? cur : to;
+    for (var i = 0; i < els.length; i++) {
+      var k = els[i].getAttribute('data-mp-roll');
+      els[i].textContent = mpMoney(cur[k], to[k]);
+    }
+    _mp.raf = p < 1 ? requestAnimationFrame(step) : 0;
+  };
+  step(t0);
+}
+// D2 — where the menu goes: under (card) or over (panel) the trigger, flipped
+// when that side has no room, its left edge on the trigger's, 12px inside the viewport.
+function mpPlace(r, w, h, vw, vh, side) {
+  var gap = 6;
+  var edge = 12;
+  var below = vh - r.bottom - gap - edge;
+  var above = r.top - gap - edge;
+  var s = side === 'top' ? (h > above && below > above ? 'bottom' : 'top') : h > below && above > below ? 'top' : 'bottom';
+  var left = Math.max(edge, Math.min(r.left, vw - edge - w));
+  var top = s === 'top' ? r.top - gap - h : r.bottom + gap;
+  top = Math.max(edge, Math.min(top, vh - edge - h));
+  return { left: Math.round(left), top: Math.round(top), side: s };
+}
+function mpReposition() {
+  var menu = document.getElementById('mp-menu');
+  if (!menu || !_mp.key) return;
+  var a = mpAnchor();
+  var r = a ? a.getBoundingClientRect() : null;
+  var vh = window.innerHeight;
+  var vw = document.documentElement.clientWidth;
+  if (!r || (!r.width && !r.height) || r.bottom < 0 || r.top > vh || r.right < 0 || r.left > vw) {
+    mpClose(false);
+    return;
+  }
+  var p = mpPlace(r, menu.offsetWidth, menu.offsetHeight, vw, vh, _mp.surface === 'panel' ? 'top' : 'bottom');
+  menu.style.left = p.left + 'px';
+  menu.style.top = p.top + 'px';
+  menu.setAttribute('data-side', p.side);
+}
+function mpQueuePlace() {
+  if (!_mp.key || _mp.placeRaf) return;
+  _mp.placeRaf = requestAnimationFrame(function() {
+    _mp.placeRaf = 0;
+    mpReposition();
+  });
+}
+// The anchor's card moved — it changed column, the board reflowed, a card
+// FLIPped: the menu closes instead of pointing at the old spot. Scrolling only
+// repositions it: the spot adds back the scroll offset of every ancestor up to
+// the first fixed one (the slide panel) — a scroll above that does not move it.
+var MP_WATCH_MS = 150;
+function mpSpot(a) {
+  var r = a.getBoundingClientRect();
+  var x = r.left;
+  var y = r.top;
+  for (var n = a.parentNode; n && n.nodeType === 1; n = n.parentNode) {
+    x += n.scrollLeft || 0;
+    y += n.scrollTop || 0;
+    if (getComputedStyle(n).position === 'fixed') break;
+  }
+  return { left: x, top: y };
+}
+function mpMoved(at, now) {
+  if (!at || !now) return false;
+  return Math.abs(now.left - at.left) > 2 || Math.abs(now.top - at.top) > 2;
+}
+function mpWatch() {
+  if (!_mp.key) return;
+  var a = mpAnchor();
+  if (!a || mpMoved(_mp.at, mpSpot(a))) {
+    mpClose(false);
+    return;
+  }
+  // The card holds its body while the menu is open, so the menu follows its session itself:
+  // whatever path updated the cache (poll, push, the board), a changed session repaints it.
+  if (mpSig(_sessionCache[_mp.key]) !== _mp.sig) mpRepaint();
+}
+// What the menu shows of a session (and the writes in flight) — a change means repaint.
+function mpSig(s) {
+  if (!s) return '';
+  var note = _modelNotes[s.key];
+  return [s.model, s.effort, s.effortEffective, s.pendingModel, (s.effortLevels || []).join(','), toNum(s.contextTokens),
+    isBusy(s.key, 'model'), isBusy(s.key, 'effort'), note && note.error ? note.text : ''].join('|');
+}
+// D11 — a row picks its model (the menu closes); the current or a locked row does not write.
+function mpPick(i) {
+  var s = _mp.key ? _sessionCache[_mp.key] : null;
+  if (!s) return;
+  var opts = mpOptions(s);
+  var o = opts[i];
+  if (i === mpCurrentIndex(s, opts)) {
+    mpClose(true); // the session's own model — also when it is outside the list: nothing to switch
+    return;
+  }
+  if (!o || !o.m || s.pendingModel || isBusy(s.key, 'model')) return;
+  var key = s.key;
+  var nickname = o.m.nickname;
+  mpClose(true);
+  changeModel(key, nickname);
+}
+// A clicked row, named by the model it showed — a row that left the list in the meantime picks nothing.
+function mpPickId(id) {
+  var s = _mp.key ? _sessionCache[_mp.key] : null;
+  if (!s) return;
+  var i = mpIndexOf(mpOptions(s), id);
+  if (i >= 0) mpPick(i);
+}
+// An effort pick keeps the menu open (the level is a setting of the same choice).
+function mpPickEffort(level) {
+  var s = _mp.key ? _sessionCache[_mp.key] : null;
+  if (!s || !level || isBusy(s.key, 'effort') || level === s.effort) return;
+  changeEffort(s.key, level);
+}
+// D9 — the list: ↑ ↓ (wrapping) · Home · End point; Enter · Space pick.
+function mpListKey(e) {
+  var s = _mp.key ? _sessionCache[_mp.key] : null;
+  if (!s) return;
+  var opts = mpOptions(s);
+  var n = opts.length;
+  var k = e.key;
+  if (k === 'ArrowDown' || k === 'ArrowUp' || k === 'Home' || k === 'End') {
+    e.preventDefault();
+    var i = k === 'Home' ? 0 : k === 'End' ? n - 1 : mpActiveIndex(s, opts) + (k === 'ArrowDown' ? 1 : -1);
+    _mp.activeId = mpOptId(opts[((i % n) + n) % n]);
+    _mp.pointing = true;
+    mpRepaint();
+  } else if (k === 'Enter' || k === ' ') {
+    e.preventDefault();
+    mpPick(mpActiveIndex(s, opts));
+  }
+}
+// D9 — effort: the arrows move and select at once (radio pattern); Home · End.
+function mpEffortKey(e, radio) {
+  var group = radio.parentNode;
+  if (!group) return;
+  var btns = group.querySelectorAll('.mp-seg-btn');
+  var n = btns.length;
+  var i = Array.prototype.indexOf.call(btns, radio);
+  var k = e.key;
+  var j = k === 'ArrowRight' || k === 'ArrowDown' ? i + 1 : k === 'ArrowLeft' || k === 'ArrowUp' ? i - 1 : k === 'Home' ? 0 : k === 'End' ? n - 1 : null;
+  if (j === null || !n) return;
+  e.preventDefault();
+  if (group.getAttribute('aria-disabled') === 'true') return;
+  j = ((j % n) + n) % n;
+  btns[j].focus();
+  mpPickEffort(btns[j].getAttribute('data-mp-effort'));
+}
+// Every key inside the menu stays in it (no board shortcut, no panel Escape).
+function mpMenuKey(e) {
+  if (!_mp.key) return;
+  e.stopPropagation();
+  var t = e.target;
+  var onList = !!(t && t.classList && t.classList.contains('mp-list'));
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    mpClose(true);
+  } else if (e.key === 'Tab') {
+    // Two stops, moved by the menu itself (never left to the page's tab order): the list and the
+    // checked level. Past either end the menu closes, back on its trigger.
+    e.preventDefault();
+    var menu = document.getElementById('mp-menu');
+    var level = menu && menu.querySelector('.mp-seg-btn[tabindex="0"]');
+    var list = menu && menu.querySelector('.mp-list');
+    if (onList && !e.shiftKey && level) level.focus();
+    else if (!onList && e.shiftKey && list) list.focus();
+    else mpClose(true);
+  } else if (onList) {
+    mpListKey(e);
+  } else {
+    var radio = t && t.closest ? t.closest('.mp-seg-btn') : null;
+    if (radio) mpEffortKey(e, radio);
+  }
+}
+function mpMenuClick(e) {
+  var t = e.target;
+  if (!t || !t.closest) return;
+  var opt = t.closest('.mp-opt');
+  if (opt) {
+    mpPickId(opt.getAttribute('data-mp-nick') || '');
+    return;
+  }
+  var b = t.closest('.mp-seg-btn');
+  if (b && b.parentNode.getAttribute('aria-disabled') !== 'true') mpPickEffort(b.getAttribute('data-mp-effort'));
+}
+// D10 — the mouse points at a row: it lights, the others step back; leaving the list lets go.
+function mpMenuPointer(e) {
+  if (!_mp.key || (e.pointerType && e.pointerType !== 'mouse')) return;
+  var opt = e.target && e.target.closest ? e.target.closest('.mp-opt') : null;
+  if (!opt) return;
+  var id = opt.getAttribute('data-mp-nick') || '';
+  if (_mp.pointing && _mp.activeId === id) return;
+  _mp.activeId = id;
+  _mp.pointing = true;
+  mpRepaint();
+}
+function mpMenuPointerOut(e) {
+  if (!_mp.key || !_mp.pointing || (e.pointerType && e.pointerType !== 'mouse')) return;
+  var menu = document.getElementById('mp-menu');
+  var list = menu && menu.querySelector('.mp-list');
+  if (!list || !list.contains(e.target) || (e.relatedTarget && list.contains(e.relatedTarget))) return;
+  _mp.pointing = false;
+  mpRepaint();
 }
 
 // ── Goal list on the work item (SSOT 2026-10-21 T2/T3) ──
@@ -10224,10 +12166,9 @@ function isEditingGoal(root) {
   var a = document.activeElement;
   return !!(a && a.classList && a.classList.contains('cg-add-input') && root.contains(a));
 }
-// An open model <select> survives live re-renders the same way (T4).
+// An open model menu holds its anchor's card still: the trigger is where the menu hangs (re-model-picker D12).
 function isPickingModel(root) {
-  var a = document.activeElement;
-  return !!(a && a.classList && a.classList.contains('cb-model-select') && root.contains(a));
+  return !!(root && root.querySelector && root.querySelector('.mp-trigger[aria-expanded="true"]'));
 }
 function captureGoalDraft(root) {
   var input = root.querySelector('.cg-add-input');
@@ -10335,6 +12276,25 @@ function toggleCard(key, instant) {
     var opened = _sessionCache[key];
     if (opened && opened.conversationId && opened.artifacts && !isSiblingSession(opened)) ensureArtifacts(opened.conversationId);
   }
+}
+
+// Escape (re-agent-inbox D7): inside an open card — its face or its body — it
+// closes that card (keyboard: no motion) and puts focus back on the face. It
+// stops there, so a docked panel stays open; anywhere else, and in a text field,
+// a select or an editable region, it is left alone.
+function closeCardOnEscape(e, root) {
+  // A text field, a select or an editable region keeps its own Escape (clear, cancel, IME).
+  var t = e.target;
+  var tag = t && t.tagName ? String(t.tagName).toUpperCase() : '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable)) return false;
+  var card = t && t.closest ? t.closest('.card.is-expanded') : null;
+  if (!card || !root.contains(card)) return false;
+  var key = card.getAttribute('data-session-key');
+  if (!key || !_expanded.has(key)) return false;
+  e.stopPropagation();
+  toggleCard(key, true);
+  if (card._faceEl && card._faceEl.focus) card._faceEl.focus({ preventScroll: true });
+  return true;
 }
 
 // Board ↔ List (§3.1-2, §4-4): CSS re-lays out the very same nodes and each
@@ -10983,6 +12943,7 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
         }
         btnEl.textContent = choiceId + '. ' + label;
         btnEl.style.color = '';
+        apRepaintQuestion(btnEl, key);
       }, 2500);
     } else {
       // On success, the WebSocket session_update SHOULD re-render the board and
@@ -10996,6 +12957,7 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
           });
           if (btnEl.isConnected && btnEl.textContent === '...') {
             btnEl.textContent = choiceId + '. ' + label;
+            apRepaintQuestion(btnEl, key);
           }
         }
       }, 5000);
@@ -11008,6 +12970,7 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
       errCard.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
     }
     btnEl.textContent = choiceId + '. ' + label;
+    apRepaintQuestion(btnEl, key);
   }
 }
 
@@ -11032,7 +12995,7 @@ function renderMultiChoiceCard(s, faceSummary) {
   return '<div class="card-question">'
     + ((q.title || q.question) && (q.title || q.question) === faceSummary ? '' : '<div class="card-question-text">\\uD83D\\uDCCB ' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>')
     + '<div class="card-question-multi">' + total + '\\uAC1C \\uC9C8\\uBB38 \\u00B7 ' + progressText + '</div>'
-    + '<div style="margin-top:6px"><button class="btn-choice" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\')" style="width:100%;text-align:center;font-weight:700">\\uB2F5\\uBCC0\\uD558\\uAE30</button></div>'
+    + '<div style="margin-top:6px"><button class="btn-choice' + (s.ownerId && s.ownerId === currentUserId && !isSiblingSession(s) ? ' btn-choice-primary' : '') + '" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\')" style="width:100%;text-align:center;font-weight:700">\\uB2F5\\uBCC0\\uD558\\uAE30</button></div>'
     + '</div>';
 }
 
@@ -12630,8 +14593,11 @@ function landPanel() {
   _panelOnQuestion = onQuestion;
   // The question sits under the session info that scrolls with the
   // conversation (SSOT 2026-10-24), so land on its own offset, not on 0.
+  // The 입력 필요 head sits right above it: land with the head in view (re-agent-run D9).
+  var needsHead = document.getElementById('panel-needs-head');
+  var headH = onQuestion && needsHead && !needsHead.hidden ? (needsHead.offsetHeight || 0) : 0;
   var questionTop = onQuestion
-    ? scrollEl.scrollTop + target.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top
+    ? Math.max(0, scrollEl.scrollTop + target.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - headH)
     : 0;
   // Instant: under scroll-behavior: smooth the glide down from 0 passed
   // through scrollTop < 100 and set off the load-older-turns handler.
@@ -12710,6 +14676,12 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // reopening the same session keeps an unsent draft.
   var goalEl = document.getElementById('panel-goal');
   if (goalEl && goalEl._key !== sessionKey) { goalEl.innerHTML = ''; goalEl._html = ''; }
+  // An opening's first plan and 입력 필요 renders are the baseline: nothing in
+  // them is announced (re-agent-run D7, D15).
+  var tasksEl = document.getElementById('panel-tasks');
+  if (tasksEl) tasksEl._planScope = null;
+  var permEl = document.getElementById('panel-permission');
+  if (permEl) permEl._seenKey = null;
   repaintPanelSession();
 
   // Pending permission prompt + question in panel
@@ -12793,7 +14765,9 @@ function focusPanelLanding() {
   else if (_panelLand === 'tasks') t = document.getElementById('panel-tasks');
   else if (_panelLand === 'worklog') t = document.getElementById('worklog-toggle');
   if (!t || t.style.display === 'none') {
-    var ask = document.querySelector('#panel-permission button:not([disabled]), #panel-question button:not([disabled]), #panel-question textarea');
+    // An approval card itself (re-agent-run D14): Esc there still closes the
+    // panel, ⌘↵ answers; the multi-question form keeps its first control.
+    var ask = document.querySelector('#panel-permission .ap-card:not(.is-resolved), #panel-question .ap-card, #panel-question button:not([disabled]), #panel-question textarea');
     t = ask || document.getElementById('panel-title');
   }
   if (t && t.focus) t.focus({ preventScroll: true });
@@ -12924,12 +14898,14 @@ function renderTurn(t, _idx, _arr, convId) {
     } else {
       body = '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">Generating summary...</div>';
     }
+    // AI answer (re-ai-answer D1): the summary stays the face; the answer card
+    // under "답변 전문" loads the raw answer on first open (ansLoad).
     var rawToggle = '';
     var cid = convId || panelConvId;
     if (t.id && cid) {
       rawToggle = '<details class="turn-raw-details" data-conv="' + esc(cid) + '" data-turn="' + esc(t.id) + '">'
-        + '<summary class="turn-expand-btn">Show raw response</summary>'
-        + '<div class="turn-raw-content"><span class="turn-raw-loading">Loading...</span></div>'
+        + '<summary class="turn-expand-btn">답변 전문</summary>'
+        + '<div class="ans-card" aria-busy="true">' + ansStateHtml('loading') + '</div>'
         + '</details>';
     }
     // SSOT 2026-10-23 T6 — the files and markdown answer this turn produced, under
@@ -12941,7 +14917,7 @@ function renderTurn(t, _idx, _arr, convId) {
     return '<div class="turn assistant"' + turnIdAttr + '>'
       + '<div class="turn-avatar bot-avatar">&#x1F916;</div>'
       + '<div class="turn-body">'
-      + '<div class="turn-header"><span class="turn-name">Assistant</span><span class="turn-time">' + time + '</span></div>'
+      + '<div class="turn-header"><span class="turn-name">Assistant</span><span class="turn-time">' + time + '</span><span class="ans-took"></span></div>'
       + title + body + turnArts + rawToggle
       + '</div></div>';
   }
@@ -12965,8 +14941,15 @@ function updateTurnInPanel(existingEl, turn) {
   tmp.innerHTML = renderTurn(turn);
   var newEl = tmp.firstElementChild;
   if (newEl) {
+    // re-ai-answer D14 — an answer the reader opened stays open (from the cache).
+    var wasOpen = !!existingEl.querySelector('.turn-raw-details[open]');
     existingEl.replaceWith(newEl);
     attachRawToggleHandlers();
+    var answer = wasOpen ? newEl.querySelector('.turn-raw-details') : null;
+    if (answer) {
+      answer.open = true;
+      ansLoad(answer);
+    }
     decoratePanelTurns();
   } else {
     console.warn('updateTurnInPanel: no element for turn', turn.id);
@@ -12979,26 +14962,428 @@ function attachRawToggleHandlers() {
     if (details._rawBound) return;
     details._rawBound = true;
     details.addEventListener('toggle', function() {
-      if (!this.open) return;
-      var convId = this.dataset.conv;
-      var turnId = this.dataset.turn;
-      var contentDiv = this.querySelector('.turn-raw-content');
-      if (_rawLoadedCache[turnId]) {
-        contentDiv.textContent = _rawLoadedCache[turnId];
-        return;
-      }
-      fetch('/api/conversations/' + convId + '/turns/' + turnId + '/raw')
-        .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-        .then(function(data) {
-          _rawLoadedCache[turnId] = data.raw;
-          contentDiv.textContent = data.raw;
-        })
-        .catch(function(err) {
-          contentDiv.textContent = 'Error loading: ' + err.message;
-        });
+      if (this.open) { ansLoad(this); return; }
+      // Closed content re-renders on open and would replay the entry animation.
+      var card = this.querySelector('.ans-card');
+      if (card) card.classList.remove('is-in');
     });
   });
 }
+
+// ── AI answer (.prd/affectui/re-ai-answer.md) ──
+// An assistant turn opened under "답변 전문": the raw answer rendered as a
+// document, the links it holds as numbered cards and link chips (links the
+// answer contains — not proven sources, so never called 출처/인용; the dashboard
+// knows no snippets, favicons or feedback), copy, the response time, and a row
+// while the answer is written.
+
+// &-entities back to text (the inverse of esc/escAttr) — for reading hrefs and
+// labels out of renderMarkdownDoc's own anchors.
+function ansUnesc(s) {
+  return String(s == null ? '' : s).replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
+// One source per URL: a trailing slash does not make another page.
+function ansKey(href) {
+  return String(href || '').replace(/\\/+$/, '');
+}
+function ansDecode(s) {
+  try { return decodeURIComponent(s); } catch (_e) { return s; }
+}
+// mdInline's link target stops at the first ")" — parens inside a URL travel
+// percent-encoded, and renderAnswer reads them back (review R1).
+function ansParens(u) {
+  return String(u).replace(/\\(/g, '%28').replace(/\\)/g, '%29');
+}
+// D3 — one stretch of prose (no code span, no markdown link): <url>, <url|label>
+// and bare http(s) URLs become [label](url). A bare URL leaves its trailing
+// punctuation and an unmatched ")" outside the link.
+function ansLinkifyText(s) {
+  return String(s).replace(/<(https?:\\/\\/[^\\s<>|]+)(?:\\|([^<>]*))?>|https?:\\/\\/[^\\s<>\\[\\]"'\\x60]+/gi, function(m, url, label) {
+    if (url) {
+      var l = String(label || '').replace(/[\\[\\]]/g, '').trim();
+      return '[' + (l || url) + '](' + ansParens(url) + ')';
+    }
+    var u = m;
+    var tail = '';
+    for (var guard = 0; guard < 8; guard++) {
+      var p = u.match(/[.,;:!?*]+$/);
+      if (p) { tail = p[0] + tail; u = u.slice(0, u.length - p[0].length); continue; }
+      if (u.charAt(u.length - 1) === ')' && u.split('(').length < u.split(')').length) { tail = ')' + tail; u = u.slice(0, -1); continue; }
+      break;
+    }
+    return '[' + u + '](' + ansParens(u) + ')' + tail;
+  });
+}
+// D3 — the whole answer. Fenced blocks (also inside a > quote) and code spans stay
+// as written (renderMarkdownDoc's fence rule, mdInline's code-span rule). A
+// markdown link stays a link: its label may hold a code span, its target
+// balanced parens (encoded for mdInline).
+function ansLinkify(raw) {
+  var fence = '';
+  var fenceQuoted = false;
+  return String(raw == null ? '' : raw).replace(/\\r\\n?/g, '\\n').split('\\n').map(function(line) {
+    var quoted = /^\\s{0,3}>/.test(line);
+    var body = line.replace(/^(\\s{0,3}>\\s?)+/, '');
+    if (fence && fenceQuoted && !quoted) fence = '';
+    if (fence) {
+      if (body.trim().indexOf(fence) === 0) fence = '';
+      return line;
+    }
+    var f = body.match(/^\\s{0,3}(\\x60{3,}|~{3,})/);
+    if (f) { fence = f[1]; fenceQuoted = quoted; return line; }
+    return line.split(/(!?\\[[^\\]]+\\]\\((?:[^()\\s]|\\([^()\\s]*\\))+\\)|\\x60[^\\x60]+\\x60)/).map(function(part, i) {
+      if (!(i % 2)) return ansLinkifyText(part);
+      if (part.charAt(0) === '\\x60') return part;
+      var at = part.indexOf('](');
+      return part.slice(0, at + 2) + ansParens(part.slice(at + 2, -1)) + ')';
+    }).join('');
+  }).join('\\n');
+}
+// D5 — what a link card is called. Title: the session's own PR / issue title, else
+// the link's label, else read off the URL. Chip: the short name.
+function ansSourceOf(href, label, s) {
+  var m = String(href || '').match(/^https?:\\/\\/([^\\/?#]+)([^?#]*)(\\?[^#]*)?/i);
+  var host = m ? m[1].toLowerCase().replace(/^www\\./, '') : String(href || '');
+  var path = m ? m[2] : '';
+  var name = host;
+  var chip = host;
+  var title = '';
+  if (host === 'github.com') {
+    name = 'GitHub';
+    chip = 'GitHub';
+    var seg = path.split('/').filter(Boolean);
+    var repo = seg.slice(0, 2).join('/');
+    var num = seg.length >= 4 && /^\\d+$/.test(seg[3]) ? seg[3] : '';
+    if (num && seg[2] === 'pull') { title = 'PR #' + num + ' · ' + repo; chip = '#' + num; }
+    else if (num && seg[2] === 'issues') { title = '이슈 #' + num + ' · ' + repo; chip = '#' + num; }
+    else if (seg.length >= 4 && seg[2] === 'commit' && /^[0-9a-f]{7,40}$/i.test(seg[3])) { chip = seg[3].slice(0, 7); title = '커밋 ' + chip + ' · ' + repo; }
+    else title = repo ? repo + (seg.length > 2 ? ' · ' + ansDecode(seg.slice(2).join('/')) : '') : 'github.com';
+  } else {
+    title = ansDecode((path + (m && m[3] ? m[3] : '')).replace(/\\/+$/, '')) || host;
+  }
+  if (label) title = label;
+  if (s && s.prUrl && s.prTitle && ansKey(s.prUrl) === ansKey(href)) title = String(s.prTitle);
+  else if (s && s.issueUrl && s.issueTitle && ansKey(s.issueUrl) === ansKey(href)) title = String(s.issueTitle);
+  return { href: String(href || ''), name: name, title: title, chip: chip };
+}
+// D7 — a link chip, named after its card.
+function ansCiteHtml(src) {
+  return '<a class="ans-cite" data-ans-src="' + Number(src.n) + '" href="' + safeHref(src.href) + '" target="_blank" rel="noopener noreferrer" aria-label="'
+    + escAttr('링크 ' + src.n + ': ' + src.title + ' (' + src.name + ')') + '">' + esc(src.chip) + '</a>';
+}
+// D6 — the numbered link cards (sideways row); --ans-i staggers the entry.
+function ansSourcesHtml(srcs) {
+  if (!srcs || !srcs.length) return '';
+  return '<ol class="ans-srcs" aria-label="답변에 포함된 링크 ' + srcs.length + '개">' + srcs.map(function(src, i) {
+    return '<li style="--ans-i:' + Math.min(i, 6) + '"><a class="ans-src" data-ans-src="' + Number(src.n) + '" href="' + safeHref(src.href) + '" target="_blank" rel="noopener noreferrer" title="' + escAttr(src.href) + '">'
+      + '<span class="ans-src-site"><span class="ans-src-name">' + esc(src.name) + '</span><span class="ans-src-num">' + Number(src.n) + '</span></span>'
+      + '<span class="ans-src-title">' + esc(src.title) + '</span></a></li>';
+  }).join('') + '</ol>';
+}
+// D2 · D4 · D7 — the answer as a document. Links are numbered by first
+// appearance (one per URL); every link renderMarkdownDoc made becomes a chip — a
+// bare URL only the chip, a labelled link its words then the chip. A [1] the
+// answer writes without a link stays text.
+function renderAnswer(raw, s) {
+  var re = /<a href="([^"]*)" target="_blank" rel="noopener noreferrer">([\\s\\S]*?)<\\/a>/g;
+  var html = renderMarkdownDoc(ansLinkify(raw));
+  var byKey = Object.create(null);
+  var found = [];
+  var textOf = function(l) { return ansUnesc(String(l).replace(/<[^>]*>/g, '')); };
+  var hrefOf = function(h) { return ansUnesc(h).replace(/%28/gi, '(').replace(/%29/gi, ')'); };
+  html.replace(re, function(m, h, l) {
+    var href = hrefOf(h);
+    var text = textOf(l);
+    var key = ansKey(href);
+    var label = text && text !== href ? text : '';
+    if (!byKey[key]) {
+      byKey[key] = { href: href, label: label, n: found.length + 1 };
+      found.push(byKey[key]);
+    } else if (!byKey[key].label && label) {
+      byKey[key].label = label;
+    }
+    return m;
+  });
+  var sources = found.map(function(f) {
+    var src = ansSourceOf(f.href, f.label, s);
+    src.n = f.n;
+    return src;
+  });
+  html = html.replace(re, function(_m, h, l) {
+    var href = hrefOf(h);
+    return (textOf(l) === href ? '' : l) + ansCiteHtml(sources[byKey[ansKey(href)].n - 1]);
+  });
+  return { html: html, sources: sources };
+}
+// D13 — what the card says before (or instead of) an answer.
+function ansStateHtml(kind, detail) {
+  if (kind === 'error') {
+    return '<span class="ans-error">답변을 불러오지 못했습니다' + (detail ? ' (' + esc(detail) + ')' : '') + '</span>'
+      + '<button type="button" class="btn-action" data-ans-retry="1">다시 시도</button>';
+  }
+  if (kind === 'empty') return '<span class="ans-empty">기록된 답변 내용이 없습니다</span>';
+  return '<span class="ans-loading">불러오는 중…</span>';
+}
+// D6 · D9 · D10 — links first (where the reference puts sources), label, body, foot.
+function renderAnswerCard(raw, s) {
+  var text = String(raw == null ? '' : raw);
+  if (!text.trim()) return ansStateHtml('empty');
+  var a = renderAnswer(text, s);
+  var n = a.sources.length;
+  return ansSourcesHtml(a.sources)
+    + '<div class="ans-label">답변' + (n ? ' · 링크 ' + n : '') + '</div>'
+    + '<div class="ans-body md-doc">' + a.html + '</div>'
+    + '<div class="ans-foot"><button type="button" class="btn-action ans-copy">복사</button>'
+    + '<span class="ans-status" role="status" aria-live="polite"></span></div>';
+}
+// D10 — the answer as written (markdown kept: where it is pasted renders it)
+// plus its numbered links.
+function ansCopyText(raw, srcs) {
+  var text = String(raw == null ? '' : raw).trim();
+  if (!srcs || !srcs.length) return text;
+  return text + '\\n\\n링크:\\n' + srcs.map(function(src) { return '[' + src.n + '] ' + src.title + ' – ' + src.href; }).join('\\n');
+}
+// The panel's session, when it is the one this conversation belongs to (D5 titles).
+function ansSession(cid) {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  return s && s.conversationId === cid ? s : null;
+}
+function ansPaint(details, state, detail, animate) {
+  var card = details.querySelector('.ans-card');
+  if (!card) return;
+  if (state !== 'ok') {
+    card.innerHTML = ansStateHtml(state, detail);
+    if (state === 'loading') card.setAttribute('aria-busy', 'true');
+    else card.removeAttribute('aria-busy');
+    return;
+  }
+  card.innerHTML = renderAnswerCard(_rawLoadedCache[ansCacheKey(details.dataset.conv, details.dataset.turn)], ansSession(details.dataset.conv));
+  card.removeAttribute('aria-busy');
+  card.classList.remove('is-in');
+  if (animate && !reduceMotion()) {
+    void card.offsetWidth;
+    card.classList.add('is-in');
+  }
+}
+// Turn ids are unique per conversation only: the raw cache is keyed by both.
+function ansCacheKey(convId, turnId) {
+  return String(convId || '') + ':' + String(turnId || '');
+}
+// The request in flight per cache key and panel opening — a disclosure re-rendered
+// mid-fetch (D14) joins it instead of asking again.
+var _ansInflight = Object.create(null);
+// D1 · D13 — first open fetches; later opens use the cache. A response lands only
+// while it is current (review R1): it fills the cache only for this panel opening
+// (_panelGen) and if no newer request replaced it, and paints only a disclosure
+// that is still in the turns list.
+function ansLoad(details) {
+  var key = ansCacheKey(details.dataset.conv, details.dataset.turn);
+  if (typeof _rawLoadedCache[key] === 'string') {
+    if (!details._ansPainted) ansPaint(details, 'ok', '', false);
+    details._ansPainted = true;
+    return;
+  }
+  if (details._ansLoading) return;
+  details._ansLoading = true;
+  ansPaint(details, 'loading');
+  var gen = _panelGen;
+  var req = _ansInflight[key];
+  if (!req || req.gen !== gen) {
+    req = { gen: gen };
+    req.promise = fetch('/api/conversations/' + encodeURIComponent(details.dataset.conv) + '/turns/' + encodeURIComponent(details.dataset.turn) + '/raw')
+      .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+      .then(function(data) {
+        var newest = _ansInflight[key] === req;
+        if (newest) delete _ansInflight[key];
+        if (newest && req.gen === _panelGen) _rawLoadedCache[key] = data && typeof data.raw === 'string' ? data.raw : '';
+      }, function(err) {
+        if (_ansInflight[key] === req) delete _ansInflight[key];
+        throw err;
+      });
+    _ansInflight[key] = req;
+  }
+  var shown = function() {
+    var turnsEl = document.getElementById('panel-turns');
+    return gen === _panelGen && !!turnsEl && turnsEl.contains(details);
+  };
+  req.promise.then(function() {
+    details._ansLoading = false;
+    if (typeof _rawLoadedCache[key] !== 'string' || !shown()) return;
+    details._ansPainted = true;
+    ansPaint(details, 'ok', '', true);
+  }, function(err) {
+    details._ansLoading = false;
+    if (!shown()) return;
+    ansPaint(details, 'error', err && err.message ? err.message : '');
+  });
+}
+// D8 — light number n in this card (its link card and every chip of it);
+// on=false clears the card. A lit card outside the row slides the ROW
+// sideways — never the panel (no scrollIntoView).
+function ansLight(card, n, on) {
+  var els = card.querySelectorAll('[data-ans-src]');
+  for (var i = 0; i < els.length; i++) els[i].classList.toggle('is-lit', !!on && els[i].getAttribute('data-ans-src') === String(n));
+  if (!on) return;
+  var row = card.querySelector('.ans-srcs');
+  var src = row ? row.querySelector('.ans-src[data-ans-src="' + Number(n) + '"]') : null;
+  if (!src) return;
+  var rr = row.getBoundingClientRect();
+  var sr = src.getBoundingClientRect();
+  var left = sr.right > rr.right ? row.scrollLeft + (sr.right - rr.right) + 16
+    : sr.left < rr.left ? row.scrollLeft - (rr.left - sr.left) - 16 : null;
+  if (left === null) return;
+  row.scrollTo({ left: Math.max(0, left), behavior: reduceMotion() ? 'auto' : 'smooth' });
+}
+// D8 · D10 · D13 — one set of delegated listeners on the turns list.
+function ansBind(root) {
+  if (!root || root._ansBound) return;
+  root._ansBound = true;
+  var lit = function(e, on) {
+    var el = e.target && e.target.closest ? e.target.closest('[data-ans-src]') : null;
+    var card = el ? el.closest('.ans-card') : null;
+    if (!card) return;
+    var to = e.relatedTarget;
+    if (!on && to && to.closest && to.closest('[data-ans-src]') === el) return;
+    ansLight(card, el.getAttribute('data-ans-src'), on);
+  };
+  root.addEventListener('mouseover', function(e) { lit(e, true); });
+  root.addEventListener('mouseout', function(e) { lit(e, false); });
+  root.addEventListener('focusin', function(e) { lit(e, true); });
+  root.addEventListener('focusout', function(e) { lit(e, false); });
+  root.addEventListener('click', function(e) {
+    var t = e.target && e.target.closest ? e.target : null;
+    if (!t) return;
+    var copy = t.closest('.ans-copy');
+    if (copy) { copyAnswer(copy); return; }
+    var retry = t.closest('[data-ans-retry]');
+    var details = retry ? retry.closest('.turn-raw-details') : null;
+    if (details) ansLoad(details);
+  });
+}
+// D10 — clipboard, or (plain http, a refused permission) select the answer.
+function copyAnswer(btn) {
+  var details = btn.closest('.turn-raw-details');
+  var card = btn.closest('.ans-card');
+  if (!details || !card) return;
+  var raw = _rawLoadedCache[ansCacheKey(details.dataset.conv, details.dataset.turn)];
+  if (typeof raw !== 'string') return;
+  var srcs = renderAnswer(raw, ansSession(details.dataset.conv)).sources;
+  var status = card.querySelector('.ans-status');
+  var body = card.querySelector('.ans-body');
+  function say(label, msg) {
+    btn.textContent = label;
+    if (status) status.textContent = msg;
+    clearTimeout(btn._ansTimer);
+    btn._ansTimer = setTimeout(function() {
+      btn.textContent = '복사';
+      if (status) status.textContent = '';
+    }, 1500);
+  }
+  function selectIt() {
+    try {
+      var range = document.createRange();
+      range.selectNodeContents(body);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch (_e) {}
+    say('복사', '선택했습니다 — ⌘C / Ctrl+C로 복사');
+  }
+  var text = ansCopyText(raw, srcs);
+  function done() {
+    say('복사됨', srcs.length ? '답변과 링크 ' + srcs.length + '개를 복사했습니다' : '답변을 복사했습니다');
+  }
+  // Without the Clipboard API (plain http): copy the RAW text from a temporary
+  // textarea — the rendered body shows chips (#999) where the URLs were.
+  function viaTextarea() {
+    try {
+      var ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.opacity = '0';
+      document.body.appendChild(ta);
+      ta.select();
+      var ok = document.execCommand('copy');
+      ta.remove();
+      if (btn.focus) btn.focus();
+      return !!ok;
+    } catch (_e) { return false; }
+  }
+  function fallback() {
+    if (viaTextarea()) done();
+    else selectIt();
+  }
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) { fallback(); return; }
+    navigator.clipboard.writeText(text).then(done, fallback);
+  } catch (_e) { fallback(); }
+}
+// D11 — "응답 4분 12초": from the instruction to the recorded answer (queue and
+// tools included — the answer is recorded when its turn ends).
+function ansTookLabel(ms) {
+  var v = Number(ms);
+  if (!isFinite(v) || v <= 0) return '';
+  if (v < 1000) return '응답 1초 미만';
+  var sec = Math.floor(v / 1000);
+  if (sec < 60) return '응답 ' + sec + '초';
+  var min = Math.floor(sec / 60);
+  if (min < 60) return '응답 ' + min + '분 ' + (sec % 60) + '초';
+  return '응답 ' + Math.floor(min / 60) + '시간 ' + (min % 60) + '분';
+}
+function ansTookFor(prevRole, prevTs, ts) {
+  return prevRole === 'user' && toNum(prevTs) > 0 ? ansTookLabel(toNum(ts) - toNum(prevTs)) : '';
+}
+// D11 · D12 — walk the turns in DOM order (every insert path ends here via
+// decoratePanelTurns): fill each answer's time, then the writing row.
+function decorateAnswerTurns() {
+  var turnsEl = document.getElementById('panel-turns');
+  if (!turnsEl) return;
+  var nodes = turnsEl.querySelectorAll('.turn[data-ts]');
+  for (var i = 0; i < nodes.length; i++) {
+    var took = nodes[i].classList.contains('assistant') ? nodes[i].querySelector('.ans-took') : null;
+    if (!took) continue;
+    var prev = i > 0 ? nodes[i - 1] : null;
+    var prevTs = prev ? toNum(prev.getAttribute('data-ts')) : 0;
+    var ts = toNum(nodes[i].getAttribute('data-ts'));
+    // An optimistic instruction carries this browser's clock, not the server's: no time.
+    var optimistic = prev && /^optimistic-/.test(prev.getAttribute('data-turn-id') || '');
+    var label = prev && !optimistic ? ansTookFor(prev.classList.contains('user') ? 'user' : 'assistant', prevTs, ts) : '';
+    if (took.textContent !== label) took.textContent = label;
+    if (label) took.setAttribute('title', '지시 ' + formatTaskTime(prevTs) + ' → 응답 ' + formatTaskTime(ts));
+    else took.removeAttribute('title');
+  }
+  syncAnsPending();
+}
+// D12 — the same rule the card's 응답 row uses (renderCardIo): the session is
+// working and the latest turn is the instruction.
+function ansPendingShow(s, convId, lastRole) {
+  return !!(s && convId && s.conversationId === convId && s.activityState === 'working' && lastRole === 'user');
+}
+function ansPendingHtml() {
+  return '<div class="turn assistant ans-pending" aria-busy="true">'
+    + '<div class="turn-avatar bot-avatar">&#x1F916;</div>'
+    + '<div class="turn-body"><div class="turn-header"><span class="turn-name">Assistant</span></div>'
+    + '<div class="ans-writing"><span class="ans-shimmer">응답 작성 중</span><i class="ans-dot" aria-hidden="true"></i></div>'
+    + '</div></div>';
+}
+// The writing row is always the list's last child — or absent.
+function syncAnsPending() {
+  var turnsEl = document.getElementById('panel-turns');
+  if (!turnsEl) return;
+  var s = panelOpen && panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var turns = turnsEl.querySelectorAll('.turn[data-ts]');
+  var last = turns.length ? turns[turns.length - 1] : null;
+  var lastRole = last ? (last.classList.contains('user') ? 'user' : 'assistant') : '';
+  var row = turnsEl.querySelector('.ans-pending');
+  if (!ansPendingShow(s, panelConvId, lastRole)) {
+    if (row) row.remove();
+    return;
+  }
+  if (!row) turnsEl.insertAdjacentHTML('beforeend', ansPendingHtml());
+  else if (row !== turnsEl.lastElementChild) turnsEl.appendChild(row);
+}
+ansBind(document.getElementById('panel-turns'));
 
 // Panel subtitle (titleSub). Reads are open to every signed-in viewer (#716);
 // so is filling a MISSING subtitle (POST ensure-title — it never overwrites).
@@ -13123,13 +15508,6 @@ function closePanel() {
 document.addEventListener('keydown', function(e) {
   // Escape in the artifact viewer closes the viewer only (the dialog's own cancel).
   // The cron drawer opens over a docked panel: Escape closes only that, the topmost.
-  // The floating model · effort pickers (narrow / short screens) close first, back on their toggle.
-  if (e.key === 'Escape' && panelOpen && _panelControlsOpen && !artModalIsOpen() && !_cronDrawerKey && window.matchMedia && window.matchMedia('(max-width: 639px), (max-height: 560px)').matches) {
-    togglePanelControls();
-    var tgl = document.querySelector('#panel-controls .pc-toggle');
-    if (tgl) tgl.focus();
-    return;
-  }
   if (e.key === 'Escape' && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closePanel();
 });
 
@@ -13237,9 +15615,11 @@ async function sendCommand() {
     }
     if (!res.ok) {
       // Only mark the optimistic turn as failed if the user is still on the same
-      // card; otherwise the "last user turn" in the DOM belongs to a different session.
+      // card; otherwise the turns in the DOM belong to a different session. Found by
+      // its own id, not by being the list's last child: the 응답 작성 중 row may follow
+      // it (re-ai-answer D12).
       if (panelSessionKey === sendingSessionKey) {
-        var lastTurn = document.querySelector('.turn.user:last-child');
+        var lastTurn = document.querySelector('.turn.user[data-turn-id="' + optimisticTurn.id + '"]');
         if (lastTurn) {
           lastTurn.style.borderColor = '#e74c3c';
           lastTurn.style.opacity = '0.7';
@@ -13532,7 +15912,8 @@ function renderCronTileHead(g, nowMs) {
   var j = g.job;
   var runs = cronGroupRuns(g);
   var sched = j ? cronScheduleLabel(j.expression, j.nextRunAt) : '';
-  var next = j && j.nextRunAt ? '다음 ' + capClockLabel(j.nextRunAt / 1000, nowMs) + ' (' + capCountdown((j.nextRunAt - nowMs) / 1000) + ' 후)' : '';
+  // The time left counts down live (#444 D18 — aqTick rewrites the <time>).
+  var next = j && j.nextRunAt ? '다음 ' + esc(capClockLabel(j.nextRunAt / 1000, nowMs)) + ' (' + aqTime(j.nextRunAt, nowMs, ' 후') + ')' : '';
   var last = runs[0];
   var lastGl = last ? cronRunGlyph(last) : null;
   var status = g.waiting ? '▲ 응답 필요'
@@ -13547,16 +15928,179 @@ function renderCronTileHead(g, nowMs) {
     + '</div>'
     + '<div class="cron-sched">'
     + (sched ? '<span class="cron-expr" title="' + escAttr((j ? j.expression : '') + ' — cron 식은 UTC 기준') + '">' + esc(sched) + '</span>' : '')
-    + (next ? '<span class="cron-next">' + esc(next) + '</span>' : '')
+    + (next ? '<span class="cron-next">' + next + '</span>' : '')
     + '</div>'
     + renderCronStrip(g, nowMs)
     + '<div class="cron-status is-' + (g.waiting ? 'wait' : g.running ? 'run' : lastGl ? lastGl.cls : 'none') + '">' + esc(status) + '</div>';
 }
 function renderCronLaneHead(plan) {
   var n = plan.groups.length;
+  // Same words as before (spec 12 T4), as the queue grammar's pills (#444 D15).
   return '<span class="col-spark" aria-hidden="true">' + CLOCK_SVG + '</span><h3>CRON</h3><span class="count">' + n + '</span>'
-    + (plan.runningCount ? '<span class="cron-lane-note is-run">● 실행 중 ' + plan.runningCount + '</span>' : '')
-    + (plan.waitingCount ? '<span class="cron-lane-note is-wait">▲ 응답 필요 ' + plan.waitingCount + '</span>' : '');
+    + (plan.runningCount ? aqPill('run', '● 실행 중 ' + plan.runningCount) : '')
+    + (plan.waitingCount ? aqPill('wait', '▲ 응답 필요 ' + plan.waitingCount) : '');
+}
+// ── The lane as a queue (affectUI Agent Queue, #444 D16/D17/D19) ──
+// The last 24 hours of the lane, from the run RECORDS only (review R1). When a record is
+// written depends on its path (cron-scheduler.ts): new_thread and idle_inject await the
+// injected turn until it settles, then write success / failed; dm and thread_reply write
+// after the message is sent; busy_queue writes 'queued' when it queues (the drain writes
+// nothing). So a run in progress has no record yet — its card is the 실행 중 tile. Whether
+// the session is busy NOW is the linked session's: the server keeps live + working/waiting
+// only on the newest run of a thread THIS job created; an injected run (someone else's
+// session) and earlier / queued runs come back idle (cron-view.ts buildCronJobsView). Same
+// rule as the strip (cronRunGlyph, trinity R2): failed → 실패; success whose session is live
+// and working/waiting again (a reply to wait for, a follow-up turn) → 진행 중; else → 성공. A queue entry is an event, not a run. A board card with no record yet is not
+// counted: it is either running (the 실행 중 tile shows it — the card IS the cron session) or
+// of unknown result, and its time may be its last activity. A job whose kept history (FIFO
+// historyCap) starts inside the window makes every count there a lower bound — say which, and
+// from when.
+function cronDayRuns(plan, nowMs) {
+  var from = nowMs - 86400000;
+  var runs = [];
+  var cut = [];
+  var pending = 0;
+  var unknown = 0;
+  ((plan && plan.groups) || []).forEach(function(g) {
+    cronGroupRuns(g).forEach(function(r) {
+      if (r.status === 'queued' || !(r.executedAt >= from)) return;
+      var s = r.session;
+      var live = !!(s && s.live && (s.activityState === 'working' || s.activityState === 'waiting'));
+      if (r.status === 'unrecorded') {
+        if (live) pending++;
+        else unknown++;
+        return;
+      }
+      runs.push({ at: r.executedAt, kind: r.status === 'failed' ? 'fail' : live ? 'run' : 'ok' });
+    });
+    var kept = g.job && Array.isArray(g.job.runs) ? g.job.runs : [];
+    var cap = (g.job && g.job.historyCap) || 20;
+    if (kept.length && kept.length >= cap) {
+      var oldest = Math.min.apply(null, kept.map(function(r) { return r.executedAt; }));
+      if (oldest > from) cut.push({ name: g.name, from: oldest, cap: cap });
+    }
+  });
+  var count = function(kind) { return runs.filter(function(r) { return r.kind === kind; }).length; };
+  var cutFrom = cut.reduce(function(t, c) { return Math.max(t, c.from); }, 0);
+  return { from: from, runs: runs, n: runs.length, ok: count('ok'), f: count('fail'), run: count('run'), pending: pending, unknown: unknown, cut: cut, cutFrom: cutFrom };
+}
+// Four numbers, each from a named field (D16): the front of the queue, running r/N, and
+// the last 24 hours' runs and failures.
+function cronStats(plan, nowMs) {
+  var groups = (plan && plan.groups) || [];
+  var front = null;
+  groups.forEach(function(g) {
+    if (g.job && g.job.nextRunAt && (!front || g.job.nextRunAt < front.job.nextRunAt)) front = g;
+  });
+  var d = cronDayRuns(plan, nowMs);
+  var cutNote = d.cut.map(function(c) { return c.name + ' 기록은 보관 한도 ' + c.cap + '회라 ' + capClockLabel(c.from / 1000, nowMs) + '부터'; }).join(' · ');
+  var lb = d.cut.length ? '≥' : '';
+  var running = (plan && plan.runningCount) || 0;
+  var stat = function(label, value, title, kind) {
+    return '<div class="aq-stat"' + (kind ? ' data-kind="' + kind + '"' : '') + '><dt>' + label + '</dt><dd title="' + escAttr(title) + '">' + value + '</dd></div>';
+  };
+  return '<dl class="aq-stats">'
+    + (front
+      ? stat('다음 실행', aqTime(front.job.nextRunAt, nowMs, ' 후') + '<span class="aq-of">' + esc(front.name) + '</span>', 'KanbanCronJob.nextRunAt 중 가장 이른 것 — ' + front.name + ' ' + capClockLabel(front.job.nextRunAt / 1000, nowMs))
+      : stat('다음 실행', '—', '8일 안에 없음'))
+    + stat('실행 중', running + '<span class="aq-of is-n">/' + groups.length + '</span>', '레인의 잡 그룹 ' + groups.length + '개(다른 인스턴스 그룹 포함) 중 실행 중 카드가 있는 그룹 ' + running + '개 — 다음 실행 열은 이 인스턴스의 스케줄만 센다')
+    + stat('24시간 실행 기록', lb + d.n + (d.unknown ? '<span class="aq-of">+미확인 ' + d.unknown + '</span>' : ''),
+      '지난 24시간 실행 기록 ' + d.n + '건(대기열 항목 제외): 성공(세션 쉼) ' + d.ok + ' · 실패 ' + d.f + ' · 진행 중(성공 기록, 세션이 지금 실행 중·응답 대기) ' + d.run
+      + (d.pending || d.unknown ? ' · 기록 전 카드 ' + (d.pending + d.unknown) + '개(실행 중 ' + d.pending + ' · 결과 미확인 ' + d.unknown + ')는 세지 않음' : '')
+      + (cutNote ? ' · ' + cutNote : ''))
+    + stat('실패 · 24시간', lb + d.f, '지난 24시간 실패 기록' + (cutNote ? ' · ' + cutNote : ''), d.f > 0 ? 'failed' : '')
+    + '</dl>';
+}
+// The queue column (D17): this instance's jobs by their next fire, soonest first, four
+// chips then +N. A chip opens its job's drawer (the delegated [data-cron-group] click).
+function cronQueue(plan, nowMs, focusKey) {
+  var list = ((plan && plan.groups) || []).filter(function(g) { return g.job && g.job.nextRunAt; });
+  list.sort(function(a, b) { return a.job.nextRunAt - b.job.nextRunAt; });
+  var n = list.length;
+  var head = '<div class="aq-col-head" title="이 인스턴스의 잡 중 다음 실행이 8일 안에 있는 것 — 다른 인스턴스 그룹은 스케줄이 없어 빠진다"><span>다음 실행</span> <b>' + n + '</b></div>';
+  if (!n) return head + '<div class="aq-empty">8일 안에 예정 없음</div>';
+  var shown = list.slice(0, 4);
+  var stop = shown.some(function(g) { return g.key === focusKey; }) ? focusKey : shown[0].key;
+  return head + shown.map(function(g, i) {
+    var at = g.job.nextRunAt;
+    var said = g.name + ', ' + aqLeftSfx(at, nowMs, ' 후 실행') + ', ' + (i + 1) + '/' + n + ' — 지난 실행 보기';
+    return '<button type="button" class="aq-q" data-cron-group="' + escAttr(g.key) + '" data-aq-key="' + escAttr(g.key) + '" tabindex="' + (g.key === stop ? '0' : '-1') + '" aria-label="' + escAttr(said) + '">'
+      + CLOCK_SVG + '<span class="aq-q-name">' + esc(g.name) + '</span>' + aqTime(at, nowMs) + '</button>';
+  }).join('') + (n > 4 ? '<span class="aq-more">+' + (n - 4) + '</span>' : '');
+}
+var AQ_NICE = [4, 6, 8, 10, 12, 16, 20, 24, 30, 40, 50, 60, 80, 100, 120, 160, 200, 300, 400, 500, 600, 800, 1000];
+// 24 hours of run records (D19): one column per rolling hour ending now (so each is labelled
+// by its start, HH:MM부터 — PR review R1), 성공 · 진행 중 (a success record whose session is
+// busy again — the strip's ● / ▲) · 실패 stacked, by cronDayRuns' rule; cards with no record are
+// not drawn; the stretch a truncated history cannot speak for is hatched; an image with a
+// sentence for screen readers.
+function cronRunChart(plan, nowMs) {
+  var d = cronDayRuns(plan, nowMs);
+  var hr = 3600000;
+  var start = nowMs - 24 * hr;
+  var bins = [];
+  for (var k = 0; k < 24; k++) bins.push({ ok: 0, fail: 0, run: 0, at: start + k * hr });
+  d.runs.forEach(function(r) {
+    var i = Math.max(0, Math.min(23, Math.floor((r.at - start) / hr)));
+    bins[i][r.kind]++;
+  });
+  var peak = 0;
+  var peakAt = 0;
+  bins.forEach(function(b) {
+    if (b.ok + b.fail + b.run > peak) { peak = b.ok + b.fail + b.run; peakAt = b.at; }
+  });
+  var top = Math.max(peak, 4);
+  var max = AQ_NICE.filter(function(v) { return v >= top; })[0] || Math.ceil(top / 500) * 500;
+  var hm = function(ms) { var t = new Date(ms); return pad2(t.getHours()) + ':' + pad2(t.getMinutes()); };
+  var pct = function(v) { return ((v / max) * 100).toFixed(1) + '%'; };
+  var cut = d.cutFrom > start;
+  var said = '지난 24시간 크론 실행 기록 ' + d.n + '건: 성공 ' + d.ok + '건, 실패 ' + d.f + '건, 진행 중 ' + d.run + '건'
+    + (peak ? ', 가장 많은 1시간 ' + hm(peakAt) + '부터 ' + peak + '건' : '') + '.'
+    + (cut ? ' ' + capClockLabel(d.cutFrom / 1000, nowMs) + ' 이전은 일부 잡 기록이 잘림.' : '')
+    + (d.pending || d.unknown ? ' 기록 전 카드 ' + (d.pending + d.unknown) + '개는 세지 않음.' : '');
+  var hatch = cut
+    ? '<div class="aq-ch-cut" style="left:0;width:' + (((d.cutFrom - start) / (24 * hr)) * 100).toFixed(1) + '%" title="' + escAttr('이 구간은 ' + d.cut.map(function(c) { return c.name; }).join(', ') + ' 기록이 보관 한도로 잘려 실제보다 적을 수 있음') + '"></div>'
+    : '';
+  var cols = bins.map(function(b) {
+    return '<i class="aq-ch-col" title="' + hm(b.at) + '부터 1시간 · 성공 ' + b.ok + ' · 실패 ' + b.fail + ' · 진행 중 ' + b.run + '"><i class="aq-ch-ok" style="height:' + pct(b.ok) + '"></i><i class="aq-ch-run" style="height:' + pct(b.run) + '"></i><i class="aq-ch-fail" style="height:' + pct(b.fail) + '"></i></i>';
+  }).join('');
+  return '<div class="aq-chart-head"><span class="aq-chart-title">실행 기록 · 24시간</span>'
+    + '<span class="aq-ch-key" title="성공 기록, 세션 쉼"><i class="is-ok" aria-hidden="true"></i>성공</span><span class="aq-ch-key" title="성공 기록, 세션이 지금 실행 중·응답 대기"><i class="is-run" aria-hidden="true"></i>진행 중</span><span class="aq-ch-key" title="실패 기록"><i class="is-fail" aria-hidden="true"></i>실패</span></div>'
+    + '<div class="aq-plot" role="img" aria-label="' + escAttr(said) + '">' + hatch
+    + '<div class="aq-ch-grid" aria-hidden="true"><span>' + max + '</span></div><div class="aq-ch-grid is-zero" aria-hidden="true"><span>0</span></div>'
+    + cols + '</div>'
+    + '<div class="aq-ch-axis"><span>24시간 전</span><span>12시간 전</span><span>지금</span></div>';
+}
+// What the lane would announce (D4): per group, whether it waits for a reply and its
+// newest recorded run (a queue entry is an event, not a run).
+function cronAnnounceSnap(plan) {
+  var out = { groups: {} };
+  ((plan && plan.groups) || []).forEach(function(g) {
+    var newest = null;
+    (g.job && Array.isArray(g.job.runs) ? g.job.runs : []).forEach(function(r) {
+      if (r.status !== 'queued' && (!newest || r.executedAt > newest.executedAt)) newest = r;
+    });
+    out.groups[g.key] = { name: g.name, waiting: !!g.waiting, hasJob: !!g.job, at: newest ? newest.executedAt : 0, status: newest ? newest.status : '', error: newest && newest.error ? String(newest.error) : '' };
+  });
+  return out;
+}
+// One sentence or none: a newer failed run first, then a job that starts waiting. A group
+// (or its job data) seen for the first time is not news.
+function cronAnnounceDiff(prev, next) {
+  if (!prev || !next) return '';
+  var fail = '';
+  var wait = '';
+  for (var key in next.groups) {
+    var n = next.groups[key];
+    var p = prev.groups[key];
+    if (!p) continue;
+    if (!fail && n.hasJob && p.hasJob && n.status === 'failed' && n.at > p.at) {
+      var e = aqPlain(n.error, 80);
+      fail = '크론 ' + aqPlain(n.name, 60) + ' 실패' + (e ? ': ' + e : '');
+    }
+    if (!wait && n.waiting && !p.waiting) wait = '크론 ' + aqPlain(n.name, 60) + ' 응답 필요';
+  }
+  return fail || wait;
 }
 // Keep one persistent section per job group in #cron-groups, in plan order, so
 // the reconciler can move each job's live card into its section.
@@ -13571,6 +16115,17 @@ function syncCronLane(plan, nowMs) {
   var keep = Object.create(null);
   // Folded (SSOT 2026-10-24): only the jobs whose run waits for a reply stay out.
   var folded = cronLaneFolded();
+  // The queue grammar (#444 D16/D17/D19): written only while unfolded (CSS hides them
+  // folded); the first render is the announcement baseline (D4).
+  if (!folded) {
+    aqWrite(document.getElementById('cron-lane-top'), cronStats(plan, nowMs));
+    aqWrite(document.getElementById('cron-queue'), cronQueue(plan, nowMs, _aqFocusKey['cron-queue']));
+    aqWrite(document.getElementById('cron-lane-chart'), cronRunChart(plan, nowMs));
+  }
+  var snap = cronAnnounceSnap(plan);
+  var news = cronAnnounceDiff(_aqCronSnap, snap);
+  _aqCronSnap = snap;
+  if (news) aqAnnounce(news);
   for (var i = 0; i < plan.groups.length; i++) {
     var g = plan.groups[i];
     keep[g.key] = true;
@@ -13646,12 +16201,13 @@ function renderCronRunRow(run, g, nowMs) {
 function renderCronDrawerMeta(g, nowMs) {
   var j = g.job;
   if (!j) return '<p class="cron-dmeta">이 인스턴스에 없는 잡입니다 — 삭제됐거나 다른 인스턴스의 잡이라 스케줄·실행 기록이 없습니다. 보드에 있는 실행만 보입니다.</p>';
+  // Values are markup (escaped here): 다음 실행 counts down live like the tile (#444 review R1).
   var rows = [
-    ['스케줄', cronScheduleLabel(j.expression, j.nextRunAt) + ' · ' + j.expression + ' (UTC)'],
-    ['다음 실행', j.nextRunAt ? capClockLabel(j.nextRunAt / 1000, nowMs) + ' (' + capCountdown((j.nextRunAt - nowMs) / 1000) + ' 후)' : '8일 안에 없음'],
-    ['실행 방식', (j.mode === 'fastlane' ? '항상 새 스레드' : '세션이 쉬면 주입, 없으면 새 스레드') + ' · 출력 ' + j.target + ' · 모델 ' + j.model],
+    ['스케줄', esc(cronScheduleLabel(j.expression, j.nextRunAt) + ' · ' + j.expression + ' (UTC)')],
+    ['다음 실행', j.nextRunAt ? esc(capClockLabel(j.nextRunAt / 1000, nowMs)) + ' (' + aqTime(j.nextRunAt, nowMs, ' 후') + ')' : '8일 안에 없음'],
+    ['실행 방식', esc((j.mode === 'fastlane' ? '항상 새 스레드' : '세션이 쉬면 주입, 없으면 새 스레드') + ' · 출력 ' + j.target + ' · 모델 ' + j.model)],
   ];
-  return '<dl class="cron-dmeta">' + rows.map(function(r) { return '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd>'; }).join('') + '</dl>'
+  return '<dl class="cron-dmeta">' + rows.map(function(r) { return '<dt>' + esc(r[0]) + '</dt><dd>' + r[1] + '</dd>'; }).join('') + '</dl>'
     + '<p class="cron-dnote">실행 기록은 잡마다 최근 ' + (j.historyCap || 20) + '회까지 보관됩니다.</p>';
 }
 function paintCronDrawer() {
@@ -13715,6 +16271,182 @@ async function loadCronJobs() {
     if (_lastBoardData) renderBoard(_lastBoardData);
   } catch (e) { console.error('Failed to load cron jobs', e); }
 }
+
+// ── Agent Queue grammar (affectUI #444, .prd/affectui/re-agent-queue.md) ──
+// Shared by the capacity cards (workers = llmux accounts) and the CRON lane (queue =
+// scheduled fires): a glyph-led pill, a live countdown, one polite region, roving focus.
+var CAP_LOW_PCT = 20;          // capacity-view.ts CAPACITY_LOW_PCT — under it a pool reads "low"
+var _aqOpen = null;            // the account card open now ('group|name'), kept across repaints
+var _aqFocusKey = {};          // the roving tab stop per strip: data-aq-rove → data-aq-key
+var _aqCronSnap = null;        // the CRON lane's last announcement snapshot (D4)
+// Time left, floored (spec 12 T9): 1일 5시간 · 1시간 20분 · 24분 · 42초 · 곧 (D3).
+function aqLeft(atMs, nowMs) {
+  var s = Math.floor((Number(atMs) - Number(nowMs)) / 1000);
+  if (!(s > 0)) return '곧';
+  if (s < 60) return s + '초';
+  var m = Math.floor(s / 60);
+  var h = Math.floor(m / 60);
+  if (h >= 24) return Math.floor(h / 24) + '일 ' + (h % 24) + '시간';
+  if (h) return h + '시간 ' + (m % 60) + '분';
+  return m + '분';
+}
+// Time left with what follows it: ' 후 복귀' reads "24분 후 복귀", and at zero "곧 복귀" — never
+// "곧 후" (PR review R1). sfx starts with ' 후' when it says "after".
+function aqLeftSfx(atMs, nowMs, sfx) {
+  var t = aqLeft(atMs, nowMs);
+  var tail = String(sfx || '');
+  return t === '곧' ? t + tail.replace(/^ 후/, '') : t + tail;
+}
+// A countdown aqTick keeps live, its suffix inside it (data-aq-sfx); role=timer is never read
+// out on each tick.
+function aqTime(atMs, nowMs, sfx) {
+  var at = Math.round(Number(atMs));
+  if (!isFinite(at)) return '';
+  return '<time class="aq-left" role="timer" datetime="' + new Date(at).toISOString() + '" data-aq-at="' + at + '"' + (sfx ? ' data-aq-sfx="' + escAttr(sfx) + '"' : '') + '>' + aqLeftSfx(at, nowMs, sfx) + '</time>';
+}
+// A status pill (D2). Its first character is a glyph — colour is never the only signal —
+// and it is not a live region: the markup repaints every 30 s; aqAnnounce speaks instead.
+function aqPill(state, html) {
+  return '<span class="aq-pill is-' + state + '">' + html + '</span>';
+}
+// Rides the shared 1 Hz tick (updateTimers → aqTick): capacity, the CRON lane and its drawer.
+function aqTickIn(root, nowMs) {
+  if (!root) return;
+  var els = root.querySelectorAll('[data-aq-at]');
+  for (var i = 0; i < els.length; i++) {
+    var t = aqLeftSfx(Number(els[i].getAttribute('data-aq-at')) || 0, nowMs, els[i].getAttribute('data-aq-sfx') || '');
+    if (els[i].textContent !== t) els[i].textContent = t;
+  }
+}
+function aqTick() {
+  if (document.hidden) return;
+  var now = Date.now();
+  aqTickIn(document.getElementById('capacity'), now);
+  aqTickIn(document.getElementById('cron-lane'), now);
+  aqTickIn(document.getElementById('cron-drawer'), now);
+}
+// Tool- or user-written text as one plain line (review R1): control characters, newlines and
+// runs of whitespace become one space, then the length is capped. Markup always goes through
+// esc / escAttr; the live region is written with textContent only.
+function aqPlain(s, max) {
+  var t = String(s == null ? '' : s).replace(/[\\u0000-\\u001f\\u007f\\s]+/g, ' ').trim();
+  return max && t.length > max ? t.slice(0, max - 1) + '…' : t;
+}
+// One polite sentence (D4). Cleared first so the same words twice are still spoken.
+function aqAnnounce(msg) {
+  var el = document.getElementById('aq-live');
+  if (!el || !msg) return;
+  el.textContent = '';
+  setTimeout(function() { el.textContent = msg; }, 60);
+}
+// Roving focus (D12): one tab stop per [data-aq-rove] strip; arrows walk, Home / End jump.
+function aqRove(e, box) {
+  var step = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1, Home: 'first', End: 'last' }[e.key];
+  if (step === undefined) return false;
+  var items = Array.prototype.slice.call(box.querySelectorAll('[data-aq-key]'));
+  var cur = e.target && e.target.closest ? e.target.closest('[data-aq-key]') : null;
+  var i = items.indexOf(cur);
+  if (i < 0) return false;
+  var j = step === 'first' ? 0 : step === 'last' ? items.length - 1 : Math.max(0, Math.min(items.length - 1, i + step));
+  e.preventDefault();
+  items.forEach(function(it, n) { it.setAttribute('tabindex', n === j ? '0' : '-1'); });
+  items[j].focus();
+  _aqFocusKey[box.getAttribute('data-aq-rove')] = items[j].getAttribute('data-aq-key');
+  return true;
+}
+// The item (data-aq-key) holding the focus inside root, 'pop' for an open card, or null.
+function aqFocusedKey(root) {
+  var a = document.activeElement;
+  if (!root || !a || a === root || !root.contains(a)) return null;
+  if (a.closest && a.closest('.aq-pop')) return 'pop';
+  return a.getAttribute ? a.getAttribute('data-aq-key') : null;
+}
+function aqFocusKey(root, key) {
+  if (!root || !key) return;
+  var els = root.querySelectorAll('[data-aq-key]');
+  for (var i = 0; i < els.length; i++) {
+    if (els[i].getAttribute('data-aq-key') === key) { els[i].focus(); return; }
+  }
+}
+function aqRestoreFocus(root, key) {
+  if (!root || !key) return;
+  if (key !== 'pop') { aqFocusKey(root, key); return; }
+  var close = root.querySelector('.aq-pop .aq-pop-close');
+  if (close) close.focus();
+}
+// Rewrite a part only when its markup changed, keeping the keyboard where it was.
+function aqWrite(el, html) {
+  if (!el || el._html === html) return;
+  var fk = aqFocusedKey(el);
+  el.innerHTML = html;
+  el._html = html;
+  aqRestoreFocus(el, fk);
+}
+// The account card sits under its mark, its left edge clamped into the strip (D11).
+function aqPlacePops(root) {
+  if (!root) return;
+  var pops = root.querySelectorAll('.aq-pop[data-aq-for]');
+  for (var i = 0; i < pops.length; i++) {
+    var pop = pops[i];
+    var box = pop.parentNode;
+    var key = pop.getAttribute('data-aq-for');
+    var marks = box.querySelectorAll('[data-aq-key]');
+    var mark = null;
+    for (var j = 0; j < marks.length; j++) if (marks[j].getAttribute('data-aq-key') === key) mark = marks[j];
+    if (!mark) continue;
+    pop.style.left = Math.max(8, Math.min(mark.offsetLeft, box.clientWidth - pop.offsetWidth - 8)) + 'px';
+    pop.style.top = (mark.offsetTop + mark.offsetHeight + 6) + 'px';
+  }
+}
+// After the key the keyboard was on moved or was dropped: its new place, else the first mark
+// of its group, else the section toggle — never another account at the old place (R3).
+function aqRefocusCapacity(view, from, to) {
+  if (!view) return;
+  if (to) { aqFocusKey(view, to); return; }
+  var group = String(from || '').split('|')[0];
+  var boxes = view.querySelectorAll('[data-aq-rove]');
+  var first = null;
+  for (var i = 0; i < boxes.length && !first; i++) {
+    if (boxes[i].getAttribute('data-aq-rove') === 'cap:' + group) first = boxes[i].querySelector('[data-aq-key]');
+  }
+  var el = first || document.getElementById('capacity-toggle');
+  if (el && typeof el.focus === 'function') el.focus();
+}
+function aqRepaintCapacity() {
+  var view = document.getElementById('capacity-view');
+  if (view) view._html = null;
+  paintCapacity();
+}
+function aqToggleCard(key) {
+  _aqOpen = _aqOpen === key ? null : key;
+  aqRepaintCapacity();
+  aqFocusKey(document.getElementById('capacity-view'), key);
+}
+function aqCloseCard(refocus) {
+  var key = _aqOpen;
+  if (!key) return;
+  _aqOpen = null;
+  aqRepaintCapacity();
+  if (refocus) aqFocusKey(document.getElementById('capacity-view'), key);
+}
+document.addEventListener('click', function(e) {
+  var t = e.target && e.target.closest ? e.target : null;
+  if (!t) return;
+  var mark = t.closest('.aq-mark[data-aq-key]');
+  if (mark) { aqToggleCard(mark.getAttribute('data-aq-key')); return; }
+  if (t.closest('.aq-pop-close')) { aqCloseCard(true); return; }
+  if (_aqOpen && !t.closest('.aq-pop')) aqCloseCard(false);
+});
+document.addEventListener('keydown', function(e) {
+  if (e.key === 'Escape' && _aqOpen) { aqCloseCard(true); return; }
+  var box = e.target && e.target.closest ? e.target.closest('[data-aq-rove]') : null;
+  if (box) aqRove(e, box);
+});
+document.addEventListener('focusin', function(e) {
+  var item = e.target && e.target.closest ? e.target.closest('[data-aq-key]') : null;
+  var box = item ? item.closest('[data-aq-rove]') : null;
+  if (box) _aqFocusKey[box.getAttribute('data-aq-rove')] = item.getAttribute('data-aq-key');
+});
 
 // ── LLM capacity v2 (2026-10-25) — the server (capacity-view.ts) counts each provider in
 // max accounts' worth (tier-weighted) and replays every account's resets in time order.
@@ -13829,7 +16561,8 @@ function capBarRow(g, cls, label, sub, v, key, nowSec) {
   var who = e ? ' title="' + escAttr((CAP_WORD[e.cause] || '') + ' · ' + e.account) + '"' : '';
   return '<div class="cap-bar-row is-' + cls + '">'
     + '<div class="cap-bar-lbl">' + label + '<i>' + sub + '</i></div>'
-    + '<div class="cap-bar" role="img" aria-label="' + escAttr(said) + '"><span style="width:' + (p * 100).toFixed(1) + '%"></span></div>'
+    // The dashed line is where the pool turns "low" (#444 D9 — the reference's backpressure line).
+    + '<div class="cap-bar" role="img" aria-label="' + escAttr(said) + '"><span style="width:' + (p * 100).toFixed(1) + '%"></span><i class="cap-low" style="left:' + CAP_LOW_PCT + '%" title="' + CAP_LOW_PCT + '% 아래면 부족"></i></div>'
     + '<div class="cap-bar-val"><b>' + capCount(v, g.total) + '</b> / ' + capFmt1(g.total) + ' 계정 <em>' + capPct(v, g.total) + '</em></div>'
     + '<div class="cap-bar-next"' + who + '>' + esc(capNextShort(g, key, nowSec)) + '</div>'
     + '</div>';
@@ -13899,7 +16632,9 @@ function capTimeline(g, W, nowSec) {
     if (d < 0.05) return;
     pts.push({ x: X(e.at), d: d, c: e.cause === '7d' ? 'wk' : 'h5', a: e.account, at: e.at });
   });
-  if (!pts.length) return '';
+  // An all-blocked pool with nothing coming back in 7 days still gets its axis and its shaded
+  // stretch (final review) — the blank is the point.
+  if (!pts.length && g.state !== 'empty') return '';
   var LW = W < 420 ? 46 : 64; // a label is at most "+10.3" (~40px): merge centres closer than that
   var buckets = [];
   pts.forEach(function(p) {
@@ -13909,6 +16644,19 @@ function capTimeline(g, W, nowSec) {
     else buckets.push({ x0: p.x, x1: p.x, d: p.d, c: p.c, n: 1, names: [p.a], at: p.at });
   });
   var s = '<svg class="cap-tl" width="' + W + '" height="' + h + '" viewBox="0 0 ' + W + ' ' + h + '" role="img" aria-label="앞으로 7일 동안 돌아오는 계정">';
+  // Every account blocked (#444 D13, spec 12 T9 v1): shade now → the first refill that
+  // raises the primary measure — the reference's rate-limited stretch.
+  if (g.state === 'empty') {
+    var lift = null;
+    (g.events || []).forEach(function(e) { if (lift === null && e[g.has5h ? 'dNow' : 'dWeek'] > 0) lift = e.at; });
+    var x1 = lift === null ? W - pad : X(lift);
+    var hid = 'aqh-' + String(g.group || 'g').replace(/[^a-z0-9_-]/gi, '');
+    var span = Math.max(0, x1 - pad).toFixed(1);
+    var until = lift === null ? '7일 안에 복귀 없음' : capClockLabel(lift, nowSec * 1000) + '까지';
+    s += '<defs><pattern id="' + hid + '" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line class="cap-tl-hatch" x1="0" y1="0" x2="0" y2="6"/></pattern></defs>';
+    s += '<rect class="cap-tl-lim" x="' + pad + '" y="0" width="' + span + '" height="' + (y0 + 14) + '"><title>' + esc('모두 막힘 — ' + until) + '</title></rect>';
+    s += '<rect x="' + pad + '" y="0" width="' + span + '" height="' + (y0 + 14) + '" fill="url(#' + hid + ')" aria-hidden="true"/>';
+  }
   [[0, '지금'], [3600, '1h'], [21600, '6h'], [86400, '24h'], [3 * 86400, '3d'], [5 * 86400, '5d'], [7 * 86400, '7d']].forEach(function(t) {
     var x = pad + capAx(t[0]) * (W - 2 * pad);
     s += '<line class="cap-tl-tick" x1="' + x.toFixed(1) + '" x2="' + x.toFixed(1) + '" y1="' + (y0 - 6) + '" y2="' + (y0 + 6) + '"/>';
@@ -13941,6 +16689,236 @@ function capAdvance(g, nowSec) {
   out.week = due.reduce(function(t, e) { return t + e.dWeek; }, g.week);
   out.events = evs.filter(function(e) { return e.at > nowSec; });
   return out;
+}
+// ── Capacity as workers (affectUI Agent Queue, #444 D8–D14) ──
+// Each llmux account is a worker: usable, paused (a block with its own lift time), spent,
+// unmeasured, held or left out — read from CapacityUnit only. A mark carries a name, one
+// state word and a countdown; never a usage bar, % or tier (spec 12 §7). Numbers live in
+// the account's card.
+// Units at the boundary (review R1): capacity times (returnAt, events[].at) are epoch
+// SECONDS (capacity-view.ts); cron times and every aq* countdown are epoch MILLISECONDS.
+function capMs(atSec) {
+  return Number(atSec) * 1000;
+}
+// The state from the unit's own fields (review R1): counted / blocked / unmeasured5h / now.
+// binding only says which window binds first (5h or 7d) — it colours an ok mark's dot.
+function capUnitState(u) {
+  if (!u.counted) return u.excluded === 'held' ? 'held' : 'out';
+  if (u.blocked) return 'paused';
+  if (u.unmeasured5h) return 'unmeasured';
+  return Number(u.now) > 0 ? 'ok' : 'spent';
+}
+function capReason(u) {
+  var b = u.blocks || {};
+  if (u.excluded === 'held') return u.held === 'paused' ? '일시정지' : u.held === 'auth' ? '인증 실패' : '보류';
+  if (u.excluded === 'noMeasure') return '측정 없음';
+  if (u.excluded === 'unknownTier') return '티어 미지정';
+  if (b.weekly) return '주간 한도';
+  if (b.fiveHour) return '5시간 한도';
+  if (b.scopedUntil) return '모델 한도';
+  if (b.cooldownUntil) return '쿨다운';
+  if (u.blocked) return '차단';
+  var st = capUnitState(u);
+  return st === 'ok' ? '사용 가능' : st === 'unmeasured' ? '5시간 미측정' : '소진';
+}
+function capTierLabel(u) {
+  var t = CAP_TIERS[u.tier];
+  if (u.tierAssumed) return (t ? t.short : 'x20') + ' 가정';
+  return t ? t.label : '티어 미지정';
+}
+// Counted accounts that are blocked right now (held ones are out of the totals).
+function capPaused(g) {
+  return (g.units || []).filter(function(u) { return u.counted && u.blocked && !u.excluded; });
+}
+// The earliest return among them (epoch s), or null.
+function capFirstReturn(g) {
+  var at = null;
+  capPaused(g).forEach(function(u) { if (u.returnAt && (at === null || u.returnAt < at)) at = u.returnAt; });
+  return at;
+}
+// When an empty pool gets something back: the first return, else the first raise.
+function capEmptyAt(g, nowSec) {
+  var at = capFirstReturn(g);
+  if (at) return at;
+  var e = capNextEvent(g, g.has5h ? 'dNow' : 'dWeek', nowSec);
+  return e ? e.at : null;
+}
+// The provider pill (D8): 계산 불가 > 모두 막힘 / 소진 > 제한 p > 부족 > 사용 가능.
+function capProvPill(g, nowMs) {
+  var p = capPaused(g).length;
+  if (g.state === 'unknown' || !(g.total > 0)) return aqPill('unknown', '◌ 계산 불가');
+  if (g.state === 'empty') {
+    var at = capEmptyAt(g, nowMs / 1000);
+    return aqPill('empty', (p ? '✗ 모두 막힘' : '✗ 소진') + (at ? ' · ' + aqTime(capMs(at), nowMs, ' 후 복귀') : ''));
+  }
+  if (p) {
+    var back = capFirstReturn(g);
+    return aqPill('paused', '⏸ 제한 ' + p + (back ? ' · ' + aqTime(capMs(back), nowMs, ' 후 복귀') : ''));
+  }
+  if (g.state === 'low') return aqPill('low', '▲ 부족');
+  return aqPill('ok', '● 사용 가능');
+}
+function capProvHead(g, nowMs) {
+  var n = (g.units || []).length || g.accountCount || 0;
+  return '<div class="aq-head"><span class="cap-pname">' + esc(g.label) + '</span><span class="aq-name">llmux · 계정 ' + n + '</span>' + capProvPill(g, nowMs) + '</div>';
+}
+// A mark's identity (final review): the unit's place in the server's order (llmux order,
+// capacity-view.ts) plus its display name — never the name alone. Anonymous llmux masks
+// ai1@x and ai2@x both to "a***", so names collide; the raw email never reaches the client.
+// The key drives the mark, the card lookup, the roving tab stop and focus restore; if the
+// order shifts, an open card closes instead of showing another account.
+function capUnitKey(g, i, u) {
+  return g.group + '|' + i + '|' + u.name;
+}
+// Does a group show the same display name twice (anonymous llmux masks names to "a***")?
+function capDupNames(v, group) {
+  var seen = {};
+  var dup = false;
+  ((v && v.groups) || []).forEach(function(g) {
+    if (g.group !== group) return;
+    (g.units || []).forEach(function(u) {
+      if (seen['#' + u.name]) dup = true;
+      seen['#' + u.name] = true;
+    });
+  });
+  return dup;
+}
+// Where a key points in a NEW capacity response (final review R3), or null when it cannot be
+// trusted. The folded usable mark (group|*ok) is a list, kept while its group exists. A unit
+// key is position + display name: with unique names it follows its account to its new place
+// (null when the account is gone); with a duplicate display name in the previous OR the new
+// response, position cannot tell two accounts apart across a reorder or a removal — dropped.
+function capRemapKey(prev, next, key) {
+  if (!key) return null;
+  var bar = key.indexOf('|');
+  if (bar < 0) return null;
+  var group = key.slice(0, bar);
+  var rest = key.slice(bar + 1);
+  var ng = null;
+  ((next && next.groups) || []).forEach(function(g) { if (g.group === group) ng = g; });
+  if (!ng) return null;
+  if (rest === '*ok') return key;
+  if (capDupNames(prev, group) || capDupNames(next, group)) return null;
+  var name = rest.slice(rest.indexOf('|') + 1);
+  var to = null;
+  (ng.units || []).forEach(function(u, i) { if (u.name === name) to = capUnitKey(ng, i, u); });
+  return to;
+}
+// The open card and every capacity roving stop after a capacity response. A NEW response
+// (another fetchedAtMs) remaps them (capRemapKey); a repaint of the same response keeps them.
+function capSelectionAfter(prev, next, open, focus) {
+  var fresh = !!(prev && next && prev.fetchedAtMs !== next.fetchedAtMs);
+  var out = { open: open || null, focus: {} };
+  for (var k in focus || {}) {
+    if (!fresh || k.indexOf('cap:') !== 0) out.focus[k] = focus[k];
+    else {
+      var f = capRemapKey(prev, next, focus[k]);
+      if (f) out.focus[k] = f;
+    }
+  }
+  if (fresh && out.open) out.open = capRemapKey(prev, next, out.open);
+  return out;
+}
+function capMark(g, u, key, nowMs, open, stop) {
+  var st = capUnitState(u);
+  var why = capReason(u);
+  var said = [u.name, capTierLabel(u), why];
+  var body = '<b>' + esc(u.name) + '</b>';
+  if (st === 'ok') {
+    body = '<i class="aq-wdot is-' + (u.binding === '5h' ? 'h5' : 'wk') + '" aria-hidden="true"></i>' + body;
+  } else if (st === 'paused') {
+    body = '⏸ ' + body + ' · ' + esc(why) + ' · ' + (u.returnAt ? aqTime(capMs(u.returnAt), nowMs) : '복귀 약속 없음');
+    said.push(u.returnAt ? aqLeftSfx(capMs(u.returnAt), nowMs, ' 후 복귀') : '복귀 약속 없음');
+  } else {
+    body += ' · ' + esc(why);
+  }
+  return '<button type="button" class="aq-mark is-' + st + '" data-aq-key="' + escAttr(key) + '" tabindex="' + (key === stop ? '0' : '-1') + '" aria-haspopup="dialog" aria-expanded="' + (key === open ? 'true' : 'false') + '" aria-label="' + escAttr(said.join(', ')) + '">' + body + '</button>';
+}
+// The account card (D11): every row from a CapacityUnit field. The folded usable mark's
+// card lists the usable accounts instead.
+function capAccountCard(g, key, nowMs) {
+  var units = g.units || [];
+  var row = function(dt, dd, wide) { return '<div' + (wide ? ' class="is-wide"' : '') + '><dt>' + esc(dt) + '</dt><dd>' + dd + '</dd></div>'; };
+  var pct = function(x) { return Math.round((Number(x) || 0) * 100) + '%'; };
+  var close = '<button type="button" class="aq-pop-close" aria-label="닫기">×</button>';
+  if (key === g.group + '|*ok') {
+    var ok = units.filter(function(x) { return capUnitState(x) === 'ok'; });
+    return '<div class="aq-pop" role="dialog" aria-label="사용 가능 계정 세부" data-aq-for="' + escAttr(key) + '">'
+      + '<div class="aq-pop-head"><span class="aq-pop-name">사용 가능</span><span class="aq-pop-kind">' + esc(g.label + ' · 계정 ' + ok.length) + '</span>' + close + '</div>'
+      + '<dl class="aq-pop-stats">' + ok.map(function(x) { return row(x.name, '지금 ' + pct(x.now) + ' · 이번 주 ' + pct(x.week)); }).join('') + '</dl></div>';
+  }
+  var u = null;
+  units.forEach(function(x, i) { if (capUnitKey(g, i, x) === key) u = x; });
+  if (!u) return '';
+  var st = capUnitState(u);
+  var rows = [row('지금 쓸 수 있음', u.counted ? pct(u.now) : '—'), row('이번 주 남음', u.counted ? pct(u.week) : '—')];
+  // binding = which window binds first (5h or 7d), set for a usable account only.
+  if (u.binding) rows.push(row('먼저 닿는 창', u.binding === '5h' ? '5시간' : '일주일'));
+  rows.push(row('상태', esc(capReason(u))));
+  if (u.returnAt) rows.push(row('복귀', esc(capClockLabel(u.returnAt, nowMs)) + ' · ' + aqTime(capMs(u.returnAt), nowMs), true));
+  if (u.estimated) rows.push(row('추정', '지난 리셋을 가득으로 침'));
+  var tone = st === 'ok' ? 'ok' : st === 'paused' ? 'paused' : st === 'held' || st === 'out' ? 'unknown' : 'low';
+  return '<div class="aq-pop" role="dialog" aria-label="' + escAttr(u.name + ' 세부') + '" data-aq-for="' + escAttr(key) + '">'
+    + '<div class="aq-pop-head"><span class="aq-pop-name">' + esc(u.name) + '</span><span class="aq-pop-kind">' + esc(capTierLabel(u)) + '</span>' + aqPill(tone, esc(capReason(u))) + close + '</div>'
+    + '<dl class="aq-pop-stats">' + rows.join('') + '</dl></div>';
+}
+// The workers strip (D10): one mark per account in llmux order (no re-sorting on refresh),
+// one tab stop; narrow folds the usable accounts into one mark.
+function capWorkers(g, nowMs, narrow, open, focusKey) {
+  var units = g.units || [];
+  if (!units.length) return '';
+  var okN = units.filter(function(u) { return capUnitState(u) === 'ok'; }).length;
+  var okKey = g.group + '|*ok';
+  var keys = [];
+  var list = [];
+  units.forEach(function(u, i) {
+    if (narrow && capUnitState(u) === 'ok') {
+      if (keys.indexOf(okKey) < 0) { keys.push(okKey); list.push(null); }
+      return;
+    }
+    keys.push(capUnitKey(g, i, u));
+    list.push({ u: u, key: keys[keys.length - 1] });
+  });
+  var stop = keys.indexOf(focusKey) >= 0 ? focusKey : keys[0];
+  var marks = list.map(function(m) {
+    if (m) return capMark(g, m.u, m.key, nowMs, open, stop);
+    return '<button type="button" class="aq-mark is-ok" data-aq-key="' + escAttr(okKey) + '" tabindex="' + (okKey === stop ? '0' : '-1') + '" aria-haspopup="dialog" aria-expanded="' + (okKey === open ? 'true' : 'false') + '" aria-label="' + escAttr('사용 가능 계정 ' + okN + '개 — 목록 보기') + '">● 사용 가능 ' + okN + '</button>';
+  }).join('');
+  var card = open && keys.indexOf(open) >= 0 ? capAccountCard(g, open, nowMs) : '';
+  return '<div class="aq-workers" role="group" aria-label="' + escAttr(g.label + ' 계정 ' + okN + '/' + units.length + ' 사용 가능') + '" data-aq-rove="' + escAttr('cap:' + g.group) + '">'
+    + '<div class="aq-col-head"><span>계정</span> <b>' + okN + '/' + units.length + '</b></div>'
+    + '<div class="aq-marks">' + marks + '</div>' + card + '</div>';
+}
+// The folded chip's paused marker (D14): { html, said } or null.
+function capChipLim(g, nowMs) {
+  var p = capPaused(g).length;
+  if (!p) return null;
+  var at = capFirstReturn(g);
+  return {
+    html: ' <i class="cap-chip-lim">⏸ ' + p + (at ? ' · ' + aqTime(capMs(at), nowMs) : '') + '</i>',
+    said: ' · 제한 ' + p + (at ? ' — ' + aqLeftSfx(capMs(at), nowMs, ' 후 첫 복귀') : ''),
+  };
+}
+// One sentence or none per capacity load (D4): all blocked > recovered > under 20%.
+function capAnnounceDiff(prev, next, nowMs) {
+  if (!prev || !next || !prev.available || !next.available) return '';
+  var best = null;
+  var put = function(rank, msg) { if (!best || rank < best.rank) best = { rank: rank, msg: msg }; };
+  (next.groups || []).forEach(function(g) {
+    var p = null;
+    (prev.groups || []).forEach(function(x) { if (x.group === g.group) p = x; });
+    if (!p || p.state === g.state) return;
+    if (g.state === 'empty') {
+      var at = capEmptyAt(g, nowMs / 1000);
+      put(1, aqPlain(g.label, 40) + (capPaused(g).length ? ' 계정이 모두 막힘' : ' 쓸 수 있는 양 없음') + (at ? ' — ' + aqLeftSfx(capMs(at), nowMs, ' 후 복귀') : ''));
+    } else if (p.state === 'empty' && g.state !== 'unknown') {
+      var units = g.units || [];
+      put(4, aqPlain(g.label, 40) + ' 다시 사용 가능 — 계정 ' + units.filter(function(u) { return capUnitState(u) === 'ok'; }).length + '/' + units.length);
+    } else if (p.state === 'ok' && g.state === 'low') {
+      put(5, aqPlain(g.label, 40) + ' ' + (g.has5h ? '지금' : '이번 주') + ' ' + CAP_LOW_PCT + '% 아래 — ' + capCount(g.has5h ? g.now : g.week, g.total) + '/' + capFmt1(g.total) + ' 계정');
+    }
+  });
+  return best ? best.msg : '';
 }
 function renderCapacitySummary(v, nowMs) {
   if (!v.available) {
@@ -13979,9 +16957,11 @@ function renderCapacitySummary(v, nowMs) {
       : (g.has5h ? '5시간(지금) ' + capCount(g.now, g.total) + '/' + t + ' 계정 (' + capPct(g.now, g.total) + '), ' : '') + '일주일 ' + capCount(g.week, g.total) + '/' + t + ' 계정 (' + capPct(g.week, g.total) + ')';
     said += [stale ? '측정 ' + stale : '', part, asm ? '티어 미지정 ' + asm.n + '(' + asm.short + ' 가정)' : ''].filter(Boolean).map(function(x) { return ' · ' + x; }).join('');
     var next = known ? capNextLine(g, g.has5h ? 'dNow' : 'dWeek', g.has5h ? CAP_5H : CAP_7D, nowSec, nowMs) : '';
-    var lead = said + (WORD[state] || '') + (next ? ' — ' + next : '');
+    // Paused workers and the first return (#444 D14), between the measures and the ⚠ flag.
+    var lim = (g.units || []).length ? capChipLim(g, nowMs) : null;
+    var lead = said + (WORD[state] || '') + (lim ? lim.said : '') + (next ? ' — ' + next : '');
     return '<span class="cap-chip is-' + state + '" title="' + escAttr(lead) + '" aria-label="' + escAttr(g.label + ' ' + lead) + '">'
-      + (GLYPH[state] || '') + esc(g.label) + ' ' + nums + flag + '</span>';
+      + (GLYPH[state] || '') + esc(g.label) + ' ' + nums + (lim ? lim.html : '') + flag + '</span>';
   }).join('') + '</div>';
 }
 function renderCapacityGroup(g, nowMs, width) {
@@ -13989,11 +16969,14 @@ function renderCapacityGroup(g, nowMs, width) {
   var W = Math.max(260, (Number(width) || 900) - 36);
   var narrow = W < 600;
   var h = '<section class="cap-prov is-' + esc(g.state || 'unknown') + (narrow ? ' is-narrow' : '') + '" data-group="' + escAttr(g.group) + '" aria-label="' + escAttr(g.label + ' 가용량') + '">'
-    + '<div class="cap-pname">' + esc(g.label) + '</div>'
+    + capProvHead(g, nowMs)
     + '<div class="cap-disc">' + capDisclosure(g, nowSec) + '</div>';
-  if (!(g.total > 0)) return h + '<div class="cap-bar-next">계산 불가 — 셀 수 있는 계정이 없음</div></section>';
+  // The accounts as workers (#444 D10/D11): state marks, the open card kept across repaints.
+  var workers = capWorkers(g, nowMs, narrow, _aqOpen, _aqFocusKey['cap:' + g.group]);
+  if (!(g.total > 0)) return h + '<div class="cap-bar-next">계산 불가 — 셀 수 있는 계정이 없음</div>' + workers + '</section>';
   if (g.has5h) h += capBarRow(g, 'h5', '5시간', '지금 쓸 수 있음', g.now, 'dNow', nowSec);
   h += capBarRow(g, 'wk', '일주일', '이번 주 남음', g.week, 'dWeek', nowSec);
+  h += workers;
   var tl = capTimeline(g, W, nowSec);
   if (tl) {
     // ● raises the 5시간 bar (a 5h reset, or a block lifting), ◆ the 일주일 bar — same colours as the bars.
@@ -14037,9 +17020,18 @@ function paintCapacity() {
     // A repaint (fresh age, new snapshot) must not fold what the reader opened.
     var opened = {};
     Array.prototype.forEach.call(view.querySelectorAll('details[data-cap-key][open]'), function(d) { opened[d.getAttribute('data-cap-key')] = true; });
+    // …nor drop the keyboard: an account mark or its open card keeps the focus (#444 D11).
+    var focusKey = aqFocusedKey(view);
+    var openWas = _aqOpen;
     view.innerHTML = html;
     view._html = html;
     Array.prototype.forEach.call(view.querySelectorAll('details[data-cap-key]'), function(d) { if (opened[d.getAttribute('data-cap-key')]) d.open = true; });
+    // An open key with no card any more (its account left, the strip folded) is forgotten, so
+    // it never reopens on its own (final review R3, fable P3) — and the keyboard is not lost.
+    if (_aqOpen && !view.querySelector('.aq-pop')) _aqOpen = null;
+    if (focusKey === 'pop' && !_aqOpen) aqRefocusCapacity(view, openWas, null);
+    else aqRestoreFocus(view, focusKey);
+    aqPlacePops(view);
     // The section sits above the board, outside #inbox: no observer sees the board
     // move when it appears or changes height, so the shift cache learns it here.
     scheduleLayoutRefresh(40);
@@ -14051,8 +17043,25 @@ async function loadCapacity() {
     var res = await fetch('/api/dashboard/capacity');
     if (!res.ok) return;
     var data = await res.json();
-    _capacityView = data.capacity || null;
+    var next = data.capacity || null;
+    // One polite sentence when a pool's state changes (#444 D4); the first load is the baseline.
+    var news = capAnnounceDiff(_capacityView, next, Date.now());
+    // A new response re-decides the open card and the roving stops (final review R3): a key
+    // follows its account, or is dropped where masked names make position ambiguous. Nothing
+    // is announced for it — the closed card is not news.
+    var prev = _capacityView;
+    var view = document.getElementById('capacity-view');
+    var fk = view ? aqFocusedKey(view) : null;
+    var wasPop = fk === 'pop';
+    if (wasPop) fk = _aqOpen;
+    var sel = capSelectionAfter(prev, next, _aqOpen, _aqFocusKey);
+    _aqOpen = sel.open;
+    _aqFocusKey = sel.focus;
+    _capacityView = next;
     paintCapacity();
+    var fresh = !!(prev && next && prev.fetchedAtMs !== next.fetchedAtMs);
+    if (fresh && fk && !(wasPop && _aqOpen)) aqRefocusCapacity(view, fk, capRemapKey(prev, next, fk));
+    if (news) aqAnnounce(news);
   } catch (e) { console.error('Failed to load capacity', e); }
 }
 
@@ -14654,6 +17663,7 @@ function decoratePanelTurns() {
     }
     start = ts;
   }
+  decorateAnswerTurns(); // re-ai-answer D11 · D12
 }
 
 function artPeekEl() {
@@ -14949,6 +17959,7 @@ function artHandleKey(e) {
       toggleCard(key, e.detail === 0);
     });
     root.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') { closeCardOnEscape(e, root); return; }
       if (e.key !== 'Enter' && e.key !== ' ') return;
       var face = e.target;
       if (!face.classList || !face.classList.contains('card-face')) return;
