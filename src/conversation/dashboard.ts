@@ -8104,7 +8104,12 @@ function spendLabel(sp) {
 }
 function spendTitle(sp) {
   if (!sp) return '';
-  var t = '이 에이전트 자신의 API 호출 ' + toNum(sp.calls) + '회 (하위 에이전트 제외) — 입력 ' + formatTokens(sp.inputTokens)
+  // Foreground subagents it started have no row of their own: their calls are counted here.
+  var nested = toNum(sp.nestedAgents);
+  var t = (nested > 0
+      ? '이 에이전트의 API 호출 ' + toNum(sp.calls) + '회 (트리에 따로 없는 하위 에이전트 ' + nested + '개 포함, 트리에 있는 하위 에이전트는 각자 행에)'
+      : '이 에이전트 자신의 API 호출 ' + toNum(sp.calls) + '회 (하위 에이전트 제외)')
+    + ' — 입력 ' + formatTokens(sp.inputTokens)
     + ' · 출력 ' + formatTokens(sp.outputTokens) + ' · 캐시 읽기 ' + formatTokens(sp.cacheReadTokens)
     + ' · 캐시 쓰기 ' + formatTokens(sp.cacheCreateTokens) + ' · API 환산 $' + toNum(sp.costUsd).toFixed(2);
   if (toNum(sp.estimatedCalls) > 0) t += ' · usage가 기록되지 않은 호출 ' + toNum(sp.estimatedCalls) + '회는 앞뒤 호출로 추정';

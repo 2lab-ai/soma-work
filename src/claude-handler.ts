@@ -48,12 +48,13 @@ import {
   type loadMcpToolPermissions,
   resolveGatedTool,
 } from './mcp-tool-permission-config';
+import { createHostPricing } from './metrics/host-pricing';
 import {
-  calculateTokenCost,
   hasOneMSuffix,
   isOneMContextUnavailableSignal,
   ONE_M_CONTEXT_UNAVAILABLE_CODE,
 } from './metrics/model-registry';
+import { modelCatalog } from './model-catalog';
 import { BUNDLED_PLUGINS_DIR } from './plugin/bundled';
 import type { SdkPluginPath } from './plugin/types';
 import type {
@@ -102,6 +103,9 @@ import { getTokenManager } from './token-manager';
 import { DEFAULT_SHOW_THINKING, type EffortLevel, userSettingsStore } from './user-settings-store';
 
 /** Heartbeat interval for long-running Claude CLI calls. */
+/** llmux models are priced with the host table, Claude models by the SDK (`metrics/host-pricing.ts`). */
+const hostPricing = createHostPricing(modelCatalog);
+
 const CLAUDE_LEASE_HEARTBEAT_MS = 5 * 60 * 1000;
 
 /**
@@ -2015,7 +2019,7 @@ export class ClaudeHandler implements TurnSteeringPort {
   ): AsyncIterable<AgentStreamEvent> {
     return runAgentStream(
       this.streamQuery(prompt, session, abortController, workingDirectory, slackContext, sessionKey),
-      { calculateTokenCost },
+      { calculateTokenCost: hostPricing.calculateTokenCost, hostPriced: hostPricing.hostPriced },
     );
   }
 

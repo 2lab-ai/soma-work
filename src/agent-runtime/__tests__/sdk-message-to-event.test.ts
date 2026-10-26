@@ -320,6 +320,40 @@ describe('createSdkMessageMapper — golden (epic #1023 P3)', () => {
       });
     });
 
+    // dev 2026-10-27: the SDK does not know llmux models (`astra`, `grok`)
+    // and prices them at its own default ($4 / $20 / $0.20 per MTok), so the
+    // task total showed astra at about a third of its price, and at other rates
+    // than the subagent rows (priced by the host's table). A model the host
+    // prices itself is priced by the host, whatever costUSD the SDK sent.
+    it('a model the host prices itself (llmux) takes the host price, not the SDK fallback costUSD', () => {
+      const calc = vi.fn((m: string | undefined, input: number) => (m === 'astra' ? input * 0.03 : input * 0.01));
+      const events = createSdkMessageMapper({ calculateTokenCost: calc, hostPriced: (m) => m === 'astra' }).map(
+        sdk({
+          type: 'result',
+          subtype: 'success',
+          result: 'x',
+          modelUsage: {
+            'claude-opus-5-5[1m]': { inputTokens: 100, outputTokens: 10, costUSD: 1.5 },
+            astra: { inputTokens: 200, outputTokens: 20, cacheReadInputTokens: 1000, costUSD: 0.9 },
+          },
+        }),
+      );
+      const usage = events.find((e) => e.type === 'usage') as
+        | {
+            usage?: {
+              modelBreakdown?: Record<string, { costUsd: number }>;
+              totalCostUsd?: number;
+              costSource?: string;
+            };
+          }
+        | undefined;
+      expect(usage?.usage?.modelBreakdown?.['claude-opus-5-5[1m]'].costUsd).toBe(1.5);
+      expect(usage?.usage?.modelBreakdown?.astra.costUsd).toBe(6);
+      expect(usage?.usage?.totalCostUsd).toBeCloseTo(7.5);
+      expect(usage?.usage?.costSource).toBe('calculated');
+      expect(calc).toHaveBeenCalledWith('astra', 200, 20, 1000, 0);
+    });
+
     it('direct usage: total_cost_usd>0 → sdk; zero → calculated via injected calc and lastAssistantModelName', () => {
       const m = mapper();
       // Prime lastAssistantModelName via a prior assistant message.

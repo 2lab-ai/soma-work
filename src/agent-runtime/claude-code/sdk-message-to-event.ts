@@ -53,6 +53,12 @@ export type CalculateTokenCost = (
 
 export interface SdkMessageMapperDeps {
   calculateTokenCost: CalculateTokenCost;
+  /**
+   * The host prices this model itself — the SDK does not know it (an llmux
+   * model) and its `costUSD` is its default rate, not the model's price
+   * (`metrics/host-pricing.ts`). Absent = the SDK's cost always stands.
+   */
+  hostPriced?: (model: string) => boolean;
 }
 
 export interface SdkMessageMapper {
@@ -344,7 +350,7 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
         const cacheCreate = raw.cacheCreationInputTokens || 0;
         const sdkCost = raw.costUSD || 0;
         let cost: number;
-        if (sdkCost > 0) {
+        if (sdkCost > 0 && !deps.hostPriced?.(model)) {
           cost = sdkCost;
         } else {
           cost = deps.calculateTokenCost(model, input, output, cacheRead, cacheCreate);
