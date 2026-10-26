@@ -214,7 +214,10 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
 
   it('every card can open the panel; without a conversation the work log reads 작업 로그 없음', () => {
     const body = fnBody('renderCardBody');
-    expect(body).toMatch(/const worklogBtn = '<button type="button" class="btn-action btn-primary"/);
+    // re-agent-inbox D10: 작업 로그 is the primary unless the card holds a decision for this viewer.
+    expect(body).toMatch(
+      /const worklogBtn = '<button type="button" class="btn-action' \+ \(canDecideHere \? '' : ' btn-primary'\) \+ '"/,
+    );
     expect(TEMPLATE).toContain("var WL_EMPTY_MSG = '작업 로그 없음';");
     expect(fnBody('resetWorkLog')).toContain('WL_EMPTY_MSG');
     expect(fnBody('openPanel')).toContain('resetWorkLog(panelConvId, true)');

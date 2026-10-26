@@ -1,6 +1,6 @@
 # re-agent-inbox — affectUI Agent Inbox → 세션 보드의 남은 차이
 
-Status: Phase A(계약, 구현 전) · Date: 2026-10-26 · 기준 main `ff6c9ac` · 이슈 #438 (에픽 #437) · 브랜치 `feat/dashboard-affectui-agent-inbox`
+Status: 구현(Phase B, 푸시 전) · Date: 2026-10-26 · 기준 main `ff6c9ac` · 이슈 #438 (에픽 #437) · 브랜치 `feat/dashboard-affectui-agent-inbox`
 SSOT: [`ssot.md`](ssot.md) · 앞선 계약: [`../10-agent-inbox-board-spec.md`](../10-agent-inbox-board-spec.md) §3.1·§4·§5,
 [`../13-dashboard-three-surfaces-spec.md`](../13-dashboard-three-surfaces-spec.md) §3.2·§3.7
 
@@ -138,7 +138,7 @@ spark는 모두 파랑(`#6a94fc`). 컴포넌트 CSS는 틴트 태그와 칸별 s
 | 9 | 카드 `aria-controls` | 없음 | **채택 D8** | — |
 | 10 | 칸 = 이름 붙은 section | `div` | **채택 D9** | — |
 | 11 | 카드당 주 버튼 하나(= 지금 할 결정) | 작업 로그 늘 잉크 + 추천 선택 잉크 | **변형 D10** | 결정 = 소유자의 질문 답 · 요청자의 권한 응답(`isPermissionRequester`) |
-| 12 | Approve/Reject 버튼 모양 | 권한 블록 Slack 색 | 범위 밖 | `renderPermissionBlock`은 패널과 공유 — Agent Run(Approval Card) 서브이슈 몫 |
+| 12 | Approve(주) + Reject(보조) | 권한 블록 Slack 색(초록·빨강 채움) | **변형 D10** | 카드 안에서만 CSS로: Approve 잉크, Deny 보조. 패널 블록·`renderPermissionBlock`은 Agent Run 몫(교차 리뷰 R1 P1) |
 | 13 | `failed` 상태 · Retry | 없음 | **불채택** | 근거 데이터 없음: 끝난 실패를 나르는 필드가 없다(오류는 자동 재개 대기 `autoResume.reason`뿐, .prd/13 §3.7 미해결) |
 | 14 | sources 수 | — | **불채택** | 근거 데이터 없음(읽은 출처를 세지 않는다) |
 | 15 | tools 수(face) | task 완료/전체 · ctx % | 유지 | 진행 지표는 task 완료/전체(.prd/13 §3.7). 툴 수는 task 창 `툴 N회`(T7)·패널 트리 `agentRoot.toolCalls` |
@@ -156,12 +156,16 @@ spark는 모두 파랑(`#6a94fc`). 컴포넌트 CSS는 틴트 태그와 칸별 s
 | 27 | 핸들러 없을 때 보드가 상태를 바꿈 | 서버 상태만 | 불채택 | 레퍼런스 aiNotes도 핸들러가 있으면 바꾸지 않는다 |
 | 28 | 바의 `New task` | FAB `.new-task-fab` | 유지 | 기존 진입점 |
 
-## 4. 계약 (TO-BE)
+## 4. 계약 (TO-BE) [SHIPPED]
 
-**D1 상태 태그.** 바닥 줄 `<span class="card-status" data-tone="T">`(마크업은 그대로 `.st-icon` + `.st-text`). 톤 `cardTone(s, col)`:
-자동 재개 대기(`pendingAutoResume(s,col)`) → `wait` · `waiting` → `wait` · `working` → `run` · `idle` → `done` · `closed` → `rest`.
-CSS: `inline-flex`, 높이 24px, 안쪽 `0 10px 0 8px`, 반경 999px, 12.5px/500, gap 6px, `flex: 0 1 auto`, `max-width: 100%`, 말줄임
-(메트릭은 `margin-left:auto`로 오른쪽, 좁으면 기존처럼 다음 줄). 배경·글자 = 새 토큰, `.st-ago`(`· 12m ago`)도 태그 안 같은 색.
+색 토큰은 보드 CSS 영역의 자체 `:root {…}` + `[data-theme="light"] {…}` 블록(3601·3611), 호버 규칙은 그 규칙 옆의 자체 `@media` 블록,
+동작 줄이기 규칙은 공유 동작 줄이기·터치 블록 **뒤**의 자체 블록(5254–5259 — 시트의 첫 동작 줄이기 블록은 공유 블록으로 남는다)이다.
+공유 `:root`(3137)·라이트(3203)·동작 줄이기(5172)·호버·터치 블록은 건드리지 않는다(에픽 위생, 교차 리뷰 R1).
+
+**D1 상태 태그 [SHIPPED].** 바닥 줄 `<span class="card-status" data-tone="T">`(안의 `.st-icon` + `.st-text`는 그대로). 톤은 `renderCardFace`
+(8361)가 정한다: 자동 재개 대기(`pendingAutoResume`) → `wait` · `waiting` → `wait` · `working` → `run` · `closed` → `rest` · 그 밖(`idle`) → `done`.
+CSS(3768–3772): `inline-flex`, 높이 24px, 안쪽 `0 10px 0 8px`, 반경 999px, 12.5px/500, gap 6px, `flex: 0 1 auto`, `max-width: 100%`, 말줄임
+(메트릭은 `margin-left:auto`로 오른쪽, 좁으면 기존처럼 다음 줄). `.st-ago`(`· 12m ago`)도 태그 안 같은 색(`color: inherit`).
 
 | 토큰 | 다크 bg / fg (대비) | 라이트 bg / fg (대비) |
 |---|---|---|
@@ -170,85 +174,96 @@ CSS: `inline-flex`, 높이 24px, 안쪽 `0 10px 0 8px`, 반경 999px, 12.5px/500
 | `--st-done-bg/-fg` | `#14301f` / `#5fd68e` (7.8:1) | `#e3f5e9` / `#136c39` (5.7:1) |
 | `--st-rest-bg/-fg` | `#2f2f35` / `#b4b4bb` (6.5:1) | `#efefef` / `#555558` (6.5:1) |
 
-아이콘 색은 지금처럼 `--st-color`(카드 `data-state`), 자동 재개 시계는 `--st-wait`. `:root`와 `[data-theme="light"]`에 둘 다 둔다.
+아이콘 색은 지금처럼 `--st-color`(카드 `data-state`), 자동 재개 시계는 `--st-wait`.
 
-**D2 상태 단어.** `.st-prefix`(`Running · `, `Done in `)는 두 보기 모두 기본으로 보인다. `.card-face { container: cardface / inline-size }`,
-`@container cardface (max-width: 300px) { .st-prefix { display: none } }`(내용 폭 300px ≈ 카드 328px). `.st-prefix { display: none }`과
-`.kanban[data-view="list"] .st-prefix` 규칙은 없어진다. 시계 없는 단어(`Waiting for you`, `Sleeping`, `Archived`, `Idle`, 자동 재개 줄)는
-늘 보인다. 결과: 1440 보드 `Running · 3m 49s` / `Done in 4m 12s · 12m ago`, 820 보드(카드 ~292px)와 320 폰은 시계만.
+**D2 상태 단어 [SHIPPED].** `.st-prefix`(`Running · `, `Done in `)는 두 보기 모두 기본으로 보인다. `.card-face { container: cardface / inline-size }`
+(3723), `@container cardface (max-width: 300px) { .card-status .st-prefix { display: none } }`(3778, 내용 폭 300px ≈ 카드 328px). 예전의
+`.st-prefix { display: none }`과 `.kanban[data-view="list"] .st-prefix`는 없다. 시계 없는 단어(`Waiting for you`, `Sleeping`, `Archived`, `Idle`,
+자동 재개 줄)는 늘 보인다. 실측: 1440 보드(카드 397px) `Running · 21m 57s` / `Done in 4m 12s`, 820(카드 ~292px)은 시계만.
 
-**D3 태그 안 링.** `.card-status .spinner`: 트랙 = `currentColor` 25%(`color-mix`), 호 = `currentColor`; 아이콘 색은 `--st-color`.
-동작 줄이기의 정지 링(5137–5139)은 그대로.
+**D3 태그 안 링 [SHIPPED].** `.card-status .spinner`(3785): 트랙 = `currentColor` 25%(`color-mix`), 호 = `currentColor`. 자체 동작 줄이기 블록
+(5256)이 `border-color: currentColor`로 정지 링을 온전히 둔다(공유 블록의 정지 링 규칙은 그대로).
 
-**D4 아이콘 팝.** 화면에 이미 있던 카드의 `data-state`가 바뀐 렌더에서만(`applyCardParts`, 첫 렌더·`canAnimate()` 거짓·`reduceMotion()` 제외)
-새 `.card-status .st-icon`에 WAAPI `[{opacity:0, transform:'scale(0.6)'}, {opacity:1, transform:'scale(1)'}]`,
-`MOTION.move`(320ms) · `MOTION.easeOut`. 상태가 같은 face 교체(토큰 증가 등)는 팝하지 않는다.
+**D4 아이콘 팝 [SHIPPED].** `applyCardParts`(8072)가 바꾸기 전 `data-state`를 잡아 두고, 있던 상태가 달라진 렌더에서만(새 카드·같은 상태의
+face 교체·`canAnimate()` 거짓·`reduceMotion()` 제외) `popStatusIcon`(8111) → 새 `.card-status .st-icon`에 WAAPI
+`[{opacity:0, transform:'scale(0.6)'}, {opacity:1, transform:'scale(1)'}]`, `MOTION.move`(320ms) · `MOTION.easeOut`.
 
-**D5 상태 먼저, 이동은 나중.** `BOARD_HOLD_MS = 900`.
-- 칸 = `waiting` → NEEDS YOU, `working` → RUNNING, `idle`·`closed` → DONE. 화면에 그려진 카드(`_cardEls[key]._colId`가 세 칸 중 하나)의 새 칸이
-  다르면 처음 본 시각에 보류 `_laneHolds[key] = { from, to, until: now + 900 }`를 만들고, 그 카드는 **지금 컨테이너·지금 자리에 남긴 채**
-  face·body·`data-state`·`data-col`만 새 상태로 그린다(D1 태그·D4 팝이 그 자리에서 보인다).
-- `until`에 타이머 하나(가장 이른 `until`)가 `renderBoard(_lastBoardData)`를 다시 부르고, 그때 기존 FLIP(`.is-flying`)으로 새 칸에 간다.
-- 보류 중 데이터가 원래 칸으로 돌아오면 보류를 지우고 움직이지 않는다. 다른 칸으로 바뀌면 `to`만 바꾸고 `until`은 그대로.
-- 보류하지 않음(오늘과 같은 즉시 이동): 첫 렌더, `canAnimate()` 거짓(숨은 탭 포함), `reduceMotion()`, 새로 들어오거나 보드에서 사라지는
-  카드, CRON 레인 슬롯. 보드에서 사라진 키·유저 전환으로 없어진 키의 보류는 버린다.
-- 칸 배지와 빈 칸 문구는 **그려진 카드** 기준(보류 카드는 출발 칸에서 센다). DONE 날짜 묶음 머리 개수는 데이터 기준이다(보류 900ms 동안 1
-  차이 가능 — 알려진 한계).
-- 순수 함수로 판단을 뺀다: `holdLanes(wantLane, drawnLane, holds, now, on) → { lanes, holds, wakeAt }`(키 → 그릴 칸, 갱신된 보류, 다음 깸 시각).
+**D5 상태 먼저, 이동은 나중 [SHIPPED].** `BOARD_HOLD_MS = 900`(7485).
+- `reconcileBoard`(7677)가 슬롯을 짠 뒤 `applyLaneHolds(slots, counts)`(7703 → 7768)를 부른다. 칸 = `waiting` / `working` / `done`(DONE 날짜
+  슬롯 포함). 판단은 순수 함수 `holdLanes(want, drawn, holds, now, on) → { lanes, holds, wakeAt }`(7745): 그려진 칸(`_cardEls[key]._colId`)과
+  새 칸이 다르면 처음 본 시각 + 900ms까지 그린 칸에 둔다. 데이터가 원래 칸으로 돌아오면 보류를 지우고, 다른 칸으로 바뀌면 `to`만 바꾸고
+  기한은 그대로. `on = canAnimate() && !reduceMotion()` — 첫 렌더·숨은 탭·동작 줄이기는 즉시 이동. 새 카드·CRON 슬롯·사라진 키는 보류 없음.
+- 보류 카드는 새 칸 슬롯에서 빠져 **지금 노드가 있는 컨테이너의 지금 자리**로 들어가고, item의 `col`은 새 칸이라 face·body·`data-state`·
+  `data-col`은 새 상태로 그려진다(D1 태그·D4 팝이 그 자리에서). 자리가 없어졌으면(떠난 DONE 날짜) 보류를 버리고 바로 이동한다.
+- 칸 배지(`counts`)와 빈 칸 문구는 그려진 카드 기준(빈 칸은 슬롯 item 수로 판정). DONE 날짜 묶음 머리 개수는 데이터 기준 — 보류 900ms 동안
+  1 차이 가능(알려진 한계).
+- 타이머 하나가 가장 이른 기한 + 20ms에 `renderBoard(_lastBoardData)`를 다시 부르고, 그때 기존 FLIP(`.is-flying`)으로 새 칸에 간다.
 
-**D6 낭독.** `#inbox` 안 `<p id="inbox-live" class="ib-sr" role="status" aria-live="polite" aria-atomic="true">`(`.ib-sr` = 시각 숨김:
-`position:absolute; width:1px; height:1px; overflow:hidden; clip-path:inset(50%); white-space:nowrap`).
-문구 `boardAnnounceText(w, r)` = `'응답이 필요한 세션 ' + w + '개, 실행 중 ' + r + '개'`(w = 렌더한 보드 데이터의 `waiting` 수 — CRON 레인으로 간
-대기 실행 포함, r = `working` 수, 보류 전). `renderBoard`마다 계산하고, 문구가 바뀌었을 때만, 1000ms 안의 연속 변화는 마지막 하나만 쓴다.
+**D6 낭독 [SHIPPED].** `#kanban` 바로 앞(6200) `<p id="inbox-live" class="ib-sr" role="status" aria-live="polite" aria-atomic="true">`(`.ib-sr`
+3622). `renderBoard`(7632)가 받은 데이터 그대로(CRON 레인으로 갈 대기 실행 포함, 보류 전) `announceBoard(waiting 수, working 수)`(7820) →
+`boardAnnounceText`(7815) = `'응답이 필요한 세션 ' + w + '개, 실행 중 ' + r + '개'`. 문구가 바뀔 때만, `ANNOUNCE_MS = 1000` 안의 연속 변화는
+마지막 하나만 쓴다. (그래서 낭독의 실행 수는 RUNNING 배지와 다를 수 있다 — CRON 레인의 실행 포함.)
 
-**D7 Esc.** `initBoardInteractions`의 `#kanban`·`#cron-lane` keydown: `e.key === 'Escape'`이고 대상이 펼친 카드(`.card.is-expanded`)
-안(face 또는 펼친 내용)이면 `e.stopPropagation()` → `toggleCard(key, true)`(키보드 = 애니메이션 없음, .prd/10 §4-9) →
-`face.focus({ preventScroll: true })`. 대상이 펼친 카드 밖이면 아무것도 하지 않는다(문서 핸들러가 패널을 닫는 것은 그대로). 아티팩트
-미리보기(window capture `artHandleKey`)가 먼저 먹은 Esc는 오지 않는다. 포커스가 카드 안에 있으면 docked 패널은 열린 채 남는다.
+**D7 Esc [SHIPPED].** `initBoardInteractions`의 `#kanban`·`#cron-lane` keydown(버블 단계, 15030) → `closeCardOnEscape(e, root)`(10407): 대상이
+펼친 카드(`.card.is-expanded`) 안이면 `stopPropagation()` → `toggleCard(key, true)`(키보드 = 애니메이션 없음) → `face.focus({ preventScroll: true })`.
+카드 밖이면 아무것도 하지 않는다(문서 핸들러가 패널을 닫는 것은 그대로). capture 리스너를 쓰지 않으므로 카드 안의 모델 선택 메뉴(#442)가 자기
+keydown에서 전파를 멈추면 메뉴만 닫힌다(교차 리뷰 R1 P2). 아티팩트 미리보기(window capture `artHandleKey`)가 먹은 Esc도 오지 않는다.
 
-**D8 `aria-controls`.** `createCardShell`이 `.card-expand`에 `id = 'card-x-' + (++_cardSeq)`(세션 키를 id에 쓰지 않는다)를 주고
-face가 `aria-controls`로 가리킨다. 닫힌 내용 `inert`는 그대로.
+**D8 `aria-controls` [SHIPPED].** `createCardShell`(8025)이 `.card-expand`에 `id = 'card-x-' + (++_cardSeq)`(7482, 세션 키를 id에 쓰지 않는다)를
+주고 face가 `aria-controls`로 가리킨다. 닫힌 내용 `inert`는 그대로.
 
-**D9 칸 section.** `<section class="kanban-col" id="col-<c>" data-col="<c>" aria-labelledby="col-<c>-name count-<c>">`,
-`<h3 id="col-<c>-name">`(이름 = `NEEDS YOU 2`). id·클래스·`data-col`은 그대로라 CSS·JS·기존 테스트가 쓰는 선택자는 바뀌지 않는다.
+**D9 칸 section [SHIPPED].** `<section class="kanban-col" id="col-<c>" data-col="<c>" aria-labelledby="col-<c>-name count-<c>">`(6202–6218),
+`<h3 id="col-<c>-name">` — 접근 이름 = `NEEDS YOU 9`. id·클래스·`data-col`은 그대로다.
 
-**D10 주 버튼 하나.** `cardHasDecision(s, col)` = 형제 인스턴스가 아니고, (닫힘이 아닌 칸에서 `pendingPermissions` 중 내가 요청자인 것)
-또는 (`waiting` 칸에서 `pendingQuestion`이 있고 내가 소유자). 참이면 `작업 로그`는 보조(`btn-action`), 거짓이면 지금처럼 주(`btn-action
-btn-primary`). 카드 안 복수 질문 `답변하기`는 `btn-choice btn-choice-primary`(카드 CSS: 잉크 바탕·카드색 글자, 굵게 — 추천 선택과 같은 모양).
+**D10 주 버튼 하나 [SHIPPED].** `renderCardBody`(9842)의 `canDecideHere`(9943) = 형제 인스턴스가 아니고, (`waiting` 칸에서 `pendingQuestion`이
+있고 내가 소유자) 또는 (닫힘이 아닌 칸에서 `pendingPermissions` 중 내가 요청자인 것). 참이면 `작업 로그`는 보조(`btn-action`), 거짓이면
+주(`btn-action btn-primary`). 결정 쪽이 잉크다(4251–4260, 카드 안에서만): 단일 선택의 추천 선택(기존), 복수 질문 `답변하기`
+(`btn-choice btn-choice-primary`, `renderMultiChoiceCard` 11097), 권한 요청의 **Approve**(`.card .btn-perm.btn-perm-approve` 잉크) — 이때 Deny는
+보조(`.card .btn-perm.btn-perm-deny`: 카드 바탕·선·`--st-fail-text` 글자). 패널의 권한 블록과 `renderPermissionBlock` 마크업은 바뀌지 않는다.
 추천이 없는 단일 선택 질문은 선택 버튼이 모두 보조이고 작업 로그도 보조다(골라야 할 결정이지 권장되는 답이 없다).
 
 **모션·반응형·테마 요약**: 새 모션은 D4 팝과 D5 보류뿐, 둘 다 동작 줄이기에서 없다. D2만 폭에 반응한다. 새 색은 D1 토큰 8쌍(다크·라이트).
 
 ## 5. 시험
 
-파일: `src/conversation/__tests__/dashboard-affectui-agent-inbox.test.ts`(템플릿 텍스트·CSS) +
-`dashboard-affectui-agent-inbox-client.test.ts`(`clientFn` + cook, 가짜 주입). 아래는 모두 구현 전 RED다.
+`src/conversation/__tests__/dashboard-affectui-agent-inbox.test.ts`(템플릿·CSS, 9건) + `dashboard-affectui-agent-inbox-client.test.ts`
+(`clientFn` + cook, 가짜 주입, 24건). 구현 전 실행: 32건 중 30건 실패(RED), 2건 통과 — 통과한 둘은 바뀌면 안 되는 동작을 지키는 가드(결정이 없을
+때·남의 결정일 때 작업 로그가 주). 권한 Approve 시험은 교차 리뷰 뒤에 더했다(`main`의 `dashboard.ts`에 `.card .btn-perm.btn-perm-approve`가 없어 RED).
 
-| 시험 | D | 내용 |
-|---|---|---|
-| T1 | D1 | `cardTone` 표(재개 대기 → wait, waiting → wait, working → run, idle → done, closed → rest); `renderCardFace`가 `class="card-status" data-tone="…"`를 낸다 |
-| T2 | D1 | `:root`·`[data-theme="light"]`에 `--st-{run,wait,done,rest}-{bg,fg}` 8쌍; `.card-status[data-tone="run"]` 등이 그 토큰을 쓴다; 높이 24px·반경 999px |
-| T3 | D2 | `.st-prefix { display: none; }`·list 오버라이드가 없고, `.card-face`에 `container: cardface / inline-size`, `@container cardface (max-width: 300px)` 안에 `.st-prefix` 숨김 |
-| T4 | D3 | `.card-status .spinner` 규칙이 `currentColor`를 쓴다; 기존 정지 링 규칙 유지 |
-| T5 | D4 | `applyCardParts`: 있던 카드의 `data-state` 변경 → `.st-icon.animate` 1회(320ms); 같은 상태의 face 교체·`reduceMotion()`·`canAnimate()` 거짓 → 0회 |
-| T6 | D5 | `holdLanes`: 처음 본 변경 → 출발 칸 + `until = now+900` + `wakeAt`; `now+900` → 새 칸; 되돌아옴 → 보류 삭제; `on=false` → 즉시; 새 카드·CRON → 보류 없음 |
-| T7 | D5 | 보류 카드의 parts는 새 상태(`data-state`·`data-col`)인데 출발 칸 컨테이너에 남고, 그 칸 배지·빈 칸 문구가 그 카드를 센다 |
-| T8 | D6 | `boardAnnounceText(2, 3)` = `응답이 필요한 세션 2개, 실행 중 3개`; 템플릿에 `id="inbox-live"`·`role="status"`·`aria-live="polite"`·`aria-atomic="true"`; 같은 문구는 다시 쓰지 않고 1초 안 연속 변화는 마지막만 |
-| T9 | D7 | keydown Escape: 펼친 카드 안 대상 → `toggleCard(key, true)` + face focus + `stopPropagation`; 카드 밖 대상 → 아무것도 안 함 |
-| T10 | D8 | `createCardShell` 두 번: face `aria-controls` = expand `id`, 두 id가 다르고 세션 키를 담지 않는다 |
-| T11 | D9 | 템플릿에 `<section class="kanban-col"` ×3, 각 `aria-labelledby="col-<c>-name count-<c>"`와 `<h3 id="col-<c>-name">` |
-| T12 | D10 | `renderCardBody`: 결정 없음 → 작업 로그 `btn-primary`; 소유자 질문·요청자 권한 → 작업 로그에 `btn-primary` 없음; 남의 질문·남의 권한 → 주; `renderMultiChoiceCard` → `btn-choice-primary` |
+| D | 시험 (describe → it) |
+|---|---|
+| D1 | 템플릿 `D1 — the status tag is a tinted pill…` 2건(자체 토큰 블록 8쌍 + 공유 블록엔 없음, pill 치수·톤 규칙) · 클라이언트 `D1 — the status tag carries a tone` 3건(톤 표, 재개 대기 = wait, 상태 마크업 유지) |
+| D2 | `D2 — the state word hides by card width, not by view` 2건 |
+| D3 | `D3 — the running ring inside the pill` 1건(공유 동작 줄이기 블록 무변경, 자체 블록은 링 규칙과 공유 블록 뒤) |
+| D4 | `D4 — a state change pops the status icon` 2건 |
+| D5 | `D5 — holdLanes…` 5건(처음 본 변경, 기한, 되돌아옴·재지정, 끔·새 카드·떠난 키, 900ms) · `D5 — applyLaneHolds…` 2건(자리·새 상태·배지, 끔 = 즉시) |
+| D6 | 템플릿 `D6 — one polite live region` 1건 · 클라이언트 `D6 — a polite announcement` 4건 |
+| D7 | `D7 — Escape closes the open card…` 3건(안 / 밖 / 배선) |
+| D8 | `D8 — the face names the region it opens` 1건 |
+| D9 | `D9 — each column is a labelled section` 1건 |
+| D10 | 템플릿 `D10 — one ink primary per open card` 2건(답변하기 + 자체 호버 블록, 카드 Approve·Deny + 패널 규칙 무변경) · 클라이언트 `D10 — one primary button per open card` 4건 |
 
-기존 테스트: `dashboard-agent-inbox.test.ts:217`의 `const worklogBtn = '<button … btn-primary"` 정규식은 D10으로 선언이 바뀌므로 새 모양으로
-고친다(이유: 주 버튼이 조건부). 그 밖의 `renderCardStatus` 단언(`is-resume`, `spinner`, `Done in`, `Goal 완료 판정 중`)은 마크업을 유지해
-그대로 통과해야 한다. 게이트: `npx vitest run src/conversation/__tests__/` · `npx tsc --noEmit` · `npx biome check src/conversation/`.
-화면: `shoot-agent-inbox.mjs`(하네스 사본) `TAG=after-agent-inbox` — 1440·390 × 라이트·다크 보드·카드 근접·펼친 카드 3종 + 프로브 JSON
-(Esc 후 닫힘·포커스, live region, section 이름, `aria-controls`, 태그 배경, 접두 표시).
+고친 기존 테스트(이유): `dashboard-agent-inbox.test.ts` — `worklogBtn` 정규식(D10: 주 버튼이 조건부). `dashboard-agent-inbox-client.test.ts` —
+`답변하기` 정규식이 `class="btn-choice[^"]*"`(D10 클래스 추가). `dashboard-agent-inbox.test.ts`의 동작 줄이기 시험(시트의 첫 블록을 읽는다)은
+자체 블록을 공유 블록 뒤에 두어 그대로 통과한다.
 
 ## 6. 범위 밖
 
-- 권한 블록(`renderPermissionBlock`)의 Approve/Deny 모양·순서 — 패널과 공유, Agent Run(Approval Card) 서브이슈가 정한다. 이 카드는 그 블록을
-  그대로 싣고, D10만 그 존재를 읽는다.
+- 권한 블록(`renderPermissionBlock`)의 마크업·라벨·순서와 패널 쪽 모양 — Agent Run(Approval Card) 서브이슈가 정한다. 이 카드는 그 블록을
+  그대로 싣고, 카드 범위 CSS로 Approve/Deny의 무게만 바꾼다(D10).
 - `failed` 상태·Retry·Reject → failed: 끝난 실패를 나르는 서버 필드가 생기면(후속 — 턴 종료 오류 표식) 빨강 톤 `--st-fail-*`과 함께 다시 본다.
 - sources 수, 칸별 spark 색, 들여쓰기·반경·글자 크기, FLIP·펼침 수치, radiogroup 전환, 좁은 폭 목록 강제(§3의 유지·불채택 행).
 - 한 번에 카드 하나만 열기(레퍼런스) — 여러 장을 펼쳐 비교하는 현재 동작(.prd/10 §3.1-4)을 유지한다.
+
+## 7. 검증
+
+- RED: 구현 전 `npx vitest run` 두 파일 → `Tests 30 failed | 2 passed (32)`(`client var BOARD_HOLD_MS not found`, `client function
+  closeCardOnEscape not found`, `expected '.card-status { display: inline-flex; …' to contain 'height: 24px;'` 등).
+- GREEN: 두 파일 33/33. `npx vitest run src/conversation/__tests__/ --testTimeout=60000 --hookTimeout=60000` → 64파일 중 63 통과,
+  1681건 중 1680 통과. 남은 1건은 `work-log.test.ts`의 자체 30초 상한 시험이 부하(load average 50–160)로 35초 걸려 시간 초과한 것 —
+  그 파일만 다시 돌리면 106/106 통과(이 변경은 work-log를 건드리지 않는다). 기본 시간 상한 실행에서 떨어진 서버 기동 시험들도 모두 시간
+  초과였고 단독 재실행에서 통과했다. `npx tsc --noEmit` 0, `npx biome check src/conversation/` 오류 0(경고 687 = 기준 checkout과 같음).
+- 브라우저(하네스 34111, 픽스처, 소유자 보기, `shots-agent-inbox/after-agent-inbox-*`, 1440·390 × 라이트·다크 + 820 라이트): 태그 배경이 톤별로
+  칠해짐, 1440에서 접두 표시·820에서 숨김, Esc 3/3 닫힘 + face 포커스, 권한 카드의 잉크 버튼은 `✅ Approve` 하나 + 작업 로그 보조, 칸 3개
+  `SECTION`·`aria-controls` 모두 유효, 보류: 실행 카드를 DONE으로 바꾼 직후 RUNNING 자리에서 `data-state=idle`·`data-tone=done`·배지 그대로,
+  1.2초 뒤 DONE으로 이동·배지 15/17·낭독 갱신(`after-agent-inbox-probe.json`, `after-agent-inbox-light-desk-hold-in-place.png`).

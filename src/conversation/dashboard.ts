@@ -3595,6 +3595,31 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* The inbox is the size container for the board columns (SSOT 2026-10-24): a docked
    drawer narrows it, so the column layout follows its width, not the viewport. */
 .inbox { margin-bottom: 28px; container: inbox / inline-size; }
+/* Status tag tones (.prd/affectui/re-agent-inbox.md D1): the face's status is a
+   tinted pill. Text on its tint is ≥ 4.5:1 in both themes (dark 6.5–7.8:1,
+   light 5.5–6.5:1). The board's own token blocks — the shared ones stay untouched. */
+:root {
+  --st-run-bg: #1d2a47;
+  --st-run-fg: #a3bdff;
+  --st-wait-bg: #3a2a12;
+  --st-wait-fg: #ffb35c;
+  --st-done-bg: #14301f;
+  --st-done-fg: #5fd68e;
+  --st-rest-bg: #2f2f35;
+  --st-rest-fg: #b4b4bb;
+}
+[data-theme="light"] {
+  --st-run-bg: #e8eeff;
+  --st-run-fg: #2453c7;
+  --st-wait-bg: #fff1dc;
+  --st-wait-fg: #8f5300;
+  --st-done-bg: #e3f5e9;
+  --st-done-fg: #136c39;
+  --st-rest-bg: #efefef;
+  --st-rest-fg: #555558;
+}
+/* D6: the board's polite announcement, visually hidden. */
+.ib-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .inbox-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 16px; min-width: 0; }
 .crumbs { display: flex; align-items: baseline; gap: 10px; font-size: 17px; line-height: 1.3; min-width: 0; white-space: nowrap; overflow: hidden; }
 .crumbs .crumb-root, .crumbs .crumb-sep { color: var(--ib-muted); }
@@ -3672,7 +3697,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .kanban[data-view="list"] { grid-template-columns: minmax(0, 1fr); }
 .kanban[data-view="list"] .kanban-col-header h3 { flex: 0 0 auto; text-align: left; }
 .kanban[data-view="list"] .card-summary { -webkit-line-clamp: 1; }
-.kanban[data-view="list"] .st-prefix { display: inline; }
 .kanban[data-view="list"] .col-empty { padding: 10px 8px 16px; }
 
 /* ── CARD — collapsed face + in-place expansion ── */
@@ -3696,7 +3720,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card[data-state="sleeping"] .card-summary, .card[data-state="archived"] .card-summary { color: var(--ib-muted); }
 .card.is-flying { z-index: 5; box-shadow: var(--ib-shadow-raised); }
 .card.is-exiting { position: absolute; z-index: 1; pointer-events: none; }
-.card-face { padding: 12px 14px; cursor: pointer; border-radius: 11px; }
+.card-face { padding: 12px 14px; cursor: pointer; border-radius: 11px; container: cardface / inline-size; }
 .card-face:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .card-spark { flex-shrink: 0; display: inline-flex; color: var(--st-color); }
@@ -3739,14 +3763,26 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   overflow-wrap: anywhere;
 }
 .card-foot { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 13px; color: var(--ib-text-2); min-width: 0; }
-.card-status { display: inline-flex; align-items: center; gap: 7px; min-width: 0; flex: 1 1 auto; white-space: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
+/* D1 — the status tag: a tinted pill, sized to its content (the metrics keep the
+   right edge; a narrow foot wraps them below as before). Tone from data-tone. */
+.card-status { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; flex: 0 1 auto; height: 24px; padding: 0 10px 0 8px; border-radius: 999px; font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
+.card-status[data-tone="run"] { background: var(--st-run-bg); color: var(--st-run-fg); }
+.card-status[data-tone="wait"] { background: var(--st-wait-bg); color: var(--st-wait-fg); }
+.card-status[data-tone="done"] { background: var(--st-done-bg); color: var(--st-done-fg); }
+.card-status[data-tone="rest"] { background: var(--st-rest-bg); color: var(--st-rest-fg); }
 .card-status .st-text { overflow: hidden; text-overflow: ellipsis; }
 .card-status .st-icon { flex-shrink: 0; display: inline-flex; align-items: center; color: var(--st-color); }
 .card-status .st-icon svg { width: 12px; height: 12px; }
-.st-prefix { display: none; }
+/* D2 — the state word ("Running · ", "Done in ") shows in both views and goes
+   only when the face has 300px of content or less. */
+@container cardface (max-width: 300px) {
+  .card-status .st-prefix { display: none; }
+}
 .st-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-color); display: inline-block; }
 .st-dot.is-hollow { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-color); }
 .spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--ib-pill); border-top-color: var(--st-run); border-right-color: var(--st-run); display: inline-block; animation: spin 0.9s linear infinite; }
+/* D3 — on the tint the ring's track follows the icon colour, not the grey pill token. */
+.card-status .spinner { border-color: color-mix(in srgb, currentColor 25%, transparent); border-top-color: currentColor; border-right-color: currentColor; }
 .card-metrics { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; row-gap: 4px; max-width: 100%; color: var(--ib-muted); flex-shrink: 0; margin-left: auto; font-variant-numeric: tabular-nums; }
 .card-metrics .metric { display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; }
 .card-metrics .metric + .metric { border-left: 1px solid var(--ib-card-border); }
@@ -3763,7 +3799,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card-metrics .card-pr.is-merged { color: var(--st-done); }
 .card-metrics .card-pr.is-closed { color: var(--st-fail-text); }
 .card-pr .cpr-state { font-size: 12px; white-space: nowrap; }
-.card-status .st-ago { color: var(--ib-muted); }
+.card-status .st-ago { color: inherit; }
 .card-status .st-ago::before { content: "·"; margin: 0 6px; }
 /* SSOT 2026-10-22 T3 — the task in progress on the collapsed face. */
 .card-task { margin-top: 8px; display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; color: var(--ib-text); background: var(--ib-pill); border-radius: 8px; padding: 5px 9px; }
@@ -4212,6 +4248,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card .btn-choice-recommended::before { content: none; }
 .card .choice-row-recommended .btn-choice-recommended,
 .card .btn-choice-recommended { display: inline-block; width: auto; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
+/* D10: one primary per open card — the decision. The multi-question 답변하기 and,
+   in the card only, a permission prompt's Approve are ink; Deny steps back to a
+   secondary (the panel's prompt keeps its own styling). Doubled classes beat the
+   shared card / hover rules that come later in the sheet. */
+.card .btn-choice.btn-choice-primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
+.card .btn-perm.btn-perm-approve { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
+.card .btn-perm.btn-perm-deny { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--st-fail-text); }
+@media (hover: hover) and (pointer: fine) {
+  .card .btn-choice.btn-choice-primary:hover:not(:disabled) { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
+}
 
 /* ── PANEL PENDING QUESTION ── */
 /* ── PERMISSION PROMPT (SSOT 2026-10-24) — the Slack "🔐 Permission Request" card ── */
@@ -5205,6 +5251,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .mc-custom-input input, .mc-custom-input button, .btn-send, .panel-command input { min-height: 44px; }
 }
 
+/* ── Agent inbox (re-agent-inbox D3) — the board's own reduced-motion rule, after the
+   shared reduce / touch blocks: the pill's static ring stays whole in its icon colour. ── */
+@media (prefers-reduced-motion: reduce) {
+  /* D3: the static ring (shared rule) stays whole, in the pill's icon colour. */
+  .card-status .spinner { border-color: currentColor; }
+}
 /* ── CRON badge · lane · drawer (SSOT 2026-10-23 T3/T4/T5) ── */
 .cron-badge {
   flex-shrink: 0;
@@ -6144,23 +6196,25 @@ body.nt-open .new-task-fab { display: none !important; }
         </div>
         <div class="cron-groups" id="cron-groups"></div>
       </div>
+      <!-- How many need you and how many run, said politely (re-agent-inbox D6). -->
+      <p id="inbox-live" class="ib-sr" role="status" aria-live="polite" aria-atomic="true"></p>
       <div class="kanban" id="kanban" data-view="board">
-        <div class="kanban-col" id="col-waiting" data-col="waiting">
-          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3>NEEDS YOU</h3><span class="count" id="count-waiting">0</span></div>
+        <section class="kanban-col" id="col-waiting" data-col="waiting" aria-labelledby="col-waiting-name count-waiting">
+          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-waiting-name">NEEDS YOU</h3><span class="count" id="count-waiting">0</span></div>
           <div class="cards" id="cards-waiting"></div>
           <div class="col-empty" id="empty-waiting">Nothing here</div>
-        </div>
-        <div class="kanban-col" id="col-working" data-col="working">
-          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3>RUNNING</h3><span class="count" id="count-working">0</span></div>
+        </section>
+        <section class="kanban-col" id="col-working" data-col="working" aria-labelledby="col-working-name count-working">
+          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-working-name">RUNNING</h3><span class="count" id="count-working">0</span></div>
           <div class="cards" id="cards-working"></div>
           <div class="col-empty" id="empty-working">Nothing here</div>
-        </div>
-        <div class="kanban-col" id="col-done" data-col="done">
-          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3>DONE</h3><span class="count" id="count-done">0</span></div>
+        </section>
+        <section class="kanban-col" id="col-done" data-col="done" aria-labelledby="col-done-name count-done">
+          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-done-name">DONE</h3><span class="count" id="count-done">0</span></div>
           <div class="cards" id="cards-done"></div>
           <div class="col-empty" id="empty-done">Nothing here</div>
           <div class="col-foot" id="foot-done"></div>
-        </div>
+        </section>
       </div>
     </section>
   </div>
@@ -7425,6 +7479,16 @@ var _cardEls = Object.create(null);  // session key → persistent card shell
 var _expanded = new Set();           // keys whose card is open
 var _boardRenders = 0;
 var _ioCache = Object.create(null);  // conversationId → { state, stamp, data, dirty, fails, retryAt }
+var _cardSeq = 0; // D8 (re-agent-inbox): ids of the expand regions — never the session key
+// D5 (re-agent-inbox): a card whose column changed shows its new state where it
+// is drawn first and changes column BOARD_HOLD_MS later (at once without motion).
+var BOARD_HOLD_MS = 900;
+var _laneHolds = Object.create(null); // session key → { from, to, until }
+var _laneHoldTimer = 0;
+// D6: the board's polite announcement — a burst within ANNOUNCE_MS is said once.
+var ANNOUNCE_MS = 1000;
+var _announceTimer = 0;
+var _announceText = '';
 
 // Motion tokens come from the CSS custom properties so CSS transitions and
 // WAAPI share one source of truth (§4 table).
@@ -7563,6 +7627,9 @@ function renderBoard(board) {
   _ownerIndex = assignOwnerHues(owners);
   function tag(col) { return function(s) { return { s: s, col: col }; }; }
   _lastBoardData = board;
+  // D6: how many need you and how many run — the data as it came (CRON runs
+  // waiting on a reply included), before the lane takes its runs and any hold.
+  announceBoard((board.waiting || []).length, (board.working || []).length);
   // Cron runs leave the columns for the CRON lane, one group per job (SSOT
   // 2026-10-23 T4); the lane sections exist before the reconciler fills them.
   var cronPlan = planCronLane(board, _cronJobs, _cronRevealKey);
@@ -7632,6 +7699,10 @@ function reconcileBoard(plan, counts) {
   (plan.cron || []).forEach(function(c) {
     slots.push({ colId: 'cron', container: c.container, items: c.items });
   });
+  // D5: a card whose column changed stays where it is drawn for a beat.
+  applyLaneHolds(slots, counts);
+  var shown = Object.create(null);
+  for (var si = 0; si < slots.length; si++) shown[slots[si].colId] = (shown[slots[si].colId] || 0) + slots[si].items.length;
   for (var c = 0; c < slots.length; c++) {
     var slot = slots[c];
     var rows = [];
@@ -7651,7 +7722,7 @@ function reconcileBoard(plan, counts) {
   for (var b = 0; b < BOARD_COLS.length; b++) {
     var colId = BOARD_COLS[b];
     setTextIfChanged(document.getElementById('count-' + colId), String(counts[colId] || 0));
-    var has = colId === 'done' ? groups.length > 0 : (plan[colId] || []).length > 0;
+    var has = colId === 'done' ? groups.length > 0 : (shown[colId] || 0) > 0;
     var empty = document.getElementById('empty-' + colId);
     if (empty && empty.hidden !== has) empty.hidden = has;
   }
@@ -7661,6 +7732,100 @@ function reconcileBoard(plan, counts) {
   if (changed) applyBoardPlan(slots, wanted, doneRoot, groups, sig);
   // Open cards keep their 지시/응답 current (no DOM write unless a fetch settles).
   _expanded.forEach(function(key) { if (_cardEls[key]) ensureCardIo(key, false); });
+}
+
+// Pure (D5): the column each card is drawn in this render. want = the column
+// its data puts it in; drawn = the column it is drawn in now (cards on screen
+// only); holds = the running holds. A card whose column changed stays where it
+// is drawn until its deadline (now + BOARD_HOLD_MS when the change is first
+// seen). Data that returns to the drawn column drops the hold; a new target
+// keeps the first deadline. on = false (no motion, first paint, hidden tab)
+// moves every card at once. Returns the columns, the holds still running and
+// the earliest deadline (0 = none).
+function holdLanes(want, drawn, holds, now, on) {
+  var lanes = Object.create(null);
+  var next = Object.create(null);
+  var wakeAt = 0;
+  for (var key in want) {
+    var to = want[key];
+    var from = drawn[key];
+    lanes[key] = to;
+    if (!on || !from || from === to) continue;
+    var h = holds[key];
+    var until = h && h.from === from ? h.until : now + BOARD_HOLD_MS;
+    if (now >= until) continue;
+    lanes[key] = from;
+    next[key] = { from: from, to: to, until: until };
+    if (!wakeAt || until < wakeAt) wakeAt = until;
+  }
+  return { lanes: lanes, holds: next, wakeAt: wakeAt };
+}
+// D5 on the reconciler's slots: a held card leaves its new column's slot and
+// goes back into the slot that holds its node now, at its place there — drawn
+// with its new state (the item keeps its new col). The column badges count it
+// where it is drawn. One timer renders the board again at the earliest deadline.
+// A held card whose place is gone (a DONE day that left) moves at once.
+function applyLaneHolds(slots, counts) {
+  function isLane(c) { return c === 'waiting' || c === 'working' || c === 'done'; }
+  var want = Object.create(null);
+  var drawn = Object.create(null);
+  for (var i = 0; i < slots.length; i++) {
+    if (!isLane(slots[i].colId)) continue;
+    for (var j = 0; j < slots[i].items.length; j++) {
+      var key = slots[i].items[j].s.key;
+      want[key] = slots[i].colId;
+      var node = _cardEls[key];
+      if (node && isLane(node._colId)) drawn[key] = node._colId;
+    }
+  }
+  var r = holdLanes(want, drawn, _laneHolds, Date.now(), canAnimate() && !reduceMotion());
+  for (var a = 0; a < slots.length; a++) {
+    var slot = slots[a];
+    if (!isLane(slot.colId)) continue;
+    for (var b = slot.items.length - 1; b >= 0; b--) {
+      var item = slot.items[b];
+      var k = item.s.key;
+      var lane = r.lanes[k];
+      if (!lane || lane === slot.colId) continue;
+      var el = _cardEls[k];
+      var home = null;
+      for (var c = 0; c < slots.length; c++) {
+        if (slots[c].colId === lane && el && slots[c].container && slots[c].container === el.parentNode) { home = slots[c]; break; }
+      }
+      if (!home) { delete r.holds[k]; continue; }
+      slot.items.splice(b, 1);
+      var at = Array.prototype.indexOf.call(home.container.children, el);
+      home.items.splice(Math.max(0, Math.min(at, home.items.length)), 0, item);
+      counts[lane] = (counts[lane] || 0) + 1;
+      counts[slot.colId] = Math.max(0, (counts[slot.colId] || 0) - 1);
+    }
+  }
+  _laneHolds = r.holds;
+  if (_laneHoldTimer) { clearTimeout(_laneHoldTimer); _laneHoldTimer = 0; }
+  if (r.wakeAt) {
+    _laneHoldTimer = setTimeout(function() {
+      _laneHoldTimer = 0;
+      if (_lastBoardData) renderBoard(_lastBoardData);
+    }, Math.max(0, r.wakeAt - Date.now()) + 20);
+  }
+}
+
+// D6 (re-agent-inbox): the board's polite announcement — the reference's
+// "N need you, M running", in the page's language.
+function boardAnnounceText(w, r) {
+  return '응답이 필요한 세션 ' + w + '개, 실행 중 ' + r + '개';
+}
+// Written only when the text changes; a burst within ANNOUNCE_MS is said once
+// (the last text), so a busy board does not chatter.
+function announceBoard(w, r) {
+  _announceText = boardAnnounceText(w, r);
+  if (_announceTimer) return;
+  var live = document.getElementById('inbox-live');
+  if (!live || live.textContent === _announceText) return;
+  _announceTimer = setTimeout(function() {
+    _announceTimer = 0;
+    setTextIfChanged(document.getElementById('inbox-live'), _announceText);
+  }, ANNOUNCE_MS);
 }
 
 // What the DONE day sections look like (label, count, open) — a change re-plans.
@@ -7868,7 +8033,9 @@ function createCardShell(key) {
   face.setAttribute('aria-expanded', 'false');
   var expand = document.createElement('div');
   expand.className = 'card-expand';
+  expand.id = 'card-x-' + (++_cardSeq);
   expand.setAttribute('inert', '');
+  face.setAttribute('aria-controls', expand.id);
   var inner = document.createElement('div');
   inner.className = 'card-expand-inner';
   expand.appendChild(inner);
@@ -7905,8 +8072,9 @@ function cardPartsDiffer(el, p) {
 function applyCardParts(el, p) {
   el._cid = p.cid; // bookkeeping only (timer release), not a DOM write
   var changed = false;
+  var prevState = el.getAttribute('data-state');
   if (el.getAttribute('data-col') !== p.col) { el.setAttribute('data-col', p.col); changed = true; }
-  if (el.getAttribute('data-state') !== p.state) { el.setAttribute('data-state', p.state); changed = true; }
+  if (prevState !== p.state) { el.setAttribute('data-state', p.state); changed = true; }
   if (el._faceHtml !== p.face) {
     // A renamed card (a cron run taking its real title, SSOT 2026-10-23 T2)
     // fades the new title in instead of snapping.
@@ -7920,6 +8088,9 @@ function applyCardParts(el, p) {
     animateCountersIn(el._faceEl, el.getAttribute('data-session-key'));
     changed = true;
   }
+  // D4 (re-agent-inbox): a card on screen whose state changed pops its new
+  // status icon — never a new card, a same-state rewrite, or without motion.
+  if (prevState && prevState !== p.state && canAnimate() && !reduceMotion()) popStatusIcon(el._faceEl);
   if (el._bodyHtml !== p.body && !isEditingGoal(el._bodyEl) && !isPickingModel(el._bodyEl)) {
     var goalDraft = captureGoalDraft(el._bodyEl);
     var anCap = anFocusCapture(el._bodyEl);
@@ -7935,6 +8106,12 @@ function applyCardParts(el, p) {
     changed = true;
   }
   return changed;
+}
+// D4: scale 0.6 → 1 with a fade, the board's move duration on the entry curve.
+function popStatusIcon(face) {
+  var icon = face && face.querySelector ? face.querySelector('.card-status .st-icon') : null;
+  if (!icon || typeof icon.animate !== 'function') return;
+  icon.animate([{ opacity: 0, transform: 'scale(0.6)' }, { opacity: 1, transform: 'scale(1)' }], { duration: MOTION.move, easing: MOTION.easeOut });
 }
 // Single-card path (sessionUpdated push, title patch, 지시/응답 arrival) —
 // the same compare-then-write as the reconciler.
@@ -8180,13 +8357,15 @@ function renderCardFace(s, col) {
   if (prBadge) metrics.push(prBadge);
   // A cron run leads with the CRON badge instead of the spark (SSOT 2026-10-23 T3).
   var lead = s.cronJob && s.cronJob.name ? renderCronBadge(s) : '<span class="card-spark">' + SPARK_SVG + '</span>';
+  // The status tag's tone (re-agent-inbox D1): an armed automatic resume waits.
+  var tone = pendingAutoResume(s, col) || col === 'waiting' ? 'wait' : col === 'working' ? 'run' : col === 'closed' ? 'rest' : 'done';
   return '<div class="card-head">' + lead + titleHtml + renderOwnerBadge(s) + '</div>'
     + (summary ? '<div class="card-summary">' + esc(summary) + '</div>' : '')
     + renderCardTaskRow(s, col)
     + renderCardAgents(s)
     + renderCardUsage(s)
     + (isSiblingSession(s) ? '' : artFaceChips(s))
-    + '<div class="card-foot"><span class="card-status">' + renderCardStatus(s, col) + '</span>'
+    + '<div class="card-foot"><span class="card-status" data-tone="' + tone + '">' + renderCardStatus(s, col) + '</span>'
     + (metrics.length ? '<span class="card-metrics">' + metrics.join('') + '</span>' : '')
     + '</div>';
 }
@@ -9758,7 +9937,12 @@ function renderCardBody(s, col) {
 
   // 작업 로그 opens the slide panel (details + message box) scrolled to the work
   // log — for every card; without a conversation the log reads "작업 로그 없음".
-  const worklogBtn = '<button type="button" class="btn-action btn-primary" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',true,\\'\\',event.detail===0)">작업 로그</button>';
+  // One primary per open card (re-agent-inbox D10): when this viewer can settle
+  // something here — the owner's pending question, a permission prompt they
+  // asked for — that decision is the primary and 작업 로그 steps back.
+  const canDecideHere = !isSibling && ((col === 'waiting' && !!s.pendingQuestion && isOwner)
+    || (col !== 'closed' && (s.pendingPermissions || []).some(function(p) { return !!(p && p.requesterId && currentUserId && p.requesterId === currentUserId); })));
+  const worklogBtn = '<button type="button" class="btn-action' + (canDecideHere ? '' : ' btn-primary') + '" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',true,\\'\\',event.detail===0)">작업 로그</button>';
   const slackBtn = (dhShow('links') && s.slackThreadUrl)
     ? '<a class="btn-action" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>'
     : '';
@@ -10215,6 +10399,20 @@ function toggleCard(key, instant) {
     var opened = _sessionCache[key];
     if (opened && opened.conversationId && opened.artifacts && !isSiblingSession(opened)) ensureArtifacts(opened.conversationId);
   }
+}
+
+// Escape (re-agent-inbox D7): inside an open card — its face or its body — it
+// closes that card (keyboard: no motion) and puts focus back on the face. It
+// stops there, so a docked panel stays open; anywhere else it is left alone.
+function closeCardOnEscape(e, root) {
+  var card = e.target && e.target.closest ? e.target.closest('.card.is-expanded') : null;
+  if (!card || !root.contains(card)) return false;
+  var key = card.getAttribute('data-session-key');
+  if (!key || !_expanded.has(key)) return false;
+  e.stopPropagation();
+  toggleCard(key, true);
+  if (card._faceEl && card._faceEl.focus) card._faceEl.focus({ preventScroll: true });
+  return true;
 }
 
 // Board ↔ List (§3.1-2, §4-4): CSS re-lays out the very same nodes and each
@@ -10912,7 +11110,7 @@ function renderMultiChoiceCard(s, faceSummary) {
   return '<div class="card-question">'
     + ((q.title || q.question) && (q.title || q.question) === faceSummary ? '' : '<div class="card-question-text">\\uD83D\\uDCCB ' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>')
     + '<div class="card-question-multi">' + total + '\\uAC1C \\uC9C8\\uBB38 \\u00B7 ' + progressText + '</div>'
-    + '<div style="margin-top:6px"><button class="btn-choice" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\')" style="width:100%;text-align:center;font-weight:700">\\uB2F5\\uBCC0\\uD558\\uAE30</button></div>'
+    + '<div style="margin-top:6px"><button class="btn-choice btn-choice-primary" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\')" style="width:100%;text-align:center;font-weight:700">\\uB2F5\\uBCC0\\uD558\\uAE30</button></div>'
     + '</div>';
 }
 
@@ -14829,6 +15027,7 @@ function artHandleKey(e) {
       toggleCard(key, e.detail === 0);
     });
     root.addEventListener('keydown', function(e) {
+      if (e.key === 'Escape') { closeCardOnEscape(e, root); return; }
       if (e.key !== 'Enter' && e.key !== ' ') return;
       var face = e.target;
       if (!face.classList || !face.classList.contains('card-face')) return;
