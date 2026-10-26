@@ -1,6 +1,6 @@
 # loop — 대시보드 × affectUI 레퍼런스 7종
 
-Status: 출고(main `9de150c`) · dev 배포 #459(t1·t2) + run 40367075865(t3) · 배포 후 QA = 에픽 #437 코멘트 · 에픽 #437 · PR #450–#456(스택) · 후속 #447 · #457 · 스펙 = [`../14-dashboard-affectui-spec.md`](../14-dashboard-affectui-spec.md) · SSOT = [`ssot.md`](ssot.md)
+Status: 출고(main `9de150c`) · dev 배포 완료(run 40389060249, t1·t2·t3) · 배포 후 QA = 에픽 #437 코멘트 · 에픽 #437 · PR #450–#456(스택) · 후속 #447 · #457 · 스펙 = [`../14-dashboard-affectui-spec.md`](../14-dashboard-affectui-spec.md) · SSOT = [`ssot.md`](ssot.md)
 
 ## 게이트 (build facts)
 - 워크트리마다: `npx vitest run src/conversation/__tests__/` → `npx tsc --noEmit` → `npx biome check src/conversation/`.
@@ -84,3 +84,7 @@ Memory Panel은 `settings-memory-tab.ts`만 고친다 — 열린 PR #380과 같�
 - 2026-10-27 01:17 KST — run 40350480733: t1(work-m16)·t2(work-m64) 성공. t3(fable-m5max)는 러너 대기 중 뒤 배포(#461)가 같은
   concurrency 그룹(`deploy-deploy/dev`, cancel-in-progress)에서 취소했고, 그 run도 #462 배포가 취소했다. t3는 deploy/dev `9e2aeb0`
   (⊇ `9de150c`)의 run 40367075865로 넘어갔다. 배포 전 기준선(dev, 실제 브라우저): 새 화면 요소 0 · 페이지 오류 0.
+- 2026-10-27 08:18 KST — run 40367075865·40387536952도 뒤 배포가 취소. run 40389060249(deploy/dev `8f688f5d` ⊇ `9de150c`)에서
+  t1·t2·t3 모두 성공(t3 23:18:33Z). 배포 후 QA(실제 브라우저, 라이트·다크): 7개 화면 요소 0 → 있음, 페이지 오류 0, 모델 메뉴
+  열림·Esc 닫힘·포커스 복귀, 카드 30장 중 28장 `effortLevels`. 컨텍스트 셀 필드는 재시작 뒤 첫 턴이 끝나야 데이터가 생긴다
+  (`usage.contextWindow`는 턴 종료 result에서 채워진다). 기록 = 에픽 #437 코멘트.
