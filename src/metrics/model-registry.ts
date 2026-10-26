@@ -390,6 +390,21 @@ export function getModelPricing(modelName?: string): ModelPricingSpec {
 }
 
 /**
+ * The registry's own pricing row for a model, or null when no row matches.
+ * Unlike `getModelPricing` it never answers with `FALLBACK_SPEC`: a display
+ * that shows a price (the dashboard model picker) must say "unknown" for an
+ * id the registry does not know instead of quoting Sonnet rates for it. Cost
+ * accounting keeps using `getModelPricing` and its fallback.
+ */
+export function findModelPricing(modelName?: string): ModelPricingSpec | null {
+  if (!modelName) return null;
+  for (const [pattern, spec] of MODEL_REGISTRY) {
+    if (modelName.includes(pattern)) return spec.pricing;
+  }
+  return null;
+}
+
+/**
  * Fixed token-count auto-compact trigger for models whose compaction point
  * is defined in absolute tokens rather than the per-user percent threshold.
  * Returns `undefined` for every other model — callers fall back to the

@@ -93,6 +93,7 @@ function load(inject: Record<string, unknown>): PermissionClient {
 var _permDetails = Object.create(null);
 var _permLoading = Object.create(null);
 var _permNotes = Object.create(null);
+var _permAnswered = Object.create(null);
 ${FNS.map(clientFn).join('\n')}
 return { ${FNS.join(', ')}, state: { _permDetails: _permDetails, _permNotes: _permNotes, _permLoading: _permLoading } };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as PermissionClient;
