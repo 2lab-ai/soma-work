@@ -4,30 +4,51 @@
  *
  *   node batch-qa.mjs <out-dir> [--concurrency 4]
  *
- * Reads <out>/results.json (the expected set) and checks, before any browser starts, that the
- * directory holds exactly those pages (missing / extra → exit 2). Then, per page in headless Chromium:
- *   - loads without console errors or failed requests;
- *   - the text of <main> is identical across all pages (content preserved; only tokens differ);
+ * Reads <out>/results.json (the expected set; for an `omd-*` run it is checked against the generated
+ * oh-my-design index) and checks, before any browser starts, that the directory holds exactly those
+ * pages (missing / extra / empty → exit 2). Pages are served over local HTTP. Per page in headless
+ * Chromium:
+ *   - loads without any console error or failed request;
+ *   - the text of <main> equals the authored page's (results.page) — content preserved;
  *   - no horizontal overflow at 1440 px and 390 px;
  *   - every visible text element meets WCAG 1.4.3 against its real background
  *     (4.5:1, or 3:1 for ≥ 24 px / ≥ 18.66 px bold);
  *   - the face that drew the Korean text is a Hangul-capable face (CDP getPlatformFontsForNode);
  *   - every in-page #anchor points at an existing id.
- * Writes <out>/qa.json. Exit 0 only when every page passes; 1 when any page fails.
+ * Writes <out>/qa.json with each page's sha256 (batch.py ignores QA records for other bytes).
+ * Exit 0 only when every page passes; 1 when any page fails.
  */
+import { createHash } from 'node:crypto';
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { dirname, join, resolve } from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const out = resolve(process.argv[2] ?? '');
-const conc = Number(process.argv[process.argv.indexOf('--concurrency') + 1]) || 4;
+const ci = process.argv.indexOf('--concurrency');
+const conc = ci > 0 ? Math.max(1, Number(process.argv[ci + 1]) || 4) : 4;
 const resultsPath = join(out, 'results.json');
 if (!process.argv[2] || !existsSync(resultsPath)) {
   console.error('usage: node batch-qa.mjs <out-dir>  (needs <out>/results.json from batch.py)');
   process.exit(2);
 }
-const expected = JSON.parse(readFileSync(resultsPath, 'utf8')).references.map((r) => r.file);
+const results = JSON.parse(readFileSync(resultsPath, 'utf8'));
+const expected = results.references.map((r) => r.file);
+if (expected.length === 0) {
+  console.log('missing: (results.json lists no pages)');
+  process.exit(2);
+}
+// The expected set is not taken on trust from batch.py: a full `omd-*` run must cover the whole
+// generated oh-my-design index.
+if (results.refs === 'omd-*' && results.omdIndex) {
+  const want = JSON.parse(readFileSync(results.omdIndex, 'utf8')).references.map((r) => `${r.name}.html`);
+  const gap = want.filter((f) => !expected.includes(f));
+  if (gap.length || want.length !== expected.length) {
+    console.log(`missing: ${gap.map((f) => f.replace(/\.html$/, '')).join(', ') || '(count differs from the index)'}`);
+    process.exit(2);
+  }
+}
 const present = readdirSync(out).filter((f) => f.endsWith('.html') && f !== 'index.html');
 const missing = expected.filter((f) => !present.includes(f));
 const extra = present.filter((f) => !expected.includes(f));
@@ -45,7 +66,22 @@ try {
   ({ chromium } = await import('playwright'));
 }
 
-const HANGUL_FACE = /Pretendard|Noto Sans (KR|CJK)|Apple SD Gothic|Nanum|Spoqa|SUIT|IBM Plex Sans KR|Malgun|Source Han Sans K/i;
+// Serve the batch over local HTTP: file:// pages make Chromium's CDP probes re-request the page as an
+// "unsafe" file load, which would be tool noise. Over HTTP every console error and failed request counts.
+const server = createServer((req, res) => {
+  const url = decodeURIComponent((req.url || '/').split('?')[0]);
+  const path = url === '/__template__.html' ? results.page : join(out, url.replace(/^\/+/, ''));
+  if (!path || (url !== '/__template__.html' && !resolve(path).startsWith(out)) || !existsSync(path)) {
+    res.writeHead(404).end();
+    return;
+  }
+  res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' }).end(readFileSync(path));
+});
+await new Promise((ok) => server.listen(0, '127.0.0.1', ok));
+const base = `http://127.0.0.1:${server.address().port}`;
+
+const HANGUL_FACE =
+  /Pretendard|Noto (Sans|Serif) (KR|CJK)|Apple SD Gothic|AppleMyungjo|Nanum|Spoqa|SUIT|IBM Plex Sans KR|Malgun|Source Han|Gmarket|Wanted Sans|Gothic A1|Black Han|Do Hyeon|Jua|Gowun|Hahmlet/i;
 
 async function checkPage(browser, file) {
   const problems = [];
@@ -58,7 +94,7 @@ async function checkPage(browser, file) {
   let mainText = '';
   let fontsUsed = [];
   try {
-    await page.goto(pathToFileURL(join(out, file)).toString(), { waitUntil: 'networkidle', timeout: 60000 });
+    await page.goto(`${base}/${file}`, { waitUntil: 'networkidle', timeout: 60000 });
     await page.evaluate(() => document.fonts.ready);
     const info = await page.evaluate(() => {
       const rgba = (s) => (s.match(/[\d.]+/g) || []).map(Number);
@@ -135,7 +171,8 @@ async function checkPage(browser, file) {
   } finally {
     await ctx.close();
   }
-  return { name: file.replace(/\.html$/, ''), file, ok: problems.length === 0, problems, fontsUsed, mainText };
+  const pageSha = createHash('sha256').update(readFileSync(join(out, file))).digest('hex');
+  return { name: file.replace(/\.html$/, ''), file, page_sha256: pageSha, ok: problems.length === 0, problems, fontsUsed, mainText };
 }
 
 const browser = await chromium.launch({ headless: true });
@@ -150,21 +187,31 @@ await Promise.all(
     }
   }),
 );
-await browser.close();
 
-// Content preservation: <main> text must be identical on every page.
-const counts = new Map();
-for (const p of pages) counts.set(p.mainText, (counts.get(p.mainText) ?? 0) + 1);
-const canonical = [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? '';
+// Content preservation: every page's <main> text must equal the authored page's, taken from the
+// template itself (not from the pages under test).
+let canonical = '';
+if (results.page && existsSync(results.page)) {
+  const ctx = await browser.newContext();
+  const tp = await ctx.newPage();
+  await tp.goto(`${base}/__template__.html`, { waitUntil: 'domcontentloaded', timeout: 60000 });
+  canonical = (await tp.evaluate(() => document.querySelector('main')?.innerText ?? '')).replace(/\s+/g, ' ').trim();
+  await ctx.close();
+}
 for (const p of pages) {
-  if (p.mainText !== canonical) {
+  if (!canonical) {
     p.ok = false;
-    p.problems.push('main text differs from the other pages');
+    p.problems.push('no authored page to compare <main> text against (results.page)');
+  } else if (p.mainText !== canonical) {
+    p.ok = false;
+    p.problems.push('main text differs from the authored page');
   }
   delete p.mainText;
 }
 const order = new Map(expected.map((f, i) => [f, i]));
 pages.sort((a, b) => order.get(a.file) - order.get(b.file));
+await browser.close();
+server.close();
 const failed = pages.filter((p) => !p.ok);
 writeFileSync(
   join(out, 'qa.json'),

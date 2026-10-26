@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Regenerate the oh-my-design reference set from an upstream checkout. Never hand-edit the output.
 
-Usage: python3 sync.py <path-to-oh-my-design-checkout> [<expected-commit-prefix>]
+Usage: python3 sync.py <path-to-oh-my-design-checkout> [<expected-commit-prefix>] [--allow-removals]
 
 Writes, next to this script:
   <id>/DESIGN.md   the upstream DESIGN.md frontmatter verbatim (tokens only) + a short pointer body
@@ -11,7 +11,7 @@ Writes, next to this script:
   LICENSE          the upstream MIT licence, verbatim
 Everything is generated in a scratch directory and validated before the managed files are swapped.
 
-Not vendored: the DESIGN.md prose body (read it at https://oh-my-design.kr/<id>/design.md),
+Not vendored: the DESIGN.md prose body (pinned link to it at the same upstream commit in each stub),
 reference.json, README.md, _research.md, logos, font files.
 """
 import json
@@ -29,7 +29,7 @@ HEX = re.compile(r"^#[0-9a-fA-F]{3,8}$")
 MANAGED = ("index.json", "UPSTREAM", "MANIFEST.json", "LICENSE")
 
 
-def main(src, expect_commit=None):
+def main(src, expect_commit=None, allow_removals=False):
     import hashlib
     import tempfile
     import yaml  # PyYAML
@@ -42,8 +42,17 @@ def main(src, expect_commit=None):
     if git("status", "--porcelain", "--", "design-md", "LICENSE"):
         raise SystemExit("upstream checkout has local changes under design-md/ or LICENSE; use a clean clone")
     ids = sorted(d for d in os.listdir(root) if os.path.isfile(os.path.join(root, d, "DESIGN.md")))
-    if len(ids) != len(set(ids)) or not ids:
+    if not ids:
         raise SystemExit("no references found")
+    # Expected-ID check: a re-sync may add references but never silently drop one that is vendored now.
+    old_manifest = os.path.join(HERE, "MANIFEST.json")
+    if os.path.isfile(old_manifest) and not allow_removals:
+        before = {k.split("/")[0] for k in json.load(open(old_manifest))["files"]}
+        after = {i.replace(".", "-") for i in ids}
+        gone = sorted(before - after)
+        if gone:
+            raise SystemExit(f"upstream no longer has {len(gone)} vendored references ({', '.join(gone[:5])} …); "
+                             "re-run with --allow-removals if that is intended")
 
     # Build everything in a scratch directory, validate it, then swap only the managed files.
     stage = tempfile.mkdtemp(prefix="omd-sync-")
@@ -70,7 +79,7 @@ def main(src, expect_commit=None):
             f"# {name}\n\n"
             f"Tokens only (frontmatter, verbatim from oh-my-design `{commit[:7]}`). "
             f"The design described here belongs to {name}; reproduced for educational reference. "
-            f"Full prose: https://oh-my-design.kr/{up_id}/design.md\n"
+            f"Full prose at the same commit: https://github.com/kwakseongjae/oh-my-design/blob/{commit}/design-md/{up_id}/DESIGN.md\n"
         )
         out = m.group(0) + "\n" + body
         os.makedirs(os.path.join(stage, rid))
@@ -82,7 +91,7 @@ def main(src, expect_commit=None):
         entries.append({
             "name": f"omd-{rid}",
             "title": f"{name} (oh-my-design archive)",
-            "source": f"https://oh-my-design.kr/{up_id}/design.md",
+            "source": f"https://github.com/kwakseongjae/oh-my-design/blob/{commit}/design-md/{up_id}/DESIGN.md",
             "upstreamId": up_id,
             "path": f"references/omd/{rid}/DESIGN.md",
             "family": "oh-my-design",
@@ -111,20 +120,33 @@ def main(src, expect_commit=None):
         f.write(commit + "\n")
     shutil.copyfile(os.path.join(src, "LICENSE"), os.path.join(stage, "LICENSE"))
 
-    # Swap: remove previously generated reference dirs and managed files, then move the stage in.
-    for name in os.listdir(HERE):
-        p = os.path.join(HERE, name)
-        if os.path.isdir(p) and os.path.isfile(os.path.join(p, "DESIGN.md")):
-            shutil.rmtree(p)
-        elif name in MANAGED:
-            os.remove(p)
-    for name in os.listdir(stage):
-        shutil.move(os.path.join(stage, name), os.path.join(HERE, name))
-    shutil.rmtree(stage)
+    # Swap with a backup: move the current generated files aside, move the stage in, and restore the
+    # backup if anything fails part-way.
+    backup = tempfile.mkdtemp(prefix="omd-sync-backup-")
+    moved = []
+    try:
+        for name in os.listdir(HERE):
+            p = os.path.join(HERE, name)
+            if (os.path.isdir(p) and os.path.isfile(os.path.join(p, "DESIGN.md"))) or name in MANAGED:
+                shutil.move(p, os.path.join(backup, name))
+                moved.append(name)
+        for name in os.listdir(stage):
+            shutil.move(os.path.join(stage, name), os.path.join(HERE, name))
+    except Exception:
+        for name in os.listdir(HERE):
+            p = os.path.join(HERE, name)
+            if (os.path.isdir(p) and os.path.isfile(os.path.join(p, "DESIGN.md"))) or name in MANAGED:
+                shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
+        for name in moved:
+            shutil.move(os.path.join(backup, name), os.path.join(HERE, name))
+        raise
+    shutil.rmtree(backup)
+    shutil.rmtree(stage, ignore_errors=True)
     print(f"{len(entries)} references from {commit[:7]}")
 
 
 if __name__ == "__main__":
-    if len(sys.argv) not in (2, 3):
+    args = [a for a in sys.argv[1:] if a != "--allow-removals"]
+    if len(args) not in (1, 2):
         raise SystemExit(__doc__)
-    main(sys.argv[1], sys.argv[2] if len(sys.argv) == 3 else None)
+    main(args[0], args[1] if len(args) == 2 else None, "--allow-removals" in sys.argv)
