@@ -276,7 +276,7 @@ If no matching server exists in server-tools, skip this step.
 
 ### 7) Post-Deploy QA and Deploy Confirmation
 
-Start this step once every repo of this deploy has reached a terminal merge outcome: merged, failed, held for a user decision, or cancelled. It runs in two phases, and every confirmation comes before any QA, so the QA of one repo never reads another repo's old running commit: if repo A and repo B both merge and B's CD finishes later, phase 1 waits for B's confirmation before the QA of A starts.
+Start this step once every repo of this deploy has reached a terminal merge outcome: merged, failed, held for a user decision, or cancelled. It runs in two phases, and every confirmation comes before any QA, so every deployment gets its bounded confirmation attempt before any repo is QA'd (a repo that ends unconfirmed or failed may still run an old commit, and QA admission handles that): if repo A and repo B both merge and B's CD finishes later, phase 1 waits for B's confirmation before the QA of A starts.
 
 **Phase 1 — confirm every merged repo, before any QA.** One repo after another:
 
@@ -300,7 +300,7 @@ With neither a CD run nor a healthcheck to confirm it, the deployment is unconfi
 
 **Running post-deploy QA** (phase 2, each repo with QA whose deploy phase 1 confirmed):
 
-1. Invoke `<plugin>:post-deploy repo=<owner/repo> target=<branch> before=<before_sha> after=<after_sha>` in this session. Its first step re-checks the deploy; one that phase 1 confirmed passes at once. `repo` and `target` are the same strings as in step 6, `before` the target SHA before the merge (the same `before_sha` as step 6), and `after` the merge commit SHA (`merge_commit_sha` of `repos/<owner/repo>/pulls/<pr-number>`, read after the merge).
+1. Invoke `<plugin>:post-deploy repo=<owner/repo> target=<branch> before=<before_sha> after=<after_sha>` in this session. Its first step re-checks the deploy; one that phase 1 confirmed normally passes without waiting, if the current evidence still shows it deployed. `repo` and `target` are the same strings as in step 6, `before` the target SHA before the merge (the same `before_sha` as step 6), and `after` the merge commit SHA (`merge_commit_sha` of `repos/<owner/repo>/pulls/<pr-number>`, read after the merge).
 2. Keep working until its final report is posted in this thread. A partial report along the way is progress, not the end. Wait the way you wait for CI: in-turn, never with `ScheduleWakeup` or a background watcher whose result nothing consumes. Write this run's deployment summary only after that report.
 3. If it ends as `deployed, QA incomplete: <reason>`, that is this repo's status: report it with what was and was not done, never as done. Put the re-run arguments it gives on one reference line for maintainers, not as a step for the requester.
 4. If the skill errors, or ends without posting its final report, report `deployed, QA incomplete: <reason>` for that repo yourself, with what was and was not done, never as done. Its reference line for maintainers is the same `<plugin>:post-deploy` invocation as in item 1.

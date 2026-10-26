@@ -86,9 +86,9 @@ describe('deploy-qa preflight and reduced mode', () => {
     expect(args).toContain('`--confirm`: run the deploy confirmation of step 1 only');
     expect(args).toContain('write nothing');
     expect(args).toContain('`confirmed`, `unconfirmed: <reason>`, or `failed: <run> concluded <conclusion>`');
-    // A full run still re-checks; a deploy --confirm already confirmed passes at once.
+    // A full run still re-checks; a confirmed deploy normally passes without waiting if the evidence still holds.
     const step1 = md.slice(md.indexOf('1. **Confirm the deploy**'), md.indexOf('2. **Commits.**'));
-    expect(step1).toContain('A full run re-checks here; a deploy that `--confirm` already confirmed passes at once.');
+    expect(step1).toContain('A full run re-checks here; a deploy that `--confirm` already confirmed normally passes without waiting, if the current evidence still shows it deployed.');
   });
 
   it('owns the deploy confirmation for its repo, within a fixed budget, with no event filter', () => {
