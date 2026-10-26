@@ -159,11 +159,11 @@ spark는 모두 파랑(`#6a94fc`). 컴포넌트 CSS는 틴트 태그와 칸별 s
 ## 4. 계약 (TO-BE) [SHIPPED]
 
 색 토큰은 보드 CSS 영역의 자체 `:root {…}` + `[data-theme="light"] {…}` 블록(3601·3611), 호버 규칙은 그 규칙 옆의 자체 `@media` 블록,
-동작 줄이기 규칙은 공유 동작 줄이기·터치 블록 **뒤**의 자체 블록(5254–5259 — 시트의 첫 동작 줄이기 블록은 공유 블록으로 남는다)이다.
-공유 `:root`(3137)·라이트(3203)·동작 줄이기(5172)·호버·터치 블록은 건드리지 않는다(에픽 위생, 교차 리뷰 R1).
+동작 줄이기 규칙은 공유 동작 줄이기·터치 블록 **뒤**의 자체 블록(5260–5265 — 시트의 첫 동작 줄이기 블록은 공유 블록으로 남는다)이다.
+공유 `:root`(3137)·라이트(3203)·동작 줄이기(5178)·호버·터치 블록은 건드리지 않는다(에픽 위생, 교차 리뷰 R1).
 
-**D1 상태 태그 [SHIPPED].** 바닥 줄 `<span class="card-status" data-tone="T">`(안의 `.st-icon` + `.st-text`는 그대로). 톤은 `renderCardFace`
-(8361)가 정한다: 자동 재개 대기(`pendingAutoResume`) → `wait` · `waiting` → `wait` · `working` → `run` · `closed` → `rest` · 그 밖(`idle`) → `done`.
+**D1 상태 태그 [SHIPPED].** 바닥 줄 `<span class="card-status" data-tone="T">`(안의 `.st-icon` + `.st-text`는 그대로). 톤은 괄호로 우선순위를 밝힌 식으로 `renderCardFace`
+(8377)가 정한다: 자동 재개 대기(`pendingAutoResume`) → `wait` · `waiting` → `wait` · `working` → `run` · `closed` → `rest` · 그 밖(`idle`) → `done`.
 CSS(3768–3772): `inline-flex`, 높이 24px, 안쪽 `0 10px 0 8px`, 반경 999px, 12.5px/500, gap 6px, `flex: 0 1 auto`, `max-width: 100%`, 말줄임
 (메트릭은 `margin-left:auto`로 오른쪽, 좁으면 기존처럼 다음 줄). `.st-ago`(`· 12m ago`)도 태그 안 같은 색(`color: inherit`).
 
@@ -182,44 +182,50 @@ CSS(3768–3772): `inline-flex`, 높이 24px, 안쪽 `0 10px 0 8px`, 반경 999p
 자동 재개 줄)는 늘 보인다. 실측: 1440 보드(카드 397px) `Running · 21m 57s` / `Done in 4m 12s`, 820(카드 ~292px)은 시계만.
 
 **D3 태그 안 링 [SHIPPED].** `.card-status .spinner`(3785): 트랙 = `currentColor` 25%(`color-mix`), 호 = `currentColor`. 자체 동작 줄이기 블록
-(5256)이 `border-color: currentColor`로 정지 링을 온전히 둔다(공유 블록의 정지 링 규칙은 그대로).
+(5262)이 `border-color: currentColor`로 정지 링을 온전히 둔다(공유 블록의 정지 링 규칙은 그대로).
 
-**D4 아이콘 팝 [SHIPPED].** `applyCardParts`(8072)가 바꾸기 전 `data-state`를 잡아 두고, 있던 상태가 달라진 렌더에서만(새 카드·같은 상태의
-face 교체·`canAnimate()` 거짓·`reduceMotion()` 제외) `popStatusIcon`(8111) → 새 `.card-status .st-icon`에 WAAPI
+**D4 아이콘 팝 [SHIPPED].** `applyCardParts`(8087)가 바꾸기 전 `data-state`를 잡아 두고, 있던 상태가 달라진 렌더에서만(새 카드·같은 상태의
+face 교체·`canAnimate()` 거짓·`reduceMotion()` 제외) `popStatusIcon`(8126) → 새 `.card-status .st-icon`에 WAAPI
 `[{opacity:0, transform:'scale(0.6)'}, {opacity:1, transform:'scale(1)'}]`, `MOTION.move`(320ms) · `MOTION.easeOut`.
 
-**D5 상태 먼저, 이동은 나중 [SHIPPED].** `BOARD_HOLD_MS = 900`(7485).
-- `reconcileBoard`(7677)가 슬롯을 짠 뒤 `applyLaneHolds(slots, counts)`(7703 → 7768)를 부른다. 칸 = `waiting` / `working` / `done`(DONE 날짜
-  슬롯 포함). 판단은 순수 함수 `holdLanes(want, drawn, holds, now, on) → { lanes, holds, wakeAt }`(7745): 그려진 칸(`_cardEls[key]._colId`)과
+**D5 상태 먼저, 이동은 나중 [SHIPPED].** `BOARD_HOLD_MS = 900`(7497).
+- `reconcileBoard`(7689)가 슬롯을 짠 뒤 `applyLaneHolds(slots, counts)`(7715 → 7780)를 부른다. 칸 = `waiting` / `working` / `done`(DONE 날짜
+  슬롯 포함). 판단은 순수 함수 `holdLanes(want, drawn, holds, now, on) → { lanes, holds, wakeAt }`(7757): 그려진 칸(`_cardEls[key]._colId`)과
   새 칸이 다르면 처음 본 시각 + 900ms까지 그린 칸에 둔다. 데이터가 원래 칸으로 돌아오면 보류를 지우고, 다른 칸으로 바뀌면 `to`만 바꾸고
   기한은 그대로. `on = canAnimate() && !reduceMotion()` — 첫 렌더·숨은 탭·동작 줄이기는 즉시 이동. 새 카드·CRON 슬롯·사라진 키는 보류 없음.
 - 보류 카드는 새 칸 슬롯에서 빠져 **지금 노드가 있는 컨테이너의 지금 자리**로 들어가고, item의 `col`은 새 칸이라 face·body·`data-state`·
   `data-col`은 새 상태로 그려진다(D1 태그·D4 팝이 그 자리에서). 자리가 없어졌으면(떠난 DONE 날짜) 보류를 버리고 바로 이동한다.
-- 칸 배지(`counts`)와 빈 칸 문구는 그려진 카드 기준(빈 칸은 슬롯 item 수로 판정). DONE 날짜 묶음 머리 개수는 데이터 기준 — 보류 900ms 동안
-  1 차이 가능(알려진 한계).
+- 칸 배지(`counts`)와 빈 칸 문구는 그려진 카드 기준(빈 칸은 슬롯 item 수로 판정). 열린 DONE 날짜 묶음의 머리 개수도 그려진 카드 수다 — 날짜
+  슬롯이 그 묶음의 item 배열을 그대로 쓰므로 보류 카드를 넣고 빼면 머리도 따라간다(배지와 같은 기준).
 - 타이머 하나가 가장 이른 기한 + 20ms에 `renderBoard(_lastBoardData)`를 다시 부르고, 그때 기존 FLIP(`.is-flying`)으로 새 칸에 간다.
 
-**D6 낭독 [SHIPPED].** `#kanban` 바로 앞(6200) `<p id="inbox-live" class="ib-sr" role="status" aria-live="polite" aria-atomic="true">`(`.ib-sr`
-3622). `renderBoard`(7632)가 받은 데이터 그대로(CRON 레인으로 갈 대기 실행 포함, 보류 전) `announceBoard(waiting 수, working 수)`(7820) →
-`boardAnnounceText`(7815) = `'응답이 필요한 세션 ' + w + '개, 실행 중 ' + r + '개'`. 문구가 바뀔 때만, `ANNOUNCE_MS = 1000` 안의 연속 변화는
-마지막 하나만 쓴다. (그래서 낭독의 실행 수는 RUNNING 배지와 다를 수 있다 — CRON 레인의 실행 포함.)
+**D6 낭독 [SHIPPED].** `#kanban` 바로 앞(6212) `<p id="inbox-live" class="ib-sr" role="status" aria-live="polite" aria-atomic="true">`(`.ib-sr`
+3622). `renderBoard`(7644)가 받은 데이터 그대로(CRON 레인으로 갈 대기 실행 포함, 보류 전) `announceBoard(waiting 수, working 수)`(7834) →
+`boardAnnounceText`(7827) = `'응답이 필요한 세션 ' + w + '개, 실행 중 ' + r + '개'`. 첫 문장은 빈 영역에 바로 쓴다(PR #450 R1 P1 — 같은 수의
+렌더가 1초 안에 다시 와도 첫 문장이 사라지지 않는다). 그 뒤로는 실제 변화만: 같은 문장은 타이머를 걸지 않고, `ANNOUNCE_MS = 1000` 안의 연속
+변화는 마지막 하나만 쓴다(원래 문장으로 돌아왔으면 아무것도 쓰지 않는다). (그래서 낭독의 실행 수는 RUNNING 배지와 다를 수 있다 — CRON 레인의 실행 포함.)
 
-**D7 Esc [SHIPPED].** `initBoardInteractions`의 `#kanban`·`#cron-lane` keydown(버블 단계, 15030) → `closeCardOnEscape(e, root)`(10407): 대상이
+**D7 Esc [SHIPPED].** `initBoardInteractions`의 `#kanban`·`#cron-lane` keydown(버블 단계, 15051) → `closeCardOnEscape(e, root)`(10424): 대상이
 펼친 카드(`.card.is-expanded`) 안이면 `stopPropagation()` → `toggleCard(key, true)`(키보드 = 애니메이션 없음) → `face.focus({ preventScroll: true })`.
-카드 밖이면 아무것도 하지 않는다(문서 핸들러가 패널을 닫는 것은 그대로). capture 리스너를 쓰지 않으므로 카드 안의 모델 선택 메뉴(#442)가 자기
+카드 밖이면, 또 대상이 입력란·`textarea`·`select`·편집 가능 영역이면 아무것도 하지 않는다(그 컨트롤의 Esc가 먼저 — fable P2; 문서 핸들러가
+패널을 닫는 것은 그대로). capture 리스너를 쓰지 않으므로 카드 안의 모델 선택 메뉴(#442)가 자기
 keydown에서 전파를 멈추면 메뉴만 닫힌다(교차 리뷰 R1 P2). 아티팩트 미리보기(window capture `artHandleKey`)가 먹은 Esc도 오지 않는다.
 
-**D8 `aria-controls` [SHIPPED].** `createCardShell`(8025)이 `.card-expand`에 `id = 'card-x-' + (++_cardSeq)`(7482, 세션 키를 id에 쓰지 않는다)를
+**D8 `aria-controls` [SHIPPED].** `createCardShell`(8040)이 `.card-expand`에 `id = 'card-x-' + (++_cardSeq)`(7494, 세션 키를 id에 쓰지 않는다)를
 주고 face가 `aria-controls`로 가리킨다. 닫힌 내용 `inert`는 그대로.
 
-**D9 칸 section [SHIPPED].** `<section class="kanban-col" id="col-<c>" data-col="<c>" aria-labelledby="col-<c>-name count-<c>">`(6202–6218),
+**D9 칸 section [SHIPPED].** `<section class="kanban-col" id="col-<c>" data-col="<c>" aria-labelledby="col-<c>-name count-<c>">`(6214–6230),
 `<h3 id="col-<c>-name">` — 접근 이름 = `NEEDS YOU 9`. id·클래스·`data-col`은 그대로다.
 
-**D10 주 버튼 하나 [SHIPPED].** `renderCardBody`(9842)의 `canDecideHere`(9943) = 형제 인스턴스가 아니고, (`waiting` 칸에서 `pendingQuestion`이
+**D10 주 버튼 하나 [SHIPPED].** `renderCardBody`(9858)의 `canDecideHere`(9959) = 형제 인스턴스가 아니고, (`waiting` 칸에서 `pendingQuestion`이
 있고 내가 소유자) 또는 (닫힘이 아닌 칸에서 `pendingPermissions` 중 내가 요청자인 것). 참이면 `작업 로그`는 보조(`btn-action`), 거짓이면
-주(`btn-action btn-primary`). 결정 쪽이 잉크다(4251–4260, 카드 안에서만): 단일 선택의 추천 선택(기존), 복수 질문 `답변하기`
-(`btn-choice btn-choice-primary`, `renderMultiChoiceCard` 11097), 권한 요청의 **Approve**(`.card .btn-perm.btn-perm-approve` 잉크) — 이때 Deny는
-보조(`.card .btn-perm.btn-perm-deny`: 카드 바탕·선·`--st-fail-text` 글자). 패널의 권한 블록과 `renderPermissionBlock` 마크업은 바뀌지 않는다.
+주(`btn-action btn-primary`). 결정 쪽이 잉크다(4251–4266, 카드 안에서만): 단일 선택의 추천 선택(기존), 소유자의 복수 질문 `답변하기`
+(`btn-choice btn-choice-primary` — 소유자일 때만, `renderMultiChoiceCard` 11118), 이 viewer가 누를 수 있는 권한 요청의 **Approve**
+(`.card .btn-perm.btn-perm-approve:not(:disabled)` 잉크; 비활성 Approve는 보조) — 이때 Deny는 보조(`.card .btn-perm.btn-perm-deny`: 카드 바탕·선·
+`--st-fail-text` 글자). 호버에서도 무게가 같다: 공유 프롬프트 호버 규칙(밝기 필터, 4315) **뒤**의 자체 호버 블록(5266–5271)이 필터를 끄고
+Approve 잉크·Deny 보조를 다시 칠한다(특이도 5 > 3). 카드에 누를 수 있는 Approve가 있으면 질문의 추천 선택·`답변하기`는 보조로 물러난다
+(`.card .card-body:has(.btn-perm-approve:not(:disabled)) …`, 4263 — 쉬는 상태·호버 모두; PR #450 R1 P1). 패널의 권한 블록과
+`renderPermissionBlock` 마크업은 바뀌지 않는다.
 추천이 없는 단일 선택 질문은 선택 버튼이 모두 보조이고 작업 로그도 보조다(골라야 할 결정이지 권장되는 답이 없다).
 
 **모션·반응형·테마 요약**: 새 모션은 D4 팝과 D5 보류뿐, 둘 다 동작 줄이기에서 없다. D2만 폭에 반응한다. 새 색은 D1 토큰 8쌍(다크·라이트).
@@ -237,11 +243,12 @@ keydown에서 전파를 멈추면 메뉴만 닫힌다(교차 리뷰 R1 P2). 아�
 | D3 | `D3 — the running ring inside the pill` 1건(공유 동작 줄이기 블록 무변경, 자체 블록은 링 규칙과 공유 블록 뒤) |
 | D4 | `D4 — a state change pops the status icon` 2건 |
 | D5 | `D5 — holdLanes…` 5건(처음 본 변경, 기한, 되돌아옴·재지정, 끔·새 카드·떠난 키, 900ms) · `D5 — applyLaneHolds…` 2건(자리·새 상태·배지, 끔 = 즉시) |
-| D6 | 템플릿 `D6 — one polite live region` 1건 · 클라이언트 `D6 — a polite announcement` 4건 |
-| D7 | `D7 — Escape closes the open card…` 3건(안 / 밖 / 배선) |
+| D6 | 템플릿 `D6 — one polite live region` 1건 · 클라이언트 `D6 — a polite announcement` 6건(첫 문장 즉시·같은 수 반복, 연속 변화 1회, 되돌아온 변화) |
+| D7 | `D7 — Escape closes the open card…` 4건(안 / 입력란·select·편집 영역 / 밖 / 배선) |
 | D8 | `D8 — the face names the region it opens` 1건 |
 | D9 | `D9 — each column is a labelled section` 1건 |
-| D10 | 템플릿 `D10 — one ink primary per open card` 2건(답변하기 + 자체 호버 블록, 카드 Approve·Deny + 패널 규칙 무변경) · 클라이언트 `D10 — one primary button per open card` 4건 |
+| D10 | 템플릿 `D10 — one ink primary per open card` 2건(답변하기 + 자체 호버 블록, 카드 Approve(활성만)·Deny + 패널 규칙 무변경) · 템플릿 `D10 — the card permission answers keep their weight on hover…` 2건(호버 규칙의 순서·특이도, `:has` 강등) · 클라이언트 `D10 — one primary button per open card` 4건(답변하기는 소유자만) |
+| P2 | `P2 — the tone expression says its precedence` 1건 |
 
 고친 기존 테스트(이유): `dashboard-agent-inbox.test.ts` — `worklogBtn` 정규식(D10: 주 버튼이 조건부). `dashboard-agent-inbox-client.test.ts` —
 `답변하기` 정규식이 `class="btn-choice[^"]*"`(D10 클래스 추가). `dashboard-agent-inbox.test.ts`의 동작 줄이기 시험(시트의 첫 블록을 읽는다)은
@@ -267,3 +274,8 @@ keydown에서 전파를 멈추면 메뉴만 닫힌다(교차 리뷰 R1 P2). 아�
   칠해짐, 1440에서 접두 표시·820에서 숨김, Esc 3/3 닫힘 + face 포커스, 권한 카드의 잉크 버튼은 `✅ Approve` 하나 + 작업 로그 보조, 칸 3개
   `SECTION`·`aria-controls` 모두 유효, 보류: 실행 카드를 DONE으로 바꾼 직후 RUNNING 자리에서 `data-state=idle`·`data-tone=done`·배지 그대로,
   1.2초 뒤 DONE으로 이동·배지 15/17·낭독 갱신(`after-agent-inbox-probe.json`, `after-agent-inbox-light-desk-hold-in-place.png`).
+- PR #450 리뷰 R1(grok P1×2 + P2, fable P2×2 + P3) 반영: 새·바뀐 시험 RED 확인(`Tests 6 failed | 32 passed (38)`, 이어서 `3 failed | 36 passed
+  (39)`) 뒤 GREEN — 두 파일 39/39, 보드 관련 6파일 338/338, `npx vitest run src/conversation/__tests__/ --testTimeout=60000 --hookTimeout=60000`
+  64/64 파일 · 1688/1688, `npx tsc --noEmit` 0, `npx biome check src/conversation/` 오류 0(경고 687 그대로). 브라우저(하네스 34121, `timeout -k 10 1200`, `shots-agent-inbox/r1-agent-inbox-*`): 라이트·다크 모두
+  권한+질문 카드의 잉크 버튼은 쉬는 상태·Approve 호버·추천 선택 호버에서 늘 `✅ Approve` 하나(호버 필터 `none`), 남의 권한 카드는 Approve 비활성·
+  잉크는 작업 로그 하나, 첫 렌더 직후 낭독 영역에 문장이 있음, 카드 안 `select`에서 Esc → 카드는 열린 채.

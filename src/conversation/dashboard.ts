@@ -4248,13 +4248,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .card .btn-choice-recommended::before { content: none; }
 .card .choice-row-recommended .btn-choice-recommended,
 .card .btn-choice-recommended { display: inline-block; width: auto; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
-/* D10: one primary per open card — the decision. The multi-question 답변하기 and,
-   in the card only, a permission prompt's Approve are ink; Deny steps back to a
-   secondary (the panel's prompt keeps its own styling). Doubled classes beat the
-   shared card / hover rules that come later in the sheet. */
+/* D10: one primary per open card — the decision this viewer can make. The owner's
+   multi-question 답변하기 and, in the card only, an Approve this viewer can press are
+   ink; Deny and a disabled Approve are secondaries (the panel's prompt keeps its own
+   styling). Doubled classes beat the shared card / hover rules later in the sheet. */
 .card .btn-choice.btn-choice-primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
-.card .btn-perm.btn-perm-approve { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
+.card .btn-perm.btn-perm-approve:not(:disabled) { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
+.card .btn-perm.btn-perm-approve:disabled { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--ib-text); }
 .card .btn-perm.btn-perm-deny { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--st-fail-text); }
+/* A card that also holds a permission prompt this viewer can answer (its Approve is
+   enabled — the requester, this instance) keeps Approve as the one ink button: the
+   question's answers step back to secondaries, resting and hovered (:has() outranks
+   the card's recommended-choice rules). */
+.card .card-body:has(.btn-perm-approve:not(:disabled)) .btn-choice.btn-choice-recommended, .card .card-body:has(.btn-perm-approve:not(:disabled)) .btn-choice.btn-choice-primary { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--ib-text); }
 @media (hover: hover) and (pointer: fine) {
   .card .btn-choice.btn-choice-primary:hover:not(:disabled) { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
 }
@@ -5256,6 +5262,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (prefers-reduced-motion: reduce) {
   /* D3: the static ring (shared rule) stays whole, in the pill's icon colour. */
   .card-status .spinner { border-color: currentColor; }
+}
+/* D10 hover, after the shared prompt's hover rule (brightness filter): in the card,
+   Approve stays the ink primary and Deny a secondary when pointed at. */
+@media (hover: hover) and (pointer: fine) {
+  .card .btn-perm.btn-perm-approve:not(:disabled):hover { filter: none; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
+  .card .btn-perm.btn-perm-deny:not(:disabled):hover { filter: none; background: var(--ib-card); border-color: var(--st-fail-text); color: var(--st-fail-text); }
 }
 /* ── CRON badge · lane · drawer (SSOT 2026-10-23 T3/T4/T5) ── */
 .cron-badge {
@@ -7815,13 +7827,16 @@ function applyLaneHolds(slots, counts) {
 function boardAnnounceText(w, r) {
   return '응답이 필요한 세션 ' + w + '개, 실행 중 ' + r + '개';
 }
-// Written only when the text changes; a burst within ANNOUNCE_MS is said once
-// (the last text), so a busy board does not chatter.
+// The first sentence goes into the empty region at once. After that only a real
+// change is said: the same sentence arms nothing, and a burst of changes within
+// ANNOUNCE_MS is said once (the last text — nothing if it came back to what the
+// region already says), so a busy board does not chatter.
 function announceBoard(w, r) {
-  _announceText = boardAnnounceText(w, r);
-  if (_announceTimer) return;
   var live = document.getElementById('inbox-live');
-  if (!live || live.textContent === _announceText) return;
+  if (!live) return;
+  _announceText = boardAnnounceText(w, r);
+  if (!live.textContent && !_announceTimer) { live.textContent = _announceText; return; }
+  if (_announceTimer || live.textContent === _announceText) return;
   _announceTimer = setTimeout(function() {
     _announceTimer = 0;
     setTextIfChanged(document.getElementById('inbox-live'), _announceText);
@@ -8177,8 +8192,9 @@ function autoResumeLabel(r) {
   return text;
 }
 
-// Status at the foot of the card. Board shows the bare timer; List adds the
-// "Running · " / "Done in " prefix via CSS — same DOM in both views.
+// Status at the foot of the card (the tinted tag, re-agent-inbox D1). The
+// "Running · " / "Done in " prefix shows in both views and hides only on a narrow
+// card (≤ 300px of face content, D2) — same DOM everywhere.
 function renderCardStatus(s, col) {
   var resume = pendingAutoResume(s, col);
   if (resume) {
@@ -8358,7 +8374,7 @@ function renderCardFace(s, col) {
   // A cron run leads with the CRON badge instead of the spark (SSOT 2026-10-23 T3).
   var lead = s.cronJob && s.cronJob.name ? renderCronBadge(s) : '<span class="card-spark">' + SPARK_SVG + '</span>';
   // The status tag's tone (re-agent-inbox D1): an armed automatic resume waits.
-  var tone = pendingAutoResume(s, col) || col === 'waiting' ? 'wait' : col === 'working' ? 'run' : col === 'closed' ? 'rest' : 'done';
+  var tone = (pendingAutoResume(s, col) || col === 'waiting') ? 'wait' : col === 'working' ? 'run' : col === 'closed' ? 'rest' : 'done';
   return '<div class="card-head">' + lead + titleHtml + renderOwnerBadge(s) + '</div>'
     + (summary ? '<div class="card-summary">' + esc(summary) + '</div>' : '')
     + renderCardTaskRow(s, col)
@@ -10403,9 +10419,14 @@ function toggleCard(key, instant) {
 
 // Escape (re-agent-inbox D7): inside an open card — its face or its body — it
 // closes that card (keyboard: no motion) and puts focus back on the face. It
-// stops there, so a docked panel stays open; anywhere else it is left alone.
+// stops there, so a docked panel stays open; anywhere else, and in a text field,
+// a select or an editable region, it is left alone.
 function closeCardOnEscape(e, root) {
-  var card = e.target && e.target.closest ? e.target.closest('.card.is-expanded') : null;
+  // A text field, a select or an editable region keeps its own Escape (clear, cancel, IME).
+  var t = e.target;
+  var tag = t && t.tagName ? String(t.tagName).toUpperCase() : '';
+  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable)) return false;
+  var card = t && t.closest ? t.closest('.card.is-expanded') : null;
   if (!card || !root.contains(card)) return false;
   var key = card.getAttribute('data-session-key');
   if (!key || !_expanded.has(key)) return false;
@@ -11110,7 +11131,7 @@ function renderMultiChoiceCard(s, faceSummary) {
   return '<div class="card-question">'
     + ((q.title || q.question) && (q.title || q.question) === faceSummary ? '' : '<div class="card-question-text">\\uD83D\\uDCCB ' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>')
     + '<div class="card-question-multi">' + total + '\\uAC1C \\uC9C8\\uBB38 \\u00B7 ' + progressText + '</div>'
-    + '<div style="margin-top:6px"><button class="btn-choice btn-choice-primary" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\')" style="width:100%;text-align:center;font-weight:700">\\uB2F5\\uBCC0\\uD558\\uAE30</button></div>'
+    + '<div style="margin-top:6px"><button class="btn-choice' + (s.ownerId && s.ownerId === currentUserId ? ' btn-choice-primary' : '') + '" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\')" style="width:100%;text-align:center;font-weight:700">\\uB2F5\\uBCC0\\uD558\\uAE30</button></div>'
     + '</div>';
 }
 
