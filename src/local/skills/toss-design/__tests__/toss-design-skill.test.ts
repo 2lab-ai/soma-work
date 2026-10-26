@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -183,5 +184,22 @@ describe('local:toss-design skill — selectable Toss themes', () => {
     const md = readFileSync(SKILL_MD, 'utf8');
     expect(md).toMatch(/Pretendard/);
     expect(existsSync(resolve(SKILL_ROOT, 'fonts'))).toBe(false);
+  });
+  it('strict AA mode passes every required pair in the shipped checker, TextField fill and overlays included', () => {
+    for (const n of ['toss-blue', 'toss-black']) {
+      const r = spawnSync(
+        'python3',
+        [
+          resolve(SKILL_ROOT, 'scripts', 'contrast-check.py'),
+          resolve(SKILL_ROOT, 'themes', n, 'tokens.css'),
+          '--mode',
+          'aa',
+          '--strict',
+        ],
+        { encoding: 'utf8' },
+      );
+      expect(r.stdout, n).toMatch(/text-placeholder on field \(focus\)/);
+      expect(r.status, `${n}\n${r.stdout}`).toBe(0);
+    }
   });
 });

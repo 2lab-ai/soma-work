@@ -117,6 +117,15 @@ Slack request — *do not ask the user anything* in this step.
 An unknown value is an error: stop, print the valid values, and render nothing.
 Never silently fall back to another driver or to the default.
 
+How the order becomes a driver:
+
+- Rule 1 or 2 → set `DESIGN` to that value (map a named style to its registry
+  name, for example "토스 스타일" → `toss-blue`, "토스 블랙" → `toss-black`) and
+  run the resolver below.
+- Rule 3 → the **brand-context driver** (below). Do not run the resolver — the
+  registry default must not override the user's own brand.
+- Rule 4 → run the resolver with `DESIGN` unset (it means `default`).
+
 Bot shells do not set `CLAUDE_PLUGIN_ROOT`; export it first in every bash
 call (`export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<this skill's base directory>/../..}"`).
 
@@ -178,6 +187,17 @@ content preservation (real data only, nothing invented).
    permission to break ui-ux Quick Reference §1–§3 (accessibility, touch targets,
    performance) — verify color pairs meet the §1 contrast rules.
 
+#### Brand-context driver (rule 3: the user supplied a palette, codebase or screenshot)
+
+Lift the real system per the `design` skill's
+[`references/design-context.md`](../design/references/design-context.md):
+exact hex values, font stack, radius and spacing from the user's material —
+never redraw them from memory. Run the `ui-ux` engine (step 1 of the reference
+driver) only to fill what the brand material leaves open. Step 3.5 runs as for
+a reference driver, and the brand's own fonts win over the `design` skill's
+"tired fonts" list. Record `driver=brand · reference=none` in the audit
+comment.
+
 #### Impeccable driver (`design=impeccable`)
 
 Read `$CLAUDE_PLUGIN_ROOT/skills/impeccable/SKILL.md` and follow its
@@ -191,7 +211,8 @@ document-based application".
 #### Record the choice
 
 Write a one-line HTML comment at the top of the file, e.g.
-`<!-- ui-ux: driver=reference · reference=openai · theme=none · design-system=Dark Mode/Inter · template=data-report -->`
+`<!-- ui-ux: driver=reference · reference=openai · theme=none · design-system=Dark Mode/Inter · template=data-report -->`,
+`<!-- ui-ux: driver=brand · reference=none · source=<palette|codebase|screenshot> · template=data-report -->`
 or `<!-- ui-ux: driver=impeccable · mode=Read · world=<one line> · template=data-report -->`,
 so the decision is auditable. Do not narrate it in the Slack reply.
 
@@ -384,8 +405,10 @@ The renderer pulls geometry from `templates/index.json` based on
 `--template <name>`. Pass `--width` / `--height` / `--full-page` /
 `--no-full-page` / `--selector` to override.
 
-The renderer also prints one `fonts loaded: <families>` line — keep it for
-Step 6.
+The renderer also prints two lines for Step 6: `fonts loaded: <families>`
+(web fonts that finished loading) and `fonts used: <families>` (the fonts
+Chromium actually drew a sample of headings, paragraphs, list items and table
+cells with). Either reads `unknown` when the probe failed.
 
 The PNG freezes Lottie mid-loop — that's expected; the live link (Step 7)
 carries the motion. If the captured frame looks empty because an animation
@@ -416,12 +439,14 @@ PY
 
 Then check what the bytes cannot tell you:
 
-1. **Font check.** Compare the renderer's `fonts loaded:` line with the
-   display and body families the driver declared (for example `Pretendard` for
-   `toss-*`, `Inter` for `openai`). A declared family missing from the line means
-   the page fell back to a system font: say so in the Step 8 upload comment
-   (`font fallback: <declared> → system`) and never present the PNG as
-   rendered in the declared font.
+1. **Font check.** Compare the renderer's `fonts used:` line with the display
+   and body families the driver declared (for example `Pretendard` for
+   `toss-*`, `Inter` for `openai`). A declared family absent from `fonts used`
+   means the text was drawn with something else: name what was used in the
+   Step 8 upload comment (`font fallback: <declared> → <used>`) and never
+   present the PNG as rendered in the declared font. A locally installed face
+   counts as used. If either line reads `unknown`, say the font check was
+   unavailable — do not claim success or fallback.
 2. **Look at the PNG.** Open it with the Read tool once and check for clipped
    or overlapping text, missing sections, unreadable contrast, and an empty
    motion frame. Fix what one look shows, re-render once, then move on — this

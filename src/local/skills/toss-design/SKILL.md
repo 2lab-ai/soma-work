@@ -66,7 +66,7 @@ Themes: `toss-blue` (default) and `toss-black`. Both expose identical variable n
 | Option | Values | Default | Effect |
 |---|---|---|---|
 | `theme` | `toss-blue`, `toss-black` | `toss-blue` | Picks the tokens file. |
-| `contrast` | `tds`, `aa` | `tds` | `aa` adds `data-contrast="aa"` on `<html>`; the tokens file then swaps the few TDS pairs below 4.5:1 (blue500 → blue700 fills, red500 → red700, placeholder grey500 → grey600). Use `aa` for public-sector, compliance or print deliverables. |
+| `contrast` | `tds`, `aa` | `tds` | `aa` adds `data-contrast="aa"` on `<html>`; the tokens file then swaps the few TDS pairs below 4.5:1 (blue500 → blue700 fills, red500 → red700, placeholder grey500 → grey700). Use `aa` for public-sector, compliance or print deliverables. |
 | `layout` | `mobile`, `wide`, `auto` | `auto` | See "Desktop-width HTML" below. |
 | `dark` | `off` | `off` | Dark mode is not shipped as a theme (see below). |
 
@@ -325,7 +325,7 @@ Restrictions:
 
 - **White on blue500 / red500 (3.71:1)** is TDS's own button pairing. It meets 3:1 but not 4.5:1, and the TDS labels (15–17px semibold) are not WCAG "large text". Use it only as a button label at t5 (17px) semibold or larger, on xlarge, large or BottomCTA buttons, never for body copy, captions, badges or small (13px) and medium (15px) buttons. For medium and small buttons in toss-blue use `dark weak` or `primary weak`.
 - **Placeholder grey500 (3.04:1)** is a hint only. The field must also have a visible label.
-- **Strict AA:** set `<html data-contrast="aa">`. Every required pair then passes in both themes (fills move to blue700 / red700, placeholder to grey600). Verified: 0 failures for both themes in `aa` mode.
+- **Strict AA:** set `<html data-contrast="aa">`. Every required pair then passes in both themes (fills move to blue700 / red700, placeholder to grey700, which also clears 4.5:1 on the TextField fill and its focus/error overlays). Verified: 0 failures for both themes in `aa` mode.
 
 Other rules:
 

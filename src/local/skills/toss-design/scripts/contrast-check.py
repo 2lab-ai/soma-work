@@ -51,6 +51,10 @@ PAIRS = [
     ("on-warning on warning", "--color-on-warning", "--color-warning", 4.5, "badge label"),
     ("toast-text on toast-bg", "--color-toast-text", "--color-toast-bg", 4.5, "body text"),
     ("text-placeholder on bg", "--color-text-placeholder", "--color-bg", 4.5, "placeholder"),
+    ("text on field", "--color-text", "--color-field-bg", 4.5, "input text"),
+    ("text-placeholder on field", "--color-text-placeholder", "--color-field-bg", 4.5, "placeholder"),
+    ("text-placeholder on field (focus)", "--color-text-placeholder", "--color-field-bg+--color-field-focus-overlay", 4.5, "placeholder"),
+    ("text-placeholder on field (error)", "--color-text-placeholder", "--color-field-bg+--color-field-error-overlay", 4.5, "placeholder"),
     ("icon-strong on bg", "--color-icon-strong", "--color-bg", 3.0, "non-text"),
     ("icon on bg", "--color-icon", "--color-bg", None, "decorative"),
     ("text-disabled on bg", "--color-text-disabled", "--color-bg", None, "disabled (exempt)"),
@@ -134,7 +138,9 @@ def main(argv):
     rows, failed = [], 0
     for label, fgv, bgv, need, kind in PAIRS:
         try:
-            bg = over(parse_color(resolve(bgv, table)), canvas)
+            bg = canvas
+            for layer in bgv.split("+"):  # "a+b": b composited over a over the canvas
+                bg = over(parse_color(resolve(layer, table)), bg)
             fg = over(parse_color(resolve(fgv, table)), bg)
         except KeyError as e:
             rows.append((label, "missing " + str(e), "", "", kind))
