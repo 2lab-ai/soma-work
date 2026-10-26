@@ -177,19 +177,19 @@ dark(`.dark`/`[data-theme=dark]` 조상)는 #19191b 카드 + #232326 칩이다. 
 |---|---|---|---|
 | D1 | 접힌 면과 lazy 로드를 지킨다 [SHIPPED] | 요약·Retry·Generating 그대로. summary 문구 `Show raw response` → `답변 전문`. 처음 열 때만 GET, 다시 열면 `_rawLoadedCache` | 12797–12814, 12857 |
 | D2 | 본문 = `renderMarkdownDoc(ansLinkify(raw))`를 `.ans-body.md-doc`에 [SHIPPED] | 본문 13.5px/1.6(≥520 컨테이너 14px). 안쪽 max-height 없음(카드가 자라고 패널이 스크롤). `mdInline`·`renderMarkdownDoc`는 바꾸지 않는다 | raw route |
-| D3 | 링크 인식 `ansLinkify(raw)` [SHIPPED] | `[label](url)` · 맨 `https?://…` · `<url>` · `<url\|label>` → `[label](url)`. 인라인 코드와 코드 펜스 안은 그대로 둔다. 맨 URL 끝의 `.,;:!?*`와 짝 없는 `)`는 뺀다. http(s)만(`safeHref`) | common.prompt 32 |
-| D4 | 링크 목록 `renderAnswer(raw, s).sources` [SHIPPED] | 처음 나온 순서대로 1부터. 같은 URL(끝 `/` 무시)은 링크 하나. 0개면 링크 줄도 칩도 없다. 정의 없는 `[1]`·`[1,2]` 글자는 그대로(가짜 칩 금지) | D3의 링크 |
+| D3 | 링크 인식 `ansLinkify(raw)` [SHIPPED] | `[label](url)` · 맨 `https?://…` · `<url>` · `<url\|label>` → `[label](url)`. 인라인 코드와 코드 펜스 안은 그대로 둔다. 맨 URL 끝의 `.,;:!?*`와 짝 없는 `)`는 뺀다. http(s)만(`safeHref`) **리뷰 R1:** 마크다운 링크는 코드 스팬보다 먼저 통째로 지킨다 — 라벨이 코드 스팬인 `` [`src/foo.ts`](url) ``도 링크다. URL 안의 짝 맞는 괄호는 `%28`/`%29`로 실어 보내고(mdInline 대상은 첫 `)`에서 끝난다) `renderAnswer`가 되돌린다. `>` 인용 안의 펜스도 펜스다(인용이 끝나면 펜스도 끝난다). | common.prompt 32 |
+| D4 | 링크 목록 `renderAnswer(raw, s).sources` [SHIPPED] | 처음 나온 순서대로 1부터. 같은 URL(끝 `/` 무시)은 링크 하나. 0개면 링크 줄도 칩도 없다. 정의 없는 `[1]`·`[1,2]` 글자는 그대로(가짜 칩 금지) 캐시 키는 `대화:턴`(`ansCacheKey`) — 턴 id는 대화 안에서만 유일하다(리뷰 R1). | D3의 링크 |
 | D5 | 이름 · 제목 · 칩 라벨 도출 [SHIPPED] | §4.3 표 | URL, 링크 라벨, 세션 `prUrl/prTitle/issueUrl/issueTitle` |
 | D6 | 링크 카드 [SHIPPED] | `<ol class="ans-srcs" aria-label="답변에 포함된 링크 N개">` > `<li>` > `<a class="ans-src" data-ans-src="n" href target="_blank" rel="noopener noreferrer" title="url">`. 폭 148px(≥520: 172px), 반경 10px, 패딩 8px 10px. 이름 11px·번호 11px tabular·제목 12px 2줄 clamp. 가로 스크롤, 스크롤바 숨김, 양끝 12px 마스크 페이드, `--ans-i` = min(i, 6) | D4 |
 | D7 | 링크 칩 [SHIPPED] | 링크 자리 → `<a class="ans-cite" data-ans-src="n" href target="_blank" rel="noopener noreferrer" aria-label="링크 n: 제목 (이름)">칩 라벨</a>`. 라벨이 URL 자체면 칩만 남는다. 아니면 라벨 글자(링크 아님) + 칩. 높이 18px, 패딩 0 6px, 반경 6px, 11px/500, 최대 16ch 말줄임 | D4·D5 |
 | D8 | 상호 강조 [SHIPPED] | 칩 hover/focus → 같은 `.ans-card`의 같은 n 링크 카드와 칩에 `.is-lit`. 링크 카드 hover/focus → 그 n 칩에 `.is-lit`. 떠나면(`mouseout`/`focusout`) 그 카드의 `.is-lit`를 모두 끈다. 켜진 카드가 링크 줄 밖이면 **링크 줄만** 가로 `scrollTo({left})`(세로 스크롤·`scrollIntoView` 금지). `#panel-turns`에 위임 리스너 한 벌을 한 번만 단다 | — |
 | D9 | 라벨 줄 [SHIPPED] | `답변`. 링크가 있으면 `답변 · 링크 N`. 12px/600 `--text-secondary` | D4 |
-| D10 | 복사 [SHIPPED] | `ansCopyText(raw, srcs)` = `raw.trim()` + (링크 ≥1이면) `\n\n링크:\n[1] 제목 – url\n…`. 마크다운은 그대로 둔다(Slack·GitHub에 붙일 곳이 렌더한다). 성공: 버튼 `복사됨` 1500ms(선례 12001) + status `답변과 링크 N개를 복사했습니다`(0개면 `답변을 복사했습니다`). clipboard가 없거나 거부되면 `.ans-body`를 선택하고 `선택했습니다 — ⌘C / Ctrl+C로 복사` | raw, D4 |
-| D11 | 응답 시간 [SHIPPED] | `decorateAnswerTurns()`가 `.turn.assistant[data-ts]`마다 직전 `.turn`이 `.turn.user`일 때만 `ts − 직전 ts`를 `ansTookLabel(ms)`로 쓴다. ≤0·NaN → 빈칸, <1s `응답 1초 미만`, <60s `응답 N초`, <1h `응답 N분 M초`, 그 이상 `응답 N시간 M분`. `title="지시 HH:MM → 응답 HH:MM"`. `decoratePanelTurns` 끝에서 부르므로 open·이전 페이지·WS append·update 모두에 적용된다 | turn `timestamp`(recorder 250·291). 대기·툴 시간이 포함되므로 "생성"이 아니라 "응답"이다 |
-| D12 | 작성 중 행 [SHIPPED] | `ansPendingShow(s, panelConvId, lastRole)` = `s.activityState==='working'` && `s.conversationId===panelConvId` && 마지막 `.turn`이 user. 참이면 `.ans-pending`을 마지막 자식으로 둔다(새 턴이 붙으면 다시 끝으로). 거짓이면 지운다. 내용: 🤖 · `Assistant` · `<span class="ans-shimmer">응답 작성 중</span>` + `<i class="ans-dot" aria-hidden="true">`. `syncAnsPending()`은 `decorateAnswerTurns`와 `repaintPanelSession`(9100)이 부른다 | 카드 IO 9511과 같은 판정 |
-| D13 | 로딩 · 오류 · 빈 답 [SHIPPED] | 열자마자 `.ans-card[aria-busy="true"]` `불러오는 중…`. 실패: `답변을 불러오지 못했습니다 (HTTP n)` + `<button class="btn-action" data-ans-retry>다시 시도</button>`(재요청). `raw===''` → `기록된 답변 내용이 없습니다`. 성공하면 `aria-busy`를 뗀다 | raw route 404/500 |
+| D10 | 복사 [SHIPPED] | `ansCopyText(raw, srcs)` = `raw.trim()` + (링크 ≥1이면) `\n\n링크:\n[1] 제목 – url\n…`. 마크다운은 그대로 둔다(Slack·GitHub에 붙일 곳이 렌더한다). 성공: 버튼 `복사됨` 1500ms(선례 12001) + status `답변과 링크 N개를 복사했습니다`(0개면 `답변을 복사했습니다`). clipboard가 없거나 거부되면 `.ans-body`를 선택하고 `선택했습니다 — ⌘C / Ctrl+C로 복사` Clipboard API가 없으면(plain http) 숨긴 임시 textarea에 **원문**을 넣어 `execCommand('copy')` — 렌더한 본문에는 URL 자리에 칩(`#999`)이 있다. 그것도 안 되면 본문 선택(리뷰 R1 P3). | raw, D4 |
+| D11 | 응답 시간 [SHIPPED] | `decorateAnswerTurns()`가 `.turn.assistant[data-ts]`마다 직전 `.turn`이 `.turn.user`일 때만 `ts − 직전 ts`를 `ansTookLabel(ms)`로 쓴다. ≤0·NaN → 빈칸, <1s `응답 1초 미만`, <60s `응답 N초`, <1h `응답 N분 M초`, 그 이상 `응답 N시간 M분`. `title="지시 HH:MM → 응답 HH:MM"`. `decoratePanelTurns` 끝에서 부르므로 open·이전 페이지·WS append·update 모두에 적용된다 직전 지시가 낙관적 턴(`data-turn-id="optimistic-…"`, 이 브라우저 시계)이면 시간을 쓰지 않는다(리뷰 R1 P3). | turn `timestamp`(recorder 250·291). 대기·툴 시간이 포함되므로 "생성"이 아니라 "응답"이다 |
+| D12 | 작성 중 행 [SHIPPED] | `ansPendingShow(s, panelConvId, lastRole)` = `s.activityState==='working'` && `s.conversationId===panelConvId` && 마지막 `.turn`이 user. 참이면 `.ans-pending`을 마지막 자식으로 둔다(새 턴이 붙으면 다시 끝으로). 거짓이면 지운다. 내용: 🤖 · `Assistant` · `<span class="ans-shimmer">응답 작성 중</span>` + `<i class="ans-dot" aria-hidden="true">`. `syncAnsPending()`은 `decorateAnswerTurns`와 `repaintPanelSession`(9100)이 부른다 행이 늘 마지막 자식이므로 `sendCommand`의 실패 표시는 낙관적 턴을 `:last-child`가 아니라 자기 `data-turn-id`로 찾는다(리뷰 R1 P1 — 전에는 작업 중에 보낸 지시의 `Failed to send / Retry`가 사라졌다). | 카드 IO 9511과 같은 판정 |
+| D13 | 로딩 · 오류 · 빈 답 [SHIPPED] | 열자마자 `.ans-card[aria-busy="true"]` `불러오는 중…`. 실패: `답변을 불러오지 못했습니다 (HTTP n)` + `<button class="btn-action" data-ans-retry>다시 시도</button>`(재요청). `raw===''` → `기록된 답변 내용이 없습니다`. 성공하면 `aria-busy`를 뗀다 **리뷰 R1:** 응답은 지금 것일 때만 내려앉는다 — 같은 패널 열림(`_panelGen`)이고 더 새 요청이 대신하지 않았을 때만 캐시에 쓰고, `#panel-turns` 안에 있는 disclosure만 칠한다. 같은 열림에서 다시 그려진 disclosure(D14)는 진행 중인 요청(`_ansInflight[key]`)에 합류한다(요청 1번). | raw route 404/500 |
 | D14 | 열림 유지 [SHIPPED] | `updateTurnInPanel`(요약 도착)이 턴을 바꿀 때, 열려 있던 답은 새 `<details open>`에 캐시로 다시 그린다. 재요청하지 않는다 | 12843 |
-| D15 | 모션 [SHIPPED] | §4.4 | `--dur-*`, `--ease-out` |
+| D15 | 모션 [SHIPPED] | §4.4 닫히면 `is-in`을 뗀다 — 닫힌 내용은 열 때 다시 렌더되어 진입 모션이 되풀이된다(리뷰 R1 fable P3). | `--dur-*`, `--ease-out` |
 | D16 | 반응형 · 터치 [SHIPPED] | §4.5 | 패널 440px(4540–4560) |
 | D17 | 키보드 · 접근성 [SHIPPED] | §4.5 | — |
 | D18 | 토큰 · 안전 [SHIPPED] | §4.6 | — |
@@ -226,7 +226,7 @@ fixture `conv-run` t2의 `https://github.com/2lab-ai/soma-work/pull/999`는 세�
 전역 reduce 규칙(5126)은 duration을 0.01ms로 줄일 뿐이라 무한 animation이 깜빡인다. 그래서 `.ans-shimmer`, `.ans-dot`, `.ans-src`,
 `.ans-card.is-in > *`에는 `animation: none !important`를 명시한다(spinner 선례 5137). 이 규칙과 coarse 규칙은 **공유 블록을 고치지 않고**
 따로 둔 `@media` 블록이다. 위치는 공유 터치 블록(5187–) 바로 뒤다. `dashboard-agent-inbox.test.ts` 452가 파일의 **첫**
-reduce 블록을 보드 블록으로 읽으므로, 5126보다 앞에 reduce 블록을 두면 그 시험이 깨진다. 캐시로 다시 그릴 때(D14)는 `is-in`이 없어 움직이지 않는다.
+reduce 블록을 보드 블록으로 읽으므로, 5126보다 앞에 reduce 블록을 두면 그 시험이 깨진다. 캐시로 다시 그릴 때(D14)와 닫았다 다시 열 때는 `is-in`이 없어 움직이지 않는다.
 
 ### 4.5 반응형 · 키보드 · 접근성 (D16 · D17)
 
@@ -283,6 +283,11 @@ reduce 블록을 보드 블록으로 읽으므로, 5126보다 앞에 reduce 블�
 | 15 | CSS: `container: ans / inline-size`, `@container ans (min-width: 520px)`의 172px, 148px, `ans-pop`·`ans-in`·지연 계산, `1.6s linear infinite`, `1s ease-in-out infinite`, 따로 둔 reduce 블록의 `animation: none !important`, coarse `::after` 히트 영역, `.ans-*` 규칙에 hex·rgba 없음 | D15·D16·D18 | RED |
 | 16 | 위생: 새 함수는 각각 한 번만 선언. **R1 P1** — 답변 코드(`ansCiteHtml`·`ansSourcesHtml`·`renderAnswerCard`·`ansCopyText`·`copyAnswer`·`ansStateHtml`)에 `출처`·`인용`이 없다 | D4·D7·D10 | RED |
 | 17 | 회귀: artifacts-client "T1 — markdown answers render as documents, safely"(324), user-media `renderTurn` user 분기 순서(137), agent-inbox-client `renderTurn`/`attachRawToggleHandlers` stub(2881), three-surfaces `_rawLoadedCache`(811), agent-inbox "reduced motion stops the spinner"(452 — 첫 reduce 블록) | D1·D2·D15 | 통과 유지 |
+| 18 | **리뷰 R1 ①②③** — 라벨이 코드 스팬인 링크는 URL을 지키고 `)`를 남기지 않는다(코드 스팬 안의 링크 문법은 코드). 짝 맞는 괄호 URL은 맨 URL·링크 대상 모두 온전하다. 인용 안 펜스는 코드로 남고, 닫히지 않은 펜스는 인용과 함께 끝난다 | D3 | RED(`c54aa09`) |
+| 19 | **리뷰 R1 (P1) 경쟁** — 패널이 바뀐 뒤 늦은 응답은 칠하지도 캐시에 쓰지도 않는다(늦은 실패도). 목록을 떠난 disclosure는 칠하지 않는다. 같은 턴 id의 두 대화는 답을 나누지 않는다(`convA:t2`·`convB:t2`). 다시 그려진 disclosure는 진행 중인 요청에 합류한다(fetch 1번). 이전 열림의 늦은 응답은 새 응답을 덮지 않는다 | D4·D13 | RED(`c54aa09`) |
+| 20 | **리뷰 R1** — 닫으면 `is-in`을 떼고, 열면 `ansLoad` | D15 | RED(`c54aa09`) |
+| 21 | **리뷰 R1 (P1)** — 작업 중(행이 마지막)에 보낸 지시가 400이면 낙관적 턴에 `Failed to send.` + 흐림. `sendCommand`에 `:last-child`가 없다 | D12 | RED(`c54aa09`) |
+| 22 | **리뷰 R1 (P3)** — 낙관적 지시 뒤의 답에는 시간이 없다. Clipboard API가 없으면 임시 textarea에 원문 + `링크:` 목록을 넣어 복사한다 | D10·D11 | RED(`c54aa09`) |
 
 RED 로그(`bba2643`, 최종 시험 파일 40건, 로그 `harness/ai-answer-logs/red-phaseA-final.txt`):
 
@@ -299,6 +304,24 @@ RED 로그(`bba2643`, 최종 시험 파일 40건, 로그 `harness/ai-answer-logs
    ✓ a closed answer stays closed                       ← 유일한 통과: 이전 코드도 닫힌 답을 열지 않는다
 ```
 
+리뷰 R1 RED 로그(직전 커밋 `c54aa09`에 최종 시험 파일, `-t "review R1"` — 그 커밋에 없는 `ansCacheKey`·`ansParens`만 목록에서 빼고 돌려 **동작으로** 실패를 본다.
+로그 `harness/ai-answer-logs/red-r1-behaviour.txt`):
+
+```
+      Tests  12 failed | 2 passed | 38 skipped (52)     ← 통과 2건은 이미 GREEN이던 D12 삽입 경로 시험
+AssertionError: expected 'See [`src/foo.ts`]([https://github.co…' to be 'See [`src/foo.ts`](https://github.com…'   ①
+AssertionError: expected [ Array(1) ] to deeply equal [ Array(1) ]                                     ② href가 …Foo_(bar 로 잘림
+AssertionError: expected '> ```sh\n> curl [https://example.com]…' to be '> ```sh\n> curl https://example.com\n…'  ③
+AssertionError: expected '<div class="ans-label">답변</div><div c…' to contain '불러오는 중…'           (1)·(1b) 늦은 응답이 칠해짐
+AssertionError: expected { 'convA:t2': 'answer A', …(1) } to deeply equal …                         (2) 키가 턴 id뿐
+AssertionError: expected "vi.fn()" to be called 1 times, but got 2 times                              (3) 다시 그리면 두 번째 요청
+AssertionError: expected undefined to be 'new answer'                                                  (3b) 낡은 응답이 덮어씀
+AssertionError: expected "vi.fn()" to be called with arguments: [ 'is-in' ]                           닫아도 is-in
+AssertionError: expected "vi.fn()" to be called with arguments: [ 'beforeend', …(1) ]                 Failed to send 없음
+AssertionError: expected '응답 1분 0초' to be ''                                                         낙관적 지시 시간
+AssertionError: expected "vi.fn()" to be called with arguments: [ 'copy' ]                             textarea 대체 없음
+```
+
 ## 6. 범위 밖
 
 - **출처·인용**이라는 말. 답변이 주장과 근거를 명시적으로 잇는 데이터(예: 참조식 정의 `[1]: https://…`, 각주 `[^1]`, 또는 서버가 내는 `sources[]` + `[n]` 매핑)가 생기면
@@ -312,13 +335,14 @@ RED 로그(`bba2643`, 최종 시험 파일 40건, 로그 `harness/ai-answer-logs
 
 ## 7. 검증
 
-- 시험: `dashboard-affectui-ai-answer-client.test.ts` 40건 모두 통과(위 RED 39건 → GREEN).
-- 게이트: `npx vitest run src/conversation/__tests__/ --testTimeout=60000 --hookTimeout=60000` → 63 files, 1688 tests 중 1687 통과.
-  남은 1건은 `dashboard-permission.test.ts` 121의 `beforeEach`가 자기 30 s 한도에 걸린 것이다(공유 머신 load average ≈ 114). 그 파일만
-  다시 돌리면 25/25 통과한다. 기본 5 s 한도에서는 무관한 서버·import 시험이 시간 초과로 떨어진다. 실제로 실패한 단언은 한 번뿐이었다.
-  첫 reduce 블록을 읽는 agent-inbox 452가 깨졌고, 블록 위치를 옮겨 고쳤다(§4.4). `npx tsc --noEmit` 0, `npx biome check src/conversation/` 0(경고 687건은 기존 것).
-- 브라우저(하네스 `PORT=34113`, fixture `conv-run`, `shoot-ai-answer.mjs`): `harness/shots-ai-answer/after-ai-answer-{light,dark}-{desk,phone}-`
-  `{turns-closed,turns-open,answer,answer-lit,pending}.png`. 확인한 것: 헤더 `응답 1분 0초`. 링크 카드 `GitHub 1` / `feat(dashboard): model picker`
+- 시험: `dashboard-affectui-ai-answer-client.test.ts` 52건 모두 통과(Phase A RED 39건 + 리뷰 R1 RED 12건 → GREEN).
+- 게이트(리뷰 R1 반영 후): `npx vitest run src/conversation/__tests__/ --testTimeout=60000 --hookTimeout=60000` → 63 files, 1700 tests 중 1699 통과.
+  남은 1건은 `work-log.test.ts` 1765의 무거운 I/O 시험이 자기 30 s 한도에 걸린 것이다(공유 머신 load average ≈ 94–114, 이 변경은 work-log를 건드리지 않는다).
+  그 파일만 다시 돌리면 106/106 통과한다. 같은 이유로 앞선 실행에서 시간 초과였던 `dashboard-permission.test.ts`도 따로 돌리면 25/25 통과한다.
+  기본 5 s 한도에서는 무관한 서버·import 시험이 시간 초과로 떨어진다. 실제로 실패한 단언은 한 번뿐이었다. 첫 reduce 블록을 읽는
+  agent-inbox 452가 깨졌고, 블록 위치를 옮겨 고쳤다(§4.4). `npx tsc --noEmit` 0, `npx biome check src/conversation/` 0(경고 687건은 기존 것).
+- 브라우저(하네스 `PORT=34113`, 리뷰 R1 뒤 다시 `PORT=34123` — 34113에는 앞선 서버의 node 자식이 남아 있었다. fixture `conv-run`, `shoot-ai-answer.mjs`): `harness/shots-ai-answer/after-ai-answer-{light,dark}-{desk,phone}-`
+  `{turns-closed,turns-open,answer,answer-lit,pending}.png`(리뷰 R1 뒤 `after-ai-answer-r1-*`). 확인한 것: 헤더 `응답 1분 0초`. 링크 카드 `GitHub 1` / `feat(dashboard): model picker`
   (세션 PR 제목). 라벨 `답변 · 링크 1`. `**three bars**` → 굵게, `` `src/…` `` → 코드, 맨 PR URL → 칩 `#999`, `[1]`·`[2]`·`[1,2]`는 글자.
   칩 hover → 칩 반전 + 카드 링(light·dark). t3(user) 뒤 `응답 작성 중` 행 + 점.
 - 상호작용(`harness/ai-answer-logs/interact.mjs`, desk·phone): 칩 focus → `.is-lit` 2개, Tab 순서 `ans-src → ans-cite → ans-copy`.
