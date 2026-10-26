@@ -452,12 +452,17 @@ export async function buildStreamOptions(
       // Deploy-workflow grant (`config.json#deploySandbox`, written per runner
       // by the fleet deploy): post-deploy QA, run in the requester's deploy
       // session, needs a few host directories and the QA environment's
-      // hostnames. Keyed to the turn's SENDER, not `session.ownerId` — someone
-      // else replying in the same thread runs without it. Domains only extend
-      // an active allowlist; `networkDisabled` keeps every domain blocked.
-      if (session?.workflow === 'deploy' && slackContext?.user) {
+      // hostnames. BOTH the turn's sender and the session owner must be listed
+      // (one person when they are the same): someone else replying in the
+      // thread runs without it, and so does a listed sender's turn in a session
+      // an unlisted user owns — the owner may steer messages into a running
+      // turn (`SessionRegistry.canInterrupt`), which would otherwise run them
+      // under the grant. Domains only extend an active allowlist;
+      // `networkDisabled` keeps every domain blocked.
+      if (session?.workflow === 'deploy' && session.ownerId && slackContext?.user) {
+        const owner = session.ownerId;
         const grant = loadDeploySandboxGrant(CONFIG_FILE, logger);
-        if (grant?.users.includes(slackContext.user)) {
+        if (grant?.users.includes(slackContext.user) && grant.users.includes(owner)) {
           const added = extendSandboxWithGrant(sandboxConfig, grant, { network: !networkDisabled });
           if (added.paths + added.domains > 0) {
             // Counts only: the values are host topology.

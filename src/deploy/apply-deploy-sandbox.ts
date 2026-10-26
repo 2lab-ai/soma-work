@@ -6,8 +6,8 @@
  * write access to a few host directories and network access to the QA
  * environment's hostnames. The fleet deploy (`.github/workflows/deploy.yml`)
  * writes exactly that, for THIS runner, into `<target>/config.json#deploySandbox`,
- * and `buildStreamOptions` applies it only to a `deploy` workflow turn sent by a
- * listed user (`src/sandbox/deploy-sandbox-grant.ts`).
+ * and `buildStreamOptions` applies it only to a `deploy` workflow turn whose
+ * sender and session owner are both listed (`src/sandbox/deploy-sandbox-grant.ts`).
  *
  * Input is the `DEPLOY_SANDBOX` env var, one entry per line, set from exactly
  * one channel's repo secret (`PRODUCTION_DEPLOY_SANDBOX` for the `main`
@@ -20,8 +20,9 @@
  * Every other line is validated — including lines for other runners, and
  * against the channel's runner labels (`CHANNEL_RUNNER_LABELS`) — so a typo
  * fails the deploy. The value rules are `src/sandbox/deploy-sandbox-rules.ts`,
- * the ones the runtime applies, so the deploy never writes what the runtime
- * would drop.
+ * the lexical ones the runtime applies, so the deploy never writes a value the
+ * runtime would drop on its face. The runtime alone also refuses a path that
+ * resolves through a symlink: that depends on the disk at query time.
  *
  * Unlike the environment plugins this REPLACES: lines for this runner set the
  * key; no line for this runner (an empty or unset secret included) deletes it,
