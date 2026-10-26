@@ -1,6 +1,6 @@
 # loop — 대시보드 × affectUI 레퍼런스 7종
 
-Status: 출고(main `9de150c`) · dev 배포 #459 · 에픽 #437 · PR #450–#456(스택) · 후속 #447 · #457 · 스펙 = [`../14-dashboard-affectui-spec.md`](../14-dashboard-affectui-spec.md) · SSOT = [`ssot.md`](ssot.md)
+Status: 출고(main `9de150c`) · dev 배포 #459(t1·t2) + run 40367075865(t3) · 배포 후 QA = 에픽 #437 코멘트 · 에픽 #437 · PR #450–#456(스택) · 후속 #447 · #457 · 스펙 = [`../14-dashboard-affectui-spec.md`](../14-dashboard-affectui-spec.md) · SSOT = [`ssot.md`](ssot.md)
 
 ## 게이트 (build facts)
 - 워크트리마다: `npx vitest run src/conversation/__tests__/` → `npx tsc --noEmit` → `npx biome check src/conversation/`.
@@ -81,3 +81,6 @@ Memory Panel은 `settings-memory-tab.ts`만 고친다 — 열린 PR #380과 같�
 - 2026-10-26 23:40 KST — 스택 푸시, PR #450–#456 열림(CI 대기열). 비차단 후속 #457.
 - 2026-10-27 00:28 KST — #456 CI(상위 집합 head 8cbbe0d) scan · lean-verify 14m43s · quality-gates 12m21s 통과. icedac 승인 후 #456 머지 → main `9de150c`. 스택 아래 #450–#455 함께 MERGED, 서브이슈 #438–#444 자동 닫힘. 아래 층 PR의 중복 CI(24건)는 상위 집합 CI로 대체하고 취소했다.
 - 2026-10-27 00:33 KST — dev 배포 PR #459(main → deploy/dev) 머지, Deploy run 40350480733. SSOT 성공 증명 = 에픽 #437 코멘트.
+- 2026-10-27 01:17 KST — run 40350480733: t1(work-m16)·t2(work-m64) 성공. t3(fable-m5max)는 러너 대기 중 뒤 배포(#461)가 같은
+  concurrency 그룹(`deploy-deploy/dev`, cancel-in-progress)에서 취소했고, 그 run도 #462 배포가 취소했다. t3는 deploy/dev `9e2aeb0`
+  (⊇ `9de150c`)의 run 40367075865로 넘어갔다. 배포 전 기준선(dev, 실제 브라우저): 새 화면 요소 0 · 페이지 오류 0.
