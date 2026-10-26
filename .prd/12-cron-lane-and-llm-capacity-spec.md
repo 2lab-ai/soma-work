@@ -53,6 +53,7 @@ TimeSets·UW IDL 라벨 배치(가장 낮은 빈 줄, 안 들어가면 `+N`, 가
 - 형제 인스턴스의 크론 잡·실행 기록은 읽지 않는다. 형제의 크론 카드는 보드 병합으로 들어와 `다른 인스턴스` 타일로 묶인다(스케줄 없음).
 - 이 변경 전에 만들어진 크론 세션에는 `cronJob`이 없다(일반 칸에 남고, 다음 실행부터 레인으로 간다).
 - Slack 스레드 헤더 제목은 같은 `title`을 쓰므로 잡 이름 → 실제 이름으로 함께 바뀐다. Slack 쪽 CRON 뱃지는 없다.
+- (2026-10-26 갱신) llmux 0.2.26부터 계정별 플랜을 보고한다(Claude `rate_limit_tier`, Codex `plan_type`: `pro` = $200, `promax` = $500; llmux `.prd/25`). 우선순위: `SOMA_LLMUX_ACCOUNT_TIERS` → llmux 보고값 → 기본값. 이전 llmux에서는 아래가 그대로다.
 - Claude 계정의 x5/x20 매핑은 운영자가 `SOMA_LLMUX_ACCOUNT_TIERS`로 지정해야 색이 붙는다(llmux가 플랜을 주지 않음).
 
 ## 5. 검증 [TEST]
