@@ -162,7 +162,7 @@ root [data-open][data-side=bottom|top][data-align=start|end]
   스크롤·resize는 rAF로 따라간다. **앵커의 카드가 움직이면 닫는다**(교차 리뷰 R1 #1 — 900ms 뒤 칸 이동 · FLIP · 보드 리플로):
   열 때 `mpSpot(trigger)` = 화면 위치 + 첫 `position: fixed` 조상까지의 scroll 오프셋(페이지·칸 스크롤이 상쇄되고, 고정된 슬라이드 패널
   위의 페이지 스크롤은 세지 않는다 — R1 fable P1)을 적고, 열린 동안 150ms 감시(`mpWatch`)가
-  2px 넘게 달라지면(`mpMoved`) `mpClose(false)`. 스크롤 타이밍에 기대지 않는다(처음엔 "300ms 안에 스크롤 없음"으로 했다가 하네스에서
+  2px 넘게 달라지면(`mpMoved`) `mpClose(false)`. 트리거가 화면 밖(위·아래·**왼쪽·오른쪽**)이면 닫힘(R1 astra P2). 스크롤 타이밍에 기대지 않는다(처음엔 "300ms 안에 스크롤 없음"으로 했다가 하네스에서
   스크롤 이벤트보다 감시가 먼저 돌아 닫히는 경합을 보고 바꿨다).
   트리거가 DOM에서 사라지거나 화면 밖이면 닫힘. 바깥 pointerdown · 메뉴와 트리거 밖으로 포커스 이동 → 닫힘.
 - **D3 모델 목록 [SHIPPED].** `renderModelMenu(s)` 안 `role="listbox" aria-label="모델" tabindex="0" aria-activedescendant="mp-opt-<i>"`. 옵션은
@@ -170,6 +170,8 @@ root [data-open][data-side=bottom|top][data-align=start|end]
   설명(`nickname · autocompact <formatTokens>[ · compact 후 전환]` — 규칙은 그대로: 현재 아님 && `contextTokens > autoCompactTokens`). 행은 grid
   `"g t b" / "g d d"` — 설명은 제목 아래 막대 밑까지 펼치고 2줄까지 감싼다(구현 중 변경: 한 칸에 두면 `opus[1m] · autoco…`로 잘렸다).
   세션 모델이 목록 밖이면 첫 옵션 `aria-disabled="true"` "<modelShort> / 현재 · 전환 목록 밖". 옵션 aria-label은 이름·설명·창·가격을 문장으로.
+  **가리킨 행은 위치가 아니라 모델로 기억한다**(`_mp.activeId` = nickname, 목록 밖 행은 `''`; `mpActiveIndex`가 그릴 때마다 지금 목록에서 찾고, 없으면
+  세션 모델) — 목록 밖 첫 행이 사라져 행이 밀려도 Enter·클릭은 보이던 그 모델을 고른다(클릭은 `data-mp-nick`으로, 목록에서 빠진 행은 아무것도 고르지 않는다 — R1 astra P1).
 - **D4 막대 [SHIPPED].** 열 3개 `창 · 압축 · 비용`(헤드 aria-hidden), 각 5칸(`.mp-seg[data-on]`). `mpSegments(v, max) = clamp(round(5·v/max), 1, 5)`,
   값이 없거나 0이면 막대 대신 `—`. 창 = `contextWindow ÷ max`, 압축 = `autoCompactTokens ÷ max`, 비용 = `price.output ÷ max(price.output)` — 최대는
   메뉴에 실린 모델들 중에서. (현 데이터: 창 1M→5 · grok 500K→3; 압축 750K→5 · 600K→4 · 450K→3; 비용 $25→3 · $50→5 · $15→2 · $30→3 · grok —.)
@@ -183,7 +185,8 @@ root [data-open][data-side=bottom|top][data-align=start|end]
   짧은 라벨 `Low · Medium · High · XHigh · Max`(aria-label은 `EFFORT_LABELS`), 체크 = `effortEffective || effort`, 체크된 것만 `tabindex="0"`.
   thumb `style="--i;--n"`, `repeat(var(--n), 1fr)`, thumb 폭 `(100% − 4px)/var(--n)`. `renderEffortPicker(s, true)`도 이것을 돌려준다.
   고르면 메뉴는 열린 채. 서버가 받은 값은 곧바로 세션 캐시에 반영(`mpApplyEffort`)되어 thumb가 폴링을 기다리지 않는다; 실패면 세션 값 그대로 +
-  메뉴 안 `.mp-err` 한 줄(시각용 — 알림은 줄 아래 `renderModelNote`의 role=alert).
+  메뉴 안 `.mp-err role="alert"` — 늘 있는(오류가 없으면 비어 숨는) 알림 영역이라 메뉴가 열린 동안의 실패가 읽힌다(줄 아래 알림은 메뉴가
+  닫힐 때까지 다시 그려지지 않으므로 — R1 astra P2).
 - **D8 트레이 [SHIPPED].** foot = 빛나는 행(가리키는 중이면 active, 아니면 현재)의 `mpTray(o)`: `입력 $5 · 출력 $25 / M · 창 1.0M`, 가격 없으면
   `가격 정보 없음 · 창 500.0K`(달러: 목표가 정수면 정수). `<kbd>↑↓</kbd><kbd>↵</kbd>`. 행이 바뀌면 달러가 `MP_ROLL_MS` 560ms
   ease-out-quart로 구른다(`mpRollTray`, reduced-motion이면 즉시). sr-only `aria-live="polite"` 하나가 `<이름>: 입력 $5 · 출력 $25 / 백만 토큰, 창 1.0M`
@@ -203,7 +206,9 @@ root [data-open][data-side=bottom|top][data-align=start|end]
   목록 위 대기 줄(`compact 후 grok[1m](으)로 전환 대기 중` / `모델 전환 중…`), Enter 무시. `isBusy(key,'effort')` → radiogroup `aria-disabled`, 화살표 무시.
 - **D12 실시간 · 포커스 [SHIPPED].** `isPickingModel(root)` = `root.querySelector('.mp-trigger[aria-expanded="true"]')` — 메뉴가 열린 동안 그 카드
   몸통은 다시 쓰지 않고, `renderPanelControls`도 같은 검사로 건너뛴다(닫을 때 `mpClose`가 둘 다 따라잡는다). 메뉴는 `_sessionCache`에서
-  `mpRepaint()`로 다시 그린다 — active가 바뀔 때마다, 자기 쓰기 전후, 그리고 패널 갱신 경로(`renderPanelControls`)마다. morph라 목록 포커스가 남는다.
+  `mpRepaint()`로 다시 그린다 — active가 바뀔 때마다, 자기 쓰기 전후, 패널 갱신 경로(`renderPanelControls`)마다, 그리고 열린 동안의 150ms 감시가
+  세션 서명(`mpSig`: 모델·effort·대기 전환·허용 단계·컨텍스트·쓰기 중·오류)이 바뀐 것을 볼 때마다 — 폴링·푸시·보드 어느 경로로 캐시가 바뀌어도
+  카드 메뉴가 따라간다(R1 astra P1). morph라 목록 포커스가 남는다.
 - **D13 모션 [SHIPPED].** 열기 opacity 200ms + transform `translateY(∓4px) scale(.96)→none` `var(--dur-move) var(--ease-out)`, 원점 = 트리거 쪽 모서리
   (`data-side`). 닫기 opacity 160ms · transform 220ms · visibility 220ms 지연. chevron 300ms · ✓ scale .6→1 320ms · thumb `var(--dur-move)` · 트리거 배경
   `var(--dur-press)`. reduced-motion: 전역 규칙이 길이를 끄고, 자기 블록 `@media all and (prefers-reduced-motion: reduce)`가 scale·칸 채움·지연까지 끈다.
@@ -226,8 +231,8 @@ root [data-open][data-side=bottom|top][data-align=start|end]
 새 파일 `src/conversation/__tests__/dashboard-affectui-model-picker-client.test.ts`(three-surfaces 하네스 헤더, 45개)와
 `dashboard-affectui-model-picker.test.ts`(서버, 4개). 처음 작성한 41 + 4개가 전부 RED(`client var _mp not found` 28, `mpPlace not found` 3,
 `mpTriggerKey not found`, `findModelPricing is not a function`, `pickerEffortLevels is not a function`, `renderCardBody`가 select를 그린다 …);
-교차 리뷰 반영으로 4개, PR 리뷰 R1 반영으로 6개 추가(고정 조상 + 페이지 스크롤 · Tab 두 정거장 2 · 다시 열기 초기화 · 목록 밖 현재 행 ·
-부팅 때 메뉴 요소) — R1 시험 5개는 수정 전 커밋에서 RED(`harness/mp/red-r1.txt`; 다시 열기 초기화는 `mpClose`가 이미 상태를 비워 통과했고,
+교차 리뷰 반영으로 4개, PR 리뷰 R1 반영으로 9개 추가(고정 조상 + 페이지 스크롤 · Tab 두 정거장 2 · 다시 열기 초기화 · 목록 밖 현재 행 ·
+부팅 때 메뉴 요소 · 가리킨 행 = 모델(astra 재현 순서 그대로) · 열린 메뉴의 세션 동기화 · 옆으로 화면 밖) — R1 시험 5개는 수정 전 커밋에서 RED(`harness/mp/red-r1.txt`; 다시 열기 초기화는 `mpClose`가 이미 상태를 비워 통과했고,
 이제 명시적으로 고정).
 
 | # | 시험(describe › it 요지) | D |
@@ -239,9 +244,9 @@ root [data-open][data-side=bottom|top][data-align=start|end]
 | T5 | 서버 › `pickerEffortLevels` · 카드 `effortLevels`(카탈로그 spy) | D6 |
 | T6 | D7 › 5단계·탭 정지 하나 · 허용 단계만 + capped 줄 · busy 비활성 · 메뉴 안 위치 + `.mp-err` | D7 |
 | T7 | D8 › 트레이 문구 · 달러 형식 · 키 힌트 + live region 하나 · 롤(ease-out, reduced-motion 즉시) | D8 |
-| T8 | D9 › ↑↓ 순환·Home/End · Enter 선택 → 닫힘+포커스 · Space 현재=닫기 · Esc 전파 중지 · 잠금 시 Enter 무시 · Tab 경계 · effort 화살표 · 트리거 Esc 전파 중지 · 트리거 ↓ · **Tab 두 정거장(focus·focusin을 흉내 낸 가짜 DOM)** · 다시 열기 초기화 · 목록 밖 현재 행 닫기 · 부팅 때 `mpHost()` | D9 |
+| T8 | D9 › ↑↓ 순환·Home/End · Enter 선택 → 닫힘+포커스 · Space 현재=닫기 · Esc 전파 중지 · 잠금 시 Enter 무시 · Tab 경계 · effort 화살표 · 트리거 Esc 전파 중지 · 트리거 ↓ · **Tab 두 정거장(focus·focusin을 흉내 낸 가짜 DOM)** · **가리킨 행은 모델: 목록 밖 Haiku → Opus 가리킴 → 세션이 Opus로 → Enter는 fable이 아님** · 열린 메뉴 세션 동기화 · 다시 열기 초기화 · 목록 밖 현재 행 닫기 · 부팅 때 `mpHost()` | D9 |
 | T9 | D11 › 모델 잠금(POST 1회, peer busy) · effort 결과 즉시 캐시 반영 | D11 |
-| T10 | D2 › `mpPlace` 정렬·뒤집기·12px · `mpSpot`/`mpMoved`(스크롤은 상쇄, 레이아웃 이동 = 닫힘, 고정 조상 + 페이지 스크롤 = 움직이지 않음, `overscroll-behavior: contain`) · 감시는 열린 동안만 | D2, D15 |
+| T10 | D2 › `mpPlace` 정렬·뒤집기·12px · 화면 밖(좌우 포함) 닫힘 · `mpSpot`/`mpMoved`(스크롤은 상쇄, 레이아웃 이동 = 닫힘, 고정 조상 + 페이지 스크롤 = 움직이지 않음, `overscroll-behavior: contain`) · 감시는 열린 동안만 | D2, D15 |
 | T11 | D12 › `isPickingModel` · 패널 컨트롤(owner 트리거 / 읽기 텍스트 / 열린 동안 건너뛰고 메뉴만 다시 그림) · 카드 줄 | D12 |
 | T12 | D13–D15 › `.mp-pop` 규칙 · 칸 지연·물러남·thumb · 토큰 light 짝 · 자기 터치 블록(공유 블록에 `.mp-` 없음) · 자기 reduced-motion 블록 | D13–D15 |
 | T13 | D16 › 접힘·select 흔적 없음 · 메뉴 함수 한 번씩 선언 | D16 |
@@ -260,7 +265,7 @@ root [data-open][data-side=bottom|top][data-align=start|end]
 
 ## 검증
 
-- RED → GREEN: 새 시험 45/45 실패(로그 `harness/mp/red-model-picker.txt`) → 49/49 통과; R1 반영 5개 RED(`harness/mp/red-r1.txt`) → 55/55 통과.
+- RED → GREEN: 새 시험 45/45 실패(로그 `harness/mp/red-model-picker.txt`) → 49/49 통과; R1 반영 RED(`harness/mp/red-r1.txt`, `red-r1b.txt`) → 58/58 통과.
 - 게이트: `npx vitest run src/conversation/__tests__/ --testTimeout=60000 --hookTimeout=60000` → 64 파일 · 1697개 통과(기기 load average ~130이라
   기본 5초/10초로 돌린 앞선 실행에서는 내 변경과 무관한 서버 시험 38개가 hook/test 시간 초과로만 실패했고, 긴 타임아웃에서 전부 통과) ·
   `npx tsc --noEmit` exit 0 · `npx biome check src/conversation/` exit 0 · `src/metrics/__tests__/` 통과.

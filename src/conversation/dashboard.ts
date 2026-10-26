@@ -4071,6 +4071,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .mp-seg-btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
 .mp-seg-ctl[aria-disabled="true"] .mp-seg-btn { cursor: progress; }
 .mp-err { margin-top: 6px; font-size: 12px; color: var(--st-fail-text); overflow-wrap: anywhere; }
+.mp-err:empty { display: none; }
 .mp-foot { display: flex; align-items: center; gap: 8px; min-height: 38px; padding: 4px 8px 0 12px; }
 .mp-caption { flex: 1; min-width: 0; overflow: hidden; font-size: 12.5px; color: var(--ib-muted); white-space: nowrap; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .mp-caption b { font-weight: 500; color: var(--ib-text); }
@@ -11247,7 +11248,7 @@ function repaintPanelControlsFor(key) {
 // trigger is found again by its key + surface after any re-render.
 // The open menu: whose (session key + surface), the active row, whether the
 // pointer or the arrows point at it, the tray's shown prices (they roll).
-var _mp = { key: null, surface: null, active: 0, pointing: false, shown: null, raf: 0, placeRaf: 0, watch: 0, at: null };
+var _mp = { key: null, surface: null, activeId: null, pointing: false, shown: null, raf: 0, placeRaf: 0, watch: 0, at: null, sig: '' };
 var MP_EFFORT_SHORT = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'XHigh', max: 'Max' };
 var MP_ROLL_MS = 560;
 function mpShort(s) {
@@ -11269,6 +11270,21 @@ function mpCurrentIndex(s, opts) {
     if (opts[i].outside || (opts[i].m && opts[i].m.model === s.model)) return i;
   }
   return 0;
+}
+// A row is named by its model, never by its position: the list is rebuilt from
+// the latest session (a model outside the list comes and goes as the first row),
+// so an index kept across updates could name another model (R1 astra P1).
+function mpOptId(o) {
+  return o && o.m ? o.m.nickname : '';
+}
+function mpIndexOf(opts, id) {
+  for (var i = 0; i < opts.length; i++) if (mpOptId(opts[i]) === id) return i;
+  return -1;
+}
+// The active row: the one last pointed at while it is still in the list, else the session's model.
+function mpActiveIndex(s, opts) {
+  var i = _mp.activeId === null ? -1 : mpIndexOf(opts, _mp.activeId);
+  return i >= 0 ? i : mpCurrentIndex(s, opts);
 }
 // D4 — filled segments of a 5-segment meter: v against the largest of the menu;
 // 0 (no meter) when the value is unknown.
@@ -11359,7 +11375,7 @@ function renderEffortControl(s) {
 function renderModelMenu(s) {
   var opts = mpOptions(s);
   var cur = mpCurrentIndex(s, opts);
-  var active = Math.max(0, Math.min(opts.length - 1, toNum(_mp.active)));
+  var active = mpActiveIndex(s, opts);
   var lit = _mp.pointing ? active : cur;
   var mx = mpMax(REPRESENTATIVE_MODELS || []);
   var used = toNum(s.contextTokens);
@@ -11387,8 +11403,10 @@ function renderModelMenu(s) {
       + '<span class="mp-desc">' + esc(desc) + '</span></div>';
   }
   html += '</div><div class="mp-settings">' + renderEffortControl(s);
+  // One alert region, always there: a failed write while the menu is open is announced here
+  // (the strip's own alert waits until the menu closes).
   var note = _modelNotes[s.key];
-  if (note && note.error) html += '<div class="mp-err">' + esc(note.text) + '</div>';
+  html += '<div class="mp-err" role="alert">' + (note && note.error ? esc(note.text) : '') + '</div>';
   var tray = mpTray(opts[lit]);
   return html + '</div></div><div class="mp-foot"><span class="mp-caption" aria-hidden="true">' + tray.html + '</span>'
     + '<span class="mp-keys" aria-hidden="true"><kbd>&#x2191;&#x2193;</kbd><kbd>&#x21B5;</kbd></span>'
@@ -11468,7 +11486,7 @@ function mpOpen(btn) {
     _mp.surface = where;
     _mp.pointing = false;
     _mp.shown = null;
-    _mp.active = mpCurrentIndex(s, mpOptions(s));
+    _mp.activeId = null;
   }
   btn.setAttribute('aria-expanded', 'true');
   menu.removeAttribute('inert');
@@ -11512,7 +11530,7 @@ function mpClose(returnFocus) {
 }
 function mpLit(s) {
   var opts = mpOptions(s);
-  var i = _mp.pointing ? _mp.active : mpCurrentIndex(s, opts);
+  var i = _mp.pointing ? mpActiveIndex(s, opts) : mpCurrentIndex(s, opts);
   return opts[i] ? opts[i].m : null;
 }
 // D12 — the open menu follows its session (morph: the list keeps its focus).
@@ -11525,6 +11543,7 @@ function mpRepaint() {
     return;
   }
   morphInnerHtml(menu, renderModelMenu(s));
+  _mp.sig = mpSig(s);
   var lit = mpLit(s);
   mpRollTray(menu, lit && lit.price ? { input: toNum(lit.price.input), output: toNum(lit.price.output) } : null);
   mpReposition();
@@ -11572,11 +11591,12 @@ function mpReposition() {
   var a = mpAnchor();
   var r = a ? a.getBoundingClientRect() : null;
   var vh = window.innerHeight;
-  if (!r || (!r.width && !r.height) || r.bottom < 0 || r.top > vh) {
+  var vw = document.documentElement.clientWidth;
+  if (!r || (!r.width && !r.height) || r.bottom < 0 || r.top > vh || r.right < 0 || r.left > vw) {
     mpClose(false);
     return;
   }
-  var p = mpPlace(r, menu.offsetWidth, menu.offsetHeight, document.documentElement.clientWidth, vh, _mp.surface === 'panel' ? 'top' : 'bottom');
+  var p = mpPlace(r, menu.offsetWidth, menu.offsetHeight, vw, vh, _mp.surface === 'panel' ? 'top' : 'bottom');
   menu.style.left = p.left + 'px';
   menu.style.top = p.top + 'px';
   menu.setAttribute('data-side', p.side);
@@ -11611,7 +11631,20 @@ function mpMoved(at, now) {
 function mpWatch() {
   if (!_mp.key) return;
   var a = mpAnchor();
-  if (!a || mpMoved(_mp.at, mpSpot(a))) mpClose(false);
+  if (!a || mpMoved(_mp.at, mpSpot(a))) {
+    mpClose(false);
+    return;
+  }
+  // The card holds its body while the menu is open, so the menu follows its session itself:
+  // whatever path updated the cache (poll, push, the board), a changed session repaints it.
+  if (mpSig(_sessionCache[_mp.key]) !== _mp.sig) mpRepaint();
+}
+// What the menu shows of a session (and the writes in flight) — a change means repaint.
+function mpSig(s) {
+  if (!s) return '';
+  var note = _modelNotes[s.key];
+  return [s.model, s.effort, s.effortEffective, s.pendingModel, (s.effortLevels || []).join(','), toNum(s.contextTokens),
+    isBusy(s.key, 'model'), isBusy(s.key, 'effort'), note && note.error ? note.text : ''].join('|');
 }
 // D11 — a row picks its model (the menu closes); the current or a locked row does not write.
 function mpPick(i) {
@@ -11629,6 +11662,13 @@ function mpPick(i) {
   mpClose(true);
   changeModel(key, nickname);
 }
+// A clicked row, named by the model it showed — a row that left the list in the meantime picks nothing.
+function mpPickId(id) {
+  var s = _mp.key ? _sessionCache[_mp.key] : null;
+  if (!s) return;
+  var i = mpIndexOf(mpOptions(s), id);
+  if (i >= 0) mpPick(i);
+}
 // An effort pick keeps the menu open (the level is a setting of the same choice).
 function mpPickEffort(level) {
   var s = _mp.key ? _sessionCache[_mp.key] : null;
@@ -11639,17 +11679,18 @@ function mpPickEffort(level) {
 function mpListKey(e) {
   var s = _mp.key ? _sessionCache[_mp.key] : null;
   if (!s) return;
-  var n = mpOptions(s).length;
+  var opts = mpOptions(s);
+  var n = opts.length;
   var k = e.key;
   if (k === 'ArrowDown' || k === 'ArrowUp' || k === 'Home' || k === 'End') {
     e.preventDefault();
-    var i = k === 'Home' ? 0 : k === 'End' ? n - 1 : toNum(_mp.active) + (k === 'ArrowDown' ? 1 : -1);
-    _mp.active = ((i % n) + n) % n;
+    var i = k === 'Home' ? 0 : k === 'End' ? n - 1 : mpActiveIndex(s, opts) + (k === 'ArrowDown' ? 1 : -1);
+    _mp.activeId = mpOptId(opts[((i % n) + n) % n]);
     _mp.pointing = true;
     mpRepaint();
   } else if (k === 'Enter' || k === ' ') {
     e.preventDefault();
-    mpPick(_mp.active);
+    mpPick(mpActiveIndex(s, opts));
   }
 }
 // D9 — effort: the arrows move and select at once (radio pattern); Home · End.
@@ -11699,7 +11740,7 @@ function mpMenuClick(e) {
   if (!t || !t.closest) return;
   var opt = t.closest('.mp-opt');
   if (opt) {
-    mpPick(toNum(opt.getAttribute('data-mp-i')));
+    mpPickId(opt.getAttribute('data-mp-nick') || '');
     return;
   }
   var b = t.closest('.mp-seg-btn');
@@ -11710,9 +11751,9 @@ function mpMenuPointer(e) {
   if (!_mp.key || (e.pointerType && e.pointerType !== 'mouse')) return;
   var opt = e.target && e.target.closest ? e.target.closest('.mp-opt') : null;
   if (!opt) return;
-  var i = toNum(opt.getAttribute('data-mp-i'));
-  if (_mp.pointing && _mp.active === i) return;
-  _mp.active = i;
+  var id = opt.getAttribute('data-mp-nick') || '';
+  if (_mp.pointing && _mp.activeId === id) return;
+  _mp.activeId = id;
   _mp.pointing = true;
   mpRepaint();
 }
