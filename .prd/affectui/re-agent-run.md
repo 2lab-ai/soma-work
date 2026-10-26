@@ -206,8 +206,9 @@ expiresAt}`(permission-prompts.ts 24) — 만료 5분(permission-mcp-server.ts 1
   Approve 클릭 / 질문 카드 → 추천 선택지가 있을 때만 그 버튼. `Esc`: 포커스가 권한 카드의 **버튼**일 때만 Deny. 처리한 키는 `preventDefault` +
   `stopPropagation`(문서 수준 Esc 처리기 — 패널 닫기 — 에 닿지 않는다); 그 밖의 Esc(카드 자체 = 키보드 착지 포커스)는 지금처럼 패널을 닫는다. `focusPanelLanding`의 질문·권한 착지는 첫 `.ap-card:not(.is-resolved)`(버튼 아님, 이미 답한 카드 아님).
   **실시간 갱신이 답을 다른 요청에 옮겨 붙이지 않는다**: 카드는 `data-mk="ap|<approvalId>"`, 답 버튼은 `data-mk="ap|<approvalId>|<decision>"`,
-  질문 카드는 `data-mk="q|<질문·선택지 id 해시>"`, 선택지는 `…|<choiceId>` — `domKeyOf`가 이 키로만 짝을 지으므로 A의 Approve 노드가 B의 것이
-  되지 않는다. 포커스가 있던 카드가 사라지면 포커스는 답하지 않는 자리로 간다(`apSafeFocus`): 같은 요청의 결과 행이면 그 카드, 아니면 `입력 필요`
+  질문 카드는 `data-mk="q|<질문 문구 + 모든 선택지의 id·label·description의 JSON 직렬화>"`(해시가 아니다 — 서로 다른 뜻이 같은 키를 가질 수
+  없다; 서버는 `pendingQuestion`을 제자리에서 덮어쓰므로 같은 문구·같은 id에 다른 라벨이 오면 다른 카드다), 그 카드 안의 선택지는 `c|<choiceId>` —
+  `domKeyOf`가 이 키로만 짝을 지으므로 A의 Approve 노드가 B의 것이 되지 않고, 뜻이 바뀐 질문의 선택지 노드가 새 뜻을 받지 않는다. 포커스가 있던 카드가 사라지면 포커스는 답하지 않는 자리로 간다(`apSafeFocus`): 같은 요청의 결과 행이면 그 카드, 아니면 `입력 필요`
   머리(`tabindex="-1"`), 그것도 없으면 패널 제목 — 결정 버튼에는 절대 가지 않는다(그 뒤 ⌘↵는 아무것도 보내지 않는다).
 - **D15 답한 뒤**: `answerPermission` 성공 → `_permAnswered[approvalId] = decision` + 열린 패널만 다시 그린다(카드 face는 지금처럼 잠긴 버튼).
   패널 카드는 요청이 payload에 남아 있는 동안 한 줄 행 `✓ 승인함` / `✕ 거부함` / `? 설명 요청함` / `✓ 승인함 · 규칙 끔`으로 바뀌고(시각 없음 —
@@ -252,7 +253,7 @@ spec 10 §3.1-6 Tasks 정렬 문장(D1/D6)도 맞췄다.
 
 ## 5. 시험
 
-`src/conversation/__tests__/dashboard-affectui-agent-run-client.test.ts`(three-surfaces-client 1–60의 harness, 43개). 변경 전 35/35 RED(§7).
+`src/conversation/__tests__/dashboard-affectui-agent-run-client.test.ts`(three-surfaces-client 1–60의 harness, 45개). 변경 전 35/35 RED(§7).
 
 | # | 시험(describe › it 요지) | D |
 |---|---|---|
@@ -273,7 +274,8 @@ spec 10 §3.1-6 Tasks 정렬 문장(D1/D6)도 맞췄다.
 | T15 | head › 실행 중 `시작 ` + leg/acc 0, 유휴 `활성` Σ, pill CSS | D18 |
 | T16 | 세부 › 7행 값, `N+`, 유휴 leg 0 · 대기 leg 포함(`rootStatusOf`), 기록 없으면 도구 호출 없음; 본문 순서 컨텍스트(`.pi-ctx` 또는 #441 `.cw`) → 세부 → pi-grid → pi-thread 네 개 모두, pi-grid엔 토큰 4종만 | D19 |
 | T17 | hygiene › 새 이름 1회 선언, 새 CSS에 색 토큰 선언 없음 | 전체 |
-| T18 | live repaint › 카드·답 버튼·질문·선택지의 `data-mk`; A·B 중 A가 사라지면 A의 Approve 노드는 페이지를 떠나고 B는 제 노드(키가 없으면 재바인딩되는 것도 대조로 고정); A의 Approve에 포커스 → A 사라짐 → 포커스 `입력 필요` 머리, ⌘↵ 전송 0; 남은 것이 없으면 패널 제목; A의 결과 행이면 A 카드(⌘↵ 전송 0) | D14 |
+| T18 | live repaint › 카드·답 버튼·질문(전체 뜻 직렬화)·선택지(`c|id`)의 `data-mk`; A·B 중 A가 사라지면 A의 Approve 노드는 페이지를 떠나고 B는 제 노드(키가 없으면 재바인딩되는 것도 대조로 고정); A의 Approve에 포커스 → A 사라짐 → 포커스 `입력 필요` 머리, ⌘↵ 전송 0; 남은 것이 없으면 패널 제목; A의 결과 행이면 A 카드(⌘↵ 전송 0) | D14 |
+| T20 | question rewritten in place › 키가 전체 뜻을 담는다(라벨·설명이 바뀌면 다른 키, 구분자 결합이라면 충돌할 쌍도 다름, `apHash` 없음); 같은 문구·같은 id, 선택지 1 라벨 변경 → 포커스된 버튼은 페이지를 떠나고 포커스는 `입력 필요` 머리, ⌘↵ 전송 0(같은 뜻이면 노드 유지) | D14 D17 |
 | T19 | flattened choice › `answerChoice`의 세 라벨 복구 지점이 `apRepaintQuestion`을 부르고, 패널 카드면 캐시를 비우고 다시 그린다(카드 face 버튼은 아님) | D17 |
 
 ## 6. 범위 밖 · 후속
@@ -290,7 +292,7 @@ spec 10 §3.1-6 Tasks 정렬 문장(D1/D6)도 맞췄다.
 
 - RED(구현 전, `harness/red-agent-run.log`): `Tests 35 failed (35)` — `client function planFootHtml not found`(9), `client var AP_ANSWERED not found`(7),
   `apKeydown not found`(3), `panelDetailsHtml not found`(2), … 및 CSS·마크업 단언 실패.
-- GREEN: 새 파일 43/43. 게이트 — `npx vitest run src/conversation/__tests__/ --testTimeout=60000 --hookTimeout=60000`: 62/63 files,
+- GREEN: 새 파일 45/45. 게이트 — `npx vitest run src/conversation/__tests__/ --testTimeout=60000 --hookTimeout=60000`: 62/63 files,
   1684/1685 — 실패 1건은 `public-url.test.ts`의 임시 디렉터리 정리 경합(`ENOTEMPTY …/public-url-instances-*`, 이 브랜치가 건드리지 않은 파일)이고
   그 파일만 다시 돌리면 34/34 통과(머신 load ≈115 — 기본 5s/10s 타임아웃에서는 무관한 서버 테스트가 시간 초과로 떨어진다). 같은 트리를
   `--testTimeout=120000 --hookTimeout=180000 --maxWorkers=4`로 돌린 실행은 **63 files · 1685 tests 모두 통과**. `npx tsc --noEmit` exit 0.
@@ -302,3 +304,5 @@ spec 10 §3.1-6 Tasks 정렬 문장(D1/D6)도 맞췄다.
 - 리뷰 R1 재현(Chromium, `harness/rebind-check.mjs`, 포트 34133): 요청 A·B, A의 Approve에 포커스 → A를 store에서 지우고 보드 갱신 →
   `{"cards":["approval_b"],"activeId":"panel-needs-head","activeTag":"DIV","sameNodeRebound":false}`, 이어서 Ctrl/⌘+Enter → POST 0건
   (`8420f88`에서는 같은 노드가 B의 Approve가 되어 B 승인이 전송됐다).
+- 리뷰 R2 재현(Chromium, `harness/rewrite-check.mjs`, 포트 34134): 추천 선택지에 포커스 → 같은 문구·같은 id로 그 선택지의 라벨·설명만 바꿔
+  다시 그림 → `{"sameNode":false,"activeId":"panel-needs-head","activeTag":"DIV"}`, Ctrl/⌘+Enter → `answer-choice` POST 0건.

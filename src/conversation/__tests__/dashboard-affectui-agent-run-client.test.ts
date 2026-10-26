@@ -340,7 +340,6 @@ function cards(
       'choiceDataAttrs',
       'stripRecommendedMarker',
       'resolveRecommendedId',
-      'apHash',
       'apQuestionCardHtml',
     ],
     ['AP_ANSWERED'],
@@ -808,8 +807,8 @@ describe('live repaint never rebinds an answer to another request (D14, review R
       question: 'q?',
       choices: [{ id: '1', label: 'a' }],
     });
-    expect(q).toMatch(/<div class="ap-card ap-question"[^>]* data-mk="q\|[0-9a-z]+"/);
-    expect(q).toMatch(/data-mk="q\|[0-9a-z]+\|1"/);
+    expect(q).toContain('data-mk="q|[&quot;q?&quot;,[[&quot;1&quot;,&quot;a&quot;,&quot;&quot;]]]"');
+    expect(q).toContain('data-mk="c|1"');
   });
 
   it('A and B pending, A goes: A’s focused Approve leaves the page; B keeps its own node (unkeyed it would be rebound)', () => {
@@ -909,6 +908,111 @@ describe('live repaint never rebinds an answer to another request (D14, review R
     expect(focused?.getAttribute('data-approval-id')).toBe('A');
     expect(focused?.tagName).toBe('DIV');
     press(done.m);
+    expect(clicks).toEqual([]);
+  });
+});
+
+describe('a question rewritten in place is another card (review R2 P1)', () => {
+  const morph = load<{ domMorphChildren(a: Node, b: Node): void }>(
+    ['domKeyOf', 'domKeyLater', 'domMorph', 'domMorphChildren'],
+    [],
+  );
+  const Q = (label1: string, desc1 = '') => ({
+    type: 'user_choice',
+    question: 'Run the migration?',
+    choices: [
+      { id: '1', label: label1, ...(desc1 ? { description: desc1 } : {}) },
+      { id: '2', label: 'Stop' },
+    ],
+    recommendedChoiceId: '1',
+  });
+  /** The card as the shipped markup keys it: the card's and each choice's data-mk, as fake nodes. */
+  const tree = (html: string) => {
+    const card = /<div class="ap-card ap-question"[^>]* data-mk="([^"]*)"/.exec(html)?.[1] ?? '';
+    const btns = [
+      ...html.matchAll(
+        /<button type="button" class="btn-choice ap-choice( ap-rec)?"[^>]* data-choice-id="([^"]*)"[^>]* data-mk="([^"]*)"/g,
+      ),
+    ];
+    return new Node('DIV', { class: 'ap-card ap-question', 'data-ap-kind': 'question', 'data-mk': card }, [
+      new Node(
+        'DIV',
+        { class: 'panel-question-choices' },
+        btns.map(
+          (m) =>
+            new Node('BUTTON', { class: `btn-choice ap-choice${m[1] ?? ''}`, 'data-choice-id': m[2], 'data-mk': m[3] }),
+        ),
+      ),
+    ]);
+  };
+
+  it('the key holds the whole meaning: a changed label or description is another key; nothing else collides', () => {
+    const c = cards();
+    const key = (q: unknown) => /data-mk="(q\|[^"]*)"/.exec(c.apQuestionCardHtml(SESSION(), q))?.[1];
+    const base = key(Q('백업 대기'));
+    expect(key(Q('백업 대기'))).toBe(base);
+    expect(key(Q('운영 반영'))).not.toBe(base);
+    expect(key(Q('백업 대기', '02:00 이후'))).not.toBe(base);
+    // Joining with a separator would collide here; the serialization does not.
+    expect(key({ ...Q('a|b'), question: 'x' })).not.toBe(key({ ...Q('b'), question: 'x|a' }));
+    expect(declarationCount('apHash')).toBe(0);
+  });
+
+  it('same text, same ids, choice 1 relabelled: the focused button leaves, focus goes to the head, ⌘↵ sends nothing', () => {
+    const c = cards();
+    const before = tree(c.apQuestionCardHtml(SESSION(), Q('백업 대기')));
+    const after = tree(c.apQuestionCardHtml(SESSION(), Q('운영 반영')));
+    const container = new Node('DIV', { id: 'panel-question', class: 'panel-question' }, [before]);
+    const head = new Node('DIV', { id: 'panel-needs-head', class: 'panel-needs-head' });
+    (head as unknown as { hidden: boolean }).hidden = false;
+    const title = new Node('H3', { id: 'panel-title' });
+    const root = new Node('DIV', {}, [title, head, container]);
+    const body = new Node('BODY');
+    const byId: Record<string, Node> = { 'panel-question': container, 'panel-needs-head': head, 'panel-title': title };
+    const document = {
+      getElementById: (id: string) => byId[id] ?? null,
+      get activeElement() {
+        return focused && root.contains(focused) ? focused : body;
+      },
+    };
+    let next = after;
+    const m = load<{ renderPanelQuestion(s: unknown): void; apKeydown(e: unknown): void }>(
+      ['renderPanelQuestion', 'apSafeFocus', 'apKeydown'],
+      [],
+      {
+        document,
+        apQuestionCardHtml: () => `<${next.getAttribute('data-mk')}>`,
+        morphInnerHtml: (el: Node) => morph.domMorphChildren(el, new Node('DIV', {}, [next])),
+        renderMultiChoicePanel: () => {},
+        renderPanelNeedsHead: () => {},
+      },
+    );
+    // The same meaning again keeps the focused node (focus stays where the reader is).
+    clicks = [];
+    const recBefore = container.querySelector('.ap-rec') as Node;
+    focused = recBefore;
+    next = tree(c.apQuestionCardHtml(SESSION(), Q('백업 대기')));
+    m.renderPanelQuestion(SESSION({ pendingQuestion: Q('백업 대기') }));
+    expect(focused).toBe(recBefore);
+    // Rewritten in place: the old button is gone, never rebound to the new meaning.
+    next = after;
+    m.renderPanelQuestion(SESSION({ pendingQuestion: Q('운영 반영') }));
+    expect(container.contains(recBefore)).toBe(false);
+    expect(focused).toBe(head);
+    const e = {
+      key: 'Enter',
+      metaKey: true,
+      ctrlKey: false,
+      target: focused,
+      defaultPrevented: false,
+      stopped: false,
+      preventDefault() {},
+      stopPropagation() {
+        this.stopped = true;
+      },
+    };
+    m.apKeydown(e);
+    expect(e.stopped).toBe(false);
     expect(clicks).toEqual([]);
   });
 });
@@ -1191,7 +1295,6 @@ describe('template hygiene', () => {
       'apAnnounce',
       'apKeydown',
       'apSafeFocus',
-      'apHash',
       'apRepaintQuestion',
       'panelDetailsHtml',
       '_permAnswered',
