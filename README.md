@@ -183,8 +183,8 @@ Status and architecture note: [Sub-Agents](./docs/misc/guides/how-to-new-agent.m
        │
   ┌────▼─────────────────────────────────┐
   │         Internal MCP Servers          │
-  │  llm · model-command · slack-mcp      │
-  │  cron · agent · server-tools          │
+  │  model-command · slack-mcp · cron     │
+  │  agent · server-tools · devops-tools  │
   │  permission · mcp-tool-permission     │
   └─────────────────────────────────────────┘
 ```
@@ -803,8 +803,10 @@ packages/                           # Workspace packages
 │   ├── slack-mcp/                  # Thread context + file upload
 │   ├── cron/                       # Cron job management
 │   ├── server-tools/               # Server administration
+│   ├── devops-tools/               # Keyless relay to the devops broker (gh / Cloudflare)
 │   ├── permission/                 # Permission prompt service
 │   └── mcp-tool-permission/        # Per-tool permission gating
+├── devops-broker/                  # Separate-OS-user broker: holds gh tokens + Cloudflare forge keys, admin-approved via its own Slack app
 ├── common/ · slack/ · process-shared/ · test-utils/
 
 somalib/                            # Shared soma-family library
