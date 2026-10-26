@@ -93,6 +93,15 @@ Other shipped references:
 - **`il-capo-production`** — cinematic, minimalist video-production portfolio
   (Awwwards SOTD). Monochrome dark canvas + signature red `#D60001`, custom-cursor
   and page-transition motion. See `references/il-capo-production/design.md`.
+- **`toss-blue`** / **`toss-black`** — Toss Design System (TDS Mobile) themes,
+  owned by the companion **`toss-design`** skill. Same TDS system, two brand
+  accents: Toss Blue (the TDS default) or near-black grey on a light canvas.
+  Their index entries point *into* that skill (`path` →
+  `../toss-design/themes/<name>/design.md`, `tokens` →
+  `../toss-design/themes/<name>/tokens.css`, `family: toss-design`) — the files
+  are not copied here. When a toss reference is active, also read
+  `toss-design/SKILL.md` (programmatic mode) for its component recipes, and use
+  the theme's tokens instead of engine colours.
 
 The live index of every available reference — and which one carries
 `"default": true` — lives in `references/index.json`.
@@ -102,10 +111,12 @@ The live index of every available reference — and which one carries
 When the user names a reference — e.g. *"build it with the il-capo-production
 reference"*, *"use the `<name>` reference / design"*, or *"design like `<name>`"*:
 
-1. **Resolve & read** the file:
+1. **Resolve & read** the file through the index entry's `path` field
+   (relative to this skill's root — some references live in another skill):
    ```bash
-   cat "$UIUX/references/<name>/design.md"
+   python3 -c "import json,os,sys; r=next(x for x in json.load(open('$UIUX/references/index.json'))['references'] if x['name']==sys.argv[1]); print(os.path.normpath(os.path.join('$UIUX', r['path'])))" <name> | xargs cat
    ```
+   If the entry also has a `tokens` field, load that CSS file too.
    If `<name>` is unknown, list `references/` (or read `references/index.json`)
    and ask which reference to use — do not silently fall back.
 2. **Treat the reference as the visual North Star.** Its palette, typography,
