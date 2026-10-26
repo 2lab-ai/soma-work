@@ -1165,14 +1165,26 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
     let writes = 0;
     const container = { style: {} as Record<string, string> } as Record<string, unknown>;
     const m = load<{ renderPanelTasks(t: unknown, l?: string): void }>(
-      ['esc', 'renderPanelTaskItem', 'renderPanelTasks'],
-      [],
+      // re-agent-run D1–D7: plan rows (markers, times) and the footer.
+      [
+        'esc',
+        'escAttr',
+        'toNum',
+        'formatDuration',
+        'formatTaskTime',
+        'agentIconHtml',
+        'renderPanelTaskItem',
+        'planFootHtml',
+        'renderPanelTasks',
+      ],
+      ['AGENT_STATUS_LABEL'],
       {
         document: { getElementById: (id: string) => (id === 'panel-tasks' ? container : null) },
         _panelTasksExpanded: false,
         morphInnerHtml: () => {
           writes++;
         },
+        updateTimersIn: () => {},
       },
     );
     const tasks = [{ id: 'T1', content: 'a', status: 'completed' }];

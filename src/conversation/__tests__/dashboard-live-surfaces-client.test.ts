@@ -347,7 +347,7 @@ describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
 
 describe('panel task rows carry id, elapsed time and tool calls (T7/T8)', () => {
   const { renderPanelTaskItem } = load<{ renderPanelTaskItem(t: unknown): string }>(
-    ['esc', 'toNum', 'formatDuration', 'formatTaskTime', 'renderPanelTaskItem'],
+    ['esc', 'escAttr', 'toNum', 'formatDuration', 'formatTaskTime', 'agentIconHtml', 'renderPanelTaskItem'],
     [],
   );
   it('completed: id, duration and tool count', () => {

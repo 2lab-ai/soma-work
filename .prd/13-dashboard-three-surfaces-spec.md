@@ -46,7 +46,7 @@ widgets·disclosure, NN/g progressive disclosure·cards·accordions, USWDS card)
 
 | 필드 | 접힌 카드 | 펼친 카드 | 패널 |
 |---|---|---|---|
-| 상태 | ★ 칸 + 바닥 줄(상태 + 타이머, 멈춘 카드는 그 상태에 든 지 `· 12m ago` — §3.7) | — | 머리 칩(세션 · 상태 단어 · 활성 시간) — 폰에서는 패널이 보드를 덮는다 |
+| 상태 | ★ 칸 + 바닥 줄(상태 + 타이머, 멈춘 카드는 그 상태에 든 지 `· 12m ago` — §3.7) | — | 머리 칩(세션 · 상태 단어 · 실행·대기 중이면 `시작 HH:MM · 이번 턴 경과`, 아니면 `활성` Σ — [re-agent-run](affectui/re-agent-run.md) D18; Σ 활성 시간은 세션 정보 세부 D19) — 폰에서는 패널이 보드를 덮는다 |
 | 질문·권한 요청 | 요약 줄(이유) | ★ 전체 문장 + 답·승인 컨트롤 | 같은 컨트롤 |
 | 자동 재개 | 요약 줄 + 상태 | ★ 재개 줄 | 칩 아래 `HH:MM 자동 재개 · 시도 n/3`(사유는 title과 세션 정보) |
 | 진행 중 task | ★ `#T2 … 3m` | 창 안에서 진한 점 | Tasks 안 |
@@ -92,7 +92,7 @@ widgets·disclosure, NN/g progressive disclosure·cards·accordions, USWDS card)
 ### 3.4 패널
 
 - 머리(고정): 제목 · 부제 · ×(`패널 닫기`). 칩 줄 `#panel-status`: `세션` + 상태 아이콘·단어(`role="status"` — 단어만 낭독, 1초
-  시계는 낭독하지 않는다) + 활성 시간(`card-timer-live`) … 오른쪽에 Slack, 세션 액션 하나(접근 이름은 보이는 라벨이 먼저 —
+  시계는 낭독하지 않는다) + 시간(`card-timer-live` — 실행·대기 중이면 `시작 HH:MM · 이번 턴 경과`, 아니면 `활성` Σ; re-agent-run D18, 2026-10-26) … 오른쪽에 Slack, 세션 액션 하나(접근 이름은 보이는 라벨이 먼저 —
   `Stop — 세션 중지`, `Close — 세션 종료`, `Trash — 세션 휴지통으로`; 소유자·형제 인스턴스 게이트는 카드와 같다, coarse ≥ 44px). 재개 대기면 그 아래 한 줄 `HH:MM 자동 재개 · 시도 n/3`.
 - 고정: Tasks(+ 이전 목록), 산출물.
 - 스크롤 영역: 세션 정보 `#panel-info` → goal `#panel-goal` → 권한 요청 → 질문 → 에이전트 → 작업 로그 → 대화.
