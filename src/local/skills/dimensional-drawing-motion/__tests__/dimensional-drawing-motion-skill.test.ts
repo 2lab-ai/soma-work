@@ -80,6 +80,24 @@ describe('local:dimensional-drawing-motion skill — RED contract', () => {
     expect(md).toMatch(/do not run `npm install`/i);
   });
 
+  it('derives the plugin root and checks ffmpeg before rendering', () => {
+    const md = readSkill();
+    expect(md).toMatch(/export CLAUDE_PLUGIN_ROOT="\$\{CLAUDE_PLUGIN_ROOT:-<base directory>\/\.\.\/\.\.\}"/);
+    expect(md).toContain('command -v ffmpeg');
+  });
+
+  it('every flag the soma-work commands pass is read by the headless renderer', () => {
+    const md = readSkill();
+    const runtime = md.slice(md.indexOf('## Running in soma-work'));
+    const block = runtime.slice(runtime.indexOf('```bash'), runtime.indexOf('```', runtime.indexOf('```bash') + 7));
+    const source = readFileSync(resolve(SKILL_ROOT, 'adapters/headless/render.mjs'), 'utf8');
+    const flags = [...new Set(block.match(/--[a-z][a-z-]*/g) ?? [])];
+    expect(flags.length).toBeGreaterThanOrEqual(5);
+    for (const flag of flags) {
+      expect({ flag, read: source.includes(`o.${flag.slice(2)}`) }).toEqual({ flag, read: true });
+    }
+  });
+
   it('LICENSES/ carries the upstream MIT license and an attribution NOTICE', () => {
     expect(existsSync(LICENSES_DIR)).toBe(true);
     const files = readdirSync(LICENSES_DIR).map((f) => f.toLowerCase());
