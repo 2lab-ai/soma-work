@@ -145,6 +145,44 @@ describe('capacity v2 — an untiered Claude account is assumed Max x20', () => 
   });
 });
 
+// llmux 0.2.26 (.prd/25) reports each account's plan: with it, no tier map is needed and
+// nothing is assumed — Claude via rate_limit_tier, Codex via plan_type.
+describe('capacity v2 — plans llmux reports need no tier map', () => {
+  it('Claude rate_limit_tier and Codex plan_type weigh the accounts, nothing assumed', () => {
+    const claude = group(
+      [
+        acct({
+          name: 'claude:ai1@c',
+          group: 'claude',
+          rate_limit_tier: 'default_claude_max_20x',
+          five_hour: w(0, H),
+          seven_day: w(0, D),
+        }),
+        acct({
+          name: 'claude:ai2@c',
+          group: 'claude',
+          rate_limit_tier: 'default_claude_max_5x',
+          five_hour: w(0, H),
+          seven_day: w(0, D),
+        }),
+      ],
+      {},
+    );
+    expect(claude.total).toBe(1.25);
+    expect(claude.tierAssumed).toBe(0);
+    const codex = group(
+      [
+        acct({ name: 'codex:ai@c', group: 'codex', type: 'codex', plan_type: 'pro', seven_day: w(0, D) }),
+        acct({ name: 'codex:ai9@c', group: 'codex', type: 'codex', plan_type: 'promax', seven_day: w(0, D) }),
+      ],
+      {},
+      'codex',
+    );
+    expect(codex.total).toBe(1.4);
+    expect(codex.excluded.unknownTier).toBe(0);
+  });
+});
+
 describe('capacity v2 — estimates and stale blocks', () => {
   it('a 5h window whose reset already passed counts as full, flagged only where it moves "now"', () => {
     const g = group([
