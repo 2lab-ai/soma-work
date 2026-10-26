@@ -20,7 +20,6 @@
  */
 
 import fs from 'node:fs';
-import path from 'node:path';
 import {
   DEPLOY_SANDBOX_KEY,
   type DeploySandboxGrant,
@@ -58,22 +57,46 @@ function keepValid(raw: unknown, valid: (value: unknown) => value is string): { 
 }
 
 /**
- * Whether `target` names itself on disk: the path — or, when it does not exist
- * yet, its nearest existing ancestor — resolves (realpath) to exactly the same
- * string. Refuses a symlink anywhere along it, so a grant cannot be pointed at
- * a forbidden location through a link. A missing tail is fine (the session
- * creates it inside the grant); any other resolution failure (a component that
- * is not a directory, no permission) is a refusal.
+ * Whether `target` names itself on disk, so a grant cannot be pointed at a
+ * forbidden location through a link:
+ *
+ *   - an existing path must resolve (realpath) to exactly the same string;
+ *   - a path realpath cannot find is walked from the root with lstat, because
+ *     realpath answers ENOENT for a dangling symlink exactly as for an absent
+ *     path. Every component that exists must be a real directory — a symlink
+ *     (dangling or not) or anything else is a refusal — and only a component
+ *     lstat cannot find counts as missing. Everything from the first missing
+ *     component down is the tail the session creates inside the grant. The
+ *     deepest existing component must then resolve to itself.
+ *
+ * Any other failure (no permission, a component that is not a directory) is a
+ * refusal.
  */
 export function resolvesToItself(target: string): boolean {
-  let current = target;
-  for (;;) {
+  try {
+    return fs.realpathSync.native(target) === target;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') return false;
+  }
+
+  let current = '';
+  let deepestExisting = '/';
+  for (const component of target.split('/').slice(1)) {
+    current = `${current}/${component}`;
+    let stat: fs.Stats;
     try {
-      return fs.realpathSync.native(current) === current;
+      stat = fs.lstatSync(current);
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || current === '/') return false;
-      current = path.dirname(current);
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') break;
+      return false;
     }
+    if (!stat.isDirectory()) return false;
+    deepestExisting = current;
+  }
+  try {
+    return fs.realpathSync.native(deepestExisting) === deepestExisting;
+  } catch {
+    return false;
   }
 }
 

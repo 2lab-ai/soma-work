@@ -98,6 +98,83 @@ describe('resolvesToItself (runtime symlink check)', () => {
   it('refuses a path that runs through a regular file', () => {
     expect(resolvesToItself(path.join(base, 'plain-file', 'lock'))).toBe(false);
   });
+
+  // realpath answers ENOENT for a symlink whose target is missing, exactly as
+  // for an absent path; only lstat tells them apart.
+  it('refuses a dangling symlink as the leaf', () => {
+    fs.symlinkSync(path.join(base, 'nowhere'), path.join(base, 'real', 'dangling'));
+    expect(resolvesToItself(path.join(base, 'real', 'dangling'))).toBe(false);
+  });
+
+  it('refuses a path under a dangling symlinked ancestor', () => {
+    fs.symlinkSync(path.join(base, 'nowhere-dir'), path.join(base, 'dangling-dir'));
+    expect(resolvesToItself(path.join(base, 'dangling-dir', 'sub', 'lock'))).toBe(false);
+  });
+
+  it('keeps refusing a dangling symlink after its target is created', () => {
+    fs.symlinkSync(path.join(base, 'later-target'), path.join(base, 'later'));
+    expect(resolvesToItself(path.join(base, 'later'))).toBe(false);
+    expect(resolvesToItself(path.join(base, 'later', 'lock'))).toBe(false);
+
+    fs.mkdirSync(path.join(base, 'later-target'));
+    expect(resolvesToItself(path.join(base, 'later'))).toBe(false);
+    expect(resolvesToItself(path.join(base, 'later', 'lock'))).toBe(false);
+  });
+});
+
+// Each check of the absent-path walk on its own, on a stubbed disk: on a real
+// disk the lstat check and the final realpath overlap, so either alone would
+// hide the other's removal.
+describe('resolvesToItself layers (stubbed disk)', () => {
+  type Kind = 'dir' | 'symlink' | 'ENOENT' | 'EACCES';
+
+  function stubDisk(realpaths: Record<string, string | 'ENOENT' | 'EACCES'>, kinds: Record<string, Kind>): void {
+    const fail = (code: string) => Object.assign(new Error(code), { code });
+    vi.spyOn(fs.realpathSync, 'native').mockImplementation(((target: fs.PathLike) => {
+      const resolved = realpaths[String(target)] ?? 'ENOENT';
+      if (resolved === 'ENOENT' || resolved === 'EACCES') throw fail(resolved);
+      return resolved;
+    }) as typeof fs.realpathSync.native);
+    vi.spyOn(fs, 'lstatSync').mockImplementation(((target: fs.PathLike) => {
+      const kind = kinds[String(target)] ?? 'ENOENT';
+      if (kind === 'ENOENT' || kind === 'EACCES') throw fail(kind);
+      return { isDirectory: () => kind === 'dir', isSymbolicLink: () => kind === 'symlink' } as fs.Stats;
+    }) as typeof fs.lstatSync);
+  }
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('accepts an absent tail under real directories that resolve to themselves', () => {
+    stubDisk({ '/srv/qa/lock': 'ENOENT', '/srv': '/srv' }, { '/srv': 'dir', '/srv/qa': 'ENOENT' });
+    expect(resolvesToItself('/srv/qa/lock')).toBe(true);
+  });
+
+  it('refuses a symlinked component even when realpath would report it unchanged', () => {
+    stubDisk(
+      { '/srv/qa/lock': 'ENOENT', '/srv': '/srv', '/srv/qa': '/srv/qa' },
+      { '/srv': 'dir', '/srv/qa': 'symlink' },
+    );
+    expect(resolvesToItself('/srv/qa/lock')).toBe(false);
+  });
+
+  it('refuses when the deepest existing directory resolves elsewhere', () => {
+    stubDisk({ '/srv/qa/lock': 'ENOENT', '/srv': '/data/srv' }, { '/srv': 'dir', '/srv/qa': 'ENOENT' });
+    expect(resolvesToItself('/srv/qa/lock')).toBe(false);
+  });
+
+  it('refuses when lstat fails for any reason other than absence', () => {
+    stubDisk({ '/srv/qa/lock': 'ENOENT', '/': '/' }, { '/srv': 'EACCES' });
+    expect(resolvesToItself('/srv/qa/lock')).toBe(false);
+  });
+
+  it('refuses when realpath fails for any reason other than absence, without walking', () => {
+    // Only an ENOENT answer may start the walk: here the walk alone would find
+    // an absent tail under a clean `/srv` and accept.
+    stubDisk({ '/srv/qa/lock': 'EACCES', '/srv': '/srv' }, { '/srv': 'dir', '/srv/qa': 'ENOENT' });
+    expect(resolvesToItself('/srv/qa/lock')).toBe(false);
+  });
 });
 
 describe('sanitizeDeploySandboxGrant', () => {
@@ -278,25 +355,36 @@ describe('loadDeploySandboxGrant', () => {
 
   it('drops a configured path that resolves elsewhere: a symlink, or under a symlinked parent', () => {
     const native = fs.realpathSync.native;
-    // `/srv/qa/lock` is a symlink to another directory; `/srv/qa/runs` does not
-    // exist but its parent `/srv/qa` is a symlink; `/srv/ok/lock` does not exist
-    // under a real `/srv`.
-    const disk: Record<string, string | null> = {
-      '/srv/qa/lock': '/srv/elsewhere/lock',
+    const lstat = fs.lstatSync;
+    const enoent = () => Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    // A fake `/srv`: `/srv/qa` is a symlink to another directory, so
+    // `/srv/qa/lock` resolves elsewhere and `/srv/qa/runs` (absent) sits under a
+    // symlinked parent; `/srv/ok/lock` is absent under a real `/srv`.
+    const realpaths: Record<string, string | null> = {
+      '/srv/qa/lock': '/data/qa/lock',
       '/srv/qa/runs': null,
-      '/srv/qa': '/data/qa',
       '/srv/ok/lock': null,
-      '/srv/ok': null,
       '/srv': '/srv',
-      '/': '/',
+    };
+    const kinds: Record<string, 'dir' | 'symlink' | null> = {
+      '/srv': 'dir',
+      '/srv/qa': 'symlink',
+      '/srv/ok': null,
     };
     vi.spyOn(fs.realpathSync, 'native').mockImplementation(((target: fs.PathLike) => {
       const key = String(target);
-      if (!(key in disk)) return native(target);
-      const resolved = disk[key];
-      if (resolved === null) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      if (!(key in realpaths)) return native(target);
+      const resolved = realpaths[key];
+      if (resolved === null) throw enoent();
       return resolved;
     }) as typeof fs.realpathSync.native);
+    vi.spyOn(fs, 'lstatSync').mockImplementation(((target: fs.PathLike, ...rest: unknown[]) => {
+      const key = String(target);
+      if (!(key in kinds)) return (lstat as (...args: unknown[]) => fs.Stats)(target, ...rest);
+      const kind = kinds[key];
+      if (kind === null) throw enoent();
+      return { isDirectory: () => kind === 'dir', isSymbolicLink: () => kind === 'symlink' } as fs.Stats;
+    }) as typeof fs.lstatSync);
 
     const logger = makeLogger();
     const file = makeConfig({
