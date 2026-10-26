@@ -29,6 +29,19 @@
       "ssh": { "host": "swarm-manager.example.com" }
     }
   },
+  "devops-tools": {
+    "_comment": "Keys and approvals live in the separate devops broker; this only maps each tool to the grant it needs. Without a permission map the server is not registered. Optional absolute \"socketPath\" overrides the broker socket.",
+    "permission": {
+      "list": "read",
+      "gh_read": "read",
+      "gh_write": "read",
+      "gh_org_member": "read",
+      "gh_repo_access": "read",
+      "cf_lease_request": "read",
+      "cf_api": "read",
+      "cf_lease_revoke": "read"
+    }
+  },
   "a2t": {
     "enabled": true,
     "model": "large-v3-turbo",
