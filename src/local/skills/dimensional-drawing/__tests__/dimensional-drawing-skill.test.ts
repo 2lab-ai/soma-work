@@ -108,6 +108,20 @@ describe('local:dimensional-drawing skill — RED contract', () => {
     expect(readSkill()).toMatch(/export CLAUDE_PLUGIN_ROOT="\$\{CLAUDE_PLUGIN_ROOT:-<base directory>\/\.\.\/\.\.\}"/);
   });
 
+  it('every delivery bash block sets the plugin root itself, because Bash calls do not share env', () => {
+    const md = readSkill();
+    const delivery = md.slice(md.indexOf('## Delivery in soma-work'), md.indexOf('To animate the finished sheet'));
+    const blocks = delivery.split('```bash').slice(1);
+    expect(blocks.length).toBeGreaterThanOrEqual(4);
+    for (const block of blocks) {
+      expect(block.trimStart().startsWith('export CLAUDE_PLUGIN_ROOT=')).toBe(true);
+    }
+  });
+
+  it('never publishes a private source to the LAN-readable archive', () => {
+    expect(readSkill()).toMatch(/skip this step when the source is private/);
+  });
+
   it('every flag the delivery commands pass exists in the html renderer / server parsers', () => {
     const md = readSkill();
     const delivery = md.slice(md.indexOf('## Delivery in soma-work'));

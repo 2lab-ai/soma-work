@@ -87,7 +87,7 @@ Pitfalls: a CSS `fill` rule on a class overrides a `fill="url(#hatch)"` attribut
 
 soma-work runs in Slack, not claude.ai, so there is no Artifact to publish. Replace the publish step with this.
 
-`$CLAUDE_PLUGIN_ROOT` is the zworkflow plugin root. Bot-session shells do not set it, so export it first from this skill's `Base directory for this skill: …` header, which points at `<plugin root>/skills/dimensional-drawing`:
+`$CLAUDE_PLUGIN_ROOT` is the zworkflow plugin root. Bot-session shells do not set it, and every Bash tool call starts a fresh shell, so an `export` in one call is gone in the next. Start **every** command below with this line, in the same call. `<base directory>` is the path in this skill's `Base directory for this skill: …` header (`<plugin root>/skills/dimensional-drawing`):
 
 ```bash
 export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
@@ -96,9 +96,14 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
 1. **Measure.** Playwright ships with soma-work. Resolve it from the `html` skill renderer so no install is needed, and walk the box tree as described in [Measuring a UI component](#measuring-a-ui-component):
 
    ```js
-   // measure.cjs — run with: node measure.cjs <url> '<selector>'
+   // measure.cjs
    const { createRequire } = require('node:module');
    const { chromium } = createRequire(`${process.env.CLAUDE_PLUGIN_ROOT}/skills/html/renderer/`)('playwright');
+   ```
+
+   ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
+   node measure.cjs <url> '<selector>'
    ```
 
    A live site is a valid source. Measure at a fixed viewport (for example 1440 × 900, `deviceScaleFactor: 1`), wait for `document.fonts.ready`, and record the viewport in the title block `SOURCE` cell. Values you cannot read from the page stay `[TBD]`.
@@ -108,14 +113,16 @@ export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
 3. **Render** the PNG at 1800 px wide with the `html` skill renderer, then open it (Read tool) and fix overlaps in one pass:
 
    ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
    node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/render.mjs" \
      --input "$(pwd)/dwg-<slug>-<ts>.html" --output "$(pwd)/dwg-<slug>-<ts>.png" \
      --width 1800 --height 1200 --full-page --wait-ms 800
    ```
 
-4. **Publish** the HTML for a clickable link (same server and archive as the `html` skill, Step 7):
+4. **Publish** the HTML for a clickable link (same server and archive as the `html` skill, Step 7). The archive is readable by anyone on the local network and is never pruned, so **skip this step when the source is private** — an internal or staging URL, a private repo, an unreleased product. Then upload the files only and say why there is no link.
 
    ```bash
+   export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
    node "$CLAUDE_PLUGIN_ROOT/skills/html/server/serve.mjs" --file "$(pwd)/dwg-<slug>-<ts>.html"
    ```
 

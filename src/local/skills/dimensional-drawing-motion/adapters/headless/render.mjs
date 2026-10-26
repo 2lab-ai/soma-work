@@ -90,6 +90,11 @@ for (let i = 0; i < N; i++) {
   if (i % FPS === 0) process.stdout.write(`\rframe ${i}/${N}`);
 }
 ffmpeg.stdin.end();
-await new Promise(r => ffmpeg.on('close', r));
+// soma-work local change: propagate the encoder's result instead of reporting a film it never wrote.
+const [code, signal] = await new Promise(r => ffmpeg.on('close', (c, sig) => r([c, sig])));
 await browser.close();
+if (code !== 0) {
+  console.error(`\nffmpeg failed (${signal ? `signal ${signal}` : `exit ${code}`}); ${OUT} was not written`);
+  process.exit(1);
+}
 console.log(`\r${N} frames → ${OUT}  (${((Date.now() - t0) / 1000).toFixed(1)} s)`);
