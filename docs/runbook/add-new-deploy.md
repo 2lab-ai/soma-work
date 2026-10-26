@@ -488,11 +488,12 @@ Deploy 스텝은 이 스크립트를 두 번 부른다:
   폴더 생성 말고는 아무것도 쓰지 않는다. `partial`이면 ⚠️ 한 줄 뒤 축소 모드로 QA를 돌리고, `missing`·다른 답·
   스킬 오류는 ⚠️ 한 줄 뒤 배포만 계속한다(그 repo = `deployed, QA not run`). 어떤 답도 배포를 멈추거나 요청자를
   기다리게 하지 않는다.
-- 7단계(Post-Deploy QA): 모든 repo의 배포 결과가 정해진 뒤, 프리플라이트가 `applies`나 `partial`이었고 배포가
-  확인된(confirmed) repo마다 하나씩 `<plugin>:post-deploy repo=<owner/repo> target=<branch>
-  before=<sha> after=<sha>` — 같은 세션에서 배포 후 QA를 끝까지 하고 최종 리포트를 그 스레드에 올린다.
-  QA를 안 한 repo는 이유를 한 줄씩 적는다. 스킬이 오류로 끝나거나 최종 리포트 없이 끝나면 워크플로우가
-  직접 `deployed, QA incomplete`를 보고한다(재실행 인자는 관리자용 참고 한 줄).
+- 7단계(배포 확인 + Post-Deploy QA): 모든 repo의 머지 결과가 정해진 뒤 두 단계로 돈다. ① 머지된 repo마다
+  배포를 확인한다 — QA가 붙는 repo는 `<plugin>:post-deploy --confirm repo=<owner/repo> target=<branch> after=<sha>`가
+  `confirmed` / `unconfirmed: …` / `failed: …` 중 하나로 답하고, 그 답이 그 repo의 배포 확인 줄이다. ② 확인된 QA repo마다
+  하나씩 `<plugin>:post-deploy repo=<owner/repo> target=<branch> before=<sha> after=<sha>` — 같은 세션에서 배포 후 QA를
+  끝까지 하고 최종 리포트를 그 스레드에 올린다. QA를 안 한 repo는 이유를 한 줄씩 적는다. 스킬이 오류로 끝나거나 최종
+  리포트 없이 끝나면 워크플로우가 직접 `deployed, QA incomplete`를 보고한다(재실행 인자는 관리자용 참고 한 줄).
 - 스킬 본문은 그 호스트의 적용표·프로필(`## Environment`)·정책(`## Policy`)을 들고, 절차는
   soma-work 번들 `zworkflow` 스킬 `deploy-qa` / `qa-issue` / `qa-report`를 호출한다.
 - 이 스킬이 없는 호스트에서는 배포가 `ℹ️ no post-deploy QA on this host` 한 줄을 남기고 QA 없이 진행한다.
