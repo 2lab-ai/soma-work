@@ -65,6 +65,7 @@ const CAP_FNS = [
   'capNextEvent',
   'capNextShort',
   'capBarRow',
+  'capAssumed',
   'capDisclosure',
   'capAx',
   'capTimeline',
@@ -102,9 +103,13 @@ const FACE_FNS = [
   'pendingAutoResume',
   'autoResumeLabel',
   'cardSummary',
+  'doneTimeOf',
+  'cardAgo',
   'renderCardStatus',
   'renderOwnerBadge',
   'renderCronBadge',
+  'ctxLevel',
+  'renderCardPr',
   'renderCardFace',
 ];
 const FACE_VARS = [
@@ -112,6 +117,8 @@ const FACE_VARS = [
   'WAIT_SVG',
   'TASKS_SVG',
   'CTX_SVG',
+  'PR_STATE_LABEL',
+  'PR_SVG',
   'RESUME_SVG',
   'CLOCK_SVG',
   'AGENT_STATUS_LABEL',
@@ -382,8 +389,9 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
         five_hour: w(0, H),
         seven_day: w(1, 2 * D),
       }),
-      a({ name: 'claude:ai4@c', group: 'claude', five_hour: w(0, H), seven_day: w(0, D) }),
       a({ name: 'claude:ai6@c', group: 'claude', blocked: 'paused', five_hour: w(0, H), seven_day: w(0, D) }),
+      // an untiered Codex account stays out (only Claude assumes x20)
+      a({ name: 'codex:ai9@c', group: 'codex', type: 'codex', seven_day: w(0, D) }),
       a({ name: 'codex:ai5@c', group: 'codex', type: 'codex', seven_day: w(0.5, 3 * D) }),
       a({ name: 'codex:ai2@c', group: 'codex', type: 'codex', seven_day: w(0.2, 5 * D) }),
     ],
@@ -442,9 +450,36 @@ describe('capacity v2 — two measures and a replayed forecast', () => {
     );
   });
 
+  // Operator, 2026-10-26: untiered Claude accounts count as Max x20, said in the muted
+  // line and, folded, on the chip — an assumption is never silent.
+  it('an untiered Claude pool is counted as x20 and says so on the card and the chip', () => {
+    const untiered = {
+      ...buildCapacityView(
+        {
+          current: null,
+          accounts: [
+            a({ name: 'claude:ai1@c', group: 'claude', five_hour: w(0.5, 2 * H), seven_day: w(0.5, 3 * D) }),
+            a({ name: 'claude:ai2@c', group: 'claude', five_hour: w(0, 2 * H), seven_day: w(0.2, 3 * D) }),
+          ],
+        } as never,
+        {} as never,
+        NOW_S * 1000,
+      ),
+      fetchedAtMs: NOW_S * 1000,
+    };
+    const card = fns.renderCapacity(untiered, NOW_S * 1000, 1200);
+    expect(card).not.toContain('계산 불가');
+    expect(card).toMatch(/cap-bar-row is-h5[\s\S]*?<b>1\.3<\/b> \/ 2\.0 계정/);
+    expect(card).toContain('2/2 반영 · 티어 미지정 2(x20 가정)');
+    const chip = fns.renderCapacitySummary(untiered, NOW_S * 1000);
+    expect(chip).toContain('<i class="cap-chip-flag">⚠ x20 가정 2</i>');
+    expect(chip).toMatch(/aria-label="Claude [^"]*티어 미지정 2\(x20 가정\)/);
+  });
+
   it('one muted line keeps the denominator honest: counted, blocked, left out and why', () => {
     // "(차단 1 포함)": the blocked accounts are inside the counted ones (trinity mockup v5, fable P2)
-    expect(claude).toContain('3/5 반영(차단 1 포함) · 제외 2(보류·티어 미지정)');
+    expect(claude).toContain('3/4 반영(차단 1 포함) · 제외 1(보류)');
+    expect(codex).toContain('2/3 반영 · 제외 1(티어 미지정)');
   });
 
   it('2 — one timeline: a 5h reset is a teal ● (label above), a weekly reset a violet ◆ (label below)', () => {

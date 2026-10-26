@@ -76,20 +76,72 @@ describe('capacity v2 — the two measures', () => {
     expect(g.now).toBe(g.week);
   });
 
-  it('unknown tier, held (paused / auth) and no weekly measurement stay out of the totals, counted apart', () => {
+  it('held (paused / auth) and no weekly measurement stay out of the totals, counted apart', () => {
     const g = group([
       acct({ name: 'claude:ai1@c', group: 'claude', seven_day: w(0.5, D), five_hour: w(0, H) }),
       acct({ name: 'claude:ai9@c', group: 'claude', seven_day: w(0, D), five_hour: w(0, H) }),
       acct({ name: 'claude:ai2@c', group: 'claude', blocked: 'paused', seven_day: w(0, D) }),
       acct({ name: 'claude:ai3@c', group: 'claude', status: 'auth_failed', seven_day: w(0, D) }),
     ]);
-    expect(g.total).toBe(1);
-    expect(r1(g.week)).toBe(0.5);
-    expect(g.excluded).toEqual({ unknownTier: 1, held: 2, noMeasure: 0 });
+    // ai9 has no tier: a Claude account is assumed Max x20 (operator, 2026-10-26)
+    expect(g.total).toBe(2);
+    expect(r1(g.week)).toBe(1.5);
+    expect(g.excluded).toEqual({ unknownTier: 0, held: 2, noMeasure: 0 });
+    expect(g.tierAssumed).toBe(1);
     const nm = group([acct({ name: 'claude:ai1@c', group: 'claude', five_hour: w(0, H) })]);
     expect(nm.excluded.noMeasure).toBe(1);
     expect(nm.total).toBe(0);
     expect(nm.state).toBe('unknown');
+  });
+});
+
+// A dev host (2026-10-26): llmux reports no plan and the host had no SOMA_LLMUX_ACCOUNT_TIERS,
+// so every Claude account was "티어 미지정" and the provider read "계산 불가". The operator's
+// rule: an untiered Claude account counts as Max x20, disclosed as an assumption.
+describe('capacity v2 — an untiered Claude account is assumed Max x20', () => {
+  it('a pool with no tier map is counted, every account flagged as assumed', () => {
+    const g = group(
+      [
+        acct({ name: 'claude:ai1@c', group: 'claude', five_hour: w(0.5, H), seven_day: w(0.5, D) }),
+        acct({ name: 'claude:ai2@c', group: 'claude', five_hour: w(0, H), seven_day: w(0.2, D) }),
+      ],
+      {},
+    );
+    expect(g.total).toBe(2);
+    expect(r1(g.now)).toBe(1.3); // min(.5,.5) + min(1,.8)
+    expect(r1(g.week)).toBe(1.3);
+    expect(g.state).not.toBe('unknown');
+    expect(g.excluded.unknownTier).toBe(0);
+    expect(g.tierAssumed).toBe(2);
+    expect(g.units.map((u) => [u.tier, u.weight, u.tierAssumed])).toEqual([
+      ['claude-max-20x', 1, true],
+      ['claude-max-20x', 1, true],
+    ]);
+  });
+
+  it('a mapped account is not an assumption; a held untiered one is not counted as one either', () => {
+    const g = group(
+      [
+        acct({ name: 'claude:ai1@c', group: 'claude', five_hour: w(0, H), seven_day: w(0, D) }),
+        acct({ name: 'claude:ai7@c', group: 'claude', five_hour: w(0, H), seven_day: w(0, D) }),
+        acct({ name: 'claude:ai8@c', group: 'claude', blocked: 'paused', seven_day: w(0, D) }),
+      ],
+      { 'claude:ai1': 'claude-max-5x' },
+    );
+    expect(g.total).toBe(1.25); // x5 ¼ + assumed x20 1
+    expect(g.tierAssumed).toBe(1);
+    expect(g.units[0].tierAssumed).toBeUndefined();
+    // a held untiered account is not counted, so nothing is assumed about it (review P2)
+    expect(g.units[2]).toMatchObject({ excluded: 'held', weight: null });
+    expect(g.units[2].tier).toBeUndefined();
+    expect(g.units[2].tierAssumed).toBeUndefined();
+  });
+
+  it('Codex has no assumption: an untiered Codex account stays out of the totals', () => {
+    const g = group([acct({ name: 'codex:ai9@c', group: 'codex', type: 'codex', seven_day: w(0, D) })], {}, 'codex');
+    expect(g.total).toBe(0);
+    expect(g.excluded.unknownTier).toBe(1);
+    expect(g.tierAssumed).toBe(0);
   });
 });
 

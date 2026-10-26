@@ -165,6 +165,64 @@ describe('SessionRegistry — lifecycle policy', () => {
     expect(stateOf('700.003')).toBeUndefined();
   });
 
+  it('spec 13 §3.7 — the restart loader keeps a known finish time and never invents one', () => {
+    updateSessionLifecyclePolicy({ sleepAfterMs: 2 * HOUR, archiveAfterMs: HOUR });
+    const now = Date.now();
+    const base = { ownerId: 'U1', userId: 'U1', channelId: 'C1', isActive: true };
+    const iso = (ms: number) => new Date(ms).toISOString();
+    const finished = now - 26 * HOUR; // the expired one finished the day before its last instruction's age says
+    const saved = [
+      // Working when the process stopped, idle past the limit: it loads asleep, its finish is unknown —
+      // the saved stamp is when the turn started, not when it ended.
+      {
+        ...base,
+        key: 'C1-900.001',
+        threadTs: '900.001',
+        sessionId: 's-cut',
+        state: 'MAIN',
+        lastActivity: iso(now - 5 * HOUR),
+        activityState: 'working',
+        activityStateChangedAt: now - 5 * HOUR,
+      },
+      // Idle with a known finish, past the limit: it loads asleep and keeps that finish.
+      {
+        ...base,
+        key: 'C1-900.002',
+        threadTs: '900.002',
+        sessionId: 's-done',
+        state: 'MAIN',
+        lastActivity: iso(now - 5 * HOUR),
+        activityState: 'idle',
+        activityStateChangedAt: now - 4 * HOUR,
+      },
+      // Asleep past the sleep time with a known finish: archived on load — the archive keeps the finish.
+      {
+        ...base,
+        key: 'C1-900.003',
+        threadTs: '900.003',
+        sessionId: 's-expired',
+        state: 'SLEEPING',
+        lastActivity: iso(now - 30 * HOUR),
+        sleepStartedAt: iso(now - 2 * HOUR),
+        activityState: 'idle',
+        activityStateChangedAt: finished,
+      },
+    ];
+    fs.mkdirSync(path.join(TEST_DATA_DIR, 'archives'), { recursive: true });
+    fs.writeFileSync(path.join(TEST_DATA_DIR, 'sessions.json'), JSON.stringify(saved));
+
+    const reg = new SessionRegistry();
+    reg.loadSessions();
+    expect(reg.getSession('C1', '900.001')?.state).toBe('SLEEPING');
+    expect(reg.getSession('C1', '900.001')?.activityStateChangedAt).toBeUndefined();
+    expect(reg.getSession('C1', '900.002')?.activityStateChangedAt).toBe(now - 4 * HOUR);
+    const archives = fs
+      .readdirSync(path.join(TEST_DATA_DIR, 'archives'))
+      .map((f) => JSON.parse(fs.readFileSync(path.join(TEST_DATA_DIR, 'archives', f), 'utf-8')));
+    const expired = archives.find((a) => a.sessionId === 's-expired');
+    expect(expired?.doneAt).toBe(finished);
+  });
+
   it('an unreadable saved policy pauses the sweep and the loader instead of falling back to shorter defaults', async () => {
     const file = path.join(TEST_DATA_DIR, 'session-lifecycle.json');
     fs.writeFileSync(file, '{ broken');

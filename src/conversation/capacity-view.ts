@@ -20,7 +20,8 @@
  *   - A reset that already passed counts the window as full and is flagged
  *     as an estimate only where it moves a number. An unblocked account with
  *     no 5h measurement adds nothing to "now" (counted apart).
- *   - Unknown tier, held, and no weekly measurement stay out of the totals.
+ *   - Held and no weekly measurement stay out of the totals. An untiered Claude
+ *     account counts as Max x20 (`tierAssumed`); an untiered Codex account stays out.
  *   - The forecast replays each account's events in time order (at one instant
  *     block lifts first, then the 5h reset, then the weekly reset; nothing is
  *     merged). Each event carries its own weighted before/after deltas.
@@ -58,6 +59,8 @@ export interface CapacityUnit {
   tier?: LlmuxTierId;
   /** Share of the provider's top plan; null when the tier is unknown. */
   weight: number | null;
+  /** Counted on {@link ASSUMED_TIER} — no configured or reported tier (operator, 2026-10-26). */
+  tierAssumed?: true;
   status: string;
   /** Usable now, 0..1 of this account (unweighted). */
   now: number;
@@ -81,6 +84,8 @@ export interface CapacityUnit {
 export interface CapacityEvent {
   account: string;
   tier?: LlmuxTierId;
+  /** The account's tier is assumed ({@link ASSUMED_TIER}), not configured. */
+  tierAssumed?: true;
   cause: CapacityCause;
   /** Epoch seconds. */
   at: number;
@@ -104,6 +109,8 @@ export interface CapacityGroupView {
   /** Usable accounts by the window that caps them. */
   binding: { fiveHour: number; weekly: number };
   excluded: { unknownTier: number; held: number; noMeasure: number };
+  /** Counted accounts whose tier is assumed ({@link ASSUMED_TIER}), not configured. */
+  tierAssumed: number;
   estimated: number;
   unmeasured5h: number;
   state: 'ok' | 'low' | 'empty' | 'unknown';
@@ -129,6 +136,13 @@ const FIVE_HOUR_GROUPS = new Set(['claude']);
 /** Providers with plan tiers (and so a max-account unit). */
 const PLAN_GROUPS = new Set(Object.values(LLMUX_TIERS).map((t) => t.provider as string));
 const ORDER: Record<CapacityCause, number> = { release: 0, '5h': 1, '7d': 2 };
+/**
+ * The tier an untiered account is counted as, per provider. Operator's rule
+ * (2026-10-26, after a dev host read "계산 불가" for want of SOMA_LLMUX_ACCOUNT_TIERS):
+ * a Claude account with no configured or reported plan counts as Max x20, and the
+ * view says so (`tierAssumed`). Codex has no such rule — its untiered accounts stay out.
+ */
+export const ASSUMED_TIER: Readonly<Record<string, LlmuxTierId>> = Object.freeze({ claude: 'claude-max-20x' });
 
 const round = (x: number, places = 4): number => {
   const f = 10 ** places;
@@ -219,6 +233,7 @@ function initAccount(
   account: LlmuxAccount,
   name: string,
   tier: LlmuxTierId | undefined,
+  tierAssumed: boolean,
   has5h: boolean,
   nowMs: number,
 ): { unit: CapacityUnit; state?: AccountState; refreshedAt?: number } {
@@ -278,13 +293,21 @@ function initAccount(
   const refreshed = Number.isFinite(account.last_refresh_ms) && (account.last_refresh_ms as number) > 0;
   const refreshedAt = refreshed ? Math.floor((account.last_refresh_ms as number) / 1000) : undefined;
 
+  // An account left out is not counted on an assumed plan: nothing is assumed about it.
+  const unassume = () => {
+    if (!tierAssumed) return;
+    delete unit.tier;
+    unit.weight = null;
+  };
   if (held) {
     unit.blocked = true;
     unit.excluded = 'held';
+    unassume();
     return { unit };
   }
   if (seven?.rem === undefined) {
     unit.excluded = 'noMeasure';
+    unassume();
     return { unit };
   }
   if (weight === null) {
@@ -324,6 +347,7 @@ function initAccount(
   }
   const blocked = isBlocked(state);
   unit.counted = true;
+  if (tierAssumed) unit.tierAssumed = true;
   unit.blocked = blocked;
   unit.now = usable(state);
   unit.week = state.rem7;
@@ -396,11 +420,12 @@ function buildGroup(
   const states: AccountState[] = [];
   const refreshes: number[] = [];
   for (const [i, account] of accounts.entries()) {
-    const tier = resolveAccountTier(
+    const known = resolveAccountTier(
       { name: account.name, group: accountGroup(account), rate_limit_tier: account.rate_limit_tier },
       tiers,
     );
-    const { unit, state, refreshedAt } = initAccount(account, labels[i], tier, has5h, nowMs);
+    const tier = known ?? ASSUMED_TIER[group];
+    const { unit, state, refreshedAt } = initAccount(account, labels[i], tier, !known && !!tier, has5h, nowMs);
     units.push(unit);
     if (state) {
       states.push(state);
@@ -441,6 +466,7 @@ function buildGroup(
     events.push({
       account: e.s.unit.name,
       ...(e.s.unit.tier ? { tier: e.s.unit.tier } : {}),
+      ...(e.s.unit.tierAssumed ? { tierAssumed: true as const } : {}),
       cause: e.cause,
       at: e.at,
       dNow: round(e.s.weight * (usable(e.s) - n0), 6),
@@ -473,6 +499,7 @@ function buildGroup(
       weekly: live.filter((u) => u.binding === '7d').length,
     },
     excluded,
+    tierAssumed: units.filter((u) => u.counted && u.tierAssumed).length,
     estimated: units.filter((u) => u.estimated).length,
     unmeasured5h: units.filter((u) => u.unmeasured5h).length,
     state,
