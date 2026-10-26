@@ -314,8 +314,8 @@ not shown) is one simple card:
   keeps two decimals (`2.37 / 2.4 · 99%`).
 - **One muted disclosure line**, only what is non-zero:
   `16/17 반영(차단 6 포함) · 제외 1(보류) · 측정 4시간 전` — accounts counted (and how
-  many of them are blocked right now), left out (paused / auth failure / no known lift = 보류, unknown tier,
-  no weekly reading) and the oldest llmux reading when over an hour old.
+  many of them are blocked right now), left out (paused / auth failure / no known lift = 보류, an untiered Codex account,
+  no weekly reading), Claude accounts counted on an assumed x20 plan and the oldest llmux reading when over an hour old.
 - **One timeline**, now → 24h (55% of the width) → 7d: ● is a gain to the 5시간 bar
   (label above), ◆ a gain to the 일주일 bar (label below), in the bars' colours;
   refills whose labels would collide merge into one marker with a span. Gains come
@@ -326,7 +326,10 @@ not shown) is one simple card:
 - Tiers: llmux does not report plans, so the map is `SOMA_LLMUX_ACCOUNT_TIERS`
   (`group:name=tier`, e.g. `claude:ai7=x20,claude:ai12=x5`) over built-in defaults
   (Codex `ai1`·`ai2` = Pro $200, `ai5`·`ai6` = Pro $500). A bare llmux `max` is
-  never guessed into x5/x20; an unmapped account is left out and counted.
+  never read as x5/x20. An unmapped **Claude** account counts as Max x20 and is said
+  so — `티어 미지정 15(x20 가정)` on the card, `⚠ x20 가정 15` on the folded chip — so a
+  host without the map still shows its pool (2026-10-26). An unmapped
+  Codex account stays out of the totals (`제외 1(티어 미지정)`).
 - Not routed through llmux (`ccp` mode) → the section is hidden; llmux
   unreachable → the section says so with a fixed reason.
 
