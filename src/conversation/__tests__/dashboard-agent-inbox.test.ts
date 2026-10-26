@@ -462,8 +462,9 @@ describe('agent inbox board — motion contract (§4)', () => {
     expect(TEMPLATE).toMatch(
       /\.card \.context-bar-fill \{[^}]*transform-origin: left center;[^}]*transition: transform/,
     );
-    // The bar lives in the panel's 세션 정보 now (spec 13 — the open card does not repeat the face's ctx %).
-    expect(fnBody('panelInfoHtml')).toContain('style="transform:scaleX(');
+    // The panel's 세션 정보 shows the context as a field of cells now (re-context-window D5/D18), not a bar.
+    expect(fnBody('contextBlockHtml')).toContain('<div class="cw-field" aria-hidden="true">');
+    expect(fnBody('panelInfoHtml')).not.toContain('transform:scaleX(');
   });
 
   it('board cards drop the star on the recommended choice (the solid primary marks it)', () => {
