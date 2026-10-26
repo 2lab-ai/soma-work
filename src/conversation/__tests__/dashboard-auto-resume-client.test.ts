@@ -50,9 +50,12 @@ const card = load<Card>(
   [
     'esc',
     'escAttr',
+    'toNum',
     'formatTaskTime',
     'pendingAutoResume',
     'autoResumeLabel',
+    'doneTimeOf',
+    'cardAgo',
     'renderCardStatus',
     'cardSummary',
     'renderCardResume',

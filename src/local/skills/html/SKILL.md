@@ -1,8 +1,8 @@
 ---
 name: html
-description: Convert any content (markdown, plain text, JSON, CSV, SQL, raw notes) into a styled single-file HTML with a Lottie motion layer and a rendered PNG, publish the HTML on the local web server (clickable access link), then upload both files to the current Slack thread. The visual design is driven by the `ui-ux` skill as the main design engine — applied by default on EVERY invocation, whether or not the user mentions design (design-system + named references; default reference `openai`) — with the `design` skill applied on top as the anti-AI-slop layer and the `motion-design`/`apple-design` standards governing all CSS motion and display typography. Pick a template name from the catalog or let the skill auto-classify. Triggers on "html로 만들어줘", "HTML로 변환", "이걸 페이지로", "render as html", "html + png", "convert to html", "to html and png", "make a card", "make a deck", "make a poster", "make a report from this data".
+description: Convert any content (markdown, plain text, JSON, CSV, SQL, raw notes) into a styled single-file HTML with a Lottie motion layer and a rendered PNG, publish the HTML on the local web server (clickable access link), then upload both files to the current Slack thread. The visual design is driven by the `ui-ux` skill as the main design engine — applied by default on EVERY invocation, whether or not the user mentions design (design-system + named references; default reference `openai`); a `design=` input selects the design driver deterministically — `default`, any registered reference (for example `claude`, `toss-blue`, `toss-black`), or `impeccable` — with the `design` skill applied on top as the anti-AI-slop layer and the `motion-design`/`apple-design` standards governing all CSS motion and display typography. Pick a template name from the catalog or let the skill auto-classify. Triggers on "html로 만들어줘", "HTML로 변환", "이걸 페이지로", "render as html", "html + png", "convert to html", "to html and png", "make a card", "make a deck", "make a poster", "make a report from this data".
 allowed-tools: Read, Write, Edit, Bash, Glob, Grep
-version: 0.4.0
+version: 0.5.0
 license: ISC
 ---
 
@@ -45,6 +45,7 @@ critical path of a Slack request.
 | **Content** | The raw text, markdown, JSON, CSV, SQL, or notes the user pasted into the thread. Always required. |
 | **Template name** (optional) | One of the entries under [`templates/index.json`](./templates/index.json). If omitted, the classifier in Step 2 picks one. |
 | **Override viewport** (optional) | The user can override `width`/`height`/`fullPage` for the render step. |
+| **Design** (optional) | `design=<value>` picks the design driver: `default` (the registry default reference, currently `openai`), any reference name registered in `ui-ux/references/index.json` (`openai`, `claude`, `il-capo-production`, `toss-blue`, `toss-black`, …), or `impeccable`. Callers (for example `autoz`) can pass it explicitly; users may also just name a reference. Resolved in Step 3.4 — an unknown value stops the run. |
 
 ## Workflow
 
@@ -90,62 +91,147 @@ typography constraints, palette). The agent obeys this contract when
 generating HTML. If the upstream template's `SKILL.md` is in Chinese or
 mixed CJK, that's fine — the structural intent translates.
 
-### 3.4. Drive the design from the `ui-ux` skill (MAIN driver — always on)
+### 3.4. Resolve the design driver (`design=`) — `ui-ux` registry, always on
 
-The **`ui-ux`** skill is the **main design driver** for this skill, and this
-step is **not opt-in**: run it on every invocation, even when the user says
-nothing about design, style, or references. The user asking for "HTML" IS the
-request for a designed page — do not wait for a design keyword, and do not
-skip to raw markup because the content seems plain. Skip this step only when
-the user explicitly opts out (e.g. asks for "unstyled/bare HTML").
+The **`ui-ux`** skill and its named-reference registry are the **main design
+driver** for this skill, and this step is **not opt-in**: run it on every
+invocation, even when the user says nothing about design, style, or
+references. The user asking for "HTML" IS the request for a designed page — do
+not wait for a design keyword, and do not skip to raw markup because the
+content seems plain. Skip this step only when the user explicitly opts out
+(e.g. asks for "unstyled/bare HTML"). You are on the critical path of one
+Slack request — *do not ask the user anything* in this step.
 
-Before any visual decision, read `ui-ux` and run its engine — it owns palette,
-typography, layout system, and the named visual reference. (The `design` skill
-in Step 3.5 then runs *on top* of the ui-ux output as the anti-AI-slop
-refinement layer; it is no longer the primary source of the visual voice.)
+**One driver per page.** Resolve the driver in this fixed order:
+
+1. explicit `design=` input (Inputs table) — `default`, a registered reference
+   name, or `impeccable`;
+2. user-named reference ("use the `<name>` reference", "토스 스타일로" →
+   `toss-blue`);
+3. brand context the user supplied (palette / codebase / screenshot) — lift that
+   real system per the `design` skill's design-context rules;
+4. registry default — the entry with `"default": true` in
+   `ui-ux/references/index.json` (currently **`openai`**). `design=default`
+   selects it explicitly.
+
+An unknown value is an error: stop, print the valid values, and render nothing.
+Never silently fall back to another driver or to the default.
+
+How the order becomes a driver:
+
+- Rule 1 or 2 → set `DESIGN` to that value (map a named style to its registry
+  name, for example "토스 스타일" → `toss-blue`, "토스 블랙" → `toss-black`) and
+  run the resolver below.
+- Rule 3 → the **brand-context driver** (below). Do not run the resolver — the
+  registry default must not override the user's own brand.
+- Rule 4 → run the resolver with `DESIGN` unset (it means `default`).
+
+Bot shells do not set `CLAUDE_PLUGIN_ROOT`, and every Bash call starts a
+fresh shell, so the block sets it itself. `<base directory>` is the path in
+this skill's `Base directory for this skill: …` header
+(`<plugin root>/skills/html`).
 
 ```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
 UIUX="$CLAUDE_PLUGIN_ROOT/skills/ui-ux"
 [ -d "$UIUX" ] || UIUX="$(git rev-parse --show-toplevel 2>/dev/null)/src/local/skills/ui-ux"
-cat "$UIUX/SKILL.md"
+python3 - "$UIUX" "${DESIGN:-default}" <<'RESOLVE'
+import json, os, sys
+root, want = sys.argv[1], sys.argv[2]
+refs = json.load(open(os.path.join(root, "references", "index.json")))["references"]
+if want == "impeccable":
+    print("driver=impeccable"); sys.exit(0)
+if want == "default":
+    want = next(r["name"] for r in refs if r.get("default"))
+hit = next((r for r in refs if r["name"] == want), None)
+if hit is None:
+    sys.exit(f"unknown design={want}; valid: default, impeccable, " + ", ".join(r["name"] for r in refs))
+print("driver=reference"); print("reference=" + hit["name"])
+print("design_md=" + os.path.normpath(os.path.join(root, hit['path'])))
+if hit.get("tokens"): print("tokens_css=" + os.path.normpath(os.path.join(root, hit["tokens"])))
+if hit.get("family"): print("family=" + hit["family"])
+RESOLVE
 ```
 
-Operate `ui-ux` in its non-interactive path (you are on the critical path of one
-Slack request — *do not ask the user anything*):
+Every reference file is resolved through the index `path` field (relative to
+the `ui-ux` skill root) — never by assembling `references/<name>/…` yourself,
+because some references live in another skill (the toss themes live in
+`toss-design`).
+
+**The selected design system owns font, spacing, radius and material.** Step
+4's global defaults (font stack, pure-black/white rule, rounded corners) and
+the Step 3.6 Apple material treatment apply only where the selected system is
+silent. The shared floor on every path is accessibility, reduced motion, and
+content preservation (real data only, nothing invented).
+
+#### Reference driver (`default`, `openai`, `claude`, `il-capo-production`, `toss-blue`, `toss-black`, …)
 
 1. **Run the design-system engine (REQUIRED).** This is `ui-ux` Step 2 — it
    returns the pattern, style, colors, typography, and effects with reasoning:
    ```bash
+   cat "$UIUX/SKILL.md"
    python3 "$UIUX/scripts/search.py" "<product/content type> <industry> <keywords>" --design-system -f markdown
    ```
    Derive the keywords from the content + the template chosen in Step 2.
-2. **Apply the active named reference as the visual North Star.** Resolve which
-   reference is active, in priority order:
-   - the reference the user explicitly named ("use the `<name>` reference"), else
-   - real brand context the user supplied (palette / codebase / screenshot), else
-   - the **default reference** — the entry with `"default": true` in
-     `$UIUX/references/index.json` (currently **`openai`**).
-   ```bash
-   REF=$(python3 -c "import json,sys; d=json.load(open('$UIUX/references/index.json')); print(next(r['name'] for r in d['references'] if r.get('default')))")
-   cat "$UIUX/references/$REF/design.md"
-   ```
-   The reference's palette, typography, layout, and motion language **override**
-   the engine's generic output and this skill's default palette when they
-   conflict (per the `ui-ux` skill's Named Design References contract). The engine
-   output fills the gaps the reference is silent on.
-3. **Honor ui-ux quality gates.** The reference sets aesthetic direction, never
+2. **Apply the resolved reference as the visual North Star.** `cat` the
+   `design_md` path printed above. Its palette, typography, layout, and motion
+   language **override** the engine's generic output and this skill's default
+   palette when they conflict (per the `ui-ux` skill's Named Design References
+   contract). The engine output fills only the gaps the reference is silent on.
+3. **Theme tokens.** When the entry has a `tokens` field, inline that
+   `tokens.css` into the page's `<style>` and use its semantic tokens
+   (`--color-primary`, `--color-text`, …) instead of raw hex. When the entry's
+   `family` is `toss-design`, also read
+   `$CLAUDE_PLUGIN_ROOT/skills/toss-design/SKILL.md` in its programmatic mode
+   and build with its component recipes (Top, ListRow, Badge, Button,
+   BottomCTA …). The toss `theme` is the reference name (`design=toss-black`
+   → `theme=toss-black`), and the html audit comment below records it as
+   `theme=<name>` — write that one comment, not toss-design's own. The toss tokens and components have final visual authority —
+   generic engine output never overrides them.
+4. **Honor ui-ux quality gates.** The reference sets aesthetic direction, never
    permission to break ui-ux Quick Reference §1–§3 (accessibility, touch targets,
    performance) — verify color pairs meet the §1 contrast rules.
-4. **Record the choice** as a one-line HTML comment at the top of the file, e.g.
-   `<!-- ui-ux: reference=openai · design-system=Dark Mode/Inter · template=data-report -->`,
-   so the decision is auditable. Do not narrate it in the Slack reply.
 
-This step never blocks and never asks a question — it is a deterministic engine
-lookup + reference read. The classifier in Step 2 and the auto-flow are unchanged.
+#### Brand-context driver (rule 3: the user supplied a palette, codebase or screenshot)
+
+Lift the real system per the `design` skill's
+[`references/design-context.md`](../design/references/design-context.md):
+exact hex values, font stack, radius and spacing from the user's material —
+never redraw them from memory. Run the `ui-ux` engine (step 1 of the reference
+driver) only to fill what the brand material leaves open. Step 3.5 runs as for
+a reference driver, and the brand's own fonts win over the `design` skill's
+"tired fonts" list. Record `driver=brand · reference=none` in the audit
+comment.
+
+#### Impeccable driver (`design=impeccable`)
+
+Read `$CLAUDE_PLUGIN_ROOT/skills/impeccable/SKILL.md` and follow its
+**soma-work local additions → html driver mode** section exactly: the
+positive read list (mode file for the template, then `craft-floor.md`), no
+questions, no launcher, no `new-work.md`. On this path the `ui-ux` engine and
+named references are **not used** (one visual owner), Step 3.5 does not run,
+and Step 3.7 changes as noted there. Label the upload "Impeccable —
+document-based application".
+
+#### Record the choice
+
+Write a one-line HTML comment at the top of the file, e.g.
+`<!-- ui-ux: driver=reference · reference=openai · theme=none · design-system=Dark Mode/Inter · template=data-report -->`,
+`<!-- ui-ux: driver=brand · reference=none · source=<palette|codebase|screenshot> · template=data-report -->`
+or `<!-- ui-ux: driver=impeccable · mode=Read · world=<one line> · template=data-report -->`,
+so the decision is auditable. Do not narrate it in the Slack reply.
+
+This step never blocks and never asks a question — it is a deterministic
+registry lookup + file read. The classifier in Step 2 and the auto-flow are
+unchanged.
 
 ### 3.5. Apply the `design` skill as the anti-AI-slop layer
 
-After the `ui-ux` driver (Step 3.4) has set the visual voice, read the
+**Reference drivers only.** On the impeccable driver this step is skipped —
+impeccable's own `craft-floor.md` is that path's anti-slop layer, and running
+both rule sets would give the page two owners.
+
+After the reference driver (Step 3.4) has set the visual voice, read the
 **`design`** skill and apply it *on top* — it is the anti-AI-slop discipline that
 stops the output from sliding back into a model's reflexive default.
 
@@ -163,8 +249,12 @@ the user anything*; you are on the critical path of one Slack request):
    visual voice**, the template SKILL.md governs *structure/layout*, and the
    `design` skill's anti-slop rules govern *what never to do* (no rainbow
    gradients, no left-border accent cards, no decorative emoji, no SVG hero
-   imagery, no invented stats/fonts/colors). Only fall back to the `design`
-   skill's own style selector if Step 3.4 produced no usable reference.
+   imagery, no invented stats/fonts/colors). The `design` skill's own style
+   selector is not used here — Step 3.4 always resolves a driver.
+   **Font priority:** a font the active reference names (for example the
+   `openai` reference's Inter stand-in, or Pretendard for `toss-*`) wins over the
+   `design` skill's "tired fonts" list. That list governs fonts *you* pick where
+   the reference is silent.
 2. **Record nothing extra** — the auditable choice line is already written in
    Step 3.4. Do not narrate the design decision in the Slack reply.
 
@@ -176,7 +266,10 @@ unchanged.
 
 Lottie (Step 3.7) is the *decorative* motion layer. Every **authored CSS
 transition/animation** on the page (entrances, hover states, links, buttons)
-is governed by the motion-design standards instead. Read the shared source of
+is governed by the motion-design standards instead. On the impeccable driver,
+`craft-floor.md` owns motion (one authored moment) and these standards only
+fill what it leaves open; the reduced-motion rule below and "no layout
+properties" stay as html's local limits on every path. Read the shared source of
 truth before writing any `transition`/`@keyframes`/`@starting-style` rule:
 
 ```bash
@@ -208,7 +301,8 @@ headings get negative letter-spacing (≈ `-0.02em`) and tight leading
 (`1.5`). Sticky headers/toolbars may use the translucent-material treatment
 (`backdrop-filter: blur() + semi-transparent background`) — never stack two
 light translucent surfaces, and pair it with `prefers-reduced-transparency`
-fallback when used.
+fallback when used. The material treatment is optional styling: skip it when
+the selected system defines its own surfaces (the toss tokens do).
 
 This step is deterministic reference reading — it never blocks and never asks
 the user anything.
@@ -216,7 +310,10 @@ the user anything.
 ### 3.7. Plan the motion layer (`lottie` skill)
 
 Every page gets a **Lottie motion layer** unless the user opts out
-(`--no-motion`) or the surface is print-shaped (`resume-modern`). Read the
+(`--no-motion`), the surface is print-shaped (`resume-modern`), or the driver is
+`impeccable` — there the automatic layer is off and at most one Lottie may serve
+as craft-floor's single authored moment. Reference drivers, the toss themes
+included, keep this step unchanged. Read the
 **`lottie`** skill — it is the authoring contract (vendored from
 [`diffusionstudio/lottie`](https://github.com/diffusionstudio/lottie)) for
 writing valid Bodymovin JSON by hand:
@@ -260,7 +357,10 @@ heading; `<ts>` is `YYYYMMDD-HHMMSS`. `$(pwd)` is the runtime-guaranteed
 `/tmp/{slackId}/session_…` directory — safe for both render and Slack upload.
 
 **Global hard constraints** (apply to every template — these are what stops
-the model from freestyling AI-slop defaults):
+the model from freestyling AI-slop defaults). The font stack, the
+pure-black/white rule and the rounded-corner rule are *defaults*: the selected
+design system (Step 3.4) overrides them where it specifies its own values.
+Contrast, real data and reduced motion are never overridden:
 
 - **CJK-first font stack** — `"Noto Sans SC", "Noto Sans KR", "Noto Sans JP",
   source-han-sans, Inter, Manrope, system-ui, sans-serif`. For headings,
@@ -310,6 +410,11 @@ The renderer pulls geometry from `templates/index.json` based on
 `--template <name>`. Pass `--width` / `--height` / `--full-page` /
 `--no-full-page` / `--selector` to override.
 
+The renderer also prints two lines for Step 6: `fonts loaded: <families>`
+(web fonts that finished loading) and `fonts used: <families>` (the fonts
+Chromium actually drew a sample of headings, paragraphs, list items and table
+cells with). Either reads `unknown` when the probe failed.
+
 The PNG freezes Lottie mid-loop — that's expected; the live link (Step 7)
 carries the motion. If the captured frame looks empty because an animation
 starts from opacity 0, pass `--wait-ms 1500` so the screenshot lands on a
@@ -336,6 +441,21 @@ with open(p, "rb") as f:
         raise SystemExit(f"dim-fail:{w}x{h}")
 PY
 ```
+
+Then check what the bytes cannot tell you:
+
+1. **Font check.** Compare the renderer's `fonts used:` line with the display
+   and body families the driver declared (for example `Pretendard` for
+   `toss-*`, `Inter` for `openai`). A declared family absent from `fonts used`
+   means the text was drawn with something else: name what was used in the
+   Step 8 upload comment (`font fallback: <declared> → <used>`) and never
+   present the PNG as rendered in the declared font. A locally installed face
+   counts as used. If either line reads `unknown`, say the font check was
+   unavailable — do not claim success or fallback.
+2. **Look at the PNG.** Open it with the Read tool once and check for clipped
+   or overlapping text, missing sections, unreadable contrast, and an empty
+   motion frame. Fix what one look shows, re-render once, then move on — this
+   is a delivery check, not a design critique loop.
 
 ### 7. Publish to the local web server (access link + durable archive)
 
@@ -406,7 +526,7 @@ mcp__slack-mcp__send_media(
   file_path="<absolute path to PNG>",
   title="<meaningful artifact title>",
   alt_text="<1-2 sentence description of what the page shows>",
-  initial_comment="<template name used + any fallback note> — live: <url from Step 7>"
+  initial_comment="<template + design driver used (+ 'Impeccable — document-based application' on that driver) + any fallback note> — live: <url from Step 7>"
 )
 mcp__slack-mcp__send_file(
   file_path="<absolute path to HTML>",
@@ -431,6 +551,9 @@ look.
 
 - Do **not** ask the user "which template?" — the classifier is the
   contract. Fall through to `doc-kami-parchment` if nothing scores.
+- Do **not** substitute a driver for an unknown `design=` value, and do not
+  run two visual owners on one page (impeccable + the `design` layer, or a
+  toss theme recoloured by the generic engine palette).
 - Do **not** invent missing data ("lorem ipsum", placeholder companies,
   fake metrics) to fill template sections. Leave them blank with `[—]`.
 - Do **not** inline a 200-line Playwright script into the agent's response —
@@ -477,8 +600,14 @@ V1 ships 8 templates. To add more from the html-anything catalog (75 total):
   design reference registry; the entry with `"default": true` is what Step 3.4
   applies when the user names no reference.
 - [`../design/SKILL.md`](../design/SKILL.md) — the `design` skill. Step 3.5
-  applies it *on top of* the ui-ux driver as the anti-AI-slop discipline before
+  applies it *on top of* a reference driver as the anti-AI-slop discipline before
   generating HTML.
+- [`../impeccable/SKILL.md`](../impeccable/SKILL.md) — the vendored Impeccable
+  skill (pbakaus/impeccable, Apache-2.0, docs-only). Step 3.4 uses its html
+  driver mode when `design=impeccable`.
+- [`../toss-design/SKILL.md`](../toss-design/SKILL.md) — Toss TDS design skill
+  with selectable themes `toss-blue` (its default) and `toss-black`; both are
+  registered as ui-ux references that point at its theme files.
 - [`../motion-design/references/motion-standards.md`](../motion-design/references/motion-standards.md)
   — the shared motion standards (easing curves, duration budgets, reduced-motion
   rules). Step 3.6 applies them to every authored CSS transition/animation.

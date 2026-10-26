@@ -103,6 +103,40 @@ describe('SessionArchiveStore', () => {
     expect(archived?.archivedAt).toBeGreaterThan(0);
   });
 
+  // Spec 13 §3.7 — the archive keeps when the work finished (lastActivity moves on user input only).
+  it('archive_keepsWhenTheWorkFinished', () => {
+    const store = new SessionArchiveStore(TEST_ARCHIVES_DIR);
+    const instruction = new Date('2026-10-25T10:00:00Z');
+    const finished = Date.parse('2026-10-25T10:40:00Z');
+    store.archive(
+      makeTestSession({ lastActivity: instruction, activityState: 'idle', activityStateChangedAt: finished } as never),
+      'C1-idle',
+      'terminated',
+    );
+    expect(loadLatestArchive('C1-idle')?.doneAt).toBe(finished);
+
+    // Archived mid-turn: the work stopped at the archive.
+    store.archive(
+      makeTestSession({
+        lastActivity: instruction,
+        activityState: 'working',
+        activityStateChangedAt: finished,
+      } as never),
+      'C2-working',
+      'terminated',
+    );
+    const mid = loadLatestArchive('C2-working');
+    expect(mid?.doneAt).toBe(mid?.archivedAt);
+
+    // No state stamp: unknown, never the instruction's time.
+    store.archive(
+      makeTestSession({ lastActivity: instruction, activityState: 'idle' } as never),
+      'C3-legacy',
+      'terminated',
+    );
+    expect(loadLatestArchive('C3-legacy')?.doneAt).toBeUndefined();
+  });
+
   // Trace: Scenario 1, Section 5 — archive failure does not block terminate
   it('terminate_archiveFailure_doesNotBlockTerminate', () => {
     // Use a non-writable path to simulate failure
