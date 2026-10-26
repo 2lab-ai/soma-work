@@ -278,7 +278,7 @@ button { font: inherit; color: inherit; }
 .field__box {
   position: relative; display: flex; align-items: center; overflow: hidden;
   padding: 14px 16px; border: 1px solid var(--tds-grey-opacity-100); border-radius: var(--radius-field);
-  background: var(--tds-grey-opacity-50);
+  background: var(--color-field-bg);
 }
 .field__box::before {
   content: ""; position: absolute; inset: 0; pointer-events: none;
@@ -296,7 +296,7 @@ button { font: inherit; color: inherit; }
 .field__help { display: block; padding: 6px var(--gutter) 0; color: var(--color-text-sub);
   font-size: var(--t7-size); line-height: var(--t7-lh); }
 .field--error .field__label, .field--error .field__help { color: var(--color-danger-text); }
-.field--error .field__box::before { background: rgba(165,25,38,0.05); opacity: 1; } /* red900 @ .05 */
+.field--error .field__box::before { background: var(--color-field-error-overlay); opacity: 1; } /* red900 @ .05 */
 
 /* Switch */
 .switch { position: relative; display: inline-flex; flex: none; width: var(--switch-w); height: var(--switch-h);

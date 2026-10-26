@@ -74,16 +74,18 @@ Full TDS scales (grey, blue, red, orange, yellow, green, teal, purple, greyOpaci
 > | on-warning on warning | 6.88:1 | 4.5:1 | PASS | badge label |
 > | toast-text on toast-bg | 11.04:1 | 4.5:1 | PASS | body text |
 > | text-placeholder on bg | 3.04:1 | 4.5:1 | FAIL | placeholder |
+> | text on field (TextField fill) | 10.56:1 | 4.5:1 | PASS | input text |
+> | text-placeholder on field (fill / focus / error) | 2.92 / ≤2.70 / 2.68:1 | 4.5:1 | FAIL | placeholder |
 > | icon-strong on bg | 4.62:1 | 3.0:1 | PASS | non-text |
 > | icon on bg | 2.01:1 | - | info | decorative |
 > | text-disabled on bg | 2.01:1 | - | info | disabled (exempt) |
 >
 > - Near-black brand pairs all pass with a wide margin (white on `#191F28` = 16.56:1; weak label 6.43:1).
 > - **White on red500 (danger fill) is 3.71:1.** **Restriction:** danger fills carry labels only at 17px semibold or larger (large / xlarge buttons); otherwise use the danger weak button (label red700, 4.66:1).
-> - **Placeholder grey500 is 3.04:1**: hint only, always paired with a visible label.
+> - **Placeholder grey500 is 3.04:1** on white and about 2.7–2.9:1 on the TextField fill: hint only, always paired with a visible label.
 > - grey600 on the grey100 band is 4.19:1, so captions there use grey700 (6.45:1).
 > - Links and primary text share the title colour, so colour alone does not mark a link (WCAG 1.4.1): underline links.
-> - **Strict AA:** `<html data-contrast="aa">` moves the danger fill to red700 (5.26:1) and the placeholder to grey600. Result: 0 failing pairs.
+> - **Strict AA:** `<html data-contrast="aa">` moves the danger fill to red700 (5.26:1) and the placeholder to grey700 (grey600 is 4.44:1 on the TextField fill). Result: 0 failing pairs.
 
 ## Typography
 

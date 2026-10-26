@@ -126,6 +126,8 @@
   --color-field-focus-label: var(--tds-grey-900); /* Focused TextField label. TDS uses blue600 (4.49:1, fails 4.5); skill uses blue700. */
   --color-field-focus-line: var(--tds-grey-900); /* Focused line/big TextField underline (TDS blue400). */
   --color-field-focus-overlay: rgba(25,31,40,0.05); /* Focused box TextField overlay (TDS blue900 @ 0.05). */
+  --color-field-bg: var(--tds-grey-opacity-50); /* Box TextField fill (TDS greyOpacity50 over the canvas). */
+  --color-field-error-overlay: rgba(165,25,38,0.05); /* Error box TextField overlay (TDS red900 @ 0.05). */
   --color-badge-brand-bg: rgba(78,89,104,0.16); /* Brand-emphasis badge (weak). blue: TDS blue weak. black: TDS elephant weak. */
   --color-badge-brand-text: var(--tds-grey-700); /* Brand-emphasis badge text. blue: blue800 (TDS blue weak badge uses blue700 = 4.49:1; fixed to 5.47:1). black: TDS elephant weak grey700. */
 
@@ -276,7 +278,7 @@
   --color-selected: var(--tds-grey-900);
   --color-danger: var(--tds-red-700);
   --color-on-danger-weak: var(--tds-red-700);
-  --color-text-placeholder: var(--tds-grey-600);
+  --color-text-placeholder: var(--tds-grey-700); /* grey600 is 4.44:1 on the field fill; grey700 clears 4.5 on fill, focus and error overlays */
 }
 
 /* Reduced motion: keep feedback, drop movement. */
