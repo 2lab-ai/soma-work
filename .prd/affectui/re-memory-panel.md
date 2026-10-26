@@ -172,14 +172,18 @@ muted `#8f8f8f/#8b8b92`, well `#f4f4f5/#222225`, hover `#ececee/#2c2c30`, red `#
   액션은 hover·`:focus-within`에서 보이고(opacity 180ms), coarse에서는 늘 보인다. `§`는 어디에도 없다.
 - **D8 제자리 편집. [SHIPPED]** 텍스트 자리에 `textarea#l1-edit-<t>.mm-edit`(rows 1, 내용 높이 자동 `l1Grow`, 커서 끝, 테두리 없음, 행 배경
   `--surface-raised` + 포커스 때 안쪽 1px `--border-focus`). meta에 실시간 `L / 상한자`(`#l1-ecount-<t>`, 초과 `is-over`) + `취소`·`저장`.
-  Enter(`isComposing`/keyCode 229 제외) = `l1Save`, Shift+Enter = 줄바꿈, Esc = `l1Cancel`. 공백을 접지 않는다. 원문과 같으면 요청 없이 닫는다.
+  Enter(`isComposing`/keyCode 229 제외) = `l1Save`, Shift+Enter = 줄바꿈, Esc = `l1Cancel`. 공백을 접지 않는다. 앞뒤 공백을 떼어 원문(역시 떼어)과 같으면 요청 없이 닫는다 — 저장소가 떼어 저장하므로 결과가 같다; 그 밖의
+  변경은 입력한 그대로 보낸다.
   빈 값은 기존 오류 문구. 저장·취소 후 포커스는 그 행의 `수정`(저장 중 다른 편집기를 열었으면 옮기지 않는다).
 - **D9 삭제. [SHIPPED]** `l1Delete`는 지금처럼 즉시 `l1Write('DELETE', …)`(hold·이중 클릭 차단 그대로)를 보내고, 같은 순간 그 행에
   `data-leaving` + 접힘(320ms + opacity 200ms + blur 2px). `l1Write`의 새 인자 `settle`(접힘 320ms 약속, reduced-motion이면 없음)이 끝날 때까지
-  성공 응답의 다시 그리기를 미룬다. 실패면 행을 다시 펴고 기존 `#mem-status` 오류. 성공 후 포커스: 다음 행의 `삭제` → 이전 행 → 그룹 추가 버튼.
+  성공 응답의 다시 그리기를 미룬다(성공 뒤에는 트레이만 다시 그린다 — 두 번째 다시 그리기 없음). 실패면 `data-leaving`을 떼고 `l1ApplyView()` —
+  행은 그 순간의 보기대로 돌아온다(409는 이미 다시 불러와 그렸다) — 기존 `#mem-status` 오류. 성공 후 포커스(`l1FocusAfterDelete`): 보기에 보이는
+  다음 행의 `삭제`(지운 자리 이후 첫 보이는 행) → 보이는 이전 행 → 그룹이 보이면 그 추가 버튼 → 검색 중이면 검색 칸, 아니면 선택된 칩. 길게 누른
+  Enter는 다음 행 `삭제`로 옮겨 간 포커스에서 다시 눌리지 않는다(`l1KeyGuard`: `event.repeat`면 기본 동작 취소).
 - **D10 트레이 되돌리기. [SHIPPED]** 성공한 삭제는 `_memUndo = {target, text, key, left: 5000}` + 트레이 `삭제함 “<b>text</b>”`(따옴표 안만 말줄임)
   + `#l1-undo 되돌리기`. 5,000ms 뒤 `_memUndo`를 비우고 기본 문구로. 포인터가 트레이 위(`mouseenter`)에 있거나 `되돌리기`에 포커스가 있으면
-  (`l1TrayHold('hover'|'focus')`) 타이머를 멈추고, 둘 다 떠나면 남은 시간부터. 새 삭제가 덮는다. `되돌리기` = 기존 `l1Undo`(`restore:true`) — 성공하면
+  (`l1TrayHold('hover'|'focus')`) 타이머를 멈추고, 둘 다 떠나면 남은 시간부터. 새 삭제가 덮는다. polite 문장의 항목은 40자에서 자른다(행 버튼 이름과 같게; 캡션은 CSS 말줄임). `되돌리기` = 기존 `l1Undo`(`restore:true`) — 성공하면
   복원된 행(그룹 끝)이 0fr에서 다시 펼쳐지고 120ms 뒤 `scrollIntoView({block:'nearest'})`, 포커스는 그 행 `수정`, 트레이 `되돌렸습니다 — 목록 끝에
   다시 넣었습니다`. 보이지 않는 보기(다른 칩·맞지 않는 검색)면 보기를 `전체`로 되돌린다. 거절은 기존대로 원문을 추가 칸/복구 상자로(그 편집기가 열린다).
   `모두 지우기`는 되돌리기 없음(기존 확인 대화).
@@ -187,14 +191,15 @@ muted `#8f8f8f/#8b8b92`, well `#f4f4f5/#222225`, hover `#ececee/#2c2c30`, red `#
   aria-controls=`l1-newbox-<t>` · 오른쪽 `모두 지우기`(항목이 있을 때만, 기존 `l1Clear`)) ⇄ fold `#l1-newbox-<t>`(`label` `새 항목 (한 항목 최대 N자)`
   · `textarea#l1-new-<t>` · `.counter#l1-count-<t>`(`l1Count` 그대로) · `취소`·`추가`). 접혀도 textarea는 DOM에 있다(inert). Enter = `l1Add`,
   Shift+Enter 줄바꿈, Esc/취소 = 접기(초안 유지, 포커스는 추가 버튼). 초안이 든 칸은 다시 그리거나 초안이 옮겨 오면(409·잃을 편집·거절된 되돌리기 —
-  `l1OpenDrafts`) 열린다. 추가 성공 → 칸 비움(기존 `clearAdd`) + 접기 + 포커스 추가 버튼 + 새 행 펼침·스크롤.
+  `l1OpenDrafts`) 열린다. 칸은 내용만큼 자란다(`l1Grow` — 입력 `l1Count`, 다시 그린 뒤 복원, 열 때). 추가 성공 → 칸 비움(기존 `clearAdd`) + 접기 + 포커스 추가 버튼 + 새 행 펼침·스크롤.
 - **D12 트레이 문구. [SHIPPED]** `.mm-foot` = 보이는 `#l1-caption.mm-caption`(aria-hidden — 롤하는 숫자를 읽지 않게) + 따로 `#l1-live.mm-sr role=status
   aria-live=polite aria-atomic=true`(최종 문장만, 바뀔 때만) + (되돌리기 창 동안만) `#l1-undo`. 상태 우선순위(`l1TrayState`): 삭제함(D10) > 알림
   (3s: `저장했습니다`·`추가했습니다`·`되돌렸습니다 — …`·`모두 지웠습니다`) > 편집 중 `Enter 저장 · Shift+Enter 줄바꿈 · Esc 취소` > 추가 중
   `Enter 추가 · Shift+Enter 줄바꿈 · Esc 닫기` > 기본 `<b>8</b>개 항목<span class="mm-cap"> · 에이전트 노트 297 / 2,200자 · 사용자 프로필 107 / 1,375자</span>`.
   상태가 바뀔 때만 교체(들어옴 320ms / 나감 220ms 교차 페이드), 같은 기본 상태에서는 숫자만 롤. L1 성공 문구는 `#mem-status` 대신 트레이로(오류·409는
   `#mem-status` 그대로 — `role=alert`).
-- **D13 숫자 롤. [SHIPPED]** `#l1-total`과 트레이 개수(`l1Roll`)는 이전 값에서 새 값으로 520ms `1−(1−t)^4`(rAF). 첫 값·reduced-motion이면 즉시.
+- **D13 숫자 롤. [SHIPPED]** `#l1-total`과 트레이 개수(`l1Roll`)는 이전 값에서 새 값으로 520ms `1−(1−t)^4`(rAF). 첫 값·reduced-motion이면 즉시. 같은 값으로 굴러가는 중에 다시 그리면(쓰기 응답 뒤
+  `l1AddClose`·알림 등) 끊지 않는다 — 목표가 바뀔 때만 취소한다.
 - **D14 모션. [SHIPPED]** fold `grid-template-rows 0fr↔1fr` `.mm` 범위 변수 `--mm-fold: 320ms` + `var(--ease-out)`(레퍼런스 420ms → 대시보드 `--dur-move`
   리듬, 설정 `:root`에는 없어 범위 변수로), opacity 열림 240ms(60ms 지연)·닫힘 `var(--dur-fade)` 180ms; 잊는 행 D9; 행 배경 `var(--dur-press)`
   160ms; 검색 교차 220ms + blur 2px. 움직이는 것은 opacity · filter · grid rows뿐. `@media (prefers-reduced-motion: reduce)`에서 `.mm` 안
@@ -229,6 +234,11 @@ muted `#8f8f8f/#8b8b92`, well `#f4f4f5/#222225`, hover `#ececee/#2c2c30`, red `#
 | T10 | 트레이 기본 문장(개수 + 두 저장소 `x / y자`) = `#l1-live`, 캡션 aria-hidden, 편집 힌트, 저장 알림이 `#mem-status`로 가지 않음 | D12 |
 | T11 | 숫자 롤: 첫 값 즉시, rAF 중간값(8→4에서 t=.25 → 5), 끝값, reduced-motion이면 즉시 | D13 |
 | T12 | CSS 마커 구간: `.mm` container, `--mm-fold`, fold·leaving 전이, reduced-motion·coarse·`@container 480/340`, 16진 색은 `#9a6700`뿐, `ui-mp`·`mp-` 없음 | D14–D16 |
+| R1-1 | 리뷰 R1 P1: 앞뒤 공백만 다른 수정은 요청 없음(원문도 떼어 비교), 다른 변경은 입력 그대로 PUT | D8 |
+| R1-2 | 리뷰 R1 P2: 삭제·되돌리기·추가의 실제 호출 경로에서 머리 개수가 끝까지 구른다(중간에 즉시 값으로 끊기지 않음) | D13 |
+| R1-3 | 리뷰 R1 P2: 추가 칸이 입력·다시 그리기 복원·409 뒤 옮겨 온 초안에서 내용만큼 자란다 | D11 |
+| R1-4 | 리뷰 R1 P2: 검색 중 삭제 뒤 포커스 = 보이는 다음 행 → 보이는 이전 행 → 검색 칸, 빈 저장소면 추가 버튼 | D9 |
+| R1-5 | 리뷰 R1 P3: `l1KeyGuard`(반복 키 취소)가 `삭제`에 걸려 있다; 거절된 삭제는 보기대로 접힌다 | D9 |
 | T13 | 회귀: `settings-memory-tab.test.ts` 전체(카드 마크업, R5 undo, R9–R13 초안·hold·잠금, 쓰기 경로) | D2 · D6 |
 
 T13 유지 방법: 기존 시험은 함수 목록을 골라 불러오므로, L1 함수가 부르는 패널 도우미를 `L1_PANEL_FNS`로 한 번 정의해 네 목록에 더했고, `l1Clear`만
@@ -250,8 +260,9 @@ T13 유지 방법: 기존 시험은 함수 목록을 골라 불러오므로, L1 
 
 - RED(구현 전, 2026-10-26): `dashboard-affectui-memory-panel.test.ts` 13건 모두 실패 — `client function l1El not found` 10건, `<div id="l1-panel"
   class="mp">`·radiogroup 마크업 없음 2건, CSS 마커 없음 1건(당시 접두 `mp-`; 리뷰 반영으로 `mm-`).
-- GREEN: 새 시험 13/13, `settings-memory-tab.test.ts` 73/73, `settings-page.test.ts` 통과. `npx vitest run src/conversation/__tests__/` 63 파일 ·
-  1,661건 통과(병렬 작업 7개가 도는 기계라 `--maxWorkers=3 --testTimeout=60000 --hookTimeout=60000` — 기본 시간 제한으로는 서버 시험 87건이
+- 리뷰 R1(grok REJECT · fable APPROVE) 반영: 새 시험 R1-1…R1-5 구현 전 5건 실패 + T7(live 문장 40자) 1건 실패 확인 → 구현 뒤 통과.
+- GREEN: 새 시험 18/18, `settings-memory-tab.test.ts` 73/73, `settings-page.test.ts`·`memory-routes.test.ts` 통과. `npx vitest run src/conversation/__tests__/`
+  63 파일 · 1,666건 통과(병렬 작업 7개가 도는 기계라 `--maxWorkers=3 --testTimeout=60000 --hookTimeout=60000` — 기본 시간 제한으로는 서버 시험 87건이
   hook·test timeout과 그 여파(시간 안에 import되지 못한 모듈의 `undefined`)로 떨어졌고, 단언 실패는 없었다). `npx tsc --noEmit` 오류 없음. `npx biome check src/conversation/` 오류 0(경고는 기존과 같은
   `noExplicitAny` 종류).
 - 화면(하네스, 픽스처 응답 — `GET /api/memory`와 L1 쓰기를 page.route로 답한다): 라이트/다크 × 1440/390 × 기본 · hover · 칩 `사용자 프로필` · 검색

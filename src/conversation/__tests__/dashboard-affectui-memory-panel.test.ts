@@ -43,7 +43,9 @@ class FakeEl {
   style: Record<string, string> = {};
   children: FakeEl[] = [];
   parentNode: FakeEl | null = null;
-  scrollHeight = 40;
+  get scrollHeight() {
+    return 20 * Math.max(1, this.value.split('\n').length);
+  }
   offsetHeight = 0;
   private html = '';
   constructor(
@@ -195,6 +197,8 @@ const PANEL_FNS = [
   'l1SearchClose',
   'l1SearchInput',
   'l1SearchKey',
+  'l1FocusAfterDelete',
+  'l1KeyGuard',
 ];
 
 interface Panel {
@@ -205,7 +209,7 @@ interface Panel {
   el(id: string): FakeEl;
 }
 
-function panel(opts: { apiWrite?: any; reduced?: boolean; raf?: any; mem?: any } = {}): Panel {
+function panel(opts: { apiWrite?: any; reduced?: boolean; raf?: any; mem?: any; loadMemory?: any } = {}): Panel {
   const dom = new FakeDom(MEMORY_TAB_HTML);
   const apiWrite = opts.apiWrite ?? vi.fn();
   const inject: Record<string, unknown> = {
@@ -213,7 +217,7 @@ function panel(opts: { apiWrite?: any; reduced?: boolean; raf?: any; mem?: any }
     _mem: opts.mem ?? { l1: { memory: block(MEM, 2200, 660, 'rm1'), user: block(USR, 1375, 412, 'ru1') } },
     _memUndo: null,
     apiWrite,
-    loadMemory: vi.fn(async () => true),
+    loadMemory: opts.loadMemory ?? vi.fn(async () => true),
     confirmDialog: vi.fn(async () => true),
     window: { matchMedia: () => ({ matches: !!opts.reduced }) },
     requestAnimationFrame: opts.raf,
@@ -391,7 +395,7 @@ describe('D8 — in-place edit', () => {
     const ta = p.el('l1-edit-memory');
     expect(ta.getAttribute('rows')).toBe('1');
     expect(p.dom.active).toBe(ta);
-    expect(ta.style.height).toBe('40px'); // grown to its content
+    expect(ta.style.height).toBe('20px'); // grown to its content (one line)
     p.fns.l1EditKey(key('Enter'), 'memory', 0); // unchanged → closes, nothing sent
     expect(apiWrite).not.toHaveBeenCalled();
     expect(p.el('l1-edit-memory')).toBeUndefined();
@@ -445,6 +449,8 @@ describe('D9 · D10 — delete folds at once; the tray offers undo for 5 s', () 
       expect(s.html).toContain('삭제함 “</span><b class="mm-quote">배포는 dev 먼저');
       expect(p.el('l1-undo').hasAttribute('hidden')).toBe(false);
       expect(p.el('l1-live').textContent).toContain('삭제함 “배포는 dev 먼저');
+      expect(p.el('l1-live').textContent).toContain(`“${MEM[1].slice(0, 40)}…”`); // R1: cut like the row names
+      expect(p.el('l1-live').textContent).not.toContain(MEM[1]);
       expect(p.dom.active).toBe(p.el('l1-del-memory-1')); // the next row's 삭제
     } finally {
       vi.useRealTimers();
@@ -595,6 +601,163 @@ describe('D13 — rolling counts', () => {
     q.fns.l1Roll(e2, 8);
     q.fns.l1Roll(e2, 3);
     expect(e2.textContent).toBe('3');
+  });
+});
+
+describe('PR review R1 (#443)', () => {
+  it('R1-1 an edit equal to the note once both are trimmed sends nothing; any other change is sent as typed', async () => {
+    const mem = {
+      l1: { memory: block(['  spaced note  ', 'b'], 2200, 660, 'rm1'), user: block([], 1375, 412, 'ru1') },
+    };
+    const apiWrite = vi.fn(async () => ({ ok: true, data: { l1: block(['spaced  note', 'b'], 2200, 660, 'rm2') } }));
+    const p = panel({ apiWrite, mem });
+    p.fns.paintL1();
+    p.fns.l1EditStart('memory', 0);
+    p.el('l1-edit-memory').value = 'spaced note\n';
+    await p.fns.l1Save('memory', 0);
+    expect(apiWrite).not.toHaveBeenCalled();
+    expect(p.el('l1-edit-memory')).toBeUndefined();
+    p.fns.l1EditStart('memory', 0);
+    p.el('l1-edit-memory').value = ' spaced  note ';
+    await p.fns.l1Save('memory', 0);
+    expect(apiWrite).toHaveBeenCalledWith('PUT', '/api/memory/l1/memory/0', {
+      text: ' spaced  note ',
+      revision: 'rm1',
+    });
+  });
+
+  it('R1-2 the heading count keeps rolling through the repaints that follow a delete, an add and an undo', async () => {
+    vi.useFakeTimers();
+    try {
+      const frames: Array<(t: number) => void> = [];
+      const cancel = vi.fn();
+      const after = block([MEM[0], ...MEM.slice(2)], 2200, 660, 'rm2');
+      const apiWrite = vi
+        .fn()
+        .mockResolvedValueOnce({ ok: true, data: { l1: after } })
+        .mockResolvedValueOnce({ ok: true, data: { l1: block([...after.entries, MEM[1]], 2200, 660, 'rm3') } })
+        .mockResolvedValueOnce({ ok: true, data: { l1: block([...USR, 'new'], 1375, 412, 'ru2') } });
+      const p = panel({ apiWrite, raf: (f: (t: number) => void) => frames.push(f) });
+      (p as any).cancel = cancel;
+      p.fns.paintL1();
+      const total = p.el('l1-total');
+      const settle = async () => {
+        let t = 1000;
+        while (frames.length) frames.shift()?.((t += 600));
+      };
+      const del = p.fns.l1Delete('memory', 1);
+      await vi.advanceTimersByTimeAsync(320);
+      await del;
+      expect(total.textContent).toBe('8'); // still rolling, not jumped
+      expect(frames.length).toBe(1);
+      await settle();
+      expect(total.textContent).toBe('7');
+
+      await p.fns.l1Undo();
+      expect(total.textContent).toBe('7');
+      expect(frames.length).toBe(1);
+      await settle();
+      expect(total.textContent).toBe('8');
+
+      p.fns.l1AddOpen('user');
+      p.el('l1-new-user').value = 'new';
+      await p.fns.l1Add('user');
+      expect(total.textContent).toBe('8');
+      expect(frames.length).toBe(1);
+      await settle();
+      expect(total.textContent).toBe('9');
+      await vi.advanceTimersByTimeAsync(5000);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('R1-3 the add box grows with its draft: typing, a repaint that restores it, a draft that lands after a 409', async () => {
+    const mem = { l1: { memory: block(MEM, 2200, 660, 'rm1'), user: block(USR, 1375, 412, 'ru1') } };
+    // the reload after the 409: the entry being edited is gone (another writer removed it)
+    const reload = vi.fn(async () => {
+      mem.l1.memory = block(MEM.slice(1), 2200, 660, 'rm2');
+      p.fns.paintL1();
+      return true;
+    });
+    const p: Panel = panel({
+      apiWrite: vi.fn(async () => ({ ok: false, status: 409, error: 'changed' })),
+      mem,
+      loadMemory: reload,
+    });
+    p.fns.paintL1();
+    p.fns.l1AddOpen('user');
+    const box = p.el('l1-new-user');
+    box.value = 'line 1\nline 2\nline 3';
+    p.fns.l1Count('user');
+    expect(box.style.height).toBe('60px');
+    p.fns.paintL1(); // e.g. another write answered
+    expect(p.el('l1-new-user').value).toBe('line 1\nline 2\nline 3');
+    expect(p.el('l1-new-user').style.height).toBe('60px');
+
+    // an edit refused with 409 whose entry vanished: the draft goes to the (empty) add box, grown
+    p.el('l1-new-memory').value = '';
+    p.fns.l1EditStart('memory', 0);
+    p.el('l1-edit-memory').value = 'a\nb\nc\nd';
+    await p.fns.l1Save('memory', 0);
+    expect(p.el('l1-new-memory').value).toBe('a\nb\nc\nd');
+    expect(isOpen(p.el('l1-newbox-memory'))).toBe(true);
+    expect(p.el('l1-new-memory').style.height).toBe('80px');
+  });
+
+  it('R1-4 after a delete, focus goes to the next row the view shows (else the previous one, else the add button)', async () => {
+    const entries = ['alpha one', 'beta', 'alpha two', 'gamma', 'alpha three'];
+    const mem = { l1: { memory: block(entries, 2200, 660, 'rm1'), user: block([], 1375, 412, 'ru1') } };
+    const answers = [
+      block(['beta', 'alpha two', 'gamma', 'alpha three'], 2200, 660, 'rm2'),
+      block(['beta', 'alpha two', 'gamma'], 2200, 660, 'rm3'),
+      block(['beta', 'gamma'], 2200, 660, 'rm4'),
+    ];
+    const apiWrite = vi.fn(async () => ({ ok: true, data: { l1: answers.shift() } }));
+    const p = panel({ apiWrite, reduced: true, mem });
+    p.fns.paintL1();
+    p.fns.l1SearchOpen();
+    p.fns.l1SearchInput('alpha');
+    await p.fns.l1Delete('memory', 0); // "alpha one": the next shown row is "alpha two", now index 1 (not "beta" at 0)
+    expect(p.dom.active).toBe(p.el('l1-del-memory-1'));
+    await p.fns.l1Delete('memory', 3); // "alpha three" was the last shown: the previous shown row, "alpha two"
+    expect(p.dom.active).toBe(p.el('l1-del-memory-1'));
+    await p.fns.l1Delete('memory', 1); // no "alpha" left, the group folds away: back to the search box
+    expect(p.dom.active).toBe(p.el('l1-q'));
+
+    const one = { l1: { memory: block(MEM, 2200, 660, 'rm1'), user: block(['only'], 1375, 412, 'ru1') } };
+    const q = panel({
+      apiWrite: vi.fn(async () => ({ ok: true, data: { l1: block([], 1375, 412, 'ru2') } })),
+      reduced: true,
+      mem: one,
+    });
+    q.fns.paintL1();
+    await q.fns.l1Delete('user', 0); // the store is empty now: its add button
+    expect(q.dom.active).toBe(q.el('l1-add-user'));
+  });
+
+  it('R1-5 a held key does not delete row after row; a refused delete restores the view, not just its row', async () => {
+    expect(MEMORY_CLIENT_JS).toContain(
+      `onkeydown="l1KeyGuard(event)" onclick="l1Delete(\\'' + target + '\\',' + i + ')"`,
+    );
+    const p = panel();
+    const held = key('Enter', { repeat: true });
+    p.fns.l1KeyGuard(held);
+    expect(held.preventDefault).toHaveBeenCalled();
+    const first = key('Enter', { repeat: false });
+    p.fns.l1KeyGuard(first);
+    expect(first.preventDefault).not.toHaveBeenCalled();
+
+    const q = panel({ apiWrite: vi.fn(async () => ({ ok: false, status: 400, error: 'no' })), reduced: true });
+    q.fns.paintL1();
+    q.fns.l1SearchOpen();
+    q.fns.l1SearchInput('vitest'); // only row 0 shows
+    const del = q.fns.l1Delete('memory', 0);
+    q.fns.l1SearchInput('deploy'); // the view moved while the delete was out
+    await del;
+    expect(isShut(q.el('l1-f-memory-0'))).toBe(true); // folded to the view, not forced open
+    expect(q.el('l1-f-memory-0').hasAttribute('data-leaving')).toBe(false);
+    expect(isOpen(q.el('l1-f-memory-1'))).toBe(true);
   });
 });
 

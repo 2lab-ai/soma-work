@@ -50,6 +50,7 @@ const L1_PANEL_FNS = [
   'l1AddOpen',
   'l1AddClose',
   'l1Reveal',
+  'l1FocusAfterDelete',
 ];
 
 function block(over: Record<string, unknown> = {}) {

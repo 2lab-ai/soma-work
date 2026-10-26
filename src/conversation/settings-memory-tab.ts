@@ -202,7 +202,7 @@ var _memLoaded = false;
 var _memPage = null;      // { page, revision, raw, representable } open in the editor (revision null = new)
 var _memPageRaw = false;  // the open page is edited as raw markdown
 var _memDay = null;       // { date, revision, entries }
-var _memUndo = null;      // { target, text } last single delete
+var _memUndo = null;      // last single delete, offered on the tray: { target, text, key, left, timer }
 var L1_LABELS = { memory: '에이전트 노트', user: '사용자 프로필' };
 var L1_FILES = { memory: 'MEMORY.md', user: 'USER.md' };
 var PAGE_GROUPS = [['agent', '에이전트'], ['sites', '사이트'], ['concepts', '개념'], ['project', '프로젝트'], ['cron', '반복 작업']];
@@ -330,7 +330,7 @@ function renderL1Card(target, block, editing, ctx) {
       row = '<div class="mm-row"><p class="mm-text">' + esc(entries[i]) + '</p><div class="mm-meta">'
         + '<span class="mm-src">#' + (i + 1) + ' · ' + fmtNum(len) + '자' + (len > block.perEntryCap ? ' · <span class="mm-over">한 항목 한도 초과</span>' : '') + '</span>'
         + '<span class="mm-acts"><button type="button" class="mm-act" id="l1-ed-' + target + '-' + i + '" aria-label="' + escAttr('수정: “' + short + '”') + '" onclick="l1EditStart(\'' + target + '\',' + i + ')">수정</button>'
-        + '<button type="button" class="mm-act mm-act-del" id="l1-del-' + target + '-' + i + '" aria-label="' + escAttr('삭제: “' + short + '”') + '" onclick="l1Delete(\'' + target + '\',' + i + ')">삭제</button></span></div></div>';
+        + '<button type="button" class="mm-act mm-act-del" id="l1-del-' + target + '-' + i + '" aria-label="' + escAttr('삭제: “' + short + '”') + '" onkeydown="l1KeyGuard(event)" onclick="l1Delete(\'' + target + '\',' + i + ')">삭제</button></span></div></div>';
     }
     rows += '<li><div class="mm-fold" id="l1-f-' + target + '-' + i + '"' + (show ? ' data-open' : ' inert') + '><div class="mm-clip">' + row + '</div></div></li>';
   }
@@ -403,7 +403,10 @@ function paintL1(editing, opts) {
     var tk = targets[k];
     if (!adds[tk] || opts.clearAdd === tk) continue;
     var nb = document.getElementById('l1-new-' + tk);
-    if (nb) nb.value = adds[tk];
+    if (nb) {
+      nb.value = adds[tk];
+      l1Grow(nb);
+    }
   }
   if (editing) l1Grow(document.getElementById('l1-edit-' + editing.target));
   if (lost) memKeepDraft('l1-new-' + lost.target, lost.text, L1_LABELS[lost.target] + ' 수정본');
@@ -427,7 +430,9 @@ function l1Busy(target) {
 // Live total after the addition (the store joins entries with a 3-char delimiter).
 function l1Count(target) {
   var block = _mem.l1[target];
-  var v = (document.getElementById('l1-new-' + target) || {}).value || '';
+  var box = document.getElementById('l1-new-' + target);
+  l1Grow(box);
+  var v = (box || {}).value || '';
   var add = v.trim().length ? v.trim().length + (block.entries.length ? 3 : 0) : 0;
   var total = block.totalChars + add;
   var el = document.getElementById('l1-count-' + target);
@@ -516,8 +521,9 @@ async function l1Save(target, i) {
   var text = ta ? ta.value : '';
   if (!text.trim()) { memStatus('비어 있는 항목은 저장할 수 없습니다 — 지우려면 삭제를 쓰세요', true); return; }
   var orig = _mem.l1[target].entries[i];
-  // unchanged: close without a request (D8)
-  if (text.trim() === orig) { paintL1(null, { close: true }); l1FocusAct('ed', target, i); return; }
+  // unchanged once both sides are trimmed (the store trims what it saves): close without a request (D8);
+  // any other change is sent as typed
+  if (text.trim() === String(orig).trim()) { paintL1(null, { close: true }); l1FocusAct('ed', target, i); return; }
   var ents = _mem.l1[target].entries;
   var unique = paintL1.open && paintL1.open.target === target && paintL1.open.orig === orig ? paintL1.open.unique : ents.indexOf(orig) === ents.lastIndexOf(orig);
   if (await l1Write('PUT', '/api/memory/l1/' + target + '/' + i, { text: text, revision: _mem.l1[target].revision }, text, i, orig, unique)) {
@@ -550,17 +556,38 @@ async function l1Delete(target, i) {
     if (!l1Reduced()) settle = new Promise(function (res) { setTimeout(res, 320); });
   }
   if (await l1Write('DELETE', '/api/memory/l1/' + target + '/' + i, { revision: _mem.l1[target].revision }, undefined, undefined, undefined, undefined, settle)) {
+    // (the write's answer already repainted the groups: only the tray changes)
     if (_memUndo && _memUndo.timer) clearTimeout(_memUndo.timer);
     _memUndo = { target: target, text: text, key: (l1Delete.seq = (l1Delete.seq || 0) + 1), left: 5000 };
     l1UndoArm(_memUndo);
-    paintL1();
-    if (!l1FocusAct('del', target, i) && !l1FocusAct('del', target, i - 1)) l1FocusAct('add', target);
+    l1PaintTray();
+    l1FocusAfterDelete(target, i);
     return;
   }
-  if (row) {
-    row.removeAttribute('data-leaving');
-    l1Fold('l1-f-' + target + '-' + i, true);
-  }
+  // refused: the row comes back as the view now has it (a 409 already reloaded and repainted)
+  if (row) row.removeAttribute('data-leaving');
+  l1ApplyView();
+}
+// Focus after a delete: the next row the view shows (it now sits at index i or later), else the
+// nearest shown row before it, else the store's add button when its group shows, else the search
+// box / the selected chip (D9).
+function l1FocusAfterDelete(target, i) {
+  var ents = (_mem.l1[target] && _mem.l1[target].entries) || [];
+  var shown = function (id) {
+    var f = l1El(id);
+    return !!f && !f.hasAttribute('inert');
+  };
+  for (var j = i; j < ents.length; j++) if (shown('l1-f-' + target + '-' + j) && l1FocusAct('del', target, j)) return;
+  for (var k = Math.min(i, ents.length) - 1; k >= 0; k--) if (shown('l1-f-' + target + '-' + k) && l1FocusAct('del', target, k)) return;
+  if (shown('l1-g-' + target) && l1FocusAct('add', target)) return;
+  var v = paintL1.view || {};
+  var q = v.searching ? document.getElementById('l1-q') : null;
+  if (q && q.focus) q.focus();
+  else l1FocusAct('chip', v.target || 'all');
+}
+// A held Enter repeats the click: on a 삭제 that the next row's 삭제 replaces, that would delete row after row.
+function l1KeyGuard(e) {
+  if (e.repeat) e.preventDefault();
 }
 async function l1Undo() {
   var u = _memUndo;
@@ -572,8 +599,7 @@ async function l1Undo() {
   if (await l1Write('POST', '/api/memory/l1/' + u.target, { text: u.text, revision: _mem.l1[u.target].revision, restore: true }, u.text)) {
     if (u.timer) clearTimeout(u.timer);
     if (_memUndo === u) _memUndo = null;
-    paintL1();
-    l1Notice('되돌렸습니다 — 목록 끝에 다시 넣었습니다');
+    l1Notice('되돌렸습니다 — 목록 끝에 다시 넣었습니다'); // (the write's answer already repainted the groups)
     l1Reveal(u.target, ((_mem.l1[u.target] && _mem.l1[u.target].entries) || []).length - 1);
     return;
   }
@@ -759,8 +785,9 @@ function l1AddOpen(target, quiet) {
   l1Fold('l1-newbox-' + target, true);
   var b = l1El('l1-add-' + target);
   if (b) b.setAttribute('aria-expanded', 'true');
-  var ta = quiet ? null : document.getElementById('l1-new-' + target);
-  if (ta && ta.focus) ta.focus();
+  var ta = document.getElementById('l1-new-' + target);
+  l1Grow(ta); // a draft that landed here may be several lines
+  if (ta && ta.focus && !quiet) ta.focus();
   l1Sync();
 }
 // Closing keeps the draft in the box (it opens again with the next repaint).
@@ -821,6 +848,7 @@ function l1Reveal(target, i, keepFocus) {
 // Counts roll to their new value: 520 ms, ease-out quart; at once with reduced motion (D13).
 function l1Roll(el, to) {
   if (!el) return;
+  if (el.mmRaf && el.mmN === to) return; // already rolling to this value (a second repaint must not cut it short)
   var from = typeof el.mmN === 'number' ? el.mmN : to;
   el.mmN = to;
   if (el.mmRaf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(el.mmRaf);
@@ -844,7 +872,8 @@ function l1TrayState() {
   var l1 = (_mem && _mem.l1) || {};
   var u = _memUndo;
   if (u && typeof u.text === 'string') {
-    return { key: 'forgot-' + (u.key || 0), html: '<span class="mm-forgot"><span class="mm-flat">삭제함 “</span><b class="mm-quote">' + esc(u.text) + '</b><span class="mm-flat">”</span></span>', live: '삭제함 “' + u.text + '” — 되돌리기로 되돌릴 수 있습니다' };
+    var short = u.text.length > 40 ? u.text.slice(0, 40) + '…' : u.text; // spoken like the row names (the caption ellipsizes)
+    return { key: 'forgot-' + (u.key || 0), html: '<span class="mm-forgot"><span class="mm-flat">삭제함 “</span><b class="mm-quote">' + esc(u.text) + '</b><span class="mm-flat">”</span></span>', live: '삭제함 “' + short + '” — 되돌리기로 되돌릴 수 있습니다' };
   }
   var n = l1Notice.cur;
   if (n) return { key: 'notice-' + n.seq, html: esc(n.text), live: n.text };
