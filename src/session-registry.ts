@@ -4,7 +4,7 @@
  */
 
 import { LOG_VERBOSITY_MASK_VERSION, upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
-import { sanitizeSdkUsageBaseline } from '@soma/slack/session-usage-math';
+import { sanitizeSdkUsageBaseline, sanitizeTaskUsage, type TaskUsage } from '@soma/slack/session-usage-math';
 import * as fs from 'fs';
 import * as path from 'path';
 import { applyInstructionOperations } from 'somalib/model-commands/catalog';
@@ -199,6 +199,8 @@ interface SerializedSession {
   instructionsCompletedSummary?: { summary: string; upstreamHash: string };
   /** Last SDK running total per model — see `ConversationSession.sdkUsageBaseline`. */
   sdkUsageBaseline?: unknown;
+  /** SSOT 2026-10-26 T3 — what the whole task spent; sanitized on load. */
+  taskUsage?: unknown;
   // Dashboard v2.1 — thread-aggregate snapshot fields (live aggregate derived from memory).
   compactionCount?: number;
   activeLegStartedAtMs?: number;
@@ -1908,7 +1910,11 @@ export class SessionRegistry {
           // even before the SDK assigns a sessionId — otherwise a crash in
           // that window would bring the thread back unrestricted.
           session.incidentRequest ||
-          session.autoCompactTokens != null
+          session.autoCompactTokens != null ||
+          // The task's spend (and its subagents') must not vanish with a
+          // `/new` that cleared the sessionId before the next SDK turn.
+          session.taskUsage ||
+          session.agents?.agents.length
         ) {
           this.ensureSessionLinkState(session);
           sessionsArray.push({
@@ -1994,6 +2000,7 @@ export class SessionRegistry {
             instructionsCompletedSummary: session.instructionsCompletedSummary,
             // Last SDK running total — without it a restart would re-count it into the goal's spend
             sdkUsageBaseline: session.sdkUsageBaseline,
+            taskUsage: session.taskUsage,
             // Dashboard v2.1 — derive-first aggregate snapshot (persisted per session)
             compactionCount: session.compactionCount,
             activeLegStartedAtMs: session.activeLegStartedAtMs,
@@ -2066,6 +2073,9 @@ export class SessionRegistry {
         taskLedger: sanitizeTaskLedger(serialized.taskLedger),
         // Spec 12: nothing that ran before this process is watched any more.
         agents: loseRunningAgents(sanitizeAgentRegistry(serialized.agents), Date.now()),
+        // SSOT 2026-10-26 T3 — the closed card keeps the task's total (partial
+        // when the session spent before the total existed).
+        taskUsage: restoreTaskUsage(serialized),
         // A cron run archived while the process was down stays filed under its job.
         cronJob: sanitizeCronJob(serialized.cronJob),
         activityState: serialized.activityState || 'idle',
@@ -2283,6 +2293,7 @@ export class SessionRegistry {
           // Cached completed-summary (may be stale — block builder validates via hash).
           instructionsCompletedSummary: serialized.instructionsCompletedSummary,
           sdkUsageBaseline: sanitizeSdkUsageBaseline(serialized.sdkUsageBaseline),
+          taskUsage: restoreTaskUsage(serialized),
           // Dashboard v2.1 — restore aggregate snapshot
           compactionCount: typeof serialized.compactionCount === 'number' ? serialized.compactionCount : 0,
           activeLegStartedAtMs: serialized.activeLegStartedAtMs,
@@ -2468,4 +2479,34 @@ export class SessionRegistry {
     }
     return count;
   }
+}
+
+/**
+ * SSOT 2026-10-26 T3 — the task total of a loaded session. A session saved
+ * before the total existed that had already spent (its SDK running total is
+ * not empty) starts a partial total: it counts from now, and the card says so
+ * instead of passing it off as the whole task.
+ */
+function restoreTaskUsage(serialized: {
+  taskUsage?: unknown;
+  sdkUsageBaseline?: unknown;
+  sessionId?: string;
+}): TaskUsage | undefined {
+  const kept = sanitizeTaskUsage(serialized.taskUsage);
+  if (kept) return kept;
+  const models = sanitizeSdkUsageBaseline(serialized.sdkUsageBaseline)?.models ?? {};
+  const spent = Object.values(models).some(
+    (m) => m.inputTokens + m.outputTokens + m.cacheReadInputTokens + m.cacheCreationInputTokens > 0 || m.costUsd > 0,
+  );
+  // A session with an SDK session has run a turn — one saved before running
+  // totals were kept at all has no baseline to show it.
+  if (!spent && !serialized.sessionId) return undefined;
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreateTokens: 0,
+    costUsd: 0,
+    partialSince: Date.now(),
+  };
 }

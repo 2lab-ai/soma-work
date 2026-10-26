@@ -375,6 +375,13 @@ export function getModelSpec(modelName?: string): ModelSpec {
   return FALLBACK_SPEC;
 }
 
+/** Whether the price table knows `modelName` (otherwise `getModelSpec` falls back to Sonnet-tier rates). */
+export function hasModelPricing(modelName?: string): boolean {
+  if (!modelName) return false;
+  for (const [pattern] of MODEL_REGISTRY) if (modelName.includes(pattern)) return true;
+  return false;
+}
+
 /**
  * Get pricing for a model. Backward-compatible wrapper.
  */

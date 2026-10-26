@@ -10,8 +10,11 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { sumLiveUsage } from '@soma/slack/live-usage';
+import type { TaskUsage } from '@soma/slack/session-usage-math';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
+import { calculateTokenCost } from './metrics/model-registry';
 import type { AgentRegistry } from './session/agent-registry';
 import type { TaskLedger } from './session/task-ledger';
 import type {
@@ -74,6 +77,8 @@ export interface ArchivedSession {
 
   // Usage snapshot at time of archive
   usage?: SessionUsage;
+  /** SSOT 2026-10-26 T3 — what the whole task spent (the closed card's total). */
+  taskUsage?: TaskUsage;
 
   // State at time of archive
   finalState?: SessionState;
@@ -151,6 +156,7 @@ function sessionToArchive(
     instructions: session.instructions ? JSON.parse(JSON.stringify(session.instructions)) : undefined,
     mergeStats: session.mergeStats ? JSON.parse(JSON.stringify(session.mergeStats)) : undefined,
     usage: session.usage ? JSON.parse(JSON.stringify(session.usage)) : undefined,
+    taskUsage: archivedTaskUsage(session),
 
     finalState: session.state,
     finalActivityState: session.activityState,
@@ -327,4 +333,36 @@ export function getArchiveStore(): SessionArchiveStore {
     _instance = new SessionArchiveStore();
   }
   return _instance;
+}
+
+/**
+ * SSOT 2026-10-26 T3 — the task total a closed card keeps: the committed
+ * total plus the calls the running turn already made. A session closed
+ * mid-turn is archived before its turn's cleanup folds those calls in (into
+ * an object nobody saves any more), so they are taken here, priced at the
+ * session model like the rest of the live cost.
+ */
+function archivedTaskUsage(session: ConversationSession): TaskUsage | undefined {
+  const live = sumLiveUsage(session.liveUsage);
+  const liveTokens = live.inputTokens + live.outputTokens + live.cacheReadTokens + live.cacheCreateTokens;
+  if (!session.taskUsage && liveTokens === 0) return undefined;
+  const t: TaskUsage = session.taskUsage
+    ? JSON.parse(JSON.stringify(session.taskUsage))
+    : { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, costUsd: 0 };
+  delete t.pendingFold;
+  if (liveTokens > 0) {
+    t.inputTokens += live.inputTokens;
+    t.outputTokens += live.outputTokens;
+    t.cacheReadTokens += live.cacheReadTokens;
+    t.cacheCreateTokens += live.cacheCreateTokens;
+    const cost = calculateTokenCost(
+      session.model,
+      live.inputTokens,
+      live.outputTokens,
+      live.cacheReadTokens,
+      live.cacheCreateTokens,
+    );
+    if (Number.isFinite(cost) && cost > 0) t.costUsd += cost;
+  }
+  return t;
 }
