@@ -12,17 +12,17 @@ Classify the user's visual request into ONE of five categories, then delegate to
 
 ## Classification
 
-Score the user's request against these signal sets. Pick the category with the highest score. Ties go to **ARCHITECTURE**.
+Score the user's request against these signal sets. Pick the category with the highest score. Ties go to **ARCHITECTURE**, after the DRAWING precedence below.
 
 | Category | Korean signals | English signals | Delegate to |
 |----------|----------------|-----------------|-------------|
 | **ARCHITECTURE** | 아키텍처, 아키텍쳐, 구조도, 시스템 구성, 컴포넌트, 서비스 구성, 플로우차트, 순서도, 관계도 | architecture, system diagram, component, service, flowchart, sequence, dependency graph, topology | `local:architecture-diagram` |
 | **NUMERIC** | 차트, 그래프, 매출, 증가율, 분포, 추이, 수치, 통계, 히스토그램 | chart, graph, plot, bar, line, histogram, distribution, trend, metric, percentage, over time | `stv:using-terminal-charts` |
 | **GENERAL** | 그림, 일러스트, 개념도, 설명 그림, 아이콘, 스케치 | illustration, sketch, concept, explain visually, conceptual | vendored Excalidraw renderer (see **Fallback** below) |
-| **DRAWING** | 도면, 치수, 치수 도면, 해부도, 컴포넌트 해부, 스펙 시트, 레드라인, 뜯어줘 | dimensional drawing, anatomy, spec sheet, redline, measured drawing | `local:dimensional-drawing` |
+| **DRAWING** | 도면, 치수, 치수 도면, 컴포넌트 해부, UI 해부, 스펙 시트, 레드라인, 사이트 뜯어줘, 컴포넌트 뜯어줘 | dimensional drawing, component anatomy, UI anatomy, spec sheet, redline, measured drawing | `local:dimensional-drawing` |
 | **MIXED** | 두 개 이상 신호 동시 등장 (예: "아키텍처 + 성능 수치") | architecture+numeric both present | ARCHITECTURE first, then NUMERIC |
 
-**Classification rule**: keyword count wins, with one precedence: DRAWING wins over ARCHITECTURE whenever any DRAWING signal is present. "Component" is a generic ARCHITECTURE signal, while a request for a 도면 / anatomy / spec sheet of a component asks for a measured drawing of that one component, not a system diagram. Otherwise, if the user supplies BOTH structural nouns (component/service/flow) AND numeric nouns (chart/metric/percentage), treat as MIXED and execute both in order.
+**Classification rule**: keyword count wins, with one precedence: DRAWING wins over ARCHITECTURE when a DRAWING signal is present AND the subject is one UI component, page or physical product (a file, URL, screenshot or named component). "Component" is a generic ARCHITECTURE signal, while a request for a 도면 / anatomy / spec sheet of a UI component asks for a measured drawing of that one component, not a system diagram. A DRAWING word aimed at a system, service or request flow ("서비스 구조 뜯어서 그려줘", "anatomy of the request flow") stays ARCHITECTURE. Otherwise, if the user supplies BOTH structural nouns (component/service/flow) AND numeric nouns (chart/metric/percentage), treat as MIXED and execute both in order.
 
 ## Execution
 

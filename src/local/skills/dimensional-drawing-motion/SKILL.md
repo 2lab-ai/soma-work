@@ -65,9 +65,13 @@ Total ~11 s. Keep films 8–15 s.
 
 ## Running in soma-work
 
-soma-work has no claude.ai Motion artifact, so the **headless adapter is the path here**. Playwright and ffmpeg are already on the host, and `render.mjs` resolves `playwright` from the soma-work install, so run it in place:
+soma-work has no claude.ai Motion artifact, so the **headless adapter is the path here**. `render.mjs` resolves `playwright` from the soma-work install, so run it in place. It also needs `ffmpeg` on `PATH` for the MP4 (stills do not):
 
 ```bash
+# Bot-session shells do not set CLAUDE_PLUGIN_ROOT: derive it from this skill's
+# "Base directory for this skill: …" header (<plugin root>/skills/dimensional-drawing-motion).
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
+command -v ffmpeg >/dev/null || echo "ffmpeg missing: stills work, MP4 does not"
 P="$CLAUDE_PLUGIN_ROOT/skills/dimensional-drawing-motion"
 cp "$P/templates/scene-dialog.js" "$(pwd)/scene-<slug>.js"     # adapt this copy, never the template
 node "$CLAUDE_PLUGIN_ROOT/skills/dimensional-drawing-motion/adapters/headless/render.mjs" \
@@ -78,7 +82,7 @@ node "$CLAUDE_PLUGIN_ROOT/skills/dimensional-drawing-motion/adapters/headless/re
   --fps 30 --out "$(pwd)/<slug>.mp4"
 ```
 
-- Do not run `npm install` inside the plugin directory. Every session shares it, and the adapter's `postinstall` downloads a browser. If `playwright not found` appears, copy `adapters/headless` into the working folder and install there.
+- Do not run `npm install` inside the plugin directory. Every session shares it, and the adapter's `postinstall` downloads a browser. If it prints ``playwright not found: run `npm install` in this folder``, ignore that advice for the plugin directory: copy `adapters/headless` into the working folder and install there. The same applies to the `npm install` step in `adapters/headless/README.md`.
 - Use `--fps 30` unless the user asks for 60. It renders twice as fast and is enough for a Slack preview.
 - Upload the MP4 and one still with `mcp__slack-mcp__send_media`. Reply with the film length and the beats, as below.
 

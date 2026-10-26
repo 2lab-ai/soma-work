@@ -104,6 +104,32 @@ describe('local:dimensional-drawing skill — RED contract', () => {
     expect(md).toMatch(/send_file/);
   });
 
+  it('derives the plugin root when the bot shell has no CLAUDE_PLUGIN_ROOT', () => {
+    expect(readSkill()).toMatch(/export CLAUDE_PLUGIN_ROOT="\$\{CLAUDE_PLUGIN_ROOT:-<base directory>\/\.\.\/\.\.\}"/);
+  });
+
+  it('every flag the delivery commands pass exists in the html renderer / server parsers', () => {
+    const md = readSkill();
+    const delivery = md.slice(md.indexOf('## Delivery in soma-work'));
+    const parsers: Record<string, string> = {
+      'html/renderer/render.mjs': readFileSync(resolve(SKILL_ROOT, '..', 'html', 'renderer', 'render.mjs'), 'utf8'),
+      'html/server/serve.mjs': readFileSync(resolve(SKILL_ROOT, '..', 'html', 'server', 'serve.mjs'), 'utf8'),
+    };
+    let checked = 0;
+    for (const [script, source] of Object.entries(parsers)) {
+      const commands = delivery.split('node "$CLAUDE_PLUGIN_ROOT/skills/').filter((c) => c.startsWith(script));
+      expect({ script, documented: commands.length > 0 }).toEqual({ script, documented: true });
+      for (const command of commands) {
+        const body = command.slice(0, command.indexOf('```'));
+        for (const flag of body.match(/--[a-z][a-z-]*/g) ?? []) {
+          expect({ script, flag, parsed: source.includes(`'${flag}'`) }).toEqual({ script, flag, parsed: true });
+          checked++;
+        }
+      }
+    }
+    expect(checked).toBeGreaterThanOrEqual(7);
+  });
+
   it('hands animation off to the motion skill', () => {
     expect(readSkill()).toMatch(/dimensional-drawing-motion/);
   });
@@ -126,5 +152,10 @@ describe('local:dimensional-drawing skill — RED contract', () => {
     expect(router).toMatch(/도면/);
     expect(router).toMatch(/anatomy/i);
     expect(router).toMatch(/DRAWING[^\n]*(wins|beats|precedence|over)[^\n]*ARCHITECTURE/i);
+    // A bare "take apart" is too broad: it must be scoped to a site or component.
+    const row = router.split('\n').find((l) => l.startsWith('| **DRAWING**')) ?? '';
+    expect(row).not.toMatch(/(\|\s*|,\s*)뜯어줘/);
+    // A drawing word aimed at a system or flow stays ARCHITECTURE.
+    expect(router).toMatch(/request flow[^\n]*stays ARCHITECTURE/);
   });
 });

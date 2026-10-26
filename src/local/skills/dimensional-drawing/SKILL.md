@@ -85,7 +85,13 @@ Pitfalls: a CSS `fill` rule on a class overrides a `fill="url(#hatch)"` attribut
 
 ## Delivery in soma-work
 
-soma-work runs in Slack, not claude.ai, so there is no Artifact to publish. Replace the publish step with this. `$CLAUDE_PLUGIN_ROOT` is the zworkflow plugin root (the same variable the `html` skill uses).
+soma-work runs in Slack, not claude.ai, so there is no Artifact to publish. Replace the publish step with this.
+
+`$CLAUDE_PLUGIN_ROOT` is the zworkflow plugin root. Bot-session shells do not set it, so export it first from this skill's `Base directory for this skill: …` header, which points at `<plugin root>/skills/dimensional-drawing`:
+
+```bash
+export CLAUDE_PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-<base directory>/../..}"
+```
 
 1. **Measure.** Playwright ships with soma-work. Resolve it from the `html` skill renderer so no install is needed, and walk the box tree as described in [Measuring a UI component](#measuring-a-ui-component):
 
