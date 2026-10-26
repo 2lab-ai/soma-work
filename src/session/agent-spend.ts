@@ -347,3 +347,26 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
     },
   };
 }
+
+/**
+ * Startup backfill: subagents that ended before this process started never
+ * fire another event, so nothing would read their spend. Read every loaded
+ * session once, one at a time (bounded disk load), as a turn end would —
+ * ended and out-of-sight agents are sealed. `onChanged` names each session
+ * whose records changed (to push its card). A session that fails to read is
+ * skipped; it never stops the rest.
+ */
+export async function backfillAgentSpend(
+  sessions: Iterable<[string, AgentSpendHolder]>,
+  reader: AgentSpendReader,
+  onChanged: (sessionKey: string) => void,
+): Promise<void> {
+  for (const [key, session] of sessions) {
+    try {
+      if (!session.agents?.agents.length) continue;
+      if (await reader.refresh(session, { force: true })) onChanged(key);
+    } catch {
+      // Spend is a display number: one unreadable session never blocks the rest.
+    }
+  }
+}

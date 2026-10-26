@@ -21,7 +21,7 @@ import {
   stampWorkLogAgent,
   subagentSpendOf,
 } from '../agent-registry';
-import { createAgentSpendReader } from '../agent-spend';
+import { backfillAgentSpend, createAgentSpendReader } from '../agent-spend';
 
 const SID = '11111111-2222-4333-8444-555555555555';
 const T0 = Date.parse('2026-10-26T00:00:00Z');
@@ -399,5 +399,50 @@ describe('agent spend — registry: persisted, and the subagent sum survives the
     expect(sum.cacheReadTokens).toBe(1050);
     expect(sum.costUsd).toBeCloseTo(1.05);
     expect(subagentSpendOf({ nextN: 1, agents: [] })).toBeUndefined();
+  });
+});
+
+describe('agent spend — startup backfill (subagents that ended before this process)', () => {
+  it('reads every loaded session once, seals what ended, and names the sessions that changed', async () => {
+    writeAgent('aaaa1111', [assistant('m1', 'claude-opus-5-5', [1, 2, 3, 4])]);
+    const done = holder();
+    // Loaded after a restart: what was running is out of sight now.
+    done.agents!.agents[0].status = 'unknown';
+    const empty = { sessionId: SID, agents: undefined };
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => T0 });
+    const changed: string[] = [];
+    await backfillAgentSpend(
+      [
+        ['C1:t1', done],
+        ['C1:t2', empty],
+      ],
+      reader,
+      (key) => changed.push(key),
+    );
+    expect(done.agents!.agents[0].spend).toMatchObject({ calls: 1, inputTokens: 1, outputTokens: 2 });
+    expect(done.agents!.agents[0].spendFinal).toBe(true);
+    expect(changed).toEqual(['C1:t1']);
+  });
+
+  it('one session that fails to read does not stop the others', async () => {
+    writeAgent('aaaa1111', [assistant('m1', 'claude-opus-5-5', [1, 0, 0, 0])]);
+    const ok = holder();
+    const broken = {
+      sessionId: SID,
+      get agents(): AgentRegistry {
+        throw new Error('boom');
+      },
+    };
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => T0 });
+    const changed: string[] = [];
+    await backfillAgentSpend(
+      [
+        ['C1:bad', broken as never],
+        ['C1:ok', ok],
+      ],
+      reader,
+      (key) => changed.push(key),
+    );
+    expect(changed).toEqual(['C1:ok']);
   });
 });
