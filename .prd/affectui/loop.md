@@ -13,13 +13,13 @@ Status: 머지 대기(CI) · 에픽 #437 · PR #450–#456(스택) · 후속 #44
 
 | ssot-task | 서브이슈 | 레퍼런스 | 브랜치 | 문서 | PR | 상태 |
 |---|---|---|---|---|---|---|
-| T3.1 | #438 | Agent Inbox | `feat/dashboard-affectui-agent-inbox` | [`re-agent-inbox.md`](re-agent-inbox.md) | #450 | PR 리뷰 R2 grok·fable APPROVE · astra 진행 |
+| T3.1 | #438 | Agent Inbox | `feat/dashboard-affectui-agent-inbox` | [`re-agent-inbox.md`](re-agent-inbox.md) | #450 | PR 리뷰 R3 만장일치 (b39ef87) |
 | T3.2 | #439 | Agent Run | `feat/dashboard-affectui-agent-run` | [`re-agent-run.md`](re-agent-run.md) | #452 | PR 리뷰 R3 만장일치 |
 | T3.3 | #440 | AI Answer | `feat/dashboard-affectui-ai-answer` | [`re-ai-answer.md`](re-ai-answer.md) | #454 | PR 리뷰 R2 만장일치 |
 | T3.4 | #441 | Context Window | `feat/dashboard-affectui-context-window` | [`re-context-window.md`](re-context-window.md) | #451 | PR 리뷰 R2 만장일치 |
 | T3.5 | #442 | Model Picker | `feat/dashboard-affectui-model-picker` | [`re-model-picker.md`](re-model-picker.md) | #453 | PR 리뷰 R2 만장일치 |
 | T3.6 | #443 | Memory Panel | `feat/dashboard-affectui-memory-panel` | [`re-memory-panel.md`](re-memory-panel.md) | #456 | PR 리뷰 R2 만장일치 |
-| T3.7 | #444 | Agent Queue | `feat/dashboard-affectui-agent-queue` | [`re-agent-queue.md`](re-agent-queue.md) | #455 | PR 리뷰 R3 grok·fable APPROVE · astra 진행 |
+| T3.7 | #444 | Agent Queue | `feat/dashboard-affectui-agent-queue` | [`re-agent-queue.md`](re-agent-queue.md) | #455 | PR 리뷰 R4 (cfd0c44) |
 
 ## 병합 순서
 7개 브랜치가 같은 파일(`src/conversation/dashboard.ts`)의 서로 다른 구역을 고친다. 각 작업자는 자기 구역 옆에만 CSS·함수를
@@ -52,15 +52,25 @@ Memory Panel은 `settings-memory-tab.ts`만 고친다 — 열린 PR #380과 같�
 
 | PR | R1 | 차단 → 수정 | 이후 라운드 |
 |---|---|---|---|
-| #450 보드 | grok REJECT · fable APPROVE | 첫 낭독 유실, 카드 Approve 호버/잉크 둘 → b34b9f3 | R2 grok·fable APPROVE · astra 진행 |
+| #450 보드 | grok REJECT · fable APPROVE | 첫 낭독 유실, 카드 Approve 호버/잉크 둘 → b34b9f3 | R2 grok·fable APPROVE · astra REJECT(응답 가능한 Approve 둘이 모두 잉크, 형제 인스턴스 카드 잉크 둘) → b39ef87 → R3 만장일치 |
 | #451 컨텍스트 | grok·fable APPROVE · astra REJECT | POST 결과 경쟁, `/new` 뒤 옛 압축 상태 → 2eaa434 | R2 만장일치 |
 | #452 세션 패널 | grok REJECT · astra REJECT · fable APPROVE | 펼침 순서, 포커스된 Approve 재바인딩(오승인) → 5b34149 | R2 astra REJECT(질문 뜻 바뀌어도 버튼 재사용) → be279ec → R3 만장일치 |
 | #453 모델 선택기 | 3 REJECT | Tab 이탈, fixed 조상 스크롤, 인덱스 선택 → d7aff1c·5ed00e5 | R2 만장일치 |
 | #454 답변 카드 | grok·astra REJECT · fable APPROVE | 진행 중 fetch 경쟁, 코드 span 라벨 링크, 전송 실패 표시 → c2c0824 | R2 만장일치 |
-| #455 가용량·크론 | grok REJECT · fable APPROVE | 성공 기록 진행 중 판정 → afa69fc | R2 fable REJECT(그 수정이 서버 실제 동작과 어긋남) → 8e4dd6c(스트립 규칙 복귀) → R3 grok·fable APPROVE · astra 진행 |
+| #455 가용량·크론 | grok REJECT · fable APPROVE | 성공 기록 진행 중 판정 → afa69fc | R2 fable REJECT(그 수정이 서버 실제 동작과 어긋남) → 8e4dd6c(스트립 규칙 복귀) → R3 grok·fable APPROVE · astra REJECT(익명 계정 이름 충돌로 다른 계정 카드가 열림) → cfd0c44 → R4 |
 | #456 기억 탭 | grok REJECT · fable·astra APPROVE | 공백만 바꾼 편집 미저장, 길게 누른 Enter 연속 삭제 → 7b2ddf7·ef67f50 | R2 만장일치 |
 
 비차단(P2/P3)은 #457에 모았다.
+
+## 통합 화면 (7개 층을 모두 쌓은 꼭대기, 고정 데이터 미리보기)
+
+| 화면 | 캡처 |
+|---|---|
+| 보드 — 펼친 카드(상태 태그·주 버튼 하나·모델 트리거) | [`after-desk-light-expanded.jpg`](assets/after-desk-light-expanded.jpg) |
+| 세션 패널 — 계획 카드 · 컨텍스트 셀 필드 · 세부 · 가용량/크론 | [`after-desk-light-panel-info.jpg`](assets/after-desk-light-panel-info.jpg) · 다크 [`after-desk-dark-panel-info.jpg`](assets/after-desk-dark-panel-info.jpg) · 폰 [`after-phone-light-panel-info.jpg`](assets/after-phone-light-panel-info.jpg) |
+| 모델 메뉴 — 막대·effort·가격 트레이 | [`after-desk-light-model-menu.jpg`](assets/after-desk-light-model-menu.jpg) |
+| 답변 카드 — 링크 카드·칩·응답 시간 | [`after-desk-light-answer.jpg`](assets/after-desk-light-answer.jpg) |
+| 설정 › 기억 — 칩·그룹·트레이 | [`after-desk-light-memory.jpg`](assets/after-desk-light-memory.jpg) |
 
 ## 사건 기록
 - 2026-10-26 18:50 KST — 유저 지시 수신. 레퍼런스 7종 원천 수집(문서 청크·CSS·문구·캡처). 오픈소스 저장소에 7종 없음 확인(유료 항목).
