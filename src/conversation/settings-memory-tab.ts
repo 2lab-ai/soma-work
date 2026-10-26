@@ -29,8 +29,28 @@ export const MEMORY_TAB_HTML = `<div data-tab="memory" class="page" hidden>
     <div id="mem-status" class="status" role="status" aria-live="polite"></div>
     <div id="mem-recover"></div>
     <section class="group" id="m-l1" aria-labelledby="h-m-l1">
-      <header><h2 id="h-m-l1">개인 메모리</h2><p>짧은 항목 목록입니다. 용량이 차면 에이전트가 새로 기억하지 못하니, 오래된 항목을 지우거나 합치세요.</p></header>
-      <div id="mem-l1-body" class="l1-grid"><div class="notice">불러오는 중…</div></div>
+      <header><h2 id="h-m-l1">개인 메모리<span id="l1-total" class="mm-count" aria-hidden="true"></span></h2><p>짧은 항목 목록입니다. 용량이 차면 에이전트가 새로 기억하지 못하니, 오래된 항목을 지우거나 합치세요.</p></header>
+      <div id="l1-panel" class="mm">
+        <div id="l1-filters" class="mm-filters">
+          <div id="l1-chips" class="mm-chips" role="radiogroup" aria-label="저장소" onkeydown="l1ChipKey(event)">
+            <button type="button" id="l1-chip-all" class="mm-chip" role="radio" aria-checked="true" tabindex="0" onclick="l1Pick('')">전체 <span id="l1-n-all" class="mm-chip-n"></span></button>
+            <button type="button" id="l1-chip-memory" class="mm-chip" role="radio" aria-checked="false" tabindex="-1" onclick="l1Pick('memory')">에이전트 노트 <span id="l1-n-memory" class="mm-chip-n"></span></button>
+            <button type="button" id="l1-chip-user" class="mm-chip" role="radio" aria-checked="false" tabindex="-1" onclick="l1Pick('user')">사용자 프로필 <span id="l1-n-user" class="mm-chip-n"></span></button>
+          </div>
+          <div id="l1-search" class="mm-search" inert>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><circle cx="6" cy="6" r="4.25" stroke="currentColor" stroke-width="1.5"/><path d="M9.25 9.25 12 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+            <input type="search" id="l1-q" placeholder="항목 검색" aria-label="개인 메모리 검색" autocomplete="off" oninput="l1SearchInput(this.value)" onkeydown="l1SearchKey(event)">
+            <button type="button" class="mm-icon" aria-label="검색 닫기" onclick="l1SearchClose()">&times;</button>
+          </div>
+          <button type="button" id="l1-search-open" class="mm-icon mm-search-open" aria-label="개인 메모리 검색" aria-expanded="false" aria-controls="l1-search" onclick="l1SearchOpen()"><svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true"><circle cx="6" cy="6" r="4.25" stroke="currentColor" stroke-width="1.5"/><path d="M9.25 9.25 12 12" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg></button>
+        </div>
+        <div id="mem-l1-body" class="mm-list"><div class="notice">불러오는 중…</div></div>
+        <div id="l1-foot" class="mm-foot" onmouseenter="l1TrayHold('hover', true)" onmouseleave="l1TrayHold('hover', false)">
+          <span id="l1-caption" class="mm-caption" aria-hidden="true"></span>
+          <span id="l1-live" class="mm-sr" role="status" aria-live="polite" aria-atomic="true"></span>
+          <button type="button" id="l1-undo" class="mm-undo" hidden onclick="l1Undo()" onfocus="l1TrayHold('focus', true)" onblur="l1TrayHold('focus', false)">되돌리기</button>
+        </div>
+      </div>
     </section>
     <section class="group" id="m-pages" aria-labelledby="h-m-pages">
       <header><h2 id="h-m-pages">지식 페이지</h2><p>주제별로 오래 남길 지식입니다. Current는 지금의 이해, History는 날짜별 변경 기록입니다.</p></header>
@@ -62,23 +82,98 @@ export const MEMORY_TAB_HTML = `<div data-tab="memory" class="page" hidden>
 export const MEMORY_TAB_CSS = String.raw`
 .navbtn { font: inherit; font-size: 13px; text-align: left; color: var(--text-secondary); background: none; border: 0; padding: 6px 10px; border-radius: 6px; cursor: pointer; }
 .navbtn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-.l1-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px; padding: 16px; }
-.l1-card h3 { font-size: 14px; }
-.l1-card .sub { font-size: 12px; color: var(--text-secondary); }
+/* ── 개인 메모리 (L1) — memory panel ── */
+/* store chips · search · one group per store · in-place edit · tray with undo
+   (.prd/affectui/re-memory-panel.md D1–D17); settings tokens only. */
+.mm { --mm-fold: 320ms; --mm-warn: var(--yellow); container-type: inline-size; }
+[data-theme="light"] .mm { --mm-warn: #9a6700; }
+.mm:not([data-ready]) .mm-filters, .mm:not([data-ready]) .mm-foot { display: none; }
+.mm-count { display: inline-block; min-width: 20px; height: 20px; margin-left: 8px; padding: 0 6px; border-radius: 5px; background: var(--surface-raised); font-size: 12px; font-weight: 500; line-height: 20px; text-align: center; color: var(--text-tertiary); font-variant-numeric: tabular-nums; vertical-align: 1px; letter-spacing: 0; }
+.mm-count:empty { display: none; }
+.mm-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+.mm :is(button, input, textarea):focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+.mm-filters { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px; padding: 10px 10px 10px 14px; border-bottom: 1px solid var(--border); }
+.mm-chips, .mm-search { grid-area: 1 / 1; transition: opacity 220ms ease, filter 220ms ease; }
+.mm-chips { display: flex; gap: 4px; min-width: 0; margin: -2px -4px; padding: 2px 4px; overflow-x: auto; scrollbar-width: none; mask-image: linear-gradient(90deg, black calc(100% - 14px), transparent); }
+.mm-chips::-webkit-scrollbar { display: none; }
+.mm-chip { display: inline-flex; flex: none; align-items: center; gap: 5px; height: 28px; padding: 0 9px; font: inherit; font-size: 12.5px; color: var(--text-secondary); background: none; border: 0; border-radius: 8px; white-space: nowrap; cursor: pointer; transition: background-color var(--dur-press) ease, color var(--dur-press) ease, box-shadow var(--dur-press) ease; }
+.mm-chip[aria-checked="true"] { background: var(--surface-raised); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--border); }
+.mm-chip-n { font-size: 11.5px; font-weight: 400; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.mm-search { display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 2px 0 9px; border-radius: 8px; background: var(--surface-raised); color: var(--text-tertiary); opacity: 0; visibility: hidden; }
+.mm-search input { flex: 1; min-width: 0; height: 28px; padding: 0; font: inherit; font-size: 13px; color: var(--text); background: none; border: 0; outline: none; }
+.mm-search input::placeholder { color: var(--text-tertiary); }
+.mm-search input::-webkit-search-cancel-button { display: none; }
+.mm .mm-search input:focus-visible { outline: none; }
+.mm-search:focus-within { box-shadow: inset 0 0 0 1px var(--border-focus); }
+.mm-filters[data-searching] .mm-chips { opacity: 0; filter: blur(2px); }
+.mm-filters[data-searching] .mm-search { grid-area: 1 / 1 / 2 / 3; opacity: 1; visibility: visible; }
+.mm-filters[data-searching] .mm-search-open { opacity: 0; visibility: hidden; }
+.mm-icon { display: grid; flex: none; place-items: center; width: 28px; height: 28px; padding: 0; font: inherit; font-size: 16px; line-height: 1; color: var(--text-tertiary); background: none; border: 0; border-radius: 8px; cursor: pointer; transition: background-color var(--dur-press) ease, color var(--dur-press) ease, opacity 200ms ease; }
+.mm-search-open { grid-area: 1 / 2; }
+.mm-list { padding: 2px 8px 6px; }
+.mm-fold { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows var(--mm-fold) var(--ease-out), opacity var(--dur-fade) ease; }
+.mm-fold[data-open] { grid-template-rows: 1fr; opacity: 1; transition: grid-template-rows var(--mm-fold) var(--ease-out), opacity 240ms ease 60ms; }
+.mm-fold[data-leaving] { transition: grid-template-rows var(--mm-fold) var(--ease-out), opacity 200ms ease, filter 200ms ease; filter: blur(2px); }
+.mm-clip { min-height: 0; overflow: hidden; }
+.mm-ghead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 4px 16px; padding: 12px 8px 4px; }
+.mm-ghead h3 { font-size: 13px; font-weight: 600; }
+.mm-ghead .sub { margin-left: 4px; font-size: 12px; font-weight: 400; color: var(--text-tertiary); }
+.mm-ghead .meter-line { flex: 0 1 280px; margin: 0; }
+.mm .meter-line.is-warn, .mm-over { color: var(--mm-warn); }
+.mm-items { list-style: none; }
+.mm-row { padding: 6px 8px 5px; border-radius: 8px; transition: background-color var(--dur-press) ease; }
+.mm-row:hover, .mm-row:focus-within, .mm-row[data-editing] { background: var(--surface-raised); }
+.mm-text { font-size: 13px; line-height: 20px; color: var(--text); white-space: pre-wrap; overflow-wrap: anywhere; }
+.mm-meta { display: flex; align-items: center; gap: 6px; min-height: 26px; font-size: 12px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.mm-src { min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.mm-acts { display: inline-flex; flex: none; align-items: center; gap: 2px; margin: -1px -4px -1px auto; opacity: 0; transition: opacity 180ms ease; }
+.mm-row:hover .mm-acts, .mm-row:focus-within .mm-acts, .mm-acts.is-on { opacity: 1; }
+.mm-act { height: 26px; padding: 0 9px; font: inherit; font-size: 12.5px; font-weight: 500; color: var(--text-secondary); background: none; border: 0; border-radius: 8px; cursor: pointer; transition: background-color var(--dur-press) ease, color var(--dur-press) ease, opacity var(--dur-press) ease; }
+.mm-act-main { background: var(--text); color: var(--surface); }
+.mm-act:disabled { opacity: 0.4; cursor: default; }
+.mm textarea.mm-edit { display: block; width: 100%; min-height: 20px; margin: 0; padding: 0; font-size: 13px; line-height: 20px; color: var(--text); background: none; border: 0; border-radius: 0; resize: none; overflow: hidden; }
+.mm textarea.mm-edit:focus-visible { outline: none; }
+.mm-row[data-editing]:focus-within, .mm-new:focus-within { box-shadow: inset 0 0 0 1px var(--border-focus); }
+.mm-empty { padding: 4px 8px 8px; font-size: 12.5px; color: var(--text-tertiary); }
+.mm-nomatch { padding: 18px 8px 12px; text-align: center; }
+.mm-addline { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0 8px; }
+.mm-add { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; font: inherit; font-size: 13px; color: var(--text-tertiary); background: none; border: 0; border-radius: 8px; cursor: pointer; transition: background-color var(--dur-press) ease, color var(--dur-press) ease; }
+.mm-clear { height: 28px; padding: 0 8px; font: inherit; font-size: 12px; color: var(--text-tertiary); background: none; border: 0; border-radius: 8px; cursor: pointer; transition: background-color var(--dur-press) ease, color var(--dur-press) ease; }
+.mm-new { margin: 2px 0 8px; padding: 8px 8px 6px; border-radius: 8px; background: var(--surface-raised); }
+.mm-new label { display: block; margin-bottom: 4px; }
+.mm-new .line { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; margin-top: 6px; }
+.mm-foot { display: flex; align-items: center; gap: 8px; min-height: 40px; padding: 4px 8px 4px 16px; border-top: 1px solid var(--border); border-radius: 0 0 9px 9px; background: var(--bg); }
+.mm-caption { display: grid; flex: 1; min-width: 0; font-size: 12.5px; color: var(--text-tertiary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.mm-caption b { font-weight: 600; color: var(--text); }
+.mm-swap { grid-area: 1 / 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; animation: mm-swap-in 320ms ease both; }
+.mm-swap[data-out] { animation: mm-swap-out 220ms ease both; }
+.mm-forgot { display: flex; min-width: 0; }
+.mm-flat { flex: none; white-space: pre; }
+.mm-quote { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.mm-undo { display: inline-flex; flex: none; align-items: center; height: 28px; padding: 0 10px; font: inherit; font-size: 12.5px; font-weight: 600; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; cursor: pointer; animation: mm-swap-in 300ms ease both; }
+.mm-undo[hidden] { display: none; }
+@keyframes mm-swap-in { from { opacity: 0; filter: blur(2px); } }
+@keyframes mm-swap-out { to { opacity: 0; filter: blur(2px); } }
+@media (hover: hover) and (pointer: fine) {
+  .mm-chip:hover, .mm-icon:hover, .mm-add:hover { background: var(--surface-raised); color: var(--text); }
+  .mm-act:hover { background: var(--surface); color: var(--text); }
+  .mm-act-main:hover { background: var(--text); color: var(--surface); opacity: 0.86; }
+  .mm-act-del:hover, .mm-clear:hover { background: var(--danger-bg); color: var(--red); }
+  .mm-undo:hover { border-color: var(--accent); }
+}
+@container (max-width: 480px) { .mm-cap { display: none; } .mm-ghead .meter-line { flex-basis: 100%; } }
+@container (max-width: 340px) { .mm-chip-n { display: none; } .mm-chip { padding: 0 7px; } }
+@media (pointer: coarse) { .mm-acts { opacity: 1; } .mm-act, .mm-chip, .mm-clear { height: 32px; } .mm-icon { width: 32px; height: 32px; } .mm-meta { min-height: 32px; } .mm-add, .mm-undo { height: 36px; } }
+@media (prefers-reduced-motion: reduce) { .mm *, .mm *::before, .mm *::after { animation: none !important; transition: none !important; } }
 .meter-line { display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .meter-line meter { flex: 1; height: 8px; }
 .meter-line.is-warn { color: var(--yellow); }
 .meter-line.is-full { color: var(--red); }
-.entries { list-style: none; display: flex; flex-direction: column; gap: 6px; }
-.entries li { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--surface-raised); }
-.entries .text { white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; }
-.entries .actions { display: flex; gap: 8px; margin-top: 6px; }
 textarea { width: 100%; font: inherit; font-size: 13px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; padding: 8px; resize: vertical; }
 textarea:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .counter { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 .counter.is-over { color: var(--red); }
-.l1-add { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
-.l1-add .line { display: flex; gap: 8px; align-items: center; justify-content: space-between; }
+/* ── end 개인 메모리 (L1) ── */
 .pages-grid { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 16px; padding: 16px; }
 .pages-list { display: flex; flex-direction: column; gap: 8px; }
 .pages-list input { font: inherit; font-size: 13px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
@@ -200,41 +295,69 @@ async function loadMemory(force) {
 }
 
 // ── 개인 메모리 (L1) ──
-function renderL1Card(target, block, editing) {
+// One panel (affectUI Memory Panel, #443 — .prd/affectui/re-memory-panel.md): store chips,
+// search, one group per store, in-place edit, a delete that folds away at once with a 5 s
+// undo on the tray. The chrome (chips, search, tray) is static markup; paintL1 repaints the
+// groups only. View state lives on paintL1 like the open editor: paintL1.view (chip +
+// search), paintL1.adding (open add editors).
+//
+// One store group. ctx = { view, adding } (absent: everything shown, add editor folded).
+// Name and first three parameters are the card renderer's (settings-memory-tab.test.ts loads it).
+function renderL1Card(target, block, editing, ctx) {
   var pct = block.charLimit > 0 ? Math.round((block.totalChars / block.charLimit) * 100) : 0;
   var state = pct >= 100 ? ' is-full' : pct >= 80 ? ' is-warn' : '';
-  var html = '<div class="l1-card" id="l1-' + target + '"><h3>' + esc(L1_LABELS[target]) + ' <span class="sub">' + esc(L1_FILES[target]) + '</span></h3>'
-    + '<div class="meter-line' + state + '"><meter min="0" max="' + block.charLimit + '" low="' + Math.round(block.charLimit * 0.8) + '" high="' + Math.round(block.charLimit * 0.95) + '" optimum="0" value="' + block.totalChars + '" aria-label="' + escAttr(L1_LABELS[target] + ' 사용량') + '"></meter>'
-    + '<span>' + fmtNum(block.totalChars) + ' / ' + fmtNum(block.charLimit) + '자' + (pct >= 100 ? ' · 가득 참' : '') + '</span></div>';
+  var view = ctx && ctx.view;
+  var inView = !view || !view.target || view.target === target;
+  var q = view && view.q ? String(view.q).trim() : '';
+  var adding = !!(ctx && ctx.adding);
   var entries = block.entries || [];
-  if (!entries.length) html += '<p class="lock">아직 항목이 없습니다. Slack에서 "기억해줘"라고 하거나 아래에서 추가하세요.</p>';
-  html += '<ol class="entries">';
+  var rows = '';
+  var shown = 0;
   for (var i = 0; i < entries.length; i++) {
-    if (editing && editing.index === i) {
-      html += '<li><textarea id="l1-edit-' + target + '" rows="3" aria-label="' + escAttr(L1_LABELS[target] + ' ' + (i + 1) + '번 수정') + '">' + esc(editing.text) + '</textarea>'
-        + '<div class="actions"><button type="button" class="btn primary" onclick="l1Save(\'' + target + '\',' + i + ')">저장</button>'
-        + '<button type="button" class="btn" onclick="l1Cancel()">취소</button></div></li>';
+    var isEdit = editing && editing.index === i;
+    var show = inView && (!view || isEdit || l1Matches(target, entries[i], view));
+    if (show) shown++;
+    var row;
+    if (isEdit) {
+      var n = String(editing.text || '').trim().length;
+      row = '<div class="mm-row" data-editing><textarea id="l1-edit-' + target + '" class="mm-edit" rows="1" aria-label="' + escAttr(L1_LABELS[target] + ' ' + (i + 1) + '번 수정') + '" onkeydown="l1EditKey(event,\'' + target + '\',' + i + ')" oninput="l1EditInput(this,\'' + target + '\')">' + esc(editing.text) + '</textarea>'
+        + '<div class="mm-meta"><span class="counter' + (n > block.perEntryCap ? ' is-over' : '') + '" id="l1-ecount-' + target + '">' + fmtNum(n) + ' / ' + fmtNum(block.perEntryCap) + '자</span>'
+        + '<span class="mm-acts is-on"><button type="button" class="mm-act" onclick="l1Cancel()">취소</button>'
+        + '<button type="button" class="mm-act mm-act-main" onclick="l1Save(\'' + target + '\',' + i + ')">저장</button></span></div></div>';
     } else {
-      html += '<li><div class="text">' + esc(entries[i]) + '</div><div class="actions">'
-        + '<button type="button" class="btn link" onclick="l1EditStart(\'' + target + '\',' + i + ')">수정</button>'
-        + '<button type="button" class="btn link" onclick="l1Delete(\'' + target + '\',' + i + ')">삭제</button></div></li>';
+      var len = entries[i].length;
+      var short = len > 40 ? entries[i].slice(0, 40) + '…' : entries[i];
+      row = '<div class="mm-row"><p class="mm-text">' + esc(entries[i]) + '</p><div class="mm-meta">'
+        + '<span class="mm-src">#' + (i + 1) + ' · ' + fmtNum(len) + '자' + (len > block.perEntryCap ? ' · <span class="mm-over">한 항목 한도 초과</span>' : '') + '</span>'
+        + '<span class="mm-acts"><button type="button" class="mm-act" id="l1-ed-' + target + '-' + i + '" aria-label="' + escAttr('수정: “' + short + '”') + '" onclick="l1EditStart(\'' + target + '\',' + i + ')">수정</button>'
+        + '<button type="button" class="mm-act mm-act-del" id="l1-del-' + target + '-' + i + '" aria-label="' + escAttr('삭제: “' + short + '”') + '" onclick="l1Delete(\'' + target + '\',' + i + ')">삭제</button></span></div></div>';
     }
+    rows += '<li><div class="mm-fold" id="l1-f-' + target + '-' + i + '"' + (show ? ' data-open' : ' inert') + '><div class="mm-clip">' + row + '</div></div></li>';
   }
-  html += '</ol>';
-  if (_memUndo && _memUndo.target === target) {
-    html += '<p class="status is-ok">삭제했습니다. <button type="button" class="btn link" onclick="l1Undo()">되돌리기</button></p>';
-  }
-  html += '<div class="l1-add"><label class="lock" for="l1-new-' + target + '">새 항목 (한 항목 최대 ' + fmtNum(block.perEntryCap) + '자)</label>'
-    + '<textarea id="l1-new-' + target + '" rows="2" oninput="l1Count(\'' + target + '\')"></textarea>'
+  var groupOpen = inView && (shown > 0 || !q);
+  var html = '<section id="l1-g-' + target + '" class="mm-group mm-fold"' + (groupOpen ? ' data-open' : ' inert') + ' aria-labelledby="l1-h-' + target + '"><div class="mm-clip">'
+    + '<div class="mm-ghead"><h3 id="l1-h-' + target + '">' + esc(L1_LABELS[target]) + ' <span class="sub">' + esc(L1_FILES[target]) + '</span></h3>'
+    + '<div class="meter-line' + state + '"><meter min="0" max="' + block.charLimit + '" low="' + Math.round(block.charLimit * 0.8) + '" high="' + Math.round(block.charLimit * 0.95) + '" optimum="0" value="' + block.totalChars + '" aria-label="' + escAttr(L1_LABELS[target] + ' 사용량') + '"></meter>'
+    + '<span>' + fmtNum(block.totalChars) + ' / ' + fmtNum(block.charLimit) + '자' + (pct >= 100 ? ' · 가득 참' : '') + '</span></div></div>';
+  if (!entries.length) html += '<p class="mm-empty">비어 있음 — Slack에서 "기억해줘"라고 하거나 아래에서 추가하세요.</p>';
+  html += '<ol class="mm-items">' + rows + '</ol>';
+  // Add: a button that unfolds this store's editor (its box stays in the DOM while folded — drafts survive, review R9).
+  html += '<div class="mm-fold" id="l1-addbtn-' + target + '"' + (adding ? ' inert' : ' data-open') + '><div class="mm-clip"><div class="mm-addline">'
+    + '<button type="button" class="mm-add" id="l1-add-' + target + '" aria-expanded="' + (adding ? 'true' : 'false') + '" aria-controls="l1-newbox-' + target + '" onclick="l1AddOpen(\'' + target + '\')">+ ' + esc(L1_LABELS[target]) + '에 추가</button>'
+    + (entries.length ? '<button type="button" class="mm-clear" onclick="l1Clear(\'' + target + '\')">모두 지우기</button>' : '') + '</div></div></div>'
+    + '<div class="mm-fold" id="l1-newbox-' + target + '"' + (adding ? ' data-open' : ' inert') + '><div class="mm-clip"><div class="mm-new">'
+    + '<label class="lock" for="l1-new-' + target + '">새 항목 (한 항목 최대 ' + fmtNum(block.perEntryCap) + '자)</label>'
+    + '<textarea id="l1-new-' + target + '" class="mm-edit" rows="2" oninput="l1Count(\'' + target + '\')" onkeydown="l1AddKey(event,\'' + target + '\')"></textarea>'
     + '<div class="line"><span class="counter" id="l1-count-' + target + '">추가하면 ' + fmtNum(block.totalChars) + ' / ' + fmtNum(block.charLimit) + '자</span>'
-    + '<span><button type="button" class="btn primary" onclick="l1Add(\'' + target + '\')">추가</button> '
-    + (entries.length ? '<button type="button" class="btn" onclick="l1Clear(\'' + target + '\')">모두 지우기</button>' : '') + '</span></div></div></div>';
-  return html;
+    + '<span class="mm-acts is-on"><button type="button" class="mm-act" onclick="l1AddClose(\'' + target + '\')">취소</button>'
+    + '<button type="button" class="mm-act mm-act-main" onclick="l1Add(\'' + target + '\')">추가</button></span></div></div></div></div>';
+  return html + '</div></section>';
 }
-// Repaint both cards. What is typed survives a repaint (review R9): an open editor is
+// Repaint both store groups. What is typed survives a repaint (review R9): an open editor is
 // re-attached to the entry with the same text (only one such), else its draft goes to
-// that card's add box; the add boxes keep their text. opts.close closes the editor
-// (cancel, its own save); opts.clearAdd empties one add box (its note was added).
+// that store's add box; the add boxes keep their text (an add editor with a draft stays
+// open). opts.close closes the editor (cancel, its own save); opts.clearAdd empties one
+// add box (its note was added).
 function paintL1(editing, opts) {
   if (!_mem) return;
   opts = opts || {};
@@ -267,11 +390,14 @@ function paintL1(editing, opts) {
   } else {
     paintL1.open = null;
   }
+  var adding = paintL1.adding || (paintL1.adding = {});
   var html = '';
   for (var i = 0; i < targets.length; i++) {
     var t = targets[i];
-    html += renderL1Card(t, _mem.l1[t], editing && editing.target === t ? editing : null);
+    if (adds[t] && opts.clearAdd !== t) adding[t] = true;
+    html += renderL1Card(t, _mem.l1[t], editing && editing.target === t ? editing : null, { view: paintL1.view || {}, adding: !!adding[t] });
   }
+  html += '<div class="mm-fold" id="l1-nomatch" inert><div class="mm-clip"><p class="mm-empty mm-nomatch" id="l1-nomatch-text"></p></div></div>';
   document.getElementById('mem-l1-body').innerHTML = html;
   for (var k = 0; k < targets.length; k++) {
     var tk = targets[k];
@@ -279,11 +405,16 @@ function paintL1(editing, opts) {
     var nb = document.getElementById('l1-new-' + tk);
     if (nb) nb.value = adds[tk];
   }
+  if (editing) l1Grow(document.getElementById('l1-edit-' + editing.target));
   if (lost) memKeepDraft('l1-new-' + lost.target, lost.text, L1_LABELS[lost.target] + ' 수정본');
+  l1OpenDrafts();
+  l1ApplyView();
 }
 function l1Cancel() {
   if (memHold()) return;
+  var o = paintL1.open;
   paintL1(null, { close: true });
+  if (o) l1FocusAct('ed', o.target, o.index);
 }
 // An L1 write in flight holds its card: a second click waits (review R9).
 function l1Busy(target) {
@@ -309,7 +440,8 @@ function l1Count(target) {
 // One L1 write. A 409 reloads the stores and puts the WHOLE draft back in an
 // edit box — the entry it was for when it still exists, else the add box —
 // so nothing typed is lost (review P1).
-async function l1Write(method, url, payload, draft, at, orig, unique) {
+// settle: a delete's fold — the answer lands after the row has folded away (D9).
+async function l1Write(method, url, payload, draft, at, orig, unique, settle) {
   var target = url.split('/')[4];
   var sentOpen = paintL1.open; // the editor a save was sent from
   var held = _mem.l1[target];
@@ -320,6 +452,7 @@ async function l1Write(method, url, payload, draft, at, orig, unique) {
   for (var lk = 0; lk < locked.length; lk++) if (locked[lk]) locked[lk].disabled = true;
   var r;
   try { r = await apiWrite(method, url, payload); } catch (e) { r = { ok: false, status: 0, error: String(e && e.message || e) }; }
+  if (r.ok && settle) await settle;
   if (held) held.saving = 0;
   if (r.status === 409) {
     // The hold and the locks last until the reload is done: nothing typed meanwhile (review R11),
@@ -329,6 +462,7 @@ async function l1Write(method, url, payload, draft, at, orig, unique) {
     try {
       reloaded = (await loadMemory(true)) !== false; // false: the load failed
       back = reloaded ? restoreL1Draft(target, draft, at, orig, unique) : true;
+      if (reloaded) l1OpenDrafts(); // a draft that went to the add box shows its editor
     } finally {
       memHold.at = 0;
       for (var ul2 = 0; ul2 < locked.length; ul2++) if (locked[ul2]) locked[ul2].disabled = false;
@@ -370,7 +504,11 @@ function l1EditStart(target, i) {
   if (memHold()) return;
   paintL1({ target: target, index: i, text: _mem.l1[target].entries[i] });
   var ta = document.getElementById('l1-edit-' + target);
-  if (ta) ta.focus();
+  if (ta) {
+    ta.focus();
+    if (ta.setSelectionRange) ta.setSelectionRange(ta.value.length, ta.value.length);
+    l1Grow(ta);
+  }
 }
 async function l1Save(target, i) {
   if (l1Busy(target)) return;
@@ -378,23 +516,50 @@ async function l1Save(target, i) {
   var text = ta ? ta.value : '';
   if (!text.trim()) { memStatus('비어 있는 항목은 저장할 수 없습니다 — 지우려면 삭제를 쓰세요', true); return; }
   var orig = _mem.l1[target].entries[i];
+  // unchanged: close without a request (D8)
+  if (text.trim() === orig) { paintL1(null, { close: true }); l1FocusAct('ed', target, i); return; }
   var ents = _mem.l1[target].entries;
   var unique = paintL1.open && paintL1.open.target === target && paintL1.open.orig === orig ? paintL1.open.unique : ents.indexOf(orig) === ents.lastIndexOf(orig);
-  if (await l1Write('PUT', '/api/memory/l1/' + target + '/' + i, { text: text, revision: _mem.l1[target].revision }, text, i, orig, unique)) memStatus('저장했습니다', false);
+  if (await l1Write('PUT', '/api/memory/l1/' + target + '/' + i, { text: text, revision: _mem.l1[target].revision }, text, i, orig, unique)) {
+    l1Notice('저장했습니다');
+    if (!paintL1.open) l1FocusAct('ed', target, i); // (not when another editor was opened meanwhile)
+  }
 }
 async function l1Add(target) {
   if (l1Busy(target)) return;
   var ta = document.getElementById('l1-new-' + target);
   var text = ta ? ta.value : '';
   if (!text.trim()) return;
-  if (await l1Write('POST', '/api/memory/l1/' + target, { text: text, revision: _mem.l1[target].revision }, text)) memStatus('추가했습니다', false);
+  if (await l1Write('POST', '/api/memory/l1/' + target, { text: text, revision: _mem.l1[target].revision }, text)) {
+    // reveal first (it may reset the view), then fold the editor back to its button and focus it
+    l1Reveal(target, ((_mem.l1[target] && _mem.l1[target].entries) || []).length - 1, true);
+    l1AddClose(target);
+    l1Notice('추가했습니다');
+  }
 }
+// A real DELETE, sent at once (the hold stops a second click); the row folds away while it
+// is out and the answer repaints after the fold. The tray then offers 되돌리기 for 5 s (D9/D10).
 async function l1Delete(target, i) {
   if (l1Busy(target)) return;
   var text = _mem.l1[target].entries[i];
-  if (await l1Write('DELETE', '/api/memory/l1/' + target + '/' + i, { revision: _mem.l1[target].revision })) {
-    _memUndo = { target: target, text: text };
+  var row = l1El('l1-f-' + target + '-' + i);
+  var settle = null;
+  if (row) {
+    row.setAttribute('data-leaving', '');
+    l1Fold('l1-f-' + target + '-' + i, false);
+    if (!l1Reduced()) settle = new Promise(function (res) { setTimeout(res, 320); });
+  }
+  if (await l1Write('DELETE', '/api/memory/l1/' + target + '/' + i, { revision: _mem.l1[target].revision }, undefined, undefined, undefined, undefined, settle)) {
+    if (_memUndo && _memUndo.timer) clearTimeout(_memUndo.timer);
+    _memUndo = { target: target, text: text, key: (l1Delete.seq = (l1Delete.seq || 0) + 1), left: 5000 };
+    l1UndoArm(_memUndo);
     paintL1();
+    if (!l1FocusAct('del', target, i) && !l1FocusAct('del', target, i - 1)) l1FocusAct('add', target);
+    return;
+  }
+  if (row) {
+    row.removeAttribute('data-leaving');
+    l1Fold('l1-f-' + target + '-' + i, true);
   }
 }
 async function l1Undo() {
@@ -403,13 +568,17 @@ async function l1Undo() {
   // Restore exactly what was deleted: a note Slack saved may be longer than a new note
   // may be (restore skips that cap, not the total). The undo stays offered until the
   // restore lands, and a refused restore leaves the text in the add box (review R5).
+  // The store appends a restored note: it comes back at the end of its group.
   if (await l1Write('POST', '/api/memory/l1/' + u.target, { text: u.text, revision: _mem.l1[u.target].revision, restore: true }, u.text)) {
+    if (u.timer) clearTimeout(u.timer);
     if (_memUndo === u) _memUndo = null;
     paintL1();
-    memStatus('되돌렸습니다 (목록 끝에 다시 추가)', false);
+    l1Notice('되돌렸습니다 — 목록 끝에 다시 넣었습니다');
+    l1Reveal(u.target, ((_mem.l1[u.target] && _mem.l1[u.target].entries) || []).length - 1);
     return;
   }
   memKeepDraft('l1-new-' + u.target, u.text, L1_LABELS[u.target] + ' 되돌리지 못한 항목');
+  l1OpenDrafts();
 }
 async function l1Clear(target) {
   // What the dialog names is what gets cleared: a reload under the open dialog makes it a 409 (review R3).
@@ -418,7 +587,341 @@ async function l1Clear(target) {
   var revision = _mem.l1[target].revision;
   var ok = await confirmDialog({ title: L1_LABELS[target] + ' 항목 ' + n + '개를 모두 지울까요?', body: '되돌릴 수 없습니다. 에이전트는 다음 세션부터 이 내용을 모릅니다.', action: n + '개 모두 지우기' });
   if (!ok || l1Busy(target)) return;
-  if (await l1Write('DELETE', '/api/memory/l1/' + target, { revision: revision })) memStatus('모두 지웠습니다', false);
+  if (await l1Write('DELETE', '/api/memory/l1/' + target, { revision: revision })) l1Notice('모두 지웠습니다');
+}
+// ·· panel helpers — every lookup tolerates a missing element (tests run on a partial DOM) ··
+function l1El(id) {
+  var el = document.getElementById(id);
+  return el && el.setAttribute && el.removeAttribute ? el : null;
+}
+function l1Fold(id, open) {
+  var el = l1El(id);
+  if (!el) return;
+  if (open) {
+    el.setAttribute('data-open', '');
+    el.removeAttribute('inert');
+  } else {
+    el.removeAttribute('data-open');
+    el.setAttribute('inert', '');
+  }
+}
+function l1Reduced() {
+  return typeof window !== 'undefined' && !!window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+function l1FocusAct(kind, target, i) {
+  var b = l1El('l1-' + kind + '-' + target + (i === undefined ? '' : '-' + i));
+  if (!b || !b.focus) return false;
+  b.focus({ preventScroll: true });
+  return true;
+}
+function l1Grow(el) {
+  if (!el || !el.style) return;
+  el.style.height = 'auto';
+  el.style.height = el.scrollHeight + 'px';
+}
+// Search matches the entry text, or the store's name / file (D5).
+function l1Matches(target, text, view) {
+  var q = String((view && view.q) || '').trim().toLowerCase();
+  if (!q) return true;
+  return String(text).toLowerCase().indexOf(q) >= 0 || (L1_LABELS[target] + ' ' + L1_FILES[target]).toLowerCase().indexOf(q) >= 0;
+}
+// Fold rows and groups to the chip + search without repainting (what is typed stays put).
+function l1ApplyView() {
+  if (!_mem || !_mem.l1) return;
+  var v = paintL1.view || {};
+  var q = String(v.q || '').trim();
+  var open = paintL1.open;
+  var targets = ['memory', 'user'];
+  var any = false;
+  for (var t = 0; t < targets.length; t++) {
+    var tg = targets[t];
+    var ents = (_mem.l1[tg] && _mem.l1[tg].entries) || [];
+    var inView = !v.target || v.target === tg;
+    var shown = 0;
+    for (var i = 0; i < ents.length; i++) {
+      var show = inView && (!!(open && open.target === tg && open.index === i) || l1Matches(tg, ents[i], v));
+      if (show) shown++;
+      var row = l1El('l1-f-' + tg + '-' + i);
+      if (row && row.hasAttribute && row.hasAttribute('data-leaving')) continue;
+      l1Fold('l1-f-' + tg + '-' + i, show);
+    }
+    if (shown) any = true;
+    l1Fold('l1-g-' + tg, inView && (shown > 0 || !q));
+  }
+  l1Fold('l1-nomatch', !!q && !any);
+  var nm = l1El('l1-nomatch-text');
+  if (nm && q) nm.textContent = '“' + q + '” 검색 결과가 없습니다';
+  l1Sync();
+}
+// Chrome after any change: counts, chips (roving tab stop), search state, tray.
+function l1Sync() {
+  if (!_mem || !_mem.l1) return;
+  var panel = l1El('l1-panel');
+  if (panel) panel.setAttribute('data-ready', '');
+  var v = paintL1.view || {};
+  var counts = { memory: ((_mem.l1.memory && _mem.l1.memory.entries) || []).length, user: ((_mem.l1.user && _mem.l1.user.entries) || []).length };
+  counts.all = counts.memory + counts.user;
+  l1Roll(l1El('l1-total'), counts.all);
+  var keys = ['all', 'memory', 'user'];
+  for (var k = 0; k < keys.length; k++) {
+    var n = l1El('l1-n-' + keys[k]);
+    if (n) n.textContent = fmtNum(counts[keys[k]]);
+    var chip = l1El('l1-chip-' + keys[k]);
+    if (!chip) continue;
+    var on = (v.target || 'all') === keys[k];
+    chip.setAttribute('aria-checked', on ? 'true' : 'false');
+    chip.setAttribute('tabindex', on ? '0' : '-1');
+  }
+  var filters = l1El('l1-filters');
+  var chips = l1El('l1-chips');
+  var box = l1El('l1-search');
+  var opener = l1El('l1-search-open');
+  if (filters) { if (v.searching) filters.setAttribute('data-searching', ''); else filters.removeAttribute('data-searching'); }
+  if (chips) { if (v.searching) chips.setAttribute('inert', ''); else chips.removeAttribute('inert'); }
+  if (box) { if (v.searching) box.removeAttribute('inert'); else box.setAttribute('inert', ''); }
+  if (opener) {
+    opener.setAttribute('aria-expanded', v.searching ? 'true' : 'false');
+    if (v.searching) opener.setAttribute('inert', ''); else opener.removeAttribute('inert');
+  }
+  l1PaintTray();
+}
+function l1Pick(target) {
+  var v = paintL1.view || {};
+  paintL1.view = { target: target || null, q: v.q || '', searching: !!v.searching };
+  l1ApplyView();
+}
+// Store chips: one tab stop, arrows move and select (wrapping), Home / End (D4).
+function l1ChipKey(e) {
+  var order = ['', 'memory', 'user'];
+  if (['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp', 'Home', 'End'].indexOf(e.key) < 0) return;
+  e.preventDefault();
+  var cur = order.indexOf((paintL1.view && paintL1.view.target) || '');
+  var next = e.key === 'Home' ? 0 : e.key === 'End' ? order.length - 1 : (cur + (e.key === 'ArrowRight' || e.key === 'ArrowDown' ? 1 : -1) + order.length) % order.length;
+  l1Pick(order[next]);
+  var chip = l1El('l1-chip-' + (order[next] || 'all'));
+  if (chip && chip.focus) {
+    chip.focus();
+    if (chip.scrollIntoView) chip.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+  }
+}
+function l1SearchOpen() {
+  paintL1.view = { target: null, q: '', searching: true };
+  l1ApplyView();
+  var q = document.getElementById('l1-q');
+  if (q && q.focus) q.focus();
+}
+function l1SearchInput(value) {
+  paintL1.view = { target: null, q: String(value || ''), searching: true };
+  l1ApplyView();
+}
+function l1SearchKey(e) {
+  if (e.key !== 'Escape') return;
+  e.preventDefault();
+  e.stopPropagation();
+  l1SearchClose();
+}
+function l1SearchClose() {
+  paintL1.view = { target: null, q: '', searching: false };
+  var q = document.getElementById('l1-q');
+  if (q) q.value = '';
+  l1ApplyView();
+  var b = l1El('l1-search-open');
+  if (b && b.focus) b.focus();
+}
+// In-place edit: Enter saves, Shift+Enter is a line break, Esc cancels; never while an IME
+// is composing (Korean input commits with Enter) (D8).
+function l1EditKey(e, target, i) {
+  if (e.isComposing || e.keyCode === 229) return;
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    return l1Save(target, i);
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+    l1Cancel();
+  }
+}
+function l1EditInput(el, target) {
+  l1Grow(el);
+  var b = _mem && _mem.l1 && _mem.l1[target];
+  var c = l1El('l1-ecount-' + target);
+  if (!b || !c) return;
+  var n = String(el.value || '').trim().length;
+  c.textContent = fmtNum(n) + ' / ' + fmtNum(b.perEntryCap) + '자';
+  c.className = 'counter' + (n > b.perEntryCap ? ' is-over' : '');
+}
+// Add per store (D11): the button folds away and the editor unfolds in its place.
+function l1AddOpen(target, quiet) {
+  var adding = paintL1.adding || (paintL1.adding = {});
+  adding[target] = true;
+  l1Fold('l1-addbtn-' + target, false);
+  l1Fold('l1-newbox-' + target, true);
+  var b = l1El('l1-add-' + target);
+  if (b) b.setAttribute('aria-expanded', 'true');
+  var ta = quiet ? null : document.getElementById('l1-new-' + target);
+  if (ta && ta.focus) ta.focus();
+  l1Sync();
+}
+// Closing keeps the draft in the box (it opens again with the next repaint).
+function l1AddClose(target) {
+  var adding = paintL1.adding || (paintL1.adding = {});
+  adding[target] = false;
+  l1Fold('l1-newbox-' + target, false);
+  l1Fold('l1-addbtn-' + target, true);
+  var b = l1El('l1-add-' + target);
+  if (b) {
+    b.setAttribute('aria-expanded', 'false');
+    if (b.focus) b.focus();
+  }
+  l1Sync();
+}
+function l1AddKey(e, target) {
+  if (e.isComposing || e.keyCode === 229) return;
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    return l1Add(target);
+  }
+  if (e.key === 'Escape') {
+    e.preventDefault();
+    e.stopPropagation();
+    l1AddClose(target);
+  }
+}
+// A draft that landed in a folded add box (a 409, a lost edit, a refused undo) shows its editor.
+function l1OpenDrafts() {
+  var adding = paintL1.adding || (paintL1.adding = {});
+  var targets = ['memory', 'user'];
+  for (var i = 0; i < targets.length; i++) {
+    var box = document.getElementById('l1-new-' + targets[i]);
+    if (box && box.value && !adding[targets[i]]) l1AddOpen(targets[i], true);
+  }
+}
+// A row that came back (undo) or was added: shown under the current view (else the view
+// resets), unfolded, scrolled into view; focus on its 수정 unless keepFocus.
+function l1Reveal(target, i, keepFocus) {
+  var text = ((_mem.l1[target] && _mem.l1[target].entries) || [])[i];
+  if (text === undefined) return;
+  var v = paintL1.view || {};
+  if ((v.target && v.target !== target) || !l1Matches(target, text, v)) {
+    paintL1.view = { target: null, q: '', searching: false };
+    var q = document.getElementById('l1-q');
+    if (q) q.value = '';
+    l1ApplyView();
+  }
+  var f = l1El('l1-f-' + target + '-' + i);
+  if (f && !l1Reduced()) {
+    f.removeAttribute('data-open');
+    void f.offsetHeight; // start the unfold from closed
+    f.setAttribute('data-open', '');
+  }
+  if (f && f.scrollIntoView) setTimeout(function () { f.scrollIntoView({ block: 'nearest', behavior: l1Reduced() ? 'auto' : 'smooth' }); }, 120);
+  if (!keepFocus) l1FocusAct('ed', target, i);
+}
+// Counts roll to their new value: 520 ms, ease-out quart; at once with reduced motion (D13).
+function l1Roll(el, to) {
+  if (!el) return;
+  var from = typeof el.mmN === 'number' ? el.mmN : to;
+  el.mmN = to;
+  if (el.mmRaf && typeof cancelAnimationFrame === 'function') cancelAnimationFrame(el.mmRaf);
+  el.mmRaf = 0;
+  if (from === to || l1Reduced() || typeof requestAnimationFrame !== 'function') {
+    el.textContent = fmtNum(to);
+    return;
+  }
+  var t0 = 0;
+  function step(now) {
+    if (!t0) t0 = now;
+    var p = Math.min(1, (now - t0) / 520);
+    el.textContent = fmtNum(Math.round(from + (to - from) * (1 - Math.pow(1 - p, 4))));
+    el.mmRaf = p < 1 ? requestAnimationFrame(step) : 0;
+  }
+  el.mmRaf = requestAnimationFrame(step);
+}
+// The tray line, by priority: the deleted note with 되돌리기 > a 3 s notice > editing /
+// adding hints > counts and capacity. html = the visible caption, live = the polite status.
+function l1TrayState() {
+  var l1 = (_mem && _mem.l1) || {};
+  var u = _memUndo;
+  if (u && typeof u.text === 'string') {
+    return { key: 'forgot-' + (u.key || 0), html: '<span class="mm-forgot"><span class="mm-flat">삭제함 “</span><b class="mm-quote">' + esc(u.text) + '</b><span class="mm-flat">”</span></span>', live: '삭제함 “' + u.text + '” — 되돌리기로 되돌릴 수 있습니다' };
+  }
+  var n = l1Notice.cur;
+  if (n) return { key: 'notice-' + n.seq, html: esc(n.text), live: n.text };
+  if (paintL1.open) return { key: 'editing', html: 'Enter 저장 · Shift+Enter 줄바꿈 · Esc 취소', live: 'Enter 저장 · Shift+Enter 줄바꿈 · Esc 취소' };
+  var adding = paintL1.adding || {};
+  if (adding.memory || adding.user) return { key: 'adding', html: 'Enter 추가 · Shift+Enter 줄바꿈 · Esc 닫기', live: 'Enter 추가 · Shift+Enter 줄바꿈 · Esc 닫기' };
+  var m = l1.memory || {};
+  var us = l1.user || {};
+  var total = (m.entries || []).length + (us.entries || []).length;
+  var cap = ' · ' + L1_LABELS.memory + ' ' + fmtNum(m.totalChars || 0) + ' / ' + fmtNum(m.charLimit || 0) + '자 · '
+    + L1_LABELS.user + ' ' + fmtNum(us.totalChars || 0) + ' / ' + fmtNum(us.charLimit || 0) + '자';
+  return { key: 'rest', total: total, cap: cap, html: '<b class="mm-n">' + fmtNum(total) + '</b>개 항목<span class="mm-cap">' + esc(cap) + '</span>', live: fmtNum(total) + '개 항목' + cap };
+}
+function l1PaintTray() {
+  var s = l1TrayState();
+  var undo = l1El('l1-undo');
+  if (undo) { if (s.key.indexOf('forgot-') === 0) undo.removeAttribute('hidden'); else undo.setAttribute('hidden', ''); }
+  var live = l1El('l1-live');
+  if (live && live.textContent !== s.live) live.textContent = s.live;
+  var cap = l1El('l1-caption');
+  if (!cap || !document.createElement) return;
+  if (cap.mmKey === s.key && cap.mmItem) {
+    // same line, new numbers: the count rolls in place
+    if (s.key !== 'rest' || !cap.mmItem.querySelector) return;
+    l1Roll(cap.mmItem.querySelector('.mm-n'), s.total);
+    var c = cap.mmItem.querySelector('.mm-cap');
+    if (c) c.textContent = s.cap;
+    return;
+  }
+  cap.mmKey = s.key;
+  var old = cap.mmItem;
+  if (old) {
+    old.setAttribute('data-out', '');
+    setTimeout(function () { if (old.parentNode) old.parentNode.removeChild(old); }, l1Reduced() ? 0 : 260);
+  }
+  var item = document.createElement('span');
+  item.className = 'mm-swap';
+  item.innerHTML = s.html;
+  cap.appendChild(item);
+  cap.mmItem = item;
+  var nb = s.key === 'rest' && item.querySelector ? item.querySelector('.mm-n') : null;
+  if (nb) nb.mmN = s.total;
+}
+function l1Notice(text) {
+  var n = { text: text, seq: (l1Notice.seq = (l1Notice.seq || 0) + 1) };
+  l1Notice.cur = n;
+  setTimeout(function () {
+    if (l1Notice.cur !== n) return;
+    l1Notice.cur = null;
+    l1PaintTray();
+  }, 3000);
+  l1PaintTray();
+}
+// The undo window: 5 s, paused while the pointer is on the tray or 되돌리기 has focus (D10).
+function l1UndoArm(u) {
+  if (u.timer) clearTimeout(u.timer);
+  u.started = Date.now();
+  u.timer = setTimeout(function () {
+    u.timer = 0;
+    if (_memUndo !== u) return;
+    _memUndo = null;
+    l1PaintTray();
+  }, Math.max(0, u.left));
+}
+function l1TrayHold(kind, on) {
+  var u = _memUndo;
+  if (!u || !u.key) return;
+  var was = !!(u.hover || u.focus);
+  u[kind] = !!on;
+  var held = !!(u.hover || u.focus);
+  if (held && !was) {
+    if (u.timer) clearTimeout(u.timer);
+    u.timer = 0;
+    u.left -= Date.now() - u.started;
+  } else if (!held && was) {
+    l1UndoArm(u);
+  }
 }
 
 // ── 지식 페이지 ──
