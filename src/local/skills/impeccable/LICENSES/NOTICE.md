@@ -23,7 +23,7 @@ rendering of `skill/SKILL.src.md` and `skill/reference/`).
   Reason: a multi-tenant Slack bot must not fetch and execute binaries at run time. The upstream
   "Launcher unavailable" path and `reference/degraded/*.md` cover the gap.
 - `SKILL.md` frontmatter: added EN/KO trigger keywords and the `html` driver note to `description`,
-  and an `allowed-tools` field. `version`, `user-invocable`, `argument-hint` and `license` are upstream.
+  and an `allowed-tools` field (Read, Write, Edit, Glob, Grep — no Bash, since no engine ships). `version`, `user-invocable`, `argument-hint` and `license` are upstream.
 - `SKILL.md` body: inserted a "soma-work local additions" section (runtime policy, unsupported
   commands, and the no-question `html` driver-mode adapter with a positive read list) above the
   upstream text, which follows under "Upstream skill (verbatim from pbakaus/impeccable)" unchanged.
