@@ -55,6 +55,8 @@ export interface AgentSpend extends SpendTotals {
   calls: number;
   /** Models the price table does not know — priced at the fallback rate, so the cost is an estimate. */
   unpricedModels?: string[];
+  /** Calls whose usage the transcript left all-zero, estimated from the calls around them (`agent-spend.ts`). */
+  estimatedCalls?: number;
 }
 
 /** The subagents' spend added up (records still kept plus those the cap dropped). */
@@ -63,6 +65,8 @@ export interface SubagentSpendSum extends SpendTotals {
   agents: number;
   /** Some of it was priced at the fallback rate. */
   unpriced?: true;
+  /** Some of it was estimated (calls recorded without usage). */
+  estimated?: true;
 }
 
 export interface AgentRecord {
@@ -424,7 +428,11 @@ function enforceBounds(reg: AgentRegistry): void {
   });
 }
 
-function addSpend(sum: SubagentSpendSum | undefined, s: SpendTotals, unpriced: number): SubagentSpendSum {
+function addSpend(
+  sum: SubagentSpendSum | undefined,
+  s: SpendTotals & { estimatedCalls?: number },
+  unpriced: number,
+): SubagentSpendSum {
   const out: SubagentSpendSum = sum
     ? { ...sum }
     : { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, costUsd: 0, agents: 0 };
@@ -435,6 +443,7 @@ function addSpend(sum: SubagentSpendSum | undefined, s: SpendTotals, unpriced: n
   out.costUsd += s.costUsd;
   out.agents += 1;
   if (unpriced) out.unpriced = true;
+  if (s.estimatedCalls) out.estimated = true;
   return out;
 }
 
@@ -502,6 +511,8 @@ export function sanitizeAgentRegistry(raw: unknown): AgentRegistry | undefined {
     if (spend) {
       const calls = finiteNonNegative((a.spend as Record<string, unknown>).calls);
       rec.spend = { ...spend, calls: Math.floor(calls ?? 0) };
+      const est = finiteNonNegative((a.spend as Record<string, unknown>).estimatedCalls);
+      if (est) rec.spend.estimatedCalls = Math.floor(est);
       const unpriced = (a.spend as Record<string, unknown>).unpricedModels;
       if (Array.isArray(unpriced)) {
         const names = unpriced.filter((m): m is string => typeof m === 'string' && m.length > 0).slice(0, 10);
@@ -524,6 +535,7 @@ export function sanitizeAgentRegistry(raw: unknown): AgentRegistry | undefined {
   if (pruned && prunedAgents) {
     reg.prunedSpend = { ...pruned, agents: Math.floor(prunedAgents) };
     if ((r.prunedSpend as Record<string, unknown>).unpriced === true) reg.prunedSpend.unpriced = true;
+    if ((r.prunedSpend as Record<string, unknown>).estimated === true) reg.prunedSpend.estimated = true;
   }
   enforceBounds(reg);
   return reg;

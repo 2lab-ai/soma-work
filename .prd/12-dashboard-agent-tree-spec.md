@@ -143,7 +143,16 @@ agent id, 중첩 서브도 같은 폴더). API 호출 하나 = `message.id` 하�
   심볼릭 링크면 읽지 않는다.
 - 서브 합계 `subagentSpendOf` = 레코드별 지출 합 + `AgentRegistry.prunedSpend`(상한 100이 지운 레코드의 지출, 영속) — 상한이 합을 줄이지
   않는다. 레코드마다 자기 호출만 갖으므로 합은 겹치지 않는다. task 합계에는 이미 서브 호출이 들어 있으므로 서브 합계를 task 합계에
-  더하지 않는다(이중 계산 금지). 단가 출처가 다르다(task = SDK `costUSD`, 서브 = 단가표) — 둘 다 "API 환산"이다.
+  더하지 않는다(이중 계산 금지).
+- usage 미기록 호출(rev 3 r4, 2026-10-27): llmux를 거치는 gpt-6-astra·grok-4.7-build는 transcript에 호출의 53%·57%를 usage 0으로 남긴다
+  (claude 모델 0%). llmux 자체 기록과 호출을 시각으로 1:1 대조하면 usage가 있는 호출은 정확히 같고, 0인 호출도 실제로는 사용량이 있다 — 0으로
+  세면 그런 서브가 2~20배 적게 보였다. 그래서 0인 호출은 앞뒤 보고된 호출 사이를 필드별로 보간하고(한쪽 끝이면 이웃 하나), 출력은 그 에이전트의
+  평균 출력으로 채운다(`fillZeroUsage`). 실측 오차 grok +3%, astra +20%. 추정한 호출 수는 `spend.estimatedCalls`, 행·합계는 `≈$`로 표시한다.
+  보고된 호출이 하나도 없으면 채우지 않는다("사용량 미보고").
+- 단가(rev 3 r4): 서브 지출은 단가표(`model-registry.ts`)로, task 합계는 SDK `costUSD`로 환산한다. claude 모델은 두 쪽이 같은 공식 단가를 쓴다
+  (Opus 5.5 $4/$20/캐시 읽기 $0.20, Fable 5.1 $10/$50/$0.25 — 단가표에 행 추가, dev 기록 역산과 일치). 실측(이 세션): 메인 + 서브 = $280.78,
+  SDK task 합계 = $281.40(0.2%). 알려진 차이: SDK `modelUsage`는 llmux 경유 gpt-6-astra 토큰을 llmux 기록의 약 6배로 집계하고 비-claude 모델을
+  기본 단가로 환산한다 — 그만큼 task 합계 토큰이 크다(후속 이슈).
 - 서브의 실시간 호출 키 `s:`는 종전대로 `liveOccupancyCall`(컨텍스트 점유율)에서만 빠진다.
 
 ## 3. 카드 payload [PR-A] (`src/conversation/dashboard.ts`)

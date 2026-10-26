@@ -296,6 +296,77 @@ describe('agent spend — read from the subagent transcript (T2)', () => {
   });
 });
 
+describe('agent spend — calls the transcript recorded with no usage (llmux models)', () => {
+  // dev 2026-10-27: gpt-6-astra and grok-4.7-build leave 53% / 57% of their
+  // calls with all-zero usage in the transcript (claude models: 0%), while the
+  // llmux proxy records a real usage for every one of them. Counting the zeros
+  // as nothing showed those subagents 2-20x too low.
+  it('a zero-usage call is estimated from the calls around it, and the spend says how many were', async () => {
+    writeAgent('aaaa1111', [
+      assistant('m1', 'grok-4.7-build', [100, 10, 900, 0]),
+      assistant('m2', 'grok-4.7-build', [0, 0, 0, 0]),
+      assistant('m3', 'grok-4.7-build', [300, 30, 2700, 0]),
+    ]);
+    const h = holder();
+    await createAgentSpendReader({ configDir, price, isPriced, now: () => T0 }).refresh(h);
+    const s = h.agents!.agents[0].spend!;
+    // m2 = halfway between m1 and m3 for every context field; output = the mean reported output.
+    expect(s).toMatchObject({
+      inputTokens: 600,
+      cacheReadTokens: 5400,
+      cacheCreateTokens: 0,
+      outputTokens: 60,
+      calls: 3,
+    });
+    expect(s.estimatedCalls).toBe(1);
+  });
+
+  it('a zero-usage call at either end takes its one reported neighbour', async () => {
+    writeAgent('aaaa1111', [
+      assistant('m1', 'gpt-6-astra', [0, 0, 0, 0]),
+      assistant('m2', 'gpt-6-astra', [50, 4, 450, 0]),
+      assistant('m3', 'gpt-6-astra', [0, 0, 0, 0]),
+    ]);
+    const h = holder();
+    await createAgentSpendReader({ configDir, price, isPriced, now: () => T0 }).refresh(h);
+    expect(h.agents!.agents[0].spend).toMatchObject({
+      inputTokens: 150,
+      cacheReadTokens: 1350,
+      outputTokens: 12,
+      estimatedCalls: 2,
+    });
+  });
+
+  it('an agent none of whose calls reported usage stays unreported — nothing is invented', async () => {
+    writeAgent('aaaa1111', [
+      assistant('m1', 'gpt-6-astra', [0, 0, 0, 0]),
+      assistant('m2', 'gpt-6-astra', [0, 0, 0, 0]),
+    ]);
+    const h = holder();
+    await createAgentSpendReader({ configDir, price, isPriced, now: () => T0 }).refresh(h);
+    const s = h.agents!.agents[0].spend!;
+    expect(s.inputTokens + s.outputTokens + s.cacheReadTokens + s.cacheCreateTokens).toBe(0);
+    expect(s.calls).toBe(2);
+    expect(s.estimatedCalls).toBeUndefined();
+  });
+
+  it('estimates are kept across a restart and flag the subagent sum', () => {
+    const h = holder();
+    h.agents!.agents[0].spend = {
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 1,
+      cacheCreateTokens: 0,
+      costUsd: 0.1,
+      calls: 3,
+      estimatedCalls: 2,
+    };
+    const back = sanitizeAgentRegistry(JSON.parse(JSON.stringify(h.agents)))!;
+    expect(back.agents[0].spend!.estimatedCalls).toBe(2);
+    expect(subagentSpendOf(back)!.estimated).toBe(true);
+  });
+});
+
 describe('agent spend — registry: persisted, and the subagent sum survives the record cap', () => {
   const spend = (n: number) => ({
     inputTokens: n,
