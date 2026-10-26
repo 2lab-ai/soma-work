@@ -48,7 +48,7 @@ export const MEMORY_TAB_HTML = `<div data-tab="memory" class="page" hidden>
         <div id="l1-foot" class="mm-foot" onmouseenter="l1TrayHold('hover', true)" onmouseleave="l1TrayHold('hover', false)">
           <span id="l1-caption" class="mm-caption" aria-hidden="true"></span>
           <span id="l1-live" class="mm-sr" role="status" aria-live="polite" aria-atomic="true"></span>
-          <button type="button" id="l1-undo" class="mm-undo" hidden onclick="l1Undo()" onfocus="l1TrayHold('focus', true)" onblur="l1TrayHold('focus', false)">되돌리기</button>
+          <button type="button" id="l1-undo" class="mm-undo" hidden onclick="l1Undo()">되돌리기</button>
         </div>
       </div>
     </section>
@@ -94,7 +94,7 @@ export const MEMORY_TAB_CSS = String.raw`
 .mm :is(button, input, textarea):focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .mm-filters { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: 4px; padding: 10px 10px 10px 14px; border-bottom: 1px solid var(--border); }
 .mm-chips, .mm-search { grid-area: 1 / 1; transition: opacity 220ms ease, filter 220ms ease; }
-.mm-chips { display: flex; gap: 4px; min-width: 0; margin: -2px -4px; padding: 2px 4px; overflow-x: auto; scrollbar-width: none; mask-image: linear-gradient(90deg, black calc(100% - 14px), transparent); }
+.mm-chips { display: flex; gap: 4px; min-width: 0; margin: -3px -4px; padding: 3px 4px; overflow-x: auto; scrollbar-width: none; mask-image: linear-gradient(90deg, black calc(100% - 14px), transparent); }
 .mm-chips::-webkit-scrollbar { display: none; }
 .mm-chip { display: inline-flex; flex: none; align-items: center; gap: 5px; height: 28px; padding: 0 9px; font: inherit; font-size: 12.5px; color: var(--text-secondary); background: none; border: 0; border-radius: 8px; white-space: nowrap; cursor: pointer; transition: background-color var(--dur-press) ease, color var(--dur-press) ease, box-shadow var(--dur-press) ease; }
 .mm-chip[aria-checked="true"] { background: var(--surface-raised); color: var(--text); font-weight: 600; box-shadow: inset 0 0 0 1px var(--border); }
@@ -136,7 +136,7 @@ export const MEMORY_TAB_CSS = String.raw`
 .mm-row[data-editing]:focus-within, .mm-new:focus-within { box-shadow: inset 0 0 0 1px var(--border-focus); }
 .mm-empty { padding: 4px 8px 8px; font-size: 12.5px; color: var(--text-tertiary); }
 .mm-nomatch { padding: 18px 8px 12px; text-align: center; }
-.mm-addline { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 2px 0 8px; }
+.mm-addline { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 3px 3px 8px; } /* room for the focus ring inside the clipping fold */
 .mm-add { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; font: inherit; font-size: 13px; color: var(--text-tertiary); background: none; border: 0; border-radius: 8px; cursor: pointer; transition: background-color var(--dur-press) ease, color var(--dur-press) ease; }
 .mm-clear { height: 28px; padding: 0 8px; font: inherit; font-size: 12px; color: var(--text-tertiary); background: none; border: 0; border-radius: 8px; cursor: pointer; transition: background-color var(--dur-press) ease, color var(--dur-press) ease; }
 .mm-new { margin: 2px 0 8px; padding: 8px 8px 6px; border-radius: 8px; background: var(--surface-raised); }
@@ -414,18 +414,35 @@ function paintL1(editing, opts) {
   l1ApplyView();
 }
 function l1Cancel() {
-  if (memHold()) return;
+  if (l1Held()) return;
   var o = paintL1.open;
   paintL1(null, { close: true });
   if (o) l1FocusAct('ed', o.target, o.index);
 }
 // An L1 write in flight holds its card: a second click waits (review R9).
 function l1Busy(target) {
-  if (memHold()) return true;
+  if (l1Held()) return true;
   var b = _mem && _mem.l1 && _mem.l1[target];
   if (!b || !b.saving) return false;
-  memStatus('저장 중입니다 — 끝난 뒤 다시 시도하세요', false);
+  l1Say('저장 중입니다 — 끝난 뒤 다시 시도하세요', false);
   return true;
+}
+// #mem-status is shared by the tab's sections. What L1 puts there (a 409, a refusal, "저장 중") is
+// remembered, and the next successful L1 write clears it — unless another section wrote since.
+function l1Say(text, isError) {
+  memStatus(text, isError);
+  l1Say.last = text;
+}
+function l1Held() {
+  if (!memHold()) return false;
+  var st = document.getElementById('mem-status');
+  l1Say.last = st ? st.textContent : '';
+  return true;
+}
+function l1Unsay() {
+  var st = document.getElementById('mem-status');
+  if (st && l1Say.last && st.textContent === l1Say.last) memStatus('', false);
+  l1Say.last = '';
 }
 // Live total after the addition (the store joins entries with a 3-char delimiter).
 function l1Count(target) {
@@ -472,12 +489,13 @@ async function l1Write(method, url, payload, draft, at, orig, unique, settle) {
       memHold.at = 0;
       for (var ul2 = 0; ul2 < locked.length; ul2++) if (locked[ul2]) locked[ul2].disabled = false;
     }
-    memStatus('그사이 다른 곳(에이전트·Slack)에서 바뀌었습니다' + (reloaded ? ' — 최신 내용을 불러왔습니다.' : ' — 최신 내용은 불러오지 못했습니다.') + (draft ? (back ? ' 작성하던 내용은 편집 칸에 그대로 있습니다' : ' 작성하던 내용은 보관했습니다') + ' — 확인하고 다시 저장하세요.' : ' 다시 적용하세요.'), true);
+    l1Say('그사이 다른 곳(에이전트·Slack)에서 바뀌었습니다' + (reloaded ? ' — 최신 내용을 불러왔습니다.' : ' — 최신 내용은 불러오지 못했습니다.') + (draft ? (back ? ' 작성하던 내용은 편집 칸에 그대로 있습니다' : ' 작성하던 내용은 보관했습니다') + ' — 확인하고 다시 저장하세요.' : ' 다시 적용하세요.'), true);
     return false;
   }
   memHold.at = 0;
   for (var ul = 0; ul < locked.length; ul++) if (locked[ul]) locked[ul].disabled = false;
   if (r.ok) {
+    l1Unsay();
     _mem.l1[target] = r.data.l1;
     // its own editor closes on its save; a new note empties its box (an undo leaves the box alone)
     // its own editor closes on its save — only if it is still the open one (a save answered
@@ -486,7 +504,7 @@ async function l1Write(method, url, payload, draft, at, orig, unique, settle) {
     paintL1(null, method === 'PUT' && paintL1.open === sentOpen ? { close: true } : method === 'POST' && !(payload && payload.restore) ? { clearAdd: target } : {});
     return true;
   }
-  memStatus('저장하지 못했습니다: ' + r.error, true);
+  l1Say('저장하지 못했습니다: ' + r.error, true);
   return false;
 }
 // The draft goes back into the editor of the entry it was for — found by its
@@ -506,7 +524,7 @@ function restoreL1Draft(target, draft, at, orig, unique) {
   return false;
 }
 function l1EditStart(target, i) {
-  if (memHold()) return;
+  if (l1Held()) return;
   paintL1({ target: target, index: i, text: _mem.l1[target].entries[i] });
   var ta = document.getElementById('l1-edit-' + target);
   if (ta) {
@@ -519,7 +537,7 @@ async function l1Save(target, i) {
   if (l1Busy(target)) return;
   var ta = document.getElementById('l1-edit-' + target);
   var text = ta ? ta.value : '';
-  if (!text.trim()) { memStatus('비어 있는 항목은 저장할 수 없습니다 — 지우려면 삭제를 쓰세요', true); return; }
+  if (!text.trim()) { l1Say('비어 있는 항목은 저장할 수 없습니다 — 지우려면 삭제를 쓰세요', true); return; }
   var orig = _mem.l1[target].entries[i];
   // unchanged once both sides are trimmed (the store trims what it saves): close without a request (D8);
   // any other change is sent as typed
@@ -684,6 +702,11 @@ function l1Sync() {
   if (!_mem || !_mem.l1) return;
   var panel = l1El('l1-panel');
   if (panel) panel.setAttribute('data-ready', '');
+  if (panel && panel.addEventListener && !panel.mmFocus) {
+    panel.mmFocus = true;
+    panel.addEventListener('focusin', l1PanelFocus);
+    panel.addEventListener('focusout', l1PanelFocus);
+  }
   var v = paintL1.view || {};
   var counts = { memory: ((_mem.l1.memory && _mem.l1.memory.entries) || []).length, user: ((_mem.l1.user && _mem.l1.user.entries) || []).length };
   counts.all = counts.memory + counts.user;
@@ -927,10 +950,17 @@ function l1Notice(text) {
   }, 3000);
   l1PaintTray();
 }
-// The undo window: 5 s, paused while the pointer is on the tray or 되돌리기 has focus (D10).
+// The undo window: 5 s, paused while the pointer rests on the tray or focus is anywhere in the
+// panel — a keyboard or screen-reader user reaches 되돌리기 without a clock (D10/D17). The hold is
+// its own state: a hover or focus that began before the delete landed still holds.
+function l1TrayHeld() {
+  return !!(l1TrayHold.hover || l1TrayHold.panel);
+}
 function l1UndoArm(u) {
   if (u.timer) clearTimeout(u.timer);
+  u.timer = 0;
   u.started = Date.now();
+  if (l1TrayHeld()) return; // held: the clock starts when the hold ends (l1TrayHold)
   u.timer = setTimeout(function () {
     u.timer = 0;
     if (_memUndo !== u) return;
@@ -938,19 +968,25 @@ function l1UndoArm(u) {
     l1PaintTray();
   }, Math.max(0, u.left));
 }
+// kind: 'hover' (pointer on the tray) | 'panel' (focus inside the panel)
 function l1TrayHold(kind, on) {
+  var was = l1TrayHeld();
+  l1TrayHold[kind] = !!on;
+  var held = l1TrayHeld();
   var u = _memUndo;
-  if (!u || !u.key) return;
-  var was = !!(u.hover || u.focus);
-  u[kind] = !!on;
-  var held = !!(u.hover || u.focus);
-  if (held && !was) {
-    if (u.timer) clearTimeout(u.timer);
+  if (held === was || !u || !u.key) return;
+  if (!held) {
+    l1UndoArm(u);
+  } else if (u.timer) {
+    clearTimeout(u.timer);
     u.timer = 0;
     u.left -= Date.now() - u.started;
-  } else if (!held && was) {
-    l1UndoArm(u);
   }
+}
+function l1PanelFocus(e) {
+  var panel = l1El('l1-panel');
+  var to = e.type === 'focusout' ? e.relatedTarget : e.target;
+  l1TrayHold('panel', !!(panel && to && panel.contains(to)));
 }
 
 // ── 지식 페이지 ──
