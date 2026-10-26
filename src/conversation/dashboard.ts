@@ -4380,7 +4380,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .btn-perm { min-height: 44px; }
 }
 .perm-note { margin-top: 6px; font-size: 0.74em; color: var(--red); overflow-wrap: anywhere; }
-.panel-permission { padding: 12px 16px; border-bottom: 1px solid rgba(249,115,22,0.2); }
+.panel-permission { padding: 0 16px 12px; border-bottom: 1px solid var(--border); }
 .panel-permission .perm-request { margin-top: 0; }
 .panel-permission .perm-head { font-size: 0.88em; }
 .panel-permission .btn-perm { font-size: 0.82em; }
@@ -4403,6 +4403,77 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .panel-question .btn-choice {
   font-size: 0.82em;
   padding: 6px 14px;
+}
+
+/* ── 입력 필요 — approval cards in the panel (re-agent-run D8–D17) ──
+   A head with the count; each prompt (and the single-choice question) is a card
+   in a tray: context line, icon · title · description · pill, the input as
+   key/value rows, the answers. The card is its own container. No new tokens. */
+.ar-vh { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
+.panel-needs-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px 8px; font-size: 13px; font-weight: 650; color: var(--text); }
+.panel-needs-head[hidden] { display: none; }
+.pn-count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--st-wait); color: #141006; font-size: 11px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; animation: pn-pop var(--dur-move) var(--ease-out) both; }
+@keyframes pn-pop { from { opacity: 0; transform: scale(0.6); } }
+.panel-question[data-ap="card"] { padding: 0 16px 12px; background: none; border-bottom: 1px solid var(--border); }
+/* One section: no rule between a prompt and the question card under it. */
+.panel-permission:has(+ .panel-question[data-ap="card"]:not([style*="none"])) { border-bottom: 0; }
+.ap-card { container-type: inline-size; position: relative; padding: 4px; border-radius: 14px; background: var(--ib-col); border: 1px solid var(--ib-card-border); color: var(--ib-text); outline: none; }
+.panel-permission .ap-card { margin: 0; padding: 4px; background: var(--ib-col); border: 1px solid var(--ib-card-border); border-radius: 14px; }
+.panel-permission .ap-card + .ap-card { margin-top: 10px; }
+.ap-card:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.ap-label { padding: 4px 8px 6px; font-size: 12px; line-height: 16px; color: var(--ib-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+.ap-body { padding: 14px; border-radius: 11px; background: var(--ib-card); box-shadow: 0 0 0 1px var(--ib-card-border); }
+.ap-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 10px; }
+.ap-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: var(--ib-pill); color: var(--ib-text); }
+.ap-icon svg { width: 16px; height: 16px; }
+.ap-titles { min-width: 0; padding-top: 1px; }
+.ap-title { font-size: 14px; font-weight: 600; line-height: 20px; color: var(--ib-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ap-question .ap-title { white-space: pre-line; overflow: visible; overflow-wrap: anywhere; }
+.ap-desc { margin-top: 1px; font-size: 13px; line-height: 18px; color: var(--ib-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.ap-pill { display: inline-flex; align-items: center; gap: 6px; height: 22px; margin-top: 1px; padding: 0 9px 0 8px; border-radius: 999px; background: var(--ib-pill); color: var(--ib-text-2); font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap; }
+.ap-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.8; }
+.ap-pill[data-kind="rule"] { background: color-mix(in srgb, var(--st-fail) 14%, transparent); color: var(--st-fail-text); }
+.ap-pill[data-kind="question"] { background: color-mix(in srgb, var(--st-wait) 16%, transparent); color: var(--st-wait); }
+.ap-details { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; max-height: 320px; overflow: auto; margin: 12px 0 0; padding: 10px 12px; border-radius: 9px; background: var(--ib-col); box-shadow: inset 0 0 0 1px var(--ib-card-border); font-size: 12.5px; line-height: 18px; }
+.ap-detail { display: contents; }
+.ap-detail dt { color: var(--ib-muted); }
+.ap-detail dd { min-width: 0; margin: 0; color: var(--ib-text); font-family: 'SF Mono','Fira Code',ui-monospace,monospace; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.ap-body .perm-params { margin: 12px 0 0; }
+.ap-body .perm-truncated { margin: 4px 0 0; }
+.ap-body .perm-rules { margin: 10px 0 0; }
+.ap-alts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
+.ap-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 8px; }
+.ap-expires { font-size: 12.5px; color: var(--ib-muted); font-variant-numeric: tabular-nums; white-space: nowrap; transition: color var(--dur-fade) linear; }
+.ap-expires.is-low { color: var(--st-wait); }
+.ap-actions { display: flex; flex: 0 0 auto; gap: 4px; margin-left: auto; }
+.ap-card .btn-perm.ap-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 34px; padding: 0 12px; border: 0; border-radius: 10px; font-size: 13px; font-weight: 500; line-height: 1; white-space: nowrap; }
+.ap-card .btn-perm.ap-ghost { min-height: 28px; padding: 0 10px; border-radius: 8px; background: transparent; color: var(--ib-text-2); font-size: 12.5px; box-shadow: inset 0 0 0 1px var(--ib-card-border); }
+.ap-card .btn-perm.ap-quiet { padding-right: 8px; background: transparent; color: var(--ib-text); box-shadow: inset 0 0 0 1px var(--ib-card-border); }
+.ap-card .btn-perm.ap-primary { padding-right: 8px; background: var(--ib-text); color: var(--ib-card); }
+.ap-btn[data-kbd]::after { content: attr(data-kbd) / ""; display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 6px; background: color-mix(in srgb, currentColor 12%, transparent); font-size: 11px; font-weight: 500; opacity: 0.8; }
+.ap-btn:disabled::after { display: none; }
+.ap-card .btn-choice.ap-choice { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; min-height: 36px; padding: 8px 12px; border: 0; border-radius: 10px; background: transparent; color: var(--ib-text); box-shadow: inset 0 0 0 1px var(--ib-card-border); font-size: 13px; text-align: left; }
+.ap-card .btn-choice.ap-choice.ap-rec { position: relative; padding-right: 52px; background: var(--ib-text); color: var(--ib-card); box-shadow: none; font-weight: 500; }
+.ap-card .btn-choice.ap-rec[data-kbd]::after { content: attr(data-kbd) / ""; position: absolute; top: 8px; right: 8px; display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 6px; background: color-mix(in srgb, currentColor 14%, transparent); font-size: 11px; opacity: 0.8; }
+.ap-choices { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
+.ap-choice-desc { font-size: 12px; font-weight: 400; opacity: 0.75; }
+.ap-choice-tag { margin-left: 8px; padding: 1px 6px; border-radius: 6px; background: color-mix(in srgb, currentColor 14%, transparent); font-size: 11px; font-weight: 500; }
+.ap-resolved { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 10px 12px; border-radius: 11px; background: var(--ib-card); box-shadow: 0 0 0 1px var(--ib-card-border); animation: ap-in var(--dur-move) var(--ease-out) both; }
+.ap-mark { display: grid; flex: none; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: color-mix(in srgb, var(--st-done) 16%, transparent); color: var(--st-done); font-size: 12px; font-weight: 700; }
+.ap-mark svg { width: 12px; height: 12px; }
+.ap-resolved[data-decision="deny"] .ap-mark, .ap-resolved[data-decision="explain"] .ap-mark { background: var(--ib-pill); color: var(--ib-text-2); }
+.ap-row-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 500; color: var(--ib-text); }
+.ap-row-status { flex: none; color: var(--ib-muted); white-space: nowrap; font-size: 12.5px; }
+@keyframes ap-in { from { opacity: 0; transform: translateY(4px); } }
+@container (max-width: 379px) {
+  .ap-actions { flex: 1 1 100%; margin-left: 0; }
+  .ap-actions .ap-btn { flex: 1 1 0; min-width: 0; }
+  .ap-btn[data-kbd]::after, .ap-card .btn-choice.ap-rec[data-kbd]::after { display: none; }
+  .ap-card .btn-choice.ap-choice.ap-rec { padding-right: 12px; }
+}
+@container (max-width: 319px) {
+  .ap-body { padding: 12px; }
+  .ap-pill-word { display: none; }
 }
 
 /* ── MULTI-CHOICE FORM (dashboard) ── */
@@ -4813,6 +4884,42 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .panel-tasks-toggle:hover { text-decoration: underline; }
 .panel-tasks-toggle + .panel-tasks-earlier-toggle { margin-left: 14px; }
+/* ── PLAN — the panel's Tasks as a plan (re-agent-run D1–D7): a marker per step
+   (check · spinner · empty ring) on one rail, the time on the right, a sticky
+   footer with the phase. The .panel-tasks box itself is unchanged. */
+.pl-list { position: relative; margin: 0; padding: 0; list-style: none; }
+.pl-step { position: relative; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; column-gap: 10px; align-items: start; padding: 5px 0; font-size: 12.5px; line-height: 18px; }
+.pl-marker { position: relative; z-index: 1; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--surface); box-shadow: inset 0 0 0 1px var(--ib-card-border); color: var(--text-secondary); }
+.pl-step[data-step="done"] .pl-marker { background: var(--ib-pill); box-shadow: none; color: var(--text); }
+.pl-step[data-step="active"] .pl-marker { box-shadow: none; color: var(--st-run); }
+.pl-marker svg { width: 10px; height: 10px; }
+.pl-marker .spinner { width: 11px; height: 11px; }
+.pl-step.pl-pop .pl-marker > * { animation: pl-pop var(--dur-move) var(--ease-out) both; }
+@keyframes pl-pop { from { opacity: 0; transform: scale(0.6); } }
+.pl-list > .pl-step:not(:last-child)::before { content: ""; position: absolute; left: 8.5px; top: 25px; bottom: -3px; width: 1px; background: var(--ib-card-border); }
+.pl-list > .pl-step:not(:last-child)::after { content: ""; position: absolute; left: 8.5px; top: 25px; bottom: -3px; width: 1px; background: var(--text-tertiary); transform: scaleY(0); transform-origin: top; transition: transform var(--dur-move) var(--ease-out); }
+.pl-list > .pl-step[data-step="done"]:not(:last-child)::after { transform: none; }
+.pl-earlier > .pl-step::before, .pl-earlier > .pl-step::after { content: none; }
+.pl-main { min-width: 0; }
+.pl-line { display: block; overflow-wrap: anywhere; }
+.pl-line .task-id { margin-right: 6px; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.pl-step.completed .task-text { color: var(--text-secondary); opacity: 1; }
+.pl-step.in_progress .task-text { color: var(--text); font-weight: 600; }
+.pl-step.pending .task-text { color: var(--text-secondary); }
+.pl-chip { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px; background: var(--ib-pill); color: var(--text-secondary); font-size: 11px; line-height: 16px; white-space: nowrap; font-variant-numeric: tabular-nums; vertical-align: 1px; }
+.pl-sub { display: block; margin-top: 1px; font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pl-aside { min-height: 18px; font-size: 12px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pl-step[data-step="active"] .pl-aside { color: var(--text); }
+.pl-fold { padding: 2px 0 2px 28px; }
+.pl-earlier { opacity: 0.85; }
+.pl-foot { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; gap: 8px; margin: 4px -16px -8px; padding: 7px 16px 8px; background: var(--surface); border-top: 1px solid var(--border); font-size: 12.5px; color: var(--text-secondary); }
+.pl-foot-st { display: inline-flex; align-items: center; gap: 7px; min-width: 0; color: var(--text); font-variant-numeric: tabular-nums; }
+.pl-foot-icon { display: inline-grid; place-items: center; width: 14px; height: 14px; color: var(--text-tertiary); }
+.pl-foot[data-phase="running"] .pl-foot-icon { color: var(--st-run); }
+.pl-foot[data-phase="completed"] .pl-foot-icon { color: var(--st-done); }
+.pl-foot-icon svg { width: 12px; height: 12px; }
+.pl-foot-icon .spinner { width: 11px; height: 11px; }
+.pl-foot-time { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* Panel work log (.prd/10 §3.1-6, §3.3) — what the agent did, in order. The
    header is a disclosure button (collapsed unless the panel was opened from
    작업 로그); the count keeps counting while it is closed. Own scroll box so
@@ -4949,13 +5056,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .panel-status { flex-basis: 100%; min-width: 0; }
 .panel-status:empty { display: none; }
 .ps-row { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12.5px; color: var(--text-secondary); }
-.ps-chip { --ag-c: var(--text-tertiary); display: inline-flex; align-items: center; gap: 5px; min-width: 0; padding: 3px 9px 3px 7px; border-radius: 99px; background: var(--surface-raised); border: 1px solid var(--border); white-space: nowrap; }
+/* re-agent-run D18: the chip is a pill tinted by its status (markup unchanged). */
+.ps-chip { --ag-c: var(--text-tertiary); display: inline-flex; align-items: center; gap: 5px; min-width: 0; height: 24px; padding: 0 10px 0 8px; border-radius: 99px; background: color-mix(in srgb, var(--ag-c) 13%, transparent); border: 0; white-space: nowrap; }
 .ps-chip.is-running { --ag-c: var(--st-run); } .ps-chip.is-waiting, .ps-chip.is-resuming { --ag-c: var(--st-wait); } .ps-chip.is-completed { --ag-c: var(--st-done); }
 .ps-label { font-size: 11px; font-weight: 700; color: var(--text-tertiary); letter-spacing: 0.02em; }
 .ps-icon { display: inline-grid; place-items: center; width: 14px; height: 14px; color: var(--ag-c); }
 .ps-icon svg { width: 12px; height: 12px; } .ps-icon .spinner { width: 10px; height: 10px; }
 .ps-word { font-weight: 650; color: var(--ag-c); }
-.ps-time { font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ps-time { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.ps-clock { flex: none; width: 13px; height: 13px; color: var(--text-tertiary); }
+.ps-dot { color: var(--text-tertiary); }
 .ps-actions { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
 .ps-actions .btn-action { min-height: 30px; padding: 3px 12px; font-size: 12.5px; }
 .ps-slack { display: inline-flex; align-items: center; min-height: 30px; padding: 0 8px; border-radius: 8px; font-size: 12.5px; font-weight: 600; color: var(--accent); text-decoration: none; }
@@ -4980,6 +5090,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .pi-grid dt { font-size: 11px; font-weight: 700; color: var(--text-tertiary); letter-spacing: 0.02em; }
 .pi-grid dd { margin: 1px 0 0; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .pi-muted { color: var(--text-tertiary); font-weight: 400; }
+/* 세부 (re-agent-run D19): label left, value right. */
+.pi-details { display: grid; gap: 7px; margin: 0; }
+.pi-details > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
+.pi-details dt { flex: none; color: var(--text-tertiary); font-size: 12px; }
+.pi-details dd { min-width: 0; margin: 0; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
 .pi-thread { font-variant-numeric: tabular-nums; }
 .pi-resume { color: var(--st-wait); overflow-wrap: anywhere; }
 /* The summary line's ctx % carries the context level (re-context-window D16). */
@@ -5386,6 +5501,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .turn-raw-details summary.turn-expand-btn { min-height: 44px; display: flex; align-items: center; }
   .panel-question .btn-choice, .mc-q-choices .btn-choice, .mc-q-edit-btn, .mc-btn-submit, .mc-btn-reset { min-height: 44px; }
   .mc-custom-input input, .mc-custom-input button, .btn-send, .panel-command input { min-height: 44px; }
+}
+/* 입력 필요 approval cards (re-agent-run D12–D13): key hints only with a hover
+   pointer, quiet hovers, 44px answers on touch — after the shared touch block. */
+@media (hover: none) {
+  .ap-btn[data-kbd]::after { display: none; }
+  .ap-card .btn-choice.ap-rec[data-kbd]::after { display: none; }
+}
+@media (hover: hover) and (pointer: fine) {
+  .ap-card .btn-perm.ap-ghost:not(:disabled):hover, .ap-card .btn-perm.ap-quiet:not(:disabled):hover, .ap-card .btn-choice.ap-choice:not(.ap-rec):not(:disabled):hover { filter: none; background: var(--ib-pill); }
+}
+@media (pointer: coarse) {
+  .ap-card .btn-perm.ap-btn, .ap-card .btn-choice.ap-choice { min-height: 44px; }
 }
 
 /* ── Agent inbox (re-agent-inbox D3) — the board's own reduced-motion rule, after the
@@ -6408,8 +6535,13 @@ body.nt-open .new-task-fab { display: none !important; }
       <div class="panel-info" id="panel-info"></div>
       <!-- Goal (spec 13): the editor's home — current, queue, add / delete, completed goals. -->
       <div class="panel-goal" id="panel-goal" role="region" tabindex="-1" aria-label="Goal" style="display:none"></div>
-      <div class="panel-permission" id="panel-permission" style="display:none" aria-live="polite"></div>
+      <!-- 입력 필요 (re-agent-run D8–D17): a head with the count, approval cards for the
+           permission prompts and the question; one polite status line says arrivals and
+           answers (the cards themselves are not a live region — their expiry clock ticks). -->
+      <div class="panel-needs-head" id="panel-needs-head" hidden><span class="pn-title">입력 필요</span><span class="pn-count" id="panel-needs-count"></span></div>
+      <div class="panel-permission" id="panel-permission" style="display:none"></div>
       <div class="panel-question" id="panel-question" style="display:none"></div>
+      <p class="ar-vh" id="panel-needs-status" role="status" aria-live="polite"></p>
       <!-- Agent bar (.prd/12 §4.3): path 메인 › A2 …, the focused node, its subtree (rich rows); it scopes Tasks and the work log. -->
       <div class="panel-agents" id="panel-agents" style="display:none"></div>
       <div class="panel-worklog" id="panel-worklog" style="display:none">
@@ -6649,41 +6781,36 @@ function formatTaskTime(ts) {
   return new Date(ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 }
 
+// The pending question (re-agent-run D17): a single-choice question is an
+// approval card (apQuestionCardHtml), written only when it changed and morphed
+// so focus stays; the multi-question form keeps its own renderer.
 function renderPanelQuestion(s) {
   var container = document.getElementById('panel-question');
   if (!container) return;
   if (!s || !s.pendingQuestion || s.activityState !== 'waiting') {
     container.style.display = 'none';
     container.innerHTML = '';
+    container._html = '';
+    renderPanelNeedsHead(s);
     return;
   }
   container.style.display = '';
   var q = s.pendingQuestion;
-
   if (q.type === 'user_choice' && q.choices) {
-    var pnlRecId = resolveRecommendedId(q.recommendedChoiceId, q.choices);
-    var pnlRecOpt = pnlRecId ? q.choices.find(function(c) { return c.id === pnlRecId; }) : null;
-    var pnlOthers = q.choices.filter(function(c) { return !pnlRecOpt || c.id !== pnlRecOpt.id; });
-    var pnlRecHtml = '';
-    if (pnlRecOpt) {
-      var recLbl = stripRecommendedMarker(pnlRecOpt.label);
-      pnlRecHtml = '<div class="choice-row-recommended">'
-        + '<button class="btn-choice btn-choice-recommended"' + choiceDataAttrs(s.key, pnlRecOpt.id, recLbl, q.question) + '>' + esc(pnlRecOpt.id) + '. ' + esc(recLbl) + (pnlRecOpt.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(pnlRecOpt.description) + '</span>' : '') + '</button>'
-        + '</div>'
-        + (pnlOthers.length > 0 ? '<hr class="choice-divider">' : '');
+    container.setAttribute('data-ap', 'card');
+    var html = apQuestionCardHtml(s, q);
+    if (container._html !== html) {
+      morphInnerHtml(container, html);
+      container._html = html;
     }
-    var pnlOtherBtns = pnlOthers.map(function(c) {
-      var lbl2 = stripRecommendedMarker(c.label);
-      return '<button class="btn-choice"' + choiceDataAttrs(s.key, c.id, lbl2, q.question) + '>' + esc(c.id) + '. ' + esc(lbl2) + (c.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(c.description) + '</span>' : '') + '</button>';
-    }).join('');
-    container.innerHTML = '<div class="panel-question-text">&#x2753; ' + esc(q.question) + '</div>'
-      + '<div class="panel-question-choices">' + pnlRecHtml + pnlOtherBtns + '</div>';
   } else if (q.type === 'user_choices' && q.questions) {
+    container.setAttribute('data-ap', 'form');
+    container._html = '';
     renderMultiChoicePanel(s);
-    return;
   } else {
     container.style.display = 'none';
   }
+  renderPanelNeedsHead(s);
 }
 
 // ── Permission prompts (SSOT 2026-10-24) ──
@@ -6762,22 +6889,220 @@ document.addEventListener('click', function(e) {
   answerPermission(d.permKey, d.permId, d.permDecision, btn);
 });
 
+// ── 입력 필요 — approval cards in the panel (re-agent-run D8–D17) ──
+// The panel's own renderer: the card face keeps renderPermissionBlock(s, 'card').
+// Every answer still rides the data-perm-* buttons and the delegated handler above.
+var _permAnswered = Object.create(null); // approvalId → the answer this page sent (D15)
+var AP_KBD_APPROVE = /Mac|iPhone|iPad|iPod/.test(String((window.navigator && (navigator.platform || navigator.userAgent)) || '')) ? '⌘↵' : 'Ctrl ↵';
+var AP_ANSWERED = { approve: '승인함', deny: '거부함', explain: '설명 요청함', approve_disable_rule: '승인함 · 규칙 끔' };
+var AP_SENT = { approve: '승인을 보냈습니다', deny: '거부를 보냈습니다', explain: '설명을 요청했습니다', approve_disable_rule: '승인을 보냈습니다 · 규칙 끔' };
+
+// The prompts as approval cards. A prompt that arrives while the panel is
+// open, and an answer this page sent, are said once in the status line; the
+// first render of an opening is the baseline. Unchanged markup writes nothing;
+// a change is morphed, and focus that was in a card stays on that card.
 function renderPanelPermission(s) {
   var container = document.getElementById('panel-permission');
   if (!container) return;
-  var html = s ? renderPermissionBlock(s, 'panel') : '';
+  var list = (s && s.pendingPermissions) || [];
+  var key = s ? s.key : '';
+  if (container._seenKey !== key) { container._seen = null; container._said = Object.create(null); }
+  var seen = container._seen;
+  var ids = Object.create(null);
+  var said = [];
+  for (var i = 0; i < list.length; i++) {
+    var p = list[i];
+    ids[p.approvalId] = true;
+    if (seen && !seen[p.approvalId]) said.push('승인 요청 — ' + (p.toolName || 'tool'));
+    var done = _permAnswered[p.approvalId];
+    if (done && !container._said[p.approvalId]) {
+      container._said[p.approvalId] = true;
+      said.push((AP_SENT[done] || done) + ' — ' + (p.toolName || 'tool'));
+    }
+  }
+  container._seenKey = key;
+  container._seen = ids;
+  var html = list.map(function(p) { return apPermissionCardHtml(s, p); }).join('');
   if (!html) {
     container.style.display = 'none';
     container.innerHTML = '';
     container._html = '';
-    return;
+  } else {
+    container.style.display = '';
+    if (container._html !== html) {
+      var ae = document.activeElement;
+      var fcard = ae && container.contains(ae) && ae.closest ? ae.closest('.ap-card') : null;
+      var fid = fcard ? fcard.getAttribute('data-approval-id') : '';
+      morphInnerHtml(container, html);
+      container._html = html;
+      if (fid && !container.contains(document.activeElement)) {
+        var cards = container.querySelectorAll('.ap-card');
+        for (var c = 0; c < cards.length; c++) {
+          if (cards[c].getAttribute('data-approval-id') === fid) { cards[c].focus({ preventScroll: true }); break; }
+        }
+      }
+    }
+    updateTimersIn(container);
   }
-  container.style.display = '';
-  if (container._html !== html) {
-    container.innerHTML = html;
-    container._html = html;
-  }
+  if (said.length) apAnnounce(said.join('. '));
+  renderPanelNeedsHead(s);
 }
+// The status line of 입력 필요 (polite, always in the page).
+function apAnnounce(msg) {
+  var el = document.getElementById('panel-needs-status');
+  if (el) el.textContent = msg;
+}
+// D9: the head of the section — 입력 필요 + how many things wait on the user.
+function panelQuestionShown(s) {
+  var q = s && s.pendingQuestion;
+  if (!q || s.activityState !== 'waiting') return false;
+  return (q.type === 'user_choice' && !!q.choices) || q.type === 'user_choices';
+}
+function renderPanelNeedsHead(s) {
+  var head = document.getElementById('panel-needs-head');
+  if (!head) return;
+  var n = s ? ((s.pendingPermissions || []).length + (panelQuestionShown(s) ? 1 : 0)) : 0;
+  head.hidden = n === 0;
+  var count = document.getElementById('panel-needs-count');
+  if (count && count.textContent !== String(n)) count.textContent = String(n);
+}
+// D12: the tool input as key/value rows when it is a JSON object (its
+// description becomes the card's description); anything else — cut at 64KB,
+// not JSON, not an object — stays the escaped <pre>.
+function apDetails(detail) {
+  var obj = null;
+  if (!detail.truncated) {
+    try { obj = JSON.parse(detail.input); } catch (_e) { obj = null; }
+  }
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
+    return {
+      desc: '',
+      html: '<pre class="perm-params">' + esc(detail.input) + '</pre>'
+        + (detail.truncated ? '<div class="perm-truncated">앞부분만 표시합니다 (64KB 초과)</div>' : ''),
+    };
+  }
+  var desc = typeof obj.description === 'string' ? obj.description : '';
+  var rows = Object.keys(obj).filter(function(k) { return !(k === 'description' && desc); }).map(function(k) {
+    var v = obj[k];
+    return '<div class="ap-detail"><dt>' + esc(k) + '</dt><dd>' + esc(typeof v === 'string' ? v : JSON.stringify(v, null, 2)) + '</dd></div>';
+  });
+  return { desc: desc, html: rows.length ? '<dl class="ap-details">' + rows.join('') + '</dl>' : '' };
+}
+// D10–D16: one permission prompt as an approval card — label, icon, title,
+// description, the matched-rule pill, the input, the rules, the answers and the
+// expiry clock — or, once this page answered it, one resolved row.
+function apPermissionCardHtml(s, p) {
+  var id = escAttr(p.approvalId);
+  var tool = p.toolName || 'tool';
+  var title = tool + ' 실행 승인';
+  var answered = _permAnswered[p.approvalId];
+  if (answered) {
+    var mark = answered === 'deny' ? agentIconHtml('failed') : answered === 'explain' ? '?' : agentIconHtml('completed');
+    return '<div class="ap-card perm-request is-resolved" role="group" tabindex="-1" data-ap-kind="perm" data-approval-id="' + id + '" aria-labelledby="ap-t-' + id + '">'
+      + '<div class="ap-resolved" data-decision="' + escAttr(answered) + '">'
+      + '<span class="ap-mark" aria-hidden="true">' + mark + '</span>'
+      + '<span class="ap-row-title" id="ap-t-' + id + '">' + esc(title) + '</span>'
+      + '<span class="ap-row-status">' + esc(AP_ANSWERED[answered] || answered) + ' &middot; 방금</span>'
+      + '</div></div>';
+  }
+  var sibling = isSiblingSession(s);
+  var mine = isPermissionRequester(p) && !sibling;
+  var detail = _permDetails[p.approvalId];
+  if (mine && !detail) loadPermissionDetail(s.key, p.approvalId);
+  var desc = '';
+  var body;
+  if (!mine) body = '<div class="perm-params perm-params-hidden">' + esc(sibling ? '다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요' : '파라미터와 응답은 요청자만 볼 수 있습니다') + '</div>';
+  else if (!detail) body = '<div class="perm-params perm-params-hidden">파라미터 불러오는 중…</div>';
+  else if (detail.error) body = '<div class="perm-params perm-params-hidden">' + esc(detail.error) + '</div>';
+  else {
+    var d = apDetails(detail);
+    desc = d.desc;
+    body = d.html;
+  }
+  var rules = p.rules || [];
+  var pill = rules.length
+    ? '<span class="ap-pill" data-kind="rule">위험<span class="ap-pill-word"> 규칙</span> ' + rules.length + '</span>'
+    : '<span class="ap-pill" data-kind="tool">도구 승인</span>';
+  var rulesHtml = rules.length
+    ? '<div class="perm-rules"><span class="perm-rules-label">Matched dangerous-command rule' + (rules.length > 1 ? 's' : '') + '</span>'
+      + rules.map(function(r) { return '<span class="perm-rule"><code>' + esc(r.id) + '</code> &mdash; ' + esc(r.label) + ': ' + esc(r.description) + '</span>'; }).join('')
+      + '</div>'
+    : '';
+  var lock = mine ? '' : ' disabled title="' + escAttr(sibling ? '다른 인스턴스의 세션' : '이 요청의 요청자만 응답할 수 있습니다') + '"';
+  var data = ' data-perm-key="' + escAttr(s.key) + '" data-perm-id="' + id + '"';
+  var alts = '<button type="button" class="btn-perm ap-btn ap-ghost"' + lock + data + ' data-perm-decision="explain">Explain</button>'
+    + (p.canDisableRule ? '<button type="button" class="btn-perm ap-btn ap-ghost"' + lock + data + ' data-perm-decision="approve_disable_rule">Approve &amp; disable rule</button>' : '');
+  var main = '<button type="button" class="btn-perm ap-btn ap-quiet ap-deny"' + lock + data + ' data-perm-decision="deny" data-kbd="Esc" aria-keyshortcuts="Escape">Deny</button>'
+    + '<button type="button" class="btn-perm ap-btn ap-primary ap-approve"' + lock + data + ' data-perm-decision="approve" data-kbd="' + AP_KBD_APPROVE + '" aria-keyshortcuts="Meta+Enter Control+Enter">Approve</button>';
+  var until = toNum(p.expiresAt);
+  var expires = until > 0
+    ? '<span class="ap-expires" data-until="' + until + '" aria-hidden="true"></span><span class="ar-vh" id="ap-x-' + id + '">' + esc(formatTaskTime(until)) + '에 만료</span>'
+    : '';
+  var describedBy = [desc ? 'ap-d-' + id : '', until > 0 ? 'ap-x-' + id : ''].filter(Boolean).join(' ');
+  var note = _permNotes[p.approvalId] ? '<div class="perm-note" role="alert">' + esc(_permNotes[p.approvalId]) + '</div>' : '';
+  return '<div class="ap-card perm-request" role="group" tabindex="-1" data-ap-kind="perm" data-approval-id="' + id + '" aria-labelledby="ap-t-' + id + '"'
+    + (describedBy ? ' aria-describedby="' + describedBy + '"' : '') + '>'
+    // Only what the prompt itself proves (no task: a subagent may have raised it).
+    + '<div class="ap-label">' + esc(tool) + (toNum(p.createdAt) > 0 ? ' &middot; ' + esc(formatTaskTime(p.createdAt)) + ' 요청' : '') + '</div>'
+    + '<div class="ap-body"><div class="ap-head">'
+    + '<span class="ap-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg></span>'
+    + '<div class="ap-titles"><div class="ap-title" id="ap-t-' + id + '">' + esc(title) + '</div>'
+    + (desc ? '<div class="ap-desc" id="ap-d-' + id + '" title="' + escAttr(desc) + '">' + esc(desc) + '</div>' : '') + '</div>'
+    + pill + '</div>'
+    + body + rulesHtml
+    + '<div class="ap-alts">' + alts + '</div>'
+    + '<div class="ap-foot">' + expires + '<div class="ap-actions">' + main + '</div></div>'
+    + note + '</div></div>';
+}
+// D17: the single-choice question in the same frame — the whole question as
+// the title, the recommended choice first (primary, ⌘↵), the rest after it.
+function apQuestionCardHtml(s, q) {
+  var recId = resolveRecommendedId(q.recommendedChoiceId, q.choices);
+  var rec = recId ? q.choices.find(function(c) { return c.id === recId; }) : null;
+  var others = q.choices.filter(function(c) { return !rec || c.id !== rec.id; });
+  var ordered = rec ? [rec].concat(others) : others;
+  var btns = ordered.map(function(c) {
+    var lbl = stripRecommendedMarker(c.label);
+    var isRec = !!rec && c.id === rec.id;
+    return '<button type="button" class="btn-choice ap-choice' + (isRec ? ' ap-rec' : '') + '"' + choiceDataAttrs(s.key, c.id, lbl, q.question)
+      + (isRec ? ' data-kbd="' + AP_KBD_APPROVE + '" aria-keyshortcuts="Meta+Enter Control+Enter"' : '') + '>'
+      + '<span class="ap-choice-label">' + esc(c.id) + '. ' + esc(lbl) + (isRec ? '<span class="ap-choice-tag">추천</span>' : '') + '</span>'
+      + (c.description ? '<span class="ap-choice-desc">' + esc(c.description) + '</span>' : '')
+      + '</button>';
+  }).join('');
+  return '<div class="ap-card ap-question" role="group" tabindex="-1" data-ap-kind="question" aria-labelledby="ap-q-title">'
+    + '<div class="ap-body"><div class="ap-head">'
+    + '<span class="ap-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M6.3 6.3a1.8 1.8 0 0 1 3.4.7c0 1.2-1.7 1.5-1.7 2.6M8 11.3v.1"/></svg></span>'
+    + '<div class="ap-titles"><div class="ap-title" id="ap-q-title">' + esc(q.question) + '</div></div>'
+    + '<span class="ap-pill" data-kind="question">질문</span></div>'
+    + '<div class="panel-question-choices ap-choices">' + btns + '</div>'
+    + '</div></div>';
+}
+// D14: ⌘/Ctrl+Enter anywhere in a card answers with its primary (Approve, or a
+// question's recommended choice); Esc denies only from one of the card's
+// buttons — on the card itself (the keyboard landing) it still closes the
+// panel. A handled key stays here: the document's Escape never sees it.
+function apKeydown(e) {
+  if (e.defaultPrevented || !e.target || !e.target.closest) return;
+  var card = e.target.closest('.ap-card');
+  if (!card) return;
+  var kind = card.getAttribute('data-ap-kind');
+  var btn = null;
+  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+    btn = card.querySelector(kind === 'question' ? '.ap-rec' : '.ap-approve');
+  } else if (e.key === 'Escape' && kind === 'perm') {
+    var from = e.target.closest('button');
+    if (from && card.contains(from)) btn = card.querySelector('.ap-deny');
+  }
+  if (!btn || btn.disabled) return;
+  e.preventDefault();
+  e.stopPropagation();
+  btn.click();
+}
+['panel-permission', 'panel-question'].forEach(function(id) {
+  var el = document.getElementById(id);
+  if (el) el.addEventListener('keydown', apKeydown);
+});
 
 // Re-draw what shows this session's prompt (its card, the open panel).
 function repaintPermission(key) {
@@ -6834,6 +7159,10 @@ async function answerPermission(key, approvalId, decision, btnEl) {
     }
     if (res.ok) {
       btnEl.textContent = '✓ ' + label;
+      // The panel's card turns into its resolved row (re-agent-run D15); the
+      // card face keeps its locked buttons until the board push removes it.
+      _permAnswered[approvalId] = decision;
+      if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelPermission(_sessionCache[key]);
       return;
     }
     var data = {};
@@ -6851,9 +7180,12 @@ async function answerPermission(key, approvalId, decision, btnEl) {
 
 // Pinned Tasks block (.prd/10 §3.1-6): always rendered — with no tasks yet it
 // says so instead of disappearing.
-// The panel's Tasks — the whole ledger of the focused node (spec 13): the
-// current list (in progress → pending → completed, completed folded past 3)
-// and, for the main agent, the earlier lists (earlierTasks) under it.
+// The panel's Tasks as a plan (re-agent-run D1–D7): the focused node's current
+// list in its own order — a marker per step (check · spinner · empty ring) on
+// one rail, the earliest completed steps folded past 3 — then, for the main
+// agent, the earlier lists (earlierTasks), and a footer with the plan's phase.
+// The first render of a scope is the baseline; a step that completes after it
+// is announced (and its marker pops) once.
 function renderPanelTasks(tasks, scopeLabel, earlier) {
   var container = document.getElementById('panel-tasks');
   if (!container) return;
@@ -6866,58 +7198,90 @@ function renderPanelTasks(tasks, scopeLabel, earlier) {
     earlierHtml = '<button class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="' + (_panelTasksEarlier ? 'true' : 'false') + '"'
       + ' onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()">'
       + (_panelTasksEarlier ? '&#x25B2; 이전 task ' + prev.length + '개 숨기기' : '&#x25BC; 이전 task ' + prev.length + '개') + '</button>';
-    if (_panelTasksEarlier) earlierHtml += '<div class="panel-tasks-earlier">' + prev.map(renderPanelTaskItem).join('') + '</div>';
+    if (_panelTasksEarlier) earlierHtml += '<ol class="pl-list pl-earlier" aria-label="이전 task">' + prev.map(function(t) { return renderPanelTaskItem(t); }).join('') + '</ol>';
   }
   if (!tasks || tasks.length === 0) {
     writePanelTasks(container, '<div class="panel-tasks-header"><span>' + title + '</span></div><div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>' + earlierHtml);
     return;
   }
 
-  // Sort: in_progress → pending → completed
-  var inProgress = tasks.filter(function(t) { return t.status === 'in_progress'; });
-  var pending = tasks.filter(function(t) { return t.status === 'pending'; });
-  var completed = tasks.filter(function(t) { return t.status === 'completed'; });
-
-  var total = tasks.length;
-  var doneCount = completed.length;
-  var pct = total > 0 ? Math.round((doneCount / total) * 100) : 0;
-
-  var html = '<div class="panel-tasks-header">'
-    + '<span>' + title + '</span>'
-    + '<span class="tasks-progress">' + doneCount + '/' + total + ' (' + pct + '%)</span>'
-    + '</div>';
-
-  // Active + pending — always shown
-  var active = inProgress.concat(pending);
-  for (var i = 0; i < active.length; i++) {
-    html += renderPanelTaskItem(active[i]);
-  }
-
-  // Completed — show first 3, rest behind toggle
-  var COMPLETED_LIMIT = 3;
-  var visibleCompleted = _panelTasksExpanded ? completed : completed.slice(0, COMPLETED_LIMIT);
-  var hiddenCount = completed.length - COMPLETED_LIMIT;
-
-  for (var j = 0; j < visibleCompleted.length; j++) {
-    html += renderPanelTaskItem(visibleCompleted[j]);
-  }
-
-  if (hiddenCount > 0) {
-    if (_panelTasksExpanded) {
-      html += '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()">&#x25B2; Hide completed</button>';
-    } else {
-      html += '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()">&#x25BC; Show ' + hiddenCount + ' more completed</button>';
+  // D7: what changed since the last render of this scope (none on its first).
+  var scope = scopeLabel || '';
+  var seen = container._planScope === scope ? container._planSeen : null;
+  var now = Object.create(null);
+  var changed = Object.create(null);
+  var said = [];
+  for (var i = 0; i < tasks.length; i++) {
+    var t = tasks[i];
+    now[t.id] = t.status;
+    if (seen && seen[t.id] && seen[t.id] !== t.status) {
+      changed[t.id] = true;
+      if (t.status === 'completed') said.push(t.id + ' 완료: ' + t.content);
     }
   }
+  container._planScope = scope;
+  container._planSeen = now;
 
-  writePanelTasks(container, html + earlierHtml);
+  // D6: the earliest completed steps fold past 3, behind one toggle in their place.
+  var COMPLETED_LIMIT = 3;
+  var doneAt = [];
+  for (var j = 0; j < tasks.length; j++) if (tasks[j].status === 'completed') doneAt.push(j);
+  var hiddenCount = doneAt.length - COMPLETED_LIMIT;
+  var hidden = Object.create(null);
+  if (!_panelTasksExpanded) for (var k = 0; k < hiddenCount; k++) hidden[doneAt[k]] = true;
+  var rows = '';
+  for (var n = 0; n < tasks.length; n++) {
+    if (hiddenCount > 0 && n === doneAt[0]) {
+      rows += '<li class="pl-fold">' + (_panelTasksExpanded
+        ? '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()">&#x25B2; Hide completed</button>'
+        : '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()">&#x25BC; Show ' + hiddenCount + ' more completed</button>') + '</li>';
+    }
+    if (!hidden[n]) rows += renderPanelTaskItem(tasks[n], !!changed[tasks[n].id]);
+  }
+
+  var html = '<div class="panel-tasks-header"><span>' + title + '</span></div>'
+    + '<ol class="pl-list" aria-label="계획 단계">' + rows + '</ol>'
+    + earlierHtml
+    + planFootHtml(tasks)
+    + '<span class="ar-vh pl-live" role="status" aria-live="polite">' + esc(said.join('. ')) + '</span>';
+  // The clocks are filled at once (the 1 Hz tick keeps them going).
+  if (writePanelTasks(container, html)) updateTimersIn(container);
   // Same data (a session push while a subagent is shown) writes nothing; a
   // change is morphed, so the focused toggle or task row stays.
   function writePanelTasks(el, markup) {
-    if (el._html === markup) return;
+    if (el._html === markup) return false;
     morphInnerHtml(el, markup);
     el._html = markup;
+    return true;
   }
+}
+// D6: the plan's phase from its steps alone — the server already demotes an
+// idle session's in-progress task (normalizeTaskProgress) — with done/total (the
+// face's 완료/전체) and the time: since the first start while it runs, the
+// total once every step is done.
+function planFootHtml(tasks) {
+  var total = tasks.length;
+  var done = 0;
+  var running = false;
+  var first = 0;
+  var last = 0;
+  for (var i = 0; i < total; i++) {
+    var t = tasks[i];
+    if (t.status === 'completed') done++;
+    if (t.status === 'in_progress') running = true;
+    var st = Number(t.startedAt) || 0;
+    if (st && (!first || st < first)) first = st;
+    var ct = Number(t.completedAt) || 0;
+    if (ct > last) last = ct;
+  }
+  var phase = running ? 'running' : done === total ? 'completed' : 'idle';
+  var time = '';
+  if (phase === 'running' && first) time = '<span class="task-elapsed" data-since="' + first + '"></span>';
+  else if (phase === 'completed' && first && last > first) time = esc(formatDuration(last - first));
+  return '<div class="pl-foot" data-phase="' + phase + '">'
+    + '<span class="pl-foot-st"><span class="pl-foot-icon">' + agentIconHtml(phase) + '</span>' + esc(AGENT_STATUS_LABEL[phase] || '') + ' &middot; ' + done + '/' + total + '</span>'
+    + (time ? '<span class="pl-foot-time" aria-hidden="true">' + time + '</span>' : '')
+    + '</div>';
 }
 // The focused node's earlier task lists: the main agent's (s.earlierTasks); a subagent has none.
 function panelAgentEarlier() {
@@ -6929,40 +7293,33 @@ function repaintPanelTasks() {
   renderPanelTasks(panelAgentTasks(), panelAgentLabel(), panelAgentEarlier());
 }
 
-function renderPanelTaskItem(t) {
-  var icon, cls;
-  if (t.status === 'completed') { icon = '&#x2705;'; cls = 'completed'; }
-  else if (t.status === 'in_progress') { icon = '<span class="spin">&#x1F504;</span>'; cls = 'in_progress'; }
-  else { icon = '&#x25CB;'; cls = 'pending'; }
-
-  var timeInfo = '';
-  if (t.status === 'completed' && t.startedAt && t.completedAt) {
-    var dur = t.completedAt - t.startedAt;
-    timeInfo = formatDuration(dur);
-  } else if (t.status === 'in_progress' && t.startedAt) {
-    var elapsed = Date.now() - t.startedAt;
-    timeInfo = formatDuration(elapsed) + '...';
-  }
+// One plan step (D1–D5): marker · #id title [툴 N회] (+ what it is doing now) ·
+// its time — the duration once done, a 1 Hz clock while it runs (no clock in
+// the markup, so equal data renders equal HTML). pop = its state just changed.
+function renderPanelTaskItem(t, pop) {
+  var st = t.status === 'completed' ? 'done' : t.status === 'in_progress' ? 'active' : 'pending';
+  var cls = t.status === 'completed' ? 'completed' : t.status === 'in_progress' ? 'in_progress' : 'pending';
+  var marker = st === 'done' ? agentIconHtml('completed') : st === 'active' ? agentIconHtml('running') : '';
   // SSOT 2026-10-22 T7: tool calls made while the task ran.
-  if (t.status !== 'pending' && t.toolCalls !== undefined) {
-    timeInfo = (timeInfo ? timeInfo + ' · ' : '') + '툴 ' + toNum(t.toolCalls) + '회';
-  }
-
-  var timeHtml = '';
-  if (t.startedAt || t.completedAt) {
-    var parts = [];
-    if (t.startedAt) parts.push(formatTaskTime(t.startedAt));
-    if (t.completedAt) parts.push(formatTaskTime(t.completedAt));
-    timeHtml = '<div class="task-time" title="' + parts.join(' → ') + '">' + (timeInfo || parts.join('→')) + '</div>';
-  }
-
-  if (!timeHtml && timeInfo) timeHtml = '<div class="task-time">' + timeInfo + '</div>';
-  return '<div class="panel-task-item ' + cls + '">'
-    + '<span class="task-icon">' + icon + '</span>'
+  var chip = t.status !== 'pending' && t.toolCalls !== undefined ? '<span class="pl-chip">툴 ' + toNum(t.toolCalls) + '회</span>' : '';
+  var sub = st === 'active' && t.activeForm && t.activeForm !== t.content ? '<span class="pl-sub">' + esc(t.activeForm) + '</span>' : '';
+  var aside = '';
+  if (st === 'done' && t.startedAt && t.completedAt) aside = esc(formatDuration(t.completedAt - t.startedAt));
+  else if (st === 'active' && t.startedAt) aside = '<span class="task-elapsed" data-since="' + toNum(t.startedAt) + '"></span>';
+  var times = [];
+  if (t.startedAt) times.push(formatTaskTime(t.startedAt));
+  if (t.completedAt) times.push(formatTaskTime(t.completedAt));
+  return '<li class="panel-task-item pl-step ' + cls + (pop ? ' pl-pop' : '') + '" data-step="' + st + '"'
+    + (st === 'active' ? ' aria-current="step"' : '')
+    + (times.length ? ' title="' + escAttr(times.join(' → ')) + '"' : '') + '>'
+    + '<span class="pl-marker" aria-hidden="true">' + marker + '</span>'
+    + '<span class="pl-main"><span class="pl-line">'
     + (t.id ? '<span class="task-id">#' + esc(t.id) + '</span>' : '')
-    + '<span class="task-text">' + esc(t.content) + '</span>'
-    + timeHtml
-    + '</div>';
+    + '<span class="task-text">' + esc(t.content) + '</span>' + chip + '</span>'
+    + sub
+    + '<span class="ar-vh">, ' + (st === 'done' ? '완료' : st === 'active' ? '진행 중' : '대기') + '</span></span>'
+    + '<span class="pl-aside">' + aside + '</span>'
+    + '</li>';
 }
 let _csrfToken = '';
 
@@ -7432,6 +7789,7 @@ function formatNmSSs(ms) {
 //   .card-timer-live  data-leg-started / data-accumulated (renderCardStatus)
 //   .rel-time         data-ts  → "6m ago"
 //   .task-elapsed     data-since → running task duration
+//   .ap-expires       data-until → an approval card's time left
 function updateTimersIn(root) {
   var now = Date.now();
   var els = root.querySelectorAll('.card-timer-live');
@@ -7452,6 +7810,14 @@ function updateTimersIn(root) {
   for (var k = 0; k < run.length; k++) {
     var d = formatDuration(now - (Number(run[k].dataset.since) || now)) || '0s';
     if (run[k].textContent !== d) run[k].textContent = d;
+  }
+  // An approval card's expiry (re-agent-run D16): m:ss left, stopping at 0:00; the last minute warns.
+  var exp = root.querySelectorAll('.ap-expires');
+  for (var x = 0; x < exp.length; x++) {
+    var left = Math.max(0, Math.ceil(((Number(exp[x].dataset.until) || 0) - now) / 1000));
+    var et = '만료까지 ' + Math.floor(left / 60) + ':' + (left % 60 < 10 ? '0' : '') + (left % 60);
+    if (exp[x].textContent !== et) exp[x].textContent = et;
+    exp[x].classList.toggle('is-low', left <= 60);
   }
 }
 function updateTimers() { updateTimersIn(document); }
@@ -9544,7 +9910,17 @@ function panelHeadHtml(s, col) {
   var st = rootStatusOf(s, col);
   var acc = toNum(s.activeAccumulatedMs);
   var leg = st === 'running' || st === 'waiting' ? (Number(s.activeLegStartedAtMs) || 0) : 0;
-  var timer = acc || leg ? '<span class="ps-time"><span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="' + acc + '" title="활성 시간"></span></span>' : '';
+  // re-agent-run D18: a turn in flight reads 시작 HH:MM · its own elapsed time;
+  // otherwise the session's total active time (also in 세부 — D19).
+  var timer = '';
+  if (leg) {
+    timer = '<span class="ps-time" title="이번 턴 시작 · 경과">'
+      + '<svg class="ps-clock" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.2l2 1.3"/></svg>'
+      + '시작 ' + esc(formatTaskTime(leg)) + '<span class="ps-dot" aria-hidden="true">&middot;</span>'
+      + '<span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="0"></span></span>';
+  } else if (acc) {
+    timer = '<span class="ps-time" title="활성 시간">활성 <span class="card-timer-live" data-leg-started="0" data-accumulated="' + acc + '"></span></span>';
+  }
   var resume = pendingAutoResume(s, col);
   var slack = s.slackThreadUrl
     ? '<a class="ps-slack" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener" aria-label="Slack 스레드 열기" title="Slack 스레드">Slack</a>'
@@ -9592,22 +9968,45 @@ function panelInfoHtml(s, open) {
   if (links.length) html += '<div class="pi-links">' + links.join('') + '</div>';
   if (!open) return html;
   var rows = [];
-  if (s.ownerName) rows.push(['소유자', esc(s.ownerName)]);
-  if (s.workflow) rows.push(['워크플로', esc(s.workflow)]);
-  if (s.environment && s.environment.instanceName) rows.push(['환경', esc(s.environment.instanceName) + ' <span class="pi-muted">' + esc((s.environment.host || '') + ':' + (s.environment.port || '')) + '</span>']);
   if (u) {
     rows.push(['누적 입력', formatTokens(u.totalInputTokens)]);
     rows.push(['누적 출력', formatTokens(u.totalOutputTokens)]);
     rows.push(['누적 캐시 읽기', formatTokens(u.totalCacheReadTokens)]);
     rows.push(['누적 캐시 쓰기', formatTokens(u.totalCacheCreateTokens)]);
-    rows.push(['비용', '$' + toNum(u.totalCostUsd).toFixed(2)]);
   }
-  var body = '<dl class="pi-grid">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
+  // Open body order (re-agent-run D19 · re-context-window D5): cw (prepended on return) → 세부 → token grid → thread.
+  var body = panelDetailsHtml(s) + '<dl class="pi-grid">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
   var thread = ['&Sigma; ' + formatNmSSs(toNum(s.threadTotalActiveMs)), '압축 ' + toNum(s.compactionCount), '세션 ' + toNum(s.threadSessionCount)];
   if (s.mergeStats) thread.push('+' + toNum(s.mergeStats.totalLinesAdded) + ' / -' + toNum(s.mergeStats.totalLinesDeleted));
   body += '<div class="pi-thread">' + thread.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</div>';
   if (s.autoResume && s.autoResume.reason) body += '<div class="pi-resume">오류: ' + esc(s.autoResume.reason) + '</div>';
   return html + '<div class="pi-body" id="panel-info-body">' + contextBlockHtml(s) + body + '</div>';
+}
+// 세부 (re-agent-run D19) — who ran it, with what, how much, at what cost:
+// 에이전트 (the model) · 시작한 사람 · 도구 호출 (the main agent's every call —
+// agentRoot — plus each subagent's; a lower bound when the card carries fewer
+// subagents than there are) · 비용 · 활성 시간 (live) · 워크플로 · 환경.
+function panelDetailsHtml(s) {
+  var u = s.tokenUsage || null;
+  var rows = [];
+  var model = String(s.model || '').replace(/^claude-/, '');
+  if (model) rows.push(['에이전트', esc(model)]);
+  if (s.ownerName) rows.push(['시작한 사람', esc(s.ownerName)]);
+  var list = s.agents || [];
+  if (s.agentRoot || list.length) {
+    var main = toNum(s.agentRoot && s.agentRoot.toolCalls);
+    var subs = 0;
+    for (var i = 0; i < list.length; i++) subs += toNum(list[i] && list[i].toolCalls);
+    var more = toNum(s.agentsTotal) > list.length ? '+' : '';
+    rows.push(['도구 호출', '<span title="메인 ' + main + ' · 서브에이전트 ' + subs + '">' + (main + subs) + more + '</span>']);
+  }
+  if (u) rows.push(['비용', '$' + toNum(u.totalCostUsd).toFixed(2)]);
+  var acc = toNum(s.activeAccumulatedMs);
+  var leg = s.activityState === 'working' || s.activityState === 'waiting' ? (Number(s.activeLegStartedAtMs) || 0) : 0;
+  if (acc || leg) rows.push(['활성 시간', '<span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="' + acc + '"></span>']);
+  if (s.workflow) rows.push(['워크플로', esc(s.workflow)]);
+  if (s.environment && s.environment.instanceName) rows.push(['환경', esc(s.environment.instanceName) + ' <span class="pi-muted">' + esc((s.environment.host || '') + ':' + (s.environment.port || '')) + '</span>']);
+  return '<dl class="pi-details">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
 }
 function renderPanelInfo() {
   var el = document.getElementById('panel-info');
@@ -13296,8 +13695,11 @@ function landPanel() {
   _panelOnQuestion = onQuestion;
   // The question sits under the session info that scrolls with the
   // conversation (SSOT 2026-10-24), so land on its own offset, not on 0.
+  // The 입력 필요 head sits right above it: land with the head in view (re-agent-run D9).
+  var needsHead = document.getElementById('panel-needs-head');
+  var headH = onQuestion && needsHead && !needsHead.hidden ? (needsHead.offsetHeight || 0) : 0;
   var questionTop = onQuestion
-    ? scrollEl.scrollTop + target.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top
+    ? Math.max(0, scrollEl.scrollTop + target.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - headH)
     : 0;
   // Instant: under scroll-behavior: smooth the glide down from 0 passed
   // through scrollTop < 100 and set off the load-older-turns handler.
@@ -13376,6 +13778,12 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // reopening the same session keeps an unsent draft.
   var goalEl = document.getElementById('panel-goal');
   if (goalEl && goalEl._key !== sessionKey) { goalEl.innerHTML = ''; goalEl._html = ''; }
+  // An opening's first plan and 입력 필요 renders are the baseline: nothing in
+  // them is announced (re-agent-run D7, D15).
+  var tasksEl = document.getElementById('panel-tasks');
+  if (tasksEl) tasksEl._planScope = null;
+  var permEl = document.getElementById('panel-permission');
+  if (permEl) permEl._seenKey = null;
   repaintPanelSession();
 
   // Pending permission prompt + question in panel
@@ -13459,7 +13867,9 @@ function focusPanelLanding() {
   else if (_panelLand === 'tasks') t = document.getElementById('panel-tasks');
   else if (_panelLand === 'worklog') t = document.getElementById('worklog-toggle');
   if (!t || t.style.display === 'none') {
-    var ask = document.querySelector('#panel-permission button:not([disabled]), #panel-question button:not([disabled]), #panel-question textarea');
+    // An approval card itself (re-agent-run D14): Esc there still closes the
+    // panel, ⌘↵ answers; the multi-question form keeps its first control.
+    var ask = document.querySelector('#panel-permission .ap-card, #panel-question .ap-card, #panel-question button:not([disabled]), #panel-question textarea');
     t = ask || document.getElementById('panel-title');
   }
   if (t && t.focus) t.focus({ preventScroll: true });

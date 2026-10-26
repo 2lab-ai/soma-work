@@ -513,12 +513,14 @@ describe('panel header — the session chip and its one action', () => {
       },
     ).panelHeadHtml(s, col);
 
-  it('a running session: 세션 · 실행 중 (announced), the live active timer, Slack, and Stop', () => {
+  it('a running session: 세션 · 실행 중 (announced), 시작 HH:MM · this turn’s live time, Slack, and Stop', () => {
     const html = head(card(), 'working');
     expect(html).toContain('class="ps-chip is-running"');
     expect(html).toContain('<span class="ps-label">세션</span>');
     expect(html).toContain('<span class="ps-word" role="status">실행 중</span>');
-    expect(html).toContain('class="card-timer-live" data-leg-started="' + T0 + '" data-accumulated="65000"');
+    // re-agent-run D18: the head times this turn from its start; the session's Σ active time is in 세부 (D19).
+    expect(html).toContain('시작 ');
+    expect(html).toContain('class="card-timer-live" data-leg-started="' + T0 + '" data-accumulated="0"');
     expect(html).toContain('href="https://slack/x"');
     expect(html).toContain('btn-stop');
     // The accessible name keeps the visible label first (WCAG 2.5.3).
@@ -559,7 +561,8 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
   const info = (s: Record<string, unknown>, open: boolean) =>
     load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
       // contextBlockHtml: the context block at the top of the open body (re-context-window D5) — empty without contextParts.
-      ['esc', 'escAttr', 'toNum', 'ctxLevel', 'ctxPercent', 'contextBlockHtml', 'panelInfoHtml'],
+      // panelDetailsHtml: 세부 right after it (re-agent-run D19).
+      ['esc', 'escAttr', 'toNum', 'ctxLevel', 'ctxPercent', 'contextBlockHtml', 'panelDetailsHtml', 'panelInfoHtml'],
       ['PI_CHEV_SVG'],
       {
         formatTokens: (n: number) => `${n}`,
@@ -1140,8 +1143,19 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
   it('the main scope lists the earlier task lists under the current one', () => {
     const el = { style: {} as Record<string, string>, _html: '', innerHTML: '' };
     const m = load<{ renderPanelTasks(tasks: unknown[], label: string, earlier: unknown[]): void }>(
-      ['esc', 'escAttr', 'toNum', 'formatDuration', 'renderPanelTaskItem', 'renderPanelTasks'],
-      [],
+      // re-agent-run D1–D7: plan rows (markers, times) and the footer.
+      [
+        'esc',
+        'escAttr',
+        'toNum',
+        'formatDuration',
+        'formatTaskTime',
+        'agentIconHtml',
+        'renderPanelTaskItem',
+        'planFootHtml',
+        'renderPanelTasks',
+      ],
+      ['AGENT_STATUS_LABEL'],
       {
         document: { getElementById: () => el },
         _panelTasksExpanded: true,
@@ -1149,6 +1163,7 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
         morphInnerHtml: (e: { innerHTML: string }, h: string) => {
           e.innerHTML = h;
         },
+        updateTimersIn: () => {},
       },
     );
     m.renderPanelTasks([{ id: 'T5', content: 'now', status: 'in_progress' }], '', [
