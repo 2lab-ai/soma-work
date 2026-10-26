@@ -13717,6 +13717,15 @@ function capBarRow(g, cls, label, sub, v, key, nowSec) {
 // One muted line, only what is non-zero: how many accounts the bars count, how many are
 // blocked right now, which are left out and why, estimates, and how old the oldest
 // llmux reading is (the fetch time sits in the section head).
+// Untiered accounts counted on an assumed plan (operator, 2026-10-26: a Claude account
+// with no tier is Max x20): { n, short } or null. Never silent — the card and the chip say it.
+function capAssumed(g) {
+  var au = (g.units || []).filter(function(x) { return x.counted && x.tierAssumed; });
+  var n = g.tierAssumed || au.length;
+  if (!n) return null;
+  var t = au.length ? CAP_TIERS[au[0].tier] : null;
+  return { n: n, short: t ? t.short : 'x20' };
+}
 function capDisclosure(g, nowSec) {
   var u = g.units || [];
   var blocked = u.filter(function(x) { return x.counted && x.blocked; }).length;
@@ -13730,6 +13739,8 @@ function capDisclosure(g, nowSec) {
   // "(차단 6 포함)": the blocked accounts are inside the counted ones (trinity mockup v5, fable P2).
   var parts = [g.countedAccounts + '/' + (g.accountCount || u.length) + ' 반영' + (blocked ? '(차단 ' + blocked + ' 포함)' : '')];
   if (exN) parts.push('제외 ' + exN + '(' + why.join('·') + ')');
+  var asm = capAssumed(g);
+  if (asm) parts.push('티어 미지정 ' + asm.n + '(' + asm.short + ' 가정)');
   if (g.estimated) parts.push('추정 ' + g.estimated);
   if (g.unmeasured5h) parts.push('5시간 측정 없음 ' + g.unmeasured5h);
   var html = esc(parts.join(' · '));
@@ -13840,11 +13851,13 @@ function renderCapacitySummary(v, nowMs) {
     var age = g.oldestRefreshAt ? nowSec - g.oldestRefreshAt : 0;
     var stale = age > 86400 ? capDur(age).split(' ')[0] + ' 전' : '';
     var part = g.accountCount && g.countedAccounts < g.accountCount * 0.8 ? g.countedAccounts + '/' + g.accountCount + ' 반영' : '';
-    var flagText = [stale ? '⚠ ' + stale : '', part].filter(Boolean).join(' · ');
-    var flag = flagText ? ' <i class="cap-chip-flag">' + esc(flagText) + '</i>' : '';
+    // …and accounts counted on an assumed plan (operator, 2026-10-26): "⚠ x20 가정 15".
+    var asm = capAssumed(g);
+    var flags = [stale, part, asm ? asm.short + ' 가정 ' + asm.n : ''].filter(Boolean);
+    var flag = flags.length ? ' <i class="cap-chip-flag">' + esc('⚠ ' + flags.join(' · ')) + '</i>' : '';
     var said = !known ? '계산 불가 — 셀 수 있는 계정 없음'
       : (g.has5h ? '5시간(지금) ' + capCount(g.now, g.total) + '/' + t + ' 계정 (' + capPct(g.now, g.total) + '), ' : '') + '일주일 ' + capCount(g.week, g.total) + '/' + t + ' 계정 (' + capPct(g.week, g.total) + ')';
-    said += [stale ? '측정 ' + stale : '', part].filter(Boolean).map(function(x) { return ' · ' + x; }).join('');
+    said += [stale ? '측정 ' + stale : '', part, asm ? '티어 미지정 ' + asm.n + '(' + asm.short + ' 가정)' : ''].filter(Boolean).map(function(x) { return ' · ' + x; }).join('');
     var next = known ? capNextLine(g, g.has5h ? 'dNow' : 'dWeek', g.has5h ? CAP_5H : CAP_7D, nowSec, nowMs) : '';
     var lead = said + (WORD[state] || '') + (next ? ' — ' + next : '');
     return '<span class="cap-chip is-' + state + '" title="' + escAttr(lead) + '" aria-label="' + escAttr(g.label + ' ' + lead) + '">'
