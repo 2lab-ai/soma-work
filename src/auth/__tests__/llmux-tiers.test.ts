@@ -85,6 +85,19 @@ describe('resolveAccountTier — explicit → upstream → defaults → unknown'
     ).toBe('claude-max-20x');
   });
 
+  // llmux 0.2.26 (.prd/25) reports Codex's plan from the token claim: pro = $200, promax = $500.
+  it('a Codex plan_type llmux reports names the ChatGPT plan, and beats a default', () => {
+    expect(resolveAccountTier({ name: 'ai', group: 'codex', plan_type: 'pro' }, {})).toBe('chatgpt-pro-200');
+    expect(resolveAccountTier({ name: 'ai9', group: 'codex', plan_type: 'promax' }, {})).toBe('chatgpt-pro-500');
+    // upstream beats the built-in default (ai2 defaults to $200)
+    expect(resolveAccountTier({ name: 'ai2', group: 'codex', plan_type: 'promax' }, {})).toBe('chatgpt-pro-500');
+    // explicit config still wins; an unknown plan word is not a guess
+    expect(resolveAccountTier({ name: 'ai1', group: 'codex', plan_type: 'pro' }, explicit)).toBe('chatgpt-pro-500');
+    expect(resolveAccountTier({ name: 'ai9', group: 'codex', plan_type: 'plus' }, {})).toBeUndefined();
+    // a Claude account never reads a Codex plan word
+    expect(resolveAccountTier({ name: 'ai9', group: 'claude', plan_type: 'pro' }, {})).toBeUndefined();
+  });
+
   it('then the built-in defaults', () => {
     expect(resolveAccountTier({ name: 'ai5', group: 'codex' }, {})).toBe('chatgpt-pro-500');
     expect(resolveAccountTier({ name: 'ai2', group: 'codex' }, {})).toBe('chatgpt-pro-200');

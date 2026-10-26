@@ -323,8 +323,10 @@ not shown) is one simple card:
   5h, then weekly). With no 5h gain in 7 days the ● key says "늘어날 양 없음"; with only small ones
   (each under 0.05) it gives their sum, `+0.1계정 미만` or e.g. `+0.1계정`, in the same words
   as the bars' next line and the chip tooltip.
-- Tiers: llmux does not report plans, so the map is `SOMA_LLMUX_ACCOUNT_TIERS`
-  (`group:name=tier`, e.g. `claude:ai7=x20,claude:ai12=x5`) over built-in defaults
+- Tiers: llmux ≥ 0.2.26 reports each account's plan — Claude `rate_limit_tier`
+  (`default_claude_max_20x`), Codex `plan_type` (`pro` = $200, `promax` = $500) — and
+  the dashboard uses it with no configuration. Order: `SOMA_LLMUX_ACCOUNT_TIERS`
+  (`group:name=tier`, e.g. `claude:ai7=x20,claude:ai12=x5`) → the plan llmux reports → built-in defaults
   (Codex `ai1`·`ai2` = Pro $200, `ai5`·`ai6` = Pro $500). A bare llmux `max` is
   never read as x5/x20. An unmapped **Claude** account counts as Max x20 and is said
   so — `티어 미지정 15(x20 가정)` on the card, `⚠ x20 가정 15` on the folded chip — so a
