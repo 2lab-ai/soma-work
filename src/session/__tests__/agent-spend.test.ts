@@ -13,7 +13,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   type AgentRegistry,
   applyAgentEvent,
@@ -329,8 +329,19 @@ describe('agent spend — registry: persisted, and the subagent sum survives the
     expect(bad.prunedSpend).toBeUndefined();
   });
 
+  // The cap reads the wall clock (an unread record goes a day after it ended):
+  // these tests pin it, so they do not depend on the day they run (review r3).
+  function capRegistry(now: number): { agents?: AgentRegistry } {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(now);
+    return {};
+  }
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   it('review r1 — the cap drops sealed records first, never one whose spend is still being read', () => {
-    const h: { agents?: AgentRegistry } = {};
+    const h = capRegistry(T0 + 60_000);
     applyAgentEvent(h, { kind: 'spawn', agentId: 'toolu_unread', ts: T0 });
     h.agents!.agents[0].taskId = 'unread1';
     applyAgentEvent(h, { kind: 'returned', agentId: 'toolu_unread', ok: true, ack: false, ts: T0 + 1 });
@@ -346,14 +357,25 @@ describe('agent spend — registry: persisted, and the subagent sum survives the
   });
 
   it('review r2 — with no settled record to drop, an unread one is kept over the cap (its spend is not lost)', () => {
-    const h: { agents?: AgentRegistry } = {};
+    const h = capRegistry(T0 + 60_000);
     for (let i = 0; i < 101; i++) {
-      applyAgentEvent(h, { kind: 'spawn', agentId: `toolu_u${i}`, ts: Date.now() + i });
+      applyAgentEvent(h, { kind: 'spawn', agentId: `toolu_u${i}`, ts: T0 + i });
       h.agents!.agents[h.agents!.agents.length - 1].taskId = `task${i}`;
-      applyAgentEvent(h, { kind: 'returned', agentId: `toolu_u${i}`, ok: true, ack: false, ts: Date.now() + i });
+      applyAgentEvent(h, { kind: 'returned', agentId: `toolu_u${i}`, ok: true, ack: false, ts: T0 + i });
     }
     expect(h.agents!.agents).toHaveLength(101);
     expect(h.agents!.agents[0].id).toBe('toolu_u0');
+  });
+
+  it('review r3 — an unread record a day after it ended no longer holds the cap', () => {
+    const h = capRegistry(T0 + 25 * 60 * 60 * 1000);
+    for (let i = 0; i < 101; i++) {
+      applyAgentEvent(h, { kind: 'spawn', agentId: `toolu_u${i}`, ts: T0 + i });
+      h.agents!.agents[h.agents!.agents.length - 1].taskId = `task${i}`;
+      applyAgentEvent(h, { kind: 'returned', agentId: `toolu_u${i}`, ok: true, ack: false, ts: T0 + i });
+    }
+    expect(h.agents!.agents).toHaveLength(100);
+    expect(h.agents!.agents[0].id).toBe('toolu_u1');
   });
 
   it('review r1 — work-log activity of a sealed agent unseals it', () => {
