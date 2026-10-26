@@ -1,7 +1,7 @@
 # re-context-window — Context Window → 패널 세션 정보의 컨텍스트 블록 + 카드 ctx 메트릭
 
 Status: 구현 (Phase B) · Date: 2026-10-26 · 기준 main `ff6c9ac` · 서브이슈 #441 (에픽 #437) · 브랜치 `feat/dashboard-affectui-context-window`
-앞선 계약: [`../13-dashboard-three-surfaces-spec.md`](../13-dashboard-three-surfaces-spec.md) §3.7(ctx 단계)·§3.5(세션 정보),
+앞선 계약: [`../13-dashboard-three-surfaces-spec.md`](../13-dashboard-three-surfaces-spec.md) §3.7(ctx 단계)·§3.4(세션 정보),
 [`../11-dashboard-live-surfaces-spec.md`](../11-dashboard-live-surfaces-spec.md) · SSOT [`ssot.md`](ssot.md)
 
 ## 0. 한 줄 정의
@@ -157,7 +157,8 @@ follow-up 큐에 들어가 턴 뒤에 실행된다(`slack-handler.ts:1156-1192`,
   `'compact'`(점유 인코딩, `session-usage-math.ts:72-101`), 아니면 `'unknown'`. 그 밖에는 없음.
 - **D3** [SHIPPED] `compactPending?: true` — `s.autoCompactPending === true`(다음 사용자 턴이 `/compact`로 시작, `compact-threshold-checker.ts:1-16`).
 - **D4** [SHIPPED] `lastCompact?: { preTokens; postTokens; trigger? }` — `compactPreTokens`·`compactPostTokens`가 둘 다 유한수일 때(경계 메타,
-  `stream-executor.ts:2222-2225`; 다음 주기 시작에 null `compact-hooks.ts:64-80`; 런타임 전용 — 재시작 뒤 없음). trigger는 `manual|auto`일 때만.
+  `stream-executor.ts:2222-2225`; 다음 주기 시작에 null `compact-hooks.ts:64-80`; 런타임 전용 — 재시작 뒤 없음) **그리고** `compactionCount > 0`일 때만 —
+  `/new`·`/renew`는 같은 세션 객체에서 count만 0으로 돌리고 옛 수를 남긴다(`session-registry.ts:1468`, `:1530`; PR 리뷰 R1). trigger는 `manual|auto`일 때만.
 
 ### 4.2 마크업 · 단계 (`panelInfoHtml` 펼침 본문 맨 앞, `contextParts`가 있을 때만; 기존 `.pi-ctx` 막대·문장 삭제)
 
@@ -185,7 +186,7 @@ follow-up 큐에 들어가 턴 뒤에 실행된다(`slack-handler.ts:1156-1192`,
   칠한 셀은 표시하지 않는다(시각 확인에서 링이 소음이었다; 넘음은 단계·tray가 말한다). 1M·750K → m=162(36열에서 마지막 1.5행). 범례 행
   `.cw-mark`: 빈 칸 견본 · "자동 압축 지점" · `cwShort(auto)`.
 - **D8** [SHIPPED] 숫자: big = `formatTokens(used)`, of = `'/ ' + cwShort(window) + ' 토큰'`(`cwShort` = formatTokens에서 `.0K/.0M` 제거),
-  pill = `Math.round(min(contextUsagePercent,100)) + '%'` — face·요약 줄과 같은 수. sr = "컨텍스트 412.0K / 1M 토큰 사용, 41%, 자동 압축 750K".
+  pill = `ctxPercent(contextUsagePercent) + '%'` — `ctxPercent`(반올림, 100 상한) 하나를 face·요약 줄·pill이 같이 쓴다(PR 리뷰 R1 P2: 요약 줄이 105%였다). sr = "컨텍스트 412.0K / 1M 토큰 사용, 41%, 자동 압축 750K".
 - **D17** [SHIPPED `:9377-9380`] 누적 격자 라벨: `누적 입력 · 누적 출력 · 누적 캐시 읽기 · 누적 캐시 쓰기`(현재 요청 부분과 구분).
 - **D18** [SHIPPED] 삭제: `.pi-ctx` 마크업·CSS. `.card .context-bar*`는 그대로(§6).
 
@@ -195,7 +196,7 @@ follow-up 큐에 들어가 턴 뒤에 실행된다(`slack-handler.ts:1156-1192`,
 
 ### 4.3 tray 문장 (`cwSay`, 우선순위 위에서 아래) · hover 연결
 
-- **D10** [SHIPPED `cwSay` `:9486`] ① 요청: 보내는 중 "압축 요청 보내는 중…", 보냄 "압축 요청 보냄 — 압축을 기다리는 중"(누른 때 턴이 돌고 있었으면
+- **D10** [SHIPPED `cwSay` `:9486`] ① 요청: 보내는 중 "압축 요청 보내는 중…", 보냄 "압축 요청 보냄 — 압축을 기다리는 중"(누른 때 턴이 슬롯을 잡고 있었으면 — working·waiting —
   "압축 요청 보냄 — 지금 턴이 끝나면 압축") ② 무장 — 화면 "지난 대화가 요약으로 줄어듭니다"(버튼이 이미 "한 번 더 눌러 압축"이라 말한다),
   읽기 "한 번 더 누르면 압축 — 지난 대화가 요약으로 줄어듭니다" ③ 실패 "압축 요청 실패" / 상한 "압축 결과를 아직 받지 못함"(빨강, 4s)
   ④ 압축 관측(D12): 그 압축의 SDK 수가 오면 3200ms "새 압축 관측됨 · **748K** 줄임 (812K → 64K)"(ok), 오기 전 "새 압축 관측됨"
@@ -213,11 +214,14 @@ follow-up 큐에 들어가 턴 뒤에 실행된다(`slack-handler.ts:1156-1192`,
 
 - **D12** [SHIPPED `cwCanCompact` `cwCompactHtml` `cwObserve` `cwCompact`] `button.cw-compact` "지금 압축" →
   `POST /api/dashboard/session/<key>/command {"message":"compact --yes"}`(CSRF 헤더, 403이면 토큰 갱신 후 1회 재시도 — `sendCommand` 패턴).
-  보임: `contextParts` 있고 used > 0, 종료 안 됨, 마지막 압축 뒤 늘어난 것이 있음(`used > lastCompact.postTokens`, 관측한 압축의 수를 기다리는
+  보임: `contextParts` 있고 used > 0, 종료·휴면 아님(컴포저와 같은 기준 `terminated || SLEEPING` — 누르면 휴면 세션을 깨운다, PR 리뷰 R1), 마지막 압축 뒤 늘어난 것이 있음(`used > lastCompact.postTokens`, 관측한 압축의 수를 기다리는
   동안은 숨김). 비활성(+title): 소유자 아님(`READ_ONLY_MSG`), 다른 인스턴스("Open <instance> (host:port) to act on this session"),
   `pendingModel`("모델 전환이 압축을 기다리는 중"), `compactPending`("다음 입력 때 자동 압축됩니다"). **두 번 누름**: 첫 누름은 무장(라벨
   "한 번 더 눌러 압축", 4000ms, Esc — 패널은 닫지 않음 — · focusout · 시간 초과로 해제), 두 번째가 보낸다 — Slack의 그냥 `compact`가 묻는
   예/아니오와 같은 확인 한 번(`compact-handler.ts:53-87`), 모달 없음.
+  **요청 결과와 관측을 나눈다(PR 리뷰 R1 astra P1)**: 요청마다 id(`_cwSeq`)를 붙이고 `_cw.req`(sending · sent · failed)는 그 id의 답만
+  바꾼다 — 다른 패널 세션·다시 시작한 세션·더 새 요청 뒤에 온 답은 아무것도 건드리지 않는다. 답보다 먼저 관측된 압축은 `obsInReq`로 남겨 답이
+  결정한다(실패면 실패를 보이고, 성공이면 바로 관측 완료). count가 내려가면(`/new`·`/renew`) 블록 상태를 처음부터 시작한다.
   **요청과 압축은 상관시키지 않는다(trinity R1 P1, 선택 (b) — 서버 변경 없음)**: 턴이 돌면 요청은 큐에 들어가고, 자동·Slack 압축이 먼저 올 수
   있으며, 경계 broadcast(`compactionCount++`, `stream-executor.ts:2200-2201`)는 pre/post 기록(`:2222-2225`)보다 먼저다. 그래서 상태를 나눈다:
   `sending`(스피너 "보내는 중") → POST ok면 `sent`("요청 보냄", `aria-busy`, 칠한 셀 wave) → 이 세션 `compactionCount`가 오르면 **압축 관측**:
@@ -253,10 +257,10 @@ follow-up 큐에 들어가 턴 뒤에 실행된다(`slack-handler.ts:1156-1192`,
 - **D16** [SHIPPED `renderCardFace` `:8304-8314` — 클래스·title 계산만, face 배치는 agent-inbox 소유] face ctx 메트릭 =
   `ctxLevel(ctxPct, s.contextTokens, s.autoCompactTokens, s.compactPending)`. title: auto 앎 → "컨텍스트 41% · 자동 압축 750K까지 338K" /
   pending "… · 다음 입력 때 자동 압축" / 넘음 "… · 자동 압축 지점을 넘음"; auto 모름 → 기존 문구 그대로("Context window used",
-  "— 80% 넘게 찼다"). 세션 정보 요약 줄 `ctx N%`는 같은 class의 `span.pi-cs`.
+  "— 80% 넘게 찼다" — 이 말은 단계가 아니라 pct > 80을 따른다: 예정된 압축은 50%에서도 danger). 세션 정보 요약 줄 `ctx N%`는 같은 class의 `span.pi-cs`.
 - **D20** [SHIPPED `renderPanelInfo` `:9390`] live: 기존 `repaintPanelSession → renderPanelInfo → writePanelPart` 그대로; 쓰기 전 `cwObserve(s, now)`,
-  쓴 뒤(바뀌었을 때) `cwApply(el)`, `cwBind(el)` 한 번. 블록 상태(`_cwHot`, `_cw{key,count,armedAt,busySince,sentAt,queued,doneAt,observedAt,
-  savedWait,usedAtRise,lcSeen,lcAtRise,savedAt,failAt,timedOutAt}`)는 패널 세션이 바뀌면 초기화. 시간이 지나 끝나는 상태는 `cwLater(ms)`가 다시 그린다.
+  쓴 뒤(바뀌었을 때) `cwApply(el)`, `cwBind(el)` 한 번. 블록 상태(`_cwHot`, `_cw{key,count,armedAt,reqId,req,reqAt,obsInReq,queued,doneAt,
+  observedAt,savedWait,usedAtRise,lcSeen,lcAtRise,savedAt,failAt,timedOutAt}`)는 패널 세션이 바뀌거나 count가 내려가면 초기화. 시간이 지나 끝나는 상태는 `cwLater(ms)`가 다시 그린다.
 
 ## 5. 시험 (`src/conversation/__tests__/dashboard-affectui-context-window{,-client}.test.ts`)
 
@@ -264,13 +268,13 @@ follow-up 큐에 들어가 턴 뒤에 실행된다(`slack-handler.ts:1156-1192`,
 |---|---|---|---|
 | S1 | D1 | GET /sessions: current* → `contextParts` 4값 + window; 합 = `contextTokens`; % 일치; usage 없음·window 0·archived → 없음 | RED (부재 사례는 GREEN) |
 | S2 | D2 | post_tokens 인코딩(input = compactPostTokens, 나머지 0) → `'compact'`; 나머지 0·불일치 → `'unknown'`; 정상 분류 → 없음 | RED |
-| S3 | D3·D4 | `autoCompactPending` → `compactPending: true`; pre/post 둘 다 수일 때만 `lastCompact`(+trigger) | RED |
+| S3 | D3·D4 | `autoCompactPending` → `compactPending: true`; pre/post 둘 다 수이고 count > 0일 때만 `lastCompact`(+trigger); `/new` 뒤 옛 수 → 없음 | RED |
 | C1 | D5·D6·D18 | 블록 마크업·부분 순서·라벨·0 부분 생략·unsplit 라벨; `contextParts` 없으면 블록 없음; 호출 한 줄; `.pi-ctx`/`context-bar` 사라짐 | RED |
 | C2 | D7 | `cwCells`: 216칸, [77,3,7,2,127], 비-빈 부분 ≥1, 넘침; `cwMarkIndex(750000, 1e6)` = 162; `data-past` 54칸 | RED |
-| C3 | D8·D9 | `ctxLevel` 1-인자 60/80 그대로, 0.8/0.95, pending → danger; pill 100% 상한; `data-level`; `cwShort` | RED |
+| C3 | D8·D9 | `ctxLevel` 1-인자 60/80 그대로, 0.8/0.95, pending → danger; `ctxPercent` 하나로 face·요약·pill 100% 상한; `data-level`; `cwShort` | RED |
 | C4 | D10 | `cwSay` 상태별 문장(요청·무장·실패·상한·관측·절감·pending·거리); live 영역에는 전이만, 거리 문장은 없음 | RED |
 | C5 | D11·D20 | 가짜 DOM hover → data-hot/on/dim, of 문장, 롤 대상; 해제; 쓰기 뒤 `cwApply`·쓰기 전 `cwObserve`; 롤 640ms 양방향 | RED |
-| C6 | D12 | 게이팅(소유자·sibling·종료·pendingModel·compactPending·압축 뒤 무증가), 무장 4s·Esc·focusout, fetch URL·body `compact --yes`·CSRF 재시도, sending→sent, 실패·상한; **(1)** 무관한 압축이 먼저 와도 "관측"만, 이전 수는 절감이 아님 **(2)** 수보다 count가 먼저 **(3)** 수가 나중에 오면 그때 절감량 | RED |
+| C6 | D12 | 게이팅(소유자·sibling·종료·pendingModel·compactPending·압축 뒤 무증가), 무장 4s·Esc·focusout, fetch URL·body `compact --yes`·CSRF 재시도, sending→sent, 실패·상한; **(1)** 무관한 압축이 먼저 와도 "관측"만, 이전 수는 절감이 아님 **(2)** 수보다 count가 먼저 **(3)** 수가 나중에 오면 그때 절감량; 답 전 관측 + 실패 → 실패, A→B→A 옛 답은 새 요청을 못 건드림, count 감소 → 초기화, 휴면 → 버튼 없음·전송 없음, waiting → 큐 | RED |
 | C7 | D13·D14·D15·D19 | CSS 계약: sweep·흐림·들림, no-preference 안의 wave, `@container cw` 24/54열, 터치 44px, 토큰 다크·라이트 둘, sr-only | RED |
 | C8 | D16 | face title·class(auto 앎 / pending / 넘음 / 모름 → 기존 문구), 요약 줄 class | RED (모름 사례는 GREEN) |
 | C9 | D17 | 누적 라벨, 블록이 격자보다 앞 | RED |
@@ -298,7 +302,8 @@ table"(`var cls = ctxLevel(ctx);` → 세 호출 지점의 확장 인자), `dash
 
 - **RED** (구현 전, 두 새 시험 파일): `Tests 38 failed | 2 passed (40)` — `client var CW_CELLS not found`, `client function cwApply/cwBind
   not found`, 서버 `expected undefined to deeply equal { window: 1000000, … }` 등. 처음부터 GREEN이던 2건은 부재 사례(아카이브·창 없음 → 부분 없음,
-  창을 모르는 face의 옛 문구)다. 이후 trinity R1 반영으로 시험을 늘려 최종 43건(서버 5 + 클라이언트 38).
+  창을 모르는 face의 옛 문구)다. 이후 trinity R1·PR 리뷰 R1 반영으로 시험을 늘려 최종 49건(서버 6 + 클라이언트 43). PR 리뷰 R1의 휴면·waiting 큐·80% 문구 3건은 고치기 전 RED 확인; astra P1·P2 시험은 `1503a71`에 대해
+  서버 `/new` 사례 RED, 클라이언트 파일은 `client function ctxPercent not found`로 수집 단계 RED.
 - **GREEN**: `dashboard-affectui-context-window.test.ts`(5) · `dashboard-affectui-context-window-client.test.ts`(38) 통과; 의도적으로 고친
   `dashboard-three-surfaces-client.test.ts` · `dashboard-agent-inbox.test.ts` 포함 4파일 159건 통과. 게이트: `npx vitest run
   src/conversation/__tests__/ --testTimeout=60000 --hookTimeout=60000` → `Test Files 64 passed (64) · Tests 1691 passed (1691)`(기계 부하

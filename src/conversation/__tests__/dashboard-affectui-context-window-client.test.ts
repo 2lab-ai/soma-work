@@ -55,6 +55,7 @@ const CW_FNS = [
   'toNum',
   'formatTokens',
   'ctxLevel',
+  'ctxPercent',
   'cwShort',
   'cwParts',
   'cwCells',
@@ -113,8 +114,10 @@ const freshState = (key = 'inst::C1:t1', extra: Record<string, number | string |
   key,
   count: 0,
   armedAt: 0,
-  busySince: 0,
-  sentAt: 0,
+  reqId: 0,
+  req: '',
+  reqAt: 0,
+  obsInReq: false,
   queued: false,
   doneAt: 0,
   observedAt: 0,
@@ -334,10 +337,10 @@ describe('D10 — the tray line, one state at a time', () => {
 
   it('sending, sent (queued behind a running turn), armed, failed, timed out, a compaction observed and its saving', () => {
     expect(say({}, 412_000, 750_000, '', 'sending').html).toBe('압축 요청 보내는 중…');
-    expect(say({}, 412_000, 750_000, '', 'sent', { busySince: NOW - 10, sentAt: NOW - 5 }).html).toBe(
+    expect(say({}, 412_000, 750_000, '', 'sent', { req: 'sent', reqAt: NOW - 10 }).html).toBe(
       '압축 요청 보냄 — 압축을 기다리는 중',
     );
-    expect(say({}, 412_000, 750_000, '', 'sent', { busySince: NOW - 10, sentAt: NOW - 5, queued: true }).html).toBe(
+    expect(say({}, 412_000, 750_000, '', 'sent', { req: 'sent', reqAt: NOW - 10, queued: true }).html).toBe(
       '압축 요청 보냄 — 지금 턴이 끝나면 압축',
     );
     // On screen the button already says 한 번 더 눌러 압축; the live region reads the whole sentence.
@@ -473,7 +476,7 @@ describe('D11/D20 — hover links a row and its cells; re-applied after every wr
       STATE,
     );
     c.cwObserve(sess({ compactionCount: 3 }), NOW);
-    expect(c.cwTestState()).toMatchObject({ key: 'inst::C1:t1', count: 3, busySince: 0 });
+    expect(c.cwTestState()).toMatchObject({ key: 'inst::C1:t1', count: 3, req: '' });
   });
 
   it('the number rolls both ways in 640ms (ease-out quart); reduced motion sets it at once', () => {
@@ -512,8 +515,11 @@ describe('D12 — 지금 압축: owner-gated, confirmed by a second press, sent 
     expect(btn({ compactPending: true })).toContain(' disabled title="다음 입력 때 자동 압축됩니다"');
   });
 
-  it('absent: a closed session, an empty context, nothing added since the last compaction', () => {
+  it('absent: a closed or sleeping session, an empty context, nothing added since the last compaction', () => {
     expect(btn({ terminated: true })).toBe('');
+    // PR review R1 (P2): a sleeping session is closed, as for the composer — pressing would wake it.
+    expect(btn({ sessionState: 'SLEEPING', activityState: 'sleeping' })).toBe('');
+    expect(cw().contextBlockHtml(sess({ sessionState: 'SLEEPING' }), NOW)).not.toContain('cw-compact');
     expect(btn({}, 'idle', 0)).toBe('');
     expect(btn({ lastCompact: { preTokens: 812_000, postTokens: 64_000 } }, 'idle', 64_000)).toBe('');
     expect(btn({ lastCompact: { preTokens: 812_000, postTokens: 64_000 } }, 'idle', 90_000)).toContain('지금 압축');
@@ -533,7 +539,7 @@ describe('D12 — 지금 압축: owner-gated, confirmed by a second press, sent 
     expect(btn({}, 'done')).toContain('>압축 관측됨</span>');
     expect(btn({}, 'leaving')).toContain('data-state="done" data-leaving disabled');
     const c = cw();
-    c.cwTestSet(freshState('inst::C1:t1', { busySince: NOW - 1000 }));
+    c.cwTestSet(freshState('inst::C1:t1', { req: 'sending', reqAt: NOW - 1000 }));
     const html = c.contextBlockHtml(sess(), NOW);
     expect(count(html, ' data-busy')).toBe(89);
   });
@@ -546,9 +552,9 @@ describe('D12 — 지금 압축: owner-gated, confirmed by a second press, sent 
     expect(c.cwPhase(s, NOW)).toBe('armed');
     c.cwTestSet(freshState('inst::C1:t1', { armedAt: NOW - 4_000 }));
     expect(c.cwPhase(s, NOW)).toBe('idle');
-    c.cwTestSet(freshState('inst::C1:t1', { busySince: NOW - 10 }));
+    c.cwTestSet(freshState('inst::C1:t1', { req: 'sending', reqAt: NOW - 10 }));
     expect(c.cwPhase(s, NOW)).toBe('sending');
-    c.cwTestSet(freshState('inst::C1:t1', { busySince: NOW - 10, sentAt: NOW - 5 }));
+    c.cwTestSet(freshState('inst::C1:t1', { req: 'sent', reqAt: NOW - 10 }));
     expect(c.cwPhase(s, NOW)).toBe('sent');
     c.cwTestSet(freshState('inst::C1:t1', { doneAt: NOW - 1_499 }));
     expect(c.cwPhase(s, NOW)).toBe('done');
@@ -556,24 +562,26 @@ describe('D12 — 지금 압축: owner-gated, confirmed by a second press, sent 
     expect(c.cwPhase(s, NOW)).toBe('leaving');
     c.cwTestSet(freshState('inst::C1:t1', { doneAt: NOW - 1_900 }));
     expect(c.cwPhase(s, NOW)).toBe('idle');
-    c.cwTestSet(freshState('other', { busySince: NOW - 10 }));
+    c.cwTestSet(freshState('other', { req: 'sending', reqAt: NOW - 10 }));
     expect(c.cwPhase(s, NOW)).toBe('idle');
   });
 
   type Flow = {
     cwCompact(): Promise<void>;
+    cwObserve(s: unknown, now: number): void;
     cwTestState(): Record<string, number | string | boolean>;
     cwTestSet(o: Record<string, number | string | boolean>): void;
   };
-  function flow(responses: { ok: boolean; status: number }[]) {
-    const fetchSpy = vi.fn(async () => responses.shift() ?? { ok: true, status: 200 });
+  type Res = { ok: boolean; status: number };
+  function flow(responses: (Res | Promise<Res>)[], over: Record<string, unknown> = {}) {
+    const fetchSpy = vi.fn(async () => (await responses.shift()) ?? { ok: true, status: 200 });
     const render = vi.fn();
     const refresh = vi.fn(async () => {});
     const later = vi.fn();
-    const s = sess();
+    const s = sess(over);
     const c = load<Flow>(
       ['toNum', 'cwCanCompact', 'cwObserve', 'cwCompact'],
-      ['_cw', 'CW_ARM_MS', 'CW_DONE_MS', 'CW_LEAVE_MS', 'CW_SAVED_MS', 'CW_FAIL_MS', 'CW_CEIL_MS'],
+      ['_cw', '_cwSeq', 'CW_ARM_MS', 'CW_DONE_MS', 'CW_LEAVE_MS', 'CW_SAVED_MS', 'CW_FAIL_MS', 'CW_CEIL_MS'],
       {
         panelSessionKey: s.key,
         _sessionCache: { [s.key]: s },
@@ -589,8 +597,61 @@ describe('D12 — 지금 압축: owner-gated, confirmed by a second press, sent 
       },
       STATE,
     );
-    return { c, fetchSpy, render, refresh, later };
+    return { c, fetchSpy, render, refresh, later, s };
   }
+  const deferred = () => {
+    let resolve: (r: Res) => void = () => {};
+    const p = new Promise<Res>((r) => {
+      resolve = r;
+    });
+    return { p, resolve };
+  };
+
+  // PR review R1 (astra P1): the request's own outcome is kept apart from what was observed,
+  // and an answer only ever updates the request it belongs to.
+  it('a compaction seen while the request is in flight never hides that request failing', async () => {
+    const d = deferred();
+    const { c, s } = flow([d.p]);
+    await c.cwCompact();
+    const sending = c.cwCompact();
+    expect(c.cwTestState().req).toBe('sending');
+    c.cwObserve({ ...s, compactionCount: 1 }, Date.now());
+    expect(c.cwTestState()).toMatchObject({ req: 'sending', obsInReq: true });
+    d.resolve({ ok: false, status: 500 });
+    await sending;
+    expect(c.cwTestState().req).toBe('failed');
+    expect(Number(c.cwTestState().failAt)).toBeGreaterThan(0);
+    // The same race with a request the server took: done, nothing left waiting.
+    const e = deferred();
+    const ok = flow([e.p]);
+    await ok.c.cwCompact();
+    const sent = ok.c.cwCompact();
+    ok.c.cwObserve({ ...ok.s, compactionCount: 1 }, Date.now());
+    e.resolve({ ok: true, status: 200 });
+    await sent;
+    expect(ok.c.cwTestState().req).toBe('');
+    expect(Number(ok.c.cwTestState().doneAt)).toBeGreaterThan(0);
+  });
+
+  it('A → B → A: the first request’s late failure leaves the new request alone, and the new answer lands', async () => {
+    const first = deferred();
+    const second = deferred();
+    const { c, s } = flow([first.p, second.p]);
+    await c.cwCompact();
+    const old = c.cwCompact();
+    c.cwObserve({ ...s, key: 'inst::C2:t2' }, Date.now());
+    c.cwObserve(s, Date.now());
+    expect(c.cwTestState()).toMatchObject({ key: s.key, req: '', reqId: 0 });
+    await c.cwCompact();
+    const fresh = c.cwCompact();
+    const id = c.cwTestState().reqId;
+    first.resolve({ ok: false, status: 500 });
+    await old;
+    expect(c.cwTestState()).toMatchObject({ reqId: id, req: 'sending', failAt: 0 });
+    second.resolve({ ok: true, status: 200 });
+    await fresh;
+    expect(c.cwTestState()).toMatchObject({ reqId: id, req: 'sent' });
+  });
 
   it('the first press arms (nothing sent); the second sends compact --yes to the owner-gated command route', async () => {
     const { c, fetchSpy, later } = flow([{ ok: true, status: 200 }]);
@@ -606,10 +667,23 @@ describe('D12 — 지금 압축: owner-gated, confirmed by a second press, sent 
       body: '{"message":"compact --yes"}',
     });
     expect(c.cwTestState().armedAt).toBe(0);
-    expect(Number(c.cwTestState().busySince)).toBeGreaterThan(0);
     // Taken by the server: sent (not "compacted").
-    expect(Number(c.cwTestState().sentAt)).toBeGreaterThan(0);
+    expect(c.cwTestState().req).toBe('sent');
+    expect(Number(c.cwTestState().reqId)).toBeGreaterThan(0);
     expect(c.cwTestState().queued).toBe(false);
+  });
+
+  it('a turn that holds the slot queues the request — running or waiting on a permission prompt; a sleeping session sends nothing', async () => {
+    for (const activityState of ['working', 'waiting']) {
+      const { c } = flow([{ ok: true, status: 200 }], { activityState });
+      await c.cwCompact();
+      await c.cwCompact();
+      expect(c.cwTestState().queued, activityState).toBe(true);
+    }
+    const sleeping = flow([{ ok: true, status: 200 }], { sessionState: 'SLEEPING', activityState: 'sleeping' });
+    await sleeping.c.cwCompact();
+    await sleeping.c.cwCompact();
+    expect(sleeping.fetchSpy).not.toHaveBeenCalled();
   });
 
   it('a 403 refreshes the CSRF token and retries once; a failure ends the busy state with the reason', async () => {
@@ -621,11 +695,11 @@ describe('D12 — 지금 압축: owner-gated, confirmed by a second press, sent 
     await a.c.cwCompact();
     expect(a.refresh).toHaveBeenCalledTimes(1);
     expect(a.fetchSpy).toHaveBeenCalledTimes(2);
-    expect(Number(a.c.cwTestState().busySince)).toBeGreaterThan(0);
+    expect(a.c.cwTestState().req).toBe('sent');
     const b = flow([{ ok: false, status: 500 }]);
     await b.c.cwCompact();
     await b.c.cwCompact();
-    expect(b.c.cwTestState().busySince).toBe(0);
+    expect(b.c.cwTestState().req).toBe('failed');
     expect(Number(b.c.cwTestState().failAt)).toBeGreaterThan(0);
     expect(b.later).toHaveBeenCalledWith(4000);
   });
@@ -649,8 +723,8 @@ describe('D12 — 지금 압축: owner-gated, confirmed by a second press, sent 
     c.cwTestSet(
       freshState('inst::C1:t1', {
         count: 2,
-        busySince: NOW - 5_000,
-        sentAt: NOW - 4_000,
+        req: 'sent',
+        reqAt: NOW - 5_000,
         queued: true,
         lcSeen: '500000/40000',
       }),
@@ -659,8 +733,7 @@ describe('D12 — 지금 압축: owner-gated, confirmed by a second press, sent 
     c.cwObserve(rose, NOW);
     expect(c.cwTestState()).toMatchObject({
       count: 3,
-      busySince: 0,
-      sentAt: 0,
+      req: '',
       doneAt: NOW,
       observedAt: NOW,
       savedWait: NOW,
@@ -674,18 +747,16 @@ describe('D12 — 지금 압축: owner-gated, confirmed by a second press, sent 
 
   it('(2) the count arrives before the counts: observed, no saving yet', () => {
     const c = observer();
-    c.cwTestSet(freshState('inst::C1:t1', { count: 2, busySince: NOW - 5_000, sentAt: NOW - 4_000 }));
+    c.cwTestSet(freshState('inst::C1:t1', { count: 2, req: 'sent', reqAt: NOW - 5_000 }));
     const rose = sess({ compactionCount: 3 });
     c.cwObserve(rose, NOW);
-    expect(c.cwTestState()).toMatchObject({ busySince: 0, savedWait: NOW, savedAt: 0 });
+    expect(c.cwTestState()).toMatchObject({ req: '', savedWait: NOW, savedAt: 0 });
     expect(line(c, rose, NOW + 100).html).toBe('새 압축 관측됨');
   });
 
   it('(3) the counts arrive later: the line then says what that compaction saved', () => {
     const c = observer();
-    c.cwTestSet(
-      freshState('inst::C1:t1', { count: 2, busySince: NOW - 5_000, sentAt: NOW - 4_000, lcSeen: '500000/40000' }),
-    );
+    c.cwTestSet(freshState('inst::C1:t1', { count: 2, req: 'sent', reqAt: NOW - 5_000, lcSeen: '500000/40000' }));
     c.cwObserve(sess({ compactionCount: 3, lastCompact: OLD }), NOW);
     const later = sess({ compactionCount: 3, lastCompact: NEW, contextTokens: 64_000 });
     c.cwObserve(later, NOW + 800);
@@ -705,9 +776,20 @@ describe('D12 — 지금 압축: owner-gated, confirmed by a second press, sent 
 
   it('a request never answered ends at the 5-minute ceiling', () => {
     const c = observer();
-    c.cwTestSet(freshState('inst::C1:t1', { count: 3, busySince: NOW - 300_000, sentAt: NOW - 299_000 }));
+    c.cwTestSet(freshState('inst::C1:t1', { count: 3, req: 'sent', reqAt: NOW - 300_000 }));
     c.cwObserve(sess({ compactionCount: 3 }), NOW);
-    expect(c.cwTestState()).toMatchObject({ busySince: 0, sentAt: 0, timedOutAt: NOW });
+    expect(c.cwTestState()).toMatchObject({ req: '', timedOutAt: NOW });
+  });
+
+  it('/new · /renew (the count goes down on the same key): the block starts over and sees the new session’s compaction', () => {
+    const c = observer();
+    c.cwTestSet(freshState('inst::C1:t1', { count: 3, req: 'sent', reqAt: NOW - 1_000, lcSeen: '812000/64000' }));
+    c.cwObserve(sess({ compactionCount: 0, contextTokens: 20_000 }), NOW);
+    expect(c.cwTestState()).toMatchObject({ count: 0, req: '', reqId: 0, lcSeen: '' });
+    const rose = sess({ compactionCount: 1, contextTokens: 20_000 });
+    c.cwObserve(rose, NOW + 100);
+    expect(c.cwTestState()).toMatchObject({ count: 1, observedAt: NOW + 100, timedOutAt: 0 });
+    expect(line(c, rose, NOW + 200).html).toBe('새 압축 관측됨');
   });
 
   it('Escape or leaving the armed button disarms it (the panel stays open)', () => {
@@ -792,6 +874,7 @@ const FACE_FNS = [
   'renderCardStatus',
   'renderOwnerBadge',
   'ctxLevel',
+  'ctxPercent',
   'renderCardPr',
   'renderCardFace',
 ];
@@ -850,6 +933,24 @@ describe('D16 — the face ctx metric and the summary line use the same level an
   it('point unknown: the window bands and the old words, unchanged', () => {
     expect(ctx(65)).toContain('<span class="metric ctx-warn" title="Context window used">');
     expect(ctx(90)).toContain('<span class="metric ctx-danger" title="Context window used — 80% 넘게 찼다">');
+    // PR review R1 (P3): the "over 80%" words follow the number, not the level (a scheduled compact is danger at 50%).
+    expect(ctx(50, undefined, { compactPending: true, autoCompactTokens: 0 })).toContain(
+      '<span class="metric ctx-danger" title="Context window used">',
+    );
+  });
+
+  it('one percent everywhere (PR review R1 P2): face, 세션 정보 summary and the block pill round and cap at 100', () => {
+    for (const fn of ['renderCardFace', 'panelInfoHtml', 'contextBlockHtml'])
+      expect(clientFn(fn), fn).toContain('ctxPercent(');
+    expect(ctx(104.6, 1_046_000, { autoCompactTokens: 0 })).toContain('100%</span>');
+    const info = load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
+      [...CW_FNS, 'panelInfoHtml'],
+      [...CW_VARS, 'PI_CHEV_SVG'],
+      { ...ENV, formatNmSSs: (n: number) => `${n}ms`, cardTotalTokens: () => 1, safeHref: (u: string) => u },
+    ).panelInfoHtml;
+    const over = sess({ tokenUsage: { totalInputTokens: 1, contextUsagePercent: 104.6 }, lastActivity: NOW });
+    expect(info(over, false)).toContain('>ctx 100%</span>');
+    expect(info(over, true)).toContain('<span class="cw-pill" aria-hidden="true">100%</span>');
   });
 
   it('세션 정보 summary: ctx N% carries the same class; the open grid says the totals are cumulative (D17)', () => {

@@ -79,6 +79,7 @@ const FACE_FNS = [
   'renderCardStatus',
   'renderOwnerBadge',
   'ctxLevel',
+  'ctxPercent',
   'renderCardPr',
   'renderCardFace',
 ];

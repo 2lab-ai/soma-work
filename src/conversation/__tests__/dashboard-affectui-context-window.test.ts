@@ -189,14 +189,24 @@ describe('re-context-window — the card payload says what fills the context (D1
   });
 
   it('D4 — the last compaction’s SDK counts only when both are known, with its trigger', async () => {
-    expect(
-      (await one(live({ compactPreTokens: 812_000, compactPostTokens: 64_000, compactTrigger: 'manual' }))).lastCompact,
-    ).toEqual({ preTokens: 812_000, postTokens: 64_000, trigger: 'manual' });
-    expect((await one(live({ compactPreTokens: 812_000, compactPostTokens: 64_000 }))).lastCompact).toEqual({
+    const done = { compactionCount: 1, compactPreTokens: 812_000, compactPostTokens: 64_000 };
+    expect((await one(live({ ...done, compactTrigger: 'manual' }))).lastCompact).toEqual({
       preTokens: 812_000,
       postTokens: 64_000,
+      trigger: 'manual',
     });
-    expect((await one(live({ compactPreTokens: 812_000, compactPostTokens: null }))).lastCompact).toBeUndefined();
+    expect((await one(live(done))).lastCompact).toEqual({ preTokens: 812_000, postTokens: 64_000 });
+    expect((await one(live({ ...done, compactPostTokens: null }))).lastCompact).toBeUndefined();
     expect((await one(live())).lastCompact).toBeUndefined();
+  });
+
+  it('D4 — /new · /renew zero the count but keep the old counts on the same session: no lastCompact (PR review R1)', async () => {
+    const card = await one(
+      live(
+        { compactionCount: 0, compactPreTokens: 812_000, compactPostTokens: 64_000 },
+        { currentInputTokens: 20_000 },
+      ),
+    );
+    expect(card.lastCompact).toBeUndefined();
   });
 });

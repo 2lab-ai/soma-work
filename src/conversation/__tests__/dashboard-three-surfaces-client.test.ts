@@ -559,7 +559,7 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
   const info = (s: Record<string, unknown>, open: boolean) =>
     load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
       // contextBlockHtml: the context block at the top of the open body (re-context-window D5) — empty without contextParts.
-      ['esc', 'escAttr', 'toNum', 'ctxLevel', 'contextBlockHtml', 'panelInfoHtml'],
+      ['esc', 'escAttr', 'toNum', 'ctxLevel', 'ctxPercent', 'contextBlockHtml', 'panelInfoHtml'],
       ['PI_CHEV_SVG'],
       {
         formatTokens: (n: number) => `${n}`,
@@ -1242,6 +1242,7 @@ const FACE_FNS = [
   'renderCardStatus',
   'renderOwnerBadge',
   'ctxLevel',
+  'ctxPercent',
   'renderCardPr',
   'renderCardFace',
 ];
