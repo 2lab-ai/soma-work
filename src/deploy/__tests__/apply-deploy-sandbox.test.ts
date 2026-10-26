@@ -29,11 +29,11 @@ function readJson(filePath: string): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(filePath, 'utf8')) as Record<string, unknown>;
 }
 
-const LINE_A = 'runner-a|UAPPROVED1|qa.example.test,*.qa.example.test|/srv/qa/lock,/srv/qa/runs';
+const LINE_A = 'runner-a|UAPPROVED1|qa.example.test,admin.qa.example.test|/srv/qa/lock,/srv/qa/runs';
 const LINE_B = 'runner-b|WAPPROVED2|qa-b.example.test|/srv/qa-b/lock';
 const GRANT_A = {
   users: ['UAPPROVED1'],
-  allowedDomains: ['qa.example.test', '*.qa.example.test'],
+  allowedDomains: ['qa.example.test', 'admin.qa.example.test'],
   allowWrite: ['/srv/qa/lock', '/srv/qa/runs'],
 };
 
@@ -72,25 +72,25 @@ describe('apply-deploy-sandbox', () => {
       expect(parseDeploySandbox('runner-a|UAPPROVED1||')).toEqual([
         { line: 1, runnerLabel: 'runner-a', users: ['UAPPROVED1'], allowedDomains: [], allowWrite: [] },
       ]);
-      expect(parseDeploySandbox('runner-a|UAPPROVED1,WAPPROVED2||/srv/qa')[0]).toMatchObject({
+      expect(parseDeploySandbox('runner-a|UAPPROVED1,WAPPROVED2||/srv/qa/state')[0]).toMatchObject({
         users: ['UAPPROVED1', 'WAPPROVED2'],
         allowedDomains: [],
-        allowWrite: ['/srv/qa'],
+        allowWrite: ['/srv/qa/state'],
       });
     });
 
     it('trims items and drops in-line duplicates', () => {
-      expect(parseDeploySandbox('runner-a| UAPPROVED1 , UAPPROVED1 |qa.example.test, qa.example.test|/srv/qa')).toEqual(
-        [
-          {
-            line: 1,
-            runnerLabel: 'runner-a',
-            users: ['UAPPROVED1'],
-            allowedDomains: ['qa.example.test'],
-            allowWrite: ['/srv/qa'],
-          },
-        ],
-      );
+      expect(
+        parseDeploySandbox('runner-a| UAPPROVED1 , UAPPROVED1 |qa.example.test, qa.example.test|/srv/qa/state'),
+      ).toEqual([
+        {
+          line: 1,
+          runnerLabel: 'runner-a',
+          users: ['UAPPROVED1'],
+          allowedDomains: ['qa.example.test'],
+          allowWrite: ['/srv/qa/state'],
+        },
+      ]);
     });
 
     it.each([
@@ -105,16 +105,20 @@ describe('apply-deploy-sandbox', () => {
   describe('malformed input', () => {
     it.each([
       ['too few fields', 'runner-a|UAPPROVED1|qa.example.test'],
-      ['too many fields', 'runner-a|UAPPROVED1|qa.example.test|/srv/qa|extra'],
-      ['an empty runner label', '|UAPPROVED1|qa.example.test|/srv/qa'],
-      ['an unsafe runner label', 'runner a|UAPPROVED1|qa.example.test|/srv/qa'],
-      ['an empty user field', 'runner-a||qa.example.test|/srv/qa'],
-      ['an empty user item', 'runner-a|UAPPROVED1,,WAPPROVED2|qa.example.test|/srv/qa'],
-      ['an empty domain item', 'runner-a|UAPPROVED1|qa.example.test,|/srv/qa'],
-      ['an empty path item', 'runner-a|UAPPROVED1|qa.example.test|,/srv/qa'],
-      ['a lowercase user', 'runner-a|uapproved1|qa.example.test|/srv/qa'],
-      ['a URL for a domain', 'runner-a|UAPPROVED1|https://qa.example.test|/srv/qa'],
-      ['an IP literal', 'runner-a|UAPPROVED1|10.0.0.1|/srv/qa'],
+      ['too many fields', 'runner-a|UAPPROVED1|qa.example.test|/srv/qa/state|extra'],
+      ['an empty runner label', '|UAPPROVED1|qa.example.test|/srv/qa/state'],
+      ['an unsafe runner label', 'runner a|UAPPROVED1|qa.example.test|/srv/qa/state'],
+      ['an empty user field', 'runner-a||qa.example.test|/srv/qa/state'],
+      ['an empty user item', 'runner-a|UAPPROVED1,,WAPPROVED2|qa.example.test|/srv/qa/state'],
+      ['an empty domain item', 'runner-a|UAPPROVED1|qa.example.test,|/srv/qa/state'],
+      ['an empty path item', 'runner-a|UAPPROVED1|qa.example.test|,/srv/qa/state'],
+      ['a lowercase user', 'runner-a|uapproved1|qa.example.test|/srv/qa/state'],
+      ['a URL for a domain', 'runner-a|UAPPROVED1|https://qa.example.test|/srv/qa/state'],
+      ['an IP literal', 'runner-a|UAPPROVED1|10.0.0.1|/srv/qa/state'],
+      ['a wildcard domain', 'runner-a|UAPPROVED1|*.qa.example.test|/srv/qa/state'],
+      ['a two-component path', 'runner-a|UAPPROVED1|qa.example.test|/srv/qa'],
+      ['a path above a forbidden root', 'runner-a|UAPPROVED1|qa.example.test|/private'],
+      ['a home directory itself', 'runner-a|UAPPROVED1|qa.example.test|/Users/someone'],
       ['a relative path', 'runner-a|UAPPROVED1|qa.example.test|srv/qa'],
       ['a path under /tmp', 'runner-a|UAPPROVED1|qa.example.test|/tmp/qa'],
       ['a path that walks up', 'runner-a|UAPPROVED1|qa.example.test|/srv/qa/../etc'],
@@ -136,7 +140,7 @@ describe('apply-deploy-sandbox', () => {
         applyDeploySandbox({
           targetDir,
           runnerLabel: 'runner-a',
-          deploySandbox: [LINE_A, 'runner-b|WAPPROVED2|https://qa-b.example.test|/srv/qa-b'].join('\n'),
+          deploySandbox: [LINE_A, 'runner-b|WAPPROVED2|https://qa-b.example.test|/srv/qa-b/state'].join('\n'),
         }),
       ).toThrow(/line 2/);
     });
@@ -182,10 +186,10 @@ describe('apply-deploy-sandbox', () => {
     }
 
     it.each(VALID_USERS)('accepts the user %j', (value) => {
-      expect(lineAccepted(`runner-a|${value}||/srv/qa`)).toBe(true);
+      expect(lineAccepted(`runner-a|${value}||/srv/qa/state`)).toBe(true);
     });
     it.each(INVALID_USERS.filter((value) => value !== '' && !value.includes(',')))('rejects the user %j', (value) => {
-      expect(lineAccepted(`runner-a|${value}||/srv/qa`)).toBe(false);
+      expect(lineAccepted(`runner-a|${value}||/srv/qa/state`)).toBe(false);
     });
     it.each(VALID_DOMAINS)('accepts the domain %j', (value) => {
       expect(lineAccepted(`runner-a|UAPPROVED1|${value}|`)).toBe(true);
@@ -274,14 +278,14 @@ describe('apply-deploy-sandbox', () => {
         deploySandbox: [
           'runner-a|UAPPROVED1|qa.example.test|/srv/qa/lock',
           LINE_B,
-          'runner-a|WAPPROVED2,UAPPROVED1|qa.example.test,*.qa.example.test|',
+          'runner-a|WAPPROVED2,UAPPROVED1|qa.example.test,admin.qa.example.test|',
           'runner-a|UAPPROVED1||/srv/qa/runs,/srv/qa/lock',
         ].join('\n'),
       });
 
       expect(readJson(configFile).deploySandbox).toEqual({
         users: ['UAPPROVED1', 'WAPPROVED2'],
-        allowedDomains: ['qa.example.test', '*.qa.example.test'],
+        allowedDomains: ['qa.example.test', 'admin.qa.example.test'],
         allowWrite: ['/srv/qa/lock', '/srv/qa/runs'],
       });
     });
@@ -676,7 +680,7 @@ describe('apply-deploy-sandbox', () => {
       const { targetDir } = makeTarget({});
 
       const { code, out } = run([targetDir], {
-        DEPLOY_SANDBOX: 'runner-a|UAPPROVED1|https://qa.example.test|/srv/qa',
+        DEPLOY_SANDBOX: 'runner-a|UAPPROVED1|https://qa.example.test|/srv/qa/state',
         RUNNER_LABEL: 'runner-a',
         ...LABELS,
       });
@@ -749,7 +753,7 @@ describe('apply-deploy-sandbox', () => {
       const { targetDir } = makeTarget({});
 
       const { code, out } = run(['--check', targetDir], {
-        DEPLOY_SANDBOX: `${LINE_A}\nrunner-typo|UAPPROVED1|qa.example.test|/srv/qa`,
+        DEPLOY_SANDBOX: `${LINE_A}\nrunner-typo|UAPPROVED1|qa.example.test|/srv/qa/state`,
         RUNNER_LABEL: 'runner-a',
         CHANNEL_RUNNER_LABELS: 'runner-a,runner-b',
       });

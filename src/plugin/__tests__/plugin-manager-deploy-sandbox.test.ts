@@ -43,7 +43,7 @@ describe('PluginManager saves keep config.json#deploySandbox', () => {
     applyDeploySandbox({
       targetDir,
       runnerLabel: 'runner-a',
-      deploySandbox: 'runner-a|UAPPROVED1|qa.example.test,*.qa.example.test|/srv/qa/lock,/srv/qa/runs',
+      deploySandbox: 'runner-a|UAPPROVED1|qa.example.test,admin.qa.example.test|/srv/qa/lock,/srv/qa/runs',
     });
   });
 
@@ -69,7 +69,7 @@ describe('PluginManager saves keep config.json#deploySandbox', () => {
     const before = grantOnDisk();
     expect(before).toEqual({
       users: ['UAPPROVED1'],
-      allowedDomains: ['qa.example.test', '*.qa.example.test'],
+      allowedDomains: ['qa.example.test', 'admin.qa.example.test'],
       allowWrite: ['/srv/qa/lock', '/srv/qa/runs'],
     });
 

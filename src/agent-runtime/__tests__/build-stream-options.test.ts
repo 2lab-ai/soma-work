@@ -491,7 +491,7 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
   const OTHER = 'UOTHER0001';
   const GRANT = {
     users: [APPROVED],
-    allowedDomains: ['qa.example.test', '*.qa.example.test'],
+    allowedDomains: ['qa.example.test', 'admin.qa.example.test'],
     allowWrite: ['/srv/qa/lock', '/srv/qa/runs'],
   };
   // The loader caches by mtime; give every write its own whole-second stamp.
@@ -544,7 +544,11 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
 
     const sandbox = sandboxOf(options);
     expect(sandbox?.filesystem?.allowWrite).toEqual([path.join('/tmp', APPROVED), '/srv/qa/lock', '/srv/qa/runs']);
-    expect(sandbox?.network?.allowedDomains).toEqual([...DEV_DOMAIN_ALLOWLIST, 'qa.example.test', '*.qa.example.test']);
+    expect(sandbox?.network?.allowedDomains).toEqual([
+      ...DEV_DOMAIN_ALLOWLIST,
+      'qa.example.test',
+      'admin.qa.example.test',
+    ]);
     // One info line, counts only.
     expect(grantLogs(deps)).toEqual([['Deploy sandbox grant applied', { paths: 2, domains: 2 }]]);
   });
@@ -563,7 +567,9 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
     expect(grantLogs(deps)).toEqual([]);
   });
 
-  it('binds to the turn sender, not the session owner', async () => {
+  // Sender AND owner must be listed: the owner can steer messages into a
+  // running turn, so an unlisted owner must never sit under a listed sender's grant.
+  it('listed sender in a session owned by an unlisted user: no grant', async () => {
     writeHostConfig({ deploySandbox: GRANT });
     const deps = makeDeps();
     const { options } = await buildStreamOptions(
@@ -571,7 +577,52 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
       deps,
     );
 
+    expect(sandboxOf(options)?.filesystem?.allowWrite).toEqual([path.join('/tmp', APPROVED)]);
+    expect(sandboxOf(options)?.network?.allowedDomains).toEqual([...DEV_DOMAIN_ALLOWLIST]);
+    expect(grantLogs(deps)).toEqual([]);
+  });
+
+  it('listed sender who is the owner: grant (one person counts once)', async () => {
+    writeHostConfig({ deploySandbox: GRANT });
+    const deps = makeDeps();
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, session: session('deploy', APPROVED), slackContext: makeSlackContext({ user: APPROVED }) },
+      deps,
+    );
+
     expect(sandboxOf(options)?.filesystem?.allowWrite).toContain('/srv/qa/lock');
+    expect(grantLogs(deps)).toEqual([['Deploy sandbox grant applied', { paths: 2, domains: 2 }]]);
+  });
+
+  it('listed sender in a session owned by another listed user: grant', async () => {
+    writeHostConfig({ deploySandbox: { ...GRANT, users: [APPROVED, 'WAPPROVED2'] } });
+    const deps = makeDeps();
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, session: session('deploy', 'WAPPROVED2'), slackContext: makeSlackContext({ user: APPROVED }) },
+      deps,
+    );
+
+    expect(sandboxOf(options)?.filesystem?.allowWrite).toEqual([
+      path.join('/tmp', APPROVED),
+      '/srv/qa/lock',
+      '/srv/qa/runs',
+    ]);
+    expect(grantLogs(deps)).toEqual([['Deploy sandbox grant applied', { paths: 2, domains: 2 }]]);
+  });
+
+  it('a deploy session with no recorded owner: no grant', async () => {
+    writeHostConfig({ deploySandbox: GRANT });
+    const deps = makeDeps();
+    const { options } = await buildStreamOptions(
+      {
+        queryEnv: {},
+        session: { workflow: 'deploy' } as ConversationSession,
+        slackContext: makeSlackContext({ user: APPROVED }),
+      },
+      deps,
+    );
+
+    expect(sandboxOf(options)?.filesystem?.allowWrite).toEqual([path.join('/tmp', APPROVED)]);
   });
 
   it.each(['default', 'pr-review', undefined])('(c) workflow %j + listed sender: no grant', async (workflow) => {
@@ -637,7 +688,11 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
 
   it('dedupes against what the sandbox already allows', async () => {
     writeHostConfig({
-      deploySandbox: { users: [APPROVED], allowedDomains: ['github.com', 'qa.example.test'], allowWrite: ['/srv/qa'] },
+      deploySandbox: {
+        users: [APPROVED],
+        allowedDomains: ['github.com', 'qa.example.test'],
+        allowWrite: ['/srv/qa/state'],
+      },
     });
     const deps = makeDeps();
     const { options } = await buildStreamOptions(

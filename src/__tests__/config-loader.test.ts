@@ -1034,7 +1034,7 @@ describe('loadConfig — deploySandbox passthrough', () => {
 
   const GRANT = {
     users: ['UAPPROVED1'],
-    allowedDomains: ['qa.example.test', '*.qa.example.test'],
+    allowedDomains: ['qa.example.test', 'admin.qa.example.test'],
     allowWrite: ['/srv/qa/lock', '/srv/qa/runs'],
   };
 

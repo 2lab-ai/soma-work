@@ -11,12 +11,16 @@
  *   { "deploySandbox": { "users": [...], "allowedDomains": [...], "allowWrite": [...] } }
  *
  * `buildStreamOptions` appends it to the sandbox only for a `deploy` workflow
- * turn whose sender is in `users`. A missing key is no grant.
+ * turn whose sender and session owner are both in `users`. A missing key is no
+ * grant. The file is read
+ * and validated on every call (once per deploy-workflow turn), so an edit or a
+ * revoking deploy applies from the next turn.
  *
  * The values are host topology, so no log line here names one — counts only.
  */
 
 import fs from 'node:fs';
+import path from 'node:path';
 import {
   DEPLOY_SANDBOX_KEY,
   type DeploySandboxGrant,
@@ -53,15 +57,41 @@ function keepValid(raw: unknown, valid: (value: unknown) => value is string): { 
   return { kept, invalid };
 }
 
-/** Validate the raw `config.json#deploySandbox` value (pure). */
-export function sanitizeDeploySandboxGrant(raw: unknown): SanitizedDeploySandboxGrant {
+/**
+ * Whether `target` names itself on disk: the path — or, when it does not exist
+ * yet, its nearest existing ancestor — resolves (realpath) to exactly the same
+ * string. Refuses a symlink anywhere along it, so a grant cannot be pointed at
+ * a forbidden location through a link. A missing tail is fine (the session
+ * creates it inside the grant); any other resolution failure (a component that
+ * is not a directory, no permission) is a refusal.
+ */
+export function resolvesToItself(target: string): boolean {
+  let current = target;
+  for (;;) {
+    try {
+      return fs.realpathSync.native(current) === current;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT' || current === '/') return false;
+      current = path.dirname(current);
+    }
+  }
+}
+
+export interface SanitizeOptions {
+  /** Runtime check on each lexically valid path; defaults to {@link resolvesToItself}. */
+  pathResolves?: (target: string) => boolean;
+}
+
+/** Validate the raw `config.json#deploySandbox` value. */
+export function sanitizeDeploySandboxGrant(raw: unknown, options: SanitizeOptions = {}): SanitizedDeploySandboxGrant {
   const dropped = { users: 0, domains: 0, paths: 0 };
   if (raw === undefined) return { grant: null, dropped, malformed: false };
   if (!isPlainObject(raw)) return { grant: null, dropped, malformed: true };
 
+  const pathResolves = options.pathResolves ?? resolvesToItself;
   const users = keepValid(raw.users, isSlackUserId);
   const domains = keepValid(raw.allowedDomains, isGrantDomain);
-  const paths = keepValid(raw.allowWrite, isGrantPath);
+  const paths = keepValid(raw.allowWrite, (value): value is string => isGrantPath(value) && pathResolves(value));
   dropped.users = users.invalid;
   dropped.domains = domains.invalid;
   dropped.paths = paths.invalid;
@@ -75,20 +105,6 @@ export interface DeploySandboxGrantLogger {
   warn(message: string, data?: unknown): void;
 }
 
-interface CacheEntry {
-  mtimeMs: number;
-  size: number;
-  ino: number;
-  grant: DeploySandboxGrant | null;
-}
-
-/**
- * Per config file. Keyed on mtime, plus size and inode so that a rewrite that
- * lands within the filesystem's mtime granularity (and the deploy writer's
- * rename, which always brings a new inode) is still seen.
- */
-const cache = new Map<string, CacheEntry>();
-
 function freeze(grant: DeploySandboxGrant | null): DeploySandboxGrant | null {
   if (!grant) return null;
   Object.freeze(grant.users);
@@ -98,9 +114,10 @@ function freeze(grant: DeploySandboxGrant | null): DeploySandboxGrant | null {
 }
 
 /**
- * The grant in `configFile`, re-read only when the file changes. Missing file
- * or key → null, silently. An unreadable file, a malformed key, or dropped
- * entries → one warning per change of the file, counts only.
+ * The grant in `configFile`, read and validated on every call — no cache: the
+ * file is small and this runs once per deploy-workflow turn. Missing file or
+ * key → null, silently. An unreadable file, a malformed key, or dropped entries
+ * → one warning for the call, counts only.
  */
 export function loadDeploySandboxGrant(
   configFile: string | undefined,
@@ -108,33 +125,30 @@ export function loadDeploySandboxGrant(
 ): DeploySandboxGrant | null {
   if (!configFile) return null;
 
-  let stat: fs.Stats;
+  let text: string;
   try {
-    stat = fs.statSync(configFile);
-  } catch {
-    cache.delete(configFile);
+    text = fs.readFileSync(configFile, 'utf8');
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      logger.warn('config.json could not be read; no deploy sandbox grant');
+    }
     return null;
   }
-  const cached = cache.get(configFile);
-  if (cached && cached.mtimeMs === stat.mtimeMs && cached.size === stat.size && cached.ino === stat.ino) {
-    return cached.grant;
-  }
 
-  let grant: DeploySandboxGrant | null = null;
+  let parsed: unknown;
   try {
-    const parsed: unknown = JSON.parse(fs.readFileSync(configFile, 'utf8'));
-    const result = sanitizeDeploySandboxGrant(isPlainObject(parsed) ? parsed[DEPLOY_SANDBOX_KEY] : undefined);
-    grant = freeze(result.grant);
-    if (result.malformed) {
-      logger.warn('config.json#deploySandbox is not an object; no deploy sandbox grant');
-    } else if (result.dropped.users + result.dropped.domains + result.dropped.paths > 0) {
-      logger.warn('Dropped invalid config.json#deploySandbox entries', result.dropped);
-    }
+    parsed = JSON.parse(text);
   } catch {
     logger.warn('config.json could not be read as JSON; no deploy sandbox grant');
+    return null;
   }
-  cache.set(configFile, { mtimeMs: stat.mtimeMs, size: stat.size, ino: stat.ino, grant });
-  return grant;
+  const result = sanitizeDeploySandboxGrant(isPlainObject(parsed) ? parsed[DEPLOY_SANDBOX_KEY] : undefined);
+  if (result.malformed) {
+    logger.warn('config.json#deploySandbox is not an object; no deploy sandbox grant');
+  } else if (result.dropped.users + result.dropped.domains + result.dropped.paths > 0) {
+    logger.warn('Dropped invalid config.json#deploySandbox entries', result.dropped);
+  }
+  return freeze(result.grant);
 }
 
 /** Structural slice of the SDK `sandbox` settings the grant extends. */

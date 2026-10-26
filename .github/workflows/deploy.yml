@@ -77,18 +77,22 @@ jobs:
       # fallback, every line naming one of this channel's runner labels:
       #   PREVIEW_DEPLOY_SANDBOX / PRODUCTION_DEPLOY_SANDBOX, one entry per line,
       #   {runner-label}|{user}[,{user}...]|[{domain}[,{domain}...]]|[{path}[,{path}...]]
-      #   e.g. runner-a|UAPPROVED1|qa.example.test,*.qa.example.test|/srv/qa/lock,/srv/qa/runs
-      # Users are Slack user IDs; domains are hostnames or *.hostname (lowercase,
-      # no scheme, port, path, or IP literal); paths are absolute and
-      # normalized, never / or anything under /tmp. The domain and path fields
-      # may be empty, and a runner may appear on several lines (their union).
+      #   e.g. runner-a|UAPPROVED1|qa.example.test,admin.qa.example.test|/srv/qa/lock,/srv/qa/runs
+      # Users are Slack user IDs; domains are exact hostnames (lowercase, no
+      # wildcard, scheme, port, path, or IP literal); paths are absolute,
+      # normalized, at least three components deep, and never a system root
+      # (/tmp, /var, /private, /etc, /usr, /opt, /Library, ...), anything under
+      # or above one, a home root, or a home directory itself. The daemon also
+      # refuses a path that resolves through a symlink. The domain and path
+      # fields may be empty, and a runner may appear on several lines (their union).
       # The Deploy step checks the lines before stopping the service, then
       # writes the union for its runner into the target's
       # config.json#deploySandbox (dist/deploy/apply-deploy-sandbox.js) before
       # the restart — or deletes that key when no line names the runner, so
       # removing a line revokes the grant on the next deploy. The daemon applies
-      # it only to deploy-workflow turns sent by a listed user: the paths always,
-      # the domains only while that user's network allowlist is on.
+      # it only to deploy-workflow turns whose sender AND session owner are both
+      # listed: the paths always, the domains only while the sender's network
+      # allowlist is on.
       - name: Resolve deploy targets
         id: targets
         env:

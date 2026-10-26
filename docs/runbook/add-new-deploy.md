@@ -511,15 +511,21 @@ Actions **repo secrets**, 채널마다 하나, 서로 넘어가지 않는다:
 
 ```text
 # runner-label|user[,user...]|domain[,domain...]|path[,path...]
-runner-a|UAPPROVED1|qa.example.test,*.qa.example.test|/srv/qa/lock,/srv/qa/runs
+runner-a|UAPPROVED1|qa.example.test,admin.qa.example.test|/srv/qa/lock,/srv/qa/runs
 ```
 
-- user = Slack 사용자 ID. domain = 호스트명 또는 `*.`+호스트명 (소문자, 스킴·포트·경로·IP 리터럴 불가).
-  path = 정규화된 절대 경로 (`/`와 `/tmp` 아래 불가). domain·path 칸은 비워도 되고, 같은 runner의 여러
-  줄은 합쳐진다. 형식이 틀린 줄이나 채널 label 집합에 없는 runner는 (다른 runner 줄이어도) 배포를 실패시킨다.
-- 데몬은 이 허용을 **배포 워크플로우 세션**의 턴에만, 그 턴을 **보낸 사람**이 user 목록에 있을 때만 붙인다
-  (세션 주인 기준이 아니다 — 같은 스레드에 다른 사람이 답한 턴에는 붙지 않는다). path는 항상, domain은 그
-  사람의 네트워크 허용 목록이 켜져 있을 때만 더해진다. 다른 워크플로우, 샌드박스가 꺼진 사용자는 그대로다.
+- user = Slack 사용자 ID. domain = **정확한 호스트명만** (소문자; 와일드카드·스킴·포트·경로·IP 리터럴 불가).
+  path = 정규화된 절대 경로, 3단계 이상 (`/srv/qa/lock`은 되고 `/srv/qa`는 안 된다). 시스템 루트(`/tmp`,
+  `/var`, `/private`, `/etc`, `/usr`, `/opt`, `/Library`, `/System`, `/Applications` 등)와 같거나, 그 아래거나,
+  그 위인 경로는 안 된다. `/Users`·`/home`과 홈 디렉터리 자체(`/Users/<이름>`)도 안 되지만, 홈 디렉터리
+  **안**(`/Users/<이름>/qa/lock`)은 된다. 데몬은 실행 시 심볼릭 링크를 거쳐 다른 곳으로 풀리는 경로를 버린다.
+  domain·path 칸은 비워도 되고, 같은 runner의 여러 줄은 합쳐진다. 형식이 틀린 줄이나 채널 label 집합에
+  없는 runner는 (다른 runner 줄이어도) 배포를 실패시킨다.
+- 데몬은 이 허용을 **배포 워크플로우 세션**의 턴에만, 그 턴을 **보낸 사람과 세션 주인이 둘 다** user 목록에
+  있을 때만 붙인다 (같은 사람이면 한 번으로 친다). 같은 스레드에 다른 사람이 답한 턴에도, 목록에 없는 사람이
+  주인인 세션의 턴에도 붙지 않는다 — 세션 주인은 실행 중인 턴에 메시지를 밀어 넣을 수 있기 때문이다. path는
+  항상, domain은 보낸 사람의 네트워크 허용 목록이 켜져 있을 때만 더해진다. 다른 워크플로우, 샌드박스가 꺼진
+  사용자는 그대로다.
 - §8.5와 달리 **교체**다: 그 runner의 줄이 있으면 키를 그 합집합으로 쓰고, 없으면(시크릿이 비었을 때 포함)
   키를 지운다 — **시크릿에서 줄을 지우면 다음 배포에서 허용이 회수된다.** 줄도 키도 없는 호스트는 대상을
   검사하지도 쓰지도 않는다 (`nothing to apply`).
