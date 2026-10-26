@@ -354,6 +354,23 @@ describe('createSdkMessageMapper — golden (epic #1023 P3)', () => {
       expect(calc).toHaveBeenCalledWith('astra', 200, 20, 1000, 0);
     });
 
+    it('review #472 r2 — direct usage of a host-priced model takes the host price too', () => {
+      const m = createSdkMessageMapper({ calculateTokenCost: CALC, hostPriced: (x) => x === 'astra' });
+      m.map(sdk({ type: 'assistant', message: { model: 'astra', content: [] } }));
+      const events = m.map(
+        sdk({
+          type: 'result',
+          subtype: 'success',
+          result: 'x',
+          total_cost_usd: 0.2,
+          usage: { input_tokens: 50, output_tokens: 5 },
+        }),
+      );
+      expect(events.find((e) => e.type === 'usage')).toMatchObject({
+        usage: { costSource: 'calculated', totalCostUsd: 0.5, modelName: 'astra' },
+      });
+    });
+
     it('direct usage: total_cost_usd>0 → sdk; zero → calculated via injected calc and lastAssistantModelName', () => {
       const m = mapper();
       // Prime lastAssistantModelName via a prior assistant message.

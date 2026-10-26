@@ -405,7 +405,7 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
       const directCacheCreate = directUsage.cache_creation_input_tokens || 0;
       const directSdkCost = (message.total_cost_usd as number) || 0;
       const directModel = (message.model as string | undefined) ?? lastAssistantModelName;
-      const useSdk = directSdkCost > 0;
+      const useSdk = directSdkCost > 0 && !(directModel && deps.hostPriced?.(directModel));
       return {
         inputTokens: directInput,
         outputTokens: directOutput,
