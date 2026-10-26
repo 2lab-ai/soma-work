@@ -1,6 +1,7 @@
 # 12 — 대시보드 에이전트 트리: 메인 에이전트 → 서브에이전트, 에이전트별 작업 로그·태스크
 
 Status: PR-A(귀속·저장·payload, #362) · PR-B(대시보드 UI, #366) 구현 · rev 2(재귀 UI — 메인과 서브는 같은 노드 타입) 구현 ·
+rev 3(서브별 지출·API 환산 비용, task 합계 영속 — §2.5, 2026-10-26) 구현 ·
 Date: 2026-10-23, rev 2 2026-10-25 · 기준 main `3c9576a` · 이슈 #361
 SSOT: [`agent-tree/ssot.md`](agent-tree/ssot.md) · 앞선 계약: [`10-agent-inbox-board-spec.md`](10-agent-inbox-board-spec.md),
 [`11-dashboard-live-surfaces-spec.md`](11-dashboard-live-surfaces-spec.md)
@@ -105,17 +106,49 @@ interface AgentRegistry { nextN; agents: AgentRecord[] /* 오래된 순 */ }
 - 스탬프(`index.ts` → `stampWorkLogAgent`): `agentId`가 있으면 그 서브의 ledger의 현재 task로 `taskId`/`taskTitle`, `tool`이면
   그 서브의 `toolCalls`+1·`lastTool`. 없으면 종전대로 세션 ledger(메인).
 
-### 2.5 사용량
+### 2.5 사용량 (rev 3, 2026-10-26 — 서브별 지출 · task 합계)
 
-세션 총 토큰·비용의 집계원은 종전 하나다(턴 중 `liveUsage` 호출별 합 → 턴 끝 result `modelUsage`). 서브의 호출은 합에 들어가고
-(실제로 쓴 돈), 키가 `s:`로 시작해 `liveOccupancyCall`(컨텍스트 점유율)에서만 빠진다. 에이전트별 토큰은 표시용이며 세션 합에
-더하지 않는다(이중 계산 금지).
+**task 합계.** 집계원은 하나다 — 턴 중 `liveUsage` 호출별 합 → 턴 끝 result `modelUsage`(sdk.d.ts: 메인 루프 + Task 서브에이전트 +
+사이드체인, 서브 호출 포함). 같은 턴 지출이 런타임 `session.usage.total*`와 영속 `session.taskUsage`
+(`packages/slack/src/session-usage-math.ts` `creditTaskSpend`)에 함께 들어간다. 차이는 수명뿐이다: `usage`는 메모리 전용이라
+재시작·`resetSessionContext`(/new, CONTINUE_SESSION)에서 0이 되고, `taskUsage`는 `sessions.json`·아카이브에 남고 리셋되지 않는다.
+result 없이 끝난 턴의 호출(`foldLiveUsage`)은 `taskUsage`에도 더하고, 그 SDK 세션의 다음 result가 다시 싣는 만큼 `taskUsage.pendingFold`
+(영속)로 정산한다 — 재시작이 사이에 있어도 두 번 세지 않는다. 이 필드가 생기기 전에 저장돼 이미 지출이 있던 세션은 로드 때
+`partialSince`(그 시각부터 집계)를 단 0짜리 합계로 시작하고, 카드가 그렇다고 말한다(소급 복원 없음 — SDK 세션이 있던 세션은
+baseline이 없어도 부분 합계다). 아카이브 스냅샷의 `taskUsage`는 확정 합계 + 진행 중 턴의 호출(`liveUsage`, 세션 모델 단가) — 턴 도중 닫힌
+카드도 그 턴의 지출을 잃지 않는다. `/new`가 `sessionId`를 지워도 `taskUsage`가 있는 세션은 보드에 남는다(`onBoard`).
+
+**서브별 지출.** SDK의 `total_tokens`(`AgentRecord.tokens`)는 마지막 컨텍스트 크기이지 지출이 아니다(실측 2026-10-26: 서브 194개
+표시 Σ 23.9M vs transcript 지출 Σ 389.6M). `forwardSubagentText`가 꺼져 있으면 서브의 텍스트 전용 호출(최종 보고)은 호스트에 오지
+않으므로 실시간 프레임으로도 셀 수 없다. 그래서 서브 자신의 transcript를 읽는다(`src/session/agent-spend.ts`):
+`<CLAUDE_CONFIG_DIR>/projects/<cwd>/<sdkSessionId>/subagents/agent-<taskId>.jsonl` (`taskId` = `task_started`의 task id = transcript의
+agent id, 중첩 서브도 같은 폴더). API 호출 하나 = `message.id` 하나, 마지막 줄의 usage가 최종값, `<synthetic>` 제외. 모델별로
+`calculateTokenCost`로 환산하고, 단가표에 없는 모델(`hasModelPricing` 거짓 — grok 등)은 기본 단가로 추정하며 `unpricedModels`로 표시한다.
+결과는 `AgentRecord.spend{inputTokens, outputTokens, cacheReadTokens, cacheCreateTokens, costUsd, calls, unpricedModels?}` +
+`sdkSessionId` + `spendFinal`(영속).
+- 읽기: 증분(파일별 오프셋 + 호출 맵, 청크 단위로 그 시점 파일 끝까지, 개행으로 끝난 줄만 소비 — 미완성 줄은 바이트로 보관). 갱신 계기 =
+  `index.ts` `recordAgentEvent`와 서브의 작업 로그 항목(실행 중 에이전트는 10초에 1회), `turn_end`는 봉인 안 된 전부를 다시 읽고 끝났거나
+  시야에서 사라진(`unknown`) 에이전트를 `spendFinal`로 봉인한다 — 미완성 마지막 줄이 남아 있으면 봉인하지 않는다. 봉인된 에이전트에
+  어떤 이벤트·작업 로그 항목이든 오면(SendMessage 재개, 되살아남, 늦은 보고) 봉인을 푼다. `sdkSessionId`는 에이전트가 실행 중일 때 처음
+  본 순간 세션의 현재 SDK 세션으로 기록한다(transcript가 생기기 전 — 이후 `/new`가 검색 위치를 바꾸지 못한다). 비동기 — 바뀌면
+  `scheduleLiveSessionUpdate`. await 뒤에는 레코드를 id로 다시 찾는다(리셋이 레지스트리를 바꿀 수 있다).
+- 상한 100의 정리: 오래된 순으로, 지출이 확정된 레코드(봉인됐거나 transcript가 없는)만 지운다. 아직 읽을 것이 남은 레코드는 턴 끝 봉인까지
+  상한을 넘어서도 남는다(끝난 지 하루가 지나도 못 읽은 것은 지운다). 봉인은 읽기를 마친 뒤 파일 크기가 그대로일 때만 한다(그사이 추가된 호출이
+  있으면 다음 턴 끝에).
+- fold 정산(rev 3 r2·r3): fold는 세션 모델 단가로 추정한 값이다. 그 SDK 세션의 다음 result가 오면 `settleFoldedLiveUsage`가 result 증가분 −
+  fold를 부호 있게 돌려주고, 세션 런타임 합계와 task 합계가 같은 값으로 고친다(`addSessionSpend`, 0 아래로는 내려가지 않음) — 과대 추정은 되돌린다. fold 직후 세션을 바로 저장한다(유휴 저장은 이미 끝났다).
+- 경로 봉쇄: 세션 id는 UUID(`findTranscriptPath`), `taskId`는 `[A-Za-z0-9_-]{1,128}`, 세션 폴더·`subagents`·transcript 어느 것도
+  심볼릭 링크면 읽지 않는다.
+- 서브 합계 `subagentSpendOf` = 레코드별 지출 합 + `AgentRegistry.prunedSpend`(상한 100이 지운 레코드의 지출, 영속) — 상한이 합을 줄이지
+  않는다. 레코드마다 자기 호출만 갖으므로 합은 겹치지 않는다. task 합계에는 이미 서브 호출이 들어 있으므로 서브 합계를 task 합계에
+  더하지 않는다(이중 계산 금지). 단가 출처가 다르다(task = SDK `costUSD`, 서브 = 단가표) — 둘 다 "API 환산"이다.
+- 서브의 실시간 호출 키 `s:`는 종전대로 `liveOccupancyCall`(컨텍스트 점유율)에서만 빠진다.
 
 ## 3. 카드 payload [PR-A] (`src/conversation/dashboard.ts`)
 
 - `KanbanSession.agents?: DashboardAgent[]` — 서브만(메인 = 카드 자신), 스폰 순. 최대 `AGENTS_ON_CARD_MAX` = 40개: 실행 중
   에이전트와 그 조상 먼저, 나머지는 최신. `agentsTotal` = 전체 수. 서브가 한 번도 없었던 세션은 두 키가 모두 없다.
-- `DashboardAgent` = `{ id, n, parentId?, type?, description?, background?, status, startedAt, endedAt?, toolCalls, lastTool?, tokens?,
+- `DashboardAgent` = `{ id, n, parentId?, type?, description?, background?, status, startedAt, endedAt?, toolCalls, lastTool?, spend?,
   durationMs?, summary?, tasks?, earlierTasks? }`. `tasks`는 `normalizeTaskProgress` — 그 에이전트가 running일 때만 현재 task
   최대 1개, 아니면 0개. 지시 전문·결과 전문은 싣지 않는다 — 작업 로그의 `agentRef` 항목 raw로 지연 로드한다.
 - 아카이브 카드도 `agents`를 싣고, 아카이브가 running으로 기억한 에이전트는 `unknown`이다.
@@ -178,8 +211,11 @@ task 타임라인 앞 `에이전트` 섹션 = `<ul role="tree">` 하나, 루트(
 - 경로: 포커스 노드의 체인(루트 → 노드)에서 만든다 — 루트 조각도 노드 이름이지 하드코딩 버튼이 아니다. 루트에 포커스면(위에 아무것도
   없음) 경로를 그리지 않는다. <640px에서는 `‹ 부모 › 여기`만 보인다.
 - 헤더: 어떤 노드든(루트 포함, 서브가 없는 세션도) 같은 슬롯 — 이름 · 상태 단어 · 시간(루트는 `활성`) · 툴 수 · 토큰 · `배경 실행` ·
-  `하위 N` · 설명 — 현재 활동. 토큰: 루트 = `세션 Σ`(서브 호출 포함, 세션 집계 그대로), 서브 = SDK가 보고한 자기 span(자식 포함 — 하위가
-  있으면 `하위 포함`). 클라이언트는 아무것도 합산하지 않는다(이중 계산 금지).
+  `하위 N` · 설명 — 현재 활동. 지출(rev 3, §2.5): 루트 = `task 합계 X tok · $Y`(메인 + 모든 서브, 영속 task 합계 + 진행 중 턴) 옆에 `서브 N개 X' tok · $Y'`(서버가
+  더한 서브 합계 — task 합계 안에 들어 있다), 서브 = 자기 API 호출의 `X tok · $Y`(하위 제외, 툴팁에 호출 수·종류별 토큰). 단가표에 없는
+  모델이 섞이면 `≈$Y`, 호출이 있는데 usage가 모두 0이면 `사용량 미보고`. SDK의 `total_tokens`는 지출로 보이지 않는다. 같은 지출이 패널 하위
+  트리 행에도 실린다. 접힌 카드의 토큰·비용은 task 합계이고 툴팁이 `메인 + 서브에이전트 N개`와 부분 합계(`partialSince`)를 말한다.
+  세션 정보는 `서브에이전트` 행과(부분 합계면) `집계 시작` 행을 더한다. 클라이언트는 아무것도 합산하지 않는다(이중 계산 금지).
 - 하위 트리: 포커스 노드의 직계 자식 전부(상한 없음)와 그 아래(같은 6 상한·같은 접기), `role="tree"`, 같은 `renderAgentNode`. 레벨은
   포커스 노드 기준(직계 자식 aria-level 1) — 루트에서 접혀 있던 손주는 그 부모로 드릴하면 열린 채 보인다. 유저가 패널에서 접은
   노드는 드릴을 오가도 접혀 있다(세션별 패널 트리 상태).

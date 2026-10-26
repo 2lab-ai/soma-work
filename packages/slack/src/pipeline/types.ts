@@ -1,5 +1,5 @@
 import type { IncidentRequest } from '../incident-contract';
-import type { SdkUsageBaseline } from '../session-usage-math';
+import type { SdkUsageBaseline, TaskUsage } from '../session-usage-math';
 import type { SayPostSwitches } from '../stream-processor';
 
 export interface ProcessedFile {
@@ -52,6 +52,8 @@ export interface ConversationSession {
   pendingModelSwitch?: { model: string; nickname: string; requestedAt: number; compactTs?: string; armed?: boolean };
   /** Last per-model SDK running total for `sessionId` (persisted) — see `toTurnUsage`. */
   sdkUsageBaseline?: SdkUsageBaseline;
+  /** What the whole task spent (persisted, never reset) — see `creditTaskSpend`. */
+  taskUsage?: TaskUsage;
   [key: string]: any;
 }
 

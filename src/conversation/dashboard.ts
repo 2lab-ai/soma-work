@@ -48,7 +48,14 @@ import {
   type PermissionPromptAnswer,
   promptBelongsToThread,
 } from '../permission-prompt-response';
-import { type AgentRegistry, loseRunningAgents, sanitizeAgentRegistry } from '../session/agent-registry';
+import {
+  type AgentRegistry,
+  type AgentSpend,
+  loseRunningAgents,
+  type SubagentSpendSum,
+  sanitizeAgentRegistry,
+  subagentSpendOf,
+} from '../session/agent-registry';
 import { resolveEffectiveAutoCompact } from '../session/autocompact-policy';
 import { sanitizeCronJob } from '../session/cron-job';
 import { EffortSwitchError, type EffortSwitchResult } from '../session/effort-switch';
@@ -167,7 +174,18 @@ export interface KanbanSession {
     totalCacheCreateTokens: number;
     totalCostUsd: number;
     contextUsagePercent: number;
+    /**
+     * SSOT 2026-10-26 T3 — the totals count from this time, not from the
+     * task's start (a task that had spent before the total was kept).
+     */
+    partialSince?: number;
   };
+  /**
+   * SSOT 2026-10-26 T2/T3 — the subagents' share of the task total: every
+   * subagent's own spend added up (the record cap's dropped ones included).
+   * Absent when no subagent spend is known.
+   */
+  subagentSpend?: SubagentSpendSum;
   /**
    * SSOT 2026-10-22 T11 — when the work finished (epoch ms), for the DONE day
    * groups: an idle / sleeping card when it last went idle (else its last
@@ -356,7 +374,12 @@ export interface DashboardAgent {
   endedAt?: number;
   toolCalls: number;
   lastTool?: string;
-  tokens?: number;
+  /**
+   * SSOT 2026-10-26 T2 — what it spent: its own API calls (tokens by kind,
+   * API-equivalent cost), read from its transcript. Not the SDK's
+   * `total_tokens`, which is only the size of its last context.
+   */
+  spend?: AgentSpend;
   durationMs?: number;
   summary?: string;
   /** Its latest TodoWrite list — at most one current task, none unless it runs. */
@@ -375,11 +398,15 @@ export const AGENTS_ON_CARD_MAX = 40;
 export function agentsToKanban(
   registry: AgentRegistry | undefined,
   live: boolean,
-): Pick<KanbanSession, 'agents' | 'agentsTotal' | 'agentRoot'> {
+): Pick<KanbanSession, 'agents' | 'agentsTotal' | 'agentRoot' | 'subagentSpend'> {
   const reg = live ? registry : loseRunningAgents(registry, Date.now());
-  const root = reg?.root
-    ? { agentRoot: { toolCalls: reg.root.toolCalls, ...(reg.root.lastTool ? { lastTool: reg.root.lastTool } : {}) } }
-    : {};
+  const subSpend = subagentSpendOf(reg);
+  const root = {
+    ...(reg?.root
+      ? { agentRoot: { toolCalls: reg.root.toolCalls, ...(reg.root.lastTool ? { lastTool: reg.root.lastTool } : {}) } }
+      : {}),
+    ...(subSpend ? { subagentSpend: subSpend } : {}),
+  };
   const all = reg?.agents ?? [];
   if (all.length === 0) return root;
   let chosen = all;
@@ -413,7 +440,7 @@ export function agentsToKanban(
         ...(a.endedAt ? { endedAt: a.endedAt } : {}),
         toolCalls: a.toolCalls,
         ...(a.lastTool ? { lastTool: a.lastTool } : {}),
-        ...(a.tokens ? { tokens: a.tokens } : {}),
+        ...(a.spend ? { spend: a.spend } : {}),
         ...(a.durationMs ? { durationMs: a.durationMs } : {}),
         ...(a.summary ? { summary: a.summary } : {}),
         ...(tasks?.length ? { tasks } : {}),
@@ -788,7 +815,18 @@ function cronRunSessionIndex(): CronRunSessionLookup {
             archived.channelId && archived.threadTs
               ? (buildThreadPermalink(archived.channelId, archived.threadTs) ?? undefined)
               : undefined,
-          ...usageOf(archived.usage),
+          // The task total it kept (SSOT 2026-10-26 T3), else the last runtime usage.
+          ...usageOf(
+            archived.taskUsage
+              ? {
+                  totalInputTokens: archived.taskUsage.inputTokens,
+                  totalOutputTokens: archived.taskUsage.outputTokens,
+                  totalCacheReadTokens: archived.taskUsage.cacheReadTokens,
+                  totalCacheCreateTokens: archived.taskUsage.cacheCreateTokens,
+                  totalCostUsd: archived.taskUsage.costUsd,
+                }
+              : archived.usage,
+          ),
           activeMs: archived.busyMs || 0,
         },
       });
@@ -1304,25 +1342,45 @@ function goalHistoryItem(g: any): KanbanGoalHistoryItem {
 }
 
 /**
- * Session token totals for the card (T1/T2): the committed `usage.total*` plus
- * the calls of the turn still running (`liveUsage`), those priced at the
- * session model like the rest of the session's cost.
+ * The card's token totals — the TASK total (SSOT 2026-10-26 T3): the persisted
+ * `taskUsage` (main agent + every subagent, across restarts and resets) plus
+ * the calls of the turn still running (`liveUsage`, priced at the session
+ * model like the rest of the live cost). A session without `taskUsage` (none
+ * spent yet since it existed) falls back to the runtime `usage.total*`. The
+ * context gauge stays the live window's.
  */
 function tokenUsageOf(s: any): KanbanSession['tokenUsage'] {
   const live = sumLiveUsage(s.liveUsage);
   const liveTokens = live.inputTokens + live.outputTokens + live.cacheReadTokens + live.cacheCreateTokens;
-  if (!s.usage && liveTokens === 0) return undefined;
+  const task = s.taskUsage;
+  if (!task && !s.usage && liveTokens === 0) return undefined;
   const u = s.usage || {};
+  const base = task
+    ? {
+        input: task.inputTokens || 0,
+        output: task.outputTokens || 0,
+        cacheRead: task.cacheReadTokens || 0,
+        cacheCreate: task.cacheCreateTokens || 0,
+        cost: task.costUsd || 0,
+      }
+    : {
+        input: u.totalInputTokens || 0,
+        output: u.totalOutputTokens || 0,
+        cacheRead: u.totalCacheReadTokens || 0,
+        cacheCreate: u.totalCacheCreateTokens || 0,
+        cost: u.totalCostUsd || 0,
+      };
   const liveCost =
     liveTokens > 0
       ? calculateTokenCost(s.model, live.inputTokens, live.outputTokens, live.cacheReadTokens, live.cacheCreateTokens)
       : 0;
   return {
-    totalInputTokens: (u.totalInputTokens || 0) + live.inputTokens,
-    totalOutputTokens: (u.totalOutputTokens || 0) + live.outputTokens,
-    totalCacheReadTokens: (u.totalCacheReadTokens || 0) + live.cacheReadTokens,
-    totalCacheCreateTokens: (u.totalCacheCreateTokens || 0) + live.cacheCreateTokens,
-    totalCostUsd: (u.totalCostUsd || 0) + liveCost,
+    ...(task?.partialSince ? { partialSince: task.partialSince } : {}),
+    totalInputTokens: base.input + live.inputTokens,
+    totalOutputTokens: base.output + live.outputTokens,
+    totalCacheReadTokens: base.cacheRead + live.cacheReadTokens,
+    totalCacheCreateTokens: base.cacheCreate + live.cacheCreateTokens,
+    totalCostUsd: base.cost + liveCost,
     contextUsagePercent: u.contextWindow
       ? (((u.currentInputTokens || 0) +
           (u.currentCacheReadTokens || 0) +
@@ -1650,16 +1708,28 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
           totalLinesDeleted: archived.mergeStats.totalLinesDeleted,
         }
       : undefined,
-    tokenUsage: archived.usage
+    // The task total it kept (SSOT 2026-10-26 T3); an older archive has only
+    // the runtime usage it saw last.
+    tokenUsage: archived.taskUsage
       ? {
-          totalInputTokens: archived.usage.totalInputTokens || 0,
-          totalOutputTokens: archived.usage.totalOutputTokens || 0,
-          totalCacheReadTokens: archived.usage.totalCacheReadTokens || 0,
-          totalCacheCreateTokens: archived.usage.totalCacheCreateTokens || 0,
-          totalCostUsd: archived.usage.totalCostUsd || 0,
+          totalInputTokens: archived.taskUsage.inputTokens || 0,
+          totalOutputTokens: archived.taskUsage.outputTokens || 0,
+          totalCacheReadTokens: archived.taskUsage.cacheReadTokens || 0,
+          totalCacheCreateTokens: archived.taskUsage.cacheCreateTokens || 0,
+          totalCostUsd: archived.taskUsage.costUsd || 0,
           contextUsagePercent: 0, // No active context for archived sessions
+          ...(archived.taskUsage.partialSince ? { partialSince: archived.taskUsage.partialSince } : {}),
         }
-      : undefined,
+      : archived.usage
+        ? {
+            totalInputTokens: archived.usage.totalInputTokens || 0,
+            totalOutputTokens: archived.usage.totalOutputTokens || 0,
+            totalCacheReadTokens: archived.usage.totalCacheReadTokens || 0,
+            totalCacheCreateTokens: archived.usage.totalCacheCreateTokens || 0,
+            totalCostUsd: archived.usage.totalCostUsd || 0,
+            contextUsagePercent: 0, // No active context for archived sessions
+          }
+        : undefined,
     // The archive's kept finish time (spec 13 §3.7); an older archive falls
     // back to its last activity for the day groups only.
     finishedAt: finiteNumber(archived.doneAt),
@@ -1687,12 +1757,21 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
   };
 }
 
+/**
+ * A session the board shows: one that has run an SDK session — or, after a
+ * `/new` cleared that, one whose task has already spent (SSOT 2026-10-26 T3:
+ * the task total outlives the reset, so the card does too).
+ */
+function onBoard(s: { sessionId?: string; taskUsage?: unknown }): boolean {
+  return !!s.sessionId || !!s.taskUsage;
+}
+
 function buildKanbanBoard(userId?: string): KanbanBoard {
   const sessions = getAllSessions();
   const board: KanbanBoard = { working: [], waiting: [], idle: [], closed: [] };
 
   for (const [key, session] of sessions.entries()) {
-    if (!session.sessionId) continue;
+    if (!onBoard(session)) continue;
     if (userId && session.ownerId !== userId) continue;
     if (session.trashed === true) continue;
 
@@ -1728,7 +1807,7 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
     const liveThreadKeys = new Set<string>();
     const liveConversationIds = new Set<string>();
     for (const [, s] of sessions.entries()) {
-      if (!s.sessionId) continue;
+      if (!onBoard(s)) continue;
       if (s.trashed === true) continue;
       if (s.channelId && s.threadTs) liveThreadKeys.add(`${s.channelId}:${s.threadTs}`);
       if (s.conversationId) liveConversationIds.add(s.conversationId);
@@ -1744,7 +1823,7 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
     for (const archived of sortedArchives) {
       // Fix #438: Skip archives without sessionId — these sessions were terminated
       // before any Claude interaction (e.g., bot-thread migration source sessions)
-      if (!archived.sessionId) continue;
+      if (!onBoard(archived)) continue;
       if (userId && archived.ownerId !== userId) continue;
       // Skip if a live session exists in the same thread
       if (archived.channelId && archived.threadTs && liveThreadKeys.has(`${archived.channelId}:${archived.threadTs}`)) {
@@ -2059,7 +2138,7 @@ export function broadcastSingleSessionUpdate(sessionKey: string): void {
   if (wsClients.size === 0) return;
   try {
     const session = _getSessionsFn?.().get(sessionKey);
-    if (!session || !session.sessionId) return;
+    if (!session || !onBoard(session)) return;
     const kanban = sessionToKanban(sessionKey, session);
     const payload = JSON.stringify({ type: 'sessionUpdated', session: kanban });
     for (const client of wsClients) {
@@ -8005,6 +8084,32 @@ function cardTotalTokens(u) {
   if (!u) return 0;
   return toNum(u.totalInputTokens) + toNum(u.totalOutputTokens) + toNum(u.totalCacheReadTokens) + toNum(u.totalCacheCreateTokens);
 }
+// SSOT 2026-10-26 T2 — a spend's tokens: every kind it was billed for.
+function spendTotal(sp) {
+  if (!sp) return 0;
+  return toNum(sp.inputTokens) + toNum(sp.outputTokens) + toNum(sp.cacheReadTokens) + toNum(sp.cacheCreateTokens);
+}
+// "<tokens> tok · $<cost>" (API-equivalent). ≈ when part of it was priced at
+// the fallback rate — a model the price table does not know.
+function spendText(tokens, cost, estimate) {
+  return formatTokens(tokens) + ' tok · ' + (estimate ? '≈' : '') + '$' + toNum(cost).toFixed(2);
+}
+// A subagent's own spend as its row and header show it. Calls that reported
+// no usage at all (a provider that zeroes it) read as unreported, not as $0.
+function spendLabel(sp) {
+  if (!sp) return '';
+  var tk = spendTotal(sp);
+  if (tk <= 0) return toNum(sp.calls) > 0 ? '사용량 미보고' : '';
+  return spendText(tk, sp.costUsd, sp.unpricedModels && sp.unpricedModels.length);
+}
+function spendTitle(sp) {
+  if (!sp) return '';
+  var t = '이 에이전트 자신의 API 호출 ' + toNum(sp.calls) + '회 (하위 에이전트 제외) — 입력 ' + formatTokens(sp.inputTokens)
+    + ' · 출력 ' + formatTokens(sp.outputTokens) + ' · 캐시 읽기 ' + formatTokens(sp.cacheReadTokens)
+    + ' · 캐시 쓰기 ' + formatTokens(sp.cacheCreateTokens) + ' · API 환산 $' + toNum(sp.costUsd).toFixed(2);
+  if (sp.unpricedModels && sp.unpricedModels.length) t += ' · 단가표에 없는 모델(' + sp.unpricedModels.join(', ') + ')은 기본 단가로 추정';
+  return t;
+}
 // Full digits for tokens (a count-up should visibly count), dollars for cost.
 function formatCount(kind, v) {
   v = Math.max(0, toNum(v));
@@ -9095,15 +9200,19 @@ function renderCardUsage(s) {
   var u = s.tokenUsage;
   if (!u) return '';
   var parts = [];
+  // SSOT 2026-10-26 T3 — the task total: main agent and every subagent.
+  var sub = s.subagentSpend;
+  var who = 'task 합계: 메인 + 서브에이전트' + (sub && toNum(sub.agents) > 0 ? ' ' + toNum(sub.agents) + '개' : '');
+  var partial = toNum(u.partialSince) > 0 ? ' · 부분 합계 (' + new Date(toNum(u.partialSince)).toLocaleString() + ' 이후 집계)' : '';
   if (dhShow('tokens')) {
     var tok = cardTotalTokens(u);
     var tip = '입력 ' + formatTokens(u.totalInputTokens) + ' · 출력 ' + formatTokens(u.totalOutputTokens)
       + ' · 캐시 읽기 ' + formatTokens(u.totalCacheReadTokens) + ' · 캐시 쓰기 ' + formatTokens(u.totalCacheCreateTokens);
-    parts.push('<span class="cu-item" title="' + escAttr('총 토큰 — ' + tip) + '"><span class="cnt" data-cnt="tok" data-to="' + tok + '">' + formatCount('tok', tok) + '</span><span class="cu-unit">tok</span></span>');
+    parts.push('<span class="cu-item" title="' + escAttr('총 토큰 (' + who + ') — ' + tip + partial) + '"><span class="cnt" data-cnt="tok" data-to="' + tok + '">' + formatCount('tok', tok) + '</span><span class="cu-unit">tok</span></span>');
   }
   if (dhShow('cost')) {
     var cost = toNum(u.totalCostUsd);
-    parts.push('<span class="cu-item" title="API 환산 비용"><span class="cnt" data-cnt="cost" data-to="' + cost + '">' + formatCount('cost', cost) + '</span></span>');
+    parts.push('<span class="cu-item" title="' + escAttr('API 환산 비용 (' + who + ')' + partial) + '"><span class="cnt" data-cnt="cost" data-to="' + cost + '">' + formatCount('cost', cost) + '</span></span>');
   }
   return parts.length ? '<div class="card-usage">' + parts.join('<span class="cu-sep" aria-hidden="true">&middot;</span>') + '</div>' : '';
 }
@@ -9550,8 +9659,8 @@ function agentNodeRow(node, ctx, desc, open, line) {
       var done = 0;
       for (var i = 0; i < tasks.length; i++) if (tasks[i] && tasks[i].status === 'completed') done++;
       if (tasks.length) meta += '<span class="ag-tools">task ' + done + '/' + tasks.length + '</span>';
-    } else if (toNum(node.tokens) > 0) {
-      meta += '<span class="ag-tok" title="이 에이전트의 토큰 (하위 포함)">' + formatTokens(node.tokens) + ' tok</span>';
+    } else if (spendLabel(node.spend)) {
+      meta += '<span class="ag-tok" title="' + escAttr(spendTitle(node.spend)) + '">' + esc(spendLabel(node.spend)) + '</span>';
     }
     if (node.background) meta += '<span class="ag-bg">배경</span>';
   }
@@ -10007,8 +10116,9 @@ function sessionColOf(key) {
 }
 // The focused node's header — the same slots for every node, the root
 // included: name, status in words, time, tools, tokens, description, activity.
-// Tokens: the root's are the session Σ (it already holds the subagents' calls);
-// a subagent's are its SDK span (its own children inside). Nothing is summed here.
+// Spend (SSOT 2026-10-26 T2/T3): the root's is the task total — main agent and
+// every subagent — with the subagents' share beside it (both summed by the
+// server); a subagent's is its own API calls. Nothing is summed here.
 function renderAgentFocus(node, s) {
   var st = node.status;
   var desc = anDesc(node);
@@ -10022,10 +10132,15 @@ function renderAgentFocus(node, s) {
   }
   bits.push('툴 ' + toNum(node.toolCalls));
   if (node.root) {
-    var tk = s && s.tokenUsage ? cardTotalTokens(s.tokenUsage) : 0;
-    if (tk > 0) bits.push('<span title="서브에이전트 호출 포함">세션 Σ ' + formatTokens(tk) + ' tok</span>');
-  } else if (toNum(node.tokens) > 0) {
-    bits.push(formatTokens(node.tokens) + ' tok' + (node.children.length ? ' · 하위 포함' : ''));
+    var tu = s && s.tokenUsage;
+    var tk = cardTotalTokens(tu);
+    if (tk > 0) bits.push('<span title="메인 + 서브에이전트 전체 — API 환산 비용">task 합계 ' + spendText(tk, tu.totalCostUsd, false) + '</span>');
+    var sub = s && s.subagentSpend;
+    if (sub && toNum(sub.agents) > 0) {
+      bits.push('<span title="서브에이전트들 자신의 API 호출 합">서브 ' + toNum(sub.agents) + '개 ' + spendText(spendTotal(sub), sub.costUsd, sub.unpriced) + '</span>');
+    }
+  } else if (spendLabel(node.spend)) {
+    bits.push('<span title="' + escAttr(spendTitle(node.spend)) + '">' + esc(spendLabel(node.spend)) + '</span>');
   }
   if (node.background) bits.push('배경 실행');
   if (desc.n) bits.push('하위 전체 ' + desc.n);
@@ -10256,6 +10371,11 @@ function panelInfoHtml(s, open, col) {
     rows.push(['누적 출력', formatTokens(u.totalOutputTokens)]);
     rows.push(['누적 캐시 읽기', formatTokens(u.totalCacheReadTokens)]);
     rows.push(['누적 캐시 쓰기', formatTokens(u.totalCacheCreateTokens)]);
+    // SSOT 2026-10-26 T2/T3 — the numbers above are the task's (main + subagents);
+    // the subagents' share, and since when a partial total counts.
+    var sub = s.subagentSpend;
+    if (sub && toNum(sub.agents) > 0) rows.push(['서브에이전트', toNum(sub.agents) + '개 · ' + spendText(spendTotal(sub), sub.costUsd, sub.unpriced)]);
+    if (toNum(u.partialSince) > 0) rows.push(['집계 시작', '<span class="rel-time" data-ts="' + toNum(u.partialSince) + '"></span> (그 전 지출 미포함)']);
   }
   // Open body order (re-agent-run D19 · re-context-window D5): cw (prepended on return) → 세부 → token grid → thread.
   var body = panelDetailsHtml(s, col) + '<dl class="pi-grid">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';

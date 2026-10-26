@@ -334,10 +334,11 @@ describe('settleFoldedLiveUsage', () => {
     expect(rest).toBeUndefined();
   });
 
-  it('never goes below zero when the result carries less than was folded', () => {
+  it('takes back what the fold over-counted when the result carries less (a signed correction; review r3)', () => {
+    // The fold was an estimate at the session model rate; the result is the authority.
     const { spend, folded: rest } = settleFoldedLiveUsage(turn(50, 0.05), folded);
-    expect(spend.inputTokens).toBe(0);
-    expect(spend.totalCostUsd).toBe(0);
+    expect(spend.inputTokens).toBe(-150);
+    expect(spend.totalCostUsd).toBeCloseTo(-0.15);
     expect(rest).toBeUndefined();
   });
 
@@ -383,5 +384,48 @@ describe('adoptSdkSessionId', () => {
     const resumed = { sessionId: 'A', sdkUsageBaseline: baseline };
     adoptSdkSessionId(resumed, 'A');
     expect(resumed.sdkUsageBaseline).toBe(baseline);
+  });
+});
+
+describe('creditTaskSpend — a fold priced at the parent rate is corrected by the result (review r2)', () => {
+  it('a folded estimate above the authoritative growth is taken back, never kept', async () => {
+    const { creditTaskSpend } = await import('../session-usage-math');
+    const holder: any = {
+      sessionId: 'sdk-A',
+      taskUsage: {
+        inputTokens: 1000,
+        outputTokens: 0,
+        cacheReadTokens: 0,
+        cacheCreateTokens: 0,
+        costUsd: 25,
+        pendingFold: {
+          inputTokens: 1000,
+          outputTokens: 0,
+          cacheReadTokens: 0,
+          cacheCreateTokens: 0,
+          costUsd: 25,
+          sdkSessionId: 'sdk-A',
+        },
+      },
+    };
+    creditTaskSpend(holder, {
+      inputTokens: 1000,
+      outputTokens: 0,
+      cacheReadInputTokens: 0,
+      cacheCreationInputTokens: 0,
+      totalCostUsd: 6,
+      modelBreakdown: {
+        'claude-haiku-4-5': {
+          inputTokens: 1000,
+          outputTokens: 0,
+          cacheReadInputTokens: 0,
+          cacheCreationInputTokens: 0,
+          costUsd: 6,
+        },
+      },
+    });
+    expect(holder.taskUsage.inputTokens).toBe(1000);
+    expect(holder.taskUsage.costUsd).toBeCloseTo(6);
+    expect(holder.taskUsage.pendingFold).toBeUndefined();
   });
 });
