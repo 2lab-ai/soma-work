@@ -72,7 +72,8 @@ widgets·disclosure, NN/g progressive disclosure·cards·accordions, USWDS card)
 - 질문 대기(`waiting`): 최근 지시 ↔ 응답 → 산출물 → task 창 → 에이전트.
 - 유휴·닫힘(`idle`·`closed`): 최근 지시 ↔ 응답 → 산출물 → 에이전트.
 - 공통 끝: goal 한 줄 → 짧은 참조(+ 환경 배지) → 컨트롤 줄(모델·effort 전환 · 상태 액션 · Slack · 작업 로그) → 대기 전환 안내.
-- 640px 미만에서는 컨트롤 줄의 모델·effort가 토글 하나(`opus-5-5[1m] · high ▾`)로 접힌다(열림 상태는 카드별 JS 상태).
+- 컨트롤 줄의 모델·effort는 owner에게 트리거 하나(`Opus 5.5 (1M) · High`)이고, 누르면 모델·effort 메뉴가 열린다 — 접힘 토글은
+  없어졌다([`affectui/re-model-picker.md`](affectui/re-model-picker.md) D1/D16). 읽는 사람에게는 모델 · 단계 텍스트.
 - 펼친 영역에 없는 것: 토큰·비용·컨텍스트 바·Σ·압축·세션·merge, owner·workflow·마지막 활동, 이슈·PR 부제, 대화 링크, task 전체와
   이전 목록, 카드 안 에이전트 `전체 보기`, goal 편집기.
 
@@ -104,9 +105,9 @@ widgets·disclosure, NN/g progressive disclosure·cards·accordions, USWDS card)
     `live = 칸 ≠ closed && !terminated`). 입력에 포커스가 있으면 쓰지 않고, 포커스 없는 초안은 새 markup으로 옮긴다. 다른 세션을 열면
     비운다(초안이 섞이지 않는다).
 - 입력창(고정): `#panel-controls`(모델 · effort, 대기 전환 안내)가 입력 위의 자기 컨테이너에 있다 — 입력은 morph 대상이 아니다.
-  640px 미만이거나 높이 560px 이하(폰 가로·키보드)면 토글 하나로 접히고, 접힌 토글은 입력과 같은 줄에 선다. 펼치면 선택은
-  입력창 위에 떠서 열린다 — 읽기 영역의 높이를 빼앗지 않고, Escape는 패널보다 먼저 그 선택을 닫는다. 입력은 줄어들어도 Send는
-  줄지 않는다(패널 밖으로 잘리지 않는다).
+  owner에게는 트리거 하나가 모델·effort 메뉴를 입력창 위로 연다 — 읽기 영역의 높이를 빼앗지 않고, Escape는 패널보다 먼저 그 메뉴를
+  닫는다([`affectui/re-model-picker.md`](affectui/re-model-picker.md) D1/D9). 640px 미만이거나 높이 560px 이하(폰 가로·키보드)면
+  트리거는 입력과 같은 줄에 선다(너비 42%까지, 말줄임). 입력은 줄어들어도 Send는 줄지 않는다(패널 밖으로 잘리지 않는다).
 - 실시간: `repaintPanelSession()` 하나가 칩 · 세션 정보 · goal · 모델·effort · 노드 범위(spec 12의 `repaintPanelScope`)를 쓴다.
   `openPanel`, WS `session_update`·`sessionUpdated`, 폴링(`loadSessions`)이 모두 이 경로다. 부분마다 markup이 같으면 쓰지 않는다.
   읽던 자리: 갱신 전에 스크롤 영역에서 읽고 있는 앵커(질문·작업 로그·대화 턴)를 잡고, 위쪽 섹션 높이가 바뀌어도 그 자리로 되돌린다

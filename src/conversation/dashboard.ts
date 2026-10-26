@@ -4035,7 +4035,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .mp-chev { flex: none; width: 6px; height: 6px; margin: 0 1px 0 2px; border-right: 1.5px solid var(--ib-muted); border-bottom: 1.5px solid var(--ib-muted); transform: translateY(-2px) rotate(45deg); transition: transform 300ms var(--ease-out); }
 .mp-trigger[aria-expanded="true"] .mp-chev { transform: translateY(1px) rotate(225deg); }
 .mp-glyph { display: inline-grid; flex: none; place-items: center; width: 22px; height: 22px; border-radius: 6px; background: var(--ib-card); box-shadow: inset 0 0 0 1px var(--ib-card-border); font-size: 10.5px; font-weight: 600; line-height: 1; color: var(--ib-text); }
-.mp-pop { position: fixed; z-index: 150; left: 0; top: 0; width: min(320px, calc(100vw - 32px)); max-height: calc(100vh - 24px); overflow-y: auto; container-type: inline-size; padding: 4px; border-radius: 16px; background: var(--ib-col); box-shadow: 0 0 0 1px var(--ib-card-border), var(--ib-shadow-raised); color: var(--ib-text-2); font-size: 13px; line-height: 20px; text-align: left; transform-origin: top left; opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(-4px) scale(0.96); transition: opacity 160ms ease, transform 220ms var(--ease-out), visibility 0s linear 220ms; }
+.mp-pop { position: fixed; z-index: 150; left: 0; top: 0; width: min(320px, calc(100vw - 32px)); max-height: calc(100vh - 24px); overflow-y: auto; overscroll-behavior: contain; container-type: inline-size; padding: 4px; border-radius: 16px; background: var(--ib-col); box-shadow: 0 0 0 1px var(--ib-card-border), var(--ib-shadow-raised); color: var(--ib-text-2); font-size: 13px; line-height: 20px; text-align: left; transform-origin: top left; opacity: 0; visibility: hidden; pointer-events: none; transform: translateY(-4px) scale(0.96); transition: opacity 160ms ease, transform 220ms var(--ease-out), visibility 0s linear 220ms; }
 .mp-pop[data-side="top"] { transform-origin: bottom left; transform: translateY(4px) scale(0.96); }
 .mp-pop.is-open { opacity: 1; visibility: visible; transform: none; pointer-events: auto; transition: opacity 200ms ease, transform var(--dur-move) var(--ease-out), visibility 0s; }
 .mp-card { padding: 6px; border-radius: 12px; background: var(--ib-card); box-shadow: 0 0 0 1px var(--ib-card-border), var(--ib-shadow); }
@@ -10951,6 +10951,8 @@ function renderCardBody(s, col) {
 
   // The open card's quick switch (T4/T5, 10-23 T1; re-model-picker D1): the
   // owner's one trigger opens the model · effort menu; others read model · level.
+  // ui.dashboardheader 'model' gates the read-only name only — the trigger is the
+  // owner's control for effort too (the effort switch was never behind that gate).
   const modelShort = esc(s.model).replace(/^claude-/, '').replace(/-\\d{8}$/, '');
   const canSwitchModel = isOwner && col !== 'closed' && !s.terminated && !isSiblingSession(s);
   const modelParts = [];
@@ -11406,7 +11408,11 @@ function mpInside(node) {
   var a = mpAnchor();
   return !!((menu && menu.contains(node)) || (a && a.contains(node)));
 }
-// The menu element, made once: a press or the focus outside it (and its trigger) closes it.
+// A press or the focus landing outside the menu and its trigger closes it (focus stays where it went).
+function mpOutside(e) {
+  if (_mp.key && !mpInside(e.target)) mpClose(false);
+}
+// The menu element, made once.
 function mpHost() {
   var el = document.getElementById('mp-menu');
   if (el) return el;
@@ -11421,16 +11427,14 @@ function mpHost() {
   el.addEventListener('pointerover', mpMenuPointer);
   el.addEventListener('pointerout', mpMenuPointerOut);
   document.body.appendChild(el);
-  document.addEventListener('pointerdown', function(e) {
-    if (_mp.key && !mpInside(e.target)) mpClose(false);
-  }, true);
-  document.addEventListener('focusin', function(e) {
-    if (_mp.key && !mpInside(e.target)) mpClose(false);
-  });
+  document.addEventListener('pointerdown', mpOutside, true);
+  document.addEventListener('focusin', mpOutside);
   window.addEventListener('resize', mpQueuePlace);
   document.addEventListener('scroll', mpQueuePlace, true);
   return el;
 }
+// Made at boot: every trigger's aria-controls="mp-menu" names an element that exists.
+mpHost();
 function mpToggleFrom(btn) {
   if (_mp.key === btn.getAttribute('data-mp-key') && _mp.surface === (btn.getAttribute('data-mp-surface') || 'card')) {
     mpClose(true);
@@ -11456,8 +11460,10 @@ function mpOpen(btn) {
   var s = _sessionCache[key];
   if (!s) return;
   var menu = mpHost();
-  if (_mp.key && (_mp.key !== key || _mp.surface !== where)) mpClose(false);
-  if (_mp.key !== key) {
+  var reopen = _mp.key === key && _mp.surface === where;
+  if (_mp.key && !reopen) mpClose(false);
+  if (!reopen) {
+    // Every open starts on the session's model, unlit — also the same session from the other surface.
     _mp.key = key;
     _mp.surface = where;
     _mp.pointing = false;
@@ -11478,6 +11484,12 @@ function mpClose(returnFocus) {
   if (!key) return;
   var menu = document.getElementById('mp-menu');
   var a = mpAnchor();
+  // Focus goes home first, while the trigger still counts as the menu's (no focusin close, no
+  // focus lost to <body> when the menu turns inert under it).
+  if (a) {
+    a.setAttribute('aria-expanded', 'false');
+    if (returnFocus && a.focus) a.focus();
+  }
   _mp.key = null;
   _mp.surface = null;
   _mp.pointing = false;
@@ -11493,10 +11505,6 @@ function mpClose(returnFocus) {
   if (menu) {
     menu.classList.remove('is-open');
     menu.setAttribute('inert', '');
-  }
-  if (a) {
-    a.setAttribute('aria-expanded', 'false');
-    if (returnFocus && a.focus) a.focus();
   }
   // The anchor's card and the panel held their live updates while the menu was open.
   refreshCard(key);
@@ -11532,7 +11540,7 @@ function mpRollTray(menu, to) {
   if (!to || !from || (from.input === to.input && from.output === to.output) || reduceMotion()) return;
   var els = menu.querySelectorAll('.mp-roll');
   var t0 = performance.now();
-  function step(now) {
+  var step = function(now) {
     var p = Math.min(1, (now - t0) / MP_ROLL_MS);
     var e = 1 - Math.pow(1 - p, 4);
     var cur = { input: from.input + (to.input - from.input) * e, output: from.output + (to.output - from.output) * e };
@@ -11542,7 +11550,7 @@ function mpRollTray(menu, to) {
       els[i].textContent = mpMoney(cur[k], to[k]);
     }
     _mp.raf = p < 1 ? requestAnimationFrame(step) : 0;
-  }
+  };
   step(t0);
 }
 // D2 — where the menu goes: under (card) or over (panel) the trigger, flipped
@@ -11582,8 +11590,8 @@ function mpQueuePlace() {
 }
 // The anchor's card moved — it changed column, the board reflowed, a card
 // FLIPped: the menu closes instead of pointing at the old spot. Scrolling only
-// repositions it: the spot adds back every ancestor's scroll offset, so a
-// scroll (page or column) does not count as a move.
+// repositions it: the spot adds back the scroll offset of every ancestor up to
+// the first fixed one (the slide panel) — a scroll above that does not move it.
 var MP_WATCH_MS = 150;
 function mpSpot(a) {
   var r = a.getBoundingClientRect();
@@ -11592,6 +11600,7 @@ function mpSpot(a) {
   for (var n = a.parentNode; n && n.nodeType === 1; n = n.parentNode) {
     x += n.scrollLeft || 0;
     y += n.scrollTop || 0;
+    if (getComputedStyle(n).position === 'fixed') break;
   }
   return { left: x, top: y };
 }
@@ -11610,12 +11619,15 @@ function mpPick(i) {
   if (!s) return;
   var opts = mpOptions(s);
   var o = opts[i];
+  if (i === mpCurrentIndex(s, opts)) {
+    mpClose(true); // the session's own model — also when it is outside the list: nothing to switch
+    return;
+  }
   if (!o || !o.m || s.pendingModel || isBusy(s.key, 'model')) return;
   var key = s.key;
   var nickname = o.m.nickname;
-  var same = i === mpCurrentIndex(s, opts);
   mpClose(true);
-  if (!same) changeModel(key, nickname);
+  changeModel(key, nickname);
 }
 // An effort pick keeps the menu open (the level is a setting of the same choice).
 function mpPickEffort(level) {
@@ -11666,11 +11678,15 @@ function mpMenuKey(e) {
     e.preventDefault();
     mpClose(true);
   } else if (e.key === 'Tab') {
-    // The list and the checked level are the menu's two stops; past them, back on the trigger.
-    if (e.shiftKey ? onList : !onList) {
-      e.preventDefault();
-      mpClose(true);
-    }
+    // Two stops, moved by the menu itself (never left to the page's tab order): the list and the
+    // checked level. Past either end the menu closes, back on its trigger.
+    e.preventDefault();
+    var menu = document.getElementById('mp-menu');
+    var level = menu && menu.querySelector('.mp-seg-btn[tabindex="0"]');
+    var list = menu && menu.querySelector('.mp-list');
+    if (onList && !e.shiftKey && level) level.focus();
+    else if (!onList && e.shiftKey && list) list.focus();
+    else mpClose(true);
   } else if (onList) {
     mpListKey(e);
   } else {
