@@ -37,6 +37,34 @@ import { applyTodoList, sanitizeTaskLedger, stampWorkLogTask, type TaskLedger, t
 
 export type AgentStatus = 'running' | 'completed' | 'failed' | 'stopped' | 'unknown';
 
+/** Tokens and API-equivalent cost of a set of API calls. */
+export interface SpendTotals {
+  inputTokens: number;
+  outputTokens: number;
+  cacheReadTokens: number;
+  cacheCreateTokens: number;
+  costUsd: number;
+}
+
+/**
+ * What one subagent spent: its own API calls, read from its transcript
+ * (`agent-spend.ts`) — a nested subagent's calls are its own record's.
+ */
+export interface AgentSpend extends SpendTotals {
+  /** API calls counted (one per message id). */
+  calls: number;
+  /** Models the price table does not know — priced at the fallback rate, so the cost is an estimate. */
+  unpricedModels?: string[];
+}
+
+/** The subagents' spend added up (records still kept plus those the cap dropped). */
+export interface SubagentSpendSum extends SpendTotals {
+  /** Subagents counted. */
+  agents: number;
+  /** Some of it was priced at the fallback rate. */
+  unpriced?: true;
+}
+
 export interface AgentRecord {
   /** The id of the tool call that started the agent. */
   id: string;
@@ -59,8 +87,17 @@ export interface AgentRecord {
   /** The SDK's own cumulative count (task_progress / settle / Agent outcome). */
   reportedTools?: number;
   lastTool?: string;
-  /** Tokens the SDK reported for the run so far. */
+  /**
+   * The SDK's `total_tokens` for the run — the size of its last context, NOT
+   * what it spent (see `spend`). Kept as the SDK sent it; never shown as spend.
+   */
   tokens?: number;
+  /** What it spent — its own API calls, from its transcript. */
+  spend?: AgentSpend;
+  /** The SDK session it ran in (where its transcript lives). */
+  sdkSessionId?: string;
+  /** `spend` is final: read after the agent ended and its turn closed. */
+  spendFinal?: true;
   /** Run time the SDK reported. */
   durationMs?: number;
   /** The SDK's one-line summary (progress summary, or the settle's). */
@@ -89,6 +126,8 @@ export interface AgentRegistry {
   agents: AgentRecord[];
   /** The main agent (absent until it calls a tool). */
   root?: AgentRootStats;
+  /** The spend of the records {@link AGENT_REGISTRY_MAX} dropped — so the subagents' sum never shrinks. */
+  prunedSpend?: SubagentSpendSum;
 }
 
 export const AGENT_REGISTRY_MAX = 100;
@@ -315,6 +354,7 @@ export function loseRunningAgents(reg: AgentRegistry | undefined, now: number): 
     agents: reg.agents.map((a) => (a.status === 'running' ? { ...a, status: 'unknown', endedAt: now } : a)),
   };
   if (reg.root) out.root = { ...reg.root };
+  if (reg.prunedSpend) out.prunedSpend = { ...reg.prunedSpend };
   // Nothing runs now: an excess the running agents held is released.
   enforceBounds(out);
   return out;
@@ -345,10 +385,58 @@ function enforceBounds(reg: AgentRegistry): void {
   reg.agents = reg.agents.filter((a) => {
     if (excess > 0 && !pinned.has(a.id)) {
       excess--;
+      if (a.spend) reg.prunedSpend = addSpend(reg.prunedSpend, a.spend, a.spend.unpricedModels?.length ? 1 : 0);
       return false;
     }
     return true;
   });
+}
+
+function addSpend(sum: SubagentSpendSum | undefined, s: SpendTotals, unpriced: number): SubagentSpendSum {
+  const out: SubagentSpendSum = sum
+    ? { ...sum }
+    : { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, costUsd: 0, agents: 0 };
+  out.inputTokens += s.inputTokens;
+  out.outputTokens += s.outputTokens;
+  out.cacheReadTokens += s.cacheReadTokens;
+  out.cacheCreateTokens += s.cacheCreateTokens;
+  out.costUsd += s.costUsd;
+  out.agents += 1;
+  if (unpriced) out.unpriced = true;
+  return out;
+}
+
+/**
+ * The subagents' spend added up — every record that has one, plus what the
+ * record cap dropped. Undefined when no subagent spend is known. A sum of
+ * disjoint spends (each record holds only its own calls), so nothing is
+ * counted twice.
+ */
+export function subagentSpendOf(reg: AgentRegistry | undefined): SubagentSpendSum | undefined {
+  if (!reg) return undefined;
+  let sum: SubagentSpendSum | undefined;
+  for (const a of reg.agents) if (a.spend) sum = addSpend(sum, a.spend, a.spend.unpricedModels?.length ? 1 : 0);
+  if (reg.prunedSpend) {
+    const p = reg.prunedSpend;
+    const base = sum ?? {
+      inputTokens: 0,
+      outputTokens: 0,
+      cacheReadTokens: 0,
+      cacheCreateTokens: 0,
+      costUsd: 0,
+      agents: 0,
+    };
+    sum = {
+      inputTokens: base.inputTokens + p.inputTokens,
+      outputTokens: base.outputTokens + p.outputTokens,
+      cacheReadTokens: base.cacheReadTokens + p.cacheReadTokens,
+      cacheCreateTokens: base.cacheCreateTokens + p.cacheCreateTokens,
+      costUsd: base.costUsd + p.costUsd,
+      agents: base.agents + p.agents,
+      ...(base.unpriced || p.unpriced ? { unpriced: true as const } : {}),
+    };
+  }
+  return sum;
 }
 
 function finitePositive(v: unknown): number | undefined {
@@ -398,6 +486,18 @@ export function sanitizeAgentRegistry(raw: unknown): AgentRegistry | undefined {
     // A record from before the two counts were kept: its count was the log's.
     if (rec.loggedTools === undefined && rec.reportedTools === undefined && rec.toolCalls > 0)
       rec.loggedTools = rec.toolCalls;
+    const spend = sanitizeSpend(a.spend);
+    if (spend) {
+      const calls = finiteNonNegative((a.spend as Record<string, unknown>).calls);
+      rec.spend = { ...spend, calls: Math.floor(calls ?? 0) };
+      const unpriced = (a.spend as Record<string, unknown>).unpricedModels;
+      if (Array.isArray(unpriced)) {
+        const names = unpriced.filter((m): m is string => typeof m === 'string' && m.length > 0).slice(0, 10);
+        if (names.length) rec.spend.unpricedModels = names.map((m) => clip(m, TYPE_MAX));
+      }
+    }
+    if (typeof a.sdkSessionId === 'string' && a.sdkSessionId) rec.sdkSessionId = clip(a.sdkSessionId, TYPE_MAX);
+    if (a.spendFinal === true && rec.spend) rec.spendFinal = true;
     const ledger = sanitizeTaskLedger(a.ledger);
     if (ledger) rec.ledger = ledger;
     agents.push(rec);
@@ -407,8 +507,32 @@ export function sanitizeAgentRegistry(raw: unknown): AgentRegistry | undefined {
   const reg: AgentRegistry = { nextN: Math.max(Math.floor(nextN), highest + 1), agents };
   const root = sanitizeRootStats(r.root);
   if (root) reg.root = root;
+  const pruned = sanitizeSpend(r.prunedSpend);
+  const prunedAgents = r.prunedSpend ? finitePositive((r.prunedSpend as Record<string, unknown>).agents) : undefined;
+  if (pruned && prunedAgents) {
+    reg.prunedSpend = { ...pruned, agents: Math.floor(prunedAgents) };
+    if ((r.prunedSpend as Record<string, unknown>).unpriced === true) reg.prunedSpend.unpriced = true;
+  }
   enforceBounds(reg);
   return reg;
+}
+
+function finiteNonNegative(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) && v >= 0 ? v : undefined;
+}
+
+/** The five spend counters, all finite and ≥ 0 — or nothing. */
+function sanitizeSpend(raw: unknown): SpendTotals | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  const fields = ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreateTokens', 'costUsd'] as const;
+  const out = {} as SpendTotals;
+  for (const f of fields) {
+    const v = finiteNonNegative(r[f]);
+    if (v === undefined) return undefined;
+    out[f] = v;
+  }
+  return out;
 }
 
 function sanitizeRootStats(raw: unknown): AgentRootStats | undefined {

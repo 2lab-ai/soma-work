@@ -492,3 +492,86 @@ describe('StreamExecutor — cumulative SDK usage is counted once', () => {
     expect(session.usage.totalInputTokens).toBe(1280);
   });
 });
+
+/**
+ * RED — the task (the dashboard card) shows the total of everything it spent
+ * (SSOT T3). `session.usage` is runtime-only and `resetSessionContext` clears
+ * it, so the card fell back to 0 after every restart, `/new` or
+ * CONTINUE_SESSION (dev 2026-10-26: a card read 20.4M tok / $15.00 while its
+ * transcripts held 356M). `session.taskUsage` takes the same per-turn spend the
+ * session totals take, is persisted, and is never reset.
+ */
+describe('StreamExecutor — the task total (taskUsage) outlives restarts and resets', () => {
+  beforeEach(() => {
+    emitted.tokenUsage.length = 0;
+  });
+
+  it('adds every turn’s spend — subagent models included — across a restart and a /new', async () => {
+    const session = newSession();
+    await runTurn(
+      session,
+      resultFrame({
+        [OPUS]: { input: 1000, output: 100, cacheRead: 10_000, cacheCreate: 500, cost: 1 },
+        grok: { input: 400, output: 40, cacheRead: 0, cacheCreate: 0, cost: 0.5 },
+      }),
+    );
+    expect(session.taskUsage).toMatchObject({
+      inputTokens: 1400,
+      outputTokens: 140,
+      cacheReadTokens: 10_000,
+      cacheCreateTokens: 500,
+    });
+    expect(session.taskUsage.costUsd).toBeCloseTo(1.5);
+
+    // Restart: only the persisted fields survive.
+    const restored = JSON.parse(JSON.stringify(session));
+    restored.usage = undefined;
+    await runTurn(
+      restored,
+      resultFrame({
+        [OPUS]: { input: 1200, output: 130, cacheRead: 10_000, cacheCreate: 500, cost: 1.25 },
+        grok: { input: 400, output: 40, cacheRead: 0, cacheCreate: 0, cost: 0.5 },
+      }),
+    );
+    expect(restored.usage.totalCostUsd).toBeCloseTo(0.25);
+    expect(restored.taskUsage.costUsd).toBeCloseTo(1.75);
+    expect(restored.taskUsage.inputTokens).toBe(1600);
+
+    // /new: a new SDK session; the runtime totals start over, the task's do not.
+    restored.sessionId = undefined;
+    restored.usage = undefined;
+    await runTurn(
+      restored,
+      resultFrame({ [OPUS]: { input: 300, output: 30, cacheRead: 0, cacheCreate: 0, cost: 0.3 } }),
+      'sdk-session-B',
+    );
+    expect(restored.usage.totalCostUsd).toBeCloseTo(0.3);
+    expect(restored.taskUsage.costUsd).toBeCloseTo(2.05);
+    expect(restored.taskUsage.inputTokens).toBe(1900);
+  });
+
+  it('a turn that ended without its result counts once in the task total', async () => {
+    const session = newSession();
+    await runTurn(
+      session,
+      resultFrame({ [OPUS]: { input: 1000, output: 100, cacheRead: 0, cacheCreate: 0, cost: 1 } }),
+    );
+    await runTurn(session, {
+      type: 'assistant',
+      message: {
+        id: 'msg-interrupted',
+        model: OPUS,
+        role: 'assistant',
+        content: [{ type: 'text', text: 'working' }],
+        usage: { input_tokens: 200, output_tokens: 20, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 },
+      },
+    });
+    expect(session.taskUsage.inputTokens).toBe(1200);
+    await runTurn(
+      session,
+      resultFrame({ [OPUS]: { input: 1300, output: 130, cacheRead: 0, cacheCreate: 0, cost: 1.3 } }),
+    );
+    expect(session.taskUsage.inputTokens).toBe(1300);
+    expect(session.taskUsage.outputTokens).toBe(130);
+  });
+});

@@ -1,0 +1,245 @@
+/**
+ * RED — each subagent's own spend: tokens and API-equivalent cost (SSOT T2).
+ *
+ * The number the dashboard showed for a subagent was the SDK's
+ * `task_notification.usage.total_tokens` — the size of its last context, not
+ * what it spent (dev 2026-10-26: 194 subagents showed Σ 23.9M tokens, their
+ * transcripts spent Σ 389.6M; a grok panelist showed 134 tokens, spent 10.0M).
+ * The host never sees a subagent's text-only calls (`forwardSubagentText` is
+ * off), so the spend is read from the subagent's own transcript:
+ * `<config>/projects/<cwd>/<sdkSessionId>/subagents/agent-<taskId>.jsonl`.
+ */
+
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { type AgentRegistry, applyAgentEvent, sanitizeAgentRegistry, subagentSpendOf } from '../agent-registry';
+import { createAgentSpendReader } from '../agent-spend';
+
+const SID = '11111111-2222-4333-8444-555555555555';
+const T0 = Date.parse('2026-10-26T00:00:00Z');
+
+let configDir: string;
+let subDir: string;
+
+function assistant(id: string, model: string, u: [number, number, number, number]) {
+  return JSON.stringify({
+    type: 'assistant',
+    isSidechain: true,
+    message: {
+      id,
+      model,
+      role: 'assistant',
+      content: [{ type: 'text', text: 'x' }],
+      usage: {
+        input_tokens: u[0],
+        output_tokens: u[1],
+        cache_read_input_tokens: u[2],
+        cache_creation_input_tokens: u[3],
+      },
+    },
+  });
+}
+
+function writeAgent(taskId: string, lines: string[], append = false) {
+  const f = path.join(subDir, `agent-${taskId}.jsonl`);
+  const body = `${lines.join('\n')}\n`;
+  if (append) fs.appendFileSync(f, body);
+  else fs.writeFileSync(f, body);
+  return f;
+}
+
+/** $1 per million tokens of any kind, $2 for output — so the test can see the per-model price applied. */
+const price = (
+  model: string | undefined,
+  t: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
+) =>
+  ((model === 'claude-opus-5-5' ? 1 : 10) *
+    (t.inputTokens + 2 * t.outputTokens + t.cacheReadTokens + t.cacheCreateTokens)) /
+  1_000_000;
+const isPriced = (model: string) => model.startsWith('claude-');
+
+function holder(): { sessionId: string; agents?: AgentRegistry } {
+  const h: { sessionId: string; agents?: AgentRegistry } = { sessionId: SID };
+  applyAgentEvent(h, { kind: 'spawn', agentId: 'toolu_a', agentType: 'Explore', background: true, ts: T0 });
+  applyAgentEvent(h, {
+    kind: 'lifecycle',
+    agentId: 'toolu_a',
+    taskId: 'aaaa1111',
+    phase: 'started',
+    taskType: 'local_agent',
+    ts: T0 + 1,
+  } as any);
+  return h;
+}
+
+beforeEach(() => {
+  configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'agent-spend-'));
+  const projectDir = path.join(configDir, 'projects', '-tmp-session-x');
+  fs.mkdirSync(projectDir, { recursive: true });
+  fs.writeFileSync(path.join(projectDir, `${SID}.jsonl`), '');
+  subDir = path.join(projectDir, SID, 'subagents');
+  fs.mkdirSync(subDir, { recursive: true });
+});
+
+afterEach(() => {
+  fs.rmSync(configDir, { recursive: true, force: true });
+});
+
+describe('agent spend — read from the subagent transcript (T2)', () => {
+  it('sums each API call once (the last line of a message wins), skips synthetic lines, prices per model', async () => {
+    writeAgent('aaaa1111', [
+      assistant('msg_1', 'claude-opus-5-5', [10, 5, 1000, 100]), // partial frame of msg_1
+      assistant('msg_1', 'claude-opus-5-5', [10, 50, 1000, 100]), // final frame of msg_1
+      '{"type":"user","message":{"role":"user","content":"tool result"}}',
+      assistant('msg_2', 'claude-opus-5-5', [20, 30, 2000, 0]),
+      assistant('err', '<synthetic>', [999, 999, 999, 999]),
+      'not json at all',
+    ]);
+    const h = holder();
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => T0 });
+    expect(await reader.refresh(h)).toBe(true);
+    const a = h.agents!.agents[0];
+    expect(a.spend).toMatchObject({
+      inputTokens: 30,
+      outputTokens: 80,
+      cacheReadTokens: 3000,
+      cacheCreateTokens: 100,
+      calls: 2,
+    });
+    expect(a.spend!.costUsd).toBeCloseTo((30 + 160 + 3000 + 100) / 1_000_000);
+    expect(a.spend!.unpricedModels).toBeUndefined();
+    // The SDK session the agent ran in is remembered (a later /new must not lose the file).
+    expect(a.sdkSessionId).toBe(SID);
+  });
+
+  it('reads only what was appended since the last read, and a half-written line waits for its end', async () => {
+    const f = writeAgent('aaaa1111', [assistant('msg_1', 'claude-opus-5-5', [1, 1, 100, 0])]);
+    const h = holder();
+    let now = T0;
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => now, minIntervalMs: 0 });
+    await reader.refresh(h);
+    expect(h.agents!.agents[0].spend!.calls).toBe(1);
+    const next = assistant('msg_2', 'claude-opus-5-5', [2, 2, 200, 0]);
+    fs.appendFileSync(f, next.slice(0, 40));
+    now += 1;
+    await reader.refresh(h);
+    expect(h.agents!.agents[0].spend!.calls).toBe(1);
+    fs.appendFileSync(f, `${next.slice(40)}\n`);
+    now += 1;
+    expect(await reader.refresh(h)).toBe(true);
+    expect(h.agents!.agents[0].spend).toMatchObject({ calls: 2, inputTokens: 3, cacheReadTokens: 300 });
+  });
+
+  it('a model the price table does not know is still priced, and named so the UI can say it is an estimate', async () => {
+    writeAgent('aaaa1111', [
+      assistant('m1', 'grok-4.7-build', [100, 10, 0, 0]),
+      assistant('m2', 'claude-opus-5-5', [100, 10, 0, 0]),
+    ]);
+    const h = holder();
+    await createAgentSpendReader({ configDir, price, isPriced, now: () => T0 }).refresh(h);
+    const s = h.agents!.agents[0].spend!;
+    expect(s.costUsd).toBeCloseTo((10 * 120 + 120) / 1_000_000);
+    expect(s.unpricedModels).toEqual(['grok-4.7-build']);
+  });
+
+  it('a running agent is re-read at most once per interval; turn_end (force) re-reads and seals a finished one', async () => {
+    const f = writeAgent('aaaa1111', [assistant('m1', 'claude-opus-5-5', [1, 0, 0, 0])]);
+    const h = holder();
+    let now = T0;
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => now, minIntervalMs: 10_000 });
+    await reader.refresh(h);
+    fs.appendFileSync(f, `${assistant('m2', 'claude-opus-5-5', [1, 0, 0, 0])}\n`);
+    now += 1000;
+    expect(await reader.refresh(h)).toBe(false);
+    expect(h.agents!.agents[0].spend!.calls).toBe(1);
+    now += 10_000;
+    expect(await reader.refresh(h)).toBe(true);
+    expect(h.agents!.agents[0].spend!.calls).toBe(2);
+
+    applyAgentEvent(h, { kind: 'returned', agentId: 'toolu_a', ok: true, ack: false, ts: now });
+    fs.appendFileSync(f, `${assistant('m3', 'claude-opus-5-5', [1, 0, 0, 0])}\n`);
+    now += 1;
+    await reader.refresh(h, { force: true });
+    const a = h.agents!.agents[0];
+    expect(a.spend!.calls).toBe(3);
+    expect(a.spendFinal).toBe(true);
+    // Sealed: nothing reads it again.
+    fs.appendFileSync(f, `${assistant('m4', 'claude-opus-5-5', [1, 0, 0, 0])}\n`);
+    now += 60_000;
+    expect(await reader.refresh(h, { force: true })).toBe(false);
+    expect(a.spend!.calls).toBe(3);
+  });
+
+  it('never reads outside the subagents directory: a hostile task id or a symlinked transcript is refused', async () => {
+    const outside = path.join(configDir, 'secret.jsonl');
+    fs.writeFileSync(outside, `${assistant('s', 'claude-opus-5-5', [5, 5, 5, 5])}\n`);
+    fs.symlinkSync(outside, path.join(subDir, 'agent-bbbb2222.jsonl'));
+    const h = holder();
+    h.agents!.agents[0].taskId = '../../secret';
+    applyAgentEvent(h, { kind: 'spawn', agentId: 'toolu_b', ts: T0 + 2 });
+    h.agents!.agents[1].taskId = 'bbbb2222';
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => T0 });
+    expect(await reader.refresh(h, { force: true })).toBe(false);
+    expect(h.agents!.agents.map((a) => a.spend)).toEqual([undefined, undefined]);
+  });
+
+  it('an agent without a transcript yet, or without an SDK session, keeps no spend and does not throw', async () => {
+    const h = holder();
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => T0 });
+    expect(await reader.refresh(h)).toBe(false);
+    expect(await reader.refresh({ agents: h.agents })).toBe(false);
+    expect(h.agents!.agents[0].spend).toBeUndefined();
+  });
+});
+
+describe('agent spend — registry: persisted, and the subagent sum survives the record cap', () => {
+  const spend = (n: number) => ({
+    inputTokens: n,
+    outputTokens: n,
+    cacheReadTokens: 10 * n,
+    cacheCreateTokens: 0,
+    costUsd: n / 100,
+    calls: 1,
+  });
+
+  it('round-trips spend, the SDK session and the seal through sanitizeAgentRegistry', () => {
+    const h = holder();
+    const a = h.agents!.agents[0];
+    a.spend = { ...spend(7), unpricedModels: ['grok-4.7-build'] };
+    a.sdkSessionId = SID;
+    a.spendFinal = true;
+    const { calls: _calls, ...pruned } = spend(3);
+    h.agents!.prunedSpend = { ...pruned, agents: 2 };
+    const back = sanitizeAgentRegistry(JSON.parse(JSON.stringify(h.agents)))!;
+    expect(back.agents[0].spend).toEqual(a.spend);
+    expect(back.agents[0].sdkSessionId).toBe(SID);
+    expect(back.agents[0].spendFinal).toBe(true);
+    expect(back.prunedSpend).toEqual(h.agents!.prunedSpend);
+    // Garbage is dropped, never trusted.
+    const bad = sanitizeAgentRegistry({
+      nextN: 2,
+      agents: [{ id: 'x', n: 1, status: 'completed', startedAt: T0, toolCalls: 0, spend: { inputTokens: 'lots' } }],
+      prunedSpend: { costUsd: -1 },
+    })!;
+    expect(bad.agents[0].spend).toBeUndefined();
+    expect(bad.prunedSpend).toBeUndefined();
+  });
+
+  it('subagentSpendOf sums every subagent — including those the 100-record cap dropped', () => {
+    const h: { agents?: AgentRegistry } = {};
+    for (let i = 0; i < 105; i++) {
+      applyAgentEvent(h, { kind: 'spawn', agentId: `toolu_${i}`, ts: T0 + i });
+      h.agents!.agents[h.agents!.agents.length - 1].spend = spend(1);
+      applyAgentEvent(h, { kind: 'returned', agentId: `toolu_${i}`, ok: true, ack: false, ts: T0 + i + 1 });
+    }
+    expect(h.agents!.agents.length).toBeLessThanOrEqual(100);
+    const sum = subagentSpendOf(h.agents)!;
+    expect(sum.agents).toBe(105);
+    expect(sum.inputTokens).toBe(105);
+    expect(sum.cacheReadTokens).toBe(1050);
+    expect(sum.costUsd).toBeCloseTo(1.05);
+    expect(subagentSpendOf({ nextN: 1, agents: [] })).toBeUndefined();
+  });
+});

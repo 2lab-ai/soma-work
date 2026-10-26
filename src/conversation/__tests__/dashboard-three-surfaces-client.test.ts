@@ -63,6 +63,7 @@ const AGENTS: Agent[] = [
     startedAt: T0,
     toolCalls: 18,
     tokens: 238000,
+    spend: { inputTokens: 1000, outputTokens: 2000, cacheReadTokens: 235000, cacheCreateTokens: 0, costUsd: 0.42, calls: 7 },
     background: true,
     tasks: [{ id: 'T1', content: 'Read the mapper', activeForm: 'Reading the mapper', status: 'in_progress' }],
   },
@@ -166,6 +167,10 @@ const NODE_FNS = [
   'agentNodeName',
   'agentNodeLine',
   'agentNodeAria',
+  'spendTotal',
+  'spendText',
+  'spendLabel',
+  'spendTitle',
   'anCompactLine',
   'anIdPart',
   'anTimeId',
@@ -279,7 +284,9 @@ describe('one row renderer, two densities — compact on the card, rich in the p
     const html = m.anTreeHtml(root, root, ctx);
     expect(html).not.toContain('is-compact');
     expect(html).toContain('<span class="ag-tools" title="툴 호출 수">툴 18</span>');
-    expect(html).toContain('<span class="ag-tok" title="이 에이전트의 토큰 (하위 포함)">238000 tok</span>');
+    // SSOT 2026-10-26 T2 — its own spend (tokens + API-equivalent cost), never the SDK's context size.
+    expect(html).toContain('>238000 tok · $0.42</span>');
+    expect(html).toContain('<span class="ag-tok" title="이 에이전트 자신의 API 호출 7회 (하위 에이전트 제외)');
     expect(html).toContain('<span class="ag-bg">배경</span>');
     expect(html).toContain('<span class="ag-desc">Trace subagent frames</span>');
     expect(html).toContain('class="ag-span"');
