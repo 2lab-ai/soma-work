@@ -5275,14 +5275,56 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .turn-content { font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
 .turn-summary-title { font-weight: 700; font-size: 13px; margin-bottom: 2px; }
 .turn-summary-body { font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
-.turn-raw-details { margin-top: 6px; }
+.turn-raw-details { margin-top: 6px; container: ans / inline-size; }
 .turn-raw-details summary.turn-expand-btn { cursor: pointer; color: var(--accent); font-size: 11px; padding: 2px 0; user-select: none; list-style: none; }
 .turn-raw-details summary.turn-expand-btn::-webkit-details-marker { display: none; }
 .turn-raw-details summary.turn-expand-btn::before { content: '\\25B6 '; font-size: 9px; }
 .turn-raw-details[open] summary.turn-expand-btn::before { content: '\\25BC '; }
 .turn-raw-details summary.turn-expand-btn:hover { text-decoration: underline; }
-.turn-raw-content { margin-top: 6px; background: var(--surface); padding: 10px; border-radius: 6px; font-family: 'SF Mono', 'Fira Code', monospace; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; max-height: 400px; overflow-y: auto; border: 1px solid var(--border); }
-.turn-raw-loading { color: var(--text-tertiary); font-style: italic; font-size: 11px; }
+/* AI answer (.prd/affectui/re-ai-answer.md) — the opened answer: the links it
+   holds as numbered cards and chips that light each other, copy. Theme
+   variables only (no new colours); the disclosure is the size container. */
+.turn-header .ans-took { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.turn-header .ans-took:empty { display: none; }
+.ans-card { margin-top: 6px; padding: 12px 14px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
+.ans-card.is-in > * { animation: ans-in var(--dur-fade) var(--ease-out) both; }
+.ans-loading, .ans-empty { font-size: 12px; color: var(--text-tertiary); }
+.ans-error { margin-right: 8px; font-size: 12px; color: var(--text-secondary); }
+.ans-srcs { display: flex; gap: 8px; margin: -4px -14px 8px; padding: 4px 14px; list-style: none; overflow-x: auto; scrollbar-width: none; -webkit-mask: linear-gradient(90deg, transparent, black 12px, black calc(100% - 12px), transparent); mask: linear-gradient(90deg, transparent, black 12px, black calc(100% - 12px), transparent); }
+.ans-srcs::-webkit-scrollbar { display: none; }
+.ans-srcs > li { flex: none; display: flex; }
+.ans-src { display: flex; flex-direction: column; gap: 4px; width: 148px; min-height: 64px; padding: 8px 10px; border-radius: 10px; background: var(--surface-raised); color: inherit; text-decoration: none; transition: background-color var(--dur-press) ease, box-shadow var(--dur-press) ease; }
+.ans-card.is-in .ans-src { animation: ans-pop var(--dur-move) var(--ease-out) both; animation-delay: calc(var(--ans-i, 0) * 60ms); }
+.ans-src:hover { background: var(--ib-pill); }
+.ans-src.is-lit { box-shadow: inset 0 0 0 1.5px var(--text-tertiary); }
+.ans-src-site { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 11px; color: var(--text-secondary); }
+.ans-src-name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.ans-src-num { flex: none; font-variant-numeric: tabular-nums; color: var(--text-tertiary); }
+.ans-src-title { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: 12px; line-height: 1.4; color: var(--text); word-break: break-word; }
+.ans-label { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
+.ans-card .ans-body { font-size: 13.5px; line-height: 1.6; }
+.ans-card .ans-body > :last-child { margin-bottom: 0; }
+.ans-card .ans-body h1, .ans-card .ans-body h2 { font-size: 1.15em; }
+.ans-card .ans-body h3, .ans-card .ans-body h4, .ans-card .ans-body h5, .ans-card .ans-body h6 { font-size: 1em; }
+.ans-body .ans-cite { display: inline-block; max-width: 16ch; height: 18px; margin: 0 1px 0 3px; padding: 0 6px; overflow: hidden; border-radius: 6px; background: var(--surface-raised); font-size: 11px; font-weight: 500; line-height: 18px; color: var(--text-secondary); text-decoration: none; white-space: nowrap; text-overflow: ellipsis; vertical-align: middle; transition: background-color var(--dur-press) ease, color var(--dur-press) ease; }
+.ans-body .ans-cite:hover { background: var(--ib-pill); color: var(--text); }
+.ans-body .ans-cite.is-lit { background: var(--text); color: var(--surface); }
+.ans-cite:focus-visible, .ans-src:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.ans-foot { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
+.ans-status { font-size: 12px; color: var(--text-tertiary); }
+.ans-writing { display: flex; align-items: center; gap: 8px; font-size: 12px; }
+.ans-shimmer { color: transparent; background: linear-gradient(90deg, var(--text-tertiary) 38%, var(--text) 50%, var(--text-tertiary) 62%) 100% 0 / 300% 100% no-repeat; -webkit-background-clip: text; background-clip: text; animation: ans-sweep 1.6s linear infinite; }
+.ans-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--st-run); animation: ans-pulse 1s ease-in-out infinite; }
+@keyframes ans-in { from { opacity: 0; filter: blur(2px); transform: translateY(3px); } to { opacity: 1; filter: none; transform: none; } }
+@keyframes ans-pop { from { opacity: 0; transform: translateY(6px) scale(0.96); } to { opacity: 1; transform: none; } }
+@keyframes ans-sweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
+@keyframes ans-pulse { 50% { transform: scale(0.6); opacity: 0.45; } }
+@container ans (min-width: 520px) {
+  .ans-card { padding: 16px 18px 12px; }
+  .ans-srcs { margin: -4px -18px 10px; padding: 4px 18px; }
+  .ans-src { width: 172px; }
+  .ans-card .ans-body { font-size: 14px; }
+}
 /* Slack link on cards */
 .slack-link { color: var(--accent); text-decoration: none; font-size: 0.85em; margin-left: 4px; opacity: 0.7; }
 .slack-link:hover { text-decoration: underline; opacity: 1; }
@@ -5595,6 +5637,18 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .mp-pop, .mp-pop[data-side="top"] { transform: none; }
   .mp-opt[data-lit] .mp-seg[data-on] { animation: none; transition-delay: 0s; }
   .mp-check { animation: none; }
+}
+/* AI answer (re-ai-answer D15 · D16): the chip's touch target, and reduced motion —
+   after the board's reduce block (the global rule only shortens durations, so
+   infinite loops would flicker). */
+@media (pointer: coarse) {
+  .ans-body .ans-cite { position: relative; overflow: visible; max-width: none; }
+  .ans-cite::after { content: ''; position: absolute; inset: -10px -4px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .ans-shimmer, .ans-dot, .ans-src, .ans-card.is-in > * { animation: none !important; }
+  .ans-shimmer { background: none; color: var(--text-tertiary); }
+  .ans-src, .ans-body .ans-cite { transition: none; }
 }
 
 /* ── Agent inbox (re-agent-inbox D3) — the board's own reduced-motion rule, after the
@@ -9953,6 +10007,7 @@ function repaintPanelSession() {
   renderPanelControls(s);
   renderPanelComposer(s);
   repaintPanelScope();
+  syncAnsPending(); // re-ai-answer D12 — the 응답 작성 중 row follows the session state
   restorePanelLiveAnchor(anchor);
 }
 // The reader's place across a live repaint: the anchor the older-turns loader
@@ -14612,12 +14667,14 @@ function renderTurn(t, _idx, _arr, convId) {
     } else {
       body = '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">Generating summary...</div>';
     }
+    // AI answer (re-ai-answer D1): the summary stays the face; the answer card
+    // under "답변 전문" loads the raw answer on first open (ansLoad).
     var rawToggle = '';
     var cid = convId || panelConvId;
     if (t.id && cid) {
       rawToggle = '<details class="turn-raw-details" data-conv="' + esc(cid) + '" data-turn="' + esc(t.id) + '">'
-        + '<summary class="turn-expand-btn">Show raw response</summary>'
-        + '<div class="turn-raw-content"><span class="turn-raw-loading">Loading...</span></div>'
+        + '<summary class="turn-expand-btn">답변 전문</summary>'
+        + '<div class="ans-card" aria-busy="true">' + ansStateHtml('loading') + '</div>'
         + '</details>';
     }
     // SSOT 2026-10-23 T6 — the files and markdown answer this turn produced, under
@@ -14629,7 +14686,7 @@ function renderTurn(t, _idx, _arr, convId) {
     return '<div class="turn assistant"' + turnIdAttr + '>'
       + '<div class="turn-avatar bot-avatar">&#x1F916;</div>'
       + '<div class="turn-body">'
-      + '<div class="turn-header"><span class="turn-name">Assistant</span><span class="turn-time">' + time + '</span></div>'
+      + '<div class="turn-header"><span class="turn-name">Assistant</span><span class="turn-time">' + time + '</span><span class="ans-took"></span></div>'
       + title + body + turnArts + rawToggle
       + '</div></div>';
   }
@@ -14653,8 +14710,15 @@ function updateTurnInPanel(existingEl, turn) {
   tmp.innerHTML = renderTurn(turn);
   var newEl = tmp.firstElementChild;
   if (newEl) {
+    // re-ai-answer D14 — an answer the reader opened stays open (from the cache).
+    var wasOpen = !!existingEl.querySelector('.turn-raw-details[open]');
     existingEl.replaceWith(newEl);
     attachRawToggleHandlers();
+    var answer = wasOpen ? newEl.querySelector('.turn-raw-details') : null;
+    if (answer) {
+      answer.open = true;
+      ansLoad(answer);
+    }
     decoratePanelTurns();
   } else {
     console.warn('updateTurnInPanel: no element for turn', turn.id);
@@ -14667,26 +14731,356 @@ function attachRawToggleHandlers() {
     if (details._rawBound) return;
     details._rawBound = true;
     details.addEventListener('toggle', function() {
-      if (!this.open) return;
-      var convId = this.dataset.conv;
-      var turnId = this.dataset.turn;
-      var contentDiv = this.querySelector('.turn-raw-content');
-      if (_rawLoadedCache[turnId]) {
-        contentDiv.textContent = _rawLoadedCache[turnId];
-        return;
-      }
-      fetch('/api/conversations/' + convId + '/turns/' + turnId + '/raw')
-        .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-        .then(function(data) {
-          _rawLoadedCache[turnId] = data.raw;
-          contentDiv.textContent = data.raw;
-        })
-        .catch(function(err) {
-          contentDiv.textContent = 'Error loading: ' + err.message;
-        });
+      if (this.open) ansLoad(this);
     });
   });
 }
+
+// ── AI answer (.prd/affectui/re-ai-answer.md) ──
+// An assistant turn opened under "답변 전문": the raw answer rendered as a
+// document, the links it holds as numbered cards and link chips (links the
+// answer contains — not proven sources, so never called 출처/인용; the dashboard
+// knows no snippets, favicons or feedback), copy, the response time, and a row
+// while the answer is written.
+
+// &-entities back to text (the inverse of esc/escAttr) — for reading hrefs and
+// labels out of renderMarkdownDoc's own anchors.
+function ansUnesc(s) {
+  return String(s == null ? '' : s).replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+}
+// One source per URL: a trailing slash does not make another page.
+function ansKey(href) {
+  return String(href || '').replace(/\\/+$/, '');
+}
+function ansDecode(s) {
+  try { return decodeURIComponent(s); } catch (_e) { return s; }
+}
+// D3 — one stretch of prose (no code): markdown links stay; <url>, <url|label>
+// and bare http(s) URLs become [label](url). A bare URL leaves its trailing
+// punctuation and an unmatched ")" outside the link.
+function ansLinkifyText(s) {
+  return String(s).replace(/(!?\\[[^\\]]+\\]\\([^)\\s]+\\))|<(https?:\\/\\/[^\\s<>|]+)(?:\\|([^<>]*))?>|https?:\\/\\/[^\\s<>\\[\\]"'\\x60]+/gi, function(m, md, url, label) {
+    if (md) return m;
+    if (url) {
+      var l = String(label || '').replace(/[\\[\\]]/g, '').trim();
+      return '[' + (l || url) + '](' + url + ')';
+    }
+    var u = m;
+    var tail = '';
+    for (var guard = 0; guard < 8; guard++) {
+      var p = u.match(/[.,;:!?*]+$/);
+      if (p) { tail = p[0] + tail; u = u.slice(0, u.length - p[0].length); continue; }
+      if (u.charAt(u.length - 1) === ')' && u.split('(').length < u.split(')').length) { tail = ')' + tail; u = u.slice(0, -1); continue; }
+      break;
+    }
+    return '[' + u + '](' + u + ')' + tail;
+  });
+}
+// D3 — the whole answer: fenced blocks and code spans stay as written (the same
+// fence rule as renderMarkdownDoc, the same code-span rule as mdInline).
+function ansLinkify(raw) {
+  var fence = '';
+  return String(raw == null ? '' : raw).replace(/\\r\\n?/g, '\\n').split('\\n').map(function(line) {
+    if (fence) {
+      if (line.trim().indexOf(fence) === 0) fence = '';
+      return line;
+    }
+    var f = line.match(/^\\s{0,3}(\\x60{3,}|~{3,})/);
+    if (f) { fence = f[1]; return line; }
+    return line.split(/(\\x60[^\\x60]+\\x60)/).map(function(part, i) { return i % 2 ? part : ansLinkifyText(part); }).join('');
+  }).join('\\n');
+}
+// D5 — what a link card is called. Title: the session's own PR / issue title, else
+// the link's label, else read off the URL. Chip: the short name.
+function ansSourceOf(href, label, s) {
+  var m = String(href || '').match(/^https?:\\/\\/([^\\/?#]+)([^?#]*)(\\?[^#]*)?/i);
+  var host = m ? m[1].toLowerCase().replace(/^www\\./, '') : String(href || '');
+  var path = m ? m[2] : '';
+  var name = host;
+  var chip = host;
+  var title = '';
+  if (host === 'github.com') {
+    name = 'GitHub';
+    chip = 'GitHub';
+    var seg = path.split('/').filter(Boolean);
+    var repo = seg.slice(0, 2).join('/');
+    var num = seg.length >= 4 && /^\\d+$/.test(seg[3]) ? seg[3] : '';
+    if (num && seg[2] === 'pull') { title = 'PR #' + num + ' · ' + repo; chip = '#' + num; }
+    else if (num && seg[2] === 'issues') { title = '이슈 #' + num + ' · ' + repo; chip = '#' + num; }
+    else if (seg.length >= 4 && seg[2] === 'commit' && /^[0-9a-f]{7,40}$/i.test(seg[3])) { chip = seg[3].slice(0, 7); title = '커밋 ' + chip + ' · ' + repo; }
+    else title = repo ? repo + (seg.length > 2 ? ' · ' + ansDecode(seg.slice(2).join('/')) : '') : 'github.com';
+  } else {
+    title = ansDecode((path + (m && m[3] ? m[3] : '')).replace(/\\/+$/, '')) || host;
+  }
+  if (label) title = label;
+  if (s && s.prUrl && s.prTitle && ansKey(s.prUrl) === ansKey(href)) title = String(s.prTitle);
+  else if (s && s.issueUrl && s.issueTitle && ansKey(s.issueUrl) === ansKey(href)) title = String(s.issueTitle);
+  return { href: String(href || ''), name: name, title: title, chip: chip };
+}
+// D7 — a link chip, named after its card.
+function ansCiteHtml(src) {
+  return '<a class="ans-cite" data-ans-src="' + Number(src.n) + '" href="' + safeHref(src.href) + '" target="_blank" rel="noopener noreferrer" aria-label="'
+    + escAttr('링크 ' + src.n + ': ' + src.title + ' (' + src.name + ')') + '">' + esc(src.chip) + '</a>';
+}
+// D6 — the numbered link cards (sideways row); --ans-i staggers the entry.
+function ansSourcesHtml(srcs) {
+  if (!srcs || !srcs.length) return '';
+  return '<ol class="ans-srcs" aria-label="답변에 포함된 링크 ' + srcs.length + '개">' + srcs.map(function(src, i) {
+    return '<li style="--ans-i:' + Math.min(i, 6) + '"><a class="ans-src" data-ans-src="' + Number(src.n) + '" href="' + safeHref(src.href) + '" target="_blank" rel="noopener noreferrer" title="' + escAttr(src.href) + '">'
+      + '<span class="ans-src-site"><span class="ans-src-name">' + esc(src.name) + '</span><span class="ans-src-num">' + Number(src.n) + '</span></span>'
+      + '<span class="ans-src-title">' + esc(src.title) + '</span></a></li>';
+  }).join('') + '</ol>';
+}
+// D2 · D4 · D7 — the answer as a document. Links are numbered by first
+// appearance (one per URL); every link renderMarkdownDoc made becomes a chip — a
+// bare URL only the chip, a labelled link its words then the chip. A [1] the
+// answer writes without a link stays text.
+function renderAnswer(raw, s) {
+  var re = /<a href="([^"]*)" target="_blank" rel="noopener noreferrer">([\\s\\S]*?)<\\/a>/g;
+  var html = renderMarkdownDoc(ansLinkify(raw));
+  var byKey = Object.create(null);
+  var found = [];
+  var textOf = function(l) { return ansUnesc(String(l).replace(/<[^>]*>/g, '')); };
+  html.replace(re, function(m, h, l) {
+    var href = ansUnesc(h);
+    var text = textOf(l);
+    var key = ansKey(href);
+    var label = text && text !== href ? text : '';
+    if (!byKey[key]) {
+      byKey[key] = { href: href, label: label, n: found.length + 1 };
+      found.push(byKey[key]);
+    } else if (!byKey[key].label && label) {
+      byKey[key].label = label;
+    }
+    return m;
+  });
+  var sources = found.map(function(f) {
+    var src = ansSourceOf(f.href, f.label, s);
+    src.n = f.n;
+    return src;
+  });
+  html = html.replace(re, function(_m, h, l) {
+    var href = ansUnesc(h);
+    return (textOf(l) === href ? '' : l) + ansCiteHtml(sources[byKey[ansKey(href)].n - 1]);
+  });
+  return { html: html, sources: sources };
+}
+// D13 — what the card says before (or instead of) an answer.
+function ansStateHtml(kind, detail) {
+  if (kind === 'error') {
+    return '<span class="ans-error">답변을 불러오지 못했습니다' + (detail ? ' (' + esc(detail) + ')' : '') + '</span>'
+      + '<button type="button" class="btn-action" data-ans-retry="1">다시 시도</button>';
+  }
+  if (kind === 'empty') return '<span class="ans-empty">기록된 답변 내용이 없습니다</span>';
+  return '<span class="ans-loading">불러오는 중…</span>';
+}
+// D6 · D9 · D10 — links first (where the reference puts sources), label, body, foot.
+function renderAnswerCard(raw, s) {
+  var text = String(raw == null ? '' : raw);
+  if (!text.trim()) return ansStateHtml('empty');
+  var a = renderAnswer(text, s);
+  var n = a.sources.length;
+  return ansSourcesHtml(a.sources)
+    + '<div class="ans-label">답변' + (n ? ' · 링크 ' + n : '') + '</div>'
+    + '<div class="ans-body md-doc">' + a.html + '</div>'
+    + '<div class="ans-foot"><button type="button" class="btn-action ans-copy">복사</button>'
+    + '<span class="ans-status" role="status" aria-live="polite"></span></div>';
+}
+// D10 — the answer as written (markdown kept: where it is pasted renders it)
+// plus its numbered links.
+function ansCopyText(raw, srcs) {
+  var text = String(raw == null ? '' : raw).trim();
+  if (!srcs || !srcs.length) return text;
+  return text + '\\n\\n링크:\\n' + srcs.map(function(src) { return '[' + src.n + '] ' + src.title + ' – ' + src.href; }).join('\\n');
+}
+// The panel's session, when it is the one this conversation belongs to (D5 titles).
+function ansSession(cid) {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  return s && s.conversationId === cid ? s : null;
+}
+function ansPaint(details, state, detail, animate) {
+  var card = details.querySelector('.ans-card');
+  if (!card) return;
+  if (state !== 'ok') {
+    card.innerHTML = ansStateHtml(state, detail);
+    if (state === 'loading') card.setAttribute('aria-busy', 'true');
+    else card.removeAttribute('aria-busy');
+    return;
+  }
+  card.innerHTML = renderAnswerCard(_rawLoadedCache[details.dataset.turn], ansSession(details.dataset.conv));
+  card.removeAttribute('aria-busy');
+  card.classList.remove('is-in');
+  if (animate && !reduceMotion()) {
+    void card.offsetWidth;
+    card.classList.add('is-in');
+  }
+}
+// D1 · D13 — first open fetches (once at a time); later opens use the cache.
+function ansLoad(details) {
+  var turnId = details.dataset.turn;
+  if (typeof _rawLoadedCache[turnId] === 'string') {
+    if (!details._ansPainted) ansPaint(details, 'ok', '', false);
+    details._ansPainted = true;
+    return;
+  }
+  if (details._ansLoading) return;
+  details._ansLoading = true;
+  ansPaint(details, 'loading');
+  fetch('/api/conversations/' + encodeURIComponent(details.dataset.conv) + '/turns/' + encodeURIComponent(turnId) + '/raw')
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(data) {
+      _rawLoadedCache[turnId] = data && typeof data.raw === 'string' ? data.raw : '';
+      details._ansLoading = false;
+      details._ansPainted = true;
+      ansPaint(details, 'ok', '', true);
+    })
+    .catch(function(err) {
+      details._ansLoading = false;
+      ansPaint(details, 'error', err && err.message ? err.message : '');
+    });
+}
+// D8 — light number n in this card (its link card and every chip of it);
+// on=false clears the card. A lit card outside the row slides the ROW
+// sideways — never the panel (no scrollIntoView).
+function ansLight(card, n, on) {
+  var els = card.querySelectorAll('[data-ans-src]');
+  for (var i = 0; i < els.length; i++) els[i].classList.toggle('is-lit', !!on && els[i].getAttribute('data-ans-src') === String(n));
+  if (!on) return;
+  var row = card.querySelector('.ans-srcs');
+  var src = row ? row.querySelector('.ans-src[data-ans-src="' + Number(n) + '"]') : null;
+  if (!src) return;
+  var rr = row.getBoundingClientRect();
+  var sr = src.getBoundingClientRect();
+  var left = sr.right > rr.right ? row.scrollLeft + (sr.right - rr.right) + 16
+    : sr.left < rr.left ? row.scrollLeft - (rr.left - sr.left) - 16 : null;
+  if (left === null) return;
+  row.scrollTo({ left: Math.max(0, left), behavior: reduceMotion() ? 'auto' : 'smooth' });
+}
+// D8 · D10 · D13 — one set of delegated listeners on the turns list.
+function ansBind(root) {
+  if (!root || root._ansBound) return;
+  root._ansBound = true;
+  var lit = function(e, on) {
+    var el = e.target && e.target.closest ? e.target.closest('[data-ans-src]') : null;
+    var card = el ? el.closest('.ans-card') : null;
+    if (!card) return;
+    var to = e.relatedTarget;
+    if (!on && to && to.closest && to.closest('[data-ans-src]') === el) return;
+    ansLight(card, el.getAttribute('data-ans-src'), on);
+  };
+  root.addEventListener('mouseover', function(e) { lit(e, true); });
+  root.addEventListener('mouseout', function(e) { lit(e, false); });
+  root.addEventListener('focusin', function(e) { lit(e, true); });
+  root.addEventListener('focusout', function(e) { lit(e, false); });
+  root.addEventListener('click', function(e) {
+    var t = e.target && e.target.closest ? e.target : null;
+    if (!t) return;
+    var copy = t.closest('.ans-copy');
+    if (copy) { copyAnswer(copy); return; }
+    var retry = t.closest('[data-ans-retry]');
+    var details = retry ? retry.closest('.turn-raw-details') : null;
+    if (details) ansLoad(details);
+  });
+}
+// D10 — clipboard, or (plain http, a refused permission) select the answer.
+function copyAnswer(btn) {
+  var details = btn.closest('.turn-raw-details');
+  var card = btn.closest('.ans-card');
+  if (!details || !card) return;
+  var raw = _rawLoadedCache[details.dataset.turn];
+  if (typeof raw !== 'string') return;
+  var srcs = renderAnswer(raw, ansSession(details.dataset.conv)).sources;
+  var status = card.querySelector('.ans-status');
+  var body = card.querySelector('.ans-body');
+  function say(label, msg) {
+    btn.textContent = label;
+    if (status) status.textContent = msg;
+    clearTimeout(btn._ansTimer);
+    btn._ansTimer = setTimeout(function() {
+      btn.textContent = '복사';
+      if (status) status.textContent = '';
+    }, 1500);
+  }
+  function selectIt() {
+    try {
+      var range = document.createRange();
+      range.selectNodeContents(body);
+      var sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+    } catch (_e) {}
+    say('복사', '선택했습니다 — ⌘C / Ctrl+C로 복사');
+  }
+  try {
+    if (!navigator.clipboard || !navigator.clipboard.writeText) { selectIt(); return; }
+    navigator.clipboard.writeText(ansCopyText(raw, srcs)).then(function() {
+      say('복사됨', srcs.length ? '답변과 링크 ' + srcs.length + '개를 복사했습니다' : '답변을 복사했습니다');
+    }, selectIt);
+  } catch (_e) { selectIt(); }
+}
+// D11 — "응답 4분 12초": from the instruction to the recorded answer (queue and
+// tools included — the answer is recorded when its turn ends).
+function ansTookLabel(ms) {
+  var v = Number(ms);
+  if (!isFinite(v) || v <= 0) return '';
+  if (v < 1000) return '응답 1초 미만';
+  var sec = Math.floor(v / 1000);
+  if (sec < 60) return '응답 ' + sec + '초';
+  var min = Math.floor(sec / 60);
+  if (min < 60) return '응답 ' + min + '분 ' + (sec % 60) + '초';
+  return '응답 ' + Math.floor(min / 60) + '시간 ' + (min % 60) + '분';
+}
+function ansTookFor(prevRole, prevTs, ts) {
+  return prevRole === 'user' && toNum(prevTs) > 0 ? ansTookLabel(toNum(ts) - toNum(prevTs)) : '';
+}
+// D11 · D12 — walk the turns in DOM order (every insert path ends here via
+// decoratePanelTurns): fill each answer's time, then the writing row.
+function decorateAnswerTurns() {
+  var turnsEl = document.getElementById('panel-turns');
+  if (!turnsEl) return;
+  var nodes = turnsEl.querySelectorAll('.turn[data-ts]');
+  for (var i = 0; i < nodes.length; i++) {
+    var took = nodes[i].classList.contains('assistant') ? nodes[i].querySelector('.ans-took') : null;
+    if (!took) continue;
+    var prev = i > 0 ? nodes[i - 1] : null;
+    var prevTs = prev ? toNum(prev.getAttribute('data-ts')) : 0;
+    var ts = toNum(nodes[i].getAttribute('data-ts'));
+    var label = prev ? ansTookFor(prev.classList.contains('user') ? 'user' : 'assistant', prevTs, ts) : '';
+    if (took.textContent !== label) took.textContent = label;
+    if (label) took.setAttribute('title', '지시 ' + formatTaskTime(prevTs) + ' → 응답 ' + formatTaskTime(ts));
+    else took.removeAttribute('title');
+  }
+  syncAnsPending();
+}
+// D12 — the same rule the card's 응답 row uses (renderCardIo): the session is
+// working and the latest turn is the instruction.
+function ansPendingShow(s, convId, lastRole) {
+  return !!(s && convId && s.conversationId === convId && s.activityState === 'working' && lastRole === 'user');
+}
+function ansPendingHtml() {
+  return '<div class="turn assistant ans-pending" aria-busy="true">'
+    + '<div class="turn-avatar bot-avatar">&#x1F916;</div>'
+    + '<div class="turn-body"><div class="turn-header"><span class="turn-name">Assistant</span></div>'
+    + '<div class="ans-writing"><span class="ans-shimmer">응답 작성 중</span><i class="ans-dot" aria-hidden="true"></i></div>'
+    + '</div></div>';
+}
+// The writing row is always the list's last child — or absent.
+function syncAnsPending() {
+  var turnsEl = document.getElementById('panel-turns');
+  if (!turnsEl) return;
+  var s = panelOpen && panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var turns = turnsEl.querySelectorAll('.turn[data-ts]');
+  var last = turns.length ? turns[turns.length - 1] : null;
+  var lastRole = last ? (last.classList.contains('user') ? 'user' : 'assistant') : '';
+  var row = turnsEl.querySelector('.ans-pending');
+  if (!ansPendingShow(s, panelConvId, lastRole)) {
+    if (row) row.remove();
+    return;
+  }
+  if (!row) turnsEl.insertAdjacentHTML('beforeend', ansPendingHtml());
+  else if (row !== turnsEl.lastElementChild) turnsEl.appendChild(row);
+}
+ansBind(document.getElementById('panel-turns'));
 
 // Panel subtitle (titleSub). Reads are open to every signed-in viewer (#716);
 // so is filling a MISSING subtitle (POST ensure-title — it never overwrites).
@@ -16335,6 +16729,7 @@ function decoratePanelTurns() {
     }
     start = ts;
   }
+  decorateAnswerTurns(); // re-ai-answer D11 · D12
 }
 
 function artPeekEl() {
