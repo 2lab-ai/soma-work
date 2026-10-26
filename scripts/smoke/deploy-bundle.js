@@ -24,6 +24,10 @@ const requiredRootFiles = [
   // The Deploy step runs it twice (--check before the stop, the merge before
   // install-target.sh); a bundle without it fails that check, before the stop.
   'dist/deploy/apply-env-plugins.js',
+  // Same two calls for the deploy-workflow sandbox grant, plus the value rules
+  // it loads at runtime (its only non-builtin import besides apply-env-plugins).
+  'dist/deploy/apply-deploy-sandbox.js',
+  'dist/sandbox/deploy-sandbox-rules.js',
   // The `somawork setup` runtime layout. This file keeps its own
   // deployment/workspace-package responsibilities; the setup contract's
   // *behaviour* (the CLI actually runs, the manifest helper answers, a profile
