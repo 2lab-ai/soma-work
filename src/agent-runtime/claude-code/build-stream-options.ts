@@ -42,6 +42,7 @@ import { resolveModelProfile } from '../../metrics/model-profile';
 import { clampEffortToModel } from '../../model-catalog';
 import { isSafePathSegment, normalizeTmpPath } from '../../path-utils';
 import type { SdkPluginPath } from '../../plugin/types';
+import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/deploy-sandbox-grant';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import type { SessionRegistry } from '../../session-registry';
 import type { ConversationSession, WorkflowType } from '../../types';
@@ -448,11 +449,27 @@ export async function buildStreamOptions(
       if (!networkDisabled) {
         sandboxConfig.network = { allowedDomains: [...DEV_DOMAIN_ALLOWLIST] };
       }
+      // Deploy-workflow grant (`config.json#deploySandbox`, written per runner
+      // by the fleet deploy): post-deploy QA, run in the requester's deploy
+      // session, needs a few host directories and the QA environment's
+      // hostnames. Keyed to the turn's SENDER, not `session.ownerId` — someone
+      // else replying in the same thread runs without it. Domains only extend
+      // an active allowlist; `networkDisabled` keeps every domain blocked.
+      if (session?.workflow === 'deploy' && slackContext?.user) {
+        const grant = loadDeploySandboxGrant(CONFIG_FILE, logger);
+        if (grant?.users.includes(slackContext.user)) {
+          const added = extendSandboxWithGrant(sandboxConfig, grant, { network: !networkDisabled });
+          if (added.paths + added.domains > 0) {
+            // Counts only: the values are host topology.
+            logger.info('Deploy sandbox grant applied', added);
+          }
+        }
+      }
       options.sandbox = sandboxConfig;
       logger.debug('Sandbox enabled', {
         user: slackContext?.user,
         network: networkDisabled ? 'off' : 'on',
-        domains: networkDisabled ? 0 : DEV_DOMAIN_ALLOWLIST.length,
+        domains: sandboxConfig.network?.allowedDomains?.length ?? 0,
       });
     } else {
       logger.info('Sandbox disabled by admin setting', { user: slackContext?.user });
