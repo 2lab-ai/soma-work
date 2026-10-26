@@ -47,6 +47,14 @@ export interface SpendTotals {
 }
 
 /**
+ * Version of the spend calculation (`agent-spend.ts`: what counts as a call,
+ * the zero-usage estimate, the price table). A spend sealed under another
+ * version is unsealed on restore, so the current calculation re-reads it.
+ * Bump it whenever the calculation or the prices change.
+ */
+export const SPEND_CALC_VERSION = 2;
+
+/**
  * What one subagent spent: its own API calls, read from its transcript
  * (`agent-spend.ts`) — a nested subagent's calls are its own record's.
  */
@@ -57,6 +65,8 @@ export interface AgentSpend extends SpendTotals {
   unpricedModels?: string[];
   /** Calls whose usage the transcript left all-zero, estimated from the calls around them (`agent-spend.ts`). */
   estimatedCalls?: number;
+  /** {@link SPEND_CALC_VERSION} the spend was calculated with. */
+  version?: number;
 }
 
 /** The subagents' spend added up (records still kept plus those the cap dropped). */
@@ -513,6 +523,8 @@ export function sanitizeAgentRegistry(raw: unknown): AgentRegistry | undefined {
       rec.spend = { ...spend, calls: Math.floor(calls ?? 0) };
       const est = finiteNonNegative((a.spend as Record<string, unknown>).estimatedCalls);
       if (est) rec.spend.estimatedCalls = Math.min(Math.floor(est), rec.spend.calls);
+      const version = finitePositive((a.spend as Record<string, unknown>).version);
+      if (version) rec.spend.version = Math.floor(version);
       const unpriced = (a.spend as Record<string, unknown>).unpricedModels;
       if (Array.isArray(unpriced)) {
         const names = unpriced.filter((m): m is string => typeof m === 'string' && m.length > 0).slice(0, 10);
@@ -520,7 +532,8 @@ export function sanitizeAgentRegistry(raw: unknown): AgentRegistry | undefined {
       }
     }
     if (typeof a.sdkSessionId === 'string' && a.sdkSessionId) rec.sdkSessionId = clip(a.sdkSessionId, TYPE_MAX);
-    if (a.spendFinal === true && rec.spend) rec.spendFinal = true;
+    // A seal holds only for the current calculation: an older one is re-read.
+    if (a.spendFinal === true && rec.spend?.version === SPEND_CALC_VERSION) rec.spendFinal = true;
     const ledger = sanitizeTaskLedger(a.ledger);
     if (ledger) rec.ledger = ledger;
     agents.push(rec);
