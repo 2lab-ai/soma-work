@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -176,6 +177,57 @@ body{background:var(--color-bg);color:var(--color-text);font-family:var(--font-s
     expect(r.status).not.toBe(0);
     expect(r.stdout).toMatch(/main text differs from the authored page/);
   }, 300_000);
+
+  it('the result list trusts a QA record only for the page bytes on disk now', () => {
+    const out = join(scratch, 'index-trust');
+    const b = spawnSync(
+      'python3',
+      [BATCH, '--page', tpl, '--refs', 'omd-toss,omd-pixiv', '--out', out, '--uiux', UIUX_ROOT],
+      { encoding: 'utf8' },
+    );
+    expect(b.status, b.stderr).toBe(0);
+    // A passing QA record for exactly the bytes batch.py wrote …
+    const sha = (f: string) =>
+      createHash('sha256')
+        .update(readFileSync(join(out, f)))
+        .digest('hex');
+    const pages = ['omd-toss', 'omd-pixiv'].map((n) => ({
+      name: n,
+      file: `${n}.html`,
+      page_sha256: sha(`${n}.html`),
+      ok: true,
+      problems: [],
+    }));
+    writeFileSync(join(out, 'qa.json'), JSON.stringify({ checked: 2, passed: 2, pages }));
+    const index = () => {
+      const r = spawnSync('python3', [BATCH, '--index-only', '--out', out], { encoding: 'utf8' });
+      expect(r.status, r.stderr).toBe(0);
+      return readFileSync(join(out, 'index.html'), 'utf8');
+    };
+    expect(index()).toMatch(/2개 중 QA 통과 2개/);
+    // … no longer counts once the page is edited after QA.
+    writeFileSync(
+      join(out, 'omd-pixiv.html'),
+      readFileSync(join(out, 'omd-pixiv.html'), 'utf8').replace('본문', '수정'),
+    );
+    const after = index();
+    expect(after).toMatch(/2개 중 QA 통과 1개/);
+    expect(after).toMatch(/omd-pixiv\.html[^\n]*QA 대기/);
+  });
+
+  it('batch-qa refuses to run when the authored page changed after the batch was rendered', () => {
+    const out = join(scratch, 'tpl-changed');
+    const page = join(scratch, 'page-changed.html');
+    writeFileSync(page, readFileSync(tpl, 'utf8'));
+    const b = spawnSync('python3', [BATCH, '--page', page, '--refs', 'omd-toss', '--out', out, '--uiux', UIUX_ROOT], {
+      encoding: 'utf8',
+    });
+    expect(b.status, b.stderr).toBe(0);
+    writeFileSync(page, readFileSync(page, 'utf8').replace('본문', '다른 본문'));
+    const r = spawnSync('node', [BATCH_QA, out], { encoding: 'utf8', timeout: 60000 });
+    expect(r.status).toBe(2);
+    expect(r.stdout + r.stderr).toMatch(/authored page changed since the batch was rendered/);
+  });
 
   it('batch-qa exits non-zero when the output set differs from the expected set', () => {
     const out = join(scratch, 'out');

@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
+  cpSync,
   existsSync,
   mkdirSync,
   mkdtempSync,
@@ -136,17 +137,34 @@ describe('local:ui-ux — designmd_tokens.py adapter', () => {
   });
 
   it('every reference yields text, muted, accent-text and button-label pairs at 4.5:1 or more', () => {
+    // Recomputed here from the emitted hex tokens — the adapter's own contrast report is not trusted.
     const script = `
 import os, sys, json
 sys.path.insert(0, ${JSON.stringify(resolve(SKILL_ROOT, 'scripts'))})
 from designmd_tokens import build
+def lum(h):
+    h = h.lstrip('#')
+    c = [int(h[i:i + 2], 16) / 255 for i in (0, 2, 4)]
+    c = [v / 12.92 if v <= 0.03928 else ((v + 0.055) / 1.055) ** 2.4 for v in c]
+    return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
+def ratio(a, b):
+    x, y = sorted((lum(a), lum(b)), reverse=True)
+    return (x + 0.05) / (y + 0.05)
+PAIRS = [('--color-text', '--color-bg'), ('--color-text', '--color-surface'), ('--color-text-muted', '--color-bg'),
+         ('--color-text-muted', '--color-surface'), ('--color-accent-text', '--color-bg'),
+         ('--color-accent-text', '--color-surface'), ('--button-text', '--button-bg')]
 root = ${JSON.stringify(OMD)}
 bad = []
 for d in sorted(os.listdir(root)):
     p = os.path.join(root, d, 'DESIGN.md')
     if os.path.isfile(p):
         r = build(p)
-        if min(r['contrast'].values()) < 4.5: bad.append(d)
+        t = r['tokens']
+        for fg, bg in PAIRS:
+            if ratio(t[fg], t[bg]) < 4.5: bad.append(f'{d} {fg}/{bg} {ratio(t[fg], t[bg]):.3f}')
+        for k in t:
+            pv = r['provenance'].get(k) or {}
+            if bool(pv.get('from')) == bool(pv.get('derived')): bad.append(f'{d} {k} provenance')
 print(json.dumps(bad))`;
     const r = spawnSync('python3', ['-c', script], { encoding: 'utf8' });
     expect(r.status, r.stderr).toBe(0);
@@ -187,6 +205,68 @@ describe('local:ui-ux — omd sync.py safety', () => {
       expect(readFileSync(resolve(OMD, 'MANIFEST.json'), 'utf8')).toBe(before);
     } finally {
       rmSync(up, { recursive: true, force: true });
+    }
+  });
+
+  it('a failure part-way through the swap restores every vendored file, byte for byte', () => {
+    const work = mkdtempSync(resolve(tmpdir(), 'omd-swap-'));
+    const up = resolve(work, 'up');
+    try {
+      // A copy of the skill's references/ tree, so the real files are never at risk.
+      cpSync(resolve(SKILL_ROOT, 'references', 'index.json'), resolve(work, 'references', 'index.json'));
+      cpSync(OMD, resolve(work, 'references', 'omd'), { recursive: true });
+      mkdirSync(resolve(up, 'design-md', 'toss'), { recursive: true });
+      writeFileSync(resolve(up, 'LICENSE'), 'MIT License\n');
+      writeFileSync(
+        resolve(up, 'design-md', 'toss', 'DESIGN.md'),
+        "---\nname: Toss\ncolors:\n  primary: '#3182f6'\n---\n",
+      );
+      const git = (...a: string[]) => spawnSync('git', ['-C', up, ...a], { encoding: 'utf8' });
+      git('init', '-q');
+      git('add', '-A');
+      git('-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'one');
+      const snapshot = () => {
+        const out: Record<string, string> = {};
+        const walk = (dir: string, rel: string) => {
+          for (const e of readdirSync(dir, { withFileTypes: true })) {
+            if (e.name === '__pycache__') continue;
+            const p = resolve(dir, e.name);
+            if (e.isDirectory()) walk(p, `${rel}${e.name}/`);
+            else out[`${rel}${e.name}`] = createHash('sha256').update(readFileSync(p)).digest('hex');
+          }
+        };
+        walk(resolve(work, 'references', 'omd'), '');
+        return out;
+      };
+      const before = snapshot();
+      // Fail while moving the current files aside (2nd rename), then again while installing the new ones.
+      for (const failAt of [2, Object.keys(before).length + 2]) {
+        const script = `
+import os, sys
+sys.path.insert(0, ${JSON.stringify(resolve(work, 'references', 'omd'))})
+import shutil, sync
+n = {'calls': 0}
+real_rename, real_move = os.rename, shutil.move
+def counted(fn):
+    def wrapped(*a, **k):
+        n['calls'] += 1
+        if n['calls'] == ${failAt}:
+            raise RuntimeError('injected failure')
+        return fn(*a, **k)
+    return wrapped
+os.rename = counted(real_rename)
+shutil.move = counted(real_move)
+try:
+    sync.main(${JSON.stringify(up)}, allow_removals=True)
+except RuntimeError as e:
+    print('raised', e)
+`;
+        const r = spawnSync('python3', ['-c', script], { encoding: 'utf8' });
+        expect(r.stdout + r.stderr, `failAt ${failAt}`).toMatch(/raised injected failure/);
+        expect(snapshot(), `failAt ${failAt}`).toEqual(before);
+      }
+    } finally {
+      rmSync(work, { recursive: true, force: true });
     }
   });
 

@@ -6,7 +6,8 @@
  *
  * Reads <out>/results.json (the expected set; for an `omd-*` run it is checked against the generated
  * oh-my-design index) and checks, before any browser starts, that the directory holds exactly those
- * pages (missing / extra / empty → exit 2). Pages are served over local HTTP. Per page in headless
+ * pages and that the authored page still has the bytes the batch was rendered from (content_sha256)
+ * (missing / extra / empty / changed → exit 2). Pages are served over local HTTP. Per page in headless
  * Chromium:
  *   - loads without any console error or failed request;
  *   - the text of <main> equals the authored page's (results.page) — content preserved;
@@ -50,6 +51,15 @@ if (results.refs === 'omd-*' && results.omdIndex) {
     console.log(`missing: ${gap.map((f) => f.replace(/\.html$/, '')).join(', ') || '(count differs from the index)'}`);
     process.exit(2);
   }
+}
+// The authored page is the content baseline; it must be the exact bytes the batch was rendered from.
+if (!results.page || !existsSync(results.page)) {
+  console.log(`authored page missing: ${results.page ?? '(results.json has no page)'}`);
+  process.exit(2);
+}
+if (createHash('sha256').update(readFileSync(results.page)).digest('hex') !== results.content_sha256) {
+  console.log(`authored page changed since the batch was rendered: ${results.page} — re-run batch.py`);
+  process.exit(2);
 }
 const present = readdirSync(out).filter((f) => f.endsWith('.html') && f !== 'index.html');
 const missing = expected.filter((f) => !present.includes(f));
@@ -241,7 +251,7 @@ await Promise.all(
 // Content preservation: every page's <main> text must equal the authored page's, taken from the
 // template itself (not from the pages under test).
 let canonical = '';
-if (results.page && existsSync(results.page)) {
+{
   const ctx = await (await liveBrowser()).newContext();
   const tp = await ctx.newPage();
   await tp.goto(`${base}/__template__.html`, { waitUntil: 'domcontentloaded', timeout: 60000 });

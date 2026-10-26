@@ -9,17 +9,20 @@ Writes, next to this script:
   UPSTREAM         the upstream commit the files came from
   MANIFEST.json    sha256 of every vendored file (the tests check it)
   LICENSE          the upstream MIT licence, verbatim
-Everything is generated in a scratch directory and validated before the managed files are swapped.
+Everything is generated in a scratch directory and validated before the generated files are swapped;
+a failure part-way through the swap restores the previous files exactly.
 
 Not vendored: the DESIGN.md prose body (pinned link to it at the same upstream commit in each stub),
 reference.json, README.md, _research.md, logos, font files.
 """
+import hashlib
 import json
 import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 FM = re.compile(r"^---\n(.*?)\n---\n", re.S)
@@ -30,8 +33,6 @@ MANAGED = ("index.json", "UPSTREAM", "MANIFEST.json", "LICENSE")
 
 
 def main(src, expect_commit=None, allow_removals=False):
-    import hashlib
-    import tempfile
     import yaml  # PyYAML
 
     root = os.path.join(src, "design-md")
@@ -54,8 +55,20 @@ def main(src, expect_commit=None, allow_removals=False):
             raise SystemExit(f"upstream no longer has {len(gone)} vendored references ({', '.join(gone[:5])} …); "
                              "re-run with --allow-removals if that is intended")
 
-    # Build everything in a scratch directory, validate it, then swap only the managed files.
-    stage = tempfile.mkdtemp(prefix="omd-sync-")
+    # Build everything in a scratch directory next to this one (same filesystem, so every swap step is an
+    # atomic os.rename), validate it, then swap only the generated files.
+    parent = os.path.dirname(HERE)
+    stage = tempfile.mkdtemp(prefix=".omd-sync-stage-", dir=parent)
+    try:
+        n = build_stage(src, ids, commit, stage, yaml)
+        swap(stage, parent)
+    finally:
+        shutil.rmtree(stage, ignore_errors=True)
+    print(f"{n} references from {commit[:7]}")
+
+
+def build_stage(src, ids, commit, stage, yaml):
+    root = os.path.join(src, "design-md")
     entries, manifest = [], {}
     for up_id in ids:
         # Registry names are [a-z0-9-]; upstream ids like `linear.app` map dots to hyphens.
@@ -119,30 +132,39 @@ def main(src, expect_commit=None, allow_removals=False):
     with open(os.path.join(stage, "UPSTREAM"), "w") as f:
         f.write(commit + "\n")
     shutil.copyfile(os.path.join(src, "LICENSE"), os.path.join(stage, "LICENSE"))
+    return len(entries)
 
-    # Swap with a backup: move the current generated files aside, move the stage in, and restore the
-    # backup if anything fails part-way.
-    backup = tempfile.mkdtemp(prefix="omd-sync-backup-")
-    moved = []
+
+def swap(stage, parent):
+    # Swap in two phases — move the current generated files aside, then move the stage in. A failure in
+    # either phase rolls back exactly what this run did: remove only what it installed, put back only what
+    # it moved aside. Files it never touched stay where they are.
+    backup = tempfile.mkdtemp(prefix=".omd-sync-backup-", dir=parent)
+    generated = sorted(
+        n for n in os.listdir(HERE)
+        if n in MANAGED or os.path.isfile(os.path.join(HERE, n, "DESIGN.md"))
+    )
+    moved, installed = [], []
     try:
-        for name in os.listdir(HERE):
-            p = os.path.join(HERE, name)
-            if (os.path.isdir(p) and os.path.isfile(os.path.join(p, "DESIGN.md"))) or name in MANAGED:
-                shutil.move(p, os.path.join(backup, name))
-                moved.append(name)
-        for name in os.listdir(stage):
-            shutil.move(os.path.join(stage, name), os.path.join(HERE, name))
-    except Exception:
-        for name in os.listdir(HERE):
-            p = os.path.join(HERE, name)
-            if (os.path.isdir(p) and os.path.isfile(os.path.join(p, "DESIGN.md"))) or name in MANAGED:
+        for name in generated:
+            os.rename(os.path.join(HERE, name), os.path.join(backup, name))
+            moved.append(name)
+        for name in sorted(os.listdir(stage)):
+            os.rename(os.path.join(stage, name), os.path.join(HERE, name))
+            installed.append(name)
+    except BaseException:
+        try:
+            for name in installed:
+                p = os.path.join(HERE, name)
                 shutil.rmtree(p) if os.path.isdir(p) else os.remove(p)
-        for name in moved:
-            shutil.move(os.path.join(backup, name), os.path.join(HERE, name))
+            for name in moved:
+                os.rename(os.path.join(backup, name), os.path.join(HERE, name))
+        except BaseException:
+            print(f"sync.py: rollback failed; the previous files are kept in {backup}", file=sys.stderr)
+            raise
+        os.rmdir(backup)  # empty again: everything moved aside went back
         raise
     shutil.rmtree(backup)
-    shutil.rmtree(stage, ignore_errors=True)
-    print(f"{len(entries)} references from {commit[:7]}")
 
 
 if __name__ == "__main__":
