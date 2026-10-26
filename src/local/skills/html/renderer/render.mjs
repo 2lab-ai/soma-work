@@ -14,7 +14,8 @@
  * The renderer expects a single, self-contained HTML file (CDN refs are OK
  * — Tailwind / Google Fonts / inline scripts all work). Headless Chromium
  * waits for `networkidle` before screenshotting, so externally-fetched
- * fonts have time to load.
+ * fonts have time to load. It then prints one `fonts loaded: <families>`
+ * line (from `document.fonts`) so callers can detect a silent fallback.
  *
  * Exit codes:
  *   0  PNG written
@@ -125,6 +126,18 @@ async function main() {
     if (geom.waitMs > 0 || args.waitMs > 0) {
       await page.waitForTimeout(args.waitMs ?? 500);
     }
+    // networkidle does not prove a web font was applied. Report the font
+    // families that actually finished loading so SKILL.md Step 6 can compare
+    // them with the design driver's declared family (silent fallback check).
+    const loadedFonts = await page
+      .evaluate(async () => {
+        await document.fonts.ready;
+        const names = new Set();
+        for (const face of document.fonts) if (face.status === 'loaded') names.add(face.family.replace(/["']/g, ''));
+        return [...names].sort();
+      })
+      .catch(() => null);
+    console.log(`fonts loaded: ${loadedFonts === null ? 'unknown' : loadedFonts.join(', ') || 'none'}`);
 
     if (geom.fullPage) {
       await page.screenshot({ path: outputPath, fullPage: true, type: 'png' });
