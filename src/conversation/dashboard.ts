@@ -4412,7 +4412,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .ar-vh { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
 .panel-needs-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px 8px; font-size: 13px; font-weight: 650; color: var(--text); }
 .panel-needs-head[hidden] { display: none; }
-.pn-count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--st-wait); color: #141006; font-size: 11px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; animation: pn-pop var(--dur-move) var(--ease-out) both; }
+.panel-needs-head:focus { outline: none; }
+.panel-needs-head:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.pn-count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: color-mix(in srgb, var(--st-wait) 24%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-wait) 55%, transparent); color: var(--text); font-size: 11px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; animation: pn-pop var(--dur-move) var(--ease-out) both; }
 @keyframes pn-pop { from { opacity: 0; transform: scale(0.6); } }
 .panel-question[data-ap="card"] { padding: 0 16px 12px; background: none; border-bottom: 1px solid var(--border); }
 /* One section: no rule between a prompt and the question card under it. */
@@ -6538,7 +6540,7 @@ body.nt-open .new-task-fab { display: none !important; }
       <!-- 입력 필요 (re-agent-run D8–D17): a head with the count, approval cards for the
            permission prompts and the question; one polite status line says arrivals and
            answers (the cards themselves are not a live region — their expiry clock ticks). -->
-      <div class="panel-needs-head" id="panel-needs-head" hidden><span class="pn-title">입력 필요</span><span class="pn-count" id="panel-needs-count"></span></div>
+      <div class="panel-needs-head" id="panel-needs-head" tabindex="-1" hidden><span class="pn-title">입력 필요</span><span class="pn-count" id="panel-needs-count"></span></div>
       <div class="panel-permission" id="panel-permission" style="display:none"></div>
       <div class="panel-question" id="panel-question" style="display:none"></div>
       <p class="ar-vh" id="panel-needs-status" role="status" aria-live="polite"></p>
@@ -6787,16 +6789,16 @@ function formatTaskTime(ts) {
 function renderPanelQuestion(s) {
   var container = document.getElementById('panel-question');
   if (!container) return;
-  if (!s || !s.pendingQuestion || s.activityState !== 'waiting') {
+  renderPanelNeedsHead(s);
+  var ae = document.activeElement;
+  var had = !!(ae && container.contains && container.contains(ae));
+  var q = s && s.activityState === 'waiting' ? s.pendingQuestion : null;
+  if (!q) {
     container.style.display = 'none';
     container.innerHTML = '';
     container._html = '';
-    renderPanelNeedsHead(s);
-    return;
-  }
-  container.style.display = '';
-  var q = s.pendingQuestion;
-  if (q.type === 'user_choice' && q.choices) {
+  } else if (q.type === 'user_choice' && q.choices) {
+    container.style.display = '';
     container.setAttribute('data-ap', 'card');
     var html = apQuestionCardHtml(s, q);
     if (container._html !== html) {
@@ -6804,13 +6806,14 @@ function renderPanelQuestion(s) {
       container._html = html;
     }
   } else if (q.type === 'user_choices' && q.questions) {
+    container.style.display = '';
     container.setAttribute('data-ap', 'form');
     container._html = '';
     renderMultiChoicePanel(s);
   } else {
     container.style.display = 'none';
   }
-  renderPanelNeedsHead(s);
+  if (had && !container.contains(document.activeElement)) apSafeFocus(container, '');
 }
 
 // ── Permission prompts (SSOT 2026-10-24) ──
@@ -6906,7 +6909,12 @@ function renderPanelPermission(s) {
   if (!container) return;
   var list = (s && s.pendingPermissions) || [];
   var key = s ? s.key : '';
-  if (container._seenKey !== key) { container._seen = null; container._said = Object.create(null); }
+  if (container._seenKey !== key) {
+    // A new opening (or session): the answers this page already sent are not said again.
+    container._seen = null;
+    container._said = Object.create(null);
+    for (var a = 0; a < list.length; a++) if (_permAnswered[list[a].approvalId]) container._said[list[a].approvalId] = true;
+  }
   var seen = container._seen;
   var ids = Object.create(null);
   var said = [];
@@ -6922,7 +6930,12 @@ function renderPanelPermission(s) {
   }
   container._seenKey = key;
   container._seen = ids;
+  renderPanelNeedsHead(s);
   var html = list.map(function(p) { return apPermissionCardHtml(s, p); }).join('');
+  var ae = document.activeElement;
+  var had = !!(ae && container.contains(ae));
+  var fcard = had && ae.closest ? ae.closest('.ap-card') : null;
+  var fid = fcard ? fcard.getAttribute('data-approval-id') : '';
   if (!html) {
     container.style.display = 'none';
     container.innerHTML = '';
@@ -6930,22 +6943,42 @@ function renderPanelPermission(s) {
   } else {
     container.style.display = '';
     if (container._html !== html) {
-      var ae = document.activeElement;
-      var fcard = ae && container.contains(ae) && ae.closest ? ae.closest('.ap-card') : null;
-      var fid = fcard ? fcard.getAttribute('data-approval-id') : '';
       morphInnerHtml(container, html);
       container._html = html;
-      if (fid && !container.contains(document.activeElement)) {
-        var cards = container.querySelectorAll('.ap-card');
-        for (var c = 0; c < cards.length; c++) {
-          if (cards[c].getAttribute('data-approval-id') === fid) { cards[c].focus({ preventScroll: true }); break; }
-        }
-      }
     }
     updateTimersIn(container);
   }
+  if (had && !container.contains(document.activeElement)) apSafeFocus(container, fid);
   if (said.length) apAnnounce(said.join('. '));
-  renderPanelNeedsHead(s);
+}
+// Focus that was in a card whose markup just changed: its own card when it is
+// still there (its resolved row), else a place that answers nothing — the 입력
+// 필요 head, else the panel title. Never a decision button (re-agent-run D14).
+function apSafeFocus(container, fid) {
+  if (fid) {
+    var cards = container.querySelectorAll('.ap-card');
+    for (var c = 0; c < cards.length; c++) {
+      if (cards[c].getAttribute('data-approval-id') === fid) { cards[c].focus({ preventScroll: true }); return; }
+    }
+  }
+  var head = document.getElementById('panel-needs-head');
+  var to = head && !head.hidden ? head : document.getElementById('panel-title');
+  if (to && to.focus) to.focus({ preventScroll: true });
+}
+// One stable short key for a question (its text and choice ids).
+function apHash(str) {
+  var h = 0;
+  for (var i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) | 0;
+  return (h >>> 0).toString(36);
+}
+// After a failed or stale single-choice answer the button's label was written
+// back as plain text (answerChoice): draw the panel's card again from the
+// session — description, 추천 tag, key hint and all.
+function apRepaintQuestion(btnEl, key) {
+  var host = btnEl && btnEl.closest ? btnEl.closest('#panel-question') : null;
+  if (!host) return;
+  host._html = '';
+  if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelQuestion(_sessionCache[key]);
 }
 // The status line of 입력 필요 (polite, always in the page).
 function apAnnounce(msg) {
@@ -6998,11 +7031,11 @@ function apPermissionCardHtml(s, p) {
   var answered = _permAnswered[p.approvalId];
   if (answered) {
     var mark = answered === 'deny' ? agentIconHtml('failed') : answered === 'explain' ? '?' : agentIconHtml('completed');
-    return '<div class="ap-card perm-request is-resolved" role="group" tabindex="-1" data-ap-kind="perm" data-approval-id="' + id + '" aria-labelledby="ap-t-' + id + '">'
+    return '<div class="ap-card perm-request is-resolved" role="group" tabindex="-1" data-ap-kind="perm" data-approval-id="' + id + '" data-mk="ap|' + id + '" aria-labelledby="ap-t-' + id + '">'
       + '<div class="ap-resolved" data-decision="' + escAttr(answered) + '">'
       + '<span class="ap-mark" aria-hidden="true">' + mark + '</span>'
       + '<span class="ap-row-title" id="ap-t-' + id + '">' + esc(title) + '</span>'
-      + '<span class="ap-row-status">' + esc(AP_ANSWERED[answered] || answered) + ' &middot; 방금</span>'
+      + '<span class="ap-row-status">' + esc(AP_ANSWERED[answered] || answered) + '</span>'
       + '</div></div>';
   }
   var sibling = isSiblingSession(s);
@@ -7029,18 +7062,20 @@ function apPermissionCardHtml(s, p) {
       + '</div>'
     : '';
   var lock = mine ? '' : ' disabled title="' + escAttr(sibling ? '다른 인스턴스의 세션' : '이 요청의 요청자만 응답할 수 있습니다') + '"';
+  // data-mk = request + answer: a live morph never rebinds a focused answer to another request (domKeyOf).
   var data = ' data-perm-key="' + escAttr(s.key) + '" data-perm-id="' + id + '"';
-  var alts = '<button type="button" class="btn-perm ap-btn ap-ghost"' + lock + data + ' data-perm-decision="explain">Explain</button>'
-    + (p.canDisableRule ? '<button type="button" class="btn-perm ap-btn ap-ghost"' + lock + data + ' data-perm-decision="approve_disable_rule">Approve &amp; disable rule</button>' : '');
-  var main = '<button type="button" class="btn-perm ap-btn ap-quiet ap-deny"' + lock + data + ' data-perm-decision="deny" data-kbd="Esc" aria-keyshortcuts="Escape">Deny</button>'
-    + '<button type="button" class="btn-perm ap-btn ap-primary ap-approve"' + lock + data + ' data-perm-decision="approve" data-kbd="' + AP_KBD_APPROVE + '" aria-keyshortcuts="Meta+Enter Control+Enter">Approve</button>';
+  var mk = function(d) { return ' data-mk="ap|' + id + '|' + d + '"'; };
+  var alts = '<button type="button" class="btn-perm ap-btn ap-ghost"' + lock + data + ' data-perm-decision="explain"' + mk('explain') + '>Explain</button>'
+    + (p.canDisableRule ? '<button type="button" class="btn-perm ap-btn ap-ghost"' + lock + data + ' data-perm-decision="approve_disable_rule"' + mk('approve_disable_rule') + '>Approve &amp; disable rule</button>' : '');
+  var main = '<button type="button" class="btn-perm ap-btn ap-quiet ap-deny"' + lock + data + ' data-perm-decision="deny" data-kbd="Esc" aria-keyshortcuts="Escape"' + mk('deny') + '>Deny</button>'
+    + '<button type="button" class="btn-perm ap-btn ap-primary ap-approve"' + lock + data + ' data-perm-decision="approve" data-kbd="' + AP_KBD_APPROVE + '" aria-keyshortcuts="Meta+Enter Control+Enter"' + mk('approve') + '>Approve</button>';
   var until = toNum(p.expiresAt);
   var expires = until > 0
     ? '<span class="ap-expires" data-until="' + until + '" aria-hidden="true"></span><span class="ar-vh" id="ap-x-' + id + '">' + esc(formatTaskTime(until)) + '에 만료</span>'
     : '';
   var describedBy = [desc ? 'ap-d-' + id : '', until > 0 ? 'ap-x-' + id : ''].filter(Boolean).join(' ');
   var note = _permNotes[p.approvalId] ? '<div class="perm-note" role="alert">' + esc(_permNotes[p.approvalId]) + '</div>' : '';
-  return '<div class="ap-card perm-request" role="group" tabindex="-1" data-ap-kind="perm" data-approval-id="' + id + '" aria-labelledby="ap-t-' + id + '"'
+  return '<div class="ap-card perm-request" role="group" tabindex="-1" data-ap-kind="perm" data-approval-id="' + id + '" data-mk="ap|' + id + '" aria-labelledby="ap-t-' + id + '"'
     + (describedBy ? ' aria-describedby="' + describedBy + '"' : '') + '>'
     // Only what the prompt itself proves (no task: a subagent may have raised it).
     + '<div class="ap-label">' + esc(tool) + (toNum(p.createdAt) > 0 ? ' &middot; ' + esc(formatTaskTime(p.createdAt)) + ' 요청' : '') + '</div>'
@@ -7061,16 +7096,18 @@ function apQuestionCardHtml(s, q) {
   var rec = recId ? q.choices.find(function(c) { return c.id === recId; }) : null;
   var others = q.choices.filter(function(c) { return !rec || c.id !== rec.id; });
   var ordered = rec ? [rec].concat(others) : others;
+  // One key per question (and per choice in it): a new question never inherits a focused choice of the last one.
+  var qk = 'q|' + apHash(q.question + '|' + q.choices.map(function(c) { return c.id; }).join(','));
   var btns = ordered.map(function(c) {
     var lbl = stripRecommendedMarker(c.label);
     var isRec = !!rec && c.id === rec.id;
     return '<button type="button" class="btn-choice ap-choice' + (isRec ? ' ap-rec' : '') + '"' + choiceDataAttrs(s.key, c.id, lbl, q.question)
-      + (isRec ? ' data-kbd="' + AP_KBD_APPROVE + '" aria-keyshortcuts="Meta+Enter Control+Enter"' : '') + '>'
+      + (isRec ? ' data-kbd="' + AP_KBD_APPROVE + '" aria-keyshortcuts="Meta+Enter Control+Enter"' : '') + ' data-mk="' + escAttr(qk + '|' + c.id) + '">'
       + '<span class="ap-choice-label">' + esc(c.id) + '. ' + esc(lbl) + (isRec ? '<span class="ap-choice-tag">추천</span>' : '') + '</span>'
       + (c.description ? '<span class="ap-choice-desc">' + esc(c.description) + '</span>' : '')
       + '</button>';
   }).join('');
-  return '<div class="ap-card ap-question" role="group" tabindex="-1" data-ap-kind="question" aria-labelledby="ap-q-title">'
+  return '<div class="ap-card ap-question" role="group" tabindex="-1" data-ap-kind="question" data-mk="' + escAttr(qk) + '" aria-labelledby="ap-q-title">'
     + '<div class="ap-body"><div class="ap-head">'
     + '<span class="ap-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M6.3 6.3a1.8 1.8 0 0 1 3.4.7c0 1.2-1.7 1.5-1.7 2.6M8 11.3v.1"/></svg></span>'
     + '<div class="ap-titles"><div class="ap-title" id="ap-q-title">' + esc(q.question) + '</div></div>'
@@ -7201,6 +7238,9 @@ function renderPanelTasks(tasks, scopeLabel, earlier) {
     if (_panelTasksEarlier) earlierHtml += '<ol class="pl-list pl-earlier" aria-label="이전 task">' + prev.map(function(t) { return renderPanelTaskItem(t); }).join('') + '</ol>';
   }
   if (!tasks || tasks.length === 0) {
+    // An empty list is a baseline as well: the next list's steps are new, not changed.
+    container._planScope = scopeLabel || '';
+    container._planSeen = Object.create(null);
     writePanelTasks(container, '<div class="panel-tasks-header"><span>' + title + '</span></div><div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>' + earlierHtml);
     return;
   }
@@ -9946,7 +9986,7 @@ function renderPanelHead() {
 // complete record: the card header's dhShow gates do not apply here.
 var _panelInfoOpen = false;
 var PI_CHEV_SVG = '<svg class="pi-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>';
-function panelInfoHtml(s, open) {
+function panelInfoHtml(s, open, col) {
   var u = s.tokenUsage || null;
   var ctx = u ? toNum(u.contextUsagePercent) : 0;
   var sum = [];
@@ -9975,7 +10015,7 @@ function panelInfoHtml(s, open) {
     rows.push(['누적 캐시 쓰기', formatTokens(u.totalCacheCreateTokens)]);
   }
   // Open body order (re-agent-run D19 · re-context-window D5): cw (prepended on return) → 세부 → token grid → thread.
-  var body = panelDetailsHtml(s) + '<dl class="pi-grid">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
+  var body = panelDetailsHtml(s, col) + '<dl class="pi-grid">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
   var thread = ['&Sigma; ' + formatNmSSs(toNum(s.threadTotalActiveMs)), '압축 ' + toNum(s.compactionCount), '세션 ' + toNum(s.threadSessionCount)];
   if (s.mergeStats) thread.push('+' + toNum(s.mergeStats.totalLinesAdded) + ' / -' + toNum(s.mergeStats.totalLinesDeleted));
   body += '<div class="pi-thread">' + thread.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</div>';
@@ -9986,7 +10026,7 @@ function panelInfoHtml(s, open) {
 // 에이전트 (the model) · 시작한 사람 · 도구 호출 (the main agent's every call —
 // agentRoot — plus each subagent's; a lower bound when the card carries fewer
 // subagents than there are) · 비용 · 활성 시간 (live) · 워크플로 · 환경.
-function panelDetailsHtml(s) {
+function panelDetailsHtml(s, col) {
   var u = s.tokenUsage || null;
   var rows = [];
   var model = String(s.model || '').replace(/^claude-/, '');
@@ -10002,7 +10042,9 @@ function panelDetailsHtml(s) {
   }
   if (u) rows.push(['비용', '$' + toNum(u.totalCostUsd).toFixed(2)]);
   var acc = toNum(s.activeAccumulatedMs);
-  var leg = s.activityState === 'working' || s.activityState === 'waiting' ? (Number(s.activeLegStartedAtMs) || 0) : 0;
+  // The same status as the head chip (rootStatusOf): a turn in flight adds its live leg.
+  var st = rootStatusOf(s, col);
+  var leg = st === 'running' || st === 'waiting' ? (Number(s.activeLegStartedAtMs) || 0) : 0;
   if (acc || leg) rows.push(['활성 시간', '<span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="' + acc + '"></span>']);
   if (s.workflow) rows.push(['워크플로', esc(s.workflow)]);
   if (s.environment && s.environment.instanceName) rows.push(['환경', esc(s.environment.instanceName) + ' <span class="pi-muted">' + esc((s.environment.host || '') + ':' + (s.environment.port || '')) + '</span>']);
@@ -10013,7 +10055,7 @@ function renderPanelInfo() {
   if (!el) return;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   if (s) cwObserve(s, Date.now());
-  if (writePanelPart(el, s ? panelInfoHtml(s, _panelInfoOpen) : '')) cwApply(el);
+  if (writePanelPart(el, s ? panelInfoHtml(s, _panelInfoOpen, sessionColOf(panelSessionKey)) : '')) cwApply(el);
   cwBind(el);
 }
 function togglePanelInfo() {
@@ -12048,6 +12090,7 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
         }
         btnEl.textContent = choiceId + '. ' + label;
         btnEl.style.color = '';
+        apRepaintQuestion(btnEl, key);
       }, 2500);
     } else {
       // On success, the WebSocket session_update SHOULD re-render the board and
@@ -12061,6 +12104,7 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
           });
           if (btnEl.isConnected && btnEl.textContent === '...') {
             btnEl.textContent = choiceId + '. ' + label;
+            apRepaintQuestion(btnEl, key);
           }
         }
       }, 5000);
@@ -12073,6 +12117,7 @@ async function answerChoice(key, choiceId, label, question, btnEl) {
       errCard.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
     }
     btnEl.textContent = choiceId + '. ' + label;
+    apRepaintQuestion(btnEl, key);
   }
 }
 
@@ -13869,7 +13914,7 @@ function focusPanelLanding() {
   if (!t || t.style.display === 'none') {
     // An approval card itself (re-agent-run D14): Esc there still closes the
     // panel, ⌘↵ answers; the multi-question form keeps its first control.
-    var ask = document.querySelector('#panel-permission .ap-card, #panel-question .ap-card, #panel-question button:not([disabled]), #panel-question textarea');
+    var ask = document.querySelector('#panel-permission .ap-card:not(.is-resolved), #panel-question .ap-card, #panel-question button:not([disabled]), #panel-question textarea');
     t = ask || document.getElementById('panel-title');
   }
   if (t && t.focus) t.focus({ preventScroll: true });

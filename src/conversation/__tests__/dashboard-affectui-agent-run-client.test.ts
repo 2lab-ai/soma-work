@@ -269,6 +269,15 @@ describe('plan announcements (D7)', () => {
     );
   });
 
+  it('a list that empties and refills is a fresh baseline (no stale announcement)', () => {
+    const p = plan();
+    p.render(TASKS);
+    p.render([]);
+    p.render([{ id: 'T2', content: 'Render the bars', status: 'completed' }]);
+    expect(live(p.el.innerHTML)).toBe('');
+    expect(p.el.innerHTML).not.toContain('pl-pop');
+  });
+
   it('another scope (a subagent) or a new opening starts a silent baseline', () => {
     const p = plan();
     p.render(TASKS);
@@ -331,6 +340,7 @@ function cards(
       'choiceDataAttrs',
       'stripRecommendedMarker',
       'resolveRecommendedId',
+      'apHash',
       'apQuestionCardHtml',
     ],
     ['AP_ANSWERED'],
@@ -349,7 +359,7 @@ function cards(
 
 describe('needs-input header (D8/D9)', () => {
   it('the page: a hidden header right before the permission slot, a live status line, no live region on the cards', () => {
-    const head = PAGE.indexOf('<div class="panel-needs-head" id="panel-needs-head" hidden>');
+    const head = PAGE.indexOf('<div class="panel-needs-head" id="panel-needs-head" tabindex="-1" hidden>');
     expect(head).toBeGreaterThan(0);
     expect(head).toBeLessThan(PAGE.indexOf('id="panel-permission"'));
     expect(PAGE).toContain(
@@ -373,12 +383,19 @@ describe('needs-input header (D8/D9)', () => {
     m.renderPanelNeedsHead(SESSION({ pendingPermissions: [], activityState: 'working', pendingQuestion: q }));
     expect(els['panel-needs-head'].hidden).toBe(true);
     expect(CSS).toMatch(/\.pn-count \{[^}]*animation: pn-pop var\(--dur-move\) var\(--ease-out\) both;/);
+    // The badge reads in both themes: ink on an amber tint, no hard-coded colour.
+    const badge = /\.pn-count \{[^}]*\}/.exec(CSS)?.[0] ?? '';
+    expect(badge).toContain('color: var(--text);');
+    expect(badge).toContain('background: color-mix(in srgb, var(--st-wait) 24%, transparent);');
+    expect(badge).not.toMatch(/#[0-9a-f]{3,6}\b/i);
   });
 
   it('landing keeps the header in view (offset by its height); keyboard landing focuses the card, not a button', () => {
     expect(clientFn('landPanel')).toContain("document.getElementById('panel-needs-head')");
     expect(clientFn('landPanel')).toContain('needsHead.offsetHeight');
-    expect(clientFn('focusPanelLanding')).toContain("'#panel-permission .ap-card, #panel-question .ap-card");
+    expect(clientFn('focusPanelLanding')).toContain(
+      "'#panel-permission .ap-card:not(.is-resolved), #panel-question .ap-card",
+    );
   });
 });
 
@@ -608,7 +625,8 @@ describe('after an answer (D15)', () => {
       const html = c.apPermissionCardHtml(SESSION(), PERM());
       expect(html, decision).toContain('<div class="ap-card perm-request is-resolved"');
       expect(html, decision).toContain(`<div class="ap-resolved" data-decision="${decision}">`);
-      expect(html, decision).toContain(`<span class="ap-row-status">${word} &middot; 방금</span>`);
+      expect(html, decision).toContain(`<span class="ap-row-status">${word}</span>`);
+      expect(html, decision).not.toContain('방금');
       expect(html, decision).not.toContain('data-perm-decision');
     }
   });
@@ -621,9 +639,10 @@ describe('after an answer (D15)', () => {
     );
     const els: Record<string, El> = { 'panel-permission': box(), 'panel-needs-status': box() };
     const said: string[] = [];
+    const answered: Record<string, string> = {};
     const m = load<{ renderPanelPermission(s: unknown): void }>(['renderPanelPermission'], ['AP_SENT'], {
       document: { getElementById: (id: string) => els[id] ?? null, activeElement: null },
-      _permAnswered: { approval_a1: 'deny' },
+      _permAnswered: answered,
       apPermissionCardHtml: (_s: unknown, p: { approvalId: string }) =>
         `<div data-approval-id="${p.approvalId}"></div>`,
       morphInnerHtml: (e: El, h: string) => {
@@ -633,7 +652,13 @@ describe('after an answer (D15)', () => {
       apAnnounce: (t: string) => said.push(t),
       renderPanelNeedsHead: () => {},
     });
+    m.renderPanelPermission(SESSION()); // the open panel's baseline
+    answered.approval_a1 = 'deny'; // answerPermission succeeded
     m.renderPanelPermission(SESSION());
+    m.renderPanelPermission(SESSION());
+    expect(said).toEqual(['거부를 보냈습니다 — Bash']);
+    // Reopened (openPanel drops the baseline) while the prompt is still pending: not said again.
+    els['panel-permission']._seenKey = null;
     m.renderPanelPermission(SESSION());
     expect(said).toEqual(['거부를 보냈습니다 — Bash']);
   });
@@ -657,6 +682,254 @@ describe('after an answer (D15)', () => {
     );
     expect(said).toEqual(['승인 요청 — Edit']);
     expect(clientFn('openPanel')).toContain('permEl._seenKey = null;');
+  });
+});
+
+// A tiny element tree with just what domMorph, focus and closest/querySelector touch.
+class Node {
+  nodeType = 1;
+  tagName: string;
+  attrs: Map<string, string>;
+  kids: Node[] = [];
+  parentNode: Node | null = null;
+  style: Record<string, string> = {};
+  get innerHTML() {
+    return '';
+  }
+  set innerHTML(v: string) {
+    if (v === '') for (const k of [...this.kids]) this.removeChild(k);
+  }
+  constructor(tag: string, attrs: Record<string, string> = {}, kids: Node[] = []) {
+    this.tagName = tag;
+    this.attrs = new Map(Object.entries(attrs));
+    for (const k of kids) this.appendChild(k);
+  }
+  get attributes() {
+    return [...this.attrs].map(([name, value]) => ({ name, value }));
+  }
+  get id() {
+    return this.attrs.get('id') ?? '';
+  }
+  getAttribute(n: string) {
+    return this.attrs.has(n) ? (this.attrs.get(n) as string) : null;
+  }
+  hasAttribute(n: string) {
+    return this.attrs.has(n);
+  }
+  setAttribute(n: string, v: string) {
+    this.attrs.set(n, String(v));
+  }
+  removeAttribute(n: string) {
+    this.attrs.delete(n);
+  }
+  get firstChild() {
+    return this.kids[0] ?? null;
+  }
+  get nextSibling(): Node | null {
+    const sib = this.parentNode?.kids ?? [];
+    return sib[sib.indexOf(this) + 1] ?? null;
+  }
+  appendChild(k: Node) {
+    return this.insertBefore(k, null);
+  }
+  insertBefore(k: Node, ref: Node | null) {
+    k.parentNode?.removeChild(k);
+    k.parentNode = this;
+    const i = ref ? this.kids.indexOf(ref) : -1;
+    if (i < 0) this.kids.push(k);
+    else this.kids.splice(i, 0, k);
+    return k;
+  }
+  removeChild(k: Node) {
+    this.kids.splice(this.kids.indexOf(k), 1);
+    k.parentNode = null;
+    return k;
+  }
+  contains(n: unknown) {
+    for (let c = n as Node | null; c; c = c.parentNode) if (c === this) return true;
+    return false;
+  }
+  matches(sel: string) {
+    return sel.startsWith('.')
+      ? (this.attrs.get('class') ?? '').split(' ').includes(sel.slice(1))
+      : this.tagName === sel.toUpperCase();
+  }
+  closest(sel: string) {
+    for (let c: Node | null = this; c; c = c.parentNode) if (c.matches(sel)) return c;
+    return null;
+  }
+  querySelectorAll(sel: string): Node[] {
+    return this.kids.flatMap((k) => [...(k.matches(sel) ? [k] : []), ...k.querySelectorAll(sel)]);
+  }
+  querySelector(sel: string) {
+    return this.querySelectorAll(sel)[0] ?? null;
+  }
+  focus() {
+    focused = this;
+  }
+  click() {
+    clicks.push(`${this.getAttribute('data-perm-id')}:${this.getAttribute('data-perm-decision')}`);
+  }
+}
+let focused: Node | null = null;
+let clicks: string[] = [];
+const BTN = (id: string, d: string, keyed: boolean) =>
+  new Node('BUTTON', {
+    class: `btn-perm ap-btn ap-${d === 'approve' ? 'primary ap-approve' : 'quiet ap-deny'}`,
+    'data-perm-id': id,
+    'data-perm-decision': d,
+    ...(keyed ? { 'data-mk': `ap|${id}|${d}` } : {}),
+  });
+const APCARD = (id: string, keyed = true) =>
+  new Node(
+    'DIV',
+    {
+      class: 'ap-card perm-request',
+      'data-approval-id': id,
+      'data-ap-kind': 'perm',
+      ...(keyed ? { 'data-mk': `ap|${id}` } : {}),
+    },
+    [new Node('DIV', { class: 'ap-actions' }, [BTN(id, 'deny', keyed), BTN(id, 'approve', keyed)])],
+  );
+
+describe('live repaint never rebinds an answer to another request (D14, review R1 P1)', () => {
+  const morph = load<{ domMorphChildren(a: Node, b: Node): void }>(
+    ['domKeyOf', 'domKeyLater', 'domMorph', 'domMorphChildren'],
+    [],
+  );
+
+  it('the card and every answer carry their request in data-mk', () => {
+    const html = cards().apPermissionCardHtml(SESSION(), PERM());
+    expect(html).toContain('data-mk="ap|approval_a1"');
+    for (const d of ['explain', 'approve_disable_rule', 'deny', 'approve'])
+      expect(html).toContain(`data-mk="ap|approval_a1|${d}"`);
+    const q = cards().apQuestionCardHtml(SESSION(), {
+      type: 'user_choice',
+      question: 'q?',
+      choices: [{ id: '1', label: 'a' }],
+    });
+    expect(q).toMatch(/<div class="ap-card ap-question"[^>]* data-mk="q\|[0-9a-z]+"/);
+    expect(q).toMatch(/data-mk="q\|[0-9a-z]+\|1"/);
+  });
+
+  it('A and B pending, A goes: A’s focused Approve leaves the page; B keeps its own node (unkeyed it would be rebound)', () => {
+    const live = new Node('DIV', { id: 'panel-permission' }, [APCARD('A'), APCARD('B')]);
+    const approveA = live.querySelectorAll('.ap-approve')[0];
+    const approveB = live.querySelectorAll('.ap-approve')[1];
+    morph.domMorphChildren(live, new Node('DIV', {}, [APCARD('B')]));
+    expect(live.contains(approveA)).toBe(false);
+    expect(live.querySelector('.ap-approve')).toBe(approveB);
+    // Without the keys the same Approve node would now answer B — the bug this pins.
+    const old = new Node('DIV', {}, [APCARD('A', false), APCARD('B', false)]);
+    const oldA = old.querySelector('.ap-approve') as Node;
+    morph.domMorphChildren(old, new Node('DIV', {}, [APCARD('B', false)]));
+    expect(old.contains(oldA) && oldA.getAttribute('data-perm-id')).toBe('B');
+  });
+
+  function panel(next: Node[], headHidden = false) {
+    const container = new Node('DIV', { id: 'panel-permission', class: 'panel-permission' }, [
+      APCARD('A'),
+      APCARD('B'),
+    ]);
+    const head = new Node('DIV', { id: 'panel-needs-head', class: 'panel-needs-head' });
+    (head as unknown as { hidden: boolean }).hidden = headHidden;
+    const title = new Node('H3', { id: 'panel-title' });
+    const root = new Node('DIV', {}, [title, head, container]);
+    const body = new Node('BODY');
+    const byId: Record<string, Node> = {
+      'panel-permission': container,
+      'panel-needs-head': head,
+      'panel-title': title,
+    };
+    const document = {
+      getElementById: (id: string) => byId[id] ?? null,
+      get activeElement() {
+        return focused && root.contains(focused) ? focused : body;
+      },
+    };
+    const m = load<{ renderPanelPermission(s: unknown): void; apKeydown(e: unknown): void }>(
+      ['renderPanelPermission', 'apSafeFocus', 'apKeydown'],
+      ['AP_SENT'],
+      {
+        document,
+        _permAnswered: {},
+        apPermissionCardHtml: (_s: unknown, p: { approvalId: string }) => p.approvalId,
+        morphInnerHtml: (el: Node, _html: string) => morph.domMorphChildren(el, new Node('DIV', {}, next)),
+        updateTimersIn: () => {},
+        apAnnounce: () => {},
+        renderPanelNeedsHead: () => {},
+      },
+    );
+    return { m, container, head, title };
+  }
+  const press = (m: { apKeydown(e: unknown): void }) => {
+    const e = {
+      key: 'Enter',
+      metaKey: true,
+      ctrlKey: false,
+      target: focused,
+      defaultPrevented: false,
+      stopped: false,
+      preventDefault() {},
+      stopPropagation() {
+        this.stopped = true;
+      },
+    };
+    m.apKeydown(e);
+    return e;
+  };
+
+  it('focus on A’s Approve, A goes: focus moves to the 입력 필요 head (no answer), and ⌘↵ sends nothing', () => {
+    clicks = [];
+    const p = panel([APCARD('B')]);
+    focused = p.container.querySelectorAll('.ap-approve')[0];
+    p.m.renderPanelPermission(SESSION({ pendingPermissions: [PERM({ approvalId: 'B' })] }));
+    expect(focused).toBe(p.head);
+    expect(focused?.tagName).not.toBe('BUTTON');
+    expect(press(p.m).stopped).toBe(false);
+    expect(clicks).toEqual([]);
+  });
+
+  it('nothing left to answer: the panel title; A answered (its resolved row): A’s card itself, where ⌘↵ answers nothing', () => {
+    clicks = [];
+    const gone = panel([], true);
+    focused = gone.container.querySelectorAll('.ap-approve')[0];
+    gone.m.renderPanelPermission(SESSION({ pendingPermissions: [] }));
+    expect(focused).toBe(gone.title);
+    const RESOLVED = new Node(
+      'DIV',
+      { class: 'ap-card perm-request is-resolved', 'data-approval-id': 'A', 'data-ap-kind': 'perm', 'data-mk': 'ap|A' },
+      [new Node('DIV', { class: 'ap-resolved' })],
+    );
+    const done = panel([RESOLVED, APCARD('B')]);
+    focused = done.container.querySelectorAll('.ap-approve')[0];
+    done.m.renderPanelPermission(
+      SESSION({ pendingPermissions: [PERM({ approvalId: 'A' }), PERM({ approvalId: 'B' })] }),
+    );
+    expect(focused?.getAttribute('data-approval-id')).toBe('A');
+    expect(focused?.tagName).toBe('DIV');
+    press(done.m);
+    expect(clicks).toEqual([]);
+  });
+});
+
+describe('a flattened panel choice is drawn again (review R1 P2)', () => {
+  it('answerChoice’s three label write-backs redraw the panel card from the session (cache dropped)', () => {
+    const src = clientFn('answerChoice');
+    expect(src.match(/apRepaintQuestion\(btnEl, key\);/g)?.length).toBe(3);
+    const host = { _html: '<cached>' };
+    let painted = 0;
+    const m = load<{ apRepaintQuestion(b: unknown, k: string): void }>(['apRepaintQuestion'], [], {
+      panelOpen: true,
+      panelSessionKey: 'k1',
+      _sessionCache: { k1: { key: 'k1' } },
+      renderPanelQuestion: () => painted++,
+    });
+    m.apRepaintQuestion({ closest: (sel: string) => (sel === '#panel-question' ? host : null) }, 'k1');
+    expect(host._html).toBe('');
+    expect(painted).toBe(1);
+    m.apRepaintQuestion({ closest: () => null }, 'k1'); // a card face button: not the panel's
+    expect(painted).toBe(1);
   });
 });
 
@@ -700,7 +973,7 @@ describe('question card (D17)', () => {
   it('the same frame: the whole question as the title, the recommended choice first and primary, the answer attributes kept', () => {
     const html = cards().apQuestionCardHtml(SESSION(), Q);
     expect(html).toContain(
-      '<div class="ap-card ap-question" role="group" tabindex="-1" data-ap-kind="question" aria-labelledby="ap-q-title">',
+      '<div class="ap-card ap-question" role="group" tabindex="-1" data-ap-kind="question" data-mk="q|',
     );
     expect(html).not.toContain('ap-label');
     expect(html).toContain(
@@ -827,7 +1100,10 @@ describe('panel head (D18)', () => {
 
 describe('세부 — Details inside 세션 정보 (D19)', () => {
   const details = (s: Record<string, unknown>) =>
-    load<{ panelDetailsHtml(s: unknown): string }>(['esc', 'toNum', 'panelDetailsHtml'], []).panelDetailsHtml(s);
+    load<{ panelDetailsHtml(s: unknown): string }>(
+      ['esc', 'toNum', 'pendingAutoResume', 'rootStatusOf', 'panelDetailsHtml'],
+      [],
+    ).panelDetailsHtml(s);
   const row = (html: string, label: string) => new RegExp(`<div><dt>${label}</dt><dd>(.*?)</dd></div>`).exec(html)?.[1];
 
   it('에이전트 · 시작한 사람 · 도구 호출 · 비용 · 활성 시간 · 워크플로 · 환경', () => {
@@ -850,13 +1126,15 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
       'data-leg-started="0" data-accumulated="65000"',
     );
     expect(row(details(CARD({ agentRoot: undefined, agents: undefined })), '도구 호출')).toBeUndefined();
+    // The head's status (rootStatusOf): a waiting session's leg counts, as on the chip.
+    expect(row(details(CARD({ activityState: 'waiting' })), '활성 시간')).toContain(`data-leg-started="${T0}"`);
+    expect(clientFn('panelDetailsHtml')).toContain('var st = rootStatusOf(s, col);');
+    expect(clientFn('renderPanelInfo')).toContain('panelInfoHtml(s, _panelInfoOpen, sessionColOf(panelSessionKey))');
   });
 
-  it('panelInfoHtml: the open body is [context block] → 세부 → token grid → thread; the grid keeps only token kinds', () => {
-    // The body starts with 세부; #441 puts its context block ahead of the body.
-    expect(clientFn('panelInfoHtml')).toContain('var body = panelDetailsHtml(s) + \'<dl class="pi-grid">\'');
+  it('panelInfoHtml: the open body is context block → 세부 → token grid → thread; the grid keeps only token kinds', () => {
     const info = load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
-      ['esc', 'escAttr', 'toNum', 'ctxLevel', 'panelDetailsHtml', 'panelInfoHtml'],
+      ['esc', 'escAttr', 'toNum', 'ctxLevel', 'pendingAutoResume', 'rootStatusOf', 'panelDetailsHtml', 'panelInfoHtml'],
       ['PI_CHEV_SVG'],
       {
         formatTokens: (n: number) => `${n}`,
@@ -870,9 +1148,17 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
     for (const gone of ['소유자', '워크플로', '환경', '비용']) expect(grid, gone).not.toContain(gone);
     for (const kept of ['입력', '출력', '캐시 읽기', '캐시 쓰기']) expect(grid, kept).toContain(kept);
     const at = (needle: string) => open.indexOf(needle);
-    expect(at('<dl class="pi-details">')).toBeGreaterThan(at('class="pi-body"'));
-    expect(at('<dl class="pi-details">')).toBeLessThan(at('<dl class="pi-grid">'));
-    expect(at('<dl class="pi-grid">')).toBeLessThan(at('class="pi-thread"'));
+    // The context block: this branch's .pi-ctx, or #441's .cw once it lands — first in the body either way.
+    const context = at('class="cw') >= 0 ? at('class="cw') : at('class="pi-ctx"');
+    const order = [
+      at('class="pi-body"'),
+      context,
+      at('<dl class="pi-details">'),
+      at('<dl class="pi-grid">'),
+      at('class="pi-thread"'),
+    ];
+    expect(order.every((i) => i >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
     // The collapsed summary is unchanged (spec 13).
     const sum = info(CARD(), false);
     expect(sum).not.toContain('pi-details');
@@ -892,6 +1178,9 @@ describe('template hygiene', () => {
       'apQuestionCardHtml',
       'apAnnounce',
       'apKeydown',
+      'apSafeFocus',
+      'apHash',
+      'apRepaintQuestion',
       'panelDetailsHtml',
       '_permAnswered',
       'AP_KBD_APPROVE',
