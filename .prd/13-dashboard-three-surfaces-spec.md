@@ -97,7 +97,8 @@ widgets·disclosure, NN/g progressive disclosure·cards·accordions, USWDS card)
 - 고정: Tasks(+ 이전 목록), 산출물.
 - 스크롤 영역: 세션 정보 `#panel-info` → goal `#panel-goal` → 권한 요청 → 질문 → 에이전트 → 작업 로그 → 대화.
   - 세션 정보: 접기(기본 접힘, 페이지 동안 JS 상태). 버튼이 요약 한 줄이다 — 소유자 · 워크플로 · 토큰 · 비용 · ctx % · 마지막 활동
-    (실시간). 링크 줄은 접혀도 보인다. 펼치면 소유자·워크플로·환경·입력·출력·캐시 읽기·캐시 쓰기·비용, 컨텍스트 바 + autocompact,
+    (실시간). 링크 줄은 접혀도 보인다. 펼치면 컨텍스트 바 + autocompact → 세부(에이전트·시작한 사람·도구 호출·비용·활성 시간·워크플로·환경 —
+    소유자·워크플로·환경·비용은 여기로 옮겼다, [re-agent-run](affectui/re-agent-run.md) D19, 2026-10-26) → 누적 토큰(입력·출력·캐시 읽기·캐시 쓰기) →
     Σ 활성·압축·세션·merge, 재개 사유. 패널은 완전한 기록이라 카드 머리 설정(`dhShow`)을 따르지 않는다.
   - goal: 카드에 있던 goal 컴포넌트(`renderCardGoal`) 전체가 이리 왔다. 게이트는 카드와 같다(`canEdit = 소유자 && !형제 인스턴스`,
     `live = 칸 ≠ closed && !terminated`). 입력에 포커스가 있으면 쓰지 않고, 포커스 없는 초안은 새 markup으로 옮긴다. 다른 세션을 열면

@@ -144,8 +144,12 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
         { id: 'q2', question: 'Q2', choices: [{ id: '1', label: 'b' }], recommendedChoiceId: '1' },
       ],
     };
-    client = load<AnswerClient>(['submitAllRecommended', 'submitMultiChoice', 'answerChoice'], {
+    // re-agent-run: a flattened panel choice is drawn again (apRepaintQuestion) — no panel open here.
+    client = load<AnswerClient>(['submitAllRecommended', 'submitMultiChoice', 'answerChoice', 'apRepaintQuestion'], {
       fetch: fetchBridge,
+      panelOpen: false,
+      panelSessionKey: null,
+      renderPanelQuestion: () => {},
       alert: (msg: string) => alerts.push(msg),
       document: { querySelector: () => fakeNode(), querySelectorAll: () => [] },
       setTimeout: () => 0,

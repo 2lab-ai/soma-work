@@ -178,12 +178,12 @@ expiresAt}`(permission-prompts.ts 24) — 만료 5분(permission-mcp-server.ts 1
   그 외 → 점 `대기 · d/N`. d = 완료 수, 단어는 `AGENT_STATUS_LABEL`. 완료 3개 초과 접기: 가장 이른 완료부터 숨기고 그 자리에 토글 행
   (`Show N more completed` / `Hide completed` 유지). 이전 목록(`이전 task N개`)은 같은 행 렌더러, rail 없음.
 - **D7 낭독**: 띠 안 `<span class="ar-vh pl-live" role="status" aria-live="polite">` — 같은 스코프의 직전 렌더와 비교해 완료로 바뀐 단계를
-  `T3 완료: <내용>`으로. 패널 열기·스코프 전환의 첫 렌더는 조용하다. 활성 단계 `aria-current="step"`, 행마다 sr 상태(`, 완료`/`, 진행 중`/`, 대기`).
+  `T3 완료: <내용>`으로. 패널 열기·스코프 전환의 첫 렌더, 빈 목록 뒤의 새 목록은 조용하다(빈 목록도 기준선). 활성 단계 `aria-current="step"`, 행마다 sr 상태(`, 완료`/`, 진행 중`/`, 대기`).
 
 **입력 필요 — 권한 요청 · 질문 (`#panel-scroll` 안, `#panel-permission` 바로 앞)** [SHIPPED]
 - **D8 정적 요소**: `<div class="panel-needs-head" id="panel-needs-head" hidden>` + `<p class="ar-vh" id="panel-needs-status" role="status"
   aria-live="polite">`(늘 존재, 시각적으로 숨김). `#panel-permission`의 `aria-live` 제거(만료 시계가 매초 낭독되지 않게).
-- **D9 머리**: `입력 필요` + 배지(`--st-wait` 바탕, 18px, 등장 시 pop `--dur-move`) = `pendingPermissions.length` + (질문이 보이면 1, 다중
+- **D9 머리**: `입력 필요` + 배지(`--st-wait` 24% 틴트 + 55% 테, 글자 `--text` — 대비 dark 8.2:1 · light 13.5:1, 18px, 등장 시 pop `--dur-move`) = `pendingPermissions.length` + (질문이 보이면 1, 다중
   질문도 1). 0이면 hidden. `renderPanelPermission`·`renderPanelQuestion`이 끝에서 같이 갱신. `landPanel`은 머리가 보이면 착지 위치를 머리 높이만큼
   올린다(카드가 아니라 머리말이 화면 위에 오게).
 - **D10 권한 카드**(패널 전용 렌더러; 카드 face의 `renderPermissionBlock(s,'card')`는 불변): `<div class="ap-card perm-request" role="group"
@@ -204,16 +204,23 @@ expiresAt}`(permission-prompts.ts 24) — 만료 5분(permission-mcp-server.ts 1
   padding 12, pill은 숫자만(`위험 n`). `(hover: none)` kbd 숨김. 폰(패널 100%)은 같은 규칙으로 접힌다.
 - **D14 키보드**: `#panel-permission`·`#panel-question`에 **요소 수준** keydown(`apKeydown`, 버블링에서 문서 처리기보다 먼저) — `⌘/Ctrl+Enter`: 포커스가 활성 권한 카드 안 어디든 → 그 카드의
   Approve 클릭 / 질문 카드 → 추천 선택지가 있을 때만 그 버튼. `Esc`: 포커스가 권한 카드의 **버튼**일 때만 Deny. 처리한 키는 `preventDefault` +
-  `stopPropagation`(문서 수준 Esc 처리기 — 패널 닫기 — 에 닿지 않는다); 그 밖의 Esc(카드 자체 = 키보드 착지 포커스)는 지금처럼 패널을 닫는다. `focusPanelLanding`의 질문·권한 착지는 첫 `.ap-card`(버튼 아님).
+  `stopPropagation`(문서 수준 Esc 처리기 — 패널 닫기 — 에 닿지 않는다); 그 밖의 Esc(카드 자체 = 키보드 착지 포커스)는 지금처럼 패널을 닫는다. `focusPanelLanding`의 질문·권한 착지는 첫 `.ap-card:not(.is-resolved)`(버튼 아님, 이미 답한 카드 아님).
+  **실시간 갱신이 답을 다른 요청에 옮겨 붙이지 않는다**: 카드는 `data-mk="ap|<approvalId>"`, 답 버튼은 `data-mk="ap|<approvalId>|<decision>"`,
+  질문 카드는 `data-mk="q|<질문·선택지 id 해시>"`, 선택지는 `…|<choiceId>` — `domKeyOf`가 이 키로만 짝을 지으므로 A의 Approve 노드가 B의 것이
+  되지 않는다. 포커스가 있던 카드가 사라지면 포커스는 답하지 않는 자리로 간다(`apSafeFocus`): 같은 요청의 결과 행이면 그 카드, 아니면 `입력 필요`
+  머리(`tabindex="-1"`), 그것도 없으면 패널 제목 — 결정 버튼에는 절대 가지 않는다(그 뒤 ⌘↵는 아무것도 보내지 않는다).
 - **D15 답한 뒤**: `answerPermission` 성공 → `_permAnswered[approvalId] = decision` + 열린 패널만 다시 그린다(카드 face는 지금처럼 잠긴 버튼).
-  패널 카드는 요청이 payload에 남아 있는 동안 한 줄 행 `✓ 승인함` / `✕ 거부함` / `? 설명 요청함` / `✓ 승인함 · 규칙 끔`(+ `· 방금`)으로 바뀌고
+  패널 카드는 요청이 payload에 남아 있는 동안 한 줄 행 `✓ 승인함` / `✕ 거부함` / `? 설명 요청함` / `✓ 승인함 · 규칙 끔`으로 바뀌고(시각 없음 —
+  정적 `방금`은 두지 않는다)
   (fade + 4px rise `--dur-move`), `#panel-needs-status`가 `승인을 보냈습니다 — Bash`(답별 문구)를 말한다. 열려 있는 동안 새 요청이 오면
-  `승인 요청 — Bash`. 실패는 지금처럼 `.perm-note role="alert"`.
+  `승인 요청 — Bash`. 다시 열었을 때 이미 답한 요청은 다시 말하지 않는다(`_said`를 `_permAnswered`로 미리 채움). 실패는 지금처럼
+  `.perm-note role="alert"`.
 - **D16 만료**: foot 왼쪽 `만료까지 m:ss` = `<span class="ap-expires" data-until="expiresAt" aria-hidden="true">`, `updateTimersIn`에 한 갈래 추가
   (0에서 멈춤); 60초 이하 `--st-wait`. sr 설명엔 정적 `HH:MM에 만료`.
 - **D17 질문 카드**(`user_choice`): 같은 틀(label 줄 없음 — task에 귀속하지 않는다), 제목 = 질문 전문(`pre-line`, 말줄임 없음), pill `질문`, 선택지는 세로 쌓기
   (추천 = primary 먼저, 나머지 quiet, `id. label — description`), `.panel-question-choices` + `.btn-choice` + `choiceDataAttrs` 유지(`answerChoice`
-  불변). 마크업이 같으면 쓰지 않고 바뀌면 morph(포커스 유지). `user_choices`(다중) 폼은 그대로, 머리 개수에만 든다.
+  불변). 마크업이 같으면 쓰지 않고 바뀌면 morph(포커스 유지). 답이 실패해 `answerChoice`가 라벨을 평문으로 되돌린 세 자리에서는 캐시를 비우고
+  세션에서 카드를 다시 그린다(`apRepaintQuestion` — 설명·추천 태그·키 힌트 복구). `user_choices`(다중) 폼은 그대로, 머리 개수에만 든다.
 
 **머리 · 세부** [SHIPPED]
 - **D18 머리 칩 줄**: `.ps-chip` 마크업·클래스 그대로(`ps-label 세션` · `ps-icon` · `ps-word role="status"`), 모양만 pill — 배경
@@ -221,11 +228,12 @@ expiresAt}`(permission-prompts.ts 24) — 만료 5분(permission-mcp-server.ts 1
   <card-timer-live data-leg-started=leg data-accumulated=0>`(title `이번 턴 시작 · 경과`); 그 외 acc > 0 → `활성 <card-timer-live 0, acc>`. Slack ·
   액션 그대로.
 - **D19 세부**(`panelDetailsHtml(s)` — `panelInfoHtml` 바로 뒤의 별도 함수, `<dl class="pi-details">`, 행 = 라벨 왼쪽 muted · 값 오른쪽 `--text`
-  tabular). 펼친 본문 순서는 두 브랜치 공통으로 고정: 컨텍스트 블록 `cw`(#441) → **`pi-details`** → 누적 토큰 `pi-grid`(4행) → `pi-thread`. 이 브랜치는
-  본문을 `var body = panelDetailsHtml(s) + '<dl class="pi-grid">'…`로 시작한다(#441이 본문 앞에 `cw`를 둔다). 세부 행:
+  tabular). 펼친 본문 순서는 두 브랜치 공통으로 고정: 컨텍스트 블록 → **`pi-details`** → 누적 토큰 `pi-grid`(4행) → `pi-thread`. 이 브랜치 단독에서는
+  기존 컨텍스트 줄(`.pi-ctx`)이 맨 앞이고 `body += panelDetailsHtml(s) + '<dl class="pi-grid">'…`가 그 뒤다; #441이 먼저 머지되면 그 `cw` 블록이
+  `.pi-ctx` 자리(본문 앞)를 대신해 순서가 그대로다. 세부 행:
   에이전트 = `model`(`claude-` 제거) · 시작한 사람 = `ownerName` · 도구 호출 = `toNum(agentRoot.toolCalls) + Σ toNum(agents[].toolCalls)`
   (`agentsTotal > agents.length`면 `N+`, title `메인 a · 서브에이전트 b`) · 비용 = `$totalCostUsd.toFixed(2)` · 활성 시간 = `card-timer-live`(acc +
-  진행 중 leg) · 워크플로 · 환경. `pi-grid`의 소유자·워크플로·환경·비용 행은 세부로 옮긴다(입력·출력·캐시 4종은 남는다). 접힌 요약 줄 불변.
+  머리와 같은 `rootStatusOf(s, col)`이 실행·대기일 때의 leg) · 워크플로 · 환경. `pi-grid`의 소유자·워크플로·환경·비용 행은 세부로 옮긴다(입력·출력·캐시 4종은 남는다). 접힌 요약 줄 불변.
   (도구 호출은 Σ task `toolCalls`가 아니다 — task 밖·이전 목록의 호출을 빠뜨린다. `agentRoot`가 메인의 전부를 센다.)
 - **D20 작업 로그 불변**(Activity 대응): 머리 `작업 로그`, task 그룹, 문자열·마크업 그대로. [SHIPPED — 변경 없음]
 
@@ -235,7 +243,8 @@ expiresAt}`(permission-prompts.ts 24) — 만료 5분(permission-mcp-server.ts 1
 빈 Tasks markup · `#T4`/`툴 12회` · `이전 task 1개` · `.panel-tasks` CSS · `renderPermissionBlock` 카드 출력 전부 · 위임 핸들러 문자열 ·
 `renderPanelPermission(...)` 3곳 · 패널 id 순서 · 세션 정보 요약/펼침 문자열 · 작업 로그 머리.
 harness 의존 목록만 늘린 테스트(문자열 변경 없음): agent-tree-client 1168, three-surfaces-client 561·1140, live-surfaces-client 349,
-agent-inbox-client 2834(openPanel), permission-client 프렐류드(`_permAnswered`). spec 13 §3.1 표·§3.4 머리 칩 줄도 D18에 맞췄다.
+agent-inbox-client 2834(openPanel), permission-client 프렐류드(`_permAnswered`). spec 13 §3.1 표·§3.4 머리 칩 줄과 세션 정보 펼침 순서(D18/D19),
+spec 10 §3.1-6 Tasks 정렬 문장(D1/D6)도 맞췄다.
 모션: 새 애니메이션은 `--dur-move`/`--ease-out`, 끝 상태가 보이는 `both` fill — reduced motion은 전역 규칙(`*` 0.01ms)이 처리한다. 이 영역 전용
 `@media (prefers-reduced-motion)` 블록은 두지 않았다: `dashboard-agent-inbox.test.ts` 453이 **첫** reduced-motion 블록에서 `.spinner, .spin`을
 찾으므로, 그보다 앞(이 CSS 자리)에 블록을 두면 그 고정 테스트가 깨진다. 승인 카드의 터치(`pointer: coarse` 44px)·`hover: none`·hover 규칙은
@@ -243,7 +252,7 @@ agent-inbox-client 2834(openPanel), permission-client 프렐류드(`_permAnswere
 
 ## 5. 시험
 
-`src/conversation/__tests__/dashboard-affectui-agent-run-client.test.ts`(three-surfaces-client 1–60의 harness, 37개). 변경 전 35/35 RED(§7).
+`src/conversation/__tests__/dashboard-affectui-agent-run-client.test.ts`(three-surfaces-client 1–60의 harness, 43개). 변경 전 35/35 RED(§7).
 
 | # | 시험(describe › it 요지) | D |
 |---|---|---|
@@ -252,18 +261,20 @@ agent-inbox-client 2834(openPanel), permission-client 프렐류드(`_permAnswere
 | T3 | plan › id, title and tool chip on one line; the active step adds its activeForm | D4 |
 | T4 | plan › a done step shows its duration; the active one a 1 Hz clock(같은 데이터 → 쓰기 1회) | D5 |
 | T5 | footer › running / all done / idle; more than three done fold in place; earlier lists | D6 |
-| T6 | announcements › first render silent, a completed step announced once + pop; another scope / new opening silent | D7 |
-| T7 | needs-input › page markup(hidden head 앞, polite status, 카드엔 aria-live 없음); count; landing offset · 카드 포커스 | D8 D9 D14 |
+| T6 | announcements › first render silent, a completed step announced once + pop; list emptied and refilled silent; another scope / new opening silent | D7 |
+| T7 | needs-input › page markup(hidden head 앞, polite status, 카드엔 aria-live 없음); count, 배지 색은 토큰(하드코딩 색 없음); landing offset · 카드 포커스 | D8 D9 D14 |
 | T8 | approval card › label·title·desc·rule pill·details·rules·네 답; no rule; another viewer locked · requester fetches | D10–D12 |
 | T9 | approval card › **a prompt is never attributed to the task in progress**(권한·질문 카드 모두 `T3`·task 제목 없음) | D10 D17 |
 | T10 | approval card › D12 key/value(escape, description 분리) · `<pre>` 대체; D13 container·kbd CSS | D12 D13 |
 | T11 | keyboard › ⌘↵/Ctrl↵ approve; Esc only from a card button; locked ignored; question ⌘↵ = 추천만; **Esc end to end**(요소 처리기 → 문서 처리기 버블링: 버튼에서는 거부 + 패널 유지, 카드에서는 패널 닫힘); 두 슬롯 바인딩 | D14 |
-| T12 | after an answer › 결과 행 4종; `answerPermission`이 `_permAnswered` 기록 + 패널만 다시 그림, 한 번 낭독; 열려 있는 동안 온 요청 낭독 | D15 |
+| T12 | after an answer › 결과 행 4종(`방금` 없음); `answerPermission`이 `_permAnswered` 기록 + 패널만 다시 그림, 한 번 낭독, 다시 열어도 재낭독 없음; 열려 있는 동안 온 요청 낭독 | D15 |
 | T13 | expiry › `만료까지 4:12` · 0:00에서 멈춤 · 60초 이하 `is-low` | D16 |
 | T14 | question card › 같은 틀, 질문 전문, 추천 먼저; 바뀐 때만 morph, 다중 질문 폼 불변 | D17 |
 | T15 | head › 실행 중 `시작 ` + leg/acc 0, 유휴 `활성` Σ, pill CSS | D18 |
-| T16 | 세부 › 7행 값, `N+`, 유휴 leg 0, 기록 없으면 도구 호출 없음; 본문 순서 세부 → pi-grid → pi-thread, pi-grid엔 토큰 4종만 | D19 |
+| T16 | 세부 › 7행 값, `N+`, 유휴 leg 0 · 대기 leg 포함(`rootStatusOf`), 기록 없으면 도구 호출 없음; 본문 순서 컨텍스트(`.pi-ctx` 또는 #441 `.cw`) → 세부 → pi-grid → pi-thread 네 개 모두, pi-grid엔 토큰 4종만 | D19 |
 | T17 | hygiene › 새 이름 1회 선언, 새 CSS에 색 토큰 선언 없음 | 전체 |
+| T18 | live repaint › 카드·답 버튼·질문·선택지의 `data-mk`; A·B 중 A가 사라지면 A의 Approve 노드는 페이지를 떠나고 B는 제 노드(키가 없으면 재바인딩되는 것도 대조로 고정); A의 Approve에 포커스 → A 사라짐 → 포커스 `입력 필요` 머리, ⌘↵ 전송 0; 남은 것이 없으면 패널 제목; A의 결과 행이면 A 카드(⌘↵ 전송 0) | D14 |
+| T19 | flattened choice › `answerChoice`의 세 라벨 복구 지점이 `apRepaintQuestion`을 부르고, 패널 카드면 캐시를 비우고 다시 그린다(카드 face 버튼은 아님) | D17 |
 
 ## 6. 범위 밖 · 후속
 
@@ -279,7 +290,7 @@ agent-inbox-client 2834(openPanel), permission-client 프렐류드(`_permAnswere
 
 - RED(구현 전, `harness/red-agent-run.log`): `Tests 35 failed (35)` — `client function planFootHtml not found`(9), `client var AP_ANSWERED not found`(7),
   `apKeydown not found`(3), `panelDetailsHtml not found`(2), … 및 CSS·마크업 단언 실패.
-- GREEN: 새 파일 37/37. 게이트 — `npx vitest run src/conversation/__tests__/ --testTimeout=60000 --hookTimeout=60000`: 62/63 files,
+- GREEN: 새 파일 43/43. 게이트 — `npx vitest run src/conversation/__tests__/ --testTimeout=60000 --hookTimeout=60000`: 62/63 files,
   1684/1685 — 실패 1건은 `public-url.test.ts`의 임시 디렉터리 정리 경합(`ENOTEMPTY …/public-url-instances-*`, 이 브랜치가 건드리지 않은 파일)이고
   그 파일만 다시 돌리면 34/34 통과(머신 load ≈115 — 기본 5s/10s 타임아웃에서는 무관한 서버 테스트가 시간 초과로 떨어진다). 같은 트리를
   `--testTimeout=120000 --hookTimeout=180000 --maxWorkers=4`로 돌린 실행은 **63 files · 1685 tests 모두 통과**. `npx tsc --noEmit` exit 0.
@@ -288,3 +299,6 @@ agent-inbox-client 2834(openPanel), permission-client 프렐류드(`_permAnswere
   `harness/shots-agent-run/after-agent-run-{light,dark}-{desk,phone}-panel-{run,run-info,wait}.png`,
   `…-desk-panel-{question,answered}.png`(카드에 포커스 → ⌘↵ → 결과 행, 상태 줄 `승인을 보냈습니다 — Bash`, 패널 열린 채).
   변경 전: `before-agent-run-*`(같은 폴더).
+- 리뷰 R1 재현(Chromium, `harness/rebind-check.mjs`, 포트 34133): 요청 A·B, A의 Approve에 포커스 → A를 store에서 지우고 보드 갱신 →
+  `{"cards":["approval_b"],"activeId":"panel-needs-head","activeTag":"DIV","sameNodeRebound":false}`, 이어서 Ctrl/⌘+Enter → POST 0건
+  (`8420f88`에서는 같은 노드가 B의 Approve가 되어 B 승인이 전송됐다).
