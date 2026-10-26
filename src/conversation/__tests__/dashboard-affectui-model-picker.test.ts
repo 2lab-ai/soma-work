@@ -62,7 +62,8 @@ describe('D5 — findModelPricing: the registry price, or none', () => {
     timeout: 30_000,
   }, async () => {
     const reg = await import('../../metrics/model-registry');
-    expect(reg.findModelPricing('claude-opus-5-5[1m]')).toMatchObject({ inputPerMTok: 5, outputPerMTok: 25 });
+    // Opus 5.5 official rates ($4 / $20) — not Opus 5's ($5 / $25), whose id it contains.
+    expect(reg.findModelPricing('claude-opus-5-5[1m]')).toMatchObject({ inputPerMTok: 4, outputPerMTok: 20 });
     expect(reg.findModelPricing('claude-sonnet-4-6[1m]')).toMatchObject({ inputPerMTok: 3, outputPerMTok: 15 });
     expect(reg.findModelPricing('gpt-5.6-sol[1m]')).toMatchObject({ inputPerMTok: 5, outputPerMTok: 30 });
     expect(reg.findModelPricing('grok-4.6')).toBeNull();
@@ -119,7 +120,7 @@ describe('Dashboard — model picker payload', () => {
     expect(m).not.toBeNull();
     const list = JSON.parse(m![1]);
     const by = (n: string) => list.find((x: any) => x.nickname === n);
-    expect(by('opus[1m]').price).toEqual({ input: 5, output: 25 });
+    expect(by('opus[1m]').price).toEqual({ input: 4, output: 20 }); // Opus 5.5 official rates
     expect(by('sonnet[1m]').price).toEqual({ input: 3, output: 15 });
     expect(by('astra[1m]').price).toEqual({ input: 10, output: 50 });
     expect(by('grok[1m]')).not.toHaveProperty('price');

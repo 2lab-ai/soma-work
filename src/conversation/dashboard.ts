@@ -8100,13 +8100,14 @@ function spendLabel(sp) {
   if (!sp) return '';
   var tk = spendTotal(sp);
   if (tk <= 0) return toNum(sp.calls) > 0 ? '사용량 미보고' : '';
-  return spendText(tk, sp.costUsd, sp.unpricedModels && sp.unpricedModels.length);
+  return spendText(tk, sp.costUsd, (sp.unpricedModels && sp.unpricedModels.length) || toNum(sp.estimatedCalls) > 0);
 }
 function spendTitle(sp) {
   if (!sp) return '';
   var t = '이 에이전트 자신의 API 호출 ' + toNum(sp.calls) + '회 (하위 에이전트 제외) — 입력 ' + formatTokens(sp.inputTokens)
     + ' · 출력 ' + formatTokens(sp.outputTokens) + ' · 캐시 읽기 ' + formatTokens(sp.cacheReadTokens)
     + ' · 캐시 쓰기 ' + formatTokens(sp.cacheCreateTokens) + ' · API 환산 $' + toNum(sp.costUsd).toFixed(2);
+  if (toNum(sp.estimatedCalls) > 0) t += ' · usage가 기록되지 않은 호출 ' + toNum(sp.estimatedCalls) + '회는 앞뒤 호출로 추정';
   if (sp.unpricedModels && sp.unpricedModels.length) t += ' · 단가표에 없는 모델(' + sp.unpricedModels.join(', ') + ')은 기본 단가로 추정';
   return t;
 }
@@ -10137,7 +10138,7 @@ function renderAgentFocus(node, s) {
     if (tk > 0) bits.push('<span title="메인 + 서브에이전트 전체 — API 환산 비용">task 합계 ' + spendText(tk, tu.totalCostUsd, false) + '</span>');
     var sub = s && s.subagentSpend;
     if (sub && toNum(sub.agents) > 0) {
-      bits.push('<span title="서브에이전트들 자신의 API 호출 합">서브 ' + toNum(sub.agents) + '개 ' + spendText(spendTotal(sub), sub.costUsd, sub.unpriced) + '</span>');
+      bits.push('<span title="서브에이전트들 자신의 API 호출 합">서브 ' + toNum(sub.agents) + '개 ' + spendText(spendTotal(sub), sub.costUsd, sub.unpriced || sub.estimated) + '</span>');
     }
   } else if (spendLabel(node.spend)) {
     bits.push('<span title="' + escAttr(spendTitle(node.spend)) + '">' + esc(spendLabel(node.spend)) + '</span>');
@@ -10374,7 +10375,7 @@ function panelInfoHtml(s, open, col) {
     // SSOT 2026-10-26 T2/T3 — the numbers above are the task's (main + subagents);
     // the subagents' share, and since when a partial total counts.
     var sub = s.subagentSpend;
-    if (sub && toNum(sub.agents) > 0) rows.push(['서브에이전트', toNum(sub.agents) + '개 · ' + spendText(spendTotal(sub), sub.costUsd, sub.unpriced)]);
+    if (sub && toNum(sub.agents) > 0) rows.push(['서브에이전트', toNum(sub.agents) + '개 · ' + spendText(spendTotal(sub), sub.costUsd, sub.unpriced || sub.estimated)]);
     if (toNum(u.partialSince) > 0) rows.push(['집계 시작', '<span class="rel-time" data-ts="' + toNum(u.partialSince) + '"></span> (그 전 지출 미포함)']);
   }
   // Open body order (re-agent-run D19 · re-context-window D5): cw (prepended on return) → 세부 → token grid → thread.

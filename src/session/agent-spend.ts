@@ -125,9 +125,56 @@ function collectCalls(text: string, calls: Map<string, CallUsage>): void {
   }
 }
 
+function isZero(c: TokenCounts): boolean {
+  return c.inputTokens + c.outputTokens + c.cacheReadTokens + c.cacheCreateTokens === 0;
+}
+
+/**
+ * Some providers leave a call's usage all-zero in the transcript: through
+ * llmux, gpt-6-astra and grok-4.7-build do so for over half their calls
+ * (dev 2026-10-27; claude models: none), while the proxy records a real usage
+ * for each. Counting those as nothing showed such subagents 2-20x too low.
+ * A zero-usage call is estimated from the calls around it — each context
+ * field interpolated between the nearest reported calls before and after it
+ * (one side only at either end), output the agent's mean reported output.
+ * Measured against the proxy's own records, the estimate lands within ~20%.
+ * An agent with no reported call at all is left at zero ("unreported").
+ * Returns the calls with estimates filled in, and how many were estimated.
+ */
+function fillZeroUsage(calls: CallUsage[]): { calls: CallUsage[]; estimated: number } {
+  const reported = calls.map((c) => !isZero(c));
+  const known = calls.filter((_, i) => reported[i]);
+  if (known.length === 0 || known.length === calls.length) return { calls, estimated: 0 };
+  const meanOut = known.reduce((a, c) => a + c.outputTokens, 0) / known.length;
+  let estimated = 0;
+  const out = calls.map((c, k) => {
+    if (reported[k]) return c;
+    let i = k - 1;
+    while (i >= 0 && !reported[i]) i--;
+    let j = k + 1;
+    while (j < calls.length && !reported[j]) j++;
+    const a = i >= 0 ? calls[i] : undefined;
+    const b = j < calls.length ? calls[j] : undefined;
+    const at = (f: 'inputTokens' | 'cacheReadTokens' | 'cacheCreateTokens') => {
+      if (a && b) return a[f] + ((b[f] - a[f]) * (k - i)) / (j - i);
+      return (a ?? b)?.[f] ?? 0;
+    };
+    estimated++;
+    return {
+      model: c.model,
+      inputTokens: Math.round(at('inputTokens')),
+      cacheReadTokens: Math.round(at('cacheReadTokens')),
+      cacheCreateTokens: Math.round(at('cacheCreateTokens')),
+      outputTokens: Math.round(meanOut),
+    };
+  });
+  return { calls: out, estimated };
+}
+
 function priceCalls(calls: Map<string, CallUsage>, opts: AgentSpendReaderOptions): AgentSpend {
+  const filled = fillZeroUsage([...calls.values()]);
   const byModel = new Map<string, TokenCounts>();
-  for (const c of calls.values()) {
+  for (const c of filled.calls) {
     const key = c.model ?? '';
     const t = byModel.get(key) ?? { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0 };
     t.inputTokens += c.inputTokens;
@@ -144,6 +191,7 @@ function priceCalls(calls: Map<string, CallUsage>, opts: AgentSpendReaderOptions
     costUsd: 0,
     calls: calls.size,
   };
+  if (filled.estimated) spend.estimatedCalls = filled.estimated;
   const unpriced: string[] = [];
   for (const [model, t] of byModel) {
     spend.inputTokens += t.inputTokens;
@@ -172,6 +220,7 @@ function sameSpend(a: AgentSpend | undefined, b: AgentSpend): boolean {
     a.cacheCreateTokens === b.cacheCreateTokens &&
     a.costUsd === b.costUsd &&
     a.calls === b.calls &&
+    a.estimatedCalls === b.estimatedCalls &&
     (a.unpricedModels ?? []).join('\n') === (b.unpricedModels ?? []).join('\n')
   );
 }
