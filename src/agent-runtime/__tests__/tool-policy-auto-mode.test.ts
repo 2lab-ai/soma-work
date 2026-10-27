@@ -28,6 +28,7 @@ function ctx(mode: 'auto' | 'bypass' | 'legacy', over: Partial<ToolPolicyContext
     isDangerousRuleDisabled: () => false,
     handoffContext: undefined,
     checkMcpToolPermission: () => null,
+    checkEnvSkillPermission: () => null,
     ...over,
   } as ToolPolicyContext;
 }

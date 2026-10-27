@@ -193,6 +193,7 @@ describe('devops-tools grant gate — PreToolUse deny tier (real ClaudeHandler.c
         aborted: false,
         isDangerousRuleDisabled: () => false,
         checkMcpToolPermission: policyCheck(user),
+        checkEnvSkillPermission: () => null,
       },
     );
   }
