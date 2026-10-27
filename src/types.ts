@@ -660,8 +660,12 @@ export interface ConversationSession {
     text: string;
     speaker: string;
     userId?: string;
-    /** Set while the entry is a steered message the queue could still take back. */
-    steerUuid?: string;
+    /**
+     * Set when the entry is a message steered into a live turn: which follow-up
+     * queue row it is. The queue decides at classification time whether it still
+     * stands (still steered, or consumed by the model).
+     */
+    steer?: { uuid: string; itemId: string; queueKey: string };
   }>;
   /**
    * The recorded instructions may miss earlier ones: the fields above are not

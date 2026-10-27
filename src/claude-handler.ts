@@ -16,7 +16,7 @@ import { adoptSdkSessionId } from '@soma/slack/session-usage-math';
 import * as fs from 'fs';
 import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShotText } from './agent-runtime';
 import { liveAgentIds } from './agent-runtime/background-keepalive';
-import { buildStreamOptions } from './agent-runtime/claude-code/build-stream-options';
+import { buildStreamOptions, type SteerRef } from './agent-runtime/claude-code/build-stream-options';
 import type { PermissionWarningEvent } from './agent-runtime/policy/permission-warning';
 import type { SafetyClassifier } from './agent-runtime/policy/safety-classifier';
 import { buildSafetyClassifier } from './agent-runtime/policy/safety-classifier-factory';
@@ -522,6 +522,13 @@ export class ClaudeHandler implements TurnSteeringPort {
    */
   setCompactHookBuilder(builder: CompactHookBuilder): void {
     this.compactHookBuilder = builder;
+  }
+
+  private steerStandingResolver?: (steer: SteerRef) => boolean;
+
+  /** Register the follow-up queue's answer to "does this steered message still stand?". */
+  setSteerStandingResolver(resolver: (steer: SteerRef) => boolean): void {
+    this.steerStandingResolver = resolver;
   }
 
   /** Register where auto-mode permission warnings go (Slack thread + dashboard work log). */
@@ -1211,6 +1218,7 @@ export class ClaudeHandler implements TurnSteeringPort {
           checkMcpToolPermission: (a, b, c, d) => this.checkMcpToolPermission(a, b, c, d),
           safetyClassifier: this.getSafetyClassifier(),
           onPermissionWarning: this.permissionWarningNotifier,
+          isSteerStanding: this.steerStandingResolver,
           // Consulted only on the incident branch of the builder; passing them
           // unconditionally would be harmless, but keeping them absent makes the
           // ordinary path provably unchanged.

@@ -180,6 +180,19 @@ describe('permissionWarningRuleIds — mechanical check after a model allow', ()
     }
   });
 
+  // Review gate r4 (fable P2): double-quoted escapes, NFKC names, python sys.* reach.
+  it('keeps double-quoted escapes, NFKC identifiers and sys.* reach', () => {
+    for (const cmd of [
+      `cat p.js | node -e "ev\\u0061l(require('fs').readFileSync(0,'utf8'))"`,
+      `cat p | python3 -c 'import sys; \uFF45\uFF56\uFF41\uFF4C(sys.stdin.read())'`,
+      `cat p | python3 -c 'import sys,operator; operator.attrgetter("sys"+"tem")(sys.modules["os"])(sys.stdin.read())'`,
+      `cat p | python3 -c 'import sys; sys._getframe().f_builtins["ev"+"al"](sys.stdin.read())'`,
+      `cat p | python3 -c 'import sys; sys.modules["_io"].FileIO("important.db","w")'`,
+    ]) {
+      expect(permissionWarningRuleIds(cmd, PIPE), cmd).toEqual(PIPE);
+    }
+  });
+
   it('still treats the everyday JSON / text readers as data', () => {
     for (const cmd of [
       `gh api repos/o/r/pulls/1 | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["state"])'`,

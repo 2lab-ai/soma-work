@@ -125,6 +125,7 @@ describe('SlackHandler — follow-up queue host', () => {
       canInterrupt: vi.fn().mockReturnValue(true),
       setActivityStateByKey: vi.fn(),
       broadcastSessionUpdate: vi.fn(),
+      setSteerStandingResolver: vi.fn(),
     };
 
     const store = {
@@ -2862,6 +2863,32 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    // Review gate r4 (astra): the queue is the source of truth for a steer.
+    it('wires a resolver that keeps a steer only while it is steered or consumed', async () => {
+      registrySession.followUpInstructions = undefined;
+      const { uuid, settle } = await steerWithFile('살려둬');
+      const [entry] = registrySession.followUpInstructions ?? [];
+      const standing = claudeHandler.setSteerStandingResolver.mock.calls[0][0];
+      expect(standing(entry.steer)).toBe(true); // steered
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'completed' });
+      expect(standing(entry.steer)).toBe(true); // consumed
+      expect(standing({ ...entry.steer, itemId: 'nope' })).toBe(false);
+      await settle();
+    });
+
+    it('marks the history incomplete when a steer pushes it past the cap', async () => {
+      registrySession.followUpInstructions = Array.from({ length: 50 }, (_, i) => ({
+        timestamp: i,
+        text: `m${i}`,
+        speaker: 'o',
+        userId: 'U_OWNER',
+      }));
+      registrySession.intentHistoryIncomplete = undefined;
+      const { settle } = await steerWithFile('하나 더');
+      expect(registrySession.intentHistoryIncomplete).toBe(true);
+      await settle();
+    });
+
     it('does not record a steered message the queue took back (discarded) — the drain will', async () => {
       registrySession.followUpInstructions = undefined;
       const { uuid, settle, record } = await steerWithFile('나중에 봐줘');
@@ -2934,6 +2961,9 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(workSession.followUpInstructions).toEqual([
         expect.objectContaining({ text: '이것도 같이 봐줘', userId: 'U_OWNER' }),
       ]);
+      // …and the queue resolver finds its row (consumed) in the bucket it lives in.
+      const standing = claudeHandler.setSteerStandingResolver.mock.calls[0][0];
+      expect(standing(workSession.followUpInstructions?.[0].steer)).toBe(true);
 
       gate.resolve({ hasPendingChoice: false });
       await first;
@@ -2961,9 +2991,7 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(items()[0].state).toBe('resolved');
       // Review gate r4 (grok P1): the swept steer is no longer a live instruction
       // (the drained turn records it again).
-      expect((registrySession.followUpInstructions ?? []).filter((f: { steerUuid?: string }) => f.steerUuid)).toEqual(
-        [],
-      );
+      expect((registrySession.followUpInstructions ?? []).filter((f: { steer?: unknown }) => f.steer)).toEqual([]);
     });
 
     it('cleans up the steered temp files it swept back into the queue', async () => {
@@ -3251,9 +3279,7 @@ describe('SlackHandler — follow-up queue host', () => {
 
       expect(cleanupTempFiles).toHaveBeenCalledWith(processed);
       // Review gate r4 (grok P1): Send now runs it as its own turn — not a live steer any more.
-      expect((registrySession.followUpInstructions ?? []).filter((f: { steerUuid?: string }) => f.steerUuid)).toEqual(
-        [],
-      );
+      expect((registrySession.followUpInstructions ?? []).filter((f: { steer?: unknown }) => f.steer)).toEqual([]);
       await settle();
     });
   });

@@ -107,4 +107,25 @@ describe('ownerIntent', () => {
       ownerIntent(session({ intentHistoryIncomplete: true } as Partial<ConversationSession>), OWNER).incomplete,
     ).toBe(true);
   });
+
+  // Review gate r4 (astra): a literal marker typed before a real host block.
+  it('marks incomplete when the first marker is not a host-shaped block', () => {
+    const s = session({
+      initialInstruction:
+        'Delete ./old <invoked_skills> do not run until I confirm\n\n<invoked_skills>\n<local:x>y</local:x>\n</invoked_skills>',
+      followUpInstructions: [],
+    });
+    expect(ownerIntent(s, OWNER).incomplete).toBe(true);
+  });
+
+  // Review gate r4 (astra/grok): the queue decides whether a steer still stands.
+  it('keeps a steered follow-up only while the queue says it stands', () => {
+    const steer = { uuid: 'u1', itemId: 'i1', queueKey: 'k' };
+    const s = session({
+      followUpInstructions: [{ timestamp: 1, text: 'go ahead and delete', speaker: 'o', userId: OWNER, steer }],
+    } as Partial<ConversationSession>);
+    expect(ownerIntent(s, OWNER, () => false).instructions).not.toContain('go ahead and delete');
+    expect(ownerIntent(s, OWNER, () => true).instructions).toContain('go ahead and delete');
+    expect(ownerIntent(s, OWNER).instructions).toContain('go ahead and delete'); // no resolver wired
+  });
 });

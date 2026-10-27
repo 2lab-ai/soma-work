@@ -684,6 +684,13 @@ export class SlackHandler {
     // 3. Auto-mode permission warnings (SSOT_2 #3): the model allowed a call the
     //    mechanical check still flags → a buttonless warning card in the thread
     //    and the same card in the dashboard chat (work log).
+    // 4. Whether a steered follow-up still stands — the follow-up queue is the
+    //    source of truth (steered, or consumed by the model; nothing else).
+    this.claudeHandler.setSteerStandingResolver?.((steer) => {
+      const item = this.followupQueue?.get(steer.queueKey, steer.itemId);
+      if (!item || item.steerUuid !== steer.uuid) return false;
+      return item.state === 'steered' || (item.state === 'resolved' && item.stateReason === 'consumed');
+    });
     this.claudeHandler.setPermissionWarningNotifier?.((warning) =>
       publishPermissionWarning(warning, {
         postMessage: (channel, text, options) => this.slackApi.postMessage(channel, text, options),
@@ -4017,7 +4024,12 @@ export class SlackHandler {
         user: event.user,
         sentAt: slackTsMs(event.ts),
       });
-      this.recordSteerAsFollowUp(sessionKey, rawText, event.user, slackTsMs(event.ts), steered.uuid);
+      this.recordSteerAsFollowUp(sessionKey, rawText, event.user, slackTsMs(event.ts), {
+        uuid: steered.uuid,
+        itemId: item.id,
+        // The bucket the row lives in — the key `dispatcher.steer` was given.
+        queueKey: sessionKey,
+      });
       (this.followupSteerUuids ??= new Map()).set(item.id, steered.uuid);
       return 'steered';
     } catch (error) {
@@ -4140,9 +4152,9 @@ export class SlackHandler {
       // Consumed: the message is part of the conversation now — record it (and
       // copy its files) before they are deleted. A message the queue took back
       // is recorded by the drain's ordinary turn instead.
+      if (phase === 'cancelled' || phase === 'discarded') this.withdrawSteerFollowUp(sessionKey, uuid);
       if (phase === 'completed' && settled.ok) await this.finishConsumedSteer(sessionKey, uuid);
       else await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
-      if (phase === 'cancelled' || phase === 'discarded') this.withdrawSteerFollowUp(sessionKey, uuid);
       // NOT awaited: the executor awaits this hook inside its stream loop, so a
       // Slack round-trip here delays the answer the user is waiting for. The
       // queue mutation above is the part that must be finished before the turn
@@ -4257,11 +4269,14 @@ export class SlackHandler {
           });
           return 'failed';
         }
+        this.withdrawSteerFollowUp(sessionKey, uuid);
         this.forgetSteerBookkeeping(itemId);
         await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
-        this.withdrawSteerFollowUp(sessionKey, uuid);
         return 'returned-to-queue';
       }
+      // The SDK confirmed the withdrawal: the owner's instruction is gone whether
+      // or not the queue's durable write below succeeds.
+      this.withdrawSteerFollowUp(sessionKey, uuid);
       const cancelled = queue.cancelSteered(sessionKey, itemId, expectedEpoch, '사용자가 취소');
       if (!cancelled.ok) {
         // The SDK dropped it but our row moved on (a settlement raced the
@@ -4271,7 +4286,6 @@ export class SlackHandler {
       }
       this.forgetSteerBookkeeping(itemId);
       await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
-      this.withdrawSteerFollowUp(sessionKey, uuid);
       return 'cancelled';
     } catch (error) {
       this.logger.warn('Steered cancel could not be recorded', {
@@ -4609,7 +4623,7 @@ export class SlackHandler {
     text: string,
     user: string | undefined,
     sentAt: number | undefined,
-    steerUuid: string,
+    steer: { uuid: string; itemId: string; queueKey: string },
   ): void {
     try {
       // The session that is really running: after a bot-thread migration the row
@@ -4622,8 +4636,10 @@ export class SlackHandler {
         text,
         speaker: userSettingsStore.getUserSettings?.(user)?.slackDisplayName ?? user,
         userId: user,
-        steerUuid,
+        steer,
       });
+      // Dropping the oldest at the cap loses history: say so (sticky until reset).
+      if (followUps.length > 50) session.intentHistoryIncomplete = true;
       session.followUpInstructions = followUps.slice(-50);
     } catch (error) {
       this.logger.warn('Steered message was not recorded as a follow-up instruction', {
@@ -4641,7 +4657,7 @@ export class SlackHandler {
   private withdrawSteerFollowUp(sessionKey: string, steerUuid: string): void {
     const session = this.claudeHandler?.getSessionByKey?.(this.canonicalFollowupKey(sessionKey));
     if (!session?.followUpInstructions) return;
-    session.followUpInstructions = session.followUpInstructions.filter((f) => f.steerUuid !== steerUuid);
+    session.followUpInstructions = session.followUpInstructions.filter((f) => f.steer?.uuid !== steerUuid);
   }
 
   /**
@@ -4656,7 +4672,7 @@ export class SlackHandler {
     files: ProcessedFile[],
   ): Promise<void> {
     try {
-      const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
+      const session = this.claudeHandler?.getSessionByKey?.(this.canonicalFollowupKey(sessionKey));
       const conversationId = session?.conversationId;
       if (!conversationId || (!instruction.text && files.length === 0)) return;
       let attachments: Awaited<ReturnType<typeof captureUserMedia>> | undefined;
@@ -4903,9 +4919,9 @@ export class SlackHandler {
         // The row's own uuid is cleared by the transition, so the files are
         // found through the item→uuid map instead.
         const uuid = this.followupSteerUuids?.get(item.id);
-        if (uuid) await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
         // Back in the queue: not a live instruction until the drain runs it.
         if (uuid) this.withdrawSteerFollowUp(sessionKey, uuid);
+        if (uuid) await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
         this.forgetSteerBookkeeping(item.id);
         // The row is `queued` again; its message still shows 전달완료 and no
         // controls, which is now a lie about a message nobody ran.

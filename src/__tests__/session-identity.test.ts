@@ -108,6 +108,9 @@ describe('SessionRegistry key migration on load (Step 4d)', () => {
     expect(registry.getSessionByKey('work:C777:171.100')?.sessionId).toBe('sess-1');
     // …and still reachable via the legacy key (pre-deploy Slack buttons).
     expect(registry.getSessionByKey('C777-171.100')?.sessionId).toBe('sess-1');
+    // Review gate r4: the instruction fields are not persisted, so a restored
+    // session's owner intent is marked incomplete for the auto-mode classifier.
+    expect(session?.intentHistoryIncomplete).toBe(true);
   });
 
   it('keeps the persisted key in LEGACY form for rollback compatibility', () => {

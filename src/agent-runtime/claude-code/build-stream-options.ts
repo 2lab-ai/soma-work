@@ -68,14 +68,16 @@ const permissionWarningDeduper = createPermissionWarningDeduper({ windowMs: 10 *
  * user's message, so a user cannot place the tag; a dashboard user who types it
  * only shortens their own intent.)
  */
+/** The shape the host appends: `\n\n<invoked_skills>\n` … `\n</invoked_skills>`, one or more blocks, at the end. */
+const HOST_SKILL_BLOCKS = /^(?:\s*<invoked_skills>\n[\s\S]*?\n<\/invoked_skills>)+\s*$/;
+
 function ownerText(text: string): { text: string; ambiguous: boolean } {
   const cut = text.indexOf('<invoked_skills>');
   if (cut < 0) return { text: text.trim(), ambiguous: false };
-  // Host blocks are appended last: anything after the final closing tag means the
-  // marker was not (only) the host's, so what was cut may hold owner text.
-  const lastClose = text.lastIndexOf('</invoked_skills>');
-  const tail = lastClose >= 0 ? text.slice(lastClose + '</invoked_skills>'.length) : text.slice(cut);
-  return { text: text.slice(0, cut).trim(), ambiguous: tail.trim().length > 0 };
+  // Host blocks are appended last, after a blank line. A marker anywhere else,
+  // or anything after the blocks, means what was cut may hold owner text.
+  const hostShaped = (cut === 0 || text.slice(0, cut).endsWith('\n\n')) && HOST_SKILL_BLOCKS.test(text.slice(cut));
+  return { text: text.slice(0, cut).trim(), ambiguous: !hostShaped };
 }
 
 /** The executor keeps at most this many follow-ups; at the cap older ones may be gone. */
@@ -91,7 +93,14 @@ const FOLLOW_UP_CAP = 50;
  * goal. Nothing is dropped here; the classifier's prompt budget decides, and says
  * so. `incomplete` marks a history that may already have lost messages.
  */
-export function ownerIntent(session: ConversationSession | undefined, user: string): SafetyUserIntent {
+/** A steered follow-up's queue row; the resolver says whether the steer still stands. */
+export type SteerRef = NonNullable<NonNullable<ConversationSession['followUpInstructions']>[number]['steer']>;
+
+export function ownerIntent(
+  session: ConversationSession | undefined,
+  user: string,
+  isSteerStanding?: (steer: SteerRef) => boolean,
+): SafetyUserIntent {
   const owner = session?.ownerId;
   if (!session || !owner || owner !== user) return { instructions: [] };
   const instructions: string[] = [];
@@ -103,7 +112,13 @@ export function ownerIntent(session: ConversationSession | undefined, user: stri
   };
   if (session.initialInstruction && session.initialInstructionUserId === owner) add(session.initialInstruction);
   const all = session.followUpInstructions ?? [];
-  for (const f of all) if (f.userId === owner) add(f.text);
+  for (const f of all) {
+    if (f.userId !== owner) continue;
+    // A steer counts while the queue says it stands (still in the turn, or read
+    // by the model) — not once it was cancelled, returned or ran as its own turn.
+    if (f.steer && isSteerStanding && !isSteerStanding(f.steer)) continue;
+    add(f.text);
+  }
   if (all.length >= FOLLOW_UP_CAP) incomplete = true;
   return { instructions, ...(incomplete ? { incomplete: true } : {}) };
 }
@@ -152,6 +167,11 @@ export interface BuildStreamOptionsDeps {
    * the decision. Absent → no warning is published.
    */
   onPermissionWarning?: (warning: PermissionWarningEvent) => void | Promise<void>;
+  /**
+   * Whether a steered follow-up still stands, from the follow-up queue (the
+   * source of truth). Absent → every recorded steer counts.
+   */
+  isSteerStanding?: (steer: SteerRef) => boolean;
   /**
    * Operator config for the incident evidence collector (`rules/config.md` owns
    * the getter's name; this dep only needs the value). Consulted **only** on the
@@ -311,7 +331,7 @@ export async function buildStreamOptions(
           // fail closed to `ask` when no classifier is wired or it errors.
           const command = typeof toolInput?.command === 'string' ? toolInput.command : '';
           const liveSession = deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs);
-          const intent = ownerIntent(liveSession, policyUser);
+          const intent = ownerIntent(liveSession, policyUser, deps.isSteerStanding);
           const verdict = deps.safetyClassifier
             ? await deps.safetyClassifier
                 .classify({
@@ -336,6 +356,7 @@ export async function buildStreamOptions(
           const intentAfter = ownerIntent(
             deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs),
             policyUser,
+            deps.isSteerStanding,
           );
           if (verdict.verdict === 'allow' && JSON.stringify(intentAfter) !== JSON.stringify(intent)) {
             logger.warn('Auto-mode classifier approval dropped: owner instructions changed meanwhile', {
