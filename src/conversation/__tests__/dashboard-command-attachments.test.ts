@@ -47,7 +47,11 @@ const PNG_B64 = Buffer.from('fake-png-bytes').toString('base64');
 describe('POST /api/dashboard/session/:key/command — attachments (T1.5)', () => {
   let injectWebServer: any;
   let stopWebServer: any;
-  let handler: ReturnType<typeof vi.fn<(key: string, message: string, files: Array<{ name: string; mimetype: string; data: Buffer }>) => Promise<void>>>;
+  let handler: ReturnType<
+    typeof vi.fn<
+      (key: string, message: string, files: Array<{ name: string; mimetype: string; data: Buffer }>) => Promise<void>
+    >
+  >;
 
   beforeEach(async () => {
     vi.resetModules();
@@ -66,7 +70,11 @@ describe('POST /api/dashboard/session/:key/command — attachments (T1.5)', () =
       lastActivity: new Date(),
     });
     dashboard.setDashboardSessionAccessor(() => sessions);
-    handler = vi.fn<(key: string, message: string, files: Array<{ name: string; mimetype: string; data: Buffer }>) => Promise<void>>().mockResolvedValue(undefined);
+    handler = vi
+      .fn<
+        (key: string, message: string, files: Array<{ name: string; mimetype: string; data: Buffer }>) => Promise<void>
+      >()
+      .mockResolvedValue(undefined);
     dashboard.setDashboardCommandHandler(handler);
     await webServer.startWebServer({ listen: false });
     // The first import transforms the whole web server — slow on a busy runner.
