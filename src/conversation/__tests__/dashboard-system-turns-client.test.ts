@@ -274,6 +274,20 @@ describe('C2 — the one-line row', () => {
     expect(out).toContain('<pre class="sys-raw">The service was restarted and the previous task was interrupted.');
   });
 
+  it('a turn sent from the composer is the server turn once echoed (a later /compact result finds it)', () => {
+    const ws = TEMPLATE.slice(
+      TEMPLATE.indexOf("msg.type === 'conversation_update'"),
+      TEMPLATE.indexOf("msg.type === 'session_action'"),
+    );
+    expect(ws).toContain('[data-turn-id^="optimistic-"]');
+    expect(ws).toContain('updateTurnInPanel(optEl, msg.turn)');
+    const send = TEMPLATE.slice(
+      TEMPLATE.indexOf('const optimisticTurn = {'),
+      TEMPLATE.indexOf('appendTurnToPanel(optimisticTurn);'),
+    );
+    expect(send).toContain("origin: { by: 'user' }");
+  });
+
   it('an open row stays open when its turn re-renders (a /compact result landing)', () => {
     const src = clientFn('updateTurnInPanel');
     expect(src).toContain(".querySelector('.sys-turn[open]')");
@@ -289,11 +303,12 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
     expect(out).toContain('data-cp-live="1"');
     expect(out).toContain('data-cp-est="150000"');
     expect(out).toContain('<span class="sys-line">압축 중 · 0:42 / 약 2:30</span>');
-    expect(out).toMatch(
-      /role="progressbar" aria-label="압축 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="28"/,
-    );
+    // Inside <summary> (a button) a progressbar role is dropped by AT: the bar is
+    // decoration, the line's text carries the numbers.
+    expect(out).toContain('<span class="cp-bar" aria-hidden="true"><i style="width:28%"></i></span>');
+    expect(out).not.toContain('role="progressbar"');
     expect(out).toContain('<span class="cp-pct">28%</span>');
-    expect(out).toContain('<dt>상태</dt><dd>진행 중</dd>');
+    expect(out).toContain('<dt>상태</dt><dd class="cp-state">진행 중</dd>');
     expect(out).toContain('<dt>예상 시간</dt><dd>2m 30s (기본값)</dd>');
     expect(a.setInterval).toHaveBeenCalledTimes(1);
   });
@@ -303,7 +318,7 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
       user('/compact', { ...SYSTEM, timestamp: Date.now() - 45_000, compact: { estimateMs: 90_000 } }),
     );
     expect(out).toContain('<span class="sys-line">압축 중 · 0:45 / 약 1:30</span>');
-    expect(out).toContain('aria-valuenow="50"');
+    expect(out).toContain('<i style="width:50%"></i>');
     expect(out).toContain('<dd>1m 30s (직전 압축 기준)</dd>');
   });
 
@@ -311,7 +326,6 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
     const out = api().renderTurn(user('/compact', { ...SYSTEM, timestamp: Date.now() - 200_000 }));
     expect(out).toContain('압축 중 · 3:20 / 약 2:30 · 예상보다 오래 걸리는 중');
     expect(out).toContain('class="cp-bar is-over"');
-    expect(out).toContain('aria-valuetext="예상 시간 초과"');
     expect(out).not.toContain('cp-pct');
   });
 
@@ -334,7 +348,7 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
     expect(out).not.toContain('data-cp-live');
     expect(out).toContain('<span class="sys-badge" data-kind="compact">자동 압축</span>');
     expect(out).toContain('<span class="sys-line">자동 압축 처리 · 182.3K → 31.0K 토큰 · 2m 14s</span>');
-    expect(out).toContain('<dt>상태</dt><dd>완료</dd>');
+    expect(out).toContain('<dt>상태</dt><dd class="cp-state">완료</dd>');
     expect(out).toContain('<dt>압축 전 → 후</dt><dd>182,340 → 31,020 토큰 (−83%)</dd>');
     expect(out).toContain('<dt>걸린 시간</dt><dd>2m 14s</dd>');
     expect(out).toContain('<dt>예상 시간</dt><dd>2m 0s (직전 압축 기준)</dd>');
@@ -343,10 +357,21 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
     expect(out).toContain('<pre class="sys-raw">/compact</pre>');
   });
 
+  it('a /compact with a later turn after it is not live at render time (no first-frame flash)', () => {
+    const t = user('/compact', { ...SYSTEM, timestamp: Date.now() - 30_000 });
+    const next = user('다음 지시', { id: 'u2' });
+    const out = api().renderTurn(t, 0, [t, next], 'conv-sys');
+    expect(out).not.toContain('data-cp-live');
+    expect(out).toContain('<span class="sys-line">자동 압축 처리</span>');
+    expect(out).toContain('<dd class="cp-state">결과 기록 없음</dd>');
+    // The last of a batch (or a pushed turn, no batch) is still live.
+    expect(api().renderTurn(t, 1, [next, t], 'conv-sys')).toContain('data-cp-live="1"');
+  });
+
   it('no result and older than a compaction can run: "압축 처리", 결과 기록 없음', () => {
     const out = api().renderTurn(user('/compact', { timestamp: Date.now() - 3_600_000 }));
     expect(out).toContain('<span class="sys-line">압축 처리</span>');
-    expect(out).toContain('<dt>상태</dt><dd>결과 기록 없음</dd>');
+    expect(out).toContain('<dt>상태</dt><dd class="cp-state">결과 기록 없음</dd>');
     expect(out).not.toContain('data-cp-live');
   });
 
@@ -355,27 +380,43 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
     const attrs: Record<string, string> = { 'data-cp-start': String(start), 'data-cp-est': '150000' };
     if (live) attrs['data-cp-live'] = '1';
     const slot = { innerHTML: '' };
+    const state = { textContent: '진행 중' };
     return {
       slot,
+      state,
       getAttribute: (k: string) => attrs[k] ?? null,
       removeAttribute: (k: string) => {
         delete attrs[k];
       },
       hasLive: () => 'data-cp-live' in attrs,
       querySelector: (sel: string) =>
-        sel === '.cp-slot' ? slot : sel === '.sys-badge' ? { textContent: '자동 압축' } : null,
+        sel === '.cp-slot'
+          ? slot
+          : sel === '.cp-state'
+            ? state
+            : sel === '.sys-badge'
+              ? { textContent: '자동 압축' }
+              : null,
     };
   }
   const NOW = 1_792_900_000_000;
-  function tick(turns: ReturnType<typeof fakeTurn>[], session: Record<string, unknown> | null) {
+  function tick(
+    turns: ReturnType<typeof fakeTurn>[],
+    session: Record<string, unknown> | null,
+    others: Record<string, unknown> = {},
+  ) {
     const clearInterval = vi.fn();
     const document = {
+      // The 응답 작성 중 row (.ans-pending, no data-ts) is always the list's last
+      // child while the session works after a user turn — a /compact included.
       querySelectorAll: (sel: string) =>
         sel === '#panel-turns .turn[data-cp-live]'
           ? turns.filter((t) => t.hasLive())
-          : sel === '#panel-turns > .turn'
+          : sel === '#panel-turns > .turn[data-ts]'
             ? turns
-            : [],
+            : sel === '#panel-turns > .turn'
+              ? [...turns, { pending: true }]
+              : [],
     };
     const { cpTick } = load<{ cpTick(): void }>(
       ['esc', 'toNum', 'cpClock', 'cpProgressHtml', 'cpTick'],
@@ -385,7 +426,7 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
         clearInterval,
         Date: { now: () => NOW },
         panelSessionKey: 'k',
-        _sessionCache: session ? { k: session } : {},
+        _sessionCache: session ? { k: session, ...others } : { ...others },
       },
     );
     cpTick();
@@ -397,7 +438,7 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
     tick([t], { activityState: 'working' });
     expect(t.hasLive()).toBe(true);
     expect(t.slot.innerHTML).toContain('압축 중 · 1:15 / 약 2:30');
-    expect(t.slot.innerHTML).toContain('aria-valuenow="50"');
+    expect(t.slot.innerHTML).toContain('<i style="width:50%"></i>');
   });
 
   it('cpTick: a later turn landed, or the session stopped working → no longer live, no result kept', () => {
@@ -405,11 +446,24 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
     const next = fakeTurn(NOW, false);
     tick([compact, next], { activityState: 'working' });
     expect(compact.hasLive()).toBe(false);
-    expect(compact.slot.innerHTML).toBe('<span class="sys-line">자동 압축 처리 · 결과 기록 없음</span>');
+    // The same line and 상태 a fresh render of a result-less /compact shows.
+    expect(compact.slot.innerHTML).toBe('<span class="sys-line">자동 압축 처리</span>');
+    expect(compact.state.textContent).toBe('결과 기록 없음');
 
     const idle = fakeTurn(NOW - 30_000);
     tick([idle], { activityState: 'idle' });
     expect(idle.hasLive()).toBe(false);
+  });
+
+  it('cpTick: a session missing from a loaded board is not running; before the board loads it is undecided', () => {
+    const gone = fakeTurn(NOW - 30_000);
+    tick([gone], null, { other: { activityState: 'working' } });
+    expect(gone.hasLive()).toBe(false);
+
+    const early = fakeTurn(NOW - 30_000);
+    tick([early], null);
+    expect(early.hasLive()).toBe(true);
+    expect(early.slot.innerHTML).toContain('압축 중 · 0:30');
   });
 
   it('cpTick: nothing live → the timer stops', () => {
