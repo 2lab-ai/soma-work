@@ -148,7 +148,7 @@ function fakeDocument(ids: string[], skeletons = 3) {
 }
 
 const BOARD_FNS = ['setBoardLoad', 'retryBoardLoad'];
-const LOAD_VARS = ['_boardLoad', '_heldWsBoard', '_sessionsSeq', 'BOARD_LOAD_TIMEOUT_MS'];
+const LOAD_VARS = ['_boardLoad', '_heldWsBoard', '_sessionsSeq', '_sessionsCtl', 'BOARD_LOAD_TIMEOUT_MS'];
 
 describe('[T2] board — skeleton until the first board paints', () => {
   it('the served board starts loading: aria-busy, data-load="loading"', () => {
@@ -432,19 +432,21 @@ describe('[T2] board — only a poll answer certifies the board (review R1/R2)',
     expect(d.byId['board-error'].hidden).toBe(false);
   });
 
-  it('slow polls never starve each other: overlapping same-user polls all paint (review R2)', async () => {
+  it('certified, slow polls never starve each other: overlapping same-user polls all paint (review R2)', async () => {
     const answers: Array<(v: unknown) => void> = [];
     const { m, painted } = harness(() => new Promise((r) => answers.push(r)));
+    const first = m.loadSessions();
+    answers[0](ok(board('p0')));
+    await first;
+    expect(m._state._boardLoad).toBe('ready');
     // Three 30 s polls start before the first (40 s) answer lands.
     const loads = [m.loadSessions(), m.loadSessions(), m.loadSessions()];
-    answers[0](ok(board('p1')));
+    answers[1](ok(board('p1')));
     await loads[0];
-    expect(painted).toEqual([board('p1')]);
-    expect(m._state._boardLoad).toBe('ready');
-    answers[1](ok(board('p2')));
-    answers[2](ok(board('p3')));
+    answers[2](ok(board('p2')));
+    answers[3](ok(board('p3')));
     await Promise.all(loads);
-    expect(painted).toHaveLength(3);
+    expect(painted).toEqual([board('p0'), board('p1'), board('p2'), board('p3')]);
   });
 
   it('ws.onmessage goes through paintPushedBoard', () => {
@@ -466,6 +468,7 @@ describe('[T3] first load is bounded; partial data is never announced as the boa
   type Call = { url: string; signal?: AbortSignal; settle(v: unknown): void; fail(e: unknown): void };
   function harness() {
     const d = fakeDocument(['kanban', 'board-error']);
+    d.byId['board-error'].hidden = true; // as served
     const calls: Call[] = [];
     const painted: Array<{ board: unknown; partial: unknown; state: string }> = [];
     let m!: Api;
@@ -564,11 +567,30 @@ describe('[T3] first load is bounded; partial data is never announced as the boa
     await vi.waitFor(() => expect(m._state._boardLoad).toBe('failed'));
   });
 
+  it('before certification a newer load aborts the one it replaces (no wasted sibling fan-out; #487 review, grok P2)', async () => {
+    const { d, m, calls } = harness();
+    const older = m.loadSessions(); // first load, hanging
+    m.loadSessions(); // a toggle / user switch / 다시 시도 asks again
+    expect(calls[0].signal?.aborted).toBe(true);
+    expect(calls[1].signal?.aborted).toBe(false);
+    await older; // its abort is a superseded failure: nothing flips
+    expect(m._state._boardLoad).toBe('loading');
+    expect(d.byId['board-error'].hidden).toBe(true);
+    calls[1].settle(res(board('poll')));
+    await vi.waitFor(() => expect(m._state._boardLoad).toBe('ready'));
+    // Certified: the next load leaves the previous one alone (no controller to abort).
+    m.loadSessions();
+    m.loadSessions();
+    expect(calls[2].signal).toBeUndefined();
+  });
+
   it('renderBoard announces only a certified board', () => {
     const body = clientFn('renderBoard');
     expect(body.startsWith('function renderBoard(board, partial) {')).toBe(true);
     // Unspecified: whatever is painted while the board is in error is partial (toggles re-render it too).
-    expect(body).toContain("if (partial === undefined) partial = _boardLoad === 'failed';");
+    // Anything painted before the board is certified is partial — also a re-render during
+    // 다시 시도 (cron poll, visibility, toggles) of the partial cards (#487 review, fable P2).
+    expect(body).toContain("if (partial === undefined) partial = _boardLoad !== 'ready';");
     expect(body).toContain('if (!partial) announceBoard(');
     expect(clientFn('loadSessions')).toContain('renderBoard(data.board, false);');
   });
