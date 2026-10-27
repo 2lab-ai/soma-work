@@ -1029,8 +1029,16 @@ check_entry "$plist" root:wheel "$OWN_ROOT" 0644
 # Group soma-devops reaches the socket and the data root: nobody but the bot user may be in it.
 members=$(dscl_words "/Groups/$BROKER_GROUP" GroupMembership || true)
 others=$(printf '%s\n' "$members" | grep -vx -e "$BOT_USER" -e '' | tr '\n' ' ' || true)
-if dscl . -read "/Groups/$BROKER_GROUP" NestedGroups >/dev/null 2>&1; then
+# Not dscl_words: a query that fails must not pass as "no nested groups". A missing attribute is exit 0 with nothing
+# on stdout (dscl prints "No such key" on stderr).
+nested_status=0
+nested=$(dscl . -read "/Groups/$BROKER_GROUP" NestedGroups 2>/dev/null) || nested_status=$?
+if [ "$nested_status" != 0 ]; then
+  check_line FAIL "cannot read the nested groups of group $BROKER_GROUP (dscl exit $nested_status); fix the directory record, then run the installer again"
+elif [ "${nested#NestedGroups:}" != "$nested" ]; then
   check_line FAIL "group $BROKER_GROUP has nested groups; remove them (dseditgroup -o edit -d <group> -t group $BROKER_GROUP)"
+elif [ -n "$nested" ]; then
+  check_line FAIL "unexpected dscl output for NestedGroups of $BROKER_GROUP"
 elif [ -n "$others" ]; then
   check_line FAIL "group $BROKER_GROUP has members other than $BOT_USER: ${others% }; remove them (dseditgroup -o edit -d <user> -t user $BROKER_GROUP)"
 elif ! in_list "$BOT_USER" "$members"; then
