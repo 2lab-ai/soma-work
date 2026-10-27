@@ -219,7 +219,9 @@ describe('[T2] board — skeleton until the first board paints', () => {
 
   it('renderBoard drops the skeleton nodes after the reconciler; only a poll answer latches ready', () => {
     const body = clientFn('renderBoard');
-    const drop = "document.querySelectorAll('.col-skel').forEach(function(n) { n.remove(); });";
+    // Only a certified paint drops them: after a partial paint, 다시 시도 still has a
+    // loading cue for the columns the partial data left empty (#487 review, astra P2).
+    const drop = "if (!partial) document.querySelectorAll('.col-skel').forEach(function(n) { n.remove(); });";
     expect(body).toContain(drop);
     // After the reconciler has drawn real cards: a render that throws on the way leaves
     // the skeleton, and loadSessions' catch shows 다시 시도 (review R1, fable P2).
@@ -769,8 +771,10 @@ describe('[T3] skeleton motion and accessibility', () => {
     expect(blocks.some((b) => /\.sk\b[^{]*\{[^}]*animation: none !important/.test(b))).toBe(true);
   });
 
-  it('skeletons show only while the board is loading', () => {
+  it('skeletons show only while the board is loading, and only in columns with no cards yet', () => {
     expect(CSS).toMatch(/\.kanban:not\(\[data-load="loading"\]\) \.col-skel \{ display: none; \}/);
+    // 다시 시도 after a partial paint: a column showing partial cards needs no skeleton above them.
+    expect(CSS).toMatch(/\.kanban-col:has\(> \.cards:not\(:empty\)\) \.col-skel \{ display: none; \}/);
   });
 
   it('counts and "Nothing here" are claims about the whole board: only a certified (ready) board shows them (#482)', () => {
