@@ -20,7 +20,6 @@ import {
 } from '../compact-state';
 import type { CompletionMessageTracker } from '../completion-message-tracker';
 import type { ContextWindowManager } from '../context-window-manager';
-import type { DeployCompletedHookContext, DeployCompletedSignal } from '../directives/deploy-completed-directive';
 import {
   buildInstructionConfirmBlocks,
   buildInstructionConfirmFallbackText,
@@ -559,17 +558,6 @@ interface StreamExecutorDeps {
     phase: AgentStreamEventOf<'steer_lifecycle'>['phase'];
   }) => void | Promise<void>;
   /**
-   * Host sink for `deploy_completed` from a DEPLOY-workflow session: a valid
-   * directive (`kind: 'completed'`) fires the lanes (cron jobs with onDeploy,
-   * or deploy-lanes.json) registered for that repo + target
-   * (src/deploy-lanes.ts); attempts that yielded no payload
-   * arrive as `kind: 'rejected'`. The host answers through `ctx.reply`, which
-   * posts one line in the deploy thread (retried once). Called without being
-   * awaited by the turn; a rejection is logged, never surfaced. Optional —
-   * without it the directive is still stripped from the visible text.
-   */
-  onDeployCompleted?: (signal: DeployCompletedSignal, ctx: DeployCompletedHookContext) => Promise<void>;
-  /**
    * Operator routing for `release_notes` (SOMA_RELEASE_NOTES_CHANNELS, parsed by
    * the host). Consulted only for a DEPLOY-workflow session; any other session,
    * or a host without it, posts the notes in its own channel (SESSION_ROUTING).
@@ -883,32 +871,6 @@ export class StreamExecutor {
   private bgWaitSuppressed = new Map<string, string>();
 
   constructor(private deps: StreamExecutorDeps) {}
-
-  /**
-   * One deploy-lane line in the deploy thread. A lost line is a lane nobody
-   * hears about, so a failed post is retried once, and the text is logged both
-   * times so it survives even when Slack does not take it.
-   */
-  private async postDeployLaneReply(
-    channel: string,
-    threadTs: string,
-    line: string,
-    sessionKey: string,
-  ): Promise<void> {
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        await this.deps.slackApi.postMessage(channel, line, { threadTs });
-        return;
-      } catch (error) {
-        this.logger.error(
-          attempt === 1
-            ? 'Failed to post deploy lane reply — retrying once'
-            : 'Failed to post deploy lane reply — line lost',
-          { sessionKey, channel, line, error: (error as Error)?.message },
-        );
-      }
-    }
-  }
 
   /**
    * Excludes `slack-block-kit` from the WorkflowComplete fan-out when the
@@ -1739,47 +1701,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       };
 
       // Create stream callbacks
-      // deploy_completed fires other users' cron lanes, so only the deploy
-      // workflow may send it: a lane session (default workflow) echoing one
-      // must not re-trigger lanes. Not awaited — the lanes are other sessions'
-      // work and the deploy turn must not wait on them.
-      const handOffDeploySignal = (signal: DeployCompletedSignal): void => {
-        const detail =
-          signal.kind === 'completed'
-            ? { repo: signal.payload.repo, target: signal.payload.target, after: signal.payload.after }
-            : { rejected: signal.rejections.map((r) => r.problem) };
-        if (session.workflow !== 'deploy') {
-          // A rejection outside a deploy session is usually prose quoting the
-          // directive: not worth a warning.
-          const log = signal.kind === 'completed' ? this.logger.warn : this.logger.debug;
-          log.call(this.logger, 'deploy_completed outside a deploy session — ignored', {
-            sessionKey,
-            workflow: session.workflow,
-            ...detail,
-          });
-          return;
-        }
-        const onDeployCompleted = this.deps.onDeployCompleted;
-        if (!onDeployCompleted) {
-          this.logger.warn('deploy_completed received but no onDeployCompleted hook is wired — no lane fired', {
-            sessionKey,
-            ...detail,
-          });
-          return;
-        }
-        this.logger.info('deploy_completed directive detected', { sessionKey, kind: signal.kind, ...detail });
-        const reply = (line: string) => this.postDeployLaneReply(channel, threadTs, line, sessionKey);
-        void Promise.resolve()
-          .then(() => onDeployCompleted(signal, { channel, threadTs, user, reply }))
-          .catch((error) => {
-            this.logger.error('Failed to handle deploy_completed directive', {
-              sessionKey,
-              ...detail,
-              error: (error as Error)?.message,
-            });
-          });
-      };
-
       const streamCallbacks: StreamCallbacks = {
         // HEARTBEAT. The transport spoke — that is all this proves, so it
         // advances `lastSignalAt` and nothing else. Advancing the progress
@@ -2039,8 +1960,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         },
         onReleaseNotesDetected: async (payload) => {
-          // Cross-channel posting is a deploy-workflow privilege, like deploy_completed:
-          // any other session echoing the directive stays in its own channel.
+          // Cross-channel posting is a deploy-workflow privilege: any other
+          // session echoing the directive stays in its own channel.
           const routing =
             session.workflow === 'deploy' && this.deps.routeReleaseNotes
               ? this.deps.routeReleaseNotes(payload.repo, payload.target)
@@ -2069,12 +1990,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             // The directive is already stripped from the reply: say so where the deployer looks.
             await reportReleaseNotesFailure(this.deps.slackApi, channel, threadTs, payload, error);
           }
-        },
-        onDeployCompletedDetected: async (payload) => {
-          handOffDeploySignal({ kind: 'completed', payload });
-        },
-        onDeployCompletedRejected: async (rejections) => {
-          handOffDeploySignal({ kind: 'rejected', rejections });
         },
         onSourceWorkingDirDetected: async (dirPath) => {
           try {

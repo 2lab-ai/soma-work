@@ -237,6 +237,29 @@ describe('qa-report build.mjs — closeout outcomes', () => {
     expect(r.right).toContain('PROJ-1');
   });
 
+  // deploy-qa without the QA lock QA's nothing: no qa-issue JSON exists, so the input has no issues.
+  it("builds a report with no QA'd issue: every key a nonQa row", () => {
+    const { run, out } = build({
+      meta: { repo: 'acme/app', target: 'deploy/staging', status: 'deployed, QA incomplete: QA lock unavailable' },
+      issues: [],
+      nonQa: [
+        { key: 'PROJ-1', status: 'not-run', reason: 'QA lock unavailable' },
+        { key: 'PROJ-2', status: 'report-only', reason: 'docs only' },
+      ],
+      outcomes: {
+        'PROJ-1': { outcome: 'not-run', reason: 'QA lock unavailable' },
+        'PROJ-2': { outcome: 'report-only', reason: 'docs only' },
+      },
+    });
+    expect(run.status, run.stderr).toBe(0);
+    expect(JSON.parse(run.stdout)).toMatchObject({ keys: 2, pass: 0, fail: 0, other: 2 });
+    const r = runReport(readFileSync(out, 'utf8'));
+    expect(row(r.left, 'PROJ-1')?.status).toBe('not-run');
+    expect(row(r.left, 'PROJ-2')?.status).toBe('report-only');
+    expect(r.left).toContain('QA lock unavailable');
+    expect(r.right).toContain('PROJ-1');
+  });
+
   it('refuses outcomes for keys that have no row', () => {
     const { run } = build({
       issues: [passIssue('PROJ-1', true)],

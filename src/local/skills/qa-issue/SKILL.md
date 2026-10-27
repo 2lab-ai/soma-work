@@ -19,6 +19,16 @@ $local:qa-issue <KEY> qa=<default|medium|high|max> env=<profile> [transition=don
 - `transition=done` is granted only by the caller (`deploy-qa` passes it with `mergeShas`, `excludeBases`, `excludeHeads`, `runDir`). Without it, never move the issue to done.
 - The caller owns `lockDir`. Never take or release the lock here.
 
+## GitHub calls
+
+Read GitHub through its REST API with curl; this works inside a sandboxed session, where the `gh` CLI's own network calls can fail (TLS verification), so do not use them. `gh auth token` only reads the stored token and works there. A **GitHub call** is:
+
+```bash
+curl -fsSL --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/<path>"
+```
+
+Write the whole form in every shell call, both timeouts included (shell state does not carry over), and read fields with `jq`. A non-zero exit is a failed call. Paging: add `per_page=100&page=N` and request N = 1, 2, … until a page holds fewer than 100 items (or follow the `rel="next"` URL of the `Link` response header, dumped with `-D <file>`, until there is none). A call that failed or timed out, or paging that stopped early, leaves the list incomplete — never read it as empty or complete.
+
 ## Profile fields
 
 - Every run: `keyPattern`; `deploy` (per repo: how to read the running version and the running commit); `tracker` (site, state IDs for qa / done / in-progress, comment conventions); `qaEnv` (health URL(s), API bases, front-end URLs, test-account references, browser primitives `open` / `eval` / `screenshot`, screenshots directory); `lockDir` when no `runDir=` is passed. Optional: `severity`.
@@ -28,7 +38,7 @@ $local:qa-issue <KEY> qa=<default|medium|high|max> env=<profile> [transition=don
 ## Procedure
 
 1. `<KEY>` must fully match `keyPattern`; otherwise verdict `blocked`, reason `key-mismatch`. Read the issue: state, assignee, description, linked PRs.
-2. Deploy check: read the running version → `env.versionStart`. With `mergeShas`, for each `<repo>:<mergeSha>` read that repo's running commit per its `deploy` entry and require `gh api repos/<repo>/compare/<mergeSha>...<runningSha> --jq .status` ∈ `ahead|identical`. Health unreachable, version or commit unreadable, or any other status → verdict `blocked`, reason `not-deployed`.
+2. Deploy check: read the running version → `env.versionStart`. With `mergeShas`, for each `<repo>:<mergeSha>` read that repo's running commit per its `deploy` entry and require a GitHub call to `repos/<repo>/compare/<mergeSha>...<runningSha>` piped to `jq -r .status` ∈ `ahead|identical`. Health unreachable, version or commit unreadable, or any other status → verdict `blocked`, reason `not-deployed`.
 3. Build cases for the QA level: `catalog=` first; otherwise derive them from the issue text and the PR diffs. Zero cases → verdict `blocked`, reason `no cases`.
 4. Run the cases one at a time and collect evidence (see Evidence).
 5. Generation check (below), after the cases.
@@ -65,7 +75,7 @@ Enforce exactly the conditions the profile lists. A condition you cannot evaluat
 
 - **state** — current state ID equals the profile's qa state.
 - **depth** — `qaLevel` is `max`.
-- **no open PR** — for each repo in `repos`, list every open PR: `gh pr list -R <repo> --state open --limit 1000 --json number,title,headRefName,baseRefName`. If the count reaches the limit, page through `gh api --paginate "repos/<repo>/pulls?state=open&per_page=100"`. A list you cannot prove complete → unmet. A PR counts when its title or head branch contains this exact key (`keyPattern` match, never substring), minus excluded PRs (the same rule as admission): base equals an `excludeBases` entry (exact match), or head matches an `excludeHeads` entry — an entry ending in `/` is a prefix, any other entry is an exact match. Absent → exclude nothing. Never use `gh search`.
+- **no open PR** — for each repo in `repos`, list every open PR with GitHub calls to `repos/<repo>/pulls?state=open&per_page=100&page=N`, N = 1, 2, … until a page holds fewer than 100 PRs (fields `number`, `title`, `head.ref`, `base.ref`). A list you cannot prove complete → unmet. A PR counts when its title or head branch contains this exact key (`keyPattern` match, never substring), minus excluded PRs (the same rule as admission): base equals an `excludeBases` entry (exact match), or head matches an `excludeHeads` entry — an entry ending in `/` is a prefix, any other entry is an exact match. Absent → exclude nothing. Never use the search API (`search/…`).
 - **contained** — step 2's per-repo compare holds for every `mergeSha`, re-read now. Running commit unreadable or no `mergeShas` → unmet.
 
 ## Browser adapter

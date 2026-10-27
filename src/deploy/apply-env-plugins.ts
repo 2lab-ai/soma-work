@@ -178,9 +178,10 @@ export function mergeEnvPlugins(config: Record<string, unknown>, entries: EnvPlu
  * Atomic write: same-directory temp (O_EXCL|O_NOFOLLOW) → fsync → chmod 0600 →
  * rename. Hand-rolled because `@soma/common/atomic-write` is not loadable
  * before `npm ci` on the target. No `.bak`: the merge only adds, and
- * sync-bundle would delete a backup on the next deploy anyway.
+ * sync-bundle would delete a backup on the next deploy anyway. Also used by
+ * `apply-deploy-sandbox.ts`, which writes the same file in the same step.
  */
-function writeConfigAtomically(configFile: string, content: string): void {
+export function writeConfigAtomically(configFile: string, content: string): void {
   const dir = path.dirname(configFile);
   const tmp = path.join(dir, `.${path.basename(configFile)}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`);
   let fd: number | undefined;
@@ -227,7 +228,7 @@ function statOrNull(filePath: string, follow: boolean): fs.Stats | null {
  * before sync-bundle, which creates a missing target, so to the check a target
  * that does not exist yet is one without a config.json.
  */
-function inspectTarget(targetDir: string, checkOnly: boolean): { configFile: string; raw: string | null } {
+export function inspectTarget(targetDir: string, checkOnly: boolean): { configFile: string; raw: string | null } {
   const configFile = path.join(targetDir, 'config.json');
   const dir = statOrNull(targetDir, true);
   if (!dir) {
