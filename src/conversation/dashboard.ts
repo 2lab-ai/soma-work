@@ -119,6 +119,15 @@ const logger = new Logger('Dashboard');
 /** A file the /dashboard/ui route serves: a flat `dist/*.js` name of @2lab.ai/ui (no dirs, no dots-only names). */
 export const UI_LIB_FILE = /^[A-Za-z0-9_][A-Za-z0-9_-]*\.js$/;
 let uiLibDir: string | null | undefined;
+/** Installed @2lab.ai/ui version — busts the browser cache of the entry file (served for an hour) on upgrade. */
+const UI_LIB_VERSION = encodeURIComponent(uiLibVersion());
+function uiLibVersion(): string {
+  try {
+    return String(createRequire(__filename)('@2lab.ai/ui/package.json').version || '0');
+  } catch {
+    return '0';
+  }
+}
 /** `dist/` of the installed @2lab.ai/ui, or null (logged once) when the package is missing. */
 export function uiLibDistDir(): string | null {
   if (uiLibDir === undefined) {
@@ -3373,7 +3382,7 @@ function renderDashboardPage(userId?: string): string {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>soma-work Dashboard</title>
-<script type="module" src="/dashboard/ui/tool-call-card.js"></script>
+<script type="module" src="/dashboard/ui/tool-call-card.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -13989,6 +13998,7 @@ var WL_BACKFILL_MAX_PAGES = 2000;
 var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류' };
 var WL_EMPTY_MSG = '작업 로그 없음';
 var _wlCardsWait = false;
+var _wlDetailRev = 0;
 var WL_FORBIDDEN_MSG = '작업 로그는 세션 소유자만 볼 수 있어요';
 var WL_RAW_MISSING_MSG = '원본 출력이 저장되어 있지 않습니다';
 var WL_RAW_ERROR_MSG = '원본 출력을 불러오지 못했어요';
@@ -14699,8 +14709,10 @@ function showWorkLogEmpty(message) {
 
 // ── Tool calls as cards (@2lab.ai/ui <ui-tool-call-card>) ──
 // A call and its result are one card. The pair is matched by the SDK
-// tool-use id; entries written before the id was kept pair by agent + tool
-// name, the oldest unanswered call first.
+// tool-use id. Entries written before the id was kept pair by agent + tool
+// name: each result, from the newest back, takes the nearest earlier
+// unanswered call — so a window that starts after a call leaves that call's
+// result unpaired (its own card) rather than pinning it on a later call.
 function wlPairKey(e) {
   return (e.agentId ? String(e.agentId) : '') + '|' + String(e.tool || '');
 }
@@ -14709,38 +14721,55 @@ function wlPairTools(entries) {
   var resultOf = Object.create(null);
   var callOf = Object.create(null);
   var byId = Object.create(null);
-  var queues = Object.create(null);
   var list = entries || [];
+  function pair(call, res) {
+    resultOf[call.seq] = res;
+    callOf[res.seq] = call.seq;
+  }
+  // With ids: forward, first call of an id wins, first result of an id pairs.
   for (var i = 0; i < list.length; i++) {
     var e = list[i];
     if (!e || (e.kind !== 'tool' && e.kind !== 'tool_result')) continue;
     var id = typeof e.toolUseId === 'string' && e.toolUseId ? e.toolUseId : '';
+    if (!id) continue;
     if (e.kind === 'tool') {
-      if (id) byId[id] = e;
-      else (queues[wlPairKey(e)] || (queues[wlPairKey(e)] = [])).push(e);
+      if (!Object.prototype.hasOwnProperty.call(byId, id)) byId[id] = e;
       continue;
     }
-    var call = null;
-    if (id) {
-      call = Object.prototype.hasOwnProperty.call(byId, id) ? byId[id] : null;
-      if (call) delete byId[id];
-    } else {
-      var q = queues[wlPairKey(e)];
-      call = q && q.length ? q.shift() : null;
+    var call = Object.prototype.hasOwnProperty.call(byId, id) ? byId[id] : null;
+    if (call && resultOf[call.seq] === undefined) pair(call, e);
+  }
+  // Without ids: backward, each result to the nearest earlier unanswered call of its key.
+  var waiting = Object.create(null);
+  for (var j = list.length - 1; j >= 0; j--) {
+    var r = list[j];
+    if (!r || (r.kind !== 'tool' && r.kind !== 'tool_result') || r.toolUseId) continue;
+    var key = wlPairKey(r);
+    if (r.kind === 'tool_result') {
+      (waiting[key] || (waiting[key] = [])).push(r);
+      continue;
     }
-    if (call) {
-      resultOf[call.seq] = e;
-      callOf[e.seq] = call.seq;
-    }
+    var q = waiting[key];
+    if (q && q.length) pair(r, q.shift());
   }
   return { resultOf: resultOf, callOf: callOf };
 }
+// Recomputed when the entries change (a live entry, an older page). A card
+// whose result changed drops the input / output it loaded for the old pair.
 function wlPairsOf(state) {
   var n = state && state.entries ? state.entries.length : 0;
   if (!state.pairs || state.pairsN !== n || state.pairsOf !== state.entries) {
+    var before = state.pairs;
     state.pairs = wlPairTools(state.entries);
     state.pairsN = n;
     state.pairsOf = state.entries;
+    if (before && state.cardDetail) {
+      for (var k in state.cardDetail) {
+        var was = before.resultOf[k];
+        var now = state.pairs.resultOf[k];
+        if ((was && was.seq) !== (now && now.seq)) delete state.cardDetail[k];
+      }
+    }
   }
   return state.pairs;
 }
@@ -14804,13 +14833,14 @@ function wlCardData(state, key, stop) {
   return d;
 }
 // Same data → the card is left alone (no re-render, focus and timers kept).
-function wlCardSig(d) {
+// Input / output enter by the revision of the load that produced them (each
+// load gets a new one), not by content: hashing 256 KiB on every push costs.
+function wlCardSig(d, rev) {
   if (!d) return '';
   var keys = ['name', 'summary', 'status', 'focusable', 'open', 'at', 'duration', 'loading', 'note', 'detailError', 'error'];
   var out = [];
   for (var i = 0; i < keys.length; i++) out.push(d[keys[i]]);
-  out.push(typeof d.args === 'string' ? d.args.length : d.args === undefined ? -1 : 1);
-  out.push(typeof d.result === 'string' ? d.result.length : d.result === undefined ? -1 : 1);
+  out.push(d.args === undefined ? -1 : 1, d.result === undefined ? -1 : 1, rev || 0);
   return JSON.stringify(out);
 }
 function wlPaintCard(state, el) {
@@ -14818,7 +14848,13 @@ function wlPaintCard(state, el) {
   var key = Math.floor(Number(el.getAttribute('data-key')) || 0);
   var d = wlCardData(state, key, el.getAttribute('data-stop') === '1');
   if (!d) return;
-  var sig = wlCardSig(d);
+  var det = state.cardDetail && state.cardDetail[key];
+  // Open without its input / output (a re-pairing dropped them, a fresh render): fetch them.
+  if (d.open && !det) {
+    wlLoadCardDetail(state, key);
+    return;
+  }
+  var sig = wlCardSig(d, det && det.rev);
   if (el._wlSig === sig) return;
   el._wlSig = sig;
   el.data = d;
@@ -14862,11 +14898,13 @@ function wlLoadCardDetail(state, key) {
   var call = carrier.kind === 'tool' ? carrier : null;
   var res = call ? wlPairsOf(state).resultOf[call.seq] || null : carrier;
   var details = state.cardDetail || (state.cardDetail = Object.create(null));
-  details[key] = { loading: true };
+  var pending = { loading: true, rev: ++_wlDetailRev };
+  details[key] = pending;
   wlPaintCard(state, wlCardEl(key));
   Promise.all([wlPartLoad(state, call), wlPartLoad(state, res)]).then(function(parts) {
-    if (state !== _wl || state.closed) return;
-    var det = { loading: false };
+    // A newer load (or a re-pairing) owns this card now: drop the late answer.
+    if (state !== _wl || state.closed || details[key] !== pending) return;
+    var det = { loading: false, rev: ++_wlDetailRev };
     var notes = [];
     var fail = '';
     for (var i = 0; i < 2; i++) {
