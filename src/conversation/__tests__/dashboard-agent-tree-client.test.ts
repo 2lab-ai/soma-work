@@ -889,6 +889,50 @@ describe('panel — drill-down over the same node type (path · focused node · 
     expect(row('toolu_lib')).toContain('grok-4.7-build');
   });
 
+  it('a subagent with estimated calls reads ≈ and says how many calls were estimated (llmux zero usage)', () => {
+    const est = { ...AGENTS[2], spend: { ...SPEND, costUsd: 0.5, estimatedCalls: 3 } };
+    const { m, out } = panel('', card({ agents: [AGENTS[0], AGENTS[1], est] }));
+    m.renderPanelAgents();
+    const at = out.html.indexOf('data-agent-select="toolu_lib"');
+    const row = out.html.slice(out.html.lastIndexOf('<li ', at), out.html.indexOf('</li>', at));
+    expect(row).toContain('10000 tok · ≈$0.50');
+    expect(row).toContain('usage가 기록되지 않은 호출 3회는 앞뒤 호출로 추정');
+  });
+
+  it('a subagent that started foreground subagents of its own says their calls are in its number', () => {
+    const lead = { ...AGENTS[2], spend: { ...SPEND, calls: 9, nestedAgents: 2 } };
+    const { m, out } = panel('', card({ agents: [AGENTS[0], AGENTS[1], lead] }));
+    m.renderPanelAgents();
+    const at = out.html.indexOf('data-agent-select="toolu_lib"');
+    const row = out.html.slice(out.html.lastIndexOf('<li ', at), out.html.indexOf('</li>', at));
+    expect(row).toContain('트리에 따로 없는 하위 에이전트 2개 포함');
+    expect(row).not.toContain('하위 에이전트 제외');
+  });
+
+  it('the root marks the subagents’ share ≈ when any of it is estimated', () => {
+    const s = card({
+      tokenUsage: {
+        totalInputTokens: 1000,
+        totalOutputTokens: 1000,
+        totalCacheReadTokens: 8000,
+        totalCacheCreateTokens: 0,
+        totalCostUsd: 3.5,
+      },
+      subagentSpend: {
+        agents: 3,
+        inputTokens: 100,
+        outputTokens: 100,
+        cacheReadTokens: 800,
+        cacheCreateTokens: 0,
+        costUsd: 0.75,
+        estimated: true,
+      },
+    });
+    const { m, out } = panel('', s);
+    m.renderPanelAgents();
+    expect(out.html).toContain('서브 3개 1000 tok · ≈$0.75');
+  });
+
   it('the root header is the task total — main and every subagent — with the subagents’ share beside it', () => {
     const s = card({
       tokenUsage: {

@@ -17,6 +17,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   type AgentRegistry,
   applyAgentEvent,
+  SPEND_CALC_VERSION,
   sanitizeAgentRegistry,
   stampWorkLogAgent,
   subagentSpendOf,
@@ -296,6 +297,121 @@ describe('agent spend — read from the subagent transcript (T2)', () => {
   });
 });
 
+describe('agent spend — calls the transcript recorded with no usage (llmux models)', () => {
+  // dev 2026-10-27: gpt-6-astra and grok-4.7-build leave 53% / 57% of their
+  // calls with all-zero usage in the transcript (claude models: 0%), while the
+  // llmux proxy records a real usage for every one of them. Counting the zeros
+  // as nothing showed those subagents 2-20x too low.
+  it('a zero-usage call is estimated from the calls around it, and the spend says how many were', async () => {
+    writeAgent('aaaa1111', [
+      assistant('m1', 'grok-4.7-build', [100, 10, 900, 0]),
+      assistant('m2', 'grok-4.7-build', [0, 0, 0, 0]),
+      assistant('m3', 'grok-4.7-build', [300, 30, 2700, 0]),
+    ]);
+    const h = holder();
+    await createAgentSpendReader({ configDir, price, isPriced, now: () => T0 }).refresh(h);
+    const s = h.agents!.agents[0].spend!;
+    // m2 = halfway between m1 and m3 for every context field; output = the mean reported output.
+    expect(s).toMatchObject({
+      inputTokens: 600,
+      cacheReadTokens: 5400,
+      cacheCreateTokens: 0,
+      outputTokens: 60,
+      calls: 3,
+    });
+    expect(s.estimatedCalls).toBe(1);
+  });
+
+  it('a zero-usage call at either end takes its one reported neighbour', async () => {
+    writeAgent('aaaa1111', [
+      assistant('m1', 'gpt-6-astra', [0, 0, 0, 0]),
+      assistant('m2', 'gpt-6-astra', [50, 4, 450, 0]),
+      assistant('m3', 'gpt-6-astra', [0, 0, 0, 0]),
+    ]);
+    const h = holder();
+    await createAgentSpendReader({ configDir, price, isPriced, now: () => T0 }).refresh(h);
+    expect(h.agents!.agents[0].spend).toMatchObject({
+      inputTokens: 150,
+      cacheReadTokens: 1350,
+      outputTokens: 12,
+      estimatedCalls: 2,
+    });
+  });
+
+  it('a cache miss next to a zero-usage call is not spread into it: context interpolated, split by the median shares', async () => {
+    writeAgent('aaaa1111', [
+      assistant('m1', 'gpt-6-astra', [50_000, 10, 1_000, 0]), // cache miss: 98% uncached
+      assistant('m2', 'gpt-6-astra', [0, 0, 0, 0]),
+      assistant('m3', 'gpt-6-astra', [100, 10, 51_000, 0]),
+      assistant('m4', 'gpt-6-astra', [100, 10, 52_000, 0]),
+    ]);
+    const h = holder();
+    await createAgentSpendReader({ configDir, price, isPriced, now: () => T0 }).refresh(h);
+    const s = h.agents!.agents[0].spend!;
+    // m2: context halfway (51,050), uncached share = the median (~0.2%) → ~100 input, the rest cache read.
+    expect(s.inputTokens).toBeGreaterThanOrEqual(50_300);
+    expect(s.inputTokens).toBeLessThanOrEqual(50_310);
+    expect(s.inputTokens + s.cacheReadTokens + s.cacheCreateTokens).toBe(51_000 + 51_050 + 51_100 + 52_100);
+    expect(s.estimatedCalls).toBe(1);
+  });
+
+  it('an agent none of whose calls reported usage stays unreported — nothing is invented', async () => {
+    writeAgent('aaaa1111', [
+      assistant('m1', 'gpt-6-astra', [0, 0, 0, 0]),
+      assistant('m2', 'gpt-6-astra', [0, 0, 0, 0]),
+    ]);
+    const h = holder();
+    await createAgentSpendReader({ configDir, price, isPriced, now: () => T0 }).refresh(h);
+    const s = h.agents!.agents[0].spend!;
+    expect(s.inputTokens + s.outputTokens + s.cacheReadTokens + s.cacheCreateTokens).toBe(0);
+    expect(s.calls).toBe(2);
+    expect(s.estimatedCalls).toBeUndefined();
+  });
+
+  it('review #472 — a spend sealed by an older calculation is unsealed on restore, so the new one re-reads it', () => {
+    const h = holder();
+    const a = h.agents!.agents[0];
+    a.spend = { inputTokens: 1, outputTokens: 1, cacheReadTokens: 1, cacheCreateTokens: 0, costUsd: 0.1, calls: 2 };
+    a.spendFinal = true; // sealed before spend carried a calculation version
+    const old = sanitizeAgentRegistry(JSON.parse(JSON.stringify(h.agents)))!;
+    expect(old.agents[0].spendFinal).toBeUndefined();
+    expect(old.agents[0].spend).toBeDefined();
+    a.spend.version = SPEND_CALC_VERSION;
+    const current = sanitizeAgentRegistry(JSON.parse(JSON.stringify(h.agents)))!;
+    expect(current.agents[0].spendFinal).toBe(true);
+  });
+
+  it('review #472 — every read stamps the current calculation version, and a long zero run stays linear', async () => {
+    const lines = [assistant('m0', 'gpt-6-astra', [10, 1, 90, 0])];
+    for (let i = 1; i <= 20_000; i++) lines.push(assistant(`m${i}`, 'gpt-6-astra', [0, 0, 0, 0]));
+    writeAgent('aaaa1111', lines);
+    const h = holder();
+    const t0 = Date.now();
+    await createAgentSpendReader({ configDir, price, isPriced, now: () => T0 }).refresh(h);
+    const s = h.agents!.agents[0].spend!;
+    expect(s.version).toBe(SPEND_CALC_VERSION);
+    expect(s.estimatedCalls).toBe(20_000);
+    expect(s.inputTokens).toBe(10 * 20_001);
+    expect(Date.now() - t0).toBeLessThan(5_000);
+  });
+
+  it('estimates are kept across a restart and flag the subagent sum', () => {
+    const h = holder();
+    h.agents!.agents[0].spend = {
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 1,
+      cacheCreateTokens: 0,
+      costUsd: 0.1,
+      calls: 3,
+      estimatedCalls: 2,
+    };
+    const back = sanitizeAgentRegistry(JSON.parse(JSON.stringify(h.agents)))!;
+    expect(back.agents[0].spend!.estimatedCalls).toBe(2);
+    expect(subagentSpendOf(back)!.estimated).toBe(true);
+  });
+});
+
 describe('agent spend — registry: persisted, and the subagent sum survives the record cap', () => {
   const spend = (n: number) => ({
     inputTokens: n,
@@ -309,7 +425,7 @@ describe('agent spend — registry: persisted, and the subagent sum survives the
   it('round-trips spend, the SDK session and the seal through sanitizeAgentRegistry', () => {
     const h = holder();
     const a = h.agents!.agents[0];
-    a.spend = { ...spend(7), unpricedModels: ['grok-4.7-build'] };
+    a.spend = { ...spend(7), unpricedModels: ['grok-4.7-build'], version: SPEND_CALC_VERSION };
     a.sdkSessionId = SID;
     a.spendFinal = true;
     const { calls: _calls, ...pruned } = spend(3);
@@ -471,5 +587,192 @@ describe('agent spend — startup backfill (subagents that ended before this pro
       (key) => changed.push(key),
     );
     expect(changed).toEqual(['C1:ok']);
+  });
+});
+
+describe('agent spend — subagents a subagent started in the foreground (never in the registry)', () => {
+  // dev 2026-10-27, this task's own session: 27 subagent transcripts, 22 in the
+  // registry. The 5 missing are general-purpose agents an astra-zhuge panelist
+  // started in the foreground (spawnDepth 2): their meta has no `toolUseId`,
+  // the host never sees their frames, so no record exists — and their ~14M
+  // tokens (raw, before the zero-usage estimate) were in the task total (the
+  // SDK counts every call) but in no subagent. Each is counted on the nearest
+  // registered agent above it (`parentAgentId` in its meta).
+  function writeMeta(taskId: string, meta: Record<string, unknown>) {
+    fs.writeFileSync(path.join(subDir, `agent-${taskId}.meta.json`), JSON.stringify(meta));
+  }
+
+  it('their calls are counted on the registered agent that started them, depth 3 included', async () => {
+    writeAgent('aaaa1111', [assistant('p1', 'claude-opus-5-5', [10, 5, 100, 0])]);
+    writeMeta('aaaa1111', { agentType: 'Explore', toolUseId: 'toolu_a', spawnDepth: 1 });
+    writeAgent('bbbb2222', [assistant('c1', 'grok-4.7-build', [100, 10, 900, 0])]);
+    writeMeta('bbbb2222', { agentType: 'general-purpose', parentAgentId: 'aaaa1111', spawnDepth: 2 });
+    writeAgent('cccc3333', [assistant('g1', 'gpt-6-astra', [1, 1, 1, 0])]);
+    writeMeta('cccc3333', { agentType: 'general-purpose', parentAgentId: 'bbbb2222', spawnDepth: 3 });
+    const h = holder();
+    await createAgentSpendReader({ configDir, price, isPriced, now: () => T0 }).refresh(h);
+    const s = h.agents!.agents[0].spend!;
+    expect(s).toMatchObject({
+      inputTokens: 111,
+      outputTokens: 16,
+      cacheReadTokens: 1001,
+      cacheCreateTokens: 0,
+      calls: 3,
+      nestedAgents: 2,
+    });
+    // Each transcript priced at its own model's rate.
+    expect(s.costUsd).toBeCloseTo((10 + 10 + 100) / 1e6 + (10 * (100 + 20 + 900)) / 1e6 + (10 * (1 + 2 + 1)) / 1e6);
+    expect(s.unpricedModels).toEqual(['gpt-6-astra', 'grok-4.7-build']);
+    // The subagent sum holds them once.
+    expect(subagentSpendOf(h.agents)).toMatchObject({ agents: 1, inputTokens: 111, cacheReadTokens: 1001 });
+  });
+
+  it('a nested agent with its own record (background, tool use id) keeps its own spend — never counted twice', async () => {
+    writeAgent('aaaa1111', [assistant('p1', 'claude-opus-5-5', [10, 0, 0, 0])]);
+    writeAgent('dddd4444', [assistant('d1', 'claude-opus-5-5', [40, 0, 0, 0])]);
+    writeMeta('dddd4444', { agentType: 'Explore', toolUseId: 'toolu_d', parentAgentId: 'aaaa1111', spawnDepth: 2 });
+    // A transcript with a tool use id but no record (the cap dropped it into prunedSpend) is not re-counted.
+    writeAgent('eeee5555', [assistant('e1', 'claude-opus-5-5', [500, 0, 0, 0])]);
+    writeMeta('eeee5555', { agentType: 'Explore', toolUseId: 'toolu_gone', parentAgentId: 'aaaa1111', spawnDepth: 2 });
+    const h = holder();
+    applyAgentEvent(h, { kind: 'spawn', agentId: 'toolu_d', parentAgentId: 'toolu_a', background: true, ts: T0 + 2 });
+    applyAgentEvent(h, {
+      kind: 'lifecycle',
+      agentId: 'toolu_d',
+      taskId: 'dddd4444',
+      phase: 'started',
+      taskType: 'local_agent',
+      ts: T0 + 3,
+    } as any);
+    await createAgentSpendReader({ configDir, price, isPriced, now: () => T0 }).refresh(h);
+    const [a, d] = h.agents!.agents;
+    expect(a.spend).toMatchObject({ inputTokens: 10, calls: 1 });
+    expect(a.spend!.nestedAgents).toBeUndefined();
+    expect(d.spend).toMatchObject({ inputTokens: 40, calls: 1 });
+    expect(subagentSpendOf(h.agents)).toMatchObject({ agents: 2, inputTokens: 50 });
+  });
+
+  it('a zero-usage call is estimated inside its own transcript, not across agents', async () => {
+    writeAgent('aaaa1111', [assistant('p1', 'claude-opus-5-5', [10, 1, 90, 0])]);
+    writeAgent('bbbb2222', [
+      assistant('c1', 'gpt-6-astra', [0, 0, 0, 0]),
+      assistant('c2', 'gpt-6-astra', [100, 10, 900, 0]),
+    ]);
+    writeMeta('bbbb2222', { agentType: 'general-purpose', parentAgentId: 'aaaa1111', spawnDepth: 2 });
+    const h = holder();
+    await createAgentSpendReader({ configDir, price, isPriced, now: () => T0 }).refresh(h);
+    // c1 takes c2 (its own neighbour), not p1.
+    expect(h.agents!.agents[0].spend).toMatchObject({
+      inputTokens: 210,
+      outputTokens: 21,
+      cacheReadTokens: 1890,
+      calls: 3,
+      estimatedCalls: 1,
+      nestedAgents: 1,
+    });
+  });
+
+  it('the seal waits for a nested transcript too: a half-written last line there keeps the agent open', async () => {
+    writeAgent('aaaa1111', [assistant('p1', 'claude-opus-5-5', [10, 0, 0, 0])]);
+    const nested = writeAgent('bbbb2222', [assistant('c1', 'claude-opus-5-5', [5, 0, 0, 0])]);
+    fs.appendFileSync(nested, assistant('c2', 'claude-opus-5-5', [7, 0, 0, 0]).slice(0, 30));
+    writeMeta('bbbb2222', { agentType: 'general-purpose', parentAgentId: 'aaaa1111', spawnDepth: 2 });
+    const h = holder();
+    h.agents!.agents[0].status = 'completed';
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => T0 });
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spend).toMatchObject({ inputTokens: 15, nestedAgents: 1 });
+    expect(h.agents!.agents[0].spendFinal).toBeUndefined();
+    fs.appendFileSync(nested, `${assistant('c2', 'claude-opus-5-5', [7, 0, 0, 0]).slice(30)}\n`);
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spend).toMatchObject({ inputTokens: 22, calls: 3, nestedAgents: 1 });
+    expect(h.agents!.agents[0].spendFinal).toBe(true);
+  });
+
+  it('review #472 r2 — a listed child whose transcript is not there yet keeps the agent from being sealed', async () => {
+    writeAgent('aaaa1111', [assistant('p1', 'claude-opus-5-5', [10, 0, 0, 0])]);
+    writeMeta('bbbb2222', { agentType: 'general-purpose', parentAgentId: 'aaaa1111', spawnDepth: 2 });
+    const h = holder();
+    h.agents!.agents[0].status = 'completed';
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => T0 });
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spend).toMatchObject({ inputTokens: 10, calls: 1 });
+    expect(h.agents!.agents[0].spendFinal).toBeUndefined();
+    writeAgent('bbbb2222', [assistant('c1', 'claude-opus-5-5', [5, 0, 0, 0])]);
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spend).toMatchObject({ inputTokens: 15, calls: 2, nestedAgents: 1 });
+    expect(h.agents!.agents[0].spendFinal).toBe(true);
+  });
+
+  it('review #472 r2 — a meta still being written holds the seal; one broken for good does not', async () => {
+    writeAgent('aaaa1111', [assistant('p1', 'claude-opus-5-5', [10, 0, 0, 0])]);
+    const meta = path.join(subDir, 'agent-bbbb2222.meta.json');
+    fs.writeFileSync(meta, '{"agentType":"general-pur'); // half-written, just now
+    const h = holder();
+    h.agents!.agents[0].status = 'completed';
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => T0 });
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spendFinal).toBeUndefined();
+    // Long broken (older than the settle window): no longer holds anything.
+    const old = (Date.now() - 10 * 60_000) / 1000;
+    fs.utimesSync(meta, old, old);
+    await reader.refresh(h, { force: true });
+    expect(h.agents!.agents[0].spendFinal).toBe(true);
+  });
+
+  it('a nested transcript that appears after a read is picked up by the next one', async () => {
+    writeAgent('aaaa1111', [assistant('p1', 'claude-opus-5-5', [10, 0, 0, 0])]);
+    const h = holder();
+    const reader = createAgentSpendReader({ configDir, price, isPriced, now: () => T0, minIntervalMs: 0 });
+    await reader.refresh(h);
+    expect(h.agents!.agents[0].spend).toMatchObject({ inputTokens: 10, calls: 1 });
+    writeAgent('bbbb2222', [assistant('c1', 'claude-opus-5-5', [5, 0, 0, 0])]);
+    writeMeta('bbbb2222', { agentType: 'general-purpose', parentAgentId: 'aaaa1111', spawnDepth: 2 });
+    await reader.refresh(h);
+    expect(h.agents!.agents[0].spend).toMatchObject({ inputTokens: 15, calls: 2, nestedAgents: 1 });
+  });
+
+  it('a bad meta (hostile parent id, symlink, loop, no parent) is ignored and never throws', async () => {
+    writeAgent('aaaa1111', [assistant('p1', 'claude-opus-5-5', [10, 0, 0, 0])]);
+    writeAgent('ffff6666', [assistant('f1', 'claude-opus-5-5', [1, 0, 0, 0])]);
+    writeMeta('ffff6666', { parentAgentId: '../../etc/passwd', spawnDepth: 2 });
+    writeAgent('gggg7777', [assistant('g1', 'claude-opus-5-5', [1, 0, 0, 0])]);
+    writeMeta('gggg7777', { parentAgentId: 'hhhh8888', spawnDepth: 2 });
+    writeAgent('hhhh8888', [assistant('h1', 'claude-opus-5-5', [1, 0, 0, 0])]);
+    writeMeta('hhhh8888', { parentAgentId: 'gggg7777', spawnDepth: 2 });
+    writeAgent('iiii9999', [assistant('i1', 'claude-opus-5-5', [1, 0, 0, 0])]);
+    writeMeta('iiii9999', { agentType: 'general-purpose', spawnDepth: 1 });
+    writeAgent('jjjj0000', [assistant('j1', 'claude-opus-5-5', [1, 0, 0, 0])]);
+    const target = path.join(configDir, 'meta-elsewhere.json');
+    fs.writeFileSync(target, JSON.stringify({ parentAgentId: 'aaaa1111', spawnDepth: 2 }));
+    fs.symlinkSync(target, path.join(subDir, 'agent-jjjj0000.meta.json'));
+    fs.writeFileSync(path.join(subDir, 'agent-kkkk1111.meta.json'), '{not json');
+    const h = holder();
+    await expect(createAgentSpendReader({ configDir, price, isPriced, now: () => T0 }).refresh(h)).resolves.toBe(true);
+    expect(h.agents!.agents[0].spend).toMatchObject({ inputTokens: 10, calls: 1 });
+    expect(h.agents!.agents[0].spend!.nestedAgents).toBeUndefined();
+  });
+
+  it('nestedAgents survives a restart, and a spend sealed before nested agents were counted is re-read', () => {
+    const h = holder();
+    const a = h.agents!.agents[0];
+    a.spend = {
+      inputTokens: 1,
+      outputTokens: 1,
+      cacheReadTokens: 1,
+      cacheCreateTokens: 0,
+      costUsd: 0.1,
+      calls: 4,
+      nestedAgents: 2,
+      version: SPEND_CALC_VERSION,
+    };
+    a.spendFinal = true;
+    const back = sanitizeAgentRegistry(JSON.parse(JSON.stringify(h.agents)))!;
+    expect(back.agents[0].spend!.nestedAgents).toBe(2);
+    expect(back.agents[0].spendFinal).toBe(true);
+    // Sealed by the calculation before this one (it did not look for nested agents): re-read.
+    a.spend.version = 2;
+    expect(sanitizeAgentRegistry(JSON.parse(JSON.stringify(h.agents)))!.agents[0].spendFinal).toBeUndefined();
+    expect(SPEND_CALC_VERSION).toBeGreaterThan(2);
   });
 });
