@@ -596,10 +596,11 @@ export async function postCompactCompleteIfNeeded(
   // "completed" text back to "starting".
   stopStartingTicker(session);
 
-  // Dashboard SSOT 2026-10-27 T2 — the SDK's boundary landed after the hook
-  // sealed this cycle without its numbers: hand them to the /compact turn (the
-  // recorder fills only what is missing).
-  if (marker.post === true && opts.source === 'on-compact-boundary') recordCompactOnTurn(session);
+  // Dashboard SSOT 2026-10-27 T2 — the SDK's boundary landed after this
+  // cycle's result was recorded (the hook got there first, without numbers —
+  // its Slack update may still be in flight): hand them to the /compact turn
+  // (the recorder fills only what is missing).
+  if (completionNoticed.has(marker) && opts.source === 'on-compact-boundary') recordCompactOnTurn(session);
 
   const postPromise =
     marker.post === true
