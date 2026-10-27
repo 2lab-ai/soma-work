@@ -97,6 +97,8 @@ describe('MetricsEventStore', () => {
       const line = JSON.stringify(makeEvent({ id: `d${i}`, timestamp: 1 }));
       fs.writeFileSync(path.join(TEST_METRICS_DIR, `metrics-events-${d}.jsonl`), `${line}\n`);
     }
+    // Run the one-time directory setup first, so the reads are all that is left to await.
+    await store.readRange(days[0], days[0]);
     const realReadFile = fs.promises.readFile;
     const gates: Array<() => void> = [];
     const spy = vi.spyOn(fs.promises, 'readFile').mockImplementation(
@@ -107,11 +109,15 @@ describe('MetricsEventStore', () => {
     );
 
     const pending = store.readRange(days[0], days[days.length - 1]);
-    for (let i = 0; i < 20 && spy.mock.calls.length < days.length; i++) await new Promise((r) => setImmediate(r));
-    // Every day's read is in flight before any of them has finished.
-    expect(spy.mock.calls.length).toBe(days.length);
-    // Finish them in reverse; the events still come back in date order.
-    for (const open of gates.reverse()) open();
+    try {
+      // Every day's read is in flight before any of them has finished.
+      await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(days.length));
+    } finally {
+      // Always: unhook, then finish the held reads in reverse — nothing leaks into the next test.
+      spy.mockRestore();
+      for (const open of gates.reverse()) open();
+    }
+    // The events still come back in date order.
     const events = await pending;
     expect(events.map((e) => e.id)).toEqual(['d0', 'd1', 'd2', 'd3', 'd4']);
   });
@@ -134,7 +140,7 @@ describe('MetricsEventStore', () => {
     const events = await store.readRange('2025-03-26', '2026-03-25');
     expect(events).toEqual([]);
     expect(peak).toBeGreaterThan(1);
-    expect(peak).toBeLessThanOrEqual(16);
+    expect(peak).toBeLessThanOrEqual(8);
   });
 
   // Trace: Scenario 1, Section 4 — file created on first write

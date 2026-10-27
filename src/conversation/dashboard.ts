@@ -1889,6 +1889,8 @@ function aggregateUserStats(events: MetricsEvent[], userId?: string): Map<string
 
   for (const ev of events) {
     if (userId && ev.userId !== userId) continue;
+    // A hand-edited line without a usable timestamp is skipped, not a 500 for the whole period.
+    if (typeof ev.timestamp !== 'number' || !Number.isFinite(ev.timestamp)) continue;
 
     const dateStr = KST_DAY.format(ev.timestamp);
     if (!dayMap.has(dateStr)) {
