@@ -5423,7 +5423,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sys-badge[data-kind="cron"] { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent); }
 .sys-line { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-slot { display: contents; }
-.cp-bar { flex: 0 1 120px; min-width: 48px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
+/* A narrow panel (phones) keeps a running compaction's elapsed / estimate
+   readable: the bar gives way first. A finished line truncates like any other. */
+.turn[data-cp-live] .cp-slot > .sys-line { flex-shrink: 0; }
+.cp-bar { flex: 1 1 120px; min-width: 0; max-width: 120px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
 .cp-bar > i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 1s linear; }
 .cp-bar.is-over > i { width: 100% !important; background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat; background-size: 40% 100%; animation: cp-over 1.4s linear infinite; }
 @keyframes cp-over { from { background-position: -40% 0; } to { background-position: 140% 0; } }
