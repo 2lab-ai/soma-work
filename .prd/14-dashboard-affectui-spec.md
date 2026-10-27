@@ -1,6 +1,6 @@
 # 14 — 대시보드 × affectUI 에이전트 UI 레퍼런스 7종
 
-Status: 머지 대기 · Date: 2026-10-26 · 기준 main `ff6c9ac` · 에픽 #437 (서브이슈 #438–#444)
+Status: 출고(main `9de150c`, 2026-10-27) · Date: 2026-10-26 · 기준 main `ff6c9ac` · 에픽 #437 (서브이슈 #438–#444)
 SSOT: [`affectui/ssot.md`](affectui/ssot.md) · Loop: [`affectui/loop.md`](affectui/loop.md)
 앞선 계약: [`10`](10-agent-inbox-board-spec.md) 보드 · [`11`](11-dashboard-live-surfaces-spec.md) 실시간 서피스 ·
 [`12`](12-dashboard-agent-tree-spec.md) 에이전트 트리 · [`12-cron`](12-cron-lane-and-llm-capacity-spec.md) 크론·가용량 ·
