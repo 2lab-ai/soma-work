@@ -64,12 +64,15 @@ describe('local:using-dotprd — loop-lint.py', () => {
     const r = spawnSync('python3', ['-I', LOOP_LINT, '--selftest'], { encoding: 'utf8' });
     expect(r.status, r.stdout + r.stderr).toBe(0);
     expect(r.stdout).toMatch(/^selftest: PASS /m);
+    // W2: a loop.md Status cell without a recognized mark warns (exit unaffected); the append-only ledger is exempt.
+    expect(r.stdout).toContain("ok 11-word-status: expected ['INFO C2', 'WARN W2'] exit 0");
+    expect(r.stdout).toContain("ok 14-word-status-in-done: expected ['INFO C2'] exit 0");
   });
 });
 
 describe('local:using-dotprd — parity-sheet.py', () => {
   it.skipIf(!hasPillow)(
-    'stacks REF over IMPL at 1800 px wide, with label flags before or after the positionals (needs Pillow; skipped when python3 cannot import PIL)',
+    'stacks REF above IMPL at 1800 px wide, with label flags before or after the positionals (needs Pillow; skipped when python3 cannot import PIL)',
     () => {
       const ref = join(scratch, 'ref.png');
       const impl = join(scratch, 'impl.png');
@@ -90,7 +93,14 @@ describe('local:using-dotprd — parity-sheet.py', () => {
       );
       expect(make.status, make.stderr).toBe(0);
 
-      // 100x50 and 100x100 scale to 1800x900 and 1800x1800, plus two 44 px label bars.
+      // 100x50 and 100x100 scale to 1800x900 and 1800x1800, plus two 44 px label bars:
+      // bar 0–43, REF 44–943, bar 944–987, IMPL 988–2787. Solid inputs, so any pixel inside a region has its colour.
+      const probe = [
+        'import sys',
+        'from PIL import Image',
+        'im = Image.open(sys.argv[1]).convert("RGB")',
+        'print(im.size, im.getpixel((900, 500)), im.getpixel((900, 1900)))',
+      ].join('\n');
       const runs: [string, string[]][] = [
         ['defaults.png', []],
         ['after.png', ['--label-ref', 'REF', '--label-impl', 'IMPL']],
@@ -102,12 +112,10 @@ describe('local:using-dotprd — parity-sheet.py', () => {
         const r = spawnSync('python3', [PARITY_SHEET, ...argv], { encoding: 'utf8' });
         expect(r.status, `${name}: ${r.stderr}`).toBe(0);
         expect(r.stdout).toContain(`parity sheet: ${out} (1800x2788)`);
-        const size = spawnSync(
-          'python3',
-          ['-c', 'import sys\nfrom PIL import Image\nprint(Image.open(sys.argv[1]).size)', out],
-          { encoding: 'utf8' },
-        );
-        expect(size.stdout.trim(), name).toBe('(1800, 2788)');
+        const sheet = spawnSync('python3', ['-c', probe, out], { encoding: 'utf8' });
+        expect(sheet.status, `${name}: ${sheet.stderr}`).toBe(0);
+        // Size, then a pixel inside the REF region (red input), then one inside the IMPL region (blue input).
+        expect(sheet.stdout.trim(), name).toBe('(1800, 2788) (200, 0, 0) (0, 0, 200)');
       }
     },
   );

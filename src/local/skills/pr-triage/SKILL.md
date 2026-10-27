@@ -1,6 +1,6 @@
 ---
 name: pr-triage
-description: "Use when every open PR of a GitHub repo must end in exactly one of 4 buckets (ready-to-merge / needs-review / close+spec-issue / close-obsolete) with the action taken — evidence-based verdicts, parallel cluster investigation, bold close of rotted PRs, real problems preserved as issues. Triggers: 'pr-triage', 'PR 정리 분류', '열린 PR 트리아지'. Args — <REPO> (required; org/repo or a GitHub repo/pulls URL); [TRACKER] (optional; Jira base URL or github-issues, default github-issues — used only for issue linking and spec preservation). NOT for an approval-gated sweep of PRs, issues, branches and Jira together (chore), or issue gating."
+description: "Use when every open PR of a GitHub repo must end in exactly one of 4 buckets (ready-to-merge / needs-review / close+spec-issue / close-obsolete) with the action taken — evidence-based verdicts, parallel cluster investigation, bold close of rotted PRs, real problems preserved as issues. Triggers: 'pr-triage', 'PR 정리 분류', '열린 PR 트리아지'. Args — <REPO> (required; org/repo or a GitHub repo/pulls URL); [TRACKER] (optional; Jira base URL or github-issues, default github-issues — used only for issue linking and spec preservation). NOT for an approval-gated sweep of PRs, issues, branches and Jira together (chore)."
 argument-hint: "<org/repo or repo-url> [tracker-base-url | github-issues]"
 ---
 
@@ -31,16 +31,20 @@ Every open PR ends in exactly ONE of 4 buckets, with an action taken. Be decisiv
 ## Pipeline
 
 ### 0. Preflight
-Resolve REPO. Confirm `gh auth status`. Disk > 1GB, email resolved.
+Resolve REPO. Confirm `gh auth status`.
 
 ### 1. List + metadata
-- `gh pr list --repo $REPO --state open --limit 100 --json number,title,labels,isDraft,createdAt,headRefName,baseRefName --jq ...`. Do NOT use MCP list_pull_requests — it overflows context. Use gh + jq.
+- `gh pr list --repo $REPO --state open --limit 1000 --json number,title,labels,isDraft,createdAt,headRefName,baseRefName --jq ...`. Do NOT use MCP list_pull_requests — it overflows context. Use gh + jq.
+- If the list returns exactly 1000 PRs, stop and report that the repo has more open PRs than one listing returns. Do not triage a truncated list.
+- Keep this list of PR numbers: step 6 reconciles against it.
 - Per PR: `gh pr view <n> --repo $REPO --json number,mergeable,mergeStateStatus,additions,deletions,changedFiles,baseRefName,createdAt`.
 - mergeable=UNKNOWN is lazy-computed; re-poll the UNKNOWN ones once and they resolve to MERGEABLE/CONFLICTING.
 - Flag stacked PRs (base != default branch) — they form epic chains. Check base-branch existence via `gh api repos/$REPO/branches/<b>`.
 
 ### 2. Clone + history
-- Clone into a fresh working folder `<cwd>/<repo>_<ts>_pr_triage`. Emit the `source_working_dir` directive.
+- Always create a unique working folder using the current timestamp (e.g., `$WORKING_DIR/20260101_1532_projalpha_pr_triage`). Clone the source into that working folder.
+  After cloning, you must output the following JSON directive to register the working folder with the session (automatically cleaned up when the session ends):
+  `{"type": "source_working_dir", "action": "add", "path": "<absolute path of the created working folder>"}`
 - `git log --merges --oneline -60`; note default branch. Ground truth for already-fixed.
 
 ### 3. Cluster + parallel investigate
@@ -58,10 +62,11 @@ Find tracking issue via body closing-keywords, branch name, or title. If TRACKER
 - Bucket 3: issue exists+open → `gh issue comment <iss>` refreshed spec, then `gh pr close <n> --comment` pointing to it. No issue → `gh issue create` (NOTE: no `--jq`; capture returned URL from stdout) with a 3-5 sentence spec, then close PR pointing to it.
 
 ### 6. Verify + report
-- `gh pr list --state open` → confirm only bucket-1/2 remain and counts reconcile (opened = kept + closed).
+- `gh pr list --repo $REPO --state open --limit 1000 --json number,labels`. If it returns exactly 1000 PRs, stop and report the listing as truncated; do not reconcile against it.
+- Reconcile by PR number against the step-1 list, not only by counts. Every step-1 PR in bucket 1/2 is still open and carries its label. Every step-1 PR in bucket 3/4 is absent. A number that is not in the step-1 list was opened during the run: list it as not triaged. Then counts reconcile (opened = kept + closed).
 - Final Slack-markdown report: per-bucket list, one-line reason each, new issue URLs, working-clone path. Lead with `N open → K kept, M closed`.
 
 ## Notes
-- gh read works even with App tokens here; close/label/issue-create write fine via GITHUB_TOKEN.
+- Uses the session's GitHub identity. If a write is refused (no permission, App not installed), stop and report; do not switch identity.
 - MCP list_pull_requests overflows on large repos — always prefer `gh ... --json ... --jq`.
 - Parallel agents doing only gh + git log/grep/show in one shared clone don't conflict.

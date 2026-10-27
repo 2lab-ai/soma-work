@@ -2,7 +2,8 @@
 """Lint a .prd loop driver home: loop.md (open work only) + loop.done.md (append-only ledger).
 
 Checks C0 loop.md / Status column present, C1 no closed rows left in loop.md, C2 loop.done.md
-append-only vs a git base, C3 one open row per regression:<ID>, C4/C5 no ID reuse, W1 length.
+append-only vs a git base, C3 one open row per regression:<ID>, C4/C5 no ID reuse, W1 length,
+W2 a loop.md Status cell without a recognized mark.
 Rule text lives in this skill's SKILL.md §loop.md 관리.
 """
 import argparse
@@ -21,7 +22,7 @@ REGRESSION_RE = re.compile(r"regression:\s*([\w\-]+(?:\.[\w\-]+)*)")
 SEP_RE = re.compile(r"^:?-+:?$")
 HEADING_RE = re.compile(r"^#{1,6}\s")
 REPO_ENV = ("GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR")
-Row = namedtuple("Row", "line id state source")
+Row = namedtuple("Row", "line id state source status")
 
 
 # ---------- parsing ----------
@@ -101,11 +102,24 @@ def gap_rows(path, tables, out):
         si = low.index("status")
         src = low.index("source") if "source" in low else None
         for ln, cs in t["rows"]:
-            rows.append(Row(ln, norm(cs[0]) if cs else "", state(cell(cs, si)), cell(cs, src)))
+            st = cell(cs, si)
+            rows.append(Row(ln, norm(cs[0]) if cs else "", state(st), cell(cs, src), st))
     return rows
 
 
 # ---------- checks ----------
+
+def check_marks(path, rows, out):
+    """loop.md only: an unmarked row is neither open nor closed, so C1/C3 would skip it silently.
+    A warning, not a FAIL: drivers written before the mark rule still use words.
+    loop.done.md is not checked: it is append-only, so a finding there could never be fixed."""
+    for r in rows:
+        if r.state is None:
+            out.append(("WARN", "W2", path, r.line,
+                        f"{r.id or '(no ID)'} Status carries no recognized mark "
+                        f"(✅ ⚫ closed · 🔴 🟡 🚪 open): {r.status!r} — use a mark; "
+                        "C1/C3 cannot see this row's state"))
+
 
 def check_closed(path, rows, out):
     for r in rows:
@@ -208,6 +222,7 @@ def lint(home, base="HEAD"):
         out.append(("INFO", "I1", loop, 0,
                     "no ID/Status gap table: C1/C3/C4/C5 not checked (document-drive or finished loop)"))
     rows = gap_rows(loop, tables, out)
+    check_marks(loop, rows, out)
     check_closed(loop, rows, out)
     check_regressions(loop, rows, out)
     check_dupes(loop, rows, out)
@@ -268,6 +283,14 @@ CASES = [
     ("8-missing-loop", None, None, {"FAIL C0"}, 1),
     ("9-no-status-col", "# Loop\n\n| ID | Gap |\n|---|---|\n| U1 | x |\n", None, {"FAIL C0", "INFO C2"}, 1),
     ("10-document-drive", "# Loop\n\nRewrite chapter 3 next.\n", None, {"INFO I1", "INFO C2"}, 0),
+    ("11-word-status", loop_doc([("U1", "spec", "done"), ("U2", "spec", "open"), ("U3", "spec", "")]), None,
+     {"WARN W2", "INFO C2"}, 0),
+    ("12-open-marks", loop_doc([("U1", "spec", "🔴"), ("U2", "spec", "🟡 partial"), ("U3", "spec", "🚪")]), None,
+     {"INFO C2"}, 0),
+    ("13-closed-marks", loop_doc([("U1", "spec", "✅"), ("U2", "spec", "⚫")]), None, {"FAIL C1", "INFO C2"}, 1),
+    # The append-only ledger keeps old word statuses as written: W2 checks loop.md only.
+    ("14-word-status-in-done", GOOD_LOOP, "# Done\n" + block(1, ["U1"], "- round 1 line\n").replace("| ✅ |", "| closed |"),
+     {"INFO C2"}, 0),
 ]
 
 
