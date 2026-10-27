@@ -57,7 +57,7 @@ Example (idle `pr-review` session, merged PR):
 
 ## 4. PR state in link rows
 
-A link's stored `status` is the state when the link was last recorded; the background refresh stamps titles only. The live state comes from the surface's PR cache. The suffix says which one it is:
+A link's stored `status` is the state when the link was last recorded — by a `link` command, a model link directive, or the link-title refresh (#762) re-recording it with fetched metadata. Nothing refreshes it on a timer. The live state comes from the surface's PR cache. The suffix says which one it is:
 
 - live and stored equal, or live only: ` · Merged`
 - both, and different: ` · Merged (기록 당시 Open)`
