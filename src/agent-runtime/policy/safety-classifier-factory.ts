@@ -78,8 +78,9 @@ export function buildSafetyClassifier(args: BuildSafetyClassifierArgs = {}): Saf
   // one-shot dispatch stops on, so a timed-out call does not keep running.
   const chat: SafetyChatFn = (prompt, opts) => {
     const abortController = new AbortController();
-    if (opts.signal?.aborted) abortController.abort();
-    else opts.signal?.addEventListener('abort', () => abortController.abort(), { once: true });
+    if (opts.signal?.aborted) abortController.abort('safety-classifier-timeout');
+    else
+      opts.signal?.addEventListener('abort', () => abortController.abort('safety-classifier-timeout'), { once: true });
     return dispatch(prompt, SAFETY_SYSTEM_PROMPT, { model: envModel || opts.model, abortController });
   };
   return new LlmSafetyClassifier(chat, { timeoutMs });

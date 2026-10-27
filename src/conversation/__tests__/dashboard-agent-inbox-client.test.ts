@@ -1993,6 +1993,8 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
       ['WL_LABELS'],
       {
         document,
+        // Permission-warning placement has its own suite (dashboard-permission-warning-client).
+        placePermissionWarnings: () => {},
         _wl: state,
         panelSessionKey: null,
         _sessionCache: {},

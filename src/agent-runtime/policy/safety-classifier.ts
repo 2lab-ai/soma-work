@@ -244,7 +244,7 @@ export class LlmSafetyClassifier implements SafetyClassifier {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const deadline = new Promise<SafetyVerdict>((resolve) => {
       timer = setTimeout(() => {
-        abort.abort();
+        abort.abort('safety-classifier-timeout');
         resolve({ verdict: 'ask', reason: `classifier timed out after ${this.timeoutMs}ms (fail-closed)` });
       }, this.timeoutMs);
     });
