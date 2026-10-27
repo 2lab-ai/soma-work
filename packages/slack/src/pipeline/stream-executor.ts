@@ -165,6 +165,24 @@ const defaultUserSettingsStore = {
   getUserCompactThreshold: () => undefined,
 };
 
+/**
+ * Dashboard SSOT 2026-10-27 T1 — who put a user turn into the conversation
+ * (`system`: a synthetic event, a host continuation, or the threshold
+ * auto-compact). Mirrors `TurnOrigin` in src/conversation/types.ts.
+ */
+export interface RecordUserTurnOpts {
+  origin?: { by: 'user' | 'system' };
+}
+
+/** Dashboard SSOT 2026-10-27 T2 — what a compaction reported when it ended. */
+export interface CompactTurnResult {
+  endedAt: number;
+  durationMs?: number;
+  preTokens?: number;
+  postTokens?: number;
+  trigger?: 'manual' | 'auto';
+}
+
 export interface StreamExecutorProviders {
   parseModelCommandRunResponse?: (result: unknown) => any;
   createTurnResultCollector?: () => TurnResultCollectorLike;
@@ -182,7 +200,14 @@ export interface StreamExecutorProviders {
     userName: string,
     user: string,
     attachments?: readonly TurnAttachment[],
+    opts?: RecordUserTurnOpts,
   ) => void;
+  /**
+   * Dashboard SSOT 2026-10-27 T2 — a compaction ended: write its numbers onto
+   * the `/compact` turn that ran it. Fire-and-forget; the host never throws.
+   * No-op by default.
+   */
+  recordCompactResult?: (conversationId: string, result: CompactTurnResult) => void;
   /**
    * User media (SSOT 2026-10-25) — copy the turn's downloaded files for the
    * dashboard. Awaited BEFORE the user turn is recorded and long before the
@@ -266,6 +291,7 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   createConversation: () => '',
   recordAssistantTurn: () => {},
   recordUserTurn: () => {},
+  recordCompactResult: () => {},
   captureUserMedia: async () => [],
   appendWorkLog: () => {},
   recordAgentEvent: () => {},
@@ -338,7 +364,8 @@ const recordUserTurn = (
   userName: string,
   user: string,
   attachments: readonly TurnAttachment[] | undefined,
-) => streamExecutorProviders.recordUserTurn(conversationId, text, userName, user, attachments);
+  opts: RecordUserTurnOpts,
+) => streamExecutorProviders.recordUserTurn(conversationId, text, userName, user, attachments, opts);
 const captureUserMedia = (conversationId: string, files: readonly ProcessedFile[]) =>
   streamExecutorProviders.captureUserMedia(conversationId, files);
 const workLogLogger = new Logger('WorkLog');
@@ -448,6 +475,24 @@ export function recordConversationWorkLog(
       conversationId,
       kind: entry.kind,
       ...(logContext.sessionKey ? { sessionKey: logContext.sessionKey } : {}),
+      error: (err as Error)?.message ?? String(err),
+    });
+  }
+}
+
+/**
+ * Dashboard SSOT 2026-10-27 T2 — a compaction ended: hand its numbers to the
+ * conversation recorder, which writes them onto the `/compact` turn that ran
+ * it. The one path compact-hooks uses (it never imports the recorder). A
+ * throwing provider is ignored — the dashboard record must never break the
+ * compaction it describes.
+ */
+export function recordConversationCompact(conversationId: string, result: CompactTurnResult): void {
+  try {
+    streamExecutorProviders.recordCompactResult(conversationId, result);
+  } catch (err) {
+    workLogLogger.warn('recordCompactResult provider threw', {
+      conversationId,
       error: (err as Error)?.message ?? String(err),
     });
   }
@@ -1492,12 +1537,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             });
           }
         }
+        // Dashboard SSOT 2026-10-27 T1 — who put this turn here. A host turn
+        // (synthetic event or continuation) says so through `isUserInput`; the
+        // threshold auto-compact rides the user's own event but swapped its
+        // text for `/compact` and parked the words on `pendingUserText`.
+        const autoCompactTurn =
+          isSlashCommand && trimmedText.split(/\s/)[0] === '/compact' && !!session.pendingUserText;
         recordUserTurn(
           session.conversationId,
           text || '',
           userName,
           user,
           attachments?.length ? attachments : undefined,
+          { origin: { by: params.isUserInput === false || autoCompactTurn ? 'system' : 'user' } },
         );
         const names = processedFiles.map((f) => f.name).join(' · ');
         emitWorkLog({ kind: 'instruction', text: names ? `${text || ''}${text ? '\n' : ''}📎 ${names}` : text || '' });

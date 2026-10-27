@@ -101,6 +101,10 @@ Every file the model sends to Slack (HTML reports, PNG, WAV/voice, video, PDF, t
 
 The files you attach to an instruction — screenshots, PDFs, text, voice notes, video — show up in the web dashboard with that instruction, not mixed into the model's artifacts. In the session panel they sit above your words (80px image tiles, "+N" past four, file cards with kind and size, voice notes play in place). The opened card's 지시 row shows them small, the card face shows a paperclip count, and a pinned 지시 첨부 line (collapsed by default) lists every file of the session. Clicking one opens the same viewer as artifacts, paging through that instruction's files. A message you send while the model is working is recorded with its files once the model reads it. Videos and voice notes are kept too and play in the dashboard. Files the bot could not download (over 50 MB, or a failed download) still appear, with a link to Slack. Uploaded HTML, SVG and text never run in the dashboard.
 
+### 🧾 Turns you did not type, as one line
+
+In the session panel's conversation, a turn soma-work sent on its own reads as one line — who, when, a badge and what it did — instead of the raw prompt: **자동 압축** / **압축** (`/compact`), **시스템 재시작**, **자동 재시도** (after an error), **Goal #2/10** (goal continuation), **크론** (a cron fire), **세션 갱신** (`/renew` save and load), and **자동 입력** for any other host turn. Click the line for its facts and the raw prompt. While a compaction runs, the line shows the elapsed time against an estimate (the conversation's previous compaction, else 2m 30s) with a progress bar; when it ends, it shows tokens before → after and how long it took. Skills an instruction invoked (`$skill`, autoskills) show as badges under your words — `local:using-ssot · ≈1.1K tokens` (an estimate) — and a badge opens that skill's text. Older turns are read from their text; a `/compact` recorded before this change shows as **압축**, because who sent it was not kept.
+
 ### 🔑 GitHub Integration
 
 GitHub App (recommended) or Personal Access Token authentication with automatic token renewal.

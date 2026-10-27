@@ -10,8 +10,15 @@ import {
   shouldShowStatusBlock,
 } from '../../claude-status-fetcher';
 import { config } from '../../config';
-import { captureUserMedia, createConversation, recordAssistantTurn, recordUserTurn } from '../../conversation';
+import {
+  captureUserMedia,
+  createConversation,
+  recordAssistantTurn,
+  recordCompactResult,
+  recordUserTurn,
+} from '../../conversation';
 import { scheduleLinkDerivedTitleRefresh } from '../../conversation/link-derived-title';
+import { Logger } from '../../logger';
 import { isMidThreadMention } from '../../mcp-config-builder';
 import { captureTurnEpisodic } from '../../memory-auto-capture';
 import { getMetricsEmitter } from '../../metrics/event-emitter';
@@ -29,6 +36,8 @@ import { getTokenManager, parseCooldownTime } from '../../token-manager';
 import { coerceToAvailableModel, MODEL_ALIASES, userSettingsStore } from '../../user-settings-store';
 import { postCompactCompleteIfNeeded, postCompactStartingIfNeeded } from '../hooks/compact-hooks';
 
+const providerLogger = new Logger('StreamExecutorProviders');
+
 setStreamExecutorProviders({
   parseModelCommandRunResponse,
   createTurnResultCollector: () => new TurnResultCollector(),
@@ -41,6 +50,12 @@ setStreamExecutorProviders({
   createConversation,
   recordAssistantTurn,
   recordUserTurn,
+  // Dashboard SSOT 2026-10-27 T2 — fire-and-forget; a failed write is logged.
+  recordCompactResult: (conversationId, result) => {
+    recordCompactResult(conversationId, result).catch((error) =>
+      providerLogger.warn('recordCompactResult failed', { conversationId, error: (error as Error)?.message }),
+    );
+  },
   captureUserMedia,
   captureMemoryTurn: captureTurnEpisodic,
   scheduleLinkDerivedTitleRefresh,
