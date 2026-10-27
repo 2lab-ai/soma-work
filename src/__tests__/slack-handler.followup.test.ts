@@ -2863,6 +2863,17 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    // Re-run (astra P1, after 8bc48b54): a steer keeps Slack's microseconds, so it
+    // sorts against a same-millisecond message the executor recorded.
+    it('stamps a steered follow-up with the full Slack ts, not a floored millisecond', async () => {
+      registrySession.followUpInstructions = undefined;
+      const { settle } = await steerWithFile('순서 유지');
+      const [entry] = registrySession.followUpInstructions ?? [];
+      expect(entry.timestamp).toBeGreaterThan(1792900000000);
+      expect(entry.timestamp).toBeCloseTo(1792900000000.1, 3);
+      await settle();
+    });
+
     // Review gate r4 (astra): the queue is the source of truth for a steer.
     it('wires a resolver that keeps a steer only while it is steered or consumed', async () => {
       registrySession.followUpInstructions = undefined;

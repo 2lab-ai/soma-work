@@ -61,6 +61,7 @@ import {
   toTurnUsage,
 } from '../session-usage-math';
 import type { SlackApiHelper } from '../slack-api-helper';
+import { slackTsOrderMs } from '../slack-ts';
 import type { StatusReporter } from '../status-reporter';
 import {
   AgentStreamProcessor,
@@ -1530,7 +1531,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
           session.followUpInstructions.push({
             // When the owner sent it (the Slack ts), so steers and turns sort together.
-            timestamp: params.mentionTs ? Math.round(Number(params.mentionTs) * 1000) || Date.now() : Date.now(),
+            timestamp: slackTsOrderMs(params.mentionTs) ?? Date.now(),
             text,
             speaker: userName,
             userId: user,
