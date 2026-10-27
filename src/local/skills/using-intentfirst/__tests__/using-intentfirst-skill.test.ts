@@ -113,7 +113,8 @@ describe('local:using-intentfirst skill — doc contract (T3)', () => {
     expect(body()).toMatch(/질문하고 대기 금지|절대 기다리지 않는다/);
   });
 
-  it('never takes an irreversible step on inference', () => {
+  it('states the prohibition on irreversible steps taken on inferred intent', () => {
+    expect(body()).toContain('추론을 근거로 되돌릴 수 없는 일을 저지르지 않는다');
     expect(body()).toMatch(/\[irrev\]/);
   });
 });
