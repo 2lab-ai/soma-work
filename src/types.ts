@@ -136,6 +136,9 @@ export interface ActionPanelPRStatus {
   approved?: boolean; // true if PR has been approved
   head?: string; // source branch
   base?: string; // target branch
+  /** Fetch provenance — see `PRStatusInfo.fetchedForUrl` in @soma/slack/action-panel-builder. */
+  fetchedForUrl?: string;
+  linkStatusAtFetch?: string;
 }
 
 export interface ActionPanelState {

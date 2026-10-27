@@ -1,192 +1,82 @@
-# Slack Session Header & Action Panel Specification
+# Slack session surface — header, status rail and controls
 
 ## Version
-- Document Version: 1.0
-- Last Updated: 2026-02-04
-- Scope: Slack UI enhancement for session header + action panel
-- Source Files (current/future):
-  - `src/slack/pipeline/session-initializer.ts`
-  - `src/slack/pipeline/stream-executor.ts`
-  - `src/slack/actions/channel-route-action-handler.ts`
-  - `src/slack/stream-processor.ts`
-  - `src/slack/actions/choice-action-handler.ts`
-  - `src/slack/actions/form-action-handler.ts`
-  - `src/slack/slack-api-helper.ts`
-  - `src/slack/thread-header-builder.ts`
-  - `src/slack/action-panel-builder.ts`
 
-## 1. Goals
-- **Two-message session UI**:
-  1) **Thread header message** (public, thread root): high-visibility summary for the session.
-  2) **Action panel message** (ephemeral, channel root): buttons + user-choice UI.
-- **Modern, minimal, high-visibility layout** using Block Kit + attachments color bar.
-- **Action panel mirrors UIAskUserQuestion** content (same options, same behavior).
-- **All buttons default disabled** and only enabled when the AI response is done and it is the user's turn.
-- **Workflow-aware buttons**:
-  - PR review workflow shows **fix PR** + **approve PR**.
-- **Channel-level action panel only** (not thread message).
+- Last updated: 27 October 2026
+- Scope: the one Slack message at the top of a session thread (the "surface")
+- Source files:
+  - `packages/slack/src/thread-surface.ts` — composes and renders the surface (`buildCombinedBlocks`, `buildClosedBlocks`)
+  - `packages/slack/src/thread-header-builder.ts` — header rows, driven by `config.json` `ui.threadheader`
+  - `packages/slack/src/action-panel-builder.ts` — status rail, controls and `ActionPanelBuilder.compose`
+  - `src/slack/actions/action-panel-action-handler.ts` — `panel_*` clicks
+  - `src/slack/actions/session-action-handler.ts` — close fallback
 
-## 2. Non-Goals
-- Reply count display (Slack already shows this).
-- Public channel action panel (must be ephemeral).
-- Automatic UI style for every Slack message (scope is only header + action panel).
+The February 2026 design (a second, ephemeral "action panel" message in the channel root with workflow buttons) is no longer used. Its history is in `docs/archive/`.
 
-## 3. UX Summary
+## 1. What the surface shows
 
-### 3.1 Thread Header (Public, Thread Root)
-- Purpose: A single, highly visible snapshot of the session state.
-- Location: Root message of the thread (bot-authored so it can be updated).
-- Visual: Attachment color bar + compact hierarchy.
+One message, top to bottom:
 
-Example (concept):
+1. The first header row — the title in every preset (`header`, compact `headline` or minimal `context`).
+2. The status rail — one full-width `section` (see 2).
+3. The remaining header rows, as configured (owner, workflow, model, context gauge, work log, link history).
+4. The controls row — `세션 종료`, plus `⏸ 중지` while a turn is running. None when the session is closed.
+5. Executive summary blocks, if any, trimmed first when the 50-block budget runs out.
+
+`ActionPanelBuilder.compose(headerBlocks, panelBlocks)` places the rail right after the first non-divider header block and never splits or reorders header blocks. With an empty header the rail comes first. Every path that renders the surface uses it: the live render, the closed render and both close fallbacks.
+
+## 2. Status rail
+
+One `section.text`, never a 2-column `fields` grid (the grid gave the state half the width and wrapped it mid-word).
+
+- Line 1: `{badge} · {step} · {progress age} [· {liveness}]`. The step, real-progress age and liveness are three separate facts (U9/A19); nothing predicts an ETA.
+- Line 2: `{turn summary} · {PR state} · 💬 최신 응답 · {verbosity}`. Each part appears only when it exists.
+- Line 3, only while a question waits: `❓ 질문에 답변해 주세요 — 질문 보기`.
+
+Closed rail:
+
+- Line 1: `⚫ *종료됨* · MM-DD HH:MM 종료`
+- Line 2: `{turn summary} · {PR state} · 💬 최신 응답`
+
+The turn summary is shown verbatim; it is not re-parsed into a grid.
+
+Example (idle `pr-review` session, merged PR):
+
 ```
-@Z | 작업중 | PROJ-123 · PR-591: feature X 구현
-🤖 Sonnet 4.5 · 🕐 방금 전 · ⏳ 23시간 59분 남음
-🔗 PROJ-123 | PR-591 | 문서
-```
-
-### 3.2 Action Panel (Ephemeral, Channel Root)
-- Purpose: One-click workflow controls and user choices without entering the thread.
-- Location: **Channel root** (no `thread_ts`), **ephemeral** to the session owner.
-- Two rows of buttons (actions block limit = 5 elements).
-- All buttons **disabled by default**; enabled only when user can act.
-
-Example (concept):
-```
-[종료] [이슈 리서치] [PR 생성] [PR 리뷰] [PR 문서화]
-[fix PR] [approve PR]
+⚪ *사용 가능* · 사용자 액션 대기 · 마지막 활동 5분 전
+⏱ 0:09 · 🔀 Merged · 💬 최신 응답 · `minimal`
 ```
 
-### 3.3 UIAskUserQuestion in Action Panel
-- When UIAskUserQuestion is emitted, append the same UI to the action panel (below buttons).
-- When user submits, the appended UI disappears from the action panel.
-- The thread continues exactly as today.
+## 3. Glyph and colour rules
 
-## 4. Block Kit Design
+- The circles 🟢 🟡 ⚪ ⚫ mean session state and appear only on the badge: 🟢 작업 중 / 요청 처리 중, 🟡 입력 대기, ⚪ 사용 가능 / 대기 중 / 대기, ⚫ 종료됨. Every badge is bold. 🔴 is not used.
+- PR and issue states are words: `🔀 Merged`, `🔀 Draft`, `🔀 Closed`, `🔀 Approved · Merge 가능`, `🔀 Approved`, `🔀 Merge 가능`, `🔀 ⚠️ Merge 불가`.
+- Kind glyphs, one noun each: 🔀 PR, 🗂 issue, 📄 doc, 📋 work log.
+- The log verbosity is a setting, shown as a code chip (`` `minimal` ``, `` `detail` `` and so on).
+- In the combined surface the header suppresses its own session-status decorations (`suppressSessionStatus`), so 종료됨 appears once, on the rail. A standalone header marks a closed session with `⚫ _종료됨_` or `_종료됨_`.
 
-### 4.1 Status Colors (Attachment Bar)
-- working: blue (active)
-- waiting: amber (user input needed)
-- idle/completed: green (ready or done)
+## 4. PR state in link rows
 
-### 4.2 Thread Header Blocks (Attachment + Blocks)
-```
-attachment.color = statusColor
-blocks:
-  - header: "@Z | 작업중 | PROJ-123 · PR-591: feature X 구현"
-  - context: "🤖 Sonnet 4.5 · 🕐 방금 전 · ⏳ 23시간 59분 남음"
-  - section: "🔗 <issue|PROJ-123> | <pr|PR-591> | <doc|문서>"
-```
+A link's stored `status` is the state when the link was last recorded; the background refresh stamps titles only. The live state comes from the surface's PR cache. The suffix says which one it is:
 
-### 4.3 Action Panel Blocks (Ephemeral)
-```
-blocks:
-  - context: "🎯 세션 컨트롤 · <thread|스레드 열기>"
-  - actions (row 1): 종료, 이슈 리서치, PR 생성, PR 리뷰, PR 문서화
-  - actions (row 2): fix PR, approve PR (pr-review only)
-  - optional: UIAskUserQuestion blocks appended (same as thread UI)
-```
+- live and stored equal, or live only: ` · Merged`
+- both, and different: ` · Merged (기록 당시 Open)`
+- stored only: ` · 기록 당시 Open`
+- neither: no suffix
 
-## 5. Action Buttons & Behavior
+`ActionPanelBuilder.livePrStatus(link, prStatus)` decides whether a cached status is live: it must have been fetched for the same URL, and the link must not have been re-recorded with another state since the fetch. The rail chip and the link row use the same value. Stored data is never changed by rendering.
 
-### 5.1 Button Set
-- **종료**: terminate session (existing handler behavior).
-- **이슈 리서치**: `new <ISSUE_URL>` → `jira-brainstorming`.
-- **PR 생성**: `new fix <ISSUE_URL>` → `jira-create-pr`.
-- **PR 리뷰**: `new <PR_URL>` → `pr-review`.
-- **fix PR** (pr-review only): `new fix <PR_URL>` → `pr-fix-and-update`.
-- **approve PR** (pr-review only): `이슈 없으면 PR approve 처리 요청` (no /new).
-- **PR 문서화**: `new <DOC_URL> <PR_URL>` → `pr-docs-confluence`.
+## 5. Controls
 
-### 5.2 Enable/Disable Rules
-- **Disabled by default**.
-- Enabled only when:
-  - `activityState` is `waiting` or `idle`, **and**
-  - there is **no active request** for the session.
-- Buttons that require missing links stay disabled and show a short hint in context text.
+- `panel_close` (세션 종료, danger, with a confirmation) on every live surface.
+- `panel_stop` (⏸ 중지) while a turn is running. It aborts the turn and keeps the session. The thread `!` message and the dashboard stop do the same.
+- Both go through one Bolt route, `app.action(/^panel_/)`, and only the session owner can use them.
+- The workflow buttons (New Fix, Renew Fix, PR 문서화, New 리뷰, Renew 리뷰, PR 승인, Merge) were removed on 27 October 2026 because nobody used them. A message rendered before that still carries them until its next re-render; a click gets `❌ 지원하지 않는 액션입니다.` and does nothing else.
 
-## 6. UIAskUserQuestion Mirroring
+## 6. Tests
 
-### 6.1 Render
-- When StreamProcessor detects `UserChoice` or `UserChoices`, build blocks via `ChoiceMessageBuilder`.
-- Action panel appends those blocks **after** the actions section.
-- Action panel title line changes to `유저 컨펌 대기`.
-
-### 6.2 Submit/Clear
-- On submit, action panel re-renders without the appended choice blocks.
-- Thread behavior remains unchanged.
-
-## 7. State Model
-
-### 7.1 Session State Fields
-Add a small state object on `ConversationSession`:
-```
-actionPanel?: {
-  enabled: boolean;
-  waitingForUser: boolean;
-  choiceHash?: string;
-  lastRenderedAt?: number;
-}
-```
-
-### 7.2 State Transitions
-- Session created → action panel posted (disabled).
-- Stream start → disable panel.
-- Stream end:
-  - `hasUserChoice` → waiting + enable.
-  - no choice → idle + enable.
-- Choice submit → waiting false + re-render.
-
-### 7.3 De-duplication
-- Re-render only when state changes (enabled flag, waiting flag, choice hash).
-
-## 8. Integration Points
-
-### 8.1 Thread Header
-- `SessionInitializer`:
-  - bot-initiated thread root should use `ThreadHeaderBuilder` for initial header.
-- `ChannelRouteActionHandler`:
-  - new thread root message created in target channel uses `ThreadHeaderBuilder`.
-- `StreamExecutor.updateThreadRoot`:
-  - replace current text-only header with builder output.
-
-### 8.2 Action Panel
-- New `ActionPanelManager`:
-  - `ensurePanel(session)` → posts ephemeral panel in channel root.
-  - `updatePanel(session, opts)` → re-renders when state changes.
-- `StreamExecutor`:
-  - on start: disable panel.
-  - on completion: enable panel and set waiting if choice exists.
-- `StreamProcessor`:
-  - when choice payload exists, pass payload to `ActionPanelManager` to append.
-- `ChoiceActionHandler` / `FormActionHandler`:
-  - on submit, clear choice from action panel.
-
-### 8.3 Workflow Action Handling
-- New action handler for workflow buttons:
-  - Build injected text (see section 5.1).
-  - Inject into session thread using existing message handler.
-  - For `new ...` flows, rely on `/new` command semantics.
-
-### 8.4 Ephemeral Update Strategy
-- Action panel is posted via `chat.postEphemeral`.
-- Ephemeral messages cannot be updated with `chat.update`; updates are done by **re-posting** on state change.
-- When a user clicks a button, `respond({ replace_original: true })` can replace the ephemeral message for that user.
-- De-duplication is required to avoid flooding the channel with repeated ephemeral updates.
-
-## 9. Error Handling
-- Ephemeral post failures: log and continue (no hard fail).
-- If session owner mismatch: respond ephemeral with error (consistent with existing action handlers).
-
-## 10. Test Plan
-
-### 10.1 Unit Tests
-- `ThreadHeaderBuilder` output formatting (status colors, text lines).
-- `ActionPanelBuilder` button layout and disabled state.
-- Choice append behavior (single + multi).
-
-### 10.2 Integration Tests
-- Session start → creates header + action panel.
-- Stream start/end toggles enabled state.
-- UIAskUserQuestion renders in both thread and action panel; submit clears action panel.
-- PR review workflow shows fix/approve buttons.
+- `packages/slack/src/__tests__/action-panel-builder.layout.test.ts` — rail shape, badges, PR words, verbosity chip, closed rail, `compose`
+- `packages/slack/src/__tests__/action-panel-builder.buttons.test.ts` — only `세션 종료` (and `⏸ 중지` while working) render
+- `packages/slack/src/__tests__/thread-header-builder.status-words.test.ts` — link suffix by source, markers, suppression
+- `packages/slack/src/__tests__/thread-surface.layout.test.ts` — composed message order, single 종료됨, URL and re-record checks
+- `src/slack/actions/__tests__/action-panel-action-handler.removed-actions.test.ts` — stale clicks on removed buttons

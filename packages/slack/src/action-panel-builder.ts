@@ -1,4 +1,4 @@
-import { getVerbosityName, type LogVerbosity } from './output-flags';
+import { getVerbosityName } from './output-flags';
 
 export type ActivityState = 'working' | 'waiting' | 'idle';
 
@@ -24,6 +24,14 @@ export interface PRStatusInfo {
   approved?: boolean; // true if PR has been approved
   head?: string; // source branch
   base?: string; // target branch
+  /**
+   * T2 — provenance of the fetch: the PR URL it was made for and the state the
+   * session's stored link carried at that moment. {@link ActionPanelBuilder.livePrStatus}
+   * uses them to refuse a status that belongs to another PR, or that predates
+   * a re-recorded link.
+   */
+  fetchedForUrl?: string;
+  linkStatusAtFetch?: string;
 }
 
 export interface ActionPanelBuildParams {
@@ -80,57 +88,12 @@ export interface ActionPanelPayload {
   blocks: any[];
 }
 
-type PanelActionKey =
-  | 'pr_fix_new'
-  | 'pr_fix_renew'
-  | 'pr_review_new'
-  | 'pr_review_renew'
-  | 'pr_docs'
-  | 'pr_approve'
-  | 'pr_merge';
-
-interface PanelActionDef {
-  key: PanelActionKey;
-  actionId: string;
-  label: string;
-  style?: 'primary' | 'danger';
-}
-
-const ACTION_DEFS: Record<PanelActionKey, PanelActionDef> = {
-  pr_fix_new: { key: 'pr_fix_new', actionId: 'panel_pr_fix_new', label: 'New Fix' },
-  pr_fix_renew: { key: 'pr_fix_renew', actionId: 'panel_pr_fix_renew', label: 'Renew Fix' },
-  pr_review_new: { key: 'pr_review_new', actionId: 'panel_pr_review_new', label: 'New 리뷰' },
-  pr_review_renew: { key: 'pr_review_renew', actionId: 'panel_pr_review_renew', label: 'Renew 리뷰' },
-  pr_docs: { key: 'pr_docs', actionId: 'panel_pr_docs', label: 'PR 문서화' },
-  pr_approve: { key: 'pr_approve', actionId: 'panel_pr_approve', label: 'PR 승인', style: 'primary' },
-  pr_merge: { key: 'pr_merge', actionId: 'panel_pr_merge', label: 'Merge', style: 'primary' },
-};
-
-const DEFAULT_ACTIONS: PanelActionKey[] = [];
-
 /**
  * U9 — how far the liveness signal must outrun the last real progress before
  * the header states it separately. Below this the two agree and a second line
  * would only be noise.
  */
 const LIVENESS_DIVERGENCE_MS = 60_000;
-
-const WORKFLOW_ACTIONS: Record<WorkflowType, PanelActionKey[]> = {
-  onboarding: [],
-  'jira-executive-summary': [],
-  'jira-brainstorming': [],
-  'jira-planning': [],
-  'jira-create-pr': [],
-  'pr-review': ['pr_fix_new', 'pr_fix_renew', 'pr_approve', 'pr_docs'],
-  'pr-fix-and-update': ['pr_review_new', 'pr_review_renew', 'pr_docs'],
-  'pr-docs-confluence': ['pr_review_new', 'pr_review_renew'],
-  deploy: [],
-  default: [],
-  // Handoff entrypoints (issue #695) — no action-panel buttons; sessions enter
-  // the z skill via deterministic workflow routing, not panel clicks.
-  'z-plan-to-work': [],
-  'z-epic-update': [],
-};
 
 export class ActionPanelBuilder {
   static build(params: ActionPanelBuildParams): ActionPanelPayload {
@@ -141,8 +104,6 @@ export class ActionPanelBuilder {
     if (params.closed) {
       return ActionPanelBuilder.buildClosedPanel(params);
     }
-
-    const actions = WORKFLOW_ACTIONS[workflow] || DEFAULT_ACTIONS;
 
     const status = ActionPanelBuilder.resolveStatus({
       waitingForChoice: params.waitingForChoice,
@@ -156,97 +117,93 @@ export class ActionPanelBuilder {
 
     const closeButton = ActionPanelBuilder.buildCloseButton(params.sessionKey);
 
-    // Build final action rows with close button merged in
-    let actionRows: any[];
+    // The surface carries exactly two controls: ⏸ 중지 while a turn runs, and
+    // 세션 종료 always. The per-workflow buttons (New Fix / Renew Fix / PR 문서화 /
+    // New·Renew 리뷰 / PR 승인 / Merge) were removed on 2026-10-27 — unused.
+    const controls = isWorking ? [ActionPanelBuilder.buildStopButton(params.sessionKey), closeButton] : [closeButton];
+    const actionRows = [{ type: 'actions', block_id: 'control_actions', elements: controls }];
 
-    if (isWorking) {
-      // Working: [⏸ 중지(default)] [세션 종료(danger)] in control row
-      const stopButton = {
-        type: 'button',
-        text: { type: 'plain_text', text: '⏸ 중지', emoji: true },
-        action_id: 'panel_stop',
-        value: JSON.stringify({ sessionKey: params.sessionKey, action: 'stop' }),
-      };
-      actionRows = [{ type: 'actions', block_id: 'control_actions', elements: [stopButton, closeButton] }];
-    } else if (isQuestionPending) {
-      // Question: [세션 종료(danger)] alone in control row
-      actionRows = [{ type: 'actions', block_id: 'control_actions', elements: [closeButton] }];
-    } else {
-      // Idle: workflow buttons chunked, close appended to last row
-      const workflowButtons = actions
-        .filter((key) => {
-          if (key === 'pr_approve' && params.prStatus?.approved) return false;
-          if (key === 'pr_approve' && params.prStatus?.merged) return false;
-          return true;
-        })
-        .map((key) => ActionPanelBuilder.buildButton(ACTION_DEFS[key], params.sessionKey));
-
-      if (params.prUrl && !actions.some((k) => k.startsWith('pr_review'))) {
-        workflowButtons.push(ActionPanelBuilder.buildButton(ACTION_DEFS['pr_review_new'], params.sessionKey));
-        workflowButtons.push(ActionPanelBuilder.buildButton(ACTION_DEFS['pr_review_renew'], params.sessionKey));
-      }
-
-      if (ActionPanelBuilder.shouldRenderMergeButton(workflow, params)) {
-        workflowButtons.push(ActionPanelBuilder.buildMergeButton(params));
-      }
-
-      // Enforce max 1 primary button (recommended action only)
-      ActionPanelBuilder.enforceMaxOnePrimary(workflowButtons);
-
-      if (workflowButtons.length > 0) {
-        const chunks = ActionPanelBuilder.chunk(workflowButtons, 5);
-        actionRows = chunks.map((row, i) => ({
-          type: 'actions',
-          block_id: `workflow_actions${i > 0 ? `_${i}` : ''}`,
-          elements: row,
-        }));
-        // Close in separate control row
-        actionRows.push({ type: 'actions', block_id: 'control_actions', elements: [closeButton] });
-      } else {
-        actionRows = [{ type: 'actions', block_id: 'control_actions', elements: [closeButton] }];
-      }
-    }
-
-    const blocks: any[] = [];
-
-    // 1. Status block — badge + step/progress on line 1, turn timers on line 2.
-    //    One block, not two: the pair used to be a section plus a context block
-    //    with a full-width gap between them (2026-09-17 panel-height feedback).
-    blocks.push(
-      ...ActionPanelBuilder.buildStatusBlocks({
-        status,
-        waitingForChoice: params.waitingForChoice,
-        activityState: params.activityState,
-        hasActiveRequest: params.hasActiveRequest,
-        prStatus: params.prStatus,
-        contextRemainingPercent: params.contextRemainingPercent,
-        agentPhase: params.agentPhase,
-        activeTool: params.activeTool,
-        lastProgressAt: params.lastProgressAt,
-        lastSignalAt: params.lastSignalAt,
-        now: params.now,
-        metricsLine: ActionPanelBuilder.buildMetricsLine({
-          turnSummary: params.turnSummary,
-          latestResponseLink: params.latestResponseLink,
-          logVerbosity: params.logVerbosity,
+    // The rail: ONE full-width section (T2, 2026-10-27, trinity-reviewed) —
+    //   line 1  badge · step · progress age [· liveness]   (buildProgressLine)
+    //   line 2  turn timers · PR state · latest response · verbosity
+    //   line 3  the open question, when there is one
+    // It used to be a 2-column `fields` grid with the PR chip in the right half,
+    // which gave the state half the width and wrapped it mid-word; the question
+    // and the controls each sat behind their own divider.
+    const rail = ActionPanelBuilder.buildRail([
+      ActionPanelBuilder.joinParts([
+        ActionPanelBuilder.statusBadge(status),
+        ActionPanelBuilder.buildProgressLine({
+          status,
+          waitingForChoice: params.waitingForChoice,
+          activityState: params.activityState,
+          hasActiveRequest: params.hasActiveRequest,
+          agentPhase: params.agentPhase,
+          activeTool: params.activeTool,
+          lastProgressAt: params.lastProgressAt,
+          lastSignalAt: params.lastSignalAt,
+          now: params.now,
         }),
-      }),
-    );
-
-    // 2. Choice slot (when waiting for user input) — show link to standalone choice message
-    if (isQuestionPending) {
-      blocks.push({ type: 'divider' });
-      blocks.push(ActionPanelBuilder.buildChoiceLinkSection(params.choiceMessageLink));
-    }
-
-    // 3. Divider + action rows (with close button merged)
-    blocks.push({ type: 'divider' });
-    blocks.push(...actionRows);
+      ]),
+      ActionPanelBuilder.joinParts([
+        params.turnSummary,
+        params.prStatus ? ActionPanelBuilder.prStatusChip(params.prStatus) : undefined,
+        params.latestResponseLink ? `<${params.latestResponseLink}|💬 최신 응답>` : undefined,
+        params.logVerbosity !== undefined ? ActionPanelBuilder.verbosityLabel(params.logVerbosity) : undefined,
+      ]),
+      isQuestionPending ? ActionPanelBuilder.choiceLine(params.choiceMessageLink) : undefined,
+    ]);
 
     return {
       text: `Action panel (${workflow}) - ${status}`,
-      blocks,
+      blocks: [rail, ...actionRows],
     };
+  }
+
+  /**
+   * The PR status the surface may show as LIVE for the session's active PR link
+   * — or `undefined`. A fetched status is live only while it still describes
+   * that link: fetched for the same URL, and the link has not been re-recorded
+   * with a different state since (re-recording rewrites the stored status; the
+   * cache would otherwise contradict it for up to its TTL). One rule for the
+   * rail chip and the link row, on every composition path (T2).
+   */
+  static livePrStatus(
+    prLink: { url?: string; status?: string } | undefined,
+    prStatus: Partial<PRStatusInfo> | undefined,
+  ): PRStatusInfo | undefined {
+    if (!prLink?.url || !prStatus || prStatus.fetchedForUrl !== prLink.url) return undefined;
+    if ((prStatus.linkStatusAtFetch ?? '') !== (prLink.status ?? '')) return undefined;
+    return prStatus as PRStatusInfo;
+  }
+
+  /**
+   * Place the panel into the header (T2). The rail goes right after the first
+   * non-divider header block — the title in every preset — then the rest of the
+   * header, then the controls. Header blocks are never split or reordered; an
+   * empty header puts the rail first. Every surface composition (live, closed,
+   * and the close fallbacks) goes through here so they cannot drift apart.
+   */
+  static compose(headerBlocks: any[], panelBlocks: any[]): any[] {
+    const [rail, ...rest] = panelBlocks;
+    if (!rail) return [...headerBlocks];
+    const first = headerBlocks.findIndex((block) => block?.type !== 'divider');
+    if (first < 0) return [rail, ...headerBlocks, ...rest];
+    return [...headerBlocks.slice(0, first + 1), rail, ...headerBlocks.slice(first + 1), ...rest];
+  }
+
+  private static buildRail(lines: Array<string | undefined>): any {
+    const text = lines.filter((line): line is string => Boolean(line)).join('\n');
+    return { type: 'section', text: { type: 'mrkdwn', text } };
+  }
+
+  private static joinParts(parts: Array<string | null | undefined>): string | undefined {
+    const present = parts.filter((part): part is string => Boolean(part));
+    return present.length > 0 ? present.join(' · ') : undefined;
+  }
+
+  private static choiceLine(choiceMessageLink?: string): string {
+    return choiceMessageLink ? `❓ 질문에 답변해 주세요 — <${choiceMessageLink}|질문 보기>` : '❓ 질문에 답변해 주세요';
   }
 
   private static resolveStatus(params: {
@@ -281,62 +238,6 @@ export class ActionPanelBuilder {
     }
 
     return '사용 가능';
-  }
-
-  /**
-   * Status block: ONE section, at most two lines.
-   *
-   *   line 1  `🟢 *작업 중* · 결과 반영 중 · 마지막 활동 0초 전`
-   *   line 2  `⏱ 4:02 · 🛠 17 · 🔇 minimal`   (omitted when there is nothing)
-   *
-   * Merging the badge and the step onto one line, and folding the former
-   * metrics context block in as line 2, is layout only — every U9 fact
-   * (`buildProgressLine`) and every metric still renders, and neither is
-   * derived from the other. With a PR present the two lines share the LEFT
-   * column of a 2-column fields layout; the PR chip keeps the right one.
-   */
-  private static buildStatusBlocks(params: {
-    status: string;
-    waitingForChoice?: boolean;
-    activityState?: ActivityState;
-    hasActiveRequest?: boolean;
-    prStatus?: PRStatusInfo;
-    contextRemainingPercent?: number;
-    agentPhase?: string;
-    activeTool?: string;
-    lastProgressAt?: number;
-    lastSignalAt?: number;
-    now?: number;
-    metricsLine?: string;
-  }): any[] {
-    const badge = ActionPanelBuilder.statusBadge(params.status);
-    const progressLine = ActionPanelBuilder.buildProgressLine(params);
-    const headline = progressLine ? `${badge} · ${progressLine}` : badge;
-    const statusText = params.metricsLine ? `${headline}\n${params.metricsLine}` : headline;
-
-    // PR chip for right column
-    const prChip = params.prStatus ? ActionPanelBuilder.prStatusChip(params.prStatus) : '';
-
-    if (prChip) {
-      // 2-column fields: status (left) + PR (right)
-      return [
-        {
-          type: 'section',
-          fields: [
-            { type: 'mrkdwn', text: statusText },
-            { type: 'mrkdwn', text: `*PR*\n${prChip}` },
-          ],
-        },
-      ];
-    }
-
-    // No PR — plain section
-    return [
-      {
-        type: 'section',
-        text: { type: 'mrkdwn', text: statusText },
-      },
-    ];
   }
 
   /**
@@ -425,130 +326,46 @@ export class ActionPanelBuilder {
     return `${Math.floor(hours / 24)}일`;
   }
 
-  /**
-   * Metrics line: time + tools + link + verbosity on ONE row, `undefined` when
-   * there is nothing to say. Used to be a context block of separate elements;
-   * it is now line 2 of the status section ({@link buildStatusBlocks}).
-   */
-  private static buildMetricsLine(params: {
-    turnSummary?: string;
-    latestResponseLink?: string;
-    logVerbosity?: number;
-  }): string | undefined {
-    const parts: string[] = [];
-
-    if (params.turnSummary) {
-      parts.push(params.turnSummary);
-    }
-
-    if (params.latestResponseLink) {
-      parts.push(`<${params.latestResponseLink}|💬 최신 응답>`);
-    }
-
-    if (params.logVerbosity !== undefined) {
-      parts.push(ActionPanelBuilder.verbosityLabel(params.logVerbosity));
-    }
-
-    return parts.length > 0 ? parts.join(' · ') : undefined;
-  }
-
+  /** The log verbosity is a setting, not a state: a plain code chip, no emoji (T2). */
   private static verbosityLabel(mask: number): string {
-    const LABELS: Record<LogVerbosity, string> = {
-      minimal: '🔇 minimal',
-      compact: '📎 compact',
-      detail: '📋 detail',
-      verbose: '📢 verbose',
-    };
-    const name = getVerbosityName(mask);
-    return name === 'custom' ? `🔧 custom` : LABELS[name];
+    return `\`${getVerbosityName(mask)}\``;
   }
 
+  /**
+   * Session-state badge. The circles 🟢🟡⚪⚫ mean session state and nothing
+   * else on the surface, and every badge is bold — the state is the first thing
+   * to read, whichever state it is (T2).
+   */
   private static statusBadge(status: string): string {
     switch (status) {
-      case '사용 가능':
-        return '⚪ 사용 가능';
       case '작업 중':
-        return '🟢 *작업 중*';
       case '요청 처리 중':
-        return '🟢 *요청 처리 중*';
+        return `🟢 *${status}*`;
       case '입력 대기':
-        return '🟡 *입력 대기*';
-      case '대기 중':
-        return '⚪ 대기 중';
+        return `🟡 *${status}*`;
       case '종료됨':
-        return '⚫ *종료됨*';
-      case '비활성':
+        return `⚫ *${status}*`;
+      case '사용 가능':
+      case '대기 중':
+        return `⚪ *${status}*`;
       default:
-        return '⚪ 대기';
+        return '⚪ *대기*';
     }
-  }
-
-  private static prStatusChip(prStatus: PRStatusInfo): string {
-    if (prStatus.merged) return '🟣 Merged';
-    if (prStatus.draft) return '_Draft_';
-    if (prStatus.state === 'closed') return '🔴 Closed';
-    if (prStatus.approved && prStatus.mergeable) return 'Approved · Merge 가능';
-    if (prStatus.approved) return 'Approved';
-    if (prStatus.mergeable) return 'Merge 가능';
-    if (prStatus.state === 'open') return '⚠️ Merge 불가';
-    return '';
-  }
-
-  private static buildMergeButton(params: ActionPanelBuildParams): any {
-    const prLabel = params.prStatus?.head ? `${params.prStatus.head} → ${params.prStatus.base}` : 'PR';
-
-    return {
-      type: 'button',
-      text: { type: 'plain_text', text: 'Merge', emoji: true },
-      action_id: 'panel_pr_merge',
-      style: 'primary',
-      value: JSON.stringify({
-        sessionKey: params.sessionKey,
-        action: 'pr_merge',
-        prUrl: params.prUrl,
-        headBranch: params.prStatus?.head,
-        baseBranch: params.prStatus?.base,
-      }),
-      confirm: {
-        title: { type: 'plain_text', text: 'PR 머지' },
-        text: {
-          type: 'mrkdwn',
-          text: `*${prLabel}*을(를) 머지하시겠습니까?\n\nSquash merge로 진행되며, 머지 후 소스 브랜치가 삭제됩니다.`,
-        },
-        confirm: { type: 'plain_text', text: '머지' },
-        deny: { type: 'plain_text', text: '취소' },
-      },
-    };
-  }
-
-  private static shouldRenderMergeButton(workflow: WorkflowType, params: ActionPanelBuildParams): boolean {
-    if (!params.prStatus?.mergeable || !params.prUrl) {
-      return false;
-    }
-
-    if (workflow === 'pr-review' || workflow === 'pr-fix-and-update') {
-      return false;
-    }
-
-    return true;
   }
 
   /**
-   * Build a section that links to the standalone choice message instead of
-   * embedding interactive choice buttons directly in the thread header.
-   *
-   * Uses a plain mrkdwn link instead of a button element — Slack URL buttons
-   * are still interactive elements that may be suppressed in Threads panel /
-   * notifications, whereas mrkdwn links always render.
+   * PR state as a word behind the 🔀 kind glyph — never a colour dot, which
+   * would collide with the session badge (T2).
    */
-  private static buildChoiceLinkSection(choiceMessageLink?: string): any {
-    const text = choiceMessageLink
-      ? `❓ 질문에 답변해 주세요 — <${choiceMessageLink}|질문 보기>`
-      : '❓ 질문에 답변해 주세요';
-    return {
-      type: 'section',
-      text: { type: 'mrkdwn', text },
-    };
+  private static prStatusChip(prStatus: PRStatusInfo): string | undefined {
+    if (prStatus.merged) return '🔀 Merged';
+    if (prStatus.draft) return '🔀 Draft';
+    if (prStatus.state === 'closed') return '🔀 Closed';
+    if (prStatus.approved && prStatus.mergeable) return '🔀 Approved · Merge 가능';
+    if (prStatus.approved) return '🔀 Approved';
+    if (prStatus.mergeable) return '🔀 Merge 가능';
+    if (prStatus.state === 'open') return '🔀 ⚠️ Merge 불가';
+    return undefined;
   }
 
   private static buildCloseButton(sessionKey: string): any {
@@ -567,116 +384,46 @@ export class ActionPanelBuilder {
     };
   }
 
-  private static buildButton(def: PanelActionDef, sessionKey: string): any {
-    const button: any = {
+  private static buildStopButton(sessionKey: string): any {
+    return {
       type: 'button',
-      text: { type: 'plain_text', text: def.label, emoji: true },
-      action_id: def.actionId,
-      value: JSON.stringify({ sessionKey, action: def.key }),
+      text: { type: 'plain_text', text: '⏸ 중지', emoji: true },
+      action_id: 'panel_stop',
+      value: JSON.stringify({ sessionKey, action: 'stop' }),
     };
-
-    if (def.style) {
-      button.style = def.style;
-    }
-
-    return button;
   }
 
   /**
-   * Closed panel: hero (status left + PR right) → divider → summary fields grid → context footer
+   * Closed rail: the same single section, in the same place as the live one —
+   *   line 1  `⚫ *종료됨* · MM-DD HH:MM 종료`
+   *   line 2  turn summary (verbatim) · PR state · latest response
+   * It used to be a hero row, a divider, a `*작업 요약*` grid re-parsed out of
+   * the turn summary, and a context footer. No controls: the session is gone.
    */
   private static buildClosedPanel(params: ActionPanelBuildParams): ActionPanelPayload {
     const workflow = params.workflow || 'default';
-    const prChip = params.prStatus ? ActionPanelBuilder.prStatusChip(params.prStatus) : '';
-
-    const heroBlock = prChip
-      ? {
-          type: 'section',
-          fields: [
-            { type: 'mrkdwn', text: '⚫ *종료됨*' },
-            { type: 'mrkdwn', text: `*PR*\n${prChip}` },
-          ],
-        }
-      : { type: 'section', text: { type: 'mrkdwn', text: '⚫ *종료됨*' } };
-
-    const blocks: any[] = [heroBlock, { type: 'divider' }];
-
-    // Summary fields grid (2-column layout)
-    const fields: any[] = [];
-    if (params.turnSummary) {
-      const { elapsed, toolCount } = ActionPanelBuilder.parseTurnSummary(params.turnSummary);
-      if (elapsed) {
-        fields.push({ type: 'mrkdwn', text: `*소요 시간*\n${elapsed}` });
-      }
-      if (toolCount !== undefined) {
-        fields.push({ type: 'mrkdwn', text: `*도구 사용*\n${toolCount}회` });
-      }
-    }
-    // Context info is shown in thread header badge — no need to duplicate here.
-
-    // Only add summary section when there are actual fields (Slack rejects empty fields[])
-    if (fields.length > 0) {
-      blocks.push({
-        type: 'section',
-        text: { type: 'mrkdwn', text: '*작업 요약*' },
-        fields,
-      });
-    }
-
-    // Context footer: timestamp + link
-    const footerElements: any[] = [];
-    footerElements.push({ type: 'mrkdwn', text: `${ActionPanelBuilder.formatCloseTimestamp()} 종료` });
-
-    if (params.latestResponseLink) {
-      footerElements.push({ type: 'mrkdwn', text: `<${params.latestResponseLink}|최신 응답>` });
-    }
-
-    blocks.push({ type: 'context', elements: footerElements });
+    const closedAt = `${ActionPanelBuilder.formatCloseTimestamp(params.now ?? Date.now())} 종료`;
+    const rail = ActionPanelBuilder.buildRail([
+      ActionPanelBuilder.joinParts([ActionPanelBuilder.statusBadge('종료됨'), closedAt]),
+      ActionPanelBuilder.joinParts([
+        params.turnSummary,
+        params.prStatus ? ActionPanelBuilder.prStatusChip(params.prStatus) : undefined,
+        params.latestResponseLink ? `<${params.latestResponseLink}|💬 최신 응답>` : undefined,
+      ]),
+    ]);
 
     return {
       text: `Action panel (${workflow}) - 종료됨`,
-      blocks,
+      blocks: [rail],
     };
   }
 
-  /**
-   * Ensure at most 1 primary button.
-   */
-  private static enforceMaxOnePrimary(buttons: any[]): void {
-    const primaryIndices = buttons.reduce<number[]>((acc, b, i) => {
-      if (b.style === 'primary') acc.push(i);
-      return acc;
-    }, []);
-    if (primaryIndices.length <= 1) return;
-    // Keep only the last primary (merge takes priority over approve)
-    for (let i = 0; i < primaryIndices.length - 1; i++) {
-      delete buttons[primaryIndices[i]].style;
-    }
-  }
-
-  private static parseTurnSummary(turnSummary: string): { elapsed?: string; toolCount?: number } {
-    const timeMatch = turnSummary.match(/⏱\s*(.+?)(?:\s*·|$)/);
-    const toolMatch = turnSummary.match(/🛠\s*(\d+)/);
-    return {
-      elapsed: timeMatch?.[1]?.trim(),
-      toolCount: toolMatch ? parseInt(toolMatch[1], 10) : undefined,
-    };
-  }
-
-  private static formatCloseTimestamp(): string {
-    const now = new Date();
+  private static formatCloseTimestamp(nowMs: number): string {
+    const now = new Date(nowMs);
     const mm = String(now.getMonth() + 1).padStart(2, '0');
     const dd = String(now.getDate()).padStart(2, '0');
     const hh = String(now.getHours()).padStart(2, '0');
     const mi = String(now.getMinutes()).padStart(2, '0');
     return `${mm}-${dd} ${hh}:${mi}`;
-  }
-
-  private static chunk<T>(items: T[], size: number): T[][] {
-    const result: T[][] = [];
-    for (let i = 0; i < items.length; i += size) {
-      result.push(items.slice(i, i + size));
-    }
-    return result;
   }
 }
