@@ -1263,7 +1263,7 @@ else bad "42 run order / confirm" "step or confirm line wrong"; fi
 # 43. hostile + ordering fixture, generated with chore_plan's encoders: HTML and bidi / zero-width text in summary, status,
 #     target name, requirement text, comment, reason fields, owner login and the search; keys TST-9 / TST-10; every owner kind
 G4=$(mk v4g)
-"$PY" -I - "$SKILL/scripts/chore_plan.py" "$V4/valid.tsv" "$G4/plan.tsv" <<'PY'
+"$PY" -I -B - "$SKILL/scripts/chore_plan.py" "$V4/valid.tsv" "$G4/plan.tsv" <<'PY'
 import importlib.util, sys
 spec = importlib.util.spec_from_file_location("chore_plan", sys.argv[1]); P = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(P)
@@ -1593,7 +1593,7 @@ else bad "51 apply order" "rc=$rc $(grep -o '<li id="step-full">[^.]*' "$d/out.h
 #     that is not JSON / whose description parse_blocks refuses (the sha check alone would let them through).
 MV="$V4/move"
 M5=$(mk mv52)
-"$PY" -I - "$SKILL/scripts/chore_plan.py" "$V4/valid.tsv" "$M5" <<'PY'
+"$PY" -I -B - "$SKILL/scripts/chore_plan.py" "$V4/valid.tsv" "$M5" <<'PY'
 import hashlib, importlib.util, json, os, sys
 spec = importlib.util.spec_from_file_location("chore_plan", sys.argv[1]); P = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(P)
@@ -1842,7 +1842,7 @@ JSON52="$T/j52.json" mvfail "52i move row without its engine report row → erro
 #      move/issues.json): renders, numbers / links / completeness; issue#12 adopts TST-120 without a recorded comment,
 #      issue#13 adopts TST-130 with one (4001); no search-total row → the Jira section says no ticket moves
 M6=$(mk mv52j); cp "$MV/valid.tsv" "$M6/plan.tsv"; mkdir -p "$M6/payloads"
-"$PY" -I - "$SKILL/scripts/chore_plan.py" "$MV/issues.json" "$M6/payloads" <<'PY'
+"$PY" -I -B - "$SKILL/scripts/chore_plan.py" "$MV/issues.json" "$M6/payloads" <<'PY'
 import importlib.util, json, sys
 spec = importlib.util.spec_from_file_location("chore_plan", sys.argv[1]); P = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(P)

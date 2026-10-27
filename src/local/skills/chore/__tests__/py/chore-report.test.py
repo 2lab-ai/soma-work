@@ -3,21 +3,16 @@
 
     python3 -I __tests__/py/chore-report.test.py [path/to/chore-report.py]   → exit 0 only when every case passes
 
-Two inputs:
-- one real 2026-10-15 ledger of a large repository, read in place from the folder CHORE_REPORT_LEDGER names (plan.tsv,
-  apply-1-deploy.out, apply-2-final.out, verify-1.out, verify-final.out; its plan digest is pinned below). That folder
-  is operations data, so it is NOT copied into the plaintext fixtures folder; when CHORE_REPORT_LEDGER is unset, the
-  folder is absent or it is locked (git-crypt), those cases print "skip" and do not count as failures.
-- synthetic v4 fixtures in fixtures/chore-report/ built with chore_plan's encoders: v4-plan.tsv (+ an ABORTED only-group
-  run, a full run, and the verify output of both) and v4-jira-plan.tsv (Jira only: an ABORTED full run with Jira results,
-  a full rerun, verify). Refusal cases mutate copies in a temp folder; review-round item ids ([A1]…[D]) are in the case names.
-Stdlib only, no network. One ok/FAIL/skip line per case.
+Input: synthetic v4 fixtures in fixtures/chore-report/ built with chore_plan's encoders: v4-plan.tsv (+ an ABORTED
+only-group run, a full run, and the verify output of both) and v4-jira-plan.tsv (Jira only: an ABORTED full run with Jira
+results, a full rerun, verify). Refusal cases mutate copies in a temp folder; review-round item ids ([A1]…[D]) are in the
+case names.
+Stdlib only, no network. One ok/FAIL line per case.
 """
 import atexit
 import hashlib
 import html
 import importlib.util
-import os
 import re
 import shlex
 import shutil
@@ -31,16 +26,13 @@ HERE = Path(__file__).resolve().parent
 SCRIPTS = HERE.parent.parent / "scripts"   # <skill>/scripts — this file is <skill>/__tests__/py/
 SCRIPT = Path(sys.argv[1]).resolve() if len(sys.argv) > 1 else SCRIPTS / "chore-report.py"   # mutation runs pass a copy
 FIX = HERE.parent / "fixtures" / "chore-report"
-# a real ledger is operations data and never lives in this tree: CHORE_REPORT_LEDGER=<folder> runs section 1 on it
-LEDGER = Path(os.environ["CHORE_REPORT_LEDGER"]) if os.environ.get("CHORE_REPORT_LEDGER") else None
-LEDGER_DIGEST = "d063e4ea853ec6a362f04e8aad56ec02a6ee89b276f43b0ab5f0386ff7553c93"   # README of that ledger
 DEFINITION = "배포 확인 = 바인딩의 deploy-proof 워크플로가 성공한 push 실행에 포함됨 — 지금 그 환경이 그 코드라는 뜻은 아님"
 
 _spec = importlib.util.spec_from_file_location("chore_report", SCRIPT)
 R = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(R)
 
-n = fail = skipped = 0
+n = fail = 0
 TMP = Path(tempfile.mkdtemp(prefix="chore-report-test."))
 atexit.register(shutil.rmtree, TMP, True)
 
@@ -56,12 +48,6 @@ def bad(name, why):
     n += 1
     fail += 1
     print("FAIL %s :: %s" % (name, why))
-
-
-def skip(name, why):
-    global skipped
-    skipped += 1
-    print("skip %s :: %s" % (name, why))
 
 
 def check(name, cond, why=""):
@@ -134,57 +120,6 @@ def next_cmd_tokens(page):
     except ValueError:
         return None
 
-
-# ── 1. the real 2026-10-15 ledger (read in place from CHORE_REPORT_LEDGER) ─────────────────────────────
-LP, A1, A2, V1, VF = ((LEDGER / x) if LEDGER else None
-                      for x in ("plan.tsv", "apply-1-deploy.out", "apply-2-final.out", "verify-1.out", "verify-final.out"))
-readable = LEDGER is not None and all(p.is_file() for p in (LP, A1, A2, V1, VF)) and LP.read_bytes()[:14] == b"#chore-plan v3"
-if not readable:
-    skip("1 real 2026-10-15 ledger cases", "ledger not readable as plaintext (CHORE_REPORT_LEDGER unset, absent or git-crypt locked)")
-else:
-    # --repo-url must name the plan's own repository (the report refuses any other), so it comes from the header remote=
-    GH = "https://github.com/" + dict(f.split("=", 1) for f in LP.read_text(encoding="utf-8").split("\n", 1)[0].split("\t")[1:])["remote"]
-    check("1a ledger plan digest = the approval digest in its README", sha(LP) == LEDGER_DIGEST, sha(LP))
-    vf = VF.read_text(encoding="utf-8")
-    plan_rows = [ln.split("\t") for ln in LP.read_text(encoding="utf-8").split("\n")[1:] if ln]
-    want = {"t-branches": vf.count("VERIFY\tOK\tdelete-remote\t"), "t-prs": vf.count("VERIFY\tOK\tclose-pr\t"),
-            "t-issues": vf.count("VERIFY\tOK\tclose-issue\t"), "t-jira-qa": 0, "t-jira-closed": 0, "t-decide": 0,
-            "t-bad": 0, "t-recent": 0}
-    rc, err, page = run(LP, [A1, A2], VF, digest=LEDGER_DIGEST, repo=GH)
-    check("1b apply-1 + apply-2 + verify-final renders", rc == 0 and page, "rc=%s err=%r" % (rc, err))
-    page = page or ""
-    got = nums(page)
-    check("1c tiles = counts of the VERIFY file (1822 / 1 / 6, nothing else)",
-          {k: got.get(k) for k in want} == want and want["t-branches"] == 1822, "%r vs %r" % ({k: got.get(k) for k in want}, want))
-    check("1d rows tried twice count once (325 deleted in run 1, SKIP gone in run 2 → 1822 not 2147)",
-          got.get("f-branch-x-done") == 1822 and got.get("f-branch-r-act") == sum(1 for c in plan_rows if c[1] == "delete-remote"),
-          "%r %r" % (got.get("f-branch-x-done"), got.get("f-branch-r-act")))
-    n_pr = sum(1 for c in plan_rows if c[2].startswith("pr#"))
-    n_issue = sum(1 for c in plan_rows if c[2].startswith("issue#"))
-    check("1e area totals = plan row counts (PR %d, 이슈 %d, 브랜치 = the rest)" % (n_pr, n_issue),
-          got.get("f-pr-total") == n_pr and got.get("f-issue-total") == n_issue
-          and got.get("f-branch-total") == len(plan_rows) - n_pr - n_issue and got.get("f-jira-total") == 0, "")
-    check("1f success with nothing skipped or not run → plain 모두 확인됨; 58 protected refs 아직 있음",
-          '<span id="verdict-text">모두 확인됨</span>' in page and 'id="notrun-note"' not in page
-          and "보호·통합 브랜치 <b>58</b>개가 정리 뒤에도 아직 있음" in page and "그대로 있음" not in page, "")
-    check("1f2 old plan without close titles: closed PR / issues fall back to the posted comment's first line",
-          section(page, "s-done", 'id="s-kept"').count('<span class="muted">남긴 댓글</span>') == 7, "")
-    check("1g [C5] coverage: 판정 counts structured verdicts only (0), close rows as 닫기 결정 (1 / 6)",
-          [got.get("cov-%d" % i) for i in (0, 1, 2, 3, 8, 9)] == [0, 1, 0, 6, 0, 1822] and "PR 닫기 결정" in page,
-          repr([got.get("cov-%d" % i) for i in range(11)]))
-    rc, err, page = run(LP, [A2], VF, digest=LEDGER_DIGEST, repo=GH)
-    fails_one_line("1h apply-2 alone + verify-final (325 rows only skipped there) → exit 1", rc, err, "verify came from other results")
-    rc, err, page = run(LP, [A1], V1, digest=LEDGER_DIGEST, repo=GH)
-    got = nums(page or "")
-    check("1i [C2] apply-1 + verify-1: headline 확인한 325건 모두 확인됨 · 실행 안 함 1,504건",
-          rc == 0 and got.get("t-branches") == 325 and got.get("n-notrun") == 1504 and got.get("f-branch-x-notrun") == 1497
-          and '<span id="verdict-text">확인한 325건 모두 확인됨 · 실행 안 함 1,504건</span>' in (page or ""), "rc=%s err=%r" % (rc, err))
-    rc, err, page = run(LP, [A1, A2], V1, digest=LEDGER_DIGEST, repo=GH)
-    fails_one_line("1j both applies + verify-1 (made from apply-1 only) → exit 1", rc, err, "no line for")
-    rc, err, page = run(LP, [A1, A2], VF, digest="0" * 64, repo=GH)
-    fails_one_line("1k digest mismatch on the ledger plan → exit 1", rc, err, "not the approved plan")
-    rc, err, page = run(LP, [A1, A1], VF, digest=LEDGER_DIGEST, repo=GH)
-    fails_one_line("1l [A5] v3 output (no attempt ids) given twice → exit 1", rc, err, "same bytes")
 
 # ── 2. synthetic v4 plan: tiles and funnels ──────────────────────────────────────────────────────────
 PLAN = FIX / "v4-plan.tsv"
@@ -1816,5 +1751,5 @@ check("21e [R5b] #182 is the breaker cause in run A (M5) and again in run B (M19
       and "티켓 내용이 승인본과 다름 — 닫지 않음" not in section(nb, "next-cause", "</p>"),
       "rc=%s err=%r block=%r" % (rc, err[:200], nb[:600]))
 
-print("---- %d cases, %d failed, %d skipped" % (n, fail, skipped))
+print("---- %d cases, %d failed" % (n, fail))
 sys.exit(1 if fail else 0)

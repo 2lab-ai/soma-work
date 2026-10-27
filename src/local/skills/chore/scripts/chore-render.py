@@ -40,6 +40,8 @@ from collections import Counter
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+
 
 def _load_plan_module():
     """계획 TSV 문법 = scripts/chore_plan.py 한 벌(판정·렌더·보고·헬퍼가 같은 파서). python3 -I로는 같은 폴더의

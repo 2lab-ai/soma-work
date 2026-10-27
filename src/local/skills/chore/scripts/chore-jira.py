@@ -64,6 +64,7 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+sys.dont_write_bytecode = True
 TIMEOUT = 30.0
 READ_TRIES = 3     # GET만: 연결 오류·5xx면 다시 (쓰기는 언제나 1번)
 RETRY_SLEEP = 0.5  # 첫 쉼; 두 번째는 2배

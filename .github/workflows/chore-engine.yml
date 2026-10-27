@@ -32,20 +32,30 @@ jobs:
       (github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, fable-m5max]
-    timeout-minutes: 90
+    timeout-minutes: 60
 
     steps:
       - uses: actions/checkout@v4
 
       # All eight suites at once; each writes its own log. bash 3.2-safe (no
       # associative arrays): the runner's default bash may be the system one.
+      # Each suite has its own deadline so every `wait` below returns and a hung
+      # suite cannot hide the logs printed after it: perl's alarm survives exec,
+      # so SIGALRM ends the suite (exit 142). perl, not coreutils `timeout`, which
+      # macOS lacks. The slowest suite (chore.test.sh) takes ~35 min; keep the
+      # deadline above that and below the job timeout.
       - name: Engine suites (parallel)
         run: |
           set -uo pipefail
           D=src/local/skills/chore/__tests__/py
           LOGS=$(mktemp -d "${RUNNER_TEMP:-/tmp}/chore-engine.XXXXXX")
+          DEADLINE=3000
           names=() pids=()
-          start() { local n=$1; shift; "$@" > "$LOGS/$n.log" 2>&1 & names+=("$n"); pids+=("$!"); }
+          start() {
+            local n=$1; shift
+            perl -e 'alarm shift; exec @ARGV or die "exec $ARGV[0]: $!\n"' "$DEADLINE" "$@" > "$LOGS/$n.log" 2>&1 &
+            names+=("$n"); pids+=("$!")
+          }
           for t in chore-contract chore-evidence chore-jira chore-judge chore-move chore-report; do
             start "$t" python3 -I "$D/$t.test.py"
           done
@@ -54,7 +64,9 @@ jobs:
           failed=0
           for i in "${!pids[@]}"; do
             if wait "${pids[$i]}"; then rc=0; else rc=$?; fi
-            echo "${names[$i]}: exit $rc — $(tail -n 1 "$LOGS/${names[$i]}.log")"
+            note=""
+            if [ "$rc" -eq 142 ]; then note=" (killed at the ${DEADLINE}s deadline)"; fi
+            echo "${names[$i]}: exit $rc$note — $(tail -n 1 "$LOGS/${names[$i]}.log")"
             if [ "$rc" -ne 0 ]; then
               failed=1
               echo "::group::${names[$i]} (last 60 lines)"
