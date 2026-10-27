@@ -2268,6 +2268,9 @@ export class SessionRegistry {
           titleProvisional: serialized.titleProvisional === true ? true : undefined,
           // Merge code change stats
           mergeStats: serialized.mergeStats,
+          // The instruction fields are not persisted: a restored session's owner
+          // intent has a gap before the restart (auto-mode classifier).
+          intentHistoryIncomplete: true,
           // User SSOT instructions (restored from disk).
           // Legacy migration: entries saved before the lifecycle-status
           // extension lack `status`. Seed them to 'active' so the block

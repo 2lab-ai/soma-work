@@ -1510,9 +1510,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         if (!session.initialInstruction) {
           session.initialInstruction = text;
           session.initialInstructionUserId = user;
-          // An SDK session already exists (a restored or resumed session): what
-          // was said before this message was not recorded here.
-          if (session.sessionId) session.intentHistoryIncomplete = true;
         } else {
           // Always record subsequent turns as follow-ups (even if text matches initial).
           // This block is the only writer of initialInstruction (and its author id), so
@@ -1522,6 +1519,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
           if (session.followUpInstructions.length >= MAX_FOLLOW_UP_INSTRUCTIONS) {
             session.followUpInstructions.shift();
+            // History lost at the cap: the auto-mode classifier treats intent as incomplete.
+            session.intentHistoryIncomplete = true;
           }
           session.followUpInstructions.push({
             timestamp: Date.now(),

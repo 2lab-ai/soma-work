@@ -73,6 +73,8 @@ const NOT_A_READER = new RegExp(
     String.raw`(?<![.\w])(?:load|do)\s*[('"]`, // ruby `load 'f'`, perl `do 'f'` (json.load is a method call, not this)
     String.raw`\bimport\s*\(`, // JS dynamic import()
     String.raw`\bprocess\.(?!stdin\b|stdout\b|exit\b)`, // node: only stdin / stdout / exit
+    String.raw`\bsys\.(?!stdin\b|stdout\b|stderr\b|argv\b|exit\b)`, // python: only stdio / argv / exit
+    String.raw`\b(?:attrgetter|methodcaller|FileIO|modules|_getframe|f_builtins|f_globals|f_locals)\b`,
   ].join('|'),
 );
 /** Python modules a data reader may import. */
@@ -105,9 +107,11 @@ const NODE_COMPUTED_ACCESS = /\b(?:globalThis|global|this|self|Reflect|Proxy)\b|
 /** Escapes and unusual whitespace can spell a name the scan cannot see (`ev\u0061l`, `import\f…`, `\`-newline). */
 const OPAQUE_SYNTAX = /\\(?:u|x|N|\r?\n)|[\f\v]/;
 
-function isDataReaderCode(family: InterpreterFamily, code: string): boolean {
-  if (code.trim().length === 0) return false;
-  if (OPAQUE_SYNTAX.test(code)) return false;
+function isDataReaderCode(family: InterpreterFamily, rawCode: string): boolean {
+  if (rawCode.trim().length === 0) return false;
+  if (OPAQUE_SYNTAX.test(rawCode)) return false;
+  // Python reads identifiers in NFKC (`ｅｖａｌ` is `eval`): scan what it will see.
+  const code = rawCode.normalize('NFKC');
   // `sys.stdout.write` / `process.stdout.write` only print.
   const scanned = code.replace(/\b(?:sys\.|process\.)?stdout\.write\b/g, 'print');
   if (NOT_A_READER.test(scanned)) return false;
@@ -147,8 +151,12 @@ function readWord(s: string, i: number): { word: string; end: number; expands: b
     } else if (c === '"') {
       let j = i + 1;
       while (j < s.length && s[j] !== '"') {
-        if (s[j] === '\\' && j + 1 < s.length) j++;
-        else if (s[j] === '$' || s[j] === '`') expands = true;
+        if (s[j] === '\\' && j + 1 < s.length) {
+          // Inside "…" bash drops the backslash only before $ ` " \ and newline;
+          // anywhere else it stays (so `\u0061` reaches the interpreter as written).
+          if (!/[$`"\\\n]/.test(s[j + 1])) word += '\\';
+          j++;
+        } else if (s[j] === '$' || s[j] === '`') expands = true;
         word += s[j];
         j++;
       }
