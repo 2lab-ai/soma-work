@@ -123,9 +123,44 @@ describe('LlmSafetyClassifier — owner intent in the prompt (T7.2)', () => {
     expect(chat.mock.calls[0][0]).not.toMatch(/filesystem writes are restricted/i);
   });
 
+  // Review gate r1 (astra P1): a cut must never keep a permission and drop its restriction.
+  it('keeps the end of a long instruction and says the text was cut', async () => {
+    const chat = vi.fn().mockResolvedValue('{"verdict":"ask","reason":"x"}');
+    const long = `Delete ./old ${'x'.repeat(5000)} but do not execute until I explicitly confirm`;
+    await new LlmSafetyClassifier(chat).classify({ ...BASE, userIntent: { instructions: [long] } });
+    const prompt: string = chat.mock.calls[0][0];
+    expect(prompt).toContain('Delete ./old');
+    expect(prompt).toContain('do not execute until I explicitly confirm');
+    expect(prompt).toMatch(/cut/i);
+    expect(prompt).toMatch(/do not allow a destructive/i);
+  });
+
   it('caps the quoted intent so a huge instruction cannot flood the prompt', async () => {
     const chat = vi.fn().mockResolvedValue('{"verdict":"ask","reason":"x"}');
     await new LlmSafetyClassifier(chat).classify({ ...BASE, userIntent: { instructions: ['가'.repeat(20000)] } });
     expect((chat.mock.calls[0][0] as string).length).toBeLessThan(8000);
+  });
+});
+
+describe('LlmSafetyClassifier — fail-closed contract (review r1)', () => {
+  it('a backend that throws synchronously still yields ask and clears its timer', async () => {
+    vi.useFakeTimers();
+    try {
+      const chat = vi.fn(() => {
+        throw new Error('sync boom');
+      });
+      const v = await new LlmSafetyClassifier(chat as never, { timeoutMs: 1000 }).classify({
+        toolName: 'Bash',
+        command: 'rm -rf ./x',
+        toolInput: {},
+        matchedRuleIds: ['rm-recursive'],
+        user: 'U1',
+      });
+      expect(v.verdict).toBe('ask');
+      expect(v.reason).toMatch(/sync boom/);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

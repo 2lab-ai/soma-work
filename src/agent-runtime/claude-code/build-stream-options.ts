@@ -63,20 +63,31 @@ const permissionWarningDeduper = createPermissionWarningDeduper({ windowMs: 10 *
 /** Recent owner follow-ups quoted to the classifier, after the first instruction. */
 const INTENT_FOLLOW_UPS = 5;
 
+/** A host-appended skill body (`$skill` / autoskill) is not something the owner wrote. */
+const INVOKED_SKILLS_BLOCK = /<invoked_skills>[\s\S]*?<\/invoked_skills>/g;
+
+function ownerText(text: string): string {
+  return text.replace(INVOKED_SKILLS_BLOCK, '').trim();
+}
+
 /**
  * The owner's own words for the auto-mode classifier: the session's first
- * instruction and its latest follow-ups, kept only when `user` wrote them (a
- * message from anyone else in the thread is never treated as the owner's
- * intent). Host-recorded raw text — never agent output or a model-written goal.
+ * instruction and its latest follow-ups (steered messages included), kept only
+ * when the session OWNER wrote them, and only when the owner is the one acting
+ * — another participant's turn in the thread gets no intent at all, so the model
+ * falls back to asking. Host-recorded raw Slack text with any host-appended
+ * skill body removed — never agent output or a model-written goal.
  */
 export function ownerIntent(session: ConversationSession | undefined, user: string): SafetyUserIntent {
+  const owner = session?.ownerId;
+  if (!session || !owner || owner !== user) return { instructions: [] };
   const instructions: string[] = [];
-  if (session?.initialInstruction && session.initialInstructionUserId === user) {
-    instructions.push(session.initialInstruction);
+  if (session.initialInstruction && session.initialInstructionUserId === owner) {
+    instructions.push(ownerText(session.initialInstruction));
   }
-  const followUps = (session?.followUpInstructions ?? []).filter((f) => f.userId === user).slice(-INTENT_FOLLOW_UPS);
-  for (const f of followUps) instructions.push(f.text);
-  return { instructions };
+  const followUps = (session.followUpInstructions ?? []).filter((f) => f.userId === owner).slice(-INTENT_FOLLOW_UPS);
+  for (const f of followUps) instructions.push(ownerText(f.text));
+  return { instructions: instructions.filter((t) => t.length > 0) };
 }
 
 /**
@@ -310,29 +321,39 @@ export async function buildStreamOptions(
             });
             // SSOT_2 #3: the model passed it — the mechanical check still runs and,
             // when it flags something, the owner sees a warning (never a question).
-            const warnIds = permissionWarningRuleIds(command, result.matchedRuleIds ?? []);
-            const notify = deps.onPermissionWarning;
-            if (notify && warnIds.length > 0 && permissionWarningDeduper.shouldWarn(hookSessionKey, command, warnIds)) {
-              const warning: PermissionWarningEvent = {
+            // Nothing in this step — a sync throw or a rejected publish — may change
+            // the allow below.
+            const warnFailed = (err: unknown) =>
+              logger.warn('Permission warning could not be published', {
+                tool: toolName,
                 user: policyUser,
-                channel: slackContext.channel,
-                ...(slackContext.threadTs ? { threadTs: slackContext.threadTs } : {}),
-                ...(liveSession?.conversationId ? { conversationId: liveSession.conversationId } : {}),
-                toolName,
-                toolInput: toolInput ?? {},
-                command,
-                rules: permissionWarningRules(warnIds),
-                reason: verdict.reason,
-              };
-              Promise.resolve()
-                .then(() => notify(warning))
-                .catch((err) =>
-                  logger.warn('Permission warning could not be published', {
-                    tool: toolName,
-                    user: policyUser,
-                    error: err instanceof Error ? err.message : String(err),
-                  }),
-                );
+                error: err instanceof Error ? err.message : String(err),
+              });
+            try {
+              const warnIds = permissionWarningRuleIds(command, result.matchedRuleIds ?? []);
+              const notify = deps.onPermissionWarning;
+              if (
+                notify &&
+                warnIds.length > 0 &&
+                permissionWarningDeduper.shouldWarn(hookSessionKey, command, warnIds)
+              ) {
+                const warning: PermissionWarningEvent = {
+                  user: policyUser,
+                  channel: slackContext.channel,
+                  ...(slackContext.threadTs ? { threadTs: slackContext.threadTs } : {}),
+                  ...(liveSession?.conversationId ? { conversationId: liveSession.conversationId } : {}),
+                  toolName,
+                  toolInput: toolInput ?? {},
+                  command,
+                  rules: permissionWarningRules(warnIds),
+                  reason: verdict.reason,
+                };
+                Promise.resolve()
+                  .then(() => notify(warning))
+                  .catch(warnFailed);
+              }
+            } catch (err) {
+              warnFailed(err);
             }
             return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
           }

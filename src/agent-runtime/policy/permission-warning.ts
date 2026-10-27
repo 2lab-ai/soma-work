@@ -34,15 +34,97 @@ const PIPE_TO_INTERPRETER = new RegExp(
   String.raw`\|\s*(?:\S*/)?(?:env\s+(?:-\S+\s+)*)?(${INTERPRETER})(?![\w.-])`,
   'gi',
 );
-/** Flags whose next argument is inline program text (python -c, node/perl/ruby -e, perl -ne/-pe/-lne, php -r). */
-const INLINE_CODE_FLAG = /^-[a-zA-Z]*[cer]$/;
-/** Inline code that can run what it reads — keep the warning when any of these appear. */
-const EXECUTES_INPUT =
-  /\b(?:exec|eval|compile|execfile|system|popen|spawn\w*|fork|subprocess|child_process|shell_exec|passthru|__import__|importlib|runpy|Function)\b|`|\$\(|\bqx\b/;
+/**
+ * The data-reader allowlist. A pipe into an interpreter is treated as a pure
+ * DATA pipe only when the interpreter's FIRST argument is its own inline-code
+ * flag and that code passes {@link isDataReaderCode}. Anything else — another
+ * flag first (`-W x -c`, `-r ./mod.js`, `-m code`), a long flag, `-p`, a script
+ * operand, no argument at all — keeps the warning (fail closed).
+ */
+type InterpreterFamily = 'python' | 'node';
+/**
+ * Only python `-c` and node `-e` one-liners can be positively recognised as data
+ * readers (the measured noise: `| python3 -c '<json parse>'`). perl, ruby and
+ * php are too loose to read safely here and always keep the warning.
+ */
+const INLINE_CODE_FLAGS: Record<InterpreterFamily, RegExp> = {
+  python: /^-c$/,
+  node: /^-e$/,
+};
 
-/** Read one shell word starting at `i` (handles '…', "…" with \-escapes, and bare words). */
-function readWord(s: string, i: number): { word: string; end: number } {
+function interpreterFamily(name: string): InterpreterFamily | null {
+  const n = name.toLowerCase();
+  if (n.startsWith('python')) return 'python';
+  if (n === 'node') return 'node';
+  return null;
+}
+
+/**
+ * Anything in the code that can run, load, write or reach beyond printing what
+ * it read. Fail closed: a word on this list in a string or a dict key also keeps
+ * the warning — a warning is never a block.
+ */
+const NOT_A_READER = new RegExp(
+  [
+    '`|__', // backticks (perl/ruby run them), dunder access
+    String.raw`\b(?:exec\w*|eval\w*|compile|system|popen\w*|spawn\w*|posix_spawn\w*|fork|subprocess|child_process|shell_exec|passthru|proc_open|qx)\b`,
+    String.raw`\b(?:importlib|runpy|ctypes|pty|builtins|getattr|setattr|globals|locals|pickle|marshal|shelve|yaml|code|Function|vm|run\w*Context|binding|dlopen|Module)\b`,
+    String.raw`\b(?:open|write\w*|unlink\w*|remove|rmtree|rename\w*|mkdir\w*|chmod|chown|truncate|socket|fetch|https?|net|request|urlopen)\b`,
+    String.raw`(?<![.\w])(?:load|do)\s*[('"]`, // ruby `load 'f'`, perl `do 'f'` (json.load is a method call, not this)
+    String.raw`\bimport\s*\(`, // JS dynamic import()
+    String.raw`\bprocess\.(?!stdin\b|stdout\b|exit\b)`, // node: only stdin / stdout / exit
+  ].join('|'),
+);
+/** Python modules a data reader may import. */
+const PY_READER_MODULES = new Set([
+  'json',
+  'sys',
+  're',
+  'csv',
+  'collections',
+  'itertools',
+  'datetime',
+  'math',
+  'string',
+  'textwrap',
+  'functools',
+  'operator',
+  'base64',
+  'statistics',
+  'pprint',
+]);
+/** node: `require('fs').readFileSync(0…)` / `fs.readFileSync(0…)` is the one allowed read (stdin). */
+const NODE_STDIN_READ =
+  /\brequire\s*\(\s*['"](?:node:)?fs['"]\s*\)\s*\.\s*readFileSync\s*\(\s*0\b|\bfs\s*\.\s*readFileSync\s*\(\s*0\b/g;
+
+function isDataReaderCode(family: InterpreterFamily, code: string): boolean {
+  if (code.trim().length === 0) return false;
+  // `sys.stdout.write` / `process.stdout.write` only print.
+  const scanned = code.replace(/\b(?:sys\.|process\.)?stdout\.write\b/g, 'print');
+  if (NOT_A_READER.test(scanned)) return false;
+  if (family === 'python') {
+    for (const m of code.matchAll(/\bimport\s+([\w.\s,]+)/g)) {
+      const names = m[1].split(',').map((n) => n.trim().split(/\s+/)[0]);
+      if (names.some((n) => !PY_READER_MODULES.has(n))) return false;
+    }
+    for (const m of code.matchAll(/\bfrom\s+([\w.]+)\s+import\b/g)) {
+      if (!PY_READER_MODULES.has(m[1])) return false;
+    }
+  } else if (family === 'node') {
+    // After the one allowed stdin read, no require, fs or *Sync call may remain.
+    if (/\brequire\b|\bfs\b|\w+Sync\b/.test(code.replace(NODE_STDIN_READ, 'STDIN'))) return false;
+  }
+  return true;
+}
+
+/**
+ * Read one shell word starting at `i` (handles '…', "…" with \-escapes, and bare
+ * words). `expands` is true when a `$` or backtick sits outside single quotes —
+ * the shell substitutes it, so the code the interpreter runs is not what we read.
+ */
+function readWord(s: string, i: number): { word: string; end: number; expands: boolean } {
   let word = '';
+  let expands = false;
   while (i < s.length && !/\s|[|;&()]/.test(s[i])) {
     const c = s[i];
     if (c === "'") {
@@ -54,41 +136,51 @@ function readWord(s: string, i: number): { word: string; end: number } {
       let j = i + 1;
       while (j < s.length && s[j] !== '"') {
         if (s[j] === '\\' && j + 1 < s.length) j++;
+        else if (s[j] === '$' || s[j] === '`') expands = true;
         word += s[j];
         j++;
       }
       i = j + 1;
     } else {
+      if (c === '$' || c === '`') expands = true;
       word += c;
       i++;
     }
   }
-  return { word, end: i };
+  return { word, end: i, expands };
 }
 
 /**
- * True when the interpreter invoked at `start` (just after its name) reads its
- * PROGRAM from stdin — no inline-code flag, no script operand, or an explicit
- * `-` / `-s` — or runs inline code that can execute input. A shell is never a
- * data reader: `| sh -c '…'` can run stdin (`. /dev/stdin`), so it always warns.
+ * True unless the interpreter invoked at `start` (just after its name) is
+ * positively a data reader (see the allowlist above). A shell is never a data
+ * reader (`| sh -c '…'` can run stdin via `. /dev/stdin`).
  */
 function interpreterRunsInput(command: string, interpreter: string, start: number): boolean {
   if (SHELL.test(interpreter)) return true;
+  const family = interpreterFamily(interpreter);
+  if (!family) return true;
   let i = start;
-  for (;;) {
-    while (i < command.length && /[ \t]/.test(command[i])) i++;
-    if (i >= command.length || /[|;&)\n]/.test(command[i])) return true; // no program given → stdin is the program
-    const { word, end } = readWord(command, i);
-    i = end;
-    if (word === '-' || word === '-s') return true;
-    if (INLINE_CODE_FLAG.test(word)) {
-      while (i < command.length && /[ \t]/.test(command[i])) i++;
-      const code = readWord(command, i).word;
-      return EXECUTES_INPUT.test(code);
-    }
-    if (!word.startsWith('-')) return false; // a script operand: the program is that file, stdin is data
-  }
+  while (i < command.length && /[ \t]/.test(command[i])) i++;
+  if (i >= command.length || /[|;&)\n]/.test(command[i])) return true;
+  const flag = readWord(command, i);
+  if (!INLINE_CODE_FLAGS[family].test(flag.word)) return true;
+  i = flag.end;
+  while (i < command.length && /[ \t]/.test(command[i])) i++;
+  const code = readWord(command, i);
+  if (code.expands || !isDataReaderCode(family, code.word)) return true;
+  // Nothing may follow the code but redirects: a second `-e`, more arguments or
+  // a script operand is not something this check understands.
+  return !ONLY_REDIRECTS.test(restOfStage(command, code.end));
 }
+
+/** Text after `start` up to the end of this pipeline stage (`|`, `;`, `&`, newline or `)`). */
+function restOfStage(command: string, start: number): string {
+  const m = /[|;&\n)]/.exec(command.slice(start));
+  return m ? command.slice(start, start + m.index) : command.slice(start);
+}
+
+/** Zero or more redirects such as `2>/dev/null`, `> out.json`, `2>&1`. */
+const ONLY_REDIRECTS = /^(?:\s*\d*(?:>>?|<)\s*(?:&\d+|[^\s|;&<>]+))*\s*$/;
 
 /** True when every `| interpreter` in the command only reads stdin as data. */
 function onlyDataPipes(command: string): boolean {

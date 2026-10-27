@@ -2848,6 +2848,18 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    // Review gate r1 (astra P1): a consumed steer is an instruction the owner gave
+    // mid-turn — the auto-mode classifier must see it (e.g. a late "don't delete").
+    it('adds a consumed steered message to the follow-up instructions with its author', async () => {
+      registrySession.followUpInstructions = undefined;
+      const { uuid, settle } = await steerWithFile('삭제는 하지 마');
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'completed' });
+      expect(registrySession.followUpInstructions).toEqual([
+        expect.objectContaining({ text: '삭제는 하지 마', userId: 'U_OWNER' }),
+      ]);
+      await settle();
+    });
+
     it('does not record a steered message the queue took back (discarded) — the drain will', async () => {
       const { uuid, settle, record } = await steerWithFile('나중에 봐줘');
 

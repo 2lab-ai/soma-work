@@ -1512,8 +1512,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           session.initialInstructionUserId = user;
         } else {
           // Always record subsequent turns as follow-ups (even if text matches initial).
-          // The first turn is not duplicated because session-initializer sets initialInstruction
-          // before stream-executor runs, so this branch is only reached from the 2nd turn onward.
+          // This block is the only writer of initialInstruction (and its author id), so
+          // the first turn lands above and this branch runs from the 2nd turn onward.
           if (!session.followUpInstructions) {
             session.followUpInstructions = [];
           }
