@@ -3870,6 +3870,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sk { background: var(--ib-pill); border-radius: 6px; animation: sk-pulse 1.6s ease-in-out infinite; }
 .col-skel { display: flex; flex-direction: column; gap: 8px; }
 .kanban:not([data-load="loading"]) .col-skel { display: none; }
+/* Counts and "Nothing here" are claims about the whole board: only a certified
+   (ready) board makes them — not 다시 시도 after a partial paint, not this
+   instance's cards shown under the error. */
+.kanban:not([data-load="ready"]) .col-empty { display: none; }
+.kanban:not([data-load="ready"]) .kanban-col-header .count:not(:empty) { visibility: hidden; }
 .sk-card { background: var(--ib-card); border: 1px solid var(--ib-card-border); border-radius: 12px; box-shadow: var(--ib-shadow); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .sk-card .sk-title { height: 14px; width: 68%; }
 .sk-card .sk-meta { height: 10px; width: 42%; }
@@ -8562,7 +8567,11 @@ function patchLastBoard(s) {
   });
 }
 
-function renderBoard(board) {
+function renderBoard(board, partial) {
+  // Partial: this instance's cards painted while the board is in error — never
+  // announced as the board. Unspecified means whatever the load state says, so a
+  // toggle re-render of partial data stays quiet too.
+  if (partial === undefined) partial = _boardLoad === 'failed';
   _sessionCache = Object.create(null); // Clear stale cache each render cycle
   // Populate cache from the entire board first so the env-palette pass
   // (which reads every card's environment) and the per-card renders share
@@ -8583,7 +8592,7 @@ function renderBoard(board) {
   _lastBoardData = board;
   // D6: how many need you and how many run — the data as it came (CRON runs
   // waiting on a reply included), before the lane takes its runs and any hold.
-  announceBoard((board.waiting || []).length, (board.working || []).length);
+  if (!partial) announceBoard((board.waiting || []).length, (board.working || []).length);
   // Cron runs leave the columns for the CRON lane, one group per job (SSOT
   // 2026-10-23 T4); the lane sections exist before the reconciler fills them.
   var cronPlan = planCronLane(board, _cronJobs, _cronRevealKey);
@@ -12957,20 +12966,35 @@ function paintPushedBoard(board) {
   return true;
 }
 
+// Until the board is certified a request that never answers would keep the
+// skeleton up: it is cut off after BOARD_LOAD_TIMEOUT_MS (shorter than the 30 s
+// poll) and ends in 다시 시도. The deadline is for the answer, not the transfer —
+// a large board on a slow link still arrives. Certified, polls run unbounded.
+var BOARD_LOAD_TIMEOUT_MS = 20000;
+var _sessionsSeq = 0;
 async function loadSessions() {
   // An answer for a user no longer selected paints nothing and flags nothing.
-  // Same-user loads never cancel each other: a slow 30 s poll still paints.
+  // Same-user loads never cancel each other: a slow 30 s poll still paints. Only
+  // a failure is dropped when a newer load is already asking (it reports itself).
   var forUser = currentUserId;
+  var seq = ++_sessionsSeq;
+  var ctl = null;
+  var timer = 0;
+  if (_boardLoad !== 'ready' && typeof AbortController === 'function') {
+    ctl = new AbortController();
+    timer = setTimeout(function() { ctl.abort(); }, BOARD_LOAD_TIMEOUT_MS);
+  }
   try {
     const url = '/api/dashboard/sessions' + (currentUserId ? '?userId=' + currentUserId : '');
-    const res = await fetch(url);
+    const res = await fetch(url, ctl ? { signal: ctl.signal } : {});
+    clearTimeout(timer);
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     if (forUser !== currentUserId) return;
     _heldWsBoard = null;
     _lastPolledBoard = data.board;
     if (data.lifecycle) _lifecycle = data.lifecycle;
-    renderBoard(data.board);
+    renderBoard(data.board, false);
     setBoardLoad('ready');
     if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) {
       // Without the WebSocket (or for a sibling instance) the poll is the only
@@ -12978,14 +13002,16 @@ async function loadSessions() {
       repaintPanelSession();
     }
   } catch (e) {
-    if (forUser !== currentUserId) return;
+    clearTimeout(timer);
+    if (forUser !== currentUserId || seq !== _sessionsSeq) return;
     console.error('Failed to load sessions', e);
-    var held = _heldWsBoard && _heldWsBoard.user === forUser ? _heldWsBoard.board : null;
+    var held = _boardLoad === 'loading' && _heldWsBoard && _heldWsBoard.user === forUser ? _heldWsBoard.board : null;
     _heldWsBoard = null;
-    // This instance's cards are better than none — shown under the error, which
-    // stays: they are not the whole board.
-    if (_boardLoad === 'loading' && held) renderBoard(held);
     setBoardLoad('failed'); // a no-op once the board has painted: it stays as it is
+    // This instance's cards are better than none — shown under the error, which
+    // stays: they are not the whole board (painted as partial: no counts, no
+    // "Nothing here", not announced).
+    if (held) renderBoard(held);
   }
 }
 
