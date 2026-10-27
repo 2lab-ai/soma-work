@@ -480,7 +480,8 @@ src/                                # TypeScript 소스
 └── local/                          # Claude Code SDK 확장 (skills/, agents/, hooks/)
 
 packages/                           # 워크스페이스 패키지
-├── mcp-servers/                    # 내장 MCP 서버 (agent, cron, model-command, ...)
+├── mcp-servers/                    # 내장 MCP 서버 (agent, cron, model-command, devops-tools, ...)
+├── devops-broker/                  # 별도 OS 유저 브로커: gh 토큰 + Cloudflare forge 키 보관, 자체 Slack 앱으로 admin 승인
 ├── common/ · slack/ · process-shared/ · test-utils/
 
 somalib/                            # soma 계열 공유 라이브러리
