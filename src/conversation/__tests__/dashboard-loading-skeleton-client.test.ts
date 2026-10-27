@@ -607,6 +607,33 @@ describe('[T3] first load is bounded; partial data is never announced as the boa
     await vi.waitFor(() => expect(m._state._boardLoad).toBe('ready'));
   });
 
+  it('A → B → A before certification: the aborted A load is not a failure of the new A load (#487 R3, fable P2)', async () => {
+    const { d, m, calls } = harness();
+    const a1 = m.loadSessions();
+    m.select('U_B');
+    const b = m.loadSessions(); // aborts A1
+    m.select('');
+    m.loadSessions(); // back to A: aborts B, starts A2
+    expect(calls).toHaveLength(3);
+    await Promise.all([a1, b]);
+    expect(m._state._boardLoad).toBe('loading');
+    expect(d.byId['board-error'].hidden).toBe(true);
+    calls[2].settle(res(board('a2')));
+    await vi.waitFor(() => expect(m._state._boardLoad).toBe('ready'));
+  });
+
+  it('a body that stalls after the headers does not swallow 다시 시도: once answered, the next ask is a new request (#487 R3, grok P2)', async () => {
+    const { m, calls } = harness();
+    m.loadSessions();
+    calls[0].settle({ ok: true, json: () => new Promise(() => {}) }); // headers in, body never
+    await new Promise((r) => setTimeout(r, 0));
+    m.setBoardLoad('failed');
+    m.retryBoardLoad();
+    expect(calls).toHaveLength(2);
+    calls[1].settle(res(board('retry')));
+    await vi.waitFor(() => expect(m._state._boardLoad).toBe('ready'));
+  });
+
   it('renderBoard announces only a certified board', () => {
     const body = clientFn('renderBoard');
     expect(body.startsWith('function renderBoard(board, partial) {')).toBe(true);
