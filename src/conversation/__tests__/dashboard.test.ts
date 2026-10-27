@@ -512,6 +512,40 @@ describe('Dashboard API', () => {
       expect(start).toBe(end);
     });
 
+    // #477: a month is thousands of events. Building a KST date per event with
+    // toLocaleDateString constructs a new formatter every call (~35 µs each) —
+    // 90% of the request's time, on the event loop every other request waits on.
+    it('month: groups thousands of events by KST day without a formatter per event', async () => {
+      const base = Date.parse('2026-10-26T14:59:00Z'); // 23:59 KST on the 26th
+      const many = Array.from({ length: 3000 }, (_, i) => ({
+        id: `m${i}`,
+        // Half a minute either side of KST midnight, alternating.
+        timestamp: i % 2 ? base + 2 * 60_000 : base,
+        eventType: 'turn_used',
+        userId: 'U1',
+        userName: 'U1',
+      }));
+      mockReadRange.mockResolvedValue(many);
+      const spy = vi.spyOn(Date.prototype, 'toLocaleDateString');
+      try {
+        const res = await injectWebServer({
+          method: 'GET',
+          url: '/api/dashboard/stats?period=month',
+          headers: AUTH_HEADER,
+        });
+        expect(res.statusCode).toBe(200);
+        const body = JSON.parse(res.body);
+        expect(body.days.map((d: any) => [d.date, d.turnsUsed])).toEqual([
+          ['2026-10-26', 1500],
+          ['2026-10-27', 1500],
+        ]);
+        expect(body.totals.turnsUsed).toBe(3000);
+        expect(spy.mock.calls.length).toBeLessThan(10);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     // The stats strip takes its tokens and cost from /usage for the same period.
     it('/usage totals follow the period and the optional user', async () => {
       const usage = (id: string, userId: string, inputTokens: number, outputTokens: number, costUsd: number) =>

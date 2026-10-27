@@ -86,6 +86,57 @@ describe('MetricsEventStore', () => {
     expect(events).toHaveLength(2); // 2 valid, 1 skipped
   });
 
+  // #477: a month of stats was 30 serial file reads — each one a separate trip
+  // through the libuv threadpool, so on a busy host the request took seconds.
+  // The day files are now read together (bounded), in date order.
+  it('readRange_readsDayFilesConcurrently_inDateOrder', async () => {
+    fs.mkdirSync(TEST_METRICS_DIR, { recursive: true });
+    const days = ['2026-03-20', '2026-03-21', '2026-03-22', '2026-03-23', '2026-03-24'];
+    for (const [i, d] of days.entries()) {
+      // Same timestamp everywhere: the result order then comes from the read order alone.
+      const line = JSON.stringify(makeEvent({ id: `d${i}`, timestamp: 1 }));
+      fs.writeFileSync(path.join(TEST_METRICS_DIR, `metrics-events-${d}.jsonl`), `${line}\n`);
+    }
+    const realReadFile = fs.promises.readFile;
+    const gates: Array<() => void> = [];
+    const spy = vi.spyOn(fs.promises, 'readFile').mockImplementation(
+      ((...args: Parameters<typeof realReadFile>) =>
+        new Promise((resolve, reject) => {
+          gates.push(() => realReadFile(...args).then(resolve, reject));
+        })) as typeof realReadFile,
+    );
+
+    const pending = store.readRange(days[0], days[days.length - 1]);
+    for (let i = 0; i < 20 && spy.mock.calls.length < days.length; i++) await new Promise((r) => setImmediate(r));
+    // Every day's read is in flight before any of them has finished.
+    expect(spy.mock.calls.length).toBe(days.length);
+    // Finish them in reverse; the events still come back in date order.
+    for (const open of gates.reverse()) open();
+    const events = await pending;
+    expect(events.map((e) => e.id)).toEqual(['d0', 'd1', 'd2', 'd3', 'd4']);
+  });
+
+  it('readRange_boundsConcurrentReads_forLongRanges', async () => {
+    const realReadFile = fs.promises.readFile;
+    let inFlight = 0;
+    let peak = 0;
+    vi.spyOn(fs.promises, 'readFile').mockImplementation((async (...args: Parameters<typeof realReadFile>) => {
+      inFlight++;
+      peak = Math.max(peak, inFlight);
+      try {
+        await new Promise((r) => setTimeout(r, 1));
+        return await realReadFile(...args);
+      } finally {
+        inFlight--;
+      }
+    }) as typeof realReadFile);
+    // A year of days (the 'all' report range): never a year of open files at once.
+    const events = await store.readRange('2025-03-26', '2026-03-25');
+    expect(events).toEqual([]);
+    expect(peak).toBeGreaterThan(1);
+    expect(peak).toBeLessThanOrEqual(16);
+  });
+
   // Trace: Scenario 1, Section 4 — file created on first write
   it('append_fileCreatedOnFirstWrite', async () => {
     const filePath = path.join(TEST_METRICS_DIR, 'metrics-events-2026-03-25.jsonl');
