@@ -99,6 +99,7 @@ import {
 import { McpConfigBuilder, type SlackContext } from './mcp-config-builder';
 import { getAvailablePersonas, PromptBuilder } from './prompt-builder';
 import { type CrashRecoveredSession, SessionExpiryCallbacks, SessionRegistry } from './session-registry';
+import { ownerInvokedSkills } from './slack/owner-skill-invocations';
 import { getTokenManager } from './token-manager';
 import { DEFAULT_SHOW_THINKING, type EffortLevel, userSettingsStore } from './user-settings-store';
 
@@ -1219,6 +1220,7 @@ export class ClaudeHandler implements TurnSteeringPort {
           safetyClassifier: this.getSafetyClassifier(),
           onPermissionWarning: this.permissionWarningNotifier,
           isSteerStanding: this.steerStandingResolver,
+          resolveOwnerSkills: ownerInvokedSkills,
           // Consulted only on the incident branch of the builder; passing them
           // unconditionally would be harmless, but keeping them absent makes the
           // ordinary path provably unchanged.

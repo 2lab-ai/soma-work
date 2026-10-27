@@ -443,7 +443,7 @@ Bash 호출 → 하드 거부 계층 → 위험 규칙 매칭(soma-lib 카탈로
                        ⚠️ Permission Warning 카드: Slack 스레드(버튼 없음) + 대시보드 채팅·작업 로그(work-log kind `permission_warning`)
 ```
 
-- owner가 부른 스킬은 이름만 넘긴다(호스트가 붙인 `<invoked_skills>` 블록의 헤더만, 본문은 넘기지 않는다). 위임 범위는 호스트 코드(`safety-classifier.ts`의 `SKILL_DELEGATIONS`)가 정한다. 지금 위임을 정의한 스킬은 `local:autoz` 하나로, 세션이 작업하는 저장소에서 이슈와 PR을 열고 자체 리뷰 게이트 뒤에 승인하고 머지하는 것까지다. autoskill로 매 세션 `$autoz`를 켜 둔 owner의 PR 머지는 묻지 않는다. 다른 사람이나 다른 계정의 자격증명을 쓰는 일은 어떤 스킬도 위임하지 않는다.
+- owner가 직접 부른 스킬만 classifier에 넘긴다. 근거는 owner 본인 메시지의 `$스킬`·`$local:스킬` 토큰과, owner가 Slack 명령·버튼·대시보드로 등록한 autoskill 두 가지뿐이다(`src/slack/owner-skill-invocations.ts`). 호스트가 붙인 `<invoked_skills>` 블록 텍스트는 근거로 쓰지 않는다. 스킬 본문이 섹션 경계를 흉내 낼 수 있고, 다른 스킬의 `$참조`는 owner가 입력하지 않은 의존성으로 펼쳐지기 때문이다. 위임 범위는 호스트 코드(`safety-classifier.ts`의 `SKILL_DELEGATIONS`)가 정한다. 지금은 `local:autoz` 하나로, 세션이 작업하는 저장소에서 이슈와 PR을 열고 자체 리뷰 게이트 뒤에 승인하고 머지하는 것까지다. 다른 사람이나 다른 계정의 자격증명을 쓰는 일은 어떤 스킬도 위임하지 않는다.
 - classifier가 판단하는 동안 owner 지시가 바뀌면(예: 끼어든 "삭제하지 마") 그 승인은 쓰지 않고 묻는다. 취소되거나 큐로 돌아간 steer는 지시에서 빠진다. 지시 이력이 불완전할 수 있으면(재시작으로 복원된 세션, 50개 상한, 스킬 블록 뒤에 남은 텍스트) 파괴적 작업은 그 지시만으로 허용하지 않는다.
 - 경고는 결정을 바꾸지 않는다. 훅이 `allow`를 반환한 뒤 fire-and-forget으로 게시되고, 실패는 로그만 남는다.
 - 같은 명령 + 같은 규칙은 세션당 10분에 한 번만 경고한다.

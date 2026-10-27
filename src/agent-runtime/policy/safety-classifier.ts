@@ -59,8 +59,9 @@ export interface SafetyUserIntent {
   /** The host may already have lost older messages (a capped history): treat as cut. */
   incomplete?: boolean;
   /**
-   * Keys of the skills the owner invoked with those messages (`local:autoz`), read
-   * by the host from its own appended `<invoked_skills>` blocks — names only.
+   * Keys of the skills the owner invoked themselves (`local:autoz`): `$skill` in
+   * their own messages or their registered autoskills, resolved by the host —
+   * never read from skill text.
    */
   invokedSkills?: readonly string[];
 }
@@ -117,7 +118,8 @@ function skillBlock(intent: SafetyUserIntent | undefined): string[] {
   const keys = [...new Set((intent?.invokedSkills ?? []).filter((k) => SKILL_KEY.test(k)))];
   if (keys.length === 0) return [];
   return [
-    'Skills the owner invoked with those messages (recorded by the host, not by the agent):',
+    'Skills the owner invoked themselves — typed in their own messages or registered to run in every',
+    'session (resolved by the host, not by the agent):',
     ...keys.map((k) => (SKILL_DELEGATIONS[k] ? `- ${k} — ${SKILL_DELEGATIONS[k]}` : `- ${k}`)),
   ];
 }

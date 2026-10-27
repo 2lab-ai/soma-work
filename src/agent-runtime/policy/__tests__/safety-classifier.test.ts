@@ -152,7 +152,7 @@ describe('LlmSafetyClassifier — owner intent in the prompt (T7.2)', () => {
     const prompt: string = chat.mock.calls[0][0];
     expect(prompt).toContain('local:using-ssot');
     expect(prompt).toMatch(/local:autoz — .*merg(?:e|es|ing) (?:those|the) PRs/i);
-    expect(prompt).toMatch(/recorded by the host/i);
+    expect(prompt).toMatch(/resolved by the host/i);
     // Delegation never reaches another identity's credentials.
     expect(prompt).toMatch(/another (account|person)'s credentials/i);
   });
