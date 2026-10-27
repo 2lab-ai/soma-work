@@ -91,10 +91,19 @@ describe('dashboard permission warning card', () => {
     // Review gate r1 (astra P2): the row opens the stored raw like every other row.
     expect(row).toContain('class="wl-row');
     expect(row).toContain('id="wl-detail-7"');
+    // Review gate r2: toggleWorkLogEntry finds .wl-row and .wl-detail INSIDE the
+    // .wl-entry — the detail must sit at depth 1 (inside the entry, after the row).
+    const before = row.slice(0, row.indexOf('class="wl-detail"'));
+    const depth = (before.match(/<div\b/g) ?? []).length - (before.match(/<\/div>/g) ?? []).length;
+    expect(depth).toBe(2); // entry open + the detail's own <div
+    expect(row.endsWith('</div></div>')).toBe(true);
   });
 
   it('says when the command was cut and where the full text is', () => {
-    expect(client.renderPermissionWarningCard({ ...ENTRY, rawBytes: 9000 })).toContain('전체 원문');
+    expect(client.renderPermissionWarningCard({ ...ENTRY, text: `${'x'.repeat(3999)}…`, rawBytes: 9000 })).toContain(
+      '전체 원문',
+    );
+    expect(client.renderPermissionWarningCard({ ...ENTRY, rawBytes: 50 })).not.toContain('전체 원문');
     expect(client.renderPermissionWarningCard(ENTRY)).not.toContain('전체 원문');
   });
 });

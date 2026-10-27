@@ -14372,7 +14372,7 @@ function renderPermissionWarningCard(e) {
   return '<div class="perm-request perm-warning" role="note" aria-label="퍼미션 경고">'
     + '<div class="perm-head">&#x26A0;&#xFE0F; Permission Warning &mdash; <code>' + esc(e.tool || 'Bash') + '</code>' + (time ? '<span class="turn-time">' + esc(time) + '</span>' : '') + '</div>'
     + '<pre class="perm-params is-clamped">' + esc(String(e.text || '')) + '</pre>'
-    + (e.rawBytes ? '<div class="perm-truncated">명령이 길어 앞부분만 보입니다 &mdash; 작업 로그에서 이 경고를 열면 전체 원문이 보입니다</div>' : '')
+    + (e.rawBytes && /\u2026$/.test(String(e.text || '')) ? '<div class="perm-truncated">명령이 길어 앞부분만 보입니다 &mdash; 작업 로그에서 이 경고를 열면 전체 원문이 보입니다</div>' : '')
     + rulesHtml
     + '<div class="perm-warning-note">&#x1F916; auto mode 승인' + (w.reason ? ': ' + esc(String(w.reason)) : '') + ' &middot; 응답 필요 없음 (경고만 표시)</div>'
     + '</div>';

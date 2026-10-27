@@ -38,6 +38,8 @@ export async function publishPermissionWarning(
       kind: 'permission_warning',
       text: warning.command,
       tool: warning.toolName,
+      // The full command, so opening the row in the work log always shows it.
+      raw: warning.command,
       warning: { rules: warning.rules, reason: warning.reason },
     });
   }

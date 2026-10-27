@@ -38,6 +38,8 @@ describe('publishPermissionWarning', () => {
       kind: 'permission_warning',
       text: 'kill 4242',
       tool: 'Bash',
+      // Review gate r2 (fable P3): the row always opens to the full command.
+      raw: 'kill 4242',
       warning: { rules: WARNING.rules, reason: WARNING.reason },
     });
   });
