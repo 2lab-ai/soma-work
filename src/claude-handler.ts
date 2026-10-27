@@ -17,6 +17,7 @@ import * as fs from 'fs';
 import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShotText } from './agent-runtime';
 import { liveAgentIds } from './agent-runtime/background-keepalive';
 import { buildStreamOptions } from './agent-runtime/claude-code/build-stream-options';
+import type { PermissionWarningEvent } from './agent-runtime/policy/permission-warning';
 import type { SafetyClassifier } from './agent-runtime/policy/safety-classifier';
 import { buildSafetyClassifier } from './agent-runtime/policy/safety-classifier-factory';
 import { readUuidList, STEER_SETTLEMENT_SUBTYPE } from './agent-runtime/steer-settlement';
@@ -504,6 +505,10 @@ export class ClaudeHandler implements TurnSteeringPort {
   // path with no thread-side post.
   private compactHookBuilder?: CompactHookBuilder;
 
+  // Auto-mode permission warning publisher (SSOT_2 #3). Set by SlackHandler
+  // during bootstrap; undefined in unit tests / non-Slack callers → no warning.
+  private permissionWarningNotifier?: (warning: PermissionWarningEvent) => void | Promise<void>;
+
   constructor(mcpManager: McpManager) {
     this.mcpManager = mcpManager;
     this.sessionRegistry = new SessionRegistry();
@@ -517,6 +522,11 @@ export class ClaudeHandler implements TurnSteeringPort {
    */
   setCompactHookBuilder(builder: CompactHookBuilder): void {
     this.compactHookBuilder = builder;
+  }
+
+  /** Register where auto-mode permission warnings go (Slack thread + dashboard work log). */
+  setPermissionWarningNotifier(notifier: (warning: PermissionWarningEvent) => void | Promise<void>): void {
+    this.permissionWarningNotifier = notifier;
   }
 
   /**
@@ -1200,6 +1210,7 @@ export class ClaudeHandler implements TurnSteeringPort {
           sessionRegistry: this.sessionRegistry,
           checkMcpToolPermission: (a, b, c, d) => this.checkMcpToolPermission(a, b, c, d),
           safetyClassifier: this.getSafetyClassifier(),
+          onPermissionWarning: this.permissionWarningNotifier,
           // Consulted only on the incident branch of the builder; passing them
           // unconditionally would be harmless, but keeping them absent makes the
           // ordinary path provably unchanged.

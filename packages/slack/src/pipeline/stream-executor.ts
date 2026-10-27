@@ -1509,6 +1509,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       if (session && text && params.isUserInput !== false) {
         if (!session.initialInstruction) {
           session.initialInstruction = text;
+          session.initialInstructionUserId = user;
         } else {
           // Always record subsequent turns as follow-ups (even if text matches initial).
           // The first turn is not duplicated because session-initializer sets initialInstruction
@@ -1523,6 +1524,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             timestamp: Date.now(),
             text,
             speaker: userName,
+            userId: user,
           });
         }
       }
@@ -4926,7 +4928,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     contextItems.push(`  <user-persona>${persona}</user-persona>`);
     contextItems.push(`  <user-default-model>${defaultModel}</user-default-model>`);
     contextItems.push(`  <user-permission-mode>${permissionMode}</user-permission-mode>`);
-    contextItems.push(`  <user-bypass-permission>${permissionMode === 'bypass' ? 'on' : 'off'}</user-bypass-permission>`);
+    contextItems.push(
+      `  <user-bypass-permission>${permissionMode === 'bypass' ? 'on' : 'off'}</user-bypass-permission>`,
+    );
 
     // User rating - model self-awareness of user satisfaction
     const rating = userSettingsStore.getUserRating(userId);

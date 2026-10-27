@@ -83,7 +83,7 @@ Connect any MCP-compatible server (stdio/SSE/HTTP) to extend Claude's capabiliti
 
 ### 🔐 Interactive Permissions
 
-Slack-native button/form UX for permission approvals, option selection, and session management. Bypass mode available for trusted users.
+Slack-native button/form UX for permission approvals, option selection, and session management. Auto mode (default) lets a safety classifier decide whether a flagged command needs your approval, and shows a buttonless warning card in the thread and the dashboard chat when it lets a flagged command run. Bypass mode (no checks) is admin-only.
 
 ### 📎 File Analysis
 
@@ -215,7 +215,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z help` | Show all topics |
 | `/z cwd [set <path>]` | Show / set working directory |
 | `/z mcp [list\|reload]` | List MCP servers / reload config |
-| `/z bypass [set on\|off]` | Toggle permission bypass |
+| `/z bypass [set on\|off]` | Permission mode: `off` = Auto (default), `on` = Bypass (admin only) |
 | `/z persona [set <name>\|list]` | Switch persona |
 | `/z model [set <name>\|list]` | Switch model (sonnet, opus, haiku) |
 | `/z verbosity [set <level>]` | Set output verbosity (`minimal` · `compact` · `detail` · `verbose`). The default is `minimal`: the thread shows the task list (the main agent's — a subagent's own list lives on its dashboard entry), questions/approvals, the final answer and errors; the model's running narration, tool calls, compaction notices and skill banners (`$skill` and autoskill included) go to the dashboard work log |

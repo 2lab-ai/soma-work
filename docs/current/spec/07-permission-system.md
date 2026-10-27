@@ -3,7 +3,7 @@
 ## Version
 - Document Version: 1.0
 - Source Files: `src/permission-mcp-server.ts`, `src/shared-store.ts`
-- Last Updated: 2026-03-06
+- Last Updated: 2026-10-27
 
 ## 1. Overview
 
@@ -415,41 +415,41 @@ this.app.action('deny_tool', async ({ ack, body, respond }) => {
 });
 ```
 
-## 7. User Bypass System
+## 7. Permission Modes (auto · bypass · legacy)
 
-### 7.1 Bypass Setting
+정본: `src/agent-runtime/policy/permission-mode.ts`, 결정 함수: `src/agent-runtime/policy/tool-policy.ts`.
 
-사용자별 권한 우회 설정:
+### 7.1 Modes
 
-```typescript
-// Claude Handler에서
-const userBypass = userSettingsStore.getUserBypassPermission(slackContext.user);
+| Mode | 누가 | Bash 처리 |
+|---|---|---|
+| `auto` (기본) | 모두 | 위험 규칙에 안 걸리면 실행. 걸리면 safety classifier(model)가 질문할지 정한다 — 정규식이 직접 묻는 일은 없다. |
+| `bypass` | **admin만** | 검사 없이 실행(하드 거부 계층은 그대로). admin이 아닌 유저의 저장값 `bypass`(명시 또는 레거시 `bypassPermission:true`)는 `auto`로 해석된다(`effectivePermissionMode`). |
+| `legacy` | 명시 설정만 | SDK가 모든 도구마다 묻는다. 버튼으로는 고를 수 없다. |
 
-if (userBypass) {
-  options.permissionMode = 'bypassPermissions';
-  // permission-prompt 서버 추가하지 않음
-}
+모델 컨텍스트에는 실제 적용 모드가 `<user-permission-mode>`로 들어간다.
+
+### 7.2 Auto mode: model decides, mechanical check warns
+
+```
+Bash 호출 → 하드 거부 계층 → 위험 규칙 매칭(soma-lib 카탈로그)
+   ├─ 매칭 없음 → 실행
+   └─ 매칭 → safety classifier (session owner의 Slack 원문만 데이터로 인용, 20s 타임아웃 = 실제 abort, 실패 시 ask)
+        ├─ ask   → 🔐 Permission Request 카드 (Slack + 대시보드 "입력 필요")
+        └─ allow → 실행 + 기계 검사(permission-warning.ts)
+                    └─ 여전히 문제(데이터 파이프 `| python3 -c '<json 파싱>'` 제외) →
+                       ⚠️ Permission Warning 카드: Slack 스레드(버튼 없음) + 대시보드 채팅·작업 로그(work-log kind `permission_warning`)
 ```
 
-### 7.2 Bypass Commands
+- 경고는 결정을 바꾸지 않는다. 훅이 `allow`를 반환한 뒤 fire-and-forget으로 게시되고, 실패는 로그만 남는다.
+- 같은 명령 + 같은 규칙은 세션당 10분에 한 번만 경고한다.
+- 데이터 파이프 판정은 경고에만 쓴다. 질문 trigger와 퍼미션 카드는 원래 카탈로그를 그대로 쓴다(퍼미션 MCP child와 어긋나지 않음, Lean 모델 변경 없음).
 
-**Check Status**:
-```
-bypass
-/bypass
-```
+### 7.3 Commands
 
-**Enable**:
-```
-bypass on
-```
+`/z bypass` 카드: Auto 버튼은 모두에게, Bypass 버튼은 admin에게만 보인다. `bypass on`/`set bypass`는 admin이 아니면 거부된다. 대시보드 설정 페이지도 같은 규칙.
 
-**Disable**:
-```
-bypass off
-```
-
-### 7.3 Response Messages
+### 7.4 Response Messages
 
 **Status Check**:
 ```

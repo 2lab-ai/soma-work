@@ -48,8 +48,36 @@ import type { SessionRegistry } from '../../session-registry';
 import type { ConversationSession, WorkflowType } from '../../types';
 import { DEFAULT_THINKING_ENABLED, userSettingsStore } from '../../user-settings-store';
 import { createTrackedClaudeProcessSpawner } from '../claude-child-process-registry';
-import type { SafetyClassifier } from '../policy/safety-classifier';
+import {
+  createPermissionWarningDeduper,
+  type PermissionWarningEvent,
+  permissionWarningRuleIds,
+  permissionWarningRules,
+} from '../policy/permission-warning';
+import type { SafetyClassifier, SafetyUserIntent } from '../policy/safety-classifier';
 import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from '../policy/tool-policy';
+
+/** Same command + rule set warns once per session per window (an agent retrying a command stacks no cards). */
+const permissionWarningDeduper = createPermissionWarningDeduper({ windowMs: 10 * 60 * 1000 });
+
+/** Recent owner follow-ups quoted to the classifier, after the first instruction. */
+const INTENT_FOLLOW_UPS = 5;
+
+/**
+ * The owner's own words for the auto-mode classifier: the session's first
+ * instruction and its latest follow-ups, kept only when `user` wrote them (a
+ * message from anyone else in the thread is never treated as the owner's
+ * intent). Host-recorded raw text — never agent output or a model-written goal.
+ */
+export function ownerIntent(session: ConversationSession | undefined, user: string): SafetyUserIntent {
+  const instructions: string[] = [];
+  if (session?.initialInstruction && session.initialInstructionUserId === user) {
+    instructions.push(session.initialInstruction);
+  }
+  const followUps = (session?.followUpInstructions ?? []).filter((f) => f.userId === user).slice(-INTENT_FOLLOW_UPS);
+  for (const f of followUps) instructions.push(f.text);
+  return { instructions };
+}
 
 /**
  * Structural logger surface used by the builder. The concrete `Logger`
@@ -88,6 +116,13 @@ export interface BuildStreamOptionsDeps {
    * the old "dangerous → ask the human" behaviour.
    */
   safetyClassifier?: SafetyClassifier;
+  /**
+   * Publishes an auto-mode permission WARNING (SSOT_2 #3): the model allowed a
+   * call that the mechanical check still flags. Called fire-and-forget after the
+   * hook has decided `allow`; a throw or rejection is logged and never changes
+   * the decision. Absent → no warning is published.
+   */
+  onPermissionWarning?: (warning: PermissionWarningEvent) => void | Promise<void>;
   /**
    * Operator config for the incident evidence collector (`rules/config.md` owns
    * the getter's name; this dep only needs the value). Consulted **only** on the
@@ -242,9 +277,11 @@ export async function buildStreamOptions(
             },
           };
         case 'classify': {
-          // Auto mode: a dangerous-rule hit. Consult the guardian classifier;
+          // Auto mode: a dangerous-rule hit. The model alone decides whether the
+          // owner is asked (SSOT_2 #2), with the owner's own words as context;
           // fail closed to `ask` when no classifier is wired or it errors.
           const command = typeof toolInput?.command === 'string' ? toolInput.command : '';
+          const liveSession = deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs);
           const verdict = deps.safetyClassifier
             ? await deps.safetyClassifier
                 .classify({
@@ -257,6 +294,7 @@ export async function buildStreamOptions(
                   // Default classifier model = the session's CURRENT model
                   // (#model-call-unify). Resolved on `options.model` earlier.
                   model: options.model,
+                  userIntent: ownerIntent(liveSession, policyUser),
                 })
                 .catch((err) => ({
                   verdict: 'ask' as const,
@@ -270,6 +308,32 @@ export async function buildStreamOptions(
               rule: result.reason,
               reason: verdict.reason,
             });
+            // SSOT_2 #3: the model passed it — the mechanical check still runs and,
+            // when it flags something, the owner sees a warning (never a question).
+            const warnIds = permissionWarningRuleIds(command, result.matchedRuleIds ?? []);
+            const notify = deps.onPermissionWarning;
+            if (notify && warnIds.length > 0 && permissionWarningDeduper.shouldWarn(hookSessionKey, command, warnIds)) {
+              const warning: PermissionWarningEvent = {
+                user: policyUser,
+                channel: slackContext.channel,
+                ...(slackContext.threadTs ? { threadTs: slackContext.threadTs } : {}),
+                ...(liveSession?.conversationId ? { conversationId: liveSession.conversationId } : {}),
+                toolName,
+                toolInput: toolInput ?? {},
+                command,
+                rules: permissionWarningRules(warnIds),
+                reason: verdict.reason,
+              };
+              Promise.resolve()
+                .then(() => notify(warning))
+                .catch((err) =>
+                  logger.warn('Permission warning could not be published', {
+                    tool: toolName,
+                    user: policyUser,
+                    error: err instanceof Error ? err.message : String(err),
+                  }),
+                );
+            }
             return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
           }
           logger.warn('Auto-mode classifier escalating to Slack permission UI', {
