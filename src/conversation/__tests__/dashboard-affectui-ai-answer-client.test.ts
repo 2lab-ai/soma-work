@@ -918,6 +918,7 @@ describe('D12 · review R1 (P1) — a failed send is marked although the writing
         _pcRec: null,
         _pcFiles: [],
         _pcSending: false,
+        _pcFiling: null, // #488: no stopped recording waiting to be filed
         pcStopRecording: () => {},
         pcAutosize: () => {},
         pcRemoveFile: () => {},

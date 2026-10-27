@@ -17228,9 +17228,11 @@ async function sendCommand() {
   _pcSending = true;
   try {
     // Task view T1.5: a recording in progress is the user's last words — filed first.
-    if (_pcRec) {
+    // A recording running now, or stopped but not filed yet (a send that timed out before).
+    var filing = _pcRec ? pcStopRecording(true) : _pcFiling;
+    if (filing) {
       var filed = await Promise.race([
-        pcStopRecording(true).then(function() { return true; }),
+        filing.then(function() { return true; }),
         new Promise(function(resolve) { setTimeout(function() { resolve(false); }, 3000); }),
       ]);
       // #488: never send without the voice note the user just recorded — it is
@@ -20649,6 +20651,7 @@ var _pcFiles = [];
 var _pcSeq = 0;
 var _pcRec = null;
 var _pcRecGen = 0; // bumped by pcReset: a recording (or a pending mic permission) from before belongs to no one
+var _pcFiling = null; // a stopped recording not filed yet (its done promise) — every send waits on it (#488)
 var _pcSending = false; // one send at a time, from the first wait on
 function pcEnterAction(e, touch) {
   if (!e || e.key !== 'Enter') return 'none';
@@ -20747,6 +20750,7 @@ function pcRenderFiles() {
 // Every file and any recording go with the session they were added for.
 function pcReset() {
   _pcRecGen++;
+  _pcFiling = null;
   if (_pcRec) pcStopRecording(false);
   _pcFiles.forEach(function(f) { if (f.url) { try { URL.revokeObjectURL(f.url); } catch (_e) {} } });
   _pcFiles = [];
@@ -20835,6 +20839,12 @@ function pcStopRecording(keep) {
   var mic = document.getElementById('pc-mic');
   mic.setAttribute('aria-pressed', 'false');
   mic.setAttribute('aria-label', '음성 녹음');
+  // Kept and not filed yet: a send right now (or after a timed-out one) waits on
+  // it. A dropped one (a reset, a cancel) leaves nothing to wait on.
+  if (keep) {
+    _pcFiling = state.done;
+    state.done.then(function() { if (_pcFiling === state.done) _pcFiling = null; });
+  }
   return state.done;
 }
 function pcFinishRecording(state) {

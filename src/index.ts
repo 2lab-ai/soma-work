@@ -88,7 +88,7 @@ import {
 import { captureArtifactFromWorkLog } from './conversation/artifact-capture';
 import { getArtifactStore } from './conversation/artifacts';
 import type { NewTaskAttachment } from './conversation/new-task';
-import { createNewTaskProvider, uploadFiles } from './conversation/new-task-provider';
+import { createNewTaskProvider, resolveUploadedFile, uploadFileIds } from './conversation/new-task-provider';
 import { setSettingsRegistry } from './conversation/settings-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
 import { createSteerUploader } from './conversation/steer-uploads';
@@ -760,9 +760,10 @@ async function start() {
     });
 
     // The composer's files go up one by one; a retry reuses what Slack already took (#488).
-    const uploadSteerFiles = createSteerUploader((channel, threadTs, files) =>
-      uploadFiles(app.client, channel, threadTs, files),
-    );
+    const uploadSteerFiles = createSteerUploader({
+      upload: async (channel, threadTs, file) => (await uploadFileIds(app.client, channel, threadTs, [file]))[0],
+      resolve: (id) => resolveUploadedFile(app.client, id),
+    });
     // Connect dashboard: command handler (inject message as if user typed in Slack)
     /** Returns the injected message's identity (channel + ts), undefined when nothing was sent. */
     const injectDashboardMessage = async (

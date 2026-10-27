@@ -80,17 +80,13 @@ async function loadUsage(): Promise<{ accounts: UsageAccountView[]; source: stri
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-/**
- * Upload into the thread, then read each file back in the shape the message
- * pipeline downloads from. Also the path of the panel composer's attachments
- * (an instruction to a running session, dashboard task view T1.5).
- */
-export async function uploadFiles(
+/** Upload into the thread; the ids Slack gave the files, in order (all of them, or it throws). */
+export async function uploadFileIds(
   client: WebClient,
   channel: string,
   threadTs: string,
   files: NewTaskAttachment[],
-): Promise<SlackEventFile[]> {
+): Promise<string[]> {
   // biome-ignore lint/suspicious/noExplicitAny: FilesUploadV2Arguments is a tagged union the multi-file branch does not narrow to
   const result: any = await client.filesUploadV2({
     channel_id: channel,
@@ -104,20 +100,38 @@ export async function uploadFiles(
   if (ids.length !== files.length) {
     throw new Error(`Slack accepted ${ids.length} of ${files.length} files`);
   }
-  const out: SlackEventFile[] = [];
-  for (const id of ids) {
-    let info: any;
-    for (let attempt = 0; attempt < 3; attempt++) {
-      info = (await client.files.info({ file: id }))?.file;
-      if (info?.url_private_download) break;
-      await sleep(500);
-    }
-    if (!info?.url_private_download) throw new Error(`Slack has no download URL for file ${id} yet`);
-    // The pipeline fetches this URL with the bot token: only ever a Slack file host.
-    if (!isSlackFileUrl(info.url_private_download))
-      throw new Error(`Slack returned a non-Slack download URL for file ${id}`);
-    out.push(slackEventFileFrom(id, info));
+  return ids;
+}
+
+/** Read an uploaded file back in the shape the message pipeline downloads from. */
+export async function resolveUploadedFile(client: WebClient, id: string): Promise<SlackEventFile> {
+  let info: any;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    info = (await client.files.info({ file: id }))?.file;
+    if (info?.url_private_download) break;
+    await sleep(500);
   }
+  if (!info?.url_private_download) throw new Error(`Slack has no download URL for file ${id} yet`);
+  // The pipeline fetches this URL with the bot token: only ever a Slack file host.
+  if (!isSlackFileUrl(info.url_private_download))
+    throw new Error(`Slack returned a non-Slack download URL for file ${id}`);
+  return slackEventFileFrom(id, info);
+}
+
+/**
+ * Upload into the thread, then read each file back in the shape the message
+ * pipeline downloads from (a new task's attachments). The panel composer's
+ * files go through `createSteerUploader` on the same two steps.
+ */
+export async function uploadFiles(
+  client: WebClient,
+  channel: string,
+  threadTs: string,
+  files: NewTaskAttachment[],
+): Promise<SlackEventFile[]> {
+  const ids = await uploadFileIds(client, channel, threadTs, files);
+  const out: SlackEventFile[] = [];
+  for (const id of ids) out.push(await resolveUploadedFile(client, id));
   return out;
 }
 
