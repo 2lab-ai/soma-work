@@ -693,10 +693,10 @@ export class ThreadSurface {
       await this.initialize(session, sessionKey);
       return;
     }
-    // Refresh PR cache if stale (non-blocking for render)
+    // Refresh PR cache if stale or no longer about the active link (non-blocking for render)
     if (session.links?.pr) {
       const state = this.getState(sessionKey);
-      if (!state.prCache || Date.now() - state.prCache.fetchedAt >= PR_CACHE_TTL_MS) {
+      if (!this.isPrCacheUsable(session, state)) {
         this.refreshPRStatus(session, sessionKey).catch(() => {});
       }
     }
@@ -1495,19 +1495,14 @@ export class ThreadSurface {
     const panelState = session.actionPanel || {};
     const choiceMessageLink = panelState.choiceMessageLink;
 
-    // Read PR status from per-session cache (never fetch in render path)
-    const prStatusInfo = this.getState(sessionKey).prCache;
-
     if (isClosed) {
       return this.buildClosedBlocks(session, sessionKey);
     }
 
-    const blocks: any[] = [];
+    // PR state from the per-session cache (never fetched in the render path),
+    // and only while it still describes the active PR link (T2).
+    const livePr = this.livePr(session, sessionKey);
 
-    // ── 1. Header section ──
-    blocks.push(...this.buildHeaderBlocks(session, sessionKey));
-
-    // ── 2. Status + fields section (from ActionPanelBuilder) ──
     const panelPayload = ActionPanelBuilder.build({
       sessionKey,
       workflow: session.workflow,
@@ -1527,22 +1522,12 @@ export class ThreadSurface {
       lastProgressAt: panelState.lastProgressAt,
       lastSignalAt: panelState.lastSignalAt,
       logVerbosity: session.logVerbosity,
-      prStatus: prStatusInfo?.prStatus,
-      prUrl: prStatusInfo?.prUrl,
+      prStatus: livePr,
     });
 
-    // ActionPanelBuilder.build() returns full blocks: status/metrics first and
-    // the action rows (plus their divider) last. The split is kept so the two
-    // halves stay in that order; nothing is inserted between them any more.
-    const panelBlocks = panelPayload.blocks;
-    const splitAt = ThreadSurface.actionRowsIndex(panelBlocks);
-    blocks.push(...panelBlocks.slice(0, splitAt));
-    const actionRows = panelBlocks.slice(splitAt);
+    // Title → status rail → the rest of the header → controls (T2).
+    const blocks = ActionPanelBuilder.compose(this.buildHeaderBlocks(session, sessionKey, livePr), panelPayload.blocks);
 
-    // ── 3. Action rows ──
-    blocks.push(...actionRows);
-
-    // ── 4. Summary section ──
     const summaryBlocks =
       session.actionPanel?.summaryBlocks && Array.isArray(session.actionPanel.summaryBlocks)
         ? session.actionPanel.summaryBlocks
@@ -1560,29 +1545,30 @@ export class ThreadSurface {
     return blocks;
   }
 
-  /**
-   * Index of the trailing action rows inside an ActionPanelBuilder payload.
-   * Walks back over the contiguous run of `actions` blocks and includes the
-   * divider that introduces them; a payload with no trailing actions (the
-   * closed panel) returns its length.
-   *
-   * This used to be the Queue's insertion point. Nothing is inserted there any
-   * more (A39) — the split survives because it is what keeps the status half
-   * and the action rows in that order.
-   */
-  private static actionRowsIndex(blocks: any[]): number {
-    let index = blocks.length;
-    while (index > 0 && blocks[index - 1]?.type === 'actions') index--;
-    if (index > 0 && index < blocks.length && blocks[index - 1]?.type === 'divider') index--;
-    return index;
+  /** The PR status the surface may present as live right now (T2). */
+  private livePr(session: ConversationSession, sessionKey: string): PRStatusInfo | undefined {
+    return ActionPanelBuilder.livePrStatus(session.links?.pr, this.getState(sessionKey).prCache?.prStatus);
   }
 
   /**
-   * Header blocks: title + context row.
+   * Header blocks for the combined surface: the panel states the session
+   * status, so the header suppresses its own (T2), and link rows get the live
+   * PR state for the URL it was fetched for.
    */
-  private buildHeaderBlocks(session: ConversationSession, sessionKey: string): any[] {
+  private buildHeaderBlocks(
+    session: ConversationSession,
+    sessionKey: string,
+    livePr: PRStatusInfo | undefined,
+    closed?: boolean,
+  ): any[] {
     const theme = threadSurfaceProviders.getSessionTheme(session.ownerId);
-    const payload = ThreadHeaderBuilder.fromSession(session, { theme, sessionKey });
+    const payload = ThreadHeaderBuilder.fromSession(session, {
+      closed,
+      theme,
+      sessionKey,
+      suppressSessionStatus: true,
+      liveLinkStatus: ThreadHeaderBuilder.livePrLinkStatus(livePr?.fetchedForUrl, livePr),
+    });
     return payload.blocks || [];
   }
 
@@ -1603,15 +1589,7 @@ export class ThreadSurface {
    *     freeze notice now live, because this panel no longer carries them.
    */
   private buildClosedBlocks(session: ConversationSession, sessionKey: string): any[] {
-    const prStatusInfo = this.getState(sessionKey).prCache;
-    const blocks: any[] = [];
-
-    // Header with closed flag
-    const theme = threadSurfaceProviders.getSessionTheme(session.ownerId);
-    const headerPayload = ThreadHeaderBuilder.fromSession(session, { closed: true, theme, sessionKey });
-    blocks.push(...(headerPayload.blocks || []));
-
-    // Closed panel
+    const livePr = this.livePr(session, sessionKey);
     const panelPayload = ActionPanelBuilder.build({
       sessionKey,
       workflow: session.workflow,
@@ -1619,12 +1597,9 @@ export class ThreadSurface {
       turnSummary: session.actionPanel?.turnSummary,
       contextRemainingPercent: this.getContextRemainingPercent(session),
       latestResponseLink: session.actionPanel?.latestResponseLink,
-      prStatus: prStatusInfo?.prStatus,
-      prUrl: prStatusInfo?.prUrl,
+      prStatus: livePr,
     });
-    blocks.push(...panelPayload.blocks);
-
-    return blocks;
+    return ActionPanelBuilder.compose(this.buildHeaderBlocks(session, sessionKey, livePr, true), panelPayload.blocks);
   }
 
   /**
@@ -1813,6 +1788,16 @@ export class ThreadSurface {
   // PR Status (out-of-render-path)
   // =========================================================================
 
+  /** Fresh, and {@link ActionPanelBuilder.livePrStatus} still accepts it for the active link. */
+  private isPrCacheUsable(session: ConversationSession, state: SessionRenderState): boolean {
+    const entry = state.prCache;
+    return (
+      !!entry &&
+      Date.now() - entry.fetchedAt < PR_CACHE_TTL_MS &&
+      ActionPanelBuilder.livePrStatus(session.links?.pr, entry.prStatus) !== undefined
+    );
+  }
+
   private async fetchPRStatusEntry(
     session: ConversationSession,
     state: SessionRenderState,
@@ -1820,8 +1805,8 @@ export class ThreadSurface {
     const prLink = session.links?.pr;
     if (!prLink || prLink.provider !== 'github') return null;
 
-    // Use cache if fresh
-    if (state.prCache && Date.now() - state.prCache.fetchedAt < PR_CACHE_TTL_MS) {
+    // Use cache if fresh AND still about this link (same URL, link not re-recorded since)
+    if (this.isPrCacheUsable(session, state)) {
       return state.prCache;
     }
 
@@ -1840,6 +1825,8 @@ export class ThreadSurface {
         approved: reviewStatus === 'approved',
         head: details.head,
         base: details.base,
+        fetchedForUrl: prLink.url,
+        linkStatusAtFetch: prLink.status,
       };
 
       // Also cache in session for action handlers
@@ -1852,6 +1839,8 @@ export class ThreadSurface {
           approved: prStatus.approved,
           head: prStatus.head,
           base: prStatus.base,
+          fetchedForUrl: prStatus.fetchedForUrl,
+          linkStatusAtFetch: prStatus.linkStatusAtFetch,
         };
       }
 

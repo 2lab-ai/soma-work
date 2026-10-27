@@ -97,7 +97,6 @@ setActionHandlersProviders({
       actionPanelHandler: new ActionPanelActionHandler({
         slackApi: ctx.slackApi as any,
         claudeHandler: ctx.claudeHandler,
-        messageHandler: ctx.messageHandler as any,
         requestCoordinator: ctx.requestCoordinator,
         threadPanel: ctx.threadPanel,
       }),
