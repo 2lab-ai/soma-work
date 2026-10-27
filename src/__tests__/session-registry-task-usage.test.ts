@@ -10,6 +10,14 @@ vi.mock('../env-paths', () => ({
   ),
 }));
 
+// Host pricing stub: `astra` is host-priced at $1 per input token (review #472 r2 — a saved running total is repriced on load).
+vi.mock('../metrics/host-pricing-catalog', () => ({
+  hostPricing: {
+    hostPriced: (m: string) => m === 'astra',
+    calculateTokenCost: (_m: string | undefined, input: number) => input,
+  },
+}));
+
 import { getArchiveStore, SessionArchiveStore } from '../session-archive';
 import { SessionRegistry } from '../session-registry';
 
@@ -45,6 +53,26 @@ describe('SessionRegistry — taskUsage persistence', () => {
     reader.loadSessions();
     expect(reader.getSession('C1', '171.201')?.taskUsage).toEqual(total);
     expect(reader.getSession('C1', '171.202')?.taskUsage).toBeUndefined();
+  });
+
+  it('review #472 r2 — the saved SDK running total of a host-priced model is repriced on load', () => {
+    const writer = new SessionRegistry();
+    const s = writer.createSession('U1', 'Tester', 'C1', '171.209');
+    s.sessionId = 'sdk-A';
+    s.sdkUsageBaseline = {
+      sdkSessionId: 'sdk-A',
+      models: {
+        astra: { inputTokens: 7, outputTokens: 0, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUsd: 0.25 },
+        opus: { inputTokens: 5, outputTokens: 5, cacheReadInputTokens: 0, cacheCreationInputTokens: 0, costUsd: 0.1 },
+      },
+    };
+    writer.saveSessions();
+
+    const reader = new SessionRegistry();
+    reader.loadSessions();
+    const models = reader.getSession('C1', '171.209')?.sdkUsageBaseline?.models;
+    expect(models?.astra.costUsd).toBe(7);
+    expect(models?.opus.costUsd).toBe(0.1);
   });
 
   it('a session saved before taskUsage existed, that had spent, loads a partial total that counts from now', () => {
