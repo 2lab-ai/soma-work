@@ -41,6 +41,13 @@ Bot:   [Analyzes uploaded code, identifies bottlenecks, proposes optimized versi
 - The 2026-05-18 research note on AI-agent-friendly project documentation is in [docs/research](./docs/misc/research/2026-05-18-ai-agent-docs-organization.md).
 - Slack Block Kit/API constraints are maintained in [docs/misc/reference/slack-block-kit.md](./docs/misc/reference/slack-block-kit.md).
 
+## zworkflow plugin
+
+The Claude Code plugin soma-work ships by default, `zworkflow`, lives in [`src/local/`](./src/local/).
+You can install it in your own Claude Code with `/plugin marketplace add 2lab-ai/soma-work` and
+`/plugin install zworkflow@soma-work`. Install, update, hooks, and a path that copies only the
+`using-intentfirst` and `using-ssot` skills are in the [zworkflow plugin README](./src/local/README.md).
+
 ---
 
 ## ✨ Key Features

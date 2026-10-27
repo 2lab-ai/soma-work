@@ -41,6 +41,13 @@ Bot:   [업로드된 코드 분석, 병목 지점 식별, 최적화된 버전 �
 - AI agent 친화적인 프로젝트 문서 정리 리서치는 [docs/research](./docs/misc/research/2026-05-18-ai-agent-docs-organization.md)에 있습니다.
 - Slack Block Kit/API 제약은 [docs/misc/reference/slack-block-kit.md](./docs/misc/reference/slack-block-kit.md)에 유지합니다.
 
+## zworkflow 플러그인
+
+soma-work가 기본으로 싣는 Claude Code 플러그인 `zworkflow`는 [`src/local/`](./src/local/)에 있습니다.
+내 Claude Code에서는 `/plugin marketplace add 2lab-ai/soma-work`와 `/plugin install zworkflow@soma-work`로
+설치합니다. 설치·업데이트·훅, 그리고 플러그인 없이 `using-intentfirst`·`using-ssot` 스킬만 복사하는 경로는
+[zworkflow 플러그인 README](./src/local/README.ko.md)에 있습니다.
+
 ---
 
 ## ✨ 주요 기능
