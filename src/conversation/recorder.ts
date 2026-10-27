@@ -217,7 +217,7 @@ export function recordUserTurn(
   userName?: string,
   userId?: string,
   attachments?: readonly TurnAttachment[],
-  opts: { timestamp?: number; origin?: TurnOrigin } = {},
+  opts: { timestamp?: number; origin?: TurnOrigin; compact?: boolean } = {},
 ): void {
   // Fire-and-forget
   _recordUserTurnAsync(conversationId, content, userName, userId, attachments, opts).catch((err) => {
@@ -235,7 +235,7 @@ async function _recordUserTurnAsync(
   userName: string | undefined,
   userId: string | undefined,
   attachments: readonly TurnAttachment[] | undefined,
-  opts: { timestamp?: number; origin?: TurnOrigin },
+  opts: { timestamp?: number; origin?: TurnOrigin; compact?: boolean },
 ): Promise<void> {
   const record = await getOrLoadConversation(conversationId);
   if (!record) {
@@ -246,7 +246,9 @@ async function _recordUserTurnAsync(
 
   const now = Date.now();
   const { timestamp, origin } = opts;
-  const estimateMs = isCompactCommandText(content) ? previousCompactionMs(record) : undefined;
+  // A compaction turn (the executor's flag) carries its record from the start —
+  // empty, or the conversation's previous compaction time as the estimate.
+  const estimateMs = opts.compact ? previousCompactionMs(record) : undefined;
   const turn: ConversationTurn = {
     id: randomUUID(),
     role: 'user',
@@ -256,7 +258,7 @@ async function _recordUserTurnAsync(
     rawContent: content,
     ...(attachments && attachments.length > 0 ? { attachments: [...attachments] } : {}),
     ...(origin ? { origin: { by: origin.by } } : {}),
-    ...(estimateMs !== undefined ? { compact: { estimateMs } } : {}),
+    ...(opts.compact ? { compact: estimateMs !== undefined ? { estimateMs } : {} } : {}),
   };
 
   record.turns.push(turn);
@@ -266,15 +268,6 @@ async function _recordUserTurnAsync(
   // Saved: the copies the turn lists may now be served — before anyone is told about it.
   if (turn.attachments) await getUserMediaStore().commit(conversationId, turn.attachments);
   if (_onTurnRecorded) _onTurnRecorded(conversationId, turn);
-}
-
-/**
- * A `/compact` turn: soma-work records only the bare command (`/compact --yes`
- * and the auto-compact both send `/compact`). A goal objective that starts with
- * it is the user's words (executor `literalPrompt`), not a compaction.
- */
-export function isCompactCommandText(text: string | undefined): boolean {
-  return (text ?? '').trim() === '/compact';
 }
 
 /**
@@ -298,7 +291,8 @@ function previousCompactionMs(record: ConversationRecord): number | undefined {
  * Dashboard SSOT 2026-10-27 T2 — a compaction ended (the PostCompact hook /
  * `compact_boundary`, once per cycle): write its numbers onto the `/compact`
  * turn that ran it and push that turn to the dashboard again. The turn is the
- * latest user turn when it is a `/compact`, recorded no longer ago than a
+ * latest user turn when it is a compaction turn (`compact` set at record time
+ * from the executor's flag), recorded no longer ago than a
  * compaction can run; a result already on it only gets its missing numbers. A
  * compaction the SDK started inside an ordinary turn has no such turn —
  * nothing is written. Returns whether a turn was written.
@@ -313,7 +307,7 @@ export async function recordCompactResult(
   for (let i = record.turns.length - 1; i >= 0; i--) {
     const t = record.turns[i];
     if (t.role !== 'user') continue;
-    if (isCompactCommandText(t.rawContent)) turn = t;
+    if (t.compact) turn = t;
     break;
   }
   if (!turn) return false;

@@ -15116,9 +15116,10 @@ function sysTurnInfo(t) {
   var raw = decodeSlackEntities(String(t.rawContent || ''));
   var head = raw.replace(/^\\s+/, '');
   var by = t.origin && t.origin.by ? t.origin.by : '';
-  // soma-work records only the bare command; a goal objective starting with it
-  // (executor literalPrompt) is the user's words.
-  if (raw.trim() === '/compact') {
+  // A compaction turn: the recorder marks it (t.compact, from the executor —
+  // a goal objective starting with "/compact" is literal, never marked). A turn
+  // from before origins were kept is read from its text: the bare command.
+  if (t.compact || (!by && raw.trim() === '/compact')) {
     var auto = by === 'system';
     var who = auto ? 'soma-work — 컨텍스트가 자동 압축 지점을 넘어 /compact 실행'
       : by === 'user' ? '사용자 요청' : '기록 없음 (출처를 저장하기 전의 턴)';
@@ -15300,10 +15301,16 @@ function splitInvokedSkills(raw) {
   // never closed.
   for (;;) {
     var end = s.indexOf(CLOSE, from);
-    var at = end < 0 ? -1 : s.lastIndexOf(OPEN, end);
-    if (at < from) {
+    if (end < 0) {
       text += s.slice(from);
       break;
+    }
+    var at = s.lastIndexOf(OPEN, end);
+    if (at < from) {
+      // A stray closing tag in the words: words, and look on past it.
+      text += s.slice(from, end + CLOSE.length);
+      from = end + CLOSE.length;
+      continue;
     }
     text += s.slice(from, at);
     var inner = s.slice(at + OPEN.length, end);
@@ -15316,7 +15323,11 @@ function splitInvokedSkills(raw) {
       var bodyAt = i + m.index + m[0].length;
       var closeTag = '</' + name + '>';
       var bodyEnd = inner.indexOf(closeTag, bodyAt);
-      if (bodyEnd < 0) bodyEnd = inner.length;
+      if (bodyEnd < 0) {
+        // A tag never closed is not a skill — skip it, keep reading.
+        i = bodyAt;
+        continue;
+      }
       var body = inner.slice(bodyAt, bodyEnd).replace(/^\\n+|\\s+$/g, '');
       skills.push({ name: name, body: body, tokens: estimateTokens(body) });
       i = bodyEnd + closeTag.length;

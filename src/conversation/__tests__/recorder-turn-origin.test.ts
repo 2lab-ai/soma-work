@@ -49,10 +49,11 @@ describe('T2.1 — a /compact turn records its compaction', () => {
   it('the result lands on the running /compact turn and is pushed again', async () => {
     const cid = createConversation('C1', '1700000000.000500', 'U1', 'Zhuge');
     let seen = nextTurn();
-    recordUserTurn(cid, '/compact', 'Zhuge', 'U1', undefined, { origin: { by: 'system' } });
+    recordUserTurn(cid, '/compact', 'Zhuge', 'U1', undefined, { origin: { by: 'system' }, compact: true });
     const compactTurn = await seen;
-    // The first compaction of a conversation has nothing to estimate from.
-    expect(compactTurn.compact).toBeUndefined();
+    // The first compaction of a conversation has nothing to estimate from — the
+    // empty record still marks the turn as a compaction.
+    expect(compactTurn.compact).toEqual({});
 
     seen = nextTurn();
     const ok = await recordCompactResult(cid, {
@@ -79,7 +80,7 @@ describe('T2.1 — a /compact turn records its compaction', () => {
   it('the next /compact expects the previous compaction time', async () => {
     const cid = createConversation('C1', '1700000000.000600', 'U1', 'Zhuge');
     let seen = nextTurn();
-    recordUserTurn(cid, '/compact', 'Zhuge', 'U1');
+    recordUserTurn(cid, '/compact', 'Zhuge', 'U1', undefined, { compact: true });
     const first = await seen;
     await recordCompactResult(cid, { endedAt: first.timestamp + 90_000, durationMs: 90_000 });
 
@@ -88,7 +89,7 @@ describe('T2.1 — a /compact turn records its compaction', () => {
     expect((await seen).compact).toBeUndefined(); // only a /compact turn carries one
 
     seen = nextTurn();
-    recordUserTurn(cid, '/compact', 'Zhuge', 'U1');
+    recordUserTurn(cid, '/compact', 'Zhuge', 'U1', undefined, { compact: true });
     expect((await seen).compact).toEqual({ estimateMs: 90_000 });
   });
 
@@ -101,7 +102,7 @@ describe('T2.1 — a /compact turn records its compaction', () => {
     expect(await recordCompactResult(cid, { endedAt: plain.timestamp + 1000, durationMs: 1000 })).toBe(false);
 
     let s2 = nextTurn();
-    recordUserTurn(cid, '/compact', 'Zhuge', 'U1');
+    recordUserTurn(cid, '/compact', 'Zhuge', 'U1', undefined, { compact: true });
     const c = await s2;
     await recordCompactResult(cid, { endedAt: c.timestamp + 5000, durationMs: 5000 });
     // Already sealed: a second END of the same cycle does not overwrite it.
@@ -115,10 +116,11 @@ describe('T2.1 — a /compact turn records its compaction', () => {
   it('a goal objective that starts with /compact is not a /compact turn', async () => {
     const cid = createConversation('C1', '1700000000.000900', 'U1', 'Zhuge');
     let seen = nextTurn();
-    recordUserTurn(cid, '/compact', 'Zhuge', 'U1');
+    recordUserTurn(cid, '/compact', 'Zhuge', 'U1', undefined, { compact: true });
     const first = await seen;
     await recordCompactResult(cid, { endedAt: first.timestamp + 60_000, durationMs: 60_000 });
     seen = nextTurn();
+    // The executor does not flag a goal objective (literalPrompt) as a compaction.
     recordUserTurn(cid, '/compact 명령의 버그를 고쳐라', 'Zhuge', 'U1', undefined, { origin: { by: 'user' } });
     const goal = await seen;
     expect(goal.compact).toBeUndefined();
@@ -126,10 +128,19 @@ describe('T2.1 — a /compact turn records its compaction', () => {
     expect(await recordCompactResult(cid, { endedAt: goal.timestamp + 1000, durationMs: 1000 })).toBe(false);
   });
 
+  it('/compact with instructions is a compaction when the executor says so (the SDK runs it)', async () => {
+    const cid = createConversation('C1', '1700000000.001100', 'U1', 'Zhuge');
+    const seen = nextTurn();
+    recordUserTurn(cid, '/compact 인증 쪽 위주로', 'Zhuge', 'U1', undefined, { origin: { by: 'user' }, compact: true });
+    const c = await seen;
+    expect(c.compact).toEqual({});
+    expect(await recordCompactResult(cid, { endedAt: c.timestamp + 3000, durationMs: 3000 })).toBe(true);
+  });
+
   it('numbers that arrive after the result was written fill the gaps, never overwrite', async () => {
     const cid = createConversation('C1', '1700000000.001000', 'U1', 'Zhuge');
     let seen = nextTurn();
-    recordUserTurn(cid, '/compact', 'Zhuge', 'U1');
+    recordUserTurn(cid, '/compact', 'Zhuge', 'U1', undefined, { compact: true });
     const c = await seen;
     await recordCompactResult(cid, { endedAt: c.timestamp + 5000, durationMs: 5000 });
     seen = nextTurn();
@@ -156,7 +167,7 @@ describe('T2.1 — a /compact turn records its compaction', () => {
   it('a /compact turn older than a compaction can run is not the one that ended', async () => {
     const cid = createConversation('C1', '1700000000.000800', 'U1', 'Zhuge');
     const seen = nextTurn();
-    recordUserTurn(cid, '/compact', 'Zhuge', 'U1');
+    recordUserTurn(cid, '/compact', 'Zhuge', 'U1', undefined, { compact: true });
     const stale = await seen;
     expect(await recordCompactResult(cid, { endedAt: stale.timestamp + 60 * 60_000, durationMs: 1000 })).toBe(false);
   });
