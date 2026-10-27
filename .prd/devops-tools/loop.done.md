@@ -35,3 +35,19 @@
 | WU2b 브로커 본체 | 소켓·라우팅·GitHub 관리·serve | `114d69c3` 99 tests → 리뷰(Opus, 탐침) REVISE → `2eaf01ed`(현재 상태 조회 후 '현재 → 변경' 카드, 결과 불명 재조회, pr merge SHA 필수, 반쯤 열린 연결 정리, abort 사유) · `e4a2f8f3` |
 | WU7a 설치 스크립트 | install/uninstall·plist | `b85bb6b9` 14 tests → 리뷰(Opus, 탐침) REVISE(봇 소유 gh/node로 root 실행·토큰 반출 재현) → `81478d9a`(고정 sha256 공식 아카이브만, nobody로 버전 확인, 체크아웃 신뢰 FAIL, 점검표 뒤 부트스트랩, Slack CLI 로그인 FAIL) 23 tests |
 | WU1 리뷰 반영 | gh 허용표 | 리뷰(Opus, 탐침) REVISE → `0cef6764`(api 경로 허용표, secret-scanning, 소유자 범위 조회, 카드 문자 제한) 337 tests |
+
+## 라운드 1 — 닫힘: 머지 (2026-10-27)
+
+- 머지 전 trinity(grok-4.7 · gpt-6-astra · fable), 3라운드에서 만장일치 APPROVE.
+  - R1: grok APPROVE · gpt-6-astra REVISE(설치 스크립트가 ACL을 보지 않는다, 코드 트리 `find`의 `-print` 우선순위 때문에 검사가 실패할 수 없다) ·
+    fable REVISE(`pr merge --auto`가 승인 뒤에도 상시 자동 머지를 남긴다, 허용된 인자를 통째로 기록해 카드 없이 원장이 커진다, 카드 길이 거부에 속도 제한이 없다).
+    → `--auto` 제거, 긴 인자는 해시+미리보기로 기록, 카드를 만들기 전에 속도 제한, 설치 시 ACL 제거·남으면 FAIL, `find` 분기 괄호.
+  - R2: grok·fable APPROVE · gpt-6-astra REVISE(merge queue가 필요한 레포에서는 gh가 `--auto` 없이도 자동 머지를 고른다).
+    → `pr merge`는 gh를 거치지 않고 승인된 SHA에 고정한 REST 머지 한 번으로 실행.
+  - R3: 3×APPROVE, MUST-FIX none.
+- 공개 레포 푸시: 계획 커밋 히스토리에 승인 위조 경로의 구체 위치가 있어, 공개 `.prd`에는 원리(봇과 같은 OS 유저 안의 승인은 믿을 수 없다)만 남기고
+  운영 상태·구체 위치는 운영 저장소의 비공개 계획 파일로 옮겼다. 그 뒤 origin/main `50ad59de` 위 커밋 1개(`e8d76733`)로 다시 잘라 올렸다.
+  위 표의 커밋 해시는 합치기 전 로컬 브랜치 기준이다.
+- 전체 게이트(합친 커밋): build · tsc · 테스트 15,879 통과/0 실패 · mcp-bins · deploy-bundle 스모크 · lean-verify 통과.
+- PR #465: CI lean-verify · quality-gates · Sanitize Gate scan 통과 → 머지 `2da8f4e4`(2026-10-27 04:22 KST).
+- 머지 뒤 문서 정리(README 두 벌 · 아키텍처 문서 · CLAUDE.md의 사람 계정 토큰 push 안내 제거)는 후속 문서 PR.
