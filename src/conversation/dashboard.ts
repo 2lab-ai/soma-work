@@ -3862,6 +3862,41 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .col-empty { text-align: center; color: var(--ib-muted); font-size: 13px; padding: 14px 8px 18px; }
 .col-foot:empty { display: none; }
 
+/* ── Loading skeletons — the shape of what is coming, never a false "0 · Nothing
+   here". The board shows them until its first answer (data-load="loading"); the
+   stats values and the panel turns until theirs. Opacity pulse only (compositor),
+   staggered per card; still under reduced motion. ── */
+@keyframes sk-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+.sk { background: var(--ib-pill); border-radius: 6px; animation: sk-pulse 1.6s ease-in-out infinite; }
+.col-skel { display: flex; flex-direction: column; gap: 8px; }
+.kanban:not([data-load="loading"]) .col-skel { display: none; }
+.sk-card { background: var(--ib-card); border: 1px solid var(--ib-card-border); border-radius: 12px; box-shadow: var(--ib-shadow); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.sk-card .sk-title { height: 14px; width: 68%; }
+.sk-card .sk-meta { height: 10px; width: 42%; }
+.sk-card .sk-pill { height: 20px; width: 34%; border-radius: 999px; }
+.sk-card:nth-child(2) .sk { animation-delay: 120ms; }
+.sk-card:nth-child(3) .sk { animation-delay: 240ms; }
+.kanban-col-header .count:empty { min-height: 18px; }
+.kanban[data-load="loading"] .kanban-col-header .count:empty { animation: sk-pulse 1.6s ease-in-out infinite; }
+.kanban:not([data-load="loading"]) .kanban-col-header .count:empty { visibility: hidden; }
+.board-error { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 12px; padding: 12px 16px; border-radius: 12px; background: var(--ib-col); color: var(--ib-text-2); font-size: 13px; }
+.board-error[hidden] { display: none; }
+/* Stats values: a bar where the number will be. */
+.strip-num .is-loading, .stat-card .value.is-loading { display: inline-block; vertical-align: middle; width: 3.2em; height: 0.9em; border-radius: 4px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
+.stat-card .value.is-loading { width: 64px; height: 22px; }
+.chart-row.is-loading { min-height: 132px; border-radius: 8px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
+/* Panel turns: rows shaped like a user / assistant turn. */
+.sk-turn { margin-bottom: 8px; padding: 8px 10px; border-radius: var(--radius); display: flex; gap: 10px; align-items: flex-start; border-left: 3px solid var(--ib-pill); }
+.sk-turn.user { background: var(--surface-raised); }
+.sk-turn .sk-avatar { width: 32px; height: 32px; border-radius: 4px; flex-shrink: 0; }
+.sk-turn-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding-top: 2px; }
+.sk-turn .sk-line { height: 10px; }
+.io-row.io-skel { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
+.io-skel .sk-line { height: 10px; }
+.io-skel + .io-skel .sk { animation-delay: 120ms; }
+.sk-turn:nth-child(2) .sk { animation-delay: 120ms; }
+.sk-turn:nth-child(3) .sk { animation-delay: 240ms; }
+
 /* List = the same columns stacked as full-width sections (same DOM, §4-4). */
 .kanban[data-view="list"] { grid-template-columns: minmax(0, 1fr); }
 .kanban[data-view="list"] .kanban-col-header h3 { flex: 0 0 auto; text-align: left; }
@@ -5635,6 +5670,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .btn-perm:active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
+  /* Loading skeletons hold still. */
+  .sk, .is-loading, .kanban-col-header .count:empty { animation: none !important; }
   .wl-group-head .wl-g-chev, .done-group-head .dg-chev { transition: none; }
   .spinner { border-color: var(--st-run); background: radial-gradient(circle, var(--st-run) 0 2px, transparent 2.5px); }
 }
@@ -6722,22 +6759,22 @@ body.nt-open .new-task-fab { display: none !important; }
           <button type="button" class="period-btn" data-period="month" aria-pressed="false" onclick="setPeriod('month')">&#xC9C0;&#xB09C; 30&#xC77C;</button>
         </div>
         <div class="strip-nums">
-          <div class="strip-num"><span class="label">&#xC138;&#xC158;</span><span class="value" id="stat-sessions">-</span></div>
-          <div class="strip-num"><span class="label">&#xD1A0;&#xD070;</span><span class="value" id="stat-tokens-wrap"><span id="stat-tokens">-</span><span id="stat-tokens-tooltip" role="tooltip"></span></span></div>
-          <div class="strip-num"><span class="label">&#xBE44;&#xC6A9;</span><span class="value" id="stat-cost">-</span></div>
+          <div class="strip-num"><span class="label">&#xC138;&#xC158;</span><span class="value is-loading" id="stat-sessions"></span></div>
+          <div class="strip-num"><span class="label">&#xD1A0;&#xD070;</span><span class="value" id="stat-tokens-wrap"><span id="stat-tokens" class="is-loading"></span><span id="stat-tokens-tooltip" role="tooltip"></span></span></div>
+          <div class="strip-num"><span class="label">&#xBE44;&#xC6A9;</span><span class="value is-loading" id="stat-cost"></span></div>
         </div>
         <button type="button" class="stats-more" id="stats-more" aria-expanded="false" aria-controls="stats-detail" onclick="toggleStatsDetail()"><span>&#xC790;&#xC138;&#xD788;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
       </div>
       <div class="stats-detail" id="stats-detail" hidden>
         <div class="stats-grid" id="stats-grid">
-          <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value" id="stat-turns">-</div></div>
-          <div class="stat-card"><div class="label">PR &#xC0DD;&#xC131;</div><div class="value" id="stat-prs">-</div></div>
-          <div class="stat-card"><div class="label">PR &#xBA38;&#xC9C0;</div><div class="value" id="stat-merged">-</div></div>
-          <div class="stat-card"><div class="label">&#xBA38;&#xC9C0; &#xCF54;&#xB4DC;</div><div class="value" id="stat-merge-lines">-</div></div>
-          <div class="stat-card"><div class="label">&#xC6CC;&#xD06C;&#xD50C;&#xB85C;&#xC6B0;</div><div class="value" id="stat-workflows" style="font-size:0.85em">-</div></div>
+          <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value is-loading" id="stat-turns"></div></div>
+          <div class="stat-card"><div class="label">PR &#xC0DD;&#xC131;</div><div class="value is-loading" id="stat-prs"></div></div>
+          <div class="stat-card"><div class="label">PR &#xBA38;&#xC9C0;</div><div class="value is-loading" id="stat-merged"></div></div>
+          <div class="stat-card"><div class="label">&#xBA38;&#xC9C0; &#xCF54;&#xB4DC;</div><div class="value is-loading" id="stat-merge-lines"></div></div>
+          <div class="stat-card"><div class="label">&#xC6CC;&#xD06C;&#xD50C;&#xB85C;&#xC6B0;</div><div class="value is-loading" id="stat-workflows" style="font-size:0.85em"></div></div>
         </div>
         <div style="display:none" id="stat-commits-hidden"></div>
-        <div class="chart-row" id="chart-row"></div>
+        <div class="chart-row is-loading" id="chart-row"></div>
       </div>
     </section>
 
@@ -6794,21 +6831,28 @@ body.nt-open .new-task-fab { display: none !important; }
       </div>
       <!-- How many need you and how many run, said politely (re-agent-inbox D6). -->
       <p id="inbox-live" class="ib-sr" role="status" aria-live="polite" aria-atomic="true"></p>
-      <div class="kanban" id="kanban" data-view="board">
+      <!-- Until the first board answer the columns show skeleton cards, not
+           "0 · Nothing here" (a false empty board). A first load that fails says so
+           here and offers a retry; the 30 s poll keeps retrying on its own. -->
+      <div class="board-error" id="board-error" role="alert" hidden><span>보드를 불러오지 못했습니다.</span><button type="button" class="archives-btn" onclick="retryBoardLoad()">다시 시도</button></div>
+      <div class="kanban" id="kanban" data-view="board" data-load="loading" aria-busy="true">
         <section class="kanban-col" id="col-waiting" data-col="waiting" aria-labelledby="col-waiting-name count-waiting">
-          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-waiting-name">NEEDS YOU</h3><span class="count" id="count-waiting">0</span></div>
+          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-waiting-name">NEEDS YOU</h3><span class="count" id="count-waiting"></span></div>
+          <div class="col-skel" aria-hidden="true"><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div></div>
           <div class="cards" id="cards-waiting"></div>
-          <div class="col-empty" id="empty-waiting">Nothing here</div>
+          <div class="col-empty" id="empty-waiting" hidden>Nothing here</div>
         </section>
         <section class="kanban-col" id="col-working" data-col="working" aria-labelledby="col-working-name count-working">
-          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-working-name">RUNNING</h3><span class="count" id="count-working">0</span></div>
+          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-working-name">RUNNING</h3><span class="count" id="count-working"></span></div>
+          <div class="col-skel" aria-hidden="true"><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div></div>
           <div class="cards" id="cards-working"></div>
-          <div class="col-empty" id="empty-working">Nothing here</div>
+          <div class="col-empty" id="empty-working" hidden>Nothing here</div>
         </section>
         <section class="kanban-col" id="col-done" data-col="done" aria-labelledby="col-done-name count-done">
-          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-done-name">DONE</h3><span class="count" id="count-done">0</span></div>
+          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-done-name">DONE</h3><span class="count" id="count-done"></span></div>
+          <div class="col-skel" aria-hidden="true"><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div></div>
           <div class="cards" id="cards-done"></div>
-          <div class="col-empty" id="empty-done">Nothing here</div>
+          <div class="col-empty" id="empty-done" hidden>Nothing here</div>
           <div class="col-foot" id="foot-done"></div>
         </section>
       </div>
@@ -8565,6 +8609,9 @@ function renderBoard(board) {
     // (hidden archives / sleeping cards are not in it).
     done: plan.done.length,
   });
+  // Real cards are drawn: the skeleton goes for good. After the reconciler, so a
+  // render that throws on the way leaves it, and loadSessions' catch shows 다시 시도.
+  document.querySelectorAll('.col-skel').forEach(function(n) { n.remove(); });
   renderArchivesToggle(plan.archivedCount);
   renderSleepingToggle(plan.sleepingCount);
   paintCronDrawer();
@@ -11058,8 +11105,11 @@ function renderCardIo(s) {
   if (!s.conversationId) return '';
   var c = _ioCache[s.conversationId];
   if (!c || !c.data) {
-    var note = c && c.state === 'error' ? '지시/응답을 불러오지 못했습니다' : '지시/응답 불러오는 중…';
-    return '<div class="card-io"><div class="io-row"><div class="io-text is-muted">' + note + '</div></div></div>';
+    if (c && c.state === 'error') return '<div class="card-io"><div class="io-row"><div class="io-text is-muted">지시/응답을 불러오지 못했습니다</div></div></div>';
+    // In flight: the shape of 지시 and 응답, the words for screen readers only.
+    return '<div class="card-io" aria-busy="true"><div class="io-row io-skel" aria-hidden="true"><div class="sk sk-line" style="width:44%"></div><div class="sk sk-line" style="width:86%"></div></div>'
+      + '<div class="io-row io-skel" aria-hidden="true"><div class="sk sk-line" style="width:36%"></div><div class="sk sk-line" style="width:72%"></div></div>'
+      + '<span class="ib-sr">지시/응답 불러오는 중…</span></div>';
   }
   var d = c.data;
   var who = d.instruction && d.instruction.who ? '<span class="io-who">' + esc(d.instruction.who) + '</span>' : '';
@@ -12873,20 +12923,70 @@ function mergeSiblingCards(board) {
   return out;
 }
 
+// The board's first load (spec: no false empty board). 'loading' — skeleton
+// cards, no counts, no "Nothing here" — until the first poll answer paints,
+// then 'ready' for good: a background poll never brings the skeleton back.
+// Only a poll answer certifies the board (it carries every instance's cards);
+// a WebSocket push is this instance's cards only. A first load that fails is
+// 'failed' — the skeleton stops and the board says so, with 다시 시도, until a
+// poll succeeds (the 30 s poll keeps retrying either way).
+var _boardLoad = 'loading';
+function setBoardLoad(state) {
+  if (_boardLoad === 'ready') return;
+  _boardLoad = state;
+  var kb = document.getElementById('kanban');
+  if (kb) {
+    kb.dataset.load = state;
+    kb.setAttribute('aria-busy', state === 'loading' ? 'true' : 'false');
+  }
+  var err = document.getElementById('board-error');
+  if (err) err.hidden = state !== 'failed';
+}
+function retryBoardLoad() {
+  setBoardLoad('loading');
+  loadSessions();
+}
+// A WebSocket push carries this instance's cards only; before a poll answer
+// there are no sibling cards to merge in, so a push while loading is held for
+// the user it was filtered for — and painted, as partial data under the error,
+// if that load fails. After a failed load pushes paint (the error stays).
+var _heldWsBoard = null;
+function paintPushedBoard(board) {
+  if (_boardLoad === 'loading') { _heldWsBoard = { user: currentUserId, board: board }; return false; }
+  renderBoard(mergeSiblingCards(board));
+  return true;
+}
+
 async function loadSessions() {
+  // An answer for a user no longer selected paints nothing and flags nothing.
+  // Same-user loads never cancel each other: a slow 30 s poll still paints.
+  var forUser = currentUserId;
   try {
     const url = '/api/dashboard/sessions' + (currentUserId ? '?userId=' + currentUserId : '');
     const res = await fetch(url);
+    if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
+    if (forUser !== currentUserId) return;
+    _heldWsBoard = null;
     _lastPolledBoard = data.board;
     if (data.lifecycle) _lifecycle = data.lifecycle;
     renderBoard(data.board);
+    setBoardLoad('ready');
     if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) {
       // Without the WebSocket (or for a sibling instance) the poll is the only
       // update: the whole panel follows it (spec 13).
       repaintPanelSession();
     }
-  } catch (e) { console.error('Failed to load sessions', e); }
+  } catch (e) {
+    if (forUser !== currentUserId) return;
+    console.error('Failed to load sessions', e);
+    var held = _heldWsBoard && _heldWsBoard.user === forUser ? _heldWsBoard.board : null;
+    _heldWsBoard = null;
+    // This instance's cards are better than none — shown under the error, which
+    // stays: they are not the whole board.
+    if (_boardLoad === 'loading' && held) renderBoard(held);
+    setBoardLoad('failed'); // a no-op once the board has painted: it stays as it is
+  }
 }
 
 // ── Action handler (with CSRF retry on 403 after JWT rotation) ──
@@ -13343,6 +13443,9 @@ async function loadStats() {
   var gen = ++_statsGen;
   var q = 'period=' + encodeURIComponent(currentPeriod) + (currentUserId ? '&userId=' + encodeURIComponent(currentUserId) : '');
   updateTokenBreakdown();
+  // A bar where each number will be — not the last period's (or user's) number
+  // under the new selection while the answer is in flight (month: seconds).
+  markStatsLoading();
   await Promise.all([
     statsJson('/api/dashboard/stats?' + q).then(
       function(data) { if (gen === _statsGen) paintStats(data); },
@@ -13362,11 +13465,25 @@ function statsJson(url) {
   });
 }
 
+var STAT_IDS = ['stat-sessions', 'stat-tokens', 'stat-cost', 'stat-turns', 'stat-prs', 'stat-merged', 'stat-merge-lines', 'stat-workflows'];
+function markStatsLoading() {
+  STAT_IDS.forEach(function(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = '';
+    el.classList.remove('no-data');
+    el.classList.add('is-loading');
+  });
+  var chart = document.getElementById('chart-row');
+  if (chart) chart.classList.add('is-loading');
+}
+
 // A failed load shows a dash rather than the previous period's number.
 function setStat(id, text) {
   var el = document.getElementById(id);
   if (!el) return;
   el.textContent = text;
+  el.classList.remove('is-loading');
   el.classList.toggle('no-data', text === '\\u2014');
 }
 
@@ -13380,11 +13497,17 @@ function paintStats(data) {
   setStat('stat-commits-hidden', t ? String(toNum(t.commitsCreated)) : dash);
   setStat('stat-merge-lines', t ? '+' + toNum(t.mergeLinesAdded) + ' / -' + toNum(t.mergeLinesDeleted) : dash);
   var wfEntries = Object.entries((t && t.workflowCounts) || {}).sort(function(a, b) { return toNum(b[1]) - toNum(a[1]); });
-  document.getElementById('stat-workflows').innerHTML = wfEntries.length
-    ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + toNum(e[1]) + '</b></span>'; }).join('')
-    : '<span style="color:var(--text-secondary)">-</span>';
+  var wfEl = document.getElementById('stat-workflows');
+  if (wfEl) {
+    wfEl.classList.remove('is-loading');
+    wfEl.innerHTML = wfEntries.length
+      ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + toNum(e[1]) + '</b></span>'; }).join('')
+      : '<span style="color:var(--text-secondary)">-</span>';
+  }
+  var chartEl = document.getElementById('chart-row');
+  if (chartEl) chartEl.classList.remove('is-loading');
   if (data) renderCharts(Array.isArray(data.days) ? data.days : []);
-  else document.getElementById('chart-row').innerHTML = '';
+  else if (chartEl) chartEl.innerHTML = '';
 }
 
 function paintUsage(report) {
@@ -13452,7 +13575,7 @@ function connectWs() {
           msg.board.idle = (msg.board.idle || []).filter(function(s) { return s.ownerId === currentUserId; });
           msg.board.closed = (msg.board.closed || []).filter(function(s) { return s.ownerId === currentUserId; });
         }
-        renderBoard(mergeSiblingCards(msg.board));
+        if (!paintPushedBoard(msg.board)) return;
         // Refresh panel question if panel is open (session may have transitioned)
         if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) {
           var panelS = _sessionCache[panelSessionKey];
@@ -14698,7 +14821,8 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // Conversation turns — paginated (infinite scroll: latest 30, load older on scroll-up)
   const turnsEl = document.getElementById('panel-turns');
   if (s.conversationId) {
-    turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Loading...</p>';
+    turnsEl.innerHTML = turnsSkeletonHtml();
+    turnsEl.setAttribute('aria-busy', 'true');
     landPanel(); // the answer form is in view while the turns load
     _panelTurnsLoading = true;
     var loadingConvId = s.conversationId;
@@ -14722,6 +14846,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
 
         if (!data.turns || data.turns.length === 0) {
           turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation turns</p>';
+          turnsEl.removeAttribute('aria-busy');
           landPanel();
           _panelTurnsLoading = false;
           return;
@@ -14730,6 +14855,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
         _panelTurnsHasMore = !!data.hasMore;
         _panelTurnsOldestId = data.turns[0] && data.turns[0].id;
         turnsEl.innerHTML = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
+        turnsEl.removeAttribute('aria-busy');
         attachRawToggleHandlers();
         decoratePanelTurns();
         landPanel();
@@ -14738,11 +14864,13 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
       .catch(function() {
         if (loadingGen !== _panelGen) return;
         turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Failed to load conversation</p>';
+        turnsEl.removeAttribute('aria-busy');
         landPanel();
         _panelTurnsLoading = false;
       });
   } else {
     turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation recorded</p>';
+    turnsEl.removeAttribute('aria-busy');
     landPanel();
   }
 
@@ -14872,6 +15000,17 @@ async function loadMorePanelTurns() {
     // settling must not clear the flag of the load that replaced it.
     if (requestGen === _panelGen) _panelTurnsLoading = false;
   }
+}
+
+// The turns while they load: rows shaped like a user / assistant / user turn
+// (spec: skeletons, not a "Loading..." line). Decorative — the list carries
+// aria-busy while it loads.
+function turnsSkeletonHtml() {
+  function row(role, a, b) {
+    return '<div class="sk-turn ' + role + '"><div class="sk sk-avatar"></div><div class="sk-turn-body">'
+      + '<div class="sk sk-line" style="width:' + a + '%"></div><div class="sk sk-line" style="width:' + b + '%"></div></div></div>';
+  }
+  return '<div class="sk-turns" aria-hidden="true">' + row('user', 38, 72) + row('assistant', 46, 88) + row('user', 30, 64) + '</div>';
 }
 
 function renderTurn(t, _idx, _arr, convId) {
@@ -18955,7 +19094,8 @@ function syncTopbarBottom() {
 
 // ── Init ──
 loadUsers();
-loadSessions().then(function() { loadStats(); });
+loadSessions();
+loadStats();
 connectWs();
 ntInit();
 setInterval(loadSessions, 30000);
