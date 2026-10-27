@@ -153,8 +153,15 @@ const goalPrompt = (n: number, max: number, reason?: string) =>
 describe('C1 — what soma-work injected, by its own wording', () => {
   it('/compact: 자동 압축 when soma-work sent it, 압축 when a person did or nobody recorded who', () => {
     const { sysTurnInfo } = api();
-    expect(sysTurnInfo(user('/compact', SYSTEM))).toMatchObject({ kind: 'compact', label: '자동 압축' });
-    expect(sysTurnInfo(user('/compact', PERSON))).toMatchObject({ kind: 'compact', label: '압축' });
+    expect(sysTurnInfo(user('/compact', { ...SYSTEM, compact: {} }))).toMatchObject({
+      kind: 'compact',
+      label: '자동 압축',
+    });
+    expect(sysTurnInfo(user('/compact', { ...PERSON, compact: {} }))).toMatchObject({ kind: 'compact', label: '압축' });
+    // The recorder marks every compaction turn (the executor's flag): /compact
+    // with instructions, too. A newer turn without the mark is words.
+    expect(sysTurnInfo(user('/compact 인증 쪽 위주로', { ...PERSON, compact: {} }))).toMatchObject({ kind: 'compact' });
+    expect(sysTurnInfo(user('/compact', PERSON))).toBeNull();
     const legacy = sysTurnInfo(user('/compact'));
     expect(legacy).toMatchObject({ kind: 'compact', label: '압축' });
     expect(legacy?.facts).toContainEqual(['실행', '기록 없음 (출처를 저장하기 전의 턴)']);
@@ -279,6 +286,7 @@ describe('C2 — the one-line row', () => {
     }).renderTurn(
       user('/compact', {
         ...SYSTEM,
+        compact: {},
         timestamp: Date.now() - 3_600_000,
         attachments: [{ id: 'F1', name: 'a.png', kind: 'image' }],
       }),
@@ -319,7 +327,7 @@ describe('C2 — the one-line row', () => {
 describe('C3 — /compact: progress while it runs, its numbers once done', () => {
   it('running: elapsed / default estimate, %, a progressbar — and the ticker starts', () => {
     const a = api();
-    const out = a.renderTurn(user('/compact', { ...SYSTEM, timestamp: Date.now() - 42_000 }));
+    const out = a.renderTurn(user('/compact', { ...SYSTEM, compact: {}, timestamp: Date.now() - 42_000 }));
     expect(out).toContain('<span class="sys-badge" data-kind="compact">자동 압축</span>');
     expect(out).toContain('data-cp-live="1"');
     expect(out).toContain('data-cp-est="150000"');
@@ -344,7 +352,7 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
   });
 
   it('past the estimate: no false percentage — "예상보다 오래 걸리는 중" and a moving bar', () => {
-    const out = api().renderTurn(user('/compact', { ...SYSTEM, timestamp: Date.now() - 200_000 }));
+    const out = api().renderTurn(user('/compact', { ...SYSTEM, compact: {}, timestamp: Date.now() - 200_000 }));
     expect(out).toContain('압축 중 · 3:20 / 약 2:30 · 예상보다 오래 걸리는 중');
     expect(out).toContain('class="cp-bar is-over"');
     expect(out).not.toContain('cp-pct');
@@ -379,7 +387,7 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
   });
 
   it('a /compact with a later turn after it is not live at render time (no first-frame flash)', () => {
-    const t = user('/compact', { ...SYSTEM, timestamp: Date.now() - 30_000 });
+    const t = user('/compact', { ...SYSTEM, compact: {}, timestamp: Date.now() - 30_000 });
     const next = user('다음 지시', { id: 'u2' });
     const out = api().renderTurn(t, 0, [t, next], 'conv-sys');
     expect(out).not.toContain('data-cp-live');
@@ -558,6 +566,15 @@ describe('C4 — the skills an instruction invoked, as badges', () => {
     );
     expect(closed.text).toBe('Explain <invoked_skills> syntax </invoked_skills> please');
     expect(closed.skills.map((x) => x.name)).toEqual(['local:autoz']);
+    // A stray closing tag in the words does not hide the real block after it.
+    const stray = splitInvokedSkills(invoked('close with </invoked_skills> like this', [['local:autoz', AUTOZ_BODY]]));
+    expect(stray.text).toBe('close with </invoked_skills> like this');
+    expect(stray.skills.map((x) => x.name)).toEqual(['local:autoz']);
+    // A skill tag never closed is words, and does not swallow the skills after it.
+    const unclosed = splitInvokedSkills(
+      'do it\n\n<invoked_skills>\n<broken>\nno end\n<local:autoz>\nbody\n</local:autoz>\n</invoked_skills>',
+    );
+    expect(unclosed.skills.map((x) => x.name)).toEqual(['local:autoz']);
     const out = splitInvokedSkills(invoked('What does <invoked_skills> do?', [['local:autoz', AUTOZ_BODY]]));
     expect(out.text).toBe('What does <invoked_skills> do?');
     expect(out.skills.map((x) => x.name)).toEqual(['local:autoz']);

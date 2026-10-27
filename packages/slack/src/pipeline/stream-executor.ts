@@ -172,6 +172,12 @@ const defaultUserSettingsStore = {
  */
 export interface RecordUserTurnOpts {
   origin?: { by: 'user' | 'system' };
+  /**
+   * The turn runs the SDK's `/compact` (a local slash command — a goal
+   * objective that starts with it is literal, never one). The recorder marks
+   * it a compaction turn; this is the one definition the dashboard reads.
+   */
+  compact?: boolean;
 }
 
 /** Dashboard SSOT 2026-10-27 T2 — what a compaction reported when it ended. */
@@ -1541,15 +1547,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // (synthetic event or continuation) says so through `isUserInput`; the
         // threshold auto-compact rides the user's own event but swapped its
         // text for `/compact` and parked the words on `pendingUserText`.
-        const autoCompactTurn =
-          isSlashCommand && trimmedText.split(/\s/)[0] === '/compact' && !!session.pendingUserText;
+        const compactTurn = isSlashCommand && trimmedText.split(/\s/)[0] === '/compact';
+        const autoCompactTurn = compactTurn && !!session.pendingUserText;
         recordUserTurn(
           session.conversationId,
           text || '',
           userName,
           user,
           attachments?.length ? attachments : undefined,
-          { origin: { by: params.isUserInput === false || autoCompactTurn ? 'system' : 'user' } },
+          {
+            origin: { by: params.isUserInput === false || autoCompactTurn ? 'system' : 'user' },
+            ...(compactTurn ? { compact: true } : {}),
+          },
         );
         const names = processedFiles.map((f) => f.name).join(' · ');
         emitWorkLog({ kind: 'instruction', text: names ? `${text || ''}${text ? '\n' : ''}📎 ${names}` : text || '' });

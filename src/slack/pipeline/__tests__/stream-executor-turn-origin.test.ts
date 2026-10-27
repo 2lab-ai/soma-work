@@ -269,11 +269,23 @@ describe('T1.1 — the recorded user turn says who put it there', () => {
       params('/compact', { isUserInput: true }, { pendingUserText: '원래 보낸 메시지' }),
     );
     expect(vi.mocked(recordUserTurn).mock.calls[0]?.[1]).toBe('/compact');
-    expect(originOf()).toEqual({ origin: { by: 'system' } });
+    expect(originOf()).toEqual({ origin: { by: 'system' }, compact: true });
   });
 
   it('a /compact the user asked for (nothing parked) → user', async () => {
     await new StreamExecutor(createDeps()).execute(params('/compact', { isUserInput: true }));
+    expect(originOf()).toEqual({ origin: { by: 'user' }, compact: true });
+  });
+
+  it('/compact with instructions runs as the SDK command → a compaction turn', async () => {
+    await new StreamExecutor(createDeps()).execute(params('/compact 인증 쪽 위주로', { isUserInput: true }));
+    expect(originOf()).toEqual({ origin: { by: 'user' }, compact: true });
+  });
+
+  it("a goal objective that starts with /compact (literalPrompt) is the user's words, not a compaction", async () => {
+    await new StreamExecutor(createDeps()).execute(
+      params('/compact 명령의 버그를 고쳐라', { isUserInput: true, literalPrompt: true }),
+    );
     expect(originOf()).toEqual({ origin: { by: 'user' } });
   });
 });
