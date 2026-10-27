@@ -630,3 +630,25 @@ describe('#488 · every landing scroll starts a new panel scroll generation', ()
     expect(wl).toContain('_panelScrollGen++');
   });
 });
+
+describe('#488 r4 (astra) · a send right after a recording timed out still waits for that recording', () => {
+  const send = TEMPLATE.slice(
+    TEMPLATE.indexOf('\nasync function sendCommand('),
+    TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nasync function sendCommand(')),
+  );
+  const stop = TEMPLATE.slice(
+    TEMPLATE.indexOf('\nfunction pcStopRecording('),
+    TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction pcStopRecording(')),
+  );
+  const reset = TEMPLATE.slice(
+    TEMPLATE.indexOf('\nfunction pcReset('),
+    TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction pcReset(')),
+  );
+  it('a stopping recording stays pending (_pcFiling) until filed; every send waits on it; a reset forgets it', () => {
+    expect(stop).toMatch(/_pcFiling = state\.done/);
+    expect(send).toMatch(/var filing = _pcRec \? pcStopRecording\(true\) : _pcFiling;/);
+    expect(reset).toMatch(/_pcFiling = null/);
+    // r4 (fable P3): a dropped recording (keep = false, a reset) leaves nothing for the next send to wait on.
+    expect(stop).toMatch(/if \(keep\) \{\s*_pcFiling = state\.done;/);
+  });
+});
