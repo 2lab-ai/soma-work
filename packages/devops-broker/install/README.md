@@ -117,13 +117,14 @@ sudo packages/devops-broker/install/install.sh --bot-user <bot-os-user>
 # offline:
 sudo packages/devops-broker/install/install.sh --bot-user <bot-os-user> \
   --node-archive ~/Downloads/node-v24.22.1-darwin-arm64.tar.gz --gh-archive ~/Downloads/gh_2.102.0_macOS_arm64.zip
+# from the bot user, while it is the only admin (see "Operator account"):
+sudo packages/devops-broker/install/install.sh --bot-user <bot-os-user> --operator-is-bot-user
 ```
-
-Run it from an operator account. It refuses to run when `SUDO_USER` is the bot user.
 
 The installer:
 
 1. Runs preflight checks. They only read, and nothing changes if any of them fails:
+   - `SUDO_USER` is not the bot user, unless `--operator-is-bot-user` ("Operator account");
    - the Slack CLI login check;
    - the checkout trust rules ("Before you start");
    - `pins.txt` against the build;
@@ -138,13 +139,28 @@ The installer:
 5. Boots out a running daemon, swaps in the new code, writes the plist, and runs `check-policy` as `_somadevops`. The
    output shows its exit status.
 6. Prints the ownership and permission checklist: one `OK`/`FAIL` line per path; every entry of the code tree
-   (owner, mode, one link); ACL grants; the group members; and the Slack CLI `WARN` if you accepted one.
+   (owner, mode, one link); ACL grants; the group members; and a `WARN` for each of the operator account and the
+   Slack CLI login if you accepted it.
 7. Runs `launchctl bootstrap` only when the checklist has no `FAIL` and `check-policy` passed. Otherwise it prints
    the next steps: one `ingest` line per missing secret.
 
 Exit status: `0` = installed and the daemon was started; `3` = installed but not started yet (fill the policy and
 ingest the secrets, then run it again); `1` = a check failed (the daemon stays stopped); `2` = usage error.
 `--dry-run` prints the actions without changing anything.
+
+### Operator account
+
+Run the installer from a separate admin account that the bot does not control. The bot user's shell startup files
+and LaunchAgents belong to the bot, so a sudo password typed in one of its sessions, and any secret piped through
+it, can be captured. The installer refuses to run when `SUDO_USER` is the bot user.
+
+When the bot user is the only admin on the Mac anyway, `--operator-is-bot-user` accepts running from it. The
+installer then prints a `WARN` line in the checklist, and that line does not stop the daemon from starting. Every
+other check still applies, including the checkout trust rules ("Before you start"): the build must not be owned by
+the bot user or sit under a directory it owns, such as its home.
+
+To move to a separate operator account later: create the account, remove the bot user from the `admin` group, and
+run the installer again from the new account without the flag.
 
 ## policy.json
 

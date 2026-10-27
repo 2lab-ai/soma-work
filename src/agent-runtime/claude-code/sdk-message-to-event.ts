@@ -210,10 +210,42 @@ function lifecycleDetails(m: Record<string, unknown>): Record<string, unknown> {
   return out;
 }
 
+/** A non-negative finite token count, else 0. */
+function tokenCount(v: unknown): number {
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 ? v : 0;
+}
+
+/** Prompt-side tokens (input + cache read + cache write) of a raw Anthropic `usage` object. */
+function promptTokens(u: unknown): number {
+  if (!u || typeof u !== 'object') return 0;
+  const r = u as Record<string, unknown>;
+  return tokenCount(r.input_tokens) + tokenCount(r.cache_read_input_tokens) + tokenCount(r.cache_creation_input_tokens);
+}
+
+/** Sum of the four token fields of a raw Anthropic `usage` object (0 when absent). */
+function usageSum(u: unknown): number {
+  if (!u || typeof u !== 'object') return 0;
+  return promptTokens(u) + tokenCount((u as Record<string, unknown>).output_tokens);
+}
+
+/**
+ * The API call a `stream_event` lane is currently streaming: its message id
+ * (for the per-call live-usage key) and whether its `message_start` reported
+ * no usage at all.
+ */
+interface StreamLaneState {
+  messageId?: string;
+  startUsageEmpty: boolean;
+}
+
 export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMapper {
   // Carried across messages so the direct-usage fallback prices the correct
   // model tier when the result message itself does not carry `model`.
   let lastAssistantModelName: string | undefined;
+  // One streaming API call per lane: the main agent ('') and each subagent
+  // (keyed by the tool call that started it) stream independently, so a
+  // subagent's `message_start` must not re-key the main call's delta.
+  const streamLanes = new Map<string, StreamLaneState>();
 
   function mapAssistant(message: Extract<SDKMessage, { type: 'assistant' }>): AgentStreamEvent[] {
     const events: AgentStreamEvent[] = [];
@@ -240,8 +272,11 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
     // `lastTurn* = 0` made the executor overwrite the real context-window
     // state with zeros (`/context` → `0/372k (100% available)`, and the GPT
     // fixed-token auto-compact trigger never fired). A per-turn usage that
-    // sums to zero carries no information — skip the event so downstream
-    // falls back to the billing aggregate.
+    // sums to zero carries no information — skip the event. With partial
+    // messages requested (non-claude models, `build-stream-options.ts`) the
+    // call's real reading arrives on its `message_delta` instead
+    // (`mapStreamEvent`); without one, downstream falls back to the billing
+    // aggregate.
     const u = inner.usage;
     if (u) {
       const lastTurnInputTokens = u.input_tokens || 0;
@@ -434,6 +469,9 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
     if (usage) {
       events.push({ type: 'usage', usage });
     }
+    // The turn is over: no call is still streaming, so no later delta may be
+    // read against this turn's last `message_start`.
+    streamLanes.clear();
 
     const stopReason = mapStopReason(m.stop_reason);
     const subtype = typeof m.subtype === 'string' ? m.subtype : undefined;
@@ -599,6 +637,68 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
     return [];
   }
 
+  /**
+   * Map a partial-message (`stream_event`) frame. Text deltas carry no neutral
+   * content (partial rendering is not on this seam); two things are read:
+   *
+   *   • the steering stamp — with `includePartialMessages` it also rides the
+   *     turn's first non-ping stream event (sdk.d.ts SDKPartialAssistantMessage);
+   *   • per-call usage for providers whose `message_start` reports none.
+   *
+   * llmux's non-claude providers (codex: gpt-5.6-sol[1m], gpt-6-astra; grok)
+   * stream `message_start.usage = {0, 0}` and put the call's real usage on
+   * `message_delta` only (measured 2026-10-27). The pinned SDK copies the
+   * `message_start` usage onto every assistant frame, so those frames carry
+   * nothing and the harness used to fall back to the turn's billing aggregate —
+   * the SUM of every call in the agent loop — as the "current context". The
+   * `message_delta` usage is the call's own reading, so it becomes the
+   * per-call usage event the assistant frame would have carried.
+   *
+   * Three guards, each against replacing a full reading with `input 0`:
+   *   • the call's `message_start` was empty — an Anthropic stream's
+   *     `message_start` already carries the input/cache counts and its
+   *     `message_delta` may carry output only;
+   *   • a delta without a recorded start is ignored (nothing says the
+   *     assistant frame lacked usage);
+   *   • the delta must carry a prompt-side reading — every real call has a
+   *     prompt, so an output-only delta is not an occupancy reading.
+   */
+  function mapStreamEvent(message: SDKMessage): AgentStreamEvent[] {
+    const m = message as unknown as Record<string, unknown>;
+    const events = steerStartedEventsFor(m);
+    const ev = m.event as { type?: unknown; message?: { id?: unknown; usage?: unknown }; usage?: unknown } | undefined;
+    if (!ev || typeof ev !== 'object') return events;
+    const parent = parentOf(message);
+    const lane = parent.parentToolUseId ?? '';
+
+    if (ev.type === 'message_start') {
+      const id = ev.message?.id;
+      streamLanes.set(lane, {
+        messageId: typeof id === 'string' && id.length > 0 ? id : undefined,
+        startUsageEmpty: usageSum(ev.message?.usage) === 0,
+      });
+      return events;
+    }
+
+    if (ev.type === 'message_delta') {
+      const state = streamLanes.get(lane);
+      if (!state?.startUsageEmpty || promptTokens(ev.usage) === 0) return events;
+      const u = ev.usage as Record<string, unknown>;
+      events.push({
+        type: 'usage',
+        usage: {
+          lastTurnInputTokens: tokenCount(u.input_tokens),
+          lastTurnOutputTokens: tokenCount(u.output_tokens),
+          lastTurnCacheReadTokens: tokenCount(u.cache_read_input_tokens),
+          lastTurnCacheCreateTokens: tokenCount(u.cache_creation_input_tokens),
+          ...(state.messageId ? { lastTurnMessageId: state.messageId } : {}),
+        },
+        ...parent,
+      });
+    }
+    return events;
+  }
+
   return {
     map(message: SDKMessage): AgentStreamEvent[] {
       switch (message.type) {
@@ -610,13 +710,11 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
           return mapResult(message as Extract<SDKMessage, { type: 'result' }>);
         case 'system':
           return mapSystem(message as Extract<SDKMessage, { type: 'system' }>);
+        case 'stream_event':
+          return mapStreamEvent(message);
         default:
-          // `stream_event` frames carry no neutral content (partial-message
-          // rendering is not on this seam), but with `includePartialMessages`
-          // the steering stamp rides the turn's first non-ping stream event
-          // instead of the first assistant message (sdk.d.ts:4656). Reading it
-          // here keeps the `started` transition alive if that option is ever
-          // enabled; every other frame type still maps to nothing.
+          // Every other frame type maps to nothing, but a steering stamp on
+          // it is still honoured.
           return steerStartedEventsFor(message as unknown as Record<string, unknown>);
       }
     },
