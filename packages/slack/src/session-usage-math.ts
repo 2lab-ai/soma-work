@@ -10,6 +10,13 @@
  * defined" is NOT the same as "per-turn data is valid". Trusting a zeroed
  * per-turn value blanks the context display (`0/372k (100% available)`) and
  * silently disables the fixed-token auto-compact trigger for those models.
+ *
+ * Those models' real per-call reading arrives on the stream's `message_delta`
+ * frame, which the host requests for them (partial messages,
+ * `agent-runtime/claude-code/build-stream-options.ts`) and maps to the same
+ * per-turn fields (`sdk-message-to-event.ts#mapStreamEvent`). The aggregate
+ * fallback below is for a turn that still has no per-call reading — e.g. one
+ * cut off before its first `message_delta`.
  */
 
 /** Minimal structural slice of `UsageData` this module needs. */
@@ -36,11 +43,14 @@ export interface CurrentContextTokens {
  * Select the token set representing the CURRENT context-window occupancy.
  *
  * Per-turn values win only when they are present AND carry information
- * (sum > 0). All-zero per-turn usage — the llmux/codex signature — falls back
- * to the billing aggregate. The aggregate overstates occupancy on multi-call
- * agent loops (it sums every round-trip), but overstating is strictly safer
- * than reporting an empty window: the display clamps at 100% used and the
- * auto-compact trigger fires early instead of never.
+ * (sum > 0). A turn with no per-call reading falls back to the billing
+ * aggregate. The aggregate is NOT an occupancy figure: it sums every round-trip
+ * of the agent loop, so a 20-call turn reads ~20× the window it actually
+ * holds and trips auto-compact on a session that does not need it (the sol[1m]
+ * miscalculation, 2026-10-27). It is kept only because an empty window would be
+ * worse — the trigger would never fire. The fix for llmux models is upstream of
+ * this function (per-call usage from `message_delta`), not a different
+ * fallback here.
  */
 export function selectCurrentContextTokens(usage: CurrentContextTokensInput): CurrentContextTokens {
   const hasPerTurn = usage.lastTurnInputTokens !== undefined;

@@ -5179,8 +5179,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // real context window state at the end of the loop.
     //
     // ALL-ZERO per-turn values (llmux/codex assistant messages) are treated as
-    // missing — `selectCurrentContextTokens` falls back to the aggregate so the
-    // context display and auto-compact triggers never see an empty window.
+    // missing. For those models the call's reading comes from its stream
+    // `message_delta` instead (partial messages, requested by the options
+    // builder); only a turn that still has no reading falls back to the
+    // aggregate — an overstatement, kept so the window never reads empty.
     //
     // Issue #196 — EXCEPT right after a compact boundary. This callback fires
     // once per turn, after the stream loop, so on a compacted turn the sample
@@ -5295,9 +5297,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     });
 
     // Per-turn data is the source of truth for live context display. If it is
-    // missing OR all-zero (llmux/codex), the aggregate path overstates context
-    // usage (sums ALL API calls in the agent loop). Log so the gap is
-    // observable in ops.
+    // missing OR all-zero, the aggregate path overstates context usage (sums
+    // ALL API calls in the agent loop). For llmux non-claude models this now
+    // means the turn ended without a `message_delta` reading (cut off, or the
+    // partial-message stream was not requested). Log so the gap is observable
+    // in ops.
     if (current.source === 'aggregate-fallback') {
       this.logger.warn(
         'Session context usage derived from aggregate fallback (per-turn tokens missing or all-zero) — displayed context may overstate actual window occupancy',
