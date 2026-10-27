@@ -14372,23 +14372,32 @@ function renderPermissionWarningCard(e) {
   return '<div class="perm-request perm-warning" role="note" aria-label="퍼미션 경고">'
     + '<div class="perm-head">&#x26A0;&#xFE0F; Permission Warning &mdash; <code>' + esc(e.tool || 'Bash') + '</code>' + (time ? '<span class="turn-time">' + esc(time) + '</span>' : '') + '</div>'
     + '<pre class="perm-params is-clamped">' + esc(String(e.text || '')) + '</pre>'
+    + (e.rawBytes ? '<div class="perm-truncated">명령이 길어 앞부분만 보입니다 &mdash; 작업 로그에서 이 경고를 열면 전체 원문이 보입니다</div>' : '')
     + rulesHtml
     + '<div class="perm-warning-note">&#x1F916; auto mode 승인' + (w.reason ? ': ' + esc(String(w.reason)) : '') + ' &middot; 응답 필요 없음 (경고만 표시)</div>'
     + '</div>';
 }
 
-// Where a warning at time ts goes among the chat's turn times (ascending): the
-// index of the first turn after it, -1 = after every turn, null = older than the
-// loaded turns while older pages remain (it is filed when they load).
-function permissionWarningSlot(turnTimes, ts, hasOlder) {
-  if (hasOlder && (!turnTimes.length || ts < turnTimes[0])) return null;
-  for (var i = 0; i < turnTimes.length; i++) if (turnTimes[i] > ts) return i;
+// Where a warning (ts, seq) goes among the chat's dated nodes — turns
+// ({ ts, seq: null }) and warnings already filed ({ ts, seq }) in DOM order: the
+// index of the first node after it (time, then seq among warnings), -1 = after
+// every node, null = older than the loaded turns while older pages remain (it is
+// filed when they load).
+function permissionWarningSlot(nodes, ts, seq, hasOlder) {
+  var firstTurn = null;
+  for (var k = 0; k < nodes.length; k++) if (nodes[k].seq === null) { firstTurn = nodes[k].ts; break; }
+  if (hasOlder && (firstTurn === null || ts < firstTurn)) return null;
+  for (var i = 0; i < nodes.length; i++) {
+    var n = nodes[i];
+    if (n.ts > ts || (n.ts === ts && n.seq !== null && n.seq > seq)) return i;
+  }
   return -1;
 }
 
-// File the open conversation's permission warnings into the panel chat. Each
-// warning goes in once (data-warn-seq); the nodes are not .turn, so the
-// artifact windows between turns are unchanged.
+// File the open conversation's permission warnings into the panel chat, merged
+// with the turns and the warnings already there by time. Each warning goes in
+// once (data-warn-seq); the nodes are not .turn, so the artifact windows
+// between turns are unchanged.
 function placePermissionWarnings() {
   var turnsEl = document.getElementById('panel-turns');
   var st = _wl;
@@ -14397,19 +14406,26 @@ function placePermissionWarnings() {
   if (!warnings.length) return;
   for (var k = 0; k < warnings.length; k++) {
     var e = warnings[k];
-    var seq = String(Math.floor(Number(e.seq) || 0));
+    var seq = Math.floor(Number(e.seq) || 0);
     if (turnsEl.querySelector('[data-warn-seq="' + seq + '"]')) continue;
-    var turns = turnsEl.querySelectorAll('.turn[data-ts]');
-    var times = [];
-    for (var i = 0; i < turns.length; i++) times.push(toNum(turns[i].getAttribute('data-ts')));
-    var slot = permissionWarningSlot(times, toNum(e.ts), _panelTurnsHasMore);
+    var els = turnsEl.querySelectorAll('.turn[data-ts], .perm-warning-turn[data-ts]');
+    var nodes = [];
+    for (var i = 0; i < els.length; i++) {
+      nodes.push({
+        ts: toNum(els[i].getAttribute('data-ts')),
+        seq: els[i].hasAttribute('data-warn-seq') ? toNum(els[i].getAttribute('data-warn-seq')) : null,
+      });
+    }
+    var ts = toNum(e.ts);
+    var slot = permissionWarningSlot(nodes, ts, seq, _panelTurnsHasMore);
     if (slot === null) continue;
     var node = document.createElement('div');
     node.className = 'perm-warning-turn';
-    node.setAttribute('data-warn-seq', seq);
+    node.setAttribute('data-warn-seq', String(seq));
+    node.setAttribute('data-ts', String(ts));
     node.innerHTML = renderPermissionWarningCard(e);
     if (slot === -1) turnsEl.appendChild(node);
-    else turnsEl.insertBefore(node, turns[slot]);
+    else turnsEl.insertBefore(node, els[slot]);
   }
 }
 
@@ -14431,7 +14447,8 @@ function renderWorkLogEntry(e) {
   var detailHtml = '<div class="wl-detail" id="wl-detail-' + seq + '" aria-live="off" hidden></div>';
   var text = String(e.text || '');
   if (kind === 'permission_warning') {
-    return '<div class="wl-entry wl-permission_warning"' + seqAttr + '>' + renderPermissionWarningCard(e) + '</div>';
+    // The card is the row: opening it shows the stored full command (its raw).
+    return '<div class="wl-entry wl-permission_warning"' + seqAttr + '>' + rowOpen() + renderPermissionWarningCard(e) + '</div>' + detailHtml + '</div>';
   }
   if (kind === 'tool' || kind === 'tool_result') {
     var fail = kind === 'tool_result' && e.ok === false;

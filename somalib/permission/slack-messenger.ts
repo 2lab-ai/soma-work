@@ -31,6 +31,11 @@ export interface PermissionRuleSummary {
 /** Slack caps a section text at 3000 chars; keep room for the fence and the label. */
 const WARNING_TEXT_MAX = 2800;
 
+/** Slack mrkdwn needs only `&`, `<`, `>` encoded; this stops `<@U…>`, `<!here>`, `<url|x>` from rendering. */
+function escapeMrkdwn(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
 function clipText(text: string, max: number): string {
   return text.length > max ? `${text.slice(0, max - 1)}…` : text;
 }
@@ -60,14 +65,17 @@ export function buildPermissionWarningBlocks(args: PermissionWarningBlockArgs): 
   } catch {
     params = String(input);
   }
-  const ruleLines = rules.map((r) => `• \`${r.id}\` — ${r.label}: ${r.description}`).join('\n');
+  // Everything here can carry model or command text: escape it before it reaches mrkdwn.
+  const ruleLines = rules
+    .map((r) => `• \`${escapeMrkdwn(r.id)}\` — ${escapeMrkdwn(r.label)}: ${escapeMrkdwn(r.description)}`)
+    .join('\n');
   return [
     { type: 'header', text: { type: 'plain_text', text: `⚠️ Permission Warning — ${toolName}` } },
     {
       type: 'section',
       text: {
         type: 'mrkdwn',
-        text: `${userMention}Auto mode approved this \`${toolName}\` call, but the mechanical check flagged it.\n\n*Tool Parameters:*\n\`\`\`json\n${clipText(params, WARNING_TEXT_MAX)}\n\`\`\``,
+        text: `${userMention}Auto mode approved this \`${toolName}\` call, but the mechanical check flagged it.\n\n*Tool Parameters:*\n\`\`\`json\n${clipText(escapeMrkdwn(params), WARNING_TEXT_MAX)}\n\`\`\``,
       },
     },
     {
@@ -86,7 +94,7 @@ export function buildPermissionWarningBlocks(args: PermissionWarningBlockArgs): 
         {
           type: 'mrkdwn',
           text: clipText(
-            `🤖 Classifier: ${reason || 'approved'} · No action needed — this is a warning, not a question.`,
+            `🤖 Classifier: ${escapeMrkdwn(reason || 'approved')} · No action needed — this is a warning, not a question.`,
             WARNING_TEXT_MAX,
           ),
         },

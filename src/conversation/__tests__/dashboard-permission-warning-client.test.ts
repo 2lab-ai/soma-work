@@ -32,7 +32,12 @@ function clientLine(prefix: string): string {
 const FNS = ['esc', 'escAttr', 'renderPermissionWarningCard', 'permissionWarningSlot', 'renderWorkLogEntry'] as const;
 interface Client {
   renderPermissionWarningCard(e: unknown): string;
-  permissionWarningSlot(times: number[], ts: number, hasOlder: boolean): number | null;
+  permissionWarningSlot(
+    nodes: Array<{ ts: number; seq: number | null }>,
+    ts: number,
+    seq: number,
+    hasOlder: boolean,
+  ): number | null;
   renderWorkLogEntry(e: unknown): string;
 }
 const client = new Function(
@@ -78,25 +83,115 @@ describe('dashboard permission warning card', () => {
     expect(html).toContain('&lt;img');
   });
 
-  it('is the work-log row for a permission_warning entry', () => {
+  it('is the work-log row for a permission_warning entry, openable to the full command', () => {
     const row = client.renderWorkLogEntry(ENTRY);
     expect(row).toContain('wl-entry wl-permission_warning');
     expect(row).toContain('data-seq="7"');
     expect(row).toContain('perm-warning');
+    // Review gate r1 (astra P2): the row opens the stored raw like every other row.
+    expect(row).toContain('class="wl-row');
+    expect(row).toContain('id="wl-detail-7"');
+  });
+
+  it('says when the command was cut and where the full text is', () => {
+    expect(client.renderPermissionWarningCard({ ...ENTRY, rawBytes: 9000 })).toContain('전체 원문');
+    expect(client.renderPermissionWarningCard(ENTRY)).not.toContain('전체 원문');
   });
 });
 
+// Review gate r1 (astra P2): warnings merge with turns AND with the warnings
+// already filed, by time then seq — a backfilled older warning lands before a
+// newer one, not after it.
+type Node = { ts: number; seq: number | null };
 describe('permissionWarningSlot — filing a warning into the chat at its time', () => {
+  const turns = (...ts: number[]): Node[] => ts.map((t) => ({ ts: t, seq: null }));
   it('goes before the first turn after it', () => {
-    expect(client.permissionWarningSlot([10, 20, 30], 25, false)).toBe(2);
-    expect(client.permissionWarningSlot([10, 20, 30], 5, false)).toBe(0);
+    expect(client.permissionWarningSlot(turns(10, 20, 30), 25, 1, false)).toBe(2);
+    expect(client.permissionWarningSlot(turns(10, 20, 30), 5, 1, false)).toBe(0);
   });
   it('goes after every turn when it is the newest (the turn still running)', () => {
-    expect(client.permissionWarningSlot([10, 20], 25, false)).toBe(-1);
-    expect(client.permissionWarningSlot([], 25, false)).toBe(-1);
+    expect(client.permissionWarningSlot(turns(10, 20), 25, 1, false)).toBe(-1);
+    expect(client.permissionWarningSlot([], 25, 1, false)).toBe(-1);
   });
   it('waits for older pages when it is older than every loaded turn', () => {
-    expect(client.permissionWarningSlot([10, 20], 5, true)).toBeNull();
-    expect(client.permissionWarningSlot([10, 20], 15, true)).toBe(1);
+    expect(client.permissionWarningSlot(turns(10, 20), 5, 1, true)).toBeNull();
+    expect(client.permissionWarningSlot(turns(10, 20), 15, 1, true)).toBe(1);
+  });
+  it('orders against warnings already filed, by time then seq', () => {
+    const nodes: Node[] = [
+      { ts: 10, seq: null },
+      { ts: 25, seq: 9 },
+      { ts: 30, seq: null },
+    ];
+    expect(client.permissionWarningSlot(nodes, 15, 4, false)).toBe(1); // before the warning at 25
+    expect(client.permissionWarningSlot(nodes, 25, 3, false)).toBe(1); // same time, lower seq first
+    expect(client.permissionWarningSlot(nodes, 25, 12, false)).toBe(2);
+  });
+});
+
+// A minimal DOM: enough for placePermissionWarnings to file nodes into #panel-turns.
+function fakeDom() {
+  type El = { className: string; attrs: Record<string, string>; innerHTML: string };
+  const children: El[] = [];
+  const el = (className: string, attrs: Record<string, string>): El => ({ className, attrs, innerHTML: '' });
+  const api = (n: El) =>
+    Object.assign(n, {
+      getAttribute: (k: string) => n.attrs[k] ?? null,
+      hasAttribute: (k: string) => k in n.attrs,
+      setAttribute: (k: string, v: string) => {
+        n.attrs[k] = v;
+      },
+    });
+  const turnsEl = {
+    querySelector: (sel: string) => {
+      const m = /data-warn-seq="(\d+)"/.exec(sel);
+      return children.find((c) => m && c.attrs['data-warn-seq'] === m[1]) ?? null;
+    },
+    querySelectorAll: () => children.filter((c) => 'data-ts' in c.attrs).map(api),
+    appendChild: (n: El) => children.push(n),
+    insertBefore: (n: El, ref: El) => children.splice(children.indexOf(ref), 0, n),
+  };
+  const document = {
+    getElementById: (id: string) => (id === 'panel-turns' ? turnsEl : null),
+    createElement: () => api(el('', {})),
+  };
+  const addTurn = (ts: number) => children.push(api(el('turn', { 'data-ts': String(ts) })));
+  const order = () =>
+    children.map((c) => (c.attrs['data-warn-seq'] ? `w${c.attrs['data-warn-seq']}` : `t${c.attrs['data-ts']}`));
+  return { document, addTurn, order };
+}
+
+describe('placePermissionWarnings — incremental filing into the chat', () => {
+  it('keeps chat order when an older warning is backfilled after a newer one', () => {
+    const dom = fakeDom();
+    dom.addTurn(10);
+    dom.addTurn(30);
+    const state = { convId: 'c1', entries: [] as unknown[] };
+    const place = new Function(
+      'document',
+      'decodeSlackEntities',
+      'wlChildBlock',
+      'toNum',
+      'state',
+      `var _wl = state; var panelConvId = 'c1'; var _panelTurnsHasMore = false;
+${clientFn('esc')}
+${clientFn('escAttr')}
+${clientFn('renderPermissionWarningCard')}
+${clientFn('permissionWarningSlot')}
+${clientFn('placePermissionWarnings')}
+return placePermissionWarnings;`,
+    )(
+      dom.document,
+      (t: string) => t,
+      () => '',
+      (v: unknown) => Number(v) || 0,
+      state,
+    ) as () => void;
+    state.entries.push({ ...ENTRY, seq: 9, ts: 25 });
+    place();
+    state.entries.push({ ...ENTRY, seq: 4, ts: 15 });
+    place();
+    place(); // idempotent
+    expect(dom.order()).toEqual(['t10', 'w4', 'w9', 't30']);
   });
 });

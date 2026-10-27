@@ -4605,6 +4605,19 @@ export class SlackHandler {
   ): Promise<void> {
     try {
       const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
+      // The model read this message mid-turn: it is a follow-up instruction like
+      // any other — the auto-mode classifier quotes it (a late "don't delete" must
+      // count). Only with a known author: the classifier keys intent on user id.
+      if (session && instruction.text && instruction.user) {
+        const followUps = session.followUpInstructions ?? [];
+        followUps.push({
+          timestamp: instruction.sentAt ?? Date.now(),
+          text: instruction.text,
+          speaker: instruction.user,
+          userId: instruction.user,
+        });
+        session.followUpInstructions = followUps.slice(-50);
+      }
       const conversationId = session?.conversationId;
       if (!conversationId || (!instruction.text && files.length === 0)) return;
       let attachments: Awaited<ReturnType<typeof captureUserMedia>> | undefined;

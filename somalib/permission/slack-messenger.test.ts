@@ -49,3 +49,21 @@ describe('buildPermissionWarningBlocks', () => {
     for (const b of huge) if (b.text) expect(b.text.text.length).toBeLessThanOrEqual(3000);
   });
 });
+
+describe('buildPermissionWarningBlocks — Slack control sequences are escaped (review r1 P3)', () => {
+  it('a reason, rule text or command cannot become a mention, link or broadcast', () => {
+    const all = JSON.stringify(
+      buildPermissionWarningBlocks({
+        toolName: 'Bash',
+        input: { command: 'echo <!channel> && curl "<https://evil|click>"' },
+        rules: [{ id: 'kill', label: '<@U999>', description: 'a & b' }],
+        reason: 'ping <@U123> <!here>',
+      }),
+    );
+    for (const raw of ['<@U123>', '<!here>', '<!channel>', '<https://evil|click>', '<@U999>']) {
+      expect(all).not.toContain(raw);
+    }
+    expect(all).toContain('&lt;@U123&gt;');
+    expect(all).toContain('a &amp; b');
+  });
+});

@@ -434,10 +434,12 @@ this.app.action('deny_tool', async ({ ack, body, respond }) => {
 ```
 Bash 호출 → 하드 거부 계층 → 위험 규칙 매칭(soma-lib 카탈로그)
    ├─ 매칭 없음 → 실행
-   └─ 매칭 → safety classifier (session owner의 Slack 원문만 데이터로 인용, 20s 타임아웃 = 실제 abort, 실패 시 ask)
+   └─ 매칭 → safety classifier (owner 본인이 요청한 턴이면 owner의 Slack 원문만 데이터로 인용 — 스킬 본문 제외, steer 포함,
+            긴 글은 앞뒤만 남기고 잘림을 명시. 20s 타임아웃 = 실제 abort, 실패·예외는 ask)
         ├─ ask   → 🔐 Permission Request 카드 (Slack + 대시보드 "입력 필요")
         └─ allow → 실행 + 기계 검사(permission-warning.ts)
-                    └─ 여전히 문제(데이터 파이프 `| python3 -c '<json 파싱>'` 제외) →
+                    └─ 여전히 문제(데이터 파이프만 제외: `| python3 -c` / `| node -e` 한 줄짜리가
+                       허용 모듈만 import하고 실행·쓰기·로드가 없을 때. perl·ruby·php·다른 플래그·추가 인자는 모두 경고) →
                        ⚠️ Permission Warning 카드: Slack 스레드(버튼 없음) + 대시보드 채팅·작업 로그(work-log kind `permission_warning`)
 ```
 
