@@ -1029,7 +1029,7 @@ check_entry "$plist" root:wheel "$OWN_ROOT" 0644
 # Group soma-devops reaches the socket and the data root: nobody but the bot user may be in it.
 members=$(dscl_words "/Groups/$BROKER_GROUP" GroupMembership || true)
 others=$(printf '%s\n' "$members" | grep -vx -e "$BOT_USER" -e '' | tr '\n' ' ' || true)
-if dscl . -read "/Groups/$BROKER_GROUP" NestedGroups >/dev/null 2>&1; then
+if dscl_words "/Groups/$BROKER_GROUP" NestedGroups >/dev/null; then
   check_line FAIL "group $BROKER_GROUP has nested groups; remove them (dseditgroup -o edit -d <group> -t group $BROKER_GROUP)"
 elif [ -n "$others" ]; then
   check_line FAIL "group $BROKER_GROUP has members other than $BOT_USER: ${others% }; remove them (dseditgroup -o edit -d <user> -t user $BROKER_GROUP)"

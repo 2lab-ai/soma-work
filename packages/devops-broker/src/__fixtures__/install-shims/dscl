@@ -1,6 +1,7 @@
 #!/bin/bash
 # Test stand-in for dscl (install.test.ts). The local directory is plain files:
 # $SHIM_STATE/<Users|Groups>/<record>/<attribute> holds the attribute value.
+# Like real dscl (macOS 15.6.1), -read exits 0 for a missing attribute and 56 for a missing record.
 set -euo pipefail
 { printf 'dscl'; printf ' %s' "$@"; printf '\n'; } >>"$SHIM_LOG"
 
@@ -23,7 +24,7 @@ case $command in
   -read)
     [ -d "$record" ] || not_found
     if [ $# -ge 1 ]; then
-      [ -f "$record/$1" ] || { echo "No such key: $1" >&2; exit 181; }
+      [ -f "$record/$1" ] || { echo "No such key: $1" >&2; exit 0; }
       printf '%s: %s\n' "$1" "$(cat "$record/$1")"
     else
       for file in "$record"/*; do printf '%s: %s\n' "$(basename "$file")" "$(cat "$file")"; done
