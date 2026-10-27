@@ -1116,3 +1116,15 @@ describe('T1.5 · the session model sits above the steering input — on a phone
     expect(CSS).toContain('.panel-command .btn-send { order: 5; }');
   });
 });
+
+describe('a phone held sideways (short docked screen) keeps a reading area', () => {
+  it('a short docked drawer takes the full height over the top bar; the subtitle steps aside unless 자세히', () => {
+    expect(CSS).toContain('@media (min-width: 840px) and (max-height: 560px) {');
+    expect(CSS).toMatch(
+      /@media \(min-width: 840px\) and \(max-height: 560px\) \{\s*\.slide-panel \{ top: var\(--pv-t, 0px\); height: var\(--pv-h, 100dvh\); z-index: 102; \}/,
+    );
+    expect(CSS).toMatch(
+      /@media \(max-height: 560px\) \{\s*\.slide-panel:not\(\.is-detail\) #panel-title-sub \{ display: none !important; \}/,
+    );
+  });
+});

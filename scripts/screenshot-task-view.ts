@@ -594,6 +594,23 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     `${tag}: folded Tasks head reads the running step and 1/3 ("${def.taskSum}")`,
   );
 
+  // T1.6 · 자세히 sits at the panel's top right — in the head row, just left of ×.
+  const corner = await page.evaluate(() => {
+    const p = (document.getElementById('slide-panel') as HTMLElement).getBoundingClientRect();
+    const t = (document.getElementById('panel-detail-toggle') as HTMLElement).getBoundingClientRect();
+    const x = (document.querySelector('#slide-panel .panel-close') as HTMLElement).getBoundingClientRect();
+    return {
+      fromTop: Math.round(t.top - p.top),
+      fromRight: Math.round(p.right - t.right),
+      leftOfClose: t.right <= x.left + 1 && Math.abs(t.top + t.height / 2 - (x.top + x.height / 2)) <= 4,
+      upperRight: t.left >= p.left + p.width / 2 && t.bottom <= p.top + 80,
+    };
+  });
+  check(
+    corner.upperRight && corner.leftOfClose,
+    `${tag}: 자세히 sits at the top right of the panel, beside × (${corner.fromTop}px from the top, ${corner.fromRight}px from the right)`,
+  );
+
   // T1.4 · the answer is the face; Raw closed at the foot.
   await page
     .waitForFunction(() => !!document.querySelector('#panel-turns .turn-answer .ans-body'), null, { timeout: 8000 })
@@ -1001,6 +1018,36 @@ async function landscapeComposer(browser: import('playwright').Browser, width: n
     row.composerInView && row.overflow <= 0,
     `${tag}: the composer is in view, no sideways overflow (${JSON.stringify(row)})`,
   );
+  // The reading area: the drawer takes the full height (over the wrapped top bar), so the
+  // task view has room under its sticky tabs, and 이전 대화 opens the earlier turns.
+  const area = await page.evaluate(() => {
+    const sc = document.getElementById('panel-scroll') as HTMLElement;
+    const tabs = (document.getElementById('panel-tabs') as HTMLElement).getBoundingClientRect().height;
+    const p = (document.getElementById('slide-panel') as HTMLElement).getBoundingClientRect();
+    return {
+      scroll: sc.clientHeight,
+      tabs: Math.round(tabs),
+      panelTop: Math.round(p.top),
+      panelH: Math.round(p.height),
+    };
+  });
+  check(
+    area.panelTop === 0 && area.scroll >= area.panelH / 3,
+    `${tag}: the drawer takes the full height and the reading area is a third of it or more (${JSON.stringify(area)})`,
+  );
+  const opened = await page
+    .locator('#conv-earlier')
+    .click({ timeout: 5000 })
+    .then(
+      () => true,
+      () => false,
+    );
+  await page.waitForTimeout(200);
+  const all = await page.evaluate(
+    () =>
+      Array.from(document.querySelectorAll('#panel-turns > .turn')).filter((t) => t.getClientRects().length > 0).length,
+  );
+  check(opened && all === 4, `${tag}: 이전 대화 is reachable and opens every turn (${all})`);
   await page.screenshot({ path: path.join(OUT, `composer-landscape-${width}.png`) });
   await ctx.close();
 }
@@ -1044,6 +1091,7 @@ async function main() {
     await scenario(browser, 'light', 390, 844);
     // A phone sideways (iPhone 18 Pro Max landscape, a target posture of the responsive sweep).
     await landscapeComposer(browser, 956, 440);
+    await landscapeComposer(browser, 844, 390);
   } finally {
     await browser.close();
     await ws.stopWebServer();
