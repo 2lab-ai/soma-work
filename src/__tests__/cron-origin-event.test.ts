@@ -94,22 +94,4 @@ describe('cron fire → structured cron origin', () => {
       error: 'turn crashed',
     });
   });
-
-  // trinity round 4 (fable P3): a deploy lane is not a cron job — its session
-  // must not be named after a job or filed in the CRON lane, and it writes no
-  // cron history.
-  it('a deploy-lane fire carries no cron origin and records no cron history', async () => {
-    const storage = tmpStorage('lane');
-    const { deps, injected } = setup(storage);
-
-    const result = await new CronScheduler(deps).fireDeployLane(
-      { name: 'dev-qa', owner: 'U1', channel: 'C1', prompt: 'qa' },
-      { rootText: 'deploy lane dev-qa' },
-    );
-
-    expect(result).toEqual({ ok: true, message: 'new_thread' });
-    expect(injected).toHaveLength(1);
-    expect(injected[0].cron).toBeUndefined();
-    expect(storage.getExecutionHistory('dev-qa')).toEqual([]);
-  });
 });

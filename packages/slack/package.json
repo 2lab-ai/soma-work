@@ -24,7 +24,6 @@
     "./cct/views": "./dist/cct/views.js",
     "./directives": "./dist/directives/index.js",
     "./directives/channel-message-directive": "./dist/directives/channel-message-directive.js",
-    "./directives/deploy-completed-directive": "./dist/directives/deploy-completed-directive.js",
     "./directives/release-notes-directive": "./dist/directives/release-notes-directive.js",
     "./directives/session-link-directive": "./dist/directives/session-link-directive.js",
     "./context-window-manager": "./dist/context-window-manager.js",
