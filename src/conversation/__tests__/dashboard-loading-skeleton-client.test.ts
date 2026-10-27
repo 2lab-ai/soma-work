@@ -148,7 +148,7 @@ function fakeDocument(ids: string[], skeletons = 3) {
 }
 
 const BOARD_FNS = ['setBoardLoad', 'retryBoardLoad'];
-const LOAD_VARS = ['_boardLoad', '_heldWsBoard', '_sessionsSeq', '_sessionsCtl', 'BOARD_LOAD_TIMEOUT_MS'];
+const LOAD_VARS = ['_boardLoad', '_heldWsBoard', '_sessionsInflight', 'BOARD_LOAD_TIMEOUT_MS'];
 
 describe('[T2] board — skeleton until the first board paints', () => {
   it('the served board starts loading: aria-busy, data-load="loading"', () => {
@@ -463,6 +463,7 @@ describe('[T3] first load is bounded; partial data is never announced as the boa
     paintPushedBoard(b: unknown): boolean;
     setBoardLoad(s: string): void;
     retryBoardLoad(): void;
+    select(u: string): void;
     _state: { _boardLoad: string; _heldWsBoard: unknown; BOARD_LOAD_TIMEOUT_MS: number };
   };
   type Call = { url: string; signal?: AbortSignal; settle(v: unknown): void; fail(e: unknown): void };
@@ -478,21 +479,26 @@ describe('[T3] first load is bounded; partial data is never announced as the boa
         calls.push(call);
         opts?.signal?.addEventListener('abort', () => fail(new DOMException('aborted', 'AbortError')));
       });
-    m = load<Api>(['loadSessions', 'paintPushedBoard', ...BOARD_FNS], LOAD_VARS, {
-      document: d.document,
-      fetch: fetchImpl,
-      // Record what the board was painted with, and the load state at that moment.
-      renderBoard: (b: unknown, partial: unknown) => painted.push({ board: b, partial, state: m._state._boardLoad }),
-      mergeSiblingCards: (b: unknown) => b,
-      currentUserId: '',
-      _lastPolledBoard: null,
-      _lifecycle: null,
-      panelOpen: false,
-      panelSessionKey: null,
-      _sessionCache: {},
-      repaintPanelSession: () => {},
-      console: { error: () => {} },
-    });
+    m = load<Api>(
+      ['loadSessions', 'paintPushedBoard', ...BOARD_FNS],
+      LOAD_VARS,
+      {
+        document: d.document,
+        fetch: fetchImpl,
+        // Record what the board was painted with, and the load state at that moment.
+        renderBoard: (b: unknown, partial: unknown) => painted.push({ board: b, partial, state: m._state._boardLoad }),
+        mergeSiblingCards: (b: unknown) => b,
+        currentUserId: '',
+        _lastPolledBoard: null,
+        _lifecycle: null,
+        panelOpen: false,
+        panelSessionKey: null,
+        _sessionCache: {},
+        repaintPanelSession: () => {},
+        console: { error: () => {} },
+      },
+      ['function select(u) { currentUserId = u; }'],
+    );
     return { d, m, calls, painted };
   }
   const board = (tag: string) => ({ tag, working: [], waiting: [], idle: [], closed: [] });
@@ -553,35 +559,52 @@ describe('[T3] first load is bounded; partial data is never announced as the boa
     expect(calls[1].signal).toBeUndefined();
   });
 
-  it('a superseded failure does not flip a newer load back to the error', async () => {
+  it("before certification the same user's next ask joins the load in flight — task_update, toggles, polls, 다시 시도 (#487 R2, fable P1)", async () => {
     const { d, m, calls } = harness();
-    const older = m.loadSessions(); // a 30 s poll, still hanging
-    m.setBoardLoad('failed'); // the board said so; the user presses 다시 시도
-    m.retryBoardLoad();
-    expect(m._state._boardLoad).toBe('loading');
-    calls[0].fail(new Error('offline')); // the older one fails while the retry is in flight
-    await older;
-    expect(m._state._boardLoad).toBe('loading');
+    const first = m.loadSessions(); // the first load, slow
+    // A busy board: task_update calls loadSessions() on every message.
+    const joins = [m.loadSessions(), m.loadSessions(), m.loadSessions()];
+    expect(calls).toHaveLength(1); // one request, one sibling fan-out
+    expect(calls[0].signal?.aborted).toBe(false); // nobody restarts its clock
+    calls[0].settle(res(board('poll')));
+    await Promise.all([first, ...joins]);
+    expect(m._state._boardLoad).toBe('ready');
     expect(d.byId['board-error'].hidden).toBe(true);
-    calls[1].fail(new Error('offline')); // the retry's own failure counts
-    await vi.waitFor(() => expect(m._state._boardLoad).toBe('failed'));
+    // Certified: every ask is its own request again, never aborted.
+    m.loadSessions();
+    m.loadSessions();
+    expect(calls).toHaveLength(3);
+    expect(calls[1].signal).toBeUndefined();
+    expect(calls[2].signal).toBeUndefined();
   });
 
-  it('before certification a newer load aborts the one it replaces (no wasted sibling fan-out; #487 review, grok P2)', async () => {
+  it('다시 시도 while a poll is in flight joins it: its outcome is the answer', async () => {
     const { d, m, calls } = harness();
-    const older = m.loadSessions(); // first load, hanging
-    m.loadSessions(); // a toggle / user switch / 다시 시도 asks again
-    expect(calls[0].signal?.aborted).toBe(true);
-    expect(calls[1].signal?.aborted).toBe(false);
-    await older; // its abort is a superseded failure: nothing flips
+    const poll = m.loadSessions(); // the 30 s poll, after a failed first load
+    m.setBoardLoad('failed');
+    m.retryBoardLoad();
+    expect(calls).toHaveLength(1);
     expect(m._state._boardLoad).toBe('loading');
     expect(d.byId['board-error'].hidden).toBe(true);
-    calls[1].settle(res(board('poll')));
+    calls[0].fail(new Error('offline'));
+    await poll;
+    expect(m._state._boardLoad).toBe('failed');
+    expect(d.byId['board-error'].hidden).toBe(false);
+  });
+
+  it("a user switch aborts the previous user's uncertified load (its answer would be dropped; #487 review, grok P2)", async () => {
+    const { d, m, calls } = harness();
+    const forA = m.loadSessions();
+    m.select('U_B');
+    m.loadSessions();
+    expect(calls).toHaveLength(2);
+    expect(calls[0].signal?.aborted).toBe(true);
+    expect(calls[1].signal?.aborted).toBe(false);
+    await forA; // A's abort is not B's failure
+    expect(m._state._boardLoad).toBe('loading');
+    expect(d.byId['board-error'].hidden).toBe(true);
+    calls[1].settle(res(board('b')));
     await vi.waitFor(() => expect(m._state._boardLoad).toBe('ready'));
-    // Certified: the next load leaves the previous one alone (no controller to abort).
-    m.loadSessions();
-    m.loadSessions();
-    expect(calls[2].signal).toBeUndefined();
   });
 
   it('renderBoard announces only a certified board', () => {
