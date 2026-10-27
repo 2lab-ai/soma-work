@@ -406,7 +406,8 @@ export class ThreadHeaderBuilder {
    *
    * The suffix says where its value came from. `live` is the PR state fetched
    * for this exact URL; `link.status` is the state stored when the link was
-   * recorded (refreshes stamp titles only). Live alone or equal → the bare
+   * last recorded (a `link` command, a model link directive, or the #762 title
+   * refresh re-recording it). Live alone or equal → the bare
    * word; stored alone → `기록 당시 {word}`; both and different → the live word
    * first, the recorded one after it in parentheses. Neither → no suffix.
    */
