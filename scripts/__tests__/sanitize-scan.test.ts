@@ -164,6 +164,41 @@ describe('sanitize-scan.sh — push scope', () => {
     expect(r.out).not.toMatch(/forbidden-token-\d/);
   });
 
+  it('catches a hit that is only a path name, without printing it', () => {
+    writeFileSync(path.join(repo, 'forbidden-token-5.txt'), 'nothing here\n');
+    git('add', 'forbidden-token-5.txt');
+    git('commit', '-q', '-m', 'add file');
+    git('update-ref', 'refs/remotes/origin/feature/path', git('rev-parse', 'HEAD'));
+    git('checkout', '-q', '--detach', clean);
+    const r = scan('push');
+    expect(r.status).toBe(1);
+    expect(r.out).not.toMatch(/forbidden-token-\d/);
+  });
+
+  it('catches an annotated tag message on push, and leaves it out of a PR verdict', () => {
+    git('tag', '-a', 'v2', '-m', `note ${SECRET_TEXT}`, clean);
+    const push = scan('push');
+    expect(push.status).toBe(1);
+    expect(push.out).not.toMatch(/forbidden-token-\d/);
+    expect(scan('pull_request').status).toBe(0);
+  });
+
+  it('catches a tag whose name is a hit, without printing it', () => {
+    git('tag', 'forbidden-token-3', clean);
+    const r = scan('push');
+    expect(r.status).toBe(1);
+    expect(r.out).not.toMatch(/forbidden-token-\d/);
+  });
+
+  it('never prints the pattern itself, even one git cannot compile', () => {
+    // BSD grep accepts a lazy quantifier that git's regcomp rejects; git's error
+    // message quotes the whole pattern — the secret — into a public log.
+    git('update-ref', 'refs/remotes/origin/feature/dirty', dirty);
+    const r = scan('push', { SANITIZE_PATTERNS: 'forbidden-token-[0-9]+?' });
+    expect(r.status).not.toBe(0);
+    expect(r.out).not.toContain('[0-9]+?');
+  });
+
   it('treats a local run like a push', () => {
     git('update-ref', 'refs/remotes/origin/feature/dirty', dirty);
     expect(scan('').status).toBe(1);

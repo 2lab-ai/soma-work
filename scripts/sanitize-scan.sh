@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Generic forbidden-pattern scanner over git history + refs.
 # Patterns are injected via $SANITIZE_PATTERNS (extended regex, matched case-insensitively).
+# Keep them plain POSIX ERE: git's regex engine locates hits, and it does not
+# know grep-only extensions such as \d, \< or (?i).
 # This file intentionally contains no pattern literals — see repo docs on sanitize policy.
 #
 # Scope depends on the event that runs it ($GITHUB_EVENT_NAME):
@@ -70,9 +72,9 @@ count() {
   echo "$1"
 }
 
-a=$(count object_contents)
-b=$(count git rev-list --objects "${revs[@]}")
-c=$(count ref_names)
+a=$(count object_contents) || exit 2
+b=$(count git rev-list --objects "${revs[@]}") || exit 2
+c=$(count ref_names) || exit 2
 echo "sanitize-scan: objects=$a paths=$b refs=$c"
 if [ "$a" = "0" ] && [ "$b" = "0" ] && [ "$c" = "0" ]; then
   echo "sanitize-scan: clean"
@@ -87,10 +89,11 @@ redact() {
     if printf '%s' "$ref" | grep -q -i -E "$P"; then echo '<redacted ref>'; else echo "$ref"; fi
   done
 }
+attributed=1
 shas=$({
-  git log "${revs[@]}" -i -G"$P" --format=%H || true
-  git log "${revs[@]}" -i -E --grep="$P" --format=%H || true
-} | sort -u)
+  git log "${revs[@]}" -i -G"$P" --format=%H 2>/dev/null &&
+    git log "${revs[@]}" -i -E --grep="$P" --format=%H 2>/dev/null
+} | sort -u) || attributed=0
 in_head=0
 for sha in $shas; do
   if git merge-base --is-ancestor "$sha" HEAD 2>/dev/null; then
@@ -99,7 +102,8 @@ for sha in $shas; do
   else
     where='not in HEAD'
   fi
-  reach=$( (git for-each-ref --contains "$sha" --format='%(refname:short)' refs/remotes/origin refs/tags || true) | redact | tr '\n' ' ')
+  reach=$(git for-each-ref --contains "$sha" --format='%(refname:short)' refs/remotes/origin refs/tags | redact | tr '\n' ' ') ||
+    reach='(branch lookup failed)'
   echo "sanitize-scan: hit in commit $sha ($where)${reach:+ — reached by: $reach}" >&2
 done
 if [ -n "$shas" ] && [ "$pr" = 0 ]; then
@@ -110,8 +114,10 @@ if [ -n "$shas" ] && [ "$pr" = 0 ]; then
   fi
 fi
 [ "$c" = "0" ] || echo "sanitize-scan: a branch or tag name is a hit (name withheld)" >&2
-if [ -z "$shas" ] && [ "$c" = "0" ]; then
-  echo "sanitize-scan: no commit diff or message matched — the hit is in a binary file, a path name or a merge resolution" >&2
+if [ "$attributed" = 0 ]; then
+  echo "sanitize-scan: could not attribute the hit (git log failed; a pattern git cannot compile?) — rerun the scan locally to locate it" >&2
+elif [ -z "$shas" ] && [ "$c" = "0" ]; then
+  echo "sanitize-scan: no commit diff or message matched — the hit is in a binary file, a path name, a merge resolution, an annotated tag message, or uses a grep-only regex extension" >&2
 fi
 echo "sanitize-scan: FORBIDDEN PATTERN FOUND" >&2
 exit 1
