@@ -827,3 +827,35 @@ describe('buildStreamOptions — auto-mode classify path (T7.2 / T8)', () => {
     expect(out.hookSpecificOutput?.permissionDecision).toBe('allow');
   });
 });
+
+// Review gate r3 (astra P1): an approval that was pending while the owner's
+// instructions changed is not used — the hook asks instead.
+describe('buildStreamOptions — owner instructions change during classification', () => {
+  it('returns ask when a new owner instruction arrived while the classifier ran', async () => {
+    const live = {
+      ownerId: SAFE_USER,
+      conversationId: 'conv-x',
+      initialInstruction: 'Delete ./old',
+      initialInstructionUserId: SAFE_USER,
+      followUpInstructions: [] as Array<{ timestamp: number; text: string; speaker: string; userId?: string }>,
+    } as unknown as ConversationSession;
+    const classify = vi.fn(async () => {
+      live.followUpInstructions?.push({ timestamp: 2, text: 'Do not delete ./old', speaker: 'o', userId: SAFE_USER });
+      return { verdict: 'allow' as const, reason: 'owner asked' };
+    });
+    const deps = makeDeps({
+      mcpConfigBuilder: { buildConfig: vi.fn(async () => makeMcpConfig({ somaPermissionMode: 'auto' })) },
+      safetyClassifier: { classify },
+      sessionRegistry: {
+        getSessionKey: vi.fn(() => 'chan:thread:intent-change'),
+        isDangerousRuleDisabled: vi.fn(() => false),
+        getSession: vi.fn(() => live),
+      } as unknown as BuildStreamOptionsDeps['sessionRegistry'],
+    });
+    const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, deps);
+    const entry = (options.hooks?.PreToolUse ?? []).find((e) => (e as { matcher: string }).matcher === 'Bash');
+    const hook = (entry as { hooks: Array<(i: unknown) => Promise<any>> }).hooks[0];
+    const out = await hook({ tool_name: 'Bash', tool_input: { command: 'rm -rf ./old' } });
+    expect(out.hookSpecificOutput?.permissionDecision).toBe('ask');
+  });
+});

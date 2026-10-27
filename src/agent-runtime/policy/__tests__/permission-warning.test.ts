@@ -168,6 +168,18 @@ describe('permissionWarningRuleIds — mechanical check after a model allow', ()
     }
   });
 
+  // Review gate r3 (astra P2): escapes, computed indexes and odd whitespace.
+  it('keeps escaped identifiers, computed indexes and continuation lines', () => {
+    for (const cmd of [
+      `cat p.js | node -e 'ev\\u0061l(require("fs").readFileSync(0,"utf8"))'`,
+      `cat p.js | node -e 'console.log(process[0 || "env"])'`,
+      'echo a | python3 -c \'import json, \\\npathlib; pathlib.Path("o").touch()\'',
+      'echo a | python3 -c \'import\fpathlib; pathlib.Path("o").touch()\'',
+    ]) {
+      expect(permissionWarningRuleIds(cmd, PIPE), cmd).toEqual(PIPE);
+    }
+  });
+
   it('still treats the everyday JSON / text readers as data', () => {
     for (const cmd of [
       `gh api repos/o/r/pulls/1 | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["state"])'`,

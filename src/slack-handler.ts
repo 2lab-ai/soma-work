@@ -4017,7 +4017,7 @@ export class SlackHandler {
         user: event.user,
         sentAt: slackTsMs(event.ts),
       });
-      this.recordSteerAsFollowUp(sessionKey, rawText, event.user, slackTsMs(event.ts));
+      this.recordSteerAsFollowUp(sessionKey, rawText, event.user, slackTsMs(event.ts), steered.uuid);
       (this.followupSteerUuids ??= new Map()).set(item.id, steered.uuid);
       return 'steered';
     } catch (error) {
@@ -4142,6 +4142,7 @@ export class SlackHandler {
       // is recorded by the drain's ordinary turn instead.
       if (phase === 'completed' && settled.ok) await this.finishConsumedSteer(sessionKey, uuid);
       else await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
+      if (phase === 'cancelled' || phase === 'discarded') this.withdrawSteerFollowUp(sessionKey, uuid);
       // NOT awaited: the executor awaits this hook inside its stream loop, so a
       // Slack round-trip here delays the answer the user is waiting for. The
       // queue mutation above is the part that must be finished before the turn
@@ -4258,6 +4259,7 @@ export class SlackHandler {
         }
         this.forgetSteerBookkeeping(itemId);
         await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
+        this.withdrawSteerFollowUp(sessionKey, uuid);
         return 'returned-to-queue';
       }
       const cancelled = queue.cancelSteered(sessionKey, itemId, expectedEpoch, '사용자가 취소');
@@ -4269,6 +4271,7 @@ export class SlackHandler {
       }
       this.forgetSteerBookkeeping(itemId);
       await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
+      this.withdrawSteerFollowUp(sessionKey, uuid);
       return 'cancelled';
     } catch (error) {
       this.logger.warn('Steered cancel could not be recorded', {
@@ -4601,9 +4604,17 @@ export class SlackHandler {
    * queue later takes back is recorded again when it runs as a turn; a repeated
    * instruction is harmless, a missing one is not.
    */
-  private recordSteerAsFollowUp(sessionKey: string, text: string, user: string | undefined, sentAt?: number): void {
+  private recordSteerAsFollowUp(
+    sessionKey: string,
+    text: string,
+    user: string | undefined,
+    sentAt: number | undefined,
+    steerUuid: string,
+  ): void {
     try {
-      const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
+      // The session that is really running: after a bot-thread migration the row
+      // key is the dead source thread, and the classifier reads the work session.
+      const session = this.claudeHandler?.getSessionByKey?.(this.canonicalFollowupKey(sessionKey));
       if (!session || !text || !user) return;
       const followUps = session.followUpInstructions ?? [];
       followUps.push({
@@ -4611,6 +4622,7 @@ export class SlackHandler {
         text,
         speaker: userSettingsStore.getUserSettings?.(user)?.slackDisplayName ?? user,
         userId: user,
+        steerUuid,
       });
       session.followUpInstructions = followUps.slice(-50);
     } catch (error) {
@@ -4619,6 +4631,17 @@ export class SlackHandler {
         error: (error as Error)?.message ?? String(error),
       });
     }
+  }
+
+  /**
+   * A steer the SDK withdrew, or the queue took back, is no longer the owner's
+   * instruction to this turn: drop its follow-up entry (a returned message is
+   * recorded again when the drain runs it as a turn).
+   */
+  private withdrawSteerFollowUp(sessionKey: string, steerUuid: string): void {
+    const session = this.claudeHandler?.getSessionByKey?.(this.canonicalFollowupKey(sessionKey));
+    if (!session?.followUpInstructions) return;
+    session.followUpInstructions = session.followUpInstructions.filter((f) => f.steerUuid !== steerUuid);
   }
 
   /**

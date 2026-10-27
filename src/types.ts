@@ -655,7 +655,20 @@ export interface ConversationSession {
   initialInstruction?: string;
   /** Slack user id that wrote `initialInstruction` (the auto-mode classifier quotes only the owner's own words). */
   initialInstructionUserId?: string;
-  followUpInstructions?: Array<{ timestamp: number; text: string; speaker: string; userId?: string }>;
+  followUpInstructions?: Array<{
+    timestamp: number;
+    text: string;
+    speaker: string;
+    userId?: string;
+    /** Set while the entry is a steered message the queue could still take back. */
+    steerUuid?: string;
+  }>;
+  /**
+   * The recorded instructions may miss earlier ones: the fields above are not
+   * persisted, so a session restored from disk starts with a gap. The auto-mode
+   * classifier then treats the owner's intent as incomplete. Cleared on reset.
+   */
+  intentHistoryIncomplete?: boolean;
 
   // User SSOT instructions: structured, model-readable, persisted to disk.
   // Exposed to the model via GET_SESSION and managed via UPDATE_SESSION instructionOperations.

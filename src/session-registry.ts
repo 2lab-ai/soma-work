@@ -1475,6 +1475,7 @@ export class SessionRegistry {
     session.systemPrompt = undefined;
     session.initialInstruction = undefined;
     session.initialInstructionUserId = undefined;
+    session.intentHistoryIncomplete = undefined;
     session.followUpInstructions = undefined;
     // Clear any pending rejection flag — runtime-only, must not leak across
     // /new or CONTINUE_SESSION resetSession boundaries (otherwise the next

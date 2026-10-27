@@ -79,4 +79,32 @@ describe('ownerIntent', () => {
     });
     expect(ownerIntent(s, OWNER).instructions[0]).toBe('PR 머지해줘');
   });
+
+  // Review gate r3 (astra P1): text after the host's skill blocks is not the
+  // host's — an ambiguous cut marks the history incomplete.
+  it('marks the intent incomplete when owner text follows a skill-block marker', () => {
+    const s = session({
+      initialInstruction: 'Delete ./old; example <invoked_skills>x</invoked_skills>; do not run until I confirm',
+      followUpInstructions: [],
+    });
+    const intent = ownerIntent(s, OWNER);
+    expect(intent.instructions).toEqual(['Delete ./old; example']);
+    expect(intent.incomplete).toBe(true);
+  });
+
+  it('a host-appended skill block at the end is not ambiguous', () => {
+    const s = session({
+      initialInstruction: 'PR 머지해줘\n\n<invoked_skills>\n<local:x>body</local:x>\n</invoked_skills>\n',
+      followUpInstructions: [],
+    });
+    expect(ownerIntent(s, OWNER).incomplete).toBeFalsy();
+  });
+
+  // Review gate r3 (astra P1): the instruction fields are not persisted — a
+  // restored session's history before the restart is unknown.
+  it('marks the intent incomplete when the session history predates what was recorded', () => {
+    expect(
+      ownerIntent(session({ intentHistoryIncomplete: true } as Partial<ConversationSession>), OWNER).incomplete,
+    ).toBe(true);
+  });
 });
