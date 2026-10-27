@@ -1074,6 +1074,9 @@ export class SlackHandler {
     // First admission point: restored items are only trustworthy once the
     // startup reconcile has run against the registry.
     this.warnIfReconcileSkipped();
+    // Before any await: the owner said something — an auto-mode approval being
+    // decided right now must not be used without it.
+    this.noteOwnerInput(event);
 
     // Dropped HERE, ahead of the fence: past it, a message in a busy
     // incident thread would be parked, get a queue receipt painted into the
@@ -4646,6 +4649,25 @@ export class SlackHandler {
         sessionKey,
         error: (error as Error)?.message ?? String(error),
       });
+    }
+  }
+
+  /**
+   * Bump the running session's owner-input revision when its owner's message is
+   * accepted (synchronous; the session is the canonical one after a bot-thread
+   * migration). Best effort — never fails the message.
+   */
+  private noteOwnerInput(event: MessageEvent): void {
+    try {
+      const threadTs = (event as { thread_ts?: string }).thread_ts;
+      if (!event.user || !threadTs) return;
+      const key = this.claudeHandler?.getSessionKey?.(event.channel, threadTs);
+      if (!key) return;
+      const session = this.claudeHandler?.getSessionByKey?.(this.canonicalFollowupKey(key));
+      if (!session || session.ownerId !== event.user) return;
+      session.ownerInputRevision = (session.ownerInputRevision ?? 0) + 1;
+    } catch {
+      // bookkeeping only
     }
   }
 

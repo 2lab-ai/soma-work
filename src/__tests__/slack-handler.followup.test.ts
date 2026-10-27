@@ -2889,6 +2889,16 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    // Review gate r4 (astra P1): accepted owner input moves the revision before any await.
+    it('bumps the owner input revision synchronously at ingress', async () => {
+      const { settle } = await startBusyTurn();
+      const before = registrySession.ownerInputRevision ?? 0;
+      const pending = handler.handleMessage(message({ ts: '444.555', text: '삭제하지 마' }), say());
+      expect(registrySession.ownerInputRevision).toBe(before + 1);
+      await pending;
+      await settle();
+    });
+
     it('does not record a steered message the queue took back (discarded) — the drain will', async () => {
       registrySession.followUpInstructions = undefined;
       const { uuid, settle, record } = await steerWithFile('나중에 봐줘');
