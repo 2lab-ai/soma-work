@@ -5410,10 +5410,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .turn.is-sys { padding: 3px 10px; background: transparent; border-left-color: var(--border); }
 .turn.is-sys .turn-avatar { width: 20px; height: 20px; margin-top: 2px; font-size: 11px; border-radius: 3px; }
 .sys-turn { container: sysrow / inline-size; }
-/* A narrow row (a phone's full-width panel) drops what is said elsewhere: the
-   name (the avatar shows it) and "압축 중" (the badge says it) — elapsed /
-   estimate stay readable. */
-@container sysrow (max-width: 400px) { .cp-verb, .sys-row-in .turn-name { display: none; } }
+/* A narrow row drops what is said elsewhere, so elapsed / estimate stay whole:
+   "압축 중" (the badge says it) at ≤ 420px — the default 440px drawer's row is
+   ~355px and keeps the name — and the name too (the avatar shows it) at
+   ≤ 340px, a phone's full-width panel. */
+@container sysrow (max-width: 420px) { .cp-verb { display: none; } }
+@container sysrow (max-width: 340px) { .sys-row-in .turn-name { display: none; } }
 @container sysrow (max-width: 280px) { .cp-pct { display: none; } }
 .sys-turn > summary { list-style: none; display: block; cursor: pointer; border-radius: var(--radius); }
 .sys-turn > summary::-webkit-details-marker { display: none; }
@@ -5421,7 +5423,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sys-row-in { display: flex; align-items: center; gap: 8px; min-height: 24px; min-width: 0; font-size: 12px; color: var(--text-tertiary); }
 .sys-row-in .turn-name { font-size: 12px; }
 .sys-row-in .turn-time { flex: none; white-space: nowrap; }
-.sys-row-in .turn-name { flex: none; max-width: 10em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sys-row-in .turn-name { flex: none; max-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sys-turn > summary:hover .sys-line { color: var(--text-secondary); }
 .sys-badge { flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised); color: var(--text); font-size: 11.5px; font-weight: 600; line-height: 1; white-space: nowrap; }
 .sys-badge[data-kind="compact"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }

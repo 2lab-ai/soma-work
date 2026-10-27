@@ -518,13 +518,16 @@ describe('C3b — on a narrow panel the row never overflows; the bar gives way f
   it('the name never shrinks (a long one is capped with an ellipsis); the time never wraps', () => {
     expect(TEMPLATE).toContain('.sys-row-in .turn-time { flex: none; white-space: nowrap; }');
     expect(TEMPLATE).toMatch(
-      /\.sys-row-in \.turn-name \{ flex: none; max-width: 10em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; \}/,
+      /\.sys-row-in \.turn-name \{ flex: none; max-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; \}/,
     );
   });
-  it('a narrow row drops the words the badge already says (and the name the avatar shows)', () => {
+  it('a narrow row drops what is said elsewhere — the default desktop drawer keeps the name', () => {
     expect(TEMPLATE).toMatch(/\.sys-turn \{ container: sysrow \/ inline-size; \}/);
+    // ≤ 420px (the default 440px drawer's row is ~355px): "압축 중" goes, the name stays.
+    expect(TEMPLATE).toMatch(/@container sysrow \(max-width: 420px\) \{ \.cp-verb \{ display: none; \} \}/);
+    // ≤ 340px (phones): the name goes too — the avatar shows it.
     expect(TEMPLATE).toMatch(
-      /@container sysrow \(max-width: 400px\) \{ \.cp-verb, \.sys-row-in \.turn-name \{ display: none; \} \}/,
+      /@container sysrow \(max-width: 340px\) \{ \.sys-row-in \.turn-name \{ display: none; \} \}/,
     );
   });
 
