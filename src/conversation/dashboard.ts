@@ -5409,12 +5409,19 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    (native disclosure) to its facts and the raw prompt. */
 .turn.is-sys { padding: 3px 10px; background: transparent; border-left-color: var(--border); }
 .turn.is-sys .turn-avatar { width: 20px; height: 20px; margin-top: 2px; font-size: 11px; border-radius: 3px; }
+.sys-turn { container: sysrow / inline-size; }
+/* A narrow row (a phone's full-width panel) drops what is said elsewhere: the
+   name (the avatar shows it) and "압축 중" (the badge says it) — elapsed /
+   estimate stay readable. */
+@container sysrow (max-width: 400px) { .cp-verb, .sys-row-in .turn-name { display: none; } }
+@container sysrow (max-width: 280px) { .cp-pct { display: none; } }
 .sys-turn > summary { list-style: none; display: block; cursor: pointer; border-radius: var(--radius); }
 .sys-turn > summary::-webkit-details-marker { display: none; }
 .sys-turn > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .sys-row-in { display: flex; align-items: center; gap: 8px; min-height: 24px; min-width: 0; font-size: 12px; color: var(--text-tertiary); }
 .sys-row-in .turn-name { font-size: 12px; }
-.sys-row-in .turn-name, .sys-row-in .turn-time { flex: none; white-space: nowrap; }
+.sys-row-in .turn-time { flex: none; white-space: nowrap; }
+.sys-row-in .turn-name { flex: none; max-width: 10em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sys-turn > summary:hover .sys-line { color: var(--text-secondary); }
 .sys-badge { flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised); color: var(--text); font-size: 11.5px; font-weight: 600; line-height: 1; white-space: nowrap; }
 .sys-badge[data-kind="compact"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
@@ -5423,10 +5430,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sys-badge[data-kind="cron"] { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent); }
 .sys-line { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-slot { display: contents; }
-/* A narrow panel (phones) keeps a running compaction's elapsed / estimate
-   readable: the bar gives way first. A finished line truncates like any other. */
-.turn[data-cp-live] .cp-slot > .sys-line { flex-shrink: 0; }
-.cp-bar { flex: 1 1 120px; min-width: 0; max-width: 120px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
+/* A narrow panel (phones): the bar's shrink weight (1000) dwarfs the line's (1),
+   so the bar gives way first, then the line truncates from its end. Weights
+   stay ≥ 1: below 1 the flex algorithm hands out only that fraction of the
+   space and the row would overflow. */
+/* A running line's parts are the row's own flex items: the times never shrink
+   (no sub-pixel ellipsis); only the overdue words take the ellipsis. */
+.turn[data-cp-live] .cp-slot > .sys-line { display: contents; }
+.cp-time { flex: none; white-space: nowrap; }
+.cp-over { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-bar { flex: 0 1000 120px; min-width: 0; max-width: 120px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
 .cp-bar > i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 1s linear; }
 .cp-bar.is-over > i { width: 100% !important; background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat; background-size: 40% 100%; animation: cp-over 1.4s linear infinite; }
 @keyframes cp-over { from { background-position: -40% 0; } to { background-position: 140% 0; } }
@@ -15187,7 +15200,9 @@ function cpState(t, now, notLast) {
 function cpProgressHtml(elapsed, est) {
   var over = elapsed > est;
   var pct = Math.max(0, Math.min(99, Math.floor((elapsed / est) * 100)));
-  return '<span class="sys-line">압축 중 · ' + cpClock(elapsed) + ' / 약 ' + cpClock(est) + (over ? ' · 예상보다 오래 걸리는 중' : '') + '</span>'
+  // The times first: on a narrow row the ellipsis cuts the overdue words before them.
+  return '<span class="sys-line"><span class="cp-time"><span class="cp-verb">압축 중 · </span>' + cpClock(elapsed) + ' / 약 ' + cpClock(est) + '</span>'
+    + (over ? '<span class="cp-over"> · 예상보다 오래 걸리는 중</span>' : '') + '</span>'
     // Decoration: inside <summary> (a button) AT drops a progressbar role — the
     // line's own text carries elapsed / estimate and the percentage.
     + '<span class="cp-bar' + (over ? ' is-over' : '') + '" aria-hidden="true"><i style="width:' + pct + '%"></i></span>'

@@ -331,7 +331,7 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
     expect(out).toContain('<span class="sys-badge" data-kind="compact">자동 압축</span>');
     expect(out).toContain('data-cp-live="1"');
     expect(out).toContain('data-cp-est="150000"');
-    expect(out).toContain('<span class="sys-line">압축 중 · 0:42 / 약 2:30</span>');
+    expect(out).toContain('<span class="cp-time"><span class="cp-verb">압축 중 · </span>0:42 / 약 2:30</span>');
     // Inside <summary> (a button) a progressbar role is dropped by AT: the bar is
     // decoration, the line's text carries the numbers.
     expect(out).toContain('<span class="cp-bar" aria-hidden="true"><i style="width:28%"></i></span>');
@@ -346,14 +346,16 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
     const out = api().renderTurn(
       user('/compact', { ...SYSTEM, timestamp: Date.now() - 45_000, compact: { estimateMs: 90_000 } }),
     );
-    expect(out).toContain('<span class="sys-line">압축 중 · 0:45 / 약 1:30</span>');
+    expect(out).toContain('<span class="cp-time"><span class="cp-verb">압축 중 · </span>0:45 / 약 1:30</span>');
     expect(out).toContain('<i style="width:50%"></i>');
     expect(out).toContain('<dd>1m 30s (직전 압축 기준)</dd>');
   });
 
   it('past the estimate: no false percentage — "예상보다 오래 걸리는 중" and a moving bar', () => {
     const out = api().renderTurn(user('/compact', { ...SYSTEM, compact: {}, timestamp: Date.now() - 200_000 }));
-    expect(out).toContain('압축 중 · 3:20 / 약 2:30 · 예상보다 오래 걸리는 중');
+    expect(out).toContain(
+      '<span class="cp-time"><span class="cp-verb">압축 중 · </span>3:20 / 약 2:30</span><span class="cp-over"> · 예상보다 오래 걸리는 중</span>',
+    );
     expect(out).toContain('class="cp-bar is-over"');
     expect(out).not.toContain('cp-pct');
   });
@@ -466,7 +468,7 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
     const t = fakeTurn(NOW - 75_000);
     tick([t], { activityState: 'working' });
     expect(t.hasLive()).toBe(true);
-    expect(t.slot.innerHTML).toContain('압축 중 · 1:15 / 약 2:30');
+    expect(t.slot.innerHTML).toContain('<span class="cp-verb">압축 중 · </span>1:15 / 약 2:30');
     expect(t.slot.innerHTML).toContain('<i style="width:50%"></i>');
   });
 
@@ -492,7 +494,7 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
     const early = fakeTurn(NOW - 30_000);
     tick([early], null);
     expect(early.hasLive()).toBe(true);
-    expect(early.slot.innerHTML).toContain('압축 중 · 0:30');
+    expect(early.slot.innerHTML).toContain('</span>0:30 / 약 2:30');
   });
 
   it('cpTick: nothing live → the timer stops', () => {
@@ -501,12 +503,51 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
   });
 });
 
-describe('C3b — on a narrow panel the progress text wins over the bar', () => {
-  it('the running line keeps its size; the bar gives way first', () => {
-    // Only while it runs: a finished line (tokens · time) truncates like any other.
-    expect(TEMPLATE).toContain('.turn[data-cp-live] .cp-slot > .sys-line { flex-shrink: 0; }');
-    expect(TEMPLATE).not.toMatch(/^\.cp-slot > \.sys-line \{ flex-shrink: 0; \}/m);
-    expect(TEMPLATE).toMatch(/\.cp-bar \{ flex: 1 1 120px; min-width: 0; max-width: 120px;/);
+describe('C3b — on a narrow panel the row never overflows; the bar gives way first', () => {
+  // Measured in Chromium (shipped CSS + renderer) at 320 / 400px panels: no
+  // horizontal overflow, overdue or not, short or long names. A no-shrink rule on
+  // the line would overflow (it holds the overdue suffix too).
+  it('the bar shrinks first (high shrink weight), then the line truncates from its end', () => {
+    expect(TEMPLATE).toMatch(/\.cp-bar \{ flex: 0 1000 120px; min-width: 0; max-width: 120px;/);
+    expect(TEMPLATE).not.toContain('.cp-slot > .sys-line { flex-shrink: 0; }');
+    // Priority by weight ratio (bar 1000 : line 1). Every weight stays
+    // ≥ 1: below 1 the flex algorithm hands out only that fraction of the space
+    // to shrink, and the row overflows.
+    expect(TEMPLATE).not.toMatch(/flex-shrink: 0\.\d/);
+  });
+  it('the name never shrinks (a long one is capped with an ellipsis); the time never wraps', () => {
+    expect(TEMPLATE).toContain('.sys-row-in .turn-time { flex: none; white-space: nowrap; }');
+    expect(TEMPLATE).toMatch(
+      /\.sys-row-in \.turn-name \{ flex: none; max-width: 10em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; \}/,
+    );
+  });
+  it('a narrow row drops the words the badge already says (and the name the avatar shows)', () => {
+    expect(TEMPLATE).toMatch(/\.sys-turn \{ container: sysrow \/ inline-size; \}/);
+    expect(TEMPLATE).toMatch(
+      /@container sysrow \(max-width: 400px\) \{ \.cp-verb, \.sys-row-in \.turn-name \{ display: none; \} \}/,
+    );
+  });
+
+  it('a running line never cuts its times: only the overdue words take the ellipsis', () => {
+    expect(TEMPLATE).toContain('.turn[data-cp-live] .cp-slot > .sys-line { display: contents; }');
+    expect(TEMPLATE).toContain('.cp-time { flex: none; white-space: nowrap; }');
+    expect(TEMPLATE).toContain(
+      '.cp-over { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }',
+    );
+    expect(TEMPLATE).toMatch(/@container sysrow \(max-width: 280px\) \{ \.cp-pct \{ display: none; \} \}/);
+  });
+
+  it('the overdue words sit after the times, so the ellipsis cuts them first', () => {
+    const { cpProgressHtml } = load<{ cpProgressHtml(e: number, est: number): string }>(
+      ['esc', 'cpClock', 'toNum', 'cpProgressHtml'],
+      [],
+    );
+    expect(cpProgressHtml(200_000, 134_000)).toContain(
+      '<span class="sys-line"><span class="cp-time"><span class="cp-verb">압축 중 · </span>3:20 / 약 2:14</span><span class="cp-over"> · 예상보다 오래 걸리는 중</span></span>',
+    );
+    expect(cpProgressHtml(44_000, 134_000)).toContain(
+      '<span class="sys-line"><span class="cp-time"><span class="cp-verb">압축 중 · </span>0:44 / 약 2:14</span></span>',
+    );
   });
 });
 
