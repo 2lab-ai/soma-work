@@ -2850,13 +2850,15 @@ describe('SlackHandler — follow-up queue host', () => {
 
     // Review gate r1 (astra P1): a consumed steer is an instruction the owner gave
     // mid-turn — the auto-mode classifier must see it (e.g. a late "don't delete").
-    it('adds a consumed steered message to the follow-up instructions with its author', async () => {
+    it('adds a steered message to the follow-up instructions as soon as it is steered (review r2)', async () => {
       registrySession.followUpInstructions = undefined;
       const { uuid, settle } = await steerWithFile('삭제는 하지 마');
-      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'completed' });
+      // Before any settlement: the live turn's next tool call must already see it.
       expect(registrySession.followUpInstructions).toEqual([
         expect.objectContaining({ text: '삭제는 하지 마', userId: 'U_OWNER' }),
       ]);
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'completed' });
+      expect(registrySession.followUpInstructions).toHaveLength(1); // not added twice
       await settle();
     });
 

@@ -150,13 +150,20 @@ function fakeDom() {
       setAttribute: (k: string, v: string) => {
         n.attrs[k] = v;
       },
+      remove: () => {
+        const at = children.indexOf(n);
+        if (at >= 0) children.splice(at, 1);
+      },
     });
   const turnsEl = {
     querySelector: (sel: string) => {
       const m = /data-warn-seq="(\d+)"/.exec(sel);
       return children.find((c) => m && c.attrs['data-warn-seq'] === m[1]) ?? null;
     },
-    querySelectorAll: () => children.filter((c) => 'data-ts' in c.attrs).map(api),
+    querySelectorAll: (sel: string) =>
+      children
+        .filter((c) => (sel === '.perm-warning-turn' ? 'data-warn-seq' in c.attrs : 'data-ts' in c.attrs))
+        .map(api),
     appendChild: (n: El) => children.push(n),
     insertBefore: (n: El, ref: El) => children.splice(children.indexOf(ref), 0, n),
   };
@@ -164,7 +171,11 @@ function fakeDom() {
     getElementById: (id: string) => (id === 'panel-turns' ? turnsEl : null),
     createElement: () => api(el('', {})),
   };
-  const addTurn = (ts: number) => children.push(api(el('turn', { 'data-ts': String(ts) })));
+  const addTurn = (ts: number, at?: number) => {
+    const n = api(el('turn', { 'data-ts': String(ts) }));
+    if (at === undefined) children.push(n);
+    else children.splice(at, 0, n);
+  };
   const order = () =>
     children.map((c) => (c.attrs['data-warn-seq'] ? `w${c.attrs['data-warn-seq']}` : `t${c.attrs['data-ts']}`));
   return { document, addTurn, order };
@@ -187,6 +198,7 @@ ${clientFn('esc')}
 ${clientFn('escAttr')}
 ${clientFn('renderPermissionWarningCard')}
 ${clientFn('permissionWarningSlot')}
+${clientFn('removePermissionWarnings')}
 ${clientFn('placePermissionWarnings')}
 return placePermissionWarnings;`,
     )(
@@ -202,5 +214,66 @@ return placePermissionWarnings;`,
     place();
     place(); // idempotent
     expect(dom.order()).toEqual(['t10', 'w4', 'w9', 't30']);
+  });
+});
+
+// Review gate r2 (astra P2): a turn that lands later in the middle (a settled
+// steer with an earlier timestamp) re-files the warnings around it.
+describe('placePermissionWarnings — reconciles when turns change', () => {
+  it('moves an existing warning after a late-arriving earlier turn', () => {
+    const dom = fakeDom();
+    dom.addTurn(10);
+    const state = { convId: 'c1', entries: [{ ...ENTRY, seq: 9, ts: 25 }] as unknown[] };
+    const place = new Function(
+      'document',
+      'decodeSlackEntities',
+      'wlChildBlock',
+      'toNum',
+      'state',
+      `var _wl = state; var panelConvId = 'c1'; var _panelTurnsHasMore = false;
+${clientFn('esc')}
+${clientFn('escAttr')}
+${clientFn('renderPermissionWarningCard')}
+${clientFn('permissionWarningSlot')}
+${clientFn('removePermissionWarnings')}
+${clientFn('placePermissionWarnings')}
+return placePermissionWarnings;`,
+    )(
+      dom.document,
+      (t: string) => t,
+      () => '',
+      (v: unknown) => Number(v) || 0,
+      state,
+    ) as () => void;
+    place();
+    expect(dom.order()).toEqual(['t10', 'w9']);
+    dom.addTurn(20, 2); // appended after the warning, though it is older
+    place();
+    expect(dom.order()).toEqual(['t10', 't20', 'w9']);
+  });
+});
+
+describe('showWorkLogDenied — the chat copies go too', () => {
+  it('removes every warning card from the chat when the log is denied', () => {
+    const removed: string[] = [];
+    const nodes = [{ remove: () => removed.push('a') }, { remove: () => removed.push('b') }];
+    const turnsEl = { querySelectorAll: (sel: string) => (sel === '.perm-warning-turn' ? nodes : []) };
+    const list = { innerHTML: '' };
+    const document = {
+      getElementById: (id: string) => (id === 'panel-turns' ? turnsEl : id === 'worklog-list' ? list : null),
+    };
+    const state = { closed: false, entries: [1] };
+    new Function(
+      'document',
+      'state',
+      'setTextIfChanged',
+      `var _wl = state; var WL_FORBIDDEN_MSG = 'x';
+${clientFn('esc')}
+${clientFn('removePermissionWarnings')}
+${clientFn('showWorkLogDenied')}
+showWorkLogDenied(state);`,
+    )(document, state, () => {});
+    expect(removed).toEqual(['a', 'b']);
+    expect(state.entries).toEqual([]);
   });
 });

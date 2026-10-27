@@ -60,23 +60,31 @@ import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from
 /** Same command + rule set warns once per session per window (an agent retrying a command stacks no cards). */
 const permissionWarningDeduper = createPermissionWarningDeduper({ windowMs: 10 * 60 * 1000 });
 
-/** Recent owner follow-ups quoted to the classifier, after the first instruction. */
-const INTENT_FOLLOW_UPS = 5;
-
-/** A host-appended skill body (`$skill` / autoskill) is not something the owner wrote. */
-const INVOKED_SKILLS_BLOCK = /<invoked_skills>[\s\S]*?<\/invoked_skills>/g;
-
+/**
+ * A host-appended skill body (`$skill` / autoskill) is not something the owner
+ * wrote. The host only ever APPENDS `<invoked_skills>` blocks after the owner's
+ * text, so everything from the first opening tag on is dropped — skill content
+ * can never survive, whatever tags it contains. (Slack entity-encodes `<` in a
+ * user's message, so a user cannot place the tag; a dashboard user who types it
+ * only shortens their own intent.)
+ */
 function ownerText(text: string): string {
-  return text.replace(INVOKED_SKILLS_BLOCK, '').trim();
+  const cut = text.indexOf('<invoked_skills>');
+  return (cut >= 0 ? text.slice(0, cut) : text).trim();
 }
+
+/** The executor keeps at most this many follow-ups; at the cap older ones may be gone. */
+const FOLLOW_UP_CAP = 50;
 
 /**
  * The owner's own words for the auto-mode classifier: the session's first
- * instruction and its latest follow-ups (steered messages included), kept only
- * when the session OWNER wrote them, and only when the owner is the one acting
- * — another participant's turn in the thread gets no intent at all, so the model
- * falls back to asking. Host-recorded raw Slack text with any host-appended
- * skill body removed — never agent output or a model-written goal.
+ * instruction and every recorded follow-up (steered messages included), kept
+ * only when the session OWNER wrote them, and only when the owner is the one
+ * acting — another participant's turn in the thread gets no intent at all, so
+ * the model falls back to asking. Host-recorded raw Slack text with any
+ * host-appended skill body removed — never agent output or a model-written
+ * goal. Nothing is dropped here; the classifier's prompt budget decides, and says
+ * so. `incomplete` marks a history that may already have lost messages.
  */
 export function ownerIntent(session: ConversationSession | undefined, user: string): SafetyUserIntent {
   const owner = session?.ownerId;
@@ -85,9 +93,12 @@ export function ownerIntent(session: ConversationSession | undefined, user: stri
   if (session.initialInstruction && session.initialInstructionUserId === owner) {
     instructions.push(ownerText(session.initialInstruction));
   }
-  const followUps = (session.followUpInstructions ?? []).filter((f) => f.userId === owner).slice(-INTENT_FOLLOW_UPS);
-  for (const f of followUps) instructions.push(ownerText(f.text));
-  return { instructions: instructions.filter((t) => t.length > 0) };
+  const all = session.followUpInstructions ?? [];
+  for (const f of all) if (f.userId === owner) instructions.push(ownerText(f.text));
+  return {
+    instructions: instructions.filter((t) => t.length > 0),
+    ...(all.length >= FOLLOW_UP_CAP ? { incomplete: true } : {}),
+  };
 }
 
 /**

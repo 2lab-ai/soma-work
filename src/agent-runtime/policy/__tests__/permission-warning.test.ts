@@ -156,6 +156,18 @@ describe('permissionWarningRuleIds — mechanical check after a model allow', ()
     ).toEqual([]);
   });
 
+  // Review gate r2 (astra P2): node reads stdin only through the literal
+  // descriptor 0; computed property access keeps the warning.
+  it('keeps computed access and non-literal reads in node', () => {
+    for (const cmd of [
+      `cat p.js | node -e 'globalThis["ev"+"al"](require("fs").readFileSync(0,"utf8"))'`,
+      `cat p.js | node -e 'console.log(require("fs").readFileSync(0 || "/etc/passwd","utf8"))'`,
+      `cat p.js | node -e 'const k="x"; console.log(this[k])'`,
+    ]) {
+      expect(permissionWarningRuleIds(cmd, PIPE), cmd).toEqual(PIPE);
+    }
+  });
+
   it('still treats the everyday JSON / text readers as data', () => {
     for (const cmd of [
       `gh api repos/o/r/pulls/1 | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["state"])'`,
