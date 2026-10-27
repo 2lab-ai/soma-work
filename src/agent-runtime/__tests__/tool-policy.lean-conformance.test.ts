@@ -69,7 +69,12 @@ import {
 import type { HandoffContext } from '../../types';
 import { checkDevopsSecretCommand, checkDevopsSecretGlob, checkDevopsSecretPath } from '../policy/devops-secret-guard';
 import type { PermissionMode } from '../policy/permission-mode';
-import { evaluateToolPolicy, type IncidentReadOnlyContext, type ToolPolicyContext } from '../policy/tool-policy';
+import {
+  ENV_GATED_TOOLS,
+  evaluateToolPolicy,
+  type IncidentReadOnlyContext,
+  type ToolPolicyContext,
+} from '../policy/tool-policy';
 
 const repoRoot = path.resolve(__dirname, '../../..');
 
@@ -83,6 +88,8 @@ interface Primitives {
   bash: BypassBashPermissionResult;
   /** The devops-secret check's value: a reason, or null. */
   devopsSecret: string | null;
+  /** `ctx.checkEnvSkillPermission`'s value (phase 4): a reason, or null. */
+  envSkillDenied: string | null;
 }
 
 /** A sensitive-path check call: the check and its arguments. */
@@ -205,6 +212,7 @@ function contextOf(row: MockedRow): ToolPolicyContext {
     isDangerousRuleDisabled: () => false,
     handoffContext: row.handoff ? HANDOFF : undefined,
     checkMcpToolPermission: () => row.prims.mcpDenied,
+    checkEnvSkillPermission: () => row.prims.envSkillDenied,
     ...(row.incidentReadOnly ? { incidentReadOnly: row.incidentReadOnly } : {}),
   };
 }
@@ -278,6 +286,21 @@ describe('tool-policy Lean conformance vectors (mocked primitives)', () => {
     // The incident tier only allows or denies, and the rows reach both outcomes.
     const decisions = new Set(incident.flatMap((row) => row.calls.map((call) => call.expect.decision)));
     expect([...decisions].sort()).toEqual(['allow', 'deny']);
+  });
+
+  it('fire the environment-skill step (phase 4) on non-admin ENV_GATED_TOOLS calls only', () => {
+    const envDenials = rows.flatMap((row) =>
+      row.calls.filter((call) => String(call.expect.reason).startsWith('env-skill:')).map((call) => ({ row, call })),
+    );
+    expect(envDenials.length).toBeGreaterThan(0);
+    expect(envDenials.some(({ call }) => call.tool === 'Skill')).toBe(true);
+    expect(envDenials.some(({ call }) => call.tool === 'Read')).toBe(true);
+    for (const { row, call } of envDenials) {
+      expect(ENV_GATED_TOOLS).toContain(call.tool);
+      expect(row.isAdmin).toBe(false);
+      expect(row.incidentReadOnly).toBeUndefined();
+      expect(row.prims.envSkillDenied).not.toBeNull();
+    }
   });
 
   for (const kind of MOCKED_KINDS as MockedRow['kind'][]) {

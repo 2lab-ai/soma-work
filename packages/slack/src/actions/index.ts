@@ -128,6 +128,8 @@ export interface ActionHandlerDelegates {
   cronRunPermissionHandler: { handleAction(body: any, respond: RespondFn): Promise<void> };
   userSkillMenuHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
   userSkillPermissionHandler: { handleAction(body: any, respond: RespondFn, client: any): Promise<void> };
+  /** Admin-facing buttons of the environment-skill permission prompt (once/always/all/deny). */
+  envSkillPermissionHandler: { handleAction(body: any, respond: RespondFn): Promise<void> };
   userSkillEditSubmitHandler: { handleSubmit(ack: ViewAck, body: any, client: any): Promise<void> };
   userSkillRenameSubmitHandler: { handleSubmit(ack: ViewAck, body: any, client: any): Promise<void> };
   userSkillDeleteSubmitHandler: { handleSubmit(ack: ViewAck, body: any, client: any): Promise<void> };
@@ -324,6 +326,13 @@ export class ActionHandlers {
     app.action(/^skill_perm_/, async ({ ack, body, respond, client }) => {
       await ack();
       await this.delegates.userSkillPermissionHandler.handleAction(body, respond as RespondFn, client);
+    });
+
+    // An admin's answer to an environment-skill permission request (DM'd prompt, or the in-thread
+    // fallback when no DM could be delivered).
+    app.action(/^env_skill_perm_/, async ({ ack, body, respond }) => {
+      await ack();
+      await this.delegates.envSkillPermissionHandler.handleAction(body, respond as RespondFn);
     });
 
     app.view(USER_SKILL_EDIT_MODAL_CALLBACK_ID, async ({ ack, body, client }) => {

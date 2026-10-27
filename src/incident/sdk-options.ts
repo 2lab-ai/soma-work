@@ -386,6 +386,7 @@ export function buildIncidentSdkOptions(input: IncidentSdkOptionsInput, deps: In
     isDangerousRuleDisabled: () => false,
     handoffContext: undefined,
     checkMcpToolPermission: () => null,
+    checkEnvSkillPermission: () => null,
     incidentReadOnly: { allowedMcpTools: [INCIDENT_EVIDENCE_TOOL] },
   });
 

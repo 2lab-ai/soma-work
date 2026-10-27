@@ -34,6 +34,7 @@ import {
   resolveShowSummary,
 } from '../../claude-handler';
 import { CONFIG_FILE } from '../../env-paths';
+import { checkEnvSkillAccess, type EnvSkillRegistry, envSkillSandboxDenyRead } from '../../env-skill-registry';
 import type { IncidentEvidence, IncidentEvidenceConfig } from '../../incident/evidence';
 import { assertIncidentRequest, buildIncidentSdkOptions, type IncidentRequestLike } from '../../incident/sdk-options';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
@@ -105,6 +106,16 @@ export interface BuildStreamOptionsDeps {
     gated: string[],
   ) => string | null | undefined;
   /**
+   * The deploy-time environment plugins (`plugin.envPlugins`) and where their skills live — what
+   * step 6b of the policy checks a `Skill` call against. Absent → no environment skills.
+   */
+  getEnvSkillRegistry?: () => EnvSkillRegistry;
+  /**
+   * Enforcer of a step-6b denial: ask the admins for the skill (DM prompt + a notice in the
+   * thread). Fire-and-forget from the hook; the request store dedupes repeated calls per thread.
+   */
+  onEnvSkillDenied?: (denial: EnvSkillDenial) => Promise<void>;
+  /**
    * Auto-mode safety classifier (guardian). Consulted only when the policy
    * returns the `classify` decision (a dangerous-rule hit in `auto` mode).
    * When absent, `classify` fails closed to `ask` — i.e. auto mode degrades to
@@ -127,6 +138,18 @@ export interface BuildStreamOptionsDeps {
    */
   onIncidentEvidence?: (request: IncidentRequestLike, evidence: IncidentEvidence) => void;
 }
+
+/** A `Skill` call step 6b denied: who asked, for which environment skill, in which thread. */
+export interface EnvSkillDenial {
+  requesterId: string;
+  /** `plugin:skill` */
+  skillKey: string;
+  channel: string;
+  threadTs?: string;
+}
+
+/** The reason prefix step 6b of `evaluateToolPolicy` denies with (`env-skill: <plugin:skill>`). */
+const ENV_SKILL_REASON_PREFIX = 'env-skill: ';
 
 export interface BuildStreamOptionsInput {
   queryEnv: Record<string, string | undefined>;
@@ -236,6 +259,8 @@ export async function buildStreamOptions(
     const cachedPermConfig = CONFIG_FILE ? loadMcpToolPermissions(CONFIG_FILE) : {};
     const gatedServerNames = getPermissionGatedServers(cachedPermConfig);
     const hookSessionKey = deps.sessionRegistry.getSessionKey(slackContext.channel, slackContext.threadTs);
+    const envSkillScope = { channel: slackContext.channel, threadTs: slackContext.threadTs };
+    const envRegistry = deps.getEnvSkillRegistry?.();
 
     const policyHook = async (input: HookInput): Promise<HookJSONOutput> => {
       const toolName = (input as { tool_name?: string }).tool_name || '';
@@ -251,12 +276,32 @@ export async function buildStreamOptions(
           gatedServerNames.length > 0
             ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
             : null,
+        checkEnvSkillPermission: (tool, toolInput) =>
+          envRegistry
+            ? checkEnvSkillAccess(tool, toolInput, policyUser, envSkillScope, envRegistry, workingDirectory)
+            : null,
       };
 
       const result = evaluateToolPolicy(toolName, toolInput, ctx);
       switch (result.decision) {
-        case 'deny':
+        case 'deny': {
           logger.warn('Tool policy denied call', { tool: toolName, user: policyUser, reason: result.reason });
+          const envSkillKey = result.reason.startsWith(ENV_SKILL_REASON_PREFIX)
+            ? result.reason.slice(ENV_SKILL_REASON_PREFIX.length)
+            : null;
+          // Enforce step 6b: ask the admins — only for a denial that names one skill (`plugin:skill`);
+          // a read of other plugin files or an unnamed `Skill` call has no skill to grant. Never
+          // awaited — the denial must reach the model now.
+          if (envSkillKey?.includes(':') && deps.onEnvSkillDenied) {
+            void deps
+              .onEnvSkillDenied({ requesterId: policyUser, skillKey: envSkillKey, ...envSkillScope })
+              .catch((err: unknown) =>
+                logger.warn('Environment skill permission request failed', {
+                  user: policyUser,
+                  err: err instanceof Error ? err.message : String(err),
+                }),
+              );
+          }
           return {
             hookSpecificOutput: {
               hookEventName: 'PreToolUse',
@@ -264,6 +309,7 @@ export async function buildStreamOptions(
               ...(result.denyMessage ? { permissionDecisionReason: result.denyMessage } : {}),
             },
           };
+        }
         case 'classify': {
           // Auto mode: a dangerous-rule hit. Consult the guardian classifier;
           // fail closed to `ask` when no classifier is wired or it errors.
@@ -504,6 +550,19 @@ export async function buildStreamOptions(
             // Counts only: the values are host topology.
             logger.info('Deploy sandbox grant applied', added);
           }
+        }
+      }
+      // Environment plugins: a non-admin's Bash must not read them by any spelling (relative paths,
+      // wildcards, symbolic links — what step 6b's text check cannot see). OS-enforced read deny
+      // of their directories, unless the all-environment-skills grant opens them.
+      if (slackContext?.user && !isAdminUser(slackContext.user)) {
+        const envRegistry = deps.getEnvSkillRegistry?.();
+        const denyRead = envRegistry ? envSkillSandboxDenyRead(envRegistry, slackContext.user) : [];
+        if (denyRead.length > 0) {
+          sandboxConfig.filesystem = {
+            ...(sandboxConfig.filesystem ?? {}),
+            denyRead: [...(sandboxConfig.filesystem?.denyRead ?? []), ...denyRead],
+          };
         }
       }
       options.sandbox = sandboxConfig;
