@@ -841,16 +841,19 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
 
   // T1.5 · voice: 🎤 records on Chromium's fake microphone; 완료 files it; a voice-only send carries it.
   check(await visible(page, '#pc-mic'), `${tag}: the voice button is there`);
+  // The first getUserMedia of a run starts Chromium's fake audio device: seconds on a busy machine.
+  const micAt = Date.now();
   await page.locator('#pc-mic').click();
   const recOn = await page
-    .waitForFunction(() => !(document.getElementById('pc-recorder') as HTMLElement).hidden, null, { timeout: 5000 })
+    .waitForFunction(() => !(document.getElementById('pc-recorder') as HTMLElement).hidden, null, { timeout: 30000 })
     .then(
       () => true,
       () => false,
     );
+  const micMs = Date.now() - micAt;
   check(
     recOn && (await page.locator('#pc-mic').getAttribute('aria-pressed')) === 'true',
-    `${tag}: 🎤 starts a recording (recorder bar shown, mic pressed)`,
+    `${tag}: 🎤 starts a recording (recorder bar shown, mic pressed — ${(micMs / 1000).toFixed(1)} s)`,
   );
   await page.waitForTimeout(1600);
   await page.screenshot({ path: path.join(OUT, `composer-recording-${theme}-${width}.png`) });
@@ -881,7 +884,7 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
   // T1.5 · sent while still recording: the send waits for the note to be filed (#488).
   await page.locator('#pc-mic').click();
   await page
-    .waitForFunction(() => !(document.getElementById('pc-recorder') as HTMLElement).hidden, null, { timeout: 5000 })
+    .waitForFunction(() => !(document.getElementById('pc-recorder') as HTMLElement).hidden, null, { timeout: 15000 })
     .catch(() => {});
   await page.waitForTimeout(1300);
   await input.fill('녹음 중에 보냄');
@@ -901,18 +904,31 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
   );
 
   // ztrace S3: a panel opened straight onto a subagent (a tree item) fills its
-  // instruction and result once the work log arrives — the log is slowed here.
+  // instruction and result once the work log arrives — the log is held until
+  // the early look is taken, so that look always precedes it.
   await page.evaluate(() => (window as any).closePanel());
   await page.waitForTimeout(300);
   const slowLog = /\/api\/dashboard\/session\/[^/?]+\/worklog(\?.*)?$/;
+  let releaseLog: () => void = () => {};
+  const logHeld = new Promise<void>((res) => {
+    releaseLog = res;
+  });
   await page.route(slowLog, async (r) => {
-    await new Promise((res) => setTimeout(res, 1500));
+    await logHeld;
     return r.fulfill({ json: { entries: WORKLOG, hasMore: false } });
   });
   await page.evaluate((k) => (window as any).openPanel(k, 'agent', 'toolu_lib'), KEY);
   await page.waitForTimeout(400);
   const early = await page.evaluate(() => document.getElementById('panel-agent-conv')?.textContent ?? '');
-  await page.waitForTimeout(2500);
+  releaseLog();
+  // A busy machine renders the arriving log late: wait for it.
+  await page
+    .waitForFunction(
+      () => /Apple 앱들의 탭 패턴/.test(document.getElementById('panel-agent-conv')?.textContent ?? ''),
+      null,
+      { timeout: 10000 },
+    )
+    .catch(() => {});
   const late = await page.evaluate(() => document.getElementById('panel-agent-conv')?.textContent ?? '');
   check(
     !/Apple 앱들의 탭 패턴/.test(early) && /Apple 앱들의 탭 패턴/.test(late) && /3곳/.test(late),
@@ -924,6 +940,18 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
   await page.evaluate(() => (window as any).closePanel());
   await page.waitForTimeout(300);
   await page.evaluate((k) => (window as any).openPanel(k, 'goal'), KEY);
+  // A busy machine renders late: wait for the landing, then confirm it holds.
+  await page
+    .waitForFunction(
+      () => {
+        const sc = document.getElementById('panel-scroll') as HTMLElement;
+        const goal = document.getElementById('panel-goal') as HTMLElement | null;
+        return !!goal && Math.abs(goal.getBoundingClientRect().top - sc.getBoundingClientRect().top) <= 2;
+      },
+      null,
+      { timeout: 8000 },
+    )
+    .catch(() => {});
   await page.waitForTimeout(900);
   const goalAt = await page.evaluate(() => {
     const sc = document.getElementById('panel-scroll') as HTMLElement;
@@ -1042,7 +1070,16 @@ async function landscapeComposer(browser: import('playwright').Browser, width: n
       () => true,
       () => false,
     );
-  await page.waitForTimeout(200);
+  // The older turns may still be loading on a busy machine: wait for them, then count.
+  await page
+    .waitForFunction(
+      () =>
+        Array.from(document.querySelectorAll('#panel-turns > .turn')).filter((t) => t.getClientRects().length > 0)
+          .length === 4,
+      null,
+      { timeout: 8000 },
+    )
+    .catch(() => {});
   const all = await page.evaluate(
     () =>
       Array.from(document.querySelectorAll('#panel-turns > .turn')).filter((t) => t.getClientRects().length > 0).length,
