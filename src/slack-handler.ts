@@ -4607,7 +4607,8 @@ export class SlackHandler {
         userName,
         userId,
         attachments?.length ? attachments : undefined,
-        { timestamp: instruction.sentAt },
+        // A steered message is always a person's (dashboard SSOT 2026-10-27).
+        { timestamp: instruction.sentAt, origin: { by: 'user' } },
       );
     } catch (error) {
       this.logger.warn('Steered message was not recorded as a user turn', {

@@ -5445,7 +5445,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .skill-tok { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .skill-detail { margin-top: 6px; }
 .skill-detail-h { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; font-size: 12px; }
-@media (pointer: coarse) { .sys-row-in { min-height: 44px; } .turn.is-sys .turn-avatar { margin-top: 12px; } .skill-badge { min-height: 36px; } }
+@media (pointer: coarse) { .sys-row-in { min-height: 44px; } .turn.is-sys .turn-avatar { margin-top: 12px; } .skill-badge { min-height: 44px; } }
 .ans-card { margin-top: 6px; padding: 12px 14px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
 .ans-card.is-in > * { animation: ans-in var(--dur-fade) var(--ease-out) both; }
 .ans-loading, .ans-empty { font-size: 12px; color: var(--text-tertiary); }
@@ -13666,6 +13666,11 @@ function connectWs() {
             // Remove pending style from optimistic turn if present
             var pending = document.querySelector('.turn.user[style*="opacity"]');
             if (pending) pending.style.opacity = '';
+            // The server's turn takes over the optimistic one, so a later push for
+            // it (a /compact result, SSOT 2026-10-27) finds it by its real id.
+            var opts = document.querySelectorAll('#panel-turns .turn.user[data-turn-id^="optimistic-"]');
+            var optEl = opts.length ? opts[opts.length - 1] : null;
+            if (optEl && msg.turn.id) updateTurnInPanel(optEl, msg.turn);
           } else {
             // Check if this turn already exists (e.g., summary update for existing assistant turn).
             // If so, replace in-place instead of appending a duplicate.
@@ -15165,20 +15170,21 @@ function cpClock(ms) {
 // younger than a compaction can run — cpTick confirms it is still the latest
 // turn of a working session. unknown: no result and no longer running (from
 // before results were kept, or it never ended).
-function cpState(t, now) {
+function cpState(t, now, notLast) {
   var c = t.compact || {};
   var known = toNum(c.estimateMs) > 0;
   var st = { phase: 'unknown', c: c, start: toNum(t.timestamp), est: known ? toNum(c.estimateMs) : CP_DEFAULT_EST_MS, estKnown: known };
   if (c.endedAt) st.phase = 'done';
-  else if ((now || Date.now()) - st.start < CP_MAX_MS) st.phase = 'live';
+  else if (!notLast && (now || Date.now()) - st.start < CP_MAX_MS) st.phase = 'live';
   return st;
 }
 function cpProgressHtml(elapsed, est) {
   var over = elapsed > est;
   var pct = Math.max(0, Math.min(99, Math.floor((elapsed / est) * 100)));
   return '<span class="sys-line">압축 중 · ' + cpClock(elapsed) + ' / 약 ' + cpClock(est) + (over ? ' · 예상보다 오래 걸리는 중' : '') + '</span>'
-    + '<span class="cp-bar' + (over ? ' is-over' : '') + '" role="progressbar" aria-label="압축 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="' + pct + '"'
-    + (over ? ' aria-valuetext="예상 시간 초과"' : '') + '><i style="width:' + pct + '%"></i></span>'
+    // Decoration: inside <summary> (a button) AT drops a progressbar role — the
+    // line's own text carries elapsed / estimate and the percentage.
+    + '<span class="cp-bar' + (over ? ' is-over' : '') + '" aria-hidden="true"><i style="width:' + pct + '%"></i></span>'
     + (over ? '' : '<span class="cp-pct">' + pct + '%</span>');
 }
 // The one line of a /compact turn: progress while it runs, its numbers once done.
@@ -15192,7 +15198,7 @@ function cpLineHtml(info, st, now) {
 }
 function cpFacts(st) {
   var c = st.c;
-  var f = [['상태', st.phase === 'done' ? '완료' : st.phase === 'live' ? '진행 중' : '결과 기록 없음']];
+  var f = [['상태', st.phase === 'done' ? '완료' : st.phase === 'live' ? '진행 중' : '결과 기록 없음', 'cp-state']];
   if (st.phase === 'done' && c.preTokens != null && c.postTokens != null) {
     var pre = toNum(c.preTokens);
     var cut = pre > 0 ? Math.round((1 - toNum(c.postTokens) / pre) * 100) : 0;
@@ -15207,13 +15213,13 @@ function cpFacts(st) {
 function sysFactsHtml(facts) {
   if (!facts.length) return '';
   return '<dl class="sys-facts">' + facts.map(function(f) {
-    return '<dt>' + esc(f[0]) + '</dt><dd>' + esc(f[1]) + '</dd>';
+    return '<dt>' + esc(f[0]) + '</dt><dd' + (f[2] ? ' class="' + f[2] + '"' : '') + '>' + esc(f[1]) + '</dd>';
   }).join('') + '</dl>';
 }
 // One line: who · when · badge · what it did. Opens (a native disclosure) to its
 // facts and the raw prompt.
-function renderSysTurn(t, info, attrs, time, initial, now) {
-  var st = info.kind === 'compact' ? cpState(t, now) : null;
+function renderSysTurn(t, info, attrs, time, initial, now, notLast) {
+  var st = info.kind === 'compact' ? cpState(t, now, notLast) : null;
   var live = st && st.phase === 'live';
   var facts = st ? info.facts.concat(cpFacts(st)) : info.facts;
   var line = st ? '<span class="cp-slot">' + cpLineHtml(info, st, now) + '</span>' : '<span class="sys-line">' + esc(info.line) + '</span>';
@@ -15241,10 +15247,15 @@ function cpTick() {
     _cpTimer = 0;
     return;
   }
-  var all = document.querySelectorAll('#panel-turns > .turn');
+  // Turns only: the 응답 작성 중 row (.ans-pending, no data-ts) follows a running
+  // /compact as the list's last child (syncAnsPending reads turns the same way).
+  var all = document.querySelectorAll('#panel-turns > .turn[data-ts]');
   var last = all.length ? all[all.length - 1] : null;
+  // The board refills the cache in one pass: a session missing from a loaded
+  // board is not running; before the board's first load it is undecided.
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  var working = !s || s.activityState === 'working';
+  var boardLoaded = Object.keys(_sessionCache).length > 0;
+  var working = s ? s.activityState === 'working' : !boardLoaded;
   var now = Date.now();
   for (var i = 0; i < nodes.length; i++) {
     var node = nodes[i];
@@ -15255,9 +15266,12 @@ function cpTick() {
       if (slot) slot.innerHTML = cpProgressHtml(now - start, est);
       continue;
     }
+    // Ended without a result: the line and 상태 a fresh render of it shows.
     node.removeAttribute('data-cp-live');
     var badge = node.querySelector('.sys-badge');
-    if (slot) slot.innerHTML = '<span class="sys-line">' + esc((badge ? badge.textContent : '압축') + ' 처리 · 결과 기록 없음') + '</span>';
+    var state = node.querySelector('.cp-state');
+    if (slot) slot.innerHTML = '<span class="sys-line">' + esc((badge ? badge.textContent : '압축') + ' 처리') + '</span>';
+    if (state) state.textContent = '결과 기록 없음';
   }
 }
 // A rough token count for a skill body: ~4 ASCII characters or 1 other
@@ -15341,7 +15355,8 @@ function renderTurn(t, _idx, _arr, convId) {
   if (t.role === 'user') {
     // SSOT 2026-10-27 T1 — a turn soma-work put there reads as one line.
     var sys = sysTurnInfo(t);
-    if (sys) return renderSysTurn(t, sys, turnIdAttr, time, initial);
+    // A batch tells whether a later turn follows (then a /compact is not running).
+    if (sys) return renderSysTurn(t, sys, turnIdAttr, time, initial, 0, !!(_arr && typeof _idx === 'number' && _idx < _arr.length - 1));
     // User media (SSOT 2026-10-25): the files sit above the words, as chat apps
     // show an attachment with its message; a files-only turn has no empty text.
     var umCid = convId || panelConvId;
@@ -16067,6 +16082,7 @@ async function sendCommand() {
     timestamp: Date.now(),
     userName: 'You',
     rawContent: msg,
+    origin: { by: 'user' },
     _optimistic: true,
   };
   appendTurnToPanel(optimisticTurn);
