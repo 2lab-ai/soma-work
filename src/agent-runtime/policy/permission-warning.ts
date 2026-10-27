@@ -100,11 +100,14 @@ const PY_READER_MODULES = new Set([
 const NODE_STDIN_READ =
   /(?:\brequire\s*\(\s*['"](?:node:)?fs['"]\s*\)|\bfs)\s*\.\s*readFileSync\s*\(\s*0\s*(?:,\s*['"][\w-]+['"]\s*)?\)/g;
 /** node: computed or global property access can reach anything (`globalThis["ev"+"al"]`, `this[k]`). */
-const NODE_COMPUTED_ACCESS = /\b(?:globalThis|global|this|self|Reflect|Proxy)\b|\[\s*[^\]\d\s]/;
-/\brequire\s*\(\s*['"](?:node:)?fs['"]\s*\)\s*\.\s*readFileSync\s*\(\s*0\b|\bfs\s*\.\s*readFileSync\s*\(\s*0\b/g;
+const NODE_COMPUTED_ACCESS = /\b(?:globalThis|global|this|self|Reflect|Proxy)\b|\[(?!\s*\d+\s*\])/;
+
+/** Escapes and unusual whitespace can spell a name the scan cannot see (`ev\u0061l`, `import\f…`, `\`-newline). */
+const OPAQUE_SYNTAX = /\\(?:u|x|N|\r?\n)|[\f\v]/;
 
 function isDataReaderCode(family: InterpreterFamily, code: string): boolean {
   if (code.trim().length === 0) return false;
+  if (OPAQUE_SYNTAX.test(code)) return false;
   // `sys.stdout.write` / `process.stdout.write` only print.
   const scanned = code.replace(/\b(?:sys\.|process\.)?stdout\.write\b/g, 'print');
   if (NOT_A_READER.test(scanned)) return false;

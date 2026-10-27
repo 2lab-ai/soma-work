@@ -2863,11 +2863,14 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     it('does not record a steered message the queue took back (discarded) — the drain will', async () => {
+      registrySession.followUpInstructions = undefined;
       const { uuid, settle, record } = await steerWithFile('나중에 봐줘');
 
       await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'discarded' });
 
       expect(record).not.toHaveBeenCalled();
+      // …nor keep it as an instruction: the drain records it when it runs (review r3).
+      expect(registrySession.followUpInstructions).toEqual([]);
       await settle();
     });
 
@@ -2926,6 +2929,11 @@ describe('SlackHandler — follow-up queue host', () => {
 
       expect(items()[0].state).toBe('resolved');
       expect(items()[0].stateReason).toBe('consumed');
+      // Review gate r3 (grok P1): the follow-up lands on the session that is
+      // really running (the work thread), where the classifier reads it.
+      expect(workSession.followUpInstructions).toEqual([
+        expect.objectContaining({ text: '이것도 같이 봐줘', userId: 'U_OWNER' }),
+      ]);
 
       gate.resolve({ hasPendingChoice: false });
       await first;
@@ -3264,6 +3272,17 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(claudeHandler.cancelSteeredMessage).toHaveBeenCalledWith(SESSION_KEY, uuid);
       expect(outcome).toBe('cancelled');
       expect(items()[0].state).toBe('cancelled');
+      await settle();
+    });
+
+    // Review gate r3 (astra P1): a withdrawn steer is no longer the owner's instruction.
+    it('removes a withdrawn steer from the follow-up instructions', async () => {
+      registrySession.followUpInstructions = undefined;
+      const { uuid, itemId, epoch, settle } = await steerOne();
+      expect(registrySession.followUpInstructions).toHaveLength(1);
+      claudeHandler.cancelSteeredMessage = vi.fn().mockResolvedValue('withdrawn');
+      await handlerAny.cancelSteeredFollowup(SESSION_KEY, itemId, epoch, uuid);
+      expect(registrySession.followUpInstructions).toEqual([]);
       await settle();
     });
 

@@ -68,9 +68,14 @@ const permissionWarningDeduper = createPermissionWarningDeduper({ windowMs: 10 *
  * user's message, so a user cannot place the tag; a dashboard user who types it
  * only shortens their own intent.)
  */
-function ownerText(text: string): string {
+function ownerText(text: string): { text: string; ambiguous: boolean } {
   const cut = text.indexOf('<invoked_skills>');
-  return (cut >= 0 ? text.slice(0, cut) : text).trim();
+  if (cut < 0) return { text: text.trim(), ambiguous: false };
+  // Host blocks are appended last: anything after the final closing tag means the
+  // marker was not (only) the host's, so what was cut may hold owner text.
+  const lastClose = text.lastIndexOf('</invoked_skills>');
+  const tail = lastClose >= 0 ? text.slice(lastClose + '</invoked_skills>'.length) : text.slice(cut);
+  return { text: text.slice(0, cut).trim(), ambiguous: tail.trim().length > 0 };
 }
 
 /** The executor keeps at most this many follow-ups; at the cap older ones may be gone. */
@@ -90,15 +95,17 @@ export function ownerIntent(session: ConversationSession | undefined, user: stri
   const owner = session?.ownerId;
   if (!session || !owner || owner !== user) return { instructions: [] };
   const instructions: string[] = [];
-  if (session.initialInstruction && session.initialInstructionUserId === owner) {
-    instructions.push(ownerText(session.initialInstruction));
-  }
-  const all = session.followUpInstructions ?? [];
-  for (const f of all) if (f.userId === owner) instructions.push(ownerText(f.text));
-  return {
-    instructions: instructions.filter((t) => t.length > 0),
-    ...(all.length >= FOLLOW_UP_CAP ? { incomplete: true } : {}),
+  let incomplete = session.intentHistoryIncomplete === true;
+  const add = (raw: string) => {
+    const t = ownerText(raw);
+    incomplete ||= t.ambiguous;
+    if (t.text.length > 0) instructions.push(t.text);
   };
+  if (session.initialInstruction && session.initialInstructionUserId === owner) add(session.initialInstruction);
+  const all = session.followUpInstructions ?? [];
+  for (const f of all) if (f.userId === owner) add(f.text);
+  if (all.length >= FOLLOW_UP_CAP) incomplete = true;
+  return { instructions, ...(incomplete ? { incomplete: true } : {}) };
 }
 
 /**
@@ -304,6 +311,7 @@ export async function buildStreamOptions(
           // fail closed to `ask` when no classifier is wired or it errors.
           const command = typeof toolInput?.command === 'string' ? toolInput.command : '';
           const liveSession = deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs);
+          const intent = ownerIntent(liveSession, policyUser);
           const verdict = deps.safetyClassifier
             ? await deps.safetyClassifier
                 .classify({
@@ -316,13 +324,26 @@ export async function buildStreamOptions(
                   // Default classifier model = the session's CURRENT model
                   // (#model-call-unify). Resolved on `options.model` earlier.
                   model: options.model,
-                  userIntent: ownerIntent(liveSession, policyUser),
+                  userIntent: intent,
                 })
                 .catch((err) => ({
                   verdict: 'ask' as const,
                   reason: `classifier threw (fail-closed): ${err instanceof Error ? err.message : String(err)}`,
                 }))
             : { verdict: 'ask' as const, reason: 'no classifier wired (fail-closed)' };
+          // The owner may have said something new while the model was judging (a
+          // steered "don't"): an approval made without it is not used — ask instead.
+          const intentAfter = ownerIntent(
+            deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs),
+            policyUser,
+          );
+          if (verdict.verdict === 'allow' && JSON.stringify(intentAfter) !== JSON.stringify(intent)) {
+            logger.warn('Auto-mode classifier approval dropped: owner instructions changed meanwhile', {
+              tool: toolName,
+              user: policyUser,
+            });
+            return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } };
+          }
           if (verdict.verdict === 'allow') {
             logger.info('Auto-mode classifier approved tool call', {
               tool: toolName,
