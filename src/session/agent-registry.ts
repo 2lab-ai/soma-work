@@ -47,14 +47,30 @@ export interface SpendTotals {
 }
 
 /**
+ * Version of the spend calculation (`agent-spend.ts`: what counts as a call,
+ * the zero-usage estimate, the price table). A spend sealed under another
+ * version is unsealed on restore, so the current calculation re-reads it.
+ * Bump it whenever the calculation or the prices change.
+ */
+export const SPEND_CALC_VERSION = 3;
+
+/**
  * What one subagent spent: its own API calls, read from its transcript
- * (`agent-spend.ts`) — a nested subagent's calls are its own record's.
+ * (`agent-spend.ts`). A nested subagent with a record of its own keeps its
+ * calls there; one with no record (started in the foreground by a subagent —
+ * the host never sees it) is counted here, on the nearest agent above it.
  */
 export interface AgentSpend extends SpendTotals {
   /** API calls counted (one per message id). */
   calls: number;
   /** Models the price table does not know — priced at the fallback rate, so the cost is an estimate. */
   unpricedModels?: string[];
+  /** Calls whose usage the transcript left all-zero, estimated from the calls around them (`agent-spend.ts`). */
+  estimatedCalls?: number;
+  /** {@link SPEND_CALC_VERSION} the spend was calculated with. */
+  version?: number;
+  /** Subagents without a record of their own whose calls are counted here (`agent-spend.ts`). */
+  nestedAgents?: number;
 }
 
 /** The subagents' spend added up (records still kept plus those the cap dropped). */
@@ -63,6 +79,8 @@ export interface SubagentSpendSum extends SpendTotals {
   agents: number;
   /** Some of it was priced at the fallback rate. */
   unpriced?: true;
+  /** Some of it was estimated (calls recorded without usage). */
+  estimated?: true;
 }
 
 export interface AgentRecord {
@@ -424,7 +442,11 @@ function enforceBounds(reg: AgentRegistry): void {
   });
 }
 
-function addSpend(sum: SubagentSpendSum | undefined, s: SpendTotals, unpriced: number): SubagentSpendSum {
+function addSpend(
+  sum: SubagentSpendSum | undefined,
+  s: SpendTotals & { estimatedCalls?: number },
+  unpriced: number,
+): SubagentSpendSum {
   const out: SubagentSpendSum = sum
     ? { ...sum }
     : { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, costUsd: 0, agents: 0 };
@@ -435,6 +457,7 @@ function addSpend(sum: SubagentSpendSum | undefined, s: SpendTotals, unpriced: n
   out.costUsd += s.costUsd;
   out.agents += 1;
   if (unpriced) out.unpriced = true;
+  if (s.estimatedCalls) out.estimated = true;
   return out;
 }
 
@@ -502,6 +525,12 @@ export function sanitizeAgentRegistry(raw: unknown): AgentRegistry | undefined {
     if (spend) {
       const calls = finiteNonNegative((a.spend as Record<string, unknown>).calls);
       rec.spend = { ...spend, calls: Math.floor(calls ?? 0) };
+      const est = finiteNonNegative((a.spend as Record<string, unknown>).estimatedCalls);
+      if (est) rec.spend.estimatedCalls = Math.min(Math.floor(est), rec.spend.calls);
+      const version = finitePositive((a.spend as Record<string, unknown>).version);
+      if (version) rec.spend.version = Math.floor(version);
+      const nested = finitePositive((a.spend as Record<string, unknown>).nestedAgents);
+      if (nested) rec.spend.nestedAgents = Math.min(Math.floor(nested), 10_000);
       const unpriced = (a.spend as Record<string, unknown>).unpricedModels;
       if (Array.isArray(unpriced)) {
         const names = unpriced.filter((m): m is string => typeof m === 'string' && m.length > 0).slice(0, 10);
@@ -509,7 +538,8 @@ export function sanitizeAgentRegistry(raw: unknown): AgentRegistry | undefined {
       }
     }
     if (typeof a.sdkSessionId === 'string' && a.sdkSessionId) rec.sdkSessionId = clip(a.sdkSessionId, TYPE_MAX);
-    if (a.spendFinal === true && rec.spend) rec.spendFinal = true;
+    // A seal holds only for the current calculation: an older one is re-read.
+    if (a.spendFinal === true && rec.spend?.version === SPEND_CALC_VERSION) rec.spendFinal = true;
     const ledger = sanitizeTaskLedger(a.ledger);
     if (ledger) rec.ledger = ledger;
     agents.push(rec);
@@ -524,6 +554,7 @@ export function sanitizeAgentRegistry(raw: unknown): AgentRegistry | undefined {
   if (pruned && prunedAgents) {
     reg.prunedSpend = { ...pruned, agents: Math.floor(prunedAgents) };
     if ((r.prunedSpend as Record<string, unknown>).unpriced === true) reg.prunedSpend.unpriced = true;
+    if ((r.prunedSpend as Record<string, unknown>).estimated === true) reg.prunedSpend.estimated = true;
   }
   enforceBounds(reg);
   return reg;
