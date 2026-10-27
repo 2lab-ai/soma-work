@@ -475,7 +475,7 @@ const modelAboveInput = (page: Page) =>
   });
 
 async function scenario(browser: import('playwright').Browser, theme: 'light' | 'dark', width: number, height = 900) {
-  const narrow = width < 640;
+  const narrow = width < 640 || height < 560; // a phone, upright or sideways
   const ctx = await browser.newContext({
     viewport: { width, height },
     colorScheme: theme,
@@ -741,6 +741,21 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
   // T1.5 · composer: multiline, a pasted image, the send carries it.
   const input = page.locator('#cmd-input');
   check((await input.evaluate((el) => el.tagName)) === 'TEXTAREA', `${tag}: the composer is a textarea`);
+  // While a send is in flight the button reads "Sending..." — it stays beside the field, in view.
+  const sendingRow = await page.evaluate(() => {
+    const b = document.getElementById('cmd-send') as HTMLButtonElement;
+    const i = document.getElementById('cmd-input') as HTMLElement;
+    const was = b.textContent;
+    b.textContent = 'Sending...';
+    const br = b.getBoundingClientRect();
+    const ir = i.getBoundingClientRect();
+    b.textContent = was;
+    return { sameLine: br.top < ir.bottom && br.bottom > ir.top, inView: br.bottom <= window.innerHeight };
+  });
+  check(
+    sendingRow.sameLine && sendingRow.inView,
+    `${tag}: "Sending..." stays beside the field and in view (${JSON.stringify(sendingRow)})`,
+  );
   await input.click();
   await page.keyboard.type('첫 줄');
   await page.keyboard.press('Shift+Enter');
@@ -949,6 +964,47 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
   await ctx.close();
 }
 
+// A phone sideways: the composer keeps the session model above the field, Send
+// (even "Sending...") beside it, and the whole composer in view.
+async function landscapeComposer(browser: import('playwright').Browser, width: number, height: number) {
+  const ctx = await browser.newContext({ viewport: { width, height }, hasTouch: true, isMobile: true });
+  const page = await ctx.newPage();
+  const tag = `light ${width}×${height} (phone sideways)`;
+  page.on('pageerror', (err) => check(false, `page error: ${err.message}`));
+  await installMocks(page);
+  await page.goto(`${BASE_URL}/dashboard/U001`);
+  await page.waitForFunction(() => document.querySelectorAll('#kanban .card').length >= 1, null, { timeout: 20000 });
+  await page.evaluate((k) => (window as any).openPanel(k), KEY);
+  await page.waitForTimeout(900);
+  const m = await modelAboveInput(page);
+  check(
+    m.shown && /Opus 5\.5/.test(m.text) && m.above,
+    `${tag}: the session model sits above the steering input (gap ${m.gap}px)`,
+  );
+  const row = await page.evaluate(() => {
+    const b = document.getElementById('cmd-send') as HTMLButtonElement;
+    const i = document.getElementById('cmd-input') as HTMLElement;
+    const c = (document.getElementById('panel-command') as HTMLElement).getBoundingClientRect();
+    const was = b.textContent;
+    b.textContent = 'Sending...';
+    const br = b.getBoundingClientRect();
+    const ir = i.getBoundingClientRect();
+    b.textContent = was;
+    return {
+      sameLine: br.top < ir.bottom && br.bottom > ir.top,
+      composerInView: c.top >= 0 && c.bottom <= window.innerHeight + 1,
+      overflow: document.documentElement.scrollWidth - window.innerWidth,
+    };
+  });
+  check(row.sameLine, `${tag}: "Sending..." stays beside the field`);
+  check(
+    row.composerInView && row.overflow <= 0,
+    `${tag}: the composer is in view, no sideways overflow (${JSON.stringify(row)})`,
+  );
+  await page.screenshot({ path: path.join(OUT, `composer-landscape-${width}.png`) });
+  await ctx.close();
+}
+
 async function main() {
   const dashboard = await import('../src/conversation/dashboard');
   const { createSlackSteerUploader } = await import('../src/conversation/new-task-provider');
@@ -986,6 +1042,8 @@ async function main() {
     await scenario(browser, 'light', 1280);
     await scenario(browser, 'dark', 1280);
     await scenario(browser, 'light', 390, 844);
+    // A phone sideways (iPhone 18 Pro Max landscape, a target posture of the responsive sweep).
+    await landscapeComposer(browser, 956, 440);
   } finally {
     await browser.close();
     await ws.stopWebServer();

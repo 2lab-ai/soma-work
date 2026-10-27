@@ -6093,7 +6093,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    short screen (a phone sideways), so the reading area keeps its room; its menu opens above. */
 @media (max-width: 639px), (max-height: 560px) {
   .panel-command { display: flex; flex-wrap: wrap; align-items: center; column-gap: 8px; }
-  .panel-command .panel-controls { padding: 0; flex: 0 1 auto; max-width: 42%; }
+  .panel-command .panel-controls { padding: 0; flex: 0 1 auto; }
   .panel-command .panel-controls .pc-scope { display: none; }
   .panel-command .panel-controls .mp-trigger { max-width: 100%; }
   .panel-command .panel-controls .cb-model-note { flex-basis: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
@@ -6106,7 +6106,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .panel-command .panel-controls { order: 1; max-width: calc(100% - 150px); min-width: 0; }
   .panel-command .pc-tools { order: 2; margin-left: auto; }
   .panel-command .pc-attachments, .panel-command .pc-recorder, .panel-command .pc-error { order: 3; flex-basis: 100%; }
-  .panel-command textarea { order: 4; flex: 1 1 calc(100% - 88px); min-width: 0; }
+  .panel-command textarea { order: 4; flex: 1 1 calc(100% - 140px); min-width: 0; }
   .panel-command .btn-send { order: 5; }
 }
 @media (max-width: 639px), (pointer: coarse) {
