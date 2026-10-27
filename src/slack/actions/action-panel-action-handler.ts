@@ -19,11 +19,12 @@ interface PanelActionContext {
 }
 
 /**
- * The surface carries two controls and nothing else: `⏸ 중지` while a turn
- * runs, and `세션 종료`. The workflow buttons (New Fix / Renew Fix / PR 문서화 /
- * New·Renew 리뷰 / PR 승인 / Merge) were removed on 2026-10-27 — nobody used
- * them. A message rendered before that still carries them until its next
- * re-render; such a click lands on the "unsupported" reply below.
+ * The surface carries one control: `세션 종료`. The workflow buttons (New Fix /
+ * Renew Fix / PR 문서화 / New·Renew 리뷰 / PR 승인 / Merge) and `⏸ 중지` were
+ * removed on 2026-10-27 ("세션 종료 버튼을 제외하고 모두 삭제"). A running turn
+ * is still stopped from the thread (`!`) or the dashboard. A message rendered
+ * before the removal still carries the old buttons until its next re-render;
+ * such a click lands on the "unsupported" reply below.
  */
 interface PanelActionValue {
   sessionKey?: string;
@@ -70,20 +71,15 @@ export class ActionPanelActionHandler {
         return;
       }
 
-      // Stop action: abort the active request
-      if (value.action === 'stop') {
-        await this.handleStop(value.sessionKey!, session, respond);
-        return;
-      }
-
       // Close action: terminate the session
       if (value.action === 'close') {
         await this.handleClose(value.sessionKey!, session, respond);
         return;
       }
 
-      // Anything else is a workflow button from a message rendered before the
-      // 2026-10-27 removal (or a forged value). Nothing to run.
+      // Anything else is a removed button (a workflow button or ⏸ 중지) on a
+      // message rendered before the 2026-10-27 removal, or a forged value.
+      // Nothing to run.
       await respond({
         response_type: 'ephemeral',
         text: '❌ 지원하지 않는 액션입니다.',
@@ -98,34 +94,6 @@ export class ActionPanelActionHandler {
           replace_original: false,
         });
       } catch {}
-    }
-  }
-
-  private async handleStop(sessionKey: string, session: ConversationSession, respond: RespondFn): Promise<void> {
-    if (!this.ctx.requestCoordinator) {
-      await respond({
-        response_type: 'ephemeral',
-        text: '❌ 중지 기능을 사용할 수 없습니다.',
-        replace_original: false,
-      });
-      return;
-    }
-
-    // Explicit Stop button — user already knows the turn ended, so the
-    // notification gate stays quiet (no "🔴 오류 발생" card).
-    const aborted = this.ctx.requestCoordinator.abortSession(sessionKey, 'user-stop');
-    if (aborted) {
-      await respond({
-        response_type: 'ephemeral',
-        text: '🛑 요청을 중지했습니다.',
-        replace_original: false,
-      });
-    } else {
-      await respond({
-        response_type: 'ephemeral',
-        text: 'ℹ️ 현재 처리 중인 요청이 없습니다.',
-        replace_original: false,
-      });
     }
   }
 

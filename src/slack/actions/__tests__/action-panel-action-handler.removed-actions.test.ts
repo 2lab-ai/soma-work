@@ -23,10 +23,14 @@ const REMOVED = [
   'pr_create',
   'issue_research',
   'focus_choice',
+  // ⏸ 중지 too: the user kept only 세션 종료. Stopping a turn stays available
+  // from the thread (`!`) and the dashboard.
+  'stop',
 ];
 
 function makeHandler() {
   const postMessage = vi.fn();
+  const abortSession = vi.fn().mockReturnValue(true);
   const handler = new ActionPanelActionHandler({
     slackApi: { postMessage } as any,
     claudeHandler: {
@@ -40,14 +44,15 @@ function makeHandler() {
         links: { pr: { url: 'https://github.com/acme/repo/pull/1', label: 'PR #1' } },
       }),
     } as any,
+    requestCoordinator: { abortSession } as any,
   });
-  return { handler, postMessage };
+  return { handler, postMessage, abortSession };
 }
 
 describe('ActionPanelActionHandler — T1: removed workflow actions', () => {
   for (const action of REMOVED) {
     it(`replies "unsupported" to a stale ${action} click and injects nothing`, async () => {
-      const { handler, postMessage } = makeHandler();
+      const { handler, postMessage, abortSession } = makeHandler();
       const respond = vi.fn().mockResolvedValue(undefined);
 
       await handler.handleAction(
@@ -65,6 +70,7 @@ describe('ActionPanelActionHandler — T1: removed workflow actions', () => {
         expect.objectContaining({ response_type: 'ephemeral', text: '❌ 지원하지 않는 액션입니다.' }),
       );
       expect(postMessage).not.toHaveBeenCalled();
+      expect(abortSession).not.toHaveBeenCalled();
     });
   }
 });

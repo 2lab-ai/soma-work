@@ -139,20 +139,19 @@ describe('ActionPanelBuilder', () => {
     const actionBlocks = payload.blocks.filter((b) => b.type === 'actions');
     expect(actionBlocks).toHaveLength(0);
   });
-  it('stop button shows ⏸ emoji prefix when working', () => {
+  it('renders only 세션 종료 while working — the ⏸ 중지 button is gone too', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-11',
       workflow: 'default',
       activityState: 'working',
       hasActiveRequest: true,
     });
-    const actionBlocks = payload.blocks.filter((block) => block.type === 'actions');
-    const stopButton = actionBlocks.flatMap((b: any) => b.elements).find((el: any) => el.action_id === 'panel_stop');
+    const actionIds = payload.blocks
+      .filter((block) => block.type === 'actions')
+      .flatMap((b: any) => b.elements.map((el: any) => el.action_id));
 
-    expect(stopButton).toBeDefined();
-    expect(stopButton.text.text).toBe('⏸ 중지');
+    expect(actionIds).toEqual(['panel_close']);
   });
-
   it('block order: status rail (badge + metrics) → actions, no divider', () => {
     const payload = ActionPanelBuilder.build({
       sessionKey: 'session-8',

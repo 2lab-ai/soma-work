@@ -48,6 +48,19 @@ describe('ActionPanelBuilder — T1: only 세션 종료 survives', () => {
     });
   }
 
+  it('renders only 세션 종료 while a turn runs — no ⏸ 중지 (T1, literal: "세션 종료 버튼을 제외하고 모두 삭제")', () => {
+    for (const working of [{ activityState: 'working' as const }, { hasActiveRequest: true }]) {
+      const { blocks } = ActionPanelBuilder.build({
+        sessionKey: 'C1:1700.000000',
+        workflow: 'pr-review',
+        now: NOW,
+        ...working,
+      });
+      expect(buttons(blocks).map((b) => b.action_id)).toEqual(['panel_close']);
+      expect(JSON.stringify(blocks)).not.toMatch(/panel_stop|⏸|중지/);
+    }
+  });
+
   it('never emits a workflow action id, whatever the state', () => {
     const states = [
       { activityState: 'working' as const },
