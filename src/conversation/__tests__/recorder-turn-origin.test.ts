@@ -112,6 +112,47 @@ describe('T2.1 — a /compact turn records its compaction', () => {
     void s2;
   });
 
+  it('a goal objective that starts with /compact is not a /compact turn', async () => {
+    const cid = createConversation('C1', '1700000000.000900', 'U1', 'Zhuge');
+    let seen = nextTurn();
+    recordUserTurn(cid, '/compact', 'Zhuge', 'U1');
+    const first = await seen;
+    await recordCompactResult(cid, { endedAt: first.timestamp + 60_000, durationMs: 60_000 });
+    seen = nextTurn();
+    recordUserTurn(cid, '/compact 명령의 버그를 고쳐라', 'Zhuge', 'U1', undefined, { origin: { by: 'user' } });
+    const goal = await seen;
+    expect(goal.compact).toBeUndefined();
+    // The SDK compacting inside that turn writes nothing onto it.
+    expect(await recordCompactResult(cid, { endedAt: goal.timestamp + 1000, durationMs: 1000 })).toBe(false);
+  });
+
+  it('numbers that arrive after the result was written fill the gaps, never overwrite', async () => {
+    const cid = createConversation('C1', '1700000000.001000', 'U1', 'Zhuge');
+    let seen = nextTurn();
+    recordUserTurn(cid, '/compact', 'Zhuge', 'U1');
+    const c = await seen;
+    await recordCompactResult(cid, { endedAt: c.timestamp + 5000, durationMs: 5000 });
+    seen = nextTurn();
+    expect(
+      await recordCompactResult(cid, {
+        endedAt: c.timestamp + 7000,
+        durationMs: 9999,
+        preTokens: 160_000,
+        postTokens: 35_000,
+        trigger: 'auto',
+      }),
+    ).toBe(true);
+    expect((await seen).compact).toEqual({
+      endedAt: c.timestamp + 5000,
+      durationMs: 5000,
+      preTokens: 160_000,
+      postTokens: 35_000,
+      trigger: 'auto',
+    });
+    // Nothing missing any more → nothing written.
+    expect(await recordCompactResult(cid, { endedAt: c.timestamp + 8000, preTokens: 1 })).toBe(false);
+  });
+
   it('a /compact turn older than a compaction can run is not the one that ended', async () => {
     const cid = createConversation('C1', '1700000000.000800', 'U1', 'Zhuge');
     const seen = nextTurn();
