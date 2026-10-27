@@ -39,7 +39,7 @@ import { assertIncidentRequest, buildIncidentSdkOptions, type IncidentRequestLik
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { getPermissionGatedServers, loadMcpToolPermissions } from '../../mcp-tool-permission-config';
 import { resolveModelProfile } from '../../metrics/model-profile';
-import { clampEffortToModel } from '../../model-catalog';
+import { clampEffortToModel, modelCatalog } from '../../model-catalog';
 import { isSafePathSegment, normalizeTmpPath } from '../../path-utils';
 import type { SdkPluginPath } from '../../plugin/types';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
@@ -49,6 +49,26 @@ import { DEFAULT_THINKING_ENABLED, userSettingsStore } from '../../user-settings
 import { createTrackedClaudeProcessSpawner } from '../claude-child-process-registry';
 import type { SafetyClassifier } from '../policy/safety-classifier';
 import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from '../policy/tool-policy';
+
+/** The llmux catalog group whose streams report each call's usage on `message_start`. */
+const CLAUDE_GROUP = 'claude';
+/** Claude ids, for an id the catalog does not list (cold start, non-llmux auth). */
+const CLAUDE_MODEL_RE = /^claude-/i;
+
+/**
+ * Does this model's stream leave per-call usage to `message_delta`, so the
+ * harness must request partial messages to see it? Every non-claude llmux
+ * provider does (codex, grok — measured: `message_start.usage = {0, 0}`).
+ * The catalog group decides; the id prefix only decides for an id the
+ * catalog does not list. A false positive costs only frames: the mapper
+ * reads a delta only when its call's `message_start` was empty.
+ */
+function needsStreamedCallUsage(model: string): boolean {
+  const id = model.trim();
+  const group = modelCatalog.getGroupFor(id);
+  if (group) return group !== CLAUDE_GROUP;
+  return !CLAUDE_MODEL_RE.test(id);
+}
 
 /**
  * Structural logger surface used by the builder. The concrete `Logger`
@@ -382,6 +402,15 @@ export async function buildStreamOptions(
         blockingLimitOverride: env.CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE,
       });
     }
+  }
+
+  // Per-call usage for non-claude models (sol[1m] context miscalculation,
+  // 2026-10-27). llmux's codex / grok providers report each call's usage on
+  // `message_delta` only and the pinned SDK copies the empty `message_start`
+  // usage onto every assistant frame — without partial messages the harness
+  // falls back to the turn's billing aggregate as the current context.
+  if (options.model && needsStreamedCallUsage(options.model)) {
+    options.includePartialMessages = true;
   }
 
   // Set effort level only when explicitly configured. The value is clamped
