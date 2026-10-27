@@ -103,43 +103,20 @@ export function resolveModelOverride(config?: CronModelConfig): string | undefin
   return undefined;
 }
 
-/**
- * Per-fire options beyond the job itself. `note` is appended to the injected
- * prompt on every delivery path (queued entries keep it), so a fire can carry
- * context the job definition does not — e.g. which deploy triggered it.
- * `forceNewThread` takes the fastlane path whatever the job's mode/target say.
- */
-export interface CronFireOptions {
-  note?: string;
-  forceNewThread?: boolean;
-}
-
-/** A fire waiting for its session to go idle. */
-interface QueuedCron {
-  job: CronJob;
-  note?: string;
-}
-
 /** The structured origin every injected fire carries. */
 function cronOrigin(job: CronJob): { jobId: string; jobName: string } {
   return { jobId: job.id, jobName: job.name };
 }
 
 /** The text a fire injects / posts. */
-function cronText(job: CronJob, note?: string): string {
-  return `[cron:${job.name}] ${job.prompt}${note ?? ''}`;
+function cronText(job: CronJob): string {
+  return `[cron:${job.name}] ${job.prompt}`;
 }
-
-/**
- * What {@link CronScheduler.fireDeployLane} runs: a deploy-only lane
- * (src/deploy-lanes.ts) — the parts of a cron job a fire needs, without being one.
- */
-export type DeployLaneSpec = Pick<CronJob, 'name' | 'owner' | 'channel' | 'prompt' | 'modelConfig'>;
 
 export class CronScheduler {
   private deps: CronSchedulerDeps;
   private timer: ReturnType<typeof setInterval> | null = null;
-  private pendingCronQueue: Map<string, QueuedCron[]> = new Map();
+  private pendingCronQueue: Map<string, CronJob[]> = new Map();
   private isRunning = false;
   /** Last epoch minute a completed tick evaluated; null until the first tick. */
   private lastEvaluatedMinute: number | null = null;
@@ -182,16 +159,11 @@ export class CronScheduler {
    * runs with the owner's identity; the attribution exists so cron history can
    * answer "who fired this" — the one question a permission feature must not
    * leave to the log file.
-   *
-   * `forceNewThread` / `note`: see {@link CronFireOptions}. A deploy-triggered
-   * fire uses both — it must start now in its own thread (queued behind the
-   * owner's busy session it would only claim to have started), and it must know
-   * which deploy fired it.
    */
   async runJobNow(
     owner: string,
     name: string,
-    opts?: { triggeredBy?: string } & CronFireOptions,
+    opts?: { triggeredBy?: string },
   ): Promise<{ ok: boolean; message: string }> {
     let job: CronJob | undefined;
     try {
@@ -208,50 +180,13 @@ export class CronScheduler {
       // Delivery helpers record failures internally and report via the return
       // status — surface that here so the ▶ button never claims success on a
       // swallowed Slack delivery error.
-      const result = await this.executeJob(job, now, opts?.triggeredBy, {
-        note: opts?.note,
-        forceNewThread: opts?.forceNewThread,
-      });
+      const result = await this.executeJob(job, now, opts?.triggeredBy);
       return result.ok
         ? { ok: true, message: result.detail }
         : { ok: false, message: `delivery failed (${result.detail}) — cron history 확인` };
     } catch (error: any) {
       logger.error('Manual cron fire failed', { name: job.name, error: error?.message });
       this.recordExecution(job, 'failed', 'idle_inject', undefined, error?.message, opts?.triggeredBy);
-      return { ok: false, message: error?.message ?? 'unknown error' };
-    }
-  }
-
-  /**
-   * Start a deploy-only lane (src/deploy-lanes.ts) in a new thread of its
-   * channel: the new-thread path of a cron fire — owner identity, the lane's
-   * model, never queued behind a busy session — for something that is not a
-   * cron job. So it touches neither cron storage nor cron history; the log is
-   * its only record. The thread's root is `rootText`, the injected prompt
-   * `[deploy-lane:<name>] <prompt><note>`.
-   *
-   * Same contract as {@link runJobNow}: resolves when the injected turn ends,
-   * `{ ok: false }` when the thread could not be created or the fire threw.
-   */
-  async fireDeployLane(
-    lane: DeployLaneSpec,
-    opts: { triggeredBy?: string; note?: string; rootText: string },
-  ): Promise<{ ok: boolean; message: string }> {
-    logger.info('Deploy lane fire', { name: lane.name, owner: lane.owner, triggeredBy: opts.triggeredBy });
-    try {
-      const rootTs = await this.injectInNewThread(
-        lane,
-        opts.rootText,
-        `[deploy-lane:${lane.name}] ${lane.prompt}${opts.note ?? ''}`,
-      );
-      if (!rootTs) {
-        logger.error('Deploy lane thread not created (no ts returned)', { name: lane.name, channel: lane.channel });
-        return { ok: false, message: 'thread creation returned no ts' };
-      }
-      logger.info('Deploy lane turn ended', { name: lane.name, owner: lane.owner, channel: lane.channel, rootTs });
-      return { ok: true, message: 'new_thread' };
-    } catch (error: any) {
-      logger.error('Deploy lane fire failed', { name: lane.name, error: error?.message });
       return { ok: false, message: error?.message ?? 'unknown error' };
     }
   }
@@ -357,50 +292,38 @@ export class CronScheduler {
    * Fastlane mode always creates a new thread regardless of session state.
    * Target determines delivery: channel (default), thread (reply), or dm.
    */
-  private async executeJob(
-    job: CronJob,
-    now: Date,
-    triggeredBy?: string,
-    fire: CronFireOptions = {},
-  ): Promise<{ ok: boolean; detail: string }> {
-    const { note } = fire;
-
-    // Forced: always a new thread in the job channel, whatever mode/target say.
-    if (fire.forceNewThread) {
-      return { ok: await this.executeWithNewThread(job, now, triggeredBy, note), detail: 'new_thread' };
-    }
-
+  private async executeJob(job: CronJob, now: Date, triggeredBy?: string): Promise<{ ok: boolean; detail: string }> {
     const target = job.target || 'channel';
 
     // DM target: send directly to user, no session interaction
     if (target === 'dm') {
-      return { ok: await this.executeWithDm(job, now, triggeredBy, note), detail: 'dm' };
+      return { ok: await this.executeWithDm(job, now, triggeredBy), detail: 'dm' };
     }
 
     // Thread target: post reply in existing thread, no session interaction
     if (target === 'thread') {
-      return { ok: await this.executeWithThreadReply(job, now, triggeredBy, note), detail: 'thread_reply' };
+      return { ok: await this.executeWithThreadReply(job, now, triggeredBy), detail: 'thread_reply' };
     }
 
     // Channel target (default): original behavior
     // Fastlane: always new thread, skip session lookup
     if (job.mode === 'fastlane') {
-      return { ok: await this.executeWithNewThread(job, now, triggeredBy, note), detail: 'new_thread' };
+      return { ok: await this.executeWithNewThread(job, now, triggeredBy), detail: 'new_thread' };
     }
 
     const session = this.findSession(job.owner, job.channel, job.threadTs);
 
     if (!session) {
       // Scenario 6: No session → create new thread
-      return { ok: await this.executeWithNewThread(job, now, triggeredBy, note), detail: 'new_thread' };
+      return { ok: await this.executeWithNewThread(job, now, triggeredBy), detail: 'new_thread' };
     }
     if (session.activityState === 'idle') {
       // Scenario 4: Idle → inject immediately
-      await this.injectMessage(job, session, now, triggeredBy, note);
+      await this.injectMessage(job, session, now, triggeredBy);
       return { ok: true, detail: 'idle_inject' };
     }
     // Scenario 5: Busy → queue and wait for idle
-    this.enqueueForIdle(job, session, now, triggeredBy, note);
+    this.enqueueForIdle(job, session, now, triggeredBy);
     return { ok: true, detail: 'busy_queue' };
   }
 
@@ -442,14 +365,13 @@ export class CronScheduler {
     session: ConversationSession,
     now: Date,
     triggeredBy?: string,
-    note?: string,
   ): Promise<void> {
     const syntheticEvent: SyntheticMessageEvent = {
       user: job.owner,
       channel: session.channelId,
       thread_ts: session.threadTs,
       ts: `${Date.now() / 1000}`,
-      text: cronText(job, note),
+      text: cronText(job),
       synthetic: true,
       skipDispatch: true,
       modelOverride: resolveModelOverride(job.modelConfig),
@@ -478,17 +400,11 @@ export class CronScheduler {
    * Queue a cron job for later execution when session becomes idle.
    * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 5, Section 3a
    */
-  private enqueueForIdle(
-    job: CronJob,
-    session: ConversationSession,
-    now: Date,
-    triggeredBy?: string,
-    note?: string,
-  ): void {
+  private enqueueForIdle(job: CronJob, session: ConversationSession, now: Date, triggeredBy?: string): void {
     const sessionKey = buildWorkSessionKey(session.channelId, session.threadTs);
     const queue = this.pendingCronQueue.get(sessionKey) || [];
     const isFirstInQueue = queue.length === 0;
-    queue.push({ job, note });
+    queue.push(job);
     this.pendingCronQueue.set(sessionKey, queue);
 
     logger.info('Queued cron for idle', {
@@ -523,7 +439,7 @@ export class CronScheduler {
       return;
     }
 
-    const { job, note } = queue.shift()!;
+    const job = queue.shift()!;
     logger.info('Draining queued cron on idle', { name: job.name, sessionKey, remaining: queue.length });
 
     // Find session again (it may have changed)
@@ -540,7 +456,7 @@ export class CronScheduler {
       channel: session.channelId,
       thread_ts: session.threadTs,
       ts: `${Date.now() / 1000}`,
-      text: cronText(job, note),
+      text: cronText(job),
       synthetic: true,
       skipDispatch: true,
       modelOverride: resolveModelOverride(job.modelConfig),
@@ -566,16 +482,13 @@ export class CronScheduler {
    * Create a new bot-initiated thread and inject the cron message.
    * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 6, Section 3b-3c
    */
-  private async executeWithNewThread(job: CronJob, now: Date, triggeredBy?: string, note?: string): Promise<boolean> {
+  private async executeWithNewThread(job: CronJob, now: Date, triggeredBy?: string): Promise<boolean> {
     logger.info('No session found, creating new thread', { name: job.name, channel: job.channel });
 
     let openedTs: string | undefined;
     try {
-      const rootTs = await this.injectInNewThread(job, `[cron:${job.name}] Scheduled task`, cronText(job, note), {
-        cron: cronOrigin(job),
-        onOpened: (ts) => {
-          openedTs = ts;
-        },
+      const rootTs = await this.injectInNewThread(job, `[cron:${job.name}] Scheduled task`, cronText(job), (ts) => {
+        openedTs = ts;
       });
       if (!rootTs) {
         logger.warn('Failed to create thread (no ts returned)', { name: job.name });
@@ -605,36 +518,33 @@ export class CronScheduler {
   }
 
   /**
-   * Open a bot thread in `fire.channel` with `rootText` and inject `text` into
-   * it as `fire.owner`, on the fire's model. Resolves with the root ts once the
+   * Open a bot thread in `job.channel` with `rootText` and inject `text` into
+   * it as `job.owner`, on the job's model. The fire names and files the session
+   * it opens (SSOT 2026-10-23 T1). `onOpened` is told the root ts as soon as the
+   * thread exists, before the turn runs. Resolves with the root ts once the
    * injected turn ends, or undefined when Slack returned no ts (nothing
    * injected). Throws what the thread creator or the injector throws.
    */
   private async injectInNewThread(
-    fire: DeployLaneSpec,
+    job: CronJob,
     rootText: string,
     text: string,
-    opts: {
-      /** A cron job's fire names and files the session it opens (SSOT 2026-10-23 T1). */
-      cron?: { jobId: string; jobName: string };
-      /** Told the root ts as soon as the thread exists, before the turn runs. */
-      onOpened?: (rootTs: string) => void;
-    } = {},
+    onOpened?: (rootTs: string) => void,
   ): Promise<string | undefined> {
-    const rootTs = await this.deps.threadCreator(fire.channel, rootText);
+    const rootTs = await this.deps.threadCreator(job.channel, rootText);
     if (!rootTs) return undefined;
-    opts.onOpened?.(rootTs);
+    onOpened?.(rootTs);
 
     const syntheticEvent: SyntheticMessageEvent = {
-      user: fire.owner,
-      channel: fire.channel,
+      user: job.owner,
+      channel: job.channel,
       thread_ts: rootTs,
       ts: `${Date.now() / 1000}`,
       text,
       synthetic: true,
       skipDispatch: true,
-      modelOverride: resolveModelOverride(fire.modelConfig),
-      ...(opts.cron ? { cron: opts.cron } : {}),
+      modelOverride: resolveModelOverride(job.modelConfig),
+      cron: cronOrigin(job),
       routeContext: { skipAutoBotThread: true },
     };
 
@@ -645,14 +555,14 @@ export class CronScheduler {
   /**
    * Send cron result as a DM to the job owner.
    */
-  private async executeWithDm(job: CronJob, now: Date, triggeredBy?: string, note?: string): Promise<boolean> {
+  private async executeWithDm(job: CronJob, now: Date, triggeredBy?: string): Promise<boolean> {
     if (!this.deps.dmSender) {
       logger.warn('DM sender not configured, falling back to new thread', { name: job.name });
-      return this.executeWithNewThread(job, now, triggeredBy, note);
+      return this.executeWithNewThread(job, now, triggeredBy);
     }
 
     try {
-      const text = cronText(job, note);
+      const text = cronText(job);
       await this.deps.dmSender(job.owner, text);
       this.deps.storage.updateLastRun(job.id, now);
       this.recordExecution(job, 'success', 'dm', undefined, undefined, triggeredBy);
@@ -668,7 +578,7 @@ export class CronScheduler {
   /**
    * Post cron result as a reply in an existing thread.
    */
-  private async executeWithThreadReply(job: CronJob, now: Date, triggeredBy?: string, note?: string): Promise<boolean> {
+  private async executeWithThreadReply(job: CronJob, now: Date, triggeredBy?: string): Promise<boolean> {
     if (!job.threadTs) {
       logger.error('Thread target requires threadTs — cannot deliver', { name: job.name });
       this.deps.storage.updateLastRun(job.id, now);
@@ -684,11 +594,11 @@ export class CronScheduler {
     }
     if (!this.deps.threadReplier) {
       logger.warn('Thread replier not configured, falling back to new thread', { name: job.name });
-      return this.executeWithNewThread(job, now, triggeredBy, note);
+      return this.executeWithNewThread(job, now, triggeredBy);
     }
 
     try {
-      const text = cronText(job, note);
+      const text = cronText(job);
       await this.deps.threadReplier(job.channel, job.threadTs, text);
       this.deps.storage.updateLastRun(job.id, now);
       this.recordExecution(job, 'success', 'thread_reply', undefined, undefined, triggeredBy);

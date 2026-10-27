@@ -1019,6 +1019,77 @@ describe('loadConfig — ui surfaces passthrough', () => {
   });
 });
 
+describe('loadConfig — deploySandbox passthrough', () => {
+  let tmpDir: string;
+  let configFile: string;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'unified-config-deploy-sandbox-'));
+    configFile = path.join(tmpDir, 'config.json');
+  });
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  const GRANT = {
+    users: ['UAPPROVED1'],
+    allowedDomains: ['qa.example.test', 'admin.qa.example.test'],
+    allowWrite: ['/srv/qa/lock', '/srv/qa/runs'],
+  };
+
+  it('loads deploySandbox into result.deploySandbox verbatim (opaque passthrough)', () => {
+    fs.writeFileSync(configFile, JSON.stringify({ ui: {}, deploySandbox: GRANT }));
+    expect(loadConfig(configFile).deploySandbox).toEqual(GRANT);
+  });
+
+  it('round-trips deploySandbox through loadConfig → saveConfig (a plugin save must not revoke the grant)', () => {
+    fs.writeFileSync(
+      configFile,
+      JSON.stringify({ ui: {}, plugin: { marketplace: [], plugins: [] }, deploySandbox: GRANT }),
+    );
+    const loaded = loadConfig(configFile);
+    saveConfig(configFile, { ...loaded, plugin: { ...loaded.plugin, plugins: ['some@plugin'] } });
+
+    expect(JSON.parse(fs.readFileSync(configFile, 'utf-8')).deploySandbox).toEqual(GRANT);
+  });
+
+  it('keeps ${VAR} text in deploySandbox literal — never persisted resolved', () => {
+    process.env.DEPLOY_SANDBOX_LEAK_TEST = 'resolved-value-must-stay-in-env';
+    try {
+      const raw = { ...GRANT, allowWrite: ['${DEPLOY_SANDBOX_LEAK_TEST}'] };
+      fs.writeFileSync(configFile, JSON.stringify({ ui: {}, plugin: {}, deploySandbox: raw }));
+
+      const loaded = loadConfig(configFile);
+      expect(loaded.deploySandbox).toEqual(raw);
+      saveConfig(configFile, { ...loaded, plugin: { plugins: ['some@plugin'] } });
+
+      const onDiskRaw = fs.readFileSync(configFile, 'utf-8');
+      expect(onDiskRaw).toContain('${DEPLOY_SANDBOX_LEAK_TEST}');
+      expect(onDiskRaw).not.toContain('resolved-value-must-stay-in-env');
+    } finally {
+      delete process.env.DEPLOY_SANDBOX_LEAK_TEST;
+    }
+  });
+
+  it.each([
+    ['an array', ['UAPPROVED1']],
+    ['a string', 'UAPPROVED1'],
+    ['null', null],
+  ])('drops a malformed deploySandbox (%s) without throwing', (_label, value) => {
+    fs.writeFileSync(configFile, JSON.stringify({ ui: {}, deploySandbox: value }));
+    expect(loadConfig(configFile).deploySandbox).toBeUndefined();
+  });
+
+  it('adds no deploySandbox key when there is none', () => {
+    fs.writeFileSync(configFile, JSON.stringify({ ui: {}, plugin: {} }));
+    const loaded = loadConfig(configFile);
+    expect('deploySandbox' in loaded).toBe(false);
+    saveConfig(configFile, loaded);
+    expect('deploySandbox' in JSON.parse(fs.readFileSync(configFile, 'utf-8'))).toBe(false);
+  });
+});
+
 describe('config.json ui defaults seeding (디폴트 설정을 config.json에)', () => {
   // User requirement SSOT_1: defaults must land IN config.json itself so the
   // operator sees and edits them there. Seed happens once, only when the
