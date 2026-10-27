@@ -268,9 +268,13 @@ async function _recordUserTurnAsync(
   if (_onTurnRecorded) _onTurnRecorded(conversationId, turn);
 }
 
-/** The SDK's local compact command as a turn's text: `/compact` and its arguments. */
+/**
+ * A `/compact` turn: soma-work records only the bare command (`/compact --yes`
+ * and the auto-compact both send `/compact`). A goal objective that starts with
+ * it is the user's words (executor `literalPrompt`), not a compaction.
+ */
 export function isCompactCommandText(text: string | undefined): boolean {
-  return (text ?? '').trim().split(/\s/)[0] === '/compact';
+  return (text ?? '').trim() === '/compact';
 }
 
 /**
@@ -294,10 +298,10 @@ function previousCompactionMs(record: ConversationRecord): number | undefined {
  * Dashboard SSOT 2026-10-27 T2 — a compaction ended (the PostCompact hook /
  * `compact_boundary`, once per cycle): write its numbers onto the `/compact`
  * turn that ran it and push that turn to the dashboard again. The turn is the
- * latest user turn that is a `/compact` with no result yet, recorded no longer
- * ago than a compaction can run. A compaction the SDK started inside an
- * ordinary turn has no such turn — nothing is written. Returns whether a turn
- * was written.
+ * latest user turn when it is a `/compact`, recorded no longer ago than a
+ * compaction can run; a result already on it only gets its missing numbers. A
+ * compaction the SDK started inside an ordinary turn has no such turn —
+ * nothing is written. Returns whether a turn was written.
  */
 export async function recordCompactResult(
   conversationId: string,
@@ -312,15 +316,28 @@ export async function recordCompactResult(
     if (isCompactCommandText(t.rawContent)) turn = t;
     break;
   }
-  if (!turn || turn.compact?.endedAt !== undefined) return false;
+  if (!turn) return false;
   if (result.endedAt - turn.timestamp > COMPACT_RESULT_WINDOW_MS) return false;
 
-  const compact: TurnCompaction = { ...turn.compact, endedAt: result.endedAt };
+  // Already written (a second END of the cycle, or the SDK's boundary landing
+  // after the hook sealed it without numbers): fill what is missing, never
+  // overwrite.
+  const sealed = turn.compact?.endedAt !== undefined;
+  const compact: TurnCompaction = sealed ? { ...turn.compact } : { ...turn.compact, endedAt: result.endedAt };
+  let filled = false;
   for (const key of ['durationMs', 'preTokens', 'postTokens'] as const) {
     const v = result[key];
-    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) compact[key] = v;
+    if (sealed && compact[key] !== undefined) continue;
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) {
+      compact[key] = v;
+      filled = true;
+    }
   }
-  if (result.trigger === 'manual' || result.trigger === 'auto') compact.trigger = result.trigger;
+  if ((result.trigger === 'manual' || result.trigger === 'auto') && !(sealed && compact.trigger)) {
+    compact.trigger = result.trigger;
+    filled = true;
+  }
+  if (sealed && !filled) return false;
   turn.compact = compact;
   record.updatedAt = Date.now();
   await serializedSave(conversationId, record);

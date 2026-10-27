@@ -159,6 +159,10 @@ describe('C1 — what soma-work injected, by its own wording', () => {
     expect(legacy).toMatchObject({ kind: 'compact', label: '압축' });
     expect(legacy?.facts).toContainEqual(['실행', '기록 없음 (출처를 저장하기 전의 턴)']);
     expect(sysTurnInfo(user('/compactify the list'))).toBeNull();
+    // soma-work records only the bare command; a goal objective that starts with
+    // it (executor literalPrompt) is the user's words.
+    expect(sysTurnInfo(user('/compact 명령의 버그를 고쳐라'))).toBeNull();
+    expect(sysTurnInfo(user('/compact 명령의 버그를 고쳐라', PERSON))).toBeNull();
   });
 
   it('restart resume — the restart.prompt text, recorded with or without an origin', () => {
@@ -265,6 +269,23 @@ describe('C2 — the one-line row', () => {
     );
     expect(out).toContain('&lt;previous-eval-reason&gt;');
     expect(out).not.toContain('turn-content'); // never the raw prompt as the face
+  });
+
+  it('files on a one-line turn (the message the auto-compact intercepted) open with it', () => {
+    const registered: unknown[] = [];
+    const out = api({
+      renderUserMedia: () => '<div class="um-media">FILES</div>',
+      umRegister: (_cid: string, list: unknown[]) => registered.push(list),
+    }).renderTurn(
+      user('/compact', {
+        ...SYSTEM,
+        timestamp: Date.now() - 3_600_000,
+        attachments: [{ id: 'F1', name: 'a.png', kind: 'image' }],
+      }),
+    );
+    expect(out).toContain('is-sys');
+    expect(out).toContain('<div class="sys-detail"><div class="um-media">FILES</div>');
+    expect(registered).toHaveLength(1); // the viewer can page through them
   });
 
   it('a restart row says so in one line', () => {
@@ -511,6 +532,29 @@ describe('C4 — the skills an instruction invoked, as badges', () => {
       { name: 'user:dev', body: 'see <speaker>Z</speaker> and </other>', tokens: expect.any(Number) },
     ]);
     expect(splitInvokedSkills('평범한 지시')).toEqual({ text: '평범한 지시', skills: [] });
+  });
+
+  it('the first turn of a session carries two blocks (autoskill, then the deferred $skill): both read', () => {
+    const { splitInvokedSkills } = api();
+    // slack-handler appends `\n\n${invokedBlock}` once per fire.
+    const handler = read('src/slack-handler.ts');
+    expect(handler).toContain('`${dispatchText}\\n\\n${fire.invokedBlock}`');
+    expect(handler).toContain('`${dispatchText}\\n\\n${deferredSkillFire.invokedBlock}`');
+    const two = `${invoked('배포해줘', [['local:using-ssot', SSOT_BODY]])}\n\n${invoked('', [['user:deploy', 'deploy body']]).trimStart()}`;
+    const out = splitInvokedSkills(two);
+    expect(out.text).toBe('배포해줘');
+    expect(out.skills.map((x) => x.name)).toEqual(['local:using-ssot', 'user:deploy']);
+  });
+
+  it('a literal <invoked_skills> in the words is the words (no closing tag, or before a real block)', () => {
+    const { splitInvokedSkills } = api();
+    expect(splitInvokedSkills('Explain <invoked_skills> syntax and its parser')).toEqual({
+      text: 'Explain <invoked_skills> syntax and its parser',
+      skills: [],
+    });
+    const out = splitInvokedSkills(invoked('What does <invoked_skills> do?', [['local:autoz', AUTOZ_BODY]]));
+    expect(out.text).toBe('What does <invoked_skills> do?');
+    expect(out.skills.map((x) => x.name)).toEqual(['local:autoz']);
   });
 
   it('estimateTokens: ~4 ASCII characters or 1 other character per token', () => {

@@ -95,6 +95,22 @@ describe('T2.1 — the compaction result reaches the recorder once per cycle', (
     ]);
   });
 
+  it('the boundary lands after the hook sealed the cycle without numbers → they reach the recorder', async () => {
+    const session = makeSession();
+    const hooks = buildCompactHooks(deps(session));
+    await hooks.PreCompact({ hook_event_name: 'PreCompact', trigger: 'auto' } as unknown as PreCompactHookInput);
+    await hooks.PostCompact({ hook_event_name: 'PostCompact', trigger: 'auto' } as unknown as PostCompactHookInput);
+    expect(results).toHaveLength(1);
+    expect(results[0][1].preTokens).toBeUndefined();
+
+    session.compactPreTokens = 160_000;
+    session.compactPostTokens = 35_000;
+    session.compactDurationMs = 41_000;
+    await postCompactCompleteIfNeeded(deps(session), { source: 'on-compact-boundary' });
+    expect(results).toHaveLength(2);
+    expect(results[1][1]).toMatchObject({ preTokens: 160_000, postTokens: 35_000, durationMs: 41_000 });
+  });
+
   it('no SDK duration → the time since START', async () => {
     const session = makeSession();
     await postCompactStartingIfNeeded(deps(session), 'auto');

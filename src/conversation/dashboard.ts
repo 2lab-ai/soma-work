@@ -15116,7 +15116,9 @@ function sysTurnInfo(t) {
   var raw = decodeSlackEntities(String(t.rawContent || ''));
   var head = raw.replace(/^\\s+/, '');
   var by = t.origin && t.origin.by ? t.origin.by : '';
-  if (/^\\/compact(\\s|$)/.test(head)) {
+  // soma-work records only the bare command; a goal objective starting with it
+  // (executor literalPrompt) is the user's words.
+  if (raw.trim() === '/compact') {
     var auto = by === 'system';
     var who = auto ? 'soma-work — 컨텍스트가 자동 압축 지점을 넘어 /compact 실행'
       : by === 'user' ? '사용자 요청' : '기록 없음 (출처를 저장하기 전의 턴)';
@@ -15218,7 +15220,7 @@ function sysFactsHtml(facts) {
 }
 // One line: who · when · badge · what it did. Opens (a native disclosure) to its
 // facts and the raw prompt.
-function renderSysTurn(t, info, attrs, time, initial, now, notLast) {
+function renderSysTurn(t, info, attrs, time, initial, now, notLast, mediaHtml) {
   var st = info.kind === 'compact' ? cpState(t, now, notLast) : null;
   var live = st && st.phase === 'live';
   var facts = st ? info.facts.concat(cpFacts(st)) : info.facts;
@@ -15230,7 +15232,7 @@ function renderSysTurn(t, info, attrs, time, initial, now, notLast) {
     + '<div class="turn-body"><details class="sys-turn"><summary class="sys-row"><span class="sys-row-in">'
     + '<span class="turn-name">' + esc(t.userName || 'User') + '</span><span class="turn-time">' + esc(time) + '</span>'
     + '<span class="sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>' + line
-    + '<span class="sys-chev" aria-hidden="true"></span></span></summary><div class="sys-detail">' + sysFactsHtml(facts)
+    + '<span class="sys-chev" aria-hidden="true"></span></span></summary><div class="sys-detail">' + (mediaHtml || '') + sysFactsHtml(facts)
     + '<div class="sys-raw-h">원본 프롬프트</div><pre class="sys-raw">' + esc(info.raw) + '</pre></div></details></div></div>';
 }
 function cpEnsureTicker() {
@@ -15287,26 +15289,40 @@ function estimateTokens(s) {
 // skill as { name, body, tokens }.
 function splitInvokedSkills(raw) {
   var s = String(raw == null ? '' : raw);
-  var at = s.indexOf('<invoked_skills>');
-  if (at < 0) return { text: s, skills: [] };
-  var end = s.indexOf('</invoked_skills>', at);
-  var inner = s.slice(at + '<invoked_skills>'.length, end < 0 ? s.length : end);
+  var OPEN = '<invoked_skills>';
+  var CLOSE = '</invoked_skills>';
+  var text = '';
   var skills = [];
-  var i = 0;
-  while (i < inner.length) {
-    var m = /<([^\\s<>\\/]+)>/.exec(inner.slice(i));
-    if (!m) break;
-    var name = m[1];
-    var bodyAt = i + m.index + m[0].length;
-    var closeTag = '</' + name + '>';
-    var bodyEnd = inner.indexOf(closeTag, bodyAt);
-    if (bodyEnd < 0) bodyEnd = inner.length;
-    var body = inner.slice(bodyAt, bodyEnd).replace(/^\\n+|\\s+$/g, '');
-    skills.push({ name: name, body: body, tokens: estimateTokens(body) });
-    i = bodyEnd + closeTag.length;
+  var from = 0;
+  // Every closed block (a session's first turn carries two: autoskill, then the
+  // deferred $skill). Each block starts at the last <invoked_skills> before its
+  // closing tag, so a literal mention in the words stays words; so does one
+  // never closed.
+  for (;;) {
+    var end = s.indexOf(CLOSE, from);
+    var at = end < 0 ? -1 : s.lastIndexOf(OPEN, end);
+    if (at < from) {
+      text += s.slice(from);
+      break;
+    }
+    text += s.slice(from, at);
+    var inner = s.slice(at + OPEN.length, end);
+    var i = 0;
+    while (i < inner.length) {
+      var m = /<([^\\s<>\\/]+)>/.exec(inner.slice(i));
+      if (!m) break;
+      var name = m[1];
+      var bodyAt = i + m.index + m[0].length;
+      var closeTag = '</' + name + '>';
+      var bodyEnd = inner.indexOf(closeTag, bodyAt);
+      if (bodyEnd < 0) bodyEnd = inner.length;
+      var body = inner.slice(bodyAt, bodyEnd).replace(/^\\n+|\\s+$/g, '');
+      skills.push({ name: name, body: body, tokens: estimateTokens(body) });
+      i = bodyEnd + closeTag.length;
+    }
+    from = end + CLOSE.length;
   }
-  var text = (s.slice(0, at) + (end < 0 ? '' : s.slice(end + '</invoked_skills>'.length))).replace(/\\s+$/, '');
-  return { text: text, skills: skills };
+  return { text: skills.length ? text.replace(/\\s+$/, '') : s, skills: skills };
 }
 // The skills a turn invoked, as badges (name · estimated tokens). A badge opens
 // that skill's body under the row — one at a time; the body is written on
@@ -15353,16 +15369,17 @@ function renderTurn(t, _idx, _arr, convId) {
   const initial = (t.userName || 'U').charAt(0).toUpperCase();
   var turnIdAttr = (t.id ? ' data-turn-id="' + esc(t.id) + '"' : '') + ' data-ts="' + toNum(t.timestamp) + '"';
   if (t.role === 'user') {
-    // SSOT 2026-10-27 T1 — a turn soma-work put there reads as one line.
-    var sys = sysTurnInfo(t);
-    // A batch tells whether a later turn follows (then a /compact is not running).
-    if (sys) return renderSysTurn(t, sys, turnIdAttr, time, initial, 0, !!(_arr && typeof _idx === 'number' && _idx < _arr.length - 1));
     // User media (SSOT 2026-10-25): the files sit above the words, as chat apps
     // show an attachment with its message; a files-only turn has no empty text.
     var umCid = convId || panelConvId;
     var atts = Array.isArray(t.attachments) ? t.attachments : [];
     if (atts.length) umRegister(umCid, atts, t);
     var mediaHtml = atts.length ? renderUserMedia(umCid, atts) : '';
+    // SSOT 2026-10-27 T1 — a turn soma-work put there reads as one line; its
+    // files (the message the auto-compact intercepted) open with it. A batch
+    // tells whether a later turn follows (then a /compact is not running).
+    var sys = sysTurnInfo(t);
+    if (sys) return renderSysTurn(t, sys, turnIdAttr, time, initial, 0, !!(_arr && typeof _idx === 'number' && _idx < _arr.length - 1), mediaHtml);
     // T5 — an <invoked_skills> block becomes badges under the words.
     var said = splitInvokedSkills(decodeSlackEntities(t.rawContent || ''));
     var textHtml = said.text
