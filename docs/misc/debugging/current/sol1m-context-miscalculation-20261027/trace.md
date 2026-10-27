@@ -40,12 +40,12 @@ Two harness choices turn the missing reading into a wrong action:
 ## Fix
 
 - `build-stream-options.ts` requests partial messages when the model's llmux catalog group is not `claude`; an id the catalog does not list falls back to the `claude-` prefix. Claude sessions keep their current wire.
-- `sdk-message-to-event.ts` maps `stream_event` frames per lane (main agent, or each subagent by `parent_tool_use_id`). A `message_delta` becomes the call's per-call usage only when that lane's `message_start` carried no usage and the delta carries a prompt-side reading. Lanes clear at the turn's result. Partial content frames still map to nothing.
+- `sdk-message-to-event.ts` maps `stream_event` frames per lane (main agent, or each subagent by `parent_tool_use_id`). A `message_delta` becomes the call's per-call usage only when that lane's `message_start` carried no prompt-side usage and the merged reading has a prompt side; a later delta's null/absent field keeps the value the call already reported. Assistant frames follow the same prompt-side rule, so an output-only frame is never an occupancy reading. Lanes clear at the turn's result (`mapResult`). Partial content frames still map to nothing.
 - Downstream is unchanged: `applyUsageEvent` adopts main-lane readings for occupancy and reports every call (subagents as `sidechain`) as live spend.
 
 ## Limits
 
-- A turn whose result arrives without any main-agent `message_delta` reading (for example its first call errored) still falls back to the aggregate. A turn with no result never reaches `onUsageUpdate`: occupancy is kept and its live calls are folded into the totals.
+- A turn whose result arrives without any main-agent prompt-side reading (for example the turn's only call errored before its `message_delta`) still falls back to the aggregate. A turn with no result never reaches `onUsageUpdate`: its live calls are folded into the totals, and the fold can raise occupancy to the largest eligible live call (`live-usage.ts` `foldLiveUsage`).
 - If the LAST call of a turn ends without a `message_delta`, the previous call's reading stands as the occupancy (it under-reads by that call's growth). Tracked in #494.
 - The incident path drops all partial frames, so it does not get this fix.
 - Occupancy is adopted at turn end. Live usage during the turn records spend, not occupancy.

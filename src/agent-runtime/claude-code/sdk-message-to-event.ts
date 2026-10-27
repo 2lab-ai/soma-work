@@ -230,6 +230,33 @@ function promptTokens(u: unknown): number {
 interface StreamLaneState {
   messageId?: string;
   startUsageEmpty: boolean;
+  /** The call's last emitted reading — a later delta's null/absent field keeps it. */
+  last?: CallReading;
+}
+
+/** One call's token reading, as the per-turn usage fields carry it. */
+interface CallReading {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheCreate: number;
+}
+
+/**
+ * Merge a `message_delta` usage into the call's previous reading. Delta
+ * counters are cumulative per message and nullable (Anthropic streaming
+ * spec): a number replaces the field, null/absent keeps what the call already
+ * reported — the same merge the SDK's own MessageStream does.
+ */
+function mergeCallReading(prev: CallReading | undefined, u: Record<string, unknown>): CallReading {
+  const pick = (v: unknown, fallback: number) =>
+    typeof v === 'number' && Number.isFinite(v) ? tokenCount(v) : fallback;
+  return {
+    input: pick(u.input_tokens, prev?.input ?? 0),
+    output: pick(u.output_tokens, prev?.output ?? 0),
+    cacheRead: pick(u.cache_read_input_tokens, prev?.cacheRead ?? 0),
+    cacheCreate: pick(u.cache_creation_input_tokens, prev?.cacheCreate ?? 0),
+  };
 }
 
 export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMapper {
@@ -266,30 +293,33 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
     // `lastTurn* = 0` made the executor overwrite the real context-window
     // state with zeros (`/context` → `0/372k (100% available)`, and the GPT
     // fixed-token auto-compact trigger never fired). A per-turn usage that
-    // sums to zero carries no information — skip the event. With partial
+    // has no prompt side carries no information — skip the event. With partial
     // messages requested (non-claude models, `build-stream-options.ts`) the
     // call's real reading arrives on its `message_delta` instead
     // (`mapStreamEvent`); without one, downstream falls back to the billing
     // aggregate.
+    //
+    // The same rule as `mapStreamEvent`: a reading needs a prompt side. Every
+    // real call sends a prompt, so a frame with output only (a provider whose
+    // `message_start` reports `{input 0, output N}`) says nothing about how
+    // full the window is — adopting it would read a 600k context as 1 token.
     const u = inner.usage;
-    if (u) {
+    if (u && promptTokens(u) > 0) {
       const lastTurnInputTokens = u.input_tokens || 0;
       const lastTurnOutputTokens = u.output_tokens || 0;
       const lastTurnCacheReadTokens = u.cache_read_input_tokens || 0;
       const lastTurnCacheCreateTokens = u.cache_creation_input_tokens || 0;
-      if (lastTurnInputTokens + lastTurnOutputTokens + lastTurnCacheReadTokens + lastTurnCacheCreateTokens > 0) {
-        events.push({
-          type: 'usage',
-          usage: {
-            lastTurnInputTokens,
-            lastTurnOutputTokens,
-            lastTurnCacheReadTokens,
-            lastTurnCacheCreateTokens,
-            ...(typeof inner.id === 'string' && inner.id ? { lastTurnMessageId: inner.id } : {}),
-          },
-          ...parent,
-        });
-      }
+      events.push({
+        type: 'usage',
+        usage: {
+          lastTurnInputTokens,
+          lastTurnOutputTokens,
+          lastTurnCacheReadTokens,
+          lastTurnCacheCreateTokens,
+          ...(typeof inner.id === 'string' && inner.id ? { lastTurnMessageId: inner.id } : {}),
+        },
+        ...parent,
+      });
     }
 
     const content = Array.isArray(inner.content) ? (inner.content as Array<Record<string, unknown>>) : [];
@@ -657,6 +687,9 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
    *     assistant frame lacked usage);
    *   • the delta must carry a prompt-side reading — every real call has a
    *     prompt, so an output-only delta is not an occupancy reading.
+   *
+   * Delta counters are cumulative and nullable: a later delta's null/absent
+   * field keeps the value the call already reported (`mergeCallReading`).
    */
   function mapStreamEvent(message: SDKMessage): AgentStreamEvent[] {
     const m = message as unknown as Record<string, unknown>;
@@ -677,15 +710,17 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
 
     if (ev.type === 'message_delta') {
       const state = streamLanes.get(lane);
-      if (!state?.startUsageEmpty || promptTokens(ev.usage) === 0) return events;
-      const u = ev.usage as Record<string, unknown>;
+      if (!state?.startUsageEmpty || !ev.usage || typeof ev.usage !== 'object') return events;
+      const reading = mergeCallReading(state.last, ev.usage as Record<string, unknown>);
+      if (reading.input + reading.cacheRead + reading.cacheCreate === 0) return events;
+      state.last = reading;
       events.push({
         type: 'usage',
         usage: {
-          lastTurnInputTokens: tokenCount(u.input_tokens),
-          lastTurnOutputTokens: tokenCount(u.output_tokens),
-          lastTurnCacheReadTokens: tokenCount(u.cache_read_input_tokens),
-          lastTurnCacheCreateTokens: tokenCount(u.cache_creation_input_tokens),
+          lastTurnInputTokens: reading.input,
+          lastTurnOutputTokens: reading.output,
+          lastTurnCacheReadTokens: reading.cacheRead,
+          lastTurnCacheCreateTokens: reading.cacheCreate,
           ...(state.messageId ? { lastTurnMessageId: state.messageId } : {}),
         },
         ...parent,

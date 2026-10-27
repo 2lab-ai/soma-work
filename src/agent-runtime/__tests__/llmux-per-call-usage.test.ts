@@ -334,12 +334,62 @@ describe('llmux per-call usage — mapper (T3)', () => {
         }),
       ]),
     );
-    // Both carry the same message id, so the live map keeps one entry (the later
-    // one) and the processor's last-call reading is the later snapshot.
+    // Mapper level: both readings are emitted under the same message id. The
+    // processor-level effect is pinned in the "processor" describe below.
     expect(usages.map((u) => [u.lastTurnMessageId, u.lastTurnOutputTokens])).toEqual([
       ['rep', 2],
       ['rep', 7],
     ]);
+  });
+
+  it('#494: a repeated message_delta with a null field keeps the value the call already reported', () => {
+    const usages = perTurnUsages(
+      mapAll([
+        sdk({
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          event: { type: 'message_start', message: { id: 'nul', usage: ZERO_START } },
+        }),
+        sdk({
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          event: {
+            type: 'message_delta',
+            usage: { input_tokens: 30, cache_read_input_tokens: 610_000, output_tokens: 20 },
+          },
+        }),
+        sdk({
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          event: {
+            type: 'message_delta',
+            usage: { input_tokens: 30, cache_read_input_tokens: null, output_tokens: 100 },
+          },
+        }),
+      ]),
+    );
+    expect(usages.map((u) => [u.lastTurnInputTokens, u.lastTurnCacheReadTokens, u.lastTurnOutputTokens])).toEqual([
+      [30, 610_000, 20],
+      [30, 610_000, 100],
+    ]);
+  });
+
+  it('#494: an assistant frame with output only (no prompt-side reading) is not a per-call reading', () => {
+    const usages = perTurnUsages(
+      mapAll([
+        sdk({
+          type: 'assistant',
+          parent_tool_use_id: null,
+          message: {
+            id: 'oo',
+            model: 'x',
+            usage: { input_tokens: 0, output_tokens: 1 },
+            content: [{ type: 'text', text: 'a' }],
+          },
+        }),
+      ]),
+    );
+    expect(usages).toEqual([]);
   });
 
   it('#494: a CLI retry on the same lane (start, no delta, start, delta) reads the retried call', () => {
@@ -461,6 +511,95 @@ describe('llmux per-call usage — current context after a sol[1m] turn (T1 regr
     expect(onLiveUsage.mock.calls[onLiveUsage.mock.calls.length - 1]?.[0]).toMatchObject({
       messageId: 'resp_sub',
       sidechain: true,
+    });
+  });
+});
+
+describe('llmux per-call usage — processor, provider shapes from #494', () => {
+  const OO_START = { input_tokens: 0, output_tokens: 1 };
+  const result = (input: number, cacheRead: number, output: number) =>
+    sdk({
+      type: 'result',
+      subtype: 'success',
+      is_error: false,
+      result: 'ok',
+      modelUsage: {
+        'gpt-x': {
+          inputTokens: input,
+          outputTokens: output,
+          cacheReadInputTokens: cacheRead,
+          cacheCreationInputTokens: 0,
+          costUSD: 0,
+          contextWindow: 1_000_000,
+        },
+      },
+    });
+  const start = (id: string) =>
+    sdk({
+      type: 'stream_event',
+      parent_tool_use_id: null,
+      event: { type: 'message_start', message: { id, usage: OO_START } },
+    });
+  const assistant = (id: string) =>
+    sdk({
+      type: 'assistant',
+      parent_tool_use_id: null,
+      message: { id, model: 'gpt-x', usage: OO_START, content: [{ type: 'text', text: 'ok' }] },
+    });
+  const delta = (input: number, cacheRead: number, output: number) =>
+    sdk({
+      type: 'stream_event',
+      parent_tool_use_id: null,
+      event: {
+        type: 'message_delta',
+        usage: { input_tokens: input, cache_read_input_tokens: cacheRead, output_tokens: output },
+      },
+    });
+
+  async function occupancyOf(frames: SDKMessage[]) {
+    const onUsageUpdate = vi.fn();
+    async function* stream() {
+      for (const e of mapAll(frames)) yield e;
+    }
+    await new AgentStreamProcessor({ onUsageUpdate }).process(
+      stream() as never,
+      streamContext(),
+      new AbortController().signal,
+    );
+    const c = selectCurrentContextTokens(onUsageUpdate.mock.calls[0][0]);
+    return { source: c.source, used: c.inputTokens + c.cacheReadTokens + c.cacheCreateTokens + c.outputTokens };
+  }
+
+  it('output-only start, delta AFTER the assistant frame → the delta reading', async () => {
+    expect(await occupancyOf([start('a'), assistant('a'), delta(20, 4_000, 9), result(20, 4_000, 9)])).toEqual({
+      source: 'per-turn',
+      used: 4_029,
+    });
+  });
+
+  it('output-only start, delta BEFORE the assistant frame → still the delta reading (order-independent)', async () => {
+    expect(await occupancyOf([start('a'), delta(20, 4_000, 9), assistant('a'), result(20, 4_000, 9)])).toEqual({
+      source: 'per-turn',
+      used: 4_029,
+    });
+  });
+
+  it('output-only start and no delta → not a 1-token occupancy (aggregate fallback)', async () => {
+    expect(await occupancyOf([start('a'), assistant('a'), result(120, 610_000, 0)])).toEqual({
+      source: 'aggregate-fallback',
+      used: 610_120,
+    });
+  });
+
+  it('a repeated delta: the processor keeps the later snapshot', async () => {
+    const z = sdk({
+      type: 'stream_event',
+      parent_tool_use_id: null,
+      event: { type: 'message_start', message: { id: 'r', usage: { input_tokens: 0, output_tokens: 0 } } },
+    });
+    expect(await occupancyOf([z, delta(10, 500, 2), delta(10, 500, 7), result(10, 500, 7)])).toEqual({
+      source: 'per-turn',
+      used: 517,
     });
   });
 });
