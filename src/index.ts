@@ -827,7 +827,9 @@ async function start() {
         }
         const ts = echoTs || String(Date.now() / 1000);
         onSent?.({ channel: session.channelId, ts });
-        await slackHandler.handleMessage(
+        // Hands the early registration over to this message's ts (no gap), so it
+        // does not stay pending for the whole turn the message starts.
+        await slackHandler.handleMessageHandingOff(
           {
             type: 'message',
             channel: session.channelId,
@@ -837,6 +839,7 @@ async function start() {
             ts,
           } as any,
           dashboardSay,
+          ownerInput,
         );
         logger.info('Dashboard: command sent to session', { sessionKey, messageLength: message.length });
         return { channel: session.channelId, ts };

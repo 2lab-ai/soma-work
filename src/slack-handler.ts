@@ -1088,6 +1088,18 @@ export class SlackHandler {
     }
   }
 
+  /**
+   * `handleMessage` for a transport that registered the owner's input before it
+   * could build the event (the dashboard, before its Slack echo): the message's
+   * own ts is registered by `handleMessage`'s synchronous prefix, then the early
+   * registration is settled — no gap, and nothing stays pending for the turn.
+   */
+  handleMessageHandingOff(event: MessageEvent, say: any, preRegistered?: { settle: () => void }): Promise<void> {
+    const run = this.handleMessage(event, say);
+    preRegistered?.settle();
+    return run;
+  }
+
   private async handleMessageInner(event: MessageEvent, say: any): Promise<void> {
     // First admission point: restored items are only trustworthy once the
     // startup reconcile has run against the registry.
