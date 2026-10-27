@@ -147,6 +147,7 @@ updates inside its terminal-cleanup boundary, including setup failures.
 - 도메인 allowlist, 툴 권한 레벨(admin/elevated/user), dangerous command 감지
 - devops-secret 가드(`src/agent-runtime/policy/devops-secret-guard.ts`, `tool-policy.ts` deny tier 1b): `gh auth token` · `gh auth status --show-token` · `gh auth git-credential` · `security` 키체인 비밀 읽기와 브로커 경로(`/usr/local/{libexec,var}/soma-devops`) 접근을 모든 권한 모드에서 admin 포함 거부. 어휘 검사라 방어 심층일 뿐이고, 실제 경계는 브로커의 별도 OS 유저
 - 권한 승인 UI는 Slack 액션(`src/slack/actions/permission-action-handler.ts`)과 웹 대시보드(`POST /api/dashboard/session/:key/permission`) 두 곳. 둘 다 `src/permission-prompt-response.ts`의 `answerPermissionPrompt`로 응답한다 — 요청자 본인만, `kind: 'tool_permission'` 레코드만(같은 pending 디렉터리의 mcp-tool-permission grant 요청 제외), store claim으로 1회만.
+- 권한 모드(`src/agent-runtime/policy/permission-mode.ts`): `auto`(기본) · `bypass`(admin 전용 — admin이 아닌 유저의 저장값은 `effectivePermissionMode`가 `auto`로 해석) · `legacy`. auto에서 위험 규칙에 걸린 Bash는 safety classifier(`safety-classifier.ts`, 세션 owner의 Slack 원문만 인용, 실제 abort 타임아웃)가 질문 여부를 정한다. classifier가 허용한 호출이 여전히 기계 검사(`permission-warning.ts`)에 걸리면 `ClaudeHandler.setPermissionWarningNotifier` → `src/slack/permission-warning-publisher.ts`가 버튼 없는 ⚠️ 경고 카드를 Slack 스레드에 올리고 work-log `permission_warning` 항목으로 남긴다(대시보드 작업 로그·채팅에 같은 카드). 경고는 결정을 바꾸지 않는다.
 - 대시보드는 `src/conversation/permission-prompts.ts`가 웹 서버 listen 동안 1초마다 shared store의 pending 디렉터리를 다시 읽어 세션 스레드별 인덱스를 만들고, 바뀌면 보드를 푸시한다. 보드 페이로드에는 도구 입력이 없다(요청자 전용 `GET .../permission/:approvalId`).
 
 ### Observability (`src/metrics/`, `src/conversation/`)

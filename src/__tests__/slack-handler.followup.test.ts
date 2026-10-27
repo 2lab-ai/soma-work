@@ -125,6 +125,7 @@ describe('SlackHandler — follow-up queue host', () => {
       canInterrupt: vi.fn().mockReturnValue(true),
       setActivityStateByKey: vi.fn(),
       broadcastSessionUpdate: vi.fn(),
+      setSteerStandingResolver: vi.fn(),
     };
 
     const store = {
@@ -2848,12 +2849,158 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    // Review gate r1 (astra P1): a consumed steer is an instruction the owner gave
+    // mid-turn — the auto-mode classifier must see it (e.g. a late "don't delete").
+    it('adds a steered message to the follow-up instructions as soon as it is steered (review r2)', async () => {
+      registrySession.followUpInstructions = undefined;
+      const { uuid, settle } = await steerWithFile('삭제는 하지 마');
+      // Before any settlement: the live turn's next tool call must already see it.
+      expect(registrySession.followUpInstructions).toEqual([
+        expect.objectContaining({ text: '삭제는 하지 마', userId: 'U_OWNER' }),
+      ]);
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'completed' });
+      expect(registrySession.followUpInstructions).toHaveLength(1); // not added twice
+      await settle();
+    });
+
+    // Re-run (astra P1, after 8bc48b54): a steer keeps Slack's microseconds, so it
+    // sorts against a same-millisecond message the executor recorded.
+    it('stamps a steered follow-up with the full Slack ts, not a floored millisecond', async () => {
+      registrySession.followUpInstructions = undefined;
+      const { settle } = await steerWithFile('순서 유지');
+      const [entry] = registrySession.followUpInstructions ?? [];
+      expect(entry.timestamp).toBeGreaterThan(1792900000000);
+      expect(entry.timestamp).toBeCloseTo(1792900000000.1, 3);
+      await settle();
+    });
+
+    // Review gate r4 (astra): the queue is the source of truth for a steer.
+    it('wires a resolver that keeps a steer only while it is steered or consumed', async () => {
+      registrySession.followUpInstructions = undefined;
+      const { uuid, settle } = await steerWithFile('살려둬');
+      const [entry] = registrySession.followUpInstructions ?? [];
+      const standing = claudeHandler.setSteerStandingResolver.mock.calls[0][0];
+      expect(standing(entry.steer)).toBe(true); // steered
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'completed' });
+      expect(standing(entry.steer)).toBe(true); // consumed
+      expect(standing({ ...entry.steer, itemId: 'nope' })).toBe(false);
+      await settle();
+    });
+
+    it('marks the history incomplete when a steer pushes it past the cap', async () => {
+      registrySession.followUpInstructions = Array.from({ length: 50 }, (_, i) => ({
+        timestamp: i,
+        text: `m${i}`,
+        speaker: 'o',
+        userId: 'U_OWNER',
+      }));
+      registrySession.intentHistoryIncomplete = undefined;
+      const { settle } = await steerWithFile('하나 더');
+      expect(registrySession.intentHistoryIncomplete).toBe(true);
+      await settle();
+    });
+
+    // Review gate r4 (astra P1): accepted owner input moves the revision before any await.
+    it('bumps the owner input revision synchronously at ingress', async () => {
+      const { settle } = await startBusyTurn();
+      const before = registrySession.ownerInputRevision ?? 0;
+      const pending = handler.handleMessage(message({ ts: '444.555', text: '삭제하지 마' }), say());
+      expect(registrySession.ownerInputRevision).toBe(before + 1);
+      // Pending until it is recorded or settled (review r5) …
+      expect(registrySession.pendingOwnerInputs).toContain('444.555');
+      await pending;
+      // … and cleared once ingress finished with it.
+      expect(registrySession.pendingOwnerInputs ?? []).not.toContain('444.555');
+      await settle();
+    });
+
+    // Review gate r5 (grok P1): a DM or a root mention has no thread_ts — the
+    // session is keyed by the message ts, as at every other ingress.
+    it('bumps the owner input revision for a message without thread_ts', async () => {
+      const { settle } = await startBusyTurn();
+      const before = registrySession.ownerInputRevision ?? 0;
+      const pending = handler.handleMessage(
+        { ...message({ ts: '555.666', text: '멈춰' }), thread_ts: undefined },
+        say(),
+      );
+      expect(registrySession.ownerInputRevision).toBe(before + 1);
+      expect(claudeHandler.getSessionKey).toHaveBeenCalledWith(CHANNEL, '555.666');
+      await pending;
+      await settle();
+    });
+
+    // Review gate r5 (astra P1): the withdrawal does not wait for durable settlement.
+    it('withdraws a cancelled steer even when the queue settlement throws', async () => {
+      registrySession.followUpInstructions = undefined;
+      const { uuid, settle } = await steerWithFile('지워도 돼');
+      handlerAny.followupDispatcher.unsteer = () => {
+        throw new Error('disk full');
+      };
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'cancelled' });
+      expect((registrySession.followUpInstructions ?? []).filter((f: { steer?: unknown }) => f.steer)).toEqual([]);
+      await settle();
+    });
+
+    // Review gate r5 (astra P2): synthetic events and redelivered messages do not
+    // count as new owner input.
+    it('ignores synthetic and duplicate events for the owner input revision', async () => {
+      const { settle } = await startBusyTurn();
+      const before = registrySession.ownerInputRevision ?? 0;
+      void handler.handleMessage({ ...message({ ts: '666.777', text: 'auto' }), synthetic: true } as never, say());
+      expect(registrySession.ownerInputRevision ?? 0).toBe(before);
+      registrySession.pendingOwnerInputs = ['777.888'];
+      void handler.handleMessage(message({ ts: '777.888', text: 'dup' }), say());
+      expect(registrySession.ownerInputRevision ?? 0).toBe(before);
+      registrySession.pendingOwnerInputs = [];
+      await settle();
+    });
+
+    // Review gate r5 (astra P1): a transport that awaits before handleMessage
+    // (the dashboard echo) registers the input first.
+    // Review gate re-run (fable P1): the dashboard's pre-registered input is
+    // handed over to the message's own ts before the turn runs — otherwise it
+    // stays pending for the whole turn and every classifier allow becomes ask.
+    it('hands a pre-registered input over to the message ts synchronously', async () => {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const pre = handlerAny.beginOwnerInput(SESSION_KEY, 'U_OWNER', 'dashboard:9');
+      const run = handler.handleMessageHandingOff(message({ ts: '888.999', text: '대시보드 지시' }), say(), pre);
+      expect(registrySession.pendingOwnerInputs).toContain('888.999');
+      expect(registrySession.pendingOwnerInputs).not.toContain('dashboard:9');
+      gate.resolve({ hasPendingChoice: false });
+      await run;
+    });
+
+    // Re-run (astra P1): only the delivery that created a registration settles it.
+    it('a duplicate delivery does not own (and cannot clear) the original registration', () => {
+      const first = handlerAny.noteOwnerInput(message({ ts: '999.111', text: 'do not delete' }));
+      const dup = handlerAny.noteOwnerInput(message({ ts: '999.111', text: 'do not delete' }));
+      expect(first).toBeDefined();
+      expect(dup).toBeUndefined();
+      expect(registrySession.pendingOwnerInputs).toContain('999.111');
+      first.settle();
+      expect(registrySession.pendingOwnerInputs ?? []).not.toContain('999.111');
+    });
+
+    it('beginOwnerInput marks owner input pending until settled', () => {
+      const before = registrySession.ownerInputRevision ?? 0;
+      const token = handlerAny.beginOwnerInput(SESSION_KEY, 'U_OWNER', 'dashboard:1');
+      expect(registrySession.ownerInputRevision).toBe(before + 1);
+      expect(registrySession.pendingOwnerInputs).toContain('dashboard:1');
+      token.settle();
+      expect(registrySession.pendingOwnerInputs ?? []).not.toContain('dashboard:1');
+      expect(handlerAny.beginOwnerInput(SESSION_KEY, 'U_SOMEONE', 'dashboard:2')).toBeUndefined();
+    });
+
     it('does not record a steered message the queue took back (discarded) — the drain will', async () => {
+      registrySession.followUpInstructions = undefined;
       const { uuid, settle, record } = await steerWithFile('나중에 봐줘');
 
       await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'discarded' });
 
       expect(record).not.toHaveBeenCalled();
+      // …nor keep it as an instruction: the drain records it when it runs (review r3).
+      expect(registrySession.followUpInstructions).toEqual([]);
       await settle();
     });
 
@@ -2912,6 +3059,14 @@ describe('SlackHandler — follow-up queue host', () => {
 
       expect(items()[0].state).toBe('resolved');
       expect(items()[0].stateReason).toBe('consumed');
+      // Review gate r3 (grok P1): the follow-up lands on the session that is
+      // really running (the work thread), where the classifier reads it.
+      expect(workSession.followUpInstructions).toEqual([
+        expect.objectContaining({ text: '이것도 같이 봐줘', userId: 'U_OWNER' }),
+      ]);
+      // …and the queue resolver finds its row (consumed) in the bucket it lives in.
+      const standing = claudeHandler.setSteerStandingResolver.mock.calls[0][0];
+      expect(standing(workSession.followUpInstructions?.[0].steer)).toBe(true);
 
       gate.resolve({ hasPendingChoice: false });
       await first;
@@ -2937,6 +3092,9 @@ describe('SlackHandler — follow-up queue host', () => {
       // It ran as an ordinary drained item instead of being stranded.
       expect(startWithContinuation).toHaveBeenCalledTimes(2);
       expect(items()[0].state).toBe('resolved');
+      // Review gate r4 (grok P1): the swept steer is no longer a live instruction
+      // (the drained turn records it again).
+      expect((registrySession.followUpInstructions ?? []).filter((f: { steer?: unknown }) => f.steer)).toEqual([]);
     });
 
     it('cleans up the steered temp files it swept back into the queue', async () => {
@@ -3223,6 +3381,8 @@ describe('SlackHandler — follow-up queue host', () => {
       await tick();
 
       expect(cleanupTempFiles).toHaveBeenCalledWith(processed);
+      // Review gate r4 (grok P1): Send now runs it as its own turn — not a live steer any more.
+      expect((registrySession.followUpInstructions ?? []).filter((f: { steer?: unknown }) => f.steer)).toEqual([]);
       await settle();
     });
   });
@@ -3250,6 +3410,17 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(claudeHandler.cancelSteeredMessage).toHaveBeenCalledWith(SESSION_KEY, uuid);
       expect(outcome).toBe('cancelled');
       expect(items()[0].state).toBe('cancelled');
+      await settle();
+    });
+
+    // Review gate r3 (astra P1): a withdrawn steer is no longer the owner's instruction.
+    it('removes a withdrawn steer from the follow-up instructions', async () => {
+      registrySession.followUpInstructions = undefined;
+      const { uuid, itemId, epoch, settle } = await steerOne();
+      expect(registrySession.followUpInstructions).toHaveLength(1);
+      claudeHandler.cancelSteeredMessage = vi.fn().mockResolvedValue('withdrawn');
+      await handlerAny.cancelSteeredFollowup(SESSION_KEY, itemId, epoch, uuid);
+      expect(registrySession.followUpInstructions).toEqual([]);
       await settle();
     });
 

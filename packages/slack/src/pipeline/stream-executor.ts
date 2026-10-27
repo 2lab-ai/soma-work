@@ -61,6 +61,7 @@ import {
   toTurnUsage,
 } from '../session-usage-math';
 import type { SlackApiHelper } from '../slack-api-helper';
+import { slackTsOrderMs } from '../slack-ts';
 import type { StatusReporter } from '../status-reporter';
 import {
   AgentStreamProcessor,
@@ -1503,26 +1504,37 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         emitWorkLog({ kind: 'instruction', text: names ? `${text || ''}${text ? '\n' : ''}📎 ${names}` : text || '' });
       }
 
+      // This message is now this turn's input: no longer a pending owner input
+      // (the auto-mode classifier stops holding approvals for it).
+      if (session?.pendingOwnerInputs && params.mentionTs) {
+        session.pendingOwnerInputs = session.pendingOwnerInputs.filter((t: string) => t !== params.mentionTs);
+      }
+
       // Store user instruction for SSOT tracking (only real user input, not auto-resume/continuation/renew)
       // followUpInstructions is capped to prevent unbounded memory growth.
       const MAX_FOLLOW_UP_INSTRUCTIONS = 50;
       if (session && text && params.isUserInput !== false) {
         if (!session.initialInstruction) {
           session.initialInstruction = text;
+          session.initialInstructionUserId = user;
         } else {
           // Always record subsequent turns as follow-ups (even if text matches initial).
-          // The first turn is not duplicated because session-initializer sets initialInstruction
-          // before stream-executor runs, so this branch is only reached from the 2nd turn onward.
+          // This block is the only writer of initialInstruction (and its author id), so
+          // the first turn lands above and this branch runs from the 2nd turn onward.
           if (!session.followUpInstructions) {
             session.followUpInstructions = [];
           }
           if (session.followUpInstructions.length >= MAX_FOLLOW_UP_INSTRUCTIONS) {
             session.followUpInstructions.shift();
+            // History lost at the cap: the auto-mode classifier treats intent as incomplete.
+            session.intentHistoryIncomplete = true;
           }
           session.followUpInstructions.push({
-            timestamp: Date.now(),
+            // When the owner sent it (the Slack ts), so steers and turns sort together.
+            timestamp: slackTsOrderMs(params.mentionTs) ?? Date.now(),
             text,
             speaker: userName,
+            userId: user,
           });
         }
       }
@@ -4909,7 +4921,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const jiraAccountId = userSettingsStore.getUserJiraAccountId(userId);
     const persona = userSettingsStore.getUserPersona(userId);
     const defaultModel = userSettingsStore.getUserDefaultModel(userId);
-    const bypassPermission = userSettingsStore.getUserBypassPermission(userId);
+    // Effective mode (`bypass` is admin-only — a non-admin's stored bypass runs as `auto`).
+    const permissionMode: string =
+      typeof userSettingsStore.getUserPermissionMode === 'function'
+        ? userSettingsStore.getUserPermissionMode(userId)
+        : userSettingsStore.getUserBypassPermission(userId)
+          ? 'bypass'
+          : 'auto';
 
     const contextItems: string[] = [];
 
@@ -4919,7 +4937,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     if (jiraAccountId) contextItems.push(`  <jira-account-id>${jiraAccountId}</jira-account-id>`);
     contextItems.push(`  <user-persona>${persona}</user-persona>`);
     contextItems.push(`  <user-default-model>${defaultModel}</user-default-model>`);
-    contextItems.push(`  <user-bypass-permission>${bypassPermission ? 'on' : 'off'}</user-bypass-permission>`);
+    contextItems.push(`  <user-permission-mode>${permissionMode}</user-permission-mode>`);
+    contextItems.push(
+      `  <user-bypass-permission>${permissionMode === 'bypass' ? 'on' : 'off'}</user-bypass-permission>`,
+    );
 
     // User rating - model self-awareness of user satisfaction
     const rating = userSettingsStore.getUserRating(userId);

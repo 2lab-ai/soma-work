@@ -22,6 +22,7 @@ import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
 import { OutputFlag } from '@soma/slack/output-flags';
 import { isLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
+import { slackTsOrderMs } from '@soma/slack/slack-ts';
 import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
 import { getAdminUsers, isAdminUser } from './admin-utils';
@@ -95,6 +96,7 @@ import {
   HandoffBudgetExhaustedError,
 } from './slack/handoff-budget';
 import { buildCompactHooks } from './slack/hooks/compact-hooks';
+import { publishPermissionWarning } from './slack/permission-warning-publisher';
 import { InputProcessor, type MessageEvent, SessionInitializer, StreamExecutor } from './slack/pipeline';
 import {
   advanceGoalQueue,
@@ -210,6 +212,12 @@ export interface SlackHandlerOptions {
  */
 function isVerbatimPrompt(event: MessageEvent): boolean {
   return event.routeContext?.verbatimPrompt === true;
+}
+
+/** An owner message is no longer pending: recorded as an instruction, or ingress is done with it. */
+function settleOwnerInput(session: ConversationSession | undefined, ts: string | undefined): void {
+  if (!session?.pendingOwnerInputs || !ts) return;
+  session.pendingOwnerInputs = session.pendingOwnerInputs.filter((t) => t !== ts);
 }
 
 export class SlackHandler {
@@ -680,6 +688,22 @@ export class SlackHandler {
       }),
     );
 
+    // 3. Auto-mode permission warnings (SSOT_2 #3): the model allowed a call the
+    //    mechanical check still flags → a buttonless warning card in the thread
+    //    and the same card in the dashboard chat (work log).
+    // 4. Whether a steered follow-up still stands — the follow-up queue is the
+    //    source of truth (steered, or consumed by the model; nothing else).
+    this.claudeHandler.setSteerStandingResolver?.((steer) => {
+      const item = this.followupQueue?.get(steer.queueKey, steer.itemId);
+      if (!item || item.steerUuid !== steer.uuid) return false;
+      return item.state === 'steered' || (item.state === 'resolved' && item.stateReason === 'consumed');
+    });
+    this.claudeHandler.setPermissionWarningNotifier?.((warning) =>
+      publishPermissionWarning(warning, {
+        postMessage: (channel, text, options) => this.slackApi.postMessage(channel, text, options),
+      }),
+    );
+
     // #666 P4 Part 1/2 — Register the Bolt Assistant container. Enables the
     // Slack Assistant sidebar + 4 suggested prompts; routes
     // `assistant_thread_started` / `assistant_thread_context_changed` and
@@ -1054,6 +1078,30 @@ export class SlackHandler {
    * queue stores what the user actually sent (ssot.md:91-92).
    */
   async handleMessage(event: MessageEvent, say: any): Promise<void> {
+    // Before any await: the owner said something — an auto-mode approval being
+    // decided right now must not be used without it. Pending until it is recorded
+    // as an instruction (executor / steer) or ingress is done with it.
+    const owner = this.noteOwnerInput(event);
+    try {
+      await this.handleMessageInner(event, say);
+    } finally {
+      owner?.settle();
+    }
+  }
+
+  /**
+   * `handleMessage` for a transport that registered the owner's input before it
+   * could build the event (the dashboard, before its Slack echo): the message's
+   * own ts is registered by `handleMessage`'s synchronous prefix, then the early
+   * registration is settled — no gap, and nothing stays pending for the turn.
+   */
+  handleMessageHandingOff(event: MessageEvent, say: any, preRegistered?: { settle: () => void }): Promise<void> {
+    const run = this.handleMessage(event, say);
+    preRegistered?.settle();
+    return run;
+  }
+
+  private async handleMessageInner(event: MessageEvent, say: any): Promise<void> {
     // First admission point: restored items are only trustworthy once the
     // startup reconcile has run against the registry.
     this.warnIfReconcileSkipped();
@@ -4007,6 +4055,13 @@ export class SlackHandler {
         user: event.user,
         sentAt: slackTsMs(event.ts),
       });
+      settleOwnerInput(this.claudeHandler?.getSessionByKey?.(this.canonicalFollowupKey(sessionKey)), event.ts);
+      this.recordSteerAsFollowUp(sessionKey, rawText, event.user, slackTsOrderMs(event.ts), {
+        uuid: steered.uuid,
+        itemId: item.id,
+        // The bucket the row lives in — the key `dispatcher.steer` was given.
+        queueKey: sessionKey,
+      });
       (this.followupSteerUuids ??= new Map()).set(item.id, steered.uuid);
       return 'steered';
     } catch (error) {
@@ -4085,6 +4140,9 @@ export class SlackHandler {
   }): Promise<void> {
     const { sessionKey, uuid, phase } = args;
     if (phase === 'started' || phase === 'observed') return;
+    // The receipt itself ends the steer's authority — before, and whatever the
+    // outcome of, the durable settlement below.
+    if (phase === 'cancelled' || phase === 'discarded') this.withdrawSteerFollowUp(sessionKey, uuid);
     const dispatcher = this.followupDispatcher;
     if (!dispatcher) return;
 
@@ -4245,10 +4303,14 @@ export class SlackHandler {
           });
           return 'failed';
         }
+        this.withdrawSteerFollowUp(sessionKey, uuid);
         this.forgetSteerBookkeeping(itemId);
         await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
         return 'returned-to-queue';
       }
+      // The SDK confirmed the withdrawal: the owner's instruction is gone whether
+      // or not the queue's durable write below succeeds.
+      this.withdrawSteerFollowUp(sessionKey, uuid);
       const cancelled = queue.cancelSteered(sessionKey, itemId, expectedEpoch, '사용자가 취소');
       if (!cancelled.ok) {
         // The SDK dropped it but our row moved on (a settlement raced the
@@ -4583,6 +4645,103 @@ export class SlackHandler {
   }
 
   /**
+   * A message steered into the live turn is a follow-up instruction from the
+   * moment it is steered: the auto-mode classifier quotes it for the turn's next
+   * tool calls (a mid-turn "don't delete" must count before the turn ends). Only
+   * with a known author — the classifier keys intent on user id. A steer the
+   * queue later takes back is recorded again when it runs as a turn; a repeated
+   * instruction is harmless, a missing one is not.
+   */
+  private recordSteerAsFollowUp(
+    sessionKey: string,
+    text: string,
+    user: string | undefined,
+    sentAt: number | undefined,
+    steer: { uuid: string; itemId: string; queueKey: string },
+  ): void {
+    try {
+      // The session that is really running: after a bot-thread migration the row
+      // key is the dead source thread, and the classifier reads the work session.
+      const session = this.claudeHandler?.getSessionByKey?.(this.canonicalFollowupKey(sessionKey));
+      if (!session || !text || !user) return;
+      const followUps = session.followUpInstructions ?? [];
+      followUps.push({
+        timestamp: sentAt ?? Date.now(),
+        text,
+        speaker: userSettingsStore.getUserSettings?.(user)?.slackDisplayName ?? user,
+        userId: user,
+        steer,
+      });
+      // Dropping the oldest at the cap loses history: say so (sticky until reset).
+      if (followUps.length > 50) session.intentHistoryIncomplete = true;
+      session.followUpInstructions = followUps.slice(-50);
+    } catch (error) {
+      this.logger.warn('Steered message was not recorded as a follow-up instruction', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+  }
+
+  /**
+   * Bump the running session's owner-input revision when its owner's message is
+   * accepted (synchronous; the session is the canonical one after a bot-thread
+   * migration). Best effort — never fails the message.
+   */
+  private noteOwnerInput(event: MessageEvent): { settle: () => void } | undefined {
+    try {
+      // A host-made continuation is not the owner speaking.
+      if ((event as { synthetic?: boolean }).synthetic || !event.user || !event.ts) return;
+      // Keyed like every other ingress: a DM or a root mention has no thread_ts,
+      // and its session lives under the message ts.
+      const threadTs = (event as { thread_ts?: string }).thread_ts || event.ts;
+      const key = this.claudeHandler?.getSessionKey?.(event.channel, threadTs);
+      if (!key) return;
+      const handle = this.beginOwnerInput(key, event.user, event.ts);
+      // Only the delivery that created the registration owns (and settles) it: a
+      // redelivered copy that returns early must not clear the original's guard.
+      return handle?.created ? handle : undefined;
+    } catch {
+      // bookkeeping only
+      return undefined;
+    }
+  }
+
+  /**
+   * Register owner input on the running session the moment a transport accepts
+   * it — before any await (Slack ingress here; the dashboard before its echo).
+   * Idempotent by `inputId`: a redelivered message moves nothing. Returns a
+   * handle whose `settle()` ends the pending state; undefined when the sender is
+   * not the session owner or there is no session.
+   */
+  beginOwnerInput(
+    sessionKey: string,
+    user: string,
+    inputId: string,
+  ): { session: ConversationSession; created: boolean; settle: () => void } | undefined {
+    const session = this.claudeHandler?.getSessionByKey?.(this.canonicalFollowupKey(sessionKey));
+    if (!session || session.ownerId !== user) return undefined;
+    const pending = session.pendingOwnerInputs ?? [];
+    const created = !pending.includes(inputId);
+    if (created) {
+      session.ownerInputRevision = (session.ownerInputRevision ?? 0) + 1;
+      session.pendingOwnerInputs = [...pending, inputId];
+    }
+    return { session, created, settle: () => settleOwnerInput(session, inputId) };
+  }
+
+  /**
+   * A steer the SDK withdrew, or the queue took back, is no longer the owner's
+   * instruction to this turn: drop its follow-up entry (a returned message is
+   * recorded again when the drain runs it as a turn).
+   */
+  private withdrawSteerFollowUp(sessionKey: string, steerUuid: string): void {
+    const session = this.claudeHandler?.getSessionByKey?.(this.canonicalFollowupKey(sessionKey));
+    if (!session?.followUpInstructions) return;
+    session.followUpInstructions = session.followUpInstructions.filter((f) => f.steer?.uuid !== steerUuid);
+  }
+
+  /**
    * A steered message the model read becomes a user turn of the session's
    * conversation, with its files (user media, SSOT 2026-10-25) — the executor
    * never saw it, so nothing else records it. Best effort: a bookkeeping
@@ -4594,7 +4753,7 @@ export class SlackHandler {
     files: ProcessedFile[],
   ): Promise<void> {
     try {
-      const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
+      const session = this.claudeHandler?.getSessionByKey?.(this.canonicalFollowupKey(sessionKey));
       const conversationId = session?.conversationId;
       if (!conversationId || (!instruction.text && files.length === 0)) return;
       let attachments: Awaited<ReturnType<typeof captureUserMedia>> | undefined;
@@ -4841,6 +5000,8 @@ export class SlackHandler {
         // The row's own uuid is cleared by the transition, so the files are
         // found through the item→uuid map instead.
         const uuid = this.followupSteerUuids?.get(item.id);
+        // Back in the queue: not a live instruction until the drain runs it.
+        if (uuid) this.withdrawSteerFollowUp(sessionKey, uuid);
         if (uuid) await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
         this.forgetSteerBookkeeping(item.id);
         // The row is `queued` again; its message still shows 전달완료 and no
@@ -4887,6 +5048,8 @@ export class SlackHandler {
     this.forgetSteerBookkeeping(itemId);
     if (!uuid) return;
     void this.cleanupSteerFiles(this.takeSteerFiles(uuid));
+    // It runs as its own turn now (recorded there): not a live steer any more.
+    this.withdrawSteerFollowUp(sessionKey, uuid);
     this.logger.debug('Released steer artifacts after Send now', { sessionKey, itemId });
   }
 

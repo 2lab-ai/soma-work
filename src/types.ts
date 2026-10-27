@@ -653,7 +653,38 @@ export interface ConversationSession {
   // User instruction SSOT: stores the original user instruction and follow-ups.
   // Used by the bot to self-verify instruction compliance. NOT persisted to disk.
   initialInstruction?: string;
-  followUpInstructions?: Array<{ timestamp: number; text: string; speaker: string }>;
+  /** Slack user id that wrote `initialInstruction` (the auto-mode classifier quotes only the owner's own words). */
+  initialInstructionUserId?: string;
+  followUpInstructions?: Array<{
+    timestamp: number;
+    text: string;
+    speaker: string;
+    userId?: string;
+    /**
+     * Set when the entry is a message steered into a live turn: which follow-up
+     * queue row it is. The queue decides at classification time whether it still
+     * stands (still steered, or consumed by the model).
+     */
+    steer?: { uuid: string; itemId: string; queueKey: string };
+  }>;
+  /**
+   * The recorded instructions may miss earlier ones: the fields above are not
+   * persisted, so a session restored from disk starts with a gap. The auto-mode
+   * classifier then treats the owner's intent as incomplete. Cleared on reset.
+   */
+  intentHistoryIncomplete?: boolean;
+  /**
+   * Bumped synchronously each time a message from the session owner is accepted
+   * at ingress — before it is painted, downloaded or recorded. An auto-mode
+   * classifier approval made while it moved is not used (the hook asks instead).
+   */
+  ownerInputRevision?: number;
+  /**
+   * Message ts of owner messages accepted at ingress and not yet recorded as an
+   * instruction or settled (queued, dropped). While any is pending, an auto-mode
+   * classifier approval is not used. Transient — never persisted.
+   */
+  pendingOwnerInputs?: string[];
 
   // User SSOT instructions: structured, model-readable, persisted to disk.
   // Exposed to the model via GET_SESSION and managed via UPDATE_SESSION instructionOperations.

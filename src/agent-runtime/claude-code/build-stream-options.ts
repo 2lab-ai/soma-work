@@ -48,8 +48,109 @@ import type { SessionRegistry } from '../../session-registry';
 import type { ConversationSession, WorkflowType } from '../../types';
 import { DEFAULT_THINKING_ENABLED, userSettingsStore } from '../../user-settings-store';
 import { createTrackedClaudeProcessSpawner } from '../claude-child-process-registry';
-import type { SafetyClassifier } from '../policy/safety-classifier';
+import {
+  createPermissionWarningDeduper,
+  type PermissionWarningEvent,
+  permissionWarningRuleIds,
+  permissionWarningRules,
+} from '../policy/permission-warning';
+import type { SafetyClassifier, SafetyUserIntent } from '../policy/safety-classifier';
 import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from '../policy/tool-policy';
+
+/** Same command + rule set warns once per session per window (an agent retrying a command stacks no cards). */
+const permissionWarningDeduper = createPermissionWarningDeduper({ windowMs: 10 * 60 * 1000 });
+
+/**
+ * A host-appended skill body (`$skill` / autoskill) is not something the owner
+ * wrote. The host only ever APPENDS `<invoked_skills>` blocks after the owner's
+ * text, so everything from the first opening tag on is dropped — skill content
+ * can never survive, whatever tags it contains. (Slack entity-encodes `<` in a
+ * user's message, so a user cannot place the tag; a dashboard user who types it
+ * only shortens their own intent.)
+ */
+/**
+ * The shape the host appends: `\n\n<invoked_skills>\n` … `\n</invoked_skills>`, one
+ * or more blocks, at the end. A block body may not contain either tag, so a
+ * match never stretches across owner prose between two blocks.
+ */
+const HOST_SKILL_BLOCKS = /^(?:\s*<invoked_skills>\n(?:(?!<\/?invoked_skills>)[\s\S])*\n<\/invoked_skills>)+\s*$/;
+
+function ownerText(text: string): { text: string; ambiguous: boolean } {
+  const cut = text.indexOf('<invoked_skills>');
+  if (cut < 0) return { text: text.trim(), ambiguous: false };
+  // Host blocks are appended last, after a blank line. A marker anywhere else,
+  // or anything after the blocks, means what was cut may hold owner text.
+  const hostShaped = (cut === 0 || text.slice(0, cut).endsWith('\n\n')) && HOST_SKILL_BLOCKS.test(text.slice(cut));
+  return { text: text.slice(0, cut).trim(), ambiguous: !hostShaped };
+}
+
+/** The executor keeps at most this many follow-ups; at the cap older ones may be gone. */
+const FOLLOW_UP_CAP = 50;
+
+/**
+ * The owner's own words for the auto-mode classifier: the session's first
+ * instruction and every recorded follow-up (steered messages included), kept
+ * only when the session OWNER wrote them, and only when the owner is the one
+ * acting — another participant's turn in the thread gets no intent at all, so
+ * the model falls back to asking. Host-recorded raw Slack text with any
+ * host-appended skill body removed — never agent output or a model-written
+ * goal. Nothing is dropped here; the classifier's prompt budget decides, and says
+ * so. `incomplete` marks a history that may already have lost messages.
+ */
+/**
+ * The skills the owner invoked themselves (`$skill` in their own prose, their
+ * registered autoskills), as resolved keys. Injected from the Slack layer.
+ */
+export type OwnerSkillResolver = (owner: string, ownerProse: readonly string[]) => readonly string[];
+
+/** A steered follow-up's queue row; the resolver says whether the steer still stands. */
+export type SteerRef = NonNullable<NonNullable<ConversationSession['followUpInstructions']>[number]['steer']>;
+
+export function ownerIntent(
+  session: ConversationSession | undefined,
+  user: string,
+  isSteerStanding?: (steer: SteerRef) => boolean,
+  resolveSkills?: OwnerSkillResolver,
+): SafetyUserIntent {
+  const owner = session?.ownerId;
+  if (!session || !owner || owner !== user) return { instructions: [] };
+  const instructions: string[] = [];
+  let incomplete = session.intentHistoryIncomplete === true;
+  const add = (raw: string) => {
+    const t = ownerText(raw);
+    incomplete ||= t.ambiguous;
+    if (t.text.length > 0) instructions.push(t.text);
+  };
+  if (session.initialInstruction && session.initialInstructionUserId === owner) add(session.initialInstruction);
+  const all = session.followUpInstructions ?? [];
+  // Concurrent writers (a steer still downloading its files, the executor) can
+  // append out of order: quote the owner's own chronology (stable for ties).
+  const chronological = all
+    .map((f, i) => ({ f, i }))
+    .sort((a, b) => a.f.timestamp - b.f.timestamp || a.i - b.i)
+    .map(({ f }) => f);
+  for (const f of chronological) {
+    if (f.userId !== owner) continue;
+    // A steer counts while the queue says it stands (still in the turn, or read
+    // by the model) — not once it was cancelled, returned or ran as its own turn.
+    if (f.steer && isSteerStanding && !isSteerStanding(f.steer)) continue;
+    add(f.text);
+  }
+  if (all.length >= FOLLOW_UP_CAP) incomplete = true;
+  // Skills only from what the owner did (their prose, their autoskills), resolved
+  // by the host — never from the appended block text. A failure gives none.
+  let skills: readonly string[] = [];
+  try {
+    skills = resolveSkills?.(owner, instructions) ?? [];
+  } catch {
+    skills = [];
+  }
+  return {
+    instructions,
+    ...(skills.length > 0 ? { invokedSkills: [...skills] } : {}),
+    ...(incomplete ? { incomplete: true } : {}),
+  };
+}
 
 /**
  * Structural logger surface used by the builder. The concrete `Logger`
@@ -88,6 +189,20 @@ export interface BuildStreamOptionsDeps {
    * the old "dangerous → ask the human" behaviour.
    */
   safetyClassifier?: SafetyClassifier;
+  /**
+   * Publishes an auto-mode permission WARNING (SSOT_2 #3): the model allowed a
+   * call that the mechanical check still flags. Called fire-and-forget after the
+   * hook has decided `allow`; a throw or rejection is logged and never changes
+   * the decision. Absent → no warning is published.
+   */
+  onPermissionWarning?: (warning: PermissionWarningEvent) => void | Promise<void>;
+  /**
+   * Whether a steered follow-up still stands, from the follow-up queue (the
+   * source of truth). Absent → every recorded steer counts.
+   */
+  isSteerStanding?: (steer: SteerRef) => boolean;
+  /** The skills the owner invoked themselves — the classifier's only skill provenance. */
+  resolveOwnerSkills?: OwnerSkillResolver;
   /**
    * Operator config for the incident evidence collector (`rules/config.md` owns
    * the getter's name; this dep only needs the value). Consulted **only** on the
@@ -242,9 +357,13 @@ export async function buildStreamOptions(
             },
           };
         case 'classify': {
-          // Auto mode: a dangerous-rule hit. Consult the guardian classifier;
+          // Auto mode: a dangerous-rule hit. The model alone decides whether the
+          // owner is asked (SSOT_2 #2), with the owner's own words as context;
           // fail closed to `ask` when no classifier is wired or it errors.
           const command = typeof toolInput?.command === 'string' ? toolInput.command : '';
+          const liveSession = deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs);
+          const intent = ownerIntent(liveSession, policyUser, deps.isSteerStanding, deps.resolveOwnerSkills);
+          const revisionBefore = liveSession?.ownerInputRevision ?? 0;
           const verdict = deps.safetyClassifier
             ? await deps.safetyClassifier
                 .classify({
@@ -257,12 +376,28 @@ export async function buildStreamOptions(
                   // Default classifier model = the session's CURRENT model
                   // (#model-call-unify). Resolved on `options.model` earlier.
                   model: options.model,
+                  userIntent: intent,
                 })
                 .catch((err) => ({
                   verdict: 'ask' as const,
                   reason: `classifier threw (fail-closed): ${err instanceof Error ? err.message : String(err)}`,
                 }))
             : { verdict: 'ask' as const, reason: 'no classifier wired (fail-closed)' };
+          // The owner may have said something new while the model was judging (a
+          // steered "don't"): an approval made without it is not used — ask instead.
+          const sessionAfter = deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs);
+          const intentAfter = ownerIntent(sessionAfter, policyUser, deps.isSteerStanding, deps.resolveOwnerSkills);
+          const ownerSpokeMeanwhile =
+            (sessionAfter?.pendingOwnerInputs?.length ?? 0) > 0 || // accepted, not yet recorded
+            (sessionAfter?.ownerInputRevision ?? 0) !== revisionBefore ||
+            JSON.stringify(intentAfter) !== JSON.stringify(intent);
+          if (verdict.verdict === 'allow' && ownerSpokeMeanwhile) {
+            logger.warn('Auto-mode classifier approval dropped: owner instructions changed meanwhile', {
+              tool: toolName,
+              user: policyUser,
+            });
+            return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'ask' } };
+          }
           if (verdict.verdict === 'allow') {
             logger.info('Auto-mode classifier approved tool call', {
               tool: toolName,
@@ -270,6 +405,42 @@ export async function buildStreamOptions(
               rule: result.reason,
               reason: verdict.reason,
             });
+            // SSOT_2 #3: the model passed it — the mechanical check still runs and,
+            // when it flags something, the owner sees a warning (never a question).
+            // Nothing in this step — a sync throw or a rejected publish — may change
+            // the allow below.
+            const warnFailed = (err: unknown) =>
+              logger.warn('Permission warning could not be published', {
+                tool: toolName,
+                user: policyUser,
+                error: err instanceof Error ? err.message : String(err),
+              });
+            try {
+              const warnIds = permissionWarningRuleIds(command, result.matchedRuleIds ?? []);
+              const notify = deps.onPermissionWarning;
+              if (
+                notify &&
+                warnIds.length > 0 &&
+                permissionWarningDeduper.shouldWarn(hookSessionKey, command, warnIds)
+              ) {
+                const warning: PermissionWarningEvent = {
+                  user: policyUser,
+                  channel: slackContext.channel,
+                  ...(slackContext.threadTs ? { threadTs: slackContext.threadTs } : {}),
+                  ...(liveSession?.conversationId ? { conversationId: liveSession.conversationId } : {}),
+                  toolName,
+                  toolInput: toolInput ?? {},
+                  command,
+                  rules: permissionWarningRules(warnIds),
+                  reason: verdict.reason,
+                };
+                Promise.resolve()
+                  .then(() => notify(warning))
+                  .catch(warnFailed);
+              }
+            } catch (err) {
+              warnFailed(err);
+            }
             return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
           }
           logger.warn('Auto-mode classifier escalating to Slack permission UI', {

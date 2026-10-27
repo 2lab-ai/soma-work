@@ -12,10 +12,11 @@
  *     and native tools run; a *dangerous-rule hit* is handed to a safety
  *     classifier ("guardian" subagent, mirroring Codex `auto_review`) which
  *     either auto-approves or escalates to the human. Fail-closed to ask.
- *   • `bypass` (UNSAFE) — the hard-deny tier still applies (multi-tenant
- *     isolation: cross-user / ssh / sensitive-path / mcp-grant), but everything
- *     else runs with NO prompt — even a dangerous Bash. The deliberately unsafe
- *     choice.
+ *   • `bypass` (UNSAFE, ADMIN ONLY) — the hard-deny tier still applies
+ *     (multi-tenant isolation: cross-user / ssh / sensitive-path / mcp-grant),
+ *     but everything else runs with NO prompt — even a dangerous Bash. The
+ *     deliberately unsafe choice. A non-admin's stored `bypass` resolves to
+ *     `auto` (`effectivePermissionMode`).
  *   • `legacy` — the old "ask the user for every tool" flow (SDK
  *     `permissionMode:'default'`). Still honoured if explicitly set, but NOT
  *     offered as a user-selectable option any more.
@@ -69,4 +70,19 @@ export function resolvePermissionMode(stored: StoredPermissionFields | undefined
   if (isPermissionMode(explicit)) return explicit;
   if (stored?.bypassPermission === true) return 'bypass';
   return DEFAULT_PERMISSION_MODE;
+}
+
+/**
+ * `bypass` is admin-only. A non-admin whose stored setting says `bypass`
+ * (explicitly, or through the legacy `bypassPermission: true` boolean) runs in
+ * `auto`. The stored value is left as it is, so an admin promotion restores it.
+ */
+export function effectivePermissionMode(stored: StoredPermissionFields | undefined, isAdmin: boolean): PermissionMode {
+  const mode = resolvePermissionMode(stored);
+  return mode === 'bypass' && !isAdmin ? 'auto' : mode;
+}
+
+/** Modes this user may pick: `bypass` only for an admin. */
+export function selectablePermissionModesFor(isAdmin: boolean): readonly PermissionMode[] {
+  return isAdmin ? SELECTABLE_PERMISSION_MODES : SELECTABLE_PERMISSION_MODES.filter((m) => m !== 'bypass');
 }

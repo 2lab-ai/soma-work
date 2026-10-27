@@ -10,7 +10,8 @@
 2. **결정 계층 순서는 고정이며 우회 불가:** ① hard-deny(모드 무관) → ② grant 조회(영속) → ③ classifier(auto 모드, 위험 Bash) → ④ 사용자 프롬프트(fallback). 어느 핸들러도 이 순서를 건너뛰고 독자 허용하지 않는다.
 3. **불확실하면 닫는다(fail-closed).** classifier 에러·타임아웃·미지 입력은 `ask`(또는 deny)로 귀결. 절대 fail-open 금지. 타임아웃은 실제 `AbortController`로 강제(선언만 하고 미연결 금지).
 4. **grant store는 단일 구현 + 원자적.** `mcp-tool-grant-store`·`skill-grants`가 src/process-shared로 갈라지지 않게 한 곳으로. 읽고-수정-쓰기는 CAS, 저장은 `atomicWriteJson`(→ `config.md`).
-5. **권한 결정의 기본값(default mode)은 한 곳에서만 정의한다.** `agent-runtime/policy/permission-mode.ts`. 다른 모듈이 자체 기본값을 재정의하지 않는다(현재 `mcp-config-builder`·`bypass-topic`·`user-settings-store`가 모드를 각자 해석 — 단일화 대상).
+5. **`bypass`는 admin 전용이다.** admin이 아닌 유저의 저장값 `bypass`는 `permission-mode.ts`의 `effectivePermissionMode`가 `auto`로 해석한다. UI와 apply도 같은 규칙.
+6. **권한 결정의 기본값(default mode)은 한 곳에서만 정의한다.** `agent-runtime/policy/permission-mode.ts`. 다른 모듈이 자체 기본값을 재정의하지 않는다. `user-settings-store`·`bypass-topic`은 `effectivePermissionMode`·`selectablePermissionModesFor`를 쓴다. `mcp-config-builder`만 아직 SDK 모드(`bypassPermissions`/`default`)를 따로 유도한다 — 단일화 대상.
 
 ## 단일 파이프라인
 
@@ -22,6 +23,7 @@ evaluateToolPolicy(tool, ctx, mode)         ← 유일한 결정 함수
    ├─ ① hard-deny tier (abort/ssh/민감경로/cross-user/…)         → DENY
    ├─ ② grant lookup (단일 grant store, 영속)                     → ALLOW
    ├─ ③ auto 모드 + 위험 Bash → safety-classifier (timeout=abort) → ALLOW | ASK
+   │      └─ ALLOW 후 기계 검사(policy/permission-warning.ts) → 경고 카드만 (결정 불변)
    └─ ④ 그 외                                                     → ASK(사용자 프롬프트)
    │
    ▼
@@ -48,9 +50,9 @@ PreToolUse 훅 / MCP 권한서버 = 위 결정의 **집행자**일 뿐, 독자 �
 
 - MCP 권한서버 둘(`mcp-servers/permission` + `mcp-servers/mcp-tool-permission`) — 역할 통합 또는 명확 분리 문서화.
 - grant store 이중(`src/mcp-tool-grant-store.ts` ↔ `packages/process-shared/src/mcp-tool-grant-store.ts`), `click-classifier.ts` 이중(src ↔ @soma/slack) — 단일화.
-- classifier 타임아웃 미연결(`safety-classifier-factory.ts:74-78`) — fail-closed 무력화. abort 연결.
-- 모드 기본값이 `permission-mode`/`mcp-config-builder`/`bypass-topic`에 분산 — `permission-mode`로 단일화. (`off`→`auto` 의미역전, `false`→`auto` 무고지 강등도 여기서 정리.)
+- `mcp-config-builder`가 SDK 모드를 따로 유도 — `permission-mode`로 단일화. (`off`→`auto` 의미역전, `false`→`auto` 무고지 강등도 여기서 정리.)
 - 타입드 `goal`/스킬 명령 등 일부 경로가 owner guard를 건너뜀 — 모든 mutation을 동일 guard 통과.
+- classifier 기본 모델이 세션 모델을 상속한다(`safety-classifier-factory.ts`, #model-call-unify) — 위 "싼 모델" 규칙과 충돌. 어느 쪽을 정본으로 할지 후속 이슈에서 결정.
 
 ## 검증
 

@@ -742,6 +742,8 @@ describe('D12 — the writing row through the real insert paths (cross-spec revi
         _artCache: {},
         artInTurn: () => false,
         renderTurnArtifacts: () => '',
+        // Permission-warning placement has its own suite (dashboard-permission-warning-client).
+        placePermissionWarnings: () => {},
       },
     );
     const order = () =>
