@@ -51,7 +51,9 @@ jobs:
       (github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, fable-m5max]
-    timeout-minutes: 15
+    # The Test step alone takes 13–14 min on this runner (measured 2026-10-27/28); at 15 the job was
+    # cancelled during Build, after green tests, on main and on PRs.
+    timeout-minutes: 20
 
     steps:
       - uses: actions/checkout@v4
