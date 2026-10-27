@@ -116,7 +116,13 @@ export function ownerIntent(
   };
   if (session.initialInstruction && session.initialInstructionUserId === owner) add(session.initialInstruction);
   const all = session.followUpInstructions ?? [];
-  for (const f of all) {
+  // Concurrent writers (a steer still downloading its files, the executor) can
+  // append out of order: quote the owner's own chronology (stable for ties).
+  const chronological = all
+    .map((f, i) => ({ f, i }))
+    .sort((a, b) => a.f.timestamp - b.f.timestamp || a.i - b.i)
+    .map(({ f }) => f);
+  for (const f of chronological) {
     if (f.userId !== owner) continue;
     // A steer counts while the queue says it stands (still in the turn, or read
     // by the model) — not once it was cancelled, returned or ran as its own turn.

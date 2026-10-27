@@ -2960,6 +2960,17 @@ describe('SlackHandler — follow-up queue host', () => {
       await run;
     });
 
+    // Re-run (astra P1): only the delivery that created a registration settles it.
+    it('a duplicate delivery does not own (and cannot clear) the original registration', () => {
+      const first = handlerAny.noteOwnerInput(message({ ts: '999.111', text: 'do not delete' }));
+      const dup = handlerAny.noteOwnerInput(message({ ts: '999.111', text: 'do not delete' }));
+      expect(first).toBeDefined();
+      expect(dup).toBeUndefined();
+      expect(registrySession.pendingOwnerInputs).toContain('999.111');
+      first.settle();
+      expect(registrySession.pendingOwnerInputs ?? []).not.toContain('999.111');
+    });
+
     it('beginOwnerInput marks owner input pending until settled', () => {
       const before = registrySession.ownerInputRevision ?? 0;
       const token = handlerAny.beginOwnerInput(SESSION_KEY, 'U_OWNER', 'dashboard:1');
