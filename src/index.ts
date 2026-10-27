@@ -87,7 +87,8 @@ import {
 } from './conversation';
 import { captureArtifactFromWorkLog } from './conversation/artifact-capture';
 import { getArtifactStore } from './conversation/artifacts';
-import { createNewTaskProvider } from './conversation/new-task-provider';
+import type { NewTaskAttachment } from './conversation/new-task';
+import { createNewTaskProvider, uploadFiles } from './conversation/new-task-provider';
 import { setSettingsRegistry } from './conversation/settings-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
 import { appendWorkLog, flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
@@ -763,6 +764,7 @@ async function start() {
       sessionKey: string,
       message: string,
       onSent?: (sent: { channel: string; ts: string }) => void,
+      attachments: NewTaskAttachment[] = [],
     ): Promise<{ channel: string; ts: string } | undefined> => {
       const session = claudeHandler.getSessionByKey(sessionKey);
       if (!session) {
@@ -781,12 +783,22 @@ async function start() {
         return undefined;
       }
 
+      // The composer's files (T1.5) go into the thread first — the pipeline
+      // reads them from Slack like files the user attached there. A failed
+      // upload fails the instruction (the dashboard offers a retry); it is
+      // never sent without the files the user meant it to carry.
+      const files = attachments.length
+        ? await uploadFiles(app.client, session.channelId, session.threadTs, attachments)
+        : undefined;
+      // A files-only instruction still echoes a line (a section needs text).
+      const echoed = message.trim() ? message : `📎 ${attachments.length}개 파일`;
+
       let echoTs: string | undefined;
       try {
         const echoResult = await app.client.chat.postMessage({
           channel: session.channelId,
           thread_ts: session.threadTs,
-          text: message.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+          text: echoed.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
           blocks: [
             {
               type: 'context',
@@ -794,7 +806,7 @@ async function start() {
             },
             {
               type: 'section',
-              text: { type: 'plain_text', text: message.length > 3000 ? `${message.slice(0, 2997)}...` : message },
+              text: { type: 'plain_text', text: echoed.length > 3000 ? `${echoed.slice(0, 2997)}...` : echoed },
             },
           ],
         });
@@ -827,14 +839,19 @@ async function start() {
           text: message,
           user: session.ownerId,
           ts,
+          ...(files ? { files } : {}),
         } as any,
         dashboardSay,
       );
-      logger.info('Dashboard: command sent to session', { sessionKey, messageLength: message.length });
+      logger.info('Dashboard: command sent to session', {
+        sessionKey,
+        messageLength: message.length,
+        files: attachments.length,
+      });
       return { channel: session.channelId, ts };
     };
-    setDashboardCommandHandler(async (sessionKey: string, message: string) => {
-      await injectDashboardMessage(sessionKey, message);
+    setDashboardCommandHandler(async (sessionKey, message, attachments) => {
+      await injectDashboardMessage(sessionKey, message, undefined, attachments);
     });
 
     // Connect dashboard: model switch (SSOT 2026-10-22 T4/T5) — representative

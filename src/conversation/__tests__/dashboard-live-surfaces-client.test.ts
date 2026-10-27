@@ -298,9 +298,10 @@ describe('count-up animation of the usage numbers (T1/T2)', () => {
 });
 
 describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
+  // Task view T2: the meta and the 전체 task count read each task's fate.
   const tl = load<{ renderTimeline(s: unknown): string }>(
-    ['esc', 'escJs', 'toNum', 'formatDuration', 'renderTaskMeta', 'renderTimelineItem', 'renderTimeline'],
-    [],
+    ['esc', 'escJs', 'toNum', 'formatDuration', 'taskFateOf', 'renderTaskMeta', 'renderTimelineItem', 'renderTimeline'],
+    ['TASK_FATE_LABEL'],
     { ...SHOW_ALL },
   );
 
@@ -343,12 +344,53 @@ describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
     );
     expect(html).toContain('전체 task 1개 &rarr;');
   });
+
+  it('task view T2: earlier steps a new plan dropped before they ran are not counted; one that ran is', () => {
+    const skipped = { id: 'T8', content: 'never ran', status: 'pending', dropped: 'unstarted', removedAt: 9000 };
+    const stopped = {
+      id: 'T9',
+      content: 'stopped',
+      status: 'in_progress',
+      dropped: 'started',
+      startedAt: 1000,
+      removedAt: 9000,
+      toolCalls: 2,
+    };
+    expect(tl.renderTimeline(workingCard({ earlierTasks: [skipped, stopped] }))).toContain('전체 task 4개 &rarr;');
+    // Only never-run steps behind an empty list: nothing to open.
+    expect(tl.renderTimeline(workingCard({ tasks: [], earlierTasks: [skipped] }))).toBe('');
+  });
+
+  it('task view T2: a paused step says 멈춤 with its tools and never ticks; the pending one stays bare', () => {
+    const html = tl.renderTimeline(
+      workingCard({
+        tasks: [
+          { id: 'T1', content: 'Was running', status: 'pending', startedAt: 1000, toolCalls: 4 },
+          { id: 'T2', content: 'Next', status: 'pending' },
+        ],
+      }),
+    );
+    expect(html).toContain(
+      '<span class="tl-time">멈춤 &middot; <span class="tl-tools" title="툴 호출 수">툴 4회</span></span>',
+    );
+    expect(html).not.toContain('task-elapsed');
+    expect(html).toMatch(/#T2<\/span><span class="tl-text">Next<\/span><\/li>/);
+  });
 });
 
 describe('panel task rows carry id, elapsed time and tool calls (T7/T8)', () => {
   const { renderPanelTaskItem } = load<{ renderPanelTaskItem(t: unknown): string }>(
-    ['esc', 'escAttr', 'toNum', 'formatDuration', 'formatTaskTime', 'agentIconHtml', 'renderPanelTaskItem'],
-    [],
+    [
+      'esc',
+      'escAttr',
+      'toNum',
+      'formatDuration',
+      'formatTaskTime',
+      'agentIconHtml',
+      'taskFateOf',
+      'renderPanelTaskItem',
+    ],
+    ['TASK_FATE_LABEL', 'TASK_PAUSE_SVG', 'TASK_STOP_SVG', 'TASK_SKIP_SVG'],
   );
   it('completed: id, duration and tool count', () => {
     const html = renderPanelTaskItem({
@@ -361,6 +403,32 @@ describe('panel task rows carry id, elapsed time and tool calls (T7/T8)', () => 
     });
     expect(html).toContain('<span class="task-id">#T4</span>');
     expect(html).toContain('툴 12회');
+  });
+  it('task view T2: a step a later plan dropped after it ran keeps its tools and time; one that never ran has neither', () => {
+    const dropped = renderPanelTaskItem({
+      id: 'T5',
+      content: 'Stopped',
+      status: 'in_progress',
+      dropped: 'started',
+      startedAt: 1000,
+      removedAt: 61_000,
+      toolCalls: 6,
+    });
+    expect(dropped).toContain('data-step="dropped"');
+    expect(dropped).toContain('<span class="pl-fate">중단</span><span class="pl-chip">툴 6회</span>');
+    expect(dropped).toContain('<span class="pl-aside">1m 0s</span>');
+    expect(dropped).not.toContain('aria-current');
+    const skipped = renderPanelTaskItem({
+      id: 'T6',
+      content: 'Never ran',
+      status: 'pending',
+      dropped: 'unstarted',
+      toolCalls: 0,
+    });
+    expect(skipped).toContain('data-step="skipped"');
+    expect(skipped).toContain('<span class="pl-fate">실행 안 됨</span>');
+    expect(skipped).not.toContain('pl-chip');
+    expect(skipped).toContain('<span class="ar-vh">, 실행 안 됨</span>');
   });
 });
 
@@ -589,6 +657,7 @@ describe('work log folds under the task each entry was made in (T10)', () => {
       'toNum',
       'formatDuration',
       'decodeSlackEntities',
+      'taskFateOf',
       'renderTaskMeta',
       'wlToolSummary',
       'renderWorkLogEntry',
@@ -597,7 +666,7 @@ describe('work log folds under the task each entry was made in (T10)', () => {
       'renderWorkLogGroupHead',
       'renderWorkLogGroup',
     ],
-    ['WL_LABELS'],
+    ['WL_LABELS', 'TASK_FATE_LABEL'],
   );
   const E = (seq: number, taskId?: string, taskTitle?: string, kind = 'tool') => ({
     seq,

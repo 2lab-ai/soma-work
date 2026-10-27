@@ -920,11 +920,12 @@ async function scenario(
     const t = document.getElementById('panel-tasks') as HTMLElement;
     return { text: t.innerText, items: t.querySelectorAll('.panel-task-item').length };
   });
+  // Task view (.prd/14): the plan opens unfolded, and so do the earlier plans (이전 계획 with their fates).
   check(
     ledger.text.includes('Research prior art') &&
       ledger.text.includes('Audit the surfaces') &&
-      ledger.text.includes('이전 task 2개'),
-    `${tag}: 전체 task → opens every task and the earlier lists in the panel`,
+      ledger.text.includes('이전 계획'),
+    `${tag}: 전체 task → opens every task and the earlier plans in the panel`,
   );
   await page.keyboard.press('Escape');
   await page.waitForTimeout(300);
@@ -939,13 +940,15 @@ async function scenario(
   await page.keyboard.press('Enter');
   await page.waitForSelector('#slide-panel.open', { timeout: 5000 });
   await page.waitForTimeout(400);
-  const tasksLand = await page.evaluate(() => ({
-    focus: document.activeElement?.id ?? '',
-    top: (document.getElementById('panel-tasks') as HTMLElement).scrollTop,
-  }));
+  // Task view (.prd/14): Tasks sit in the tab under the sticky agent tabs — the landing puts their head right under the strip.
+  const tasksLand = await page.evaluate(() => {
+    const tasks = (document.getElementById('panel-tasks') as HTMLElement).getBoundingClientRect();
+    const tabs = (document.getElementById('panel-tabs') as HTMLElement).getBoundingClientRect();
+    return { focus: document.activeElement?.id ?? '', gap: Math.round(tasks.top - tabs.bottom) };
+  });
   check(
-    tasksLand.focus === 'panel-tasks' && tasksLand.top === 0,
-    `${tag}: keyboard 전체 task → focuses the Tasks box at its head (${JSON.stringify(tasksLand)})`,
+    tasksLand.focus === 'panel-tasks' && Math.abs(tasksLand.gap) <= 2,
+    `${tag}: keyboard 전체 task → focuses the Tasks section, its head under the agent tabs (${JSON.stringify(tasksLand)})`,
   );
   await page.keyboard.press('Escape');
   await page.waitForFunction(() => !document.getElementById('slide-panel')?.classList.contains('open'), null, {

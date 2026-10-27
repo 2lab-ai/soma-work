@@ -11,7 +11,11 @@
  *     clock and survives a re-sent list, so a list re-sent after the todo list
  *     was cleared does not restart every task at "now";
  *   - the tool calls made while a task was in progress are counted on it;
- *   - a completed task that a later list no longer contains is kept (bounded).
+ *   - a task that a later list no longer contains is kept (bounded), stamped
+ *     with the moment it left (`removedAt`). The view says how it left
+ *     (`dropped`): a task that had run and never completed was stopped (중단),
+ *     one that never ran was dropped before it started (실행 안 됨) — so the
+ *     dashboard never shows a dropped task as running or as waiting to run.
  *
  * Identity across updates: a task in the new list is the task of the PREVIOUS
  * list with the same text (first unused match, in order). Anything else is a
@@ -36,6 +40,27 @@ export interface TaskRecord {
   completedAt?: number;
   /** Tool calls made while this task was the task in progress. */
   toolCalls: number;
+  /**
+   * Epoch ms the task left the latest list: a later TodoWrite list no longer
+   * held it, or the session started over ({@link closeTaskList}). Set once.
+   * Absent while it is in the list — and on tasks a ledger saved before this
+   * field existed.
+   */
+  removedAt?: number;
+}
+
+/**
+ * How a task that left the list without completing went: `started` — it had
+ * run (it was or had been in progress) and was stopped; `unstarted` — it
+ * never ran. Derived from the record, so a ledger saved before `removedAt`
+ * existed reads the same way.
+ */
+export type TaskDropped = 'started' | 'unstarted';
+
+/** A task as the dashboard shows it: the record, and how it left the list if it did. */
+export interface TaskView extends TaskRecord {
+  /** Earlier tasks only: it left the list before it completed. */
+  dropped?: TaskDropped;
 }
 
 export interface TaskLedger {
@@ -47,7 +72,7 @@ export interface TaskLedger {
   current: string[];
 }
 
-/** Ledger bound — completed tasks dropped from the list beyond this are forgotten, oldest first. */
+/** Ledger bound — tasks no longer in the list beyond this are forgotten, oldest first. */
 export const TASK_LEDGER_MAX = 200;
 
 const STATUSES = new Set<TaskStatus>(['pending', 'in_progress', 'completed']);
@@ -72,6 +97,11 @@ function stamp(rec: TaskRecord, status: TaskStatus, now: number): void {
   }
 }
 
+/** The task left the latest list at `now` (the first time only). */
+function markRemoved(rec: TaskRecord, now: number): void {
+  if (!rec.removedAt) rec.removedAt = now;
+}
+
 /** Merge one TodoWrite list into the ledger (returns a new ledger). */
 export function applyTodoList(ledger: TaskLedger | undefined, todos: readonly TodoInput[], now: number): TaskLedger {
   const prev = ledger ?? { nextSeq: 1, tasks: [], current: [] };
@@ -93,6 +123,8 @@ export function applyTodoList(ledger: TaskLedger | undefined, todos: readonly To
     stamp(rec, item.status, now);
     current.push(rec.id);
   }
+  // The previous list's tasks the new one does not hold left it now.
+  for (const t of previousList) if (!used.has(t.id)) markRemoved(t, now);
 
   // Oldest first: tasks already known keep their place, new ones go last.
   const known = prev.tasks.map((t) => byId.get(t.id)!);
@@ -129,11 +161,18 @@ export function recordToolCall(ledger: TaskLedger | undefined): TaskRecord | und
   return t;
 }
 
+/** How an earlier task left the list, if it had not completed. */
+function droppedOf(t: TaskRecord): TaskDropped | undefined {
+  if (t.status === 'completed') return undefined;
+  return t.status === 'in_progress' || t.startedAt ? 'started' : 'unstarted';
+}
+
 /**
  * The ledger as the dashboard shows it: `current` = the latest list in its
- * order; `earlier` = tasks no longer in it, newest first. Copies.
+ * order; `earlier` = tasks no longer in it, newest first, each not completed
+ * one marked with how it left (`dropped`). Copies.
  */
-export function ledgerTasks(ledger: TaskLedger): { current: TaskRecord[]; earlier: TaskRecord[] } {
+export function ledgerTasks(ledger: TaskLedger): { current: TaskView[]; earlier: TaskView[] } {
   const inList = new Set(ledger.current);
   const byId = new Map(ledger.tasks.map((t) => [t.id, t]));
   return {
@@ -144,7 +183,10 @@ export function ledgerTasks(ledger: TaskLedger): { current: TaskRecord[]; earlie
     earlier: ledger.tasks
       .filter((t) => !inList.has(t.id))
       .reverse()
-      .map((t) => ({ ...t })),
+      .map((t) => {
+        const dropped = droppedOf(t);
+        return dropped ? { ...t, dropped } : { ...t };
+      }),
   };
 }
 
@@ -176,6 +218,8 @@ export function sanitizeTaskLedger(raw: unknown): TaskLedger | undefined {
     if (startedAt) rec.startedAt = startedAt;
     const completedAt = finitePositive(t.completedAt);
     if (completedAt) rec.completedAt = completedAt;
+    const removedAt = finitePositive(t.removedAt);
+    if (removedAt) rec.removedAt = removedAt;
     tasks.push(rec);
   }
   const current = Array.isArray(r.current)
@@ -194,11 +238,19 @@ export function sanitizeTaskLedger(raw: unknown): TaskLedger | undefined {
 
 /**
  * The session starts over (`/new`, renew, handoff): no task of the old list is
- * in progress any more — it stays in the history (`earlier`), and nothing new
- * is attributed to it.
+ * in progress any more — it stays in the history (`earlier`), left at `now`,
+ * and nothing new is attributed to it.
  */
-export function closeTaskList(ledger: TaskLedger | undefined): TaskLedger | undefined {
-  return ledger ? { ...ledger, current: [] } : undefined;
+export function closeTaskList(ledger: TaskLedger | undefined, now: number): TaskLedger | undefined {
+  if (!ledger) return undefined;
+  const inList = new Set(ledger.current);
+  const tasks = ledger.tasks.map((t) => {
+    if (!inList.has(t.id)) return t;
+    const copy = { ...t };
+    markRemoved(copy, now);
+    return copy;
+  });
+  return { ...ledger, tasks, current: [] };
 }
 
 /** Work-log kinds that belong to the task in progress. Instructions and final answers frame the turn. */
