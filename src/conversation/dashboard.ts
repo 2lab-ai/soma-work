@@ -6098,15 +6098,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .panel-command .panel-controls .mp-trigger { max-width: 100%; }
   .panel-command .panel-controls .cb-model-note { flex-basis: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .panel-command .cmd-hint { flex-basis: 100%; }
-  /* Task view T1.5: the field takes its own full line; model · effort, the
-     tools and Send share the line under it (the row's box steps aside). */
+  /* Task view T1.5: the session's model (model · effort) above the steering
+     input, as on a wide screen — it shares the first line with the tools; the
+     field and Send take the line under it (the row's box steps aside). */
   .panel-command { row-gap: 6px; }
   .panel-command .panel-command-row { display: contents; }
-  .panel-command .pc-attachments, .panel-command .pc-recorder, .panel-command .pc-error { flex-basis: 100%; }
-  .panel-command textarea { order: 1; flex: 1 1 100%; }
-  .panel-command .panel-controls { order: 2; max-width: calc(100% - 216px); min-width: 0; }
-  .panel-command .pc-tools { order: 3; margin-left: auto; }
-  .panel-command .btn-send { order: 4; }
+  .panel-command .panel-controls { order: 1; max-width: calc(100% - 150px); min-width: 0; }
+  .panel-command .pc-tools { order: 2; margin-left: auto; }
+  .panel-command .pc-attachments, .panel-command .pc-recorder, .panel-command .pc-error { order: 3; flex-basis: 100%; }
+  .panel-command textarea { order: 4; flex: 1 1 calc(100% - 88px); min-width: 0; }
+  .panel-command .btn-send { order: 5; }
 }
 @media (max-width: 639px), (pointer: coarse) {
   .topbar .nav a, .topbar .nav .user-select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }

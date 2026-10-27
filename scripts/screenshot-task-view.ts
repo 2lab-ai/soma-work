@@ -459,6 +459,21 @@ const visible = (page: Page, sel: string) =>
     return r.width > 0 && r.height > 0 && getComputedStyle(el).visibility !== 'hidden';
   }, sel);
 
+/** T1.5: the session's model (model · effort) is shown, above the steering input. */
+const modelAboveInput = (page: Page) =>
+  page.evaluate(() => {
+    const c = document.getElementById('panel-controls') as HTMLElement;
+    const i = document.getElementById('cmd-input') as HTMLElement;
+    const cr = c.getBoundingClientRect();
+    const ir = i.getBoundingClientRect();
+    return {
+      text: (c.textContent ?? '').replace(/\s+/g, ' ').trim(),
+      shown: cr.height > 0 && cr.width > 0,
+      above: cr.bottom <= ir.top + 1,
+      gap: Math.round(ir.top - cr.bottom),
+    };
+  });
+
 async function scenario(browser: import('playwright').Browser, theme: 'light' | 'dark', width: number, height = 900) {
   const narrow = width < 640;
   const ctx = await browser.newContext({
@@ -635,6 +650,11 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     `${tag}: Main first, selected, sticky (${tabs.map((t) => t.text).join(' | ')})`,
   );
   check(tabs[1]?.id === 'toolu_explore' && tabs[2]?.id === 'toolu_lib', `${tag}: subagent tabs in spawn order`);
+  const mMain = await modelAboveInput(page);
+  check(
+    mMain.shown && /Opus 5\.5/.test(mMain.text) && mMain.above,
+    `${tag}: Main tab — the session model ("${mMain.text}") sits above the steering input (gap ${mMain.gap}px)`,
+  );
   await page.locator('#panel-tabs [data-agent-tab="toolu_lib"]').click();
   await page.waitForTimeout(700);
   const sub = await page.evaluate(() => ({
@@ -651,6 +671,11 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
   );
   check(/A2/.test(sub.tasksTitle), `${tag}: Tasks are scoped to A2 ("${sub.tasksTitle}")`);
   check(sub.earlierBtn, `${tag}: the main conversation's 이전 대화 button is not on A2's tab`);
+  const mSub = await modelAboveInput(page);
+  check(
+    mSub.shown && /Opus 5\.5/.test(mSub.text) && mSub.above,
+    `${tag}: A2 tab — the session model ("${mSub.text}") still sits above the steering input (gap ${mSub.gap}px)`,
+  );
   await page.screenshot({ path: path.join(OUT, `panel-subagent-${theme}-${width}.png`) });
   // Arrow keys move along the strip.
   await page.locator('#panel-tabs [aria-selected="true"]').focus();
