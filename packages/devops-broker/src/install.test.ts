@@ -721,7 +721,7 @@ describe.skipIf(process.platform !== 'darwin')('devops-broker install.sh', SLOW,
     expect(stuck.out).toMatch(/^WARN the broker user could not remove every ACL/m);
   });
 
-  it('is idempotent, and a re-run fails on an extra soma-devops member or a hard-linked policy.json', () => {
+  it('is idempotent, and a re-run fails on an extra soma-devops member, a nested group, an unreadable NestedGroups or a hard-linked policy.json', () => {
     expect(install().status).toBe(3);
     const tree = snapshot();
     const before = logLines().length;
@@ -744,6 +744,36 @@ describe.skipIf(process.platform !== 'darwin')('devops-broker install.sh', SLOW,
       expect.stringMatching(/^FAIL group soma-devops has members other than alice: mallory/),
     ]);
     fs.writeFileSync(membership, 'alice\n');
+
+    // A nested group would let its members in too. Real dscl prints "No such key" and exits 0 when the group has none;
+    // the leading newline makes the shim print dscl's multi-line form ("NestedGroups:" then " <uuid>").
+    const nested = path.join(state, 'Groups/soma-devops/NestedGroups');
+    fs.writeFileSync(nested, '\n ABCDEFAB-CDEF-ABCD-EFAB-CDEFABCDEF0C\n');
+    const nestedMark = logLines().length;
+    const nestedRun = install();
+    expect(nestedRun.status).toBe(1);
+    expect(fails(nestedRun)).toEqual([expect.stringMatching(/^FAIL group soma-devops has nested groups/)]);
+    expect(nestedRun.stdout).toMatch(/^daemon NOT started: 1 check\(s\) failed$/m);
+    expect(
+      logLines()
+        .slice(nestedMark)
+        .filter((line) => line.startsWith('launchctl bootstrap')),
+    ).toEqual([]);
+    fs.rmSync(nested);
+
+    // A NestedGroups query that fails is a FAIL, not "no nested groups", even with the bot user alone in the group.
+    const unreadableMark = logLines().length;
+    const unreadable = install(WITH_ARCHIVES(), { SHIM_DSCL_FAIL_READ: 'NestedGroups' });
+    expect(unreadable.status).toBe(1);
+    expect(fails(unreadable)).toEqual([
+      expect.stringMatching(/^FAIL cannot read the nested groups of group soma-devops \(dscl exit 1\)/),
+    ]);
+    expect(unreadable.stdout).toMatch(/^daemon NOT started: 1 check\(s\) failed$/m);
+    expect(
+      logLines()
+        .slice(unreadableMark)
+        .filter((line) => line.startsWith('launchctl bootstrap')),
+    ).toEqual([]);
 
     // A policy.json with a second name is never chowned or chmodded: that name could be any root-owned file.
     const victim = path.join(work, 'victim');
