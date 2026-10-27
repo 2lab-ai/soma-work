@@ -12972,29 +12972,32 @@ function paintPushedBoard(board) {
 // poll) and ends in 다시 시도. The deadline is for the answer, not the transfer —
 // a large board on a slow link still arrives. Certified, polls run unbounded.
 var BOARD_LOAD_TIMEOUT_MS = 20000;
-var _sessionsSeq = 0;
-var _sessionsCtl = null; // the uncertified load in flight, aborted when a newer one asks
+// Before certification there is one load at a time. The same user's next ask
+// (task_update, toggles, the 30 s poll, 다시 시도) joins it: killing it would
+// restart the clock on a busy board, and a second request would pay a second
+// sibling fan-out. A user switch aborts it — its answer would be dropped.
+var _sessionsInflight = null; // { user, ctl, done, settle }
 async function loadSessions() {
+  if (_sessionsInflight) {
+    if (_sessionsInflight.user === currentUserId) return _sessionsInflight.done;
+    _sessionsInflight.ctl.abort();
+    _sessionsInflight = null;
+  }
   // An answer for a user no longer selected paints nothing and flags nothing.
-  // Same-user loads never cancel each other: a slow 30 s poll still paints. Only
-  // a failure is dropped when a newer load is already asking (it reports itself).
-  // Before certification a newer load aborts the one it replaces: every request
-  // fans out to the sibling instances, and the replaced answer would be dropped.
+  // Certified, same-user loads never cancel each other: a slow poll still paints.
   var forUser = currentUserId;
-  var seq = ++_sessionsSeq;
-  var ctl = null;
+  var entry = null;
   var timer = 0;
-  if (_sessionsCtl) { _sessionsCtl.abort(); _sessionsCtl = null; }
   if (_boardLoad !== 'ready' && typeof AbortController === 'function') {
-    ctl = new AbortController();
-    _sessionsCtl = ctl;
-    timer = setTimeout(function() { ctl.abort(); }, BOARD_LOAD_TIMEOUT_MS);
+    entry = { user: forUser, ctl: new AbortController() };
+    entry.done = new Promise(function(r) { entry.settle = r; });
+    _sessionsInflight = entry;
+    timer = setTimeout(function() { entry.ctl.abort(); }, BOARD_LOAD_TIMEOUT_MS);
   }
   try {
     const url = '/api/dashboard/sessions' + (currentUserId ? '?userId=' + currentUserId : '');
-    const res = await fetch(url, ctl ? { signal: ctl.signal } : {});
+    const res = await fetch(url, entry ? { signal: entry.ctl.signal } : {});
     clearTimeout(timer);
-    if (_sessionsCtl === ctl) _sessionsCtl = null; // answered: nothing left to abort
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     if (forUser !== currentUserId) return;
@@ -13010,8 +13013,7 @@ async function loadSessions() {
     }
   } catch (e) {
     clearTimeout(timer);
-    if (ctl && _sessionsCtl === ctl) _sessionsCtl = null;
-    if (forUser !== currentUserId || seq !== _sessionsSeq) return;
+    if (forUser !== currentUserId) return;
     console.error('Failed to load sessions', e);
     var held = _boardLoad === 'loading' && _heldWsBoard && _heldWsBoard.user === forUser ? _heldWsBoard.board : null;
     _heldWsBoard = null;
@@ -13020,6 +13022,11 @@ async function loadSessions() {
     // stays: they are not the whole board (painted as partial: no counts, no
     // "Nothing here", not announced).
     if (held) renderBoard(held);
+  } finally {
+    if (entry) {
+      if (_sessionsInflight === entry) _sessionsInflight = null;
+      entry.settle();
+    }
   }
 }
 
