@@ -743,7 +743,10 @@ describe('one live path for the whole panel', () => {
 describe('landing follows the opening intent (executed)', () => {
   type Rect = { top: number; bottom: number; height: number };
   /** A scroll area at y=100, 400px tall, and the sections inside it at fixed content offsets. */
-  function rig(intent: string, opts: { question?: boolean; tasksHidden?: boolean; tabs?: number } = {}) {
+  function rig(
+    intent: string,
+    opts: { question?: boolean; tasksHidden?: boolean; tabs?: number; detail?: boolean } = {},
+  ) {
     const offsets: Record<string, number> = {
       'panel-info': 0,
       'panel-goal': 80,
@@ -789,7 +792,7 @@ describe('landing follows the opening intent (executed)', () => {
       ['_panelOnQuestion'],
       { document: { getElementById: (id: string) => els[id] ?? null } },
       [
-        `var _panelLand = ${JSON.stringify(intent)}; var _panelLanded = false; var _panelStickBottom = false; var _panelLandAt = null; var _panelScrollGen = 0;`,
+        `var _panelLand = ${JSON.stringify(intent)}; var _panelLanded = false; var _panelStickBottom = false; var _panelLandAt = null; var _panelScrollGen = 0; var _panelDetail = ${!!opts.detail};`,
         'function state() { return { landed: _panelLanded, stick: _panelStickBottom }; }',
       ],
     );
@@ -827,11 +830,16 @@ describe('landing follows the opening intent (executed)', () => {
     const ask = rig('tasks', { question: true, tabs: 40 });
     ask.m.landPanel();
     expect(ask.scroll.scrollTop).toBe(520);
-    // No Tasks shown: the default landing — a question first, else the newest turns.
+    // No Tasks shown: the default landing — a question first, else the top of the
+    // minimal panel (task view: surface → tabs → latest exchange), or with 자세히 the newest turns.
     const none = rig('tasks', { tasksHidden: true });
     none.m.landPanel();
-    expect(none.scroll.scrollTop).toBe(3000);
-    expect(none.m.state()).toEqual({ landed: false, stick: true });
+    expect(none.scroll.scrollTop).toBe(0);
+    expect(none.m.state()).toEqual({ landed: false, stick: false });
+    const noneDetail = rig('tasks', { tasksHidden: true, detail: true });
+    noneDetail.m.landPanel();
+    expect(noneDetail.scroll.scrollTop).toBe(3000);
+    expect(noneDetail.m.state()).toEqual({ landed: false, stick: true });
     const noneAsk = rig('tasks', { tasksHidden: true, question: true });
     noneAsk.m.landPanel();
     expect(noneAsk.scroll.scrollTop).toBe(300);

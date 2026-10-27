@@ -34,6 +34,7 @@ import {
   slackEventFileFrom,
 } from './new-task-launcher';
 import { cctSlotsToUsage, createTtlCache, llmuxAccountsToUsage } from './new-task-usage';
+import { createSteerUploader, type SteerUploaderOptions } from './steer-uploads';
 
 const logger = new Logger('DashboardNewTask');
 
@@ -133,6 +134,20 @@ export async function uploadFiles(
   const out: SlackEventFile[] = [];
   for (const id of ids) out.push(await resolveUploadedFile(client, id));
   return out;
+}
+
+/**
+ * The panel composer's uploader (`injectDashboardMessage`): one Slack upload
+ * per file, kept by id so a retry never uploads a file Slack already took (#488).
+ */
+export function createSlackSteerUploader(client: WebClient, opts?: SteerUploaderOptions) {
+  return createSteerUploader(
+    {
+      upload: async (channel, threadTs, file) => (await uploadFileIds(client, channel, threadTs, [file]))[0],
+      resolve: (id) => resolveUploadedFile(client, id),
+    },
+    opts,
+  );
 }
 
 export function createNewTaskProvider(deps: NewTaskProviderDeps): DashboardNewTaskProvider {

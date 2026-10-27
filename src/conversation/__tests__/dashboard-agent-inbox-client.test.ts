@@ -2798,6 +2798,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     prevScrollTop?: number;
     turns?: 'ok' | 'empty' | 'fail' | 'held';
     settle?: 'ok' | 'empty' | 'fail';
+    /** 자세히 on: the whole conversation, landed on the newest turns. */
+    detail?: boolean;
   }) {
     const els: Record<string, FakeEl & Record<string, unknown>> = {};
     const el = (id: string) => {
@@ -2916,7 +2918,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         pcReset: () => {},
         resetPanelSections: () => {},
         applyPanelConv: () => {},
-        _panelDetail: false,
+        _panelDetail: !!opts.detail,
         _panelTasksOpen: false,
         _agentConvRaw: null,
         // The previous opening's answer observer (none in this harness).
@@ -2930,6 +2932,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         renderPanelArtifactsSection: () => {},
         ensureArtifacts: () => {},
         decoratePanelTurns: () => {},
+        // Task view: openPanel re-counts the 이전 대화 button when it replaces the turns.
+        renderConvEarlier: () => {},
         isSiblingSession: () => false,
         // main's own openPanel deps since this harness was written (#372 panel controls, spec 12 agent views).
         renderPanelControls: () => {},
@@ -3049,8 +3053,13 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     expect(p.formInView()).toBe(true);
   });
 
-  it('a question answered before the turns arrive lands on the newest turns instead', async () => {
-    const p = page({ session: waitingMulti(), turns: 'held' });
+  // Task view (T1.1 / T1.6): with no question the minimal panel lands at its top —
+  // the common surface, the tabs, the latest exchange; 자세히 lands on the newest turns.
+  it.each([
+    [false, 'the top'],
+    [true, 'the newest turns (자세히)'],
+  ] as const)('a question answered before the turns arrive lands on %s instead', async (detail, _where) => {
+    const p = page({ session: waitingMulti(), turns: 'held', detail });
     p.clickAnswer();
     // The answer lands (here or in Slack): the WS session_update re-renders the panel question.
     p.cache[KEY] = waitingMulti({ activityState: 'working', pendingQuestion: undefined });
@@ -3058,17 +3067,20 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     p.release();
     await flush();
     await flush();
-    expect(p.scroll.scrollTop).toBe(p.bottom());
-    expect(p.m.stick()).toBe(true);
+    expect(p.scroll.scrollTop).toBe(detail ? p.bottom() : 0);
+    expect(p.m.stick()).toBe(detail);
   });
 
-  it('an opening without an open question still lands on the newest turns and holds them', async () => {
-    const p = page({ session: waitingMulti({ activityState: 'idle', pendingQuestion: undefined }) });
+  it.each([
+    [false, 'the top, and does not hold the bottom'],
+    [true, 'the newest turns and holds them (자세히)'],
+  ] as const)('an opening without an open question lands on %s', async (detail, _where) => {
+    const p = page({ session: waitingMulti({ activityState: 'idle', pendingQuestion: undefined }), detail });
     p.m.openPanel(KEY);
     await flush();
     await flush();
-    expect(p.scroll.scrollTop).toBe(p.bottom());
-    expect(p.m.stick()).toBe(true);
+    expect(p.scroll.scrollTop).toBe(detail ? p.bottom() : 0);
+    expect(p.m.stick()).toBe(detail);
   });
 
   it('작업 로그 on a waiting session keeps the work-log landing (top, or the header for a tall question)', async () => {

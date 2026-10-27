@@ -12,8 +12,15 @@
  *         Tasks, the work log and 지시와 답변 (its instruction and result)
  *   T1.3  Tasks and 작업 로그 folded, 지시와 답변 open by default
  *   T1.4  an assistant turn shows its answer (rendered markdown), Raw at its foot
+ *   T1.1  each surface part renders: 세션 정보 (owner · tokens · cost · PR link),
+ *         산출물 (the session's files), 입력 필요 (a waiting session's question
+ *         and permission request, counted in its head)
  *   T1.5  the composer: a textarea (Shift+Enter breaks the line), a pasted image
- *         becomes a chip, the send carries it as an attachment
+ *         becomes a chip, the send carries it as an attachment; a file picked
+ *         with 📎, and a voice note recorded on Chromium's fake microphone
+ *         (MediaRecorder), alone or still recording at send time, reach the REAL
+ *         command route (validation, body limit, owner gate) and its handler
+ *         uploads them on the Slack leg (`createSlackSteerUploader`, Slack double)
  *   T1.6  자세히 opens every section; off again, the defaults return
  *   T2    earlier plans: 완료 · 중단 · 실행 안 됨 counted, folded, never spinning
  *   and documentElement.scrollWidth === innerWidth everywhere.
@@ -36,6 +43,9 @@ const BASE_URL = `http://127.0.0.1:${PORT}`;
 const NOW = Date.now();
 const M = 60_000;
 const KEY = 'mock-inst::work:C123:1700000000.000200';
+const KEY_WAIT = 'mock-inst::work:C124:1700000000.000300';
+// The browser's command bodies are forwarded, byte for byte, to the real route under this bare key.
+const LOCAL_KEY = 'C123:1700000000.000200';
 
 const ANSWER = [
   '## 탭 구조로 바꿨습니다',
@@ -84,9 +94,50 @@ const AGENTS = [
   },
 ];
 
+// A session that waits on its owner: a question and a permission request (입력 필요).
+function waitingSession() {
+  return {
+    key: KEY_WAIT,
+    title: 'Needs you',
+    displayHeadline: '배포 승인 대기',
+    ownerId: 'U001',
+    ownerName: 'Zhuge',
+    workflow: 'zwork',
+    model: 'claude-opus-5-5[1m]',
+    channelId: 'C124',
+    sessionState: 'MAIN',
+    activityState: 'waiting',
+    conversationId: 'conv-wait',
+    lastActivity: new Date(NOW).toISOString(),
+    pendingQuestion: {
+      type: 'user_choice',
+      question: '어느 환경에 배포할까요?',
+      choices: [
+        { id: 'dev', label: 'dev', description: '먼저 dev에서 확인' },
+        { id: 'prod', label: 'prod' },
+      ],
+      recommendedChoiceId: 'dev',
+    },
+    pendingPermissions: [
+      {
+        approvalId: 'ap-1',
+        toolName: 'Bash',
+        requesterId: 'U001',
+        rules: [{ id: 'rm-rf', label: 'rm -rf', description: 'recursive delete' }],
+        canDisableRule: false,
+        createdAt: NOW - M,
+        expiresAt: NOW + 10 * M,
+      },
+    ],
+    artifacts: { count: 0, recent: [] },
+    tasks: [],
+    earlierTasks: [],
+  };
+}
+
 function makeBoard() {
   return {
-    waiting: [],
+    waiting: [waitingSession()],
     working: [
       {
         key: KEY,
@@ -242,6 +293,65 @@ const PAGE_HELPERS = [
 ].join('\n');
 
 let sentBodies: unknown[] = [];
+/** What the real command route handed its handler, and what the Slack leg made of it. */
+interface Handled {
+  key: string;
+  message: string;
+  names: string[];
+  types: string[];
+  sizes: number[];
+  firstText: string;
+  slack: Array<{ id: string; name: string; mimetype: string; url: string }>;
+}
+let handled: Handled[] = [];
+/** A fresh Slack double (and uploader cache) per scenario — set up in main(). */
+let resetSlackLeg: () => void = () => {};
+const sleep = (ms: number) => new Promise((res) => setTimeout(res, ms));
+async function waitHandled(n: number) {
+  for (let i = 0; i < 80 && handled.length < n; i++) await sleep(100);
+}
+
+// A Slack client double for the upload leg: files.uploadV2 takes each file, files.info reads it back.
+function slackDouble() {
+  let n = 0;
+  const byId = new Map<string, { name: string; size: number }>();
+  return {
+    filesUploadV2: async (args: any) => {
+      const files = args.file_uploads.map((u: any) => {
+        const id = `F${++n}`;
+        byId.set(id, { name: u.filename, size: Buffer.from(u.file).length });
+        return { id, name: u.filename };
+      });
+      return { ok: true, files: [{ ok: true, files }] };
+    },
+    files: {
+      info: async ({ file }: { file: string }) => {
+        const f = byId.get(file);
+        const ext = (f?.name.split('.').pop() ?? '').toLowerCase();
+        const mimetype =
+          {
+            m4a: 'audio/mp4',
+            mp4: 'audio/mp4',
+            ogg: 'audio/ogg',
+            webm: 'audio/webm',
+            png: 'image/png',
+            txt: 'text/plain',
+          }[ext] ?? 'application/octet-stream';
+        return {
+          ok: true,
+          file: {
+            id: file,
+            name: f?.name,
+            mimetype,
+            filetype: ext,
+            size: f?.size ?? 0,
+            url_private_download: `https://files.slack.com/files-pri/T1-${file}/download/${f?.name}`,
+          },
+        };
+      },
+    },
+  };
+}
 async function installMocks(page: Page) {
   await page.addInitScript({ content: PAGE_HELPERS });
   await page.addInitScript({ content: 'window.__name = function (f) { return f; };' });
@@ -269,10 +379,22 @@ async function installMocks(page: Page) {
       : r.fulfill({ status: 404, json: { error: 'missing' } });
   });
   await page.route(/\/api\/conversations\/[^/]+\/turns\/[^/]+\/raw/, (r) => r.fulfill({ json: { raw: ANSWER } }));
-  await page.route(/\/api\/dashboard\/session\/[^/?]+\/command/, (r) => {
-    sentBodies.push(JSON.parse(r.request().postData() || '{}'));
-    return r.fulfill({ json: { ok: true } });
+  // The send goes on to the real route — the browser's exact bytes — and its answer comes back.
+  await page.route(/\/api\/dashboard\/session\/[^/?]+\/command/, async (r) => {
+    const body = r.request().postData() || '{}';
+    sentBodies.push(JSON.parse(body));
+    const res = await fetch(`${BASE_URL}/api/dashboard/session/${encodeURIComponent(LOCAL_KEY)}/command`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-admin-mode': 'on' },
+      body,
+    });
+    return r.fulfill({ status: res.status, json: await res.json().catch(() => ({})) });
   });
+  await page.route(/\/api\/dashboard\/session\/[^/?]+\/permission\/[^/?]+$/, (r) =>
+    r.fulfill({
+      json: { approvalId: 'ap-1', toolName: 'Bash', input: '{"command":"rm -rf build"}', truncated: false },
+    }),
+  );
   await page.route(/\/api\/dashboard\/session\/[^/?]+(\?.*)?$/, (r) => {
     if (r.request().method() !== 'GET') return r.fulfill({ json: { ok: true } });
     return r.fulfill({
@@ -280,8 +402,23 @@ async function installMocks(page: Page) {
         id: 'conv-run',
         title: 'conv-run',
         titleSub: '탭으로 나눈 태스크 뷰',
-        turnCount: 2,
+        turnCount: 4,
         turns: [
+          {
+            id: 't0u',
+            role: 'user',
+            timestamp: new Date(NOW - 11 * M).toISOString(),
+            userName: 'Zhuge',
+            rawContent: '먼저 구조를 조사해줘',
+          },
+          {
+            id: 't0a',
+            role: 'assistant',
+            timestamp: new Date(NOW - 10 * M).toISOString(),
+            summaryTitle: '조사',
+            summaryBody: 'summary: survey done',
+            summarized: true,
+          },
           {
             id: 't1',
             role: 'user',
@@ -329,9 +466,12 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     colorScheme: theme,
     hasTouch: narrow,
     isMobile: narrow,
+    permissions: ['microphone'],
   });
   const page = await ctx.newPage();
   sentBodies = [];
+  handled = [];
+  resetSlackLeg();
   page.on('pageerror', (err) => check(false, `page error: ${err.message}`));
   await installMocks(page);
   await page.goto(`${BASE_URL}/dashboard/U001`);
@@ -352,6 +492,73 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
   check(
     order.every((x, i) => x >= 0 && (i === 0 || x > order[i - 1])),
     `${tag}: surface → tabs → Tasks · 작업 로그 · 지시와 답변 (${order.join(',')})`,
+  );
+
+  // T1.1 · each part of the surface renders: 세션 정보 and 산출물 here, 입력 필요 on a waiting session below.
+  await page
+    .waitForFunction(() => /analysis\.html/.test(document.getElementById('panel-artifacts')?.textContent ?? ''), null, {
+      timeout: 5000,
+    })
+    .catch(() => {});
+  const surf = await page.evaluate(() => {
+    const shown = (el: Element | null) => !!el && (el as HTMLElement).getBoundingClientRect().height > 0;
+    const info = document.getElementById('panel-info');
+    const art = document.getElementById('panel-artifacts');
+    return {
+      info: shown(info),
+      title: info?.querySelector('.pi-title')?.textContent ?? '',
+      sum: (info?.querySelector('.pi-sum')?.textContent ?? '').replace(/\s+/g, ' ').trim(),
+      links: info?.querySelector('.pi-links')?.textContent ?? '',
+      art: shown(art),
+      artText: (art?.textContent ?? '').replace(/\s+/g, ' ').trim(),
+      needsHidden: (document.getElementById('panel-needs-head') as HTMLElement | null)?.hidden,
+    };
+  });
+  check(
+    surf.info &&
+      surf.title === '세션 정보' &&
+      /Zhuge/.test(surf.sum) &&
+      /\$12\.40/.test(surf.sum) &&
+      /PR #999/.test(surf.links),
+    `${tag}: 세션 정보 renders — "${surf.sum}" · links "${surf.links}"`,
+  );
+  check(surf.art && /analysis\.html/.test(surf.artText), `${tag}: 산출물 renders — "${surf.artText.slice(0, 60)}"`);
+  check(surf.needsHidden === true, `${tag}: 입력 필요 stays out of the way while nothing waits on the user`);
+
+  // T1.1 / T1.6 · the opening lands at the top: the surface in view, then the tabs,
+  // and 지시와 답변 holding the latest exchange (the earlier one folded).
+  const land = await page.evaluate(() => {
+    const sc = document.getElementById('panel-scroll') as HTMLElement;
+    const r = (document.getElementById('panel-info') as HTMLElement).getBoundingClientRect();
+    const a = sc.getBoundingClientRect();
+    const btn = document.getElementById('conv-earlier') as HTMLElement;
+    return {
+      top: sc.scrollTop,
+      infoIn: r.top >= a.top - 1 && r.bottom <= a.bottom,
+      shown: Array.from(document.querySelectorAll('#panel-turns > .turn'))
+        .filter((t) => t.getClientRects().length > 0)
+        .map((t) => t.getAttribute('data-turn-id')),
+      btn: btn.hidden ? '' : (btn.textContent ?? ''),
+    };
+  });
+  check(
+    land.top === 0 && land.infoIn,
+    `${tag}: the opening lands at the top — 세션 정보 in view (scrollTop ${land.top})`,
+  );
+  // A layout shift (a narrower window reflows the rows) keeps a panel read at its top at its top.
+  await page.setViewportSize({ width: narrow ? 360 : 390, height });
+  await page.waitForTimeout(700);
+  const afterResize = await page.evaluate(() => (document.getElementById('panel-scroll') as HTMLElement).scrollTop);
+  await page.setViewportSize({ width, height });
+  await page.waitForTimeout(700);
+  const afterBack = await page.evaluate(() => (document.getElementById('panel-scroll') as HTMLElement).scrollTop);
+  check(
+    afterResize === 0 && afterBack === 0,
+    `${tag}: a window resize keeps the top landing (scrollTop ${afterResize} → ${afterBack})`,
+  );
+  check(
+    land.shown.join(',') === 't1,t2' && land.btn === '이전 대화 2개',
+    `${tag}: 지시와 답변 holds the latest exchange (${land.shown.join(',')}) under "${land.btn}"`,
   );
 
   // T1.3 / T1.6 · minimal by default.
@@ -377,7 +584,8 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     .waitForFunction(() => !!document.querySelector('#panel-turns .turn-answer .ans-body'), null, { timeout: 8000 })
     .catch(() => {});
   const ans = await page.evaluate(() => {
-    const turn = document.querySelector('#panel-turns .turn.assistant');
+    const all = document.querySelectorAll('#panel-turns .turn.assistant');
+    const turn = all[all.length - 1];
     const body = turn?.querySelector('.turn-answer .ans-body');
     const raw = turn?.querySelector('details.turn-raw') as HTMLDetailsElement | null;
     return {
@@ -400,6 +608,18 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     `${tag}: Raw holds the markdown source and the summary (not the face)`,
   );
   await page.screenshot({ path: path.join(OUT, `panel-default-${theme}-${width}.png`) });
+  await page.locator('#conv-earlier').click();
+  await page.waitForTimeout(200);
+  const opened = await page.evaluate(() => ({
+    shown: Array.from(document.querySelectorAll('#panel-turns > .turn'))
+      .filter((t) => t.getClientRects().length > 0)
+      .map((t) => t.getAttribute('data-turn-id')),
+    btn: (document.getElementById('conv-earlier') as HTMLElement).hidden,
+  }));
+  check(
+    opened.shown.join(',') === 't0u,t0a,t1,t2' && opened.btn,
+    `${tag}: 이전 대화 opens every turn (${opened.shown.join(',')})`,
+  );
 
   // T1.2 · tabs: Main first and sticky; a subagent tab scopes the tab panel.
   const tabs = await page.evaluate(() =>
@@ -422,6 +642,7 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     turnsHidden: (document.getElementById('panel-turns') as HTMLElement).hidden,
     conv: document.getElementById('panel-agent-conv')?.textContent ?? '',
     tasksTitle: document.querySelector('#panel-tasks .ps-sec-title')?.textContent ?? '',
+    earlierBtn: (document.getElementById('conv-earlier') as HTMLElement).hidden,
   }));
   check(sub.sel === 'toolu_lib' && sub.turnsHidden, `${tag}: the A2 tab is selected and the main turns step aside`);
   check(
@@ -429,6 +650,7 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     `${tag}: A2's tab shows its instruction (prompt) and its result`,
   );
   check(/A2/.test(sub.tasksTitle), `${tag}: Tasks are scoped to A2 ("${sub.tasksTitle}")`);
+  check(sub.earlierBtn, `${tag}: the main conversation's 이전 대화 button is not on A2's tab`);
   await page.screenshot({ path: path.join(OUT, `panel-subagent-${theme}-${width}.png`) });
   // Arrow keys move along the strip.
   await page.locator('#panel-tabs [aria-selected="true"]').focus();
@@ -525,7 +747,96 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     `${tag}: the send carries the multiline text and the image (${JSON.stringify(body && { message: body.message, files: body.attachments?.map((a) => a.name) })})`,
   );
   check((await page.locator('#pc-attachments .nt-att').count()) === 0, `${tag}: a sent file leaves the composer`);
+  await waitHandled(1);
+  check(
+    handled[0]?.message === '첫 줄\n둘째 줄' &&
+      handled[0].types[0] === 'image/png' &&
+      handled[0].sizes[0] === 12 &&
+      handled[0].slack[0]?.id === 'F1',
+    `${tag}: the real command route decoded the image (12 bytes) and the Slack leg uploaded it (${handled[0]?.slack.map((f) => `${f.id} ${f.name}`).join(', ')})`,
+  );
+
+  // T1.5 · a file picked with 📎 goes with a text instruction.
+  await page.setInputFiles('#pc-file-input', {
+    name: 'notes.txt',
+    mimeType: 'text/plain',
+    buffer: Buffer.from('메모 내용'),
+  });
+  await page.waitForTimeout(250);
+  check(
+    (await page.locator('#pc-attachments .nt-att').count()) === 1,
+    `${tag}: a file picked with 📎 becomes one chip`,
+  );
+  await input.fill('파일 확인해줘');
+  await page.locator('#cmd-send').click();
+  await waitHandled(2);
+  const fileBody = sentBodies[1] as { message?: string; attachments?: Array<{ name: string; mimetype: string }> };
+  check(
+    fileBody?.message === '파일 확인해줘' &&
+      fileBody.attachments?.[0]?.name === 'notes.txt' &&
+      handled[1]?.message === '파일 확인해줘' &&
+      handled[1].names[0] === 'notes.txt' &&
+      handled[1].types[0] === 'text/plain' &&
+      handled[1].firstText === '메모 내용' &&
+      handled[1].slack[0]?.name === 'notes.txt',
+    `${tag}: the picked file reaches the route byte for byte ("${handled[1]?.firstText}") and Slack (${handled[1]?.slack[0]?.id})`,
+  );
+
+  // T1.5 · voice: 🎤 records on Chromium's fake microphone; 완료 files it; a voice-only send carries it.
   check(await visible(page, '#pc-mic'), `${tag}: the voice button is there`);
+  await page.locator('#pc-mic').click();
+  const recOn = await page
+    .waitForFunction(() => !(document.getElementById('pc-recorder') as HTMLElement).hidden, null, { timeout: 5000 })
+    .then(
+      () => true,
+      () => false,
+    );
+  check(
+    recOn && (await page.locator('#pc-mic').getAttribute('aria-pressed')) === 'true',
+    `${tag}: 🎤 starts a recording (recorder bar shown, mic pressed)`,
+  );
+  await page.waitForTimeout(1600);
+  await page.screenshot({ path: path.join(OUT, `composer-recording-${theme}-${width}.png`) });
+  await page.locator('#pc-recorder .nt-rec-btn.is-primary').click();
+  await page
+    .waitForFunction(() => document.querySelectorAll('#pc-attachments .nt-att').length === 1, null, { timeout: 5000 })
+    .catch(() => {});
+  const voiceName =
+    (await page
+      .locator('#pc-attachments .nt-att-name')
+      .first()
+      .textContent()
+      .catch(() => '')) ?? '';
+  check(/^voice-.+\.(m4a|mp4|ogg|webm)$/.test(voiceName), `${tag}: 완료 files the recording as a chip (${voiceName})`);
+  await page.locator('#cmd-send').click();
+  await waitHandled(3);
+  const voiceBody = sentBodies[2] as { message?: string; attachments?: Array<{ name: string; mimetype: string }> };
+  check(
+    voiceBody?.message === '' &&
+      /^audio\//.test(voiceBody.attachments?.[0]?.mimetype ?? '') &&
+      handled[2]?.message === '' &&
+      /^audio\//.test(handled[2].types[0] ?? '') &&
+      (handled[2].sizes[0] ?? 0) > 1000 &&
+      handled[2].slack[0]?.name === voiceName,
+    `${tag}: a voice-only send reaches the route and Slack (${handled[2]?.types[0]}, ${handled[2]?.sizes[0]} bytes, ${handled[2]?.slack[0]?.id})`,
+  );
+
+  // T1.5 · sent while still recording: the send waits for the note to be filed (#488).
+  await page.locator('#pc-mic').click();
+  await page
+    .waitForFunction(() => !(document.getElementById('pc-recorder') as HTMLElement).hidden, null, { timeout: 5000 })
+    .catch(() => {});
+  await page.waitForTimeout(1300);
+  await input.fill('녹음 중에 보냄');
+  await page.locator('#cmd-send').click();
+  await waitHandled(4);
+  check(
+    handled[3]?.message === '녹음 중에 보냄' &&
+      handled[3].names.length === 1 &&
+      /^audio\//.test(handled[3].types[0] ?? '') &&
+      (handled[3].sizes[0] ?? 0) > 500,
+    `${tag}: a send made while recording carries the note (${handled[3]?.names.join(', ')}, ${handled[3]?.sizes[0]} bytes)`,
+  );
 
   check(
     (await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)) <= 0,
@@ -571,16 +882,81 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     Math.abs(goalAt.offset) <= 2,
     `${tag}: a goal opening lands with the goal at the top (${JSON.stringify(goalAt)})`,
   );
+
+  // T1.1 · 입력 필요 — a session waiting on its owner: its question and its permission request, above the tabs.
+  await page.evaluate(() => (window as any).closePanel());
+  await page.waitForTimeout(300);
+  await page.evaluate((k) => (window as any).openPanel(k), KEY_WAIT);
+  await page
+    .waitForFunction(() => /rm -rf build/.test(document.getElementById('panel-permission')?.textContent ?? ''), null, {
+      timeout: 5000,
+    })
+    .catch(() => {});
+  const needs = await page.evaluate(() => {
+    const head = document.getElementById('panel-needs-head') as HTMLElement;
+    const q = document.getElementById('panel-question') as HTMLElement;
+    const p = document.getElementById('panel-permission') as HTMLElement;
+    const all = Array.from(document.querySelectorAll('#panel-scroll *'));
+    const flat = (el: HTMLElement) => (el.textContent ?? '').replace(/\s+/g, ' ').trim();
+    return {
+      head: head && !head.hidden ? flat(head) : '',
+      q: q && q.style.display !== 'none' ? flat(q) : '',
+      choices: q ? q.querySelectorAll('button').length : 0,
+      p: p && p.style.display !== 'none' ? flat(p) : '',
+      order: [head, p, q, document.getElementById('panel-tabs')].map((el) => all.indexOf(el as Element)),
+    };
+  });
+  check(
+    /입력 필요/.test(needs.head) &&
+      /2/.test(needs.head) &&
+      needs.order.every((x, i) => x >= 0 && (i === 0 || x > needs.order[i - 1])),
+    `${tag}: 입력 필요 renders — head "${needs.head}", then the permission, the question, and the tabs below`,
+  );
+  check(
+    /어느 환경에 배포할까요/.test(needs.q) && needs.choices >= 2,
+    `${tag}: 입력 필요 — the question with ${needs.choices} buttons ("${needs.q.slice(0, 50)}")`,
+  );
+  check(
+    /Bash/.test(needs.p) && /rm -rf build/.test(needs.p),
+    `${tag}: 입력 필요 — the permission request with its command ("${needs.p.slice(0, 60)}")`,
+  );
+  await page.screenshot({ path: path.join(OUT, `surface-needs-${theme}-${width}.png`) });
   await ctx.close();
 }
 
 async function main() {
   const dashboard = await import('../src/conversation/dashboard');
-  dashboard.setDashboardSessionAccessor(() => new Map());
+  const { createSlackSteerUploader } = await import('../src/conversation/new-task-provider');
+  // The real command route acts on this session; its handler runs the production Slack upload leg on a double.
+  const sessions = new Map<string, any>([
+    [LOCAL_KEY, { ownerId: 'U001', channelId: 'C123', threadTs: '1700000000.000200' }],
+  ]);
+  dashboard.setDashboardSessionAccessor(() => sessions);
+  let upload = createSlackSteerUploader(slackDouble() as any);
+  resetSlackLeg = () => {
+    upload = createSlackSteerUploader(slackDouble() as any);
+  };
+  dashboard.setDashboardCommandHandler(async (key, message, files) => {
+    const s = sessions.get(key);
+    const slack = files.length ? await upload(s.channelId, s.threadTs, files) : [];
+    handled.push({
+      key,
+      message,
+      names: files.map((f) => f.name),
+      types: files.map((f) => f.mimetype),
+      sizes: files.map((f) => f.data.length),
+      firstText: files[0] ? files[0].data.toString('utf8') : '',
+      slack: slack.map((f) => ({ id: f.id, name: f.name, mimetype: f.mimetype, url: f.url_private_download })),
+    });
+  });
   const ws = await import('../src/conversation/web-server');
   await ws.startWebServer({ listen: true });
   log(`server ${BASE_URL}`);
-  const browser = await chromium.launch({ headless: true });
+  // A fake microphone (a tone) that needs no prompt: the recorder records something real.
+  const browser = await chromium.launch({
+    headless: true,
+    args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
+  });
   try {
     await scenario(browser, 'light', 1280);
     await scenario(browser, 'dark', 1280);
