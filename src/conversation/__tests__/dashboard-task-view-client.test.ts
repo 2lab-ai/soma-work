@@ -559,3 +559,24 @@ describe('review r1 · one send at a time; a failed multiline send retries witho
     expect(send).toContain("addEventListener('click'");
   });
 });
+
+// ── ztrace (Hook 4) S3 — a subagent tab opened before its work log arrived ──
+describe('ztrace S3 · a subagent tab fills its instruction and result when the work log arrives', () => {
+  it('painting work-log entries re-renders the focused subagent conversation', () => {
+    const start = TEMPLATE.indexOf('\nfunction paintWorkLog(');
+    const body = TEMPLATE.slice(start, TEMPLATE.indexOf('\n}\n', start));
+    expect(body).toMatch(/if \(_panelAgent\) renderAgentConv\(\);/);
+  });
+});
+
+describe('browser receipt · a section landing is not undone by the layout coordinator', () => {
+  it('the landing scroll starts a new panel scroll generation (a stale layout anchor no longer applies)', () => {
+    const start = TEMPLATE.indexOf('\nfunction landPanel(');
+    const body = TEMPLATE.slice(start, TEMPLATE.indexOf('\n}\n', start));
+    const branch = body.slice(
+      body.indexOf("_panelLand === 'goal' || _panelLand === 'agent' || _panelLand === 'tasks'"),
+    );
+    expect(branch.indexOf('_panelScrollGen++')).toBeGreaterThan(-1);
+    expect(branch.indexOf('_panelScrollGen++')).toBeLessThan(branch.indexOf('scrollEl.scrollTo({ top: target'));
+  });
+});

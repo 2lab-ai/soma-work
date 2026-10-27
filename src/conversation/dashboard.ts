@@ -15271,6 +15271,9 @@ function paintWorkLog(state, added) {
   if (!scopedCount) showWorkLogEmpty('이 에이전트의 작업 로그 없음');
   wlEnsureTabStop(list);
   if (wlNamesNewAgent(added)) renderPanelAgents();
+  // Task view T1.3: a subagent tab's 지시와 답변 comes from these entries — the
+  // tab may have opened (or the result may land) before they did.
+  if (_panelAgent) renderAgentConv();
   // Tail-follow, unless the reader has an entry's detail open; older entries
   // arriving above keep the reader's place.
   if (!state.painted || (atBottom && !wlDetailOpen(state))) list.scrollTop = list.scrollHeight;
@@ -15819,6 +15822,9 @@ function landPanel() {
       var tabs = _panelLand === 'goal' ? null : document.getElementById('panel-tabs');
       var under = tabs ? tabs.offsetHeight || 0 : 0;
       var target = scrollEl.scrollTop + sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - under;
+      // The landing is the reader's new place: an anchor the layout coordinator
+      // captured before it (layoutBeforeChange) must not pull the panel back.
+      _panelScrollGen++;
       scrollEl.scrollTo({ top: target, behavior: 'instant' });
       // Task view: the scroll area is the whole body, so before the turns load it
       // may be too short to bring the section up — landed only once it is there;

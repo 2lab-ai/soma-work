@@ -789,7 +789,7 @@ describe('landing follows the opening intent (executed)', () => {
       ['_panelOnQuestion'],
       { document: { getElementById: (id: string) => els[id] ?? null } },
       [
-        `var _panelLand = ${JSON.stringify(intent)}; var _panelLanded = false; var _panelStickBottom = false; var _panelLandAt = null;`,
+        `var _panelLand = ${JSON.stringify(intent)}; var _panelLanded = false; var _panelStickBottom = false; var _panelLandAt = null; var _panelScrollGen = 0;`,
         'function state() { return { landed: _panelLanded, stick: _panelStickBottom }; }',
       ],
     );
