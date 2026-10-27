@@ -2895,8 +2895,65 @@ describe('SlackHandler — follow-up queue host', () => {
       const before = registrySession.ownerInputRevision ?? 0;
       const pending = handler.handleMessage(message({ ts: '444.555', text: '삭제하지 마' }), say());
       expect(registrySession.ownerInputRevision).toBe(before + 1);
+      // Pending until it is recorded or settled (review r5) …
+      expect(registrySession.pendingOwnerInputs).toContain('444.555');
+      await pending;
+      // … and cleared once ingress finished with it.
+      expect(registrySession.pendingOwnerInputs ?? []).not.toContain('444.555');
+      await settle();
+    });
+
+    // Review gate r5 (grok P1): a DM or a root mention has no thread_ts — the
+    // session is keyed by the message ts, as at every other ingress.
+    it('bumps the owner input revision for a message without thread_ts', async () => {
+      const { settle } = await startBusyTurn();
+      const before = registrySession.ownerInputRevision ?? 0;
+      const pending = handler.handleMessage(
+        { ...message({ ts: '555.666', text: '멈춰' }), thread_ts: undefined },
+        say(),
+      );
+      expect(registrySession.ownerInputRevision).toBe(before + 1);
+      expect(claudeHandler.getSessionKey).toHaveBeenCalledWith(CHANNEL, '555.666');
       await pending;
       await settle();
+    });
+
+    // Review gate r5 (astra P1): the withdrawal does not wait for durable settlement.
+    it('withdraws a cancelled steer even when the queue settlement throws', async () => {
+      registrySession.followUpInstructions = undefined;
+      const { uuid, settle } = await steerWithFile('지워도 돼');
+      handlerAny.followupDispatcher.unsteer = () => {
+        throw new Error('disk full');
+      };
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'cancelled' });
+      expect((registrySession.followUpInstructions ?? []).filter((f: { steer?: unknown }) => f.steer)).toEqual([]);
+      await settle();
+    });
+
+    // Review gate r5 (astra P2): synthetic events and redelivered messages do not
+    // count as new owner input.
+    it('ignores synthetic and duplicate events for the owner input revision', async () => {
+      const { settle } = await startBusyTurn();
+      const before = registrySession.ownerInputRevision ?? 0;
+      void handler.handleMessage({ ...message({ ts: '666.777', text: 'auto' }), synthetic: true } as never, say());
+      expect(registrySession.ownerInputRevision ?? 0).toBe(before);
+      registrySession.pendingOwnerInputs = ['777.888'];
+      void handler.handleMessage(message({ ts: '777.888', text: 'dup' }), say());
+      expect(registrySession.ownerInputRevision ?? 0).toBe(before);
+      registrySession.pendingOwnerInputs = [];
+      await settle();
+    });
+
+    // Review gate r5 (astra P1): a transport that awaits before handleMessage
+    // (the dashboard echo) registers the input first.
+    it('beginOwnerInput marks owner input pending until settled', () => {
+      const before = registrySession.ownerInputRevision ?? 0;
+      const token = handlerAny.beginOwnerInput(SESSION_KEY, 'U_OWNER', 'dashboard:1');
+      expect(registrySession.ownerInputRevision).toBe(before + 1);
+      expect(registrySession.pendingOwnerInputs).toContain('dashboard:1');
+      token.settle();
+      expect(registrySession.pendingOwnerInputs ?? []).not.toContain('dashboard:1');
+      expect(handlerAny.beginOwnerInput(SESSION_KEY, 'U_SOMEONE', 'dashboard:2')).toBeUndefined();
     });
 
     it('does not record a steered message the queue took back (discarded) — the drain will', async () => {

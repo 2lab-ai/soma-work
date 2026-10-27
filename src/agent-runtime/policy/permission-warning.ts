@@ -74,7 +74,7 @@ const NOT_A_READER = new RegExp(
     String.raw`\bimport\s*\(`, // JS dynamic import()
     String.raw`\bprocess\.(?!stdin\b|stdout\b|exit\b)`, // node: only stdin / stdout / exit
     String.raw`\bsys\.(?!stdin\b|stdout\b|stderr\b|argv\b|exit\b)`, // python: only stdio / argv / exit
-    String.raw`\b(?:attrgetter|methodcaller|FileIO|modules|_getframe|f_builtins|f_globals|f_locals)\b`,
+    String.raw`\b(?:attrgetter|methodcaller|itemgetter|FileIO|modules|_getframe|f_builtins|f_globals|f_locals|vars|type|dir|buffer|raw|fileno)\b`,
   ].join('|'),
 );
 /** Python modules a data reader may import. */
@@ -152,9 +152,14 @@ function readWord(s: string, i: number): { word: string; end: number; expands: b
       let j = i + 1;
       while (j < s.length && s[j] !== '"') {
         if (s[j] === '\\' && j + 1 < s.length) {
-          // Inside "…" bash drops the backslash only before $ ` " \ and newline;
-          // anywhere else it stays (so `\u0061` reaches the interpreter as written).
-          if (!/[$`"\\\n]/.test(s[j + 1])) word += '\\';
+          // Inside "…" a backslash-newline is a line continuation: both vanish.
+          if (s[j + 1] === '\n') {
+            j += 2;
+            continue;
+          }
+          // Otherwise bash drops the backslash only before $ ` " \ ; anywhere
+          // else it stays (so `\u0061` reaches the interpreter as written).
+          if (!/[$`"\\]/.test(s[j + 1])) word += '\\';
           j++;
         } else if (s[j] === '$' || s[j] === '`') expands = true;
         word += s[j];

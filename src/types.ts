@@ -679,6 +679,12 @@ export interface ConversationSession {
    * classifier approval made while it moved is not used (the hook asks instead).
    */
   ownerInputRevision?: number;
+  /**
+   * Message ts of owner messages accepted at ingress and not yet recorded as an
+   * instruction or settled (queued, dropped). While any is pending, an auto-mode
+   * classifier approval is not used. Transient — never persisted.
+   */
+  pendingOwnerInputs?: string[];
 
   // User SSOT instructions: structured, model-readable, persisted to disk.
   // Exposed to the model via GET_SESSION and managed via UPDATE_SESSION instructionOperations.
