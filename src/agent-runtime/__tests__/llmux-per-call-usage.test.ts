@@ -10,7 +10,7 @@
  *   • the harness therefore had no per-call reading and fell back to the
  *     turn's billing aggregate — the SUM of every API call — as the "current
  *     context". A 3-call probe turn read 50,377 tokens against a real
- *     occupancy of 16,555 (3.04×); a 20-call turn overstates ~20×, pins the
+ *     occupancy of 16,555 (3.04×); a 20-call turn would overstate ~20× [estimate], pin the
  *     display at 100% and trips the 600k auto-compact trigger.
  *
  * The fix: request partial messages for non-claude models and read the
@@ -171,7 +171,7 @@ describe('llmux per-call usage — mapper (T3)', () => {
         sdk({
           type: 'stream_event',
           parent_tool_use_id: null,
-          // Anthropic message_delta: output only — must NOT overwrite the
+          // Anthropic message_delta (input/cache nullable) — must NOT overwrite the
           // assistant frame's reading with input 0.
           event: { type: 'message_delta', delta: { stop_reason: 'end_turn' }, usage: { output_tokens: 40 } },
         }),
@@ -271,6 +271,98 @@ describe('llmux per-call usage — mapper (T3)', () => {
       ]),
     );
     expect(usages.map((u) => u.lastTurnMessageId)).toEqual(['resp_x']);
+  });
+
+  it('#494: a message_start with output only (no prompt-side reading) still counts as empty', () => {
+    const usages = perTurnUsages(
+      mapAll([
+        sdk({
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          event: { type: 'message_start', message: { id: 'p1', usage: { input_tokens: 0, output_tokens: 1 } } },
+        }),
+        sdk({
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          event: {
+            type: 'message_delta',
+            usage: { input_tokens: 20, cache_read_input_tokens: 4_000, output_tokens: 9 },
+          },
+        }),
+      ]),
+    );
+    expect(usages.map((u) => [u.lastTurnMessageId, u.lastTurnInputTokens, u.lastTurnCacheReadTokens])).toEqual([
+      ['p1', 20, 4_000],
+    ]);
+  });
+
+  it('#494: a message_start with no usage key counts as empty', () => {
+    const usages = perTurnUsages(
+      mapAll([
+        sdk({
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          event: { type: 'message_start', message: { id: 'nu' } },
+        }),
+        sdk({
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          event: { type: 'message_delta', usage: { input_tokens: 3, cache_read_input_tokens: 70, output_tokens: 1 } },
+        }),
+      ]),
+    );
+    expect(usages.map((u) => u.lastTurnMessageId)).toEqual(['nu']);
+  });
+
+  it('#494: a repeated message_delta replaces the reading for the same message (cumulative snapshot)', () => {
+    const usages = perTurnUsages(
+      mapAll([
+        sdk({
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          event: { type: 'message_start', message: { id: 'rep', usage: ZERO_START } },
+        }),
+        sdk({
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          event: { type: 'message_delta', usage: { input_tokens: 10, cache_read_input_tokens: 500, output_tokens: 2 } },
+        }),
+        sdk({
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          event: { type: 'message_delta', usage: { input_tokens: 10, cache_read_input_tokens: 500, output_tokens: 7 } },
+        }),
+      ]),
+    );
+    // Both carry the same message id, so the live map keeps one entry (the later
+    // one) and the processor's last-call reading is the later snapshot.
+    expect(usages.map((u) => [u.lastTurnMessageId, u.lastTurnOutputTokens])).toEqual([
+      ['rep', 2],
+      ['rep', 7],
+    ]);
+  });
+
+  it('#494: a CLI retry on the same lane (start, no delta, start, delta) reads the retried call', () => {
+    const usages = perTurnUsages(
+      mapAll([
+        sdk({
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          event: { type: 'message_start', message: { id: 'try1', usage: ZERO_START } },
+        }),
+        sdk({
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          event: { type: 'message_start', message: { id: 'try2', usage: ZERO_START } },
+        }),
+        sdk({
+          type: 'stream_event',
+          parent_tool_use_id: null,
+          event: { type: 'message_delta', usage: { input_tokens: 5, cache_read_input_tokens: 600, output_tokens: 3 } },
+        }),
+      ]),
+    );
+    expect(usages.map((u) => u.lastTurnMessageId)).toEqual(['try2']);
   });
 
   it('partial content frames never become rendered text — usage extraction only', () => {
