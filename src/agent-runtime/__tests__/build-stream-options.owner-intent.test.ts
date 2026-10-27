@@ -128,4 +128,14 @@ describe('ownerIntent', () => {
     expect(ownerIntent(s, OWNER, () => true).instructions).toContain('go ahead and delete');
     expect(ownerIntent(s, OWNER).instructions).toContain('go ahead and delete'); // no resolver wired
   });
+
+  // Review gate r5 (astra P1): a block may not swallow a closing tag and owner prose.
+  it('does not let a skill-block match cross owner prose between two blocks', () => {
+    const s = session({
+      initialInstruction:
+        'Delete ./old\n\n<invoked_skills>\nquoted\n</invoked_skills>\nDo not run until I confirm\n\n<invoked_skills>\n<local:x>y</local:x>\n</invoked_skills>',
+      followUpInstructions: [],
+    });
+    expect(ownerIntent(s, OWNER).incomplete).toBe(true);
+  });
 });

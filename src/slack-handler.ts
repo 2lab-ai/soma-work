@@ -213,6 +213,12 @@ function isVerbatimPrompt(event: MessageEvent): boolean {
   return event.routeContext?.verbatimPrompt === true;
 }
 
+/** An owner message is no longer pending: recorded as an instruction, or ingress is done with it. */
+function settleOwnerInput(session: ConversationSession | undefined, ts: string | undefined): void {
+  if (!session?.pendingOwnerInputs || !ts) return;
+  session.pendingOwnerInputs = session.pendingOwnerInputs.filter((t) => t !== ts);
+}
+
 export class SlackHandler {
   private app: App;
   private claudeHandler: ClaudeHandler;
@@ -1071,12 +1077,21 @@ export class SlackHandler {
    * queue stores what the user actually sent (ssot.md:91-92).
    */
   async handleMessage(event: MessageEvent, say: any): Promise<void> {
+    // Before any await: the owner said something — an auto-mode approval being
+    // decided right now must not be used without it. Pending until it is recorded
+    // as an instruction (executor / steer) or ingress is done with it.
+    const owner = this.noteOwnerInput(event);
+    try {
+      await this.handleMessageInner(event, say);
+    } finally {
+      if (owner) settleOwnerInput(owner, event.ts);
+    }
+  }
+
+  private async handleMessageInner(event: MessageEvent, say: any): Promise<void> {
     // First admission point: restored items are only trustworthy once the
     // startup reconcile has run against the registry.
     this.warnIfReconcileSkipped();
-    // Before any await: the owner said something — an auto-mode approval being
-    // decided right now must not be used without it.
-    this.noteOwnerInput(event);
 
     // Dropped HERE, ahead of the fence: past it, a message in a busy
     // incident thread would be parked, get a queue receipt painted into the
@@ -4027,6 +4042,7 @@ export class SlackHandler {
         user: event.user,
         sentAt: slackTsMs(event.ts),
       });
+      settleOwnerInput(this.claudeHandler?.getSessionByKey?.(this.canonicalFollowupKey(sessionKey)), event.ts);
       this.recordSteerAsFollowUp(sessionKey, rawText, event.user, slackTsMs(event.ts), {
         uuid: steered.uuid,
         itemId: item.id,
@@ -4111,6 +4127,9 @@ export class SlackHandler {
   }): Promise<void> {
     const { sessionKey, uuid, phase } = args;
     if (phase === 'started' || phase === 'observed') return;
+    // The receipt itself ends the steer's authority — before, and whatever the
+    // outcome of, the durable settlement below.
+    if (phase === 'cancelled' || phase === 'discarded') this.withdrawSteerFollowUp(sessionKey, uuid);
     const dispatcher = this.followupDispatcher;
     if (!dispatcher) return;
 
@@ -4155,7 +4174,6 @@ export class SlackHandler {
       // Consumed: the message is part of the conversation now — record it (and
       // copy its files) before they are deleted. A message the queue took back
       // is recorded by the drain's ordinary turn instead.
-      if (phase === 'cancelled' || phase === 'discarded') this.withdrawSteerFollowUp(sessionKey, uuid);
       if (phase === 'completed' && settled.ok) await this.finishConsumedSteer(sessionKey, uuid);
       else await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
       // NOT awaited: the executor awaits this hook inside its stream loop, so a
@@ -4657,18 +4675,42 @@ export class SlackHandler {
    * accepted (synchronous; the session is the canonical one after a bot-thread
    * migration). Best effort — never fails the message.
    */
-  private noteOwnerInput(event: MessageEvent): void {
+  private noteOwnerInput(event: MessageEvent): ConversationSession | undefined {
     try {
-      const threadTs = (event as { thread_ts?: string }).thread_ts;
-      if (!event.user || !threadTs) return;
+      // A host-made continuation is not the owner speaking.
+      if ((event as { synthetic?: boolean }).synthetic || !event.user || !event.ts) return;
+      // Keyed like every other ingress: a DM or a root mention has no thread_ts,
+      // and its session lives under the message ts.
+      const threadTs = (event as { thread_ts?: string }).thread_ts || event.ts;
       const key = this.claudeHandler?.getSessionKey?.(event.channel, threadTs);
       if (!key) return;
-      const session = this.claudeHandler?.getSessionByKey?.(this.canonicalFollowupKey(key));
-      if (!session || session.ownerId !== event.user) return;
-      session.ownerInputRevision = (session.ownerInputRevision ?? 0) + 1;
+      return this.beginOwnerInput(key, event.user, event.ts)?.session;
     } catch {
       // bookkeeping only
+      return undefined;
     }
+  }
+
+  /**
+   * Register owner input on the running session the moment a transport accepts
+   * it — before any await (Slack ingress here; the dashboard before its echo).
+   * Idempotent by `inputId`: a redelivered message moves nothing. Returns a
+   * handle whose `settle()` ends the pending state; undefined when the sender is
+   * not the session owner or there is no session.
+   */
+  beginOwnerInput(
+    sessionKey: string,
+    user: string,
+    inputId: string,
+  ): { session: ConversationSession; settle: () => void } | undefined {
+    const session = this.claudeHandler?.getSessionByKey?.(this.canonicalFollowupKey(sessionKey));
+    if (!session || session.ownerId !== user) return undefined;
+    const pending = session.pendingOwnerInputs ?? [];
+    if (!pending.includes(inputId)) {
+      session.ownerInputRevision = (session.ownerInputRevision ?? 0) + 1;
+      session.pendingOwnerInputs = [...pending, inputId];
+    }
+    return { session, settle: () => settleOwnerInput(session, inputId) };
   }
 
   /**

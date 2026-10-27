@@ -892,3 +892,33 @@ describe('buildStreamOptions — owner input arrives during classification', () 
     expect(out.hookSpecificOutput?.permissionDecision).toBe('ask');
   });
 });
+
+// Review gate r5 (astra P1): input accepted before the hook started but not yet
+// recorded (still painting / downloading) must also void an approval.
+describe('buildStreamOptions — owner input accepted but not yet recorded', () => {
+  it('returns ask while an owner message is pending', async () => {
+    const live = {
+      ownerId: SAFE_USER,
+      conversationId: 'conv-z',
+      initialInstruction: 'Delete ./old',
+      initialInstructionUserId: SAFE_USER,
+      followUpInstructions: [],
+      ownerInputRevision: 5,
+      pendingOwnerInputs: ['1700000000.0009'],
+    } as unknown as ConversationSession;
+    const deps = makeDeps({
+      mcpConfigBuilder: { buildConfig: vi.fn(async () => makeMcpConfig({ somaPermissionMode: 'auto' })) },
+      safetyClassifier: { classify: vi.fn(async () => ({ verdict: 'allow' as const, reason: 'owner asked' })) },
+      sessionRegistry: {
+        getSessionKey: vi.fn(() => 'chan:thread:pending'),
+        isDangerousRuleDisabled: vi.fn(() => false),
+        getSession: vi.fn(() => live),
+      } as unknown as BuildStreamOptionsDeps['sessionRegistry'],
+    });
+    const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, deps);
+    const entry = (options.hooks?.PreToolUse ?? []).find((e) => (e as { matcher: string }).matcher === 'Bash');
+    const hook = (entry as { hooks: Array<(i: unknown) => Promise<any>> }).hooks[0];
+    const out = await hook({ tool_name: 'Bash', tool_input: { command: 'rm -rf ./old' } });
+    expect(out.hookSpecificOutput?.permissionDecision).toBe('ask');
+  });
+});

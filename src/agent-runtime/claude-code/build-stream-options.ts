@@ -68,8 +68,12 @@ const permissionWarningDeduper = createPermissionWarningDeduper({ windowMs: 10 *
  * user's message, so a user cannot place the tag; a dashboard user who types it
  * only shortens their own intent.)
  */
-/** The shape the host appends: `\n\n<invoked_skills>\n` … `\n</invoked_skills>`, one or more blocks, at the end. */
-const HOST_SKILL_BLOCKS = /^(?:\s*<invoked_skills>\n[\s\S]*?\n<\/invoked_skills>)+\s*$/;
+/**
+ * The shape the host appends: `\n\n<invoked_skills>\n` … `\n</invoked_skills>`, one
+ * or more blocks, at the end. A block body may not contain either tag, so a
+ * match never stretches across owner prose between two blocks.
+ */
+const HOST_SKILL_BLOCKS = /^(?:\s*<invoked_skills>\n(?:(?!<\/?invoked_skills>)[\s\S])*\n<\/invoked_skills>)+\s*$/;
 
 function ownerText(text: string): { text: string; ambiguous: boolean } {
   const cut = text.indexOf('<invoked_skills>');
@@ -357,6 +361,7 @@ export async function buildStreamOptions(
           const sessionAfter = deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs);
           const intentAfter = ownerIntent(sessionAfter, policyUser, deps.isSteerStanding);
           const ownerSpokeMeanwhile =
+            (sessionAfter?.pendingOwnerInputs?.length ?? 0) > 0 || // accepted, not yet recorded
             (sessionAfter?.ownerInputRevision ?? 0) !== revisionBefore ||
             JSON.stringify(intentAfter) !== JSON.stringify(intent);
           if (verdict.verdict === 'allow' && ownerSpokeMeanwhile) {

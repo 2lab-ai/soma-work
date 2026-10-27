@@ -1503,6 +1503,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         emitWorkLog({ kind: 'instruction', text: names ? `${text || ''}${text ? '\n' : ''}📎 ${names}` : text || '' });
       }
 
+      // This message is now this turn's input: no longer a pending owner input
+      // (the auto-mode classifier stops holding approvals for it).
+      if (session?.pendingOwnerInputs && params.mentionTs) {
+        session.pendingOwnerInputs = session.pendingOwnerInputs.filter((t: string) => t !== params.mentionTs);
+      }
+
       // Store user instruction for SSOT tracking (only real user input, not auto-resume/continuation/renew)
       // followUpInstructions is capped to prevent unbounded memory growth.
       const MAX_FOLLOW_UP_INSTRUCTIONS = 50;

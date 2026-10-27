@@ -781,57 +781,68 @@ async function start() {
         return undefined;
       }
 
-      let echoTs: string | undefined;
-      try {
-        const echoResult = await app.client.chat.postMessage({
-          channel: session.channelId,
-          thread_ts: session.threadTs,
-          text: message.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
-          blocks: [
-            {
-              type: 'context',
-              elements: [{ type: 'mrkdwn', text: `💬 *<@${session.ownerId}>* via Dashboard` }],
-            },
-            {
-              type: 'section',
-              text: { type: 'plain_text', text: message.length > 3000 ? `${message.slice(0, 2997)}...` : message },
-            },
-          ],
-        });
-        echoTs = echoResult.ts as string | undefined;
-      } catch (err) {
-        logger.warn('Dashboard: failed to echo user message to Slack', { sessionKey, error: err });
-      }
-
-      const dashboardSay = async (args: any) => {
-        const text = typeof args === 'string' ? args : args?.text;
-        const result = await app.client.chat.postMessage({
-          channel: session.channelId,
-          text: text || ' ',
-          thread_ts: typeof args === 'string' ? session.threadTs : args?.thread_ts || session.threadTs,
-          blocks: typeof args === 'string' ? undefined : args?.blocks,
-          attachments: typeof args === 'string' ? undefined : args?.attachments,
-        });
-        return { ts: result.ts as string | undefined };
-      };
-      if (!echoTs) {
-        logger.warn('Dashboard echo: using fabricated timestamp (echo failed or was skipped)', { sessionKey });
-      }
-      const ts = echoTs || String(Date.now() / 1000);
-      onSent?.({ channel: session.channelId, ts });
-      await slackHandler.handleMessage(
-        {
-          type: 'message',
-          channel: session.channelId,
-          thread_ts: session.threadTs,
-          text: message,
-          user: session.ownerId,
-          ts,
-        } as any,
-        dashboardSay,
+      // Register the owner's input before the echo awaits: an auto-mode approval
+      // being decided right now must not be used without it.
+      const ownerInput = slackHandler.beginOwnerInput(
+        sessionKey,
+        session.ownerId,
+        `dashboard:${Date.now()}:${Math.random().toString(36).slice(2)}`,
       );
-      logger.info('Dashboard: command sent to session', { sessionKey, messageLength: message.length });
-      return { channel: session.channelId, ts };
+      try {
+        let echoTs: string | undefined;
+        try {
+          const echoResult = await app.client.chat.postMessage({
+            channel: session.channelId,
+            thread_ts: session.threadTs,
+            text: message.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+            blocks: [
+              {
+                type: 'context',
+                elements: [{ type: 'mrkdwn', text: `💬 *<@${session.ownerId}>* via Dashboard` }],
+              },
+              {
+                type: 'section',
+                text: { type: 'plain_text', text: message.length > 3000 ? `${message.slice(0, 2997)}...` : message },
+              },
+            ],
+          });
+          echoTs = echoResult.ts as string | undefined;
+        } catch (err) {
+          logger.warn('Dashboard: failed to echo user message to Slack', { sessionKey, error: err });
+        }
+
+        const dashboardSay = async (args: any) => {
+          const text = typeof args === 'string' ? args : args?.text;
+          const result = await app.client.chat.postMessage({
+            channel: session.channelId,
+            text: text || ' ',
+            thread_ts: typeof args === 'string' ? session.threadTs : args?.thread_ts || session.threadTs,
+            blocks: typeof args === 'string' ? undefined : args?.blocks,
+            attachments: typeof args === 'string' ? undefined : args?.attachments,
+          });
+          return { ts: result.ts as string | undefined };
+        };
+        if (!echoTs) {
+          logger.warn('Dashboard echo: using fabricated timestamp (echo failed or was skipped)', { sessionKey });
+        }
+        const ts = echoTs || String(Date.now() / 1000);
+        onSent?.({ channel: session.channelId, ts });
+        await slackHandler.handleMessage(
+          {
+            type: 'message',
+            channel: session.channelId,
+            thread_ts: session.threadTs,
+            text: message,
+            user: session.ownerId,
+            ts,
+          } as any,
+          dashboardSay,
+        );
+        logger.info('Dashboard: command sent to session', { sessionKey, messageLength: message.length });
+        return { channel: session.channelId, ts };
+      } finally {
+        ownerInput?.settle();
+      }
     };
     setDashboardCommandHandler(async (sessionKey: string, message: string) => {
       await injectDashboardMessage(sessionKey, message);

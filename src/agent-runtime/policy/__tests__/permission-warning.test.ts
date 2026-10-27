@@ -193,6 +193,19 @@ describe('permissionWarningRuleIds — mechanical check after a model allow', ()
     }
   });
 
+  // Review gate r5 (fable P2): double-quote line continuation and python
+  // builtins that reach modules without a denied word.
+  it('keeps double-quote continuations and vars/type/itemgetter reach', () => {
+    for (const cmd of [
+      "cat p.js | node -e \"ev\\\nal(require('fs').readFileSync(0,'utf8'))\"",
+      `cat p | python3 -c 'import sys; vars(vars(sys)["mod"+"ules"]["o"+"s"])["sys"+"tem"](sys.stdin.read())'`,
+      `cat p | python3 -c 'import sys; type(sys.stdin.buffer.raw)("important.db","w")'`,
+      `cat p | python3 -c 'import sys,operator; operator.itemgetter("mod"+"ules")(vars(sys))'`,
+    ]) {
+      expect(permissionWarningRuleIds(cmd, PIPE), cmd).toEqual(PIPE);
+    }
+  });
+
   it('still treats the everyday JSON / text readers as data', () => {
     for (const cmd of [
       `gh api repos/o/r/pulls/1 | python3 -c 'import json,sys; d=json.load(sys.stdin); print(d["state"])'`,
