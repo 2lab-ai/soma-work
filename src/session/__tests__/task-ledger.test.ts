@@ -176,10 +176,10 @@ describe('ledger bounds and persistence', () => {
 
   it('closing the list (new / renew) keeps the history but no task is in progress any more (review P2)', () => {
     const l = applyTodoList(undefined, [todo('A', 'in_progress')], 1);
-    const closed = closeTaskList(l);
+    const closed = closeTaskList(l, 2);
     expect(currentTask(closed)).toBeUndefined();
     expect(ledgerTasks(closed!).earlier.map((t) => t.id)).toEqual(['T1']);
-    expect(closeTaskList(undefined)).toBeUndefined();
+    expect(closeTaskList(undefined, 2)).toBeUndefined();
   });
 
   it('sanitizes a persisted ledger: unknown shapes are dropped, numbers stay numbers', () => {

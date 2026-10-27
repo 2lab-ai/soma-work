@@ -70,7 +70,7 @@ import {
   type ModelSwitchResult,
   usedContextTokens,
 } from '../session/model-switch';
-import { ledgerTasks, sanitizeTaskLedger } from '../session/task-ledger';
+import { ledgerTasks, sanitizeTaskLedger, type TaskDropped } from '../session/task-ledger';
 import { type ArchivedSession, getArchiveStore } from '../session-archive';
 import { buildWorkSessionKey, normalizeSessionKey } from '../session-identity';
 import {
@@ -95,9 +95,12 @@ import { readAllInstances } from './instance-registry';
 import {
   createNewTaskGate,
   NEW_TASK_BODY_LIMIT,
+  NEW_TASK_LIMITS,
+  type NewTaskAttachment,
   type NewTaskContext,
   NewTaskError,
   type NewTaskSubmission,
+  parseAttachments,
   parseNewTaskSubmission,
 } from './new-task';
 import type { NewTaskLaunchResult } from './new-task-launcher';
@@ -277,7 +280,10 @@ export interface KanbanSession {
    * elapsed time and the tool calls made while it ran.
    */
   tasks?: DashboardTask[];
-  /** Tasks a later list no longer holds (completed earlier), newest first. */
+  /**
+   * Tasks a later list no longer holds, newest first: completed ones, and ones
+   * it dropped before they completed (`dropped` says how — never running).
+   */
   earlierTasks?: DashboardTask[];
   /**
    * Spec 12 — the subagents of this session (the main agent is the card
@@ -392,6 +398,14 @@ export interface DashboardTask {
   startedAt?: number;
   completedAt?: number;
   toolCalls: number;
+  /** When it left the list (earlier tasks; absent on a ledger saved before this existed). */
+  removedAt?: number;
+  /**
+   * Earlier tasks only (dashboard task view T2): it left the list before it
+   * completed — `started` it had run and was stopped (중단), `unstarted` it
+   * never ran (실행 안 됨). Such a task is never shown as running or waiting.
+   */
+  dropped?: TaskDropped;
 }
 
 /** One subagent as the card carries it (an `AgentRecord` of `session/agent-registry.ts`). */
@@ -986,7 +1000,12 @@ export function setDashboardTaskAccessor(fn: TaskAccessor): void {
 type StopHandler = (sessionKey: string) => Promise<void>;
 type CloseHandler = (sessionKey: string) => Promise<void>;
 type TrashHandler = (sessionKey: string) => Promise<void>;
-type CommandHandler = (sessionKey: string, message: string) => Promise<void>;
+/**
+ * An instruction from the panel's composer (dashboard task view T1.5): the
+ * text (may be empty when files are attached) and the files the user pasted,
+ * attached or recorded — decoded and held to the new-task limits.
+ */
+type CommandHandler = (sessionKey: string, message: string, files: NewTaskAttachment[]) => Promise<void>;
 
 let _stopHandlerFn: StopHandler | null = null;
 let _closeHandlerFn: CloseHandler | null = null;
@@ -2776,25 +2795,39 @@ export async function registerDashboardRoutes(
     },
   );
 
-  server.post<{ Params: { key: string }; Body: { message: string } }>(
+  // The panel's composer (dashboard task view T1.5): a multiline instruction
+  // with the images, files and voice notes the user added — base64 in JSON like
+  // a new task's, under the same limits (and the same body limit, so a phone
+  // photo fits). A files-only instruction is allowed.
+  server.post<{ Params: { key: string }; Body: { message?: string; attachments?: unknown } }>(
     '/api/dashboard/session/:key/command',
-    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    { bodyLimit: NEW_TASK_BODY_LIMIT, preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const { message } = request.body || {};
-      if (!message || typeof message !== 'string') {
-        reply.status(400).send({ error: 'message is required and must be a string' });
+      const { message = '', attachments } = request.body || {};
+      if (typeof message !== 'string') {
+        reply.status(400).send({ error: 'message must be a string' });
         return;
       }
-      if (message.length > 4000) {
-        reply.status(400).send({ error: 'message exceeds max length (4000 chars)' });
+      if (message.length > NEW_TASK_LIMITS.maxPromptChars) {
+        reply.status(400).send({ error: `message exceeds max length (${NEW_TASK_LIMITS.maxPromptChars} chars)` });
         return;
       }
+      if (!message.trim() && !(Array.isArray(attachments) && attachments.length > 0)) {
+        reply.status(400).send({ error: 'message is required (or attach a file)' });
+        return;
+      }
+      // Only the session's owner gets their files decoded (up to the new-task limits).
       const resolved = resolveSelfActionKeyAndOwner(request, reply);
       if (!resolved) return;
       const { originalKey } = resolved;
+      const files = parseAttachments(attachments);
+      if (!files.ok) {
+        reply.status(400).send({ error: files.error });
+        return;
+      }
       try {
         if (_commandHandlerFn) {
-          await _commandHandlerFn(originalKey, message);
+          await _commandHandlerFn(originalKey, message, files.value);
         }
         reply.send({ ok: true });
       } catch (error) {
@@ -5102,29 +5135,140 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .wc-act { grid-column: 2 / 4; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-tertiary); }
 .wc-open { grid-column: 2 / 4; font-size: 12px; color: var(--accent); }
 .wl-legacy { margin: 4px 0 6px; padding: 6px 10px; border-radius: 6px; background: var(--ib-pill); color: var(--text-secondary); font-size: 12px; }
-/* Panel body (SSOT 2026-10-24): pinned Tasks · pinned Artifacts · the one main
-   scroll area. The scroll row never gets less than half the body (R/2, R = panel
-   − header − composer); the pinned blocks share the rest, down to one row each,
-   and scroll inside rather than clip (.prd/10 §3.1-6). On the shortest bodies
-   (< 176px, two 44px floors) the scroll row takes what the floors leave, so no row
-   ever overflows the body, which clips. */
+/* Panel body (task view, SSOT 2026-10-27): one scroll area between the head and
+   the composer — the task's common surface, then the agent tabs (sticky at its
+   top while the conversation scrolls) and the focused agent's tab. Nothing is
+   pinned inside it, so a short screen gives the conversation every row. */
 .panel-body {
   flex: 1 1 0;
   min-height: 0;
-  display: grid;
-  grid-template-columns: minmax(0, 1fr);
-  grid-template-rows: auto auto minmax(min(50%, calc(100% - 88px)), 1fr);
+  display: flex;
+  flex-direction: column;
   container: pbody / size;
   overflow: hidden;
 }
-.panel-tasks {
-  grid-row: 1;
+/* The common surface (T1.1): 세션 정보 · goal · 입력 필요 · 산출물 as one grouped block. */
+.panel-surface { border-bottom: 1px solid var(--border); background: var(--surface); }
+.panel-surface > .panel-info, .panel-surface > .panel-goal, .panel-surface > .panel-permission, .panel-surface > .panel-artifacts { border-bottom: 0; }
+.panel-surface > :not([hidden]):not([style*="display:none"]):not([style*="display: none"]) + :not([hidden]) { border-top: 1px solid var(--border); }
+/* Agent tabs (T1.2): a segmented strip that scrolls sideways; Main stays at its
+   left edge, the strip at the top of the scroll area. */
+.panel-tabs {
+  position: sticky;
+  top: 0;
+  z-index: 6;
+  display: flex;
+  gap: 4px;
   padding: 8px 16px;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  scrollbar-width: none;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  -webkit-backdrop-filter: saturate(180%) blur(12px);
+  backdrop-filter: saturate(180%) blur(12px);
   border-bottom: 1px solid var(--border);
-  min-height: 44px;
-  max-height: min(30vh, 240px);
-  overflow-y: auto;
 }
+.panel-tabs::-webkit-scrollbar { display: none; }
+.panel-tab {
+  --ag-c: var(--text-tertiary);
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  max-width: 220px;
+  min-height: 30px;
+  padding: 4px 12px;
+  border: 0;
+  border-radius: 999px;
+  background: none;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--speed) var(--ease), color var(--speed) var(--ease);
+}
+.panel-tab .pt-name { overflow: hidden; text-overflow: ellipsis; }
+.panel-tab .pt-type { font-weight: 500; color: var(--text-tertiary); }
+.panel-tab .ag-icon { display: inline-grid; place-items: center; width: 14px; height: 14px; color: var(--ag-c); }
+.panel-tab .ag-icon svg { width: 12px; height: 12px; } .panel-tab .ag-icon .spinner { width: 10px; height: 10px; }
+.panel-tab.is-running { --ag-c: var(--st-run); } .panel-tab.is-completed { --ag-c: var(--st-done); } .panel-tab.is-failed { --ag-c: var(--st-fail); } .panel-tab.is-waiting { --ag-c: var(--st-wait); }
+.panel-tab[aria-selected="true"] { background: var(--ib-pill); color: var(--text); }
+.panel-tab[aria-selected="true"] .pt-type { color: var(--text-secondary); }
+.panel-tab:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+.panel-tab.is-main {
+  position: sticky;
+  left: 0;
+  z-index: 1;
+  box-shadow: 8px 0 8px -6px color-mix(in srgb, var(--surface) 90%, transparent);
+}
+.panel-tab.is-main:not([aria-selected="true"]) { background: var(--surface); }
+.panel-tabpanel { outline: none; }
+/* A section head (T1.3): title · a one-line summary · chevron. Tasks and 지시와
+   답변 share it; 작업 로그 keeps its own head (same look). */
+.panel-sec-head {
+  font: inherit;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 36px;
+  padding: 4px 0;
+  border: 0;
+  background: none;
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+}
+.ps-sec-title { flex: none; font-size: 12px; font-weight: 700; letter-spacing: 0.04em; color: var(--text-secondary); }
+.ps-sec-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+.ps-sec-now { display: inline-flex; align-items: center; gap: 4px; color: var(--text); font-weight: 600; }
+.ps-sec-now .spinner { width: 10px; height: 10px; }
+.panel-sec-head .pi-chev { flex: none; width: 12px; height: 12px; transition: transform var(--dur-expand) var(--ease-out); }
+.panel-sec-head[aria-expanded="true"] .pi-chev { transform: rotate(180deg); }
+.panel-sec-head:hover .ps-sec-title { color: var(--text); }
+.panel-sec-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; border-radius: 6px; }
+.panel-tasks {
+  padding: 4px 16px;
+  border-bottom: 1px solid var(--border);
+  outline: none;
+}
+.panel-tasks-body { padding: 2px 0 6px; }
+.panel-conv { padding: 4px 0 0; }
+.panel-conv > .panel-sec-head { padding: 4px 16px; width: 100%; }
+.panel-conv-body[hidden] { display: none; }
+.panel-agent-conv { padding: 6px 16px 10px; }
+/* 자세히 (T1.6) — a switch in the head; the panel's class gates the detail-only parts. */
+.panel-detail-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 32px;
+  padding: 0 10px 0 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface-raised);
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.pdt-switch { position: relative; width: 26px; height: 16px; border-radius: 999px; background: var(--border); transition: background var(--speed) var(--ease); }
+.pdt-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--surface); box-shadow: 0 1px 2px rgba(0,0,0,0.25); transition: transform var(--dur-move) var(--ease-out); }
+.panel-detail-toggle[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+.panel-detail-toggle[aria-pressed="true"] .pdt-switch { background: var(--accent); }
+.panel-detail-toggle[aria-pressed="true"] .pdt-switch::after { transform: translateX(10px); }
+.panel-detail-toggle:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+/* Minimal by default: the agent path, the subtree and the main agent's own
+   header are for 자세히 — the tabs already say where the reader is. */
+.slide-panel:not(.is-detail) .pa-bar,
+.slide-panel:not(.is-detail) .pa-kids-head,
+.slide-panel:not(.is-detail) .pa-tree,
+.slide-panel:not(.is-detail) .panel-agents.is-main { display: none !important; }
+.slide-panel:not(.is-detail) .panel-arts-hint { display: none; }
+.slide-panel:not(.is-detail) .panel-goal.is-empty { display: none !important; }
 .panel-tasks-empty { font-size: 12px; color: var(--text-tertiary); padding: 2px 0 4px; }
 .panel-tasks-header {
   font-size: 12px;
@@ -5186,6 +5330,20 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .pl-marker { position: relative; z-index: 1; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--surface); box-shadow: inset 0 0 0 1px var(--ib-card-border); color: var(--text-secondary); }
 .pl-step[data-step="done"] .pl-marker { background: var(--ib-pill); box-shadow: none; color: var(--text); }
 .pl-step[data-step="active"] .pl-marker { box-shadow: none; color: var(--st-run); }
+/* Task fates (task view T2): paused (it had started; the session stopped), and the
+   two ways a later plan dropped a task — stopped after it ran, never run. None spins. */
+.pl-step[data-step="paused"] .pl-marker { box-shadow: inset 0 0 0 1px var(--st-wait); color: var(--st-wait); }
+.pl-step[data-step="dropped"] .pl-marker { box-shadow: none; color: var(--st-fail); }
+.pl-step[data-step="skipped"] .pl-marker { box-shadow: inset 0 0 0 1px var(--ib-card-border); color: var(--text-tertiary); }
+.pl-marker > svg { width: 10px; height: 10px; }
+.pl-step[data-step="skipped"] .task-text { color: var(--text-tertiary); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--text-tertiary) 60%, transparent); }
+.pl-step[data-step="dropped"] .task-text { color: var(--text-secondary); }
+.pl-fate { flex: none; margin-left: 6px; padding: 0 6px; border-radius: 4px; font-size: 10.5px; font-weight: 700; background: var(--ib-pill); color: var(--text-secondary); }
+.pl-step[data-step="dropped"] .pl-fate { color: var(--st-fail); background: color-mix(in srgb, var(--st-fail) 12%, transparent); }
+.pl-step[data-step="paused"] .pl-fate { color: var(--st-wait); background: color-mix(in srgb, var(--st-wait) 12%, transparent); }
+.pl-earlier-counts { font-weight: 500; color: var(--text-tertiary); }
+.pl-earlier-group { margin-top: 6px; }
+.pl-earlier-when { margin: 4px 0 2px; font-size: 11px; font-weight: 600; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 .pl-marker svg { width: 10px; height: 10px; }
 .pl-marker .spinner { width: 11px; height: 11px; }
 .pl-step.pl-pop .pl-marker > * { animation: pl-pop var(--dur-move) var(--ease-out) both; }
@@ -5501,7 +5659,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* Scroll container: wraps panel-question + panel-worklog + panel-turns so
    large UIAskQ choices scroll together with the chat content. Tasks sit pinned
    above it and .panel-command stays pinned below, both non-scrolling siblings. */
-.panel-scroll { grid-row: 3; overflow-y: auto; scroll-behavior: smooth; min-height: 0; }
+.panel-scroll { flex: 1 1 auto; overflow-y: auto; scroll-behavior: smooth; min-height: 0; }
 .panel-turns { padding: 10px 16px; }
 .panel-turns-loading { text-align: center; font-size: 11px; color: var(--text-tertiary); padding: 8px 0; font-style: italic; }
 /* Slack-style turns */
@@ -5516,14 +5674,25 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .turn-name { font-weight: 700; color: var(--text-primary); font-size: 13px; text-transform: none; letter-spacing: 0; }
 .turn-time { font-size: 11px; color: var(--text-tertiary); }
 .turn-content { font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.turn-instr { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 12; overflow: hidden; cursor: pointer; }
+.turn-instr.is-full, .slide-panel.is-detail .turn-instr { display: block; -webkit-line-clamp: unset; overflow: visible; }
 .turn-summary-title { font-weight: 700; font-size: 13px; margin-bottom: 2px; }
 .turn-summary-body { font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
-.turn-raw-details { margin-top: 6px; container: ans / inline-size; }
-.turn-raw-details summary.turn-expand-btn { cursor: pointer; color: var(--accent); font-size: 11px; padding: 2px 0; user-select: none; list-style: none; }
-.turn-raw-details summary.turn-expand-btn::-webkit-details-marker { display: none; }
-.turn-raw-details summary.turn-expand-btn::before { content: '\\25B6 '; font-size: 9px; }
-.turn-raw-details[open] summary.turn-expand-btn::before { content: '\\25BC '; }
-.turn-raw-details summary.turn-expand-btn:hover { text-decoration: underline; }
+/* An assistant turn (task view T1.4): the answer itself, then Raw at its foot —
+   the turn's summary and the answer's source as written. */
+.turn-answer { margin-top: 4px; container: ans / inline-size; }
+.turn-answer .ans-card { margin-top: 2px; padding: 2px 0 0; border: 0; border-radius: 0; background: none; }
+.turn-raw { margin-top: 6px; }
+.turn-raw summary.turn-expand-btn { cursor: pointer; color: var(--text-tertiary); font-size: 11px; padding: 2px 0; user-select: none; list-style: none; }
+.turn-raw summary.turn-expand-btn::-webkit-details-marker { display: none; }
+.turn-raw summary.turn-expand-btn::before { content: '\\25B6 '; font-size: 9px; }
+.turn-raw[open] summary.turn-expand-btn::before { content: '\\25BC '; }
+.turn-raw summary.turn-expand-btn:hover { color: var(--accent); }
+.turn-raw-body { margin-top: 4px; padding: 8px 10px; border-radius: 8px; background: var(--surface-raised); font-size: 12px; color: var(--text-secondary); }
+.turn-raw-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-tertiary); margin: 6px 0 2px; }
+.turn-raw-label:first-child { margin-top: 0; }
+.turn-raw-src { margin: 0; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-secondary); }
+.turn-raw-src:empty::before { content: '답변이 열리면 원문이 여기에 표시됩니다'; color: var(--text-tertiary); font-family: inherit; }
 /* AI answer (.prd/affectui/re-ai-answer.md) — the opened answer: the links it
    holds as numbered cards and chips that light each other, copy. Theme
    variables only (no new colours); the disclosure is the size container. */
@@ -5654,9 +5823,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   text-align: center;
   font-style: italic;
 }
-.panel-command input {
+.panel-command textarea {
   flex: 1;
   min-width: 0; /* shrinks before Send is pushed out of the panel (folded toggle on the same line) */
+  resize: none;
+  max-height: 200px;
+  line-height: 1.45;
+  font-family: inherit;
+  overflow-y: auto;
   background: var(--surface-raised);
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -5667,9 +5841,22 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   min-height: 36px;
   transition: border-color var(--speed) var(--ease);
 }
-.panel-command input:focus { border-color: var(--accent); }
-.panel-command input::placeholder { color: var(--text-tertiary); }
-.panel-command input:disabled { opacity: 0.6; cursor: not-allowed; }
+.panel-command textarea:focus { border-color: var(--accent); }
+.panel-command textarea::placeholder { color: var(--text-tertiary); }
+.panel-command textarea:disabled { opacity: 0.6; cursor: not-allowed; }
+.panel-command-row { align-items: flex-end; }
+.panel-command.is-drag .panel-command-row textarea { border-color: var(--accent); border-style: dashed; }
+.pc-tools { display: flex; align-items: center; gap: 2px; flex: none; padding-bottom: 2px; }
+.pc-tool { display: inline-grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 8px; background: none; color: var(--text-secondary); cursor: pointer; }
+.pc-tool svg { width: 18px; height: 18px; }
+.pc-tool:hover { color: var(--text); background: var(--surface-raised); }
+.pc-tool:disabled { opacity: 0.4; cursor: default; }
+.pc-tool:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+.pc-tool-mic[aria-pressed="true"] { color: var(--st-fail); }
+.pc-attachments { display: flex; gap: 8px; overflow-x: auto; padding: 0 0 8px; }
+.pc-attachments:empty { display: none; }
+.pc-recorder { margin: 0 0 8px; }
+.pc-error { margin: 0 0 6px; font-size: 12px; color: var(--st-fail); }
 .btn-send {
   flex-shrink: 0;
   background: var(--accent);
@@ -5771,7 +5958,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (max-width: 639px) {
   .topbar .td-prefix, .topbar .td-status { display: none; }
   .main { padding: 14px 12px; }
-  .panel-tasks { max-height: min(22vh, 160px); }
   /* Agent tree (.prd/12 §4.4): status · time · tools drop under the name;
      12px per level, the indent capped at 3; 44px targets. */
   .an-row { min-height: 44px; padding-top: 10px; padding-bottom: 10px; padding-left: calc(6px + min(var(--an-lvl, 0), 3) * 12px); }
@@ -5873,7 +6059,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (pointer: coarse) {
   .btn-action { min-height: 40px; padding: 8px 12px; font-size: 12px; }
   .btn-send { min-height: 44px; padding: 12px 16px; }
-  .panel-command input { min-height: 44px; padding: 12px 16px; }
+  .panel-command textarea { min-height: 44px; padding: 11px 14px; }
+  .pc-tool, .panel-tab, .panel-sec-head, .panel-detail-toggle { min-height: 44px; }
+  .pc-tool { width: 44px; height: 44px; }
   .panel-close { width: 40px; height: 40px; }
   .topbar .nav a, .topbar .nav .user-select { min-height: 40px; padding: 8px 16px; }
   .period-btn { min-height: 40px; padding: 12px 20px; }
@@ -5903,7 +6091,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .panel-command .panel-controls .mp-trigger { max-width: 100%; }
   .panel-command .panel-controls .cb-model-note { flex-basis: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .panel-command .cmd-hint { flex-basis: 100%; }
-  .panel-command .panel-command-row { flex: 1 1 160px; min-width: 0; }
+  /* Task view T1.5: the field takes its own full line; model · effort, the
+     tools and Send share the line under it (the row's box steps aside). */
+  .panel-command { row-gap: 6px; }
+  .panel-command .panel-command-row { display: contents; }
+  .panel-command .pc-attachments, .panel-command .pc-recorder, .panel-command .pc-error { flex-basis: 100%; }
+  .panel-command textarea { order: 1; flex: 1 1 100%; }
+  .panel-command .panel-controls { order: 2; max-width: calc(100% - 216px); min-width: 0; }
+  .panel-command .pc-tools { order: 3; margin-left: auto; }
+  .panel-command .btn-send { order: 4; }
 }
 @media (max-width: 639px), (pointer: coarse) {
   .topbar .nav a, .topbar .nav .user-select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }
@@ -5921,9 +6117,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .panel-worklog-header, .wl-detail-btn { min-height: 44px; }
   .worklog-list .wl-row { min-height: 44px; display: flex; flex-direction: column; justify-content: center; }
   .wl-tool > .wl-row, .wl-tool_result > .wl-row, .worklog-list .wl-row.wl-line { flex-direction: row; align-items: center; }
-  .turn-raw-details summary.turn-expand-btn { min-height: 44px; display: flex; align-items: center; }
+  .turn-raw summary.turn-expand-btn { min-height: 44px; display: flex; align-items: center; }
   .panel-question .btn-choice, .mc-q-choices .btn-choice, .mc-q-edit-btn, .mc-btn-submit, .mc-btn-reset { min-height: 44px; }
-  .mc-custom-input input, .mc-custom-input button, .btn-send, .panel-command input { min-height: 44px; }
+  .mc-custom-input input, .mc-custom-input button, .btn-send, .panel-command textarea { min-height: 44px; }
 }
 /* 입력 필요 approval cards (re-agent-run D12–D13): key hints only with a hover
    pointer, quiet hovers, 44px answers on touch — after the shared touch block. */
@@ -6618,7 +6814,7 @@ body.nt-open .new-task-fab { display: none !important; }
 .art-play .ic-pause, .art-play.is-playing .ic-play { display: none; }
 .art-play.is-playing .ic-pause { display: block; }
 .art-play.is-playing { box-shadow: 0 0 0 4px color-mix(in srgb, var(--purple) 30%, transparent); }
-.panel-artifacts { grid-row: 2; padding: 10px 16px 4px; border-bottom: 1px solid var(--border); min-height: 44px; overflow-y: auto; }
+.panel-artifacts { padding: 10px 16px 4px; border-bottom: 1px solid var(--border); min-height: 44px; }
 .panel-arts-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 12px; font-weight: 600; color: var(--text); }
 .panel-arts-hint { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--text-tertiary); }
 .art-strip-panel .art-tile { width: 152px; }
@@ -6785,7 +6981,7 @@ body.nt-open .new-task-fab { display: none !important; }
 }
 @media (pointer: coarse) {
   /* Responsive (SSOT 2026-10-24) — 16px text: iOS does not zoom into a focused input. */
-  .panel-command input, .mc-custom-input input { font-size: 16px; }
+  .panel-command textarea, .mc-custom-input input { font-size: 16px; }
   /* The merged cron drawer and lane (#374): 44px touch targets. */
   .cron-drawer-close { min-width: 44px; min-height: 44px; }
   .cron-history-btn { min-height: 44px; }
@@ -7080,41 +7276,54 @@ body.nt-open .new-task-fab { display: none !important; }
           <button id="panel-title-sub-regen" class="btn-action" style="font-size:10px;padding:1px 6px;display:none" onclick="event.stopPropagation();generateTitleSub(panelConvId, !!_panelTitleSub)">&#x1F504;</button>
         </div>
       </div>
+      <!-- 자세히 (task view T1.6): the panel shows what matters by default; on, every detail of every section. Saved per device. -->
+      <button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false" title="모든 세부 정보 보기" onclick="togglePanelDetail()"><span class="pdt-switch" aria-hidden="true"></span><span class="pdt-label">자세히</span></button>
       <button class="panel-close" aria-label="패널 닫기" title="패널 닫기" onclick="closePanel()">&#x2715;</button>
       <!-- Session chip (spec 13): status · active time · retry · Slack · the session's one action. -->
       <div class="panel-status" id="panel-status"></div>
     </div>
-    <!-- Body (SSOT 2026-10-24): pinned Tasks and Artifacts, then the one main scroll
-         area, which keeps at least half of the body (.panel-body grid). -->
+    <!-- Body (task view, SSOT 2026-10-27): one scroll area — the task's common
+         surface on top, then the agent tabs (sticky while the conversation
+         scrolls) and the focused agent's tab: Tasks · 작업 로그 · 지시와 답변. -->
     <div class="panel-body" id="panel-body">
-    <!-- Tasks are pinned (.prd/10 §3.1-6): always shown, never scrolled away. -->
-    <div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>
-    <!-- Artifacts are pinned too (SSOT 2026-10-23 T6): in view wherever the conversation is scrolled. -->
-    <div class="panel-artifacts" id="panel-artifacts" style="display:none"></div>
-    <!-- Scroll area: the static session info (SSOT 2026-10-24 — it scrolls with the
-         conversation so a short screen still has room to read), then question +
-         work log (collapsed unless opened from 작업 로그) + turns. -->
     <div class="panel-scroll" id="panel-scroll">
-      <!-- 세션 정보 (spec 13): one summary line + the links, the complete numbers on demand — live. -->
-      <div class="panel-info" id="panel-info"></div>
-      <!-- Goal (spec 13): the editor's home — current, queue, add / delete, completed goals. -->
-      <div class="panel-goal" id="panel-goal" role="region" tabindex="-1" aria-label="Goal" style="display:none"></div>
-      <!-- 입력 필요 (re-agent-run D8–D17): a head with the count, approval cards for the
-           permission prompts and the question; one polite status line says arrivals and
-           answers (the cards themselves are not a live region — their expiry clock ticks). -->
-      <div class="panel-needs-head" id="panel-needs-head" tabindex="-1" hidden><span class="pn-title">입력 필요</span><span class="pn-count" id="panel-needs-count"></span></div>
-      <div class="panel-permission" id="panel-permission" style="display:none"></div>
-      <div class="panel-question" id="panel-question" style="display:none"></div>
-      <p class="ar-vh" id="panel-needs-status" role="status" aria-live="polite"></p>
-      <!-- Agent bar (.prd/12 §4.3): path 메인 › A2 …, the focused node, its subtree (rich rows); it scopes Tasks and the work log. -->
-      <div class="panel-agents" id="panel-agents" style="display:none"></div>
-      <div class="panel-worklog" id="panel-worklog" style="display:none">
-        <button type="button" class="panel-worklog-header" id="worklog-toggle" aria-expanded="false" aria-controls="worklog-list" onclick="toggleWorkLogSection()"><span>작업 로그</span><span class="wl-count" id="worklog-count"></span><svg class="wl-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
-        <div class="worklog-list" id="worklog-list" role="log" aria-live="polite" aria-label="작업 로그" hidden></div>
-      </div>
-      <div class="panel-turns" id="panel-turns">
-        <p style="color:var(--text-secondary);text-align:center;margin-top:40px">Click a session card to view details</p>
-      </div>
+      <section class="panel-surface" id="panel-surface" aria-label="작업 정보">
+        <!-- 세션 정보 (spec 13): one summary line + the links, the complete numbers on demand (or with 자세히) — live. -->
+        <div class="panel-info" id="panel-info"></div>
+        <!-- Goal (spec 13): the editor's home — current, queue, add / delete, completed goals. -->
+        <div class="panel-goal" id="panel-goal" role="region" tabindex="-1" aria-label="Goal" style="display:none"></div>
+        <!-- 입력 필요 (re-agent-run D8–D17): a head with the count, approval cards for the
+             permission prompts and the question; one polite status line says arrivals and
+             answers (the cards themselves are not a live region — their expiry clock ticks). -->
+        <div class="panel-needs-head" id="panel-needs-head" tabindex="-1" hidden><span class="pn-title">입력 필요</span><span class="pn-count" id="panel-needs-count"></span></div>
+        <div class="panel-permission" id="panel-permission" style="display:none"></div>
+        <div class="panel-question" id="panel-question" style="display:none"></div>
+        <p class="ar-vh" id="panel-needs-status" role="status" aria-live="polite"></p>
+        <!-- 산출물 (SSOT 2026-10-23 T6): what the task produced, and the files the user attached. -->
+        <div class="panel-artifacts" id="panel-artifacts" style="display:none"></div>
+      </section>
+      <!-- Agent tabs (task view T1.2): Main always first and pinned at the left, then every subagent in spawn order. -->
+      <div class="panel-tabs" id="panel-tabs" role="tablist" aria-label="에이전트" aria-orientation="horizontal"></div>
+      <section class="panel-tabpanel" id="panel-tabpanel" role="tabpanel" aria-labelledby="panel-tab-main" tabindex="-1">
+        <!-- The focused agent (.prd/12 §4.3): its header; with 자세히, its path and subtree. -->
+        <div class="panel-agents" id="panel-agents" style="display:none"></div>
+        <!-- Tasks (task view T1.3): folded to one line by default. -->
+        <div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>
+        <div class="panel-worklog" id="panel-worklog" style="display:none">
+          <button type="button" class="panel-worklog-header" id="worklog-toggle" aria-expanded="false" aria-controls="worklog-list" onclick="toggleWorkLogSection()"><span>작업 로그</span><span class="wl-count" id="worklog-count"></span><svg class="wl-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
+          <div class="worklog-list" id="worklog-list" role="log" aria-live="polite" aria-label="작업 로그" hidden></div>
+        </div>
+        <!-- 지시와 답변 (task view T1.3): open by default — the main agent's turns, a subagent's instruction and result. -->
+        <div class="panel-conv" id="panel-conv">
+          <button type="button" class="panel-sec-head panel-conv-header" id="conv-toggle" aria-expanded="true" aria-controls="panel-conv-body" onclick="togglePanelConv()"><span class="ps-sec-title">지시와 답변</span><span class="ps-sec-sum" id="conv-count"></span><svg class="pi-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
+          <div class="panel-conv-body" id="panel-conv-body">
+            <div class="panel-agent-conv" id="panel-agent-conv" hidden></div>
+            <div class="panel-turns" id="panel-turns">
+              <p style="color:var(--text-secondary);text-align:center;margin-top:40px">Click a session card to view details</p>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
     </div>
     <!-- Command row is always visible; disabled + hint for terminated sessions. -->
@@ -7122,8 +7331,20 @@ body.nt-open .new-task-fab { display: none !important; }
       <!-- Model · effort beside the composer (spec 13): their own container — the input is never morphed. -->
       <div class="panel-controls" id="panel-controls" aria-label="이 세션의 모델과 effort"></div>
       <div class="cmd-hint" id="cmd-hint" style="display:none">&#xC774; &#xC138;&#xC158;&#xC740; &#xC885;&#xB8CC;&#xB418;&#xC5C8;&#xC2B5;&#xB2C8;&#xB2E4; &mdash; &#xBA54;&#xC2DC;&#xC9C0;&#xB97C; &#xBCF4;&#xB0BC; &#xC218; &#xC5C6;&#xC2B5;&#xB2C8;&#xB2E4;</div>
-      <div class="panel-command-row">
-        <input type="text" id="cmd-input" placeholder="Send message to session..." onkeydown="if(event.key==='Enter')sendCommand()">
+      <!-- Steering composer (task view T1.5): multiline; images by paste, drop or picker; files; voice. -->
+      <div class="pc-attachments" id="pc-attachments" aria-live="polite" aria-label="첨부 파일"></div>
+      <div class="nt-recorder pc-recorder" id="pc-recorder" role="status" aria-label="녹음 중" hidden><span class="nt-rec-dot" aria-hidden="true"></span><span id="pc-rec-time">0:00</span><span class="nt-rec-meter" aria-hidden="true"><span class="nt-rec-level" id="pc-rec-level"></span></span><button type="button" class="nt-rec-btn" onclick="pcStopRecording(false)">취소</button><button type="button" class="nt-rec-btn is-primary" onclick="pcStopRecording(true)">완료</button></div>
+      <p class="pc-error" id="pc-error" role="alert" hidden></p>
+      <div class="panel-command-row" id="pc-row">
+        <div class="pc-tools">
+          <button type="button" class="pc-tool" id="pc-attach" aria-label="파일 첨부" title="파일 첨부" onclick="document.getElementById('pc-file-input').click()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.5 9.5l-5.8 5.8a3.5 3.5 0 0 1-5-5l6.3-6.3a2.3 2.3 0 0 1 3.3 3.3l-6.2 6.2a1.1 1.1 0 0 1-1.6-1.6l5.6-5.6"/></svg></button>
+          <button type="button" class="pc-tool" id="pc-image" aria-label="이미지 첨부" title="이미지 첨부 (붙여넣기·끌어놓기도 됩니다)" onclick="document.getElementById('pc-image-input').click()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2"/><circle cx="7.5" cy="8.5" r="1.4"/><path d="M3.5 14l4-4 3 3 2-2 4 3.5"/></svg></button>
+          <button type="button" class="pc-tool pc-tool-mic" id="pc-mic" aria-label="음성 녹음" aria-pressed="false" title="음성 녹음" onclick="pcToggleRecording()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><rect x="7.5" y="2.5" width="5" height="9.5" rx="2.5"/><path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5"/></svg></button>
+          <input type="file" id="pc-file-input" multiple hidden onchange="pcAddFiles(this.files); this.value = ''">
+          <input type="file" id="pc-image-input" accept="image/*" multiple hidden onchange="pcAddFiles(this.files); this.value = ''">
+          <input type="file" id="pc-audio-input" accept="audio/*" capture hidden onchange="pcAddFiles(this.files); this.value = ''">
+        </div>
+        <textarea id="cmd-input" rows="1" placeholder="Send message to session..." aria-label="이 세션에 지시" title="Enter 보내기 · Shift+Enter 줄바꿈 · 이미지는 붙여넣기나 끌어놓기" onkeydown="pcKeydown(event)" oninput="pcAutosize()"></textarea>
         <button class="btn-send" id="cmd-send" onclick="sendCommand()">Send</button>
       </div>
     </div>
@@ -7242,8 +7463,9 @@ let ws = null;
 let panelOpen = false;
 let panelSessionKey = null;
 let panelConvId = null;
-let _panelTasksExpanded = false;
-let _panelTasksEarlier = false; // the earlier task lists shown under the current one (spec 13)
+var _panelTasksOpen = false; // the Tasks section of the focused tab is open (folded by default — task view T1.3)
+var _panelTasksExpanded = false; // every completed step shown, none folded
+var _panelTasksEarlier = false; // the earlier plans shown under the current one (spec 13, task view T2)
 let _panelTitleSub = ''; // the subtitle the open panel shows ('' = none yet)
 let _viewerIsAdmin = false; // /auth/me says ADMIN_USERS (or viewer token); UX only, the server re-checks
 let _viewerUserId = ''; // the signed-in user (/auth/me) — not currentUserId, which is the board filter
@@ -7774,44 +7996,33 @@ async function answerPermission(key, approvalId, decision, btnEl) {
   repaintPermission(key);
 }
 
-// Pinned Tasks block (.prd/10 §3.1-6): always rendered — with no tasks yet it
-// says so instead of disappearing.
-// The panel's Tasks as a plan (re-agent-run D1–D7): the focused node's current
-// list in its own order — a marker per step (check · spinner · empty ring) on
-// one rail, the earliest completed steps folded past 3 — then, for the main
-// agent, the earlier lists (earlierTasks), and a footer with the plan's phase.
-// The first render of a scope is the baseline; a step that completes after it
-// is announced (and its marker pops) once.
+// The panel's Tasks section (dashboard task view T1.3): a disclosure in the
+// tab of the focused agent, folded by default. Folded, its head is the plan in
+// one line — the step in progress (or what the plan reads), done/total, how
+// many earlier steps a new plan dropped. Opened: the current list as a plan
+// (re-agent-run D1–D7) — a marker per step (check · spinner · pause · empty
+// ring) on one rail, the earliest completed steps folded past 3 — then the
+// earlier plans (T2), and a footer with the plan's phase. The first render of
+// a scope is the baseline; a step that completes after it is announced (and
+// its marker pops) once.
 function renderPanelTasks(tasks, scopeLabel, earlier) {
   var container = document.getElementById('panel-tasks');
   if (!container) return;
   container.style.display = '';
+  var list = tasks || [];
+  var prev = earlier || [];
   // Spec 12: a subagent's own tasks are labelled with that agent.
   var title = 'Tasks' + (scopeLabel ? ' <span class="tasks-scope">&middot; ' + esc(scopeLabel) + '</span>' : '');
-  var prev = earlier || [];
-  var earlierHtml = '';
-  if (prev.length) {
-    earlierHtml = '<button class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="' + (_panelTasksEarlier ? 'true' : 'false') + '"'
-      + ' onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()">'
-      + (_panelTasksEarlier ? '&#x25B2; 이전 task ' + prev.length + '개 숨기기' : '&#x25BC; 이전 task ' + prev.length + '개') + '</button>';
-    if (_panelTasksEarlier) earlierHtml += '<ol class="pl-list pl-earlier" aria-label="이전 task">' + prev.map(function(t) { return renderPanelTaskItem(t); }).join('') + '</ol>';
-  }
-  if (!tasks || tasks.length === 0) {
-    // An empty list is a baseline as well: the next list's steps are new, not changed.
-    container._planScope = scopeLabel || '';
-    container._planSeen = Object.create(null);
-    writePanelTasks(container, '<div class="panel-tasks-header"><span>' + title + '</span></div><div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>' + earlierHtml);
-    return;
-  }
 
   // D7: what changed since the last render of this scope (none on its first).
+  // An empty list is a baseline as well: the next list's steps are new, not changed.
   var scope = scopeLabel || '';
   var seen = container._planScope === scope ? container._planSeen : null;
   var now = Object.create(null);
   var changed = Object.create(null);
   var said = [];
-  for (var i = 0; i < tasks.length; i++) {
-    var t = tasks[i];
+  for (var i = 0; i < list.length; i++) {
+    var t = list[i];
     now[t.id] = t.status;
     if (seen && seen[t.id] && seen[t.id] !== t.status) {
       changed[t.id] = true;
@@ -7821,28 +8032,37 @@ function renderPanelTasks(tasks, scopeLabel, earlier) {
   container._planScope = scope;
   container._planSeen = now;
 
-  // D6: the earliest completed steps fold past 3, behind one toggle in their place.
-  var COMPLETED_LIMIT = 3;
-  var doneAt = [];
-  for (var j = 0; j < tasks.length; j++) if (tasks[j].status === 'completed') doneAt.push(j);
-  var hiddenCount = doneAt.length - COMPLETED_LIMIT;
-  var hidden = Object.create(null);
-  if (!_panelTasksExpanded) for (var k = 0; k < hiddenCount; k++) hidden[doneAt[k]] = true;
-  var rows = '';
-  for (var n = 0; n < tasks.length; n++) {
-    if (hiddenCount > 0 && n === doneAt[0]) {
-      rows += '<li class="pl-fold">' + (_panelTasksExpanded
-        ? '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()">&#x25B2; Hide completed</button>'
-        : '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()">&#x25BC; Show ' + hiddenCount + ' more completed</button>') + '</li>';
-    }
-    if (!hidden[n]) rows += renderPanelTaskItem(tasks[n], !!changed[tasks[n].id]);
-  }
+  var head = '<button type="button" class="panel-sec-head panel-tasks-header" aria-expanded="' + (_panelTasksOpen ? 'true' : 'false') + '"'
+    + (_panelTasksOpen ? ' aria-controls="panel-tasks-body"' : '') + ' onclick="togglePanelTasks()">'
+    + '<span class="ps-sec-title">' + title + '</span>'
+    + '<span class="ps-sec-sum">' + planSummaryHtml(list, prev) + '</span>'
+    + PI_CHEV_SVG + '</button>';
+  var live = '<span class="ar-vh pl-live" role="status" aria-live="polite">' + esc(said.join('. ')) + '</span>';
+  if (!_panelTasksOpen) { writePanelTasks(container, head + live); return; }
 
-  var html = '<div class="panel-tasks-header"><span>' + title + '</span></div>'
-    + '<ol class="pl-list" aria-label="계획 단계">' + rows + '</ol>'
-    + earlierHtml
-    + planFootHtml(tasks)
-    + '<span class="ar-vh pl-live" role="status" aria-live="polite">' + esc(said.join('. ')) + '</span>';
+  var body;
+  if (!list.length) {
+    body = '<div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>';
+  } else {
+    // D6: the earliest completed steps fold past 3, behind one toggle in their place.
+    var COMPLETED_LIMIT = 3;
+    var doneAt = [];
+    for (var j = 0; j < list.length; j++) if (list[j].status === 'completed') doneAt.push(j);
+    var hiddenCount = doneAt.length - COMPLETED_LIMIT;
+    var hidden = Object.create(null);
+    if (!_panelTasksExpanded) for (var k = 0; k < hiddenCount; k++) hidden[doneAt[k]] = true;
+    var rows = '';
+    for (var n = 0; n < list.length; n++) {
+      if (hiddenCount > 0 && n === doneAt[0]) {
+        rows += '<li class="pl-fold">' + (_panelTasksExpanded
+          ? '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()">&#x25B2; Hide completed</button>'
+          : '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()">&#x25BC; Show ' + hiddenCount + ' more completed</button>') + '</li>';
+      }
+      if (!hidden[n]) rows += renderPanelTaskItem(list[n], !!changed[list[n].id]);
+    }
+    body = '<ol class="pl-list" aria-label="계획 단계">' + rows + '</ol>';
+  }
+  var html = head + '<div class="panel-tasks-body" id="panel-tasks-body">' + body + planEarlierHtml(prev) + (list.length ? planFootHtml(list) : '') + '</div>' + live;
   // The clocks are filled at once (the 1 Hz tick keeps them going).
   if (writePanelTasks(container, html)) updateTimersIn(container);
   // Same data (a session push while a subagent is shown) writes nothing; a
@@ -7853,6 +8073,28 @@ function renderPanelTasks(tasks, scopeLabel, earlier) {
     el._html = markup;
     return true;
   }
+}
+function togglePanelTasks() {
+  _panelTasksOpen = !_panelTasksOpen;
+  repaintPanelTasks();
+}
+// The folded head's one line: the step in progress (its activeForm), else the
+// plan's state — then done/total, and what a new plan dropped before it ran.
+function planSummaryHtml(tasks, earlier) {
+  var list = tasks || [];
+  var parts = [];
+  var cur = null;
+  var done = 0;
+  for (var i = 0; i < list.length; i++) {
+    if (list[i].status === 'completed') done++;
+    if (!cur && taskFateOf(list[i]) === 'active') cur = list[i];
+  }
+  if (cur) parts.push('<span class="ps-sec-now">' + agentIconHtml('running') + esc(cur.activeForm || cur.content || '') + '</span>');
+  if (list.length) parts.push(done + '/' + list.length);
+  else parts.push('목록 없음');
+  var c = planEarlierCounts(earlier);
+  if (c.dropped || c.skipped) parts.push('이전 계획 중단 ' + c.dropped + ' · 실행 안 됨 ' + c.skipped);
+  return parts.join('<span class="pi-dot" aria-hidden="true">&middot;</span>');
 }
 // D6: the plan's phase from its steps alone — the server already demotes an
 // idle session's in-progress task (normalizeTaskProgress) — with done/total (the
@@ -7882,41 +8124,122 @@ function planFootHtml(tasks) {
     + (time ? '<span class="pl-foot-time" aria-hidden="true">' + time + '</span>' : '')
     + '</div>';
 }
-// The focused node's earlier task lists: the main agent's (s.earlierTasks); a subagent has none.
+// ── Task fates (dashboard task view T2) ──
+// TodoWrite replaces the whole list. What a task is, in one word:
+//   done     — completed
+//   active   — in progress, and the session (or agent) runs now
+//   paused   — it had started; the session stopped before it completed (the
+//              server shows an idle session's in-progress task as pending,
+//              keeping its start time)
+//   pending  — waiting its turn in the current list
+//   dropped  — a later list dropped it after it had run (중단)
+//   skipped  — a later list dropped it before it ever ran (실행 안 됨)
+// Only 'active' spins or ticks; a dropped task is never running or waiting.
+var TASK_FATE_LABEL = { done: '완료', active: '진행 중', paused: '멈춤', pending: '대기', dropped: '중단', skipped: '실행 안 됨' };
+function taskFateOf(t) {
+  if (!t) return 'pending';
+  if (t.dropped === 'started') return 'dropped';
+  if (t.dropped === 'unstarted') return 'skipped';
+  if (t.status === 'completed') return 'done';
+  if (t.status === 'in_progress') return 'active';
+  return toNum(t.startedAt) > 0 ? 'paused' : 'pending';
+}
+var TASK_PAUSE_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5 4h2v8H5zM9 4h2v8H9z"/></svg>';
+var TASK_STOP_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M4.5 11.5l7-7"/></svg>';
+var TASK_SKIP_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4.5 8h7"/></svg>';
+// The earlier plans by fate: what completed, what stopped, what never ran.
+function planEarlierCounts(earlier) {
+  var c = { done: 0, dropped: 0, skipped: 0 };
+  var list = earlier || [];
+  for (var i = 0; i < list.length; i++) {
+    var f = taskFateOf(list[i]);
+    if (f === 'done') c.done++;
+    else if (f === 'skipped') c.skipped++;
+    else c.dropped++;
+  }
+  return c;
+}
+// One group per plan replacement: the tasks that left the list at the same
+// moment (removedAt), newest first, in their order; tasks a ledger kept
+// before that moment was recorded last (at 0).
+function planEarlierGroups(earlier) {
+  var groups = [];
+  var byAt = Object.create(null);
+  var list = earlier || [];
+  for (var i = 0; i < list.length; i++) {
+    var at = toNum(list[i] && list[i].removedAt);
+    var g = byAt[at];
+    if (!g) { g = byAt[at] = { at: at, tasks: [] }; groups.push(g); }
+    g.tasks.push(list[i]);
+  }
+  return groups.sort(function(a, b) { return b.at - a.at; });
+}
+// 이전 계획 (T2): one toggle with the counts by fate — folded by default, so a
+// long history of dropped steps never floods the plan; opened, a group per
+// plan replacement ("14:02 새 계획으로 교체").
+function planEarlierHtml(earlier) {
+  var prev = earlier || [];
+  if (!prev.length) return '';
+  var c = planEarlierCounts(prev);
+  var counts = [];
+  if (c.done) counts.push('완료 ' + c.done);
+  if (c.dropped) counts.push('중단 ' + c.dropped);
+  if (c.skipped) counts.push('실행 안 됨 ' + c.skipped);
+  var html = '<button type="button" class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="' + (_panelTasksEarlier ? 'true' : 'false') + '"'
+    + ' onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()">'
+    + (_panelTasksEarlier ? '&#x25B2; ' : '&#x25BC; ') + '이전 계획 <span class="pl-earlier-counts">' + counts.join(' &middot; ') + '</span></button>';
+  if (!_panelTasksEarlier) return html;
+  return html + planEarlierGroups(prev).map(function(g) {
+    var when = g.at ? esc(formatTaskTime(g.at)) + ' 새 계획으로 교체' : '이전 기록';
+    return '<div class="pl-earlier-group"><div class="pl-earlier-when">' + when + '</div>'
+      + '<ol class="pl-list pl-earlier" aria-label="' + escAttr(when) + '">' + g.tasks.map(function(t) { return renderPanelTaskItem(t); }).join('') + '</ol></div>';
+  }).join('');
+}
+// The focused node's earlier task lists: the main agent's (s.earlierTasks) or
+// the focused subagent's own.
 function panelAgentEarlier() {
-  if (_panelAgent) return [];
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  return (s && s.earlierTasks) || [];
+  if (!_panelAgent) return (s && s.earlierTasks) || [];
+  var a = panelAgentOf(s);
+  return (a && a.earlierTasks) || [];
 }
 function repaintPanelTasks() {
   renderPanelTasks(panelAgentTasks(), panelAgentLabel(), panelAgentEarlier());
 }
 
 // One plan step (D1–D5): marker · #id title [툴 N회] (+ what it is doing now) ·
-// its time — the duration once done, a 1 Hz clock while it runs (no clock in
-// the markup, so equal data renders equal HTML). pop = its state just changed.
+// its time — the duration once done (or until it was stopped), a 1 Hz clock
+// while it runs (no clock in the markup, so equal data renders equal HTML).
+// pop = its state just changed.
 function renderPanelTaskItem(t, pop) {
-  var st = t.status === 'completed' ? 'done' : t.status === 'in_progress' ? 'active' : 'pending';
-  var cls = t.status === 'completed' ? 'completed' : t.status === 'in_progress' ? 'in_progress' : 'pending';
-  var marker = st === 'done' ? agentIconHtml('completed') : st === 'active' ? agentIconHtml('running') : '';
+  var st = taskFateOf(t);
+  var cls = st === 'done' ? 'completed' : st === 'active' ? 'in_progress' : st;
+  var marker = st === 'done' ? agentIconHtml('completed')
+    : st === 'active' ? agentIconHtml('running')
+    : st === 'paused' ? TASK_PAUSE_SVG
+    : st === 'dropped' ? TASK_STOP_SVG
+    : st === 'skipped' ? TASK_SKIP_SVG : '';
   // SSOT 2026-10-22 T7: tool calls made while the task ran.
-  var chip = t.status !== 'pending' && t.toolCalls !== undefined ? '<span class="pl-chip">툴 ' + toNum(t.toolCalls) + '회</span>' : '';
+  var chip = st !== 'pending' && st !== 'skipped' && t.toolCalls !== undefined ? '<span class="pl-chip">툴 ' + toNum(t.toolCalls) + '회</span>' : '';
   var sub = st === 'active' && t.activeForm && t.activeForm !== t.content ? '<span class="pl-sub">' + esc(t.activeForm) + '</span>' : '';
+  var fate = st === 'dropped' || st === 'skipped' || st === 'paused' ? '<span class="pl-fate">' + TASK_FATE_LABEL[st] + '</span>' : '';
   var aside = '';
   if (st === 'done' && t.startedAt && t.completedAt) aside = esc(formatDuration(t.completedAt - t.startedAt));
   else if (st === 'active' && t.startedAt) aside = '<span class="task-elapsed" data-since="' + toNum(t.startedAt) + '"></span>';
+  else if (st === 'dropped' && t.startedAt && t.removedAt > t.startedAt) aside = esc(formatDuration(t.removedAt - t.startedAt));
   var times = [];
   if (t.startedAt) times.push(formatTaskTime(t.startedAt));
   if (t.completedAt) times.push(formatTaskTime(t.completedAt));
+  else if (t.removedAt && (st === 'dropped' || st === 'skipped')) times.push(formatTaskTime(t.removedAt) + ' 계획에서 빠짐');
   return '<li class="panel-task-item pl-step ' + cls + (pop ? ' pl-pop' : '') + '" data-step="' + st + '"'
     + (st === 'active' ? ' aria-current="step"' : '')
     + (times.length ? ' title="' + escAttr(times.join(' → ')) + '"' : '') + '>'
     + '<span class="pl-marker" aria-hidden="true">' + marker + '</span>'
     + '<span class="pl-main"><span class="pl-line">'
     + (t.id ? '<span class="task-id">#' + esc(t.id) + '</span>' : '')
-    + '<span class="task-text">' + esc(t.content) + '</span>' + chip + '</span>'
+    + '<span class="task-text">' + esc(t.content) + '</span>' + fate + chip + '</span>'
     + sub
-    + '<span class="ar-vh">, ' + (st === 'done' ? '완료' : st === 'active' ? '진행 중' : '대기') + '</span></span>'
+    + '<span class="ar-vh">, ' + TASK_FATE_LABEL[st] + '</span></span>'
     + '<span class="pl-aside">' + aside + '</span>'
     + '</li>';
 }
@@ -9575,10 +9898,16 @@ function renderTaskMeta(t) {
   // Task timestamps come from the ledger: numbers only.
   var started = Number(t.startedAt) || 0;
   var completed = Number(t.completedAt) || 0;
+  var removed = Number(t.removedAt) || 0;
+  // Task view T2: a task a later plan dropped says so — never a running clock.
+  var fate = taskFateOf(t);
   var parts = [];
-  if (t.status === 'completed' && started && completed) parts.push(formatDuration(completed - started) || '0s');
-  else if (t.status === 'in_progress' && started) parts.push('<span class="task-elapsed" data-since="' + started + '"></span>');
-  if (t.status !== 'pending') parts.push('<span class="tl-tools" title="툴 호출 수">툴 ' + toNum(t.toolCalls) + '회</span>');
+  if (fate === 'done' && started && completed) parts.push(formatDuration(completed - started) || '0s');
+  else if (fate === 'active' && started) parts.push('<span class="task-elapsed" data-since="' + started + '"></span>');
+  else if (fate === 'dropped' || fate === 'skipped' || fate === 'paused') {
+    parts.push(TASK_FATE_LABEL[fate] + (fate === 'dropped' && started && removed > started ? ' ' + formatDuration(removed - started) : ''));
+  }
+  if (fate !== 'pending' && fate !== 'skipped') parts.push('<span class="tl-tools" title="툴 호출 수">툴 ' + toNum(t.toolCalls) + '회</span>');
   return parts.join(' &middot; ');
 }
 function renderTimelineItem(t) {
@@ -9593,7 +9922,11 @@ function renderTimeline(s) {
   if (!dhShow('tasks')) return '';
   var tasks = s.tasks || [];
   var earlier = s.earlierTasks || [];
-  if (tasks.length === 0 && earlier.length === 0) return '';
+  // Task view T2: steps a new plan dropped before they ran were never work —
+  // the count (and the panel it opens) does not grow with them.
+  var ran = 0;
+  for (var e = 0; e < earlier.length; e++) if (taskFateOf(earlier[e]) !== 'skipped') ran++;
+  if (tasks.length === 0 && ran === 0) return '';
   var max = dhMax('tasks', 5);
   var folded = 0;
   var tail = 0;
@@ -9604,14 +9937,14 @@ function renderTimeline(s) {
     shown.push(tasks[i]);
   }
   if (shown.length > max) { tail = shown.length - max; shown = shown.slice(0, max); }
-  var hidden = folded + tail + earlier.length;
+  var hidden = folded + tail + ran;
   var html = '<div class="tl-wrap">';
   if (folded > 0) html += '<div class="tl-more">+' + folded + ' completed</div>';
   if (shown.length) html += '<ul class="tl">' + shown.map(renderTimelineItem).join('') + '</ul>';
   if (tail > 0) html += '<div class="tl-more">+' + tail + ' more</div>';
   if (hidden > 0) {
     html += '<button type="button" class="tl-toggle" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',\\'tasks\\',\\'\\',event.detail===0)">'
-      + '전체 task ' + (tasks.length + earlier.length) + '개 &rarr;</button>';
+      + '전체 task ' + (tasks.length + ran) + '개 &rarr;</button>';
   }
   return html + '</div>';
 }
@@ -10419,6 +10752,8 @@ function renderPanelAgents() {
     _panelAgentsHtml = '';
     return;
   }
+  // Task view T1.6: the main agent's own header (tools, the task's spend) is a detail.
+  el.classList.toggle('is-main', !_panelAgent);
   var root = agentTreeOf(s, sessionColOf(panelSessionKey), panelLogOnlyAgents(s));
   _panelAgentIdsShown = Object.create(null);
   for (var id in root.byId) if (id) _panelAgentIdsShown[id] = true;
@@ -10465,11 +10800,233 @@ function renderPanelAgents() {
 // update — whichever node it is (no main-only or subagent-only gate). Each part
 // writes nothing when its markup is unchanged.
 function repaintPanelScope() {
+  renderPanelTabs();
   renderPanelAgents();
   repaintPanelTasks();
   wlRefreshGroupHeads();
   wlRefreshChildBlocks();
   wlRefreshCards();
+  renderAgentConv();
+}
+// ── Task view (SSOT 2026-10-27) — 자세히, agent tabs, 지시와 답변 ──
+// 자세히 (T1.6): the panel shows what matters by default — one line of 세션 정보,
+// what needs the user, the artifacts, the tabs, the conversation; Tasks and the
+// work log folded. On, every section opens: the full 세션 정보, the plan with
+// every completed step and the earlier plans, the work log, the agent's path
+// and subtree. The choice is saved per device.
+var PANEL_DETAIL_KEY = 'soma-panel-detail';
+var _panelDetail = false;
+var _panelConvOpen = true; // 지시와 답변 is open by default (T1.3)
+function panelDetailFrom(saved) {
+  return saved === '1';
+}
+function readPanelDetail() {
+  try { return panelDetailFrom(localStorage.getItem(PANEL_DETAIL_KEY)); } catch (_e) { return false; }
+}
+function applyPanelDetail() {
+  var panel = document.getElementById('slide-panel');
+  if (panel) panel.classList.toggle('is-detail', _panelDetail);
+  var btn = document.getElementById('panel-detail-toggle');
+  if (btn) btn.setAttribute('aria-pressed', _panelDetail ? 'true' : 'false');
+}
+// The sections an opening starts with: every one open with 자세히, else the defaults.
+function resetPanelSections() {
+  _panelInfoOpen = _panelDetail;
+  _panelTasksOpen = _panelDetail || _panelLand === 'tasks';
+  _panelTasksExpanded = _panelTasksOpen;
+  _panelTasksEarlier = _panelDetail;
+  _panelConvOpen = true;
+}
+function togglePanelDetail() {
+  _panelDetail = !_panelDetail;
+  try { localStorage.setItem(PANEL_DETAIL_KEY, _panelDetail ? '1' : '0'); } catch (_e) {}
+  applyPanelDetail();
+  resetPanelSections();
+  if (!panelSessionKey) return;
+  setWorkLogOpen(_panelDetail);
+  applyPanelConv();
+  repaintPanelSession();
+}
+
+// Agent tabs (T1.2): Main first — always, pinned at the strip's left — then each
+// subagent in spawn order with its status. A tab scopes everything below it
+// (Tasks, the work log, 지시와 답변) to its agent; selecting one is
+// selectPanelAgent. Arrow keys move along the strip and select (automatic
+// activation, the WAI-ARIA tabs pattern); one tab holds the tab stop.
+function panelTabsHtml(s, active, mainSt) {
+  var st0 = mainSt || (s && s.activityState === 'working' ? 'running' : s && s.activityState === 'waiting' ? 'waiting' : 'idle');
+  var cur = active || '';
+  var tab = function(id, domId, st, name, type, extra) {
+    var on = id === cur;
+    return '<button type="button" class="panel-tab' + extra + ' is-' + st + '" role="tab" id="' + domId + '" data-agent-tab="' + escAttr(id) + '"'
+      + ' aria-selected="' + (on ? 'true' : 'false') + '" aria-controls="panel-tabpanel" tabindex="' + (on ? '0' : '-1') + '"'
+      + ' title="' + escAttr(name + (type ? ' ' + type : '') + ' — ' + (AGENT_STATUS_LABEL[st] || '')) + '">'
+      + '<span class="ag-icon">' + agentIconHtml(st) + '</span>'
+      + '<span class="pt-name">' + esc(name) + '</span>'
+      + (type ? '<span class="pt-type">' + esc(type) + '</span>' : '')
+      + '</button>';
+  };
+  var model = s && s.model ? String(s.model).replace(/^claude-/, '') : '';
+  var html = tab('', 'panel-tab-main', st0, 'Main', model, ' is-main');
+  var list = ((s && s.agents) || []).slice().sort(function(a, b) { return toNum(a.n) - toNum(b.n); });
+  for (var i = 0; i < list.length; i++) {
+    var a = list[i];
+    if (!a || !a.id) continue;
+    html += tab(String(a.id), 'panel-tab-a' + toNum(a.n), agentStatusOf(a), 'A' + toNum(a.n), a.type || '', '');
+  }
+  return html;
+}
+function renderPanelTabs() {
+  var el = document.getElementById('panel-tabs');
+  if (!el) return;
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  if (!s) { writePanelPart(el, ''); return; }
+  writePanelPart(el, panelTabsHtml(s, _panelAgent, rootStatusOf(s, sessionColOf(panelSessionKey))));
+  var on = el.querySelector('[aria-selected="true"]');
+  var panel = document.getElementById('panel-tabpanel');
+  if (panel) panel.setAttribute('aria-labelledby', on ? on.id : 'panel-tab-main');
+  // Bring the selected tab into the strip's view — sideways only, never the panel.
+  if (on && !on.classList.contains('is-main')) {
+    var main = el.querySelector('.panel-tab.is-main');
+    var left = on.offsetLeft - (main ? main.offsetWidth + 8 : 0);
+    if (left < el.scrollLeft) el.scrollLeft = left;
+    else if (on.offsetLeft + on.offsetWidth > el.scrollLeft + el.clientWidth) el.scrollLeft = on.offsetLeft + on.offsetWidth - el.clientWidth;
+  }
+}
+function panelTabsKey(e) {
+  var tabs = Array.prototype.slice.call(document.querySelectorAll('#panel-tabs [role="tab"]'));
+  var i = tabs.indexOf(e.target);
+  if (i < 0) return;
+  var to = e.key === 'ArrowRight' ? Math.min(tabs.length - 1, i + 1)
+    : e.key === 'ArrowLeft' ? Math.max(0, i - 1)
+    : e.key === 'Home' ? 0 : e.key === 'End' ? tabs.length - 1 : -1;
+  if (to < 0) return;
+  e.preventDefault();
+  selectPanelAgent(tabs[to].getAttribute('data-agent-tab') || '');
+  var next = document.querySelector('#panel-tabs [role="tab"][aria-selected="true"]');
+  if (next) next.focus();
+}
+function bindPanelTabs() {
+  var el = document.getElementById('panel-tabs');
+  if (!el || el._bound) return;
+  el._bound = true;
+  el.addEventListener('click', function(e) {
+    var t = e.target && e.target.closest ? e.target.closest('[data-agent-tab]') : null;
+    if (t) selectPanelAgent(t.getAttribute('data-agent-tab') || '');
+  });
+  el.addEventListener('keydown', panelTabsKey);
+}
+
+// 지시와 답변 (T1.3): open by default; folded, its head still says where the
+// conversation stands. The main agent's tab shows the session's turns; a
+// subagent's tab shows what it was told and what it answered (renderAgentConv).
+function applyPanelConv() {
+  var btn = document.getElementById('conv-toggle');
+  var body = document.getElementById('panel-conv-body');
+  if (btn) btn.setAttribute('aria-expanded', _panelConvOpen ? 'true' : 'false');
+  if (body) body.hidden = !_panelConvOpen;
+}
+function togglePanelConv() {
+  _panelConvOpen = !_panelConvOpen;
+  applyPanelConv();
+}
+// Pure: a subagent's instruction (the call that started it) and its result,
+// from the work log — the latest of each.
+function agentConvEntries(entries, agentId) {
+  var out = { spawn: null, result: null };
+  var list = entries || [];
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i];
+    if (!e || !agentId || e.agentRef !== agentId) continue;
+    if (e.kind === 'tool') out.spawn = e;
+    else if (e.kind === 'tool_result') out.result = e;
+  }
+  return out;
+}
+// Pure: the instruction text in a spawn call's input (its JSON) — the prompt,
+// else the description; anything that is not that JSON is the text itself.
+function agentPromptOf(raw) {
+  var text = String(raw == null ? '' : raw);
+  try {
+    var o = JSON.parse(text);
+    if (o && typeof o === 'object') return String(o.prompt || o.description || text);
+  } catch (_e) {}
+  return text;
+}
+var _agentConvRaw = Object.create(null); // work-log seq → its loaded raw (this panel opening)
+function agentConvRawOf(seq) {
+  var key = String(seq);
+  if (Object.prototype.hasOwnProperty.call(_agentConvRaw, key)) return _agentConvRaw[key];
+  _agentConvRaw[key] = null;
+  if (!_wl) return null;
+  var gen = _panelGen;
+  wlRawLoad(_wl, seq, wlFetchJson).then(function(r) {
+    if (gen !== _panelGen) return;
+    _agentConvRaw[key] = r && r.status === 'ok' ? r.raw : '';
+    renderAgentConv();
+  });
+  return null;
+}
+function agentConvHtml(a, io, prompt, answer) {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var name = a ? agentName(a) : '에이전트';
+  var st = a ? agentStatusOf(a) : 'unknown';
+  var html = '';
+  if (io.spawn || (a && a.description)) {
+    // The prompt as sent; its one-line preview when the raw cannot be read (not stored, not this viewer's).
+    var said = prompt || (io.spawn ? String(io.spawn.text || '') : '');
+    html += '<div class="turn user"><div class="turn-avatar user-avatar">M</div><div class="turn-body">'
+      + '<div class="turn-header"><span class="turn-name">지시 · Main</span>'
+      + (io.spawn && io.spawn.ts ? '<span class="turn-time">' + esc(formatTaskTime(io.spawn.ts)) + '</span>' : '') + '</div>'
+      + (a && a.description ? '<div class="turn-summary-title">' + esc(a.description) + '</div>' : '')
+      + (said ? '<div class="turn-content agent-prompt">' + esc(said) + '</div>' : '')
+      + '</div></div>';
+  }
+  var body;
+  if (io.result) {
+    var at = ' data-conv="agent" data-turn="' + escAttr(io.result.seq) + '"';
+    // A result that cannot be read reads as the agent's own one-line summary, if it has one.
+    var shown = answer === '' && a && a.summary ? a.summary : answer;
+    body = answer != null
+      ? '<div class="turn-answer"' + at + '><div class="ans-card">' + renderAnswerCard(shown, s) + '</div></div>'
+      : '<div class="turn-answer"' + at + '><div class="ans-card" aria-busy="true">' + ansStateHtml('loading') + '</div></div>';
+    body += '<details class="turn-raw"><summary class="turn-expand-btn">Raw</summary><div class="turn-raw-body">'
+      + (a && a.summary ? '<div class="turn-raw-label">요약</div><div>' + esc(a.summary) + '</div>' : '')
+      + '<div class="turn-raw-label">원문</div><pre class="turn-raw-src">' + esc(answer || '') + '</pre></div></details>';
+  } else if (st === 'running') {
+    body = '<div class="ans-writing"><span class="ans-shimmer">응답 작성 중</span><i class="ans-dot" aria-hidden="true"></i></div>';
+  } else {
+    body = '<div class="turn-summary-body" style="color:var(--text-tertiary)">' + esc(a && a.summary ? a.summary : '작업 로그에 결과가 없습니다') + '</div>';
+  }
+  html += '<div class="turn assistant"><div class="turn-avatar bot-avatar">&#x1F916;</div><div class="turn-body">'
+    + '<div class="turn-header"><span class="turn-name">' + esc(name) + '</span>'
+    + '<span class="turn-time">' + esc(AGENT_STATUS_LABEL[st] || '') + '</span></div>'
+    + body + '</div></div>';
+  return html;
+}
+function renderAgentConv() {
+  var host = document.getElementById('panel-agent-conv');
+  var turns = document.getElementById('panel-turns');
+  var sum = document.getElementById('conv-count');
+  if (!host || !turns) return;
+  if (!_panelAgent) {
+    host.hidden = true;
+    turns.hidden = false;
+    if (sum) setTextIfChanged(sum, '');
+    return;
+  }
+  turns.hidden = true;
+  host.hidden = false;
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var a = panelAgentOf(s);
+  var io = agentConvEntries(_wl && _wl.entries, _panelAgent);
+  var prompt = io.spawn && io.spawn.rawBytes ? agentConvRawOf(io.spawn.seq) : null;
+  var answer = io.result ? (io.result.rawBytes ? agentConvRawOf(io.result.seq) : String(io.result.text || '')) : null;
+  if (sum) setTextIfChanged(sum, a ? (AGENT_STATUS_LABEL[agentStatusOf(a)] || '') : '');
+  // 복사 reads an answer from the raw cache, like a turn's (copyAnswer).
+  if (io.result && typeof answer === 'string') _rawLoadedCache[ansCacheKey('agent', io.result.seq)] = answer;
+  var html = io.spawn || io.result || a ? agentConvHtml(a, io, prompt != null ? agentPromptOf(prompt) : null, answer) : '<p class="panel-tasks-empty">이 에이전트의 지시와 결과를 찾지 못했습니다</p>';
+  if (writePanelPart(host, html)) ansBind(host);
 }
 // ── The panel as a whole (spec 13 — "understand and steer") ──
 // One live path writes every part of the open panel that follows the session:
@@ -10541,6 +11098,12 @@ function renderPanelComposer(s, force) {
   var cmdInput = document.getElementById('cmd-input');
   var cmdBtn = document.getElementById('cmd-send');
   var cmdHint = document.getElementById('cmd-hint');
+  // Task view T1.5: the composer's tools follow the field.
+  ['pc-attach', 'pc-image', 'pc-mic'].forEach(function(id) {
+    var tool = document.getElementById(id);
+    if (tool) tool.disabled = mode !== 'open';
+  });
+  if (mode !== 'open') pcReset();
   if (mode === 'readonly') {
     if (cmdInput) { cmdInput.disabled = true; cmdInput.placeholder = READ_ONLY_MSG; }
     if (cmdBtn) { cmdBtn.disabled = true; }
@@ -11098,6 +11661,9 @@ function renderPanelGoal() {
   }
   el.style.display = '';
   el._key = panelSessionKey;
+  // Task view T1.6: a session with no goal keeps the empty editor for 자세히.
+  var g = s.goal;
+  el.classList.toggle('is-empty', !(g && (g.current || (g.queue && g.queue.length) || (g.history && g.history.length))));
   if (el._html === html || isEditingGoal(el)) return;
   var draft = captureGoalDraft(el);
   var a = document.activeElement;
@@ -11124,11 +11690,12 @@ function selectPanelAgent(agentId) {
     _wl.groupOpen = saved[next] || Object.create(null);
   }
   _panelAgent = next;
-  _panelTasksExpanded = false;
+  _panelTasksExpanded = _panelDetail;
   _anScopeChange = true;
-  try { renderPanelAgents(); } finally { _anScopeChange = false; }
+  try { renderPanelTabs(); renderPanelAgents(); } finally { _anScopeChange = false; }
   repaintPanelTasks();
   repaintWorkLogScope();
+  renderAgentConv();
   // A keyboard choice (a list row, 서브에이전트 열기) went with the list it was
   // in: focus lands on the agent now shown, not on <body>.
   var after = document.activeElement;
@@ -15222,36 +15789,31 @@ function scrollPanelToWorkLog() {
 // Where an opening lands (§3.1-6, spec 13) — on open, and again once the
 // scroll area has its content. By the opening's intent (_panelLand):
 //   worklog (작업 로그 / ?session=): the work-log header;
-//   goal / agent (관리 →, a tree item, 전체 N개 → 상세): that section at the
-//     top of the scroll area, once per opening — the turns loading below it
-//     never drag it away;
-//   answer, tasks, default: the permission or question the session waits on,
-//     which heads the scroll area's live blocks, so the answer form is in view
-//     at once; with none shown (none, or answered while the turns loaded) the
+//   goal / agent / tasks (관리 →, a tree item, 전체 N개 → 상세, 전체 task →):
+//     that section at the top of the scroll area (under the sticky agent tabs),
+//     once per opening — the turns loading below it never drag it away;
+//   answer, default: the permission or question the session waits on, which
+//     sits in the common surface at the top, so the answer form is in view at
+//     once; with none shown (none, or answered while the turns loaded) the
 //     newest turns, held while the panel settles until the reader acts. The
 //     question landing is made once per opening: turns load below the form and
-//     do not move it, and a reader who scrolled meanwhile stays. (Tasks are
-//     pinned outside the scroll area: a tasks opening unfolds them instead.)
+//     do not move it, and a reader who scrolled meanwhile stays.
 var _panelOnQuestion = false;
 function landPanel() {
   var scrollEl = document.getElementById('panel-scroll');
   if (!scrollEl) return;
   if (_panelLand === 'worklog') { scrollPanelToWorkLog(); return; }
-  if (_panelLand === 'tasks' && !_panelLanded) {
-    // The Tasks are pinned outside the scroll area: their own box opens at its
-    // head (the whole ledger unfolded below it); the scroll area takes the
-    // default landing below.
-    var box = document.getElementById('panel-tasks');
-    if (box) box.scrollTop = 0;
-    _panelLanded = true;
-  }
-  if (_panelLand === 'goal' || _panelLand === 'agent') {
+  // Task view: Tasks sit in the tab under the sticky agent tabs — a tasks
+  // opening lands on the (unfolded) plan's head, just under the tab strip.
+  if (_panelLand === 'goal' || _panelLand === 'agent' || _panelLand === 'tasks') {
     if (_panelLanded) return;
-    var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : 'panel-agents');
+    var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : _panelLand === 'tasks' ? 'panel-tasks' : 'panel-agents');
     if (sec && sec.style.display !== 'none') {
       _panelLanded = true;
       _panelStickBottom = false;
-      scrollEl.scrollTo({ top: scrollEl.scrollTop + sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top, behavior: 'instant' });
+      var tabs = _panelLand === 'goal' ? null : document.getElementById('panel-tabs');
+      var under = tabs ? tabs.offsetHeight || 0 : 0;
+      scrollEl.scrollTo({ top: scrollEl.scrollTop + sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - under, behavior: 'instant' });
       return;
     }
   }
@@ -15307,6 +15869,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
     var cmdBtnEl = document.getElementById('cmd-send');
     if (cmdInputEl) { cmdInputEl.value = ''; cmdInputEl.disabled = false; }
     if (cmdBtnEl) { cmdBtnEl.disabled = false; cmdBtnEl.textContent = 'Send'; }
+    pcReset();
   })();
 
   // Reset pagination state before loading this session's turns. A new panel
@@ -15324,7 +15887,14 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   renderPanelArtifactsSection();
   if (panelConvId && !isSiblingSession(s)) ensureArtifacts(panelConvId, true);
   if (panelConvId && !isSiblingSession(s) && s.userMedia && toNum(s.userMedia.count) > 0) ensureUserMedia(panelConvId);
-  setWorkLogOpen(false); // every opening starts collapsed (§3.1-6)
+  // Every opening starts with the defaults (§3.1-6, task view T1.3): the work
+  // log and Tasks folded, 지시와 답변 open — or every section open with 자세히.
+  resetPanelSections();
+  setWorkLogOpen(_panelDetail);
+  applyPanelConv();
+  _agentConvRaw = Object.create(null);
+  // The previous opening's answers are gone from the list: stop watching them.
+  if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
   _panelOlderArmed = false; // a landing never loads older turns by itself
   _panelStickBottom = false;
   _panelOnQuestion = false;
@@ -15343,8 +15913,8 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
 
   // The session parts — head chip, 세션 정보, goal, model · effort, the node
   // scope — go through the same live path as every update (spec 13).
-  _panelTasksExpanded = _panelLand === 'tasks';
-  _panelTasksEarlier = _panelLand === 'tasks';
+  // A tasks opening (전체 task N개 →) unfolds the plan with every step and the earlier plans.
+  if (_panelLand === 'tasks') { _panelTasksOpen = true; _panelTasksExpanded = true; _panelTasksEarlier = true; }
   // Another session's goal form (and its draft) never carries into this one;
   // reopening the same session keeps an unsent draft.
   var goalEl = document.getElementById('panel-goal');
@@ -15886,8 +16456,10 @@ function renderTurn(t, _idx, _arr, convId) {
     if (sys) return renderSysTurn(t, sys, turnIdAttr, time, initial, 0, !!(_arr && typeof _idx === 'number' && _idx < _arr.length - 1), mediaHtml);
     // T5 — an <invoked_skills> block becomes badges under the words.
     var said = splitInvokedSkills(decodeSlackEntities(t.rawContent || ''));
+    // Task view T1.3: the whole instruction — a long one folds to 12 lines until
+    // clicked (자세히 shows it whole).
     var textHtml = said.text
-      ? '<div class="turn-content">' + esc(said.text.slice(0, 500)) + (said.text.length > 500 ? '...' : '') + '</div>'
+      ? '<div class="turn-content turn-instr" title="눌러서 펼치기 · 접기" onclick="this.classList.toggle(\\'is-full\\')">' + esc(said.text) + '</div>'
       : '';
     return '<div class="turn user"' + turnIdAttr + '>'
       + '<div class="turn-avatar user-avatar">' + initial + '</div>'
@@ -15905,15 +16477,19 @@ function renderTurn(t, _idx, _arr, convId) {
     } else {
       body = '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">Generating summary...</div>';
     }
-    // AI answer (re-ai-answer D1): the summary stays the face; the answer card
-    // under "답변 전문" loads the raw answer on first open (ansLoad).
-    var rawToggle = '';
+    // AI answer (task view T1.4, re-ai-answer D1): the answer itself is the
+    // turn — loaded as it nears the view (ansObserve) — and Raw at its foot
+    // holds the turn's summary and the answer's source as written. A turn
+    // with no recorded answer to load shows its summary.
+    var answer = title + body;
+    var raw = '';
     var cid = convId || panelConvId;
     if (t.id && cid) {
-      rawToggle = '<details class="turn-raw-details" data-conv="' + esc(cid) + '" data-turn="' + esc(t.id) + '">'
-        + '<summary class="turn-expand-btn">답변 전문</summary>'
-        + '<div class="ans-card" aria-busy="true">' + ansStateHtml('loading') + '</div>'
-        + '</details>';
+      answer = '<div class="turn-answer" data-conv="' + esc(cid) + '" data-turn="' + esc(t.id) + '">'
+        + '<div class="ans-card" aria-busy="true">' + ansStateHtml('loading') + '</div></div>';
+      raw = '<details class="turn-raw"><summary class="turn-expand-btn">Raw</summary><div class="turn-raw-body">'
+        + '<div class="turn-raw-label">요약</div><div class="turn-raw-summary">' + title + body + '</div>'
+        + '<div class="turn-raw-label">원문</div><pre class="turn-raw-src"></pre></div></details>';
     }
     // SSOT 2026-10-23 T6 — the files and markdown answer this turn produced, under
     // it. decoratePanelTurns() re-files them whenever turns or artifacts change.
@@ -15925,7 +16501,7 @@ function renderTurn(t, _idx, _arr, convId) {
       + '<div class="turn-avatar bot-avatar">&#x1F916;</div>'
       + '<div class="turn-body">'
       + '<div class="turn-header"><span class="turn-name">Assistant</span><span class="turn-time">' + time + '</span><span class="ans-took"></span></div>'
-      + title + body + turnArts + rawToggle
+      + answer + turnArts + raw
       + '</div></div>';
   }
 }
@@ -15948,19 +16524,17 @@ function updateTurnInPanel(existingEl, turn) {
   tmp.innerHTML = renderTurn(turn);
   var newEl = tmp.firstElementChild;
   if (newEl) {
-    // re-ai-answer D14 — an answer the reader opened stays open (from the cache).
-    var wasOpen = !!existingEl.querySelector('.turn-raw-details[open]');
+    // re-ai-answer D14 — the answer stays (painted again from the cache), and so
+    // does an open Raw.
+    var rawOpen = !!existingEl.querySelector('.turn-raw[open]');
     // SSOT 2026-10-27 — so does a one-line row (a /compact result landing).
     var sysOpen = !!existingEl.querySelector('.sys-turn[open]');
     existingEl.replaceWith(newEl);
+    var rawEl = rawOpen ? newEl.querySelector('.turn-raw') : null;
+    if (rawEl) rawEl.open = true;
     var sysEl = sysOpen ? newEl.querySelector('.sys-turn') : null;
     if (sysEl) sysEl.open = true;
     attachRawToggleHandlers();
-    var answer = wasOpen ? newEl.querySelector('.turn-raw-details') : null;
-    if (answer) {
-      answer.open = true;
-      ansLoad(answer);
-    }
     decoratePanelTurns();
   } else {
     console.warn('updateTurnInPanel: no element for turn', turn.id);
@@ -15968,17 +16542,30 @@ function updateTurnInPanel(existingEl, turn) {
 }
 
 var _rawLoadedCache = Object.create(null);
+// Task view T1.4 — every answer in the turns list loads as it nears the view
+// (one fetch per answer, then the cache); an answer already cached paints at once.
+var _ansIo = null;
 function attachRawToggleHandlers() {
-  document.querySelectorAll('.turn-raw-details').forEach(function(details) {
-    if (details._rawBound) return;
-    details._rawBound = true;
-    details.addEventListener('toggle', function() {
-      if (this.open) { ansLoad(this); return; }
-      // Closed content re-renders on open and would replay the entry animation.
-      var card = this.querySelector('.ans-card');
-      if (card) card.classList.remove('is-in');
-    });
-  });
+  var turnsEl = document.getElementById('panel-turns');
+  if (!turnsEl) return;
+  var els = turnsEl.querySelectorAll('.turn-answer[data-turn]');
+  for (var i = 0; i < els.length; i++) {
+    var el = els[i];
+    if (el._ansObserved) continue;
+    el._ansObserved = true;
+    var cached = typeof _rawLoadedCache[ansCacheKey(el.dataset.conv, el.dataset.turn)] === 'string';
+    if (!cached && !_ansIo && typeof IntersectionObserver === 'function') {
+      _ansIo = new IntersectionObserver(function(entries) {
+        entries.forEach(function(en) {
+          if (!en.isIntersecting) return;
+          _ansIo.unobserve(en.target);
+          ansLoad(en.target);
+        });
+      }, { root: document.getElementById('panel-scroll'), rootMargin: '800px 0px' });
+    }
+    if (cached || !_ansIo) ansLoad(el);
+    else _ansIo.observe(el);
+  }
 }
 
 // ── AI answer (.prd/affectui/re-ai-answer.md) ──
@@ -16159,16 +16746,27 @@ function ansSession(cid) {
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   return s && s.conversationId === cid ? s : null;
 }
+// Task view T1.4 — the turn's summary (kept in its Raw), the face when the
+// answer cannot be read (none recorded, or not this viewer's to read).
+function ansFallbackHtml(details) {
+  var body = details.parentNode;
+  var sum = body && body.querySelector ? body.querySelector('.turn-raw-summary') : null;
+  return sum && sum.innerHTML ? '<div class="ans-fallback">' + sum.innerHTML + '</div>' : '';
+}
 function ansPaint(details, state, detail, animate) {
   var card = details.querySelector('.ans-card');
   if (!card) return;
   if (state !== 'ok') {
-    card.innerHTML = ansStateHtml(state, detail);
+    card.innerHTML = (state === 'loading' ? '' : ansFallbackHtml(details)) + ansStateHtml(state, detail);
     if (state === 'loading') card.setAttribute('aria-busy', 'true');
     else card.removeAttribute('aria-busy');
     return;
   }
-  card.innerHTML = renderAnswerCard(_rawLoadedCache[ansCacheKey(details.dataset.conv, details.dataset.turn)], ansSession(details.dataset.conv));
+  var raw = _rawLoadedCache[ansCacheKey(details.dataset.conv, details.dataset.turn)];
+  // The answer as written, in Raw at the turn's foot.
+  var src = details.parentNode && details.parentNode.querySelector ? details.parentNode.querySelector('.turn-raw-src') : null;
+  if (src && src.textContent !== raw) src.textContent = raw;
+  card.innerHTML = String(raw || '').trim() ? renderAnswerCard(raw, ansSession(details.dataset.conv)) : ansFallbackHtml(details) + ansStateHtml('empty');
   card.removeAttribute('aria-busy');
   card.classList.remove('is-in');
   if (animate && !reduceMotion()) {
@@ -16267,13 +16865,13 @@ function ansBind(root) {
     var copy = t.closest('.ans-copy');
     if (copy) { copyAnswer(copy); return; }
     var retry = t.closest('[data-ans-retry]');
-    var details = retry ? retry.closest('.turn-raw-details') : null;
+    var details = retry ? retry.closest('.turn-answer') : null;
     if (details) ansLoad(details);
   });
 }
 // D10 — clipboard, or (plain http, a refused permission) select the answer.
 function copyAnswer(btn) {
-  var details = btn.closest('.turn-raw-details');
+  var details = btn.closest('.turn-answer');
   var card = btn.closest('.ans-card');
   if (!details || !card) return;
   var raw = _rawLoadedCache[ansCacheKey(details.dataset.conv, details.dataset.turn)];
@@ -16584,17 +17182,34 @@ let _lastSentTime = 0;
 async function sendCommand() {
   const input = document.getElementById('cmd-input');
   const btn = document.getElementById('cmd-send');
-  const msg = input.value.trim();
-  if (!msg || !panelSessionKey) return;
+  if (!panelSessionKey) return;
   // Guard: do not send while the input is disabled (e.g., terminated session).
   if (input.disabled) return;
-
-  // Capture the session this send belongs to. We must never mutate shared UI
-  // (cmd-input/cmd-send) after the user has already switched to a different card,
-  // otherwise the new card inherits stale "Sending..." / disabled state.
+  // Capture the session this send belongs to — before any wait. We must never
+  // mutate shared UI (cmd-input/cmd-send) after the user has already switched to
+  // a different card, otherwise the new card inherits stale "Sending..." /
+  // disabled state; and an instruction is never sent to a card opened meanwhile.
   const sendingSessionKey = panelSessionKey;
+  // Task view T1.5: a recording in progress is the user's last words — finish it first.
+  if (_pcRec) {
+    pcStopRecording(true);
+    await new Promise(function(resolve) { setTimeout(resolve, 300); });
+  }
+  const msg = input.value.trim();
+  const files = _pcFiles.slice();
+  if (!pcCanSend(msg, files)) return;
+  // Every file read in full (a failed read removes its chip and says so).
+  try {
+    await Promise.all(files.map(function(f) { return f.ready; }));
+  } catch (_e) {
+    return;
+  }
+  // The card changed while the files were read: this instruction was for the other one (its files went with pcReset).
+  if (panelSessionKey !== sendingSessionKey) return;
 
-  // Optimistic: immediately show user turn in panel
+  // Optimistic: immediately show user turn in panel (its files by name — the
+  // recorded turn brings their previews).
+  const shown = msg + (files.length ? (msg ? '\\n' : '') + '📎 ' + files.map(function(f) { return f.name; }).join(', ') : '');
   _lastSentContent = msg;
   _lastSentTime = Date.now();
   const optimisticTurn = {
@@ -16602,7 +17217,7 @@ async function sendCommand() {
     role: 'user',
     timestamp: Date.now(),
     userName: 'You',
-    rawContent: msg,
+    rawContent: shown,
     origin: { by: 'user' },
     _optimistic: true,
   };
@@ -16612,18 +17227,23 @@ async function sendCommand() {
   btn.textContent = 'Sending...';
   input.disabled = true;
   input.value = '';
+  pcAutosize();
 
   try {
     const cmdHeaders = { 'Content-Type': 'application/json' };
     if (_csrfToken) cmdHeaders['X-CSRF-Token'] = _csrfToken;
     const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(sendingSessionKey) + '/command';
-    const cmdBody = JSON.stringify({ message: msg });
+    const cmdBody = JSON.stringify(pcCommandBody(msg, files));
     let res = await fetch(cmdUrl, { method: 'POST', headers: cmdHeaders, body: cmdBody });
     if (res.status === 403) {
       await refreshCsrfToken();
       const retryHeaders = { 'Content-Type': 'application/json' };
       if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
       res = await fetch(cmdUrl, { method: 'POST', headers: retryHeaders, body: cmdBody });
+    }
+    // Sent: the files went with it. Failed: they stay attached for the retry.
+    if (res.ok && panelSessionKey === sendingSessionKey) {
+      files.forEach(function(f) { pcRemoveFile(f.id); });
     }
     if (!res.ok) {
       // Only mark the optimistic turn as failed if the user is still on the same
@@ -19964,7 +20584,237 @@ loadUsers();
 loadSessions();
 loadStats();
 connectWs();
+// ── Steering composer (task view T1.5) ──
+// The panel's composer: a multiline instruction to the running session with
+// images (pasted, dropped or picked), files and voice notes. Enter sends and
+// Shift+Enter breaks the line (a phone's Enter is a line break — the button
+// sends); an IME composition (한글) never sends. The files ride in the command
+// body as base64 (pcCommandBody) under the new-task limits; the server puts
+// them in the session's Slack thread like files the user attached there.
+// The pure helpers of the new-task composer are shared (ntKindOf, ntStamp,
+// ntFormatBytes, ntFormatDuration, ntPickRecorderMime, ntExtForMime).
+var PC_LIMITS = { maxFiles: 10, maxFileBytes: 20971520, maxTotalBytes: 31457280 };
+var _pcFiles = [];
+var _pcSeq = 0;
+var _pcRec = null;
+function pcEnterAction(e, touch) {
+  if (!e || e.key !== 'Enter') return 'none';
+  if (e.isComposing || e.keyCode === 229) return 'none';
+  if (e.metaKey || e.ctrlKey) return 'send';
+  if (e.shiftKey || touch) return 'newline';
+  return 'send';
+}
+function pcCanSend(message, files) {
+  return String(message || '').trim().length > 0 || (files || []).length > 0;
+}
+function pcCommandBody(message, files) {
+  var list = files || [];
+  if (!list.length) return { message: message };
+  return {
+    message: message,
+    attachments: list.map(function(f) { return { name: f.name, mimetype: f.mimetype, data: f.data }; }),
+  };
+}
+function pcKeydown(e) {
+  var act = pcEnterAction(e, ntIsTouch());
+  if (act !== 'send') return;
+  e.preventDefault();
+  sendCommand();
+}
+// The field grows with its text up to its max height (CSS), then scrolls.
+function pcAutosize() {
+  var el = document.getElementById('cmd-input');
+  if (!el || !el.style) return;
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight + 2, 200) + 'px';
+}
+function pcSetError(text) {
+  var el = document.getElementById('pc-error');
+  if (!el) return;
+  el.textContent = text || '';
+  el.hidden = !text;
+}
+function pcAddFiles(list) {
+  Array.prototype.slice.call(list || []).forEach(function(f) {
+    pcAddBlob(f, f.name || 'file', f.type || 'application/octet-stream');
+  });
+}
+function pcAddBlob(blob, name, mimetype, extra) {
+  if (_pcFiles.length >= PC_LIMITS.maxFiles) { pcSetError('첨부는 최대 ' + PC_LIMITS.maxFiles + '개까지 가능합니다'); return; }
+  if (!blob.size) { pcSetError(name + ' — 빈 파일은 첨부할 수 없습니다'); return; }
+  if (blob.size > PC_LIMITS.maxFileBytes) { pcSetError(name + ' — 파일 하나는 ' + ntFormatBytes(PC_LIMITS.maxFileBytes) + '까지 첨부할 수 있습니다'); return; }
+  var total = _pcFiles.reduce(function(sum, f) { return sum + f.size; }, 0);
+  if (total + blob.size > PC_LIMITS.maxTotalBytes) { pcSetError('첨부는 모두 합쳐 ' + ntFormatBytes(PC_LIMITS.maxTotalBytes) + '까지입니다'); return; }
+  pcSetError('');
+  var entry = { id: ++_pcSeq, name: name, mimetype: mimetype, size: blob.size, kind: ntKindOf(mimetype), data: null, url: null, duration: extra && extra.duration ? extra.duration : 0 };
+  if (entry.kind === 'image' || entry.kind === 'audio') {
+    try { entry.url = URL.createObjectURL(blob); } catch (_e) {}
+  }
+  entry.ready = new Promise(function(resolve, reject) {
+    var reader = new FileReader();
+    reader.onload = function() {
+      var str = String(reader.result || '');
+      var comma = str.indexOf(',');
+      entry.data = comma >= 0 ? str.slice(comma + 1) : '';
+      resolve();
+    };
+    reader.onerror = function() { reject(new Error(name)); };
+    reader.readAsDataURL(blob);
+  });
+  entry.ready.catch(function() {
+    pcRemoveFile(entry.id);
+    pcSetError(name + ' — 파일을 읽지 못했습니다');
+  });
+  _pcFiles.push(entry);
+  pcRenderFiles();
+}
+function pcRemoveFile(id) {
+  _pcFiles = _pcFiles.filter(function(f) {
+    if (f.id === id && f.url) { try { URL.revokeObjectURL(f.url); } catch (_e) {} }
+    return f.id !== id;
+  });
+  pcRenderFiles();
+}
+// The chips of the new-task composer (.nt-att), with this composer's remove.
+function pcRenderFiles() {
+  var box = document.getElementById('pc-attachments');
+  if (!box) return;
+  box.innerHTML = _pcFiles.map(function(f) {
+    var thumb = f.kind === 'image' && f.url
+      ? '<img class="nt-att-thumb" src="' + escAttr(f.url) + '" alt="">'
+      : '<span class="nt-att-thumb" aria-hidden="true">' + NT_ICON_FILE + '</span>';
+    var meta = (f.duration ? ntFormatDuration(f.duration) + ' · ' : '') + ntFormatBytes(f.size);
+    return '<div class="nt-att" data-id="' + f.id + '">' + thumb
+      + '<span class="nt-att-text"><span class="nt-att-name" title="' + escAttr(f.name) + '">' + esc(f.name) + '</span>'
+      + '<span class="nt-att-meta">' + esc(meta) + '</span></span>'
+      + '<button type="button" class="nt-att-remove" aria-label="' + escAttr(f.name) + ' 삭제" onclick="pcRemoveFile(' + f.id + ')">' + NT_ICON_X + '</button></div>';
+  }).join('');
+  box.scrollLeft = box.scrollWidth;
+}
+// Every file and any recording go with the session they were added for.
+function pcReset() {
+  if (_pcRec) pcStopRecording(false);
+  _pcFiles.forEach(function(f) { if (f.url) { try { URL.revokeObjectURL(f.url); } catch (_e) {} } });
+  _pcFiles = [];
+  pcRenderFiles();
+  pcSetError('');
+  pcAutosize();
+}
+async function pcToggleRecording() {
+  if (_pcRec) { pcStopRecording(true); return; }
+  var canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
+  if (!canRecord) { document.getElementById('pc-audio-input').click(); return; }
+  var stream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) {
+    pcSetError('마이크를 쓸 수 없습니다 (' + (e && e.name ? e.name : '권한 거부') + ') — 기기 녹음기로 녹음해 첨부해 주세요');
+    document.getElementById('pc-audio-input').click();
+    return;
+  }
+  var mime = ntPickRecorderMime(function(t) { return MediaRecorder.isTypeSupported(t); });
+  var recorder;
+  try { recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream); } catch (_e) { recorder = new MediaRecorder(stream); }
+  var state = { recorder: recorder, stream: stream, chunks: [], started: Date.now(), mime: recorder.mimeType || mime || 'audio/mp4', keep: true, finished: false, timer: 0, raf: 0, audioCtx: null };
+  _pcRec = state;
+  recorder.ondataavailable = function(ev) { if (ev.data && ev.data.size) state.chunks.push(ev.data); };
+  recorder.onstop = function() { pcFinishRecording(state); };
+  recorder.start(1000);
+  try {
+    var AC = window.AudioContext || window.webkitAudioContext;
+    state.audioCtx = new AC();
+    var analyser = state.audioCtx.createAnalyser();
+    analyser.fftSize = 512;
+    state.audioCtx.createMediaStreamSource(stream).connect(analyser);
+    var buf = new Uint8Array(analyser.fftSize);
+    var tick = function() {
+      if (_pcRec !== state) return;
+      analyser.getByteTimeDomainData(buf);
+      var peak = 0;
+      for (var i = 0; i < buf.length; i++) { var v = Math.abs(buf[i] - 128); if (v > peak) peak = v; }
+      document.getElementById('pc-rec-level').style.width = Math.min(100, Math.round((peak / 128) * 160)) + '%';
+      state.raf = requestAnimationFrame(tick);
+    };
+    tick();
+  } catch (_e) {}
+  document.getElementById('pc-recorder').hidden = false;
+  document.getElementById('pc-rec-time').textContent = '0:00';
+  var mic = document.getElementById('pc-mic');
+  mic.setAttribute('aria-pressed', 'true');
+  mic.setAttribute('aria-label', '녹음 완료');
+  state.timer = setInterval(function() {
+    var sec = Math.floor((Date.now() - state.started) / 1000);
+    document.getElementById('pc-rec-time').textContent = ntFormatDuration(sec);
+    if (sec >= NT_MAX_RECORD_SEC) pcStopRecording(true);
+  }, 250);
+}
+function pcStopRecording(keep) {
+  var state = _pcRec;
+  if (!state) return;
+  _pcRec = null;
+  state.keep = keep;
+  state.stoppedAt = Date.now();
+  clearInterval(state.timer);
+  cancelAnimationFrame(state.raf);
+  try {
+    if (state.recorder.state !== 'inactive') state.recorder.stop();
+    else pcFinishRecording(state);
+  } catch (_e) { pcFinishRecording(state); }
+  state.stream.getTracks().forEach(function(t) { t.stop(); });
+  if (state.audioCtx) { try { state.audioCtx.close(); } catch (_e) {} }
+  document.getElementById('pc-recorder').hidden = true;
+  var mic = document.getElementById('pc-mic');
+  mic.setAttribute('aria-pressed', 'false');
+  mic.setAttribute('aria-label', '음성 녹음');
+}
+function pcFinishRecording(state) {
+  if (state.finished) return;
+  state.finished = true;
+  if (!state.keep || !state.chunks.length) return;
+  var type = String(state.mime).split(';')[0] || 'audio/mp4';
+  var blob = new Blob(state.chunks, { type: type });
+  var sec = Math.max(1, Math.round(((state.stoppedAt || Date.now()) - state.started) / 1000));
+  pcAddBlob(blob, 'voice-' + ntStamp(new Date()) + '.' + ntExtForMime(type), type, { duration: sec });
+}
+// Paste an image (a screenshot) into the field; drop files on the composer.
+function pcInit() {
+  var input = document.getElementById('cmd-input');
+  var host = document.getElementById('panel-command');
+  if (!input || !host) return;
+  input.addEventListener('paste', function(e) {
+    var files = e.clipboardData && e.clipboardData.files ? Array.prototype.slice.call(e.clipboardData.files) : [];
+    if (!files.length || input.disabled) return;
+    if (!e.clipboardData.getData('text/plain')) e.preventDefault();
+    files.forEach(function(f) {
+      var type = f.type || 'application/octet-stream';
+      var generic = !f.name || f.name === 'image.png' || f.name === 'image.jpeg';
+      pcAddBlob(f, generic ? 'screenshot-' + ntStamp(new Date()) + '.' + (type.split('/')[1] || 'png') : f.name, type);
+    });
+  });
+  var hasFiles = function(e) {
+    return !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0) && !input.disabled;
+  };
+  host.addEventListener('dragover', function(e) {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    host.classList.add('is-drag');
+  });
+  host.addEventListener('dragleave', function(e) {
+    if (!e.relatedTarget || !host.contains(e.relatedTarget)) host.classList.remove('is-drag');
+  });
+  host.addEventListener('drop', function(e) {
+    host.classList.remove('is-drag');
+    if (!hasFiles(e) || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
+    e.preventDefault();
+    pcAddFiles(e.dataTransfer.files);
+  });
+}
 ntInit();
+pcInit();
+// Task view: 자세히 as this device saved it; the agent tabs answer clicks and arrows.
+_panelDetail = readPanelDetail();
+applyPanelDetail();
+bindPanelTabs();
 setInterval(loadSessions, 30000);
 // CRON lane jobs and the llmux capacity view poll on their own cadence (the
 // server caches llmux for 30s); the timeline re-lays out every 30s so markers

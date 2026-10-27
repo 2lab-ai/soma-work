@@ -4,7 +4,9 @@
  * literal, cooked exactly as the browser receives it (the harness of
  * dashboard-three-surfaces-client.test.ts). Each block cites the D-decision it pins.
  *
- *   face     = the turn summary (unchanged); the answer loads lazily on open
+ *   face     = the answer itself (task view T1.4, SSOT 2026-10-27), loaded as it
+ *              nears the view; the turn summary and the answer as written sit
+ *              in "Raw" at the turn's foot
  *   answer   = rendered markdown; the links the answer holds as numbered link
  *              cards and link chips that light each other — called 링크, never
  *              출처/인용: appearing in the answer does not prove a source (R1 P1)
@@ -130,29 +132,129 @@ const ans = (): Ans => {
   return ANS;
 };
 
-describe('D1 — the summary stays the face; the answer loads when opened', () => {
-  const turn = (extra: Record<string, unknown>) => {
+describe('D1 · task view T1.4 — the answer is the face; the summary and the source sit in Raw', () => {
+  const turn = (extra: Record<string, unknown>, cid = 'conv-run') => {
     const api = load<{ renderTurn(t: unknown, i?: number, arr?: unknown[], cid?: string): string }>(
       ['esc', 'escJs', 'toNum', 'ansStateHtml', 'renderTurn'],
       [],
-      { panelConvId: 'conv-run', _artCache: {}, renderTurnArtifacts: () => '' },
+      { panelConvId: cid, _artCache: {}, renderTurnArtifacts: () => '' },
     );
-    return api.renderTurn({ id: 't2', role: 'assistant', timestamp: T0, ...extra }, 0, [], 'conv-run');
+    return api.renderTurn({ id: 't2', role: 'assistant', timestamp: T0, ...extra }, 0, [], cid);
   };
 
-  it('summary, a lazy "답변 전문" disclosure with a busy card, and a response-time slot', () => {
+  it('a busy answer card, a response-time slot, and Raw (요약 + 원문) at the foot', () => {
     const out = turn({ summaryTitle: 'Picker bars', summaryBody: 'Three bars per model.', summarized: true });
-    expect(out).toContain('<div class="turn-summary-title">Picker bars</div>');
-    expect(out).toContain('<details class="turn-raw-details" data-conv="conv-run" data-turn="t2">');
-    expect(out).toContain('<summary class="turn-expand-btn">답변 전문</summary>');
-    expect(out).toContain('<div class="ans-card" aria-busy="true"><span class="ans-loading">불러오는 중…</span></div>');
+    expect(out).toContain(
+      '<div class="turn-answer" data-conv="conv-run" data-turn="t2"><div class="ans-card" aria-busy="true"><span class="ans-loading">불러오는 중…</span></div></div>',
+    );
     expect(out).toContain('<span class="ans-took"></span>');
+    expect(out).toContain(
+      '<details class="turn-raw"><summary class="turn-expand-btn">Raw</summary><div class="turn-raw-body">' +
+        '<div class="turn-raw-label">요약</div><div class="turn-raw-summary"><div class="turn-summary-title">Picker bars</div>' +
+        '<div class="turn-summary-body">Three bars per model.</div></div>' +
+        '<div class="turn-raw-label">원문</div><pre class="turn-raw-src"></pre></div></details>',
+    );
+    // The answer first, Raw at the turn's foot (after the turn's files).
+    expect(out.indexOf('class="turn-answer"')).toBeLessThan(out.indexOf('class="turn-arts"'));
+    expect(out.indexOf('class="turn-arts"')).toBeLessThan(out.indexOf('class="turn-raw"'));
+    // The summary is no longer the face, and the lazy "답변 전문" disclosure is gone.
+    expect(out.slice(0, out.indexOf('class="turn-raw"'))).not.toContain('turn-summary-title');
+    expect(out).not.toContain('turn-raw-details');
+    expect(out).not.toContain('답변 전문');
     expect(out).not.toContain('Show raw response');
   });
 
-  it('Summary failed + Retry and "Generating summary..." are kept', () => {
-    expect(turn({ summarized: true })).toMatch(/Summary failed <button[^>]*resummarize\(/);
-    expect(turn({})).toContain('Generating summary...');
+  it('Summary failed + Retry and "Generating summary..." are kept (in Raw)', () => {
+    expect(turn({ summarized: true })).toMatch(
+      /<div class="turn-raw-summary"><div class="turn-summary-body"[^>]*>Summary failed <button[^>]*resummarize\(/,
+    );
+    expect(turn({})).toMatch(
+      /<div class="turn-raw-summary"><div class="turn-summary-body"[^>]*>Generating summary\.\.\./,
+    );
+  });
+
+  it('a turn with no answer to load (no id or no conversation) shows its summary as before', () => {
+    for (const out of [
+      turn({ id: undefined, summaryTitle: 'Picker bars', summaryBody: 'Three bars per model.' }),
+      turn({ summaryTitle: 'Picker bars', summaryBody: 'Three bars per model.' }, ''),
+    ]) {
+      expect(out).toContain(
+        '<div class="turn-summary-title">Picker bars</div><div class="turn-summary-body">Three bars per model.</div>',
+      );
+      expect(out).not.toContain('turn-answer');
+      expect(out).not.toContain('turn-raw');
+      expect(out).not.toContain('ans-card');
+    }
+  });
+
+  type Io = { observe(el: unknown): void; unobserve(el: unknown): void };
+  const loader = (els: unknown[], cache: Record<string, string>, withIo: boolean) => {
+    const observed: unknown[] = [];
+    const unobserved: unknown[] = [];
+    const made: Array<{ cb: (entries: unknown[]) => void; opts: unknown }> = [];
+    class FakeIo implements Io {
+      constructor(cb: (entries: unknown[]) => void, opts: unknown) {
+        made.push({ cb, opts });
+      }
+      observe(el: unknown) {
+        observed.push(el);
+      }
+      unobserve(el: unknown) {
+        unobserved.push(el);
+      }
+    }
+    const scroll = { id: 'panel-scroll' };
+    const ansLoad = vi.fn();
+    const api = load<{ attachRawToggleHandlers(): void }>(['ansCacheKey', 'attachRawToggleHandlers'], [], {
+      document: {
+        getElementById: (id: string) =>
+          id === 'panel-turns'
+            ? { querySelectorAll: (sel: string) => (sel === '.turn-answer[data-turn]' ? els : []) }
+            : id === 'panel-scroll'
+              ? scroll
+              : null,
+      },
+      IntersectionObserver: withIo ? FakeIo : undefined,
+      _ansIo: null,
+      _rawLoadedCache: cache,
+      ansLoad,
+    });
+    return { api, observed, unobserved, made, scroll, ansLoad };
+  };
+  const answerEl = (turnId: string) => ({ dataset: { conv: 'conv-run', turn: turnId } });
+
+  it('every answer loads as it nears the view: observed once, rooted at the panel scroll, 800px ahead', () => {
+    const a = answerEl('t2');
+    const b = answerEl('t4');
+    const cached = answerEl('t6');
+    const h = loader([a, b, cached], { 'conv-run:t6': 'cached answer' }, true);
+    h.api.attachRawToggleHandlers();
+    expect(h.made).toHaveLength(1);
+    expect(h.made[0].opts).toEqual({ root: h.scroll, rootMargin: '800px 0px' });
+    expect(h.observed).toEqual([a, b]);
+    // A cached answer paints at once — it does not wait for the view.
+    expect(h.ansLoad.mock.calls).toEqual([[cached]]);
+    // Another insert path runs it again: nothing is observed or loaded twice.
+    h.api.attachRawToggleHandlers();
+    expect(h.made).toHaveLength(1);
+    expect(h.observed).toEqual([a, b]);
+    expect(h.ansLoad).toHaveBeenCalledTimes(1);
+    // Nearing the view loads it, once.
+    h.made[0].cb([
+      { isIntersecting: false, target: b },
+      { isIntersecting: true, target: a },
+    ]);
+    expect(h.unobserved).toEqual([a]);
+    expect(h.ansLoad.mock.calls).toEqual([[cached], [a]]);
+  });
+
+  it('without IntersectionObserver every answer loads at once', () => {
+    const a = answerEl('t2');
+    const b = answerEl('t4');
+    const h = loader([a, b], {}, false);
+    h.api.attachRawToggleHandlers();
+    expect(h.observed).toEqual([]);
+    expect(h.ansLoad.mock.calls).toEqual([[a], [b]]);
   });
 });
 
@@ -435,9 +537,10 @@ describe('D10 — copy: the answer plus its numbered links', () => {
     const status = { textContent: '' };
     const body = {};
     const btn: Record<string, unknown> = { textContent: '복사' };
-    const details = { dataset: { turn: 't2', conv: 'conv-run' } };
+    // Task view T1.4: the answer is the turn's .turn-answer (no "답변 전문" disclosure).
+    const answer = { dataset: { turn: 't2', conv: 'conv-run' } };
     const cardEl = { querySelector: (sel: string) => (sel === '.ans-status' ? status : body) };
-    btn.closest = (sel: string) => (sel === '.turn-raw-details' ? details : cardEl);
+    btn.closest = (sel: string) => (sel === '.turn-answer' ? answer : sel === '.ans-card' ? cardEl : null);
     const addRange = vi.fn();
     const timers: number[] = [];
     const api = load<{ copyAnswer(b: unknown): void }>([...ANS_FNS, 'ansSession', 'copyAnswer'], [], {
@@ -785,26 +888,41 @@ describe('D12 · review R1 (P1) — a failed send is marked although the writing
       'cmd-input': { value: 'a follow-up while it works', disabled: false, focus: () => {} },
       'cmd-send': { disabled: false, textContent: 'Send' },
     };
-    const api = load<{ sendCommand(): Promise<void> }>(['esc', 'escJs', 'sendCommand'], [], {
-      document: {
-        getElementById: (id: string) => el[id] ?? null,
-        // The 응답 작성 중 row is the last child: ':last-child' finds no user turn.
-        querySelector: (sel: string) =>
-          optimisticId && sel === `.turn.user[data-turn-id="${optimisticId}"]` ? optimistic : null,
+    const bodies: string[] = [];
+    const api = load<{ sendCommand(): Promise<void> }>(
+      ['esc', 'escJs', 'pcCanSend', 'pcCommandBody', 'sendCommand'],
+      [],
+      {
+        document: {
+          getElementById: (id: string) => el[id] ?? null,
+          // The 응답 작성 중 row is the last child: ':last-child' finds no user turn.
+          querySelector: (sel: string) =>
+            optimisticId && sel === `.turn.user[data-turn-id="${optimisticId}"]` ? optimistic : null,
+        },
+        appendTurnToPanel: (t: { id: string }) => {
+          optimisticId = t.id;
+        },
+        fetch: (_url: string, init: { body: string }) => {
+          bodies.push(init.body);
+          return Promise.resolve({ ok: false, status: 400 });
+        },
+        refreshCsrfToken: () => Promise.resolve(),
+        panelSessionKey: 'k',
+        _sessionCache: { k: { activityState: 'working' } },
+        renderPanelComposer: () => {},
+        _csrfToken: '',
+        _lastSentContent: '',
+        _lastSentTime: 0,
+        // Task view T1.5 composer: no recording, no attached files.
+        _pcRec: null,
+        _pcFiles: [],
+        pcStopRecording: () => {},
+        pcAutosize: () => {},
+        pcRemoveFile: () => {},
       },
-      appendTurnToPanel: (t: { id: string }) => {
-        optimisticId = t.id;
-      },
-      fetch: () => Promise.resolve({ ok: false, status: 400 }),
-      refreshCsrfToken: () => Promise.resolve(),
-      panelSessionKey: 'k',
-      _sessionCache: { k: { activityState: 'working' } },
-      renderPanelComposer: () => {},
-      _csrfToken: '',
-      _lastSentContent: '',
-      _lastSentTime: 0,
-    });
+    );
     await api.sendCommand();
+    expect(bodies).toEqual([JSON.stringify({ message: 'a follow-up while it works' })]);
     expect(optimisticId).toMatch(/^optimistic-\d+$/);
     expect(optimistic.insertAdjacentHTML).toHaveBeenCalledWith('beforeend', expect.stringContaining('Failed to send.'));
     expect(optimistic.style.opacity).toBe('0.7');
@@ -822,7 +940,10 @@ describe('D13 — loading, error, empty', () => {
     expect(a.ansStateHtml('empty')).toContain('기록된 답변 내용이 없습니다');
   });
 
-  const paintHarness = (cache: Record<string, string>, fetchImpl: unknown) => {
+  /** The turn's summary, as renderTurn puts it in Raw (task view T1.4). */
+  const SUMMARY =
+    '<div class="turn-summary-title">Picker bars</div><div class="turn-summary-body">Three bars per model.</div>';
+  const paintHarness = (cache: Record<string, string>, fetchImpl: unknown, summary = SUMMARY) => {
     const card = {
       innerHTML: '',
       attrs: { 'aria-busy': 'true' } as Record<string, string>,
@@ -837,43 +958,61 @@ describe('D13 — loading, error, empty', () => {
         delete cardApi.attrs[k];
       },
     };
+    // The turn body: the answer, then Raw (요약 + 원문) at its foot.
+    const rawSrc = { textContent: '' };
+    const rawSummary = { innerHTML: summary };
+    const turnBody = {
+      querySelector: (sel: string) =>
+        sel === '.turn-raw-src' ? rawSrc : sel === '.turn-raw-summary' ? rawSummary : null,
+    };
     const details: Record<string, unknown> = {
       dataset: { turn: 't2', conv: 'conv-run' },
-      querySelector: () => cardApi,
+      parentNode: turnBody,
+      querySelector: (sel: string) => (sel === '.ans-card' ? cardApi : null),
     };
-    const api = load<{ ansLoad(d: unknown): void }>([...ANS_FNS, 'ansSession', 'ansPaint', 'ansLoad'], [], {
-      _rawLoadedCache: cache,
-      _ansInflight: {},
-      _panelGen: 0,
-      panelSessionKey: 'k',
-      _sessionCache: { k: SESSION },
-      fetch: fetchImpl,
-      reduceMotion: () => true,
-      document: { getElementById: () => ({ contains: () => true }) },
-    });
-    return { api, card: cardApi, details };
+    const api = load<{ ansLoad(d: unknown): void }>(
+      [...ANS_FNS, 'ansSession', 'ansFallbackHtml', 'ansPaint', 'ansLoad'],
+      [],
+      {
+        _rawLoadedCache: cache,
+        _ansInflight: {},
+        _panelGen: 0,
+        panelSessionKey: 'k',
+        _sessionCache: { k: SESSION },
+        fetch: fetchImpl,
+        reduceMotion: () => true,
+        document: { getElementById: () => ({ contains: () => true }) },
+      },
+    );
+    return { api, card: cardApi, details, rawSrc };
   };
 
-  it('a cached answer paints at once without a request', () => {
+  it('a cached answer paints at once without a request, and Raw holds it as written', () => {
     const fetch = vi.fn();
     const h = paintHarness({ 'conv-run:t2': '**hi**' }, fetch);
     h.api.ansLoad(h.details);
     expect(fetch).not.toHaveBeenCalled();
     expect(h.card.innerHTML).toContain('<strong>hi</strong>');
+    expect(h.card.innerHTML).not.toContain('ans-fallback');
     expect(h.card.attrs['aria-busy']).toBeUndefined();
+    expect(h.rawSrc.textContent).toBe('**hi**');
   });
 
-  it('a failed request shows the status and a retry; a good one fills the cache', async () => {
+  it('a failed request shows the summary, the status and a retry; a good one fills the cache', async () => {
     const bad = paintHarness(
       {},
       vi.fn(() => Promise.resolve({ ok: false, status: 404 })),
     );
     bad.api.ansLoad(bad.details);
-    expect(bad.card.innerHTML).toContain('불러오는 중…');
+    expect(bad.card.innerHTML).toBe('<span class="ans-loading">불러오는 중…</span>');
     expect(bad.card.attrs['aria-busy']).toBe('true');
     await new Promise((r) => setTimeout(r, 0));
+    // Task view T1.4: the answer is the face, so a failure falls back to the summary first.
+    expect(bad.card.innerHTML.startsWith(`<div class="ans-fallback">${SUMMARY}</div>`)).toBe(true);
     expect(bad.card.innerHTML).toContain('답변을 불러오지 못했습니다 (HTTP 404)');
     expect(bad.card.innerHTML).toContain('data-ans-retry');
+    expect(bad.card.attrs['aria-busy']).toBeUndefined();
+    expect(bad.rawSrc.textContent).toBe('');
 
     const cache: Record<string, string> = {};
     const fetch = vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ raw: FIXTURE }) }));
@@ -883,7 +1022,21 @@ describe('D13 — loading, error, empty', () => {
     expect(fetch).toHaveBeenCalledWith('/api/conversations/conv-run/turns/t2/raw');
     expect(cache['conv-run:t2']).toBe(FIXTURE);
     expect(ok.card.innerHTML).toContain('ans-cite');
+    expect(ok.card.innerHTML).not.toContain('ans-fallback');
     expect(ok.card.attrs['aria-busy']).toBeUndefined();
+    expect(ok.rawSrc.textContent).toBe(FIXTURE);
+  });
+
+  it('an empty answer says so under the summary; with no summary yet, only the state', async () => {
+    const empty = paintHarness({}, () => Promise.resolve({ ok: true, json: () => Promise.resolve({ raw: '  ' }) }));
+    empty.api.ansLoad(empty.details);
+    await new Promise((r) => setTimeout(r, 0));
+    expect(empty.card.innerHTML).toBe(`<div class="ans-fallback">${SUMMARY}</div>${ans().ansStateHtml('empty')}`);
+    expect(empty.card.attrs['aria-busy']).toBeUndefined();
+
+    const bare = paintHarness({ 'conv-run:t2': '' }, vi.fn(), '');
+    bare.api.ansLoad(bare.details);
+    expect(bare.card.innerHTML).toBe(ans().ansStateHtml('empty'));
   });
 });
 
@@ -920,7 +1073,7 @@ describe('D13 · review R1 — a raw response lands only where it is still curre
       return d;
     };
     const api = load<{ ansLoad(d: unknown): void; __set(n: string, v: unknown): void }>(
-      [...ANS_FNS, 'ansSession', 'ansPaint', 'ansLoad'],
+      [...ANS_FNS, 'ansSession', 'ansFallbackHtml', 'ansPaint', 'ansLoad'],
       [],
       {
         _rawLoadedCache: cache,
@@ -1020,57 +1173,144 @@ describe('D13 · review R1 — a raw response lands only where it is still curre
 });
 
 describe('D15 · review R1 (fable P3) — the entry animation plays on load only', () => {
-  it('closing the disclosure drops is-in, so reopening does not replay it', () => {
-    let onToggle: ((this: unknown) => void) | undefined;
-    const remove = vi.fn();
-    const details: Record<string, unknown> = {
-      open: false,
-      addEventListener: (_t: string, fn: (this: unknown) => void) => {
-        onToggle = fn;
-      },
-      querySelector: () => ({ classList: { remove } }),
+  // Task view T1.4: no disclosure to close and reopen — a turn re-rendered (its
+  // summary landed, D14) paints its answer again from the cache, without the entry.
+  const harness = (reduce: boolean) => {
+    const classes = new Set<string>();
+    const card = {
+      innerHTML: '',
+      offsetWidth: 0,
+      setAttribute: () => {},
+      removeAttribute: () => {},
+      classList: { add: (c: string) => classes.add(c), remove: (c: string) => classes.delete(c) },
     };
-    const ansLoad = vi.fn();
-    const api = load<{ attachRawToggleHandlers(): void }>(['attachRawToggleHandlers'], [], {
-      document: { querySelectorAll: () => [details] },
-      ansLoad,
-    });
-    api.attachRawToggleHandlers();
-    onToggle?.call(details);
-    expect(remove).toHaveBeenCalledWith('is-in');
-    expect(ansLoad).not.toHaveBeenCalled();
-    details.open = true;
-    onToggle?.call(details);
-    expect(ansLoad).toHaveBeenCalledWith(details);
+    const answerEl = () => ({ dataset: { conv: 'conv-run', turn: 't2' }, querySelector: () => card });
+    const cache: Record<string, string> = {};
+    const fetch = vi.fn(() => Promise.resolve({ ok: true, json: () => Promise.resolve({ raw: FIXTURE }) }));
+    const api = load<{ ansLoad(d: unknown): void }>(
+      [...ANS_FNS, 'ansSession', 'ansFallbackHtml', 'ansPaint', 'ansLoad'],
+      [],
+      {
+        _rawLoadedCache: cache,
+        _ansInflight: {},
+        _panelGen: 0,
+        panelSessionKey: 'k',
+        _sessionCache: { k: SESSION },
+        fetch,
+        reduceMotion: () => reduce,
+        document: { getElementById: () => ({ contains: () => true }) },
+      },
+    );
+    return { api, classes, card, answerEl, fetch };
+  };
+  const flush = () => new Promise((r) => setTimeout(r, 0));
+
+  it('a fetched answer enters once; a repaint from the cache drops is-in, so it does not replay', async () => {
+    const h = harness(false);
+    h.api.ansLoad(h.answerEl());
+    await flush();
+    expect(h.classes.has('is-in')).toBe(true);
+    // The summary landed: the turn is re-rendered and its answer painted from the cache.
+    h.api.ansLoad(h.answerEl());
+    expect(h.fetch).toHaveBeenCalledTimes(1);
+    expect(h.card.innerHTML).toContain('ans-cite');
+    expect(h.classes.has('is-in')).toBe(false);
+  });
+
+  it('reduced motion: a fetched answer does not animate in', async () => {
+    const h = harness(true);
+    h.api.ansLoad(h.answerEl());
+    await flush();
+    expect(h.card.innerHTML).toContain('ans-cite');
+    expect(h.classes.has('is-in')).toBe(false);
   });
 });
 
-describe('D14 — an open answer stays open when its summary lands', () => {
-  const run = (wasOpen: boolean) => {
-    const d = { open: false };
-    const newEl = { querySelector: () => d };
-    const existing = { querySelector: () => (wasOpen ? {} : null), replaceWith: vi.fn() };
-    const ansLoad = vi.fn();
-    const api = load<{ updateTurnInPanel(e: unknown, t: unknown): void }>(['updateTurnInPanel'], [], {
-      document: { createElement: () => ({ innerHTML: '', firstElementChild: newEl }) },
-      renderTurn: () => '<div></div>',
-      attachRawToggleHandlers: () => {},
-      decoratePanelTurns: () => {},
-      ansLoad,
-    });
+describe('D14 — the answer survives its summary landing; an open Raw stays open', () => {
+  // updateTurnInPanel re-renders the turn (the new markup holds a loading card);
+  // attachRawToggleHandlers then paints the answer again from the cache, at once.
+  const run = (rawWasOpen: boolean) => {
+    const rawEl = { open: false };
+    const classes = new Set<string>();
+    const card = {
+      innerHTML: '<span class="ans-loading">불러오는 중…</span>',
+      attrs: { 'aria-busy': 'true' } as Record<string, string>,
+      setAttribute: (k: string, v: string) => {
+        card.attrs[k] = v;
+      },
+      removeAttribute: (k: string) => {
+        delete card.attrs[k];
+      },
+      classList: { add: (c: string) => classes.add(c), remove: (c: string) => classes.delete(c) },
+    };
+    const rawSrc = { textContent: '' };
+    const turnBody = {
+      querySelector: (sel: string) =>
+        sel === '.turn-raw-src' ? rawSrc : sel === '.turn-raw-summary' ? { innerHTML: 'summary' } : null,
+    };
+    const answerEl = {
+      dataset: { conv: 'conv-run', turn: 't2' },
+      parentNode: turnBody,
+      querySelector: (sel: string) => (sel === '.ans-card' ? card : null),
+    };
+    const newEl = { querySelector: (sel: string) => (sel === '.turn-raw' ? rawEl : null) };
+    const existing = {
+      querySelector: (sel: string) => (sel === '.turn-raw[open]' && rawWasOpen ? {} : null),
+      replaceWith: vi.fn(),
+    };
+    const fetch = vi.fn();
+    const io = vi.fn();
+    const api = load<{ updateTurnInPanel(e: unknown, t: unknown): void }>(
+      [
+        ...ANS_FNS,
+        'ansSession',
+        'ansFallbackHtml',
+        'ansPaint',
+        'ansLoad',
+        'attachRawToggleHandlers',
+        'updateTurnInPanel',
+      ],
+      [],
+      {
+        document: {
+          createElement: () => ({ innerHTML: '', firstElementChild: newEl }),
+          getElementById: (id: string) =>
+            id === 'panel-turns'
+              ? { querySelectorAll: (sel: string) => (sel === '.turn-answer[data-turn]' ? [answerEl] : []) }
+              : null,
+        },
+        renderTurn: () => '<div></div>',
+        decoratePanelTurns: () => {},
+        IntersectionObserver: io,
+        _ansIo: null,
+        _rawLoadedCache: { 'conv-run:t2': FIXTURE },
+        _ansInflight: {},
+        _panelGen: 0,
+        panelSessionKey: 'k',
+        _sessionCache: { k: SESSION },
+        fetch,
+        reduceMotion: () => false,
+      },
+    );
     api.updateTurnInPanel(existing, { id: 't2' });
-    return { d, ansLoad, existing };
+    return { rawEl, card, classes, rawSrc, existing, fetch, io };
   };
-  it('re-opens and repaints from the cache', () => {
-    const r = run(true);
-    expect(r.existing.replaceWith).toHaveBeenCalled();
-    expect(r.d.open).toBe(true);
-    expect(r.ansLoad).toHaveBeenCalledWith(r.d);
-  });
-  it('a closed answer stays closed', () => {
+
+  it('the answer is painted again from the cache — no request, no observer, no entry replay', () => {
     const r = run(false);
-    expect(r.d.open).toBe(false);
-    expect(r.ansLoad).not.toHaveBeenCalled();
+    expect(r.existing.replaceWith).toHaveBeenCalled();
+    expect(r.fetch).not.toHaveBeenCalled();
+    expect(r.io).not.toHaveBeenCalled();
+    expect(r.card.innerHTML).toContain('<strong>three bars</strong>');
+    expect(r.card.attrs['aria-busy']).toBeUndefined();
+    expect(r.classes.has('is-in')).toBe(false);
+    expect(r.rawSrc.textContent).toBe(FIXTURE);
+  });
+  it('an open Raw stays open', () => {
+    expect(run(true).rawEl.open).toBe(true);
+  });
+  it('a closed Raw stays closed', () => {
+    expect(run(false).rawEl.open).toBe(false);
   });
 });
 
@@ -1128,9 +1368,11 @@ describe('client hygiene', () => {
     for (const name of [
       ...ANS_FNS.slice(5),
       'ansSession',
+      'ansFallbackHtml',
       'ansPaint',
       'ansLoad',
       '_ansInflight',
+      '_ansIo',
       'ansLight',
       'ansBind',
       'copyAnswer',

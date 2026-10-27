@@ -80,8 +80,12 @@ async function loadUsage(): Promise<{ accounts: UsageAccountView[]; source: stri
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-/** Upload into the thread, then read each file back in the shape the message pipeline downloads from. */
-async function uploadFiles(
+/**
+ * Upload into the thread, then read each file back in the shape the message
+ * pipeline downloads from. Also the path of the panel composer's attachments
+ * (an instruction to a running session, dashboard task view T1.5).
+ */
+export async function uploadFiles(
   client: WebClient,
   channel: string,
   threadTs: string,

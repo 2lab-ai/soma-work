@@ -1434,7 +1434,7 @@ export class SessionRegistry {
     session.lastActivity = new Date();
     // The old task list stays as history; none of it is in progress any more,
     // so the new conversation's work is not attributed to it (dashboard T7/T10).
-    session.taskLedger = closeTaskList(session.taskLedger);
+    session.taskLedger = closeTaskList(session.taskLedger, Date.now());
     // Spec 12: the old conversation's subagents are history; none is watched now.
     session.agents = loseRunningAgents(session.agents, Date.now());
 
