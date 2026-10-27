@@ -66,6 +66,37 @@ describe('pairing a result with its call (shipped wlPairTools)', () => {
     expect(p.callOf).toEqual({ 4: 1, 5: 2, 6: 3 });
   });
 
+  it("a window that starts after a call (older page not loaded) leaves that call's result unpaired — review P0", () => {
+    // A1's call is on the older page: R1 must not be pinned on A2, nor R2 on A3.
+    const p = wlPairTools([
+      { seq: 12, kind: 'tool', tool: 'Read' },
+      { seq: 13, kind: 'tool', tool: 'Read' },
+      { seq: 14, kind: 'tool_result', tool: 'Read', ok: true },
+      { seq: 15, kind: 'tool_result', tool: 'Read', ok: true },
+      { seq: 16, kind: 'tool_result', tool: 'Read', ok: true },
+    ]);
+    expect(p.callOf).toEqual({ 15: 12, 16: 13 });
+    // Once the older page is in, every result has its own call.
+    const all = wlPairTools([
+      { seq: 11, kind: 'tool', tool: 'Read' },
+      { seq: 12, kind: 'tool', tool: 'Read' },
+      { seq: 13, kind: 'tool', tool: 'Read' },
+      { seq: 14, kind: 'tool_result', tool: 'Read', ok: true },
+      { seq: 15, kind: 'tool_result', tool: 'Read', ok: true },
+      { seq: 16, kind: 'tool_result', tool: 'Read', ok: true },
+    ]);
+    expect(all.callOf).toEqual({ 14: 11, 15: 12, 16: 13 });
+  });
+
+  it("a second call with an id already seen does not take over the first one's result", () => {
+    const p = wlPairTools([
+      { seq: 1, kind: 'tool', tool: 'Bash', toolUseId: 'x' },
+      { seq: 2, kind: 'tool', tool: 'Bash', toolUseId: 'x' },
+      { seq: 3, kind: 'tool_result', tool: 'Bash', toolUseId: 'x', ok: true },
+    ]);
+    expect(p.callOf).toEqual({ 3: 1 });
+  });
+
   it('a result whose call is not in the log, or a second result for one id, stays unpaired', () => {
     const p = wlPairTools([
       { seq: 7, kind: 'tool_result', tool: 'Bash', toolUseId: 'gone', ok: true },
@@ -156,12 +187,44 @@ describe('what each card shows (shipped wlCardData)', () => {
     expect(make(null).wlCardData(st, 42)).toBeNull();
   });
 
-  it('the signature changes with what the card shows, not with the size of identical output', () => {
-    const { wlCardSig } = make(null);
+  it('the signature follows what the card shows and the load that produced its output (review P1)', () => {
+    const { wlCardSig } = make(null) as unknown as { wlCardSig(d: unknown, rev?: number): string };
     const a = { name: 'Read', status: 'success', result: 'x'.repeat(1000) };
-    expect(wlCardSig(a)).toBe(wlCardSig({ ...a, result: 'y'.repeat(1000) }));
-    expect(wlCardSig(a)).not.toBe(wlCardSig({ ...a, status: 'error' }));
-    expect(wlCardSig(a)).not.toBe(wlCardSig({ ...a, open: true }));
+    // Same-length but different output from a newer load: a new revision, so the card is repainted.
+    expect(wlCardSig(a, 1)).not.toBe(wlCardSig({ ...a, result: 'y'.repeat(1000) }, 2));
+    expect(wlCardSig(a, 1)).toBe(wlCardSig(a, 1));
+    expect(wlCardSig(a, 1)).not.toBe(wlCardSig({ ...a, status: 'error' }, 1));
+    expect(wlCardSig(a, 1)).not.toBe(wlCardSig({ ...a, open: true }, 1));
+  });
+
+  it('an older page never re-pairs what is on screen (legacy pairing runs from the newest back)', () => {
+    const { wlPairTools } = load<{ wlPairTools(e: Entry[]): Pairs }>(PAIR_FNS, []);
+    const latest: Entry[] = [
+      { seq: 13, kind: 'tool', tool: 'Read' },
+      { seq: 14, kind: 'tool_result', tool: 'Read', ok: true },
+      { seq: 15, kind: 'tool_result', tool: 'Read', ok: true },
+    ];
+    expect(wlPairTools(latest).callOf).toEqual({ 15: 13 });
+    const withOlder = wlPairTools([{ seq: 12, kind: 'tool', tool: 'Read' }, ...latest]);
+    expect(withOlder.callOf).toEqual({ 14: 12, 15: 13 });
+  });
+
+  it('when the entries change a pairing, the card drops the output it loaded for its old pair', () => {
+    const m = load<{ wlPairsOf(st: Record<string, unknown>): Pairs }>(PAIR_FNS, []);
+    const st: Record<string, unknown> = {
+      entries: [
+        { seq: 13, kind: 'tool', tool: 'Read', toolUseId: 'a' },
+        { seq: 14, kind: 'tool_result', tool: 'Read', ok: true, toolUseId: 'a' },
+      ],
+    };
+    expect(m.wlPairsOf(st).resultOf[13]?.seq).toBe(14);
+    st.cardDetail = { 13: { loading: false, result: 'loaded for 13 + 14', rev: 1 }, 99: { loading: false, rev: 2 } };
+    // An older page brings the first call of that id: it owns the result now.
+    st.entries = [{ seq: 12, kind: 'tool', tool: 'Read', toolUseId: 'a' }, ...(st.entries as Entry[])];
+    expect(m.wlPairsOf(st).resultOf[12]?.seq).toBe(14);
+    expect(m.wlPairsOf(st).resultOf[13]).toBeUndefined();
+    expect((st.cardDetail as Record<number, unknown>)[13]).toBeUndefined();
+    expect((st.cardDetail as Record<number, unknown>)[99]).toBeDefined(); // untouched pairs keep theirs
   });
 });
 
@@ -181,7 +244,7 @@ describe('opening a card fetches its input and output (shipped wlToggleCard + wl
       wlLoadCardDetail(st: unknown, key: number): void;
     }>(
       [...PAIR_FNS, 'wlEntryBySeq', 'wlPartLoad', 'wlLoadCardDetail', 'wlToggleCard'],
-      ['WL_RAW_MISSING_MSG', 'WL_RAW_ERROR_MSG', 'WL_RAW_DAMAGED_MSG', 'WL_FORBIDDEN_MSG'],
+      ['WL_RAW_MISSING_MSG', 'WL_RAW_ERROR_MSG', 'WL_RAW_DAMAGED_MSG', 'WL_FORBIDDEN_MSG', '_wlDetailRev'],
       {
         _wl: st,
         toNum: (v: unknown) => Number(v) || 0,
@@ -208,11 +271,12 @@ describe('opening a card fetches its input and output (shipped wlToggleCard + wl
     });
     r.m.wlToggleCard(r.st, r.card, true);
     expect((r.st.open as Set<number>).has(1)).toBe(true);
-    expect((r.st.cardDetail as Record<number, unknown>)[1]).toEqual({ loading: true });
+    expect((r.st.cardDetail as Record<number, unknown>)[1]).toMatchObject({ loading: true });
     await flush();
     expect(r.loads).toEqual([1, 2]);
     expect((r.st.cardDetail as Record<number, unknown>)[1]).toEqual({
       loading: false,
+      rev: expect.any(Number),
       args: '{"command":"ls"}',
       result: 'a\nb',
       note: '결과: 저장된 앞 256 KiB만 표시 — 원본 293 KiB',
@@ -230,6 +294,7 @@ describe('opening a card fetches its input and output (shipped wlToggleCard + wl
     await flush();
     expect((r.st.cardDetail as Record<number, unknown>)[1]).toEqual({
       loading: false,
+      rev: expect.any(Number),
       note: '입력: 원본 출력이 저장되어 있지 않습니다',
       detailError: '원본 출력을 불러오지 못했어요',
     });
@@ -250,7 +315,15 @@ describe('opening a card fetches its input and output (shipped wlToggleCard + wl
     r.m.wlToggleCard(r.st, r.card, true);
     r.st.closed = true;
     await flush();
-    expect((r.st.cardDetail as Record<number, unknown>)[1]).toEqual({ loading: true });
+    expect((r.st.cardDetail as Record<number, unknown>)[1]).toMatchObject({ loading: true });
+  });
+
+  it('a load superseded by a newer one (or dropped by a re-pairing) does not land', async () => {
+    const r = rig({ 1: { status: 'ok', raw: 'old', bytes: 3 }, 2: { status: 'ok', raw: 'old', bytes: 3 } });
+    r.m.wlLoadCardDetail(r.st, 1);
+    delete (r.st.cardDetail as Record<number, unknown>)[1]; // the pairing changed meanwhile
+    await flush();
+    expect((r.st.cardDetail as Record<number, unknown>)[1]).toBeUndefined();
   });
 });
 
@@ -340,7 +413,10 @@ describe('the roving tab stop can sit on a card (shipped wlMarkStop)', () => {
 
 describe('the library build is served from the dashboard origin (server half)', () => {
   it('the page loads <ui-tool-call-card> from /dashboard/ui, a module script', () => {
-    expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/tool-call-card.js"></script>');
+    // Versioned: the entry file is not content-hashed and is cached for an hour.
+    expect(TEMPLATE).toContain(
+      '<script type="module" src="/dashboard/ui/tool-call-card.js?v=${UI_LIB_VERSION}"></script>',
+    );
   });
 
   it('the cards take the dashboard tokens from their wrapper, never on the element (a custom-property cycle)', () => {
