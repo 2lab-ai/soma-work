@@ -1109,7 +1109,10 @@ describe('T1.5 · the session model sits above the steering input — on a phone
   it('narrow: model · effort and the tools on the first line, the field and Send on the line under it', () => {
     expect(CSS).toContain('.panel-command .panel-controls { order: 1;');
     expect(CSS).toContain('.panel-command .pc-tools { order: 2; margin-left: auto; }');
-    expect(CSS).toMatch(/\.panel-command textarea \{ order: 4; flex: 1 1 calc\(100% - 88px\);/);
+    // Room for Send as wide as "Sending..." beside the field — it never drops to its own line.
+    expect(CSS).toMatch(/\.panel-command textarea \{ order: 4; flex: 1 1 calc\(100% - 140px\);/);
+    // The model's width is set once, by the task view rule (no dead 42% before it).
+    expect(CSS).not.toContain('.panel-command .panel-controls { padding: 0; flex: 0 1 auto; max-width: 42%; }');
     expect(CSS).toContain('.panel-command .btn-send { order: 5; }');
   });
 });
