@@ -34,7 +34,7 @@ import type {
 } from '@anthropic-ai/claude-agent-sdk';
 import { promotePendingToDispatchQueue } from '@soma/slack/compact-state';
 import { OutputFlag, resolveVerbosityMask, shouldOutput } from '@soma/slack/output-flags';
-import { recordConversationWorkLog } from '@soma/slack/pipeline/stream-executor';
+import { recordConversationCompact, recordConversationWorkLog } from '@soma/slack/pipeline/stream-executor';
 import { Logger } from '../../logger';
 import { resolveContextWindow } from '../../metrics/model-registry';
 import { buildCompactionContext, snapshotFromSession } from '../../session/compaction-context-builder';
@@ -131,6 +131,31 @@ const completionNoticed = new WeakSet<object>();
 function recordCompactNotice(session: ConversationSession, text: string): void {
   if (!session.conversationId) return;
   recordConversationWorkLog(session.conversationId, { kind: 'notice', text });
+}
+
+/**
+ * Dashboard SSOT 2026-10-27 T2 — the compaction's numbers onto the `/compact`
+ * turn that ran it (once per cycle, beside the completion notice). The SDK's
+ * `duration_ms` when it sent one, else the time since START. Runs before the
+ * cycle clears `compactStartedAtMs`.
+ */
+function recordCompactOnTurn(session: ConversationSession): void {
+  if (!session.conversationId) return;
+  const endedAt = Date.now();
+  const started = session.compactStartedAtMs;
+  const durationMs =
+    typeof session.compactDurationMs === 'number'
+      ? session.compactDurationMs
+      : typeof started === 'number'
+        ? endedAt - started
+        : undefined;
+  recordConversationCompact(session.conversationId, {
+    endedAt,
+    ...(durationMs !== undefined ? { durationMs } : {}),
+    ...(typeof session.compactPreTokens === 'number' ? { preTokens: session.compactPreTokens } : {}),
+    ...(typeof session.compactPostTokens === 'number' ? { postTokens: session.compactPostTokens } : {}),
+    ...(session.compactTrigger ? { trigger: session.compactTrigger } : {}),
+  });
 }
 
 /** Work-log text for a sealed cycle: trigger and SDK token counts, each omitted when unknown. */
@@ -580,6 +605,7 @@ export async function postCompactCompleteIfNeeded(
           if (!completionNoticed.has(marker)) {
             completionNoticed.add(marker);
             recordCompactNotice(session, describeCompactionComplete(session));
+            recordCompactOnTurn(session);
           }
           const text = buildCompactCompleteMessage(session);
           const startingTs = session.compactStartingMessageTs;

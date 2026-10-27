@@ -604,6 +604,9 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
           rawContent: t.role === 'user' ? t.rawContent : undefined,
           // A user turn's attached files (user media) — metadata only, the bytes have their own route.
           attachments: t.role === 'user' ? t.attachments : undefined,
+          // Dashboard SSOT 2026-10-27: who put a user turn there, and a /compact turn's compaction.
+          origin: t.role === 'user' ? t.origin : undefined,
+          compact: t.role === 'user' ? t.compact : undefined,
         }));
 
         reply.send({

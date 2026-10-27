@@ -1,0 +1,551 @@
+/**
+ * Dashboard SSOT 2026-10-27 — the detail panel's conversation: a turn the user
+ * did not type reads as one line, and the skills an instruction invoked read
+ * as badges. Executes the shipped page code (cut out of renderDashboardPage()'s
+ * template literal, the harness of dashboard-user-media-client.test.ts).
+ *
+ *   C1  sysTurnInfo: what soma-work injected — /compact (자동 압축 / 압축),
+ *       restart resume, error retry, goal continuation (Goal #n/m), cron,
+ *       /renew save + load, any other host turn — each producer's wording
+ *       pinned against its source; a turn a person sent is never one of them
+ *   C2  the one-line row: who · when · badge · what it did, opening to its
+ *       facts and the raw prompt
+ *   C3  /compact: progress (elapsed / estimate, %) while it runs, its numbers
+ *       once done; cpTick keeps it live only while it is the latest turn of a
+ *       working session
+ *   C4  skills: the <invoked_skills> block becomes badges (name · estimated
+ *       tokens) that open the skill body, written on first open
+ */
+
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
+import { buildGoalContinuationPrompt } from '../../prompt/session-goal-block';
+import { GOAL_CONTINUATION_TEXT_PREFIX } from '../../slack/goal-continuation';
+import type { SessionGoal } from '../../types';
+
+const ROOT = join(__dirname, '..', '..', '..');
+const read = (p: string) => readFileSync(join(ROOT, p), 'utf-8');
+const DASHBOARD_TS = read('src/conversation/dashboard.ts');
+const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
+
+function cook(fragment: string): string {
+  if (fragment.includes('`') || fragment.includes('${')) throw new Error('fragment is not a plain template slice');
+  return new Function(`return \`${fragment}\`;`)() as string;
+}
+function assertUnique(name: string) {
+  const re = new RegExp(`^(?:async function|function|var|let|const) ${name}\\b`, 'gm');
+  const n = (TEMPLATE.match(re) ?? []).length;
+  if (n > 1) throw new Error(`client ${name} is declared ${n} times`);
+}
+// Cut once per name: every test loads the same shipped functions.
+const cooked = new Map<string, string>();
+function clientFn(name: string): string {
+  const hit = cooked.get(`fn:${name}`);
+  if (hit) return hit;
+  const src = cutFn(name);
+  cooked.set(`fn:${name}`, src);
+  return src;
+}
+function cutFn(name: string): string {
+  assertUnique(name);
+  const start = TEMPLATE.indexOf(`\nfunction ${name}(`);
+  if (start < 0) throw new Error(`client function ${name} not found`);
+  const end = TEMPLATE.indexOf('\n}\n', start);
+  return cook(TEMPLATE.slice(start + 1, end + 2));
+}
+function clientVar(name: string): string {
+  const hit = cooked.get(`var:${name}`);
+  if (hit) return hit;
+  const src = cutVar(name);
+  cooked.set(`var:${name}`, src);
+  return src;
+}
+function cutVar(name: string): string {
+  assertUnique(name);
+  const m = TEMPLATE.match(new RegExp(`^(var ${name} = .*?;)(?:\\s*//.*)?$`, 'm'));
+  if (!m) throw new Error(`client var ${name} not found`);
+  return cook(m[1]);
+}
+function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+  const names = Object.keys(inject);
+  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
+  return new Function(...names, body)(...names.map((n) => inject[n])) as T;
+}
+
+const SYS_FNS = [
+  'esc',
+  'escAttr',
+  'escJs',
+  'toNum',
+  'decodeSlackEntities',
+  'formatTokens',
+  'formatDuration',
+  'sysOneLine',
+  'sysBetween',
+  'sysResumeContext',
+  'sysTurnInfo',
+  'cpClock',
+  'cpState',
+  'cpProgressHtml',
+  'cpLineHtml',
+  'cpFacts',
+  'sysFactsHtml',
+  'renderSysTurn',
+  'cpEnsureTicker',
+  'cpTick',
+  'estimateTokens',
+  'splitInvokedSkills',
+  'skillBadgesHtml',
+];
+const SYS_VARS = [
+  'SYS_RESTART_HEADS',
+  'SYS_RESUME_CONTEXT',
+  'SYS_RETRY_MARK',
+  'CP_DEFAULT_EST_MS',
+  'CP_MAX_MS',
+  '_cpTimer',
+  '_skillBodies',
+  '_skillSeq',
+];
+
+type Info = { kind: string; label: string; line: string; raw: string; facts: [string, string][] } | null;
+type Api = {
+  sysTurnInfo(t: unknown): Info;
+  renderTurn(t: unknown, i?: number, arr?: unknown[], cid?: string): string;
+  splitInvokedSkills(raw: string): { text: string; skills: { name: string; body: string; tokens: number }[] };
+  estimateTokens(s: string): number;
+};
+
+function api(extra: Record<string, unknown> = {}) {
+  const setInterval = vi.fn(() => 7);
+  const a = load<Api>([...SYS_FNS, 'renderTurn'], SYS_VARS, {
+    panelConvId: 'conv-sys',
+    _artCache: {},
+    renderTurnArtifacts: () => '',
+    umRegister: () => {},
+    renderUserMedia: () => '',
+    ansStateHtml: () => '',
+    setInterval,
+    ...extra,
+  });
+  return { ...a, setInterval };
+}
+const user = (rawContent: string, extra: Record<string, unknown> = {}) => ({
+  id: 'u1',
+  role: 'user',
+  timestamp: Date.now(),
+  userName: 'Z',
+  rawContent,
+  ...extra,
+});
+const SYSTEM = { origin: { by: 'system' } };
+const PERSON = { origin: { by: 'user' } };
+
+const RESTART_PROMPT = read('src/prompt/restart.prompt').trimEnd();
+const goalPrompt = (n: number, max: number, reason?: string) =>
+  `${GOAL_CONTINUATION_TEXT_PREFIX} ${buildGoalContinuationPrompt({
+    continuationCount: n,
+    maxContinuations: max,
+    lastEvalReason: reason,
+  } as unknown as SessionGoal)}`;
+
+describe('C1 — what soma-work injected, by its own wording', () => {
+  it('/compact: 자동 압축 when soma-work sent it, 압축 when a person did or nobody recorded who', () => {
+    const { sysTurnInfo } = api();
+    expect(sysTurnInfo(user('/compact', SYSTEM))).toMatchObject({ kind: 'compact', label: '자동 압축' });
+    expect(sysTurnInfo(user('/compact', PERSON))).toMatchObject({ kind: 'compact', label: '압축' });
+    const legacy = sysTurnInfo(user('/compact'));
+    expect(legacy).toMatchObject({ kind: 'compact', label: '압축' });
+    expect(legacy?.facts).toContainEqual(['실행', '기록 없음 (출처를 저장하기 전의 턴)']);
+    expect(sysTurnInfo(user('/compactify the list'))).toBeNull();
+  });
+
+  it('restart resume — the restart.prompt text, recorded with or without an origin', () => {
+    const { sysTurnInfo } = api();
+    expect(sysTurnInfo(user(RESTART_PROMPT, SYSTEM))).toMatchObject({ kind: 'restart', label: '시스템 재시작' });
+    expect(sysTurnInfo(user(RESTART_PROMPT))).toMatchObject({ kind: 'restart', line: '중단된 작업 자동 재개' });
+    // The fallback slack-handler uses when the prompt file is missing.
+    const handler = read('src/slack-handler.ts');
+    const fallbackHead = '서비스가 재시작되어 이전 작업이 중단되었다.';
+    expect(handler).toContain(`'${fallbackHead} `);
+    expect(sysTurnInfo(user(`${fallbackHead} 아래 순서로 작업을 이어가라:`))).toMatchObject({ kind: 'restart' });
+  });
+
+  it('the resume context autoResumeSession appends: title, workflow — and an error makes it a retry', () => {
+    const { sysTurnInfo } = api();
+    const handler = read('src/slack-handler.ts');
+    expect(handler).toContain('\\n\\n--- 중단 시점 컨텍스트 ---\\n');
+    expect(handler).toContain('`세션 제목: ${session.title}`');
+    expect(handler).toContain('`워크플로우: ${session.workflow}`');
+    expect(handler).toContain('`⚠️ 이전 시도 중 오류 발생: ${errorContext}`');
+
+    const ctx = (lines: string[]) => `${RESTART_PROMPT}\n\n--- 중단 시점 컨텍스트 ---\n${lines.join('\n')}`;
+    const restart = sysTurnInfo(user(ctx(['세션 제목: 대시보드 개선', '워크플로우: z']), SYSTEM));
+    expect(restart).toMatchObject({ kind: 'restart', line: '중단된 작업 자동 재개 · 대시보드 개선' });
+    expect(restart?.facts).toContainEqual(['워크플로우', 'z']);
+
+    const retry = sysTurnInfo(
+      user(ctx(['세션 제목: 대시보드 개선', '⚠️ 이전 시도 중 오류 발생: 429 rate limited']), SYSTEM),
+    );
+    expect(retry).toMatchObject({ kind: 'retry', label: '자동 재시도', line: '오류 뒤 자동 재개 · 429 rate limited' });
+    expect(retry?.facts[0]).toEqual(['이전 오류', '429 rate limited']);
+  });
+
+  it('goal continuation — Goal #n/m and the evaluator gap, from the real prompt builder', () => {
+    const { sysTurnInfo } = api();
+    const plain = sysTurnInfo(user(goalPrompt(2, 10), SYSTEM));
+    expect(plain).toMatchObject({ kind: 'goal', label: 'Goal #2/10', line: 'Goal 자동 계속' });
+    const gap = 'The work summary contains no evidence at all: <files> missing';
+    const withGap = sysTurnInfo(user(goalPrompt(3, 10, gap)));
+    expect(withGap).toMatchObject({ kind: 'goal', label: 'Goal #3/10' });
+    expect(withGap?.line).toBe(`직전 평가: ${gap}`);
+    expect(withGap?.facts).toEqual([
+      ['회차', '3 / 10'],
+      ['직전 평가에서 남은 일', gap],
+    ]);
+  });
+
+  it('cron — the [cron:<name>] prefix cronText writes', () => {
+    const { sysTurnInfo } = api();
+    expect(read('src/cron-scheduler.ts')).toContain('return `[cron:${job.name}] ${job.prompt}`;');
+    expect(sysTurnInfo(user('[cron:daily-report] 어제 머지된 PR 요약', SYSTEM))).toMatchObject({
+      kind: 'cron',
+      label: '크론',
+      line: 'daily-report · 어제 머지된 PR 요약',
+    });
+  });
+
+  it('/renew — the save prompt (a command the user typed) and the load continuation', () => {
+    const { sysTurnInfo } = api();
+    const renew = read('src/slack/commands/renew-handler.ts');
+    expect(renew).toContain('const savePrompt = `Follow this exact sequence:');
+    expect(renew).toContain('skill="local:save"');
+    const save = 'Follow this exact sequence:\n\n1. Invoke Skill tool: skill="local:save"\n2. ...';
+    expect(sysTurnInfo(user(save, PERSON))).toMatchObject({ kind: 'renew', line: '컨텍스트 저장 (1/2)' });
+
+    const exec = read('packages/slack/src/pipeline/stream-executor.ts');
+    expect(exec).toContain("const loadPrompt = `Use 'local:load' skill with this saved context:");
+    expect(exec).toContain('<user-instruction>${userMessage}</user-instruction>');
+    const load = `Use 'local:load' skill with this saved context:\n<save>\nctx\n</save>\n\nAfter loading the context, execute this user instruction:\n<user-instruction>PR 마무리</user-instruction>`;
+    const info = sysTurnInfo(user(load, SYSTEM));
+    expect(info).toMatchObject({ kind: 'renew', line: '저장된 컨텍스트 불러오기 · PR 마무리' });
+    expect(info?.facts).toContainEqual(['이어서 할 지시', 'PR 마무리']);
+  });
+
+  it('any other host turn reads as 자동 입력; a person never reads as an injected kind', () => {
+    const { sysTurnInfo } = api();
+    expect(sysTurnInfo(user('Continue the handoff: phase 2 of 5', SYSTEM))).toMatchObject({
+      kind: 'system',
+      label: '자동 입력',
+      line: 'Continue the handoff: phase 2 of 5',
+    });
+    // A person pasting the goal prompt into their message is still their message.
+    expect(sysTurnInfo(user(goalPrompt(2, 10), PERSON))).toBeNull();
+    expect(sysTurnInfo(user(RESTART_PROMPT, PERSON))).toBeNull();
+    expect(sysTurnInfo(user('대시보드 고쳐줘'))).toBeNull();
+    expect(sysTurnInfo({ role: 'assistant', rawContent: '/compact' })).toBeNull();
+  });
+});
+
+describe('C2 — the one-line row', () => {
+  it('who · when · badge · line, opening to the facts and the raw prompt (escaped)', () => {
+    const { renderTurn } = api();
+    const raw = `${goalPrompt(2, 10, 'needs <evidence> & tests')}`;
+    const out = renderTurn(user(raw, SYSTEM));
+    expect(out).toMatch(/^<div class="turn user is-sys" data-sys="goal" data-turn-id="u1" data-ts="\d+">/);
+    expect(out).toContain('<div class="turn-avatar user-avatar">Z</div>');
+    expect(out).toContain('<details class="sys-turn"><summary class="sys-row"><span class="sys-row-in">');
+    expect(out).toContain('<span class="turn-name">Z</span>');
+    expect(out).toContain('<span class="sys-badge" data-kind="goal">Goal #2/10</span>');
+    expect(out).toContain('<span class="sys-line">직전 평가: needs &lt;evidence&gt; &amp; tests</span>');
+    expect(out).toContain('<dt>회차</dt><dd>2 / 10</dd>');
+    expect(out).toContain(
+      '<div class="sys-raw-h">원본 프롬프트</div><pre class="sys-raw">[goal-continuation] Continue working',
+    );
+    expect(out).toContain('&lt;previous-eval-reason&gt;');
+    expect(out).not.toContain('turn-content'); // never the raw prompt as the face
+  });
+
+  it('a restart row says so in one line', () => {
+    const out = api().renderTurn(user(RESTART_PROMPT, SYSTEM));
+    expect(out).toContain('<span class="sys-badge" data-kind="restart">시스템 재시작</span>');
+    expect(out).toContain('<span class="sys-line">중단된 작업 자동 재개</span>');
+    expect(out).toContain('<pre class="sys-raw">The service was restarted and the previous task was interrupted.');
+  });
+
+  it('an open row stays open when its turn re-renders (a /compact result landing)', () => {
+    const src = clientFn('updateTurnInPanel');
+    expect(src).toContain(".querySelector('.sys-turn[open]')");
+    expect(src).toContain('sysEl.open = true');
+  });
+});
+
+describe('C3 — /compact: progress while it runs, its numbers once done', () => {
+  it('running: elapsed / default estimate, %, a progressbar — and the ticker starts', () => {
+    const a = api();
+    const out = a.renderTurn(user('/compact', { ...SYSTEM, timestamp: Date.now() - 42_000 }));
+    expect(out).toContain('<span class="sys-badge" data-kind="compact">자동 압축</span>');
+    expect(out).toContain('data-cp-live="1"');
+    expect(out).toContain('data-cp-est="150000"');
+    expect(out).toContain('<span class="sys-line">압축 중 · 0:42 / 약 2:30</span>');
+    expect(out).toMatch(
+      /role="progressbar" aria-label="압축 진행률" aria-valuemin="0" aria-valuemax="100" aria-valuenow="28"/,
+    );
+    expect(out).toContain('<span class="cp-pct">28%</span>');
+    expect(out).toContain('<dt>상태</dt><dd>진행 중</dd>');
+    expect(out).toContain('<dt>예상 시간</dt><dd>2m 30s (기본값)</dd>');
+    expect(a.setInterval).toHaveBeenCalledTimes(1);
+  });
+
+  it('the estimate is the conversation’s previous compaction when the turn carries one', () => {
+    const out = api().renderTurn(
+      user('/compact', { ...SYSTEM, timestamp: Date.now() - 45_000, compact: { estimateMs: 90_000 } }),
+    );
+    expect(out).toContain('<span class="sys-line">압축 중 · 0:45 / 약 1:30</span>');
+    expect(out).toContain('aria-valuenow="50"');
+    expect(out).toContain('<dd>1m 30s (직전 압축 기준)</dd>');
+  });
+
+  it('past the estimate: no false percentage — "예상보다 오래 걸리는 중" and a moving bar', () => {
+    const out = api().renderTurn(user('/compact', { ...SYSTEM, timestamp: Date.now() - 200_000 }));
+    expect(out).toContain('압축 중 · 3:20 / 약 2:30 · 예상보다 오래 걸리는 중');
+    expect(out).toContain('class="cp-bar is-over"');
+    expect(out).toContain('aria-valuetext="예상 시간 초과"');
+    expect(out).not.toContain('cp-pct');
+  });
+
+  it('done: the badge, "자동 압축 처리" with before → after and the time; the facts in full', () => {
+    const t0 = Date.now() - 3_600_000;
+    const out = api().renderTurn(
+      user('/compact', {
+        ...SYSTEM,
+        timestamp: t0,
+        compact: {
+          estimateMs: 120_000,
+          endedAt: t0 + 134_000,
+          durationMs: 134_000,
+          preTokens: 182_340,
+          postTokens: 31_020,
+          trigger: 'manual',
+        },
+      }),
+    );
+    expect(out).not.toContain('data-cp-live');
+    expect(out).toContain('<span class="sys-badge" data-kind="compact">자동 압축</span>');
+    expect(out).toContain('<span class="sys-line">자동 압축 처리 · 182.3K → 31.0K 토큰 · 2m 14s</span>');
+    expect(out).toContain('<dt>상태</dt><dd>완료</dd>');
+    expect(out).toContain('<dt>압축 전 → 후</dt><dd>182,340 → 31,020 토큰 (−83%)</dd>');
+    expect(out).toContain('<dt>걸린 시간</dt><dd>2m 14s</dd>');
+    expect(out).toContain('<dt>예상 시간</dt><dd>2m 0s (직전 압축 기준)</dd>');
+    expect(out).toContain('<dt>SDK trigger</dt><dd>manual</dd>');
+    expect(out).toContain('<dt>실행</dt><dd>soma-work — 컨텍스트가 자동 압축 지점을 넘어 /compact 실행</dd>');
+    expect(out).toContain('<pre class="sys-raw">/compact</pre>');
+  });
+
+  it('no result and older than a compaction can run: "압축 처리", 결과 기록 없음', () => {
+    const out = api().renderTurn(user('/compact', { timestamp: Date.now() - 3_600_000 }));
+    expect(out).toContain('<span class="sys-line">압축 처리</span>');
+    expect(out).toContain('<dt>상태</dt><dd>결과 기록 없음</dd>');
+    expect(out).not.toContain('data-cp-live');
+  });
+
+  // A minimal DOM for cpTick: nodes with attributes and a .cp-slot / .sys-badge.
+  function fakeTurn(start: number, live = true) {
+    const attrs: Record<string, string> = { 'data-cp-start': String(start), 'data-cp-est': '150000' };
+    if (live) attrs['data-cp-live'] = '1';
+    const slot = { innerHTML: '' };
+    return {
+      slot,
+      getAttribute: (k: string) => attrs[k] ?? null,
+      removeAttribute: (k: string) => {
+        delete attrs[k];
+      },
+      hasLive: () => 'data-cp-live' in attrs,
+      querySelector: (sel: string) =>
+        sel === '.cp-slot' ? slot : sel === '.sys-badge' ? { textContent: '자동 압축' } : null,
+    };
+  }
+  const NOW = 1_792_900_000_000;
+  function tick(turns: ReturnType<typeof fakeTurn>[], session: Record<string, unknown> | null) {
+    const clearInterval = vi.fn();
+    const document = {
+      querySelectorAll: (sel: string) =>
+        sel === '#panel-turns .turn[data-cp-live]'
+          ? turns.filter((t) => t.hasLive())
+          : sel === '#panel-turns > .turn'
+            ? turns
+            : [],
+    };
+    const { cpTick } = load<{ cpTick(): void }>(
+      ['esc', 'toNum', 'cpClock', 'cpProgressHtml', 'cpTick'],
+      ['CP_DEFAULT_EST_MS', 'CP_MAX_MS', '_cpTimer'],
+      {
+        document,
+        clearInterval,
+        Date: { now: () => NOW },
+        panelSessionKey: 'k',
+        _sessionCache: session ? { k: session } : {},
+      },
+    );
+    cpTick();
+    return { clearInterval };
+  }
+
+  it('cpTick: the latest turn of a working session keeps ticking', () => {
+    const t = fakeTurn(NOW - 75_000);
+    tick([t], { activityState: 'working' });
+    expect(t.hasLive()).toBe(true);
+    expect(t.slot.innerHTML).toContain('압축 중 · 1:15 / 약 2:30');
+    expect(t.slot.innerHTML).toContain('aria-valuenow="50"');
+  });
+
+  it('cpTick: a later turn landed, or the session stopped working → no longer live, no result kept', () => {
+    const compact = fakeTurn(NOW - 30_000);
+    const next = fakeTurn(NOW, false);
+    tick([compact, next], { activityState: 'working' });
+    expect(compact.hasLive()).toBe(false);
+    expect(compact.slot.innerHTML).toBe('<span class="sys-line">자동 압축 처리 · 결과 기록 없음</span>');
+
+    const idle = fakeTurn(NOW - 30_000);
+    tick([idle], { activityState: 'idle' });
+    expect(idle.hasLive()).toBe(false);
+  });
+
+  it('cpTick: nothing live → the timer stops', () => {
+    const { clearInterval } = tick([fakeTurn(NOW - 1000, false)], { activityState: 'working' });
+    expect(clearInterval).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('C4 — the skills an instruction invoked, as badges', () => {
+  // The block skill-force-handler / autoskill-fire append (format pinned below).
+  const invoked = (text: string, skills: [string, string][]) =>
+    `${text}\n\n<invoked_skills>\n${skills.map(([k, c]) => `<${k}>\n${c}\n</${k}>`).join('\n')}\n</invoked_skills>`;
+  const SSOT_BODY =
+    'Base directory for this skill: /opt/soma-work/dev/dist/local/skills/using-ssot\n\n---\nname: using-ssot\n---\n# using-ssot — Single Source of Truth';
+  const AUTOZ_BODY =
+    'Base directory for this skill: /opt/soma-work/dev/dist/local/skills/autoz\n\n# autoz — 자율 파이프라인';
+
+  it('the producers write the block this parser reads', () => {
+    const force = read('src/slack/commands/skill-force-handler.ts');
+    expect(force).toContain('.map(([key, content]) => `<${key}>\\n${content}\\n</${key}>`)');
+    expect(force).toContain('const invokedBlock = `<invoked_skills>\\n${skillBlocks}\\n</invoked_skills>`;');
+    expect(force).toContain('const finalPrompt = `${text}\\n\\n${invokedBlock}`;');
+    const auto = read('src/slack/autoskill-fire.ts');
+    expect(auto).toContain(
+      'blocks.push(`<${resolved.key}>\\n${header}\\n\\n${resolved.content}\\n</${resolved.key}>`);',
+    );
+  });
+
+  it('splits the instruction from its skills; each skill keeps its body and an estimate', () => {
+    const { splitInvokedSkills } = api();
+    const out = splitInvokedSkills(
+      invoked('예측 시장 관련 개발 리포트 시각화', [
+        ['local:using-ssot', SSOT_BODY],
+        ['local:autoz', AUTOZ_BODY],
+      ]),
+    );
+    expect(out.text).toBe('예측 시장 관련 개발 리포트 시각화');
+    expect(out.skills.map((s) => s.name)).toEqual(['local:using-ssot', 'local:autoz']);
+    expect(out.skills[0].body).toBe(SSOT_BODY);
+    expect(out.skills[1].body).toBe(AUTOZ_BODY);
+    expect(out.skills[0].tokens).toBeGreaterThan(20);
+    // A body holding other tags (<speaker>) ends at its own closing tag only.
+    const nested = splitInvokedSkills(invoked('x', [['user:dev', 'see <speaker>Z</speaker> and </other>']]));
+    expect(nested.skills).toEqual([
+      { name: 'user:dev', body: 'see <speaker>Z</speaker> and </other>', tokens: expect.any(Number) },
+    ]);
+    expect(splitInvokedSkills('평범한 지시')).toEqual({ text: '평범한 지시', skills: [] });
+  });
+
+  it('estimateTokens: ~4 ASCII characters or 1 other character per token', () => {
+    const { estimateTokens } = api();
+    expect(estimateTokens('abcd')).toBe(1);
+    expect(estimateTokens('abcde')).toBe(2);
+    expect(estimateTokens('가나다')).toBe(3);
+    expect(estimateTokens('')).toBe(0);
+  });
+
+  it('renderTurn: the words, then one badge per skill (name · ≈tokens); bodies not written yet', () => {
+    const { renderTurn } = api();
+    const out = renderTurn(
+      user(
+        invoked('예측 시장 관련 개발 리포트 시각화', [
+          ['local:using-ssot', SSOT_BODY],
+          ['local:autoz', AUTOZ_BODY],
+        ]),
+      ),
+    );
+    expect(out).toContain('<div class="turn user" data-turn-id="u1"');
+    expect(out).toContain('<div class="turn-content">예측 시장 관련 개발 리포트 시각화</div>');
+    expect(out).not.toContain('invoked_skills');
+    expect(out).not.toContain('Base directory');
+    expect(out).toContain('<div class="skill-badges" role="group" aria-label="활성화된 스킬 2개">');
+    expect(out).toMatch(
+      /<button type="button" class="skill-badge" aria-expanded="false" aria-controls="skd-u1-0" data-skill="skd-u1-0" onclick="skillToggle\(this\)"[^>]*><span class="skill-name">local:using-ssot<\/span><span class="skill-tok">≈\d+ tokens<\/span><\/button>/,
+    );
+    expect(out).toContain('<span class="skill-name">local:autoz</span>');
+    expect(out).toContain('<div class="skill-detail" id="skd-u1-0" hidden></div>');
+    expect(out).toContain('<div class="skill-detail" id="skd-u1-1" hidden></div>');
+  });
+
+  it('skills only (no words): badges, no empty text block', () => {
+    const out = api().renderTurn(user(invoked('', [['local:autoz', AUTOZ_BODY]])));
+    expect(out).not.toContain('turn-content');
+    expect(out).toContain('local:autoz');
+  });
+
+  it('skillToggle opens that skill (body written once, escaped), closes the one open, and closes again', () => {
+    const panes: Record<string, { hidden: boolean; innerHTML: string; firstChild: unknown }> = {};
+    const pane = (id: string) => {
+      const p = { hidden: true, innerHTML: '', firstChild: null as unknown };
+      Object.defineProperty(p, 'firstChild', { get: () => (p.innerHTML ? {} : null) });
+      panes[id] = p;
+      return p;
+    };
+    const document = { getElementById: (id: string) => panes[id] ?? null };
+    const a = load<{
+      skillBadgesHtml(key: string, skills: unknown[]): string;
+      skillToggle(btn: unknown): void;
+    }>(['esc', 'escAttr', 'toNum', 'formatTokens', 'skillBadgesHtml', 'skillToggle'], ['_skillBodies', '_skillSeq'], {
+      document,
+    });
+    a.skillBadgesHtml('u9', [
+      { name: 'local:using-ssot', body: '<b>raw</b> & body', tokens: 524 },
+      { name: 'local:autoz', body: 'autoz body', tokens: 1234 },
+    ]);
+    pane('skd-u9-0');
+    pane('skd-u9-1');
+    const btns: any[] = [];
+    const row = { querySelectorAll: () => btns.filter((b) => b.attrs['aria-expanded'] === 'true') };
+    for (const id of ['skd-u9-0', 'skd-u9-1']) {
+      const attrs: Record<string, string> = { 'data-skill': id, 'aria-expanded': 'false' };
+      btns.push({
+        attrs,
+        parentNode: row,
+        getAttribute: (k: string) => attrs[k] ?? null,
+        setAttribute: (k: string, v: string) => {
+          attrs[k] = v;
+        },
+      });
+    }
+
+    a.skillToggle(btns[0]);
+    expect(btns[0].attrs['aria-expanded']).toBe('true');
+    expect(panes['skd-u9-0'].hidden).toBe(false);
+    expect(panes['skd-u9-0'].innerHTML).toContain('<span class="skill-name">local:using-ssot</span>');
+    expect(panes['skd-u9-0'].innerHTML).toContain('≈524 tokens (추정)');
+    expect(panes['skd-u9-0'].innerHTML).toContain('<pre class="skill-body">&lt;b&gt;raw&lt;/b&gt; &amp; body</pre>');
+
+    a.skillToggle(btns[1]); // one at a time
+    expect(btns[0].attrs['aria-expanded']).toBe('false');
+    expect(panes['skd-u9-0'].hidden).toBe(true);
+    expect(panes['skd-u9-1'].hidden).toBe(false);
+    expect(panes['skd-u9-1'].innerHTML).toContain('≈1.2K tokens (추정)');
+
+    a.skillToggle(btns[1]); // and closes
+    expect(btns[1].attrs['aria-expanded']).toBe('false');
+    expect(panes['skd-u9-1'].hidden).toBe(true);
+  });
+});
