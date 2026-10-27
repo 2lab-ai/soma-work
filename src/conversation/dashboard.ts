@@ -10965,6 +10965,11 @@ function agentConvRawOf(seq) {
   wlRawLoad(_wl, seq, wlFetchJson).then(function(r) {
     if (gen !== _panelGen) return;
     _agentConvRaw[key] = r && r.status === 'ok' ? r.raw : '';
+    // #488: a transient failure is tried again on a later render (a poll, a log
+    // page) — after a pause, so a failing load never spins.
+    if (r && r.status === 'error') {
+      setTimeout(function() { if (gen === _panelGen && _agentConvRaw[key] === '') delete _agentConvRaw[key]; }, 15000);
+    }
     renderAgentConv();
   });
   return null;
@@ -15790,6 +15795,7 @@ function scrollPanelToWorkLog() {
   if (!scrollEl || !section || section.style.display === 'none') return;
   var sectionTop = scrollEl.scrollTop + section.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
   var headerHeight = toggle ? toggle.getBoundingClientRect().height : 0;
+  _panelScrollGen++; // #488: a layout anchor from before this landing must not pull it back
   scrollEl.scrollTo({ top: workLogLandingTop(sectionTop, headerHeight, scrollEl.clientHeight), behavior: 'instant' });
 }
 // Where an opening lands (§3.1-6, spec 13) — on open, and again once the
@@ -15853,6 +15859,8 @@ function landPanel() {
     : 0;
   // Instant: under scroll-behavior: smooth the glide down from 0 passed
   // through scrollTop < 100 and set off the load-older-turns handler.
+  // #488: the landing is the reader's new place — a layout anchor from before it is stale.
+  _panelScrollGen++;
   scrollEl.scrollTo({ top: onQuestion ? questionTop : scrollEl.scrollHeight, behavior: 'instant' });
   _panelStickBottom = !onQuestion;
 }
@@ -16545,6 +16553,9 @@ function updateTurnInPanel(existingEl, turn) {
     // re-ai-answer D14 — the answer stays (painted again from the cache), and so
     // does an open Raw.
     var rawOpen = !!existingEl.querySelector('.turn-raw[open]');
+    // #488: the old answer leaves the list — stop watching it.
+    var oldAnswer = existingEl.querySelector('.turn-answer');
+    if (_ansIo && oldAnswer) _ansIo.unobserve(oldAnswer);
     // SSOT 2026-10-27 — so does a one-line row (a /compact result landing).
     var sysOpen = !!existingEl.querySelector('.sys-turn[open]');
     existingEl.replaceWith(newEl);
@@ -17217,7 +17228,18 @@ async function sendCommand() {
   _pcSending = true;
   try {
     // Task view T1.5: a recording in progress is the user's last words — filed first.
-    if (_pcRec) await Promise.race([pcStopRecording(true), new Promise(function(resolve) { setTimeout(resolve, 3000); })]);
+    if (_pcRec) {
+      var filed = await Promise.race([
+        pcStopRecording(true).then(function() { return true; }),
+        new Promise(function(resolve) { setTimeout(function() { resolve(false); }, 3000); }),
+      ]);
+      // #488: never send without the voice note the user just recorded — it is
+      // filed as a chip when the recorder catches up; the text stays for a resend.
+      if (!filed) {
+        pcSetError('음성 녹음을 아직 마무리하는 중입니다 — 잠시 후 다시 보내 주세요');
+        return;
+      }
+    }
     msg = input.value.trim();
     files = _pcFiles.slice();
     if (!pcCanSend(msg, files)) return;

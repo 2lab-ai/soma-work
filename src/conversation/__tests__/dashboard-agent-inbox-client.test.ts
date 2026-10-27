@@ -2921,6 +2921,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         _agentConvRaw: null,
         // The previous opening's answer observer (none in this harness).
         _ansIo: null,
+        _panelScrollGen: 0, // #488: every landing scroll starts a new panel scroll generation
         _panelAgent: '',
         _panelAgentListOpen: false,
         renderTurn: (t: { id: string }) => `<div class="turn assistant" data-turn-id="${t.id}"></div>`,

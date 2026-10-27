@@ -96,3 +96,25 @@ describe('review r1 (astra P2) — a task that ran and went back to pending', ()
     expect(a?.dropped).toBe('started');
   });
 });
+
+describe('#488 — a task that started, made no tool call, went back to pending and was dropped', () => {
+  it('reads stopped (started): the ledger remembers that it ever started', () => {
+    let l = applyTodoList(undefined, [todo('A', 'in_progress')], 1000);
+    l = applyTodoList(l, [todo('A', 'pending')], 2000);
+    l = applyTodoList(l, [todo('B')], 3000);
+    const a = ledgerTasks(l).earlier.find((t) => t.content === 'A');
+    expect(a?.toolCalls).toBe(0);
+    expect(a?.startedAt).toBeUndefined();
+    expect(a?.firstStartedAt).toBe(1000);
+    expect(a?.dropped).toBe('started');
+  });
+  it('the first start survives persistence and a later start does not move it', () => {
+    let l = applyTodoList(undefined, [todo('A', 'in_progress')], 1000);
+    l = applyTodoList(l, [todo('A', 'pending')], 2000);
+    l = applyTodoList(l, [todo('A', 'in_progress')], 3000);
+    const restored = sanitizeTaskLedger(JSON.parse(JSON.stringify(l)))!;
+    const a = ledgerTasks(restored).current[0];
+    expect(a.startedAt).toBe(3000);
+    expect(a.firstStartedAt).toBe(1000);
+  });
+});

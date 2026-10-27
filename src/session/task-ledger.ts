@@ -36,6 +36,8 @@ export interface TaskRecord {
   status: TaskStatus;
   /** Epoch ms the task last entered in_progress (cleared on a regression to pending). */
   startedAt?: number;
+  /** Epoch ms the task first entered in_progress — never cleared: it ran, even if it went back to pending (#488). */
+  firstStartedAt?: number;
   /** Epoch ms the task completed (cleared when it is reopened). */
   completedAt?: number;
   /** Tool calls made while this task was the task in progress. */
@@ -95,6 +97,7 @@ function stamp(rec: TaskRecord, status: TaskStatus, now: number): void {
     if (!rec.startedAt) rec.startedAt = now;
     if (!rec.completedAt) rec.completedAt = now;
   }
+  if (rec.startedAt && !rec.firstStartedAt) rec.firstStartedAt = rec.startedAt;
 }
 
 /** The task left the latest list at `now` (the first time only). */
@@ -164,8 +167,9 @@ export function recordToolCall(ledger: TaskLedger | undefined): TaskRecord | und
 /** How an earlier task left the list, if it had not completed. */
 function droppedOf(t: TaskRecord): TaskDropped | undefined {
   if (t.status === 'completed') return undefined;
-  // A regression to pending clears startedAt; tool calls made while it ran still prove it ran.
-  return t.status === 'in_progress' || t.startedAt || t.toolCalls > 0 ? 'started' : 'unstarted';
+  // A regression to pending clears startedAt; its first start (or tool calls made
+  // while it ran, on a ledger saved before firstStartedAt existed) still prove it ran.
+  return t.status === 'in_progress' || t.startedAt || t.firstStartedAt || t.toolCalls > 0 ? 'started' : 'unstarted';
 }
 
 /**
@@ -221,6 +225,8 @@ export function sanitizeTaskLedger(raw: unknown): TaskLedger | undefined {
     if (completedAt) rec.completedAt = completedAt;
     const removedAt = finitePositive(t.removedAt);
     if (removedAt) rec.removedAt = removedAt;
+    const firstStartedAt = finitePositive(t.firstStartedAt) ?? startedAt;
+    if (firstStartedAt) rec.firstStartedAt = firstStartedAt;
     tasks.push(rec);
   }
   const current = Array.isArray(r.current)

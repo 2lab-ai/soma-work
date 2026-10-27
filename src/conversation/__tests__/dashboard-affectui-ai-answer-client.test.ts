@@ -838,6 +838,7 @@ describe('D12 — the writing row through the real insert paths (cross-spec revi
         renderTurn,
         attachRawToggleHandlers: () => {},
         ansLoad: () => {},
+        _ansIo: null, // #488: no answer observer in this harness
         panelOpen: true,
         panelSessionKey: 'k',
         panelConvId: 'c',

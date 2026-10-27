@@ -91,6 +91,7 @@ import type { NewTaskAttachment } from './conversation/new-task';
 import { createNewTaskProvider, uploadFiles } from './conversation/new-task-provider';
 import { setSettingsRegistry } from './conversation/settings-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
+import { createSteerUploader } from './conversation/steer-uploads';
 import { appendWorkLog, flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
@@ -758,6 +759,10 @@ async function start() {
       logger.info('Dashboard: trashed session', { sessionKey });
     });
 
+    // The composer's files go up one by one; a retry reuses what Slack already took (#488).
+    const uploadSteerFiles = createSteerUploader((channel, threadTs, files) =>
+      uploadFiles(app.client, channel, threadTs, files),
+    );
     // Connect dashboard: command handler (inject message as if user typed in Slack)
     /** Returns the injected message's identity (channel + ts), undefined when nothing was sent. */
     const injectDashboardMessage = async (
@@ -788,7 +793,7 @@ async function start() {
       // upload fails the instruction (the dashboard offers a retry); it is
       // never sent without the files the user meant it to carry.
       const files = attachments.length
-        ? await uploadFiles(app.client, session.channelId, session.threadTs, attachments)
+        ? await uploadSteerFiles(session.channelId, session.threadTs, attachments)
         : undefined;
       // A files-only instruction still echoes a line (a section needs text).
       const echoed = message.trim() ? message : `📎 ${attachments.length}개 파일`;
