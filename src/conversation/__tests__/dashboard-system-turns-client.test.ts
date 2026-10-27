@@ -501,6 +501,15 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
   });
 });
 
+describe('C3b — on a narrow panel the progress text wins over the bar', () => {
+  it('the running line keeps its size; the bar gives way first', () => {
+    // Only while it runs: a finished line (tokens · time) truncates like any other.
+    expect(TEMPLATE).toContain('.turn[data-cp-live] .cp-slot > .sys-line { flex-shrink: 0; }');
+    expect(TEMPLATE).not.toMatch(/^\.cp-slot > \.sys-line \{ flex-shrink: 0; \}/m);
+    expect(TEMPLATE).toMatch(/\.cp-bar \{ flex: 1 1 120px; min-width: 0; max-width: 120px;/);
+  });
+});
+
 describe('C4 — the skills an instruction invoked, as badges', () => {
   // The block skill-force-handler / autoskill-fire append (format pinned below).
   const invoked = (text: string, skills: [string, string][]) =>
