@@ -789,7 +789,7 @@ describe('landing follows the opening intent (executed)', () => {
       ['_panelOnQuestion'],
       { document: { getElementById: (id: string) => els[id] ?? null } },
       [
-        `var _panelLand = ${JSON.stringify(intent)}; var _panelLanded = false; var _panelStickBottom = false;`,
+        `var _panelLand = ${JSON.stringify(intent)}; var _panelLanded = false; var _panelStickBottom = false; var _panelLandAt = null;`,
         'function state() { return { landed: _panelLanded, stick: _panelStickBottom }; }',
       ],
     );
@@ -878,6 +878,9 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
           resetWorkLog: () => {},
           _cardEls: { k: { _faceEl: face } },
           __ret: opener,
+          // Task view: a closing panel releases the composer and the answer observer.
+          pcReset: () => {},
+          _ansIo: null,
         },
         [
           'var panelOpen = true, panelSessionKey = "k", panelConvId = null, _panelAgent = "", _panelAgentsHtml = "", _rawLoadedCache = {}, _panelGen = 0;',
@@ -1197,7 +1200,8 @@ describe('a live repaint keeps the reader where they were reading (executed)', (
     const info = kid('panel-info', 0, 200);
     const turns = kid('panel-turns', 200, 2000);
     scroll.children = [info, turns];
-    scroll.querySelectorAll = () => [turns];
+    // Task view: the live sections are read from the surface and the tab panel; the anchor from the turns.
+    scroll.querySelectorAll = (sel: string) => (sel.includes('#panel-surface') ? [info, turns] : [turns]);
     const m = load<{ panelLiveAnchor(): unknown; restorePanelLiveAnchor(a: unknown): void }>(
       ['panelScrollAnchor', 'panelLiveAnchor', 'restorePanelLiveAnchor'],
       ['PANEL_LIVE_SECTIONS'],

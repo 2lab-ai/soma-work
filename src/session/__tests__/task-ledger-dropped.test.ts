@@ -84,3 +84,15 @@ describe('a later list drops tasks (T2)', () => {
     ]);
   });
 });
+
+describe('review r1 (astra P2) — a task that ran and went back to pending', () => {
+  it('still reads stopped (started) when a later list drops it: its tool calls prove it ran', () => {
+    let l = applyTodoList(undefined, [todo('A', 'in_progress')], 1000);
+    l.tasks[0].toolCalls = 1;
+    l = applyTodoList(l, [todo('A', 'pending')], 2000);
+    l = applyTodoList(l, [todo('B')], 3000);
+    const a = ledgerTasks(l).earlier.find((t) => t.content === 'A');
+    expect(a?.startedAt).toBeUndefined();
+    expect(a?.dropped).toBe('started');
+  });
+});

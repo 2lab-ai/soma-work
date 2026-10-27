@@ -124,6 +124,18 @@ function makeBoard() {
         agents: AGENTS,
         agentsTotal: 2,
         agentRoot: { toolCalls: 16, lastTool: 'Edit' },
+        goal: {
+          current: {
+            goalId: 'g1',
+            objective: '태스크 뷰를 출시한다',
+            status: 'active',
+            continuationCount: 1,
+            maxContinuations: 5,
+          },
+          queue: [],
+          completedCount: 0,
+          history: [],
+        },
         artifacts: {
           count: 1,
           recent: [
@@ -518,6 +530,26 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
   check(
     (await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth)) <= 0,
     `${tag}: no horizontal overflow`,
+  );
+
+  // 관리 → (a goal opening) lands with the goal at the top of the scroll area.
+  await page.evaluate(() => (window as any).closePanel());
+  await page.waitForTimeout(300);
+  await page.evaluate((k) => (window as any).openPanel(k, 'goal'), KEY);
+  await page.waitForTimeout(900);
+  const goalAt = await page.evaluate(() => {
+    const sc = document.getElementById('panel-scroll') as HTMLElement;
+    const goal = document.getElementById('panel-goal') as HTMLElement;
+    return {
+      offset: Math.round(goal.getBoundingClientRect().top - sc.getBoundingClientRect().top),
+      top: sc.scrollTop,
+      h: sc.scrollHeight,
+      ch: sc.clientHeight,
+    };
+  });
+  check(
+    Math.abs(goalAt.offset) <= 2,
+    `${tag}: a goal opening lands with the goal at the top (${JSON.stringify(goalAt)})`,
   );
   await ctx.close();
 }

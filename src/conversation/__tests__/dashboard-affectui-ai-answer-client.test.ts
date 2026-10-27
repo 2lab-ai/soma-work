@@ -916,6 +916,7 @@ describe('D12 · review R1 (P1) — a failed send is marked although the writing
         // Task view T1.5 composer: no recording, no attached files.
         _pcRec: null,
         _pcFiles: [],
+        _pcSending: false,
         pcStopRecording: () => {},
         pcAutosize: () => {},
         pcRemoveFile: () => {},
