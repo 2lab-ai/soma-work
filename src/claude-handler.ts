@@ -48,8 +48,8 @@ import {
   type loadMcpToolPermissions,
   resolveGatedTool,
 } from './mcp-tool-permission-config';
+import { hostPricing } from './metrics/host-pricing-catalog';
 import {
-  calculateTokenCost,
   hasOneMSuffix,
   isOneMContextUnavailableSignal,
   ONE_M_CONTEXT_UNAVAILABLE_CODE,
@@ -2015,7 +2015,7 @@ export class ClaudeHandler implements TurnSteeringPort {
   ): AsyncIterable<AgentStreamEvent> {
     return runAgentStream(
       this.streamQuery(prompt, session, abortController, workingDirectory, slackContext, sessionKey),
-      { calculateTokenCost },
+      { calculateTokenCost: hostPricing.calculateTokenCost, hostPriced: hostPricing.hostPriced },
     );
   }
 
