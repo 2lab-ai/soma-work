@@ -1870,14 +1870,29 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
 
 // ── Stats aggregation ──────────────────────────────────────────────
 
+/**
+ * KST calendar day ('YYYY-MM-DD') of a timestamp. One formatter for every call:
+ * `toLocaleDateString(…, { timeZone })` builds a new one each time (~35 µs),
+ * which was 90% of a month of stats — thousands of events, on the event loop
+ * every other request waits on (#477).
+ */
+const KST_DAY = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Seoul',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
 /** Per-day stats for one user, or for every user when `userId` is absent. */
 function aggregateUserStats(events: MetricsEvent[], userId?: string): Map<string, UserDayStats> {
   const dayMap = new Map<string, UserDayStats>();
 
   for (const ev of events) {
     if (userId && ev.userId !== userId) continue;
+    // A hand-edited line without a usable timestamp is skipped, not a 500 for the whole period.
+    if (typeof ev.timestamp !== 'number' || !Number.isFinite(ev.timestamp)) continue;
 
-    const dateStr = new Date(ev.timestamp).toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
+    const dateStr = KST_DAY.format(ev.timestamp);
     if (!dayMap.has(dateStr)) {
       dayMap.set(dateStr, {
         date: dateStr,
@@ -1930,7 +1945,7 @@ function aggregateUserStats(events: MetricsEvent[], userId?: string): Map<string
 
 function getDateRange(period: 'day' | 'week' | 'month'): { startDate: string; endDate: string } {
   const now = new Date();
-  const end = now.toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
+  const end = KST_DAY.format(now);
 
   let start: Date;
   switch (period) {
@@ -1944,7 +1959,7 @@ function getDateRange(period: 'day' | 'week' | 'month'): { startDate: string; en
       start = new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000);
       break;
   }
-  const startDate = start.toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
+  const startDate = KST_DAY.format(start);
   return { startDate, endDate: end };
 }
 
