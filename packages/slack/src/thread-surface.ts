@@ -278,7 +278,8 @@ const REANCHOR_MIN_INTERVAL_MS = Number(process.env.SLACK_PANEL_REANCHOR_MIN_INT
 /**
  * Slack's hard per-message block cap
  * (docs.slack.dev/reference/block-kit/blocks — 50 blocks for `chat.update`).
- * The combined surface must fit header + status + Queue + controls inside it.
+ * The combined surface must fit header + status rail + controls inside it;
+ * the optional summary blocks are trimmed first.
  */
 const MAX_MESSAGE_BLOCKS = 50;
 
@@ -1475,8 +1476,8 @@ export class ThreadSurface {
   /**
    * Build the combined header + panel blocks.
    *
-   * Layout:
-   *   header · status/metrics · divider · action rows · summary
+   * Layout (T2, via {@link ActionPanelBuilder.compose}):
+   *   first header block · status rail · rest of the header · controls · summary
    *
    * The follow-up Queue used to sit between the status block and the action
    * rows. It does NOT any more (A39): a queued message is posted as its own

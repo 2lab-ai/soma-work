@@ -50,7 +50,6 @@ export interface ActionPanelBuildParams {
   statusUpdatedAt?: number;
   logVerbosity?: number;
   prStatus?: PRStatusInfo;
-  prUrl?: string;
   /**
    * U9 — the step the agent is on, in its own words ("코드 수정 중"), as opposed
    * to the coarse `activityState` badge. Rendered next to the badge; a running
