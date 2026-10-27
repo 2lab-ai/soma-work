@@ -8,7 +8,7 @@
  * The attachments are validated like a new task's (same limits) and handed to
  * the command handler as decoded files; a files-only instruction is allowed.
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockConfig = {
   conversation: {
@@ -53,6 +53,14 @@ describe('POST /api/dashboard/session/:key/command — attachments (T1.5)', () =
     >
   >;
 
+  // The first import transforms the whole web server: 110 s on a busy shared
+  // runner. Pay it once here, so each test below only re-evaluates the cached
+  // transform (a per-test budget must not absorb a cold transform).
+  beforeAll(async () => {
+    await import('../web-server');
+    await import('../dashboard');
+  }, 300_000);
+
   beforeEach(async () => {
     vi.resetModules();
     const webServer = await import('../web-server');
@@ -77,11 +85,10 @@ describe('POST /api/dashboard/session/:key/command — attachments (T1.5)', () =
       .mockResolvedValue(undefined);
     dashboard.setDashboardCommandHandler(handler);
     await webServer.startWebServer({ listen: false });
-    // The first import transforms the whole web server — slow on a busy runner.
   }, 60_000);
 
   afterEach(async () => {
-    await stopWebServer();
+    await stopWebServer?.();
   });
 
   function post(payload: unknown) {
