@@ -1751,6 +1751,7 @@ type FakeEl = {
   style: Record<string, string>;
   children: unknown[];
   setAttribute(k: string, v: string): void;
+  removeAttribute(k: string): void;
   getAttribute(k: string): string | null;
   querySelector(sel: string): FakeEl | null;
   querySelectorAll(sel: string): FakeEl[];
@@ -1769,6 +1770,9 @@ function fakeEl(over: Partial<FakeEl> = {}): FakeEl {
     children: [],
     setAttribute(k, v) {
       this.attrs[k] = String(v);
+    },
+    removeAttribute(k) {
+      delete this.attrs[k];
     },
     getAttribute(k) {
       return k in this.attrs ? this.attrs[k] : null;
@@ -2081,10 +2085,12 @@ describe('stats: only the latest period / user selection paints (shipped loadSta
       });
     const painted: string[] = [];
     const m = load<{ loadStats(): Promise<void>; select(p: string, u: string): void }>(
-      ['statsJson', 'loadStats'],
-      ['_statsGen'],
+      ['statsJson', 'loadStats', 'markStatsLoading'],
+      ['_statsGen', 'STAT_IDS'],
       {
         fetch,
+        // The loading bars (markStatsLoading) find no elements in this harness.
+        document: { getElementById: () => null },
         currentPeriod: 'day',
         currentUserId: '',
         paintStats: (d: { tag?: string } | null) => painted.push(`stats:${d ? d.tag : 'dash'}`),
@@ -2833,6 +2839,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     const m = load<Panel>(
       [
         'openPanel',
+        'turnsSkeletonHtml',
         'renderPanelPermission',
         'renderPermissionBlock',
         'renderPanelQuestion',
