@@ -580,3 +580,53 @@ describe('browser receipt · a section landing is not undone by the layout coord
     expect(branch.indexOf('_panelScrollGen++')).toBeLessThan(branch.indexOf('scrollEl.scrollTo({ top: target'));
   });
 });
+
+// ── #488 (review P2/P3, closed in this PR) ──
+describe('#488 · a voice note that is not filed in time stops the send instead of dropping it', () => {
+  const send = TEMPLATE.slice(
+    TEMPLATE.indexOf('\nasync function sendCommand('),
+    TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nasync function sendCommand(')),
+  );
+  it('a recording that does not settle within the wait aborts with a message; text and chips stay', () => {
+    expect(send).toMatch(/if \(!filed\) \{[^}]*pcSetError\(/);
+    expect(send.indexOf('if (!filed)')).toBeLessThan(send.indexOf('input.value = '));
+  });
+});
+
+describe('#488 · a subagent raw that failed to load is tried again later', () => {
+  const fn = TEMPLATE.slice(
+    TEMPLATE.indexOf('\nfunction agentConvRawOf('),
+    TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction agentConvRawOf(')),
+  );
+  it('a transient failure forgets its cache entry after a delay (no retry storm)', () => {
+    expect(fn).toMatch(/setTimeout\(/);
+    expect(fn).toMatch(/delete _agentConvRaw\[key\]/);
+  });
+});
+
+describe('#488 · answers replaced in the list are no longer observed', () => {
+  const fn = TEMPLATE.slice(
+    TEMPLATE.indexOf('\nfunction updateTurnInPanel('),
+    TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction updateTurnInPanel(')),
+  );
+  it('updateTurnInPanel unobserves the old answer before replacing it', () => {
+    expect(fn).toMatch(/_ansIo\.unobserve\(/);
+    expect(fn.indexOf('_ansIo.unobserve(')).toBeLessThan(fn.indexOf('existingEl.replaceWith('));
+  });
+});
+
+describe('#488 · every landing scroll starts a new panel scroll generation', () => {
+  const land = TEMPLATE.slice(
+    TEMPLATE.indexOf('\nfunction landPanel('),
+    TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction landPanel(')),
+  );
+  const wl = TEMPLATE.slice(
+    TEMPLATE.indexOf('\nfunction scrollPanelToWorkLog('),
+    TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction scrollPanelToWorkLog(')),
+  );
+  it('the question / newest-turns landing and the work-log landing bump it too', () => {
+    const tail = land.slice(land.lastIndexOf('scrollEl.scrollTo(') - 200);
+    expect(tail).toContain('_panelScrollGen++');
+    expect(wl).toContain('_panelScrollGen++');
+  });
+});
