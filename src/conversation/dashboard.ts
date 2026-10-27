@@ -3908,6 +3908,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sk { background: var(--ib-pill); border-radius: 6px; animation: sk-pulse 1.6s ease-in-out infinite; }
 .col-skel { display: flex; flex-direction: column; gap: 8px; }
 .kanban:not([data-load="loading"]) .col-skel { display: none; }
+.kanban-col:has(> .cards:not(:empty)) .col-skel { display: none; }
 /* Counts and "Nothing here" are claims about the whole board: only a certified
    (ready) board makes them — not 다시 시도 after a partial paint, not this
    instance's cards shown under the error. */
@@ -8722,9 +8723,11 @@ function renderBoard(board, partial) {
     // (hidden archives / sleeping cards are not in it).
     done: plan.done.length,
   });
-  // Real cards are drawn: the skeleton goes for good. After the reconciler, so a
-  // render that throws on the way leaves it, and loadSessions' catch shows 다시 시도.
-  document.querySelectorAll('.col-skel').forEach(function(n) { n.remove(); });
+  // The certified board is drawn: the skeleton goes for good. After the
+  // reconciler, so a render that throws on the way leaves it, and loadSessions'
+  // catch shows 다시 시도. A partial paint keeps it: 다시 시도 still needs a loading
+  // cue for the columns the partial data left empty.
+  if (!partial) document.querySelectorAll('.col-skel').forEach(function(n) { n.remove(); });
   renderArchivesToggle(plan.archivedCount);
   renderSleepingToggle(plan.sleepingCount);
   paintCronDrawer();
