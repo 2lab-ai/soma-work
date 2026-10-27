@@ -72,13 +72,14 @@ trap on_exit EXIT
 usage() {
   cat <<EOF
 usage: sudo $0 --bot-user <name> [--node-archive <file>] [--gh-archive <file>] [--repo <dir>]
-                 [--accept-slack-cli-login] [--dry-run]
+                 [--accept-slack-cli-login] [--operator-is-bot-user] [--dry-run]
 
   --bot-user <name>          OS user the soma bot runs as; it joins group $BROKER_GROUP to reach the broker socket
   --node-archive <file>      the official node release archive pinned in pins.txt (default: download it)
   --gh-archive <file>        the official gh release archive pinned in pins.txt (default: download it)
   --repo <dir>               soma-work checkout with the devops packages built (default: this script's checkout)
   --accept-slack-cli-login   the bot user's Slack CLI login was checked (README); report it as a WARN, not a FAIL
+  --operator-is-bot-user     accept running from the bot user (README "Operator account"); report it as a WARN
   --dry-run                  print the actions without changing anything
   --prefix <dir>             tests only (SOMA_DEVOPS_INSTALL_TEST=1): install under <dir>; $SHIMMED_TOOLS
                              must be shims ahead of the system tools on PATH
@@ -122,7 +123,7 @@ absolute() {
 
 # ---- arguments ----------------------------------------------------------------------------------------------
 
-BOT_USER='' NODE_ARCHIVE='' GH_ARCHIVE='' REPO='' PREFIX='' DRY_RUN=0 ACCEPT_SLACK_LOGIN=0
+BOT_USER='' NODE_ARCHIVE='' GH_ARCHIVE='' REPO='' PREFIX='' DRY_RUN=0 ACCEPT_SLACK_LOGIN=0 OPERATOR_IS_BOT_USER=0
 while [ $# -gt 0 ]; do
   case $1 in
     --bot-user | --node-archive | --gh-archive | --repo | --prefix)
@@ -141,6 +142,10 @@ while [ $# -gt 0 ]; do
       ;;
     --accept-slack-cli-login)
       ACCEPT_SLACK_LOGIN=1
+      shift
+      ;;
+    --operator-is-bot-user)
+      OPERATOR_IS_BOT_USER=1
       shift
       ;;
     --dry-run)
@@ -695,8 +700,14 @@ step 'preflight'
 if [ "$TEST_MODE" = 0 ] && [ "$DRY_RUN" = 0 ] && [ "$(id -u)" != 0 ]; then
   die 'run it with sudo (or add --dry-run to preview)'
 fi
+# The bot user's shell files and LaunchAgents are the bot's: whatever is typed or piped in its sessions, it can read.
+OPERATOR_WARN=''
 if [ "${SUDO_USER:-}" = "$BOT_USER" ]; then
-  die "SUDO_USER is $BOT_USER, the bot user; run the installer from an operator account the bot does not control"
+  if [ "$OPERATOR_IS_BOT_USER" = 1 ]; then
+    OPERATOR_WARN="operator is the bot user ($BOT_USER): the bot can read a sudo password typed in its sessions and the secrets piped through them; move to a separate operator account (README \"Operator account\")"
+  else
+    die "SUDO_USER is $BOT_USER, the bot user; run the installer from an operator account the bot does not control, or pass --operator-is-bot-user to accept this (README \"Operator account\")"
+  fi
 fi
 [ -f "$TEMPLATE" ] || die "$TEMPLATE is missing"
 [ -f "$PINS" ] || die "$PINS is missing"
@@ -1046,6 +1057,7 @@ EOF
 if [ -z "$ACL_FOUND" ] && [ -z "$left" ]; then
   check_line OK "$(printf '%-28s %s' 'no ACL grants' "code, data, logs, plist")"
 fi
+if [ -n "$OPERATOR_WARN" ]; then warn "$OPERATOR_WARN"; fi
 if [ -n "$SLACK_WARN" ]; then warn "$SLACK_WARN"; fi
 
 # ---- 7. start, or say what is missing -----------------------------------------------------------------------

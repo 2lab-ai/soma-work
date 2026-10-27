@@ -558,8 +558,22 @@ describe.skipIf(process.platform !== 'darwin')('devops-broker install.sh', SLOW,
   it('refuses to run when SUDO_USER is the bot user', () => {
     const result = install(WITH_ARCHIVES(), { SUDO_USER: 'alice' });
     expect(result.status).toBe(1);
-    expect(result.out).toMatch(/^FAIL .*SUDO_USER.*alice/m);
+    expect(result.out).toMatch(/^FAIL .*SUDO_USER.*alice.*or pass --operator-is-bot-user .*README "Operator account"/m);
     expectNothingInstalled();
+  });
+
+  it('runs from the bot user with --operator-is-bot-user and says so in a checklist WARN', () => {
+    const accepted = install([...WITH_ARCHIVES(), '--operator-is-bot-user'], { SUDO_USER: 'alice' });
+    expect(fails(accepted)).toEqual([]);
+    expect(accepted.status).toBe(3);
+    const checklist = accepted.stdout.slice(accepted.stdout.indexOf('== ownership and permissions'));
+    expect(checklist).toMatch(/^WARN operator is the bot user \(alice\): .*README "Operator account"/m);
+
+    // From another account the flag changes nothing.
+    const other = install([...WITH_ARCHIVES(), '--operator-is-bot-user'], { SUDO_USER: 'operator' });
+    expect(fails(other)).toEqual([]);
+    expect(other.status).toBe(3);
+    expect(other.out).not.toMatch(/^WARN/m);
   });
 
   it('refuses the removed --node/--gh path options', () => {
