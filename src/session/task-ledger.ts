@@ -164,7 +164,8 @@ export function recordToolCall(ledger: TaskLedger | undefined): TaskRecord | und
 /** How an earlier task left the list, if it had not completed. */
 function droppedOf(t: TaskRecord): TaskDropped | undefined {
   if (t.status === 'completed') return undefined;
-  return t.status === 'in_progress' || t.startedAt ? 'started' : 'unstarted';
+  // A regression to pending clears startedAt; tool calls made while it ran still prove it ran.
+  return t.status === 'in_progress' || t.startedAt || t.toolCalls > 0 ? 'started' : 'unstarted';
 }
 
 /**

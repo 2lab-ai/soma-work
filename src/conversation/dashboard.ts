@@ -10932,14 +10932,16 @@ function togglePanelConv() {
 }
 // Pure: a subagent's instruction (the call that started it) and its result,
 // from the work log — the latest of each.
-function agentConvEntries(entries, agentId) {
+// A background agent's spawn result only acknowledges its start (as the work
+// log reads it, wlScopeEntries) — never its answer; a failed one is the spawn failing.
+function agentConvEntries(entries, agentId, background) {
   var out = { spawn: null, result: null };
   var list = entries || [];
   for (var i = 0; i < list.length; i++) {
     var e = list[i];
     if (!e || !agentId || e.agentRef !== agentId) continue;
     if (e.kind === 'tool') out.spawn = e;
-    else if (e.kind === 'tool_result') out.result = e;
+    else if (e.kind === 'tool_result' && !(background && e.ok !== false)) out.result = e;
   }
   return out;
 }
@@ -11019,7 +11021,7 @@ function renderAgentConv() {
   host.hidden = false;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var a = panelAgentOf(s);
-  var io = agentConvEntries(_wl && _wl.entries, _panelAgent);
+  var io = agentConvEntries(_wl && _wl.entries, _panelAgent, !!(a && a.background));
   var prompt = io.spawn && io.spawn.rawBytes ? agentConvRawOf(io.spawn.seq) : null;
   var answer = io.result ? (io.result.rawBytes ? agentConvRawOf(io.result.seq) : String(io.result.text || '')) : null;
   if (sum) setTextIfChanged(sum, a ? (AGENT_STATUS_LABEL[agentStatusOf(a)] || '') : '');
@@ -11057,7 +11059,8 @@ function panelLiveAnchor() {
   var scrollEl = document.getElementById('panel-scroll');
   if (!scrollEl || _panelStickBottom || scrollEl.scrollTop <= 0) return null;
   var top = scrollEl.getBoundingClientRect().top;
-  var kids = scrollEl.children;
+  // Task view: the sections sit in the common surface and the tab panel.
+  var kids = scrollEl.querySelectorAll('#panel-surface > *, #panel-tabpanel > *');
   for (var i = 0; i < kids.length; i++) {
     var r = kids[i].getBoundingClientRect();
     if (!r.height || r.bottom <= top) continue;
@@ -15799,6 +15802,7 @@ function scrollPanelToWorkLog() {
 //     question landing is made once per opening: turns load below the form and
 //     do not move it, and a reader who scrolled meanwhile stays.
 var _panelOnQuestion = false;
+var _panelLandAt = null; // where the last section landing left the scroll (null = none yet this opening)
 function landPanel() {
   var scrollEl = document.getElementById('panel-scroll');
   if (!scrollEl) return;
@@ -15809,11 +15813,18 @@ function landPanel() {
     if (_panelLanded) return;
     var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : _panelLand === 'tasks' ? 'panel-tasks' : 'panel-agents');
     if (sec && sec.style.display !== 'none') {
-      _panelLanded = true;
+      // The reader scrolled since the last try: they stay where they are.
+      if (_panelLandAt !== null && Math.abs(scrollEl.scrollTop - _panelLandAt) > 1) { _panelLanded = true; return; }
       _panelStickBottom = false;
       var tabs = _panelLand === 'goal' ? null : document.getElementById('panel-tabs');
       var under = tabs ? tabs.offsetHeight || 0 : 0;
-      scrollEl.scrollTo({ top: scrollEl.scrollTop + sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - under, behavior: 'instant' });
+      var target = scrollEl.scrollTop + sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - under;
+      scrollEl.scrollTo({ top: target, behavior: 'instant' });
+      // Task view: the scroll area is the whole body, so before the turns load it
+      // may be too short to bring the section up — landed only once it is there;
+      // the landing after the turns arrive tries again.
+      _panelLandAt = scrollEl.scrollTop;
+      _panelLanded = Math.abs(scrollEl.scrollTop - target) <= 1;
       return;
     }
   }
@@ -15850,6 +15861,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // The intent of this opening: true is the 작업 로그 landing, as before.
   _panelLand = focusWorkLog === true ? 'worklog' : (focusWorkLog || '');
   _panelLanded = false;
+  _panelLandAt = null;
   // The control that opened it gets focus back on close (not a control inside the panel).
   var opener = document.activeElement;
   if (opener && opener !== document.body && !(opener.closest && opener.closest('#slide-panel'))) _panelReturnFocus = document.activeElement;
@@ -16459,7 +16471,7 @@ function renderTurn(t, _idx, _arr, convId) {
     // Task view T1.3: the whole instruction — a long one folds to 12 lines until
     // clicked (자세히 shows it whole).
     var textHtml = said.text
-      ? '<div class="turn-content turn-instr" title="눌러서 펼치기 · 접기" onclick="this.classList.toggle(\\'is-full\\')">' + esc(said.text) + '</div>'
+      ? '<div class="turn-content turn-instr" role="button" tabindex="0" title="눌러서 펼치기 · 접기" onclick="this.classList.toggle(\\'is-full\\')" onkeydown="if(event.key===\\'Enter\\'||event.key===\\' \\'){event.preventDefault();this.classList.toggle(\\'is-full\\')}">' + esc(said.text) + '</div>'
       : '';
     return '<div class="turn user"' + turnIdAttr + '>'
       + '<div class="turn-avatar user-avatar">' + initial + '</div>'
@@ -17071,6 +17083,9 @@ async function generateTitleSub(convId, regenerate) {
 
 function closePanel() {
   var closingKey = panelSessionKey;
+  // Task view: a closed panel keeps no mic, no files and watches no answers.
+  pcReset();
+  if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
   layoutBeforeChange();
   document.getElementById('slide-panel').classList.remove('open');
   document.getElementById('panel-overlay').classList.remove('open');
@@ -17183,26 +17198,31 @@ async function sendCommand() {
   const input = document.getElementById('cmd-input');
   const btn = document.getElementById('cmd-send');
   if (!panelSessionKey) return;
-  // Guard: do not send while the input is disabled (e.g., terminated session).
-  if (input.disabled) return;
+  // Guard: do not send while the input is disabled (e.g., terminated session),
+  // or while a send is already reading its files (a second press sends nothing).
+  if (input.disabled || _pcSending) return;
   // Capture the session this send belongs to — before any wait. We must never
   // mutate shared UI (cmd-input/cmd-send) after the user has already switched to
   // a different card, otherwise the new card inherits stale "Sending..." /
   // disabled state; and an instruction is never sent to a card opened meanwhile.
   const sendingSessionKey = panelSessionKey;
-  // Task view T1.5: a recording in progress is the user's last words — finish it first.
-  if (_pcRec) {
-    pcStopRecording(true);
-    await new Promise(function(resolve) { setTimeout(resolve, 300); });
-  }
-  const msg = input.value.trim();
-  const files = _pcFiles.slice();
-  if (!pcCanSend(msg, files)) return;
-  // Every file read in full (a failed read removes its chip and says so).
+  var msg;
+  var files;
+  _pcSending = true;
   try {
-    await Promise.all(files.map(function(f) { return f.ready; }));
-  } catch (_e) {
-    return;
+    // Task view T1.5: a recording in progress is the user's last words — filed first.
+    if (_pcRec) await Promise.race([pcStopRecording(true), new Promise(function(resolve) { setTimeout(resolve, 3000); })]);
+    msg = input.value.trim();
+    files = _pcFiles.slice();
+    if (!pcCanSend(msg, files)) return;
+    // Every file read in full (a failed read removes its chip and says so).
+    try {
+      await Promise.all(files.map(function(f) { return f.ready; }));
+    } catch (_e) {
+      return;
+    }
+  } finally {
+    _pcSending = false;
   }
   // The card changed while the files were read: this instruction was for the other one (its files went with pcReset).
   if (panelSessionKey !== sendingSessionKey) return;
@@ -17255,7 +17275,10 @@ async function sendCommand() {
         if (lastTurn) {
           lastTurn.style.borderColor = '#e74c3c';
           lastTurn.style.opacity = '0.7';
-          lastTurn.insertAdjacentHTML('beforeend', '<div style="color:#e74c3c;font-size:0.75em;margin-top:4px">Failed to send. <a href="#" onclick="event.preventDefault();sendRetry(\\'' + escJs(msg) + '\\')">Retry</a></div>');
+          // The retry holds the message in a closure: a multiline one cannot break an inline handler.
+          lastTurn.insertAdjacentHTML('beforeend', '<div style="color:#e74c3c;font-size:0.75em;margin-top:4px">Failed to send. <a href="#" class="cmd-retry">Retry</a></div>');
+          var retryA = lastTurn.querySelector('.cmd-retry:last-of-type');
+          if (retryA) retryA.addEventListener('click', function(ev) { ev.preventDefault(); sendRetry(msg); });
         }
       }
     }
@@ -20597,6 +20620,8 @@ var PC_LIMITS = { maxFiles: 10, maxFileBytes: 20971520, maxTotalBytes: 31457280 
 var _pcFiles = [];
 var _pcSeq = 0;
 var _pcRec = null;
+var _pcRecGen = 0; // bumped by pcReset: a recording (or a pending mic permission) from before belongs to no one
+var _pcSending = false; // one send at a time, from the first wait on
 function pcEnterAction(e, touch) {
   if (!e || e.key !== 'Enter') return 'none';
   if (e.isComposing || e.keyCode === 229) return 'none';
@@ -20693,6 +20718,7 @@ function pcRenderFiles() {
 }
 // Every file and any recording go with the session they were added for.
 function pcReset() {
+  _pcRecGen++;
   if (_pcRec) pcStopRecording(false);
   _pcFiles.forEach(function(f) { if (f.url) { try { URL.revokeObjectURL(f.url); } catch (_e) {} } });
   _pcFiles = [];
@@ -20700,22 +20726,36 @@ function pcReset() {
   pcSetError('');
   pcAutosize();
 }
+// A recording belongs to the session it was started for (gen + key): a mic
+// permission granted, or a recorder that stops, after the panel closed or moved
+// to another card attaches nothing and releases the mic.
+function pcRecCurrent(gen, key) {
+  return gen === _pcRecGen && key === panelSessionKey && !!panelOpen;
+}
 async function pcToggleRecording() {
   if (_pcRec) { pcStopRecording(true); return; }
   var canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
   if (!canRecord) { document.getElementById('pc-audio-input').click(); return; }
+  var gen = _pcRecGen;
+  var key = panelSessionKey;
   var stream;
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (e) {
+    if (!pcRecCurrent(gen, key)) return;
     pcSetError('마이크를 쓸 수 없습니다 (' + (e && e.name ? e.name : '권한 거부') + ') — 기기 녹음기로 녹음해 첨부해 주세요');
     document.getElementById('pc-audio-input').click();
+    return;
+  }
+  if (!pcRecCurrent(gen, key) || _pcRec) {
+    stream.getTracks().forEach(function(t) { t.stop(); });
     return;
   }
   var mime = ntPickRecorderMime(function(t) { return MediaRecorder.isTypeSupported(t); });
   var recorder;
   try { recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream); } catch (_e) { recorder = new MediaRecorder(stream); }
-  var state = { recorder: recorder, stream: stream, chunks: [], started: Date.now(), mime: recorder.mimeType || mime || 'audio/mp4', keep: true, finished: false, timer: 0, raf: 0, audioCtx: null };
+  var state = { recorder: recorder, stream: stream, chunks: [], started: Date.now(), mime: recorder.mimeType || mime || 'audio/mp4', keep: true, finished: false, timer: 0, raf: 0, audioCtx: null, gen: gen, key: key };
+  state.done = new Promise(function(resolve) { state.resolve = resolve; });
   _pcRec = state;
   recorder.ondataavailable = function(ev) { if (ev.data && ev.data.size) state.chunks.push(ev.data); };
   recorder.onstop = function() { pcFinishRecording(state); };
@@ -20748,9 +20788,10 @@ async function pcToggleRecording() {
     if (sec >= NT_MAX_RECORD_SEC) pcStopRecording(true);
   }, 250);
 }
+// Resolves once the recording is filed (or dropped) — the send waits on it.
 function pcStopRecording(keep) {
   var state = _pcRec;
-  if (!state) return;
+  if (!state) return Promise.resolve();
   _pcRec = null;
   state.keep = keep;
   state.stoppedAt = Date.now();
@@ -20766,15 +20807,19 @@ function pcStopRecording(keep) {
   var mic = document.getElementById('pc-mic');
   mic.setAttribute('aria-pressed', 'false');
   mic.setAttribute('aria-label', '음성 녹음');
+  return state.done;
 }
 function pcFinishRecording(state) {
   if (state.finished) return;
   state.finished = true;
-  if (!state.keep || !state.chunks.length) return;
-  var type = String(state.mime).split(';')[0] || 'audio/mp4';
-  var blob = new Blob(state.chunks, { type: type });
-  var sec = Math.max(1, Math.round(((state.stoppedAt || Date.now()) - state.started) / 1000));
-  pcAddBlob(blob, 'voice-' + ntStamp(new Date()) + '.' + ntExtForMime(type), type, { duration: sec });
+  // Kept, and still this card's: the panel did not close or move on meanwhile.
+  if (state.keep && state.chunks.length && pcRecCurrent(state.gen, state.key)) {
+    var type = String(state.mime).split(';')[0] || 'audio/mp4';
+    var blob = new Blob(state.chunks, { type: type });
+    var sec = Math.max(1, Math.round(((state.stoppedAt || Date.now()) - state.started) / 1000));
+    pcAddBlob(blob, 'voice-' + ntStamp(new Date()) + '.' + ntExtForMime(type), type, { duration: sec });
+  }
+  if (state.resolve) state.resolve();
 }
 // Paste an image (a screenshot) into the field; drop files on the composer.
 function pcInit() {

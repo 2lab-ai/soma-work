@@ -449,3 +449,113 @@ describe('T1.6 · 자세히 is a saved per-device choice, off unless saved on', 
     expect(env.panelDetailFrom(null)).toBe(false);
   });
 });
+
+// ── review r1 (trinity astra P1/P2, fable P2) ──
+describe('review r1 · a subagent tab never shows a background start acknowledgement as its answer', () => {
+  const env = load<{
+    agentConvEntries(entries: unknown[], id: string, background?: boolean): { spawn: unknown; result: unknown };
+  }>(['agentConvEntries'], []);
+  const log = [
+    { seq: 1, kind: 'tool', tool: 'Agent', agentRef: 'a1' },
+    { seq: 2, kind: 'tool_result', tool: 'Agent', ok: true, agentRef: 'a1', text: 'Async agent launched' },
+  ];
+  it('foreground: the result is the answer; background: no answer from the ack (a failed spawn still is one)', () => {
+    expect(env.agentConvEntries(log, 'a1', false).result).toEqual(log[1]);
+    expect(env.agentConvEntries(log, 'a1', true).result).toBeNull();
+    const failed = [log[0], { ...log[1], ok: false }];
+    expect(env.agentConvEntries(failed, 'a1', true).result).toEqual(failed[1]);
+  });
+});
+
+describe('review r1 · a recording belongs to the card it was started for', () => {
+  type Rec = Record<string, unknown>;
+  function harness() {
+    const added: string[] = [];
+    const env = load<{
+      pcRecCurrent(gen: number, key: string): boolean;
+      pcFinishRecording(state: Rec): void;
+      __set(n: string, v: unknown): void;
+    }>(['pcRecCurrent', 'pcFinishRecording'], [], {
+      _pcRecGen: 0,
+      panelSessionKey: 'A',
+      panelOpen: true,
+      Blob: class {
+        constructor(
+          public parts: unknown[],
+          public opts: unknown,
+        ) {}
+      },
+      ntStamp: () => 'stamp',
+      ntExtForMime: () => 'm4a',
+      pcAddBlob: (_b: unknown, name: string) => added.push(name),
+    });
+    return { env, added };
+  }
+  const state = (o: Rec = {}) => ({
+    keep: true,
+    finished: false,
+    chunks: [1],
+    mime: 'audio/mp4',
+    started: 0,
+    stoppedAt: 2000,
+    gen: 0,
+    key: 'A',
+    resolve: () => {},
+    ...o,
+  });
+
+  it('files the voice note on the card it was recorded for', () => {
+    const { env, added } = harness();
+    env.pcFinishRecording(state());
+    expect(added).toEqual(['voice-stamp.m4a']);
+  });
+  it('a recorder that stops after the panel moved to another card, or closed, attaches nothing', () => {
+    const moved = harness();
+    moved.env.__set('panelSessionKey', 'B');
+    moved.env.pcFinishRecording(state());
+    expect(moved.added).toEqual([]);
+    const closed = harness();
+    closed.env.__set('panelOpen', false);
+    closed.env.pcFinishRecording(state());
+    expect(closed.added).toEqual([]);
+    const reset = harness();
+    reset.env.__set('_pcRecGen', 1);
+    reset.env.pcFinishRecording(state());
+    expect(reset.added).toEqual([]);
+  });
+  it('the send waits on the recording itself — the done promise settles either way', () => {
+    const { env } = harness();
+    let settled = 0;
+    env.__set('panelSessionKey', 'B');
+    env.pcFinishRecording(state({ resolve: () => settled++ }));
+    expect(settled).toBe(1);
+  });
+  it('closing the panel resets the composer (mic, files) and stops watching answers', () => {
+    const close = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nfunction closePanel('),
+      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction closePanel(')),
+    );
+    expect(close).toContain('pcReset();');
+    expect(close).toMatch(/_ansIo\.disconnect\(\)/);
+    const reset = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nfunction pcReset('),
+      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction pcReset(')),
+    );
+    expect(reset).toContain('_pcRecGen++');
+  });
+});
+
+describe('review r1 · one send at a time; a failed multiline send retries without inline JS', () => {
+  const send = TEMPLATE.slice(
+    TEMPLATE.indexOf('\nasync function sendCommand('),
+    TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nasync function sendCommand(')),
+  );
+  it('a second press while the first reads its files sends nothing', () => {
+    expect(send).toMatch(/if \(input\.disabled \|\| _pcSending\) return;/);
+    expect(send.indexOf('_pcSending = true')).toBeLessThan(send.indexOf('await '));
+  });
+  it('the retry link holds the message in a closure, not in a quoted handler', () => {
+    expect(send).not.toMatch(/sendRetry\(\\\\'/);
+    expect(send).toContain("addEventListener('click'");
+  });
+});
