@@ -15307,6 +15307,7 @@ function splitInvokedSkills(raw) {
     }
     text += s.slice(from, at);
     var inner = s.slice(at + OPEN.length, end);
+    var before = skills.length;
     var i = 0;
     while (i < inner.length) {
       var m = /<([^\\s<>\\/]+)>/.exec(inner.slice(i));
@@ -15320,6 +15321,8 @@ function splitInvokedSkills(raw) {
       skills.push({ name: name, body: body, tokens: estimateTokens(body) });
       i = bodyEnd + closeTag.length;
     }
+    // A closed block that held no skill is words too.
+    if (skills.length === before) text += s.slice(at, end + CLOSE.length);
     from = end + CLOSE.length;
   }
   return { text: skills.length ? text.replace(/\\s+$/, '') : s, skills: skills };

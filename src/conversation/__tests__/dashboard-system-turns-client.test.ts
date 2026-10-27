@@ -552,6 +552,12 @@ describe('C4 — the skills an instruction invoked, as badges', () => {
       text: 'Explain <invoked_skills> syntax and its parser',
       skills: [],
     });
+    // A closed block that holds no skill is words too, even beside a real block.
+    const closed = splitInvokedSkills(
+      invoked('Explain <invoked_skills> syntax </invoked_skills> please', [['local:autoz', AUTOZ_BODY]]),
+    );
+    expect(closed.text).toBe('Explain <invoked_skills> syntax </invoked_skills> please');
+    expect(closed.skills.map((x) => x.name)).toEqual(['local:autoz']);
     const out = splitInvokedSkills(invoked('What does <invoked_skills> do?', [['local:autoz', AUTOZ_BODY]]));
     expect(out.text).toBe('What does <invoked_skills> do?');
     expect(out.skills.map((x) => x.name)).toEqual(['local:autoz']);

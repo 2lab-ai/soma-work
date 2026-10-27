@@ -6,7 +6,7 @@
  */
 
 import type { PostCompactHookInput, PreCompactHookInput } from '@anthropic-ai/claude-agent-sdk';
-import { LOG_MINIMAL } from '@soma/slack/output-flags';
+import { getVerbosityFlags, LOG_MINIMAL } from '@soma/slack/output-flags';
 import {
   type CompactTurnResult,
   resetWorkLogDropWarningsForTests,
@@ -109,6 +109,36 @@ describe('T2.1 — the compaction result reaches the recorder once per cycle', (
     await postCompactCompleteIfNeeded(deps(session), { source: 'on-compact-boundary' });
     expect(results).toHaveLength(2);
     expect(results[1][1]).toMatchObject({ preTokens: 160_000, postTokens: 35_000, durationMs: 41_000 });
+  });
+
+  it('the boundary lands while the completion message is still being updated → its numbers reach the recorder', async () => {
+    const session = makeSession();
+    session.logVerbosity = getVerbosityFlags('compact') as unknown as ConversationSession['logVerbosity'];
+    const pending: Array<() => void> = [];
+    const slackApi = {
+      postSystemMessage: vi.fn().mockResolvedValue({ ts: 'start_ts' }),
+      updateMessage: vi.fn(() => new Promise<void>((resolve) => pending.push(resolve))),
+    };
+    const d = { session, channel: 'C1', threadTs: 'T1', slackApi: slackApi as unknown as SlackApiHelper };
+    await postCompactStartingIfNeeded(d, 'auto');
+    const hookDone = postCompactCompleteIfNeeded(d, { source: 'post-compact-hook' });
+    for (let i = 0; i < 100 && slackApi.updateMessage.mock.calls.length === 0; i++) {
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    expect(slackApi.updateMessage).toHaveBeenCalled(); // the hook is mid-update, its result already recorded
+    expect(results).toHaveLength(1);
+
+    session.compactPreTokens = 150_000;
+    session.compactPostTokens = 30_000;
+    const boundary = postCompactCompleteIfNeeded(d, { source: 'on-compact-boundary' });
+    expect(results).toHaveLength(2);
+    expect(results[1][1]).toMatchObject({ preTokens: 150_000, postTokens: 30_000 });
+    // Let every Slack update in flight finish.
+    for (let i = 0; i < 50 && (pending.length || i === 0); i++) {
+      for (const done of pending.splice(0)) done();
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    await Promise.all([hookDone, boundary]);
   });
 
   it('no SDK duration → the time since START', async () => {
