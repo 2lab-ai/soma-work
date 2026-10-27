@@ -75,52 +75,13 @@ const permissionWarningDeduper = createPermissionWarningDeduper({ windowMs: 10 *
  */
 const HOST_SKILL_BLOCKS = /^(?:\s*<invoked_skills>\n(?:(?!<\/?invoked_skills>)[\s\S])*\n<\/invoked_skills>)+\s*$/;
 
-function ownerText(text: string): { text: string; ambiguous: boolean; skills: string[] } {
+function ownerText(text: string): { text: string; ambiguous: boolean } {
   const cut = text.indexOf('<invoked_skills>');
-  if (cut < 0) return { text: text.trim(), ambiguous: false, skills: [] };
+  if (cut < 0) return { text: text.trim(), ambiguous: false };
   // Host blocks are appended last, after a blank line. A marker anywhere else,
   // or anything after the blocks, means what was cut may hold owner text.
   const hostShaped = (cut === 0 || text.slice(0, cut).endsWith('\n\n')) && HOST_SKILL_BLOCKS.test(text.slice(cut));
-  return {
-    text: text.slice(0, cut).trim(),
-    ambiguous: !hostShaped,
-    skills: hostShaped ? invokedSkillKeys(text.slice(cut)) : [],
-  };
-}
-
-/** A skill key as the host writes it: `<plugin>:<skill>`. */
-const SKILL_KEY = /^<([\w.-]+:[\w.-]+)>\n/;
-
-/**
- * The skill keys of host-appended blocks, in order — names only, never bodies.
- * Each block is `<invoked_skills>\n<key>\n…\n</key>\n<key2>\n…\n</key2>\n</invoked_skills>`
- * (skill-force-handler / autoskill-fire). A section ends at its own closing tag
- * followed by the next section or the block end, so a header-looking line inside
- * a body is never read as another skill.
- */
-function invokedSkillKeys(blocks: string): string[] {
-  const keys: string[] = [];
-  for (const block of blocks.matchAll(/<invoked_skills>\n((?:(?!<\/?invoked_skills>)[\s\S])*)\n<\/invoked_skills>/g)) {
-    let rest = block[1];
-    for (;;) {
-      const head = SKILL_KEY.exec(rest);
-      if (!head) break;
-      const key = head[1];
-      keys.push(key);
-      const close = `\n</${key}>`;
-      let end = -1;
-      for (let i = rest.indexOf(close, head[0].length - 1); i >= 0; i = rest.indexOf(close, i + 1)) {
-        const after = i + close.length;
-        if (after === rest.length || rest.startsWith('\n<', after)) {
-          end = after;
-          break;
-        }
-      }
-      if (end < 0 || end === rest.length) break;
-      rest = rest.slice(end + 1);
-    }
-  }
-  return keys;
+  return { text: text.slice(0, cut).trim(), ambiguous: !hostShaped };
 }
 
 /** The executor keeps at most this many follow-ups; at the cap older ones may be gone. */
@@ -136,6 +97,12 @@ const FOLLOW_UP_CAP = 50;
  * goal. Nothing is dropped here; the classifier's prompt budget decides, and says
  * so. `incomplete` marks a history that may already have lost messages.
  */
+/**
+ * The skills the owner invoked themselves (`$skill` in their own prose, their
+ * registered autoskills), as resolved keys. Injected from the Slack layer.
+ */
+export type OwnerSkillResolver = (owner: string, ownerProse: readonly string[]) => readonly string[];
+
 /** A steered follow-up's queue row; the resolver says whether the steer still stands. */
 export type SteerRef = NonNullable<NonNullable<ConversationSession['followUpInstructions']>[number]['steer']>;
 
@@ -143,17 +110,16 @@ export function ownerIntent(
   session: ConversationSession | undefined,
   user: string,
   isSteerStanding?: (steer: SteerRef) => boolean,
+  resolveSkills?: OwnerSkillResolver,
 ): SafetyUserIntent {
   const owner = session?.ownerId;
   if (!session || !owner || owner !== user) return { instructions: [] };
   const instructions: string[] = [];
-  const skills = new Set<string>();
   let incomplete = session.intentHistoryIncomplete === true;
   const add = (raw: string) => {
     const t = ownerText(raw);
     incomplete ||= t.ambiguous;
     if (t.text.length > 0) instructions.push(t.text);
-    for (const k of t.skills) skills.add(k);
   };
   if (session.initialInstruction && session.initialInstructionUserId === owner) add(session.initialInstruction);
   const all = session.followUpInstructions ?? [];
@@ -171,9 +137,17 @@ export function ownerIntent(
     add(f.text);
   }
   if (all.length >= FOLLOW_UP_CAP) incomplete = true;
+  // Skills only from what the owner did (their prose, their autoskills), resolved
+  // by the host — never from the appended block text. A failure gives none.
+  let skills: readonly string[] = [];
+  try {
+    skills = resolveSkills?.(owner, instructions) ?? [];
+  } catch {
+    skills = [];
+  }
   return {
     instructions,
-    ...(skills.size > 0 ? { invokedSkills: [...skills] } : {}),
+    ...(skills.length > 0 ? { invokedSkills: [...skills] } : {}),
     ...(incomplete ? { incomplete: true } : {}),
   };
 }
@@ -227,6 +201,8 @@ export interface BuildStreamOptionsDeps {
    * source of truth). Absent → every recorded steer counts.
    */
   isSteerStanding?: (steer: SteerRef) => boolean;
+  /** The skills the owner invoked themselves — the classifier's only skill provenance. */
+  resolveOwnerSkills?: OwnerSkillResolver;
   /**
    * Operator config for the incident evidence collector (`rules/config.md` owns
    * the getter's name; this dep only needs the value). Consulted **only** on the
@@ -386,7 +362,7 @@ export async function buildStreamOptions(
           // fail closed to `ask` when no classifier is wired or it errors.
           const command = typeof toolInput?.command === 'string' ? toolInput.command : '';
           const liveSession = deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs);
-          const intent = ownerIntent(liveSession, policyUser, deps.isSteerStanding);
+          const intent = ownerIntent(liveSession, policyUser, deps.isSteerStanding, deps.resolveOwnerSkills);
           const revisionBefore = liveSession?.ownerInputRevision ?? 0;
           const verdict = deps.safetyClassifier
             ? await deps.safetyClassifier
@@ -410,7 +386,7 @@ export async function buildStreamOptions(
           // The owner may have said something new while the model was judging (a
           // steered "don't"): an approval made without it is not used — ask instead.
           const sessionAfter = deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs);
-          const intentAfter = ownerIntent(sessionAfter, policyUser, deps.isSteerStanding);
+          const intentAfter = ownerIntent(sessionAfter, policyUser, deps.isSteerStanding, deps.resolveOwnerSkills);
           const ownerSpokeMeanwhile =
             (sessionAfter?.pendingOwnerInputs?.length ?? 0) > 0 || // accepted, not yet recorded
             (sessionAfter?.ownerInputRevision ?? 0) !== revisionBefore ||
