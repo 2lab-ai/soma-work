@@ -28,6 +28,73 @@ export interface PermissionRuleSummary {
   readonly description: string;
 }
 
+/** Slack caps a section text at 3000 chars; keep room for the fence and the label. */
+const WARNING_TEXT_MAX = 2800;
+
+function clipText(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+export interface PermissionWarningBlockArgs {
+  toolName: string;
+  input: unknown;
+  user?: string;
+  /** Rules the mechanical check matched after the model allowed the call. */
+  rules: ReadonlyArray<PermissionRuleSummary>;
+  /** The safety classifier's short reason for allowing it. */
+  reason: string;
+}
+
+/**
+ * The auto-mode permission WARNING card: the same shape as the permission
+ * request card (header, tool parameters, matched rules) but nothing is asked —
+ * no buttons, no approval id. Posted after the model allowed a call that the
+ * mechanical check still flags.
+ */
+export function buildPermissionWarningBlocks(args: PermissionWarningBlockArgs): any[] {
+  const { toolName, input, user, rules, reason } = args;
+  const userMention = user ? `<@${user}> ` : '';
+  let params: string;
+  try {
+    params = JSON.stringify(input, null, 2) ?? '';
+  } catch {
+    params = String(input);
+  }
+  const ruleLines = rules.map((r) => `• \`${r.id}\` — ${r.label}: ${r.description}`).join('\n');
+  return [
+    { type: 'header', text: { type: 'plain_text', text: `⚠️ Permission Warning — ${toolName}` } },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `${userMention}Auto mode approved this \`${toolName}\` call, but the mechanical check flagged it.\n\n*Tool Parameters:*\n\`\`\`json\n${clipText(params, WARNING_TEXT_MAX)}\n\`\`\``,
+      },
+    },
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: clipText(
+          `*Matched dangerous-command rule${rules.length > 1 ? 's' : ''}:*\n${ruleLines}`,
+          WARNING_TEXT_MAX,
+        ),
+      },
+    },
+    {
+      type: 'context',
+      elements: [
+        {
+          type: 'mrkdwn',
+          text: clipText(
+            `🤖 Classifier: ${reason || 'approved'} · No action needed — this is a warning, not a question.`,
+            WARNING_TEXT_MAX,
+          ),
+        },
+      ],
+    },
+  ];
+}
+
 /**
  * Handles Slack message creation and updates for permission requests
  */

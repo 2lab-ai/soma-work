@@ -513,7 +513,12 @@ export function createSettingsRegistry(deps: SettingsRegistryDeps): SettingsRegi
           { value: 'auto', label: '자동 (권장)', description: '위험한 도구는 실행 전에 확인합니다.' },
         ];
         // `bypass` is admin-only (applyBypass rejects it for anyone else).
-        if (isAdmin) options.push({ value: 'bypass', label: '확인 없이 실행', description: '모든 도구를 확인 없이 실행합니다. 관리자 전용.' });
+        if (isAdmin)
+          options.push({
+            value: 'bypass',
+            label: '확인 없이 실행',
+            description: '모든 도구를 확인 없이 실행합니다. 관리자 전용.',
+          });
         if (value === 'legacy') options.push({ value: 'legacy', label: 'legacy', description: '이전 방식' });
         return {
           key,

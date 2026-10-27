@@ -95,6 +95,7 @@ import {
   HandoffBudgetExhaustedError,
 } from './slack/handoff-budget';
 import { buildCompactHooks } from './slack/hooks/compact-hooks';
+import { publishPermissionWarning } from './slack/permission-warning-publisher';
 import { InputProcessor, type MessageEvent, SessionInitializer, StreamExecutor } from './slack/pipeline';
 import {
   advanceGoalQueue,
@@ -677,6 +678,15 @@ export class SlackHandler {
         threadTs,
         slackApi: this.slackApi,
         eventRouter: this.eventRouter,
+      }),
+    );
+
+    // 3. Auto-mode permission warnings (SSOT_2 #3): the model allowed a call the
+    //    mechanical check still flags → a buttonless warning card in the thread
+    //    and the same card in the dashboard chat (work log).
+    this.claudeHandler.setPermissionWarningNotifier?.((warning) =>
+      publishPermissionWarning(warning, {
+        postMessage: (channel, text, options) => this.slackApi.postMessage(channel, text, options),
       }),
     );
 

@@ -16,7 +16,22 @@
  */
 export const WORK_LOG_RAW_MAX_BYTES = 256 * 1024;
 
-export type WorkLogKind = 'instruction' | 'narration' | 'tool' | 'tool_result' | 'final' | 'notice' | 'error';
+export type WorkLogKind =
+  | 'instruction'
+  | 'narration'
+  | 'tool'
+  | 'tool_result'
+  | 'final'
+  | 'notice'
+  | 'error'
+  /** SSOT_2 #3 — auto mode allowed a call the mechanical check flags; `text` is the command, `warning` the card. */
+  | 'permission_warning';
+
+/** The card a `permission_warning` entry carries: the rules the mechanical check matched and the model's reason. */
+export interface WorkLogPermissionWarning {
+  rules: Array<{ id: string; label: string; description: string }>;
+  reason: string;
+}
 
 export interface WorkLogInput {
   kind: WorkLogKind;
@@ -42,6 +57,8 @@ export interface WorkLogInput {
    * `Task` call and on its tool result, whoever made the call.
    */
   agentRef?: string;
+  /** Set on `permission_warning` entries only. */
+  warning?: WorkLogPermissionWarning;
   /**
    * The full content behind the one-line `text`: a tool call's whole input, a
    * tool result's output. The store keeps it (size-capped, in a file of its

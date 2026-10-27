@@ -4538,6 +4538,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .btn-perm { min-height: 44px; }
 }
 .perm-note { margin-top: 6px; font-size: 0.74em; color: var(--red); overflow-wrap: anywhere; }
+/* SSOT_2 #3 — the auto-mode permission WARNING: the request card's look, no buttons, nothing pending. */
+.perm-warning { background: rgba(234,179,8,0.07); border-color: rgba(234,179,8,0.38); }
+.perm-warning .perm-head code { background: rgba(234,179,8,0.16); }
+.perm-warning-note { font-size: 0.74em; color: var(--text-secondary); overflow-wrap: anywhere; }
+.perm-warning-turn { margin-bottom: 8px; }
+.perm-warning-turn .perm-request { margin-top: 0; }
+.wl-permission_warning .perm-request { margin: 4px 0; }
 .panel-permission { padding: 0 16px 12px; border-bottom: 1px solid var(--border); }
 .panel-permission .perm-request { margin-top: 0; }
 .panel-permission .perm-head { font-size: 0.88em; }
@@ -13643,7 +13650,7 @@ function updateTokenBreakdown() {
 // A safety bound against a server that never stops saying hasMore — not a
 // size limit: 2000 pages of 500 is a million entries (SSOT 2026-10-22 T9).
 var WL_BACKFILL_MAX_PAGES = 2000;
-var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류' };
+var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류', permission_warning: '퍼미션 경고' };
 var WL_EMPTY_MSG = '작업 로그 없음';
 var WL_FORBIDDEN_MSG = '작업 로그는 세션 소유자만 볼 수 있어요';
 var WL_RAW_MISSING_MSG = '원본 출력이 저장되어 있지 않습니다';
@@ -14326,6 +14333,10 @@ function paintWorkLog(state, added) {
   if (!state.painted || (atBottom && !wlDetailOpen(state))) list.scrollTop = list.scrollHeight;
   else if (keepTop !== null) list.scrollTop = list.scrollHeight - keepTop;
   state.painted = true;
+  if (added.some(function(a) { return a && a.entry && a.entry.kind === 'permission_warning'; }) || !state.placedWarnings) {
+    state.placedWarnings = true;
+    placePermissionWarnings();
+  }
 }
 
 // Owner-only log (403 on any path) — only for the conversation still open.
@@ -14340,6 +14351,66 @@ function showWorkLogDenied(state) {
 function showWorkLogEmpty(message) {
   var list = document.getElementById('worklog-list');
   if (list && !list.querySelector('.wl-entry')) list.innerHTML = '<div class="wl-empty">' + esc(message || WL_EMPTY_MSG) + '</div>';
+}
+
+// ── Permission warning (SSOT_2 #3) ──
+// Auto mode let a call run that the mechanical check still flags. The owner
+// sees the Slack "Permission Request" card's look with nothing to answer: the
+// command, the matched rules, the model's reason. It lives in the work log
+// (owner-only) and is filed into the panel chat at its time.
+function renderPermissionWarningCard(e) {
+  var w = (e && e.warning) || {};
+  var rules = Array.isArray(w.rules) ? w.rules : [];
+  var time = typeof e.ts === 'number' && isFinite(e.ts)
+    ? new Date(e.ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false })
+    : '';
+  var rulesHtml = rules.length
+    ? '<div class="perm-rules"><span class="perm-rules-label">Matched dangerous-command rule' + (rules.length > 1 ? 's' : '') + '</span>'
+      + rules.map(function(r) { return '<span class="perm-rule"><code>' + esc(r.id) + '</code> &mdash; ' + esc(r.label) + ': ' + esc(r.description) + '</span>'; }).join('')
+      + '</div>'
+    : '';
+  return '<div class="perm-request perm-warning" role="note" aria-label="퍼미션 경고">'
+    + '<div class="perm-head">&#x26A0;&#xFE0F; Permission Warning &mdash; <code>' + esc(e.tool || 'Bash') + '</code>' + (time ? '<span class="turn-time">' + esc(time) + '</span>' : '') + '</div>'
+    + '<pre class="perm-params is-clamped">' + esc(String(e.text || '')) + '</pre>'
+    + rulesHtml
+    + '<div class="perm-warning-note">&#x1F916; auto mode 승인' + (w.reason ? ': ' + esc(String(w.reason)) : '') + ' &middot; 응답 필요 없음 (경고만 표시)</div>'
+    + '</div>';
+}
+
+// Where a warning at time ts goes among the chat's turn times (ascending): the
+// index of the first turn after it, -1 = after every turn, null = older than the
+// loaded turns while older pages remain (it is filed when they load).
+function permissionWarningSlot(turnTimes, ts, hasOlder) {
+  if (hasOlder && (!turnTimes.length || ts < turnTimes[0])) return null;
+  for (var i = 0; i < turnTimes.length; i++) if (turnTimes[i] > ts) return i;
+  return -1;
+}
+
+// File the open conversation's permission warnings into the panel chat. Each
+// warning goes in once (data-warn-seq); the nodes are not .turn, so the
+// artifact windows between turns are unchanged.
+function placePermissionWarnings() {
+  var turnsEl = document.getElementById('panel-turns');
+  var st = _wl;
+  if (!turnsEl || !st || st.convId !== panelConvId) return;
+  var warnings = (st.entries || []).filter(function(e) { return e && e.kind === 'permission_warning' && !e.agentId; });
+  if (!warnings.length) return;
+  for (var k = 0; k < warnings.length; k++) {
+    var e = warnings[k];
+    var seq = String(Math.floor(Number(e.seq) || 0));
+    if (turnsEl.querySelector('[data-warn-seq="' + seq + '"]')) continue;
+    var turns = turnsEl.querySelectorAll('.turn[data-ts]');
+    var times = [];
+    for (var i = 0; i < turns.length; i++) times.push(toNum(turns[i].getAttribute('data-ts')));
+    var slot = permissionWarningSlot(times, toNum(e.ts), _panelTurnsHasMore);
+    if (slot === null) continue;
+    var node = document.createElement('div');
+    node.className = 'perm-warning-turn';
+    node.setAttribute('data-warn-seq', seq);
+    node.innerHTML = renderPermissionWarningCard(e);
+    if (slot === -1) turnsEl.appendChild(node);
+    else turnsEl.insertBefore(node, turns[slot]);
+  }
 }
 
 function renderWorkLogEntry(e) {
@@ -14359,6 +14430,9 @@ function renderWorkLogEntry(e) {
   // of up to 256 KiB must not be read out in full.
   var detailHtml = '<div class="wl-detail" id="wl-detail-' + seq + '" aria-live="off" hidden></div>';
   var text = String(e.text || '');
+  if (kind === 'permission_warning') {
+    return '<div class="wl-entry wl-permission_warning"' + seqAttr + '>' + renderPermissionWarningCard(e) + '</div>';
+  }
   if (kind === 'tool' || kind === 'tool_result') {
     var fail = kind === 'tool_result' && e.ok === false;
     var mark = kind === 'tool' ? '&#x25B8;' : (fail ? '&#x2717;' : '&#x2713;');
@@ -17670,6 +17744,7 @@ function decoratePanelTurns() {
     start = ts;
   }
   decorateAnswerTurns(); // re-ai-answer D11 · D12
+  placePermissionWarnings(); // SSOT_2 #3 — warnings filed at their time in the chat
 }
 
 function artPeekEl() {

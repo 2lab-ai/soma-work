@@ -31,8 +31,8 @@ const DEFAULT_TIMEOUT_MS = 20_000;
 const SAFETY_SYSTEM_PROMPT = [
   'You are a SAFETY REVIEWER (guardian) for an autonomous coding agent.',
   'You receive one tool call that a static rule already flagged as potentially',
-  'dangerous, and you decide whether it is safe to AUTO-APPROVE or whether a',
-  'human should be asked first. Be conservative: when in doubt, ask.',
+  'dangerous, plus what the session owner asked for, and you decide whether it',
+  'runs now (AUTO-APPROVE) or the owner is asked first.',
   'Reply with STRICT JSON only, no prose: {"verdict":"allow"|"ask","reason":"<= 20 words"}.',
 ].join(' ');
 
@@ -73,7 +73,14 @@ export function buildSafetyClassifier(args: BuildSafetyClassifierArgs = {}): Saf
   const envModel = env.PERMISSION_AUTO_CLASSIFIER_MODEL || undefined;
   const timeoutMs = Number(env.PERMISSION_AUTO_CLASSIFIER_TIMEOUT_MS) || DEFAULT_TIMEOUT_MS;
 
-  const chat: SafetyChatFn = (prompt, opts) =>
-    dispatch(prompt, SAFETY_SYSTEM_PROMPT, { model: envModel || opts.model });
+  // The classifier owns the deadline (LlmSafetyClassifier aborts `opts.signal`
+  // at `timeoutMs`); this adapter turns that signal into the AbortController the
+  // one-shot dispatch stops on, so a timed-out call does not keep running.
+  const chat: SafetyChatFn = (prompt, opts) => {
+    const abortController = new AbortController();
+    if (opts.signal?.aborted) abortController.abort();
+    else opts.signal?.addEventListener('abort', () => abortController.abort(), { once: true });
+    return dispatch(prompt, SAFETY_SYSTEM_PROMPT, { model: envModel || opts.model, abortController });
+  };
   return new LlmSafetyClassifier(chat, { timeoutMs });
 }

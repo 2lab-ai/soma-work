@@ -202,7 +202,7 @@ export function closeTaskList(ledger: TaskLedger | undefined): TaskLedger | unde
 }
 
 /** Work-log kinds that belong to the task in progress. Instructions and final answers frame the turn. */
-const TASK_SCOPED_KINDS = new Set(['narration', 'tool', 'tool_result', 'notice', 'error']);
+const TASK_SCOPED_KINDS = new Set(['narration', 'tool', 'tool_result', 'notice', 'error', 'permission_warning']);
 /** Longest task title a work-log entry carries. */
 export const WORK_LOG_TASK_TITLE_MAX = 200;
 

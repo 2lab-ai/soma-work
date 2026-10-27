@@ -204,6 +204,30 @@ describe('work log store', () => {
     expect(again.entries[again.entries.length - 1].attributed).toBeUndefined();
   });
 
+  it('keeps a permission warning (kind permission_warning + its rules and reason, capped) — SSOT_2 #3 T8.3', async () => {
+    const e = await wl.appendWorkLog('conv-warn', {
+      kind: 'permission_warning',
+      text: 'rm -rf /tmp/scratch',
+      tool: 'Bash',
+      warning: {
+        reason: 'r'.repeat(5000),
+        rules: [
+          { id: 'rm-recursive', label: 'recursive delete', description: 'd'.repeat(5000) },
+          ...Array.from({ length: 20 }, (_, i) => ({ id: `x${i}`, label: 'l', description: 'd' })),
+        ],
+      },
+    });
+    expect(e.kind).toBe('permission_warning');
+    expect(e.warning?.rules[0]).toMatchObject({ id: 'rm-recursive', label: 'recursive delete' });
+    expect(e.warning?.rules[0].description.length).toBe(wl.WORK_LOG_FIELD_MAX);
+    expect(e.warning?.rules.length).toBeLessThanOrEqual(10);
+    expect(e.warning?.reason.length).toBeLessThanOrEqual(1000);
+    const page = await wl.readWorkLog('conv-warn');
+    expect(page.entries[0]).toMatchObject({ kind: 'permission_warning', tool: 'Bash', warning: e.warning });
+    const plain = await wl.appendWorkLog('conv-warn', { kind: 'notice', text: 'n' });
+    expect('warning' in plain).toBe(false);
+  });
+
   it('serializes concurrent appends so every line stays whole and ordered', async () => {
     const all = Array.from({ length: 50 }, (_, i) =>
       wl.appendWorkLog('conv-c', { kind: 'narration', text: `step ${i}` }),

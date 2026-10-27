@@ -1474,6 +1474,7 @@ export class SessionRegistry {
     // Clear in-memory debugging fields (system prompt snapshot, user instruction SSOT)
     session.systemPrompt = undefined;
     session.initialInstruction = undefined;
+    session.initialInstructionUserId = undefined;
     session.followUpInstructions = undefined;
     // Clear any pending rejection flag — runtime-only, must not leak across
     // /new or CONTINUE_SESSION resetSession boundaries (otherwise the next

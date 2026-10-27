@@ -653,7 +653,9 @@ export interface ConversationSession {
   // User instruction SSOT: stores the original user instruction and follow-ups.
   // Used by the bot to self-verify instruction compliance. NOT persisted to disk.
   initialInstruction?: string;
-  followUpInstructions?: Array<{ timestamp: number; text: string; speaker: string }>;
+  /** Slack user id that wrote `initialInstruction` (the auto-mode classifier quotes only the owner's own words). */
+  initialInstructionUserId?: string;
+  followUpInstructions?: Array<{ timestamp: number; text: string; speaker: string; userId?: string }>;
 
   // User SSOT instructions: structured, model-readable, persisted to disk.
   // Exposed to the model via GET_SESSION and managed via UPDATE_SESSION instructionOperations.
