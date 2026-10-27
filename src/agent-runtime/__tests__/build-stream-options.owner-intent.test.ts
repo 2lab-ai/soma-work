@@ -138,4 +138,21 @@ describe('ownerIntent', () => {
     });
     expect(ownerIntent(s, OWNER).incomplete).toBe(true);
   });
+
+  // Re-run (astra P1): concurrent writers can append out of order — the intent
+  // is quoted in the owner's own chronology.
+  it('orders follow-ups by when the owner sent them', () => {
+    const s = session({
+      initialInstruction: 'Review old files',
+      followUpInstructions: [
+        { timestamp: 3000, text: 'Do NOT delete ./old until I confirm', speaker: 'o', userId: OWNER },
+        { timestamp: 2000, text: 'Delete ./old now', speaker: 'o', userId: OWNER },
+      ],
+    });
+    expect(ownerIntent(s, OWNER).instructions).toEqual([
+      'Review old files',
+      'Delete ./old now',
+      'Do NOT delete ./old until I confirm',
+    ]);
+  });
 });

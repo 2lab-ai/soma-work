@@ -1084,7 +1084,7 @@ export class SlackHandler {
     try {
       await this.handleMessageInner(event, say);
     } finally {
-      if (owner) settleOwnerInput(owner, event.ts);
+      owner?.settle();
     }
   }
 
@@ -4687,7 +4687,7 @@ export class SlackHandler {
    * accepted (synchronous; the session is the canonical one after a bot-thread
    * migration). Best effort — never fails the message.
    */
-  private noteOwnerInput(event: MessageEvent): ConversationSession | undefined {
+  private noteOwnerInput(event: MessageEvent): { settle: () => void } | undefined {
     try {
       // A host-made continuation is not the owner speaking.
       if ((event as { synthetic?: boolean }).synthetic || !event.user || !event.ts) return;
@@ -4696,7 +4696,10 @@ export class SlackHandler {
       const threadTs = (event as { thread_ts?: string }).thread_ts || event.ts;
       const key = this.claudeHandler?.getSessionKey?.(event.channel, threadTs);
       if (!key) return;
-      return this.beginOwnerInput(key, event.user, event.ts)?.session;
+      const handle = this.beginOwnerInput(key, event.user, event.ts);
+      // Only the delivery that created the registration owns (and settles) it: a
+      // redelivered copy that returns early must not clear the original's guard.
+      return handle?.created ? handle : undefined;
     } catch {
       // bookkeeping only
       return undefined;
@@ -4714,15 +4717,16 @@ export class SlackHandler {
     sessionKey: string,
     user: string,
     inputId: string,
-  ): { session: ConversationSession; settle: () => void } | undefined {
+  ): { session: ConversationSession; created: boolean; settle: () => void } | undefined {
     const session = this.claudeHandler?.getSessionByKey?.(this.canonicalFollowupKey(sessionKey));
     if (!session || session.ownerId !== user) return undefined;
     const pending = session.pendingOwnerInputs ?? [];
-    if (!pending.includes(inputId)) {
+    const created = !pending.includes(inputId);
+    if (created) {
       session.ownerInputRevision = (session.ownerInputRevision ?? 0) + 1;
       session.pendingOwnerInputs = [...pending, inputId];
     }
-    return { session, settle: () => settleOwnerInput(session, inputId) };
+    return { session, created, settle: () => settleOwnerInput(session, inputId) };
   }
 
   /**
