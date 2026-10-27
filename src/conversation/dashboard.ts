@@ -14342,8 +14342,10 @@ function paintWorkLog(state, added) {
 // Owner-only log (403 on any path) — only for the conversation still open.
 function showWorkLogDenied(state) {
   if (state !== _wl || state.closed) return;
-  // Live entries painted before the 403 go too: the log is owner-only.
+  // Live entries painted before the 403 go too: the log is owner-only — and so
+  // do their permission-warning copies in the chat.
   state.entries = [];
+  removePermissionWarnings();
   var list = document.getElementById('worklog-list');
   setTextIfChanged(document.getElementById('worklog-count'), '');
   if (list) list.innerHTML = '<div class="wl-empty">' + esc(WL_FORBIDDEN_MSG) + '</div>';
@@ -14394,20 +14396,28 @@ function permissionWarningSlot(nodes, ts, seq, hasOlder) {
   return -1;
 }
 
+// Take every permission-warning card out of the panel chat.
+function removePermissionWarnings() {
+  var turnsEl = document.getElementById('panel-turns');
+  if (!turnsEl) return;
+  var old = turnsEl.querySelectorAll('.perm-warning-turn');
+  for (var i = 0; i < old.length; i++) old[i].remove();
+}
+
 // File the open conversation's permission warnings into the panel chat, merged
-// with the turns and the warnings already there by time. Each warning goes in
-// once (data-warn-seq); the nodes are not .turn, so the artifact windows
-// between turns are unchanged.
+// with the turns by time (then seq). Every call re-files them all, so a turn that
+// lands later between two others (a settled steer) never leaves a warning out of
+// order. The nodes are not .turn, so the artifact windows between turns are
+// unchanged.
 function placePermissionWarnings() {
   var turnsEl = document.getElementById('panel-turns');
   var st = _wl;
   if (!turnsEl || !st || st.convId !== panelConvId) return;
+  removePermissionWarnings();
   var warnings = (st.entries || []).filter(function(e) { return e && e.kind === 'permission_warning' && !e.agentId; });
-  if (!warnings.length) return;
   for (var k = 0; k < warnings.length; k++) {
     var e = warnings[k];
     var seq = Math.floor(Number(e.seq) || 0);
-    if (turnsEl.querySelector('[data-warn-seq="' + seq + '"]')) continue;
     var els = turnsEl.querySelectorAll('.turn[data-ts], .perm-warning-turn[data-ts]');
     var nodes = [];
     for (var i = 0; i < els.length; i++) {

@@ -54,8 +54,10 @@ export interface SafetyClassifyRequest {
 }
 
 export interface SafetyUserIntent {
-  /** Owner-authored messages, oldest first (the first instruction, then recent follow-ups). */
+  /** Owner-authored messages, oldest first (the first instruction, then follow-ups). */
   instructions: readonly string[];
+  /** The host may already have lost older messages (a capped history): treat as cut. */
+  incomplete?: boolean;
 }
 
 export interface SafetyClassifier {
@@ -101,7 +103,7 @@ function intentBlock(intent: SafetyUserIntent | undefined): string[] {
   }
   const kept: string[] = [];
   let total = 0;
-  let cut = false;
+  let cut = intent?.incomplete === true;
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = clip(messages[i]);
     if (total + m.text.length > INTENT_TOTAL_MAX_CHARS) {

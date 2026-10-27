@@ -93,9 +93,15 @@ const PY_READER_MODULES = new Set([
   'statistics',
   'pprint',
 ]);
-/** node: `require('fs').readFileSync(0…)` / `fs.readFileSync(0…)` is the one allowed read (stdin). */
+/**
+ * node: the one allowed read is stdin through the literal descriptor 0 —
+ * `require('fs').readFileSync(0)` / `fs.readFileSync(0, 'utf8')`, nothing computed.
+ */
 const NODE_STDIN_READ =
-  /\brequire\s*\(\s*['"](?:node:)?fs['"]\s*\)\s*\.\s*readFileSync\s*\(\s*0\b|\bfs\s*\.\s*readFileSync\s*\(\s*0\b/g;
+  /(?:\brequire\s*\(\s*['"](?:node:)?fs['"]\s*\)|\bfs)\s*\.\s*readFileSync\s*\(\s*0\s*(?:,\s*['"][\w-]+['"]\s*)?\)/g;
+/** node: computed or global property access can reach anything (`globalThis["ev"+"al"]`, `this[k]`). */
+const NODE_COMPUTED_ACCESS = /\b(?:globalThis|global|this|self|Reflect|Proxy)\b|\[\s*[^\]\d\s]/;
+/\brequire\s*\(\s*['"](?:node:)?fs['"]\s*\)\s*\.\s*readFileSync\s*\(\s*0\b|\bfs\s*\.\s*readFileSync\s*\(\s*0\b/g;
 
 function isDataReaderCode(family: InterpreterFamily, code: string): boolean {
   if (code.trim().length === 0) return false;
@@ -112,8 +118,10 @@ function isDataReaderCode(family: InterpreterFamily, code: string): boolean {
       if (!PY_READER_MODULES.has(m[1])) return false;
     }
   } else if (family === 'node') {
-    // After the one allowed stdin read, no require, fs or *Sync call may remain.
-    if (/\brequire\b|\bfs\b|\w+Sync\b/.test(code.replace(NODE_STDIN_READ, 'STDIN'))) return false;
+    const rest = code.replace(NODE_STDIN_READ, 'STDIN');
+    // After the one allowed stdin read, no require, fs or *Sync call may remain,
+    // and nothing may be reached through a computed or global property.
+    if (/\brequire\b|\bfs\b|\w+Sync\b/.test(rest) || NODE_COMPUTED_ACCESS.test(rest)) return false;
   }
   return true;
 }

@@ -4017,6 +4017,7 @@ export class SlackHandler {
         user: event.user,
         sentAt: slackTsMs(event.ts),
       });
+      this.recordSteerAsFollowUp(sessionKey, rawText, event.user, slackTsMs(event.ts));
       (this.followupSteerUuids ??= new Map()).set(item.id, steered.uuid);
       return 'steered';
     } catch (error) {
@@ -4593,6 +4594,34 @@ export class SlackHandler {
   }
 
   /**
+   * A message steered into the live turn is a follow-up instruction from the
+   * moment it is steered: the auto-mode classifier quotes it for the turn's next
+   * tool calls (a mid-turn "don't delete" must count before the turn ends). Only
+   * with a known author — the classifier keys intent on user id. A steer the
+   * queue later takes back is recorded again when it runs as a turn; a repeated
+   * instruction is harmless, a missing one is not.
+   */
+  private recordSteerAsFollowUp(sessionKey: string, text: string, user: string | undefined, sentAt?: number): void {
+    try {
+      const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
+      if (!session || !text || !user) return;
+      const followUps = session.followUpInstructions ?? [];
+      followUps.push({
+        timestamp: sentAt ?? Date.now(),
+        text,
+        speaker: userSettingsStore.getUserSettings?.(user)?.slackDisplayName ?? user,
+        userId: user,
+      });
+      session.followUpInstructions = followUps.slice(-50);
+    } catch (error) {
+      this.logger.warn('Steered message was not recorded as a follow-up instruction', {
+        sessionKey,
+        error: (error as Error)?.message ?? String(error),
+      });
+    }
+  }
+
+  /**
    * A steered message the model read becomes a user turn of the session's
    * conversation, with its files (user media, SSOT 2026-10-25) — the executor
    * never saw it, so nothing else records it. Best effort: a bookkeeping
@@ -4605,19 +4634,6 @@ export class SlackHandler {
   ): Promise<void> {
     try {
       const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
-      // The model read this message mid-turn: it is a follow-up instruction like
-      // any other — the auto-mode classifier quotes it (a late "don't delete" must
-      // count). Only with a known author: the classifier keys intent on user id.
-      if (session && instruction.text && instruction.user) {
-        const followUps = session.followUpInstructions ?? [];
-        followUps.push({
-          timestamp: instruction.sentAt ?? Date.now(),
-          text: instruction.text,
-          speaker: userSettingsStore.getUserSettings?.(instruction.user)?.slackDisplayName ?? instruction.user,
-          userId: instruction.user,
-        });
-        session.followUpInstructions = followUps.slice(-50);
-      }
       const conversationId = session?.conversationId;
       if (!conversationId || (!instruction.text && files.length === 0)) return;
       let attachments: Awaited<ReturnType<typeof captureUserMedia>> | undefined;

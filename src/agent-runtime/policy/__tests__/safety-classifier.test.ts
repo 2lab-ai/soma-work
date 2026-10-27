@@ -135,6 +135,12 @@ describe('LlmSafetyClassifier — owner intent in the prompt (T7.2)', () => {
     expect(prompt).toMatch(/do not allow a destructive/i);
   });
 
+  it('says the history is incomplete when the host marked it so', async () => {
+    const chat = vi.fn().mockResolvedValue('{"verdict":"ask","reason":"x"}');
+    await new LlmSafetyClassifier(chat).classify({ ...BASE, userIntent: { instructions: ['go'], incomplete: true } });
+    expect(chat.mock.calls[0][0]).toMatch(/do not allow a destructive/i);
+  });
+
   it('caps the quoted intent so a huge instruction cannot flood the prompt', async () => {
     const chat = vi.fn().mockResolvedValue('{"verdict":"ask","reason":"x"}');
     await new LlmSafetyClassifier(chat).classify({ ...BASE, userIntent: { instructions: ['가'.repeat(20000)] } });
