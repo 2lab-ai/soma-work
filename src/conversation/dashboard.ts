@@ -12972,14 +12972,18 @@ function paintPushedBoard(board) {
 // poll) and ends in 다시 시도. The deadline is for the answer, not the transfer —
 // a large board on a slow link still arrives. Certified, polls run unbounded.
 var BOARD_LOAD_TIMEOUT_MS = 20000;
-// Before certification there is one load at a time. The same user's next ask
-// (task_update, toggles, the 30 s poll, 다시 시도) joins it: killing it would
-// restart the clock on a busy board, and a second request would pay a second
-// sibling fan-out. A user switch aborts it — its answer would be dropped.
-var _sessionsInflight = null; // { user, ctl, done, settle }
+// Before certification there is one load waiting for its answer at a time. The
+// same user's next ask (task_update, toggles, the 30 s poll, 다시 시도) joins it:
+// killing it would restart the clock on a busy board, and a second request would
+// pay a second sibling fan-out. A user switch aborts it — its answer would be
+// dropped, and its abort is not a failure of whatever load comes next. Once the
+// answer's headers are in the slot is free: a body that stalls never swallows
+// the next ask.
+var _sessionsInflight = null; // { user, ctl, done, settle, superseded }
 async function loadSessions() {
   if (_sessionsInflight) {
     if (_sessionsInflight.user === currentUserId) return _sessionsInflight.done;
+    _sessionsInflight.superseded = true;
     _sessionsInflight.ctl.abort();
     _sessionsInflight = null;
   }
@@ -12998,6 +13002,7 @@ async function loadSessions() {
     const url = '/api/dashboard/sessions' + (currentUserId ? '?userId=' + currentUserId : '');
     const res = await fetch(url, entry ? { signal: entry.ctl.signal } : {});
     clearTimeout(timer);
+    if (entry && _sessionsInflight === entry) _sessionsInflight = null; // answered: the next ask is a new request
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     if (forUser !== currentUserId) return;
@@ -13013,7 +13018,7 @@ async function loadSessions() {
     }
   } catch (e) {
     clearTimeout(timer);
-    if (forUser !== currentUserId) return;
+    if ((entry && entry.superseded) || forUser !== currentUserId) return;
     console.error('Failed to load sessions', e);
     var held = _boardLoad === 'loading' && _heldWsBoard && _heldWsBoard.user === forUser ? _heldWsBoard.board : null;
     _heldWsBoard = null;
