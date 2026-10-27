@@ -595,7 +595,7 @@ describe('work log core (shipped wl* functions)', () => {
 
 describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEntry + esc)', () => {
   const { renderWorkLogEntry } = load<{ renderWorkLogEntry(e: unknown): string }>(
-    ['decodeSlackEntities', 'esc', 'escAttr', 'renderWorkLogEntry'],
+    ['decodeSlackEntities', 'esc', 'escAttr', 'wlToolSummary', 'renderWorkLogEntry'],
     ['WL_LABELS'],
   );
   /** Every " left after removing the attributes we emit would be an attribute break-out. */
@@ -606,7 +606,7 @@ describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEn
   const tags = (html: string) =>
     (html.match(/<\/?([a-z0-9]+)/gi) ?? []).map((t) => t.replace(/[</]/g, '').toLowerCase());
 
-  it('a tool call is one card element: its name and text never reach the markup (they go in as data)', () => {
+  it('a tool call is one card element; its fallback text (shown only if the element never loads) is escaped', () => {
     for (const kind of ['tool', 'tool_result']) {
       const html = renderWorkLogEntry({
         seq: 1,
@@ -616,9 +616,11 @@ describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEn
         text: '"><script>alert(1)</script><a href="javascript:x">',
       });
       const all = (html.match(/<\/?([a-z0-9-]+)/gi) ?? []).map((t) => t.replace(/[</]/g, '').toLowerCase());
-      expect(new Set(all)).toEqual(new Set(['div', 'ui-tool-call-card']));
-      expect(html).not.toContain('img');
-      expect(html).not.toContain('script');
+      expect(new Set(all)).toEqual(new Set(['div', 'ui-tool-call-card', 'span']));
+      expect(html).not.toContain('<img');
+      expect(html).not.toContain('<script');
+      expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+      // Every " left after removing the attributes we emit (and the escaped text) would be a break-out.
       expect(html.replace(/\s(class|data-seq|lang|data-key)="[^"]*"/g, '')).not.toContain('"');
     }
     // A hostile seq cannot reach data-seq / data-key.
@@ -644,10 +646,13 @@ describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEn
 
   it('every entry is one root: a keyboard-reachable row that controls its (empty, hidden) detail block', () => {
     expect(renderWorkLogEntry({ seq: 7, kind: 'tool', tool: 'Bash', text: 'Bash {"command":"ls"}' })).toBe(
-      '<div class="wl-entry wl-toolcall" data-seq="7"><ui-tool-call-card class="wl-card" lang="ko" data-key="7"></ui-tool-call-card></div>',
+      '<div class="wl-entry wl-toolcall" data-seq="7"><ui-tool-call-card class="wl-card" lang="ko" data-key="7">' +
+        '<span class="wl-card-fallback"><span class="wl-tool-name">Bash</span> {&quot;command&quot;:&quot;ls&quot;}</span>' +
+        '</ui-tool-call-card></div>',
     );
-    expect(renderWorkLogEntry({ seq: 9, kind: 'tool_result', tool: 'Bash', ok: true, text: 'Bash ok' })).toBe(
-      '<div class="wl-entry wl-toolcall is-orphan" data-seq="9"><ui-tool-call-card class="wl-card" lang="ko" data-key="9"></ui-tool-call-card></div>',
+    expect(renderWorkLogEntry({ seq: 9, kind: 'tool_result', tool: 'Bash', ok: false, text: 'Bash error' })).toBe(
+      '<div class="wl-entry wl-toolcall is-orphan" data-seq="9"><ui-tool-call-card class="wl-card" lang="ko" data-key="9">' +
+        '<span class="wl-card-fallback"><span class="wl-tool-name">Bash</span> 실패</span></ui-tool-call-card></div>',
     );
     for (const e of [
       { seq: 8, kind: 'narration', text: 'Reading the schema.' },
@@ -1946,6 +1951,7 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
         'decodeSlackEntities',
         'setTextIfChanged',
         'renderTaskMeta',
+        'wlToolSummary',
         'renderWorkLogEntry',
         'wlGroupOf',
         'wlBuildRows',

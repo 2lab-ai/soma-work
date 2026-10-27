@@ -5325,6 +5325,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   --ui-dur-move: var(--dur-move); --ui-dur-fade: var(--dur-fade); --ui-radius: var(--radius);
 }
 .worklog-list ui-tool-call-card { display: block; min-width: 0; }
+.wl-card-fallback {
+  display: block; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+  font-family: 'SF Mono','Fira Code',ui-monospace,monospace; font-size: 11.5px; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .slide-panel-overlay {
   position: fixed;
   top: 0; left: 0;
@@ -11131,7 +11136,7 @@ function repaintWorkLogScope() {
   if (!_wl.entries.length) return;
   wlRenderList(_wl, list);
   updateTimersIn(list);
-  setTextIfChanged(document.getElementById('worklog-count'), String(wlScopeEntries(_wl.entries).length));
+  setTextIfChanged(document.getElementById('worklog-count'), String(wlVisible(_wl, wlScopeEntries(_wl.entries)).length));
   wlEnsureTabStop(list);
   if (!wlScopeEntries(_wl.entries).length) showWorkLogEmpty('이 에이전트의 작업 로그 없음');
 }
@@ -14680,7 +14685,8 @@ function paintWorkLog(state, added) {
   if (tail) wlAppendTail(state, list, added);
   else wlRenderList(state, list);
   updateTimersIn(list);
-  var scopedCount = wlScopeEntries(state.entries).length;
+  // What the list shows: a paired result lives in its call's card, so it is not counted twice.
+  var scopedCount = wlVisible(state, wlScopeEntries(state.entries)).length;
   setTextIfChanged(document.getElementById('worklog-count'), String(scopedCount));
   // Spec 12: entries of another agent arrived while this agent's log is empty — keep the empty line.
   if (!scopedCount) showWorkLogEmpty('이 에이전트의 작업 로그 없음');
@@ -14916,8 +14922,9 @@ function wlLoadCardDetail(state, key) {
         else det.result = r.raw;
         if (r.truncated) notes.push(label + ': 저장된 앞 256 KiB만 표시 — 원본 ' + formatBytes(r.bytes));
       } else if (r.status === 'missing') notes.push(label + ': ' + WL_RAW_MISSING_MSG);
-      else if (r.status === 'denied') fail = WL_FORBIDDEN_MSG;
-      else if (r.status === 'damaged') fail = fail || WL_RAW_DAMAGED_MSG;
+      // Final answers (cached): a note — 다시 시도 would only get the same answer.
+      else if (r.status === 'denied') notes.push(WL_FORBIDDEN_MSG);
+      else if (r.status === 'damaged') notes.push(label + ': ' + WL_RAW_DAMAGED_MSG);
       else fail = fail || WL_RAW_ERROR_MSG;
     }
     if (notes.length) det.note = notes.join(' · ');
@@ -14971,8 +14978,14 @@ function renderWorkLogEntry(e) {
   // Spec 12's 지시 / 결과 rows of a subagent scope stay rows.
   if ((kind === 'tool' || kind === 'tool_result') && !e._role) {
     var cardLink = kind === 'tool' && e.agentRef ? wlChildBlock(String(e.agentRef)) : '';
+    // Light-DOM text: shown until the element is defined — and for good if its
+    // module never loads (the card's shadow root has no slot, so it hides it).
+    var fbTool = e.tool ? String(e.tool) : '';
+    var fbText = kind === 'tool' ? wlToolSummary(fbTool, text) : (e.ok === false ? '실패' : '완료');
     return '<div class="wl-entry wl-toolcall' + (kind === 'tool_result' ? ' is-orphan' : '') + '"' + seqAttr + '>'
-      + '<ui-tool-call-card class="wl-card" lang="ko" data-key="' + seq + '"></ui-tool-call-card>'
+      + '<ui-tool-call-card class="wl-card" lang="ko" data-key="' + seq + '">'
+      + '<span class="wl-card-fallback"><span class="wl-tool-name">' + esc(fbTool) + '</span> ' + esc(fbText) + '</span>'
+      + '</ui-tool-call-card>'
       + cardLink + '</div>';
   }
   if (kind === 'tool' || kind === 'tool_result') {

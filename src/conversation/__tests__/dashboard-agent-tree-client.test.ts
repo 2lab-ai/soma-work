@@ -635,7 +635,7 @@ describe('panel scope (§4.3)', () => {
 
   it('rows say 지시 / 결과 / 배경 실행 시작 in a subagent scope', () => {
     const r = load<{ renderWorkLogEntry(e: unknown): string }>(
-      [...NODE_FNS, 'decodeSlackEntities', 'wlChildBlock', 'renderWorkLogEntry'],
+      [...NODE_FNS, 'decodeSlackEntities', 'wlChildBlock', 'wlToolSummary', 'renderWorkLogEntry'],
       [...AGENT_VARS, 'WL_LABELS'],
       { panelSessionKey: 'k', _sessionCache: { k: card() } },
     );
@@ -719,7 +719,10 @@ describe('panel scope (§4.3)', () => {
     expect(fnBody('selectPanelAgent')).toContain('repaintWorkLogScope();');
     // Paired tool results live in their call's card (wlVisible), so they are not rows.
     expect(fnBody('wlRenderList')).toContain('wlBuildRows(wlVisible(state, wlScopeEntries(state.entries)))');
-    expect(fnBody('paintWorkLog')).toContain('var scopedCount = wlScopeEntries(state.entries).length;');
+    // Counts what the list shows: a paired result lives in its call's card.
+    expect(fnBody('paintWorkLog')).toContain(
+      'var scopedCount = wlVisible(state, wlScopeEntries(state.entries)).length;',
+    );
     expect(fnBody('paintWorkLog')).toContain("if (!scopedCount) showWorkLogEmpty('이 에이전트의 작업 로그 없음');");
     expect(fnBody('renderCardFace')).toContain('+ renderCardAgents(s)');
     expect(fnBody('renderCardBody')).toContain('const agentsHtml = renderAgentTree(s, col);');
@@ -991,7 +994,7 @@ describe('panel — drill-down over the same node type (path · focused node · 
 });
 
 describe('work log — a child is one live block at the point it was started', () => {
-  const ENTRY_FNS = [...NODE_FNS, 'decodeSlackEntities', 'wlChildBlock', 'renderWorkLogEntry'];
+  const ENTRY_FNS = [...NODE_FNS, 'decodeSlackEntities', 'wlChildBlock', 'wlToolSummary', 'renderWorkLogEntry'];
   const spawn = { seq: 2, ts: 0, kind: 'tool', tool: 'Agent', text: 'Agent {}', agentRef: 'toolu_explore' };
   const r = (agents: Agent[] = AGENTS) =>
     load<{ renderWorkLogEntry(e: unknown): string }>(ENTRY_FNS, [...AGENT_VARS, 'WL_LABELS'], {

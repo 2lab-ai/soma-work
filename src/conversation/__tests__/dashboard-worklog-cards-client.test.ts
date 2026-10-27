@@ -288,7 +288,7 @@ describe('opening a card fetches its input and output (shipped wlToggleCard + wl
     expect(r.loads).toEqual([1, 2]);
   });
 
-  it('not stored → a note; owner-only / failed → an error the card offers to retry', async () => {
+  it('not stored / owner-only → a note; a failed load → an error the card offers to retry', async () => {
     const r = rig({ 1: { status: 'missing' }, 2: { status: 'error' } });
     r.m.wlToggleCard(r.st, r.card, true);
     await flush();
@@ -305,9 +305,10 @@ describe('opening a card fetches its input and output (shipped wlToggleCard + wl
     const denied = rig({ 1: { status: 'denied' }, 2: { status: 'ok', raw: 'x', bytes: 1 } });
     denied.m.wlToggleCard(denied.st, denied.card, true);
     await flush();
-    expect((denied.st.cardDetail as Record<number, Record<string, unknown>>)[1].detailError).toBe(
-      '작업 로그는 세션 소유자만 볼 수 있어요',
-    );
+    // Owner-only is a final answer: a note, not a retry that would only get the same answer.
+    const deniedDet = (denied.st.cardDetail as Record<number, Record<string, unknown>>)[1];
+    expect(deniedDet.note).toBe('작업 로그는 세션 소유자만 볼 수 있어요');
+    expect(deniedDet.detailError).toBeUndefined();
   });
 
   it('a late answer for a conversation no longer shown is dropped', async () => {
@@ -342,7 +343,16 @@ describe('a live result fills its call card instead of adding a row (shipped wlA
       ],
     };
     const m = load<{ wlAppendTail(st: unknown, list: unknown, added: unknown[]): void }>(
-      [...PAIR_FNS, 'wlGroupOf', 'wlAppendTail', 'renderWorkLogEntry', 'esc', 'escAttr', 'decodeSlackEntities'],
+      [
+        ...PAIR_FNS,
+        'wlGroupOf',
+        'wlAppendTail',
+        'wlToolSummary',
+        'renderWorkLogEntry',
+        'esc',
+        'escAttr',
+        'decodeSlackEntities',
+      ],
       ['WL_LABELS'],
       {
         document: {
