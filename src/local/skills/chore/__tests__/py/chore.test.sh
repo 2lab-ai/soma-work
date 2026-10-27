@@ -2465,7 +2465,7 @@ need "penc without a registry: rc=$RC" rc 0
 need "penc output" test "$(cat "$C/penc.out")" = "a%3Bb"
 end
 
-begin "126 the registry's own work tree is refused (registry in a subdirectory of the clone; the row or the registry path through a symlink) for report, apply and verify before any gh call; a registry in another git work tree or in none → no refusal" std
+begin "126 the registry's own work tree is refused (registry in a subdirectory of the clone; the row or the registry path through a directory symlink, or the registry path itself a file symlink (its directory in no work tree or in another one)) for report, apply and verify before any gh call; a registry in another git work tree or in none → no refusal" std
 mkdir -p "$C/work/reg"; ln -s "$C/work" "$C/wlink"
 printf '| repo | local path | remote | note |\n|---|---|---|---|\n| `t` | `%s` | `test/repo` | test |\n' "$C/wlink" > "$C/work/reg/repos.md"
 export CHORE_REPOS_MD="$C/work/reg/repos.md"
@@ -2485,6 +2485,19 @@ export CHORE_REPOS_MD="$C/wlink/reg/repos.md"
 rep
 need "symlinked registry path: refused rc=$RC" rc 1
 need "symlinked registry path: message" has "$C/rep.err" "chore: refusing to run on the registry's own repository"
+# CHORE_REPOS_MD = a file symlink to that registry, the symlink in a directory in no git work tree / in another one
+mkdir -p "$C/nowt"; ln -s "$C/work/reg/repos.md" "$C/nowt/repos.md"
+need "precondition: the file symlink's directory is in no work tree" sh -c "! git -C '$C/nowt' rev-parse --show-toplevel"
+export CHORE_REPOS_MD="$C/nowt/repos.md"
+rep
+need "file symlink outside any work tree: refused rc=$RC $(head -c 200 "$C/rep.err")" rc 1
+need "file symlink outside any work tree: message" has "$C/rep.err" "chore: refusing to run on the registry's own repository"
+git init -q "$C/otherwt"; ln -s "$C/work/reg/repos.md" "$C/otherwt/repos.md"
+need "precondition: the file symlink's directory is another work tree" test "$(git -C "$C/otherwt" rev-parse --show-toplevel)" = "$C/otherwt"
+export CHORE_REPOS_MD="$C/otherwt/repos.md"
+rep
+need "file symlink in another work tree: refused rc=$RC $(head -c 200 "$C/rep.err")" rc 1
+need "file symlink in another work tree: message" has "$C/rep.err" "chore: refusing to run on the registry's own repository"
 need "no gh call in any refused run (so no fetch either: it follows repo view)" test ! -s "$GH_LOG"
 need "nothing deleted" bare_has feat/merged
 newcase std-reg-other                                   # registry in a git work tree that is not the target's clone

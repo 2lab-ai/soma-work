@@ -275,7 +275,7 @@ def hrepo($r): (((.headRepositoryOwner.login // "") + "/" + (.headRepository.nam
 
 # ---------- repo identity ----------
 resolve_repo() { # $1 = name | owner/repo | url → LOCAL, REMOTE, REMOTE_LC, OWNER, NAME (REPOS_MD already checked)
-  local in="$1" row home here re='github\.com[/:]([^/]+)/([^/]+)'
+  local in="$1" row reg home here re='github\.com[/:]([^/]+)/([^/]+)'
   if [[ "$in" =~ $re ]]; then in="${BASH_REMATCH[1]}/${BASH_REMATCH[2]}"; in="${in%.git}"; fi
   if [[ "$in" == */* ]]; then
     row=$(awk -F'|' -v r="$in" '/^\|/ { x = $4; gsub(/[ `]/, "", x); if (tolower(x) == tolower(r)) { print; exit } }' "$REPOS_MD")
@@ -288,8 +288,11 @@ resolve_repo() { # $1 = name | owner/repo | url → LOCAL, REMOTE, REMOTE_LC, OW
   REMOTE=$(printf '%s\n' "$row" | awk -F'|' '{ x = $4; gsub(/[ `]/, "", x); print x }')
   [ -d "$LOCAL/.git" ] || [ -f "$LOCAL/.git" ] || die "local path $LOCAL is not a git checkout"
   # the registry's home = the top level of the git work tree that contains the registry file (none when it is not in
-  # one); the clone of the target must not be that work tree. Both sides physical (pwd -P), so a symlink is no way around.
-  home=$(git -C "$(dirname -- "$REPOS_MD")" rev-parse --show-toplevel 2>/dev/null) || home=""
+  # one); the clone of the target must not be that work tree. The registry file itself is resolved first (realpath, the
+  # final symlink included), then both sides physical (pwd -P), so neither a directory nor a file symlink is a way around.
+  reg=$(python3 -I -c 'import os, sys; sys.stdout.buffer.write(os.path.realpath(os.fsencode(sys.argv[1])))' "$REPOS_MD") && [ -n "$reg" ] \
+    || die "cannot resolve the registry file $REPOS_MD"
+  home=$(git -C "$(dirname -- "$reg")" rev-parse --show-toplevel 2>/dev/null) || home=""
   if [ -n "$home" ]; then
     home=$(CDPATH= cd -- "$home" && pwd -P) || die "cannot resolve the registry's work tree $home"
     here=$(CDPATH= cd -- "$LOCAL" && pwd -P) || die "cannot resolve local path $LOCAL"
