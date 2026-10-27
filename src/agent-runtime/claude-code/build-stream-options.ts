@@ -332,6 +332,7 @@ export async function buildStreamOptions(
           const command = typeof toolInput?.command === 'string' ? toolInput.command : '';
           const liveSession = deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs);
           const intent = ownerIntent(liveSession, policyUser, deps.isSteerStanding);
+          const revisionBefore = liveSession?.ownerInputRevision ?? 0;
           const verdict = deps.safetyClassifier
             ? await deps.safetyClassifier
                 .classify({
@@ -353,12 +354,12 @@ export async function buildStreamOptions(
             : { verdict: 'ask' as const, reason: 'no classifier wired (fail-closed)' };
           // The owner may have said something new while the model was judging (a
           // steered "don't"): an approval made without it is not used — ask instead.
-          const intentAfter = ownerIntent(
-            deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs),
-            policyUser,
-            deps.isSteerStanding,
-          );
-          if (verdict.verdict === 'allow' && JSON.stringify(intentAfter) !== JSON.stringify(intent)) {
+          const sessionAfter = deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs);
+          const intentAfter = ownerIntent(sessionAfter, policyUser, deps.isSteerStanding);
+          const ownerSpokeMeanwhile =
+            (sessionAfter?.ownerInputRevision ?? 0) !== revisionBefore ||
+            JSON.stringify(intentAfter) !== JSON.stringify(intent);
+          if (verdict.verdict === 'allow' && ownerSpokeMeanwhile) {
             logger.warn('Auto-mode classifier approval dropped: owner instructions changed meanwhile', {
               tool: toolName,
               user: policyUser,

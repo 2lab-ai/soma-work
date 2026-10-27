@@ -673,6 +673,12 @@ export interface ConversationSession {
    * classifier then treats the owner's intent as incomplete. Cleared on reset.
    */
   intentHistoryIncomplete?: boolean;
+  /**
+   * Bumped synchronously each time a message from the session owner is accepted
+   * at ingress — before it is painted, downloaded or recorded. An auto-mode
+   * classifier approval made while it moved is not used (the hook asks instead).
+   */
+  ownerInputRevision?: number;
 
   // User SSOT instructions: structured, model-readable, persisted to disk.
   // Exposed to the model via GET_SESSION and managed via UPDATE_SESSION instructionOperations.
