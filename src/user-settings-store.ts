@@ -3,7 +3,8 @@ import { DEFAULT_LOG_VERBOSITY, getVerbosityFlags, type LogVerbosity, VERBOSITY_
 import fs from 'fs';
 import path from 'path';
 import { SDK_EFFORT_LEVELS as EFFORT_LEVELS, type SdkEffortLevel as EffortLevel } from 'soma-lib';
-import { isPermissionMode, type PermissionMode, resolvePermissionMode } from './agent-runtime/policy/permission-mode';
+import { isAdminUser } from './admin-utils';
+import { effectivePermissionMode, isPermissionMode, type PermissionMode } from './agent-runtime/policy/permission-mode';
 import { DATA_DIR as ENV_DATA_DIR } from './env-paths';
 import { Logger } from './logger.js';
 import { isRejectedModelInput, resolveModelInputCompatibility } from './metrics/model-registry';
@@ -822,15 +823,16 @@ export class UserSettingsStore {
    * Get user's bypass permission setting
    */
   getUserBypassPermission(userId: string): boolean {
-    return this.settings[userId]?.bypassPermission ?? false;
+    return this.getUserPermissionMode(userId) === 'bypass';
   }
 
   /**
    * Resolve the user's effective permission mode (`auto` | `bypass` | `legacy`).
    * Defaults to `auto`; migrates a legacy `bypassPermission:true` to `bypass`.
+   * `bypass` is admin-only: a non-admin's stored `bypass` resolves to `auto`.
    */
   getUserPermissionMode(userId: string): PermissionMode {
-    return resolvePermissionMode(this.settings[userId]);
+    return effectivePermissionMode(this.settings[userId], isAdminUser(userId));
   }
 
   /**

@@ -11,10 +11,12 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_PERMISSION_MODE,
+  effectivePermissionMode,
   isPermissionMode,
   type PermissionMode,
   resolvePermissionMode,
   SELECTABLE_PERMISSION_MODES,
+  selectablePermissionModesFor,
 } from '../permission-mode';
 
 describe('permission-mode SSOT', () => {
@@ -55,6 +57,29 @@ describe('permission-mode SSOT', () => {
     it('ignores a malformed stored permissionMode and falls through', () => {
       expect(resolvePermissionMode({ permissionMode: 'garbage', bypassPermission: true })).toBe('bypass');
       expect(resolvePermissionMode({ permissionMode: 'garbage' })).toBe('auto');
+    });
+  });
+
+  // SSOT_2 #1 (T6): "bypass는 admin만 가능하도록해줘."
+  describe('effectivePermissionMode — bypass is admin-only (T6)', () => {
+    it('a non-admin with an explicit stored bypass runs in auto', () => {
+      expect(effectivePermissionMode({ permissionMode: 'bypass' }, false)).toBe('auto');
+    });
+    it('a non-admin with only the legacy bypassPermission:true boolean runs in auto', () => {
+      expect(effectivePermissionMode({ bypassPermission: true }, false)).toBe('auto');
+    });
+    it('an admin keeps bypass (explicit or legacy boolean)', () => {
+      expect(effectivePermissionMode({ permissionMode: 'bypass' }, true)).toBe('bypass');
+      expect(effectivePermissionMode({ bypassPermission: true }, true)).toBe('bypass');
+    });
+    it('auto and legacy are not touched by the admin gate', () => {
+      expect(effectivePermissionMode({ permissionMode: 'legacy' }, false)).toBe('legacy');
+      expect(effectivePermissionMode({}, false)).toBe('auto');
+      expect(effectivePermissionMode(undefined, true)).toBe('auto');
+    });
+    it('only an admin may select bypass', () => {
+      expect(selectablePermissionModesFor(true)).toEqual(['auto', 'bypass']);
+      expect(selectablePermissionModesFor(false)).toEqual(['auto']);
     });
   });
 });
