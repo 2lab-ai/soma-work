@@ -163,6 +163,33 @@ describe('environment-skill admin approval — full flow', () => {
     expect(policy('Skill', { skill: 'acme-env:post-deploy' }, OTHER_THREAD).decision).toBe('deny');
   });
 
+  it('per skill: an approval opens only that skill; the next skill asks the admin again', async () => {
+    const where = { channel: 'CFLOW00005', threadTs: '1793000000.000500' };
+    const qaFile = path.join(PLUGINS_DIR, 'acme-env', 'skills', 'dev2-qa', 'SKILL.md');
+    fs.mkdirSync(path.dirname(qaFile), { recursive: true });
+    fs.writeFileSync(qaFile, '# acme dev2-qa\nRun the dev QA profile.');
+
+    await ask('$acme-env:post-deploy', REQUESTER, where);
+    await click(adminButton('env_skill_once'));
+    expect(policy('Skill', { skill: 'acme-env:post-deploy' }, where).decision).toBe('pass');
+
+    // The approval named post-deploy only: dev2-qa in the same thread is still closed, on both paths.
+    expect(policy('Skill', { skill: 'acme-env:dev2-qa' }, where).decision).toBe('deny');
+    expect(policy('Read', { file_path: qaFile }, where).decision).toBe('deny');
+    const second = await ask('$acme-env:dev2-qa', REQUESTER, where);
+    expect(second.awaitingPermission).toBe(true);
+    expect(JSON.stringify(posted)).not.toContain('Run the dev QA profile');
+
+    // A second, separate admin DM names dev2-qa, and its own approval opens it.
+    expect(slackApi.openDmChannel).toHaveBeenCalledTimes(2);
+    const dms = posted.filter((p) => p.channel === `D-${ADMIN}` && Array.isArray(p.opts?.blocks));
+    expect(dms).toHaveLength(2);
+    expect(JSON.stringify(dms[1].opts?.blocks)).toContain('acme-env:dev2-qa');
+    await click(adminButton('env_skill_once'));
+    expect(redispatched.at(-1)?.result.continueWithPrompt).toContain('Run the dev QA profile');
+    expect(policy('Skill', { skill: 'acme-env:dev2-qa' }, where).decision).toBe('pass');
+  });
+
   it('거부: no grant, no re-dispatch, a second click changes nothing', async () => {
     const where = { channel: 'CFLOW00002', threadTs: '1793000000.000200' };
     await ask('$acme-env:post-deploy', REQUESTER, where);
