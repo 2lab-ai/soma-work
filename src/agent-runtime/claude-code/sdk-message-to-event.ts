@@ -222,16 +222,10 @@ function promptTokens(u: unknown): number {
   return tokenCount(r.input_tokens) + tokenCount(r.cache_read_input_tokens) + tokenCount(r.cache_creation_input_tokens);
 }
 
-/** Sum of the four token fields of a raw Anthropic `usage` object (0 when absent). */
-function usageSum(u: unknown): number {
-  if (!u || typeof u !== 'object') return 0;
-  return promptTokens(u) + tokenCount((u as Record<string, unknown>).output_tokens);
-}
-
 /**
  * The API call a `stream_event` lane is currently streaming: its message id
  * (for the per-call live-usage key) and whether its `message_start` reported
- * no usage at all.
+ * no prompt-side usage (input + cache).
  */
 interface StreamLaneState {
   messageId?: string;
@@ -655,9 +649,10 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
    * per-call usage event the assistant frame would have carried.
    *
    * Three guards, each against replacing a full reading with `input 0`:
-   *   • the call's `message_start` was empty — an Anthropic stream's
-   *     `message_start` already carries the input/cache counts and its
-   *     `message_delta` may carry output only;
+   *   • the call's `message_start` carried no prompt-side reading — an
+   *     Anthropic stream's `message_start` already carries the input/cache
+   *     counts, so the assistant frame is that call's source (its
+   *     `message_delta` input/cache fields are nullable and not needed);
    *   • a delta without a recorded start is ignored (nothing says the
    *     assistant frame lacked usage);
    *   • the delta must carry a prompt-side reading — every real call has a
@@ -675,7 +670,7 @@ export function createSdkMessageMapper(deps: SdkMessageMapperDeps): SdkMessageMa
       const id = ev.message?.id;
       streamLanes.set(lane, {
         messageId: typeof id === 'string' && id.length > 0 ? id : undefined,
-        startUsageEmpty: usageSum(ev.message?.usage) === 0,
+        startUsageEmpty: promptTokens(ev.message?.usage) === 0,
       });
       return events;
     }

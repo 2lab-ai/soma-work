@@ -45,7 +45,8 @@ Two harness choices turn the missing reading into a wrong action:
 
 ## Limits
 
-- A turn cut off before its first `message_delta` still falls back to the aggregate.
+- A turn whose result arrives without any main-agent `message_delta` reading (for example its first call errored) still falls back to the aggregate. A turn with no result never reaches `onUsageUpdate`: occupancy is kept and its live calls are folded into the totals.
+- If the LAST call of a turn ends without a `message_delta`, the previous call's reading stands as the occupancy (it under-reads by that call's growth). Tracked in #494.
 - The incident path drops all partial frames, so it does not get this fix.
 - Occupancy is adopted at turn end. Live usage during the turn records spend, not occupancy.
 - A compact boundary's `post_tokens` still wins over the turn's own sample (issue #196 shield).
