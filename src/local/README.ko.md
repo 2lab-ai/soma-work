@@ -68,12 +68,14 @@ Claude Code를 재시작해야 적용됩니다.
   비어 있으면(기본값) 단독 모드입니다. Agent/Task와 MCP 호출에 대해 `hooks/call-tracker.sh`가
   `/tmp/claude-calls` 아래에 호출 기록을 남기고, 네트워크는 쓰지 않습니다. soma-work는 자기
   에이전트에 `HOOKS_PROXY_ENABLED=true`를 넣어 이벤트를 로컬 soma-work 서비스로 보냅니다. 직접 설치할
-  때는 이 값을 넣지 마세요. 이 훅은 항상 0으로 끝나며 도구 호출을 막지 않습니다.
+  때는 이 값을 넣지 마세요. `hook-proxy.sh`는 모든 경로에서 0으로 끝나고 stdout에 아무것도 쓰지
+  않으므로, 이 훅은 도구 호출을 막지 않습니다.
 - **Stop**: `hooks/stop-hook.sh`(Ralph loop)와 `hook-proxy.sh cleanup`을 실행합니다. Ralph loop는
   프로젝트에 `.claude/ralph-loop.local.md`가 있을 때만 동작하고, 이 플러그인은 그 파일을 만들지
   않습니다. 파일이 있으면 설계대로 세션을 이어 갑니다.
-- **필요한 것**: `jq`. 없으면 훅은 아무 일도 하지 않고 0으로 끝납니다. `stop-hook.sh`는 `perl`·`sed`·`awk`도
-  확인하고, 하나라도 없으면 stderr에 경고를 쓰고 0으로 끝납니다.
+- **필요한 것**: `jq`. 없으면 PreToolUse / PostToolUse 훅은 아무 일도 하지 않고 0으로 끝납니다.
+  `stop-hook.sh`는 Stop 때마다 `jq`·`perl`·`sed`·`awk`를 확인하고, 하나라도 없으면 stderr에 경고를
+  쓰고 0으로 끝납니다.
 
 ## 가벼운 경로: 스킬 두 개만
 
@@ -81,10 +83,11 @@ Claude Code를 재시작해야 적용됩니다.
 `using-ssot`를 사용자 스킬 디렉터리에 복사합니다:
 
 ```bash
-git clone --depth 1 --filter=blob:none --sparse https://github.com/2lab-ai/soma-work.git /tmp/soma-work && git -C /tmp/soma-work sparse-checkout set src/local/skills/using-ssot src/local/skills/using-intentfirst && mkdir -p ~/.claude/skills && cp -R /tmp/soma-work/src/local/skills/using-ssot /tmp/soma-work/src/local/skills/using-intentfirst ~/.claude/skills/
+d="$(mktemp -d)/soma-work" && git clone --depth 1 --filter=blob:none --sparse https://github.com/2lab-ai/soma-work.git "$d" && git -C "$d" sparse-checkout set src/local/skills/using-ssot src/local/skills/using-intentfirst && mkdir -p ~/.claude/skills && cp -R "$d/src/local/skills/using-ssot" "$d/src/local/skills/using-intentfirst" ~/.claude/skills/
 ```
 
-`/tmp/soma-work`가 이미 있으면 클론이 실패하니 먼저 지웁니다. 프로젝트 하나에만 쓰려면 두 폴더를
+클론은 `mktemp -d`로 새로 만든 디렉터리에 받으므로 기존 체크아웃을 건드리지 않습니다.
+프로젝트 하나에만 쓰려면 두 폴더를
 `<project>/.claude/skills/`에 복사합니다. 복사한 스킬은 네임스페이스가 없어 `/using-intentfirst`로
 부릅니다. 복사본은 스스로 갱신되지 않으니, 갱신하려면 다시 복사합니다.
 
