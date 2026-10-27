@@ -606,18 +606,23 @@ describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEn
   const tags = (html: string) =>
     (html.match(/<\/?([a-z0-9]+)/gi) ?? []).map((t) => t.replace(/[</]/g, '').toLowerCase());
 
-  it('tool name and text cannot inject markup or break out of the title attribute', () => {
-    const html = renderWorkLogEntry({
-      seq: 1,
-      ts: 0,
-      kind: 'tool',
-      tool: '<img src=x onerror=alert(1)>',
-      text: '"><script>alert(1)</script><a href="javascript:x">',
-    });
-    expect(new Set(tags(html))).toEqual(new Set(['div', 'span']));
-    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
-    expect(html).toContain('title="&quot;&gt;&lt;script&gt;');
-    expect(strayQuotes(html)).toBe(false);
+  it('a tool call is one card element: its name and text never reach the markup (they go in as data)', () => {
+    for (const kind of ['tool', 'tool_result']) {
+      const html = renderWorkLogEntry({
+        seq: 1,
+        ts: 0,
+        kind,
+        tool: '<img src=x onerror=alert(1)>',
+        text: '"><script>alert(1)</script><a href="javascript:x">',
+      });
+      const all = (html.match(/<\/?([a-z0-9-]+)/gi) ?? []).map((t) => t.replace(/[</]/g, '').toLowerCase());
+      expect(new Set(all)).toEqual(new Set(['div', 'ui-tool-call-card']));
+      expect(html).not.toContain('img');
+      expect(html).not.toContain('script');
+      expect(html.replace(/\s(class|data-seq|lang|data-key)="[^"]*"/g, '')).not.toContain('"');
+    }
+    // A hostile seq cannot reach data-seq / data-key.
+    expect(renderWorkLogEntry({ seq: '5" onmouseover="x', kind: 'tool', text: 'x' })).toContain('data-key="0"');
   });
 
   it('narration, Slack-encoded instructions, odd kinds and seqs stay inert', () => {
@@ -638,8 +643,13 @@ describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEn
   });
 
   it('every entry is one root: a keyboard-reachable row that controls its (empty, hidden) detail block', () => {
+    expect(renderWorkLogEntry({ seq: 7, kind: 'tool', tool: 'Bash', text: 'Bash {"command":"ls"}' })).toBe(
+      '<div class="wl-entry wl-toolcall" data-seq="7"><ui-tool-call-card class="wl-card" lang="ko" data-key="7"></ui-tool-call-card></div>',
+    );
+    expect(renderWorkLogEntry({ seq: 9, kind: 'tool_result', tool: 'Bash', ok: true, text: 'Bash ok' })).toBe(
+      '<div class="wl-entry wl-toolcall is-orphan" data-seq="9"><ui-tool-call-card class="wl-card" lang="ko" data-key="9"></ui-tool-call-card></div>',
+    );
     for (const e of [
-      { seq: 7, kind: 'tool', tool: 'Bash', text: 'Bash {"command":"ls"}' },
       { seq: 8, kind: 'narration', text: 'Reading the schema.' },
       { seq: 9, kind: 'final', text: 'Done.' },
     ]) {
@@ -657,64 +667,27 @@ describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEn
       ).toBe(true);
     }
     // A hostile seq cannot reach the id / aria-controls values.
-    expect(renderWorkLogEntry({ seq: '5" onmouseover="x', kind: 'tool', text: 'x' })).toContain(
+    expect(renderWorkLogEntry({ seq: '5" onmouseover="x', kind: 'final', text: 'x' })).toContain(
       'aria-controls="wl-detail-0"',
     );
   });
 });
 
-describe('work-log tool rows print the tool name once (shipped renderWorkLogEntry)', () => {
-  const { renderWorkLogEntry } = load<{ renderWorkLogEntry(e: unknown): string }>(
-    ['decodeSlackEntities', 'esc', 'escAttr', 'renderWorkLogEntry'],
-    ['WL_LABELS'],
-  );
-  /** The visible pieces of a tool row: the tool-name span, the text span and its title. */
-  function row(e: Record<string, unknown>) {
-    const html = renderWorkLogEntry({ seq: 1, ts: 0, ...e });
-    const name = /<span class="wl-tool-name">([^<]*)<\/span>/.exec(html)?.[1] ?? null;
-    const m = /<span class="wl-text" title="([^"]*)">([^<]*)<\/span>/.exec(html);
-    return { name, text: m?.[2] ?? null, title: m?.[1] ?? null };
-  }
-
+describe('work-log tool call cards print the tool name once (shipped wlToolSummary)', () => {
+  const { wlToolSummary } = load<{ wlToolSummary(tool: string, text: string): string }>(['wlToolSummary'], []);
   // Stored entries carry the emitter's shape: `text` starts with the tool name
-  // (packages/slack/src/stream-processor.ts summarizeToolCall and the tool_result text).
-  it('a tool call shows its input after the name, not the name again', () => {
-    expect(row({ kind: 'tool', tool: 'Read', text: 'Read {"file_path":"/a.ts"}' })).toEqual({
-      name: 'Read',
-      text: '{&quot;file_path&quot;:&quot;/a.ts&quot;}',
-      title: 'Read {&quot;file_path&quot;:&quot;/a.ts&quot;}',
-    });
+  // (packages/slack/src/stream-processor.ts summarizeToolCall). The card shows
+  // the name on its own, so the summary is what follows.
+  it('a tool call summary is its input after the name, not the name again', () => {
+    expect(wlToolSummary('Read', 'Read {"file_path":"/a.ts"}')).toBe('{"file_path":"/a.ts"}');
   });
-
-  it('a tool result shows ok / error after the name', () => {
-    expect(row({ kind: 'tool_result', tool: 'Glob', ok: true, text: 'Glob ok' })).toEqual({
-      name: 'Glob',
-      text: 'ok',
-      title: 'Glob ok',
-    });
-    expect(row({ kind: 'tool_result', tool: 'Bash', ok: false, text: 'Bash error' })).toEqual({
-      name: 'Bash',
-      text: 'error',
-      title: 'Bash error',
-    });
+  it('a call without input (text is just the name) has no summary', () => {
+    expect(wlToolSummary('TodoRead', 'TodoRead')).toBe('');
   });
-
-  it('a call without input (text is just the name) shows the name once', () => {
-    expect(row({ kind: 'tool', tool: 'TodoRead', text: 'TodoRead' })).toEqual({
-      name: 'TodoRead',
-      text: '',
-      title: 'TodoRead',
-    });
-  });
-
-  it('text that does not start with "<tool> " is shown whole', () => {
-    expect(row({ kind: 'tool', tool: 'Read', text: 'Readme.md opened' }).text).toBe('Readme.md opened');
-    expect(row({ kind: 'tool', tool: 'Bash', text: 'backfill step 3' }).text).toBe('backfill step 3');
-    expect(row({ kind: 'tool', text: 'Read {"a":1}' })).toEqual({
-      name: null,
-      text: 'Read {&quot;a&quot;:1}',
-      title: 'Read {&quot;a&quot;:1}',
-    });
+  it('text that does not start with "<tool> " is kept whole', () => {
+    expect(wlToolSummary('Read', 'Readme.md opened')).toBe('Readme.md opened');
+    expect(wlToolSummary('Bash', 'backfill step 3')).toBe('backfill step 3');
+    expect(wlToolSummary('', 'Read {"a":1}')).toBe('Read {"a":1}');
   });
 });
 
@@ -1985,6 +1958,14 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
         'wlScopeEntry',
         'wlScopeEntries',
         'wlLegacyMixed',
+        // Tool call cards: a paired result is not a row (pure pairing).
+        'wlPairKey',
+        'wlPairTools',
+        'wlPairsOf',
+        'wlCardHidden',
+        'wlVisible',
+        'wlIsCard',
+        'wlMarkStop',
         'wlRenderList',
         'wlAppendTail',
         'wlDetailOpen',
@@ -1994,10 +1975,14 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
         'setWorkLogOpen',
         'paintWorkLog',
       ],
-      ['WL_LABELS'],
+      ['WL_LABELS', 'WL_STOP_SEL'],
       {
         document,
         _wl: state,
+        // The cards' data needs the element (covered by the card suite below).
+        wlHydrateCards: () => {},
+        wlOnToolResult: () => false,
+        wlPaintCard: () => {},
         panelSessionKey: null,
         _sessionCache: {},
         updateTimersIn: () => {},

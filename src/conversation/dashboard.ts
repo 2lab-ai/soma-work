@@ -27,6 +27,9 @@
  *                                              incl. `work_log` entries (owner/admin scoped)
  */
 
+import { readFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
+import { dirname, join } from 'node:path';
 import { constants as zlibConstants } from 'node:zlib';
 import { sumLiveUsage } from '@soma/slack/live-usage';
 import { livePendingModelSwitch } from '@soma/slack/model-switch';
@@ -112,6 +115,22 @@ import { getUserMediaStore } from './user-media';
 import type { WorkLogEntry } from './work-log';
 
 const logger = new Logger('Dashboard');
+
+/** A file the /dashboard/ui route serves: a flat `dist/*.js` name of @2lab.ai/ui (no dirs, no dots-only names). */
+export const UI_LIB_FILE = /^[A-Za-z0-9_][A-Za-z0-9_-]*\.js$/;
+let uiLibDir: string | null | undefined;
+/** `dist/` of the installed @2lab.ai/ui, or null (logged once) when the package is missing. */
+export function uiLibDistDir(): string | null {
+  if (uiLibDir === undefined) {
+    try {
+      uiLibDir = join(dirname(createRequire(__filename).resolve('@2lab.ai/ui/package.json')), 'dist');
+    } catch (err) {
+      uiLibDir = null;
+      logger.error('@2lab.ai/ui is not installed — the work log tool call cards cannot load', err);
+    }
+  }
+  return uiLibDir;
+}
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -3229,6 +3248,26 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── @2lab.ai/ui — the library's own build, same origin ──
+  // The 작업 로그's tool call cards are <ui-tool-call-card> from the installed
+  // @2lab.ai/ui package (a pinned dependency): its flat dist/*.js files, nothing
+  // else. Public library code — no session data — so no auth.
+  server.get<{ Params: { file: string } }>('/dashboard/ui/:file', async (request, reply) => {
+    const file = String(request.params.file || '');
+    const dir = uiLibDistDir();
+    if (!dir || !UI_LIB_FILE.test(file)) return reply.code(404).send();
+    try {
+      const body = await readFile(join(dir, file));
+      return reply
+        .header('Cache-Control', 'public, max-age=3600')
+        .header('X-Content-Type-Options', 'nosniff')
+        .type('text/javascript; charset=utf-8')
+        .send(body);
+    } catch {
+      return reply.code(404).send();
+    }
+  });
+
   // ── HTML Dashboard ──
 
   // The page is ~0.8 MB of inline HTML/CSS/JS: compressed when the browser
@@ -3334,6 +3373,7 @@ function renderDashboardPage(userId?: string): string {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>soma-work Dashboard</title>
+<script type="module" src="/dashboard/ui/tool-call-card.js"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -5251,6 +5291,31 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .wl-mark { flex-shrink: 0; width: 1em; text-align: center; color: var(--text-tertiary); }
 .wl-tool_result .wl-mark { color: var(--green); }
 .wl-tool_result.is-fail .wl-mark, .wl-tool_result.is-fail .wl-tool-name { color: var(--red); }
+/* A tool call and its result: one @2lab.ai/ui <ui-tool-call-card>, drawn with
+   the dashboard's own tokens: each --ui-* the element reads is set here, on the
+   wrapper, from the same-named dashboard token. Not on the element itself — its
+   shadow :host defines --border: var(--ui-border, …), so --ui-border: var(--border)
+   on the same element is a cycle and blanks both. Inherited from the wrapper,
+   the values arrive already resolved and follow the theme switch. */
+.wl-toolcall {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  --ui-bg: var(--bg); --ui-surface: var(--surface); --ui-surface-raised: var(--surface-raised);
+  --ui-border: var(--border); --ui-border-focus: var(--border-focus); --ui-text: var(--text);
+  --ui-text-secondary: var(--text-secondary); --ui-text-tertiary: var(--text-tertiary); --ui-accent: var(--accent);
+  --ui-accent-hover: var(--accent-hover); --ui-green: var(--green); --ui-yellow: var(--yellow); --ui-red: var(--red);
+  --ui-purple: var(--purple); --ui-orange: var(--orange); --ui-ib-col: var(--ib-col); --ui-ib-card: var(--ib-card);
+  --ui-ib-card-dim: var(--ib-card-dim); --ui-ib-card-border: var(--ib-card-border); --ui-ib-pill: var(--ib-pill);
+  --ui-ib-text: var(--ib-text); --ui-ib-text-2: var(--ib-text-2); --ui-ib-muted: var(--ib-muted);
+  --ui-ib-seg: var(--ib-seg); --ui-ib-seg-on: var(--ib-seg-on); --ui-ib-spark: var(--ib-spark);
+  --ui-ib-shadow: var(--ib-shadow); --ui-ib-shadow-raised: var(--ib-shadow-raised); --ui-st-wait: var(--st-wait);
+  --ui-st-run: var(--st-run); --ui-st-done: var(--st-done); --ui-st-fail: var(--st-fail);
+  --ui-st-fail-text: var(--st-fail-text); --ui-ease: var(--ease); --ui-ease-out: var(--ease-out);
+  --ui-ease-in-out: var(--ease-in-out); --ui-dur-press: var(--dur-press); --ui-dur-expand: var(--dur-expand);
+  --ui-dur-move: var(--dur-move); --ui-dur-fade: var(--dur-fade); --ui-radius: var(--radius);
+}
+.worklog-list ui-tool-call-card { display: block; min-width: 0; }
 .slide-panel-overlay {
   position: fixed;
   top: 0; left: 0;
@@ -10381,6 +10446,7 @@ function repaintPanelScope() {
   repaintPanelTasks();
   wlRefreshGroupHeads();
   wlRefreshChildBlocks();
+  wlRefreshCards();
 }
 // ── The panel as a whole (spec 13 — "understand and steer") ──
 // One live path writes every part of the open panel that follows the session:
@@ -13922,6 +13988,7 @@ function updateTokenBreakdown() {
 var WL_BACKFILL_MAX_PAGES = 2000;
 var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류' };
 var WL_EMPTY_MSG = '작업 로그 없음';
+var _wlCardsWait = false;
 var WL_FORBIDDEN_MSG = '작업 로그는 세션 소유자만 볼 수 있어요';
 var WL_RAW_MISSING_MSG = '원본 출력이 저장되어 있지 않습니다';
 var WL_RAW_ERROR_MSG = '원본 출력을 불러오지 못했어요';
@@ -14453,9 +14520,10 @@ function renderWorkLogGroup(grp, open, task) {
 function wlFillGroupBody(state, grpEl, taskId) {
   var body = grpEl.querySelector('.wl-group-body');
   if (!body || body.getAttribute('data-filled') === '1') return;
-  var entries = wlScopeEntries(state.entries).filter(function(x) { return wlGroupOf(x) === taskId; });
+  var entries = wlVisible(state, wlScopeEntries(state.entries)).filter(function(x) { return wlGroupOf(x) === taskId; });
   body.innerHTML = entries.map(renderWorkLogEntry).join('');
   body.setAttribute('data-filled', '1');
+  wlHydrateCards(body);
   for (var i = 0; i < entries.length; i++) {
     var seq = entries[i].seq;
     if (!state.open || !state.open.has(seq)) continue;
@@ -14483,7 +14551,7 @@ function wlGroupEl(list, taskId) {
 // The whole list from state.entries; open details are re-opened (raw output is cached on the state).
 function wlRenderList(state, list) {
   // Spec 12: only the agent the panel shows (the main agent by default).
-  var rows = wlBuildRows(wlScopeEntries(state.entries));
+  var rows = wlBuildRows(wlVisible(state, wlScopeEntries(state.entries)));
   var newest = null;
   for (var i = rows.length - 1; i >= 0; i--) if (rows[i].group) { newest = rows[i].group; break; }
   // A log from before agent attribution that started subagents: its "main"
@@ -14504,6 +14572,7 @@ function wlRenderList(state, list) {
     detail.hidden = false;
     loadWorkLogDetail(state, seq);
   });
+  wlHydrateCards(list);
 }
 // Live entries at the end of the log: append in place (a task's entry into its
 // group, a new task as a new — open — group at the end).
@@ -14513,6 +14582,14 @@ function wlAppendTail(state, list, added) {
   for (var i = 0; i < scoped.length; i++) {
     var e = scoped[i];
     var g = wlGroupOf(e);
+    if (wlCardHidden(state, e)) {
+      wlOnToolResult(state, e);
+      if (g) {
+        var ownGrp = wlGroupEl(list, g);
+        if (ownGrp) wlRefreshGroupHead(state, ownGrp, g);
+      }
+      continue;
+    }
     if (!g) {
       tmp.innerHTML = renderWorkLogEntry(e);
       if (tmp.firstElementChild) list.appendChild(tmp.firstElementChild);
@@ -14533,11 +14610,12 @@ function wlAppendTail(state, list, added) {
     }
     wlRefreshGroupHead(state, grpEl, g);
   }
+  wlHydrateCards(list);
 }
 function wlRefreshGroupHead(state, grpEl, taskId) {
   var head = grpEl.querySelector('.wl-group-head');
   if (!head) return;
-  var entries = wlScopeEntries(state.entries).filter(function(x) { return wlGroupOf(x) === taskId; });
+  var entries = wlVisible(state, wlScopeEntries(state.entries)).filter(function(x) { return wlGroupOf(x) === taskId; });
   var title = '';
   for (var i = 0; i < entries.length; i++) if (entries[i].taskTitle) title = String(entries[i].taskTitle);
   var html = renderWorkLogGroupHead({ taskId: taskId, title: title, entries: entries }, head.getAttribute('aria-expanded') === 'true', wlTaskInfo(taskId));
@@ -14619,6 +14697,218 @@ function showWorkLogEmpty(message) {
   if (list && !list.querySelector('.wl-entry')) list.innerHTML = '<div class="wl-empty">' + esc(message || WL_EMPTY_MSG) + '</div>';
 }
 
+// ── Tool calls as cards (@2lab.ai/ui <ui-tool-call-card>) ──
+// A call and its result are one card. The pair is matched by the SDK
+// tool-use id; entries written before the id was kept pair by agent + tool
+// name, the oldest unanswered call first.
+function wlPairKey(e) {
+  return (e.agentId ? String(e.agentId) : '') + '|' + String(e.tool || '');
+}
+// Pure: resultOf[call seq] = result entry, callOf[result seq] = call seq.
+function wlPairTools(entries) {
+  var resultOf = Object.create(null);
+  var callOf = Object.create(null);
+  var byId = Object.create(null);
+  var queues = Object.create(null);
+  var list = entries || [];
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i];
+    if (!e || (e.kind !== 'tool' && e.kind !== 'tool_result')) continue;
+    var id = typeof e.toolUseId === 'string' && e.toolUseId ? e.toolUseId : '';
+    if (e.kind === 'tool') {
+      if (id) byId[id] = e;
+      else (queues[wlPairKey(e)] || (queues[wlPairKey(e)] = [])).push(e);
+      continue;
+    }
+    var call = null;
+    if (id) {
+      call = Object.prototype.hasOwnProperty.call(byId, id) ? byId[id] : null;
+      if (call) delete byId[id];
+    } else {
+      var q = queues[wlPairKey(e)];
+      call = q && q.length ? q.shift() : null;
+    }
+    if (call) {
+      resultOf[call.seq] = e;
+      callOf[e.seq] = call.seq;
+    }
+  }
+  return { resultOf: resultOf, callOf: callOf };
+}
+function wlPairsOf(state) {
+  var n = state && state.entries ? state.entries.length : 0;
+  if (!state.pairs || state.pairsN !== n || state.pairsOf !== state.entries) {
+    state.pairs = wlPairTools(state.entries);
+    state.pairsN = n;
+    state.pairsOf = state.entries;
+  }
+  return state.pairs;
+}
+// A result whose call is in the log: it lives in the call's card.
+function wlCardHidden(state, e) {
+  return !!(e && !e._role && e.kind === 'tool_result' && state && wlPairsOf(state).callOf[e.seq] !== undefined);
+}
+function wlVisible(state, entries) {
+  return (entries || []).filter(function(e) { return !wlCardHidden(state, e); });
+}
+// Pure: the emitter's text starts with the tool name ("Read {...}", "Glob ok");
+// the card shows the name on its own, so the summary is only what follows.
+function wlToolSummary(tool, text) {
+  text = String(text || '');
+  if (tool && text === tool) return '';
+  if (tool && text.indexOf(tool + ' ') === 0) return text.slice(tool.length + 1);
+  return text;
+}
+// A call without a result is running only while its session works on the
+// turn it belongs to; otherwise the run ended before it returned.
+function wlCallLive(state, call) {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var act = s && s.activityState;
+  if (act !== 'working' && act !== 'waiting') return false;
+  var list = (state && state.entries) || [];
+  for (var i = list.length - 1; i >= 0; i--) {
+    if (list[i] && list[i].turnId) return !call.turnId || call.turnId === list[i].turnId;
+  }
+  return true;
+}
+// The card's data for the entry that carries it (a call, or a result on its own).
+function wlCardData(state, key, stop) {
+  var carrier = wlEntryBySeq(state, key);
+  if (!carrier) return null;
+  var call = carrier.kind === 'tool' ? carrier : null;
+  var res = call ? wlPairsOf(state).resultOf[call.seq] || null : carrier;
+  var tool = String((call && call.tool) || (res && res.tool) || '');
+  var status = res ? (res.ok === false ? 'error' : 'success') : wlCallLive(state, call) ? 'running' : 'interrupted';
+  var d = { name: tool || '툴', status: status, focusable: !!stop, open: !!(state.open && state.open.has(key)) };
+  var summary = call ? wlToolSummary(tool, call.text) : '';
+  if (summary) d.summary = summary;
+  if (call && typeof call.ts === 'number' && isFinite(call.ts)) {
+    d.at = call.ts;
+    d.startedAt = call.ts;
+  }
+  if (call && res && typeof res.ts === 'number' && typeof call.ts === 'number' && isFinite(res.ts) && isFinite(call.ts)) {
+    d.duration = Math.max(0, res.ts - call.ts);
+  }
+  var det = state.cardDetail && state.cardDetail[key];
+  if (det) {
+    if (det.loading) d.loading = true;
+    if (det.args !== undefined) d.args = det.args;
+    if (det.result !== undefined) d.result = det.result;
+    if (det.note) d.note = det.note;
+    if (det.detailError) d.detailError = det.detailError;
+  }
+  if (status === 'error') {
+    var msg = det && typeof det.result === 'string' ? det.result.slice(0, 600) : '';
+    d.error = msg || '툴이 오류를 돌려줬어요 — 열면 출력을 볼 수 있어요';
+  }
+  return d;
+}
+// Same data → the card is left alone (no re-render, focus and timers kept).
+function wlCardSig(d) {
+  if (!d) return '';
+  var keys = ['name', 'summary', 'status', 'focusable', 'open', 'at', 'duration', 'loading', 'note', 'detailError', 'error'];
+  var out = [];
+  for (var i = 0; i < keys.length; i++) out.push(d[keys[i]]);
+  out.push(typeof d.args === 'string' ? d.args.length : d.args === undefined ? -1 : 1);
+  out.push(typeof d.result === 'string' ? d.result.length : d.result === undefined ? -1 : 1);
+  return JSON.stringify(out);
+}
+function wlPaintCard(state, el) {
+  if (!el || !state) return;
+  var key = Math.floor(Number(el.getAttribute('data-key')) || 0);
+  var d = wlCardData(state, key, el.getAttribute('data-stop') === '1');
+  if (!d) return;
+  var sig = wlCardSig(d);
+  if (el._wlSig === sig) return;
+  el._wlSig = sig;
+  el.data = d;
+}
+function wlCardEl(key) {
+  var list = document.getElementById('worklog-list');
+  return list ? list.querySelector('ui-tool-call-card[data-key="' + Math.floor(Number(key) || 0) + '"]') : null;
+}
+// Give every card on screen its data — once the element is defined, so data
+// never lands on an un-upgraded node (the library loads as a module).
+function wlHydrateCards(root) {
+  if (!root || !_wl) return;
+  var cards = root.querySelectorAll('ui-tool-call-card.wl-card');
+  if (!cards.length) return;
+  var reg = window.customElements;
+  if (reg && !reg.get('ui-tool-call-card')) {
+    if (!_wlCardsWait && reg.whenDefined) {
+      _wlCardsWait = true;
+      reg.whenDefined('ui-tool-call-card').then(function() {
+        _wlCardsWait = false;
+        wlHydrateCards(document.getElementById('worklog-list'));
+      });
+    }
+    return;
+  }
+  for (var i = 0; i < cards.length; i++) wlPaintCard(_wl, cards[i]);
+}
+// Session pushes: a running call whose session stopped reads 결과 없음.
+function wlRefreshCards() {
+  wlHydrateCards(document.getElementById('worklog-list'));
+}
+// A stored raw → the card's text for that part (args / result) and its note.
+function wlPartLoad(state, e) {
+  if (!e) return Promise.resolve(null);
+  if (!(toNum(e.rawBytes) > 0)) return Promise.resolve({ status: 'none' });
+  return wlRawLoad(state, e.seq, wlFetchJson);
+}
+function wlLoadCardDetail(state, key) {
+  var carrier = wlEntryBySeq(state, key);
+  if (!carrier) return;
+  var call = carrier.kind === 'tool' ? carrier : null;
+  var res = call ? wlPairsOf(state).resultOf[call.seq] || null : carrier;
+  var details = state.cardDetail || (state.cardDetail = Object.create(null));
+  details[key] = { loading: true };
+  wlPaintCard(state, wlCardEl(key));
+  Promise.all([wlPartLoad(state, call), wlPartLoad(state, res)]).then(function(parts) {
+    if (state !== _wl || state.closed) return;
+    var det = { loading: false };
+    var notes = [];
+    var fail = '';
+    for (var i = 0; i < 2; i++) {
+      var r = parts[i];
+      if (!r || r.status === 'none') continue;
+      var label = i === 0 ? '입력' : '결과';
+      if (r.status === 'ok') {
+        if (i === 0) det.args = r.raw;
+        else det.result = r.raw;
+        if (r.truncated) notes.push(label + ': 저장된 앞 256 KiB만 표시 — 원본 ' + formatBytes(r.bytes));
+      } else if (r.status === 'missing') notes.push(label + ': ' + WL_RAW_MISSING_MSG);
+      else if (r.status === 'denied') fail = WL_FORBIDDEN_MSG;
+      else if (r.status === 'damaged') fail = fail || WL_RAW_DAMAGED_MSG;
+      else fail = fail || WL_RAW_ERROR_MSG;
+    }
+    if (notes.length) det.note = notes.join(' · ');
+    if (fail) det.detailError = fail;
+    details[key] = det;
+    wlPaintCard(state, wlCardEl(key));
+  });
+}
+// The list owns each card's open state (state.open), so a re-render, a live
+// result or a page of older entries brings it back as it was.
+function wlToggleCard(state, el, open) {
+  if (!state || state.closed || !el) return;
+  var key = Math.floor(Number(el.getAttribute('data-key')) || 0);
+  var set = state.open || (state.open = new Set());
+  if (open) set.add(key);
+  else set.delete(key);
+  if (open && !(state.cardDetail && state.cardDetail[key] && !state.cardDetail[key].detailError)) wlLoadCardDetail(state, key);
+  else wlPaintCard(state, el);
+}
+// A result arrived for a call on screen: its card turns done / failed (and an
+// open card fetches the output).
+function wlOnToolResult(state, e) {
+  var callSeq = wlPairsOf(state).callOf[e.seq];
+  if (callSeq === undefined) return false;
+  var el = wlCardEl(callSeq);
+  if (state.open && state.open.has(callSeq)) wlLoadCardDetail(state, callSeq);
+  else if (el) wlPaintCard(state, el);
+  return true;
+}
 function renderWorkLogEntry(e) {
   var kind = Object.prototype.hasOwnProperty.call(WL_LABELS, e.kind) ? e.kind : 'narration';
   var time = typeof e.ts === 'number' && isFinite(e.ts)
@@ -14636,6 +14926,17 @@ function renderWorkLogEntry(e) {
   // of up to 256 KiB must not be read out in full.
   var detailHtml = '<div class="wl-detail" id="wl-detail-' + seq + '" aria-live="off" hidden></div>';
   var text = String(e.text || '');
+  // A tool call is one card (@2lab.ai/ui <ui-tool-call-card>, hydrated by
+  // wlHydrateCards): the call's entry carries it, its result fills it. A result
+  // whose call is on screen is never rendered on its own (wlCardHidden); one
+  // whose call is not (an older page, a log cut short) is its own card.
+  // Spec 12's 지시 / 결과 rows of a subagent scope stay rows.
+  if ((kind === 'tool' || kind === 'tool_result') && !e._role) {
+    var cardLink = kind === 'tool' && e.agentRef ? wlChildBlock(String(e.agentRef)) : '';
+    return '<div class="wl-entry wl-toolcall' + (kind === 'tool_result' ? ' is-orphan' : '') + '"' + seqAttr + '>'
+      + '<ui-tool-call-card class="wl-card" lang="ko" data-key="' + seq + '"></ui-tool-call-card>'
+      + cardLink + '</div>';
+  }
   if (kind === 'tool' || kind === 'tool_result') {
     var fail = kind === 'tool_result' && e.ok === false;
     var mark = kind === 'tool' ? '&#x25B8;' : (fail ? '&#x2717;' : '&#x2713;');
@@ -14728,7 +15029,7 @@ function wlRovingIndex(key, i, n) {
 // The rows the arrows move between: entry rows, task-group heads and a spawn
 // row's 서브에이전트 열기 (Spec 12) that are on screen (a closed group's are not).
 function wlNavRows(list) {
-  var all = list.querySelectorAll('.wl-group-head, .wl-row, .wl-agent-link');
+  var all = list.querySelectorAll('.wl-group-head, .wl-row, .wl-agent-link, ui-tool-call-card.wl-card');
   var out = [];
   for (var i = 0; i < all.length; i++) {
     var body = all[i].closest ? all[i].closest('.wl-group-body') : null;
@@ -14737,15 +15038,30 @@ function wlNavRows(list) {
   }
   return out;
 }
+var WL_STOP_SEL = '.wl-row[tabindex="0"], .wl-group-head[tabindex="0"], .wl-agent-link[tabindex="0"], ui-tool-call-card[data-stop="1"]';
+function wlIsCard(el) {
+  return !!(el && el.tagName === 'UI-TOOL-CALL-CARD');
+}
+// A card is a stop through its header button: data-stop marks it, and its
+// data turns the button's tabindex to 0 (focusable).
+function wlMarkStop(el, on) {
+  if (wlIsCard(el)) {
+    if (on) el.setAttribute('data-stop', '1');
+    else el.removeAttribute('data-stop');
+    if (_wl) wlPaintCard(_wl, el);
+    return;
+  }
+  el.setAttribute('tabindex', on ? '0' : '-1');
+}
 function wlEnsureTabStop(list) {
-  if (!list || !list.querySelector || list.querySelector('.wl-row[tabindex="0"], .wl-group-head[tabindex="0"], .wl-agent-link[tabindex="0"]')) return;
+  if (!list || !list.querySelector || list.querySelector(WL_STOP_SEL)) return;
   var rows = wlNavRows(list);
-  if (rows.length) rows[rows.length - 1].setAttribute('tabindex', '0');
+  if (rows.length) wlMarkStop(rows[rows.length - 1], true);
 }
 function wlSetTabStop(list, row) {
-  var old = list.querySelectorAll('.wl-row[tabindex="0"], .wl-group-head[tabindex="0"], .wl-agent-link[tabindex="0"]');
-  for (var i = 0; i < old.length; i++) if (old[i] !== row) old[i].setAttribute('tabindex', '-1');
-  if (row.getAttribute('tabindex') !== '0') row.setAttribute('tabindex', '0');
+  var old = list.querySelectorAll(WL_STOP_SEL);
+  for (var i = 0; i < old.length; i++) if (old[i] !== row) wlMarkStop(old[i], false);
+  if (wlIsCard(row) ? row.getAttribute('data-stop') !== '1' : row.getAttribute('tabindex') !== '0') wlMarkStop(row, true);
 }
 
 // Rows open / close their detail on click, Enter or Space; clicks inside an
@@ -14784,11 +15100,25 @@ function wlSetTabStop(list, row) {
     if (window.getSelection && String(window.getSelection())) return;
     toggleWorkLogEntry(seqOf(row));
   });
+  // A card says it opened / closed: the list keeps that (state.open) and
+  // fetches its input and output; 다시 시도 fetches them again.
+  list.addEventListener('ui-toggle', function(e) {
+    if (!wlIsCard(e.target)) return;
+    e.preventDefault();
+    wlToggleCard(_wl, e.target, !!(e.detail && e.detail.open));
+  });
+  list.addEventListener('ui-reload', function(e) {
+    if (!wlIsCard(e.target) || !_wl || _wl.closed) return;
+    wlLoadCardDetail(_wl, Math.floor(Number(e.target.getAttribute('data-key')) || 0));
+  });
   list.addEventListener('keydown', function(e) {
     var row = e.target;
     var isHead = !!(row.classList && row.classList.contains('wl-group-head'));
     var isLink = !!(row.classList && row.classList.contains('wl-agent-link'));
-    if (!row.classList || (!isHead && !isLink && !row.classList.contains('wl-row'))) return;
+    var isCard = wlIsCard(row);
+    if (!row.classList || (!isHead && !isLink && !isCard && !row.classList.contains('wl-row'))) return;
+    // A card's header is a real button: Enter / Space are its own (ui-toggle).
+    if (isCard && (e.key === 'Enter' || e.key === ' ')) return;
     // 서브에이전트 열기 is a real button: Enter / Space click it (the delegated handler opens the agent).
     if (isLink && (e.key === 'Enter' || e.key === ' ')) return;
     if (e.key === 'Enter' || e.key === ' ') {
@@ -14809,7 +15139,7 @@ function wlSetTabStop(list, row) {
   });
   list.addEventListener('focusin', function(e) {
     var row = e.target;
-    if (row && row.classList && (row.classList.contains('wl-row') || row.classList.contains('wl-group-head') || row.classList.contains('wl-agent-link'))) wlSetTabStop(list, row);
+    if (row && row.classList && (row.classList.contains('wl-row') || row.classList.contains('wl-group-head') || row.classList.contains('wl-agent-link') || wlIsCard(row))) wlSetTabStop(list, row);
   });
 })();
 
