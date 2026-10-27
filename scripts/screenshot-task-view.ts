@@ -532,6 +532,26 @@ async function scenario(browser: import('playwright').Browser, theme: 'light' | 
     `${tag}: no horizontal overflow`,
   );
 
+  // ztrace S3: a panel opened straight onto a subagent (a tree item) fills its
+  // instruction and result once the work log arrives — the log is slowed here.
+  await page.evaluate(() => (window as any).closePanel());
+  await page.waitForTimeout(300);
+  const slowLog = /\/api\/dashboard\/session\/[^/?]+\/worklog(\?.*)?$/;
+  await page.route(slowLog, async (r) => {
+    await new Promise((res) => setTimeout(res, 1500));
+    return r.fulfill({ json: { entries: WORKLOG, hasMore: false } });
+  });
+  await page.evaluate((k) => (window as any).openPanel(k, 'agent', 'toolu_lib'), KEY);
+  await page.waitForTimeout(400);
+  const early = await page.evaluate(() => document.getElementById('panel-agent-conv')?.textContent ?? '');
+  await page.waitForTimeout(2500);
+  const late = await page.evaluate(() => document.getElementById('panel-agent-conv')?.textContent ?? '');
+  check(
+    !/Apple 앱들의 탭 패턴/.test(early) && /Apple 앱들의 탭 패턴/.test(late) && /3곳/.test(late),
+    `${tag}: a subagent tab opened before its work log fills its instruction and result when the log arrives`,
+  );
+  await page.unroute(slowLog);
+
   // 관리 → (a goal opening) lands with the goal at the top of the scroll area.
   await page.evaluate(() => (window as any).closePanel());
   await page.waitForTimeout(300);
