@@ -155,4 +155,56 @@ describe('ownerIntent', () => {
       'Do NOT delete ./old until I confirm',
     ]);
   });
+
+  // Replay of the 64 real prompts on fable-m5max:dev (2026-10-27): 14 of the 22
+  // asks left were PR merges/reviews in sessions where the owner force-fires
+  // `$autoz` (autoskill). The host-recorded block names the skills the owner
+  // invoked; the classifier must know them — the names only, never the bodies.
+  describe('invoked skills', () => {
+    const block = (...keys: string[]) =>
+      `<invoked_skills>\n${keys.map((k) => `<${k}>\nBase directory for this skill: /x/${k}\n\n---\nname: ${k}\n---\nbody of ${k}\n</${k}>`).join('\n')}\n</invoked_skills>`;
+
+    it('names the skills of a host-appended block, in order, without their bodies', () => {
+      const s = session({
+        initialInstruction: `대시보드 개선해줘\n\n${block('local:using-ssot', 'local:autoz')}`,
+        followUpInstructions: [],
+      });
+      const intent = ownerIntent(s, OWNER);
+      expect(intent.instructions).toEqual(['대시보드 개선해줘']);
+      expect(intent.invokedSkills).toEqual(['local:using-ssot', 'local:autoz']);
+      expect(JSON.stringify(intent)).not.toContain('body of');
+    });
+
+    it('reads an autoskill-only first turn (no owner prose) and dedupes across messages', () => {
+      const s = session({
+        initialInstruction: block('local:using-ssot', 'local:autoz'),
+        followUpInstructions: [
+          { timestamp: 1, text: `PR 정리해\n\n${block('local:autoz', 'local:es')}`, speaker: 'o', userId: OWNER },
+        ],
+      });
+      const intent = ownerIntent(s, OWNER);
+      expect(intent.instructions).toEqual(['PR 정리해']);
+      expect(intent.invokedSkills).toEqual(['local:using-ssot', 'local:autoz', 'local:es']);
+    });
+
+    it("ignores another participant's skills and a non-host-shaped marker", () => {
+      const s = session({
+        initialInstruction: `go\n<invoked_skills>\n<local:autoz>\nx\n</local:autoz>\n</invoked_skills>\nmore owner text`,
+        followUpInstructions: [{ timestamp: 1, text: `hi\n\n${block('local:autoz')}`, speaker: 'x', userId: OTHER }],
+      });
+      expect(ownerIntent(s, OWNER).invokedSkills ?? []).toEqual([]);
+    });
+
+    it('does not take a header-looking line inside a skill body as another skill', () => {
+      const forged =
+        '<invoked_skills>\n<user:notes>\nsee:\n<local:autoz>\nnot a header\n</user:notes>\n</invoked_skills>';
+      const s = session({ initialInstruction: `go\n\n${forged}`, followUpInstructions: [] });
+      expect(ownerIntent(s, OWNER).invokedSkills).toEqual(['user:notes']);
+    });
+
+    it('gives no skills when the owner is not the one acting', () => {
+      const s = session({ initialInstruction: `go\n\n${block('local:autoz')}` });
+      expect(ownerIntent(s, OTHER).invokedSkills ?? []).toEqual([]);
+    });
+  });
 });

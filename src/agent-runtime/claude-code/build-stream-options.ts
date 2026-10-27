@@ -75,13 +75,52 @@ const permissionWarningDeduper = createPermissionWarningDeduper({ windowMs: 10 *
  */
 const HOST_SKILL_BLOCKS = /^(?:\s*<invoked_skills>\n(?:(?!<\/?invoked_skills>)[\s\S])*\n<\/invoked_skills>)+\s*$/;
 
-function ownerText(text: string): { text: string; ambiguous: boolean } {
+function ownerText(text: string): { text: string; ambiguous: boolean; skills: string[] } {
   const cut = text.indexOf('<invoked_skills>');
-  if (cut < 0) return { text: text.trim(), ambiguous: false };
+  if (cut < 0) return { text: text.trim(), ambiguous: false, skills: [] };
   // Host blocks are appended last, after a blank line. A marker anywhere else,
   // or anything after the blocks, means what was cut may hold owner text.
   const hostShaped = (cut === 0 || text.slice(0, cut).endsWith('\n\n')) && HOST_SKILL_BLOCKS.test(text.slice(cut));
-  return { text: text.slice(0, cut).trim(), ambiguous: !hostShaped };
+  return {
+    text: text.slice(0, cut).trim(),
+    ambiguous: !hostShaped,
+    skills: hostShaped ? invokedSkillKeys(text.slice(cut)) : [],
+  };
+}
+
+/** A skill key as the host writes it: `<plugin>:<skill>`. */
+const SKILL_KEY = /^<([\w.-]+:[\w.-]+)>\n/;
+
+/**
+ * The skill keys of host-appended blocks, in order — names only, never bodies.
+ * Each block is `<invoked_skills>\n<key>\n…\n</key>\n<key2>\n…\n</key2>\n</invoked_skills>`
+ * (skill-force-handler / autoskill-fire). A section ends at its own closing tag
+ * followed by the next section or the block end, so a header-looking line inside
+ * a body is never read as another skill.
+ */
+function invokedSkillKeys(blocks: string): string[] {
+  const keys: string[] = [];
+  for (const block of blocks.matchAll(/<invoked_skills>\n((?:(?!<\/?invoked_skills>)[\s\S])*)\n<\/invoked_skills>/g)) {
+    let rest = block[1];
+    for (;;) {
+      const head = SKILL_KEY.exec(rest);
+      if (!head) break;
+      const key = head[1];
+      keys.push(key);
+      const close = `\n</${key}>`;
+      let end = -1;
+      for (let i = rest.indexOf(close, head[0].length - 1); i >= 0; i = rest.indexOf(close, i + 1)) {
+        const after = i + close.length;
+        if (after === rest.length || rest.startsWith('\n<', after)) {
+          end = after;
+          break;
+        }
+      }
+      if (end < 0 || end === rest.length) break;
+      rest = rest.slice(end + 1);
+    }
+  }
+  return keys;
 }
 
 /** The executor keeps at most this many follow-ups; at the cap older ones may be gone. */
@@ -108,11 +147,13 @@ export function ownerIntent(
   const owner = session?.ownerId;
   if (!session || !owner || owner !== user) return { instructions: [] };
   const instructions: string[] = [];
+  const skills = new Set<string>();
   let incomplete = session.intentHistoryIncomplete === true;
   const add = (raw: string) => {
     const t = ownerText(raw);
     incomplete ||= t.ambiguous;
     if (t.text.length > 0) instructions.push(t.text);
+    for (const k of t.skills) skills.add(k);
   };
   if (session.initialInstruction && session.initialInstructionUserId === owner) add(session.initialInstruction);
   const all = session.followUpInstructions ?? [];
@@ -130,7 +171,11 @@ export function ownerIntent(
     add(f.text);
   }
   if (all.length >= FOLLOW_UP_CAP) incomplete = true;
-  return { instructions, ...(incomplete ? { incomplete: true } : {}) };
+  return {
+    instructions,
+    ...(skills.size > 0 ? { invokedSkills: [...skills] } : {}),
+    ...(incomplete ? { incomplete: true } : {}),
+  };
 }
 
 /**

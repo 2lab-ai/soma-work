@@ -22,6 +22,7 @@ import { FollowupQueueStore } from '@soma/slack/followup-queue-store';
 import { OutputFlag } from '@soma/slack/output-flags';
 import { isLocalSlashCommand } from '@soma/slack/pipeline/local-slash-command';
 import { runWithTimeout } from '@soma/slack/pipeline/stream-executor-cleanup-helpers';
+import { slackTsOrderMs } from '@soma/slack/slack-ts';
 import { sayPostSwitches } from '@soma/slack/stream-processor';
 import { HandoffAbortError, isZHandoffWorkflow } from 'somalib/model-commands/handoff-parser';
 import { getAdminUsers, isAdminUser } from './admin-utils';
@@ -4055,7 +4056,7 @@ export class SlackHandler {
         sentAt: slackTsMs(event.ts),
       });
       settleOwnerInput(this.claudeHandler?.getSessionByKey?.(this.canonicalFollowupKey(sessionKey)), event.ts);
-      this.recordSteerAsFollowUp(sessionKey, rawText, event.user, slackTsMs(event.ts), {
+      this.recordSteerAsFollowUp(sessionKey, rawText, event.user, slackTsOrderMs(event.ts), {
         uuid: steered.uuid,
         itemId: item.id,
         // The bucket the row lives in — the key `dispatcher.steer` was given.
