@@ -82,7 +82,8 @@ python3 "$CLAUDE_PLUGIN_ROOT/skills/using-dotprd/scripts/parity-sheet.py" <out.p
    스크린샷만으로는 그 라운드를 GREEN 선언할 수 없다.
 
 ### Phase 3 — 종결
-8. 리시트 green → 머지+배포+배포 후 실측까지 (PR에서 멈추지 않는다).
+8. 리시트 green → 머지 → 레포 런북이 정한 프리뷰/dev 배포 → 배포 후 실측 (PR에서 멈추지 않는다).
+   prod·정규 릴리즈처럼 되돌릴 수 없는 배포는 레포·세션의 게이트를 따른다.
 9. 번호 문서를 shipped 상태로 갱신 (미래형 → 현재형 계약). 남은 기록을 `loop.done.md`로 옮기고,
    loop.md에는 `Status: done` + 다음 착수점·게이트 대기 항목만 남긴다.
 10. `.prd` 변경분 커밋 — 코드와 같은 PR/커밋 흐름에 태운다.
@@ -92,6 +93,10 @@ python3 "$CLAUDE_PLUGIN_ROOT/skills/using-dotprd/scripts/parity-sheet.py" <out.p
 이 절이 loop.md ↔ loop.done.md 규칙의 정본이다. 기계 검사 = 번들 `loop-lint.py <워크스트림 폴더>`
 (`--selftest`로 자기 검증; 명령 = §번들 파일).
 
+- **표 형식.** 첫 헤더가 `ID`인 표는 모두 gap/WU 표이고 `Status` 열을 가진다(없으면 C0). loop.md의 Status 칸은
+  표시 하나를 반드시 담는다 — ✅ ⚫ = 닫힘, 🔴 🟡 🚪 = 열림. 표시 없는 칸(`open`·`done` 같은 낱말뿐) = W2 경고 — 표시로 바꾼다.
+  선택 열 `Source`는 회귀를 `regression:<ID>`로 적는다. loop.md의 WU 행도 같은 ID/Status 형식을 쓴다
+  (Layout의 "열린 WU 행"이 이 표다).
 - **loop.md = 아직 안 끝난 것만.** 현재 라운드 계획 · 열린 WU 행 · build facts · 열린 gap 행 · 아직 처리 안 한
   리뷰 지적 · 다음 착수점. 옮기는 기준은 "끝났는가" 하나다 — 열린 것은 줄 수와 상관없이 남긴다. 린트의 줄 수
   경고는 "끝난 것이 남았는지 점검하라"는 신호이지 상한이 아니다.
