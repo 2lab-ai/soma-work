@@ -6987,6 +6987,17 @@ body.nt-open .new-task-fab { display: none !important; }
   }
   .slide-panel.open ~ .new-task-fab { right: calc(var(--panel-w) + 16px); }
 }
+/* Task view: a short docked screen (a phone held sideways, an unfolded Duo) — under a
+   top bar that wraps to two lines the drawer kept a few dozen pixels to read in. It
+   takes the full height instead, over the top bar's right end (above its default
+   chips, which are back once the drawer closes). */
+@media (min-width: 840px) and (max-height: 560px) {
+  .slide-panel { top: var(--pv-t, 0px); height: var(--pv-h, 100dvh); z-index: 102; }
+}
+/* A short screen: the panel head drops its subtitle line unless 자세히 is on. */
+@media (max-height: 560px) {
+  .slide-panel:not(.is-detail) #panel-title-sub { display: none !important; }
+}
 @media (pointer: coarse) {
   /* Responsive (SSOT 2026-10-24) — 16px text: iOS does not zoom into a focused input. */
   .panel-command textarea, .mc-custom-input input { font-size: 16px; }
