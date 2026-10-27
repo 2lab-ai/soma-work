@@ -1,0 +1,66 @@
+name: Chore engine
+
+# The chore skill's full engine suites. Too slow for quality-gates (15 min), so
+# they run here, only when the skill or this file changes; ci.yml keeps the fast
+# contract test (src/local/skills/chore/__tests__/chore-skill.test.ts).
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'src/local/skills/chore/**'
+      - '.github/workflows/chore-engine.yml'
+  pull_request:
+    paths:
+      - 'src/local/skills/chore/**'
+      - '.github/workflows/chore-engine.yml'
+
+concurrency:
+  group: chore-engine-${{ github.ref }}
+  cancel-in-progress: true
+
+# Read-only: the suites only read the checkout and write temp dirs.
+permissions:
+  contents: read
+
+jobs:
+  engine:
+    # Same allow-list guard as ci.yml: job-level, so a fork PR's head is never
+    # fetched onto the self-hosted runner. Kept flat (see ci.yml).
+    if: >-
+      github.event_name == 'push' ||
+      (github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository)
+    runs-on: [self-hosted, fable-m5max]
+    timeout-minutes: 90
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # All eight suites at once; each writes its own log. bash 3.2-safe (no
+      # associative arrays): the runner's default bash may be the system one.
+      - name: Engine suites (parallel)
+        run: |
+          set -uo pipefail
+          D=src/local/skills/chore/__tests__/py
+          LOGS=$(mktemp -d "${RUNNER_TEMP:-/tmp}/chore-engine.XXXXXX")
+          names=() pids=()
+          start() { local n=$1; shift; "$@" > "$LOGS/$n.log" 2>&1 & names+=("$n"); pids+=("$!"); }
+          for t in chore-contract chore-evidence chore-jira chore-judge chore-move chore-report; do
+            start "$t" python3 -I "$D/$t.test.py"
+          done
+          start chore-render bash "$D/chore-render.test.sh"
+          start chore bash "$D/chore.test.sh"
+          failed=0
+          for i in "${!pids[@]}"; do
+            if wait "${pids[$i]}"; then rc=0; else rc=$?; fi
+            echo "${names[$i]}: exit $rc — $(tail -n 1 "$LOGS/${names[$i]}.log")"
+            if [ "$rc" -ne 0 ]; then
+              failed=1
+              echo "::group::${names[$i]} (last 60 lines)"
+              tail -n 60 "$LOGS/${names[$i]}.log"
+              echo "::endgroup::"
+            fi
+          done
+          rm -rf "$LOGS"
+          exit "$failed"
