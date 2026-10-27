@@ -546,6 +546,21 @@ describe('Dashboard API', () => {
       }
     });
 
+    it('skips an event without a usable timestamp instead of failing the period', async () => {
+      mockReadRange.mockResolvedValue([
+        ...EVENTS,
+        { id: 'bad1', timestamp: Number.NaN, eventType: 'turn_used', userId: 'U1', userName: 'U1' },
+        { id: 'bad2', timestamp: 'abc', eventType: 'turn_used', userId: 'U1', userName: 'U1' },
+      ]);
+      const res = await injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/stats?period=week',
+        headers: AUTH_HEADER,
+      });
+      expect(res.statusCode).toBe(200);
+      expect(JSON.parse(res.body).totals).toMatchObject({ sessionsCreated: 3, turnsUsed: 1 });
+    });
+
     // The stats strip takes its tokens and cost from /usage for the same period.
     it('/usage totals follow the period and the optional user', async () => {
       const usage = (id: string, userId: string, inputTokens: number, outputTokens: number, costUsd: number) =>
