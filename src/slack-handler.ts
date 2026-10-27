@@ -4904,6 +4904,8 @@ export class SlackHandler {
         // found through the item→uuid map instead.
         const uuid = this.followupSteerUuids?.get(item.id);
         if (uuid) await this.cleanupSteerFiles(this.takeSteerFiles(uuid));
+        // Back in the queue: not a live instruction until the drain runs it.
+        if (uuid) this.withdrawSteerFollowUp(sessionKey, uuid);
         this.forgetSteerBookkeeping(item.id);
         // The row is `queued` again; its message still shows 전달완료 and no
         // controls, which is now a lie about a message nobody ran.
@@ -4949,6 +4951,8 @@ export class SlackHandler {
     this.forgetSteerBookkeeping(itemId);
     if (!uuid) return;
     void this.cleanupSteerFiles(this.takeSteerFiles(uuid));
+    // It runs as its own turn now (recorded there): not a live steer any more.
+    this.withdrawSteerFollowUp(sessionKey, uuid);
     this.logger.debug('Released steer artifacts after Send now', { sessionKey, itemId });
   }
 

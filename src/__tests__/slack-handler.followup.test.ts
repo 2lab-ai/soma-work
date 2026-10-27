@@ -2959,6 +2959,11 @@ describe('SlackHandler — follow-up queue host', () => {
       // It ran as an ordinary drained item instead of being stranded.
       expect(startWithContinuation).toHaveBeenCalledTimes(2);
       expect(items()[0].state).toBe('resolved');
+      // Review gate r4 (grok P1): the swept steer is no longer a live instruction
+      // (the drained turn records it again).
+      expect((registrySession.followUpInstructions ?? []).filter((f: { steerUuid?: string }) => f.steerUuid)).toEqual(
+        [],
+      );
     });
 
     it('cleans up the steered temp files it swept back into the queue', async () => {
@@ -3245,6 +3250,10 @@ describe('SlackHandler — follow-up queue host', () => {
       await tick();
 
       expect(cleanupTempFiles).toHaveBeenCalledWith(processed);
+      // Review gate r4 (grok P1): Send now runs it as its own turn — not a live steer any more.
+      expect((registrySession.followUpInstructions ?? []).filter((f: { steerUuid?: string }) => f.steerUuid)).toEqual(
+        [],
+      );
       await settle();
     });
   });
