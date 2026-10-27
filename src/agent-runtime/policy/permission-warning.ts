@@ -68,7 +68,7 @@ const NOT_A_READER = new RegExp(
   [
     '`|__', // backticks (perl/ruby run them), dunder access
     String.raw`\b(?:exec\w*|eval\w*|compile|system|popen\w*|spawn\w*|posix_spawn\w*|fork|subprocess|child_process|shell_exec|passthru|proc_open|qx)\b`,
-    String.raw`\b(?:importlib|runpy|ctypes|pty|builtins|getattr|setattr|globals|locals|pickle|marshal|shelve|yaml|code|Function|vm|run\w*Context|binding|dlopen|Module)\b`,
+    String.raw`\b(?:importlib|runpy|ctypes|pty|builtins|getattr|setattr|globals|locals|pickle|marshal|shelve|yaml|code|breakpoint|pdb|Function|vm|run\w*Context|binding|dlopen|[Mm]odule|_load|constructor)\b`,
     String.raw`\b(?:open|write\w*|unlink\w*|remove|rmtree|rename\w*|mkdir\w*|chmod|chown|truncate|socket|fetch|https?|net|request|urlopen)\b`,
     String.raw`(?<![.\w])(?:load|do)\s*[('"]`, // ruby `load 'f'`, perl `do 'f'` (json.load is a method call, not this)
     String.raw`\bimport\s*\(`, // JS dynamic import()
@@ -103,11 +103,12 @@ function isDataReaderCode(family: InterpreterFamily, code: string): boolean {
   const scanned = code.replace(/\b(?:sys\.|process\.)?stdout\.write\b/g, 'print');
   if (NOT_A_READER.test(scanned)) return false;
   if (family === 'python') {
-    for (const m of code.matchAll(/\bimport\s+([\w.\s,]+)/g)) {
-      const names = m[1].split(',').map((n) => n.trim().split(/\s+/)[0]);
+    // One line at a time: an import list never spans a newline (`[ \t]`, not `\s`).
+    for (const m of code.matchAll(/\bimport[ \t]+([\w., \t]+)/g)) {
+      const names = m[1].split(',').map((n) => n.trim().split(/[ \t]+/)[0]);
       if (names.some((n) => !PY_READER_MODULES.has(n))) return false;
     }
-    for (const m of code.matchAll(/\bfrom\s+([\w.]+)\s+import\b/g)) {
+    for (const m of code.matchAll(/\bfrom[ \t]+([\w.]+)[ \t]+import\b/g)) {
       if (!PY_READER_MODULES.has(m[1])) return false;
     }
   } else if (family === 'node') {
@@ -168,19 +169,14 @@ function interpreterRunsInput(command: string, interpreter: string, start: numbe
   while (i < command.length && /[ \t]/.test(command[i])) i++;
   const code = readWord(command, i);
   if (code.expands || !isDataReaderCode(family, code.word)) return true;
-  // Nothing may follow the code but redirects: a second `-e`, more arguments or
-  // a script operand is not something this check understands.
-  return !ONLY_REDIRECTS.test(restOfStage(command, code.end));
+  // Only a silenced stderr may follow the reader: a second argument or code
+  // fragment, a file redirect, another pipe stage or another command (`;`, `&&`,
+  // `||`, `&`, newline) is not something this check understands.
+  return !ONLY_STDERR_REDIRECTS.test(command.slice(code.end));
 }
 
-/** Text after `start` up to the end of this pipeline stage (`|`, `;`, `&`, newline or `)`). */
-function restOfStage(command: string, start: number): string {
-  const m = /[|;&\n)]/.exec(command.slice(start));
-  return m ? command.slice(start, start + m.index) : command.slice(start);
-}
-
-/** Zero or more redirects such as `2>/dev/null`, `> out.json`, `2>&1`. */
-const ONLY_REDIRECTS = /^(?:\s*\d*(?:>>?|<)\s*(?:&\d+|[^\s|;&<>]+))*\s*$/;
+/** `2>/dev/null` and `2>&1`, any number of times, and nothing else. */
+const ONLY_STDERR_REDIRECTS = /^(?:\s*2>\s*(?:\/dev\/null|&1))*\s*$/;
 
 /** True when every `| interpreter` in the command only reads stdin as data. */
 function onlyDataPipes(command: string): boolean {

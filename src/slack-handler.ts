@@ -4613,7 +4613,7 @@ export class SlackHandler {
         followUps.push({
           timestamp: instruction.sentAt ?? Date.now(),
           text: instruction.text,
-          speaker: instruction.user,
+          speaker: userSettingsStore.getUserSettings?.(instruction.user)?.slackDisplayName ?? instruction.user,
           userId: instruction.user,
         });
         session.followUpInstructions = followUps.slice(-50);
