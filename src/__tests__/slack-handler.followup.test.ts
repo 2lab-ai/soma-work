@@ -2946,6 +2946,20 @@ describe('SlackHandler — follow-up queue host', () => {
 
     // Review gate r5 (astra P1): a transport that awaits before handleMessage
     // (the dashboard echo) registers the input first.
+    // Review gate re-run (fable P1): the dashboard's pre-registered input is
+    // handed over to the message's own ts before the turn runs — otherwise it
+    // stays pending for the whole turn and every classifier allow becomes ask.
+    it('hands a pre-registered input over to the message ts synchronously', async () => {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const pre = handlerAny.beginOwnerInput(SESSION_KEY, 'U_OWNER', 'dashboard:9');
+      const run = handler.handleMessageHandingOff(message({ ts: '888.999', text: '대시보드 지시' }), say(), pre);
+      expect(registrySession.pendingOwnerInputs).toContain('888.999');
+      expect(registrySession.pendingOwnerInputs).not.toContain('dashboard:9');
+      gate.resolve({ hasPendingChoice: false });
+      await run;
+    });
+
     it('beginOwnerInput marks owner input pending until settled', () => {
       const before = registrySession.ownerInputRevision ?? 0;
       const token = handlerAny.beginOwnerInput(SESSION_KEY, 'U_OWNER', 'dashboard:1');
