@@ -1099,3 +1099,17 @@ describe('R8 review (fable P3) · input symmetry and a short body read at its to
     expect(run(400, 1000)).toBe(1400); // scrolled to the end: follows the new turn
   });
 });
+
+describe('T1.5 · the session model sits above the steering input — on a phone too', () => {
+  it('markup: model · effort come before the composer row', () => {
+    expect(PAGE.indexOf('id="panel-controls"')).toBeGreaterThan(-1);
+    expect(PAGE.indexOf('id="panel-controls"')).toBeLessThan(PAGE.indexOf('id="pc-row"'));
+  });
+
+  it('narrow: model · effort and the tools on the first line, the field and Send on the line under it', () => {
+    expect(CSS).toContain('.panel-command .panel-controls { order: 1;');
+    expect(CSS).toContain('.panel-command .pc-tools { order: 2; margin-left: auto; }');
+    expect(CSS).toMatch(/\.panel-command textarea \{ order: 4; flex: 1 1 calc\(100% - 88px\);/);
+    expect(CSS).toContain('.panel-command .btn-send { order: 5; }');
+  });
+});
