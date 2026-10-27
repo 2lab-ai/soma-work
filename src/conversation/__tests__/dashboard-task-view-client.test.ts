@@ -652,3 +652,450 @@ describe('#488 r4 (astra) · a send right after a recording timed out still wait
     expect(stop).toMatch(/if \(keep\) \{\s*_pcFiling = state\.done;/);
   });
 });
+
+describe('T1.1 / T1.6 · a minimal opening lands at the top: the surface, the tabs, the latest exchange', () => {
+  type Rect = { top: number; bottom: number; height: number };
+  /** The default landing (no section intent, no question), minimal or 자세히. */
+  function rig(detail: boolean) {
+    const scroll = {
+      scrollTop: 0,
+      scrollHeight: 2400,
+      clientHeight: 600,
+      calls: [] as number[],
+      getBoundingClientRect: (): Rect => ({ top: 100, bottom: 700, height: 600 }),
+      scrollTo(o: { top: number }) {
+        this.scrollTop = o.top;
+        this.calls.push(o.top);
+      },
+    };
+    const hidden = {
+      style: { display: 'none' },
+      getBoundingClientRect: (): Rect => ({ top: 0, bottom: 0, height: 0 }),
+    };
+    const els: Record<string, unknown> = {
+      'panel-scroll': scroll,
+      'panel-permission': hidden,
+      'panel-question': hidden,
+      'panel-needs-head': { hidden: true, offsetHeight: 0 },
+    };
+    const m = load<{ landPanel(): void; __set(n: string, v: unknown): void }>(['landPanel'], [], {
+      document: { getElementById: (id: string) => els[id] ?? null },
+      scrollPanelToWorkLog: () => {},
+    });
+    m.__set('_panelLand', '');
+    m.__set('_panelLanded', false);
+    m.__set('_panelLandAt', null);
+    m.__set('_panelOnQuestion', false);
+    m.__set('_panelStickBottom', false);
+    m.__set('_panelScrollGen', 0);
+    m.__set('_panelDetail', detail);
+    return { m, scroll };
+  }
+
+  it('minimal: lands at 0 and does not hold the bottom; a later landing (turns arrived) leaves a reader who scrolled', () => {
+    const r = rig(false);
+    r.scroll.scrollTop = 900; // where the previous content left it
+    r.m.landPanel();
+    expect(r.scroll.scrollTop).toBe(0);
+    r.m.landPanel(); // the turns arrive: still the top
+    expect(r.scroll.calls).toEqual([0, 0]);
+    r.scroll.scrollTop = 350; // the reader scrolls down
+    r.m.landPanel();
+    expect(r.scroll.scrollTop).toBe(350);
+  });
+
+  it('자세히: the whole conversation, landed on the newest turns as before', () => {
+    const r = rig(true);
+    r.m.landPanel();
+    expect(r.scroll.scrollTop).toBe(2400);
+  });
+
+  it('the landing never holds the bottom in minimal mode', () => {
+    const land = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nfunction landPanel('),
+      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction landPanel(')),
+    );
+    expect(land).toMatch(/if \(!onQuestion && !_panelDetail\) \{/);
+  });
+});
+
+describe('T1.3 / T1.6 · minimal 지시와 답변 is the latest exchange; 이전 대화 opens the rest', () => {
+  const turn = (role: string) => ({ classList: { contains: (c: string) => c === role } });
+
+  it('the latest exchange starts at the last instruction: the turns before it are counted', () => {
+    const m = load<{ convEarlierCount(nodes: unknown[]): number }>(['convEarlierCount'], []);
+    expect(m.convEarlierCount([])).toBe(0);
+    expect(m.convEarlierCount([turn('user'), turn('assistant')])).toBe(0);
+    expect(m.convEarlierCount([turn('user'), turn('assistant'), turn('user'), turn('assistant')])).toBe(2);
+    expect(m.convEarlierCount([turn('assistant'), turn('user')])).toBe(1);
+    expect(m.convEarlierCount([turn('assistant'), turn('assistant')])).toBe(0); // no instruction: all of it shows
+  });
+
+  function rig(nodes: unknown[], hasMore: boolean, all: boolean) {
+    const classes = new Set<string>();
+    const turns = {
+      classList: { toggle: (c: string, on: boolean) => (on ? classes.add(c) : classes.delete(c)) },
+      querySelectorAll: () => nodes,
+    };
+    const btn = { hidden: true, textContent: '' };
+    const loads: number[] = [];
+    const m = load<{ renderConvEarlier(): void; showEarlierTurns(): void; __set(n: string, v: unknown): void }>(
+      ['convEarlierCount', 'renderConvEarlier', 'showEarlierTurns'],
+      [],
+      {
+        document: {
+          getElementById: (id: string) => (id === 'panel-turns' ? turns : id === 'conv-earlier' ? btn : null),
+        },
+        loadMorePanelTurns: () => loads.push(1),
+      },
+    );
+    m.__set('_panelConvAll', all);
+    m.__set('_panelTurnsHasMore', hasMore);
+    m.__set('_panelAgent', ''); // the Main tab
+    return { m, btn, classes, loads };
+  }
+
+  it('a button names how many turns wait above the latest exchange (+ when older pages are not loaded)', () => {
+    const nodes = [turn('user'), turn('assistant'), turn('user'), turn('assistant')];
+    const r = rig(nodes, false, false);
+    r.m.renderConvEarlier();
+    expect(r.btn.hidden).toBe(false);
+    expect(r.btn.textContent).toBe('이전 대화 2개');
+    expect(r.classes.has('is-all')).toBe(false);
+    const more = rig(nodes, true, false);
+    more.m.renderConvEarlier();
+    expect(more.btn.textContent).toBe('이전 대화 2+개');
+  });
+
+  it('nothing above the latest exchange: no button', () => {
+    const r = rig([turn('user'), turn('assistant')], false, false);
+    r.m.renderConvEarlier();
+    expect(r.btn.hidden).toBe(true);
+  });
+
+  it('이전 대화 shows every turn for this opening; with only older pages left it loads one', () => {
+    const r = rig([turn('user'), turn('assistant'), turn('user')], false, false);
+    r.m.showEarlierTurns();
+    expect(r.classes.has('is-all')).toBe(true);
+    expect(r.btn.hidden).toBe(true);
+    const older = rig([turn('user'), turn('assistant')], true, false);
+    older.m.renderConvEarlier();
+    expect(older.btn.textContent).toBe('이전 대화');
+    older.m.showEarlierTurns();
+    expect(older.loads).toEqual([1]);
+  });
+
+  it('the markup and the style: the button above the turns; minimal hides the turns before the last instruction', () => {
+    expect(PAGE).toMatch(
+      /<button type="button" class="conv-earlier" id="conv-earlier" hidden onclick="showEarlierTurns\(\)"><\/button>\s*<div class="panel-turns" id="panel-turns">/,
+    );
+    expect(CSS).toContain(
+      '.slide-panel:not(.is-detail) #panel-turns:not(.is-all) > .turn:has(~ .turn.user) { display: none; }',
+    );
+    expect(CSS).toMatch(/\.slide-panel\.is-detail \.conv-earlier\b[^{]*\{ display: none; \}/);
+  });
+
+  it('minimal shows the artifacts as one row of name chips; 자세히 keeps the thumbnails', () => {
+    expect(CSS).toContain(
+      '.slide-panel:not(.is-detail) .art-strip-panel .art-thumb, .slide-panel:not(.is-detail) .art-strip-panel .art-tile-meta { display: none; }',
+    );
+    expect(CSS).toContain('.slide-panel:not(.is-detail) .panel-artifacts { display: flex;');
+  });
+
+  it('every opening starts at the latest exchange again; decorating the turns re-counts', () => {
+    const open = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nfunction openPanel('),
+      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction openPanel(')),
+    );
+    expect(open).toContain('_panelConvAll = false;');
+    const deco = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nfunction decoratePanelTurns('),
+      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction decoratePanelTurns(')),
+    );
+    expect(deco.indexOf('renderConvEarlier()')).toBeGreaterThan(-1);
+    expect(deco.indexOf('renderConvEarlier()')).toBeLessThan(deco.indexOf('if (!turnsEl || !cid) return;'));
+  });
+
+  it('a hidden first turn never starts loading older pages', () => {
+    const init = TEMPLATE.slice(
+      TEMPLATE.indexOf('(function initPanelScrollHandler()'),
+      TEMPLATE.indexOf('})();', TEMPLATE.indexOf('(function initPanelScrollHandler()')),
+    );
+    expect(init).toMatch(/if \(!first \|\| !first\.getClientRects\(\)\.length\) return;/);
+  });
+});
+
+describe('browser receipt · a section landing cut short by a short body lands once the body grows', () => {
+  it('the scroll area ResizeObserver tries a pending goal / agent / tasks landing again', () => {
+    const init = TEMPLATE.slice(
+      TEMPLATE.indexOf('(function initPanelScrollHandler()'),
+      TEMPLATE.indexOf('})();', TEMPLATE.indexOf('(function initPanelScrollHandler()')),
+    );
+    const ro = init.slice(init.indexOf('new ResizeObserver('));
+    expect(ro).toMatch(
+      /else if \(panelOpen && !_panelLanded && \(_panelLand === 'goal' \|\| _panelLand === 'agent' \|\| _panelLand === 'tasks'\)\) landPanel\(\);/,
+    );
+  });
+});
+
+describe('T1.6 · HIG: outside a list the 자세히 toggle is a button that behaves like a toggle, not a switch', () => {
+  it('a pressed-state button whose background changes — no switch knob in the panel head', () => {
+    expect(PAGE).toMatch(
+      /<button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false"[^>]*><svg class="pdt-icon"/,
+    );
+    expect(PAGE).not.toContain('pdt-switch');
+    expect(CSS).toMatch(
+      /\.panel-detail-toggle\[aria-pressed="true"\] \{ background: var\(--accent\); border-color: var\(--accent\); color: #fff; \}/,
+    );
+  });
+});
+
+describe('browser receipt · a section landing is held while the panel settles, until the reader acts', () => {
+  type Rect = { top: number; bottom: number; height: number };
+  function rig(goalAt: number, scrollTop: number) {
+    const scroll = {
+      scrollTop,
+      scrollHeight: 1000,
+      clientHeight: 600,
+      calls: [] as number[],
+      getBoundingClientRect: (): Rect => ({ top: 100, bottom: 700, height: 600 }),
+      scrollTo(o: { top: number }) {
+        this.scrollTop = o.top;
+        this.calls.push(o.top);
+      },
+    };
+    const goal = {
+      style: { display: '' },
+      getBoundingClientRect: (): Rect => {
+        const top = 100 + goalAt - scroll.scrollTop;
+        return { top, bottom: top + 80, height: 80 };
+      },
+    };
+    const m = load<{ holdPanelLanding(): void; __set(n: string, v: unknown): void }>(['holdPanelLanding'], [], {
+      document: {
+        getElementById: (id: string) => (id === 'panel-scroll' ? scroll : id === 'panel-goal' ? goal : null),
+      },
+    });
+    m.__set('_panelLand', 'goal');
+    m.__set('_panelScrollGen', 0);
+    m.__set('_panelHold', true);
+    m.__set('_panelHoldUntil', Number.POSITIVE_INFINITY);
+    return { m, scroll };
+  }
+
+  it('the panel moved the landed goal (a re-render, the browser anchoring): it goes back to the top', () => {
+    const r = rig(104, 77);
+    r.m.holdPanelLanding();
+    expect(r.scroll.scrollTop).toBe(104);
+  });
+
+  it('in place, or as far as the body allows: nothing moves', () => {
+    const r = rig(104, 104);
+    r.m.holdPanelLanding();
+    expect(r.scroll.calls).toEqual([]);
+    const end = rig(900, 400); // the goal cannot reach the top: the end is the landing
+    end.m.holdPanelLanding();
+    expect(end.scroll.calls).toEqual([]);
+  });
+
+  it('wiring: landed → held; a scroll or a resize while held puts it back; any reader input lets go; each opening and closing resets', () => {
+    const land = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nfunction landPanel('),
+      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction landPanel(')),
+    );
+    expect(land).toContain('_panelHold = _panelLanded;');
+    const init = TEMPLATE.slice(
+      TEMPLATE.indexOf('(function initPanelScrollHandler()'),
+      TEMPLATE.indexOf('})();', TEMPLATE.indexOf('(function initPanelScrollHandler()')),
+    );
+    expect(init).toMatch(/if \(_panelHold && panelOpen\) holdPanelLanding\(\);/);
+    expect(init).toMatch(/else if \(_panelHold && panelOpen\) holdPanelLanding\(\);/);
+    expect(init).toContain('_panelStickBottom = false; _panelHold = false;');
+    const open = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nfunction openPanel('),
+      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction openPanel(')),
+    );
+    expect(open).toContain('_panelHold = false;');
+    const close = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nfunction closePanel('),
+      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction closePanel(')),
+    );
+    expect(close).toContain('_panelHold = false;');
+  });
+});
+
+describe('R7 review (fable P2/P3) · the 이전 대화 button belongs to the main conversation; the hold is a settle window', () => {
+  const turn = (role: string) => ({ classList: { contains: (c: string) => c === role } });
+  function rig(nodes: unknown[], o: { agent?: string; hasMore?: boolean } = {}) {
+    const turns = { classList: { toggle: () => {} }, querySelectorAll: () => nodes };
+    const btn = { hidden: true, textContent: '' };
+    const m = load<{ renderConvEarlier(): void; __set(n: string, v: unknown): void }>(
+      ['convEarlierCount', 'renderConvEarlier'],
+      [],
+      {
+        document: {
+          getElementById: (id: string) => (id === 'panel-turns' ? turns : id === 'conv-earlier' ? btn : null),
+        },
+      },
+    );
+    m.__set('_panelConvAll', false);
+    m.__set('_panelTurnsHasMore', !!o.hasMore);
+    m.__set('_panelAgent', o.agent ?? '');
+    return { m, btn };
+  }
+
+  it("a subagent tab never shows the main conversation's 이전 대화 button", () => {
+    const r = rig([turn('user'), turn('assistant'), turn('user')], { agent: 'toolu_lib' });
+    r.m.renderConvEarlier();
+    expect(r.btn.hidden).toBe(true);
+  });
+
+  it('no turns yet (loading, none recorded, a failed load): no button, whatever the last session left', () => {
+    const r = rig([], { hasMore: true });
+    r.m.renderConvEarlier();
+    expect(r.btn.hidden).toBe(true);
+  });
+
+  it('switching tabs and replacing the turns re-count the button', () => {
+    const agentConv = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nfunction renderAgentConv('),
+      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction renderAgentConv(')),
+    );
+    expect(agentConv).toContain('renderConvEarlier();');
+    const open = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nfunction openPanel('),
+      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction openPanel(')),
+    );
+    expect(open.split('renderConvEarlier();').length - 1).toBeGreaterThanOrEqual(3);
+  });
+
+  it('the hold lets go after the settle window, and a mouse press lets go at once', () => {
+    type Rect = { top: number; bottom: number; height: number };
+    const scroll = {
+      scrollTop: 77,
+      scrollHeight: 1000,
+      clientHeight: 600,
+      calls: [] as number[],
+      getBoundingClientRect: (): Rect => ({ top: 100, bottom: 700, height: 600 }),
+      scrollTo(o: { top: number }) {
+        this.scrollTop = o.top;
+        this.calls.push(o.top);
+      },
+    };
+    const goal = {
+      style: { display: '' },
+      getBoundingClientRect: (): Rect => ({ top: 100 + 104 - scroll.scrollTop, bottom: 0, height: 80 }),
+    };
+    const m = load<{ holdPanelLanding(): void; __set(n: string, v: unknown): void; __get(): boolean }>(
+      ['holdPanelLanding'],
+      [],
+      {
+        document: {
+          getElementById: (id: string) => (id === 'panel-scroll' ? scroll : id === 'panel-goal' ? goal : null),
+        },
+      },
+    );
+    m.__set('_panelLand', 'goal');
+    m.__set('_panelScrollGen', 0);
+    m.__set('_panelHold', true);
+    m.__set('_panelHoldUntil', Date.now() - 1); // the panel settled a while ago: the reader's place now
+    m.holdPanelLanding();
+    expect(scroll.calls).toEqual([]);
+    const init = TEMPLATE.slice(
+      TEMPLATE.indexOf('(function initPanelScrollHandler()'),
+      TEMPLATE.indexOf('})();', TEMPLATE.indexOf('(function initPanelScrollHandler()')),
+    );
+    expect(init).toContain("['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart']");
+    const land = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nfunction landPanel('),
+      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction landPanel(')),
+    );
+    expect(land).toMatch(/_panelHoldUntil = Date\.now\(\) \+ 3000;/);
+  });
+});
+
+describe('R7 review (astra P2) · a panel read at its top stays at its top through a layout shift', () => {
+  type Rect = { top: number; bottom: number; height: number };
+  function rig(scrollTop: number) {
+    const row = {
+      isConnected: true,
+      top: 300,
+      getBoundingClientRect(): Rect {
+        return { top: this.top - scroll.scrollTop, bottom: 0, height: 40 };
+      },
+    };
+    const scroll = {
+      scrollTop,
+      calls: [] as number[],
+      getBoundingClientRect: (): Rect => ({ top: 0, bottom: 600, height: 600 }),
+      scrollTo(o: { top: number }) {
+        this.scrollTop = o.top;
+        this.calls.push(o.top);
+      },
+    };
+    const m = load<{
+      capturePanelAnchor(): unknown;
+      restorePanelAnchor(a: unknown): void;
+      __set(n: string, v: unknown): void;
+    }>(['capturePanelAnchor', 'restorePanelAnchor'], [], {
+      document: { getElementById: (id: string) => (id === 'panel-scroll' ? scroll : null) },
+      panelScrollAnchor: () => ({ el: row, top: row.getBoundingClientRect().top }),
+    });
+    m.__set('panelOpen', true);
+    m.__set('_panelStickBottom', false);
+    m.__set('_panelScrollGen', 0);
+    return { m, scroll, row };
+  }
+
+  it('at the top: the reflow (a narrower window grows the rows above) does not push the surface away', () => {
+    const r = rig(0);
+    const a = r.m.capturePanelAnchor();
+    r.row.top = 332; // the rows above the anchor grew by 32px
+    r.m.restorePanelAnchor(a);
+    expect(r.scroll.scrollTop).toBe(0);
+  });
+
+  it('below the top: the row the reader was on keeps its place, as before', () => {
+    const r = rig(200);
+    const a = r.m.capturePanelAnchor();
+    r.row.top = 332;
+    r.m.restorePanelAnchor(a);
+    expect(r.scroll.scrollTop).toBe(232);
+  });
+});
+
+describe('R8 review (fable P3) · input symmetry and a short body read at its top', () => {
+  it('a mouse press also starts a new panel scroll generation (as it lets go of the hold)', () => {
+    const gen = TEMPLATE.slice(
+      TEMPLATE.lastIndexOf(
+        'forEach(function(type) {\n      panel.addEventListener(type, function() { _panelScrollGen++; }',
+      ) - 80,
+    );
+    expect(gen.slice(0, 200)).toContain("['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart']");
+  });
+
+  it('a new turn follows the bottom only for a reader who is down there — a body that could not scroll stays at its top', () => {
+    type T = { role: string };
+    const run = (scrollTop: number, scrollHeight: number) => {
+      const scroll = { scrollTop, scrollHeight, clientHeight: 600 };
+      const turns = {
+        insertAdjacentHTML: () => {
+          scroll.scrollHeight += 400;
+        },
+      };
+      const m = load<{ appendTurnToPanel(t: T): void }>(['appendTurnToPanel'], [], {
+        document: {
+          getElementById: (id: string) => (id === 'panel-scroll' ? scroll : id === 'panel-turns' ? turns : null),
+        },
+        renderTurn: () => '<div class="turn user"></div>',
+        attachRawToggleHandlers: () => {},
+        decoratePanelTurns: () => {},
+        _panelStickBottom: false,
+      });
+      m.appendTurnToPanel({ role: 'user' });
+      return scroll.scrollTop;
+    };
+    expect(run(0, 500)).toBe(0); // short body at its top: stays at the top
+    expect(run(400, 1000)).toBe(1400); // scrolled to the end: follows the new turn
+  });
+});

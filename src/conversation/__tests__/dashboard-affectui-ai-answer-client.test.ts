@@ -846,6 +846,9 @@ describe('D12 — the writing row through the real insert paths (cross-spec revi
         _artCache: {},
         artInTurn: () => false,
         renderTurnArtifacts: () => '',
+        // Task view: decorating the turns re-counts the 이전 대화 fold (not under test here).
+        renderConvEarlier: () => {},
+        _panelStickBottom: false, // appendTurnToPanel: a body read at its top stays there
       },
     );
     const order = () =>

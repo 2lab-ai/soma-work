@@ -345,7 +345,8 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
 
   it('a default landing stays on the newest turns only until the reader touches the panel (§3.1-6)', () => {
     const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelScrollHandler() {'));
-    expect(init).toContain("['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(");
+    // Task view: a mouse press (a scrollbar drag) is the reader's input too.
+    expect(init).toContain("['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart'].forEach(");
     expect(init).toContain("document.getElementById('slide-panel')");
     expect(init).toContain('_panelStickBottom = false;');
   });

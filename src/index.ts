@@ -88,10 +88,9 @@ import {
 import { captureArtifactFromWorkLog } from './conversation/artifact-capture';
 import { getArtifactStore } from './conversation/artifacts';
 import type { NewTaskAttachment } from './conversation/new-task';
-import { createNewTaskProvider, resolveUploadedFile, uploadFileIds } from './conversation/new-task-provider';
+import { createNewTaskProvider, createSlackSteerUploader } from './conversation/new-task-provider';
 import { setSettingsRegistry } from './conversation/settings-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
-import { createSteerUploader } from './conversation/steer-uploads';
 import { appendWorkLog, flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
@@ -760,10 +759,7 @@ async function start() {
     });
 
     // The composer's files go up one by one; a retry reuses what Slack already took (#488).
-    const uploadSteerFiles = createSteerUploader({
-      upload: async (channel, threadTs, file) => (await uploadFileIds(app.client, channel, threadTs, [file]))[0],
-      resolve: (id) => resolveUploadedFile(app.client, id),
-    });
+    const uploadSteerFiles = createSlackSteerUploader(app.client);
     // Connect dashboard: command handler (inject message as if user typed in Slack)
     /** Returns the injected message's identity (channel + ts), undefined when nothing was sent. */
     const injectDashboardMessage = async (

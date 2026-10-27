@@ -726,14 +726,16 @@ async function scenario(
     const goal = document.getElementById('panel-goal') as HTMLElement;
     return {
       offset: Math.round(goal.getBoundingClientRect().top - sc.getBoundingClientRect().top),
+      // Task view: a short body cannot bring the goal all the way up — then it is scrolled as far as it goes.
+      atEnd: Math.abs(sc.scrollTop - (sc.scrollHeight - sc.clientHeight)) <= 1,
       editor: !!goal.querySelector('.cg-add-input'),
       history: goal.querySelector('.cg-history-toggle')?.textContent ?? '',
       queue: goal.textContent?.includes('Deploy to dev') ?? false,
     };
   });
   check(
-    Math.abs(land.offset) <= 4,
-    `${tag}: 관리 → lands with the goal at the top of the scroll area (${land.offset}px)`,
+    Math.abs(land.offset) <= 4 || (land.atEnd && land.offset > 0 && land.offset < 200),
+    `${tag}: 관리 → lands with the goal at the top of the scroll area, or as far up as the body allows (${land.offset}px${land.atEnd ? ', scrolled to the end' : ''})`,
   );
   check(
     land.editor && land.history.includes('완료된 goal 1개') && land.queue,

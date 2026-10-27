@@ -9,7 +9,7 @@ Status: 구현 · Date: 2026-10-27 · 기준 main `8332695b`
 
 ## 0. 한 줄 정의
 
-세션 패널은 태스크 뷰다. 위는 태스크 공통 서피스(세션 정보 · 입력 필요 · 산출물), 그 아래는 에이전트 탭(Main은 항상 맨 왼쪽)이고, 탭마다 Tasks(접힘) · 작업 로그(접힘) · 지시와 답변(펼침)이 있다. 기본은 꼭 필요한 정보만 보이고, 우상단 **자세히** 스위치를 켜면 모든 섹션이 펼쳐진다. Tasks는 새 계획으로 빠진 task를 진행 중이나 대기로 보이지 않게, 완료 · 중단 · 실행 안 됨으로 나눠 보여 준다.
+세션 패널은 태스크 뷰다. 위는 태스크 공통 서피스(세션 정보 · 입력 필요 · 산출물), 그 아래는 에이전트 탭(Main은 항상 맨 왼쪽)이고, 탭마다 Tasks(접힘) · 작업 로그(접힘) · 지시와 답변(펼침)이 있다. 기본은 꼭 필요한 정보만 보이고(패널은 맨 위에서 열리고 지시와 답변은 최신 대화), 우상단 **자세히** 토글 버튼을 켜면 모든 섹션이 펼쳐진다. Tasks는 새 계획으로 빠진 task를 진행 중이나 대기로 보이지 않게, 완료 · 중단 · 실행 안 됨으로 나눠 보여 준다.
 
 ## 1. 요구 (SSOT 2026-10-27, 원문 요약은 PR 본문에)
 
@@ -17,28 +17,30 @@ Status: 구현 · Date: 2026-10-27 · 기준 main `8332695b`
 |---|---|---|
 | T1.1 | 상단 공통 정보 서피스: 세션 정보 · 입력 필요 · 산출물 | `#panel-surface` — `#panel-info` · `#panel-goal` · 입력 필요(`#panel-needs-head` · `#panel-permission` · `#panel-question`) · `#panel-artifacts` |
 | T1.2 | 하단 에이전트 탭, Main은 왼쪽에 항상 | `#panel-tabs` role=tablist: `panelTabsHtml` — Main 다음 서브에이전트를 spawn 순서로. 스크롤 영역 위에 sticky, Main 탭은 가로 스크롤에서도 왼쪽에 sticky. ←/→/Home/End로 이동하면 바로 선택된다(WAI-ARIA tabs, automatic activation) |
-| T1.3 | 탭마다 태스크 리스트(접힘) · 작업 로그(접힘) · 지시와 답변(펼침) | `#panel-tabpanel`: `#panel-tasks`(`_panelTasksOpen` 기본 false, 접힌 머리 한 줄 = 진행 중 단계 · 완료/전체 · 새 계획으로 빠진 수) · `#panel-worklog`(기본 접힘) · `#panel-conv`(기본 펼침). 서브에이전트 탭의 지시와 답변 = 작업 로그의 시작 호출(입력 JSON의 `prompt`)과 결과(`renderAgentConv`) |
+| T1.3 | 탭마다 태스크 리스트(접힘) · 작업 로그(접힘) · 지시와 답변(펼침) | `#panel-tabpanel`: `#panel-tasks`(`_panelTasksOpen` 기본 false, 접힌 머리 한 줄 = 진행 중 단계 · 완료/전체 · 새 계획으로 빠진 수) · `#panel-worklog`(기본 접힘) · `#panel-conv`(기본 펼침). 기본(최소)에서 지시와 답변은 **최신 대화 한 묶음**(마지막 지시와 그 뒤)이고, 그 앞의 대화는 `이전 대화 n개`(`#conv-earlier`, `showEarlierTurns`) 뒤에 접힌다 — CSS `:has(~ .turn.user)`. 자세히는 모든 대화. 서브에이전트 탭의 지시와 답변 = 작업 로그의 시작 호출(입력 JSON의 `prompt`)과 결과(`renderAgentConv`) |
 | T1.4 | AI 답변은 기본이 답변 전문, 맨 아래에 raw | 어시스턴트 턴 = `.turn-answer`(화면 근처에 오면 불러오는 렌더된 답변, `IntersectionObserver` rootMargin 800px) → 턴 산출물 → `<details class="turn-raw">Raw</details>`(요약 + 원문 마크다운). 답변을 못 읽으면(기록 없음 · 권한 없음) 요약이 얼굴이 된다 |
 | T1.5 | 세션 모델 + 그 아래 스티어링 입력: 여러 줄 · 이미지 · 파일 · 음성 | `#panel-controls`(모델 · effort) 아래 `<textarea id="cmd-input">`: Enter 보내기, Shift+Enter 줄바꿈, IME 조합 중(한글) Enter는 보내지 않음, 폰에서는 Enter가 줄바꿈. 이미지 붙여넣기 · 끌어놓기 · 선택, 파일 첨부, 음성 녹음(MediaRecorder). 서버: `POST /api/dashboard/session/:key/command { message, attachments? }`(새 작업과 같은 제한 · body limit, 파일만 보내기 허용) → `injectDashboardMessage`가 세션 스레드에 업로드(`uploadFiles`)하고 `event.files`로 넘긴다 |
-| T1.6 | 기본은 중요한 정보만, 우상단 자세히 토글로 전부 | `#panel-detail-toggle`(기기별 저장 `soma-panel-detail`). 꺼짐: 세션 정보 한 줄 · 빈 goal 편집기 숨김 · 에이전트 경로 · 하위 트리 · 메인 머리 숨김 · Tasks/작업 로그 접힘. 켜짐: 모든 섹션 펼침(세션 정보 전체, Tasks 전체 단계와 이전 계획, 작업 로그, 에이전트 경로와 하위 트리) |
+| T1.6 | 기본은 중요한 정보만, 우상단 자세히 토글로 전부 | `#panel-detail-toggle` — 스위치가 아니라 **토글처럼 동작하는 버튼**(HIG Toggles, §5), 켜지면 배경이 채워진다. 기기별 저장 `soma-panel-detail`. 꺼짐: 패널이 **맨 위에서 열린다**(서피스 → 탭 → 최신 대화가 한 화면) · 세션 정보 한 줄 · 빈 goal 편집기 숨김 · 산출물은 이름 칩 한 줄 · 에이전트 경로 · 하위 트리 · 메인 머리 숨김 · Tasks/작업 로그 접힘 · 최신 대화만. 켜짐: 모든 섹션 펼침(세션 정보 전체, 산출물 썸네일, Tasks 전체 단계와 이전 계획, 작업 로그, 에이전트 경로와 하위 트리, 모든 대화)이고 최신 턴에 착지한다 |
 | T2 | Tasks: 새 task 목록이 기존 목록을 지울 때, 실행 안 되고 사라진 task를 구분하고 "진행 중" 오표시를 없앤다 | §3 |
 
 ## 2. 배치 (Apple식 기본 최소)
 
 ```
-패널 머리   제목 · 부제                         [자세히 ◯] [×]
+패널 머리   제목 · 부제                         [≡ 자세히] [×]
             세션 칩(상태 · 시간)            Slack  Stop
-스크롤 ─┬─ 공통 서피스   세션 정보(한 줄 + 링크) · goal · 입력 필요 · 산출물
+스크롤 ─┬─ 공통 서피스   세션 정보(한 줄 + 링크) · goal · 입력 필요 · 산출물(이름 칩)
         ├─ 에이전트 탭   [Main opus] [A1 Explore] [A2 librarian] …   ← sticky
         └─ 탭 패널       (자세히: 에이전트 머리 · 경로 · 하위 트리)
                          Tasks ▸ 화면 수정 중 · 1/3 · 이전 계획 중단 1 · 실행 안 됨 2
                          작업 로그 ▸ 3
-                         지시와 답변 ▾  지시 → 답변(렌더) → ▸Raw
+                         지시와 답변 ▾  (이전 대화 n개) 최신 지시 → 답변(렌더) → ▸Raw
 입력        모델 · effort
             [📎][🖼][🎤]  여러 줄 입력…                       [Send]
 ```
 
 폰(640px 미만 또는 높이 560px 미만): 입력칸이 한 줄을 다 쓰고, 모델 · effort · 도구 · Send가 그 아래 한 줄에 놓인다.
+
+착지: 기본(최소) 열기는 맨 위(`scrollTop 0`)에 한 번 착지하고, 턴이 도착해 다시 불려도 읽는 사람이 스크롤했으면 그대로 둔다(`_panelLandAt`). 질문 · 승인 요청이 있으면 그 카드, 관리 → · 상세 · 전체 task는 그 섹션, 자세히 켜짐은 최신 턴. 섹션 착지가 아직 짧은 본문 때문에 덜 됐으면 본문이 자랄 때(답변이 늦게 로드) 다시 착지한다(`ResizeObserver`).
 
 ## 3. Tasks의 결말 (T2)
 
@@ -78,7 +80,32 @@ Claude의 TodoWrite는 매 호출마다 목록 전체를 보낸다. 새 목록�
 
 동일성은 "직전 목록에서 같은 문구"다. 모델이 문구를 고쳐 다시 보낸 같은 일은 옛 문구가 `실행 안 됨`, 새 문구가 새 task로 남는다. 문구 유사도로 추측하지 않는다. 표시는 사실("시작 전에 계획에서 빠짐")만 말한다.
 
-## 4. 검증
+## 4. 검증 (갱신 2026-10-27 delta)
 
 - 단위: `src/session/__tests__/task-ledger-dropped.test.ts`(ledger), `src/conversation/__tests__/dashboard-task-view-client.test.ts`(결말 · 이전 계획 · 탭 · 답변 순서 · 입력 · 자세히), `src/conversation/__tests__/dashboard-command-attachments.test.ts`(명령 경로 첨부).
-- 브라우저: `scripts/screenshot-task-view.ts` — 1280 라이트/다크, 390 라이트에서 배치 순서, 기본 접힘, 렌더된 답변과 Raw, 탭 범위, 키보드, 이전 계획, 자세히 켜기/끄기, 여러 줄 · 붙여넣은 이미지 · 전송 본문, 가로 넘침 없음.
+- 브라우저: `scripts/screenshot-task-view.ts` — 1280 라이트/다크, 390 라이트(시나리오당 42개 확인)에서 배치 순서, 서피스 세 부분이 각각 그려짐(세션 정보 · 산출물 · 기다리는 세션의 입력 필요 = 질문 카드와 승인 요청), 맨 위 착지와 최신 대화 · 이전 대화, 기본 접힘, 렌더된 답변과 Raw, 탭 범위, 키보드, 이전 계획, 자세히 켜기/끄기, 여러 줄 · 붙여넣은 이미지 · 📎로 고른 파일 · Chromium 가짜 마이크로 실제 녹음한 음성(단독 전송, 녹음 중 전송), 가로 넘침 없음. 전송은 브라우저 본문 그대로 **실제 명령 라우트**(검증 · body limit · 소유자 확인)로 가고, 핸들러는 운영 업로드 경로(`createSlackSteerUploader`, Slack 더블)로 올린다.
+- Slack 업로드 구간: `src/conversation/__tests__/new-task-provider.steer.test.ts` — 파일마다 한 번 업로드, 파이프라인 `event.files` 모양, 메타데이터 읽기 실패 후 재시도는 다시 올리지 않음, Slack 밖 URL 거부.
+
+## 5. Apple HIG 리서치 — 결정과 원칙
+
+출처: Apple Human Interface Guidelines, 2026-10-27에 `developer.apple.com/tutorials/data/design/human-interface-guidelines/<page>.json`에서 받은 원문. 인용은 원문 그대로다.
+
+| 결정 | HIG 원문 | 페이지 |
+|---|---|---|
+| 맨 위에서 연다: 상태 칩 → 세션 정보 → 입력 필요 → 산출물 → 탭 → 최신 대화 | "Order content by relative importance. … place the most important items near the top and leading side of the window or display." | [Layout](https://developer.apple.com/design/human-interface-guidelines/layout) |
+| 기본 최소: Tasks · 작업 로그 접힘, 세션 정보 한 줄, 이전 대화 접힘, 자세히로 전부 | "Use progressive disclosure to make layouts cleaner and easier to interact with. … Use disclosure triangles, menus, or nested views to reduce how much content to initially display" | [Layout](https://developer.apple.com/design/human-interface-guidelines/layout) |
+| 자주 보는 것은 늘 보이고, 깊은 정보는 기본으로 숨김 | "Use a disclosure control to hide details until they’re relevant. Place controls that people are most likely to use at the top of the disclosure hierarchy so they’re always visible, with more advanced functionality hidden by default." | [Disclosure controls](https://developer.apple.com/design/human-interface-guidelines/disclosure-controls) |
+| 접힌 섹션 머리가 무엇이 숨었는지 말한다(`Tasks · 화면 수정 중 · 1/3 · 이전 계획 중단 1`) | "Provide a descriptive label when using a disclosure triangle. Make sure your labels indicate what is disclosed or hidden" | [Disclosure controls](https://developer.apple.com/design/human-interface-guidelines/disclosure-controls) |
+| 탭은 에이전트별 같은 구성(Tasks · 로그 · 지시와 답변), 태스크 공통 정보는 탭 밖 서피스 | "Use a tab view to present closely related areas of content." · "Make sure the controls within a pane affect content only in the same pane." | [Tab views](https://developer.apple.com/design/human-interface-guidelines/tab-views) |
+| 탭 이름 = 에이전트 이름 · 종류 · 상태 | "Provide a label for each tab that describes the contents of its pane." | [Tab views](https://developer.apple.com/design/human-interface-guidelines/tab-views) |
+| 탭 줄은 스크롤해도 위에 붙어 있다(sticky), Main은 왼쪽 고정 | "Make sure the tab bar is visible when people navigate to different sections of your app." | [Tab bars](https://developer.apple.com/design/human-interface-guidelines/tab-bars) |
+| 섹션은 여백 · 구분선으로 묶는다(서피스 / 탭 / 탭 패널) | "Group related items to clearly express related information or functions. For example, you might use negative space, container shapes, or separator lines" | [Layout](https://developer.apple.com/design/human-interface-guidelines/layout) |
+| 자세히는 스위치가 아니라 토글처럼 동작하는 버튼, 켜지면 배경이 채워진다 | "Outside of a list, use a button that behaves like a toggle, not a switch." · "you update its appearance — typically by changing the background — based on the current state." · (macOS) "avoid using these components in a toolbar or status bar." | [Toggles](https://developer.apple.com/design/human-interface-guidelines/toggles) |
+| 켜짐과 꺼짐은 채움의 유무로 구분(색만으로 구분하지 않음), `aria-pressed` | "Make sure the visual differences in a toggle’s state are obvious. … Avoid relying solely on different colors to communicate state" | [Toggles](https://developer.apple.com/design/human-interface-guidelines/toggles) |
+| 입력은 여러 줄 텍스트 뷰(자동 높이, Shift+Enter 줄바꿈) | "Use a text view when you need to display text that’s long, editable, or in a special format." | [Text views](https://developer.apple.com/design/human-interface-guidelines/text-views) |
+
+원칙에서 벗어난 것(의도적):
+
+- **탭 수.** HIG Tab views는 "Avoid providing more than six tabs in a tab view."라고 한다. 서브에이전트 수는 세션이 정하므로 상한을 둘 수 없다. 탭 줄은 가로로 스크롤되고 Main은 왼쪽에 붙어 있으며, 전체 그림은 자세히의 에이전트 트리가 맡는다.
+- **탭 줄 위치.** HIG Tab views는 탭 컨트롤을 콘텐츠 위쪽 가장자리에 둔다. 여기서는 태스크 공통 서피스가 탭 위에 있다(유저 요구 T1.1). 탭 줄은 스크롤하면 위에 붙어 그 자리를 지킨다.
+

@@ -5239,27 +5239,27 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .panel-conv > .panel-sec-head { padding: 4px 16px; width: 100%; }
 .panel-conv-body[hidden] { display: none; }
 .panel-agent-conv { padding: 6px 16px 10px; }
-/* 자세히 (T1.6) — a switch in the head; the panel's class gates the detail-only parts. */
+/* 자세히 (T1.6) — a button that behaves like a toggle (HIG Toggles: outside a list,
+   not a switch; the background tells the state); the panel's class gates the
+   detail-only parts. */
 .panel-detail-toggle {
   display: inline-flex;
   align-items: center;
   gap: 6px;
   min-height: 32px;
-  padding: 0 10px 0 6px;
+  padding: 0 11px 0 9px;
   border: 1px solid var(--border);
   border-radius: 999px;
-  background: var(--surface-raised);
+  background: transparent;
   color: var(--text-secondary);
   font: inherit;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
+  transition: background var(--speed) var(--ease), border-color var(--speed) var(--ease), color var(--speed) var(--ease);
 }
-.pdt-switch { position: relative; width: 26px; height: 16px; border-radius: 999px; background: var(--border); transition: background var(--speed) var(--ease); }
-.pdt-switch::after { content: ""; position: absolute; top: 2px; left: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--surface); box-shadow: 0 1px 2px rgba(0,0,0,0.25); transition: transform var(--dur-move) var(--ease-out); }
-.panel-detail-toggle[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
-.panel-detail-toggle[aria-pressed="true"] .pdt-switch { background: var(--accent); }
-.panel-detail-toggle[aria-pressed="true"] .pdt-switch::after { transform: translateX(10px); }
+.pdt-icon { width: 14px; height: 14px; flex: none; }
+.panel-detail-toggle[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
 .panel-detail-toggle:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 /* Minimal by default: the agent path, the subtree and the main agent's own
    header are for 자세히 — the tabs already say where the reader is. */
@@ -5681,6 +5681,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* An assistant turn (task view T1.4): the answer itself, then Raw at its foot —
    the turn's summary and the answer's source as written. */
 .turn-answer { margin-top: 4px; container: ans / inline-size; }
+/* Task view (T1.3 / T1.6): minimal 지시와 답변 is the latest exchange — the last
+   instruction and what followed it; 이전 대화 (or 자세히) shows the turns before it. */
+.slide-panel:not(.is-detail) #panel-turns:not(.is-all) > .turn:has(~ .turn.user) { display: none; }
+.conv-earlier { display: block; margin: 10px auto 0; padding: 5px 14px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.conv-earlier:hover { color: var(--text); border-color: var(--text-tertiary); }
+.conv-earlier:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.conv-earlier[hidden], .slide-panel.is-detail .conv-earlier { display: none; }
 .turn-answer .ans-card { margin-top: 2px; padding: 2px 0 0; border: 0; border-radius: 0; background: none; }
 .turn-raw { margin-top: 6px; }
 .turn-raw summary.turn-expand-btn { cursor: pointer; color: var(--text-tertiary); font-size: 11px; padding: 2px 0; user-select: none; list-style: none; }
@@ -7079,6 +7086,17 @@ body.nt-open .new-task-fab { display: none !important; }
 .cron-lane-bar .cron-lane-head { flex: 1 1 auto; min-width: 0; }
 .cron-group[hidden] { display: none; }
 .cron-lane.is-collapsed { padding-bottom: 4px; }
+/* Task view (T1.6): minimal — the artifacts are one row of name chips, like a
+   short panel body below; 자세히 shows them as thumbnails. */
+.slide-panel:not(.is-detail) .panel-artifacts { display: flex; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
+.slide-panel:not(.is-detail) .panel-arts-head { flex: none; margin-bottom: 0; }
+.slide-panel:not(.is-detail) .panel-arts-hint { display: none; }
+.slide-panel:not(.is-detail) .art-strip-panel { flex: 1 1 auto; min-width: 0; padding-top: 2px; padding-bottom: 2px; }
+.slide-panel:not(.is-detail) .art-strip-panel .art-thumb, .slide-panel:not(.is-detail) .art-strip-panel .art-tile-meta { display: none; }
+.slide-panel:not(.is-detail) .art-strip-panel .art-tile-name { padding-bottom: 6px; }
+.slide-panel:not(.is-detail) .art-strip-panel .art-tile { display: flex; align-items: center; gap: 6px; width: auto; max-width: 200px; }
+.slide-panel:not(.is-detail) .art-strip-panel .art-open { flex: 1 1 auto; min-width: 0; }
+.slide-panel:not(.is-detail) .art-strip-panel .art-play { position: static; flex: none; width: 32px; height: 32px; }
 /* A short panel body (landscape phones, the unfolded Duo, a docked drawer under a
    tall top bar; below 560px R/2 cannot hold full thumbnails plus a couple of task
    rows): artifacts become name chips with the play button inline, so the
@@ -7277,7 +7295,7 @@ body.nt-open .new-task-fab { display: none !important; }
         </div>
       </div>
       <!-- 자세히 (task view T1.6): the panel shows what matters by default; on, every detail of every section. Saved per device. -->
-      <button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false" title="모든 세부 정보 보기" onclick="togglePanelDetail()"><span class="pdt-switch" aria-hidden="true"></span><span class="pdt-label">자세히</span></button>
+      <button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false" title="모든 세부 정보 보기" onclick="togglePanelDetail()"><svg class="pdt-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 4h10M3 8h10M3 12h6"/></svg><span class="pdt-label">자세히</span></button>
       <button class="panel-close" aria-label="패널 닫기" title="패널 닫기" onclick="closePanel()">&#x2715;</button>
       <!-- Session chip (spec 13): status · active time · retry · Slack · the session's one action. -->
       <div class="panel-status" id="panel-status"></div>
@@ -7318,6 +7336,7 @@ body.nt-open .new-task-fab { display: none !important; }
           <button type="button" class="panel-sec-head panel-conv-header" id="conv-toggle" aria-expanded="true" aria-controls="panel-conv-body" onclick="togglePanelConv()"><span class="ps-sec-title">지시와 답변</span><span class="ps-sec-sum" id="conv-count"></span><svg class="pi-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
           <div class="panel-conv-body" id="panel-conv-body">
             <div class="panel-agent-conv" id="panel-agent-conv" hidden></div>
+            <button type="button" class="conv-earlier" id="conv-earlier" hidden onclick="showEarlierTurns()"></button>
             <div class="panel-turns" id="panel-turns">
               <p style="color:var(--text-secondary);text-align:center;margin-top:40px">Click a session card to view details</p>
             </div>
@@ -11016,6 +11035,7 @@ function renderAgentConv() {
   var turns = document.getElementById('panel-turns');
   var sum = document.getElementById('conv-count');
   if (!host || !turns) return;
+  renderConvEarlier(); // the 이전 대화 button belongs to the main conversation
   if (!_panelAgent) {
     host.hidden = true;
     turns.hidden = false;
@@ -13253,6 +13273,8 @@ function layoutScrollNow() {
 function capturePanelAnchor() {
   var scrollEl = document.getElementById('panel-scroll');
   if (!scrollEl || !panelOpen) return null;
+  // Read at its top (the task view's landing): the top is the place to keep, not a row.
+  if (scrollEl.scrollTop <= 0) return { atTop: true, gen: _panelScrollGen };
   var a = panelScrollAnchor(scrollEl);
   return a ? { el: a.el, offset: a.top - scrollEl.getBoundingClientRect().top, gen: _panelScrollGen } : null;
 }
@@ -13261,7 +13283,9 @@ function restorePanelAnchor(a) {
   if (!scrollEl || !panelOpen) return;
   if (_panelStickBottom) { scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' }); return; }
   // Never pull the reader back from a place they scrolled to themselves.
-  if (!a || !a.el.isConnected || a.gen !== _panelScrollGen) return;
+  if (!a || a.gen !== _panelScrollGen) return;
+  if (a.atTop) { if (scrollEl.scrollTop !== 0) scrollEl.scrollTo({ top: 0, behavior: 'instant' }); return; }
+  if (!a.el.isConnected) return;
   var drift = a.el.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - a.offset;
   if (Math.abs(drift) > 0.5) scrollEl.scrollTo({ top: scrollEl.scrollTop + drift, behavior: 'instant' });
 }
@@ -15812,6 +15836,8 @@ function scrollPanelToWorkLog() {
 //     do not move it, and a reader who scrolled meanwhile stays.
 var _panelOnQuestion = false;
 var _panelLandAt = null; // where the last section landing left the scroll (null = none yet this opening)
+var _panelHold = false; // a landed section is held in place while the panel settles, until the reader acts
+var _panelHoldUntil = 0; // the settle window (3 s): after it, the panel's own moves are the reader's place too
 function landPanel() {
   var scrollEl = document.getElementById('panel-scroll');
   if (!scrollEl) return;
@@ -15837,6 +15863,8 @@ function landPanel() {
       // the landing after the turns arrive tries again.
       _panelLandAt = scrollEl.scrollTop;
       _panelLanded = Math.abs(scrollEl.scrollTop - target) <= 1;
+      _panelHold = _panelLanded;
+      _panelHoldUntil = Date.now() + 3000;
       return;
     }
   }
@@ -15857,12 +15885,41 @@ function landPanel() {
   var questionTop = onQuestion
     ? Math.max(0, scrollEl.scrollTop + target.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - headH)
     : 0;
+  if (!onQuestion && !_panelDetail) {
+    // Task view (minimal): land at the top — the common surface, the tabs, and
+    // under them the latest exchange (the turns before it are folded). Made
+    // again as the turns arrive, but a reader who scrolled since stays.
+    if (_panelLandAt !== null && Math.abs(scrollEl.scrollTop - _panelLandAt) > 1) return;
+    _panelScrollGen++;
+    scrollEl.scrollTo({ top: 0, behavior: 'instant' });
+    _panelLandAt = scrollEl.scrollTop;
+    _panelStickBottom = false;
+    return;
+  }
   // Instant: under scroll-behavior: smooth the glide down from 0 passed
   // through scrollTop < 100 and set off the load-older-turns handler.
   // #488: the landing is the reader's new place — a layout anchor from before it is stale.
   _panelScrollGen++;
   scrollEl.scrollTo({ top: onQuestion ? questionTop : scrollEl.scrollHeight, behavior: 'instant' });
   _panelStickBottom = !onQuestion;
+}
+
+// A held section landing: the section goes back under the tabs when the panel
+// moved it without the reader (a re-render above it, the browser's own scroll
+// anchoring) — as far as the body allows.
+function holdPanelLanding() {
+  // Past the settle window a move with no input (find in page, a scrollbar) is the reader's.
+  if (Date.now() > _panelHoldUntil) { _panelHold = false; return; }
+  var scrollEl = document.getElementById('panel-scroll');
+  var sec = document.getElementById(_panelLand === 'goal' ? 'panel-goal' : _panelLand === 'tasks' ? 'panel-tasks' : 'panel-agents');
+  if (!scrollEl || !sec || sec.style.display === 'none') return;
+  var tabs = _panelLand === 'goal' ? null : document.getElementById('panel-tabs');
+  var under = tabs ? tabs.offsetHeight || 0 : 0;
+  var drift = sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - under;
+  var top = Math.max(0, Math.min(scrollEl.scrollTop + drift, scrollEl.scrollHeight - scrollEl.clientHeight));
+  if (Math.abs(top - scrollEl.scrollTop) <= 1) return;
+  _panelScrollGen++;
+  scrollEl.scrollTo({ top: top, behavior: 'instant' });
 }
 
 // ── Slide Panel ──
@@ -15876,6 +15933,8 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   _panelLand = focusWorkLog === true ? 'worklog' : (focusWorkLog || '');
   _panelLanded = false;
   _panelLandAt = null;
+  _panelHold = false;
+  _panelConvAll = false; // 지시와 답변 starts at the latest exchange again
   // The control that opened it gets focus back on close (not a control inside the panel).
   var opener = document.activeElement;
   if (opener && opener !== document.body && !(opener.closest && opener.closest('#slide-panel'))) _panelReturnFocus = document.activeElement;
@@ -15963,6 +16022,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   if (s.conversationId) {
     turnsEl.innerHTML = turnsSkeletonHtml();
     turnsEl.setAttribute('aria-busy', 'true');
+    renderConvEarlier();
     landPanel(); // the answer form is in view while the turns load
     _panelTurnsLoading = true;
     var loadingConvId = s.conversationId;
@@ -16005,12 +16065,14 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
         if (loadingGen !== _panelGen) return;
         turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Failed to load conversation</p>';
         turnsEl.removeAttribute('aria-busy');
+        renderConvEarlier();
         landPanel();
         _panelTurnsLoading = false;
       });
   } else {
     turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation recorded</p>';
     turnsEl.removeAttribute('aria-busy');
+    renderConvEarlier();
     landPanel();
   }
 
@@ -16537,7 +16599,9 @@ function appendTurnToPanel(turn) {
   // Scroll container is now .panel-scroll (parent of .panel-turns). Bottom-stick
   // logic must read from the scroll parent, not from panel-turns itself.
   const scrollEl = document.getElementById('panel-scroll') || turnsEl;
-  const wasAtBottom = scrollEl.scrollHeight - scrollEl.scrollTop <= scrollEl.clientHeight + 40;
+  // At the end the reader follows the new turn; a short body read at its top (the
+  // minimal landing, nothing to scroll yet) stays at its top unless the bottom is held.
+  const wasAtBottom = (scrollEl.scrollTop > 0 || _panelStickBottom) && scrollEl.scrollHeight - scrollEl.scrollTop <= scrollEl.clientHeight + 40;
   turnsEl.insertAdjacentHTML('beforeend', renderTurn(turn));
   if (wasAtBottom) scrollEl.scrollTop = scrollEl.scrollHeight;
   attachRawToggleHandlers();
@@ -17121,6 +17185,7 @@ function closePanel() {
   resetWorkLog(null, false);
   _panelLand = '';
   _panelLanded = false;
+  _panelHold = false;
   _panelStickBottom = false;
   _panelOnQuestion = false;
   // Focus goes back to whatever opened the panel (a tree item, a card button)
@@ -17175,13 +17240,15 @@ function panelOlderStep(armed, inZone, canLoad) {
   if (!scrollEl || !turnsEl) return;
   var lastTop = 0;
   scrollEl.addEventListener('scroll', function() {
+    if (_panelHold && panelOpen) holdPanelLanding();
     // Only the reader moving up ends the stick; the area shrinking under a
     // resting scrollTop (a late subtitle) does not.
     var top = scrollEl.scrollTop;
     if (top < lastTop && scrollEl.scrollHeight - scrollEl.clientHeight - top > 4) _panelStickBottom = false;
     lastTop = top;
     var first = turnsEl.querySelector('.turn');
-    if (!first) return;
+    // Folded under 이전 대화 (minimal): no older pages until the reader opens them.
+    if (!first || !first.getClientRects().length) return;
     var inZone = olderTurnsZone(first.getBoundingClientRect().top, scrollEl.getBoundingClientRect().top);
     var canLoad = _panelTurnsHasMore && !_panelTurnsLoading && !!panelConvId && !!_panelTurnsOldestId;
     var step = panelOlderStep(_panelOlderArmed, inZone, canLoad);
@@ -17192,8 +17259,8 @@ function panelOlderStep(armed, inZone, canLoad) {
   // the reader took over: stop holding the newest turns.
   var panel = document.getElementById('slide-panel');
   if (panel) {
-    ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(function(type) {
-      panel.addEventListener(type, function() { _panelStickBottom = false; }, { passive: true, capture: true });
+    ['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart'].forEach(function(type) {
+      panel.addEventListener(type, function() { _panelStickBottom = false; _panelHold = false; }, { passive: true, capture: true });
     });
   }
   // The area shrinking (a subtitle arriving) or the turns growing after the
@@ -17201,6 +17268,10 @@ function panelOlderStep(armed, inZone, canLoad) {
   if (typeof ResizeObserver === 'function') {
     var stick = new ResizeObserver(function() {
       if (_panelStickBottom) scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' });
+      else if (_panelHold && panelOpen) holdPanelLanding();
+      // A section landing the body was still too short for (the answers load
+      // after the turns) lands as it grows; a reader who scrolled meanwhile stays.
+      else if (panelOpen && !_panelLanded && (_panelLand === 'goal' || _panelLand === 'agent' || _panelLand === 'tasks')) landPanel();
     });
     stick.observe(scrollEl);
     stick.observe(turnsEl);
@@ -19329,9 +19400,37 @@ function renderPanelArtifactsSection() {
 
 // Files each answer produced, under that answer: walk the turns in order; an
 // artifact goes to the first answer whose turn window holds its turn start.
+// 지시와 답변 (minimal, T1.3 / T1.6): the latest exchange — the last instruction
+// and what followed it. The turns before it wait behind 이전 대화 for this
+// opening; 자세히 shows every turn.
+var _panelConvAll = false;
+function convEarlierCount(nodes) {
+  for (var i = nodes.length - 1; i >= 0; i--) if (nodes[i].classList.contains('user')) return i;
+  return 0;
+}
+function renderConvEarlier() {
+  var turnsEl = document.getElementById('panel-turns');
+  var btn = document.getElementById('conv-earlier');
+  if (!turnsEl || !btn) return;
+  turnsEl.classList.toggle('is-all', _panelConvAll);
+  var nodes = turnsEl.querySelectorAll(':scope > .turn');
+  var n = convEarlierCount(nodes);
+  // The main conversation's, with turns in it: never on a subagent tab, a skeleton or a placeholder.
+  var show = !_panelAgent && !_panelConvAll && nodes.length > 0 && (n > 0 || !!_panelTurnsHasMore);
+  btn.hidden = !show;
+  if (show) btn.textContent = n > 0 ? '이전 대화 ' + n + (_panelTurnsHasMore ? '+' : '') + '개' : '이전 대화';
+}
+function showEarlierTurns() {
+  _panelConvAll = true;
+  renderConvEarlier();
+  // Every loaded turn is the latest exchange: the older ones are a page away.
+  var turnsEl = document.getElementById('panel-turns');
+  if (_panelTurnsHasMore && convEarlierCount(turnsEl ? turnsEl.querySelectorAll(':scope > .turn') : []) === 0) loadMorePanelTurns();
+}
 function decoratePanelTurns() {
   var turnsEl = document.getElementById('panel-turns');
   var cid = panelConvId;
+  renderConvEarlier();
   if (!turnsEl || !cid) return;
   var c = _artCache[cid];
   var list = (c && c.list) || [];
@@ -20626,7 +20725,7 @@ function syncTopbarBottom() {
   // The reader's own input in the panel: a shift no longer restores the old place.
   var panel = document.getElementById('slide-panel');
   if (panel) {
-    ['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(function(type) {
+    ['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart'].forEach(function(type) {
       panel.addEventListener(type, function() { _panelScrollGen++; }, { passive: true, capture: true });
     });
   }
