@@ -112,15 +112,18 @@ export class ActionPanelBuilder {
     });
 
     const isQuestionPending = params.waitingForChoice === true;
-    const isWorking = params.activityState === 'working' || params.hasActiveRequest === true;
 
-    const closeButton = ActionPanelBuilder.buildCloseButton(params.sessionKey);
-
-    // The surface carries exactly two controls: ⏸ 중지 while a turn runs, and
-    // 세션 종료 always. The per-workflow buttons (New Fix / Renew Fix / PR 문서화 /
-    // New·Renew 리뷰 / PR 승인 / Merge) were removed on 2026-10-27 — unused.
-    const controls = isWorking ? [ActionPanelBuilder.buildStopButton(params.sessionKey), closeButton] : [closeButton];
-    const actionRows = [{ type: 'actions', block_id: 'control_actions', elements: controls }];
+    // The surface carries one control: 세션 종료 (2026-10-27, "세션 종료 버튼을
+    // 제외하고 모두 삭제"). The per-workflow buttons (New Fix / Renew Fix /
+    // PR 문서화 / New·Renew 리뷰 / PR 승인 / Merge) and ⏸ 중지 are gone; a running
+    // turn is still stopped from the thread (`!`) or the dashboard.
+    const actionRows = [
+      {
+        type: 'actions',
+        block_id: 'control_actions',
+        elements: [ActionPanelBuilder.buildCloseButton(params.sessionKey)],
+      },
+    ];
 
     // The rail: ONE full-width section (T2, 2026-10-27, trinity-reviewed) —
     //   line 1  badge · step · progress age [· liveness]   (buildProgressLine)
@@ -380,15 +383,6 @@ export class ActionPanelBuilder {
         confirm: { type: 'plain_text', text: '종료' },
         deny: { type: 'plain_text', text: '취소' },
       },
-    };
-  }
-
-  private static buildStopButton(sessionKey: string): any {
-    return {
-      type: 'button',
-      text: { type: 'plain_text', text: '⏸ 중지', emoji: true },
-      action_id: 'panel_stop',
-      value: JSON.stringify({ sessionKey, action: 'stop' }),
     };
   }
 

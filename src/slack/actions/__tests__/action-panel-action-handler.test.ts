@@ -41,48 +41,23 @@ describe('ActionPanelActionHandler', () => {
     );
   });
 
-  it('stops the running turn via stop action', async () => {
-    const abortSession = vi.fn().mockReturnValue(true);
-    const handler = new ActionPanelActionHandler({
-      slackApi: { postMessage: vi.fn() } as any,
-      claudeHandler: {
-        getSessionByKey: vi.fn().mockReturnValue({
-          ownerId: 'U123',
-          channelId: 'C123',
-          threadTs: '111.222',
-          activityState: 'working',
-        }),
-      } as any,
-      requestCoordinator: { abortSession } as any,
-    });
-
-    const respond = vi.fn().mockResolvedValue(undefined);
-    await handler.handleAction(
-      { user: { id: 'U123' }, actions: [{ value: JSON.stringify({ sessionKey: 'session-1', action: 'stop' }) }] },
-      respond as any,
-    );
-
-    expect(abortSession).toHaveBeenCalledWith('session-1', 'user-stop');
-    expect(respond).toHaveBeenCalledWith(expect.objectContaining({ text: '🛑 요청을 중지했습니다.' }));
-  });
-
   it('rejects a click from someone other than the session owner', async () => {
-    const abortSession = vi.fn();
+    const terminateSession = vi.fn();
     const handler = new ActionPanelActionHandler({
       slackApi: { postMessage: vi.fn() } as any,
       claudeHandler: {
         getSessionByKey: vi.fn().mockReturnValue({ ownerId: 'U123', channelId: 'C123', threadTs: '111.222' }),
+        terminateSession,
       } as any,
-      requestCoordinator: { abortSession } as any,
     });
 
     const respond = vi.fn().mockResolvedValue(undefined);
     await handler.handleAction(
-      { user: { id: 'U999' }, actions: [{ value: JSON.stringify({ sessionKey: 'session-1', action: 'stop' }) }] },
+      { user: { id: 'U999' }, actions: [{ value: JSON.stringify({ sessionKey: 'session-1', action: 'close' }) }] },
       respond as any,
     );
 
-    expect(abortSession).not.toHaveBeenCalled();
+    expect(terminateSession).not.toHaveBeenCalled();
     expect(respond).toHaveBeenCalledWith(
       expect.objectContaining({ text: '❌ 세션 소유자만 이 작업을 수행할 수 있습니다.' }),
     );

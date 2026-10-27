@@ -20,7 +20,7 @@ One message, top to bottom:
 1. The first header row — the title in every preset (`header`, compact `headline` or minimal `context`).
 2. The status rail — one full-width `section` (see 2).
 3. The remaining header rows, as configured (owner, workflow, model, context gauge, work log, link history).
-4. The controls row — `세션 종료`, plus `⏸ 중지` while a turn is running. None when the session is closed.
+4. The controls row — `세션 종료` only. None when the session is closed.
 5. Executive summary blocks, if any, trimmed first when the 50-block budget runs out.
 
 `ActionPanelBuilder.compose(headerBlocks, panelBlocks)` places the rail right after the first non-divider header block and never splits or reorders header blocks. With an empty header the rail comes first. Every path that renders the surface uses it: the live render, the closed render and both close fallbacks.
@@ -69,14 +69,14 @@ A link's stored `status` is the state when the link was last recorded — by a `
 ## 5. Controls
 
 - `panel_close` (세션 종료, danger, with a confirmation) on every live surface.
-- `panel_stop` (⏸ 중지) while a turn is running. It aborts the turn and keeps the session. The thread `!` message and the dashboard stop do the same.
-- Both go through one Bolt route, `app.action(/^panel_/)`, and only the session owner can use them.
-- The workflow buttons (New Fix, Renew Fix, PR 문서화, New 리뷰, Renew 리뷰, PR 승인, Merge) were removed on 27 October 2026 because nobody used them. A message rendered before that still carries them until its next re-render; a click gets `❌ 지원하지 않는 액션입니다.` and does nothing else.
+- No stop button. A running turn is stopped by sending `!` in the thread or with the dashboard's Stop; both abort the turn and keep the session.
+- It goes through the Bolt route `app.action(/^panel_/)`, and only the session owner can use it.
+- The workflow buttons (New Fix, Renew Fix, PR 문서화, New 리뷰, Renew 리뷰, PR 승인, Merge) and `⏸ 중지` were removed on 27 October 2026: the instruction was to delete every button except `세션 종료`. A message rendered before that still carries them until its next re-render; a click gets `❌ 지원하지 않는 액션입니다.` and does nothing else.
 
 ## 6. Tests
 
 - `packages/slack/src/__tests__/action-panel-builder.layout.test.ts` — rail shape, badges, PR words, verbosity chip, closed rail, `compose`
-- `packages/slack/src/__tests__/action-panel-builder.buttons.test.ts` — only `세션 종료` (and `⏸ 중지` while working) render
+- `packages/slack/src/__tests__/action-panel-builder.buttons.test.ts` — only `세션 종료` renders, in every state
 - `packages/slack/src/__tests__/thread-header-builder.status-words.test.ts` — link suffix by source, markers, suppression
 - `packages/slack/src/__tests__/thread-surface.layout.test.ts` — composed message order, single 종료됨, URL and re-record checks
 - `src/slack/actions/__tests__/action-panel-action-handler.removed-actions.test.ts` — stale clicks on removed buttons
