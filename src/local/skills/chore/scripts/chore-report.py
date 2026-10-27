@@ -52,6 +52,8 @@ import unicodedata
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
+sys.dont_write_bytecode = True
+
 
 def _load_plan_module():
     """계획 TSV 문법 = scripts/chore_plan.py 한 벌. python3 -I로는 같은 폴더 모듈이 import 경로에 없어서 경로로 읽는다."""

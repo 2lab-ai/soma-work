@@ -288,10 +288,12 @@ resolve_repo() { # $1 = name | owner/repo | url → LOCAL, REMOTE, REMOTE_LC, OW
   REMOTE=$(printf '%s\n' "$row" | awk -F'|' '{ x = $4; gsub(/[ `]/, "", x); print x }')
   [ -d "$LOCAL/.git" ] || [ -f "$LOCAL/.git" ] || die "local path $LOCAL is not a git checkout"
   # the registry's home = the top level of the git work tree that contains the registry file (none when it is not in
-  # one); the clone of the target must not be that work tree. The registry file itself is resolved first (realpath, the
-  # final symlink included), then both sides physical (pwd -P), so neither a directory nor a file symlink is a way around.
-  reg=$(python3 -I -c 'import os, sys; sys.stdout.buffer.write(os.path.realpath(os.fsencode(sys.argv[1])))' "$REPOS_MD") && [ -n "$reg" ] \
-    || die "cannot resolve the registry file $REPOS_MD"
+  # one); the clone of the target must not be that work tree. The registry file itself is resolved first, strictly (the
+  # final symlink included; a loop or any other resolution error stops the run), then both sides physical (pwd -P), so
+  # neither a directory nor a file symlink is a way around.
+  reg=$(python3 -I -c 'import os, pathlib, sys
+try: sys.stdout.buffer.write(os.fsencode(str(pathlib.Path(sys.argv[1]).resolve(strict=True))))
+except Exception: sys.exit(1)' "$REPOS_MD") && [ -n "$reg" ] || die "cannot resolve the registry file $REPOS_MD"
   home=$(git -C "$(dirname -- "$reg")" rev-parse --show-toplevel 2>/dev/null) || home=""
   if [ -n "$home" ]; then
     home=$(CDPATH= cd -- "$home" && pwd -P) || die "cannot resolve the registry's work tree $home"
