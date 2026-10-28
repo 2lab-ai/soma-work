@@ -179,6 +179,10 @@ describe('CI workflow contract', () => {
     const pip = steps.findIndex((run) => /^python3 -m pip install pyyaml==\d+\.\d+\.\d+$/.test(run));
     expect(pip, 'quality-gates installs a pinned PyYAML').toBeGreaterThan(-1);
     expect(pip).toBeLessThan(steps.indexOf('npm run test:release'));
+    // html batch-qa drives Playwright's Chromium headless shell; a hosted image has none cached.
+    const browser = steps.indexOf('npx playwright install --only-shell chromium');
+    expect(browser, 'quality-gates installs the Playwright headless shell').toBeGreaterThan(steps.indexOf('npm ci'));
+    expect(browser).toBeLessThan(steps.indexOf('npm run test:release'));
 
     const workflow = read(CI_WORKFLOW);
     // …and it is still reachable from a pull request. A guard that works by
