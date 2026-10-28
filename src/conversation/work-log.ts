@@ -130,11 +130,16 @@ export interface WorkLogInput {
   raw?: string;
   /** UTF-8 size of the original when the emitter already cut `raw`; ignored unless larger than `raw`. */
   rawBytes?: number;
-  /** SDK tool-use id of a `tool` / `tool_result` entry, for live observers (artifact capture). Not persisted. */
+  /**
+   * SDK tool-use id of a `tool` / `tool_result` entry: the key that pairs a
+   * result with its call (the dashboard's tool call card) and that live
+   * observers (artifact capture) match on. Persisted, clamped to
+   * WORK_LOG_FIELD_MAX; entries written before it was kept have none.
+   */
   toolUseId?: string;
 }
 /** An entry as pages and the broadcast carry it: its raw is described, never included. */
-export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes' | 'toolUseId'> {
+export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes'> {
   seq: number;
   ts: number;
   /** UTF-8 byte length of the original raw; present iff the entry has a stored raw. */
@@ -176,7 +181,7 @@ export interface WorkLogPage {
 
 /** Max characters kept per entry `text` (spec §3.3). */
 export const WORK_LOG_TEXT_MAX = 4000;
-/** Max characters kept for `tool`, `turnId`, `taskId` and `taskTitle`. */
+/** Max characters kept for `tool`, `turnId`, `taskId`, `taskTitle`, `agentId`, `agentRef` and `toolUseId`. */
 export const WORK_LOG_FIELD_MAX = 200;
 /** Max UTF-8 bytes kept per raw — defined once, next to the emitter's types. */
 export { WORK_LOG_RAW_MAX_BYTES };
@@ -1176,6 +1181,7 @@ export function appendWorkLog(conversationId: string, input: WorkLogInput): Prom
   if (input.taskTitle !== undefined) fields.taskTitle = clampChars(String(input.taskTitle), WORK_LOG_FIELD_MAX);
   if (input.agentId !== undefined) fields.agentId = clampChars(String(input.agentId), WORK_LOG_FIELD_MAX);
   if (input.agentRef !== undefined) fields.agentRef = clampChars(String(input.agentRef), WORK_LOG_FIELD_MAX);
+  if (input.toolUseId !== undefined) fields.toolUseId = clampChars(String(input.toolUseId), WORK_LOG_FIELD_MAX);
   const raw =
     input.raw != null
       ? pendingRaw(String(input.raw), input.rawBytes)
