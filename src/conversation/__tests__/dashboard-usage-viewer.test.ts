@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 /**
  * affectUI review batch 1 (Z, 2026-10-27): the usage breakdown is by model for everyone and by user for
@@ -50,6 +50,12 @@ vi.mock('../../metrics/event-store', async (importOriginal) => {
 });
 
 describe('usageForViewer — per-user usage to admins and operator tokens only', () => {
+  // The first import transforms the whole dashboard module (seconds on a loaded runner): pay it once, outside the 5 s test budget.
+  let usageForViewer: typeof import('../dashboard').usageForViewer;
+  beforeAll(async () => {
+    ({ usageForViewer } = await import('../dashboard'));
+  }, 60_000);
+
   const report = () => ({
     totals: { totalCostUsd: 2 },
     byUser: { U1: { totalCostUsd: 1 }, U2: { totalCostUsd: 1 } },
@@ -59,7 +65,6 @@ describe('usageForViewer — per-user usage to admins and operator tokens only',
   });
 
   it('an admin, the header token and the token cookie get the whole report', async () => {
-    const { usageForViewer } = await import('../dashboard');
     for (const viewer of [{ isAdmin: true, mode: 'jwt' }, { mode: 'bearer_header' }, { mode: 'bearer_cookie' }]) {
       const r = report();
       expect(usageForViewer(r, viewer), JSON.stringify(viewer)).toBe(r);
@@ -67,7 +72,6 @@ describe('usageForViewer — per-user usage to admins and operator tokens only',
   });
 
   it('anyone else (a signed-in non-admin, no auth context) gets totals and models, no per-user parts', async () => {
-    const { usageForViewer } = await import('../dashboard');
     for (const viewer of [{ isAdmin: false, mode: 'jwt' }, undefined]) {
       const r = report();
       const out = usageForViewer(r, viewer);
