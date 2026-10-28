@@ -128,7 +128,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 export interface MergeResult {
-  /** The merged config. Keys other than `plugin.marketplace` / `plugin.plugins` keep their value and order. */
+  /**
+   * The merged config. Keys other than `plugin.marketplace` / `plugin.plugins` / `plugin.envPlugins`
+   * keep their value and order.
+   */
   config: Record<string, unknown>;
   changed: boolean;
 }
@@ -137,7 +140,10 @@ export interface MergeResult {
  * Merge entries into a parsed config.json object (pure; the input is not mutated).
  * A marketplace entry replaces every entry of the same name, at the position of
  * the first one — the loader lets a later same-name entry win, so a leftover
- * duplicate would shadow the replacement. Plugin refs are appended once.
+ * duplicate would shadow the replacement. Plugin refs are appended once, to
+ * `plugin.plugins` (load it) and to `plugin.envPlugins` (it is an environment
+ * plugin: its skills run for non-admins only on an admin's grant — see
+ * `src/env-skill-registry.ts`).
  */
 export function mergeEnvPlugins(config: Record<string, unknown>, entries: EnvPluginLine[]): MergeResult {
   const plugin = config.plugin === undefined ? {} : config.plugin;
@@ -148,9 +154,13 @@ export function mergeEnvPlugins(config: Record<string, unknown>, entries: EnvPlu
   if (plugin.plugins !== undefined && !Array.isArray(plugin.plugins)) {
     throw new EnvPluginsError('config.json "plugin.plugins" is not an array; left untouched');
   }
+  if (plugin.envPlugins !== undefined && !Array.isArray(plugin.envPlugins)) {
+    throw new EnvPluginsError('config.json "plugin.envPlugins" is not an array; left untouched');
+  }
 
   let marketplace: unknown[] = [...((plugin.marketplace as unknown[] | undefined) ?? [])];
   const plugins: unknown[] = [...((plugin.plugins as unknown[] | undefined) ?? [])];
+  const envPlugins: unknown[] = [...((plugin.envPlugins as unknown[] | undefined) ?? [])];
 
   for (const entry of entries) {
     const sameName = (item: unknown) => isPlainObject(item) && item.name === entry.marketplace.name;
@@ -167,10 +177,11 @@ export function mergeEnvPlugins(config: Record<string, unknown>, entries: EnvPlu
     for (const name of entry.plugins) {
       const ref = `${name}@${entry.marketplace.name}`;
       if (!plugins.includes(ref)) plugins.push(ref);
+      if (!envPlugins.includes(ref)) envPlugins.push(ref);
     }
   }
 
-  const merged = { ...config, plugin: { ...plugin, marketplace, plugins } };
+  const merged = { ...config, plugin: { ...plugin, marketplace, plugins, envPlugins } };
   return { config: merged, changed: JSON.stringify(merged) !== JSON.stringify(config) };
 }
 

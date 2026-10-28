@@ -151,12 +151,88 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
     const preToolUse = options.hooks?.PreToolUse;
     expect(Array.isArray(preToolUse)).toBe(true);
     // P5 collapsed the per-concern hooks into one policy hook fanned out across
-    // three matchers: Bash, the native-bypass tool union, and mcp__.
+    // the matchers: Bash, the native-bypass tool union, mcp__, and Skill (step 6b).
     const matchers = (preToolUse ?? []).map((e) => (e as { matcher: string }).matcher);
-    expect(matchers).toHaveLength(3);
+    expect(matchers).toHaveLength(4);
     expect(matchers).toContain('Bash');
     expect(matchers).toContain('mcp__');
+    expect(matchers).toContain('Skill');
     expect(matchers.some((m) => m.includes('Write') && m.includes('Read'))).toBe(true);
+  });
+
+  describe('environment-skill gate (policy step 6b) in the hook', () => {
+    const envRegistry = (dir: string) => ({ pluginNames: new Set(['acme-env']), pluginsDir: dir });
+
+    async function skillHook(deps: BuildStreamOptionsDeps) {
+      const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, deps);
+      const entry = (options.hooks?.PreToolUse ?? []).find((e) => (e as { matcher: string }).matcher === 'Skill') as {
+        hooks: Array<(input: unknown) => Promise<any>>;
+      };
+      return (skill: string) =>
+        entry.hooks[0]({ hook_event_name: 'PreToolUse', tool_name: 'Skill', tool_input: { skill } } as never);
+    }
+
+    it('denies an ungranted environment skill, tells the model why, and asks the admins for that thread', async () => {
+      const onEnvSkillDenied = vi.fn(async () => undefined);
+      const run = await skillHook(
+        makeDeps({ getEnvSkillRegistry: () => envRegistry('/nonexistent-plugins'), onEnvSkillDenied }),
+      );
+
+      const out = await run('acme-env:post-deploy');
+
+      expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+      expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(/environment skill/);
+      expect(onEnvSkillDenied).toHaveBeenCalledWith({
+        requesterId: SAFE_USER,
+        skillKey: 'acme-env:post-deploy',
+        channel: 'C123',
+        threadTs: '1700000000.0001',
+      });
+    });
+
+    it('passes every other skill through untouched, and asks nobody', async () => {
+      const onEnvSkillDenied = vi.fn(async () => undefined);
+      const run = await skillHook(
+        makeDeps({ getEnvSkillRegistry: () => envRegistry('/nonexistent-plugins'), onEnvSkillDenied }),
+      );
+
+      expect(await run('zworkflow:deploy-qa')).toEqual({ continue: true });
+      expect(onEnvSkillDenied).not.toHaveBeenCalled();
+    });
+
+    it('still denies when the admin ask fails (the request is enforcement, not the decision)', async () => {
+      const onEnvSkillDenied = vi.fn(async () => {
+        throw new Error('slack down');
+      });
+      const run = await skillHook(
+        makeDeps({ getEnvSkillRegistry: () => envRegistry('/nonexistent-plugins'), onEnvSkillDenied }),
+      );
+
+      expect((await run('acme-env:staging-qa')).hookSpecificOutput.permissionDecision).toBe('deny');
+    });
+
+    it('a host without an environment-skill registry gates nothing', async () => {
+      const run = await skillHook(makeDeps());
+      expect(await run('acme-env:post-deploy')).toEqual({ continue: true });
+    });
+
+    it('a non-admin sandboxed Bash gets an OS-level read deny of the environment plugin directories', async () => {
+      const { options } = await buildStreamOptions(
+        { queryEnv: {}, slackContext: makeSlackContext() },
+        makeDeps({ getEnvSkillRegistry: () => envRegistry('/srv/soma/plugins') }),
+      );
+      const denyRead = (options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead;
+      expect(denyRead).toEqual(['/srv/soma/plugins/acme-env', '/srv/soma/plugins/.backups/acme-env']);
+      // The write mount is kept.
+      expect((options.sandbox as { filesystem?: { allowWrite?: string[] } }).filesystem?.allowWrite?.length).toBe(1);
+    });
+
+    it('no read deny is added on a host without environment plugins', async () => {
+      const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, makeDeps());
+      expect(
+        (options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead,
+      ).toBeUndefined();
+    });
   });
 
   it('hooks: registers PreCompact/PostCompact/SessionStart only when compactHookBuilder + session + threadTs', async () => {
