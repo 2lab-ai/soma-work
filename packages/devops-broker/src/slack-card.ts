@@ -49,9 +49,18 @@ export interface SlackTextObject {
   verbatim?: boolean;
 }
 
+export interface SlackButton {
+  type: 'button';
+  action_id: string;
+  text: SlackTextObject;
+  value: string;
+  style?: 'primary' | 'danger';
+}
+
 export type SlackBlock =
   | { type: 'header'; text: SlackTextObject }
-  | { type: 'section'; block_id?: string; text: SlackTextObject };
+  | { type: 'section'; block_id?: string; text: SlackTextObject }
+  | { type: 'actions'; block_id: string; elements: SlackButton[] };
 
 export interface SlackCard {
   /** Notification fallback; the blocks carry the whole card. */
@@ -74,12 +83,23 @@ export const CARD_LIMITS = {
 
 export const APPROVAL_INSTRUCTION = '승인 = :white_check_mark: 리액션 · 거부 = :x: 리액션 (어드민 본인 리액션만 유효)';
 
+/** Used when the card carries buttons (the broker has a Socket Mode connection); reactions still count. */
+export const APPROVAL_INSTRUCTION_BUTTONS =
+  '아래 *승인* / *거부* 버튼 또는 :white_check_mark: / :x: 리액션 (어드민 본인만 유효)';
+
+/** The two button action ids the broker's Socket Mode handler accepts; the button value is the approval id. */
+export const APPROVE_ACTION_ID = 'devops_approval_approve';
+export const DENY_ACTION_ID = 'devops_approval_deny';
+
 export const LEASE_BEARER_NOTE =
   ':warning: 승인하면 이 범위·기간 동안 이 봇의 세션이 사용할 수 있습니다 — lease ID를 가진 세션이면 요청한 세션이 아니어도 씁니다.';
 
 const HEADER = 'devops 확인 요청';
 const INSTRUCTION_BLOCK_ID = 'approval-instruction';
 const STATUS_BLOCK_ID = 'approval-status';
+const ACTIONS_BLOCK_ID = 'approval-actions';
+/** Slack's limit on a button value; an approval id is 22 characters. */
+const BUTTON_VALUE_CHARS = 2_000;
 const SLACK_USER_RE = /^[UW][A-Z0-9]{2,20}$/;
 /** Longest result line kept (before escaping, which can grow it six-fold). */
 const RESULT_LINE_CHARS = 400;
@@ -164,6 +184,11 @@ function checkLimits(card: SlackCard): SlackCard {
   if (card.blocks.length > CARD_LIMITS.blocks) tooLong();
   let total = card.text.length;
   for (const block of card.blocks) {
+    // Button labels are fixed broker text; only the value (the approval id) varies.
+    if (block.type === 'actions') {
+      if (block.elements.some((button) => button.value.length > BUTTON_VALUE_CHARS)) tooLong();
+      continue;
+    }
     const max = block.type === 'header' ? CARD_LIMITS.headerChars : CARD_LIMITS.sectionChars;
     if (block.text.text.length > max) tooLong();
     total += block.text.text.length;
@@ -177,10 +202,26 @@ export function formatKst(ms: number): string {
   return `${shifted.slice(0, 10)} ${shifted.slice(11, 19)} KST`;
 }
 
-/** Throws ApprovalError('card-too-long') when the card cannot be shown whole. */
+function approvalButtons(approvalId: string): SlackBlock {
+  const label = (text: string): SlackTextObject => ({ type: 'plain_text', text, emoji: false });
+  return {
+    type: 'actions',
+    block_id: ACTIONS_BLOCK_ID,
+    elements: [
+      { type: 'button', action_id: APPROVE_ACTION_ID, text: label('승인'), value: approvalId, style: 'primary' },
+      { type: 'button', action_id: DENY_ACTION_ID, text: label('거부'), value: approvalId, style: 'danger' },
+    ],
+  };
+}
+
+/**
+ * Throws ApprovalError('card-too-long') when the card cannot be shown whole. `buttons` adds 승인 / 거부 buttons
+ * (only when the broker can receive their clicks over Socket Mode); reactions count either way.
+ */
 export function renderApprovalCard(
   req: ApprovalRequest,
   meta: { approvalId: string; digest: string; expiresAtMs: number },
+  opts: { buttons?: boolean } = {},
 ): SlackCard {
   const blocks: SlackBlock[] = [
     { type: 'header', text: { type: 'plain_text', text: HEADER, emoji: false } },
@@ -224,7 +265,11 @@ export function renderApprovalCard(
   if (longLines.length > 0) {
     blocks.push(...codeSections('*긴 값* — 위에서 [긴 값 N → 아래]로 표시한 값의 전문 (JSON 문자열)', longLines));
   }
-  blocks.push(mrkdwn(APPROVAL_INSTRUCTION, INSTRUCTION_BLOCK_ID));
+  if (opts.buttons === true) {
+    blocks.push(mrkdwn(APPROVAL_INSTRUCTION_BUTTONS, INSTRUCTION_BLOCK_ID), approvalButtons(meta.approvalId));
+  } else {
+    blocks.push(mrkdwn(APPROVAL_INSTRUCTION, INSTRUCTION_BLOCK_ID));
+  }
   return checkLimits({ text: `${HEADER}: ${prose(req.title)}`, blocks });
 }
 
@@ -247,7 +292,7 @@ const STATUS_LABEL: Record<CardStatus['kind'], string> = {
   cancelled: '취소됨',
 };
 
-const NO_LONGER = '이 카드에 리액션해도 더 이상 반영되지 않습니다.';
+const NO_LONGER = '이 카드의 버튼·리액션은 더 이상 반영되지 않습니다.';
 
 function statusText(status: CardStatus): string {
   switch (status.kind) {
@@ -265,8 +310,8 @@ function statusText(status: CardStatus): string {
 }
 
 /**
- * The card with its instruction line replaced by the status, so a stale card cannot be read as still
- * open. Without the original card (after a restart) a short status card is rendered instead.
+ * The card with its instruction line and buttons replaced by the status, so a stale card cannot be read (or
+ * clicked) as still open. Without the original card (after a restart) a short status card is rendered instead.
  */
 export function renderCardStatus(card: SlackCard | undefined, status: CardStatus): SlackCard {
   const statusBlock = mrkdwn(statusText(status), STATUS_BLOCK_ID);
@@ -279,7 +324,8 @@ export function renderCardStatus(card: SlackCard | undefined, status: CardStatus
   }
   const blocks = card.blocks.filter(
     (block) =>
-      !(block.type === 'section' && (block.block_id === INSTRUCTION_BLOCK_ID || block.block_id === STATUS_BLOCK_ID)),
+      !(block.type === 'section' && (block.block_id === INSTRUCTION_BLOCK_ID || block.block_id === STATUS_BLOCK_ID)) &&
+      !(block.type === 'actions' && block.block_id === ACTIONS_BLOCK_ID),
   );
   return { text: `[${label}] ${card.text}`, blocks: [...blocks, statusBlock] };
 }
