@@ -169,6 +169,10 @@ const UPDATE_SESSION_HELP: CommandHelp = {
     },
     { title: 'Set the session title', params: { title: 'Fix model-command help' } },
     {
+      title: 'Name a session that still has a temporary title (fill-only)',
+      params: { title: '대시보드 제목 자동 갱신', titleFillOnly: true },
+    },
+    {
       title: 'Add a user instruction (queued for y/n confirmation)',
       params: { instructionOperations: [{ action: 'add', text: 'Always run tests before PR' }] },
     },

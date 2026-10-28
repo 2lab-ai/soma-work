@@ -8,8 +8,8 @@ import { sanitizeSdkUsageBaseline, sanitizeTaskUsage, type TaskUsage } from '@so
 import * as fs from 'fs';
 import * as path from 'path';
 import { applyInstructionOperations } from 'somalib/model-commands/catalog';
-import { decodeSlackEntities } from './dispatch-service';
 import { DATA_DIR } from './env-paths';
+import { isPlaceholderSessionTitle, sanitizeSessionTitle } from './format/display-title';
 import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
 import { repriceBaseline } from './metrics/host-pricing';
@@ -894,10 +894,11 @@ export class SessionRegistry {
    */
   setSessionTitle(channelId: string, threadTs: string | undefined, title: string): void {
     const session = this.getSession(channelId, threadTs);
+    const clean = sanitizeSessionTitle(title);
     // A provisional title (a cron job name, SSOT 2026-10-23 T2) is a
     // placeholder — the first real title replaces it.
-    if (session && (!session.title || session.titleProvisional)) {
-      session.title = decodeSlackEntities(title);
+    if (session && clean && (!session.title || session.titleProvisional)) {
+      session.title = clean;
       session.titleProvisional = undefined;
       this.saveSessions();
     }
@@ -905,15 +906,36 @@ export class SessionRegistry {
 
   /**
    * Update session title unconditionally (e.g. when issue is linked or PR is merged).
-   * Unlike setSessionTitle, this overwrites existing title.
+   * Unlike setSessionTitle, this overwrites existing title. A candidate that
+   * sanitizes to nothing leaves the current title in place.
    */
   updateSessionTitle(channelId: string, threadTs: string | undefined, title: string): void {
     const session = this.getSession(channelId, threadTs);
-    if (session) {
-      session.title = decodeSlackEntities(title);
+    const clean = sanitizeSessionTitle(title);
+    if (session && clean) {
+      session.title = clean;
       session.titleProvisional = undefined;
       this.saveSessions();
     }
+  }
+
+  /**
+   * Fill-only title write for intent titles (UPDATE_SESSION `titleFillOnly`).
+   * Overwrites only a host-written stand-in title ("New Session" and friends)
+   * or a provisional title (a cron job name), checked here at apply time — so a deliberate title set between the model
+   * reading the notice and this write is never clobbered. Returns whether the
+   * title was written.
+   */
+  fillPlaceholderSessionTitle(channelId: string, threadTs: string | undefined, title: string): boolean {
+    const session = this.getSession(channelId, threadTs);
+    const clean = sanitizeSessionTitle(title);
+    if (!session || !clean) return false;
+    // Host stand-in ("New Session" and friends) or a provisional cron job name.
+    if (!isPlaceholderSessionTitle(session.title) && !session.titleProvisional) return false;
+    session.title = clean;
+    session.titleProvisional = undefined;
+    this.saveSessions();
+    return true;
   }
 
   /**
@@ -1479,6 +1501,9 @@ export class SessionRegistry {
     // /new or CONTINUE_SESSION resetSession boundaries (otherwise the next
     // turn would inject a stale rejection notice).
     session.pendingInstructionRejection = undefined;
+    // A reset re-dispatches with a fresh stand-in title, so the title notice
+    // budget starts over for the new context.
+    session.titleNoticeCount = undefined;
     // NOTE: `session.instructions` and `session.instructionsCompletedSummary`
     // are intentionally preserved — the user-SSOT semantics require them to
     // survive `/new` and CONTINUE_SESSION resets (they represent durable

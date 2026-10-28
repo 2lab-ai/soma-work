@@ -219,6 +219,42 @@ describe('GoalActionHandler — cap-decision DM guards (S3, codex #2)', () => {
     expect(session.goal?.capDmPendingAt).toBeUndefined();
   });
 
+  // Continuation turns carry a one-line nudge; the objective reaches the
+  // model only through the `<session-goal>` system block, which is rebuilt
+  // only when `session.systemPrompt` is dropped. Every goal-state change must
+  // drop it and advance the epoch, like `GoalHandler.persistGoalChange`.
+  it('Cancel drops the cached system prompt and advances the epoch', async () => {
+    const session = makeSession({
+      goal: makeGoal({ capDmPendingAt: 123, epoch: 4 }),
+      systemPrompt: '<session-goal status="active">stale</session-goal>',
+    });
+    const { handler, saveSessions } = makeHandler(session);
+
+    await handler.handleCancelDm(body('goal-1'), vi.fn().mockResolvedValue(undefined));
+
+    expect(session.goal?.status).toBe('paused');
+    expect(session.systemPrompt).toBeUndefined();
+    expect(session.goal?.epoch).toBe(5);
+    expect(saveSessions).toHaveBeenCalled();
+  });
+
+  it('Continue drops the cached system prompt and advances the epoch before resuming', async () => {
+    const session = makeSession({
+      goal: makeGoal({ capDmPendingAt: 123, epoch: 4 }),
+      systemPrompt: 'cached',
+    });
+    const { handler } = makeHandler(session);
+    let promptAtResume: string | undefined = 'not-called';
+    resumeGoalLoopMock.mockImplementationOnce(() => {
+      promptAtResume = session.systemPrompt;
+    });
+
+    await handler.handleContinueDm(body('goal-1'), vi.fn().mockResolvedValue(undefined));
+
+    expect(promptAtResume).toBeUndefined();
+    expect(session.goal?.epoch).toBe(5);
+  });
+
   it('Continue does NOT resurrect a goal that has since completed (round-2 #1)', async () => {
     // `goal done` with no queue keeps a status=complete goal in session.goal,
     // and capDmPendingAt may still be set if it was never cleared — a stale

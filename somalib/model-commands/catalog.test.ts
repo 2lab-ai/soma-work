@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   applyInstructionOperations,
   getDefaultSessionSnapshot,
+  listModelCommands,
   registerSkillStore,
   runModelCommand,
   type SkillStore,
@@ -14,6 +15,7 @@ import {
   shareOverLimitMessage,
 } from './skill-share-errors';
 import type { ModelCommandContext, ModelCommandRunRequest } from './types';
+import { validateModelCommandRunArgs } from './validator';
 
 function makeContext(overrides?: Partial<ModelCommandContext>): ModelCommandContext {
   return {
@@ -856,5 +858,65 @@ describe('MANAGE_SKILL rename dispatcher + mutation signal', () => {
     if (result.ok) return;
     expect(result.error.code).toBe('INVALID_ARGS');
     expect(result.error.message).toContain('newName');
+  });
+});
+
+// Intent titles for voice / image-only sessions are written with a fill-only
+// guard: the host applies them only while the session still has a stand-in
+// title. The flag must survive validation and reach the host via the payload.
+describe('UPDATE_SESSION titleFillOnly', () => {
+  it('validator keeps titleFillOnly: true alongside the title', () => {
+    const validated = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: { title: '음성 지시 제목', titleFillOnly: true },
+    });
+    expect(validated.ok).toBe(true);
+    if (!validated.ok) return;
+    expect(validated.request.params).toMatchObject({ title: '음성 지시 제목', titleFillOnly: true });
+  });
+
+  it('validator omits titleFillOnly when absent (default replace semantics unchanged)', () => {
+    const validated = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: { title: 'Plain rename' },
+    });
+    expect(validated.ok).toBe(true);
+    if (!validated.ok) return;
+    expect(validated.request.params).not.toHaveProperty('titleFillOnly');
+  });
+
+  it('validator rejects a non-boolean titleFillOnly', () => {
+    const validated = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: { title: 'x', titleFillOnly: 'true' },
+    });
+    expect(validated.ok).toBe(false);
+  });
+
+  it('validator rejects titleFillOnly without a title', () => {
+    const validated = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: { titleFillOnly: true },
+    });
+    expect(validated.ok).toBe(false);
+  });
+
+  it('run passes titleFillOnly through to the host payload', () => {
+    const result = runModelCommand(
+      {
+        commandId: 'UPDATE_SESSION',
+        params: { title: '이미지 분석', titleFillOnly: true },
+      } as ModelCommandRunRequest,
+      makeContext(),
+    );
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.payload).toMatchObject({ title: '이미지 분석', titleFillOnly: true });
+  });
+
+  it('schema advertises titleFillOnly so the model can discover it', () => {
+    const update = listModelCommands(makeContext()).find((c) => c.id === 'UPDATE_SESSION');
+    const properties = (update?.paramsSchema as { properties?: Record<string, { type?: string }> }).properties;
+    expect(properties?.titleFillOnly?.type).toBe('boolean');
   });
 });

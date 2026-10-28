@@ -273,6 +273,20 @@ export class GoalActionHandler {
     return { value, session, goal };
   }
 
+  /**
+   * Same invalidation every goal-state change applies
+   * (`GoalHandler.persistGoalChange`). Continuation turns carry a one-line
+   * nudge; the objective reaches the model only through the
+   * `<session-goal>` system block, which is rebuilt only after
+   * `session.systemPrompt` is dropped. The epoch bump makes any in-flight
+   * completion eval discard its verdict instead of applying it.
+   */
+  private persistCapDecision(session: ConversationSession, goal: SessionGoal): void {
+    goal.epoch = (goal.epoch ?? 0) + 1;
+    session.systemPrompt = undefined;
+    this.ctx.claudeHandler.saveSessions();
+  }
+
   async handleContinueDm(body: any, respond: RespondFn): Promise<void> {
     try {
       const r = this.resolveCapDecision(body);
@@ -288,7 +302,7 @@ export class GoalActionHandler {
       r.goal.capDmPendingAt = undefined;
       r.goal.status = 'active';
       r.goal.updatedAt = Date.now();
-      this.ctx.claudeHandler.saveSessions();
+      this.persistCapDecision(r.session, r.goal);
       resumeGoalLoop(r.value.sessionKey);
       await respond({ replace_original: true, text: '✅ goal을 계속 진행합니다.' });
     } catch (error) {
@@ -315,7 +329,7 @@ export class GoalActionHandler {
       r.goal.status = 'paused';
       r.goal.capDmPendingAt = undefined;
       r.goal.updatedAt = Date.now();
-      this.ctx.claudeHandler.saveSessions();
+      this.persistCapDecision(r.session, r.goal);
       await respond({
         replace_original: true,
         text: '🛑 goal을 중단했습니다. (`goal resume`으로 다시 시작할 수 있습니다.)',

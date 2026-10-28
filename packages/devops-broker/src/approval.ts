@@ -1,7 +1,9 @@
 // Per-request approval, received by the broker itself (.prd/16-devops-tools-architecture.md §5): a card in
 // each admin's DM from the broker's own Slack app, an admin's own ✅ / ❌ reaction read back with
-// reactions.get, and an approval that can be used exactly once. Slack errors never approve; every state
-// transition is on disk before anyone acts on it; nothing here writes a token anywhere.
+// reactions.get or an admin's own 승인 / 거부 button click delivered over Socket Mode (`decide`), and an
+// approval that can be used exactly once. Slack errors never approve; every state transition is on disk
+// before anyone acts on it; nothing here writes a token anywhere. Reactions keep being polled when the cards
+// have buttons, so a Socket Mode outage never blocks an approval.
 
 import { createHash, randomBytes } from 'node:crypto';
 import type { DevopsTool, UnverifiedRequesterClaim } from '@soma/process-shared/devops/protocol.js';
@@ -45,9 +47,27 @@ export interface Approvals {
    * A consumed or already decided record is left alone. Never throws.
    */
   release(approvalId: string, reason: ApprovalReleaseReason): Promise<void>;
+  /**
+   * A 승인 / 거부 button click delivered over Socket Mode. Counts only when the clicker is an admin, the approval
+   * is still pending, and the click came from one of that approval's own cards; then it is decided exactly
+   * like a reaction (expiry, one use and disk-first all apply). Never throws.
+   */
+  decide(click: ButtonClick): Promise<'accepted' | 'ignored'>;
   /** Cancels what is still open (approved-but-unused included) and waits for the card updates. */
   close(): Promise<void>;
 }
+
+/** What the Socket Mode client reads from a block_actions payload (Slack, not the requester, sets `user`). */
+export interface ButtonClick {
+  approvalId: string;
+  action: 'approve' | 'deny';
+  user: string;
+  channel: string;
+  messageTs: string;
+}
+
+/** How long a click on a card that is still being posted to the other admins waits for it to open. */
+const CLICK_WHILE_POSTING_WAIT_MS = 5_000;
 
 /** Why a handed-out approval goes unused. */
 export type ApprovalReleaseReason = 'requester-stopped-waiting';
@@ -220,6 +240,8 @@ export function createApprovals(opts: {
   now?: () => number;
   pollIntervalMs?: number;
   limits?: Partial<ApprovalLimits>;
+  /** Put 승인 / 거부 buttons on new cards (only when something calls `decide` with their clicks). */
+  buttons?: boolean;
   /** Operator log line (never a secret); default stderr. */
   log?: (line: string) => void;
 }): Approvals {
@@ -833,7 +855,7 @@ export function createApprovals(opts: {
       if (over !== null) return refuse(req, digest, 'too-many-pending-approvals', over);
       let card: SlackCard;
       try {
-        card = renderApprovalCard(req, { approvalId, digest, expiresAtMs });
+        card = renderApprovalCard(req, { approvalId, digest, expiresAtMs }, { buttons: opts.buttons === true });
       } catch (err) {
         if (err instanceof ApprovalError) {
           // Nothing reached an admin, but a session looping on oversized requests spends its own window
@@ -901,6 +923,38 @@ export function createApprovals(opts: {
         }).catch(() => undefined);
       } catch {
         // Best effort: the result is already in the ledger through the caller.
+      }
+    },
+
+    async decide(click) {
+      const ignore = async (reason: string): Promise<'ignored'> => {
+        await ledger
+          .append({ event: 'approval.click-ignored', approvalId: click.approvalId, user: click.user, reason })
+          .catch(() => undefined);
+        return 'ignored';
+      };
+      try {
+        if (closed) return ignore('closed');
+        if (!admins.has(click.user)) return ignore('not-admin');
+        const entry = active.get(click.approvalId);
+        if (entry === undefined) return ignore('not-pending');
+        // Clicked on the first admin's card while the others are still being posted: wait for the card to open.
+        // Real time, not the injectable clock: this is a wait, not a decision.
+        const deadline = performance.now() + CLICK_WHILE_POSTING_WAIT_MS;
+        while (entry.status === 'posting' && performance.now() < deadline && !closed) {
+          await new Promise((resolve) => setTimeout(resolve, 100));
+        }
+        if (entry.status !== 'pending') return ignore('not-pending');
+        const ownCard = entry.posts.some((p) => p.channel === click.channel && p.ts === click.messageTs);
+        if (!ownCard) return ignore('wrong-card');
+        await finish(
+          entry,
+          click.action === 'approve' ? { kind: 'approved', by: click.user } : { kind: 'denied', by: click.user },
+        );
+        return 'accepted';
+      } catch (err) {
+        log(`button click on approval ${click.approvalId} failed (${errorCode(err)})`);
+        return 'ignored';
       }
     },
 
