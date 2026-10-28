@@ -86,6 +86,7 @@ import type { GoalOpeningAdmission } from './slack/commands/types';
 import { CompletionMessageTracker } from './slack/completion-message-tracker';
 import { createForkExecutor } from './slack/create-fork-executor';
 import { DispatchAbortError, formatDispatchAbortMessage } from './slack/dispatch-abort';
+import { requestEnvSkillPermission } from './slack/env-skill-permission-request';
 import { type FollowupReactionRole, FollowupReactionSurface, rolesForFollowupState } from './slack/followup-reactions';
 import { bumpGoalEpoch, resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from './slack/goal-host-actions';
@@ -679,6 +680,25 @@ export class SlackHandler {
         eventRouter: this.eventRouter,
       }),
     );
+
+    // 3. Environment-skill gate (step 6b of the tool policy): when a non-admin's
+    //    `Skill` call names an environment skill an admin has not granted, the
+    //    hook denies it and this asks the admins. On approval the action handler
+    //    sends the continuation below as the requester, so the run resumes.
+    //    Optional-chained for the same `{}` claudeHandler mocks.
+    this.claudeHandler.setEnvSkillPermissionRequester?.(async ({ requesterId, skillKey, channel, threadTs }) => {
+      await requestEnvSkillPermission({
+        slackApi: this.slackApi,
+        requesterId,
+        skillKey,
+        channel,
+        threadTs,
+        originalText:
+          `어드민이 환경 스킬 ${skillKey} 실행을 허용했습니다. ` +
+          '이 스킬이 거부되어 진행하지 못한 단계부터 이어서 진행하세요.',
+        notifyWhenPending: false,
+      });
+    });
 
     // #666 P4 Part 1/2 — Register the Bolt Assistant container. Enables the
     // Slack Assistant sidebar + 4 suggested prompts; routes
@@ -4607,7 +4627,8 @@ export class SlackHandler {
         userName,
         userId,
         attachments?.length ? attachments : undefined,
-        { timestamp: instruction.sentAt },
+        // A steered message is always a person's (dashboard SSOT 2026-10-27).
+        { timestamp: instruction.sentAt, origin: { by: 'user' } },
       );
     } catch (error) {
       this.logger.warn('Steered message was not recorded as a user turn', {

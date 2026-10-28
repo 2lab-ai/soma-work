@@ -54,13 +54,14 @@ export interface WorkLogInput {
   /**
    * SSOT 2026-10-23 T1 — the SDK tool-use id of a `tool` / `tool_result` entry,
    * so a live observer (the dashboard's artifact capture) pairs a call with its
-   * result exactly. Never persisted: the store keeps its own fields only.
+   * result exactly. Persisted by the store (clamped) since the 작업 로그 tool
+   * call card pairs a result with its call by it; older logs have none.
    */
   toolUseId?: string;
 }
 
 /** An entry as pages and the live broadcast carry it: its raw is described, never included. */
-export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes' | 'toolUseId'> {
+export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes'> {
   seq: number;
   ts: number;
   /** UTF-8 byte length of the original raw; present iff the entry has one. */

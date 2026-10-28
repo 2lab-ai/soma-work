@@ -27,6 +27,10 @@
  *                                              incl. `work_log` entries (owner/admin scoped)
  */
 
+import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
+import { constants as zlibConstants } from 'node:zlib';
 import { sumLiveUsage } from '@soma/slack/live-usage';
 import { livePendingModelSwitch } from '@soma/slack/model-switch';
 import type { FastifyInstance } from 'fastify';
@@ -111,6 +115,37 @@ import { getUserMediaStore } from './user-media';
 import type { WorkLogEntry } from './work-log';
 
 const logger = new Logger('Dashboard');
+
+/** A file the /dashboard/ui route serves: a flat `dist/*.js` name of @2lab.ai/ui (no dirs, no dots-only names). */
+export const UI_LIB_FILE = /^[A-Za-z0-9_][A-Za-z0-9_-]*\.js$/;
+let uiLibDir: string | null | undefined;
+/** Installed @2lab.ai/ui version — busts the browser cache of the entry file (served for an hour) on upgrade. */
+const UI_LIB_VERSION = encodeURIComponent(uiLibVersion());
+// The package is located with require.resolve (a path, not a load) and its
+// manifest read as a file: the import graph (scripts/verification) follows
+// every module load, and createRequire / node:module are loads it cannot follow.
+function uiLibPackageJson(): string {
+  return require.resolve('@2lab.ai/ui/package.json');
+}
+function uiLibVersion(): string {
+  try {
+    return String(JSON.parse(readFileSync(uiLibPackageJson(), 'utf8')).version || '0');
+  } catch {
+    return '0';
+  }
+}
+/** `dist/` of the installed @2lab.ai/ui, or null (logged once) when the package is missing. */
+export function uiLibDistDir(): string | null {
+  if (uiLibDir === undefined) {
+    try {
+      uiLibDir = join(dirname(uiLibPackageJson()), 'dist');
+    } catch (err) {
+      uiLibDir = null;
+      logger.error('@2lab.ai/ui is not installed — the work log tool call cards cannot load', err);
+    }
+  }
+  return uiLibDir;
+}
 
 // ── Types ──────────────────────────────────────────────────────────
 
@@ -1870,14 +1905,29 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
 
 // ── Stats aggregation ──────────────────────────────────────────────
 
+/**
+ * KST calendar day ('YYYY-MM-DD') of a timestamp. One formatter for every call:
+ * `toLocaleDateString(…, { timeZone })` builds a new one each time (~35 µs),
+ * which was 90% of a month of stats — thousands of events, on the event loop
+ * every other request waits on (#477).
+ */
+const KST_DAY = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Seoul',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
 /** Per-day stats for one user, or for every user when `userId` is absent. */
 function aggregateUserStats(events: MetricsEvent[], userId?: string): Map<string, UserDayStats> {
   const dayMap = new Map<string, UserDayStats>();
 
   for (const ev of events) {
     if (userId && ev.userId !== userId) continue;
+    // A hand-edited line without a usable timestamp is skipped, not a 500 for the whole period.
+    if (typeof ev.timestamp !== 'number' || !Number.isFinite(ev.timestamp)) continue;
 
-    const dateStr = new Date(ev.timestamp).toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
+    const dateStr = KST_DAY.format(ev.timestamp);
     if (!dayMap.has(dateStr)) {
       dayMap.set(dateStr, {
         date: dateStr,
@@ -1930,7 +1980,7 @@ function aggregateUserStats(events: MetricsEvent[], userId?: string): Map<string
 
 function getDateRange(period: 'day' | 'week' | 'month'): { startDate: string; endDate: string } {
   const now = new Date();
-  const end = now.toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
+  const end = KST_DAY.format(now);
 
   let start: Date;
   switch (period) {
@@ -1944,7 +1994,7 @@ function getDateRange(period: 'day' | 'week' | 'month'): { startDate: string; en
       start = new Date(now.getTime() - 29 * 24 * 60 * 60 * 1000);
       break;
   }
-  const startDate = start.toLocaleDateString('en-CA', { timeZone: 'Asia/Seoul' });
+  const startDate = KST_DAY.format(start);
   return { startDate, endDate: end };
 }
 
@@ -2202,6 +2252,18 @@ function broadcastSessionAction(sessionKey: string, action: 'stop' | 'close' | '
 
 // ── Route registration ─────────────────────────────────────────────
 
+// Opt-in route compression for the dashboard's first load (#477): ~1.5 MB of
+// HTML + JSON that the public proxy does not compress. br or gzip only (route
+// options replace the plugin's, so the list is explicit here; zstd would
+// otherwise win on Node 26). Brotli quality 5 instead of the plugin's default 4:
+// ~8% smaller page for ~2x the CPU (≈16 ms for the 0.8 MB page, off the event
+// loop above the plugin's sync threshold).
+const FIRST_LOAD_COMPRESSION = {
+  encodings: ['br', 'gzip'] as Array<'br' | 'gzip'>,
+  threshold: 1024,
+  brotliOptions: { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 } },
+};
+
 export async function registerDashboardRoutes(
   server: FastifyInstance,
   authMiddleware: (req: any, reply: any) => Promise<void>,
@@ -2212,9 +2274,10 @@ export async function registerDashboardRoutes(
   // ── JSON API ──
 
   // Kanban sessions
+  // The board: hundreds of KB of JSON, polled every 30 s by every open tab.
   server.get<{ Querystring: { userId?: string; selfOnly?: string } }>(
     '/api/dashboard/sessions',
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware], compress: FIRST_LOAD_COMPRESSION },
     async (request, reply) => {
       const userId = request.query.userId || undefined;
       const selfOnly = request.query.selfOnly === 'true';
@@ -2226,12 +2289,10 @@ export async function registerDashboardRoutes(
       // aggregator to fan out to sibling instances on the same host.
       // Skip pre-listen / single-instance.
       if (!_selfInstanceEnv) {
-        reply.send({ board, lifecycle });
-        return;
+        return reply.send({ board, lifecycle });
       }
       if (selfOnly) {
-        reply.send({ board, lifecycle });
-        return;
+        return reply.send({ board, lifecycle });
       }
 
       try {
@@ -2248,8 +2309,7 @@ export async function registerDashboardRoutes(
             siblingCount,
           })
         ) {
-          reply.send({ board, lifecycle });
-          return;
+          return reply.send({ board, lifecycle });
         }
         // Per-poll TTL cache — multiple browser tabs polling /sessions
         // every 30 s shouldn't independently fan out N×HTTP each time.
@@ -2273,14 +2333,14 @@ export async function registerDashboardRoutes(
           selfEnv: _selfInstanceEnv,
           siblings,
         });
-        reply.send({ board: merged, lifecycle });
+        return reply.send({ board: merged, lifecycle });
       } catch (err) {
         // Hard failure of the aggregator must never surface a 500 —
         // fall back to self-only. Log at error (with stack) so a
         // genuine bug in mergeBoards / fetch wiring is visible, not
         // confused with the warn-throttled per-sibling failures.
         logger.error('Aggregator failed; serving self-only board', err);
-        reply.send({ board, lifecycle });
+        return reply.send({ board, lifecycle });
       }
     },
   );
@@ -2550,6 +2610,10 @@ export async function registerDashboardRoutes(
         rawContent: t.role === 'user' ? t.rawContent : undefined,
         // User media (SSOT 2026-10-25): the files this instruction carried, metadata only.
         attachments: t.role === 'user' ? t.attachments : undefined,
+        // SSOT 2026-10-27: who put a user turn there (a host turn reads as one
+        // line), and a /compact turn's compaction (estimate, then its result).
+        origin: t.role === 'user' ? t.origin : undefined,
+        compact: t.role === 'user' ? t.compact : undefined,
       }));
 
       reply.send({
@@ -3199,17 +3263,45 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── @2lab.ai/ui — the library's own build, same origin ──
+  // The 작업 로그's tool call cards are <ui-tool-call-card> from the installed
+  // @2lab.ai/ui package (a pinned dependency): its flat dist/*.js files, nothing
+  // else. Public library code — no session data — so no auth.
+  server.get<{ Params: { file: string } }>('/dashboard/ui/:file', async (request, reply) => {
+    const file = String(request.params.file || '');
+    const dir = uiLibDistDir();
+    if (!dir || !UI_LIB_FILE.test(file)) return reply.code(404).send();
+    try {
+      const body = await readFile(join(dir, file));
+      return reply
+        .header('Cache-Control', 'public, max-age=3600')
+        .header('X-Content-Type-Options', 'nosniff')
+        .type('text/javascript; charset=utf-8')
+        .send(body);
+    } catch {
+      return reply.code(404).send();
+    }
+  });
+
   // ── HTML Dashboard ──
 
-  server.get('/dashboard', { preHandler: [authMiddleware] }, async (_request, reply) => {
-    reply.type('text/html; charset=utf-8').send(renderDashboardPage());
-  });
+  // The page is ~0.8 MB of inline HTML/CSS/JS: compressed when the browser
+  // accepts it (web-server registers @fastify/compress opt-in, #477). These
+  // handlers return the reply: a compressed body is a stream, and an async
+  // handler that resolves without returning it ends the response empty.
+  server.get(
+    '/dashboard',
+    { preHandler: [authMiddleware], compress: FIRST_LOAD_COMPRESSION },
+    async (_request, reply) => {
+      return reply.type('text/html; charset=utf-8').send(renderDashboardPage());
+    },
+  );
 
   server.get<{ Params: { userId: string } }>(
     '/dashboard/:userId',
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware], compress: FIRST_LOAD_COMPRESSION },
     async (request, reply) => {
-      reply.type('text/html; charset=utf-8').send(renderDashboardPage(request.params.userId));
+      return reply.type('text/html; charset=utf-8').send(renderDashboardPage(request.params.userId));
     },
   );
 
@@ -3296,6 +3388,7 @@ function renderDashboardPage(userId?: string): string {
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>soma-work Dashboard</title>
+<script type="module" src="/dashboard/ui/tool-call-card.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -3861,6 +3954,47 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .kanban-col .cards { position: relative; display: flex; flex-direction: column; gap: 8px; }
 .col-empty { text-align: center; color: var(--ib-muted); font-size: 13px; padding: 14px 8px 18px; }
 .col-foot:empty { display: none; }
+
+/* ── Loading skeletons — the shape of what is coming, never a false "0 · Nothing
+   here". The board shows them until its first answer (data-load="loading"); the
+   stats values and the panel turns until theirs. Opacity pulse only (compositor),
+   staggered per card; still under reduced motion. ── */
+@keyframes sk-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
+.sk { background: var(--ib-pill); border-radius: 6px; animation: sk-pulse 1.6s ease-in-out infinite; }
+.col-skel { display: flex; flex-direction: column; gap: 8px; }
+.kanban:not([data-load="loading"]) .col-skel { display: none; }
+.kanban-col:has(> .cards:not(:empty)) .col-skel { display: none; }
+/* Counts and "Nothing here" are claims about the whole board: only a certified
+   (ready) board makes them — not 다시 시도 after a partial paint, not this
+   instance's cards shown under the error. */
+.kanban:not([data-load="ready"]) .col-empty { display: none; }
+.kanban:not([data-load="ready"]) .kanban-col-header .count:not(:empty) { visibility: hidden; }
+.sk-card { background: var(--ib-card); border: 1px solid var(--ib-card-border); border-radius: 12px; box-shadow: var(--ib-shadow); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
+.sk-card .sk-title { height: 14px; width: 68%; }
+.sk-card .sk-meta { height: 10px; width: 42%; }
+.sk-card .sk-pill { height: 20px; width: 34%; border-radius: 999px; }
+.sk-card:nth-child(2) .sk { animation-delay: 120ms; }
+.sk-card:nth-child(3) .sk { animation-delay: 240ms; }
+.kanban-col-header .count:empty { min-height: 18px; }
+.kanban[data-load="loading"] .kanban-col-header .count:empty { animation: sk-pulse 1.6s ease-in-out infinite; }
+.kanban:not([data-load="loading"]) .kanban-col-header .count:empty { visibility: hidden; }
+.board-error { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 12px; padding: 12px 16px; border-radius: 12px; background: var(--ib-col); color: var(--ib-text-2); font-size: 13px; }
+.board-error[hidden] { display: none; }
+/* Stats values: a bar where the number will be. */
+.strip-num .is-loading, .stat-card .value.is-loading { display: inline-block; vertical-align: middle; width: 3.2em; height: 0.9em; border-radius: 4px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
+.stat-card .value.is-loading { width: 64px; height: 22px; }
+.chart-row.is-loading { min-height: 132px; border-radius: 8px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
+/* Panel turns: rows shaped like a user / assistant turn. */
+.sk-turn { margin-bottom: 8px; padding: 8px 10px; border-radius: var(--radius); display: flex; gap: 10px; align-items: flex-start; border-left: 3px solid var(--ib-pill); }
+.sk-turn.user { background: var(--surface-raised); }
+.sk-turn .sk-avatar { width: 32px; height: 32px; border-radius: 4px; flex-shrink: 0; }
+.sk-turn-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding-top: 2px; }
+.sk-turn .sk-line { height: 10px; }
+.io-row.io-skel { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
+.io-skel .sk-line { height: 10px; }
+.io-skel + .io-skel .sk { animation-delay: 120ms; }
+.sk-turn:nth-child(2) .sk { animation-delay: 120ms; }
+.sk-turn:nth-child(3) .sk { animation-delay: 240ms; }
 
 /* List = the same columns stacked as full-width sections (same DOM, §4-4). */
 .kanban[data-view="list"] { grid-template-columns: minmax(0, 1fr); }
@@ -5173,6 +5307,36 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .wl-mark { flex-shrink: 0; width: 1em; text-align: center; color: var(--text-tertiary); }
 .wl-tool_result .wl-mark { color: var(--green); }
 .wl-tool_result.is-fail .wl-mark, .wl-tool_result.is-fail .wl-tool-name { color: var(--red); }
+/* A tool call and its result: one @2lab.ai/ui <ui-tool-call-card>, drawn with
+   the dashboard's own tokens: each --ui-* the element reads is set here, on the
+   wrapper, from the same-named dashboard token. Not on the element itself — its
+   shadow :host defines --border: var(--ui-border, …), so --ui-border: var(--border)
+   on the same element is a cycle and blanks both. Inherited from the wrapper,
+   the values arrive already resolved and follow the theme switch. */
+.wl-toolcall {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  --ui-bg: var(--bg); --ui-surface: var(--surface); --ui-surface-raised: var(--surface-raised);
+  --ui-border: var(--border); --ui-border-focus: var(--border-focus); --ui-text: var(--text);
+  --ui-text-secondary: var(--text-secondary); --ui-text-tertiary: var(--text-tertiary); --ui-accent: var(--accent);
+  --ui-accent-hover: var(--accent-hover); --ui-green: var(--green); --ui-yellow: var(--yellow); --ui-red: var(--red);
+  --ui-purple: var(--purple); --ui-orange: var(--orange); --ui-ib-col: var(--ib-col); --ui-ib-card: var(--ib-card);
+  --ui-ib-card-dim: var(--ib-card-dim); --ui-ib-card-border: var(--ib-card-border); --ui-ib-pill: var(--ib-pill);
+  --ui-ib-text: var(--ib-text); --ui-ib-text-2: var(--ib-text-2); --ui-ib-muted: var(--ib-muted);
+  --ui-ib-seg: var(--ib-seg); --ui-ib-seg-on: var(--ib-seg-on); --ui-ib-spark: var(--ib-spark);
+  --ui-ib-shadow: var(--ib-shadow); --ui-ib-shadow-raised: var(--ib-shadow-raised); --ui-st-wait: var(--st-wait);
+  --ui-st-run: var(--st-run); --ui-st-done: var(--st-done); --ui-st-fail: var(--st-fail);
+  --ui-st-fail-text: var(--st-fail-text); --ui-ease: var(--ease); --ui-ease-out: var(--ease-out);
+  --ui-ease-in-out: var(--ease-in-out); --ui-dur-press: var(--dur-press); --ui-dur-expand: var(--dur-expand);
+  --ui-dur-move: var(--dur-move); --ui-dur-fade: var(--dur-fade); --ui-radius: var(--radius);
+}
+.worklog-list ui-tool-call-card { display: block; min-width: 0; }
+.wl-card-fallback {
+  display: block; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius);
+  font-family: 'SF Mono','Fira Code',ui-monospace,monospace; font-size: 11.5px; color: var(--text-secondary);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
 .slide-panel-overlay {
   position: fixed;
   top: 0; left: 0;
@@ -5365,6 +5529,66 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    variables only (no new colours); the disclosure is the size container. */
 .turn-header .ans-took { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 .turn-header .ans-took:empty { display: none; }
+/* SSOT 2026-10-27 — a turn soma-work put there (compact, restart, retry, goal,
+   cron, renew): one quiet line — who · when · badge · what it did — that opens
+   (native disclosure) to its facts and the raw prompt. */
+.turn.is-sys { padding: 3px 10px; background: transparent; border-left-color: var(--border); }
+.turn.is-sys .turn-avatar { width: 20px; height: 20px; margin-top: 2px; font-size: 11px; border-radius: 3px; }
+.sys-turn { container: sysrow / inline-size; }
+/* A narrow row drops what is said elsewhere, so elapsed / estimate stay whole:
+   "압축 중" (the badge says it) at ≤ 420px — the default 440px drawer's row is
+   ~355px and keeps the name — and the name too (the avatar shows it) at
+   ≤ 340px, a phone's full-width panel. */
+@container sysrow (max-width: 420px) { .cp-verb { display: none; } }
+@container sysrow (max-width: 340px) { .sys-row-in .turn-name { display: none; } }
+@container sysrow (max-width: 280px) { .cp-pct { display: none; } }
+.sys-turn > summary { list-style: none; display: block; cursor: pointer; border-radius: var(--radius); }
+.sys-turn > summary::-webkit-details-marker { display: none; }
+.sys-turn > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sys-row-in { display: flex; align-items: center; gap: 8px; min-height: 24px; min-width: 0; font-size: 12px; color: var(--text-tertiary); }
+.sys-row-in .turn-name { font-size: 12px; }
+.sys-row-in .turn-time { flex: none; white-space: nowrap; }
+.sys-row-in .turn-name { flex: none; max-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sys-turn > summary:hover .sys-line { color: var(--text-secondary); }
+.sys-badge { flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised); color: var(--text); font-size: 11.5px; font-weight: 600; line-height: 1; white-space: nowrap; }
+.sys-badge[data-kind="compact"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.sys-badge[data-kind="restart"], .sys-badge[data-kind="retry"] { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 45%, transparent); }
+.sys-badge[data-kind="goal"] { color: var(--purple); border-color: color-mix(in srgb, var(--purple) 45%, transparent); }
+.sys-badge[data-kind="cron"] { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent); }
+.sys-line { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-slot { display: contents; }
+/* A narrow panel (phones): the bar's shrink weight (1000) dwarfs the line's (1),
+   so the bar gives way first, then the line truncates from its end. Weights
+   stay ≥ 1: below 1 the flex algorithm hands out only that fraction of the
+   space and the row would overflow. */
+/* A running line's parts are the row's own flex items: the times never shrink
+   (no sub-pixel ellipsis); only the overdue words take the ellipsis. */
+.turn[data-cp-live] .cp-slot > .sys-line { display: contents; }
+.cp-time { flex: none; white-space: nowrap; }
+.cp-over { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-bar { flex: 0 1000 120px; min-width: 0; max-width: 120px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
+.cp-bar > i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 1s linear; }
+.cp-bar.is-over > i { width: 100% !important; background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat; background-size: 40% 100%; animation: cp-over 1.4s linear infinite; }
+@keyframes cp-over { from { background-position: -40% 0; } to { background-position: 140% 0; } }
+.cp-pct { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; }
+.sys-chev { flex: none; margin-left: auto; width: 0; height: 0; border-left: 4px solid currentColor; border-top: 4px solid transparent; border-bottom: 4px solid transparent; opacity: 0.7; transition: transform var(--dur-press) var(--ease-out); }
+.sys-turn[open] .sys-chev { transform: rotate(90deg); }
+.sys-detail { margin: 6px 0 4px; padding: 8px 10px; border-radius: var(--radius); background: var(--surface-raised); }
+.sys-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 12px; margin: 0 0 8px; font-size: 12px; }
+.sys-facts dt { color: var(--text-tertiary); }
+.sys-facts dd { margin: 0; color: var(--text); white-space: pre-wrap; word-break: break-word; }
+.sys-raw-h { margin-bottom: 4px; font-size: 11px; color: var(--text-tertiary); }
+.sys-raw, .skill-body { margin: 0; max-height: 320px; overflow: auto; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); color: var(--text-secondary); font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+/* T5 — the skills an instruction invoked: badges (name · estimated tokens) under its words. */
+.skill-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.skill-badge { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; transition: background-color var(--dur-press) ease, border-color var(--dur-press) ease; }
+.skill-badge:hover { background: var(--bg); }
+.skill-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.skill-badge[aria-expanded="true"] { border-color: var(--accent); }
+.skill-tok { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.skill-detail { margin-top: 6px; }
+.skill-detail-h { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; font-size: 12px; }
+@media (pointer: coarse) { .sys-row-in { min-height: 44px; } .turn.is-sys .turn-avatar { margin-top: 12px; } .skill-badge { min-height: 44px; } }
 .ans-card { margin-top: 6px; padding: 12px 14px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
 .ans-card.is-in > * { animation: ans-in var(--dur-fade) var(--ease-out) both; }
 .ans-loading, .ans-empty { font-size: 12px; color: var(--text-tertiary); }
@@ -5635,8 +5859,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .btn-perm:active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
+  /* Loading skeletons hold still. */
+  .sk, .is-loading, .kanban-col-header .count:empty { animation: none !important; }
   .wl-group-head .wl-g-chev, .done-group-head .dg-chev { transition: none; }
   .spinner { border-color: var(--st-run); background: radial-gradient(circle, var(--st-run) 0 2px, transparent 2.5px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* SSOT 2026-10-27 — a compaction past its estimate holds a still, dimmed bar
+     instead of the sweep (the shared block above already stills transitions). */
+  .cp-bar.is-over > i { animation: none !important; background: var(--accent); opacity: 0.6; }
 }
 /* ── TOUCH — coarse pointer enlargement ── */
 @media (pointer: coarse) {
@@ -6722,22 +6953,22 @@ body.nt-open .new-task-fab { display: none !important; }
           <button type="button" class="period-btn" data-period="month" aria-pressed="false" onclick="setPeriod('month')">&#xC9C0;&#xB09C; 30&#xC77C;</button>
         </div>
         <div class="strip-nums">
-          <div class="strip-num"><span class="label">&#xC138;&#xC158;</span><span class="value" id="stat-sessions">-</span></div>
-          <div class="strip-num"><span class="label">&#xD1A0;&#xD070;</span><span class="value" id="stat-tokens-wrap"><span id="stat-tokens">-</span><span id="stat-tokens-tooltip" role="tooltip"></span></span></div>
-          <div class="strip-num"><span class="label">&#xBE44;&#xC6A9;</span><span class="value" id="stat-cost">-</span></div>
+          <div class="strip-num"><span class="label">&#xC138;&#xC158;</span><span class="value is-loading" id="stat-sessions"></span></div>
+          <div class="strip-num"><span class="label">&#xD1A0;&#xD070;</span><span class="value" id="stat-tokens-wrap"><span id="stat-tokens" class="is-loading"></span><span id="stat-tokens-tooltip" role="tooltip"></span></span></div>
+          <div class="strip-num"><span class="label">&#xBE44;&#xC6A9;</span><span class="value is-loading" id="stat-cost"></span></div>
         </div>
         <button type="button" class="stats-more" id="stats-more" aria-expanded="false" aria-controls="stats-detail" onclick="toggleStatsDetail()"><span>&#xC790;&#xC138;&#xD788;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
       </div>
       <div class="stats-detail" id="stats-detail" hidden>
         <div class="stats-grid" id="stats-grid">
-          <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value" id="stat-turns">-</div></div>
-          <div class="stat-card"><div class="label">PR &#xC0DD;&#xC131;</div><div class="value" id="stat-prs">-</div></div>
-          <div class="stat-card"><div class="label">PR &#xBA38;&#xC9C0;</div><div class="value" id="stat-merged">-</div></div>
-          <div class="stat-card"><div class="label">&#xBA38;&#xC9C0; &#xCF54;&#xB4DC;</div><div class="value" id="stat-merge-lines">-</div></div>
-          <div class="stat-card"><div class="label">&#xC6CC;&#xD06C;&#xD50C;&#xB85C;&#xC6B0;</div><div class="value" id="stat-workflows" style="font-size:0.85em">-</div></div>
+          <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value is-loading" id="stat-turns"></div></div>
+          <div class="stat-card"><div class="label">PR &#xC0DD;&#xC131;</div><div class="value is-loading" id="stat-prs"></div></div>
+          <div class="stat-card"><div class="label">PR &#xBA38;&#xC9C0;</div><div class="value is-loading" id="stat-merged"></div></div>
+          <div class="stat-card"><div class="label">&#xBA38;&#xC9C0; &#xCF54;&#xB4DC;</div><div class="value is-loading" id="stat-merge-lines"></div></div>
+          <div class="stat-card"><div class="label">&#xC6CC;&#xD06C;&#xD50C;&#xB85C;&#xC6B0;</div><div class="value is-loading" id="stat-workflows" style="font-size:0.85em"></div></div>
         </div>
         <div style="display:none" id="stat-commits-hidden"></div>
-        <div class="chart-row" id="chart-row"></div>
+        <div class="chart-row is-loading" id="chart-row"></div>
       </div>
     </section>
 
@@ -6794,21 +7025,28 @@ body.nt-open .new-task-fab { display: none !important; }
       </div>
       <!-- How many need you and how many run, said politely (re-agent-inbox D6). -->
       <p id="inbox-live" class="ib-sr" role="status" aria-live="polite" aria-atomic="true"></p>
-      <div class="kanban" id="kanban" data-view="board">
+      <!-- Until the first board answer the columns show skeleton cards, not
+           "0 · Nothing here" (a false empty board). A first load that fails says so
+           here and offers a retry; the 30 s poll keeps retrying on its own. -->
+      <div class="board-error" id="board-error" role="alert" hidden><span>보드를 불러오지 못했습니다.</span><button type="button" class="archives-btn" onclick="retryBoardLoad()">다시 시도</button></div>
+      <div class="kanban" id="kanban" data-view="board" data-load="loading" aria-busy="true">
         <section class="kanban-col" id="col-waiting" data-col="waiting" aria-labelledby="col-waiting-name count-waiting">
-          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-waiting-name">NEEDS YOU</h3><span class="count" id="count-waiting">0</span></div>
+          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-waiting-name">NEEDS YOU</h3><span class="count" id="count-waiting"></span></div>
+          <div class="col-skel" aria-hidden="true"><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div></div>
           <div class="cards" id="cards-waiting"></div>
-          <div class="col-empty" id="empty-waiting">Nothing here</div>
+          <div class="col-empty" id="empty-waiting" hidden>Nothing here</div>
         </section>
         <section class="kanban-col" id="col-working" data-col="working" aria-labelledby="col-working-name count-working">
-          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-working-name">RUNNING</h3><span class="count" id="count-working">0</span></div>
+          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-working-name">RUNNING</h3><span class="count" id="count-working"></span></div>
+          <div class="col-skel" aria-hidden="true"><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div></div>
           <div class="cards" id="cards-working"></div>
-          <div class="col-empty" id="empty-working">Nothing here</div>
+          <div class="col-empty" id="empty-working" hidden>Nothing here</div>
         </section>
         <section class="kanban-col" id="col-done" data-col="done" aria-labelledby="col-done-name count-done">
-          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-done-name">DONE</h3><span class="count" id="count-done">0</span></div>
+          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-done-name">DONE</h3><span class="count" id="count-done"></span></div>
+          <div class="col-skel" aria-hidden="true"><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div></div>
           <div class="cards" id="cards-done"></div>
-          <div class="col-empty" id="empty-done">Nothing here</div>
+          <div class="col-empty" id="empty-done" hidden>Nothing here</div>
           <div class="col-foot" id="foot-done"></div>
         </section>
       </div>
@@ -8518,7 +8756,12 @@ function patchLastBoard(s) {
   });
 }
 
-function renderBoard(board) {
+function renderBoard(board, partial) {
+  // Partial: anything painted before the board is certified — this instance's
+  // cards under the error, or re-rendered during 다시 시도 — is never announced as
+  // the board. Unspecified means whatever the load state says, so a re-render
+  // (cron poll, visibility, toggles) of partial data stays quiet too.
+  if (partial === undefined) partial = _boardLoad !== 'ready';
   _sessionCache = Object.create(null); // Clear stale cache each render cycle
   // Populate cache from the entire board first so the env-palette pass
   // (which reads every card's environment) and the per-card renders share
@@ -8539,7 +8782,7 @@ function renderBoard(board) {
   _lastBoardData = board;
   // D6: how many need you and how many run — the data as it came (CRON runs
   // waiting on a reply included), before the lane takes its runs and any hold.
-  announceBoard((board.waiting || []).length, (board.working || []).length);
+  if (!partial) announceBoard((board.waiting || []).length, (board.working || []).length);
   // Cron runs leave the columns for the CRON lane, one group per job (SSOT
   // 2026-10-23 T4); the lane sections exist before the reconciler fills them.
   var cronPlan = planCronLane(board, _cronJobs, _cronRevealKey);
@@ -8565,6 +8808,11 @@ function renderBoard(board) {
     // (hidden archives / sleeping cards are not in it).
     done: plan.done.length,
   });
+  // The certified board is drawn: the skeleton goes for good. After the
+  // reconciler, so a render that throws on the way leaves it, and loadSessions'
+  // catch shows 다시 시도. A partial paint keeps it: 다시 시도 still needs a loading
+  // cue for the columns the partial data left empty.
+  if (!partial) document.querySelectorAll('.col-skel').forEach(function(n) { n.remove(); });
   renderArchivesToggle(plan.archivedCount);
   renderSleepingToggle(plan.sleepingCount);
   paintCronDrawer();
@@ -10221,6 +10469,7 @@ function repaintPanelScope() {
   repaintPanelTasks();
   wlRefreshGroupHeads();
   wlRefreshChildBlocks();
+  wlRefreshCards();
 }
 // ── The panel as a whole (spec 13 — "understand and steer") ──
 // One live path writes every part of the open panel that follows the session:
@@ -10896,7 +11145,7 @@ function repaintWorkLogScope() {
   if (!_wl.entries.length) return;
   wlRenderList(_wl, list);
   updateTimersIn(list);
-  setTextIfChanged(document.getElementById('worklog-count'), String(wlScopeEntries(_wl.entries).length));
+  setTextIfChanged(document.getElementById('worklog-count'), String(wlVisible(_wl, wlScopeEntries(_wl.entries)).length));
   wlEnsureTabStop(list);
   if (!wlScopeEntries(_wl.entries).length) showWorkLogEmpty('이 에이전트의 작업 로그 없음');
 }
@@ -11058,8 +11307,11 @@ function renderCardIo(s) {
   if (!s.conversationId) return '';
   var c = _ioCache[s.conversationId];
   if (!c || !c.data) {
-    var note = c && c.state === 'error' ? '지시/응답을 불러오지 못했습니다' : '지시/응답 불러오는 중…';
-    return '<div class="card-io"><div class="io-row"><div class="io-text is-muted">' + note + '</div></div></div>';
+    if (c && c.state === 'error') return '<div class="card-io"><div class="io-row"><div class="io-text is-muted">지시/응답을 불러오지 못했습니다</div></div></div>';
+    // In flight: the shape of 지시 and 응답, the words for screen readers only.
+    return '<div class="card-io" aria-busy="true"><div class="io-row io-skel" aria-hidden="true"><div class="sk sk-line" style="width:44%"></div><div class="sk sk-line" style="width:86%"></div></div>'
+      + '<div class="io-row io-skel" aria-hidden="true"><div class="sk sk-line" style="width:36%"></div><div class="sk sk-line" style="width:72%"></div></div>'
+      + '<span class="ib-sr">지시/응답 불러오는 중…</span></div>';
   }
   var d = c.data;
   var who = d.instruction && d.instruction.who ? '<span class="io-who">' + esc(d.instruction.who) + '</span>' : '';
@@ -12873,20 +13125,106 @@ function mergeSiblingCards(board) {
   return out;
 }
 
+// The board's first load (spec: no false empty board). 'loading' — skeleton
+// cards, no counts, no "Nothing here" — until the first poll answer paints,
+// then 'ready' for good: a background poll never brings the skeleton back.
+// Only a poll answer certifies the board (it carries every instance's cards);
+// a WebSocket push is this instance's cards only. A first load that fails is
+// 'failed' — the skeleton stops and the board says so, with 다시 시도, until a
+// poll succeeds (the 30 s poll keeps retrying either way).
+var _boardLoad = 'loading';
+function setBoardLoad(state) {
+  if (_boardLoad === 'ready') return;
+  _boardLoad = state;
+  var kb = document.getElementById('kanban');
+  if (kb) {
+    kb.dataset.load = state;
+    kb.setAttribute('aria-busy', state === 'loading' ? 'true' : 'false');
+  }
+  var err = document.getElementById('board-error');
+  if (err) err.hidden = state !== 'failed';
+}
+function retryBoardLoad() {
+  setBoardLoad('loading');
+  loadSessions();
+}
+// A WebSocket push carries this instance's cards only; before a poll answer
+// there are no sibling cards to merge in, so a push while loading is held for
+// the user it was filtered for — and painted, as partial data under the error,
+// if that load fails. After a failed load pushes paint (the error stays).
+var _heldWsBoard = null;
+function paintPushedBoard(board) {
+  if (_boardLoad === 'loading') { _heldWsBoard = { user: currentUserId, board: board }; return false; }
+  renderBoard(mergeSiblingCards(board));
+  return true;
+}
+
+// Until the board is certified a request that never answers would keep the
+// skeleton up: it is cut off after BOARD_LOAD_TIMEOUT_MS (shorter than the 30 s
+// poll) and ends in 다시 시도. The deadline is for the answer, not the transfer —
+// a large board on a slow link still arrives. Certified, polls run unbounded.
+var BOARD_LOAD_TIMEOUT_MS = 20000;
+// Before certification there is one load waiting for its answer at a time. The
+// same user's next ask (task_update, toggles, the 30 s poll, 다시 시도) joins it:
+// killing it would restart the clock on a busy board, and a second request would
+// pay a second sibling fan-out. A user switch aborts it — its answer would be
+// dropped, and its abort is not a failure of whatever load comes next. Once the
+// answer's headers are in the slot is free: a body that stalls never swallows
+// the next ask.
+var _sessionsInflight = null; // { user, ctl, done, settle, superseded }
 async function loadSessions() {
+  if (_sessionsInflight) {
+    if (_sessionsInflight.user === currentUserId) return _sessionsInflight.done;
+    _sessionsInflight.superseded = true;
+    _sessionsInflight.ctl.abort();
+    _sessionsInflight = null;
+  }
+  // An answer for a user no longer selected paints nothing and flags nothing.
+  // Certified, same-user loads never cancel each other: a slow poll still paints.
+  var forUser = currentUserId;
+  var entry = null;
+  var timer = 0;
+  if (_boardLoad !== 'ready' && typeof AbortController === 'function') {
+    entry = { user: forUser, ctl: new AbortController() };
+    entry.done = new Promise(function(r) { entry.settle = r; });
+    _sessionsInflight = entry;
+    timer = setTimeout(function() { entry.ctl.abort(); }, BOARD_LOAD_TIMEOUT_MS);
+  }
   try {
     const url = '/api/dashboard/sessions' + (currentUserId ? '?userId=' + currentUserId : '');
-    const res = await fetch(url);
+    const res = await fetch(url, entry ? { signal: entry.ctl.signal } : {});
+    clearTimeout(timer);
+    if (entry && _sessionsInflight === entry) _sessionsInflight = null; // answered: the next ask is a new request
+    if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
+    if (forUser !== currentUserId) return;
+    _heldWsBoard = null;
     _lastPolledBoard = data.board;
     if (data.lifecycle) _lifecycle = data.lifecycle;
-    renderBoard(data.board);
+    renderBoard(data.board, false);
+    setBoardLoad('ready');
     if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) {
       // Without the WebSocket (or for a sibling instance) the poll is the only
       // update: the whole panel follows it (spec 13).
       repaintPanelSession();
     }
-  } catch (e) { console.error('Failed to load sessions', e); }
+  } catch (e) {
+    clearTimeout(timer);
+    if ((entry && entry.superseded) || forUser !== currentUserId) return;
+    console.error('Failed to load sessions', e);
+    var held = _boardLoad === 'loading' && _heldWsBoard && _heldWsBoard.user === forUser ? _heldWsBoard.board : null;
+    _heldWsBoard = null;
+    setBoardLoad('failed'); // a no-op once the board has painted: it stays as it is
+    // This instance's cards are better than none — shown under the error, which
+    // stays: they are not the whole board (painted as partial: no counts, no
+    // "Nothing here", not announced).
+    if (held) renderBoard(held);
+  } finally {
+    if (entry) {
+      if (_sessionsInflight === entry) _sessionsInflight = null;
+      entry.settle();
+    }
+  }
 }
 
 // ── Action handler (with CSRF retry on 403 after JWT rotation) ──
@@ -13343,6 +13681,9 @@ async function loadStats() {
   var gen = ++_statsGen;
   var q = 'period=' + encodeURIComponent(currentPeriod) + (currentUserId ? '&userId=' + encodeURIComponent(currentUserId) : '');
   updateTokenBreakdown();
+  // A bar where each number will be — not the last period's (or user's) number
+  // under the new selection while the answer is in flight (month: seconds).
+  markStatsLoading();
   await Promise.all([
     statsJson('/api/dashboard/stats?' + q).then(
       function(data) { if (gen === _statsGen) paintStats(data); },
@@ -13362,11 +13703,25 @@ function statsJson(url) {
   });
 }
 
+var STAT_IDS = ['stat-sessions', 'stat-tokens', 'stat-cost', 'stat-turns', 'stat-prs', 'stat-merged', 'stat-merge-lines', 'stat-workflows'];
+function markStatsLoading() {
+  STAT_IDS.forEach(function(id) {
+    var el = document.getElementById(id);
+    if (!el) return;
+    el.textContent = '';
+    el.classList.remove('no-data');
+    el.classList.add('is-loading');
+  });
+  var chart = document.getElementById('chart-row');
+  if (chart) chart.classList.add('is-loading');
+}
+
 // A failed load shows a dash rather than the previous period's number.
 function setStat(id, text) {
   var el = document.getElementById(id);
   if (!el) return;
   el.textContent = text;
+  el.classList.remove('is-loading');
   el.classList.toggle('no-data', text === '\\u2014');
 }
 
@@ -13380,11 +13735,17 @@ function paintStats(data) {
   setStat('stat-commits-hidden', t ? String(toNum(t.commitsCreated)) : dash);
   setStat('stat-merge-lines', t ? '+' + toNum(t.mergeLinesAdded) + ' / -' + toNum(t.mergeLinesDeleted) : dash);
   var wfEntries = Object.entries((t && t.workflowCounts) || {}).sort(function(a, b) { return toNum(b[1]) - toNum(a[1]); });
-  document.getElementById('stat-workflows').innerHTML = wfEntries.length
-    ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + toNum(e[1]) + '</b></span>'; }).join('')
-    : '<span style="color:var(--text-secondary)">-</span>';
+  var wfEl = document.getElementById('stat-workflows');
+  if (wfEl) {
+    wfEl.classList.remove('is-loading');
+    wfEl.innerHTML = wfEntries.length
+      ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + toNum(e[1]) + '</b></span>'; }).join('')
+      : '<span style="color:var(--text-secondary)">-</span>';
+  }
+  var chartEl = document.getElementById('chart-row');
+  if (chartEl) chartEl.classList.remove('is-loading');
   if (data) renderCharts(Array.isArray(data.days) ? data.days : []);
-  else document.getElementById('chart-row').innerHTML = '';
+  else if (chartEl) chartEl.innerHTML = '';
 }
 
 function paintUsage(report) {
@@ -13452,7 +13813,7 @@ function connectWs() {
           msg.board.idle = (msg.board.idle || []).filter(function(s) { return s.ownerId === currentUserId; });
           msg.board.closed = (msg.board.closed || []).filter(function(s) { return s.ownerId === currentUserId; });
         }
-        renderBoard(mergeSiblingCards(msg.board));
+        if (!paintPushedBoard(msg.board)) return;
         // Refresh panel question if panel is open (session may have transitioned)
         if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) {
           var panelS = _sessionCache[panelSessionKey];
@@ -13492,6 +13853,11 @@ function connectWs() {
             // Remove pending style from optimistic turn if present
             var pending = document.querySelector('.turn.user[style*="opacity"]');
             if (pending) pending.style.opacity = '';
+            // The server's turn takes over the optimistic one, so a later push for
+            // it (a /compact result, SSOT 2026-10-27) finds it by its real id.
+            var opts = document.querySelectorAll('#panel-turns .turn.user[data-turn-id^="optimistic-"]');
+            var optEl = opts.length ? opts[opts.length - 1] : null;
+            if (optEl && msg.turn.id) updateTurnInPanel(optEl, msg.turn);
           } else {
             // Check if this turn already exists (e.g., summary update for existing assistant turn).
             // If so, replace in-place instead of appending a duplicate.
@@ -13645,6 +14011,8 @@ function updateTokenBreakdown() {
 var WL_BACKFILL_MAX_PAGES = 2000;
 var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류' };
 var WL_EMPTY_MSG = '작업 로그 없음';
+var _wlCardsWait = false;
+var _wlDetailRev = 0;
 var WL_FORBIDDEN_MSG = '작업 로그는 세션 소유자만 볼 수 있어요';
 var WL_RAW_MISSING_MSG = '원본 출력이 저장되어 있지 않습니다';
 var WL_RAW_ERROR_MSG = '원본 출력을 불러오지 못했어요';
@@ -14176,9 +14544,10 @@ function renderWorkLogGroup(grp, open, task) {
 function wlFillGroupBody(state, grpEl, taskId) {
   var body = grpEl.querySelector('.wl-group-body');
   if (!body || body.getAttribute('data-filled') === '1') return;
-  var entries = wlScopeEntries(state.entries).filter(function(x) { return wlGroupOf(x) === taskId; });
+  var entries = wlVisible(state, wlScopeEntries(state.entries)).filter(function(x) { return wlGroupOf(x) === taskId; });
   body.innerHTML = entries.map(renderWorkLogEntry).join('');
   body.setAttribute('data-filled', '1');
+  wlHydrateCards(body);
   for (var i = 0; i < entries.length; i++) {
     var seq = entries[i].seq;
     if (!state.open || !state.open.has(seq)) continue;
@@ -14206,7 +14575,7 @@ function wlGroupEl(list, taskId) {
 // The whole list from state.entries; open details are re-opened (raw output is cached on the state).
 function wlRenderList(state, list) {
   // Spec 12: only the agent the panel shows (the main agent by default).
-  var rows = wlBuildRows(wlScopeEntries(state.entries));
+  var rows = wlBuildRows(wlVisible(state, wlScopeEntries(state.entries)));
   var newest = null;
   for (var i = rows.length - 1; i >= 0; i--) if (rows[i].group) { newest = rows[i].group; break; }
   // A log from before agent attribution that started subagents: its "main"
@@ -14227,6 +14596,7 @@ function wlRenderList(state, list) {
     detail.hidden = false;
     loadWorkLogDetail(state, seq);
   });
+  wlHydrateCards(list);
 }
 // Live entries at the end of the log: append in place (a task's entry into its
 // group, a new task as a new — open — group at the end).
@@ -14236,6 +14606,14 @@ function wlAppendTail(state, list, added) {
   for (var i = 0; i < scoped.length; i++) {
     var e = scoped[i];
     var g = wlGroupOf(e);
+    if (wlCardHidden(state, e)) {
+      wlOnToolResult(state, e);
+      if (g) {
+        var ownGrp = wlGroupEl(list, g);
+        if (ownGrp) wlRefreshGroupHead(state, ownGrp, g);
+      }
+      continue;
+    }
     if (!g) {
       tmp.innerHTML = renderWorkLogEntry(e);
       if (tmp.firstElementChild) list.appendChild(tmp.firstElementChild);
@@ -14256,11 +14634,12 @@ function wlAppendTail(state, list, added) {
     }
     wlRefreshGroupHead(state, grpEl, g);
   }
+  wlHydrateCards(list);
 }
 function wlRefreshGroupHead(state, grpEl, taskId) {
   var head = grpEl.querySelector('.wl-group-head');
   if (!head) return;
-  var entries = wlScopeEntries(state.entries).filter(function(x) { return wlGroupOf(x) === taskId; });
+  var entries = wlVisible(state, wlScopeEntries(state.entries)).filter(function(x) { return wlGroupOf(x) === taskId; });
   var title = '';
   for (var i = 0; i < entries.length; i++) if (entries[i].taskTitle) title = String(entries[i].taskTitle);
   var html = renderWorkLogGroupHead({ taskId: taskId, title: title, entries: entries }, head.getAttribute('aria-expanded') === 'true', wlTaskInfo(taskId));
@@ -14315,7 +14694,8 @@ function paintWorkLog(state, added) {
   if (tail) wlAppendTail(state, list, added);
   else wlRenderList(state, list);
   updateTimersIn(list);
-  var scopedCount = wlScopeEntries(state.entries).length;
+  // What the list shows: a paired result lives in its call's card, so it is not counted twice.
+  var scopedCount = wlVisible(state, wlScopeEntries(state.entries)).length;
   setTextIfChanged(document.getElementById('worklog-count'), String(scopedCount));
   // Spec 12: entries of another agent arrived while this agent's log is empty — keep the empty line.
   if (!scopedCount) showWorkLogEmpty('이 에이전트의 작업 로그 없음');
@@ -14342,6 +14722,247 @@ function showWorkLogEmpty(message) {
   if (list && !list.querySelector('.wl-entry')) list.innerHTML = '<div class="wl-empty">' + esc(message || WL_EMPTY_MSG) + '</div>';
 }
 
+// ── Tool calls as cards (@2lab.ai/ui <ui-tool-call-card>) ──
+// A call and its result are one card. The pair is matched by the SDK
+// tool-use id. Entries written before the id was kept pair by agent + tool
+// name: each result, from the newest back, takes the nearest earlier
+// unanswered call — so a window that starts after a call leaves that call's
+// result unpaired (its own card) rather than pinning it on a later call.
+function wlPairKey(e) {
+  return (e.agentId ? String(e.agentId) : '') + '|' + String(e.tool || '');
+}
+// Pure: resultOf[call seq] = result entry, callOf[result seq] = call seq.
+function wlPairTools(entries) {
+  var resultOf = Object.create(null);
+  var callOf = Object.create(null);
+  var byId = Object.create(null);
+  var list = entries || [];
+  function pair(call, res) {
+    resultOf[call.seq] = res;
+    callOf[res.seq] = call.seq;
+  }
+  // With ids: forward, first call of an id wins, first result of an id pairs.
+  for (var i = 0; i < list.length; i++) {
+    var e = list[i];
+    if (!e || (e.kind !== 'tool' && e.kind !== 'tool_result')) continue;
+    var id = typeof e.toolUseId === 'string' && e.toolUseId ? e.toolUseId : '';
+    if (!id) continue;
+    if (e.kind === 'tool') {
+      if (!Object.prototype.hasOwnProperty.call(byId, id)) byId[id] = e;
+      continue;
+    }
+    var call = Object.prototype.hasOwnProperty.call(byId, id) ? byId[id] : null;
+    if (call && resultOf[call.seq] === undefined) pair(call, e);
+  }
+  // Without ids: backward, each result to the nearest earlier unanswered call of its key.
+  var waiting = Object.create(null);
+  for (var j = list.length - 1; j >= 0; j--) {
+    var r = list[j];
+    if (!r || (r.kind !== 'tool' && r.kind !== 'tool_result') || r.toolUseId) continue;
+    var key = wlPairKey(r);
+    if (r.kind === 'tool_result') {
+      (waiting[key] || (waiting[key] = [])).push(r);
+      continue;
+    }
+    var q = waiting[key];
+    if (q && q.length) pair(r, q.shift());
+  }
+  return { resultOf: resultOf, callOf: callOf };
+}
+// Recomputed when the entries change (a live entry, an older page). A card
+// whose result changed drops the input / output it loaded for the old pair.
+function wlPairsOf(state) {
+  var n = state && state.entries ? state.entries.length : 0;
+  if (!state.pairs || state.pairsN !== n || state.pairsOf !== state.entries) {
+    var before = state.pairs;
+    state.pairs = wlPairTools(state.entries);
+    state.pairsN = n;
+    state.pairsOf = state.entries;
+    if (before && state.cardDetail) {
+      for (var k in state.cardDetail) {
+        var was = before.resultOf[k];
+        var now = state.pairs.resultOf[k];
+        if ((was && was.seq) !== (now && now.seq)) delete state.cardDetail[k];
+      }
+    }
+  }
+  return state.pairs;
+}
+// A result whose call is in the log: it lives in the call's card.
+function wlCardHidden(state, e) {
+  return !!(e && !e._role && e.kind === 'tool_result' && state && wlPairsOf(state).callOf[e.seq] !== undefined);
+}
+function wlVisible(state, entries) {
+  return (entries || []).filter(function(e) { return !wlCardHidden(state, e); });
+}
+// Pure: the emitter's text starts with the tool name ("Read {...}", "Glob ok");
+// the card shows the name on its own, so the summary is only what follows.
+function wlToolSummary(tool, text) {
+  text = String(text || '');
+  if (tool && text === tool) return '';
+  if (tool && text.indexOf(tool + ' ') === 0) return text.slice(tool.length + 1);
+  return text;
+}
+// A call without a result is running only while its session works on the
+// turn it belongs to; otherwise the run ended before it returned.
+function wlCallLive(state, call) {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var act = s && s.activityState;
+  if (act !== 'working' && act !== 'waiting') return false;
+  var list = (state && state.entries) || [];
+  for (var i = list.length - 1; i >= 0; i--) {
+    if (list[i] && list[i].turnId) return !call.turnId || call.turnId === list[i].turnId;
+  }
+  return true;
+}
+// The card's data for the entry that carries it (a call, or a result on its own).
+function wlCardData(state, key, stop) {
+  var carrier = wlEntryBySeq(state, key);
+  if (!carrier) return null;
+  var call = carrier.kind === 'tool' ? carrier : null;
+  var res = call ? wlPairsOf(state).resultOf[call.seq] || null : carrier;
+  var tool = String((call && call.tool) || (res && res.tool) || '');
+  var status = res ? (res.ok === false ? 'error' : 'success') : wlCallLive(state, call) ? 'running' : 'interrupted';
+  var d = { name: tool || '툴', status: status, focusable: !!stop, open: !!(state.open && state.open.has(key)) };
+  var summary = call ? wlToolSummary(tool, call.text) : '';
+  if (summary) d.summary = summary;
+  if (call && typeof call.ts === 'number' && isFinite(call.ts)) {
+    d.at = call.ts;
+    d.startedAt = call.ts;
+  }
+  if (call && res && typeof res.ts === 'number' && typeof call.ts === 'number' && isFinite(res.ts) && isFinite(call.ts)) {
+    d.duration = Math.max(0, res.ts - call.ts);
+  }
+  var det = state.cardDetail && state.cardDetail[key];
+  if (det) {
+    if (det.loading) d.loading = true;
+    if (det.args !== undefined) d.args = det.args;
+    if (det.result !== undefined) d.result = det.result;
+    if (det.note) d.note = det.note;
+    if (det.detailError) d.detailError = det.detailError;
+  }
+  if (status === 'error') {
+    var msg = det && typeof det.result === 'string' ? det.result.slice(0, 600) : '';
+    d.error = msg || '툴이 오류를 돌려줬어요 — 열면 출력을 볼 수 있어요';
+  }
+  return d;
+}
+// Same data → the card is left alone (no re-render, focus and timers kept).
+// Input / output enter by the revision of the load that produced them (each
+// load gets a new one), not by content: hashing 256 KiB on every push costs.
+function wlCardSig(d, rev) {
+  if (!d) return '';
+  var keys = ['name', 'summary', 'status', 'focusable', 'open', 'at', 'duration', 'loading', 'note', 'detailError', 'error'];
+  var out = [];
+  for (var i = 0; i < keys.length; i++) out.push(d[keys[i]]);
+  out.push(d.args === undefined ? -1 : 1, d.result === undefined ? -1 : 1, rev || 0);
+  return JSON.stringify(out);
+}
+function wlPaintCard(state, el) {
+  if (!el || !state) return;
+  var key = Math.floor(Number(el.getAttribute('data-key')) || 0);
+  var d = wlCardData(state, key, el.getAttribute('data-stop') === '1');
+  if (!d) return;
+  var det = state.cardDetail && state.cardDetail[key];
+  // Open without its input / output (a re-pairing dropped them, a fresh render): fetch them.
+  if (d.open && !det) {
+    wlLoadCardDetail(state, key);
+    return;
+  }
+  var sig = wlCardSig(d, det && det.rev);
+  if (el._wlSig === sig) return;
+  el._wlSig = sig;
+  el.data = d;
+}
+function wlCardEl(key) {
+  var list = document.getElementById('worklog-list');
+  return list ? list.querySelector('ui-tool-call-card[data-key="' + Math.floor(Number(key) || 0) + '"]') : null;
+}
+// Give every card on screen its data — once the element is defined, so data
+// never lands on an un-upgraded node (the library loads as a module).
+function wlHydrateCards(root) {
+  if (!root || !_wl) return;
+  var cards = root.querySelectorAll('ui-tool-call-card.wl-card');
+  if (!cards.length) return;
+  var reg = window.customElements;
+  if (reg && !reg.get('ui-tool-call-card')) {
+    if (!_wlCardsWait && reg.whenDefined) {
+      _wlCardsWait = true;
+      reg.whenDefined('ui-tool-call-card').then(function() {
+        _wlCardsWait = false;
+        wlHydrateCards(document.getElementById('worklog-list'));
+      });
+    }
+    return;
+  }
+  for (var i = 0; i < cards.length; i++) wlPaintCard(_wl, cards[i]);
+}
+// Session pushes: a running call whose session stopped reads 결과 없음.
+function wlRefreshCards() {
+  wlHydrateCards(document.getElementById('worklog-list'));
+}
+// A stored raw → the card's text for that part (args / result) and its note.
+function wlPartLoad(state, e) {
+  if (!e) return Promise.resolve(null);
+  if (!(toNum(e.rawBytes) > 0)) return Promise.resolve({ status: 'none' });
+  return wlRawLoad(state, e.seq, wlFetchJson);
+}
+function wlLoadCardDetail(state, key) {
+  var carrier = wlEntryBySeq(state, key);
+  if (!carrier) return;
+  var call = carrier.kind === 'tool' ? carrier : null;
+  var res = call ? wlPairsOf(state).resultOf[call.seq] || null : carrier;
+  var details = state.cardDetail || (state.cardDetail = Object.create(null));
+  var pending = { loading: true, rev: ++_wlDetailRev };
+  details[key] = pending;
+  wlPaintCard(state, wlCardEl(key));
+  Promise.all([wlPartLoad(state, call), wlPartLoad(state, res)]).then(function(parts) {
+    // A newer load (or a re-pairing) owns this card now: drop the late answer.
+    if (state !== _wl || state.closed || details[key] !== pending) return;
+    var det = { loading: false, rev: ++_wlDetailRev };
+    var notes = [];
+    var fail = '';
+    for (var i = 0; i < 2; i++) {
+      var r = parts[i];
+      if (!r || r.status === 'none') continue;
+      var label = i === 0 ? '입력' : '결과';
+      if (r.status === 'ok') {
+        if (i === 0) det.args = r.raw;
+        else det.result = r.raw;
+        if (r.truncated) notes.push(label + ': 저장된 앞 256 KiB만 표시 — 원본 ' + formatBytes(r.bytes));
+      } else if (r.status === 'missing') notes.push(label + ': ' + WL_RAW_MISSING_MSG);
+      // Final answers (cached): a note — 다시 시도 would only get the same answer.
+      else if (r.status === 'denied') notes.push(WL_FORBIDDEN_MSG);
+      else if (r.status === 'damaged') notes.push(label + ': ' + WL_RAW_DAMAGED_MSG);
+      else fail = fail || WL_RAW_ERROR_MSG;
+    }
+    if (notes.length) det.note = notes.join(' · ');
+    if (fail) det.detailError = fail;
+    details[key] = det;
+    wlPaintCard(state, wlCardEl(key));
+  });
+}
+// The list owns each card's open state (state.open), so a re-render, a live
+// result or a page of older entries brings it back as it was.
+function wlToggleCard(state, el, open) {
+  if (!state || state.closed || !el) return;
+  var key = Math.floor(Number(el.getAttribute('data-key')) || 0);
+  var set = state.open || (state.open = new Set());
+  if (open) set.add(key);
+  else set.delete(key);
+  if (open && !(state.cardDetail && state.cardDetail[key] && !state.cardDetail[key].detailError)) wlLoadCardDetail(state, key);
+  else wlPaintCard(state, el);
+}
+// A result arrived for a call on screen: its card turns done / failed (and an
+// open card fetches the output).
+function wlOnToolResult(state, e) {
+  var callSeq = wlPairsOf(state).callOf[e.seq];
+  if (callSeq === undefined) return false;
+  var el = wlCardEl(callSeq);
+  if (state.open && state.open.has(callSeq)) wlLoadCardDetail(state, callSeq);
+  else if (el) wlPaintCard(state, el);
+  return true;
+}
 function renderWorkLogEntry(e) {
   var kind = Object.prototype.hasOwnProperty.call(WL_LABELS, e.kind) ? e.kind : 'narration';
   var time = typeof e.ts === 'number' && isFinite(e.ts)
@@ -14359,6 +14980,23 @@ function renderWorkLogEntry(e) {
   // of up to 256 KiB must not be read out in full.
   var detailHtml = '<div class="wl-detail" id="wl-detail-' + seq + '" aria-live="off" hidden></div>';
   var text = String(e.text || '');
+  // A tool call is one card (@2lab.ai/ui <ui-tool-call-card>, hydrated by
+  // wlHydrateCards): the call's entry carries it, its result fills it. A result
+  // whose call is on screen is never rendered on its own (wlCardHidden); one
+  // whose call is not (an older page, a log cut short) is its own card.
+  // Spec 12's 지시 / 결과 rows of a subagent scope stay rows.
+  if ((kind === 'tool' || kind === 'tool_result') && !e._role) {
+    var cardLink = kind === 'tool' && e.agentRef ? wlChildBlock(String(e.agentRef)) : '';
+    // Light-DOM text: shown until the element is defined — and for good if its
+    // module never loads (the card's shadow root has no slot, so it hides it).
+    var fbTool = e.tool ? String(e.tool) : '';
+    var fbText = kind === 'tool' ? wlToolSummary(fbTool, text) : (e.ok === false ? '실패' : '완료');
+    return '<div class="wl-entry wl-toolcall' + (kind === 'tool_result' ? ' is-orphan' : '') + '"' + seqAttr + '>'
+      + '<ui-tool-call-card class="wl-card" lang="ko" data-key="' + seq + '">'
+      + '<span class="wl-card-fallback"><span class="wl-tool-name">' + esc(fbTool) + '</span> ' + esc(fbText) + '</span>'
+      + '</ui-tool-call-card>'
+      + cardLink + '</div>';
+  }
   if (kind === 'tool' || kind === 'tool_result') {
     var fail = kind === 'tool_result' && e.ok === false;
     var mark = kind === 'tool' ? '&#x25B8;' : (fail ? '&#x2717;' : '&#x2713;');
@@ -14451,7 +15089,7 @@ function wlRovingIndex(key, i, n) {
 // The rows the arrows move between: entry rows, task-group heads and a spawn
 // row's 서브에이전트 열기 (Spec 12) that are on screen (a closed group's are not).
 function wlNavRows(list) {
-  var all = list.querySelectorAll('.wl-group-head, .wl-row, .wl-agent-link');
+  var all = list.querySelectorAll('.wl-group-head, .wl-row, .wl-agent-link, ui-tool-call-card.wl-card');
   var out = [];
   for (var i = 0; i < all.length; i++) {
     var body = all[i].closest ? all[i].closest('.wl-group-body') : null;
@@ -14460,15 +15098,30 @@ function wlNavRows(list) {
   }
   return out;
 }
+var WL_STOP_SEL = '.wl-row[tabindex="0"], .wl-group-head[tabindex="0"], .wl-agent-link[tabindex="0"], ui-tool-call-card[data-stop="1"]';
+function wlIsCard(el) {
+  return !!(el && el.tagName === 'UI-TOOL-CALL-CARD');
+}
+// A card is a stop through its header button: data-stop marks it, and its
+// data turns the button's tabindex to 0 (focusable).
+function wlMarkStop(el, on) {
+  if (wlIsCard(el)) {
+    if (on) el.setAttribute('data-stop', '1');
+    else el.removeAttribute('data-stop');
+    if (_wl) wlPaintCard(_wl, el);
+    return;
+  }
+  el.setAttribute('tabindex', on ? '0' : '-1');
+}
 function wlEnsureTabStop(list) {
-  if (!list || !list.querySelector || list.querySelector('.wl-row[tabindex="0"], .wl-group-head[tabindex="0"], .wl-agent-link[tabindex="0"]')) return;
+  if (!list || !list.querySelector || list.querySelector(WL_STOP_SEL)) return;
   var rows = wlNavRows(list);
-  if (rows.length) rows[rows.length - 1].setAttribute('tabindex', '0');
+  if (rows.length) wlMarkStop(rows[rows.length - 1], true);
 }
 function wlSetTabStop(list, row) {
-  var old = list.querySelectorAll('.wl-row[tabindex="0"], .wl-group-head[tabindex="0"], .wl-agent-link[tabindex="0"]');
-  for (var i = 0; i < old.length; i++) if (old[i] !== row) old[i].setAttribute('tabindex', '-1');
-  if (row.getAttribute('tabindex') !== '0') row.setAttribute('tabindex', '0');
+  var old = list.querySelectorAll(WL_STOP_SEL);
+  for (var i = 0; i < old.length; i++) if (old[i] !== row) wlMarkStop(old[i], false);
+  if (wlIsCard(row) ? row.getAttribute('data-stop') !== '1' : row.getAttribute('tabindex') !== '0') wlMarkStop(row, true);
 }
 
 // Rows open / close their detail on click, Enter or Space; clicks inside an
@@ -14507,11 +15160,25 @@ function wlSetTabStop(list, row) {
     if (window.getSelection && String(window.getSelection())) return;
     toggleWorkLogEntry(seqOf(row));
   });
+  // A card says it opened / closed: the list keeps that (state.open) and
+  // fetches its input and output; 다시 시도 fetches them again.
+  list.addEventListener('ui-toggle', function(e) {
+    if (!wlIsCard(e.target)) return;
+    e.preventDefault();
+    wlToggleCard(_wl, e.target, !!(e.detail && e.detail.open));
+  });
+  list.addEventListener('ui-reload', function(e) {
+    if (!wlIsCard(e.target) || !_wl || _wl.closed) return;
+    wlLoadCardDetail(_wl, Math.floor(Number(e.target.getAttribute('data-key')) || 0));
+  });
   list.addEventListener('keydown', function(e) {
     var row = e.target;
     var isHead = !!(row.classList && row.classList.contains('wl-group-head'));
     var isLink = !!(row.classList && row.classList.contains('wl-agent-link'));
-    if (!row.classList || (!isHead && !isLink && !row.classList.contains('wl-row'))) return;
+    var isCard = wlIsCard(row);
+    if (!row.classList || (!isHead && !isLink && !isCard && !row.classList.contains('wl-row'))) return;
+    // A card's header is a real button: Enter / Space are its own (ui-toggle).
+    if (isCard && (e.key === 'Enter' || e.key === ' ')) return;
     // 서브에이전트 열기 is a real button: Enter / Space click it (the delegated handler opens the agent).
     if (isLink && (e.key === 'Enter' || e.key === ' ')) return;
     if (e.key === 'Enter' || e.key === ' ') {
@@ -14532,7 +15199,7 @@ function wlSetTabStop(list, row) {
   });
   list.addEventListener('focusin', function(e) {
     var row = e.target;
-    if (row && row.classList && (row.classList.contains('wl-row') || row.classList.contains('wl-group-head') || row.classList.contains('wl-agent-link'))) wlSetTabStop(list, row);
+    if (row && row.classList && (row.classList.contains('wl-row') || row.classList.contains('wl-group-head') || row.classList.contains('wl-agent-link') || wlIsCard(row))) wlSetTabStop(list, row);
   });
 })();
 
@@ -14698,7 +15365,8 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // Conversation turns — paginated (infinite scroll: latest 30, load older on scroll-up)
   const turnsEl = document.getElementById('panel-turns');
   if (s.conversationId) {
-    turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Loading...</p>';
+    turnsEl.innerHTML = turnsSkeletonHtml();
+    turnsEl.setAttribute('aria-busy', 'true');
     landPanel(); // the answer form is in view while the turns load
     _panelTurnsLoading = true;
     var loadingConvId = s.conversationId;
@@ -14722,6 +15390,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
 
         if (!data.turns || data.turns.length === 0) {
           turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation turns</p>';
+          turnsEl.removeAttribute('aria-busy');
           landPanel();
           _panelTurnsLoading = false;
           return;
@@ -14730,6 +15399,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
         _panelTurnsHasMore = !!data.hasMore;
         _panelTurnsOldestId = data.turns[0] && data.turns[0].id;
         turnsEl.innerHTML = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
+        turnsEl.removeAttribute('aria-busy');
         attachRawToggleHandlers();
         decoratePanelTurns();
         landPanel();
@@ -14738,11 +15408,13 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
       .catch(function() {
         if (loadingGen !== _panelGen) return;
         turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Failed to load conversation</p>';
+        turnsEl.removeAttribute('aria-busy');
         landPanel();
         _panelTurnsLoading = false;
       });
   } else {
     turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation recorded</p>';
+    turnsEl.removeAttribute('aria-busy');
     landPanel();
   }
 
@@ -14874,6 +15546,328 @@ async function loadMorePanelTurns() {
   }
 }
 
+// The turns while they load: rows shaped like a user / assistant / user turn
+// (spec: skeletons, not a "Loading..." line). Decorative — the list carries
+// aria-busy while it loads.
+function turnsSkeletonHtml() {
+  function row(role, a, b) {
+    return '<div class="sk-turn ' + role + '"><div class="sk sk-avatar"></div><div class="sk-turn-body">'
+      + '<div class="sk sk-line" style="width:' + a + '%"></div><div class="sk sk-line" style="width:' + b + '%"></div></div></div>';
+  }
+  return '<div class="sk-turns" aria-hidden="true">' + row('user', 38, 72) + row('assistant', 46, 88) + row('user', 30, 64) + '</div>';
+}
+
+// ── Turns the user did not type (SSOT 2026-10-27 T1–T5) ──
+// soma-work puts some user turns there itself: a /compact, a restart resume, an
+// error retry, a goal continuation, a cron fire, a /renew save or load. Each
+// reads as one line — a badge and what it did — that opens to its facts and the
+// raw prompt. The wording each producer injects is pinned against its source by
+// dashboard-system-turns-client.test.ts. A turn a person sent (origin.by
+// 'user') is never read as one of the injected kinds; a command they may type
+// themselves (/compact, /renew) is classified whoever sent it.
+var SYS_RESTART_HEADS = ['The service was restarted and the previous task was interrupted.', '서비스가 재시작되어 이전 작업이 중단되었다.'];
+var SYS_RESUME_CONTEXT = '--- 중단 시점 컨텍스트 ---';
+var SYS_RETRY_MARK = '⚠️ 이전 시도 중 오류 발생:';
+var CP_DEFAULT_EST_MS = 150000; // a /compact runs 2–3 min (compact-state.ts) — the estimate until the conversation has one of its own
+var CP_MAX_MS = 600000; // COMPACTION_IN_PROGRESS_MAX_MS: past this a compaction without a result is dead
+var _cpTimer = 0;
+var _skillBodies = Object.create(null);
+var _skillSeq = 0;
+
+function sysOneLine(s, max) {
+  var line = String(s || '').replace(/\\s+/g, ' ').trim();
+  return line.length > max ? line.slice(0, max - 1) + '…' : line;
+}
+function sysBetween(s, open, close) {
+  var a = s.indexOf(open);
+  if (a < 0) return '';
+  var b = s.indexOf(close, a + open.length);
+  return s.slice(a + open.length, b < 0 ? s.length : b).trim();
+}
+// The "--- 중단 시점 컨텍스트 ---" lines a restart / retry resume carries (autoResumeSession).
+function sysResumeContext(raw) {
+  var out = { title: '', workflow: '', error: '' };
+  var at = raw.indexOf(SYS_RESUME_CONTEXT);
+  if (at < 0) return out;
+  raw.slice(at + SYS_RESUME_CONTEXT.length).split('\\n').forEach(function(line) {
+    var l = line.trim();
+    if (l.indexOf('세션 제목: ') === 0) out.title = l.slice('세션 제목: '.length);
+    else if (l.indexOf('워크플로우: ') === 0) out.workflow = l.slice('워크플로우: '.length);
+    else if (l.indexOf(SYS_RETRY_MARK) === 0) out.error = l.slice(SYS_RETRY_MARK.length).trim();
+  });
+  return out;
+}
+// What a user turn is when soma-work put it there: { kind, label, line, raw,
+// facts: [[term, value]] }, or null for a turn the user typed.
+function sysTurnInfo(t) {
+  if (!t || t.role !== 'user') return null;
+  var raw = decodeSlackEntities(String(t.rawContent || ''));
+  var head = raw.replace(/^\\s+/, '');
+  var by = t.origin && t.origin.by ? t.origin.by : '';
+  // A compaction turn: the recorder marks it (t.compact, from the executor —
+  // a goal objective starting with "/compact" is literal, never marked). A turn
+  // from before origins were kept is read from its text: the bare command.
+  if (t.compact || (!by && raw.trim() === '/compact')) {
+    var auto = by === 'system';
+    var who = auto ? 'soma-work — 컨텍스트가 자동 압축 지점을 넘어 /compact 실행'
+      : by === 'user' ? '사용자 요청' : '기록 없음 (출처를 저장하기 전의 턴)';
+    return { kind: 'compact', label: auto ? '자동 압축' : '압축', line: '', raw: raw, facts: [['실행', who]] };
+  }
+  if (head.indexOf('Follow this exact sequence:') === 0 && head.indexOf('skill="local:save"') >= 0) {
+    return { kind: 'renew', label: '세션 갱신', line: '컨텍스트 저장 (1/2)', raw: raw, facts: [['단계', '저장 — 다음 턴이 새 세션에서 불러옴']] };
+  }
+  if (by === 'user') return null;
+  for (var i = 0; i < SYS_RESTART_HEADS.length; i++) {
+    if (head.indexOf(SYS_RESTART_HEADS[i]) !== 0) continue;
+    var ctx = sysResumeContext(raw);
+    var facts = [];
+    if (ctx.title) facts.push(['세션 제목', ctx.title]);
+    if (ctx.workflow) facts.push(['워크플로우', ctx.workflow]);
+    if (ctx.error) {
+      facts.unshift(['이전 오류', ctx.error]);
+      return { kind: 'retry', label: '자동 재시도', line: '오류 뒤 자동 재개 · ' + sysOneLine(ctx.error, 90), raw: raw, facts: facts };
+    }
+    facts.unshift(['원인', '서비스 재시작으로 중단된 작업']);
+    return { kind: 'restart', label: '시스템 재시작', line: '중단된 작업 자동 재개' + (ctx.title ? ' · ' + sysOneLine(ctx.title, 60) : ''), raw: raw, facts: facts };
+  }
+  var g = /^\\[goal-continuation\\]\\s*/.exec(head);
+  if (g) {
+    var n = /Auto-continuation (\\d+)\\/(\\d+)/.exec(head);
+    var reason = sysBetween(raw, '<previous-eval-reason>', '</previous-eval-reason>');
+    var gf = [];
+    if (n) gf.push(['회차', n[1] + ' / ' + n[2]]);
+    if (reason) gf.push(['직전 평가에서 남은 일', reason]);
+    return { kind: 'goal', label: n ? 'Goal #' + n[1] + '/' + n[2] : 'Goal', line: reason ? '직전 평가: ' + sysOneLine(reason, 90) : 'Goal 자동 계속', raw: raw, facts: gf };
+  }
+  var c = /^\\[cron:([^\\]]+)\\]\\s*/.exec(head);
+  if (c) {
+    var prompt = head.slice(c[0].length);
+    return { kind: 'cron', label: '크론', line: c[1] + (prompt ? ' · ' + sysOneLine(prompt, 80) : ''), raw: raw, facts: [['작업', c[1]]] };
+  }
+  if (head.indexOf("Use 'local:load' skill with this saved context:") === 0) {
+    var instr = sysBetween(raw, '<user-instruction>', '</user-instruction>');
+    var lf = [['단계', '불러오기 (2/2)']];
+    if (instr) lf.push(['이어서 할 지시', instr]);
+    return { kind: 'renew', label: '세션 갱신', line: '저장된 컨텍스트 불러오기' + (instr ? ' · ' + sysOneLine(instr, 70) : ''), raw: raw, facts: lf };
+  }
+  if (by === 'system') return { kind: 'system', label: '자동 입력', line: sysOneLine(head, 90), raw: raw, facts: [] };
+  return null;
+}
+function cpClock(ms) {
+  var s = Math.max(0, Math.round(toNum(ms) / 1000));
+  return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+}
+// A /compact turn's compaction. done: its result came. live: no result yet and
+// younger than a compaction can run — cpTick confirms it is still the latest
+// turn of a working session. unknown: no result and no longer running (from
+// before results were kept, or it never ended).
+function cpState(t, now, notLast) {
+  var c = t.compact || {};
+  var known = toNum(c.estimateMs) > 0;
+  var st = { phase: 'unknown', c: c, start: toNum(t.timestamp), est: known ? toNum(c.estimateMs) : CP_DEFAULT_EST_MS, estKnown: known };
+  if (c.endedAt) st.phase = 'done';
+  else if (!notLast && (now || Date.now()) - st.start < CP_MAX_MS) st.phase = 'live';
+  return st;
+}
+function cpProgressHtml(elapsed, est) {
+  var over = elapsed > est;
+  var pct = Math.max(0, Math.min(99, Math.floor((elapsed / est) * 100)));
+  // The times first: on a narrow row the ellipsis cuts the overdue words before them.
+  return '<span class="sys-line"><span class="cp-time"><span class="cp-verb">압축 중 · </span>' + cpClock(elapsed) + ' / 약 ' + cpClock(est) + '</span>'
+    + (over ? '<span class="cp-over"> · 예상보다 오래 걸리는 중</span>' : '') + '</span>'
+    // Decoration: inside <summary> (a button) AT drops a progressbar role — the
+    // line's own text carries elapsed / estimate and the percentage.
+    + '<span class="cp-bar' + (over ? ' is-over' : '') + '" aria-hidden="true"><i style="width:' + pct + '%"></i></span>'
+    + (over ? '' : '<span class="cp-pct">' + pct + '%</span>');
+}
+// The one line of a /compact turn: progress while it runs, its numbers once done.
+function cpLineHtml(info, st, now) {
+  if (st.phase === 'live') return cpProgressHtml((now || Date.now()) - st.start, st.est);
+  var parts = [info.label + ' 처리'];
+  var c = st.c;
+  if (st.phase === 'done' && c.preTokens != null && c.postTokens != null) parts.push(formatTokens(c.preTokens) + ' → ' + formatTokens(c.postTokens) + ' 토큰');
+  if (st.phase === 'done' && toNum(c.durationMs) > 0) parts.push(formatDuration(c.durationMs));
+  return '<span class="sys-line">' + esc(parts.join(' · ')) + '</span>';
+}
+function cpFacts(st) {
+  var c = st.c;
+  var f = [['상태', st.phase === 'done' ? '완료' : st.phase === 'live' ? '진행 중' : '결과 기록 없음', 'cp-state']];
+  if (st.phase === 'done' && c.preTokens != null && c.postTokens != null) {
+    var pre = toNum(c.preTokens);
+    var cut = pre > 0 ? Math.round((1 - toNum(c.postTokens) / pre) * 100) : 0;
+    f.push(['압축 전 → 후', pre.toLocaleString('en-US') + ' → ' + toNum(c.postTokens).toLocaleString('en-US') + ' 토큰' + (pre > 0 ? ' (−' + cut + '%)' : '')]);
+  }
+  if (st.phase === 'done' && toNum(c.durationMs) > 0) f.push(['걸린 시간', formatDuration(c.durationMs)]);
+  f.push(['예상 시간', formatDuration(st.est) + (st.estKnown ? ' (직전 압축 기준)' : ' (기본값)')]);
+  if (c.trigger) f.push(['SDK trigger', c.trigger]);
+  if (c.endedAt) f.push(['끝난 시각', new Date(toNum(c.endedAt)).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })]);
+  return f;
+}
+function sysFactsHtml(facts) {
+  if (!facts.length) return '';
+  return '<dl class="sys-facts">' + facts.map(function(f) {
+    return '<dt>' + esc(f[0]) + '</dt><dd' + (f[2] ? ' class="' + f[2] + '"' : '') + '>' + esc(f[1]) + '</dd>';
+  }).join('') + '</dl>';
+}
+// One line: who · when · badge · what it did. Opens (a native disclosure) to its
+// facts and the raw prompt.
+function renderSysTurn(t, info, attrs, time, initial, now, notLast, mediaHtml) {
+  var st = info.kind === 'compact' ? cpState(t, now, notLast) : null;
+  var live = st && st.phase === 'live';
+  var facts = st ? info.facts.concat(cpFacts(st)) : info.facts;
+  var line = st ? '<span class="cp-slot">' + cpLineHtml(info, st, now) + '</span>' : '<span class="sys-line">' + esc(info.line) + '</span>';
+  if (live) cpEnsureTicker();
+  return '<div class="turn user is-sys" data-sys="' + info.kind + '"' + attrs
+    + (live ? ' data-cp-live="1" data-cp-start="' + st.start + '" data-cp-est="' + st.est + '"' : '') + '>'
+    + '<div class="turn-avatar user-avatar">' + esc(initial) + '</div>'
+    + '<div class="turn-body"><details class="sys-turn"><summary class="sys-row"><span class="sys-row-in">'
+    + '<span class="turn-name">' + esc(t.userName || 'User') + '</span><span class="turn-time">' + esc(time) + '</span>'
+    + '<span class="sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>' + line
+    + '<span class="sys-chev" aria-hidden="true"></span></span></summary><div class="sys-detail">' + (mediaHtml || '') + sysFactsHtml(facts)
+    + '<div class="sys-raw-h">원본 프롬프트</div><pre class="sys-raw">' + esc(info.raw) + '</pre></div></details></div></div>';
+}
+function cpEnsureTicker() {
+  if (_cpTimer || typeof setInterval !== 'function') return;
+  _cpTimer = setInterval(cpTick, 1000);
+}
+// Every second while a compaction runs in the open panel: its elapsed time and
+// progress. It stops being live once a later turn landed, the session stopped
+// working, or it outlived any compaction — then it says no result was kept.
+function cpTick() {
+  var nodes = document.querySelectorAll('#panel-turns .turn[data-cp-live]');
+  if (!nodes.length) {
+    clearInterval(_cpTimer);
+    _cpTimer = 0;
+    return;
+  }
+  // Turns only: the 응답 작성 중 row (.ans-pending, no data-ts) follows a running
+  // /compact as the list's last child (syncAnsPending reads turns the same way).
+  var all = document.querySelectorAll('#panel-turns > .turn[data-ts]');
+  var last = all.length ? all[all.length - 1] : null;
+  // The board refills the cache in one pass: a session missing from a loaded
+  // board is not running; before the board's first load it is undecided.
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var boardLoaded = Object.keys(_sessionCache).length > 0;
+  var working = s ? s.activityState === 'working' : !boardLoaded;
+  var now = Date.now();
+  for (var i = 0; i < nodes.length; i++) {
+    var node = nodes[i];
+    var start = toNum(node.getAttribute('data-cp-start'));
+    var est = toNum(node.getAttribute('data-cp-est')) || CP_DEFAULT_EST_MS;
+    var slot = node.querySelector('.cp-slot');
+    if (node === last && working && now - start < CP_MAX_MS) {
+      if (slot) slot.innerHTML = cpProgressHtml(now - start, est);
+      continue;
+    }
+    // Ended without a result: the line and 상태 a fresh render of it shows.
+    node.removeAttribute('data-cp-live');
+    var badge = node.querySelector('.sys-badge');
+    var state = node.querySelector('.cp-state');
+    if (slot) slot.innerHTML = '<span class="sys-line">' + esc((badge ? badge.textContent : '압축') + ' 처리') + '</span>';
+    if (state) state.textContent = '결과 기록 없음';
+  }
+}
+// A rough token count for a skill body: ~4 ASCII characters or 1 other
+// character (Hangul, CJK, emoji) per token. Labeled an estimate wherever shown.
+function estimateTokens(s) {
+  var str = String(s || '');
+  var ascii = 0;
+  for (var i = 0; i < str.length; i++) if (str.charCodeAt(i) < 128) ascii++;
+  return Math.ceil(ascii / 4 + (str.length - ascii));
+}
+// The <invoked_skills> block a $skill / autoskill appends to the instruction
+// (skill-force-handler.ts, autoskill-fire.ts): the user's own text, and each
+// skill as { name, body, tokens }.
+function splitInvokedSkills(raw) {
+  var s = String(raw == null ? '' : raw);
+  var OPEN = '<invoked_skills>';
+  var CLOSE = '</invoked_skills>';
+  var text = '';
+  var skills = [];
+  var from = 0;
+  // Every closed block (a session's first turn carries two: autoskill, then the
+  // deferred $skill). Each block starts at the last <invoked_skills> before its
+  // closing tag, so a literal mention in the words stays words; so does one
+  // never closed.
+  for (;;) {
+    var end = s.indexOf(CLOSE, from);
+    if (end < 0) {
+      text += s.slice(from);
+      break;
+    }
+    var at = s.lastIndexOf(OPEN, end);
+    if (at < from) {
+      // A stray closing tag in the words: words, and look on past it.
+      text += s.slice(from, end + CLOSE.length);
+      from = end + CLOSE.length;
+      continue;
+    }
+    text += s.slice(from, at);
+    var inner = s.slice(at + OPEN.length, end);
+    var before = skills.length;
+    var i = 0;
+    while (i < inner.length) {
+      var m = /<([^\\s<>\\/]+)>/.exec(inner.slice(i));
+      if (!m) break;
+      var name = m[1];
+      var bodyAt = i + m.index + m[0].length;
+      var closeTag = '</' + name + '>';
+      var bodyEnd = inner.indexOf(closeTag, bodyAt);
+      if (bodyEnd < 0) {
+        // A tag never closed is not a skill — skip it, keep reading.
+        i = bodyAt;
+        continue;
+      }
+      var body = inner.slice(bodyAt, bodyEnd).replace(/^\\n+|\\s+$/g, '');
+      skills.push({ name: name, body: body, tokens: estimateTokens(body) });
+      i = bodyEnd + closeTag.length;
+    }
+    // A closed block that held no skill is words too.
+    if (skills.length === before) text += s.slice(at, end + CLOSE.length);
+    from = end + CLOSE.length;
+  }
+  return { text: skills.length ? text.replace(/\\s+$/, '') : s, skills: skills };
+}
+// The skills a turn invoked, as badges (name · estimated tokens). A badge opens
+// that skill's body under the row — one at a time; the body is written on
+// first open, not with every turn.
+function skillBadgesHtml(key, skills) {
+  if (!skills.length) return '';
+  var base = 'skd-' + String(key || 'n' + (++_skillSeq)).replace(/[^A-Za-z0-9_-]/g, '');
+  var badges = '';
+  var panes = '';
+  for (var i = 0; i < skills.length; i++) {
+    var id = base + '-' + i;
+    _skillBodies[id] = skills[i];
+    badges += '<button type="button" class="skill-badge" aria-expanded="false" aria-controls="' + id + '" data-skill="' + id + '" onclick="skillToggle(this)"'
+      + ' title="토큰 수는 추정치 — 영문 4자 또는 그 밖의 글자 1자를 1토큰으로 셈">'
+      + '<span class="skill-name">' + esc(skills[i].name) + '</span><span class="skill-tok">≈' + formatTokens(skills[i].tokens) + ' tokens</span></button>';
+    panes += '<div class="skill-detail" id="' + id + '" hidden></div>';
+  }
+  return '<div class="skill-badges" role="group" aria-label="활성화된 스킬 ' + skills.length + '개">' + badges + '</div>' + panes;
+}
+function skillToggle(btn) {
+  var id = btn.getAttribute('data-skill');
+  var opening = btn.getAttribute('aria-expanded') !== 'true';
+  var row = btn.parentNode;
+  var open = row ? row.querySelectorAll('.skill-badge[aria-expanded="true"]') : [];
+  for (var i = 0; i < open.length; i++) {
+    open[i].setAttribute('aria-expanded', 'false');
+    var pane = document.getElementById(open[i].getAttribute('data-skill'));
+    if (pane) pane.hidden = true;
+  }
+  if (!opening) return;
+  var d = document.getElementById(id);
+  var sk = _skillBodies[id];
+  if (!d || !sk) return;
+  if (!d.firstChild) {
+    d.innerHTML = '<div class="skill-detail-h"><span class="skill-name">' + esc(sk.name) + '</span><span class="skill-tok">≈' + formatTokens(sk.tokens) + ' tokens (추정)</span></div>'
+      + '<pre class="skill-body">' + esc(sk.body) + '</pre>';
+  }
+  d.hidden = false;
+  btn.setAttribute('aria-expanded', 'true');
+}
+
 function renderTurn(t, _idx, _arr, convId) {
   const time = new Date(t.timestamp).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit' });
   const initial = (t.userName || 'U').charAt(0).toUpperCase();
@@ -14885,14 +15879,21 @@ function renderTurn(t, _idx, _arr, convId) {
     var atts = Array.isArray(t.attachments) ? t.attachments : [];
     if (atts.length) umRegister(umCid, atts, t);
     var mediaHtml = atts.length ? renderUserMedia(umCid, atts) : '';
-    var textHtml = t.rawContent
-      ? '<div class="turn-content">' + esc(decodeSlackEntities(t.rawContent.slice(0, 500))) + (t.rawContent.length > 500 ? '...' : '') + '</div>'
+    // SSOT 2026-10-27 T1 — a turn soma-work put there reads as one line; its
+    // files (the message the auto-compact intercepted) open with it. A batch
+    // tells whether a later turn follows (then a /compact is not running).
+    var sys = sysTurnInfo(t);
+    if (sys) return renderSysTurn(t, sys, turnIdAttr, time, initial, 0, !!(_arr && typeof _idx === 'number' && _idx < _arr.length - 1), mediaHtml);
+    // T5 — an <invoked_skills> block becomes badges under the words.
+    var said = splitInvokedSkills(decodeSlackEntities(t.rawContent || ''));
+    var textHtml = said.text
+      ? '<div class="turn-content">' + esc(said.text.slice(0, 500)) + (said.text.length > 500 ? '...' : '') + '</div>'
       : '';
     return '<div class="turn user"' + turnIdAttr + '>'
       + '<div class="turn-avatar user-avatar">' + initial + '</div>'
       + '<div class="turn-body">'
       + '<div class="turn-header"><span class="turn-name">' + esc(t.userName || 'User') + '</span><span class="turn-time">' + time + '</span></div>'
-      + mediaHtml + textHtml
+      + mediaHtml + textHtml + skillBadgesHtml(t.id, said.skills)
       + '</div></div>';
   } else {
     const title = t.summaryTitle ? '<div class="turn-summary-title">' + esc(t.summaryTitle) + '</div>' : '';
@@ -14949,7 +15950,11 @@ function updateTurnInPanel(existingEl, turn) {
   if (newEl) {
     // re-ai-answer D14 — an answer the reader opened stays open (from the cache).
     var wasOpen = !!existingEl.querySelector('.turn-raw-details[open]');
+    // SSOT 2026-10-27 — so does a one-line row (a /compact result landing).
+    var sysOpen = !!existingEl.querySelector('.sys-turn[open]');
     existingEl.replaceWith(newEl);
+    var sysEl = sysOpen ? newEl.querySelector('.sys-turn') : null;
+    if (sysEl) sysEl.open = true;
     attachRawToggleHandlers();
     var answer = wasOpen ? newEl.querySelector('.turn-raw-details') : null;
     if (answer) {
@@ -15598,6 +16603,7 @@ async function sendCommand() {
     timestamp: Date.now(),
     userName: 'You',
     rawContent: msg,
+    origin: { by: 'user' },
     _optimistic: true,
   };
   appendTurnToPanel(optimisticTurn);
@@ -18955,7 +19961,8 @@ function syncTopbarBottom() {
 
 // ── Init ──
 loadUsers();
-loadSessions().then(function() { loadStats(); });
+loadSessions();
+loadStats();
 connectWs();
 ntInit();
 setInterval(loadSessions, 30000);

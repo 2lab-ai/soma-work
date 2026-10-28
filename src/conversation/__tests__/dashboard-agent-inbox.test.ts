@@ -224,7 +224,9 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
   });
 
   it('a WS session_update re-attaches sibling-instance cards from the last poll', () => {
-    expect(fnBody('connectWs')).toContain('renderBoard(mergeSiblingCards(msg.board))');
+    // The push goes through paintPushedBoard, which merges once the first poll has painted.
+    expect(fnBody('connectWs')).toContain('paintPushedBoard(msg.board)');
+    expect(fnBody('paintPushedBoard')).toContain('renderBoard(mergeSiblingCards(board))');
     expect(fnBody('loadSessions')).toContain('_lastPolledBoard = data.board;');
   });
 
