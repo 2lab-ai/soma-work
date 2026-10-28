@@ -67,6 +67,15 @@ describe('resolveContextWindow — catalog overlay', () => {
     expect(resolveContextWindow('gpt-6-astra')).toBe(272_000);
   });
 
+  it('keeps gpt-6.1-sol on its declared 272k window when llmux advertises it with the `sol` alias', () => {
+    modelCatalog.__testSeed([
+      GROK,
+      { id: 'gpt-6.1-sol', aliases: ['sol'], name: 'GPT-6.1 Sol', efforts: [], max_context: 400_000, group: 'codex' },
+    ]);
+    expect(resolveContextWindow('gpt-6.1-sol')).toBe(272_000);
+    expect(resolveContextWindow('gpt-6.1-sol[1m]')).toBe(1_000_000);
+  });
+
   it('ignores null / non-positive catalog windows', () => {
     modelCatalog.__testSeed([{ ...GROK, max_context: null }]);
     expect(resolveContextWindow('grok-4.5')).toBe(200_000);

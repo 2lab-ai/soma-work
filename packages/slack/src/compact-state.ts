@@ -26,7 +26,7 @@
 
 export interface CompactDispatchPayload {
   /** `verbatimPrompt`: the text is a goal objective — replayed as the user's words. */
-  ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean };
+  ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean; hostTurn?: boolean };
   text: string;
 }
 
@@ -52,7 +52,7 @@ export interface CompactStateSession {
    */
   compactTurnActive?: boolean;
   pendingUserText?: string | null;
-  pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string } | null;
+  pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string; hostTurn?: boolean } | null;
   /**
    * Deferred post-compact re-dispatch queue, in arrival order. Multiple
    * entries occur when different users (or non-contiguous messages) arrive
@@ -110,23 +110,31 @@ export function isCompactionInProgress(session: CompactStateSession, nowMs: numb
  */
 export function stashUserMessageDuringCompaction(
   session: CompactStateSession,
-  ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean },
+  ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean; hostTurn?: boolean },
   text: string,
 ): void {
   if (!text) return;
   const queue = (session.compactPendingDispatches ??= []);
   // A goal objective (`verbatimPrompt`) always gets its own entry: merged with
   // ordinary text, one of the two would be replayed under the wrong rules.
-  if (ctx.verbatimPrompt) {
+  // So does a host turn (`hostTurn`, a goal continuation or resume soma-work
+  // injected): merged, a person's words would be recorded as soma-work's or
+  // soma-work's prompt as the person's.
+  if (ctx.verbatimPrompt || ctx.hostTurn) {
     queue.push({ ctx, text });
     return;
   }
   const last = queue[queue.length - 1];
-  if (last && last.ctx.user === ctx.user && !last.ctx.verbatimPrompt) {
+  if (last && last.ctx.user === ctx.user && !last.ctx.verbatimPrompt && !last.ctx.hostTurn) {
     last.text += `\n${text}`;
     return;
   }
-  if (queue.length === 0 && session.pendingUserText && session.pendingEventContext?.user === ctx.user) {
+  if (
+    queue.length === 0 &&
+    session.pendingUserText &&
+    session.pendingEventContext?.user === ctx.user &&
+    !session.pendingEventContext.hostTurn
+  ) {
     session.pendingUserText += `\n${text}`;
     return;
   }

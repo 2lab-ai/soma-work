@@ -136,11 +136,11 @@ export class EnvSkillPermissionActionHandler {
       markRequestHandled(requestId);
 
       await this.closePrompts(req, respond, `✅ <@${clickerId}> — ${grantLabel}`);
-      await this.notifyRequester(
+      const noticeTs = await this.notifyRequester(
         req,
         `✅ <@${req.requesterId}> — 어드민 <@${clickerId}>님이 환경 스킬 \`${req.skillName}\` 실행을 허용했습니다. 이어서 실행합니다.`,
       );
-      await this.fulfill(req);
+      await this.fulfill(req, noticeTs);
       this.logger.info('env_skill_perm: granted + fulfilled', {
         kind,
         requestId,
@@ -158,11 +158,24 @@ export class EnvSkillPermissionActionHandler {
     }
   }
 
-  /** Send the requester's ask again as them, now that the gate lets it through. */
-  private async fulfill(req: PermissionRequest): Promise<void> {
+  /**
+   * Send the requester's ask again as them, now that the gate lets it through.
+   *
+   * The turn rides on the "이어서 실행합니다" notice: a real message in the requester's thread,
+   * so when the session is still running and the turn is queued, its queue identity and its
+   * controls land on something the requester can see (`autoResumeSession` does the same). With
+   * no notice, `handleMessage` mints a ts.
+   */
+  private async fulfill(req: PermissionRequest, noticeTs: string | undefined): Promise<void> {
     if (!req.originalText) return;
     await this.ctx.messageHandler(
-      { user: req.requesterId, channel: req.channel, thread_ts: req.threadTs, ts: '', text: req.originalText },
+      {
+        user: req.requesterId,
+        channel: req.channel,
+        thread_ts: req.threadTs,
+        ts: noticeTs ?? '',
+        text: req.originalText,
+      },
       this.createSayFn(req.channel),
     );
   }
@@ -183,13 +196,16 @@ export class EnvSkillPermissionActionHandler {
     }
   }
 
-  private async notifyRequester(req: PermissionRequest, text: string): Promise<void> {
-    if (!req.channel) return;
-    await this.ctx.slackApi
+  /** Tell the requester in their thread; returns the notice's ts when it was posted. */
+  private async notifyRequester(req: PermissionRequest, text: string): Promise<string | undefined> {
+    if (!req.channel) return undefined;
+    const posted = await this.ctx.slackApi
       .postMessage(req.channel, text, { threadTs: req.threadTs })
-      .catch((err: unknown) =>
-        this.logger.warn('env_skill_perm: requester notify failed', { err: (err as Error)?.message ?? String(err) }),
-      );
+      .catch((err: unknown) => {
+        this.logger.warn('env_skill_perm: requester notify failed', { err: (err as Error)?.message ?? String(err) });
+        return undefined;
+      });
+    return posted?.ts || undefined;
   }
 
   private async ephemeral(respond: RespondFn, text: string): Promise<void> {

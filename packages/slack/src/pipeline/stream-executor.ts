@@ -581,7 +581,7 @@ interface StreamExecutorDeps {
    * by the auto-compact interception path (AC3 end-to-end).
    */
   dispatchPendingUserMessage?: (
-    ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean },
+    ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean; hostTurn?: boolean },
     text: string,
     opts?: { compactRedispatch?: boolean },
   ) => Promise<void>;
@@ -644,6 +644,12 @@ interface StreamExecuteParams {
   sourceChannel?: string;
   /** True when the prompt originates from a real user message (not auto-resume, continuation, /renew load, etc.) */
   isUserInput?: boolean;
+  /**
+   * A host turn (goal continuation, resume) replayed after a compaction
+   * through the user-message path (`routeContext.hostTurn`). Changes nothing
+   * but the recorded origin: the turn is soma-work's, not the person's.
+   */
+  hostTurn?: boolean;
   /**
    * The text is a goal objective dispatched as the goal's opening turn: never
    * forward it to the SDK as a local slash command, whatever it starts with.
@@ -1571,6 +1577,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // text for `/compact` and parked the words on `pendingUserText`.
         const compactTurn = isSlashCommand && trimmedText.split(/\s/)[0] === '/compact';
         const autoCompactTurn = compactTurn && !!session.pendingUserText;
+        const by = params.isUserInput === false || autoCompactTurn || params.hostTurn === true ? 'system' : 'user';
         recordUserTurn(
           session.conversationId,
           text || '',
@@ -1578,12 +1585,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           user,
           attachments?.length ? attachments : undefined,
           {
-            origin: { by: params.isUserInput === false || autoCompactTurn ? 'system' : 'user' },
+            origin: { by },
             ...(compactTurn ? { compact: true } : {}),
           },
         );
         const names = processedFiles.map((f) => f.name).join(' · ');
-        emitWorkLog({ kind: 'instruction', text: names ? `${text || ''}${text ? '\n' : ''}📎 ${names}` : text || '' });
+        // The work log's instruction says the same (SSOT 2026-10-28): who sent it, and a compaction turn.
+        emitWorkLog({
+          kind: 'instruction',
+          text: names ? `${text || ''}${text ? '\n' : ''}📎 ${names}` : text || '',
+          by,
+          ...(compactTurn ? { compactTurn: true as const } : {}),
+        });
       }
 
       // Store user instruction for SSOT tracking (only real user input, not auto-resume/continuation/renew)
