@@ -146,7 +146,7 @@ describe('C1 — panel user turn: the instruction with its files', () => {
 describe('C2 — open card 지시 row', () => {
   it('shows compact thumbnails, and a files-only instruction reads as "첨부 N개" — not "기록된 지시 없음"', () => {
     const fns = load<{ renderCardIo(s: unknown): string; umRegister: Api['umRegister'] }>(
-      [...BASE_FNS, 'renderCardIo'],
+      [...BASE_FNS, 'ioInstructionHtml', 'renderCardIo'],
       BASE_VARS,
       {
         _ioCache: {
