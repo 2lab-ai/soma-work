@@ -2868,7 +2868,14 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'openPanel',
         'turnsSkeletonHtml',
         'renderPanelPermission',
-        'renderPermissionBlock',
+        // affectUI batch 1: the prompts are <ui-approval-card> slots (none in this harness).
+        'acPermissionsHtml',
+        'acSlotHtml',
+        'acQuestionId',
+        'acQuestionHtml',
+        'acHydrate',
+        'apSafeFocus',
+        'apAnnounce',
         'renderPanelQuestion',
         // re-agent-run D9: both slots keep the 입력 필요 head in step.
         'renderPanelNeedsHead',
@@ -2903,6 +2910,10 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
       {
         document: { getElementById: el },
         fetch: fetchImpl,
+        // The single-choice question's approval-card slot is written by a morph.
+        morphInnerHtml: (e: { innerHTML: string }, h: string) => {
+          e.innerHTML = h;
+        },
         _sessionCache: cache,
         currentUserId: 'U1',
         READ_ONLY_MSG: 'read-only',
@@ -2989,6 +3000,31 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     const firstTurnTop = AREA_TOP + 420 + WL_HEADER - p.scroll.scrollTop;
     const step = p.m.panelOlderStep(p.m.armed(), p.m.olderTurnsZone(firstTurnTop, AREA_TOP), true);
     expect(step).toEqual({ load: false, armed: false });
+  });
+
+  // affectUI batch 1: the single-choice question is a <ui-approval-card> in the same slot — the
+  // opening lands on it as on the form (the brief's suspected lost landing anchor: it is not lost).
+  it('a single-choice question (an approval card) is where the panel lands, before and after the turns arrive', async () => {
+    const single = waitingMulti({
+      pendingQuestion: {
+        type: 'user_choice',
+        question: '배포할까요?',
+        choices: [
+          { id: '1', label: '지금' },
+          { id: '2', label: '나중에' },
+        ],
+        recommendedChoiceId: '1',
+      },
+    });
+    const p = page({ session: single, prevScrollTop: 3000, turns: 'held' });
+    p.m.openPanel(KEY);
+    expect(p.question.innerHTML).toContain('<ui-approval-card lang="ko" data-ac-key="' + KEY + '" data-ac-kind="question">');
+    expect(p.formInView()).toBe(true);
+    p.release();
+    await flush();
+    await flush();
+    expect(p.formInView()).toBe(true);
+    expect(p.m.stick()).toBe(false);
   });
 
   it('lands on the form even when the panel was left scrolled down by the previous opening', async () => {
