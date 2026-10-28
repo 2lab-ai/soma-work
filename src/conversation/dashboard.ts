@@ -5455,6 +5455,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .wl-instruction { background: rgba(77,157,224,0.08); border-left: 2px solid var(--accent); border-radius: 4px; padding: 6px 8px; margin: 4px 0; }
 .wl-instruction .wl-label { color: var(--accent); }
+.wl-instruction.is-sys { background: transparent; border-left-color: var(--border); padding: 3px 8px; }
+.wl-instruction.is-sys .wl-head { align-items: center; gap: 8px; min-width: 0; font-size: 12px; }
+.wl-sys-line { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
+.wl-entry > .skill-badges { margin: 4px 0 2px; }
+.wl-detail > .sys-facts { margin: 6px 0 8px; }
 .wl-final { border-left: 2px solid var(--green); padding: 4px 8px; margin: 4px 0; }
 .wl-final .wl-label { color: var(--green); }
 .wl-notice .wl-row > .wl-text { color: var(--text-tertiary); font-style: italic; }
@@ -15104,6 +15109,82 @@ function wlEntryBySeq(state, seq) {
   return null;
 }
 // What the row stands for, in full — for an entry without stored raw output.
+// An instruction entry as the conversation's turn: who sent it (by, kept
+// since SSOT 2026-10-28) and a compaction turn; older entries carry neither
+// and are read from their text.
+function wlInstructionTurn(e, text) {
+  return {
+    role: 'user',
+    rawContent: text,
+    origin: e.by === 'user' || e.by === 'system' ? { by: e.by } : undefined,
+    compact: e.compactTurn === true ? {} : undefined,
+  };
+}
+// The facts an opened instruction row shows above its raw prompt — '' for a
+// person's instruction and every other entry.
+function wlEntryFactsHtml(e) {
+  if (!e || e.kind !== 'instruction') return '';
+  var info = sysTurnInfo(wlInstructionTurn(e, decodeSlackEntities(String(e.text || ''))));
+  return info ? sysFactsHtml(info.facts) : '';
+}
+// An instruction text cut inside its <invoked_skills> block: the words before
+// it, the names of the skills that start before the cut (in order, the last
+// one cut), and that more may follow. null when there is no such block.
+function wlCutSkills(text) {
+  var at = text.indexOf('<invoked_skills>');
+  if (at < 0) return null;
+  var inner = text.slice(at + '<invoked_skills>'.length);
+  var names = [];
+  var i = 0;
+  for (;;) {
+    var m = /^\\s*<([^\\s<>\\/]+)>/.exec(inner.slice(i));
+    if (!m) break;
+    names.push(m[1]);
+    var close = inner.indexOf('</' + m[1] + '>', i + m[0].length);
+    if (close < 0) return { words: text.slice(0, at), names: names, more: true };
+    i = close + m[1].length + 3;
+  }
+  if (!names.length) return null;
+  return { words: text.slice(0, at), names: names, more: !/^\\s*<\\/invoked_skills>/.test(inner.slice(i)) };
+}
+function wlCutSkillsHtml(seq, cut) {
+  var badge = function(name, label) {
+    return '<button type="button" class="skill-badge" aria-expanded="false" data-wl-seq="' + seq + '" data-wl-skill="' + escAttr(name) + '" onclick="wlSkillOpen(this)"'
+      + ' title="원본에서 스킬 본문과 토큰 수를 불러옵니다"><span class="skill-name">' + label + '</span></button>';
+  };
+  var html = '';
+  for (var i = 0; i < cut.names.length; i++) html += badge(cut.names[i], esc(cut.names[i]));
+  if (cut.more) html += badge('', '…');
+  return '<div class="skill-badges" role="group" aria-label="활성화된 스킬">' + html + '</div>';
+}
+// A badge of a cut entry: load the stored original once, redraw the badges
+// with every skill and its estimated tokens, and open the one clicked.
+function wlSkillOpen(btn) {
+  var st = _wl;
+  if (!st || st.closed || !btn) return Promise.resolve();
+  var seq = Math.floor(Number(btn.getAttribute('data-wl-seq')) || 0);
+  var want = btn.getAttribute('data-wl-skill') || '';
+  var group = btn.parentNode;
+  btn.setAttribute('aria-busy', 'true');
+  return wlRawLoad(st, seq, wlFetchJson).then(function(r) {
+    btn.removeAttribute('aria-busy');
+    if (st !== _wl) return;
+    var skills = r && r.status === 'ok' ? splitInvokedSkills(decodeSlackEntities(r.raw)).skills : [];
+    if (!skills.length) {
+      btn.setAttribute('title', '원본을 불러오지 못했습니다');
+      return;
+    }
+    if (group) group.outerHTML = skillBadgesHtml('wl' + seq, skills);
+    var list = document.querySelectorAll('[data-skill^="skd-wl' + seq + '-"]');
+    for (var i = 0; i < list.length; i++) {
+      var n = list[i].querySelector('.skill-name');
+      if (want && n && n.textContent === want) {
+        skillToggle(list[i]);
+        break;
+      }
+    }
+  });
+}
 function wlFullText(e) {
   var text = String(e.text || '');
   return e.kind === 'instruction' ? decodeSlackEntities(text) : text;
@@ -15114,7 +15195,7 @@ function paintWorkLogDetail(state, seq, result) {
   if (state !== _wl || state.closed || !state.open || !state.open.has(seq)) return;
   var el = wlEntryEl(seq);
   var detail = el && el.querySelector('.wl-detail');
-  if (detail) detail.innerHTML = renderWorkLogDetail(result);
+  if (detail) detail.innerHTML = wlEntryFactsHtml(wlEntryBySeq(state, seq)) + renderWorkLogDetail(result);
 }
 function loadWorkLogDetail(state, seq) {
   var entry = wlEntryBySeq(state, seq);
@@ -15719,7 +15800,33 @@ function renderWorkLogEntry(e) {
       + '<span class="wl-text" title="' + escAttr(text) + '">' + esc(shown) + '</span>'
       + timeHtml + '</div>' + link + detailHtml + '</div>';
   }
-  if (kind === 'instruction') text = decodeSlackEntities(text);
+  if (kind === 'instruction') {
+    text = decodeSlackEntities(text);
+    // A turn soma-work sent reads as the conversation's one line (SSOT
+    // 2026-10-28): badge, what it did, time. The row opens to its facts and
+    // the raw prompt (wlEntryFactsHtml + the stored original).
+    var info = sysTurnInfo(wlInstructionTurn(e, text));
+    if (info) {
+      return '<div class="wl-entry wl-instruction is-sys"' + seqAttr + '>' + rowOpen()
+        + '<div class="wl-head"><span class="sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>'
+        + '<span class="wl-sys-line">' + esc(info.kind === 'compact' ? '컨텍스트 압축 (/compact)' : info.line) + '</span>' + timeHtml + '</div>'
+        + '</div>' + detailHtml + '</div>';
+    }
+    // A person's: the words on the row, the skills it invoked as badges beside
+    // it — outside the row, whose click opens the original.
+    var split = splitInvokedSkills(text);
+    // The stored text is cut at 4,000 characters, so a skill block is usually
+    // cut too: the words, and the skill names readable before the cut; the
+    // badges load the stored original (wlSkillOpen).
+    var cut = split.skills.length ? null : wlCutSkills(text);
+    if (split.skills.length || cut) {
+      var words = cut ? cut.words : split.text;
+      return '<div class="wl-entry wl-instruction"' + seqAttr + '>' + rowOpen()
+        + '<div class="wl-head"><span class="wl-label">' + WL_LABELS.instruction + '</span>' + timeHtml + '</div>'
+        + (words.trim() ? '<div class="wl-text">' + esc(words.replace(/\\s+$/, '')) + '</div>' : '')
+        + '</div>' + (cut ? wlCutSkillsHtml(seq, cut) : skillBadgesHtml('wl' + seq, split.skills)) + detailHtml + '</div>';
+    }
+  }
   var label = WL_LABELS[kind];
   if (!label) {
     // Narration: the text with its time on the right of the same line.

@@ -105,6 +105,14 @@ export type WorkLogKind = 'instruction' | 'narration' | 'tool' | 'tool_result' |
 export interface WorkLogInput {
   kind: WorkLogKind;
   text: string;
+  /**
+   * SSOT 2026-10-28 — an `instruction` entry: who put it in the conversation
+   * (the recorded user turn's `origin.by`) and whether it was a compaction
+   * turn. The dashboard's work log reads a turn soma-work sent as a one-line
+   * badge from these; entries written before they were kept are read from text.
+   */
+  by?: 'user' | 'system';
+  compactTurn?: true;
   tool?: string;
   ok?: boolean;
   turnId?: string;
@@ -1182,6 +1190,8 @@ export function appendWorkLog(conversationId: string, input: WorkLogInput): Prom
   if (input.agentId !== undefined) fields.agentId = clampChars(String(input.agentId), WORK_LOG_FIELD_MAX);
   if (input.agentRef !== undefined) fields.agentRef = clampChars(String(input.agentRef), WORK_LOG_FIELD_MAX);
   if (input.toolUseId !== undefined) fields.toolUseId = clampChars(String(input.toolUseId), WORK_LOG_FIELD_MAX);
+  if (input.by === 'user' || input.by === 'system') fields.by = input.by;
+  if (input.compactTurn === true) fields.compactTurn = true;
   const raw =
     input.raw != null
       ? pendingRaw(String(input.raw), input.rawBytes)

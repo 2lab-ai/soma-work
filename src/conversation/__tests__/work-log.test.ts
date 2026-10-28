@@ -173,6 +173,33 @@ describe('work log store', () => {
     expect('taskId' in plain).toBe(false);
   });
 
+  it('keeps who sent an instruction (by) and whether it was a compaction (compactTurn) — SSOT 2026-10-28', async () => {
+    const sys = await wl.appendWorkLog('conv-by', {
+      kind: 'instruction',
+      text: '/compact',
+      by: 'system',
+      compactTurn: true,
+    });
+    expect(sys).toMatchObject({ by: 'system', compactTurn: true });
+    const person = await wl.appendWorkLog('conv-by', { kind: 'instruction', text: 'go', by: 'user' });
+    expect(person.by).toBe('user');
+    expect('compactTurn' in person).toBe(false);
+    const junk = await wl.appendWorkLog('conv-by', {
+      kind: 'instruction',
+      text: 'x',
+      by: 'robot' as never,
+      compactTurn: 'yes' as never,
+    });
+    expect('by' in junk).toBe(false);
+    expect('compactTurn' in junk).toBe(false);
+    const page = await wl.readWorkLog('conv-by');
+    expect(page.entries.map((e) => [e.by, e.compactTurn])).toEqual([
+      ['system', true],
+      ['user', undefined],
+      [undefined, undefined],
+    ]);
+  });
+
   it('keeps who made an entry (agentId) and which agent it starts (agentRef), and marks it attributed — spec 12 §2.4', async () => {
     const sub = await wl.appendWorkLog('conv-agent', {
       kind: 'tool',
