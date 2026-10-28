@@ -154,6 +154,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
         'submitAllRecommended',
         'submitMultiChoice',
         'answerChoice',
+        'acDrop',
         'acQuestionId',
         'acPost',
         'acRefusal',
