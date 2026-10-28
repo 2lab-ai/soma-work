@@ -15818,7 +15818,11 @@ function renderWorkLogEntry(e) {
     // The stored text is cut at 4,000 characters, so a skill block is usually
     // cut too: the words, and the skill names readable before the cut; the
     // badges load the stored original (wlSkillOpen).
-    var cut = split.skills.length ? null : wlCutSkills(text);
+    // Only a text that was cut (its original stored apart) can hold a cut
+    // block; a short one that merely mentions the tag is words. A first turn's
+    // two blocks: the closed one and the cut one read as one row of badges.
+    var cut = toNum(e.rawBytes) > 0 ? wlCutSkills(split.text) : null;
+    if (cut && split.skills.length) cut.names = split.skills.map(function(sk) { return sk.name; }).concat(cut.names);
     if (split.skills.length || cut) {
       var words = cut ? cut.words : split.text;
       return '<div class="wl-entry wl-instruction"' + seqAttr + '>' + rowOpen()

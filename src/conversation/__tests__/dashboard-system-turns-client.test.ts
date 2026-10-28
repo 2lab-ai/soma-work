@@ -1145,6 +1145,25 @@ describe('C7 — the work log (작업 로그): an instruction entry reads like t
     expect(out).not.toContain('invoked_skills');
   });
 
+  it('two blocks (autoskill closed, the $skill one cut): one row of badges for both, no skill text on the row', () => {
+    const two = `리포트\n\n<invoked_skills>\n<local:using-ssot>\nssot body\n</local:using-ssot>\n</invoked_skills>\n\n<invoked_skills>\n<local:autoz>\n${'y'.repeat(3000)}`;
+    const out = wl().renderWorkLogEntry(entry(two, { by: 'user', rawBytes: 40_000 }));
+    expect(out).toContain(
+      '<div class="wl-text">리포트</div></div><div class="skill-badges" role="group" aria-label="활성화된 스킬">',
+    );
+    expect(out).toContain('data-wl-skill="local:using-ssot"');
+    expect(out).toContain('data-wl-skill="local:autoz"');
+    expect(out).not.toContain('yyyyyyyyyy');
+    expect(out).not.toContain('ssot body');
+    expect(out).not.toContain('invoked_skills');
+  });
+
+  it('a text that was not cut (no stored original) and only mentions the tag is words, never badges', () => {
+    const out = wl().renderWorkLogEntry(entry('예시: <invoked_skills>\n<foo> 처럼 쓰면 된다', { by: 'user' }));
+    expect(out).not.toContain('skill-badge');
+    expect(out).toContain('<div class="wl-text">예시: &lt;invoked_skills&gt;');
+  });
+
   it('wlSkillOpen: loads the stored original, redraws the badges with every skill and its tokens, opens the one clicked', async () => {
     const full = invoked('예측 시장 리포트', [
       ['local:using-ssot', 'ssot body'],
