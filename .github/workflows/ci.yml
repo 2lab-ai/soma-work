@@ -89,6 +89,11 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # The html skill's batch-qa (renderer/batch-qa.mjs) drives Playwright's Chromium headless
+      # shell. The self-hosted Mac had it cached; a hosted image does not.
+      - name: Install the Playwright headless shell for the html skill tests
+        run: npx playwright install --only-shell chromium
+
       # Workspace packages must be compiled to dist/ before root tsc can
       # resolve `@soma/*` imports (each package.json points main/types at
       # ./dist/...). The Type Check step below relies on these via the
