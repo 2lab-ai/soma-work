@@ -119,6 +119,23 @@ import type { WorkLogEntry } from './work-log';
 
 const logger = new Logger('Dashboard');
 
+/** Who reads a usage report: an admin or an operator token sees per-user spend; everyone else the totals and models. */
+export interface UsageViewer {
+  isAdmin?: boolean;
+  mode?: string;
+}
+/**
+ * affectUI review batch 1 (Z, 2026-10-27): spend by model for everyone, by user for admins only. The report's
+ * per-user parts (byUser, the rankings) leave the server only for an admin or an operator token.
+ */
+export function usageForViewer<T extends { byUser: unknown; tokenRankings: unknown[]; costRankings: unknown[] }>(
+  report: T,
+  viewer: UsageViewer | undefined,
+): T {
+  if (viewer?.isAdmin || viewer?.mode === 'bearer_header' || viewer?.mode === 'bearer_cookie') return report;
+  return { ...report, byUser: {}, tokenRankings: [], costRankings: [] };
+}
+
 /** A file the /dashboard/ui route serves: a flat `dist/*.js` name of @2lab.ai/ui (no dirs, no dots-only names). */
 export const UI_LIB_FILE = /^[A-Za-z0-9_][A-Za-z0-9_-]*\.js$/;
 let uiLibDir: string | null | undefined;
@@ -2547,7 +2564,7 @@ export async function registerDashboardRoutes(
       try {
         const aggregator = new ReportAggregator(store);
         const report = await aggregator.aggregateTokenUsage(startDate, endDate, userId || undefined);
-        reply.send(report);
+        reply.send(usageForViewer(report, (request as { authContext?: UsageViewer }).authContext));
       } catch (error) {
         logger.error('Error computing token usage stats', error);
         reply.status(500).send({ error: 'Internal Server Error' });
@@ -3422,6 +3439,9 @@ function renderDashboardPage(userId?: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>soma-work Dashboard</title>
 <script type="module" src="/dashboard/ui/tool-call-card.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/approval-card.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/toaster.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/compact-breakdown.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -3848,6 +3868,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .stats-more[aria-expanded="true"] { color: var(--text); }
 .stats-more[aria-expanded="true"] svg { transform: rotate(180deg); }
 .stats-detail { margin-top: 12px; }
+.usage-cb-wrap { max-width: 440px; margin-bottom: 12px; }
 
 /* ── STATS GRID — the cards behind 자세히: 5 columns, 2 below 1100px ── */
 .stats-grid {
@@ -4554,11 +4575,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   align-items: center;
   gap: 4px;
 }
-.card-question-choices {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
 .btn-choice {
   font-size: 0.72em;
   padding: 4px 10px;
@@ -4583,11 +4599,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   font-weight: 600;
 }
 .btn-choice-recommended::before { content: "\\2B50 "; }
-.choice-row-recommended .btn-choice-recommended {
-  width: 100%;
-  display: block;
-  text-align: center;
-}
 /* Hero "Submit All Recommended" — group-only, top of multi-choice panel */
 .btn-hero-recommended {
   display: block;
@@ -4611,11 +4622,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   opacity: 0.7;
   cursor: not-allowed;
 }
-.choice-divider {
-  border: none;
-  border-top: 1px solid var(--border, #e0e0e0);
-  margin: 6px 0;
-}
 .card-question-multi {
   font-size: 0.72em;
   color: var(--text-secondary);
@@ -4626,96 +4632,23 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   text-decoration: none;
 }
 .card-question-multi a:hover { text-decoration: underline; }
-/* Pending question inside an open card — the card's own button language
-   (reference "Reject | Approve"): outline choices, the recommended one solid
-   and last on the right. Markup and handlers are the shared ones above. */
+/* The multi-question form inside an open card (renderMultiChoiceCard): its
+   title, progress and 답변하기, in the card's own button language. The
+   single-choice question and the permission prompts are <ui-approval-card>s,
+   which draw their own answers. */
 .card .card-question { margin-top: 12px; padding: 10px 12px; background: var(--ib-col); border: 0; border-radius: 8px; }
 .card .card-question-text { font-size: 13px; color: var(--ib-text); margin-bottom: 8px; }
 .card .card-question-multi { font-size: 12px; color: var(--ib-muted); }
-.card .card-question-choices { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
-.card .choice-divider { display: none; }
-.card .choice-row-recommended { order: 2; max-width: 100%; min-width: 0; }
 .card .btn-choice { font-size: 13px; padding: 5px 12px; min-height: 32px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); text-align: left; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
-.card .btn-choice-recommended::before { content: none; }
-.card .choice-row-recommended .btn-choice-recommended,
-.card .btn-choice-recommended { display: inline-block; width: auto; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
-.card .btn-choice.btn-choice-recommended.is-quiet { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--ib-text); font-weight: 500; }
-/* D10: one primary per open card — the decision this viewer can make here. The
-   owner's 답변하기 / recommended answer on this instance and, in the card only, the
-   lead Approve (renderPermissionBlock marks the first one this viewer can press
-   .is-lead) are ink; Deny, every other Approve and a quiet recommended answer
-   (.is-quiet: not answerable here) are secondaries. The panel's prompt keeps its own
-   styling. Doubled classes beat the shared card / hover rules later in the sheet. */
+/* D10: one primary per open card — the owner's 답변하기 on this instance is ink.
+   Doubled classes beat the shared card / hover rules later in the sheet. */
 .card .btn-choice.btn-choice-primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
-.card .btn-perm.btn-perm-approve { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--ib-text); }
-.card .btn-perm.btn-perm-approve.is-lead { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
-.card .btn-perm.btn-perm-deny { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--st-fail-text); }
-/* A card that also holds a permission prompt this viewer can answer (a lead Approve —
-   the requester, this instance) keeps that Approve as the one ink button: the
-   question's answers step back to secondaries, resting and hovered (:has() outranks
-   the card's recommended-choice rules). */
-.card .card-body:has(.btn-perm-approve.is-lead) .btn-choice.btn-choice-recommended, .card .card-body:has(.btn-perm-approve.is-lead) .btn-choice.btn-choice-primary { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--ib-text); }
 @media (hover: hover) and (pointer: fine) {
   .card .btn-choice.btn-choice-primary:hover:not(:disabled) { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
 }
 
 /* ── PANEL PENDING QUESTION ── */
-/* ── PERMISSION PROMPT (SSOT 2026-10-24) — the Slack "🔐 Permission Request" card ── */
-.perm-request {
-  margin-top: 8px;
-  padding: 10px;
-  background: rgba(249,115,22,0.06);
-  border: 1px solid rgba(249,115,22,0.32);
-  border-radius: 8px;
-}
-.perm-request + .perm-request { margin-top: 6px; }
-.perm-head {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
-  margin-bottom: 6px;
-  font-size: 0.8em; font-weight: 700; color: var(--ib-text);
-}
-.perm-head code, .perm-rule code {
-  font-family: 'SF Mono','Fira Code',ui-monospace,monospace;
-  font-size: 0.95em; padding: 1px 5px; border-radius: 4px;
-  background: rgba(249,115,22,0.14); color: var(--orange);
-}
-.perm-params {
-  margin: 0 0 6px; padding: 8px;
-  font-family: 'SF Mono','Fira Code',ui-monospace,monospace;
-  font-size: 0.72em; line-height: 1.45;
-  white-space: pre-wrap; overflow-wrap: anywhere;
-  max-height: 320px; overflow: auto;
-  background: var(--ib-col); color: var(--ib-text); border-radius: 6px;
-}
-.perm-params.is-clamped { max-height: 120px; }
-.perm-params-hidden { font-family: inherit; color: var(--text-secondary); }
-.perm-truncated { margin: -2px 0 6px; font-size: 0.72em; color: var(--text-secondary); }
-.perm-rules { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; font-size: 0.74em; color: var(--ib-text); }
-.perm-rules-label { font-weight: 600; color: var(--text-secondary); }
-.perm-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.btn-perm {
-  min-height: 32px; padding: 5px 10px;
-  font: inherit; font-size: 0.74em; line-height: 1.3;
-  color: var(--ib-text); background: var(--ib-card);
-  border: 1px solid var(--ib-card-border); border-radius: 6px;
-  cursor: pointer;
-  transition: background-color 150ms ease, border-color 150ms ease, transform var(--dur-press) var(--ease-out);
-}
-.btn-perm-approve { color: #fff; background: #1f8f4e; border-color: #1f8f4e; }
-.btn-perm-deny { color: #fff; background: #c43c3c; border-color: #c43c3c; }
-.btn-perm:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-perm:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
-@media (hover: hover) and (pointer: fine) {
-  .btn-perm:not(:disabled):hover { filter: brightness(1.12); }
-}
-@media (pointer: coarse) {
-  .btn-perm { min-height: 44px; }
-}
-.perm-note { margin-top: 6px; font-size: 0.74em; color: var(--red); overflow-wrap: anywhere; }
 .panel-permission { padding: 0 16px 12px; border-bottom: 1px solid var(--border); }
-.panel-permission .perm-request { margin-top: 0; }
-.panel-permission .perm-head { font-size: 0.88em; }
-.panel-permission .btn-perm { font-size: 0.82em; }
 .panel-question {
   padding: 12px 16px;
   background: rgba(246,201,14,0.06);
@@ -4737,10 +4670,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   padding: 6px 14px;
 }
 
-/* ── 입력 필요 — approval cards in the panel (re-agent-run D8–D17) ──
-   A head with the count; each prompt (and the single-choice question) is a card
-   in a tray: context line, icon · title · description · pill, the input as
-   key/value rows, the answers. The card is its own container. No new tokens. */
+/* ── 입력 필요 (re-agent-run D8–D17) ──
+   A head with the count; each prompt (and the single-choice question) is a
+   <ui-approval-card> in its slot (.ac-slot) — the card's own look is the
+   library's. No new tokens. */
 .ar-vh { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
 .panel-needs-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px 8px; font-size: 13px; font-weight: 650; color: var(--text); }
 .panel-needs-head[hidden] { display: none; }
@@ -4751,64 +4684,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .panel-question[data-ap="card"] { padding: 0 16px 12px; background: none; border-bottom: 1px solid var(--border); }
 /* One section: no rule between a prompt and the question card under it. */
 .panel-permission:has(+ .panel-question[data-ap="card"]:not([style*="none"])) { border-bottom: 0; }
-.ap-card { container-type: inline-size; position: relative; padding: 4px; border-radius: 14px; background: var(--ib-col); border: 1px solid var(--ib-card-border); color: var(--ib-text); outline: none; }
-.panel-permission .ap-card { margin: 0; padding: 4px; background: var(--ib-col); border: 1px solid var(--ib-card-border); border-radius: 14px; }
-.panel-permission .ap-card + .ap-card { margin-top: 10px; }
-.ap-card:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
-.ap-label { padding: 4px 8px 6px; font-size: 12px; line-height: 16px; color: var(--ib-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
-.ap-body { padding: 14px; border-radius: 11px; background: var(--ib-card); box-shadow: 0 0 0 1px var(--ib-card-border); }
-.ap-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 10px; }
-.ap-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: var(--ib-pill); color: var(--ib-text); }
-.ap-icon svg { width: 16px; height: 16px; }
-.ap-titles { min-width: 0; padding-top: 1px; }
-.ap-title { font-size: 14px; font-weight: 600; line-height: 20px; color: var(--ib-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ap-question .ap-title { white-space: pre-line; overflow: visible; overflow-wrap: anywhere; }
-.ap-desc { margin-top: 1px; font-size: 13px; line-height: 18px; color: var(--ib-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ap-pill { display: inline-flex; align-items: center; gap: 6px; height: 22px; margin-top: 1px; padding: 0 9px 0 8px; border-radius: 999px; background: var(--ib-pill); color: var(--ib-text-2); font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap; }
-.ap-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.8; }
-.ap-pill[data-kind="rule"] { background: color-mix(in srgb, var(--st-fail) 14%, transparent); color: var(--st-fail-text); }
-.ap-pill[data-kind="question"] { background: color-mix(in srgb, var(--st-wait) 16%, transparent); color: var(--st-wait); }
-.ap-details { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; max-height: 320px; overflow: auto; margin: 12px 0 0; padding: 10px 12px; border-radius: 9px; background: var(--ib-col); box-shadow: inset 0 0 0 1px var(--ib-card-border); font-size: 12.5px; line-height: 18px; }
-.ap-detail { display: contents; }
-.ap-detail dt { color: var(--ib-muted); }
-.ap-detail dd { min-width: 0; margin: 0; color: var(--ib-text); font-family: 'SF Mono','Fira Code',ui-monospace,monospace; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.ap-body .perm-params { margin: 12px 0 0; }
-.ap-body .perm-truncated { margin: 4px 0 0; }
-.ap-body .perm-rules { margin: 10px 0 0; }
-.ap-alts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
-.ap-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 8px; }
-.ap-expires { font-size: 12.5px; color: var(--ib-muted); font-variant-numeric: tabular-nums; white-space: nowrap; transition: color var(--dur-fade) linear; }
-.ap-expires.is-low { color: var(--st-wait); }
-.ap-actions { display: flex; flex: 0 0 auto; gap: 4px; margin-left: auto; }
-.ap-card .btn-perm.ap-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 34px; padding: 0 12px; border: 0; border-radius: 10px; font-size: 13px; font-weight: 500; line-height: 1; white-space: nowrap; }
-.ap-card .btn-perm.ap-ghost { min-height: 28px; padding: 0 10px; border-radius: 8px; background: transparent; color: var(--ib-text-2); font-size: 12.5px; box-shadow: inset 0 0 0 1px var(--ib-card-border); }
-.ap-card .btn-perm.ap-quiet { padding-right: 8px; background: transparent; color: var(--ib-text); box-shadow: inset 0 0 0 1px var(--ib-card-border); }
-.ap-card .btn-perm.ap-primary { padding-right: 8px; background: var(--ib-text); color: var(--ib-card); }
-.ap-btn[data-kbd]::after { content: attr(data-kbd) / ""; display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 6px; background: color-mix(in srgb, currentColor 12%, transparent); font-size: 11px; font-weight: 500; opacity: 0.8; }
-.ap-btn:disabled::after { display: none; }
-.ap-card .btn-choice.ap-choice { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; min-height: 36px; padding: 8px 12px; border: 0; border-radius: 10px; background: transparent; color: var(--ib-text); box-shadow: inset 0 0 0 1px var(--ib-card-border); font-size: 13px; text-align: left; }
-.ap-card .btn-choice.ap-choice.ap-rec { position: relative; padding-right: 52px; background: var(--ib-text); color: var(--ib-card); box-shadow: none; font-weight: 500; }
-.ap-card .btn-choice.ap-rec[data-kbd]::after { content: attr(data-kbd) / ""; position: absolute; top: 8px; right: 8px; display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 6px; background: color-mix(in srgb, currentColor 14%, transparent); font-size: 11px; opacity: 0.8; }
-.ap-choices { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
-.ap-choice-desc { font-size: 12px; font-weight: 400; opacity: 0.75; }
-.ap-choice-tag { margin-left: 8px; padding: 1px 6px; border-radius: 6px; background: color-mix(in srgb, currentColor 14%, transparent); font-size: 11px; font-weight: 500; }
-.ap-resolved { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 10px 12px; border-radius: 11px; background: var(--ib-card); box-shadow: 0 0 0 1px var(--ib-card-border); animation: ap-in var(--dur-move) var(--ease-out) both; }
-.ap-mark { display: grid; flex: none; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: color-mix(in srgb, var(--st-done) 16%, transparent); color: var(--st-done); font-size: 12px; font-weight: 700; }
-.ap-mark svg { width: 12px; height: 12px; }
-.ap-resolved[data-decision="deny"] .ap-mark, .ap-resolved[data-decision="explain"] .ap-mark { background: var(--ib-pill); color: var(--ib-text-2); }
-.ap-row-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 500; color: var(--ib-text); }
-.ap-row-status { flex: none; color: var(--ib-muted); white-space: nowrap; font-size: 12.5px; }
-@keyframes ap-in { from { opacity: 0; transform: translateY(4px); } }
-@container (max-width: 379px) {
-  .ap-actions { flex: 1 1 100%; margin-left: 0; }
-  .ap-actions .ap-btn { flex: 1 1 0; min-width: 0; }
-  .ap-btn[data-kbd]::after, .ap-card .btn-choice.ap-rec[data-kbd]::after { display: none; }
-  .ap-card .btn-choice.ap-choice.ap-rec { padding-right: 12px; }
-}
-@container (max-width: 319px) {
-  .ap-body { padding: 12px; }
-  .ap-pill-word { display: none; }
-}
+/* The <ui-approval-card> slots (batch 1): a gap between two prompts, and the open card's off what follows. */
+.ac-slot + .ac-slot { margin-top: 10px; }
+.card-body > .ac-slot { margin-bottom: 10px; }
 
 /* ── MULTI-CHOICE FORM (dashboard) ── */
 .mc-form {
@@ -5482,11 +5360,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    wrapper, from the same-named dashboard token. Not on the element itself — its
    shadow :host defines --border: var(--ui-border, …), so --ui-border: var(--border)
    on the same element is a cycle and blanks both. Inherited from the wrapper,
-   the values arrive already resolved and follow the theme switch. */
-.wl-toolcall {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
+   the values arrive already resolved and follow the theme switch. The same
+   mapping serves every other library element's wrapper (.ui-tok: the approval
+   cards, the toaster, the usage breakdown). */
+.wl-toolcall, .ui-tok {
   --ui-bg: var(--bg); --ui-surface: var(--surface); --ui-surface-raised: var(--surface-raised);
   --ui-border: var(--border); --ui-border-focus: var(--border-focus); --ui-text: var(--text);
   --ui-text-secondary: var(--text-secondary); --ui-text-tertiary: var(--text-tertiary); --ui-accent: var(--accent);
@@ -5501,6 +5378,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   --ui-ease-in-out: var(--ease-in-out); --ui-dur-press: var(--dur-press); --ui-dur-expand: var(--dur-expand);
   --ui-dur-move: var(--dur-move); --ui-dur-fade: var(--dur-fade); --ui-radius: var(--radius);
 }
+.wl-toolcall { display: grid; gap: 4px; min-width: 0; }
 .worklog-list ui-tool-call-card { display: block; min-width: 0; }
 .wl-card-fallback {
   display: block; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius);
@@ -5945,7 +5823,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .btn-choice:hover:not(:disabled) { border-color: var(--accent); background: rgba(77,157,224,0.18); color: var(--text); }
   .btn-choice-recommended:hover:not(:disabled) { background: #256f38; color: white; border-color: #256f38; }
   .card .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--ib-card); color: var(--ib-text); }
-  .card .btn-choice-recommended:hover:not(:disabled) { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
 }
 
 /* ── BOARD RESPONSIVE (.prd/10 §5, SSOT 2026-10-24) ──
@@ -6062,7 +5939,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .card-expand { transition: none !important; }
   .card-expand-inner { transition: opacity var(--dur-fade) linear !important; }
   .btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .archives-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: none; }
-  .btn-perm:active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   /* Loading skeletons hold still. */
@@ -6142,18 +6018,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .panel-question .btn-choice, .mc-q-choices .btn-choice, .mc-q-edit-btn, .mc-btn-submit, .mc-btn-reset { min-height: 44px; }
   .mc-custom-input input, .mc-custom-input button, .btn-send, .panel-command textarea { min-height: 44px; }
 }
-/* 입력 필요 approval cards (re-agent-run D12–D13): key hints only with a hover
-   pointer, quiet hovers, 44px answers on touch — after the shared touch block. */
-@media (hover: none) {
-  .ap-btn[data-kbd]::after { display: none; }
-  .ap-card .btn-choice.ap-rec[data-kbd]::after { display: none; }
-}
-@media (hover: hover) and (pointer: fine) {
-  .ap-card .btn-perm.ap-ghost:not(:disabled):hover, .ap-card .btn-perm.ap-quiet:not(:disabled):hover, .ap-card .btn-choice.ap-choice:not(.ap-rec):not(:disabled):hover { filter: none; background: var(--ib-pill); }
-}
-@media (pointer: coarse) {
-  .ap-card .btn-perm.ap-btn, .ap-card .btn-choice.ap-choice { min-height: 44px; }
-}
 /* The model · effort menu's own touch / narrow sizes and reduced motion — after the shared blocks, which stay untouched (re-model-picker D13/D15). */
 @media (pointer: coarse), (max-width: 639px) {
   .mp-trigger, .mp-seg-btn { min-height: 44px; }
@@ -6183,15 +6047,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (prefers-reduced-motion: reduce) {
   /* D3: the static ring (shared rule) stays whole, in the pill's icon colour. */
   .card-status .spinner { border-color: currentColor; }
-}
-/* D10 hover, after the shared prompt's hover rule (brightness filter): in the card,
-   the lead Approve stays the ink primary and every other Approve, Deny and a quiet
-   recommended answer stay secondaries when pointed at. */
-@media (hover: hover) and (pointer: fine) {
-  .card .btn-perm.btn-perm-approve:not(:disabled):hover { filter: none; background: var(--ib-card); border-color: var(--ib-muted); color: var(--ib-text); }
-  .card .btn-perm.btn-perm-approve.is-lead:not(:disabled):hover { filter: none; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
-  .card .btn-perm.btn-perm-deny:not(:disabled):hover { filter: none; background: var(--ib-card); border-color: var(--st-fail-text); color: var(--st-fail-text); }
-  .card .btn-choice.btn-choice-recommended.is-quiet:hover:not(:disabled) { background: var(--ib-card); border-color: var(--ib-muted); color: var(--ib-text); opacity: 1; }
 }
 /* ── CRON badge · lane · drawer (SSOT 2026-10-23 T3/T4/T5) ── */
 .cron-badge {
@@ -6718,14 +6573,6 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-submit:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
 .nt-submit.is-busy svg { animation: nt-spin 0.9s linear infinite; }
 
-.nt-toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 90; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 10px; width: max-content; max-width: min(560px, calc(100vw - 24px)); padding: 10px 10px 10px 14px; translate: -50% 0; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-raised); color: var(--text); box-shadow: var(--ib-shadow-raised); font-size: 13px; animation: nt-toast-in 320ms var(--ease-out) both; }
-.nt-toast[hidden] { display: none; }
-/* left: 50% leaves only half the viewport for a shrink-to-fit box, so the
-   width is the content's own (capped) and the actions wrap under the message
-   on a narrow screen instead of squeezing it into a column. */
-.nt-toast-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
-.nt-toast-actions { display: flex; flex: none; gap: 8px; margin-left: auto; }
-.nt-toast a, .nt-toast button { flex: none; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; font-weight: 700; text-decoration: none; display: inline-flex; align-items: center; cursor: pointer; }
 
 @keyframes nt-sheen { to { rotate: 360deg; } }
 @keyframes nt-pulse {
@@ -6736,7 +6583,6 @@ body.nt-open .new-task-fab { display: none !important; }
 @keyframes nt-fab-in { from { opacity: 0; transform: translateY(16px) scale(0.6); } to { opacity: 1; transform: none; } }
 @keyframes nt-ring { 0% { box-shadow: 0 0 0 0 rgba(123, 156, 240, 0.5); } 60%, 100% { box-shadow: 0 0 0 16px rgba(123, 156, 240, 0); } }
 @keyframes nt-att-in { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: none; } }
-@keyframes nt-toast-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 @keyframes nt-rec { 50% { opacity: 0.35; transform: scale(0.8); } }
 @keyframes nt-blink { 50% { opacity: 0.45; } }
 @keyframes nt-spin { to { rotate: 360deg; } }
@@ -6773,13 +6619,11 @@ body.nt-open .new-task-fab { display: none !important; }
   .nt-toolbar { padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)); }
   .nt-submit { height: 44px; padding: 0 18px; border-radius: 13px; }
   .nt-submit-hint, .nt-head-hint { display: none; }
-  .nt-toast { bottom: calc(86px + env(safe-area-inset-bottom, 0px)); }
 }
 @media (pointer: coarse) {
   /* New task — touch: 44px targets, 16px text (iOS does not zoom into it),
      and the camera button (capture="environment" opens the camera directly). */
   .nt-tool, .nt-close, .nt-battery-btn, .nt-toggle, .nt-chip, .nt-rec-btn { min-height: 44px; min-width: 44px; }
-  .nt-toast a, .nt-toast button { height: 44px; padding: 0 14px; font-size: 13px; }
   .nt-tool { width: 44px; height: 44px; }
   .nt-att-remove { width: 28px; height: 28px; }
   .nt-prompt, .nt-chip select { font-size: 16px; }
@@ -6788,7 +6632,7 @@ body.nt-open .new-task-fab { display: none !important; }
 }
 @media (prefers-reduced-motion: reduce) {
   /* New task — no rotation, pulse, ring or slide; changes are instant. */
-  .new-task-btn, .new-task-btn::before, .new-task-fab, .new-task-fab::after, .nt-dialog, .nt-att, .nt-toast,
+  .new-task-btn, .new-task-btn::before, .new-task-fab, .new-task-fab::after, .nt-dialog, .nt-att,
   .nt-rec-dot, .nt-battery-fill, .nt-plus, .nt-fab-label, .nt-fab-icon, .nt-submit svg { animation: none !important; transition: none !important; }
 }
 /* ── Session artifacts (SSOT 2026-10-23): face chips, strips, minimap, viewer ── */
@@ -7199,6 +7043,7 @@ body.nt-open .new-task-fab { display: none !important; }
         <button type="button" class="stats-more" id="stats-more" aria-expanded="false" aria-controls="stats-detail" onclick="toggleStatsDetail()"><span>&#xC790;&#xC138;&#xD788;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
       </div>
       <div class="stats-detail" id="stats-detail" hidden>
+        <div class="ui-tok usage-cb-wrap"><ui-compact-breakdown id="usage-cb" lang="ko"></ui-compact-breakdown></div>
         <div class="stats-grid" id="stats-grid">
           <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value is-loading" id="stat-turns"></div></div>
           <div class="stat-card"><div class="label">PR &#xC0DD;&#xC131;</div><div class="value is-loading" id="stat-prs"></div></div>
@@ -7441,7 +7286,6 @@ body.nt-open .new-task-fab { display: none !important; }
       </footer>
     </form>
   </dialog>
-  <div class="nt-toast" id="nt-toast" role="status" aria-live="polite" hidden></div>
 </div>
 <!-- Artifacts (SSOT 2026-10-23): hover minimap + full-size viewer, shared by board and panel. -->
 <div id="art-peek" class="art-peek" role="tooltip" aria-hidden="true"></div>
@@ -7611,9 +7455,206 @@ function formatTaskTime(ts) {
   return new Date(ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 }
 
-// The pending question (re-agent-run D17): a single-choice question is an
-// approval card (apQuestionCardHtml), written only when it changed and morphed
-// so focus stays; the multi-question form keeps its own renderer.
+// ── 입력 필요 — @2lab.ai/ui <ui-approval-card> (affectUI review batch 1) ──
+// One element for the open card and the panel's 입력 필요: a permission prompt
+// (the tool, its risk and matched dangerous-command rules, a preview of the
+// input, Approve / Deny / Explain, "disable this rule", the expiry countdown)
+// or the single-choice question (recommended first) — the answer in flight,
+// a refusal with Retry, and the resolved row. The markup is a slot keyed by the
+// request (static per request, so equal data still renders equal strings); the
+// data — the prompt, the requester-only input, the answer's state — is set on
+// the element by acHydrate. Answers leave it as ui-decide / ui-answer for
+// answerPermission / answerChoice. The multi-question form keeps its own
+// renderer (renderMultiChoicePanel): one element is one question.
+//
+// The board never carries the parameters (it is one document for every
+// viewer): the requester's page fetches them from the requester-only route.
+var _permDetails = Object.create(null); // approvalId → { input, truncated } | { error }
+var _permLoading = Object.create(null);
+// session key → { 'p|<approvalId>' | the question id → the card's state (sending · error · resolved) }.
+// Per session: a question has no request id (its id is its content), so two
+// sessions asking the same thing are two requests (PR #536 review P1).
+var _acState = Object.create(null);
+var AC_SENT = { approve: '승인을 보냈어요', deny: '거부를 보냈어요', explain: '설명을 요청했어요', approve_disable_rule: '승인을 보냈어요 · 규칙 끔' };
+var AC_SIBLING = '다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요';
+
+function isPermissionRequester(p) {
+  return !!(p && p.requesterId && currentUserId && p.requesterId === currentUserId);
+}
+
+function permissionSummary(s) {
+  var list = s.pendingPermissions || [];
+  if (!list.length) return '';
+  return '🔐 ' + (list[0].toolName || 'tool') + ' 실행 승인 필요' + (list.length > 1 ? ' 외 ' + (list.length - 1) + '건' : '');
+}
+
+// Who may answer here, as the element's canAnswer: '' (yes) or why not. A
+// prompt: its requester, on this instance. The question: the session's owner,
+// on this instance (as Stop). The server re-checks both.
+function acPermissionLock(s, p) {
+  if (isSiblingSession(s)) return AC_SIBLING;
+  return isPermissionRequester(p) ? '' : '이 요청의 요청자만 응답할 수 있습니다';
+}
+function acQuestionLock(s) {
+  if (isSiblingSession(s)) return AC_SIBLING;
+  return s.ownerId && s.ownerId === currentUserId ? '' : '읽기 전용 — 내 세션이 아닙니다';
+}
+
+// DashboardPermissionRequest (+ the requester's input, + this page's answer) → the card's data.
+function acPermissionData(s, p) {
+  var d = { kind: 'permission', id: String(p.approvalId), tool: p.toolName || 'tool', canExplain: true, canDisableRule: !!p.canDisableRule };
+  var rules = (p.rules || []).map(function(r) {
+    var o = { id: String(r.id), label: String(r.label || r.id) };
+    if (r.description) o.description = String(r.description);
+    return o;
+  });
+  if (rules.length) d.rules = rules;
+  var created = toNum(p.createdAt);
+  if (created > 0) d.createdAt = created;
+  var until = toNum(p.expiresAt);
+  if (until > 0) d.expiresAt = until;
+  var lock = acPermissionLock(s, p);
+  if (lock) {
+    d.canAnswer = lock;
+    d.notice = isSiblingSession(s) ? '파라미터는 그 인스턴스의 대시보드에서 볼 수 있습니다' : '파라미터는 요청자만 볼 수 있습니다';
+  } else {
+    var detail = _permDetails[p.approvalId];
+    if (!detail) {
+      d.loading = true;
+      loadPermissionDetail(s.key, p.approvalId);
+    } else if (detail.error) d.notice = detail.error;
+    else {
+      d.input = detail.input;
+      if (detail.truncated) d.truncated = true;
+    }
+  }
+  var st = _acState[s.key] && _acState[s.key]['p|' + p.approvalId];
+  if (st) d.state = st;
+  return d;
+}
+// A question's identity is its whole meaning — the text and every choice's id,
+// label and description, serialized (no two meanings share it): a question
+// rewritten in place is another card, never the old one's answer or focus
+// (review R2 P1).
+function acQuestionId(q) {
+  return 'q|' + JSON.stringify([q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })]);
+}
+// pendingQuestion (single choice) → the card's data. The choices read as
+// before ("1. label", the recommended marker stripped); the route takes one
+// of them only (no free-text answer, so no allowOther).
+function acQuestionData(s, q) {
+  var id = acQuestionId(q);
+  var d = {
+    kind: 'question',
+    id: id,
+    question: String(q.question || ''),
+    choices: q.choices.map(function(c) {
+      var o = { id: String(c.id), label: c.id + '. ' + stripRecommendedMarker(c.label) };
+      if (c.description) o.description = String(c.description);
+      return o;
+    }),
+    allowOther: false,
+  };
+  var rec = resolveRecommendedId(q.recommendedChoiceId, q.choices);
+  if (rec) d.recommendedId = String(rec);
+  var lock = acQuestionLock(s);
+  if (lock) d.canAnswer = lock;
+  var st = _acState[s.key] && _acState[s.key][id];
+  if (st) d.state = st;
+  return d;
+}
+// A push of session key (s: its new data; none when it left the board): the
+// answer states of what it no longer asks go — a prompt that left, a question
+// gone or replaced. A question has no request id, so the same question asked
+// again is a new, unanswered card only because the push that cleared the old
+// one took its state along (PR #536 review P1).
+function acEvict(key, s) {
+  var states = _acState[key];
+  if (!states) return;
+  var keep = Object.create(null);
+  var list = (s && s.pendingPermissions) || [];
+  for (var i = 0; i < list.length; i++) keep['p|' + list[i].approvalId] = true;
+  var q = s && s.pendingQuestion;
+  if (q && q.type === 'user_choice' && q.choices) keep[acQuestionId(q)] = true;
+  var left = 0;
+  for (var id in states) {
+    if (keep[id]) left++;
+    else delete states[id];
+  }
+  if (!left) delete _acState[key];
+}
+
+// One request's slot: the token wrapper (.ui-tok) keyed by the request — a
+// live morph never hands one request's element (its focus, an answer in
+// flight) to another — the element, and a light-DOM line until the library
+// has loaded.
+function acSlotHtml(key, kind, mk, id, fallback) {
+  return '<div class="ui-tok ac-slot" data-mk="' + escAttr('ac|' + mk) + '">'
+    + '<ui-approval-card lang="ko" data-ac-key="' + escAttr(key) + '" data-ac-kind="' + kind + '"' + (id ? ' data-ac-id="' + escAttr(id) + '"' : '') + '>'
+    + '<span class="ac-fallback">' + esc(fallback) + '</span></ui-approval-card></div>';
+}
+function acPermissionsHtml(s) {
+  return ((s && s.pendingPermissions) || []).map(function(p) {
+    return acSlotHtml(s.key, 'perm', 'p|' + p.approvalId, String(p.approvalId), (p.toolName || 'tool') + ' 실행 승인 — 응답 대기');
+  }).join('');
+}
+function acQuestionHtml(s, q) {
+  return acSlotHtml(s.key, 'question', acQuestionId(q), '', '질문 — ' + String(q.question || ''));
+}
+
+// What one slot's element shows now, from the session it belongs to.
+function acDataFor(el) {
+  var s = _sessionCache[el.getAttribute('data-ac-key')];
+  if (!s) return null;
+  if (el.getAttribute('data-ac-kind') === 'question') {
+    var q = s.pendingQuestion;
+    return q && q.type === 'user_choice' && q.choices ? acQuestionData(s, q) : null;
+  }
+  var id = el.getAttribute('data-ac-id');
+  var list = s.pendingPermissions || [];
+  for (var i = 0; i < list.length; i++) if (String(list[i].approvalId) === id) return acPermissionData(s, list[i]);
+  return null;
+}
+// Set every approval card's data under root — only what changed (a push that
+// changes nothing on a card does not re-render it). Data set before the
+// element is defined is picked up when it upgrades.
+function acHydrate(root) {
+  if (!root || !root.querySelectorAll) return;
+  var els = root.querySelectorAll('ui-approval-card[data-ac-key]');
+  for (var i = 0; i < els.length; i++) {
+    var d = acDataFor(els[i]);
+    if (!d) continue;
+    var sig = JSON.stringify(d);
+    if (els[i]._acSig === sig) continue;
+    els[i]._acSig = sig;
+    els[i].data = d;
+  }
+}
+// Re-draw what shows this session's prompts (its card, the open panel).
+function acRepaint(key) {
+  refreshCard(key);
+  var s = _sessionCache[key];
+  if (panelOpen && panelSessionKey === key && s) {
+    renderPanelPermission(s);
+    renderPanelQuestion(s);
+  }
+}
+
+// The answers leave the element as composed events, retargeted to it here.
+document.addEventListener('ui-decide', function(e) {
+  var el = e.target;
+  if (!el || !el.getAttribute || !e.detail || el.getAttribute('data-ac-kind') !== 'perm') return;
+  answerPermission(el.getAttribute('data-ac-key'), String(e.detail.id), String(e.detail.decision));
+});
+document.addEventListener('ui-answer', function(e) {
+  var el = e.target;
+  if (!el || !el.getAttribute || !e.detail || el.getAttribute('data-ac-kind') !== 'question') return;
+  answerChoice(el.getAttribute('data-ac-key'), String(e.detail.id), e.detail.choiceId === undefined ? '' : String(e.detail.choiceId));
+});
+
+// The pending question in the panel: the single-choice question is an
+// approval card (written only when it changed, morphed so focus stays); the
+// multi-question form keeps its own renderer.
 function renderPanelQuestion(s) {
   var container = document.getElementById('panel-question');
   if (!container) return;
@@ -7628,11 +7669,12 @@ function renderPanelQuestion(s) {
   } else if (q.type === 'user_choice' && q.choices) {
     container.style.display = '';
     container.setAttribute('data-ap', 'card');
-    var html = apQuestionCardHtml(s, q);
+    var html = acQuestionHtml(s, q);
     if (container._html !== html) {
       morphInnerHtml(container, html);
       container._html = html;
     }
+    acHydrate(container);
   } else if (q.type === 'user_choices' && q.questions) {
     container.style.display = '';
     container.setAttribute('data-ap', 'form');
@@ -7641,129 +7683,31 @@ function renderPanelQuestion(s) {
   } else {
     container.style.display = 'none';
   }
-  if (had && !container.contains(document.activeElement)) apSafeFocus(container, '');
+  if (had && !container.contains(document.activeElement)) apSafeFocus();
 }
 
-// ── Permission prompts (SSOT 2026-10-24) ──
-// The Slack "🔐 Permission Request" card on the dashboard: the tool, its
-// parameters, the matched dangerous-command rules and the same four answers.
-// The board never carries the parameters (it is one document for every
-// viewer): the requester's page fetches them from the requester-only route.
-var _permDetails = Object.create(null); // approvalId → { input, truncated } | { error }
-var _permLoading = Object.create(null);
-var _permNotes = Object.create(null);   // approvalId → why the last answer failed
-var PERM_DECISIONS = [
-  { id: 'approve', label: '✅ Approve', cls: ' btn-perm-approve' },
-  { id: 'deny', label: '❌ Deny', cls: ' btn-perm-deny' },
-  { id: 'explain', label: '💡 Explain', cls: '' },
-  { id: 'approve_disable_rule', label: '🔓 Approve & disable rule (this session)', cls: '', needsRule: true },
-];
-
-function isPermissionRequester(p) {
-  return !!(p && p.requesterId && currentUserId && p.requesterId === currentUserId);
-}
-
-function permissionSummary(s) {
-  var list = s.pendingPermissions || [];
-  if (!list.length) return '';
-  return '🔐 ' + (list[0].toolName || 'tool') + ' 실행 승인 필요' + (list.length > 1 ? ' 외 ' + (list.length - 1) + '건' : '');
-}
-
-// where: 'card' (clamped parameters) | 'panel'.
-function renderPermissionBlock(s, where) {
-  var list = (s && s.pendingPermissions) || [];
-  if (!list.length) return '';
-  var sibling = isSiblingSession(s);
-  // On the card, the first Approve this viewer can press is the card's one ink
-  // primary (.is-lead, re-agent-inbox D10); the panel has no lead.
-  var leadTaken = where !== 'card';
-  return list.map(function(p) {
-    var mine = isPermissionRequester(p) && !sibling;
-    var detail = _permDetails[p.approvalId];
-    if (mine && !detail) loadPermissionDetail(s.key, p.approvalId);
-    var params;
-    if (!mine) params = '<div class="perm-params perm-params-hidden">' + esc(sibling ? '다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요' : '파라미터와 응답은 요청자만 볼 수 있습니다') + '</div>';
-    else if (!detail) params = '<div class="perm-params perm-params-hidden">파라미터 불러오는 중…</div>';
-    else if (detail.error) params = '<div class="perm-params perm-params-hidden">' + esc(detail.error) + '</div>';
-    else params = '<pre class="perm-params' + (where === 'card' ? ' is-clamped' : '') + '">' + esc(detail.input) + '</pre>'
-      + (detail.truncated ? '<div class="perm-truncated">앞부분만 표시합니다 (64KB 초과)</div>' : '');
-    var rules = p.rules || [];
-    var rulesHtml = rules.length
-      ? '<div class="perm-rules"><span class="perm-rules-label">Matched dangerous-command rule' + (rules.length > 1 ? 's' : '') + '</span>'
-        + rules.map(function(r) { return '<span class="perm-rule"><code>' + esc(r.id) + '</code> &mdash; ' + esc(r.label) + ': ' + esc(r.description) + '</span>'; }).join('')
-        + '</div>'
-      : '';
-    var lockTitle = mine ? '' : ' title="' + escAttr(sibling ? '다른 인스턴스의 세션' : '이 요청의 요청자만 응답할 수 있습니다') + '"';
-    var btns = PERM_DECISIONS.filter(function(d) { return !d.needsRule || p.canDisableRule; }).map(function(d) {
-      var lead = mine && !leadTaken && d.id === 'approve';
-      if (lead) leadTaken = true;
-      return '<button type="button" class="btn-perm' + d.cls + (lead ? ' is-lead' : '') + '"' + (mine ? '' : ' disabled') + lockTitle
-        + ' data-perm-key="' + escAttr(s.key) + '" data-perm-id="' + escAttr(p.approvalId) + '" data-perm-decision="' + d.id + '">'
-        + esc(d.label) + '</button>';
-    }).join('');
-    var note = _permNotes[p.approvalId] ? '<div class="perm-note" role="alert">' + esc(_permNotes[p.approvalId]) + '</div>' : '';
-    return '<div class="perm-request" data-approval-id="' + escAttr(p.approvalId) + '">'
-      + '<div class="perm-head">&#x1F510; Permission Request &mdash; <code>' + esc(p.toolName) + '</code></div>'
-      + params + rulesHtml
-      + '<div class="perm-actions">' + btns + '</div>'
-      + note
-      + '</div>';
-  }).join('');
-}
-
-// One delegated handler (like the choice buttons): the ids ride in
-// attribute-escaped data-perm-* attributes, never in an inline onclick string.
-document.addEventListener('click', function(e) {
-  var btn = e.target && e.target.closest ? e.target.closest('button[data-perm-decision]') : null;
-  if (!btn || btn.disabled) return;
-  var d = btn.dataset;
-  answerPermission(d.permKey, d.permId, d.permDecision, btn);
-});
-
-// ── 입력 필요 — approval cards in the panel (re-agent-run D8–D17) ──
-// The panel's own renderer: the card face keeps renderPermissionBlock(s, 'card').
-// Every answer still rides the data-perm-* buttons and the delegated handler above.
-var _permAnswered = Object.create(null); // approvalId → the answer this page sent (D15)
-var AP_KBD_APPROVE = /Mac|iPhone|iPad|iPod/.test(String((window.navigator && (navigator.platform || navigator.userAgent)) || '')) ? '⌘↵' : 'Ctrl ↵';
-var AP_ANSWERED = { approve: '승인함', deny: '거부함', explain: '설명 요청함', approve_disable_rule: '승인함 · 규칙 끔' };
-var AP_SENT = { approve: '승인을 보냈습니다', deny: '거부를 보냈습니다', explain: '설명을 요청했습니다', approve_disable_rule: '승인을 보냈습니다 · 규칙 끔' };
-
-// The prompts as approval cards. A prompt that arrives while the panel is
-// open, and an answer this page sent, are said once in the status line; the
-// first render of an opening is the baseline. Unchanged markup writes nothing;
-// a change is morphed, and focus that was in a card stays on that card.
+// The prompts in the panel. A prompt that arrives while the panel is open is
+// said once in the status line (the first render of an opening is the
+// baseline); an answer's outcome is said by its own card. Unchanged markup
+// writes nothing; a change is morphed, so focus in a card stays in it.
 function renderPanelPermission(s) {
   var container = document.getElementById('panel-permission');
   if (!container) return;
   var list = (s && s.pendingPermissions) || [];
   var key = s ? s.key : '';
-  if (container._seenKey !== key) {
-    // A new opening (or session): the answers this page already sent are not said again.
-    container._seen = null;
-    container._said = Object.create(null);
-    for (var a = 0; a < list.length; a++) if (_permAnswered[list[a].approvalId]) container._said[list[a].approvalId] = true;
-  }
-  var seen = container._seen;
+  var seen = container._seenKey === key ? container._seen : null;
   var ids = Object.create(null);
   var said = [];
   for (var i = 0; i < list.length; i++) {
-    var p = list[i];
-    ids[p.approvalId] = true;
-    if (seen && !seen[p.approvalId]) said.push('승인 요청 — ' + (p.toolName || 'tool'));
-    var done = _permAnswered[p.approvalId];
-    if (done && !container._said[p.approvalId]) {
-      container._said[p.approvalId] = true;
-      said.push((AP_SENT[done] || done) + ' — ' + (p.toolName || 'tool'));
-    }
+    ids[list[i].approvalId] = true;
+    if (seen && !seen[list[i].approvalId]) said.push('승인 요청 — ' + (list[i].toolName || 'tool'));
   }
   container._seenKey = key;
   container._seen = ids;
   renderPanelNeedsHead(s);
-  var html = list.map(function(p) { return apPermissionCardHtml(s, p); }).join('');
+  var html = s ? acPermissionsHtml(s) : '';
   var ae = document.activeElement;
   var had = !!(ae && container.contains(ae));
-  var fcard = had && ae.closest ? ae.closest('.ap-card') : null;
-  var fid = fcard ? fcard.getAttribute('data-approval-id') : '';
   if (!html) {
     container.style.display = 'none';
     container.innerHTML = '';
@@ -7774,33 +7718,18 @@ function renderPanelPermission(s) {
       morphInnerHtml(container, html);
       container._html = html;
     }
-    updateTimersIn(container);
+    acHydrate(container);
   }
-  if (had && !container.contains(document.activeElement)) apSafeFocus(container, fid);
+  if (had && !container.contains(document.activeElement)) apSafeFocus();
   if (said.length) apAnnounce(said.join('. '));
 }
-// Focus that was in a card whose markup just changed: its own card when it is
-// still there (its resolved row), else a place that answers nothing — the 입력
-// 필요 head, else the panel title. Never a decision button (re-agent-run D14).
-function apSafeFocus(container, fid) {
-  if (fid) {
-    var cards = container.querySelectorAll('.ap-card');
-    for (var c = 0; c < cards.length; c++) {
-      if (cards[c].getAttribute('data-approval-id') === fid) { cards[c].focus({ preventScroll: true }); return; }
-    }
-  }
+// Focus that was in a card that left (answered and gone, or a question
+// rewritten in place): a place that answers nothing — the 입력 필요 head, else
+// the panel title. Never a decision (re-agent-run D14).
+function apSafeFocus() {
   var head = document.getElementById('panel-needs-head');
   var to = head && !head.hidden ? head : document.getElementById('panel-title');
   if (to && to.focus) to.focus({ preventScroll: true });
-}
-// After a failed or stale single-choice answer the button's label was written
-// back as plain text (answerChoice): draw the panel's card again from the
-// session — description, 추천 tag, key hint and all.
-function apRepaintQuestion(btnEl, key) {
-  var host = btnEl && btnEl.closest ? btnEl.closest('#panel-question') : null;
-  if (!host) return;
-  host._html = '';
-  if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelQuestion(_sessionCache[key]);
 }
 // The status line of 입력 필요 (polite, always in the page).
 function apAnnounce(msg) {
@@ -7821,155 +7750,12 @@ function renderPanelNeedsHead(s) {
   var count = document.getElementById('panel-needs-count');
   if (count && count.textContent !== String(n)) count.textContent = String(n);
 }
-// D12: the tool input as key/value rows when it is a JSON object (its
-// description becomes the card's description); anything else — cut at 64KB,
-// not JSON, not an object — stays the escaped <pre>.
-function apDetails(detail) {
-  var obj = null;
-  if (!detail.truncated) {
-    try { obj = JSON.parse(detail.input); } catch (_e) { obj = null; }
-  }
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
-    return {
-      desc: '',
-      html: '<pre class="perm-params">' + esc(detail.input) + '</pre>'
-        + (detail.truncated ? '<div class="perm-truncated">앞부분만 표시합니다 (64KB 초과)</div>' : ''),
-    };
-  }
-  var desc = typeof obj.description === 'string' ? obj.description : '';
-  var rows = Object.keys(obj).filter(function(k) { return !(k === 'description' && desc); }).map(function(k) {
-    var v = obj[k];
-    return '<div class="ap-detail"><dt>' + esc(k) + '</dt><dd>' + esc(typeof v === 'string' ? v : JSON.stringify(v, null, 2)) + '</dd></div>';
-  });
-  return { desc: desc, html: rows.length ? '<dl class="ap-details">' + rows.join('') + '</dl>' : '' };
-}
-// D10–D16: one permission prompt as an approval card — label, icon, title,
-// description, the matched-rule pill, the input, the rules, the answers and the
-// expiry clock — or, once this page answered it, one resolved row.
-function apPermissionCardHtml(s, p) {
-  var id = escAttr(p.approvalId);
-  var tool = p.toolName || 'tool';
-  var title = tool + ' 실행 승인';
-  var answered = _permAnswered[p.approvalId];
-  if (answered) {
-    var mark = answered === 'deny' ? agentIconHtml('failed') : answered === 'explain' ? '?' : agentIconHtml('completed');
-    return '<div class="ap-card perm-request is-resolved" role="group" tabindex="-1" data-ap-kind="perm" data-approval-id="' + id + '" data-mk="ap|' + id + '" aria-labelledby="ap-t-' + id + '">'
-      + '<div class="ap-resolved" data-decision="' + escAttr(answered) + '">'
-      + '<span class="ap-mark" aria-hidden="true">' + mark + '</span>'
-      + '<span class="ap-row-title" id="ap-t-' + id + '">' + esc(title) + '</span>'
-      + '<span class="ap-row-status">' + esc(AP_ANSWERED[answered] || answered) + '</span>'
-      + '</div></div>';
-  }
-  var sibling = isSiblingSession(s);
-  var mine = isPermissionRequester(p) && !sibling;
-  var detail = _permDetails[p.approvalId];
-  if (mine && !detail) loadPermissionDetail(s.key, p.approvalId);
-  var desc = '';
-  var body;
-  if (!mine) body = '<div class="perm-params perm-params-hidden">' + esc(sibling ? '다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요' : '파라미터와 응답은 요청자만 볼 수 있습니다') + '</div>';
-  else if (!detail) body = '<div class="perm-params perm-params-hidden">파라미터 불러오는 중…</div>';
-  else if (detail.error) body = '<div class="perm-params perm-params-hidden">' + esc(detail.error) + '</div>';
-  else {
-    var d = apDetails(detail);
-    desc = d.desc;
-    body = d.html;
-  }
-  var rules = p.rules || [];
-  var pill = rules.length
-    ? '<span class="ap-pill" data-kind="rule">위험<span class="ap-pill-word"> 규칙</span> ' + rules.length + '</span>'
-    : '<span class="ap-pill" data-kind="tool">도구 승인</span>';
-  var rulesHtml = rules.length
-    ? '<div class="perm-rules"><span class="perm-rules-label">Matched dangerous-command rule' + (rules.length > 1 ? 's' : '') + '</span>'
-      + rules.map(function(r) { return '<span class="perm-rule"><code>' + esc(r.id) + '</code> &mdash; ' + esc(r.label) + ': ' + esc(r.description) + '</span>'; }).join('')
-      + '</div>'
-    : '';
-  var lock = mine ? '' : ' disabled title="' + escAttr(sibling ? '다른 인스턴스의 세션' : '이 요청의 요청자만 응답할 수 있습니다') + '"';
-  // data-mk = request + answer: a live morph never rebinds a focused answer to another request (domKeyOf).
-  var data = ' data-perm-key="' + escAttr(s.key) + '" data-perm-id="' + id + '"';
-  var mk = function(d) { return ' data-mk="ap|' + id + '|' + d + '"'; };
-  var alts = '<button type="button" class="btn-perm ap-btn ap-ghost"' + lock + data + ' data-perm-decision="explain"' + mk('explain') + '>Explain</button>'
-    + (p.canDisableRule ? '<button type="button" class="btn-perm ap-btn ap-ghost"' + lock + data + ' data-perm-decision="approve_disable_rule"' + mk('approve_disable_rule') + '>Approve &amp; disable rule</button>' : '');
-  var main = '<button type="button" class="btn-perm ap-btn ap-quiet ap-deny"' + lock + data + ' data-perm-decision="deny" data-kbd="Esc" aria-keyshortcuts="Escape"' + mk('deny') + '>Deny</button>'
-    + '<button type="button" class="btn-perm ap-btn ap-primary ap-approve"' + lock + data + ' data-perm-decision="approve" data-kbd="' + AP_KBD_APPROVE + '" aria-keyshortcuts="Meta+Enter Control+Enter"' + mk('approve') + '>Approve</button>';
-  var until = toNum(p.expiresAt);
-  var expires = until > 0
-    ? '<span class="ap-expires" data-until="' + until + '" aria-hidden="true"></span><span class="ar-vh" id="ap-x-' + id + '">' + esc(formatTaskTime(until)) + '에 만료</span>'
-    : '';
-  var describedBy = [desc ? 'ap-d-' + id : '', until > 0 ? 'ap-x-' + id : ''].filter(Boolean).join(' ');
-  var note = _permNotes[p.approvalId] ? '<div class="perm-note" role="alert">' + esc(_permNotes[p.approvalId]) + '</div>' : '';
-  return '<div class="ap-card perm-request" role="group" tabindex="-1" data-ap-kind="perm" data-approval-id="' + id + '" data-mk="ap|' + id + '" aria-labelledby="ap-t-' + id + '"'
-    + (describedBy ? ' aria-describedby="' + describedBy + '"' : '') + '>'
-    // Only what the prompt itself proves (no task: a subagent may have raised it).
-    + '<div class="ap-label">' + esc(tool) + (toNum(p.createdAt) > 0 ? ' &middot; ' + esc(formatTaskTime(p.createdAt)) + ' 요청' : '') + '</div>'
-    + '<div class="ap-body"><div class="ap-head">'
-    + '<span class="ap-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg></span>'
-    + '<div class="ap-titles"><div class="ap-title" id="ap-t-' + id + '">' + esc(title) + '</div>'
-    + (desc ? '<div class="ap-desc" id="ap-d-' + id + '" title="' + escAttr(desc) + '">' + esc(desc) + '</div>' : '') + '</div>'
-    + pill + '</div>'
-    + body + rulesHtml
-    + '<div class="ap-alts">' + alts + '</div>'
-    + '<div class="ap-foot">' + expires + '<div class="ap-actions">' + main + '</div></div>'
-    + note + '</div></div>';
-}
-// D17: the single-choice question in the same frame — the whole question as
-// the title, the recommended choice first (primary, ⌘↵), the rest after it.
-function apQuestionCardHtml(s, q) {
-  var recId = resolveRecommendedId(q.recommendedChoiceId, q.choices);
-  var rec = recId ? q.choices.find(function(c) { return c.id === recId; }) : null;
-  var others = q.choices.filter(function(c) { return !rec || c.id !== rec.id; });
-  var ordered = rec ? [rec].concat(others) : others;
-  // The card's key is the question's whole meaning — its text and every choice's id, label and description,
-  // serialized (JSON: no two meanings share a key). A question rewritten in place (same text, same ids, another
-  // label) is another card: the old one and its focused choice leave the page (apSafeFocus), never rebound.
-  // Inside one card a choice pairs by its id.
-  var qk = 'q|' + JSON.stringify([q.question, q.choices.map(function(c) { return [c.id, c.label, c.description || '']; })]);
-  var btns = ordered.map(function(c) {
-    var lbl = stripRecommendedMarker(c.label);
-    var isRec = !!rec && c.id === rec.id;
-    return '<button type="button" class="btn-choice ap-choice' + (isRec ? ' ap-rec' : '') + '"' + choiceDataAttrs(s.key, c.id, lbl, q.question)
-      + (isRec ? ' data-kbd="' + AP_KBD_APPROVE + '" aria-keyshortcuts="Meta+Enter Control+Enter"' : '') + ' data-mk="' + escAttr('c|' + c.id) + '">'
-      + '<span class="ap-choice-label">' + esc(c.id) + '. ' + esc(lbl) + (isRec ? '<span class="ap-choice-tag">추천</span>' : '') + '</span>'
-      + (c.description ? '<span class="ap-choice-desc">' + esc(c.description) + '</span>' : '')
-      + '</button>';
-  }).join('');
-  return '<div class="ap-card ap-question" role="group" tabindex="-1" data-ap-kind="question" data-mk="' + escAttr(qk) + '" aria-labelledby="ap-q-title">'
-    + '<div class="ap-body"><div class="ap-head">'
-    + '<span class="ap-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M6.3 6.3a1.8 1.8 0 0 1 3.4.7c0 1.2-1.7 1.5-1.7 2.6M8 11.3v.1"/></svg></span>'
-    + '<div class="ap-titles"><div class="ap-title" id="ap-q-title">' + esc(q.question) + '</div></div>'
-    + '<span class="ap-pill" data-kind="question">질문</span></div>'
-    + '<div class="panel-question-choices ap-choices">' + btns + '</div>'
-    + '</div></div>';
-}
-// D14: ⌘/Ctrl+Enter anywhere in a card answers with its primary (Approve, or a
-// question's recommended choice); Esc denies only from one of the card's
-// buttons — on the card itself (the keyboard landing) it still closes the
-// panel. A handled key stays here: the document's Escape never sees it.
-function apKeydown(e) {
-  if (e.defaultPrevented || !e.target || !e.target.closest) return;
-  var card = e.target.closest('.ap-card');
-  if (!card) return;
-  var kind = card.getAttribute('data-ap-kind');
-  var btn = null;
-  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-    btn = card.querySelector(kind === 'question' ? '.ap-rec' : '.ap-approve');
-  } else if (e.key === 'Escape' && kind === 'perm') {
-    var from = e.target.closest('button');
-    if (from && card.contains(from)) btn = card.querySelector('.ap-deny');
-  }
-  if (!btn || btn.disabled) return;
-  e.preventDefault();
-  e.stopPropagation();
-  btn.click();
-}
-['panel-permission', 'panel-question'].forEach(function(id) {
-  var el = document.getElementById(id);
-  if (el) el.addEventListener('keydown', apKeydown);
-});
-
-// Re-draw what shows this session's prompt (its card, the open panel).
-function repaintPermission(key) {
-  refreshCard(key);
-  if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelPermission(_sessionCache[key]);
+// The first card in root still waiting on an answer (not a resolved row).
+function acFirstOpen(root) {
+  if (!root || root.style.display === 'none') return null;
+  var els = root.querySelectorAll('ui-approval-card');
+  for (var i = 0; i < els.length; i++) if (els[i].status !== 'resolved') return els[i];
+  return null;
 }
 
 function loadPermissionDetail(key, approvalId) {
@@ -7991,53 +7777,166 @@ function loadPermissionDetail(key, approvalId) {
     .catch(function() { _permDetails[approvalId] = { error: '파라미터를 불러오지 못했습니다' }; })
     .then(function() {
       delete _permLoading[approvalId];
-      repaintPermission(key);
+      acRepaint(key);
     });
 }
 
-// One answer per prompt: every button of the prompt is disabled while it is
-// sent. Success leaves them disabled — the permission MCP server takes the
-// answer within a second and the board push removes the prompt. A refusal is
-// shown under the buttons; only a retryable failure re-enables them.
-async function answerPermission(key, approvalId, decision, btnEl) {
-  var box = btnEl.closest('.perm-request');
-  var btns = box ? box.querySelectorAll('.btn-perm') : [];
-  btns.forEach(function(b) { b.disabled = true; });
-  var label = btnEl.textContent;
-  btnEl.textContent = '...';
-  delete _permNotes[approvalId];
-  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/permission';
-  var body = JSON.stringify({ approvalId: approvalId, decision: decision });
-  var retryable = true;
+// POST with the CSRF retry (a 403 after the JWT rotated refreshes the token once).
+async function acPost(url, body) {
+  var headers = { 'Content-Type': 'application/json' };
+  if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+  var res = await fetch(url, { method: 'POST', headers: headers, body: body });
+  if (res.status === 403) {
+    await refreshCsrfToken();
+    var retryHeaders = { 'Content-Type': 'application/json' };
+    if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+    res = await fetch(url, { method: 'POST', headers: retryHeaders, body: body });
+  }
+  return res;
+}
+// A refused answer as the card's error: the server's reason; a request that is
+// gone (404) or already answered elsewhere (409) is final — no Retry.
+async function acRefusal(res) {
+  var data = {};
+  try { data = await res.json(); } catch (_e) {}
+  return { status: 'error', message: (data && data.error) || ('응답을 보내지 못했어요 (HTTP ' + res.status + ')'), retry: res.status !== 409 && res.status !== 404 };
+}
+function acToolOf(key, approvalId) {
+  var s = _sessionCache[key];
+  var list = (s && s.pendingPermissions) || [];
+  for (var i = 0; i < list.length; i++) if (String(list[i].approvalId) === approvalId) return list[i].toolName || 'tool';
+  return '';
+}
+
+// One answer per prompt. The card shows it in flight, then its resolved row —
+// the permission MCP server takes the answer within a second and the board
+// push removes the prompt, so a toast says it went through after the card is
+// gone. A refusal stays on the card (the state): its reason, and Retry unless
+// the request is gone or was answered elsewhere.
+// ── Results as toasts — @2lab.ai/ui <ui-toaster> (affectUI review batch 1) ──
+// One page stack for what an action did: Stop / Close / Trash, the answers,
+// the multi-choice form, a launched task. The element sits in a token wrapper
+// (.ui-tok, display: contents) — the dashboard tokens reach it resolved; on the
+// element itself the mapping would be a custom-property cycle.
+var _dashToastQ = null;
+var _dashToastAct = Object.create(null); // toast id → what its action does
+function dashToaster() {
+  var t = document.getElementById('dash-toaster');
+  if (t) return t;
+  var wrap = document.createElement('div');
+  wrap.className = 'ui-tok';
+  wrap.style.display = 'contents';
+  t = document.createElement('ui-toaster');
+  t.id = 'dash-toaster';
+  t.setAttribute('lang', 'ko');
+  wrap.appendChild(t);
+  document.body.appendChild(wrap);
+  return t;
+}
+// Show a toast; onAction runs when its action (Retry, 카드 열기 …) is pressed.
+// Before the library module has run, toasts wait and show once it is defined.
+function dashToast(input, onAction) {
+  var t = dashToaster();
+  if (typeof t.show !== 'function') {
+    if (!_dashToastQ) {
+      _dashToastQ = [];
+      if (window.customElements && customElements.whenDefined) {
+        customElements.whenDefined('ui-toaster').then(function() {
+          var q = _dashToastQ || [];
+          _dashToastQ = null;
+          for (var i = 0; i < q.length; i++) dashToast(q[i][0], q[i][1]);
+        });
+      }
+    }
+    _dashToastQ.push([input, onAction]);
+    return '';
+  }
+  var id = t.show(input);
+  if (onAction) _dashToastAct[id] = onAction;
+  return id;
+}
+document.addEventListener('ui-action', function(e) {
+  var d = e.detail;
+  if (!d || !e.target || e.target.id !== 'dash-toaster') return;
+  var fn = _dashToastAct[d.id];
+  if (fn) fn(d.actionId);
+});
+document.addEventListener('ui-dismiss', function(e) {
+  if (e.detail && e.target && e.target.id === 'dash-toaster') delete _dashToastAct[e.detail.id];
+});
+var DA_LABEL = { stop: '중지', close: '닫기', trash: '휴지통으로 이동' };
+var DA_DONE = { stop: '세션을 중지했어요', close: '세션을 닫았어요', trash: '휴지통으로 옮겼어요' };
+
+async function answerPermission(key, approvalId, decision) {
+  var sk = 'p|' + approvalId;
+  var states = _acState[key] || (_acState[key] = Object.create(null));
+  var cur = states[sk];
+  if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
+  states[sk] = { status: 'sending', decision: decision };
+  acRepaint(key);
+  var st;
   try {
-    var headers = { 'Content-Type': 'application/json' };
-    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
-    var res = await fetch(url, { method: 'POST', headers: headers, body: body });
-    if (res.status === 403) {
-      await refreshCsrfToken();
-      var retryHeaders = { 'Content-Type': 'application/json' };
-      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
-      res = await fetch(url, { method: 'POST', headers: retryHeaders, body: body });
-    }
+    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/permission', JSON.stringify({ approvalId: approvalId, decision: decision }));
     if (res.ok) {
-      btnEl.textContent = '✓ ' + label;
-      // The panel's card turns into its resolved row (re-agent-run D15); the
-      // card face keeps its locked buttons until the board push removes it.
-      _permAnswered[approvalId] = decision;
-      if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelPermission(_sessionCache[key]);
-      return;
-    }
-    var data = {};
-    try { data = await res.json(); } catch (_) {}
-    _permNotes[approvalId] = data.error || ('Failed (status ' + res.status + ')');
-    retryable = res.status !== 409 && res.status !== 404;
+      st = { status: 'resolved', outcome: decision === 'deny' ? 'denied' : decision === 'explain' ? 'explained' : 'approved', at: Date.now() };
+      if (decision === 'approve_disable_rule') st.ruleDisabled = true;
+      dashToast({ title: AC_SENT[decision] || '응답을 보냈어요', description: acToolOf(key, approvalId), tone: 'success' });
+    } else st = await acRefusal(res);
   } catch (e) {
     console.error('Permission answer error', e);
-    _permNotes[approvalId] = '네트워크 오류 — 다시 시도하세요';
+    st = { status: 'error', message: '네트워크 오류 — 다시 시도하세요', retry: true };
   }
-  btnEl.textContent = label;
-  if (retryable) btns.forEach(function(b) { b.disabled = false; });
-  repaintPermission(key);
+  // Kept only while the session still asks it (a push may have taken it meanwhile).
+  var still = ((_sessionCache[key] && _sessionCache[key].pendingPermissions) || []).some(function(p) { return String(p.approvalId) === String(approvalId); });
+  if (still) (_acState[key] || (_acState[key] = Object.create(null)))[sk] = st;
+  else acDrop(key, sk);
+  acRepaint(key);
+  return st;
+}
+// Forget one answer state (and the session's map once it is empty).
+function acDrop(key, id) {
+  var states = _acState[key];
+  if (!states) return;
+  delete states[id];
+  for (var k in states) return;
+  delete _acState[key];
+}
+
+// The single-choice answer, from the card or the panel (the same element): the
+// choice travels with its label and the question, as the route wants. Same
+// states as a prompt; a question that changed meanwhile takes no answer.
+async function answerChoice(key, qid, choiceId) {
+  var s = _sessionCache[key];
+  var q = s && s.pendingQuestion;
+  if (!q || q.type !== 'user_choice' || !q.choices || acQuestionId(q) !== qid) return null;
+  var c = null;
+  for (var i = 0; i < q.choices.length; i++) if (String(q.choices[i].id) === choiceId) c = q.choices[i];
+  if (!c) return null;
+  var states = _acState[key] || (_acState[key] = Object.create(null));
+  var cur = states[qid];
+  if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
+  states[qid] = { status: 'sending', choiceId: choiceId };
+  acRepaint(key);
+  var label = stripRecommendedMarker(c.label);
+  var st;
+  try {
+    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/answer-choice', JSON.stringify({ choiceId: choiceId, label: label, question: q.question }));
+    if (res.ok) {
+      st = { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() };
+      dashToast({ title: '답을 보냈어요', description: label, tone: 'success' });
+    } else st = await acRefusal(res);
+  } catch (e) {
+    console.error('Answer choice error', e);
+    st = { status: 'error', message: '네트워크 오류 — 다시 시도하세요', retry: true };
+  }
+  // Kept only while the session still asks this question: once a push took it
+  // away (answered here or in Slack), a late result would otherwise answer the
+  // next identical question.
+  var nq = _sessionCache[key] && _sessionCache[key].pendingQuestion;
+  if (nq && nq.type === 'user_choice' && nq.choices && acQuestionId(nq) === qid) (_acState[key] || (_acState[key] = Object.create(null)))[qid] = st;
+  else acDrop(key, qid);
+  acRepaint(key);
+  return st;
 }
 
 // The panel's Tasks section (dashboard task view T1.3): a disclosure in the
@@ -8330,6 +8229,7 @@ function _applyUserPill(data) {
   // also gets the toggle.
   const isAdminCapable = !!(data && (data.isAdmin || (data.user && data.user.name && data.isAdmin)));
   _viewerIsAdmin = isAdminCapable;
+  if (typeof paintUsageBreakdown === 'function') paintUsageBreakdown(); // the by-user view is an admin's
   _viewerUserId = (data && data.user && data.user.slackUserId) || '';
   const lifecycleBtn = document.getElementById('lifecycle-btn');
   if (lifecycleBtn) lifecycleBtn.style.display = isAdminCapable ? 'inline-flex' : 'none';
@@ -8614,12 +8514,12 @@ function choiceDataAttrs(key, id, label, question) {
   return ' data-choice-key="' + escAttr(key) + '" data-choice-id="' + escAttr(id)
     + '" data-choice-label="' + escAttr(label) + '" data-choice-question="' + escAttr(question) + '"';
 }
+// (The single-choice question is an approval card: its answer is ui-answer.)
 document.addEventListener('click', function(e) {
-  var btn = e.target && e.target.closest ? e.target.closest('button[data-choice-id]') : null;
+  var btn = e.target && e.target.closest ? e.target.closest('button[data-choice-id][data-mc-index]') : null;
   if (!btn || btn.disabled) return;
   var d = btn.dataset;
-  if (d.mcIndex !== undefined) selectMc(d.choiceKey, Number(d.mcIndex), d.choiceId, d.choiceLabel);
-  else answerChoice(d.choiceKey, d.choiceId, d.choiceLabel, d.choiceQuestion, btn);
+  selectMc(d.choiceKey, Number(d.mcIndex), d.choiceId, d.choiceLabel);
 });
 // Only http(s) URLs become links; anything else (javascript:, data:) is inert.
 function safeHref(u) {
@@ -8787,7 +8687,7 @@ function formatNmSSs(ms) {
 //   .card-timer-live  data-leg-started / data-accumulated (renderCardStatus)
 //   .rel-time         data-ts  → "6m ago"
 //   .task-elapsed     data-since → running task duration
-//   .ap-expires       data-until → an approval card's time left
+// (An approval card's expiry is <ui-approval-card>'s own countdown.)
 function updateTimersIn(root) {
   var now = Date.now();
   var els = root.querySelectorAll('.card-timer-live');
@@ -8808,14 +8708,6 @@ function updateTimersIn(root) {
   for (var k = 0; k < run.length; k++) {
     var d = formatDuration(now - (Number(run[k].dataset.since) || now)) || '0s';
     if (run[k].textContent !== d) run[k].textContent = d;
-  }
-  // An approval card's expiry (re-agent-run D16): m:ss left, stopping at 0:00; the last minute warns.
-  var exp = root.querySelectorAll('.ap-expires');
-  for (var x = 0; x < exp.length; x++) {
-    var left = Math.max(0, Math.ceil(((Number(exp[x].dataset.until) || 0) - now) / 1000));
-    var et = '만료까지 ' + Math.floor(left / 60) + ':' + (left % 60 < 10 ? '0' : '') + (left % 60);
-    if (exp[x].textContent !== et) exp[x].textContent = et;
-    exp[x].classList.toggle('is-low', left <= 60);
   }
 }
 function updateTimers() { updateTimersIn(document); aqTick(); }
@@ -9139,6 +9031,8 @@ function renderBoard(board, partial) {
       _sessionCache[arr[i0].key] = arr[i0];
     }
   }
+  // Answer states of requests the board no longer holds (a session gone, a prompt or question it no longer asks).
+  for (var ak in _acState) acEvict(ak, _sessionCache[ak]);
   _envIndex = _buildEnvIndex();
   // Owner hues for every card in the board data (hidden archives too, so the
   // Show archives toggle never recolours anyone).
@@ -9641,6 +9535,10 @@ function applyCardParts(el, p) {
     updateTimersIn(el._bodyEl);
     changed = true;
   }
+  // The body's approval cards: their data (the requester's input, an answer in
+  // flight) changes without their markup — set on every pass, written only
+  // where it changed.
+  acHydrate(el._bodyEl);
   return changed;
 }
 // D4: scale 0.6 → 1 with a fade, the board's move duration on the entry curve.
@@ -12184,10 +12082,6 @@ function renderCardBody(s, col) {
   // this is UX only. Fail closed: if ownerId is missing (legacy record) the
   // viewer is not treated as owner so the server-side reject is expected.
   const isOwner = !!s.ownerId && s.ownerId === currentUserId;
-  // readOnlyAttrs carries only the disabled attribute — each button owns its
-  // own title= so there is no duplicate-attribute clash when the button already
-  // needs a descriptive tooltip (e.g. pending-question choices).
-  const readOnlyAttrs = isOwner ? '' : ' disabled';
   const isSibling = !!(SELF_INSTANCE_NAME && s.environment && s.environment.instanceName && s.environment.instanceName !== SELF_INSTANCE_NAME);
   // re-agent-inbox D10: what this viewer can settle here — the owner's question on
   // this instance, a permission prompt they asked for. One gate for the ink.
@@ -12233,39 +12127,23 @@ function renderCardBody(s, col) {
   // The collapsed face already shows the pending question as its summary; the
   // open card then keeps only the choices, not the same sentence twice.
   const faceSummary = cardSummary(s, col, s.displayHeadline || s.summaryTitle || s.title);
-  // Pending question (choice buttons for waiting sessions)
+  // The pending question of a waiting session. The single-choice question is
+  // the same <ui-approval-card> as the panel's (acQuestionHtml — its answer is
+  // ui-answer, locked for anyone but the owner on this instance); the element
+  // titles the card with the whole question, so it reads the face's summary
+  // again. The multi-question form opens the panel (답변하기).
   let questionHtml = '';
   if (s.pendingQuestion && col === 'waiting') {
     if (s.pendingQuestion.type === 'user_choice' && s.pendingQuestion.choices) {
-      var pq = s.pendingQuestion;
-      var recId = resolveRecommendedId(pq.recommendedChoiceId, pq.choices);
-      var recOpt = recId ? pq.choices.find(function(c) { return c.id === recId; }) : null;
-      var otherOpts = pq.choices.filter(function(c) { return !recOpt || c.id !== recOpt.id; });
-      var recHtml = '';
-      if (recOpt) {
-        var recLabel = stripRecommendedMarker(recOpt.label);
-        var recTitle = isOwner ? (recOpt.description || recLabel) : READ_ONLY_MSG;
-        recHtml = '<div class="choice-row-recommended">'
-          + '<button class="btn-choice btn-choice-recommended' + (canAnswerQuestion ? '' : ' is-quiet') + '"' + readOnlyAttrs + choiceDataAttrs(s.key, recOpt.id, recLabel, pq.question) + ' title="' + escAttr(recTitle) + '">' + esc(recOpt.id) + '. ' + esc(recLabel) + '</button>'
-          + '</div>'
-          + (otherOpts.length > 0 ? '<hr class="choice-divider">' : '');
-      }
-      var otherBtns = otherOpts.map(function(c) {
-        var lbl = stripRecommendedMarker(c.label);
-        var btnTitle = isOwner ? (c.description || lbl) : READ_ONLY_MSG;
-        return '<button class="btn-choice"' + readOnlyAttrs + choiceDataAttrs(s.key, c.id, lbl, pq.question) + ' title="' + escAttr(btnTitle) + '">' + esc(c.id) + '. ' + esc(lbl) + '</button>';
-      }).join('');
-      questionHtml = '<div class="card-question">'
-        + (pq.question === faceSummary ? '' : '<div class="card-question-text">&#x2753; ' + esc(String(pq.question || '').slice(0, 80)) + '</div>')
-        + '<div class="card-question-choices">' + recHtml + otherBtns + '</div>'
-        + '</div>';
+      questionHtml = acQuestionHtml(s, s.pendingQuestion);
     } else if (s.pendingQuestion.type === 'user_choices') {
       questionHtml = renderMultiChoiceCard(s, faceSummary);
     }
   }
 
-  // Permission prompt the turn is blocked on (SSOT 2026-10-24).
-  const permissionHtml = col === 'closed' ? '' : renderPermissionBlock(s, 'card');
+  // The permission prompts the turn is blocked on (SSOT 2026-10-24): one
+  // <ui-approval-card> each (acPermissionsHtml), as in the panel.
+  const permissionHtml = col === 'closed' ? '' : acPermissionsHtml(s);
 
   const ioHtml = isSiblingSession(s) ? '' : renderCardIo(s);
   // Artifacts live on this instance's disk: a sibling instance's card links nowhere here.
@@ -13947,78 +13825,26 @@ async function doAction(key, action) {
       if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
       res = await fetch(url, { method: 'POST', headers: retryHeaders });
     }
-    if (!res.ok) console.error('Action failed', action, key);
-  } catch (e) { console.error('Action error', e); }
+    var title = (_sessionCache[key] && _sessionCache[key].title) || '';
+    if (res.ok) dashToast({ title: DA_DONE[action] || '완료했어요', description: title || undefined, tone: 'success' });
+    else {
+      console.error('Action failed', action, key);
+      dashToast(
+        { title: (DA_LABEL[action] || action) + ' 실패', description: 'HTTP ' + res.status + (title ? ' · ' + title : ''), tone: 'error', action: { id: 'retry' } },
+        function() { doAction(key, action); },
+      );
+    }
+  } catch (e) {
+    console.error('Action error', e);
+    dashToast(
+      { title: (DA_LABEL[action] || action) + ' 실패', description: '네트워크 오류', tone: 'error', action: { id: 'retry' } },
+      function() { doAction(key, action); },
+    );
+  }
   setBusy(key, 'action', false);
   refreshCard(key);
   if (panelOpen && panelSessionKey === key) renderPanelHead();
   loadSessions();
-}
-
-// ── Answer choice from dashboard ──
-async function answerChoice(key, choiceId, label, question, btnEl) {
-  try {
-    // Disable all choice buttons in the same card or panel to prevent double-click
-    var card = btnEl.closest('.card') || btnEl.closest('.panel-question-choices') || btnEl.closest('#panel-question');
-    if (card) {
-      card.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = true; });
-    }
-    btnEl.textContent = '...';
-
-    const choiceHeaders = { 'Content-Type': 'application/json' };
-    if (_csrfToken) choiceHeaders['X-CSRF-Token'] = _csrfToken;
-    const choiceUrl = '/api/dashboard/session/' + encodeURIComponent(key) + '/answer-choice';
-    const choiceBody = JSON.stringify({ choiceId: choiceId, label: label, question: question });
-    let res = await fetch(choiceUrl, { method: 'POST', headers: choiceHeaders, body: choiceBody });
-    if (res.status === 403) {
-      await refreshCsrfToken();
-      const retryHeaders = { 'Content-Type': 'application/json' };
-      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
-      res = await fetch(choiceUrl, { method: 'POST', headers: retryHeaders, body: choiceBody });
-    }
-    if (!res.ok) {
-      var errData = {};
-      try { errData = await res.json(); } catch(_) {}
-      var errMsg = errData.error || 'Failed (status ' + res.status + ')';
-      console.error('Answer choice failed', key, choiceId, errMsg);
-      // Show error briefly, then re-enable buttons for retry
-      btnEl.textContent = errMsg;
-      btnEl.style.color = 'var(--red)';
-      setTimeout(function() {
-        if (card) {
-          card.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
-        }
-        btnEl.textContent = choiceId + '. ' + label;
-        btnEl.style.color = '';
-        apRepaintQuestion(btnEl, key);
-      }, 2500);
-    } else {
-      // On success, the WebSocket session_update SHOULD re-render the board and
-      // replace these buttons. But if the WS message is delayed/dropped, the
-      // user is stuck with permanently disabled buttons. Fallback: re-enable
-      // after 5s if the card is still in the DOM (i.e. not re-rendered).
-      setTimeout(function() {
-        if (card && card.isConnected) {
-          card.querySelectorAll('.btn-choice').forEach(function(b) {
-            if (b.disabled) b.disabled = false;
-          });
-          if (btnEl.isConnected && btnEl.textContent === '...') {
-            btnEl.textContent = choiceId + '. ' + label;
-            apRepaintQuestion(btnEl, key);
-          }
-        }
-      }, 5000);
-    }
-  } catch (e) {
-    console.error('Answer choice error', e);
-    // Re-enable buttons on network error so user can retry
-    var errCard = btnEl.closest('.card') || btnEl.closest('.panel-question-choices') || btnEl.closest('#panel-question');
-    if (errCard) {
-      errCard.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
-    }
-    btnEl.textContent = choiceId + '. ' + label;
-    apRepaintQuestion(btnEl, key);
-  }
 }
 
 // ── Multi-choice form state ──
@@ -14261,13 +14087,13 @@ async function submitMultiChoice(key) {
   var s = _sessionCache[key];
   if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) {
     console.warn('submitMultiChoice: session data unavailable', key);
-    alert('\\uC138\\uC158 \\uB370\\uC774\\uD130\\uB97C \\uBD88\\uB7EC\\uC62C \\uC218 \\uC5C6\\uC2B5\\uB2C8\\uB2E4. \\uD398\\uC774\\uC9C0\\uB97C \\uC0C8\\uB85C\\uACE0\\uCE68\\uD574\\uC8FC\\uC138\\uC694.');
+    dashToast({ title: '\\uC138\\uC158 \\uB370\\uC774\\uD130\\uB97C \\uBD88\\uB7EC\\uC62C \\uC218 \\uC5C6\\uC2B5\\uB2C8\\uB2E4. \\uD398\\uC774\\uC9C0\\uB97C \\uC0C8\\uB85C\\uACE0\\uCE68\\uD574\\uC8FC\\uC138\\uC694.', tone: 'error' });
     return;
   }
   var st = _mcState[key];
   if (!st) {
     console.warn('submitMultiChoice: no selections state', key);
-    alert('\\uC120\\uD0DD \\uC0C1\\uD0DC\\uAC00 \\uC5C6\\uC2B5\\uB2C8\\uB2E4. \\uB2E4\\uC2DC \\uC120\\uD0DD\\uD574\\uC8FC\\uC138\\uC694.');
+    dashToast({ title: '\\uC120\\uD0DD \\uC0C1\\uD0DC\\uAC00 \\uC5C6\\uC2B5\\uB2C8\\uB2E4. \\uB2E4\\uC2DC \\uC120\\uD0DD\\uD574\\uC8FC\\uC138\\uC694.', tone: 'error' });
     return;
   }
 
@@ -14278,7 +14104,7 @@ async function submitMultiChoice(key) {
     if (st.selections[s.pendingQuestion.questions[i].id]) answered++;
   }
   if (answered < total) {
-    alert('\\uBAA8\\uB4E0 \\uC9C8\\uBB38\\uC5D0 \\uB2F5\\uBCC0\\uD574\\uC8FC\\uC138\\uC694. (' + answered + '/' + total + ')');
+    dashToast({ title: '\\uBAA8\\uB4E0 \\uC9C8\\uBB38\\uC5D0 \\uB2F5\\uBCC0\\uD574\\uC8FC\\uC138\\uC694. (' + answered + '/' + total + ')', tone: 'error' });
     return;
   }
 
@@ -14308,7 +14134,7 @@ async function submitMultiChoice(key) {
       var errData = {};
       try { errData = await res.json(); } catch(_) {}
       var errMsg = errData.error || 'Failed (status ' + res.status + ')';
-      alert('\\uC81C\\uCD9C \\uC2E4\\uD328: ' + errMsg);
+      dashToast({ title: '\\uC81C\\uCD9C \\uC2E4\\uD328: ' + errMsg, tone: 'error' });
       btns.forEach(function(b) { b.disabled = false; b.textContent = '\\uC81C\\uCD9C\\uD558\\uAE30 (' + total + '/' + total + ')'; });
       if (mcForm) {
         mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
@@ -14321,7 +14147,7 @@ async function submitMultiChoice(key) {
     }
   } catch (e) {
     console.error('submitMultiChoice error', e);
-    alert('\\uB124\\uD2B8\\uC6CC\\uD06C \\uC624\\uB958: ' + e.message);
+    dashToast({ title: '\\uB124\\uD2B8\\uC6CC\\uD06C \\uC624\\uB958: ' + e.message, tone: 'error' });
     btns.forEach(function(b) { b.disabled = false; b.textContent = '\\uC81C\\uCD9C\\uD558\\uAE30 (' + total + '/' + total + ')'; });
     if (mcForm) {
       mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
@@ -14359,7 +14185,7 @@ async function submitAllRecommended(key) {
       var errData = {};
       try { errData = await res.json(); } catch(_) {}
       var errMsg = errData.error || ('Failed (status ' + res.status + ')');
-      alert('\\u274C ' + errMsg);
+      dashToast({ title: '\\u274C ' + errMsg, tone: 'error' });
       if (heroBtn) { heroBtn.disabled = false; heroBtn.removeAttribute('aria-disabled'); }
     } else {
       // Success — clear local state; WebSocket will re-render.
@@ -14367,7 +14193,7 @@ async function submitAllRecommended(key) {
     }
   } catch (e) {
     console.error('submitAllRecommended error', e);
-    alert('\\u274C ' + e.message);
+    dashToast({ title: '\\u274C ' + e.message, tone: 'error' });
     if (heroBtn) { heroBtn.disabled = false; heroBtn.removeAttribute('aria-disabled'); }
   }
 }
@@ -14451,7 +14277,55 @@ function paintStats(data) {
   else if (chartEl) chartEl.innerHTML = '';
 }
 
+// ── Where the usage goes — @2lab.ai/ui <ui-compact-breakdown> (affectUI review batch 1) ──
+// Spend or tokens by model for everyone; spend by user for an admin (the
+// server sends per-user parts to admins only — usageForViewer).
+var _usageView = 'cost';
+var _usageReport = null;
+var USAGE_VIEWS = [{ id: 'cost', label: '모델별 비용' }, { id: 'tokens', label: '모델별 토큰' }];
+// Pure: the usage report → the card's data.
+function usageBreakdownData(report, view, admin) {
+  var options = admin ? USAGE_VIEWS.concat([{ id: 'user', label: '사용자별 비용' }]) : USAGE_VIEWS;
+  if (view === 'user' && !admin) view = 'cost';
+  var d = { title: '사용량', unit: view === 'tokens' ? 'tokens' : 'usd', options: options, value: view, optionsLabel: '보기', maxRows: 5, parts: [], emptyText: '이 기간에는 사용량이 없어요' };
+  if (!report) {
+    d.error = '사용량을 불러오지 못했어요';
+    return d;
+  }
+  if (view === 'user') {
+    var users = report.byUser || {};
+    for (var uid in users) {
+      if (!Object.prototype.hasOwnProperty.call(users, uid)) continue;
+      d.parts.push({ key: uid, label: String((users[uid] && users[uid].userName) || uid), value: toNum(users[uid] && users[uid].totalCostUsd) });
+    }
+    return d;
+  }
+  var models = (report.totals && report.totals.byModel) || {};
+  for (var m in models) {
+    if (!Object.prototype.hasOwnProperty.call(models, m)) continue;
+    var u = models[m] || {};
+    d.parts.push({ key: m, label: m, value: view === 'tokens' ? toNum(u.inputTokens) + toNum(u.outputTokens) : toNum(u.costUsd) });
+  }
+  return d;
+}
+function paintUsageBreakdown() {
+  var el = document.getElementById('usage-cb');
+  if (!el) return;
+  var d = usageBreakdownData(_usageReport, _usageView, !!_viewerIsAdmin);
+  var sig = JSON.stringify(d);
+  if (el._sig === sig) return;
+  el._sig = sig;
+  el.data = d;
+}
+document.addEventListener('ui-change', function(e) {
+  if (!e.target || e.target.id !== 'usage-cb' || !e.detail) return;
+  _usageView = String(e.detail.value);
+  paintUsageBreakdown();
+});
+
 function paintUsage(report) {
+  _usageReport = report || null;
+  paintUsageBreakdown();
   var t = report && report.totals;
   setStat('stat-tokens', t ? formatTokens(toNum(t.totalInputTokens) + toNum(t.totalOutputTokens)) : '\\u2014');
   setStat('stat-cost', t ? '$' + toNum(t.totalCostUsd).toFixed(2) : '\\u2014');
@@ -14601,6 +14475,7 @@ function connectWs() {
         // (an open card stays open). The column comes from the card's data-col.
         var updatedKey = msg.session.key;
         _sessionCache[updatedKey] = msg.session;
+        acEvict(updatedKey, msg.session);
         patchLastBoard(msg.session);
         var existingCard = _cardEls[updatedKey];
         if (existingCard) {
@@ -16311,9 +16186,11 @@ function focusPanelLanding() {
   else if (_panelLand === 'tasks') t = document.getElementById('panel-tasks');
   else if (_panelLand === 'worklog') t = document.getElementById('worklog-toggle');
   if (!t || t.style.display === 'none') {
-    // An approval card itself (re-agent-run D14): Esc there still closes the
-    // panel, ⌘↵ answers; the multi-question form keeps its first control.
-    var ask = document.querySelector('#panel-permission .ap-card:not(.is-resolved), #panel-question .ap-card, #panel-question button:not([disabled]), #panel-question textarea');
+    // The first approval card still waiting on an answer, itself — its focus()
+    // lands on the card, not a button: Esc there still closes the panel, ⌘↵
+    // answers (re-agent-run D14); the multi-question form keeps its first control.
+    var ask = acFirstOpen(document.getElementById('panel-permission')) || acFirstOpen(document.getElementById('panel-question'))
+      || document.querySelector('#panel-question button:not([disabled]), #panel-question textarea');
     t = ask || document.getElementById('panel-title');
   }
   if (t && t.focus) t.focus({ preventScroll: true });
@@ -20049,8 +19926,6 @@ var _ntRequestId = null;
 var _ntRec = null;
 var _ntAudio = null;
 var _ntPlayingId = 0;
-var _ntLastLaunch = null;
-var _ntToastTimer = 0;
 
 function ntBatteryView(b) {
   if (!b || typeof b.level !== 'number') {
@@ -20758,33 +20633,22 @@ function ntOnLaunched(data) {
   var channel = _ntCtx.channels.find(function (c) {
     return c.id === data.channel;
   });
-  ntShowToast(data, channel ? channel.name : data.channel);
+  // A toast on the page's <ui-toaster>: 카드 열기 opens this launch's card
+  // (not a later launch's), Slack에서 보기 its thread.
+  var toast = {
+    title: data.status === 'running' ? '작업을 시작했어요' : '작업을 접수했어요',
+    description: '#' + (channel ? channel.name : data.channel),
+    tone: 'success',
+    action: { id: 'open', label: '카드 열기' },
+    duration: 12000,
+  };
+  if (data.permalink) toast.link = { label: 'Slack에서 보기', href: String(data.permalink) };
+  dashToast(toast, function () { ntOpenLaunched(data); });
   if (typeof loadSessions === 'function') setTimeout(loadSessions, 800);
 }
 
-function ntShowToast(data, channelName) {
-  var t = ntEl('nt-toast');
-  if (!t) return;
-  var head = data.status === 'running' ? '✅ 작업을 시작했습니다' : '⏳ 작업을 접수했습니다';
-  var html = '<span class="nt-toast-text">' + head + ' — #' + esc(channelName) + '</span>';
-  // The actions wrap as one group: never one beside the message, one below.
-  html += '<span class="nt-toast-actions">';
-  if (data.permalink) {
-    html += '<a href="' + escAttr(data.permalink) + '" target="_blank" rel="noopener">Slack에서 보기</a>';
-  }
-  html += '<button type="button" onclick="ntOpenLaunched()">카드 열기</button></span>';
-  t.innerHTML = html;
-  t.hidden = false;
-  _ntLastLaunch = data;
-  clearTimeout(_ntToastTimer);
-  _ntToastTimer = setTimeout(function () {
-    t.hidden = true;
-  }, 12000);
-}
-
-async function ntOpenLaunched() {
-  var key = _ntLastLaunch && _ntLastLaunch.sessionKey;
-  ntEl('nt-toast').hidden = true;
+async function ntOpenLaunched(launch) {
+  var key = launch && launch.sessionKey;
   if (!key) return;
   var find = function () {
     var cache = typeof _sessionCache === 'object' && _sessionCache ? _sessionCache : {};
@@ -20798,7 +20662,7 @@ async function ntOpenLaunched() {
     found = find();
   }
   if (found) openPanel(found);
-  else if (_ntLastLaunch.permalink) window.open(_ntLastLaunch.permalink, '_blank', 'noopener');
+  else if (launch.permalink) window.open(launch.permalink, '_blank', 'noopener');
 }
 
 function ntSyncViewport() {
