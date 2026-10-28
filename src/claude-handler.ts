@@ -624,6 +624,11 @@ export class ClaudeHandler implements TurnSteeringPort {
     this.sessionRegistry.updateSessionTitle(channelId, threadTs, title);
   }
 
+  /** Write `title` only if the session still has a host stand-in title. */
+  fillPlaceholderSessionTitle(channelId: string, threadTs: string | undefined, title: string): boolean {
+    return this.sessionRegistry.fillPlaceholderSessionTitle(channelId, threadTs, title);
+  }
+
   /**
    * Record merge code change stats for a PR in this session.
    */
