@@ -9,6 +9,7 @@
     "./actions/pending-form-store": "./dist/actions/pending-form-store.js",
     "./actions/pending-instruction-confirm-store": "./dist/actions/pending-instruction-confirm-store.js",
     "./actions/user-skill-action-kinds": "./dist/actions/user-skill-action-kinds.js",
+    "./agent-tree": "./dist/agent-tree.js",
     "./assistant-container": "./dist/assistant-container.js",
     "./assistant-status-manager": "./dist/assistant-status-manager.js",
     "./channel-description-cache": "./dist/channel-description-cache.js",
@@ -23,10 +24,12 @@
     "./cct/views": "./dist/cct/views.js",
     "./directives": "./dist/directives/index.js",
     "./directives/channel-message-directive": "./dist/directives/channel-message-directive.js",
-    "./directives/deploy-completed-directive": "./dist/directives/deploy-completed-directive.js",
+    "./directives/release-notes-directive": "./dist/directives/release-notes-directive.js",
     "./directives/session-link-directive": "./dist/directives/session-link-directive.js",
     "./context-window-manager": "./dist/context-window-manager.js",
     "./session-usage-math": "./dist/session-usage-math.js",
+    "./live-usage": "./dist/live-usage.js",
+    "./model-switch": "./dist/model-switch.js",
     "./directives/source-working-dir-directive": "./dist/directives/source-working-dir-directive.js",
     "./dispatch-abort": "./dist/dispatch-abort.js",
     "./event-router": "./dist/event-router.js",
@@ -50,6 +53,7 @@
     "./pipeline/transcript-sanitizer": "./dist/pipeline/transcript-sanitizer.js",
     "./pipeline/types": "./dist/pipeline/types.js",
     "./reaction-manager": "./dist/reaction-manager.js",
+    "./release-notes-poster": "./dist/release-notes-poster.js",
     "./release-notifier": "./dist/release-notifier.js",
     "./request-coordinator": "./dist/request-coordinator.js",
     "./session-manager": "./dist/session-manager.js",
@@ -76,6 +80,7 @@
     "./user-choice-handler": "./dist/user-choice-handler.js",
     "./user-choice-extractor": "./dist/user-choice-extractor.js",
     "./user-skill-file-roundtrip": "./dist/user-skill-file-roundtrip.js",
+    "./user-media": "./dist/user-media.js",
     "./work-log": "./dist/work-log.js",
     "./z/capability": "./dist/z/capability.js",
     "./z/normalize": "./dist/z/normalize.js",
@@ -155,6 +160,9 @@
       "directives/channel-message-directive": [
         "dist/directives/channel-message-directive.d.ts"
       ],
+      "directives/release-notes-directive": [
+        "dist/directives/release-notes-directive.d.ts"
+      ],
       "directives/session-link-directive": [
         "dist/directives/session-link-directive.d.ts"
       ],
@@ -223,6 +231,9 @@
       ],
       "reaction-manager": [
         "dist/reaction-manager.d.ts"
+      ],
+      "release-notes-poster": [
+        "dist/release-notes-poster.d.ts"
       ],
       "release-notifier": [
         "dist/release-notifier.d.ts"

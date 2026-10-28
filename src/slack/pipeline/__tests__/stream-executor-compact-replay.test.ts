@@ -72,6 +72,7 @@ vi.mock('../../../conversation', () => ({
   createConversation: vi.fn().mockReturnValue('conv_1'),
   recordAssistantTurn: vi.fn(),
   recordUserTurn: vi.fn(),
+  captureUserMedia: vi.fn(async () => []),
 }));
 
 vi.mock('../../../mcp-config-builder', () => ({
@@ -283,6 +284,38 @@ async function* compactFailureAsContentSdk() {
     },
   };
   yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+}
+
+/**
+ * Field incident 2026-10-22: the account-pool gateway rejected the
+ * compaction request with a pool-wide 429. The SDK sealed it as a
+ * successful turn whose content is the stderr line.
+ */
+const POOL_429_COMPACT_TEXT =
+  'Error: Error during compaction: API Error: Request rejected (429) · All 10 eligible accounts are rate-limited right now; retry in 3653s.';
+
+async function* compactPool429AsContentSdk() {
+  yield { type: 'assistant', message: { content: [{ type: 'text', text: POOL_429_COMPACT_TEXT }] } };
+  // No `usage` on the result: the rejected summarization request consumed no
+  // tokens, so the session keeps its pre-compact occupancy reading.
+  yield { type: 'result', subtype: 'success', total_cost_usd: 0 };
+}
+
+/** Context usage well above the session override, so the turn-end threshold check re-trips. */
+function overThresholdUsage() {
+  return {
+    currentInputTokens: 150_000,
+    currentOutputTokens: 0,
+    currentCacheReadTokens: 0,
+    currentCacheCreateTokens: 0,
+    contextWindow: 200_000,
+    totalInputTokens: 0,
+    totalOutputTokens: 0,
+    totalCacheReadTokens: 0,
+    totalCacheCreateTokens: 0,
+    totalCostUsd: 0,
+    lastUpdated: Date.now(),
+  };
 }
 
 /** Never yields; `.return()` resolves so the bounded close cannot hang. */
@@ -552,5 +585,211 @@ describe('normal-threshold compaction replay is exactly-once on the real execute
     expect(session.compactDispatchInFlight).toBe(true);
     // No dispatch handoff attempted by this (re-entrant) turn
     expect(rec.delivered).toHaveLength(0);
+  });
+});
+
+// ── Compact retry loop (field incident 2026-10-22) ──────────────────────
+//
+// `/compact` failed with a pool-wide 429. The turn-end threshold check saw
+// the still-high context usage and re-armed `autoCompactPending`; the
+// strand-rescue replay of the intercepted message re-entered InputProcessor,
+// which intercepted it AGAIN into `/compact`, which failed again … every ~10s,
+// forever ("Auto-compact 실행" → "🔴 컴팩트 실패" → "Auto-compact 실행" …).
+
+describe('failed /compact does not re-arm auto-compact (compact retry loop)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  /** Let the fire-and-forget turn-end threshold check settle. */
+  const settle = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+  it('pool-429 compact failure: replayed message is not re-intercepted into another /compact', async () => {
+    const { InputProcessor } = await import('../input-processor');
+    const session = thresholdSession({
+      // InputProcessor already consumed the flag when it intercepted the message.
+      autoCompactPending: false,
+      autoCompactTokens: 100_000,
+      usage: overThresholdUsage(),
+    });
+    const processor = new InputProcessor({
+      fileHandler: {} as any,
+      commandRouter: { route: vi.fn().mockResolvedValue({ handled: false }) } as any,
+      claudeHandler: { getSession: () => session } as any,
+      slackApi: { postSystemMessage: vi.fn().mockResolvedValue(undefined) } as any,
+    });
+
+    // Drive the real pipeline loop: every replay goes back through
+    // InputProcessor, and an injected `/compact` runs another compact turn.
+    // Bounded so a regression fails fast instead of hanging the suite.
+    let compactTurns = 0;
+    let nextCompact = true;
+    const replays: string[] = [];
+    const dispatch = vi.fn(async (ctx: any, text: string) => {
+      await settle();
+      replays.push(text);
+      const routed = await processor.routeCommand(
+        { type: 'message', channel: ctx.channel, thread_ts: ctx.threadTs, user: ctx.user, ts: ctx.ts, text } as any,
+        vi.fn() as any,
+      );
+      nextCompact = routed.continueWithPrompt === '/compact';
+    });
+    const deps = createDeps(() => toAgentEvents(compactPool429AsContentSdk()), dispatch);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    while (nextCompact && compactTurns < 5) {
+      nextCompact = false;
+      compactTurns += 1;
+      await new StreamExecutor(deps).execute(executeParams(session, say, '/compact'));
+      await settle();
+    }
+
+    // Exactly one failed compaction, and the user's message reaches a normal turn.
+    expect(compactTurns).toBe(1);
+    expect(replays).toEqual([STASHED]);
+    expect(session.autoCompactPending).toBe(false);
+  });
+
+  it('pool-429 compact failure: auto-compact stays paused for the advertised retry window', async () => {
+    const before = Date.now();
+    const session = thresholdSession({
+      autoCompactPending: false,
+      autoCompactTokens: 100_000,
+      usage: overThresholdUsage(),
+    });
+    const deps = createDeps(() => toAgentEvents(compactPool429AsContentSdk()), createDispatchRecorder().fn);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await new StreamExecutor(deps).execute(executeParams(session, say, '/compact'));
+    await settle();
+
+    expect(session.autoCompactPending).toBe(false);
+    expect(session.autoCompactSuppressedUntilMs).toBeGreaterThanOrEqual(before + 3653_000);
+    // The single failure notice tells the user auto-compact is paused.
+    expect(say).toHaveBeenCalledTimes(1);
+    expect(String(say.mock.calls[0][0].text)).toContain('컴팩트 실패');
+    expect(String(say.mock.calls[0][0].text)).toContain('자동 compact');
+  });
+
+  it('thrown /compact error: turn-end threshold check does not re-arm auto-compact', async () => {
+    const session = thresholdSession({
+      autoCompactPending: false,
+      autoCompactTokens: 100_000,
+      usage: overThresholdUsage(),
+    });
+    const deps = createDeps(
+      () =>
+        toAgentEvents(
+          (async function* () {
+            yield* [];
+            throw new Error('Error during compaction: socket hang up');
+          })(),
+        ),
+      createDispatchRecorder().fn,
+    );
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await new StreamExecutor(deps).execute(executeParams(session, say, '/compact'));
+    await settle();
+
+    expect(session.autoCompactPending).toBe(false);
+    expect(session.autoCompactSuppressedUntilMs).toBeGreaterThan(Date.now());
+  });
+
+  it('SDK error-result /compact (no throw): loop is still cut', async () => {
+    // Review (astra P1): a `/compact` whose SDK result is `error_during_execution`
+    // returns normally through the sdkResultError branch — it never reaches the
+    // catch block, so the pause must also be armed on that exit.
+    const { InputProcessor } = await import('../input-processor');
+    const session = thresholdSession({
+      autoCompactPending: false,
+      autoCompactTokens: 100_000,
+      usage: overThresholdUsage(),
+    });
+    const processor = new InputProcessor({
+      fileHandler: {} as any,
+      commandRouter: { route: vi.fn().mockResolvedValue({ handled: false }) } as any,
+      claudeHandler: { getSession: () => session } as any,
+      slackApi: { postSystemMessage: vi.fn().mockResolvedValue(undefined) } as any,
+    });
+    let compactTurns = 0;
+    let nextCompact = true;
+    const dispatch = vi.fn(async (ctx: any, text: string) => {
+      await settle();
+      const routed = await processor.routeCommand(
+        { type: 'message', channel: ctx.channel, thread_ts: ctx.threadTs, user: ctx.user, ts: ctx.ts, text } as any,
+        vi.fn() as any,
+      );
+      nextCompact = routed.continueWithPrompt === '/compact';
+    });
+    const deps = createDeps(
+      () =>
+        toAgentEvents(
+          (async function* () {
+            yield {
+              type: 'result',
+              subtype: 'error_during_execution',
+              is_error: true,
+              errors: [POOL_429_COMPACT_TEXT],
+              num_turns: 1,
+            };
+          })(),
+        ),
+      dispatch,
+    );
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    while (nextCompact && compactTurns < 5) {
+      nextCompact = false;
+      compactTurns += 1;
+      await new StreamExecutor(deps).execute(executeParams(session, say, '/compact'));
+      await settle();
+    }
+
+    expect(compactTurns).toBe(1);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(session.autoCompactPending).toBe(false);
+    expect(session.autoCompactSuppressedUntilMs).toBeGreaterThanOrEqual(Date.now() + 3600_000);
+  });
+
+  it('recoverable thrown /compact error: no generic auto-resume on top of the replay', async () => {
+    // Review (astra P1): the deferred replay already re-runs the user's
+    // message; a 30s auto-resume scheduled for the failed `/compact` would
+    // fire a stray continuation after that work completed.
+    const rec = createDispatchRecorder();
+    const session = thresholdSession({
+      autoCompactPending: false,
+      autoCompactTokens: 100_000,
+      usage: overThresholdUsage(),
+    });
+    const deps = createDeps(
+      () =>
+        toAgentEvents(
+          (async function* () {
+            yield* [];
+            throw new Error('read ECONNRESET');
+          })(),
+        ),
+      rec.fn,
+    );
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    const result = await new StreamExecutor(deps).execute(executeParams(session, say, '/compact'));
+    await settle();
+
+    expect(result.success).toBe(false);
+    expect(result.retryAfterMs).toBeUndefined();
+    expect(rec.delivered).toEqual([STASHED]);
+    expect(session.autoCompactSuppressedUntilMs).toBeGreaterThan(Date.now());
+  });
+
+  it('successful /compact clears an earlier failure pause', async () => {
+    const session = thresholdSession({ autoCompactSuppressedUntilMs: Date.now() + 60_000 });
+    const deps = createDeps(() => toAgentEvents(compactBoundarySdk()), createDispatchRecorder().fn);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await new StreamExecutor(deps).execute(executeParams(session, say, '/compact'));
+
+    expect(session.autoCompactSuppressedUntilMs).toBeNull();
   });
 });

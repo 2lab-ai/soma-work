@@ -40,8 +40,20 @@ interface GoalCard {
   renderCardGoal(s: any, col: string, canEdit: boolean): string;
 }
 
-const RENDER_FNS = ['esc', 'escAttr', 'escJs', 'toNum', 'renderCardGoal'];
-const RENDER_VARS = ['GOAL_STATUS_LABELS', '_goalErrors'];
+const RENDER_FNS = [
+  'esc',
+  'escAttr',
+  'escJs',
+  'toNum',
+  'formatTokens',
+  'formatDuration',
+  'formatGoalTime',
+  'renderGoalHistory',
+  'isBusy',
+  'setBusy',
+  'renderCardGoal',
+];
+const RENDER_VARS = ['GOAL_STATUS_LABELS', 'GOAL_VIA_LABELS', '_goalHistoryOpen', '_goalErrors', '_busy'];
 
 function card(overrides: Record<string, any> = {}) {
   return {
@@ -76,7 +88,8 @@ function clickTargets(html: string): any[][] {
       .replace(/&quot;/g, '"')
       .replace(/&#39;/g, "'")
       .replace(/&amp;/g, '&');
-    new Function('event', 'goalAction', js)(event, goalAction);
+    // The completed-goals toggle (T6) only opens a list — not a goal action.
+    new Function('event', 'goalAction', 'toggleGoalHistory', js)(event, goalAction, () => {});
   }
   return calls;
 }
@@ -172,7 +185,10 @@ describe('work item goal list — controls (T3)', () => {
       ['closed', true],
     ] as const) {
       const html = renderCardGoal(card(), col, canEdit);
-      const buttons = html.match(/<button[^>]*>/g) ?? [];
+      const all = html.match(/<button[^>]*>/g) ?? [];
+      // Opening the completed goals (T6) is reading, so it stays enabled.
+      const buttons = all.filter((b) => !b.includes('cg-history-toggle'));
+      expect(all.filter((b) => b.includes('cg-history-toggle'))).toEqual([expect.not.stringContaining(' disabled')]);
       expect(buttons.length).toBe(3);
       for (const b of buttons) expect(b).toContain(' disabled');
       expect(html).not.toContain('cg-add-input');
@@ -221,6 +237,10 @@ describe('work item goal list — controls (T3)', () => {
       refreshCard,
       loadSessions,
       postGoalAction,
+      // Spec 13: the goal editor's home is the panel — a write re-renders it there too.
+      panelOpen: false,
+      panelSessionKey: null,
+      renderPanelGoal: () => {},
     });
 
     await mod.goalAction('self::C1:t1', { action: 'delete', goalId: 'g1', expect: 'current' }, null);
@@ -262,11 +282,19 @@ describe('work item goal list — the goal being typed survives a live re-render
   it('does not replace the body while the goal input has focus (typing / IME untouched)', () => {
     const { el, body, document } = fakeCard(true, '쓰는 중');
     const { applyCardParts } = load<any>(
-      ['isEditingGoal', 'captureGoalDraft', 'restoreGoalDraft', 'applyCardParts'],
+      ['isEditingGoal', 'isPickingModel', 'captureGoalDraft', 'restoreGoalDraft', 'applyCardParts'],
       [],
       {
         document,
         updateTimersIn: () => {},
+        animateCountersIn: () => {},
+        // The browser morphs the body; this fake body rebuilds on write.
+        morphInnerHtml: (b: { innerHTML: string }, html: string) => {
+          b.innerHTML = html;
+        },
+        // Spec 12 (recursive): the agent tree's focus is kept across the morph.
+        anFocusCapture: () => null,
+        anFocusRestore: () => {},
       },
     );
 
@@ -280,11 +308,19 @@ describe('work item goal list — the goal being typed survives a live re-render
     const { el, body, document } = fakeCard(false, '나중에 보낼 goal');
     const fresh = { classList: { contains: () => true }, value: '' };
     const { applyCardParts } = load<any>(
-      ['isEditingGoal', 'captureGoalDraft', 'restoreGoalDraft', 'applyCardParts'],
+      ['isEditingGoal', 'isPickingModel', 'captureGoalDraft', 'restoreGoalDraft', 'applyCardParts'],
       [],
       {
         document,
         updateTimersIn: () => {},
+        animateCountersIn: () => {},
+        // The browser morphs the body; this fake body rebuilds on write.
+        morphInnerHtml: (b: { innerHTML: string }, html: string) => {
+          b.innerHTML = html;
+        },
+        // Spec 12 (recursive): the agent tree's focus is kept across the morph.
+        anFocusCapture: () => null,
+        anFocusRestore: () => {},
       },
     );
     // innerHTML assignment builds a fresh, empty input.

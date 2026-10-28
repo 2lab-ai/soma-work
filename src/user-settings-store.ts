@@ -1,3 +1,4 @@
+import { atomicWriteJson } from '@soma/common/atomic-json';
 import { DEFAULT_LOG_VERBOSITY, getVerbosityFlags, type LogVerbosity, VERBOSITY_NAMES } from '@soma/slack/output-flags';
 import fs from 'fs';
 import path from 'path';
@@ -113,6 +114,9 @@ export const AVAILABLE_MODELS = [
   'claude-opus-4-8[1m]',
   'claude-opus-4-7[1m]',
   'claude-opus-4-6[1m]',
+  // Sonnet's 1M opt-in — one of the dashboard's representative models
+  // (SSOT 2026-10-22 T4: opus / fable / sonnet / sol / astra [1m] + grok).
+  'claude-sonnet-4-6[1m]',
   'gpt-5.5',
   'gpt-5.6-sol',
   'gpt-5.6-sol[1m]',
@@ -156,6 +160,8 @@ export const MODEL_ALIASES: Record<string, ModelId> = {
   'fable-5[1m]': 'claude-fable-5[1m]',
   sonnet: 'claude-sonnet-4-6',
   'sonnet-4.6': 'claude-sonnet-4-6',
+  'sonnet[1m]': 'claude-sonnet-4-6[1m]',
+  'sonnet-4.6[1m]': 'claude-sonnet-4-6[1m]',
   'sonnet-4.5': 'claude-sonnet-4-5-20250929',
   // `opus` / `opus[1m]` follow the current latest opus — bump these two rows
   // (plus AVAILABLE_MODELS) when a new generation lands. Both point at the
@@ -630,7 +636,9 @@ export class UserSettingsStore {
    */
   private saveSettings(): void {
     try {
-      fs.writeFileSync(this.settingsFile, JSON.stringify(this.settings, null, 2), 'utf8');
+      // rules/config.md rule 3 — temp write + rename, previous generation kept
+      // as `.bak`; the dashboard settings page writes here too (SSOT 2026-10-23 T2).
+      atomicWriteJson(this.settingsFile, this.settings);
       logger.debug('Saved user settings to file');
     } catch (error) {
       logger.error('Failed to save user settings', error);
@@ -750,6 +758,20 @@ export class UserSettingsStore {
     const clamped = Math.max(0, Math.min(10, rating));
     this.patchUserSettings(userId, { rating: clamped } as Partial<UserSettings>);
     logger.info('Set user rating', { userId, rating: clamped });
+  }
+
+  /**
+   * Change the rating the way `rate +/-` does — one path for Slack and the
+   * dashboard (SSOT 2026-10-23 T2): clamp to 0–10, store, and record the
+   * pending note the agent is told about, only when the value moved.
+   */
+  changeUserRating(userId: string, rating: number): { from: number; to: number } {
+    const from = this.getUserRating(userId);
+    const to = Math.max(0, Math.min(10, Math.round(rating)));
+    if (to === from) return { from, to };
+    this.setUserRating(userId, to);
+    this.setPendingRatingChange(userId, { from, to });
+    return { from, to };
   }
 
   /**
@@ -1260,6 +1282,8 @@ export class UserSettingsStore {
         return 'Opus 4.6 (1M)';
       case 'claude-sonnet-4-6':
         return 'Sonnet 4.6';
+      case 'claude-sonnet-4-6[1m]':
+        return 'Sonnet 4.6 (1M)';
       case 'claude-sonnet-4-5-20250929':
         return 'Sonnet 4.5';
       case 'claude-opus-4-5-20251101':

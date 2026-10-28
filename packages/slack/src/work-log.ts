@@ -26,6 +26,23 @@ export interface WorkLogInput {
   turnId?: string;
   ts?: number;
   /**
+   * SSOT 2026-10-22 T10 — the task (`T<n>` of the session's task ledger) that
+   * was in progress when this entry was made, and its title then. The
+   * dashboard folds the log under these. Absent outside any task.
+   */
+  taskId?: string;
+  taskTitle?: string;
+  /**
+   * Spec 12 — the subagent that made this entry: the id of the tool call that
+   * started it (SDK `parent_tool_use_id`). Absent = the main agent.
+   */
+  agentId?: string;
+  /**
+   * Spec 12 — the subagent this entry starts or returns: set on an `Agent` /
+   * `Task` call and on its tool result, whoever made the call.
+   */
+  agentRef?: string;
+  /**
    * The full content behind the one-line `text`: a tool call's whole input, a
    * tool result's output. The store keeps it (size-capped, in a file of its
    * own) and serves it on demand only; pages and the live broadcast carry
@@ -34,6 +51,13 @@ export interface WorkLogInput {
   raw?: string;
   /** UTF-8 size of the original when `raw` was already cut here (the store then reports it as truncated). */
   rawBytes?: number;
+  /**
+   * SSOT 2026-10-23 T1 — the SDK tool-use id of a `tool` / `tool_result` entry,
+   * so a live observer (the dashboard's artifact capture) pairs a call with its
+   * result exactly. Persisted by the store (clamped) since the 작업 로그 tool
+   * call card pairs a result with its call by it; older logs have none.
+   */
+  toolUseId?: string;
 }
 
 /** An entry as pages and the live broadcast carry it: its raw is described, never included. */
@@ -44,4 +68,10 @@ export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes'> {
   rawBytes?: number;
   /** The stored raw is cut short of the original. */
   rawTruncated?: true;
+  /**
+   * Spec 12 — written by a store that records who made each entry. An entry
+   * without it predates agent attribution: a subagent's work may be filed in
+   * it as the main agent's, so the dashboard does not claim it is.
+   */
+  attributed?: true;
 }

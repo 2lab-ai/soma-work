@@ -4,6 +4,7 @@
  */
 
 import { LOG_VERBOSITY_MASK_VERSION, upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
+import { sanitizeSdkUsageBaseline, sanitizeTaskUsage, type TaskUsage } from '@soma/slack/session-usage-math';
 import * as fs from 'fs';
 import * as path from 'path';
 import { applyInstructionOperations } from 'somalib/model-commands/catalog';
@@ -11,7 +12,12 @@ import { decodeSlackEntities } from './dispatch-service';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
+import { repriceBaseline } from './metrics/host-pricing';
+import { hostPricing } from './metrics/host-pricing-catalog';
 import { normalizeTmpPath } from './path-utils';
+import { loseRunningAgents, sanitizeAgentRegistry } from './session/agent-registry';
+import { sanitizeCronJob } from './session/cron-job';
+import { closeTaskList, sanitizeTaskLedger } from './session/task-ledger';
 import { getArchiveStore } from './session-archive';
 import { buildLegacySessionKey, buildWorkSessionKey, normalizeSessionKey } from './session-identity';
 import { getSessionLifecyclePolicy, isSessionLifecyclePolicyDegraded } from './session-lifecycle-policy';
@@ -27,6 +33,7 @@ import type {
   ActivityState,
   ConversationSession,
   HandoffContext,
+  SessionCronJob,
   SessionGoal,
   SessionIncidentRequest,
   SessionInstruction,
@@ -77,6 +84,9 @@ const ACTIVE_KEY_BY_RESOURCE: Record<SessionResourceType, keyof SessionLinks> = 
  * Serialized session for file persistence
  */
 interface SerializedSession {
+  /** SSOT 2026-10-23 — the cron job that created the session, and a placeholder-title mark. */
+  cronJob?: SessionCronJob;
+  titleProvisional?: boolean;
   /**
    * Incident ownership survives restarts: dropping it would silently promote a
    * restricted session back to an ordinary one.
@@ -122,6 +132,13 @@ interface SerializedSession {
   shutdownNotificationSent?: boolean;
   shutdownNotifiedAt?: number;
   wasWorkingAtShutdown?: boolean;
+  // Error auto-retry (#351): due time, owning run, budget and error context of
+  // a pending retry, so a restart can re-arm it. The timer handle is runtime-only.
+  pendingRetryAt?: number;
+  pendingRetrySessionId?: string;
+  pendingRetryDetail?: { attempt?: number; maxAttempts?: number; reason?: string };
+  errorRetryCount?: number;
+  lastErrorContext?: string;
   // Log verbosity bitmask
   logVerbosity?: number;
   /**
@@ -169,6 +186,12 @@ interface SerializedSession {
   // Multi-goal queue + completed history (persisted — T1/T2).
   goalQueue?: SessionGoal[];
   goalHistory?: SessionGoal[];
+  // SSOT 2026-10-22 T7/T8 — task ledger (ids, times, tool calls); sanitized on load.
+  taskLedger?: unknown;
+  // Spec 12 — the session's subagents (registry); sanitized on load.
+  agents?: unknown;
+  // When the activity state last changed — the DONE column's completion time for an idle card.
+  activityStateChangedAt?: number;
   /**
    * Cached summary of completed instructions. Persisted so that
    * restart after a long session doesn't force a fresh summary re-build
@@ -176,6 +199,10 @@ interface SerializedSession {
    * `src/conversation/instructions-summarizer.ts`.
    */
   instructionsCompletedSummary?: { summary: string; upstreamHash: string };
+  /** Last SDK running total per model — see `ConversationSession.sdkUsageBaseline`. */
+  sdkUsageBaseline?: unknown;
+  /** SSOT 2026-10-26 T3 — what the whole task spent; sanitized on load. */
+  taskUsage?: unknown;
   // Dashboard v2.1 — thread-aggregate snapshot fields (live aggregate derived from memory).
   compactionCount?: number;
   activeLegStartedAtMs?: number;
@@ -294,6 +321,27 @@ export interface CrashRecoveredSession {
    * actually mid-work.
    */
   shouldAutoResume: boolean;
+}
+
+/**
+ * A persisted `pendingRetryDetail` back as the session carries it — finite
+ * counts and a string reason only; anything else is dropped (disk JSON is
+ * untrusted shape).
+ */
+function restorePendingRetryDetail(raw: unknown): ConversationSession['pendingRetryDetail'] {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  const count = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+  return {
+    attempt: count(r.attempt),
+    maxAttempts: count(r.maxAttempts),
+    reason: typeof r.reason === 'string' ? r.reason : undefined,
+  };
+}
+
+/** A saved epoch-ms stamp, or undefined when it is not a finite number. */
+function finiteStamp(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 }
 
 export class SessionRegistry {
@@ -846,8 +894,11 @@ export class SessionRegistry {
    */
   setSessionTitle(channelId: string, threadTs: string | undefined, title: string): void {
     const session = this.getSession(channelId, threadTs);
-    if (session && !session.title) {
+    // A provisional title (a cron job name, SSOT 2026-10-23 T2) is a
+    // placeholder — the first real title replaces it.
+    if (session && (!session.title || session.titleProvisional)) {
       session.title = decodeSlackEntities(title);
+      session.titleProvisional = undefined;
       this.saveSessions();
     }
   }
@@ -860,6 +911,7 @@ export class SessionRegistry {
     const session = this.getSession(channelId, threadTs);
     if (session) {
       session.title = decodeSlackEntities(title);
+      session.titleProvisional = undefined;
       this.saveSessions();
     }
   }
@@ -1324,6 +1376,10 @@ export class SessionRegistry {
         clearTimeout(session.pendingRetryTimer);
         session.pendingRetryTimer = undefined;
       }
+      // ...and its persisted marker, so a restart cannot re-arm it (#351)
+      session.pendingRetryAt = undefined;
+      session.pendingRetrySessionId = undefined;
+      session.pendingRetryDetail = undefined;
       // Drop any armed SKILL.md edit-roundtrip marker — the user is starting
       // a fresh logical session, an inbound `SKILL.md` upload should NOT
       // silently apply to a skill the user clicked 편집 on in the previous
@@ -1372,7 +1428,15 @@ export class SessionRegistry {
     // Clear conversation-related fields
     session.sessionId = undefined;
     session.title = undefined;
+    // The placeholder mark belongs to the cleared title; the cron origin
+    // (`cronJob`) is a fact about the thread and stays.
+    session.titleProvisional = undefined;
     session.lastActivity = new Date();
+    // The old task list stays as history; none of it is in progress any more,
+    // so the new conversation's work is not attributed to it (dashboard T7/T10).
+    session.taskLedger = closeTaskList(session.taskLedger);
+    // Spec 12: the old conversation's subagents are history; none is watched now.
+    session.agents = loseRunningAgents(session.agents, Date.now());
 
     // Reset state to INITIALIZING to trigger re-dispatch on next message
     session.state = 'INITIALIZING';
@@ -1437,6 +1501,10 @@ export class SessionRegistry {
       clearTimeout(session.pendingRetryTimer);
       session.pendingRetryTimer = undefined;
     }
+    // ...and its persisted marker, so a restart cannot re-arm it (#351)
+    session.pendingRetryAt = undefined;
+    session.pendingRetrySessionId = undefined;
+    session.pendingRetryDetail = undefined;
     // Drop any armed SKILL.md edit-roundtrip marker — `/new` / `/renew` starts
     // a fresh logical session and an inbound `SKILL.md` upload should not
     // resurrect an edit click from the previous one.
@@ -1844,7 +1912,11 @@ export class SessionRegistry {
           // even before the SDK assigns a sessionId — otherwise a crash in
           // that window would bring the thread back unrestricted.
           session.incidentRequest ||
-          session.autoCompactTokens != null
+          session.autoCompactTokens != null ||
+          // The task's spend (and its subagents') must not vanish with a
+          // `/new` that cleared the sessionId before the next SDK turn.
+          session.taskUsage ||
+          session.agents?.agents.length
         ) {
           this.ensureSessionLinkState(session);
           sessionsArray.push({
@@ -1888,6 +1960,13 @@ export class SessionRegistry {
             shutdownNotificationSent: session.shutdownNotificationSent,
             shutdownNotifiedAt: session.shutdownNotifiedAt,
             wasWorkingAtShutdown: session.wasWorkingAtShutdown,
+            // Pending error auto-retry (#351): the timer dies with the process,
+            // so its due time, budget and context are what startup re-arms from.
+            pendingRetryAt: session.pendingRetryAt,
+            pendingRetrySessionId: session.pendingRetrySessionId,
+            pendingRetryDetail: session.pendingRetryDetail,
+            errorRetryCount: session.errorRetryCount,
+            lastErrorContext: session.lastErrorContext,
             logVerbosity: session.logVerbosity,
             logVerbosityVersion: session.logVerbosity === undefined ? undefined : LOG_VERBOSITY_MASK_VERSION,
             effort: session.effort,
@@ -1914,10 +1993,16 @@ export class SessionRegistry {
             // survives a restart — T1/T2).
             goalQueue: session.goalQueue,
             goalHistory: session.goalHistory,
+            taskLedger: session.taskLedger,
+            agents: session.agents,
+            activityStateChangedAt: session.activityStateChangedAt,
             // Cached completed-summary (persisted so the next turn after restart
             // doesn't pay a cold summary rebuild). Safe to omit — the block
             // builder falls back to a placeholder and the async regen kicks in.
             instructionsCompletedSummary: session.instructionsCompletedSummary,
+            // Last SDK running total — without it a restart would re-count it into the goal's spend
+            sdkUsageBaseline: session.sdkUsageBaseline,
+            taskUsage: session.taskUsage,
             // Dashboard v2.1 — derive-first aggregate snapshot (persisted per session)
             compactionCount: session.compactionCount,
             activeLegStartedAtMs: session.activeLegStartedAtMs,
@@ -1933,6 +2018,8 @@ export class SessionRegistry {
             // Verified Eagle incident request that owns this session, plus the
             // host completion marker that decides whether a retry is admissible
             incidentRequest: session.incidentRequest,
+            cronJob: session.cronJob,
+            titleProvisional: session.titleProvisional || undefined,
             incidentAttemptFinishedId: session.incidentAttemptFinishedId,
             // Session-scoped `/autocompact` token override (persisted verbatim).
             autoCompactTokens: session.autoCompactTokens,
@@ -1985,7 +2072,17 @@ export class SessionRegistry {
         goal: migrateLegacyGoal(serialized.goal),
         goalQueue: migrateLegacyGoalArray(serialized.goalQueue),
         goalHistory: migrateLegacyGoalArray(serialized.goalHistory),
+        taskLedger: sanitizeTaskLedger(serialized.taskLedger),
+        // Spec 12: nothing that ran before this process is watched any more.
+        agents: loseRunningAgents(sanitizeAgentRegistry(serialized.agents), Date.now()),
+        // SSOT 2026-10-26 T3 — the closed card keeps the task's total (partial
+        // when the session spent before the total existed).
+        taskUsage: restoreTaskUsage(serialized),
+        // A cron run archived while the process was down stays filed under its job.
+        cronJob: sanitizeCronJob(serialized.cronJob),
         activityState: serialized.activityState || 'idle',
+        // When its work finished — the archive keeps it (spec 13 §3.7).
+        activityStateChangedAt: finiteStamp(serialized.activityStateChangedAt),
         // Preserve handoff metadata for diagnostic parity when archiving.
         handoffContext: serialized.handoffContext,
       };
@@ -2048,6 +2145,17 @@ export class SessionRegistry {
           }
         }
 
+        // Pending error auto-retry (#351), re-armed by resumePendingErrorRetries.
+        // A session that loads asleep is never auto-resumed, so its marker is
+        // dropped rather than re-armed.
+        const restoredRetryAt =
+          !sleptOnLoad &&
+          serialized.state !== 'SLEEPING' &&
+          typeof serialized.pendingRetryAt === 'number' &&
+          Number.isFinite(serialized.pendingRetryAt)
+            ? serialized.pendingRetryAt
+            : undefined;
+
         const resolvedOwnerId = serialized.ownerId || serialized.userId;
         const session: ConversationSession = {
           ownerId: resolvedOwnerId, // Fallback for legacy sessions
@@ -2081,6 +2189,18 @@ export class SessionRegistry {
           shutdownNotificationSent: serialized.shutdownNotificationSent,
           shutdownNotifiedAt: serialized.shutdownNotifiedAt,
           wasWorkingAtShutdown: serialized.wasWorkingAtShutdown,
+          pendingRetryAt: restoredRetryAt,
+          pendingRetrySessionId:
+            restoredRetryAt !== undefined && typeof serialized.pendingRetrySessionId === 'string'
+              ? serialized.pendingRetrySessionId
+              : undefined,
+          pendingRetryDetail:
+            restoredRetryAt !== undefined ? restorePendingRetryDetail(serialized.pendingRetryDetail) : undefined,
+          errorRetryCount:
+            typeof serialized.errorRetryCount === 'number' && Number.isFinite(serialized.errorRetryCount)
+              ? serialized.errorRetryCount
+              : undefined,
+          lastErrorContext: typeof serialized.lastErrorContext === 'string' ? serialized.lastErrorContext : undefined,
           // A mask stored before the NARRATION flag (no version marker) maps
           // to its current preset (spec 10 §3.2) — otherwise the thread
           // silently loses narration. A versioned mask is used as stored.
@@ -2142,6 +2262,8 @@ export class SessionRegistry {
           // which denies the retry rather than admitting one on bad state.
           incidentAttemptFinishedId:
             typeof serialized.incidentAttemptFinishedId === 'string' ? serialized.incidentAttemptFinishedId : undefined,
+          cronJob: sanitizeCronJob(serialized.cronJob),
+          titleProvisional: serialized.titleProvisional === true ? true : undefined,
           // Merge code change stats
           mergeStats: serialized.mergeStats,
           // User SSOT instructions (restored from disk).
@@ -2160,8 +2282,21 @@ export class SessionRegistry {
           // Multi-goal queue + completed history (restored — T1/T2).
           goalQueue: migrateLegacyGoalArray(serialized.goalQueue),
           goalHistory: migrateLegacyGoalArray(serialized.goalHistory),
+          taskLedger: sanitizeTaskLedger(serialized.taskLedger),
+          // Spec 12: nothing that ran before this process is watched any more.
+          agents: loseRunningAgents(sanitizeAgentRegistry(serialized.agents), Date.now()),
+          // A session put to sleep on load that was not idle has no known finish:
+          // its saved stamp is when it started working or waiting, and the
+          // dashboard reads an idle stamp as the finish (spec 13 §3.7).
+          activityStateChangedAt:
+            sleptOnLoad && (serialized.activityState || 'idle') !== 'idle'
+              ? undefined
+              : finiteStamp(serialized.activityStateChangedAt),
           // Cached completed-summary (may be stale — block builder validates via hash).
           instructionsCompletedSummary: serialized.instructionsCompletedSummary,
+          // Repriced: llmux models moved from the SDK's default rate to the host table (`metrics/host-pricing.ts`).
+          sdkUsageBaseline: repriceBaseline(sanitizeSdkUsageBaseline(serialized.sdkUsageBaseline), hostPricing),
+          taskUsage: restoreTaskUsage(serialized),
           // Dashboard v2.1 — restore aggregate snapshot
           compactionCount: typeof serialized.compactionCount === 'number' ? serialized.compactionCount : 0,
           activeLegStartedAtMs: serialized.activeLegStartedAtMs,
@@ -2347,4 +2482,34 @@ export class SessionRegistry {
     }
     return count;
   }
+}
+
+/**
+ * SSOT 2026-10-26 T3 — the task total of a loaded session. A session saved
+ * before the total existed that had already spent (its SDK running total is
+ * not empty) starts a partial total: it counts from now, and the card says so
+ * instead of passing it off as the whole task.
+ */
+function restoreTaskUsage(serialized: {
+  taskUsage?: unknown;
+  sdkUsageBaseline?: unknown;
+  sessionId?: string;
+}): TaskUsage | undefined {
+  const kept = sanitizeTaskUsage(serialized.taskUsage);
+  if (kept) return kept;
+  const models = sanitizeSdkUsageBaseline(serialized.sdkUsageBaseline)?.models ?? {};
+  const spent = Object.values(models).some(
+    (m) => m.inputTokens + m.outputTokens + m.cacheReadInputTokens + m.cacheCreationInputTokens > 0 || m.costUsd > 0,
+  );
+  // A session with an SDK session has run a turn — one saved before running
+  // totals were kept at all has no baseline to show it.
+  if (!spent && !serialized.sessionId) return undefined;
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreateTokens: 0,
+    costUsd: 0,
+    partialSince: Date.now(),
+  };
 }

@@ -36,6 +36,7 @@ export type {
   WorkflowType,
 } from 'somalib/model-commands/session-types';
 
+import type { SdkUsageBaseline, TaskUsage } from '@soma/slack/session-usage-math';
 import type {
   HandoffContext,
   RenewState,
@@ -49,6 +50,8 @@ import type {
   UserChoices,
   WorkflowType,
 } from 'somalib/model-commands/session-types';
+import type { AgentRegistry } from './session/agent-registry';
+import type { TaskLedger } from './session/task-ledger';
 import type { EffortLevel } from './user-settings-store';
 
 /**
@@ -109,6 +112,19 @@ export interface SessionUsage {
     }
   >;
 
+  /**
+   * Spend a result-less turn folded into the totals above, until the next
+   * resumed result settles it (`settleFoldedLiveUsage`). Runtime-only.
+   */
+  foldedLiveUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheCreateTokens: number;
+    costUsd: number;
+    sdkSessionId?: string;
+  };
+
   lastUpdated: number; // Timestamp of last update
 }
 
@@ -120,6 +136,9 @@ export interface ActionPanelPRStatus {
   approved?: boolean; // true if PR has been approved
   head?: string; // source branch
   base?: string; // target branch
+  /** Fetch provenance — see `PRStatusInfo.fetchedForUrl` in @soma/slack/action-panel-builder. */
+  fetchedForUrl?: string;
+  linkStatusAtFetch?: string;
 }
 
 export interface ActionPanelState {
@@ -297,6 +316,12 @@ export interface SessionGoal {
    * message.
    */
   evalBackoffUntil?: number;
+  /**
+   * The dispatch error behind the current `evalBackoffUntil` window (first
+   * line, bounded) — what the dashboard card says the scheduled re-eval is
+   * waiting out. Set and cleared together with `evalBackoffUntil`.
+   */
+  evalRetryReason?: string;
 
   /**
    * Monotonic intent epoch. Bumped by every goal mutation (set / pause /
@@ -337,6 +362,12 @@ export interface SessionGoal {
  * to the package's compiled `dist/`, which is not guaranteed to exist when
  * this file is typechecked.
  */
+/** The cron job a session was created by (SSOT 2026-10-23). `id` is absent only when the fire carried none. */
+export interface SessionCronJob {
+  id?: string;
+  name: string;
+}
+
 export interface SessionIncidentRequest {
   readonly version: 1;
   readonly incident_id: string;
@@ -373,6 +404,18 @@ export interface ConversationSession {
   workflow?: WorkflowType; // Determined workflow type
   // Token usage tracking
   usage?: SessionUsage;
+  /**
+   * Last per-model running total the SDK reported for `sessionId` (persisted).
+   * A result's `modelUsage` is cumulative for the SDK session, so each turn
+   * counts only the growth past this — see `toTurnUsage`.
+   */
+  sdkUsageBaseline?: SdkUsageBaseline;
+  /**
+   * SSOT 2026-10-26 T3 — what the whole task spent (main agent + every
+   * subagent), across SDK sessions, restarts and resets. Fed the same per-turn
+   * spend as `usage.total*`; persisted, never reset. The dashboard card's total.
+   */
+  taskUsage?: TaskUsage;
   // Renew command state
   renewState?: RenewState;
   // User message to execute after renew (e.g., "/renew PR 리뷰해줘" → "PR 리뷰해줘")
@@ -484,6 +527,19 @@ export interface ConversationSession {
   // Session-unique base working directory (auto-created on new session, cleaned up on end)
   sessionWorkingDir?: string;
   /**
+   * The cron job whose fire CREATED this session (SSOT 2026-10-23 T1/T3).
+   * Stamped once by `SessionInitializer`'s dispatch-bypass branch; a fire
+   * injected into an existing session never sets it. The dashboard files the
+   * session in the CRON lane under this job. Persisted and archived.
+   */
+  cronJob?: SessionCronJob;
+  /**
+   * The title is a placeholder (the cron job name) that the first clear title
+   * — the turn summary or a linked issue/PR — may replace (T2). Any explicit
+   * title write clears it.
+   */
+  titleProvisional?: boolean;
+  /**
    * Set once by `SessionInitializer` from a verified incident turn; makes this
    * session incident-owned (restricted runtime, ordinary traffic refused in
    * the thread). Persisted so a restart cannot launder the restriction away,
@@ -527,8 +583,24 @@ export interface ConversationSession {
   // to adapt its approach instead of repeating the same failed action.
   lastErrorContext?: string;
   // Handle for pending auto-retry setTimeout — stored so session reset can cancel it (Issue #215).
-  // Not serialized to disk (runtime-only).
+  // The handle is runtime-only; its due time is persisted as `pendingRetryAt` (#351).
   pendingRetryTimer?: ReturnType<typeof setTimeout>;
+  // Epoch ms the scheduled error auto-retry is due (#351). Persisted so startup can
+  // re-arm a retry whose timer died with the previous process; cleared when the
+  // retry fires or the session resets.
+  pendingRetryAt?: number;
+  // `sessionId` of the run the pending error auto-retry belongs to (#351). A
+  // retry whose run was replaced is dropped instead of resuming the new run.
+  // Persisted and cleared together with `pendingRetryAt`.
+  pendingRetrySessionId?: string;
+  /**
+   * What the dashboard card says about the pending error auto-retry next to
+   * its due time (`pendingRetryAt`): which attempt of how many, and the first
+   * line of the error behind it. Recorded where the retry is armed; persisted
+   * and cleared together with `pendingRetryAt`, so a retry re-armed after a
+   * restart (#351) still reads "HH:MM 자동 재개 · 시도 n/3".
+   */
+  pendingRetryDetail?: { attempt?: number; maxAttempts?: number; reason?: string };
   /**
    * Pending personal-skill SKILL.md file roundtrip — set when the user clicks
    * "✏️ 편집" on a skill whose body exceeds `MAX_INLINE_EDIT_CHARS`. The
@@ -678,6 +750,11 @@ export interface ConversationSession {
   compactTickInterval?: ReturnType<typeof setInterval>;
   // Threshold-checker → input-processor signal that next /compact-threshold-violating user turn must be compacted.
   autoCompactPending?: boolean;
+  // Runtime-only (not serialized): wall-clock ms until which the threshold-
+  // triggered auto-compact stays paused after a `/compact` turn failed —
+  // breaks the compact → fail → compact loop. Cleared by a successful
+  // compaction. See `pauseAutoCompactAfterFailure` in @soma/slack/compact-state.
+  autoCompactSuppressedUntilMs?: number | null;
   /**
    * Session-scoped auto-compact threshold in TOKENS, set by `/autocompact
    * <tokens>` and cleared by `/autocompact reset`. Wins over the model's
@@ -688,6 +765,42 @@ export interface ConversationSession {
    * `null` / `undefined` = no override.
    */
   autoCompactTokens?: number | null;
+  /**
+   * SSOT 2026-10-22 T7/T8 — the session's task ledger: every TodoWrite task
+   * with its own id, elapsed time and tool-call count, kept across list
+   * replacements (see `session/task-ledger.ts`). Persisted.
+   */
+  taskLedger?: TaskLedger;
+  /**
+   * Spec 12 — the subagents this session started, each with its own task
+   * ledger, tool-call count and status (see `session/agent-registry.ts`). The
+   * main agent's tasks stay in {@link taskLedger}. Persisted.
+   */
+  agents?: AgentRegistry;
+  /**
+   * SSOT 2026-10-22 T1/T2 — usage of the RUNNING turn, one entry per API
+   * message id (each assistant message carries its own call's usage). Folded
+   * into the dashboard's totals until the turn's result usage lands in
+   * `usage.total*`, then cleared. Runtime-only — NOT persisted.
+   */
+  liveUsage?: Record<
+    string,
+    { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number }
+  >;
+  /** The turn `liveUsage` belongs to (same-session turns can overlap). Runtime-only. */
+  liveUsageTurnId?: string;
+  /** The latest compact boundary's turn and that turn's `liveUsage` keys before it. Runtime-only. */
+  liveUsageBoundary?: { turnId?: string; keys: string[] };
+  /**
+   * SSOT 2026-10-22 T5 — a dashboard model switch that waits for the compact
+   * the current model must run first (context above the target model's
+   * auto-compact threshold). Only the compact turn of the message the switch
+   * dispatched (`compactTs`) arms it (`armed`); that turn applies it at its
+   * boundary, or cancels it when it ends without one — any other compact
+   * leaves it alone. Runtime-only — NOT persisted, so a restart cancels it
+   * instead of applying it to some unrelated later compact.
+   */
+  pendingModelSwitch?: { model: string; nickname: string; requestedAt: number; compactTs?: string; armed?: boolean };
   // One-shot suppression for `checkAndSchedulePendingCompact`. Set to `true`
   // by `postCompactCompleteIfNeeded` when a compact cycle seals; cleared by
   // the very next threshold check. Prevents the "Compaction completed →

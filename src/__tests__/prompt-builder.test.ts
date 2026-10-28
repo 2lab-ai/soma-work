@@ -139,23 +139,189 @@ describe('PromptBuilder', () => {
       expect(prompt!.toLowerCase()).toContain('deploy workflow');
     });
 
-    it('deploy workflow ends with the post-deploy lane signal (deploy_completed directive)', () => {
+    it('deploy workflow posts release notes through the release_notes directive, not channel_message', () => {
       const prompt = builder.loadWorkflowPrompt('deploy')!;
-      const section = prompt.slice(prompt.indexOf('### 7) Post-Deploy Lane Signal (Required)'));
+      const section = prompt.slice(prompt.indexOf('### 6) Release Notes'), prompt.indexOf('### 7) Post-Deploy QA'));
 
-      expect(prompt).toContain('### 7) Post-Deploy Lane Signal (Required)');
-      // After the release-notes step, and it carries the exact directive shape.
-      expect(prompt.indexOf('### 7) Post-Deploy Lane Signal')).toBeGreaterThan(prompt.indexOf('### 6) Release Notes'));
-      expect(section).toContain('"type": "deploy_completed"');
-      for (const field of ['"repo"', '"target"', '"before"', '"after"']) expect(section).toContain(field);
-      // The guard rails the harness relies on.
-      expect(section).toMatch(/never emit/i);
-      expect(section).toContain('baseRefName');
-      // A merged-but-unconfirmed deploy is said explicitly, not left silent.
-      expect(section).toContain('"confirmed": false');
-      // A CD run still going when the in-turn wait ends is not a confirmation.
-      expect(section).toMatch(/still in progress when the wait ends[^.]*unconfirmed/);
-      expect(section).toMatch(/"type"`? is the first key/);
+      expect(prompt.indexOf('### 6) Release Notes')).toBeGreaterThan(-1);
+      expect(prompt.indexOf('### 7) Post-Deploy QA')).toBeGreaterThan(prompt.indexOf('### 6) Release Notes'));
+      expect(section).toContain('local:release-notes');
+      expect(section).toContain('"type": "release_notes"');
+      for (const field of ['"repo"', '"target"', '"version"', '"tldr"', '"text"']) expect(section).toContain(field);
+      // The channel is the operator's mapping, never the model's pick.
+      expect(section).toContain('SOMA_RELEASE_NOTES_CHANNELS');
+      expect(section).not.toContain('"type": "channel_message"');
+      // repo/target are defined here on their own, so the mapping key matches the merged branch.
+      expect(section).toMatch(/normalized `owner\/repo`[^\n]*base branch exactly as merged into/);
+      expect(section).toContain('`base.ref` of the GitHub call `repos/<owner/repo>/pulls/<pr-number>`');
+      expect(section).toMatch(/never emit twice/i);
+    });
+
+    it('deploy workflow reads and writes GitHub through REST, since gh network calls fail in a sandbox', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy')!;
+      const execution = prompt.slice(prompt.indexOf('## Execution Process'), prompt.indexOf('### 1) Pre-Validation'));
+
+      // The sandbox fact and the one call form sit at the top of Execution Process.
+      expect(execution).toContain('x509: OSStatus -26276');
+      expect(execution).toContain('`gh auth token`');
+      expect(execution).toContain(
+        'curl -fsSL --connect-timeout 10 --max-time 30 -H "Authorization: Bearer $(gh auth token)" -H "Accept: application/vnd.github+json" "https://api.github.com/<path>"',
+      );
+      expect(execution).toMatch(/PR create and merge, CI checks, CD runs, the merge commit/);
+      // git over https still works; it is not rewritten.
+      expect(execution).toMatch(/`git` over https[^\n]*keep using it/);
+      // No gh CLI network command is left anywhere in the workflow.
+      for (const cmd of [
+        'gh pr checks',
+        'gh pr view',
+        'gh pr create',
+        'gh pr merge',
+        'gh run watch',
+        'gh run list',
+        'gh api',
+      ]) {
+        expect(prompt, cmd).not.toContain(cmd);
+      }
+      // CI wait polls check runs and workflow runs for the PR head, in the foreground and bounded.
+      const ci = prompt.slice(prompt.indexOf('#### How to wait for CI'), prompt.indexOf('## Conflict Handling Policy'));
+      expect(ci).toContain('repos/<owner/repo>/commits/<head_sha>/check-runs');
+      expect(ci).toContain('repos/<owner/repo>/actions/runs?head_sha=<head_sha>');
+      expect(ci).toMatch(/for i in \$\(seq 1 40\)/);
+      // The bound is stated as rounds, not as a wall clock.
+      expect(ci).toContain('up to 40 polling rounds (each request bounded by `--max-time 30`, then a 30 s sleep)');
+      expect(ci).not.toContain('40 rounds of 30 s');
+      // Both lists are paged to the end and must add up to total_count; anything else is unknown, never green.
+      expect(ci).toContain('&per_page=100&page=$p');
+      expect(ci).toContain('[ "$seen" = "$(jq -r .total_count <<<"$body")" ] && echo "$left" || echo unknown');
+      expect(ci).toContain('`unknown` is never green');
+      // Every curl in the workflow is bounded.
+      const curls = prompt.split('\n').filter((l) => l.includes('curl -'));
+      expect(curls.length).toBeGreaterThan(0);
+      for (const l of curls) expect(l).toContain('--connect-timeout 10 --max-time 30');
+      expect(ci).toContain('NOT `run_in_background`');
+      // CD wait (repos without QA) finds the run for the merge commit, any trigger, and polls it.
+      const step7 = prompt.slice(prompt.indexOf('### 7) Post-Deploy QA'));
+      expect(prompt).not.toContain('event=push');
+      expect(step7).toContain(
+        'repos/<owner/repo>/actions/runs?head_sha=<after_sha>&branch=<target>`, paged to the end, with no event filter',
+      );
+      // A listing without a deploy run is "not registered yet" before it means "no CD signal".
+      expect(step7).toContain('is "not registered yet"');
+      expect(step7).toContain('for up to 5 minutes after the merge');
+      expect(step7).toContain('Only after that does it mean there is no CD signal');
+      // Ambiguity = unconfirmed, said out loud; a deploy run once seen gets the 30-minute budget.
+      expect(step7).toContain('treat the deployment as unconfirmed and say so in the thread');
+      expect(step7).toContain('within a 30-minute budget');
+      expect(step7).toContain('repos/<owner/repo>/actions/runs/<run-id>');
+      expect(step7).toContain('`merge_commit_sha`');
+    });
+
+    it('deploy workflow emits no lane signal: QA is its own step, not a hand-off', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy')!;
+
+      // The deploy_completed directive had no receivers; the QA runs in this session instead.
+      expect(prompt).not.toContain('deploy_completed');
+      expect(prompt).not.toContain('Post-Deploy Lane Signal');
+      expect(prompt).not.toMatch(/\blanes?\b/i);
+      // Steps end at 7; nothing points at a step 8 any more.
+      expect(prompt).not.toContain('### 8)');
+      expect(prompt).not.toMatch(/step 8/i);
+      // Steps 5 and 6 repeat per repo; step 7 waits for every repo's merge outcome — one ordering story.
+      expect(prompt).toMatch(/repeat steps 5\) and 6\) for each repo/);
+      expect(prompt).not.toContain('terminal deploy outcome');
+      expect(prompt).toContain('Step 7) starts once every repo has reached a terminal merge outcome');
+    });
+
+    it('deploy workflow preflights post-deploy QA in step 1 through the environment plugin', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy')!;
+      const section = prompt.slice(
+        prompt.indexOf('### 1) Pre-Validation'),
+        prompt.indexOf('### 2) Prepare Working Branch'),
+      );
+
+      // The environment lives in a host-installed plugin; the workflow only knows the skill name.
+      expect(section).toContain('`<plugin>:post-deploy`');
+      expect(section).toContain('--preflight repo=<owner/repo> target=<branch>');
+      expect(section).toContain('the same strings the QA step will use');
+      expect(section).toContain(
+        'It only reads, apart from creating the QA lock and screenshot directories and one probe file it removes',
+      );
+      for (const answer of ['`applies`', '`partial: <checks>`', '`not-applicable`', '`missing: <fields>`']) {
+        expect(section).toContain(answer);
+      }
+      // partial -> one warning line, and QA still runs in the skill's reduced mode.
+      expect(section).toMatch(/`partial: <checks>`[^\n]*⚠️[^\n]*Step 7 still runs for this repo, in the reduced mode/);
+      // missing -> one warning line, the deploy continues, and the repo is never reported as QA done.
+      expect(section).toMatch(/`missing: <fields>`[^\n]*⚠️[^\n]*continue the deploy/);
+      expect(section).toContain('`deployed, QA not run: <reason>`');
+      // Fail closed: an unexpected answer or a skill error is a `missing`, never a silent deploy-only.
+      expect(section).toMatch(
+        /Any other answer, or an error from the skill, is handled like `missing: <fields>`[^\n]*⚠️/,
+      );
+      // Nothing earlier in the conversation waives QA, and a preflight answer never parks the deploy on the requester.
+      expect(section).toContain('is consent to skip or reduce QA');
+      expect(section).toContain('Never wait for the requester because of a preflight answer');
+      expect(section).toContain('Never tell the requester to re-run QA elsewhere');
+      expect(section).not.toMatch(/then wait for the requester/);
+      expect(section).not.toMatch(/only if they say so/);
+      // No such skill on this host -> say so once and keep deploying.
+      expect(section).toContain('`ℹ️ no post-deploy QA on this host`');
+    });
+
+    it('deploy workflow runs post-deploy QA itself in step 7; the QA skill owns deploy confirmation for its repos', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy')!;
+      const step7 = prompt.slice(prompt.indexOf('### 7) Post-Deploy QA'));
+
+      expect(prompt.indexOf('### 7) Post-Deploy QA')).toBeGreaterThan(prompt.indexOf('### 6) Release Notes'));
+      // A QA repo: the workflow does not confirm the deploy itself; the skill's --confirm answer is the line.
+      expect(step7).toContain('`applies` or `partial: …`');
+      expect(step7).toContain('do not confirm its deployment yourself');
+      expect(step7).toContain('`<plugin>:post-deploy --confirm repo=<owner/repo> target=<branch> after=<after_sha>`');
+      expect(step7).toContain('`confirmed`, `unconfirmed: <reason>`, or `failed: <run> concluded <conclusion>`');
+      expect(step7).toContain("That answer is this repo's deploy confirmation line");
+      // Only a repo without QA is confirmed by the workflow.
+      expect(step7).toContain('**Confirming a deployment yourself** (only for a merged repo without QA)');
+      expect(step7).toMatch(/run for the merge commit concluded `success`[^\n]*\*\*in-turn\*\*/);
+      expect(step7).toContain("step 5's healthcheck passed");
+      // A CD run still going when the in-turn wait ends is not a confirmation; a failed one is a failed deploy.
+      expect(step7).toMatch(/still in progress when the bounded wait ends[^.]*unconfirmed/);
+      expect(step7).toContain('A CD run for the merge commit that failed is a failed deploy');
+      expect(step7).toContain(
+        '`<plugin>:post-deploy repo=<owner/repo> target=<branch> before=<before_sha> after=<after_sha>`',
+      );
+      expect(step7).toContain('in this session');
+      expect(step7).toMatch(/`before` the target SHA before the merge[^\n]*`after` the merge commit SHA/);
+      expect(step7).toMatch(/until its final report is posted in this thread/);
+      expect(step7).toContain('`deployed, QA incomplete: <reason>`');
+      expect(step7).toMatch(/never as done/);
+      // Re-run arguments are a maintainer reference, never the requester's next step.
+      expect(step7).toContain('reference line for maintainers');
+      expect(step7).not.toMatch(/with the re-run arguments it gives/);
+    });
+
+    it('deploy workflow step 7 waits for every repo, states the skipped ones, and reports a broken QA run itself', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy')!;
+      const step7 = prompt.slice(prompt.indexOf('### 7) Post-Deploy QA'));
+
+      // Multi-repo: after every merge outcome, phase 1 confirms every merged repo before phase 2 QAs any.
+      expect(step7).toContain('once every repo of this deploy has reached a terminal merge outcome');
+      const phase1 = step7.indexOf('**Phase 1 — confirm every merged repo, before any QA.**');
+      const phase2 = step7.indexOf('**Phase 2 — QA, one repo at a time**');
+      expect(phase1).toBeGreaterThan(-1);
+      expect(phase2).toBeGreaterThan(phase1);
+      expect(step7).toContain(
+        "if repo A and repo B both merge and B's CD finishes later, phase 1 waits for B's confirmation before the QA of A starts",
+      );
+      expect(step7).toContain('Phase 1 ends only when every merged repo has a result');
+      expect(step7.slice(phase2)).toMatch(/for each repo with QA whose phase-1 answer is `confirmed`/);
+      // Every other repo gets one line saying why QA did not run; a failed or held repo never hides the rest.
+      expect(step7.slice(phase2)).toContain('Post one line for every other repo saying QA did not run for it and why');
+      expect(step7).toContain('`deploy failed, QA not run: <run> concluded <conclusion>`');
+      expect(step7).toContain('A failed or held repo is stated; it never silently skips QA for the other repos.');
+      // The skill erroring or never reporting is not a silent end: the workflow reports it itself.
+      expect(step7).toMatch(
+        /If the skill errors, or ends without posting its final report, report `deployed, QA incomplete: <reason>` for that repo yourself/,
+      );
     });
 
     it('should fallback to default for unknown workflow', () => {
