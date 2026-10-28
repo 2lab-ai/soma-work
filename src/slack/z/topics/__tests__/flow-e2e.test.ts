@@ -1,5 +1,5 @@
 /**
- * `/z` Block Kit flow — end-to-end wiring tests (Phase 2, #507).
+ * `/z` Block Kit flow — end-to-end wiring tests (#507).
  *
  * Validates the full three-step lifecycle:
  *
@@ -11,7 +11,7 @@
  *
  * These tests use the real `buildDefaultTopicRegistry()` (no mocks for the
  * topic bindings) + a fake Slack client. They are the canonical smoke-test
- * that the 11 topics are wired correctly from `ActionHandlers` through
+ * that every registered topic is wired from `ActionHandlers` through
  * `ZSettingsActionHandler` to `ZRespond`.
  */
 
@@ -49,17 +49,14 @@ function actionIdsIn(blocks: any[]): string[] {
 }
 
 describe('/z Block Kit flow — help card → nav → set', () => {
-  it('help card lists nav buttons for every registered topic', () => {
-    const blocks = buildHelpCard({ issuedAt: 42 });
-    const ids = actionIdsIn(blocks);
-    // Every id must be a nav button.
+  // T3 invariant: a help button exists iff its topic has a registered card — both directions. A
+  // button without a card is the dead "coming in Phase 3" UI this replaced; a card without a
+  // button is unreachable from help.
+  it('help card buttons are exactly the registered topics', () => {
+    const ids = actionIdsIn(buildHelpCard({ issuedAt: 42 }));
     for (const id of ids) expect(id.startsWith('z_help_nav_')).toBe(true);
-    // Spot-check — all Phase 2 topic ids must have a corresponding nav button
-    // (since the default card includes them).
-    const registry = buildDefaultTopicRegistry();
-    for (const topic of registry.topics()) {
-      expect(ids).toContain(`z_help_nav_${topic}`);
-    }
+    const buttons = new Set(ids.map((id) => id.slice('z_help_nav_'.length)));
+    expect([...buttons].sort()).toEqual([...buildDefaultTopicRegistry().topics()].sort());
   });
 
   it('z_help_nav_<topic> replaces the card via chat.update in DM source', async () => {
@@ -108,20 +105,45 @@ describe('/z Block Kit flow — help card → nav → set', () => {
     expect(client.chat.delete).toHaveBeenCalledWith({ channel: 'D1', ts: '111.1' });
   });
 
-  it('unknown topic nav surfaces a visible Phase 3 notice (no silent fallback)', async () => {
+  it('a stale help button (topic without a card) says it is no longer used — never a silent no-op', async () => {
     const registry = buildDefaultTopicRegistry();
     const handler = new ZSettingsActionHandler({ registry });
     const client = makeClient();
 
-    const body = buildDmActionBody('z_help_nav_doesnotexist');
+    // Help cards rendered by older releases still carry buttons such as `z_help_nav_mcp`.
+    const body = buildDmActionBody('z_help_nav_mcp');
     await expect(handler.handleHelpNav(body, client)).resolves.toBeUndefined();
-    // DM path → replace() calls chat.update; we expect ONE visible message
-    // (not a silent no-op) even for unregistered topics so the "no silent
-    // fallback" invariant (MASTER-SPEC §10) holds.
+    // One visible message (MASTER-SPEC §10 no-silent-fallback), pointing at the current help.
     expect(client.chat.update).toHaveBeenCalledTimes(1);
     const payload = client.chat.update.mock.calls[0][0];
-    expect(payload.text).toContain('Phase 3');
-    expect(payload.text).toContain('doesnotexist');
+    expect(payload.text).toContain('/z help');
+    expect(payload.text).not.toMatch(/Phase/i);
+    // Navigation never runs a command: nothing else is posted.
+    expect(client.chat.postMessage).not.toHaveBeenCalled();
+  });
+
+  // T2/T3: the `skill` help button opens the skill list — personal skills, then environment skills.
+  it('z_help_nav_skill replaces the card with the personal skill list, then posts the environment skills', async () => {
+    const registry = buildDefaultTopicRegistry();
+    const handler = new ZSettingsActionHandler({ registry });
+    const client = makeClient();
+
+    await handler.handleHelpNav(buildDmActionBody('z_help_nav_skill', 'UNOSKILLS'), client);
+
+    expect(client.chat.update).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(client.chat.update.mock.calls[0][0])).toContain('personal skill');
+    expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+    const followUp = client.chat.postMessage.mock.calls[0][0];
+    expect(followUp.channel).toBe('D1');
+    expect(JSON.stringify(followUp)).toContain('환경 스킬');
+  });
+
+  it('a set click on a topic whose card has no settings is ignored', async () => {
+    const registry = buildDefaultTopicRegistry();
+    const handler = new ZSettingsActionHandler({ registry });
+    const client = makeClient();
+    await expect(handler.handleSet(buildDmActionBody('z_setting_skill_set_x'), client)).resolves.toBeUndefined();
+    expect(client.chat.update).not.toHaveBeenCalled();
   });
 });
 
@@ -137,8 +159,8 @@ describe('/z Block Kit flow — every registered topic renders a non-empty card'
       const payload = client.chat.update.mock.calls[0][0];
       expect(Array.isArray(payload.blocks)).toBe(true);
       expect(payload.blocks.length).toBeGreaterThan(0);
-      // Header is always block[0].
-      expect(payload.blocks[0].type).toBe('header');
+      // Setting cards open with a header; the skill card is the `$user` list (sections).
+      expect(payload.blocks[0].type).toBe(topic === 'skill' ? 'section' : 'header');
     });
   }
 });

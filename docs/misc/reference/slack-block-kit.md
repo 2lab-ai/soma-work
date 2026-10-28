@@ -351,18 +351,21 @@ action handler가 카드를 교체(`replace`)할 때, **원래 전송한 surface
 ### 5.4 Flow (help → nav → set)
 
 ```
-/z  (empty remainder)
-  └─> ZRouter → buildHelpCard({issuedAt})
-       └─> 카테고리별 z_help_nav_<topic> 버튼 (5개/row)
+/z · /z help · help
+  └─> buildHelpCard({issuedAt})
+       ├─> 카드 주제(card: true = 등록된 binding): z_help_nav_<topic> 버튼 (5개/row)
+       └─> 그 외 주제: `/z <command>` 칩 (context, 🧵 = SLASH_FORBIDDEN)
 
 [user clicks z_help_nav_<topic>]
   └─> ZSettingsActionHandler.handleHelpNav
-       └─> registry.get(topic).renderCard({userId, issuedAt})
-            └─> zRespond.replace({text, blocks})  // 원 카드와 같은 surface
+       ├─ binding 있음 → renderCard({userId, issuedAt})
+       │    ├─> zRespond.replace({text, blocks})  // 원 카드와 같은 surface
+       │    └─> followUp 있으면 zRespond.send(followUp)  // skill: 환경 스킬 목록
+       └─ binding 없음(옛 카드의 버튼) → "더 이상 사용되지 않는 버튼 — /z help" (명령 실행 없음)
 
 [user clicks z_setting_<topic>_set_<value>]
   └─> ZSettingsActionHandler.handleSet
-       └─> binding.apply({userId, value, actionId, body})
+       └─> binding.apply({userId, value, actionId, body})   // apply 없는 binding(skill)은 무시
             ├─ ok:true,  dismiss:false → buildConfirmationCard + replace
             ├─ ok:true,  dismiss:true  → zRespond.dismiss()
             └─ ok:false              → error confirmation

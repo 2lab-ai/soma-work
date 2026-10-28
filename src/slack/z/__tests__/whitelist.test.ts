@@ -37,3 +37,27 @@ describe('isDmAllowedForNonAdmin — autocompact (config-only, never spawns a pr
     expect(isDmAllowedForNonAdmin('autocompacting now')).toBe(false);
   });
 });
+
+// T1: `skill` lists the requester's own skills — a read-only command, never a prompt.
+describe('isDmAllowedForNonAdmin — skill list (read-only, never spawns a prompt)', () => {
+  it('allows every list/download form, naked and `/z`', () => {
+    for (const t of [
+      'skill',
+      'skills',
+      '/skill',
+      '/skills',
+      'skill list',
+      'skills download',
+      '/z skill',
+      '/z skills list',
+    ]) {
+      expect(isDmAllowedForNonAdmin(t), t).toBe(true);
+    }
+  });
+
+  it('still rejects prose that starts with "skill"', () => {
+    for (const t of ['skill me a deploy script', '/z skill write a deploy script', 'skills are great']) {
+      expect(isDmAllowedForNonAdmin(t), t).toBe(false);
+    }
+  });
+});

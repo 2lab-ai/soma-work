@@ -163,13 +163,10 @@ export function parseTopic(remainder: string): { topic: string; verb?: string; a
 }
 
 /**
- * Translate a `/z <topic> [verb] [args...]` remainder into legacy naked
- * syntax understood by the current CommandRouter.
- *
- * This is intentionally pragmatic — Phase 1 keeps all legacy handlers
- * working, so we just need to bridge the new noun-verb surface to the old
- * verb-noun / legacy syntaxes. Phase 2 will migrate handlers to accept
- * native `/z` syntax directly.
+ * Translate a `/z <topic> [verb] [args...]` remainder into the naked syntax
+ * the CommandRouter handlers accept (`/z skill` → `skills`, `/z email set x`
+ * → `set email x`). Topics whose handlers already accept the `/z` form pass
+ * through unchanged.
  */
 export function translateToLegacy(remainder: string): string {
   const trimmed = remainder.trim().replace(/\s+/g, ' ');

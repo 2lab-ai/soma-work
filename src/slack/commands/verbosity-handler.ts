@@ -7,7 +7,7 @@ import type { CommandContext, CommandDependencies, CommandHandler, CommandResult
 /**
  * Handles verbosity commands (status/set).
  *
- * Phase 2 (#507):
+ * #507:
  *   - bare `verbosity` → Block Kit setting card
  *   - `verbosity <level>` → apply + text ack (also applied to current session)
  */

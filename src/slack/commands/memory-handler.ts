@@ -15,7 +15,7 @@ import type { CommandContext, CommandHandler, CommandResult } from './types';
 /**
  * Handles memory commands (show/save/clear).
  *
- * Phase 2 (#507): bare `memory` / `memory show` renders Block Kit via
+ * #507: bare `memory` / `memory show` renders Block Kit via
  * renderMemoryCard. Explicit save/clear subcommands keep their text acks for
  * CLI-style back-compat.
  */

@@ -45,6 +45,12 @@ const SAFE_Z_TOPICS =
  *
  * Admin users bypass this gate entirely at the call site.
  */
+/**
+ * The `skill` list — the requester's own skills and this host's environment skills, read-only.
+ * Exact forms only (`SkillsHandler` grammar): `skill write me a script` stays a prompt.
+ */
+const SKILL_LIST = /^\/?skills?(?:\s+(?:list|download))?$/;
+
 export function isDmAllowedForNonAdmin(text: string): boolean {
   const raw = (text ?? '').trim();
   if (!raw) return false;
@@ -54,12 +60,13 @@ export function isDmAllowedForNonAdmin(text: string): boolean {
   if (zStripped !== null) {
     const t = zStripped.trim().toLowerCase();
     if (!t) return true; // bare `/z` → help card
-    return SAFE_Z_TOPICS.test(t);
+    return SAFE_Z_TOPICS.test(t) || SKILL_LIST.test(t);
   }
 
   // Naked surface — help / sessions / theme / key / %…$… only.
   const lower = raw.toLowerCase();
   if (/^help$/.test(lower)) return true;
+  if (SKILL_LIST.test(lower)) return true;
   // Personal llmux client key — DM is the PRIMARY surface for this command
   // (the response carries a secret, delivered by DM). Grammar mirrors
   // CommandParser.isAuthCommand's `key` arm exactly: bare word, optional

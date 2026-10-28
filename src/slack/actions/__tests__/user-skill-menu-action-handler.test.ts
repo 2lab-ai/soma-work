@@ -191,6 +191,43 @@ describe('UserSkillMenuActionHandler', () => {
     });
   });
 
+  // ---------- invoke from an ephemeral list ----------
+  // The help card opened by slash `/z` is ephemeral, so its `skill` button renders the list
+  // ephemerally. Ephemeral click payloads carry no `message` — only `container`.
+
+  describe('invoke from an ephemeral list', () => {
+    const ephemeralBody = (threadTs?: string) => {
+      const body: any = makeButtonBody();
+      delete body.message;
+      body.container = {
+        type: 'message',
+        channel_id: 'C1',
+        message_ts: 'eph-ts',
+        is_ephemeral: true,
+        thread_ts: threadTs,
+      };
+      return body;
+    };
+
+    it('runs the skill in the thread the ephemeral list was opened in', async () => {
+      await handler.handleAction(ephemeralBody('thread-ts'), respond, client);
+
+      expect(messageHandler).toHaveBeenCalledTimes(1);
+      expect(messageHandler.mock.calls[0][0].thread_ts).toBe('thread-ts');
+      // An ephemeral message cannot be edited with chat.update.
+      expect(slackApi.updateMessage).not.toHaveBeenCalled();
+    });
+
+    it('outside a thread: runs nothing and says how to run it (no reply into a dead thread)', async () => {
+      await handler.handleAction(ephemeralBody(undefined), respond, client);
+
+      expect(messageHandler).not.toHaveBeenCalled();
+      expect(respond).toHaveBeenCalledTimes(1);
+      expect(respond.mock.calls[0][0].response_type).toBe('ephemeral');
+      expect(respond.mock.calls[0][0].text).toContain('$user:a');
+    });
+  });
+
   // ---------- invoke (overflow option, kind=invoke) ----------
 
   describe('invoke (overflow option)', () => {

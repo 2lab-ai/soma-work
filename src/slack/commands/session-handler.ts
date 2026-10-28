@@ -24,7 +24,7 @@ export class SessionHandler implements CommandHandler {
 
     // Session theme command (e.g., "sessions theme=A", "theme", "theme set B")
     //
-    // Phase 2 (#507): bare `theme` renders Block Kit via /z topic module.
+    // #507: bare `theme` renders Block Kit via /z topic module.
     // Explicit `theme set <v>` retains text ack for CLI back-compat.
     if (CommandParser.isSessionThemeCommand(text)) {
       const parsed = CommandParser.parseSessionThemeCommand(text);

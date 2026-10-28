@@ -154,9 +154,10 @@ export function isValidSkillName(name: string): boolean {
  *
  * Broken / missing frontmatter is allowed by design — the inline editor must
  * round-trip whatever the user actually wrote. A skill with no `description:`
- * line simply renders with an empty description in the `$user` list.
+ * line simply renders with an empty description in the `$user` list. The
+ * `skill` list reads environment-skill descriptions with the same rule.
  */
-function extractDescription(content: string): string {
+export function extractDescription(content: string): string {
   const match = content.match(/^---\s*\n[\s\S]*?description:\s*["']?([^"'\n]+)["']?\s*\n[\s\S]*?---/);
   return match?.[1]?.trim() ?? '';
 }
