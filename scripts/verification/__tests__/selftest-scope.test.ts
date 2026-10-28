@@ -69,7 +69,8 @@ afterAll(() => {
   for (const dir of dirs) fs.rmSync(dir, { recursive: true, force: true });
 });
 
-describe('selftest-scope.sh', () => {
+// Each case spawns several git processes; on a loaded host that exceeds vitest's 5 s default.
+describe('selftest-scope.sh', { timeout: 30_000 }, () => {
   it('runs the self-test on a push, whatever changed', () => {
     const { dir, base } = repoWithChange(['src/app.ts']);
     expect(scope(dir, { EVENT_NAME: 'push', BASE_SHA: base }).verdict).toBe('true');
