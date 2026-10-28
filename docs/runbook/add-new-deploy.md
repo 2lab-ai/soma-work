@@ -479,23 +479,91 @@ Deploy 스텝은 이 스크립트를 두 번 부른다:
   마켓플레이스라면 그 호스트의 `gh` 인증이 그 레포를 읽을 수 있어야 한다. **fetch 실패는 배포를 실패시키지
   않는다** (PluginManager는 로그만 남기고 뜬다) — 첫 배포 뒤 다음 deploy 스레드의 프리플라이트 줄을 확인하라:
   `ℹ️ no post-deploy QA on this host`가 나오면 플러그인이 로드되지 않은 것이고, ⚠️ 줄이면 프로필이 덜 찼다.
-- 호스트를 `onDeploy` QA 레인(크론 잡 또는 `deploy-lanes.json`)에서 환경 플러그인으로 옮길 때는 그 레인을
-  지운다 — 남겨 두면 레인과 8단계가 같은 배포를 두 번 QA한다.
 
 **환경 플러그인 규약 — `post-deploy` 스킬.** 배포 워크플로우(`src/prompt/workflows/deploy.prompt`)는
 환경 값을 모르고, 이름이 고정된 스킬 하나만 찾는다:
 
 - 1단계(Pre-Validation): `<plugin>:post-deploy --preflight repo=<owner/repo> target=<branch>` → 정확히
-  하나를 답한다: `applies` / `not-applicable` / `missing: <fields>`. 아무것도 쓰지 않는다. 다른 답이나
-  스킬 오류는 `missing`과 같게 처리된다 (⚠️ 한 줄 + 요청자 대기).
-- 8단계(Post-Deploy QA): 모든 repo의 배포 결과가 정해진 뒤, 프리플라이트가 `applies`였고 7단계
-  `deploy_completed`가 confirmed인 repo마다 하나씩 `<plugin>:post-deploy repo=<owner/repo> target=<branch>
-  before=<sha> after=<sha>` — 같은 세션에서 배포 후 QA를 끝까지 하고 최종 리포트를 그 스레드에 올린다.
-  QA를 안 한 repo는 이유를 한 줄씩 적는다. 스킬이 오류로 끝나거나 최종 리포트 없이 끝나면 워크플로우가
-  직접 `deployed, QA incomplete`와 재실행 인자를 보고한다. 레인이 아니라 워크플로우 자신의 일이다.
+  하나를 답한다: `applies` / `partial: <checks>` / `not-applicable` / `missing: <fields>`. 잠금·스크린샷
+  폴더 생성 말고는 아무것도 쓰지 않는다. `partial`이면 ⚠️ 한 줄 뒤 축소 모드로 QA를 돌리고, `missing`·다른 답·
+  스킬 오류는 ⚠️ 한 줄 뒤 배포만 계속한다(그 repo = `deployed, QA not run`). 어떤 답도 배포를 멈추거나 요청자를
+  기다리게 하지 않는다.
+- 7단계(배포 확인 + Post-Deploy QA): 모든 repo의 머지 결과가 정해진 뒤 두 단계로 돈다. ① 머지된 repo마다
+  배포를 확인한다 — QA가 붙는 repo는 `<plugin>:post-deploy --confirm repo=<owner/repo> target=<branch> after=<sha>`가
+  `confirmed` / `unconfirmed: …` / `failed: …` 중 하나로 답하고, 그 답이 그 repo의 배포 확인 줄이다. ② 확인된 QA repo마다
+  하나씩 `<plugin>:post-deploy repo=<owner/repo> target=<branch> before=<sha> after=<sha>` — 같은 세션에서 배포 후 QA를
+  끝까지 하고 최종 리포트를 그 스레드에 올린다. QA를 안 한 repo는 이유를 한 줄씩 적는다. 스킬이 오류로 끝나거나 최종
+  리포트 없이 끝나면 워크플로우가 직접 `deployed, QA incomplete`를 보고한다(재실행 인자는 관리자용 참고 한 줄).
 - 스킬 본문은 그 호스트의 적용표·프로필(`## Environment`)·정책(`## Policy`)을 들고, 절차는
   soma-work 번들 `zworkflow` 스킬 `deploy-qa` / `qa-issue` / `qa-report`를 호출한다.
 - 이 스킬이 없는 호스트에서는 배포가 `ℹ️ no post-deploy QA on this host` 한 줄을 남기고 QA 없이 진행한다.
+
+**환경 스킬 권한 — 어드민 승인.** 환경 플러그인의 스킬(이하 환경 스킬)은 그 호스트의 환경 값과 정책을 들고 있으므로
+어드민(`ADMIN_USERS`)만 바로 쓴다. 그 밖의 사람은 어드민이 허용했을 때만 쓴다. 다른 사람의 개인 스킬을 쓸 때 소유자에게
+허용을 묻는 흐름(`skill_perm_`)과 같은 방식이고, 여기서는 소유자 자리에 어드민이 있다.
+
+- 어떤 플러그인이 환경 플러그인인지는 배포가 정한다. 위의 합치기가 `plugin.plugins[]`와 함께
+  `plugin.envPlugins[]`에도 `plugin@marketplace-name`을 넣는다(추가만 한다). 이 표시가 붙은 플러그인의 스킬만 막힌다.
+  표시가 없던 호스트는 이 기능이 들어간 첫 배포에서 표시가 붙는다(그 배포 로그는 `applied`).
+- 막는 곳은 두 군데이고 판단은 한 함수다. 사람이 친 `$plugin:skill`(`SkillForceHandler`, 다른 스킬 안에 중첩된 참조
+  포함)과 모델의 도구 호출(`evaluateToolPolicy` 6b단계)이다. 6b는 `Skill` 호출(배포 워크플로우가 `post-deploy`를
+  부르는 길)과 함께 그 플러그인 파일을 직접 읽는 `Read`·`Glob`·`Grep`·`Bash`도 막는다 — 스킬 파일을 읽어 손으로
+  따라 하는 우회를 닫기 위해서다. `<plugin>/skills/<skill>/` 아래는 그 스킬의 허용이, 플러그인의 다른 파일과
+  `PLUGINS_DIR/.backups/<plugin>`은 "모든 환경 스킬" 허용이 있어야 읽힌다. `PLUGINS_DIR` 자체나 그 위 디렉터리를
+  훑는 `Grep`·`Glob`도 같다. 경로는 세션 작업 디렉터리 기준으로 풀고 심볼릭 링크도 따라간다. `Write`·`Edit`·
+  `NotebookEdit`로 그 파일을 고치는 것은 허용이 있어도 막는다(허용은 실행이지 수정이 아니다). `Bash`는 명령 문자열
+  검사에 더해, 샌드박스가 켜진 비어드민 세션에 환경 플러그인 디렉터리와 백업의 OS 수준 읽기 금지
+  (`sandbox.filesystem.denyRead`)가 걸린다 — 상대 경로·와일드카드·링크까지 막는다("모든 환경 스킬" 허용이면 풀린다).
+  샌드박스를 끈 사용자(`sandbox off`)는 문자열 검사만 받는다. 어드민은 모두 묻지 않고 통과한다. 인시던트
+  세션은 원래대로 그 위 단계에서 전부 막힌다. 스킬 이름이 없거나 문자열이 아닌 `Skill` 호출은 환경 플러그인이 있는
+  호스트에서 거부한다(어드민에게 묻지는 않는다).
+- 막히면 요청이 하나 기록되고(`DATA_DIR/skill-perm-requests.json`, 같은 스레드의 같은 요청은 다시 보내지 않는다)
+  어드민 전원에게 DM이 간다. DM이 하나도 안 가면 요청한 스레드에 어드민을 멘션해 올리고, 그것도 안 되거나 어드민이
+  없으면 요청을 닫고 요청자에게 그렇게 알린다. 요청자 스레드에는 어느 경우든 한 줄이 남는다.
+- 어드민 버튼: **✅ 1회 허용** = 그 요청자가 그 스레드에서만 12시간 동안 그 스킬을 쓴다(한 배포가 같은 스킬을 여러 번
+  부르므로 "1회"는 그 실행 한 번이다. 메모리에만 있어 재시작하면 사라진다). **📋 항상 허용** = 그 요청자에게 그 스킬을
+  영구 허용. **🌐 모든 환경 스킬 항상 허용** = 그 요청자에게 환경 스킬 전부를 영구 허용. **❌ 거부** = 허용 없음.
+  영구 허용은 `DATA_DIR/env-skill-grants.json`(`{allowAll, perSkill}`)에 원자적으로 저장된다. 어느 어드민이든
+  답할 수 있고 먼저 누른 사람의 답 하나만 반영되며, 다른 어드민들의 DM도 결과로 바뀐다.
+- 허용되면 요청한 턴을 요청자 이름으로 다시 보낸다. `$` 호출은 그 원문을, 모델의 `Skill` 호출은 "이어서 진행하라"는
+  메시지를 보낸다. 배포 세션이면 QA를 건너뛴 repo의 사전점검·배포 확인·QA를 같은 인자로 다시 돈다(`deploy.prompt`).
+- 영구 허용을 거두려면 `DATA_DIR/env-skill-grants.json`에서 그 사용자 ID를 지운다(다음 호출부터 적용).
+
+### 8.6 배포 워크플로우 샌드박스 허용 (배포 시 기록)
+
+8단계 QA는 요청자의 배포 워크플로우 세션 안, SDK 샌드박스 안에서 돈다. 호스트에 따라 QA는 샌드박스가
+허용하지 않는 것 — 호스트 디렉터리 쓰기(공유 QA lock, 실행 증거)와 QA 환경 호스트명으로의 네트워크 —
+이 더 필요하다. 그 허용을 runner마다 `config.json#deploySandbox`에 쓴다. 설정 위치는 §8.5와 같은
+Actions **repo secrets**, 채널마다 하나, 서로 넘어가지 않는다:
+
+| 시크릿 | 채널 |
+|------|------|
+| `PREVIEW_DEPLOY_SANDBOX` | 프리뷰 (`deploy/dev`, main dispatch) |
+| `PRODUCTION_DEPLOY_SANDBOX` | 프로덕션 (`deploy/prod`) |
+
+```text
+# runner-label|user[,user...]|domain[,domain...]|path[,path...]
+runner-a|UAPPROVED1|qa.example.test,admin.qa.example.test|/srv/qa/lock,/srv/qa/runs
+```
+
+- user = Slack 사용자 ID. domain = **정확한 호스트명만** (소문자; 와일드카드·스킴·포트·경로·IP 리터럴 불가).
+  path = 정규화된 절대 경로, 3단계 이상 (`/srv/qa/lock`은 되고 `/srv/qa`는 안 된다). 시스템 루트(`/tmp`,
+  `/var`, `/private`, `/etc`, `/usr`, `/opt`, `/Library`, `/System`, `/Applications` 등)와 같거나, 그 아래거나,
+  그 위인 경로는 안 된다. `/Users`·`/home`과 홈 디렉터리 자체(`/Users/<이름>`)도 안 되지만, 홈 디렉터리
+  **안**(`/Users/<이름>/qa/lock`)은 된다. 데몬은 실행 시 심볼릭 링크를 거쳐 다른 곳으로 풀리는 경로를 버린다.
+  domain·path 칸은 비워도 되고, 같은 runner의 여러 줄은 합쳐진다. 형식이 틀린 줄이나 채널 label 집합에
+  없는 runner는 (다른 runner 줄이어도) 배포를 실패시킨다.
+- 데몬은 이 허용을 **배포 워크플로우 세션**의 턴에만, 그 턴을 **보낸 사람과 세션 주인이 둘 다** user 목록에
+  있을 때만 붙인다 (같은 사람이면 한 번으로 친다). 같은 스레드에 다른 사람이 답한 턴에도, 목록에 없는 사람이
+  주인인 세션의 턴에도 붙지 않는다 — 세션 주인은 실행 중인 턴에 메시지를 밀어 넣을 수 있기 때문이다. path는
+  항상, domain은 보낸 사람의 네트워크 허용 목록이 켜져 있을 때만 더해진다. 다른 워크플로우, 샌드박스가 꺼진
+  사용자는 그대로다.
+- §8.5와 달리 **교체**다: 그 runner의 줄이 있으면 키를 그 합집합으로 쓰고, 없으면(시크릿이 비었을 때 포함)
+  키를 지운다 — **시크릿에서 줄을 지우면 다음 배포에서 허용이 회수된다.** 줄도 키도 없는 호스트는 대상을
+  검사하지도 쓰지도 않는다 (`nothing to apply`).
+- Deploy 스텝은 `apply-env-plugins.js` 옆에서 `node dist/deploy/apply-deploy-sandbox.js`를 같은 두 번
+  (`--check`는 stop 전, 실제 기록은 restart 전) 부르고, 개수만 출력한 뒤 값을 `unset`한다. `/z plugin`
+  저장은 이 키를 보존한다.
 
 ---
 

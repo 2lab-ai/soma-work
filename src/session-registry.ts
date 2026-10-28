@@ -4,14 +4,16 @@
  */
 
 import { LOG_VERBOSITY_MASK_VERSION, upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
-import { sanitizeSdkUsageBaseline } from '@soma/slack/session-usage-math';
+import { sanitizeSdkUsageBaseline, sanitizeTaskUsage, type TaskUsage } from '@soma/slack/session-usage-math';
 import * as fs from 'fs';
 import * as path from 'path';
 import { applyInstructionOperations } from 'somalib/model-commands/catalog';
-import { decodeSlackEntities } from './dispatch-service';
 import { DATA_DIR } from './env-paths';
+import { isPlaceholderSessionTitle, sanitizeSessionTitle } from './format/display-title';
 import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
+import { repriceBaseline } from './metrics/host-pricing';
+import { hostPricing } from './metrics/host-pricing-catalog';
 import { normalizeTmpPath } from './path-utils';
 import { loseRunningAgents, sanitizeAgentRegistry } from './session/agent-registry';
 import { sanitizeCronJob } from './session/cron-job';
@@ -199,6 +201,8 @@ interface SerializedSession {
   instructionsCompletedSummary?: { summary: string; upstreamHash: string };
   /** Last SDK running total per model — see `ConversationSession.sdkUsageBaseline`. */
   sdkUsageBaseline?: unknown;
+  /** SSOT 2026-10-26 T3 — what the whole task spent; sanitized on load. */
+  taskUsage?: unknown;
   // Dashboard v2.1 — thread-aggregate snapshot fields (live aggregate derived from memory).
   compactionCount?: number;
   activeLegStartedAtMs?: number;
@@ -333,6 +337,11 @@ function restorePendingRetryDetail(raw: unknown): ConversationSession['pendingRe
     maxAttempts: count(r.maxAttempts),
     reason: typeof r.reason === 'string' ? r.reason : undefined,
   };
+}
+
+/** A saved epoch-ms stamp, or undefined when it is not a finite number. */
+function finiteStamp(v: unknown): number | undefined {
+  return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 }
 
 export class SessionRegistry {
@@ -901,10 +910,11 @@ export class SessionRegistry {
    */
   setSessionTitle(channelId: string, threadTs: string | undefined, title: string): void {
     const session = this.getSession(channelId, threadTs);
+    const clean = sanitizeSessionTitle(title);
     // A provisional title (a cron job name, SSOT 2026-10-23 T2) is a
     // placeholder — the first real title replaces it.
-    if (session && (!session.title || session.titleProvisional)) {
-      session.title = decodeSlackEntities(title);
+    if (session && clean && (!session.title || session.titleProvisional)) {
+      session.title = clean;
       session.titleProvisional = undefined;
       this.saveSessions();
     }
@@ -912,15 +922,36 @@ export class SessionRegistry {
 
   /**
    * Update session title unconditionally (e.g. when issue is linked or PR is merged).
-   * Unlike setSessionTitle, this overwrites existing title.
+   * Unlike setSessionTitle, this overwrites existing title. A candidate that
+   * sanitizes to nothing leaves the current title in place.
    */
   updateSessionTitle(channelId: string, threadTs: string | undefined, title: string): void {
     const session = this.getSession(channelId, threadTs);
-    if (session) {
-      session.title = decodeSlackEntities(title);
+    const clean = sanitizeSessionTitle(title);
+    if (session && clean) {
+      session.title = clean;
       session.titleProvisional = undefined;
       this.saveSessions();
     }
+  }
+
+  /**
+   * Fill-only title write for intent titles (UPDATE_SESSION `titleFillOnly`).
+   * Overwrites only a host-written stand-in title ("New Session" and friends)
+   * or a provisional title (a cron job name), checked here at apply time — so a deliberate title set between the model
+   * reading the notice and this write is never clobbered. Returns whether the
+   * title was written.
+   */
+  fillPlaceholderSessionTitle(channelId: string, threadTs: string | undefined, title: string): boolean {
+    const session = this.getSession(channelId, threadTs);
+    const clean = sanitizeSessionTitle(title);
+    if (!session || !clean) return false;
+    // Host stand-in ("New Session" and friends) or a provisional cron job name.
+    if (!isPlaceholderSessionTitle(session.title) && !session.titleProvisional) return false;
+    session.title = clean;
+    session.titleProvisional = undefined;
+    this.saveSessions();
+    return true;
   }
 
   /**
@@ -1441,7 +1472,7 @@ export class SessionRegistry {
     session.lastActivity = new Date();
     // The old task list stays as history; none of it is in progress any more,
     // so the new conversation's work is not attributed to it (dashboard T7/T10).
-    session.taskLedger = closeTaskList(session.taskLedger);
+    session.taskLedger = closeTaskList(session.taskLedger, Date.now());
     // Spec 12: the old conversation's subagents are history; none is watched now.
     session.agents = loseRunningAgents(session.agents, Date.now());
 
@@ -1486,6 +1517,9 @@ export class SessionRegistry {
     // /new or CONTINUE_SESSION resetSession boundaries (otherwise the next
     // turn would inject a stale rejection notice).
     session.pendingInstructionRejection = undefined;
+    // A reset re-dispatches with a fresh stand-in title, so the title notice
+    // budget starts over for the new context.
+    session.titleNoticeCount = undefined;
     // NOTE: `session.instructions` and `session.instructionsCompletedSummary`
     // are intentionally preserved — the user-SSOT semantics require them to
     // survive `/new` and CONTINUE_SESSION resets (they represent durable
@@ -1919,7 +1953,11 @@ export class SessionRegistry {
           // even before the SDK assigns a sessionId — otherwise a crash in
           // that window would bring the thread back unrestricted.
           session.incidentRequest ||
-          session.autoCompactTokens != null
+          session.autoCompactTokens != null ||
+          // The task's spend (and its subagents') must not vanish with a
+          // `/new` that cleared the sessionId before the next SDK turn.
+          session.taskUsage ||
+          session.agents?.agents.length
         ) {
           this.ensureSessionLinkState(session);
           sessionsArray.push({
@@ -2005,6 +2043,7 @@ export class SessionRegistry {
             instructionsCompletedSummary: session.instructionsCompletedSummary,
             // Last SDK running total — without it a restart would re-count it into the goal's spend
             sdkUsageBaseline: session.sdkUsageBaseline,
+            taskUsage: session.taskUsage,
             // Dashboard v2.1 — derive-first aggregate snapshot (persisted per session)
             compactionCount: session.compactionCount,
             activeLegStartedAtMs: session.activeLegStartedAtMs,
@@ -2077,9 +2116,14 @@ export class SessionRegistry {
         taskLedger: sanitizeTaskLedger(serialized.taskLedger),
         // Spec 12: nothing that ran before this process is watched any more.
         agents: loseRunningAgents(sanitizeAgentRegistry(serialized.agents), Date.now()),
+        // SSOT 2026-10-26 T3 — the closed card keeps the task's total (partial
+        // when the session spent before the total existed).
+        taskUsage: restoreTaskUsage(serialized),
         // A cron run archived while the process was down stays filed under its job.
         cronJob: sanitizeCronJob(serialized.cronJob),
         activityState: serialized.activityState || 'idle',
+        // When its work finished — the archive keeps it (spec 13 §3.7).
+        activityStateChangedAt: finiteStamp(serialized.activityStateChangedAt),
         // Preserve handoff metadata for diagnostic parity when archiving.
         handoffContext: serialized.handoffContext,
       };
@@ -2282,13 +2326,18 @@ export class SessionRegistry {
           taskLedger: sanitizeTaskLedger(serialized.taskLedger),
           // Spec 12: nothing that ran before this process is watched any more.
           agents: loseRunningAgents(sanitizeAgentRegistry(serialized.agents), Date.now()),
+          // A session put to sleep on load that was not idle has no known finish:
+          // its saved stamp is when it started working or waiting, and the
+          // dashboard reads an idle stamp as the finish (spec 13 §3.7).
           activityStateChangedAt:
-            typeof serialized.activityStateChangedAt === 'number' && Number.isFinite(serialized.activityStateChangedAt)
-              ? serialized.activityStateChangedAt
-              : undefined,
+            sleptOnLoad && (serialized.activityState || 'idle') !== 'idle'
+              ? undefined
+              : finiteStamp(serialized.activityStateChangedAt),
           // Cached completed-summary (may be stale — block builder validates via hash).
           instructionsCompletedSummary: serialized.instructionsCompletedSummary,
-          sdkUsageBaseline: sanitizeSdkUsageBaseline(serialized.sdkUsageBaseline),
+          // Repriced: llmux models moved from the SDK's default rate to the host table (`metrics/host-pricing.ts`).
+          sdkUsageBaseline: repriceBaseline(sanitizeSdkUsageBaseline(serialized.sdkUsageBaseline), hostPricing),
+          taskUsage: restoreTaskUsage(serialized),
           // Dashboard v2.1 — restore aggregate snapshot
           compactionCount: typeof serialized.compactionCount === 'number' ? serialized.compactionCount : 0,
           activeLegStartedAtMs: serialized.activeLegStartedAtMs,
@@ -2474,4 +2523,34 @@ export class SessionRegistry {
     }
     return count;
   }
+}
+
+/**
+ * SSOT 2026-10-26 T3 — the task total of a loaded session. A session saved
+ * before the total existed that had already spent (its SDK running total is
+ * not empty) starts a partial total: it counts from now, and the card says so
+ * instead of passing it off as the whole task.
+ */
+function restoreTaskUsage(serialized: {
+  taskUsage?: unknown;
+  sdkUsageBaseline?: unknown;
+  sessionId?: string;
+}): TaskUsage | undefined {
+  const kept = sanitizeTaskUsage(serialized.taskUsage);
+  if (kept) return kept;
+  const models = sanitizeSdkUsageBaseline(serialized.sdkUsageBaseline)?.models ?? {};
+  const spent = Object.values(models).some(
+    (m) => m.inputTokens + m.outputTokens + m.cacheReadInputTokens + m.cacheCreationInputTokens > 0 || m.costUsd > 0,
+  );
+  // A session with an SDK session has run a turn — one saved before running
+  // totals were kept at all has no baseline to show it.
+  if (!spent && !serialized.sessionId) return undefined;
+  return {
+    inputTokens: 0,
+    outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheCreateTokens: 0,
+    costUsd: 0,
+    partialSince: Date.now(),
+  };
 }

@@ -10,12 +10,19 @@
  * `DATA_DIR/skill-perm-requests.json`, keyed by requestId. Requests dedupe by
  * (owner, skill, requester, operation) while unhandled+unexpired, and are
  * marked `handled` once a grant is processed to prevent replay.
+ *
+ * Environment-skill requests (owner {@link ENV_SKILL_GRANT_OWNER}, approved by
+ * any admin) share the store. They dedupe per thread as well, since an admin's
+ * "1회" grant and the re-dispatch both belong to the asking thread, and they
+ * record where each admin's prompt was posted so the handler can close them all.
  */
 import { randomUUID } from 'node:crypto';
+import { atomicWriteJson } from '@soma/common/atomic-json';
 import * as fs from 'fs';
 import * as path from 'path';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
+import { ENV_SKILL_GRANT_OWNER } from './user-skill-grants-store';
 
 const logger = new Logger('SkillPermissionRequestStore');
 
@@ -34,10 +41,21 @@ export interface PermissionRequest {
   threadTs?: string;
   /** Original message text — replayed via messageHandler to fulfill `invoke`. */
   originalText?: string;
+  /** Environment-skill requests: the admin prompts posted for this request (one per admin DM). */
+  prompts?: PromptRef[];
   createdAt: number;
   expiresAt: number;
   handled: boolean;
 }
+
+/** Where one permission prompt was posted. */
+export interface PromptRef {
+  channel: string;
+  ts: string;
+}
+
+/** A request as `createPermissionRequest` returns it: `reused` = an identical unhandled ask already existed. */
+export type CreatedPermissionRequest = PermissionRequest & { reused: boolean };
 
 export interface CreatePermissionRequestInput {
   operation: PermissionOperation;
@@ -67,9 +85,7 @@ function loadAll(): Record<string, PermissionRequest> {
 }
 
 function saveAll(all: Record<string, PermissionRequest>): void {
-  const file = storeFile();
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  fs.writeFileSync(file, JSON.stringify(all, null, 2), 'utf-8');
+  atomicWriteJson(storeFile(), all);
 }
 
 function isLive(req: PermissionRequest, now: number): boolean {
@@ -94,9 +110,10 @@ function prune(
 /**
  * Create (or reuse) a pending request. Dedupes against an existing unhandled,
  * unexpired request for the same (owner, skill, requester, operation) so a
- * re-dispatch after a partial grant doesn't re-prompt B.
+ * re-dispatch after a partial grant doesn't re-prompt B. Environment-skill
+ * requests also match on (channel, thread).
  */
-export function createPermissionRequest(input: CreatePermissionRequestInput): PermissionRequest {
+export function createPermissionRequest(input: CreatePermissionRequestInput): CreatedPermissionRequest {
   const now = Date.now();
   const all = loadAll();
   prune(all, now);
@@ -108,10 +125,11 @@ export function createPermissionRequest(input: CreatePermissionRequestInput): Pe
       req.ownerId === input.ownerId &&
       req.requesterId === input.requesterId &&
       req.skillName === input.skillName &&
-      req.operation === input.operation
+      req.operation === input.operation &&
+      (input.ownerId !== ENV_SKILL_GRANT_OWNER || (req.channel === input.channel && req.threadTs === input.threadTs))
     ) {
       saveAll(all); // persist any pruning
-      return req;
+      return { ...req, reused: true };
     }
   }
 
@@ -137,7 +155,7 @@ export function createPermissionRequest(input: CreatePermissionRequestInput): Pe
     requesterId: req.requesterId,
     skillName: req.skillName,
   });
-  return req;
+  return { ...req, reused: false };
 }
 
 /** Read a request by id, or null when missing/expired. */
@@ -155,5 +173,14 @@ export function markRequestHandled(requestId: string): void {
   const req = all[requestId];
   if (!req) return;
   req.handled = true;
+  saveAll(all);
+}
+
+/** Record where the prompts of a request were posted (environment-skill admin DMs). No-op if missing. */
+export function setRequestPrompts(requestId: string, prompts: PromptRef[]): void {
+  const all = loadAll();
+  const req = all[requestId];
+  if (!req) return;
+  req.prompts = prompts;
   saveAll(all);
 }

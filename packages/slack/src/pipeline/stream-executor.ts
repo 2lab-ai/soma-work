@@ -20,7 +20,6 @@ import {
 } from '../compact-state';
 import type { CompletionMessageTracker } from '../completion-message-tracker';
 import type { ContextWindowManager } from '../context-window-manager';
-import type { DeployCompletedHookContext, DeployCompletedSignal } from '../directives/deploy-completed-directive';
 import {
   buildInstructionConfirmBlocks,
   buildInstructionConfirmFallbackText,
@@ -54,7 +53,9 @@ import {
 } from '../session-goal';
 import {
   accumulateModelTotals,
+  addSessionSpend,
   applyPostCompactOccupancy,
+  creditTaskSpend,
   selectCurrentContextTokens,
   settleFoldedLiveUsage,
   toTurnUsage,
@@ -86,9 +87,11 @@ import {
 } from '../turn-notifier';
 import type { UserChoice, UserChoices } from '../user-choice-extractor';
 import { UserChoiceHandler } from '../user-choice-handler';
+import type { TurnAttachment } from '../user-media';
 import type { WorkLogInput } from '../work-log';
 import { decideBackgroundWaitContinuation, getBackgroundWaitCap } from './background-wait';
 import { shouldForwardAsLocalSlashCommand } from './local-slash-command';
+import { SESSION_TITLE_PENDING_NOTICE, shouldInjectSessionTitleNotice } from './session-title-notice';
 import { cleanupWithTimeout, DEFAULT_CLEANUP_TIMEOUT_MS, runWithTimeout } from './stream-executor-cleanup-helpers';
 import { sanitizeTranscriptEmptyTextBlocks } from './transcript-sanitizer';
 import type { ConversationSession, ProcessedFile, SayFn } from './types';
@@ -163,6 +166,30 @@ const defaultUserSettingsStore = {
   getUserCompactThreshold: () => undefined,
 };
 
+/**
+ * Dashboard SSOT 2026-10-27 T1 — who put a user turn into the conversation
+ * (`system`: a synthetic event, a host continuation, or the threshold
+ * auto-compact). Mirrors `TurnOrigin` in src/conversation/types.ts.
+ */
+export interface RecordUserTurnOpts {
+  origin?: { by: 'user' | 'system' };
+  /**
+   * The turn runs the SDK's `/compact` (a local slash command — a goal
+   * objective that starts with it is literal, never one). The recorder marks
+   * it a compaction turn; this is the one definition the dashboard reads.
+   */
+  compact?: boolean;
+}
+
+/** Dashboard SSOT 2026-10-27 T2 — what a compaction reported when it ended. */
+export interface CompactTurnResult {
+  endedAt: number;
+  durationMs?: number;
+  preTokens?: number;
+  postTokens?: number;
+  trigger?: 'manual' | 'auto';
+}
+
 export interface StreamExecutorProviders {
   parseModelCommandRunResponse?: (result: unknown) => any;
   createTurnResultCollector?: () => TurnResultCollectorLike;
@@ -174,7 +201,27 @@ export interface StreamExecutorProviders {
   shouldShowStatusBlock?: (status: any) => boolean;
   createConversation?: (channel: string, threadTs: string, user: string, userName: string) => string;
   recordAssistantTurn?: (conversationId: string, text: string) => void;
-  recordUserTurn?: (conversationId: string, text: string, userName: string, user: string) => void;
+  recordUserTurn?: (
+    conversationId: string,
+    text: string,
+    userName: string,
+    user: string,
+    attachments?: readonly TurnAttachment[],
+    opts?: RecordUserTurnOpts,
+  ) => void;
+  /**
+   * Dashboard SSOT 2026-10-27 T2 — a compaction ended: write its numbers onto
+   * the `/compact` turn that ran it. Fire-and-forget; the host never throws.
+   * No-op by default.
+   */
+  recordCompactResult?: (conversationId: string, result: CompactTurnResult) => void;
+  /**
+   * User media (SSOT 2026-10-25) — copy the turn's downloaded files for the
+   * dashboard. Awaited BEFORE the user turn is recorded and long before the
+   * end-of-turn temp cleanup; the host bounds it and never drops a file.
+   * Default: nothing kept.
+   */
+  captureUserMedia?: (conversationId: string, files: readonly ProcessedFile[]) => Promise<TurnAttachment[]>;
   /**
    * Spec 10 §3.3 — append one work-log entry to the conversation's log
    * (instruction, narration, tool, tool_result, final, notice, error), at
@@ -251,6 +298,8 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   createConversation: () => '',
   recordAssistantTurn: () => {},
   recordUserTurn: () => {},
+  recordCompactResult: () => {},
+  captureUserMedia: async () => [],
   appendWorkLog: () => {},
   recordAgentEvent: () => {},
   captureMemoryTurn: () => {},
@@ -316,8 +365,16 @@ const createConversation = (channel: string, threadTs: string, user: string, use
   streamExecutorProviders.createConversation(channel, threadTs, user, userName);
 const recordAssistantTurn = (conversationId: string, text: string) =>
   streamExecutorProviders.recordAssistantTurn(conversationId, text);
-const recordUserTurn = (conversationId: string, text: string, userName: string, user: string) =>
-  streamExecutorProviders.recordUserTurn(conversationId, text, userName, user);
+const recordUserTurn = (
+  conversationId: string,
+  text: string,
+  userName: string,
+  user: string,
+  attachments: readonly TurnAttachment[] | undefined,
+  opts: RecordUserTurnOpts,
+) => streamExecutorProviders.recordUserTurn(conversationId, text, userName, user, attachments, opts);
+const captureUserMedia = (conversationId: string, files: readonly ProcessedFile[]) =>
+  streamExecutorProviders.captureUserMedia(conversationId, files);
 const workLogLogger = new Logger('WorkLog');
 
 /**
@@ -429,6 +486,24 @@ export function recordConversationWorkLog(
     });
   }
 }
+
+/**
+ * Dashboard SSOT 2026-10-27 T2 — a compaction ended: hand its numbers to the
+ * conversation recorder, which writes them onto the `/compact` turn that ran
+ * it. The one path compact-hooks uses (it never imports the recorder). A
+ * throwing provider is ignored — the dashboard record must never break the
+ * compaction it describes.
+ */
+export function recordConversationCompact(conversationId: string, result: CompactTurnResult): void {
+  try {
+    streamExecutorProviders.recordCompactResult(conversationId, result);
+  } catch (err) {
+    workLogLogger.warn('recordCompactResult provider threw', {
+      conversationId,
+      error: (err as Error)?.message ?? String(err),
+    });
+  }
+}
 const captureMemoryTurn = (userId: string, userText: string, assistantText: string) =>
   streamExecutorProviders.captureMemoryTurn(userId, userText, assistantText);
 const scheduleLinkDerivedTitleRefresh = (claudeHandler: any, channel: string, threadTs: string, reason: string) =>
@@ -534,17 +609,6 @@ interface StreamExecutorDeps {
     uuid: string;
     phase: AgentStreamEventOf<'steer_lifecycle'>['phase'];
   }) => void | Promise<void>;
-  /**
-   * Host sink for `deploy_completed` from a DEPLOY-workflow session: a valid
-   * directive (`kind: 'completed'`) fires the lanes (cron jobs with onDeploy,
-   * or deploy-lanes.json) registered for that repo + target
-   * (src/deploy-lanes.ts); attempts that yielded no payload
-   * arrive as `kind: 'rejected'`. The host answers through `ctx.reply`, which
-   * posts one line in the deploy thread (retried once). Called without being
-   * awaited by the turn; a rejection is logged, never surfaced. Optional —
-   * without it the directive is still stripped from the visible text.
-   */
-  onDeployCompleted?: (signal: DeployCompletedSignal, ctx: DeployCompletedHookContext) => Promise<void>;
   /**
    * Operator routing for `release_notes` (SOMA_RELEASE_NOTES_CHANNELS, parsed by
    * the host). Consulted only for a DEPLOY-workflow session; any other session,
@@ -859,32 +923,6 @@ export class StreamExecutor {
   private bgWaitSuppressed = new Map<string, string>();
 
   constructor(private deps: StreamExecutorDeps) {}
-
-  /**
-   * One deploy-lane line in the deploy thread. A lost line is a lane nobody
-   * hears about, so a failed post is retried once, and the text is logged both
-   * times so it survives even when Slack does not take it.
-   */
-  private async postDeployLaneReply(
-    channel: string,
-    threadTs: string,
-    line: string,
-    sessionKey: string,
-  ): Promise<void> {
-    for (let attempt = 1; attempt <= 2; attempt++) {
-      try {
-        await this.deps.slackApi.postMessage(channel, line, { threadTs });
-        return;
-      } catch (error) {
-        this.logger.error(
-          attempt === 1
-            ? 'Failed to post deploy lane reply — retrying once'
-            : 'Failed to post deploy lane reply — line lost',
-          { sessionKey, channel, line, error: (error as Error)?.message },
-        );
-      }
-    }
-  }
 
   /**
    * Excludes `slack-block-kit` from the WorkflowComplete fan-out when the
@@ -1477,9 +1515,32 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         session.pendingInstructionRejection = undefined;
       }
 
-      // Record user turn (fire-and-forget, non-blocking)
+      // Voice / image-only first message → host stand-in title ("New Session").
+      // Only the model can read the attachment, so ask it to resolve the
+      // user's intent and write the title (fill-only). Real user turns only;
+      // stops once the title is real or the budget is spent.
+      if (
+        shouldInjectSessionTitleNotice({
+          title: session.title,
+          isUserInput: params.isUserInput,
+          isSlashCommand,
+          noticeCount: session.titleNoticeCount,
+        })
+      ) {
+        finalPrompt = `${SESSION_TITLE_PENDING_NOTICE}\n\n${finalPrompt}`;
+        session.titleNoticeCount = (session.titleNoticeCount ?? 0) + 1;
+        this.logger.info('Injected session-title-pending notice', {
+          sessionKey,
+          title: session.title,
+          noticeCount: session.titleNoticeCount,
+        });
+      }
+
+      // Record user turn (fire-and-forget, non-blocking). A files-only message
+      // is a user turn too: its instruction IS the files (user media).
+      const hasInput = !!text || processedFiles.length > 0;
       // Auto-create conversation if session lost its conversationId (e.g., after restart backfill miss)
-      if (!session.conversationId && text && channel) {
+      if (!session.conversationId && hasInput && channel) {
         try {
           session.conversationId = createConversation(channel, session.threadTs || '', user, userName);
           this.logger.info('Auto-created conversation for session missing conversationId', {
@@ -1490,9 +1551,39 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           this.logger.error('Failed to auto-create conversation', err);
         }
       }
-      if (session.conversationId && text) {
-        recordUserTurn(session.conversationId, text, userName, user);
-        emitWorkLog({ kind: 'instruction', text });
+      if (session.conversationId && hasInput) {
+        // Copy the files now — before the model can touch them and before the
+        // end-of-turn cleanup deletes them. A failed capture never costs the turn.
+        let attachments: TurnAttachment[] | undefined;
+        if (processedFiles.length > 0) {
+          try {
+            attachments = await captureUserMedia(session.conversationId, processedFiles);
+          } catch (error) {
+            this.logger.warn('User media capture failed — turn recorded without attachments', {
+              sessionKey,
+              error: (error as Error)?.message ?? String(error),
+            });
+          }
+        }
+        // Dashboard SSOT 2026-10-27 T1 — who put this turn here. A host turn
+        // (synthetic event or continuation) says so through `isUserInput`; the
+        // threshold auto-compact rides the user's own event but swapped its
+        // text for `/compact` and parked the words on `pendingUserText`.
+        const compactTurn = isSlashCommand && trimmedText.split(/\s/)[0] === '/compact';
+        const autoCompactTurn = compactTurn && !!session.pendingUserText;
+        recordUserTurn(
+          session.conversationId,
+          text || '',
+          userName,
+          user,
+          attachments?.length ? attachments : undefined,
+          {
+            origin: { by: params.isUserInput === false || autoCompactTurn ? 'system' : 'user' },
+            ...(compactTurn ? { compact: true } : {}),
+          },
+        );
+        const names = processedFiles.map((f) => f.name).join(' · ');
+        emitWorkLog({ kind: 'instruction', text: names ? `${text || ''}${text ? '\n' : ''}📎 ${names}` : text || '' });
       }
 
       // Store user instruction for SSOT tracking (only real user input, not auto-resume/continuation/renew)
@@ -1693,47 +1784,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       };
 
       // Create stream callbacks
-      // deploy_completed fires other users' cron lanes, so only the deploy
-      // workflow may send it: a lane session (default workflow) echoing one
-      // must not re-trigger lanes. Not awaited — the lanes are other sessions'
-      // work and the deploy turn must not wait on them.
-      const handOffDeploySignal = (signal: DeployCompletedSignal): void => {
-        const detail =
-          signal.kind === 'completed'
-            ? { repo: signal.payload.repo, target: signal.payload.target, after: signal.payload.after }
-            : { rejected: signal.rejections.map((r) => r.problem) };
-        if (session.workflow !== 'deploy') {
-          // A rejection outside a deploy session is usually prose quoting the
-          // directive: not worth a warning.
-          const log = signal.kind === 'completed' ? this.logger.warn : this.logger.debug;
-          log.call(this.logger, 'deploy_completed outside a deploy session — ignored', {
-            sessionKey,
-            workflow: session.workflow,
-            ...detail,
-          });
-          return;
-        }
-        const onDeployCompleted = this.deps.onDeployCompleted;
-        if (!onDeployCompleted) {
-          this.logger.warn('deploy_completed received but no onDeployCompleted hook is wired — no lane fired', {
-            sessionKey,
-            ...detail,
-          });
-          return;
-        }
-        this.logger.info('deploy_completed directive detected', { sessionKey, kind: signal.kind, ...detail });
-        const reply = (line: string) => this.postDeployLaneReply(channel, threadTs, line, sessionKey);
-        void Promise.resolve()
-          .then(() => onDeployCompleted(signal, { channel, threadTs, user, reply }))
-          .catch((error) => {
-            this.logger.error('Failed to handle deploy_completed directive', {
-              sessionKey,
-              ...detail,
-              error: (error as Error)?.message,
-            });
-          });
-      };
-
       const streamCallbacks: StreamCallbacks = {
         // HEARTBEAT. The transport spoke — that is all this proves, so it
         // advances `lastSignalAt` and nothing else. Advancing the progress
@@ -1993,8 +2043,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
         },
         onReleaseNotesDetected: async (payload) => {
-          // Cross-channel posting is a deploy-workflow privilege, like deploy_completed:
-          // any other session echoing the directive stays in its own channel.
+          // Cross-channel posting is a deploy-workflow privilege: any other
+          // session echoing the directive stays in its own channel.
           const routing =
             session.workflow === 'deploy' && this.deps.routeReleaseNotes
               ? this.deps.routeReleaseNotes(payload.repo, payload.target)
@@ -2023,12 +2073,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             // The directive is already stripped from the reply: say so where the deployer looks.
             await reportReleaseNotesFailure(this.deps.slackApi, channel, threadTs, payload, error);
           }
-        },
-        onDeployCompletedDetected: async (payload) => {
-          handOffDeploySignal({ kind: 'completed', payload });
-        },
-        onDeployCompletedRejected: async (rejections) => {
-          handOffDeploySignal({ kind: 'rejected', rejections });
         },
         onSourceWorkingDirDetected: async (dirPath) => {
           try {
@@ -3264,6 +3308,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           // result carries these calls again (see `settleFoldedLiveUsage`).
           const folded = session.usage?.foldedLiveUsage;
           if (folded) folded.sdkSessionId = session.sessionId;
+          // The task total (persisted) just grew outside a result: save it now —
+          // the idle save already ran, and a crash before the next one would
+          // lose the fold (SSOT 2026-10-26 T3, review r2).
+          this.deps.claudeHandler.getSessionRegistry().persistAndBroadcast?.(sessionKey);
         }
         clearLiveUsage(session, turnId);
         this.deps.claudeHandler.getSessionRegistry().endTurn(session);
@@ -5179,6 +5227,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       });
       // Calls folded before the seed are inside the seeded running total now.
       session.usage.foldedLiveUsage = undefined;
+      if (session.taskUsage) delete session.taskUsage.pendingFold;
     }
     const { turn: usage, baseline } = toTurnUsage(reported, baselineIn, session.sessionId);
     session.sdkUsageBaseline = baseline;
@@ -5213,8 +5262,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // real context window state at the end of the loop.
     //
     // ALL-ZERO per-turn values (llmux/codex assistant messages) are treated as
-    // missing — `selectCurrentContextTokens` falls back to the aggregate so the
-    // context display and auto-compact triggers never see an empty window.
+    // missing. For those models the call's reading comes from its stream
+    // `message_delta` instead (partial messages, requested by the options
+    // builder); only a turn that still has no reading falls back to the
+    // aggregate — an overstatement, kept so the window never reads empty.
     //
     // Issue #196 — EXCEPT right after a compact boundary. This callback fires
     // once per turn, after the stream loop, so on a compacted turn the sample
@@ -5259,12 +5310,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       pendingFold && pendingFold.sdkSessionId === session.sessionId ? pendingFold : undefined,
     );
     session.usage.foldedLiveUsage = folded;
-    session.usage.totalInputTokens += spend.inputTokens;
-    session.usage.totalOutputTokens += spend.outputTokens;
-    session.usage.totalCacheReadTokens += spend.cacheReadInputTokens;
-    session.usage.totalCacheCreateTokens += spend.cacheCreationInputTokens;
-    session.usage.totalCostUsd += spend.totalCostUsd;
+    // Signed when it settles a fold (the fold was an estimate): never below zero.
+    const u = session.usage;
+    u.totalInputTokens = addSessionSpend(u.totalInputTokens, spend.inputTokens);
+    u.totalOutputTokens = addSessionSpend(u.totalOutputTokens, spend.outputTokens);
+    u.totalCacheReadTokens = addSessionSpend(u.totalCacheReadTokens, spend.cacheReadInputTokens);
+    u.totalCacheCreateTokens = addSessionSpend(u.totalCacheCreateTokens, spend.cacheCreationInputTokens);
+    u.totalCostUsd = addSessionSpend(u.totalCostUsd, spend.totalCostUsd);
     session.usage.lastUpdated = Date.now();
+    // SSOT 2026-10-26 T3 — the task total takes the same turn spend, settled
+    // against its own (persisted) fold so a restart in between cannot count a
+    // folded call twice. It outlives restarts and resets; `usage` does not.
+    creditTaskSpend(session, usage);
     // The turn's calls are in the totals now — the live view stops adding them,
     // and the turn's end never folds them a second time.
     markLiveUsageSettled(session, turnId);
@@ -5323,9 +5380,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     });
 
     // Per-turn data is the source of truth for live context display. If it is
-    // missing OR all-zero (llmux/codex), the aggregate path overstates context
-    // usage (sums ALL API calls in the agent loop). Log so the gap is
-    // observable in ops.
+    // missing OR all-zero, the aggregate path overstates context usage (sums
+    // ALL API calls in the agent loop). For llmux non-claude models this now
+    // means the turn ended without a `message_delta` reading (cut off, or the
+    // partial-message stream was not requested). Log so the gap is observable
+    // in ops.
     if (current.source === 'aggregate-fallback') {
       this.logger.warn(
         'Session context usage derived from aggregate fallback (per-turn tokens missing or all-zero) — displayed context may overstate actual window occupancy',
@@ -5750,14 +5809,31 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           await this.interceptInstructionOperationsForConfirm(request, session, context);
         }
 
-        // Apply title update only if no operations or operations succeeded
-        const titleUpdate = (parsed.payload as Record<string, unknown>).title as string | undefined;
+        // Apply title update only if no operations or operations succeeded.
+        // `titleFillOnly` (intent titles for stand-in sessions) writes only
+        // while the session still has a host stand-in title; a plain `title`
+        // stays an unconditional rename (e.g. pr-review after a merge).
+        const payload = parsed.payload as Record<string, unknown>;
+        const titleUpdate = payload.title as string | undefined;
         if (titleUpdate && operationsOk) {
-          this.deps.claudeHandler.updateSessionTitle(context.channel, context.threadTs, titleUpdate);
-          this.logger.info('Applied session title update from UPDATE_SESSION', {
-            sessionKey: context.sessionKey,
-            title: titleUpdate,
-          });
+          if (payload.titleFillOnly === true) {
+            const applied = this.deps.claudeHandler.fillPlaceholderSessionTitle(
+              context.channel,
+              context.threadTs,
+              titleUpdate,
+            );
+            this.logger.info('Fill-only session title from UPDATE_SESSION', {
+              sessionKey: context.sessionKey,
+              title: titleUpdate,
+              applied,
+            });
+          } else {
+            this.deps.claudeHandler.updateSessionTitle(context.channel, context.threadTs, titleUpdate);
+            this.logger.info('Applied session title update from UPDATE_SESSION', {
+              sessionKey: context.sessionKey,
+              title: titleUpdate,
+            });
+          }
         }
       }
     }

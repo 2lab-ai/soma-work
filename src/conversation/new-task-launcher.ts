@@ -45,6 +45,25 @@ export interface SlackEventFile {
   url_private: string;
   url_private_download: string;
   size: number;
+  /** Slack permalink — the dashboard's only way to open a file the bot does not download (video, untranscribed audio). */
+  permalink?: string;
+}
+
+/** A file read back from Slack (`files.info`), in the shape the message pipeline downloads from. */
+// biome-ignore lint/suspicious/noExplicitAny: files.info returns an untyped Slack file object
+export function slackEventFileFrom(id: string, info: any): SlackEventFile {
+  const permalink =
+    typeof info?.permalink === 'string' && /^https:\/\//i.test(info.permalink) ? info.permalink : undefined;
+  return {
+    id,
+    name: info?.name ?? id,
+    mimetype: info?.mimetype ?? 'application/octet-stream',
+    filetype: info?.filetype ?? '',
+    url_private: info?.url_private ?? info?.url_private_download,
+    url_private_download: info?.url_private_download,
+    size: typeof info?.size === 'number' ? info.size : 0,
+    ...(permalink ? { permalink } : {}),
+  };
 }
 
 /** The message event a dashboard task enters the pipeline with. */

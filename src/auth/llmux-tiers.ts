@@ -8,8 +8,13 @@
  *   explicit config (SOMA_LLMUX_ACCOUNT_TIERS) → a validated tier string llmux
  *   reports itself → built-in defaults → unknown.
  *
- * The tier is display data (colour + label on the dashboard cooldown timeline).
- * It never weighs the capacity percentage: a plan price is not a token ratio.
+ * The tier weighs each account on the capacity view (capacity v2, 2026-10-25):
+ * remaining is counted in "max accounts' worth" (계정분), the provider's top
+ * plan = 1. Max x5 is a quarter of x20 (Anthropic's plan multiples 5/20).
+ * Pro $200 is 0.4 of $500 — a price ratio, an estimate: OpenAI publishes no
+ * usage multiple. An unknown tier has no weight here; the capacity view counts an
+ * untiered Claude account as Max x20 (`ASSUMED_TIER`, flagged) and leaves an
+ * untiered Codex account out of the totals.
  */
 
 export type LlmuxTierId = 'claude-max-5x' | 'claude-max-20x' | 'chatgpt-pro-200' | 'chatgpt-pro-500';
@@ -23,19 +28,43 @@ export interface LlmuxTierInfo {
   short: string;
   /** Higher or lower plan of its provider — the colour key. */
   rank: 'high' | 'low';
+  /** Share of the provider's top plan (top = 1): the unit of "계정분". */
+  weight: number;
 }
 
 export const LLMUX_TIERS: Record<LlmuxTierId, LlmuxTierInfo> = {
-  'claude-max-5x': { id: 'claude-max-5x', provider: 'claude', label: 'Max x5', short: 'x5', rank: 'low' },
-  'claude-max-20x': { id: 'claude-max-20x', provider: 'claude', label: 'Max x20', short: 'x20', rank: 'high' },
-  'chatgpt-pro-200': { id: 'chatgpt-pro-200', provider: 'codex', label: 'Pro ($200)', short: '$200', rank: 'low' },
-  'chatgpt-pro-500': { id: 'chatgpt-pro-500', provider: 'codex', label: 'Pro ($500)', short: '$500', rank: 'high' },
+  'claude-max-5x': { id: 'claude-max-5x', provider: 'claude', label: 'Max x5', short: 'x5', rank: 'low', weight: 0.25 },
+  'claude-max-20x': {
+    id: 'claude-max-20x',
+    provider: 'claude',
+    label: 'Max x20',
+    short: 'x20',
+    rank: 'high',
+    weight: 1,
+  },
+  'chatgpt-pro-200': {
+    id: 'chatgpt-pro-200',
+    provider: 'codex',
+    label: 'Pro ($200)',
+    short: '$200',
+    rank: 'low',
+    weight: 0.4,
+  },
+  'chatgpt-pro-500': {
+    id: 'chatgpt-pro-500',
+    provider: 'codex',
+    label: 'Pro ($500)',
+    short: '$500',
+    rank: 'high',
+    weight: 1,
+  },
 };
 
 /**
  * Operator-supplied defaults (2026-10-23): Codex ai5 · ai6 are ChatGPT Pro
- * ($500), ai1 · ai2 Pro ($200). Claude accounts have no default — an unmapped
- * one shows as "티어 미지정" until SOMA_LLMUX_ACCOUNT_TIERS names it.
+ * ($500), ai1 · ai2 Pro ($200). Claude accounts have no default here — the
+ * capacity view assumes Max x20 for an unmapped one and says so ("티어 미지정 N(x20
+ * 가정)") until SOMA_LLMUX_ACCOUNT_TIERS names it.
  */
 export const DEFAULT_LLMUX_ACCOUNT_TIERS: Readonly<Record<string, LlmuxTierId>> = Object.freeze({
   'codex:ai1': 'chatgpt-pro-200',
@@ -72,6 +101,16 @@ const UPSTREAM_TIERS: Record<string, LlmuxTierId> = {
   claude_max_20x: 'claude-max-20x',
   max_5x: 'claude-max-5x',
   max_20x: 'claude-max-20x',
+};
+
+/**
+ * Codex plan words llmux ≥ 0.2.26 reports (`plan_type`, the access token's
+ * `chatgpt_plan_type` claim — measured 2026-10-26: `pro` = Pro $200,
+ * `promax` = Pro $500). Any other word is not a guess.
+ */
+const UPSTREAM_CODEX_PLANS: Record<string, LlmuxTierId> = {
+  pro: 'chatgpt-pro-200',
+  promax: 'chatgpt-pro-500',
 };
 
 /**
@@ -114,6 +153,8 @@ export interface TierLookupAccount {
   group?: string;
   /** An exact plan string llmux may report (Anthropic `rate_limit_tier`). */
   rate_limit_tier?: string;
+  /** The Codex plan word llmux may report (`pro`, `promax`). */
+  plan_type?: string;
   /** llmux's own coarse tier ("max") — read by nothing here: it cannot tell x5 from x20. */
   tier?: string;
 }
@@ -160,5 +201,8 @@ export function resolveAccountTier(
   const upstream =
     typeof account.rate_limit_tier === 'string' ? UPSTREAM_TIERS[account.rate_limit_tier.toLowerCase()] : undefined;
   if (fits(upstream)) return upstream;
+  const plan =
+    typeof account.plan_type === 'string' ? UPSTREAM_CODEX_PLANS[account.plan_type.toLowerCase()] : undefined;
+  if (fits(plan)) return plan;
   return lookup(defaults);
 }

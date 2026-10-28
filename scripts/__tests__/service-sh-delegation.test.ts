@@ -180,6 +180,8 @@ function run(
         // /opt/soma-work/main — the exact host contact this file exists to
         // prevent.
         SOMA_TEST_HARNESS: '1',
+        // Launchctl and the daemon are shims here: scale service.sh's real waits (pause).
+        SOMA_SERVICE_WAIT_SCALE: '0.05',
         // Same reason, for the one thing the harness flag does not cover: the
         // real /Library/LaunchDaemons/<label>.plist (and an inherited
         // SOMA_LAUNCHD_SYSTEM=1) would put a `main stop` here into the system

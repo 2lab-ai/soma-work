@@ -1,5 +1,6 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import * as os from 'node:os';
+import fastifyCompress from '@fastify/compress';
 import fastifyFormbody from '@fastify/formbody';
 // Type-only: the plugin itself is registered by dashboard.ts via dynamic import.
 import type { WebSocket } from '@fastify/websocket';
@@ -17,7 +18,12 @@ import { IS_DEV } from '../env-paths';
 import { registerHookRoutes } from '../hooks';
 import { Logger } from '../logger';
 import { registerArtifactRoutes } from './artifact-routes';
-import { registerDashboardRoutes, setSelfInstanceEnv } from './dashboard';
+import {
+  registerDashboardRoutes,
+  setSelfInstanceEnv,
+  startDashboardPermissionWatch,
+  stopDashboardPermissionWatch,
+} from './dashboard';
 import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
 import { registerMemoryRoutes } from './memory-routes';
 import {
@@ -43,6 +49,7 @@ import {
 import { getConversation, getTurnRawContent, listConversations } from './recorder';
 import { registerSettingsRoutes } from './settings-routes';
 import type { ConversationTurn } from './types';
+import { registerUserMediaRoutes } from './user-media-routes';
 import { renderConversationListPage, renderConversationViewPage } from './viewer';
 import { registerWorkLogRoutes } from './work-log-routes';
 
@@ -511,6 +518,11 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // handler would receive an empty `request.body`.
   await server.register(fastifyFormbody);
 
+  // Response compression, opt-in per route (dashboard.ts FIRST_LOAD_COMPRESSION).
+  // Off by default so byte-range routes (artifacts, user media) keep exact
+  // Content-Length / Content-Range semantics (#477).
+  await server.register(fastifyCompress, { global: false });
+
   // ---- HTML Routes (require auth when token is configured) ----
 
   // Conversation list page
@@ -597,6 +609,11 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
           summarized: t.summarized,
           // Include rawContent only for user turns (they're short)
           rawContent: t.role === 'user' ? t.rawContent : undefined,
+          // A user turn's attached files (user media) — metadata only, the bytes have their own route.
+          attachments: t.role === 'user' ? t.attachments : undefined,
+          // Dashboard SSOT 2026-10-27: who put a user turn there, and a /compact turn's compaction.
+          origin: t.role === 'user' ? t.origin : undefined,
+          compact: t.role === 'user' ? t.compact : undefined,
         }));
 
         reply.send({
@@ -678,6 +695,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   await registerDashboardRoutes(server, authMiddleware, csrfMiddleware);
   await registerWorkLogRoutes(server, authMiddleware);
   await registerArtifactRoutes(server, authMiddleware);
+  await registerUserMediaRoutes(server, authMiddleware);
   // Personal settings (SSOT 2026-10-23 T2) — self only, auth + CSRF on writes.
   registerSettingsRoutes(server, authMiddleware, csrfMiddleware);
   // Personal memory — the settings page "기억" tab (SSOT 2026-10-23 T3).
@@ -756,6 +774,9 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       // Confirm the public URL reaches this instance, now and periodically.
       startPublicUrlCheck();
 
+      // Permission prompts waiting in the shared store → cards (SSOT 2026-10-24).
+      startDashboardPermissionWatch();
+
       return;
     } catch (error) {
       listening = false;
@@ -776,6 +797,7 @@ export async function stopWebServer(): Promise<void> {
   // Stop handing out dashboard links before the listener goes away.
   listening = false;
   stopPublicUrlCheck();
+  stopDashboardPermissionWatch();
   if (server) {
     // Flush hook state before closing
     try {

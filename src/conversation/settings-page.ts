@@ -130,8 +130,10 @@ dialog .actions { display: flex; justify-content: flex-end; gap: 8px; }
   .row { grid-template-columns: minmax(0, 1fr); }
 }
 @media (pointer: coarse) {
-  /* Touch screens (SSOT 2026-10-24): 16px text, so iOS does not zoom into a focused field. */
+  /* Touch screens (SSOT 2026-10-24): 16px text, so iOS does not zoom into a focused field.
+     Every tab's fields — the memory tab's CSS comes after this sheet, hence !important. */
   .side input[type="search"], .row input[type="text"], .row input[type="number"], .row select { font-size: 16px; }
+  input[type="text"], input[type="search"], input[type="number"], select, textarea { font-size: 16px !important; }
 }
 @media (prefers-reduced-motion: reduce) { .btn { transition: none; } }
 `;

@@ -227,13 +227,6 @@ export function getAllChannels(): ChannelInfo[] {
 }
 
 /**
- * Get Confluence URL for a channel (from purpose/topic).
- */
-export function getChannelConfluenceUrl(channelId: string): string | undefined {
-  return channels.get(channelId)?.confluenceUrl;
-}
-
-/**
  * Check if a PR URL belongs to the correct channel.
  * Returns: { correct: true } or { correct: false, suggestedChannels: [...] }
  */

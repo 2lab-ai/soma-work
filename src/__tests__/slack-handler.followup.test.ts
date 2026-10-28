@@ -13,6 +13,7 @@ import {
   type FollowupQueueView,
   parseFollowupItemActionValue,
 } from '@soma/slack/followup-queue-blocks';
+import { parseFollowupQueueSnapshot } from '@soma/slack/followup-queue-store';
 import { getMetricsEmitter } from '../metrics/event-emitter';
 import { QueueHandler } from '../slack/commands/queue-handler';
 import { ThreadSurface } from '../slack/thread-surface';
@@ -321,6 +322,34 @@ describe('SlackHandler — follow-up queue host', () => {
   });
 
   /**
+   * work-m64 dev, 2026-10-28: an admin approved an environment skill while the requester's
+   * session was still running, the approval sent the requester's turn again with
+   * `ts: ''`, and the queue store refused it — "큐 저장에 실패 — …message.ts is not a
+   * non-empty string". The action handlers that inject a turn (env-skill and skill
+   * approvals, session actions) all send one without a Slack message of its own.
+   */
+  it('queues a turn sent without a Slack ts behind a running turn, each under its own key', async () => {
+    const { settle } = await startBusyTurn();
+
+    await handler.handleMessage(message({ ts: '', text: '어드민이 허용했습니다 — 이어서 진행하세요' }), say());
+    await handler.handleMessage(message({ ts: '', text: '세션 액션 — 두 번째' }), say());
+
+    const queued = items();
+    expect(queued, 'both turns are stored; the second is not a duplicate of the first').toHaveLength(2);
+    for (const item of queued) expect(item.message.ts).toMatch(/^\d+\.\d{6}$/);
+    expect(queued[0].eventKey).not.toBe(queued[1].eventKey);
+    // The production schema gate accepts what was saved.
+    expect(() => parseFollowupQueueSnapshot(saved[saved.length - 1])).not.toThrow();
+    expect(postSystemMessage).not.toHaveBeenCalledWith(
+      CHANNEL,
+      expect.stringContaining('큐 저장에 실패'),
+      expect.anything(),
+    );
+
+    await settle();
+  });
+
+  /**
    * Tail anchoring (A36) — the panel can only stay at the bottom of its thread
    * if it hears about EVERY message that lands below it. Bot writes report
    * themselves through the api helper; an inbound human reply never touches it,
@@ -346,6 +375,15 @@ describe('SlackHandler — follow-up queue host', () => {
     handlerAny.slackApi.notifyThreadPost = notifyThreadPost;
 
     await handler.handleMessage(message({ ts: '333.445', synthetic: true }), say());
+
+    expect(notifyThreadPost).not.toHaveBeenCalled();
+  });
+
+  it('reports nothing for a turn sent without a Slack ts — its minted ts names no message', async () => {
+    const notifyThreadPost = vi.fn();
+    handlerAny.slackApi.notifyThreadPost = notifyThreadPost;
+
+    await handler.handleMessage(message({ ts: '' }), say());
 
     expect(notifyThreadPost).not.toHaveBeenCalled();
   });
@@ -2776,6 +2814,89 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    /**
+     * User media (SSOT 2026-10-25): a steered message never ran through the
+     * executor, so nothing recorded it — its text and its files were missing
+     * from the dashboard. Once the SDK confirms the model read it (`completed`,
+     * the only consumption receipt) the host records it as a user turn, files
+     * copied BEFORE the steer cleanup deletes them. A message returned to the
+     * queue is not recorded here: the drain runs it as an ordinary turn.
+     */
+    async function steerWithFile(text: string) {
+      const processed = [{ name: 'shot.png', path: '/tmp/slack-file-1-shot.png', isImage: true }];
+      processFiles.mockResolvedValue({ files: processed, shouldContinue: true });
+      const order: string[] = [];
+      const cleanupTempFiles = vi.fn(async () => {
+        order.push('cleanup');
+      });
+      handlerAny.fileHandler = { formatFilePrompt: vi.fn().mockResolvedValue('t'), cleanupTempFiles };
+      const attachments = [{ id: 'M1', name: 'shot.png', kind: 'image', mime: 'image/png', size: 3, stored: true }];
+      const capture = vi.fn(async () => {
+        order.push('capture');
+        return attachments;
+      });
+      const record = vi.fn(() => {
+        order.push('record');
+      });
+      handlerAny.userMediaRecorder = { capture, record };
+      registrySession.conversationId = 'conv_steer';
+      registrySession.ownerName = 'Owner';
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(
+        message({
+          ts: '1792900000.000100',
+          text,
+          files: [
+            {
+              id: 'F1',
+              name: 'shot.png',
+              mimetype: 'image/png',
+              filetype: 'png',
+              url_private: 'https://x/1',
+              url_private_download: 'https://x/1d',
+              size: 3,
+            },
+          ],
+        }),
+        say(),
+      );
+      return { uuid: steerTurn.mock.calls[0][1].uuid, settle, capture, record, order, processed, attachments };
+    }
+
+    it('records a consumed steered message — text and files — as a user turn, files copied before cleanup', async () => {
+      const { uuid, settle, capture, record, order, processed, attachments } = await steerWithFile('이것도 같이 봐줘');
+      expect(record).not.toHaveBeenCalled(); // not at steer time — the model has not read it yet
+
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'completed' });
+
+      expect(capture).toHaveBeenCalledWith('conv_steer', processed);
+      expect(record).toHaveBeenCalledWith(
+        'conv_steer',
+        '이것도 같이 봐줘',
+        expect.any(String),
+        'U_OWNER',
+        attachments,
+        {
+          timestamp: 1792900000000,
+          // A steered message is always a person's (dashboard SSOT 2026-10-27).
+          origin: { by: 'user' },
+        },
+      );
+      expect(order).toEqual(['capture', 'record', 'cleanup']);
+      await settle();
+    });
+
+    it('does not record a steered message the queue took back (discarded) — the drain will', async () => {
+      const { uuid, settle, record } = await steerWithFile('나중에 봐줘');
+
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'discarded' });
+
+      expect(record).not.toHaveBeenCalled();
+      await settle();
+    });
+
     it('never fails the turn when the settlement itself cannot be recorded', async () => {
       const { settle } = await steerOne();
 
@@ -3181,6 +3302,79 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(outcome).toBe('already-delivered');
       // The model has it: the honest row is consumed history, not `cancelled`.
       expect(items()[0].state).toBe('resolved');
+      await settle();
+    });
+
+    /**
+     * User media (SSOT 2026-10-25, review gate P1): `already-dequeued` is a
+     * consumption receipt too — the model has the message — and the row is
+     * resolved, so no drain will ever run it. It must be recorded (text + files)
+     * here, before its files are deleted; a late `completed` frame must not
+     * record it a second time.
+     */
+    it('records an already-delivered message with its files before the cleanup, once', async () => {
+      const processed = [{ name: 'shot.png', path: '/tmp/slack-file-1-shot.png', isImage: true }];
+      processFiles.mockResolvedValue({ files: processed, shouldContinue: true });
+      const order: string[] = [];
+      handlerAny.fileHandler = {
+        formatFilePrompt: vi.fn().mockResolvedValue('t'),
+        cleanupTempFiles: vi.fn(async () => {
+          order.push('cleanup');
+        }),
+      };
+      const attachments = [{ id: 'M1', name: 'shot.png', kind: 'image', mime: 'image/png', size: 3, stored: true }];
+      const capture = vi.fn(async () => {
+        order.push('capture');
+        return attachments;
+      });
+      const record = vi.fn(() => {
+        order.push('record');
+      });
+      handlerAny.userMediaRecorder = { capture, record };
+      registrySession.conversationId = 'conv_cancel';
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(
+        message({
+          ts: '1792900000.000100',
+          text: '이것도 같이 봐줘',
+          files: [
+            {
+              id: 'F1',
+              name: 'shot.png',
+              mimetype: 'image/png',
+              filetype: 'png',
+              url_private: 'https://x/1',
+              url_private_download: 'https://x/1d',
+              size: 3,
+            },
+          ],
+        }),
+        say(),
+      );
+      const [item] = items();
+      const uuid = steerTurn.mock.calls[0][1].uuid;
+      claudeHandler.cancelSteeredMessage = vi.fn().mockResolvedValue('already-dequeued');
+
+      const outcome = await handlerAny.cancelSteeredFollowup(SESSION_KEY, item.id, item.epoch, uuid);
+
+      expect(outcome).toBe('already-delivered');
+      expect(record).toHaveBeenCalledWith(
+        'conv_cancel',
+        '이것도 같이 봐줘',
+        expect.any(String),
+        'U_OWNER',
+        attachments,
+        {
+          timestamp: 1792900000000,
+          // A steered message is always a person's (dashboard SSOT 2026-10-27).
+          origin: { by: 'user' },
+        },
+      );
+      expect(order).toEqual(['capture', 'record', 'cleanup']);
+      await handlerAny.streamExecutor.deps.onSteerLifecycle({ sessionKey: SESSION_KEY, uuid, phase: 'completed' });
+      expect(record).toHaveBeenCalledTimes(1);
       await settle();
     });
 
