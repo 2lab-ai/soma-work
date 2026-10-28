@@ -197,9 +197,8 @@ describe('D4 — a state change pops the status icon', () => {
         updateTimersIn: () => {},
         animateCountersIn: () => {},
         morphInnerHtml: () => {},
-        anFocusCapture: () => null,
-        anFocusRestore: () => {},
         acHydrate: () => {}, // affectUI batch 1: the body's approval cards take their data
+        atHydrate: () => {}, // affectUI batch 2: the body's agent tree takes its data
         canAnimate: () => opts.animate !== false,
         reduceMotion: () => !!opts.reduce,
         MOTION: { move: 320, easeOut: 'cubic-bezier(0.23, 1, 0.32, 1)' },
