@@ -2565,6 +2565,10 @@ export async function registerDashboardRoutes(
         rawContent: t.role === 'user' ? t.rawContent : undefined,
         // User media (SSOT 2026-10-25): the files this instruction carried, metadata only.
         attachments: t.role === 'user' ? t.attachments : undefined,
+        // SSOT 2026-10-27: who put a user turn there (a host turn reads as one
+        // line), and a /compact turn's compaction (estimate, then its result).
+        origin: t.role === 'user' ? t.origin : undefined,
+        compact: t.role === 'user' ? t.compact : undefined,
       }));
 
       reply.send({
@@ -5420,6 +5424,66 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    variables only (no new colours); the disclosure is the size container. */
 .turn-header .ans-took { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 .turn-header .ans-took:empty { display: none; }
+/* SSOT 2026-10-27 — a turn soma-work put there (compact, restart, retry, goal,
+   cron, renew): one quiet line — who · when · badge · what it did — that opens
+   (native disclosure) to its facts and the raw prompt. */
+.turn.is-sys { padding: 3px 10px; background: transparent; border-left-color: var(--border); }
+.turn.is-sys .turn-avatar { width: 20px; height: 20px; margin-top: 2px; font-size: 11px; border-radius: 3px; }
+.sys-turn { container: sysrow / inline-size; }
+/* A narrow row drops what is said elsewhere, so elapsed / estimate stay whole:
+   "압축 중" (the badge says it) at ≤ 420px — the default 440px drawer's row is
+   ~355px and keeps the name — and the name too (the avatar shows it) at
+   ≤ 340px, a phone's full-width panel. */
+@container sysrow (max-width: 420px) { .cp-verb { display: none; } }
+@container sysrow (max-width: 340px) { .sys-row-in .turn-name { display: none; } }
+@container sysrow (max-width: 280px) { .cp-pct { display: none; } }
+.sys-turn > summary { list-style: none; display: block; cursor: pointer; border-radius: var(--radius); }
+.sys-turn > summary::-webkit-details-marker { display: none; }
+.sys-turn > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sys-row-in { display: flex; align-items: center; gap: 8px; min-height: 24px; min-width: 0; font-size: 12px; color: var(--text-tertiary); }
+.sys-row-in .turn-name { font-size: 12px; }
+.sys-row-in .turn-time { flex: none; white-space: nowrap; }
+.sys-row-in .turn-name { flex: none; max-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sys-turn > summary:hover .sys-line { color: var(--text-secondary); }
+.sys-badge { flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised); color: var(--text); font-size: 11.5px; font-weight: 600; line-height: 1; white-space: nowrap; }
+.sys-badge[data-kind="compact"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
+.sys-badge[data-kind="restart"], .sys-badge[data-kind="retry"] { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 45%, transparent); }
+.sys-badge[data-kind="goal"] { color: var(--purple); border-color: color-mix(in srgb, var(--purple) 45%, transparent); }
+.sys-badge[data-kind="cron"] { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent); }
+.sys-line { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-slot { display: contents; }
+/* A narrow panel (phones): the bar's shrink weight (1000) dwarfs the line's (1),
+   so the bar gives way first, then the line truncates from its end. Weights
+   stay ≥ 1: below 1 the flex algorithm hands out only that fraction of the
+   space and the row would overflow. */
+/* A running line's parts are the row's own flex items: the times never shrink
+   (no sub-pixel ellipsis); only the overdue words take the ellipsis. */
+.turn[data-cp-live] .cp-slot > .sys-line { display: contents; }
+.cp-time { flex: none; white-space: nowrap; }
+.cp-over { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cp-bar { flex: 0 1000 120px; min-width: 0; max-width: 120px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
+.cp-bar > i { display: block; height: 100%; border-radius: inherit; background: var(--accent); transition: width 1s linear; }
+.cp-bar.is-over > i { width: 100% !important; background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat; background-size: 40% 100%; animation: cp-over 1.4s linear infinite; }
+@keyframes cp-over { from { background-position: -40% 0; } to { background-position: 140% 0; } }
+.cp-pct { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; }
+.sys-chev { flex: none; margin-left: auto; width: 0; height: 0; border-left: 4px solid currentColor; border-top: 4px solid transparent; border-bottom: 4px solid transparent; opacity: 0.7; transition: transform var(--dur-press) var(--ease-out); }
+.sys-turn[open] .sys-chev { transform: rotate(90deg); }
+.sys-detail { margin: 6px 0 4px; padding: 8px 10px; border-radius: var(--radius); background: var(--surface-raised); }
+.sys-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 12px; margin: 0 0 8px; font-size: 12px; }
+.sys-facts dt { color: var(--text-tertiary); }
+.sys-facts dd { margin: 0; color: var(--text); white-space: pre-wrap; word-break: break-word; }
+.sys-raw-h { margin-bottom: 4px; font-size: 11px; color: var(--text-tertiary); }
+.sys-raw, .skill-body { margin: 0; max-height: 320px; overflow: auto; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); color: var(--text-secondary); font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+/* T5 — the skills an instruction invoked: badges (name · estimated tokens) under its words. */
+.skill-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
+.skill-badge { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; transition: background-color var(--dur-press) ease, border-color var(--dur-press) ease; }
+.skill-badge:hover { background: var(--bg); }
+.skill-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.skill-badge[aria-expanded="true"] { border-color: var(--accent); }
+.skill-tok { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
+.skill-detail { margin-top: 6px; }
+.skill-detail-h { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; font-size: 12px; }
+@media (pointer: coarse) { .sys-row-in { min-height: 44px; } .turn.is-sys .turn-avatar { margin-top: 12px; } .skill-badge { min-height: 44px; } }
 .ans-card { margin-top: 6px; padding: 12px 14px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
 .ans-card.is-in > * { animation: ans-in var(--dur-fade) var(--ease-out) both; }
 .ans-loading, .ans-empty { font-size: 12px; color: var(--text-tertiary); }
@@ -5694,6 +5758,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .sk, .is-loading, .kanban-col-header .count:empty { animation: none !important; }
   .wl-group-head .wl-g-chev, .done-group-head .dg-chev { transition: none; }
   .spinner { border-color: var(--st-run); background: radial-gradient(circle, var(--st-run) 0 2px, transparent 2.5px); }
+}
+@media (prefers-reduced-motion: reduce) {
+  /* SSOT 2026-10-27 — a compaction past its estimate holds a still, dimmed bar
+     instead of the sweep (the shared block above already stills transitions). */
+  .cp-bar.is-over > i { animation: none !important; background: var(--accent); opacity: 0.6; }
 }
 /* ── TOUCH — coarse pointer enlargement ── */
 @media (pointer: coarse) {
@@ -13676,6 +13745,11 @@ function connectWs() {
             // Remove pending style from optimistic turn if present
             var pending = document.querySelector('.turn.user[style*="opacity"]');
             if (pending) pending.style.opacity = '';
+            // The server's turn takes over the optimistic one, so a later push for
+            // it (a /compact result, SSOT 2026-10-27) finds it by its real id.
+            var opts = document.querySelectorAll('#panel-turns .turn.user[data-turn-id^="optimistic-"]');
+            var optEl = opts.length ? opts[opts.length - 1] : null;
+            if (optEl && msg.turn.id) updateTurnInPanel(optEl, msg.turn);
           } else {
             // Check if this turn already exists (e.g., summary update for existing assistant turn).
             // If so, replace in-place instead of appending a duplicate.
@@ -15074,6 +15148,317 @@ function turnsSkeletonHtml() {
   return '<div class="sk-turns" aria-hidden="true">' + row('user', 38, 72) + row('assistant', 46, 88) + row('user', 30, 64) + '</div>';
 }
 
+// ── Turns the user did not type (SSOT 2026-10-27 T1–T5) ──
+// soma-work puts some user turns there itself: a /compact, a restart resume, an
+// error retry, a goal continuation, a cron fire, a /renew save or load. Each
+// reads as one line — a badge and what it did — that opens to its facts and the
+// raw prompt. The wording each producer injects is pinned against its source by
+// dashboard-system-turns-client.test.ts. A turn a person sent (origin.by
+// 'user') is never read as one of the injected kinds; a command they may type
+// themselves (/compact, /renew) is classified whoever sent it.
+var SYS_RESTART_HEADS = ['The service was restarted and the previous task was interrupted.', '서비스가 재시작되어 이전 작업이 중단되었다.'];
+var SYS_RESUME_CONTEXT = '--- 중단 시점 컨텍스트 ---';
+var SYS_RETRY_MARK = '⚠️ 이전 시도 중 오류 발생:';
+var CP_DEFAULT_EST_MS = 150000; // a /compact runs 2–3 min (compact-state.ts) — the estimate until the conversation has one of its own
+var CP_MAX_MS = 600000; // COMPACTION_IN_PROGRESS_MAX_MS: past this a compaction without a result is dead
+var _cpTimer = 0;
+var _skillBodies = Object.create(null);
+var _skillSeq = 0;
+
+function sysOneLine(s, max) {
+  var line = String(s || '').replace(/\\s+/g, ' ').trim();
+  return line.length > max ? line.slice(0, max - 1) + '…' : line;
+}
+function sysBetween(s, open, close) {
+  var a = s.indexOf(open);
+  if (a < 0) return '';
+  var b = s.indexOf(close, a + open.length);
+  return s.slice(a + open.length, b < 0 ? s.length : b).trim();
+}
+// The "--- 중단 시점 컨텍스트 ---" lines a restart / retry resume carries (autoResumeSession).
+function sysResumeContext(raw) {
+  var out = { title: '', workflow: '', error: '' };
+  var at = raw.indexOf(SYS_RESUME_CONTEXT);
+  if (at < 0) return out;
+  raw.slice(at + SYS_RESUME_CONTEXT.length).split('\\n').forEach(function(line) {
+    var l = line.trim();
+    if (l.indexOf('세션 제목: ') === 0) out.title = l.slice('세션 제목: '.length);
+    else if (l.indexOf('워크플로우: ') === 0) out.workflow = l.slice('워크플로우: '.length);
+    else if (l.indexOf(SYS_RETRY_MARK) === 0) out.error = l.slice(SYS_RETRY_MARK.length).trim();
+  });
+  return out;
+}
+// What a user turn is when soma-work put it there: { kind, label, line, raw,
+// facts: [[term, value]] }, or null for a turn the user typed.
+function sysTurnInfo(t) {
+  if (!t || t.role !== 'user') return null;
+  var raw = decodeSlackEntities(String(t.rawContent || ''));
+  var head = raw.replace(/^\\s+/, '');
+  var by = t.origin && t.origin.by ? t.origin.by : '';
+  // A compaction turn: the recorder marks it (t.compact, from the executor —
+  // a goal objective starting with "/compact" is literal, never marked). A turn
+  // from before origins were kept is read from its text: the bare command.
+  if (t.compact || (!by && raw.trim() === '/compact')) {
+    var auto = by === 'system';
+    var who = auto ? 'soma-work — 컨텍스트가 자동 압축 지점을 넘어 /compact 실행'
+      : by === 'user' ? '사용자 요청' : '기록 없음 (출처를 저장하기 전의 턴)';
+    return { kind: 'compact', label: auto ? '자동 압축' : '압축', line: '', raw: raw, facts: [['실행', who]] };
+  }
+  if (head.indexOf('Follow this exact sequence:') === 0 && head.indexOf('skill="local:save"') >= 0) {
+    return { kind: 'renew', label: '세션 갱신', line: '컨텍스트 저장 (1/2)', raw: raw, facts: [['단계', '저장 — 다음 턴이 새 세션에서 불러옴']] };
+  }
+  if (by === 'user') return null;
+  for (var i = 0; i < SYS_RESTART_HEADS.length; i++) {
+    if (head.indexOf(SYS_RESTART_HEADS[i]) !== 0) continue;
+    var ctx = sysResumeContext(raw);
+    var facts = [];
+    if (ctx.title) facts.push(['세션 제목', ctx.title]);
+    if (ctx.workflow) facts.push(['워크플로우', ctx.workflow]);
+    if (ctx.error) {
+      facts.unshift(['이전 오류', ctx.error]);
+      return { kind: 'retry', label: '자동 재시도', line: '오류 뒤 자동 재개 · ' + sysOneLine(ctx.error, 90), raw: raw, facts: facts };
+    }
+    facts.unshift(['원인', '서비스 재시작으로 중단된 작업']);
+    return { kind: 'restart', label: '시스템 재시작', line: '중단된 작업 자동 재개' + (ctx.title ? ' · ' + sysOneLine(ctx.title, 60) : ''), raw: raw, facts: facts };
+  }
+  var g = /^\\[goal-continuation\\]\\s*/.exec(head);
+  if (g) {
+    var n = /Auto-continuation (\\d+)\\/(\\d+)/.exec(head);
+    var reason = sysBetween(raw, '<previous-eval-reason>', '</previous-eval-reason>');
+    var gf = [];
+    if (n) gf.push(['회차', n[1] + ' / ' + n[2]]);
+    if (reason) gf.push(['직전 평가에서 남은 일', reason]);
+    return { kind: 'goal', label: n ? 'Goal #' + n[1] + '/' + n[2] : 'Goal', line: reason ? '직전 평가: ' + sysOneLine(reason, 90) : 'Goal 자동 계속', raw: raw, facts: gf };
+  }
+  var c = /^\\[cron:([^\\]]+)\\]\\s*/.exec(head);
+  if (c) {
+    var prompt = head.slice(c[0].length);
+    return { kind: 'cron', label: '크론', line: c[1] + (prompt ? ' · ' + sysOneLine(prompt, 80) : ''), raw: raw, facts: [['작업', c[1]]] };
+  }
+  if (head.indexOf("Use 'local:load' skill with this saved context:") === 0) {
+    var instr = sysBetween(raw, '<user-instruction>', '</user-instruction>');
+    var lf = [['단계', '불러오기 (2/2)']];
+    if (instr) lf.push(['이어서 할 지시', instr]);
+    return { kind: 'renew', label: '세션 갱신', line: '저장된 컨텍스트 불러오기' + (instr ? ' · ' + sysOneLine(instr, 70) : ''), raw: raw, facts: lf };
+  }
+  if (by === 'system') return { kind: 'system', label: '자동 입력', line: sysOneLine(head, 90), raw: raw, facts: [] };
+  return null;
+}
+function cpClock(ms) {
+  var s = Math.max(0, Math.round(toNum(ms) / 1000));
+  return Math.floor(s / 60) + ':' + ('0' + (s % 60)).slice(-2);
+}
+// A /compact turn's compaction. done: its result came. live: no result yet and
+// younger than a compaction can run — cpTick confirms it is still the latest
+// turn of a working session. unknown: no result and no longer running (from
+// before results were kept, or it never ended).
+function cpState(t, now, notLast) {
+  var c = t.compact || {};
+  var known = toNum(c.estimateMs) > 0;
+  var st = { phase: 'unknown', c: c, start: toNum(t.timestamp), est: known ? toNum(c.estimateMs) : CP_DEFAULT_EST_MS, estKnown: known };
+  if (c.endedAt) st.phase = 'done';
+  else if (!notLast && (now || Date.now()) - st.start < CP_MAX_MS) st.phase = 'live';
+  return st;
+}
+function cpProgressHtml(elapsed, est) {
+  var over = elapsed > est;
+  var pct = Math.max(0, Math.min(99, Math.floor((elapsed / est) * 100)));
+  // The times first: on a narrow row the ellipsis cuts the overdue words before them.
+  return '<span class="sys-line"><span class="cp-time"><span class="cp-verb">압축 중 · </span>' + cpClock(elapsed) + ' / 약 ' + cpClock(est) + '</span>'
+    + (over ? '<span class="cp-over"> · 예상보다 오래 걸리는 중</span>' : '') + '</span>'
+    // Decoration: inside <summary> (a button) AT drops a progressbar role — the
+    // line's own text carries elapsed / estimate and the percentage.
+    + '<span class="cp-bar' + (over ? ' is-over' : '') + '" aria-hidden="true"><i style="width:' + pct + '%"></i></span>'
+    + (over ? '' : '<span class="cp-pct">' + pct + '%</span>');
+}
+// The one line of a /compact turn: progress while it runs, its numbers once done.
+function cpLineHtml(info, st, now) {
+  if (st.phase === 'live') return cpProgressHtml((now || Date.now()) - st.start, st.est);
+  var parts = [info.label + ' 처리'];
+  var c = st.c;
+  if (st.phase === 'done' && c.preTokens != null && c.postTokens != null) parts.push(formatTokens(c.preTokens) + ' → ' + formatTokens(c.postTokens) + ' 토큰');
+  if (st.phase === 'done' && toNum(c.durationMs) > 0) parts.push(formatDuration(c.durationMs));
+  return '<span class="sys-line">' + esc(parts.join(' · ')) + '</span>';
+}
+function cpFacts(st) {
+  var c = st.c;
+  var f = [['상태', st.phase === 'done' ? '완료' : st.phase === 'live' ? '진행 중' : '결과 기록 없음', 'cp-state']];
+  if (st.phase === 'done' && c.preTokens != null && c.postTokens != null) {
+    var pre = toNum(c.preTokens);
+    var cut = pre > 0 ? Math.round((1 - toNum(c.postTokens) / pre) * 100) : 0;
+    f.push(['압축 전 → 후', pre.toLocaleString('en-US') + ' → ' + toNum(c.postTokens).toLocaleString('en-US') + ' 토큰' + (pre > 0 ? ' (−' + cut + '%)' : '')]);
+  }
+  if (st.phase === 'done' && toNum(c.durationMs) > 0) f.push(['걸린 시간', formatDuration(c.durationMs)]);
+  f.push(['예상 시간', formatDuration(st.est) + (st.estKnown ? ' (직전 압축 기준)' : ' (기본값)')]);
+  if (c.trigger) f.push(['SDK trigger', c.trigger]);
+  if (c.endedAt) f.push(['끝난 시각', new Date(toNum(c.endedAt)).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })]);
+  return f;
+}
+function sysFactsHtml(facts) {
+  if (!facts.length) return '';
+  return '<dl class="sys-facts">' + facts.map(function(f) {
+    return '<dt>' + esc(f[0]) + '</dt><dd' + (f[2] ? ' class="' + f[2] + '"' : '') + '>' + esc(f[1]) + '</dd>';
+  }).join('') + '</dl>';
+}
+// One line: who · when · badge · what it did. Opens (a native disclosure) to its
+// facts and the raw prompt.
+function renderSysTurn(t, info, attrs, time, initial, now, notLast, mediaHtml) {
+  var st = info.kind === 'compact' ? cpState(t, now, notLast) : null;
+  var live = st && st.phase === 'live';
+  var facts = st ? info.facts.concat(cpFacts(st)) : info.facts;
+  var line = st ? '<span class="cp-slot">' + cpLineHtml(info, st, now) + '</span>' : '<span class="sys-line">' + esc(info.line) + '</span>';
+  if (live) cpEnsureTicker();
+  return '<div class="turn user is-sys" data-sys="' + info.kind + '"' + attrs
+    + (live ? ' data-cp-live="1" data-cp-start="' + st.start + '" data-cp-est="' + st.est + '"' : '') + '>'
+    + '<div class="turn-avatar user-avatar">' + esc(initial) + '</div>'
+    + '<div class="turn-body"><details class="sys-turn"><summary class="sys-row"><span class="sys-row-in">'
+    + '<span class="turn-name">' + esc(t.userName || 'User') + '</span><span class="turn-time">' + esc(time) + '</span>'
+    + '<span class="sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>' + line
+    + '<span class="sys-chev" aria-hidden="true"></span></span></summary><div class="sys-detail">' + (mediaHtml || '') + sysFactsHtml(facts)
+    + '<div class="sys-raw-h">원본 프롬프트</div><pre class="sys-raw">' + esc(info.raw) + '</pre></div></details></div></div>';
+}
+function cpEnsureTicker() {
+  if (_cpTimer || typeof setInterval !== 'function') return;
+  _cpTimer = setInterval(cpTick, 1000);
+}
+// Every second while a compaction runs in the open panel: its elapsed time and
+// progress. It stops being live once a later turn landed, the session stopped
+// working, or it outlived any compaction — then it says no result was kept.
+function cpTick() {
+  var nodes = document.querySelectorAll('#panel-turns .turn[data-cp-live]');
+  if (!nodes.length) {
+    clearInterval(_cpTimer);
+    _cpTimer = 0;
+    return;
+  }
+  // Turns only: the 응답 작성 중 row (.ans-pending, no data-ts) follows a running
+  // /compact as the list's last child (syncAnsPending reads turns the same way).
+  var all = document.querySelectorAll('#panel-turns > .turn[data-ts]');
+  var last = all.length ? all[all.length - 1] : null;
+  // The board refills the cache in one pass: a session missing from a loaded
+  // board is not running; before the board's first load it is undecided.
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var boardLoaded = Object.keys(_sessionCache).length > 0;
+  var working = s ? s.activityState === 'working' : !boardLoaded;
+  var now = Date.now();
+  for (var i = 0; i < nodes.length; i++) {
+    var node = nodes[i];
+    var start = toNum(node.getAttribute('data-cp-start'));
+    var est = toNum(node.getAttribute('data-cp-est')) || CP_DEFAULT_EST_MS;
+    var slot = node.querySelector('.cp-slot');
+    if (node === last && working && now - start < CP_MAX_MS) {
+      if (slot) slot.innerHTML = cpProgressHtml(now - start, est);
+      continue;
+    }
+    // Ended without a result: the line and 상태 a fresh render of it shows.
+    node.removeAttribute('data-cp-live');
+    var badge = node.querySelector('.sys-badge');
+    var state = node.querySelector('.cp-state');
+    if (slot) slot.innerHTML = '<span class="sys-line">' + esc((badge ? badge.textContent : '압축') + ' 처리') + '</span>';
+    if (state) state.textContent = '결과 기록 없음';
+  }
+}
+// A rough token count for a skill body: ~4 ASCII characters or 1 other
+// character (Hangul, CJK, emoji) per token. Labeled an estimate wherever shown.
+function estimateTokens(s) {
+  var str = String(s || '');
+  var ascii = 0;
+  for (var i = 0; i < str.length; i++) if (str.charCodeAt(i) < 128) ascii++;
+  return Math.ceil(ascii / 4 + (str.length - ascii));
+}
+// The <invoked_skills> block a $skill / autoskill appends to the instruction
+// (skill-force-handler.ts, autoskill-fire.ts): the user's own text, and each
+// skill as { name, body, tokens }.
+function splitInvokedSkills(raw) {
+  var s = String(raw == null ? '' : raw);
+  var OPEN = '<invoked_skills>';
+  var CLOSE = '</invoked_skills>';
+  var text = '';
+  var skills = [];
+  var from = 0;
+  // Every closed block (a session's first turn carries two: autoskill, then the
+  // deferred $skill). Each block starts at the last <invoked_skills> before its
+  // closing tag, so a literal mention in the words stays words; so does one
+  // never closed.
+  for (;;) {
+    var end = s.indexOf(CLOSE, from);
+    if (end < 0) {
+      text += s.slice(from);
+      break;
+    }
+    var at = s.lastIndexOf(OPEN, end);
+    if (at < from) {
+      // A stray closing tag in the words: words, and look on past it.
+      text += s.slice(from, end + CLOSE.length);
+      from = end + CLOSE.length;
+      continue;
+    }
+    text += s.slice(from, at);
+    var inner = s.slice(at + OPEN.length, end);
+    var before = skills.length;
+    var i = 0;
+    while (i < inner.length) {
+      var m = /<([^\\s<>\\/]+)>/.exec(inner.slice(i));
+      if (!m) break;
+      var name = m[1];
+      var bodyAt = i + m.index + m[0].length;
+      var closeTag = '</' + name + '>';
+      var bodyEnd = inner.indexOf(closeTag, bodyAt);
+      if (bodyEnd < 0) {
+        // A tag never closed is not a skill — skip it, keep reading.
+        i = bodyAt;
+        continue;
+      }
+      var body = inner.slice(bodyAt, bodyEnd).replace(/^\\n+|\\s+$/g, '');
+      skills.push({ name: name, body: body, tokens: estimateTokens(body) });
+      i = bodyEnd + closeTag.length;
+    }
+    // A closed block that held no skill is words too.
+    if (skills.length === before) text += s.slice(at, end + CLOSE.length);
+    from = end + CLOSE.length;
+  }
+  return { text: skills.length ? text.replace(/\\s+$/, '') : s, skills: skills };
+}
+// The skills a turn invoked, as badges (name · estimated tokens). A badge opens
+// that skill's body under the row — one at a time; the body is written on
+// first open, not with every turn.
+function skillBadgesHtml(key, skills) {
+  if (!skills.length) return '';
+  var base = 'skd-' + String(key || 'n' + (++_skillSeq)).replace(/[^A-Za-z0-9_-]/g, '');
+  var badges = '';
+  var panes = '';
+  for (var i = 0; i < skills.length; i++) {
+    var id = base + '-' + i;
+    _skillBodies[id] = skills[i];
+    badges += '<button type="button" class="skill-badge" aria-expanded="false" aria-controls="' + id + '" data-skill="' + id + '" onclick="skillToggle(this)"'
+      + ' title="토큰 수는 추정치 — 영문 4자 또는 그 밖의 글자 1자를 1토큰으로 셈">'
+      + '<span class="skill-name">' + esc(skills[i].name) + '</span><span class="skill-tok">≈' + formatTokens(skills[i].tokens) + ' tokens</span></button>';
+    panes += '<div class="skill-detail" id="' + id + '" hidden></div>';
+  }
+  return '<div class="skill-badges" role="group" aria-label="활성화된 스킬 ' + skills.length + '개">' + badges + '</div>' + panes;
+}
+function skillToggle(btn) {
+  var id = btn.getAttribute('data-skill');
+  var opening = btn.getAttribute('aria-expanded') !== 'true';
+  var row = btn.parentNode;
+  var open = row ? row.querySelectorAll('.skill-badge[aria-expanded="true"]') : [];
+  for (var i = 0; i < open.length; i++) {
+    open[i].setAttribute('aria-expanded', 'false');
+    var pane = document.getElementById(open[i].getAttribute('data-skill'));
+    if (pane) pane.hidden = true;
+  }
+  if (!opening) return;
+  var d = document.getElementById(id);
+  var sk = _skillBodies[id];
+  if (!d || !sk) return;
+  if (!d.firstChild) {
+    d.innerHTML = '<div class="skill-detail-h"><span class="skill-name">' + esc(sk.name) + '</span><span class="skill-tok">≈' + formatTokens(sk.tokens) + ' tokens (추정)</span></div>'
+      + '<pre class="skill-body">' + esc(sk.body) + '</pre>';
+  }
+  d.hidden = false;
+  btn.setAttribute('aria-expanded', 'true');
+}
+
 function renderTurn(t, _idx, _arr, convId) {
   const time = new Date(t.timestamp).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit' });
   const initial = (t.userName || 'U').charAt(0).toUpperCase();
@@ -15085,14 +15470,21 @@ function renderTurn(t, _idx, _arr, convId) {
     var atts = Array.isArray(t.attachments) ? t.attachments : [];
     if (atts.length) umRegister(umCid, atts, t);
     var mediaHtml = atts.length ? renderUserMedia(umCid, atts) : '';
-    var textHtml = t.rawContent
-      ? '<div class="turn-content">' + esc(decodeSlackEntities(t.rawContent.slice(0, 500))) + (t.rawContent.length > 500 ? '...' : '') + '</div>'
+    // SSOT 2026-10-27 T1 — a turn soma-work put there reads as one line; its
+    // files (the message the auto-compact intercepted) open with it. A batch
+    // tells whether a later turn follows (then a /compact is not running).
+    var sys = sysTurnInfo(t);
+    if (sys) return renderSysTurn(t, sys, turnIdAttr, time, initial, 0, !!(_arr && typeof _idx === 'number' && _idx < _arr.length - 1), mediaHtml);
+    // T5 — an <invoked_skills> block becomes badges under the words.
+    var said = splitInvokedSkills(decodeSlackEntities(t.rawContent || ''));
+    var textHtml = said.text
+      ? '<div class="turn-content">' + esc(said.text.slice(0, 500)) + (said.text.length > 500 ? '...' : '') + '</div>'
       : '';
     return '<div class="turn user"' + turnIdAttr + '>'
       + '<div class="turn-avatar user-avatar">' + initial + '</div>'
       + '<div class="turn-body">'
       + '<div class="turn-header"><span class="turn-name">' + esc(t.userName || 'User') + '</span><span class="turn-time">' + time + '</span></div>'
-      + mediaHtml + textHtml
+      + mediaHtml + textHtml + skillBadgesHtml(t.id, said.skills)
       + '</div></div>';
   } else {
     const title = t.summaryTitle ? '<div class="turn-summary-title">' + esc(t.summaryTitle) + '</div>' : '';
@@ -15149,7 +15541,11 @@ function updateTurnInPanel(existingEl, turn) {
   if (newEl) {
     // re-ai-answer D14 — an answer the reader opened stays open (from the cache).
     var wasOpen = !!existingEl.querySelector('.turn-raw-details[open]');
+    // SSOT 2026-10-27 — so does a one-line row (a /compact result landing).
+    var sysOpen = !!existingEl.querySelector('.sys-turn[open]');
     existingEl.replaceWith(newEl);
+    var sysEl = sysOpen ? newEl.querySelector('.sys-turn') : null;
+    if (sysEl) sysEl.open = true;
     attachRawToggleHandlers();
     var answer = wasOpen ? newEl.querySelector('.turn-raw-details') : null;
     if (answer) {
@@ -15798,6 +16194,7 @@ async function sendCommand() {
     timestamp: Date.now(),
     userName: 'You',
     rawContent: msg,
+    origin: { by: 'user' },
     _optimistic: true,
   };
   appendTurnToPanel(optimisticTurn);
