@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type { FollowupItem } from '@soma/slack/followup-queue';
 import type { FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -337,9 +339,13 @@ describe('Dashboard — the follow-up queue (batch 2)', () => {
 
   it('after an act the panel gets the queue as it is now over the dashboard WebSocket', async () => {
     const messages: any[] = [];
-    const ws = await injectWebServerWS('/ws/dashboard', { headers: { authorization: 'Bearer test-token' } }, (s: any) => {
-      s.on('message', (data: any) => messages.push(JSON.parse(data.toString())));
-    });
+    const ws = await injectWebServerWS(
+      '/ws/dashboard',
+      { headers: { authorization: 'Bearer test-token' } },
+      (s: any) => {
+        s.on('message', (data: any) => messages.push(JSON.parse(data.toString())));
+      },
+    );
     sockets.push(ws);
     act.mockImplementationOnce(async () => {
       view = { ...view, items: view.items.filter((i) => i.id !== `${KEY}#1`) };
@@ -353,5 +359,24 @@ describe('Dashboard — the follow-up queue (batch 2)', () => {
       expect(ids).not.toContain(`${KEY}#1`);
       expect(ids).toContain(`${KEY}#2`);
     });
+  });
+});
+
+// The entry point (the brief's rule: a route without wiring is a dead feature). The chain the panel rides:
+// ui-promote / ui-cancel / ui-edit → POST …/queue/:itemId/:op → setDashboardFollowupHandler.act →
+// SlackHandler.handleDashboardFollowupAction (the Slack controls' handlers, editQueued) → the queue's save
+// sink → setFollowupChangeListener → scheduleLiveSessionUpdate → the sessionUpdated push → the panel repaints
+// (repaintPanelSession → renderPanelComposer). Each link has its own test; this pins the two in src/index.ts.
+describe('src/index.ts wires the queue to the dashboard', () => {
+  const INDEX = readFileSync(join(__dirname, '..', '..', 'index.ts'), 'utf-8');
+
+  it('the route’s handler is the SlackHandler’s control view and action, and every committed change pushes its session', () => {
+    expect(INDEX).toMatch(/import \{[^}]*\bsetDashboardFollowupHandler\b[^}]*\} from '\.\/conversation'/);
+    expect(INDEX).toMatch(
+      /setDashboardFollowupHandler\(\{\s*view: \(sessionKey\) => slackHandler\.getFollowupView\(sessionKey\),\s*act: \(request\) => slackHandler\.handleDashboardFollowupAction\(request\),\s*\}\);/,
+    );
+    expect(INDEX).toContain(
+      'slackHandler.setFollowupChangeListener((sessionKey) => scheduleLiveSessionUpdate(sessionKey));',
+    );
   });
 });
