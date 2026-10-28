@@ -868,7 +868,7 @@ export interface ConversationSession {
   // User message text captured when auto-compact intercepts the turn; re-dispatched after PostCompact.
   pendingUserText?: string | null;
   // Slack event context captured alongside `pendingUserText` for synthetic re-dispatch via event-router.
-  pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string } | null;
+  pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string; hostTurn?: boolean } | null;
   // Deferred post-compact re-dispatch queue (arrival order, one entry per
   // author burst). `postCompactCompleteIfNeeded` promotes
   // `pendingUserText`/`pendingEventContext` here when a compact cycle seals;
@@ -879,7 +879,7 @@ export interface ConversationSession {
   // control abort the still-running /compact process and lose the compaction
   // entirely (observed as `now ~85% ← was ~85%` immediate re-compact loops).
   compactPendingDispatches?: Array<{
-    ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean };
+    ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean; hostTurn?: boolean };
     text: string;
   }> | null;
   // Runtime-only exact-once guard while the queue is handed back to EventRouter.

@@ -104,6 +104,18 @@ describe('EventRouter', () => {
       );
     });
 
+    it('replays a parked host turn with routeContext.hostTurn — recorded as soma-work’s, not the person’s', async () => {
+      await router.dispatchPendingUserMessage(
+        { channel: 'C123', threadTs: '111.222', user: 'U123', ts: '111.334', hostTurn: true },
+        '[goal-continuation] Continue',
+        { compactRedispatch: true },
+      );
+      expect(mockMessageHandler).toHaveBeenCalledWith(
+        expect.objectContaining({ routeContext: { compactRedispatch: true, hostTurn: true } }),
+        expect.any(Function),
+      );
+    });
+
     it('treats pipeline invocation as the handoff boundary and does not reject after downstream acceptance', async () => {
       mockMessageHandler = vi.fn(async () => {
         throw new Error('downstream turn failed after acceptance');

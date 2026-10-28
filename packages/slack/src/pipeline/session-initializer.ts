@@ -309,7 +309,16 @@ export class SessionInitializer {
     // the dispatch text and carries the marker on its context.
     const verbatimReplay = event.routeContext?.verbatimPrompt === true;
     const replayText = (verbatimReplay ? undefined : event.inlineDirectiveRawText) || dispatchText;
-    const replayCtx = { channel, threadTs, user, ts, ...(verbatimReplay ? { verbatimPrompt: true } : {}) };
+    // A host turn (synthetic, or a replay of one) keeps saying so when parked.
+    const hostReplay = event.synthetic === true || event.routeContext?.hostTurn === true;
+    const replayCtx = {
+      channel,
+      threadTs,
+      user,
+      ts,
+      ...(verbatimReplay ? { verbatimPrompt: true } : {}),
+      ...(hostReplay ? { hostTurn: true } : {}),
+    };
     const skipAutoBotThread = event.routeContext?.skipAutoBotThread === true;
     // Whether the mention originated from inside an existing thread (thread_ts exists).
     // Used for sourceThread data linking — NOT for UX decisions.
