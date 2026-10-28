@@ -5,7 +5,7 @@ import SomaVerify.ToolPolicy.Model
 /-!
 # Conformance vectors for `SomaVerify.ToolPolicy`
 
-`verification/vectors/tool-policy.json` holds seven kinds of case, told apart by `kind`.
+`verification/vectors/tool-policy.json` holds eight kinds of case, told apart by `kind`.
 
 Replayed by `tool-policy.lean-conformance.test.ts`, which mocks the guard primitives with each
 row's `prims` and calls the real `evaluateToolPolicy` once per entry of `calls`. Every call also
@@ -25,7 +25,9 @@ other, so a wrong argument or a wrong check fails the replay.
 * `tool-names`: every native tool and a set of near misses (case, spacing, look-alike letters,
   prefixes, the empty name), with no primitive firing, each firing alone, and all firing, in
   every mode, for admins and non-admins.
-* Every `expect` is the output of `evaluateToolPolicyEnv`, the phase-4 model of the TS function.
+* Every `expect` is the output of `evaluateToolPolicyWith`, the model of the whole TS function
+  (phase 4 with the native write boundary); a row without `checkNativeWrite` gets
+  `evaluateToolPolicyEnv`'s, which `ProofsNativeWrite.lean` proves equal.
 * `boundary`: the payloads the table holds fixed. A sensitive result without a reason or with
   an empty one, an empty MCP, devops-secret or environment-skill reason (and the environment-skill
   check firing for admins and alongside every other primitive), PR-issue results without a reason or a message,
@@ -41,10 +43,16 @@ other, so a wrong argument or a wrong check fails the replay.
   firing, each deny condition alone, a dangerous Bash, everything at once), in every mode, for
   admins and non-admins. Each row calls the allow-listed tools, near misses of them, native tools
   including `Task` and `Agent`, and tools the policy has never heard of.
+* `native-write`: the only rows with `ctx.checkNativeWrite` set, as `checkNativeWrite`: what it
+  returns (`null`, a reason, the empty reason) with every pattern of `patterns`, in every mode, for
+  admins and non-admins, with and without the live incident context. Each row calls the six
+  native write tools, with and without a target, near misses of their names, and the tools of the
+  other steps. The replay answers every call with the row's value and fails when the policy asks
+  for a tool outside `NATIVE_WRITE_TOOLS`.
 
 Replayed by `tool-policy.concrete.lean-conformance.test.ts` against the real modules, no mocks:
 
-* `constants`: `NATIVE_BYPASS_TOOLS`, `TOOL_POLICY_MATCHERS` and
+* `constants`: `NATIVE_BYPASS_TOOLS`, `NATIVE_WRITE_TOOLS`, `TOOL_POLICY_MATCHERS` and
   `INCIDENT_TOOL_POLICY_MATCHERS` as the model has them.
 * `concrete`: real tool calls, some in an incident session. Each lists the primitive calls the
   policy makes for it, with the values the test first checks against the real primitives; the
@@ -132,6 +140,12 @@ def incidentProp : Option IncidentReadOnly → List (String × Json)
   | some inc => [("incidentReadOnly", incidentJson inc)]
   | none => []
 
+/-- The `checkNativeWrite` property: what `ctx.checkNativeWrite` returns (`null` for `none`), or
+left out when the property is undefined. -/
+def nativeWriteProp : Option (Option String) → List (String × Json)
+  | some v => [("checkNativeWrite", (v.map .str).getD .null)]
+  | none => []
+
 def primsJson (p : Primitives) : Json :=
   .obj [("ssh", .bool p.ssh), ("sensitive", sensitiveJson p.sensitive),
     ("crossUser", .bool p.crossUser), ("mcpDenied", mcpJson p.mcpDenied),
@@ -149,6 +163,8 @@ structure Row where
   prims : Primitives
   /-- `ctx.incidentReadOnly`; `none` leaves it undefined -/
   incident : Option IncidentReadOnly := none
+  /-- what `ctx.checkNativeWrite` returns; `none` leaves it undefined -/
+  nativeWrite : Option (Option String) := none
 
 /-- A call: the tool name and the exact `toolInput` handed to the TS (`none` is `undefined`). -/
 structure Call where
@@ -165,12 +181,12 @@ def callJson (r : Row) (c : Call) : Json :=
   .obj [("tool", .str c.tool), ("input", c.input.getD .null),
     ("sensitiveCall", sensitiveCallJson (sensitiveCall (r.toInput c))),
     ("devopsCall", devopsCallJson (devopsCall (r.toInput c))),
-    ("expect", resultJson (evaluateToolPolicyEnv r.incident (r.toInput c)))]
+    ("expect", resultJson (evaluateToolPolicyWith r.nativeWrite r.incident (r.toInput c)))]
 
 def rowJson (kind : String) (calls : List Call) (r : Row) : Json :=
   .obj ([("kind", .str kind), ("mode", .str (modeName r.mode)), ("isAdmin", .bool r.isAdmin),
     ("aborted", .bool r.aborted), ("handoff", .bool r.handoff), ("prims", primsJson r.prims)] ++
-    incidentProp r.incident ++
+    incidentProp r.incident ++ nativeWriteProp r.nativeWrite ++
     [("calls", .arr (calls.map (callJson r)))])
 
 /-- Every primitive silent: nothing sensitive, no deny reason, not blocked, not dangerous. -/
@@ -440,10 +456,47 @@ def incidentRows : List Row :=
   patterns.map fun (aborted, handoff, prims) =>
     { mode, isAdmin, aborted, handoff, prims, incident := some inc }
 
+/-- What `ctx.checkNativeWrite` returns on the `native-write` rows: inside, a reason, the empty
+reason (still a denial: `outside !== null`). -/
+def nativeWriteValues : List (Option String) :=
+  [none, some "outside-reason", some ""]
+
+/-- The three native write tools with a target, without one and with no input at all; near misses
+of their names; and the tools the other steps look at. -/
+def nativeWriteCalls : List Call :=
+  [⟨"Write", some (.obj [("file_path", .str "/tmp/U0VECTOR01/a.txt"), ("content", .str "x")])⟩,
+    ⟨"Edit", some (.obj [("file_path", .str "/tmp/U0VECTOR01/a.txt"), ("old_string", .str "a"),
+      ("new_string", .str "b")])⟩,
+    ⟨"NotebookEdit", some (.obj [("notebook_path", .str "/tmp/U0VECTOR01/n.ipynb"),
+      ("new_source", .str "x")])⟩,
+    ⟨"Artifact", some (.obj [("action", .str "read_asset"), ("url", .str "u"), ("asset_id", .str "a"),
+      ("out_dir", .str "/tmp/U0VECTOR01")])⟩,
+    ⟨"EnterWorktree", some (.obj [("name", .str "feat")])⟩,
+    ⟨"Agent", some (.obj [("description", .str "d"), ("prompt", .str "p"), ("isolation", .str "worktree")])⟩,
+    ⟨"Write", empty⟩, ⟨"Edit", none⟩, ⟨"Artifact", empty⟩, ⟨"Agent", empty⟩,
+    ⟨"write", empty⟩, ⟨"WRITE", empty⟩, ⟨"Write ", empty⟩, ⟨"MultiEdit", empty⟩,
+    ⟨"NotebookEdit2", empty⟩, ⟨"Edits", empty⟩, ⟨"mcp__x__Write", empty⟩, ⟨"artifact", empty⟩,
+    ⟨"ExitWorktree", empty⟩, ⟨"Monitor", empty⟩,
+    ⟨"Bash", empty⟩, ⟨"Read", some (.obj [("file_path", .str "/tmp/U0VECTOR01/a.txt")])⟩,
+    ⟨"Glob", empty⟩, ⟨"Grep", grepPath⟩, ⟨"TodoWrite", empty⟩, ⟨"Task", empty⟩,
+    ⟨"mcp__server-tools__db_query", empty⟩, ⟨prCreateMcpTool, empty⟩, ⟨"Skill", empty⟩,
+    ⟨"", empty⟩]
+
+/-- Every `nativeWriteValues` × `patterns` × mode × `isAdmin`, without and with the live incident
+context. -/
+def nativeWriteRows : List Row :=
+  nativeWriteValues.flatMap fun v =>
+  [none, some { allowedMcpTools := [evidenceTool] }].flatMap fun incident =>
+  modes.flatMap fun mode =>
+  bools.flatMap fun isAdmin =>
+  patterns.map fun (aborted, handoff, prims) =>
+    { mode, isAdmin, aborted, handoff, prims, incident, nativeWrite := some v }
+
 /-! ## Constants -/
 
 def constantsJson : Json :=
   .obj [("kind", .str "constants"), ("nativeBypassTools", strs nativeBypassTools),
+    ("nativeWriteTools", strs nativeWriteTools),
     ("toolPolicyMatchers", strs toolPolicyMatchers),
     ("incidentToolPolicyMatchers",
       .arr (incidentToolPolicyMatchers.map fun m => (m.map .str).getD .null))]
@@ -781,6 +834,7 @@ def cases : List Json :=
   boundaryRows.map (fun (r, calls) => rowJson "boundary" calls r) ++
   argumentRows.map (rowJson "arguments" argumentCalls) ++
   incidentRows.map (rowJson "incident" incidentCalls) ++
+  nativeWriteRows.map (rowJson "native-write" nativeWriteCalls) ++
   [constantsJson] ++
   concreteCases.map concreteJson
 

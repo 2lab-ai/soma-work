@@ -213,9 +213,12 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(TEMPLATE).not.toContain('onclick="openPanel(');
   });
 
-  it('does not repeat the pending question the face already shows', () => {
-    expect(fnBody('renderCardBody')).toContain('pq.question === faceSummary');
+  it('the multi-question form does not repeat the question the face already shows', () => {
+    expect(fnBody('renderCardBody')).toContain('renderMultiChoiceCard(s, faceSummary)');
     expect(fnBody('renderMultiChoiceCard')).toContain('=== faceSummary');
+    // affectUI batch 1: the single-choice question is a <ui-approval-card>, titled with the whole
+    // question (the element has no untitled form), so there the face's summary is read again.
+    expect(fnBody('renderCardBody')).toContain('questionHtml = acQuestionHtml(s, s.pendingQuestion);');
   });
 
   it('every card can open the panel; without a conversation the work log reads 작업 로그 없음', () => {
@@ -502,8 +505,13 @@ describe('agent inbox board — motion contract (§4)', () => {
     expect(fnBody('panelInfoHtml')).not.toContain('transform:scaleX(');
   });
 
-  it('board cards drop the star on the recommended choice (the solid primary marks it)', () => {
-    expect(TEMPLATE).toContain('.card .btn-choice-recommended::before { content: none; }');
+  it('board cards draw no recommended-choice button of their own: the approval card marks the recommendation', () => {
+    // affectUI batch 1: the card's single-choice question is a <ui-approval-card>, which lists the
+    // recommended choice first, tagged and preselected (library: approval-card.test.ts "lists the
+    // recommended choice first and preselected; Submit sends it"). The card's star / ink overrides went
+    // with the old buttons; the panel's multi-question form keeps the shared .btn-choice-recommended.
+    expect(TEMPLATE).not.toMatch(/\.card \.btn-choice-recommended|\.card \.btn-choice\.btn-choice-recommended/);
+    expect(TEMPLATE).toMatch(/\n\.btn-choice-recommended::before \{ content: "\\\\2B50 "; \}/);
   });
 
   it('board hover effects live only inside (hover: hover) and (pointer: fine)', () => {

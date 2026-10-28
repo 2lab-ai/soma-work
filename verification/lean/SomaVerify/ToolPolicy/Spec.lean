@@ -471,3 +471,73 @@ def IncidentAbsentUnchanged (ev : Option IncidentReadOnly → Input → Result) 
   ∀ i : Input, ev none i = evaluate i
 
 end SomaVerify.ToolPolicy
+
+/-!
+## The native write boundary
+
+Statements about an evaluation function
+`ev : Option (Option String) → Option IncidentReadOnly → Input → Result` of the current model,
+where `ev nativeWrite incident i` is the call with `ctx.checkNativeWrite` giving `nativeWrite`
+(`none`: the property is undefined; `some v`: it returns `v`, `null` being `none`).
+`ProofsNativeWrite.lean` proves each one for `evaluateToolPolicyWith`. The function without a
+boundary is `evaluateToolPolicyEnv` (phase 4, the devops-secret and environment-skill steps
+included), and `evaluateEnv` is it without an incident context. As in the incident section, a bare
+line number refers to `src/agent-runtime/policy/tool-policy.ts` as it is now.
+-/
+
+namespace SomaVerify.ToolPolicy
+
+/-- (a) 103-105: "**Absent → native writes are not confined**". Without the property nothing
+changes: the result is `evaluateToolPolicyEnv`'s, the function `ProofsEnvSkill.lean` is about. -/
+def NativeWriteAbsentUnchanged (ev : Option (Option String) → Option IncidentReadOnly → Input → Result) :
+    Prop :=
+  ∀ (inc : Option IncidentReadOnly) (i : Input), ev none inc i = evaluateToolPolicyEnv inc i
+
+/-- (b) 102-103: "a deny reason when its target lands outside the roots sandboxed Bash may write";
+218: step 3b. For a non-admin, or in an incident session, a native write tool whose target the
+boundary puts outside is denied with that reason, which is also the deny message — whatever the
+mode (bypass included), the abort and handoff state and the other primitives, except the
+devops-secret check: step 1b runs first (238-243, every mode, admins too), so its denial of a
+`Write` or `Edit` wins, and the statement asks that check to come back clear. -/
+def NativeWriteDeniesOutside
+    (ev : Option (Option String) → Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (outside : String) (inc : Option IncidentReadOnly) (i : Input),
+    (i.isAdmin = false ∨ inc.isSome = true) → i.toolName ∈ nativeWriteTools →
+      i.prims.devopsSecret = none →
+        ev (some (some outside)) inc i =
+          { decision := .deny, reason := "write-boundary: " ++ outside, denyMessage := some outside }
+
+/-- (b) The same without the devops-secret hypothesis: the call is denied, by step 1b or step 3b,
+whatever the reason. -/
+def NativeWriteOutsideDenied
+    (ev : Option (Option String) → Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (outside : String) (inc : Option IncidentReadOnly) (i : Input),
+    (i.isAdmin = false ∨ inc.isSome = true) → i.toolName ∈ nativeWriteTools →
+      (ev (some (some outside)) inc i).decision = .deny
+
+/-- (c) 106: "Admins are exempt, as from the other guards of the block". Outside an incident
+session an admin's call is decided as without a boundary. -/
+def NativeWriteAdminExempt
+    (ev : Option (Option String) → Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (nw : Option (Option String)) (i : Input), i.isAdmin = true → ev nw none i = evaluateEnv i
+
+/-- (d) 101-102: the boundary is "for a call of a `NATIVE_WRITE_TOOLS` tool". Every other tool is
+decided as without a boundary, whatever the boundary would say. -/
+def NativeWriteOnlyWriteTools
+    (ev : Option (Option String) → Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (nw : Option (Option String)) (inc : Option IncidentReadOnly) (i : Input),
+    i.toolName ∉ nativeWriteTools → ev nw inc i = evaluateToolPolicyEnv inc i
+
+/-- (e) 103: "else null". A target inside the roots changes nothing. -/
+def NativeWriteInsideUnchanged
+    (ev : Option (Option String) → Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (inc : Option IncidentReadOnly) (i : Input), ev (some none) inc i = evaluateToolPolicyEnv inc i
+
+/-- (f) The boundary only adds denials: every result is the one without a boundary, or a denial.
+It never allows, classifies or passes what the policy without it would deny. -/
+def NativeWriteOnlyAddsDenies
+    (ev : Option (Option String) → Option IncidentReadOnly → Input → Result) : Prop :=
+  ∀ (nw : Option (Option String)) (inc : Option IncidentReadOnly) (i : Input),
+    ev nw inc i = evaluateToolPolicyEnv inc i ∨ (ev nw inc i).decision = .deny
+
+end SomaVerify.ToolPolicy

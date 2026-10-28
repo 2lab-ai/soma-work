@@ -88,7 +88,8 @@ const AUTH_HEADER = { Authorization: 'Bearer test-token' };
 interface AnswerClient {
   submitAllRecommended(key: string): Promise<void>;
   submitMultiChoice(key: string): Promise<void>;
-  answerChoice(key: string, choiceId: string, label: string, question: string, btn: unknown): Promise<void>;
+  answerChoice(key: string, qid: string, choiceId: string): Promise<unknown>;
+  acQuestionId(q: unknown): string;
 }
 
 describe('dashboard answer buttons → real server (shipped client code)', () => {
@@ -98,6 +99,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
   let requests: Array<{ url: string; headers: Record<string, string>; body: unknown }>;
   let alerts: string[];
   let client: AnswerClient;
+  let sessionCache: Record<string, { key: string; pendingQuestion: unknown }>;
   /** When set, the next request is refused 403 as csrfMiddleware does after a JWT rotation. */
   let staleCsrfOnce: boolean;
   let csrfRefreshes: number;
@@ -144,29 +146,59 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
         { id: 'q2', question: 'Q2', choices: [{ id: '1', label: 'b' }], recommendedChoiceId: '1' },
       ],
     };
-    // re-agent-run: a flattened panel choice is drawn again (apRepaintQuestion) — no panel open here.
-    client = load<AnswerClient>(['submitAllRecommended', 'submitMultiChoice', 'answerChoice', 'apRepaintQuestion'], {
-      fetch: fetchBridge,
-      panelOpen: false,
-      panelSessionKey: null,
-      renderPanelQuestion: () => {},
-      alert: (msg: string) => alerts.push(msg),
-      document: { querySelector: () => fakeNode(), querySelectorAll: () => [] },
-      setTimeout: () => 0,
-      console: { error() {}, warn() {} },
-      _csrfToken: 'csrf-1',
-      refreshCsrfToken: async () => {
-        csrfRefreshes++;
-      },
-      _sessionCache: { [KEY]: { key: KEY, pendingQuestion: twoQuestions } },
-      _mcState: {
-        [KEY]: {
-          selections: { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } },
-          activeQ: 0,
+    // affectUI batch 1: the single-choice answer comes from <ui-approval-card> (answerChoice(key, qid, choiceId));
+    // failures are error toasts (dashToast), not alert().
+    sessionCache = { [KEY]: { key: KEY, pendingQuestion: twoQuestions } };
+    client = load<AnswerClient>(
+      [
+        'submitAllRecommended',
+        'submitMultiChoice',
+        'answerChoice',
+        'acDrop',
+        'acQuestionId',
+        'acPost',
+        'acRefusal',
+        'stripRecommendedMarker',
+      ],
+      {
+        fetch: fetchBridge,
+        panelOpen: false,
+        panelSessionKey: null,
+        renderPanelQuestion: () => {},
+        dashToast: (t: { title: string; tone?: string }) => {
+          if (t.tone === 'error') alerts.push(t.title);
+        },
+        _acState: {},
+        acRepaint: () => {},
+        document: { querySelector: () => fakeNode(), querySelectorAll: () => [] },
+        setTimeout: () => 0,
+        console: { error() {}, warn() {} },
+        _csrfToken: 'csrf-1',
+        refreshCsrfToken: async () => {
+          csrfRefreshes++;
+        },
+        _sessionCache: sessionCache,
+        _mcState: {
+          [KEY]: {
+            selections: { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } },
+            activeQ: 0,
+          },
         },
       },
-    });
+    );
   });
+  const single = {
+    type: 'user_choice',
+    question: 'macmini:main prod 배포',
+    choices: [
+      { id: '1', label: 'auto-deploy' },
+      { id: '2', label: 'manual-deploy' },
+    ],
+  };
+  function useSingle(): string {
+    sessionCache[KEY].pendingQuestion = single;
+    return client.acQuestionId(single);
+  }
 
   afterEach(async () => {
     await stopWebServer();
@@ -203,12 +235,11 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
   it('T1 — a single-question choice button reaches the choice handler', async () => {
     const handler = vi.fn().mockResolvedValue(undefined);
     dashboard.setDashboardChoiceAnswerHandler(handler);
-    const btn = fakeNode();
 
-    await client.answerChoice(KEY, '2', 'manual-deploy', 'macmini:main prod 배포', btn);
+    const st = await client.answerChoice(KEY, useSingle(), '2');
 
     expect(handler).toHaveBeenCalledWith(KEY, '2', 'manual-deploy', 'macmini:main prod 배포');
-    expect(btn.style.color).toBeUndefined();
+    expect(st).toMatchObject({ status: 'resolved', outcome: 'answered', choiceId: '2' });
   });
 
   // After a JWT rotation the first POST is refused 403; each answer button
@@ -227,7 +258,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
     },
     {
       name: 'single choice',
-      run: () => client.answerChoice(KEY, '2', 'manual-deploy', 'macmini:main prod 배포', fakeNode()),
+      run: () => client.answerChoice(KEY, useSingle(), '2'),
       register: (h: any) => dashboard.setDashboardChoiceAnswerHandler(h),
     },
   ])('T1 — $name retried after a stale-CSRF 403 still reaches its handler', async ({ run, register }) => {
