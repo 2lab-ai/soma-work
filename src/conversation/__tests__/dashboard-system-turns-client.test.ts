@@ -1044,3 +1044,190 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
     expect(idle.slot.innerHTML).toBe('<span class="sys-line">자동 압축 처리</span>');
   });
 });
+
+describe('C7 — the work log (작업 로그): an instruction entry reads like the conversation', () => {
+  const invoked = (text: string, skills: [string, string][]) =>
+    `${text}\n\n<invoked_skills>\n${skills.map(([k, c]) => `<${k}>\n${c}\n</${k}>`).join('\n')}\n</invoked_skills>`;
+  type WlApi = {
+    renderWorkLogEntry(e: Record<string, unknown>): string;
+    wlEntryFactsHtml(e: Record<string, unknown>): string;
+  };
+  function wl() {
+    return load<WlApi>(
+      [...SYS_FNS, 'wlInstructionTurn', 'wlEntryFactsHtml', 'wlCutSkills', 'wlCutSkillsHtml', 'renderWorkLogEntry'],
+      [...SYS_VARS, 'WL_LABELS'],
+      { setInterval: vi.fn(() => 7) },
+    );
+  }
+  const entry = (text: string, extra: Record<string, unknown> = {}) => ({
+    seq: 5,
+    ts: 1_792_900_000_000,
+    kind: 'instruction',
+    text,
+    ...extra,
+  });
+
+  it('a turn soma-work sent: one line — badge, what it did, time — on the row that opens the raw', () => {
+    const out = wl().renderWorkLogEntry(
+      entry(goalPrompt(2, 10, 'No evidence: no files, diffs, or tests.'), { by: 'system' }),
+    );
+    expect(out).toContain('<div class="wl-entry wl-instruction is-sys" data-seq="5">');
+    expect(out).toContain(
+      '<div class="wl-row" role="button" tabindex="-1" aria-expanded="false" aria-controls="wl-detail-5">',
+    );
+    expect(out).toMatch(
+      /<div class="wl-head"><span class="sys-badge" data-kind="goal">Goal #2\/10<\/span><span class="wl-sys-line">직전 평가: No evidence: no files, diffs, or tests\.<\/span><span class="wl-time">/,
+    );
+    expect(out).not.toContain('[goal-continuation]');
+    expect(out).not.toContain('<span class="wl-label">지시</span>');
+  });
+
+  it('entries written before origins were kept are read from their text (goal, background resume, restart)', () => {
+    const a = wl();
+    expect(a.renderWorkLogEntry(entry(goalPrompt(3, 10)))).toContain('data-kind="goal">Goal #3/10</span>');
+    expect(
+      a.renderWorkLogEntry(entry(buildBackgroundWaitPrompt({ count: 1, labels: ['local_bash'] } as never, 1, 6))),
+    ).toContain('data-kind="bgwork">백그라운드 재개 #1/6</span>');
+    expect(
+      a.renderWorkLogEntry(entry(`${RESTART_PROMPT}\n\n--- 중단 시점 컨텍스트 ---\n세션 제목: 대시보드`)),
+    ).toContain(
+      'data-kind="restart">시스템 재시작</span><span class="wl-sys-line">중단된 작업 자동 재개 · 대시보드</span>',
+    );
+  });
+
+  it('/compact: 자동 압축 when soma-work ran it, 압축 when a person did; a goal objective starting with /compact is words', () => {
+    const a = wl();
+    expect(a.renderWorkLogEntry(entry('/compact', { by: 'system', compactTurn: true }))).toContain(
+      'data-kind="compact">자동 압축</span><span class="wl-sys-line">컨텍스트 압축 (/compact)</span>',
+    );
+    expect(a.renderWorkLogEntry(entry('/compact', { by: 'user', compactTurn: true }))).toContain(
+      'data-kind="compact">압축</span>',
+    );
+    const literal = a.renderWorkLogEntry(entry('/compact 명령의 버그를 고쳐라', { by: 'user' }));
+    expect(literal).not.toContain('sys-badge');
+    expect(literal).toContain('<div class="wl-text">/compact 명령의 버그를 고쳐라</div>');
+  });
+
+  it('a person’s instruction: the words on the row, skill badges beside it (never inside the row button)', () => {
+    const out = wl().renderWorkLogEntry(
+      entry(
+        invoked('예측 시장 리포트', [
+          ['local:using-ssot', 'ssot body'],
+          ['local:autoz', 'autoz body'],
+        ]),
+        { by: 'user' },
+      ),
+    );
+    expect(out).toContain('<span class="wl-label">지시</span>');
+    expect(out).toContain(
+      '<div class="wl-text">예측 시장 리포트</div></div><div class="skill-badges" role="group" aria-label="활성화된 스킬 2개">',
+    );
+    expect(out).toContain('aria-controls="skd-wl5-0" data-skill="skd-wl5-0" onclick="skillToggle(this)"');
+    expect(out).not.toContain('invoked_skills');
+    expect(out).not.toContain('ssot body');
+    expect(out.indexOf('skill-badges')).toBeLessThan(out.indexOf('wl-detail-5" aria-live'));
+  });
+
+  it('a stored text cut inside the skill block (4,000 characters): the words, and a badge per readable skill name — no skill text', () => {
+    const cut = `예측 시장 리포트\n\n<invoked_skills>\n<local:using-ssot>\nssot body\n</local:using-ssot>\n<local:autoz>\n${'x'.repeat(3000)}`;
+    const out = wl().renderWorkLogEntry(entry(cut, { by: 'user', rawBytes: 51_998 }));
+    expect(out).toContain(
+      '<div class="wl-text">예측 시장 리포트</div></div><div class="skill-badges" role="group" aria-label="활성화된 스킬">',
+    );
+    expect(out).toContain(
+      '<button type="button" class="skill-badge" aria-expanded="false" data-wl-seq="5" data-wl-skill="local:using-ssot" onclick="wlSkillOpen(this)"',
+    );
+    expect(out).toContain('data-wl-skill="local:autoz" onclick="wlSkillOpen(this)"');
+    // Past the cut more may follow: one badge says so.
+    expect(out).toContain('data-wl-skill="" onclick="wlSkillOpen(this)"');
+    expect(out).not.toContain('xxxxxxxxxx');
+    expect(out).not.toContain('ssot body');
+    expect(out).not.toContain('invoked_skills');
+  });
+
+  it('two blocks (autoskill closed, the $skill one cut): one row of badges for both, no skill text on the row', () => {
+    const two = `리포트\n\n<invoked_skills>\n<local:using-ssot>\nssot body\n</local:using-ssot>\n</invoked_skills>\n\n<invoked_skills>\n<local:autoz>\n${'y'.repeat(3000)}`;
+    const out = wl().renderWorkLogEntry(entry(two, { by: 'user', rawBytes: 40_000 }));
+    expect(out).toContain(
+      '<div class="wl-text">리포트</div></div><div class="skill-badges" role="group" aria-label="활성화된 스킬">',
+    );
+    expect(out).toContain('data-wl-skill="local:using-ssot"');
+    expect(out).toContain('data-wl-skill="local:autoz"');
+    expect(out).not.toContain('yyyyyyyyyy');
+    expect(out).not.toContain('ssot body');
+    expect(out).not.toContain('invoked_skills');
+  });
+
+  it('a text that was not cut (no stored original) and only mentions the tag is words, never badges', () => {
+    const out = wl().renderWorkLogEntry(entry('예시: <invoked_skills>\n<foo> 처럼 쓰면 된다', { by: 'user' }));
+    expect(out).not.toContain('skill-badge');
+    expect(out).toContain('<div class="wl-text">예시: &lt;invoked_skills&gt;');
+  });
+
+  it('wlSkillOpen: loads the stored original, redraws the badges with every skill and its tokens, opens the one clicked', async () => {
+    const full = invoked('예측 시장 리포트', [
+      ['local:using-ssot', 'ssot body'],
+      ['local:autoz', 'autoz body'],
+    ]);
+    const skillToggle = vi.fn();
+    const named = (name: string) => ({ querySelector: () => ({ textContent: name }) });
+    const fresh = [named('local:using-ssot'), named('local:autoz')];
+    const document = { querySelectorAll: vi.fn((sel: string) => (sel === '[data-skill^="skd-wl5-"]' ? fresh : [])) };
+    const state = { convId: 'c1', closed: false };
+    const a = load<{ wlSkillOpen(btn: unknown): Promise<void> }>(
+      [
+        'esc',
+        'escAttr',
+        'toNum',
+        'formatTokens',
+        'decodeSlackEntities',
+        'estimateTokens',
+        'splitInvokedSkills',
+        'skillBadgesHtml',
+        'wlSkillOpen',
+      ],
+      ['_skillBodies', '_skillSeq'],
+      {
+        _wl: state,
+        document,
+        skillToggle,
+        wlFetchJson: vi.fn(),
+        wlRawLoad: vi.fn(async () => ({ status: 'ok', raw: full })),
+      },
+    );
+    const group: { outerHTML: string } = { outerHTML: '' };
+    const attrs: Record<string, string> = { 'data-wl-seq': '5', 'data-wl-skill': 'local:autoz' };
+    const btn = {
+      parentNode: group,
+      getAttribute: (k: string) => attrs[k] ?? null,
+      setAttribute: (k: string, v: string) => {
+        attrs[k] = v;
+      },
+      removeAttribute: (k: string) => {
+        delete attrs[k];
+      },
+    };
+    await a.wlSkillOpen(btn);
+    expect(group.outerHTML).toContain('<div class="skill-badges" role="group" aria-label="활성화된 스킬 2개">');
+    expect(group.outerHTML).toMatch(
+      /aria-controls="skd-wl5-1" data-skill="skd-wl5-1" onclick="skillToggle\(this\)"[^>]*><span class="skill-name">local:autoz<\/span><span class="skill-tok">≈\d+ tokens<\/span>/,
+    );
+    expect(skillToggle).toHaveBeenCalledWith(fresh[1]);
+  });
+
+  it('a plain instruction is unchanged', () => {
+    const out = wl().renderWorkLogEntry(entry('대시보드 고쳐줘', { by: 'user' }));
+    expect(out).toContain('<div class="wl-head"><span class="wl-label">지시</span>');
+    expect(out).toContain('<div class="wl-text">대시보드 고쳐줘</div>');
+    expect(out).not.toContain('sys-badge');
+  });
+
+  it('the opened row shows the facts above the raw prompt; a person’s row has none', () => {
+    const a = wl();
+    expect(a.wlEntryFactsHtml(entry(goalPrompt(2, 10, 'gap'), { by: 'system' }))).toBe(
+      '<dl class="sys-facts"><dt>회차</dt><dd>2 / 10</dd><dt>직전 평가에서 남은 일</dt><dd>gap</dd></dl>',
+    );
+    expect(a.wlEntryFactsHtml(entry('대시보드 고쳐줘', { by: 'user' }))).toBe('');
+    expect(a.wlEntryFactsHtml({ seq: 6, kind: 'narration', text: goalPrompt(2, 10) })).toBe('');
+  });
+});

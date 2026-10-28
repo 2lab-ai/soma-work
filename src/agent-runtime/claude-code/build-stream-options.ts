@@ -50,6 +50,7 @@ import type { SessionRegistry } from '../../session-registry';
 import type { ConversationSession, WorkflowType } from '../../types';
 import { DEFAULT_THINKING_ENABLED, userSettingsStore } from '../../user-settings-store';
 import { createTrackedClaudeProcessSpawner } from '../claude-child-process-registry';
+import { createNativeWriteCheck } from '../policy/native-write-boundary';
 import type { SafetyClassifier } from '../policy/safety-classifier';
 import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from '../policy/tool-policy';
 
@@ -246,6 +247,19 @@ export async function buildStreamOptions(
     }
   }
 
+  // The roots sandboxed Bash may write: the working directory (the SDK sandbox's
+  // default) and `/tmp/{userId}` (`allowWrite`, mounted below). The policy hook
+  // confines the native file tools of a non-admin to the same roots
+  // (`native-write-boundary.ts`); with the sandbox off neither is confined.
+  const sandboxDisabled = slackContext?.user ? userSettingsStore.getUserSandboxDisabled(slackContext.user) : false;
+  const sandboxUserDir =
+    slackContext?.user && isSafePathSegment(slackContext.user)
+      ? normalizeTmpPath(path.join('/tmp', slackContext.user))
+      : undefined;
+  const nativeWriteRoots: readonly string[] | undefined = sandboxDisabled
+    ? undefined
+    : [...(workingDirectory ? [workingDirectory] : []), ...(sandboxUserDir ? [sandboxUserDir] : [])];
+
   // PreToolUse hooks
   if (slackContext) {
     // PreToolUse: a single unified policy hook (epic #1023 P5). All tool guards
@@ -266,6 +280,9 @@ export async function buildStreamOptions(
     const policyHook = async (input: HookInput): Promise<HookJSONOutput> => {
       const toolName = (input as { tool_name?: string }).tool_name || '';
       const toolInput = (input as { tool_input?: Record<string, unknown> }).tool_input;
+      // The session's directory now (a worktree switch moves it): relative targets and
+      // the repository of a new worktree are resolved from it, as the SDK does.
+      const hookCwd = (input as { cwd?: string }).cwd || workingDirectory || process.cwd();
       const ctx: ToolPolicyContext = {
         user: policyUser,
         isAdmin: policyIsAdmin,
@@ -277,6 +294,7 @@ export async function buildStreamOptions(
           gatedServerNames.length > 0
             ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
             : null,
+        ...(nativeWriteRoots ? { checkNativeWrite: createNativeWriteCheck(nativeWriteRoots, hookCwd) } : {}),
         checkEnvSkillPermission: (tool, toolInput) =>
           envRegistry
             ? checkEnvSkillAccess(tool, toolInput, policyUser, envSkillScope, envRegistry, workingDirectory)
@@ -504,77 +522,79 @@ export async function buildStreamOptions(
       logger.debug('Thinking adaptive', { display: showSummary ? 'summarized' : 'omitted' });
     }
   }
-
   // Sandbox: enabled by default for all users. Only admin-toggled
-  // `sandboxDisabled` skips it. When sandbox is active, a dev-domain
-  // allowlist (`DEV_DOMAIN_ALLOWLIST`) is applied to the network unless the
-  // user has set `networkDisabled=true`, in which case every outbound
-  // domain is blocked by the SDK default.
+  // `sandboxDisabled` (resolved above, with the write roots) skips it. When
+  // sandbox is active, a dev-domain allowlist (`DEV_DOMAIN_ALLOWLIST`) is
+  // applied to the network unless the user has set `networkDisabled=true`, in
+  // which case every outbound domain is blocked by the SDK default.
   //
   // Applies from the NEXT user turn \u2014 SDK sandbox config is captured at
   // `query()` init and OS-enforced (Seatbelt on macOS, bubblewrap on
   // Linux), so in-flight queries keep the previous policy.
-  {
-    const sandboxDisabled = slackContext?.user ? userSettingsStore.getUserSandboxDisabled(slackContext.user) : false;
-    if (!sandboxDisabled) {
-      const sandboxConfig: NonNullable<Options['sandbox']> = {
-        enabled: true,
-        autoAllowBashIfSandboxed: true,
-        failIfUnavailable: false,
-        allowUnsandboxedCommands: false,
-      };
-      // Mount only the user's /tmp/{userId} directory for writes.
-      if (slackContext?.user && isSafePathSegment(slackContext.user)) {
-        const userDir = normalizeTmpPath(path.join('/tmp', slackContext.user));
-        sandboxConfig.filesystem = { allowWrite: [userDir] };
-      }
-      const networkDisabled = slackContext?.user ? userSettingsStore.getUserNetworkDisabled(slackContext.user) : false;
-      if (!networkDisabled) {
-        sandboxConfig.network = { allowedDomains: [...DEV_DOMAIN_ALLOWLIST] };
-      }
-      // Deploy-workflow grant (`config.json#deploySandbox`, written per runner
-      // by the fleet deploy): post-deploy QA, run in the requester's deploy
-      // session, needs a few host directories and the QA environment's
-      // hostnames. BOTH the turn's sender and the session owner must be listed
-      // (one person when they are the same): someone else replying in the
-      // thread runs without it, and so does a listed sender's turn in a session
-      // an unlisted user owns — the owner may steer messages into a running
-      // turn (`SessionRegistry.canInterrupt`), which would otherwise run them
-      // under the grant. Domains only extend an active allowlist;
-      // `networkDisabled` keeps every domain blocked.
-      if (session?.workflow === 'deploy' && session.ownerId && slackContext?.user) {
-        const owner = session.ownerId;
-        const grant = loadDeploySandboxGrant(CONFIG_FILE, logger);
-        if (grant?.users.includes(slackContext.user) && grant.users.includes(owner)) {
-          const added = extendSandboxWithGrant(sandboxConfig, grant, { network: !networkDisabled });
-          if (added.paths + added.domains > 0) {
-            // Counts only: the values are host topology.
-            logger.info('Deploy sandbox grant applied', added);
-          }
-        }
-      }
-      // Environment plugins: a non-admin's Bash must not read them by any spelling (relative paths,
-      // wildcards, symbolic links — what step 6b's text check cannot see). OS-enforced read deny
-      // of their directories, unless the all-environment-skills grant opens them.
-      if (slackContext?.user && !isAdminUser(slackContext.user)) {
-        const envRegistry = deps.getEnvSkillRegistry?.();
-        const denyRead = envRegistry ? envSkillSandboxDenyRead(envRegistry, slackContext.user) : [];
-        if (denyRead.length > 0) {
-          sandboxConfig.filesystem = {
-            ...(sandboxConfig.filesystem ?? {}),
-            denyRead: [...(sandboxConfig.filesystem?.denyRead ?? []), ...denyRead],
-          };
-        }
-      }
-      options.sandbox = sandboxConfig;
-      logger.debug('Sandbox enabled', {
-        user: slackContext?.user,
-        network: networkDisabled ? 'off' : 'on',
-        domains: sandboxConfig.network?.allowedDomains?.length ?? 0,
-      });
-    } else {
-      logger.info('Sandbox disabled by admin setting', { user: slackContext?.user });
+  if (!sandboxDisabled) {
+    const sandboxConfig: NonNullable<Options['sandbox']> = {
+      enabled: true,
+      autoAllowBashIfSandboxed: true,
+      failIfUnavailable: false,
+      allowUnsandboxedCommands: false,
+    };
+    // Mount only the user's /tmp/{userId} directory for writes.
+    if (sandboxUserDir) {
+      sandboxConfig.filesystem = { allowWrite: [sandboxUserDir] };
     }
+    // Plan mode writes its plan file with the native Write tool, by default
+    // to ~/.claude/plans — outside the write boundary of a non-admin. Keep
+    // the plans inside the working directory (the SDK requires a path within
+    // the project root).
+    if (slackContext?.user && !isAdminUser(slackContext.user)) {
+      options.settings = { plansDirectory: '.claude/plans' };
+    }
+    const networkDisabled = slackContext?.user ? userSettingsStore.getUserNetworkDisabled(slackContext.user) : false;
+    if (!networkDisabled) {
+      sandboxConfig.network = { allowedDomains: [...DEV_DOMAIN_ALLOWLIST] };
+    }
+    // Deploy-workflow grant (`config.json#deploySandbox`, written per runner
+    // by the fleet deploy): post-deploy QA, run in the requester's deploy
+    // session, needs a few host directories and the QA environment's
+    // hostnames. BOTH the turn's sender and the session owner must be listed
+    // (one person when they are the same): someone else replying in the
+    // thread runs without it, and so does a listed sender's turn in a session
+    // an unlisted user owns — the owner may steer messages into a running
+    // turn (`SessionRegistry.canInterrupt`), which would otherwise run them
+    // under the grant. Domains only extend an active allowlist;
+    // `networkDisabled` keeps every domain blocked.
+    if (session?.workflow === 'deploy' && session.ownerId && slackContext?.user) {
+      const owner = session.ownerId;
+      const grant = loadDeploySandboxGrant(CONFIG_FILE, logger);
+      if (grant?.users.includes(slackContext.user) && grant.users.includes(owner)) {
+        const added = extendSandboxWithGrant(sandboxConfig, grant, { network: !networkDisabled });
+        if (added.paths + added.domains > 0) {
+          // Counts only: the values are host topology.
+          logger.info('Deploy sandbox grant applied', added);
+        }
+      }
+    }
+    // Environment plugins: a non-admin's Bash must not read them by any spelling (relative paths,
+    // wildcards, symbolic links — what step 6b's text check cannot see). OS-enforced read deny
+    // of their directories, unless the all-environment-skills grant opens them.
+    if (slackContext?.user && !isAdminUser(slackContext.user)) {
+      const envRegistry = deps.getEnvSkillRegistry?.();
+      const denyRead = envRegistry ? envSkillSandboxDenyRead(envRegistry, slackContext.user) : [];
+      if (denyRead.length > 0) {
+        sandboxConfig.filesystem = {
+          ...(sandboxConfig.filesystem ?? {}),
+          denyRead: [...(sandboxConfig.filesystem?.denyRead ?? []), ...denyRead],
+        };
+      }
+    }
+    options.sandbox = sandboxConfig;
+    logger.debug('Sandbox enabled', {
+      user: slackContext?.user,
+      network: networkDisabled ? 'off' : 'on',
+      domains: sandboxConfig.network?.allowedDomains?.length ?? 0,
+    });
+  } else {
+    logger.info('Sandbox disabled by admin setting', { user: slackContext?.user });
   }
 
   // Build system prompt with persona and workflow.

@@ -51,7 +51,7 @@ export interface AutoCompactSession {
   autoCompactPending?: boolean;
   autoCompactSuppressedUntilMs?: number | null;
   pendingUserText?: string | null;
-  pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string } | null;
+  pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string; hostTurn?: boolean } | null;
 }
 
 export interface ClaudeSessionReader {
@@ -187,7 +187,11 @@ export class InputProcessor {
         // that the message handler stripped off `event.text` — the post-compact
         // replay re-enters the handler and re-parses them.
         session.pendingUserText = event.inlineDirectiveRawText || text;
-        session.pendingEventContext = { channel, threadTs, user, ts };
+        // A host turn (synthetic: a goal continuation, a resume — or one
+        // already replayed once) is replayed through the user-message path;
+        // `hostTurn` keeps it recorded as soma-work's, not the person's.
+        const hostTurn = event.synthetic === true || event.routeContext?.hostTurn === true;
+        session.pendingEventContext = { channel, threadTs, user, ts, ...(hostTurn ? { hostTurn: true } : {}) };
 
         // Notice post is decorative — fire-and-forget so Slack latency cannot
         // delay the `/compact` injection that the pipeline is about to run.
