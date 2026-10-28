@@ -59,12 +59,13 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # A hosted runner has no Lean. elan installs the toolchain pinned by
-      # verification/lean/lean-toolchain on first use; lean-verify.sh already looks in ~/.elan/bin.
-      # The proofs are still built from scratch every run: no .lake cache, so nothing a previous
-      # run left behind can stand in for this commit's build.
-      - name: Install elan (Lean toolchain manager)
-        run: curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none
+      # A hosted runner has no Lean: install elan (pinned release) and the toolchain
+      # verification/lean/lean-toolchain names, retrying transient download failures.
+      # lean-verify.sh already looks in ~/.elan/bin. The proofs are still built from scratch
+      # every run: no .lake cache, so nothing a previous run left behind can stand in for
+      # this commit's build.
+      - name: Install elan and the pinned Lean toolchain
+        run: bash scripts/verification/install-lean-toolchain.sh
 
       - name: Rebuild proofs, audit declarations, replay the kernel, check vector drift
         run: bash scripts/verification/lean-verify.sh --check
