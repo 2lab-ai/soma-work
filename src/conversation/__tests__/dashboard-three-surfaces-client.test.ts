@@ -314,10 +314,9 @@ describe('expanded body — face + delta, sections keyed on state', () => {
     renderCardArtifacts: () => '[ARTS]',
     renderAgentTree: () => '[AGENTS]',
     renderTimeline: () => '[TASKS]',
-    renderPermissionBlock: () => '',
-    resolveRecommendedId: () => null,
-    stripRecommendedMarker: (l: string) => l,
-    choiceDataAttrs: () => '',
+    // affectUI batch 1: the prompts and the single-choice question are <ui-approval-card> slots.
+    acPermissionsHtml: () => '',
+    acQuestionHtml: () => '[Q]',
     renderMultiChoiceCard: () => '[MC]',
     renderModelNote: () => '',
     renderModelPicker: () => '[MODEL]',
@@ -390,14 +389,14 @@ describe('expanded body — face + delta, sections keyed on state', () => {
   it('needs you: the ask first, then the latest exchange and the evidence (artifacts), then the work', () => {
     const q = { type: 'user_choice', question: 'Ship it?', choices: [{ id: '1', label: 'Yes' }] };
     const html = body(card({ activityState: 'waiting', pendingQuestion: q }), 'waiting');
-    const order = ['class="card-question"', '[IO]', '[ARTS]', '[TASKS]', '[AGENTS]'].map((m) => html.indexOf(m));
+    const order = ['[Q]', '[IO]', '[ARTS]', '[TASKS]', '[AGENTS]'].map((m) => html.indexOf(m));
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(html).toContain('btn-close');
   });
 
   it('a permission prompt heads the body whatever the column; an armed resume heads a running card', () => {
-    const perm = body(card(), 'working', { renderPermissionBlock: () => '[PERM]' });
+    const perm = body(card(), 'working', { acPermissionsHtml: () => '[PERM]' });
     expect(perm.indexOf('[PERM]')).toBeGreaterThanOrEqual(0);
     expect(perm.indexOf('[PERM]')).toBeLessThan(perm.indexOf('[TASKS]'));
     const resume = body(
