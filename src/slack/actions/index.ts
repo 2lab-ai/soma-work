@@ -14,6 +14,7 @@ import { CompactActionHandler } from './compact-action-handler';
 import { CronActionHandler } from './cron-action-handler';
 import { CronEditViewSubmissionHandler } from './cron-edit-view-submission-handler';
 import { CronRunPermissionActionHandler } from './cron-run-permission-action-handler';
+import { EnvSkillPermissionActionHandler } from './env-skill-permission-action-handler';
 import { FormActionHandler } from './form-action-handler';
 import { GoalActionHandler } from './goal-action-handler';
 import { InstructionConfirmActionHandler } from './instruction-confirm-action-handler';
@@ -132,6 +133,11 @@ setActionHandlersProviders({
         slackApi: ctx.slackApi as any,
         claudeHandler: ctx.claudeHandler,
         messageHandler: ctx.messageHandler as any,
+      }),
+      envSkillPermissionHandler: new EnvSkillPermissionActionHandler({
+        slackApi: ctx.slackApi as any,
+        messageHandler: ctx.messageHandler as any,
+        mcpManager: ctx.mcpManager,
       }),
       userSkillEditSubmitHandler: new UserSkillEditViewSubmissionHandler({
         slackApi: ctx.slackApi as any,
