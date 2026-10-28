@@ -18,7 +18,7 @@ PR의 CI + **Sanitize Gate**(리시트는 PR 자신의 체크) · 외부 리뷰 
 코드는 main에 있다(PR #465, 라운드 1 기록 = `loop.done.md`). 봇 설정에 `devops-tools` 절이 없으면 도구는 등록되지 않으므로,
 설정을 넣은 봇(`work-m64` dev) 말고는 하드 거부(사람 gh 계정 키 꺼내기·키체인 덤프·브로커 경로 접근) 하나만 바뀐다. 순서:
 1. WU7 남은 라이브 항목 — 어드민이 카드에 ✅ → lease → `cf_api` GET → `cf_lease_revoke`(Cloudflare `GET` 404 확인), 봇 토큰 ✅ 무효 확인.
-2. stage0 · stage2 포지키(아래 열린 질문), org-admin 토큰 `admin:org` 재발급.
+2. org-admin 토큰 `admin:org` 재발급. (stage0 포지키 = 끝, stage2 = 계획만 — 아래 "stage2 계획")
 3. WU8.
 
 ## 라운드 2 — 라이브 (2026-10-27 열림)
@@ -31,6 +31,8 @@ WU7 측정(2026-10-27, `work-m64` dev):
 - 봇: `config.json`에 `devops-tools.permission`(도구 8개 = read) → `service.sh restart` + `verify-restart` 통과. 비관리자 세션 = "Permission-gated server blocked — no active grant", 관리자 = 전면 허용.
 - 봇 유저에서 MCP 서버 직접 호출: `list` 정상, `gh_read` 두 계정 정상, `gh auth token` = `policy-denied`.
 - 봇 모델 → `cf_lease_request` → 전용 앱 카드가 어드민 DM에 게시(요청→게시 약 2.4초) ×3, 모두 5분 만료 `not-approved (expired)` · 실행 0 · lease 0.
+- 2026-10-28: 같은 시험 카드 2장과 다른 세션·다른 요청자의 실제 요청 카드(Cloudflare read lease 3, `gh pr review` 1)도 모두 만료. 최근 4장을 조회 시점(16:5x KST)에 `reactions.get`으로 본 결과 리액션 0. ✅ 이벤트를 브로커가 처리하는지는 아직 미검증. 어드민이 전용 앱 DM의 카드를 보는지가 열린 문제(아래 열린 질문).
+- 2026-10-28 stage0: 운영 계정(그 계정의 Super Administrator)으로 계정 소유 포지키 생성 — 권한 = Account API Tokens Write 하나, 만료 없음, IP 조건 없음. 화면 캡처 없이 Copy 버튼 위치만 찾아 클릭 → 운영자 Mac 클립보드 → Cloudflare verify(토큰 id·active, 입력 직전 재확인) → `ingest cf stage0`(53 bytes) → 정책에 stage0(존 2개, 권한 그룹 dev2와 같음, 1h/71h) → `check-policy` valid · 비밀 5개 → 브로커 재시작(정책은 기동 때 1회만 읽는다) → `list` = dev2 · stage0.
 
 | WU | 하는 일 | 파일 소유 | RED로 먼저 고정할 것 |
 |---|---|---|---|
@@ -39,7 +41,13 @@ WU7 측정(2026-10-27, `work-m64` dev):
 
 ## 열린 질문
 
-- stage0 포지키: 운영자 브라우저 세션(포지키를 만드는 계정으로 로그인된 Chrome)이 연결돼 있어야 만든다 — 2026-10-27 22시 관측: 그 기계에 SSH 연결 시간 초과, 연결된 브라우저 확장 0개(전원 상태는 미확인).
-- stage2 포지키: 2026-10-27 관측한 운영 계정의 Cloudflare 계정 목록에 stage2 계정이 없었다. 운영 문서상 그 계정의 소유자는 제3자다 → 운영 계정의 접근 가능 여부(멤버십) 확인이 먼저, 없으면 소유자 초대.
+- 승인 카드 가시성: 카드는 전용 앱의 어드민 DM에만 게시된다. 이번 시험에서 요청한 봇 세션은 카드 위치를 몰라 "어드민이 카드를 받지 못했다"고 잘못 추정했다 → 요청 스레드에 카드 링크를 남기는 방안 검토(코드 변경, 별도 WU).
 - org-admin 토큰: 현재 scope = `gist` · `read:org` · `repo` · `workflow` → 조직 멤버 추가·삭제(`gh_org_member`)는 `admin:org`로 재발급해야 동작한다. 레포 협업자 부여는 `repo` + 레포 admin 권한으로 동작.
 - dev2 포지키는 WU0 시험에 쓴 키를 그대로 브로커 포지키로 썼다(계획의 "시험 후 삭제" 대신). WU0 form 검사 출력: 계정 소유 · status active · `expires_on` 없음 · 자체 권한 그룹 = Account API Tokens Write 하나.
+
+## stage2 계획 (SSOT_7 — 이번에는 실행하지 않는다)
+
+- 전제: 운영 계정이 stage2 Cloudflare 계정에 접근할 수 있어야 한다. 2026-10-28 운영 계정 세션의 `/accounts` = dev2 · hq · stage0 세 개 → stage2 계정 없음. 운영 문서상 그 계정 소유자는 제3자 → 소유자가 운영 계정을 Super Administrator(또는 API 토큰 관리 가능 역할)로 초대.
+- 순서(stage0과 같음): 계정 소유 포지키 `soma-devops-forge-stage2`(Account API Tokens Write 하나, 만료 없음) → Copy 버튼 클릭만으로 클립보드 → Cloudflare verify(id·active) → `ingest cf stage2` → 정책에 stage2 추가(존·존 ID는 그때 API로 실측, 권한 그룹은 dev2와 같음) → `check-policy` → 브로커 재시작 → `list` → 어드민 ✅ 라이브 시험 1회(read lease → `cf_api` GET → revoke, 404 확인).
+- 실행 때 정할 것: stage2의 최대 수명(지금 dev2·stage0 = 71h; stage2는 더 짧게 둘지), edit 접근을 처음부터 열지.
+- 범위 밖: stage2에 이미 쓰이는 계정 전체 권한 키(앱 서버 쪽)의 교체·폐기 — 이 기능과 별개.

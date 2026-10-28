@@ -151,7 +151,13 @@ describe('agent inbox board — drag and drop removed (§3.1-5)', () => {
   it('has no draggable cards, drag listeners, or confirm() prompts', () => {
     expect(TEMPLATE).not.toContain('draggable=');
     expect(TEMPLATE).not.toContain("'dragstart'");
-    expect(TEMPLATE).not.toContain("'drop'");
+    // Task view T1.5: the one 'drop' listener is the session composer's file
+    // drop (#panel-command, files only) — never a board card or column.
+    expect(TEMPLATE.match(/'drop'/g) ?? []).toHaveLength(1);
+    const pc = fnBody('pcInit');
+    expect(pc).toContain("var host = document.getElementById('panel-command');");
+    expect(pc).toContain("host.addEventListener('drop', function(e) {");
+    expect(pc).toContain("Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0");
     expect(TEMPLATE).not.toContain('confirm(');
   });
 });
@@ -267,22 +273,43 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(fnBody('resetWorkLog')).toContain('_wl.closed = true');
   });
 
-  it('Tasks sit in a pinned block above the scroll area, right under the header (§3.1-6)', () => {
+  it('Tasks sit in the focused tab after the agent tabs, inside the one scroll area — no pinned block (task view T1)', () => {
     const panel = TEMPLATE.slice(TEMPLATE.indexOf('<div class="slide-panel" id="slide-panel">'));
     const header = panel.indexOf('<div class="panel-header">');
+    const scroll = panel.indexOf('<div class="panel-scroll" id="panel-scroll">');
+    const surface = panel.indexOf('<section class="panel-surface" id="panel-surface"');
+    const tabs = panel.indexOf('<div class="panel-tabs" id="panel-tabs" role="tablist"');
+    const tabpanel = panel.indexOf('<section class="panel-tabpanel" id="panel-tabpanel" role="tabpanel"');
     const tasks = panel.indexOf(
       '<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>',
     );
-    const scroll = panel.indexOf('<div class="panel-scroll" id="panel-scroll">');
+    const worklog = panel.indexOf('<div class="panel-worklog" id="panel-worklog"');
+    const conv = panel.indexOf('<div class="panel-conv" id="panel-conv">');
     const command = panel.indexOf('<div class="panel-command" id="panel-command">');
     expect(header).toBeGreaterThan(0);
-    expect(tasks).toBeGreaterThan(header);
-    expect(scroll).toBeGreaterThan(tasks);
-    expect(panel.slice(scroll, command)).not.toContain('panel-tasks');
-    // SSOT 2026-10-24: still pinned, but it yields height down to one 44px row
-    // (and scrolls inside) so the conversation keeps half the panel body.
-    expect(TEMPLATE).toMatch(
-      /\n\.panel-tasks \{[^}]*min-height: 44px;[^}]*max-height: min\(30vh, 240px\);[^}]*overflow-y: auto;/,
+    expect(scroll).toBeGreaterThan(header);
+    expect(surface).toBeGreaterThan(scroll);
+    expect(tabs).toBeGreaterThan(surface);
+    expect(tabpanel).toBeGreaterThan(tabs);
+    expect(tasks).toBeGreaterThan(tabpanel);
+    expect(worklog).toBeGreaterThan(tasks);
+    expect(conv).toBeGreaterThan(worklog);
+    expect(command).toBeGreaterThan(conv);
+    // Nothing of Tasks between the header and the scroll area any more.
+    expect(panel.slice(header, scroll)).not.toContain('panel-tasks');
+    expect(panel.match(/id="panel-tasks"/g) ?? []).toHaveLength(1);
+    // The block no longer caps its height or scrolls inside: it scrolls with the tab.
+    const tasksCss = /\n\.panel-tasks \{[^}]*\}/.exec(TEMPLATE)?.[0] ?? '';
+    expect(tasksCss).toContain('padding: 4px 16px;');
+    expect(tasksCss).not.toMatch(/max-height|overflow|grid-row/);
+    expect(TEMPLATE).toMatch(/\n\.panel-scroll \{ flex: 1 1 auto; overflow-y: auto;[^}]*\}/);
+    expect(TEMPLATE).toMatch(/\n\.panel-body \{[^}]*display: flex;[^}]*flex-direction: column;/);
+    // The agent tabs stay in view while the tab scrolls.
+    expect(TEMPLATE).toMatch(/\n\.panel-tabs \{[^}]*position: sticky;[^}]*top: 0;/);
+    // Folded to one line by default (_panelTasksOpen), opened with 자세히 or a tasks landing.
+    expect(TEMPLATE).toMatch(/^var _panelTasksOpen = false;/m);
+    expect(fnBody('renderPanelTasks')).toContain(
+      'if (!_panelTasksOpen) { writePanelTasks(container, head + live); return; }',
     );
     expect(fnBody('panelScrollAnchor')).not.toContain('#panel-tasks');
   });
@@ -297,12 +324,17 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(TEMPLATE).toContain('.worklog-list[hidden] { display: none; }');
   });
 
-  it('every opening starts with the work log collapsed, no exceptions (§3.1-6, §3.1-7)', () => {
+  it('every opening starts with the work log collapsed — only 자세히 opens it, never the landing (§3.1-6, §3.1-7, task view T1.6)', () => {
     const body = fnBody('openPanel');
     const reset = body.indexOf('resetWorkLog(panelConvId, true);');
     expect(reset).toBeGreaterThan(-1);
-    expect(body.indexOf('setWorkLogOpen(false);')).toBeGreaterThan(reset);
+    expect(body.indexOf('resetPanelSections();')).toBeGreaterThan(reset);
+    expect(body.indexOf('setWorkLogOpen(_panelDetail);')).toBeGreaterThan(reset);
+    // The one call: the 자세히 switch (off by default, saved per device) — no other exception.
+    expect(body.match(/setWorkLogOpen\(/g) ?? []).toHaveLength(1);
     expect(body).not.toContain('setWorkLogOpen(_panelFocusWorkLog)');
+    expect(TEMPLATE).toMatch(/^var _panelDetail = false;/m);
+    expect(fnBody('panelDetailFrom')).toContain("return saved === '1';");
     // 작업 로그 / ?session= land with the collapsed header in view, not inside the log.
     expect(fnBody('scrollPanelToWorkLog')).toContain('workLogLandingTop(');
     expect(fnBody('scrollPanelToWorkLog')).not.toContain('list.scrollTop');
@@ -313,7 +345,8 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
 
   it('a default landing stays on the newest turns only until the reader touches the panel (§3.1-6)', () => {
     const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelScrollHandler() {'));
-    expect(init).toContain("['pointerdown', 'keydown', 'wheel', 'touchstart'].forEach(");
+    // Task view: a mouse press (a scrollbar drag) is the reader's input too.
+    expect(init).toContain("['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart'].forEach(");
     expect(init).toContain("document.getElementById('slide-panel')");
     expect(init).toContain('_panelStickBottom = false;');
   });

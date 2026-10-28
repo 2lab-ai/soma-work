@@ -263,6 +263,48 @@ function cleanFileName(raw: string): string {
   return trimmed || 'attachment';
 }
 
+/**
+ * The attachments of a dashboard submission — a new task, or an instruction
+ * the panel's composer sends to a running session: `[{ name, mimetype, data }]`
+ * with base64 data, decoded and held to {@link NEW_TASK_LIMITS}. Absent = none.
+ */
+export function parseAttachments(
+  raw: unknown,
+): { ok: true; value: NewTaskAttachment[] } | { ok: false; error: string } {
+  const rawAttachments = raw === undefined ? [] : raw;
+  if (!Array.isArray(rawAttachments)) return { ok: false, error: 'attachments must be an array' };
+  if (rawAttachments.length > NEW_TASK_LIMITS.maxFiles) {
+    return { ok: false, error: `at most ${NEW_TASK_LIMITS.maxFiles} attachments` };
+  }
+  const attachments: NewTaskAttachment[] = [];
+  let total = 0;
+  for (const [i, item] of rawAttachments.entries()) {
+    if (!item || typeof item !== 'object') return { ok: false, error: `attachment ${i + 1} is malformed` };
+    const a = item as Record<string, unknown>;
+    if (typeof a.name !== 'string' || a.name.length === 0 || a.name.length > 255) {
+      return { ok: false, error: `attachment ${i + 1} needs a name` };
+    }
+    const mimetype = a.mimetype === undefined || a.mimetype === '' ? 'application/octet-stream' : a.mimetype;
+    if (typeof mimetype !== 'string' || mimetype.length > 100 || !MIMETYPE.test(mimetype)) {
+      return { ok: false, error: `attachment ${i + 1} has an invalid type` };
+    }
+    if (typeof a.data !== 'string' || a.data.length === 0 || a.data.length % 4 === 1 || !BASE64.test(a.data)) {
+      return { ok: false, error: `attachment ${i + 1} is not valid base64 data` };
+    }
+    const data = Buffer.from(a.data, 'base64');
+    if (data.length === 0) return { ok: false, error: `attachment ${i + 1} is empty` };
+    if (data.length > NEW_TASK_LIMITS.maxFileBytes) {
+      return { ok: false, error: `attachment ${i + 1} exceeds ${NEW_TASK_LIMITS.maxFileBytes} bytes` };
+    }
+    total += data.length;
+    if (total > NEW_TASK_LIMITS.maxTotalBytes) {
+      return { ok: false, error: `attachments exceed ${NEW_TASK_LIMITS.maxTotalBytes} bytes in total` };
+    }
+    attachments.push({ name: cleanFileName(a.name), mimetype, data });
+  }
+  return { ok: true, value: attachments };
+}
+
 export function parseNewTaskSubmission(body: unknown, ctx: NewTaskContext): NewTaskParseResult {
   if (!body || typeof body !== 'object' || Array.isArray(body)) return { ok: false, error: 'body must be an object' };
   const b = body as Record<string, unknown>;
@@ -287,37 +329,9 @@ export function parseNewTaskSubmission(body: unknown, ctx: NewTaskContext): NewT
     return { ok: false, error: 'autogoal and autoz must be booleans' };
   }
 
-  const rawAttachments = b.attachments === undefined ? [] : b.attachments;
-  if (!Array.isArray(rawAttachments)) return { ok: false, error: 'attachments must be an array' };
-  if (rawAttachments.length > NEW_TASK_LIMITS.maxFiles) {
-    return { ok: false, error: `at most ${NEW_TASK_LIMITS.maxFiles} attachments` };
-  }
-  const attachments: NewTaskAttachment[] = [];
-  let total = 0;
-  for (const [i, raw] of rawAttachments.entries()) {
-    if (!raw || typeof raw !== 'object') return { ok: false, error: `attachment ${i + 1} is malformed` };
-    const a = raw as Record<string, unknown>;
-    if (typeof a.name !== 'string' || a.name.length === 0 || a.name.length > 255) {
-      return { ok: false, error: `attachment ${i + 1} needs a name` };
-    }
-    const mimetype = a.mimetype === undefined || a.mimetype === '' ? 'application/octet-stream' : a.mimetype;
-    if (typeof mimetype !== 'string' || mimetype.length > 100 || !MIMETYPE.test(mimetype)) {
-      return { ok: false, error: `attachment ${i + 1} has an invalid type` };
-    }
-    if (typeof a.data !== 'string' || a.data.length === 0 || a.data.length % 4 === 1 || !BASE64.test(a.data)) {
-      return { ok: false, error: `attachment ${i + 1} is not valid base64 data` };
-    }
-    const data = Buffer.from(a.data, 'base64');
-    if (data.length === 0) return { ok: false, error: `attachment ${i + 1} is empty` };
-    if (data.length > NEW_TASK_LIMITS.maxFileBytes) {
-      return { ok: false, error: `attachment ${i + 1} exceeds ${NEW_TASK_LIMITS.maxFileBytes} bytes` };
-    }
-    total += data.length;
-    if (total > NEW_TASK_LIMITS.maxTotalBytes) {
-      return { ok: false, error: `attachments exceed ${NEW_TASK_LIMITS.maxTotalBytes} bytes in total` };
-    }
-    attachments.push({ name: cleanFileName(a.name), mimetype, data });
-  }
+  const parsed = parseAttachments(b.attachments);
+  if (!parsed.ok) return parsed;
+  const attachments = parsed.value;
 
   if (!prompt && attachments.length === 0) return { ok: false, error: 'prompt is required (or attach a file)' };
 
