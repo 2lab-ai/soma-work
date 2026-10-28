@@ -448,7 +448,16 @@ function answers(
     answerChoice(k: string, qid: string, c: string): Promise<any>;
     acQuestionId(q: unknown): string;
   }>(
-    ['acPost', 'acRefusal', 'acToolOf', 'stripRecommendedMarker', 'acQuestionId', 'answerPermission', 'answerChoice'],
+    [
+      'acPost',
+      'acRefusal',
+      'acToolOf',
+      'acDrop',
+      'stripRecommendedMarker',
+      'acQuestionId',
+      'answerPermission',
+      'answerChoice',
+    ],
     ['AC_SENT'],
     {
       _acState: state,
@@ -697,11 +706,12 @@ describe('after an answer (D15)', () => {
   it('answerPermission: sending, then the outcome — card and panel redrawn each time, one toast; a second answer sends nothing', async () => {
     const a = answers({ ok: true, status: 200 });
     await a.answerPermission('inst::C1:t1', 'approval_a1', 'deny');
-    expect(a.repaints.map(([k, s]) => [k, (s as Record<string, any>)['p|approval_a1'].status])).toEqual([
+    expect(a.repaints.map(([k, s]) => [k, (s as Record<string, any>)['inst::C1:t1']['p|approval_a1'].status])).toEqual([
       ['inst::C1:t1', 'sending'],
       ['inst::C1:t1', 'resolved'],
     ]);
-    expect(a.repaints[0][1]).toEqual({ 'p|approval_a1': { status: 'sending', decision: 'deny' } });
+    // Per session (PR #536 review P1): the state lives under the session that asked.
+    expect(a.repaints[0][1]).toEqual({ 'inst::C1:t1': { 'p|approval_a1': { status: 'sending', decision: 'deny' } } });
     expect(a.toasts).toEqual([{ title: '거부를 보냈어요', description: 'Bash', tone: 'success' }]);
     expect(clientFn('acRepaint')).toContain('refreshCard(key);');
     expect(clientFn('acRepaint')).toContain('renderPanelPermission(s);');
@@ -1041,6 +1051,148 @@ describe('a question rewritten in place is another card (review R2 P1)', () => {
   });
 });
 
+// PR #536 review P1: a single-choice question has no request id — its card id is its content. The answer
+// state must belong to the session that asked it, and leave when that session no longer asks it: another
+// session's identical question, or the same question asked again later, is a new request.
+describe('an answer’s state belongs to its session and leaves with its request (PR #536 review P1)', () => {
+  const Q = () => ({
+    type: 'user_choice',
+    question: '계속할까요?',
+    choices: [
+      { id: '1', label: '예' },
+      { id: '2', label: '아니오' },
+    ],
+  });
+  const S = (key: string, over: Record<string, unknown> = {}) =>
+    SESSION({ key, pendingPermissions: [], pendingQuestion: Q(), ...over });
+  function rig(cache: Record<string, unknown>, extra: string[] = [], hold?: { release?: () => void }) {
+    const state: Record<string, any> = {};
+    const posts: Array<[string, unknown]> = [];
+    const m = load<{
+      acQuestionId(q: unknown): string;
+      acQuestionData(s: unknown, q: unknown): CardData;
+      acPermissionData(s: unknown, p: unknown): CardData;
+      answerChoice(k: string, qid: string, c: string): Promise<any>;
+      answerPermission(k: string, id: string, d: string): Promise<any>;
+      acEvict(k: string, s: unknown): void;
+    }>(
+      [
+        'toNum',
+        'isPermissionRequester',
+        'acPermissionLock',
+        'acQuestionLock',
+        'acQuestionId',
+        'acQuestionData',
+        'acPermissionData',
+        'stripRecommendedMarker',
+        'resolveRecommendedId',
+        'acPost',
+        'acRefusal',
+        'acToolOf',
+        'acDrop',
+        'answerChoice',
+        'answerPermission',
+        ...extra,
+      ],
+      ['AC_SENT', 'AC_SIBLING'],
+      {
+        _acState: state,
+        _sessionCache: cache,
+        _permDetails: { approval_a1: { input: '{}', truncated: false } },
+        loadPermissionDetail: () => {},
+        currentUserId: 'U1',
+        isSiblingSession: () => false,
+        acRepaint: () => {},
+        dashToast: () => {},
+        _csrfToken: 'csrf',
+        refreshCsrfToken: async () => {},
+        console: { error() {} },
+        fetch: async (url: string, init: { body: string }) => {
+          posts.push([url, JSON.parse(init.body)]);
+          if (hold) await new Promise<void>((r) => (hold.release = r));
+          return { ok: true, status: 200, json: async () => ({}) };
+        },
+      },
+    );
+    return { ...m, state, posts };
+  }
+
+  it('two sessions ask the same question: answering A leaves B unanswered, and B’s answer is sent', async () => {
+    const cache: Record<string, any> = { A: S('A'), B: S('B') };
+    const r = rig(cache);
+    const qid = r.acQuestionId(Q());
+    expect(r.acQuestionId(cache.B.pendingQuestion)).toBe(qid); // the content is the id: the same in both
+    expect(await r.answerChoice('A', qid, '1')).toMatchObject({ status: 'resolved', choiceId: '1' });
+    expect(r.acQuestionData(cache.A, cache.A.pendingQuestion).state).toMatchObject({ status: 'resolved' });
+    expect(r.acQuestionData(cache.B, cache.B.pendingQuestion).state).toBeUndefined();
+    expect(await r.answerChoice('B', qid, '2')).toMatchObject({ status: 'resolved', choiceId: '2' });
+    expect(r.posts.map((p) => p[0])).toEqual([
+      '/api/dashboard/session/A/answer-choice',
+      '/api/dashboard/session/B/answer-choice',
+    ]);
+  });
+
+  it('the same session asks the same question again after the first was answered and cleared: a new, unanswered card', async () => {
+    const cache: Record<string, any> = { A: S('A') };
+    const r = rig(cache, ['acEvict']);
+    const qid = r.acQuestionId(Q());
+    await r.answerChoice('A', qid, '1');
+    // The push after the answer: the session works again, no question.
+    cache.A = S('A', { activityState: 'working', pendingQuestion: undefined });
+    r.acEvict('A', cache.A);
+    // Later the same question again.
+    cache.A = S('A');
+    r.acEvict('A', cache.A);
+    expect(r.acQuestionData(cache.A, cache.A.pendingQuestion).state).toBeUndefined();
+    expect(await r.answerChoice('A', qid, '2')).toMatchObject({ status: 'resolved', choiceId: '2' });
+    expect(r.posts).toHaveLength(2);
+  });
+
+  it('eviction on a push: a question replaced or gone, a prompt that left, a session off the board; what is still asked keeps its state', async () => {
+    const cache: Record<string, any> = { A: S('A', { pendingPermissions: [PERM()] }), B: S('B') };
+    const r = rig(cache, ['acEvict']);
+    const qid = r.acQuestionId(Q());
+    await r.answerPermission('A', 'approval_a1', 'deny');
+    await r.answerChoice('A', qid, '1');
+    await r.answerChoice('B', qid, '1');
+    // A push that changes nothing A asks: both of A's states stay.
+    r.acEvict('A', cache.A);
+    expect(r.acPermissionData(cache.A, PERM()).state).toMatchObject({ outcome: 'denied' });
+    expect(r.acQuestionData(cache.A, cache.A.pendingQuestion).state).toMatchObject({ status: 'resolved' });
+    // The prompt left and the question was replaced: both go; B is untouched.
+    const other = { ...Q(), question: '다른 질문?' };
+    cache.A = S('A', { pendingPermissions: [], pendingQuestion: other });
+    r.acEvict('A', cache.A);
+    expect(r.acPermissionData(cache.A, PERM()).state).toBeUndefined();
+    expect(r.acQuestionData(cache.A, Q()).state).toBeUndefined();
+    expect(r.acQuestionData(cache.B, cache.B.pendingQuestion).state).toMatchObject({ status: 'resolved' });
+    // A session no longer on the board: all of its states go.
+    r.acEvict('B', undefined);
+    expect(r.acQuestionData(cache.B, cache.B.pendingQuestion).state).toBeUndefined();
+    expect(Object.keys(r.state).filter((k) => Object.keys(r.state[k] ?? {}).length)).toEqual([]);
+    // Both push paths run it: the board (every session it holds, or drops) and a single-session update.
+    expect(clientFn('renderBoard')).toMatch(/for \(var \w+ in _acState\) acEvict\(\w+, _sessionCache\[\w+\]\);/);
+    expect(clientFn('connectWs')).toContain('acEvict(updatedKey, msg.session);');
+  });
+
+  it('an answer that lands after the push removed its question is not kept (it would answer the next identical question)', async () => {
+    const cache: Record<string, any> = { A: S('A') };
+    const hold: { release?: () => void } = {};
+    const r = rig(cache, ['acEvict'], hold);
+    const qid = r.acQuestionId(Q());
+    const sent = r.answerChoice('A', qid, '1');
+    await Promise.resolve();
+    // The server took it and pushed the session without the question before the POST returned.
+    cache.A = S('A', { activityState: 'working', pendingQuestion: undefined });
+    r.acEvict('A', cache.A);
+    hold.release?.();
+    expect(await sent).toMatchObject({ status: 'resolved' });
+    cache.A = S('A');
+    r.acEvict('A', cache.A);
+    expect(r.acQuestionData(cache.A, cache.A.pendingQuestion).state).toBeUndefined();
+  });
+});
+
 describe('a refused panel choice is drawn again from the session (review R1 P2)', () => {
   it('the card keeps its choices and says why, with Retry; card and panel are redrawn from the session; no toast', async () => {
     const q = {
@@ -1351,6 +1503,8 @@ describe('template hygiene', () => {
       'acHydrate',
       'acRepaint',
       'acFirstOpen',
+      'acEvict',
+      'acDrop',
       'acPost',
       'acRefusal',
       'answerPermission',
