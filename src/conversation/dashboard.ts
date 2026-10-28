@@ -119,6 +119,23 @@ import type { WorkLogEntry } from './work-log';
 
 const logger = new Logger('Dashboard');
 
+/** Who reads a usage report: an admin or an operator token sees per-user spend; everyone else the totals and models. */
+export interface UsageViewer {
+  isAdmin?: boolean;
+  mode?: string;
+}
+/**
+ * affectUI review batch 1 (Z, 2026-10-27): spend by model for everyone, by user for admins only. The report's
+ * per-user parts (byUser, the rankings) leave the server only for an admin or an operator token.
+ */
+export function usageForViewer<T extends { byUser: unknown; tokenRankings: unknown[]; costRankings: unknown[] }>(
+  report: T,
+  viewer: UsageViewer | undefined,
+): T {
+  if (viewer?.isAdmin || viewer?.mode === 'bearer_header' || viewer?.mode === 'bearer_cookie') return report;
+  return { ...report, byUser: {}, tokenRankings: [], costRankings: [] };
+}
+
 /** A file the /dashboard/ui route serves: a flat `dist/*.js` name of @2lab.ai/ui (no dirs, no dots-only names). */
 export const UI_LIB_FILE = /^[A-Za-z0-9_][A-Za-z0-9_-]*\.js$/;
 let uiLibDir: string | null | undefined;
@@ -2547,7 +2564,7 @@ export async function registerDashboardRoutes(
       try {
         const aggregator = new ReportAggregator(store);
         const report = await aggregator.aggregateTokenUsage(startDate, endDate, userId || undefined);
-        reply.send(report);
+        reply.send(usageForViewer(report, (request as { authContext?: UsageViewer }).authContext));
       } catch (error) {
         logger.error('Error computing token usage stats', error);
         reply.status(500).send({ error: 'Internal Server Error' });
@@ -3851,6 +3868,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .stats-more[aria-expanded="true"] { color: var(--text); }
 .stats-more[aria-expanded="true"] svg { transform: rotate(180deg); }
 .stats-detail { margin-top: 12px; }
+.usage-cb-wrap { max-width: 440px; margin-bottom: 12px; }
 
 /* ── STATS GRID — the cards behind 자세히: 5 columns, 2 below 1100px ── */
 .stats-grid {
@@ -7197,6 +7215,7 @@ body.nt-open .new-task-fab { display: none !important; }
         <button type="button" class="stats-more" id="stats-more" aria-expanded="false" aria-controls="stats-detail" onclick="toggleStatsDetail()"><span>&#xC790;&#xC138;&#xD788;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
       </div>
       <div class="stats-detail" id="stats-detail" hidden>
+        <div class="ui-tok usage-cb-wrap"><ui-compact-breakdown id="usage-cb" lang="ko"></ui-compact-breakdown></div>
         <div class="stats-grid" id="stats-grid">
           <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value is-loading" id="stat-turns"></div></div>
           <div class="stat-card"><div class="label">PR &#xC0DD;&#xC131;</div><div class="value is-loading" id="stat-prs"></div></div>
@@ -8342,6 +8361,7 @@ function _applyUserPill(data) {
   // also gets the toggle.
   const isAdminCapable = !!(data && (data.isAdmin || (data.user && data.user.name && data.isAdmin)));
   _viewerIsAdmin = isAdminCapable;
+  if (typeof paintUsageBreakdown === 'function') paintUsageBreakdown(); // the by-user view is an admin's
   _viewerUserId = (data && data.user && data.user.slackUserId) || '';
   const lifecycleBtn = document.getElementById('lifecycle-btn');
   if (lifecycleBtn) lifecycleBtn.style.display = isAdminCapable ? 'inline-flex' : 'none';
@@ -14411,7 +14431,55 @@ function paintStats(data) {
   else if (chartEl) chartEl.innerHTML = '';
 }
 
+// ── Where the usage goes — @2lab.ai/ui <ui-compact-breakdown> (affectUI review batch 1) ──
+// Spend or tokens by model for everyone; spend by user for an admin (the
+// server sends per-user parts to admins only — usageForViewer).
+var _usageView = 'cost';
+var _usageReport = null;
+var USAGE_VIEWS = [{ id: 'cost', label: '모델별 비용' }, { id: 'tokens', label: '모델별 토큰' }];
+// Pure: the usage report → the card's data.
+function usageBreakdownData(report, view, admin) {
+  var options = admin ? USAGE_VIEWS.concat([{ id: 'user', label: '사용자별 비용' }]) : USAGE_VIEWS;
+  if (view === 'user' && !admin) view = 'cost';
+  var d = { title: '사용량', unit: view === 'tokens' ? 'tokens' : 'usd', options: options, value: view, optionsLabel: '보기', maxRows: 5, parts: [], emptyText: '이 기간에는 사용량이 없어요' };
+  if (!report) {
+    d.error = '사용량을 불러오지 못했어요';
+    return d;
+  }
+  if (view === 'user') {
+    var users = report.byUser || {};
+    for (var uid in users) {
+      if (!Object.prototype.hasOwnProperty.call(users, uid)) continue;
+      d.parts.push({ key: uid, label: String((users[uid] && users[uid].userName) || uid), value: toNum(users[uid] && users[uid].totalCostUsd) });
+    }
+    return d;
+  }
+  var models = (report.totals && report.totals.byModel) || {};
+  for (var m in models) {
+    if (!Object.prototype.hasOwnProperty.call(models, m)) continue;
+    var u = models[m] || {};
+    d.parts.push({ key: m, label: m, value: view === 'tokens' ? toNum(u.inputTokens) + toNum(u.outputTokens) : toNum(u.costUsd) });
+  }
+  return d;
+}
+function paintUsageBreakdown() {
+  var el = document.getElementById('usage-cb');
+  if (!el) return;
+  var d = usageBreakdownData(_usageReport, _usageView, !!_viewerIsAdmin);
+  var sig = JSON.stringify(d);
+  if (el._sig === sig) return;
+  el._sig = sig;
+  el.data = d;
+}
+document.addEventListener('ui-change', function(e) {
+  if (!e.target || e.target.id !== 'usage-cb' || !e.detail) return;
+  _usageView = String(e.detail.value);
+  paintUsageBreakdown();
+});
+
 function paintUsage(report) {
+  _usageReport = report || null;
+  paintUsageBreakdown();
   var t = report && report.totals;
   setStat('stat-tokens', t ? formatTokens(toNum(t.totalInputTokens) + toNum(t.totalOutputTokens)) : '\\u2014');
   setStat('stat-cost', t ? '$' + toNum(t.totalCostUsd).toFixed(2) : '\\u2014');
