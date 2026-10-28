@@ -19,12 +19,16 @@ other, so a wrong argument or a wrong check fails the replay.
   3 × 2^10 = 3072 rows. Each row has nine calls, one per path through the tool-name tests of the
   TS: Bash, Read, Glob, Grep with and without a path, a native tool without a sensitive-path
   check but with a devops-secret check (Write, the path Edit shares), the PR-create MCP tool,
-  another `mcp__` tool, and a tool the policy does not govern.
+  another `mcp__` tool, and `Skill`. The environment-skill check (phase 4) comes back clear in
+  every table row: it is consulted for a non-admin `Skill` call only, which the `tool-names`,
+  `boundary` and `concrete` rows fire it on.
 * `tool-names`: every native tool and a set of near misses (case, spacing, look-alike letters,
   prefixes, the empty name), with no primitive firing, each firing alone, and all firing, in
   every mode, for admins and non-admins.
+* Every `expect` is the output of `evaluateToolPolicyEnv`, the phase-4 model of the TS function.
 * `boundary`: the payloads the table holds fixed. A sensitive result without a reason or with
-  an empty one, an empty MCP or devops-secret reason, PR-issue results without a reason or a message,
+  an empty one, an empty MCP, devops-secret or environment-skill reason (and the environment-skill
+  check firing for admins and alongside every other primitive), PR-issue results without a reason or a message,
   empty and longer rule-id lists, Grep `path` values that are empty, blank, not strings or
   missing, and undefined tool inputs.
 * `arguments`: Glob, Read, Edit, Write, Bash and Grep inputs that differ only in the properties
@@ -132,7 +136,7 @@ def primsJson (p : Primitives) : Json :=
   .obj [("ssh", .bool p.ssh), ("sensitive", sensitiveJson p.sensitive),
     ("crossUser", .bool p.crossUser), ("mcpDenied", mcpJson p.mcpDenied),
     ("prIssue", prIssueJson p.prIssue), ("bash", bashJson p.bash),
-    ("devopsSecret", mcpJson p.devopsSecret)]
+    ("devopsSecret", mcpJson p.devopsSecret), ("envSkillDenied", mcpJson p.envSkillDenied)]
 
 /-! ## Mocked rows -/
 
@@ -161,7 +165,7 @@ def callJson (r : Row) (c : Call) : Json :=
   .obj [("tool", .str c.tool), ("input", c.input.getD .null),
     ("sensitiveCall", sensitiveCallJson (sensitiveCall (r.toInput c))),
     ("devopsCall", devopsCallJson (devopsCall (r.toInput c))),
-    ("expect", resultJson (evaluateToolPolicy r.incident (r.toInput c)))]
+    ("expect", resultJson (evaluateToolPolicyEnv r.incident (r.toInput c)))]
 
 def rowJson (kind : String) (calls : List Call) (r : Row) : Json :=
   .obj ([("kind", .str kind), ("mode", .str (modeName r.mode)), ("isAdmin", .bool r.isAdmin),
@@ -173,7 +177,7 @@ def rowJson (kind : String) (calls : List Call) (r : Row) : Json :=
 def quiet : Primitives :=
   { ssh := false, sensitive := { isSensitive := false }, crossUser := false, mcpDenied := none,
     prIssue := { blocked := false }, bash := { decision := .allow, matchedRuleIds := [] },
-    devopsSecret := none }
+    devopsSecret := none, envSkillDenied := none }
 
 def devopsReason : String := "devops-reason"
 
@@ -181,6 +185,8 @@ def sensitiveHit : SensitivePathResult :=
   { isSensitive := true, reason := some "sensitive-reason" }
 
 def mcpReason : String := "mcp-reason"
+
+def envSkillReason : String := "acme-env:post-deploy"
 
 /-- A block with a `PrIssueGuardReason` and a message. -/
 def prBlocked : PrIssueGuardResult :=
@@ -242,7 +248,8 @@ def toolNames : List Call :=
 
 def allFiring : Primitives :=
   { ssh := true, sensitive := sensitiveHit, crossUser := true, mcpDenied := some mcpReason,
-    prIssue := prBlocked, bash := bashAsk, devopsSecret := some devopsReason }
+    prIssue := prBlocked, bash := bashAsk, devopsSecret := some devopsReason,
+    envSkillDenied := some envSkillReason }
 
 /-- `(aborted, handoff, prims)`: nothing firing, each deny condition's inputs alone, a dangerous
 Bash alone, and everything at once. -/
@@ -256,6 +263,7 @@ def patterns : List (Bool × Bool × Primitives) :=
     (false, false, { quiet with mcpDenied := some mcpReason }),
     (false, true, { quiet with prIssue := prBlocked }),
     (false, false, { quiet with bash := bashAsk }),
+    (false, false, { quiet with envSkillDenied := some envSkillReason }),
     (true, true, allFiring)]
 
 def namesRows : List Row :=
@@ -281,6 +289,14 @@ def devopsCalls : List Call :=
     ⟨"Grep", empty⟩, ⟨"Glob", empty⟩, ⟨"NotebookEdit", empty⟩, ⟨prCreateMcpTool, empty⟩,
     ⟨"mcp__server-tools__db_query", empty⟩, ⟨"Skill", empty⟩]
 
+/-- The `Skill` tool with and without a `skill` input, the tools before it in the deny tier, an
+`mcp__` tool and a tool the policy does not govern. -/
+def envSkillCalls : List Call :=
+  [⟨"Skill", some (.obj [("skill", .str "acme-env:post-deploy"), ("args", .str "--preflight")])⟩,
+    ⟨"Skill", empty⟩, ⟨"Skill", none⟩, ⟨"Bash", empty⟩, ⟨"Read", empty⟩, ⟨"Glob", empty⟩,
+    ⟨"Grep", grepPath⟩, ⟨"Write", empty⟩, ⟨"Edit", empty⟩, ⟨"NotebookEdit", empty⟩,
+    ⟨"mcp__server-tools__db_query", empty⟩, ⟨"ExitPlanMode", empty⟩, ⟨"skill", empty⟩]
+
 def prCalls : List Call :=
   [⟨"Bash", empty⟩, ⟨prCreateMcpTool, empty⟩, ⟨"Read", empty⟩,
     ⟨"mcp__server-tools__db_query", empty⟩]
@@ -305,6 +321,12 @@ def boundaryRows : List (Row × List Call) :=
     (fun s => (autoRow { quiet with sensitive := s }, sensitiveCalls)) ++
   [(autoRow { quiet with mcpDenied := some "" }, mcpCalls),
     ({ autoRow { quiet with mcpDenied := some "" } with isAdmin := true }, mcpCalls)] ++
+  ([.auto, .bypass, .legacy] : List Mode).flatMap (fun mode =>
+    [({ autoRow { quiet with envSkillDenied := some "" } with mode }, envSkillCalls),
+      ({ autoRow { quiet with envSkillDenied := some envSkillReason } with mode, isAdmin := true },
+        envSkillCalls),
+      ({ autoRow { allFiring with envSkillDenied := some envSkillReason } with mode, handoff := true },
+        envSkillCalls)]) ++
   [(autoRow { quiet with devopsSecret := some "" }, devopsCalls),
     ({ autoRow { quiet with devopsSecret := some "" } with isAdmin := true, mode := .bypass },
       devopsCalls),
@@ -506,9 +528,10 @@ def concreteJson (c : Concrete) : Json :=
     ("ctx", .obj ([("user", .str sessionUser), ("isAdmin", .bool c.isAdmin),
       ("mode", .str (modeName c.mode)), ("aborted", .bool c.aborted),
       ("handoffContext", c.handoff.getD .null), ("mcpDenied", mcpJson c.prims.mcpDenied),
+      ("envSkillDenied", mcpJson c.prims.envSkillDenied),
       ("disabledRules", strs c.disabledRules)] ++ incidentProp c.incident)),
     ("pre", .arr (devopsPreJson c ++ c.pre.map (preJson c))),
-    ("expect", resultJson (evaluateToolPolicy c.incident c.toInput))]
+    ("expect", resultJson (evaluateToolPolicyEnv c.incident c.toInput))]
 
 def bashInput (command : String) : Json :=
   .obj [("command", .str command)]
@@ -729,6 +752,23 @@ def concreteCases : List Concrete :=
    { name := "glob-broker-base-nonadmin-auto", tool := "Glob",
      input := .obj [("pattern", .str "secrets/**"), ("path", .str brokerData)], mode := .auto,
      prims := { quiet with devopsSecret := some "devops broker path" }, pre := [] },
+   { name := "skill-env-denied-nonadmin-auto", tool := "Skill",
+     input := .obj [("skill", .str "acme-env:post-deploy"), ("args", .str "--preflight")],
+     mode := .auto, prims := { quiet with envSkillDenied := some "acme-env:post-deploy" }, pre := [] },
+   { name := "skill-env-denied-nonadmin-bypass", tool := "Skill",
+     input := .obj [("skill", .str "acme-env:staging-qa")], mode := .bypass,
+     prims := { quiet with envSkillDenied := some "acme-env:staging-qa" }, pre := [] },
+   { name := "skill-env-denied-admin-bypass", tool := "Skill",
+     input := .obj [("skill", .str "acme-env:post-deploy")], isAdmin := true, mode := .bypass,
+     prims := { quiet with envSkillDenied := some "acme-env:post-deploy" }, pre := [] },
+   { name := "skill-env-granted-nonadmin-legacy", tool := "Skill",
+     input := .obj [("skill", .str "acme-env:post-deploy")], mode := .legacy, pre := [] },
+   { name := "skill-plain-nonadmin-auto", tool := "Skill",
+     input := .obj [("skill", .str "zworkflow:deploy-qa")], mode := .auto, pre := [] },
+   { name := "incident-skill-env-denied-nonadmin-auto", tool := "Skill",
+     input := .obj [("skill", .str "acme-env:post-deploy")], mode := .auto,
+     incident := some liveIncident,
+     prims := { quiet with envSkillDenied := some "acme-env:post-deploy" }, pre := [] },
    { name := "incident-bash-gh-auth-token-admin-bypass", tool := "Bash",
      input := bashInput "gh auth token", isAdmin := true, mode := .bypass,
      incident := some liveIncident,

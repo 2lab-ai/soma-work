@@ -19,9 +19,8 @@ jobs:
   scan:
     # Same allow-list guard as `.github/workflows/ci.yml`, and this job has the
     # larger stake of the two. The repository is public, `pull_request` fires
-    # for forks, and the runner is a persistent machine we own — but on top of
-    # that, the scan step is handed `secrets.SANITIZE_PATTERNS`, and the script
-    # it runs (`scripts/sanitize-scan.sh`) is a file the pull request can
+    # for forks, and the scan step is handed `secrets.SANITIZE_PATTERNS` while
+    # the script it runs (`scripts/sanitize-scan.sh`) is a file the pull request can
     # rewrite. Without this guard a fork PR could replace that script with one
     # that prints the secret, and the gate that exists to keep patterns out of
     # published history would be the thing that published them.
@@ -39,7 +38,10 @@ jobs:
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: [self-hosted, fable-m5max]
+    # GitHub-hosted (see ci.yml for why the PR gates left the self-hosted workstation). A fresh
+    # clone also means the scan sees only this repository's refs, never stale refs a reused
+    # runner checkout had accumulated.
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
