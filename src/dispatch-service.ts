@@ -7,18 +7,13 @@ import * as fs from 'fs';
 import * as path from 'path';
 import type { ClaudeHandler } from './claude-handler';
 import { type ComplexityResult, scoreComplexity } from './complexity-scorer';
+import { decodeSlackEntities, PLACEHOLDER_SESSION_TITLE, sanitizeSessionTitle } from './format/display-title';
 import { Logger } from './logger';
 import type { SessionLinks, WorkflowType } from './types';
 
-/**
- * Decode Slack HTML entities in text.
- * Slack API encodes &, <, > as &amp;, &lt;, &gt; in message text.
- * IMPORTANT: &amp; must be decoded LAST to avoid double-decoding
- * (e.g. &amp;gt; should become &gt;, not >).
- */
-export function decodeSlackEntities(text: string): string {
-  return text.replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
-}
+// Pure title/text helpers live with the title rules in @soma/common; re-exported
+// here for existing importers.
+export { decodeSlackEntities, sanitizeSessionTitle } from './format/display-title';
 
 // Default dispatch model - fast and cheap for classification
 // Can be overridden via DEFAULT_DISPATCH_MODEL env var
@@ -487,29 +482,21 @@ class DispatchService {
    * Prevents mention injection (<!channel>, <@U123>) and link formatting
    */
   private sanitizeTitle(title: string): string {
-    const cleaned =
-      title
-        .replace(/<[!@#][^>]*>/g, '') // Remove <!channel>, <@U123>, <#C123>
-        .replace(/<[^|>]+\|([^>]+)>/g, '$1') // Convert <url|text> to text
-        .replace(/<[^>]+>/g, '') // Remove remaining <url>
-        .replace(/\s+/g, ' ')
-        .trim() || 'New Session';
-    // Decode Slack HTML entities (LLMs sometimes include them in generated titles)
-    return decodeSlackEntities(cleaned);
+    return sanitizeSessionTitle(title) || PLACEHOLDER_SESSION_TITLE;
   }
 
   /**
    * Generate fallback title from message
    */
   private generateFallbackTitle(message: string): string {
-    if (!message) return 'New Session';
+    if (!message) return PLACEHOLDER_SESSION_TITLE;
 
     // Decode Slack HTML entities before truncating
     const decoded = decodeSlackEntities(message);
     // Take first 50 chars, clean up
     const title = decoded.replace(/\n/g, ' ').replace(/\s+/g, ' ').trim().substring(0, 50);
 
-    return title.length === 50 ? `${title}...` : title || 'New Session';
+    return title.length === 50 ? `${title}...` : title || PLACEHOLDER_SESSION_TITLE;
   }
 
   /**

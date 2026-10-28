@@ -21,9 +21,11 @@ import {
   SecretError,
   type SecretKind,
   SLACK_APP_SECRET_NAME,
+  SLACK_SOCKET_SECRET_NAME,
   secretFile,
 } from './secrets.js';
 import { createSlackApi, type SlackApi } from './slack-api.js';
+import { type SocketModeClient, startSocketMode } from './slack-socket.js';
 import { StateStore } from './state.js';
 
 /** The pinned gh the installer copies (root-owned); `--gh` overrides it. */
@@ -33,7 +35,7 @@ const USAGE = [
   `usage: soma-devops-broker <command> [--root <dir>]    (broker protocol v${PROTOCOL_VERSION})`,
   '',
   '  serve [--gh <path>]    run the broker (gh default: /usr/local/libexec/soma-devops/gh, must be root-owned)',
-  '  ingest <kind> <name>   store a secret piped on stdin (gh <account> | cf <env> | slack broker-app)',
+  '  ingest <kind> <name>   store a secret piped on stdin (gh <account> | cf <env> | slack broker-app | slack broker-app-socket)',
   '  check-policy           validate policy.json and list which secret files are in place (never their values)',
   '',
   '  --root <dir>           data root (default: $SOMA_DEVOPS_ROOT or /usr/local/var/soma-devops)',
@@ -160,6 +162,20 @@ function checkPolicy(args: string[], root: string | undefined): number {
     }
     out.push(`  ${`${kind}/${name}`.padEnd(24)} ${status}`);
   }
+  // Optional: without it the cards have no buttons and reactions decide, which is a working broker.
+  let socket: string;
+  try {
+    readSecret(paths, 'slack', SLACK_SOCKET_SECRET_NAME);
+    socket = 'ok (approval buttons on)';
+  } catch (err) {
+    if (err instanceof SecretError && err.reason === 'missing') {
+      socket = 'absent (optional; reactions only)';
+    } else {
+      healthy = false;
+      socket = `bad (${describeError(err)})`;
+    }
+  }
+  out.push(`  ${`slack/${SLACK_SOCKET_SECRET_NAME}`.padEnd(24)} ${socket}`);
   process.stdout.write(`${out.join('\n')}\n`);
   return healthy ? 0 : 1;
 }
@@ -216,7 +232,24 @@ async function serve(args: string[], root: string | undefined, ghPath: string): 
     return 1;
   }
   const slack = createSlackApi({ token: slackToken });
-  const approvals = createApprovals({ policy, slack, store: approvalStore, ledger, log });
+  // Optional app-level token: buttons on the cards and a Socket Mode connection to receive their clicks.
+  let appToken: string | undefined;
+  try {
+    appToken = readSecret(paths, 'slack', SLACK_SOCKET_SECRET_NAME);
+  } catch (err) {
+    if (!(err instanceof SecretError && err.reason === 'missing')) {
+      log(`approval buttons off: ${describeError(err)}`);
+    }
+  }
+  const approvals = createApprovals({
+    policy,
+    slack,
+    store: approvalStore,
+    ledger,
+    log,
+    buttons: appToken !== undefined,
+  });
+  let socket: SocketModeClient | undefined;
   const cfLeases = createCloudflareLeases({
     policy,
     // Read per operation, so a key rotated with `ingest` takes effect without a restart.
@@ -250,6 +283,9 @@ async function serve(args: string[], root: string | undefined, ghPath: string): 
     await approvals.close();
     return 1;
   }
+  if (appToken !== undefined) {
+    socket = startSocketMode({ appToken, log, onClick: (click) => approvals.decide(click) });
+  }
   await ledger.append({ event: 'broker.start', protocol: PROTOCOL_VERSION }).catch(() => undefined);
   log(`listening on ${paths.socketPath} (protocol v${PROTOCOL_VERSION})`);
   // Leases a crash left mid-operation (minting, revoking, expired) are handled now, not one interval later.
@@ -263,6 +299,7 @@ async function serve(args: string[], root: string | undefined, ghPath: string): 
   log(`${signal}: no new requests; waiting for running ones`);
   stopSweeper();
   await server.close();
+  await socket?.close();
   await approvals.close();
   await ledger.append({ event: 'broker.stop', signal }).catch(() => undefined);
   log('stopped');
