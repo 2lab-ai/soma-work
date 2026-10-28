@@ -76,7 +76,29 @@ const logger = new Logger('FollowupActions');
 /** Ephemeral, in-thread, never a new post — a click can never speak to a channel. */
 const EPHEMERAL = { response_type: 'ephemeral', replace_original: false } as const;
 
-export type FollowupRespond = (message: Record<string, unknown>) => Promise<unknown>;
+/**
+ * How a handler talks back. The second argument is `'refused'` on every refusal and absent on a receipt: Slack's
+ * `respond` ignores it (an ephemeral is an ephemeral), while a transport that answers with a status — the
+ * dashboard's queue routes — reads it to tell "rejected, the item stays" from "done".
+ */
+export type FollowupRespond = (message: Record<string, unknown>, verdict?: 'refused') => Promise<unknown>;
+
+/**
+ * A click whose transport proved WHO made it without a Slack message to check that against: the dashboard's
+ * queue controls, where the route already let only the session's owner through (the gate its Stop uses, #716)
+ * and acts as that owner — as the instruction it sends does. It stands in for the Slack body in
+ * {@link verifyClick}, which then re-reads the session from server state as for any click; everything after it
+ * (`canInterrupt`, the item's generation, the turn fence, the dispatcher's own authorization, the cancel veto,
+ * the steered-cancel path) is the same policy a button gets. Made only by {@link provenFollowupClick}: a symbol
+ * key cannot arrive in a Slack body, so no forged payload can claim to be one.
+ */
+const PROVEN_CLICKER = Symbol('followup.provenClicker');
+export interface ProvenFollowupClick {
+  readonly [PROVEN_CLICKER]: string;
+}
+export function provenFollowupClick(clicker: string): ProvenFollowupClick {
+  return { [PROVEN_CLICKER]: clicker };
+}
 
 /**
  * The queue slice this module touches. Structural on purpose: the real
@@ -910,13 +932,19 @@ type ClickVerification = { ok: true; clicker: string; session: FollowupActionSes
 /**
  * Re-derive the click from server state. Nothing in the button `value` is taken
  * as proof of anything except which coordinates to LOOK UP.
+ *
+ * A {@link ProvenFollowupClick} has no Slack message, so there is no channel or
+ * thread to compare: its transport proved the clicker, and the session is still
+ * re-read here like any other click's.
  */
 function verifyClick(deps: FollowupActionsDeps, body: unknown, sessionKey: string): ClickVerification {
-  const clicker = readUserId(body);
+  const proven = readProvenClicker(body);
+  const clicker = proven ?? readUserId(body);
   if (!clicker) return { ok: false, detail: 'the click carries no user id' };
 
   const session = deps.getSessionByKey(sessionKey);
   if (!session) return { ok: false, detail: 'that queue belongs to a session this process does not have' };
+  if (proven !== undefined) return { ok: true, clicker, session };
 
   const channelId = readChannelId(body);
   if (!channelId) return { ok: false, detail: 'the click carries no verifiable channel' };
@@ -994,6 +1022,13 @@ function readUserId(body: unknown): string | undefined {
   return typeof id === 'string' && id ? id : undefined;
 }
 
+/** The clicker of a {@link ProvenFollowupClick}; `undefined` for anything else (every Slack body). */
+function readProvenClicker(body: unknown): string | undefined {
+  if (typeof body !== 'object' || body === null || !(PROVEN_CLICKER in body)) return undefined;
+  const id = (body as ProvenFollowupClick)[PROVEN_CLICKER];
+  return typeof id === 'string' ? id : '';
+}
+
 /**
  * Slack reports the channel twice. If both are present they must agree —
  * a disagreement is a malformed/forged body, not a value to pick from.
@@ -1032,9 +1067,9 @@ function reply(respond: FollowupRespond, text: string): Promise<unknown> {
   return respond({ ...EPHEMERAL, text });
 }
 
-/** {@link reply} under the name every rejection path reads better with. */
+/** {@link reply}, marked as a refusal — the item stays where it was (A13/A29). */
 function refuse(respond: FollowupRespond, text: string): Promise<unknown> {
-  return reply(respond, text);
+  return respond({ ...EPHEMERAL, text }, 'refused');
 }
 
 /**

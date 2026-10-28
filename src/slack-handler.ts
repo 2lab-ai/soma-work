@@ -77,6 +77,7 @@ import {
   handleCancel as handleFollowupCancel,
   handleRetry as handleFollowupRetry,
   handleSendNow as handleFollowupSendNow,
+  provenFollowupClick,
   registerFollowupActions,
 } from './slack/actions/followup-actions';
 import { createAssistantContainer } from './slack/assistant-container';
@@ -363,6 +364,14 @@ export class SlackHandler {
    * reaction enters through it too ({@link buildFollowupActionDeps}).
    */
   private followupActionDeps?: FollowupActionsDeps;
+  /**
+   * Told the session key after every committed queue write that changed what a
+   * session's queue shows — the dashboard pushes that session's panel
+   * ({@link setFollowupChangeListener}). `followupShown` is the last signature
+   * per session, so an unrelated session's write announces nothing.
+   */
+  private followupChangeListener?: (sessionKey: string) => void;
+  private followupShown?: Map<string, string>;
   /**
    * Live bot-thread migrations. A first mention opens its dispatch slot under
    * the SOURCE thread key, and the pipeline then moves the session into a new
@@ -781,6 +790,7 @@ export class SlackHandler {
             // was rejected (`followup-queue.ts:564-567`).
             persist.save(next);
             this.observeCommittedQueue(next);
+            this.announceFollowupChanges(next);
           }
         : undefined,
     });
@@ -2595,6 +2605,49 @@ export class SlackHandler {
     return own;
   }
 
+  /**
+   * The dashboard's live queue (the panel's `<ui-agent-steering>`): `fn` is told
+   * the key of every session whose queue changed — an item's state, text or
+   * generation, the turn generation, the freeze — after the write is committed.
+   */
+  setFollowupChangeListener(fn: ((sessionKey: string) => void) | undefined): void {
+    this.followupChangeListener = fn;
+  }
+
+  /**
+   * Called from the save sink, i.e. BEFORE the queue swaps its memory
+   * (`followup-queue.ts` `commit`) — so the listener runs a microtask later,
+   * when a read of the queue sees this write. Best effort: a listener that
+   * throws never fails the transaction that produced the change.
+   */
+  private announceFollowupChanges(snapshot: FollowupQueueSnapshot): void {
+    const listener = this.followupChangeListener;
+    if (!listener) return;
+    const shown = (this.followupShown ??= new Map());
+    const changed: string[] = [];
+    for (const session of snapshot.sessions) {
+      const signature = `${session.turnEpoch}|${session.freeze?.at ?? ''}|${session.items
+        .map((item) => `${item.id}:${item.epoch}`)
+        .join(',')}`;
+      if (shown.get(session.sessionKey) === signature) continue;
+      shown.set(session.sessionKey, signature);
+      changed.push(session.sessionKey);
+    }
+    if (changed.length === 0) return;
+    queueMicrotask(() => {
+      for (const sessionKey of changed) {
+        try {
+          listener(sessionKey);
+        } catch (error) {
+          this.logger.debug('Follow-up change listener failed', {
+            sessionKey,
+            error: (error as Error)?.message ?? String(error),
+          });
+        }
+      }
+    });
+  }
+
   /** Why the queue view is untrustworthy right now (DEGRADED), else `undefined`. */
   getFollowupError(_sessionKey: string): string | undefined {
     return this.followupDegradedReason;
@@ -4342,7 +4395,7 @@ export class SlackHandler {
     // goal's opening turn (its objective, or its `$skill` part), not the text
     // the user is editing. Rewriting it would run `goal Y` as a literal prompt
     // while the goal stays X.
-    if (item.message?.routeContext?.goalOpeningId !== undefined) {
+    if (SlackHandler.isGoalOpeningFollowup(item)) {
       if (['resolved', 'failed', 'cancelled'].includes(item.state)) return;
       const noticed = (this.followupEditNoticed ??= new Set());
       if (noticed.has(item.id)) return;
@@ -4561,6 +4614,163 @@ export class SlackHandler {
   private static followupReactionRefusal(role: 'sendNow' | 'cancel', state: FollowupItem['state']): string | undefined {
     if (state !== 'dispatched' && state !== 'resolved') return undefined;
     return role === 'cancel' ? FOLLOWUP_CANCEL_ALREADY_DELIVERED_TEXT : FOLLOWUP_SEND_NOW_ALREADY_DELIVERED_TEXT;
+  }
+
+  /**
+   * A goal command's queued opening turn: its text is the goal's objective (or
+   * its `$skill` part), not the words the user typed, so an edit must not
+   * rewrite it — the goal would stay X while `goal Y` ran as a literal prompt.
+   * The one rule both edit transports (a Slack message edit, the dashboard's
+   * Edit) apply.
+   */
+  private static isGoalOpeningFollowup(item: FollowupItem): boolean {
+    return item.message?.routeContext?.goalOpeningId !== undefined;
+  }
+
+  /**
+   * The dashboard panel's queue controls (`<ui-agent-steering>`: Send now, Retry,
+   * Cancel, Edit) — a fourth transport into the handlers the buttons, the menu
+   * and the reactions use, never a second policy.
+   *
+   * WHO: the route let only the session's owner through (the gate its Stop
+   * uses — or the operator token, or an admin in admin mode), and the dashboard
+   * acts as that owner, as the instruction it sends does
+   * (`injectDashboardMessage`: `user: session.ownerId`). That identity enters as
+   * a {@link provenFollowupClick}, so `verifyClick` re-reads the session and
+   * everything after it — `canInterrupt`, the item generation, the turn fence,
+   * the dispatcher's authorization of the original author, the cancel veto, the
+   * steered cancel through the SDK — is the button's own code.
+   *
+   * WHICH operation: the reaction transport's table read for the clicked row
+   * ({@link followupReactionOperation}) — "go" is `Send now` on a waiting row and
+   * `Retry` on a failed/uncertain one; a state with no such control answers with
+   * the reaction transport's refusal.
+   *
+   * WHAT the dashboard hears: every reply the handler makes, and whether it was a
+   * refusal (`FollowupRespond`'s verdict) — a refusal is a 409 with that text, a
+   * receipt a 200 with it. A reply after the request ended (the `Send now`
+   * follow-through, detached) has no one to go to and is logged.
+   *
+   * Edit has no Slack control: it is {@link editFollowupFromDashboard}.
+   */
+  async handleDashboardFollowupAction(request: {
+    sessionKey: string;
+    itemId: string;
+    op: 'promote' | 'cancel' | 'edit';
+    epoch: number;
+    turnEpoch: number;
+    text?: string;
+  }): Promise<{ ok: true; message?: string } | { ok: false; status: number; message: string }> {
+    const deps = this.followupActionDeps;
+    const queue = this.followupQueue;
+    if (!deps || !queue || this.followupReadFailed) {
+      return {
+        ok: false,
+        status: 503,
+        message: `큐를 사용할 수 없습니다 — ${this.followupDegradedReason ?? 'queue unavailable'}`,
+      };
+    }
+    const session = this.claudeHandler?.getSessionByKey?.(request.sessionKey);
+    if (!session?.ownerId) return { ok: false, status: 404, message: '세션을 찾을 수 없습니다.' };
+    const owner = session.ownerId;
+    if (request.op === 'edit') return this.editFollowupFromDashboard(request, owner);
+
+    const role = request.op === 'promote' ? 'sendNow' : 'cancel';
+    const item = queue.get(request.sessionKey, request.itemId);
+    // A row that is gone is still sent through: the handler's own refusal says so.
+    const operation = item
+      ? SlackHandler.followupReactionOperation(role, item.state)
+      : role === 'sendNow'
+        ? 'send-now'
+        : 'cancel';
+    if (!operation) {
+      const state = item?.state ?? 'unknown';
+      return {
+        ok: false,
+        status: 409,
+        message:
+          (item && SlackHandler.followupReactionRefusal(role, item.state)) ??
+          `지금 상태(${state})에서는 할 수 없습니다 — 항목은 그대로 둡니다.`,
+      };
+    }
+
+    const said: Array<{ text: string; refused: boolean }> = [];
+    let open = true;
+    const respond: FollowupRespond = async (message, verdict) => {
+      const text = typeof message?.text === 'string' ? message.text : '';
+      if (open) said.push({ text, refused: verdict === 'refused' });
+      else this.logger.info('Dashboard queue action replied after the request ended', { itemId: request.itemId, text });
+      return undefined;
+    };
+    const value = {
+      sessionKey: request.sessionKey,
+      itemId: request.itemId,
+      epoch: request.epoch,
+      turnEpoch: request.turnEpoch,
+    };
+    const click = provenFollowupClick(owner);
+    try {
+      if (operation === 'send-now') await handleFollowupSendNow(deps, click, respond, value);
+      else if (operation === 'retry') await handleFollowupRetry(deps, click, respond, value);
+      else await handleFollowupCancel(deps, click, respond, value);
+    } finally {
+      open = false;
+    }
+    const refusal = said.find((entry) => entry.refused);
+    if (refusal) return { ok: false, status: 409, message: refusal.text };
+    const receipt = said.filter((entry) => entry.text).pop();
+    return receipt ? { ok: true, message: receipt.text } : { ok: true };
+  }
+
+  /**
+   * Edit a queued item from the dashboard (the panel's ✎). The same door the
+   * Slack message edit uses — `editQueued`, `queued` only, never a goal's opening
+   * turn ({@link isGoalOpeningFollowup}) — with the one rule a Slack edit gets
+   * from Slack itself: only the author rewrites a message. The owner may cancel
+   * someone else's note, but putting the owner's words under another author
+   * would be the clicker rewriting the item (A30).
+   */
+  private async editFollowupFromDashboard(
+    request: { sessionKey: string; itemId: string; epoch: number; text?: string },
+    owner: string,
+  ): Promise<{ ok: true } | { ok: false; status: number; message: string }> {
+    const queue = this.followupQueue;
+    const text = request.text ?? '';
+    const item = queue?.get(request.sessionKey, request.itemId);
+    if (!queue || !item) return { ok: false, status: 409, message: '이미 큐에 없는 항목입니다.' };
+    if (item.message?.user !== owner) {
+      return {
+        ok: false,
+        status: 403,
+        message: '다른 사람이 보낸 메시지는 수정할 수 없습니다 — 보낸 사람만 고칠 수 있습니다.',
+      };
+    }
+    if (SlackHandler.isGoalOpeningFollowup(item)) {
+      return {
+        ok: false,
+        status: 409,
+        message:
+          '이 goal 명령은 이미 실행되어 수정할 수 없습니다 — goal을 바꾸려면 goal 목록에서 삭제하고 새로 추가해 주세요.',
+      };
+    }
+    const result = queue.editQueued(request.sessionKey, request.itemId, request.epoch, text);
+    if (!result.ok) return { ok: false, status: 409, message: SlackHandler.dashboardEditRefusal(result.reason, item) };
+    await this.refreshFollowupSurface(request.sessionKey);
+    return { ok: true };
+  }
+
+  /** Why an Edit did not land — the row stays as it is in every case (A13/A29). */
+  private static dashboardEditRefusal(reason: string, item: FollowupItem): string {
+    if (reason === 'stale-epoch') return '이미 바뀐 항목입니다 — 목록을 최신 상태로 갱신했습니다. 다시 수정해 주세요.';
+    if (reason === 'not-found') return '이미 큐에 없는 항목입니다.';
+    if (reason !== 'invalid-state') return `수정하지 못했습니다 (${reason}) — 항목은 그대로 둡니다.`;
+    if (item.state === 'paused') {
+      return '보류된 항목이라 수정할 수 없습니다 — 지금 보내기로 실행하거나, 고친 내용은 새 메시지로 보내 주세요.';
+    }
+    if (item.state === 'uncertain') {
+      return '실행 여부가 불확실한 항목이라 수정할 수 없습니다 — 다시 시도로 실행하거나, 고친 내용은 새 메시지로 보내 주세요.';
+    }
+    return '이미 전달·실행된 메시지라 수정할 수 없습니다.';
   }
 
   /**

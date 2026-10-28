@@ -2931,6 +2931,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         '_panelOnQuestion',
       ],
       {
+        // affectUI batch 2b: openPanel gives each opening a fresh <ui-agent-steering>; this harness has no composer.
+        pcFreshSteer: () => {},
         document: { getElementById: el },
         fetch: fetchImpl,
         // The single-choice question's approval-card slot is written by a morph.

@@ -31,6 +31,8 @@ import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { constants as zlibConstants } from 'node:zlib';
+import type { FollowupItem, FollowupItemState } from '@soma/slack/followup-queue';
+import type { FollowupQueueView } from '@soma/slack/followup-queue-blocks';
 import { sumLiveUsage } from '@soma/slack/live-usage';
 import { livePendingModelSwitch } from '@soma/slack/model-switch';
 import type { FastifyInstance } from 'fastify';
@@ -404,6 +406,13 @@ export interface KanbanSession {
     title?: string;
     description?: string;
   };
+  /**
+   * The session's follow-up queue as the panel's <ui-agent-steering> lists it
+   * (dashboard batch 2): the notes still waiting, being handed over or failed,
+   * with the generations an action on them must carry. Absent when there is
+   * nothing to show.
+   */
+  followups?: DashboardFollowups;
 }
 
 /** One task as the dashboard shows it (a `TaskRecord` of `session/task-ledger.ts`). */
@@ -1040,6 +1049,113 @@ export function setDashboardTrashHandler(fn: TrashHandler): void {
 }
 export function setDashboardCommandHandler(fn: CommandHandler): void {
   _commandHandlerFn = fn;
+}
+
+// ── Follow-up queue (dashboard batch 2 — <ui-agent-steering>) ──────
+
+/** One queue item as the panel lists it. */
+export interface DashboardFollowupItem {
+  id: string;
+  /** `message.text` as it will run (an edit replaces it). */
+  text: string;
+  /** Names of the files that came with it. */
+  files: string[];
+  /** Who wrote it — only when that is not the session's owner (someone else in the thread). */
+  author?: string;
+  enqueuedAt: number;
+  state: FollowupItemState;
+  stateReason?: string;
+  /** The item's CAS generation: every action on it sends it back. */
+  epoch: number;
+  /** Edit is offered: `queued`, the owner's own words, not a goal's opening turn (the server checks again). */
+  editable: boolean;
+}
+export interface DashboardFollowups {
+  /** The session's turn generation (the control view's): Send now sends it back. */
+  turnEpoch: number;
+  items: DashboardFollowupItem[];
+}
+export type DashboardFollowupOp = 'promote' | 'cancel' | 'edit';
+export interface DashboardFollowupRequest {
+  sessionKey: string;
+  itemId: string;
+  op: DashboardFollowupOp;
+  epoch: number;
+  turnEpoch: number;
+  text?: string;
+}
+/** A refusal carries the queue's own words (the item stays) and the status the route answers with. */
+export type DashboardFollowupOutcome = { ok: true; message?: string } | { ok: false; status: number; message: string };
+/**
+ * The queue behind the panel (wired in src/index.ts to SlackHandler): `view` is
+ * the CONTROL view (`getFollowupView` — its turnEpoch is what Send now is
+ * fenced against), `act` runs Send now / Retry / Cancel through the Slack
+ * controls' own handlers and Edit through `editQueued`.
+ */
+export interface DashboardFollowupHandler {
+  view(sessionKey: string): FollowupQueueView | undefined;
+  act(request: DashboardFollowupRequest): Promise<DashboardFollowupOutcome>;
+}
+let _followupHandler: DashboardFollowupHandler | null = null;
+export function setDashboardFollowupHandler(handler: DashboardFollowupHandler | null): void {
+  _followupHandler = handler;
+}
+
+/** States a note still has a control in; `failed` keeps Retry / Cancel until one is used. */
+const FOLLOWUP_SHOWN_STATES: readonly FollowupItemState[] = [
+  'queued',
+  'paused',
+  'steered',
+  'reserved',
+  'claimed',
+  'dispatched',
+  'uncertain',
+  'failed',
+];
+/** `failed` is history (nothing clears it but Retry or Cancel): the newest few are shown, not all of them. */
+const FOLLOWUP_SHOWN_FAILED = 5;
+/** A reason that only repeats the state (`steered`) says nothing the state does not. */
+const FOLLOWUP_STATE_ECHO = new Set<string>(['steered', 'consumed']);
+
+/** The session payload's queue: what the panel lists, oldest first (the queue's arrival order). */
+export function followupsOf(sessionKey: string, ownerId: string | undefined): DashboardFollowups | undefined {
+  const view = _followupHandler?.view(sessionKey);
+  if (!view) return undefined;
+  const failed = view.items.filter((item) => item.state === 'failed').slice(-FOLLOWUP_SHOWN_FAILED);
+  const shown = view.items.filter(
+    (item) => FOLLOWUP_SHOWN_STATES.includes(item.state) && (item.state !== 'failed' || failed.includes(item)),
+  );
+  if (shown.length === 0) return undefined;
+  let names: Map<string, string> | undefined;
+  const nameOf = (userId: string): string => {
+    if (!names) {
+      names = new Map();
+      for (const [, s] of getAllSessions()) if (s?.ownerId && s.ownerName) names.set(s.ownerId, s.ownerName);
+    }
+    return names.get(userId) ?? userId;
+  };
+  return {
+    turnEpoch: view.turnEpoch ?? 0,
+    items: shown.map((item: FollowupItem) => {
+      const author = item.message?.user;
+      const out: DashboardFollowupItem = {
+        id: item.id,
+        text: typeof item.message?.text === 'string' ? item.message.text : '',
+        files: (item.message?.files ?? []).map((f) => String(f?.name || 'file')),
+        enqueuedAt: item.enqueuedAt,
+        state: item.state,
+        epoch: item.epoch,
+        editable:
+          item.state === 'queued' &&
+          !!author &&
+          author === ownerId &&
+          item.message?.routeContext?.goalOpeningId === undefined,
+      };
+      if (author && author !== ownerId) out.author = nameOf(author);
+      if (item.stateReason && !FOLLOWUP_STATE_ECHO.has(item.stateReason)) out.stateReason = item.stateReason;
+      return out;
+    }),
+  };
 }
 
 /**
@@ -1689,6 +1805,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...(autoResume ? { autoResume } : {}),
     artifacts: cardArtifacts(s.conversationId),
     userMedia: cardUserMedia(s.conversationId),
+    followups: followupsOf(key, s.ownerId),
     pendingQuestion: s.actionPanel?.pendingQuestion
       ? s.actionPanel.pendingQuestion.type === 'user_choice'
         ? {
@@ -2854,6 +2971,72 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // The panel's follow-up queue (dashboard batch 2, <ui-agent-steering>): Send now
+  // (Retry on a failed note), Cancel and Edit on one item. Owner-only like Stop —
+  // the same gate — and carrying the generation the panel showed: the item's
+  // epoch, and the session's turnEpoch that Send now is fenced against. A
+  // refusal answers with the queue's own words; the item stays where it was.
+  server.post<{
+    Params: { key: string; itemId: string; op: string };
+    Body: { epoch?: unknown; turnEpoch?: unknown; text?: unknown };
+  }>(
+    '/api/dashboard/session/:key/queue/:itemId/:op',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { itemId, op } = request.params;
+      const body = request.body || {};
+      if (op !== 'promote' && op !== 'cancel' && op !== 'edit') {
+        reply.status(404).send({ error: "op must be 'promote', 'cancel' or 'edit'" });
+        return;
+      }
+      if (!itemId || itemId.length > 400) {
+        reply.status(400).send({ error: 'itemId is required' });
+        return;
+      }
+      const generation = (v: unknown): v is number => typeof v === 'number' && Number.isSafeInteger(v) && v >= 0;
+      if (!generation(body.epoch) || !generation(body.turnEpoch)) {
+        reply.status(400).send({ error: 'epoch and turnEpoch are required (the generation the panel showed)' });
+        return;
+      }
+      let text: string | undefined;
+      if (op === 'edit') {
+        if (typeof body.text !== 'string' || !body.text.trim()) {
+          reply.status(400).send({ error: 'text is required and must be a non-empty string' });
+          return;
+        }
+        if (body.text.length > NEW_TASK_LIMITS.maxPromptChars) {
+          reply.status(400).send({ error: `text exceeds max length (${NEW_TASK_LIMITS.maxPromptChars} chars)` });
+          return;
+        }
+        text = body.text.trim();
+      }
+      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      if (!resolved) return;
+      const { originalKey } = resolved;
+      if (!_followupHandler) {
+        reply.status(501).send({ error: 'Follow-up queue handler not configured' });
+        return;
+      }
+      try {
+        const outcome = await _followupHandler.act({
+          sessionKey: originalKey,
+          itemId,
+          op,
+          epoch: body.epoch,
+          turnEpoch: body.turnEpoch,
+          ...(text !== undefined ? { text } : {}),
+        });
+        // Whatever the queue answered, the panel gets the queue as it is now.
+        scheduleLiveSessionUpdate(originalKey);
+        if (outcome.ok) reply.send(outcome.message ? { ok: true, message: outcome.message } : { ok: true });
+        else reply.status(outcome.status).send({ error: outcome.message });
+      } catch (error) {
+        logger.error('Error acting on the follow-up queue', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
   // ── Goal list (work item) ──
 
   server.post<{
@@ -3440,6 +3623,7 @@ function renderDashboardPage(userId?: string): string {
 <title>soma-work Dashboard</title>
 <script type="module" src="/dashboard/ui/tool-call-card.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/agent-tree.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/agent-steering.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/approval-card.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/toaster.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/compact-breakdown.js?v=${UI_LIB_VERSION}"></script>
@@ -5660,41 +5844,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   background: var(--surface);
   flex-shrink: 0;
 }
-.panel-command-row {
-  display: flex;
-  gap: 8px;
-}
-.cmd-hint {
-  font-size: 11px;
-  color: var(--text-tertiary);
-  padding: 0 0 6px 0;
-  text-align: center;
-  font-style: italic;
-}
-.panel-command textarea {
-  flex: 1;
-  min-width: 0; /* shrinks before Send is pushed out of the panel (folded toggle on the same line) */
-  resize: none;
-  max-height: 200px;
-  line-height: 1.45;
-  font-family: inherit;
-  overflow-y: auto;
-  background: var(--surface-raised);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  color: var(--text);
-  font-size: 13px;
-  padding: 8px 12px;
-  outline: none;
-  min-height: 36px;
-  transition: border-color var(--speed) var(--ease);
-}
-.panel-command textarea:focus { border-color: var(--accent); }
-.panel-command textarea::placeholder { color: var(--text-tertiary); }
-.panel-command textarea:disabled { opacity: 0.6; cursor: not-allowed; }
-.panel-command-row { align-items: flex-end; }
-.panel-command.is-drag .panel-command-row textarea { border-color: var(--accent); border-style: dashed; }
-.pc-tools { display: flex; align-items: center; gap: 2px; flex: none; padding-bottom: 2px; }
+/* The composer is <ui-agent-steering> (batch 2): its field, Send, queue and key
+   hints are the element's; these are the page's slotted tools and chips. A file
+   dragged over the composer outlines it. */
+.pc-steer-wrap { display: block; min-width: 0; border-radius: var(--radius); }
+.panel-command.is-drag .pc-steer-wrap { outline: 2px dashed var(--accent); outline-offset: 2px; }
+.pc-tools { display: flex; align-items: center; gap: 2px; flex: none; }
 .pc-tool { display: inline-grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 8px; background: none; color: var(--text-secondary); cursor: pointer; }
 .pc-tool svg { width: 18px; height: 18px; }
 .pc-tool:hover { color: var(--text); background: var(--surface-raised); }
@@ -5705,22 +5860,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .pc-attachments:empty { display: none; }
 .pc-recorder { margin: 0 0 8px; }
 .pc-error { margin: 0 0 6px; font-size: 12px; color: var(--st-fail); }
-.btn-send {
-  flex-shrink: 0;
-  background: var(--accent);
-  border: none;
-  border-radius: var(--radius);
-  color: var(--bg);
-  font-size: 12px;
-  font-weight: 700;
-  padding: 8px 14px;
-  cursor: pointer;
-  min-height: 36px;
-  transition: background var(--speed) var(--ease);
-  flex-shrink: 0;
-}
-.btn-send:hover { background: var(--accent-hover); }
-.btn-send:disabled { background: var(--surface-raised); color: var(--text-tertiary); cursor: default; }
 
 /* ── DONE by finish day (SSOT 2026-10-22 T11/T12) ── */
 #cards-done { gap: 4px; }
@@ -5896,8 +6035,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* ── TOUCH — coarse pointer enlargement ── */
 @media (pointer: coarse) {
   .btn-action { min-height: 40px; padding: 8px 12px; font-size: 12px; }
-  .btn-send { min-height: 44px; padding: 12px 16px; }
-  .panel-command textarea { min-height: 44px; padding: 11px 14px; }
   .pc-tool, .panel-tab, .panel-sec-head, .panel-detail-toggle { min-height: 44px; }
   .pc-tool { width: 44px; height: 44px; }
   .panel-close { width: 40px; height: 40px; }
@@ -5928,17 +6065,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .panel-command .panel-controls .pc-scope { display: none; }
   .panel-command .panel-controls .mp-trigger { max-width: 100%; }
   .panel-command .panel-controls .cb-model-note { flex-basis: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .panel-command .cmd-hint { flex-basis: 100%; }
-  /* Task view T1.5: the session's model (model · effort) above the steering
-     input, as on a wide screen — it shares the first line with the tools; the
-     field and Send take the line under it (the row's box steps aside). */
+  /* Task view T1.5: the session's model (model · effort) on its own line above
+     the composer — the tools sit inside <ui-agent-steering>'s field (batch 2). */
   .panel-command { row-gap: 6px; }
-  .panel-command .panel-command-row { display: contents; }
-  .panel-command .panel-controls { order: 1; max-width: calc(100% - 150px); min-width: 0; }
-  .panel-command .pc-tools { order: 2; margin-left: auto; }
-  .panel-command .pc-attachments, .panel-command .pc-recorder, .panel-command .pc-error { order: 3; flex-basis: 100%; }
-  .panel-command textarea { order: 4; flex: 1 1 calc(100% - 140px); min-width: 0; }
-  .panel-command .btn-send { order: 5; }
+  .panel-command .panel-controls { min-width: 0; max-width: 100%; }
+  .panel-command .pc-steer-wrap { flex-basis: 100%; }
 }
 @media (max-width: 639px), (pointer: coarse) {
   .topbar .nav a, .topbar .nav .user-select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }
@@ -5958,7 +6089,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .wl-tool > .wl-row, .wl-tool_result > .wl-row, .worklog-list .wl-row.wl-line { flex-direction: row; align-items: center; }
   .turn-raw summary.turn-expand-btn { min-height: 44px; display: flex; align-items: center; }
   .panel-question .btn-choice, .mc-q-choices .btn-choice, .mc-q-edit-btn, .mc-btn-submit, .mc-btn-reset { min-height: 44px; }
-  .mc-custom-input input, .mc-custom-input button, .btn-send, .panel-command textarea { min-height: 44px; }
+  .mc-custom-input input, .mc-custom-input button { min-height: 44px; }
 }
 /* The model · effort menu's own touch / narrow sizes and reduced motion — after the shared blocks, which stay untouched (re-model-picker D13/D15). */
 @media (pointer: coarse), (max-width: 639px) {
@@ -6799,7 +6930,7 @@ body.nt-open .new-task-fab { display: none !important; }
 }
 @media (pointer: coarse) {
   /* Responsive (SSOT 2026-10-24) — 16px text: iOS does not zoom into a focused input. */
-  .panel-command textarea, .mc-custom-input input { font-size: 16px; }
+  .mc-custom-input input { font-size: 16px; }
   /* The merged cron drawer and lane (#374): 44px touch targets. */
   .cron-drawer-close { min-width: 44px; min-height: 44px; }
   .cron-history-btn { min-height: 44px; }
@@ -7157,26 +7288,29 @@ body.nt-open .new-task-fab { display: none !important; }
       </section>
     </div>
     </div>
-    <!-- Command row is always visible; disabled + hint for terminated sessions. -->
+    <!-- Command row is always visible: read-only for a viewer who is not the owner, off once the session ended. -->
     <div class="panel-command" id="panel-command">
       <!-- Model · effort beside the composer (spec 13): their own container — the input is never morphed. -->
       <div class="panel-controls" id="panel-controls" aria-label="이 세션의 모델과 effort"></div>
-      <div class="cmd-hint" id="cmd-hint" style="display:none">&#xC774; &#xC138;&#xC158;&#xC740; &#xC885;&#xB8CC;&#xB418;&#xC5C8;&#xC2B5;&#xB2C8;&#xB2E4; &mdash; &#xBA54;&#xC2DC;&#xC9C0;&#xB97C; &#xBCF4;&#xB0BC; &#xC218; &#xC5C6;&#xC2B5;&#xB2C8;&#xB2E4;</div>
-      <!-- Steering composer (task view T1.5): multiline; images by paste, drop or picker; files; voice. -->
-      <div class="pc-attachments" id="pc-attachments" aria-live="polite" aria-label="첨부 파일"></div>
-      <div class="nt-recorder pc-recorder" id="pc-recorder" role="status" aria-label="녹음 중" hidden><span class="nt-rec-dot" aria-hidden="true"></span><span id="pc-rec-time">0:00</span><span class="nt-rec-meter" aria-hidden="true"><span class="nt-rec-level" id="pc-rec-level"></span></span><button type="button" class="nt-rec-btn" onclick="pcStopRecording(false)">취소</button><button type="button" class="nt-rec-btn is-primary" onclick="pcStopRecording(true)">완료</button></div>
-      <p class="pc-error" id="pc-error" role="alert" hidden></p>
-      <div class="panel-command-row" id="pc-row">
-        <div class="pc-tools">
-          <button type="button" class="pc-tool" id="pc-attach" aria-label="파일 첨부" title="파일 첨부" onclick="document.getElementById('pc-file-input').click()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.5 9.5l-5.8 5.8a3.5 3.5 0 0 1-5-5l6.3-6.3a2.3 2.3 0 0 1 3.3 3.3l-6.2 6.2a1.1 1.1 0 0 1-1.6-1.6l5.6-5.6"/></svg></button>
-          <button type="button" class="pc-tool" id="pc-image" aria-label="이미지 첨부" title="이미지 첨부 (붙여넣기·끌어놓기도 됩니다)" onclick="document.getElementById('pc-image-input').click()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2"/><circle cx="7.5" cy="8.5" r="1.4"/><path d="M3.5 14l4-4 3 3 2-2 4 3.5"/></svg></button>
-          <button type="button" class="pc-tool pc-tool-mic" id="pc-mic" aria-label="음성 녹음" aria-pressed="false" title="음성 녹음" onclick="pcToggleRecording()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><rect x="7.5" y="2.5" width="5" height="9.5" rx="2.5"/><path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5"/></svg></button>
-          <input type="file" id="pc-file-input" multiple hidden onchange="pcAddFiles(this.files); this.value = ''">
-          <input type="file" id="pc-image-input" accept="image/*" multiple hidden onchange="pcAddFiles(this.files); this.value = ''">
-          <input type="file" id="pc-audio-input" accept="audio/*" capture hidden onchange="pcAddFiles(this.files); this.value = ''">
-        </div>
-        <textarea id="cmd-input" rows="1" placeholder="Send message to session..." aria-label="이 세션에 지시" title="Enter 보내기 · Shift+Enter 줄바꿈 · 이미지는 붙여넣기나 끌어놓기" onkeydown="pcKeydown(event)" oninput="pcAutosize()"></textarea>
-        <button class="btn-send" id="cmd-send" onclick="sendCommand()">Send</button>
+      <!-- The composer and the session's follow-up queue — @2lab.ai/ui <ui-agent-steering> (dashboard batch 2):
+           multiline; images by paste, drop or picker; files; voice. Its slots hold this page's tools and file chips.
+           The token wrapper (.ui-tok) hands it the dashboard tokens; renderPanelComposer gives it its data. -->
+      <div class="ui-tok pc-steer-wrap">
+        <ui-agent-steering id="cmd-steer" lang="ko">
+          <div slot="attachments" class="pc-top">
+            <div class="pc-attachments" id="pc-attachments" aria-live="polite" aria-label="첨부 파일"></div>
+            <div class="nt-recorder pc-recorder" id="pc-recorder" role="status" aria-label="녹음 중" hidden><span class="nt-rec-dot" aria-hidden="true"></span><span id="pc-rec-time">0:00</span><span class="nt-rec-meter" aria-hidden="true"><span class="nt-rec-level" id="pc-rec-level"></span></span><button type="button" class="nt-rec-btn" onclick="pcStopRecording(false)">취소</button><button type="button" class="nt-rec-btn is-primary" onclick="pcStopRecording(true)">완료</button></div>
+            <p class="pc-error" id="pc-error" role="alert" hidden></p>
+          </div>
+          <span slot="tools" class="pc-tools">
+            <button type="button" class="pc-tool" id="pc-attach" aria-label="파일 첨부" title="파일 첨부" onclick="document.getElementById('pc-file-input').click()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.5 9.5l-5.8 5.8a3.5 3.5 0 0 1-5-5l6.3-6.3a2.3 2.3 0 0 1 3.3 3.3l-6.2 6.2a1.1 1.1 0 0 1-1.6-1.6l5.6-5.6"/></svg></button>
+            <button type="button" class="pc-tool" id="pc-image" aria-label="이미지 첨부" title="이미지 첨부 (붙여넣기·끌어놓기도 됩니다)" onclick="document.getElementById('pc-image-input').click()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2"/><circle cx="7.5" cy="8.5" r="1.4"/><path d="M3.5 14l4-4 3 3 2-2 4 3.5"/></svg></button>
+            <button type="button" class="pc-tool pc-tool-mic" id="pc-mic" aria-label="음성 녹음" aria-pressed="false" title="음성 녹음" onclick="pcToggleRecording()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><rect x="7.5" y="2.5" width="5" height="9.5" rx="2.5"/><path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5"/></svg></button>
+            <input type="file" id="pc-file-input" multiple hidden onchange="pcAddFiles(this.files); this.value = ''">
+            <input type="file" id="pc-image-input" accept="image/*" multiple hidden onchange="pcAddFiles(this.files); this.value = ''">
+            <input type="file" id="pc-audio-input" accept="audio/*" capture hidden onchange="pcAddFiles(this.files); this.value = ''">
+          </span>
+        </ui-agent-steering>
       </div>
     </div>
   </div>
@@ -10741,40 +10875,68 @@ function writePanelPart(el, html) {
   return true;
 }
 
-// The composer's state follows the session — also live (spec 13: the panel's
-// own Close can end the session it shows). Non-owner takes precedence over
-// closed so the message is informative; fail closed on a missing ownerId. A
-// live update writes only when the state changes (an in-flight send keeps its button).
+// The composer and the session's follow-up queue — @2lab.ai/ui <ui-agent-steering>
+// (dashboard batch 2) — follow the session, also live (spec 13: the panel's own
+// Close can end the session it shows). Non-owner takes precedence over closed
+// (read-only: the queue shows, nothing can be done — like Stop); fail closed on a
+// missing ownerId. The element keeps the text being typed (an IME composition
+// too) across every update, so its data is written whenever it changed; a change
+// of mode also switches the page's own tools and drops its files.
 function renderPanelComposer(s, force) {
   var host = document.getElementById('panel-command');
-  if (!host || !s) return;
+  var el = document.getElementById('cmd-steer');
+  if (!host || !el || !s) return;
+  var mode = pcModeOf(s);
+  if (force || host._mode !== mode) {
+    host._mode = mode;
+    // Task view T1.5: the composer's tools follow the field.
+    ['pc-attach', 'pc-image', 'pc-mic'].forEach(function(id) {
+      var tool = document.getElementById(id);
+      if (tool) tool.disabled = mode !== 'open';
+    });
+    if (mode !== 'open') pcReset();
+  }
+  var data = steeringData(s, mode, pcHeldFiles());
+  var sig = JSON.stringify(data);
+  if (!force && el._sig === sig) return;
+  el._sig = sig;
+  el.data = data;
+}
+function pcModeOf(s) {
   var isOwnerPanel = !!s.ownerId && s.ownerId === currentUserId;
   var isClosed = s.terminated || s.sessionState === 'SLEEPING';
-  var mode = !isOwnerPanel ? 'readonly' : (isClosed ? 'closed' : 'open');
-  if (!force && host._mode === mode) return;
-  host._mode = mode;
-  var cmdInput = document.getElementById('cmd-input');
-  var cmdBtn = document.getElementById('cmd-send');
-  var cmdHint = document.getElementById('cmd-hint');
-  // Task view T1.5: the composer's tools follow the field.
-  ['pc-attach', 'pc-image', 'pc-mic'].forEach(function(id) {
-    var tool = document.getElementById(id);
-    if (tool) tool.disabled = mode !== 'open';
-  });
-  if (mode !== 'open') pcReset();
-  if (mode === 'readonly') {
-    if (cmdInput) { cmdInput.disabled = true; cmdInput.placeholder = READ_ONLY_MSG; }
-    if (cmdBtn) { cmdBtn.disabled = true; }
-    if (cmdHint) { cmdHint.style.display = 'none'; }
-  } else if (mode === 'closed') {
-    if (cmdInput) { cmdInput.disabled = true; cmdInput.placeholder = '\uC774 \uC138\uC158\uC740 \uC885\uB8CC\uB418\uC5C8\uC2B5\uB2C8\uB2E4'; }
-    if (cmdBtn) { cmdBtn.disabled = true; }
-    if (cmdHint) { cmdHint.style.display = ''; }
-  } else {
-    if (cmdInput) { cmdInput.disabled = false; cmdInput.placeholder = 'Send message to session...'; }
-    if (cmdBtn) { cmdBtn.disabled = false; }
-    if (cmdHint) { cmdHint.style.display = 'none'; }
+  return !isOwnerPanel ? 'readonly' : (isClosed ? 'closed' : 'open');
+}
+// The queue's ten states as the element's five: paused → queued (Send now runs
+// it), reserved / claimed / dispatched → sending, uncertain → failed (Retry).
+// Resolved and cancelled notes are history the server does not send.
+var STEER_STATE = { queued: 'queued', paused: 'queued', steered: 'steered', reserved: 'sending', claimed: 'sending', dispatched: 'sending', failed: 'failed', uncertain: 'failed' };
+// The element's data from the session payload (KanbanSession.followups): running
+// while a turn works (Enter then queues for the next step), canAct for the owner
+// only, Edit only where the server offers it, and the files this page holds for
+// the next message (a recording counts — the send files it first).
+function steeringData(s, mode, files) {
+  var list = (s.followups && s.followups.items) || [];
+  var items = [];
+  for (var i = 0; i < list.length; i++) {
+    var f = list[i];
+    var state = f && STEER_STATE[f.state];
+    if (!state || !f.id) continue;
+    var it = { id: String(f.id), text: String(f.text || ''), state: state, canEdit: !!f.editable };
+    if (f.enqueuedAt) it.at = Number(f.enqueuedAt);
+    if (f.author) it.author = String(f.author);
+    if (f.stateReason) it.reason = String(f.stateReason);
+    if (f.files && f.files.length) it.files = f.files.map(String);
+    items.push(it);
   }
+  return { running: mode !== 'closed' && s.activityState === 'working', canAct: mode !== 'readonly', disabled: mode === 'closed', items: items, attachments: files || 0 };
+}
+// The note the element names (its host id) as the payload has it: the generation
+// an action on it carries. A local row (a send that failed) is not in the queue.
+function steerItemOf(s, id) {
+  var list = (s && s.followups && s.followups.items) || [];
+  for (var i = 0; i < list.length; i++) if (list[i] && String(list[i].id) === id) return list[i];
+  return null;
 }
 
 // The head chip: the session's status in the root vocabulary (only the icon
@@ -15733,19 +15895,16 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // Spec 12 §4.3: the agent whose tasks and work log the panel shows ('' = main).
   _panelAgent = agentId ? String(agentId) : '';
 
-  // Unconditional UI reset on card switch — an in-flight send from a previous
-  // card must never leak "Sending..." / disabled state into this card. The
-  // in-flight request still completes in the background; only the UI is reset.
-  // Re-landing on the session already open (관리 →, 전체 task →, a tree item)
-  // keeps the message being typed and a send in flight (spec 13).
+  // A card switch starts the composer clean: a fresh <ui-agent-steering> (the
+  // old one's text, notes in flight and failed sends were that session's) and no
+  // files. A send still in flight completes in the background without touching
+  // this card. Re-landing on the session already open (관리 →, 전체 task →, a tree
+  // item) keeps the message being typed and a send in flight (spec 13).
   var sameSession = panelOpen && panelSessionKey === sessionKey;
-  if (!sameSession) (function resetCmdUi() {
-    var cmdInputEl = document.getElementById('cmd-input');
-    var cmdBtnEl = document.getElementById('cmd-send');
-    if (cmdInputEl) { cmdInputEl.value = ''; cmdInputEl.disabled = false; }
-    if (cmdBtnEl) { cmdBtnEl.disabled = false; cmdBtnEl.textContent = 'Send'; }
+  if (!sameSession) {
+    pcFreshSteer();
     pcReset();
-  })();
+  }
 
   // Reset pagination state before loading this session's turns. A new panel
   // generation makes every request of the previous one stale — including a
@@ -17100,19 +17259,22 @@ function panelOlderStep(armed, inZone, canLoad) {
 let _lastSentContent = '';
 let _lastSentTime = 0;
 
-async function sendCommand() {
-  const input = document.getElementById('cmd-input');
-  const btn = document.getElementById('cmd-send');
-  if (!panelSessionKey) return;
-  // Guard: do not send while the input is disabled (e.g., terminated session),
-  // or while a send is already reading its files (a second press sends nothing).
-  if (input.disabled || _pcSending) return;
-  // Capture the session this send belongs to — before any wait. We must never
-  // mutate shared UI (cmd-input/cmd-send) after the user has already switched to
-  // a different card, otherwise the new card inherits stale "Sending..." /
-  // disabled state; and an instruction is never sent to a card opened meanwhile.
+// A note from the composer — Enter, ⌘/Ctrl+Enter, Send, or Retry on a failed one
+// (<ui-agent-steering> ui-submit: text, ref) — to the session's command route, the
+// one path a dashboard instruction takes: while a turn runs the server queues it
+// (and steers it into that turn when it can — the host decides, so ⌘/Ctrl+Enter
+// goes the same way), idle it starts the next turn. The element shows the note at
+// once (running: as a row until the queue lists it); idle, the turn shows in the
+// transcript. A send that cannot go out puts the text back; one the server refuses
+// is marked failed on its row (Retry) and said in a toast.
+async function sendCommand(text, ref) {
+  var el = document.getElementById('cmd-steer');
+  if (!panelSessionKey || !el) return;
+  // Capture the session this send belongs to — before any wait: an instruction
+  // is never sent to a card opened meanwhile.
   const sendingSessionKey = panelSessionKey;
-  var msg;
+  var running = !!(el.data && el.data.running);
+  var msg = String(text || '').trim();
   var files;
   _pcSending = true;
   try {
@@ -17128,16 +17290,17 @@ async function sendCommand() {
       // filed as a chip when the recorder catches up; the text stays for a resend.
       if (!filed) {
         pcSetError('음성 녹음을 아직 마무리하는 중입니다 — 잠시 후 다시 보내 주세요');
+        pcGiveBack(el, ref, msg, sendingSessionKey);
         return;
       }
     }
-    msg = input.value.trim();
     files = _pcFiles.slice();
-    if (!pcCanSend(msg, files)) return;
+    if (!pcCanSend(msg, files)) { pcGiveBack(el, ref, msg, sendingSessionKey); return; }
     // Every file read in full (a failed read removes its chip and says so).
     try {
       await Promise.all(files.map(function(f) { return f.ready; }));
     } catch (_e) {
+      pcGiveBack(el, ref, msg, sendingSessionKey);
       return;
     }
   } finally {
@@ -17146,88 +17309,105 @@ async function sendCommand() {
   // The card changed while the files were read: this instruction was for the other one (its files went with pcReset).
   if (panelSessionKey !== sendingSessionKey) return;
 
-  // Optimistic: immediately show user turn in panel (its files by name — the
-  // recorded turn brings their previews).
-  const shown = msg + (files.length ? (msg ? '\\n' : '') + '📎 ' + files.map(function(f) { return f.name; }).join(', ') : '');
-  _lastSentContent = msg;
-  _lastSentTime = Date.now();
-  const optimisticTurn = {
-    id: 'optimistic-' + Date.now(),
-    role: 'user',
-    timestamp: Date.now(),
-    userName: 'You',
-    rawContent: shown,
-    origin: { by: 'user' },
-    _optimistic: true,
-  };
-  appendTurnToPanel(optimisticTurn);
+  // Optimistic, idle only: the turn this starts shows in the transcript at once
+  // (its files by name — the recorded turn brings their previews). A note sent
+  // while a turn runs shows in the queue instead.
+  var optimisticId = '';
+  if (!running) {
+    const shown = msg + (files.length ? (msg ? '\\n' : '') + '📎 ' + files.map(function(f) { return f.name; }).join(', ') : '');
+    _lastSentContent = msg;
+    _lastSentTime = Date.now();
+    optimisticId = 'optimistic-' + Date.now();
+    appendTurnToPanel({
+      id: optimisticId,
+      role: 'user',
+      timestamp: Date.now(),
+      userName: 'You',
+      rawContent: shown,
+      origin: { by: 'user' },
+      _optimistic: true,
+    });
+  }
 
-  btn.disabled = true;
-  btn.textContent = 'Sending...';
-  input.disabled = true;
-  input.value = '';
-  pcAutosize();
-
+  var why = '';
   try {
-    const cmdHeaders = { 'Content-Type': 'application/json' };
-    if (_csrfToken) cmdHeaders['X-CSRF-Token'] = _csrfToken;
     const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(sendingSessionKey) + '/command';
-    const cmdBody = JSON.stringify(pcCommandBody(msg, files));
-    let res = await fetch(cmdUrl, { method: 'POST', headers: cmdHeaders, body: cmdBody });
-    if (res.status === 403) {
-      await refreshCsrfToken();
-      const retryHeaders = { 'Content-Type': 'application/json' };
-      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
-      res = await fetch(cmdUrl, { method: 'POST', headers: retryHeaders, body: cmdBody });
-    }
-    // Sent: the files went with it. Failed: they stay attached for the retry.
-    if (res.ok && panelSessionKey === sendingSessionKey) {
-      files.forEach(function(f) { pcRemoveFile(f.id); });
-    }
+    const res = await acPost(cmdUrl, JSON.stringify(pcCommandBody(msg, files)));
     if (!res.ok) {
-      // Only mark the optimistic turn as failed if the user is still on the same
-      // card; otherwise the turns in the DOM belong to a different session. Found by
-      // its own id, not by being the list's last child: the 응답 작성 중 row may follow
-      // it (re-ai-answer D12).
-      if (panelSessionKey === sendingSessionKey) {
-        var lastTurn = document.querySelector('.turn.user[data-turn-id="' + optimisticTurn.id + '"]');
-        if (lastTurn) {
-          lastTurn.style.borderColor = '#e74c3c';
-          lastTurn.style.opacity = '0.7';
-          // The retry holds the message in a closure: a multiline one cannot break an inline handler.
-          lastTurn.insertAdjacentHTML('beforeend', '<div style="color:#e74c3c;font-size:0.75em;margin-top:4px">Failed to send. <a href="#" class="cmd-retry">Retry</a></div>');
-          var retryA = lastTurn.querySelector('.cmd-retry:last-of-type');
-          if (retryA) retryA.addEventListener('click', function(ev) { ev.preventDefault(); sendRetry(msg); });
-        }
-      }
+      var data = {};
+      try { data = await res.json(); } catch (_e) {}
+      why = ((data && data.error) || '') + ' (HTTP ' + res.status + ')';
     }
   } catch (e) {
-    console.error('Command error', e);
-  } finally {
-    // Only reset the input/button if we are still on the originating card.
-    // openPanel already resets UI on card switch, so skipping here prevents
-    // the late-completing fetch from clobbering the new card's clean state.
-    if (panelSessionKey === sendingSessionKey) {
-      btn.textContent = 'Send';
-      // The session's own state decides (spec 13): one closed meanwhile — from
-      // the panel's Close, Slack or the lifecycle — keeps its composer closed.
-      if (_sessionCache[sendingSessionKey]) renderPanelComposer(_sessionCache[sendingSessionKey], true);
-      else {
-        // The session left the board meanwhile (archived, a folded day): fail closed. The next
-        // live render that finds it again re-applies its real state (the mode cache is cleared).
-        btn.disabled = true;
-        input.disabled = true;
-        var cmdHost = document.getElementById('panel-command');
-        if (cmdHost) cmdHost._mode = '';
-      }
-      if (!input.disabled) input.focus();
-    }
+    why = (e && e.message) || '네트워크 오류';
   }
+  // Only the card that sent it changes: a late answer never touches the card opened meanwhile.
+  if (panelSessionKey !== sendingSessionKey) return;
+  // The session left the board meanwhile (archived, a folded day): fail closed. The next live
+  // render that finds it again re-applies its real state (the mode cache is cleared).
+  if (!_sessionCache[sendingSessionKey]) {
+    var cmdHost = document.getElementById('panel-command');
+    if (cmdHost) cmdHost._mode = '';
+    el._sig = '';
+    el.data = Object.assign({}, el.data, { disabled: true });
+  }
+  if (!why) {
+    // Sent: the files went with it. Failed: they stay attached for the retry.
+    files.forEach(function(f) { pcRemoveFile(f.id); });
+    return;
+  }
+  // Not sent: the note's row says so with Retry (the element's), and the
+  // optimistic turn leaves the transcript — found by its own id, not by being the
+  // list's last child (the 응답 작성 중 row may follow it, re-ai-answer D12).
+  if (optimisticId) {
+    var turn = document.querySelector('.turn.user[data-turn-id="' + optimisticId + '"]');
+    if (turn) turn.remove();
+  }
+  if (ref) el.setItemState(ref, 'failed', why.trim());
+  dashToast({ title: '메시지를 보내지 못했어요', description: why.trim(), tone: 'error' });
+}
+// A note that did not go out at all (a recording still being filed, a file that
+// could not be read): its row goes and its text returns to the field — unless the
+// user has typed something new there, or moved to another card.
+function pcGiveBack(el, ref, msg, key) {
+  if (ref) el.setItemState(ref, 'cancelled');
+  if (msg && panelSessionKey === key && !el.value) el.value = msg;
 }
 
-function sendRetry(msg) {
-  document.getElementById('cmd-input').value = msg;
-  sendCommand();
+// Send now (Retry on a failed note), Cancel and Edit on a queued note → the
+// session's queue route, owner-only like Stop, carrying the generation the panel
+// showed: the item's epoch and the session's turnEpoch (Send now is fenced on
+// it). The pushed list confirms the act; a refusal rolls the note back to its
+// state with the queue's own words (setItemState) and says it in a toast.
+var STEER_FAIL = { promote: '지금 보내지 못했어요', cancel: '취소하지 못했어요', edit: '수정하지 못했어요' };
+async function steerAct(op, id, text) {
+  var key = panelSessionKey;
+  var s = key ? _sessionCache[key] : null;
+  var item = steerItemOf(s, id);
+  var el = document.getElementById('cmd-steer');
+  // Not in the queue: a local row (Cancel on a failed send) — the element dropped it; nothing to tell the server.
+  if (!item || !el) return;
+  var body = { epoch: Number(item.epoch) || 0, turnEpoch: Number(s.followups && s.followups.turnEpoch) || 0 };
+  if (op === 'edit') body.text = text;
+  var ok = false;
+  var said = '';
+  try {
+    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/queue/' + encodeURIComponent(id) + '/' + op, JSON.stringify(body));
+    var data = {};
+    try { data = await res.json(); } catch (_e) {}
+    ok = res.ok;
+    said = ok ? ((data && data.message) || '') : ((data && data.error) || ('HTTP ' + res.status));
+  } catch (e) {
+    said = (e && e.message) || '네트워크 오류';
+  }
+  if (ok) {
+    // The queue's receipt (취소했습니다 …, 이미 전달되어 …) — Send now says nothing; its note moves.
+    if (said) dashToast({ title: said, tone: 'success' });
+    return;
+  }
+  // The element now shows another session's queue: the refusal is only a toast.
+  if (panelSessionKey === key && document.getElementById('cmd-steer') === el) el.setItemState(id, STEER_STATE[item.state] || 'queued', said);
+  dashToast({ title: STEER_FAIL[op] || '하지 못했어요', description: said, tone: 'error' });
 }
 
 // ── Secondary sections: LLM capacity and the CRON lane (SSOT 2026-10-24) ──
@@ -20521,15 +20701,16 @@ loadUsers();
 loadSessions();
 loadStats();
 connectWs();
-// ── Steering composer (task view T1.5) ──
-// The panel's composer: a multiline instruction to the running session with
-// images (pasted, dropped or picked), files and voice notes. Enter sends and
-// Shift+Enter breaks the line (a phone's Enter is a line break — the button
-// sends); an IME composition (한글) never sends. The files ride in the command
-// body as base64 (pcCommandBody) under the new-task limits; the server puts
-// them in the session's Slack thread like files the user attached there.
-// The pure helpers of the new-task composer are shared (ntKindOf, ntStamp,
-// ntFormatBytes, ntFormatDuration, ntPickRecorderMime, ntExtForMime).
+// ── Steering composer (task view T1.5; dashboard batch 2) ──
+// The panel's composer is <ui-agent-steering>: a multiline instruction to the
+// session above its follow-up queue. The element owns the field — Enter, Shift+
+// Enter, ⌘/Ctrl+Enter, an IME composition (한글) that never sends, a phone's Enter
+// as a line break, the field's growth — and the queue's rows; this page owns what
+// goes in its slots: images (pasted, dropped or picked), files and voice notes.
+// The files ride in the command body as base64 (pcCommandBody) under the new-task
+// limits; the server puts them in the session's Slack thread like files the user
+// attached there. The pure helpers of the new-task composer are shared (ntKindOf,
+// ntStamp, ntFormatBytes, ntFormatDuration, ntPickRecorderMime, ntExtForMime).
 var PC_LIMITS = { maxFiles: 10, maxFileBytes: 20971520, maxTotalBytes: 31457280 };
 var _pcFiles = [];
 var _pcSeq = 0;
@@ -20537,13 +20718,6 @@ var _pcRec = null;
 var _pcRecGen = 0; // bumped by pcReset: a recording (or a pending mic permission) from before belongs to no one
 var _pcFiling = null; // a stopped recording not filed yet (its done promise) — every send waits on it (#488)
 var _pcSending = false; // one send at a time, from the first wait on
-function pcEnterAction(e, touch) {
-  if (!e || e.key !== 'Enter') return 'none';
-  if (e.isComposing || e.keyCode === 229) return 'none';
-  if (e.metaKey || e.ctrlKey) return 'send';
-  if (e.shiftKey || touch) return 'newline';
-  return 'send';
-}
 function pcCanSend(message, files) {
   return String(message || '').trim().length > 0 || (files || []).length > 0;
 }
@@ -20555,18 +20729,27 @@ function pcCommandBody(message, files) {
     attachments: list.map(function(f) { return { name: f.name, mimetype: f.mimetype, data: f.data }; }),
   };
 }
-function pcKeydown(e) {
-  var act = pcEnterAction(e, ntIsTouch());
-  if (act !== 'send') return;
-  e.preventDefault();
-  sendCommand();
+// What this page holds for the next message: its files, and a recording still
+// running (the send files it first) — the element lets a note with no text go then.
+function pcHeldFiles() {
+  return (_pcFiles ? _pcFiles.length : 0) + (_pcRec ? 1 : 0);
 }
-// The field grows with its text up to its max height (CSS), then scrolls.
-function pcAutosize() {
-  var el = document.getElementById('cmd-input');
-  if (!el || !el.style) return;
-  el.style.height = 'auto';
-  el.style.height = Math.min(el.scrollHeight + 2, 200) + 'px';
+// The held files changed: the element's data follows (attachments).
+function pcSyncSteer() {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  if (s) renderPanelComposer(s);
+}
+// A fresh element for another session: what the old one showed — the text being
+// typed, notes in flight, a failed send's Retry — was the other session's. The
+// page's slotted tools and chips move across; the listeners sit on #panel-command.
+function pcFreshSteer() {
+  var old = document.getElementById('cmd-steer');
+  if (!old) return;
+  var el = document.createElement('ui-agent-steering');
+  el.id = 'cmd-steer';
+  el.setAttribute('lang', 'ko');
+  while (old.firstChild) el.appendChild(old.firstChild);
+  old.replaceWith(el);
 }
 function pcSetError(text) {
   var el = document.getElementById('pc-error');
@@ -20630,6 +20813,7 @@ function pcRenderFiles() {
       + '<button type="button" class="nt-att-remove" aria-label="' + escAttr(f.name) + ' 삭제" onclick="pcRemoveFile(' + f.id + ')">' + NT_ICON_X + '</button></div>';
   }).join('');
   box.scrollLeft = box.scrollWidth;
+  pcSyncSteer();
 }
 // Every file and any recording go with the session they were added for.
 function pcReset() {
@@ -20640,7 +20824,6 @@ function pcReset() {
   _pcFiles = [];
   pcRenderFiles();
   pcSetError('');
-  pcAutosize();
 }
 // A recording belongs to the session it was started for (gen + key): a mic
 // permission granted, or a recorder that stops, after the panel closed or moved
@@ -20698,6 +20881,7 @@ async function pcToggleRecording() {
   var mic = document.getElementById('pc-mic');
   mic.setAttribute('aria-pressed', 'true');
   mic.setAttribute('aria-label', '녹음 완료');
+  pcSyncSteer();
   state.timer = setInterval(function() {
     var sec = Math.floor((Date.now() - state.started) / 1000);
     document.getElementById('pc-rec-time').textContent = ntFormatDuration(sec);
@@ -20723,6 +20907,7 @@ function pcStopRecording(keep) {
   var mic = document.getElementById('pc-mic');
   mic.setAttribute('aria-pressed', 'false');
   mic.setAttribute('aria-label', '음성 녹음');
+  pcSyncSteer();
   // Kept and not filed yet: a send right now (or after a timed-out one) waits on
   // it. A dropped one (a reset, a cancel) leaves nothing to wait on.
   if (keep) {
@@ -20743,14 +20928,16 @@ function pcFinishRecording(state) {
   }
   if (state.resolve) state.resolve();
 }
-// Paste an image (a screenshot) into the field; drop files on the composer.
+// Paste an image (a screenshot) into the field; drop files on the composer. The
+// element's events reach #panel-command (they bubble and are composed), so they
+// keep working when pcFreshSteer swaps the element.
 function pcInit() {
-  var input = document.getElementById('cmd-input');
   var host = document.getElementById('panel-command');
-  if (!input || !host) return;
-  input.addEventListener('paste', function(e) {
+  if (!host) return;
+  var open = function() { return host._mode === 'open'; };
+  host.addEventListener('paste', function(e) {
     var files = e.clipboardData && e.clipboardData.files ? Array.prototype.slice.call(e.clipboardData.files) : [];
-    if (!files.length || input.disabled) return;
+    if (!files.length || !open()) return;
     if (!e.clipboardData.getData('text/plain')) e.preventDefault();
     files.forEach(function(f) {
       var type = f.type || 'application/octet-stream';
@@ -20759,7 +20946,7 @@ function pcInit() {
     });
   });
   var hasFiles = function(e) {
-    return !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0) && !input.disabled;
+    return !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0) && open();
   };
   host.addEventListener('dragover', function(e) {
     if (!hasFiles(e)) return;
@@ -20775,6 +20962,21 @@ function pcInit() {
     e.preventDefault();
     pcAddFiles(e.dataTransfer.files);
   });
+  host.addEventListener('ui-submit', pcOnSubmit);
+  host.addEventListener('ui-promote', function(e) { if (e.detail) steerAct('promote', String(e.detail.id)); });
+  host.addEventListener('ui-cancel', function(e) { if (e.detail) steerAct('cancel', String(e.detail.id)); });
+  host.addEventListener('ui-edit', function(e) { if (e.detail) steerAct('edit', String(e.detail.id), String(e.detail.text || '')); });
+}
+// ui-submit: a send already reading its files (or a card with no open composer)
+// takes nothing — cancelled, the text stays in the field.
+function pcOnSubmit(e) {
+  var d = e.detail || {};
+  var host = document.getElementById('panel-command');
+  if (!panelSessionKey || _pcSending || !host || host._mode !== 'open') {
+    e.preventDefault();
+    return;
+  }
+  sendCommand(d.text || '', d.ref || '');
 }
 ntInit();
 pcInit();
