@@ -241,6 +241,26 @@ describe('CI workflow contract', () => {
     expect(scripts.test).toBe('vitest run');
   });
 
+  it('builds once, before the tests, with nothing run twice', () => {
+    // `npm run build` is Biome, the somalib and workspace-package builds, and a full root `tsc`.
+    // The job used to run those four as separate steps and then all of them again in a final
+    // Build step. One build ahead of Test keeps the fail-fast order (a lint or type error stops
+    // the job before the long test run) and still compiles the workspace packages' dist/ that
+    // root tsc and several tests resolve `@soma/*` through.
+    const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
+    expect(scripts.build).toMatch(/^npm run check && npm run build:somalib && npm run build:packages && tsc &&/);
+
+    const job = jobBlock(CI_WORKFLOW, 'quality-gates');
+    const runs = [...job.matchAll(/^ {8}run: (.+)$/gm)].map((match) => match[1].trim());
+    // Tool installs (Python, PyYAML, the Playwright shell) may sit between them; the npm steps are exactly these, in this order.
+    expect(runs.filter((run) => run.startsWith('npm '))).toEqual(['npm ci', 'npm run build', 'npm run test:release']);
+    for (const duplicate of ['npm run check', 'npx tsc', 'npm run build:somalib', 'npm run build:packages']) {
+      expect(job, `ci.yml runs \`${duplicate}\` on its own, but \`npm run build\` already does`).not.toContain(
+        `\n          ${duplicate}`,
+      );
+    }
+  });
+
   it('runs the gate with a read-only token', () => {
     // Nothing in this workflow publishes, and `npm ci` runs third-party install
     // scripts on a persistent host — a write-capable default token would be
@@ -348,11 +368,45 @@ describe('Lean verification workflow contract', () => {
       'npm ci',
       'bash scripts/verification/install-lean-toolchain.sh',
       'bash scripts/verification/lean-verify.sh --check',
+      'bash scripts/verification/selftest-scope.sh',
       'bash scripts/verification/lean-verify.sh --selftest',
     ]);
     for (const step of steps) {
       expect(step.run.includes('${{'), `${step.name} interpolates an expression into a shell body`).toBe(false);
     }
+  });
+
+  it('runs the self-test on every push and on every pull request that changes the gate', () => {
+    // The self-test exercises the gate, not the application code: on a pull request that leaves
+    // verification/, scripts/verification/ and this workflow alone it reruns, on identical
+    // inputs, what already passed on main — about 12 of the job's 16 minutes on the one runner.
+    // `--check` still runs on every pull request (it reads the src/ import graph), and the job
+    // still reports, so the required check never goes missing.
+    const job = jobBlock(LEAN_WORKFLOW, 'lean-verify');
+    const step = (name: string): string => {
+      const at = job.indexOf(`\n      - name: ${name}\n`);
+      expect(at, `${LEAN_WORKFLOW} has no step named \`${name}\``).toBeGreaterThan(-1);
+      const next = job.indexOf('\n      - ', at + 1);
+      return job.slice(at, next === -1 ? job.length : next);
+    };
+
+    const scope = step('Decide whether the gate changed');
+    expect(scope).toMatch(/\n {8}id: scope\n/);
+    // The event's values reach the script through `env:` only, as everywhere in this workflow.
+    expect(scope).toMatch(/\n {10}EVENT_NAME: \$\{\{ github\.event_name \}\}\n/);
+    expect(scope).toMatch(/\n {10}BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}\n/);
+
+    const selftest = step('Self-test the gate against planted forbidden constructs');
+    expect(selftest).toMatch(/\n {8}if: steps\.scope\.outputs\.selftest == 'true'\n/);
+
+    // The `--check` step carries no condition: it is the proof, and it runs on every event.
+    expect(step('Rebuild proofs, audit declarations, replay the kernel, check vector drift')).not.toMatch(/\n {8}if:/);
+
+    // The script's notion of "the gate" covers the three roots the self-test depends on.
+    const script = read('scripts/verification/selftest-scope.sh');
+    expect(script).toContain(
+      "GATE_INPUTS='^(verification/|scripts/verification/|\\.github/workflows/lean-verify\\.yml$)'",
+    );
   });
 
   it('runs the gate with a read-only token', () => {
