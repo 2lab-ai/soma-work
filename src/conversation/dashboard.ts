@@ -3439,6 +3439,7 @@ function renderDashboardPage(userId?: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>soma-work Dashboard</title>
 <script type="module" src="/dashboard/ui/tool-call-card.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/agent-tree.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/approval-card.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/toaster.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/compact-breakdown.js?v=${UI_LIB_VERSION}"></script>
@@ -4185,69 +4186,22 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .ca-text b { color: var(--ib-text); font-weight: 600; }
 .ca-text .ca-fail { color: var(--st-fail); font-weight: 600; }
 @keyframes agPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-@keyframes agSweep { from { background-position: 200% 0; } to { background-position: -200% 0; } }
 
-.ag-tree { margin: 12px 0 2px; border: 1px solid var(--ib-card-border); border-radius: 10px; overflow: hidden; background: var(--ib-card); }
-.ag-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 12px; background: var(--ib-pill); font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--ib-muted); }
-.ag-head .ag-count { letter-spacing: 0; text-transform: none; font-weight: 600; font-variant-numeric: tabular-nums; }
-/* Recursive agent tree (.prd/12 §4, rev 2): one node type at every depth, the
-   main agent at the root. Rows indent by their own level (capped), tree lines
-   are CSS borders (a rail down each group at the parent's chevron, an elbow
-   into each child), status reads as icon + word. */
-.an-tree, .an-kids { list-style: none; margin: 0; padding: 0; }
-.an { --ag-c: var(--ib-muted); position: relative; outline: none; }
-.an.is-running { --ag-c: var(--st-run); }
-.an.is-completed { --ag-c: var(--st-done); }
-.an.is-failed { --ag-c: var(--st-fail); }
-.an.is-waiting, .an.is-resuming { --ag-c: var(--st-wait); }
-.an.is-idle, .an.is-sleeping, .an.is-archived, .an.is-stopped, .an.is-unknown { --ag-c: var(--ib-muted); }
-.an-row { position: relative; display: grid; grid-template-columns: 16px 16px minmax(0, 1fr); column-gap: 6px; align-items: start; padding: 8px 12px 8px calc(8px + min(var(--an-lvl, 0), 4) * 16px); border-top: 1px solid var(--ib-card-border); color: var(--ib-text); cursor: pointer; transition: background-color 150ms ease; }
-.an.is-root > .an-row { border-top: 0; }
-.an:focus-visible > .an-row, .an-all:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
-.an-chev { grid-column: 1; grid-row: 1; position: relative; width: 16px; height: 16px; display: grid; place-items: center; margin: 1px 0 0; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--ib-muted); font: inherit; }
-.an-chev.is-toggle { cursor: pointer; }
-.an-chev.is-toggle::before { content: ''; position: absolute; inset: -8px; }
-.an-chev svg { width: 12px; height: 12px; transition: transform var(--dur-expand) var(--ease-out); }
-.an[aria-expanded="true"] > .an-row > .an-chev svg { transform: rotate(90deg); }
-.an-kids > .an::before, .an-kids > .an-all::before { content: ''; position: absolute; left: calc(8px + (min(var(--an-lvl, 1), 4) - 1) * 16px + 7px); top: 0; bottom: 0; width: 1px; background: var(--ib-card-border); pointer-events: none; }
-.an-kids > .is-last::before { bottom: auto; height: 17px; }
-.an-kids > .an > .an-row::after, .an-kids > .an-all::after { content: ''; position: absolute; left: calc(8px + (min(var(--an-lvl, 1), 4) - 1) * 16px + 7px); top: 17px; width: 9px; height: 1px; background: var(--ib-card-border); pointer-events: none; }
-/* Deeper than the indent cap: a dotted rail says "further down" without more indent. */
-.an-kids > .an[aria-level="6"]::before, .an-kids > .an[aria-level="7"]::before, .an-kids > .an[aria-level="8"]::before { background: none; border-left: 1px dotted var(--ib-muted); }
-.an-row > .ag-icon { margin-top: 1px; }
-.an-body { grid-column: 3; display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.an-head { display: flex; flex-wrap: wrap; align-items: baseline; column-gap: 8px; row-gap: 1px; min-width: 0; }
-.an-head .ag-line { flex: 1 1 7.5em; min-width: 0; }
-.an-head .ag-meta { flex: 0 1 auto; flex-wrap: wrap; row-gap: 1px; }
-.an-body .ag-span { margin-top: 4px; }
-.an-more { font-size: 10.5px; line-height: 16px; padding: 0 6px; border-radius: 99px; background: var(--ib-pill); color: var(--ib-text-2); font-weight: 600; }
-.an-more.is-running { color: var(--st-run); }
-.an-more.is-failed { color: var(--st-fail); }
-.an-all { position: relative; display: block; padding: 8px 12px 8px calc(8px + min(var(--an-lvl, 0), 4) * 16px + 22px); border-top: 1px solid var(--ib-card-border); color: var(--ib-text-2); font-size: 12.5px; cursor: pointer; outline: none; }
-@media (pointer: coarse) {
-  /* The chevron is the only fold control on touch: a 44px hit zone around its 16px glyph. */
-  .an-chev.is-toggle::before { inset: -14px; }
-  .an-row, .an-all { min-height: 44px; }
-}
+/* The open card's agent tree: @2lab.ai/ui <ui-agent-tree> (compact) in a
+   frame that scrolls past a dozen rows (a wide fan-out stays a card, not a
+   page); the element draws the rows, the folds, the bar and the roll-up. */
+.ag-tree { display: block; margin: 12px 0 2px; padding: 10px 12px 6px; border: 1px solid var(--ib-card-border); border-radius: 10px; background: var(--ib-card); }
+.ag-tree > ui-agent-tree, .pa-tree > ui-agent-tree { display: block; min-width: 0; }
+.ag-tree > ui-agent-tree { max-height: 420px; overflow-y: auto; overscroll-behavior: contain; }
+.at-fallback { display: block; padding: 4px 0; font-size: 12px; color: var(--ib-muted); }
 .ag-icon { grid-column: 2; grid-row: 1; width: 16px; height: 16px; display: grid; place-items: center; color: var(--ag-c); }
 .ag-icon svg { width: 14px; height: 14px; }
 .ag-icon .ag-spinner { width: 11px; height: 11px; border-width: 1.8px; }
-.ag-line { grid-column: 3; grid-row: 1; display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 13px; line-height: 1.35; }
 .ag-id { flex-shrink: 0; font-size: 11.5px; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
 .ag-type { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
-.an.is-root > .an-row .ag-type { flex-shrink: 0; overflow: visible; }
 .ag-model { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ib-text-2); }
-.ag-desc { grid-column: 3 / 5; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; color: var(--ib-text-2); }
-.ag-meta { grid-column: 4; grid-row: 1; display: inline-flex; align-items: baseline; gap: 7px; font-size: 12px; color: var(--ib-text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .ag-st { color: var(--ag-c); font-weight: 600; }
-.ag-tok { color: var(--ib-text-2); }
-.an-row.is-compact { padding-top: 6px; padding-bottom: 6px; }
-.ag-bg { font-size: 10.5px; line-height: 16px; padding: 0 6px; border-radius: 99px; border: 1px solid var(--ib-card-border); color: var(--ib-muted); }
-.ag-sub { grid-column: 3 / 5; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--ib-muted); }
-.ag-span { grid-column: 3 / 5; position: relative; height: 3px; margin-top: 3px; border-radius: 2px; background: var(--ib-pill); overflow: hidden; }
-.ag-span i { position: absolute; top: 0; bottom: 0; border-radius: 2px; background: var(--ag-c); opacity: 0.7; }
-.an.is-running > .an-row .ag-span i { background-image: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.55) 50%, transparent 100%); background-size: 200% 100%; animation: agSweep 1.8s linear infinite; }
-.ag-more { padding: 7px 12px; border-top: 1px solid var(--ib-card-border); font-size: 12px; color: var(--ib-muted); }
+.ag-more { margin: 4px 2px 0; font-size: 12px; color: var(--ib-muted); }
 /* Armed automatic resume (turn retry / goal re-check): the clock in the status
    line and the open card's resume row take the "waiting" hue, not the run hue. */
 .st-icon.is-resume, .card-resume svg { color: var(--st-wait); }
@@ -4993,10 +4947,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .pa-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 14px; line-height: 1.35; }
 .pa-name .ag-type { font-weight: 650; }
 .pa-name .ag-id { font-size: 12px; }
-.pa-kids-head { margin-top: 8px; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-tertiary); }
-.pa-kids-head b { font-weight: 700; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.pa-tree { margin-top: 4px; max-height: min(32vh, 260px); overflow-y: auto; border: 1px solid var(--ib-card-border); border-radius: 10px; background: var(--ib-card); overscroll-behavior: contain; }
-.pa-tree > .an:first-child > .an-row { border-top: 0; }
+.pa-tree { display: block; margin-top: 10px; max-height: min(48vh, 440px); overflow-y: auto; overscroll-behavior: contain; }
 .pa-sum { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 7px; margin-top: 4px; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .pa-st { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; }
 .pa-st svg, .pa-st .spinner { width: 12px; height: 12px; }
@@ -5149,7 +5100,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* Minimal by default: the agent path, the subtree and the main agent's own
    header are for 자세히 — the tabs already say where the reader is. */
 .slide-panel:not(.is-detail) .pa-bar,
-.slide-panel:not(.is-detail) .pa-kids-head,
 .slide-panel:not(.is-detail) .pa-tree,
 .slide-panel:not(.is-detail) .panel-agents.is-main { display: none !important; }
 .slide-panel:not(.is-detail) .panel-arts-hint { display: none; }
@@ -5855,18 +5805,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (max-width: 639px) {
   .topbar .td-prefix, .topbar .td-status { display: none; }
   .main { padding: 14px 12px; }
-  /* Agent tree (.prd/12 §4.4): status · time · tools drop under the name;
-     12px per level, the indent capped at 3; 44px targets. */
-  .an-row { min-height: 44px; padding-top: 10px; padding-bottom: 10px; padding-left: calc(6px + min(var(--an-lvl, 0), 3) * 12px); }
-  .an-kids > .an::before, .an-kids > .an-all::before, .an-kids > .an > .an-row::after, .an-kids > .an-all::after { left: calc(6px + (min(var(--an-lvl, 1), 3) - 1) * 12px + 7px); }
-  .an-kids > .an > .an-row::after, .an-kids > .an-all::after { top: 21px; width: 5px; }
-  .an-kids > .is-last::before { height: 21px; }
-  .an-all { min-height: 44px; display: flex; align-items: center; padding-left: calc(6px + min(var(--an-lvl, 0), 3) * 12px + 22px); }
+  .ag-tree { padding: 8px 8px 4px; }
   .pa-crumb { min-height: 44px; }
   /* The path shrinks to "‹ parent › here". */
   .pa-crumb.is-far, .pa-sep.is-far { display: none; }
   .pa-crumb.is-up::before { content: '\\2039\\00a0'; }
-  .pa-tree { max-height: min(40vh, 300px); }
+  .pa-tree { max-height: min(56vh, 480px); }
   .wl-child { grid-template-columns: 16px minmax(0, 1fr); }
   .wc-meta { grid-column: 2; grid-row: auto; flex-wrap: wrap; }
 
@@ -5924,16 +5868,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .chart-row { flex-direction: column; }
 }
 @media (hover: hover) and (pointer: fine) {
-  .an-row:hover, .an-all:hover { background: var(--ib-pill); }
-  .an-chev.is-toggle:hover { color: var(--ib-text); }
   .wl-child:hover { border-color: var(--border-focus); }
   .pa-crumb:not([aria-current="page"]):hover { background: var(--surface-raised); color: var(--text); }
   .wl-agent-link:not(.wl-child):hover { text-decoration: underline; }
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  /* Agent tree: a static running indicator, no sweep across the waterfall bar. */
-  .ag-dot.is-running, .an.is-running > .an-row .ag-span i { animation: none !important; }
+  /* Agent dots: a static running indicator. */
+  .ag-dot.is-running { animation: none !important; }
   /* §4-8: no movement or scale — the expanded body only cross-fades. These
      selectors are more specific than the * rule above, so they win. */
   .card-expand { transition: none !important; }
@@ -9446,12 +9388,15 @@ function applyExpanded(el, open) {
 
 // One card's rendered parts. The HTML strings depend only on the data (clocks
 // are filled by the 1 Hz tick), so equal data gives equal strings.
+// tree: the open card's <ui-agent-tree> data (atCardData), compared by its
+// signature — an agent's status, time or spend changes no markup.
 function cardParts(s, col) {
-  return { col: col, state: cardState(s, col), face: renderCardFace(s, col), body: renderCardBody(s, col), cid: s.conversationId || null };
+  var tree = atCardData(s, col);
+  return { col: col, state: cardState(s, col), face: renderCardFace(s, col), body: renderCardBody(s, col), cid: s.conversationId || null, tree: tree, treeSig: tree ? JSON.stringify(tree) : '' };
 }
 function cardPartsDiffer(el, p) {
   return el.getAttribute('data-col') !== p.col || el.getAttribute('data-state') !== p.state
-    || el._faceHtml !== p.face || el._bodyHtml !== p.body;
+    || el._faceHtml !== p.face || el._bodyHtml !== p.body || (el._treeSig || '') !== (p.treeSig || '');
 }
 // Each part is replaced only when its HTML string changed, so untouched cards
 // keep their nodes, an open card keeps its state, and a running transition is
@@ -9480,13 +9425,10 @@ function applyCardParts(el, p) {
   if (prevState && prevState !== p.state && canAnimate() && !reduceMotion()) popStatusIcon(el._faceEl);
   if (el._bodyHtml !== p.body && !isEditingGoal(el._bodyEl) && !isPickingModel(el._bodyEl)) {
     var goalDraft = captureGoalDraft(el._bodyEl);
-    var anCap = anFocusCapture(el._bodyEl);
-    // Spec 12 §4.4: morphed, not rewritten — while a subagent runs the body
-    // changes every push (its tool count, the waterfall axis, the last-activity
-    // stamp), and the focused agent row, a running spinner and a scrolled list
-    // must survive that.
+    // Spec 12 §4.4: morphed, not rewritten — a focused control, a running
+    // spinner and a scrolled list survive a live update (the agent tree
+    // keeps its own focus: its element stays, only its data changes).
     morphInnerHtml(el._bodyEl, p.body);
-    anFocusRestore(el._bodyEl, anCap);
     restoreGoalDraft(el._bodyEl, goalDraft);
     el._bodyHtml = p.body;
     updateTimersIn(el._bodyEl);
@@ -9496,6 +9438,10 @@ function applyCardParts(el, p) {
   // flight) changes without their markup — set on every pass, written only
   // where it changed.
   acHydrate(el._bodyEl);
+  // The agent tree likewise (every agent's status, time and spend; the folds).
+  if ((el._treeSig || '') !== (p.treeSig || '')) changed = true;
+  el._treeSig = p.treeSig || '';
+  atHydrate(el._bodyEl, p);
   return changed;
 }
 // D4: scale 0.6 → 1 with a fade, the board's move duration on the entry curve.
@@ -9853,13 +9799,9 @@ function renderTimeline(s) {
 // subagent) started, in spawn order. Each has its own tasks and its own work
 // log (entries with its agentId). Status always shows as an icon AND a word.
 var AGENT_STATUS_LABEL = { running: '실행 중', completed: '완료', failed: '실패', stopped: '중단', unknown: '확인 불가', waiting: '입력 대기', idle: '대기', resuming: '재개 대기', sleeping: '휴면', archived: '보관' };
-var AGENT_TREE_ROWS = 6; // children a parent shows on a card before its own 전체 N개 보기
 var AGENT_DOTS_MAX = 6; // status dots on the collapsed face before +N
 var AGENTS_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="3.5" r="1.8"/><circle cx="12" cy="8" r="1.8"/><circle cx="12" cy="13" r="1.8"/><path d="M4 5.3v5.2c0 1.4 1.1 2.5 2.5 2.5h3.7M4 8h6.2"/></svg>';
-var AN_CHEV_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>';
 var _anOpen = Object.create(null); // tree namespace|node id → a fold the user chose (absent = the default)
-var _anAll = Object.create(null); // tree namespace|node id → every child shown
-var _anActive = Object.create(null); // tree namespace → the node id that holds the tree's tab stop
 var _panelAgent = ''; // the node the open panel shows ('' = the root, the main agent)
 var _panelAgentIdsShown = Object.create(null); // agent ids the panel tree knows now
 var _panelAgentsHtml = ''; // what the agent section last rendered (a live update with the same data writes nothing)
@@ -9932,39 +9874,13 @@ function agentActivity(a) {
   if (a.lastTool) return '마지막 도구 ' + a.lastTool;
   return '';
 }
-// Pure: the waterfall's time axis (§4.2) — the subagent set's first start to its
-// last end (or the session's last activity while one runs). Stable between
-// pushes, so an unchanged card renders the same markup.
-function agentSpanAxis(agents, lastActivityMs) {
-  var t0 = 0;
-  var t1 = 0;
-  var list = agents || [];
-  for (var i = 0; i < list.length; i++) {
-    var a = list[i];
-    var st = Number(a.startedAt) || 0;
-    if (!st) continue;
-    if (!t0 || st < t0) t0 = st;
-    var end = Number(a.endedAt) || st;
-    if (end > t1) t1 = end;
-  }
-  if (lastActivityMs > t1) t1 = lastActivityMs;
-  if (t1 - t0 < 1000) t1 = t0 + 1000;
-  return { t0: t0, t1: t1 };
-}
-function agentSpanStyle(a, axis) {
-  var st = Number(a.startedAt) || axis.t0;
-  var end = agentStatusOf(a) === 'running' ? axis.t1 : (Number(a.endedAt) || st);
-  var w = axis.t1 - axis.t0;
-  var left = Math.max(0, Math.min(100, ((st - axis.t0) / w) * 100));
-  var width = Math.max(1.5, Math.min(100 - left, ((end - st) / w) * 100));
-  return 'left:' + left.toFixed(1) + '%;width:' + width.toFixed(1) + '%';
-}
 
 // ── One node type (recursive UI): the main agent is the root of the session's
 // agent tree; every subagent is a node of the same shape under the agent that
-// started it. One renderer draws them all — the card tree, the panel's subtree
-// and the work log's child blocks — so nothing about the root is special but
-// its fields: active time instead of a run time, the model, the session's tasks.
+// started it. One model feeds every surface — the card tree and the panel's
+// subtree (<ui-agent-tree>, atTreeData), the panel's focused-node header and
+// the work log's child blocks — so nothing about the root is special but its
+// fields: active time instead of a run time, the model, the session's tasks.
 
 // The root's status from lifecycle evidence — never "stopped" for a closed card.
 // Same order as the card's status line (renderCardStatus): a waiting card
@@ -10049,9 +9965,9 @@ function agentTreeOf(s, col, extras) {
   root.byId = byId;
   return root;
 }
-// How many nodes are below this one, and whether any runs or failed (the +N tint).
+// How many nodes are below this one (the panel's focused-node header).
 function anDesc(node) {
-  var out = { n: 0, running: false, failed: false };
+  var out = { n: 0 };
   var stack = node.children.slice();
   var met = Object.create(null);
   while (stack.length) {
@@ -10059,8 +9975,6 @@ function anDesc(node) {
     if (met[c.id]) continue;
     met[c.id] = true;
     out.n++;
-    if (c.status === 'running') out.running = true;
-    if (c.status === 'failed') out.failed = true;
     for (var i = 0; i < c.children.length; i++) stack.push(c.children[i]);
   }
   return out;
@@ -10070,26 +9984,16 @@ function agentNodeName(node) {
   if (node.logOnly) return '에이전트 ' + node.id.slice(-6);
   return agentName(node);
 }
-// The name slot: the root's label and model; a subagent's spawn number and type.
-// compact (the open card): the root is its label only — the card's control
-// strip names the model (spec 13: nothing twice on one surface).
-function agentNodeLine(node, compact) {
-  if (node.root) return '<span class="ag-type">' + esc(node.label) + '</span>' + (node.model && !compact ? '<span class="ag-model">' + esc(node.model) + '</span>' : '');
+// The name slot (the panel's focused-node header, a work log child block):
+// the root's label and model; a subagent's spawn number and type.
+function agentNodeLine(node) {
+  if (node.root) return '<span class="ag-type">' + esc(node.label) + '</span>' + (node.model ? '<span class="ag-model">' + esc(node.model) + '</span>' : '');
   if (node.logOnly) return '<span class="ag-type">기타 에이전트</span><span class="ag-model">' + esc(node.id.slice(-6)) + '</span>';
   return '<span class="ag-id">A' + toNum(node.n) + '</span><span class="ag-type">' + esc(node.type || 'agent') + '</span>';
 }
-// One accessible name per tree item (its visual columns are not read one by one).
-// The live time is not in it (it changes every second): the item points at it
-// with aria-describedby instead.
-// line (compact density): the item's name lists the slots the row shows —
-// name, status word, its one activity line, how many below — and no more.
-function agentNodeAria(node, desc, line) {
-  if (typeof line === 'string') {
-    var c = [agentNodeName(node), AGENT_STATUS_LABEL[node.status] || ''];
-    if (line) c.push(line);
-    if (desc && desc.n) c.push('하위 ' + desc.n);
-    return c.join(', ');
-  }
+// The focused node header's one accessible name (its visual columns are not
+// read one by one). The live time is not in it: it changes every second.
+function agentNodeAria(node, desc) {
   var parts = [agentNodeName(node) + (node.root && node.model ? ' ' + node.model : '') + (node.description ? ' — ' + node.description : ''), AGENT_STATUS_LABEL[node.status] || '', '툴 ' + toNum(node.toolCalls)];
   if (node.root) {
     var tasks = node.tasks || [];
@@ -10103,168 +10007,13 @@ function agentNodeAria(node, desc, line) {
   if (act) parts.push(act);
   return parts.join(', ');
 }
-// A DOM id part from any text (tree namespace, node id), collision-free:
-// letters and digits kept, every other character as _<hex>_ — so '-' never
-// appears inside a part and can join parts unambiguously.
-function anIdPart(v) {
-  var out = '';
-  var str = String(v);
-  for (var i = 0; i < str.length; i++) {
-    var c = str.charAt(i);
-    out += (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ? c : '_' + str.charCodeAt(i).toString(16) + '_';
-  }
-  return out;
-}
-// Open or folded: the user's choice for this node in this tree, else the
-// default — the anchor and its children open (d ≤ 1), deeper parents folded.
-function anIsOpen(ns, node, d) {
-  if (node.root) return true;
-  var k = ns + '|' + node.id;
-  if (Object.prototype.hasOwnProperty.call(_anOpen, k)) return !!_anOpen[k];
-  return d <= 1;
-}
-// A node's row, at the density of its surface (one row renderer, two densities):
-//   compact (the open card — who is doing what now): chevron · status icon ·
-//     name · status word · time, and its one line (anCompactLine) when it has one.
-//   rich (the panel — inspect): + tools (and the root's task count), tokens,
-//     background, description, activity and the waterfall bar.
-// line: the compact line ('' = none); undefined at rich density.
-function agentNodeRow(node, ctx, desc, open, line) {
-  var st = node.status;
-  var rich = typeof line !== 'string';
-  var chev = node.children.length && !node.root
-    ? '<span class="an-chev is-toggle" aria-hidden="true" data-an-toggle="' + escAttr(node.id) + '">' + AN_CHEV_SVG + '</span>'
-    : '<span class="an-chev"></span>';
-  var meta = '<span class="ag-st">' + esc(AGENT_STATUS_LABEL[st] || '') + '</span>';
-  var time = agentTimeHtml(node);
-  if (time) meta += '<span class="ag-time" id="' + anTimeId(ctx, node) + '">' + time + '</span>';
-  if (rich) {
-    meta += '<span class="ag-tools" title="툴 호출 수">툴 ' + toNum(node.toolCalls) + '</span>';
-    if (node.root) {
-      var tasks = node.tasks || [];
-      var done = 0;
-      for (var i = 0; i < tasks.length; i++) if (tasks[i] && tasks[i].status === 'completed') done++;
-      if (tasks.length) meta += '<span class="ag-tools">task ' + done + '/' + tasks.length + '</span>';
-    } else if (spendLabel(node.spend)) {
-      meta += '<span class="ag-tok" title="' + escAttr(spendTitle(node.spend)) + '">' + esc(spendLabel(node.spend)) + '</span>';
-    }
-    if (node.background) meta += '<span class="ag-bg">배경</span>';
-  }
-  if (!open && desc.n) {
-    meta += '<span class="an-more' + (desc.failed ? ' is-failed' : desc.running ? ' is-running' : '') + '" title="하위 에이전트 ' + desc.n + '">+' + desc.n + '</span>';
-  }
-  var lines = '';
-  if (rich) {
-    var act = agentActivity(node);
-    lines = (node.description ? '<span class="ag-desc">' + esc(node.description) + '</span>' : '')
-      + (act ? '<span class="ag-sub">' + esc(act) + '</span>' : '')
-      + (ctx.axis && !node.root && !node.logOnly ? '<span class="ag-span" aria-hidden="true"><i style="' + agentSpanStyle(node, ctx.axis) + '"></i></span>' : '');
-  } else if (line) {
-    lines = '<span class="ag-sub">' + esc(line) + '</span>';
-  }
-  // The name and the status words share a line that wraps: in a narrow card
-  // the words drop under the name instead of squeezing it to nothing.
-  return '<div class="an-row' + (rich ? '' : ' is-compact') + '">' + chev
-    + '<span class="ag-icon">' + agentIconHtml(st) + '</span>'
-    + '<span class="an-body"><span class="an-head"><span class="ag-line">' + agentNodeLine(node, !rich) + '</span>'
-    + '<span class="ag-meta">' + meta + '</span></span>'
-    + lines
-    + '</span></div>';
-}
-// The one line a compact row adds: what a live node is doing; a failed node's
-// description when it reports nothing else. The root's line is its current
-// task — dropped while the card face's task row shows that very task
-// (ctx.rootLine false), kept otherwise (its last tool / summary).
-var AN_LIVE_LINE = { running: true, waiting: true, resuming: true, failed: true };
-function anCompactLine(node, ctx) {
-  if (node.root) return ctx.rootLine ? agentActivity(node) : '';
-  if (!AN_LIVE_LINE[node.status]) return '';
-  return agentActivity(node) || (node.status === 'failed' ? node.description || '' : '');
-}
-function anTimeId(ctx, node) {
-  return 'an-' + anIdPart(ctx.ns) + '-' + (node.root ? 'root' : 'n' + anIdPart(node.id)) + '-t';
-}
-// One tree item, recursively: the node's row, then — while it is open — its
-// children in a group. d = depth from the tree's anchor; aria-level and the
-// indent follow it (ctx.levelBase: 1 when the anchor is drawn, 0 when it is the
-// panel's header). ctx.act = the attribute a delegated handler reads.
-function renderAgentNode(node, d, pos, size, ctx, last) {
-  var lvl = d + ctx.levelBase;
-  var hasKids = node.children.length > 0;
-  var open = hasKids ? anIsOpen(ctx.ns, node, d) : false;
-  var desc = anDesc(node);
-  var line = ctx.density === 'compact' ? anCompactLine(node, ctx) : undefined;
-  ctx.seen[node.id] = true;
-  var html = '<li class="an is-' + node.status + (node.root ? ' is-root' : '') + (last ? ' is-last' : '') + '" role="treeitem"'
-    + ' aria-level="' + lvl + '" aria-setsize="' + size + '" aria-posinset="' + pos + '"'
-    + (hasKids ? ' aria-expanded="' + (open ? 'true' : 'false') + '"' : '')
-    + ' tabindex="' + (node.id === ctx.stop ? '0' : '-1') + '"'
-    + ' aria-label="' + escAttr(agentNodeAria(node, desc, line)) + '"'
-    + (agentTimeHtml(node) ? ' aria-describedby="' + anTimeId(ctx, node) + '"' : '')
-    + ' ' + ctx.act + '="' + escAttr(node.id) + '"'
-    + ' style="--an-lvl:' + Math.max(0, lvl - 1) + '">'
-    + agentNodeRow(node, ctx, desc, open, line);
-  if (open) html += '<ul class="an-kids" role="group">' + renderAgentNodes(node, d + 1, ctx) + '</ul>';
-  return html + '</li>';
-}
-// A parent's children at depth d. From ctx.capFrom on, a parent shows
-// AGENT_TREE_ROWS of them and its own 전체 N개 보기 (an item of the tree).
-function renderAgentNodes(parent, d, ctx) {
-  var kids = parent.children;
-  var capped = d >= ctx.capFrom && kids.length > AGENT_TREE_ROWS;
-  // The card never unfolds in place (spec 13): its rest is the panel's.
-  var all = capped && ctx.density !== 'compact' && !!_anAll[ctx.ns + '|' + parent.id];
-  var shown = capped && !all ? AGENT_TREE_ROWS : kids.length;
-  var html = '';
-  for (var i = 0; i < shown; i++) html += renderAgentNode(kids[i], d, i + 1, kids.length, ctx, i === shown - 1 && !capped);
-  if (capped) {
-    var lvl = d + ctx.levelBase;
-    var allKey = 'a:' + parent.id;
-    ctx.seen[allKey] = true;
-    // The card is a preview: the rest of a parent's children are the panel's
-    // (opened on that parent). The panel itself unfolds them in place.
-    var toPanel = ctx.density === 'compact';
-    var label = toPanel ? '전체 ' + kids.length + '개 — 상세 패널에서 보기'
-      : (all ? '접기 — 전체 ' + kids.length + '개 표시 중' : '전체 ' + kids.length + '개 보기 — ' + AGENT_TREE_ROWS + '개 표시 중');
-    var text = toPanel ? '전체 ' + kids.length + '개 &rarr; 상세' : (all ? '접기' : '전체 ' + kids.length + '개 보기');
-    html += '<li class="an-all is-last" role="treeitem" aria-level="' + lvl + '" tabindex="' + (ctx.stop === allKey ? '0' : '-1') + '" data-an-all="' + escAttr(parent.id) + '"'
-      + ' aria-label="' + escAttr(label) + '"'
-      + ' style="--an-lvl:' + Math.max(0, lvl - 1) + '"><span class="an-all-text">' + text + '</span></li>';
-  }
-  return html;
-}
-// The tree's items with exactly one roving tab stop, reconciled against what is
-// visible: the node the user was last on, else its nearest visible ancestor,
-// else the first item. ctx.withRoot: draw the anchor itself (the card) or only
-// its children (the panel, whose header is the anchor).
-function anTreeHtml(root, anchor, ctx) {
-  var first = ctx.withRoot ? anchor.id : (anchor.children[0] ? anchor.children[0].id : '');
-  function draw() {
-    ctx.seen = Object.create(null);
-    return ctx.withRoot ? renderAgentNode(anchor, 0, 1, 1, ctx, false) : renderAgentNodes(anchor, 1, ctx);
-  }
-  var want = Object.prototype.hasOwnProperty.call(_anActive, ctx.ns) ? _anActive[ctx.ns] : first;
-  ctx.stop = want;
-  var html = draw();
-  if (ctx.seen[want]) return html;
-  // A parent's 전체 N개 보기 that is gone (the list shrank) hands the stop to that parent.
-  var start = String(want).indexOf('a:') === 0 ? root.byId[String(want).slice(2)] : root.byId[want];
-  var next = start && ctx.seen[start.id] && start.id !== want ? start.id : '';
-  for (var cur = start, guard = 0; !next && cur && !cur.root && guard < 64; guard++) {
-    cur = root.byId[cur.parentId];
-    if (cur && ctx.seen[cur.id]) next = cur.id;
-  }
-  ctx.stop = next || first;
-  return draw();
-}
 // Spec 12: bring a live node in line with freshly rendered markup, keeping
 // every node whose place did not change — so focus, a list's scroll and a
 // running spinner's animation survive a live update. Children pair up in
-// order; an agent row pairs only with the row of the same agent.
+// order; an agent's path crumb pairs only with the crumb of the same agent.
 function domKeyOf(n) {
   if (n.nodeType !== 1) return '#' + n.nodeType;
-  var k = n.getAttribute('data-agent-open');
-  if (k === null) k = n.getAttribute('data-agent-select');
+  var k = n.getAttribute('data-agent-select');
   // data-mk: any row that stands for one record (a goal) pairs only with that record's row,
   // so a focused control is never rebound to the record that took its place.
   if (k === null) k = n.getAttribute('data-mk');
@@ -10339,216 +10088,172 @@ function morphInnerHtml(el, html) {
   tmp.innerHTML = html;
   domMorphChildren(el, tmp);
 }
+// ── Agent tree — @2lab.ai/ui <ui-agent-tree> (affectUI review batch 2) ──
+// The session's agent tree (spec 12) in two places: the open card (compact —
+// who is doing what now) and the panel's agents section (rich — the focused
+// node's subtree, a card per agent on one waterfall axis). The element builds
+// the tree from parentId, rolls every branch's tokens, cost and tool calls up,
+// puts why an agent needs you or failed on its node, ticks the running times
+// and owns the keyboard (the WAI-ARIA tree) and its focus across live updates.
+// The dashboard maps the session onto its nodes (atTreeData), keeps the folds
+// (_anOpen: on the card the root and its children start open, in the panel the
+// focused node's children; deeper parents start folded) and answers its events:
+// ui-select opens that agent in the panel (card) or drills into it (panel),
+// ui-toggle folds. The markup is a slot per tree (static per session); the data
+// is set on the element by atPaint, only where it changed.
+var AT_ROOT = ':main'; // the main agent's node id (a tool call id never starts with ':')
+var AT_STATUS = { running: 'running', completed: 'done', failed: 'failed', stopped: 'cancelled', unknown: 'unknown' };
+// The main agent (rootStatusOf): waiting on the user is "needs you"; a resume
+// or the next instruction is waiting for something else; a closed session is done.
+var AT_ROOT_STATUS = { running: 'running', waiting: 'needs_you', resuming: 'waiting', idle: 'waiting', sleeping: 'done', archived: 'done' };
+// Whether the last input was a key: ui-select carries only the id, and a
+// keyboard opening moves focus into the panel (a click leaves it alone).
+var _atKeyed = false;
+
+function atIdOf(node) {
+  return node.root ? AT_ROOT : String(node.id);
+}
+// What the main agent waits on: the permission prompt(s), else the question.
+function atRootReason(s) {
+  var perms = (s && s.pendingPermissions) || [];
+  if (perms.length) return (perms[0].toolName || 'tool') + ' 실행 승인 필요' + (perms.length > 1 ? ' 외 ' + (perms.length - 1) + '건' : '');
+  var q = s && s.pendingQuestion;
+  return q ? String(q.question || q.title || '답변 대기') : '';
+}
+// Pure: one node of agentTreeOf as the element takes it (AgentTreeNode).
+// The root is the main agent: its time is the session's active time (a
+// running clock while a leg is open — also while the turn waits on a
+// permission), its spend its own share of the task total (the task total less
+// the subagents' share: the element adds the branch up again), its reason
+// what it waits on, its line its current task unless the card face's task row
+// already says it (rootLine). A subagent: A<n> type, its brief as the role,
+// its own spend (none while its calls report no usage — never a false $0),
+// what it does now — or, failed, what it last reported, as the reason.
+function atNode(n, parentId, s, rootLine) {
+  var d = { id: atIdOf(n), name: agentNodeName(n), status: 'unknown', toolCalls: toNum(n.toolCalls) };
+  if (parentId) d.parentId = parentId;
+  if (n.root) {
+    d.status = AT_ROOT_STATUS[n.status] || 'waiting';
+    var acc = toNum(n.activeMs);
+    var leg = n.status === 'running' || n.status === 'waiting' ? toNum(n.legStartedAt) : 0;
+    if (leg) d.startedAt = Math.max(0, leg - acc);
+    else if (acc) { d.startedAt = 0; d.endedAt = acc; }
+    var why = d.status === 'needs_you' ? atRootReason(s) : '';
+    if (why) d.reason = why;
+    var line = rootLine ? agentActivity(n) : '';
+    if (line) d.summary = line;
+    var tu = s && s.tokenUsage;
+    var own = tu ? cardTotalTokens(tu) - spendTotal(s.subagentSpend) : 0;
+    if (own > 0) {
+      d.tokens = own;
+      d.costUsd = Math.max(0, toNum(tu.totalCostUsd) - toNum(s.subagentSpend && s.subagentSpend.costUsd));
+    }
+    return d;
+  }
+  d.status = n.logOnly ? 'unknown' : AT_STATUS[n.status] || 'unknown';
+  var role = n.logOnly ? '작업 로그에만 있는 에이전트' : (n.background ? '배경 · ' : '') + (n.description || '');
+  if (role) d.role = role;
+  var start = toNum(n.startedAt);
+  if (start) {
+    d.startedAt = start;
+    var end = d.status === 'running' ? 0 : toNum(n.endedAt) || (toNum(n.durationMs) ? start + toNum(n.durationMs) : 0);
+    if (end) d.endedAt = end;
+  }
+  var tk = spendTotal(n.spend);
+  if (tk > 0) {
+    d.tokens = tk;
+    d.costUsd = toNum(n.spend.costUsd);
+  }
+  var act = agentActivity(n);
+  if (act && d.status === 'failed') d.reason = act;
+  else if (act) d.summary = act;
+  return d;
+}
+// Pure: the subtree of anchor (an agentTreeOf node) as <ui-agent-tree> data —
+// its nodes in spawn order (the anchor itself first when withRoot, else its
+// children at the top) and the open branches: the reader's fold for this tree
+// and node (_anOpen), else open down to openDepth. Folds and selection are
+// the host's (controlled): the element asks, the next paint answers.
+function atTreeData(anchor, o) {
+  var nodes = [];
+  var expanded = [];
+  function visit(n, parentId, depth) {
+    var id = atIdOf(n);
+    nodes.push(atNode(n, parentId, o.s, o.rootLine));
+    if (!n.children.length) return;
+    var k = o.ns + '|' + id;
+    if (Object.prototype.hasOwnProperty.call(_anOpen, k) ? !!_anOpen[k] : depth <= o.openDepth) expanded.push(id);
+    for (var i = 0; i < n.children.length; i++) visit(n.children[i], id, depth + 1);
+  }
+  if (o.withRoot) visit(anchor, '', 0);
+  else for (var i = 0; i < anchor.children.length; i++) visit(anchor.children[i], '', 0);
+  return { nodes: nodes, density: o.density, title: o.title, selectedId: null, expanded: expanded };
+}
+// The open card's tree: the main agent at its root, compact (null: no subagents, no tree).
+function atCardData(s, col) {
+  if (!s || !s.agents || !s.agents.length) return null;
+  return atTreeData(agentTreeOf(s, col, null), {
+    s: s, ns: 'c|' + s.key, withRoot: true, openDepth: 1, density: 'compact', title: '에이전트', rootLine: !renderCardTaskRow(s, col),
+  });
+}
+// One tree's slot: the token wrapper (.ui-tok) and the element, named by its
+// tree (c|<key> the card, p|<key> the panel), with a light-DOM line until the
+// library has loaded.
+function atSlotHtml(cls, ns, fallback) {
+  return '<div class="' + cls + ' ui-tok"><ui-agent-tree lang="ko" data-at-ns="' + escAttr(ns) + '">'
+    + '<span class="at-fallback">' + esc(fallback) + '</span></ui-agent-tree></div>';
+}
+// Set a tree's data where it changed (a push that changes nothing writes
+// nothing). Data set before the element is defined is taken when it upgrades.
+function atPaint(el, d, sig) {
+  if (!el || !d || el._atSig === sig) return;
+  el._atSig = sig;
+  el.data = d;
+}
+// The open card's tree takes the data of its card's parts (cardParts).
+function atHydrate(body, p) {
+  var el = p && p.tree && body && body.querySelector ? body.querySelector('ui-agent-tree[data-at-ns]') : null;
+  if (el) atPaint(el, p.tree, p.treeSig);
+}
 // Open card (§4.2): the session's agent tree, the main agent at its root.
+// Agents beyond the card's bound are named under it (the work log has them).
 function renderAgentTree(s, col) {
   var list = s.agents || [];
   if (!list.length) return '';
-  var root = agentTreeOf(s, col, null);
-  var ns = 'c|' + s.key;
-  // Compact rows: who is doing what now. The detail (tools, tokens, the waterfall) is the panel's.
-  // The root's line is its current task — the face's task row, when it shows, already says it.
-  var ctx = { ns: ns, act: 'data-agent-open', levelBase: 1, capFrom: 1, withRoot: true, density: 'compact', axis: null, rootLine: !renderCardTaskRow(s, col) };
   var total = Math.max(toNum(s.agentsTotal), list.length);
-  var html = '<div class="ag-tree">'
-    + '<div class="ag-head"><span>에이전트</span><span class="ag-count">메인 + ' + total + '</span></div>'
-    + '<ul class="an-tree" role="tree" aria-label="에이전트 트리" data-an-ns="' + escAttr(ns) + '">' + anTreeHtml(root, root, ctx) + '</ul>';
-  if (total > list.length) html += '<div class="ag-more">이전 에이전트 ' + (total - list.length) + '개는 카드 목록 밖 — 작업 로그에서 볼 수 있어요</div>';
-  return html + '</div>';
+  return atSlotHtml('ag-tree', 'c|' + s.key, '에이전트 — 메인 + ' + total)
+    + (total > list.length ? '<div class="ag-more">이전 에이전트 ' + (total - list.length) + '개는 카드 목록 밖 — 작업 로그에서 볼 수 있어요</div>' : '');
 }
-// Fold / unfold one node of one tree (the chevron, ← / →). The node keeps the
-// tree's tab stop; the tree repaints through the morph, so focus stays.
-function toggleAgentNode(ns, id, open) {
-  _anOpen[ns + '|' + id] = !!open;
-  _anActive[ns] = id;
-  anRepaint(ns);
-}
-function showAllAgentChildren(ns, id) {
-  var k = ns + '|' + id;
-  if (_anAll[k]) delete _anAll[k];
-  else _anAll[k] = true;
-  anRepaint(ns);
-}
-function anRepaint(ns) {
+// What a tree asks for. Card: open the panel on that agent — by keyboard,
+// focus lands on its header (openPanel's landing) and closing the panel gives
+// it back to the tree, the opener. Panel: drill into it; the chosen node's
+// header takes focus (the item it was is no longer in the subtree).
+document.addEventListener('ui-select', function(e) {
+  var el = e.target;
+  if (!el || el.tagName !== 'UI-AGENT-TREE' || !e.detail) return;
+  var ns = el.getAttribute('data-at-ns') || '';
+  var id = String(e.detail.id);
+  var agentId = id === AT_ROOT ? '' : id;
+  if (ns.indexOf('c|') === 0) {
+    openPanel(ns.slice(2), 'agent', agentId, _atKeyed);
+    return;
+  }
+  if (ns.indexOf('p|') !== 0) return;
+  selectPanelAgent(agentId);
+  var head = document.querySelector('#panel-agents .pa-focus');
+  if (head && head.focus) head.focus();
+});
+// A fold the reader chose, kept per tree and node; the tree repaints with it.
+document.addEventListener('ui-toggle', function(e) {
+  var el = e.target;
+  if (!el || el.tagName !== 'UI-AGENT-TREE' || !e.detail) return;
+  var ns = el.getAttribute('data-at-ns') || '';
+  _anOpen[ns + '|' + String(e.detail.id)] = !!e.detail.expanded;
   if (ns.indexOf('c|') === 0) refreshCard(ns.slice(2));
   else renderPanelAgents();
-}
-function openPanelAgent(key, agentId) {
-  openPanel(key, 'agent', agentId || '');
-}
-// The node id an item stands for (a card item opens, a panel item selects).
-function anItemId(item) {
-  var v = item.getAttribute('data-agent-open');
-  if (v === null) v = item.getAttribute('data-agent-select');
-  return v || '';
-}
-// What an item is, for finding it again after a morph: a node ('n:' + id) or
-// a parent's 전체 N개 보기 ('a:' + the parent's id) — never confused with the root.
-function anItemKey(item) {
-  var all = item.getAttribute('data-an-all');
-  return all !== null ? 'a:' + all : 'n:' + anItemId(item);
-}
-// Activate a tree item: open the panel on that node (card) or drill into it
-// (panel). From the keyboard, opening the panel moves focus onto the shown
-// node's header in it; closing the panel brings focus back to the item.
-var _anReturnFocus = null;
-var _anScopeChange = false; // selectPanelAgent is repainting for a node the reader chose
-function anActivate(item, byKey) {
-  var allId = item.getAttribute('data-an-all');
-  if (allId !== null) {
-    var t = item.closest('.an-tree');
-    var ns = t ? t.getAttribute('data-an-ns') || '' : '';
-    // The item keeps the tree's stop either way.
-    _anActive[ns] = 'a:' + allId;
-    if (ns.indexOf('c|') === 0) {
-      // The card's 전체 N개 → 상세: the panel, opened on that parent.
-      openPanel(ns.slice(2), 'agent', allId);
-      if (byKey) {
-        _anReturnFocus = item;
-        var focusHead = document.querySelector('#panel-agents .pa-focus');
-        if (focusHead && focusHead.focus) focusHead.focus();
-      }
-    } else {
-      showAllAgentChildren(ns, allId); // the panel unfolds in place (it now reads 접기)
-    }
-    return;
-  }
-  var openId = item.getAttribute('data-agent-open');
-  if (openId !== null) {
-    var cardEl = item.closest('.card');
-    var key = cardEl && cardEl.getAttribute('data-session-key');
-    if (!key) return;
-    openPanelAgent(key, openId);
-    if (byKey) {
-      _anReturnFocus = item;
-      var head = document.querySelector('#panel-agents .pa-focus');
-      if (head && head.focus) head.focus();
-    }
-    return;
-  }
-  var sel = item.getAttribute('data-agent-select');
-  if (sel !== null) selectPanelAgent(sel);
-}
-// A click in a tree: the chevron only folds, 전체 N개 보기 only unfolds the list,
-// a row activates its own node — the area of its children activates nothing.
-// Returns whether the click was the tree's.
-function anClick(e, scope) {
-  var tree = e.target.closest('.an-tree');
-  if (!tree || !scope.contains(tree)) return false;
-  var ns = tree.getAttribute('data-an-ns') || '';
-  var chev = e.target.closest('[data-an-toggle]');
-  if (chev) {
-    var item = chev.closest('[role="treeitem"]');
-    toggleAgentNode(ns, chev.getAttribute('data-an-toggle') || '', !(item && item.getAttribute('aria-expanded') === 'true'));
-    return true;
-  }
-  var more = e.target.closest('[data-an-all]');
-  if (more) {
-    anActivate(more);
-    return true;
-  }
-  var row = e.target.closest('.an-row');
-  if (row && row.parentNode) {
-    _anActive[ns] = anItemId(row.parentNode);
-    anActivate(row.parentNode);
-  }
-  return true;
-}
-// Pure: what a key does on a tree item (WAI-ARIA tree pattern).
-function anKeyAction(key, info) {
-  if (key === 'ArrowDown') return 'next';
-  if (key === 'ArrowUp') return 'prev';
-  if (key === 'Home') return 'first';
-  if (key === 'End') return 'last';
-  if (key === 'Enter' || key === ' ') return 'activate';
-  if (key === 'ArrowRight') return info.hasKids ? (info.open ? 'child' : 'expand') : '';
-  if (key === 'ArrowLeft') {
-    if (info.root) return '';
-    return info.hasKids && info.open ? 'collapse' : 'parent';
-  }
-  return '';
-}
-// The item that takes the tree's tab stop: exactly one tabindex="0" in the
-// tree, and the state the next render reads (a node id, or 'a:' + the parent's
-// id for a 전체 N개 보기) — DOM, focus and state never disagree.
-function anSetStop(tree, ns, to) {
-  var olds = tree.querySelectorAll('[role="treeitem"][tabindex="0"]');
-  for (var i = 0; i < olds.length; i++) if (olds[i] !== to) olds[i].setAttribute('tabindex', '-1');
-  to.setAttribute('tabindex', '0');
-  var all = to.getAttribute('data-an-all');
-  _anActive[ns] = all !== null ? 'a:' + all : anItemId(to);
-}
-function anMoveStop(ns, from, to) {
-  if (!to || to === from) return;
-  var tree = to.closest('.an-tree');
-  if (tree) anSetStop(tree, ns, to);
-  to.focus();
-}
-function anOnKey(e, item) {
-  var tree = item.closest('.an-tree');
-  if (!tree) return;
-  var ns = tree.getAttribute('data-an-ns') || '';
-  var isAll = item.classList.contains('an-all');
-  var exp = item.getAttribute('aria-expanded');
-  var act = anKeyAction(e.key, { hasKids: exp !== null && !isAll, open: exp === 'true', root: item.classList.contains('is-root') });
-  if (!act) return;
-  e.preventDefault();
-  if (act === 'activate') {
-    anActivate(item, true);
-    return;
-  }
-  if (act === 'expand' || act === 'collapse') {
-    toggleAgentNode(ns, anItemId(item), act === 'expand');
-    return;
-  }
-  var all = tree.querySelectorAll('[role="treeitem"]');
-  var list = [];
-  for (var i = 0; i < all.length; i++) list.push(all[i]);
-  var at = list.indexOf(item);
-  var to = null;
-  if (act === 'next') to = list[Math.min(list.length - 1, at + 1)];
-  else if (act === 'prev') to = list[Math.max(0, at - 1)];
-  else if (act === 'first') to = list[0];
-  else if (act === 'last') to = list[list.length - 1];
-  else if (act === 'child') {
-    var group = item.querySelector('.an-kids');
-    to = group ? group.querySelector('[role="treeitem"]') : null;
-  } else if (act === 'parent') {
-    var up = item.parentNode && item.parentNode.closest ? item.parentNode.closest('[role="treeitem"]') : null;
-    to = up && tree.contains(up) ? up : null;
-  }
-  anMoveStop(ns, item, to);
-}
-// A live update may remove the focused item (it left, or moved under another
-// parent): keep where focus was — the same node or its nearest surviving
-// ancestor — but only when a tree in el owned focus before the update.
-function anFocusCapture(el) {
-  var a = document.activeElement;
-  if (!a || !a.closest || !el.contains(a)) return null;
-  var item = a.closest('.an-tree [role="treeitem"]');
-  if (!item) return null;
-  var chain = [];
-  for (var cur = item; cur && el.contains(cur); cur = cur.parentNode && cur.parentNode.closest ? cur.parentNode.closest('[role="treeitem"]') : null) {
-    chain.push(anItemKey(cur));
-  }
-  return { node: a, chain: chain };
-}
-function anFocusRestore(el, cap) {
-  if (!cap) return;
-  if (document.activeElement === cap.node && el.contains(cap.node)) return;
-  var items = el.querySelectorAll('.an-tree [role="treeitem"]');
-  var to = null;
-  for (var c = 0; c < cap.chain.length && !to; c++) {
-    for (var i = 0; i < items.length; i++) {
-      if (anItemKey(items[i]) === cap.chain[c]) { to = items[i]; break; }
-    }
-  }
-  // Nothing of the chain survived (the panel draws no root): the tree's own stop.
-  if (!to) to = el.querySelector('.an-tree [role="treeitem"][tabindex="0"]');
-  if (!to) return;
-  var tree = to.closest('.an-tree');
-  if (tree) anSetStop(tree, tree.getAttribute('data-an-ns') || '', to);
-  to.focus();
-}
+});
+document.addEventListener('keydown', function() { _atKeyed = true; }, true);
+document.addEventListener('pointerdown', function() { _atKeyed = false; }, true);
 
 // ── Panel scope: which node's tasks and work log the panel shows (§4.3) ──
 function panelAgentOf(s) {
@@ -10640,7 +10345,7 @@ function renderAgentFocus(node, s) {
 }
 // The panel's agent section (§4.3), a drill-down over the same tree: the path
 // (the focused node's chain from the root), the focused node's header, and its
-// subtree as a tree — all of its direct children, deeper levels capped.
+// subtree as a tree — its children open, deeper parents folded.
 function renderPanelAgents() {
   var el = document.getElementById('panel-agents');
   if (!el) return;
@@ -10676,24 +10381,23 @@ function renderPanelAgents() {
   var html = chain.length > 1 || !node ? '<div class="pa-bar"><nav class="pa-path" aria-label="에이전트 경로">' + path + '</nav></div>' : '';
   if (node) html += renderAgentFocus(node, s);
   else html += '<div class="pa-focus is-unknown"><div class="pa-sum">카드 목록 밖의 에이전트 — 작업 로그만 있어요</div></div>';
+  // Its subtree: <ui-agent-tree>, rich — a card per agent on one waterfall
+  // axis, every branch's spend rolled up; the element's bar is its head.
+  var tree = null;
   if (node && node.children.length) {
-    var ns = 'p|' + panelSessionKey;
-    var ctx = { ns: ns, act: 'data-agent-select', levelBase: 0, capFrom: 2, withRoot: false, density: 'rich', axis: agentSpanAxis(s.agents || [], new Date(s.lastActivity).getTime() || 0) };
-    html += '<div class="pa-kids-head">하위 에이전트 <b>' + node.children.length + '</b></div>'
-      + '<ul class="an-tree pa-tree" role="tree" aria-label="' + escAttr(agentNodeName(node) + '의 하위 에이전트') + '" data-an-ns="' + escAttr(ns) + '">'
-      + anTreeHtml(root, node, ctx) + '</ul>';
+    tree = atTreeData(node, { s: s, ns: 'p|' + panelSessionKey, withRoot: false, openDepth: 0, density: 'rich', title: '하위 에이전트' });
+    html += atSlotHtml('pa-tree', 'p|' + panelSessionKey, '하위 에이전트 ' + node.children.length);
   }
-  // A live update (sessionUpdated, a board push) with the same data writes
-  // nothing; a changed section is morphed, so the focused item, the tree's
-  // scroll and a running spinner stay.
-  if (html === _panelAgentsHtml && el.style.display === '') return;
-  el.style.display = '';
-  // A live update keeps focus in the tree; a chosen scope change (selectPanelAgent) places it itself.
-  var cap = _anScopeChange ? null : anFocusCapture(el);
-  morphInnerHtml(el, html);
-  anFocusRestore(el, cap);
-  _panelAgentsHtml = html;
-  updateTimersIn(el);
+  // A live update (sessionUpdated, a board push) with the same markup writes
+  // nothing; a changed section is morphed, so a focused crumb stays. The
+  // tree's data is set apart, where it changed (the element keeps its focus).
+  if (html !== _panelAgentsHtml || el.style.display !== '') {
+    el.style.display = '';
+    morphInnerHtml(el, html);
+    _panelAgentsHtml = html;
+    updateTimersIn(el);
+  }
+  if (tree) atPaint(el.querySelector('ui-agent-tree'), tree, JSON.stringify(tree));
 }
 // Everything in the panel that follows the focused node, after any live
 // update — whichever node it is (no main-only or subagent-only gate). Each part
@@ -11599,8 +11303,8 @@ function selectPanelAgent(agentId) {
   }
   _panelAgent = next;
   _panelTasksExpanded = _panelDetail;
-  _anScopeChange = true;
-  try { renderPanelTabs(); renderPanelAgents(); } finally { _anScopeChange = false; }
+  renderPanelTabs();
+  renderPanelAgents();
   repaintPanelTasks();
   repaintWorkLogScope();
   renderAgentConv();
@@ -15981,8 +15685,6 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   if (opener && opener !== document.body && !(opener.closest && opener.closest('#slide-panel'))) _panelReturnFocus = document.activeElement;
   // Spec 12 §4.3: the agent whose tasks and work log the panel shows ('' = main).
   _panelAgent = agentId ? String(agentId) : '';
-  // A panel opened some other way returns focus nowhere (anActivate sets it after this).
-  _anReturnFocus = null;
 
   // Unconditional UI reset on card switch — an in-flight send from a previous
   // card must never leak "Sending..." / disabled state into this card. The
@@ -17261,8 +16963,7 @@ function closePanel() {
   // Focus goes back to whatever opened the panel (a tree item, a card button)
   // when it was in the panel; an opener that is gone (a folded DONE date, a
   // hidden archive) hands it to that session's card, else the board heading.
-  var back = _anReturnFocus || _panelReturnFocus;
-  _anReturnFocus = null;
+  var back = _panelReturnFocus;
   _panelReturnFocus = null;
   var a = document.activeElement;
   var wasInPanel = !a || a === document.body || !!(a.closest && a.closest('#slide-panel'));
@@ -19801,9 +19502,6 @@ function artHandleKey(e) {
     root.addEventListener('click', function(e) {
       // An artifact chip on the face opens its viewer (initArtifactInteractions), not the card.
       if (e.target.closest('[data-art-id]')) return;
-      // Spec 12: an open card's agent tree — a row opens the panel on that
-      // node, the chevron folds it, 전체 N개 보기 unfolds a parent's list.
-      if (anClick(e, root)) return;
       var face = e.target.closest('.card-face');
       if (!face || !root.contains(face)) return;
       var key = face.parentNode.getAttribute('data-session-key');
@@ -19828,33 +19526,16 @@ function artHandleKey(e) {
   // The secondary sections' disclosure state, before the first board render.
   applySectionState();
 })();
-// Spec 12 §4.3 — the panel's agent section: a path step or a subtree row drills
-// into that node; the subtree's chevrons and 전체 N개 보기 fold and unfold.
+// Spec 12 §4.3 — the panel's agent section: a path step drills into that node
+// (a subtree row is <ui-agent-tree>'s ui-select).
 (function initPanelAgentInteractions() {
   var bar = document.getElementById('panel-agents');
   if (!bar) return;
   bar.addEventListener('click', function(e) {
-    if (anClick(e, bar)) return;
     var pick = e.target.closest('.pa-crumb[data-agent-select]');
     if (pick && bar.contains(pick) && pick.getAttribute('aria-current') !== 'page') {
       selectPanelAgent(pick.getAttribute('data-agent-select') || '');
     }
-  });
-})();
-// One keydown path for every agent tree (card and panel): the WAI-ARIA tree
-// keys. Focus arriving on an item by any route (a click, a restore) takes the
-// tree's tab stop with it, so Tab / Shift+Tab always leave the tree.
-(function initAgentTreeKeys() {
-  document.addEventListener('keydown', function(e) {
-    if (e.altKey || e.ctrlKey || e.metaKey || !e.target || !e.target.closest) return;
-    var item = e.target.closest('.an-tree [role="treeitem"]');
-    if (item && item === e.target) anOnKey(e, item);
-  });
-  document.addEventListener('focusin', function(e) {
-    var item = e.target && e.target.closest ? e.target.closest('.an-tree [role="treeitem"]') : null;
-    if (!item || item !== e.target || item.getAttribute('tabindex') === '0') return;
-    var tree = item.closest('.an-tree');
-    if (tree) anSetStop(tree, tree.getAttribute('data-an-ns') || '', item);
   });
 })();
 
