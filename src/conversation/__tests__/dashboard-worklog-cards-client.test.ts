@@ -435,7 +435,8 @@ describe('the library build is served from the dashboard origin (server half)', 
       expect(i, sel).toBeGreaterThan(0);
       return TEMPLATE.slice(i, TEMPLATE.indexOf('}', i));
     };
-    const wrapper = css('.wl-toolcall');
+    // One mapping for every library element's wrapper (.wl-toolcall, and .ui-tok for the batch-1 elements).
+    const wrapper = css('.wl-toolcall, .ui-tok');
     for (const t of ['border', 'surface', 'text', 'st-done', 'st-fail', 'st-run'])
       expect(wrapper).toContain(`--ui-${t}: var(--${t});`);
     expect(css('.worklog-list ui-tool-call-card')).not.toContain('--ui-');
