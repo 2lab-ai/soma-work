@@ -35,22 +35,22 @@ const SAFE_Z_TOPICS =
   /^(?:help|sessions?|theme|persona|model|verbosity|effort|cwd|email|memory|notify|sandbox|cct|auth|bypass)(?:\s+.*)?$/;
 
 /**
- * Non-admin DM policy gate (Issue #553).
- *
- * Returns `true` when `text` is allowed for a non-admin user in a DM.
- * Allowed surface: safe `/z` topics, naked `sessions`/`theme`/`help`, and
- * the `%…` / `$…` session-config prefix. Plain prose and session-creating
- * commands (`new`, `renew`, prompts) are NOT allowed — the caller must
- * reject those with an ephemeral notice.
- *
- * Admin users bypass this gate entirely at the call site.
- */
-/**
  * The `skill` list — the requester's own skills and this host's environment skills, read-only.
  * Exact forms only (`SkillsHandler` grammar): `skill write me a script` stays a prompt.
  */
 const SKILL_LIST = /^\/?skills?(?:\s+(?:list|download))?$/;
 
+/**
+ * Non-admin DM policy gate (Issue #553).
+ *
+ * Returns `true` when `text` is allowed for a non-admin user in a DM.
+ * Allowed surface: safe `/z` topics, naked `sessions`/`theme`/`help`, the
+ * read-only `skill` list, and the `%…` / `$…` session-config prefix. Plain prose and session-creating
+ * commands (`new`, `renew`, prompts) are NOT allowed — the caller must
+ * reject those with an ephemeral notice.
+ *
+ * Admin users bypass this gate entirely at the call site.
+ */
 export function isDmAllowedForNonAdmin(text: string): boolean {
   const raw = (text ?? '').trim();
   if (!raw) return false;
