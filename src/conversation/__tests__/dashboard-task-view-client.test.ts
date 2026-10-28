@@ -560,10 +560,12 @@ describe('review r1 · one send at a time; a failed multiline send retries witho
     TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction pcOnSubmit(')),
   );
   it('a second press while the first reads its files sends nothing (the note stays in the field)', () => {
-    expect(submit).toMatch(/if \(!panelSessionKey \|\| _pcSending \|\| !host \|\| host\._mode !== 'open'\) \{\s*e\.preventDefault\(\);/);
+    expect(submit).toMatch(
+      /if \(!panelSessionKey \|\| _pcSending \|\| !host \|\| host\._mode !== 'open'\) \{\s*e\.preventDefault\(\);/,
+    );
     expect(send.indexOf('_pcSending = true')).toBeLessThan(send.indexOf('await '));
   });
-  it('a failed send retries through the element (its row\'s Retry re-emits ui-submit), never an inline handler', () => {
+  it("a failed send retries through the element (its row's Retry re-emits ui-submit), never an inline handler", () => {
     expect(send).toContain("el.setItemState(ref, 'failed', why.trim());");
     expect(TEMPLATE).not.toMatch(/function sendRetry\(|class="cmd-retry"/);
   });
