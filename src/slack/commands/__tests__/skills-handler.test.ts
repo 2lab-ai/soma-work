@@ -142,6 +142,13 @@ describe('SkillsHandler', () => {
       expect(env).not.toContain('승인 필요');
     });
 
+    it('truncates a long description before escaping, so an entity is never cut in half', async () => {
+      h.isAdmin.mockReturnValue(true);
+      writeEnvSkill('post-deploy', `${'x'.repeat(198)}&&`);
+      await handler.execute(ctx('skill'));
+      expect(textOf(posted()[1])).toContain(`${'x'.repeat(198)}&amp;&amp;`);
+    });
+
     it('shows every description to an admin', async () => {
       h.isAdmin.mockReturnValue(true);
       await handler.execute(ctx('skill'));

@@ -59,7 +59,8 @@ export function buildEnvSkillListMessage(
     },
     ...shown.map((s) => {
       const allowed = admin || isEnvSkillUseAllowed(s.key, userId, scope);
-      const desc = escapeSlackMrkdwn(s.description || '(no description)').substring(0, DESC_TRUNC_LEN);
+      // Truncate before escaping: cutting an escaped string can split an entity (`&amp;` → `&am`).
+      const desc = escapeSlackMrkdwn((s.description || '(no description)').substring(0, DESC_TRUNC_LEN));
       return {
         type: 'section',
         text: { type: 'mrkdwn', text: allowed ? `*\`$${s.key}\`*\n${desc}` : `*\`$${s.key}\`* 🔐 어드민 승인 필요` },
