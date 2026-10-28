@@ -308,6 +308,8 @@ function run(
         HOME: homeStub,
         // The overrides are inert without this flag (service.sh resolve_env).
         SOMA_TEST_HARNESS: '1',
+        // Launchctl and the daemon are shims here: scale service.sh's real waits (pause).
+        SOMA_SERVICE_WAIT_SCALE: '0.05',
         // This suite is about the gui/user domains. Force system-daemon mode
         // off so an inherited SOMA_LAUNCHD_SYSTEM=1 (or, without the harness
         // flag, a real /Library/LaunchDaemons/<label>.plist) can never make a

@@ -52,6 +52,7 @@ import { ClaudeHandler } from './claude-handler';
 import { config, runPreflightChecks, validateConfig } from './config';
 import { loadConfig } from './config-loader';
 import {
+  broadcastArtifactUpdate,
   broadcastConversationUpdate,
   broadcastSessionUpdate,
   broadcastSummaryTitleChanged,
@@ -64,11 +65,13 @@ import {
   setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
   setDashboardCommandHandler,
+  setDashboardCronSource,
   setDashboardEffortHandler,
   setDashboardGoalHandler,
   setDashboardModelHandler,
   setDashboardMultiChoiceAnswerHandler,
   setDashboardNewTaskProvider,
+  setDashboardPermissionAnswerHandler,
   setDashboardSessionAccessor,
   setDashboardStopHandler,
   setDashboardSubmitRecommendedHandler,
@@ -82,6 +85,8 @@ import {
   startWebServer,
   stopWebServer,
 } from './conversation';
+import { captureArtifactFromWorkLog } from './conversation/artifact-capture';
+import { getArtifactStore } from './conversation/artifacts';
 import { createNewTaskProvider } from './conversation/new-task-provider';
 import { setSettingsRegistry } from './conversation/settings-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
@@ -99,7 +104,7 @@ import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from '
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { startReportScheduler, stopReportScheduler } from './metrics';
-import { calculateTokenCost } from './metrics/model-registry';
+import { calculateTokenCost, hasModelPricing } from './metrics/model-registry';
 import { clampEffortToModel } from './model-catalog';
 import { bootModelCatalog } from './model-catalog-boot';
 import {
@@ -110,17 +115,20 @@ import {
   startUsageRefreshScheduler,
   type UsageRefreshScheduler,
 } from './oauth';
+import { answerPermissionPrompt } from './permission-prompt-response';
 import { acquirePidLock, releasePidLock } from './pid-lock';
 import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
 import { applyAgentEvent, stampWorkLogAgent } from './session/agent-registry';
+import { backfillAgentSpend, createAgentSpendReader } from './session/agent-spend';
 import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
 import { switchSessionEffort } from './session/effort-switch';
 import { productionModelCatalogDeps } from './session/model-catalog-deps';
 import { switchSessionModel } from './session/model-switch';
 import { applyTodoList, ledgerTasks } from './session/task-ledger';
+import { canApplySummaryTitle } from './session-title-policy';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
@@ -578,16 +586,7 @@ async function start() {
     const mcpConfig = mcpManager.loadConfiguration();
     timing(`MCP config loaded (${mcpConfig ? Object.keys(mcpConfig.mcpServers).length : 0} servers)`);
 
-    // Initialize Plugin manager
-    const pluginManager = new PluginManager(appConfig.plugin || {}, PLUGINS_DIR, undefined, BUNDLED_PLUGINS);
-    try {
-      await pluginManager.initialize();
-      mcpManager.setPluginManager(pluginManager);
-      timing(`Plugins initialized (${pluginManager.getResolvedPlugins().length} plugins)`);
-    } catch (error) {
-      logger.error('Plugin initialization failed (non-critical, using fallback)', error);
-    }
-
+    // Before plugin init: private marketplace fetches use `gh`, which needs the GITHUB_TOKEN auto-refresh sets.
     // Initialize GitHub App authentication and auto-refresh if configured
     if (isGitHubAppConfigured()) {
       await discoverInstallations();
@@ -604,6 +603,16 @@ async function start() {
           logger.error('Failed to start GitHub App token auto-refresh:', error);
         }
       }
+    }
+
+    // Initialize Plugin manager
+    const pluginManager = new PluginManager(appConfig.plugin || {}, PLUGINS_DIR, undefined, BUNDLED_PLUGINS);
+    try {
+      await pluginManager.initialize();
+      mcpManager.setPluginManager(pluginManager);
+      timing(`Plugins initialized (${pluginManager.getResolvedPlugins().length} plugins)`);
+    } catch (error) {
+      logger.error('Plugin initialization failed (non-critical, using fallback)', error);
     }
 
     // Initialize A2T service (audio-to-text transcription, non-critical)
@@ -885,6 +894,12 @@ async function start() {
       }
     });
 
+    // Connect dashboard: permission prompt answers (SSOT 2026-10-24) — the same
+    // answer path as the Slack buttons, with the registry for "approve & disable rule".
+    setDashboardPermissionAnswerHandler((args) =>
+      answerPermissionPrompt({ ...args, sessions: claudeHandler.getSessionRegistry() }),
+    );
+
     // Connect dashboard: multi-choice form answer handler
     setDashboardMultiChoiceAnswerHandler(
       async (sessionKey: string, selections: Record<string, { choiceId: string; label: string }>) => {
@@ -970,6 +985,24 @@ async function start() {
     // Fire-and-forget: the turn never waits on the disk; every failure is
     // already logged inside work-log.ts.
     setOnWorkLogAppendedCallback(broadcastWorkLog);
+    // A recorded artifact reaches every dashboard and grows its card's face row.
+    getArtifactStore().onRecorded(broadcastArtifactUpdate);
+    // SSOT 2026-10-26 T2 — what each subagent spent (tokens + API-equivalent
+    // cost), read from its own transcript. Refreshed on the session's agent
+    // events and its subagents' tool entries (≤ 1 read / 10 s per running
+    // agent); a turn end reads every agent not sealed yet and seals the ended
+    // ones. Off the hot path: the card is pushed when a number changed.
+    const agentSpendReader = createAgentSpendReader({
+      price: (model, t) =>
+        calculateTokenCost(model, t.inputTokens, t.outputTokens, t.cacheReadTokens, t.cacheCreateTokens),
+      isPriced: hasModelPricing,
+    });
+    const refreshAgentSpend = (sessionKey: string, session: ConversationSession, force: boolean) => {
+      if (!session.agents?.agents.length) return;
+      void agentSpendReader.refresh(session, { force }).then((changed) => {
+        if (changed) scheduleLiveSessionUpdate(sessionKey);
+      });
+    };
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
       recordAgentEvent: (sessionKey: string, event: AgentTreeEvent) => void;
@@ -999,8 +1032,15 @@ async function start() {
           }
         }
         const stamped = stampWorkLogAgent(owner ?? {}, entry, Date.now());
-        // A subagent's tool count grew: push the card (throttled, ≤ 1/s).
-        if (entry.agentId && entry.kind === 'tool' && ownerKey) scheduleLiveSessionUpdate(ownerKey);
+        // A node's tool count grew — a subagent's, or the main agent's (the
+        // registry root): push the card (throttled, ≤ 1/s per session).
+        if (entry.kind === 'tool' && ownerKey) scheduleLiveSessionUpdate(ownerKey);
+        // A subagent is working: its spend may have grown (throttled read).
+        if (entry.agentId && owner && ownerKey) refreshAgentSpend(ownerKey, owner, false);
+        // SSOT 2026-10-23 T1/T7: files the model sends to Slack and its markdown
+        // answers become dashboard artifacts. Before the store sees it, while
+        // `entry` still has the whole final text (the work log caps it).
+        void captureArtifactFromWorkLog(conversationId, entry);
         appendWorkLog(conversationId, stamped).catch(() => {});
       },
       // Spec 12 — the session's agent tree: fold the event into its registry
@@ -1009,9 +1049,14 @@ async function start() {
         const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
         if (!session) return;
         if (applyAgentEvent(session, event)) scheduleLiveSessionUpdate(sessionKey);
+        refreshAgentSpend(sessionKey, session, event.kind === 'turn_end');
       },
     };
     setStreamExecutorProviders(workLogProviders);
+    // SSOT 2026-10-26 T2 — subagents that ended before this process started
+    // fire no more events: read the loaded sessions' spend once, in the
+    // background, so every card shows its subagents' spend after a restart.
+    void backfillAgentSpend(claudeHandler.getAllSessions().entries(), agentSpendReader, scheduleLiveSessionUpdate);
 
     // Dashboard v2.1 — wire session title bridge so the recorder can
     // regenerate session summaryTitle without importing session-registry
@@ -1086,8 +1131,9 @@ async function start() {
         return;
       }
       // Guard: only overwrite title when it hasn't been deliberately set
-      // (e.g. by dispatch or issue linking). Treat conversationId-equal titles as "empty".
-      if (session.title && session.title !== session.conversationId) {
+      // (e.g. by dispatch or issue linking). Treat conversationId-equal titles as "empty",
+      // and a provisional cron job-name title as a placeholder (SSOT 2026-10-23 T2).
+      if (!canApplySummaryTitle(session)) {
         logger.debug('Skipping summary title — session already has a deliberate title', {
           conversationId,
           existingTitle: session.title,
@@ -1097,6 +1143,8 @@ async function start() {
       }
       registry.updateSessionTitle(session.channelId, session.threadTs, summaryTitle);
       slackHandler.requestThreadSurfaceRender(session);
+      // The dashboard card shows the new headline now, not at the next poll.
+      scheduleLiveSessionUpdate(registry.getSessionKey(session.channelId, session.threadTs));
       logger.debug('Summary title applied to session', {
         conversationId,
         summaryTitle,
@@ -1199,6 +1247,11 @@ async function start() {
     let cronScheduler: CronScheduler | null = null;
     try {
       const cronStorage = new CronStorage(path.join(DATA_DIR, 'cron-jobs.json'));
+      // The dashboard's CRON lane reads this instance's jobs + run history (SSOT 2026-10-23 T5).
+      setDashboardCronSource({
+        listJobs: () => cronStorage.getAll(),
+        listHistory: () => cronStorage.getExecutionHistory(),
+      });
 
       // Build a real say function that posts to Slack via chat.postMessage.
       // noopSay caused drain output to be silently discarded — the model ran

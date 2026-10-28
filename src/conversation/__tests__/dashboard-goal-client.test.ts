@@ -49,9 +49,11 @@ const RENDER_FNS = [
   'formatDuration',
   'formatGoalTime',
   'renderGoalHistory',
+  'isBusy',
+  'setBusy',
   'renderCardGoal',
 ];
-const RENDER_VARS = ['GOAL_STATUS_LABELS', 'GOAL_VIA_LABELS', '_goalHistoryOpen', '_goalErrors'];
+const RENDER_VARS = ['GOAL_STATUS_LABELS', 'GOAL_VIA_LABELS', '_goalHistoryOpen', '_goalErrors', '_busy'];
 
 function card(overrides: Record<string, any> = {}) {
   return {
@@ -235,6 +237,10 @@ describe('work item goal list — controls (T3)', () => {
       refreshCard,
       loadSessions,
       postGoalAction,
+      // Spec 13: the goal editor's home is the panel — a write re-renders it there too.
+      panelOpen: false,
+      panelSessionKey: null,
+      renderPanelGoal: () => {},
     });
 
     await mod.goalAction('self::C1:t1', { action: 'delete', goalId: 'g1', expect: 'current' }, null);
@@ -282,6 +288,13 @@ describe('work item goal list — the goal being typed survives a live re-render
         document,
         updateTimersIn: () => {},
         animateCountersIn: () => {},
+        // The browser morphs the body; this fake body rebuilds on write.
+        morphInnerHtml: (b: { innerHTML: string }, html: string) => {
+          b.innerHTML = html;
+        },
+        // Spec 12 (recursive): the agent tree's focus is kept across the morph.
+        anFocusCapture: () => null,
+        anFocusRestore: () => {},
       },
     );
 
@@ -301,6 +314,13 @@ describe('work item goal list — the goal being typed survives a live re-render
         document,
         updateTimersIn: () => {},
         animateCountersIn: () => {},
+        // The browser morphs the body; this fake body rebuilds on write.
+        morphInnerHtml: (b: { innerHTML: string }, html: string) => {
+          b.innerHTML = html;
+        },
+        // Spec 12 (recursive): the agent tree's focus is kept across the morph.
+        anFocusCapture: () => null,
+        anFocusRestore: () => {},
       },
     );
     // innerHTML assignment builds a fresh, empty input.

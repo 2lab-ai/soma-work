@@ -98,6 +98,18 @@ export function validatePluginConfig(raw: unknown): PluginConfig {
     result.plugins = valid;
   }
 
+  // envPlugins — kept so a CRUD write-back of the plugin section never drops the
+  // deploy's environment-plugin marker (the admin gate would silently open).
+  if (Array.isArray(obj.envPlugins)) {
+    const valid: string[] = [];
+    for (const p of obj.envPlugins) {
+      if (typeof p === 'string' && parsePluginRef(p)) {
+        valid.push(p);
+      }
+    }
+    result.envPlugins = valid;
+  }
+
   // localOverrides
   if (Array.isArray(obj.localOverrides)) {
     result.localOverrides = obj.localOverrides.filter((p): p is string => typeof p === 'string' && p.length > 0);

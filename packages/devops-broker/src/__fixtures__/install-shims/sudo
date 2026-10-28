@@ -1,0 +1,24 @@
+#!/bin/bash
+# Test stand-in for sudo (install.test.ts): records the call, drops -u <user> and runs the command
+# as the test user. SHIM_SUDO_REFUSE=<word>: a call with that exact argument fails without running, the way a
+# command the target user may not run fails.
+set -euo pipefail
+{ printf 'sudo'; printf ' %s' "$@"; printf '\n'; } >>"$SHIM_LOG"
+if [ -n "${SHIM_SUDO_REFUSE:-}" ]; then
+  for arg in "$@"; do
+    if [ "$arg" = "$SHIM_SUDO_REFUSE" ]; then
+      echo "sudo shim: refused $SHIM_SUDO_REFUSE" >&2
+      exit 1
+    fi
+  done
+fi
+while [ $# -gt 0 ]; do
+  case $1 in
+    -u) shift 2 ;;
+    -H | -n) shift ;;
+    --) shift; break ;;
+    -*) echo "sudo shim: unsupported option $1" >&2; exit 2 ;;
+    *) break ;;
+  esac
+done
+exec "$@"

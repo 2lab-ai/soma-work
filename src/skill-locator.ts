@@ -54,6 +54,8 @@ export interface ResolvedAutoskill {
   key: string;
   /** Verbatim SKILL.md content. */
   content: string;
+  /** Absolute SKILL.md path; its directory is the skill's base directory. */
+  file: string;
 }
 
 function skillMdPath(dir: string, name: string): string {
@@ -86,7 +88,7 @@ export function resolveAutoskillContent(name: string, userId?: string): Resolved
   for (const c of candidates) {
     try {
       if (fs.existsSync(c.file)) {
-        return { key: c.key, content: fs.readFileSync(c.file, 'utf-8') };
+        return { key: c.key, content: fs.readFileSync(c.file, 'utf-8'), file: c.file };
       }
     } catch (err) {
       logger.warn('resolveAutoskillContent: read failed', { name, file: c.file, error: (err as Error).message });
@@ -99,7 +101,7 @@ export function resolveAutoskillContent(name: string, userId?: string): Resolved
     const file = skillMdPath(path.join(PLUGINS_DIR, plugin, 'skills'), name);
     try {
       if (fs.existsSync(file)) {
-        return { key: `${plugin}:${name}`, content: fs.readFileSync(file, 'utf-8') };
+        return { key: `${plugin}:${name}`, content: fs.readFileSync(file, 'utf-8'), file };
       }
     } catch {
       // best-effort — skip unreadable plugin dirs

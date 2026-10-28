@@ -22,16 +22,24 @@ const logger = new Logger('MetricsEventStore');
  */
 const EVENT_TIMEZONE = process.env.REPORT_TIMEZONE || 'Asia/Seoul';
 
+// Built once: constructing an Intl.DateTimeFormat costs tens of microseconds.
+const EVENT_DATE_FORMAT = new Intl.DateTimeFormat('en-CA', {
+  timeZone: EVENT_TIMEZONE,
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+});
+
 function timestampToDateStr(timestamp: number): string {
-  const d = new Date(timestamp);
-  const formatter = new Intl.DateTimeFormat('en-CA', {
-    timeZone: EVENT_TIMEZONE,
-    year: 'numeric',
-    month: '2-digit',
-    day: '2-digit',
-  });
-  return formatter.format(d);
+  return EVENT_DATE_FORMAT.format(timestamp);
 }
+
+/**
+ * Day files read at once. Each read is several libuv threadpool trips; reading
+ * them one after another made a month of stats take seconds on a busy host
+ * (#477). Bounded so a year-long range never holds hundreds of files open.
+ */
+const READ_CONCURRENCY = 8;
 
 /**
  * Generate an inclusive list of date strings between start and end.
@@ -314,6 +322,27 @@ export class MetricsEventStore {
     }
   }
 
+  /** One day's events in file order; a missing file is an empty day. */
+  private async readDay(dateStr: string): Promise<MetricsEvent[]> {
+    const filePath = this.getFilePath(dateStr);
+    const events: MetricsEvent[] = [];
+    try {
+      const content = await fs.promises.readFile(filePath, 'utf-8');
+      const lines = content.split('\n').filter((line) => line.trim().length > 0);
+      for (let i = 0; i < lines.length; i++) {
+        try {
+          events.push(JSON.parse(lines[i]) as MetricsEvent);
+        } catch {
+          logger.warn(`Skipped corrupted line in ${path.basename(filePath)}:${i + 1}`);
+        }
+      }
+    } catch (error: any) {
+      // ENOENT: no events for this date — expected
+      if (error.code !== 'ENOENT') logger.error(`Failed to read metrics file for ${dateStr}`, error);
+    }
+    return events;
+  }
+
   /**
    * Read all events in a date range (inclusive).
    * Returns events sorted by timestamp ascending.
@@ -322,31 +351,16 @@ export class MetricsEventStore {
   async readRange(startDate: string, endDate: string): Promise<MetricsEvent[]> {
     await ensureDirOnce(this.dataDir, this.metricsDir);
     const dates = generateDateRange(startDate, endDate);
-    const allEvents: MetricsEvent[] = [];
-
-    for (const dateStr of dates) {
-      const filePath = this.getFilePath(dateStr);
-
-      try {
-        const content = await fs.promises.readFile(filePath, 'utf-8');
-        const lines = content.split('\n').filter((line) => line.trim().length > 0);
-
-        for (let i = 0; i < lines.length; i++) {
-          try {
-            const event = JSON.parse(lines[i]) as MetricsEvent;
-            allEvents.push(event);
-          } catch {
-            logger.warn(`Skipped corrupted line in ${path.basename(filePath)}:${i + 1}`);
-          }
-        }
-      } catch (error: any) {
-        if (error.code === 'ENOENT') {
-          // No events for this date — expected
-          continue;
-        }
-        logger.error(`Failed to read metrics file for ${dateStr}`, error);
+    const perDay: MetricsEvent[][] = new Array(dates.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < dates.length) {
+        const i = next++;
+        perDay[i] = await this.readDay(dates[i]);
       }
-    }
+    };
+    await Promise.all(Array.from({ length: Math.min(READ_CONCURRENCY, dates.length) }, worker));
+    const allEvents = perDay.flat();
 
     // Sort by timestamp ascending
     allEvents.sort((a, b) => a.timestamp - b.timestamp);

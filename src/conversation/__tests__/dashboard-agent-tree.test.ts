@@ -138,6 +138,20 @@ describe('Dashboard — agent tree payload (spec 12 §3)', () => {
     expect(card.agents[0].tasks.map((t: any) => t.status)).toEqual(['pending', 'pending']);
   });
 
+  it("a card carries the main agent's own tool count as agentRoot — with or without subagents", async () => {
+    const reg = registry();
+    reg.root = { toolCalls: 7, lastTool: 'Edit' };
+    const withSubs = (await board(new Map([['C1:t1', liveSession({ agents: reg })]]))).working[0];
+    expect(withSubs.agentRoot).toEqual({ toolCalls: 7, lastTool: 'Edit' });
+    const mainOnly = (
+      await board(new Map([['C1:t1', liveSession({ agents: { nextN: 1, agents: [], root: { toolCalls: 2 } } })]]))
+    ).working[0];
+    expect(mainOnly.agentRoot).toEqual({ toolCalls: 2 });
+    expect('agents' in mainOnly).toBe(false);
+    const none = (await board(new Map([['C1:t1', liveSession()]]))).working[0];
+    expect('agentRoot' in none).toBe(false);
+  });
+
   it('a card without subagents carries no agents key', async () => {
     const card = (await board(new Map([['C1:t1', liveSession()]]))).working[0];
     expect('agents' in card).toBe(false);
@@ -167,5 +181,148 @@ describe('Dashboard — agent tree payload (spec 12 §3)', () => {
     const card = b.closed.find((c: any) => c.conversationId === 'conv9');
     expect(card.agents.map((a: any) => a.status)).toEqual(['unknown', 'failed']);
     expect(card.agents[0].tasks.map((t: any) => t.status)).toEqual(['pending', 'pending']);
+  });
+
+  // RED (SSOT T2/T3) — each subagent carries its own spend (tokens + API-equivalent
+  // cost); the card's total is the task's (persisted taskUsage + the running turn),
+  // not the runtime usage a restart or /new wipes; the subagents' sum rides along.
+  describe('spend — per subagent and the task total', () => {
+    const spend = (n: number, extra: Record<string, unknown> = {}) => ({
+      inputTokens: n,
+      outputTokens: 2 * n,
+      cacheReadTokens: 10 * n,
+      cacheCreateTokens: 0,
+      costUsd: n / 1000,
+      calls: 3,
+      ...extra,
+    });
+
+    it('a subagent carries its own spend; the SDK context size is not passed off as tokens', async () => {
+      const reg = registry();
+      reg.agents[0].tokens = 134;
+      reg.agents[0].spend = spend(1000, { unpricedModels: ['grok-4.7-build'] });
+      const card = (await board(new Map([['C1:t1', liveSession({ agents: reg })]]))).working[0];
+      expect(card.agents[0].spend).toEqual(spend(1000, { unpricedModels: ['grok-4.7-build'] }));
+      expect('tokens' in card.agents[0]).toBe(false);
+      expect('spend' in card.agents[1]).toBe(false);
+    });
+
+    it('the card carries the subagents’ sum — those dropped by the record cap included', async () => {
+      const reg = registry();
+      reg.agents[0].spend = spend(1000);
+      reg.agents[1].spend = spend(500, { unpricedModels: ['gpt-6-astra'] });
+      reg.prunedSpend = { ...spend(100), agents: 4 };
+      const card = (await board(new Map([['C1:t1', liveSession({ agents: reg })]]))).working[0];
+      expect(card.subagentSpend).toMatchObject({
+        agents: 6,
+        inputTokens: 1600,
+        outputTokens: 3200,
+        cacheReadTokens: 16_000,
+        cacheCreateTokens: 0,
+        unpriced: true,
+      });
+      expect(card.subagentSpend.costUsd).toBeCloseTo(1.6);
+    });
+
+    it('the card total is the task total plus the running turn — not the runtime usage', async () => {
+      const s = liveSession({
+        taskUsage: {
+          inputTokens: 5000,
+          outputTokens: 600,
+          cacheReadTokens: 900_000,
+          cacheCreateTokens: 7000,
+          costUsd: 42,
+        },
+        usage: {
+          totalInputTokens: 10,
+          totalOutputTokens: 10,
+          totalCacheReadTokens: 10,
+          totalCacheCreateTokens: 10,
+          totalCostUsd: 0.01,
+          currentInputTokens: 100_000,
+          currentOutputTokens: 0,
+          currentCacheReadTokens: 0,
+          currentCacheCreateTokens: 0,
+          contextWindow: 1_000_000,
+        },
+        liveUsage: { 'm:x': { inputTokens: 1, outputTokens: 2, cacheReadTokens: 3, cacheCreateTokens: 4 } },
+      });
+      const card = (await board(new Map([['C1:t1', s]]))).working[0];
+      expect(card.tokenUsage).toMatchObject({
+        totalInputTokens: 5001,
+        totalOutputTokens: 602,
+        totalCacheReadTokens: 900_003,
+        totalCacheCreateTokens: 7004,
+      });
+      expect(card.tokenUsage.totalCostUsd).toBeGreaterThan(42);
+      expect(card.tokenUsage.totalCostUsd).toBeLessThan(42.01);
+      // The context gauge is still the live window's.
+      expect(card.tokenUsage.contextUsagePercent).toBeCloseTo(10);
+    });
+
+    it('a partial task total says since when it counts', async () => {
+      const s = liveSession({
+        taskUsage: {
+          inputTokens: 1,
+          outputTokens: 1,
+          cacheReadTokens: 0,
+          cacheCreateTokens: 0,
+          costUsd: 0.01,
+          partialSince: T0,
+        },
+      });
+      const card = (await board(new Map([['C1:t1', s]]))).working[0];
+      expect(card.tokenUsage.partialSince).toBe(T0);
+    });
+
+    it('review r1 — after /new (no SDK session yet) a task with spend stays on the board', async () => {
+      const s = liveSession({
+        sessionId: undefined,
+        taskUsage: { inputTokens: 9, outputTokens: 9, cacheReadTokens: 0, cacheCreateTokens: 0, costUsd: 0.5 },
+      });
+      const b = await board(new Map([['C1:t1', s]]));
+      const all = [...b.working, ...b.waiting, ...b.idle, ...b.closed];
+      expect(all).toHaveLength(1);
+      expect(all[0].tokenUsage.totalCostUsd).toBeCloseTo(0.5);
+      // Without any history it is still a not-yet-started session: not shown.
+      const empty = await board(new Map([['C1:t2', liveSession({ sessionId: undefined })]]));
+      expect([...empty.working, ...empty.waiting, ...empty.idle, ...empty.closed]).toHaveLength(0);
+    });
+
+    it('a closed card shows the task total it archived', async () => {
+      archives.push({
+        archivedAt: T0 + 120_000,
+        archiveReason: 'terminated',
+        sessionKey: 'C1:t8',
+        sessionId: 'sid8',
+        conversationId: 'conv8',
+        ownerId: 'U1',
+        ownerName: 'Zhuge',
+        channelId: 'C1',
+        threadTs: 't8',
+        title: 'Archived spend',
+        model: 'claude-opus-5-5[1m]',
+        workflow: 'default',
+        lastActivity: new Date(T0 + 110_000).toISOString(),
+        finalState: 'MAIN',
+        finalActivityState: 'idle',
+        usage: {
+          totalInputTokens: 1,
+          totalOutputTokens: 1,
+          totalCacheReadTokens: 1,
+          totalCacheCreateTokens: 1,
+          totalCostUsd: 0.001,
+        },
+        taskUsage: { inputTokens: 70, outputTokens: 80, cacheReadTokens: 900, cacheCreateTokens: 10, costUsd: 12.5 },
+      });
+      const card = (await board(new Map())).closed.find((c: any) => c.conversationId === 'conv8');
+      expect(card.tokenUsage).toMatchObject({
+        totalInputTokens: 70,
+        totalOutputTokens: 80,
+        totalCacheReadTokens: 900,
+        totalCacheCreateTokens: 10,
+        totalCostUsd: 12.5,
+      });
+    });
   });
 });

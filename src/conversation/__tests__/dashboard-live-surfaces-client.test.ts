@@ -51,6 +51,10 @@ const SHOW_ALL = {
   dhMax: (_f: string, d: number) => d,
   dhTruncate: () => null,
   currentUserId: 'U1',
+  // The artifact row has its own suite (dashboard-artifacts-client.test.ts).
+  isSiblingSession: () => false,
+  artFaceChips: () => '',
+  umFaceBadge: () => '',
 };
 const FACE_FNS = [
   'esc',
@@ -62,16 +66,35 @@ const FACE_FNS = [
   'cardTotalTokens',
   'cardCurrentTask',
   'renderCardTaskRow',
+  'agentStatusOf',
+  'agentCounts',
+  'renderCardAgents',
   'renderCardUsage',
   'formatTaskTime',
   'pendingAutoResume',
   'autoResumeLabel',
   'cardSummary',
+  'doneTimeOf',
+  'cardAgo',
   'renderCardStatus',
   'renderOwnerBadge',
+  'ctxLevel',
+  'ctxPercent',
+  'renderCardPr',
   'renderCardFace',
 ];
-const FACE_VARS = ['SPARK_SVG', 'WAIT_SVG', 'TASKS_SVG', 'CTX_SVG', 'RESUME_SVG'];
+const FACE_VARS = [
+  'SPARK_SVG',
+  'WAIT_SVG',
+  'TASKS_SVG',
+  'CTX_SVG',
+  'PR_STATE_LABEL',
+  'PR_SVG',
+  'RESUME_SVG',
+  'AGENT_STATUS_LABEL',
+  'AGENT_DOTS_MAX',
+  'AGENTS_SVG',
+];
 
 function workingCard(over: Record<string, unknown> = {}) {
   return {
@@ -275,11 +298,10 @@ describe('count-up animation of the usage numbers (T1/T2)', () => {
 });
 
 describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
-  const tasksOpen: Record<string, boolean> = {};
   const tl = load<{ renderTimeline(s: unknown): string }>(
     ['esc', 'escJs', 'toNum', 'formatDuration', 'renderTaskMeta', 'renderTimelineItem', 'renderTimeline'],
     [],
-    { ...SHOW_ALL, _tasksOpen: tasksOpen },
+    { ...SHOW_ALL },
   );
 
   it('each task shows its id; a completed task its elapsed time and tool calls', () => {
@@ -293,7 +315,9 @@ describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
     expect(html).toMatch(/#T3<\/span><span class="tl-text">Ship it<\/span><\/li>/);
   });
 
-  it('completed tasks beyond the budget and earlier tasks open on demand', () => {
+  // Spec 13: the open card is a window; every task of the list and the earlier
+  // lists are the panel's Tasks — 전체 task N개 → opens them there (T7 reachability kept).
+  it('completed tasks beyond the budget and earlier tasks are one click away, in the panel', () => {
     const many = workingCard({
       tasks: Array.from({ length: 8 }, (_, i) => ({
         id: `T${i + 1}`,
@@ -307,30 +331,23 @@ describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
         { id: 'T0', content: 'old plan', status: 'completed', startedAt: 1, completedAt: 2, toolCalls: 4 },
       ],
     });
-    const closed = tl.renderTimeline(many);
-    expect(closed).not.toContain('old plan');
-    expect(closed).toContain('aria-expanded="false"');
-    expect(closed).toContain('전체 task 보기 (4)');
-    tasksOpen[many.key] = true;
-    const open = tl.renderTimeline(many);
-    for (let i = 1; i <= 8; i++) expect(open).toContain(`#T${i}<`);
-    expect(open).toContain('이전 task 1개');
-    expect(open).toContain('old plan');
-    expect(open).toContain('aria-expanded="true"');
-    delete tasksOpen[many.key];
+    const html = tl.renderTimeline(many);
+    expect(html).not.toContain('old plan');
+    expect(html).toContain('전체 task 9개 &rarr;');
+    expect(html).toContain("openPanel('" + many.key + "','tasks',");
   });
 
   it('a session with only earlier tasks still offers them', () => {
     const html = tl.renderTimeline(
       workingCard({ tasks: [], earlierTasks: [{ id: 'T9', content: 'x', status: 'completed', toolCalls: 1 }] }),
     );
-    expect(html).toContain('전체 task 보기 (1)');
+    expect(html).toContain('전체 task 1개 &rarr;');
   });
 });
 
 describe('panel task rows carry id, elapsed time and tool calls (T7/T8)', () => {
   const { renderPanelTaskItem } = load<{ renderPanelTaskItem(t: unknown): string }>(
-    ['esc', 'toNum', 'formatDuration', 'formatTaskTime', 'renderPanelTaskItem'],
+    ['esc', 'escAttr', 'toNum', 'formatDuration', 'formatTaskTime', 'agentIconHtml', 'renderPanelTaskItem'],
     [],
   );
   it('completed: id, duration and tool count', () => {
@@ -359,9 +376,10 @@ describe('goals: completed goals open with their details (T6)', () => {
       'formatDuration',
       'formatGoalTime',
       'renderGoalHistory',
+      'isBusy',
       'renderCardGoal',
     ],
-    ['GOAL_STATUS_LABELS', '_goalErrors', 'GOAL_VIA_LABELS'],
+    ['GOAL_STATUS_LABELS', '_goalErrors', 'GOAL_VIA_LABELS', '_busy'],
     { _goalHistoryOpen: open },
   );
   const card = (history: unknown[], over: Record<string, unknown> = {}) => ({
@@ -572,6 +590,7 @@ describe('work log folds under the task each entry was made in (T10)', () => {
       'formatDuration',
       'decodeSlackEntities',
       'renderTaskMeta',
+      'wlToolSummary',
       'renderWorkLogEntry',
       'wlGroupOf',
       'wlBuildRows',
@@ -703,6 +722,8 @@ describe('DONE grouped by the day the work finished (T11/T12)', () => {
 });
 
 describe('model switch on the open card (T4/T5)', () => {
+  // The <select> became the model menu (.prd/affectui/re-model-picker.md D1/D3):
+  // the same six models, the same "compact 후 전환" rule, now as listbox rows.
   const MODELS = [
     { nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]', autoCompactTokens: 750_000 },
     { nickname: 'fable[1m]', model: 'claude-fable-5-1[1m]', autoCompactTokens: 750_000 },
@@ -714,13 +735,41 @@ describe('model switch on the open card (T4/T5)', () => {
   const notes: Record<string, unknown> = {};
   const m = load<{
     renderModelPicker(s: unknown, canSwitch: boolean, short: string): string;
+    renderModelMenu(s: unknown): string;
     renderModelNote(s: unknown): string;
     modelSwitchNote(r: unknown): { text: string; error: boolean };
   }>(
-    ['esc', 'escAttr', 'escJs', 'toNum', 'formatTokens', 'renderModelPicker', 'renderModelNote', 'modelSwitchNote'],
-    [],
+    [
+      'esc',
+      'escAttr',
+      'escJs',
+      'toNum',
+      'formatTokens',
+      'effortLabel',
+      'isBusy',
+      'mpShort',
+      'mpOptions',
+      'mpCurrentIndex',
+      'mpOptId',
+      'mpIndexOf',
+      'mpActiveIndex',
+      'mpSegments',
+      'mpMax',
+      'mpMetersHtml',
+      'mpMoney',
+      'mpPriceWords',
+      'mpTray',
+      'mpEffortLevels',
+      'renderEffortControl',
+      'renderModelMenu',
+      'renderModelPicker',
+      'renderModelNote',
+      'modelSwitchNote',
+    ],
+    ['_busy', '_mp', 'EFFORT_LABELS', 'MP_EFFORT_SHORT'],
     {
       REPRESENTATIVE_MODELS: MODELS,
+      EFFORT_LEVELS: ['low', 'medium', 'high', 'xhigh', 'max'],
       _modelNotes: notes,
     },
   );
@@ -732,16 +781,18 @@ describe('model switch on the open card (T4/T5)', () => {
   });
 
   it('offers exactly the six representative models, the current one selected', () => {
-    const html = m.renderModelPicker(s(), true, 'opus-5-5[1m]');
-    const values = [...html.matchAll(/<option value="([^"]*)"/g)].map((x) => x[1]);
+    const html = m.renderModelMenu(s());
+    const values = [...html.matchAll(/data-mp-nick="([^"]*)"/g)].map((x) => x[1]);
     expect(values).toEqual(['opus[1m]', 'fable[1m]', 'sonnet[1m]', 'sol[1m]', 'astra[1m]', 'grok[1m]']);
-    expect(html).toMatch(/<option value="opus\[1m\]" selected>/);
-    expect(html).toContain('aria-label="모델 변경"');
-    expect(html).toContain('onchange="changeModel(\'inst::C1:t1\',this)"');
+    expect(html).toMatch(/data-mp-nick="opus\[1m\]" aria-selected="true"/);
+    expect(html).toContain('role="listbox" aria-label="모델"');
+    const trigger = m.renderModelPicker(s(), true, 'opus-5-5[1m]');
+    expect(trigger).toContain('data-mp-key="inst::C1:t1"');
+    expect(trigger).toContain('onclick="event.stopPropagation();mpToggleFrom(this)"');
   });
 
   it('shows each model’s auto-compact threshold; a target below the context says it compacts first', () => {
-    const html = m.renderModelPicker(s(), true, 'opus');
+    const html = m.renderModelMenu(s());
     expect(html).toContain('grok[1m] · autocompact 450.0K · compact 후 전환');
     expect(html).toContain('fable[1m] · autocompact 750.0K<');
     // The current model never says so.
@@ -749,14 +800,15 @@ describe('model switch on the open card (T4/T5)', () => {
   });
 
   it('a model outside the list is shown as the current, unselectable entry', () => {
-    const html = m.renderModelPicker(s({ model: 'claude-haiku-4-5-20251001' }), true, 'haiku-4-5');
-    expect(html).toContain('<option value="" selected disabled>haiku-4-5</option>');
+    const html = m.renderModelMenu(s({ model: 'claude-haiku-4-5-20251001' }));
+    expect(html).toContain('id="mp-opt-0" role="option" data-mp-i="0" aria-selected="true" aria-disabled="true"');
+    expect(html).toContain('<span class="mp-title-name">haiku-4-5</span>');
   });
 
-  it('read-only viewers see the model name, no control; a waiting switch disables the control and says so', () => {
+  it('read-only viewers see the model name, no control; a waiting switch locks the list and says so', () => {
     expect(m.renderModelPicker(s(), false, 'opus-5-5[1m]')).toBe('<span class="cb-model-name">opus-5-5[1m]</span>');
-    expect(m.renderModelPicker(s({ pendingModel: 'grok[1m]' }), true, 'opus')).toContain(
-      '<select class="cb-model-select" aria-label="모델 변경" disabled',
+    expect(m.renderModelMenu(s({ pendingModel: 'grok[1m]' }))).toContain(
+      'role="listbox" aria-label="모델" tabindex="0" aria-activedescendant="mp-opt-0" aria-disabled="true"',
     );
     expect(m.renderModelNote(s({ pendingModel: 'grok[1m]' }))).toContain('compact 후 grok[1m](으)로 전환합니다');
   });

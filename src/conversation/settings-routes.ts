@@ -13,6 +13,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { Logger } from '../logger';
 import { SettingsError, type SettingsRegistry } from '../user-settings-registry';
+import { renderSettingsPage } from './settings-page';
 
 const logger = new Logger('SettingsRoutes');
 
@@ -42,6 +43,12 @@ export function registerSettingsRoutes(
 ): void {
   const read = { preHandler: [authMiddleware] };
   const write = { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] };
+
+  // The settings page (SSOT 2026-10-23 T2/T5). A static path, so it wins over
+  // the dashboard's `/dashboard/:userId` route.
+  server.get('/dashboard/settings', read, async (_request, reply) => {
+    reply.header('Cache-Control', 'no-store').type('text/html; charset=utf-8').send(renderSettingsPage());
+  });
 
   server.get('/api/settings', read, async (request, reply) => {
     const userId = requireSelfUser(request, reply);
