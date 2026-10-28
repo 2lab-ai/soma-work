@@ -317,10 +317,12 @@ describe('C2 — the one-line row', () => {
     );
     expect(ws).toContain('[data-turn-id^="optimistic-"]');
     expect(ws).toContain('updateTurnInPanel(optEl, msg.turn)');
-    const send = TEMPLATE.slice(
-      TEMPLATE.indexOf('const optimisticTurn = {'),
-      TEMPLATE.indexOf('appendTurnToPanel(optimisticTurn);'),
-    );
+    // affectUI batch 2b: the composer (<ui-agent-steering>) draws the optimistic turn only when no turn is running;
+    // a note sent mid-turn is a queued note in the steering list instead (dashboard-steering-client).
+    const from = TEMPLATE.indexOf("optimisticId = 'optimistic-' + Date.now();");
+    expect(from).toBeGreaterThan(-1);
+    const send = TEMPLATE.slice(from, TEMPLATE.indexOf('_optimistic: true', from));
+    expect(send).toContain('appendTurnToPanel({');
     expect(send).toContain("origin: { by: 'user' }");
   });
 
