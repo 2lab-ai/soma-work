@@ -1,7 +1,10 @@
 import { WebClient } from '@slack/web-api';
 import { parseBgKeepaliveMaxMs } from './agent-runtime/background-keepalive';
+import { type LlmuxTierId, parseLlmuxAccountTiers } from './auth/llmux-tiers';
 import { resolveIncidentEvidenceOrigin } from './incident/evidence';
 import { Logger } from './logger';
+import { DEFAULT_OAUTH_REFRESH_INTERVAL_MS } from './oauth/oauth-refresh-scheduler';
+import { parseReleaseNotesChannels, type ReleaseNotesChannelsConfig } from './release-notes-routes';
 import { normalizeSigningSecret, SIGNING_SECRET_MIN_LENGTH } from './slack-signing-secret';
 
 // Logger for preflight checks and config validation
@@ -306,6 +309,44 @@ export function getIncidentEvidenceConfig(): IncidentEvidenceConfig | null {
   }
 }
 
+/**
+ * Typed getter for `SOMA_RELEASE_NOTES_CHANNELS` (grammar in
+ * `release-notes-routes.ts`). Read on every call — it runs once per deploy, and
+ * a cached parse would outlive the env it was read from (tests reset env per
+ * file). Malformed entries are dropped individually and logged here; the
+ * poster also reports them in the deploy thread.
+ */
+export function getReleaseNotesChannels(): ReleaseNotesChannelsConfig {
+  const parsed = parseReleaseNotesChannels(process.env.SOMA_RELEASE_NOTES_CHANNELS);
+  if (parsed.invalid.length > 0) {
+    logger.warn('SOMA_RELEASE_NOTES_CHANNELS has malformed entries — they are ignored', { invalid: parsed.invalid });
+  }
+  return parsed;
+}
+
+/**
+ * Typed getter for `SOMA_LLMUX_ACCOUNT_TIERS` (SSOT 2026-10-23 T10; grammar in
+ * `auth/llmux-tiers.ts`): the operator's account → subscription tier map for
+ * the dashboard cooldown timeline. Returns the operator's entries only; the
+ * built-in defaults are applied last by `resolveAccountTier`. Malformed
+ * entries are dropped and logged once per distinct value.
+ */
+let _llmuxTiersMemo: { raw: string | undefined; tiers: Record<string, LlmuxTierId> } | null = null;
+export function getLlmuxAccountTiers(): Record<string, LlmuxTierId> {
+  const raw = process.env.SOMA_LLMUX_ACCOUNT_TIERS;
+  // Parsed (and a malformed entry warned about) once per distinct value — the
+  // capacity view reads this every 30 s.
+  if (_llmuxTiersMemo && _llmuxTiersMemo.raw === raw) return { ..._llmuxTiersMemo.tiers };
+  const parsed = parseLlmuxAccountTiers(raw);
+  if (parsed.invalid.length > 0) {
+    logger.warn('SOMA_LLMUX_ACCOUNT_TIERS has malformed entries — they are ignored', { invalid: parsed.invalid });
+  }
+  // Operator entries only: resolveAccountTier applies the built-in defaults
+  // last, so a bare-name override (`ai1=pro500`) still beats a scoped default.
+  _llmuxTiersMemo = { raw, tiers: { ...parsed.tiers } };
+  return { ..._llmuxTiersMemo.tiers };
+}
+
 export const config = {
   slack: {
     botToken: process.env.SLACK_BOT_TOKEN!,
@@ -401,6 +442,13 @@ export const config = {
      * heartbeat record has a non-empty `instanceName`.
      */
     instanceName: process.env.INSTANCE_NAME || '',
+    /**
+     * Opt-in: while another server answers at `viewerUrl` and the OAuth callback
+     * origin (`SOMA_OAUTH_CALLBACK_BASE_URL`) answers as this instance, mint links
+     * on the callback origin (conversation/public-url.ts). Off: the mismatch is
+     * only logged and reported on /health.
+     */
+    publicUrlFallback: parseBool(process.env.SOMA_PUBLIC_URL_FALLBACK, false),
   },
   oauth: {
     google: {
@@ -412,6 +460,15 @@ export const config = {
       clientSecret: process.env.MICROSOFT_CLIENT_SECRET || '',
     },
     jwtSecret: process.env.DASHBOARD_JWT_SECRET || '',
+    /**
+     * Origin the OAuth provider redirects back to (`<base>/auth/<provider>/callback`).
+     * Empty = the public viewer URL. Set it to the previous public origin while the
+     * provider console still lists only that callback: the provider returns there,
+     * the canonical-origin redirect forwards the callback to the public URL, and
+     * the code exchange repeats this same redirect_uri. The forwarding redirect only
+     * exists when the viewer URL is https (web-server.ts registerCanonicalOriginRedirect).
+     */
+    callbackBaseUrl: process.env.SOMA_OAUTH_CALLBACK_BASE_URL || '',
     /** Seconds until dashboard JWT expires (default: 7 days) */
     jwtExpiresIn: parseInt(process.env.DASHBOARD_JWT_EXPIRES_IN || '604800', 10),
   },
@@ -464,7 +521,7 @@ export const config = {
      * the scheduler churns refresh endpoints faster than the 8-hour token
      * TTL warrants, which burns Anthropic-side rate limit for no gain.
      */
-    intervalMs: parsePositiveIntEnv('OAUTH_REFRESH_INTERVAL_MS', 60 * 60_000, 5 * 60_000),
+    intervalMs: parsePositiveIntEnv('OAUTH_REFRESH_INTERVAL_MS', DEFAULT_OAUTH_REFRESH_INTERVAL_MS, 5 * 60_000),
     /**
      * ms deadline for each fan-out; default 30s. Per-slot HTTP call has
      * its own 10s timeout inside `refreshClaudeCredentials`, so 30s is

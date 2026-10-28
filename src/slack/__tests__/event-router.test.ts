@@ -89,6 +89,21 @@ describe('EventRouter', () => {
   });
 
   describe('dispatchPendingUserMessage', () => {
+    it('replays a stashed goal objective with routeContext.verbatimPrompt (PR #305)', async () => {
+      await router.dispatchPendingUserMessage(
+        { channel: 'C123', threadTs: '111.222', user: 'U123', ts: '111.333', verbatimPrompt: true },
+        'new dashboard 구현',
+        { compactRedispatch: true },
+      );
+      expect(mockMessageHandler).toHaveBeenCalledWith(
+        expect.objectContaining({
+          text: 'new dashboard 구현',
+          routeContext: { compactRedispatch: true, verbatimPrompt: true },
+        }),
+        expect.any(Function),
+      );
+    });
+
     it('treats pipeline invocation as the handoff boundary and does not reject after downstream acceptance', async () => {
       mockMessageHandler = vi.fn(async () => {
         throw new Error('downstream turn failed after acceptance');
@@ -598,6 +613,33 @@ describe('EventRouter', () => {
       await handler({ event: mockEvent, say: mockSay });
 
       expect(mockMessageHandler).toHaveBeenCalled();
+    });
+
+    it('strips the bot mention from a file upload in an existing session thread — `@bot goal …` + file is a goal command there too', async () => {
+      mockClaudeHandler.getSession.mockReturnValue(createMockSession());
+      router.setup();
+
+      const eventCall = mockApp.event.mock.calls.find((call) => call[0] === 'message');
+      const handler = eventCall![1];
+
+      const mockEvent = {
+        user: 'U123',
+        channel: 'C456',
+        thread_ts: '111.222',
+        ts: '333.445',
+        text: '<@B123> goal 스펙대로 구현 <@U999>',
+        subtype: 'file_share',
+        files: [{ id: 'F2', name: 'spec.md', mimetype: 'text/markdown' }],
+      };
+
+      await handler({ event: mockEvent, say: vi.fn() });
+
+      expect(mockMessageHandler).toHaveBeenCalledTimes(1);
+      const forwarded = (mockMessageHandler as any).mock.calls[0][0];
+      // Only the BOT mention goes (as on the app_mention path); other mentions stay.
+      expect(forwarded.text).toBe('goal 스펙대로 구현 <@U999>');
+      expect(forwarded.files).toEqual(mockEvent.files);
+      expect(mockEvent.text, 'the Slack event itself is not mutated').toBe('<@B123> goal 스펙대로 구현 <@U999>');
     });
 
     it('should always process file uploads in DM', async () => {

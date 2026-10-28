@@ -5,9 +5,12 @@
 
 import { Logger } from '@soma/common/logger';
 import type { AgentStreamEvent, AgentStreamEventOf, AgentUsage } from './agent-stream-types';
+import { type AgentTreeEvent, isAgentSpawnTool, isBackgroundAckText } from './agent-tree';
 import type { SlackMessagePayload } from './choice-message-builder';
 import {
   ChannelMessageDirectiveHandler,
+  ReleaseNotesDirectiveHandler,
+  type ReleaseNotesPayload,
   SessionLinkDirectiveHandler,
   SourceWorkingDirDirectiveHandler,
 } from './directives';
@@ -15,13 +18,14 @@ import { markdownToBlocks, thinkingToQuoteBlock } from './formatters';
 // Direct module imports — going through the barrel (`./index`) creates a
 // `slack/index.ts → stream-processor.ts → index.ts` cycle that breaks
 // tree-shaking and risks init-order issues. See #745.
+import type { LiveUsageCall } from './live-usage';
 import { MessageFormatter } from './message-formatter';
 import {
   shouldOutput as checkOutputFlag,
   getThinkingRenderMode,
   getToolCallRenderMode,
-  LOG_DETAIL,
   OutputFlag,
+  resolveVerbosityMask,
   verboseTag,
 } from './output-flags';
 // Type-only: the interrupt-flush guard compares `AbortSignal.reason` against
@@ -31,27 +35,7 @@ import type { SessionLinks } from './thread-header-builder';
 import type { EndTurnInfo } from './thread-surface';
 import { ToolFormatter } from './tool-formatter';
 import { UserChoiceHandler } from './user-choice-handler';
-
-export interface StreamProcessorProviders {
-  calculateTokenCost?: (
-    model: string | undefined,
-    inputTokens: number,
-    outputTokens: number,
-    cacheReadInputTokens: number,
-    cacheCreationInputTokens: number,
-  ) => number;
-}
-
-let streamProcessorProviders: Required<StreamProcessorProviders> = {
-  calculateTokenCost: () => 0,
-};
-
-export function setStreamProcessorProviders(providers: StreamProcessorProviders): void {
-  streamProcessorProviders = {
-    ...streamProcessorProviders,
-    ...providers,
-  };
-}
+import { WORK_LOG_RAW_MAX_BYTES, type WorkLogInput } from './work-log';
 
 /**
  * Context for stream processing
@@ -110,6 +94,21 @@ export interface StreamContext {
    * (`session.incidentRequest !== undefined`), never from a literal.
    */
   incidentAttempt: boolean;
+  /**
+   * Spec 10 §3.3 work-log sink. Every narration segment, tool call, tool
+   * result and final answer is handed here at EVERY verbosity — Slack
+   * verbosity decides what reaches the thread, never what reaches the work
+   * log. Bound by stream-executor to `appendWorkLog(conversationId, …)` when
+   * the session has a conversation; absent otherwise. A throw is swallowed.
+   */
+  workLog?: (entry: WorkLogInput) => void;
+  /**
+   * True once the HOST posted a user-choice form this turn (the model-command
+   * ASK_USER_QUESTION path in stream-executor) — a post this processor never
+   * sees. A turn that ends on such a form must not get withheld narration
+   * posted under it as a fallback answer.
+   */
+  hostChoicePosted?: () => boolean;
 }
 
 /**
@@ -198,6 +197,144 @@ function textIndicatesCompactionErrorLeak(text: unknown, isCompactTurn = false):
   return t.includes('api error: 400') && t.includes('text content blocks must be non-empty');
 }
 
+/** Work-log `tool` entries carry at most this many characters (spec 10 §3.3). */
+const WORK_LOG_TOOL_TEXT_MAX = 200;
+
+/**
+ * One-line work-log text for a tool call: the tool name and its input as JSON,
+ * internal `_`-prefixed keys dropped, capped at {@link WORK_LOG_TOOL_TEXT_MAX}.
+ */
+function summarizeToolCall(name: string, input: unknown): string {
+  let args = '';
+  try {
+    const visible =
+      input && typeof input === 'object' && !Array.isArray(input)
+        ? Object.fromEntries(Object.entries(input as Record<string, unknown>).filter(([key]) => !key.startsWith('_')))
+        : input;
+    args = visible === undefined ? '' : (JSON.stringify(visible) ?? '');
+  } catch {
+    args = '';
+  }
+  if (args === '{}') args = '';
+  const text = args ? `${name} ${args}` : name;
+  return text.length <= WORK_LOG_TOOL_TEXT_MAX ? text : ToolFormatter.truncateString(text, WORK_LOG_TOOL_TEXT_MAX - 3);
+}
+
+/** `String(value)`, or undefined when even that throws (e.g. a null-prototype object). */
+function safeString(value: unknown): string | undefined {
+  try {
+    return String(value);
+  } catch {
+    return undefined;
+  }
+}
+
+/** Work-log `raw` for a tool call: its whole input, pretty-printed. None without input. */
+function toolInputRaw(input: unknown): string | undefined {
+  if (input === undefined || input === null) return undefined;
+  try {
+    return JSON.stringify(input, null, 2) ?? safeString(input);
+  } catch {
+    return safeString(input); // circular, BigInt, a throwing toJSON
+  }
+}
+
+const IMAGE_BLOCK_TEXT = '[image]';
+
+/** A text block's own text, when the block is one. */
+function textOfBlock(block: unknown): string | undefined {
+  const typed = block as { type?: unknown; text?: unknown } | null;
+  return typed?.type === 'text' && typeof typed.text === 'string' ? typed.text : undefined;
+}
+
+/** One tool-result block as raw text: a text block's text, `[image]`, anything else as JSON. */
+function resultBlockText(block: unknown): string {
+  const text = textOfBlock(block);
+  if (text !== undefined) return text;
+  if ((block as { type?: unknown } | null)?.type === 'image') return IMAGE_BLOCK_TEXT;
+  try {
+    return JSON.stringify(block) ?? safeString(block) ?? '';
+  } catch {
+    return safeString(block) ?? '';
+  }
+}
+
+/**
+ * UTF-8 size of {@link resultBlockText}(block). A text block is measured in
+ * place and an image is a constant, so neither builds a string; other blocks
+ * have no size without their JSON.
+ */
+function resultBlockBytes(block: unknown): number {
+  const text = textOfBlock(block);
+  if (text !== undefined) return Buffer.byteLength(text, 'utf-8');
+  if ((block as { type?: unknown } | null)?.type === 'image') return IMAGE_BLOCK_TEXT.length;
+  return Buffer.byteLength(resultBlockText(block), 'utf-8');
+}
+
+/**
+ * Work-log `raw` for a tool result: the content as the SDK delivered it. A
+ * string as-is; a block array as its blocks' raw text ({@link resultBlockText})
+ * one per line; any other value as pretty JSON. None without content. A block
+ * array stops accumulating once the join passes WORK_LOG_RAW_MAX_BYTES (the
+ * store cuts the rest anyway), and then `rawBytes` reports the whole output's
+ * size — the later blocks are measured ({@link resultBlockBytes}), not joined.
+ */
+function toolResultRaw(result: unknown): { raw: string; rawBytes?: number } | undefined {
+  if (result === undefined || result === null) return undefined;
+  if (typeof result === 'string') return { raw: result };
+  if (Array.isArray(result)) {
+    const kept: string[] = [];
+    let keptBytes = 0;
+    let totalBytes = 0;
+    result.forEach((block, i) => {
+      const newline = i > 0 ? 1 : 0; // the joining newline
+      if (keptBytes <= WORK_LOG_RAW_MAX_BYTES) {
+        const text = resultBlockText(block);
+        const bytes = Buffer.byteLength(text, 'utf-8') + newline;
+        kept.push(text);
+        keptBytes += bytes;
+        totalBytes += bytes;
+      } else {
+        totalBytes += resultBlockBytes(block) + newline;
+      }
+    });
+    const raw = kept.join('\n');
+    return totalBytes > keptBytes ? { raw, rawBytes: totalBytes } : { raw };
+  }
+  try {
+    const raw = JSON.stringify(result, null, 2) ?? safeString(result);
+    return raw === undefined ? undefined : { raw };
+  } catch {
+    const raw = safeString(result);
+    return raw === undefined ? undefined : { raw };
+  }
+}
+
+/**
+ * One assistant text segment's delivery state. `withheld` = narration kept off
+ * Slack by the verbosity, still owed if it turns out to be the final answer;
+ * `settled` = posted (or nothing to show: directive-only text) — never posted
+ * again; `suppressed` = a transport-error leak the guards kept off Slack — the
+ * executor turns it into a recovery path, so it must not trigger the
+ * withheld-narration fallback either.
+ */
+interface SegmentFate {
+  /** The text as the user reads it (directives stripped). */
+  shown: string;
+  fate: 'withheld' | 'settled' | 'suppressed';
+}
+
+/**
+ * The latest narration entry, held back until the turn proves it is not the
+ * final answer — so the final answer is recorded once, as `final`, never also
+ * as `narration`. `ts` is the time the segment streamed.
+ */
+interface PendingNarration {
+  segment: SegmentFate | undefined;
+  text: string;
+  ts: number;
+}
+
 /**
  * Handler for assistant text messages
  */
@@ -230,6 +367,8 @@ export interface ToolUseEvent {
   id: string;
   name: string;
   input: any;
+  /** Spec 12 — the subagent that made the call; absent = the main agent. */
+  parentToolUseId?: string;
 }
 
 /**
@@ -240,6 +379,8 @@ export interface ToolResultEvent {
   toolName?: string;
   result: any;
   isError?: boolean;
+  /** Spec 12 — the subagent whose call this answers; absent = the main agent. */
+  parentToolUseId?: string;
 }
 
 /**
@@ -385,10 +526,19 @@ export interface StreamCallbacks {
   onInvalidateOldForms?: (sessionKey: string, newFormId: string) => Promise<void>;
   /** Called with usage data when stream completes */
   onUsageUpdate?: (usage: UsageData) => void;
+  /**
+   * SSOT 2026-10-22 T1/T2 — one API call's usage, reported while the turn
+   * runs (the result usage arrives only at its end). `messageId` identifies
+   * the call: a call reported on several frames carries the same id. Pure
+   * bookkeeping — a throw is swallowed.
+   */
+  onLiveUsage?: (call: LiveUsageCall) => void;
   /** Called when model outputs session_links JSON directive */
   onSessionLinksDetected?: (links: SessionLinks, context: StreamContext) => Promise<void>;
   /** Called when model outputs channel_message JSON directive */
   onChannelMessageDetected?: (messageText: string, context: StreamContext) => Promise<void>;
+  /** Called once per valid release_notes JSON directive (a multi-repo deploy emits several) */
+  onReleaseNotesDetected?: (payload: ReleaseNotesPayload, context: StreamContext) => Promise<void>;
   /** Called when model outputs source_working_dir JSON directive */
   onSourceWorkingDirDetected?: (dirPath: string, context: StreamContext) => Promise<void>;
   /** Called when a user choice UI is rendered */
@@ -420,6 +570,12 @@ export interface StreamCallbacks {
    * lives in the host, and a bug there must not kill the user's turn.
    */
   onSteerLifecycle?: (event: AgentStreamEventOf<'steer_lifecycle'>, context: StreamContext) => void | Promise<void>;
+  /**
+   * Spec 12 — what the session's agent tree needs to know: a subagent was
+   * started, made a TodoWrite list, returned, changed task state, and the turn
+   * ended. Pure bookkeeping: a throw is swallowed, nothing is rendered.
+   */
+  onAgentEvent?: (event: AgentTreeEvent, context: StreamContext) => void;
   /** Called before sending the final assistant message to append footer text */
   buildFinalResponseFooter?: (params: FinalResponseFooterParams) => Promise<string | undefined> | string | undefined;
   /**
@@ -529,6 +685,24 @@ export interface StreamResult {
   aborted: boolean;
   /** All collected text from the response (for renew pattern detection) */
   collectedText?: string;
+  /**
+   * The transport-error leak the turn ENDED on (a segment the leak guards
+   * kept off Slack: prompt-too-long, compaction failure, empty-text-block
+   * 400) — its text alone. `collectedText` joins every segment, so after any
+   * narration the executor's content guards (short-text / starts-with) could
+   * no longer see the leak; they read this first. Absent when the turn went
+   * on to show other text after the leak.
+   */
+  transportLeak?: string;
+  /**
+   * What the executor's content guards should read: `transportLeak` when the
+   * turn ended on a leak, else every NON-suppressed segment joined. A
+   * suppressed leak followed by a real answer must not reach the guards as
+   * "leak\nanswer" — short and containing the leak, it would fire recovery on
+   * a turn that recovered by itself. `collectedText` (the recorder's copy)
+   * keeps every segment.
+   */
+  guardText?: string;
   /** Usage data from the result message */
   usage?: UsageData;
   /** Whether the response ended with a user choice/form prompt */
@@ -669,19 +843,49 @@ export class AgentStreamProcessor {
     cacheReadTokens: number;
     cacheCreateTokens: number;
   } | null = null;
-  /**
-   * Model name captured from the most recent SDKAssistantMessage
-   * (BetaMessage.model). Used by extractUsageData's direct-usage fallback
-   * so calculateTokenCost prices the correct tier when the result message
-   * itself does not carry `model`.
-   */
-  private _lastAssistantModelName: string | undefined;
   /** EndTurn info from the result message stop_reason (Issue #42 S3) */
   private _endTurnInfo: EndTurnInfo | undefined;
   /** Last tool name seen in assistant messages (for endTurnInfo.lastToolUse) */
   private _lastToolName: string | undefined;
   /** SDK result error details from SDKResultError (Issue #122) */
   private _sdkResultError: StreamResult['sdkResultError'] | undefined;
+  /** tool_use_id → tool name, so a `tool_result` work-log entry can name its tool. */
+  private toolNamesById = new Map<string, string>();
+  /**
+   * Spec 12 — the subagents this turn started (spawn call id → whether it was
+   * asked to run in the background), and every agent id seen, so a frame of
+   * an agent not seen before (a background agent of an earlier turn) is
+   * announced once.
+   */
+  private spawnedAgents = new Map<string, boolean>();
+  private seenAgents = new Set<string>();
+  /**
+   * What became of every assistant text segment this turn, keyed by BOTH its
+   * raw text (directives included — what the SDK `finalText` usually carries)
+   * and its shown text (directives stripped). The result event dedupes against
+   * this delivery record, never against `currentMessages` (the recorder's
+   * copy): a segment's directives were dispatched when it streamed, so a
+   * `finalText` naming a known segment is never dispatched again, and is
+   * posted only if that segment was withheld (spec 10 §3.2-3).
+   */
+  private segments = new Map<string, SegmentFate>();
+  /** Suppressed leak segments keyed by trimmed text (see the result-time lookup). */
+  private suppressedByTrimmed = new Map<string, SegmentFate>();
+  /** The latest withheld segment — the answer of a turn with no usable `finalText`. */
+  private lastWithheld: SegmentFate | undefined;
+  /**
+   * The latest segment that showed any text. When it is a suppressed
+   * transport-error leak, the turn ends on that error (the executor recovers
+   * it), and earlier withheld narration must not be posted as its answer.
+   */
+  private lastShownSegment: SegmentFate | undefined;
+  private pendingNarration: PendingNarration | undefined;
+  /**
+   * Set by every assistant-text post (narration, final, choice, incident);
+   * gates the "never end a turn silent" fallback in
+   * {@link postLastWithheldIfSilent}.
+   */
+  private slackTextPosted = false;
   /**
    * Max ms between iterator `.next()` resolutions before
    * {@link StreamCallbacks.onIdleTimeout} fires and the loop returns
@@ -696,12 +900,134 @@ export class AgentStreamProcessor {
 
   /** Check whether a given output flag is enabled for the stream's verbosity */
   private shouldOutput(flag: number, context: StreamContext): boolean {
-    return checkOutputFlag(flag, context.logVerbosity ?? LOG_DETAIL);
+    return checkOutputFlag(flag, resolveVerbosityMask(context.logVerbosity));
   }
 
   /** Returns verbose category tag prefix (empty string when not verbose) */
   private vtag(flag: number, context: StreamContext): string {
-    return verboseTag(flag, context.logVerbosity ?? LOG_DETAIL);
+    return verboseTag(flag, resolveVerbosityMask(context.logVerbosity));
+  }
+
+  /**
+   * Hand one entry to the work log (spec 10 §3.3). Stamped with this turn's id
+   * and the emission time; a throwing sink is logged and ignored — the work
+   * log is a side record and must never break the user's turn.
+   */
+  private emitWorkLog(context: StreamContext, entry: WorkLogInput): void {
+    // Anything recorded after a held narration proves it was not the answer.
+    this.settleNarration(context);
+    this.writeWorkLog(context, entry);
+  }
+
+  /**
+   * Hold a narration entry until the turn shows whether this segment is the
+   * final answer (see {@link PendingNarration}). A previous held entry is
+   * settled first, so order is preserved.
+   */
+  private holdNarration(context: StreamContext, segment: SegmentFate | undefined, text: string): void {
+    this.settleNarration(context);
+    this.pendingNarration = { segment, text, ts: Date.now() };
+  }
+
+  /** Record the held entry as `narration` — the turn moved on past it. */
+  private settleNarration(context: StreamContext): void {
+    const pending = this.pendingNarration;
+    if (!pending) return;
+    this.pendingNarration = undefined;
+    this.writeWorkLog(context, { kind: 'narration', text: pending.text, ts: pending.ts });
+  }
+
+  /**
+   * Record the turn's final answer — always exactly one `final` entry. When it
+   * IS the held segment, the held entry becomes that `final` (no narration).
+   * Work-log contract: a segment already recorded as `narration` (the turn
+   * moved on past it) that the fallback later posts as the answer appears
+   * once as `narration` and once as `final` — never two of either.
+   */
+  private emitFinal(context: StreamContext, text: string, segment?: SegmentFate): void {
+    if (segment && this.pendingNarration?.segment === segment) {
+      this.pendingNarration = undefined;
+    } else {
+      this.settleNarration(context);
+    }
+    this.writeWorkLog(context, { kind: 'final', text });
+  }
+
+  /** Spec 12 — hand one agent-tree event to the host; a throw is swallowed. */
+  private emitAgentEvent(context: StreamContext, event: AgentTreeEvent): void {
+    if (!this.callbacks.onAgentEvent) return;
+    try {
+      this.callbacks.onAgentEvent(event, context);
+    } catch (err) {
+      this.logger.debug('onAgentEvent callback threw — ignored', {
+        kind: event.kind,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+  }
+
+  /**
+   * Spec 12 — a tool call arrived: announce the agent it belongs to (first
+   * frame of an agent not seen before) and, for an `Agent` / `Task` call, the
+   * agent it starts. Once per call id.
+   */
+  private announceAgents(
+    callId: string,
+    name: string,
+    input: unknown,
+    parent: string | undefined,
+    context: StreamContext,
+  ): void {
+    if (!callId || this.spawnedAgents.has(callId)) return;
+    this.toolNamesById.set(callId, name);
+    if (parent) this.noteAgent(parent, context);
+    if (!isAgentSpawnTool(name)) return;
+    const args = (input ?? {}) as Record<string, unknown>;
+    const background = args.run_in_background === true;
+    this.spawnedAgents.set(callId, background);
+    this.seenAgents.add(callId);
+    this.emitAgentEvent(context, {
+      kind: 'spawn',
+      agentId: callId,
+      ...(parent ? { parentAgentId: parent } : {}),
+      ...(typeof args.subagent_type === 'string' && args.subagent_type ? { agentType: args.subagent_type } : {}),
+      ...(typeof args.description === 'string' && args.description ? { description: args.description } : {}),
+      background,
+      ts: Date.now(),
+    });
+  }
+
+  /**
+   * Spec 12 — a frame of agent `agentId`. The first one of an agent this turn
+   * did not start (a background agent of an earlier turn, a non-Agent spawner)
+   * announces it by id; the registry fills in what it knows.
+   */
+  private noteAgent(agentId: string, context: StreamContext): void {
+    if (this.seenAgents.has(agentId)) return;
+    this.seenAgents.add(agentId);
+    const spawner = this.toolNamesById.get(agentId);
+    this.emitAgentEvent(context, {
+      kind: 'spawn',
+      agentId,
+      ...(spawner && !isAgentSpawnTool(spawner) ? { agentType: spawner } : {}),
+      ts: Date.now(),
+    });
+  }
+
+  private writeWorkLog(context: StreamContext, entry: WorkLogInput): void {
+    if (!context.workLog) return;
+    try {
+      context.workLog({
+        ...(context.turnId ? { turnId: context.turnId } : {}),
+        ts: Date.now(),
+        ...entry,
+      });
+    } catch (err) {
+      this.logger.debug('workLog sink threw — ignored', {
+        kind: entry.kind,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
   }
 
   /**
@@ -721,9 +1047,16 @@ export class AgentStreamProcessor {
   ): Promise<StreamResult> {
     const currentMessages: string[] = [];
     let lastUsage: UsageData | undefined;
+    let sawResult = false;
     this._hasUserChoice = false;
+    this.segments.clear();
+    this.suppressedByTrimmed.clear();
+    this.lastWithheld = undefined;
+    this.lastShownSegment = undefined;
+    this.pendingNarration = undefined;
+    this.slackTextPosted = false;
     // Note: per-turn state fields (_lastAssistantTurnUsage, _lastToolName,
-    // _endTurnInfo, _sdkResultError, _lastAssistantModelName) are NOT reset
+    // _endTurnInfo, _sdkResultError) are NOT reset
     // here — stream-executor constructs a fresh AgentStreamProcessor per turn,
     // so they start at their declared initializers (matches the old class).
 
@@ -781,6 +1114,8 @@ export class AgentStreamProcessor {
       while (true) {
         if (abortSignal.aborted) {
           const rescue = await this.flushTextOnExplicitInterrupt(textBuf, context, abortSignal);
+          this.settleNarration(context);
+          this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
           return {
             success: true,
             messageCount: currentMessages.length,
@@ -798,6 +1133,8 @@ export class AgentStreamProcessor {
           // signal on its own. Throws are harmless here.
           await this.tryReturnIterator(iterator, 'abort');
           const rescue = await this.flushTextOnExplicitInterrupt(textBuf, context, abortSignal);
+          this.settleNarration(context);
+          this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
           return {
             success: true,
             messageCount: currentMessages.length,
@@ -820,6 +1157,8 @@ export class AgentStreamProcessor {
             }
           }
           await this.tryReturnIterator(iterator, 'idle timeout');
+          this.settleNarration(context);
+          this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
           return { success: true, messageCount: currentMessages.length, aborted: true };
         }
 
@@ -862,40 +1201,73 @@ export class AgentStreamProcessor {
         // so only one group is pending); everything else flushes all pending
         // groups, then handles the terminal/usage/status event.
         switch (event.type) {
+          // A held narration (see PendingNarration) is settled by every event
+          // that proves the turn went on past it — thinking, more text, a tool
+          // call or result — but not by bookkeeping frames (usage, status,
+          // compact_boundary, side-band lifecycle), which can arrive between
+          // the answer and `result`.
           case 'thought_delta':
+            // A subagent's thinking (forwarded only with forwardSubagentText)
+            // is not the main agent's: it is never rendered.
+            if (event.parentToolUseId) break;
             await flushText();
             await flushToolCalls();
             await flushToolResults();
+            this.settleNarration(context);
             thinkingBuf.push(event.text);
             break;
           case 'assistant_delta':
+            // A subagent's text goes to that agent's work log only — never to
+            // Slack, the main narration or the turn's collected text.
+            if (event.parentToolUseId) {
+              this.noteAgent(event.parentToolUseId, context);
+              const text = event.text.trim();
+              if (text) this.writeWorkLog(context, { kind: 'narration', text, agentId: event.parentToolUseId });
+              break;
+            }
             await flushThinking();
             await flushToolCalls();
             await flushToolResults();
+            this.settleNarration(context);
             textBuf.push(event.text);
             break;
           case 'tool_call':
             await flushThinking();
             await flushText();
             await flushToolResults();
-            this._lastToolName = event.name;
-            toolCallBuf.push({ type: 'tool_use', id: event.toolCallId, name: event.name, input: event.input });
+            this.settleNarration(context);
+            // The turn's last tool is the main agent's (a subagent's is its own).
+            if (!event.parentToolUseId) this._lastToolName = event.name;
+            // Spec 12: announce the agent this call belongs to / starts NOW — the
+            // call waits in the render buffer, and the SDK's task_started for a
+            // spawn can arrive before that buffer flushes (review R2).
+            this.announceAgents(event.toolCallId, event.name, event.input, event.parentToolUseId, context);
+            toolCallBuf.push({
+              type: 'tool_use',
+              id: event.toolCallId,
+              name: event.name,
+              input: event.input,
+              ...(event.parentToolUseId ? { parent_tool_use_id: event.parentToolUseId } : {}),
+            });
             break;
           case 'tool_result':
             await flushThinking();
             await flushText();
             await flushToolCalls();
+            this.settleNarration(context);
             toolResultBuf.push({
               type: 'tool_result',
               tool_use_id: event.toolCallId,
               content: event.rawOutput ?? event.content,
               // Preserve absence (undefined, not false) for ToolFormatter parity.
               is_error: event.isError,
+              ...(event.parentToolUseId ? { parent_tool_use_id: event.parentToolUseId } : {}),
+              ...(event.agentOutcome ? { agent_outcome: event.agentOutcome } : {}),
             });
             break;
           case 'usage':
             await flushAll();
-            lastUsage = this.applyUsageEvent(event.usage, lastUsage);
+            lastUsage = this.applyUsageEvent(event.usage, lastUsage, event.parentToolUseId);
             break;
           case 'status':
             await flushAll();
@@ -915,6 +1287,21 @@ export class AgentStreamProcessor {
             // render groups (it produces no Slack output — just a tracker-state
             // update) so an interleaved task_progress can't fragment streaming.
             await this.callbacks.onAgentTaskLifecycle?.(event, context);
+            this.emitAgentEvent(context, {
+              kind: 'lifecycle',
+              ...(event.toolUseId ? { agentId: event.toolUseId } : {}),
+              phase: event.phase,
+              taskId: event.taskId,
+              ...(event.taskType ? { taskType: event.taskType } : {}),
+              ...(event.status ? { status: event.status } : {}),
+              ...(event.subagentType ? { agentType: event.subagentType } : {}),
+              ...(event.description ? { description: event.description } : {}),
+              ...(event.background !== undefined ? { background: event.background } : {}),
+              ...(event.summary ? { summary: event.summary } : {}),
+              ...(event.lastToolName ? { lastTool: event.lastToolName } : {}),
+              ...(event.usage ? { usage: event.usage } : {}),
+              ts: Date.now(),
+            });
             break;
           case 'steer_lifecycle':
             // Side-band steering signal (which queued user message this turn
@@ -945,6 +1332,7 @@ export class AgentStreamProcessor {
             // terminal `done` on long turns (prod hang 2026-05-29), and nothing
             // is consumed after `result`. Best-effort bounded close, then break
             // to post-loop finalization.
+            sawResult = true;
             lastUsage = await this.handleResultEvent(event, context, currentMessages, lastUsage);
             await this.tryReturnIterator(iterator, 'result');
             break;
@@ -960,6 +1348,13 @@ export class AgentStreamProcessor {
       // The stream ended without a terminal `result` (e.g. transport closed) —
       // flush any text/tool groups still buffered so nothing is dropped.
       await flushAll();
+      // No `result` means no `finalText` will ever arrive: a narration-gated
+      // turn would otherwise end with nothing in the thread.
+      if (!sawResult) {
+        await this.postLastWithheldIfSilent(context, lastUsage, undefined);
+      }
+      this.settleNarration(context);
+      this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
 
       // Merge per-turn usage from the last assistant message into the
       // aggregate UsageData so consumers can distinguish billing totals
@@ -981,12 +1376,16 @@ export class AgentStreamProcessor {
         messageCount: currentMessages.length,
         aborted: false,
         collectedText: currentMessages.join('\n'),
+        ...this.transportLeakResult(),
+        guardText: this.guardTextFor(currentMessages),
         usage: lastUsage,
         hasUserChoice: this._hasUserChoice,
         endTurnInfo: this._endTurnInfo,
         sdkResultError: this._sdkResultError,
       };
     } catch (error: any) {
+      this.settleNarration(context);
+      this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
       if (error.name === 'AbortError') {
         return { success: true, messageCount: currentMessages.length, aborted: true };
       }
@@ -1130,7 +1529,7 @@ export class AgentStreamProcessor {
     const inTurn = Boolean(context.turnId && context.threadPanel?.isTurnSurfaceActive());
     if (inTurn) return;
 
-    const thinkingMode = getThinkingRenderMode(context.logVerbosity ?? LOG_DETAIL);
+    const thinkingMode = getThinkingRenderMode(resolveVerbosityMask(context.logVerbosity));
     if (thinkingMode === 'hidden') return;
 
     const thinkingParts = content
@@ -1184,17 +1583,39 @@ export class AgentStreamProcessor {
       await this.callbacks.onStatusUpdate('working');
     }
 
-    // Check for TodoWrite tool
-    const todoTool = content.find((part: any) => part.type === 'tool_use' && part.name === 'TodoWrite');
+    // Spec 12: the agents these calls belong to / start were announced when
+    // the calls arrived (announceAgents); this is idempotent for any part that
+    // reached this method another way.
+    for (const part of content) {
+      if (part.type !== 'tool_use' || !part.id) continue;
+      this.announceAgents(part.id, part.name, part.input, part.parent_tool_use_id, context);
+    }
+
+    // Check for TodoWrite tool. The main agent's list is the session's task
+    // list (Slack plan block + dashboard ledger); a subagent's list is its own
+    // (spec 12) and never replaces it.
+    const todoTool = content.find(
+      (part: any) => part.type === 'tool_use' && part.name === 'TodoWrite' && !part.parent_tool_use_id,
+    );
     if (todoTool && this.callbacks.onTodoUpdate) {
       await this.callbacks.onTodoUpdate(todoTool.input, context);
+    }
+    for (const part of content) {
+      if (part.type === 'tool_use' && part.name === 'TodoWrite' && part.parent_tool_use_id) {
+        this.emitAgentEvent(context, {
+          kind: 'todos',
+          agentId: part.parent_tool_use_id,
+          todos: part.input?.todos,
+          ts: Date.now(),
+        });
+      }
     }
 
     // Emit RPG-style skill invocation announcement (PHASE=0 only — flavor text
     // is dropped from the P1 consolidated stream per plan v2 §5.1).
     if (!inTurn && this.shouldOutput(OutputFlag.SKILL_INVOCATION, context)) {
       for (const part of content) {
-        if (part.type === 'tool_use' && part.name === 'Skill') {
+        if (part.type === 'tool_use' && part.name === 'Skill' && !part.parent_tool_use_id) {
           const skillName = part.input?.skill || part.input?.name || 'unknown';
           const casterName = context.botUserId ? `<@${context.botUserId}>` : 'AI';
           const rpgMsg = ToolFormatter.formatSkillInvocationRPG(skillName, casterName);
@@ -1219,9 +1640,12 @@ export class AgentStreamProcessor {
     });
 
     // Format and send tool use messages (render mode dispatch) — PHASE=0 only.
-    const toolCallMode = getToolCallRenderMode(context.logVerbosity ?? LOG_DETAIL);
+    const toolCallMode = getToolCallRenderMode(resolveVerbosityMask(context.logVerbosity));
     if (!inTurn && toolCallMode !== 'hidden') {
-      const toolContent = ToolFormatter.formatToolUse(enrichedContent, toolCallMode);
+      const toolContent = ToolFormatter.formatToolUse(
+        enrichedContent.filter((part: any) => !part.parent_tool_use_id),
+        toolCallMode,
+      );
       if (toolContent) {
         const tag = this.vtag(OutputFlag.TOOL_CALL, context);
         await context.say({
@@ -1238,20 +1662,42 @@ export class AgentStreamProcessor {
         id: part.id,
         name: part.name,
         input: part.input,
+        ...(part.parent_tool_use_id ? { parentToolUseId: part.parent_tool_use_id } : {}),
       }));
+    const parentOfCall = new Map<string, string>();
+    for (const part of content) {
+      if (part.type === 'tool_use' && part.id && part.parent_tool_use_id)
+        parentOfCall.set(part.id, part.parent_tool_use_id);
+    }
 
     for (const toolUse of toolUses) {
       this.logger.debug(
         'Received tool_use',
         ToolFormatter.buildToolUseLogSummary(toolUse.id, toolUse.name, toolUse.input),
       );
+      this.toolNamesById.set(toolUse.id, toolUse.name);
+      const raw = toolInputRaw(toolUse.input);
+      const agentId = parentOfCall.get(toolUse.id);
+      this.emitWorkLog(context, {
+        kind: 'tool',
+        tool: toolUse.name,
+        toolUseId: toolUse.id,
+        text: summarizeToolCall(toolUse.name, toolUse.input),
+        ...(raw !== undefined ? { raw } : {}),
+        ...(agentId ? { agentId } : {}),
+        ...(this.spawnedAgents.has(toolUse.id) ? { agentRef: toolUse.id } : {}),
+      });
     }
 
-    // Track last tool name for endTurnInfo (Issue #42 S3)
-    if (toolUses.length > 0) {
-      this._lastToolName = toolUses[toolUses.length - 1].name;
+    // Track last tool name for endTurnInfo (Issue #42 S3) — the main agent's
+    // (a subagent's calls are in its own work log).
+    const mainToolUses = toolUses.filter((t) => !t.parentToolUseId);
+    if (mainToolUses.length > 0) {
+      this._lastToolName = mainToolUses[mainToolUses.length - 1].name;
     }
 
+    // Every call goes on, attributed: the executor keeps the Slack surfaces
+    // (current tool, tool rows, stats) to the main agent's (spec 12 §2.2).
     if (toolUses.length > 0 && this.callbacks.onToolUse) {
       await this.callbacks.onToolUse(toolUses, context);
     }
@@ -1259,7 +1705,8 @@ export class AgentStreamProcessor {
 
   /**
    * Extract and dispatch all response directives (session links, channel messages,
-   * source working dirs) from text content. Returns the cleaned text with directives stripped.
+   * release notes, source working dirs) from text content. Returns the cleaned text
+   * with directives stripped.
    */
   private async extractAndDispatchDirectives(text: string, context: StreamContext): Promise<string> {
     let cleaned = text;
@@ -1287,6 +1734,23 @@ export class AgentStreamProcessor {
       }
     } catch (error) {
       this.logger.error('Failed to process channel message directive', { error });
+    }
+
+    // release_notes: one per repo, each dispatched in its own try.
+    try {
+      const releaseNotesResult = ReleaseNotesDirectiveHandler.extract(cleaned);
+      if (releaseNotesResult.payloads.length > 0) {
+        cleaned = releaseNotesResult.cleanedText;
+        for (const payload of releaseNotesResult.payloads) {
+          try {
+            await this.callbacks.onReleaseNotesDetected?.(payload, context);
+          } catch (error) {
+            this.logger.error('Failed to handle release_notes directive', { repo: payload.repo, error });
+          }
+        }
+      }
+    } catch (error) {
+      this.logger.error('Failed to process release_notes directive', { error });
     }
 
     try {
@@ -1317,22 +1781,39 @@ export class AgentStreamProcessor {
     if (context.incidentAttempt) {
       if (!textContent.trim()) return;
       currentMessages.push(textContent);
+      const incidentSegment: SegmentFate = { shown: textContent, fate: 'settled' };
+      this.recordSegment(textContent, incidentSegment);
+      this.lastShownSegment = incidentSegment;
+      this.holdNarration(context, incidentSegment, textContent);
       await this.publishIncidentText(textContent, context);
       return;
     }
 
+    const rawSegment = textContent;
     textContent = await this.extractAndDispatchDirectives(textContent, context);
+    // Recorded as soon as its directives are dispatched — including a
+    // directive-only segment that shows nothing — so a `finalText` naming it
+    // is never dispatched a second time.
+    const segment: SegmentFate = { shown: textContent, fate: 'settled' };
+    this.recordSegment(rawSegment, segment);
 
     if (!textContent.trim()) {
       return;
     }
 
     currentMessages.push(textContent);
+    this.recordSegment(textContent, segment);
+    this.lastShownSegment = segment;
+    // Work log first — before any of the suppressions below (spec 10 §3.3).
+    // Held: if this segment turns out to be the final answer it is recorded
+    // once, as `final`.
+    this.holdNarration(context, segment, textContent);
 
     // Claude SDK can surface a context overflow as a successful assistant text
     // turn. Do not stream that raw transport error to Slack; stream-executor
     // inspects collectedText after process() and routes it into fallback compact.
     if (textIndicatesPromptTooLong(textContent)) {
+      this.suppressLeak(context, segment);
       return;
     }
 
@@ -1341,6 +1822,7 @@ export class AgentStreamProcessor {
     // Slack — stream-executor routes collectedText into the transcript-repair
     // / terminal-failure rails, which surface one condensed notice instead.
     if (textIndicatesCompactionErrorLeak(textContent, context.isCompactTurn)) {
+      this.suppressLeak(context, segment);
       return;
     }
 
@@ -1353,6 +1835,12 @@ export class AgentStreamProcessor {
     } else if (choice) {
       this._hasUserChoice = true;
       await this.handleSingleChoiceMessage(choice, textWithoutChoice, context);
+    } else if (!this.shouldOutput(OutputFlag.NARRATION, context)) {
+      // Spec 10 §3.2-3: below `compact` the running narration stays off
+      // Slack (it is in the work log). Held so the result event can post the
+      // segment that turns out to be the final answer.
+      segment.fate = 'withheld';
+      this.lastWithheld = segment;
     } else {
       // Regular message — convert to Block Kit
       await this.sayWithBlockKit(textContent, context);
@@ -1372,6 +1860,7 @@ export class AgentStreamProcessor {
     textWithoutChoice: string,
     context: StreamContext,
   ): Promise<void> {
+    this.slackTextPosted = true;
     const questions = choices.questions || [];
     const questionCount = questions.length;
 
@@ -1499,6 +1988,7 @@ export class AgentStreamProcessor {
     textWithoutChoice: string,
     context: StreamContext,
   ): Promise<void> {
+    this.slackTextPosted = true;
     // Log the original model output for debugging
     this.logger.debug('Received single choice from model', {
       question: choice.question,
@@ -1610,11 +2100,63 @@ export class AgentStreamProcessor {
   private async handleToolResultsContent(content: any[], context: StreamContext): Promise<void> {
     if (!content || content.length === 0) return;
 
-    const toolResults = ToolFormatter.extractToolResults(content);
+    const toolResults: ToolResultEvent[] = ToolFormatter.extractToolResults(content);
+    // Spec 12: who each result belongs to, and an Agent call's structured outcome.
+    const parentOfResult = new Map<string, string>();
+    const outcomeOfResult = new Map<string, { status: string; toolUses?: number; durationMs?: number }>();
+    for (const part of content) {
+      if (part?.type !== 'tool_result' || !part.tool_use_id) continue;
+      if (part.parent_tool_use_id) parentOfResult.set(part.tool_use_id, part.parent_tool_use_id);
+      if (part.agent_outcome) outcomeOfResult.set(part.tool_use_id, part.agent_outcome);
+    }
 
     // Correlate Task results with background task IDs for TaskOutput display
     this.correlateTaskResults(toolResults);
 
+    for (const toolResult of toolResults) {
+      const tool = toolResult.toolName ?? this.toolNamesById.get(toolResult.toolUseId) ?? 'unknown';
+      this.toolNamesById.delete(toolResult.toolUseId);
+      const ok = toolResult.isError !== true;
+      const agentId = parentOfResult.get(toolResult.toolUseId);
+      if (agentId) {
+        // The executor skips a subagent's results on the Slack tool surfaces
+        // (whose tracker would name them), so they travel named and attributed
+        // — the host's model-command and metrics handling reads both.
+        toolResult.parentToolUseId = agentId;
+        if (!toolResult.toolName && tool !== 'unknown') toolResult.toolName = tool;
+      }
+      const spawned = this.spawnedAgents.get(toolResult.toolUseId);
+      const rawFields = toolResultRaw(toolResult.result);
+      this.emitWorkLog(context, {
+        kind: 'tool_result',
+        tool,
+        toolUseId: toolResult.toolUseId,
+        ok,
+        text: `${tool} ${ok ? 'ok' : 'error'}`,
+        ...rawFields,
+        ...(agentId ? { agentId } : {}),
+        ...(spawned !== undefined ? { agentRef: toolResult.toolUseId } : {}),
+      });
+      if (spawned !== undefined) {
+        const outcome = outcomeOfResult.get(toolResult.toolUseId);
+        // A background start only acknowledges the run: the structured
+        // outcome decides, then the spawn input, then (last resort) the text.
+        // An error is never an acknowledgement — the agent did not start.
+        const ack =
+          ok && (outcome ? outcome.status !== 'completed' : spawned || isBackgroundAckText(rawFields?.raw ?? ''));
+        this.emitAgentEvent(context, {
+          kind: 'returned',
+          agentId: toolResult.toolUseId,
+          ok,
+          ack,
+          ...(outcome?.toolUses !== undefined ? { toolUses: outcome.toolUses } : {}),
+          ...(outcome?.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}),
+          ts: Date.now(),
+        });
+      }
+    }
+
+    // Every result goes on, attributed (see onToolUse above).
     if (toolResults.length > 0 && this.callbacks.onToolResult) {
       await this.callbacks.onToolResult(toolResults, context);
     }
@@ -1676,6 +2218,7 @@ export class AgentStreamProcessor {
     const usage = cumulativeUsage ?? (event.usage ? this.toUsageData(event.usage) : undefined);
 
     if (event.error) {
+      this.settleNarration(context);
       this.logger.error('Agent result error', {
         subtype: event.error.subtype,
         numTurns: event.error.numTurns,
@@ -1686,15 +2229,112 @@ export class AgentStreamProcessor {
         errors: event.error.errors ?? [],
         numTurns: event.error.numTurns,
       };
-    } else if (typeof event.finalText === 'string') {
-      const finalResult = event.finalText;
-      if (finalResult && !currentMessages.includes(finalResult)) {
+    } else {
+      const finalResult = typeof event.finalText === 'string' ? event.finalText : '';
+      // A finalText that differs from a suppressed leak only by whitespace is
+      // that same leak — matched trimmed, so it is not logged a second time.
+      const known = finalResult
+        ? (this.segments.get(finalResult) ?? this.suppressedByTrimmed.get(finalResult.trim()))
+        : undefined;
+      if (known) {
+        // The answer already streamed as a segment: its directives fired then.
+        // A suppressed leak is never the answer: it was recorded as `error`.
+        if (known.fate !== 'suppressed' && known.shown.trim()) {
+          this.emitFinal(context, known.shown, known);
+          if (this.mayPromoteWithheld(known, context)) {
+            // Spec 10 §3.2-3: kept off Slack as narration, but it IS the final
+            // answer — post it once, without dispatching its directives again.
+            // A throw here propagates out of process(); the turn fails on that
+            // error (handleError) and no leak recovery runs this turn.
+            known.fate = 'settled';
+            await this.postFinalAnswer(known.shown, context, usage, event.durationMs);
+          }
+          // Spec 10 §3.2-3: the final answer — or the host's question form,
+          // which is why it was not promoted — reached Slack this turn, so the
+          // turn did not end on a leak: this segment is terminal, and there is
+          // no `transportLeak` and no recovery (guardText agrees).
+          this.lastShownSegment = known;
+        }
+      } else if (finalResult) {
         currentMessages.push(finalResult);
         await this.handleFinalResult(finalResult, context, usage, event.durationMs);
       }
+      // Nothing reached Slack yet — no `finalText`, or one that showed nothing
+      // (directive-only / whitespace): the withheld narration is the answer.
+      // Never after a transport-error leak: the executor recovers that turn.
+      if (known?.fate !== 'suppressed') {
+        await this.postLastWithheldIfSilent(context, usage, event.durationMs);
+      }
+      this.settleNarration(context);
     }
 
     return usage;
+  }
+
+  /**
+   * Whether a withheld segment may be promoted onto Slack as the answer.
+   * Question-form policy: once the HOST posted a question form this turn
+   * (`StreamContext.hostChoicePosted`), that form is what the user answers —
+   * no withheld narration is posted under it, whatever `finalText` says. A
+   * final text the stream never carried is new text and still posts.
+   */
+  private mayPromoteWithheld(segment: SegmentFate, context: StreamContext): boolean {
+    return segment.fate === 'withheld' && !context.hostChoicePosted?.();
+  }
+
+  /**
+   * Mark a segment as a suppressed transport-error leak: never posted, and in
+   * the work log once as `error` — never as `narration` or `final`, whatever
+   * the turn's ending. A held narration entry for this segment is replaced.
+   */
+  private suppressLeak(context: StreamContext, segment: SegmentFate): void {
+    segment.fate = 'suppressed';
+    this.suppressedByTrimmed.set(segment.shown.trim(), segment);
+    if (this.pendingNarration?.segment === segment) this.pendingNarration = undefined;
+    this.emitWorkLog(context, { kind: 'error', text: segment.shown });
+  }
+
+  /** See {@link StreamResult.guardText}. */
+  private guardTextFor(currentMessages: string[]): string {
+    const last = this.lastShownSegment;
+    if (last?.fate === 'suppressed') return last.shown;
+    return currentMessages.filter((text) => this.segments.get(text)?.fate !== 'suppressed').join('\n');
+  }
+
+  /** `{ transportLeak }` when the turn's last visible segment was a suppressed leak. */
+  private transportLeakResult(): Pick<StreamResult, 'transportLeak'> {
+    const last = this.lastShownSegment;
+    return last?.fate === 'suppressed' ? { transportLeak: last.shown } : {};
+  }
+
+  /** Index one segment under one of its identities (raw or shown text). */
+  private recordSegment(identity: string, segment: SegmentFate): void {
+    if (identity.trim()) this.segments.set(identity, segment);
+  }
+
+  /**
+   * A narration-gated turn whose final answer showed nothing (no `finalText`,
+   * an empty or directive-only one, or no `result` at all) must not end with
+   * nothing in the thread: post the last withheld segment as the answer —
+   * unless some assistant text or a choice (the processor's own, or one the
+   * host posted, `StreamContext.hostChoicePosted`) already reached Slack this
+   * turn. Not used on an SDK result error (the executor surfaces that one) nor
+   * after a transport-error leak (the executor recovers that turn). Records
+   * exactly one `final` entry for what it posts.
+   */
+  private async postLastWithheldIfSilent(
+    context: StreamContext,
+    usage: UsageData | undefined,
+    durationMs: number | undefined,
+  ): Promise<void> {
+    const segment = this.lastWithheld;
+    if (this.slackTextPosted || !segment || !this.mayPromoteWithheld(segment, context)) return;
+    // The turn's last visible text was a transport-error leak: it ends on that
+    // error (the executor recovers it), not on the earlier narration.
+    if (this.lastShownSegment?.fate === 'suppressed') return;
+    segment.fate = 'settled';
+    this.emitFinal(context, segment.shown, segment);
+    await this.postFinalAnswer(segment.shown, context, usage, durationMs);
   }
 
   /**
@@ -1702,7 +2342,11 @@ export class AgentStreamProcessor {
    * usage (only `lastTurn*` fields) captured for the post-loop merge, and a
    * *cumulative* usage (token/cost fields) that becomes the turn's `UsageData`.
    */
-  private applyUsageEvent(u: AgentUsage, current: UsageData | undefined): UsageData | undefined {
+  private applyUsageEvent(
+    u: AgentUsage,
+    current: UsageData | undefined,
+    parentToolUseId?: string,
+  ): UsageData | undefined {
     const hasCumulative =
       u.inputTokens !== undefined ||
       u.outputTokens !== undefined ||
@@ -1732,7 +2376,20 @@ export class AgentStreamProcessor {
       // per-turn usage carries no context-state information — keep the last
       // meaningful snapshot instead of blanking the context display.
       if (perTurn.inputTokens + perTurn.outputTokens + perTurn.cacheReadTokens + perTurn.cacheCreateTokens > 0) {
-        this._lastAssistantTurnUsage = perTurn;
+        // Spec 12 §2.5: a subagent's call is spent (live totals) but read the
+        // subagent's own context — it is never the main agent's last turn.
+        if (!parentToolUseId) this._lastAssistantTurnUsage = perTurn;
+        if (this.callbacks.onLiveUsage) {
+          try {
+            this.callbacks.onLiveUsage({
+              messageId: u.lastTurnMessageId,
+              ...perTurn,
+              ...(parentToolUseId ? { sidechain: true } : {}),
+            });
+          } catch (error) {
+            this.logger.debug('onLiveUsage callback failed', { error: (error as Error)?.message ?? String(error) });
+          }
+        }
       }
     }
 
@@ -1773,7 +2430,10 @@ export class AgentStreamProcessor {
     // preceded it. Same rule as `handleTextMessage`: the host's bytes, nothing
     // read out of them and nothing (not even the footer) added after the marker.
     if (context.incidentAttempt) {
-      if (result.trim()) await this.publishIncidentText(result, context);
+      if (result.trim()) {
+        this.emitFinal(context, result);
+        await this.publishIncidentText(result, context);
+      }
       return;
     }
 
@@ -1784,6 +2444,41 @@ export class AgentStreamProcessor {
       return;
     }
 
+    // A final text the stream never carried is a segment shown this turn —
+    // tracked like a streamed one, so a leak before it no longer counts as
+    // the turn's ending (`transportLeak`).
+    const segment: SegmentFate = { shown: processedResult, fate: 'settled' };
+    this.recordSegment(result, segment);
+    this.recordSegment(processedResult, segment);
+    this.lastShownSegment = segment;
+
+    // Same leak guards as a streamed segment: a transport error that arrives
+    // only as `finalText` is never posted, at any level, and is handed to the
+    // executor's recovery as `transportLeak`.
+    if (
+      textIndicatesPromptTooLong(processedResult) ||
+      textIndicatesCompactionErrorLeak(processedResult, context.isCompactTurn)
+    ) {
+      this.suppressLeak(context, segment);
+      return;
+    }
+
+    this.emitFinal(context, processedResult);
+    await this.postFinalAnswer(processedResult, context, usage, durationMs);
+  }
+
+  /**
+   * Post a final answer whose directives are already dispatched: footer, then
+   * choice extraction, then Block Kit / the turn stream. Shared by
+   * {@link handleFinalResult} and the withheld-final path, which must not
+   * dispatch the segment's directives a second time.
+   */
+  private async postFinalAnswer(
+    processedResult: string,
+    context: StreamContext,
+    usage?: UsageData,
+    durationMs?: number,
+  ): Promise<void> {
     let footer: string | undefined;
     if (this.callbacks.buildFinalResponseFooter) {
       footer = await this.callbacks.buildFinalResponseFooter({
@@ -1831,6 +2526,9 @@ export class AgentStreamProcessor {
    *     (session links, channel posts); an interrupted turn must not fire them.
    *   - The transport-error leak guards still apply, so a partial
    *     "Prompt is too long" / compaction-failure frame is not shown raw.
+   *   - Below `compact` (no `NARRATION` flag) nothing is appended: with no
+   *     final answer, the partial text is narration and goes to the work log
+   *     only (spec 10 §3.2-3).
    *
    * Any other abort reason (`user-stop`, `supersede`, `stall-timeout`, …)
    * keeps the historical drop behaviour — untouched.
@@ -1868,7 +2566,18 @@ export class AgentStreamProcessor {
       textBuf.length = 0;
       return { delivered: false };
     }
+    // The partial text never reaches handleTextMessage, so it joins the work
+    // log here — before the suppressions below, like every other segment.
     if (textIndicatesPromptTooLong(pending) || textIndicatesCompactionErrorLeak(pending)) {
+      this.emitWorkLog(context, { kind: 'error', text: pending });
+      textBuf.length = 0;
+      return { delivered: false };
+    }
+    this.emitWorkLog(context, { kind: 'narration', text: pending });
+    if (!this.shouldOutput(OutputFlag.NARRATION, context)) {
+      // Spec 10 §3.2-3: an interrupted turn has no final answer, so what is
+      // left is narration — kept in the work log, not on Slack, below
+      // `compact`. A deliberate drop, not a lost rescue (no `failure`).
       textBuf.length = 0;
       return { delivered: false };
     }
@@ -1947,6 +2656,7 @@ export class AgentStreamProcessor {
    * bytes plus a few short lines), so it needs no overflow splitting.
    */
   private async publishIncidentText(text: string, context: StreamContext): Promise<void> {
+    this.slackTextPosted = true;
     await context.say({
       text,
       thread_ts: context.threadTs,
@@ -1962,6 +2672,7 @@ export class AgentStreamProcessor {
    * Handles overflow messages (content exceeding 45-block limit).
    */
   private async sayWithBlockKit(text: string, context: StreamContext): Promise<void> {
+    this.slackTextPosted = true;
     // Issue #525 P1: PHASE>=1 routes assistant text into the B1 stream via
     // TurnSurface.appendText (chat.appendStream) instead of opening a new
     // Block Kit message per chunk. Verbosity tags are dropped in the stream

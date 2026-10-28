@@ -71,6 +71,7 @@
         "links:read",
         "links:write",
         "users:read",
+        "users:read.email",
         "reactions:read",
         "reactions:write"
       ]

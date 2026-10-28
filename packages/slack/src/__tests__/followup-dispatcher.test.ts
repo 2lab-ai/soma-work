@@ -83,13 +83,18 @@ interface PendingRun {
 }
 
 /**
- * Click a rendered `Send now` control the way the host does: with the payload
- * the dispatcher handed out at render time (item CAS epoch + turn epoch).
+ * Click a rendered `Send now` control the way the host does: with the item's
+ * CAS epoch and the session's turn epoch as they stood at render time, both
+ * read through the queue the dispatcher was actually given.
  */
-function click(h: { dispatcher: FollowupDispatcher }, itemId: string, clicker = CLICKER): Promise<SendNowResult> {
-  const payload = h.dispatcher.controlPayload(SESSION, itemId);
-  if (!payload) throw new Error(`no control payload for ${itemId}`);
-  return h.dispatcher.sendNow(SESSION, payload.itemId, payload.itemEpoch, clicker, payload.turnEpoch);
+function click(
+  h: { dispatcher: FollowupDispatcher; queuePort: FollowupQueuePort },
+  itemId: string,
+  clicker = CLICKER,
+): Promise<SendNowResult> {
+  const item = h.queuePort.get(SESSION, itemId);
+  if (!item) throw new Error(`no queue item ${itemId}`);
+  return h.dispatcher.sendNow(SESSION, item.id, item.epoch, clicker, h.dispatcher.snapshot(SESSION).turnEpoch);
 }
 
 function harness(overrides: Partial<FollowupDispatcherDeps> = {}) {
@@ -140,6 +145,7 @@ function harness(overrides: Partial<FollowupDispatcherDeps> = {}) {
   // a test that overrides one asserts against an object nobody ever calls.
   return {
     queue,
+    queuePort: deps.queue,
     dispatcher,
     dispatch: deps.dispatch as typeof dispatch,
     interrupt: deps.interrupt as typeof interrupt,
@@ -216,21 +222,6 @@ describe('FollowupDispatcher turn generation', () => {
     expect(start.run.turnEpoch).toBe(8);
     expect((h.dispatch.mock.calls[0][0] as DispatchRequest).turnEpoch).toBe(8);
     expect(h.dispatcher.snapshot(SESSION).turnEpoch).toBe(8);
-  });
-
-  it('hands the host a control payload carrying both the item CAS epoch and the turn epoch', () => {
-    const queue = new FollowupQueue();
-    let turnEpoch = 3;
-    const h = harness({ queue: portOf(queue, { beginTurn: () => ++turnEpoch, getTurnEpoch: () => turnEpoch }) });
-    const item = enqueue(queue, event({ ts: '1.1' }));
-
-    expect(h.dispatcher.controlPayload(SESSION, item.id)).toEqual({
-      sessionKey: SESSION,
-      itemId: item.id,
-      itemEpoch: item.epoch,
-      turnEpoch: 3,
-    });
-    expect(h.dispatcher.controlPayload(SESSION, 'nope')).toBeUndefined();
   });
 
   it('rejects a click rendered under an older turn before touching the item', async () => {
@@ -855,7 +846,6 @@ describe('FollowupDispatcher failure injection', () => {
     // surface is never fenced — the still-running turn keeps writing its header.
     expect(h.dispatcher.snapshot(SESSION).turnEpoch).toBe(start.run.turnEpoch);
     expect(h.invalidateSurface).not.toHaveBeenCalled();
-    expect(h.dispatcher.controlPayload(SESSION, item.id)?.turnEpoch).toBe(start.run.turnEpoch);
     // The rollback succeeded, so the lane is still healthy — no halt, no notice.
     expect(h.dispatcher.drainHalt(SESSION)).toBeUndefined();
     expect(h.notices).not.toContainEqual(expect.objectContaining({ type: 'drain-halted' }));

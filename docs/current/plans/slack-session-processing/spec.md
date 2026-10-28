@@ -66,7 +66,7 @@ getSessionKey(channelId, threadTs?) = `${channelId}-${threadTs || 'direct'}`
 
 근거:
 - 정의: [src/session-registry.ts:216](../../src/session-registry.ts).
-- userId 무시 (legacy 호환): [src/session-registry.ts:223](../../src/session-registry.ts) — `getSessionKeyWithUser`가 내부적으로 `getSessionKey`로 위임.
+- userId 무시: 키는 channel/thread만으로 만든다(`getSessionKey`). userId를 받던 legacy alias `getSessionKeyWithUser`는 2026-10에 삭제됐다.
 - `SessionRegistry`의 내부 맵 `sessions: Map<string, ConversationSession>` 키가 이 수식.
 
 **라이프사이클 연산:**
@@ -260,7 +260,7 @@ getSessionKey(channelId, threadTs?) = `${channelId}-${threadTs || 'direct'}`
 ### 7.2 비-admin DM whitelist
 
 - `SAFE_Z_TOPICS` regex — [src/slack/z/whitelist.ts:93](../../src/slack/z/whitelist.ts). help/sessions/theme/`%.../$...` 허용.
-- `isWhitelistedNaked(text)` — [src/slack/z/whitelist.ts:30](../../src/slack/z/whitelist.ts).
+- 체크 함수: `isDmAllowedForNonAdmin(text)` — [packages/slack/src/z/whitelist.ts](../../../../packages/slack/src/z/whitelist.ts). (구 `isWhitelistedNaked`는 #531 이후 호출 경로가 없어 삭제됐다.)
 
 ### 7.3 slack-mcp 등록
 

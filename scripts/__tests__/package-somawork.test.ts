@@ -84,6 +84,37 @@ function sha256(file: string): string {
   return crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
 }
 
+/** `resolved` of the root and `somalib` soma-lib pins (one pin since e9af688b). */
+const SOMA_LIB_TARBALL = 'https://github.com/2lab-ai/soma-lib/releases/download/v0.7.0/soma-lib-0.7.0.tgz';
+
+/**
+ * The staged tree's `package-lock.json`, in the repository lockfile's layout.
+ *
+ * Since e9af688b aligned `somalib`'s soma-lib pin with the root's, soma-lib is
+ * installed once, at `node_modules/soma-lib`, and no workspace has a nested
+ * `node_modules` (pinned against the real lockfile in "archive gate
+ * internals"). The gate derives the workspace-nested trees it requires from
+ * this file, so the fixture states the layout instead of leaving it empty.
+ * `nested` adds lockfile entries for the nested-layout tests.
+ */
+function fixtureLockfile(nested: Record<string, Record<string, unknown>> = {}): unknown {
+  return {
+    name: 'soma-work',
+    version: VERSION,
+    lockfileVersion: 3,
+    requires: true,
+    packages: {
+      '': { name: 'soma-work', version: VERSION, license: 'ISC', workspaces: ['somalib', 'packages/*'] },
+      'node_modules/@soma/common': { resolved: 'packages/common', link: true },
+      'node_modules/left-pad': { version: '1.0.0' },
+      'node_modules/soma-lib': { version: '0.7.0', resolved: SOMA_LIB_TARBALL },
+      'packages/common': { name: '@soma/common' },
+      somalib: { dependencies: { 'soma-lib': SOMA_LIB_TARBALL } },
+      ...nested,
+    },
+  };
+}
+
 /**
  * A minimal tree with the shape `stage-bundle.sh` produces.
  *
@@ -126,7 +157,7 @@ function makeStagedRuntime(root: string): string {
   );
   write('packages/common/dist/index.js', 'module.exports = {};\n');
   write('somalib/package.json', `${JSON.stringify({ name: 'somalib' }, null, 2)}\n`);
-  write('package-lock.json', '{"lockfileVersion":3}\n');
+  write('package-lock.json', `${JSON.stringify(fixtureLockfile(), null, 2)}\n`);
   // Executable and actually runnable: the gate now runs the runtime's controller
   // entry out of the extraction rather than only stat-ing it.
   write('dist/cli/index.js', `#!/usr/bin/env node\nconsole.log(${JSON.stringify(VERSION)});\n`, 0o755);
@@ -151,30 +182,43 @@ function makeStagedRuntime(root: string): string {
   return root;
 }
 
+/** Install one package tree (`package.json` + `dist/index.{js,d.ts}`) at `dir`. */
+function writeInstalledPackage(dir: string, name: string, version: string): void {
+  fs.mkdirSync(path.join(dir, 'dist'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'package.json'), `${JSON.stringify({ name, version, main: 'dist/index.js' })}\n`);
+  fs.writeFileSync(path.join(dir, 'dist', 'index.js'), 'module.exports = {};\n');
+  // A published package's own type declarations: forbidden first-party, ordinary
+  // in dependency territory.
+  fs.writeFileSync(path.join(dir, 'dist', 'index.d.ts'), 'export {};\n');
+}
+
 /**
  * A stand-in for what `npm ci --omit=dev` leaves behind, overlaid on the payload
- * root.
+ * root — in the layout `fixtureLockfile()` describes: one root tree, soma-lib
+ * hoisted into it.
  *
- * Two `node_modules`, not one: an install also writes a nested tree for a
- * workspace dependency it cannot hoist (in the real bundle,
- * `somalib/node_modules/soma-lib`). An overlay fixture with only the root tree
- * would not exercise the rule that dependency territory is any `node_modules`
- * segment.
+ * `nestedSomaLib` adds `somalib/node_modules/soma-lib`, the tree an install
+ * writes when a workspace's pin cannot be hoisted (the layout before
+ * e9af688b). The nested-layout tests use it to exercise the rule that
+ * dependency territory is any `node_modules` segment, not just a leading one.
  */
-function makeDependencyOverlay(root: string): string {
+function makeDependencyOverlay(
+  root: string,
+  options: { nestedSomaLib?: boolean; omitRootSomaLib?: boolean; pruneRootSomaLibBuild?: boolean } = {},
+): string {
   const modules = path.join(root, 'node_modules');
   fs.mkdirSync(path.join(modules, 'left-pad'), { recursive: true });
   fs.writeFileSync(path.join(modules, 'left-pad', 'index.js'), 'module.exports = () => {};\n');
   fs.writeFileSync(path.join(modules, 'left-pad', 'package.json'), '{"name":"left-pad","version":"1.0.0"}\n');
   fs.mkdirSync(path.join(modules, '@soma'), { recursive: true });
   fs.symlinkSync('../../packages/common', path.join(modules, '@soma', 'common'));
+  if (!options.omitRootSomaLib) writeInstalledPackage(path.join(modules, 'soma-lib'), 'soma-lib', '0.7.0');
+  // The manifest survives, the module does not (a prune that drops `dist/`).
+  if (options.pruneRootSomaLibBuild) fs.unlinkSync(path.join(modules, 'soma-lib', 'dist', 'index.js'));
 
-  const nested = path.join(root, 'somalib', 'node_modules', 'soma-lib', 'dist');
-  fs.mkdirSync(nested, { recursive: true });
-  fs.writeFileSync(path.join(nested, 'index.js'), 'module.exports = {};\n');
-  // A published package's own type declarations: forbidden first-party, ordinary
-  // here, and the exact shape that failed before nested trees counted.
-  fs.writeFileSync(path.join(nested, 'index.d.ts'), 'export {};\n');
+  if (options.nestedSomaLib) {
+    writeInstalledPackage(path.join(root, 'somalib', 'node_modules', 'soma-lib'), 'soma-lib', '0.5.0');
+  }
   return root;
 }
 
@@ -597,9 +641,9 @@ describe('packaged release assets', () => {
         // packaging script adds the grant to the payload root.
         'LICENSE',
         'node_modules/left-pad/index.js',
-        // A workspace dependency npm could not hoist. The archive is an
-        // incomplete install without it.
-        'somalib/node_modules/soma-lib/dist/index.js',
+        // `somalib`'s runtime dependency, hoisted to the root tree (the real
+        // lockfile layout). The archive is an incomplete install without it.
+        'node_modules/soma-lib/dist/index.js',
       ]) {
         expect(members, `${asset} -> ${required}`).toContain(required);
       }
@@ -700,7 +744,9 @@ describe('packaged release assets', () => {
       expect(output).toContain(CONTROLLER_ASSET);
       // …and both runtime archives were still opened and checked.
       for (const asset of [PRODUCTION_ASSET, PREVIEW_ASSET]) {
-        expect(output, asset).toContain(`${asset}: carries the unhoistable workspace dependency`);
+        expect(output, asset).toContain(
+          `${asset}: carries every production dependency tree its lockfile installs (root and workspace-nested)`,
+        );
         expect(output, asset).toContain(`${asset}: the runtime's controller entry runs from the extraction`);
       }
     },
@@ -727,6 +773,105 @@ describe('packaged release assets', () => {
       ]) {
         expect(output, expected).toContain(expected);
       }
+    },
+    PACKAGING_TIMEOUT_MS,
+  );
+});
+
+describe('workspace-nested dependency trees, when the lockfile has them', () => {
+  // The layout before e9af688b: `somalib` pinned a different soma-lib than the
+  // root, so `npm ci` installed a second copy under `somalib/node_modules`. A
+  // packaging flag that only copied the root tree shipped archives without it.
+  // The gate reads which trees are nested from the archive's own lockfile, so it
+  // requires them exactly when the install would have produced them.
+  const nestedSomaLib = {
+    'somalib/node_modules/soma-lib': { version: '0.5.0', resolved: SOMA_LIB_TARBALL },
+    // Never installed under `--omit=dev`; requiring it would refuse a correct archive.
+    'somalib/node_modules/dev-only-tool': { version: '1.0.0', dev: true },
+  };
+
+  function stagedWithNestedLockfile(slug: string): string {
+    const staged = makeStagedRuntime(path.join(scratch, `staged-${slug}`));
+    fs.writeFileSync(
+      path.join(staged, 'package-lock.json'),
+      `${JSON.stringify(fixtureLockfile(nestedSomaLib), null, 2)}\n`,
+    );
+    return staged;
+  }
+
+  it(
+    'packages an archive that carries the nested tree (its .d.ts is dependency territory)',
+    () => {
+      const run = runPackaging({
+        outDir: path.join(scratch, 'out-nested-present'),
+        stagedRuntime: stagedWithNestedLockfile('nested-present'),
+        dependencyOverlay: makeDependencyOverlay(path.join(scratch, 'modules-nested-present'), {
+          nestedSomaLib: true,
+        }),
+      });
+      expect(run.status, `${run.stdout}\n${run.stderr}`).toBe(0);
+    },
+    PACKAGING_TIMEOUT_MS,
+  );
+
+  it(
+    'refuses, by path and for both runtime archives, an archive missing a nested tree its lockfile installs',
+    () => {
+      const run = runPackaging({
+        outDir: path.join(scratch, 'out-nested-missing'),
+        stagedRuntime: stagedWithNestedLockfile('nested-missing'),
+        dependencyOverlay: makeDependencyOverlay(path.join(scratch, 'modules-nested-missing')),
+      });
+      const output = `${run.stdout}${run.stderr}`;
+      expect(run.status, output).not.toBe(0);
+      for (const asset of [PRODUCTION_ASSET, PREVIEW_ASSET]) {
+        expect(output, asset).toMatch(
+          new RegExp(
+            `FAIL ${asset.replace(/\./g, '\\.')}: carries every production dependency tree its lockfile installs.*somalib/node_modules/soma-lib/package\\.json`,
+          ),
+        );
+      }
+      expect(output).not.toContain('dev-only-tool');
+    },
+    PACKAGING_TIMEOUT_MS,
+  );
+});
+
+describe('root dependency trees the lockfile installs', () => {
+  it(
+    'refuses an archive whose root node_modules lost a production package (hoisted soma-lib)',
+    () => {
+      const staged = makeStagedRuntime(path.join(scratch, 'staged-root-missing'));
+      const run = runPackaging({
+        outDir: path.join(scratch, 'out-root-missing'),
+        stagedRuntime: staged,
+        dependencyOverlay: makeDependencyOverlay(path.join(scratch, 'modules-root-missing'), { omitRootSomaLib: true }),
+      });
+      const output = `${run.stdout}${run.stderr}`;
+      expect(run.status, output).not.toBe(0);
+      expect(output).toMatch(
+        /carries every production dependency tree its lockfile installs.*node_modules\/soma-lib\/package\.json/,
+      );
+    },
+    PACKAGING_TIMEOUT_MS,
+  );
+
+  it(
+    'refuses an archive whose production package kept its package.json but lost its runtime entry',
+    () => {
+      const staged = makeStagedRuntime(path.join(scratch, 'staged-root-pruned'));
+      const run = runPackaging({
+        outDir: path.join(scratch, 'out-root-pruned'),
+        stagedRuntime: staged,
+        dependencyOverlay: makeDependencyOverlay(path.join(scratch, 'modules-root-pruned'), {
+          pruneRootSomaLibBuild: true,
+        }),
+      });
+      const output = `${run.stdout}${run.stderr}`;
+      expect(run.status, output).not.toBe(0);
+      expect(output).toMatch(
+        /FAIL .*every production dependency's declared runtime entry is present.*node_modules\/soma-lib\/dist\/index\.js/,
+      );
     },
     PACKAGING_TIMEOUT_MS,
   );
@@ -1198,6 +1343,7 @@ describe('archive gate internals', () => {
     isNativeExecutable: (file: string) => boolean;
     walk: (root: string) => { rel: string }[];
     archiveWorkspaceEntries: (root: string) => { entries: string[]; unsupported: string[] };
+    lockfileWorkspaceNestedInstalls: (root: string) => string[] | null;
   };
 
   it('classifies a real PE through its header chain, not through two bytes', () => {
@@ -1240,6 +1386,48 @@ describe('archive gate internals', () => {
     }
   });
 
+  it('models the repository lockfile: soma-lib hoisted, no workspace-nested tree', () => {
+    // The fixtures above stand in for a real install. When this fails, the real
+    // lockfile's layout changed — update `fixtureLockfile` / `makeDependencyOverlay`
+    // to match it, or the suite keeps passing against a layout that no longer
+    // ships (how a gate requiring the pre-e9af688b nested copy stayed green).
+    expect(gate.lockfileWorkspaceNestedInstalls(repoRoot)).toEqual([]);
+    const lock = JSON.parse(read('package-lock.json')) as { packages: Record<string, { resolved?: string }> };
+    // Layout, not version: a soma-lib bump changes the URL but not the hoisting.
+    expect(lock.packages['node_modules/soma-lib']?.resolved).toMatch(
+      /^https:\/\/github\.com\/2lab-ai\/soma-lib\/releases\/download\/v\d+\.\d+\.\d+\/soma-lib-\d+\.\d+\.\d+\.tgz$/,
+    );
+  });
+
+  it('derives the required workspace-nested trees from the lockfile, skipping what --omit=dev omits', () => {
+    const root = path.join(scratch, 'lockfile-derive');
+    fs.mkdirSync(root, { recursive: true });
+    fs.writeFileSync(
+      path.join(root, 'package-lock.json'),
+      JSON.stringify({
+        lockfileVersion: 3,
+        packages: {
+          '': { name: 'soma-work' },
+          'node_modules/soma-lib': {},
+          'node_modules/a/node_modules/b': {},
+          somalib: {},
+          'somalib/node_modules/soma-lib': {},
+          'packages/x/node_modules/y/node_modules/z': {},
+          'somalib/node_modules/dev': { dev: true },
+          'somalib/node_modules/opt': { optional: true },
+          'somalib/node_modules/devopt': { devOptional: true },
+        },
+      }),
+    );
+    expect(gate.lockfileWorkspaceNestedInstalls(root)).toEqual([
+      'packages/x/node_modules/y/node_modules/z',
+      'somalib/node_modules/soma-lib',
+    ]);
+
+    fs.writeFileSync(path.join(root, 'package-lock.json'), '{"lockfileVersion":3}\n');
+    expect(gate.lockfileWorkspaceNestedInstalls(root)).toBeNull();
+  });
+
   it('derives required workspace entry points from the archive\u2019s own manifest', () => {
     const root = makeStagedRuntime(path.join(scratch, 'workspace-derive'));
     const derived = gate.archiveWorkspaceEntries(root);
@@ -1248,6 +1436,23 @@ describe('archive gate internals', () => {
     // manufacture a requirement.
     expect(derived.entries).toContain('packages/common/dist/index.js');
     expect(derived.entries.some((entry) => entry.startsWith('somalib/'))).toBe(false);
+  });
+
+  it('requires every concrete subpath target of a package with no root entry point', () => {
+    // `@soma/slack` exports subpaths only. Without this, dropping its root
+    // entry would also drop the only requirement that its dist is staged.
+    const root = makeStagedRuntime(path.join(scratch, 'workspace-subpaths'));
+    const manifest = {
+      name: '@soma/slack',
+      exports: { './a': './dist/a.js', './b/c': './dist/b/c.js', './*': './dist/*.js' },
+    };
+    fs.mkdirSync(path.join(root, 'packages/slack'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'packages/slack/package.json'), `${JSON.stringify(manifest)}\n`);
+
+    const derived = gate.archiveWorkspaceEntries(root);
+    expect(derived.entries).toContain('packages/slack/dist/a.js');
+    expect(derived.entries).toContain('packages/slack/dist/b/c.js');
+    expect(derived.entries.some((entry) => entry.includes('*'))).toBe(false);
   });
 });
 

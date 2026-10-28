@@ -19,7 +19,7 @@ export class SkillsHandler implements CommandHandler {
   }
 
   async execute(ctx: CommandContext): Promise<CommandResult> {
-    const { text, user, say, threadTs } = ctx;
+    const { text } = ctx;
     const trimmed = text.trim().toLowerCase();
 
     if (trimmed.startsWith('skills list') || trimmed.startsWith('skill list')) {

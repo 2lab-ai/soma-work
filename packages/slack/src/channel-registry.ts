@@ -11,7 +11,7 @@
 
 import type { WebClient } from '@slack/web-api';
 import { Logger } from '@soma/common/logger';
-import { getChannelDescription, invalidateChannelCache } from './channel-description-cache';
+import { invalidateChannelCache } from './channel-description-cache';
 
 const logger = new Logger('ChannelRegistry');
 
@@ -224,13 +224,6 @@ export function getChannel(channelId: string): ChannelInfo | undefined {
  */
 export function getAllChannels(): ChannelInfo[] {
   return [...channels.values()];
-}
-
-/**
- * Get Confluence URL for a channel (from purpose/topic).
- */
-export function getChannelConfluenceUrl(channelId: string): string | undefined {
-  return channels.get(channelId)?.confluenceUrl;
 }
 
 /**

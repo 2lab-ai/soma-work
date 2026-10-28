@@ -39,6 +39,7 @@ registerSkillStore({
 
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
+import type { AgentTreeEvent } from '@soma/slack/agent-tree';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
@@ -51,20 +52,32 @@ import { ClaudeHandler } from './claude-handler';
 import { config, runPreflightChecks, validateConfig } from './config';
 import { loadConfig } from './config-loader';
 import {
+  broadcastArtifactUpdate,
   broadcastConversationUpdate,
   broadcastSessionUpdate,
   broadcastSummaryTitleChanged,
   broadcastTaskUpdate,
+  broadcastWorkLog,
+  getDashboardSessionUrl,
   initRecorder,
+  matchSlackUsersByEmail,
+  scheduleLiveSessionUpdate,
   setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
   setDashboardCommandHandler,
+  setDashboardCronSource,
+  setDashboardEffortHandler,
+  setDashboardGoalHandler,
+  setDashboardModelHandler,
   setDashboardMultiChoiceAnswerHandler,
+  setDashboardNewTaskProvider,
+  setDashboardPermissionAnswerHandler,
   setDashboardSessionAccessor,
   setDashboardStopHandler,
   setDashboardSubmitRecommendedHandler,
   setDashboardTaskAccessor,
   setDashboardTrashHandler,
+  setOAuthDirectoryLookup,
   setOAuthUserLookup,
   setOnSummaryGeneratedCallback,
   setOnTurnRecordedCallback,
@@ -72,17 +85,28 @@ import {
   startWebServer,
   stopWebServer,
 } from './conversation';
+import { captureArtifactFromWorkLog } from './conversation/artifact-capture';
+import { getArtifactStore } from './conversation/artifacts';
+import type { NewTaskAttachment } from './conversation/new-task';
+import { createNewTaskProvider, createSlackSteerUploader } from './conversation/new-task-provider';
+import { setSettingsRegistry } from './conversation/settings-routes';
+import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
+import { appendWorkLog, flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
 import { GPT_5_6_UPSTREAM_SLUG, syncLlmuxCodexModel } from './deploy/llmux-codex-model-sync';
+import { migrateAllUsersMinimalOnce } from './deploy/migrate-all-users-minimal-once';
 import { migrateAllUsersOpusOnce } from './deploy/migrate-all-users-opus-once';
 import { migrateCronOpusOnce } from './deploy/migrate-cron-opus-once';
+import { migrateThreadHeaderDashboardLinkOnce } from './deploy/migrate-threadheader-dashboard-link-once';
 import { initializeDispatchService } from './dispatch-service';
 import { CONFIG_FILE, DATA_DIR, PLUGINS_DIR } from './env-paths';
 import { discoverInstallations, getGitHubAppAuth, isGitHubAppConfigured } from './github-auth.js';
 import { Logger } from './logger';
 import { McpManager } from './mcp-manager';
 import { startReportScheduler, stopReportScheduler } from './metrics';
+import { calculateTokenCost, hasModelPricing } from './metrics/model-registry';
+import { clampEffortToModel } from './model-catalog';
 import { bootModelCatalog } from './model-catalog-boot';
 import {
   evaluateAndMaybeRotate,
@@ -92,19 +116,32 @@ import {
   startUsageRefreshScheduler,
   type UsageRefreshScheduler,
 } from './oauth';
+import { answerPermissionPrompt } from './permission-prompt-response';
 import { acquirePidLock, releasePidLock } from './pid-lock';
 import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
+import { applyAgentEvent, stampWorkLogAgent } from './session/agent-registry';
+import { backfillAgentSpend, createAgentSpendReader } from './session/agent-spend';
+import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
+import { switchSessionEffort } from './session/effort-switch';
+import { productionModelCatalogDeps } from './session/model-catalog-deps';
+import { switchSessionModel } from './session/model-switch';
+import { applyTodoList, ledgerTasks } from './session/task-ledger';
+import { canApplySummaryTitle } from './session-title-policy';
 import { GoalLoopController } from './slack/goal-loop-controller';
-import { setGoalLoopResumeHandler } from './slack/goal-loop-resume';
+import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
+import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
 import { setUiSurfacesConfig } from './slack/surface-config';
+import { setThreadHeaderProviders } from './slack/thread-header-builder';
 import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
 import { getTokenManager } from './token-manager';
+import type { ConversationSession } from './types';
+import { productionSettingsRegistry } from './user-settings-registry-production';
 
 const logger = new Logger('Main');
 
@@ -216,6 +253,36 @@ async function start() {
     }
     timing('all-users opus migration evaluated');
 
+    // 2026-10-16 one-time ALL-USER Slack verbosity rewrite (spec 10 §3.2-1):
+    // every user default → `minimal` and every persisted session mask in
+    // sessions.json → LOG_MINIMAL. Same presence-only, marker-first contract
+    // as the opus rewrite above. Runs BEFORE `slackHandler.loadSavedSessions()`
+    // further down, so the restored sessions read the rewritten masks. No
+    // second writer can race it: the O_EXCL pid lock `acquirePidLock(DATA_DIR)`
+    // (src/pid-lock.ts) is held from the top of start() above. Own try/catch;
+    // never blocks boot, and the settings singleton is reloaded unless it was
+    // a clean skip (including after a throw).
+    let allUsersMinimalStatus: 'skipped' | 'applied' | 'failed' = 'failed';
+    try {
+      const allUsersMinimal = migrateAllUsersMinimalOnce({ dataDir: DATA_DIR });
+      allUsersMinimalStatus = allUsersMinimal.status;
+      logger.info(
+        `all-users log-minimal one-time migration: ${allUsersMinimal.status} (migrated users ${allUsersMinimal.users.migrated}/${allUsersMinimal.users.total}, sessions ${allUsersMinimal.sessions.migrated}/${allUsersMinimal.sessions.total}, marker=${allUsersMinimal.markerFile})`,
+      );
+    } catch (error) {
+      logger.error('all-users log-minimal one-time migration FAILED — check the marker before assuming a retry', error);
+    } finally {
+      if (allUsersMinimalStatus !== 'skipped') {
+        try {
+          userSettingsStore.reloadSettings();
+          logger.info(`reloaded user settings after all-users log-minimal migration (status=${allUsersMinimalStatus})`);
+        } catch (error) {
+          logger.error('reloadSettings after all-users log-minimal migration failed', error);
+        }
+      }
+    }
+    timing('all-users log-minimal migration evaluated');
+
     // 2026-09-28 one-time cron rewrite: every job's model → `{type:'opus'}`
     // (resolved to the latest opus at fire time). Same presence-only,
     // marker-first contract as above. Runs here — BEFORE `app.start()` — so no
@@ -230,6 +297,29 @@ async function start() {
       logger.error('cron opus one-time migration FAILED — check the marker before assuming a retry', error);
     }
     timing('cron opus migration evaluated');
+
+    // 2026-10-16 one-time ADDITIVE config.json rewrite: every `ui.threadheader`
+    // lines array (base + each theme) that never mentions `dashboardLink` gets
+    // the 📋 작업 로그 field — seeded or edited copies alike, since a seeded
+    // config.json never sees new built-in defaults. Runs BEFORE loadConfig below
+    // so this boot already renders it; marker in DATA_DIR, so an operator who
+    // removes the link afterwards keeps it removed. The DATA_DIR PID lock
+    // (acquirePidLock above) only excludes a second daemon boot; other
+    // config.json writers (CLI setup, plugin saves) take no lock, so the
+    // migration writes compare-and-swap and reports `contended` if they keep
+    // changing the file. Non-fatal: a failure or contention writes no marker and
+    // is retried next boot.
+    try {
+      const headerLink = migrateThreadHeaderDashboardLinkOnce({ configFile: CONFIG_FILE, dataDir: DATA_DIR });
+      logger.info(
+        `threadheader dashboardLink one-time migration: ${headerLink.outcome} (arrays changed ${headerLink.arraysChanged}, config=${CONFIG_FILE}, marker=${headerLink.markerFile})`,
+      );
+    } catch (error) {
+      logger.warn(
+        `threadheader dashboardLink one-time migration: failed (non-fatal, retried next boot): ${(error as Error).message}`,
+      );
+    }
+    timing('threadheader dashboardLink migration evaluated');
 
     // llmux-dependent boot steps (codex pin sync + model-catalog fetch) run
     // AFTER initAuthRuntimeDefault below — gating them on the static
@@ -430,6 +520,10 @@ async function start() {
     if (appConfig.ui) {
       timing(`UI surface config applied (${Object.keys(uiConfigResult.config).length} surfaces overridden)`);
     }
+    // The one injection point for the dashboard deep link: the thread header
+    // `dashboardLink` field and the user-started thread link both resolve
+    // through it (undefined = viewer not listening = no link).
+    setThreadHeaderProviders({ getDashboardSessionUrl });
 
     // Install operator-controlled additional env (config.json#claude.env)
     // BEFORE any ClaudeHandler / SDK consumers are constructed, so every
@@ -493,16 +587,7 @@ async function start() {
     const mcpConfig = mcpManager.loadConfiguration();
     timing(`MCP config loaded (${mcpConfig ? Object.keys(mcpConfig.mcpServers).length : 0} servers)`);
 
-    // Initialize Plugin manager
-    const pluginManager = new PluginManager(appConfig.plugin || {}, PLUGINS_DIR, undefined, BUNDLED_PLUGINS);
-    try {
-      await pluginManager.initialize();
-      mcpManager.setPluginManager(pluginManager);
-      timing(`Plugins initialized (${pluginManager.getResolvedPlugins().length} plugins)`);
-    } catch (error) {
-      logger.error('Plugin initialization failed (non-critical, using fallback)', error);
-    }
-
+    // Before plugin init: private marketplace fetches use `gh`, which needs the GITHUB_TOKEN auto-refresh sets.
     // Initialize GitHub App authentication and auto-refresh if configured
     if (isGitHubAppConfigured()) {
       await discoverInstallations();
@@ -519,6 +604,16 @@ async function start() {
           logger.error('Failed to start GitHub App token auto-refresh:', error);
         }
       }
+    }
+
+    // Initialize Plugin manager
+    const pluginManager = new PluginManager(appConfig.plugin || {}, PLUGINS_DIR, undefined, BUNDLED_PLUGINS);
+    try {
+      await pluginManager.initialize();
+      mcpManager.setPluginManager(pluginManager);
+      timing(`Plugins initialized (${pluginManager.getResolvedPlugins().length} plugins)`);
+    } catch (error) {
+      logger.error('Plugin initialization failed (non-critical, using fallback)', error);
     }
 
     // Initialize A2T service (audio-to-text transcription, non-critical)
@@ -635,17 +730,12 @@ async function start() {
       setSkillPromptInvalidationHook(invalidate);
     }
 
-    // Connect dashboard: task accessor (resolve sessionKey → sessionId for TodoManager)
+    // Connect dashboard: task accessor — the session's task ledger (SSOT
+    // 2026-10-22 T7/T8: ids, elapsed time, tool calls; kept across TodoWrite
+    // list replacements and the TodoManager's post-turn cleanup).
     setDashboardTaskAccessor((sessionKey: string) => {
       const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
-      const lookupId = session?.sessionId || sessionKey;
-      const todos = slackHandler.getTodoManager().getTodos(lookupId);
-      return todos.map((t) => ({
-        content: t.content,
-        status: t.status,
-        startedAt: t.startedAt,
-        completedAt: t.completedAt,
-      }));
+      return session?.taskLedger ? ledgerTasks(session.taskLedger) : undefined;
     });
 
     // Connect dashboard: stop handler (abort running session). Dashboard
@@ -668,12 +758,20 @@ async function start() {
       logger.info('Dashboard: trashed session', { sessionKey });
     });
 
+    // The composer's files go up one by one; a retry reuses what Slack already took (#488).
+    const uploadSteerFiles = createSlackSteerUploader(app.client);
     // Connect dashboard: command handler (inject message as if user typed in Slack)
-    setDashboardCommandHandler(async (sessionKey: string, message: string) => {
+    /** Returns the injected message's identity (channel + ts), undefined when nothing was sent. */
+    const injectDashboardMessage = async (
+      sessionKey: string,
+      message: string,
+      onSent?: (sent: { channel: string; ts: string }) => void,
+      attachments: NewTaskAttachment[] = [],
+    ): Promise<{ channel: string; ts: string } | undefined> => {
       const session = claudeHandler.getSessionByKey(sessionKey);
       if (!session) {
         logger.warn('Dashboard command: session not found', { sessionKey });
-        return;
+        return undefined;
       }
       // Post the user's message to the Slack thread so it's visible,
       // styled as a quote block with dashboard origin indicator.
@@ -684,15 +782,25 @@ async function start() {
           channelId: session.channelId,
           threadTs: session.threadTs,
         });
-        return;
+        return undefined;
       }
+
+      // The composer's files (T1.5) go into the thread first — the pipeline
+      // reads them from Slack like files the user attached there. A failed
+      // upload fails the instruction (the dashboard offers a retry); it is
+      // never sent without the files the user meant it to carry.
+      const files = attachments.length
+        ? await uploadSteerFiles(session.channelId, session.threadTs, attachments)
+        : undefined;
+      // A files-only instruction still echoes a line (a section needs text).
+      const echoed = message.trim() ? message : `📎 ${attachments.length}개 파일`;
 
       let echoTs: string | undefined;
       try {
         const echoResult = await app.client.chat.postMessage({
           channel: session.channelId,
           thread_ts: session.threadTs,
-          text: message.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
+          text: echoed.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;'),
           blocks: [
             {
               type: 'context',
@@ -700,7 +808,7 @@ async function start() {
             },
             {
               type: 'section',
-              text: { type: 'plain_text', text: message.length > 3000 ? `${message.slice(0, 2997)}...` : message },
+              text: { type: 'plain_text', text: echoed.length > 3000 ? `${echoed.slice(0, 2997)}...` : echoed },
             },
           ],
         });
@@ -723,6 +831,8 @@ async function start() {
       if (!echoTs) {
         logger.warn('Dashboard echo: using fabricated timestamp (echo failed or was skipped)', { sessionKey });
       }
+      const ts = echoTs || String(Date.now() / 1000);
+      onSent?.({ channel: session.channelId, ts });
       await slackHandler.handleMessage(
         {
           type: 'message',
@@ -730,12 +840,67 @@ async function start() {
           thread_ts: session.threadTs,
           text: message,
           user: session.ownerId,
-          ts: echoTs || String(Date.now() / 1000),
+          ts,
+          ...(files ? { files } : {}),
         } as any,
         dashboardSay,
       );
-      logger.info('Dashboard: command sent to session', { sessionKey, messageLength: message.length });
+      logger.info('Dashboard: command sent to session', {
+        sessionKey,
+        messageLength: message.length,
+        files: attachments.length,
+      });
+      return { channel: session.channelId, ts };
+    };
+    setDashboardCommandHandler(async (sessionKey, message, attachments) => {
+      await injectDashboardMessage(sessionKey, message, undefined, attachments);
     });
+
+    // Connect dashboard: model switch (SSOT 2026-10-22 T4/T5) — representative
+    // models only; a context above the target's auto-compact threshold is
+    // compacted on the current model first (the owner's own `compact --yes`,
+    // echoed to the thread like any dashboard message) and the switch lands
+    // at that compact's boundary.
+    setDashboardModelHandler((sessionKey: string, nickname: string) =>
+      switchSessionModel(sessionKey, nickname, {
+        ...productionModelCatalogDeps(),
+        getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+        isRequestActive: (key) => slackHandler.getRequestCoordinator().isRequestActive(key),
+        currentAutoCompact: (session) =>
+          resolveEffectiveAutoCompact(session, session.ownerId || '', userSettingsStore).tokens,
+        // `handleMessage` returns as soon as the follow-up queue holds the
+        // command when another turn has the slot — the compact is still ahead
+        // then, and the switch keeps waiting for it (review R3-2).
+        dispatchCompact: async (key, onSent) => {
+          const sent = await injectDashboardMessage(key, 'compact --yes', onSent);
+          return sent && slackHandler.isFollowupPending(sent.channel, sent.ts) ? 'queued' : 'settled';
+        },
+        isCompactQueued: ({ channel, ts }) => slackHandler.isFollowupPending(channel, ts),
+        save: () => claudeHandler.saveSessions(),
+        broadcast: () => broadcastSessionUpdate(),
+      }),
+    );
+
+    // Connect dashboard: personal settings (SSOT 2026-10-23 T2) — the same
+    // validators / `/z` apply functions the Slack commands use.
+    setSettingsRegistry(productionSettingsRegistry());
+
+    // Connect dashboard: session effort (SSOT 2026-10-23 T1) — the `%effort`
+    // scope: this session only, read by the next turn's SDK call.
+    setDashboardEffortHandler((sessionKey: string, effort: string) =>
+      switchSessionEffort(sessionKey, effort, {
+        getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+        clamp: clampEffortToModel,
+        save: () => claudeHandler.saveSessions(),
+        broadcast: () => broadcastSessionUpdate(),
+      }),
+    );
+
+    // Connect dashboard: goal list on the work item (SSOT 2026-10-21 T3) —
+    // add / delete-current (promotes the next goal) / delete-queued.
+    setDashboardGoalHandler((sessionKey, action, actorUserId) =>
+      slackHandler.handleHostGoalAction(sessionKey, action, actorUserId),
+    );
 
     // Connect dashboard: choice answer handler (dashboard button click → same path as Slack button)
     setDashboardChoiceAnswerHandler(async (sessionKey: string, choiceId: string, label: string, question: string) => {
@@ -747,6 +912,12 @@ async function start() {
         throw error; // Re-throw so the API endpoint returns the correct HTTP status
       }
     });
+
+    // Connect dashboard: permission prompt answers (SSOT 2026-10-24) — the same
+    // answer path as the Slack buttons, with the registry for "approve & disable rule".
+    setDashboardPermissionAnswerHandler((args) =>
+      answerPermissionPrompt({ ...args, sessions: claudeHandler.getSessionRegistry() }),
+    );
 
     // Connect dashboard: multi-choice form answer handler
     setDashboardMultiChoiceAnswerHandler(
@@ -775,32 +946,136 @@ async function start() {
       }
     });
 
+    // Connect dashboard: "New task" (SSOT 2026-10-23) — the composer's
+    // context and the launch. A task is the user's own message on a fresh
+    // thread in the chosen channel, so it runs through handleMessage like a
+    // message typed in Slack (autogoal, autoskills, `$autoz` included).
+    setDashboardNewTaskProvider(
+      createNewTaskProvider({
+        client: app.client,
+        handleMessage: (event, say) => slackHandler.handleMessage(event as any, say),
+        getSessionKey: (channel, threadTs) => claudeHandler.getSessionKey(channel, threadTs),
+        hasSession: (sessionKey) => !!claudeHandler.getSessionRegistry().getSessionByKey(sessionKey),
+        listUserSessions: (userId) => {
+          const out: Array<{ channelId: string; lastActivity: number }> = [];
+          for (const session of claudeHandler.getAllSessions().values()) {
+            if (session.ownerId !== userId && session.currentInitiatorId !== userId) continue;
+            if (!session.channelId) continue;
+            const at = session.lastActivity ? new Date(session.lastActivity).getTime() : 0;
+            out.push({ channelId: session.channelId, lastActivity: Number.isFinite(at) ? at : 0 });
+          }
+          return out;
+        },
+      }),
+    );
+
     // Connect dashboard: real-time task updates
     // TodoManager fires with sessionId, but dashboard caches by sessionKey.
     // Resolve sessionId → sessionKey so WebSocket clients can match the update.
+    // Every TodoWrite list is merged into the session's task ledger first, so
+    // the update carries ledger ids, times and tool-call counts.
     slackHandler.getTodoManager().setOnUpdateCallback((sessionId, todos) => {
       let sessionKey = sessionId;
+      let owner: ConversationSession | undefined;
       const allSessions = claudeHandler.getSessionRegistry().getAllSessions();
       for (const [key, session] of allSessions) {
         if (session.sessionId === sessionId) {
           sessionKey = key;
+          owner = session;
           break;
         }
       }
-      broadcastTaskUpdate(
-        sessionKey,
-        todos.map((t) => ({
-          content: t.content,
-          status: t.status,
-          activeForm: t.activeForm,
-          startedAt: t.startedAt,
-          completedAt: t.completedAt,
-        })),
-      );
+      if (!owner) return;
+      owner.taskLedger = applyTodoList(owner.taskLedger, todos, Date.now());
+      const view = ledgerTasks(owner.taskLedger);
+      broadcastTaskUpdate(sessionKey, view.current, view.earlier);
     });
 
     // Connect dashboard: real-time conversation turn updates
     setOnTurnRecordedCallback(broadcastConversationUpdate);
+
+    // Connect dashboard: work log (spec §3.3). The stream executor emits every
+    // instruction / narration / tool step through `appendWorkLog`; each entry is
+    // persisted and pushed to the owner's and admins' dashboards.
+    // setStreamExecutorProviders merges, so this adds one field on top of the
+    // set wired in src/slack/pipeline/stream-executor.ts. The intersection type
+    // keeps it compiling whether or not StreamExecutorProviders declares
+    // `appendWorkLog` yet (both declare the same WorkLogInput shape).
+    // Fire-and-forget: the turn never waits on the disk; every failure is
+    // already logged inside work-log.ts.
+    setOnWorkLogAppendedCallback(broadcastWorkLog);
+    // A recorded artifact reaches every dashboard and grows its card's face row.
+    getArtifactStore().onRecorded(broadcastArtifactUpdate);
+    // SSOT 2026-10-26 T2 — what each subagent spent (tokens + API-equivalent
+    // cost), read from its own transcript. Refreshed on the session's agent
+    // events and its subagents' tool entries (≤ 1 read / 10 s per running
+    // agent); a turn end reads every agent not sealed yet and seals the ended
+    // ones. Off the hot path: the card is pushed when a number changed.
+    const agentSpendReader = createAgentSpendReader({
+      price: (model, t) =>
+        calculateTokenCost(model, t.inputTokens, t.outputTokens, t.cacheReadTokens, t.cacheCreateTokens),
+      isPriced: hasModelPricing,
+    });
+    const refreshAgentSpend = (sessionKey: string, session: ConversationSession, force: boolean) => {
+      if (!session.agents?.agents.length) return;
+      void agentSpendReader.refresh(session, { force }).then((changed) => {
+        if (changed) scheduleLiveSessionUpdate(sessionKey);
+      });
+    };
+    const workLogProviders: StreamExecutorProviders & {
+      appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
+      recordAgentEvent: (sessionKey: string, event: AgentTreeEvent) => void;
+      notifyLiveUsage: (sessionKey: string) => void;
+      priceLiveUsage: (
+        model: string | undefined,
+        t: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
+      ) => number;
+    } = {
+      // SSOT 2026-10-22 T1/T2 — a running turn made another API call: push the
+      // card (≤ 1/s per session) so its token / cost totals grow live.
+      notifyLiveUsage: (sessionKey: string) => scheduleLiveSessionUpdate(sessionKey),
+      priceLiveUsage: (model, t) =>
+        calculateTokenCost(model, t.inputTokens, t.outputTokens, t.cacheReadTokens, t.cacheCreateTokens),
+      appendWorkLog: (conversationId: string, entry: WorkLogInput) => {
+        // SSOT 2026-10-22 T7/T10: the entry carries the task in progress (the
+        // dashboard folds the log under it) and a tool call counts on that task.
+        // Spec 12: the task — and the tool count — of the agent that made the
+        // entry: a subagent's own ledger, the session's for the main agent.
+        let owner: ConversationSession | undefined;
+        let ownerKey: string | undefined;
+        for (const [key, session] of claudeHandler.getAllSessions()) {
+          if (session.conversationId === conversationId) {
+            owner = session;
+            ownerKey = key;
+            break;
+          }
+        }
+        const stamped = stampWorkLogAgent(owner ?? {}, entry, Date.now());
+        // A node's tool count grew — a subagent's, or the main agent's (the
+        // registry root): push the card (throttled, ≤ 1/s per session).
+        if (entry.kind === 'tool' && ownerKey) scheduleLiveSessionUpdate(ownerKey);
+        // A subagent is working: its spend may have grown (throttled read).
+        if (entry.agentId && owner && ownerKey) refreshAgentSpend(ownerKey, owner, false);
+        // SSOT 2026-10-23 T1/T7: files the model sends to Slack and its markdown
+        // answers become dashboard artifacts. Before the store sees it, while
+        // `entry` still has the whole final text (the work log caps it).
+        void captureArtifactFromWorkLog(conversationId, entry);
+        appendWorkLog(conversationId, stamped).catch(() => {});
+      },
+      // Spec 12 — the session's agent tree: fold the event into its registry
+      // and push the card when something changed (throttled, ≤ 1/s per session).
+      recordAgentEvent: (sessionKey: string, event: AgentTreeEvent) => {
+        const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
+        if (!session) return;
+        if (applyAgentEvent(session, event)) scheduleLiveSessionUpdate(sessionKey);
+        refreshAgentSpend(sessionKey, session, event.kind === 'turn_end');
+      },
+    };
+    setStreamExecutorProviders(workLogProviders);
+    // SSOT 2026-10-26 T2 — subagents that ended before this process started
+    // fire no more events: read the loaded sessions' spend once, in the
+    // background, so every card shows its subagents' spend after a restart.
+    void backfillAgentSpend(claudeHandler.getAllSessions().entries(), agentSpendReader, scheduleLiveSessionUpdate);
 
     // Dashboard v2.1 — wire session title bridge so the recorder can
     // regenerate session summaryTitle without importing session-registry
@@ -875,8 +1150,9 @@ async function start() {
         return;
       }
       // Guard: only overwrite title when it hasn't been deliberately set
-      // (e.g. by dispatch or issue linking). Treat conversationId-equal titles as "empty".
-      if (session.title && session.title !== session.conversationId) {
+      // (e.g. by dispatch or issue linking). Treat conversationId-equal titles as "empty",
+      // and a provisional cron job-name title as a placeholder (SSOT 2026-10-23 T2).
+      if (!canApplySummaryTitle(session)) {
         logger.debug('Skipping summary title — session already has a deliberate title', {
           conversationId,
           existingTitle: session.title,
@@ -886,6 +1162,8 @@ async function start() {
       }
       registry.updateSessionTitle(session.channelId, session.threadTs, summaryTitle);
       slackHandler.requestThreadSurfaceRender(session);
+      // The dashboard card shows the new headline now, not at the next poll.
+      scheduleLiveSessionUpdate(registry.getSessionKey(session.channelId, session.threadTs));
       logger.debug('Summary title applied to session', {
         conversationId,
         summaryTitle,
@@ -896,16 +1174,10 @@ async function start() {
     // Connect OAuth: email → Slack user lookup for dashboard login
     {
       const { userSettingsStore } = await import('./user-settings-store');
-      setOAuthUserLookup((email: string) => {
-        const allUsers = userSettingsStore.getAllUsers();
-        const emailLower = email.toLowerCase();
-        for (const u of allUsers) {
-          if (u.email && u.email.toLowerCase() === emailLower) {
-            return { userId: u.userId, name: u.slackName || u.userId };
-          }
-        }
-        return null;
-      });
+      setOAuthUserLookup((email: string) => matchSlackUsersByEmail(userSettingsStore.getAllUsers(), email));
+      // Google logins that no `/z email` matches fall back to the Slack account email,
+      // on a client of their own: a rate limit on the bot's client pauses all its calls.
+      setOAuthDirectoryLookup(createSlackDirectoryLookup(config.slack.botToken));
     }
 
     // Start conversation viewer web server (includes dashboard)
@@ -994,6 +1266,11 @@ async function start() {
     let cronScheduler: CronScheduler | null = null;
     try {
       const cronStorage = new CronStorage(path.join(DATA_DIR, 'cron-jobs.json'));
+      // The dashboard's CRON lane reads this instance's jobs + run history (SSOT 2026-10-23 T5).
+      setDashboardCronSource({
+        listJobs: () => cronStorage.getAll(),
+        listHistory: () => cronStorage.getExecutionHistory(),
+      });
 
       // Build a real say function that posts to Slack via chat.postMessage.
       // noopSay caused drain output to be silently discarded — the model ran
@@ -1107,6 +1384,9 @@ async function start() {
           getSessionByKey: (key) => registry.getSessionByKey(key),
           getActivityStateByKey: (key) => registry.getActivityStateByKey(key),
           saveSessions: () => registry.saveSessions(),
+          // Loop steps happen while the session is idle — push each one so the
+          // dashboard card leaves DONE while an eval runs or a retry waits.
+          broadcastSessionUpdate: () => registry.broadcastSessionUpdate(),
         },
         requestCoordinator: {
           isRequestActive: (key) => requestCoordinator.isRequestActive(key),
@@ -1135,6 +1415,11 @@ async function start() {
       setGoalLoopResumeHandler((sessionKey: string) => {
         goalLoopController.onTurnSettled(sessionKey);
       });
+      // SSOT 2026-10-21: the goal-list Delete button and the dashboard share
+      // ONE host path for goal-list changes (opening turn through the fence).
+      setHostGoalActionHandler((sessionKey, action, actorUserId) =>
+        slackHandler.handleHostGoalAction(sessionKey, action, actorUserId),
+      );
       timing('Goal turn-settled driver installed');
     } catch (error) {
       logger.warn('Failed to install goal turn-settled driver (non-critical)', error);
@@ -1157,6 +1442,15 @@ async function start() {
           if (resumed > 0) timing(`Resumed ${resumed} active goal(s) after restart`);
         } catch (error) {
           logger.warn('Resuming active goals after restart failed (non-critical)', error);
+        }
+        // #351 — re-arm error auto-retries whose timer died with the previous
+        // process. Runs last so crash recovery and the goal loop have already
+        // claimed the sessions they resume (no double resume).
+        try {
+          const rearmed = slackHandler.resumePendingErrorRetries();
+          if (rearmed > 0) timing(`Re-armed ${rearmed} pending error auto-retry(ies) after restart`);
+        } catch (error) {
+          logger.warn('Re-arming pending error auto-retries failed (non-critical)', error);
         }
       })
       .catch((error) => {
@@ -1303,6 +1597,20 @@ async function start() {
         logger.info('Conversation viewer stopped');
       } catch (error) {
         logger.error('Error stopping conversation viewer:', error);
+      }
+
+      // Land queued work-log lines before exit; bounded so a stuck disk cannot
+      // hold the shutdown.
+      {
+        let flushTimer: NodeJS.Timeout | undefined;
+        const flushed = await Promise.race([
+          flushWorkLog().then(() => true),
+          new Promise<false>((resolve) => {
+            flushTimer = setTimeout(() => resolve(false), 2000);
+          }),
+        ]);
+        clearTimeout(flushTimer);
+        if (!flushed) logger.warn('Work log flush timed out during shutdown');
       }
 
       // SDK transport.close() escalates with timers, but timers cannot run after

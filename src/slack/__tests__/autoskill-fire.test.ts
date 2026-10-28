@@ -35,17 +35,18 @@ describe('buildAutoskillFire', () => {
     vi.mocked(userSettingsStore.getUserAutoskills).mockReturnValue(['using-ssot', 'using-govuk']);
     vi.mocked(resolveAutoskillContent).mockImplementation((name: string) =>
       name === 'using-ssot'
-        ? { key: 'local:using-ssot', content: 'SSOT BODY' }
-        : { key: 'local:using-govuk', content: 'GOVUK BODY' },
+        ? { key: 'local:using-ssot', content: 'SSOT BODY', file: '/skills/using-ssot/SKILL.md' }
+        : { key: 'local:using-govuk', content: 'GOVUK BODY', file: '/skills/using-govuk/SKILL.md' },
     );
 
     const fire = buildAutoskillFire(U, '<@U_FIRE>');
     expect(fire).not.toBeNull();
     expect(fire?.keys).toEqual(['local:using-ssot', 'local:using-govuk']);
+    // Each block opens with the skill's base directory, like a forced `$skill`.
     expect(fire?.invokedBlock).toBe(
       '<invoked_skills>\n' +
-        '<local:using-ssot>\nSSOT BODY\n</local:using-ssot>\n' +
-        '<local:using-govuk>\nGOVUK BODY\n</local:using-govuk>\n' +
+        '<local:using-ssot>\nBase directory for this skill: /skills/using-ssot\n\nSSOT BODY\n</local:using-ssot>\n' +
+        '<local:using-govuk>\nBase directory for this skill: /skills/using-govuk\n\nGOVUK BODY\n</local:using-govuk>\n' +
         '</invoked_skills>',
     );
     // Banner is a red RPG attachment that names the caster + skills.
@@ -57,7 +58,9 @@ describe('buildAutoskillFire', () => {
   it('skips unresolvable names but still fires the resolvable subset', () => {
     vi.mocked(userSettingsStore.getUserAutoskills).mockReturnValue(['using-ssot', 'ghost']);
     vi.mocked(resolveAutoskillContent).mockImplementation((name: string) =>
-      name === 'using-ssot' ? { key: 'local:using-ssot', content: 'SSOT BODY' } : null,
+      name === 'using-ssot'
+        ? { key: 'local:using-ssot', content: 'SSOT BODY', file: '/skills/using-ssot/SKILL.md' }
+        : null,
     );
 
     const fire = buildAutoskillFire(U, '<@U_FIRE>');

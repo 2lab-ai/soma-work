@@ -46,12 +46,13 @@ describe('Dashboard multi-instance frontend (#814)', () => {
     expect(DASHBOARD_TS).toContain("matchMedia('(hover: none)')");
   });
 
-  it('updateTokenStats suppresses the tooltip when fewer than 2 envs are present', () => {
+  it('updateTokenBreakdown suppresses the tooltip when fewer than 2 envs are present', () => {
+    expect(DASHBOARD_TS).toContain('function updateTokenBreakdown()');
     expect(DASHBOARD_TS).toContain('envNames.length < 2');
   });
 
   it('CSS `.env-badge` rule is present in the inline style block', () => {
-    expect(DASHBOARD_TS).toContain('.card .card-meta .env-badge');
+    expect(DASHBOARD_TS).toContain('.card .card-refs .env-badge');
   });
 
   // PR #815 review #1 — sibling cards must not invite action clicks.

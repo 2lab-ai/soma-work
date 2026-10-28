@@ -28,6 +28,7 @@ function ctx(mode: 'auto' | 'bypass' | 'legacy', over: Partial<ToolPolicyContext
     isDangerousRuleDisabled: () => false,
     handoffContext: undefined,
     checkMcpToolPermission: () => null,
+    checkEnvSkillPermission: () => null,
     ...over,
   } as ToolPolicyContext;
 }
@@ -59,6 +60,35 @@ describe('evaluateToolPolicy — auto mode (default)', () => {
 
   it('hard deny still wins over auto (cross-user Bash)', () => {
     expect(evaluateToolPolicy('Bash', { command: `cat /tmp/${OTHER}/s` }, ctx('auto')).decision).toBe('deny');
+  });
+});
+
+// The hosts run on case-insensitive APFS: `RM` is /bin/rm, `SSH` is /usr/bin/ssh,
+// and a lowercased /tmp/<id> is that user's directory. Before soma-lib 0.8.0 the
+// rule catalog matched case-sensitively, so each of these was `allow`.
+describe('evaluateToolPolicy — case-insensitive filesystem', () => {
+  it.each([
+    ['RM -rf /tmp/dir', 'rm-recursive'],
+    ['rm -R /tmp/dir', 'rm-recursive'],
+    ['KILL 1', 'kill'],
+  ])('auto mode: %s → classify', (command, ruleId) => {
+    const r = evaluateToolPolicy('Bash', { command }, ctx('auto'));
+    expect(r.decision).toBe('classify');
+    expect(r.matchedRuleIds).toContain(ruleId);
+  });
+
+  it('non-admin SSH in any case → deny', () => {
+    expect(evaluateToolPolicy('Bash', { command: 'SSH prod-host ls' }, ctx('auto')).decision).toBe('deny');
+  });
+
+  it('another user /tmp dir written in lowercase → deny', () => {
+    const command = `cat /tmp/${OTHER.toLowerCase()}/s`;
+    expect(evaluateToolPolicy('Bash', { command }, ctx('auto')).decision).toBe('deny');
+  });
+
+  it('own /tmp dir in lowercase stays allowed', () => {
+    const command = `cat /tmp/${USER.toLowerCase()}/x.txt`;
+    expect(evaluateToolPolicy('Bash', { command }, ctx('auto')).decision).toBe('allow');
   });
 });
 

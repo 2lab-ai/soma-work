@@ -35,16 +35,3 @@ export interface TurnObserver {
   /** 어시스턴트 텍스트 메시지 수신 */
   onText(text: string): void;
 }
-
-/**
- * No-op 기본 구현.
- * TurnObserver가 설정되지 않은 경우의 fallback.
- */
-const NULL_OBSERVER: TurnObserver = {
-  onToolStart() {},
-  onToolEnd() {},
-  onModelCommandResult() {},
-  onPhaseChange() {},
-  onEndTurn() {},
-  onText() {},
-};

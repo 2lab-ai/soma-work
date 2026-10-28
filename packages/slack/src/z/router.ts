@@ -3,12 +3,13 @@
  *
  * Responsibilities:
  *  1. Empty remainder → show help card (buildHelpCard).
- *  2. Legacy naked (multi-word) → show tombstone card (once per user) + drop.
- *  3. `/z <topic> …` → translate to legacy syntax and hand off to CommandRouter.
+ *  2. `/z <topic> …` → translate to legacy syntax and hand off to CommandRouter.
  *     - SLASH_FORBIDDEN topic/verb combos are rejected on slash with a hint
  *       to use DM / channel thread.
- *  4. Whitelisted naked (session/new/renew/$…) → direct passthrough to
- *     CommandRouter.
+ *
+ * Only `/z`-prefixed input reaches the router (slash command, `/z` app
+ * mention, `/z` DM). Bare `[cmd] [args]` forms are routed by CommandRouter
+ * directly (#531), never through here.
  *
  * The router never talks to Slack directly — all output goes through the
  * `ZRespond` surface attached to the invocation.
@@ -16,9 +17,8 @@
 
 import { Logger } from '@soma/common/logger';
 import { isSlashForbidden, SLASH_FORBIDDEN_MESSAGE } from './capability';
-import { detectLegacyNaked } from './tombstone';
 import type { ZBlock, ZInvocation } from './types';
-import { buildHelpCard, buildTombstoneCard } from './ui-builder';
+import { buildHelpCard } from './ui-builder';
 
 const logger = new Logger('ZRouter');
 
@@ -39,27 +39,34 @@ export interface CommandContext {
 }
 
 export interface LegacyCommandRouter {
-  route(
-    ctx: CommandContext,
-  ): Promise<{ handled: boolean; continueWithPrompt?: string; error?: string; awaitingPermission?: boolean }>;
-}
-
-export interface TombstoneStore {
-  /** Returns true if the hint was freshly marked; false if already shown. */
-  markMigrationHintShown(userId: string): Promise<boolean>;
-  hasMigrationHintShown(userId: string): boolean;
+  route(ctx: CommandContext): Promise<{
+    handled: boolean;
+    continueWithPrompt?: string;
+    error?: string;
+    awaitingPermission?: boolean;
+    verbatimPrompt?: boolean;
+  }>;
+  /**
+   * The host's "goal command run at once" predicate (`CommandRouter.isGoalIntakeText`).
+   * Optional: a router without it keeps every `/z goal` on the ZRouter path.
+   */
+  isGoalIntakeText?(text: string, user?: string): boolean;
 }
 
 export interface ZRouterDeps {
   legacyRouter: LegacyCommandRouter;
-  tombstoneStore: TombstoneStore;
 }
 
 export interface ZDispatchResult {
   handled: boolean;
   /** Prompt to continue the pipeline with (e.g. `/z new <prompt>`). */
   continueWithPrompt?: string;
-  /** If true, the caller should treat the input as a no-op (tombstone shown etc.). */
+  /**
+   * `continueWithPrompt` is user text that must not be parsed as a command
+   * again (`/z goal <objective>`). Carried from the legacy result.
+   */
+  verbatimPrompt?: boolean;
+  /** If true, the caller should treat the input as a no-op (help card / slash refusal shown). */
   consumed?: boolean;
   /**
    * Set together with `handled: true` when the legacy handler CRASHED (the
@@ -75,18 +82,7 @@ export class ZRouter {
   constructor(private deps: ZRouterDeps) {}
 
   async dispatch(inv: ZInvocation): Promise<ZDispatchResult> {
-    // 1. Whitelisted naked — passthrough.
-    if (inv.whitelistedNaked) {
-      return this.routeToLegacy(inv, inv.remainder);
-    }
-
-    // 2. Legacy naked — tombstone hint.
-    if (inv.isLegacyNaked) {
-      await this.handleTombstone(inv);
-      return { handled: true, consumed: true };
-    }
-
-    // 3. `/z` invocation (remainder may be empty).
+    // `/z` invocation (remainder may be empty).
     const remainder = inv.remainder.trim();
     if (!remainder) {
       await inv.respond.send({
@@ -107,27 +103,6 @@ export class ZRouter {
     // Translate `/z <topic> [verb] [...]` → legacy text.
     const legacy = translateToLegacy(remainder);
     return this.routeToLegacy(inv, legacy);
-  }
-
-  private async handleTombstone(inv: ZInvocation): Promise<void> {
-    const hint = detectLegacyNaked(inv.remainder);
-    if (!hint) {
-      // Shouldn't happen — isLegacyNaked should ensure a hint exists.
-      return;
-    }
-
-    // CAS-style mark: first caller for this user wins.
-    const freshlyMarked = await this.deps.tombstoneStore.markMigrationHintShown(inv.userId);
-    if (!freshlyMarked) {
-      logger.debug('Tombstone already shown for user, suppressing', { userId: inv.userId });
-      return;
-    }
-
-    await inv.respond.send({
-      text: `ℹ️ \`${hint.oldForm}\`은 더 이상 사용되지 않습니다. 대신 \`${hint.newForm}\`을 사용해주세요.`,
-      blocks: buildTombstoneCard({ hint, issuedAt: Date.now() }),
-      ephemeral: true,
-    });
   }
 
   private async routeToLegacy(inv: ZInvocation, text: string): Promise<ZDispatchResult> {
@@ -155,6 +130,7 @@ export class ZRouter {
         continueWithPrompt: result.continueWithPrompt,
         error: result.error,
         awaitingPermission: result.awaitingPermission,
+        verbatimPrompt: result.verbatimPrompt,
       };
     } catch (err) {
       logger.error('routeToLegacy failed', { err: (err as Error).message });

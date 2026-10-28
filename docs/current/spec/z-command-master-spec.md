@@ -2,6 +2,13 @@
 
 **상태**: codex 96/100 리뷰 통과 + 유저 승인. **단일 PR**로 배포.
 
+> **변경 (#531, `f69f6978`)**: 네이키드 절단 + tombstone 1회 힌트(§3 Q1, §4, §8-3, §11-2/11-3)는 되돌려졌다.
+> bare `[cmd] [args]`는 `/z` 없이도 `CommandRouter` 핸들러가 그대로 실행하고, ZRouter는 `/z`로 시작하는
+> 입력만 받는다. 그 뒤 남아 있던 tombstone 모듈·`buildTombstoneCard`·`isWhitelistedNaked`·
+> `ZInvocation.isLegacyNaked/whitelistedNaked`·`migrationHintShown`은 코드에서 삭제됐다. 비-admin DM
+> 입력 게이트는 `isDmAllowedForNonAdmin`(`packages/slack/src/z/whitelist.ts`, #553)이다. 아래 §6·§13은
+> 원래 PR 계획 기록으로 남긴다.
+
 ## 1. 배경
 
 현재 soma-work Slack 봇:
@@ -14,14 +21,14 @@
 
 1. `/z` 단일 진입점 통합 (DM/채널 멘션/slash 공통 `normalizeZInvocation()`)
 2. 33개 커맨드를 `/z <topic> [verb] [args]` 문법으로 통일
-3. 네이키드 즉시 절단 + 멀티워드 legacy는 tombstone 1회 힌트 (per-user)
+3. ~~네이키드 즉시 절단 + 멀티워드 legacy는 tombstone 1회 힌트 (per-user)~~ (#531에서 철회)
 4. `/soma` → `/z` rename. `/session`, `/new` → `/z` 흡수. **2-release cutover** (이번 PR은 Release N)
 5. Block Kit 표준 UI (`buildSettingCard`) + 진입점별 응답 전략
 6. 롤백 3-tier (manifest rollback 1급)
 
 ## 3. 정책 (확정)
 
-- Q1 네이키드: **즉시 절단 + 화이트리스트 예외 + tombstone 1회**
+- Q1 네이키드: ~~즉시 절단 + 화이트리스트 예외 + tombstone 1회~~ → #531에서 철회: bare 명령은 그대로 실행
 - Q2 `/soma`: **`/z` rename**. `/session`, `/new`는 **Release N에서 병존 + tombstone**, Release N+1에서 manifest 제거
 - Q3 범위: **DM + 채널 멘션 + slash 모두**
 - Q4 UI 피드백: **진입점별 응답 전략** (slash/channel ephemeral → response_url, DM → chat.update)
@@ -35,7 +42,7 @@
 - `renew [prompt]`
 - `$`, `$model <n>`, `$verbosity <l>`, `$effort <l>`, `$thinking <l>`, `$thinking_summary <l>`
 
-화이트리스트는 tombstone 대상에서 **제외**. 나머지 네이키드는 tombstone 표시 + Claude로 전달 안 함.
+(#531 이후) 이 목록 밖의 bare 명령도 `CommandRouter` 핸들러가 그대로 실행한다. tombstone은 없다.
 
 ## 5. 아키텍처
 
@@ -55,10 +62,10 @@ Entry Points
                                        ▼
                                   ZRouter.dispatch()
                                        │
-                     ┌─────────────────┼─────────────────┐
-                     ▼                 ▼                 ▼
-             empty remainder    legacy naked    /z <topic> parsed
-                  → help       → tombstone(1회)  → topic handler
+                     ┌─────────────────┴─────────────────┐
+                     ▼                                   ▼
+             empty remainder                     /z <topic> parsed
+                  → help                          → topic handler
 ```
 
 ### 5-2. `normalizeZInvocation` 규약
@@ -70,8 +77,6 @@ interface ZInvocation {
   source: ZSource;
   remainder: string;
   rawText: string;
-  isLegacyNaked: boolean; // 네이키드 tombstone 대상
-  whitelistedNaked: boolean; // 화이트리스트 네이키드 (session/new/renew/$)
   userId: string;
   channelId: string;
   threadTs?: string;
@@ -82,10 +87,8 @@ interface ZInvocation {
 
 // 분기 규칙
 // slash: /z만 등록. text는 이미 /z 제거된 상태
-// app_mention: <@BOT> strip → /z로 시작 → /z 제거
-//              OR 화이트리스트 패턴 매칭 (session|new|renew|^\$) → 그대로 CommandRouter
-//              OR 그 외 멀티워드 커맨드 의심 → tombstone
-// DM: text.startsWith('/z ') → /z 제거, 화이트리스트 → 그대로, 그 외 → 기존 drop 경로
+// app_mention: <@BOT> strip → /z로 시작할 때만 ZRouter (/z 제거). 그 외는 CommandRouter가 직접 처리 (#531)
+// DM: /z로 시작할 때만 ZRouter (/z 제거). 그 외는 CommandRouter / 대화 경로
 ```
 
 ### 5-3. `ZRespond` 인터페이스
@@ -203,11 +206,11 @@ if (isDm && !isCleanup) {
 
 - `src/slack/z/normalize.ts` — `normalizeZInvocation()`
 - `src/slack/z/respond.ts` — `ZRespond` 3 구현체
-- `src/slack/z/router.ts` — `ZRouter`
-- `src/slack/z/capability.ts` — `SLASH_FORBIDDEN` 판정
-- `src/slack/z/tombstone.ts` — legacy 탐지 + hint
-- `src/slack/z/whitelist.ts` — 네이키드 화이트리스트 (`session|new|renew|^\$`)
-- `src/slack/z/ui-builder.ts` — `buildSettingCard`, `buildHelpCard`, `buildTombstoneCard`
+- `packages/slack/src/z/router.ts` — `ZRouter`
+- `packages/slack/src/z/capability.ts` — `SLASH_FORBIDDEN` 판정
+- `src/slack/z/whitelist.ts` — 비-admin DM 입력 게이트 `isDmAllowedForNonAdmin` (#553)
+- `src/slack/z/ui-builder.ts` — `buildSettingCard`, `buildHelpCard`, `buildConfirmationCard`
+- (구현은 `packages/slack/src/z/`에 있고, `src/slack/z/`에 남은 파일은 re-export shim. `tombstone.ts`는 #531 이후 도달 불가로 삭제)
 - `src/slack/actions/z-settings-actions.ts` — 액션 핸들러
 
 ### 8-2. `buildSettingCard` 인터페이스
@@ -230,7 +233,7 @@ Block: header + context(current) + actions(options) + divider + context(addition
 
 Action ID: `z_setting_<topic>_set_<value>`, `z_setting_<topic>_cancel`, `z_help_nav_<topic>`.
 
-### 8-3. `buildTombstoneCard`
+### 8-3. ~~`buildTombstoneCard`~~ (삭제 — #531 이후 호출 경로 없음)
 
 ```
 ℹ️ 이 명령은 더 이상 사용되지 않습니다
@@ -280,7 +283,7 @@ Action ID: `z_setting_<topic>_set_<value>`, `z_setting_<topic>_cancel`, `z_help_
 | 버튼 클릭 → 교체 | `response_url + replace_original:true` | `response_url + replace_original:true` | `chat.update({ts:botMessageTs, blocks:[done]})` |
 | 취소 | `response_url + delete_original:true` | `response_url + delete_original:true` | `chat.delete({ts:botMessageTs})` |
 | 에러 | `respond({ephemeral, text})` | `postEphemeral({text})` | `chat.postMessage({text})` |
-| tombstone | N/A (slash에는 tombstone 불필요) | `postEphemeral({blocks:[tombstone]})` | `chat.postMessage({blocks:[tombstone]})` |
+| ~~tombstone~~ (#531에서 삭제) | N/A | — | — |
 
 ### 10-1. response_url 부재 fallback
 
@@ -310,13 +313,12 @@ throw err;
 ## 11. 테스트 (테이블 기반 계약)
 
 ### 11-1. normalizeZInvocation
-- slash/channel_mention/dm × (빈/`/z persona`/`persona set linus`(non-whitelisted)/`new`(whitelisted)/`$model opus`(whitelisted)) × 예상 remainder/isLegacy/whitelisted
+- slash/channel_mention/dm × (빈/`/z persona`/`/z help`/prefix 없는 텍스트) × 예상 remainder
 
-### 11-2. tombstone 탐지
-- `persona set linus`, `show prompt`, `help`, `model opus`, `플러그인 업데이트`, `show email` → 힌트 매칭
+### 11-2. ~~tombstone 탐지~~ (삭제 — #531)
 
-### 11-3. 화이트리스트 통과
-- `session`, `sessions public`, `new hello`, `renew`, `$model opus` → passthrough to CommandRouter
+### 11-3. 비-admin DM 게이트
+- `isDmAllowedForNonAdmin`: 안전한 `/z` topic, `help`/`sessions`/`theme`/`key`, `%…`/`$…` 허용; prose와 `new`/`renew` 거부
 
 ### 11-4. slash forbidden capability
 - slash × (new, close, renew, context, restore, link, compact, session set model, session set verbosity, session set effort, session set thinking, session set thinking_summary) → denied
@@ -341,13 +343,13 @@ throw err;
 - Slack app config UI/CLI로 재업로드 (plantform team 사전 공지)
 
 ### Tier 2: Runtime Flag
-- `SOMA_ENABLE_LEGACY_SLASH=true` → 라우터가 `/soma`/`/session`/`/new`/`$`/naked 전부 부활
+- `SOMA_ENABLE_LEGACY_SLASH=true` → `/soma`/`/session`/`/new` 슬래시 커맨드 부활 (bare 명령은 #531 이후 플래그와 무관하게 항상 실행)
 - manifest가 이미 교체된 상태에서는 부분 복구만 가능
 
 ### Tier 3: 2-Release Cutover
 - **이번 PR (Release N)**: `/z` 추가 + `/soma`·`/session`·`/new` **manifest 유지** + 런타임 tombstone 치환
 - **다음 Release N+1**: manifest에서 legacy slash 제거
-- **Release N+2**: tombstone + flag 제거
+- **Release N+2**: flag 제거 (네이키드 tombstone은 #531에서 이미 철회·삭제)
 
 ### 문서
 - `docs/runbook/rollback-z-refactor.md`
@@ -376,7 +378,7 @@ throw err;
 - [ ] `/z` → help 카드 (slash/channel/dm 동일)
 - [ ] `/z persona` → setting card (세 경로 모두)
 - [ ] `/z persona set linus` → 변경 + ack
-- [ ] `persona set linus` (naked) → tombstone 카드 (1회만)
+- [x] ~~`persona set linus` (naked) → tombstone 카드 (1회만)~~ — #531에서 철회: bare 명령은 바로 실행
 - [ ] `session`, `new`, `renew`, `$model opus` 네이키드 → 정상 동작
 - [ ] `/z session set model opus` → 동일 결과
 - [ ] `/soma`/`/session`/`/new` slash → Release N에서 tombstone (manifest는 유지)

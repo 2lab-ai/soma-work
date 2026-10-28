@@ -16,7 +16,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
-import { getModelSpec, isNativeOneMModel, resolveContextWindow, resolveModelProfile } from '../metrics/model-registry';
+import { resolveModelProfile } from '../metrics/model-registry';
 import { ModelHandler } from '../slack/commands/model-handler';
 import type { CommandContext, CommandDependencies } from '../slack/commands/types';
 import {
@@ -133,28 +133,5 @@ describe('fable-5.1 — selectable and persistence-safe without a catalog', () =
       sdkBlockingLimit: 977_000,
       autoCompactTokens: 750_000,
     });
-  });
-});
-
-describe('fable-5 — native 1M context (the key contract)', () => {
-  it('resolveContextWindow returns 1M for the BARE id — no [1m] suffix', () => {
-    expect(resolveContextWindow('claude-fable-5')).toBe(1_000_000);
-  });
-
-  it('is recognised as a native-1M model', () => {
-    expect(isNativeOneMModel('claude-fable-5')).toBe(true);
-  });
-});
-
-describe('fable-5 — model-registry pricing + context', () => {
-  it('returns double-opus pricing, 1M context, 128k max output', () => {
-    const spec = getModelSpec('claude-fable-5');
-    expect(spec.pricing.inputPerMTok).toBe(10);
-    expect(spec.pricing.outputPerMTok).toBe(50);
-    expect(spec.pricing.cacheReadPerMTok).toBe(1);
-    expect(spec.pricing.cache5minWritePerMTok).toBe(12.5);
-    expect(spec.pricing.cache1hrWritePerMTok).toBe(20);
-    expect(spec.maxOutput).toBe(128_000);
-    expect(spec.contextWindow).toBe(1_000_000);
   });
 });

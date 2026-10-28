@@ -1,6 +1,7 @@
 import { Logger } from '@soma/common/logger';
 import type { WorkflowType } from '../action-panel-builder';
 import { CommandParser } from '../command-parser';
+import { isAutoCompactPaused } from '../compact-state';
 import type { MessageEvent, ProcessedFile, SayFn } from './types';
 
 export interface FileHandlerReader {
@@ -30,6 +31,8 @@ export interface CommandRouteResult {
   error?: string;
   /** A cross-user `$skill` parked until its owner answers the permission request. */
   awaitingPermission?: boolean;
+  /** `continueWithPrompt` is a goal objective (user text) — see `CommandResult.verbatimPrompt`. */
+  verbatimPrompt?: boolean;
 }
 
 export interface CommandRouterReader {
@@ -46,6 +49,7 @@ export interface CommandRouterReader {
 
 export interface AutoCompactSession {
   autoCompactPending?: boolean;
+  autoCompactSuppressedUntilMs?: number | null;
   pendingUserText?: string | null;
   pendingEventContext?: { channel: string; threadTs: string; user: string; ts: string } | null;
 }
@@ -135,6 +139,7 @@ export class InputProcessor {
     deferredSkillFire?: DeferredSkillFireResult;
     error?: string;
     awaitingPermission?: boolean;
+    verbatimPrompt?: boolean;
   }> {
     const { user, channel, thread_ts, ts, text } = event;
 
@@ -150,6 +155,16 @@ export class InputProcessor {
     // PostCompact hook / `onCompactBoundary` path — whichever fires first.
     const threadTs = thread_ts || ts;
     const session = this.deps.claudeHandler?.getSession(channel, threadTs);
+    // A `/compact` failed after this flag was armed (compact retry loop,
+    // 2026-10-22): drop the flag and let the message run as a normal turn.
+    if (session?.autoCompactPending && isAutoCompactPaused(session)) {
+      session.autoCompactPending = false;
+      this.logger.info('input-processor: auto-compact paused after a failed /compact — not intercepting', {
+        channel,
+        threadTs,
+        user,
+      });
+    }
     if (session?.autoCompactPending) {
       // Atomically consume the pending flag — both branches below treat the
       // pending state as resolved (compaction either runs or is bypassed),
@@ -224,6 +239,9 @@ export class InputProcessor {
       // permission to `blocked`; everything else consumed is `safe`.
       error: commandResult.error,
       awaitingPermission: commandResult.awaitingPermission,
+      // `continueWithPrompt` is a goal objective (user text): slack-handler
+      // dispatches it as a literal turn, never as an SDK slash command.
+      verbatimPrompt: commandResult.verbatimPrompt,
     };
   }
 }

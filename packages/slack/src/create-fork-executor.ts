@@ -30,7 +30,7 @@ const FORK_SYSTEM_PROMPT =
   'Extract concrete work artifacts from history: file paths edited, commands run, commits made, PR/issue numbers, decisions, errors. Be specific. Never fabricate. Never hedge. ' +
   'You have NO tools or API access. Do NOT attempt to call any tools, fetch URLs, or access external services. ' +
   'If the conversation history is truly empty, say so in one sentence — do NOT ask the user for additional context. ' +
-  'Respond with the summary only — no preamble, no markdown fences wrapping the whole response.';
+  'Open the response with the <tldr> block the user message specifies (exactly 3 lines), then the summary — nothing else before the <tldr> block, no markdown fences wrapping the whole response.';
 
 /**
  * Creates a ForkExecutor that delegates to ClaudeHandler.dispatchOneShot().

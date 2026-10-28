@@ -152,13 +152,6 @@ export class ReactionManager {
   }
 
   /**
-   * 세션에 대기 중인 MCP 호출이 있는지 확인
-   */
-  hasPendingMcp(sessionKey: string): boolean {
-    return (this.pendingMcpCalls.get(sessionKey)?.size ?? 0) > 0;
-  }
-
-  /**
    * 세션 정리 시 리액션 상태 제거
    */
   cleanup(sessionKey: string): void {

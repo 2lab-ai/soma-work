@@ -132,28 +132,4 @@ export class ConversationStorage {
     }
     return index;
   }
-
-  /**
-   * Check if a conversation exists
-   */
-  exists(id: string): boolean {
-    return fs.existsSync(this.filePath(id));
-  }
-
-  /**
-   * Delete a conversation
-   */
-  async delete(id: string): Promise<boolean> {
-    try {
-      const filePath = this.filePath(id);
-      if (fs.existsSync(filePath)) {
-        await fs.promises.unlink(filePath);
-        return true;
-      }
-      return false;
-    } catch (error) {
-      logger.error(`Failed to delete conversation ${id}`, error);
-      return false;
-    }
-  }
 }

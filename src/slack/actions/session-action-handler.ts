@@ -334,14 +334,25 @@ export class SessionActionHandler {
     if (session.actionPanel?.messageTs) {
       try {
         const theme = userSettingsStore.getUserSessionTheme(session.ownerId);
-        const headerPayload = ThreadHeaderBuilder.fromSession(session, { closed: true, theme });
+        // Same composition and the same live-PR rule as ThreadSurface (T2).
+        const livePr = ActionPanelBuilder.livePrStatus(session.links?.pr, session.actionPanel.prStatus);
+        const headerPayload = ThreadHeaderBuilder.fromSession(session, {
+          closed: true,
+          theme,
+          sessionKey,
+          suppressSessionStatus: true,
+          liveLinkStatus: ThreadHeaderBuilder.livePrLinkStatus(livePr?.fetchedForUrl, livePr),
+        });
         const panelPayload = ActionPanelBuilder.build({
           sessionKey,
           workflow: session.workflow,
           closed: true,
           contextRemainingPercent: this.getContextRemainingPercent(session),
+          prStatus: livePr ? { ...livePr } : undefined,
+          turnSummary: session.actionPanel.turnSummary,
+          latestResponseLink: session.actionPanel.latestResponseLink,
         });
-        const combinedBlocks = [...(headerPayload.blocks || []), ...panelPayload.blocks];
+        const combinedBlocks = ActionPanelBuilder.compose(headerPayload.blocks || [], panelPayload.blocks);
         await this.ctx.slackApi.updateMessage(
           channelId,
           session.actionPanel.messageTs,

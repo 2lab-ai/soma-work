@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { displayTitle } from '../display-title';
+import {
+  displayTitle,
+  isPlaceholderSessionTitle,
+  PLACEHOLDER_SESSION_TITLE,
+  SESSION_RESET_TITLE,
+  SKIP_DISPATCH_TITLE,
+} from '../display-title';
 
 describe('displayTitle — Dashboard v2.1 chunk E + #762 link-derived priority', () => {
   it('prefers summaryTitle when present and non-empty', () => {
@@ -108,5 +114,37 @@ describe('displayTitle — Dashboard v2.1 chunk E + #762 link-derived priority',
     // displayTitle uses nonBlank() which trims; verify the trimmed value is returned.
     expect(displayTitle({ summaryTitle: '  My Title  ' })).toBe('My Title');
     expect(displayTitle({ links: { issue: { title: '  Issue Headline  ' } } })).toBe('Issue Headline');
+  });
+});
+
+// Voice / image-only first messages leave a host-written stand-in title.
+// These are the ONLY strings the host writes when it has no real title, and
+// the session-title notice keys off them — so they live in one place.
+describe('isPlaceholderSessionTitle — host stand-in titles', () => {
+  it('recognises every host-written stand-in title', () => {
+    expect(PLACEHOLDER_SESSION_TITLE).toBe('New Session');
+    expect(SESSION_RESET_TITLE).toBe('Session Reset');
+    expect(SKIP_DISPATCH_TITLE).toBe('Direct (skipDispatch)');
+    for (const t of [PLACEHOLDER_SESSION_TITLE, SESSION_RESET_TITLE, SKIP_DISPATCH_TITLE]) {
+      expect(isPlaceholderSessionTitle(t)).toBe(true);
+    }
+  });
+
+  it('ignores surrounding whitespace', () => {
+    expect(isPlaceholderSessionTitle('  New Session  ')).toBe(true);
+  });
+
+  it('treats a deliberate title as real', () => {
+    expect(isPlaceholderSessionTitle('음성·이미지 첫 지시 세션의 대시보드 제목 자동 갱신')).toBe(false);
+    expect(isPlaceholderSessionTitle('Onboarding')).toBe(false);
+    expect(isPlaceholderSessionTitle('New Session plan for Q3')).toBe(false);
+  });
+
+  // Empty titles belong to the pre-existing per-turn summary fallback
+  // (src/index.ts onSummaryGenerated). Claiming them here would race it.
+  it('leaves empty titles to the per-turn summary fallback', () => {
+    expect(isPlaceholderSessionTitle(undefined)).toBe(false);
+    expect(isPlaceholderSessionTitle('')).toBe(false);
+    expect(isPlaceholderSessionTitle('   ')).toBe(false);
   });
 });

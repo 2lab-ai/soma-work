@@ -1343,6 +1343,71 @@ describe('SlackHandler', () => {
       expect(handlerAny.inputProcessor.processFiles).toHaveBeenCalledTimes(1);
       const forwardedEvent = handlerAny.inputProcessor.processFiles.mock.calls[0][0];
       expect(forwardedEvent.text).toBe('write a failing test');
+      // `/z new` keeps the re-route (a deferred `$skill` remainder relies on it).
+      expect(forwardedEvent.routeContext?.verbatimPrompt).toBeUndefined();
+
+      // `/z goal <objective>`: the objective is marked verbatim so the
+      // pipeline never parses it as a command.
+      dispatch.mockResolvedValueOnce({ handled: true, continueWithPrompt: 'new dashboard', verbatimPrompt: true });
+      await handler.handleMessage({ ...event, ts: '555.667', text: '/z goal new dashboard' } as any, say);
+      const goalEvent = handlerAny.inputProcessor.processFiles.mock.calls[1][0];
+      expect(goalEvent.text).toBe('new dashboard');
+      expect(goalEvent.routeContext?.verbatimPrompt).toBe(true);
+    } finally {
+      if (prevAdmins === undefined) {
+        delete process.env.ADMIN_USERS;
+      } else {
+        process.env.ADMIN_USERS = prevAdmins;
+      }
+      resetAdminUsersCache();
+    }
+  });
+
+  // PR #305 round-4 review (astra): a goal objective replayed into an admin DM
+  // (`routeContext.verbatimPrompt`) is the user's words. If it starts with
+  // `/z` or carries a Slack permalink, the DM branch must not run it as a
+  // `/z` command (`/z new …` would reset the session) or as a cleanup link.
+  it('DM: a verbatim objective is not re-run as `/z` or as a cleanup link (admin)', async () => {
+    const { resetAdminUsersCache } = await import('../admin-utils');
+    const prevAdmins = process.env.ADMIN_USERS;
+    process.env.ADMIN_USERS = 'U_ADMIN';
+    resetAdminUsersCache();
+
+    try {
+      const handler = new SlackHandler({ client: {}, assistant: vi.fn() } as any, {} as any, {} as any);
+      const handlerAny = handler as any;
+      const dispatch = vi.fn().mockResolvedValue({ handled: true, continueWithPrompt: 'x' });
+      handlerAny.eventRouter = { getZRouter: () => ({ dispatch }) };
+      handlerAny.slackApi = {
+        addReaction: vi.fn().mockResolvedValue(undefined),
+        removeReaction: vi.fn().mockResolvedValue(undefined),
+      };
+      handlerAny.inputProcessor = {
+        processFiles: vi.fn().mockResolvedValue({ files: [], shouldContinue: false }),
+        routeCommand: vi.fn(),
+      };
+      const cleanup = vi.spyOn(handlerAny, 'handleDmCleanupRequest');
+
+      for (const text of [
+        '/z new dashboard 구현',
+        '이 메시지 https://example.slack.com/archives/C0123ABCD/p1700000000123456 분석해줘',
+      ]) {
+        await handler.handleMessage(
+          {
+            user: 'U_ADMIN',
+            channel: 'D123',
+            ts: `9.${text.length}`,
+            text,
+            routeContext: { verbatimPrompt: true },
+          } as any,
+          vi.fn(),
+        );
+        const calls = handlerAny.inputProcessor.processFiles.mock.calls;
+        const forwarded = calls[calls.length - 1][0];
+        expect(forwarded.text).toBe(text);
+      }
+      expect(dispatch).not.toHaveBeenCalled();
+      expect(cleanup).not.toHaveBeenCalled();
     } finally {
       if (prevAdmins === undefined) {
         delete process.env.ADMIN_USERS;
@@ -2457,7 +2522,7 @@ describe('SlackHandler — #1082 goal-prefixed first message', () => {
     return { handler, handlerAny, claudeHandler, fullSession, execute, dispatchSnapshots };
   }
 
-  it('applies the goal to the new session and dispatches the continuation prompt', async () => {
+  it('applies the goal to the new session and dispatches the raw objective', async () => {
     const { handler, handlerAny, claudeHandler, fullSession, execute, dispatchSnapshots } = buildGoalHarness({
       handled: false,
       setGoalObjective: 'ship the feature',
@@ -2507,11 +2572,117 @@ describe('SlackHandler — #1082 goal-prefixed first message', () => {
       expect.anything(),
     );
 
-    // 4. Model-turn text is the goal continuation prompt, not the raw text.
+    // 4. D1: the model turn is the raw objective — no continuation wrapper.
+    // Goal rules reach the model through the rebuilt <session-goal> block.
     expect(execute).toHaveBeenCalledTimes(1);
     const dispatched = execute.mock.calls[0][0].text as string;
-    expect(dispatched).toContain('Continue working toward the active session goal');
-    expect(dispatched).toContain('ship the feature');
+    expect(dispatched).toBe('ship the feature');
+  });
+
+  // Review P1 (PR #305): `/z goal <objective>` hands the RAW objective back as
+  // `continueWithPrompt`, and both `/z` consumers (DM branch, app_mention)
+  // feed it into the full pipeline again. It must dispatch verbatim — never
+  // parsed as a command, an inline directive, or the `!` abort marker.
+  it.each([
+    ['a command form', 'new dashboard 구현'],
+    ['the abort marker', '!stop the flaky test'],
+    ['an inline directive', '%nogoal ship it'],
+  ])('a verbatim prompt that looks like %s is dispatched as-is, never re-routed', async (_label, objective) => {
+    const { handler, handlerAny, execute } = buildGoalHarness({ handled: false });
+    const abortSpy = vi.spyOn(handlerAny.requestCoordinator, 'abortSession');
+
+    const say = vi.fn().mockResolvedValue({ ts: 'msg123' });
+    await handler.handleMessage(
+      {
+        user: 'U123',
+        channel: 'C123',
+        ts: '111.222',
+        text: objective,
+        routeContext: { verbatimPrompt: true },
+      } as any,
+      say,
+    );
+
+    expect(handlerAny.inputProcessor.routeCommand).not.toHaveBeenCalled();
+    expect(abortSpy).not.toHaveBeenCalled();
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0][0].text).toBe(objective);
+  });
+
+  // Review P1 (PR #305, round 2): the opening turn of a goal is the objective
+  // itself. An objective starting with an SDK slash command must reach the
+  // model as text, so the executor gets `literalPrompt` on that turn.
+  it.each([
+    [
+      'goal command (channel)',
+      { handled: true, continueWithPrompt: '/compact 명령의 버그를 고쳐라', verbatimPrompt: true },
+      'goal /compact 명령의 버그를 고쳐라',
+    ],
+    [
+      'goal-prefixed first message',
+      { handled: false, setGoalObjective: '/clear 명령을 문서화해' },
+      'goal /clear 명령을 문서화해',
+    ],
+  ])('marks the opening turn literal: %s', async (_label, routeResult, text) => {
+    const { handler, execute } = buildGoalHarness(routeResult);
+    await handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.222', text } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg123' }),
+    );
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute.mock.calls[0][0].literalPrompt).toBe(true);
+  });
+
+  // Round-3 review (astra): a goal command already ran when the turn reaches
+  // session init. If init stashes the turn for a post-compact replay, the
+  // stash must replay the objective verbatim — so the event handed to
+  // `initialize` carries the marker the stash copies onto its context.
+  it('hands session init a verbatim-marked event after a goal command ran', async () => {
+    const { handler, handlerAny } = buildGoalHarness({
+      handled: true,
+      continueWithPrompt: 'new dashboard 구현',
+      verbatimPrompt: true,
+    });
+    await handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.222', text: 'goal new dashboard 구현' } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg123' }),
+    );
+    const [initEvent, , initText] = handlerAny.sessionInitializer.initialize.mock.calls[0];
+    expect(initText).toBe('new dashboard 구현');
+    expect(initEvent.routeContext?.verbatimPrompt).toBe(true);
+  });
+
+  it('does not mark an ordinary message for verbatim replay', async () => {
+    const { handler, handlerAny } = buildGoalHarness({ handled: false });
+    await handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.222', text: 'new dashboard 구현' } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg123' }),
+    );
+    expect(handlerAny.sessionInitializer.initialize.mock.calls[0][0].routeContext?.verbatimPrompt).toBeUndefined();
+  });
+
+  it('a verbatim `/z goal` objective is a literal turn too', async () => {
+    const { handler, execute } = buildGoalHarness({ handled: false });
+    await handler.handleMessage(
+      {
+        user: 'U123',
+        channel: 'C123',
+        ts: '111.222',
+        text: '/compact 명령의 버그를 고쳐라',
+        routeContext: { verbatimPrompt: true },
+      } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg123' }),
+    );
+    expect(execute.mock.calls[0][0].literalPrompt).toBe(true);
+  });
+
+  it('a plain message is not literal — a typed `/compact` stays an SDK command', async () => {
+    const { handler, execute } = buildGoalHarness({ handled: false });
+    await handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.222', text: '/compact' } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg123' }),
+    );
+    expect(execute.mock.calls[0][0].literalPrompt).toBeFalsy();
   });
 
   it('continueWithPrompt (goal+skill split) wins as dispatch text while the goal is still applied', async () => {

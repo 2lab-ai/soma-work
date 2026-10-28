@@ -48,23 +48,16 @@ export interface ConversationSession {
 }
 
 const ONE_M_SUFFIX_RE = /\[1m\]$/i;
-const STATUS_EMOJI: Record<string, string> = {
-  'to do': '⬜',
-  open: '⬜',
-  backlog: '⬜',
-  'in progress': '🔵',
-  'in development': '🔵',
-  'in review': '🟡',
-  review: '🟡',
-  done: '✅',
-  closed: '✅',
-  resolved: '✅',
-  'pr:open': '🟢',
-  'pr:draft': '⚪',
-  'pr:merged': '🟣',
-  'pr:closed': '🔴',
-  'issue:open': '🟢',
-  'issue:closed': '✅',
+/**
+ * Display words for the PR/issue states GitHub reports in lowercase. Any other
+ * stored status (a Jira workflow name such as `In Progress`) renders verbatim.
+ * Words, not colour dots: the circles belong to the session badge (T2).
+ */
+const STATUS_WORDS: Record<string, string> = {
+  open: 'Open',
+  draft: 'Draft',
+  merged: 'Merged',
+  closed: 'Closed',
 };
 
 function hasOneMSuffix(model: string): boolean {
@@ -75,10 +68,27 @@ function stripOneMSuffix(model: string): string {
   return model.replace(ONE_M_SUFFIX_RE, '');
 }
 
-function getStatusEmoji(status: string | undefined, linkType?: string): string {
-  if (!status) return '';
-  const key = linkType ? `${linkType}:${status.toLowerCase()}` : status.toLowerCase();
-  return STATUS_EMOJI[key] || STATUS_EMOJI[status.toLowerCase()] || '';
+function statusWord(status: string): string {
+  return STATUS_WORDS[status.toLowerCase()] ?? status;
+}
+
+/**
+ * Host-injected URL sources. packages/slack cannot import the src web server,
+ * so the host wires the dashboard deep-link builder here — once, in
+ * src/index.ts. The session initializer reads it through
+ * ThreadHeaderBuilder.resolveDashboardSessionUrl, so there is one injection path.
+ */
+export interface ThreadHeaderProviders {
+  /** `/dashboard/<ownerId>?session=<sessionKey>` on the viewer, or undefined when the viewer is not listening. */
+  getDashboardSessionUrl?: (ownerId: string, sessionKey: string) => string | undefined;
+}
+
+const threadHeaderProviders: Required<ThreadHeaderProviders> = {
+  getDashboardSessionUrl: () => undefined,
+};
+
+export function setThreadHeaderProviders(next: ThreadHeaderProviders): void {
+  if (next.getDashboardSessionUrl) threadHeaderProviders.getDashboardSessionUrl = next.getDashboardSessionUrl;
 }
 
 /** Max links to display per type when the field config sets no `max` */
@@ -104,6 +114,21 @@ export interface ThreadHeaderData {
   usage?: SessionUsage;
   /** UI display theme */
   theme?: SessionTheme;
+  /** Session registry key — with ownerId, addresses the session's dashboard card (`dashboardLink`). */
+  sessionKey?: string;
+  /**
+   * T2 — set by the combined thread surface, whose panel states the session
+   * status itself: the header then renders no `status` field and no headline
+   * status dot, so 종료됨 appears once. Standalone headers leave it unset.
+   */
+  suppressSessionStatus?: boolean;
+  /**
+   * T2 — live state per link URL (`open` | `draft` | `merged` | `closed`), from a
+   * PR status fetched for exactly that URL ({@link ThreadHeaderBuilder.livePrLinkStatus}).
+   * A link row shows it as a bare word; the status stored with the link is the
+   * state when the link was recorded and renders as `기록 당시 …`.
+   */
+  liveLinkStatus?: Record<string, string>;
 }
 
 export interface ThreadHeaderPayload {
@@ -115,7 +140,13 @@ export interface ThreadHeaderPayload {
 export class ThreadHeaderBuilder {
   static fromSession(
     session: ConversationSession,
-    overrides?: { closed?: boolean; theme?: SessionTheme },
+    overrides?: {
+      closed?: boolean;
+      theme?: SessionTheme;
+      sessionKey?: string;
+      suppressSessionStatus?: boolean;
+      liveLinkStatus?: Record<string, string>;
+    },
   ): ThreadHeaderPayload {
     // Dashboard v2.1 — prefer LLM-generated summaryTitle when available,
     // then raw title. Undefined when neither is set so resolveTitle's
@@ -216,8 +247,10 @@ export class ThreadHeaderBuilder {
         if (field.format === 'headline') {
           const title = ThreadHeaderBuilder.resolveTitle(data);
           const owner = ThreadHeaderBuilder.resolveOwner(data);
-          const emoji = data.closed ? '🔴' : '🟢';
-          return [owner ? `${emoji} *${owner} — ${title}*` : `${emoji} *${title}*`];
+          const headline = owner ? `*${owner} — ${title}*` : `*${title}*`;
+          // A live session needs no dot (the panel badge carries the state);
+          // a closed one is ⚫ — the session badge's colour, never 🔴 (T2).
+          return [data.closed && !data.suppressSessionStatus ? `⚫ ${headline}` : headline];
         }
         return [ThreadHeaderBuilder.resolveTitle(data)];
       }
@@ -246,10 +279,19 @@ export class ThreadHeaderBuilder {
       case 'links':
         return ThreadHeaderBuilder.formatLinks(data.links);
       case 'linkhistory':
-        return ThreadHeaderBuilder.formatAllLinks(data.linkHistory, data.links, field.max ?? MAX_LINKS_PER_TYPE);
+        return ThreadHeaderBuilder.formatAllLinks(
+          data.linkHistory,
+          data.links,
+          field.max ?? MAX_LINKS_PER_TYPE,
+          data.liveLinkStatus,
+        );
       case 'status': {
-        if (!data.closed) return [];
-        return [field.format === 'closed-text' ? '_종료됨_' : '🔴 _종료됨_'];
+        if (!data.closed || data.suppressSessionStatus) return [];
+        return [field.format === 'closed-text' ? '_종료됨_' : '⚫ _종료됨_'];
+      }
+      case 'dashboardLink': {
+        const url = ThreadHeaderBuilder.resolveDashboardSessionUrl(data.ownerId, data.sessionKey);
+        return url ? [ThreadHeaderBuilder.formatDashboardLink(url)] : [];
       }
       default:
         // Unknown fields were already warn-filtered by surface-config
@@ -331,6 +373,7 @@ export class ThreadHeaderBuilder {
     linkHistory: SessionLinkHistory | undefined,
     activeLinks: SessionLinks | undefined,
     maxPerType: number,
+    liveLinkStatus?: Record<string, string>,
   ): string[] {
     if (!linkHistory) {
       // Fallback: use active links only
@@ -339,14 +382,15 @@ export class ThreadHeaderBuilder {
 
     const values: string[] = [];
     const groups: Array<{ links: SessionLink[]; emoji: string; noun: string }> = [
-      { links: linkHistory.issues || [], emoji: '📋', noun: 'issues' },
+      // 🗂 for issues: 📋 is the work-log link's glyph (one glyph, one noun — T2).
+      { links: linkHistory.issues || [], emoji: '🗂', noun: 'issues' },
       { links: linkHistory.prs || [], emoji: '🔀', noun: 'PRs' },
       { links: linkHistory.docs || [], emoji: '📄', noun: 'docs' },
     ];
 
     for (const { links, emoji, noun } of groups) {
       for (const link of links.slice(-maxPerType)) {
-        values.push(ThreadHeaderBuilder.formatLinkWithMeta(link, emoji));
+        values.push(ThreadHeaderBuilder.formatLinkWithMeta(link, emoji, liveLinkStatus?.[link.url]));
       }
       if (links.length > maxPerType) {
         values.push(`_+${links.length - maxPerType} more ${noun}_`);
@@ -357,19 +401,30 @@ export class ThreadHeaderBuilder {
   }
 
   /**
-   * Format a single link with its metadata (title + status emoji).
-   * Example: "📋 <url|SOMA-123>: Fix login bug ✅"
+   * Format a single link with its title and state (T2):
+   *   "🔀 <url|PR #664>: feat: … · Merged (기록 당시 Open)"
+   *
+   * The suffix says where its value came from. `live` is the PR state fetched
+   * for this exact URL; `link.status` is the state stored when the link was
+   * last recorded (a `link` command, a model link directive, or the #762 title
+   * refresh re-recording it). Live alone or equal → the bare
+   * word; stored alone → `기록 당시 {word}`; both and different → the live word
+   * first, the recorded one after it in parentheses. Neither → no suffix.
    */
-  private static formatLinkWithMeta(link: SessionLink, emoji: string): string {
+  private static formatLinkWithMeta(link: SessionLink, emoji: string, live?: string): string {
     const label = link.label || link.url;
     let text = `${emoji} <${link.url}|${label}>`;
     if (link.title) {
       const truncated = link.title.length > 40 ? `${link.title.slice(0, 39)}…` : link.title;
       text += `: ${truncated}`;
     }
-    if (link.status) {
-      const statusEmoji = getStatusEmoji(link.status, link.type);
-      text += ` ${statusEmoji || `[${link.status}]`}`;
+    const stored = link.status;
+    if (live && stored && statusWord(live) !== statusWord(stored)) {
+      text += ` · ${statusWord(live)} (기록 당시 ${statusWord(stored)})`;
+    } else if (live) {
+      text += ` · ${statusWord(live)}`;
+    } else if (stored) {
+      text += ` · 기록 당시 ${statusWord(stored)}`;
     }
     return text;
   }
@@ -404,6 +459,51 @@ export class ThreadHeaderBuilder {
   // ---------------------------------------------------------------------------
   // Public static helpers
   // ---------------------------------------------------------------------------
+
+  /**
+   * The live-state map for a PR link, keyed by the URL the status was fetched
+   * for (T2). A cached status for another URL must never label this link, so
+   * callers pass the fetch's own URL, not the session's current one.
+   */
+  static livePrLinkStatus(
+    prUrl: string | undefined,
+    prStatus: { state?: string; merged?: boolean; draft?: boolean } | undefined,
+  ): Record<string, string> | undefined {
+    if (!prUrl || !prStatus) return undefined;
+    const state = prStatus.merged
+      ? 'merged'
+      : prStatus.draft
+        ? 'draft'
+        : prStatus.state === 'closed'
+          ? 'closed'
+          : 'open';
+    return { [prUrl]: state };
+  }
+
+  /**
+   * Slack mrkdwn for the session work-log link (`📋 작업 로그`). Shared by the
+   * header `dashboardLink` field and the link posted into a user-started thread.
+   */
+  static formatDashboardLink(url: string): string {
+    return `📋 <${url}|작업 로그>`;
+  }
+
+  /**
+   * The session's dashboard deep link through the host provider — the one
+   * source for both the header `dashboardLink` field and the user-started
+   * thread link. Undefined means there is nothing to link to: the viewer is not
+   * listening, or the owner/key is unknown (a bot-thread root posted before its
+   * own thread ts exists). A provider failure counts as "not listening" — it
+   * drops the link, never the message carrying it.
+   */
+  static resolveDashboardSessionUrl(ownerId: string | undefined, sessionKey: string | undefined): string | undefined {
+    if (!ownerId || !sessionKey) return undefined;
+    try {
+      return threadHeaderProviders.getDashboardSessionUrl(ownerId, sessionKey) || undefined;
+    } catch {
+      return undefined;
+    }
+  }
 
   /**
    * Format model name for display.

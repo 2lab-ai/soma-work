@@ -268,6 +268,10 @@ Slack action은 `src/slack/actions/index.ts`에서 등록됩니다:
 
 **Endpoint**: `POST /api/dashboard/session/:key/submit-recommended` (CSRF + auth + ownership)
 
+요청에는 body가 없고, 그래서 `Content-Type` 헤더도 보내지 않는다. Fastify는 `Content-Type: application/json` + 빈 body를
+라우트에 닿기 전에 400(`FST_ERR_CTP_EMPTY_JSON_BODY`, 응답 `error: "Bad Request"`)으로 거절한다 — 대시보드 버튼이
+`❌ Bad Request`를 띄우던 원인. `dashboard-answer-client.test.ts`가 배포되는 클라이언트 함수를 실제 서버에 연결해 이 모양을 고정한다.
+
 | 상태 코드 | 조건 |
 |-----------|------|
 | 200 | 정상 처리 |
@@ -288,10 +292,14 @@ Slack의 partial-fill 동작과 의도적으로 다릅니다. 1000+ sub-question
 ## 8. Session/Status Integration
 
 ### 8.1 모델 응답이 “선택 대기”로 끝난 경우
-`src/slack/pipeline/stream-executor.ts`:
-- 스트림 결과에 `hasUserChoice=true`면:
+`packages/slack/src/pipeline/stream-executor.ts`:
+- 이 턴이 질문을 했고(`hasUserChoice` 또는 ASK_USER_QUESTION) 그 질문이 **아직 열려 있으면**:
   - Slack 상태를 `waiting`으로 표시
   - 세션 `activityState`를 `waiting`으로 전환
+- "아직 열려 있음"은 `session.actionPanel.waitingForChoice`로 판단한다. 질문을 띄우는 경로가 `true`로 세우고,
+  모든 답변 경로(대시보드·Slack 버튼·폼)가 `false`로 내린다. 모델이 아직 스트리밍 중일 때 답변이 먼저 도착하면
+  턴 종료 시 이 값이 `false`이므로 `idle`로 끝난다. 예전에는 "이 턴이 질문을 했다"만 보고 `waiting`으로 되돌려,
+  질문이 없는 세션이 대시보드 NEEDS YOU 칸에 답변 창 없이 남았다(`stream-executor.choice-answered-mid-turn.test.ts`).
 
 ### 8.2 유저가 선택/제출한 경우
 Choice/Form 액션 핸들러는:

@@ -40,7 +40,27 @@ export interface CommandContext {
    * fresh-context start fires it AFTER session init / autogoal / autoskill.
    */
   deferSkillFire?: boolean;
+  /**
+   * Admit the opening turn of a goal the command just started, synchronously
+   * with the mutation — see the package `CommandContext.admitOpening`
+   * (`@soma/slack/commands/command-router`) for the contract. Supplied only by
+   * the host's goal intake while a turn runs.
+   */
+  admitOpening?: (opening: GoalOpening) => GoalOpeningAdmission;
 }
+
+/** The opening turn `admitOpening` admits — see the package `GoalOpening`. */
+export interface GoalOpening {
+  goalId: string;
+  objective: string;
+  /** `set` — the goal this command set; `promoted` — the next goal `goal done` started; `resumed` — `goal resume` of a goal whose first turn never ran. */
+  cause: 'set' | 'promoted' | 'resumed';
+  /** Opening text when it is not the objective (the `$skill` part of a split). */
+  prompt?: string;
+}
+
+/** `queued` | `started` | `{ failed: reason }` — see {@link CommandContext.admitOpening}. */
+export type GoalOpeningAdmission = 'queued' | 'started' | { failed: string };
 
 /**
  * Dependencies injected into command handlers
@@ -105,6 +125,20 @@ export interface CommandResult {
    * dispatch outcome is then `blocked` (item `uncertain`), not `safe`.
    */
   awaitingPermission?: boolean;
+  /**
+   * `continueWithPrompt` is the user's own free text (a goal objective), not
+   * a host-built prompt. It has already been through command routing, so the
+   * `/z` callers (DM branch, app_mention) must mark the re-entered event
+   * `routeContext.verbatimPrompt` instead of letting the pipeline parse it as
+   * a command, an inline directive, or the `!` abort marker again.
+   */
+  verbatimPrompt?: boolean;
+  /**
+   * `goal <objective>` appended the goal to the queue behind the goal in
+   * flight — no opening turn exists for it yet, so nothing else the message
+   * carried (a `$skill` part, attachments) can ride along.
+   */
+  goalQueued?: boolean;
 }
 
 /**

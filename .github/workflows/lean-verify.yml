@@ -25,8 +25,9 @@ jobs:
     # Same allow-list guard as `.github/workflows/ci.yml`; the rationale is in
     # the comment there. In short: the repository is public, `pull_request`
     # fires for forks, and this job runs pull-request code (the gate script and
-    # everything Lean elaborates) on a persistent self-hosted machine, so a fork
-    # PR must be refused before dispatch, not after checkout.
+    # everything Lean elaborates), so a fork PR is refused before dispatch, not
+    # after checkout. The job now runs on a GitHub-hosted runner (see ci.yml for
+    # why it left the self-hosted workstation); the guard is unchanged.
     #
     # Kept flat (no continuation line indented further than the first): a
     # more-indented line in a folded scalar is preserved verbatim, which would
@@ -35,8 +36,10 @@ jobs:
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: [self-hosted, fable-m5max]
-    # `--check` plus `--selftest` come close to 20 minutes on a loaded runner.
+    # Linux: the gate is bash, perl, git and the Lean toolchain, all portable, and hosted Linux
+    # runners take 20 jobs at once where macOS takes 5.
+    runs-on: ubuntu-latest
+    # `--check` plus `--selftest` came close to 20 minutes on the loaded self-hosted runner.
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -47,6 +50,8 @@ jobs:
       # `src/` and never reads `dist/`.
       - name: Use Node.js 20
         uses: actions/setup-node@v4
+        # `cache: 'npm'` on a hosted runner: each job starts from an empty ~/.npm. (It was off on the
+        # self-hosted Mac, whose ~/.npm persisted and whose 2 GB restore ran at ~5 MB/s.)
         with:
           node-version: '20'
           cache: 'npm'
@@ -54,11 +59,34 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      # A hosted runner has no Lean: install elan (pinned release) and the toolchain
+      # verification/lean/lean-toolchain names, retrying transient download failures.
+      # lean-verify.sh already looks in ~/.elan/bin. The proofs are still built from scratch
+      # every run: no .lake cache, so nothing a previous run left behind can stand in for
+      # this commit's build.
+      - name: Install elan and the pinned Lean toolchain
+        run: bash scripts/verification/install-lean-toolchain.sh
+
       - name: Rebuild proofs, audit declarations, replay the kernel, check vector drift
         run: bash scripts/verification/lean-verify.sh --check
+
+      # The self-test below exercises the gate itself — scripts/verification/, the Lean tree
+      # under verification/ and this workflow — not the application code. A pull request that
+      # changes none of those would rerun, on identical inputs, the self-test main already
+      # passed: about 12 of this job's 16 minutes on the one self-hosted runner. So it runs on
+      # every push, on every pull request that changes the gate, and whenever the diff cannot
+      # be determined. The job still reports either way, so the required check is never missing.
+      - name: Decide whether the gate changed
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/verification/selftest-scope.sh
+
       # Plants each forbidden construct in a scratch copy. Soundness escapes must be rejected
       # with and without the textual checks; an invisible character, by the source gate only;
       # a clean module must pass. A gate that silently stopped catching something would
       # otherwise stay green.
       - name: Self-test the gate against planted forbidden constructs
+        if: steps.scope.outputs.selftest == 'true'
         run: bash scripts/verification/lean-verify.sh --selftest

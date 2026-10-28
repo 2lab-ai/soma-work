@@ -10,8 +10,14 @@ import type { ActionHandlers } from '../actions';
 import { buildMarkerBlocks, SUPERSEDED_TEXT } from '../actions/click-classifier';
 import type { PendingInstructionConfirmStore } from '../actions/pending-instruction-confirm-store';
 import type { AgentStreamEventOf } from '../agent-stream-types';
+import type { AgentTreeEvent } from '../agent-tree';
 import type { AssistantStatusManager } from '../assistant-status-manager';
-import { type CompactStateSession, promotePendingToDispatchQueue } from '../compact-state';
+import {
+  type CompactStateSession,
+  isAutoCompactPaused,
+  pauseAutoCompactAfterFailure,
+  promotePendingToDispatchQueue,
+} from '../compact-state';
 import type { CompletionMessageTracker } from '../completion-message-tracker';
 import type { ContextWindowManager } from '../context-window-manager';
 import {
@@ -19,8 +25,22 @@ import {
   buildInstructionConfirmFallbackText,
   buildInstructionSupersededBlocks,
 } from '../instruction-confirm-blocks';
-import { LOG_DETAIL, OutputFlag, shouldOutput, verboseTag } from '../output-flags';
+import {
+  clearLiveUsage,
+  foldLiveUsage,
+  markLiveUsageBoundary,
+  markLiveUsageSettled,
+  recordLiveUsage,
+} from '../live-usage';
+import { applyPendingModelSwitch, armPendingModelSwitch, settlePendingModelSwitch } from '../model-switch';
+import { OutputFlag, resolveVerbosityMask, shouldOutput, verboseTag } from '../output-flags';
 import type { ReactionManager } from '../reaction-manager';
+import {
+  postReleaseNotes,
+  type ReleaseNotesRouting,
+  reportReleaseNotesFailure,
+  SESSION_ROUTING,
+} from '../release-notes-poster';
 import type { RequestAbortReason, RequestCoordinator } from '../request-coordinator';
 // Issue #1082 T2: shared goal-apply helpers (same pair T1's slack-handler
 // uses for goal-prefixed first messages) — epoch bump + cache invalidation
@@ -31,7 +51,15 @@ import {
   formatGoalObjectiveForSlack,
   type GoalQueueSession,
 } from '../session-goal';
-import { accumulateModelTotals, applyPostCompactOccupancy, selectCurrentContextTokens } from '../session-usage-math';
+import {
+  accumulateModelTotals,
+  addSessionSpend,
+  applyPostCompactOccupancy,
+  creditTaskSpend,
+  selectCurrentContextTokens,
+  settleFoldedLiveUsage,
+  toTurnUsage,
+} from '../session-usage-math';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { StatusReporter } from '../status-reporter';
 import {
@@ -59,8 +87,11 @@ import {
 } from '../turn-notifier';
 import type { UserChoice, UserChoices } from '../user-choice-extractor';
 import { UserChoiceHandler } from '../user-choice-handler';
+import type { TurnAttachment } from '../user-media';
+import type { WorkLogInput } from '../work-log';
 import { decideBackgroundWaitContinuation, getBackgroundWaitCap } from './background-wait';
-import { isLocalSlashCommand } from './local-slash-command';
+import { shouldForwardAsLocalSlashCommand } from './local-slash-command';
+import { SESSION_TITLE_PENDING_NOTICE, shouldInjectSessionTitleNotice } from './session-title-notice';
 import { cleanupWithTimeout, DEFAULT_CLEANUP_TIMEOUT_MS, runWithTimeout } from './stream-executor-cleanup-helpers';
 import { sanitizeTranscriptEmptyTextBlocks } from './transcript-sanitizer';
 import type { ConversationSession, ProcessedFile, SayFn } from './types';
@@ -96,6 +127,8 @@ interface TurnResultCollectorLike {
   onEndTurn(info: any): void;
   onText(text: string): void;
   setContinuation(continuation: Continuation): void;
+  setHasPendingChoice(value: boolean): void;
+  setPendingChoiceProbe?(probe: () => boolean): void;
   getResult(): any;
 }
 
@@ -107,6 +140,7 @@ const createNoopTurnResultCollector = (): TurnResultCollectorLike => ({
   onEndTurn: () => {},
   onText: () => {},
   setContinuation: () => {},
+  setHasPendingChoice: () => {},
   getResult: () => ({
     text: '',
     toolCalls: [],
@@ -132,6 +166,30 @@ const defaultUserSettingsStore = {
   getUserCompactThreshold: () => undefined,
 };
 
+/**
+ * Dashboard SSOT 2026-10-27 T1 — who put a user turn into the conversation
+ * (`system`: a synthetic event, a host continuation, or the threshold
+ * auto-compact). Mirrors `TurnOrigin` in src/conversation/types.ts.
+ */
+export interface RecordUserTurnOpts {
+  origin?: { by: 'user' | 'system' };
+  /**
+   * The turn runs the SDK's `/compact` (a local slash command — a goal
+   * objective that starts with it is literal, never one). The recorder marks
+   * it a compaction turn; this is the one definition the dashboard reads.
+   */
+  compact?: boolean;
+}
+
+/** Dashboard SSOT 2026-10-27 T2 — what a compaction reported when it ended. */
+export interface CompactTurnResult {
+  endedAt: number;
+  durationMs?: number;
+  preTokens?: number;
+  postTokens?: number;
+  trigger?: 'manual' | 'auto';
+}
+
 export interface StreamExecutorProviders {
   parseModelCommandRunResponse?: (result: unknown) => any;
   createTurnResultCollector?: () => TurnResultCollectorLike;
@@ -143,7 +201,33 @@ export interface StreamExecutorProviders {
   shouldShowStatusBlock?: (status: any) => boolean;
   createConversation?: (channel: string, threadTs: string, user: string, userName: string) => string;
   recordAssistantTurn?: (conversationId: string, text: string) => void;
-  recordUserTurn?: (conversationId: string, text: string, userName: string, user: string) => void;
+  recordUserTurn?: (
+    conversationId: string,
+    text: string,
+    userName: string,
+    user: string,
+    attachments?: readonly TurnAttachment[],
+    opts?: RecordUserTurnOpts,
+  ) => void;
+  /**
+   * Dashboard SSOT 2026-10-27 T2 — a compaction ended: write its numbers onto
+   * the `/compact` turn that ran it. Fire-and-forget; the host never throws.
+   * No-op by default.
+   */
+  recordCompactResult?: (conversationId: string, result: CompactTurnResult) => void;
+  /**
+   * User media (SSOT 2026-10-25) — copy the turn's downloaded files for the
+   * dashboard. Awaited BEFORE the user turn is recorded and long before the
+   * end-of-turn temp cleanup; the host bounds it and never drops a file.
+   * Default: nothing kept.
+   */
+  captureUserMedia?: (conversationId: string, files: readonly ProcessedFile[]) => Promise<TurnAttachment[]>;
+  /**
+   * Spec 10 §3.3 — append one work-log entry to the conversation's log
+   * (instruction, narration, tool, tool_result, final, notice, error), at
+   * every verbosity. Fire-and-forget; a throw is swallowed. No-op by default.
+   */
+  appendWorkLog?: (conversationId: string, entry: WorkLogInput) => void;
   /**
    * Append a per-turn episodic breadcrumb to the user's hierarchical memory.
    * Fire-and-forget; must never throw or block the reply. No-op by default.
@@ -177,6 +261,24 @@ export interface StreamExecutorProviders {
   getAutoFallbackCompactModel?: () => string;
   postCompactCompleteIfNeeded?: (...args: any[]) => Promise<unknown>;
   postCompactStartingIfNeeded?: (...args: any[]) => Promise<unknown>;
+  /**
+   * SSOT 2026-10-22 T1/T2 — the session's live usage changed (one more API
+   * call of the running turn). The host pushes the card to the dashboard
+   * (throttled). Must be cheap and never throw. No-op by default.
+   */
+  notifyLiveUsage?: (sessionKey: string) => void;
+  /**
+   * Spec 12 — one agent-tree event of this session's turn (a subagent
+   * started, listed its tasks, returned, changed task state; the turn ended).
+   * The host folds it into the session's agent registry. Must be cheap and
+   * never throw. No-op by default.
+   */
+  recordAgentEvent?: (sessionKey: string, event: AgentTreeEvent) => void;
+  /** API-equivalent cost of calls folded from an interrupted turn. 0 by default. */
+  priceLiveUsage?: (
+    model: string | undefined,
+    totals: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
+  ) => number;
 }
 
 const FALLBACK_CONTEXT_WINDOW = 200_000;
@@ -196,6 +298,10 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   createConversation: () => '',
   recordAssistantTurn: () => {},
   recordUserTurn: () => {},
+  recordCompactResult: () => {},
+  captureUserMedia: async () => [],
+  appendWorkLog: () => {},
+  recordAgentEvent: () => {},
   captureMemoryTurn: () => {},
   scheduleLinkDerivedTitleRefresh: () => {},
   isMidThreadMention: () => false,
@@ -229,6 +335,8 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   getAutoFallbackCompactModel: () => process.env.AUTO_FALLBACK_COMPACT_MODEL || 'opus[1m]',
   postCompactCompleteIfNeeded: async () => undefined,
   postCompactStartingIfNeeded: async () => undefined,
+  notifyLiveUsage: () => {},
+  priceLiveUsage: () => 0,
 };
 
 export function setStreamExecutorProviders(providers: StreamExecutorProviders): void {
@@ -257,8 +365,145 @@ const createConversation = (channel: string, threadTs: string, user: string, use
   streamExecutorProviders.createConversation(channel, threadTs, user, userName);
 const recordAssistantTurn = (conversationId: string, text: string) =>
   streamExecutorProviders.recordAssistantTurn(conversationId, text);
-const recordUserTurn = (conversationId: string, text: string, userName: string, user: string) =>
-  streamExecutorProviders.recordUserTurn(conversationId, text, userName, user);
+const recordUserTurn = (
+  conversationId: string,
+  text: string,
+  userName: string,
+  user: string,
+  attachments: readonly TurnAttachment[] | undefined,
+  opts: RecordUserTurnOpts,
+) => streamExecutorProviders.recordUserTurn(conversationId, text, userName, user, attachments, opts);
+const captureUserMedia = (conversationId: string, files: readonly ProcessedFile[]) =>
+  streamExecutorProviders.captureUserMedia(conversationId, files);
+const workLogLogger = new Logger('WorkLog');
+
+/**
+ * Reporting interval for dropped work-log entries. While the store keeps
+ * throwing, the first drop warns at once and later drops are counted; at most
+ * one warning goes out per interval, a summary with the count and the latest
+ * drop. Process-wide: one outage warns once per interval, not once per
+ * conversation. Only reporting is throttled — every write is still attempted.
+ */
+export const WORK_LOG_DROP_WARN_INTERVAL_MS = 60_000;
+
+interface WorkLogDrop {
+  conversationId: string;
+  kind: WorkLogInput['kind'];
+  sessionKey?: string;
+  error: string;
+}
+
+const workLogDrops: {
+  lastWarnAt: number | undefined;
+  suppressed: number;
+  latest: WorkLogDrop | undefined;
+  flushTimer: ReturnType<typeof setTimeout> | undefined;
+} = { lastWarnAt: undefined, suppressed: 0, latest: undefined, flushTimer: undefined };
+
+function workLogDropFields(drop: WorkLogDrop): Record<string, unknown> {
+  return {
+    conversationId: drop.conversationId,
+    kind: drop.kind,
+    ...(drop.sessionKey ? { sessionKey: drop.sessionKey } : {}),
+    error: drop.error,
+  };
+}
+
+function flushWorkLogDrops(): void {
+  if (workLogDrops.flushTimer) clearTimeout(workLogDrops.flushTimer);
+  workLogDrops.flushTimer = undefined;
+  const { suppressed, latest } = workLogDrops;
+  if (suppressed === 0 || !latest) return;
+  workLogDrops.lastWarnAt = Date.now();
+  workLogDrops.suppressed = 0;
+  workLogDrops.latest = undefined;
+  workLogLogger.warn('appendWorkLog provider threw — more entries dropped (count; latest shown)', {
+    suppressed,
+    ...workLogDropFields(latest),
+  });
+}
+
+function reportWorkLogDrop(drop: WorkLogDrop): void {
+  const now = Date.now();
+  const { lastWarnAt } = workLogDrops;
+  if (lastWarnAt !== undefined && now - lastWarnAt < WORK_LOG_DROP_WARN_INTERVAL_MS) {
+    workLogDrops.suppressed += 1;
+    workLogDrops.latest = drop;
+    if (!workLogDrops.flushTimer) {
+      const timer = setTimeout(flushWorkLogDrops, lastWarnAt + WORK_LOG_DROP_WARN_INTERVAL_MS - now);
+      // Reporting must never keep the process alive; `unref` is missing on
+      // browser/jsdom timer stubs — optional-call.
+      (timer as { unref?: () => void } | undefined)?.unref?.();
+      workLogDrops.flushTimer = timer;
+    }
+    return;
+  }
+  if (workLogDrops.suppressed > 0) {
+    // The interval ended before its flush timer ran: this drop joins the summary.
+    workLogDrops.suppressed += 1;
+    workLogDrops.latest = drop;
+    flushWorkLogDrops();
+    return;
+  }
+  workLogDrops.lastWarnAt = now;
+  workLogLogger.warn('appendWorkLog provider threw — entry dropped', workLogDropFields(drop));
+}
+
+/** Test seam: forget throttle state and cancel a pending summary. */
+export function resetWorkLogDropWarningsForTests(): void {
+  if (workLogDrops.flushTimer) clearTimeout(workLogDrops.flushTimer);
+  workLogDrops.lastWarnAt = undefined;
+  workLogDrops.suppressed = 0;
+  workLogDrops.latest = undefined;
+  workLogDrops.flushTimer = undefined;
+}
+
+/**
+ * Spec 10 §3.3 — record one work-log entry: the one global path to
+ * `streamExecutorProviders.appendWorkLog` (the dashboard store once src wires
+ * it). Used for turn entries — through the executor's `emitWorkLog`, stamped
+ * with the turn's `turnId` — and for conversation-level entries such as the
+ * compaction notices (src/slack/hooks/compact-hooks.ts), which belong to the
+ * conversation, not to a turn: no `turnId`. Stamps `ts` when absent. A
+ * throwing provider is ignored — the work log must never break what records
+ * into it — and reported at warn (conversationId, kind, the caller's
+ * sessionKey when it has one, error), throttled process-wide to one warning
+ * per `WORK_LOG_DROP_WARN_INTERVAL_MS`.
+ */
+export function recordConversationWorkLog(
+  conversationId: string,
+  entry: WorkLogInput,
+  logContext: { sessionKey?: string } = {},
+): void {
+  try {
+    streamExecutorProviders.appendWorkLog(conversationId, { ts: Date.now(), ...entry });
+  } catch (err) {
+    reportWorkLogDrop({
+      conversationId,
+      kind: entry.kind,
+      ...(logContext.sessionKey ? { sessionKey: logContext.sessionKey } : {}),
+      error: (err as Error)?.message ?? String(err),
+    });
+  }
+}
+
+/**
+ * Dashboard SSOT 2026-10-27 T2 — a compaction ended: hand its numbers to the
+ * conversation recorder, which writes them onto the `/compact` turn that ran
+ * it. The one path compact-hooks uses (it never imports the recorder). A
+ * throwing provider is ignored — the dashboard record must never break the
+ * compaction it describes.
+ */
+export function recordConversationCompact(conversationId: string, result: CompactTurnResult): void {
+  try {
+    streamExecutorProviders.recordCompactResult(conversationId, result);
+  } catch (err) {
+    workLogLogger.warn('recordCompactResult provider threw', {
+      conversationId,
+      error: (err as Error)?.message ?? String(err),
+    });
+  }
+}
 const captureMemoryTurn = (userId: string, userText: string, assistantText: string) =>
   streamExecutorProviders.captureMemoryTurn(userId, userText, assistantText);
 const scheduleLinkDerivedTitleRefresh = (claudeHandler: any, channel: string, threadTs: string, reason: string) =>
@@ -336,7 +581,7 @@ interface StreamExecutorDeps {
    * by the auto-compact interception path (AC3 end-to-end).
    */
   dispatchPendingUserMessage?: (
-    ctx: { channel: string; threadTs: string; user: string; ts: string },
+    ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean },
     text: string,
     opts?: { compactRedispatch?: boolean },
   ) => Promise<void>;
@@ -364,6 +609,12 @@ interface StreamExecutorDeps {
     uuid: string;
     phase: AgentStreamEventOf<'steer_lifecycle'>['phase'];
   }) => void | Promise<void>;
+  /**
+   * Operator routing for `release_notes` (SOMA_RELEASE_NOTES_CHANNELS, parsed by
+   * the host). Consulted only for a DEPLOY-workflow session; any other session,
+   * or a host without it, posts the notes in its own channel (SESSION_ROUTING).
+   */
+  routeReleaseNotes?: (repo: string, target: string) => ReleaseNotesRouting;
 }
 
 interface StreamExecuteParams {
@@ -393,6 +644,13 @@ interface StreamExecuteParams {
   sourceChannel?: string;
   /** True when the prompt originates from a real user message (not auto-resume, continuation, /renew load, etc.) */
   isUserInput?: boolean;
+  /**
+   * The text is a goal objective dispatched as the goal's opening turn: never
+   * forward it to the SDK as a local slash command, whatever it starts with.
+   * Set by slack-handler; the adapter carries it on the first dispatch turn
+   * only, so a later host `/compact` continuation is still a command.
+   */
+  literalPrompt?: boolean;
   /**
    * A28 — the session's follow-up turn generation at the moment the host
    * dispatched THIS run. Captured once at `execute()` entry and carried
@@ -529,6 +787,20 @@ const UNKNOWN_ABORT_REASON = '__unknown' as const;
 
 /** Coerced reason type — either a known RequestAbortReason or the internal sentinel. */
 type CoercedAbortReason = RequestAbortReason | typeof UNKNOWN_ABORT_REASON;
+
+/**
+ * Abort reasons the user already knows about (they caused or chose the end of
+ * the turn), so no 🔴 card is posted — see `handleError`'s `knownSilentAbort`.
+ * Shared with the work log, which records these as `notice` and every other
+ * abort (stall-timeout, ghost-session, unknown) as `error`.
+ */
+const QUIET_ABORT_REASONS: ReadonlySet<CoercedAbortReason> = new Set<CoercedAbortReason>([
+  'supersede',
+  'user-stop',
+  'session-close',
+  'shutdown',
+  'user-interrupted',
+]);
 
 function coerceAbortReason(raw: unknown): CoercedAbortReason {
   if (typeof raw === 'string' && KNOWN_ABORT_REASONS.has(raw as RequestAbortReason)) {
@@ -938,6 +1210,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
 
     let toolChoicePending = false;
+    /**
+     * A choice this turn asked was registered as open — the open-choice bit
+     * (`actionPanel.waitingForChoice`) went up. Only then can a cleared bit at
+     * turn end mean "answered"; a choice that never registered (its buttons
+     * failed to post, a plain-text fallback went out) is still unanswered.
+     */
+    let choiceRegistered = false;
     let toolContinuation: Continuation | undefined;
     const requestStartedAt = new Date();
     const contextUsagePercentBefore = this.getCurrentContextUsagePercent(session.usage);
@@ -961,6 +1240,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // turnId) would silently skip — leaving the second turn without an open
     // B1 stream.
     const turnId = `${sessionKey}:${requestStartedAt.getTime()}:${randomUUID()}`;
+    // The SDK session this turn resumes (none → a new one starts). Read before
+    // the stream: the turn's `system`/`init` frame overwrites `session.sessionId`.
+    const resumedSdkSessionId: string | undefined = session.sessionId;
 
     // P5 B5 marker snapshot.
     //
@@ -1051,9 +1333,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const turnCollector = streamExecutorProviders.createTurnResultCollector();
 
     // Verbosity filtering — read from session dynamically so mid-stream $verbosity changes apply
-    const getVerbosity = () => session.logVerbosity ?? LOG_DETAIL;
+    const getVerbosity = () => resolveVerbosityMask(session.logVerbosity);
     const isOutputEnabled = (flag: number) => shouldOutput(flag, getVerbosity());
     const vtag = (flag: number) => verboseTag(flag, getVerbosity());
+
+    // Spec 10 §3.3 work log. `conversationId` is read at call time — it can be
+    // auto-created below, after this binding. Stamped with this turn's id; a
+    // throwing provider must never break the turn. Compaction notices are
+    // conversation-level: compact-hooks records them itself through
+    // `recordConversationWorkLog`.
+    const emitWorkLog = (entry: WorkLogInput): void => {
+      const conversationId = session.conversationId;
+      if (!conversationId) return;
+      recordConversationWorkLog(conversationId, { turnId, ts: Date.now(), ...entry }, { sessionKey });
+    };
 
     // Per-request tool statistics
     const toolStats: RequestToolStats = {};
@@ -1090,6 +1383,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // must name the loss lives on the far side of that boundary.
     let interruptFlushFailed: InterruptFlushFailure | undefined;
 
+    // Compact retry loop breaker (field incident 2026-10-22). A `/compact`
+    // turn that ends WITHOUT a compact boundary failed — however it ended:
+    // a throw (handled in catch), an SDK error result, or a result that never
+    // compacted. Declared outside the try so `finally` can see all three.
+    let compactBoundarySeen = false;
+    let compactFailureHandled = false;
+    let compactFailureText: string | undefined;
+
     try {
       if (this.deps.threadPanel) {
         await runWithTimeout(() => this.deps.threadPanel!.beginTurn(turnContext), 5_000, {
@@ -1123,7 +1424,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // so without this bypass the threshold-triggered compaction would also
       // be silently no-op'd.
       const trimmedText = (text ?? '').trim();
-      const isSlashCommand = isLocalSlashCommand(trimmedText);
+      // A literal turn (a goal objective) is the user's words even when it
+      // starts with `/compact` or `/clear` — wrap it like any prompt.
+      const isSlashCommand = shouldForwardAsLocalSlashCommand(trimmedText, params.literalPrompt);
 
       let finalPrompt: string;
       if (isSlashCommand) {
@@ -1135,6 +1438,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // transcript and emits `result`). Cleared in this turn's `finally`.
         if (trimmedText.split(/\s/)[0] === '/compact') {
           session.compactTurnActive = true;
+          // T5: the compact a dashboard model switch dispatched arms it — only
+          // this turn's boundary may apply it (review R4).
+          if (armPendingModelSwitch(session, params.mentionTs)) {
+            this.logger.info('Dashboard model switch armed by its compact turn', { sessionKey });
+          }
         }
         this.logger.info('Bypassing preparePrompt for SDK local slash command', {
           sessionKey,
@@ -1207,9 +1515,32 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         session.pendingInstructionRejection = undefined;
       }
 
-      // Record user turn (fire-and-forget, non-blocking)
+      // Voice / image-only first message → host stand-in title ("New Session").
+      // Only the model can read the attachment, so ask it to resolve the
+      // user's intent and write the title (fill-only). Real user turns only;
+      // stops once the title is real or the budget is spent.
+      if (
+        shouldInjectSessionTitleNotice({
+          title: session.title,
+          isUserInput: params.isUserInput,
+          isSlashCommand,
+          noticeCount: session.titleNoticeCount,
+        })
+      ) {
+        finalPrompt = `${SESSION_TITLE_PENDING_NOTICE}\n\n${finalPrompt}`;
+        session.titleNoticeCount = (session.titleNoticeCount ?? 0) + 1;
+        this.logger.info('Injected session-title-pending notice', {
+          sessionKey,
+          title: session.title,
+          noticeCount: session.titleNoticeCount,
+        });
+      }
+
+      // Record user turn (fire-and-forget, non-blocking). A files-only message
+      // is a user turn too: its instruction IS the files (user media).
+      const hasInput = !!text || processedFiles.length > 0;
       // Auto-create conversation if session lost its conversationId (e.g., after restart backfill miss)
-      if (!session.conversationId && text && channel) {
+      if (!session.conversationId && hasInput && channel) {
         try {
           session.conversationId = createConversation(channel, session.threadTs || '', user, userName);
           this.logger.info('Auto-created conversation for session missing conversationId', {
@@ -1220,8 +1551,39 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           this.logger.error('Failed to auto-create conversation', err);
         }
       }
-      if (session.conversationId && text) {
-        recordUserTurn(session.conversationId, text, userName, user);
+      if (session.conversationId && hasInput) {
+        // Copy the files now — before the model can touch them and before the
+        // end-of-turn cleanup deletes them. A failed capture never costs the turn.
+        let attachments: TurnAttachment[] | undefined;
+        if (processedFiles.length > 0) {
+          try {
+            attachments = await captureUserMedia(session.conversationId, processedFiles);
+          } catch (error) {
+            this.logger.warn('User media capture failed — turn recorded without attachments', {
+              sessionKey,
+              error: (error as Error)?.message ?? String(error),
+            });
+          }
+        }
+        // Dashboard SSOT 2026-10-27 T1 — who put this turn here. A host turn
+        // (synthetic event or continuation) says so through `isUserInput`; the
+        // threshold auto-compact rides the user's own event but swapped its
+        // text for `/compact` and parked the words on `pendingUserText`.
+        const compactTurn = isSlashCommand && trimmedText.split(/\s/)[0] === '/compact';
+        const autoCompactTurn = compactTurn && !!session.pendingUserText;
+        recordUserTurn(
+          session.conversationId,
+          text || '',
+          userName,
+          user,
+          attachments?.length ? attachments : undefined,
+          {
+            origin: { by: params.isUserInput === false || autoCompactTurn ? 'system' : 'user' },
+            ...(compactTurn ? { compact: true } : {}),
+          },
+        );
+        const names = processedFiles.map((f) => f.name).join(' · ');
+        emitWorkLog({ kind: 'instruction', text: names ? `${text || ''}${text ? '\n' : ''}📎 ${names}` : text || '' });
       }
 
       // Store user instruction for SSOT tracking (only real user input, not auto-resume/continuation/renew)
@@ -1393,8 +1755,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         isCompactTurn: (isSlashCommand && trimmedText.startsWith('/compact')) || Boolean(session.fallbackCompactActive),
         isUserInputTurn: params.isUserInput === true,
         incidentAttempt,
+        ...(session.conversationId ? { workLog: emitWorkLog } : {}),
+        // The ASK_USER_QUESTION form is posted here, not by the processor
+        // (handleModelCommandToolResults); tell it so its no-final fallback
+        // does not post old narration under the form.
+        hostChoicePosted: () => toolChoicePending,
         get logVerbosity() {
-          return session.logVerbosity ?? LOG_DETAIL;
+          return resolveVerbosityMask(session.logVerbosity);
         },
         get showThinking() {
           return session.showThinking ?? userSettingsStore.getUserShowThinking(user);
@@ -1442,7 +1809,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         onIdleTimeout: () => {
           abortController.abort('stall-timeout' satisfies RequestAbortReason);
         },
-        onToolUse: async (toolUses, ctx) => {
+        onToolUse: async (allToolUses, ctx) => {
           // Ghost Session Fix #99: self-terminate if session was terminated while streaming.
           // Tag the abort with `'ghost-session'` so handleError surfaces a
           // 🔴 terminal card. An untagged abort here previously fell
@@ -1453,6 +1820,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             abortController.abort('ghost-session' satisfies RequestAbortReason);
             return;
           }
+          // Spec 12 §2.2: what the main agent is doing — the thread header's
+          // current tool, the Slack tool rows, the request's tool stats — is
+          // the main agent's calls only. A subagent's are in its own work log.
+          const toolUses = allToolUses.filter((tu) => !tu.parentToolUseId);
+          if (toolUses.length === 0) return;
           if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
             await this.deps.reactionManager.updateReaction(
               sessionKey,
@@ -1469,6 +1841,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             },
             turnEpochToken,
           );
+          // Re-check after the awaits: a delete during them has already
+          // drained this session's tracking, and handleToolUse would register
+          // background-bash state under a key a new session may reuse.
+          if (session.terminated) {
+            abortController.abort('ghost-session' satisfies RequestAbortReason);
+            return;
+          }
           // Track tool start times for per-request stats
           for (const tu of toolUses) {
             toolStartTimes.set(tu.id, Date.now());
@@ -1490,13 +1869,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           }
           turnCollector.onPhaseChange('도구 실행 중');
         },
-        onToolResult: async (toolResults, ctx) => {
+        onToolResult: async (allToolResults, ctx) => {
           // Ghost Session Fix #99: self-terminate if session was terminated while streaming.
           // Same tagging rationale as onToolUse above — see §B-1.
           if (session.terminated) {
             abortController.abort('ghost-session' satisfies RequestAbortReason);
             return;
           }
+          // Spec 12 §2.2: the Slack tool surfaces (stats, status, tool rows,
+          // the turn observer) take the main agent's results; the host's own
+          // work on a result — git metrics, model commands — takes every
+          // agent's, as before attribution (review round 2).
+          const toolResults = allToolResults.filter((tr) => !tr.parentToolUseId);
           // Accumulate per-request tool stats
           for (const tr of toolResults) {
             const name = tr.toolName || 'unknown';
@@ -1509,28 +1893,41 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             toolStats[name].count++;
             toolStats[name].totalDurationMs += duration;
           }
-          await this.updateRuntimeStatus(
-            session,
-            ctx.sessionKey,
-            {
-              agentPhase: '결과 반영 중',
-              activeTool: undefined,
-            },
-            turnEpochToken,
-          );
-          await this.deps.toolEventProcessor.handleToolResult(toolResults, {
-            channel: ctx.channel,
-            threadTs: ctx.threadTs,
-            sessionKey: ctx.sessionKey,
-            say: ctx.say,
-            logVerbosity: getVerbosity(),
-            // #664 P2 absorb: same turnId as the matching tool_use event,
-            // so sink-side lookups stay on one B1 stream handle.
-            turnId,
-          });
-          // Metrics: detect git/gh commands in Bash output (fire-and-forget)
+          if (toolResults.length > 0) {
+            await this.updateRuntimeStatus(
+              session,
+              ctx.sessionKey,
+              {
+                agentPhase: '결과 반영 중',
+                activeTool: undefined,
+              },
+              turnEpochToken,
+            );
+          }
+          // Re-check after the await: a delete during the status write has
+          // already drained this session's background tracking, and the
+          // spawn-ack below would re-add an entry nothing will ever settle.
+          if (session.terminated) {
+            abortController.abort('ghost-session' satisfies RequestAbortReason);
+            return;
+          }
+          if (toolResults.length > 0)
+            await this.deps.toolEventProcessor.handleToolResult(toolResults, {
+              channel: ctx.channel,
+              threadTs: ctx.threadTs,
+              sessionKey: ctx.sessionKey,
+              say: ctx.say,
+              logVerbosity: getVerbosity(),
+              // Checked at the tracker mutation itself: a delete can land while an
+              // earlier result of this batch awaits, after the guard above.
+              isSessionTerminated: () => session.terminated === true,
+              // #664 P2 absorb: same turnId as the matching tool_use event,
+              // so sink-side lookups stay on one B1 stream handle.
+              turnId,
+            });
+          // Metrics: detect git/gh commands in Bash output (fire-and-forget) — every agent's.
           interceptToolResults(
-            toolResults,
+            allToolResults,
             session.ownerId,
             session.ownerName || 'unknown',
             ctx.sessionKey,
@@ -1539,20 +1936,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               this.deps.claudeHandler.addMergeStats(ctx.channel, ctx.threadTs, prNumber, linesAdded, linesDeleted);
             },
           );
-          const commandResult = await this.handleModelCommandToolResults(toolResults, session, ctx, turnEpochToken);
+          const commandResult = await this.handleModelCommandToolResults(allToolResults, session, ctx, turnEpochToken);
           if (commandResult.hasPendingChoice) {
             toolChoicePending = true;
+            // renderAskUserQuestionFromCommand raised the open-choice bit.
+            choiceRegistered = true;
           }
           if (commandResult.continuation) {
             toolContinuation = commandResult.continuation;
           }
-          // Issue #42 S3: observer — 도구 종료 + model-command 결과 수집
-          // duration은 위 루프(367-377)에서 이미 계산·삭제되었으므로 toolStats에서 역산
+          // Issue #42 S3: observer — 도구 종료 + model-command 결과 수집.
+          // duration은 collector가 자체 startTime으로 계산한다.
           for (const tr of toolResults) {
-            const name = tr.toolName || 'unknown';
-            const _stats = toolStats[name];
-            // 직전 루프에서 계산된 duration을 collector의 자체 startTime fallback으로 위임
-            turnCollector.onToolEnd(name, tr.toolUseId);
+            turnCollector.onToolEnd(tr.toolName || 'unknown', tr.toolUseId);
           }
           turnCollector.onPhaseChange('결과 반영 중');
           if (commandResult.modelCommandResults) {
@@ -1566,6 +1962,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           // notification). Feeds the session-scoped tracker that the turn-end
           // resume guard reads — replaces the old heuristic (spawn-ack text +
           // the model polling TaskOutput/BashOutput).
+          // A terminated session's tracking was drained on delete; a late frame
+          // must not re-add it under a key a new session in the thread reuses.
+          if (session.terminated) return;
           this.deps.toolEventProcessor.handleAgentTaskLifecycle(event, ctx.sessionKey);
         },
         onSteerLifecycle: async (event, ctx) => {
@@ -1578,6 +1977,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             uuid: event.uuid,
             phase: event.phase,
           });
+        },
+        // Spec 12 — the session's agent tree (subagent spawn / tasks / result /
+        // lifecycle, turn end). Bookkeeping only; a throw is the processor's to swallow.
+        onAgentEvent: (event) => {
+          streamExecutorProviders.recordAgentEvent(sessionKey, event);
         },
         onTodoUpdate: async (input, ctx) => {
           // Task list is part of thread header — always update regardless of verbosity.
@@ -1638,6 +2042,38 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             });
           }
         },
+        onReleaseNotesDetected: async (payload) => {
+          // Cross-channel posting is a deploy-workflow privilege: any other
+          // session echoing the directive stays in its own channel.
+          const routing =
+            session.workflow === 'deploy' && this.deps.routeReleaseNotes
+              ? this.deps.routeReleaseNotes(payload.repo, payload.target)
+              : SESSION_ROUTING;
+          try {
+            await postReleaseNotes(this.deps.slackApi, {
+              payload,
+              sessionChannel: channel,
+              sessionThreadTs: threadTs,
+              routing,
+            });
+            this.logger.info('Release notes posted from model directive', {
+              sessionKey,
+              repo: payload.repo,
+              target: payload.target,
+              destination: routing.destination.kind,
+              unmapped: routing.unmapped,
+            });
+          } catch (error) {
+            this.logger.error('Failed to post release notes from model directive', {
+              sessionKey,
+              repo: payload.repo,
+              target: payload.target,
+              error: (error as Error)?.message,
+            });
+            // The directive is already stripped from the reply: say so where the deployer looks.
+            await reportReleaseNotesFailure(this.deps.slackApi, channel, threadTs, payload, error);
+          }
+        },
         onSourceWorkingDirDetected: async (dirPath) => {
           try {
             const added = this.deps.claudeHandler.addSourceWorkingDir(channel, threadTs, dirPath);
@@ -1660,8 +2096,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             });
           }
         },
+        // SSOT 2026-10-22 T1/T2 — each API call of this turn, as it lands, so
+        // the dashboard's token / cost totals grow during the turn.
+        onLiveUsage: (call) => {
+          recordLiveUsage(session, call, turnId);
+          try {
+            streamExecutorProviders.notifyLiveUsage(sessionKey);
+          } catch (err) {
+            this.logger.debug('notifyLiveUsage failed', { error: (err as Error)?.message ?? String(err) });
+          }
+        },
         onUsageUpdate: async (usage: UsageData) => {
-          this.updateSessionUsage(session, usage, turnId);
+          this.updateSessionUsage(session, sessionKey, usage, turnId, resumedSdkSessionId);
 
           // Update context window emoji
           if (session.usage && isOutputEnabled(OutputFlag.CONTEXT_EMOJI)) {
@@ -1690,6 +2136,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             },
             turnEpochToken,
           );
+          choiceRegistered = true;
           await this.deps.threadPanel?.attachChoice(ctx.sessionKey, payload, sourceMessageTs);
           // Issue #42 S3: observer — 선택 대기 상태 수집
           turnCollector.onPhaseChange('입력 대기');
@@ -1702,6 +2149,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // at turn-end and is stale between PreCompact and PostCompact).
         onCompactBoundary: (metadata) => {
           session.compactionOccurred = true;
+          compactBoundarySeen = true;
 
           // Auto fallback compact (prompt-too-long emergency path): the
           // compaction that just sealed ran on the temporary 1M compact model.
@@ -1734,6 +2182,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
                 });
               });
             }
+          }
+          // SSOT 2026-10-22 T5 — a dashboard model switch that waited for this
+          // compact (the context was above the target model's auto-compact
+          // threshold) takes effect now, after the compact ran on the old model.
+          const switched = applyPendingModelSwitch(session, resolveContextWindow);
+          if (switched) {
+            this.logger.info('Dashboard model switch applied at compact boundary', {
+              sessionKey,
+              model: switched.model,
+              nickname: switched.nickname,
+            });
           }
           // Dashboard v2.1 — bump compaction counter. Guarded so any failure
           // in the dashboard/broadcast path cannot interrupt compaction.
@@ -1808,6 +2267,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               // or let the aborted turn's cleanup erase a shield the successor
               // had just established.
               session.postCompactOccupancyTurnId = turnId;
+              // The live calls so far read the pre-compact context; only the
+              // ones after this point show what the turn holds now (T5).
+              markLiveUsageBoundary(session, turnId);
               this.logger.info('Adopted post-compact occupancy from compact_boundary', {
                 sessionKey,
                 postTokens: m.post_tokens,
@@ -1955,6 +2417,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // rotated a credential and re-ran an unattended attempt. One decision,
       // so none of the five applies to it.
       const textMayBeTransportError = !toolContinuation && !incidentAttempt;
+      // What the guards read (`StreamResult.guardText`): the leak the turn
+      // ended on, else the turn text WITHOUT suppressed leak segments. The
+      // whole `collectedText` broke both ways: after narration
+      // ("narration\nleak") the short-text and starts-with predicates missed a
+      // real leak, and after a recovered leak ("leak\nanswer") they fired on a
+      // turn that had answered. `collectedText` is the fallback for producers
+      // that do not set it.
+      const guardText = streamResult.guardText ?? streamResult.transportLeak ?? streamResult.collectedText;
 
       // Compaction-failure-as-content guard (field incident 2026-07-07,
       // session ccee16e0). The SDK seals a FAILED `/compact` as a successful
@@ -1984,9 +2454,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       if (
         textMayBeTransportError &&
         (compactCommandTurn || session.fallbackCompactActive) &&
-        textIndicatesCompactionFailure(streamResult.collectedText)
+        textIndicatesCompactionFailure(guardText)
       ) {
-        const collected = String(streamResult.collectedText);
+        const collected = String(guardText);
         const emptyBlock400 = textIndicatesEmptyContentBlock400(collected);
         const repairRecentlyAttempted =
           typeof session.transcriptRepairAttemptedAtMs === 'number' &&
@@ -2029,15 +2499,15 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // delay so `handleError` schedules the timed retry. Checked BEFORE the
       // usage-limit guard so the retry-after hint is honored rather than
       // triggering a futile rotation.
-      if (textMayBeTransportError && textIndicatesRetryableRateLimit(streamResult.collectedText)) {
-        const delayMs = boundRateLimitDelayMs(parseRetryAfterMs(streamResult.collectedText));
+      if (textMayBeTransportError && textIndicatesRetryableRateLimit(guardText)) {
+        const delayMs = boundRateLimitDelayMs(parseRetryAfterMs(guardText));
         this.logger.warn('Pool rate-limit surfaced as turn content — converting to timed-retry path', {
           sessionKey,
           delayMs,
-          preview: String(streamResult.collectedText).slice(0, 120),
+          preview: String(guardText).slice(0, 120),
         });
         const rlError = new Error(
-          `Claude pool rate-limited (surfaced as turn content): ${String(streamResult.collectedText).slice(0, 200)}`,
+          `Claude pool rate-limited (surfaced as turn content): ${String(guardText).slice(0, 200)}`,
         );
         (rlError as { poolRateLimitRetryMs?: number }).poolRateLimitRetryMs = delayMs;
         throw rlError;
@@ -2059,13 +2529,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // (isRateLimitError → tryRotateToken) and schedule a retry
       // (isRecoverableClaudeSdkError), so the next attempt runs on a fresh
       // credential instead of replaying the cap notice to the user.
-      if (textMayBeTransportError && textIndicatesUsageLimit(streamResult.collectedText)) {
+      if (textMayBeTransportError && textIndicatesUsageLimit(guardText)) {
         this.logger.warn('Usage limit surfaced as turn content — converting to rotation path', {
           sessionKey,
-          preview: String(streamResult.collectedText).slice(0, 120),
+          preview: String(guardText).slice(0, 120),
         });
         const capError = new Error(
-          `Claude usage limit hit (surfaced as turn content): ${String(streamResult.collectedText).slice(0, 200)}`,
+          `Claude usage limit hit (surfaced as turn content): ${String(guardText).slice(0, 200)}`,
         );
         (capError as { usageLimitFromContent?: boolean }).usageLimitFromContent = true;
         throw capError;
@@ -2087,14 +2557,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // is recorded/posted. `isContextOverflowError` matches the message, so
       // handleError arms the fallback (stash model → switch to the 1M compact
       // model → `/compact` retry → restore at the boundary).
-      if (textMayBeTransportError && textIndicatesPromptTooLong(streamResult.collectedText)) {
+      if (textMayBeTransportError && textIndicatesPromptTooLong(guardText)) {
         this.logger.warn('Prompt-too-long surfaced as turn content — converting to fallback-compact path', {
           sessionKey,
-          preview: String(streamResult.collectedText).slice(0, 120),
+          preview: String(guardText).slice(0, 120),
         });
-        throw new Error(
-          `Prompt is too long (surfaced as turn content): ${String(streamResult.collectedText).slice(0, 200)}`,
-        );
+        throw new Error(`Prompt is too long (surfaced as turn content): ${String(guardText).slice(0, 200)}`);
       }
 
       // Empty-text-block 400 surfaced as content on a NORMAL turn (post-
@@ -2103,8 +2571,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // let the recoverable-error rail retry; if the repair already ran and
       // the 400 persists, fall through to the generic throw so
       // `shouldClearSessionOnError` policy decides.
-      if (textMayBeTransportError && textIndicatesEmptyContentBlock400(streamResult.collectedText)) {
-        const collected = String(streamResult.collectedText);
+      if (textMayBeTransportError && textIndicatesEmptyContentBlock400(guardText)) {
+        const collected = String(guardText);
         const repairRecentlyAttempted =
           typeof session.transcriptRepairAttemptedAtMs === 'number' &&
           Date.now() - session.transcriptRepairAttemptedAtMs < StreamExecutor.TRANSCRIPT_REPAIR_COOLDOWN_MS;
@@ -2140,8 +2608,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Issue #122 followup: treat SDK result errors as failures
       const hasSdkError = !!streamResult.sdkResultError;
 
-      // Update reaction based on whether user choice is pending
-      const hasPendingChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
+      // Update reaction based on whether user choice is pending.
+      // A choice this turn asked can already be answered before the turn ends
+      // (a dashboard or Slack click while the model is still streaming), and
+      // every answer path clears `actionPanel.waitingForChoice`. A registered
+      // choice whose bit is cleared is answered, so the turn must not end
+      // waiting — otherwise the dashboard shows a NEEDS YOU card with no
+      // question to answer, and the follow-up drain stays held. An unregistered
+      // choice (plain-text fallback) or a bit no thread panel ever wrote keeps
+      // the asked-this-turn behaviour.
+      const askedChoice = Boolean(streamResult.hasUserChoice || toolChoicePending);
+      const choiceStillOpen = () =>
+        askedChoice && !(choiceRegistered && session.actionPanel?.waitingForChoice === false);
+      let hasPendingChoice = choiceStillOpen();
       const finalStatus = hasSdkError ? 'error' : hasPendingChoice ? 'waiting' : 'completed';
       if (isOutputEnabled(OutputFlag.STATUS_REACTION)) {
         await this.deps.reactionManager.updateReaction(
@@ -2149,6 +2628,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           this.deps.statusReporter.getStatusEmoji(finalStatus),
         );
       }
+      // Re-read after the reaction write: an answer can land during that await.
+      hasPendingChoice = choiceStillOpen();
       // Transition activity state
       // Issue #391: Skip idle transition when continuation exists — next turn starts immediately,
       // so transitioning to idle would cause dashboard to briefly flicker to "대기" column.
@@ -2161,11 +2642,21 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           {
             agentPhase: hasPendingChoice ? '입력 대기' : '사용자 액션 대기',
             activeTool: undefined,
-            waitingForChoice: hasPendingChoice,
+            // A registered open choice already has its bit up. Re-writing `true`
+            // here would re-open an answer that lands during this write, so
+            // only an unregistered choice (or a cleared one) is written.
+            waitingForChoice: hasPendingChoice && choiceRegistered ? undefined : hasPendingChoice,
           },
           turnEpochToken,
         );
       }
+      // The turn result is read by the adapter only after this turn's teardown
+      // awaits (endTurn, permalink, …), and TurnRunner.finish / the host's
+      // drain decision consume it. Hand it the live read, not a snapshot, so
+      // an answer landing during teardown is not re-opened.
+      hasPendingChoice = choiceStillOpen();
+      turnCollector.setHasPendingChoice(hasPendingChoice);
+      turnCollector.setPendingChoiceProbe?.(choiceStillOpen);
 
       // Update action panel with turn summary and latest response permalink
       await this.updateActionPanelTurnMeta(session, channel, requestStartedAt, toolStats, latestResponseTs);
@@ -2192,6 +2683,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // Issue #122: Surface SDK result errors to user (errors[] from SDKResultError)
       if (streamResult.sdkResultError) {
         const { subtype, errors, numTurns } = streamResult.sdkResultError;
+        compactFailureText = [subtype, ...errors].join(': ');
         const escMrkdwn = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
         const errorLines = [`⚠️ *[SDK Result Error]* ${escMrkdwn(subtype)}`, `> *Turns:* ${numTurns ?? 'unknown'}`];
         if (errors.length > 0) {
@@ -2206,6 +2698,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         } else {
           errorLines.push(`> _No error details provided by SDK_`);
         }
+        emitWorkLog({ kind: 'error', text: [subtype, ...errors.slice(0, 5)].join(': ') });
         await say({ text: errorLines.join('\n'), thread_ts: threadTs });
       }
 
@@ -2584,6 +3077,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         text.trim()
       ) {
         (error as any).failedTurnText = text;
+        // A goal objective must replay as the user's words — never re-parsed
+        // as a command (`new …`) or an SDK slash command (`/clear …`).
+        if (params.literalPrompt === true) (error as any).failedTurnLiteral = true;
       }
       // The reason was set by `RequestCoordinator.abortSession(reason)` —
       // `controller.abort(reason)` surfaces it on `signal.reason`. Used by
@@ -2595,6 +3091,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // `controller.abort()` yields a DOMException ("AbortError"); we only
       // trust it when it matches our known reason union.
       const abortReason = requestAborted ? coerceAbortReason(abortController.signal.reason) : undefined;
+      // Work log: a quiet abort (QUIET_ABORT_REASONS) is a `notice`, a
+      // card-worthy one an `error`; any other error is an `error` unless
+      // handleError schedules a retry (recoverable — `notice` with the delay).
+      // Written after handleError, in a finally, so a throw there still logs.
+      const turnErrorText = requestAborted
+        ? `aborted${abortReason ? ` (${abortReason})` : ''}`
+        : this.sanitizeSdkDetails(String((error as Error)?.message ?? error));
+      let scheduledRetryMs: number | undefined;
       // Issue #525 P1: close the B1 stream before handleError posts the
       // error block — otherwise the stream would linger until finally and
       // race with the error message rendering. PHASE=0 → no-op.
@@ -2634,20 +3138,52 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           error: (err as Error)?.message ?? String(err),
         });
       }
-      const retryAfterMs = await this.handleError(
-        error,
-        session,
-        sessionKey,
-        channel,
-        threadTs,
-        processedFiles,
-        say,
-        requestAborted,
-        activeSlotSnapshot,
-        abortReason,
-        turnEpochToken,
-        interruptFlushFailed,
-      );
+      // Compact retry loop breaker (field incident 2026-10-22). A failed
+      // `/compact` leaves usage where it was, so this turn's `finally`
+      // threshold check would re-arm `autoCompactPending` and the replay of
+      // the intercepted message would be intercepted straight back into
+      // `/compact` — compact → fail → compact every few seconds. Pause the
+      // threshold-triggered auto-compact first (handleError's failure notice
+      // reports the pause). Exempt: the transcript-repair retry (Rail 1, one
+      // bounded re-run) and aborts the user chose.
+      if (session.compactTurnActive === true) {
+        compactFailureHandled = true;
+        if (
+          !(error as any)?.compactRetryAfterRepair &&
+          !(requestAborted && abortReason !== undefined && QUIET_ABORT_REASONS.has(abortReason))
+        ) {
+          this.pauseAutoCompactAfterCompactFailure(session, sessionKey, String((error as Error)?.message ?? error));
+        }
+      }
+      let retryAfterMs: number | undefined;
+      try {
+        retryAfterMs = await this.handleError(
+          error,
+          session,
+          sessionKey,
+          channel,
+          threadTs,
+          processedFiles,
+          say,
+          requestAborted,
+          activeSlotSnapshot,
+          abortReason,
+          turnEpochToken,
+          interruptFlushFailed,
+        );
+        scheduledRetryMs = retryAfterMs;
+      } finally {
+        if (requestAborted && abortReason !== undefined && QUIET_ABORT_REASONS.has(abortReason)) {
+          emitWorkLog({ kind: 'notice', text: turnErrorText });
+        } else if (!requestAborted && scheduledRetryMs !== undefined) {
+          emitWorkLog({
+            kind: 'notice',
+            text: `retrying in ${Math.round(scheduledRetryMs / 1000)}s: ${turnErrorText}`,
+          });
+        } else {
+          emitWorkLog({ kind: 'error', text: turnErrorText });
+        }
+      }
       // `handleError()` ran to completion — it either dispatched a user-facing
       // Exception card (turnNotifier), reset status/reaction, or both.
       //
@@ -2725,6 +3261,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           this.logger,
         );
       }
+      // Compact retry loop breaker, non-throwing exits: a `/compact` turn that
+      // returned normally (SDK error result, or a result that never compacted)
+      // without a compact boundary failed too. Must run BEFORE the threshold
+      // check below, which would otherwise re-arm auto-compact.
+      if (session.compactTurnActive === true && !compactBoundarySeen && !compactFailureHandled) {
+        this.pauseAutoCompactAfterCompactFailure(session, sessionKey, compactFailureText);
+      }
       // #617 AC3: threshold check at turn-end. Must run AFTER endTurn so
       // session.usage reflects the just-completed turn. Fire-and-forget —
       // the helper sets `session.autoCompactPending=true` synchronously
@@ -2738,6 +3281,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         userSettings: userSettingsStore,
         slackApi: this.deps.slackApi,
         logger: this.logger,
+        workLog: emitWorkLog,
       }).catch((err: unknown) => {
         this.logger.warn('stream-executor: compact threshold check failed', {
           turnId,
@@ -2748,6 +3292,28 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // already ran endTurn, activeLegStartedAtMs is undefined and this is
       // a no-op. Guarantees the accumulator is correct on every exit path.
       try {
+        // A turn that ended without its result usage (abort, error): its
+        // reported calls were spent — fold them into the totals (priced at the
+        // session model) instead of letting the live numbers fall back.
+        if (session.liveUsage && Object.keys(session.liveUsage).length) {
+          this.ensureSessionUsage(session);
+          // A pending fold from an SDK session this one replaced will never be
+          // settled (that session is never resumed again) — drop it rather than
+          // let it pile onto, and be retagged as, this session's fold.
+          const stale = session.usage?.foldedLiveUsage;
+          if (session.usage && stale && stale.sdkSessionId !== session.sessionId)
+            session.usage.foldedLiveUsage = undefined;
+          foldLiveUsage(session, turnId, (t) => streamExecutorProviders.priceLiveUsage(session.model, t));
+          // The fold belongs to the SDK session this turn ran in — only its next
+          // result carries these calls again (see `settleFoldedLiveUsage`).
+          const folded = session.usage?.foldedLiveUsage;
+          if (folded) folded.sdkSessionId = session.sessionId;
+          // The task total (persisted) just grew outside a result: save it now —
+          // the idle save already ran, and a crash before the next one would
+          // lose the fold (SSOT 2026-10-26 T3, review r2).
+          this.deps.claudeHandler.getSessionRegistry().persistAndBroadcast?.(sessionKey);
+        }
+        clearLiveUsage(session, turnId);
         this.deps.claudeHandler.getSessionRegistry().endTurn(session);
         this.deps.claudeHandler.getSessionRegistry().broadcastSessionUpdate();
       } catch (err) {
@@ -2793,6 +3359,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
       if (wasCompactTurn) {
         promotePendingToDispatchQueue(session as CompactStateSession);
+        // T5: a model switch that waited for this compact never outlives it —
+        // applied if the turn compacted after all, cancelled if it did not.
+        const settled = settlePendingModelSwitch(session, resolveContextWindow);
+        if (settled !== 'none') {
+          this.logger.info('Dashboard model switch settled at compact turn end', { sessionKey, settled });
+        }
       }
       // Codex review F2: if ANOTHER turn started in the tiny window between
       // `cleanup()` removing this turn's controller and this consumption
@@ -2853,8 +3425,31 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
   }
 
-  /** Max auto-retries per error sequence before giving up */
-  private static readonly MAX_ERROR_RETRIES = 3;
+  /**
+   * Compact retry loop breaker — pause threshold-triggered auto-compact after
+   * a failed `/compact` turn (see `pauseAutoCompactAfterFailure`). A pool-429
+   * `retry in Ns` hint in `failureText` sets the pause length.
+   */
+  private pauseAutoCompactAfterCompactFailure(
+    session: ConversationSession,
+    sessionKey: string,
+    failureText: string | undefined,
+  ): void {
+    const advertisedRetryMs =
+      failureText && textIndicatesRetryableRateLimit(failureText) ? parseRetryAfterMs(failureText) : null;
+    const pausedUntilMs = pauseAutoCompactAfterFailure(session as CompactStateSession, advertisedRetryMs);
+    this.logger.warn('Auto-compact paused after failed /compact turn', {
+      sessionKey,
+      pausedUntil: new Date(pausedUntilMs).toISOString(),
+      advertisedRetryMs,
+    });
+  }
+
+  /**
+   * Max auto-retries per error sequence before giving up. Public so the host
+   * can say "attempt n/MAX" wherever it shows the armed retry (dashboard card).
+   */
+  static readonly MAX_ERROR_RETRIES = 3;
   /** Delay in ms before auto-retry on recoverable errors */
   private static readonly ERROR_RETRY_DELAY_MS = 30_000;
   /**
@@ -3004,7 +3599,12 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         .replace(/\x60/g, 'ˋ');
       const detail =
         escapedReason.length > 2500 ? `${escapedReason.slice(0, 2500)}… (이하 생략 — 상세 로그 확인)` : escapedReason;
-      const condensed = `🔴 컴팩트 실패 — 대화 요약 중 오류가 발생했습니다.${restoreNote}${sessionResetNote}\n원인: ${detail}`;
+      const pausedUntilMs = session.autoCompactSuppressedUntilMs;
+      const pauseNote =
+        typeof pausedUntilMs === 'number' && isAutoCompactPaused(session as CompactStateSession)
+          ? ` 자동 compact는 ${Math.ceil((pausedUntilMs - Date.now()) / 60_000)}분간 중지합니다 (수동 \`/compact\`는 가능).`
+          : '';
+      const condensed = `🔴 컴팩트 실패 — 대화 요약 중 오류가 발생했습니다.${restoreNote}${sessionResetNote}${pauseNote}\n원인: ${detail}`;
       await runWithTimeout(() => say({ text: condensed, thread_ts: threadTs }), DEFAULT_CLEANUP_TIMEOUT_MS, {
         what: 'handleError say(compactTerminalFailure)',
         logger: this.logger,
@@ -3060,13 +3660,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     const stallTimeoutAbort = isAbort && abortReason === 'stall-timeout';
     const ghostSessionAbort = isAbort && abortReason === 'ghost-session';
     const userInterruptedAbort = isAbort && abortReason === 'user-interrupted';
-    const knownSilentAbort =
-      isAbort &&
-      (abortReason === 'supersede' ||
-        abortReason === 'user-stop' ||
-        abortReason === 'session-close' ||
-        abortReason === 'shutdown' ||
-        userInterruptedAbort);
+    const knownSilentAbort = isAbort && abortReason !== undefined && QUIET_ABORT_REASONS.has(abortReason);
     const unknownAbort = isAbort && !stallTimeoutAbort && !ghostSessionAbort && !knownSilentAbort;
     const notifyWorthyAbort = stallTimeoutAbort || ghostSessionAbort || unknownAbort;
     const shouldNotifyException =
@@ -3304,7 +3898,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // 30s recoverable backoff, which would just re-hit the same wall and
         // burn the budget in ~90s. `poolRateLimitRetryMs` is stashed by the
         // content-guard; otherwise it is parsed from message + stderr.
-        const poolRateLimitRetryMs = this.detectPoolRateLimitRetryMs(error);
+        //
+        // A failed threshold/manual `/compact` is never auto-resumed: the
+        // deferred replay in `finally` re-runs the intercepted message and the
+        // auto-compact pause decides when compaction is tried again, so an
+        // auto-resume would fire a stray continuation after that replay. The
+        // emergency fallback compact keeps its own retry rails.
+        const failedCompactTurn = session.compactTurnActive === true && !session.fallbackCompactActive;
+        const poolRateLimitRetryMs = failedCompactTurn ? null : this.detectPoolRateLimitRetryMs(error);
         if (poolRateLimitRetryMs !== null) {
           const retryCount = session.errorRetryCount ?? 0;
           if (retryCount < StreamExecutor.MAX_ERROR_RETRIES) {
@@ -3333,7 +3934,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // Auto-retry only for known recoverable errors.
         // Unknown errors are preserved but not auto-retried — the user
         // decides whether to continue or `/reset`.
-        if (!poolRateLimitHandled && isRecoverable) {
+        if (!poolRateLimitHandled && isRecoverable && !failedCompactTurn) {
           const retryCount = session.errorRetryCount ?? 0;
           if (retryCount < StreamExecutor.MAX_ERROR_RETRIES) {
             session.errorRetryCount = retryCount + 1;
@@ -3577,6 +4178,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // The user text whose turn overflowed — attached by execute()'s catch so
     // the boundary handler can re-dispatch it after compaction completes.
     const failedTurnText = typeof (error as any)?.failedTurnText === 'string' ? (error as any).failedTurnText : null;
+    const failedTurnLiteral = (error as any)?.failedTurnLiteral === true;
 
     // Proactive transcript repair (field incident 2026-07-07, ccee16e0): the
     // `/compact` we are about to run replays the FULL transcript through the
@@ -3609,7 +4211,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     session.fallbackCompactActive = true;
     session.fallbackCompactPendingUserText = failedTurnText;
     session.fallbackCompactPendingEventContext = failedTurnText
-      ? { channel, threadTs, user: session.ownerId || '', ts: `${Date.now() / 1000}` }
+      ? {
+          channel,
+          threadTs,
+          user: session.ownerId || '',
+          ts: `${Date.now() / 1000}`,
+          ...(failedTurnLiteral ? { verbatimPrompt: true } : {}),
+        }
       : null;
     session.model = fallbackModel;
     session.lastErrorContext = undefined;
@@ -4039,7 +4647,6 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         this.deps.todoDisplayManager.cleanup(sessionKey);
         this.deps.reactionManager.cleanup(sessionKey);
         this.deps.contextWindowManager.cleanup(sessionKey);
-        this.deps.statusReporter.cleanup(sessionKey);
       });
     }
   }
@@ -4591,8 +5198,39 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     return session.usage;
   }
 
-  private updateSessionUsage(session: ConversationSession, usage: UsageData, turnId?: string): void {
+  private updateSessionUsage(
+    session: ConversationSession,
+    sessionKey: string,
+    reported: UsageData,
+    turnId?: string,
+    resumedSdkSessionId?: string,
+  ): void {
     this.ensureSessionUsage(session);
+
+    // The result's per-model usage is the SDK session's RUNNING TOTAL, and
+    // every turn resumes the same SDK session — so adding it as-is re-counted
+    // every earlier turn. Every total below (session, per-model, goal,
+    // token_usage) reads this turn's own spend. See `toTurnUsage`.
+    //
+    // A session saved before baselines existed resumes with its whole history
+    // in this running total, and that history is already in its goal's spend:
+    // take the total as the baseline and count nothing for this one turn.
+    const legacyResume =
+      !session.sdkUsageBaseline && !!resumedSdkSessionId && resumedSdkSessionId === session.sessionId;
+    const baselineIn = legacyResume
+      ? toTurnUsage(reported, undefined, session.sessionId).baseline
+      : session.sdkUsageBaseline;
+    if (legacyResume && baselineIn) {
+      this.logger.info('Usage baseline seeded from a resumed session without one — this turn counts no spend', {
+        conversationId: session.conversationId,
+        sdkSessionId: session.sessionId,
+      });
+      // Calls folded before the seed are inside the seeded running total now.
+      session.usage.foldedLiveUsage = undefined;
+      if (session.taskUsage) delete session.taskUsage.pendingFold;
+    }
+    const { turn: usage, baseline } = toTurnUsage(reported, baselineIn, session.sessionId);
+    session.sdkUsageBaseline = baseline;
 
     // Update model name on session (useful for display)
     if (usage.modelName && !session.model) {
@@ -4624,8 +5262,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // real context window state at the end of the loop.
     //
     // ALL-ZERO per-turn values (llmux/codex assistant messages) are treated as
-    // missing — `selectCurrentContextTokens` falls back to the aggregate so the
-    // context display and auto-compact triggers never see an empty window.
+    // missing. For those models the call's reading comes from its stream
+    // `message_delta` instead (partial messages, requested by the options
+    // builder); only a turn that still has no reading falls back to the
+    // aggregate — an overstatement, kept so the window never reads empty.
     //
     // Issue #196 — EXCEPT right after a compact boundary. This callback fires
     // once per turn, after the stream loop, so on a compacted turn the sample
@@ -4640,7 +5280,16 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Only the shield THIS turn established suppresses THIS turn's sample. A
     // shield left by a different (e.g. superseded) turn must not swallow our
     // legitimate reading — that would freeze the display for an extra turn.
-    if (turnId !== undefined && session.postCompactOccupancyTurnId === turnId) {
+    const sampleIsEmpty =
+      current.source === 'aggregate-fallback' &&
+      current.inputTokens + current.outputTokens + current.cacheReadTokens + current.cacheCreateTokens === 0;
+    // A turn that counted no spend (baseline seed, zero result) says nothing
+    // about how full the window is — the last occupancy stands.
+    if (sampleIsEmpty) {
+      this.logger.debug('Keeping occupancy — this turn carried no usage sample', {
+        conversationId: session.conversationId,
+      });
+    } else if (turnId !== undefined && session.postCompactOccupancyTurnId === turnId) {
       this.logger.debug("Keeping post-compact occupancy — ignoring this turn's pre-boundary usage sample", {
         conversationId: session.conversationId,
         ignoredSource: current.source,
@@ -4653,13 +5302,30 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       session.usage.currentCacheCreateTokens = current.cacheCreateTokens;
     }
 
-    // Accumulate totals (billing-oriented: use aggregate values, not per-turn)
-    session.usage.totalInputTokens += usage.inputTokens;
-    session.usage.totalOutputTokens += usage.outputTokens;
-    session.usage.totalCacheReadTokens += usage.cacheReadInputTokens;
-    session.usage.totalCacheCreateTokens += usage.cacheCreationInputTokens;
-    session.usage.totalCostUsd += usage.totalCostUsd;
+    // Accumulate totals (billing-oriented: use aggregate values, not per-turn).
+    // Spend an earlier result-less turn already folded in is settled, not re-added.
+    const pendingFold = session.usage.foldedLiveUsage;
+    const { spend, folded } = settleFoldedLiveUsage(
+      usage,
+      pendingFold && pendingFold.sdkSessionId === session.sessionId ? pendingFold : undefined,
+    );
+    session.usage.foldedLiveUsage = folded;
+    // Signed when it settles a fold (the fold was an estimate): never below zero.
+    const u = session.usage;
+    u.totalInputTokens = addSessionSpend(u.totalInputTokens, spend.inputTokens);
+    u.totalOutputTokens = addSessionSpend(u.totalOutputTokens, spend.outputTokens);
+    u.totalCacheReadTokens = addSessionSpend(u.totalCacheReadTokens, spend.cacheReadInputTokens);
+    u.totalCacheCreateTokens = addSessionSpend(u.totalCacheCreateTokens, spend.cacheCreationInputTokens);
+    u.totalCostUsd = addSessionSpend(u.totalCostUsd, spend.totalCostUsd);
     session.usage.lastUpdated = Date.now();
+    // SSOT 2026-10-26 T3 — the task total takes the same turn spend, settled
+    // against its own (persisted) fold so a restart in between cannot count a
+    // folded call twice. It outlives restarts and resets; `usage` does not.
+    creditTaskSpend(session, usage);
+    // The turn's calls are in the totals now — the live view stops adding them,
+    // and the turn's end never folds them a second time.
+    markLiveUsageSettled(session, turnId);
+    clearLiveUsage(session, turnId);
 
     // Per-model cumulative totals (input/output/cache write/cache read/cost),
     // rendered by `/context`. Survives model switches — each model keeps its
@@ -4714,9 +5380,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     });
 
     // Per-turn data is the source of truth for live context display. If it is
-    // missing OR all-zero (llmux/codex), the aggregate path overstates context
-    // usage (sums ALL API calls in the agent loop). Log so the gap is
-    // observable in ops.
+    // missing OR all-zero, the aggregate path overstates context usage (sums
+    // ALL API calls in the agent loop). For llmux non-claude models this now
+    // means the turn ended without a `message_delta` reading (cut off, or the
+    // partial-message stream was not requested). Log so the gap is observable
+    // in ops.
     if (current.source === 'aggregate-fallback') {
       this.logger.warn(
         'Session context usage derived from aggregate fallback (per-turn tokens missing or all-zero) — displayed context may overstate actual window occupancy',
@@ -4730,17 +5398,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
 
     // Emit token_usage event for persistent tracking (fire-and-forget)
-    this.emitTokenUsageEvent(session, usage);
+    this.emitTokenUsageEvent(session, sessionKey, usage);
   }
 
   /**
    * Emit token_usage metrics event for persistent JSONL tracking.
    * Fire-and-forget — errors are logged but never block the caller.
+   *
+   * `sessionKey` is the session-registry key from `execute()` params — the
+   * same key every other metrics event carries. (This package cannot import
+   * the app's `buildWorkSessionKey`, so the key is threaded in, not rebuilt.)
    */
-  private emitTokenUsageEvent(session: ConversationSession, usage: UsageData): void {
+  private emitTokenUsageEvent(session: ConversationSession, sessionKey: string, usage: UsageData): void {
     try {
       const emitter = getMetricsEmitter();
-      const sessionKey = `${session.channelId}-${session.threadTs || 'direct'}`;
       // Must come from StreamProcessor where the cost was actually determined.
       // Re-deriving from `usage.totalCostUsd > 0` flips the label for any
       // calculated non-zero cost (which the SDK did not actually report).
@@ -4773,6 +5444,38 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     }
   }
 
+  /**
+   * Spec 10 §3.2 — report one host-side outcome of a model-command call (a
+   * failure, a refusal, a goal notice). It always goes to this turn's work
+   * log as `entry.kind`, and to Slack only when the session's mask carries
+   * `flag` — by default `TOOL_CALL` (compact and up): model-command
+   * bookkeeping is not part of the minimal thread. Verbosity is read from the
+   * session at call time so a mid-stream change applies. `alwaysPost` is for
+   * the user-facing ones: an ASK_USER_QUESTION failure and a parse/connection
+   * failure (the user would wait for a question form that never appears), and
+   * a host-side failure the model never sees — its tool result said ok, so
+   * without the post nobody learns of it.
+   */
+  private async reportModelCommandOutcome(
+    entry: { kind: 'error' | 'notice'; text: string },
+    session: ConversationSession,
+    context: StreamContext,
+    { flag = OutputFlag.TOOL_CALL, alwaysPost = false }: { flag?: number; alwaysPost?: boolean } = {},
+  ): Promise<void> {
+    try {
+      context.workLog?.(entry);
+    } catch (err) {
+      // The work log is a side record — it must never block the notice.
+      this.logger.debug('workLog sink threw — ignored', {
+        sessionKey: context.sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+    if (alwaysPost || shouldOutput(flag, resolveVerbosityMask(session.logVerbosity))) {
+      await context.say({ text: entry.text, thread_ts: context.threadTs });
+    }
+  }
+
   private async handleModelCommandToolResults(
     toolResults: Array<{ toolUseId: string; toolName?: string; result: any; isError?: boolean }>,
     session: ConversationSession,
@@ -4800,14 +5503,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           sessionKey: context.sessionKey,
           toolUseId: toolResult.toolUseId,
         });
-        // Issue #816 — surface to Slack so a parse failure isn't a
-        // silent drop. Match the bare-await convention used by the
-        // UPDATE_SESSION warning branch below.
+        // Issue #816 — never a silent drop, at any verbosity. The command is
+        // unknown, and this is the disconnected-MCP shape (the model may have
+        // been asking the user a question), so it is user-facing.
         const rawPreview = stringifyAndTruncate(toolResult.result, 200);
-        await context.say({
-          text: `❌ MCP 응답 파싱 실패 (toolUseId: ${toolResult.toolUseId}). raw: ${rawPreview}`,
-          thread_ts: context.threadTs,
-        });
+        await this.reportModelCommandOutcome(
+          {
+            kind: 'error',
+            text: `❌ MCP 응답 파싱 실패 (toolUseId: ${toolResult.toolUseId}). raw: ${rawPreview}`,
+          },
+          session,
+          context,
+          { alwaysPost: true },
+        );
         continue;
       }
 
@@ -4821,28 +5529,36 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         modelCommandResults.push({ commandId: parsed.commandId, ok: false, error: parsed.error });
         // Issue #816 — ASK_USER_QUESTION's failure is the loudest split-
         // brain symptom (agent thinks it asked, user sees nothing), so
-        // it gets an explicit hint; other commands get the bare error.
+        // it gets an explicit hint and reaches Slack at every verbosity;
+        // other commands get the bare error.
         const errMessage = parsed.error?.message ?? 'unknown error';
         const errCode = parsed.error?.code ?? 'UNKNOWN';
+        const isAskUserQuestion = parsed.commandId === 'ASK_USER_QUESTION';
         let text = `❌ MCP ${parsed.commandId} 실패: ${errCode} — ${errMessage}`;
-        if (parsed.commandId === 'ASK_USER_QUESTION') {
+        if (isAskUserQuestion) {
           text += `\n❌ 사용자 선택 UI를 띄우지 못했습니다. 같은 질문을 다시 호출하시거나 MCP 연결 상태를 확인하세요.`;
         }
-        await context.say({ text, thread_ts: context.threadTs });
+        await this.reportModelCommandOutcome({ kind: 'error', text }, session, context, {
+          alwaysPost: isAskUserQuestion,
+        });
         continue;
       }
 
       // Issue #816 — split-brain guard: the wire-level call was flagged
       // isError=true but the parsed body still looked successful (e.g. a
       // transport hiccup that returned a JSON candidate anyway). Without
-      // this branch the user would see no failure at all. Continue
+      // this branch the failure would leave no trace at all. Continue
       // processing afterwards — the body is parseable so downstream
       // branches (e.g. SAVE_CONTEXT_RESULT) may still need the payload.
       if (toolResult.isError === true) {
-        await context.say({
-          text: `❌ MCP ${parsed.commandId} 호출 실패 (wire-level isError=true). MCP 연결 상태를 확인해주세요.`,
-          thread_ts: context.threadTs,
-        });
+        await this.reportModelCommandOutcome(
+          {
+            kind: 'error',
+            text: `❌ MCP ${parsed.commandId} 호출 실패 (wire-level isError=true). MCP 연결 상태를 확인해주세요.`,
+          },
+          session,
+          context,
+        );
       }
 
       // Issue #42 S3: 성공 결과 수집
@@ -4944,9 +5660,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // and echoed the params; the HOST is the enforcement point. A goal may
       // be installed ONLY when (a) this turn originates from a real user
       // message and (b) the model's `userRequestEvidence` is a verbatim
-      // substring of that ACTUAL message. Anything else is refused loudly
-      // (⚠️ via context.say, mirroring the UPDATE_SESSION host-failure
-      // pattern) with zero session mutation.
+      // substring of that ACTUAL message. Anything else is refused with zero
+      // session mutation and a ⚠️ notice posted at every verbosity, like the
+      // UPDATE_SESSION host failure: the MCP echo told the model ok, so the
+      // model never sees the refusal (spec 10 §3.2).
       if (parsed.commandId === 'SET_GOAL') {
         const payload = parsed.payload as { objective?: string; userRequestEvidence?: string };
         const objective = typeof payload?.objective === 'string' ? payload.objective.trim() : '';
@@ -4975,12 +5692,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             isUserInputTurn: context.isUserInputTurn === true,
             hasCurrentUserText: typeof userText === 'string',
           });
-          await context.say({
-            text:
-              `⚠️ SET_GOAL refused: ${refusalReason}. ` +
-              'A goal can only be set when the user explicitly asks for it in their current message.',
-            thread_ts: context.threadTs,
-          });
+          // A refusal is the gate working, not a malfunction: `notice`.
+          // Posted at every verbosity — host-side, invisible to the model.
+          await this.reportModelCommandOutcome(
+            {
+              kind: 'notice',
+              text:
+                `⚠️ SET_GOAL refused: ${refusalReason}. ` +
+                'A goal can only be set when the user explicitly asks for it in their current message.',
+            },
+            session,
+            context,
+            { alwaysPost: true },
+          );
           continue;
         }
 
@@ -5012,12 +5736,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           activated: applied.activated,
           objectivePreview: objective.slice(0, 120),
         });
-        await context.say({
-          text: applied.activated
-            ? `🎯 Goal set by model (user-requested): ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"`
-            : `📋 Goal queued by model at position ${applied.position}: ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"`,
-          thread_ts: context.threadTs,
-        });
+        // Goal started/queued is a status notice: gated on STATUS_MESSAGE like
+        // goal-loop-controller's `postStatusNotice` (compact and up).
+        await this.reportModelCommandOutcome(
+          {
+            kind: 'notice',
+            text: applied.activated
+              ? `🎯 Goal set by model (user-requested): ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"`
+              : `📋 Goal queued by model at position ${applied.position}: ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"`,
+          },
+          session,
+          context,
+          { flag: OutputFlag.STATUS_MESSAGE },
+        );
         continue;
       }
 
@@ -5052,10 +5783,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
               error: updateResult.error,
               mismatch: updateResult.sequenceMismatch,
             });
-            await context.say({
-              text: `⚠️ Session update could not be applied on host (${updateResult.reason || 'UNKNOWN'}).`,
-              thread_ts: context.threadTs,
-            });
+            // The MCP side applied its own preview and answered ok: true, so
+            // the model never sees this failure — posted at every verbosity.
+            await this.reportModelCommandOutcome(
+              {
+                kind: 'error',
+                text: `⚠️ Session update could not be applied on host (${updateResult.reason || 'UNKNOWN'}).`,
+              },
+              session,
+              context,
+              { alwaysPost: true },
+            );
           } else {
             this.logger.info('Applied UPDATE_SESSION resource ops on host', {
               sessionKey: context.sessionKey,
@@ -5071,14 +5809,31 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           await this.interceptInstructionOperationsForConfirm(request, session, context);
         }
 
-        // Apply title update only if no operations or operations succeeded
-        const titleUpdate = (parsed.payload as Record<string, unknown>).title as string | undefined;
+        // Apply title update only if no operations or operations succeeded.
+        // `titleFillOnly` (intent titles for stand-in sessions) writes only
+        // while the session still has a host stand-in title; a plain `title`
+        // stays an unconditional rename (e.g. pr-review after a merge).
+        const payload = parsed.payload as Record<string, unknown>;
+        const titleUpdate = payload.title as string | undefined;
         if (titleUpdate && operationsOk) {
-          this.deps.claudeHandler.updateSessionTitle(context.channel, context.threadTs, titleUpdate);
-          this.logger.info('Applied session title update from UPDATE_SESSION', {
-            sessionKey: context.sessionKey,
-            title: titleUpdate,
-          });
+          if (payload.titleFillOnly === true) {
+            const applied = this.deps.claudeHandler.fillPlaceholderSessionTitle(
+              context.channel,
+              context.threadTs,
+              titleUpdate,
+            );
+            this.logger.info('Fill-only session title from UPDATE_SESSION', {
+              sessionKey: context.sessionKey,
+              title: titleUpdate,
+              applied,
+            });
+          } else {
+            this.deps.claudeHandler.updateSessionTitle(context.channel, context.threadTs, titleUpdate);
+            this.logger.info('Applied session title update from UPDATE_SESSION', {
+              sessionKey: context.sessionKey,
+              title: titleUpdate,
+            });
+          }
         }
       }
     }
@@ -5619,7 +6374,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       return undefined;
     }
 
-    const { id, files, path, dir, summary } = saveResult;
+    const { id, files, path, dir } = saveResult;
 
     // Try to get save content from files array or fallback to reading from path
     let saveContent: string;

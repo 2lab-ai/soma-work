@@ -26,6 +26,14 @@ export const GOAL_CONTINUATION_TEXT_PREFIX = '[goal-continuation]';
  */
 export function bumpGoalEpoch(goal: SessionGoal): void {
   goal.epoch = (goal.epoch ?? 0) + 1;
+  // A scheduled eval retry is armed for ONE epoch and no-ops at fire time once
+  // the epoch moved, so its backoff window no longer schedules anything. Drop
+  // the window with the bump: left in place it keeps the runOnce gate shut for
+  // a wait nobody will end, and the dashboard card keeps advertising a
+  // re-check that never runs. The user's newer intent outranks the retry
+  // machinery (same rule as a real user message).
+  goal.evalBackoffUntil = undefined;
+  goal.evalRetryReason = undefined;
 }
 
 /**
@@ -59,6 +67,7 @@ export function resetGoalContinuationOnUserMessage(session: { goal?: Conversatio
   // self-healing retry machinery.
   session.goal.evalDispatchRetryCount = undefined;
   session.goal.evalBackoffUntil = undefined;
+  session.goal.evalRetryReason = undefined;
   // Invalidate any in-flight completion eval — the user just weighed in, so
   // a verdict about the pre-message work must not apply (M1).
   bumpGoalEpoch(session.goal);

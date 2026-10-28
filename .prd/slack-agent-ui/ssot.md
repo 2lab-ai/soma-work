@@ -86,6 +86,12 @@ Queue
   "시작 가능"만 말하므로 보관 보장으로 쓰지 않는다.
 - 실행 중 도착한 일반 후속 메시지는 — 상태 질문(`진행중인거 알려줘?`) 포함 — **모두 큐에 들어간다.**
   harness가 대신 답하고 소비해 버리는 경로(answer-and-consume) 금지. 현재 실행 auto-abort 금지.
+- 예외 — **goal 명령**(2026-10-21 유저 지시: "goal을 추가 입력한 경우 추가 goal이 입력되야함"): 실행 중 입력된
+  goal 명령(`goal …`, `/z goal …`, `goal … $skill`, 첨부 포함, `@bot` 멘션 포함; 비-admin DM 제외)은 큐에 넣지 않고
+  즉시 GoalHandler로 처리한다. goal 목록(§3.6의 별도 GoalQueue)을 바꾸는 제어이지 실행 중 턴의 후속 지시가 아니다.
+  새로 시작되는 goal의 첫 턴(목표 원문, `$skill` 결합이면 그 스킬 턴, 첨부는 이 턴에 실림)은 같은 fence로 접수되어
+  이 큐에서 대기하며(steer 금지) 위 규칙을 그대로 따른다. 그 첫 턴의 Cancel은 goal 취소(삭제)다.
+  상세: `docs/goal-command/spec.md` §Goal Commands While a Turn Runs.
 - 큐 UI 리시트를 올리기 **전에 durable 저장이 먼저** 성립해야 한다(UI가 보이는데 항목이 없는 상태 금지).
 - 세션별 FIFO. sequence 번호 + event dedup(같은 Slack 이벤트 재전송은 1개 항목).
 - enqueue 시점에 원문 텍스트를 **가공하지 않는다.** goals/auth/cwd/model을 바꾸지 않는다.

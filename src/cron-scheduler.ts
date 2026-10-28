@@ -1,5 +1,6 @@
 /**
- * CronScheduler — Polls every 60s, matches cron expressions, injects synthetic messages.
+ * CronScheduler — Polls every 60s, matches cron expressions for every minute since
+ * the last evaluated one (bounded catch-up), injects synthetic messages.
  * Trace: docs/archive/features/cron-scheduler/trace.md, Scenarios 4-6
  *
  * Pattern: src/metrics/report-scheduler.ts (setInterval polling)
@@ -21,6 +22,14 @@ import { MODEL_ALIASES } from './user-settings-store';
 
 const logger = new Logger('CronScheduler');
 const POLL_INTERVAL_MS = 60_000; // 1 minute
+/**
+ * How far back a tick catches up on minutes it did not evaluate (a tick dropped
+ * while the previous one was still running, or a timer that fired late across a
+ * minute boundary). Bounded so a host that slept for hours does not replay the
+ * whole gap.
+ */
+const MAX_CATCH_UP_MINUTES = 60;
+const MINUTE_MS = 60_000;
 
 /** Synthetic message event matching slack-handler's MessageEvent shape */
 export interface SyntheticMessageEvent {
@@ -35,6 +44,11 @@ export interface SyntheticMessageEvent {
   skipDispatch?: boolean;
   /** Model override for cron jobs with non-default model config */
   modelOverride?: string;
+  /**
+   * The job behind this fire (SSOT 2026-10-23 T1): a session the fire creates
+   * is named after it and filed under it on the dashboard.
+   */
+  cron?: { jobId: string; jobName: string };
   /** Route context — skipAutoBotThread prevents duplicate root message creation */
   routeContext?: {
     skipAutoBotThread?: boolean;
@@ -69,8 +83,8 @@ export interface CronSchedulerDeps {
 // Get current minute string in YYYY-MM-DDTHH:mm format for dedup.
 // Prevents re-fire within the same calendar minute while allowing
 // multi-fire-per-day crons (e.g. every 15 min).
-function currentMinuteStr(): string {
-  return new Date().toISOString().slice(0, 16);
+function minuteKey(epochMinute: number): string {
+  return new Date(epochMinute * MINUTE_MS).toISOString().slice(0, 16);
 }
 
 const FAST_MODEL = 'claude-sonnet-4-20250514';
@@ -89,11 +103,23 @@ export function resolveModelOverride(config?: CronModelConfig): string | undefin
   return undefined;
 }
 
+/** The structured origin every injected fire carries. */
+function cronOrigin(job: CronJob): { jobId: string; jobName: string } {
+  return { jobId: job.id, jobName: job.name };
+}
+
+/** The text a fire injects / posts. */
+function cronText(job: CronJob): string {
+  return `[cron:${job.name}] ${job.prompt}`;
+}
+
 export class CronScheduler {
   private deps: CronSchedulerDeps;
   private timer: ReturnType<typeof setInterval> | null = null;
   private pendingCronQueue: Map<string, CronJob[]> = new Map();
   private isRunning = false;
+  /** Last epoch minute a completed tick evaluated; null until the first tick. */
+  private lastEvaluatedMinute: number | null = null;
 
   constructor(deps: CronSchedulerDeps) {
     this.deps = deps;
@@ -166,11 +192,16 @@ export class CronScheduler {
   }
 
   /**
-   * Main tick: evaluate all cron jobs against current time.
+   * Main tick: evaluate all cron jobs against every minute since the last
+   * evaluated one, up to now. A job whose minute fell between two ticks (the
+   * previous tick was still awaiting a turn, or the timer fired late across a
+   * minute boundary) fires late instead of never. Several missed minutes of one
+   * job coalesce into a single fire.
    * Trace: docs/archive/features/cron-scheduler/trace.md, Scenario 4, Section 3a
    */
   async tick(): Promise<void> {
-    // Guard against overlapping ticks (setInterval can fire while previous tick is still running)
+    // Guard against overlapping ticks (setInterval can fire while previous tick is still running).
+    // The dropped tick's minutes are caught up by the next tick that runs.
     if (this.isRunning) {
       logger.debug('Tick skipped — previous tick still running');
       return;
@@ -178,7 +209,16 @@ export class CronScheduler {
     this.isRunning = true;
 
     const now = new Date();
-    const currentMinute = currentMinuteStr();
+    const nowMinute = Math.floor(now.getTime() / MINUTE_MS);
+    const oldestAllowed = nowMinute - MAX_CATCH_UP_MINUTES + 1;
+    const firstMinute =
+      this.lastEvaluatedMinute === null ? nowMinute : Math.max(this.lastEvaluatedMinute + 1, oldestAllowed);
+    if (this.lastEvaluatedMinute !== null && this.lastEvaluatedMinute + 1 < oldestAllowed) {
+      logger.warn('Cron catch-up window exceeded — older minutes not replayed', {
+        from: minuteKey(this.lastEvaluatedMinute + 1),
+        to: minuteKey(oldestAllowed - 1),
+      });
+    }
 
     try {
       let jobs: CronJob[];
@@ -189,16 +229,24 @@ export class CronScheduler {
         return;
       }
 
-      for (const job of jobs) {
+      for (const listed of jobs) {
+        let job = listed;
         try {
-          // Dedup: skip if already run this minute
-          // Trace: S4, Section 3a — lastRunMinute dedup
-          if (job.lastRunMinute === currentMinute) continue;
+          if (this.findDueMinute(job, firstMinute, nowMinute) === null) continue;
+          // Re-read before firing: an earlier job of this tick may have awaited
+          // a whole turn, long enough for a run-now, an edit or a delete to land.
+          const current = this.deps.storage.getAll().find((j) => j.id === listed.id);
+          if (!current) continue;
+          job = current;
+          const dueMinute = this.findDueMinute(job, firstMinute, nowMinute);
+          if (dueMinute === null) continue;
 
-          // Check if cron expression matches current time
-          if (!matchesCronExpression(job.expression, now)) continue;
-
-          logger.info('Cron job due', { name: job.name, owner: job.owner, channel: job.channel });
+          logger.info('Cron job due', {
+            name: job.name,
+            owner: job.owner,
+            channel: job.channel,
+            ...(dueMinute < nowMinute ? { scheduledMinute: minuteKey(dueMinute) } : {}),
+          });
 
           await this.executeJob(job, now);
         } catch (error: any) {
@@ -213,9 +261,30 @@ export class CronScheduler {
           this.recordExecution(job, 'failed', 'idle_inject', undefined, error?.message);
         }
       }
+      this.lastEvaluatedMinute = nowMinute;
     } finally {
       this.isRunning = false;
     }
+  }
+
+  /**
+   * First minute in [fromMinute, toMinute] at which the job is due, existed,
+   * and has not already run (scheduled or run-now), or null.
+   * Trace: S4, Section 3a — lastRunMinute dedup
+   */
+  private findDueMinute(job: CronJob, fromMinute: number, toMinute: number): number | null {
+    // Catch-up never reaches before the job, or its current schedule, existed.
+    const createdMinute = [job.createdAt, job.scheduleChangedAt]
+      .filter((t): t is string => typeof t === 'string')
+      .map((t) => t.slice(0, 16))
+      .reduce((a, b) => (b > a ? b : a), '');
+    for (let m = fromMinute; m <= toMinute; m++) {
+      const key = minuteKey(m);
+      if (key < createdMinute) continue;
+      if (job.lastRunMinute && job.lastRunMinute >= key) continue;
+      if (matchesCronExpression(job.expression, new Date(m * MINUTE_MS))) return m;
+    }
+    return null;
   }
 
   /**
@@ -302,10 +371,11 @@ export class CronScheduler {
       channel: session.channelId,
       thread_ts: session.threadTs,
       ts: `${Date.now() / 1000}`,
-      text: `[cron:${job.name}] ${job.prompt}`,
+      text: cronText(job),
       synthetic: true,
       skipDispatch: true,
       modelOverride: resolveModelOverride(job.modelConfig),
+      cron: cronOrigin(job),
       routeContext: { skipAutoBotThread: true },
     };
 
@@ -386,10 +456,11 @@ export class CronScheduler {
       channel: session.channelId,
       thread_ts: session.threadTs,
       ts: `${Date.now() / 1000}`,
-      text: `[cron:${job.name}] ${job.prompt}`,
+      text: cronText(job),
       synthetic: true,
       skipDispatch: true,
       modelOverride: resolveModelOverride(job.modelConfig),
+      cron: cronOrigin(job),
       routeContext: { skipAutoBotThread: true },
     };
 
@@ -414,35 +485,71 @@ export class CronScheduler {
   private async executeWithNewThread(job: CronJob, now: Date, triggeredBy?: string): Promise<boolean> {
     logger.info('No session found, creating new thread', { name: job.name, channel: job.channel });
 
+    let openedTs: string | undefined;
     try {
-      const rootTs = await this.deps.threadCreator(job.channel, `[cron:${job.name}] Scheduled task`);
+      const rootTs = await this.injectInNewThread(job, `[cron:${job.name}] Scheduled task`, cronText(job), (ts) => {
+        openedTs = ts;
+      });
       if (!rootTs) {
         logger.warn('Failed to create thread (no ts returned)', { name: job.name });
         this.recordExecution(job, 'failed', 'new_thread', undefined, 'thread creation returned no ts', triggeredBy);
         return false;
       }
 
-      const syntheticEvent: SyntheticMessageEvent = {
-        user: job.owner,
-        channel: job.channel,
-        thread_ts: rootTs,
-        ts: `${Date.now() / 1000}`,
-        text: `[cron:${job.name}] ${job.prompt}`,
-        synthetic: true,
-        skipDispatch: true,
-        modelOverride: resolveModelOverride(job.modelConfig),
-        routeContext: { skipAutoBotThread: true },
-      };
-
-      await this.deps.messageInjector(syntheticEvent);
       this.deps.storage.updateLastRun(job.id, now);
-      this.recordExecution(job, 'success', 'new_thread', undefined, undefined, triggeredBy);
+      // The session this fire opened, in the same shape idle_inject records —
+      // the dashboard's run history links the run to it (SSOT 2026-10-23 T5).
+      this.recordExecution(job, 'success', 'new_thread', `${job.channel}-${rootTs}`, undefined, triggeredBy);
       return true;
     } catch (error: any) {
       logger.error('New thread creation failed', { name: job.name, error: error?.message });
-      this.recordExecution(job, 'failed', 'new_thread', undefined, error?.message, triggeredBy);
+      // When the thread was opened, the failure belongs to that session too —
+      // the dashboard must not read its card as a separate, successful run.
+      this.recordExecution(
+        job,
+        'failed',
+        'new_thread',
+        openedTs ? `${job.channel}-${openedTs}` : undefined,
+        error?.message,
+        triggeredBy,
+      );
       return false;
     }
+  }
+
+  /**
+   * Open a bot thread in `job.channel` with `rootText` and inject `text` into
+   * it as `job.owner`, on the job's model. The fire names and files the session
+   * it opens (SSOT 2026-10-23 T1). `onOpened` is told the root ts as soon as the
+   * thread exists, before the turn runs. Resolves with the root ts once the
+   * injected turn ends, or undefined when Slack returned no ts (nothing
+   * injected). Throws what the thread creator or the injector throws.
+   */
+  private async injectInNewThread(
+    job: CronJob,
+    rootText: string,
+    text: string,
+    onOpened?: (rootTs: string) => void,
+  ): Promise<string | undefined> {
+    const rootTs = await this.deps.threadCreator(job.channel, rootText);
+    if (!rootTs) return undefined;
+    onOpened?.(rootTs);
+
+    const syntheticEvent: SyntheticMessageEvent = {
+      user: job.owner,
+      channel: job.channel,
+      thread_ts: rootTs,
+      ts: `${Date.now() / 1000}`,
+      text,
+      synthetic: true,
+      skipDispatch: true,
+      modelOverride: resolveModelOverride(job.modelConfig),
+      cron: cronOrigin(job),
+      routeContext: { skipAutoBotThread: true },
+    };
+
+    await this.deps.messageInjector(syntheticEvent);
+    return rootTs;
   }
 
   /**
@@ -455,7 +562,7 @@ export class CronScheduler {
     }
 
     try {
-      const text = `[cron:${job.name}] ${job.prompt}`;
+      const text = cronText(job);
       await this.deps.dmSender(job.owner, text);
       this.deps.storage.updateLastRun(job.id, now);
       this.recordExecution(job, 'success', 'dm', undefined, undefined, triggeredBy);
@@ -491,7 +598,7 @@ export class CronScheduler {
     }
 
     try {
-      const text = `[cron:${job.name}] ${job.prompt}`;
+      const text = cronText(job);
       await this.deps.threadReplier(job.channel, job.threadTs, text);
       this.deps.storage.updateLastRun(job.id, now);
       this.recordExecution(job, 'success', 'thread_reply', undefined, undefined, triggeredBy);

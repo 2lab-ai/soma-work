@@ -19,6 +19,7 @@ vi.mock('../user-settings-store', () => ({
 }));
 
 import { SlackBlockKitChannel } from '../notification-channels/slack-block-kit-channel';
+import { buildWorkSessionKey } from '../session-identity';
 import { CompletionMessageTracker } from '../slack/completion-message-tracker';
 import type { TurnCompletionEvent } from '../turn-notifier';
 
@@ -83,7 +84,8 @@ describe('SlackBlockKitChannel.buildCompletionBlocks (A32)', () => {
 
     tracking.protectMessageTs(event, 'stream-ts-1');
 
-    const sessionKey = `${event.channel}-${event.threadTs}`;
+    // The registry key — the one `deleteAll` sweeps by.
+    const sessionKey = buildWorkSessionKey(event.channel, event.threadTs);
     expect(tracker.isProtected(sessionKey, 'stream-ts-1')).toBe(true);
     tracker.track(sessionKey, 'stream-ts-1', 'WorkflowComplete');
     expect(tracker.count(sessionKey)).toBe(0);

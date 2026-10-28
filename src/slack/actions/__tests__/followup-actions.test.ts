@@ -8,7 +8,6 @@ import {
 import { type FollowupItem, FollowupQueue } from '@soma/slack/followup-queue';
 import {
   encodeFollowupItemActionValue,
-  encodeFollowupPageActionValue,
   FOLLOWUP_CANCEL_ACTION_ID,
   FOLLOWUP_PAGE_NEXT_ACTION_ID,
   FOLLOWUP_RESUME_ACTION_ID,
@@ -628,10 +627,7 @@ describe('retry', () => {
 describe('pagination', () => {
   it('is read-only: refreshes the requested page and mutates nothing', async () => {
     const h = harness();
-    await h.click(
-      FOLLOWUP_PAGE_NEXT_ACTION_ID,
-      clickBody(encodeFollowupPageActionValue({ sessionKey: SESSION_KEY, page: 3 })),
-    );
+    await h.click(FOLLOWUP_PAGE_NEXT_ACTION_ID, clickBody(JSON.stringify({ sessionKey: SESSION_KEY, page: 3 })));
     await tick();
     expect(h.deps.refresh).toHaveBeenCalledWith(SESSION_KEY, 3);
     expect(h.queue.resume).not.toHaveBeenCalled();
@@ -645,7 +641,7 @@ describe('pagination', () => {
     const h = harness();
     await h.click(
       FOLLOWUP_PAGE_NEXT_ACTION_ID,
-      clickBody(encodeFollowupPageActionValue({ sessionKey: SESSION_KEY, page: 2 }), {
+      clickBody(JSON.stringify({ sessionKey: SESSION_KEY, page: 2 }), {
         channel: { id: 'C-ATTACKER' },
         container: { channel_id: 'C-ATTACKER', message_ts: SURFACE_TS, thread_ts: THREAD },
       }),
@@ -802,15 +798,19 @@ describe('cancel', () => {
     expect(text).toContain('권한');
   });
 
-  it('refuses to cancel a running item and points at the stop button', async () => {
+  it('refuses to cancel a running item and points at a stop path that exists', async () => {
     const h = harness();
     h.queue.get.mockReturnValue(queuedItem({ state: 'dispatched' }));
     h.queue.cancelItem.mockReturnValue({ ok: false, reason: 'invalid-state' } as never);
     await h.click(MENU_ACTION_ID, menuBody(menuValue('cancel')));
     await tick();
     const text = lastEphemeral(h.responses);
-    expect(text).toContain('실행 중인 항목은 취소할 수 없습니다');
-    expect(text).toContain('중지');
+    // The panel has no stop button since 2026-10-27 (only 세션 종료 remains);
+    // the live stop paths are `!` in the thread and the dashboard Stop.
+    expect(text).toBe(
+      '실행 중인 항목은 취소할 수 없습니다 — 멈추려면 스레드에 `!`를 보내거나 대시보드의 Stop을 쓰세요.',
+    );
+    expect(text).not.toContain('패널의 중지 버튼');
   });
 
   it('answers a stale generation with a repaint instead of cancelling the newer item', async () => {

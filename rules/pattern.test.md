@@ -28,8 +28,6 @@ covers. It is mandatory only when there would otherwise be a filename
 collision inside `__tests__/` (two sources producing the same target
 basename). Existing examples:
 
-- `src/metrics/__tests__/token-pricing.pricing.test.ts` +
-  `src/metrics/__tests__/token-pricing.test.ts`
 - `src/metrics/__tests__/report-aggregator.core.test.ts` +
   `src/metrics/__tests__/report-aggregator.test.ts`
 - `src/slack/commands/__tests__/usage-handler.routing.test.ts` +
@@ -41,9 +39,10 @@ basename). Existing examples:
   `__tests__/`. Tests import them with one extra `..` segment, e.g.
   `import { snapshot } from '../__fixtures__/snapshots';` from inside
   `__tests__/`.
-- **Shared test utilities** (mock handlers, factories, etc.) live under
-  `src/test-utils/`. Tests import them via the normal `src/**` path
-  resolution, e.g. `import { mockSession } from '../../test-utils/mock-session';`.
+- **Shared test utilities** (mock handlers, factories, etc.) live in the
+  `@soma/test-utils` package (`packages/test-utils/src/`). Tests import them
+  by package name, e.g. `import { createMockSession } from '@soma/test-utils';`.
+  `src/test-utils/` keeps only src-local fixtures (`slack-token-fixtures.ts`).
 
 ## Relative-path rule
 

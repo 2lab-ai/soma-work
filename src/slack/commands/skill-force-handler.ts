@@ -1,14 +1,20 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { OutputFlag } from '@soma/slack/output-flags';
+import { isAdminUser } from '../../admin-utils';
 import { DATA_DIR, PLUGINS_DIR } from '../../env-paths';
+import { checkEnvSkillPermission, type EnvSkillRegistry, envSkillRegistry } from '../../env-skill-registry';
 import { Logger } from '../../logger';
 import { isSafePathSegment } from '../../path-utils';
 import { createPermissionRequest } from '../../skill-permission-request-store';
+import type { ConversationSession } from '../../types';
 import { extractCopiedFrom } from '../../user-skill-frontmatter';
 import { consumeOneTimeGrant, hasOneTimeGrant, isSkillUseAllowed } from '../../user-skill-grants-store';
+import { describeEnvSkillDelivery, requestEnvSkillPermission } from '../env-skill-permission-request';
+import { announceSessionNotice } from '../session-notice';
 import { buildPermissionRequestMessage } from '../skill-permission-blocks';
 import { ToolFormatter } from '../tool-formatter';
-import type { CommandContext, CommandHandler, CommandResult } from './types';
+import type { CommandContext, CommandDependencies, CommandHandler, CommandResult } from './types';
 import { resolveUserIdentifier, type UserResolver } from './user-identity-resolver';
 
 /**
@@ -186,6 +192,13 @@ interface ResolveState {
   deniedSeen: Set<string>;
   /** (owner, skill) satisfied by a one-time grant — consumed on success only. */
   oneTime: DeniedRef[];
+  /**
+   * Environment skills (`plugin:skill`) the requester holds no admin grant for — halt the turn and
+   * ask the admins. Checked at every depth, like the cross-user gate.
+   */
+  envDenied: string[];
+  /** The environment-plugin registry and the asking thread (an admin's "1회" grant is per thread). */
+  env: { registry: EnvSkillRegistry; channel: string; threadTs?: string; exempt: boolean };
 }
 
 /**
@@ -232,8 +245,17 @@ export class SkillForceHandler implements CommandHandler {
    * @param resolveUser maps a Slack identifier (uid / display name) to a uid
    *   for cross-user `$X:skill` invocation (S3/S6). Defaults to the offline
    *   `userSettingsStore`-backed resolver; injected as a stub in tests.
+   * @param deps `claudeHandler` finds the thread's session, whose verbosity
+   *   decides whether the RPG banner is posted; `userSettingsStore` supplies
+   *   the requesting user's default when no session is registered for the
+   *   thread. With neither, the mask reads as the default detail.
    */
-  constructor(private resolveUser: UserResolver = resolveUserIdentifier) {}
+  constructor(
+    private resolveUser: UserResolver = resolveUserIdentifier,
+    private deps: Partial<
+      Pick<CommandDependencies, 'claudeHandler' | 'userSettingsStore' | 'slackApi' | 'mcpManager'>
+    > = {},
+  ) {}
 
   canHandle(text: string, userId?: string): boolean {
     const trimmed = text.trim();
@@ -308,6 +330,14 @@ export class SkillForceHandler implements CommandHandler {
       denied: [],
       deniedSeen: new Set<string>(),
       oneTime: [],
+      envDenied: [],
+      env: {
+        registry: envSkillRegistry(this.deps.mcpManager?.getPluginManager()),
+        channel: ctx.channel,
+        threadTs,
+        // Admins run environment skills without asking (the policy's step 6b exempts them too).
+        exempt: isAdminUser(user),
+      },
     };
 
     for (const ref of topLevelRefs) {
@@ -316,10 +346,12 @@ export class SkillForceHandler implements CommandHandler {
 
     const { resolved, errors } = state;
 
-    // Any cross-user skill the requester isn't permitted to access HALTS the
-    // whole turn (no partial execution) and asks each owner for permission.
-    if (state.denied.length > 0) {
-      await this.emitPermissionRequests(ctx, state.denied, text);
+    // Any cross-user skill the requester isn't permitted to access, and any
+    // environment skill an admin has not granted, HALTS the whole turn (no
+    // partial execution) and asks each owner / the admins for permission.
+    if (state.denied.length > 0 || state.envDenied.length > 0) {
+      if (state.denied.length > 0) await this.emitPermissionRequests(ctx, state.denied, text);
+      if (state.envDenied.length > 0) await this.emitEnvPermissionRequests(ctx, state.envDenied, text);
       return { handled: true, awaitingPermission: true };
     }
 
@@ -377,16 +409,35 @@ export class SkillForceHandler implements CommandHandler {
       };
     }
 
-    await say({
-      text: '',
-      thread_ts: threadTs,
-      attachments: [{ color: rpg.color, text: rpg.text }],
-    });
+    // Posted at compact and above; recorded in the work log at every level.
+    await announceSessionNotice(
+      this.bannerSession(ctx.channel, threadTs, user),
+      OutputFlag.SKILL_INVOCATION,
+      rpg.text,
+      () => say({ text: '', thread_ts: threadTs, attachments: [{ color: rpg.color, text: rpg.text }] }),
+    );
 
     return {
       handled: true,
       continueWithPrompt: finalPrompt,
     };
+  }
+
+  /**
+   * Whose verbosity decides the RPG banner: the thread's session, else the
+   * requesting user's default — the mask a session created for them now would
+   * carry (session-registry seeds `logVerbosity` from it). That stand-in has
+   * no conversation, so nothing is recorded for it.
+   */
+  private bannerSession(
+    channel: string,
+    threadTs: string,
+    user: string | undefined,
+  ): Pick<ConversationSession, 'logVerbosity' | 'conversationId'> | undefined {
+    const session = this.deps.claudeHandler?.getSession(channel, threadTs);
+    if (session) return session;
+    if (!user || !this.deps.userSettingsStore) return undefined;
+    return { logVerbosity: this.deps.userSettingsStore.getUserLogVerbosityFlags(user) };
   }
 
   /**
@@ -419,6 +470,34 @@ export class SkillForceHandler implements CommandHandler {
       requester: user,
       owners: denied.map((d) => `${d.ownerUserId}:${d.skillName}`),
     });
+  }
+
+  /**
+   * Ask the admins for each environment skill the requester holds no grant for. The original text
+   * is recorded so an admin's grant sends it again, now passing the gate. Without a Slack API (unit
+   * wiring) the requester is still told why the turn stopped.
+   */
+  private async emitEnvPermissionRequests(
+    ctx: CommandContext,
+    skillKeys: string[],
+    originalText: string,
+  ): Promise<void> {
+    const { user, channel, threadTs, say } = ctx;
+    for (const skillKey of skillKeys) {
+      if (!this.deps.slackApi) {
+        await say({ text: describeEnvSkillDelivery('none', skillKey), thread_ts: threadTs });
+        continue;
+      }
+      await requestEnvSkillPermission({
+        slackApi: this.deps.slackApi,
+        requesterId: user,
+        skillKey,
+        channel,
+        threadTs,
+        originalText,
+      });
+    }
+    this.logger.info('Environment skill use denied — admin permission requested', { requester: user, skillKeys });
   }
 
   /**
@@ -748,6 +827,22 @@ export class SkillForceHandler implements CommandHandler {
       }
     }
 
+    // ENVIRONMENT-SKILL GATE (every depth): a skill of a deploy-time environment plugin runs for a
+    // non-admin only on an admin's grant — the same check step 6b of `evaluateToolPolicy` applies to
+    // the model's `Skill` tool. A denial halts the read so none of the skill's content leaks.
+    if (!effectiveOwner && ref.plugin !== 'local' && !state.env.exempt) {
+      const envKey = checkEnvSkillPermission(
+        `${ref.plugin}:${ref.skill}`,
+        state.requesterId,
+        state.env,
+        state.env.registry,
+      );
+      if (envKey !== null) {
+        if (!state.envDenied.includes(envKey)) state.envDenied.push(envKey);
+        return;
+      }
+    }
+
     const skillPath = this.resolveSkillPath(ref, userId);
     if (!fs.existsSync(skillPath)) {
       state.errors.push(canonicalKey);
@@ -776,7 +871,11 @@ export class SkillForceHandler implements CommandHandler {
       this.resolveSkill(nestedRef, state, depth + 1, childOwner);
     }
 
-    // Add this skill AFTER its dependencies (depth-first)
-    state.resolved.set(canonicalKey, content);
+    // Add this skill AFTER its dependencies (depth-first). The header mirrors
+    // the line Claude Code's Skill tool prepends: bundled skills resolve
+    // `$CLAUDE_PLUGIN_ROOT/skills/<x>/…` from it, and CLAUDE_PLUGIN_ROOT is not
+    // set in bot-session shells. Nested-ref and `copied_from` parsing above
+    // read the raw `content`, never this header.
+    state.resolved.set(canonicalKey, `Base directory for this skill: ${path.dirname(skillPath)}\n\n${content}`);
   }
 }

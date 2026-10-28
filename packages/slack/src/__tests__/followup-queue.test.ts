@@ -353,6 +353,82 @@ describe('FollowupQueue turn epoch (session turn generation, ssot.md:116-120)', 
   });
 });
 
+/**
+ * End of a bot-thread migration: while bound, the host reads the SLOT's counter
+ * for the work-thread key; on release the work key's own counter is raised to
+ * it so its next generation opens above every one the slot handed out.
+ */
+describe('FollowupQueue turn epoch floor (bot-thread migration release)', () => {
+  const WORK = OTHER_SESSION;
+
+  it('raises the session to the floor durably, and the next turn opens above it', () => {
+    const saved: FollowupQueueSnapshot[] = [];
+    const queue = new FollowupQueue({ save: (snapshot) => saved.push(snapshot) });
+
+    expect(queue.raiseTurnEpochFloor(WORK, 2)).toBe(2);
+
+    expect(queue.getTurnEpoch(WORK)).toBe(2);
+    const persisted = saved[saved.length - 1].sessions.find((session) => session.sessionKey === WORK);
+    expect(persisted).toMatchObject({ turnEpoch: 2, items: [] });
+    // Restart: the floor is part of the snapshot, like any beginTurn.
+    const restored = new FollowupQueue({ snapshot: saved[saved.length - 1] });
+    expect(restored.beginTurn(WORK)).toBe(3);
+  });
+
+  it('raises a session that already holds parked items, leaving the items alone', () => {
+    const queue = new FollowupQueue();
+    const parked = queue.enqueue(WORK, event({ ts: '1.1' })); // a reply parked under the work key at turnEpoch 0
+    if (parked.status !== 'queued') throw new Error('setup failed');
+
+    expect(queue.raiseTurnEpochFloor(WORK, 1)).toBe(1);
+    expect(queue.list(WORK)).toEqual([parked.item]);
+  });
+
+  it('never lowers the generation, and writes nothing at or above the floor', () => {
+    const saved: FollowupQueueSnapshot[] = [];
+    const queue = new FollowupQueue({ save: (snapshot) => saved.push(snapshot) });
+    queue.beginTurn(WORK);
+    queue.beginTurn(WORK);
+    queue.beginTurn(WORK); // WORK at 3
+    const writes = saved.length;
+
+    expect(queue.raiseTurnEpochFloor(WORK, 1)).toBe(3);
+    expect(queue.raiseTurnEpochFloor(WORK, 3)).toBe(3);
+    expect(queue.getTurnEpoch(WORK)).toBe(3);
+    expect(saved).toHaveLength(writes);
+  });
+
+  it('creates no session for a floor of 0', () => {
+    const queue = new FollowupQueue();
+
+    expect(queue.raiseTurnEpochFloor(WORK, 0)).toBe(0);
+    expect(queue.snapshot().sessions).toEqual([]);
+  });
+
+  it('refuses a floor that is not a non-negative integer instead of persisting it', () => {
+    const queue = new FollowupQueue();
+
+    expect(() => queue.raiseTurnEpochFloor(WORK, -1)).toThrow(/floor/);
+    expect(() => queue.raiseTurnEpochFloor(WORK, 1.5)).toThrow(/floor/);
+    expect(() => queue.raiseTurnEpochFloor(WORK, Number.NaN)).toThrow(/floor/);
+    expect(queue.snapshot().sessions).toEqual([]);
+  });
+
+  it('leaves committed memory untouched when persistence throws', () => {
+    let failing = false;
+    const queue = new FollowupQueue({
+      save: () => {
+        if (failing) throw new Error('disk full');
+      },
+    });
+    queue.beginTurn(WORK); // WORK at 1
+    failing = true;
+
+    expect(() => queue.raiseTurnEpochFloor(WORK, 2)).toThrow('disk full');
+    expect(queue.getTurnEpoch(WORK)).toBe(1);
+  });
+});
+
 describe('FollowupQueue claim and reservation', () => {
   it('claims the oldest queued item first (FIFO)', () => {
     const queue = new FollowupQueue();
@@ -1667,5 +1743,32 @@ describe('FollowupQueue editQueued (06 §3.4 Edit)', () => {
     expect(() => queue.editQueued(SESSION, target.id, target.epoch, '편집본')).toThrow('disk full');
     expect(queue.get(SESSION, target.id)?.message.text).toBe('원문');
     expect(queue.get(SESSION, target.id)?.epoch).toBe(target.epoch);
+  });
+});
+
+describe('FollowupQueue holdsPending (dashboard model switch, review R3-2)', () => {
+  it('a message parked for a later turn is still to run; one that ran, failed or was cancelled is not', () => {
+    const queue = new FollowupQueue();
+    expect(queue.holdsPending('C1', '1.1')).toBe(false); // never queued
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.enqueue(SESSION, event({ ts: '1.2' }));
+    expect(queue.holdsPending('C1', '1.1')).toBe(true);
+    expect(queue.holdsPending('C2', '1.1')).toBe(false); // same ts, other channel
+    const ran = dispatchFirst(queue); // 1.1 is running now — its compact can still land
+    expect(queue.holdsPending('C1', '1.1')).toBe(true);
+    queue.markInterrupted(SESSION, ran.id, ran.epoch, 'test'); // stopped mid-run: re-runs only on an explicit retry
+    expect(queue.holdsPending('C1', '1.1')).toBe(false);
+    const second = queue.list(SESSION).find((i) => i.message.ts === '1.2');
+    if (!second) throw new Error('missing item');
+    queue.cancelItem(SESSION, second.id, second.epoch);
+    expect(queue.holdsPending('C1', '1.2')).toBe(false);
+  });
+
+  it('a message frozen by a stop or a restart waits for an explicit resume — not pending (review R4)', () => {
+    const queue = new FollowupQueue();
+    queue.enqueue(SESSION, event({ ts: '1.1' }));
+    queue.freeze(SESSION, 'stopped');
+    expect(queue.list(SESSION)[0].state).toBe('paused');
+    expect(queue.holdsPending('C1', '1.1')).toBe(false);
   });
 });

@@ -195,8 +195,6 @@ export interface SessionUiEventManager {
 
 export interface EventRouterProviders {
   createLegacyCommandRouter?: (deps: unknown) => LegacyCommandRouter;
-  markMigrationHintShown?: (userId: string) => Promise<boolean>;
-  hasMigrationHintShown?: (userId: string) => boolean;
   registerChannel?: (client: any, channel: string) => Promise<unknown>;
   unregisterChannel?: (channel: string) => void;
   getBaseDirectory?: () => string | undefined;
@@ -223,8 +221,6 @@ let eventRouterProviders: Required<EventRouterProviders> = {
   createLegacyCommandRouter: () => {
     throw new Error('EventRouter legacy command router provider is not configured.');
   },
-  markMigrationHintShown: async () => false,
-  hasMigrationHintShown: () => false,
   registerChannel: async () => {},
   unregisterChannel: () => {},
   getBaseDirectory: () => undefined,
@@ -317,13 +313,7 @@ export class EventRouter {
   ) {
     if (deps.commandDeps) {
       this.commandRouter = eventRouterProviders.createLegacyCommandRouter(deps.commandDeps);
-      this.zRouter = new ZRouter({
-        legacyRouter: this.commandRouter,
-        tombstoneStore: {
-          markMigrationHintShown: (uid) => eventRouterProviders.markMigrationHintShown(uid),
-          hasMigrationHintShown: (uid) => eventRouterProviders.hasMigrationHintShown(uid),
-        },
-      });
+      this.zRouter = new ZRouter({ legacyRouter: this.commandRouter });
     }
   }
 
@@ -363,10 +353,16 @@ export class EventRouter {
    * `messageHandler` runs) still propagates normally.
    */
   public async dispatchPendingUserMessage(
-    ctx: { channel: string; threadTs: string; user: string; ts: string },
+    ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean },
     text: string,
     opts?: { compactRedispatch?: boolean },
   ): Promise<void> {
+    // `ctx.verbatimPrompt`: the stashed text is a goal objective — replay it as
+    // the user's words, never as a command (see `routeContext.verbatimPrompt`).
+    const routeContext = {
+      ...(opts?.compactRedispatch ? { compactRedispatch: true } : {}),
+      ...(ctx.verbatimPrompt ? { verbatimPrompt: true } : {}),
+    };
     const syntheticEvent = {
       type: 'message',
       channel: ctx.channel,
@@ -374,7 +370,7 @@ export class EventRouter {
       user: ctx.user,
       ts: ctx.ts,
       text,
-      ...(opts?.compactRedispatch ? { routeContext: { compactRedispatch: true } } : {}),
+      ...(Object.keys(routeContext).length > 0 ? { routeContext } : {}),
     } as unknown as MessageEvent;
 
     const say: SayFn = async (arg) => {
@@ -720,6 +716,20 @@ export class EventRouter {
       }
       const text = botId ? event.text.replace(new RegExp(`<@${botId}>`, 'g'), '').trim() : event.text.trim(); // fallback: preserve all mentions if botId unavailable
 
+      // `@bot /z goal …` in a thread that already has a session is the same
+      // instruction as typing `/z goal …` there (SSOT 2026-10-21: an added goal
+      // must become a goal at once, never a steering-queue item). Hand it to the
+      // host pipeline as typed: its follow-up fence runs the goal command now
+      // and admits the new goal's opening turn in the same step as the goal
+      // change. Through ZRouter, GoalHandler would run AHEAD of the fence and
+      // the opening would only be handed over after its Slack notice — the
+      // running turn could end in between and drive the goal loop on unrelated
+      // evidence. No session in the thread → nothing can be running: ZRouter.
+      if (this.isThreadGoalCommand(event, text)) {
+        await this.messageHandler({ ...event, text } as MessageEvent, say);
+        return;
+      }
+
       // FIX #1 (PR #509, revised by #530): route `@bot /z …` through ZRouter
       // so slash + DM + app_mention share one normalization pipeline for the
       // `/z` surface. Bare `[cmd] [args]` falls through to the normal
@@ -742,6 +752,11 @@ export class EventRouter {
         // ZRouter captured a follow-up prompt; continue legacy pipeline with it.
         nextText = routedViaZ.continueWithPrompt;
       }
+      // `/z goal <objective>`: the objective is the user's words — mark it so
+      // the pipeline never parses it as a command again.
+      const routeContext = routedViaZ.verbatimPrompt
+        ? { ...(event as MessageEvent).routeContext, verbatimPrompt: true }
+        : (event as MessageEvent).routeContext;
 
       // Source thread re-mention: if mentioned in a thread that has a linked bot session,
       // respond with that session's status instead of creating a new session.
@@ -761,6 +776,7 @@ export class EventRouter {
         {
           ...event,
           text: nextText,
+          ...(routeContext ? { routeContext } : {}),
         } as MessageEvent,
         say,
       );
@@ -832,13 +848,20 @@ export class EventRouter {
     });
   }
 
+  /** A `/z` goal command (see `CommandRouter.isGoalIntakeText`) in a thread that has a session. */
+  private isThreadGoalCommand(event: { channel: string; thread_ts?: string; user?: string }, text: string): boolean {
+    if (!event.thread_ts || stripZPrefix(text) === null) return false;
+    if (this.commandRouter?.isGoalIntakeText?.(text, event.user) !== true) return false;
+    return Boolean(this.deps.claudeHandler.getSession(event.channel, event.thread_ts));
+  }
+
   /**
    * FIX #1 (PR #509): decides whether to route an `app_mention` through
    * `ZRouter` instead of the normal pipeline.
    *
    * Return shape (codex P1 followup):
    *  - `terminal: true` — the router fully consumed the invocation (card,
-   *    tombstone, forbidden notice, error, or a command that finished itself).
+   *    forbidden notice, error, or a command that finished itself).
    *    Caller MUST NOT continue pipeline processing.
    *  - `terminal: false, continueWithPrompt: string` — the command produced
    *    a follow-up prompt (e.g. `@bot /z new do X` → `do X`); caller should
@@ -855,7 +878,7 @@ export class EventRouter {
   private async maybeRouteAppMentionViaZRouter(args: {
     event: any;
     strippedText: string;
-  }): Promise<{ terminal: boolean; continueWithPrompt?: string }> {
+  }): Promise<{ terminal: boolean; continueWithPrompt?: string; verbatimPrompt?: boolean }> {
     const { event, strippedText } = args;
     if (!this.zRouter) return { terminal: false };
     const text = strippedText.trim();
@@ -896,7 +919,11 @@ export class EventRouter {
       }
 
       if (result.continueWithPrompt !== undefined) {
-        return { terminal: false, continueWithPrompt: result.continueWithPrompt };
+        return {
+          terminal: false,
+          continueWithPrompt: result.continueWithPrompt,
+          verbatimPrompt: result.verbatimPrompt,
+        };
       }
 
       if (result.handled) {
@@ -1224,7 +1251,23 @@ export class EventRouter {
         threadTs,
         sessionId: session.sessionId || '(pending)',
       });
-      await this.messageHandler(messageEvent as MessageEvent, say);
+      // Strip the BOT mention, as the app_mention path does (Issue #141), so
+      // `@bot goal …` + file is the same command as a typed `goal …` + file.
+      // Cloned: the Slack event object is not ours to mutate.
+      const uploadText: string = messageEvent.text || '';
+      let botId: string | undefined;
+      if (uploadText.includes('<@')) {
+        try {
+          botId = await this.deps.slackApi.getBotUserId();
+        } catch (err) {
+          this.logger.warn('Failed to get bot user ID for mention stripping', { error: (err as Error).message });
+        }
+      }
+      const forwarded =
+        botId && uploadText.includes(`<@${botId}>`)
+          ? { ...messageEvent, text: uploadText.replace(new RegExp(`<@${botId}>`, 'g'), '').trim() }
+          : messageEvent;
+      await this.messageHandler(forwarded as MessageEvent, say);
       return;
     }
 

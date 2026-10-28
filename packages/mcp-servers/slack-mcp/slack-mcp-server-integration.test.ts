@@ -1,25 +1,22 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
+import { fetchMessagesBefore, fetchThreadSlice, getTotalCount } from './helpers/thread-fetcher.js';
 
 /**
- * Integration tests for get_thread_messages with mocked Slack API.
+ * Integration tests for get_thread_messages with a mocked Slack API.
  *
- * Since SlackMcpServer is not exported and auto-starts on import,
- * we extract the core logic into standalone functions that mirror the
- * server's behavior, then test with mocked conversations.replies.
+ * getTotalCount, fetchThreadSlice and fetchMessagesBefore are the real exports of
+ * helpers/thread-fetcher.ts. SlackMcpServer itself is not exported and starts on import, so
+ * handleArrayMode below restates its offset/limit clamping and has_more arithmetic on top of the
+ * real helpers.
  *
- * Covers Codex review gaps:
- * - CRITICAL: Array mode with mocked conversations.replies
- * - HIGH: Legacy mode after refactor
- * - HIGH: Offset/limit boundary semantics
- * - HIGH: getTotalCount success/failure paths
+ * Covers:
+ * - Array mode with mocked conversations.replies
+ * - Legacy mode (fetchMessagesBefore)
+ * - Offset/limit boundary semantics
+ * - getTotalCount success/failure paths
  */
 
-// ── Re-implement core logic for testing ──────────────────────────
-
-function extractCursor(response: { response_metadata?: { next_cursor?: string } }): string | undefined {
-  const c = response.response_metadata?.next_cursor;
-  return c && c.length > 0 ? c : undefined;
-}
+type SlackClient = Parameters<typeof getTotalCount>[0];
 
 interface MockSlackClient {
   conversations: {
@@ -27,59 +24,11 @@ interface MockSlackClient {
   };
 }
 
-// Mirrors getTotalCount from the server
-async function getTotalCount(slack: MockSlackClient, channel: string, threadTs: string): Promise<number> {
-  try {
-    const response = await slack.conversations.replies({ channel, ts: threadTs, limit: 1 });
-    const root = response.messages?.[0];
-    if (root && root.ts === threadTs) {
-      const replyCount = root.reply_count ?? 0;
-      return replyCount + 1;
-    }
-    return 1;
-  } catch {
-    return 0;
-  }
-}
+const asSlack = (mock: MockSlackClient): SlackClient => mock as unknown as SlackClient;
 
-// Mirrors fetchThreadSlice from the server
-async function fetchThreadSlice(
-  slack: MockSlackClient,
-  channel: string,
-  threadTs: string,
-  offset: number,
-  limit: number,
-  totalCount: number,
-): Promise<any[]> {
-  if (totalCount === 0 || offset >= totalCount) return [];
-  const collected: any[] = [];
-  let cursor: string | undefined;
-  let currentIndex = 0;
+const silentLogger = { warn: vi.fn() };
 
-  do {
-    const response = await slack.conversations.replies({
-      channel,
-      ts: threadTs,
-      limit: 200,
-      cursor,
-    });
-    const msgs = response.messages || [];
-    for (const m of msgs) {
-      if (currentIndex >= offset && currentIndex < offset + limit) {
-        collected.push(m);
-      }
-      currentIndex++;
-      if (collected.length >= limit) break;
-    }
-    cursor = extractCursor(response);
-    if (collected.length >= limit) break;
-    if (currentIndex >= offset + limit) break;
-  } while (cursor);
-
-  return collected;
-}
-
-// Mirrors handleArrayMode from the server
+// Restates SlackMcpServer.handleArrayMode (private) over the real helpers.
 async function handleArrayMode(
   slack: MockSlackClient,
   channel: string,
@@ -88,9 +37,9 @@ async function handleArrayMode(
 ) {
   const offset = Math.max(args.offset ?? 0, 0);
   const limit = Math.min(Math.max(args.limit ?? 10, 1), 50);
-  const totalCount = await getTotalCount(slack, channel, threadTs);
+  const totalCount = await getTotalCount(asSlack(slack), channel, threadTs, silentLogger);
   const clampedOffset = Math.min(offset, Math.max(totalCount - 1, 0));
-  const messages = await fetchThreadSlice(slack, channel, threadTs, clampedOffset, limit, totalCount);
+  const messages = await fetchThreadSlice(asSlack(slack), channel, threadTs, clampedOffset, limit, totalCount);
   const hasMore = clampedOffset + messages.length < totalCount;
 
   return {
@@ -102,47 +51,6 @@ async function handleArrayMode(
     messages,
     has_more: hasMore,
   };
-}
-
-// Mirrors fetchMessagesBefore (legacy) from the server
-async function fetchMessagesBefore(
-  slack: MockSlackClient,
-  channel: string,
-  threadTs: string,
-  anchorTs: string,
-  count: number,
-): Promise<{ messages: any[]; rootWasInjected: boolean }> {
-  if (count === 0) return { messages: [], rootWasInjected: false };
-  let rootMessage: any | null = null;
-  const collected: any[] = [];
-  let cursor: string | undefined;
-
-  do {
-    const response = await slack.conversations.replies({
-      channel,
-      ts: threadTs,
-      limit: 200,
-      cursor,
-    });
-    const msgs = response.messages || [];
-    for (const m of msgs) {
-      if (m.ts > anchorTs) break;
-      if (m.ts === threadTs) {
-        rootMessage = m;
-      }
-      collected.push(m);
-    }
-    cursor = extractCursor(response);
-    if (msgs.length > 0 && msgs[msgs.length - 1].ts > anchorTs) break;
-  } while (cursor);
-
-  const sliced = collected.slice(-count);
-  let rootWasInjected = false;
-  if (rootMessage && !sliced.some((m: any) => m.ts === threadTs)) {
-    sliced.unshift(rootMessage);
-    rootWasInjected = true;
-  }
-  return { messages: sliced, rootWasInjected };
 }
 
 // ── Test fixtures ────────────────────────────────────────────────
@@ -183,14 +91,14 @@ describe('getTotalCount', () => {
   it('returns reply_count + 1 from root message', async () => {
     const thread = makeThread(10);
     const slack = createMockSlack(thread);
-    const count = await getTotalCount(slack, 'C123', '1700000000.000000');
+    const count = await getTotalCount(asSlack(slack), 'C123', '1700000000.000000', silentLogger);
     expect(count).toBe(11); // 10 replies + 1 root
   });
 
   it('returns 1 for thread with no replies', async () => {
     const thread = makeThread(0);
     const slack = createMockSlack(thread);
-    const count = await getTotalCount(slack, 'C123', '1700000000.000000');
+    const count = await getTotalCount(asSlack(slack), 'C123', '1700000000.000000', silentLogger);
     expect(count).toBe(1);
   });
 
@@ -202,8 +110,10 @@ describe('getTotalCount', () => {
         }),
       },
     };
-    const count = await getTotalCount(slack, 'C123', '1700000000.000000');
+    const logger = { warn: vi.fn() };
+    const count = await getTotalCount(asSlack(slack), 'C123', '1700000000.000000', logger);
     expect(count).toBe(0);
+    expect(logger.warn).toHaveBeenCalledWith('Failed to get thread total count', expect.any(Error));
   });
 
   it('returns 1 when root message has no reply_count field', async () => {
@@ -214,7 +124,7 @@ describe('getTotalCount', () => {
         })),
       },
     };
-    const count = await getTotalCount(slack, 'C123', '1700000000.000000');
+    const count = await getTotalCount(asSlack(slack), 'C123', '1700000000.000000', silentLogger);
     expect(count).toBe(1); // reply_count defaults to 0, so 0 + 1 = 1
   });
 
@@ -224,7 +134,7 @@ describe('getTotalCount', () => {
         replies: vi.fn(async () => ({ messages: [] })),
       },
     };
-    const count = await getTotalCount(slack, 'C123', '1700000000.000000');
+    const count = await getTotalCount(asSlack(slack), 'C123', '1700000000.000000', silentLogger);
     expect(count).toBe(1); // No root found but we default to 1
   });
 });
@@ -235,7 +145,7 @@ describe('fetchThreadSlice — array mode core', () => {
   it('offset=0, limit=1 returns only root', async () => {
     const thread = makeThread(5);
     const slack = createMockSlack(thread);
-    const result = await fetchThreadSlice(slack, 'C123', '1700000000.000000', 0, 1, 6);
+    const result = await fetchThreadSlice(asSlack(slack), 'C123', '1700000000.000000', 0, 1, 6);
     expect(result).toHaveLength(1);
     expect(result[0].ts).toBe('1700000000.000000');
   });
@@ -243,7 +153,7 @@ describe('fetchThreadSlice — array mode core', () => {
   it('offset=1, limit=3 returns first 3 replies without root', async () => {
     const thread = makeThread(5);
     const slack = createMockSlack(thread);
-    const result = await fetchThreadSlice(slack, 'C123', '1700000000.000000', 1, 3, 6);
+    const result = await fetchThreadSlice(asSlack(slack), 'C123', '1700000000.000000', 1, 3, 6);
     expect(result).toHaveLength(3);
     expect(result[0].ts).toBe('1700000001.000000'); // first reply
     expect(result[2].ts).toBe('1700000003.000000'); // third reply
@@ -252,20 +162,20 @@ describe('fetchThreadSlice — array mode core', () => {
   it('offset=4, limit=10 returns remaining 2 messages (clamped)', async () => {
     const thread = makeThread(5);
     const slack = createMockSlack(thread);
-    const result = await fetchThreadSlice(slack, 'C123', '1700000000.000000', 4, 10, 6);
+    const result = await fetchThreadSlice(asSlack(slack), 'C123', '1700000000.000000', 4, 10, 6);
     expect(result).toHaveLength(2); // only 2 left at offset 4 of 6 total
   });
 
   it('offset >= totalCount returns empty', async () => {
     const thread = makeThread(5);
     const slack = createMockSlack(thread);
-    const result = await fetchThreadSlice(slack, 'C123', '1700000000.000000', 6, 10, 6);
+    const result = await fetchThreadSlice(asSlack(slack), 'C123', '1700000000.000000', 6, 10, 6);
     expect(result).toHaveLength(0);
   });
 
   it('totalCount=0 returns empty', async () => {
     const slack = createMockSlack([]);
-    const result = await fetchThreadSlice(slack, 'C123', '1700000000.000000', 0, 10, 0);
+    const result = await fetchThreadSlice(asSlack(slack), 'C123', '1700000000.000000', 0, 10, 0);
     expect(result).toHaveLength(0);
   });
 
@@ -273,7 +183,7 @@ describe('fetchThreadSlice — array mode core', () => {
     const thread = makeThread(250);
     const slack = createMockSlack(thread, 200);
     // Fetch messages at offset 199 (last of page 1) and 200 (first of page 2)
-    const result = await fetchThreadSlice(slack, 'C123', '1700000000.000000', 199, 3, 251);
+    const result = await fetchThreadSlice(asSlack(slack), 'C123', '1700000000.000000', 199, 3, 251);
     expect(result).toHaveLength(3);
     expect(result[0].ts).toBe(`${1700000000 + 199}.000000`);
     expect(result[1].ts).toBe(`${1700000000 + 200}.000000`);
@@ -384,7 +294,7 @@ describe('fetchMessagesBefore — legacy mode', () => {
   it('returns last N messages before anchor (root always included)', async () => {
     const thread = makeThread(10);
     const slack = createMockSlack(thread);
-    const { messages } = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000005.000000', 3);
+    const { messages } = await fetchMessagesBefore(asSlack(slack), 'C123', '1700000000.000000', '1700000005.000000', 3);
     // Root injected + 3 sliced = 4 (root was outside the window)
     expect(messages[0].ts).toBe('1700000000.000000'); // root always first
     expect(messages[1].ts).toBe('1700000003.000000');
@@ -395,7 +305,13 @@ describe('fetchMessagesBefore — legacy mode', () => {
     const thread = makeThread(5);
     thread[0].files = [{ id: 'F1', name: 'header.png' }];
     const slack = createMockSlack(thread);
-    const { messages } = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000005.000000', 10);
+    const { messages } = await fetchMessagesBefore(
+      asSlack(slack),
+      'C123',
+      '1700000000.000000',
+      '1700000005.000000',
+      10,
+    );
     expect(messages.some((m: any) => m.ts === '1700000000.000000')).toBe(true);
     expect(messages.find((m: any) => m.ts === '1700000000.000000')?.files[0].name).toBe('header.png');
   });
@@ -403,28 +319,42 @@ describe('fetchMessagesBefore — legacy mode', () => {
   it('reports rootWasInjected when root is outside count window', async () => {
     const thread = makeThread(10);
     const slack = createMockSlack(thread);
-    const { rootWasInjected } = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000005.000000', 3);
+    const { rootWasInjected } = await fetchMessagesBefore(
+      asSlack(slack),
+      'C123',
+      '1700000000.000000',
+      '1700000005.000000',
+      3,
+    );
     expect(rootWasInjected).toBe(true);
   });
 
   it('rootWasInjected is false when root is within count window', async () => {
     const thread = makeThread(2);
     const slack = createMockSlack(thread);
-    const { rootWasInjected } = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000002.000000', 10);
+    const { rootWasInjected } = await fetchMessagesBefore(
+      asSlack(slack),
+      'C123',
+      '1700000000.000000',
+      '1700000002.000000',
+      10,
+    );
     expect(rootWasInjected).toBe(false);
   });
 
-  it('deep thread: root survives .slice(-count)', async () => {
+  it('deep thread: root (with its files) survives .slice(-count)', async () => {
     const thread = makeThread(25);
+    thread[0].files = [{ id: 'F1', name: 'header-image.png' }];
     const slack = createMockSlack(thread);
     const { messages, rootWasInjected } = await fetchMessagesBefore(
-      slack,
+      asSlack(slack),
       'C123',
       '1700000000.000000',
       '1700000025.000000',
       20,
     );
     expect(messages[0].ts).toBe('1700000000.000000');
+    expect(messages[0].files[0].name).toBe('header-image.png');
     expect(rootWasInjected).toBe(true);
     // 20 sliced + 1 injected root = 21
     expect(messages.length).toBe(21);
@@ -433,7 +363,7 @@ describe('fetchMessagesBefore — legacy mode', () => {
   it('returns empty for count=0', async () => {
     const thread = makeThread(5);
     const slack = createMockSlack(thread);
-    const { messages } = await fetchMessagesBefore(slack, 'C123', '1700000000.000000', '1700000003.000000', 0);
+    const { messages } = await fetchMessagesBefore(asSlack(slack), 'C123', '1700000000.000000', '1700000003.000000', 0);
     expect(messages).toHaveLength(0);
   });
 
@@ -441,7 +371,7 @@ describe('fetchMessagesBefore — legacy mode', () => {
     const thread = makeThread(3);
     const slack = createMockSlack(thread);
     const { messages, rootWasInjected } = await fetchMessagesBefore(
-      slack,
+      asSlack(slack),
       'C123',
       '1700000000.000000',
       '1700000003.000000',
@@ -458,7 +388,7 @@ describe('fetchMessagesBefore — legacy mode', () => {
     const thread = makeThread(2);
     const slack = createMockSlack(thread);
     const { messages, rootWasInjected } = await fetchMessagesBefore(
-      slack,
+      asSlack(slack),
       'C123',
       '1700000000.000000',
       '1700000002.000000',

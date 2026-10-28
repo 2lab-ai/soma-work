@@ -3,7 +3,8 @@ import { Logger } from '../logger';
 import { getMetricsEmitter } from '../metrics/event-emitter';
 import { ConversationStorage } from './storage';
 import { generateSessionSummaryTitle, type SessionSummaryTitleLinks, summarizeResponse } from './summarizer';
-import type { ConversationRecord, ConversationTurn } from './types';
+import type { ConversationRecord, ConversationTurn, TurnCompaction, TurnOrigin } from './types';
+import { getUserMediaStore, type TurnAttachment, type UserMediaFile } from './user-media';
 
 const logger = new Logger('ConversationRecorder');
 
@@ -16,6 +17,15 @@ const activeConversations = new Map<string, ConversationRecord>();
 
 // Per-conversation write locks to serialize disk writes and prevent race conditions
 const writeLocks = new Map<string, Promise<void>>();
+
+// One disk read per conversation at a time: concurrent cold reads share it, so
+// two snapshots of the same conversation can never both be live.
+const pendingLoads = new Map<string, Promise<ConversationRecord | null>>();
+
+// Saves not yet on disk, per conversation. An entry here is never evicted from
+// the cache — otherwise the next cold read could load the pre-save file and
+// publish it over the writes still in flight.
+const savesInFlight = new Map<string, number>();
 
 // Optional callback fired after each turn is recorded
 let _onTurnRecorded: ((conversationId: string, turn: ConversationTurn) => void) | null = null;
@@ -78,15 +88,33 @@ export function setOnSummaryGeneratedCallback(
  * Each conversation's writes are queued so only one writeFile runs at a time.
  */
 async function serializedSave(conversationId: string, record: ConversationRecord): Promise<void> {
+  await inWriteChain(conversationId, () => getStorage().save(record));
+}
+
+/**
+ * Run `task` in this conversation's write chain: after every write queued
+ * before it has landed on disk, and before any write queued after it.
+ */
+async function inWriteChain<T>(conversationId: string, task: () => Promise<T>): Promise<T> {
+  savesInFlight.set(conversationId, (savesInFlight.get(conversationId) ?? 0) + 1);
   const previous = writeLocks.get(conversationId) || Promise.resolve();
-  const current = previous.then(() => getStorage().save(record));
+  const current = previous.then(task);
   writeLocks.set(
     conversationId,
-    current.catch((err) => {
-      logger.error(`Write chain: prior save failed for ${conversationId}, next write will proceed`, err);
-    }),
+    current.then(
+      () => undefined,
+      (err) => {
+        logger.error(`Write chain: prior save failed for ${conversationId}, next write will proceed`, err);
+      },
+    ),
   );
-  await current;
+  try {
+    return await current;
+  } finally {
+    const left = (savesInFlight.get(conversationId) ?? 1) - 1;
+    if (left > 0) savesInFlight.set(conversationId, left);
+    else savesInFlight.delete(conversationId);
+  }
 }
 
 /**
@@ -98,22 +126,17 @@ function cacheRecord(id: string, record: ConversationRecord): void {
   if (activeConversations.has(id)) {
     activeConversations.delete(id);
   }
-  // Evict oldest entries if at capacity
-  while (activeConversations.size >= MAX_CACHE_SIZE) {
-    const oldest = activeConversations.keys().next().value!;
+  // Evict oldest entries if at capacity — skipping any with a save still in
+  // flight (see savesInFlight). If every entry is mid-save the cache briefly
+  // exceeds the cap rather than dropping unsaved state.
+  for (const oldest of activeConversations.keys()) {
+    if (activeConversations.size < MAX_CACHE_SIZE) break;
+    if (savesInFlight.has(oldest)) continue;
     activeConversations.delete(oldest);
     writeLocks.delete(oldest);
     logger.debug(`Evicted conversation ${oldest} from cache (LRU)`);
   }
   activeConversations.set(id, record);
-}
-
-/**
- * Remove a conversation from the in-memory cache (e.g., on session end).
- */
-function removeFromCache(id: string): void {
-  activeConversations.delete(id);
-  writeLocks.delete(id);
 }
 
 /**
@@ -173,11 +196,31 @@ export function createConversation(
 }
 
 /**
- * Record a user turn (fire-and-forget, non-blocking)
+ * Copy a turn's downloaded files into the user-media store (SSOT 2026-10-25).
+ * Awaited by the caller BEFORE it records the turn and before the turn's temp
+ * cleanup; bounded inside the store, never throws, never drops a file.
  */
-export function recordUserTurn(conversationId: string, content: string, userName?: string, userId?: string): void {
+export function captureUserMedia(conversationId: string, files: readonly UserMediaFile[]): Promise<TurnAttachment[]> {
+  return getUserMediaStore().capture(conversationId, files);
+}
+
+/**
+ * Record a user turn (fire-and-forget, non-blocking).
+ * `attachments` — the files the user attached (from `captureUserMedia`); their
+ * copies are committed once the turn is saved, before the dashboard is told.
+ * `opts.timestamp` — when the user sent it, if earlier than now (a steered message).
+ * `opts.origin` — who put the turn there (dashboard SSOT 2026-10-27 T1).
+ */
+export function recordUserTurn(
+  conversationId: string,
+  content: string,
+  userName?: string,
+  userId?: string,
+  attachments?: readonly TurnAttachment[],
+  opts: { timestamp?: number; origin?: TurnOrigin; compact?: boolean } = {},
+): void {
   // Fire-and-forget
-  _recordUserTurnAsync(conversationId, content, userName, userId).catch((err) => {
+  _recordUserTurnAsync(conversationId, content, userName, userId, attachments, opts).catch((err) => {
     logger.error(`Failed to record user turn for ${conversationId}`, err);
   });
   // Metrics: emit turn_used event (fire-and-forget)
@@ -189,29 +232,117 @@ export function recordUserTurn(conversationId: string, content: string, userName
 async function _recordUserTurnAsync(
   conversationId: string,
   content: string,
-  userName?: string,
-  userId?: string,
+  userName: string | undefined,
+  userId: string | undefined,
+  attachments: readonly TurnAttachment[] | undefined,
+  opts: { timestamp?: number; origin?: TurnOrigin; compact?: boolean },
 ): Promise<void> {
   const record = await getOrLoadConversation(conversationId);
   if (!record) {
+    // The copies stay pending and are swept (user-media.ts lifecycle).
     logger.warn(`Conversation ${conversationId} not found, skipping user turn recording`);
     return;
   }
 
+  const now = Date.now();
+  const { timestamp, origin } = opts;
+  // A compaction turn (the executor's flag) carries its record from the start —
+  // empty, or the conversation's previous compaction time as the estimate.
+  const estimateMs = opts.compact ? previousCompactionMs(record) : undefined;
   const turn: ConversationTurn = {
     id: randomUUID(),
     role: 'user',
-    timestamp: Date.now(),
+    timestamp: typeof timestamp === 'number' && timestamp > 0 && timestamp <= now ? timestamp : now,
     userName,
     userId,
     rawContent: content,
+    ...(attachments && attachments.length > 0 ? { attachments: [...attachments] } : {}),
+    ...(origin ? { origin: { by: origin.by } } : {}),
+    ...(opts.compact ? { compact: estimateMs !== undefined ? { estimateMs } : {} } : {}),
   };
 
   record.turns.push(turn);
-  record.updatedAt = Date.now();
+  record.updatedAt = now;
 
   await serializedSave(conversationId, record);
+  // Saved: the copies the turn lists may now be served — before anyone is told about it.
+  if (turn.attachments) await getUserMediaStore().commit(conversationId, turn.attachments);
   if (_onTurnRecorded) _onTurnRecorded(conversationId, turn);
+}
+
+/**
+ * The longest a compaction may run before the END that arrives is not its own
+ * (`COMPACTION_IN_PROGRESS_MAX_MS` in @soma/slack/compact-state is 10 min) —
+ * with slack for the gap between the turn being recorded and the compaction
+ * starting.
+ */
+const COMPACT_RESULT_WINDOW_MS = 15 * 60 * 1000;
+
+/** The duration of the conversation's latest compaction that reported one. */
+function previousCompactionMs(record: ConversationRecord): number | undefined {
+  for (let i = record.turns.length - 1; i >= 0; i--) {
+    const ms = record.turns[i].compact?.durationMs;
+    if (typeof ms === 'number' && Number.isFinite(ms) && ms > 0) return ms;
+  }
+  return undefined;
+}
+
+/**
+ * Dashboard SSOT 2026-10-27 T2 — a compaction ended (the PostCompact hook /
+ * `compact_boundary`, once per cycle): write its numbers onto the `/compact`
+ * turn that ran it and push that turn to the dashboard again. The turn is the
+ * latest user turn when it is a compaction turn (`compact` set at record time
+ * from the executor's flag), recorded no longer ago than a
+ * compaction can run; a result already on it only gets its missing numbers. A
+ * compaction the SDK started inside an ordinary turn has no such turn —
+ * nothing is written. Returns whether a turn was written.
+ */
+export async function recordCompactResult(
+  conversationId: string,
+  result: Omit<TurnCompaction, 'estimateMs'> & { endedAt: number },
+): Promise<boolean> {
+  const record = await getOrLoadConversation(conversationId);
+  if (!record) return false;
+  let turn: ConversationTurn | undefined;
+  for (let i = record.turns.length - 1; i >= 0; i--) {
+    const t = record.turns[i];
+    if (t.role !== 'user') continue;
+    if (t.compact) turn = t;
+    break;
+  }
+  if (!turn) return false;
+  if (result.endedAt - turn.timestamp > COMPACT_RESULT_WINDOW_MS) return false;
+
+  // Already written (a second END of the cycle, or the SDK's boundary landing
+  // after the hook sealed it without numbers): fill what is missing, never
+  // overwrite.
+  const sealed = turn.compact?.endedAt !== undefined;
+  const compact: TurnCompaction = sealed ? { ...turn.compact } : { ...turn.compact, endedAt: result.endedAt };
+  let filled = false;
+  for (const key of ['durationMs', 'preTokens', 'postTokens'] as const) {
+    const v = result[key];
+    if (sealed && compact[key] !== undefined) continue;
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) {
+      compact[key] = v;
+      filled = true;
+    }
+  }
+  if ((result.trigger === 'manual' || result.trigger === 'auto') && !(sealed && compact.trigger)) {
+    compact.trigger = result.trigger;
+    filled = true;
+  }
+  if (sealed && !filled) return false;
+  turn.compact = compact;
+  record.updatedAt = Date.now();
+  await serializedSave(conversationId, record);
+  if (_onTurnRecorded) {
+    try {
+      _onTurnRecorded(conversationId, turn);
+    } catch (err) {
+      logger.warn('onTurnRecorded callback failed', { conversationId, turnId: turn.id, error: err });
+    }
+  }
+  return true;
 }
 
 /**
@@ -417,8 +548,22 @@ async function getOrLoadConversation(id: string): Promise<ConversationRecord | n
   const cached = activeConversations.get(id);
   if (cached) return cached;
 
-  // Load from disk
+  // Load from disk — one read per conversation at a time (see pendingLoads).
+  const pending = pendingLoads.get(id);
+  if (pending) return pending;
+  const load = loadAndCache(id).finally(() => pendingLoads.delete(id));
+  pendingLoads.set(id, load);
+  return load;
+}
+
+async function loadAndCache(id: string): Promise<ConversationRecord | null> {
   const record = await getStorage().load(id);
+  // A writer that does not read first (createConversation) may have cached this
+  // id while we were on the disk. That object is the live one; publishing our
+  // snapshot over it would roll back its writes — e.g. a titleSub fill would
+  // then see "empty" and overwrite the owner's subtitle.
+  const raced = activeConversations.get(id);
+  if (raced) return raced;
   if (record) {
     cacheRecord(id, record);
   }
@@ -463,18 +608,33 @@ export async function updateConversationTitleSub(conversationId: string, titleSu
 }
 
 /**
- * Update conversation metadata (title, workflow)
+ * Fill titleSub only while it is still empty, and return the stored value.
+ * A subtitle written while the caller was generating (the owner's regenerate,
+ * another viewer's fill) wins — a fill never overwrites.
+ *
+ * The check runs inside this conversation's write chain against the file on
+ * disk, not against the cached object: every save queued before it has landed,
+ * so the file is the truth even if the cached object was evicted and replaced
+ * by an older read in the meantime. The fill writes onto that file's record (so
+ * it cannot roll back anything else on disk) and mirrors titleSub into the
+ * cached object. updatedAt is left alone: filling derived data is not
+ * conversation activity. Returns null when the conversation does not exist.
  */
-async function updateConversationMeta(
-  conversationId: string,
-  updates: { title?: string; workflow?: string },
-): Promise<void> {
-  const record = await getOrLoadConversation(conversationId);
-  if (!record) return;
-
-  if (updates.title !== undefined) record.title = updates.title;
-  if (updates.workflow !== undefined) record.workflow = updates.workflow;
-  record.updatedAt = Date.now();
-
-  await serializedSave(conversationId, record);
+export async function fillConversationTitleSub(conversationId: string, titleSub: string): Promise<string | null> {
+  return inWriteChain(conversationId, async () => {
+    const stored = await getStorage().load(conversationId);
+    const cached = activeConversations.get(conversationId);
+    const target = stored ?? cached;
+    if (!target) return null;
+    // The cached object may hold a newer value whose save is queued after us.
+    const existing = cached?.titleSub || stored?.titleSub;
+    if (existing) {
+      if (cached && !cached.titleSub) cached.titleSub = existing;
+      return existing;
+    }
+    target.titleSub = titleSub;
+    if (cached) cached.titleSub = titleSub;
+    await getStorage().save(target);
+    return titleSub;
+  });
 }

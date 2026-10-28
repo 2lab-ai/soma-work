@@ -130,6 +130,10 @@ Total: 15 scenarios. Medium: 1, 2, 10. Rest small/tiny. Surgical delta over v1.
 
 ### Scenario 4 — `activeDays`
 
+> Status: superseded. `ReportAggregator` counts active days from each tab's `daySet`
+> (`src/metrics/report-aggregator.ts`). The `streaks.ts::activeDays` helper below never had a
+> production caller and was deleted in the 2026-10 dead-code audit.
+
 **Entry**: `src/metrics/usage-render/streaks.ts::activeDays(events, windowStart, windowEnd)`
 **Definition**: count of distinct KST `YYYY-MM-DD` strings among events whose ts ∈ [windowStart, windowEnd].
 **Contract**:

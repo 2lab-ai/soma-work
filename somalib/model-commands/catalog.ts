@@ -161,10 +161,10 @@ import {
 import type {
   ContinueSessionParams,
   ManageSkillParams,
+  MemoryParams,
   ModelCommandContext,
   ModelCommandDescriptor,
   ModelCommandError,
-  MemoryParams,
   ModelCommandRunRequest,
   ModelCommandRunResponse,
   SaveMemoryParams,
@@ -193,7 +193,15 @@ const UPDATE_SESSION_SCHEMA = {
     title: {
       type: 'string',
       maxLength: 100,
-      description: 'Update session title (e.g. after linking issue or merging PR)',
+      description:
+        'Update session title (e.g. after linking issue or merging PR). Also set it once you know what the user ' +
+        'wants when the session still has a temporary title such as "New Session" (voice / image-only first message).',
+    },
+    titleFillOnly: {
+      type: 'boolean',
+      description:
+        'With `title`: apply it only if the session still has a temporary host title ("New Session", ' +
+        '"Session Reset", "Direct (skipDispatch)"); a deliberate title is left unchanged.',
     },
     operations: {
       type: 'array',
@@ -821,6 +829,7 @@ export function runModelCommand(
         request: request.params,
         // title is passed through for host to apply
         ...(request.params.title ? { title: request.params.title } : {}),
+        ...(request.params.title && request.params.titleFillOnly === true ? { titleFillOnly: true } : {}),
       },
     };
   }
@@ -1022,7 +1031,11 @@ export function runModelCommand(
         const loc = buildLocator();
         if ('error' in loc) return toRunError('MEMORY', { code: 'INVALID_ARGS', message: loc.error });
         const res = store.removePage(user, loc);
-        return ok({ ok: res.ok, message: res.message, ...(res.ok ? { mutated: { kind: 'memory' as const, user } } : {}) });
+        return ok({
+          ok: res.ok,
+          message: res.message,
+          ...(res.ok ? { mutated: { kind: 'memory' as const, user } } : {}),
+        });
       }
       if (params.op === 'episodic_append') {
         if (!params.content) return toRunError('MEMORY', { code: 'INVALID_ARGS', message: 'content is required' });

@@ -199,23 +199,7 @@ export function formatUsageBar(
   return renderUsageBar(util, resetsAtIso, nowMs, LABEL_PADDED[label], WINDOW_DURATION_MS[label]);
 }
 
-/**
- * Progress-bar formatter for model-scoped weekly windows (llmux
- * `fable_weekly` / `scoped_limits[]` — e.g. the "Fable" weekly cap). Same
- * layout as {@link formatUsageBar}, but the label is dynamic (llmux decides
- * the scope names) so it can't live in the closed `UsageWindowLabel` union.
- * Scoped windows are weekly — the remaining-bar is scaled against 7d.
- */
-export function formatScopedUsageBar(
-  util: number | undefined,
-  resetsAtIso: string | undefined,
-  nowMs: number,
-  label: string,
-): string {
-  return renderUsageBar(util, resetsAtIso, nowMs, label.padEnd(USAGE_LABEL_WIDTH), 7 * 86_400_000);
-}
-
-/** Core renderer shared by {@link formatUsageBar} / {@link formatScopedUsageBar}. */
+/** Core renderer behind {@link formatUsageBar}. */
 function renderUsageBar(
   util: number | undefined,
   resetsAtIso: string | undefined,

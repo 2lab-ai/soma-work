@@ -29,10 +29,10 @@ describe('TurnDismissActionHandler', () => {
     });
   }
 
-  it('deletes the card and untracks it (sessionKey = channel-threadTs)', async () => {
+  it('deletes the card and untracks it (sessionKey = session-registry key)', async () => {
     await handler().handleDismiss(makeBody(), vi.fn());
     expect(slackApi.deleteMessage).toHaveBeenCalledWith('C1', '1700.9');
-    expect(tracker.untrack).toHaveBeenCalledWith('C1-1700.1', '1700.9');
+    expect(tracker.untrack).toHaveBeenCalledWith('work:C1:1700.1', '1700.9');
   });
 
   it('untracks BEFORE deleting (so a racing auto-delete cannot re-add)', async () => {
