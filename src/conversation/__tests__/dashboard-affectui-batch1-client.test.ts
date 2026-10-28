@@ -5,7 +5,7 @@
  * (the harness of dashboard-affectui-agent-run-client.test.ts), with injected fakes — no DOM.
  *
  *   <ui-toaster>            dashToaster / dashToast (queue until defined, actions), ui-action /
- *                           ui-dismiss, doAction (Stop / Close / Trash), ntShowToast (task launch)
+ *                           ui-dismiss, doAction (Stop / Close / Trash), ntOnLaunched (task launch)
  *   <ui-compact-breakdown>  usageBreakdownData (by model for everyone, by user for admins),
  *                           paintUsageBreakdown, the ui-change view switch
  *   the page                the module scripts, the served library files
@@ -187,7 +187,9 @@ describe('<ui-toaster> — one page stack for what an action did', () => {
 
   it('the page script calls no alert() and keeps no one-off toast of its own', () => {
     expect(TEMPLATE).not.toMatch(/\balert\(/);
-    expect(clientFn('ntShowToast')).not.toContain('innerHTML');
+    // The new-task launch's own toast (#nt-toast, its CSS and keyframes, ntShowToast) is gone for good.
+    expect(PAGE).not.toContain('nt-toast');
+    expect(TEMPLATE).not.toMatch(/\.nt-toast\b|nt-toast-in|ntShowToast|_ntLastLaunch|_ntToastTimer/);
   });
 });
 
@@ -244,18 +246,38 @@ describe('doAction — Stop / Close / Trash say how they went (they failed silen
   });
 });
 
-describe('ntShowToast — a launched task is a toast with 카드 열기 and the Slack link', () => {
-  it('running vs queued, the channel, the card action, the link only when there is one, 12 s on screen', () => {
+describe('ntOnLaunched — a launched task is a toast with 카드 열기 and the Slack link', () => {
+  function launch() {
     const toasts: Array<[Toast, (() => void) | undefined]> = [];
-    let opened = 0;
-    const m = load<{ ntShowToast(d: unknown, ch: string): void }>(['ntShowToast'], [], {
+    const opened: unknown[] = [];
+    const m = load<{ ntOnLaunched(d: unknown): void }>(['ntOnLaunched'], [], {
       dashToast: (t: Toast, fn?: () => void) => toasts.push([t, fn]),
-      ntOpenLaunched: () => opened++,
-      _ntLastLaunch: null,
+      ntOpenLaunched: (d: unknown) => opened.push(d),
+      _ntRequestId: '',
+      ntNewRequestId: () => 'r2',
+      _ntFiles: [],
+      URL: { revokeObjectURL() {} },
+      _ntState: {},
+      ntDefaultState: () => ({}),
+      _ntCtx: { channels: [{ id: 'C1', name: 'dev' }] },
+      localStorage: { removeItem() {} },
+      NT_DRAFT_KEY: 'k',
+      ntSetStatus: () => {},
+      ntRender: () => {},
+      closeNewTask: () => {},
+      loadSessions: () => {},
+      setTimeout: () => 0,
     });
-    m.ntShowToast({ status: 'running', permalink: 'https://slack.test/p1', sessionKey: 'k' }, 'dev');
-    m.ntShowToast({ status: 'queued' }, 'ops');
-    expect(toasts.map((t) => t[0])).toEqual([
+    return { run: m.ntOnLaunched, toasts, opened };
+  }
+
+  it('running vs queued, the channel name, the card action, the link only when there is one, 12 s on screen', () => {
+    const l = launch();
+    const first = { status: 'running', channel: 'C1', permalink: 'https://slack.test/p1', sessionKey: 'k1' };
+    const second = { status: 'queued', channel: 'C9', sessionKey: 'k2' };
+    l.run(first);
+    l.run(second);
+    expect(l.toasts.map((t) => t[0])).toEqual([
       {
         title: '작업을 시작했어요',
         description: '#dev',
@@ -266,14 +288,16 @@ describe('ntShowToast — a launched task is a toast with 카드 열기 and the 
       },
       {
         title: '작업을 접수했어요',
-        description: '#ops',
+        description: '#C9',
         tone: 'success',
         action: { id: 'open', label: '카드 열기' },
         duration: 12000,
       },
     ]);
-    toasts[0][1]?.();
-    expect(opened).toBe(1);
+    // Each toast's 카드 열기 opens its own launch, not the latest one.
+    l.toasts[0][1]?.();
+    expect(l.opened).toEqual([first]);
+    expect(clientFn('ntOpenLaunched')).toContain('var key = launch && launch.sessionKey;');
   });
 });
 
