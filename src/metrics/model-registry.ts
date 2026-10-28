@@ -173,6 +173,32 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
       maxOutput: 128_000,
     },
   ],
+  // OpenAI gpt-6.1-sol — the newest sol generation ($2 in / $10 out / $0.10
+  // cache-read per MTok, OpenAI standard-tier rates). OpenAI also lists a
+  // $2.50 cache-write rate and llmux carries it (`llmux/src/pricing.rs`
+  // `GPT_6_1_SOL` = ModelPrice::new(2.0, 10.0, 0.10, 2.5)), but llmux reports
+  // cache_creation_input_tokens as 0 on the codex wire
+  // (`llmux/src/provider/responses.rs`, cache_write_tokens mapping), so the
+  // write rate never applies here — both cache-write fields stay 0. 272k
+  // window — the openai/codex model catalog value (context_window 272000);
+  // the `[1m]` twin reaches 1M.
+  // Context numbers are policy and live in model-profile.ts; this row is
+  // pricing. No other pattern in this table is a substring of `gpt-6.1-sol`,
+  // and it is a substring of no other id, so first-wins cannot misattribute.
+  [
+    'gpt-6.1-sol',
+    {
+      pricing: {
+        inputPerMTok: 2,
+        outputPerMTok: 10,
+        cacheReadPerMTok: 0.1,
+        cache5minWritePerMTok: 0,
+        cache1hrWritePerMTok: 0,
+      },
+      contextWindow: 272_000,
+      maxOutput: 128_000,
+    },
+  ],
   // OpenAI gpt-5.6-terra — mid tier of the gpt-5.6 family ($2.50 in / $15
   // out / $0.25 cache-read per MTok, 2026-07-09 launch rates; no
   // cache-creation charge on codex). Same 372k window as sol — official
