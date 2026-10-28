@@ -4575,11 +4575,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   align-items: center;
   gap: 4px;
 }
-.card-question-choices {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px;
-}
 .btn-choice {
   font-size: 0.72em;
   padding: 4px 10px;
@@ -4604,11 +4599,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   font-weight: 600;
 }
 .btn-choice-recommended::before { content: "\\2B50 "; }
-.choice-row-recommended .btn-choice-recommended {
-  width: 100%;
-  display: block;
-  text-align: center;
-}
 /* Hero "Submit All Recommended" — group-only, top of multi-choice panel */
 .btn-hero-recommended {
   display: block;
@@ -4632,11 +4622,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   opacity: 0.7;
   cursor: not-allowed;
 }
-.choice-divider {
-  border: none;
-  border-top: 1px solid var(--border, #e0e0e0);
-  margin: 6px 0;
-}
 .card-question-multi {
   font-size: 0.72em;
   color: var(--text-secondary);
@@ -4647,96 +4632,23 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   text-decoration: none;
 }
 .card-question-multi a:hover { text-decoration: underline; }
-/* Pending question inside an open card — the card's own button language
-   (reference "Reject | Approve"): outline choices, the recommended one solid
-   and last on the right. Markup and handlers are the shared ones above. */
+/* The multi-question form inside an open card (renderMultiChoiceCard): its
+   title, progress and 답변하기, in the card's own button language. The
+   single-choice question and the permission prompts are <ui-approval-card>s,
+   which draw their own answers. */
 .card .card-question { margin-top: 12px; padding: 10px 12px; background: var(--ib-col); border: 0; border-radius: 8px; }
 .card .card-question-text { font-size: 13px; color: var(--ib-text); margin-bottom: 8px; }
 .card .card-question-multi { font-size: 12px; color: var(--ib-muted); }
-.card .card-question-choices { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; }
-.card .choice-divider { display: none; }
-.card .choice-row-recommended { order: 2; max-width: 100%; min-width: 0; }
 .card .btn-choice { font-size: 13px; padding: 5px 12px; min-height: 32px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); text-align: left; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
-.card .btn-choice-recommended::before { content: none; }
-.card .choice-row-recommended .btn-choice-recommended,
-.card .btn-choice-recommended { display: inline-block; width: auto; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
-.card .btn-choice.btn-choice-recommended.is-quiet { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--ib-text); font-weight: 500; }
-/* D10: one primary per open card — the decision this viewer can make here. The
-   owner's 답변하기 / recommended answer on this instance and, in the card only, the
-   lead Approve (renderPermissionBlock marks the first one this viewer can press
-   .is-lead) are ink; Deny, every other Approve and a quiet recommended answer
-   (.is-quiet: not answerable here) are secondaries. The panel's prompt keeps its own
-   styling. Doubled classes beat the shared card / hover rules later in the sheet. */
+/* D10: one primary per open card — the owner's 답변하기 on this instance is ink.
+   Doubled classes beat the shared card / hover rules later in the sheet. */
 .card .btn-choice.btn-choice-primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
-.card .btn-perm.btn-perm-approve { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--ib-text); }
-.card .btn-perm.btn-perm-approve.is-lead { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
-.card .btn-perm.btn-perm-deny { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--st-fail-text); }
-/* A card that also holds a permission prompt this viewer can answer (a lead Approve —
-   the requester, this instance) keeps that Approve as the one ink button: the
-   question's answers step back to secondaries, resting and hovered (:has() outranks
-   the card's recommended-choice rules). */
-.card .card-body:has(.btn-perm-approve.is-lead) .btn-choice.btn-choice-recommended, .card .card-body:has(.btn-perm-approve.is-lead) .btn-choice.btn-choice-primary { background: var(--ib-card); border-color: var(--ib-card-border); color: var(--ib-text); }
 @media (hover: hover) and (pointer: fine) {
   .card .btn-choice.btn-choice-primary:hover:not(:disabled) { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
 }
 
 /* ── PANEL PENDING QUESTION ── */
-/* ── PERMISSION PROMPT (SSOT 2026-10-24) — the Slack "🔐 Permission Request" card ── */
-.perm-request {
-  margin-top: 8px;
-  padding: 10px;
-  background: rgba(249,115,22,0.06);
-  border: 1px solid rgba(249,115,22,0.32);
-  border-radius: 8px;
-}
-.perm-request + .perm-request { margin-top: 6px; }
-.perm-head {
-  display: flex; flex-wrap: wrap; align-items: center; gap: 4px;
-  margin-bottom: 6px;
-  font-size: 0.8em; font-weight: 700; color: var(--ib-text);
-}
-.perm-head code, .perm-rule code {
-  font-family: 'SF Mono','Fira Code',ui-monospace,monospace;
-  font-size: 0.95em; padding: 1px 5px; border-radius: 4px;
-  background: rgba(249,115,22,0.14); color: var(--orange);
-}
-.perm-params {
-  margin: 0 0 6px; padding: 8px;
-  font-family: 'SF Mono','Fira Code',ui-monospace,monospace;
-  font-size: 0.72em; line-height: 1.45;
-  white-space: pre-wrap; overflow-wrap: anywhere;
-  max-height: 320px; overflow: auto;
-  background: var(--ib-col); color: var(--ib-text); border-radius: 6px;
-}
-.perm-params.is-clamped { max-height: 120px; }
-.perm-params-hidden { font-family: inherit; color: var(--text-secondary); }
-.perm-truncated { margin: -2px 0 6px; font-size: 0.72em; color: var(--text-secondary); }
-.perm-rules { display: flex; flex-direction: column; gap: 3px; margin-bottom: 8px; font-size: 0.74em; color: var(--ib-text); }
-.perm-rules-label { font-weight: 600; color: var(--text-secondary); }
-.perm-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-.btn-perm {
-  min-height: 32px; padding: 5px 10px;
-  font: inherit; font-size: 0.74em; line-height: 1.3;
-  color: var(--ib-text); background: var(--ib-card);
-  border: 1px solid var(--ib-card-border); border-radius: 6px;
-  cursor: pointer;
-  transition: background-color 150ms ease, border-color 150ms ease, transform var(--dur-press) var(--ease-out);
-}
-.btn-perm-approve { color: #fff; background: #1f8f4e; border-color: #1f8f4e; }
-.btn-perm-deny { color: #fff; background: #c43c3c; border-color: #c43c3c; }
-.btn-perm:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-perm:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
-@media (hover: hover) and (pointer: fine) {
-  .btn-perm:not(:disabled):hover { filter: brightness(1.12); }
-}
-@media (pointer: coarse) {
-  .btn-perm { min-height: 44px; }
-}
-.perm-note { margin-top: 6px; font-size: 0.74em; color: var(--red); overflow-wrap: anywhere; }
 .panel-permission { padding: 0 16px 12px; border-bottom: 1px solid var(--border); }
-.panel-permission .perm-request { margin-top: 0; }
-.panel-permission .perm-head { font-size: 0.88em; }
-.panel-permission .btn-perm { font-size: 0.82em; }
 .panel-question {
   padding: 12px 16px;
   background: rgba(246,201,14,0.06);
@@ -4758,10 +4670,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   padding: 6px 14px;
 }
 
-/* ── 입력 필요 — approval cards in the panel (re-agent-run D8–D17) ──
-   A head with the count; each prompt (and the single-choice question) is a card
-   in a tray: context line, icon · title · description · pill, the input as
-   key/value rows, the answers. The card is its own container. No new tokens. */
+/* ── 입력 필요 (re-agent-run D8–D17) ──
+   A head with the count; each prompt (and the single-choice question) is a
+   <ui-approval-card> in its slot (.ac-slot) — the card's own look is the
+   library's. No new tokens. */
 .ar-vh { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
 .panel-needs-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px 8px; font-size: 13px; font-weight: 650; color: var(--text); }
 .panel-needs-head[hidden] { display: none; }
@@ -4772,67 +4684,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .panel-question[data-ap="card"] { padding: 0 16px 12px; background: none; border-bottom: 1px solid var(--border); }
 /* One section: no rule between a prompt and the question card under it. */
 .panel-permission:has(+ .panel-question[data-ap="card"]:not([style*="none"])) { border-bottom: 0; }
-.ap-card { container-type: inline-size; position: relative; padding: 4px; border-radius: 14px; background: var(--ib-col); border: 1px solid var(--ib-card-border); color: var(--ib-text); outline: none; }
-.panel-permission .ap-card { margin: 0; padding: 4px; background: var(--ib-col); border: 1px solid var(--ib-card-border); border-radius: 14px; }
-.panel-permission .ap-card + .ap-card { margin-top: 10px; }
 /* The <ui-approval-card> slots (batch 1): a gap between two prompts, and the open card's off what follows. */
 .ac-slot + .ac-slot { margin-top: 10px; }
 .card-body > .ac-slot { margin-bottom: 10px; }
-.ap-card:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
-.ap-label { padding: 4px 8px 6px; font-size: 12px; line-height: 16px; color: var(--ib-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
-.ap-body { padding: 14px; border-radius: 11px; background: var(--ib-card); box-shadow: 0 0 0 1px var(--ib-card-border); }
-.ap-head { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; gap: 10px; }
-.ap-icon { display: grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; background: var(--ib-pill); color: var(--ib-text); }
-.ap-icon svg { width: 16px; height: 16px; }
-.ap-titles { min-width: 0; padding-top: 1px; }
-.ap-title { font-size: 14px; font-weight: 600; line-height: 20px; color: var(--ib-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ap-question .ap-title { white-space: pre-line; overflow: visible; overflow-wrap: anywhere; }
-.ap-desc { margin-top: 1px; font-size: 13px; line-height: 18px; color: var(--ib-text-2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.ap-pill { display: inline-flex; align-items: center; gap: 6px; height: 22px; margin-top: 1px; padding: 0 9px 0 8px; border-radius: 999px; background: var(--ib-pill); color: var(--ib-text-2); font-size: 12px; font-weight: 500; line-height: 1; white-space: nowrap; }
-.ap-pill::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.8; }
-.ap-pill[data-kind="rule"] { background: color-mix(in srgb, var(--st-fail) 14%, transparent); color: var(--st-fail-text); }
-.ap-pill[data-kind="question"] { background: color-mix(in srgb, var(--st-wait) 16%, transparent); color: var(--st-wait); }
-.ap-details { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 6px 16px; max-height: 320px; overflow: auto; margin: 12px 0 0; padding: 10px 12px; border-radius: 9px; background: var(--ib-col); box-shadow: inset 0 0 0 1px var(--ib-card-border); font-size: 12.5px; line-height: 18px; }
-.ap-detail { display: contents; }
-.ap-detail dt { color: var(--ib-muted); }
-.ap-detail dd { min-width: 0; margin: 0; color: var(--ib-text); font-family: 'SF Mono','Fira Code',ui-monospace,monospace; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
-.ap-body .perm-params { margin: 12px 0 0; }
-.ap-body .perm-truncated { margin: 4px 0 0; }
-.ap-body .perm-rules { margin: 10px 0 0; }
-.ap-alts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 10px; }
-.ap-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; margin-top: 8px; }
-.ap-expires { font-size: 12.5px; color: var(--ib-muted); font-variant-numeric: tabular-nums; white-space: nowrap; transition: color var(--dur-fade) linear; }
-.ap-expires.is-low { color: var(--st-wait); }
-.ap-actions { display: flex; flex: 0 0 auto; gap: 4px; margin-left: auto; }
-.ap-card .btn-perm.ap-btn { display: inline-flex; align-items: center; justify-content: center; gap: 8px; min-height: 34px; padding: 0 12px; border: 0; border-radius: 10px; font-size: 13px; font-weight: 500; line-height: 1; white-space: nowrap; }
-.ap-card .btn-perm.ap-ghost { min-height: 28px; padding: 0 10px; border-radius: 8px; background: transparent; color: var(--ib-text-2); font-size: 12.5px; box-shadow: inset 0 0 0 1px var(--ib-card-border); }
-.ap-card .btn-perm.ap-quiet { padding-right: 8px; background: transparent; color: var(--ib-text); box-shadow: inset 0 0 0 1px var(--ib-card-border); }
-.ap-card .btn-perm.ap-primary { padding-right: 8px; background: var(--ib-text); color: var(--ib-card); }
-.ap-btn[data-kbd]::after { content: attr(data-kbd) / ""; display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 6px; background: color-mix(in srgb, currentColor 12%, transparent); font-size: 11px; font-weight: 500; opacity: 0.8; }
-.ap-btn:disabled::after { display: none; }
-.ap-card .btn-choice.ap-choice { display: flex; flex-direction: column; align-items: flex-start; gap: 2px; width: 100%; min-height: 36px; padding: 8px 12px; border: 0; border-radius: 10px; background: transparent; color: var(--ib-text); box-shadow: inset 0 0 0 1px var(--ib-card-border); font-size: 13px; text-align: left; }
-.ap-card .btn-choice.ap-choice.ap-rec { position: relative; padding-right: 52px; background: var(--ib-text); color: var(--ib-card); box-shadow: none; font-weight: 500; }
-.ap-card .btn-choice.ap-rec[data-kbd]::after { content: attr(data-kbd) / ""; position: absolute; top: 8px; right: 8px; display: inline-grid; place-items: center; min-width: 20px; height: 20px; padding: 0 5px; border-radius: 6px; background: color-mix(in srgb, currentColor 14%, transparent); font-size: 11px; opacity: 0.8; }
-.ap-choices { display: flex; flex-direction: column; gap: 6px; margin-top: 12px; }
-.ap-choice-desc { font-size: 12px; font-weight: 400; opacity: 0.75; }
-.ap-choice-tag { margin-left: 8px; padding: 1px 6px; border-radius: 6px; background: color-mix(in srgb, currentColor 14%, transparent); font-size: 11px; font-weight: 500; }
-.ap-resolved { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 10px 12px; border-radius: 11px; background: var(--ib-card); box-shadow: 0 0 0 1px var(--ib-card-border); animation: ap-in var(--dur-move) var(--ease-out) both; }
-.ap-mark { display: grid; flex: none; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: color-mix(in srgb, var(--st-done) 16%, transparent); color: var(--st-done); font-size: 12px; font-weight: 700; }
-.ap-mark svg { width: 12px; height: 12px; }
-.ap-resolved[data-decision="deny"] .ap-mark, .ap-resolved[data-decision="explain"] .ap-mark { background: var(--ib-pill); color: var(--ib-text-2); }
-.ap-row-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13.5px; font-weight: 500; color: var(--ib-text); }
-.ap-row-status { flex: none; color: var(--ib-muted); white-space: nowrap; font-size: 12.5px; }
-@keyframes ap-in { from { opacity: 0; transform: translateY(4px); } }
-@container (max-width: 379px) {
-  .ap-actions { flex: 1 1 100%; margin-left: 0; }
-  .ap-actions .ap-btn { flex: 1 1 0; min-width: 0; }
-  .ap-btn[data-kbd]::after, .ap-card .btn-choice.ap-rec[data-kbd]::after { display: none; }
-  .ap-card .btn-choice.ap-choice.ap-rec { padding-right: 12px; }
-}
-@container (max-width: 319px) {
-  .ap-body { padding: 12px; }
-  .ap-pill-word { display: none; }
-}
 
 /* ── MULTI-CHOICE FORM (dashboard) ── */
 .mc-form {
@@ -5964,7 +5818,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .btn-choice:hover:not(:disabled) { border-color: var(--accent); background: rgba(77,157,224,0.18); color: var(--text); }
   .btn-choice-recommended:hover:not(:disabled) { background: #256f38; color: white; border-color: #256f38; }
   .card .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--ib-card); color: var(--ib-text); }
-  .card .btn-choice-recommended:hover:not(:disabled) { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
 }
 
 /* ── BOARD RESPONSIVE (.prd/10 §5, SSOT 2026-10-24) ──
@@ -6081,7 +5934,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .card-expand { transition: none !important; }
   .card-expand-inner { transition: opacity var(--dur-fade) linear !important; }
   .btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .archives-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: none; }
-  .btn-perm:active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   /* Loading skeletons hold still. */
@@ -6161,18 +6013,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .panel-question .btn-choice, .mc-q-choices .btn-choice, .mc-q-edit-btn, .mc-btn-submit, .mc-btn-reset { min-height: 44px; }
   .mc-custom-input input, .mc-custom-input button, .btn-send, .panel-command textarea { min-height: 44px; }
 }
-/* 입력 필요 approval cards (re-agent-run D12–D13): key hints only with a hover
-   pointer, quiet hovers, 44px answers on touch — after the shared touch block. */
-@media (hover: none) {
-  .ap-btn[data-kbd]::after { display: none; }
-  .ap-card .btn-choice.ap-rec[data-kbd]::after { display: none; }
-}
-@media (hover: hover) and (pointer: fine) {
-  .ap-card .btn-perm.ap-ghost:not(:disabled):hover, .ap-card .btn-perm.ap-quiet:not(:disabled):hover, .ap-card .btn-choice.ap-choice:not(.ap-rec):not(:disabled):hover { filter: none; background: var(--ib-pill); }
-}
-@media (pointer: coarse) {
-  .ap-card .btn-perm.ap-btn, .ap-card .btn-choice.ap-choice { min-height: 44px; }
-}
 /* The model · effort menu's own touch / narrow sizes and reduced motion — after the shared blocks, which stay untouched (re-model-picker D13/D15). */
 @media (pointer: coarse), (max-width: 639px) {
   .mp-trigger, .mp-seg-btn { min-height: 44px; }
@@ -6202,15 +6042,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (prefers-reduced-motion: reduce) {
   /* D3: the static ring (shared rule) stays whole, in the pill's icon colour. */
   .card-status .spinner { border-color: currentColor; }
-}
-/* D10 hover, after the shared prompt's hover rule (brightness filter): in the card,
-   the lead Approve stays the ink primary and every other Approve, Deny and a quiet
-   recommended answer stay secondaries when pointed at. */
-@media (hover: hover) and (pointer: fine) {
-  .card .btn-perm.btn-perm-approve:not(:disabled):hover { filter: none; background: var(--ib-card); border-color: var(--ib-muted); color: var(--ib-text); }
-  .card .btn-perm.btn-perm-approve.is-lead:not(:disabled):hover { filter: none; background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
-  .card .btn-perm.btn-perm-deny:not(:disabled):hover { filter: none; background: var(--ib-card); border-color: var(--st-fail-text); color: var(--st-fail-text); }
-  .card .btn-choice.btn-choice-recommended.is-quiet:hover:not(:disabled) { background: var(--ib-card); border-color: var(--ib-muted); color: var(--ib-text); opacity: 1; }
 }
 /* ── CRON badge · lane · drawer (SSOT 2026-10-23 T3/T4/T5) ── */
 .cron-badge {
@@ -6737,14 +6568,6 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-submit:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
 .nt-submit.is-busy svg { animation: nt-spin 0.9s linear infinite; }
 
-.nt-toast { position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom, 0px)); z-index: 90; display: flex; flex-wrap: wrap; align-items: center; justify-content: flex-end; gap: 8px 10px; width: max-content; max-width: min(560px, calc(100vw - 24px)); padding: 10px 10px 10px 14px; translate: -50% 0; border: 1px solid var(--border); border-radius: 14px; background: var(--surface-raised); color: var(--text); box-shadow: var(--ib-shadow-raised); font-size: 13px; animation: nt-toast-in 320ms var(--ease-out) both; }
-.nt-toast[hidden] { display: none; }
-/* left: 50% leaves only half the viewport for a shrink-to-fit box, so the
-   width is the content's own (capped) and the actions wrap under the message
-   on a narrow screen instead of squeezing it into a column. */
-.nt-toast-text { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; }
-.nt-toast-actions { display: flex; flex: none; gap: 8px; margin-left: auto; }
-.nt-toast a, .nt-toast button { flex: none; height: 30px; padding: 0 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; font-weight: 700; text-decoration: none; display: inline-flex; align-items: center; cursor: pointer; }
 
 @keyframes nt-sheen { to { rotate: 360deg; } }
 @keyframes nt-pulse {
@@ -6755,7 +6578,6 @@ body.nt-open .new-task-fab { display: none !important; }
 @keyframes nt-fab-in { from { opacity: 0; transform: translateY(16px) scale(0.6); } to { opacity: 1; transform: none; } }
 @keyframes nt-ring { 0% { box-shadow: 0 0 0 0 rgba(123, 156, 240, 0.5); } 60%, 100% { box-shadow: 0 0 0 16px rgba(123, 156, 240, 0); } }
 @keyframes nt-att-in { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: none; } }
-@keyframes nt-toast-in { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 @keyframes nt-rec { 50% { opacity: 0.35; transform: scale(0.8); } }
 @keyframes nt-blink { 50% { opacity: 0.45; } }
 @keyframes nt-spin { to { rotate: 360deg; } }
@@ -6792,13 +6614,11 @@ body.nt-open .new-task-fab { display: none !important; }
   .nt-toolbar { padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)); }
   .nt-submit { height: 44px; padding: 0 18px; border-radius: 13px; }
   .nt-submit-hint, .nt-head-hint { display: none; }
-  .nt-toast { bottom: calc(86px + env(safe-area-inset-bottom, 0px)); }
 }
 @media (pointer: coarse) {
   /* New task — touch: 44px targets, 16px text (iOS does not zoom into it),
      and the camera button (capture="environment" opens the camera directly). */
   .nt-tool, .nt-close, .nt-battery-btn, .nt-toggle, .nt-chip, .nt-rec-btn { min-height: 44px; min-width: 44px; }
-  .nt-toast a, .nt-toast button { height: 44px; padding: 0 14px; font-size: 13px; }
   .nt-tool { width: 44px; height: 44px; }
   .nt-att-remove { width: 28px; height: 28px; }
   .nt-prompt, .nt-chip select { font-size: 16px; }
@@ -6807,7 +6627,7 @@ body.nt-open .new-task-fab { display: none !important; }
 }
 @media (prefers-reduced-motion: reduce) {
   /* New task — no rotation, pulse, ring or slide; changes are instant. */
-  .new-task-btn, .new-task-btn::before, .new-task-fab, .new-task-fab::after, .nt-dialog, .nt-att, .nt-toast,
+  .new-task-btn, .new-task-btn::before, .new-task-fab, .new-task-fab::after, .nt-dialog, .nt-att,
   .nt-rec-dot, .nt-battery-fill, .nt-plus, .nt-fab-label, .nt-fab-icon, .nt-submit svg { animation: none !important; transition: none !important; }
 }
 /* ── Session artifacts (SSOT 2026-10-23): face chips, strips, minimap, viewer ── */
@@ -7461,7 +7281,6 @@ body.nt-open .new-task-fab { display: none !important; }
       </footer>
     </form>
   </dialog>
-  <div class="nt-toast" id="nt-toast" role="status" aria-live="polite" hidden></div>
 </div>
 <!-- Artifacts (SSOT 2026-10-23): hover minimap + full-size viewer, shared by board and panel. -->
 <div id="art-peek" class="art-peek" role="tooltip" aria-hidden="true"></div>
@@ -19952,8 +19771,6 @@ var _ntRequestId = null;
 var _ntRec = null;
 var _ntAudio = null;
 var _ntPlayingId = 0;
-var _ntLastLaunch = null;
-var _ntToastTimer = 0;
 
 function ntBatteryView(b) {
   if (!b || typeof b.level !== 'number') {
@@ -20661,22 +20478,22 @@ function ntOnLaunched(data) {
   var channel = _ntCtx.channels.find(function (c) {
     return c.id === data.channel;
   });
-  ntShowToast(data, channel ? channel.name : data.channel);
+  // A toast on the page's <ui-toaster>: 카드 열기 opens this launch's card
+  // (not a later launch's), Slack에서 보기 its thread.
+  var toast = {
+    title: data.status === 'running' ? '작업을 시작했어요' : '작업을 접수했어요',
+    description: '#' + (channel ? channel.name : data.channel),
+    tone: 'success',
+    action: { id: 'open', label: '카드 열기' },
+    duration: 12000,
+  };
+  if (data.permalink) toast.link = { label: 'Slack에서 보기', href: String(data.permalink) };
+  dashToast(toast, function () { ntOpenLaunched(data); });
   if (typeof loadSessions === 'function') setTimeout(loadSessions, 800);
 }
 
-function ntShowToast(data, channelName) {
-  var head = data.status === 'running' ? '작업을 시작했어요' : '작업을 접수했어요';
-  _ntLastLaunch = data;
-  var input = { title: head, description: '#' + channelName, tone: 'success', action: { id: 'open', label: '카드 열기' }, duration: 12000 };
-  if (data.permalink) input.link = { label: 'Slack에서 보기', href: String(data.permalink) };
-  dashToast(input, function() { ntOpenLaunched(); });
-}
-
-async function ntOpenLaunched() {
-  var key = _ntLastLaunch && _ntLastLaunch.sessionKey;
-  var ntT = ntEl('nt-toast');
-  if (ntT) ntT.hidden = true;
+async function ntOpenLaunched(launch) {
+  var key = launch && launch.sessionKey;
   if (!key) return;
   var find = function () {
     var cache = typeof _sessionCache === 'object' && _sessionCache ? _sessionCache : {};
@@ -20690,7 +20507,7 @@ async function ntOpenLaunched() {
     found = find();
   }
   if (found) openPanel(found);
-  else if (_ntLastLaunch.permalink) window.open(_ntLastLaunch.permalink, '_blank', 'noopener');
+  else if (launch.permalink) window.open(launch.permalink, '_blank', 'noopener');
 }
 
 function ntSyncViewport() {

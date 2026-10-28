@@ -16,6 +16,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { uiLibDistDir } from '../dashboard';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -604,11 +605,19 @@ describe('permission approval card (D10–D13)', () => {
     expect(d.canAnswer).toBeUndefined();
   });
 
-  it('D13: the card is a container; narrow cards stack the answers and drop the key hints; hints are never read', () => {
-    expect(CSS).toMatch(/\.ap-card \{[^}]*container-type: inline-size;/);
-    expect(CSS).toMatch(/@container \(max-width: 379px\) \{[^@]*\.ap-actions \{[^}]*flex: 1 1 100%;/);
-    expect(CSS).toMatch(/\.ap-btn\[data-kbd\]::after \{[^}]*content: attr\(data-kbd\) \/ "";/);
-    expect(CSS).toMatch(/@media \(hover: none\) \{\s*\.ap-btn\[data-kbd\]::after \{ display: none; \}/);
+  it('D13: the card is a container; narrow cards stack the answers and drop the key hints; hints are never read — the element’s own', () => {
+    // The panel's old .ap-* renderer CSS is gone and must not come back: the look is <ui-approval-card>'s.
+    expect(CSS).not.toMatch(/\.ap-[a-z]/);
+    expect(CSS).not.toMatch(/@container \(max-width: (379|319)px\)/);
+    // The installed element carries it (ui/src/components/approval-card/styles.ts: "Narrow cards: the answers
+    // share a full-width row and the key hints go"; the key hints are aria-hidden and drop on touch).
+    const dist = readFileSync(join(uiLibDistDir() as string, 'approval-card.js'), 'utf-8');
+    expect(dist).toContain('container: ac / inline-size;');
+    expect(dist).toMatch(
+      /@container ac \(max-width: 400px\) \{\s*\.ac-actions \{ flex: 1 1 100%;[^}]*\}[^@]*\.ac-kbd \{ display: none; \}/,
+    );
+    expect(dist).toMatch(/@media \(hover: none\) \{\s*\.ac-kbd \{ display: none; \}/);
+    expect(dist).toContain('class="ac-kbd" aria-hidden="true"');
   });
 });
 

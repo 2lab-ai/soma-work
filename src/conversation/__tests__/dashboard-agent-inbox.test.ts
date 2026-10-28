@@ -505,8 +505,13 @@ describe('agent inbox board — motion contract (§4)', () => {
     expect(fnBody('panelInfoHtml')).not.toContain('transform:scaleX(');
   });
 
-  it('board cards drop the star on the recommended choice (the solid primary marks it)', () => {
-    expect(TEMPLATE).toContain('.card .btn-choice-recommended::before { content: none; }');
+  it('board cards draw no recommended-choice button of their own: the approval card marks the recommendation', () => {
+    // affectUI batch 1: the card's single-choice question is a <ui-approval-card>, which lists the
+    // recommended choice first, tagged and preselected (library: approval-card.test.ts "lists the
+    // recommended choice first and preselected; Submit sends it"). The card's star / ink overrides went
+    // with the old buttons; the panel's multi-question form keeps the shared .btn-choice-recommended.
+    expect(TEMPLATE).not.toMatch(/\.card \.btn-choice-recommended|\.card \.btn-choice\.btn-choice-recommended/);
+    expect(TEMPLATE).toMatch(/\n\.btn-choice-recommended::before \{ content: "\\\\2B50 "; \}/);
   });
 
   it('board hover effects live only inside (hover: hover) and (pointer: fine)', () => {
