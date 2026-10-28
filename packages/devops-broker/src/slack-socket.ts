@@ -251,7 +251,7 @@ export function startSocketMode(opts: {
     /** Stops reconnecting, aborts an open in flight, closes the socket, and waits for clicks already handed over. */
     async close() {
       closed = true;
-      stopping.abort();
+      stopping.abort('socket-mode-closed');
       if (timer !== undefined) clearTimeout(timer);
       timer = undefined;
       const socket = current;
