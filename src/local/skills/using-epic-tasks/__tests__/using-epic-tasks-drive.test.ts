@@ -21,6 +21,12 @@ import { describe, expect, it } from 'vitest';
  *        request skips nothing; SKILL.md routes the handed-over epic to §0 in both
  *        전제 and Integration; restacking is limited to unpushed branches. Apart from
  *        the marker line, checks collapse whitespace so re-wrapping does not break them.
+ *  - T6: epic-drive.md has a `## 하루 보고` section between step 4 and the 운영 결함
+ *        section — a 24-hour window counted in 완료 조건, one `trinity` round, and a
+ *        셀프 리플렉션 (멈출 것·시작할 것·계속할 것) applied the same day. The §1 칸 table
+ *        ends with 하루 보고, step 3 forbids a follow-up PR of a follow-up PR, and the
+ *        질문 rule asks the moment solo completion work runs out. SKILL.md points at
+ *        §하루 보고 and names the follow-up PR chain as an anti-pattern.
  */
 
 const SKILL_ROOT = resolve(__dirname, '..');
@@ -222,5 +228,73 @@ describe('local:using-epic-tasks — existing-epic entry and lifted rules (T5)',
 
   it('limits restacking to branches not yet pushed', () => {
     expect(flat(drive())).toContain('아직 푸시하지 않은 브랜치');
+  });
+});
+
+const DAILY_HEADING = /^## 하루 보고$/m;
+const PANELS = ['지금', '다음', '주의', '질문 중', '사건 기록', '하루 보고'];
+const DAILY_TERMS = [
+  '24시간',
+  '완료 조건',
+  'trinity',
+  '1라운드',
+  '셀프 리플렉션',
+  '멈출 것',
+  '시작할 것',
+  '계속할 것',
+  '그날',
+];
+
+describe('local:using-epic-tasks — daily report and follow-up PR limit (T6)', () => {
+  it('epic-drive.md has `## 하루 보고` after step 4 and before the 운영 결함 section', () => {
+    expectAscending(drive(), [/^## 4\. /m, DAILY_HEADING, /^## 작업 중 발견한 운영 결함$/m]);
+  });
+
+  it('§하루 보고: a 24-hour window, one trinity round, a self-reflection applied the same day', () => {
+    const sec = flat(section(drive(), DAILY_HEADING));
+    for (const term of DAILY_TERMS) {
+      expect(sec, `§하루 보고 lacks ${term}`).toContain(term);
+    }
+  });
+
+  it('§1 칸 table: the six fixed panels, ending with 하루 보고', () => {
+    const step1 = section(drive(), /^## 1\. /m);
+    expect(firstCells(step1)).toEqual(PANELS);
+    expect(flat(step1)).toContain('여섯 개로 고정');
+  });
+
+  it('§3 forbids a follow-up PR of a follow-up PR', () => {
+    expect(flat(section(drive(), /^## 3\. /m))).toContain('후속 PR의 후속 PR');
+  });
+
+  it('§3 gives the follow-up list one home and a finite end after the bundle PR merges', () => {
+    const step3 = flat(section(drive(), /^## 3\. /m));
+    expect(step3).toContain('트래커 에픽에 한 곳');
+    expect(step3).toContain('머지 뒤에 남은 같은 급 후속은 트래커에 범위 밖 항목으로');
+    expect(step3).toContain('통합은 합칠 대상 항목과 근거 위치가 있을 때만');
+    expect(step3).toContain('주석·문서만이면 "해당 없음"');
+  });
+
+  it('§4 closure empties the follow-up list and cancels the daily report schedule', () => {
+    const step4 = flat(section(drive(), /^## 4\. /m));
+    expect(step4).toContain('후속 목록 비움');
+    expect(step4).toContain('처분 완료');
+    expect(step4).toContain('하루 보고 예약 해제');
+  });
+
+  it('§하루 보고 recovers a missed window on re-entry', () => {
+    expect(flat(section(drive(), DAILY_HEADING))).toContain('다시 들어왔을 때');
+    expect(flat(section(drive(), DAILY_HEADING))).toContain('기한과 무관하게');
+  });
+
+  it('질문 rule: asks when the dispatcher runs out of solo completion work (바닥)', () => {
+    const rows = tableRows(section(drive(), /^## 공통 규칙$/m));
+    const ask = rows.find((cells) => cells[0] === '질문')?.[1] ?? '';
+    expect(ask).toContain('바닥');
+  });
+
+  it('SKILL.md drive section points at §하루 보고, and Anti-patterns names the follow-up PR chain', () => {
+    expect(flat(section(skill(), DRIVE_HEADING))).toContain('reference/epic-drive.md` §하루 보고');
+    expect(section(skill(), /^## Anti-patterns$/m)).toMatch(/^- 완료 조건이 막힌 동안 리뷰 후속 PR을 연달아 만들기/m);
   });
 });
