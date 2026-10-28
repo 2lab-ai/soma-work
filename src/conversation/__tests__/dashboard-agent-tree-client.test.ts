@@ -635,7 +635,7 @@ describe('panel scope (§4.3)', () => {
 
   it('rows say 지시 / 결과 / 배경 실행 시작 in a subagent scope', () => {
     const r = load<{ renderWorkLogEntry(e: unknown): string }>(
-      [...NODE_FNS, 'decodeSlackEntities', 'wlChildBlock', 'renderWorkLogEntry'],
+      [...NODE_FNS, 'decodeSlackEntities', 'wlChildBlock', 'wlToolSummary', 'renderWorkLogEntry'],
       [...AGENT_VARS, 'WL_LABELS'],
       { panelSessionKey: 'k', _sessionCache: { k: card() } },
     );
@@ -717,8 +717,12 @@ describe('panel scope (§4.3)', () => {
     expect(fnBody('repaintPanelScope')).toContain('repaintPanelTasks();');
     expect(fnBody('selectPanelAgent')).toContain('repaintPanelTasks();');
     expect(fnBody('selectPanelAgent')).toContain('repaintWorkLogScope();');
-    expect(fnBody('wlRenderList')).toContain('wlBuildRows(wlScopeEntries(state.entries))');
-    expect(fnBody('paintWorkLog')).toContain('var scopedCount = wlScopeEntries(state.entries).length;');
+    // Paired tool results live in their call's card (wlVisible), so they are not rows.
+    expect(fnBody('wlRenderList')).toContain('wlBuildRows(wlVisible(state, wlScopeEntries(state.entries)))');
+    // Counts what the list shows: a paired result lives in its call's card.
+    expect(fnBody('paintWorkLog')).toContain(
+      'var scopedCount = wlVisible(state, wlScopeEntries(state.entries)).length;',
+    );
     expect(fnBody('paintWorkLog')).toContain("if (!scopedCount) showWorkLogEmpty('이 에이전트의 작업 로그 없음');");
     expect(fnBody('renderCardFace')).toContain('+ renderCardAgents(s)');
     expect(fnBody('renderCardBody')).toContain('const agentsHtml = renderAgentTree(s, col);');
@@ -990,7 +994,7 @@ describe('panel — drill-down over the same node type (path · focused node · 
 });
 
 describe('work log — a child is one live block at the point it was started', () => {
-  const ENTRY_FNS = [...NODE_FNS, 'decodeSlackEntities', 'wlChildBlock', 'renderWorkLogEntry'];
+  const ENTRY_FNS = [...NODE_FNS, 'decodeSlackEntities', 'wlChildBlock', 'wlToolSummary', 'renderWorkLogEntry'];
   const spawn = { seq: 2, ts: 0, kind: 'tool', tool: 'Agent', text: 'Agent {}', agentRef: 'toolu_explore' };
   const r = (agents: Agent[] = AGENTS) =>
     load<{ renderWorkLogEntry(e: unknown): string }>(ENTRY_FNS, [...AGENT_VARS, 'WL_LABELS'], {
@@ -1008,8 +1012,10 @@ describe('work log — a child is one live block at the point it was started', (
     expect(html).toContain('#T1 Reading the mapper');
     expect(html).toContain('열기 &rarr;');
     expect(html).toContain('aria-label="A1 Explore 열기 — 실행 중, 툴 18"');
-    const rowEnd = html.indexOf('</div>', html.indexOf('class="wl-row'));
-    expect(html.indexOf('wl-agent-link')).toBeGreaterThan(rowEnd);
+    // The call itself is a tool call card; the child's block sits beside it, never inside it.
+    const cardEnd = html.indexOf('</ui-tool-call-card>');
+    expect(cardEnd).toBeGreaterThan(0);
+    expect(html.indexOf('wl-agent-link')).toBeGreaterThan(cardEnd);
   });
 
   it('a block whose agent has not arrived yet reads 확인 불가 (it morphs when the agent does)', () => {
@@ -1252,9 +1258,13 @@ describe('live morph (review B r2) — a live update keeps the nodes that did no
 
 describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the arrow path', () => {
   it('the arrow rows include the link, the tab stop can sit on it, and Enter on it is left to the button', () => {
-    expect(fnBody('wlNavRows')).toContain("'.wl-group-head, .wl-row, .wl-agent-link'");
-    expect(fnBody('wlSetTabStop')).toContain('.wl-agent-link[tabindex="0"]');
-    expect(fnBody('wlEnsureTabStop')).toContain('.wl-agent-link[tabindex="0"]');
+    expect(fnBody('wlNavRows')).toContain("'.wl-group-head, .wl-row, .wl-agent-link, ui-tool-call-card.wl-card'");
+    // One stop selector for both (rows, heads, links and tool call cards).
+    expect(TEMPLATE).toMatch(
+      /var WL_STOP_SEL = '[^']*\.wl-agent-link\[tabindex="0"\][^']*ui-tool-call-card\[data-stop="1"\]';/,
+    );
+    expect(fnBody('wlSetTabStop')).toContain('list.querySelectorAll(WL_STOP_SEL)');
+    expect(fnBody('wlEnsureTabStop')).toContain('list.querySelector(WL_STOP_SEL)');
     expect(TEMPLATE).toContain("if (isLink && (e.key === 'Enter' || e.key === ' ')) return;");
   });
   it('choosing an agent by keyboard leaves focus on the agent now shown, not on <body> (review B r3)', () => {

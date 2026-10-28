@@ -13,17 +13,11 @@ vi.mock('../source-thread-summary', () => ({
   postSourceThreadSummary: vi.fn().mockResolvedValue(undefined),
 }));
 
-// Mock link-metadata-fetcher (imported by action-panel-action-handler)
+// Mock link-metadata-fetcher (PR status lookups must never touch the network)
 vi.mock('../../link-metadata-fetcher', () => ({
   fetchGitHubPRDetails: vi.fn().mockResolvedValue(null),
   fetchGitHubPRReviewStatus: vi.fn().mockResolvedValue(null),
   isPRMergeable: vi.fn().mockReturnValue(false),
-  mergeGitHubPR: vi.fn().mockResolvedValue({ success: false }),
-}));
-
-// Mock channel-registry (imported by action-panel-action-handler)
-vi.mock('../../channel-registry', () => ({
-  getChannelConfluenceUrl: vi.fn().mockReturnValue(undefined),
 }));
 
 // Trace: Session Close UI Race Condition — regression tests for the fix
@@ -147,7 +141,6 @@ describe('Session Close UI Race Condition', () => {
         }),
         terminateSession: vi.fn().mockReturnValue(true),
       } as any,
-      messageHandler: vi.fn(),
       // No threadPanel — forces fallback path
     });
 

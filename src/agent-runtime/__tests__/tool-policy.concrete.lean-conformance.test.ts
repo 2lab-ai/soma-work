@@ -65,6 +65,8 @@ interface ConcreteCase {
     aborted: boolean;
     handoffContext: HandoffContext | null;
     mcpDenied: string | null;
+    /** `ctx.checkEnvSkillPermission`'s value (phase 4): a reason, or null. */
+    envSkillDenied: string | null;
     disabledRules: string[];
     /** Present only for an incident session. */
     incidentReadOnly?: IncidentReadOnlyContext;
@@ -143,6 +145,7 @@ function contextOf(c: ConcreteCase): ToolPolicyContext {
     isDangerousRuleDisabled: (id) => c.ctx.disabledRules.includes(id),
     handoffContext: c.ctx.handoffContext ?? undefined,
     checkMcpToolPermission: () => c.ctx.mcpDenied,
+    checkEnvSkillPermission: () => c.ctx.envSkillDenied,
     ...(c.ctx.incidentReadOnly ? { incidentReadOnly: c.ctx.incidentReadOnly } : {}),
   };
 }
