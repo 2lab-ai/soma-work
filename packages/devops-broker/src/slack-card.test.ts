@@ -1,10 +1,13 @@
 import { describe, expect, it } from 'vitest';
 import {
   APPROVAL_INSTRUCTION,
+  APPROVAL_INSTRUCTION_BUTTONS,
+  APPROVE_ACTION_ID,
   ApprovalError,
   type ApprovalRequest,
   CARD_LIMITS,
   codeValue,
+  DENY_ACTION_ID,
   formatKst,
   renderApprovalCard,
   renderCardStatus,
@@ -46,14 +49,17 @@ interface Block {
   type: string;
   block_id?: string;
   text?: TextObject;
-  elements?: TextObject[];
+  elements?: (TextObject | { type: 'button'; text: TextObject })[];
 }
 
 function texts(card: SlackCard): TextObject[] {
   const out: TextObject[] = [];
   for (const block of card.blocks as Block[]) {
     if (block.text !== undefined) out.push(block.text);
-    for (const element of block.elements ?? []) out.push(element);
+    for (const element of block.elements ?? []) {
+      // A button's label is its text object.
+      out.push(element.type === 'button' ? (element.text as TextObject) : (element as TextObject));
+    }
   }
   return out;
 }
@@ -387,6 +393,59 @@ describe('renderCardStatus', () => {
     const card = renderCardStatus(base, { kind: 'done', line: 'ok```\n:white_check_mark: <!channel>' });
     expect(allText(card)).not.toContain('<!channel>');
     for (const area of codeAreas(card)) expect(area).not.toContain('`');
+  });
+});
+
+describe('approval buttons', () => {
+  const actionBlocks = (card: SlackCard) => (card.blocks as Block[]).filter((block) => block.type === 'actions');
+
+  it('adds no buttons by default (the broker cannot receive clicks without Socket Mode)', () => {
+    const card = renderApprovalCard(ghWrite(), META);
+    expect(actionBlocks(card)).toEqual([]);
+    expect(allText(card)).toContain(APPROVAL_INSTRUCTION);
+  });
+
+  it('adds 승인 / 거부 buttons carrying the approval id when asked', () => {
+    const card = renderApprovalCard(ghWrite(), META, { buttons: true });
+    const blocks = actionBlocks(card);
+    expect(blocks).toHaveLength(1);
+    expect(blocks[0]).toEqual({
+      type: 'actions',
+      block_id: 'approval-actions',
+      elements: [
+        {
+          type: 'button',
+          action_id: APPROVE_ACTION_ID,
+          text: { type: 'plain_text', text: '승인', emoji: false },
+          value: META.approvalId,
+          style: 'primary',
+        },
+        {
+          type: 'button',
+          action_id: DENY_ACTION_ID,
+          text: { type: 'plain_text', text: '거부', emoji: false },
+          value: META.approvalId,
+          style: 'danger',
+        },
+      ],
+    });
+    // The buttons are the last block, under the instruction that names them; reactions still count.
+    expect(card.blocks[card.blocks.length - 1]).toBe(blocks[0]);
+    expect(allText(card)).toContain(APPROVAL_INSTRUCTION_BUTTONS);
+    expect(allText(card)).not.toContain(APPROVAL_INSTRUCTION);
+  });
+
+  it.each([
+    { kind: 'approved', by: 'U000ADMIN' } as const,
+    { kind: 'denied', by: 'U000ADMIN' } as const,
+    { kind: 'expired' } as const,
+    { kind: 'cancelled' } as const,
+    { kind: 'done', line: 'exit 0' } as const,
+  ])('removes the buttons and their instruction once the card is %o', (status) => {
+    const card = renderCardStatus(renderApprovalCard(ghWrite(), META, { buttons: true }), status);
+    expect(actionBlocks(card)).toEqual([]);
+    expect(allText(card)).not.toContain(APPROVAL_INSTRUCTION_BUTTONS);
+    expect(allText(card)).toContain('"looks good"');
   });
 });
 
