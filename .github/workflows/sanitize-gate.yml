@@ -6,6 +6,14 @@ on:
   pull_request:
     branches: [main]
 
+# One scan per ref: a newer push cancels the scan of the commit it supersedes. Without this, every
+# push to a pull request left its earlier scan queued on the single self-hosted runner (38 scans of
+# superseded commits ran on 10-27). Named apart from CI's and Lean Verify's groups, because groups
+# are repository-wide and a shared name would let one workflow cancel another's run.
+concurrency:
+  group: sanitize-${{ github.ref }}
+  cancel-in-progress: true
+
 # Read-only, at the top level so it applies to every job present and future. The
 # scan reads the full history and reports; it writes nothing. Pairing a
 # repository-scoped secret with a write-capable token on a self-hosted runner is
