@@ -164,6 +164,32 @@ describe('DmZRespond', () => {
     );
   });
 
+  // A `/z` card opened inside a DM thread must answer in that thread, not at the DM root.
+  it('send() posts into the DM thread when one is known', async () => {
+    const client = makeClient();
+    const r = new DmZRespond({ client: client as any, channel: 'D1', threadTs: '171.1' });
+    await r.send({ text: 'hi' });
+    expect(client.chat.postMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ channel: 'D1', thread_ts: '171.1' }),
+    );
+  });
+
+  it('fromAction() keeps the thread of the clicked message for follow-up sends', async () => {
+    const client = makeClient();
+    const r = DmZRespond.fromAction(
+      { container: { channel_id: 'D1', message_ts: '200.2' }, message: { ts: '200.2', thread_ts: '171.1' } },
+      client as any,
+    );
+    await r.send({ text: 'follow-up' });
+    expect(client.chat.postMessage).toHaveBeenCalledWith(expect.objectContaining({ thread_ts: '171.1' }));
+  });
+
+  it('send() at the DM root carries no thread_ts', async () => {
+    const client = makeClient();
+    await new DmZRespond({ client: client as any, channel: 'D1' }).send({ text: 'hi' });
+    expect(client.chat.postMessage.mock.calls[0][0]).not.toHaveProperty('thread_ts');
+  });
+
   it('replace() without botMessageTs sends UI-expired notice (does not call chat.update)', async () => {
     const client = makeClient();
     const r = new DmZRespond({ client: client as any, channel: 'D1' });
