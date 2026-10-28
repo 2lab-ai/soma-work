@@ -199,6 +199,7 @@ describe('D4 — a state change pops the status icon', () => {
         morphInnerHtml: () => {},
         anFocusCapture: () => null,
         anFocusRestore: () => {},
+        acHydrate: () => {}, // affectUI batch 1: the body's approval cards take their data
         canAnimate: () => opts.animate !== false,
         reduceMotion: () => !!opts.reduce,
         MOTION: { move: 320, easeOut: 'cubic-bezier(0.23, 1, 0.32, 1)' },
@@ -614,10 +615,6 @@ describe('D10 — one primary button per open card', () => {
     renderCardArtifacts: () => '[ARTS]',
     renderAgentTree: () => '[AGENTS]',
     renderTimeline: () => '[TASKS]',
-    renderPermissionBlock: () => '[PERM]',
-    resolveRecommendedId: () => null,
-    stripRecommendedMarker: (l: string) => l,
-    choiceDataAttrs: () => '',
     renderMultiChoiceCard: () => '[MC]',
     renderModelNote: () => '',
     renderModelPicker: () => '[MODEL]',
@@ -644,6 +641,11 @@ describe('D10 — one primary button per open card', () => {
         'isBusy',
         'sessionActionHtml',
         'cardGoalLine',
+        // affectUI batch 1: the prompts and the single-choice question are <ui-approval-card> slots.
+        'acSlotHtml',
+        'acQuestionId',
+        'acPermissionsHtml',
+        'acQuestionHtml',
         'renderCardBody',
       ],
       ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'SESSION_ACTION_ARIA', '_busy'],
@@ -684,7 +686,11 @@ describe('D10 — one primary button per open card', () => {
     expect(worklog(body(s, 'waiting', sibling))).toBe('btn-action btn-primary');
   });
 
-  it("a recommended answer is ink only where this viewer can answer it: the owner's card on this instance (astra P1)", () => {
+  // affectUI batch 1: the single-choice question is the same <ui-approval-card> as the panel's. Who
+  // may answer is the element's canAnswer (acQuestionLock); a locked card draws its answers quiet
+  // and says why (library: approval-card.test.ts "canAnswer false / string locks the answers and
+  // says why"). The recommended choice's ink is the element's own (choiceOrder / recommendedOf).
+  it("the question is an approval card, answerable only by the owner on this instance (astra P1)", () => {
     const rec = {
       type: 'user_choice',
       question: 'Ship it?',
@@ -694,25 +700,34 @@ describe('D10 — one primary button per open card', () => {
         { id: '2', label: 'No' },
       ],
     };
-    const inject = { resolveRecommendedId: (id: string) => id };
-    const recClass = (html: string) => /<button class="(btn-choice btn-choice-recommended[^"]*)"/.exec(html)?.[1];
-    // Mine, here: the recommended answer is the ink primary, 작업 로그 steps back.
-    const mine = body(card({ pendingQuestion: rec }), 'waiting', inject);
-    expect(recClass(mine)).toBe('btn-choice btn-choice-recommended');
+    const slot = (html: string) =>
+      /<ui-approval-card lang="ko" data-ac-key="([^"]+)" data-ac-kind="question">/.exec(html)?.[1];
+    const lockFor = (viewer: string, sibling: boolean) =>
+      load<{ acQuestionLock(s: unknown): string }>(['acQuestionLock'], ['AC_SIBLING'], {
+        currentUserId: viewer,
+        isSiblingSession: () => sibling,
+      }).acQuestionLock;
+    // Mine, here: the card answers, 작업 로그 steps back. No second set of choice buttons (the
+    // old ones lost their click handler with batch 1).
+    const mine = body(card({ pendingQuestion: rec }), 'waiting');
+    expect(slot(mine)).toBe('inst::C1:t1');
+    expect(mine).not.toContain('data-choice-id');
     expect(worklog(mine)).toBe('btn-action');
-    // Mine on a sibling instance: 작업 로그 is the primary, the recommended answer is quiet.
-    const sib = { ...inject, SELF_INSTANCE_NAME: 'a', isSiblingSession: () => true };
-    const there = body(
-      card({ pendingQuestion: rec, environment: { instanceName: 'b', host: 'h', port: 1 } }),
-      'waiting',
-      sib,
-    );
-    expect(recClass(there)).toBe('btn-choice btn-choice-recommended is-quiet');
+    expect(lockFor('U1', false)(card({ pendingQuestion: rec }))).toBe('');
+    // Mine on a sibling instance: the card is there but locked; 작업 로그 is the primary.
+    const sib = { SELF_INSTANCE_NAME: 'a', isSiblingSession: () => true };
+    const s = card({ pendingQuestion: rec, environment: { instanceName: 'b', host: 'h', port: 1 } });
+    const there = body(s, 'waiting', sib);
+    expect(slot(there)).toBe('inst::C1:t1');
     expect(worklog(there)).toBe('btn-action btn-primary');
-    // Someone else's question: quiet (and disabled), 작업 로그 the primary.
-    const theirs = body(card({ ownerId: 'U2', pendingQuestion: rec }), 'waiting', inject);
-    expect(recClass(theirs)).toBe('btn-choice btn-choice-recommended is-quiet');
+    expect(lockFor('U1', true)(s)).toBe('다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요');
+    // Someone else's question: locked read-only, 작업 로그 the primary.
+    const theirs = body(card({ ownerId: 'U2', pendingQuestion: rec }), 'waiting');
+    expect(slot(theirs)).toBe('inst::C1:t1');
     expect(worklog(theirs)).toBe('btn-action btn-primary');
+    expect(lockFor('U1', false)(card({ ownerId: 'U2', pendingQuestion: rec }))).toBe('읽기 전용 — 내 세션이 아닙니다');
+    // Only a waiting card asks.
+    expect(slot(body(card({ pendingQuestion: rec, activityState: 'working' }), 'working'))).toBeUndefined();
   });
 
   it("the multi-question 답변하기 is the primary in the owner's card only (fable P2), never on a sibling instance (astra P1)", () => {
@@ -738,54 +753,117 @@ describe('D10 — one primary button per open card', () => {
   });
 });
 
-// ── D10 — the card's lead Approve (astra P1): one ink even with two answerable prompts ──
-describe('D10 — renderPermissionBlock marks only the first Approve this viewer can press, in the card only', () => {
+// ── D10 — the card's permission prompts (astra P1) ──
+// affectUI batch 1: every prompt is its own <ui-approval-card>, bound to its own request; who may answer
+// is the element's canAnswer (acPermissionLock). The element draws its own Approve as its primary
+// (library: approval-card.test.ts "renders title, risk, rules, the command and Approve / Deny"); the
+// old rule that only the first answerable Approve of a card is ink (.is-lead) has no counterpart in
+// the element's API, so with two answerable prompts on one card each card has its own primary.
+describe('D10 — the open card renders one approval card per prompt; only what this viewer can answer is unlocked', () => {
+  const STUBS: Record<string, unknown> = {
+    dhShow: () => true,
+    formatTokens: (n: number) => `${n}`,
+    formatNmSSs: () => '0',
+    cardTotalTokens: () => 0,
+    _goalErrors: {},
+    safeHref: (u: string) => u,
+    getEnvBadgeColor: () => '#000',
+    _envCount: () => 1,
+    renderCardIo: () => '',
+    renderCardArtifacts: () => '',
+    renderAgentTree: () => '',
+    renderTimeline: () => '',
+    renderMultiChoiceCard: () => '',
+    renderModelNote: () => '',
+    renderModelPicker: () => '',
+    renderEffortPicker: () => '',
+    effortLabel: (e: string) => e,
+    SELF_INSTANCE_NAME: '',
+    READ_ONLY_MSG: 'read only',
+  };
   function client(viewer: string, sibling = false) {
-    const names = ['esc', 'escAttr', 'isPermissionRequester', 'renderPermissionBlock'];
-    const env: Record<string, unknown> = {
-      currentUserId: viewer,
-      isSiblingSession: () => sibling,
-      loadPermissionDetail: () => {},
-      _permDetails: { ap1: { input: 'ls' }, ap2: { input: 'rm -rf build' } },
-      _permNotes: {},
-    };
-    const keys = Object.keys(env);
-    const src = `${clientArrayVar('PERM_DECISIONS')}\n${names.map(clientFn).join('\n')}\nreturn { renderPermissionBlock };`;
-    return new Function(...keys, src)(...keys.map((k) => env[k])) as {
-      renderPermissionBlock(s: unknown, where: string): string;
-    };
+    return load<{
+      renderCardBody(s: unknown, col: string): string;
+      acPermissionLock(s: unknown, p: unknown): string;
+    }>(
+      [
+        'esc',
+        'escAttr',
+        'escJs',
+        'toNum',
+        'formatTaskTime',
+        'pendingAutoResume',
+        'autoResumeLabel',
+        'permissionSummary',
+        'cardSummary',
+        'cardCurrentTask',
+        'renderCardResume',
+        'isBusy',
+        'sessionActionHtml',
+        'cardGoalLine',
+        'isPermissionRequester',
+        'acPermissionLock',
+        'acSlotHtml',
+        'acQuestionId',
+        'acPermissionsHtml',
+        'acQuestionHtml',
+        'renderCardBody',
+      ],
+      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'SESSION_ACTION_ARIA', '_busy', 'AC_SIBLING'],
+      { ...STUBS, currentUserId: viewer, isSiblingSession: () => sibling },
+    );
   }
   const two = (requester: string) => ({
     key: 'inst::C1:t1',
+    ownerId: 'U1',
+    model: 'claude-opus-5-5[1m]',
+    activityState: 'working',
     pendingPermissions: [
       { approvalId: 'ap1', toolName: 'Bash', requesterId: requester, rules: [] },
       { approvalId: 'ap2', toolName: 'Bash', requesterId: requester, rules: [] },
     ],
   });
-  const approves = (html: string) =>
-    [...html.matchAll(/<button type="button" class="([^"]*btn-perm-approve[^"]*)"[^>]*data-perm-id="([^"]+)"/g)].map(
-      (m) => [m[2], m[1]],
-    );
+  const slots = (html: string) =>
+    [
+      ...html.matchAll(
+        /<div class="ui-tok ac-slot" data-mk="([^"]+)"><ui-approval-card lang="ko" data-ac-key="([^"]+)" data-ac-kind="perm" data-ac-id="([^"]+)">/g,
+      ),
+    ].map((m) => [m[1], m[2], m[3]]);
 
-  it('two prompts from the same requester: the first Approve is the lead, the second is not', () => {
-    expect(approves(client('U1').renderPermissionBlock(two('U1'), 'card'))).toEqual([
-      ['ap1', 'btn-perm btn-perm-approve is-lead'],
-      ['ap2', 'btn-perm btn-perm-approve'],
+  it('two prompts from the same requester: two cards in order, each keyed and bound to its own request', () => {
+    const c = client('U1');
+    expect(slots(c.renderCardBody(two('U1'), 'working'))).toEqual([
+      ['ac|p|ap1', 'inst::C1:t1', 'ap1'],
+      ['ac|p|ap2', 'inst::C1:t1', 'ap2'],
     ]);
+    const s = two('U1');
+    expect(s.pendingPermissions.map((p) => c.acPermissionLock(s, p))).toEqual(['', '']);
   });
 
-  it('a prompt the viewer cannot answer is skipped: the lead is the first answerable one', () => {
+  it('a prompt the viewer cannot answer is locked with the reason; the other stays answerable', () => {
     const s = two('U1');
     s.pendingPermissions[0].requesterId = 'U2';
-    expect(approves(client('U1').renderPermissionBlock(s, 'card'))).toEqual([
-      ['ap1', 'btn-perm btn-perm-approve'],
-      ['ap2', 'btn-perm btn-perm-approve is-lead'],
+    const c = client('U1');
+    expect(slots(c.renderCardBody(s, 'working')).map((x) => x[2])).toEqual(['ap1', 'ap2']);
+    expect(s.pendingPermissions.map((p) => c.acPermissionLock(s, p))).toEqual([
+      '이 요청의 요청자만 응답할 수 있습니다',
+      '',
     ]);
   });
 
-  it('no lead in the panel, for another viewer, or on a sibling instance', () => {
-    expect(client('U1').renderPermissionBlock(two('U1'), 'panel')).not.toContain('is-lead');
-    expect(client('U2').renderPermissionBlock(two('U1'), 'card')).not.toContain('is-lead');
-    expect(client('U1', true).renderPermissionBlock(two('U1'), 'card')).not.toContain('is-lead');
+  it('locked for another viewer and on a sibling instance; a closed card shows no prompt', () => {
+    const s = two('U1');
+    const other = client('U2');
+    expect(slots(other.renderCardBody(s, 'working'))).toHaveLength(2);
+    expect(s.pendingPermissions.map((p) => other.acPermissionLock(s, p))).toEqual([
+      '이 요청의 요청자만 응답할 수 있습니다',
+      '이 요청의 요청자만 응답할 수 있습니다',
+    ]);
+    const sib = client('U1', true);
+    expect(s.pendingPermissions.map((p) => sib.acPermissionLock(s, p))).toEqual([
+      '다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요',
+      '다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요',
+    ]);
+    expect(client('U1').renderCardBody(s, 'closed')).not.toContain('ui-approval-card');
   });
 });

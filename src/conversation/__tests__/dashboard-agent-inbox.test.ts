@@ -213,9 +213,12 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(TEMPLATE).not.toContain('onclick="openPanel(');
   });
 
-  it('does not repeat the pending question the face already shows', () => {
-    expect(fnBody('renderCardBody')).toContain('pq.question === faceSummary');
+  it('the multi-question form does not repeat the question the face already shows', () => {
+    expect(fnBody('renderCardBody')).toContain('renderMultiChoiceCard(s, faceSummary)');
     expect(fnBody('renderMultiChoiceCard')).toContain('=== faceSummary');
+    // affectUI batch 1: the single-choice question is a <ui-approval-card>, titled with the whole
+    // question (the element has no untitled form), so there the face's summary is read again.
+    expect(fnBody('renderCardBody')).toContain('questionHtml = acQuestionHtml(s, s.pendingQuestion);');
   });
 
   it('every card can open the panel; without a conversation the work log reads 작업 로그 없음', () => {

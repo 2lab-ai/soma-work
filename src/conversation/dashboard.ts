@@ -4775,6 +4775,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .ap-card { container-type: inline-size; position: relative; padding: 4px; border-radius: 14px; background: var(--ib-col); border: 1px solid var(--ib-card-border); color: var(--ib-text); outline: none; }
 .panel-permission .ap-card { margin: 0; padding: 4px; background: var(--ib-col); border: 1px solid var(--ib-card-border); border-radius: 14px; }
 .panel-permission .ap-card + .ap-card { margin-top: 10px; }
+/* The <ui-approval-card> slots (batch 1): a gap between two prompts, and the open card's off what follows. */
+.ac-slot + .ac-slot { margin-top: 10px; }
+.card-body > .ac-slot { margin-bottom: 10px; }
 .ap-card:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
 .ap-label { padding: 4px 8px 6px; font-size: 12px; line-height: 16px; color: var(--ib-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
 .ap-body { padding: 14px; border-radius: 11px; background: var(--ib-card); box-shadow: 0 0 0 1px var(--ib-card-border); }
@@ -9673,6 +9676,10 @@ function applyCardParts(el, p) {
     updateTimersIn(el._bodyEl);
     changed = true;
   }
+  // The body's approval cards: their data (the requester's input, an answer in
+  // flight) changes without their markup — set on every pass, written only
+  // where it changed.
+  acHydrate(el._bodyEl);
   return changed;
 }
 // D4: scale 0.6 → 1 with a fade, the board's move duration on the entry curve.
@@ -12216,10 +12223,6 @@ function renderCardBody(s, col) {
   // this is UX only. Fail closed: if ownerId is missing (legacy record) the
   // viewer is not treated as owner so the server-side reject is expected.
   const isOwner = !!s.ownerId && s.ownerId === currentUserId;
-  // readOnlyAttrs carries only the disabled attribute — each button owns its
-  // own title= so there is no duplicate-attribute clash when the button already
-  // needs a descriptive tooltip (e.g. pending-question choices).
-  const readOnlyAttrs = isOwner ? '' : ' disabled';
   const isSibling = !!(SELF_INSTANCE_NAME && s.environment && s.environment.instanceName && s.environment.instanceName !== SELF_INSTANCE_NAME);
   // re-agent-inbox D10: what this viewer can settle here — the owner's question on
   // this instance, a permission prompt they asked for. One gate for the ink.
@@ -12265,39 +12268,23 @@ function renderCardBody(s, col) {
   // The collapsed face already shows the pending question as its summary; the
   // open card then keeps only the choices, not the same sentence twice.
   const faceSummary = cardSummary(s, col, s.displayHeadline || s.summaryTitle || s.title);
-  // Pending question (choice buttons for waiting sessions)
+  // The pending question of a waiting session. The single-choice question is
+  // the same <ui-approval-card> as the panel's (acQuestionHtml — its answer is
+  // ui-answer, locked for anyone but the owner on this instance); the element
+  // titles the card with the whole question, so it reads the face's summary
+  // again. The multi-question form opens the panel (답변하기).
   let questionHtml = '';
   if (s.pendingQuestion && col === 'waiting') {
     if (s.pendingQuestion.type === 'user_choice' && s.pendingQuestion.choices) {
-      var pq = s.pendingQuestion;
-      var recId = resolveRecommendedId(pq.recommendedChoiceId, pq.choices);
-      var recOpt = recId ? pq.choices.find(function(c) { return c.id === recId; }) : null;
-      var otherOpts = pq.choices.filter(function(c) { return !recOpt || c.id !== recOpt.id; });
-      var recHtml = '';
-      if (recOpt) {
-        var recLabel = stripRecommendedMarker(recOpt.label);
-        var recTitle = isOwner ? (recOpt.description || recLabel) : READ_ONLY_MSG;
-        recHtml = '<div class="choice-row-recommended">'
-          + '<button class="btn-choice btn-choice-recommended' + (canAnswerQuestion ? '' : ' is-quiet') + '"' + readOnlyAttrs + choiceDataAttrs(s.key, recOpt.id, recLabel, pq.question) + ' title="' + escAttr(recTitle) + '">' + esc(recOpt.id) + '. ' + esc(recLabel) + '</button>'
-          + '</div>'
-          + (otherOpts.length > 0 ? '<hr class="choice-divider">' : '');
-      }
-      var otherBtns = otherOpts.map(function(c) {
-        var lbl = stripRecommendedMarker(c.label);
-        var btnTitle = isOwner ? (c.description || lbl) : READ_ONLY_MSG;
-        return '<button class="btn-choice"' + readOnlyAttrs + choiceDataAttrs(s.key, c.id, lbl, pq.question) + ' title="' + escAttr(btnTitle) + '">' + esc(c.id) + '. ' + esc(lbl) + '</button>';
-      }).join('');
-      questionHtml = '<div class="card-question">'
-        + (pq.question === faceSummary ? '' : '<div class="card-question-text">&#x2753; ' + esc(String(pq.question || '').slice(0, 80)) + '</div>')
-        + '<div class="card-question-choices">' + recHtml + otherBtns + '</div>'
-        + '</div>';
+      questionHtml = acQuestionHtml(s, s.pendingQuestion);
     } else if (s.pendingQuestion.type === 'user_choices') {
       questionHtml = renderMultiChoiceCard(s, faceSummary);
     }
   }
 
-  // Permission prompt the turn is blocked on (SSOT 2026-10-24).
-  const permissionHtml = col === 'closed' ? '' : renderPermissionBlock(s, 'card');
+  // The permission prompts the turn is blocked on (SSOT 2026-10-24): one
+  // <ui-approval-card> each (acPermissionsHtml), as in the panel.
+  const permissionHtml = col === 'closed' ? '' : acPermissionsHtml(s);
 
   const ioHtml = isSiblingSession(s) ? '' : renderCardIo(s);
   // Artifacts live on this instance's disk: a sibling instance's card links nowhere here.
@@ -16233,9 +16220,11 @@ function focusPanelLanding() {
   else if (_panelLand === 'tasks') t = document.getElementById('panel-tasks');
   else if (_panelLand === 'worklog') t = document.getElementById('worklog-toggle');
   if (!t || t.style.display === 'none') {
-    // An approval card itself (re-agent-run D14): Esc there still closes the
-    // panel, ⌘↵ answers; the multi-question form keeps its first control.
-    var ask = document.querySelector('#panel-permission .ap-card:not(.is-resolved), #panel-question .ap-card, #panel-question button:not([disabled]), #panel-question textarea');
+    // The first approval card still waiting on an answer, itself — its focus()
+    // lands on the card, not a button: Esc there still closes the panel, ⌘↵
+    // answers (re-agent-run D14); the multi-question form keeps its first control.
+    var ask = acFirstOpen(document.getElementById('panel-permission')) || acFirstOpen(document.getElementById('panel-question'))
+      || document.querySelector('#panel-question button:not([disabled]), #panel-question textarea');
     t = ask || document.getElementById('panel-title');
   }
   if (t && t.focus) t.focus({ preventScroll: true });
