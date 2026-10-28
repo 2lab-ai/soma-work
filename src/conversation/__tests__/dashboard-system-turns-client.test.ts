@@ -652,7 +652,10 @@ describe('C4 — the skills an instruction invoked, as badges', () => {
       ),
     );
     expect(out).toContain('<div class="turn user" data-turn-id="u1"');
-    expect(out).toContain('<div class="turn-content">예측 시장 관련 개발 리포트 시각화</div>');
+    // Task view T1.3 (#486): the instruction is the whole text, folded to 12 lines until clicked.
+    expect(out).toMatch(
+      /<div class="turn-content turn-instr" role="button"[^>]*>예측 시장 관련 개발 리포트 시각화<\/div>/,
+    );
     expect(out).not.toContain('invoked_skills');
     expect(out).not.toContain('Base directory');
     expect(out).toContain('<div class="skill-badges" role="group" aria-label="활성화된 스킬 2개">');
