@@ -31,7 +31,7 @@ WU7 측정(2026-10-27, `work-m64` dev):
 - 봇: `config.json`에 `devops-tools.permission`(도구 8개 = read) → `service.sh restart` + `verify-restart` 통과. 비관리자 세션 = "Permission-gated server blocked — no active grant", 관리자 = 전면 허용.
 - 봇 유저에서 MCP 서버 직접 호출: `list` 정상, `gh_read` 두 계정 정상, `gh auth token` = `policy-denied`.
 - 봇 모델 → `cf_lease_request` → 전용 앱 카드가 어드민 DM에 게시(요청→게시 약 2.4초) ×3, 모두 5분 만료 `not-approved (expired)` · 실행 0 · lease 0.
-- 2026-10-28: 같은 시험 카드 2장과 다른 세션·다른 요청자의 실제 요청 카드(Cloudflare read lease 3, `gh pr review` 1)도 모두 만료. 최근 4장을 조회 시점(16:5x KST)에 `reactions.get`으로 본 결과 리액션 0. ✅ 이벤트를 브로커가 처리하는지는 아직 미검증(✅가 한 번도 달린 적 없음). 어드민이 전용 앱 DM의 카드를 보는지가 열린 문제(아래 열린 질문).
+- 2026-10-28: 같은 시험 카드 2장과 다른 세션·다른 요청자의 실제 요청 카드(Cloudflare read lease 3, `gh pr review` 1)도 모두 만료. 최근 4장을 조회 시점(16:5x KST)에 `reactions.get`으로 본 결과 리액션 0. ✅ 이벤트를 브로커가 처리하는지는 아직 미검증. 어드민이 전용 앱 DM의 카드를 보는지가 열린 문제(아래 열린 질문).
 - 2026-10-28 stage0: 운영 계정(그 계정의 Super Administrator)으로 계정 소유 포지키 생성 — 권한 = Account API Tokens Write 하나, 만료 없음, IP 조건 없음. 화면 캡처 없이 Copy 버튼 위치만 찾아 클릭 → 운영자 Mac 클립보드 → Cloudflare verify(토큰 id·active, 입력 직전 재확인) → `ingest cf stage0`(53 bytes) → 정책에 stage0(존 2개, 권한 그룹 dev2와 같음, 1h/71h) → `check-policy` valid · 비밀 5개 → 브로커 재시작(정책은 기동 때 1회만 읽는다) → `list` = dev2 · stage0.
 
 | WU | 하는 일 | 파일 소유 | RED로 먼저 고정할 것 |
