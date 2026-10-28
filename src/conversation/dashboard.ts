@@ -10189,7 +10189,10 @@ function atNode(n, parentId, s, rootLine) {
     var own = tu ? cardTotalTokens(tu) - spendTotal(s.subagentSpend) : 0;
     if (own > 0) {
       d.tokens = own;
-      d.costUsd = Math.max(0, toNum(tu.totalCostUsd) - toNum(s.subagentSpend && s.subagentSpend.costUsd));
+      // Subagent costs are partly estimates: when they reach the task total the
+      // root's share is unknown, not $0 — leave it off like any unreported spend.
+      var ownCost = toNum(tu.totalCostUsd) - toNum(s.subagentSpend && s.subagentSpend.costUsd);
+      if (ownCost > 0) d.costUsd = ownCost;
     }
     return d;
   }
