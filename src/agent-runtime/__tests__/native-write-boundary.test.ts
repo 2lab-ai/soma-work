@@ -295,6 +295,7 @@ function ctx(overrides: Partial<ToolPolicyContext> = {}): ToolPolicyContext {
     aborted: false,
     isDangerousRuleDisabled: () => false,
     checkMcpToolPermission: () => null,
+    checkEnvSkillPermission: () => null,
     checkNativeWrite: check,
     ...overrides,
   };
