@@ -197,11 +197,12 @@ describe('install/slack-app-manifest.json', () => {
     expect(Object.keys(scopes)).toEqual(['bot']);
   });
 
-  it('has no event subscriptions, interactivity, socket mode or slash commands', () => {
+  it('has no event subscriptions or slash commands; interactivity only over Socket Mode (approval buttons)', () => {
     const settings = manifest.settings;
     expect(settings.event_subscriptions).toBeUndefined();
-    expect(settings.interactivity).toEqual({ is_enabled: false });
-    expect(settings.socket_mode_enabled).toBe(false);
+    // No request URL: button clicks reach the broker only over its own Socket Mode connection.
+    expect(settings.interactivity).toEqual({ is_enabled: true });
+    expect(settings.socket_mode_enabled).toBe(true);
     expect(manifest.features.slash_commands).toBeUndefined();
     expect(manifest.features.shortcuts).toBeUndefined();
     expect(Object.keys(manifest.features)).toEqual(['bot_user']);
