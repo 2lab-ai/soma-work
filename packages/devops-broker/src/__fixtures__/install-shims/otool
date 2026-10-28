@@ -1,0 +1,11 @@
+#!/bin/bash
+# Test stand-in for otool -L (install.test.ts): every binary links only libSystem, plus
+# $SHIM_OTOOL_EXTRA when a test needs a binary that loads a library from outside the system.
+set -euo pipefail
+{ printf 'otool'; printf ' %s' "$@"; printf '\n'; } >>"$SHIM_LOG"
+[ "${1:-}" = -L ] || { echo 'otool shim: only -L is supported' >&2; exit 2; }
+printf '%s:\n' "$2"
+printf '\t/usr/lib/libSystem.B.dylib (compatibility version 1.0.0, current version 1351.0.0)\n'
+if [ -n "${SHIM_OTOOL_EXTRA:-}" ]; then
+  printf '\t%s (compatibility version 1.0.0, current version 1.0.0)\n' "$SHIM_OTOOL_EXTRA"
+fi

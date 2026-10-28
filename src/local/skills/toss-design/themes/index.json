@@ -1,0 +1,21 @@
+{
+  "themes": [
+    {
+      "name": "toss-blue",
+      "title": "Toss Blue (TDS default)",
+      "accent": "#3182F6",
+      "default": true,
+      "tokens": "themes/toss-blue/tokens.css",
+      "design": "themes/toss-blue/design.md"
+    },
+    {
+      "name": "toss-black",
+      "title": "Toss Black (near-black accent)",
+      "accent": "#191F28",
+      "default": false,
+      "tokens": "themes/toss-black/tokens.css",
+      "design": "themes/toss-black/design.md"
+    }
+  ],
+  "resolution": "Pick the entry whose name equals the requested theme. No request: pick the entry with \"default\": true. Unknown name: stop and report the valid names (no silent fallback)."
+}

@@ -1,0 +1,5 @@
+RESULT	SKIP	jira-transition	jira#TST-101	manual: 댓글을 보냈지만 지금 안 보임 — 다시 달지 않음	attempt=20261019T050000Z-0d0d0d0d
+RESULT	OK	jira-transition	jira#TST-105	already-done: 승인 댓글과 목표 상태가 이미 있음	attempt=20261019T050000Z-0d0d0d0d
+RESULT	OK	jira-transition	jira#TST-102	moved: Closed로 옮김	attempt=20261019T050000Z-0d0d0d0d
+RESULT	SKIP	jira-transition	jira#TST-106	changed: 승인 뒤 상태가 바뀜 (지금 In Progress)	attempt=20261019T050000Z-0d0d0d0d
+SUMMARY	ok=2	skip=2	fail=0	unknown=0	run_id=20261016T010203Z-1f2e3d4c	attempt=20261019T050000Z-0d0d0d0d	scope=full	journal=/repo/.git/chore/20261016T010203Z-1f2e3d4c.journal

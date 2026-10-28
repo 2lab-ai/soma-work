@@ -365,6 +365,15 @@ Current implementation: `src/slack/actions/permission-action-handler.ts` (regist
 
 **Requester-only.** The prompt is an ordinary thread message, so every channel member can click it. Before storing anything, each handler (`approve_tool`, `deny_tool`, `explain_tool`, `approve_disable_rule_session`) loads the `PendingApproval` and proceeds only when `body.user.id === PendingApproval.user` (the user the request was raised for). Any other clicker gets an ephemeral notice and no response is stored. A missing click user, a request with no recorded user, or a missing/expired record also stores nothing (fail-closed): the MCP server keeps waiting and times out to deny.
 
+**One answer path, two surfaces (2026-10-24).** The Slack handlers and the web dashboard (`POST /api/dashboard/session/:key/permission`, the card and session panel of a session blocked on a prompt) both call `answerPermissionPrompt` in `src/permission-prompt-response.ts`. It:
+
+- accepts only records stamped `kind: 'tool_permission'` by the permission MCP server — the pending directory also holds mcp-tool-permission's admin-approved grant requests, whose `user` is the (non-admin) requester and must never answer them;
+- accepts only the requester (`actor === PendingApproval.user`); the dashboard passes the signed-in Slack user, so the viewer bearer token and admin mode (no requester identity) are refused;
+- on the dashboard, accepts only a prompt of the session thread named by the route key;
+- answers at most once: `sharedStore.claimPermissionResponse` is an exclusive create in `claims/` taken before any side effect (the "disable rule" mutation), and the claim outlives the MCP server's cleanup, so a late second click from either surface gets "already answered" and changes nothing. Pending records and responses are written via temp file + rename, so the 500ms poller never reads half a file.
+
+The dashboard board never carries the tool input (it is one document for every viewer); the requester's page reads it from `GET /api/dashboard/session/:key/permission/:approvalId` (cut at 64KB and labelled).
+
 ### 6.1 Approve Handler
 
 ```typescript
@@ -405,6 +414,36 @@ this.app.action('deny_tool', async ({ ack, body, respond }) => {
   });
 });
 ```
+
+## 6b. Environment Skill Admin Approval
+
+환경 플러그인(배포가 `config.json` `plugin.envPlugins`에 표시한 플러그인)의 스킬은 어드민(`ADMIN_USERS`)만 바로
+실행하고, 그 밖의 사용자는 어드민의 허용이 있어야 실행한다. 다른 사용자의 개인 스킬에 소유자 허용을 받는 흐름
+(`skill_perm_`)을 그대로 따르고, 승인자만 어드민으로 바뀐다. 운영 설명은 `docs/runbook/add-new-deploy.md` §8.5.
+
+| 부분 | 위치 |
+|---|---|
+| 환경 스킬 판정 (`plugin:skill` / 맨이름) | `src/env-skill-registry.ts` (`resolveEnvSkillKey`, `checkEnvSkillPermission`) |
+| 결정 — 모델의 `Skill` 호출·플러그인 파일 읽기 | `evaluateToolPolicy` 6b단계 (`agent-runtime/policy/tool-policy.ts`, `ENV_GATED_TOOLS`), Lean 모델 phase 4 (`verification/lean/SomaVerify/ToolPolicy/ProofsEnvSkill.lean`) |
+| 결정 — `$plugin:skill` | `SkillForceHandler.resolveSkill` (중첩 참조 포함, 같은 판정 함수) |
+| 집행 — 어드민 요청 | `build-stream-options.ts` 훅의 `onEnvSkillDenied` → `slack/env-skill-permission-request.ts` (어드민 DM, 실패 시 스레드) |
+| 허용 저장 | `user-skill-grants-store.ts`, 예약 소유자 `env-skills` → `DATA_DIR/env-skill-grants.json` + 스레드 허용(메모리, 12h) |
+| 요청 저장 | `skill-permission-request-store.ts` (소유자 `env-skills`, 스레드별 중복 제거, 어드민 DM 위치 기록) |
+| 어드민 답 | `slack/actions/env-skill-permission-action-handler.ts` (`env_skill_perm_*`: 1회/항상/전체/거부) |
+
+- 결정은 하나: 어드민이 아니고, 도구가 `ENV_GATED_TOOLS`(`Skill`·`Read`·`Glob`·`Grep`·`Bash`·`Write`·`Edit`·`NotebookEdit`) 중 하나이고,
+  `ctx.checkEnvSkillPermission(toolName, input)`(→ `checkEnvSkillAccess`)이 이유를 돌려주면 거부한다. 이유는
+  `env-skill: <plugin:skill>`(스킬 하나 — 어드민에게 묻는다), `env-skill: <plugin>`(스킬이 아닌 플러그인 파일 — 묻지
+  않는다), `env-skill: (no skill name)`(이름 없는 `Skill` 호출 — fail-closed)이고, 모델에게는 `ENV_SKILL_DENY_MESSAGE`가
+  간다. 인시던트 세션은 그 위의 인시던트 단계에서 모든 호출이 결정되므로 6b에 닿지 않는다. 6b는 모드 단계보다 앞이라
+  Bash·네이티브 도구의 allow도 덮는다. 쓰기 도구는 허용과 무관하게 플러그인 파일을 고칠 수 없다. 플러그인 매니저가
+  없으면 판정 목록은 `config.json`의 `plugin.envPlugins`에서 읽는다.
+- 방어 심층: 비어드민의 샌드박스 Bash에는 `envSkillSandboxDenyRead`가 환경 플러그인 디렉터리를 OS 수준 읽기 금지로
+  건다(`build-stream-options.ts`). 6b의 Bash 검사는 문자열 수준이라 이것이 실제 경계다.
+- 버튼은 `requestId`만 싣는다. 요청은 서버에서 읽고, 읽기와 `markRequestHandled` 사이에 `await`가 없어 두 번째 클릭
+  (같은 어드민이든 다른 어드민이든)은 "이미 처리됨"을 받는다.
+- 허용 뒤 이행은 요청자 이름으로 원문(또는 "이어서 진행" 메시지)을 다시 보내는 것이다 — 다시 보낸 턴이 같은 게이트를
+  지나며 이번에는 허용을 본다.
 
 ## 7. User Bypass System
 

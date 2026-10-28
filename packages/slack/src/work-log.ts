@@ -51,6 +51,13 @@ export interface WorkLogInput {
   raw?: string;
   /** UTF-8 size of the original when `raw` was already cut here (the store then reports it as truncated). */
   rawBytes?: number;
+  /**
+   * SSOT 2026-10-23 T1 — the SDK tool-use id of a `tool` / `tool_result` entry,
+   * so a live observer (the dashboard's artifact capture) pairs a call with its
+   * result exactly. Persisted by the store (clamped) since the 작업 로그 tool
+   * call card pairs a result with its call by it; older logs have none.
+   */
+  toolUseId?: string;
 }
 
 /** An entry as pages and the live broadcast carry it: its raw is described, never included. */

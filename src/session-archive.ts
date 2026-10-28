@@ -10,13 +10,17 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { sumLiveUsage } from '@soma/slack/live-usage';
+import type { TaskUsage } from '@soma/slack/session-usage-math';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
+import { calculateTokenCost } from './metrics/model-registry';
 import type { AgentRegistry } from './session/agent-registry';
 import type { TaskLedger } from './session/task-ledger';
 import type {
   ActivityState,
   ConversationSession,
+  SessionCronJob,
   SessionGoal,
   SessionInstruction,
   SessionLinkHistory,
@@ -73,10 +77,19 @@ export interface ArchivedSession {
 
   // Usage snapshot at time of archive
   usage?: SessionUsage;
+  /** SSOT 2026-10-26 T3 — what the whole task spent (the closed card's total). */
+  taskUsage?: TaskUsage;
 
   // State at time of archive
   finalState?: SessionState;
   finalActivityState?: ActivityState;
+  /**
+   * Spec 13 §3.7 — when its work last finished (Unix ms): the switch to idle
+   * or waiting, or the archive itself when it was archived mid-turn. Absent
+   * when unknown (no state stamp, or an archive written before this field).
+   * `lastActivity` moves on user input only, so it cannot say this.
+   */
+  doneAt?: number;
 
   // Dashboard v2.1 — snapshot so closed sessions still contribute to
   // thread-level totals once the live session is gone from memory.
@@ -88,6 +101,9 @@ export interface ArchivedSession {
   goal?: SessionGoal;
   goalHistory?: SessionGoal[];
   taskLedger?: TaskLedger;
+
+  // SSOT 2026-10-23 — a closed cron run stays filed under its job.
+  cronJob?: SessionCronJob;
   // Spec 12 — so a closed card keeps its subagents.
   agents?: AgentRegistry;
 }
@@ -103,13 +119,20 @@ function sanitizeKey(sessionKey: string): string {
 /**
  * Convert a ConversationSession to an ArchivedSession snapshot.
  */
+function archiveDoneAt(session: ConversationSession, now: number): number | undefined {
+  if ((session.activityState || 'idle') === 'working') return now;
+  const changed = session.activityStateChangedAt;
+  return typeof changed === 'number' && Number.isFinite(changed) ? changed : undefined;
+}
+
 function sessionToArchive(
   session: ConversationSession,
   sessionKey: string,
   reason: 'terminated' | 'sleep_expired',
 ): ArchivedSession {
+  const now = Date.now();
   return {
-    archivedAt: Date.now(),
+    archivedAt: now,
     archiveReason: reason,
 
     sessionKey,
@@ -133,9 +156,11 @@ function sessionToArchive(
     instructions: session.instructions ? JSON.parse(JSON.stringify(session.instructions)) : undefined,
     mergeStats: session.mergeStats ? JSON.parse(JSON.stringify(session.mergeStats)) : undefined,
     usage: session.usage ? JSON.parse(JSON.stringify(session.usage)) : undefined,
+    taskUsage: archivedTaskUsage(session),
 
     finalState: session.state,
     finalActivityState: session.activityState,
+    doneAt: archiveDoneAt(session, now),
 
     // Dashboard v2.1 — snapshot busy time + compactionCount so thread
     // aggregate keeps rendering historic totals after the live session
@@ -148,6 +173,7 @@ function sessionToArchive(
     goal: session.goal ? JSON.parse(JSON.stringify(session.goal)) : undefined,
     goalHistory: session.goalHistory ? JSON.parse(JSON.stringify(session.goalHistory)) : undefined,
     taskLedger: session.taskLedger ? JSON.parse(JSON.stringify(session.taskLedger)) : undefined,
+    cronJob: session.cronJob ? { ...session.cronJob } : undefined,
     agents: session.agents ? JSON.parse(JSON.stringify(session.agents)) : undefined,
   };
 }
@@ -307,4 +333,36 @@ export function getArchiveStore(): SessionArchiveStore {
     _instance = new SessionArchiveStore();
   }
   return _instance;
+}
+
+/**
+ * SSOT 2026-10-26 T3 — the task total a closed card keeps: the committed
+ * total plus the calls the running turn already made. A session closed
+ * mid-turn is archived before its turn's cleanup folds those calls in (into
+ * an object nobody saves any more), so they are taken here, priced at the
+ * session model like the rest of the live cost.
+ */
+function archivedTaskUsage(session: ConversationSession): TaskUsage | undefined {
+  const live = sumLiveUsage(session.liveUsage);
+  const liveTokens = live.inputTokens + live.outputTokens + live.cacheReadTokens + live.cacheCreateTokens;
+  if (!session.taskUsage && liveTokens === 0) return undefined;
+  const t: TaskUsage = session.taskUsage
+    ? JSON.parse(JSON.stringify(session.taskUsage))
+    : { inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreateTokens: 0, costUsd: 0 };
+  delete t.pendingFold;
+  if (liveTokens > 0) {
+    t.inputTokens += live.inputTokens;
+    t.outputTokens += live.outputTokens;
+    t.cacheReadTokens += live.cacheReadTokens;
+    t.cacheCreateTokens += live.cacheCreateTokens;
+    const cost = calculateTokenCost(
+      session.model,
+      live.inputTokens,
+      live.outputTokens,
+      live.cacheReadTokens,
+      live.cacheCreateTokens,
+    );
+    if (Number.isFinite(cost) && cost > 0) t.costUsd += cost;
+  }
+  return t;
 }
