@@ -3422,6 +3422,9 @@ function renderDashboardPage(userId?: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>soma-work Dashboard</title>
 <script type="module" src="/dashboard/ui/tool-call-card.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/approval-card.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/toaster.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/compact-breakdown.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -5477,11 +5480,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    wrapper, from the same-named dashboard token. Not on the element itself — its
    shadow :host defines --border: var(--ui-border, …), so --ui-border: var(--border)
    on the same element is a cycle and blanks both. Inherited from the wrapper,
-   the values arrive already resolved and follow the theme switch. */
-.wl-toolcall {
-  display: grid;
-  gap: 4px;
-  min-width: 0;
+   the values arrive already resolved and follow the theme switch. The same
+   mapping serves every other library element's wrapper (.ui-tok: the approval
+   cards, the toaster, the usage breakdown). */
+.wl-toolcall, .ui-tok {
   --ui-bg: var(--bg); --ui-surface: var(--surface); --ui-surface-raised: var(--surface-raised);
   --ui-border: var(--border); --ui-border-focus: var(--border-focus); --ui-text: var(--text);
   --ui-text-secondary: var(--text-secondary); --ui-text-tertiary: var(--text-tertiary); --ui-accent: var(--accent);
@@ -5496,6 +5498,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   --ui-ease-in-out: var(--ease-in-out); --ui-dur-press: var(--dur-press); --ui-dur-expand: var(--dur-expand);
   --ui-dur-move: var(--dur-move); --ui-dur-fade: var(--dur-fade); --ui-radius: var(--radius);
 }
+.wl-toolcall { display: grid; gap: 4px; min-width: 0; }
 .worklog-list ui-tool-call-card { display: block; min-width: 0; }
 .wl-card-fallback {
   display: block; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius);
@@ -7606,9 +7609,183 @@ function formatTaskTime(ts) {
   return new Date(ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
 }
 
-// The pending question (re-agent-run D17): a single-choice question is an
-// approval card (apQuestionCardHtml), written only when it changed and morphed
-// so focus stays; the multi-question form keeps its own renderer.
+// ── 입력 필요 — @2lab.ai/ui <ui-approval-card> (affectUI review batch 1) ──
+// One element for the open card and the panel's 입력 필요: a permission prompt
+// (the tool, its risk and matched dangerous-command rules, a preview of the
+// input, Approve / Deny / Explain, "disable this rule", the expiry countdown)
+// or the single-choice question (recommended first) — the answer in flight,
+// a refusal with Retry, and the resolved row. The markup is a slot keyed by the
+// request (static per request, so equal data still renders equal strings); the
+// data — the prompt, the requester-only input, the answer's state — is set on
+// the element by acHydrate. Answers leave it as ui-decide / ui-answer for
+// answerPermission / answerChoice. The multi-question form keeps its own
+// renderer (renderMultiChoicePanel): one element is one question.
+//
+// The board never carries the parameters (it is one document for every
+// viewer): the requester's page fetches them from the requester-only route.
+var _permDetails = Object.create(null); // approvalId → { input, truncated } | { error }
+var _permLoading = Object.create(null);
+var _acState = Object.create(null); // 'p|<approvalId>' | the question id → the card's state (sending · error · resolved)
+var AC_SENT = { approve: '승인을 보냈어요', deny: '거부를 보냈어요', explain: '설명을 요청했어요', approve_disable_rule: '승인을 보냈어요 · 규칙 끔' };
+var AC_SIBLING = '다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요';
+
+function isPermissionRequester(p) {
+  return !!(p && p.requesterId && currentUserId && p.requesterId === currentUserId);
+}
+
+function permissionSummary(s) {
+  var list = s.pendingPermissions || [];
+  if (!list.length) return '';
+  return '🔐 ' + (list[0].toolName || 'tool') + ' 실행 승인 필요' + (list.length > 1 ? ' 외 ' + (list.length - 1) + '건' : '');
+}
+
+// Who may answer here, as the element's canAnswer: '' (yes) or why not. A
+// prompt: its requester, on this instance. The question: the session's owner,
+// on this instance (as Stop). The server re-checks both.
+function acPermissionLock(s, p) {
+  if (isSiblingSession(s)) return AC_SIBLING;
+  return isPermissionRequester(p) ? '' : '이 요청의 요청자만 응답할 수 있습니다';
+}
+function acQuestionLock(s) {
+  if (isSiblingSession(s)) return AC_SIBLING;
+  return s.ownerId && s.ownerId === currentUserId ? '' : '읽기 전용 — 내 세션이 아닙니다';
+}
+
+// DashboardPermissionRequest (+ the requester's input, + this page's answer) → the card's data.
+function acPermissionData(s, p) {
+  var d = { kind: 'permission', id: String(p.approvalId), tool: p.toolName || 'tool', canExplain: true, canDisableRule: !!p.canDisableRule };
+  var rules = (p.rules || []).map(function(r) {
+    var o = { id: String(r.id), label: String(r.label || r.id) };
+    if (r.description) o.description = String(r.description);
+    return o;
+  });
+  if (rules.length) d.rules = rules;
+  var created = toNum(p.createdAt);
+  if (created > 0) d.createdAt = created;
+  var until = toNum(p.expiresAt);
+  if (until > 0) d.expiresAt = until;
+  var lock = acPermissionLock(s, p);
+  if (lock) {
+    d.canAnswer = lock;
+    d.notice = isSiblingSession(s) ? '파라미터는 그 인스턴스의 대시보드에서 볼 수 있습니다' : '파라미터는 요청자만 볼 수 있습니다';
+  } else {
+    var detail = _permDetails[p.approvalId];
+    if (!detail) {
+      d.loading = true;
+      loadPermissionDetail(s.key, p.approvalId);
+    } else if (detail.error) d.notice = detail.error;
+    else {
+      d.input = detail.input;
+      if (detail.truncated) d.truncated = true;
+    }
+  }
+  var st = _acState['p|' + p.approvalId];
+  if (st) d.state = st;
+  return d;
+}
+// A question's identity is its whole meaning — the text and every choice's id,
+// label and description, serialized (no two meanings share it): a question
+// rewritten in place is another card, never the old one's answer or focus
+// (review R2 P1).
+function acQuestionId(q) {
+  return 'q|' + JSON.stringify([q.question, (q.choices || []).map(function(c) { return [c.id, c.label, c.description || '']; })]);
+}
+// pendingQuestion (single choice) → the card's data. The choices read as
+// before ("1. label", the recommended marker stripped); the route takes one
+// of them only (no free-text answer, so no allowOther).
+function acQuestionData(s, q) {
+  var id = acQuestionId(q);
+  var d = {
+    kind: 'question',
+    id: id,
+    question: String(q.question || ''),
+    choices: q.choices.map(function(c) {
+      var o = { id: String(c.id), label: c.id + '. ' + stripRecommendedMarker(c.label) };
+      if (c.description) o.description = String(c.description);
+      return o;
+    }),
+    allowOther: false,
+  };
+  var rec = resolveRecommendedId(q.recommendedChoiceId, q.choices);
+  if (rec) d.recommendedId = String(rec);
+  var lock = acQuestionLock(s);
+  if (lock) d.canAnswer = lock;
+  var st = _acState[id];
+  if (st) d.state = st;
+  return d;
+}
+
+// One request's slot: the token wrapper (.ui-tok) keyed by the request — a
+// live morph never hands one request's element (its focus, an answer in
+// flight) to another — the element, and a light-DOM line until the library
+// has loaded.
+function acSlotHtml(key, kind, mk, id, fallback) {
+  return '<div class="ui-tok ac-slot" data-mk="' + escAttr('ac|' + mk) + '">'
+    + '<ui-approval-card lang="ko" data-ac-key="' + escAttr(key) + '" data-ac-kind="' + kind + '"' + (id ? ' data-ac-id="' + escAttr(id) + '"' : '') + '>'
+    + '<span class="ac-fallback">' + esc(fallback) + '</span></ui-approval-card></div>';
+}
+function acPermissionsHtml(s) {
+  return ((s && s.pendingPermissions) || []).map(function(p) {
+    return acSlotHtml(s.key, 'perm', 'p|' + p.approvalId, String(p.approvalId), (p.toolName || 'tool') + ' 실행 승인 — 응답 대기');
+  }).join('');
+}
+function acQuestionHtml(s, q) {
+  return acSlotHtml(s.key, 'question', acQuestionId(q), '', '질문 — ' + String(q.question || ''));
+}
+
+// What one slot's element shows now, from the session it belongs to.
+function acDataFor(el) {
+  var s = _sessionCache[el.getAttribute('data-ac-key')];
+  if (!s) return null;
+  if (el.getAttribute('data-ac-kind') === 'question') {
+    var q = s.pendingQuestion;
+    return q && q.type === 'user_choice' && q.choices ? acQuestionData(s, q) : null;
+  }
+  var id = el.getAttribute('data-ac-id');
+  var list = s.pendingPermissions || [];
+  for (var i = 0; i < list.length; i++) if (String(list[i].approvalId) === id) return acPermissionData(s, list[i]);
+  return null;
+}
+// Set every approval card's data under root — only what changed (a push that
+// changes nothing on a card does not re-render it). Data set before the
+// element is defined is picked up when it upgrades.
+function acHydrate(root) {
+  if (!root || !root.querySelectorAll) return;
+  var els = root.querySelectorAll('ui-approval-card[data-ac-key]');
+  for (var i = 0; i < els.length; i++) {
+    var d = acDataFor(els[i]);
+    if (!d) continue;
+    var sig = JSON.stringify(d);
+    if (els[i]._acSig === sig) continue;
+    els[i]._acSig = sig;
+    els[i].data = d;
+  }
+}
+// Re-draw what shows this session's prompts (its card, the open panel).
+function acRepaint(key) {
+  refreshCard(key);
+  var s = _sessionCache[key];
+  if (panelOpen && panelSessionKey === key && s) {
+    renderPanelPermission(s);
+    renderPanelQuestion(s);
+  }
+}
+
+// The answers leave the element as composed events, retargeted to it here.
+document.addEventListener('ui-decide', function(e) {
+  var el = e.target;
+  if (!el || !el.getAttribute || !e.detail || el.getAttribute('data-ac-kind') !== 'perm') return;
+  answerPermission(el.getAttribute('data-ac-key'), String(e.detail.id), String(e.detail.decision));
+});
+document.addEventListener('ui-answer', function(e) {
+  var el = e.target;
+  if (!el || !el.getAttribute || !e.detail || el.getAttribute('data-ac-kind') !== 'question') return;
+  answerChoice(el.getAttribute('data-ac-key'), String(e.detail.id), e.detail.choiceId === undefined ? '' : String(e.detail.choiceId));
+});
+
+// The pending question in the panel: the single-choice question is an
+// approval card (written only when it changed, morphed so focus stays); the
+// multi-question form keeps its own renderer.
 function renderPanelQuestion(s) {
   var container = document.getElementById('panel-question');
   if (!container) return;
@@ -7623,11 +7800,12 @@ function renderPanelQuestion(s) {
   } else if (q.type === 'user_choice' && q.choices) {
     container.style.display = '';
     container.setAttribute('data-ap', 'card');
-    var html = apQuestionCardHtml(s, q);
+    var html = acQuestionHtml(s, q);
     if (container._html !== html) {
       morphInnerHtml(container, html);
       container._html = html;
     }
+    acHydrate(container);
   } else if (q.type === 'user_choices' && q.questions) {
     container.style.display = '';
     container.setAttribute('data-ap', 'form');
@@ -7636,129 +7814,31 @@ function renderPanelQuestion(s) {
   } else {
     container.style.display = 'none';
   }
-  if (had && !container.contains(document.activeElement)) apSafeFocus(container, '');
+  if (had && !container.contains(document.activeElement)) apSafeFocus();
 }
 
-// ── Permission prompts (SSOT 2026-10-24) ──
-// The Slack "🔐 Permission Request" card on the dashboard: the tool, its
-// parameters, the matched dangerous-command rules and the same four answers.
-// The board never carries the parameters (it is one document for every
-// viewer): the requester's page fetches them from the requester-only route.
-var _permDetails = Object.create(null); // approvalId → { input, truncated } | { error }
-var _permLoading = Object.create(null);
-var _permNotes = Object.create(null);   // approvalId → why the last answer failed
-var PERM_DECISIONS = [
-  { id: 'approve', label: '✅ Approve', cls: ' btn-perm-approve' },
-  { id: 'deny', label: '❌ Deny', cls: ' btn-perm-deny' },
-  { id: 'explain', label: '💡 Explain', cls: '' },
-  { id: 'approve_disable_rule', label: '🔓 Approve & disable rule (this session)', cls: '', needsRule: true },
-];
-
-function isPermissionRequester(p) {
-  return !!(p && p.requesterId && currentUserId && p.requesterId === currentUserId);
-}
-
-function permissionSummary(s) {
-  var list = s.pendingPermissions || [];
-  if (!list.length) return '';
-  return '🔐 ' + (list[0].toolName || 'tool') + ' 실행 승인 필요' + (list.length > 1 ? ' 외 ' + (list.length - 1) + '건' : '');
-}
-
-// where: 'card' (clamped parameters) | 'panel'.
-function renderPermissionBlock(s, where) {
-  var list = (s && s.pendingPermissions) || [];
-  if (!list.length) return '';
-  var sibling = isSiblingSession(s);
-  // On the card, the first Approve this viewer can press is the card's one ink
-  // primary (.is-lead, re-agent-inbox D10); the panel has no lead.
-  var leadTaken = where !== 'card';
-  return list.map(function(p) {
-    var mine = isPermissionRequester(p) && !sibling;
-    var detail = _permDetails[p.approvalId];
-    if (mine && !detail) loadPermissionDetail(s.key, p.approvalId);
-    var params;
-    if (!mine) params = '<div class="perm-params perm-params-hidden">' + esc(sibling ? '다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요' : '파라미터와 응답은 요청자만 볼 수 있습니다') + '</div>';
-    else if (!detail) params = '<div class="perm-params perm-params-hidden">파라미터 불러오는 중…</div>';
-    else if (detail.error) params = '<div class="perm-params perm-params-hidden">' + esc(detail.error) + '</div>';
-    else params = '<pre class="perm-params' + (where === 'card' ? ' is-clamped' : '') + '">' + esc(detail.input) + '</pre>'
-      + (detail.truncated ? '<div class="perm-truncated">앞부분만 표시합니다 (64KB 초과)</div>' : '');
-    var rules = p.rules || [];
-    var rulesHtml = rules.length
-      ? '<div class="perm-rules"><span class="perm-rules-label">Matched dangerous-command rule' + (rules.length > 1 ? 's' : '') + '</span>'
-        + rules.map(function(r) { return '<span class="perm-rule"><code>' + esc(r.id) + '</code> &mdash; ' + esc(r.label) + ': ' + esc(r.description) + '</span>'; }).join('')
-        + '</div>'
-      : '';
-    var lockTitle = mine ? '' : ' title="' + escAttr(sibling ? '다른 인스턴스의 세션' : '이 요청의 요청자만 응답할 수 있습니다') + '"';
-    var btns = PERM_DECISIONS.filter(function(d) { return !d.needsRule || p.canDisableRule; }).map(function(d) {
-      var lead = mine && !leadTaken && d.id === 'approve';
-      if (lead) leadTaken = true;
-      return '<button type="button" class="btn-perm' + d.cls + (lead ? ' is-lead' : '') + '"' + (mine ? '' : ' disabled') + lockTitle
-        + ' data-perm-key="' + escAttr(s.key) + '" data-perm-id="' + escAttr(p.approvalId) + '" data-perm-decision="' + d.id + '">'
-        + esc(d.label) + '</button>';
-    }).join('');
-    var note = _permNotes[p.approvalId] ? '<div class="perm-note" role="alert">' + esc(_permNotes[p.approvalId]) + '</div>' : '';
-    return '<div class="perm-request" data-approval-id="' + escAttr(p.approvalId) + '">'
-      + '<div class="perm-head">&#x1F510; Permission Request &mdash; <code>' + esc(p.toolName) + '</code></div>'
-      + params + rulesHtml
-      + '<div class="perm-actions">' + btns + '</div>'
-      + note
-      + '</div>';
-  }).join('');
-}
-
-// One delegated handler (like the choice buttons): the ids ride in
-// attribute-escaped data-perm-* attributes, never in an inline onclick string.
-document.addEventListener('click', function(e) {
-  var btn = e.target && e.target.closest ? e.target.closest('button[data-perm-decision]') : null;
-  if (!btn || btn.disabled) return;
-  var d = btn.dataset;
-  answerPermission(d.permKey, d.permId, d.permDecision, btn);
-});
-
-// ── 입력 필요 — approval cards in the panel (re-agent-run D8–D17) ──
-// The panel's own renderer: the card face keeps renderPermissionBlock(s, 'card').
-// Every answer still rides the data-perm-* buttons and the delegated handler above.
-var _permAnswered = Object.create(null); // approvalId → the answer this page sent (D15)
-var AP_KBD_APPROVE = /Mac|iPhone|iPad|iPod/.test(String((window.navigator && (navigator.platform || navigator.userAgent)) || '')) ? '⌘↵' : 'Ctrl ↵';
-var AP_ANSWERED = { approve: '승인함', deny: '거부함', explain: '설명 요청함', approve_disable_rule: '승인함 · 규칙 끔' };
-var AP_SENT = { approve: '승인을 보냈습니다', deny: '거부를 보냈습니다', explain: '설명을 요청했습니다', approve_disable_rule: '승인을 보냈습니다 · 규칙 끔' };
-
-// The prompts as approval cards. A prompt that arrives while the panel is
-// open, and an answer this page sent, are said once in the status line; the
-// first render of an opening is the baseline. Unchanged markup writes nothing;
-// a change is morphed, and focus that was in a card stays on that card.
+// The prompts in the panel. A prompt that arrives while the panel is open is
+// said once in the status line (the first render of an opening is the
+// baseline); an answer's outcome is said by its own card. Unchanged markup
+// writes nothing; a change is morphed, so focus in a card stays in it.
 function renderPanelPermission(s) {
   var container = document.getElementById('panel-permission');
   if (!container) return;
   var list = (s && s.pendingPermissions) || [];
   var key = s ? s.key : '';
-  if (container._seenKey !== key) {
-    // A new opening (or session): the answers this page already sent are not said again.
-    container._seen = null;
-    container._said = Object.create(null);
-    for (var a = 0; a < list.length; a++) if (_permAnswered[list[a].approvalId]) container._said[list[a].approvalId] = true;
-  }
-  var seen = container._seen;
+  var seen = container._seenKey === key ? container._seen : null;
   var ids = Object.create(null);
   var said = [];
   for (var i = 0; i < list.length; i++) {
-    var p = list[i];
-    ids[p.approvalId] = true;
-    if (seen && !seen[p.approvalId]) said.push('승인 요청 — ' + (p.toolName || 'tool'));
-    var done = _permAnswered[p.approvalId];
-    if (done && !container._said[p.approvalId]) {
-      container._said[p.approvalId] = true;
-      said.push((AP_SENT[done] || done) + ' — ' + (p.toolName || 'tool'));
-    }
+    ids[list[i].approvalId] = true;
+    if (seen && !seen[list[i].approvalId]) said.push('승인 요청 — ' + (list[i].toolName || 'tool'));
   }
   container._seenKey = key;
   container._seen = ids;
   renderPanelNeedsHead(s);
-  var html = list.map(function(p) { return apPermissionCardHtml(s, p); }).join('');
+  var html = s ? acPermissionsHtml(s) : '';
   var ae = document.activeElement;
   var had = !!(ae && container.contains(ae));
-  var fcard = had && ae.closest ? ae.closest('.ap-card') : null;
-  var fid = fcard ? fcard.getAttribute('data-approval-id') : '';
   if (!html) {
     container.style.display = 'none';
     container.innerHTML = '';
@@ -7769,33 +7849,18 @@ function renderPanelPermission(s) {
       morphInnerHtml(container, html);
       container._html = html;
     }
-    updateTimersIn(container);
+    acHydrate(container);
   }
-  if (had && !container.contains(document.activeElement)) apSafeFocus(container, fid);
+  if (had && !container.contains(document.activeElement)) apSafeFocus();
   if (said.length) apAnnounce(said.join('. '));
 }
-// Focus that was in a card whose markup just changed: its own card when it is
-// still there (its resolved row), else a place that answers nothing — the 입력
-// 필요 head, else the panel title. Never a decision button (re-agent-run D14).
-function apSafeFocus(container, fid) {
-  if (fid) {
-    var cards = container.querySelectorAll('.ap-card');
-    for (var c = 0; c < cards.length; c++) {
-      if (cards[c].getAttribute('data-approval-id') === fid) { cards[c].focus({ preventScroll: true }); return; }
-    }
-  }
+// Focus that was in a card that left (answered and gone, or a question
+// rewritten in place): a place that answers nothing — the 입력 필요 head, else
+// the panel title. Never a decision (re-agent-run D14).
+function apSafeFocus() {
   var head = document.getElementById('panel-needs-head');
   var to = head && !head.hidden ? head : document.getElementById('panel-title');
   if (to && to.focus) to.focus({ preventScroll: true });
-}
-// After a failed or stale single-choice answer the button's label was written
-// back as plain text (answerChoice): draw the panel's card again from the
-// session — description, 추천 tag, key hint and all.
-function apRepaintQuestion(btnEl, key) {
-  var host = btnEl && btnEl.closest ? btnEl.closest('#panel-question') : null;
-  if (!host) return;
-  host._html = '';
-  if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelQuestion(_sessionCache[key]);
 }
 // The status line of 입력 필요 (polite, always in the page).
 function apAnnounce(msg) {
@@ -7816,155 +7881,12 @@ function renderPanelNeedsHead(s) {
   var count = document.getElementById('panel-needs-count');
   if (count && count.textContent !== String(n)) count.textContent = String(n);
 }
-// D12: the tool input as key/value rows when it is a JSON object (its
-// description becomes the card's description); anything else — cut at 64KB,
-// not JSON, not an object — stays the escaped <pre>.
-function apDetails(detail) {
-  var obj = null;
-  if (!detail.truncated) {
-    try { obj = JSON.parse(detail.input); } catch (_e) { obj = null; }
-  }
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) {
-    return {
-      desc: '',
-      html: '<pre class="perm-params">' + esc(detail.input) + '</pre>'
-        + (detail.truncated ? '<div class="perm-truncated">앞부분만 표시합니다 (64KB 초과)</div>' : ''),
-    };
-  }
-  var desc = typeof obj.description === 'string' ? obj.description : '';
-  var rows = Object.keys(obj).filter(function(k) { return !(k === 'description' && desc); }).map(function(k) {
-    var v = obj[k];
-    return '<div class="ap-detail"><dt>' + esc(k) + '</dt><dd>' + esc(typeof v === 'string' ? v : JSON.stringify(v, null, 2)) + '</dd></div>';
-  });
-  return { desc: desc, html: rows.length ? '<dl class="ap-details">' + rows.join('') + '</dl>' : '' };
-}
-// D10–D16: one permission prompt as an approval card — label, icon, title,
-// description, the matched-rule pill, the input, the rules, the answers and the
-// expiry clock — or, once this page answered it, one resolved row.
-function apPermissionCardHtml(s, p) {
-  var id = escAttr(p.approvalId);
-  var tool = p.toolName || 'tool';
-  var title = tool + ' 실행 승인';
-  var answered = _permAnswered[p.approvalId];
-  if (answered) {
-    var mark = answered === 'deny' ? agentIconHtml('failed') : answered === 'explain' ? '?' : agentIconHtml('completed');
-    return '<div class="ap-card perm-request is-resolved" role="group" tabindex="-1" data-ap-kind="perm" data-approval-id="' + id + '" data-mk="ap|' + id + '" aria-labelledby="ap-t-' + id + '">'
-      + '<div class="ap-resolved" data-decision="' + escAttr(answered) + '">'
-      + '<span class="ap-mark" aria-hidden="true">' + mark + '</span>'
-      + '<span class="ap-row-title" id="ap-t-' + id + '">' + esc(title) + '</span>'
-      + '<span class="ap-row-status">' + esc(AP_ANSWERED[answered] || answered) + '</span>'
-      + '</div></div>';
-  }
-  var sibling = isSiblingSession(s);
-  var mine = isPermissionRequester(p) && !sibling;
-  var detail = _permDetails[p.approvalId];
-  if (mine && !detail) loadPermissionDetail(s.key, p.approvalId);
-  var desc = '';
-  var body;
-  if (!mine) body = '<div class="perm-params perm-params-hidden">' + esc(sibling ? '다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요' : '파라미터와 응답은 요청자만 볼 수 있습니다') + '</div>';
-  else if (!detail) body = '<div class="perm-params perm-params-hidden">파라미터 불러오는 중…</div>';
-  else if (detail.error) body = '<div class="perm-params perm-params-hidden">' + esc(detail.error) + '</div>';
-  else {
-    var d = apDetails(detail);
-    desc = d.desc;
-    body = d.html;
-  }
-  var rules = p.rules || [];
-  var pill = rules.length
-    ? '<span class="ap-pill" data-kind="rule">위험<span class="ap-pill-word"> 규칙</span> ' + rules.length + '</span>'
-    : '<span class="ap-pill" data-kind="tool">도구 승인</span>';
-  var rulesHtml = rules.length
-    ? '<div class="perm-rules"><span class="perm-rules-label">Matched dangerous-command rule' + (rules.length > 1 ? 's' : '') + '</span>'
-      + rules.map(function(r) { return '<span class="perm-rule"><code>' + esc(r.id) + '</code> &mdash; ' + esc(r.label) + ': ' + esc(r.description) + '</span>'; }).join('')
-      + '</div>'
-    : '';
-  var lock = mine ? '' : ' disabled title="' + escAttr(sibling ? '다른 인스턴스의 세션' : '이 요청의 요청자만 응답할 수 있습니다') + '"';
-  // data-mk = request + answer: a live morph never rebinds a focused answer to another request (domKeyOf).
-  var data = ' data-perm-key="' + escAttr(s.key) + '" data-perm-id="' + id + '"';
-  var mk = function(d) { return ' data-mk="ap|' + id + '|' + d + '"'; };
-  var alts = '<button type="button" class="btn-perm ap-btn ap-ghost"' + lock + data + ' data-perm-decision="explain"' + mk('explain') + '>Explain</button>'
-    + (p.canDisableRule ? '<button type="button" class="btn-perm ap-btn ap-ghost"' + lock + data + ' data-perm-decision="approve_disable_rule"' + mk('approve_disable_rule') + '>Approve &amp; disable rule</button>' : '');
-  var main = '<button type="button" class="btn-perm ap-btn ap-quiet ap-deny"' + lock + data + ' data-perm-decision="deny" data-kbd="Esc" aria-keyshortcuts="Escape"' + mk('deny') + '>Deny</button>'
-    + '<button type="button" class="btn-perm ap-btn ap-primary ap-approve"' + lock + data + ' data-perm-decision="approve" data-kbd="' + AP_KBD_APPROVE + '" aria-keyshortcuts="Meta+Enter Control+Enter"' + mk('approve') + '>Approve</button>';
-  var until = toNum(p.expiresAt);
-  var expires = until > 0
-    ? '<span class="ap-expires" data-until="' + until + '" aria-hidden="true"></span><span class="ar-vh" id="ap-x-' + id + '">' + esc(formatTaskTime(until)) + '에 만료</span>'
-    : '';
-  var describedBy = [desc ? 'ap-d-' + id : '', until > 0 ? 'ap-x-' + id : ''].filter(Boolean).join(' ');
-  var note = _permNotes[p.approvalId] ? '<div class="perm-note" role="alert">' + esc(_permNotes[p.approvalId]) + '</div>' : '';
-  return '<div class="ap-card perm-request" role="group" tabindex="-1" data-ap-kind="perm" data-approval-id="' + id + '" data-mk="ap|' + id + '" aria-labelledby="ap-t-' + id + '"'
-    + (describedBy ? ' aria-describedby="' + describedBy + '"' : '') + '>'
-    // Only what the prompt itself proves (no task: a subagent may have raised it).
-    + '<div class="ap-label">' + esc(tool) + (toNum(p.createdAt) > 0 ? ' &middot; ' + esc(formatTaskTime(p.createdAt)) + ' 요청' : '') + '</div>'
-    + '<div class="ap-body"><div class="ap-head">'
-    + '<span class="ap-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.5" y="7" width="9" height="6.5" rx="1.5"/><path d="M5.5 7V5a2.5 2.5 0 0 1 5 0v2"/></svg></span>'
-    + '<div class="ap-titles"><div class="ap-title" id="ap-t-' + id + '">' + esc(title) + '</div>'
-    + (desc ? '<div class="ap-desc" id="ap-d-' + id + '" title="' + escAttr(desc) + '">' + esc(desc) + '</div>' : '') + '</div>'
-    + pill + '</div>'
-    + body + rulesHtml
-    + '<div class="ap-alts">' + alts + '</div>'
-    + '<div class="ap-foot">' + expires + '<div class="ap-actions">' + main + '</div></div>'
-    + note + '</div></div>';
-}
-// D17: the single-choice question in the same frame — the whole question as
-// the title, the recommended choice first (primary, ⌘↵), the rest after it.
-function apQuestionCardHtml(s, q) {
-  var recId = resolveRecommendedId(q.recommendedChoiceId, q.choices);
-  var rec = recId ? q.choices.find(function(c) { return c.id === recId; }) : null;
-  var others = q.choices.filter(function(c) { return !rec || c.id !== rec.id; });
-  var ordered = rec ? [rec].concat(others) : others;
-  // The card's key is the question's whole meaning — its text and every choice's id, label and description,
-  // serialized (JSON: no two meanings share a key). A question rewritten in place (same text, same ids, another
-  // label) is another card: the old one and its focused choice leave the page (apSafeFocus), never rebound.
-  // Inside one card a choice pairs by its id.
-  var qk = 'q|' + JSON.stringify([q.question, q.choices.map(function(c) { return [c.id, c.label, c.description || '']; })]);
-  var btns = ordered.map(function(c) {
-    var lbl = stripRecommendedMarker(c.label);
-    var isRec = !!rec && c.id === rec.id;
-    return '<button type="button" class="btn-choice ap-choice' + (isRec ? ' ap-rec' : '') + '"' + choiceDataAttrs(s.key, c.id, lbl, q.question)
-      + (isRec ? ' data-kbd="' + AP_KBD_APPROVE + '" aria-keyshortcuts="Meta+Enter Control+Enter"' : '') + ' data-mk="' + escAttr('c|' + c.id) + '">'
-      + '<span class="ap-choice-label">' + esc(c.id) + '. ' + esc(lbl) + (isRec ? '<span class="ap-choice-tag">추천</span>' : '') + '</span>'
-      + (c.description ? '<span class="ap-choice-desc">' + esc(c.description) + '</span>' : '')
-      + '</button>';
-  }).join('');
-  return '<div class="ap-card ap-question" role="group" tabindex="-1" data-ap-kind="question" data-mk="' + escAttr(qk) + '" aria-labelledby="ap-q-title">'
-    + '<div class="ap-body"><div class="ap-head">'
-    + '<span class="ap-icon" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="6"/><path d="M6.3 6.3a1.8 1.8 0 0 1 3.4.7c0 1.2-1.7 1.5-1.7 2.6M8 11.3v.1"/></svg></span>'
-    + '<div class="ap-titles"><div class="ap-title" id="ap-q-title">' + esc(q.question) + '</div></div>'
-    + '<span class="ap-pill" data-kind="question">질문</span></div>'
-    + '<div class="panel-question-choices ap-choices">' + btns + '</div>'
-    + '</div></div>';
-}
-// D14: ⌘/Ctrl+Enter anywhere in a card answers with its primary (Approve, or a
-// question's recommended choice); Esc denies only from one of the card's
-// buttons — on the card itself (the keyboard landing) it still closes the
-// panel. A handled key stays here: the document's Escape never sees it.
-function apKeydown(e) {
-  if (e.defaultPrevented || !e.target || !e.target.closest) return;
-  var card = e.target.closest('.ap-card');
-  if (!card) return;
-  var kind = card.getAttribute('data-ap-kind');
-  var btn = null;
-  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-    btn = card.querySelector(kind === 'question' ? '.ap-rec' : '.ap-approve');
-  } else if (e.key === 'Escape' && kind === 'perm') {
-    var from = e.target.closest('button');
-    if (from && card.contains(from)) btn = card.querySelector('.ap-deny');
-  }
-  if (!btn || btn.disabled) return;
-  e.preventDefault();
-  e.stopPropagation();
-  btn.click();
-}
-['panel-permission', 'panel-question'].forEach(function(id) {
-  var el = document.getElementById(id);
-  if (el) el.addEventListener('keydown', apKeydown);
-});
-
-// Re-draw what shows this session's prompt (its card, the open panel).
-function repaintPermission(key) {
-  refreshCard(key);
-  if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelPermission(_sessionCache[key]);
+// The first card in root still waiting on an answer (not a resolved row).
+function acFirstOpen(root) {
+  if (!root || root.style.display === 'none') return null;
+  var els = root.querySelectorAll('ui-approval-card');
+  for (var i = 0; i < els.length; i++) if (els[i].status !== 'resolved') return els[i];
+  return null;
 }
 
 function loadPermissionDetail(key, approvalId) {
@@ -7986,53 +7908,94 @@ function loadPermissionDetail(key, approvalId) {
     .catch(function() { _permDetails[approvalId] = { error: '파라미터를 불러오지 못했습니다' }; })
     .then(function() {
       delete _permLoading[approvalId];
-      repaintPermission(key);
+      acRepaint(key);
     });
 }
 
-// One answer per prompt: every button of the prompt is disabled while it is
-// sent. Success leaves them disabled — the permission MCP server takes the
-// answer within a second and the board push removes the prompt. A refusal is
-// shown under the buttons; only a retryable failure re-enables them.
-async function answerPermission(key, approvalId, decision, btnEl) {
-  var box = btnEl.closest('.perm-request');
-  var btns = box ? box.querySelectorAll('.btn-perm') : [];
-  btns.forEach(function(b) { b.disabled = true; });
-  var label = btnEl.textContent;
-  btnEl.textContent = '...';
-  delete _permNotes[approvalId];
-  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/permission';
-  var body = JSON.stringify({ approvalId: approvalId, decision: decision });
-  var retryable = true;
+// POST with the CSRF retry (a 403 after the JWT rotated refreshes the token once).
+async function acPost(url, body) {
+  var headers = { 'Content-Type': 'application/json' };
+  if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+  var res = await fetch(url, { method: 'POST', headers: headers, body: body });
+  if (res.status === 403) {
+    await refreshCsrfToken();
+    var retryHeaders = { 'Content-Type': 'application/json' };
+    if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
+    res = await fetch(url, { method: 'POST', headers: retryHeaders, body: body });
+  }
+  return res;
+}
+// A refused answer as the card's error: the server's reason; a request that is
+// gone (404) or already answered elsewhere (409) is final — no Retry.
+async function acRefusal(res) {
+  var data = {};
+  try { data = await res.json(); } catch (_e) {}
+  return { status: 'error', message: (data && data.error) || ('응답을 보내지 못했어요 (HTTP ' + res.status + ')'), retry: res.status !== 409 && res.status !== 404 };
+}
+function acToolOf(key, approvalId) {
+  var s = _sessionCache[key];
+  var list = (s && s.pendingPermissions) || [];
+  for (var i = 0; i < list.length; i++) if (String(list[i].approvalId) === approvalId) return list[i].toolName || 'tool';
+  return '';
+}
+
+// One answer per prompt. The card shows it in flight, then its resolved row —
+// the permission MCP server takes the answer within a second and the board
+// push removes the prompt, so a toast says it went through after the card is
+// gone. A refusal stays on the card (the state): its reason, and Retry unless
+// the request is gone or was answered elsewhere.
+async function answerPermission(key, approvalId, decision) {
+  var sk = 'p|' + approvalId;
+  var cur = _acState[sk];
+  if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
+  _acState[sk] = { status: 'sending', decision: decision };
+  acRepaint(key);
+  var st;
   try {
-    var headers = { 'Content-Type': 'application/json' };
-    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
-    var res = await fetch(url, { method: 'POST', headers: headers, body: body });
-    if (res.status === 403) {
-      await refreshCsrfToken();
-      var retryHeaders = { 'Content-Type': 'application/json' };
-      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
-      res = await fetch(url, { method: 'POST', headers: retryHeaders, body: body });
-    }
+    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/permission', JSON.stringify({ approvalId: approvalId, decision: decision }));
     if (res.ok) {
-      btnEl.textContent = '✓ ' + label;
-      // The panel's card turns into its resolved row (re-agent-run D15); the
-      // card face keeps its locked buttons until the board push removes it.
-      _permAnswered[approvalId] = decision;
-      if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelPermission(_sessionCache[key]);
-      return;
-    }
-    var data = {};
-    try { data = await res.json(); } catch (_) {}
-    _permNotes[approvalId] = data.error || ('Failed (status ' + res.status + ')');
-    retryable = res.status !== 409 && res.status !== 404;
+      st = { status: 'resolved', outcome: decision === 'deny' ? 'denied' : decision === 'explain' ? 'explained' : 'approved', at: Date.now() };
+      if (decision === 'approve_disable_rule') st.ruleDisabled = true;
+      dashToast({ title: AC_SENT[decision] || '응답을 보냈어요', description: acToolOf(key, approvalId), tone: 'success' });
+    } else st = await acRefusal(res);
   } catch (e) {
     console.error('Permission answer error', e);
-    _permNotes[approvalId] = '네트워크 오류 — 다시 시도하세요';
+    st = { status: 'error', message: '네트워크 오류 — 다시 시도하세요', retry: true };
   }
-  btnEl.textContent = label;
-  if (retryable) btns.forEach(function(b) { b.disabled = false; });
-  repaintPermission(key);
+  _acState[sk] = st;
+  acRepaint(key);
+  return st;
+}
+
+// The single-choice answer, from the card or the panel (the same element): the
+// choice travels with its label and the question, as the route wants. Same
+// states as a prompt; a question that changed meanwhile takes no answer.
+async function answerChoice(key, qid, choiceId) {
+  var s = _sessionCache[key];
+  var q = s && s.pendingQuestion;
+  if (!q || q.type !== 'user_choice' || !q.choices || acQuestionId(q) !== qid) return null;
+  var c = null;
+  for (var i = 0; i < q.choices.length; i++) if (String(q.choices[i].id) === choiceId) c = q.choices[i];
+  if (!c) return null;
+  var cur = _acState[qid];
+  if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
+  _acState[qid] = { status: 'sending', choiceId: choiceId };
+  acRepaint(key);
+  var label = stripRecommendedMarker(c.label);
+  var st;
+  try {
+    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/answer-choice', JSON.stringify({ choiceId: choiceId, label: label, question: q.question }));
+    if (res.ok) {
+      st = { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() };
+      dashToast({ title: '답을 보냈어요', description: label, tone: 'success' });
+    } else st = await acRefusal(res);
+  } catch (e) {
+    console.error('Answer choice error', e);
+    st = { status: 'error', message: '네트워크 오류 — 다시 시도하세요', retry: true };
+  }
+  _acState[qid] = st;
+  acRepaint(key);
+  return st;
 }
 
 // The panel's Tasks section (dashboard task view T1.3): a disclosure in the
@@ -8609,12 +8572,12 @@ function choiceDataAttrs(key, id, label, question) {
   return ' data-choice-key="' + escAttr(key) + '" data-choice-id="' + escAttr(id)
     + '" data-choice-label="' + escAttr(label) + '" data-choice-question="' + escAttr(question) + '"';
 }
+// (The single-choice question is an approval card: its answer is ui-answer.)
 document.addEventListener('click', function(e) {
-  var btn = e.target && e.target.closest ? e.target.closest('button[data-choice-id]') : null;
+  var btn = e.target && e.target.closest ? e.target.closest('button[data-choice-id][data-mc-index]') : null;
   if (!btn || btn.disabled) return;
   var d = btn.dataset;
-  if (d.mcIndex !== undefined) selectMc(d.choiceKey, Number(d.mcIndex), d.choiceId, d.choiceLabel);
-  else answerChoice(d.choiceKey, d.choiceId, d.choiceLabel, d.choiceQuestion, btn);
+  selectMc(d.choiceKey, Number(d.mcIndex), d.choiceId, d.choiceLabel);
 });
 // Only http(s) URLs become links; anything else (javascript:, data:) is inert.
 function safeHref(u) {
@@ -13948,72 +13911,6 @@ async function doAction(key, action) {
   refreshCard(key);
   if (panelOpen && panelSessionKey === key) renderPanelHead();
   loadSessions();
-}
-
-// ── Answer choice from dashboard ──
-async function answerChoice(key, choiceId, label, question, btnEl) {
-  try {
-    // Disable all choice buttons in the same card or panel to prevent double-click
-    var card = btnEl.closest('.card') || btnEl.closest('.panel-question-choices') || btnEl.closest('#panel-question');
-    if (card) {
-      card.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = true; });
-    }
-    btnEl.textContent = '...';
-
-    const choiceHeaders = { 'Content-Type': 'application/json' };
-    if (_csrfToken) choiceHeaders['X-CSRF-Token'] = _csrfToken;
-    const choiceUrl = '/api/dashboard/session/' + encodeURIComponent(key) + '/answer-choice';
-    const choiceBody = JSON.stringify({ choiceId: choiceId, label: label, question: question });
-    let res = await fetch(choiceUrl, { method: 'POST', headers: choiceHeaders, body: choiceBody });
-    if (res.status === 403) {
-      await refreshCsrfToken();
-      const retryHeaders = { 'Content-Type': 'application/json' };
-      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
-      res = await fetch(choiceUrl, { method: 'POST', headers: retryHeaders, body: choiceBody });
-    }
-    if (!res.ok) {
-      var errData = {};
-      try { errData = await res.json(); } catch(_) {}
-      var errMsg = errData.error || 'Failed (status ' + res.status + ')';
-      console.error('Answer choice failed', key, choiceId, errMsg);
-      // Show error briefly, then re-enable buttons for retry
-      btnEl.textContent = errMsg;
-      btnEl.style.color = 'var(--red)';
-      setTimeout(function() {
-        if (card) {
-          card.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
-        }
-        btnEl.textContent = choiceId + '. ' + label;
-        btnEl.style.color = '';
-        apRepaintQuestion(btnEl, key);
-      }, 2500);
-    } else {
-      // On success, the WebSocket session_update SHOULD re-render the board and
-      // replace these buttons. But if the WS message is delayed/dropped, the
-      // user is stuck with permanently disabled buttons. Fallback: re-enable
-      // after 5s if the card is still in the DOM (i.e. not re-rendered).
-      setTimeout(function() {
-        if (card && card.isConnected) {
-          card.querySelectorAll('.btn-choice').forEach(function(b) {
-            if (b.disabled) b.disabled = false;
-          });
-          if (btnEl.isConnected && btnEl.textContent === '...') {
-            btnEl.textContent = choiceId + '. ' + label;
-            apRepaintQuestion(btnEl, key);
-          }
-        }
-      }, 5000);
-    }
-  } catch (e) {
-    console.error('Answer choice error', e);
-    // Re-enable buttons on network error so user can retry
-    var errCard = btnEl.closest('.card') || btnEl.closest('.panel-question-choices') || btnEl.closest('#panel-question');
-    if (errCard) {
-      errCard.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
-    }
-    btnEl.textContent = choiceId + '. ' + label;
-    apRepaintQuestion(btnEl, key);
-  }
 }
 
 // ── Multi-choice form state ──
