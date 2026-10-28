@@ -186,7 +186,7 @@ describe('environment-skill admin approval — full flow', () => {
     expect(dms).toHaveLength(2);
     expect(JSON.stringify(dms[1].opts?.blocks)).toContain('acme-env:dev2-qa');
     await click(adminButton('env_skill_once'));
-    expect(redispatched.at(-1)?.result.continueWithPrompt).toContain('Run the dev QA profile');
+    expect(redispatched[redispatched.length - 1]?.result.continueWithPrompt).toContain('Run the dev QA profile');
     expect(policy('Skill', { skill: 'acme-env:dev2-qa' }, where).decision).toBe('pass');
   });
 
