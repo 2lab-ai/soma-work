@@ -148,6 +148,7 @@ function fakeDocument(ids: string[], skeletons = 3) {
 }
 
 const BOARD_FNS = ['setBoardLoad', 'retryBoardLoad'];
+const LOAD_VARS = ['_boardLoad', '_heldWsBoard', '_sessionsInflight', 'BOARD_LOAD_TIMEOUT_MS'];
 
 describe('[T2] board — skeleton until the first board paints', () => {
   it('the served board starts loading: aria-busy, data-load="loading"', () => {
@@ -226,7 +227,7 @@ describe('[T2] board — skeleton until the first board paints', () => {
     // A WebSocket push is this instance's cards only — it never certifies the board (review R2).
     expect(body).not.toContain('setBoardLoad(');
     const ls = clientFn('loadSessions');
-    expect(ls.indexOf("setBoardLoad('ready');")).toBeGreaterThan(ls.indexOf('renderBoard(data.board);'));
+    expect(ls.indexOf("setBoardLoad('ready');")).toBeGreaterThan(ls.indexOf('renderBoard(data.board, false);'));
     // A loaded, empty column still says it.
     expect(clientFn('reconcileBoard')).toContain('if (empty && empty.hidden !== has) empty.hidden = has;');
   });
@@ -241,7 +242,7 @@ describe('[T3] board — a failed first load stops the skeleton', () => {
       setBoardLoad(s: string): void;
       retryBoardLoad(): void;
       _state: { _boardLoad: string };
-    }>(['loadSessions', ...BOARD_FNS], ['_boardLoad', '_heldWsBoard'], {
+    }>(['loadSessions', ...BOARD_FNS], LOAD_VARS, {
       document: d.document,
       fetch: fetchImpl,
       renderBoard,
@@ -300,7 +301,8 @@ describe('[T3] board — a failed first load stops the skeleton', () => {
     expect(d.byId.kanban.dataset.load).toBe('loading');
     expect(d.byId.kanban.attrs['aria-busy']).toBe('true');
     expect(d.byId['board-error'].hidden).toBe(true);
-    await vi.waitFor(() => expect(renderBoard).toHaveBeenCalledWith(board));
+    // A poll answer is a certified paint (partial = false).
+    await vi.waitFor(() => expect(renderBoard).toHaveBeenCalledWith(board, false));
   });
 });
 
@@ -317,7 +319,7 @@ describe('[T2] board — only a poll answer certifies the board (review R1/R2)',
     const painted: unknown[] = [];
     const m = load<Api>(
       ['loadSessions', 'paintPushedBoard', ...BOARD_FNS],
-      ['_boardLoad', '_heldWsBoard'],
+      LOAD_VARS,
       {
         document: d.document,
         fetch: fetchImpl,
@@ -405,19 +407,46 @@ describe('[T2] board — only a poll answer certifies the board (review R1/R2)',
     expect(d.byId['board-error'].hidden).toBe(false);
   });
 
-  it('slow polls never starve each other: overlapping same-user polls all paint (review R2)', async () => {
+  it('a push held after a user switch belongs to the new user: the old load drops, the new failed load paints it (review R2, grok)', async () => {
+    const answers: Array<{ ok(v: unknown): void; fail(e: Error): void }> = [];
+    const { d, m, painted } = harness(
+      () =>
+        new Promise((ok, fail) => {
+          answers.push({ ok, fail });
+        }),
+    );
+    const loadA = m.loadSessions(); // All Users, in flight
+    m.select('U_B');
+    const loadB = m.loadSessions(); // selectUser → B
+    // ws.onmessage filters by currentUserId (B) and holds with the same currentUserId.
+    m.paintPushedBoard(WS);
+    expect(m._state._heldWsBoard).toEqual({ user: 'U_B', board: WS });
+    answers[0].fail(new Error('offline')); // A's late failure: not B's business
+    await loadA;
+    expect(painted).toEqual([]);
+    expect(m._state._heldWsBoard).toEqual({ user: 'U_B', board: WS });
+    answers[1].fail(new Error('offline')); // B's own failure: B's held cards, under the error
+    await loadB;
+    expect(painted).toEqual([WS]);
+    expect(m._state._boardLoad).toBe('failed');
+    expect(d.byId['board-error'].hidden).toBe(false);
+  });
+
+  it('certified, slow polls never starve each other: overlapping same-user polls all paint (review R2)', async () => {
     const answers: Array<(v: unknown) => void> = [];
     const { m, painted } = harness(() => new Promise((r) => answers.push(r)));
+    const first = m.loadSessions();
+    answers[0](ok(board('p0')));
+    await first;
+    expect(m._state._boardLoad).toBe('ready');
     // Three 30 s polls start before the first (40 s) answer lands.
     const loads = [m.loadSessions(), m.loadSessions(), m.loadSessions()];
-    answers[0](ok(board('p1')));
+    answers[1](ok(board('p1')));
     await loads[0];
-    expect(painted).toEqual([board('p1')]);
-    expect(m._state._boardLoad).toBe('ready');
-    answers[1](ok(board('p2')));
-    answers[2](ok(board('p3')));
+    answers[2](ok(board('p2')));
+    answers[3](ok(board('p3')));
     await Promise.all(loads);
-    expect(painted).toHaveLength(3);
+    expect(painted).toEqual([board('p0'), board('p1'), board('p2'), board('p3')]);
   });
 
   it('ws.onmessage goes through paintPushedBoard', () => {
@@ -425,6 +454,195 @@ describe('[T2] board — only a poll answer certifies the board (review R1/R2)',
     const branch = ws.slice(0, ws.indexOf('renderPanelPermission(panelS);'));
     expect(branch).toContain('if (!paintPushedBoard(msg.board)) return;');
     expect(branch).not.toContain('renderBoard(mergeSiblingCards(msg.board));');
+  });
+});
+
+describe('[T3] first load is bounded; partial data is never announced as the board (#482)', () => {
+  type Api = {
+    loadSessions(): Promise<void>;
+    paintPushedBoard(b: unknown): boolean;
+    setBoardLoad(s: string): void;
+    retryBoardLoad(): void;
+    select(u: string): void;
+    _state: { _boardLoad: string; _heldWsBoard: unknown; BOARD_LOAD_TIMEOUT_MS: number };
+  };
+  type Call = { url: string; signal?: AbortSignal; settle(v: unknown): void; fail(e: unknown): void };
+  function harness() {
+    const d = fakeDocument(['kanban', 'board-error']);
+    d.byId['board-error'].hidden = true; // as served
+    const calls: Call[] = [];
+    const painted: Array<{ board: unknown; partial: unknown; state: string }> = [];
+    let m!: Api;
+    const fetchImpl = (url: string, opts?: { signal?: AbortSignal }) =>
+      new Promise((settle, fail) => {
+        const call: Call = { url, signal: opts?.signal, settle, fail };
+        calls.push(call);
+        opts?.signal?.addEventListener('abort', () => fail(new DOMException('aborted', 'AbortError')));
+      });
+    m = load<Api>(
+      ['loadSessions', 'paintPushedBoard', ...BOARD_FNS],
+      LOAD_VARS,
+      {
+        document: d.document,
+        fetch: fetchImpl,
+        // Record what the board was painted with, and the load state at that moment.
+        renderBoard: (b: unknown, partial: unknown) => painted.push({ board: b, partial, state: m._state._boardLoad }),
+        mergeSiblingCards: (b: unknown) => b,
+        currentUserId: '',
+        _lastPolledBoard: null,
+        _lifecycle: null,
+        panelOpen: false,
+        panelSessionKey: null,
+        _sessionCache: {},
+        repaintPanelSession: () => {},
+        console: { error: () => {} },
+      },
+      ['function select(u) { currentUserId = u; }'],
+    );
+    return { d, m, calls, painted };
+  }
+  const board = (tag: string) => ({ tag, working: [], waiting: [], idle: [], closed: [] });
+  const res = (b: unknown, delayMs = 0) => ({
+    ok: true,
+    json: () => new Promise((r) => setTimeout(() => r({ board: b }), delayMs)),
+  });
+
+  it('the deadline is shorter than the 30 s poll', () => {
+    const { m } = harness();
+    expect(m._state.BOARD_LOAD_TIMEOUT_MS).toBeGreaterThan(5000);
+    expect(m._state.BOARD_LOAD_TIMEOUT_MS).toBeLessThan(30000);
+    expect(TEMPLATE).toContain('setInterval(loadSessions, 30000);');
+  });
+
+  it('a first request that never answers ends in 다시 시도 — with the held push shown as partial data', async () => {
+    vi.useFakeTimers();
+    try {
+      const { d, m, calls, painted } = harness();
+      const load = m.loadSessions();
+      m.paintPushedBoard(board('ws'));
+      expect(calls[0].signal).toBeDefined();
+      await vi.advanceTimersByTimeAsync(m._state.BOARD_LOAD_TIMEOUT_MS);
+      await load;
+      expect(calls[0].signal?.aborted).toBe(true);
+      expect(m._state._boardLoad).toBe('failed');
+      expect(d.byId['board-error'].hidden).toBe(false);
+      // The partial paint happens under 'failed' — renderBoard does not announce it as the board.
+      expect(painted).toEqual([{ board: board('ws'), partial: undefined, state: 'failed' }]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('the deadline bounds the wait for the answer, not the transfer: a slow body on a slow link still paints', async () => {
+    vi.useFakeTimers();
+    try {
+      const { m, calls, painted } = harness();
+      const load = m.loadSessions();
+      calls[0].settle(res(board('poll'), m._state.BOARD_LOAD_TIMEOUT_MS * 2)); // headers now, body later
+      await vi.advanceTimersByTimeAsync(m._state.BOARD_LOAD_TIMEOUT_MS * 2);
+      await load;
+      expect(calls[0].signal?.aborted).toBe(false);
+      expect(painted).toEqual([{ board: board('poll'), partial: false, state: 'loading' }]);
+      expect(m._state._boardLoad).toBe('ready');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('once the board is certified, polls run without a deadline (a slow healthy poll is never cut off)', async () => {
+    const { m, calls } = harness();
+    const first = m.loadSessions();
+    calls[0].settle(res(board('poll')));
+    await first;
+    expect(m._state._boardLoad).toBe('ready');
+    m.loadSessions();
+    expect(calls[1].signal).toBeUndefined();
+  });
+
+  it("before certification the same user's next ask joins the load in flight — task_update, toggles, polls, 다시 시도 (#487 R2, fable P1)", async () => {
+    const { d, m, calls } = harness();
+    const first = m.loadSessions(); // the first load, slow
+    // A busy board: task_update calls loadSessions() on every message.
+    const joins = [m.loadSessions(), m.loadSessions(), m.loadSessions()];
+    expect(calls).toHaveLength(1); // one request, one sibling fan-out
+    expect(calls[0].signal?.aborted).toBe(false); // nobody restarts its clock
+    calls[0].settle(res(board('poll')));
+    await Promise.all([first, ...joins]);
+    expect(m._state._boardLoad).toBe('ready');
+    expect(d.byId['board-error'].hidden).toBe(true);
+    // Certified: every ask is its own request again, never aborted.
+    m.loadSessions();
+    m.loadSessions();
+    expect(calls).toHaveLength(3);
+    expect(calls[1].signal).toBeUndefined();
+    expect(calls[2].signal).toBeUndefined();
+  });
+
+  it('다시 시도 while a poll is in flight joins it: its outcome is the answer', async () => {
+    const { d, m, calls } = harness();
+    const poll = m.loadSessions(); // the 30 s poll, after a failed first load
+    m.setBoardLoad('failed');
+    m.retryBoardLoad();
+    expect(calls).toHaveLength(1);
+    expect(m._state._boardLoad).toBe('loading');
+    expect(d.byId['board-error'].hidden).toBe(true);
+    calls[0].fail(new Error('offline'));
+    await poll;
+    expect(m._state._boardLoad).toBe('failed');
+    expect(d.byId['board-error'].hidden).toBe(false);
+  });
+
+  it("a user switch aborts the previous user's uncertified load (its answer would be dropped; #487 review, grok P2)", async () => {
+    const { d, m, calls } = harness();
+    const forA = m.loadSessions();
+    m.select('U_B');
+    m.loadSessions();
+    expect(calls).toHaveLength(2);
+    expect(calls[0].signal?.aborted).toBe(true);
+    expect(calls[1].signal?.aborted).toBe(false);
+    await forA; // A's abort is not B's failure
+    expect(m._state._boardLoad).toBe('loading');
+    expect(d.byId['board-error'].hidden).toBe(true);
+    calls[1].settle(res(board('b')));
+    await vi.waitFor(() => expect(m._state._boardLoad).toBe('ready'));
+  });
+
+  it('A → B → A before certification: the aborted A load is not a failure of the new A load (#487 R3, fable P2)', async () => {
+    const { d, m, calls } = harness();
+    const a1 = m.loadSessions();
+    m.select('U_B');
+    const b = m.loadSessions(); // aborts A1
+    m.select('');
+    m.loadSessions(); // back to A: aborts B, starts A2
+    expect(calls).toHaveLength(3);
+    await Promise.all([a1, b]);
+    expect(m._state._boardLoad).toBe('loading');
+    expect(d.byId['board-error'].hidden).toBe(true);
+    calls[2].settle(res(board('a2')));
+    await vi.waitFor(() => expect(m._state._boardLoad).toBe('ready'));
+  });
+
+  it('a body that stalls after the headers does not swallow 다시 시도: once answered, the next ask is a new request (#487 R3, grok P2)', async () => {
+    const { m, calls } = harness();
+    m.loadSessions();
+    calls[0].settle({ ok: true, json: () => new Promise(() => {}) }); // headers in, body never
+    await new Promise((r) => setTimeout(r, 0));
+    m.setBoardLoad('failed');
+    m.retryBoardLoad();
+    expect(calls).toHaveLength(2);
+    calls[1].settle(res(board('retry')));
+    await vi.waitFor(() => expect(m._state._boardLoad).toBe('ready'));
+  });
+
+  it('renderBoard announces only a certified board', () => {
+    const body = clientFn('renderBoard');
+    expect(body.startsWith('function renderBoard(board, partial) {')).toBe(true);
+    // Unspecified: whatever is painted while the board is in error is partial (toggles re-render it too).
+    // Anything painted before the board is certified is partial — also a re-render during
+    // 다시 시도 (cron poll, visibility, toggles) of the partial cards (#487 review, fable P2).
+    expect(body).toContain("if (partial === undefined) partial = _boardLoad !== 'ready';");
+    expect(body).toContain('if (!partial) announceBoard(');
+    expect(clientFn('loadSessions')).toContain('renderBoard(data.board, false);');
   });
 });
 
@@ -553,5 +771,13 @@ describe('[T3] skeleton motion and accessibility', () => {
 
   it('skeletons show only while the board is loading', () => {
     expect(CSS).toMatch(/\.kanban:not\(\[data-load="loading"\]\) \.col-skel \{ display: none; \}/);
+  });
+
+  it('counts and "Nothing here" are claims about the whole board: only a certified (ready) board shows them (#482)', () => {
+    // 다시 시도 after a partial paint (loading), or partial cards under the error (failed).
+    expect(CSS).toMatch(/\.kanban:not\(\[data-load="ready"\]\) \.col-empty \{ display: none; \}/);
+    expect(CSS).toMatch(
+      /\.kanban:not\(\[data-load="ready"\]\) \.kanban-col-header \.count:not\(:empty\) \{ visibility: hidden; \}/,
+    );
   });
 });
