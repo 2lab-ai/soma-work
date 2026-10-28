@@ -360,6 +360,12 @@ describe('plan announcements (D7)', () => {
 });
 
 // ── Needs input (D8–D17) ──
+// affectUI batch 1: every prompt and the single-choice question is a <ui-approval-card> (@2lab.ai/ui).
+// The dashboard's half, pinned here: the slot markup (keyed by its request), the card's data
+// (acPermissionData / acQuestionData), who may answer (canAnswer), the answer path (ui-decide /
+// ui-answer → answerPermission / answerChoice → the card's state + a toast), focus and landing around
+// the cards. The card's own markup, keyboard, countdown and resolved row are the library's
+// (ui/src/components/approval-card/approval-card.test.ts — named where a test moved there).
 const PERM = (over: Record<string, unknown> = {}) => ({
   approvalId: 'approval_a1',
   toolName: 'Bash',
@@ -386,42 +392,85 @@ const INPUT = JSON.stringify(
   null,
   2,
 );
+type CardData = Record<string, any>;
 
 function cards(
-  opts: { user?: string; details?: Record<string, unknown>; answered?: Record<string, string>; sibling?: boolean } = {},
+  opts: {
+    user?: string;
+    details?: Record<string, unknown>;
+    state?: Record<string, unknown>;
+    sibling?: boolean;
+  } = {},
 ) {
   const loads: string[] = [];
   const m = load<{
-    apPermissionCardHtml(s: unknown, p: unknown): string;
-    apQuestionCardHtml(s: unknown, q: unknown): string;
-    apDetails(d: unknown): { desc: string; html: string };
+    acPermissionData(s: unknown, p: unknown): CardData;
+    acQuestionData(s: unknown, q: unknown): CardData;
+    acQuestionId(q: unknown): string;
+    acPermissionsHtml(s: unknown): string;
+    acQuestionHtml(s: unknown, q: unknown): string;
   }>(
     [
       'esc',
       'escAttr',
       'toNum',
-      'formatTaskTime',
-      'agentIconHtml',
       'isPermissionRequester',
-      'apDetails',
-      'apPermissionCardHtml',
-      'choiceDataAttrs',
+      'acPermissionLock',
+      'acQuestionLock',
+      'acPermissionData',
+      'acQuestionId',
+      'acQuestionData',
+      'acSlotHtml',
+      'acPermissionsHtml',
+      'acQuestionHtml',
       'stripRecommendedMarker',
       'resolveRecommendedId',
-      'apQuestionCardHtml',
     ],
-    ['AP_ANSWERED'],
+    ['AC_SIBLING'],
     {
       currentUserId: opts.user ?? 'U1',
       isSiblingSession: () => !!opts.sibling,
       _permDetails: opts.details ?? { approval_a1: { input: INPUT, truncated: false } },
-      _permNotes: {},
-      _permAnswered: opts.answered ?? {},
+      _acState: opts.state ?? {},
       loadPermissionDetail: (_k: string, id: string) => loads.push(id),
-      AP_KBD_APPROVE: '⌘↵',
     },
   );
   return { ...m, loads };
+}
+
+/** answerPermission / answerChoice against one canned server answer (a Response, or a thrown network error). */
+function answers(
+  res: { ok: boolean; status: number; body?: unknown } | Error,
+  cache: Record<string, unknown> = { 'inst::C1:t1': SESSION() },
+) {
+  const state: Record<string, any> = {};
+  const repaints: Array<[string, unknown]> = [];
+  const toasts: Array<Record<string, unknown>> = [];
+  const posts: Array<[string, unknown]> = [];
+  const m = load<{
+    answerPermission(k: string, id: string, d: string): Promise<any>;
+    answerChoice(k: string, qid: string, c: string): Promise<any>;
+    acQuestionId(q: unknown): string;
+  }>(
+    ['acPost', 'acRefusal', 'acToolOf', 'stripRecommendedMarker', 'acQuestionId', 'answerPermission', 'answerChoice'],
+    ['AC_SENT'],
+    {
+      _acState: state,
+      // What the card and the open panel show is redrawn from the session (acRepaint): record the state then.
+      acRepaint: (k: string) => repaints.push([k, JSON.parse(JSON.stringify(state))]),
+      dashToast: (t: Record<string, unknown>) => toasts.push(t),
+      _csrfToken: 'csrf',
+      refreshCsrfToken: async () => {},
+      console: { error() {} },
+      _sessionCache: cache,
+      fetch: async (url: string, init: { body: string }) => {
+        posts.push([url, JSON.parse(init.body)]);
+        if (res instanceof Error) throw res;
+        return { ok: res.ok, status: res.status, json: async () => res.body ?? {} };
+      },
+    },
+  );
+  return { ...m, state, repaints, toasts, posts };
 }
 
 describe('needs-input header (D8/D9)', () => {
@@ -457,91 +506,107 @@ describe('needs-input header (D8/D9)', () => {
     expect(badge).not.toMatch(/#[0-9a-f]{3,6}\b/i);
   });
 
-  it('landing keeps the header in view (offset by its height); keyboard landing focuses the card, not a button', () => {
+  it('landing keeps the header in view (offset by its height); keyboard landing focuses the first open card itself, not a button', () => {
     expect(clientFn('landPanel')).toContain("document.getElementById('panel-needs-head')");
     expect(clientFn('landPanel')).toContain('needsHead.offsetHeight');
     expect(clientFn('focusPanelLanding')).toContain(
-      "'#panel-permission .ap-card:not(.is-resolved), #panel-question .ap-card",
+      "acFirstOpen(document.getElementById('panel-permission')) || acFirstOpen(document.getElementById('panel-question'))",
     );
+    // The first card still waiting on an answer; a resolved row, or a hidden slot, is not a landing.
+    // (The element's focus() lands on the card, not a button — UiApprovalCard.focus, "Keyboard landing".)
+    const m = load<{ acFirstOpen(r: unknown): unknown }>(['acFirstOpen'], []);
+    const root = (els: unknown[], display = '') => ({
+      style: { display },
+      querySelectorAll: (sel: string) => (sel === 'ui-approval-card' ? els : []),
+    });
+    const done = { status: 'resolved' };
+    const open = { status: 'pending' };
+    const failed = { status: 'error' };
+    expect(m.acFirstOpen(root([done, open, failed]))).toBe(open);
+    expect(m.acFirstOpen(root([done, failed]))).toBe(failed);
+    expect(m.acFirstOpen(root([done]))).toBeNull();
+    expect(m.acFirstOpen(root([open], 'none'))).toBeNull();
+    expect(m.acFirstOpen(null)).toBeNull();
   });
 });
 
 describe('permission approval card (D10–D13)', () => {
-  it('label · icon · title · description · rule pill · details · rules · the four answers', () => {
-    const c = cards();
-    const html = c.apPermissionCardHtml(SESSION(), PERM());
-    expect(html).toContain(
-      '<div class="ap-card perm-request" role="group" tabindex="-1" data-ap-kind="perm" data-approval-id="approval_a1"',
+  it('the slot: one <ui-approval-card lang="ko"> per prompt, keyed by its request, a light-DOM line until it loads', () => {
+    const html = cards().acPermissionsHtml(
+      SESSION({ pendingPermissions: [PERM(), PERM({ approvalId: 'a"2', toolName: '<b>' })] }),
     );
-    expect(html).toContain('aria-labelledby="ap-t-approval_a1"');
-    // The context line says only what the prompt proves: the tool and when it asked (D10).
-    expect(html).toMatch(/<div class="ap-label">Bash &middot; [^<]+ 요청<\/div>/);
-    expect(html).toContain('<div class="ap-title" id="ap-t-approval_a1">Bash 실행 승인</div>');
-    expect(html).toContain('id="ap-d-approval_a1"');
-    expect(text(html)).toContain('Install the tool');
-    expect(html).toContain(
-      '<span class="ap-pill" data-kind="rule">위험<span class="ap-pill-word"> 규칙</span> 1</span>',
+    expect(html).toBe(
+      '<div class="ui-tok ac-slot" data-mk="ac|p|approval_a1"><ui-approval-card lang="ko" data-ac-key="inst::C1:t1" data-ac-kind="perm" data-ac-id="approval_a1"><span class="ac-fallback">Bash 실행 승인 — 응답 대기</span></ui-approval-card></div>'
+        + '<div class="ui-tok ac-slot" data-mk="ac|p|a&quot;2"><ui-approval-card lang="ko" data-ac-key="inst::C1:t1" data-ac-kind="perm" data-ac-id="a&quot;2"><span class="ac-fallback">&lt;b&gt; 실행 승인 — 응답 대기</span></ui-approval-card></div>',
     );
-    expect(html).toContain('<code>pipe-to-interpreter</code>');
-    const decisions = [...html.matchAll(/data-perm-decision="([a-z_]+)"/g)].map((m) => m[1]);
-    expect(decisions).toEqual(['explain', 'approve_disable_rule', 'deny', 'approve']);
-    expect(html).toContain(
-      'data-perm-key="inst::C1:t1" data-perm-id="approval_a1" data-perm-decision="approve" data-kbd="⌘↵" aria-keyshortcuts="Meta+Enter Control+Enter"',
-    );
-    expect(html).toContain('data-perm-decision="deny" data-kbd="Esc" aria-keyshortcuts="Escape"');
-    expect(html).not.toMatch(/<button[^>]* disabled/);
     expect(html).not.toContain('onclick=');
+    // The tokens reach the element from its wrapper (.ui-tok), never on the element (a custom-property cycle).
+    expect(CSS).toMatch(/\.wl-toolcall, \.ui-tok \{[^}]*--ui-border: var\(--border\);/);
   });
 
-  it('no matched rule: the tool pill, no disable-rule answer; no creation time: the tool alone', () => {
-    const c = cards();
-    const html = c.apPermissionCardHtml(SESSION(), PERM({ rules: [], canDisableRule: false, createdAt: 0 }));
-    expect(html).toContain('<span class="ap-pill" data-kind="tool">도구 승인</span>');
-    expect([...html.matchAll(/data-perm-decision="([a-z_]+)"/g)].map((m) => m[1])).toEqual([
-      'explain',
-      'deny',
-      'approve',
-    ]);
-    expect(html).toContain('<div class="ap-label">Bash</div>');
+  it('the data: tool, rules, the requester-only input, times, Explain and disable-rule — the element draws label, icon, title, risk, rows and answers', () => {
+    // Library: "renders title, risk, rules, the command and Approve / Deny"; lang="ko" "uses the dashboard wording".
+    expect(cards().acPermissionData(SESSION(), PERM())).toEqual({
+      kind: 'permission',
+      id: 'approval_a1',
+      tool: 'Bash',
+      canExplain: true,
+      canDisableRule: true,
+      rules: [{ id: 'pipe-to-interpreter', label: 'Pipe to interpreter', description: 'curl | sh' }],
+      createdAt: T0,
+      expiresAt: T0 + 300_000,
+      input: INPUT,
+    });
+  });
+
+  it('no matched rule: no rules, no disable-rule answer; no creation time: none passed', () => {
+    const d = cards().acPermissionData(SESSION(), PERM({ rules: [], canDisableRule: false, createdAt: 0 }));
+    expect(d.rules).toBeUndefined();
+    expect(d.canDisableRule).toBe(false);
+    expect('createdAt' in d).toBe(false);
   });
 
   it('a prompt is never attributed to the task in progress (the payload has no task or agent: a subagent may have asked)', () => {
     const c = cards();
-    for (const html of [
-      c.apPermissionCardHtml(SESSION(), PERM()),
-      c.apQuestionCardHtml(SESSION(), { type: 'user_choice', question: 'q?', choices: [{ id: '1', label: 'a' }] }),
+    for (const d of [
+      c.acPermissionData(SESSION(), PERM()),
+      c.acQuestionData(SESSION(), { type: 'user_choice', question: 'q?', choices: [{ id: '1', label: 'a' }] }),
     ]) {
-      expect(html).not.toContain('T3');
-      expect(html).not.toContain('Run on production');
+      const json = JSON.stringify(d);
+      expect(json).not.toContain('T3');
+      expect(json).not.toContain('Run on production');
     }
   });
 
   it('another viewer: the requester-only line, every answer locked, no fetch; the requester without the detail fetches it', () => {
+    // Library: "canAnswer false / string locks the answers and says why".
     const other = cards({ user: 'U2' });
-    const html = other.apPermissionCardHtml(SESSION(), PERM());
-    expect(html).toContain('요청자만');
-    expect([...html.matchAll(/<button[^>]*>/g)].every((m) => m[0].includes(' disabled'))).toBe(true);
+    const d = other.acPermissionData(SESSION(), PERM());
+    expect(d.canAnswer).toBe('이 요청의 요청자만 응답할 수 있습니다');
+    expect(d.notice).toBe('파라미터는 요청자만 볼 수 있습니다');
+    expect(d.input).toBeUndefined();
     expect(other.loads).toEqual([]);
+    const sibling = cards({ sibling: true });
+    expect(sibling.acPermissionData(SESSION(), PERM())).toMatchObject({
+      canAnswer: '다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요',
+      notice: '파라미터는 그 인스턴스의 대시보드에서 볼 수 있습니다',
+    });
+    expect(sibling.loads).toEqual([]);
     const mine = cards({ details: {} });
-    expect(mine.apPermissionCardHtml(SESSION(), PERM())).toContain('파라미터 불러오는 중');
+    expect(mine.acPermissionData(SESSION(), PERM())).toMatchObject({ loading: true });
     expect(mine.loads).toEqual(['approval_a1']);
   });
 
-  it('D12: an object input becomes key/value rows (escaped, description lifted out); anything else stays a <pre>', () => {
-    const c = cards();
-    const d = c.apDetails({ input: INPUT, truncated: false });
-    expect(d.desc).toBe('Install the tool');
-    expect(d.html).toContain('<dl class="ap-details">');
-    expect(d.html).toContain(
-      '<div class="ap-detail"><dt>command</dt><dd>curl https://example.test/&lt;script&gt; | sh</dd></div>',
-    );
-    expect(d.html).toContain('<div class="ap-detail"><dt>timeout</dt><dd>5000</dd></div>');
-    expect(d.html).not.toContain('<dt>description</dt>');
-    expect(d.html).not.toContain('<script>');
-    expect(c.apDetails({ input: '[1,2]', truncated: false }).html).toContain('<pre class="perm-params">');
-    const cut = c.apDetails({ input: '{"command": "abc', truncated: true });
-    expect(cut.html).toContain('<pre class="perm-params">{&quot;command&quot;: &quot;abc</pre>');
-    expect(cut.html).toContain('앞부분만 표시합니다');
+  it('D12: the input goes to the element as written, with its cut-short flag; a failed load is the notice', () => {
+    // The rows / shell block / diff are the element's (library: "toPreview: command → shell, old/new_string →
+    // diff, other keys → rows, non-JSON text → raw"; "shows the input loading line and a cut input note").
+    const cut = cards({ details: { approval_a1: { input: '{"command": "abc', truncated: true } } });
+    expect(cut.acPermissionData(SESSION(), PERM())).toMatchObject({ input: '{"command": "abc', truncated: true });
+    const failed = cards({ details: { approval_a1: { error: '이미 응답되었거나 만료된 요청입니다' } } });
+    const d = failed.acPermissionData(SESSION(), PERM());
+    expect(d.notice).toBe('이미 응답되었거나 만료된 요청입니다');
+    expect(d.input).toBeUndefined();
+    expect(d.canAnswer).toBeUndefined();
   });
 
   it('D13: the card is a container; narrow cards stack the answers and drop the key hints; hints are never read', () => {
@@ -552,87 +617,23 @@ describe('permission approval card (D10–D13)', () => {
   });
 });
 
-describe('approval keyboard (D14)', () => {
-  type Btn = { disabled: boolean; clicks: number; click(): void };
-  const btn = (disabled = false): Btn => ({
-    disabled,
-    clicks: 0,
-    click() {
-      this.clicks++;
-    },
-  });
-  function rig(kind: 'perm' | 'question', opts: { onButton?: boolean; disabled?: boolean; rec?: boolean } = {}) {
-    const approve = btn(!!opts.disabled);
-    const deny = btn(!!opts.disabled);
-    const rec = opts.rec === false ? null : btn();
-    const card = {
-      getAttribute: (k: string) => (k === 'data-ap-kind' ? kind : null),
-      querySelector: (sel: string) =>
-        sel === '.ap-approve' ? approve : sel === '.ap-deny' ? deny : sel === '.ap-rec' ? rec : null,
-      contains: () => true,
-    };
-    const focused = { tag: 'BUTTON' };
-    const target = {
-      closest: (sel: string) => (sel === '.ap-card' ? card : sel === 'button' && opts.onButton ? focused : null),
-    };
-    const m = load<{ apKeydown(e: unknown): void }>(['apKeydown'], []);
-    const press = (key: string, mods: { meta?: boolean; ctrl?: boolean } = {}) => {
-      const e = {
-        key,
-        metaKey: !!mods.meta,
-        ctrlKey: !!mods.ctrl,
-        target,
-        defaultPrevented: false,
-        prevented: false,
-        stopped: false,
-        preventDefault() {
-          this.prevented = true;
-        },
-        stopPropagation() {
-          this.stopped = true;
-        },
-      };
-      m.apKeydown(e);
-      return e;
-    };
-    return { approve, deny, rec, press };
-  }
-
-  it('⌘↵ / Ctrl+↵ anywhere in the card approves and keeps the panel open', () => {
-    const r = rig('perm');
-    const e = r.press('Enter', { meta: true });
-    expect(r.approve.clicks).toBe(1);
-    expect(e.prevented && e.stopped).toBe(true);
-    r.press('Enter', { ctrl: true });
-    expect(r.approve.clicks).toBe(2);
-    r.press('Enter');
-    expect(r.approve.clicks).toBe(2);
+describe('approval keyboard (D14) — the element’s own', () => {
+  // ⌘↵ / Ctrl+↵ approve (a question: submit), Esc from one of the card's controls denies, Esc on the card
+  // itself reaches the page; a locked card answers nothing. All on the element's shadow root (library:
+  // "⌘/Ctrl+Enter approves; Esc from a button denies", "arrows move the choice; Enter on an option submits
+  // it", "canAnswer false / string locks the answers and says why"). The dashboard's part: no key handler of
+  // its own on the cards, the lock it passes, and the page's Escape that closes the panel.
+  it('no dashboard key handler on the cards; the lock that gates the keys is passed per viewer', () => {
+    expect(declarationCount('apKeydown')).toBe(0);
+    expect(TEMPLATE).not.toContain("addEventListener('keydown', apKeydown)");
+    expect(cards().acPermissionData(SESSION(), PERM()).canAnswer).toBeUndefined();
+    expect(cards({ user: 'U2' }).acPermissionData(SESSION(), PERM()).canAnswer).toBeTruthy();
+    expect(cards().acQuestionData(SESSION({ ownerId: 'U2' }), { question: 'q?', choices: [] }).canAnswer).toBe(
+      '읽기 전용 — 내 세션이 아닙니다',
+    );
   });
 
-  it('Esc denies only from one of the card buttons; on the card itself it closes the panel as before', () => {
-    const onCard = rig('perm');
-    const e = onCard.press('Escape');
-    expect(onCard.deny.clicks).toBe(0);
-    expect(e.stopped).toBe(false);
-    const onBtn = rig('perm', { onButton: true });
-    expect(onBtn.press('Escape').stopped).toBe(true);
-    expect(onBtn.deny.clicks).toBe(1);
-  });
-
-  it('locked answers ignore the keys; a question takes ⌘↵ only for its recommended choice, never Esc', () => {
-    const locked = rig('perm', { disabled: true, onButton: true });
-    expect(locked.press('Enter', { meta: true }).stopped).toBe(false);
-    expect(locked.press('Escape').stopped).toBe(false);
-    expect(locked.approve.clicks + locked.deny.clicks).toBe(0);
-    const q = rig('question', { onButton: true });
-    q.press('Enter', { meta: true });
-    expect(q.rec?.clicks).toBe(1);
-    expect(q.press('Escape').stopped).toBe(false);
-    const none = rig('question', { rec: false });
-    expect(none.press('Enter', { meta: true }).stopped).toBe(false);
-  });
-
-  it('Esc end to end: from a card button it denies and the document handler never closes the panel; from the card itself the panel closes', () => {
+  it('Esc end to end: one the card handled (stopped in its shadow root) never reaches the page; one it let through closes the panel and denies nothing', () => {
     // The page's document-level keydown handler (Escape closes the panel), cooked as served.
     const start = TEMPLATE.indexOf(
       "document.addEventListener('keydown', function(e) {\n  // Escape in the artifact viewer",
@@ -640,6 +641,7 @@ describe('approval keyboard (D14)', () => {
     expect(start).toBeGreaterThan(0);
     const fnStart = TEMPLATE.indexOf('function(e) {', start);
     const fnText = cook(TEMPLATE.slice(fnStart, TEMPLATE.indexOf('\n});', fnStart) + 2));
+    expect(fnText).not.toMatch(/answerPermission|ui-decide/);
     let closes = 0;
     const inject: Record<string, unknown> = {
       panelOpen: true,
@@ -654,91 +656,86 @@ describe('approval keyboard (D14)', () => {
     const onDocument = new Function(...Object.keys(inject), `return ${fnText}`)(...Object.values(inject)) as (
       e: unknown,
     ) => void;
-    // Bubbling: the slot's listener first (element level), then the document's — unless stopped.
-    const dispatch = (r: ReturnType<typeof rig>) => {
-      const e = r.press('Escape');
-      if (!e.stopped) onDocument(e);
-      return e;
+    // Bubbling: the element's shadow-root listener first, then the document's — unless it stopped the event.
+    const dispatch = (stoppedByCard: boolean) => {
+      if (!stoppedByCard) onDocument({ key: 'Escape', target: {}, preventDefault() {}, defaultPrevented: false });
     };
-    const onBtn = rig('perm', { onButton: true });
-    const e1 = dispatch(onBtn);
-    expect(onBtn.deny.clicks).toBe(1);
-    expect(e1.prevented && e1.stopped).toBe(true);
+    dispatch(true); // Esc on Deny / Approve: the card denied and stopped it
     expect(closes).toBe(0);
-    const onCard = rig('perm');
-    dispatch(onCard);
-    expect(onCard.deny.clicks).toBe(0);
+    dispatch(false); // Esc on the card itself (the keyboard landing): the panel closes
     expect(closes).toBe(1);
-  });
-
-  it('both slots listen before the document (whose Escape closes the panel)', () => {
-    expect(TEMPLATE).toContain("['panel-permission', 'panel-question'].forEach(function(id) {");
-    expect(TEMPLATE).toContain("el.addEventListener('keydown', apKeydown);");
   });
 });
 
 describe('after an answer (D15)', () => {
-  it('the card becomes one resolved row per answer', () => {
-    const words: Record<string, string> = {
-      approve: '승인함',
-      deny: '거부함',
-      explain: '설명 요청함',
-      approve_disable_rule: '승인함 · 규칙 끔',
+  it('the card becomes one resolved row per answer: the outcome the dashboard sets for each decision', async () => {
+    // The row itself is the element's (library: "resolved: a row with the answer"; lang="ko" "uses the
+    // dashboard wording").
+    const want: Record<string, Record<string, unknown>> = {
+      approve: { outcome: 'approved' },
+      deny: { outcome: 'denied' },
+      explain: { outcome: 'explained' },
+      approve_disable_rule: { outcome: 'approved', ruleDisabled: true },
     };
-    const answered: Record<string, string> = {};
-    const c = cards({ answered });
-    for (const [decision, word] of Object.entries(words)) {
-      answered.approval_a1 = decision;
-      const html = c.apPermissionCardHtml(SESSION(), PERM());
-      expect(html, decision).toContain('<div class="ap-card perm-request is-resolved"');
-      expect(html, decision).toContain(`<div class="ap-resolved" data-decision="${decision}">`);
-      expect(html, decision).toContain(`<span class="ap-row-status">${word}</span>`);
-      expect(html, decision).not.toContain('방금');
-      expect(html, decision).not.toContain('data-perm-decision');
+    for (const [decision, end] of Object.entries(want)) {
+      const a = answers({ ok: true, status: 200 });
+      const st = await a.answerPermission('inst::C1:t1', 'approval_a1', decision);
+      expect(st, decision).toMatchObject({ status: 'resolved', ...end });
+      expect(st.ruleDisabled, decision).toBe(end.ruleDisabled);
+      expect(a.posts, decision).toEqual([
+        ['/api/dashboard/session/inst%3A%3AC1%3At1/permission', { approvalId: 'approval_a1', decision }],
+      ]);
+      // The card's data carries it.
+      expect(cards({ state: a.state }).acPermissionData(SESSION(), PERM()).state, decision).toEqual(st);
     }
   });
 
-  it('answerPermission records the answer and repaints the panel only; the panel announces it once', () => {
-    const src = clientFn('answerPermission');
-    expect(src).toContain('_permAnswered[approvalId] = decision;');
-    expect(src).toContain(
-      'if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelPermission(_sessionCache[key]);',
-    );
-    const els: Record<string, El> = { 'panel-permission': box(), 'panel-needs-status': box() };
-    const said: string[] = [];
-    const answered: Record<string, string> = {};
-    const m = load<{ renderPanelPermission(s: unknown): void }>(['renderPanelPermission'], ['AP_SENT'], {
-      document: { getElementById: (id: string) => els[id] ?? null, activeElement: null },
-      _permAnswered: answered,
-      apPermissionCardHtml: (_s: unknown, p: { approvalId: string }) =>
-        `<div data-approval-id="${p.approvalId}"></div>`,
-      morphInnerHtml: (e: El, h: string) => {
-        e.innerHTML = h;
-      },
-      updateTimersIn: () => {},
-      apAnnounce: (t: string) => said.push(t),
-      renderPanelNeedsHead: () => {},
-    });
-    m.renderPanelPermission(SESSION()); // the open panel's baseline
-    answered.approval_a1 = 'deny'; // answerPermission succeeded
-    m.renderPanelPermission(SESSION());
-    m.renderPanelPermission(SESSION());
-    expect(said).toEqual(['거부를 보냈습니다 — Bash']);
-    // Reopened (openPanel drops the baseline) while the prompt is still pending: not said again.
-    els['panel-permission']._seenKey = null;
-    m.renderPanelPermission(SESSION());
-    expect(said).toEqual(['거부를 보냈습니다 — Bash']);
+  it('answerPermission: sending, then the outcome — card and panel redrawn each time, one toast; a second answer sends nothing', async () => {
+    const a = answers({ ok: true, status: 200 });
+    await a.answerPermission('inst::C1:t1', 'approval_a1', 'deny');
+    expect(a.repaints.map(([k, s]) => [k, (s as Record<string, any>)['p|approval_a1'].status])).toEqual([
+      ['inst::C1:t1', 'sending'],
+      ['inst::C1:t1', 'resolved'],
+    ]);
+    expect(a.repaints[0][1]).toEqual({ 'p|approval_a1': { status: 'sending', decision: 'deny' } });
+    expect(a.toasts).toEqual([{ title: '거부를 보냈어요', description: 'Bash', tone: 'success' }]);
+    expect(clientFn('acRepaint')).toContain('refreshCard(key);');
+    expect(clientFn('acRepaint')).toContain('renderPanelPermission(s);');
+    // Answered (or in flight): another press — this tab or the card face — sends nothing.
+    expect(await a.answerPermission('inst::C1:t1', 'approval_a1', 'approve')).toMatchObject({ outcome: 'denied' });
+    expect(a.posts).toHaveLength(1);
+    // The panel's status line says new prompts only; the answer is said by its card and the toast.
+    expect(clientFn('renderPanelPermission')).not.toContain('AC_SENT');
+  });
+
+  it('a refusal stays on the card: the server’s reason; Retry unless the request is gone (404) or answered elsewhere (409)', async () => {
+    const cases: Array<[{ ok: boolean; status: number; body?: unknown } | Error, Record<string, unknown>]> = [
+      [{ ok: false, status: 409, body: { error: 'Permission request was already answered' } }, { message: 'Permission request was already answered', retry: false }],
+      [{ ok: false, status: 404, body: {} }, { message: '응답을 보내지 못했어요 (HTTP 404)', retry: false }],
+      [{ ok: false, status: 500, body: { error: 'boom' } }, { message: 'boom', retry: true }],
+      [new Error('down'), { message: '네트워크 오류 — 다시 시도하세요', retry: true }],
+    ];
+    for (const [res, want] of cases) {
+      const a = answers(res);
+      expect(await a.answerPermission('inst::C1:t1', 'approval_a1', 'approve')).toEqual({ status: 'error', ...want });
+      expect(a.toasts).toEqual([]);
+      // The card's Retry sends the last answer again (library: "an error offers Retry, which sends the last
+      // answer again"): an errored card is answerable again here.
+      await a.answerPermission('inst::C1:t1', 'approval_a1', 'approve');
+      expect(a.posts).toHaveLength(2);
+    }
   });
 
   it('a prompt that arrives while the panel is open is announced; the first render of an opening is not', () => {
     const els: Record<string, El> = { 'panel-permission': box() };
     const said: string[] = [];
-    const m = load<{ renderPanelPermission(s: unknown): void }>(['renderPanelPermission'], ['AP_SENT'], {
+    const m = load<{ renderPanelPermission(s: unknown): void }>(['renderPanelPermission'], [], {
       document: { getElementById: (id: string) => els[id] ?? null, activeElement: null },
-      _permAnswered: {},
-      apPermissionCardHtml: () => '<div></div>',
+      acPermissionsHtml: (s: { pendingPermissions: Array<{ approvalId: string }> }) =>
+        s.pendingPermissions.map((p) => `<${p.approvalId}>`).join(''),
+      acHydrate: () => {},
       morphInnerHtml: () => {},
-      updateTimersIn: () => {},
+      apSafeFocus: () => {},
       apAnnounce: (t: string) => said.push(t),
       renderPanelNeedsHead: () => {},
     });
@@ -834,30 +831,14 @@ class Node {
   focus() {
     focused = this;
   }
-  click() {
-    clicks.push(`${this.getAttribute('data-perm-id')}:${this.getAttribute('data-perm-decision')}`);
-  }
 }
+/** document.activeElement: focus inside a card's shadow root reads as the card (the host). */
 let focused: Node | null = null;
-let clicks: string[] = [];
-const BTN = (id: string, d: string, keyed: boolean) =>
-  new Node('BUTTON', {
-    class: `btn-perm ap-btn ap-${d === 'approve' ? 'primary ap-approve' : 'quiet ap-deny'}`,
-    'data-perm-id': id,
-    'data-perm-decision': d,
-    ...(keyed ? { 'data-mk': `ap|${id}|${d}` } : {}),
-  });
-const APCARD = (id: string, keyed = true) =>
-  new Node(
-    'DIV',
-    {
-      class: 'ap-card perm-request',
-      'data-approval-id': id,
-      'data-ap-kind': 'perm',
-      ...(keyed ? { 'data-mk': `ap|${id}` } : {}),
-    },
-    [new Node('DIV', { class: 'ap-actions' }, [BTN(id, 'deny', keyed), BTN(id, 'approve', keyed)])],
-  );
+/** A prompt's slot as acSlotHtml writes it: the keyed wrapper and the element bound to its request. */
+const SLOT = (id: string, keyed = true) =>
+  new Node('DIV', { class: 'ui-tok ac-slot', ...(keyed ? { 'data-mk': `ac|p|${id}` } : {}) }, [
+    new Node('UI-APPROVAL-CARD', { lang: 'ko', 'data-ac-key': 'inst::C1:t1', 'data-ac-kind': 'perm', 'data-ac-id': id }),
+  ]);
 
 describe('live repaint never rebinds an answer to another request (D14, review R1 P1)', () => {
   const morph = load<{ domMorphChildren(a: Node, b: Node): void }>(
@@ -865,39 +846,34 @@ describe('live repaint never rebinds an answer to another request (D14, review R
     [],
   );
 
-  it('the card and every answer carry their request in data-mk', () => {
-    const html = cards().apPermissionCardHtml(SESSION(), PERM());
-    expect(html).toContain('data-mk="ap|approval_a1"');
-    for (const d of ['explain', 'approve_disable_rule', 'deny', 'approve'])
-      expect(html).toContain(`data-mk="ap|approval_a1|${d}"`);
-    const q = cards().apQuestionCardHtml(SESSION(), {
-      type: 'user_choice',
-      question: 'q?',
-      choices: [{ id: '1', label: 'a' }],
-    });
-    expect(q).toContain('data-mk="q|[&quot;q?&quot;,[[&quot;1&quot;,&quot;a&quot;,&quot;&quot;]]]"');
-    expect(q).toContain('data-mk="c|1"');
+  it('each card is keyed by its request in data-mk, and answers only that request', () => {
+    const html = cards().acPermissionsHtml(SESSION());
+    expect(html).toContain('<div class="ui-tok ac-slot" data-mk="ac|p|approval_a1">');
+    expect(html).toContain('data-ac-id="approval_a1"');
+    const q = cards().acQuestionHtml(SESSION(), { type: 'user_choice', question: 'q?', choices: [{ id: '1', label: 'a' }] });
+    expect(q).toContain('data-mk="ac|q|[&quot;q?&quot;,[[&quot;1&quot;,&quot;a&quot;,&quot;&quot;]]]"');
+    // ui-decide carries the card's own data id; the listener answers that id under the card's own key.
+    expect(TEMPLATE).toContain(
+      "answerPermission(el.getAttribute('data-ac-key'), String(e.detail.id), String(e.detail.decision));",
+    );
   });
 
-  it('A and B pending, A goes: A’s focused Approve leaves the page; B keeps its own node (unkeyed it would be rebound)', () => {
-    const live = new Node('DIV', { id: 'panel-permission' }, [APCARD('A'), APCARD('B')]);
-    const approveA = live.querySelectorAll('.ap-approve')[0];
-    const approveB = live.querySelectorAll('.ap-approve')[1];
-    morph.domMorphChildren(live, new Node('DIV', {}, [APCARD('B')]));
-    expect(live.contains(approveA)).toBe(false);
-    expect(live.querySelector('.ap-approve')).toBe(approveB);
-    // Without the keys the same Approve node would now answer B — the bug this pins.
-    const old = new Node('DIV', {}, [APCARD('A', false), APCARD('B', false)]);
-    const oldA = old.querySelector('.ap-approve') as Node;
-    morph.domMorphChildren(old, new Node('DIV', {}, [APCARD('B', false)]));
-    expect(old.contains(oldA) && oldA.getAttribute('data-perm-id')).toBe('B');
+  it('A and B pending, A goes: A’s card (focused) leaves the page; B keeps its own element (unkeyed it would be rebound)', () => {
+    const live = new Node('DIV', { id: 'panel-permission' }, [SLOT('A'), SLOT('B')]);
+    const [cardA, cardB] = live.querySelectorAll('ui-approval-card');
+    morph.domMorphChildren(live, new Node('DIV', {}, [SLOT('B')]));
+    expect(live.contains(cardA)).toBe(false);
+    expect(live.querySelector('ui-approval-card')).toBe(cardB);
+    expect(cardB.getAttribute('data-ac-id')).toBe('B');
+    // Without the keys A's element — its focus, an answer in flight — would now stand for B: the bug this pins.
+    const old = new Node('DIV', {}, [SLOT('A', false), SLOT('B', false)]);
+    const oldA = old.querySelector('ui-approval-card') as Node;
+    morph.domMorphChildren(old, new Node('DIV', {}, [SLOT('B', false)]));
+    expect(old.contains(oldA) && oldA.getAttribute('data-ac-id')).toBe('B');
   });
 
   function panel(next: Node[], headHidden = false) {
-    const container = new Node('DIV', { id: 'panel-permission', class: 'panel-permission' }, [
-      APCARD('A'),
-      APCARD('B'),
-    ]);
+    const container = new Node('DIV', { id: 'panel-permission', class: 'panel-permission' }, [SLOT('A'), SLOT('B')]);
     const head = new Node('DIV', { id: 'panel-needs-head', class: 'panel-needs-head' });
     (head as unknown as { hidden: boolean }).hidden = headHidden;
     const title = new Node('H3', { id: 'panel-title' });
@@ -914,69 +890,40 @@ describe('live repaint never rebinds an answer to another request (D14, review R
         return focused && root.contains(focused) ? focused : body;
       },
     };
-    const m = load<{ renderPanelPermission(s: unknown): void; apKeydown(e: unknown): void }>(
-      ['renderPanelPermission', 'apSafeFocus', 'apKeydown'],
-      ['AP_SENT'],
-      {
-        document,
-        _permAnswered: {},
-        apPermissionCardHtml: (_s: unknown, p: { approvalId: string }) => p.approvalId,
-        morphInnerHtml: (el: Node, _html: string) => morph.domMorphChildren(el, new Node('DIV', {}, next)),
-        updateTimersIn: () => {},
-        apAnnounce: () => {},
-        renderPanelNeedsHead: () => {},
-      },
-    );
+    const m = load<{ renderPanelPermission(s: unknown): void }>(['renderPanelPermission', 'apSafeFocus'], [], {
+      document,
+      acPermissionsHtml: (s: { pendingPermissions: Array<{ approvalId: string }> }) =>
+        s.pendingPermissions.map((p) => p.approvalId).join(','),
+      acHydrate: () => {},
+      morphInnerHtml: (el: Node, _html: string) => morph.domMorphChildren(el, new Node('DIV', {}, next)),
+      apAnnounce: () => {},
+      renderPanelNeedsHead: () => {},
+    });
     return { m, container, head, title };
   }
-  const press = (m: { apKeydown(e: unknown): void }) => {
-    const e = {
-      key: 'Enter',
-      metaKey: true,
-      ctrlKey: false,
-      target: focused,
-      defaultPrevented: false,
-      stopped: false,
-      preventDefault() {},
-      stopPropagation() {
-        this.stopped = true;
-      },
-    };
-    m.apKeydown(e);
-    return e;
-  };
 
-  it('focus on A’s Approve, A goes: focus moves to the 입력 필요 head (no answer), and ⌘↵ sends nothing', () => {
-    clicks = [];
-    const p = panel([APCARD('B')]);
-    focused = p.container.querySelectorAll('.ap-approve')[0];
+  it('focus in A’s card, A goes: focus moves to the 입력 필요 head — no card, so no key answers anything', () => {
+    const p = panel([SLOT('B')]);
+    focused = p.container.querySelectorAll('ui-approval-card')[0];
     p.m.renderPanelPermission(SESSION({ pendingPermissions: [PERM({ approvalId: 'B' })] }));
     expect(focused).toBe(p.head);
-    expect(focused?.tagName).not.toBe('BUTTON');
-    expect(press(p.m).stopped).toBe(false);
-    expect(clicks).toEqual([]);
+    expect(focused?.closest('ui-approval-card')).toBeNull();
   });
 
-  it('nothing left to answer: the panel title; A answered (its resolved row): A’s card itself, where ⌘↵ answers nothing', () => {
-    clicks = [];
+  it('nothing left to answer: the panel title; A answered but still listed: focus stays in A’s own card (its row)', () => {
     const gone = panel([], true);
-    focused = gone.container.querySelectorAll('.ap-approve')[0];
+    focused = gone.container.querySelectorAll('ui-approval-card')[0];
     gone.m.renderPanelPermission(SESSION({ pendingPermissions: [] }));
     expect(focused).toBe(gone.title);
-    const RESOLVED = new Node(
-      'DIV',
-      { class: 'ap-card perm-request is-resolved', 'data-approval-id': 'A', 'data-ap-kind': 'perm', 'data-mk': 'ap|A' },
-      [new Node('DIV', { class: 'ap-resolved' })],
-    );
-    const done = panel([RESOLVED, APCARD('B')]);
-    focused = done.container.querySelectorAll('.ap-approve')[0];
-    done.m.renderPanelPermission(
-      SESSION({ pendingPermissions: [PERM({ approvalId: 'A' }), PERM({ approvalId: 'B' })] }),
-    );
-    expect(focused?.getAttribute('data-approval-id')).toBe('A');
-    expect(focused?.tagName).toBe('DIV');
-    press(done.m);
-    expect(clicks).toEqual([]);
+    // A resolved on this page, the push not here yet: A's slot stays, so A's element (now its resolved row)
+    // keeps focus — inside it the element moves focus to the row (library core/element.test.ts "restores focus
+    // after updated() …, else to focusFallback()"); a second answer there is refused (D15).
+    const kept = panel([SLOT('A'), SLOT('B')]);
+    const cardA = kept.container.querySelectorAll('ui-approval-card')[0];
+    focused = cardA;
+    kept.m.renderPanelPermission(SESSION({ pendingPermissions: [PERM({ approvalId: 'A' }), PERM({ approvalId: 'B' })] }));
+    expect(focused).toBe(cardA);
+    expect(cardA.getAttribute('data-ac-id')).toBe('A');
   });
 });
 
@@ -994,29 +941,15 @@ describe('a question rewritten in place is another card (review R2 P1)', () => {
     ],
     recommendedChoiceId: '1',
   });
-  /** The card as the shipped markup keys it: the card's and each choice's data-mk, as fake nodes. */
-  const tree = (html: string) => {
-    const card = /<div class="ap-card ap-question"[^>]* data-mk="([^"]*)"/.exec(html)?.[1] ?? '';
-    const btns = [
-      ...html.matchAll(
-        /<button type="button" class="btn-choice ap-choice( ap-rec)?"[^>]* data-choice-id="([^"]*)"[^>]* data-mk="([^"]*)"/g,
-      ),
-    ];
-    return new Node('DIV', { class: 'ap-card ap-question', 'data-ap-kind': 'question', 'data-mk': card }, [
-      new Node(
-        'DIV',
-        { class: 'panel-question-choices' },
-        btns.map(
-          (m) =>
-            new Node('BUTTON', { class: `btn-choice ap-choice${m[1] ?? ''}`, 'data-choice-id': m[2], 'data-mk': m[3] }),
-        ),
-      ),
+  /** The slot as the shipped markup keys it, as fake nodes. */
+  const tree = (html: string) =>
+    new Node('DIV', { class: 'ui-tok ac-slot', 'data-mk': /data-mk="([^"]*)"/.exec(html)?.[1] ?? '' }, [
+      new Node('UI-APPROVAL-CARD', { 'data-ac-kind': 'question' }),
     ]);
-  };
 
   it('the key holds the whole meaning: a changed label or description is another key; nothing else collides', () => {
     const c = cards();
-    const key = (q: unknown) => /data-mk="(q\|[^"]*)"/.exec(c.apQuestionCardHtml(SESSION(), q))?.[1];
+    const key = (q: unknown) => c.acQuestionId(q);
     const base = key(Q('백업 대기'));
     expect(key(Q('백업 대기'))).toBe(base);
     expect(key(Q('운영 반영'))).not.toBe(base);
@@ -1024,12 +957,15 @@ describe('a question rewritten in place is another card (review R2 P1)', () => {
     // Joining with a separator would collide here; the serialization does not.
     expect(key({ ...Q('a|b'), question: 'x' })).not.toBe(key({ ...Q('b'), question: 'x|a' }));
     expect(declarationCount('apHash')).toBe(0);
+    // The slot's key and the card's id are that key.
+    expect(c.acQuestionHtml(SESSION(), Q('백업 대기'))).toContain(`data-mk="ac|${base.replace(/"/g, '&quot;')}"`);
+    expect(c.acQuestionData(SESSION(), Q('백업 대기')).id).toBe(base);
   });
 
-  it('same text, same ids, choice 1 relabelled: the focused button leaves, focus goes to the head, ⌘↵ sends nothing', () => {
+  it('same text, same ids, choice 1 relabelled: the focused card leaves, focus goes to the head, its late answer sends nothing', async () => {
     const c = cards();
-    const before = tree(c.apQuestionCardHtml(SESSION(), Q('백업 대기')));
-    const after = tree(c.apQuestionCardHtml(SESSION(), Q('운영 반영')));
+    const before = tree(c.acQuestionHtml(SESSION(), Q('백업 대기')));
+    const after = tree(c.acQuestionHtml(SESSION(), Q('운영 반영')));
     const container = new Node('DIV', { id: 'panel-question', class: 'panel-question' }, [before]);
     const head = new Node('DIV', { id: 'panel-needs-head', class: 'panel-needs-head' });
     (head as unknown as { hidden: boolean }).hidden = false;
@@ -1044,90 +980,87 @@ describe('a question rewritten in place is another card (review R2 P1)', () => {
       },
     };
     let next = after;
-    const m = load<{ renderPanelQuestion(s: unknown): void; apKeydown(e: unknown): void }>(
-      ['renderPanelQuestion', 'apSafeFocus', 'apKeydown'],
-      [],
-      {
-        document,
-        apQuestionCardHtml: () => `<${next.getAttribute('data-mk')}>`,
-        morphInnerHtml: (el: Node) => morph.domMorphChildren(el, new Node('DIV', {}, [next])),
-        renderMultiChoicePanel: () => {},
-        renderPanelNeedsHead: () => {},
-      },
-    );
-    // The same meaning again keeps the focused node (focus stays where the reader is).
-    clicks = [];
-    const recBefore = container.querySelector('.ap-rec') as Node;
-    focused = recBefore;
-    next = tree(c.apQuestionCardHtml(SESSION(), Q('백업 대기')));
+    const m = load<{ renderPanelQuestion(s: unknown): void }>(['renderPanelQuestion', 'apSafeFocus'], [], {
+      document,
+      acQuestionHtml: () => `<${next.getAttribute('data-mk')}>`,
+      acHydrate: () => {},
+      morphInnerHtml: (el: Node) => morph.domMorphChildren(el, new Node('DIV', {}, [next])),
+      renderMultiChoicePanel: () => {},
+      renderPanelNeedsHead: () => {},
+    });
+    // The same meaning again keeps the focused element (focus stays where the reader is).
+    const cardBefore = container.querySelector('ui-approval-card') as Node;
+    focused = cardBefore;
+    next = tree(c.acQuestionHtml(SESSION(), Q('백업 대기')));
     m.renderPanelQuestion(SESSION({ pendingQuestion: Q('백업 대기') }));
-    expect(focused).toBe(recBefore);
-    // Rewritten in place: the old button is gone, never rebound to the new meaning.
+    expect(focused).toBe(cardBefore);
+    // Rewritten in place: the old card is gone, never rebound to the new meaning.
     next = after;
     m.renderPanelQuestion(SESSION({ pendingQuestion: Q('운영 반영') }));
-    expect(container.contains(recBefore)).toBe(false);
+    expect(container.contains(cardBefore)).toBe(false);
     expect(focused).toBe(head);
-    const e = {
-      key: 'Enter',
-      metaKey: true,
-      ctrlKey: false,
-      target: focused,
-      defaultPrevented: false,
-      stopped: false,
-      preventDefault() {},
-      stopPropagation() {
-        this.stopped = true;
-      },
-    };
-    m.apKeydown(e);
-    expect(e.stopped).toBe(false);
-    expect(clicks).toEqual([]);
+    // The old card's answer, if it still lands (ui-answer carries the old id), is dropped: no request.
+    const a = answers({ ok: true, status: 200 }, { 'inst::C1:t1': SESSION({ pendingQuestion: Q('운영 반영') }) });
+    expect(await a.answerChoice('inst::C1:t1', c.acQuestionId(Q('백업 대기')), '1')).toBeNull();
+    expect(a.posts).toEqual([]);
+    expect(await a.answerChoice('inst::C1:t1', c.acQuestionId(Q('운영 반영')), '1')).toMatchObject({
+      status: 'resolved',
+      outcome: 'answered',
+      choiceId: '1',
+    });
+    expect(a.posts).toEqual([
+      [
+        '/api/dashboard/session/inst%3A%3AC1%3At1/answer-choice',
+        { choiceId: '1', label: '운영 반영', question: 'Run the migration?' },
+      ],
+    ]);
   });
 });
 
-describe('a flattened panel choice is drawn again (review R1 P2)', () => {
-  it('answerChoice’s three label write-backs redraw the panel card from the session (cache dropped)', () => {
-    const src = clientFn('answerChoice');
-    expect(src.match(/apRepaintQuestion\(btnEl, key\);/g)?.length).toBe(3);
-    const host = { _html: '<cached>' };
-    let painted = 0;
-    const m = load<{ apRepaintQuestion(b: unknown, k: string): void }>(['apRepaintQuestion'], [], {
-      panelOpen: true,
-      panelSessionKey: 'k1',
-      _sessionCache: { k1: { key: 'k1' } },
-      renderPanelQuestion: () => painted++,
+describe('a refused panel choice is drawn again from the session (review R1 P2)', () => {
+  it('the card keeps its choices and says why, with Retry; card and panel are redrawn from the session; no toast', async () => {
+    const q = {
+      type: 'user_choice',
+      question: 'Deploy?',
+      choices: [
+        { id: '1', label: 'auto' },
+        { id: '2', label: 'manual (Recommended)' },
+      ],
+    };
+    const a = answers({ ok: false, status: 500, body: { error: 'boom' } }, { 'inst::C1:t1': SESSION({ pendingQuestion: q }) });
+    const qid = a.acQuestionId(q);
+    expect(await a.answerChoice('inst::C1:t1', qid, '2')).toEqual({ status: 'error', message: 'boom', retry: true });
+    expect(a.posts[0][1]).toEqual({ choiceId: '2', label: 'manual', question: 'Deploy?' });
+    expect(a.repaints.map((r) => r[0])).toEqual(['inst::C1:t1', 'inst::C1:t1']);
+    expect(clientFn('acRepaint')).toContain('renderPanelQuestion(s);');
+    expect(a.toasts).toEqual([]);
+    // The card's data is redrawn from the session (no label written into a button): the same choices.
+    expect(cards({ state: a.state }).acQuestionData(SESSION({ pendingQuestion: q }), q)).toMatchObject({
+      choices: [
+        { id: '1', label: '1. auto' },
+        { id: '2', label: '2. manual' },
+      ],
+      state: { status: 'error', message: 'boom', retry: true },
     });
-    m.apRepaintQuestion({ closest: (sel: string) => (sel === '#panel-question' ? host : null) }, 'k1');
-    expect(host._html).toBe('');
-    expect(painted).toBe(1);
-    m.apRepaintQuestion({ closest: () => null }, 'k1'); // a card face button: not the panel's
-    expect(painted).toBe(1);
+    // Retry (the card re-emits ui-answer) sends it again.
+    await a.answerChoice('inst::C1:t1', qid, '2');
+    expect(a.posts).toHaveLength(2);
+    expect(declarationCount('apRepaintQuestion')).toBe(0);
   });
 });
 
 describe('expiry clock (D16)', () => {
-  it('counts down from expiresAt, stops at 0:00 and warns in the last minute', () => {
-    const html = cards().apPermissionCardHtml(SESSION(), PERM());
-    expect(html).toContain(`<span class="ap-expires" data-until="${T0 + 300_000}" aria-hidden="true"></span>`);
-    expect(html).toContain('id="ap-x-approval_a1"');
-    const make = (until: number) => {
-      const cls: Record<string, boolean> = {};
-      return {
-        dataset: { until: String(until) },
-        textContent: '',
-        classList: { toggle: (c: string, on: boolean) => (cls[c] = on) },
-        cls,
-      };
-    };
-    const now = Date.now();
-    const els = [make(now + 252_000), make(now - 5_000), make(now + 45_000)];
-    const root = { querySelectorAll: (sel: string) => (sel === '.ap-expires' ? els : []) };
-    const m = load<{ updateTimersIn(r: unknown): void }>(['formatNmSSs', 'formatDuration', 'updateTimersIn'], [], {
-      timeAgo: () => '',
-    });
-    m.updateTimersIn(root);
-    expect(els.map((e) => e.textContent)).toEqual(['만료까지 4:12', '만료까지 0:00', '만료까지 0:45']);
-    expect(els.map((e) => e.cls['is-low'])).toEqual([false, true, true]);
+  it('the dashboard passes expiresAt (and createdAt); the countdown, the warning and the Expired row are the element’s', () => {
+    // Library: "counts down to expiresAt, then emits ui-expire and shows Expired; the timer stops on
+    // disconnect"; "past expiresAt nobody can answer, even while hovered; ui-expire still fires (review P2)";
+    // "a failed answer that runs out of time becomes the Expired row (review P3)".
+    const d = cards().acPermissionData(SESSION(), PERM());
+    expect(d.expiresAt).toBe(T0 + 300_000);
+    expect(d.createdAt).toBe(T0);
+    const none = cards().acPermissionData(SESSION(), PERM({ expiresAt: 0, createdAt: undefined }));
+    expect('expiresAt' in none || 'createdAt' in none).toBe(false);
+    // The page's 1 Hz tick no longer draws an expiry of its own.
+    expect(clientFn('updateTimersIn')).not.toContain('ap-expires');
   });
 });
 
@@ -1142,33 +1075,45 @@ describe('question card (D17)', () => {
     recommendedChoiceId: 'wait',
   };
 
-  it('the same frame: the whole question as the title, the recommended choice first and primary, the answer attributes kept', () => {
-    const html = cards().apQuestionCardHtml(SESSION(), Q);
-    expect(html).toContain(
-      '<div class="ap-card ap-question" role="group" tabindex="-1" data-ap-kind="question" data-mk="q|',
+  it('the same element: the whole question, the choices as they read before ("id. label"), the recommended one named', () => {
+    // The order (recommended first, preselected) is the element's (library: "lists the recommended choice first
+    // and preselected; Submit sends it"); line breaks in the title kept (ApprovalQuestionData.question).
+    const c = cards();
+    expect(c.acQuestionData(SESSION(), Q)).toEqual({
+      kind: 'question',
+      id: c.acQuestionId(Q),
+      question: 'The dry run on staging passed.\nRun the migration on production now?',
+      choices: [
+        { id: 'run', label: 'run. Run on production', description: 'Applies 0042' },
+        { id: 'wait', label: 'wait. Wait for the backup' },
+      ],
+      allowOther: false,
+      recommendedId: 'wait',
+    });
+    // A legacy "(Recommended)" label: recommended, the marker stripped.
+    const legacy = { question: 'Go?', choices: [{ id: '1', label: 'Yes (Recommended)' }, { id: '2', label: 'No' }] };
+    expect(c.acQuestionData(SESSION(), legacy)).toMatchObject({
+      recommendedId: '1',
+      choices: [
+        { id: '1', label: '1. Yes' },
+        { id: '2', label: '2. No' },
+      ],
+    });
+    // The slot: kind question, the question as its light-DOM line (escaped).
+    expect(c.acQuestionHtml(SESSION(), { ...legacy, question: '<b>Go?</b>' })).toContain(
+      'data-ac-kind="question"><span class="ac-fallback">질문 — &lt;b&gt;Go?&lt;/b&gt;</span>',
     );
-    expect(html).not.toContain('ap-label');
-    expect(html).toContain(
-      '<div class="ap-title" id="ap-q-title">The dry run on staging passed.\nRun the migration on production now?</div>',
-    );
-    expect(html).toContain('<span class="ap-pill" data-kind="question">질문</span>');
-    expect(html).toContain('<div class="panel-question-choices ap-choices">');
-    const ids = [...html.matchAll(/data-choice-id="(\w+)"/g)].map((m) => m[1]);
-    expect(ids).toEqual(['wait', 'run']);
-    expect(html).toContain(
-      '<button type="button" class="btn-choice ap-choice ap-rec" data-choice-key="inst::C1:t1" data-choice-id="wait"',
-    );
-    expect(html).toContain('<span class="ap-choice-desc">Applies 0042</span>');
-    expect(CSS).toMatch(/\.ap-question \.ap-title \{[^}]*white-space: pre-line;/);
   });
 
-  it('the panel writes the card only when it changed (focus stays); the multi-question form is untouched', () => {
+  it('the panel writes the card only when it changed (focus stays) and sets its data every time; the multi-question form is untouched', () => {
     const els: Record<string, El> = { 'panel-question': box() };
     let writes = 0;
+    let hydrated = 0;
     let multi = 0;
     const m = load<{ renderPanelQuestion(s: unknown): void }>(['renderPanelQuestion'], [], {
       document: { getElementById: (id: string) => els[id] ?? null },
-      apQuestionCardHtml: () => '<div class="ap-card"></div>',
+      acQuestionHtml: () => '<div class="ac-slot"></div>',
+      acHydrate: () => hydrated++,
       morphInnerHtml: () => {
         writes++;
       },
@@ -1179,6 +1124,7 @@ describe('question card (D17)', () => {
     m.renderPanelQuestion(s);
     m.renderPanelQuestion(s);
     expect(writes).toBe(1);
+    expect(hydrated).toBe(2);
     expect(els['panel-question'].attrs['data-ap']).toBe('card');
     m.renderPanelQuestion(
       SESSION({ pendingQuestion: { type: 'user_choices', question: 'x', questions: [{ id: 'q1' }] } }),
@@ -1351,28 +1297,56 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
 });
 
 describe('template hygiene', () => {
-  it('each new client name is declared once; the new CSS adds no colour tokens', () => {
+  it('each new client name is declared once; the replaced renderers are gone; the new CSS adds no colour tokens', () => {
     for (const name of [
       'renderPanelTaskItem',
       'planFootHtml',
       'renderPanelNeedsHead',
       'panelQuestionShown',
+      'apAnnounce',
+      'apSafeFocus',
+      'panelDetailsHtml',
+      // affectUI batch 1: <ui-approval-card>
+      'acPermissionLock',
+      'acQuestionLock',
+      'acPermissionData',
+      'acQuestionId',
+      'acQuestionData',
+      'acSlotHtml',
+      'acPermissionsHtml',
+      'acQuestionHtml',
+      'acHydrate',
+      'acRepaint',
+      'acFirstOpen',
+      'acPost',
+      'acRefusal',
+      'answerPermission',
+      'answerChoice',
+      '_acState',
+      'AC_SENT',
+      'AC_SIBLING',
+    ]) {
+      expect(declarationCount(name), name).toBe(1);
+    }
+    for (const gone of [
+      'renderPermissionBlock',
       'apDetails',
       'apPermissionCardHtml',
       'apQuestionCardHtml',
-      'apAnnounce',
       'apKeydown',
-      'apSafeFocus',
       'apRepaintQuestion',
-      'panelDetailsHtml',
+      'repaintPermission',
       '_permAnswered',
+      '_permNotes',
+      'PERM_DECISIONS',
       'AP_KBD_APPROVE',
       'AP_ANSWERED',
       'AP_SENT',
     ]) {
-      expect(declarationCount(name), name).toBe(1);
+      expect(declarationCount(gone), gone).toBe(0);
+      expect(TEMPLATE, gone).not.toMatch(new RegExp(`\\b${gone}\\(`));
     }
-    const ours = CSS.split('\n').filter((l) => /^\s*\.(pl|ap|pn)-|^\s*\.pi-details|^\s*\.ar-vh/.test(l));
+    const ours = CSS.split('\n').filter((l) => /^\s*\.(pl|ap|pn|ac)-|^\s*\.pi-details|^\s*\.ar-vh/.test(l));
     expect(ours.length).toBeGreaterThan(10);
     for (const l of ours) expect(l, l).not.toMatch(/--[a-z-]+\s*:/);
   });
