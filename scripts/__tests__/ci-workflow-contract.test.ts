@@ -173,6 +173,12 @@ describe('CI workflow contract', () => {
     // The fork guard below is kept as a policy choice; on a hosted runner it no longer protects a
     // machine we own.
     expectGitHubHosted(CI_WORKFLOW, 'quality-gates', 'macos-latest');
+    // The ui-ux and html skill adapters (designmd_tokens.py) import PyYAML; the self-hosted Mac had
+    // it, a hosted image does not. Installed before the tests, pinned.
+    const steps = runSteps(CI_WORKFLOW, 'quality-gates').map((step) => step.run);
+    const pip = steps.findIndex((run) => /^python3 -m pip install pyyaml==\d+\.\d+\.\d+$/.test(run));
+    expect(pip, 'quality-gates installs a pinned PyYAML').toBeGreaterThan(-1);
+    expect(pip).toBeLessThan(steps.indexOf('npm run test:release'));
 
     const workflow = read(CI_WORKFLOW);
     // …and it is still reachable from a pull request. A guard that works by
@@ -305,7 +311,7 @@ describe('Lean verification workflow contract', () => {
     // repository's own TypeScript, so it needs the dependencies.
     expect(steps.map((step) => step.run)).toEqual([
       'npm ci',
-      'curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none',
+      'bash scripts/verification/install-lean-toolchain.sh',
       'bash scripts/verification/lean-verify.sh --check',
       'bash scripts/verification/lean-verify.sh --selftest',
     ]);
