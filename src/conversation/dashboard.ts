@@ -27,8 +27,8 @@
  *                                              incl. `work_log` entries (owner/admin scoped)
  */
 
+import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { constants as zlibConstants } from 'node:zlib';
 import { sumLiveUsage } from '@soma/slack/live-usage';
@@ -121,9 +121,15 @@ export const UI_LIB_FILE = /^[A-Za-z0-9_][A-Za-z0-9_-]*\.js$/;
 let uiLibDir: string | null | undefined;
 /** Installed @2lab.ai/ui version — busts the browser cache of the entry file (served for an hour) on upgrade. */
 const UI_LIB_VERSION = encodeURIComponent(uiLibVersion());
+// The package is located with require.resolve (a path, not a load) and its
+// manifest read as a file: the import graph (scripts/verification) follows
+// every module load, and createRequire / node:module are loads it cannot follow.
+function uiLibPackageJson(): string {
+  return require.resolve('@2lab.ai/ui/package.json');
+}
 function uiLibVersion(): string {
   try {
-    return String(createRequire(__filename)('@2lab.ai/ui/package.json').version || '0');
+    return String(JSON.parse(readFileSync(uiLibPackageJson(), 'utf8')).version || '0');
   } catch {
     return '0';
   }
@@ -132,7 +138,7 @@ function uiLibVersion(): string {
 export function uiLibDistDir(): string | null {
   if (uiLibDir === undefined) {
     try {
-      uiLibDir = join(dirname(createRequire(__filename).resolve('@2lab.ai/ui/package.json')), 'dist');
+      uiLibDir = join(dirname(uiLibPackageJson()), 'dist');
     } catch (err) {
       uiLibDir = null;
       logger.error('@2lab.ai/ui is not installed — the work log tool call cards cannot load', err);
