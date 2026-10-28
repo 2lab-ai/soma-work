@@ -50,9 +50,12 @@ const card = load<Card>(
   [
     'esc',
     'escAttr',
+    'toNum',
     'formatTaskTime',
     'pendingAutoResume',
     'autoResumeLabel',
+    'doneTimeOf',
+    'cardAgo',
     'renderCardStatus',
     'cardSummary',
     'renderCardResume',
@@ -152,10 +155,14 @@ describe('a RUNNING card waiting out an automatic resume (shipped card renderers
         'autoResumeLabel',
         'cardSummary',
         'renderCardResume',
+        'isBusy',
+        'sessionActionHtml',
+        'cardGoalLine',
         'renderCardBody',
       ],
-      ['RESUME_SVG'],
+      ['RESUME_SVG', 'SESSION_ACTION_ARIA', 'GOAL_STATUS_LABELS', '_busy'],
       {
+        effortLabel: (e: string) => e,
         dhShow: () => false,
         formatTokens: () => '0',
         formatNmSSs: () => '0',
@@ -170,6 +177,7 @@ describe('a RUNNING card waiting out an automatic resume (shipped card renderers
         stripRecommendedMarker: (l: string) => l,
         choiceDataAttrs: () => '',
         renderMultiChoiceCard: () => '',
+        renderPermissionBlock: () => '',
         renderCardGoal: () => '',
         renderTimeline: () => '',
         renderModelNote: () => '',
@@ -199,7 +207,12 @@ describe('a RUNNING card waiting out an automatic resume (shipped card renderers
 
   it('an open panel re-renders its tasks on every board push (a finished turn stops spinning)', () => {
     const ws = TEMPLATE.slice(TEMPLATE.indexOf('\nfunction connectWs('));
-    // Spec 12: the tasks of the agent the panel shows (the main agent by default).
-    expect(ws).toContain('renderPanelTasks(panelAgentTasks(), panelAgentLabel());');
+    // Spec 12: the tasks of the agent the panel shows (the main agent by default) —
+    // spec 13: through the one live path (repaintPanelSession → repaintPanelScope → repaintPanelTasks).
+    expect(ws).toContain('repaintPanelSession();');
+    expect(TEMPLATE.slice(TEMPLATE.indexOf('\nfunction repaintPanelScope('))).toContain('repaintPanelTasks();');
+    expect(TEMPLATE.slice(TEMPLATE.indexOf('\nfunction repaintPanelTasks('))).toContain(
+      'renderPanelTasks(panelAgentTasks(), panelAgentLabel(), panelAgentEarlier());',
+    );
   });
 });

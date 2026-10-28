@@ -1,0 +1,15 @@
+VERIFY	OK	delete-remote	feat/login-form	absent on origin
+VERIFY	OK	delete-remote	feat/a%3Db%25c	absent on origin
+VERIFY	RESOLVED	delete-remote	feat/stale-skip	earlier NOT-ATTEMPTED, last run SKIP: basis-changed (PR #105 no longer matches the snapshot)
+VERIFY	OK	delete-remote	feat/unknown-then-gone	absent on origin (was UNKNOWN, rerun SKIP gone)
+VERIFY	OK	close-pr	pr#7	CLOSED
+VERIFY	UNRESOLVED	close-pr	pr#30	last result FAIL: gh pr close failed: <img src=x onerror=alert(1)> HTTP 502
+VERIFY	OK	close-issue	issue#9	CLOSED
+VERIFY	OK	jira-transition	jira#TST-101	이번 실행이 옮김
+VERIFY	OK	jira-transition	jira#TST-102	목표 상태와 승인 댓글 확인 — 전환 주체 미확정
+VERIFY	UNRESOLVED	jira-transition	jira#TST-105	manual: 정리 댓글이 예상과 다름 (같은 승인 댓글 2개)
+VERIFY	WARN	jira-transition	jira#TST-106	이미 목표 상태 — 이번 실행이 한 것 아님
+VERIFY	RESOLVED	jira-transition	jira#TST-107	changed: 승인 뒤 상태가 바뀜 (지금 In Progress), 쓰기 없음
+VERIFY	OK	p-invariant	develop	present
+VERIFY	OK	p-invariant	deploy/staging	present
+VERIFY-SUMMARY	fail=0	warn=1	unresolved=2	run=complete	success=no

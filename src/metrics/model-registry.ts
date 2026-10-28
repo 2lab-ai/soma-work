@@ -38,7 +38,7 @@ export {
   stripOneMSuffix,
 } from './model-profile';
 
-export const PRICING_VERSION = '2026-06-09';
+export const PRICING_VERSION = '2026-10-27';
 
 export interface ModelPricingSpec {
   inputPerMTok: number;
@@ -69,6 +69,26 @@ export interface ModelSpec {
  * Order matters — first match wins.
  */
 const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
+  // Claude Fable 5.1 — same input/output as Fable 5, but cache reads at
+  // $0.25/MTok (Fable 5: $1). Official first-party rates (claude-api reference,
+  // 2026-09-25); the Agent SDK prices its result `modelUsage` with exactly
+  // these (fitted from dev token_usage records, 2026-10-27: 0% error). Before
+  // this row `claude-fable-5-1` matched `fable-5` and its cache reads — most of
+  // its tokens — were priced 4x too high. MUST stay above `fable-5`.
+  [
+    'fable-5-1',
+    {
+      pricing: {
+        inputPerMTok: 10,
+        outputPerMTok: 50,
+        cacheReadPerMTok: 0.25,
+        cache5minWritePerMTok: 12.5,
+        cache1hrWritePerMTok: 20,
+      },
+      contextWindow: 1_000_000,
+      maxOutput: 128_000,
+    },
+  ],
   // Claude Fable 5 (2026-06-09). Anthropic's most capable generally-available
   // model: 1M context, 128k max output. Pricing is double Opus-tier
   // ($10 in / $50 out per MTok). cacheRead = 0.1×input, 5min write = 1.25×input,
@@ -83,6 +103,26 @@ const MODEL_REGISTRY: [pattern: string, spec: ModelSpec][] = [
         cacheReadPerMTok: 1,
         cache5minWritePerMTok: 12.5,
         cache1hrWritePerMTok: 20,
+      },
+      contextWindow: 1_000_000,
+      maxOutput: 128_000,
+    },
+  ],
+  // Claude Opus 5.5 — successor to Opus 5 at a lower price: $4 in / $20 out /
+  // $0.20 cache read per MTok; 5min write 1.25×input, 1hr 2×input. Official
+  // first-party rates (claude-api reference, 2026-09-25), the same the Agent
+  // SDK prices its results with (fitted from 369 dev records, 2026-10-27).
+  // `claude-opus-5-5` also contains `opus-5`, so this row MUST stay above it —
+  // without it every Opus 5.5 call was priced at Opus 5's $5 / $25 / $0.50.
+  [
+    'opus-5-5',
+    {
+      pricing: {
+        inputPerMTok: 4,
+        outputPerMTok: 20,
+        cacheReadPerMTok: 0.2,
+        cache5minWritePerMTok: 5,
+        cache1hrWritePerMTok: 8,
       },
       contextWindow: 1_000_000,
       maxOutput: 128_000,
@@ -375,11 +415,33 @@ export function getModelSpec(modelName?: string): ModelSpec {
   return FALLBACK_SPEC;
 }
 
+/** Whether the price table knows `modelName` (otherwise `getModelSpec` falls back to Sonnet-tier rates). */
+export function hasModelPricing(modelName?: string): boolean {
+  if (!modelName) return false;
+  for (const [pattern] of MODEL_REGISTRY) if (modelName.includes(pattern)) return true;
+  return false;
+}
+
 /**
  * Get pricing for a model. Backward-compatible wrapper.
  */
 export function getModelPricing(modelName?: string): ModelPricingSpec {
   return getModelSpec(modelName).pricing;
+}
+
+/**
+ * The registry's own pricing row for a model, or null when no row matches.
+ * Unlike `getModelPricing` it never answers with `FALLBACK_SPEC`: a display
+ * that shows a price (the dashboard model picker) must say "unknown" for an
+ * id the registry does not know instead of quoting Sonnet rates for it. Cost
+ * accounting keeps using `getModelPricing` and its fallback.
+ */
+export function findModelPricing(modelName?: string): ModelPricingSpec | null {
+  if (!modelName) return null;
+  for (const [pattern, spec] of MODEL_REGISTRY) {
+    if (modelName.includes(pattern)) return spec.pricing;
+  }
+  return null;
 }
 
 /**

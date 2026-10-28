@@ -6,6 +6,7 @@ import type { ToolDefinition, ToolResult } from '@soma/process-shared/mcp/base-m
 import { BaseMcpServer } from '@soma/process-shared/mcp/base-mcp-server.js';
 import { overridableMatchedRuleIds, overridableRulesByIds } from '@soma/process-shared/permission/dangerous-rules.js';
 import {
+  PERMISSION_PROMPT_KIND,
   type PendingApproval,
   type PermissionResponse,
   sharedStore,
@@ -127,7 +128,11 @@ class PermissionMCPServer extends BaseMcpServer {
       // this record exists and the clicker is its requester, so a prompt that
       // is visible before the record is written would reject a fast click
       // (and the request would then time out to deny).
+      // `kind` marks this as a permission prompt: the Slack buttons and the
+      // dashboard answer only marked records (the pending directory also
+      // holds mcp-tool-permission's admin-approved grant requests).
       const pendingApproval: PendingApproval = {
+        kind: PERMISSION_PROMPT_KIND,
         tool_name,
         input,
         channel,

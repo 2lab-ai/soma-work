@@ -9,9 +9,6 @@ import { type AgentTreeEvent, isAgentSpawnTool, isBackgroundAckText } from './ag
 import type { SlackMessagePayload } from './choice-message-builder';
 import {
   ChannelMessageDirectiveHandler,
-  DeployCompletedDirectiveHandler,
-  type DeployCompletedPayload,
-  type DeployCompletedRejection,
   ReleaseNotesDirectiveHandler,
   type ReleaseNotesPayload,
   SessionLinkDirectiveHandler,
@@ -542,10 +539,6 @@ export interface StreamCallbacks {
   onChannelMessageDetected?: (messageText: string, context: StreamContext) => Promise<void>;
   /** Called once per valid release_notes JSON directive (a multi-repo deploy emits several) */
   onReleaseNotesDetected?: (payload: ReleaseNotesPayload, context: StreamContext) => Promise<void>;
-  /** Called once per valid deploy_completed JSON directive (a multi-repo deploy emits several) */
-  onDeployCompletedDetected?: (payload: DeployCompletedPayload, context: StreamContext) => Promise<void>;
-  /** Called once per text segment whose deploy_completed attempts yielded no payload (bad field, broken JSON) */
-  onDeployCompletedRejected?: (rejections: DeployCompletedRejection[], context: StreamContext) => Promise<void>;
   /** Called when model outputs source_working_dir JSON directive */
   onSourceWorkingDirDetected?: (dirPath: string, context: StreamContext) => Promise<void>;
   /** Called when a user choice UI is rendered */
@@ -880,8 +873,6 @@ export class AgentStreamProcessor {
   private suppressedByTrimmed = new Map<string, SegmentFate>();
   /** The latest withheld segment — the answer of a turn with no usable `finalText`. */
   private lastWithheld: SegmentFate | undefined;
-  /** Set once a cut turn's buffered deploy_completed has been dispatched (see dispatchDeployCompletedOnCut). */
-  private deployCutDispatched = false;
   /**
    * The latest segment that showed any text. When it is a suppressed
    * transport-error leak, the turn ends on that error (the executor recovers
@@ -1064,7 +1055,6 @@ export class AgentStreamProcessor {
     this.lastShownSegment = undefined;
     this.pendingNarration = undefined;
     this.slackTextPosted = false;
-    this.deployCutDispatched = false;
     // Note: per-turn state fields (_lastAssistantTurnUsage, _lastToolName,
     // _endTurnInfo, _sdkResultError) are NOT reset
     // here — stream-executor constructs a fresh AgentStreamProcessor per turn,
@@ -1123,7 +1113,6 @@ export class AgentStreamProcessor {
     try {
       while (true) {
         if (abortSignal.aborted) {
-          await this.dispatchDeployCompletedOnCut(textBuf, context);
           const rescue = await this.flushTextOnExplicitInterrupt(textBuf, context, abortSignal);
           this.settleNarration(context);
           this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
@@ -1143,7 +1132,6 @@ export class AgentStreamProcessor {
           // any sockets it holds, in case the SDK didn't honor the abort
           // signal on its own. Throws are harmless here.
           await this.tryReturnIterator(iterator, 'abort');
-          await this.dispatchDeployCompletedOnCut(textBuf, context);
           const rescue = await this.flushTextOnExplicitInterrupt(textBuf, context, abortSignal);
           this.settleNarration(context);
           this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
@@ -1169,7 +1157,6 @@ export class AgentStreamProcessor {
             }
           }
           await this.tryReturnIterator(iterator, 'idle timeout');
-          await this.dispatchDeployCompletedOnCut(textBuf, context);
           this.settleNarration(context);
           this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
           return { success: true, messageCount: currentMessages.length, aborted: true };
@@ -1397,10 +1384,6 @@ export class AgentStreamProcessor {
         sdkResultError: this._sdkResultError,
       };
     } catch (error: any) {
-      // The turn dies here with text still buffered (a transport error, or an
-      // AbortError surfacing from a handler): a deploy it already reported must
-      // not be lost with it.
-      await this.dispatchDeployCompletedOnCut(textBuf, context);
       this.settleNarration(context);
       this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
       if (error.name === 'AbortError') {
@@ -1721,59 +1704,9 @@ export class AgentStreamProcessor {
   }
 
   /**
-   * Extract every deploy_completed directive from `text`, hand each payload (and
-   * any rejected attempts) to the host, and return the text without the valid
-   * directives. Each callback runs in its own try, so a failing callback for one
-   * repo cannot skip the next.
-   */
-  private async dispatchDeployCompleted(text: string, context: StreamContext): Promise<string> {
-    const result = DeployCompletedDirectiveHandler.extract(text);
-    for (const payload of result.payloads) {
-      try {
-        await this.callbacks.onDeployCompletedDetected?.(payload, context);
-      } catch (error) {
-        this.logger.error('Failed to dispatch deploy_completed directive', { repo: payload.repo, error });
-      }
-    }
-    if (result.rejections.length > 0) {
-      try {
-        await this.callbacks.onDeployCompletedRejected?.(result.rejections, context);
-      } catch (error) {
-        this.logger.error('Failed to dispatch rejected deploy_completed directive', { error });
-      }
-    }
-    return result.cleanedText;
-  }
-
-  /**
-   * The turn is being cut with text still in the render buffer, so no
-   * `handleTextMessage` (and no result) will ever read it. Other directives in
-   * it stay undispatched — an interrupted turn must not fire them — but a
-   * deploy_completed reports a deploy that already happened: losing it would
-   * silently skip every lane. Dispatch it, and leave only the visible text in
-   * the buffer for the interrupt rescue.
-   */
-  private async dispatchDeployCompletedOnCut(textBuf: string[], context: StreamContext): Promise<void> {
-    // At most once per turn: an exit path that dispatched and then threw lands
-    // in the outer catch with the same buffer (rejections stay in it).
-    if (this.deployCutDispatched) return;
-    this.deployCutDispatched = true;
-    if (context.incidentAttempt) return;
-    const pending = textBuf.join('');
-    if (!pending.includes('deploy_completed')) return;
-    try {
-      const cleaned = await this.dispatchDeployCompleted(pending, context);
-      textBuf.length = 0;
-      if (cleaned) textBuf.push(cleaned);
-    } catch (error) {
-      this.logger.error('Failed to dispatch deploy_completed on a cut turn', { error });
-    }
-  }
-
-  /**
    * Extract and dispatch all response directives (session links, channel messages,
-   * release notes, deploy_completed signals, source working dirs) from text content. Returns the
-   * cleaned text with directives stripped.
+   * release notes, source working dirs) from text content. Returns the cleaned text
+   * with directives stripped.
    */
   private async extractAndDispatchDirectives(text: string, context: StreamContext): Promise<string> {
     let cleaned = text;
@@ -1818,14 +1751,6 @@ export class AgentStreamProcessor {
       }
     } catch (error) {
       this.logger.error('Failed to process release_notes directive', { error });
-    }
-
-    // A multi-repo deploy emits one per repo: each payload is dispatched in its
-    // own try, so a failing callback for one repo cannot skip the next.
-    try {
-      cleaned = await this.dispatchDeployCompleted(cleaned, context);
-    } catch (error) {
-      this.logger.error('Failed to process deploy_completed directive', { error });
     }
 
     try {
@@ -2599,8 +2524,6 @@ export class AgentStreamProcessor {
    *     dying turn's output to the turn the user just started.
    *   - No directive dispatch. `extractAndDispatchDirectives` has side effects
    *     (session links, channel posts); an interrupted turn must not fire them.
-   *     The one exception, deploy_completed, is dispatched (and removed from the
-   *     buffer) by `dispatchDeployCompletedOnCut` before this runs.
    *   - The transport-error leak guards still apply, so a partial
    *     "Prompt is too long" / compaction-failure frame is not shown raw.
    *   - Below `compact` (no `NARRATION` flag) nothing is appended: with no

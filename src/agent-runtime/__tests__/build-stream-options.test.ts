@@ -19,8 +19,10 @@
 import * as fs from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { afterAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest';
+import { CONFIG_FILE } from '../../env-paths';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
+import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import type { ConversationSession } from '../../types';
 import { type BuildStreamOptionsDeps, buildStreamOptions } from '../claude-code/build-stream-options';
 
@@ -149,12 +151,88 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
     const preToolUse = options.hooks?.PreToolUse;
     expect(Array.isArray(preToolUse)).toBe(true);
     // P5 collapsed the per-concern hooks into one policy hook fanned out across
-    // three matchers: Bash, the native-bypass tool union, and mcp__.
+    // the matchers: Bash, the native-bypass tool union, mcp__, and Skill (step 6b).
     const matchers = (preToolUse ?? []).map((e) => (e as { matcher: string }).matcher);
-    expect(matchers).toHaveLength(3);
+    expect(matchers).toHaveLength(4);
     expect(matchers).toContain('Bash');
     expect(matchers).toContain('mcp__');
+    expect(matchers).toContain('Skill');
     expect(matchers.some((m) => m.includes('Write') && m.includes('Read'))).toBe(true);
+  });
+
+  describe('environment-skill gate (policy step 6b) in the hook', () => {
+    const envRegistry = (dir: string) => ({ pluginNames: new Set(['acme-env']), pluginsDir: dir });
+
+    async function skillHook(deps: BuildStreamOptionsDeps) {
+      const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, deps);
+      const entry = (options.hooks?.PreToolUse ?? []).find((e) => (e as { matcher: string }).matcher === 'Skill') as {
+        hooks: Array<(input: unknown) => Promise<any>>;
+      };
+      return (skill: string) =>
+        entry.hooks[0]({ hook_event_name: 'PreToolUse', tool_name: 'Skill', tool_input: { skill } } as never);
+    }
+
+    it('denies an ungranted environment skill, tells the model why, and asks the admins for that thread', async () => {
+      const onEnvSkillDenied = vi.fn(async () => undefined);
+      const run = await skillHook(
+        makeDeps({ getEnvSkillRegistry: () => envRegistry('/nonexistent-plugins'), onEnvSkillDenied }),
+      );
+
+      const out = await run('acme-env:post-deploy');
+
+      expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+      expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(/environment skill/);
+      expect(onEnvSkillDenied).toHaveBeenCalledWith({
+        requesterId: SAFE_USER,
+        skillKey: 'acme-env:post-deploy',
+        channel: 'C123',
+        threadTs: '1700000000.0001',
+      });
+    });
+
+    it('passes every other skill through untouched, and asks nobody', async () => {
+      const onEnvSkillDenied = vi.fn(async () => undefined);
+      const run = await skillHook(
+        makeDeps({ getEnvSkillRegistry: () => envRegistry('/nonexistent-plugins'), onEnvSkillDenied }),
+      );
+
+      expect(await run('zworkflow:deploy-qa')).toEqual({ continue: true });
+      expect(onEnvSkillDenied).not.toHaveBeenCalled();
+    });
+
+    it('still denies when the admin ask fails (the request is enforcement, not the decision)', async () => {
+      const onEnvSkillDenied = vi.fn(async () => {
+        throw new Error('slack down');
+      });
+      const run = await skillHook(
+        makeDeps({ getEnvSkillRegistry: () => envRegistry('/nonexistent-plugins'), onEnvSkillDenied }),
+      );
+
+      expect((await run('acme-env:staging-qa')).hookSpecificOutput.permissionDecision).toBe('deny');
+    });
+
+    it('a host without an environment-skill registry gates nothing', async () => {
+      const run = await skillHook(makeDeps());
+      expect(await run('acme-env:post-deploy')).toEqual({ continue: true });
+    });
+
+    it('a non-admin sandboxed Bash gets an OS-level read deny of the environment plugin directories', async () => {
+      const { options } = await buildStreamOptions(
+        { queryEnv: {}, slackContext: makeSlackContext() },
+        makeDeps({ getEnvSkillRegistry: () => envRegistry('/srv/soma/plugins') }),
+      );
+      const denyRead = (options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead;
+      expect(denyRead).toEqual(['/srv/soma/plugins/acme-env', '/srv/soma/plugins/.backups/acme-env']);
+      // The write mount is kept.
+      expect((options.sandbox as { filesystem?: { allowWrite?: string[] } }).filesystem?.allowWrite?.length).toBe(1);
+    });
+
+    it('no read deny is added on a host without environment plugins', async () => {
+      const { options } = await buildStreamOptions({ queryEnv: {}, slackContext: makeSlackContext() }, makeDeps());
+      expect(
+        (options.sandbox as { filesystem?: { denyRead?: string[] } } | undefined)?.filesystem?.denyRead,
+      ).toBeUndefined();
+    });
   });
 
   it('hooks: registers PreCompact/PostCompact/SessionStart only when compactHookBuilder + session + threadTs', async () => {
@@ -476,5 +554,256 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
     options.stderr?.('boom-1\n');
     options.stderr?.('boom-2\n');
     expect(getStderrBuffer()).toBe('boom-1\nboom-2\n');
+  });
+});
+
+// Post-deploy QA, run by the deploy workflow in the requester's session, needs
+// a few host directories and the QA environment's hostnames. The host grants
+// exactly that, from config.json#deploySandbox (written per runner at deploy
+// time), only to deploy-workflow turns sent by a listed user. This file's
+// CONFIG_FILE is a per-file scratch path (src/test-utils/vitest-setup.ts).
+describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
+  const APPROVED = 'UAPPROVED1';
+  const OTHER = 'UOTHER0001';
+  const GRANT = {
+    users: [APPROVED],
+    allowedDomains: ['qa.example.test', 'admin.qa.example.test'],
+    allowWrite: ['/srv/qa/lock', '/srv/qa/runs'],
+  };
+  // The loader caches by mtime; give every write its own whole-second stamp.
+  let stamp = Math.floor(Date.now() / 1000) - 10_000;
+
+  function writeHostConfig(config: unknown): void {
+    const tmp = `${CONFIG_FILE}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(config), 'utf8');
+    stamp += 1;
+    fs.utimesSync(tmp, stamp, stamp);
+    fs.renameSync(tmp, CONFIG_FILE);
+  }
+
+  afterEach(() => {
+    fs.rmSync(CONFIG_FILE, { force: true });
+  });
+
+  function session(workflow: string | undefined, ownerId = APPROVED): ConversationSession {
+    return { workflow, ownerId } as ConversationSession;
+  }
+
+  function sandboxOf(options: { sandbox?: unknown }) {
+    return options.sandbox as
+      | { filesystem?: { allowWrite?: string[] }; network?: { allowedDomains?: string[] } }
+      | undefined;
+  }
+
+  function grantLogs(deps: BuildStreamOptionsDeps): unknown[][] {
+    const calls = (deps.logger.info as ReturnType<typeof vi.fn>).mock.calls as unknown[][];
+    return calls.filter(([message]) => message === 'Deploy sandbox grant applied');
+  }
+
+  async function mockUserSettings(settings: { sandboxDisabled?: boolean; networkDisabled?: boolean }) {
+    return vi.spyOn(await import('../../user-settings-store'), 'userSettingsStore', 'get').mockReturnValue({
+      getUserDefaultModel: () => 'm',
+      getUserThinkingEnabled: () => true,
+      getUserShowThinking: () => false,
+      getUserSandboxDisabled: () => settings.sandboxDisabled === true,
+      getUserNetworkDisabled: () => settings.networkDisabled === true,
+    } as never);
+  }
+
+  it('(a) deploy workflow + listed sender: appends the grant paths and domains', async () => {
+    writeHostConfig({ plugin: {}, deploySandbox: GRANT });
+    const deps = makeDeps();
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, session: session('deploy'), slackContext: makeSlackContext({ user: APPROVED }) },
+      deps,
+    );
+
+    const sandbox = sandboxOf(options);
+    expect(sandbox?.filesystem?.allowWrite).toEqual([path.join('/tmp', APPROVED), '/srv/qa/lock', '/srv/qa/runs']);
+    expect(sandbox?.network?.allowedDomains).toEqual([
+      ...DEV_DOMAIN_ALLOWLIST,
+      'qa.example.test',
+      'admin.qa.example.test',
+    ]);
+    // One info line, counts only.
+    expect(grantLogs(deps)).toEqual([['Deploy sandbox grant applied', { paths: 2, domains: 2 }]]);
+  });
+
+  it('(b) same deploy session, unlisted sender replying in the thread: no grant', async () => {
+    writeHostConfig({ deploySandbox: GRANT });
+    const deps = makeDeps();
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, session: session('deploy', APPROVED), slackContext: makeSlackContext({ user: OTHER }) },
+      deps,
+    );
+
+    const sandbox = sandboxOf(options);
+    expect(sandbox?.filesystem?.allowWrite).toEqual([path.join('/tmp', OTHER)]);
+    expect(sandbox?.network?.allowedDomains).toEqual([...DEV_DOMAIN_ALLOWLIST]);
+    expect(grantLogs(deps)).toEqual([]);
+  });
+
+  // Sender AND owner must be listed: the owner can steer messages into a
+  // running turn, so an unlisted owner must never sit under a listed sender's grant.
+  it('listed sender in a session owned by an unlisted user: no grant', async () => {
+    writeHostConfig({ deploySandbox: GRANT });
+    const deps = makeDeps();
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, session: session('deploy', OTHER), slackContext: makeSlackContext({ user: APPROVED }) },
+      deps,
+    );
+
+    expect(sandboxOf(options)?.filesystem?.allowWrite).toEqual([path.join('/tmp', APPROVED)]);
+    expect(sandboxOf(options)?.network?.allowedDomains).toEqual([...DEV_DOMAIN_ALLOWLIST]);
+    expect(grantLogs(deps)).toEqual([]);
+  });
+
+  it('listed sender who is the owner: grant (one person counts once)', async () => {
+    writeHostConfig({ deploySandbox: GRANT });
+    const deps = makeDeps();
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, session: session('deploy', APPROVED), slackContext: makeSlackContext({ user: APPROVED }) },
+      deps,
+    );
+
+    expect(sandboxOf(options)?.filesystem?.allowWrite).toContain('/srv/qa/lock');
+    expect(grantLogs(deps)).toEqual([['Deploy sandbox grant applied', { paths: 2, domains: 2 }]]);
+  });
+
+  it('listed sender in a session owned by another listed user: grant', async () => {
+    writeHostConfig({ deploySandbox: { ...GRANT, users: [APPROVED, 'WAPPROVED2'] } });
+    const deps = makeDeps();
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, session: session('deploy', 'WAPPROVED2'), slackContext: makeSlackContext({ user: APPROVED }) },
+      deps,
+    );
+
+    expect(sandboxOf(options)?.filesystem?.allowWrite).toEqual([
+      path.join('/tmp', APPROVED),
+      '/srv/qa/lock',
+      '/srv/qa/runs',
+    ]);
+    expect(grantLogs(deps)).toEqual([['Deploy sandbox grant applied', { paths: 2, domains: 2 }]]);
+  });
+
+  it('a deploy session with no recorded owner: no grant', async () => {
+    writeHostConfig({ deploySandbox: GRANT });
+    const deps = makeDeps();
+    const { options } = await buildStreamOptions(
+      {
+        queryEnv: {},
+        session: { workflow: 'deploy' } as ConversationSession,
+        slackContext: makeSlackContext({ user: APPROVED }),
+      },
+      deps,
+    );
+
+    expect(sandboxOf(options)?.filesystem?.allowWrite).toEqual([path.join('/tmp', APPROVED)]);
+  });
+
+  it.each(['default', 'pr-review', undefined])('(c) workflow %j + listed sender: no grant', async (workflow) => {
+    writeHostConfig({ deploySandbox: GRANT });
+    const deps = makeDeps();
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, session: session(workflow), slackContext: makeSlackContext({ user: APPROVED }) },
+      deps,
+    );
+
+    const sandbox = sandboxOf(options);
+    expect(sandbox?.filesystem?.allowWrite).toEqual([path.join('/tmp', APPROVED)]);
+    expect(sandbox?.network?.allowedDomains).toEqual([...DEV_DOMAIN_ALLOWLIST]);
+    expect(grantLogs(deps)).toEqual([]);
+  });
+
+  it('no session at all: no grant', async () => {
+    writeHostConfig({ deploySandbox: GRANT });
+    const deps = makeDeps();
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, slackContext: makeSlackContext({ user: APPROVED }) },
+      deps,
+    );
+
+    expect(sandboxOf(options)?.filesystem?.allowWrite).toEqual([path.join('/tmp', APPROVED)]);
+  });
+
+  it('(d) listed sender with networkDisabled: paths appended, network untouched', async () => {
+    writeHostConfig({ deploySandbox: GRANT });
+    const spy = await mockUserSettings({ networkDisabled: true });
+    try {
+      const deps = makeDeps();
+      const { options } = await buildStreamOptions(
+        { queryEnv: {}, session: session('deploy'), slackContext: makeSlackContext({ user: APPROVED }) },
+        deps,
+      );
+
+      const sandbox = sandboxOf(options);
+      expect(sandbox?.filesystem?.allowWrite).toEqual([path.join('/tmp', APPROVED), '/srv/qa/lock', '/srv/qa/runs']);
+      expect(sandbox?.network).toBeUndefined();
+      expect(grantLogs(deps)).toEqual([['Deploy sandbox grant applied', { paths: 2, domains: 0 }]]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('(e) sandbox-disabled user: unchanged, no sandbox at all', async () => {
+    writeHostConfig({ deploySandbox: GRANT });
+    const spy = await mockUserSettings({ sandboxDisabled: true });
+    try {
+      const deps = makeDeps();
+      const { options } = await buildStreamOptions(
+        { queryEnv: {}, session: session('deploy'), slackContext: makeSlackContext({ user: APPROVED }) },
+        deps,
+      );
+
+      expect(options.sandbox).toBeUndefined();
+      expect(grantLogs(deps)).toEqual([]);
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('dedupes against what the sandbox already allows', async () => {
+    writeHostConfig({
+      deploySandbox: {
+        users: [APPROVED],
+        allowedDomains: ['github.com', 'qa.example.test'],
+        allowWrite: ['/srv/qa/state'],
+      },
+    });
+    const deps = makeDeps();
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, session: session('deploy'), slackContext: makeSlackContext({ user: APPROVED }) },
+      deps,
+    );
+
+    const domains = sandboxOf(options)?.network?.allowedDomains ?? [];
+    expect(domains).toEqual([...DEV_DOMAIN_ALLOWLIST, 'qa.example.test']);
+    expect(new Set(domains).size).toBe(domains.length);
+    expect(grantLogs(deps)).toEqual([['Deploy sandbox grant applied', { paths: 1, domains: 1 }]]);
+  });
+
+  it('no deploySandbox key: unchanged', async () => {
+    writeHostConfig({ plugin: {} });
+    const deps = makeDeps();
+    const { options } = await buildStreamOptions(
+      { queryEnv: {}, session: session('deploy'), slackContext: makeSlackContext({ user: APPROVED }) },
+      deps,
+    );
+
+    expect(sandboxOf(options)?.filesystem?.allowWrite).toEqual([path.join('/tmp', APPROVED)]);
+    expect(grantLogs(deps)).toEqual([]);
+  });
+
+  it('a revoked grant (key removed by the next deploy) stops applying', async () => {
+    writeHostConfig({ deploySandbox: GRANT });
+    const input = { queryEnv: {}, session: session('deploy'), slackContext: makeSlackContext({ user: APPROVED }) };
+    expect(sandboxOf((await buildStreamOptions(input, makeDeps())).options)?.filesystem?.allowWrite).toContain(
+      '/srv/qa/lock',
+    );
+
+    writeHostConfig({ plugin: {} });
+    expect(sandboxOf((await buildStreamOptions(input, makeDeps())).options)?.filesystem?.allowWrite).toEqual([
+      path.join('/tmp', APPROVED),
+    ]);
   });
 });

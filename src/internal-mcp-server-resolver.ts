@@ -4,6 +4,7 @@ import * as path from 'node:path';
 export type InternalMcpServerName =
   | 'agent'
   | 'cron'
+  | 'devops-tools'
   | 'mcp-tool-permission'
   | 'model-command'
   | 'permission'
@@ -28,6 +29,11 @@ const INTERNAL_MCP_SERVER_SPECS: Record<InternalMcpServerName, InternalMcpServer
     dir: 'cron',
     basename: 'cron-mcp-server',
     packageBinSpecifier: '@soma/mcp-server-cron/bin',
+  },
+  'devops-tools': {
+    dir: 'devops-tools',
+    basename: 'devops-tools-mcp-server',
+    packageBinSpecifier: '@soma/mcp-server-devops-tools/bin',
   },
   'mcp-tool-permission': {
     dir: 'mcp-tool-permission',

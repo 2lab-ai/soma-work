@@ -53,6 +53,8 @@ const BASE_FNS = [
   'escAttr',
   'escJs',
   'toNum',
+  'umGet',
+  'umUrl',
   'artUrl',
   'artFormatSize',
   'artKindLabel',
@@ -60,7 +62,7 @@ const BASE_FNS = [
   'artMeta',
   'artChip',
 ];
-const BASE_VARS = ['ART_KIND_LABEL', 'ART_GLYPH'];
+const BASE_VARS = ['ART_KIND_LABEL', 'ART_GLYPH', '_userMedia', 'CARD_ART_TILES'];
 
 type Art = Record<string, unknown>;
 const html: Art = {
@@ -312,7 +314,10 @@ describe('T3 — full-size modal', () => {
 
   it('the dialog exists; Escape in the modal does not also close the slide panel', () => {
     expect(TEMPLATE).toMatch(/<dialog id="art-modal"/);
-    expect(TEMPLATE).toMatch(/if \(e\.key === 'Escape' && panelOpen && !artModalIsOpen\(\)\) closePanel\(\);/);
+    // The cron drawer over a docked panel takes Escape first too (SSOT 2026-10-24, trinity R4).
+    expect(TEMPLATE).toMatch(
+      /if \(e\.key === 'Escape' && panelOpen && !artModalIsOpen\(\) && !_cronDrawerKey\) closePanel\(\);/,
+    );
   });
 });
 

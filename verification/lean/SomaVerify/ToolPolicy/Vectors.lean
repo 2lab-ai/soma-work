@@ -10,25 +10,31 @@ import SomaVerify.ToolPolicy.Model
 Replayed by `tool-policy.lean-conformance.test.ts`, which mocks the guard primitives with each
 row's `prims` and calls the real `evaluateToolPolicy` once per entry of `calls`. Every call also
 carries `sensitiveCall`, the sensitive-path check and arguments the model says the policy passes
-it (`sensitiveCall`, `null` for none); the mocked checks answer only that exact call and throw on
-any other, so a wrong argument or a wrong check fails the replay.
+it (`sensitiveCall`, `null` for none), and `devopsCall`, the devops-secret check and arguments
+(`devopsCall`, `null` for none); the mocked checks answer only those exact calls and throw on any
+other, so a wrong argument or a wrong check fails the replay.
 
 * `table`: the truth table. Every combination of mode, `isAdmin`, `aborted`, handoff presence
-  and the six primitive values, each either silent or firing with a fixed payload:
-  3 × 2^9 = 1536 rows. Each row has nine calls, one per path through the tool-name tests of the
+  and the seven primitive values, each either silent or firing with a fixed payload:
+  3 × 2^10 = 3072 rows. Each row has nine calls, one per path through the tool-name tests of the
   TS: Bash, Read, Glob, Grep with and without a path, a native tool without a sensitive-path
-  check, the PR-create MCP tool, another `mcp__` tool, and a tool the policy does not govern.
+  check but with a devops-secret check (Write, the path Edit shares), the PR-create MCP tool,
+  another `mcp__` tool, and `Skill`. The environment-skill check (phase 4) comes back clear in
+  every table row: it is consulted for a non-admin `Skill` call only, which the `tool-names`,
+  `boundary` and `concrete` rows fire it on.
 * `tool-names`: every native tool and a set of near misses (case, spacing, look-alike letters,
   prefixes, the empty name), with no primitive firing, each firing alone, and all firing, in
   every mode, for admins and non-admins.
+* Every `expect` is the output of `evaluateToolPolicyEnv`, the phase-4 model of the TS function.
 * `boundary`: the payloads the table holds fixed. A sensitive result without a reason or with
-  an empty one, an empty MCP deny reason, PR-issue results without a reason or a message,
+  an empty one, an empty MCP, devops-secret or environment-skill reason (and the environment-skill
+  check firing for admins and alongside every other primitive), PR-issue results without a reason or a message,
   empty and longer rule-id lists, Grep `path` values that are empty, blank, not strings or
   missing, and undefined tool inputs.
-* `arguments`: Glob, Read, Bash and Grep inputs that differ only in the properties the
-  sensitive-path call takes its arguments from (a string, the empty string, other values, a
-  missing property), with the other candidate properties present, so an argument read from the
-  wrong property changes the call.
+* `arguments`: Glob, Read, Edit, Write, Bash and Grep inputs that differ only in the properties
+  the sensitive-path and devops-secret calls take their arguments from (a string, the empty
+  string, other values, a missing property), with the other candidate properties present, so an
+  argument read from the wrong property changes the call.
 * `incident`: the only rows with an `incidentReadOnly` context. Every allowlist of
   `incidentAllowLists` (the live one, exact names, an empty list, a wildcard-looking entry, a
   prefix, native tool names, the PR-create tool) with every pattern of `patterns` (nothing
@@ -43,8 +49,9 @@ Replayed by `tool-policy.concrete.lean-conformance.test.ts` against the real mod
 * `concrete`: real tool calls, some in an incident session. Each lists the primitive calls the
   policy makes for it, with the values the test first checks against the real primitives; the
   model's input is built from the same values, so a vector cannot assert one thing and model
-  another. The sensitive-path entry is the model's `sensitiveCall` for the case's input, not
-  written by hand.
+  another. The sensitive-path entry is the model's `sensitiveCall` for the case's input, and the
+  devops-secret entry, listed first for every case whose tool consults that check, the model's
+  `devopsCall`; neither is written by hand.
 
 Run by `scripts/verification/lean-verify.sh` (`lake env lean --run`); the output is
 `verification/vectors/tool-policy.json`.
@@ -97,6 +104,16 @@ def mcpJson : Option String → Json
   | some s => .str s
   | none => .null
 
+/-- A devops-secret call as the tests expect it: the check's name and its arguments; `null` for no
+call. -/
+def devopsCallJson : Option DevopsCall → Json
+  | some (.command command) =>
+    .obj [("fn", .str "checkDevopsSecretCommand"), ("args", strs [command])]
+  | some (.path filePath) => .obj [("fn", .str "checkDevopsSecretPath"), ("args", strs [filePath])]
+  | some (.glob pattern basePath) =>
+    .obj [("fn", .str "checkDevopsSecretGlob"), ("args", strs [pattern, basePath])]
+  | none => .null
+
 /-- A sensitive-path call as the tests expect it: the check's name and its arguments, a Glob base
 path that is `undefined` written as `null`; `null` for no call. -/
 def sensitiveCallJson : Option SensitiveCall → Json
@@ -118,7 +135,8 @@ def incidentProp : Option IncidentReadOnly → List (String × Json)
 def primsJson (p : Primitives) : Json :=
   .obj [("ssh", .bool p.ssh), ("sensitive", sensitiveJson p.sensitive),
     ("crossUser", .bool p.crossUser), ("mcpDenied", mcpJson p.mcpDenied),
-    ("prIssue", prIssueJson p.prIssue), ("bash", bashJson p.bash)]
+    ("prIssue", prIssueJson p.prIssue), ("bash", bashJson p.bash),
+    ("devopsSecret", mcpJson p.devopsSecret), ("envSkillDenied", mcpJson p.envSkillDenied)]
 
 /-! ## Mocked rows -/
 
@@ -146,7 +164,8 @@ def Row.toInput (r : Row) (c : Call) : Input :=
 def callJson (r : Row) (c : Call) : Json :=
   .obj [("tool", .str c.tool), ("input", c.input.getD .null),
     ("sensitiveCall", sensitiveCallJson (sensitiveCall (r.toInput c))),
-    ("expect", resultJson (evaluateToolPolicy r.incident (r.toInput c)))]
+    ("devopsCall", devopsCallJson (devopsCall (r.toInput c))),
+    ("expect", resultJson (evaluateToolPolicyEnv r.incident (r.toInput c)))]
 
 def rowJson (kind : String) (calls : List Call) (r : Row) : Json :=
   .obj ([("kind", .str kind), ("mode", .str (modeName r.mode)), ("isAdmin", .bool r.isAdmin),
@@ -157,12 +176,17 @@ def rowJson (kind : String) (calls : List Call) (r : Row) : Json :=
 /-- Every primitive silent: nothing sensitive, no deny reason, not blocked, not dangerous. -/
 def quiet : Primitives :=
   { ssh := false, sensitive := { isSensitive := false }, crossUser := false, mcpDenied := none,
-    prIssue := { blocked := false }, bash := { decision := .allow, matchedRuleIds := [] } }
+    prIssue := { blocked := false }, bash := { decision := .allow, matchedRuleIds := [] },
+    devopsSecret := none, envSkillDenied := none }
+
+def devopsReason : String := "devops-reason"
 
 def sensitiveHit : SensitivePathResult :=
   { isSensitive := true, reason := some "sensitive-reason" }
 
 def mcpReason : String := "mcp-reason"
+
+def envSkillReason : String := "acme-env:post-deploy"
 
 /-- A block with a `PrIssueGuardReason` and a message. -/
 def prBlocked : PrIssueGuardResult :=
@@ -175,20 +199,22 @@ def bools : List Bool := [false, true]
 
 def modes : List Mode := [.auto, .bypass, .legacy]
 
-/-- The 64 combinations of the six primitive values. -/
+/-- The 128 combinations of the seven primitive values. -/
 def tablePrims : List Primitives :=
   bools.flatMap fun ssh =>
   bools.flatMap fun sensitive =>
   bools.flatMap fun crossUser =>
   bools.flatMap fun mcp =>
   bools.flatMap fun pr =>
-  bools.map fun ask =>
+  bools.flatMap fun ask =>
+  bools.map fun devops =>
     { ssh,
       sensitive := if sensitive then sensitiveHit else quiet.sensitive,
       crossUser,
       mcpDenied := if mcp then some mcpReason else none,
       prIssue := if pr then prBlocked else quiet.prIssue,
-      bash := if ask then bashAsk else quiet.bash }
+      bash := if ask then bashAsk else quiet.bash,
+      devopsSecret := if devops then some devopsReason else none }
 
 /-- The truth table's rows: mode × `isAdmin` × `aborted` × handoff × `tablePrims`. -/
 def tableRows : List Row :=
@@ -222,19 +248,22 @@ def toolNames : List Call :=
 
 def allFiring : Primitives :=
   { ssh := true, sensitive := sensitiveHit, crossUser := true, mcpDenied := some mcpReason,
-    prIssue := prBlocked, bash := bashAsk }
+    prIssue := prBlocked, bash := bashAsk, devopsSecret := some devopsReason,
+    envSkillDenied := some envSkillReason }
 
 /-- `(aborted, handoff, prims)`: nothing firing, each deny condition's inputs alone, a dangerous
 Bash alone, and everything at once. -/
 def patterns : List (Bool × Bool × Primitives) :=
   [(false, false, quiet),
     (true, false, quiet),
+    (false, false, { quiet with devopsSecret := some devopsReason }),
     (false, false, { quiet with ssh := true }),
     (false, false, { quiet with sensitive := sensitiveHit }),
     (false, false, { quiet with crossUser := true }),
     (false, false, { quiet with mcpDenied := some mcpReason }),
     (false, true, { quiet with prIssue := prBlocked }),
     (false, false, { quiet with bash := bashAsk }),
+    (false, false, { quiet with envSkillDenied := some envSkillReason }),
     (true, true, allFiring)]
 
 def namesRows : List Row :=
@@ -253,6 +282,21 @@ def mcpCalls : List Call :=
   [⟨"mcp__server-tools__db_query", empty⟩, ⟨prCreateMcpTool, empty⟩, ⟨"mcp__", empty⟩,
     ⟨"Bash", empty⟩, ⟨"Read", empty⟩]
 
+/-- Every tool the devops-secret check covers, a native tool and `mcp__` tools it does not, and a
+tool the policy does not govern. -/
+def devopsCalls : List Call :=
+  [⟨"Bash", empty⟩, ⟨"Read", empty⟩, ⟨"Edit", empty⟩, ⟨"Write", empty⟩, ⟨"Grep", grepPath⟩,
+    ⟨"Grep", empty⟩, ⟨"Glob", empty⟩, ⟨"NotebookEdit", empty⟩, ⟨prCreateMcpTool, empty⟩,
+    ⟨"mcp__server-tools__db_query", empty⟩, ⟨"Skill", empty⟩]
+
+/-- The `Skill` tool with and without a `skill` input, the tools before it in the deny tier, an
+`mcp__` tool and a tool the policy does not govern. -/
+def envSkillCalls : List Call :=
+  [⟨"Skill", some (.obj [("skill", .str "acme-env:post-deploy"), ("args", .str "--preflight")])⟩,
+    ⟨"Skill", empty⟩, ⟨"Skill", none⟩, ⟨"Bash", empty⟩, ⟨"Read", empty⟩, ⟨"Glob", empty⟩,
+    ⟨"Grep", grepPath⟩, ⟨"Write", empty⟩, ⟨"Edit", empty⟩, ⟨"NotebookEdit", empty⟩,
+    ⟨"mcp__server-tools__db_query", empty⟩, ⟨"ExitPlanMode", empty⟩, ⟨"skill", empty⟩]
+
 def prCalls : List Call :=
   [⟨"Bash", empty⟩, ⟨prCreateMcpTool, empty⟩, ⟨"Read", empty⟩,
     ⟨"mcp__server-tools__db_query", empty⟩]
@@ -266,12 +310,27 @@ def pathCalls : List Call :=
     ⟨"Grep", some (.obj [("pattern", .str "TODO")])⟩, ⟨"Grep", none⟩, ⟨"Grep", grepPath⟩,
     ⟨"Read", none⟩, ⟨"Glob", none⟩, ⟨"Bash", none⟩, ⟨"Write", none⟩]
 
+/-- The devops-secret check firing together with the ssh, sensitive-path and cross-user checks. -/
+def devopsWithOthers : Primitives :=
+  { quiet with devopsSecret := some devopsReason, sensitive := sensitiveHit, crossUser := true,
+               ssh := true }
+
 def boundaryRows : List (Row × List Call) :=
   ([{ isSensitive := true }, { isSensitive := true, reason := some "" },
       { isSensitive := false, reason := some "ignored-reason" }] : List SensitivePathResult).map
     (fun s => (autoRow { quiet with sensitive := s }, sensitiveCalls)) ++
   [(autoRow { quiet with mcpDenied := some "" }, mcpCalls),
     ({ autoRow { quiet with mcpDenied := some "" } with isAdmin := true }, mcpCalls)] ++
+  ([.auto, .bypass, .legacy] : List Mode).flatMap (fun mode =>
+    [({ autoRow { quiet with envSkillDenied := some "" } with mode }, envSkillCalls),
+      ({ autoRow { quiet with envSkillDenied := some envSkillReason } with mode, isAdmin := true },
+        envSkillCalls),
+      ({ autoRow { allFiring with envSkillDenied := some envSkillReason } with mode, handoff := true },
+        envSkillCalls)]) ++
+  [(autoRow { quiet with devopsSecret := some "" }, devopsCalls),
+    ({ autoRow { quiet with devopsSecret := some "" } with isAdmin := true, mode := .bypass },
+      devopsCalls),
+    ({ autoRow devopsWithOthers with mode := .legacy }, devopsCalls)] ++
   ([{ blocked := true }, { blocked := true, reason := some "wrong-issue-number" },
       { blocked := true, message := some "pr-message" },
       { blocked := true, reason := some "", message := some "" },
@@ -320,12 +379,20 @@ def argumentCalls : List Call :=
     ⟨"Bash", inputOf [("command", .obj [])]⟩,
     ⟨"Bash", inputOf [("file_path", .str "/b")]⟩,
     ⟨"Grep", inputOf [("path", .str "/a"), ("file_path", .str "/b"), ("pattern", .str "TODO")]⟩,
-    ⟨"Grep", inputOf [("file_path", .str "/b"), ("pattern", .str "TODO")]⟩]
+    ⟨"Grep", inputOf [("file_path", .str "/b"), ("pattern", .str "TODO")]⟩,
+    ⟨"Grep", inputOf [("path", .num 7), ("file_path", .str "/b")]⟩,
+    ⟨"Edit", inputOf [("file_path", .str "/a"), ("path", .str "/b"), ("command", .str "cat /c")]⟩,
+    ⟨"Edit", inputOf [("path", .str "/b"), ("pattern", .str "/c")]⟩,
+    ⟨"Edit", inputOf [("file_path", .null)]⟩,
+    ⟨"Write", inputOf [("file_path", .str "/a"), ("pattern", .str "/c")]⟩,
+    ⟨"Write", inputOf [("file_path", .num 7), ("path", .str "/b")]⟩,
+    ⟨"Write", inputOf [("file_path", .str "")]⟩]
 
 /-- The argument calls, for a non-admin whose sensitive-path check comes back clear and one whose
 check comes back sensitive. -/
 def argumentRows : List Row :=
-  [autoRow quiet, autoRow { quiet with sensitive := sensitiveHit }]
+  [autoRow quiet, autoRow { quiet with sensitive := sensitiveHit },
+    autoRow { quiet with devopsSecret := some devopsReason }]
 
 /-- The one tool an incident attempt may call, `INCIDENT_EVIDENCE_TOOL`
 (src/incident/sdk-options.ts:66). -/
@@ -423,6 +490,14 @@ def Concrete.toInput (c : Concrete) : Input :=
     path := jsonField "path" (some c.input), isAdmin := c.isAdmin, mode := c.mode,
     aborted := c.aborted, handoff := c.handoff.isSome, prims := c.prims }
 
+/-- The model's devops-secret call for a concrete case, with the value the case gives it; none when
+the case's tool consults no such check. Listed first for every case that has one, so no case can
+leave it out. -/
+def devopsPreJson (c : Concrete) : List Json :=
+  match devopsCallJson (devopsCall c.toInput) with
+  | .obj fields => [.obj (fields ++ [("result", mcpJson c.prims.devopsSecret)])]
+  | _ => []
+
 /-- The model's sensitive-path call for a concrete case, with the value the case gives it. A case
 that lists `.sensitive` without making a call gets `fn: "no-sensitive-call"`, which the test
 rejects. -/
@@ -453,9 +528,10 @@ def concreteJson (c : Concrete) : Json :=
     ("ctx", .obj ([("user", .str sessionUser), ("isAdmin", .bool c.isAdmin),
       ("mode", .str (modeName c.mode)), ("aborted", .bool c.aborted),
       ("handoffContext", c.handoff.getD .null), ("mcpDenied", mcpJson c.prims.mcpDenied),
+      ("envSkillDenied", mcpJson c.prims.envSkillDenied),
       ("disabledRules", strs c.disabledRules)] ++ incidentProp c.incident)),
-    ("pre", .arr (c.pre.map (preJson c))),
-    ("expect", resultJson (evaluateToolPolicy c.incident c.toInput))]
+    ("pre", .arr (devopsPreJson c ++ c.pre.map (preJson c))),
+    ("expect", resultJson (evaluateToolPolicyEnv c.incident c.toInput))]
 
 def bashInput (command : String) : Json :=
   .obj [("command", .str command)]
@@ -525,6 +601,11 @@ def sshKeySensitive : SensitivePathResult :=
   { isSensitive := true, reason := some ("Access to " ++ home ++ "/.ssh/ is restricted") }
 
 def rmRules : List String := ["rm-recursive", "rm-force"]
+
+/-- The devops broker's data root and code root (`devops-secret-guard.ts`). -/
+def brokerData : String := "/usr/local/var/soma-devops"
+
+def brokerCode : String := "/usr/local/libexec/soma-devops"
 
 /-- The incident context of a live incident attempt (src/incident/sdk-options.ts:389). -/
 def liveIncident : IncidentReadOnly :=
@@ -627,7 +708,71 @@ def concreteCases : List Concrete :=
      pre := incidentBashPre "cat /tmp/U0OTHERUSR9/secret" },
    { name := "incident-agent-admin-bypass", tool := "Agent",
      input := .obj [("prompt", .str "read evidence")], isAdmin := true, mode := .bypass,
-     incident := some liveIncident, pre := [] }]
+     incident := some liveIncident, pre := [] },
+   { name := "bash-gh-auth-token-admin-bypass", tool := "Bash", input := bashInput "gh auth token",
+     isAdmin := true, mode := .bypass,
+     prims := { quiet with devopsSecret := some "gh auth token" }, pre := [] },
+   { name := "bash-gh-auth-token-nonadmin-auto", tool := "Bash", input := bashInput "gh auth token",
+     mode := .auto, prims := { quiet with devopsSecret := some "gh auth token" }, pre := [] },
+   { name := "bash-gh-auth-token-admin-legacy", tool := "Bash", input := bashInput "gh auth token",
+     isAdmin := true, mode := .legacy,
+     prims := { quiet with devopsSecret := some "gh auth token" }, pre := [] },
+   { name := "bash-gh-auth-token-aborted-bypass", tool := "Bash", input := bashInput "gh auth token",
+     mode := .bypass, aborted := true,
+     prims := { quiet with devopsSecret := some "gh auth token" }, pre := [] },
+   { name := "bash-gh-git-credential-admin-auto", tool := "Bash",
+     input := bashInput "gh auth git-credential get", isAdmin := true, mode := .auto,
+     prims := { quiet with devopsSecret := some "gh auth git-credential" }, pre := [] },
+   { name := "bash-keychain-admin-bypass", tool := "Bash",
+     input := bashInput "security find-generic-password -w -s x", isAdmin := true, mode := .bypass,
+     prims := { quiet with devopsSecret := some "keychain secret read" }, pre := [] },
+   { name := "bash-broker-code-path-admin-bypass", tool := "Bash",
+     input := bashInput ("ls " ++ brokerCode), isAdmin := true, mode := .bypass,
+     prims := { quiet with devopsSecret := some "devops broker path" }, pre := [] },
+   { name := "bash-gh-pr-list-auto", tool := "Bash", input := bashInput "gh pr list", mode := .auto,
+     pre := bashPre "gh pr list" },
+   { name := "bash-gh-auth-status-bypass", tool := "Bash", input := bashInput "gh auth status",
+     isAdmin := true, mode := .bypass, pre := bashPre "gh auth status" },
+   { name := "read-broker-policy-admin-bypass", tool := "Read",
+     input := .obj [("file_path", .str (brokerData ++ "/policy.json"))], isAdmin := true,
+     mode := .bypass, prims := { quiet with devopsSecret := some "devops broker path" }, pre := [] },
+   { name := "read-broker-policy-nonadmin-legacy", tool := "Read",
+     input := .obj [("file_path", .str (brokerData ++ "/policy.json"))], mode := .legacy,
+     prims := { quiet with devopsSecret := some "devops broker path" }, pre := [] },
+   { name := "edit-broker-code-admin-auto", tool := "Edit",
+     input := .obj [("file_path", .str (brokerCode ++ "/gh")), ("old_string", .str "a"),
+       ("new_string", .str "b")], isAdmin := true, mode := .auto,
+     prims := { quiet with devopsSecret := some "devops broker path" }, pre := [] },
+   { name := "write-safe-auto", tool := "Write",
+     input := .obj [("file_path", .str ("/tmp/" ++ sessionUser ++ "/notes.txt")),
+       ("content", .str "x")], mode := .auto, pre := [] },
+   { name := "grep-broker-path-admin-bypass", tool := "Grep",
+     input := .obj [("pattern", .str "token"), ("path", .str brokerData)], isAdmin := true,
+     mode := .bypass, prims := { quiet with devopsSecret := some "devops broker path" }, pre := [] },
+   { name := "glob-broker-base-nonadmin-auto", tool := "Glob",
+     input := .obj [("pattern", .str "secrets/**"), ("path", .str brokerData)], mode := .auto,
+     prims := { quiet with devopsSecret := some "devops broker path" }, pre := [] },
+   { name := "skill-env-denied-nonadmin-auto", tool := "Skill",
+     input := .obj [("skill", .str "acme-env:post-deploy"), ("args", .str "--preflight")],
+     mode := .auto, prims := { quiet with envSkillDenied := some "acme-env:post-deploy" }, pre := [] },
+   { name := "skill-env-denied-nonadmin-bypass", tool := "Skill",
+     input := .obj [("skill", .str "acme-env:staging-qa")], mode := .bypass,
+     prims := { quiet with envSkillDenied := some "acme-env:staging-qa" }, pre := [] },
+   { name := "skill-env-denied-admin-bypass", tool := "Skill",
+     input := .obj [("skill", .str "acme-env:post-deploy")], isAdmin := true, mode := .bypass,
+     prims := { quiet with envSkillDenied := some "acme-env:post-deploy" }, pre := [] },
+   { name := "skill-env-granted-nonadmin-legacy", tool := "Skill",
+     input := .obj [("skill", .str "acme-env:post-deploy")], mode := .legacy, pre := [] },
+   { name := "skill-plain-nonadmin-auto", tool := "Skill",
+     input := .obj [("skill", .str "zworkflow:deploy-qa")], mode := .auto, pre := [] },
+   { name := "incident-skill-env-denied-nonadmin-auto", tool := "Skill",
+     input := .obj [("skill", .str "acme-env:post-deploy")], mode := .auto,
+     incident := some liveIncident,
+     prims := { quiet with envSkillDenied := some "acme-env:post-deploy" }, pre := [] },
+   { name := "incident-bash-gh-auth-token-admin-bypass", tool := "Bash",
+     input := bashInput "gh auth token", isAdmin := true, mode := .bypass,
+     incident := some liveIncident,
+     prims := { quiet with devopsSecret := some "gh auth token" }, pre := [] }]
 
 /-- The cases written to `verification/vectors/tool-policy.json`. -/
 def cases : List Json :=
