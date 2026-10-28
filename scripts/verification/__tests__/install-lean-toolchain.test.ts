@@ -39,7 +39,8 @@ function sandbox(curlFailures: number, elanFailures: number) {
 echo "curl $*" >> "${log}"
 n=$(grep -c '^curl ' "${log}")
 [ "$n" -le ${curlFailures} ] && { echo "curl: (35) SSL connect error" >&2; exit 35; }
-out=""; while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; shift; done
+out=""; url=""; while [ $# -gt 0 ]; do [ "$1" = -o ] && out="$2"; case "$1" in http*) url="$1";; esac; shift; done
+case "$url" in *github.com/leanprover/lean4/releases/download/*) echo "release" > "$out"; exit 0;; esac
 cat > "$out" <<'INIT'
 mkdir -p "$HOME/.elan/bin"
 cat > "$HOME/.elan/bin/elan" <<'ELAN'
@@ -55,11 +56,22 @@ INIT
 `,
     { mode: 0o755 },
   );
+  // tar -xf <archive> -C <dir> --strip-components=1: records the call and lays down bin/lean.
+  fs.writeFileSync(
+    path.join(bin, 'tar'),
+    `#!/bin/bash
+echo "tar $*" >> "${log}"
+dir=""; while [ $# -gt 0 ]; do [ "$1" = -C ] && dir="$2"; shift; done
+mkdir -p "$dir/bin" && printf '#!/bin/sh\\necho lean\\n' > "$dir/bin/lean" && chmod +x "$dir/bin/lean"
+`,
+    { mode: 0o755 },
+  );
   const run = () =>
     spawnSync('bash', [script], {
       encoding: 'utf8',
       env: {
         PATH: `${bin}:/usr/bin:/bin`,
+        LEAN_INSTALL_PLATFORM: 'linux',
         HOME: home,
         ELAN_LOG: log,
         ELAN_FAILURES: String(elanFailures),
@@ -67,7 +79,7 @@ INIT
       },
     });
   const calls = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n') : []);
-  return { run, calls };
+  return { run, calls, home };
 }
 
 describe('install-lean-toolchain.sh', () => {
@@ -84,18 +96,30 @@ describe('install-lean-toolchain.sh', () => {
   });
 
   it('retries a transient download failure of elan and of the toolchain', () => {
-    const box = sandbox(2, 2);
+    const box = sandbox(2, 1);
     const result = box.run();
     expect(result.status, result.stderr).toBe(0);
     const calls = box.calls();
     expect(calls.filter((c) => c.startsWith('curl ')).length).toBe(3);
-    expect(calls.filter((c) => c.startsWith('elan toolchain install')).length).toBe(3);
+    expect(calls.filter((c) => c.startsWith('elan toolchain install')).length).toBe(2);
+    expect(calls.some((c) => c.startsWith('tar '))).toBe(false);
   });
 
-  it('fails the job after four failed attempts instead of looping', () => {
-    const box = sandbox(0, 9);
+  it('falls back to the GitHub release when the Lean release server keeps failing', () => {
+    // releases.lean-lang.org refused TLS on 2 of 10 hosted runs (2026-10-28); GitHub's own
+    // release assets are on the same network as the runner.
+    const box = sandbox(0, 99);
     const result = box.run();
-    expect(result.status).not.toBe(0);
-    expect(box.calls().filter((c) => c.startsWith('elan toolchain install')).length).toBe(4);
+    expect(result.status, result.stderr).toBe(0);
+    const calls = box.calls();
+    expect(calls.filter((c) => c.startsWith('elan toolchain install')).length).toBe(2);
+    const version = toolchain.split(':')[1];
+    expect(
+      calls.some((c) =>
+        c.includes(`github.com/leanprover/lean4/releases/download/${version}/lean-${version.slice(1)}-linux.tar.zst`),
+      ),
+    ).toBe(true);
+    const dir = path.join(box.home, '.elan/toolchains', toolchain.replace('/', '--').replace(':', '---'));
+    expect(fs.existsSync(path.join(dir, 'bin/lean'))).toBe(true);
   });
 });

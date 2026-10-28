@@ -296,6 +296,8 @@ function run(args: string[], fakes: Fakes, extraEnv: Record<string, string> = {}
         PATH: `${fakes.bin}:${process.env.PATH ?? ''}`,
         HOME: homeStub,
         SOMA_TEST_HARNESS: '1',
+        // Launchctl and the daemon are shims here: scale service.sh's real waits (pause).
+        SOMA_SERVICE_WAIT_SCALE: '0.05',
         SOMA_PID_FILE_OVERRIDE: path.join(workDir, 'soma-work.pid'),
         SOMA_PROJECT_DIR_OVERRIDE: path.join(workDir, 'project'),
         SOMA_SYSTEM_DAEMON_PLIST_OVERRIDE: fakes.systemPlist,
