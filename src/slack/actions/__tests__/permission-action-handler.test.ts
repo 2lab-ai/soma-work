@@ -1,8 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('somalib/permission/shared-store', () => ({
+  PERMISSION_PROMPT_KIND: 'tool_permission',
   sharedStore: {
     storePermissionResponse: vi.fn().mockResolvedValue(undefined),
+    claimPermissionResponse: vi.fn().mockResolvedValue(true),
     getPendingApproval: vi.fn(),
   },
 }));
@@ -44,6 +46,7 @@ describe('PermissionActionHandler.handleApproveDisableRule', () => {
 
   it('approves and disables the matched rule ids on the session', async () => {
     vi.mocked(sharedStore.getPendingApproval).mockResolvedValue({
+      kind: 'tool_permission',
       tool_name: 'Bash',
       input: { command: 'kill 1234' },
       channel: 'C123',
@@ -67,6 +70,7 @@ describe('PermissionActionHandler.handleApproveDisableRule', () => {
 
   it('falls back to plain approve when pending approval has no rule_ids', async () => {
     vi.mocked(sharedStore.getPendingApproval).mockResolvedValue({
+      kind: 'tool_permission',
       tool_name: 'Bash',
       input: { command: 'ls' },
       channel: 'C123',
@@ -102,6 +106,7 @@ describe('PermissionActionHandler.handleApproveDisableRule', () => {
   it('falls back to plain approve when constructed without a SessionRegistry', async () => {
     // The requester check still runs first — the fallback only skips the rule disable.
     vi.mocked(sharedStore.getPendingApproval).mockResolvedValue({
+      kind: 'tool_permission',
       tool_name: 'Bash',
       input: { command: 'kill 1234' },
       channel: 'C123',
@@ -149,6 +154,7 @@ describe('PermissionActionHandler click authorization — requester only', () =>
 
   function pending(overrides: Record<string, unknown> = {}) {
     return {
+      kind: 'tool_permission' as const,
       tool_name: 'Bash',
       input: { command: 'kill 1234' },
       channel: 'C123',
@@ -255,6 +261,72 @@ describe('PermissionActionHandler click authorization — requester only', () =>
 
     await handler().handleApprove(makeBody('approve_tool', 'approval_gone', REQUESTER), respond);
 
+    expect(sharedStore.storePermissionResponse).not.toHaveBeenCalled();
+    expect(respondMock).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
+  });
+});
+
+/**
+ * SSOT 2026-10-24 — the Slack buttons and the dashboard share one answer path
+ * (`answerPermissionPrompt`), so Slack inherits its two new guarantees.
+ */
+describe('PermissionActionHandler — shared answer path guarantees', () => {
+  let respondMock: ReturnType<typeof vi.fn>;
+  let respond: RespondFn;
+  let sessionRegistryMock: { getSessionKey: ReturnType<typeof vi.fn>; disableDangerousRules: ReturnType<typeof vi.fn> };
+
+  beforeEach(() => {
+    respondMock = vi.fn().mockResolvedValue(undefined);
+    respond = respondMock as unknown as RespondFn;
+    sessionRegistryMock = {
+      getSessionKey: vi.fn((channel: string, threadTs?: string) => `${channel}-${threadTs ?? ''}`),
+      disableDangerousRules: vi.fn(),
+    };
+  });
+
+  afterEach(() => {
+    vi.mocked(sharedStore.claimPermissionResponse).mockResolvedValue(true);
+    vi.clearAllMocks();
+  });
+
+  it('a second answer (dashboard already answered) is refused: nothing stored, no rule disabled', async () => {
+    vi.mocked(sharedStore.getPendingApproval).mockResolvedValue({
+      kind: 'tool_permission',
+      tool_name: 'Bash',
+      input: { command: 'kill 1234' },
+      channel: 'C123',
+      thread_ts: '171.001',
+      user: 'U_USER',
+      created_at: Date.now(),
+      expires_at: Date.now() + 60_000,
+      rule_ids: ['kill'],
+    });
+    vi.mocked(sharedStore.claimPermissionResponse).mockResolvedValue(false);
+
+    const handler = new PermissionActionHandler(sessionRegistryMock as unknown as SessionRegistry);
+    await handler.handleApproveDisableRule(makeBody('approve_disable_rule_session', 'approval_dup'), respond);
+
+    expect(sessionRegistryMock.disableDangerousRules).not.toHaveBeenCalled();
+    expect(sharedStore.storePermissionResponse).not.toHaveBeenCalled();
+    expect(respondMock).toHaveBeenCalledWith(
+      expect.objectContaining({ response_type: 'ephemeral', text: expect.stringContaining('already answered') }),
+    );
+  });
+
+  it('an approval that is not a permission prompt (MCP tool grant request) is not answerable here', async () => {
+    vi.mocked(sharedStore.getPendingApproval).mockResolvedValue({
+      tool_name: 'request_permission',
+      input: { server: 'server-tools', level: 'write' },
+      channel: 'C123',
+      thread_ts: '171.001',
+      user: 'U_USER',
+      created_at: Date.now(),
+      expires_at: Date.now() + 60_000,
+    });
+
+    await new PermissionActionHandler().handleApprove(makeBody('approve_tool', 'approval_grant'), respond);
+
+    expect(sharedStore.claimPermissionResponse).not.toHaveBeenCalled();
     expect(sharedStore.storePermissionResponse).not.toHaveBeenCalled();
     expect(respondMock).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
   });

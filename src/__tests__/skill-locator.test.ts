@@ -31,21 +31,37 @@ describe('resolveAutoskillContent — fallback order', () => {
     vi.mocked(fs.existsSync).mockImplementation((p: any) => String(p).includes('/data/U1/skills/using-ssot/'));
     vi.mocked(fs.readFileSync).mockReturnValue('USER BODY' as any);
     const r = resolveAutoskillContent('using-ssot', 'U1');
-    expect(r).toEqual({ key: 'user:using-ssot', content: 'USER BODY' });
+    expect(r).toEqual({ key: 'user:using-ssot', content: 'USER BODY', file: '/data/U1/skills/using-ssot/SKILL.md' });
   });
 
   it('falls back to local when no user skill', () => {
     vi.mocked(fs.existsSync).mockImplementation((p: any) => LOCAL(String(p)) && String(p).includes('using-ssot'));
     vi.mocked(fs.readFileSync).mockReturnValue('LOCAL BODY' as any);
     const r = resolveAutoskillContent('using-ssot', 'U1');
-    expect(r).toEqual({ key: 'local:using-ssot', content: 'LOCAL BODY' });
+    expect(r).toEqual({
+      key: 'local:using-ssot',
+      content: 'LOCAL BODY',
+      file: expect.stringMatching(/\/local\/skills\/using-ssot\/SKILL\.md$/),
+    });
   });
 
   it('falls back to a priority plugin (stv)', () => {
     vi.mocked(fs.existsSync).mockImplementation((p: any) => String(p).includes('/plugins/stv/skills/new-task/'));
     vi.mocked(fs.readFileSync).mockReturnValue('STV BODY' as any);
     const r = resolveAutoskillContent('new-task', 'U1');
-    expect(r).toEqual({ key: 'stv:new-task', content: 'STV BODY' });
+    expect(r).toEqual({ key: 'stv:new-task', content: 'STV BODY', file: '/plugins/stv/skills/new-task/SKILL.md' });
+  });
+
+  it('falls back to a scanned non-priority plugin and returns its SKILL.md path', () => {
+    vi.mocked(fs.readdirSync).mockReturnValue([dirent('custom')] as any);
+    vi.mocked(fs.existsSync).mockImplementation((p: any) => String(p) === '/plugins/custom/skills/new-task/SKILL.md');
+    vi.mocked(fs.readFileSync).mockReturnValue('CUSTOM BODY' as any);
+    const r = resolveAutoskillContent('new-task', 'U1');
+    expect(r).toEqual({
+      key: 'custom:new-task',
+      content: 'CUSTOM BODY',
+      file: '/plugins/custom/skills/new-task/SKILL.md',
+    });
   });
 
   it('returns null when nothing resolves', () => {

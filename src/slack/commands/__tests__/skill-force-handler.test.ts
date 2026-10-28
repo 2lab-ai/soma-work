@@ -1,4 +1,5 @@
 import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { SkillForceHandler } from '../skill-force-handler';
 
@@ -204,6 +205,46 @@ describe('SkillForceHandler', () => {
       expect(result.continueWithPrompt).toContain(skillContent);
       expect(result.continueWithPrompt).toContain('</local:z>');
       expect(result.continueWithPrompt).toContain('</invoked_skills>');
+    });
+
+    // Claude Code's Skill tool prefixes a loaded skill with its base directory;
+    // bundled skills rely on it to locate their scripts because
+    // CLAUDE_PLUGIN_ROOT is not set in bot-session shells. Forced injection
+    // must carry the same line right after the opening tag.
+    it('prefixes a forced skill block with its base directory', async () => {
+      const skillContent = '# Z Skill\nDo the thing.';
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockReturnValue(skillContent);
+
+      const result = await handler.execute(makeCtx('$local:z'));
+
+      const expectedDir = path.resolve(__dirname, '..', '..', '..', 'local', 'skills', 'z');
+      expect(result.continueWithPrompt).toContain(
+        `<local:z>\nBase directory for this skill: ${expectedDir}\n\n${skillContent}\n</local:z>`,
+      );
+    });
+
+    it('prefixes a nested skill block with its own base directory', async () => {
+      vi.mocked(fs.existsSync).mockReturnValue(true);
+      vi.mocked(fs.readFileSync).mockImplementation((filePath) => {
+        const p = String(filePath);
+        if (p.includes('/z/')) return '# Z\nDelegate to $stv:debug.';
+        if (p.includes('/debug/')) return '# Debug';
+        return '';
+      });
+
+      const result = await handler.execute(makeCtx('$local:z'));
+
+      const prompt = result.continueWithPrompt as string;
+      expect(prompt).toContain(
+        '<stv:debug>\nBase directory for this skill: /mock/plugins/stv/skills/debug\n\n# Debug\n</stv:debug>',
+      );
+      const expectedDir = path.resolve(__dirname, '..', '..', '..', 'local', 'skills', 'z');
+      expect(prompt).toContain(
+        `<local:z>\nBase directory for this skill: ${expectedDir}\n\n# Z\nDelegate to $stv:debug.\n</local:z>`,
+      );
+      // Nested extraction still ran on the raw content (dependency first).
+      expect(prompt.indexOf('<stv:debug>')).toBeLessThan(prompt.indexOf('<local:z>'));
     });
 
     it('emits RPG skill-force-invocation banner (red attachment) on success', async () => {

@@ -96,6 +96,24 @@ describe('runAgentStreamFromSdk (epic #1023 P4)', () => {
     expect(pulled).toEqual(['a', 'b']);
   });
 
+  it('forwards hostPriced to the mapper: an llmux model in the result is priced by the host', async () => {
+    const events = await collect(
+      runAgentStreamFromSdk(
+        fromArray([
+          sdk({
+            type: 'result',
+            subtype: 'success',
+            result: 'x',
+            modelUsage: { astra: { inputTokens: 100, outputTokens: 0, costUSD: 0.2 } },
+          }),
+        ]),
+        { calculateTokenCost: CALC, hostPriced: (m) => m === 'astra' },
+      ),
+    );
+    const usage = events.find((e) => e.type === 'usage') as { usage?: { totalCostUsd?: number } } | undefined;
+    expect(usage?.usage?.totalCostUsd).toBe(1); // 100 * 0.01 from the host, not the SDK's 0.2
+  });
+
   it('empty stream → no events', async () => {
     expect(await collect(runAgentStreamFromSdk(fromArray([]), { calculateTokenCost: CALC }))).toEqual([]);
   });

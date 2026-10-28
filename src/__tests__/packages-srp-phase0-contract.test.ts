@@ -20,6 +20,7 @@ const repoRoot = path.resolve(__dirname, '..', '..');
 const internalServers = [
   { id: 'agent', dir: 'agent', basename: 'agent-mcp-server' },
   { id: 'cron', dir: 'cron', basename: 'cron-mcp-server' },
+  { id: 'devops-tools', dir: 'devops-tools', basename: 'devops-tools-mcp-server' },
   { id: 'mcp-tool-permission', dir: 'mcp-tool-permission', basename: 'mcp-tool-permission-mcp-server' },
   { id: 'model-command', dir: 'model-command', basename: 'model-command-mcp-server' },
   { id: 'permission', dir: 'permission', basename: 'permission-mcp-server' },

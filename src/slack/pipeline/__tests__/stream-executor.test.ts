@@ -62,6 +62,7 @@ vi.mock('../../../conversation', () => ({
   createConversation: vi.fn().mockReturnValue('conv_1'),
   recordAssistantTurn: vi.fn(),
   recordUserTurn: vi.fn(),
+  captureUserMedia: vi.fn(async () => []),
 }));
 
 vi.mock('../../../mcp-config-builder', () => ({
