@@ -138,6 +138,21 @@ function expectSameRepoGuard(workflowPath: string, jobName: string): void {
 }
 
 /**
+ * A workflow's top-level `concurrency:` block as key/value pairs. Top-level only (column 0), so a
+ * job-level block cannot satisfy it.
+ */
+function concurrencyOf(workflowPath: string): Record<string, string> {
+  const block = read(workflowPath).match(/^concurrency:\n((?: {2}\S.*\n)+)/m);
+  expect(block, `${workflowPath} has no top-level \`concurrency:\` block`).not.toBeNull();
+  return Object.fromEntries(
+    (block?.[1] ?? '')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => line.trim().split(/:\s*/) as [string, string]),
+  );
+}
+
+/**
  * The workflow's `GITHUB_TOKEN` scopes, asserted as a whole set rather than as a
  * substring: `contents: read` present tells you nothing if `packages: write`
  * sits on the next line. A job-level block would silently replace the top-level
@@ -285,6 +300,22 @@ describe('sanitize gate workflow contract', () => {
     // narrowing the token means the guard is not the only thing standing there.
     expectContentsReadOnly(SANITIZE_WORKFLOW, ['scan']);
   });
+
+  it('cancels the scan a newer push supersedes, in a concurrency group of its own', () => {
+    // Without a group, every push to a pull request left its earlier scan queued on the one
+    // self-hosted runner: 38 scans of already-superseded commits ran in a single day (10-27),
+    // and a scan of a stale commit says nothing about what would merge.
+    const sanitize = concurrencyOf(SANITIZE_WORKFLOW);
+    expect(sanitize['cancel-in-progress'], `${SANITIZE_WORKFLOW} cancel-in-progress`).toBe('true');
+    expect(sanitize.group, `${SANITIZE_WORKFLOW} concurrency group`).toMatch(/\$\{\{ github\.ref \}\}/);
+    // Groups are repository-wide: sharing CI's or Lean Verify's name would let one workflow
+    // cancel another's run on the same ref.
+    for (const other of [CI_WORKFLOW, LEAN_WORKFLOW]) {
+      const otherGroup = concurrencyOf(other).group;
+      expect(otherGroup, `${other} concurrency group`).toBeTruthy();
+      expect(sanitize.group, `${SANITIZE_WORKFLOW} shares its concurrency group with ${other}`).not.toBe(otherGroup);
+    }
+  });
 });
 
 describe('Lean verification workflow contract', () => {
@@ -333,18 +364,7 @@ describe('Lean verification workflow contract', () => {
   it('cancels the run a newer push supersedes, in a concurrency group apart from CI', () => {
     // Close to 20 minutes a run: without a group, every push queued another
     // full run behind the ones it had already made stale.
-    const concurrency = (workflowPath: string): Record<string, string> => {
-      const block = read(workflowPath).match(/^concurrency:\n((?: {2}\S.*\n)+)/m);
-      expect(block, `${workflowPath} has no top-level \`concurrency:\` block`).not.toBeNull();
-      return Object.fromEntries(
-        (block?.[1] ?? '')
-          .split('\n')
-          .filter(Boolean)
-          .map((line) => line.trim().split(/:\s*/) as [string, string]),
-      );
-    };
-
-    const lean = concurrency(LEAN_WORKFLOW);
+    const lean = concurrencyOf(LEAN_WORKFLOW);
     expect(lean['cancel-in-progress'], `${LEAN_WORKFLOW} cancel-in-progress`).toBe('true');
     // Per ref, so a push cancels only its own branch's or PR's stale run. (Regex,
     // not a string literal, for the Biome reason given in the sanitize suite.)
@@ -353,7 +373,7 @@ describe('Lean verification workflow contract', () => {
     // Groups are shared across the repository's workflows, so reusing CI's would
     // have each workflow cancel the other's run on the same ref. CI's group must
     // exist for "not the same" to mean anything.
-    const ci = concurrency(CI_WORKFLOW);
+    const ci = concurrencyOf(CI_WORKFLOW);
     expect(ci.group, `${CI_WORKFLOW} concurrency group`).toBeTruthy();
     expect(lean.group, `${LEAN_WORKFLOW} shares its concurrency group with ${CI_WORKFLOW}`).not.toBe(ci.group);
   });
