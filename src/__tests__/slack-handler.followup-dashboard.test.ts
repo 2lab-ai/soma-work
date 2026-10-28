@@ -28,7 +28,15 @@ const THREAD_TS = '111.222';
 const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 function message(overrides: Record<string, any> = {}): any {
-  return { user: 'U_OWNER', channel: CHANNEL, team: 'T1', ts: '222.333', thread_ts: THREAD_TS, text: '지시', ...overrides };
+  return {
+    user: 'U_OWNER',
+    channel: CHANNEL,
+    team: 'T1',
+    ts: '222.333',
+    thread_ts: THREAD_TS,
+    text: '지시',
+    ...overrides,
+  };
 }
 
 describe('SlackHandler — the dashboard’s follow-up queue controls', () => {
@@ -169,7 +177,11 @@ describe('SlackHandler — the dashboard’s follow-up queue controls', () => {
       const claimed = queue().claimNext(SESSION_KEY);
       const marked = queue().markDispatched(SESSION_KEY, item.id, claimed.item.epoch);
       const res = await act({ itemId: item.id, op: 'promote', epoch: marked.item.epoch });
-      expect(res).toEqual({ ok: false, status: 409, message: '먼저 보낼 것이 없습니다 — 이미 모델에 전달되어 실행 중입니다.' });
+      expect(res).toEqual({
+        ok: false,
+        status: 409,
+        message: '먼저 보낼 것이 없습니다 — 이미 모델에 전달되어 실행 중입니다.',
+      });
     });
   });
 
