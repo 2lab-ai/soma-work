@@ -101,4 +101,45 @@ describe('skill-permission-request-store', () => {
     const req = store.createPermissionRequest({ ...base, ttlMs: -1 });
     expect(store.getPermissionRequest(req.requestId)).toBeNull();
   });
+
+  it('says whether it reused a pending ask', () => {
+    expect(store.createPermissionRequest(base).reused).toBe(false);
+    expect(store.createPermissionRequest(base).reused).toBe(true);
+  });
+
+  // Environment-skill requests: owner = the reserved ENV_SKILL_GRANT_OWNER, approved by any admin.
+  describe('environment-skill requests', () => {
+    const env = {
+      operation: 'invoke' as const,
+      requesterId: 'U0A',
+      ownerId: 'env-skills',
+      skillName: 'acme-env:post-deploy',
+      channel: 'C1',
+      threadTs: '171.1',
+      originalText: 'continue',
+    };
+
+    it('dedupe per thread: the same ask from another thread is a new request', () => {
+      const first = store.createPermissionRequest(env);
+      expect(store.createPermissionRequest(env).requestId).toBe(first.requestId);
+      const other = store.createPermissionRequest({ ...env, threadTs: '999.9' });
+      expect(other.requestId).not.toBe(first.requestId);
+      expect(other.reused).toBe(false);
+    });
+
+    it('record where each admin prompt went, and never persist the reused flag', () => {
+      const req = store.createPermissionRequest(env);
+      store.setRequestPrompts(req.requestId, [
+        { channel: 'D1', ts: '1.1' },
+        { channel: 'D2', ts: '2.2' },
+      ]);
+      const read = store.getPermissionRequest(req.requestId);
+      expect(read?.prompts).toEqual([
+        { channel: 'D1', ts: '1.1' },
+        { channel: 'D2', ts: '2.2' },
+      ]);
+      expect(read && 'reused' in read).toBe(false);
+      store.setRequestPrompts('missing', []); // no-op, no throw
+    });
+  });
 });

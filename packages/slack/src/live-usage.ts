@@ -10,6 +10,8 @@
  * executor clears it. Runtime-only state; never persisted.
  */
 
+import { foldTaskSpend, type TaskUsage } from './session-usage-math';
+
 export interface LiveUsageTotals {
   inputTokens: number;
   outputTokens: number;
@@ -44,6 +46,8 @@ type LiveUsageHolder = {
    * overlap.
    */
   liveUsageBoundary?: { turnId?: string; keys: string[] };
+  /** The task total (persisted) — a fold adds to it too (`foldTaskSpend`). */
+  taskUsage?: TaskUsage;
   // A session object carries many other fields.
   [key: string]: unknown;
 };
@@ -210,6 +214,13 @@ export function foldLiveUsage(
     folded.cacheCreateTokens += t.cacheCreateTokens;
     folded.costUsd += cost;
     session.usage.foldedLiveUsage = folded;
+    // The task total takes the same calls, remembered against the SDK session
+    // whose next result carries them again.
+    foldTaskSpend(
+      session,
+      { ...t, costUsd: cost },
+      typeof session.sessionId === 'string' && session.sessionId ? session.sessionId : undefined,
+    );
     const u = session.usage;
     const current =
       count(u.currentInputTokens) +

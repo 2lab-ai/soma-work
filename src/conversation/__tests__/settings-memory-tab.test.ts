@@ -29,6 +29,35 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
+// The memory-panel helpers the L1 functions call (#443 — pinned in
+// dashboard-affectui-memory-panel.test.ts): loaded alongside them, no assertion here changes.
+const L1_PANEL_FNS = [
+  'fmtNum',
+  'l1El',
+  'l1Fold',
+  'l1Reduced',
+  'l1FocusAct',
+  'l1Grow',
+  'l1Matches',
+  'l1ApplyView',
+  'l1Sync',
+  'l1Roll',
+  'l1TrayState',
+  'l1PaintTray',
+  'l1Notice',
+  'l1UndoArm',
+  'l1OpenDrafts',
+  'l1AddOpen',
+  'l1AddClose',
+  'l1Reveal',
+  'l1FocusAfterDelete',
+  'l1Say',
+  'l1Held',
+  'l1Unsay',
+  'l1TrayHeld',
+  'l1TrayHold',
+];
+
 function block(over: Record<string, unknown> = {}) {
   return {
     entries: ['테스트 전에 빌드', '배포는 dev 먼저'],
@@ -114,6 +143,7 @@ describe('개인 메모리 undo (review R5)', () => {
         'memKeepDraft',
         'memRecover',
         'paintRecover',
+        ...L1_PANEL_FNS,
       ],
       ['L1_LABELS'],
       {
@@ -155,6 +185,7 @@ describe('개인 메모리 — a repaint keeps what is typed (review R9)', () =>
     'memKeepDraft',
     'memRecover',
     'paintRecover',
+    ...L1_PANEL_FNS,
   ];
   function l1Page() {
     const els: Record<string, any> = { status: { textContent: '', setAttribute() {} } };
@@ -553,6 +584,7 @@ describe('개인 메모리 writes', () => {
         'memKeepDraft',
         'memRecover',
         'paintRecover',
+        ...L1_PANEL_FNS,
       ],
       ['L1_LABELS'],
       deps,
@@ -1900,10 +1932,12 @@ describe('관찰 기록 (에피소딕)', () => {
         'memKeepDraft',
         'memRecover',
         'paintRecover',
+        ...L1_PANEL_FNS,
       ],
       ['L1_LABELS'],
       {
         _mem: mem,
+        _memUndo: null, // the tray (#443) reads the undo state when it reports the clear
         document: { getElementById: () => ({ textContent: '', setAttribute() {} }) },
         apiWrite,
         paintL1: () => {},

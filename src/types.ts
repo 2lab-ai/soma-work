@@ -36,7 +36,7 @@ export type {
   WorkflowType,
 } from 'somalib/model-commands/session-types';
 
-import type { SdkUsageBaseline } from '@soma/slack/session-usage-math';
+import type { SdkUsageBaseline, TaskUsage } from '@soma/slack/session-usage-math';
 import type {
   HandoffContext,
   RenewState,
@@ -136,6 +136,9 @@ export interface ActionPanelPRStatus {
   approved?: boolean; // true if PR has been approved
   head?: string; // source branch
   base?: string; // target branch
+  /** Fetch provenance — see `PRStatusInfo.fetchedForUrl` in @soma/slack/action-panel-builder. */
+  fetchedForUrl?: string;
+  linkStatusAtFetch?: string;
 }
 
 export interface ActionPanelState {
@@ -407,6 +410,12 @@ export interface ConversationSession {
    * counts only the growth past this — see `toTurnUsage`.
    */
   sdkUsageBaseline?: SdkUsageBaseline;
+  /**
+   * SSOT 2026-10-26 T3 — what the whole task spent (main agent + every
+   * subagent), across SDK sessions, restarts and resets. Fed the same per-turn
+   * spend as `usage.total*`; persisted, never reset. The dashboard card's total.
+   */
+  taskUsage?: TaskUsage;
   // Renew command state
   renewState?: RenewState;
   // User message to execute after renew (e.g., "/renew PR 리뷰해줘" → "PR 리뷰해줘")
@@ -702,6 +711,14 @@ export interface ConversationSession {
    * `pendingRetryTimer` and `initialInstruction`).
    */
   pendingInstructionRejection?: { at: number; request: SessionResourceUpdateRequest };
+
+  /**
+   * How many `<session-title-pending>` notices the stream-executor has injected
+   * while the session wore a host stand-in title (voice / image-only first
+   * message). Capped by SESSION_TITLE_NOTICE_MAX_TURNS. Runtime-only — NOT
+   * persisted (same convention as `pendingInstructionRejection`).
+   */
+  titleNoticeCount?: number;
 
   // Dashboard improvements (v2.1):
   // Number of /compact invocations or SDK-triggered compact_boundary events observed on this session.

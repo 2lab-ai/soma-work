@@ -128,7 +128,10 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 }
 
 export interface MergeResult {
-  /** The merged config. Keys other than `plugin.marketplace` / `plugin.plugins` keep their value and order. */
+  /**
+   * The merged config. Keys other than `plugin.marketplace` / `plugin.plugins` / `plugin.envPlugins`
+   * keep their value and order.
+   */
   config: Record<string, unknown>;
   changed: boolean;
 }
@@ -137,7 +140,10 @@ export interface MergeResult {
  * Merge entries into a parsed config.json object (pure; the input is not mutated).
  * A marketplace entry replaces every entry of the same name, at the position of
  * the first one — the loader lets a later same-name entry win, so a leftover
- * duplicate would shadow the replacement. Plugin refs are appended once.
+ * duplicate would shadow the replacement. Plugin refs are appended once, to
+ * `plugin.plugins` (load it) and to `plugin.envPlugins` (it is an environment
+ * plugin: its skills run for non-admins only on an admin's grant — see
+ * `src/env-skill-registry.ts`).
  */
 export function mergeEnvPlugins(config: Record<string, unknown>, entries: EnvPluginLine[]): MergeResult {
   const plugin = config.plugin === undefined ? {} : config.plugin;
@@ -148,9 +154,13 @@ export function mergeEnvPlugins(config: Record<string, unknown>, entries: EnvPlu
   if (plugin.plugins !== undefined && !Array.isArray(plugin.plugins)) {
     throw new EnvPluginsError('config.json "plugin.plugins" is not an array; left untouched');
   }
+  if (plugin.envPlugins !== undefined && !Array.isArray(plugin.envPlugins)) {
+    throw new EnvPluginsError('config.json "plugin.envPlugins" is not an array; left untouched');
+  }
 
   let marketplace: unknown[] = [...((plugin.marketplace as unknown[] | undefined) ?? [])];
   const plugins: unknown[] = [...((plugin.plugins as unknown[] | undefined) ?? [])];
+  const envPlugins: unknown[] = [...((plugin.envPlugins as unknown[] | undefined) ?? [])];
 
   for (const entry of entries) {
     const sameName = (item: unknown) => isPlainObject(item) && item.name === entry.marketplace.name;
@@ -167,10 +177,11 @@ export function mergeEnvPlugins(config: Record<string, unknown>, entries: EnvPlu
     for (const name of entry.plugins) {
       const ref = `${name}@${entry.marketplace.name}`;
       if (!plugins.includes(ref)) plugins.push(ref);
+      if (!envPlugins.includes(ref)) envPlugins.push(ref);
     }
   }
 
-  const merged = { ...config, plugin: { ...plugin, marketplace, plugins } };
+  const merged = { ...config, plugin: { ...plugin, marketplace, plugins, envPlugins } };
   return { config: merged, changed: JSON.stringify(merged) !== JSON.stringify(config) };
 }
 
@@ -178,9 +189,10 @@ export function mergeEnvPlugins(config: Record<string, unknown>, entries: EnvPlu
  * Atomic write: same-directory temp (O_EXCL|O_NOFOLLOW) → fsync → chmod 0600 →
  * rename. Hand-rolled because `@soma/common/atomic-write` is not loadable
  * before `npm ci` on the target. No `.bak`: the merge only adds, and
- * sync-bundle would delete a backup on the next deploy anyway.
+ * sync-bundle would delete a backup on the next deploy anyway. Also used by
+ * `apply-deploy-sandbox.ts`, which writes the same file in the same step.
  */
-function writeConfigAtomically(configFile: string, content: string): void {
+export function writeConfigAtomically(configFile: string, content: string): void {
   const dir = path.dirname(configFile);
   const tmp = path.join(dir, `.${path.basename(configFile)}.tmp-${process.pid}-${randomBytes(6).toString('hex')}`);
   let fd: number | undefined;
@@ -227,7 +239,7 @@ function statOrNull(filePath: string, follow: boolean): fs.Stats | null {
  * before sync-bundle, which creates a missing target, so to the check a target
  * that does not exist yet is one without a config.json.
  */
-function inspectTarget(targetDir: string, checkOnly: boolean): { configFile: string; raw: string | null } {
+export function inspectTarget(targetDir: string, checkOnly: boolean): { configFile: string; raw: string | null } {
   const configFile = path.join(targetDir, 'config.json');
   const dir = statOrNull(targetDir, true);
   if (!dir) {

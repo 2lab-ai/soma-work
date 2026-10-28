@@ -9,9 +9,10 @@
  *     the board from 840px (no dim, the board stays live);
  *   - the board's column layout follows the inbox's own width (container
  *     query), not the viewport, so a docked drawer narrows it correctly;
- *   - Tasks and Artifacts stay pinned outside the scroll area (.prd/10
- *     §3.1-6), the static session info scrolls with the conversation, and
- *     the scroll area always keeps at least half of the panel body (R/2);
+ *   - the panel body is one scroll area (task view, SSOT 2026-10-27 — it
+ *     replaced the pinned Tasks/Artifacts rows and their R/2 floor): the
+ *     task's common surface (세션 정보, goal, 입력 필요, 산출물), then the
+ *     agent tabs (sticky at its top) and the focused agent's tab;
  *   - a change of layout mode {columns, panel closed|sheet|docked, view}
  *     animates the cards from where they were on screen to where they are
  *     now; a further resize while they fly retargets from the visible spot.
@@ -41,8 +42,15 @@ function clientFn(name: string): string {
   const end = TEMPLATE.indexOf('\n}\n', start);
   return cook(TEMPLATE.slice(start + 1, end + 2));
 }
-function load<T>(fns: string[]): T {
-  return new Function(`${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`)() as T;
+function clientVar(name: string): string {
+  const m = TEMPLATE.match(new RegExp(`^(var ${name} = .*?;)(?:\\s*//.*)?$`, 'm'));
+  if (!m) throw new Error(`client var ${name} not found`);
+  return cook(m[1]);
+}
+function load<T>(fns: string[], vars: string[] = []): T {
+  return new Function(
+    `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`,
+  )() as T;
 }
 function cssBlock(opening: string): string {
   const i = TEMPLATE.indexOf(opening);
@@ -141,52 +149,73 @@ describe('drawer — a sheet below 840px, docked beside the board from 840px', (
   });
 });
 
-describe('panel body — pinned Tasks and Artifacts, one main scroll, at least half the body (R/2)', () => {
+describe("panel body — one scroll area: the task surface, the sticky agent tabs, the focused agent's tab", () => {
   const panel = TEMPLATE.slice(TEMPLATE.indexOf('<div class="slide-panel" id="slide-panel">'));
   const at = (s: string) => panel.indexOf(s);
 
-  it('header → body (tasks, artifacts, scroll) → composer', () => {
+  it('header (자세히) → body (scroll: surface → tabs → tabpanel) → composer', () => {
     expect(at('<div class="panel-header">')).toBeGreaterThan(0);
-    expect(at('<div class="panel-body" id="panel-body">')).toBeGreaterThan(at('<div class="panel-header">'));
-    expect(at('<div class="panel-tasks" id="panel-tasks"></div>')).toBeGreaterThan(at('id="panel-body"'));
-    expect(at('id="panel-artifacts"')).toBeGreaterThan(at('id="panel-tasks"'));
-    expect(at('<div class="panel-scroll" id="panel-scroll">')).toBeGreaterThan(at('id="panel-artifacts"'));
-    expect(at('<div class="panel-command" id="panel-command">')).toBeGreaterThan(at('id="panel-scroll"'));
+    expect(at('id="panel-detail-toggle"')).toBeGreaterThan(at('<div class="panel-header">'));
+    expect(at('<div class="panel-body" id="panel-body">')).toBeGreaterThan(at('id="panel-detail-toggle"'));
+    expect(at('<div class="panel-scroll" id="panel-scroll">')).toBeGreaterThan(at('id="panel-body"'));
+    expect(at('<section class="panel-surface" id="panel-surface"')).toBeGreaterThan(at('id="panel-scroll"'));
+    expect(at('id="panel-artifacts"')).toBeGreaterThan(at('id="panel-surface"'));
+    expect(at('<div class="panel-tabs" id="panel-tabs" role="tablist"')).toBeGreaterThan(at('id="panel-artifacts"'));
+    expect(at('<section class="panel-tabpanel" id="panel-tabpanel" role="tabpanel"')).toBeGreaterThan(
+      at('id="panel-tabs"'),
+    );
+    expect(
+      at('<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>'),
+    ).toBeGreaterThan(at('id="panel-tabpanel"'));
+    expect(at('id="panel-turns"')).toBeGreaterThan(at('id="panel-tasks"'));
+    expect(at('<div class="panel-command" id="panel-command">')).toBeGreaterThan(at('id="panel-turns"'));
+    // One scroll area in the body.
+    expect(panel.slice(0, at('id="panel-command"')).split('class="panel-scroll"').length - 1).toBe(1);
   });
 
-  it('the static session info (controls, meta, links, tokens, agents) scrolls with the conversation, above it', () => {
+  it('the static session info (세션 정보, goal) scrolls with the conversation, above it; agents follow the question (spec 13)', () => {
     const scroll = at('<div class="panel-scroll" id="panel-scroll">');
     const question = at('id="panel-question"');
-    for (const id of ['panel-controls', 'panel-meta', 'panel-links', 'panel-tokens', 'panel-agents']) {
+    for (const id of ['panel-info', 'panel-goal']) {
       expect(at(`id="${id}"`), id).toBeGreaterThan(scroll);
       expect(at(`id="${id}"`), id).toBeLessThan(question);
     }
+    expect(at('id="panel-agents"')).toBeGreaterThan(question);
+    expect(at('id="panel-agents"')).toBeLessThan(at('id="panel-worklog"'));
+    // Model · effort sit beside the composer, outside the scroll area.
+    expect(at('id="panel-controls"')).toBeGreaterThan(at('<div class="panel-command" id="panel-command">'));
   });
 
-  it('the body is a grid whose last row (the scroll area) never gets less than half of it', () => {
+  it('the body is a flex column whose one scroll area takes every row left (no grid, no pinned rows)', () => {
     const body = rule('.panel-body');
-    expect(body).toContain('display: grid');
-    // Half the body — unless the two pinned 44px floors leave less, so no row ever
-    // overflows the body (which clips) on the shortest docked screens.
-    expect(body).toContain('grid-template-rows: auto auto minmax(min(50%, calc(100% - 88px)), 1fr)');
+    expect(body).toContain('display: flex');
+    expect(body).toContain('flex-direction: column');
     expect(body).toContain('container: pbody / size');
-    expect(rule('.panel-scroll')).toContain('grid-row: 3');
+    expect(body).not.toContain('display: grid');
+    expect(body).not.toContain('grid-template-rows');
+    const scroll = rule('.panel-scroll');
+    expect(scroll).toContain('flex: 1 1 auto');
+    expect(scroll).toContain('overflow-y: auto');
+    expect(scroll).toContain('min-height: 0');
+    expect(scroll).not.toContain('grid-row');
+    // The agent tabs stay at the top of the scroll area while the conversation scrolls.
+    const tabs = rule('.panel-tabs');
+    expect(tabs).toContain('position: sticky');
+    expect(tabs).toContain('top: 0');
   });
 
-  it('pinned blocks yield height down to one row and scroll inside; nothing is clipped', () => {
+  it('Tasks and Artifacts are no longer pinned: no grid row, no height cap, no inner scroll; nothing is clipped', () => {
     const tasks = rule('.panel-tasks');
-    expect(tasks).toContain('grid-row: 1');
-    expect(tasks).toContain('min-height: 44px');
-    expect(tasks).toContain('max-height: min(30vh, 240px)');
-    expect(tasks).toContain('overflow-y: auto');
+    expect(tasks).not.toBe('');
+    for (const pinned of ['grid-row', 'max-height', 'overflow']) expect(tasks, pinned).not.toContain(pinned);
     const arts = rule('.panel-artifacts');
-    expect(arts).toContain('grid-row: 2');
-    expect(arts).toContain('overflow-y: auto');
-    expect(arts).not.toContain('overflow: hidden');
+    expect(arts).not.toBe('');
+    for (const pinned of ['grid-row', 'max-height', 'overflow']) expect(arts, pinned).not.toContain(pinned);
+    expect(TEMPLATE).not.toContain('minmax(min(50%, calc(100% - 88px)), 1fr)');
   });
 
   it('a short body shows artifacts as name chips (no thumbnail), the play button inline; every tile stays reachable sideways', () => {
-    // 560px: below it, R/2 cannot hold full thumbnails plus a couple of task rows.
+    // 560px: below it, full thumbnails would push the conversation out of a short body.
     const compact = cssBlock('@container pbody (max-height: 560px) {');
     expect(compact).not.toBe('');
     expect(compact).toContain('.art-strip-panel .art-thumb { display: none; }');
@@ -216,8 +245,10 @@ describe('board columns follow the inbox width, not the viewport', () => {
 
 describe('phones — nothing zooms, nothing hides behind the FAB, nothing runs off the edge', () => {
   it('text inputs in the drawer are 16px on touch screens (iOS does not zoom into them)', () => {
+    // The composer is a multiline <textarea id="cmd-input"> (task view T1.5).
+    expect(TEMPLATE).toContain('<textarea id="cmd-input" rows="1"');
     expect(TEMPLATE).toMatch(
-      /@media \(pointer: coarse\) \{\n {2}\/\* Responsive[^@]*\.panel-command input, \.mc-custom-input input \{ font-size: 16px; \}/,
+      /@media \(pointer: coarse\) \{\n {2}\/\* Responsive[^@]*\.panel-command textarea, \.mc-custom-input input \{ font-size: 16px; \}/,
     );
   });
 
@@ -420,6 +451,13 @@ describe('views merged from #374 follow the same device contract', () => {
 });
 
 describe('settings page — reached from the dashboard top bar', () => {
+  it('every text field on every tab (the #379 memory tab too) is 16px on touch screens', () => {
+    const settingsTs = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
+    expect(settingsTs).toContain(
+      '  input[type="text"], input[type="search"], input[type="number"], select, textarea { font-size: 16px !important; }',
+    );
+  });
+
   const SETTINGS_TS = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
 
   it('its text inputs and selects are 16px on touch screens (iOS does not zoom into them)', () => {
@@ -473,5 +511,277 @@ describe('merged views — trinity code review R4 follow-ups', () => {
     const settings = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
     const coarse = settings.slice(settings.indexOf('@media (pointer: coarse) {'));
     expect(coarse.slice(0, coarse.indexOf('\n}'))).toContain('.side input[type="search"]');
+  });
+});
+
+describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on small screens', () => {
+  // Measured with both sections populated: the first board card sat at 989–1247px on
+  // every phone and foldable posture and at 864px on a 1440×900 PC (trinity design
+  // consult: a disclosure, collapsed unless the window is at least 840×1000).
+  it('the default is open only on a large window (840 wide and 1000 tall); a saved choice wins', () => {
+    const { secOpen } = load<{ secOpen: (saved: string | null, large: boolean) => boolean }>(['secOpen']);
+    expect(secOpen(null, false)).toBe(false);
+    expect(secOpen(null, true)).toBe(true);
+    expect(secOpen('open', false)).toBe(true);
+    expect(secOpen('closed', true)).toBe(false);
+    expect(TEMPLATE).toContain("var SEC_OPEN_QUERY = '(min-width: 840px) and (min-height: 1000px)';");
+    // capacity v2 is taller: it opens on its own only on a 1400px+ tall window (board first)
+    // capacity v2 starts folded on every window (its chips carry both measures); the
+    // reader's unfold choice persists
+    expect(clientFn('secIsOpen')).toContain(
+      "secOpen(saved, sec === 'capacity' ? false : !!(_secMql && _secMql.matches))",
+    );
+    expect(TEMPLATE).not.toContain('SEC_OPEN_QUERY_CAPACITY');
+  });
+
+  it('the toggles are static buttons outside the regions that are re-rendered (focus and state survive repaints)', () => {
+    const cap = TEMPLATE.slice(TEMPLATE.indexOf('<section class="capacity" id="capacity"'));
+    const capSection = cap.slice(0, cap.indexOf('</section>'));
+    expect(capSection).toMatch(
+      /<button type="button" class="sec-toggle" id="capacity-toggle" data-sec-toggle="capacity" aria-expanded="false" aria-controls="capacity-view">/,
+    );
+    expect(capSection).toContain('<div class="capacity-view" id="capacity-view"></div>');
+    const lane = TEMPLATE.slice(TEMPLATE.indexOf('<div class="cron-lane" id="cron-lane"'));
+    const laneBar = lane.slice(0, lane.indexOf('<div class="cron-groups"'));
+    expect(laneBar).toContain('<div class="cron-lane-head" id="cron-lane-head"></div>');
+    expect(laneBar).toMatch(
+      // #444 (PR review R1): the fold hides the tiles, the queue and the chart too, so it controls them all.
+      /<button type="button" class="sec-toggle" id="cron-toggle" data-sec-toggle="cron" aria-expanded="false" aria-controls="cron-lane-top cron-queue cron-groups cron-lane-chart">/,
+    );
+    // paintCapacity writes its timeline into the view, never over the toggle.
+    expect(clientFn('paintCapacity')).toContain("getElementById('capacity-view')");
+  });
+
+  it('a collapsed capacity shows one chip per provider: both measures in max accounts, a state glyph, the next event as its tooltip', () => {
+    const fns = load<{ renderCapacitySummary: (v: unknown, nowMs: number) => string }>(
+      [
+        'esc',
+        'escAttr',
+        'pad2',
+        'capCountdown',
+        'capClockLabel',
+        'capFmt1',
+        'capGain',
+        'capPct',
+        'capNextLine',
+        'capAdvance',
+        'capCount',
+        'capDur',
+        'capAssumed',
+        'renderCapacitySummary',
+      ],
+      ['CAP_CAUSE', 'CAP_WORD', 'CAP_5H', 'CAP_7D'],
+    );
+    const nowS = 1_800_000_000;
+    const ev = (cause: string, at: number, dNow: number, dWeek: number) => ({
+      account: 'a',
+      cause,
+      at: nowS + at,
+      dNow,
+      dWeek,
+    });
+    const html = fns.renderCapacitySummary(
+      {
+        available: true,
+        groups: [
+          { label: 'Claude', state: 'ok', has5h: true, total: 16, now: 6.2, week: 6.3, events: [ev('7d', 7200, 1, 1)] },
+          {
+            label: 'Codex',
+            state: 'low',
+            has5h: false,
+            total: 2.4,
+            now: 0.3,
+            week: 0.3,
+            events: [ev('7d', 3600, 1, 1)],
+          },
+          {
+            label: 'Gemini',
+            state: 'empty',
+            has5h: true,
+            total: 1,
+            now: 0,
+            week: 0.5,
+            events: [ev('release', 600, 0.5, 0)],
+          },
+          { label: 'Other', state: 'unknown', has5h: true, total: 0, now: 0, week: 0, events: [] },
+        ],
+      },
+      nowS * 1000,
+    );
+    expect(html).toContain('class="cap-summary"');
+    expect(html).not.toContain('aria-live');
+    // The glyph leads (the state shows first even where the row scrolls); the whole
+    // sentence is the chip's accessible name.
+    // Requirement 1a while folded: each measure as max accounts' worth AND % of the total.
+    expect(html).toMatch(
+      /cap-chip is-ok"[^>]*>Claude <span class="cap-m is-now"><i class="cap-chip-k">지금 <\/i><b>6\.2<\/b><i class="cap-chip-of">\/16\.0<\/i> <em>39%<\/em><\/span> · <span class="cap-m is-wk"><i class="cap-chip-k">주 <\/i><b>6\.3<\/b><i class="cap-chip-of">\/16\.0<\/i> <em>39%<\/em><\/span>/,
+    );
+    // weekly-only: the total rides on the one measure
+    expect(html).toMatch(
+      /cap-chip is-low"[^>]*>▲ Codex <span class="cap-m is-wk"><i class="cap-chip-k">주 <\/i><b>0\.3<\/b><i class="cap-chip-of">\/2\.4<\/i> <em>13%<\/em><\/span>/,
+    );
+    expect(html).toMatch(
+      /cap-chip is-empty"[^>]*>✗ Gemini <span class="cap-m is-now"><i class="cap-chip-k">지금 <\/i><b>0\.0<\/b><i class="cap-chip-of">\/1\.0<\/i> <em>0%<\/em>/,
+    );
+    expect(html).toMatch(/cap-chip is-unknown"[^>]*>◌ Other <b>—<\/b>/);
+    // r7: the tooltip speaks the card's words — 계정, 시간·분, 일주일 리셋.
+    expect(html).toMatch(/cap-chip is-low" title="[^"]*다음 \+1\.0계정 · 1시간 0분 후 \([^)]*\) · ◆ a 일주일 리셋/);
+    // the tooltip carries the counts too, not only the next event
+    expect(html).toMatch(/cap-chip is-low" title="일주일 0\.3\/2\.4 계정 \(13%\)[^"]*1시간 0분 후/);
+    expect(html).toMatch(/aria-label="Codex 일주일 0\.3\/2\.4 계정 \(13%\) · 부족 — [^"]*1시간 0분 후/);
+    const off = fns.renderCapacitySummary({ available: false, reason: 'llmux unreachable', groups: [] }, nowS * 1000);
+    expect(off).toContain('가용량 미확인');
+    expect(off).toContain('llmux unreachable');
+  });
+
+  // Trinity mockup v5 (astra P1): the folded chip is the default view, so it carries what
+  // the card's disclosure line flags — a reading over a day old, and a pool where a fifth
+  // or more of the accounts is left out of the total. A fresh, (almost) full pool shows none.
+  it('a folded chip flags a day-old reading and a partly counted pool', () => {
+    const fns = load<{ renderCapacitySummary: (v: unknown, nowMs: number) => string }>(
+      [
+        'esc',
+        'escAttr',
+        'pad2',
+        'capCountdown',
+        'capClockLabel',
+        'capFmt1',
+        'capGain',
+        'capPct',
+        'capNextLine',
+        'capAdvance',
+        'capCount',
+        'capDur',
+        'capAssumed',
+        'renderCapacitySummary',
+      ],
+      ['CAP_CAUSE', 'CAP_WORD', 'CAP_5H', 'CAP_7D'],
+    );
+    const nowS = 1_800_000_000;
+    const g = (over: Record<string, unknown>) => ({
+      label: 'X',
+      state: 'ok',
+      has5h: false,
+      total: 2.4,
+      now: 2.37,
+      week: 2.37,
+      events: [],
+      accountCount: 5,
+      countedAccounts: 5,
+      oldestRefreshAt: nowS - 600,
+      ...over,
+    });
+    const html = fns.renderCapacitySummary(
+      {
+        available: true,
+        groups: [
+          g({ label: 'Codex', countedAccounts: 3, oldestRefreshAt: nowS - 5 * 86400 - 3600 }),
+          g({ label: 'Claude', has5h: true, total: 16, now: 5.2, week: 5.6, accountCount: 17, countedAccounts: 16 }),
+          g({ label: 'Gemini', oldestRefreshAt: nowS - 2 * 3600 }),
+          g({ label: 'Partial', countedAccounts: 3 }),
+          g({ label: 'Assumed', tierAssumed: 2, oldestRefreshAt: nowS - 5 * 86400 - 3600 }),
+        ],
+      },
+      nowS * 1000,
+    );
+    const chip = (name: string) =>
+      html.slice(html.indexOf(`>${name} `) - 200, html.indexOf('</span></span>', html.indexOf(`>${name} `)) + 200);
+    expect(html).toMatch(
+      />Codex [\s\S]*?<em>99%<\/em><\/span> <i class="cap-chip-flag">⚠ 5일 전 · 3\/5 반영<\/i><\/span>/,
+    );
+    expect(html).toMatch(/aria-label="Codex 일주일 2\.37\/2\.4 계정 \(99%\) · 측정 5일 전 · 3\/5 반영/);
+    // one held account out of 17 and a two-hour-old reading are the card's business, not the chip's
+    expect(chip('Claude')).not.toContain('cap-chip-flag');
+    expect(chip('Gemini')).not.toContain('cap-chip-flag');
+    // any flag leads with ⚠; an assumed plan joins the same flag (review P2)
+    expect(html).toMatch(/>Partial [\s\S]*?<i class="cap-chip-flag">⚠ 3\/5 반영<\/i><\/span>/);
+    expect(html).toMatch(/>Assumed [\s\S]*?<i class="cap-chip-flag">⚠ 5일 전 · x20 가정 2<\/i><\/span>/);
+    expect(html).toMatch(/aria-label="Assumed [^"]*측정 5일 전 · 티어 미지정 2\(x20 가정\)/);
+    expect(TEMPLATE).toContain('.cap-chip .cap-chip-flag { color: var(--st-wait); font-weight: 600; }');
+  });
+
+  // Trinity mockup v5 (grok P1): every measure reads "count / total %" — the week too, and
+  // on phones too; the folded row wraps rather than drop a denominator.
+  it('phones keep labelled counts, totals and % for both windows; the folded row wraps instead', () => {
+    expect(TEMPLATE).not.toMatch(/\.cap-chip-of \{ display: none/);
+    expect(TEMPLATE).toContain(
+      '.capacity.is-collapsed .cap-summary { flex: 1 1 auto; flex-wrap: wrap; overflow-x: visible; gap: 4px; }',
+    );
+    // Below 840px (Duo cover ~300px, Duo inner 669px) a chip wider than the row breaks
+    // between its two measures, never inside one; both rules come after the base .cap-chip.
+    const wrap = '.cap-chip { flex: 0 1 auto; min-width: 0; flex-wrap: wrap; white-space: normal; column-gap: 4px; }';
+    expect(TEMPLATE).toContain(`@media (max-width: 839px) {`);
+    expect(TEMPLATE).toContain(wrap);
+    expect(TEMPLATE).toContain('.cap-chip .cap-m, .cap-chip .cap-chip-flag { white-space: nowrap; }');
+    expect(TEMPLATE).toContain('@media (max-width: 639px) { .cap-chip { padding: 2px 6px; font-size: 11px; } }');
+    for (const rule of [wrap, '.cap-chip { padding: 2px 6px; font-size: 11px; }'])
+      expect(TEMPLATE.indexOf(rule)).toBeGreaterThan(TEMPLATE.indexOf('.cap-chip {\n  flex: none;'));
+    expect(TEMPLATE).not.toMatch(/\.cap-chip[^{]*(?:\bb|em|cap-chip-k)[^{]*\{ display: none/);
+  });
+
+  it('collapsed: the timeline, legend and subtitle are hidden; the chips only show while collapsed', () => {
+    expect(TEMPLATE).toContain(
+      '.capacity.is-collapsed .cap-sub, .capacity.is-collapsed .cap-legend, .capacity.is-collapsed .cap-rows, .capacity.is-collapsed .cap-off { display: none; }',
+    );
+    expect(TEMPLATE).toContain('.capacity:not(.is-collapsed) .cap-summary { display: none; }');
+    expect(TEMPLATE).toContain('.cron-group[hidden] { display: none; }');
+    expect(TEMPLATE).toContain('@media (pointer: coarse) { .sec-toggle { min-height: 44px; } }');
+  });
+
+  it('a folded CRON lane drops the cards of every job that does not wait for a reply (out of the DOM, not display:none)', () => {
+    const slots = clientFn('cronLaneSlots');
+    expect(slots).toContain('cronLaneFolded()');
+    expect(slots).toContain('!g.waiting');
+    const sync = clientFn('syncCronLane');
+    expect(sync).toContain('sec.hidden = folded && !g.waiting;');
+  });
+
+  it('the disclosure state is part of the layout mode, so a toggle or a window change moves the board by FLIP', () => {
+    const { layoutModeKey } = load<{ layoutModeKey: (m: Record<string, string>) => string }>(['layoutModeKey']);
+    expect(layoutModeKey({ cols: 'full', panel: 'closed', view: 'board' })).toBe('full|closed|board');
+    expect(layoutModeKey({ cols: 'full', panel: 'closed', view: 'board', sec: 'cR' })).toBe('full|closed|board|cR');
+    expect(clientFn('currentLayoutMode')).toContain('secStateKey()');
+    expect(clientFn('runLayoutCheck')).toContain('applySectionState()');
+    const toggle = clientFn('toggleSection');
+    expect(toggle.indexOf('layoutBeforeChange()')).toBeGreaterThan(-1);
+    expect(toggle.indexOf('layoutBeforeChange()')).toBeLessThan(toggle.indexOf('localStorage.setItem'));
+  });
+
+  it('elements that are not rendered never enter the shift cache (no FLIP from the top-left corner)', () => {
+    expect(clientFn('collectViewMovers')).toContain('getClientRects().length');
+  });
+
+  it('a capacity paint that changes the page height refreshes the shift cache (it sits above the board, outside #inbox)', () => {
+    expect(clientFn('paintCapacity')).toContain('scheduleLayoutRefresh(');
+  });
+
+  it('a deep link into a folded CRON lane opens it for this page load only', () => {
+    expect(clientFn('openDeepLinkedSession')).toContain('_cronLaneRevealed = true;');
+    expect(clientFn('secIsOpen')).toContain('_cronLaneRevealed');
+  });
+});
+
+describe('secondary sections — trinity code review R1 follow-ups (astra)', () => {
+  it('a disclosure render leaves every board move to the coordinator (no FLIP from a half-revealed lane)', () => {
+    expect(clientFn('applyBoardPlan')).toContain('_boardFlipOff');
+    expect(clientFn('renderBoardForLayout')).toContain('_boardFlipOff = true;');
+    expect(clientFn('toggleSection')).toContain('renderBoardForLayout()');
+    expect(clientFn('runLayoutCheck')).toContain('renderBoardForLayout()');
+    expect(clientFn('toggleSection')).not.toContain('renderBoard(_lastBoardData)');
+  });
+
+  it('the 44px touch size comes after the toggle base rule, so it wins', () => {
+    const base = TEMPLATE.indexOf('.sec-toggle {\n  position: relative;\n  display: inline-flex;');
+    const touch = TEMPLATE.indexOf('@media (pointer: coarse) { .sec-toggle { min-height: 44px; } }');
+    expect(base).toBeGreaterThan(-1);
+    expect(touch).toBeGreaterThan(base);
+  });
+
+  it('a toggle works for this page even when storage refuses the write', () => {
+    expect(TEMPLATE).toContain('var _secChoice = {};');
+    expect(clientFn('toggleSection')).toMatch(
+      /_secChoice\[sec\] = open \? 'open' : 'closed';[\s\S]*localStorage\.setItem/,
+    );
+    expect(clientFn('secIsOpen')).toContain('_secChoice[sec]');
   });
 });

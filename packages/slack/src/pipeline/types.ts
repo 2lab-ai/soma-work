@@ -1,5 +1,5 @@
 import type { IncidentRequest } from '../incident-contract';
-import type { SdkUsageBaseline } from '../session-usage-math';
+import type { SdkUsageBaseline, TaskUsage } from '../session-usage-math';
 import type { SayPostSwitches } from '../stream-processor';
 
 export interface ProcessedFile {
@@ -12,6 +12,11 @@ export interface ProcessedFile {
   isAudio: boolean;
   size: number;
   tempPath?: string;
+  /** Slack file id and permalink — the dashboard keeps them with the user turn (user media). */
+  slackFileId?: string;
+  permalink?: string;
+  /** The bot could not fetch the file: over the download cap, or the download failed. `path` is ''. */
+  unavailable?: 'too_large' | 'download_failed';
 }
 
 export interface ConversationSession {
@@ -47,6 +52,8 @@ export interface ConversationSession {
   pendingModelSwitch?: { model: string; nickname: string; requestedAt: number; compactTs?: string; armed?: boolean };
   /** Last per-model SDK running total for `sessionId` (persisted) — see `toTurnUsage`. */
   sdkUsageBaseline?: SdkUsageBaseline;
+  /** What the whole task spent (persisted, never reset) — see `creditTaskSpend`. */
+  taskUsage?: TaskUsage;
   [key: string]: any;
 }
 

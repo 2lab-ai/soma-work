@@ -45,6 +45,20 @@ resolve_test_overrides() {
     return 0
 }
 
+# Every wait in this script goes through pause. In production it sleeps exactly the
+# seconds asked for. Under the test harness (SOMA_TEST_HARNESS=1, the same second
+# signal the overrides above need) SOMA_SERVICE_WAIT_SCALE multiplies each wait:
+# there launchctl and the daemon are shims, so a 15-second bootout poll or a
+# `sleep 2` after kickstart is pure wall-clock on the single CI runner. A missing
+# or malformed scale means the full wait.
+pause() {
+    local seconds="$1" scale="${SOMA_SERVICE_WAIT_SCALE:-}"
+    if [[ "${SOMA_TEST_HARNESS:-}" == "1" && "$scale" =~ ^[0-9]*\.?[0-9]+$ ]]; then
+        seconds="$(awk -v s="$seconds" -v k="$scale" 'BEGIN { printf "%.3f", s * k }')"
+    fi
+    sleep "$seconds"
+}
+
 resolve_env() {
     local env="$1"
     case "$env" in
@@ -852,7 +866,7 @@ start_headless_fallback() {
     # Wait for the app to acquire its PID lock (startup does channel scan etc.).
     local i
     for i in $(seq 1 25); do
-        sleep 1
+        pause 1
         if get_pidfile_pid >/dev/null 2>&1; then
             return 0
         fi
@@ -917,7 +931,7 @@ cmd_start() {
     if ! is_system_mode && is_registered; then
         print_warning "Service is registered but dead — unloading stale plist first"
         launchctl unload "$PLIST_PATH" 2>/dev/null || true
-        sleep 1
+        pause 1
     fi
 
     if is_system_mode; then
@@ -932,7 +946,7 @@ cmd_start() {
     fi
 
     load_and_kickstart
-    sleep 2
+    pause 2
 
     if is_alive; then
         # Name the domain that took the job: "started" on a headless host means
@@ -1042,7 +1056,7 @@ bootout_all_domains() {
                 still_held=0
                 break
             fi
-            sleep 1
+            pause 1
         done
         if [[ "$still_held" -eq 1 ]]; then
             print_error "Domain still holds the label after ${STOP_BOOTOUT_WAIT_SECONDS}s: $domain/$SERVICE_NAME"
@@ -1171,12 +1185,12 @@ terminate_pid() {
     kill "$pid" 2>/dev/null
     for i in 1 2 3 4 5; do
         kill -0 "$pid" 2>/dev/null || { print_success "Process stopped (pid=$pid)"; return 0; }
-        sleep 1
+        pause 1
     done
 
     print_warning "pid=$pid still alive, sending SIGKILL..."
     kill -9 "$pid" 2>/dev/null
-    sleep 1
+    pause 1
     if kill -0 "$pid" 2>/dev/null; then
         print_error "Failed to kill process (pid=$pid)"
         return 1
@@ -1230,7 +1244,7 @@ cmd_stop() {
             # stopped. The per-domain bootout below is the verdict.
             print_warning "launchctl unload $PLIST_PATH failed: ${unload_err:-<no stderr>} — the per-domain bootout below decides"
         fi
-        sleep 2
+        pause 2
 
         if ! is_registered; then
             print_success "Service stopped (LaunchAgent)"
@@ -1331,7 +1345,7 @@ cmd_restart() {
         print_error "Refusing to start on top of a failed stop."
         return 1
     fi
-    sleep 1
+    pause 1
     cmd_start
 }
 
@@ -1465,7 +1479,7 @@ cmd_verify_restart() {
         fi
 
         [[ "$(date +%s)" -ge "$deadline" ]] && break
-        sleep 2
+        pause 2
     done
 
     print_error "Restart NOT verified (version $want_version, --since $since, waited ${timeout}s)"
@@ -1520,7 +1534,7 @@ cmd_install() {
     fi
 
     load_and_kickstart
-    sleep 2
+    pause 2
 
     if is_alive; then
         print_success "Service installed and started (PID: $(get_pid))"
@@ -1692,7 +1706,7 @@ cmd_reinstall() {
     # Step 4: Start
     print_status "[4/4] Starting service..."
     load_and_kickstart
-    sleep 2
+    pause 2
 
     if is_alive; then
         echo ""

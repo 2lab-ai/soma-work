@@ -79,11 +79,17 @@ export interface LlmuxAccount {
   } | null;
   cooldown_until?: number | null;
   /**
-   * Exact plan string (Anthropic `rate_limit_tier`, e.g. `default_claude_max_20x`)
-   * when a future llmux reports it. Additive; absent today. Read by the
-   * dashboard tier map (auth/llmux-tiers.ts) after the operator's own map.
+   * Exact Claude plan (Anthropic `rate_limit_tier`, e.g. `default_claude_max_20x`),
+   * reported by llmux ≥ 0.2.26 (`.prd/25`). Additive; absent from older daemons.
+   * Read by the dashboard tier map (auth/llmux-tiers.ts) after the operator's own map.
    */
   rate_limit_tier?: string;
+  /** Codex plan (`chatgpt_plan_type`: `pro` = $200, `promax` = $500), llmux ≥ 0.2.26. */
+  plan_type?: string;
+  /** llmux's short plan label (`max20`, `max5`, `pro`, `promax`), llmux ≥ 0.2.26. Display only. */
+  plan?: string;
+  /** When llmux last measured this account's usage windows (epoch ms). */
+  last_refresh_ms?: number;
   in_flight?: number;
   totals?: { requests: number; input_tokens: number; output_tokens: number };
 }

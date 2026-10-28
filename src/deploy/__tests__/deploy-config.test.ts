@@ -102,4 +102,52 @@ describe('deploy config expectations', () => {
     expect(unset).toBeGreaterThan(apply);
     expect(install).toBeGreaterThan(unset);
   });
+
+  it('deploy step sets or revokes the per-runner deploy sandbox grant under the same channel rules', () => {
+    const workflow = read('.github/workflows/deploy.yml');
+
+    // Same secret handling as the env plugins: secrets, never variables, and no
+    // `a || b` that would hand production the preview list.
+    expect(workflow).toContain('DEPLOY_SANDBOX_PREVIEW: ${{ secrets.PREVIEW_DEPLOY_SANDBOX }}');
+    expect(workflow).toContain('DEPLOY_SANDBOX_PRODUCTION: ${{ secrets.PRODUCTION_DEPLOY_SANDBOX }}');
+    expect(workflow).not.toMatch(/vars\.(PREVIEW|PRODUCTION)_DEPLOY_SANDBOX/);
+    expect(workflow).not.toMatch(/PRODUCTION_DEPLOY_SANDBOX\s*\|\|/);
+    expect(workflow).not.toMatch(/\|\|\s*secrets\.PREVIEW_DEPLOY_SANDBOX/);
+    expect(workflow).toContain(
+      [
+        'if [[ "$ENV" == "main" ]]; then',
+        '            export DEPLOY_SANDBOX="$DEPLOY_SANDBOX_PRODUCTION"',
+        '          else',
+        '            export DEPLOY_SANDBOX="$DEPLOY_SANDBOX_PREVIEW"',
+        '          fi',
+      ].join('\n'),
+    );
+
+    // Check while the old service still runs; write between the sync and the
+    // restart, while RUNNER_LABEL / CHANNEL_RUNNER_LABELS are still set; and the
+    // restarted daemon inherits none of it.
+    const select = workflow.indexOf('export DEPLOY_SANDBOX="$DEPLOY_SANDBOX_PRODUCTION"');
+    const check = workflow.indexOf('node dist/deploy/apply-deploy-sandbox.js --check "$TARGET"');
+    const stop = workflow.indexOf('bash scripts/service.sh "$ENV" stop');
+    const sync = workflow.indexOf('bash scripts/deploy/sync-bundle.sh "$TARGET" "."');
+    const apply = workflow.indexOf('node dist/deploy/apply-deploy-sandbox.js "$TARGET"');
+    const unsetGrant = workflow.indexOf('unset DEPLOY_SANDBOX DEPLOY_SANDBOX_PREVIEW DEPLOY_SANDBOX_PRODUCTION');
+    const unsetLabels = workflow.indexOf(
+      'unset ENV_PLUGINS ENV_PLUGINS_PREVIEW ENV_PLUGINS_PRODUCTION RUNNER_LABEL CHANNEL_RUNNER_LABELS',
+    );
+    const install = workflow.indexOf('bash scripts/deploy/install-target.sh "$TARGET"');
+    expect(select).toBeGreaterThan(-1);
+    expect(check).toBeGreaterThan(select);
+    expect(stop).toBeGreaterThan(check);
+    expect(sync).toBeGreaterThan(stop);
+    expect(apply).toBeGreaterThan(sync);
+    expect(unsetGrant).toBeGreaterThan(apply);
+    expect(unsetLabels).toBeGreaterThan(apply);
+    expect(install).toBeGreaterThan(Math.max(unsetGrant, unsetLabels));
+
+    // A bundle without the writer or the rules it loads fails the smoke check.
+    const smoke = read('scripts/smoke/deploy-bundle.js');
+    expect(smoke).toContain("'dist/deploy/apply-deploy-sandbox.js'");
+    expect(smoke).toContain("'dist/sandbox/deploy-sandbox-rules.js'");
+  });
 });

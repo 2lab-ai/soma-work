@@ -675,7 +675,10 @@ const CANCEL_DENIED_TEXT = '취소가 거부되었습니다: 이 세션을 조�
  * click that never arrived — and every refusal branch below already answers.
  */
 const CANCEL_OK_TEXT = '취소했습니다 — 항목은 기록으로 남습니다.';
-const CANCEL_RUNNING_TEXT = '실행 중인 항목은 취소할 수 없습니다 — 패널의 중지 버튼을 쓰세요.';
+// The panel has no stop button since 2026-10-27 (only 세션 종료 remains), so
+// point at the stop paths that exist: `!` in the thread and the dashboard Stop.
+const CANCEL_RUNNING_TEXT =
+  '실행 중인 항목은 취소할 수 없습니다 — 멈추려면 스레드에 `!`를 보내거나 대시보드의 Stop을 쓰세요.';
 /**
  * A lost race is answered by bringing the CLICKED message forward, not by
  * pointing at a panel: the queue panel no longer renders the rows (A39), and the

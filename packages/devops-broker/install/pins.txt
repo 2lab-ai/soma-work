@@ -1,0 +1,12 @@
+# Official release archives install.sh accepts, by sha256. It never takes node or gh from a PATH.
+# <tool> <arch> <version> <sha256> <archive>
+# The gh version must equal GH_POLICY_GH_VERSION (packages/process-shared/src/devops/gh-policy.ts).
+#
+# gh: https://github.com/cli/cli/releases/download/v2.102.0/gh_2.102.0_checksums.txt
+#     (the same two digests are on the release assets: https://api.github.com/repos/cli/cli/releases/tags/v2.102.0)
+gh   arm64 2.102.0 da922c20d1792e5b2cbf375593d7a658acf034c12c84e007e71c76ef959c337e gh_2.102.0_macOS_arm64.zip
+gh   x64   2.102.0 b245f24eb2bf5f75b426b4c26da3651a107f8d5b6f4fddfbfccc5679041378b3 gh_2.102.0_macOS_amd64.zip
+# node: newest LTS line (24, "Krypton") per https://nodejs.org/dist/index.json on 2026-10-27;
+#       https://nodejs.org/dist/v24.22.1/SHASUMS256.txt (signed copy: SHASUMS256.txt.asc in the same directory)
+node arm64 24.22.1 89c682593d76cd44233fa53b1563264e7de9cbb189cad169135c5b4fadfbc0a7 node-v24.22.1-darwin-arm64.tar.gz
+node x64   24.22.1 d132557e7ee2b85af08b0c8c34338e65c6430f2238d01f727728ef42dc83b035 node-v24.22.1-darwin-x64.tar.gz

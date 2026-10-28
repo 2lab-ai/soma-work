@@ -42,7 +42,7 @@ Files: [`template.html`](./template.html) holds the layout. The left pane has ti
 
 ## Steps
 
-Each step is a separate shell call, and shell variables do not carry over between them: paste the paths step 1 prints. Bundled files are reached through `$CLAUDE_PLUGIN_ROOT/skills/<skill>/…`.
+Each step is a separate shell call, and shell variables do not carry over between them: paste the paths step 1 prints. Bundled files are reached through `$CLAUDE_PLUGIN_ROOT/skills/<skill>/…`. `$CLAUDE_PLUGIN_ROOT` is two directories above this skill's base directory (`…/skills/qa-report` → `…`); shells usually do not set it, so write the absolute path.
 
 **1. Build the HTML.** `shots` is the calling profile's screenshots directory (`qaEnv`); standalone, use the `shots=` argument:
 
@@ -53,7 +53,7 @@ node "$CLAUDE_PLUGIN_ROOT/skills/qa-report/scripts/build.mjs" --input <report-in
 
 It prints one JSON line: `html`, `png` (the path to render to), `keys`, `pass`, `fail`, `other`, `missingFields`, `masked`, `shots`, `shotProblems`. A non-zero exit means bad input (the message says which). Fix the input; never hand-write the HTML instead.
 
-**2. Render the PNG** with the `html` and `png` paths from step 1. In the same call, run the `local:html` Step 6 validation block with `PNG=<png from step 1>`. Allow one retry on a transient render error. If the retry also fails, report the error with the HTML path, because the HTML stands alone:
+**2. Render the PNG** with the `html` and `png` paths from step 1. In the same call, run the `local:html` Step 6 validation block with `PNG=<png from step 1>`. Allow one retry on a transient render error. A PNG that cannot be rendered never fails the report: if the retry also fails (the headless browser cannot start, the render exits non-zero, or the validation fails), keep the HTML, which stands alone, and return `png=none png-error=<one-line reason>` in step 3:
 
 ```bash
 node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/render.mjs" --input <html from step 1> --output <png from step 1> --width 1440 --height 1200 --full-page
@@ -61,7 +61,8 @@ node "$CLAUDE_PLUGIN_ROOT/skills/html/renderer/render.mjs" --input <html from st
 
 **3. Return one line**, with every count copied from step 1's output (never counted by eye):
 `qa-report: html=<abs> png=<abs> keys=<n> pass=<n> fail=<n> other=<n> missing-fields=<n> masked=<n> shot-problems=<n>`
-When a skill called qa-report, stop here. Serving and posting (thread first, then the summary channel) belong to the caller and its profile's `report`, so qa-report never posts in that case and nothing is posted twice. Standalone only: upload the PNG and then the HTML to the current thread as in `local:html` Step 8. Without Slack tools, print the paths.
+(`png=none png-error=<one-line reason>` when step 2 could not render it; the caller then uploads the HTML alone and says the PNG was not rendered.)
+When a skill called qa-report, stop here. Serving and posting (the calling thread, then the summary channel when the profile's `report` names one) belong to the caller and its profile's `report`, so qa-report never posts in that case and nothing is posted twice. A served link is not required: uploading the HTML and PNG to the thread with the session's Slack file tool (e.g. slack-mcp `send_file` / `send_media`) is an equal alternative. Standalone only: upload the PNG and then the HTML to the current thread as in `local:html` Step 8 (without a PNG, the HTML alone plus `PNG not rendered: <reason>`). Without Slack tools, print the paths.
 
 ## Shared masker
 

@@ -1,81 +1,124 @@
 /**
- * LLM capacity view for the dashboard cooldown timeline (SSOT 2026-10-23
- * T7/T9/T10; trinity scope consult D5/D6). Pure: an llmux `/llmux/status`
- * snapshot + the account → tier map + a clock → one row per provider group.
+ * LLM capacity view v2 (2026-10-25; trinity mockup review r1–r4). Pure: an
+ * llmux `/llmux/status` snapshot + the account → tier map + a clock → one
+ * row per provider group that answers the dashboard's two questions:
+ *
+ *   1. How many max accounts' worth is left — usable NOW and THIS WEEK?
+ *   2. What comes back, when, and through which reset (5h vs weekly)?
  *
  * Honest numbers only:
- *   - llmux reports window UTILIZATION (0..1), not tokens — every figure here
- *     is a remaining RATE (잔여율 %).
- *   - An account's availability is its BINDING window: the smaller remaining of
- *     5h and 7d. Model-scoped weekly windows (e.g. Fable) bind only their model,
- *     so they are shown as markers but never lower the account's availability.
- *   - A blocked / cooling / auth-failed account has 0 available.
- *   - The group % is the UNWEIGHTED mean over measured accounts. A plan price is
- *     not a token ratio, so the tier is colour + label only.
- *   - A window past its reset is stale and left out on its own; an account
- *     with no measurable binding window is unknown (미확인) and excluded.
- *   - `nextRefill` (a usable account's BINDING window resets: its
- *     availability rises) and `nextReturn` (a blocked account is usable
- *     again, every block lifted) are different events.
+ *   - llmux reports window UTILIZATION, not tokens. "계정분" (account-
+ *     equivalents) = Σ tier weight × remaining ratio — a normalised estimate.
+ *   - Per account: now = min(5h remaining, weekly remaining) unless a block is
+ *     active; week = weekly remaining. A group with no five_hour data at all
+ *     (Codex today) has one measure: now = week.
+ *   - Blocks are tracked on their own — weekly ceiling (lifts at the weekly
+ *     reset), 5h ceiling (5h reset), cooldown over 120 s (cooldown_until),
+ *     model-scoped ceiling such as "fable …" (that window's reset). A block
+ *     whose lift time is unknown — paused, auth failure, a cooldown with no
+ *     end, any other reason — is HELD: out of the totals, no return drawn.
+ *   - A reset that already passed counts the window as full and is flagged
+ *     as an estimate only where it moves a number. An unblocked account with
+ *     no 5h measurement adds nothing to "now" (counted apart).
+ *   - Held and no weekly measurement stay out of the totals. An untiered Claude
+ *     account counts as Max x20 (`tierAssumed`); an untiered Codex account stays out.
+ *   - The forecast replays each account's events in time order (at one instant
+ *     block lifts first, then the 5h reset, then the weekly reset; nothing is
+ *     merged). Each event carries its own weighted before/after deltas.
  */
 
 import type { LlmuxAccount, LlmuxScopedWindow, LlmuxStatus, LlmuxWindow } from '../auth/llmux-client';
-import { type LlmuxTierId, llmuxAccountLocalName, resolveAccountTier } from '../auth/llmux-tiers';
+import { LLMUX_TIERS, type LlmuxTierId, llmuxAccountLocalName, resolveAccountTier } from '../auth/llmux-tiers';
 import { accountGroup, groupAccounts, providerName, remaining, resetAt } from '../slack/auth/capacity';
 
-/** Below this group % a row reads "low". */
+/** Below this share of the group's total, the primary measure reads "low". */
 export const CAPACITY_LOW_PCT = 20;
+/** A cooldown at most this long is throttling, not a block (seconds). */
+export const TRANSIENT_COOLDOWN_SECS = 120;
+/** The forecast reaches one weekly window ahead (seconds). */
+export const CAPACITY_HORIZON_SECS = 7 * 86400;
 
-export interface CapacityMarker {
-  account: string;
-  tier?: LlmuxTierId;
-  /** '5h' · '7d' · '7d-<scope>' · 'cooldown'. */
-  window: string;
-  /** Epoch seconds. */
-  at: number;
-  /** Percentage points this window gives back when it resets (its utilization). */
-  gainPct: number;
-  /** The account is blocked and this is the moment it is usable again. */
-  returns: boolean;
-  /**
-   * This reset raises the account's availability (it is the binding window,
-   * or the account's return). A reset of a non-binding window — 5h while 7d
-   * binds, a model-scoped window — is drawn but supplies nothing usable.
-   */
-  raises: boolean;
+export type CapacityCause = '5h' | '7d' | 'release';
+export type CapacityHeld = 'paused' | 'auth' | 'other';
+export type CapacityExclusion = 'held' | 'noMeasure' | 'unknownTier';
+
+export interface CapacityBlocks {
+  /** Weekly ceiling ("7d …"), lifts at the weekly reset. */
+  weekly: boolean;
+  /** 5h ceiling ("5h …"), lifts at the 5h reset. */
+  fiveHour: boolean;
+  /** A cooldown longer than a throttle: lifts at this epoch second. */
+  cooldownUntil?: number;
+  /** A model-scoped ceiling ("fable …"): lifts at this epoch second. */
+  scopedUntil?: number;
 }
 
-export interface CapacityAccountView {
+export interface CapacityUnit {
+  /** Short label (`ai7`); masked when llmux runs anonymous. */
   name: string;
   tier?: LlmuxTierId;
+  /** Share of the provider's top plan; null when the tier is unknown. */
+  weight: number | null;
+  /** Counted on {@link ASSUMED_TIER} — no configured or reported tier (operator, 2026-10-26). */
+  tierAssumed?: true;
   status: string;
-  /** Binding remaining in %, or null when unknown / stale. */
-  availablePct: number | null;
+  /** Usable now, 0..1 of this account (unweighted). */
+  now: number;
+  /** This week's remaining, 0..1 of this account (unweighted). */
+  week: number;
   blocked: boolean;
-  stale: boolean;
-  /** Epoch seconds the account is usable again; absent when not blocked or unknown (auth failure). */
+  held?: CapacityHeld;
+  blocks: CapacityBlocks;
+  /** A passed reset decides a number this account contributes. */
+  estimated: boolean;
+  /** Unblocked, 5h group, but no 5h measurement: adds nothing to "now". */
+  unmeasured5h: boolean;
+  counted: boolean;
+  excluded?: CapacityExclusion;
+  /** Which window caps a usable account. */
+  binding?: '5h' | '7d';
+  /** Epoch seconds every block has lifted (blocked, counted accounts). */
   returnAt?: number;
 }
 
 export interface CapacityEvent {
   account: string;
   tier?: LlmuxTierId;
-  window: string;
+  /** The account's tier is assumed ({@link ASSUMED_TIER}), not configured. */
+  tierAssumed?: true;
+  cause: CapacityCause;
+  /** Epoch seconds. */
   at: number;
+  /** Weighted change to "now" (account-equivalents). */
+  dNow: number;
+  /** Weighted change to "this week" (account-equivalents). */
+  dWeek: number;
 }
 
 export interface CapacityGroupView {
   group: string;
   label: string;
-  availablePct: number | null;
-  availableAccounts: number;
-  unknownAccounts: number;
-  totalAccounts: number;
+  /** The group has 5h data: two measures. Otherwise "now" equals "week". */
+  has5h: boolean;
+  accountCount: number;
+  countedAccounts: number;
+  /** Σ weight of the counted accounts (account-equivalents). */
+  total: number;
+  now: number;
+  week: number;
+  /** Usable accounts by the window that caps them. */
+  binding: { fiveHour: number; weekly: number };
+  excluded: { unknownTier: number; held: number; noMeasure: number };
+  /** Counted accounts whose tier is assumed ({@link ASSUMED_TIER}), not configured. */
+  tierAssumed: number;
+  estimated: number;
+  unmeasured5h: number;
   state: 'ok' | 'low' | 'empty' | 'unknown';
-  nextRefill?: CapacityEvent;
-  nextReturn?: CapacityEvent;
-  markers: CapacityMarker[];
-  accounts: CapacityAccountView[];
+  /** Oldest llmux measurement among the counted accounts (epoch seconds). */
+  oldestRefreshAt?: number;
+  /** Replayed forecast, time order, within {@link CAPACITY_HORIZON_SECS}. */
+  events: CapacityEvent[];
+  units: CapacityUnit[];
 }
 
 export interface CapacityView {
@@ -86,13 +129,25 @@ export interface CapacityView {
   groups: CapacityGroupView[];
 }
 
-const EXHAUSTED = 1e-6;
-/** A cooldown at most this long is throttling, not a block (seconds). */
-export const TRANSIENT_COOLDOWN_SECS = 120;
+const EPS = 1e-9;
+const FIVE_HOURS = 5 * 3600;
+/** Providers whose plans always carry a 5h window. */
+const FIVE_HOUR_GROUPS = new Set(['claude']);
+/** Providers with plan tiers (and so a max-account unit). */
+const PLAN_GROUPS = new Set(Object.values(LLMUX_TIERS).map((t) => t.provider as string));
+const ORDER: Record<CapacityCause, number> = { release: 0, '5h': 1, '7d': 2 };
+/**
+ * The tier an untiered account is counted as, per provider. Operator's rule
+ * (2026-10-26, after a dev host read "계산 불가" for want of SOMA_LLMUX_ACCOUNT_TIERS):
+ * a Claude account with no configured or reported plan counts as Max x20, and the
+ * view says so (`tierAssumed`). Codex has no such rule — its untiered accounts stay out.
+ */
+export const ASSUMED_TIER: Readonly<Record<string, LlmuxTierId>> = Object.freeze({ claude: 'claude-max-20x' });
 
-function current0(pct: number | null): number | null {
-  return pct === null ? null : pct / 100;
-}
+const round = (x: number, places = 4): number => {
+  const f = 10 ** places;
+  return Math.round(x * f) / f;
+};
 
 /** `kim.lee@corp.example` → `k***@corp.example` (only when llmux runs anonymous). */
 function maskName(name: string, anonymous: boolean): string {
@@ -122,180 +177,341 @@ function accountLabels(accounts: LlmuxAccount[], group: string, anonymous: boole
   });
 }
 
-function scopedLabel(window: LlmuxScopedWindow, index: number): string {
-  return `7d-${(window.scope_label ?? `scoped${index + 1}`).toLowerCase()}`;
-}
-
-interface WindowReading {
-  label: string;
-  window: LlmuxWindow;
-  binding: boolean;
-  remaining?: number;
+interface WindowRead {
+  /** Remaining 0..1; undefined when not measurable. */
+  rem?: number;
+  /** Known reset, epoch seconds. */
   at?: number;
+  /** The reset already passed: the window is full by estimate. */
+  passed: boolean;
+  /** What the stale reading said before that passed reset (when it was valid). */
+  before?: number;
 }
 
-function readings(account: LlmuxAccount, nowMs: number): WindowReading[] {
-  const out: WindowReading[] = [];
-  const push = (label: string, window: LlmuxWindow | null | undefined, binding: boolean) => {
-    if (!window) return;
-    out.push({ label, window, binding, remaining: remaining(window, nowMs), at: resetAt(window, nowMs) });
-  };
-  push('5h', account.five_hour, true);
-  push('7d', account.seven_day, true);
-  const scoped = Array.isArray(account.scoped_limits) && account.scoped_limits.length > 0 ? account.scoped_limits : [];
-  if (scoped.length) scoped.forEach((w, i) => push(scopedLabel(w, i), w, false));
-  else if (account.fable_weekly) push('7d-fable', account.fable_weekly, false);
-  return out;
+function readWindow(window: LlmuxWindow | null | undefined, nowMs: number): WindowRead | undefined {
+  if (!window) return undefined;
+  const at = resetAt(window, nowMs);
+  if (at !== undefined && at <= nowMs / 1000) {
+    const u = window.utilization;
+    const before = Number.isFinite(u) && u >= 0 && u <= 1 ? 1 - u : undefined;
+    return { rem: 1, at, passed: true, ...(before !== undefined ? { before } : {}) };
+  }
+  return { rem: remaining(window, nowMs), at, passed: false };
 }
 
-function accountView(
+/** The scoped window a "<scope> …" block names, e.g. "fable 99.0% > 98%". */
+function scopedWindow(account: LlmuxAccount, scope: string): LlmuxScopedWindow | undefined {
+  const list = Array.isArray(account.scoped_limits) ? account.scoped_limits : [];
+  const hit = list.find((w) => (w.scope_label ?? '').toLowerCase() === scope);
+  if (hit) return hit;
+  return scope === 'fable' && account.fable_weekly ? account.fable_weekly : undefined;
+}
+
+interface AccountState {
+  unit: CapacityUnit;
+  weight: number;
+  rem5: number | null;
+  rem7: number;
+  r5?: number;
+  r7?: number;
+  bWeek: boolean;
+  b5h: boolean;
+  bCool: number;
+  bScoped: number;
+  unmeasured5: boolean;
+  /**
+   * Blocked with no 5h measurement: full only if it will have sat idle a whole
+   * 5h window by the time it lifts (trinity r4, astra); otherwise unmeasured.
+   */
+  idle5: boolean;
+}
+
+const isBlocked = (s: AccountState): boolean => s.bWeek || s.b5h || s.bCool > 0 || s.bScoped > 0;
+const usable = (s: AccountState): number => (isBlocked(s) || s.unmeasured5 ? 0 : Math.min(s.rem5 ?? 1, s.rem7));
+
+function initAccount(
   account: LlmuxAccount,
-  tier: LlmuxTierId | undefined,
   name: string,
+  tier: LlmuxTierId | undefined,
+  tierAssumed: boolean,
+  has5h: boolean,
   nowMs: number,
-): { view: CapacityAccountView; markers: CapacityMarker[] } {
+): { unit: CapacityUnit; state?: AccountState; refreshedAt?: number } {
   const nowS = nowMs / 1000;
-  const all = readings(account, nowMs);
-  const binding = all.filter((r) => r.binding);
-  const stale = binding.some((r) => r.remaining === undefined);
-  const measured = binding.filter((r) => r.remaining !== undefined);
-  const authFailed = account.status === 'auth_failed';
-  const cooling = Number.isFinite(account.cooldown_until) && (account.cooldown_until ?? 0) > nowS;
   const reason = typeof account.blocked === 'string' ? account.blocked.trim().toLowerCase() : '';
-  // A cooldown that lifts within a couple of minutes is llmux backing off a
-  // burst (429), not a supply problem (live: "cooldown 6s" on accounts with
-  // most of their windows left). It neither zeroes the account nor needs a
-  // return marker; a longer cooldown blocks as before.
-  // A snapshot can still say "cooldown" just after cooldown_until passed —
-  // that throttle is over, so it counts the same way.
-  const throttled =
-    Number.isFinite(account.cooldown_until) &&
-    (account.cooldown_until as number) - nowS <= TRANSIENT_COOLDOWN_SECS &&
-    (reason === '' || reason.startsWith('cooldown'));
-  const exhausted = measured.filter((r) => (r.remaining ?? 1) <= EXHAUSTED);
-  const blocked =
-    authFailed ||
-    (!throttled && (cooling || account.status === 'cooldown' || !!account.blocked)) ||
-    exhausted.length > 0;
+  const five = readWindow(account.five_hour, nowMs);
+  const seven = readWindow(account.seven_day, nowMs);
+  const blocks: CapacityBlocks = { weekly: false, fiveHour: false };
 
-  let availablePct: number | null;
-  if (blocked) availablePct = 0;
-  // A window past its reset is left out on its own; the account is unknown
-  // only when no binding window is measurable at all.
-  else if (measured.length === 0) availablePct = null;
-  else availablePct = Math.min(...measured.map((r) => r.remaining as number)) * 100;
-
-  // When is a blocked account usable again? Only when EVERY block lifts, so
-  // each block needs a known release time — otherwise no return is promised:
-  //   - an exhausted 5h/7d window: its reset;
-  //   - a cooldown: cooldown_until;
-  //   - llmux's own reason: "5h …"/"7d …" (a utilization ceiling) lifts with
-  //     that window's reset, "cooldown …" with cooldown_until, "fable …" with
-  //     the Fable window's reset; "paused", "usage stale", an auth failure or
-  //     any other reason has no time.
-  let returnAt: number | undefined;
-  let returnWindow: string | undefined;
-  if (blocked) {
-    const lifts: { at: number; label: string }[] = [];
-    let unknown = authFailed;
-    const liftAt = (label: string) => {
-      const r = all.find((w) => w.label === label);
-      if (r?.at && r.at > nowS) lifts.push({ at: r.at, label });
-      else unknown = true;
-    };
-    for (const r of exhausted) liftAt(r.label);
-    // A throttle never blocks on its own, but an account blocked for another
-    // reason is not back until a running cooldown ends as well.
-    if (cooling) lifts.push({ at: account.cooldown_until as number, label: 'cooldown' });
-    else if (account.status === 'cooldown' && !throttled) unknown = true;
-    if (reason) {
-      if (reason.startsWith('5h')) liftAt('5h');
-      else if (reason.startsWith('7d')) liftAt('7d');
-      else if (reason.startsWith('cooldown')) {
-        if (!cooling) unknown = true;
-      } else if (reason.startsWith('fable')) {
-        const fable = all.find((w) => w.label === '7d-fable');
-        if (fable) liftAt('7d-fable');
-        else unknown = true;
-      } else unknown = true;
-    }
-    const last = lifts.sort((a, b) => b.at - a.at)[0];
-    if (last && !unknown) {
-      returnAt = last.at;
-      returnWindow = last.label;
-    }
-  }
-
-  // Which resets raise a usable account's availability: replay its binding
-  // windows' resets in time order (simultaneous ones together) — a reset
-  // raises it when the binding minimum goes up at that moment. With 5h and 7d
-  // both at 50%, the first reset changes nothing and the second does.
-  const raisingAt = new Set<number>();
-  if (current0(availablePct) !== null) {
-    const state = new Map(measured.map((r) => [r.label, r.remaining as number]));
-    const upcoming = measured.filter((r) => r.at && r.at > nowS).sort((a, b) => (a.at as number) - (b.at as number));
-    let level = Math.min(...state.values());
-    for (let i = 0; i < upcoming.length; ) {
-      const at = upcoming[i].at as number;
-      while (i < upcoming.length && upcoming[i].at === at) {
-        state.set(upcoming[i].label, 1);
-        i++;
-      }
-      const next = Math.min(...state.values());
-      if (next - level >= 0.005) raisingAt.add(at);
-      level = next;
-    }
-  }
-  const raisesOnReset = (r: WindowReading): boolean => r.binding && !!r.at && raisingAt.has(r.at);
-
-  const markers: CapacityMarker[] = [];
-  if (blocked) {
-    if (returnAt !== undefined && returnWindow) {
-      const reading = all.find((r) => r.label === returnWindow);
-      markers.push({
-        account: name,
-        tier,
-        window: returnWindow,
-        at: returnAt,
-        gainPct: reading ? Math.round((1 - (reading.remaining ?? 0)) * 1000) / 10 : 0,
-        returns: true,
-        raises: true,
-      });
-    }
-  } else {
-    for (const r of all) {
-      if (r.remaining === undefined || !r.at || r.at <= nowS) continue;
-      const used = 1 - r.remaining;
-      if (used < 0.01) continue; // nothing to give back
-      markers.push({
-        account: name,
-        tier,
-        window: r.label,
-        at: r.at,
-        gainPct: Math.round(used * 1000) / 10,
-        returns: false,
-        raises: raisesOnReset(r),
-      });
-    }
-  }
-
-  return {
-    view: {
-      name,
-      tier,
-      status: account.status,
-      availablePct: availablePct === null ? null : Math.round(availablePct * 10) / 10,
-      blocked,
-      stale: stale && !blocked,
-      ...(returnAt !== undefined ? { returnAt } : {}),
-    },
-    markers,
+  // Blocks, each with its own lift. A block whose lift time is unknown is held.
+  let held: CapacityHeld | undefined;
+  const hold = (why: CapacityHeld) => {
+    held = held ?? why;
   };
+  if (account.status === 'auth_failed') hold('auth');
+  if (account.status === 'paused' || reason.startsWith('paused')) hold('paused');
+  const scope = reason.split(/\s+/)[0] ?? '';
+  if (reason.startsWith('7d')) {
+    if (seven?.at === undefined) hold('other');
+    else blocks.weekly = !seven.passed; // a passed weekly reset already lifted it
+  } else if (reason.startsWith('5h')) {
+    if (five?.at === undefined) hold('other');
+    else blocks.fiveHour = !five.passed;
+  } else if (reason.startsWith('cooldown') || reason.startsWith('paused') || reason === '') {
+    // handled below / above
+  } else {
+    const w = scopedWindow(account, scope);
+    const at = w ? resetAt(w, nowMs) : undefined;
+    if (at === undefined) hold('other');
+    else if (at > nowS) blocks.scopedUntil = at;
+  }
+  // 0 / negative = no end time reported (a "cooldown" with it is held), not an expired one.
+  const cd =
+    Number.isFinite(account.cooldown_until) && (account.cooldown_until as number) > 0
+      ? (account.cooldown_until as number)
+      : undefined;
+  if (cd !== undefined) {
+    // A throttle (≤ 120 s) or a cooldown already over never blocks.
+    if (cd - nowS > TRANSIENT_COOLDOWN_SECS) blocks.cooldownUntil = cd;
+  } else if (account.status === 'cooldown' || reason.startsWith('cooldown')) hold('other');
+
+  const weight = tier ? LLMUX_TIERS[tier].weight : null;
+  const unit: CapacityUnit = {
+    name,
+    ...(tier ? { tier } : {}),
+    weight,
+    status: account.status,
+    now: 0,
+    week: 0,
+    blocked: false,
+    ...(held ? { held } : {}),
+    blocks,
+    estimated: false,
+    unmeasured5h: false,
+    counted: false,
+  };
+  const refreshed = Number.isFinite(account.last_refresh_ms) && (account.last_refresh_ms as number) > 0;
+  const refreshedAt = refreshed ? Math.floor((account.last_refresh_ms as number) / 1000) : undefined;
+
+  // An account left out is not counted on an assumed plan: nothing is assumed about it.
+  const unassume = () => {
+    if (!tierAssumed) return;
+    delete unit.tier;
+    unit.weight = null;
+  };
+  if (held) {
+    unit.blocked = true;
+    unit.excluded = 'held';
+    unassume();
+    return { unit };
+  }
+  if (seven?.rem === undefined) {
+    unit.excluded = 'noMeasure';
+    unassume();
+    return { unit };
+  }
+  if (weight === null) {
+    unit.excluded = 'unknownTier';
+    return { unit };
+  }
+
+  const state: AccountState = {
+    unit,
+    weight,
+    rem5: null,
+    rem7: seven.rem,
+    r5: five?.at !== undefined && five.at > nowS ? five.at : undefined,
+    r7: seven.at !== undefined && seven.at > nowS ? seven.at : undefined,
+    bWeek: blocks.weekly,
+    b5h: blocks.fiveHour,
+    bCool: blocks.cooldownUntil ?? 0,
+    bScoped: blocks.scopedUntil ?? 0,
+    unmeasured5: false,
+    idle5: false,
+  };
+  let est5 = false;
+  let before5: number | undefined;
+  if (has5h) {
+    if (five?.rem !== undefined) {
+      state.rem5 = five.rem;
+      est5 = five.passed;
+      before5 = five.before;
+    } else if (isBlocked(state)) {
+      // Decided when it lifts: full only after a whole idle 5h window.
+      state.rem5 = 1;
+      state.idle5 = true;
+    } else {
+      state.rem5 = 1;
+      state.unmeasured5 = true;
+    }
+  }
+  const blocked = isBlocked(state);
+  unit.counted = true;
+  if (tierAssumed) unit.tierAssumed = true;
+  unit.blocked = blocked;
+  unit.now = usable(state);
+  unit.week = state.rem7;
+  unit.unmeasured5h = state.unmeasured5;
+  // An estimate counts only where it decides a number: any weekly guess, or a
+  // 5h guess on the minimum of a usable account.
+  // A 5h guess decides "now" when the stale reading would have been the minimum
+  // (trinity PR review, astra): it lifts min from that reading to the weekly or to full.
+  const est5Moves = before5 !== undefined ? before5 < state.rem7 - EPS : (state.rem5 ?? 1) <= state.rem7 + EPS;
+  unit.estimated = seven.passed || (est5 && !blocked && !state.unmeasured5 && est5Moves);
+  // A usable account has something left: an exhausted window is not "usable".
+  if (!blocked && !state.unmeasured5 && usable(state) > EPS) {
+    unit.binding = has5h && (state.rem5 ?? 1) < state.rem7 - EPS ? '5h' : '7d';
+  }
+  return { unit, state, refreshedAt };
 }
 
-function earliest(markers: CapacityMarker[]): CapacityEvent | undefined {
-  const m = markers[0];
-  return m ? { account: m.account, tier: m.tier, window: m.window, at: m.at } : undefined;
+interface PendingEvent {
+  s: AccountState;
+  cause: CapacityCause;
+  at: number;
+  lift?: 'cooldown' | 'scoped';
+}
+
+function eventsOf(s: AccountState, horizon: number): PendingEvent[] {
+  const out: PendingEvent[] = [];
+  if (s.r5 !== undefined && s.rem5 !== null) out.push({ s, cause: '5h', at: s.r5 });
+  if (s.r7 !== undefined) out.push({ s, cause: '7d', at: s.r7 });
+  if (s.bCool) out.push({ s, cause: 'release', at: s.bCool, lift: 'cooldown' });
+  if (s.bScoped) out.push({ s, cause: 'release', at: s.bScoped, lift: 'scoped' });
+  return out.filter((e) => e.at <= horizon);
+}
+
+/** Apply one event; false when it changes nothing (a window already full). */
+function apply(e: PendingEvent): boolean {
+  const s = e.s;
+  if (e.cause === '5h') {
+    const changed = (s.rem5 ?? 1) < 1 || s.b5h || s.unmeasured5;
+    s.rem5 = 1;
+    s.b5h = false;
+    s.unmeasured5 = false;
+    s.idle5 = false;
+    return changed;
+  }
+  if (e.cause === '7d') {
+    const changed = s.rem7 < 1 || s.bWeek;
+    s.rem7 = 1;
+    s.bWeek = false;
+    return changed;
+  }
+  // A release lifts a block; it adds no quota.
+  if (e.lift === 'scoped') s.bScoped = 0;
+  else s.bCool = 0;
+  return true;
+}
+
+function buildGroup(
+  group: string,
+  accounts: LlmuxAccount[],
+  tiers: Readonly<Record<string, LlmuxTierId>>,
+  anonymous: boolean,
+  nowMs: number,
+): CapacityGroupView {
+  const nowS = nowMs / 1000;
+  // Claude always has a 5h window — a pool with no 5h reading must not lose its
+  // "now" line (trinity r4, astra). Others: only when llmux reports one.
+  const has5h = FIVE_HOUR_GROUPS.has(group) || accounts.some((a) => !!a.five_hour);
+  const labels = accountLabels(accounts, group, anonymous);
+  const units: CapacityUnit[] = [];
+  const states: AccountState[] = [];
+  const refreshes: number[] = [];
+  for (const [i, account] of accounts.entries()) {
+    const known = resolveAccountTier(
+      {
+        name: account.name,
+        group: accountGroup(account),
+        rate_limit_tier: account.rate_limit_tier,
+        plan_type: account.plan_type,
+      },
+      tiers,
+    );
+    const tier = known ?? ASSUMED_TIER[group];
+    const { unit, state, refreshedAt } = initAccount(account, labels[i], tier, !known && !!tier, has5h, nowMs);
+    units.push(unit);
+    if (state) {
+      states.push(state);
+      if (refreshedAt !== undefined) refreshes.push(refreshedAt);
+    }
+  }
+
+  const sum = (f: (s: AccountState) => number) => states.reduce((t, s) => t + s.weight * f(s), 0);
+  const total = round(states.reduce((t, s) => t + s.weight, 0));
+  const now = round(sum(usable));
+  const week = round(sum((s) => s.rem7));
+  const live = units.filter((u) => u.binding);
+  const excluded = {
+    unknownTier: units.filter((u) => u.excluded === 'unknownTier').length,
+    held: units.filter((u) => u.excluded === 'held').length,
+    noMeasure: units.filter((u) => u.excluded === 'noMeasure').length,
+  };
+
+  // Replay. Each account is independent, so the global time order keeps every
+  // account's own order; at one instant: release → 5h → weekly.
+  const pending = states.flatMap((s) => eventsOf(s, nowS + CAPACITY_HORIZON_SECS));
+  pending.sort((a, b) => a.at - b.at || ORDER[a.cause] - ORDER[b.cause] || a.s.unit.name.localeCompare(b.s.unit.name));
+  const events: CapacityEvent[] = [];
+  for (const e of pending) {
+    const wasBlocked = isBlocked(e.s);
+    const n0 = usable(e.s);
+    const w0 = e.s.rem7;
+    if (!apply(e)) continue;
+    if (wasBlocked && !isBlocked(e.s)) {
+      // A return is promised only when the account has something to use then.
+      if (e.s.unit.returnAt === undefined && usable(e.s) > EPS) e.s.unit.returnAt = e.at;
+      if (e.s.idle5) {
+        // Idle a whole 5h window by now → full (estimate); a shorter block → unknown.
+        e.s.idle5 = false;
+        if (e.at - nowS < FIVE_HOURS) e.s.unmeasured5 = true;
+      }
+    }
+    events.push({
+      account: e.s.unit.name,
+      ...(e.s.unit.tier ? { tier: e.s.unit.tier } : {}),
+      ...(e.s.unit.tierAssumed ? { tierAssumed: true as const } : {}),
+      cause: e.cause,
+      at: e.at,
+      dNow: round(e.s.weight * (usable(e.s) - n0), 6),
+      dWeek: round(e.s.weight * (e.s.rem7 - w0), 6),
+    });
+  }
+
+  const primary = has5h ? now : week;
+  // Nothing usable only because no usable account has a 5h reading is "unknown", not "empty".
+  const unmeasuredOnly = has5h && primary <= EPS && live.length === 0 && units.some((u) => u.unmeasured5h);
+  const state: CapacityGroupView['state'] =
+    total <= EPS || unmeasuredOnly
+      ? 'unknown'
+      : primary <= EPS
+        ? 'empty'
+        : (primary / total) * 100 < CAPACITY_LOW_PCT
+          ? 'low'
+          : 'ok';
+  return {
+    group,
+    label: providerName(group),
+    has5h,
+    accountCount: accounts.length,
+    countedAccounts: states.length,
+    total,
+    now,
+    week,
+    binding: {
+      fiveHour: live.filter((u) => u.binding === '5h').length,
+      weekly: live.filter((u) => u.binding === '7d').length,
+    },
+    excluded,
+    tierAssumed: units.filter((u) => u.counted && u.tierAssumed).length,
+    estimated: units.filter((u) => u.estimated).length,
+    unmeasured5h: units.filter((u) => u.unmeasured5h).length,
+    state,
+    ...(refreshes.length ? { oldestRefreshAt: Math.min(...refreshes) } : {}),
+    events,
+    units,
+  };
 }
 
 export function buildCapacityView(
@@ -306,45 +522,10 @@ export function buildCapacityView(
   const anonymous = status.email_anonymous === true;
   const groups: CapacityGroupView[] = [];
   for (const [group, accounts] of groupAccounts(status.accounts ?? [])) {
-    const views: CapacityAccountView[] = [];
-    const markers: CapacityMarker[] = [];
-    const labels = accountLabels(accounts, group, anonymous);
-    for (const [i, account] of accounts.entries()) {
-      const tier = resolveAccountTier(
-        { name: account.name, group: accountGroup(account), rate_limit_tier: account.rate_limit_tier },
-        tiers,
-      );
-      const { view, markers: own } = accountView(account, tier, labels[i], nowMs);
-      views.push(view);
-      markers.push(...own);
-    }
-    markers.sort((a, b) => a.at - b.at || a.account.localeCompare(b.account));
-    const measured = views.filter((v) => v.availablePct !== null);
-    const availablePct = measured.length
-      ? Math.round((measured.reduce((sum, v) => sum + (v.availablePct as number), 0) / measured.length) * 100) / 100
-      : null;
-    const availableAccounts = views.filter((v) => !v.blocked && (v.availablePct ?? 0) > 0).length;
-    const state: CapacityGroupView['state'] =
-      availablePct === null
-        ? 'unknown'
-        : availableAccounts === 0
-          ? 'empty'
-          : availablePct < CAPACITY_LOW_PCT
-            ? 'low'
-            : 'ok';
-    groups.push({
-      group,
-      label: providerName(group),
-      availablePct,
-      availableAccounts,
-      unknownAccounts: views.length - measured.length,
-      totalAccounts: views.length,
-      state,
-      nextRefill: earliest(markers.filter((m) => !m.returns && m.raises)),
-      nextReturn: earliest(markers.filter((m) => m.returns)),
-      markers,
-      accounts: views,
-    });
+    // Only subscription providers have plan windows to count in max accounts;
+    // an API-key pool (grok, openrouter) could only ever read "계산 불가".
+    if (!PLAN_GROUPS.has(group)) continue;
+    groups.push(buildGroup(group, accounts, tiers, anonymous, nowMs));
   }
   return { available: true, fetchedAtMs: nowMs, groups };
 }

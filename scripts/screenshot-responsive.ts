@@ -51,10 +51,16 @@ const POSTURES: Posture[] = [
   { device: 'fold8-main-portrait', w: 704, h: 933 },
   { device: 'pc', w: 1440, h: 900 },
   { device: 'pc-wide', w: 1920, h: 1080 },
+  // a tall PC window: capacity still starts folded, so the board starts on the first screen
+  { device: 'pc-tall', w: 1440, h: 1400 },
 ];
+
+// Loaded with the dashboard (after the env is set): the capacity fixture runs the real model.
+let buildCapacityView: typeof import('../src/conversation/capacity-view').buildCapacityView;
 
 async function setupMockSessions() {
   const { setDashboardSessionAccessor } = await import('../src/conversation/dashboard');
+  ({ buildCapacityView } = await import('../src/conversation/capacity-view'));
   const now = Date.now();
   const base = {
     ownerId: 'U001',
@@ -92,13 +98,87 @@ async function setupMockSessions() {
   return sessions;
 }
 
-async function preparePage(page: Page, opts: { savedView?: string; savedWidth?: number } = {}) {
+/**
+ * LLM capacity (#374, v2 2026-10-25) with two provider groups: an llmux snapshot
+ * through the real buildCapacityView. Claude ok; Codex low (▲) and weekly-only.
+ */
+function capacityFixture(nowMs: number) {
+  const nowS = Math.floor(nowMs / 1000);
+  const w = (used: number, hours: number) => ({
+    utilization: used,
+    resets_at: nowS + hours * 3600,
+    resets_in_secs: hours * 3600,
+  });
+  const acct = (name: string, group: string, over: Record<string, unknown>) => ({
+    name: `${group}:${name}@corp.example`,
+    type: group === 'codex' ? 'codex' : 'oauth',
+    group,
+    status: 'ok',
+    order: 1,
+    blocked: null,
+    ...over,
+  });
+  const status = {
+    current: null,
+    accounts: [
+      acct('acct-a', 'claude', { five_hour: w(0.7, 2), seven_day: w(0.3, 90) }),
+      acct('acct-b', 'claude', { five_hour: w(0.1, 3), seven_day: w(0.6, 30) }),
+      acct('acct-c', 'claude', { five_hour: null, seven_day: w(1, 50), blocked: '7d 100.0% > 99%' }),
+      acct('acct-d', 'claude', { five_hour: w(0, 1), seven_day: w(0.2, 120) }),
+      acct('acct-e', 'codex', { seven_day: w(0.9, 100) }),
+      acct('acct-f', 'codex', { seven_day: w(0.95, 60) }),
+    ],
+  };
+  const tiers = {
+    'claude:acct-a': 'claude-max-20x',
+    'claude:acct-b': 'claude-max-5x',
+    'claude:acct-c': 'claude-max-20x',
+    'claude:acct-d': 'claude-max-5x',
+    'codex:acct-e': 'chatgpt-pro-500',
+    'codex:acct-f': 'chatgpt-pro-200',
+  };
+  return { capacity: buildCapacityView(status as never, tiers as never, nowMs) };
+}
+
+async function preparePage(
+  page: Page,
+  opts: {
+    savedView?: string;
+    savedWidth?: number;
+    seedSecondary?: boolean;
+    openSections?: string[];
+    capacityDelayMs?: number;
+  } = {},
+) {
+  if (opts.seedSecondary) {
+    const now = Date.now();
+    const delay = opts.capacityDelayMs || 0;
+    await page.route('**/api/dashboard/capacity', async (r) => {
+      // A slow llmux: the view lands after the board has settled.
+      if (delay) await new Promise((res) => setTimeout(res, delay));
+      await r.fulfill({ json: capacityFixture(now) });
+    });
+    await page.route('**/api/dashboard/cron*', (r) =>
+      r.fulfill({
+        json: {
+          jobs: [
+            {
+              id: 'job-nightly',
+              name: 'nightly-usage',
+              expression: '0 9 * * *',
+              nextRunAt: now + 3 * 3600e3,
+              runs: [],
+            },
+          ],
+        },
+      }),
+    );
+  }
   // Plain-JS init scripts (tsx would wrap named functions in __name()).
   await page.addInitScript({
     content: [
       'window.WebSocket = function StubWebSocket(url) { this.url = url; };',
       'window.WebSocket.prototype.close = function () {};',
-      'try { localStorage.clear(); } catch (_e) {}',
       // Count the script animations that move board items (the layout-shift FLIPs), so a
       // probe that lands after a 320ms animation ended still sees that it ran.
       'window.__shiftAnims = 0;',
@@ -109,11 +189,16 @@ async function preparePage(page: Page, opts: { savedView?: string; savedWidth?: 
       "  try { if (this.matches('#kanban .card, #kanban .kanban-col-header') && JSON.stringify(kf).indexOf('transform') >= 0) window.__shiftAnims++; } catch (_e) {}",
       "  try { if (this.id === 'slide-panel' && JSON.stringify(kf).indexOf('width') >= 0) window.__panelWidthAnims++; } catch (_e) {}",
       // Where a CRON lane card's layout FLIP starts on screen: its layout spot plus the first translate.
+      "  try { if (this.matches('.card') && kf[0] && kf[0].transform) { var m2 = /translate\\(([-\\d.]+)px, ([-\\d.]+)px\\)/.exec(kf[0].transform); var r2 = this.getBoundingClientRect(); if (m2) { window.__flipStarts = window.__flipStarts || {}; window.__flipStarts[this.getAttribute('data-session-key')] = { left: r2.left + Number(m2[1]), top: r2.top + Number(m2[2]) }; } } } catch (_e) {}",
       "  try { if (this.matches('.cron-lane .card') && kf[0] && kf[0].transform) { var m = /translate\\(([-\\d.]+)px, ([-\\d.]+)px\\)/.exec(kf[0].transform); var r = this.getBoundingClientRect(); if (m) window.__cronFlipStart = { left: r.left + Number(m[1]), top: r.top + Number(m[2]) }; } } catch (_e) {}",
       '  return __animate.call(this, kf, opts);',
       '};',
+      // First load only: a reload keeps what the page itself saved.
+      "try { if (!sessionStorage.getItem('__sweepInit')) { sessionStorage.setItem('__sweepInit', '1'); localStorage.clear();",
       opts.savedView ? `localStorage.setItem('soma-board-view', ${JSON.stringify(opts.savedView)});` : '',
       opts.savedWidth ? `localStorage.setItem('soma-panel-width', '${opts.savedWidth}');` : '',
+      ...(opts.openSections || []).map((sec) => `localStorage.setItem('soma-sec-${sec}', 'open');`),
+      '} } catch (_e) {}',
     ].join('\n'),
   });
 }
@@ -195,6 +280,133 @@ async function checkFab(page: Page): Promise<Check[]> {
   });
 }
 
+/**
+ * The merged secondary sections (#374 LLM capacity, CRON lane) leave the board on the
+ * first screen: its first card on screens at least 540px tall, its title row on the
+ * short landscape phones. An expanded capacity section keeps every chart inside its card.
+ */
+async function checkSecondary(page: Page, touch: boolean): Promise<Check[]> {
+  await page.evaluate(() => window.scrollTo(0, 0));
+  await page.waitForTimeout(150);
+  return page.evaluate((touchArg) => {
+    const out: { ok: boolean; msg: string }[] = [];
+    const vh = window.innerHeight;
+    const cap = document.getElementById('capacity') as HTMLElement;
+    for (const id of ['capacity-toggle', 'cron-toggle']) {
+      const t = document.getElementById(id) as HTMLElement | null;
+      if (!t) continue;
+      const r = t.getBoundingClientRect();
+      const need = touchArg ? 44 : 28;
+      out.push({
+        ok: r.height >= need,
+        msg: `#${id} is ${Math.round(r.height)}px tall (≥ ${need}${touchArg ? ' on touch' : ''})`,
+      });
+    }
+    const lane = document.getElementById('cron-lane') as HTMLElement;
+    out.push({ ok: !cap.hidden && !lane.hidden, msg: 'capacity and the CRON lane are shown (seeded)' });
+    // Collapsed (capacity: every posture; CRON: below 840×1000): chips for capacity.
+    if (cap.classList.contains('is-collapsed')) {
+      const h = cap.getBoundingClientRect().height;
+      // Below 840px the chips may wrap to a second row (labelled counts, totals and % for both windows).
+      const limit = window.innerWidth < 840 ? 96 : 64;
+      out.push({
+        ok: h <= limit,
+        msg: `collapsed capacity is one row, two below 840px (${Math.round(h)} ≤ ${limit}px)`,
+      });
+      const chips = Array.from(cap.querySelectorAll('.cap-chip')).map((c) =>
+        (c as HTMLElement).innerText.replace(/\s+/g, ' '),
+      );
+      out.push({
+        ok:
+          chips.length === 2 &&
+          chips[0].indexOf('Claude') === 0 &&
+          chips[0].indexOf('·') > 0 &&
+          (chips[0].match(/\d+%/g) || []).length === 2 &&
+          chips[0].indexOf('지금') > 0 &&
+          (chips[0].match(/\d\.\d/g) || []).length >= 2 &&
+          chips[1].indexOf('▲ Codex') === 0 &&
+          chips[1].indexOf('·') < 0 &&
+          (chips[1].match(/\d+%/g) || []).length === 1,
+        msg: `capacity chips: ${chips.join(' / ')}`,
+      });
+      // Whole chips: none runs past the row's visible edge (the glyph and % would hide).
+      const row = (cap.querySelector('.cap-summary') as HTMLElement).getBoundingClientRect();
+      const cut = Array.from(cap.querySelectorAll('.cap-chip')).filter(
+        (c) => (c as HTMLElement).getBoundingClientRect().right > row.right + 0.5,
+      ).length;
+      out.push({
+        ok: cut === 0,
+        msg: `every capacity chip is whole on the row (${cut} cut at ${Math.round(row.right)})`,
+      });
+      const title = (cap.querySelector('.cap-title') as HTMLElement).getBoundingClientRect();
+      out.push({ ok: title.height <= 24, msg: `the capacity title is one line (${Math.round(title.height)}px)` });
+    }
+    if (lane.classList.contains('is-collapsed') && !lane.querySelector('.cron-group.is-waiting')) {
+      const h = lane.getBoundingClientRect().height;
+      out.push({ ok: h <= 64, msg: `collapsed CRON lane is one row (${Math.round(h)} ≤ 64px)` });
+    }
+    const card = (document.querySelector('#kanban .card') as HTMLElement).getBoundingClientRect();
+    const head = (document.querySelector('.inbox-head') as HTMLElement).getBoundingClientRect();
+    if (vh >= 540) {
+      out.push({
+        ok: card.top <= vh - 60,
+        msg: `the first board card starts on the first screen (${Math.round(card.top)} ≤ ${vh - 60})`,
+      });
+    } else {
+      out.push({
+        ok: head.top <= vh - 50,
+        msg: `the board title row starts on the first screen (${Math.round(head.top)} ≤ ${vh - 50})`,
+      });
+    }
+    // v2: every chart (unit bar, per-account bars, lanes) stays inside its provider card.
+    const cards = Array.from(document.querySelectorAll('#capacity .cap-prov')) as HTMLElement[];
+    let outside = 0;
+    for (const c of cards) {
+      const cr = c.getBoundingClientRect();
+      if (cr.width === 0) continue;
+      for (const g of Array.from(c.querySelectorAll('svg')) as SVGElement[]) {
+        const r = g.getBoundingClientRect();
+        if (r.width > 0 && (r.left < cr.left - 1 || r.right > cr.right + 1)) outside++;
+      }
+    }
+    out.push({ ok: outside === 0, msg: `capacity charts stay inside their cards (${outside} outside)` });
+    return out;
+  }, touch);
+}
+
+/** Expand the capacity timeline if a disclosure collapsed it, then check its markers. */
+async function checkCapacityExpanded(page: Page, state: string): Promise<Check[]> {
+  await page.evaluate(() => {
+    const t = document.querySelector('[data-sec-toggle="capacity"]') as HTMLElement | null;
+    if (t && t.getAttribute('aria-expanded') === 'false') t.click();
+  });
+  await page.waitForTimeout(400);
+  return page.evaluate((st) => {
+    const out: { ok: boolean; msg: string }[] = [];
+    const vw = document.documentElement.clientWidth;
+    const cards = Array.from(document.querySelectorAll('#capacity .cap-prov')) as HTMLElement[];
+    out.push({
+      ok: cards.length === 2 && cards.every((c) => c.getBoundingClientRect().width > 0),
+      msg: `${st}: the capacity section shows both providers`,
+    });
+    let outside = 0;
+    for (const c of cards) {
+      const cr = c.getBoundingClientRect();
+      for (const g of Array.from(c.querySelectorAll('svg')) as SVGElement[]) {
+        const r = g.getBoundingClientRect();
+        if (r.width > 0 && (r.left < cr.left - 1 || r.right > cr.right + 1)) outside++;
+      }
+    }
+    out.push({ ok: outside === 0, msg: `${st}: capacity charts stay inside their cards (${outside} outside)` });
+    const capR = (document.getElementById('capacity') as HTMLElement).getBoundingClientRect();
+    out.push({
+      ok: capR.right <= vw + 1,
+      msg: `${st}: capacity has no sideways overflow (${Math.round(capR.right)} ≤ ${vw})`,
+    });
+    return out;
+  }, state);
+}
+
 /** The cron run drawer (#374), opened directly: it fits the viewport and its close button is reachable. */
 async function checkCronDrawer(page: Page, touch: boolean): Promise<Check[]> {
   await page.evaluate(() => {
@@ -256,6 +468,31 @@ async function checkSettings(page: Page, baseUrl: string, touch: boolean): Promi
   }, touch);
 }
 
+/** The settings page's 기억 tab (#379, linked from the dashboard top bar): no sideways overflow, 16px fields on touch. */
+async function checkMemoryTab(page: Page, baseUrl: string, touch: boolean): Promise<Check[]> {
+  await page.goto(`${baseUrl}/dashboard/settings#memory`);
+  await page.waitForTimeout(500);
+  return page.evaluate((touchArg) => {
+    const out: { ok: boolean; msg: string }[] = [];
+    const vw = document.documentElement.clientWidth;
+    const sw = document.documentElement.scrollWidth;
+    out.push({ ok: sw <= vw + 1, msg: `memory tab has no sideways overflow (${sw} ≤ ${vw})` });
+    if (touchArg) {
+      // Its editors load per user; probe the tab's own field rules with detached copies.
+      const box = document.createElement('div');
+      box.innerHTML =
+        '<div class="pages-list"><input type="search"></div><div class="pages-detail"><div class="field"><input type="text"></div></div><textarea></textarea><div class="ep-bar"><select><option>x</option></select></div>';
+      document.body.appendChild(box);
+      const sizes = Array.from(box.querySelectorAll('input, textarea, select')).map((el) =>
+        parseFloat(getComputedStyle(el as HTMLElement).fontSize),
+      );
+      box.remove();
+      out.push({ ok: sizes.every((n) => n >= 16), msg: `memory tab fields ${sizes.join(' / ')}px ≥ 16px on touch` });
+    }
+    return out;
+  }, touch);
+}
+
 async function checkOpen(page: Page, touch: boolean): Promise<Check[]> {
   return page.evaluate((touchArg) => {
     const out: { ok: boolean; msg: string }[] = [];
@@ -286,20 +523,13 @@ async function checkOpen(page: Page, touch: boolean): Promise<Check[]> {
     const body = (document.getElementById('panel-body') as HTMLElement).getBoundingClientRect();
     const scrollEl = document.getElementById('panel-scroll') as HTMLElement;
     const s = scrollEl.getBoundingClientRect();
-    // R/2, or what the two 44px pinned floors leave on the shortest bodies.
-    const need = Math.min(body.height / 2, body.height - 88);
-    out.push({ ok: s.height >= need - 1, msg: `main scroll ≥ R/2 (${s.height} ≥ ${need})` });
-    // The body clips overflow: every row must also end inside it, or a "tall" scroll
-    // area could be partly hidden under the composer.
-    for (const id of ['panel-tasks', 'panel-artifacts', 'panel-scroll']) {
-      const el = document.getElementById(id) as HTMLElement;
-      if (getComputedStyle(el).display === 'none') continue;
-      const r = el.getBoundingClientRect();
-      out.push({
-        ok: r.top >= body.top - 1 && r.bottom <= body.bottom + 1,
-        msg: `#${id} inside the body, not clipped (${r.top}..${r.bottom} in ${body.top}..${body.bottom})`,
-      });
-    }
+    // Task view (.prd/14): nothing is pinned inside the body — the one scroll area is all of it,
+    // and it ends inside the body (never partly hidden under the composer).
+    out.push({ ok: s.height >= body.height - 1, msg: `the scroll area fills the body (${s.height} ≥ ${body.height})` });
+    out.push({
+      ok: s.top >= body.top - 1 && s.bottom <= body.bottom + 1,
+      msg: `#panel-scroll inside the body, not clipped (${s.top}..${s.bottom} in ${body.top}..${body.bottom})`,
+    });
     scrollEl.scrollTo({ top: 0, behavior: 'instant' });
     const top = scrollEl.scrollTop;
     scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' });
@@ -307,8 +537,12 @@ async function checkOpen(page: Page, touch: boolean): Promise<Check[]> {
       ok: scrollEl.scrollHeight > scrollEl.clientHeight && scrollEl.scrollTop > top,
       msg: `the conversation scrolls (${scrollEl.clientHeight}/${scrollEl.scrollHeight})`,
     });
-    const tasks = (document.getElementById('panel-tasks') as HTMLElement).getBoundingClientRect();
-    out.push({ ok: tasks.height >= 43, msg: `pinned Tasks keep at least one row (${tasks.height})` });
+    // The agent tabs stay at the top of the scroll area while the conversation scrolls.
+    const tabs = (document.getElementById('panel-tabs') as HTMLElement).getBoundingClientRect();
+    out.push({
+      ok: tabs.top >= s.top - 1 && tabs.top <= s.top + 1,
+      msg: `agent tabs stick to the top (${tabs.top} ≈ ${s.top})`,
+    });
     if (touchArg) {
       const fs = parseFloat(getComputedStyle(document.getElementById('cmd-input') as HTMLElement).fontSize);
       out.push({ ok: fs >= 16, msg: `composer input ${fs}px ≥ 16px on touch` });
@@ -338,7 +572,7 @@ async function sweepBrowser(name: string, type: BrowserType, baseUrl: string, ou
       const tag = `${name}-${pos.device}`;
       page.on('pageerror', (e) => failures.push(`${tag}: page error ${e.message}`));
       try {
-        await preparePage(page);
+        await preparePage(page, { seedSecondary: true });
         await openDashboard(page, baseUrl);
         const record = (checks: Check[], state: string) => {
           for (const c of checks) {
@@ -351,8 +585,12 @@ async function sweepBrowser(name: string, type: BrowserType, baseUrl: string, ou
           }
         };
         record(await checkClosed(page), 'closed');
+        record(await checkSecondary(page, touch), 'closed');
         await page.screenshot({ path: path.join(outDir, `${tag}-closed.png`) });
         if (pos.w < 640) record(await checkFab(page), 'closed');
+        record(await checkCapacityExpanded(page, 'expanded'), 'closed');
+        await page.evaluate(() => window.scrollTo(0, 0));
+        await page.screenshot({ path: path.join(outDir, `${tag}-capacity.png`) });
         await page.evaluate(() => window.scrollTo(0, 0));
         await openFilledPanel(page);
         // Measure the settled drawer, not its slide-in (headless frames can lag).
@@ -361,9 +599,12 @@ async function sweepBrowser(name: string, type: BrowserType, baseUrl: string, ou
         );
         record(await checkOpen(page, touch), 'open');
         await page.screenshot({ path: path.join(outDir, `${tag}-open.png`) });
+        // Docked, the page narrows without a window resize: the timeline repacks.
+        if (pos.w >= 840) record(await checkCapacityExpanded(page, 'docked'), 'open');
         await page.evaluate(() => (window as unknown as { closePanel(): void }).closePanel());
         record(await checkCronDrawer(page, touch), 'cron');
         record(await checkSettings(page, baseUrl, touch), 'settings');
+        record(await checkMemoryTab(page, baseUrl, touch), 'memory');
         await page.screenshot({ path: path.join(outDir, `${tag}-settings.png`) });
       } finally {
         await ctx.close();
@@ -417,7 +658,16 @@ async function transitions(
       failures.push(`transition: ${msg}`);
     }
   };
-  const fresh = async (opts: { savedView?: string; savedWidth?: number; reduced?: boolean } = {}) => {
+  const fresh = async (
+    opts: {
+      savedView?: string;
+      savedWidth?: number;
+      reduced?: boolean;
+      seedSecondary?: boolean;
+      openSections?: string[];
+      capacityDelayMs?: number;
+    } = {},
+  ) => {
     const ctx = await browser.newContext({
       viewport: { width: 382, height: 580 },
       hasTouch: true,
@@ -573,19 +823,52 @@ async function transitions(
         w.openPanel(first.getAttribute('data-session-key') as string);
         await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
         const before = card.getBoundingClientRect().left;
+        const col0 = card.getAttribute('data-col');
+        // Where the render's FLIP starts: read in the same task as the render (a
+        // mutation callback runs before the next frame), so it is the spot the card
+        // was drawn at when the render landed — the path's true origin.
+        let start: number | null = null;
+        const mo = new MutationObserver(() => {
+          if (start === null && card.getAttribute('data-col') !== col0) start = card.getBoundingClientRect().left;
+        });
+        mo.observe(card, { attributes: true, attributeFilter: ['data-col'] });
+        // And where it was drawn just before that render ran (trinity R4, astra): the
+        // FLIP must start there — a render that itself jumped would move "start".
+        let pre: number | null = null;
+        const g = window as unknown as { renderBoard: (b: unknown) => unknown };
+        const realRender = g.renderBoard;
+        g.renderBoard = function (b: unknown) {
+          if (pre === null) pre = card.getBoundingClientRect().left;
+          return realRender.call(this, b);
+        };
         void w.loadSessions();
         const xs: number[] = [];
-        for (let n = 0; n < 45; n++) {
+        const cols: (string | null)[] = [];
+        for (let n = 0; n < 60; n++) {
           xs.push(card.getBoundingClientRect().left);
+          cols.push(card.getAttribute('data-col'));
           await new Promise((res) => requestAnimationFrame(res));
         }
-        return { before, xs };
+        mo.disconnect();
+        g.renderBoard = realRender;
+        return { before, xs, cols, col0, start, pre };
       });
       moving.activityState = was;
       const end = r.xs[r.xs.length - 1];
-      const lo = Math.min(r.before, end) - 2;
-      const hi = Math.max(r.before, end) + 2;
-      const out = r.xs.filter((x) => x < lo || x > hi);
+      // The path starts where the card was drawn when the render landed (its column
+      // changed), not before the request: the docking shift keeps moving it meanwhile,
+      // and a slow response is not a jump (trinity R2 on #409, astra and fable).
+      const k = r.cols.findIndex((c) => c !== r.col0);
+      const origin = r.start === null ? r.before : r.start;
+      const lo = Math.min(origin, end) - 2;
+      const hi = Math.max(origin, end) + 2;
+      // Every frame from the landing on — the first one included (trinity R3, astra).
+      const out = (k > 0 ? r.xs.slice(k) : r.xs).filter((x) => x < lo || x > hi);
+      expect(k > 0 && r.start !== null, `the render lands while sampled (frame ${k}, FLIP from ${r.start})`);
+      expect(
+        r.pre !== null && r.start !== null && Math.abs(r.start - r.pre) <= 2,
+        `the render's FLIP starts where the card was drawn just before it (${r.start} vs ${r.pre})`,
+      );
       expect(Math.abs(end - r.before) > 50, `the render moves the card (${r.before} → ${end})`);
       expect(
         out.length === 0,
@@ -626,7 +909,7 @@ async function transitions(
     // 4e. A CRON lane card sits outside the board's sideways scroll: unfolding right after
     //     a board scroll starts it where it was on screen (trinity code review R4, astra/fable).
     {
-      const { ctx, page } = await fresh({ savedView: 'board' });
+      const { ctx, page } = await fresh({ savedView: 'board', openSections: ['cron'] });
       await page.setViewportSize({ width: 669, height: 825 });
       await page.waitForFunction(() => window.innerWidth === 669);
       await page.waitForTimeout(600);
@@ -675,7 +958,7 @@ async function transitions(
     // 4g. The same rule on the cache's write path: a CRON card FLIP that lands right after a
     //     board scroll records its own spot, not one shifted by the board (trinity R5).
     {
-      const { ctx, page } = await fresh({ savedView: 'board' });
+      const { ctx, page } = await fresh({ savedView: 'board', openSections: ['cron'] });
       await page.setViewportSize({ width: 669, height: 825 });
       await page.waitForFunction(() => window.innerWidth === 669);
       await page.waitForTimeout(600);
@@ -726,7 +1009,7 @@ async function transitions(
       const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
       const page = await ctx.newPage();
       page.on('pageerror', (e) => failures.push(`transition escape: page error ${e.message}`));
-      await preparePage(page);
+      await preparePage(page, { openSections: ['cron'] });
       await openDashboard(page, baseUrl);
       await openFilledPanel(page);
       await page.click('.cron-history-btn');
@@ -742,6 +1025,240 @@ async function transitions(
         panel: (document.getElementById('slide-panel') as HTMLElement).classList.contains('open'),
       }));
       expect(!st.drawer && st.panel, `Escape closes the cron drawer only (drawer ${st.drawer}, panel ${st.panel})`);
+      await ctx.close();
+    }
+    // 4h. The capacity view loads after the board and pushes it down: the shift cache must
+    //     learn that, or the next unfold starts the cards from where they were before.
+    {
+      const { ctx, page } = await fresh({ seedSecondary: true, capacityDelayMs: 1500 });
+      await page.waitForFunction(() => !(document.getElementById('capacity') as HTMLElement).hidden, undefined, {
+        timeout: 10000,
+      });
+      await page.waitForTimeout(300);
+      const before = await page.evaluate(() => {
+        const cards = Array.from(document.querySelectorAll('#kanban .card')) as HTMLElement[];
+        const card = cards.find((c) => {
+          const r = c.getBoundingClientRect();
+          return r.top >= 0 && r.top <= window.innerHeight - 40;
+        });
+        if (!card) return null;
+        (window as unknown as { __flipStarts: Record<string, unknown> }).__flipStarts = {};
+        const r = card.getBoundingClientRect();
+        return { key: card.getAttribute('data-session-key') as string, left: r.left, top: r.top };
+      });
+      expect(before !== null, 'a board card is on the first screen after the capacity view loads (folded)');
+      if (before) {
+        await page.setViewportSize({ width: 951, height: 543 });
+        await page.waitForFunction(() => window.innerWidth === 951);
+        const start = await page.evaluate(
+          (key) =>
+            new Promise<{ left: number; top: number } | null>((resolve) =>
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => {
+                  const w = window as unknown as { __flipStarts: Record<string, { left: number; top: number }> };
+                  resolve(w.__flipStarts[key] || null);
+                }),
+              ),
+            ),
+          before.key,
+        );
+        expect(
+          start !== null && Math.abs(start.left - before.left) <= 2 && Math.abs(start.top - before.top) <= 2,
+          `after the capacity load, the unfold starts the card where it was (${start ? `${Math.round(start.left)},${Math.round(start.top)}` : 'no FLIP'} vs ${Math.round(before.left)},${Math.round(before.top)})`,
+        );
+      }
+      await ctx.close();
+    }
+    // 4i. The reader's toggle: the board below moves by the coordinator's FLIP (no jump),
+    //     the toggle keeps keyboard focus across a repaint, and the choice survives a reload.
+    {
+      const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+      const page = await ctx.newPage();
+      page.on('pageerror', (e) => failures.push(`transition toggle: page error ${e.message}`));
+      await preparePage(page, { seedSecondary: true });
+      await openDashboard(page, baseUrl);
+      await page.waitForFunction(() => !(document.getElementById('capacity') as HTMLElement).hidden);
+      await page.waitForTimeout(900);
+      const hasToggle = (await page.$('#capacity-toggle')) !== null;
+      expect(hasToggle, 'capacity has a disclosure toggle');
+      if (hasToggle) {
+        const before = await page.evaluate(() => {
+          const card = document.querySelector('#kanban .card') as HTMLElement;
+          const w = window as unknown as { __flipStarts: Record<string, unknown>; __shiftAnims: number };
+          w.__flipStarts = {};
+          w.__shiftAnims = 0;
+          const r = card.getBoundingClientRect();
+          return {
+            key: card.getAttribute('data-session-key') as string,
+            left: r.left,
+            top: r.top,
+            expanded: (document.getElementById('capacity-toggle') as HTMLElement).getAttribute('aria-expanded'),
+          };
+        });
+        expect(before.expanded === 'false', `1440×900 starts collapsed (${before.expanded})`);
+        await page.focus('#capacity-toggle');
+        await page.keyboard.press('Enter');
+        const seen = await page.evaluate(
+          (key) =>
+            new Promise<{ start: { left: number; top: number } | null; anims: number; now: number }>((resolve) =>
+              requestAnimationFrame(() =>
+                requestAnimationFrame(() => {
+                  const w = window as unknown as {
+                    __flipStarts: Record<string, { left: number; top: number }>;
+                    __shiftAnims: number;
+                  };
+                  const card = document.querySelector(`[data-session-key="${key}"]`) as HTMLElement;
+                  resolve({
+                    start: w.__flipStarts[key] || null,
+                    anims: w.__shiftAnims,
+                    now: card.getBoundingClientRect().top,
+                  });
+                }),
+              ),
+            ),
+          before.key,
+        );
+        expect(
+          seen.anims > 0 && seen.start !== null && Math.abs(seen.start.top - before.top) <= 2,
+          `expanding capacity slides the board from where it was (${seen.anims} FLIPs, from ${seen.start ? Math.round(seen.start.top) : '—'} vs ${Math.round(before.top)})`,
+        );
+        await page.waitForTimeout(500);
+        const kept = await page.evaluate(() => {
+          const w = window as unknown as { paintCapacity(): void };
+          (document.getElementById('capacity-view') as HTMLElement & { _html: unknown })._html = null;
+          w.paintCapacity();
+          const t = document.getElementById('capacity-toggle') as HTMLElement;
+          return { focus: document.activeElement === t, expanded: t.getAttribute('aria-expanded') };
+        });
+        expect(
+          kept.focus && kept.expanded === 'true',
+          `the toggle keeps focus and state across a repaint (${JSON.stringify(kept)})`,
+        );
+        await page.reload();
+        await page.waitForFunction(() => document.querySelectorAll('#kanban .card').length > 0);
+        await page.waitForTimeout(900);
+        const after = await page.evaluate(() =>
+          (document.getElementById('capacity-toggle') as HTMLElement).getAttribute('aria-expanded'),
+        );
+        expect(after === 'true', `the reader's choice survives a reload (${after})`);
+      }
+      await ctx.close();
+    }
+    // 4j. A folded CRON lane still shows a job whose run waits for a reply.
+    {
+      const run = sessions.get(CRON_KEY) as Record<string, unknown>;
+      run.activityState = 'waiting';
+      const { ctx, page } = await fresh({ seedSecondary: true });
+      await page.waitForTimeout(600);
+      const st = await page.evaluate(() => {
+        const lane = document.getElementById('cron-lane') as HTMLElement;
+        const card = lane.querySelector('.card') as HTMLElement | null;
+        return {
+          folded: lane.classList.contains('is-collapsed'),
+          card: !!card && card.getBoundingClientRect().height > 0,
+        };
+      });
+      expect(st.folded && st.card, `a folded CRON lane keeps the waiting job's card (${JSON.stringify(st)})`);
+      run.activityState = 'idle';
+      await ctx.close();
+    }
+    // 4k. llmux unreachable: the collapsed capacity says so in its chip.
+    {
+      const ctx = await browser.newContext({ viewport: { width: 382, height: 580 }, hasTouch: true, isMobile: true });
+      const page = await ctx.newPage();
+      await preparePage(page, { seedSecondary: true });
+      await page.route('**/api/dashboard/capacity', (r) =>
+        r.fulfill({
+          json: { capacity: { available: false, reason: 'llmux unreachable', fetchedAtMs: Date.now(), groups: [] } },
+        }),
+      );
+      await openDashboard(page, baseUrl);
+      await page.waitForFunction(() => !(document.getElementById('capacity') as HTMLElement).hidden);
+      const chip = await page.evaluate(() => {
+        const c = document.querySelector('#capacity .cap-chip') as HTMLElement | null;
+        return c ? c.innerText : '';
+      });
+      expect(
+        chip.indexOf('가용량 미확인') >= 0,
+        `an unreachable llmux shows in the collapsed chip (${chip || 'no chip'})`,
+      );
+      await ctx.close();
+    }
+    // 4l. Expanding the CRON lane moves the board from where it was (one FLIP from the
+    //     coordinator, not a render FLIP from a half-revealed lane — trinity R1, astra).
+    {
+      const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+      const page = await ctx.newPage();
+      page.on('pageerror', (e) => failures.push(`transition cron toggle: page error ${e.message}`));
+      await preparePage(page, { seedSecondary: true });
+      await openDashboard(page, baseUrl);
+      await page.waitForFunction(() => !(document.getElementById('capacity') as HTMLElement).hidden);
+      await page.waitForTimeout(900);
+      const before = await page.evaluate(() => {
+        const card = document.querySelector('#kanban .card') as HTMLElement;
+        const w = window as unknown as { __flipStarts: Record<string, unknown> };
+        w.__flipStarts = {};
+        const r = card.getBoundingClientRect();
+        return { key: card.getAttribute('data-session-key') as string, top: r.top };
+      });
+      await page.click('#cron-toggle');
+      const seen = await page.evaluate(
+        (key) =>
+          new Promise<{ start: { top: number } | null; lane: boolean }>((resolve) =>
+            requestAnimationFrame(() =>
+              requestAnimationFrame(() => {
+                const w = window as unknown as { __flipStarts: Record<string, { top: number }> };
+                resolve({ start: w.__flipStarts[key] || null, lane: !!document.querySelector('.cron-lane .card') });
+              }),
+            ),
+          ),
+        before.key,
+      );
+      expect(
+        seen.lane && seen.start !== null && Math.abs(seen.start.top - before.top) <= 2,
+        `expanding the CRON lane slides the board from where it was (from ${seen.start ? Math.round(seen.start.top) : '—'} vs ${Math.round(before.top)}, lane card ${seen.lane})`,
+      );
+      await ctx.close();
+    }
+    // 4m. Storage refuses the write (private mode, a full quota): the toggle still works here.
+    {
+      const ctx = await browser.newContext({ viewport: { width: 1440, height: 900 } });
+      const page = await ctx.newPage();
+      await preparePage(page, { seedSecondary: true });
+      await page.addInitScript({
+        content: "Storage.prototype.setItem = function () { throw new Error('QuotaExceededError'); };",
+      });
+      await openDashboard(page, baseUrl);
+      await page.waitForFunction(() => !(document.getElementById('capacity') as HTMLElement).hidden);
+      await page.click('#capacity-toggle');
+      await page.waitForTimeout(200);
+      const expanded = await page.evaluate(() =>
+        (document.getElementById('capacity-toggle') as HTMLElement).getAttribute('aria-expanded'),
+      );
+      expect(expanded === 'true', `the toggle works when storage refuses the write (${expanded})`);
+      await ctx.close();
+    }
+    // 4n. A deep link to a CRON run in a folded lane opens the lane (this load only) and its panel.
+    {
+      const ctx = await browser.newContext({ viewport: { width: 382, height: 580 }, hasTouch: true, isMobile: true });
+      const page = await ctx.newPage();
+      page.on('pageerror', (e) => failures.push(`transition deep link: page error ${e.message}`));
+      await preparePage(page, { seedSecondary: true });
+      await page.goto(`${baseUrl}/dashboard?session=${encodeURIComponent(CRON_KEY)}`);
+      await page.waitForFunction(() => document.querySelectorAll('#kanban .card').length > 0, undefined, {
+        timeout: 15000,
+      });
+      await page.waitForTimeout(1500);
+      const st = await page.evaluate(() => ({
+        lane: (document.getElementById('cron-toggle') as HTMLElement).getAttribute('aria-expanded'),
+        card: !!document.querySelector('.cron-lane .card'),
+        panel: (document.getElementById('slide-panel') as HTMLElement).classList.contains('open'),
+        saved: localStorage.getItem('soma-sec-cron'),
+      }));
+      expect(
+        st.lane === 'true' && st.card && st.panel && st.saved === null,
+        `a deep link opens the folded lane for this load and the run's panel (${JSON.stringify(st)})`,
+      );
       await ctx.close();
     }
     // 4. Reduced motion: no movement, a fade only.
@@ -766,8 +1283,11 @@ async function main() {
   const baseUrl = getViewerBaseUrl().replace(/\/\/[^:/]+/, '//127.0.0.1');
   const failures: string[] = [];
   try {
-    await sweepBrowser('chromium', chromium, baseUrl, outDir, failures);
-    await sweepBrowser('webkit', webkit, baseUrl, outDir, failures);
+    // SWEEP_ONLY=transitions reruns just the motion checks (a flake hunt, a quick loop).
+    if (process.env.SWEEP_ONLY !== 'transitions') {
+      await sweepBrowser('chromium', chromium, baseUrl, outDir, failures);
+      await sweepBrowser('webkit', webkit, baseUrl, outDir, failures);
+    }
     await transitions(baseUrl, outDir, failures, sessions);
   } finally {
     await stopWebServer();

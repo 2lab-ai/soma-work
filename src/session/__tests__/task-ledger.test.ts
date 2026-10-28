@@ -176,10 +176,10 @@ describe('ledger bounds and persistence', () => {
 
   it('closing the list (new / renew) keeps the history but no task is in progress any more (review P2)', () => {
     const l = applyTodoList(undefined, [todo('A', 'in_progress')], 1);
-    const closed = closeTaskList(l);
+    const closed = closeTaskList(l, 2);
     expect(currentTask(closed)).toBeUndefined();
     expect(ledgerTasks(closed!).earlier.map((t) => t.id)).toEqual(['T1']);
-    expect(closeTaskList(undefined)).toBeUndefined();
+    expect(closeTaskList(undefined, 2)).toBeUndefined();
   });
 
   it('sanitizes a persisted ledger: unknown shapes are dropped, numbers stay numbers', () => {
@@ -198,7 +198,8 @@ describe('ledger bounds and persistence', () => {
       nextSeq: 4,
       current: ['T3'],
       tasks: [
-        { id: 'T1', content: 'A', status: 'completed', startedAt: 1, completedAt: 2, toolCalls: 3 },
+        // #488: a ledger saved before firstStartedAt existed reads its first start from startedAt.
+        { id: 'T1', content: 'A', status: 'completed', startedAt: 1, firstStartedAt: 1, completedAt: 2, toolCalls: 3 },
         { id: 'T3', content: '<b>C</b>', status: 'pending', toolCalls: 0 },
       ],
     });
