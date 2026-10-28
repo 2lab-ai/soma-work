@@ -43,6 +43,7 @@ import { resolveModelProfile } from '../../metrics/model-profile';
 import { clampEffortToModel, modelCatalog } from '../../model-catalog';
 import { isSafePathSegment, normalizeTmpPath } from '../../path-utils';
 import type { SdkPluginPath } from '../../plugin/types';
+import { getProjectMemoryStore, projectMemoryPromptBlock } from '../../project-memory-store';
 import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/deploy-sandbox-grant';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import type { SessionRegistry } from '../../session-registry';
@@ -626,6 +627,14 @@ export async function buildStreamOptions(
     const hasConfluence = !!slackContext?.confluenceUrl;
     if (builtSystemPrompt && (hasRepos || hasConfluence)) {
       builtSystemPrompt = `${builtSystemPrompt}\n\n${buildRepoContextBlock(slackContext!.repos || [], slackContext!.confluenceUrl)}`;
+    }
+
+    // Shared project memory of the channel's repos (SSOT 2026-10-23 T4) —
+    // admin-curated notes, read-only for the model; a change clears the cached
+    // prompt of the sessions in those channels (src/index.ts).
+    if (builtSystemPrompt && hasRepos) {
+      const projectBlock = projectMemoryPromptBlock(getProjectMemoryStore(), slackContext!.repos || []);
+      if (projectBlock) builtSystemPrompt = `${builtSystemPrompt}\n\n${projectBlock}`;
     }
 
     // Cache the freshly-built prompt on the session so subsequent turns

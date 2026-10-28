@@ -185,6 +185,10 @@ updates inside its terminal-cleanup boundary, including setup failures.
   host·MCP·대시보드 모든 메모리 쓰기는 `somalib/model-commands/memory-lock.ts`(`{DATA_DIR}/{uid}/memory/.lock`: 소유자 파일 `owner-<token>.json`을 넣은 임시 디렉터리를 `rename`으로 올려 획득, 해제·회수는 그 파일의 `rename`(원자적 비교-삭제) 뒤 `rmdir`, 같은 호스트의 살아 있는 소유자는 나이로 회수하지 않음, 프로세스 내 재진입)를 잡는다.
   양식에 무손실로 담기지 않는 지식 페이지는 `PUT /api/memory/page/raw`(원문 markdown, revision 조건부)로만 고친다(`getPageWithRevision().representable`).
   `SLACK_MEMORY_COVERAGE` 계약 테스트가 Slack 메모리 쓰기 전수와 대조
+- 공유 프로젝트 메모리: `src/project-memory-store.ts`(`DATA_DIR/project-memory.json`, 키 `owner/repo`, revision 조건부, atomicWriteJson) ←
+  `src/conversation/project-memory-routes.ts` `/api/project-memory`(읽기: 로그인 사용자, 쓰기: `requireWriteAccess(req, reply, undefined)` 관리자 게이트 + CSRF, 인증 미설정(`mode:none`)은 쓰기 403).
+  프롬프트 주입: `build-stream-options.ts`가 `<channel-repository>` 뒤에 `projectMemoryPromptBlock(slackContext.repos)`.
+  `src/index.ts`가 채널 레지스트리(`getAllChannels`)를 저장소 목록 소스로, 변경 훅을 `SessionRegistry.invalidateSystemPromptWhere`(해당 저장소 채널 세션)로 연결
 - **새 작업 (대시보드 New task, 2026-10-23)**: `GET /api/dashboard/new-task/context` · `POST /api/dashboard/new-task` (`dashboard.ts`, 로그인한 Slack 유저 본인으로만 — body의 userId·admin mode 무시, CSRF, 라우트 bodyLimit) →
   `setDashboardNewTaskProvider` ← `src/index.ts`의 `createNewTaskProvider` (`src/conversation/new-task-provider.ts`). 컨텍스트 = 대표 모델+공유 풀 배터리(`new-task-usage.ts`: llmux `/llmux/status` 또는 CCT 슬롯) ·
   유저 기본 effort/autogoal · 채널(ChannelRegistry repo 매핑 ∩ `users.conversations` 멤버십, 멤버십 미확인 시 빈 목록) · 기본 채널(`LastCommandChannelStore` → 최근 세션). 제출은 멱등 게이트(`createNewTaskGate`, requestId·유저당 동시 1건)와 fresh 멤버십 재검증(`parseNewTaskSubmission`) 뒤
