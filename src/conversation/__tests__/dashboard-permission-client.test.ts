@@ -82,6 +82,7 @@ const FNS = [
   'acPost',
   'acRefusal',
   'acToolOf',
+  'acDrop',
   'answerPermission',
 ] as const;
 
@@ -321,7 +322,7 @@ describe('dashboard permission prompt → real server (shipped client code)', ()
 
     const st = c.answerPermission(key, id, 'approve');
     // In flight: the card locks its answers and spins the one pressed.
-    expect(c.state._acState[`p|${id}`]).toEqual({ status: 'sending', decision: 'approve' });
+    expect(c.state._acState[key][`p|${id}`]).toEqual({ status: 'sending', decision: 'approve' });
     await st;
 
     expect(fetchCalls[fetchCalls.length - 1]).toEqual({
@@ -330,7 +331,7 @@ describe('dashboard permission prompt → real server (shipped client code)', ()
     });
     // Answered: the card becomes its resolved row; a toast says it went through after the push removes it.
     expect(await st).toMatchObject({ status: 'resolved', outcome: 'approved' });
-    expect(c.state._acState[`p|${id}`]).toMatchObject({ status: 'resolved', outcome: 'approved' });
+    expect(c.state._acState[key][`p|${id}`]).toMatchObject({ status: 'resolved', outcome: 'approved' });
     expect(c.acPermissionData(card(id), card(id).pendingPermissions[0]).state).toMatchObject({ status: 'resolved' });
     expect(toasts).toEqual([{ title: '승인을 보냈어요', description: 'Bash', tone: 'success' }]);
     expect(await sharedStore.waitForPermissionResponse(id, 1500)).toEqual({
