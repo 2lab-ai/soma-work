@@ -67,6 +67,7 @@ import {
   setDashboardCommandHandler,
   setDashboardCronSource,
   setDashboardEffortHandler,
+  setDashboardFollowupHandler,
   setDashboardGoalHandler,
   setDashboardModelHandler,
   setDashboardMultiChoiceAnswerHandler,
@@ -855,6 +856,16 @@ async function start() {
     setDashboardCommandHandler(async (sessionKey, message, attachments) => {
       await injectDashboardMessage(sessionKey, message, undefined, attachments);
     });
+
+    // Connect dashboard: the session's follow-up queue on the panel
+    // (<ui-agent-steering>, batch 2) — Send now / Retry / Cancel through the
+    // Slack controls' own handlers, Edit through editQueued, and every committed
+    // queue change pushes that session to the open panels.
+    setDashboardFollowupHandler({
+      view: (sessionKey) => slackHandler.getFollowupView(sessionKey),
+      act: (request) => slackHandler.handleDashboardFollowupAction(request),
+    });
+    slackHandler.setFollowupChangeListener((sessionKey) => scheduleLiveSessionUpdate(sessionKey));
 
     // Connect dashboard: model switch (SSOT 2026-10-22 T4/T5) — representative
     // models only; a context above the target's auto-compact threshold is
