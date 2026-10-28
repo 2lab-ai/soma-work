@@ -1,5 +1,6 @@
 import type { IncomingHttpHeaders } from 'node:http';
 import * as os from 'node:os';
+import fastifyCompress from '@fastify/compress';
 import fastifyFormbody from '@fastify/formbody';
 // Type-only: the plugin itself is registered by dashboard.ts via dynamic import.
 import type { WebSocket } from '@fastify/websocket';
@@ -515,6 +516,11 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
   // application/x-www-form-urlencoded by default; without this plugin the
   // handler would receive an empty `request.body`.
   await server.register(fastifyFormbody);
+
+  // Response compression, opt-in per route (dashboard.ts FIRST_LOAD_COMPRESSION).
+  // Off by default so byte-range routes (artifacts, user media) keep exact
+  // Content-Length / Content-Range semantics (#477).
+  await server.register(fastifyCompress, { global: false });
 
   // ---- HTML Routes (require auth when token is configured) ----
 
