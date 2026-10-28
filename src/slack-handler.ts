@@ -87,6 +87,7 @@ import { CompletionMessageTracker } from './slack/completion-message-tracker';
 import { createForkExecutor } from './slack/create-fork-executor';
 import { DispatchAbortError, formatDispatchAbortMessage } from './slack/dispatch-abort';
 import { requestEnvSkillPermission } from './slack/env-skill-permission-request';
+import { mintEventTs } from './slack/event-ts';
 import { type FollowupReactionRole, FollowupReactionSurface, rolesForFollowupState } from './slack/followup-reactions';
 import { bumpGoalEpoch, resetGoalContinuationOnUserMessage } from './slack/goal-continuation';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from './slack/goal-host-actions';
@@ -663,7 +664,14 @@ export class SlackHandler {
     // 1. StreamExecutor → EventRouter.dispatchPendingUserMessage
     //    Set on an already-constructed instance via a runtime field.
     (this.streamExecutor as any).deps.dispatchPendingUserMessage = (
-      ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean },
+      ctx: {
+        channel: string;
+        threadTs: string;
+        user: string;
+        ts: string;
+        verbatimPrompt?: boolean;
+        hostTurn?: boolean;
+      },
       text: string,
       opts?: { compactRedispatch?: boolean },
     ) => this.eventRouter.dispatchPendingUserMessage(ctx, text, opts);
@@ -1074,6 +1082,14 @@ export class SlackHandler {
    * queue stores what the user actually sent (ssot.md:91-92).
    */
   async handleMessage(event: MessageEvent, say: any): Promise<void> {
+    // A turn sent without a Slack message of its own (an approved request sent
+    // again, an injected session action) arrives with `ts: ''`. The ts is its
+    // queue identity (`<channel>:<ts>`) and the queue store refuses an empty one,
+    // so it is minted here, once, before anything keys on it (`slack/event-ts.ts`).
+    // A minted ts names no Slack message, which the thread-post report below needs.
+    const hasSlackMessage = Boolean(event.ts);
+    if (!hasSlackMessage) event = { ...event, ts: mintEventTs() };
+
     // First admission point: restored items are only trustworthy once the
     // startup reconcile has run against the registry.
     this.warnIfReconcileSkipped();
@@ -1128,8 +1144,9 @@ export class SlackHandler {
     // Bot writes report themselves inside the api helper; an INBOUND reply never
     // touches it, so the ingress reports it instead. Best-effort and never
     // awaited: this is a UI hint, and a listener fault must not touch the fence
-    // below. Synthetic turns are excluded — no message reached the thread.
-    if (event.thread_ts && event.ts && !event.synthetic) {
+    // below. Synthetic and minted-ts turns are excluded — no message reached the
+    // thread, and a phantom ts newer than the panel would re-post it for nothing.
+    if (event.thread_ts && hasSlackMessage && !event.synthetic) {
       try {
         this.slackApi.notifyThreadPost?.({
           channel: event.channel,
@@ -2052,6 +2069,7 @@ export class SlackHandler {
         sourceThreadTs,
         sourceChannel,
         synthetic: event.synthetic,
+        hostTurn: event.routeContext?.hostTurn === true,
         literalPrompt,
       });
 
@@ -2333,6 +2351,8 @@ export class SlackHandler {
       sourceThreadTs?: string;
       sourceChannel?: string;
       synthetic?: boolean;
+      /** A post-compact replay of a host turn: recorded as soma-work's (routeContext.hostTurn). */
+      hostTurn?: boolean;
       /** The first turn's text is a goal objective — never an SDK slash command. */
       literalPrompt?: boolean;
       /**
@@ -2387,6 +2407,7 @@ export class SlackHandler {
       sourceThreadTs: context.sourceThreadTs,
       sourceChannel: context.sourceChannel,
       isUserInput: !context.synthetic,
+      hostTurn: context.hostTurn === true,
       literalPrompt: context.literalPrompt === true,
       // Same captured token, for the executor's own late-write fence.
       followupTurnEpoch: expectedTurnEpoch,

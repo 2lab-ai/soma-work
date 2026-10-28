@@ -21,6 +21,14 @@ export type WorkLogKind = 'instruction' | 'narration' | 'tool' | 'tool_result' |
 export interface WorkLogInput {
   kind: WorkLogKind;
   text: string;
+  /**
+   * SSOT 2026-10-28 — an `instruction` entry: who put it in the conversation
+   * (the recorded user turn's `origin.by`) and whether it was a compaction
+   * turn. The dashboard's work log reads a turn soma-work sent as a one-line
+   * badge from these; entries written before they were kept are read from text.
+   */
+  by?: 'user' | 'system';
+  compactTurn?: true;
   tool?: string;
   ok?: boolean;
   turnId?: string;
