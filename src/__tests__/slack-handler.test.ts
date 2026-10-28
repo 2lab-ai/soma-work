@@ -2676,6 +2676,28 @@ describe('SlackHandler — #1082 goal-prefixed first message', () => {
     expect(execute.mock.calls[0][0].literalPrompt).toBe(true);
   });
 
+  it('a replayed host turn (routeContext.hostTurn) reaches the executor as one; a plain message does not', async () => {
+    const { handler, execute } = buildGoalHarness({ handled: false });
+    await handler.handleMessage(
+      {
+        user: 'U123',
+        channel: 'C123',
+        ts: '111.222',
+        text: '[goal-continuation] Continue',
+        routeContext: { compactRedispatch: true, hostTurn: true },
+      } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg123' }),
+    );
+    expect(execute.mock.calls[0][0].hostTurn).toBe(true);
+
+    const plain = buildGoalHarness({ handled: false });
+    await plain.handler.handleMessage(
+      { user: 'U123', channel: 'C123', ts: '111.223', text: '대시보드 고쳐줘' } as any,
+      vi.fn().mockResolvedValue({ ts: 'msg124' }),
+    );
+    expect(plain.execute.mock.calls[0][0].hostTurn).toBeFalsy();
+  });
+
   it('a plain message is not literal — a typed `/compact` stays an SDK command', async () => {
     const { handler, execute } = buildGoalHarness({ handled: false });
     await handler.handleMessage(

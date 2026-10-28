@@ -255,7 +255,8 @@ describe('StreamExecutor — work log binding (spec 10 §3.3)', () => {
     // Payloads, not just kinds.
     const turnId = appendWorkLog.mock.calls[0]?.[1].turnId;
     expect(appendWorkLog.mock.calls.map(([, entry]) => entry)).toEqual([
-      { kind: 'instruction', text: INSTRUCTION, turnId, ts: expect.any(Number) },
+      // Who sent it (SSOT 2026-10-28) rides on the instruction, as on the recorded turn.
+      { kind: 'instruction', text: INSTRUCTION, by: 'user', turnId, ts: expect.any(Number) },
       { kind: 'narration', text: NARRATION, turnId, ts: expect.any(Number) },
       {
         kind: 'tool',
