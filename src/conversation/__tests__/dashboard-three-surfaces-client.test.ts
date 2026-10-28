@@ -157,146 +157,109 @@ const card = (over: Record<string, unknown> = {}) => ({
 });
 
 const BASE = ['esc', 'escAttr', 'escJs', 'toNum', 'formatDuration'];
-const NODE_FNS = [
+// The session's agent tree as @2lab.ai/ui <ui-agent-tree> takes it (affectUI review batch 2).
+const TREE_FNS = [
   ...BASE,
   'agentStatusOf',
   'agentName',
-  'agentIconHtml',
-  'agentTimeHtml',
   'agentActivity',
-  'agentSpanAxis',
-  'agentSpanStyle',
   'pendingAutoResume',
   'rootStatusOf',
   'agentNodeOf',
   'agentTreeOf',
-  'anDesc',
   'agentNodeName',
-  'agentNodeLine',
-  'agentNodeAria',
+  'cardTotalTokens',
   'spendTotal',
-  'spendText',
-  'spendLabel',
-  'spendTitle',
-  'anCompactLine',
-  'anIdPart',
-  'anTimeId',
-  'anIsOpen',
-  'agentNodeRow',
-  'renderAgentNode',
-  'renderAgentNodes',
-  'anTreeHtml',
+  'atIdOf',
+  'atRootReason',
+  'atNode',
+  'atTreeData',
+  'cardCurrentTask',
+  'renderCardTaskRow',
+  'atCardData',
 ];
-const NODE_VARS = [
-  'AGENT_STATUS_LABEL',
-  'AGENT_TREE_ROWS',
-  'AN_CHEV_SVG',
-  'AN_LIVE_LINE',
-  '_anOpen',
-  '_anAll',
-  '_anActive',
-];
+const TREE_VARS = ['AGENT_STATUS_LABEL', 'AT_ROOT', 'AT_STATUS', 'AT_ROOT_STATUS', '_anOpen'];
+type TreeNode = Record<string, unknown> & { id: string; status: string };
+type TreeData = { nodes: TreeNode[]; density: string; title: string; expanded: string[] };
 
 // ── 1. The agent tree at the density of its surface ──
-describe('one row renderer, two densities — compact on the card, rich in the panel', () => {
+describe('one tree element, two densities — compact on the card, rich in the panel', () => {
   // One load for the suite (cooking the client is the slow part); the header config is mutable.
   const header: { show: Record<string, boolean> } = { show: {} };
-  const treeUi = load<{ renderAgentTree(s: unknown, col: string): string }>(
-    [...NODE_FNS, 'cardCurrentTask', 'renderCardTaskRow', 'renderAgentTree'],
-    NODE_VARS,
-    { formatTokens: (n: number) => `${n}`, dhShow: (k: string) => !!header.show[k] },
-  );
+  const treeUi = load<{
+    atCardData(s: unknown, col: string): TreeData | null;
+    atTreeData(anchor: unknown, o: Record<string, unknown>): TreeData;
+    agentTreeOf(s: unknown, col: string): unknown;
+  }>(TREE_FNS, TREE_VARS, { formatTokens: (n: number) => `${n}`, dhShow: (k: string) => !!header.show[k] });
   const tree = (s: Record<string, unknown>, col: string, show: Record<string, boolean> = { tasks: true }) => {
     header.show = show;
-    return treeUi.renderAgentTree(s, col);
+    return treeUi.atCardData(s, col) as TreeData;
   };
-  const itemOf = (html: string, id: string) => {
-    const at = html.indexOf(`data-agent-open="${id}"`);
-    const start = html.lastIndexOf('<li ', at);
-    const next = html.indexOf('<li ', at);
-    return html.slice(start, next < 0 ? undefined : next);
-  };
+  const nodeOf = (d: TreeData, id: string) => d.nodes.find((n) => n.id === id) as TreeNode;
 
-  it('a card row is name · status word · time — no tools, tokens, background pill, description or waterfall', () => {
-    const html = tree(card(), 'working');
-    expect(html).toContain('class="an-row is-compact"');
-    expect(html).not.toContain('class="ag-tools"');
-    expect(html).not.toContain('class="ag-tok"');
-    expect(html).not.toContain('class="ag-bg"');
-    expect(html).not.toContain('class="ag-desc"');
-    expect(html).not.toContain('class="ag-span"');
-    const lib = itemOf(html, 'toolu_lib');
-    expect(lib).toContain('<span class="ag-st">완료</span>');
-    expect(lib).toContain('4m 2s');
-    expect(lib).not.toContain('class="ag-sub"');
+  it('the card is compact: a row per agent — name, status word, time, cost; the element draws no waterfall there', () => {
+    const d = tree(card(), 'working');
+    expect(d.density).toBe('compact');
+    expect(d.title).toBe('에이전트');
+    // The data a compact row reads (library: 'compact: rows with status words; the line only on live / failed ones').
+    expect(nodeOf(d, 'toolu_lib')).toMatchObject({
+      name: 'A2 librarian',
+      status: 'done',
+      startedAt: T0 + 5_000,
+      endedAt: T0 + 247_000,
+    });
+    expect(TEMPLATE).toContain('.ag-tree > ui-agent-tree { max-height: 420px; overflow-y: auto;');
   });
 
-  it('a live node adds what it is doing; a failed node adds its description when it reports nothing else', () => {
-    const html = tree(card(), 'working');
-    expect(itemOf(html, 'toolu_explore')).toContain('<span class="ag-sub">#T1 Reading the mapper</span>');
-    // The failed child sits under a folded parent? No — depth 1 is open by default on the card.
-    expect(itemOf(html, 'toolu_nested')).toContain('<span class="ag-sub">Check nested spawn frames</span>');
-  });
-
-  it("the compact item's accessible name lists the slots it shows — never the tools it does not", () => {
-    const html = tree(card(), 'working');
-    expect(itemOf(html, 'toolu_explore')).toContain('aria-label="A1 Explore, 실행 중, #T1 Reading the mapper, 하위 1"');
-    expect(itemOf(html, 'toolu_lib')).toContain('aria-label="A2 librarian, 완료"');
-    expect(html).not.toMatch(/aria-label="[^"]*툴 \d/);
+  it('a live node says what it is doing; a failed node carries what it last reported as its reason', () => {
+    const d = tree(card({ agents: [AGENTS[0], { ...AGENTS[1], summary: 'frames were empty' }, AGENTS[2]] }), 'working');
+    expect(nodeOf(d, 'toolu_explore').summary).toBe('#T1 Reading the mapper');
+    expect(nodeOf(d, 'toolu_nested')).toMatchObject({
+      status: 'failed',
+      reason: 'frames were empty',
+      role: 'Check nested spawn frames',
+    });
   });
 
   it("the root's activity line is dropped only while the face's task row shows it", () => {
-    const shown = tree(card(), 'working');
-    expect(itemOf(shown, '')).not.toContain('class="ag-sub"');
+    expect(nodeOf(tree(card(), 'working'), ':main')).not.toHaveProperty('summary');
     // No task in progress: the face has no task row, so the root says what it last did.
     const noTask = tree(card({ tasks: [{ id: 'T1', content: 'Plan', status: 'completed' }] }), 'working');
-    expect(itemOf(noTask, '')).toContain('<span class="ag-sub">마지막 도구 Edit</span>');
+    expect(nodeOf(noTask, ':main').summary).toBe('마지막 도구 Edit');
     // The header hides the task row: the root keeps its line.
-    const hidden = tree(card(), 'working', {});
-    expect(itemOf(hidden, '')).toContain('<span class="ag-sub">#T2 Build</span>');
+    expect(nodeOf(tree(card(), 'working', {}), ':main').summary).toBe('#T2 Build');
   });
 
-  it('a parent over the card cap hands the rest to the panel — 전체 N개 → 상세, not an in-card expansion', () => {
+  it('a wide fan-out stays a card: every child is a node, the frame scrolls (no in-card cap, no 전체 N개 → 상세)', () => {
     const kids = Array.from({ length: 9 }, (_, i) => ({
       id: `k${i}`,
       n: 10 + i,
       status: 'completed',
       startedAt: T0 + i,
     }));
-    const html = tree(card({ agents: kids, agentsTotal: 9 }), 'working');
-    expect(html.match(/data-agent-open="k\d"/g)).toHaveLength(6);
-    expect(html).toContain('<span class="an-all-text">전체 9개 &rarr; 상세</span>');
-    expect(html).toContain('aria-label="전체 9개 — 상세 패널에서 보기"');
-    const act = clientFn('anActivate');
-    expect(act).toContain("ns.indexOf('c|') === 0");
-    expect(act).toContain("openPanel(ns.slice(2), 'agent', allId)");
+    const d = tree(card({ agents: kids, agentsTotal: 9 }), 'working');
+    expect(d.nodes.filter((n) => /^k\d$/.test(n.id))).toHaveLength(9);
+    expect(declarationCount('AGENT_TREE_ROWS')).toBe(0);
   });
 
-  it('the panel rows stay rich: tools, tokens, background, description, activity, waterfall', () => {
-    const fns = [...NODE_FNS];
-    const m = load<{
-      anTreeHtml(root: unknown, anchor: unknown, ctx: unknown): string;
-      agentTreeOf(s: unknown, c: string): any;
-    }>(fns, NODE_VARS, { formatTokens: (n: number) => `${n}` });
-    const root = m.agentTreeOf(card(), 'working');
-    const ctx = {
+  it('the panel subtree is rich — a card per agent with its spend, its brief and the waterfall on one axis', () => {
+    const root = treeUi.agentTreeOf(card(), 'working');
+    const d = treeUi.atTreeData(root, {
+      s: card(),
       ns: 'p|k',
-      act: 'data-agent-select',
-      levelBase: 0,
-      capFrom: 2,
       withRoot: false,
+      openDepth: 0,
       density: 'rich',
-      axis: { t0: T0, t1: T0 + 300_000 },
-    };
-    const html = m.anTreeHtml(root, root, ctx);
-    expect(html).not.toContain('is-compact');
-    expect(html).toContain('<span class="ag-tools" title="툴 호출 수">툴 18</span>');
-    // SSOT 2026-10-26 T2 — its own spend (tokens + API-equivalent cost), never the SDK's context size.
-    expect(html).toContain('>238000 tok · $0.42</span>');
-    expect(html).toContain('<span class="ag-tok" title="이 에이전트 자신의 API 호출 7회 (하위 에이전트 제외)');
-    expect(html).toContain('<span class="ag-bg">배경</span>');
-    expect(html).toContain('<span class="ag-desc">Trace subagent frames</span>');
-    expect(html).toContain('class="ag-span"');
+      title: '하위 에이전트',
+    });
+    expect(d.density).toBe('rich');
+    // SSOT 2026-10-26 T2 — its own spend: every token kind it was billed for and the API-equivalent cost.
+    expect(nodeOf(d, 'toolu_explore')).toMatchObject({ tokens: 238_000, costUsd: 0.42, toolCalls: 18 });
+    expect(nodeOf(d, 'toolu_explore').role).toBe('배경 · Trace subagent frames');
+    // The waterfall needs every node's start (and end, when it ended) — the element puts them on one axis
+    // (library: 'rich: cards with pill, summary, reason on needs_you / failed, branch cost, time and the waterfall').
+    expect(nodeOf(d, 'toolu_nested')).toMatchObject({ startedAt: T0 + 10_000, endedAt: T0 + 51_000 });
+    expect(clientFn('renderPanelAgents')).toContain("density: 'rich', title: '하위 에이전트'");
   });
 });
 
@@ -892,7 +855,7 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
         [
           'var panelOpen = true, panelSessionKey = "k", panelConvId = null, _panelAgent = "", _panelAgentsHtml = "", _rawLoadedCache = {}, _panelGen = 0;',
           'var _panelTurnsHasMore = false, _panelTurnsLoading = false, _panelTurnsOldestId = null, _panelLand = "", _panelLanded = false;',
-          'var _panelStickBottom = false, _panelOnQuestion = false, _anReturnFocus = null, _panelReturnFocus = __ret;',
+          'var _panelStickBottom = false, _panelOnQuestion = false, _panelReturnFocus = __ret;',
         ],
       );
       m.closePanel();
