@@ -4,7 +4,8 @@
  * template literal, cooked exactly as the browser receives it (the harness of
  * dashboard-three-surfaces-client.test.ts).
  *
- *   plan        = the pinned Tasks as a plan: original order, markers, rail,
+ *   plan        = the Tasks section of the focused tab (task view T1.3: folded
+ *                 by default; opened, a plan): original order, markers, rail,
  *                 a footer with the phase, announcements (D1–D7)
  *   needs input = a header with a count, approval cards for permission prompts
  *                 and the single-choice question, the keyboard, the answered
@@ -88,8 +89,12 @@ type Task = {
   startedAt?: number;
   completedAt?: number;
   toolCalls?: number;
+  dropped?: 'started' | 'unstarted';
+  removedAt?: number;
 };
-function plan(opts: { expanded?: boolean; earlier?: boolean } = {}) {
+// The plan steps live in the opened Tasks section (task view T1.3) — D1–D7 are
+// pinned there; `open: false` is the folded default (the head only).
+function plan(opts: { expanded?: boolean; earlier?: boolean; open?: boolean } = {}) {
   const el = box();
   let writes = 0;
   const m = load<{ renderPanelTasks(t: Task[] | null, label?: string, earlier?: Task[]): void }>(
@@ -100,13 +105,19 @@ function plan(opts: { expanded?: boolean; earlier?: boolean } = {}) {
       'formatDuration',
       'formatTaskTime',
       'agentIconHtml',
+      'taskFateOf',
       'renderPanelTaskItem',
       'planFootHtml',
+      'planSummaryHtml',
+      'planEarlierCounts',
+      'planEarlierGroups',
+      'planEarlierHtml',
       'renderPanelTasks',
     ],
-    ['AGENT_STATUS_LABEL'],
+    ['AGENT_STATUS_LABEL', 'TASK_FATE_LABEL', 'TASK_PAUSE_SVG', 'TASK_STOP_SVG', 'TASK_SKIP_SVG', 'PI_CHEV_SVG'],
     {
       document: { getElementById: (id: string) => (id === 'panel-tasks' ? el : null) },
+      _panelTasksOpen: opts.open !== false,
       _panelTasksExpanded: !!opts.expanded,
       _panelTasksEarlier: !!opts.earlier,
       morphInnerHtml: (e: El, h: string) => {
@@ -133,7 +144,41 @@ const TASKS: Task[] = [
 const rows = (html: string) =>
   [...html.matchAll(/<li class="panel-task-item pl-step[^"]*"[^>]*>[\s\S]*?<\/li>/g)].map((m) => m[0]);
 
-describe('plan — the pinned Tasks in their own order (D1–D5)', () => {
+describe('plan — the Tasks section of the tab, in its own order (D1–D5)', () => {
+  it('T1.3: folded by default — the head is the plan in one line, no steps until it is opened', () => {
+    const p = plan({ open: false });
+    p.render(TASKS);
+    const html = p.el.innerHTML;
+    expect(html).toContain(
+      '<button type="button" class="panel-sec-head panel-tasks-header" aria-expanded="false" onclick="togglePanelTasks()">',
+    );
+    expect(html).toContain('<span class="ps-sec-title">Tasks</span>');
+    // The step in progress (its activeForm) and done/total.
+    expect(text(html)).toContain('Rendering the bars·1/3');
+    expect(html).not.toContain('panel-tasks-body');
+    expect(rows(html)).toHaveLength(0);
+    // The live region is written folded as well (D7 keeps announcing).
+    expect(html).toContain('<span class="ar-vh pl-live" role="status" aria-live="polite"></span>');
+    const open = plan();
+    open.render(TASKS);
+    expect(open.el.innerHTML).toContain(
+      'aria-expanded="true" aria-controls="panel-tasks-body" onclick="togglePanelTasks()">',
+    );
+    expect(open.el.innerHTML).toContain('<div class="panel-tasks-body" id="panel-tasks-body">');
+    expect(rows(open.el.innerHTML)).toHaveLength(3);
+  });
+
+  it('T2: a pending step that had started reads 멈춤 (paused), not 대기', () => {
+    const p = plan();
+    p.render([{ id: 'T7', content: 'Was running', status: 'pending', startedAt: T0, toolCalls: 3 }]);
+    const [r] = rows(p.el.innerHTML);
+    expect(r).toContain('data-step="paused"');
+    expect(r).toContain('pl-step paused');
+    expect(r).toContain('<span class="pl-fate">멈춤</span>');
+    expect(r).toContain('<span class="ar-vh">, 멈춤</span>');
+    expect(r).not.toContain('aria-current');
+  });
+
   it('D1/D2: original order, one marker per state, the active step is the current one', () => {
     const p = plan();
     p.render([TASKS[2], TASKS[0], TASKS[1]]);
@@ -240,12 +285,35 @@ describe('plan footer — the phase from the steps (D6)', () => {
     expect(open.el.innerHTML).toContain('Hide completed');
   });
 
-  it('the earlier lists keep their toggle and use the same rows, without the rail', () => {
+  it('the earlier plans keep their toggle (counts by fate) and use the same rows, without the rail', () => {
+    const folded = plan();
+    folded.render([TASKS[1]], '', [{ id: 'T0', content: 'old one', status: 'completed' }]);
+    expect(folded.el.innerHTML).toContain('이전 계획 <span class="pl-earlier-counts">완료 1</span>');
+    expect(folded.el.innerHTML).toContain('aria-expanded="false"');
+    expect(folded.el.innerHTML).not.toContain('old one');
     const p = plan({ earlier: true });
     p.render([TASKS[1]], '', [{ id: 'T0', content: 'old one', status: 'completed' }]);
-    expect(p.el.innerHTML).toContain('이전 task 1개');
-    expect(p.el.innerHTML).toContain('<ol class="pl-list pl-earlier" aria-label="이전 task">');
+    expect(p.el.innerHTML).toContain('이전 계획 <span class="pl-earlier-counts">완료 1</span>');
+    // A ledger entry without removedAt is grouped as 이전 기록.
+    expect(p.el.innerHTML).toContain(
+      '<div class="pl-earlier-group"><div class="pl-earlier-when">이전 기록</div><ol class="pl-list pl-earlier" aria-label="이전 기록">',
+    );
     expect(p.el.innerHTML).toContain('old one');
+    // One group per replacement, newest first; dropped vs never-run by fate.
+    const at = T0 + 600_000;
+    const g = plan({ earlier: true });
+    g.render([TASKS[1]], '', [
+      { id: 'T0', content: 'old one', status: 'completed' },
+      { id: 'T8', content: 'stopped', status: 'in_progress', startedAt: T0, dropped: 'started', removedAt: at },
+      { id: 'T9', content: 'never ran', status: 'pending', dropped: 'unstarted', removedAt: at },
+    ]);
+    const html = g.el.innerHTML;
+    expect(html).toContain('<span class="pl-earlier-counts">완료 1 &middot; 중단 1 &middot; 실행 안 됨 1</span>');
+    const when = new Date(at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
+    expect(html.indexOf(`${when} 새 계획으로 교체`)).toBeGreaterThan(-1);
+    expect(html.indexOf(`${when} 새 계획으로 교체`)).toBeLessThan(html.indexOf('이전 기록'));
+    expect(html).toContain('data-step="dropped"');
+    expect(html).toContain('data-step="skipped"');
   });
 });
 
