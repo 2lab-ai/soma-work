@@ -671,15 +671,22 @@ describe('one live path for the whole panel', () => {
     expect(open).not.toContain("getElementById('panel-tokens')");
   });
 
-  it('the composer input is never inside a morph root; the pickers have their own container beside it', () => {
+  it('the composer is never inside a morph root; the pickers have their own container beside it', () => {
+    // Batch 2: the composer is <ui-agent-steering id="cmd-steer"> — it patches its own field in place
+    // (library: agent-steering.test.ts "a host update never re-creates the field (IME composition and
+    // caret survive)"); the page only sets its data, never morphs around it.
     const cmd = PAGE.slice(PAGE.indexOf('<div class="panel-command" id="panel-command">'));
     expect(cmd.indexOf('id="panel-controls"')).toBeGreaterThan(0);
-    expect(cmd.indexOf('id="panel-controls"')).toBeLessThan(cmd.indexOf('id="cmd-input"'));
+    expect(cmd.indexOf('id="panel-controls"')).toBeLessThan(
+      cmd.indexOf('<ui-agent-steering id="cmd-steer" lang="ko">'),
+    );
     const controls = cmd.slice(
       cmd.indexOf('id="panel-controls"'),
       cmd.indexOf('</div>', cmd.indexOf('id="panel-controls"')),
     );
-    expect(controls).not.toContain('cmd-input');
+    expect(controls).not.toContain('cmd-steer');
+    expect(PAGE).not.toContain('id="cmd-input"');
+    expect(clientFn('renderPanelComposer')).not.toMatch(/morphInnerHtml|innerHTML/);
   });
 
   it('the page: chip in the header; 세션 정보 → goal → permission → question → agents → work log → turns in the scroll area', () => {
@@ -1038,54 +1045,69 @@ describe('focus inside the goal section after its goal left (executed)', () => {
     m.renderPanelGoal();
     expect(doc.activeElement).toBe(el);
     expect(classes.has('is-empty')).toBe(false); // the session has a current goal
-    expect(clientFn('openPanel')).toContain('if (!sameSession) (function resetCmdUi()');
+    // A card switch starts the composer clean: a fresh <ui-agent-steering> and no files.
+    expect(clientFn('openPanel')).toMatch(/if \(!sameSession\) \{\s*pcFreshSteer\(\);\s*pcReset\(\);/);
   });
 });
 
 describe('the composer follows the session live (executed)', () => {
-  it('a session closed while the panel shows it disables the composer; an unchanged state writes nothing; a forced pass re-applies', () => {
-    const input = { disabled: false, placeholder: '' };
-    const btn = { disabled: false };
-    const hint = { style: { display: 'none' } };
+  // Batch 2: the composer is <ui-agent-steering>. The page passes the mode as data — canAct (the owner),
+  // disabled (the session ended), running — and the element draws the field off with its own words
+  // (library: agent-steering.test.ts "read-only (canAct: false): the list shows, no buttons, the field is
+  // off", "disabled: the session ended", lang="ko" "uses the dashboard / Slack wording").
+  it('a session closed while the panel shows it turns the composer off; an unchanged state writes nothing; a forced pass re-applies', () => {
+    const writes: Array<Record<string, unknown>> = [];
+    const el: Record<string, unknown> = {};
+    Object.defineProperty(el, 'data', {
+      get: () => writes[writes.length - 1],
+      set: (d: Record<string, unknown>) => writes.push(d),
+    });
     const host: Record<string, unknown> = {};
     // Task view T1.5: the composer's tools (attach, image, voice) follow the field.
     const tools = { 'pc-attach': { disabled: false }, 'pc-image': { disabled: false }, 'pc-mic': { disabled: false } };
-    const els: Record<string, unknown> = {
-      'panel-command': host,
-      'cmd-input': input,
-      'cmd-send': btn,
-      'cmd-hint': hint,
-      ...tools,
-    };
+    const els: Record<string, unknown> = { 'panel-command': host, 'cmd-steer': el, ...tools };
     let resets = 0;
-    const m = load<{ renderPanelComposer(s: unknown, force?: boolean): void }>(['renderPanelComposer'], [], {
-      document: { getElementById: (id: string) => els[id] ?? null },
-      currentUserId: 'U1',
-      READ_ONLY_MSG: 'read only',
-      pcReset: () => {
-        resets++;
+    let held = 0;
+    const m = load<{ renderPanelComposer(s: unknown, force?: boolean): void }>(
+      ['renderPanelComposer', 'pcModeOf', 'steeringData'],
+      ['STEER_STATE'],
+      {
+        document: { getElementById: (id: string) => els[id] ?? null },
+        currentUserId: 'U1',
+        pcHeldFiles: () => held,
+        pcReset: () => {
+          resets++;
+        },
       },
-    });
+    );
     const toolsDisabled = () => Object.values(tools).map((t) => t.disabled);
-    m.renderPanelComposer({ ownerId: 'U1' }, true);
-    expect(input.disabled).toBe(false);
-    expect(input.placeholder).toMatch(/^Send message to session\.\.\./);
+    const last = () => writes[writes.length - 1];
+    m.renderPanelComposer({ ownerId: 'U1', activityState: 'working' }, true);
+    expect(last()).toEqual({ running: true, canAct: true, disabled: false, items: [], attachments: 0 });
     expect(toolsDisabled()).toEqual([false, false, false]);
     expect(resets).toBe(0);
+    // A file chip added: the element learns the page holds one (an empty note may then go).
+    held = 1;
+    m.renderPanelComposer({ ownerId: 'U1', activityState: 'working' });
+    expect(last()?.attachments).toBe(1);
+    held = 0;
     m.renderPanelComposer({ ownerId: 'U1', terminated: true });
-    expect(input.disabled).toBe(true);
-    expect(btn.disabled).toBe(true);
-    expect(hint.style.display).toBe('');
+    expect(last()).toMatchObject({ running: false, disabled: true, canAct: true });
     expect(toolsDisabled()).toEqual([true, true, true]);
     expect(resets).toBe(1); // the files and any recording were for the open session
-    // A late send completion re-enabled it by hand: the forced pass puts the closed state back.
-    input.disabled = false;
-    btn.disabled = false;
+    // The same state again writes nothing (the field's text and an IME composition are the element's).
+    const n = writes.length;
     m.renderPanelComposer({ ownerId: 'U1', terminated: true });
-    expect(input.disabled).toBe(false); // same mode, no write (an in-flight send keeps its button)
+    expect(writes.length).toBe(n);
+    // A forced pass re-applies.
     m.renderPanelComposer({ ownerId: 'U1', terminated: true }, true);
-    expect(input.disabled).toBe(true);
-    expect(clientFn('sendCommand')).toContain('renderPanelComposer(_sessionCache[sendingSessionKey], true);');
+    expect(writes.length).toBe(n + 1);
+    // Someone else's session: read-only — the queue shows, nothing can be done (like Stop).
+    m.renderPanelComposer({ ownerId: 'U2', activityState: 'working' });
+    expect(last()).toMatchObject({ canAct: false, disabled: false });
+    expect(toolsDisabled()).toEqual([true, true, true]);
+    m.renderPanelComposer({ activityState: 'working' }); // no ownerId: fail closed
+    expect(last()).toMatchObject({ canAct: false });
     expect(clientFn('repaintPanelSession')).toContain('renderPanelComposer(s);');
   });
 });
@@ -1141,7 +1163,7 @@ describe('the model menu closes on Escape before the panel does (executed)', () 
   it('the same-session re-landing leaves a send in flight alone; a send whose session left the board fails closed', () => {
     expect(clientFn('openPanel')).toContain('renderPanelComposer(s, !sameSession);');
     const send = clientFn('sendCommand');
-    expect(send).toContain('btn.disabled = true;');
+    expect(send).toContain('el.data = Object.assign({}, el.data, { disabled: true });');
     expect(send).toContain("if (cmdHost) cmdHost._mode = '';");
     const esc = TEMPLATE.slice(TEMPLATE.indexOf("if (e.key === 'Escape' && panelOpen && !artModalIsOpen()"));
     expect(esc.slice(0, 200)).toContain('!artModalIsOpen() && !_cronDrawerKey');

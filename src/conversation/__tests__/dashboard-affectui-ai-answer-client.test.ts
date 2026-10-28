@@ -884,21 +884,20 @@ describe('D12 — the writing row through the real insert paths (cross-spec revi
   });
 });
 
-describe('D12 · review R1 (P1) — a failed send is marked although the writing row is last', () => {
+describe('D12 · review R1 (P1) — a failed send is found although the writing row is last', () => {
+  // Dashboard batch 2: the composer is <ui-agent-steering>. A failed idle send now leaves the transcript (its row in
+  // the composer says failed, with Retry) — the optimistic turn is still found by its own id.
   it('the optimistic turn is found by its id, not ":last-child"', async () => {
-    const optimistic = { style: {} as Record<string, string>, insertAdjacentHTML: vi.fn() };
+    const optimistic = { remove: vi.fn() };
     let optimisticId = '';
-    const el: Record<string, Record<string, unknown>> = {
-      'cmd-input': { value: 'a follow-up while it works', disabled: false, focus: () => {} },
-      'cmd-send': { disabled: false, textContent: 'Send' },
-    };
+    const steer = { data: { running: false }, value: '', setItemState: vi.fn() };
     const bodies: string[] = [];
-    const api = load<{ sendCommand(): Promise<void> }>(
-      ['esc', 'escJs', 'pcCanSend', 'pcCommandBody', 'sendCommand'],
+    const api = load<{ sendCommand(text: string, ref: string): Promise<void> }>(
+      ['esc', 'escJs', 'pcCanSend', 'pcCommandBody', 'acPost', 'sendCommand'],
       [],
       {
         document: {
-          getElementById: (id: string) => el[id] ?? null,
+          getElementById: (id: string) => (id === 'cmd-steer' ? steer : null),
           // The 응답 작성 중 row is the last child: ':last-child' finds no user turn.
           querySelector: (sel: string) =>
             optimisticId && sel === `.turn.user[data-turn-id="${optimisticId}"]` ? optimistic : null,
@@ -908,12 +907,12 @@ describe('D12 · review R1 (P1) — a failed send is marked although the writing
         },
         fetch: (_url: string, init: { body: string }) => {
           bodies.push(init.body);
-          return Promise.resolve({ ok: false, status: 400 });
+          return Promise.resolve({ ok: false, status: 400, json: () => Promise.resolve({}) });
         },
         refreshCsrfToken: () => Promise.resolve(),
+        dashToast: vi.fn(),
         panelSessionKey: 'k',
-        _sessionCache: { k: { activityState: 'working' } },
-        renderPanelComposer: () => {},
+        _sessionCache: { k: { activityState: 'idle' } },
         _csrfToken: '',
         _lastSentContent: '',
         _lastSentTime: 0,
@@ -923,15 +922,14 @@ describe('D12 · review R1 (P1) — a failed send is marked although the writing
         _pcSending: false,
         _pcFiling: null, // #488: no stopped recording waiting to be filed
         pcStopRecording: () => {},
-        pcAutosize: () => {},
         pcRemoveFile: () => {},
       },
     );
-    await api.sendCommand();
-    expect(bodies).toEqual([JSON.stringify({ message: 'a follow-up while it works' })]);
+    await api.sendCommand('a follow-up', 'as-1');
+    expect(bodies).toEqual([JSON.stringify({ message: 'a follow-up' })]);
     expect(optimisticId).toMatch(/^optimistic-\d+$/);
-    expect(optimistic.insertAdjacentHTML).toHaveBeenCalledWith('beforeend', expect.stringContaining('Failed to send.'));
-    expect(optimistic.style.opacity).toBe('0.7');
+    expect(optimistic.remove).toHaveBeenCalledTimes(1);
+    expect(steer.setItemState).toHaveBeenCalledWith('as-1', 'failed', '(HTTP 400)');
     expect(clientFn('sendCommand')).not.toContain(':last-child');
   });
 });

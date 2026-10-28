@@ -245,10 +245,12 @@ describe('board columns follow the inbox width, not the viewport', () => {
 
 describe('phones — nothing zooms, nothing hides behind the FAB, nothing runs off the edge', () => {
   it('text inputs in the drawer are 16px on touch screens (iOS does not zoom into them)', () => {
-    // The composer is a multiline <textarea id="cmd-input"> (task view T1.5).
-    expect(TEMPLATE).toContain('<textarea id="cmd-input" rows="1"');
+    // The composer is @2lab.ai/ui <ui-agent-steering> (dashboard batch 2): its field and its edit box are 16px on a
+    // coarse pointer in the element's own styles (@2lab.ai/ui src/components/agent-steering/styles.ts,
+    // `@media (pointer: coarse) { … .as-input, .as-edit { font-size: 16px; } }`). The page's own inputs stay here.
+    expect(TEMPLATE).toContain('<ui-agent-steering id="cmd-steer" lang="ko">');
     expect(TEMPLATE).toMatch(
-      /@media \(pointer: coarse\) \{\n {2}\/\* Responsive[^@]*\.panel-command textarea, \.mc-custom-input input \{ font-size: 16px; \}/,
+      /@media \(pointer: coarse\) \{\n {2}\/\* Responsive[^@]*\.mc-custom-input input \{ font-size: 16px; \}/,
     );
   });
 
