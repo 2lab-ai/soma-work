@@ -581,7 +581,7 @@ interface StreamExecutorDeps {
    * by the auto-compact interception path (AC3 end-to-end).
    */
   dispatchPendingUserMessage?: (
-    ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean },
+    ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean; hostTurn?: boolean },
     text: string,
     opts?: { compactRedispatch?: boolean },
   ) => Promise<void>;
@@ -644,6 +644,12 @@ interface StreamExecuteParams {
   sourceChannel?: string;
   /** True when the prompt originates from a real user message (not auto-resume, continuation, /renew load, etc.) */
   isUserInput?: boolean;
+  /**
+   * A host turn (goal continuation, resume) replayed after a compaction
+   * through the user-message path (`routeContext.hostTurn`). Changes nothing
+   * but the recorded origin: the turn is soma-work's, not the person's.
+   */
+  hostTurn?: boolean;
   /**
    * The text is a goal objective dispatched as the goal's opening turn: never
    * forward it to the SDK as a local slash command, whatever it starts with.
@@ -1578,7 +1584,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           user,
           attachments?.length ? attachments : undefined,
           {
-            origin: { by: params.isUserInput === false || autoCompactTurn ? 'system' : 'user' },
+            origin: {
+              by: params.isUserInput === false || autoCompactTurn || params.hostTurn === true ? 'system' : 'user',
+            },
             ...(compactTurn ? { compact: true } : {}),
           },
         );

@@ -353,7 +353,7 @@ export class EventRouter {
    * `messageHandler` runs) still propagates normally.
    */
   public async dispatchPendingUserMessage(
-    ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean },
+    ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean; hostTurn?: boolean },
     text: string,
     opts?: { compactRedispatch?: boolean },
   ): Promise<void> {
@@ -362,6 +362,8 @@ export class EventRouter {
     const routeContext = {
       ...(opts?.compactRedispatch ? { compactRedispatch: true } : {}),
       ...(ctx.verbatimPrompt ? { verbatimPrompt: true } : {}),
+      // A parked host turn: recorded as soma-work's (stream-executor origin).
+      ...(ctx.hostTurn ? { hostTurn: true } : {}),
     };
     const syntheticEvent = {
       type: 'message',

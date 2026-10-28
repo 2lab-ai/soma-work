@@ -264,6 +264,13 @@ describe('T1.1 — the recorded user turn says who put it there', () => {
     expect(originOf()).toEqual({ origin: { by: 'system' } });
   });
 
+  it('a host turn replayed after a compaction (hostTurn, through the user-message path) → system', async () => {
+    const text =
+      '[goal-continuation] Continue working toward the active session goal (objective in <session-goal>). Auto-continuation 3/10.';
+    await new StreamExecutor(createDeps()).execute(params(text, { isUserInput: true, hostTurn: true }));
+    expect(originOf()).toEqual({ origin: { by: 'system' } });
+  });
+
   it('the threshold auto-compact (user event, text swapped, words parked) → system', async () => {
     await new StreamExecutor(createDeps()).execute(
       params('/compact', { isUserInput: true }, { pendingUserText: '원래 보낸 메시지' }),
