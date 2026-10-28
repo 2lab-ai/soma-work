@@ -590,6 +590,7 @@ describe('work log folds under the task each entry was made in (T10)', () => {
       'formatDuration',
       'decodeSlackEntities',
       'renderTaskMeta',
+      'wlToolSummary',
       'renderWorkLogEntry',
       'wlGroupOf',
       'wlBuildRows',
