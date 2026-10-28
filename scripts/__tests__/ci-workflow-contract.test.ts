@@ -138,6 +138,21 @@ function expectSameRepoGuard(workflowPath: string, jobName: string): void {
 }
 
 /**
+ * A workflow's top-level `concurrency:` block as key/value pairs. Top-level only (column 0), so a
+ * job-level block cannot satisfy it.
+ */
+function concurrencyOf(workflowPath: string): Record<string, string> {
+  const block = read(workflowPath).match(/^concurrency:\n((?: {2}\S.*\n)+)/m);
+  expect(block, `${workflowPath} has no top-level \`concurrency:\` block`).not.toBeNull();
+  return Object.fromEntries(
+    (block?.[1] ?? '')
+      .split('\n')
+      .filter(Boolean)
+      .map((line) => line.trim().split(/:\s*/) as [string, string]),
+  );
+}
+
+/**
  * The workflow's `GITHUB_TOKEN` scopes, asserted as a whole set rather than as a
  * substring: `contents: read` present tells you nothing if `packages: write`
  * sits on the next line. A job-level block would silently replace the top-level
@@ -226,6 +241,26 @@ describe('CI workflow contract', () => {
     expect(scripts.test).toBe('vitest run');
   });
 
+  it('builds once, before the tests, with nothing run twice', () => {
+    // `npm run build` is Biome, the somalib and workspace-package builds, and a full root `tsc`.
+    // The job used to run those four as separate steps and then all of them again in a final
+    // Build step. One build ahead of Test keeps the fail-fast order (a lint or type error stops
+    // the job before the long test run) and still compiles the workspace packages' dist/ that
+    // root tsc and several tests resolve `@soma/*` through.
+    const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
+    expect(scripts.build).toMatch(/^npm run check && npm run build:somalib && npm run build:packages && tsc &&/);
+
+    const job = jobBlock(CI_WORKFLOW, 'quality-gates');
+    const runs = [...job.matchAll(/^ {8}run: (.+)$/gm)].map((match) => match[1].trim());
+    // Tool installs (Python, PyYAML, the Playwright shell) may sit between them; the npm steps are exactly these, in this order.
+    expect(runs.filter((run) => run.startsWith('npm '))).toEqual(['npm ci', 'npm run build', 'npm run test:release']);
+    for (const duplicate of ['npm run check', 'npx tsc', 'npm run build:somalib', 'npm run build:packages']) {
+      expect(job, `ci.yml runs \`${duplicate}\` on its own, but \`npm run build\` already does`).not.toContain(
+        `\n          ${duplicate}`,
+      );
+    }
+  });
+
   it('runs the gate with a read-only token', () => {
     // Nothing in this workflow publishes, and `npm ci` runs third-party install
     // scripts on a persistent host — a write-capable default token would be
@@ -285,6 +320,22 @@ describe('sanitize gate workflow contract', () => {
     // narrowing the token means the guard is not the only thing standing there.
     expectContentsReadOnly(SANITIZE_WORKFLOW, ['scan']);
   });
+
+  it('cancels the scan a newer push supersedes, in a concurrency group of its own', () => {
+    // Without a group, every push to a pull request left its earlier scan queued on the one
+    // self-hosted runner: 38 scans of already-superseded commits ran in a single day (10-27),
+    // and a scan of a stale commit says nothing about what would merge.
+    const sanitize = concurrencyOf(SANITIZE_WORKFLOW);
+    expect(sanitize['cancel-in-progress'], `${SANITIZE_WORKFLOW} cancel-in-progress`).toBe('true');
+    expect(sanitize.group, `${SANITIZE_WORKFLOW} concurrency group`).toMatch(/\$\{\{ github\.ref \}\}/);
+    // Groups are repository-wide: sharing CI's or Lean Verify's name would let one workflow
+    // cancel another's run on the same ref.
+    for (const other of [CI_WORKFLOW, LEAN_WORKFLOW]) {
+      const otherGroup = concurrencyOf(other).group;
+      expect(otherGroup, `${other} concurrency group`).toBeTruthy();
+      expect(sanitize.group, `${SANITIZE_WORKFLOW} shares its concurrency group with ${other}`).not.toBe(otherGroup);
+    }
+  });
 });
 
 describe('Lean verification workflow contract', () => {
@@ -317,11 +368,45 @@ describe('Lean verification workflow contract', () => {
       'npm ci',
       'bash scripts/verification/install-lean-toolchain.sh',
       'bash scripts/verification/lean-verify.sh --check',
+      'bash scripts/verification/selftest-scope.sh',
       'bash scripts/verification/lean-verify.sh --selftest',
     ]);
     for (const step of steps) {
       expect(step.run.includes('${{'), `${step.name} interpolates an expression into a shell body`).toBe(false);
     }
+  });
+
+  it('runs the self-test on every push and on every pull request that changes the gate', () => {
+    // The self-test exercises the gate, not the application code: on a pull request that leaves
+    // verification/, scripts/verification/ and this workflow alone it reruns, on identical
+    // inputs, what already passed on main — about 12 of the job's 16 minutes on the one runner.
+    // `--check` still runs on every pull request (it reads the src/ import graph), and the job
+    // still reports, so the required check never goes missing.
+    const job = jobBlock(LEAN_WORKFLOW, 'lean-verify');
+    const step = (name: string): string => {
+      const at = job.indexOf(`\n      - name: ${name}\n`);
+      expect(at, `${LEAN_WORKFLOW} has no step named \`${name}\``).toBeGreaterThan(-1);
+      const next = job.indexOf('\n      - ', at + 1);
+      return job.slice(at, next === -1 ? job.length : next);
+    };
+
+    const scope = step('Decide whether the gate changed');
+    expect(scope).toMatch(/\n {8}id: scope\n/);
+    // The event's values reach the script through `env:` only, as everywhere in this workflow.
+    expect(scope).toMatch(/\n {10}EVENT_NAME: \$\{\{ github\.event_name \}\}\n/);
+    expect(scope).toMatch(/\n {10}BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \}\}\n/);
+
+    const selftest = step('Self-test the gate against planted forbidden constructs');
+    expect(selftest).toMatch(/\n {8}if: steps\.scope\.outputs\.selftest == 'true'\n/);
+
+    // The `--check` step carries no condition: it is the proof, and it runs on every event.
+    expect(step('Rebuild proofs, audit declarations, replay the kernel, check vector drift')).not.toMatch(/\n {8}if:/);
+
+    // The script's notion of "the gate" covers the three roots the self-test depends on.
+    const script = read('scripts/verification/selftest-scope.sh');
+    expect(script).toContain(
+      "GATE_INPUTS='^(verification/|scripts/verification/|\\.github/workflows/lean-verify\\.yml$)'",
+    );
   });
 
   it('runs the gate with a read-only token', () => {
@@ -333,18 +418,7 @@ describe('Lean verification workflow contract', () => {
   it('cancels the run a newer push supersedes, in a concurrency group apart from CI', () => {
     // Close to 20 minutes a run: without a group, every push queued another
     // full run behind the ones it had already made stale.
-    const concurrency = (workflowPath: string): Record<string, string> => {
-      const block = read(workflowPath).match(/^concurrency:\n((?: {2}\S.*\n)+)/m);
-      expect(block, `${workflowPath} has no top-level \`concurrency:\` block`).not.toBeNull();
-      return Object.fromEntries(
-        (block?.[1] ?? '')
-          .split('\n')
-          .filter(Boolean)
-          .map((line) => line.trim().split(/:\s*/) as [string, string]),
-      );
-    };
-
-    const lean = concurrency(LEAN_WORKFLOW);
+    const lean = concurrencyOf(LEAN_WORKFLOW);
     expect(lean['cancel-in-progress'], `${LEAN_WORKFLOW} cancel-in-progress`).toBe('true');
     // Per ref, so a push cancels only its own branch's or PR's stale run. (Regex,
     // not a string literal, for the Biome reason given in the sanitize suite.)
@@ -353,7 +427,7 @@ describe('Lean verification workflow contract', () => {
     // Groups are shared across the repository's workflows, so reusing CI's would
     // have each workflow cancel the other's run on the same ref. CI's group must
     // exist for "not the same" to mean anything.
-    const ci = concurrency(CI_WORKFLOW);
+    const ci = concurrencyOf(CI_WORKFLOW);
     expect(ci.group, `${CI_WORKFLOW} concurrency group`).toBeTruthy();
     expect(lean.group, `${LEAN_WORKFLOW} shares its concurrency group with ${CI_WORKFLOW}`).not.toBe(ci.group);
   });

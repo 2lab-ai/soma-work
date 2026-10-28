@@ -51,3 +51,9 @@
 - 전체 게이트(합친 커밋): build · tsc · 테스트 15,879 통과/0 실패 · mcp-bins · deploy-bundle 스모크 · lean-verify 통과.
 - PR #465: CI lean-verify · quality-gates · Sanitize Gate scan 통과 → 머지 `2da8f4e4`(2026-10-27 04:22 KST).
 - 머지 뒤 문서 정리(README 두 벌 · 아키텍처 문서 · CLAUDE.md의 사람 계정 토큰 push 안내 제거)는 후속 문서 PR.
+
+## 라운드 2 — WU0 닫힘 (2026-10-27)
+
+| WU | 하는 일 | 결과 |
+|---|---|---|
+| WU0 Cloudflare 첫 시험 (라이브) | dev2 포지키 1개로 16 §6 Q1 기능 · Q2 환경 경계 · Q3 같은 계정 권한 상한 + IP 조건 표기 | 9 통과 / 0 실패 / 정보 7. 포지키 = 계정 소유 · 권한 1개(Account API Tokens Write). Q1 = 자식 키가 지정 존만 되고(다른 존 403) 만료가 강제됨(200 → 401). Q2 = 다른 계정 대상 자식 발급 3종 모두 거부(400/403). Q3(정보) = 포지키가 새면 같은 계정 안에서 Account Settings Write 자식까지 만들 수 있다, 자식은 토큰을 관리하지 못한다. 시험용 자식 5개 DELETE → GET 404. 만료된 자식은 기본 토큰 목록에 안 보인다 → 브로커 정리기는 이미 `include_expired`로 조회(WU4). → stage0 · stage2 진행 조건 충족 |

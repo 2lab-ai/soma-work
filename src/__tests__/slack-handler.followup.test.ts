@@ -2842,6 +2842,8 @@ describe('SlackHandler — follow-up queue host', () => {
         attachments,
         {
           timestamp: 1792900000000,
+          // A steered message is always a person's (dashboard SSOT 2026-10-27).
+          origin: { by: 'user' },
         },
       );
       expect(order).toEqual(['capture', 'record', 'cleanup']);
@@ -3328,6 +3330,8 @@ describe('SlackHandler — follow-up queue host', () => {
         attachments,
         {
           timestamp: 1792900000000,
+          // A steered message is always a person's (dashboard SSOT 2026-10-27).
+          origin: { by: 'user' },
         },
       );
       expect(order).toEqual(['capture', 'record', 'cleanup']);
