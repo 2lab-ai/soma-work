@@ -7944,6 +7944,60 @@ function acToolOf(key, approvalId) {
 // push removes the prompt, so a toast says it went through after the card is
 // gone. A refusal stays on the card (the state): its reason, and Retry unless
 // the request is gone or was answered elsewhere.
+// ── Results as toasts — @2lab.ai/ui <ui-toaster> (affectUI review batch 1) ──
+// One page stack for what an action did: Stop / Close / Trash, the answers,
+// the multi-choice form, a launched task. The element sits in a token wrapper
+// (.ui-tok, display: contents) — the dashboard tokens reach it resolved; on the
+// element itself the mapping would be a custom-property cycle.
+var _dashToastQ = null;
+var _dashToastAct = Object.create(null); // toast id → what its action does
+function dashToaster() {
+  var t = document.getElementById('dash-toaster');
+  if (t) return t;
+  var wrap = document.createElement('div');
+  wrap.className = 'ui-tok';
+  wrap.style.display = 'contents';
+  t = document.createElement('ui-toaster');
+  t.id = 'dash-toaster';
+  t.setAttribute('lang', 'ko');
+  wrap.appendChild(t);
+  document.body.appendChild(wrap);
+  return t;
+}
+// Show a toast; onAction runs when its action (Retry, 카드 열기 …) is pressed.
+// Before the library module has run, toasts wait and show once it is defined.
+function dashToast(input, onAction) {
+  var t = dashToaster();
+  if (typeof t.show !== 'function') {
+    if (!_dashToastQ) {
+      _dashToastQ = [];
+      if (window.customElements && customElements.whenDefined) {
+        customElements.whenDefined('ui-toaster').then(function() {
+          var q = _dashToastQ || [];
+          _dashToastQ = null;
+          for (var i = 0; i < q.length; i++) dashToast(q[i][0], q[i][1]);
+        });
+      }
+    }
+    _dashToastQ.push([input, onAction]);
+    return '';
+  }
+  var id = t.show(input);
+  if (onAction) _dashToastAct[id] = onAction;
+  return id;
+}
+document.addEventListener('ui-action', function(e) {
+  var d = e.detail;
+  if (!d || !e.target || e.target.id !== 'dash-toaster') return;
+  var fn = _dashToastAct[d.id];
+  if (fn) fn(d.actionId);
+});
+document.addEventListener('ui-dismiss', function(e) {
+  if (e.detail && e.target && e.target.id === 'dash-toaster') delete _dashToastAct[e.detail.id];
+});
+var DA_LABEL = { stop: '중지', close: '닫기', trash: '휴지통으로 이동' };
+var DA_DONE = { stop: '세션을 중지했어요', close: '세션을 닫았어요', trash: '휴지통으로 옮겼어요' };
+
 async function answerPermission(key, approvalId, decision) {
   var sk = 'p|' + approvalId;
   var cur = _acState[sk];
@@ -13905,8 +13959,22 @@ async function doAction(key, action) {
       if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
       res = await fetch(url, { method: 'POST', headers: retryHeaders });
     }
-    if (!res.ok) console.error('Action failed', action, key);
-  } catch (e) { console.error('Action error', e); }
+    var title = (_sessionCache[key] && _sessionCache[key].title) || '';
+    if (res.ok) dashToast({ title: DA_DONE[action] || '완료했어요', description: title || undefined, tone: 'success' });
+    else {
+      console.error('Action failed', action, key);
+      dashToast(
+        { title: (DA_LABEL[action] || action) + ' 실패', description: 'HTTP ' + res.status + (title ? ' · ' + title : ''), tone: 'error', action: { id: 'retry' } },
+        function() { doAction(key, action); },
+      );
+    }
+  } catch (e) {
+    console.error('Action error', e);
+    dashToast(
+      { title: (DA_LABEL[action] || action) + ' 실패', description: '네트워크 오류', tone: 'error', action: { id: 'retry' } },
+      function() { doAction(key, action); },
+    );
+  }
   setBusy(key, 'action', false);
   refreshCard(key);
   if (panelOpen && panelSessionKey === key) renderPanelHead();
@@ -14153,13 +14221,13 @@ async function submitMultiChoice(key) {
   var s = _sessionCache[key];
   if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) {
     console.warn('submitMultiChoice: session data unavailable', key);
-    alert('\\uC138\\uC158 \\uB370\\uC774\\uD130\\uB97C \\uBD88\\uB7EC\\uC62C \\uC218 \\uC5C6\\uC2B5\\uB2C8\\uB2E4. \\uD398\\uC774\\uC9C0\\uB97C \\uC0C8\\uB85C\\uACE0\\uCE68\\uD574\\uC8FC\\uC138\\uC694.');
+    dashToast({ title: '\\uC138\\uC158 \\uB370\\uC774\\uD130\\uB97C \\uBD88\\uB7EC\\uC62C \\uC218 \\uC5C6\\uC2B5\\uB2C8\\uB2E4. \\uD398\\uC774\\uC9C0\\uB97C \\uC0C8\\uB85C\\uACE0\\uCE68\\uD574\\uC8FC\\uC138\\uC694.', tone: 'error' });
     return;
   }
   var st = _mcState[key];
   if (!st) {
     console.warn('submitMultiChoice: no selections state', key);
-    alert('\\uC120\\uD0DD \\uC0C1\\uD0DC\\uAC00 \\uC5C6\\uC2B5\\uB2C8\\uB2E4. \\uB2E4\\uC2DC \\uC120\\uD0DD\\uD574\\uC8FC\\uC138\\uC694.');
+    dashToast({ title: '\\uC120\\uD0DD \\uC0C1\\uD0DC\\uAC00 \\uC5C6\\uC2B5\\uB2C8\\uB2E4. \\uB2E4\\uC2DC \\uC120\\uD0DD\\uD574\\uC8FC\\uC138\\uC694.', tone: 'error' });
     return;
   }
 
@@ -14170,7 +14238,7 @@ async function submitMultiChoice(key) {
     if (st.selections[s.pendingQuestion.questions[i].id]) answered++;
   }
   if (answered < total) {
-    alert('\\uBAA8\\uB4E0 \\uC9C8\\uBB38\\uC5D0 \\uB2F5\\uBCC0\\uD574\\uC8FC\\uC138\\uC694. (' + answered + '/' + total + ')');
+    dashToast({ title: '\\uBAA8\\uB4E0 \\uC9C8\\uBB38\\uC5D0 \\uB2F5\\uBCC0\\uD574\\uC8FC\\uC138\\uC694. (' + answered + '/' + total + ')', tone: 'error' });
     return;
   }
 
@@ -14200,7 +14268,7 @@ async function submitMultiChoice(key) {
       var errData = {};
       try { errData = await res.json(); } catch(_) {}
       var errMsg = errData.error || 'Failed (status ' + res.status + ')';
-      alert('\\uC81C\\uCD9C \\uC2E4\\uD328: ' + errMsg);
+      dashToast({ title: '\\uC81C\\uCD9C \\uC2E4\\uD328: ' + errMsg, tone: 'error' });
       btns.forEach(function(b) { b.disabled = false; b.textContent = '\\uC81C\\uCD9C\\uD558\\uAE30 (' + total + '/' + total + ')'; });
       if (mcForm) {
         mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
@@ -14213,7 +14281,7 @@ async function submitMultiChoice(key) {
     }
   } catch (e) {
     console.error('submitMultiChoice error', e);
-    alert('\\uB124\\uD2B8\\uC6CC\\uD06C \\uC624\\uB958: ' + e.message);
+    dashToast({ title: '\\uB124\\uD2B8\\uC6CC\\uD06C \\uC624\\uB958: ' + e.message, tone: 'error' });
     btns.forEach(function(b) { b.disabled = false; b.textContent = '\\uC81C\\uCD9C\\uD558\\uAE30 (' + total + '/' + total + ')'; });
     if (mcForm) {
       mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
@@ -14251,7 +14319,7 @@ async function submitAllRecommended(key) {
       var errData = {};
       try { errData = await res.json(); } catch(_) {}
       var errMsg = errData.error || ('Failed (status ' + res.status + ')');
-      alert('\\u274C ' + errMsg);
+      dashToast({ title: '\\u274C ' + errMsg, tone: 'error' });
       if (heroBtn) { heroBtn.disabled = false; heroBtn.removeAttribute('aria-disabled'); }
     } else {
       // Success — clear local state; WebSocket will re-render.
@@ -14259,7 +14327,7 @@ async function submitAllRecommended(key) {
     }
   } catch (e) {
     console.error('submitAllRecommended error', e);
-    alert('\\u274C ' + e.message);
+    dashToast({ title: '\\u274C ' + e.message, tone: 'error' });
     if (heroBtn) { heroBtn.disabled = false; heroBtn.removeAttribute('aria-disabled'); }
   }
 }
@@ -20549,28 +20617,17 @@ function ntOnLaunched(data) {
 }
 
 function ntShowToast(data, channelName) {
-  var t = ntEl('nt-toast');
-  if (!t) return;
-  var head = data.status === 'running' ? '✅ 작업을 시작했습니다' : '⏳ 작업을 접수했습니다';
-  var html = '<span class="nt-toast-text">' + head + ' — #' + esc(channelName) + '</span>';
-  // The actions wrap as one group: never one beside the message, one below.
-  html += '<span class="nt-toast-actions">';
-  if (data.permalink) {
-    html += '<a href="' + escAttr(data.permalink) + '" target="_blank" rel="noopener">Slack에서 보기</a>';
-  }
-  html += '<button type="button" onclick="ntOpenLaunched()">카드 열기</button></span>';
-  t.innerHTML = html;
-  t.hidden = false;
+  var head = data.status === 'running' ? '작업을 시작했어요' : '작업을 접수했어요';
   _ntLastLaunch = data;
-  clearTimeout(_ntToastTimer);
-  _ntToastTimer = setTimeout(function () {
-    t.hidden = true;
-  }, 12000);
+  var input = { title: head, description: '#' + channelName, tone: 'success', action: { id: 'open', label: '카드 열기' }, duration: 12000 };
+  if (data.permalink) input.link = { label: 'Slack에서 보기', href: String(data.permalink) };
+  dashToast(input, function() { ntOpenLaunched(); });
 }
 
 async function ntOpenLaunched() {
   var key = _ntLastLaunch && _ntLastLaunch.sessionKey;
-  ntEl('nt-toast').hidden = true;
+  var ntT = ntEl('nt-toast');
+  if (ntT) ntT.hidden = true;
   if (!key) return;
   var find = function () {
     var cache = typeof _sessionCache === 'object' && _sessionCache ? _sessionCache : {};
