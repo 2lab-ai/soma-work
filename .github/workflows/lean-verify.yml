@@ -69,9 +69,24 @@ jobs:
 
       - name: Rebuild proofs, audit declarations, replay the kernel, check vector drift
         run: bash scripts/verification/lean-verify.sh --check
+
+      # The self-test below exercises the gate itself — scripts/verification/, the Lean tree
+      # under verification/ and this workflow — not the application code. A pull request that
+      # changes none of those would rerun, on identical inputs, the self-test main already
+      # passed: about 12 of this job's 16 minutes on the one self-hosted runner. So it runs on
+      # every push, on every pull request that changes the gate, and whenever the diff cannot
+      # be determined. The job still reports either way, so the required check is never missing.
+      - name: Decide whether the gate changed
+        id: scope
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: bash scripts/verification/selftest-scope.sh
+
       # Plants each forbidden construct in a scratch copy. Soundness escapes must be rejected
       # with and without the textual checks; an invisible character, by the source gate only;
       # a clean module must pass. A gate that silently stopped catching something would
       # otherwise stay green.
       - name: Self-test the gate against planted forbidden constructs
+        if: steps.scope.outputs.selftest == 'true'
         run: bash scripts/verification/lean-verify.sh --selftest
