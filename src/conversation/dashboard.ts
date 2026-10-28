@@ -3885,6 +3885,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sk { background: var(--ib-pill); border-radius: 6px; animation: sk-pulse 1.6s ease-in-out infinite; }
 .col-skel { display: flex; flex-direction: column; gap: 8px; }
 .kanban:not([data-load="loading"]) .col-skel { display: none; }
+/* Counts and "Nothing here" are claims about the whole board: only a certified
+   (ready) board makes them — not 다시 시도 after a partial paint, not this
+   instance's cards shown under the error. */
+.kanban:not([data-load="ready"]) .col-empty { display: none; }
+.kanban:not([data-load="ready"]) .kanban-col-header .count:not(:empty) { visibility: hidden; }
 .sk-card { background: var(--ib-card); border: 1px solid var(--ib-card-border); border-radius: 12px; box-shadow: var(--ib-shadow); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
 .sk-card .sk-title { height: 14px; width: 68%; }
 .sk-card .sk-meta { height: 10px; width: 42%; }
@@ -8577,7 +8582,12 @@ function patchLastBoard(s) {
   });
 }
 
-function renderBoard(board) {
+function renderBoard(board, partial) {
+  // Partial: anything painted before the board is certified — this instance's
+  // cards under the error, or re-rendered during 다시 시도 — is never announced as
+  // the board. Unspecified means whatever the load state says, so a re-render
+  // (cron poll, visibility, toggles) of partial data stays quiet too.
+  if (partial === undefined) partial = _boardLoad !== 'ready';
   _sessionCache = Object.create(null); // Clear stale cache each render cycle
   // Populate cache from the entire board first so the env-palette pass
   // (which reads every card's environment) and the per-card renders share
@@ -8598,7 +8608,7 @@ function renderBoard(board) {
   _lastBoardData = board;
   // D6: how many need you and how many run — the data as it came (CRON runs
   // waiting on a reply included), before the lane takes its runs and any hold.
-  announceBoard((board.waiting || []).length, (board.working || []).length);
+  if (!partial) announceBoard((board.waiting || []).length, (board.working || []).length);
   // Cron runs leave the columns for the CRON lane, one group per job (SSOT
   // 2026-10-23 T4); the lane sections exist before the reconciler fills them.
   var cronPlan = planCronLane(board, _cronJobs, _cronRevealKey);
@@ -12972,20 +12982,49 @@ function paintPushedBoard(board) {
   return true;
 }
 
+// Until the board is certified a request that never answers would keep the
+// skeleton up: it is cut off after BOARD_LOAD_TIMEOUT_MS (shorter than the 30 s
+// poll) and ends in 다시 시도. The deadline is for the answer, not the transfer —
+// a large board on a slow link still arrives. Certified, polls run unbounded.
+var BOARD_LOAD_TIMEOUT_MS = 20000;
+// Before certification there is one load waiting for its answer at a time. The
+// same user's next ask (task_update, toggles, the 30 s poll, 다시 시도) joins it:
+// killing it would restart the clock on a busy board, and a second request would
+// pay a second sibling fan-out. A user switch aborts it — its answer would be
+// dropped, and its abort is not a failure of whatever load comes next. Once the
+// answer's headers are in the slot is free: a body that stalls never swallows
+// the next ask.
+var _sessionsInflight = null; // { user, ctl, done, settle, superseded }
 async function loadSessions() {
+  if (_sessionsInflight) {
+    if (_sessionsInflight.user === currentUserId) return _sessionsInflight.done;
+    _sessionsInflight.superseded = true;
+    _sessionsInflight.ctl.abort();
+    _sessionsInflight = null;
+  }
   // An answer for a user no longer selected paints nothing and flags nothing.
-  // Same-user loads never cancel each other: a slow 30 s poll still paints.
+  // Certified, same-user loads never cancel each other: a slow poll still paints.
   var forUser = currentUserId;
+  var entry = null;
+  var timer = 0;
+  if (_boardLoad !== 'ready' && typeof AbortController === 'function') {
+    entry = { user: forUser, ctl: new AbortController() };
+    entry.done = new Promise(function(r) { entry.settle = r; });
+    _sessionsInflight = entry;
+    timer = setTimeout(function() { entry.ctl.abort(); }, BOARD_LOAD_TIMEOUT_MS);
+  }
   try {
     const url = '/api/dashboard/sessions' + (currentUserId ? '?userId=' + currentUserId : '');
-    const res = await fetch(url);
+    const res = await fetch(url, entry ? { signal: entry.ctl.signal } : {});
+    clearTimeout(timer);
+    if (entry && _sessionsInflight === entry) _sessionsInflight = null; // answered: the next ask is a new request
     if (!res.ok) throw new Error('HTTP ' + res.status);
     const data = await res.json();
     if (forUser !== currentUserId) return;
     _heldWsBoard = null;
     _lastPolledBoard = data.board;
     if (data.lifecycle) _lifecycle = data.lifecycle;
-    renderBoard(data.board);
+    renderBoard(data.board, false);
     setBoardLoad('ready');
     if (panelOpen && panelSessionKey && _sessionCache[panelSessionKey]) {
       // Without the WebSocket (or for a sibling instance) the poll is the only
@@ -12993,14 +13032,21 @@ async function loadSessions() {
       repaintPanelSession();
     }
   } catch (e) {
-    if (forUser !== currentUserId) return;
+    clearTimeout(timer);
+    if ((entry && entry.superseded) || forUser !== currentUserId) return;
     console.error('Failed to load sessions', e);
-    var held = _heldWsBoard && _heldWsBoard.user === forUser ? _heldWsBoard.board : null;
+    var held = _boardLoad === 'loading' && _heldWsBoard && _heldWsBoard.user === forUser ? _heldWsBoard.board : null;
     _heldWsBoard = null;
-    // This instance's cards are better than none — shown under the error, which
-    // stays: they are not the whole board.
-    if (_boardLoad === 'loading' && held) renderBoard(held);
     setBoardLoad('failed'); // a no-op once the board has painted: it stays as it is
+    // This instance's cards are better than none — shown under the error, which
+    // stays: they are not the whole board (painted as partial: no counts, no
+    // "Nothing here", not announced).
+    if (held) renderBoard(held);
+  } finally {
+    if (entry) {
+      if (_sessionsInflight === entry) _sessionsInflight = null;
+      entry.settle();
+    }
   }
 }
 
