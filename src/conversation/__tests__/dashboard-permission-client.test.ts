@@ -93,6 +93,8 @@ interface CardData {
   canDisableRule?: boolean;
   canExplain?: boolean;
   canAnswer?: string;
+  createdAt?: number;
+  expiresAt?: number;
   input?: string;
   loading?: boolean;
   notice?: string;
@@ -277,7 +279,7 @@ describe('dashboard permission prompt → real server (shipped client code)', ()
     expect(d).toMatchObject({ canExplain: true, canDisableRule: true });
     expect(d.canAnswer).toBeUndefined();
     expect(d.createdAt).toBeGreaterThan(0);
-    expect(d.expiresAt).toBeGreaterThan(d.createdAt as unknown as number);
+    expect(d.expiresAt).toBeGreaterThan(d.createdAt as number);
     // The slot is bound to the request in attributes, never an inline handler.
     const slot = c.acPermissionsHtml(card(id));
     expect(slot).toContain(`<ui-approval-card lang="ko" data-ac-key="${key}" data-ac-kind="perm" data-ac-id="${id}">`);
