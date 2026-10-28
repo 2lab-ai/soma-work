@@ -75,7 +75,7 @@ python3 "$CLAUDE_PLUGIN_ROOT/skills/using-dotprd/scripts/parity-sheet.py" <out.p
    "GREEN only from observed pixels") → gap matrix 갱신 →
    잔여 gap이 0이 될 때까지 다음 라운드. 리시트는 레포·세션의 리시트 규율을 따른다.
    라운드를 닫는 커밋에서 끝난 것을 `loop.done.md`로 옮기고 번들 `loop-lint.py <워크스트림 폴더>`
-   FAIL 0을 확인한다(§번들 파일, §loop.md 관리).
+   FAIL 0 · W2 0을 확인한다(§번들 파일, §loop.md 관리).
    **외부 제품 UX 재현 루프의 UI 라운드는 원본 대조 시트가 리시트 필수 항목이다** —
    레퍼런스 원본 캡처를 먼저 확보하고 번들 `parity-sheet.py`(§번들 파일)로 원본↔구현
    나란히 합성 시트를 만들어 항목별 갭 체크리스트와 함께 첨부; 행동 테스트·단독
@@ -122,7 +122,7 @@ python3 "$CLAUDE_PLUGIN_ROOT/skills/using-dotprd/scripts/parity-sheet.py" <out.p
 
 - `.prd`를 만들었는데 gitignore에 넣으려 한다 → 불변량 1 위반.
 - loop.md 없이 "머릿속 계획"으로 WU를 디스패치하고 있다 → Phase 2로 복귀.
-- loop.md에 끝난 라운드·닫힌 WU·처리가 끝난 리뷰 지적이 남아 있다 → `loop.done.md`로 옮기고 `loop-lint.py` FAIL 0 후 진행.
+- loop.md에 끝난 라운드·닫힌 WU·처리가 끝난 리뷰 지적이 남아 있다 → `loop.done.md`로 옮기고 `loop-lint.py` FAIL 0 · W2 0 후 진행.
 - verify가 에이전트 보고 인용뿐이다 → 관측 캡처를 직접 떠라 (inputs not oracles).
 - 문서 상태가 shipped인데 본문이 미래형이다 → 계약 기술로 재작성.
 
