@@ -7605,7 +7605,10 @@ function formatTaskTime(ts) {
 // viewer): the requester's page fetches them from the requester-only route.
 var _permDetails = Object.create(null); // approvalId → { input, truncated } | { error }
 var _permLoading = Object.create(null);
-var _acState = Object.create(null); // 'p|<approvalId>' | the question id → the card's state (sending · error · resolved)
+// session key → { 'p|<approvalId>' | the question id → the card's state (sending · error · resolved) }.
+// Per session: a question has no request id (its id is its content), so two
+// sessions asking the same thing are two requests (PR #536 review P1).
+var _acState = Object.create(null);
 var AC_SENT = { approve: '승인을 보냈어요', deny: '거부를 보냈어요', explain: '설명을 요청했어요', approve_disable_rule: '승인을 보냈어요 · 규칙 끔' };
 var AC_SIBLING = '다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요';
 
@@ -7659,7 +7662,7 @@ function acPermissionData(s, p) {
       if (detail.truncated) d.truncated = true;
     }
   }
-  var st = _acState['p|' + p.approvalId];
+  var st = _acState[s.key] && _acState[s.key]['p|' + p.approvalId];
   if (st) d.state = st;
   return d;
 }
@@ -7690,9 +7693,29 @@ function acQuestionData(s, q) {
   if (rec) d.recommendedId = String(rec);
   var lock = acQuestionLock(s);
   if (lock) d.canAnswer = lock;
-  var st = _acState[id];
+  var st = _acState[s.key] && _acState[s.key][id];
   if (st) d.state = st;
   return d;
+}
+// A push of session key (s: its new data; none when it left the board): the
+// answer states of what it no longer asks go — a prompt that left, a question
+// gone or replaced. A question has no request id, so the same question asked
+// again is a new, unanswered card only because the push that cleared the old
+// one took its state along (PR #536 review P1).
+function acEvict(key, s) {
+  var states = _acState[key];
+  if (!states) return;
+  var keep = Object.create(null);
+  var list = (s && s.pendingPermissions) || [];
+  for (var i = 0; i < list.length; i++) keep['p|' + list[i].approvalId] = true;
+  var q = s && s.pendingQuestion;
+  if (q && q.type === 'user_choice' && q.choices) keep[acQuestionId(q)] = true;
+  var left = 0;
+  for (var id in states) {
+    if (keep[id]) left++;
+    else delete states[id];
+  }
+  if (!left) delete _acState[key];
 }
 
 // One request's slot: the token wrapper (.ui-tok) keyed by the request — a
@@ -7980,9 +8003,10 @@ var DA_DONE = { stop: '세션을 중지했어요', close: '세션을 닫았어�
 
 async function answerPermission(key, approvalId, decision) {
   var sk = 'p|' + approvalId;
-  var cur = _acState[sk];
+  var states = _acState[key] || (_acState[key] = Object.create(null));
+  var cur = states[sk];
   if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
-  _acState[sk] = { status: 'sending', decision: decision };
+  states[sk] = { status: 'sending', decision: decision };
   acRepaint(key);
   var st;
   try {
@@ -7996,9 +8020,20 @@ async function answerPermission(key, approvalId, decision) {
     console.error('Permission answer error', e);
     st = { status: 'error', message: '네트워크 오류 — 다시 시도하세요', retry: true };
   }
-  _acState[sk] = st;
+  // Kept only while the session still asks it (a push may have taken it meanwhile).
+  var still = ((_sessionCache[key] && _sessionCache[key].pendingPermissions) || []).some(function(p) { return String(p.approvalId) === String(approvalId); });
+  if (still) (_acState[key] || (_acState[key] = Object.create(null)))[sk] = st;
+  else acDrop(key, sk);
   acRepaint(key);
   return st;
+}
+// Forget one answer state (and the session's map once it is empty).
+function acDrop(key, id) {
+  var states = _acState[key];
+  if (!states) return;
+  delete states[id];
+  for (var k in states) return;
+  delete _acState[key];
 }
 
 // The single-choice answer, from the card or the panel (the same element): the
@@ -8011,9 +8046,10 @@ async function answerChoice(key, qid, choiceId) {
   var c = null;
   for (var i = 0; i < q.choices.length; i++) if (String(q.choices[i].id) === choiceId) c = q.choices[i];
   if (!c) return null;
-  var cur = _acState[qid];
+  var states = _acState[key] || (_acState[key] = Object.create(null));
+  var cur = states[qid];
   if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
-  _acState[qid] = { status: 'sending', choiceId: choiceId };
+  states[qid] = { status: 'sending', choiceId: choiceId };
   acRepaint(key);
   var label = stripRecommendedMarker(c.label);
   var st;
@@ -8027,7 +8063,12 @@ async function answerChoice(key, qid, choiceId) {
     console.error('Answer choice error', e);
     st = { status: 'error', message: '네트워크 오류 — 다시 시도하세요', retry: true };
   }
-  _acState[qid] = st;
+  // Kept only while the session still asks this question: once a push took it
+  // away (answered here or in Slack), a late result would otherwise answer the
+  // next identical question.
+  var nq = _sessionCache[key] && _sessionCache[key].pendingQuestion;
+  if (nq && nq.type === 'user_choice' && nq.choices && acQuestionId(nq) === qid) (_acState[key] || (_acState[key] = Object.create(null)))[qid] = st;
+  else acDrop(key, qid);
   acRepaint(key);
   return st;
 }
@@ -9124,6 +9165,8 @@ function renderBoard(board, partial) {
       _sessionCache[arr[i0].key] = arr[i0];
     }
   }
+  // Answer states of requests the board no longer holds (a session gone, a prompt or question it no longer asks).
+  for (var ak in _acState) acEvict(ak, _sessionCache[ak]);
   _envIndex = _buildEnvIndex();
   // Owner hues for every card in the board data (hidden archives too, so the
   // Show archives toggle never recolours anyone).
@@ -14594,6 +14637,7 @@ function connectWs() {
         // (an open card stays open). The column comes from the card's data-col.
         var updatedKey = msg.session.key;
         _sessionCache[updatedKey] = msg.session;
+        acEvict(updatedKey, msg.session);
         patchLastBoard(msg.session);
         var existingCard = _cardEls[updatedKey];
         if (existingCard) {
