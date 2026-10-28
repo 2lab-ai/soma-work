@@ -45,7 +45,7 @@ export interface CurrentContextTokens {
  * Per-turn values win only when they are present AND carry information
  * (sum > 0). A turn with no per-call reading falls back to the billing
  * aggregate. The aggregate is NOT an occupancy figure: it sums every round-trip
- * of the agent loop, so a 20-call turn reads ~20× the window it actually
+ * of the agent loop, so a 20-call turn reads roughly 20× [estimate] the window it actually
  * holds and trips auto-compact on a session that does not need it (the sol[1m]
  * miscalculation, 2026-10-27). It is kept only because an empty window would be
  * worse — the trigger would never fire. The fix for llmux models is upstream of
