@@ -9,9 +9,10 @@
  *     the board from 840px (no dim, the board stays live);
  *   - the board's column layout follows the inbox's own width (container
  *     query), not the viewport, so a docked drawer narrows it correctly;
- *   - Tasks and Artifacts stay pinned outside the scroll area (.prd/10
- *     §3.1-6), the static session info scrolls with the conversation, and
- *     the scroll area always keeps at least half of the panel body (R/2);
+ *   - the panel body is one scroll area (task view, SSOT 2026-10-27 — it
+ *     replaced the pinned Tasks/Artifacts rows and their R/2 floor): the
+ *     task's common surface (세션 정보, goal, 입력 필요, 산출물), then the
+ *     agent tabs (sticky at its top) and the focused agent's tab;
  *   - a change of layout mode {columns, panel closed|sheet|docked, view}
  *     animates the cards from where they were on screen to where they are
  *     now; a further resize while they fly retargets from the visible spot.
@@ -148,19 +149,28 @@ describe('drawer — a sheet below 840px, docked beside the board from 840px', (
   });
 });
 
-describe('panel body — pinned Tasks and Artifacts, one main scroll, at least half the body (R/2)', () => {
+describe("panel body — one scroll area: the task surface, the sticky agent tabs, the focused agent's tab", () => {
   const panel = TEMPLATE.slice(TEMPLATE.indexOf('<div class="slide-panel" id="slide-panel">'));
   const at = (s: string) => panel.indexOf(s);
 
-  it('header → body (tasks, artifacts, scroll) → composer', () => {
+  it('header (자세히) → body (scroll: surface → tabs → tabpanel) → composer', () => {
     expect(at('<div class="panel-header">')).toBeGreaterThan(0);
-    expect(at('<div class="panel-body" id="panel-body">')).toBeGreaterThan(at('<div class="panel-header">'));
+    expect(at('id="panel-detail-toggle"')).toBeGreaterThan(at('<div class="panel-header">'));
+    expect(at('<div class="panel-body" id="panel-body">')).toBeGreaterThan(at('id="panel-detail-toggle"'));
+    expect(at('<div class="panel-scroll" id="panel-scroll">')).toBeGreaterThan(at('id="panel-body"'));
+    expect(at('<section class="panel-surface" id="panel-surface"')).toBeGreaterThan(at('id="panel-scroll"'));
+    expect(at('id="panel-artifacts"')).toBeGreaterThan(at('id="panel-surface"'));
+    expect(at('<div class="panel-tabs" id="panel-tabs" role="tablist"')).toBeGreaterThan(at('id="panel-artifacts"'));
+    expect(at('<section class="panel-tabpanel" id="panel-tabpanel" role="tabpanel"')).toBeGreaterThan(
+      at('id="panel-tabs"'),
+    );
     expect(
       at('<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>'),
-    ).toBeGreaterThan(at('id="panel-body"'));
-    expect(at('id="panel-artifacts"')).toBeGreaterThan(at('id="panel-tasks"'));
-    expect(at('<div class="panel-scroll" id="panel-scroll">')).toBeGreaterThan(at('id="panel-artifacts"'));
-    expect(at('<div class="panel-command" id="panel-command">')).toBeGreaterThan(at('id="panel-scroll"'));
+    ).toBeGreaterThan(at('id="panel-tabpanel"'));
+    expect(at('id="panel-turns"')).toBeGreaterThan(at('id="panel-tasks"'));
+    expect(at('<div class="panel-command" id="panel-command">')).toBeGreaterThan(at('id="panel-turns"'));
+    // One scroll area in the body.
+    expect(panel.slice(0, at('id="panel-command"')).split('class="panel-scroll"').length - 1).toBe(1);
   });
 
   it('the static session info (세션 정보, goal) scrolls with the conversation, above it; agents follow the question (spec 13)', () => {
@@ -176,30 +186,36 @@ describe('panel body — pinned Tasks and Artifacts, one main scroll, at least h
     expect(at('id="panel-controls"')).toBeGreaterThan(at('<div class="panel-command" id="panel-command">'));
   });
 
-  it('the body is a grid whose last row (the scroll area) never gets less than half of it', () => {
+  it('the body is a flex column whose one scroll area takes every row left (no grid, no pinned rows)', () => {
     const body = rule('.panel-body');
-    expect(body).toContain('display: grid');
-    // Half the body — unless the two pinned 44px floors leave less, so no row ever
-    // overflows the body (which clips) on the shortest docked screens.
-    expect(body).toContain('grid-template-rows: auto auto minmax(min(50%, calc(100% - 88px)), 1fr)');
+    expect(body).toContain('display: flex');
+    expect(body).toContain('flex-direction: column');
     expect(body).toContain('container: pbody / size');
-    expect(rule('.panel-scroll')).toContain('grid-row: 3');
+    expect(body).not.toContain('display: grid');
+    expect(body).not.toContain('grid-template-rows');
+    const scroll = rule('.panel-scroll');
+    expect(scroll).toContain('flex: 1 1 auto');
+    expect(scroll).toContain('overflow-y: auto');
+    expect(scroll).toContain('min-height: 0');
+    expect(scroll).not.toContain('grid-row');
+    // The agent tabs stay at the top of the scroll area while the conversation scrolls.
+    const tabs = rule('.panel-tabs');
+    expect(tabs).toContain('position: sticky');
+    expect(tabs).toContain('top: 0');
   });
 
-  it('pinned blocks yield height down to one row and scroll inside; nothing is clipped', () => {
+  it('Tasks and Artifacts are no longer pinned: no grid row, no height cap, no inner scroll; nothing is clipped', () => {
     const tasks = rule('.panel-tasks');
-    expect(tasks).toContain('grid-row: 1');
-    expect(tasks).toContain('min-height: 44px');
-    expect(tasks).toContain('max-height: min(30vh, 240px)');
-    expect(tasks).toContain('overflow-y: auto');
+    expect(tasks).not.toBe('');
+    for (const pinned of ['grid-row', 'max-height', 'overflow']) expect(tasks, pinned).not.toContain(pinned);
     const arts = rule('.panel-artifacts');
-    expect(arts).toContain('grid-row: 2');
-    expect(arts).toContain('overflow-y: auto');
-    expect(arts).not.toContain('overflow: hidden');
+    expect(arts).not.toBe('');
+    for (const pinned of ['grid-row', 'max-height', 'overflow']) expect(arts, pinned).not.toContain(pinned);
+    expect(TEMPLATE).not.toContain('minmax(min(50%, calc(100% - 88px)), 1fr)');
   });
 
   it('a short body shows artifacts as name chips (no thumbnail), the play button inline; every tile stays reachable sideways', () => {
-    // 560px: below it, R/2 cannot hold full thumbnails plus a couple of task rows.
+    // 560px: below it, full thumbnails would push the conversation out of a short body.
     const compact = cssBlock('@container pbody (max-height: 560px) {');
     expect(compact).not.toBe('');
     expect(compact).toContain('.art-strip-panel .art-thumb { display: none; }');
@@ -229,8 +245,10 @@ describe('board columns follow the inbox width, not the viewport', () => {
 
 describe('phones — nothing zooms, nothing hides behind the FAB, nothing runs off the edge', () => {
   it('text inputs in the drawer are 16px on touch screens (iOS does not zoom into them)', () => {
+    // The composer is a multiline <textarea id="cmd-input"> (task view T1.5).
+    expect(TEMPLATE).toContain('<textarea id="cmd-input" rows="1"');
     expect(TEMPLATE).toMatch(
-      /@media \(pointer: coarse\) \{\n {2}\/\* Responsive[^@]*\.panel-command input, \.mc-custom-input input \{ font-size: 16px; \}/,
+      /@media \(pointer: coarse\) \{\n {2}\/\* Responsive[^@]*\.panel-command textarea, \.mc-custom-input input \{ font-size: 16px; \}/,
     );
   });
 

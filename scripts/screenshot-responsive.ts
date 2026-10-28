@@ -523,20 +523,13 @@ async function checkOpen(page: Page, touch: boolean): Promise<Check[]> {
     const body = (document.getElementById('panel-body') as HTMLElement).getBoundingClientRect();
     const scrollEl = document.getElementById('panel-scroll') as HTMLElement;
     const s = scrollEl.getBoundingClientRect();
-    // R/2, or what the two 44px pinned floors leave on the shortest bodies.
-    const need = Math.min(body.height / 2, body.height - 88);
-    out.push({ ok: s.height >= need - 1, msg: `main scroll ≥ R/2 (${s.height} ≥ ${need})` });
-    // The body clips overflow: every row must also end inside it, or a "tall" scroll
-    // area could be partly hidden under the composer.
-    for (const id of ['panel-tasks', 'panel-artifacts', 'panel-scroll']) {
-      const el = document.getElementById(id) as HTMLElement;
-      if (getComputedStyle(el).display === 'none') continue;
-      const r = el.getBoundingClientRect();
-      out.push({
-        ok: r.top >= body.top - 1 && r.bottom <= body.bottom + 1,
-        msg: `#${id} inside the body, not clipped (${r.top}..${r.bottom} in ${body.top}..${body.bottom})`,
-      });
-    }
+    // Task view (.prd/14): nothing is pinned inside the body — the one scroll area is all of it,
+    // and it ends inside the body (never partly hidden under the composer).
+    out.push({ ok: s.height >= body.height - 1, msg: `the scroll area fills the body (${s.height} ≥ ${body.height})` });
+    out.push({
+      ok: s.top >= body.top - 1 && s.bottom <= body.bottom + 1,
+      msg: `#panel-scroll inside the body, not clipped (${s.top}..${s.bottom} in ${body.top}..${body.bottom})`,
+    });
     scrollEl.scrollTo({ top: 0, behavior: 'instant' });
     const top = scrollEl.scrollTop;
     scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' });
@@ -544,8 +537,12 @@ async function checkOpen(page: Page, touch: boolean): Promise<Check[]> {
       ok: scrollEl.scrollHeight > scrollEl.clientHeight && scrollEl.scrollTop > top,
       msg: `the conversation scrolls (${scrollEl.clientHeight}/${scrollEl.scrollHeight})`,
     });
-    const tasks = (document.getElementById('panel-tasks') as HTMLElement).getBoundingClientRect();
-    out.push({ ok: tasks.height >= 43, msg: `pinned Tasks keep at least one row (${tasks.height})` });
+    // The agent tabs stay at the top of the scroll area while the conversation scrolls.
+    const tabs = (document.getElementById('panel-tabs') as HTMLElement).getBoundingClientRect();
+    out.push({
+      ok: tabs.top >= s.top - 1 && tabs.top <= s.top + 1,
+      msg: `agent tabs stick to the top (${tabs.top} ≈ ${s.top})`,
+    });
     if (touchArg) {
       const fs = parseFloat(getComputedStyle(document.getElementById('cmd-input') as HTMLElement).fontSize);
       out.push({ ok: fs >= 16, msg: `composer input ${fs}px ≥ 16px on touch` });

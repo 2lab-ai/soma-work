@@ -527,7 +527,8 @@ describe('one node type — the main agent is the root of the same recursive tre
     expect(TEMPLATE).toContain("document.addEventListener('focusin', function(e) {");
     expect(fnBody('renderPanelAgents')).toContain('var cap = _anScopeChange ? null : anFocusCapture(el);');
     const sel = fnBody('selectPanelAgent');
-    expect(sel).toContain('try { renderPanelAgents(); } finally { _anScopeChange = false; }');
+    // Task view T1.2: the agent tabs repaint with the node header under the same scope-change flag.
+    expect(sel).toContain('try { renderPanelTabs(); renderPanelAgents(); } finally { _anScopeChange = false; }');
     expect(sel.indexOf("document.querySelector('#panel-agents .pa-focus')")).toBeLessThan(
       sel.indexOf(`document.querySelector('#panel-agents .pa-crumb[aria-current="page"]')`),
     );
@@ -740,7 +741,19 @@ describe('panel — drill-down over the same node type (path · focused node · 
     'renderPanelAgents',
   ];
   function panel(focus: string, s: Record<string, unknown>, extra: Record<string, unknown> = {}) {
-    const el = { style: {} as Record<string, string>, innerHTML: '' };
+    // Task view T1.6: #panel-agents carries is-main while the Main tab is focused.
+    const classes = new Set<string>();
+    const el = {
+      style: {} as Record<string, string>,
+      innerHTML: '',
+      classes,
+      classList: {
+        toggle(c: string, on: boolean) {
+          if (on) classes.add(c);
+          else classes.delete(c);
+        },
+      },
+    };
     const out = { html: '', writes: 0 };
     const m = load<{ renderPanelAgents(): void }>(
       PANEL_FNS,
@@ -802,6 +815,7 @@ describe('panel — drill-down over the same node type (path · focused node · 
     const { m, el, out } = panel('', s, { _lastBoardData: { idle: [s] } });
     m.renderPanelAgents();
     expect(el.style.display).toBe('');
+    expect(el.classes.has('is-main')).toBe(true);
     expect(out.html).toContain('class="pa-focus is-idle"');
     expect(out.html).toContain('<span class="ag-type">메인</span>');
     expect(out.html).toContain('대기');
@@ -814,8 +828,10 @@ describe('panel — drill-down over the same node type (path · focused node · 
   });
 
   it('the path is generated from the chain of the focused node — the root crumb is its label, not a hard-coded button', () => {
-    const { m, out } = panel('toolu_nested', card());
+    const { m, el, out } = panel('toolu_nested', card());
     m.renderPanelAgents();
+    // A subagent's tab: its own header is not the main agent's detail.
+    expect(el.classes.has('is-main')).toBe(false);
     const path = out.html.slice(out.html.indexOf('<nav class="pa-path"'), out.html.indexOf('</nav>'));
     expect(path.indexOf('data-agent-select="">메인</button>')).toBeGreaterThan(0);
     expect(path.indexOf('data-agent-select="toolu_explore">A1 Explore</button>')).toBeGreaterThan(path.indexOf('메인'));
@@ -1272,38 +1288,49 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
     expect(body).toContain("before.closest('#slide-panel')");
     expect(body).toContain('#panel-agents .pa-crumb[aria-current="page"]');
   });
-  it('the panel Tasks block writes nothing for the same data and morphs a change (review B r3 astra)', () => {
-    let writes = 0;
-    const container = { style: {} as Record<string, string> } as Record<string, unknown>;
-    const m = load<{ renderPanelTasks(t: unknown, l?: string): void }>(
-      // re-agent-run D1–D7: plan rows (markers, times) and the footer.
-      [
-        'esc',
-        'escAttr',
-        'toNum',
-        'formatDuration',
-        'formatTaskTime',
-        'agentIconHtml',
-        'renderPanelTaskItem',
-        'planFootHtml',
-        'renderPanelTasks',
-      ],
-      ['AGENT_STATUS_LABEL'],
-      {
-        document: { getElementById: (id: string) => (id === 'panel-tasks' ? container : null) },
-        _panelTasksExpanded: false,
-        morphInnerHtml: () => {
-          writes++;
+  it('the panel Tasks block writes nothing for the same data and morphs a change — folded or open (review B r3 astra)', () => {
+    // Task view T1.3: the Tasks section is folded by default (the head alone);
+    // opened, the plan (re-agent-run D1–D7: rows, markers, times, the footer).
+    for (const open of [false, true]) {
+      let writes = 0;
+      const container = { style: {} as Record<string, string> } as Record<string, unknown>;
+      const m = load<{ renderPanelTasks(t: unknown, l?: string): void }>(
+        [
+          'esc',
+          'escAttr',
+          'toNum',
+          'formatDuration',
+          'formatTaskTime',
+          'agentIconHtml',
+          'taskFateOf',
+          'renderPanelTaskItem',
+          'planFootHtml',
+          'planSummaryHtml',
+          'planEarlierCounts',
+          'planEarlierGroups',
+          'planEarlierHtml',
+          'renderPanelTasks',
+        ],
+        ['AGENT_STATUS_LABEL', 'TASK_FATE_LABEL', 'TASK_PAUSE_SVG', 'TASK_STOP_SVG', 'TASK_SKIP_SVG', 'PI_CHEV_SVG'],
+        {
+          document: { getElementById: (id: string) => (id === 'panel-tasks' ? container : null) },
+          _panelTasksOpen: open,
+          _panelTasksExpanded: false,
+          _panelTasksEarlier: false,
+          morphInnerHtml: () => {
+            writes++;
+          },
+          updateTimersIn: () => {},
         },
-        updateTimersIn: () => {},
-      },
-    );
-    const tasks = [{ id: 'T1', content: 'a', status: 'completed' }];
-    m.renderPanelTasks(tasks, 'A1 Explore');
-    m.renderPanelTasks(tasks, 'A1 Explore');
-    expect(writes).toBe(1);
-    m.renderPanelTasks([...tasks, { id: 'T2', content: 'b', status: 'pending' }], 'A1 Explore');
-    expect(writes).toBe(2);
+      );
+      const tasks = [{ id: 'T1', content: 'a', status: 'completed' }];
+      m.renderPanelTasks(tasks, 'A1 Explore');
+      m.renderPanelTasks(tasks, 'A1 Explore');
+      expect(writes).toBe(1);
+      // A new step changes the folded head (1/1 → 1/2) as well as the open plan.
+      m.renderPanelTasks([...tasks, { id: 'T2', content: 'b', status: 'pending' }], 'A1 Explore');
+      expect(writes).toBe(2);
+    }
     expect(fnBody('renderPanelTasks')).not.toContain('container.innerHTML =');
   });
   it('a refused model switch leaves nothing to put back — also the second time, when the card markup does not change (review B r4 astra)', async () => {

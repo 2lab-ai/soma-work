@@ -479,8 +479,18 @@ describe('expanded body — face + delta, sections keyed on state', () => {
 describe('task window on the card — the full ledger is the panel', () => {
   const tl = (s: Record<string, unknown>) =>
     load<{ renderTimeline(s: unknown): string }>(
-      ['esc', 'escAttr', 'escJs', 'toNum', 'formatDuration', 'renderTaskMeta', 'renderTimelineItem', 'renderTimeline'],
-      [],
+      [
+        'esc',
+        'escAttr',
+        'escJs',
+        'toNum',
+        'formatDuration',
+        'taskFateOf',
+        'renderTaskMeta',
+        'renderTimelineItem',
+        'renderTimeline',
+      ],
+      ['TASK_FATE_LABEL'],
       {
         dhShow: () => true,
         dhMax: (_k: string, d: number) => d,
@@ -493,12 +503,22 @@ describe('task window on the card — the full ledger is the panel', () => {
       content: `t${i + 1}`,
       status: i < 6 ? 'completed' : i === 6 ? 'in_progress' : 'pending',
     }));
-    const html = tl({ key: 'k1', tasks, earlierTasks: [{ id: 'T0', content: 'old', status: 'completed' }] });
+    const html = tl({
+      key: 'k1',
+      tasks,
+      earlierTasks: [
+        { id: 'T0', content: 'old', status: 'completed' },
+        // Task view T2: a step a new plan dropped before it ran was never work — not counted.
+        { id: 'Tx', content: 'never ran', status: 'pending', dropped: 'unstarted' },
+      ],
+    });
     expect(html.match(/class="tl-item/g)).toHaveLength(5);
     expect(html).toContain("openPanel('k1','tasks',");
     expect(html).toContain('전체 task 10개 &rarr;');
     expect(html).not.toContain('toggleCardTasks');
     expect(html).not.toContain('tl-earlier');
+    // Only skipped earlier steps and no current list: nothing to open.
+    expect(tl({ key: 'k1', tasks: [], earlierTasks: [{ id: 'Tx', content: 'x', dropped: 'unstarted' }] })).toBe('');
   });
 });
 
@@ -723,13 +743,17 @@ describe('one live path for the whole panel', () => {
 describe('landing follows the opening intent (executed)', () => {
   type Rect = { top: number; bottom: number; height: number };
   /** A scroll area at y=100, 400px tall, and the sections inside it at fixed content offsets. */
-  function rig(intent: string, opts: { question?: boolean } = {}) {
+  function rig(
+    intent: string,
+    opts: { question?: boolean; tasksHidden?: boolean; tabs?: number; detail?: boolean } = {},
+  ) {
     const offsets: Record<string, number> = {
       'panel-info': 0,
       'panel-goal': 80,
       'panel-permission': 300,
       'panel-question': 300,
       'panel-agents': 420,
+      'panel-tasks': 560,
       'panel-worklog': 700,
     };
     const scroll = {
@@ -751,10 +775,11 @@ describe('landing follows the opening intent (executed)', () => {
         return { top, bottom: top + 60, height: 60 };
       },
     });
-    const tasks = { scrollTop: 120 };
+    const tasks = section('panel-tasks', !opts.tasksHidden);
     const els: Record<string, unknown> = {
       'panel-scroll': scroll,
       'panel-tasks': tasks,
+      'panel-tabs': opts.tabs === undefined ? null : { offsetHeight: opts.tabs },
       'panel-goal': section('panel-goal'),
       'panel-agents': section('panel-agents'),
       'panel-worklog': section('panel-worklog'),
@@ -767,7 +792,7 @@ describe('landing follows the opening intent (executed)', () => {
       ['_panelOnQuestion'],
       { document: { getElementById: (id: string) => els[id] ?? null } },
       [
-        `var _panelLand = ${JSON.stringify(intent)}; var _panelLanded = false; var _panelStickBottom = false;`,
+        `var _panelLand = ${JSON.stringify(intent)}; var _panelLanded = false; var _panelStickBottom = false; var _panelLandAt = null; var _panelScrollGen = 0; var _panelDetail = ${!!opts.detail};`,
         'function state() { return { landed: _panelLanded, stick: _panelStickBottom }; }',
       ],
     );
@@ -790,14 +815,34 @@ describe('landing follows the opening intent (executed)', () => {
     expect(r.scroll.scrollTop).toBe(420);
   });
 
-  it('전체 task → opens the pinned Tasks box at its head; the scroll area keeps the default landing', () => {
-    const r = rig('tasks');
+  it('전체 task → puts the (unfolded) Tasks section at the top of the scroll area, under the sticky agent tabs, once', () => {
+    // Task view: Tasks are no longer pinned outside the scroll area — they sit in the
+    // focused agent's tab, so a tasks opening lands like 관리 → / 상세 does.
+    const r = rig('tasks', { tabs: 40 });
     r.m.landPanel();
-    expect(r.tasks.scrollTop).toBe(0);
-    expect(r.scroll.scrollTop).toBe(3000); // no blocker: the newest turns
-    const ask = rig('tasks', { question: true });
+    expect(r.scroll.scrollTop).toBe(560 - 40);
+    expect(r.scroll.calls).toEqual([520]);
+    expect(r.m.state()).toEqual({ landed: true, stick: false });
+    r.scroll.scrollTop = 40; // the reader scrolls; the turns arrive and land again
+    r.m.landPanel();
+    expect(r.scroll.scrollTop).toBe(40);
+    // The reader asked for the plan: a waiting question does not take the landing.
+    const ask = rig('tasks', { question: true, tabs: 40 });
     ask.m.landPanel();
-    expect(ask.scroll.scrollTop).toBe(300); // a question waits: it heads the scroll area
+    expect(ask.scroll.scrollTop).toBe(520);
+    // No Tasks shown: the default landing — a question first, else the top of the
+    // minimal panel (task view: surface → tabs → latest exchange), or with 자세히 the newest turns.
+    const none = rig('tasks', { tasksHidden: true });
+    none.m.landPanel();
+    expect(none.scroll.scrollTop).toBe(0);
+    expect(none.m.state()).toEqual({ landed: false, stick: false });
+    const noneDetail = rig('tasks', { tasksHidden: true, detail: true });
+    noneDetail.m.landPanel();
+    expect(noneDetail.scroll.scrollTop).toBe(3000);
+    expect(noneDetail.m.state()).toEqual({ landed: false, stick: true });
+    const noneAsk = rig('tasks', { tasksHidden: true, question: true });
+    noneAsk.m.landPanel();
+    expect(noneAsk.scroll.scrollTop).toBe(300);
   });
 
   it('true (작업 로그) still lands on the work-log head', () => {
@@ -841,6 +886,9 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
           resetWorkLog: () => {},
           _cardEls: { k: { _faceEl: face } },
           __ret: opener,
+          // Task view: a closing panel releases the composer and the answer observer.
+          pcReset: () => {},
+          _ansIo: null,
         },
         [
           'var panelOpen = true, panelSessionKey = "k", panelConvId = null, _panelAgent = "", _panelAgentsHtml = "", _rawLoadedCache = {}, _panelGen = 0;',
@@ -993,10 +1041,13 @@ describe('focus inside the goal section after its goal left (executed)', () => {
     const btn = { id: 'del-q1' };
     let inside = new Set<unknown>([btn]);
     const doc: Record<string, unknown> = { activeElement: btn, body: {} };
+    const classes = new Set<string>(['is-empty']);
     const el = {
       style: { display: '' },
       _html: 'old',
       _key: 'k',
+      // Task view T1.6: a session without a goal marks the section empty (자세히 shows it).
+      classList: { toggle: (c: string, on: boolean) => (on ? classes.add(c) : classes.delete(c)) },
       contains: (n: unknown) => inside.has(n),
       focus: () => {
         doc.activeElement = el;
@@ -1024,6 +1075,7 @@ describe('focus inside the goal section after its goal left (executed)', () => {
     );
     m.renderPanelGoal();
     expect(doc.activeElement).toBe(el);
+    expect(classes.has('is-empty')).toBe(false); // the session has a current goal
     expect(clientFn('openPanel')).toContain('if (!sameSession) (function resetCmdUi()');
   });
 });
@@ -1034,23 +1086,36 @@ describe('the composer follows the session live (executed)', () => {
     const btn = { disabled: false };
     const hint = { style: { display: 'none' } };
     const host: Record<string, unknown> = {};
+    // Task view T1.5: the composer's tools (attach, image, voice) follow the field.
+    const tools = { 'pc-attach': { disabled: false }, 'pc-image': { disabled: false }, 'pc-mic': { disabled: false } };
     const els: Record<string, unknown> = {
       'panel-command': host,
       'cmd-input': input,
       'cmd-send': btn,
       'cmd-hint': hint,
+      ...tools,
     };
+    let resets = 0;
     const m = load<{ renderPanelComposer(s: unknown, force?: boolean): void }>(['renderPanelComposer'], [], {
       document: { getElementById: (id: string) => els[id] ?? null },
       currentUserId: 'U1',
       READ_ONLY_MSG: 'read only',
+      pcReset: () => {
+        resets++;
+      },
     });
+    const toolsDisabled = () => Object.values(tools).map((t) => t.disabled);
     m.renderPanelComposer({ ownerId: 'U1' }, true);
     expect(input.disabled).toBe(false);
+    expect(input.placeholder).toMatch(/^Send message to session\.\.\./);
+    expect(toolsDisabled()).toEqual([false, false, false]);
+    expect(resets).toBe(0);
     m.renderPanelComposer({ ownerId: 'U1', terminated: true });
     expect(input.disabled).toBe(true);
     expect(btn.disabled).toBe(true);
     expect(hint.style.display).toBe('');
+    expect(toolsDisabled()).toEqual([true, true, true]);
+    expect(resets).toBe(1); // the files and any recording were for the open session
     // A late send completion re-enabled it by hand: the forced pass puts the closed state back.
     input.disabled = false;
     btn.disabled = false;
@@ -1143,7 +1208,8 @@ describe('a live repaint keeps the reader where they were reading (executed)', (
     const info = kid('panel-info', 0, 200);
     const turns = kid('panel-turns', 200, 2000);
     scroll.children = [info, turns];
-    scroll.querySelectorAll = () => [turns];
+    // Task view: the live sections are read from the surface and the tab panel; the anchor from the turns.
+    scroll.querySelectorAll = (sel: string) => (sel.includes('#panel-surface') ? [info, turns] : [turns]);
     const m = load<{ panelLiveAnchor(): unknown; restorePanelLiveAnchor(a: unknown): void }>(
       ['panelScrollAnchor', 'panelLiveAnchor', 'restorePanelLiveAnchor'],
       ['PANEL_LIVE_SECTIONS'],
@@ -1164,10 +1230,10 @@ describe('a live repaint keeps the reader where they were reading (executed)', (
 });
 
 describe('panel Tasks — the whole ledger, earlier lists included', () => {
-  it('the main scope lists the earlier task lists under the current one', () => {
+  const rig = (open: boolean) => {
     const el = { style: {} as Record<string, string>, _html: '', innerHTML: '' };
     const m = load<{ renderPanelTasks(tasks: unknown[], label: string, earlier: unknown[]): void }>(
-      // re-agent-run D1–D7: plan rows (markers, times) and the footer.
+      // re-agent-run D1–D7: plan rows (markers, times) and the footer; task view T2: fates.
       [
         'esc',
         'escAttr',
@@ -1175,13 +1241,19 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
         'formatDuration',
         'formatTaskTime',
         'agentIconHtml',
+        'taskFateOf',
         'renderPanelTaskItem',
         'planFootHtml',
+        'planSummaryHtml',
+        'planEarlierCounts',
+        'planEarlierGroups',
+        'planEarlierHtml',
         'renderPanelTasks',
       ],
-      ['AGENT_STATUS_LABEL'],
+      ['AGENT_STATUS_LABEL', 'TASK_FATE_LABEL', 'TASK_PAUSE_SVG', 'TASK_STOP_SVG', 'TASK_SKIP_SVG', 'PI_CHEV_SVG'],
       {
         document: { getElementById: () => el },
+        _panelTasksOpen: open,
         _panelTasksExpanded: true,
         _panelTasksEarlier: true,
         morphInnerHtml: (e: { innerHTML: string }, h: string) => {
@@ -1190,11 +1262,33 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
         updateTimersIn: () => {},
       },
     );
-    m.renderPanelTasks([{ id: 'T5', content: 'now', status: 'in_progress' }], '', [
+    m.renderPanelTasks([{ id: 'T5', content: 'now', activeForm: 'Doing it now', status: 'in_progress' }], '', [
       { id: 'T1', content: 'old one', status: 'completed' },
+      { id: 'T2', content: 'never ran', status: 'pending', dropped: 'unstarted' },
     ]);
-    expect(el.innerHTML).toContain('이전 task 1개');
-    expect(el.innerHTML).toContain('old one');
+    return el;
+  };
+
+  it('folded by default (task view T1.3): one head — the plan in one line, no rows', () => {
+    const html = rig(false).innerHTML;
+    expect(html).toContain(
+      '<button type="button" class="panel-sec-head panel-tasks-header" aria-expanded="false" onclick="togglePanelTasks()">',
+    );
+    expect(html).toContain('Doing it now');
+    expect(html).toContain('0/1');
+    expect(html).toContain('이전 계획 중단 0 · 실행 안 됨 1');
+    expect(html).not.toContain('panel-tasks-body');
+    expect(html).not.toContain('old one');
+  });
+
+  it('opened, the main scope lists the earlier task lists under the current one', () => {
+    const html = rig(true).innerHTML;
+    expect(html).toContain('aria-expanded="true" aria-controls="panel-tasks-body"');
+    expect(html).toContain('<div class="panel-tasks-body" id="panel-tasks-body">');
+    expect(html).toContain('이전 계획 <span class="pl-earlier-counts">완료 1 &middot; 실행 안 됨 1</span>');
+    expect(html).toContain('old one');
+    expect(html).toContain('<span class="pl-fate">실행 안 됨</span>');
+    expect(html.indexOf('>now<')).toBeLessThan(html.indexOf('old one'));
   });
 });
 
