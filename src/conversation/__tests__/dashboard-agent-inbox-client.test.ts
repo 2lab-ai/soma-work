@@ -3018,7 +3018,9 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     });
     const p = page({ session: single, prevScrollTop: 3000, turns: 'held' });
     p.m.openPanel(KEY);
-    expect(p.question.innerHTML).toContain('<ui-approval-card lang="ko" data-ac-key="' + KEY + '" data-ac-kind="question">');
+    expect(p.question.innerHTML).toContain(
+      '<ui-approval-card lang="ko" data-ac-key="' + KEY + '" data-ac-kind="question">',
+    );
     expect(p.formInView()).toBe(true);
     p.release();
     await flush();

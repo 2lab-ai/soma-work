@@ -690,7 +690,7 @@ describe('D10 — one primary button per open card', () => {
   // may answer is the element's canAnswer (acQuestionLock); a locked card draws its answers quiet
   // and says why (library: approval-card.test.ts "canAnswer false / string locks the answers and
   // says why"). The recommended choice's ink is the element's own (choiceOrder / recommendedOf).
-  it("the question is an approval card, answerable only by the owner on this instance (astra P1)", () => {
+  it('the question is an approval card, answerable only by the owner on this instance (astra P1)', () => {
     const rec = {
       type: 'user_choice',
       question: 'Ship it?',
