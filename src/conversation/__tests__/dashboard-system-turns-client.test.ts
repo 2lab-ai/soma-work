@@ -15,10 +15,17 @@
  *       working session
  *   C4  skills: the <invoked_skills> block becomes badges (name · estimated
  *       tokens) that open the skill body, written on first open
+ *   C5  background-work-resume: the host prompt that keeps a turn going while
+ *       background work runs reads as its own badge (백그라운드 재개 #n/m)
+ *   C6  the inbox's open card (지시 / 응답): the same one line + badge for a
+ *       turn the user did not type, skill badges under the user's words, and a
+ *       /compact's progress or result as the 응답 — open state kept per
+ *       conversation across the card's morph re-render
  */
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { buildBackgroundWaitPrompt } from '@soma/slack/pipeline/background-wait';
 import { describe, expect, it, vi } from 'vitest';
 import { buildGoalContinuationPrompt } from '../../prompt/session-goal-block';
 import { GOAL_CONTINUATION_TEXT_PREFIX } from '../../slack/goal-continuation';
@@ -682,9 +689,13 @@ describe('C4 — the skills an instruction invoked, as badges', () => {
     const a = load<{
       skillBadgesHtml(key: string, skills: unknown[]): string;
       skillToggle(btn: unknown): void;
-    }>(['esc', 'escAttr', 'toNum', 'formatTokens', 'skillBadgesHtml', 'skillToggle'], ['_skillBodies', '_skillSeq'], {
-      document,
-    });
+    }>(
+      ['esc', 'escAttr', 'toNum', 'formatTokens', 'skillBadgesHtml', 'skillPaneHtml', 'skillToggle'],
+      ['_skillBodies', '_skillSeq'],
+      {
+        document,
+      },
+    );
     a.skillBadgesHtml('u9', [
       { name: 'local:using-ssot', body: '<b>raw</b> & body', tokens: 524 },
       { name: 'local:autoz', body: 'autoz body', tokens: 1234 },
@@ -721,5 +732,312 @@ describe('C4 — the skills an instruction invoked, as badges', () => {
     a.skillToggle(btns[1]); // and closes
     expect(btns[1].attrs['aria-expanded']).toBe('false');
     expect(panes['skd-u9-1'].hidden).toBe(true);
+  });
+});
+
+describe('C5 — background-work-resume reads as its own badge', () => {
+  // The real prompt builder (packages/slack/src/pipeline/background-wait.ts).
+  const one = buildBackgroundWaitPrompt({ count: 1, labels: ['local_bash'] } as never, 1, 6);
+  const two = buildBackgroundWaitPrompt({ count: 2, labels: ['local_bash', 'local_agent'] } as never, 3, 6);
+  const bare = buildBackgroundWaitPrompt({ count: 1, labels: [] } as never, 6, 6);
+
+  it('백그라운드 재개 #n/m — the round, how many tasks were still running and which', () => {
+    const { sysTurnInfo } = api();
+    for (const extra of [SYSTEM, {}]) {
+      const info = sysTurnInfo(user(one, extra)) as NonNullable<Info>;
+      expect(info.kind).toBe('bgwork');
+      expect(info.label).toBe('백그라운드 재개 #1/6');
+      expect(info.line).toBe('실행 중인 백그라운드 작업 1개 (local_bash) — 턴을 이어감');
+      expect(info.facts).toEqual([
+        ['회차', '1 / 6'],
+        ['실행 중인 작업', '1개 (local_bash)'],
+        ['이유', '턴이 끝났지만 런타임이 백그라운드 작업을 아직 실행 중으로 보고'],
+      ]);
+      expect(info.raw).toBe(one);
+    }
+    const info2 = sysTurnInfo(user(two, SYSTEM)) as NonNullable<Info>;
+    expect(info2.label).toBe('백그라운드 재개 #3/6');
+    expect(info2.facts[1]).toEqual(['실행 중인 작업', '2개 (local_bash, local_agent)']);
+    const info3 = sysTurnInfo(user(bare, SYSTEM)) as NonNullable<Info>;
+    expect(info3.line).toBe('실행 중인 백그라운드 작업 1개 — 턴을 이어감');
+    expect(info3.facts[1]).toEqual(['실행 중인 작업', '1개']);
+  });
+
+  it('a person who typed the marker is a person', () => {
+    expect(api().sysTurnInfo(user(one, PERSON))).toBeNull();
+  });
+
+  it('renderTurn: one line with its badge', () => {
+    const out = api().renderTurn(user(one, SYSTEM));
+    expect(out).toContain('data-sys="bgwork"');
+    expect(out).toContain('<span class="sys-badge" data-kind="bgwork">백그라운드 재개 #1/6</span>');
+  });
+});
+
+describe('C6 — the inbox card: 지시 / 응답', () => {
+  const CID = 'conv-io';
+  const NOW = 1_792_900_000_000;
+  // A clock frozen at NOW that still builds dates (끝난 시각).
+  class FrozenDate extends Date {
+    static now() {
+      return NOW;
+    }
+  }
+  const invoked = (text: string, skills: [string, string][]) =>
+    `${text}\n\n<invoked_skills>\n${skills.map(([k, c]) => `<${k}>\n${c}\n</${k}>`).join('\n')}\n</invoked_skills>`;
+  type CardApi = {
+    renderCardIo(s: unknown): string;
+    ioSysToggle(el: { open: boolean }, cid: string): void;
+    ioSkillToggle(cid: string, i: number): void;
+    fetchCardIo(cid: string): Promise<{ instruction: { turn: Record<string, unknown> }; response: unknown }>;
+  };
+  const IO_FNS = [
+    ...SYS_FNS,
+    'skillPaneHtml',
+    'ioOpenState',
+    'ioSysToggle',
+    'ioSkillToggle',
+    'ioRefreshCards',
+    'ioSkillsHtml',
+    'ioInstructionHtml',
+    'ioCompactOutHtml',
+    'renderCardIo',
+    'fetchCardIo',
+  ];
+  function card(
+    turn: Record<string, unknown>,
+    opts: { response?: unknown; working?: boolean; extra?: Record<string, unknown> } = {},
+  ) {
+    const setInterval = vi.fn(() => 7);
+    const refreshCard = vi.fn();
+    const raw = String(turn.rawContent);
+    const _ioCache: Record<string, unknown> = {
+      [CID]: {
+        state: 'ok',
+        data: {
+          instruction: { text: raw.slice(0, 500) + (raw.length > 500 ? '…' : ''), who: 'Z', attachments: [], turn },
+          response: opts.response ?? null,
+        },
+      },
+    };
+    const session = { key: 'k1', conversationId: CID, activityState: opts.working ? 'working' : 'idle' };
+    const a = load<CardApi>(IO_FNS, [...SYS_VARS, '_ioOpen'], {
+      panelConvId: 'other',
+      _artCache: {},
+      renderTurnArtifacts: () => '',
+      umRegister: () => {},
+      renderUserMedia: () => '',
+      ansStateHtml: () => '',
+      setInterval,
+      _ioCache,
+      _cardEls: { k1: {} },
+      _sessionCache: { k1: session },
+      refreshCard,
+      Date: FrozenDate,
+      ...(opts.extra || {}),
+    });
+    return { ...a, html: () => a.renderCardIo(session), setInterval, refreshCard, session };
+  }
+
+  it('a turn the user did not type: one line with its badge, opening to the facts and the raw prompt', () => {
+    const c = card(user(goalPrompt(2, 10, 'No evidence: no files, diffs, or tests.'), SYSTEM));
+    const out = c.html();
+    expect(out).toContain('<div class="io-label">지시<span class="io-who">Z</span></div>');
+    expect(out).toContain(`<details class="io-sys" ontoggle="ioSysToggle(this,'${CID}')">`);
+    expect(out).toContain('<span class="sys-badge" data-kind="goal">Goal #2/10</span>');
+    expect(out).toContain('<span class="sys-line">직전 평가: No evidence: no files, diffs, or tests.</span>');
+    expect(out).toContain('<dt>회차</dt><dd>2 / 10</dd>');
+    expect(out).toContain('<pre class="sys-raw">[goal-continuation] Continue working');
+    // The raw prompt is no longer the 지시's visible text.
+    expect(out).not.toContain('<div class="io-text">[goal-continuation]');
+  });
+
+  it('restart (recorded before origins were kept) and background-work-resume read the same way', () => {
+    const r = card(user(`${RESTART_PROMPT}\n\n--- 중단 시점 컨텍스트 ---\n세션 제목: 대시보드`)).html();
+    expect(r).toContain('<span class="sys-badge" data-kind="restart">시스템 재시작</span>');
+    expect(r).toContain('<span class="sys-line">중단된 작업 자동 재개 · 대시보드</span>');
+    const b = card(user(buildBackgroundWaitPrompt({ count: 1, labels: ['local_bash'] } as never, 2, 6), SYSTEM)).html();
+    expect(b).toContain('<span class="sys-badge" data-kind="bgwork">백그라운드 재개 #2/6</span>');
+  });
+
+  it('the row stays open across the card re-render (the morph drops attributes the markup lacks)', () => {
+    const c = card(user(goalPrompt(2, 10), SYSTEM));
+    expect(c.html()).not.toContain('<details class="io-sys" open');
+    c.ioSysToggle({ open: true }, CID);
+    expect(c.html()).toContain(`<details class="io-sys" open ontoggle="ioSysToggle(this,'${CID}')">`);
+    c.ioSysToggle({ open: false }, CID);
+    expect(c.html()).not.toContain('<details class="io-sys" open');
+  });
+
+  it('a person typed it: the words as before', () => {
+    const out = card(user('배포까지 진행', PERSON)).html();
+    expect(out).toContain('<div class="io-text">배포까지 진행</div>');
+    expect(out).not.toContain('io-sys');
+  });
+
+  it('skills: the user’s words, then one badge per skill — parsed from the whole turn, not the 500-character cut', () => {
+    const long = 'x'.repeat(900);
+    const c = card(
+      user(
+        invoked('예측 시장 리포트', [
+          ['local:using-ssot', `Base directory for this skill: /s\n${long}`],
+          ['local:autoz', 'autoz <b>body</b>'],
+        ]),
+        PERSON,
+      ),
+    );
+    const out = c.html();
+    expect(out).toContain('<div class="io-text">예측 시장 리포트</div>');
+    expect(out).not.toContain('invoked_skills');
+    expect(out).not.toContain('Base directory');
+    expect(out).toContain('<div class="skill-badges" role="group" aria-label="활성화된 스킬 2개">');
+    expect(out).toMatch(
+      new RegExp(
+        `<button type="button" class="skill-badge" aria-expanded="false" aria-controls="ios-${CID}-0" onclick="ioSkillToggle\\('${CID}',0\\)"[^>]*><span class="skill-name">local:using-ssot</span><span class="skill-tok">≈\\d+ tokens</span></button>`,
+      ),
+    );
+    expect(out).not.toContain('skill-body');
+  });
+
+  it('a skill badge opens that skill’s body (escaped) and keeps it open across re-renders; one at a time', () => {
+    const c = card(
+      user(
+        invoked('리포트', [
+          ['local:using-ssot', 'ssot body'],
+          ['local:autoz', 'autoz <b>body</b>'],
+        ]),
+        PERSON,
+      ),
+    );
+    c.ioSkillToggle(CID, 1);
+    expect(c.refreshCard).toHaveBeenCalledWith('k1');
+    let out = c.html();
+    expect(out).toContain(`aria-controls="ios-${CID}-1" onclick="ioSkillToggle('${CID}',1)"`);
+    expect(out).toMatch(/aria-expanded="true" aria-controls="ios-conv-io-1"/);
+    expect(out).toContain(`<div class="skill-detail" id="ios-${CID}-1">`);
+    expect(out).toContain('<pre class="skill-body">autoz &lt;b&gt;body&lt;/b&gt;</pre>');
+    expect(out).not.toContain('ssot body');
+    c.ioSkillToggle(CID, 0); // the other one: one at a time
+    out = c.html();
+    expect(out).toContain('<pre class="skill-body">ssot body</pre>');
+    expect(out).not.toContain('autoz &lt;b&gt;');
+    c.ioSkillToggle(CID, 0); // and closed
+    expect(c.html()).not.toContain('skill-body');
+  });
+
+  it('/compact running: the 지시 is one line, the 응답 its progress (elapsed / estimate, %) — and the ticker starts', () => {
+    const c = card(user('/compact', { ...SYSTEM, timestamp: NOW - 30_000, compact: { estimateMs: 120_000 } }), {
+      working: true,
+    });
+    const out = c.html();
+    expect(out).toContain('<span class="sys-badge" data-kind="compact">자동 압축</span>');
+    expect(out).toContain('<span class="sys-line">컨텍스트 압축 (/compact)</span>');
+    expect(out).toContain(
+      `<div class="io-cp" data-cp-live="1" data-cp-start="${NOW - 30_000}" data-cp-est="120000" data-cp-label="자동 압축">`,
+    );
+    expect(out).toContain('<span class="cp-verb">압축 중 · </span>0:30 / 약 2:00');
+    expect(out).toContain('<span class="cp-pct">25%</span>');
+    expect(out).not.toContain('응답 작성 중');
+    expect(c.setInterval).toHaveBeenCalledTimes(1);
+  });
+
+  it('/compact done: the 응답 is its result; the facts in the 지시 row', () => {
+    const c = card(
+      user('/compact', {
+        ...SYSTEM,
+        timestamp: NOW - 200_000,
+        compact: {
+          estimateMs: 140_000,
+          endedAt: NOW - 66_000,
+          durationMs: 134_000,
+          preTokens: 182_340,
+          postTokens: 31_020,
+          trigger: 'auto',
+        },
+      }),
+    );
+    const out = c.html();
+    expect(out).toContain(
+      '<div class="io-cp"><span class="cp-slot"><span class="sys-line">자동 압축 처리 · 182.3K → 31.0K 토큰 · 2m 14s</span></span></div>',
+    );
+    expect(out).not.toContain('data-cp-live');
+    expect(out).toContain('<dt>압축 전 → 후</dt><dd>182,340 → 31,020 토큰 (−83%)</dd>');
+    expect(out).not.toContain('응답 없음');
+  });
+
+  it('/compact with no result and the session not working: no live progress, 결과 기록 없음', () => {
+    const out = card(user('/compact', { ...SYSTEM, timestamp: NOW - 30_000, compact: {} })).html();
+    expect(out).not.toContain('data-cp-live');
+    expect(out).toContain('<span class="sys-line">자동 압축 처리</span>');
+    expect(out).toContain('<dd class="cp-state">결과 기록 없음</dd>');
+  });
+
+  it('/compact with a reply after it: the result line, then the reply', () => {
+    const out = card(user('/compact', { ...SYSTEM, timestamp: NOW - 30_000, compact: {} }), {
+      working: true,
+      response: { title: '압축 뒤 요약', body: '본문' },
+    }).html();
+    expect(out).not.toContain('data-cp-live');
+    expect(out).toContain('<span class="io-title">압축 뒤 요약</span>');
+  });
+
+  it('fetchCardIo keeps the whole latest user turn (raw, origin, compact) for the card to read', async () => {
+    const long = invoked('지시', [['local:autoz', 'y'.repeat(2000)]]);
+    const turns = [
+      { id: 'u1', role: 'user', timestamp: 1, userName: 'Z', rawContent: long, origin: { by: 'user' } },
+      { id: 'a1', role: 'assistant', timestamp: 2, summaryTitle: 'T', summaryBody: 'B' },
+    ];
+    const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ turns }) }));
+    const c = card(user('x'), { extra: { fetch } });
+    const res = await c.fetchCardIo(CID);
+    expect(res.instruction.turn.rawContent).toBe(long);
+    expect(res.instruction.turn.origin).toEqual({ by: 'user' });
+    expect(res.instruction.turn.role).toBe('user');
+    expect(res.response).toEqual({ title: 'T', body: 'B' });
+  });
+
+  it('cpTick keeps an open card’s compaction live while its session works, and ends it when it stops', () => {
+    const NOWT = 1_792_900_000_000;
+    function node(start: number, key: string) {
+      const attrs: Record<string, string> = {
+        'data-cp-live': '1',
+        'data-cp-start': String(start),
+        'data-cp-est': '120000',
+        'data-cp-label': '자동 압축',
+      };
+      const slot = { innerHTML: '' };
+      return {
+        slot,
+        attrs,
+        getAttribute: (k: string) => attrs[k] ?? null,
+        removeAttribute: (k: string) => {
+          delete attrs[k];
+        },
+        querySelector: (sel: string) => (sel === '.cp-slot' ? slot : null),
+        closest: (sel: string) =>
+          sel === '.card' ? { getAttribute: (k: string) => (k === 'data-session-key' ? key : null) } : null,
+      };
+    }
+    const working = node(NOWT - 45_000, 'w');
+    const idle = node(NOWT - 45_000, 'i');
+    const document = {
+      querySelectorAll: (sel: string) => (sel === '.card-io [data-cp-live]' ? [working, idle] : []),
+    };
+    const { cpTick } = load<{ cpTick(): void }>(
+      ['esc', 'toNum', 'cpClock', 'cpProgressHtml', 'cpTick'],
+      ['CP_DEFAULT_EST_MS', 'CP_MAX_MS', '_cpTimer'],
+      {
+        document,
+        clearInterval: vi.fn(),
+        Date: { now: () => NOWT },
+        panelSessionKey: null,
+        _sessionCache: { w: { activityState: 'working' }, i: { activityState: 'idle' } },
+      },
+    );
+    cpTick();
+    expect(working.attrs['data-cp-live']).toBe('1');
+    expect(working.slot.innerHTML).toContain('</span>0:45 / 약 2:00');
+    expect(idle.attrs['data-cp-live']).toBeUndefined();
+    expect(idle.slot.innerHTML).toBe('<span class="sys-line">자동 압축 처리</span>');
   });
 });
