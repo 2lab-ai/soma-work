@@ -4430,6 +4430,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .io-text { font-size: 13px; line-height: 1.45; color: var(--ib-text); white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden; }
 .io-text .io-title { font-weight: 600; }
 .io-text.is-muted, .io-muted { color: var(--ib-muted); }
+.card-io .io-sys > summary { list-style: none; display: flex; align-items: center; gap: 8px; min-height: 24px; min-width: 0; cursor: pointer; border-radius: 6px; font-size: 12.5px; color: var(--ib-text-2); }
+.card-io .io-sys > summary::-webkit-details-marker { display: none; }
+.card-io .io-sys > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.card-io .io-sys > summary:hover .sys-line { color: var(--ib-text); }
+.card-io .sys-detail { margin: 6px 0 0; }
+.card-io .skill-badges { margin-top: 4px; }
+.io-cp { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 22px; font-size: 12.5px; color: var(--ib-text-2); }
 
 /* ── ACTION BUTTONS — secondary outline + one solid primary (reference "Approve") ── */
 .card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; justify-content: flex-end; }
@@ -5731,6 +5738,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sys-badge[data-kind="restart"], .sys-badge[data-kind="retry"] { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 45%, transparent); }
 .sys-badge[data-kind="goal"] { color: var(--purple); border-color: color-mix(in srgb, var(--purple) 45%, transparent); }
 .sys-badge[data-kind="cron"] { color: var(--green); border-color: color-mix(in srgb, var(--green) 45%, transparent); }
+.sys-badge[data-kind="bgwork"] { color: var(--yellow); border-color: color-mix(in srgb, var(--yellow) 45%, transparent); }
 .sys-line { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-slot { display: contents; }
 /* A narrow panel (phones): the bar's shrink weight (1000) dwarfs the line's (1),
@@ -5748,7 +5756,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @keyframes cp-over { from { background-position: -40% 0; } to { background-position: 140% 0; } }
 .cp-pct { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; }
 .sys-chev { flex: none; margin-left: auto; width: 0; height: 0; border-left: 4px solid currentColor; border-top: 4px solid transparent; border-bottom: 4px solid transparent; opacity: 0.7; transition: transform var(--dur-press) var(--ease-out); }
-.sys-turn[open] .sys-chev { transform: rotate(90deg); }
+.sys-turn[open] .sys-chev, .io-sys[open] .sys-chev { transform: rotate(90deg); }
 .sys-detail { margin: 6px 0 4px; padding: 8px 10px; border-radius: var(--radius); background: var(--surface-raised); }
 .sys-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 12px; margin: 0 0 8px; font-size: 12px; }
 .sys-facts dt { color: var(--text-tertiary); }
@@ -11925,14 +11933,24 @@ function renderCardIo(s) {
   // User media (SSOT 2026-10-25): the instruction's files, small, above its words.
   var atts = d.instruction && Array.isArray(d.instruction.attachments) ? d.instruction.attachments : [];
   var mediaHtml = atts.length ? renderUserMedia(s.conversationId, atts, { compact: true }) : '';
-  var inHtml = d.instruction && d.instruction.text
-    ? '<div class="io-text">' + esc(d.instruction.text) + '</div>'
-    : (atts.length ? '<div class="io-text is-muted">첨부 ' + atts.length + '개</div>' : '<div class="io-text is-muted">기록된 지시 없음</div>');
-  var outHtml;
-  if (d.response && (d.response.title || d.response.body)) {
-    outHtml = '<div class="io-text">'
+  // A turn the user did not type reads as the detail panel's one line (SSOT
+  // 2026-10-28): its badge, opening to the facts and the raw prompt.
+  var turn = d.instruction && d.instruction.turn ? d.instruction.turn : null;
+  var info = turn ? sysTurnInfo(turn) : null;
+  var replyHtml = d.response && (d.response.title || d.response.body)
+    ? '<div class="io-text">'
       + (d.response.title ? '<span class="io-title">' + esc(d.response.title) + '</span>' + (d.response.body ? '\\n' : '') : '')
-      + esc(d.response.body || '') + '</div>';
+      + esc(d.response.body || '') + '</div>'
+    : '';
+  // A /compact runs only while it is the latest turn of a working session.
+  var cp = info && info.kind === 'compact' ? cpState(turn, Date.now(), !!replyHtml || s.activityState !== 'working') : null;
+  var inHtml = ioInstructionHtml(s.conversationId, d, turn, info, cp, atts);
+  var outHtml;
+  if (cp) {
+    // A compaction's answer is the compaction: its progress, then its numbers.
+    outHtml = ioCompactOutHtml(info, cp) + replyHtml;
+  } else if (replyHtml) {
+    outHtml = replyHtml;
   } else if (d.partial) {
     outHtml = '<div class="io-text is-muted">응답을 불러오지 못했습니다</div>';
   } else if (s.activityState === 'working') {
@@ -11944,6 +11962,72 @@ function renderCardIo(s) {
     + '<div class="io-row io-in"><div class="io-label">지시' + who + '</div>' + mediaHtml + inHtml + '</div>'
     + '<div class="io-row io-out"><div class="io-label">응답</div>' + outHtml + '</div>'
     + '</div>';
+}
+
+// The open card's 지시 (SSOT 2026-10-28). A turn the user did not type: one
+// line with its badge, opening to its facts and raw prompt. A person's turn:
+// their words, and the skills it invoked as badges. What is open stays open
+// across the card's morph re-render (kept per conversation in _ioOpen).
+var _ioOpen = Object.create(null);
+function ioOpenState(cid) {
+  return _ioOpen[cid] || (_ioOpen[cid] = { sys: false, skill: -1 });
+}
+function ioSysToggle(el, cid) {
+  ioOpenState(cid).sys = !!el.open;
+}
+function ioSkillToggle(cid, i) {
+  var st = ioOpenState(cid);
+  st.skill = st.skill === i ? -1 : i;
+  ioRefreshCards(cid);
+}
+function ioRefreshCards(cid) {
+  for (var k in _cardEls) {
+    var s = _sessionCache[k];
+    if (s && s.conversationId === cid) refreshCard(k);
+  }
+}
+// The skill badges of the detail panel, written from state: the open one's
+// body is in the markup, so the morph keeps it.
+function ioSkillsHtml(cid, skills) {
+  if (!skills.length) return '';
+  var open = ioOpenState(cid).skill;
+  var base = 'ios-' + String(cid).replace(/[^A-Za-z0-9_-]/g, '');
+  var badges = '';
+  var pane = '';
+  for (var i = 0; i < skills.length; i++) {
+    var id = base + '-' + i;
+    var on = open === i;
+    badges += '<button type="button" class="skill-badge" aria-expanded="' + (on ? 'true' : 'false') + '" aria-controls="' + id + '" onclick="ioSkillToggle(\\'' + escJs(cid) + '\\',' + i + ')"'
+      + ' title="토큰 수는 추정치 — 영문 4자 또는 그 밖의 글자 1자를 1토큰으로 셈">'
+      + '<span class="skill-name">' + esc(skills[i].name) + '</span><span class="skill-tok">≈' + formatTokens(skills[i].tokens) + ' tokens</span></button>';
+    if (on) pane = '<div class="skill-detail" id="' + id + '">' + skillPaneHtml(skills[i]) + '</div>';
+  }
+  return '<div class="skill-badges" role="group" aria-label="활성화된 스킬 ' + skills.length + '개">' + badges + '</div>' + pane;
+}
+function ioInstructionHtml(cid, d, turn, info, cp, atts) {
+  if (info) {
+    var facts = cp ? info.facts.concat(cpFacts(cp)) : info.facts;
+    var line = info.kind === 'compact' ? '컨텍스트 압축 (/compact)' : info.line;
+    return '<details class="io-sys"' + (ioOpenState(cid).sys ? ' open' : '') + ' ontoggle="ioSysToggle(this,\\'' + escJs(cid) + '\\')">'
+      + '<summary class="io-sys-row"><span class="sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>'
+      + '<span class="sys-line">' + esc(line) + '</span><span class="sys-chev" aria-hidden="true"></span></summary>'
+      + '<div class="sys-detail">' + sysFactsHtml(facts) + '<div class="sys-raw-h">원본 프롬프트</div><pre class="sys-raw">' + esc(info.raw) + '</pre></div></details>';
+  }
+  var none = atts.length ? '<div class="io-text is-muted">첨부 ' + atts.length + '개</div>' : '<div class="io-text is-muted">기록된 지시 없음</div>';
+  if (!turn) return d.instruction && d.instruction.text ? '<div class="io-text">' + esc(d.instruction.text) + '</div>' : none;
+  // The whole turn, not the 500-character cut: a skill block runs past it.
+  var split = splitInvokedSkills(decodeSlackEntities(String(turn.rawContent || '')));
+  var words = split.text.length > 500 ? split.text.slice(0, 500) + '…' : split.text;
+  var wordsHtml = words.trim() ? '<div class="io-text">' + esc(words) + '</div>' : (split.skills.length ? '' : none);
+  return wordsHtml + ioSkillsHtml(cid, split.skills);
+}
+// The 응답 of a /compact: elapsed / estimate while it runs (cpTick moves it),
+// then its numbers.
+function ioCompactOutHtml(info, cp) {
+  var live = cp.phase === 'live';
+  if (live) cpEnsureTicker();
+  return '<div class="io-cp"' + (live ? ' data-cp-live="1" data-cp-start="' + cp.start + '" data-cp-est="' + cp.est + '" data-cp-label="' + escAttr(info.label) + '"' : '') + '>'
+    + '<span class="cp-slot">' + cpLineHtml(info, cp, Date.now()) + '</span></div>';
 }
 
 // The latest instruction and the reply that answers it (only an assistant
@@ -11960,8 +12044,11 @@ function fetchCardIo(cid) {
       var raw = ui >= 0 ? decodeSlackEntities(turns[ui].rawContent || '') : '';
       var attachments = ui >= 0 && Array.isArray(turns[ui].attachments) ? turns[ui].attachments : [];
       if (attachments.length) umRegister(cid, attachments, turns[ui]);
-      var instruction = ui >= 0
-        ? { text: raw.slice(0, 500) + (raw.length > 500 ? '…' : ''), who: turns[ui].userName || '', attachments: attachments }
+      var u = ui >= 0 ? turns[ui] : null;
+      // The whole turn rides along: the card reads who sent it and its skills from it.
+      var instruction = u
+        ? { text: raw.slice(0, 500) + (raw.length > 500 ? '…' : ''), who: u.userName || '', attachments: attachments,
+          turn: { id: u.id, role: 'user', timestamp: u.timestamp, userName: u.userName, rawContent: u.rawContent || '', origin: u.origin, compact: u.compact } }
         : null;
       if (reply && !reply.summaryTitle && !reply.summaryBody && reply.id) {
         // Summary not generated yet — fall back to the head of the raw response.
@@ -16309,6 +16396,17 @@ function sysTurnInfo(t) {
     if (reason) gf.push(['직전 평가에서 남은 일', reason]);
     return { kind: 'goal', label: n ? 'Goal #' + n[1] + '/' + n[2] : 'Goal', line: reason ? '직전 평가: ' + sysOneLine(reason, 90) : 'Goal 자동 계속', raw: raw, facts: gf };
   }
+  // The host prompt that keeps a turn going while background work still runs
+  // (packages/slack/src/pipeline/background-wait.ts buildBackgroundWaitPrompt).
+  var bw = /^\\[background-work-resume (\\d+)\\/(\\d+)\\]/.exec(head);
+  if (bw) {
+    var bt = /You ended your turn while (\\d+) background tasks?(?: \\(([^)]*)\\))?/.exec(head);
+    var what = bt ? bt[1] + '개' + (bt[2] ? ' (' + bt[2] + ')' : '') : '';
+    var bf = [['회차', bw[1] + ' / ' + bw[2]]];
+    if (what) bf.push(['실행 중인 작업', what]);
+    bf.push(['이유', '턴이 끝났지만 런타임이 백그라운드 작업을 아직 실행 중으로 보고']);
+    return { kind: 'bgwork', label: '백그라운드 재개 #' + bw[1] + '/' + bw[2], line: '실행 중인 백그라운드 작업' + (what ? ' ' + what : '') + ' — 턴을 이어감', raw: raw, facts: bf };
+  }
   var c = /^\\[cron:([^\\]]+)\\]\\s*/.exec(head);
   if (c) {
     var prompt = head.slice(c[0].length);
@@ -16405,7 +16503,9 @@ function cpEnsureTicker() {
 // working, or it outlived any compaction — then it says no result was kept.
 function cpTick() {
   var nodes = document.querySelectorAll('#panel-turns .turn[data-cp-live]');
-  if (!nodes.length) {
+  // An open inbox card's 응답 (ioCompactOutHtml): live while its session works.
+  var cardNodes = document.querySelectorAll('.card-io [data-cp-live]');
+  if (!nodes.length && !cardNodes.length) {
     clearInterval(_cpTimer);
     _cpTimer = 0;
     return;
@@ -16435,6 +16535,19 @@ function cpTick() {
     var state = node.querySelector('.cp-state');
     if (slot) slot.innerHTML = '<span class="sys-line">' + esc((badge ? badge.textContent : '압축') + ' 처리') + '</span>';
     if (state) state.textContent = '결과 기록 없음';
+  }
+  for (var j = 0; j < cardNodes.length; j++) {
+    var cn = cardNodes[j];
+    var card = cn.closest ? cn.closest('.card') : null;
+    var cs = card ? _sessionCache[card.getAttribute('data-session-key')] : null;
+    var cstart = toNum(cn.getAttribute('data-cp-start'));
+    var cslot = cn.querySelector('.cp-slot');
+    if (cs && cs.activityState === 'working' && now - cstart < CP_MAX_MS) {
+      if (cslot) cslot.innerHTML = cpProgressHtml(now - cstart, toNum(cn.getAttribute('data-cp-est')) || CP_DEFAULT_EST_MS);
+      continue;
+    }
+    cn.removeAttribute('data-cp-live');
+    if (cslot) cslot.innerHTML = '<span class="sys-line">' + esc((cn.getAttribute('data-cp-label') || '압축') + ' 처리') + '</span>';
   }
 }
 // A rough token count for a skill body: ~4 ASCII characters or 1 other
@@ -16530,12 +16643,13 @@ function skillToggle(btn) {
   var d = document.getElementById(id);
   var sk = _skillBodies[id];
   if (!d || !sk) return;
-  if (!d.firstChild) {
-    d.innerHTML = '<div class="skill-detail-h"><span class="skill-name">' + esc(sk.name) + '</span><span class="skill-tok">≈' + formatTokens(sk.tokens) + ' tokens (추정)</span></div>'
-      + '<pre class="skill-body">' + esc(sk.body) + '</pre>';
-  }
+  if (!d.firstChild) d.innerHTML = skillPaneHtml(sk);
   d.hidden = false;
   btn.setAttribute('aria-expanded', 'true');
+}
+function skillPaneHtml(sk) {
+  return '<div class="skill-detail-h"><span class="skill-name">' + esc(sk.name) + '</span><span class="skill-tok">≈' + formatTokens(sk.tokens) + ' tokens (추정)</span></div>'
+    + '<pre class="skill-body">' + esc(sk.body) + '</pre>';
 }
 
 function renderTurn(t, _idx, _arr, convId) {
