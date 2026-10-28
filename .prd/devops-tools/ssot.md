@@ -51,9 +51,9 @@ Status: in-progress · 작성 2026-10-26 · 기준 커밋 main `0a7a638e` · 유
 "이대로" = DM과 시연에 제시한 추천안 전부 → D1–D6 = ①(상세 §3). member 계정이 원문의 `<member 계정 메일>`인지는 답이 없어
 `[가정]`으로 두고 WU7 토큰 입력 때 확인한다(loop.md 열린 질문).
 
-### SSOT_5 — 2026-10-27 drift (치환본: 개발 봇 호스트 이름 → `work-m64`)
+### SSOT_5 — 2026-10-27 drift (치환본: 개발 봇 호스트 이름 → `work-m64`, 운영자 Mac 호스트 이름 → `<운영자 Mac>`. 나머지는 원문 그대로)
 
-> 뭔 마지막 블로커야 작업 하라고 그리고 fable-m5max에는 배포 안해도 되 work-m64에만 필요한거야
+> 뭔 마지막 블로커야 작업 하라고 그리고 <운영자 Mac>에는 배포 안해도 되 work-m64에만 필요한거야
 
 ### SSOT_6 — 2026-10-28 drift (원문 그대로)
 
@@ -87,7 +87,7 @@ Status: in-progress · 작성 2026-10-26 · 기준 커밋 main `0a7a638e` · 유
 Diff (SSOT_2): added = T11 · changed = T1(표 → AS-IS PRD 그림으로 재제출) · kept = T2–T10.
 Diff (SSOT_3): added = T12 · changed = T10(컨펌 시점 = 시연을 본 뒤) · kept = T1–T9, T11.
 Diff (SSOT_4): added = 없음 · changed = T10(컨펌 받음 → 진행 단계), T12 완료 · kept = T2–T9. D1–D6 = ①로 확정.
-Diff (SSOT_5): added = 없음 · changed = 없음(확정 스코프 6 재확인: 설치 대상은 `work-m64` dev 하나, CI 대기를 설치의 선행 조건으로 두지 않는다) · kept = T1–T12.
+Diff (SSOT_5): added = 없음 · changed = 없음(확정 스코프 6 재확인: 설치 대상은 `work-m64` dev 하나) · kept = T1–T12.
 Diff (SSOT_6): added = 없음 · changed = 없음(이미 충족) · kept = T1–T12.
 Diff (SSOT_7): added = 없음 · changed = T7(stage2 포지키 = 이번에는 계획만, 실행 보류 — loop.md "stage2 계획") · kept = T1–T6, T8–T12.
 
