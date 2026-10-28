@@ -94,20 +94,14 @@ jobs:
       - name: Install the Playwright headless shell for the html skill tests
         run: npx playwright install --only-shell chromium
 
-      # Workspace packages must be compiled to dist/ before root tsc can
-      # resolve `@soma/*` imports (each package.json points main/types at
-      # ./dist/...). The Type Check step below relies on these via the
-      # workspace symlinks under node_modules/@soma/*.
-      - name: Build workspace packages
-        run: |
-          npm run build:somalib
-          npm run build:packages
-
-      - name: Format & Lint (Biome)
-        run: npm run check
-
-      - name: Type Check
-        run: npx tsc --noEmit
+      # One build, before the tests. `npm run build` is Biome (`npm run check`), the somalib and
+      # workspace-package builds, and a full root `tsc`. This job used to run those four as
+      # separate steps and then all of them again in a final Build step. Running the build once,
+      # here, keeps the fail-fast order (a lint or type error stops the job before the long test
+      # run) and still compiles the workspace packages to dist/ first, which root tsc and several
+      # tests resolve `@soma/*` imports through (each package.json points main/types at ./dist/).
+      - name: Build (Biome, workspace packages, type check, compile)
+        run: npm run build
 
       # NOT `npm test`. That script is a plain `vitest run`: threaded workers
       # sharing a process, and a 5s default timeout. Suites in this repository
@@ -128,6 +122,3 @@ jobs:
       # about the code rather than about worker scheduling.
       - name: Test
         run: npm run test:release
-
-      - name: Build
-        run: npm run build
