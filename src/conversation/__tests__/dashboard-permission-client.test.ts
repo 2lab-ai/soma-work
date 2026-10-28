@@ -288,7 +288,11 @@ describe('dashboard permission prompt → real server (shipped client code)', ()
 
   it('T1.2 — no matched rule, no disable-rule answer', async () => {
     const id = await seed({ rule_ids: undefined });
-    const d = client('U1').acPermissionData(card(id), { ...card(id).pendingPermissions[0], rules: [], canDisableRule: false });
+    const d = client('U1').acPermissionData(card(id), {
+      ...card(id).pendingPermissions[0],
+      rules: [],
+      canDisableRule: false,
+    });
     expect(d.rules).toBeUndefined();
     expect(d.canDisableRule).toBe(false);
     expect(d.canExplain).toBe(true);

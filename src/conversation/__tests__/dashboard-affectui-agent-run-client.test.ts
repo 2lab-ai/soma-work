@@ -395,12 +395,7 @@ const INPUT = JSON.stringify(
 type CardData = Record<string, any>;
 
 function cards(
-  opts: {
-    user?: string;
-    details?: Record<string, unknown>;
-    state?: Record<string, unknown>;
-    sibling?: boolean;
-  } = {},
+  opts: { user?: string; details?: Record<string, unknown>; state?: Record<string, unknown>; sibling?: boolean } = {},
 ) {
   const loads: string[] = [];
   const m = load<{
@@ -536,8 +531,8 @@ describe('permission approval card (D10–D13)', () => {
       SESSION({ pendingPermissions: [PERM(), PERM({ approvalId: 'a"2', toolName: '<b>' })] }),
     );
     expect(html).toBe(
-      '<div class="ui-tok ac-slot" data-mk="ac|p|approval_a1"><ui-approval-card lang="ko" data-ac-key="inst::C1:t1" data-ac-kind="perm" data-ac-id="approval_a1"><span class="ac-fallback">Bash 실행 승인 — 응답 대기</span></ui-approval-card></div>'
-        + '<div class="ui-tok ac-slot" data-mk="ac|p|a&quot;2"><ui-approval-card lang="ko" data-ac-key="inst::C1:t1" data-ac-kind="perm" data-ac-id="a&quot;2"><span class="ac-fallback">&lt;b&gt; 실행 승인 — 응답 대기</span></ui-approval-card></div>',
+      '<div class="ui-tok ac-slot" data-mk="ac|p|approval_a1"><ui-approval-card lang="ko" data-ac-key="inst::C1:t1" data-ac-kind="perm" data-ac-id="approval_a1"><span class="ac-fallback">Bash 실행 승인 — 응답 대기</span></ui-approval-card></div>' +
+        '<div class="ui-tok ac-slot" data-mk="ac|p|a&quot;2"><ui-approval-card lang="ko" data-ac-key="inst::C1:t1" data-ac-kind="perm" data-ac-id="a&quot;2"><span class="ac-fallback">&lt;b&gt; 실행 승인 — 응답 대기</span></ui-approval-card></div>',
     );
     expect(html).not.toContain('onclick=');
     // The tokens reach the element from its wrapper (.ui-tok), never on the element (a custom-property cycle).
@@ -710,9 +705,18 @@ describe('after an answer (D15)', () => {
 
   it('a refusal stays on the card: the server’s reason; Retry unless the request is gone (404) or answered elsewhere (409)', async () => {
     const cases: Array<[{ ok: boolean; status: number; body?: unknown } | Error, Record<string, unknown>]> = [
-      [{ ok: false, status: 409, body: { error: 'Permission request was already answered' } }, { message: 'Permission request was already answered', retry: false }],
-      [{ ok: false, status: 404, body: {} }, { message: '응답을 보내지 못했어요 (HTTP 404)', retry: false }],
-      [{ ok: false, status: 500, body: { error: 'boom' } }, { message: 'boom', retry: true }],
+      [
+        { ok: false, status: 409, body: { error: 'Permission request was already answered' } },
+        { message: 'Permission request was already answered', retry: false },
+      ],
+      [
+        { ok: false, status: 404, body: {} },
+        { message: '응답을 보내지 못했어요 (HTTP 404)', retry: false },
+      ],
+      [
+        { ok: false, status: 500, body: { error: 'boom' } },
+        { message: 'boom', retry: true },
+      ],
       [new Error('down'), { message: '네트워크 오류 — 다시 시도하세요', retry: true }],
     ];
     for (const [res, want] of cases) {
@@ -837,7 +841,12 @@ let focused: Node | null = null;
 /** A prompt's slot as acSlotHtml writes it: the keyed wrapper and the element bound to its request. */
 const SLOT = (id: string, keyed = true) =>
   new Node('DIV', { class: 'ui-tok ac-slot', ...(keyed ? { 'data-mk': `ac|p|${id}` } : {}) }, [
-    new Node('UI-APPROVAL-CARD', { lang: 'ko', 'data-ac-key': 'inst::C1:t1', 'data-ac-kind': 'perm', 'data-ac-id': id }),
+    new Node('UI-APPROVAL-CARD', {
+      lang: 'ko',
+      'data-ac-key': 'inst::C1:t1',
+      'data-ac-kind': 'perm',
+      'data-ac-id': id,
+    }),
   ]);
 
 describe('live repaint never rebinds an answer to another request (D14, review R1 P1)', () => {
@@ -850,7 +859,11 @@ describe('live repaint never rebinds an answer to another request (D14, review R
     const html = cards().acPermissionsHtml(SESSION());
     expect(html).toContain('<div class="ui-tok ac-slot" data-mk="ac|p|approval_a1">');
     expect(html).toContain('data-ac-id="approval_a1"');
-    const q = cards().acQuestionHtml(SESSION(), { type: 'user_choice', question: 'q?', choices: [{ id: '1', label: 'a' }] });
+    const q = cards().acQuestionHtml(SESSION(), {
+      type: 'user_choice',
+      question: 'q?',
+      choices: [{ id: '1', label: 'a' }],
+    });
     expect(q).toContain('data-mk="ac|q|[&quot;q?&quot;,[[&quot;1&quot;,&quot;a&quot;,&quot;&quot;]]]"');
     // ui-decide carries the card's own data id; the listener answers that id under the card's own key.
     expect(TEMPLATE).toContain(
@@ -921,7 +934,9 @@ describe('live repaint never rebinds an answer to another request (D14, review R
     const kept = panel([SLOT('A'), SLOT('B')]);
     const cardA = kept.container.querySelectorAll('ui-approval-card')[0];
     focused = cardA;
-    kept.m.renderPanelPermission(SESSION({ pendingPermissions: [PERM({ approvalId: 'A' }), PERM({ approvalId: 'B' })] }));
+    kept.m.renderPanelPermission(
+      SESSION({ pendingPermissions: [PERM({ approvalId: 'A' }), PERM({ approvalId: 'B' })] }),
+    );
     expect(focused).toBe(cardA);
     expect(cardA.getAttribute('data-ac-id')).toBe('A');
   });
@@ -1027,7 +1042,10 @@ describe('a refused panel choice is drawn again from the session (review R1 P2)'
         { id: '2', label: 'manual (Recommended)' },
       ],
     };
-    const a = answers({ ok: false, status: 500, body: { error: 'boom' } }, { 'inst::C1:t1': SESSION({ pendingQuestion: q }) });
+    const a = answers(
+      { ok: false, status: 500, body: { error: 'boom' } },
+      { 'inst::C1:t1': SESSION({ pendingQuestion: q }) },
+    );
     const qid = a.acQuestionId(q);
     expect(await a.answerChoice('inst::C1:t1', qid, '2')).toEqual({ status: 'error', message: 'boom', retry: true });
     expect(a.posts[0][1]).toEqual({ choiceId: '2', label: 'manual', question: 'Deploy?' });
@@ -1091,7 +1109,13 @@ describe('question card (D17)', () => {
       recommendedId: 'wait',
     });
     // A legacy "(Recommended)" label: recommended, the marker stripped.
-    const legacy = { question: 'Go?', choices: [{ id: '1', label: 'Yes (Recommended)' }, { id: '2', label: 'No' }] };
+    const legacy = {
+      question: 'Go?',
+      choices: [
+        { id: '1', label: 'Yes (Recommended)' },
+        { id: '2', label: 'No' },
+      ],
+    };
     expect(c.acQuestionData(SESSION(), legacy)).toMatchObject({
       recommendedId: '1',
       choices: [
