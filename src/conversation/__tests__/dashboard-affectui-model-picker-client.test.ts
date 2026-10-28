@@ -835,7 +835,7 @@ describe('D9 — Tab moves between the menu’s two stops itself; past them focu
     menu.querySelector = (sel: string) =>
       sel === '.mp-list' ? list : sel === '.mp-seg-btn[tabindex="0"]' ? level : null;
     const trigger = node('mp-trigger', { 'data-mp-key': 'k', 'data-mp-surface': 'panel', 'aria-expanded': 'true' });
-    const pageNext = node('cmd-input');
+    const pageNext = node('cmd-steer');
     const document = {
       getElementById: (id: string) => (id === 'mp-menu' ? menu : null),
       querySelectorAll: (sel: string) => (sel === '.mp-trigger' ? [trigger] : []),
