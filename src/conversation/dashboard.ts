@@ -27,6 +27,7 @@
  *                                              incl. `work_log` entries (owner/admin scoped)
  */
 
+import { constants as zlibConstants } from 'node:zlib';
 import { sumLiveUsage } from '@soma/slack/live-usage';
 import { livePendingModelSwitch } from '@soma/slack/model-switch';
 import type { FastifyInstance } from 'fastify';
@@ -2217,6 +2218,18 @@ function broadcastSessionAction(sessionKey: string, action: 'stop' | 'close' | '
 
 // ── Route registration ─────────────────────────────────────────────
 
+// Opt-in route compression for the dashboard's first load (#477): ~1.5 MB of
+// HTML + JSON that the public proxy does not compress. br or gzip only (route
+// options replace the plugin's, so the list is explicit here; zstd would
+// otherwise win on Node 26). Brotli quality 5 instead of the plugin's default 4:
+// ~8% smaller page for ~2x the CPU (≈16 ms for the 0.8 MB page, off the event
+// loop above the plugin's sync threshold).
+const FIRST_LOAD_COMPRESSION = {
+  encodings: ['br', 'gzip'] as Array<'br' | 'gzip'>,
+  threshold: 1024,
+  brotliOptions: { params: { [zlibConstants.BROTLI_PARAM_QUALITY]: 5 } },
+};
+
 export async function registerDashboardRoutes(
   server: FastifyInstance,
   authMiddleware: (req: any, reply: any) => Promise<void>,
@@ -2227,9 +2240,10 @@ export async function registerDashboardRoutes(
   // ── JSON API ──
 
   // Kanban sessions
+  // The board: hundreds of KB of JSON, polled every 30 s by every open tab.
   server.get<{ Querystring: { userId?: string; selfOnly?: string } }>(
     '/api/dashboard/sessions',
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware], compress: FIRST_LOAD_COMPRESSION },
     async (request, reply) => {
       const userId = request.query.userId || undefined;
       const selfOnly = request.query.selfOnly === 'true';
@@ -2241,12 +2255,10 @@ export async function registerDashboardRoutes(
       // aggregator to fan out to sibling instances on the same host.
       // Skip pre-listen / single-instance.
       if (!_selfInstanceEnv) {
-        reply.send({ board, lifecycle });
-        return;
+        return reply.send({ board, lifecycle });
       }
       if (selfOnly) {
-        reply.send({ board, lifecycle });
-        return;
+        return reply.send({ board, lifecycle });
       }
 
       try {
@@ -2263,8 +2275,7 @@ export async function registerDashboardRoutes(
             siblingCount,
           })
         ) {
-          reply.send({ board, lifecycle });
-          return;
+          return reply.send({ board, lifecycle });
         }
         // Per-poll TTL cache — multiple browser tabs polling /sessions
         // every 30 s shouldn't independently fan out N×HTTP each time.
@@ -2288,14 +2299,14 @@ export async function registerDashboardRoutes(
           selfEnv: _selfInstanceEnv,
           siblings,
         });
-        reply.send({ board: merged, lifecycle });
+        return reply.send({ board: merged, lifecycle });
       } catch (err) {
         // Hard failure of the aggregator must never surface a 500 —
         // fall back to self-only. Log at error (with stack) so a
         // genuine bug in mergeBoards / fetch wiring is visible, not
         // confused with the warn-throttled per-sibling failures.
         logger.error('Aggregator failed; serving self-only board', err);
-        reply.send({ board, lifecycle });
+        return reply.send({ board, lifecycle });
       }
     },
   );
@@ -3220,15 +3231,23 @@ export async function registerDashboardRoutes(
 
   // ── HTML Dashboard ──
 
-  server.get('/dashboard', { preHandler: [authMiddleware] }, async (_request, reply) => {
-    reply.type('text/html; charset=utf-8').send(renderDashboardPage());
-  });
+  // The page is ~0.8 MB of inline HTML/CSS/JS: compressed when the browser
+  // accepts it (web-server registers @fastify/compress opt-in, #477). These
+  // handlers return the reply: a compressed body is a stream, and an async
+  // handler that resolves without returning it ends the response empty.
+  server.get(
+    '/dashboard',
+    { preHandler: [authMiddleware], compress: FIRST_LOAD_COMPRESSION },
+    async (_request, reply) => {
+      return reply.type('text/html; charset=utf-8').send(renderDashboardPage());
+    },
+  );
 
   server.get<{ Params: { userId: string } }>(
     '/dashboard/:userId',
-    { preHandler: [authMiddleware] },
+    { preHandler: [authMiddleware], compress: FIRST_LOAD_COMPRESSION },
     async (request, reply) => {
-      reply.type('text/html; charset=utf-8').send(renderDashboardPage(request.params.userId));
+      return reply.type('text/html; charset=utf-8').send(renderDashboardPage(request.params.userId));
     },
   );
 
