@@ -6,16 +6,22 @@
  *   §4.0  one node type: the main agent is the root of the session's agent
  *         tree (agentTreeOf), its status from lifecycle evidence
  *   §4.1  collapsed card: one agents row — status dots + "서브에이전트 N · 실행 r · 실패 f"
- *   §4.2  open card: one ARIA tree drawn by one recursive renderer — the same
- *         item and row slots for the root and every subagent, relative levels,
- *         default folding with +N, a cap per parent, one roving tab stop, the
- *         tree keys and click boundaries
+ *   §4.2  open card: @2lab.ai/ui <ui-agent-tree>, compact (affectUI review
+ *         batch 2) — the host contract: the slot markup, the data the
+ *         dashboard maps the session onto (atCardData / atTreeData), the folds
+ *         it keeps, the events it answers (ui-select, ui-toggle)
  *   §4.3  panel: a drill-down over the same tree (path · focused node header ·
- *         its subtree); the focused node scopes Tasks and the work log; a
- *         parent's log carries each child's live block
+ *         its subtree as a rich <ui-agent-tree>); the focused node scopes Tasks
+ *         and the work log; a parent's log carries each child's live block
+ *
+ * What the element itself does — the WAI-ARIA tree and its keys, the roving
+ * tab stop, focus across a live update, the branch roll-up, the folded badge,
+ * the waterfall axis, the ticking times, escaping — is owned by the library's
+ * suite (@2lab.ai/ui src/components/agent-tree/agent-tree.test.ts); each
+ * moved test below names the library test that now covers it.
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
@@ -48,6 +54,12 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
+/** A top-level `document.addEventListener('<ev>', function(e) { … });` of the page script. */
+function clientListener(ev: string): string {
+  const at = TEMPLATE.indexOf(`\ndocument.addEventListener('${ev}', function(e) {`);
+  if (at < 0) throw new Error(`listener ${ev} not found`);
+  return cook(TEMPLATE.slice(at + 1, TEMPLATE.indexOf('\n});', at) + 4));
+}
 function load<T>(fns: string[], vars: string[], given: Record<string, unknown> = {}): T {
   // The card header config and the token formatter the tree reads (spec 13), unless a test sets its own.
   const inject: Record<string, unknown> = { dhShow: () => true, formatTokens: (n: number) => String(n), ...given };
@@ -69,8 +81,6 @@ const NODE_FNS = [
   'agentIconHtml',
   'agentTimeHtml',
   'agentActivity',
-  'agentSpanAxis',
-  'agentSpanStyle',
   'pendingAutoResume',
   'rootStatusOf',
   'agentNodeOf',
@@ -79,48 +89,65 @@ const NODE_FNS = [
   'agentNodeName',
   'agentNodeLine',
   'agentNodeAria',
+  'cardTotalTokens',
   'spendTotal',
   'spendText',
   'spendLabel',
   'spendTitle',
-  'anCompactLine',
-  'anIdPart',
-  'anTimeId',
-  'anIsOpen',
-  'agentNodeRow',
-  'renderAgentNode',
-  'renderAgentNodes',
-  'anTreeHtml',
 ];
-const AGENT_FNS = [
+// The tree as <ui-agent-tree> takes it (affectUI review batch 2).
+const TREE_FNS = [
   ...NODE_FNS,
-  'agentCounts',
-  'renderCardAgents',
+  'atIdOf',
+  'atRootReason',
+  'atNode',
+  'atTreeData',
   'cardCurrentTask',
   'renderCardTaskRow',
+  'atCardData',
+  'atSlotHtml',
+  'atPaint',
+  'atHydrate',
   'renderAgentTree',
 ];
+const AGENT_FNS = [...TREE_FNS, 'agentCounts', 'renderCardAgents'];
 const AGENT_VARS = [
-  'AN_LIVE_LINE',
   'AGENT_STATUS_LABEL',
-  'AGENT_TREE_ROWS',
   'AGENT_DOTS_MAX',
   'AGENTS_SVG',
-  'AN_CHEV_SVG',
+  'AT_ROOT',
+  'AT_STATUS',
+  'AT_ROOT_STATUS',
   '_anOpen',
-  '_anAll',
-  '_anActive',
 ];
 
 type Agent = Record<string, unknown>;
 type Node = Record<string, any> & { id: string; children: Node[] };
+/** One node as <ui-agent-tree> takes it (AgentTreeNode). */
+type TNode = {
+  id: string;
+  parentId?: string;
+  name: string;
+  role?: string;
+  status: string;
+  startedAt?: number;
+  endedAt?: number;
+  tokens?: number;
+  costUsd?: number;
+  toolCalls?: number;
+  summary?: string;
+  reason?: string;
+};
+type TreeData = { nodes: TNode[]; density: string; title: string; selectedId: null; expanded: string[] };
 interface AgentUi {
   renderCardAgents(s: unknown): string;
   renderAgentTree(s: unknown, col?: string): string;
-  agentSpanAxis(a: Agent[], last: number): { t0: number; t1: number };
-  agentSpanStyle(a: Agent, axis: { t0: number; t1: number }): string;
   agentTreeOf(s: unknown, col?: string, extras?: string[]): Node;
   rootStatusOf(s: unknown, col?: string): string;
+  atCardData(s: unknown, col: string): TreeData | null;
+  atTreeData(anchor: unknown, o: Record<string, unknown>): TreeData;
+  atPaint(el: unknown, d: unknown, sig: string): void;
+  atHydrate(body: unknown, p: unknown): void;
 }
 const ui = load<AgentUi>(AGENT_FNS, AGENT_VARS);
 
@@ -208,43 +235,7 @@ describe('collapsed card agents row (§4.1)', () => {
   });
 });
 
-describe('one node type — the main agent is the root of the same recursive tree', () => {
-  const KEY = 'inst::C1:t1';
-  const NS = 'c|' + KEY;
-  const chain = (): Agent[] => [
-    { id: 'a', n: 1, type: 'Explore', status: 'running', startedAt: T0, toolCalls: 1 },
-    { id: 'b', n: 2, parentId: 'a', type: 'general-purpose', status: 'running', startedAt: T0 + 1, toolCalls: 2 },
-    { id: 'c', n: 3, parentId: 'b', type: 'librarian', status: 'running', startedAt: T0 + 2, toolCalls: 3 },
-    {
-      id: 'd',
-      n: 4,
-      parentId: 'c',
-      type: 'Plan',
-      status: 'completed',
-      startedAt: T0 + 3,
-      endedAt: T0 + 9,
-      toolCalls: 4,
-    },
-  ];
-  const liOf = (html: string, id: string) => {
-    const at = html.indexOf(`data-agent-open="${id}"`);
-    if (at < 0) return '';
-    const start = html.lastIndexOf('<li ', at);
-    return html.slice(start, html.indexOf('>', at) + 1);
-  };
-
-  it('the client has one row renderer: the main-only and subagent-only row functions are gone', () => {
-    expect(declarationCount('renderMainAgentRow')).toBe(0);
-    expect(declarationCount('renderAgentRow')).toBe(0);
-    expect(fnBody('renderAgentTree')).toContain('anTreeHtml(root, root, ctx)');
-    expect(fnBody('renderPanelAgents')).toContain('anTreeHtml(root, node, ctx)');
-    expect(fnBody('renderPanelAgents')).toContain('renderAgentFocus(node, s)');
-    // anTreeHtml draws the anchor itself (card) or its children (panel) — both through renderAgentNode.
-    expect(fnBody('anTreeHtml')).toContain('renderAgentNode(anchor, 0, 1, 1, ctx, false)');
-    expect(fnBody('renderAgentNodes')).toContain('renderAgentNode(kids[i], d, i + 1, kids.length, ctx');
-    expect(fnBody('renderAgentNode')).toContain('renderAgentNodes(node, d + 1, ctx)');
-  });
-
+describe('one node type — the main agent is the root of the session’s agent tree', () => {
   it('agentTreeOf: the session is the root node; subagents hang by parentId, in spawn order', () => {
     const root = ui.agentTreeOf(
       card({
@@ -287,204 +278,276 @@ describe('one node type — the main agent is the root of the same recursive tre
     expect(st({ activityState: 'working' }, 'waiting')).toBe('waiting');
     expect(st({ activityState: 'idle', terminated: true }, 'idle')).toBe('archived');
   });
+});
 
-  it('root and subagents render through renderAgentNode: same item, same slots, nested groups', () => {
+describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) — the host contract', () => {
+  const KEY = 'inst::C1:t1';
+  const NS = `c|${KEY}`;
+  const chain = (): Agent[] => [
+    { id: 'a', n: 1, type: 'Explore', status: 'running', startedAt: T0, toolCalls: 1 },
+    { id: 'b', n: 2, parentId: 'a', type: 'general-purpose', status: 'running', startedAt: T0 + 1, toolCalls: 2 },
+    { id: 'c', n: 3, parentId: 'b', type: 'librarian', status: 'running', startedAt: T0 + 2, toolCalls: 3 },
+    {
+      id: 'd',
+      n: 4,
+      parentId: 'c',
+      type: 'Plan',
+      status: 'completed',
+      startedAt: T0 + 3,
+      endedAt: T0 + 9,
+      toolCalls: 4,
+    },
+  ];
+  const nodeOf = (d: TreeData | null, id: string) => d?.nodes.find((n) => n.id === id);
+
+  it('replaces the inline renderer: its functions, its state and its CSS are gone', () => {
+    for (const gone of [
+      'agentNodeRow',
+      'renderAgentNode',
+      'renderAgentNodes',
+      'anTreeHtml',
+      'anIsOpen',
+      'anCompactLine',
+      'anIdPart',
+      'anTimeId',
+      'anClick',
+      'anKeyAction',
+      'anOnKey',
+      'anActivate',
+      'anSetStop',
+      'anMoveStop',
+      'anFocusCapture',
+      'anFocusRestore',
+      'anItemId',
+      'anItemKey',
+      'toggleAgentNode',
+      'showAllAgentChildren',
+      'anRepaint',
+      'openPanelAgent',
+      'agentSpanAxis',
+      'agentSpanStyle',
+      'AGENT_TREE_ROWS',
+      'AN_CHEV_SVG',
+      'AN_LIVE_LINE',
+      '_anAll',
+      '_anActive',
+      '_anReturnFocus',
+      '_anScopeChange',
+    ])
+      expect(declarationCount(gone), gone).toBe(0);
+    const CSS = TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>'));
+    for (const rule of [
+      '.an-row',
+      '.an-kids',
+      '.an-chev',
+      '.an-all',
+      '.ag-span',
+      '.ag-head',
+      '.pa-kids-head',
+      'agSweep',
+    ])
+      expect(CSS, rule).not.toContain(rule);
+    // No tree markup or tree key handling is left in the page script.
+    expect(TEMPLATE).not.toContain('data-agent-open');
+    expect(TEMPLATE).not.toContain('.an-tree');
+  });
+
+  it('the page loads the element as a module script; the installed @2lab.ai/ui carries it and its chunks', async () => {
+    // The first import of the dashboard module transforms 21k lines — seconds on a loaded runner, so this test gets 60 s.
+    const HEAD = TEMPLATE.slice(0, TEMPLATE.indexOf('<style>'));
+    expect(HEAD).toContain(`<script type="module" src="/dashboard/ui/agent-tree.js?v=\${UI_LIB_VERSION}"></script>`);
+    const { UI_LIB_FILE, uiLibDistDir } = await import('../dashboard');
+    const dir = uiLibDistDir() as string;
+    expect(existsSync(join(dir, 'agent-tree.js'))).toBe(true);
+    for (const imp of readFileSync(join(dir, 'agent-tree.js'), 'utf-8').match(/from\s*"\.\/([^"]+)"/g) ?? []) {
+      const file = /"\.\/([^"]+)"/.exec(imp)?.[1] as string;
+      expect(UI_LIB_FILE.test(file), file).toBe(true);
+      expect(existsSync(join(dir, file)), file).toBe(true);
+    }
+  }, 60_000);
+
+  it('the card body carries a slot per session — static markup, so a moving agent never rewrites the body', () => {
     const html = ui.renderAgentTree(card(), 'working');
-    expect(html).toContain('<ul class="an-tree" role="tree"');
-    // The root item.
-    const root = liOf(html, '');
-    expect(root).toContain('class="an is-running is-root"');
-    expect(root).toContain('role="treeitem"');
-    expect(root).toContain('aria-level="1" aria-setsize="1" aria-posinset="1" aria-expanded="true"');
-    // A subagent item: same element, its level and its place among its siblings.
-    const explore = liOf(html, 'toolu_explore');
-    expect(explore).toContain('class="an is-running"');
-    expect(explore).toContain('aria-level="2" aria-setsize="2" aria-posinset="1" aria-expanded="true"');
-    const lib = liOf(html, 'toolu_lib');
-    expect(lib).toContain('aria-level="2" aria-setsize="2" aria-posinset="2"');
-    expect(lib).not.toContain('aria-expanded'); // a leaf has no expanded state
-    // The nested subagent sits in its parent's group, one level down.
-    const group = html.indexOf('<ul class="an-kids" role="group"', html.indexOf('data-agent-open="toolu_explore"'));
-    expect(group).toBeGreaterThan(0);
-    expect(html.indexOf('data-agent-open="toolu_nested"')).toBeGreaterThan(group);
-    expect(liOf(html, 'toolu_nested')).toContain('aria-level="3" aria-setsize="1" aria-posinset="1"');
-    // Every item carries the same row slots — the root included — at the card's compact density (spec 13).
-    expect(html.match(/<div class="an-row is-compact">/g)).toHaveLength(4);
-    expect(html.match(/<span class="ag-meta"><span class="ag-st">/g)).toHaveLength(4);
+    expect(html).toBe(
+      '<div class="ag-tree ui-tok"><ui-agent-tree lang="ko" data-at-ns="c|inst::C1:t1">' +
+        '<span class="at-fallback">에이전트 — 메인 + 3</span></ui-agent-tree></div>',
+    );
+    // Statuses, tool counts and spend are data, not markup.
+    const moved = AGENTS.map((a) => ({ ...a, status: 'completed', toolCalls: 99 }));
+    expect(ui.renderAgentTree(card({ agents: moved }), 'working')).toBe(html);
+    // Agents beyond the card's bound are named under it; a hostile key is an attribute value; none → no tree.
+    expect(ui.renderAgentTree(card({ agentsTotal: 7 }), 'working')).toContain(
+      '<div class="ag-more">이전 에이전트 4개는 카드 목록 밖 — 작업 로그에서 볼 수 있어요</div>',
+    );
+    expect(ui.renderAgentTree(card({ key: 'k"><img src=x>' }), 'working')).toContain(
+      'data-at-ns="c|k&quot;&gt;&lt;img src=x&gt;"',
+    );
+    expect(ui.renderAgentTree(card({ agents: [] }), 'working')).toBe('');
+    expect(fnBody('renderCardBody')).toContain('const agentsHtml = renderAgentTree(s, col);');
   });
 
-  // Spec 13: on the card every row — the root included — has the same compact
-  // slots (status in words, time, and one line when live or failed); the detail
-  // (tools, tokens, background, description, the waterfall) is the panel's.
-  it('the root row carries what a subagent row carries: status in words, time — compact on the card', () => {
-    const html = ui.renderAgentTree(card(), 'working');
-    const rootRow = html.slice(html.indexOf('<div class="an-row is-compact">'), html.indexOf('<ul class="an-kids"'));
-    expect(rootRow).toContain('<span class="ag-type">메인</span>');
-    // The card's control strip names the model: the compact root does not say it again.
-    expect(rootRow).not.toContain('opus-5-5[1m]');
-    expect(rootRow).toContain('<span class="ag-st">실행 중</span>');
-    expect(rootRow).toContain('class="card-timer-live" data-leg-started="' + T0 + '"');
-    // The face's task row already names #T2: the root does not say it again.
-    expect(rootRow).not.toContain('#T2 Build');
-    expect(rootRow).not.toContain('툴 7');
-    // No waterfall, tools, background or description on the card at all.
-    expect(html).not.toContain('ag-span');
-    expect(html).not.toContain('class="ag-tools"');
-    expect(html).not.toContain('<span class="ag-bg">');
-    expect(html).not.toContain('<span class="ag-desc">');
-    // A subagent row: id + type, status word, time; a live one says what it does, a failed one why.
-    expect(html).toContain('<span class="ag-id">A1</span><span class="ag-type">Explore</span>');
-    expect(html).toContain('data-since="' + T0 + '"');
-    expect(html).toContain('<span class="ag-sub">#T1 Reading the mapper</span>');
-    expect(html).toContain('<span class="ag-st">실패</span>');
-    expect(html).toContain('<span class="ag-sub">Nested look</span>');
-    // A finished one is just its status and run time.
-    expect(html).toContain('4m 2s');
-    expect(html).not.toContain('마지막 도구 WebFetch');
+  it('atCardData: the main agent first, every subagent under the agent that started it, in spawn order — compact', () => {
+    const d = ui.atCardData(card(), 'working') as TreeData;
+    expect(d).toMatchObject({ density: 'compact', title: '에이전트', selectedId: null });
+    expect(d.nodes.map((n) => [n.id, n.parentId ?? ''])).toEqual([
+      [':main', ''],
+      ['toolu_explore', ':main'],
+      ['toolu_nested', 'toolu_explore'],
+      ['toolu_lib', ':main'],
+    ]);
+    // The root: 메인, its tool count, its active time running from the open leg; the face's task row already
+    // names #T2, so the root does not say it again (spec 13).
+    expect(nodeOf(d, ':main')).toEqual({ id: ':main', name: '메인', status: 'running', toolCalls: 7, startedAt: T0 });
+    // A subagent: A<n> type, its brief as the role (background said), what it does now.
+    expect(nodeOf(d, 'toolu_explore')).toEqual({
+      id: 'toolu_explore',
+      parentId: ':main',
+      name: 'A1 Explore',
+      role: '배경 · Trace subagent frames',
+      status: 'running',
+      toolCalls: 18,
+      startedAt: T0,
+      summary: '#T1 Reading the mapper',
+    });
+    // Finished: its run time is endedAt − startedAt; failed / done / stopped read as the element's words.
+    expect(nodeOf(d, 'toolu_lib')).toMatchObject({ status: 'done', startedAt: T0 + 5_000, endedAt: T0 + 247_000 });
+    expect(nodeOf(d, 'toolu_nested')).toMatchObject({ status: 'failed', endedAt: T0 + 51_000, role: 'Nested look' });
+    const stopped = ui.atCardData(card({ agents: [{ ...AGENTS[2], status: 'stopped' }] }), 'working') as TreeData;
+    expect(nodeOf(stopped, 'toolu_lib')?.status).toBe('cancelled');
+    // No subagents → no tree on the card.
+    expect(ui.atCardData(card({ agents: [] }), 'working')).toBeNull();
   });
 
-  it('each item has one composed accessible name; activation and expansion use data attributes, never inline JS', () => {
-    const html = ui.renderAgentTree(card(), 'working');
-    // Everything the row shows but the ticking time, which the item names as its description (review r1 astra).
-    // Compact density: the name lists the slots the row shows (spec 13).
-    expect(liOf(html, 'toolu_explore')).toContain('aria-label="A1 Explore, 실행 중, #T1 Reading the mapper, 하위 1"');
-    expect(liOf(html, '')).toContain('aria-label="메인, 실행 중, 하위 3"');
-    const describedBy = /aria-describedby="([^"]+)"/.exec(liOf(html, 'toolu_explore'))?.[1] ?? '';
-    expect(describedBy).toBe('an-c_7c_inst_3a__3a_C1_3a_t1-ntoolu_5f_explore-t');
-    expect(html).toContain(`<span class="ag-time" id="${describedBy}">`);
-    expect(html).not.toContain('onclick=');
-    // The root is always open: no chevron. A parent below it has one, out of the tab order.
-    expect(html).not.toContain('data-an-toggle=""');
-    // The chevron is a mouse target only — not focusable, so a click never strands focus on it (review r1 fable).
-    expect(html).toContain('<span class="an-chev is-toggle" aria-hidden="true" data-an-toggle="toolu_explore">');
-    expect(html).not.toContain('<button type="button" class="an-chev"');
+  it('why a node needs you or failed sits on it: the main agent’s prompt or question, a subagent’s last report', () => {
+    const perm = ui.atCardData(
+      card({
+        activityState: 'waiting',
+        pendingPermissions: [
+          { approvalId: 'p1', toolName: 'Bash' },
+          { approvalId: 'p2', toolName: 'Edit' },
+        ],
+      }),
+      'waiting',
+    );
+    expect(nodeOf(perm, ':main')).toMatchObject({ status: 'needs_you', reason: 'Bash 실행 승인 필요 외 1건' });
+    const ask = ui.atCardData(card({ activityState: 'waiting', pendingQuestion: { question: 'Ship it?' } }), 'waiting');
+    expect(nodeOf(ask, ':main')).toMatchObject({ status: 'needs_you', reason: 'Ship it?' });
+    // A failed subagent: what it last reported is the reason (never also its line).
+    const failed = ui.atCardData(card({ agents: [{ ...AGENTS[1], summary: '2 tests failed' }] }), 'working');
+    expect(nodeOf(failed, 'toolu_nested')).toMatchObject({ status: 'failed', reason: '2 tests failed' });
+    expect(nodeOf(failed, 'toolu_nested')).not.toHaveProperty('summary');
+    // A running one has no reason.
+    expect(nodeOf(ui.atCardData(card(), 'working'), 'toolu_explore')).not.toHaveProperty('reason');
   });
 
-  it('default expansion is relative to the tree: the root and its children are open, deeper parents start folded with +N', () => {
-    const m = load<AgentUi>(AGENT_FNS, AGENT_VARS);
-    const html = m.renderAgentTree(card({ agents: chain() }), 'working');
-    expect(liOf(html, 'a')).toContain('aria-expanded="true"');
-    expect(liOf(html, 'b')).toContain('aria-expanded="false"'); // level 3: folded
-    expect(html).toContain('data-agent-open="b"');
-    expect(html).not.toContain('data-agent-open="c"');
-    const bItem = html.slice(html.indexOf('data-agent-open="b"'));
-    expect(bItem).toContain('<span class="an-more is-running" title="하위 에이전트 2">+2</span>');
+  it("the root's time: the open leg keeps counting while the turn waits on a permission; idle, the active total", () => {
+    const waiting = ui.atCardData(card({ activityState: 'waiting', activeAccumulatedMs: 65_000 }), 'waiting');
+    expect(nodeOf(waiting, ':main')).toMatchObject({ status: 'needs_you', startedAt: T0 - 65_000 });
+    expect(nodeOf(waiting, ':main')).not.toHaveProperty('endedAt');
+    const idle = ui.atCardData(
+      card({ activityState: 'idle', activeLegStartedAtMs: 0, activeAccumulatedMs: 65_000 }),
+      'idle',
+    );
+    expect(nodeOf(idle, ':main')).toMatchObject({ status: 'waiting', startedAt: 0, endedAt: 65_000 });
+    // A resume waits for the system, a closed session is done.
+    const resuming = ui.atCardData(
+      card({ activityState: 'idle', autoResume: { kind: 'turn-retry', at: T0 } }),
+      'working',
+    );
+    expect(nodeOf(resuming, ':main')?.status).toBe('waiting');
+    expect(nodeOf(ui.atCardData(card({ activityState: 'idle' }), 'closed'), ':main')?.status).toBe('done');
   });
 
-  it('a user toggle overrides the default and is remembered per tree and node', () => {
+  it("spend: a subagent's own (all token kinds, API-equivalent cost); the root's own share of the task total", () => {
+    const SPEND = {
+      inputTokens: 100,
+      outputTokens: 200,
+      cacheReadTokens: 9700,
+      cacheCreateTokens: 0,
+      costUsd: 1.234,
+      calls: 5,
+    };
+    const d = ui.atCardData(
+      card({
+        agents: [
+          { ...AGENTS[0], tokens: 134, spend: SPEND },
+          // Calls that reported no usage are not a $0 spend: the node carries none.
+          { ...AGENTS[1], spend: { ...SPEND, inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, costUsd: 0 } },
+          AGENTS[2],
+        ],
+        tokenUsage: {
+          totalInputTokens: 1000,
+          totalOutputTokens: 1000,
+          totalCacheReadTokens: 8000,
+          totalCacheCreateTokens: 0,
+          totalCostUsd: 3.5,
+        },
+        subagentSpend: {
+          agents: 3,
+          inputTokens: 100,
+          outputTokens: 100,
+          cacheReadTokens: 800,
+          cacheCreateTokens: 0,
+          costUsd: 0.75,
+        },
+      }),
+      'working',
+    );
+    // Never the SDK's context size (tokens: 134).
+    expect(nodeOf(d, 'toolu_explore')).toMatchObject({ tokens: 10_000, costUsd: 1.234 });
+    expect(nodeOf(d, 'toolu_nested')).not.toHaveProperty('costUsd');
+    expect(nodeOf(d, 'toolu_nested')).not.toHaveProperty('tokens');
+    // The task total less the subagents' share: the element adds the branch up again.
+    expect(nodeOf(d, ':main')).toMatchObject({ tokens: 9_000, costUsd: 2.75 });
+    // Subagent cost estimates above the session total: the root keeps its tokens, never a false $0.
+    const over = ui.atCardData(
+      card({
+        tokenUsage: {
+          totalInputTokens: 1000,
+          totalOutputTokens: 1000,
+          totalCacheReadTokens: 0,
+          totalCacheCreateTokens: 0,
+          totalCostUsd: 0.5,
+        },
+        subagentSpend: {
+          agents: 3,
+          inputTokens: 100,
+          outputTokens: 100,
+          cacheReadTokens: 0,
+          cacheCreateTokens: 0,
+          costUsd: 0.75,
+        },
+      }),
+      'working',
+    );
+    expect(nodeOf(over, ':main')).toMatchObject({ tokens: 1_800 });
+    expect(nodeOf(over, ':main')).not.toHaveProperty('costUsd');
+  });
+
+  it("the root's line is its current task only while the face's task row does not show it (spec 13)", () => {
+    expect(nodeOf(ui.atCardData(card(), 'working'), ':main')).not.toHaveProperty('summary');
+    const noTask = card({ tasks: [{ id: 'T1', content: 'Plan', status: 'completed' }] });
+    expect(nodeOf(ui.atCardData(noTask, 'working'), ':main')?.summary).toBe('마지막 도구 Edit');
+    const hidden = load<AgentUi>(AGENT_FNS, AGENT_VARS, { dhShow: () => false });
+    expect(nodeOf(hidden.atCardData(card(), 'working'), ':main')?.summary).toBe('#T2 Build');
+  });
+
+  it('folds are the host’s: the root and its children start open, deeper parents folded; a toggle is kept per tree and node', () => {
     const anOpen: Record<string, boolean> = {};
     const m = load<AgentUi>(
       AGENT_FNS,
       AGENT_VARS.filter((v) => v !== '_anOpen'),
       { _anOpen: anOpen },
     );
-    anOpen[NS + '|b'] = true;
-    const html = m.renderAgentTree(card({ agents: chain() }), 'working');
-    expect(html).toContain('data-agent-open="c"');
-    expect(liOf(html, 'c')).toContain('aria-expanded="false"');
-    anOpen[NS + '|a'] = false;
-    const folded = m.renderAgentTree(card({ agents: chain() }), 'working');
-    expect(folded).not.toContain('data-agent-open="b"');
-    expect(liOf(folded, 'a')).toContain('aria-expanded="false"');
+    expect(m.atCardData(card({ agents: chain() }), 'working')?.expanded).toEqual([':main', 'a']);
+    anOpen[`${NS}|b`] = true;
+    anOpen[`${NS}|a`] = false;
+    expect(m.atCardData(card({ agents: chain() }), 'working')?.expanded).toEqual([':main', 'b']);
+    // Another session's tree keeps its own folds.
+    expect(m.atCardData(card({ key: 'other', agents: chain() }), 'working')?.expanded).toEqual([':main', 'a']);
   });
 
-  it('every parent shows at most 6 children, the rest behind its own 전체 N개 보기 — at every level', () => {
-    const kids = Array.from({ length: 9 }, (_, i) => ({
-      id: `k${i}`,
-      n: i + 1,
-      status: 'completed',
-      startedAt: T0 + i,
-    }));
-    const grand = Array.from({ length: 8 }, (_, i) => ({
-      id: `g${i}`,
-      n: 20 + i,
-      parentId: 'k0',
-      status: 'completed',
-      startedAt: T0 + 20 + i,
-    }));
-    const anAll: Record<string, boolean> = {};
-    const m = load<AgentUi>(
-      AGENT_FNS,
-      AGENT_VARS.filter((v) => v !== '_anAll'),
-      { _anAll: anAll },
-    );
-    const html = m.renderAgentTree(card({ agents: [...kids, ...grand], agentsTotal: 17 }), 'working');
-    expect(html.match(/data-agent-open="k\d"/g)).toHaveLength(6);
-    expect(html.match(/data-agent-open="g\d"/g)).toHaveLength(6);
-    expect(html).toContain('data-an-all=""');
-    expect(html).toContain('전체 9개 &rarr; 상세');
-    expect(html).toContain('data-an-all="k0"');
-    expect(html).toContain('전체 8개 &rarr; 상세');
-    // Spec 13: the card is a preview — the rest opens in the panel on that parent, never in place.
-    anAll[NS + '|'] = true;
-    const all = m.renderAgentTree(card({ agents: [...kids, ...grand], agentsTotal: 17 }), 'working');
-    expect(all.match(/data-agent-open="k\d"/g)).toHaveLength(6);
-    expect(all).not.toContain('접기');
-  });
-
-  it('one roving tab stop per tree — on the active node when visible, else its nearest visible ancestor', () => {
-    const anActive: Record<string, string> = {};
-    const m = load<AgentUi>(
-      AGENT_FNS,
-      AGENT_VARS.filter((v) => v !== '_anActive'),
-      { _anActive: anActive },
-    );
-    const stops = (html: string) => (html.match(/<li [^>]*tabindex="0"/g) || []).length;
-    let html = m.renderAgentTree(card(), 'working');
-    expect(stops(html)).toBe(1);
-    expect(liOf(html, '')).toContain('tabindex="0"');
-    anActive[NS] = 'toolu_nested';
-    html = m.renderAgentTree(card(), 'working');
-    expect(stops(html)).toBe(1);
-    expect(liOf(html, 'toolu_nested')).toContain('tabindex="0"');
-    // The active node is folded away (level 4 under a folded parent): its nearest visible ancestor holds the stop.
-    anActive[NS] = 'c';
-    html = m.renderAgentTree(card({ agents: chain() }), 'working');
-    expect(stops(html)).toBe(1);
-    expect(liOf(html, 'b')).toContain('tabindex="0"');
-  });
-
-  it('arrow keys follow the tree pattern (APG): move, open / first child, close / parent, Home / End, Enter', () => {
-    const k = load<{ anKeyAction(key: string, info: Record<string, boolean>): string }>(['anKeyAction'], []);
-    expect(k.anKeyAction('ArrowDown', {})).toBe('next');
-    expect(k.anKeyAction('ArrowUp', {})).toBe('prev');
-    expect(k.anKeyAction('Home', {})).toBe('first');
-    expect(k.anKeyAction('End', {})).toBe('last');
-    expect(k.anKeyAction('ArrowRight', { hasKids: true, open: false })).toBe('expand');
-    expect(k.anKeyAction('ArrowRight', { hasKids: true, open: true })).toBe('child');
-    expect(k.anKeyAction('ArrowRight', {})).toBe('');
-    expect(k.anKeyAction('ArrowLeft', { hasKids: true, open: true })).toBe('collapse');
-    expect(k.anKeyAction('ArrowLeft', { hasKids: true, open: true, root: true })).toBe('');
-    expect(k.anKeyAction('ArrowLeft', { open: false })).toBe('parent');
-    expect(k.anKeyAction('Enter', {})).toBe('activate');
-    expect(k.anKeyAction(' ', {})).toBe('activate');
-    // Wired: one keydown path for the card tree and the panel tree.
-    expect(TEMPLATE).toContain('e.target.closest(\'.an-tree [role="treeitem"]\')');
-  });
-
-  it("focus kept across a morph finds a parent's 전체 N개 보기 again by its parent, never as the root (review r1 grok)", () => {
-    const k = load<{ anItemKey(item: unknown): string }>(['anItemId', 'anItemKey'], []);
-    const item = (attrs: Record<string, string>) => ({ getAttribute: (n: string) => (n in attrs ? attrs[n] : null) });
-    expect(k.anItemKey(item({ 'data-an-all': 'k0' }))).toBe('a:k0');
-    expect(k.anItemKey(item({ 'data-an-all': '' }))).toBe('a:');
-    expect(k.anItemKey(item({ 'data-agent-open': '' }))).toBe('n:');
-    expect(k.anItemKey(item({ 'data-agent-select': 'toolu_x' }))).toBe('n:toolu_x');
-    expect(fnBody('anFocusCapture')).toContain('chain.push(anItemKey(cur));');
-    expect(fnBody('anFocusRestore')).toContain('anItemKey(items[i]) === cap.chain[c]');
-  });
-
-  it('clicks: the chevron only folds, a row opens that node, the area of its children opens nothing', () => {
-    const body = fnBody('anClick');
-    const row = body.indexOf("e.target.closest('.an-row')");
-    expect(body.indexOf("e.target.closest('[data-an-toggle]')")).toBeGreaterThan(0);
-    expect(body.indexOf("e.target.closest('[data-an-toggle]')")).toBeLessThan(row);
-    expect(body.indexOf("e.target.closest('[data-an-all]')")).toBeLessThan(row);
-    // The card board and the panel share it.
-    expect(TEMPLATE).toContain('if (anClick(e, root)) return;');
-    expect(TEMPLATE).toContain('if (anClick(e, bar)) return;');
-  });
-
-  it('a parent cycle of any length is broken — every agent reachable, the descendant count finite (review r1 astra)', () => {
+  it('a parent cycle of any length is broken — every agent is a node exactly once (review r1 astra)', () => {
     const ring = Array.from({ length: 65 }, (_, i) => ({
       id: `r${i}`,
       n: i + 1,
@@ -492,99 +555,148 @@ describe('one node type — the main agent is the root of the same recursive tre
       status: 'completed',
       startedAt: T0 + i,
     }));
-    const root = ui.agentTreeOf(card({ agents: ring }), 'working');
-    const reached = new Set<string>();
-    const walk = (n: Node) => {
-      for (const c of n.children) {
-        reached.add(c.id);
-        walk(c);
-      }
+    const d = ui.atCardData(card({ agents: ring }), 'working') as TreeData;
+    const ids = d.nodes.map((n) => n.id);
+    expect(ids).toHaveLength(66);
+    expect(new Set(ids).size).toBe(66);
+    for (const n of d.nodes) if (n.parentId) expect(ids).toContain(n.parentId);
+    const desc = load<{ anDesc(n: unknown): { n: number } }>(['anDesc'], []);
+    expect(desc.anDesc(ui.agentTreeOf(card({ agents: ring }), 'working')).n).toBe(65);
+  });
+
+  it('the data travels with the card’s parts: a tree-only change is a change, painted where it changed', () => {
+    const parts = load<{
+      cardParts(s: unknown, col: string): Record<string, unknown>;
+      cardPartsDiffer(el: unknown, p: unknown): boolean;
+    }>([...AGENT_FNS, 'cardParts', 'cardPartsDiffer'], AGENT_VARS, {
+      cardState: () => 'working',
+      renderCardFace: () => 'face',
+      renderCardBody: () => 'body',
+    });
+    const p = parts.cardParts(card(), 'working');
+    expect(p.tree).toEqual(ui.atCardData(card(), 'working'));
+    expect(p.treeSig).toBe(JSON.stringify(p.tree));
+    const el = {
+      getAttribute: (n: string) => (n === 'data-col' ? 'working' : 'working'),
+      _faceHtml: 'face',
+      _bodyHtml: 'body',
+      _treeSig: p.treeSig,
     };
-    walk(root);
-    expect(reached.size).toBe(65);
-    const d = load<{ anDesc(n: unknown): { n: number } }>(['anDesc'], []);
-    expect(d.anDesc(root).n).toBe(65);
+    expect(parts.cardPartsDiffer(el, p)).toBe(false);
+    const moved = parts.cardParts(card({ agents: [{ ...AGENTS[0], toolCalls: 19 }, AGENTS[1], AGENTS[2]] }), 'working');
+    expect(moved.body).toBe(p.body);
+    expect(parts.cardPartsDiffer(el, moved)).toBe(true);
+    expect(fnBody('applyCardParts')).toContain('atHydrate(el._bodyEl, p);');
+    expect(parts.cardParts(card({ agents: [] }), 'working')).toMatchObject({ tree: null, treeSig: '' });
   });
 
-  it("the root's open leg keeps counting while the turn waits on a permission (review r1 astra)", () => {
-    const html = ui.renderAgentTree(card({ activityState: 'waiting' }), 'waiting');
-    const rootRow = html.slice(html.indexOf('<div class="an-row is-compact">'), html.indexOf('<ul class="an-kids"'));
-    expect(rootRow).toContain('<span class="ag-st">입력 대기</span>');
-    expect(rootRow).toContain('data-leg-started="' + T0 + '"');
+  it('atPaint / atHydrate set the element’s data only where it changed (a push that changes nothing writes nothing)', () => {
+    let writes = 0;
+    const tree: Record<string, unknown> = {};
+    Object.defineProperty(tree, 'data', {
+      set() {
+        writes++;
+      },
+    });
+    const body = { querySelector: (sel: string) => (sel === 'ui-agent-tree[data-at-ns]' ? tree : null) };
+    const d = ui.atCardData(card(), 'working');
+    ui.atHydrate(body, { tree: d, treeSig: 'a' });
+    ui.atHydrate(body, { tree: d, treeSig: 'a' });
+    expect(writes).toBe(1);
+    ui.atPaint(tree, d, 'b');
+    expect(writes).toBe(2);
+    ui.atHydrate(body, { tree: null, treeSig: '' });
+    ui.atHydrate({}, { tree: d, treeSig: 'c' });
+    expect(writes).toBe(2);
   });
 
-  it('description ids never collide across sessions or nodes — the encoding is reversible (review r2 astra)', () => {
-    const k = load<{ anIdPart(v: string): string }>(['anIdPart'], []);
-    expect(k.anIdPart('c|dev-a::C1:t')).not.toBe(k.anIdPart('c|dev_a::C1:t'));
-    expect(k.anIdPart('a-b')).not.toBe(k.anIdPart('a_b'));
-    expect(k.anIdPart('a-b')).not.toContain('-');
+  describe('events: ui-select and ui-toggle', () => {
+    const tree = (ns: string) => ({
+      tagName: 'UI-AGENT-TREE',
+      getAttribute: (n: string) => (n === 'data-at-ns' ? ns : null),
+    });
+    function listener(ev: string, inject: Record<string, unknown>) {
+      const handlers: Array<(e: unknown) => void> = [];
+      const doc = {
+        addEventListener: (name: string, fn: (e: unknown) => void) => {
+          if (name === ev) handlers.push(fn);
+        },
+        querySelector: inject.querySelector ?? (() => null),
+      };
+      const names = Object.keys(inject).filter((n) => n !== 'querySelector');
+      new Function('document', ...names, `${clientVar('AT_ROOT')}\n${clientListener(ev)}`)(
+        doc,
+        ...names.map((n) => inject[n]),
+      );
+      return handlers[0];
+    }
+
+    it('card: a picked agent opens the panel on it — the main agent is the panel’s root; by keyboard focus lands there', () => {
+      const calls: unknown[][] = [];
+      const on = (keyed: boolean) =>
+        listener('ui-select', {
+          openPanel: (...a: unknown[]) => calls.push(a),
+          selectPanelAgent: () => calls.push(['select']),
+          _atKeyed: keyed,
+        });
+      on(false)({ target: tree(NS), detail: { id: 'toolu_explore' } });
+      on(true)({ target: tree(NS), detail: { id: ':main' } });
+      expect(calls).toEqual([
+        [KEY, 'agent', 'toolu_explore', false],
+        [KEY, 'agent', '', true],
+      ]);
+      // openPanel's keyboard landing for 'agent' is the node's header; closing gives focus back to the opener —
+      // the tree's host element (its focus() is the tree's tab stop).
+      expect(fnBody('focusPanelLanding')).toContain(
+        "else if (_panelLand === 'agent') t = document.querySelector('#panel-agents .pa-focus');",
+      );
+      expect(fnBody('closePanel')).toContain('var back = _panelReturnFocus;');
+      // Another element's ui-select is not the tree's.
+      on(false)({ target: { tagName: 'UI-OTHER', getAttribute: () => NS }, detail: { id: 'x' } });
+      expect(calls).toHaveLength(2);
+      // The input modality: a key or a pointer, caught before the element sees it.
+      expect(TEMPLATE).toContain("document.addEventListener('keydown', function() { _atKeyed = true; }, true);");
+      expect(TEMPLATE).toContain("document.addEventListener('pointerdown', function() { _atKeyed = false; }, true);");
+    });
+
+    it('panel: a picked agent is drilled into and its header takes focus (review r2 astra: a chosen drill lands on the header)', () => {
+      const calls: unknown[] = [];
+      const head = { focus: () => calls.push('focus head') };
+      listener('ui-select', {
+        openPanel: () => calls.push('open'),
+        selectPanelAgent: (id: string) => calls.push(`select ${id}`),
+        _atKeyed: false,
+        querySelector: (sel: string) => (sel === '#panel-agents .pa-focus' ? head : null),
+      })({ target: tree('p|k'), detail: { id: 'toolu_nested' } });
+      expect(calls).toEqual(['select toolu_nested', 'focus head']);
+    });
+
+    it('ui-toggle: the fold is kept per tree and node, and that tree repaints with it', () => {
+      const anOpen: Record<string, boolean> = {};
+      const calls: string[] = [];
+      const on = listener('ui-toggle', {
+        _anOpen: anOpen,
+        refreshCard: (k: string) => calls.push(`card ${k}`),
+        renderPanelAgents: () => calls.push('panel'),
+      });
+      on({ target: tree(NS), detail: { id: 'b', expanded: true } });
+      on({ target: tree('p|k'), detail: { id: 'c', expanded: false } });
+      expect(anOpen).toEqual({ [`${NS}|b`]: true, 'p|k|c': false });
+      expect(calls).toEqual([`card ${KEY}`, 'panel']);
+    });
   });
 
-  it('a mouse click on 전체 N개 보기 or any focus in a tree takes the tab stop; a chosen drill lands on the header (review r2 astra)', () => {
-    // A click on 전체 N개 goes through anActivate, which takes the stop first (spec 13: card → panel, panel → in place).
-    expect(fnBody('anClick')).toContain('anActivate(more);');
-    expect(fnBody('anActivate')).toContain("_anActive[ns] = 'a:' + allId;");
-    expect(TEMPLATE).toContain("document.addEventListener('focusin', function(e) {");
-    expect(fnBody('renderPanelAgents')).toContain('var cap = _anScopeChange ? null : anFocusCapture(el);');
-    const sel = fnBody('selectPanelAgent');
-    // Task view T1.2: the agent tabs repaint with the node header under the same scope-change flag.
-    expect(sel).toContain('try { renderPanelTabs(); renderPanelAgents(); } finally { _anScopeChange = false; }');
-    expect(sel.indexOf("document.querySelector('#panel-agents .pa-focus')")).toBeLessThan(
-      sel.indexOf(`document.querySelector('#panel-agents .pa-crumb[aria-current="page"]')`),
-    );
-  });
-
-  it('stop, focus and state move together; keyboard activation hands focus to the panel and back (review r1 astra)', () => {
-    const stop = fnBody('anSetStop');
-    expect(stop).toContain(`tree.querySelectorAll('[role="treeitem"][tabindex="0"]')`);
-    expect(stop).toContain("_anActive[ns] = all !== null ? 'a:' + all : anItemId(to);");
-    expect(fnBody('anMoveStop')).toContain('anSetStop(tree, ns, to);');
-    expect(fnBody('anFocusRestore')).toContain("anSetStop(tree, tree.getAttribute('data-an-ns') || '', to);");
-    expect(fnBody('renderAgentNodes')).toContain("tabindex=\"' + (ctx.stop === allKey ? '0' : '-1') + '\"");
-    expect(fnBody('anTreeHtml')).toContain("String(want).indexOf('a:') === 0");
-    expect(fnBody('anOnKey')).toContain('anActivate(item, true);');
-    expect(fnBody('anActivate')).toContain("document.querySelector('#panel-agents .pa-focus')");
-    expect(fnBody('closePanel')).toContain('var back = _anReturnFocus || _panelReturnFocus;');
-    // Opened another way (a click, another card): no stale return target (review r2 fable).
-    expect(fnBody('openPanel')).toContain('_anReturnFocus = null;');
-    expect(fnBody('renderAgentFocus')).toContain('role="group" tabindex="-1" aria-label="');
-  });
-
-  it('a poll without the WebSocket repaints the focused node too; the server pushes a main tool count (review r1 astra)', () => {
-    // Spec 13: the poll repaints the whole panel (repaintPanelSession → repaintPanelScope).
-    expect(fnBody('loadSessions')).toContain('repaintPanelSession();');
-    expect(fnBody('repaintPanelSession')).toContain('repaintPanelScope();');
-    const index = readFileSync(join(__dirname, '..', '..', 'index.ts'), 'utf-8');
-    expect(index).toContain("if (entry.kind === 'tool' && ownerKey) scheduleLiveSessionUpdate(ownerKey);");
-  });
-
-  it('the same card renders the same markup (the reconciler leaves it alone)', () => {
-    expect(ui.renderAgentTree(card(), 'working')).toBe(ui.renderAgentTree(card(), 'working'));
-  });
-
-  it('names agents beyond the card; hostile text is text; no subagents → no tree on the card', () => {
-    const html = ui.renderAgentTree(card({ agentsTotal: 7 }), 'working');
-    expect(html).toContain('이전 에이전트 4개는 카드 목록 밖');
-    const bad = '"><img src=x onerror=alert(1)>';
-    const hostile = ui.renderAgentTree(
-      card({ agents: [{ id: 'x"y', n: 1, type: bad, description: bad, status: 'running', startedAt: T0 }] }),
-      'working',
-    );
-    expect(hostile).not.toContain('<img');
-    expect(hostile).toContain('data-agent-open="x&quot;y"');
-    expect(ui.renderAgentTree(card({ agents: [] }), 'working')).toBe('');
-  });
-});
-
-describe('waterfall time axis (§4.2) — the agent set, not the session', () => {
-  it('spans the first start to the last end or the last activity, whichever is later', () => {
-    const axis = ui.agentSpanAxis(AGENTS, T0 + 300_000);
-    expect(axis).toEqual({ t0: T0, t1: T0 + 300_000 });
-    // librarian: 5s → 247s of 300s.
-    expect(ui.agentSpanStyle(AGENTS[2], axis)).toBe('left:1.7%;width:80.7%');
-    // A running agent reaches the end of the axis.
-    expect(ui.agentSpanStyle(AGENTS[0], axis)).toBe('left:0.0%;width:100.0%');
-  });
+  // Moved to the library (@2lab.ai/ui src/components/agent-tree/agent-tree.test.ts), which owns them now:
+  //   roving tab stop, levels, set sizes          → 'renders a WAI-ARIA tree: levels, set sizes, one tab stop, …'
+  //   arrow keys (APG), Home / End, Enter         → 'keyboard: arrows, Home / End, ← / → fold and move, * opens siblings, Enter selects'
+  //   clicks: the chevron folds, a row selects    → 'click selects (ui-select, cancelable); …', 'the fold control toggles (ui-toggle); …'
+  //   focus kept across a live update             → 'a live update morphs: the focused item stays the same element; …'
+  //   +N with the worst status below              → 'the fold control toggles (ui-toggle); folded shows +N with the worst status below …'
+  //   compact rows: status word, the live line    → 'compact: rows with status words; the line only on live / failed ones, the reason first'
+  //   the waterfall axis (§4.2)                   → 'durations run while open, spans sit on one axis'
+  //   description ids never collide               → 'fmtCost, initials and idPart'
+  //   hostile text is text                        → 'escapes every host string'
+  //   the 1 s clock                               → 'running times tick on one shared timer, stop when nothing runs and on disconnect'
 });
 
 describe('panel scope (§4.3)', () => {
@@ -734,15 +846,29 @@ describe('panel scope (§4.3)', () => {
 describe('panel — drill-down over the same node type (path · focused node · its subtree)', () => {
   const PANEL_FNS = [
     ...NODE_FNS,
-    'cardTotalTokens',
     'renderAgentFocus',
     'panelLogOnlyAgents',
     'sessionColOf',
+    'atIdOf',
+    'atRootReason',
+    'atNode',
+    'atTreeData',
+    'atSlotHtml',
+    'atPaint',
     'renderPanelAgents',
   ];
   function panel(focus: string, s: Record<string, unknown>, extra: Record<string, unknown> = {}) {
     // Task view T1.6: #panel-agents carries is-main while the Main tab is focused.
     const classes = new Set<string>();
+    const out = { html: '', writes: 0, sets: 0, data: null as TreeData | null };
+    // The subtree's element: the data it was given, how often.
+    const tree: Record<string, unknown> = {};
+    Object.defineProperty(tree, 'data', {
+      set(v: TreeData) {
+        out.sets++;
+        out.data = v;
+      },
+    });
     const el = {
       style: {} as Record<string, string>,
       innerHTML: '',
@@ -753,8 +879,8 @@ describe('panel — drill-down over the same node type (path · focused node · 
           else classes.delete(c);
         },
       },
+      querySelector: (sel: string) => (sel === 'ui-agent-tree' && out.html.includes('<ui-agent-tree') ? tree : null),
     };
-    const out = { html: '', writes: 0 };
     const m = load<{ renderPanelAgents(): void }>(
       PANEL_FNS,
       AGENT_VARS.filter((v) => !(v in extra)),
@@ -769,9 +895,6 @@ describe('panel — drill-down over the same node type (path · focused node · 
         _panelAgentsHtml: '',
         formatTokens: (n: number) => String(n),
         updateTimersIn: () => {},
-        anFocusCapture: () => null,
-        anFocusRestore: () => {},
-        _anScopeChange: false,
         morphInnerHtml: (_el: unknown, h: string) => {
           out.writes++;
           out.html = h;
@@ -822,7 +945,9 @@ describe('panel — drill-down over the same node type (path · focused node · 
     expect(out.html).toContain('툴 2');
     expect(out.html).toContain('task 합계 1200 tok · $0.00');
     expect(out.html).not.toContain('세션 Σ');
-    expect(out.html).not.toContain('role="tree"');
+    // Nothing below it: no subtree element.
+    expect(out.html).not.toContain('ui-agent-tree');
+    expect(out.sets).toBe(0);
     // The root has nothing above it: no path.
     expect(out.html).not.toContain('pa-path');
   });
@@ -843,7 +968,7 @@ describe('panel — drill-down over the same node type (path · focused node · 
     expect(out.html).toContain('41s');
   });
 
-  it("the focused node's children are a tree (levels relative to the focused node), all of them shown", () => {
+  it("the focused node's subtree is a rich <ui-agent-tree>: every descendant, its children at the top", () => {
     const kids = Array.from({ length: 9 }, (_, i) => ({
       id: `k${i}`,
       n: 10 + i,
@@ -853,25 +978,35 @@ describe('panel — drill-down over the same node type (path · focused node · 
     }));
     const { m, out } = panel('toolu_explore', card({ agents: [...AGENTS, ...kids] }));
     m.renderPanelAgents();
-    expect(out.html).toContain('<ul class="an-tree pa-tree" role="tree"');
-    expect(out.html.match(/data-agent-select="k\d"/g)).toHaveLength(9);
-    const nested = out.html.slice(out.html.lastIndexOf('<li ', out.html.indexOf('data-agent-select="toolu_nested"')));
-    expect(nested).toContain('aria-level="1"');
+    expect(out.html).toContain(
+      '<div class="pa-tree ui-tok"><ui-agent-tree lang="ko" data-at-ns="p|k"><span class="at-fallback">하위 에이전트 10</span></ui-agent-tree></div>',
+    );
+    // The element's bar is the subtree's head (its title, counts and branch cost).
+    expect(out.data).toMatchObject({ density: 'rich', title: '하위 에이전트', selectedId: null });
+    expect(out.data?.nodes.map((n) => n.id)).toEqual(['toolu_nested', ...kids.map((k) => k.id)]);
+    expect(out.data?.nodes.every((n) => !('parentId' in n))).toBe(true);
+    // A leaf that is focused has no subtree.
+    const leaf = panel('toolu_lib', card());
+    leaf.m.renderPanelAgents();
+    expect(leaf.out.html).not.toContain('ui-agent-tree');
   });
 
   it('drilling in opens what was folded below — and a node the user folded stays folded across the drill', () => {
     const atRoot = panel('', card({ agents: chain() }));
     atRoot.m.renderPanelAgents();
-    expect(atRoot.out.html).toContain('data-agent-select="b"');
-    expect(atRoot.out.html).not.toContain('data-agent-select="c"');
+    // From the root: a open (b shows), b folded (c does not).
+    expect(atRoot.out.data?.expanded).toEqual(['a']);
     const intoA = panel('a', card({ agents: chain() }));
     intoA.m.renderPanelAgents();
-    expect(intoA.out.html).toContain('data-agent-select="c"');
-    const c = intoA.out.html.slice(intoA.out.html.lastIndexOf('<li ', intoA.out.html.indexOf('data-agent-select="c"')));
-    expect(c).toContain('aria-level="2"');
+    expect(intoA.out.data?.nodes.map((n) => [n.id, n.parentId ?? ''])).toEqual([
+      ['b', ''],
+      ['c', 'b'],
+      ['d', 'c'],
+    ]);
+    expect(intoA.out.data?.expanded).toEqual(['b']);
     const folded = panel('a', card({ agents: chain() }), { _anOpen: { 'p|k|b': false } });
     folded.m.renderPanelAgents();
-    expect(folded.out.html).not.toContain('data-agent-select="c"');
+    expect(folded.out.data?.expanded).toEqual([]);
   });
 
   // RED (SSOT T2/T3) — what a subagent spent (its own API calls: tokens and
@@ -884,49 +1019,44 @@ describe('panel — drill-down over the same node type (path · focused node · 
     costUsd: 1.234,
     calls: 5,
   };
+  const head = (html: string) =>
+    html.slice(html.indexOf('class="pa-focus'), html.indexOf('</div>', html.indexOf('class="pa-sum"')));
   it("a subagent's header shows its own spend — tokens and API-equivalent cost; the SDK context size is never shown", () => {
     const agents = [{ ...AGENTS[0], tokens: 134, spend: SPEND }, AGENTS[1], AGENTS[2]];
     const { m, out } = panel('toolu_explore', card({ agents }));
     m.renderPanelAgents();
-    const head = out.html.slice(
-      out.html.indexOf('class="pa-focus'),
-      out.html.indexOf('</div>', out.html.indexOf('class="pa-sum"')),
-    );
-    expect(head).toContain('10000 tok · $1.23');
+    expect(head(out.html)).toContain('10000 tok · $1.23');
     expect(out.html).not.toContain('134 tok');
   });
 
-  it('every subagent row in the panel tree carries its own spend; an unpriced model reads as an estimate (≈)', () => {
+  it('every subagent node in the panel tree carries its own spend; the header says when it is an estimate (≈)', () => {
     const lib = { ...AGENTS[2], spend: { ...SPEND, costUsd: 0.5, unpricedModels: ['grok-4.7-build'] } };
-    const { m, out } = panel('', card({ agents: [{ ...AGENTS[0], spend: SPEND }, AGENTS[1], lib] }));
-    m.renderPanelAgents();
-    const row = (id: string) => {
-      const at = out.html.indexOf(`data-agent-select="${id}"`);
-      return out.html.slice(out.html.lastIndexOf('<li ', at), out.html.indexOf('</li>', at));
-    };
-    expect(row('toolu_explore')).toContain('10000 tok · $1.23');
-    expect(row('toolu_lib')).toContain('10000 tok · ≈$0.50');
-    expect(row('toolu_lib')).toContain('grok-4.7-build');
+    const root = panel('', card({ agents: [{ ...AGENTS[0], spend: SPEND }, AGENTS[1], lib] }));
+    root.m.renderPanelAgents();
+    const nodes = root.out.data?.nodes ?? [];
+    expect(nodes.find((n) => n.id === 'toolu_explore')).toMatchObject({ tokens: 10_000, costUsd: 1.234 });
+    expect(nodes.find((n) => n.id === 'toolu_lib')).toMatchObject({ tokens: 10_000, costUsd: 0.5 });
+    // The element shows the amount; ≈ and the per-kind breakdown are the focused node's header.
+    const focused = panel('toolu_lib', card({ agents: [AGENTS[0], AGENTS[1], lib] }));
+    focused.m.renderPanelAgents();
+    expect(head(focused.out.html)).toContain('10000 tok · ≈$0.50');
+    expect(head(focused.out.html)).toContain('grok-4.7-build');
   });
 
   it('a subagent with estimated calls reads ≈ and says how many calls were estimated (llmux zero usage)', () => {
     const est = { ...AGENTS[2], spend: { ...SPEND, costUsd: 0.5, estimatedCalls: 3 } };
-    const { m, out } = panel('', card({ agents: [AGENTS[0], AGENTS[1], est] }));
+    const { m, out } = panel('toolu_lib', card({ agents: [AGENTS[0], AGENTS[1], est] }));
     m.renderPanelAgents();
-    const at = out.html.indexOf('data-agent-select="toolu_lib"');
-    const row = out.html.slice(out.html.lastIndexOf('<li ', at), out.html.indexOf('</li>', at));
-    expect(row).toContain('10000 tok · ≈$0.50');
-    expect(row).toContain('usage가 기록되지 않은 호출 3회는 앞뒤 호출로 추정');
+    expect(head(out.html)).toContain('10000 tok · ≈$0.50');
+    expect(head(out.html)).toContain('usage가 기록되지 않은 호출 3회는 앞뒤 호출로 추정');
   });
 
   it('a subagent that started foreground subagents of its own says their calls are in its number', () => {
     const lead = { ...AGENTS[2], spend: { ...SPEND, calls: 9, nestedAgents: 2 } };
-    const { m, out } = panel('', card({ agents: [AGENTS[0], AGENTS[1], lead] }));
+    const { m, out } = panel('toolu_lib', card({ agents: [AGENTS[0], AGENTS[1], lead] }));
     m.renderPanelAgents();
-    const at = out.html.indexOf('data-agent-select="toolu_lib"');
-    const row = out.html.slice(out.html.lastIndexOf('<li ', at), out.html.indexOf('</li>', at));
-    expect(row).toContain('트리에 따로 없는 하위 에이전트 2개 포함');
-    expect(row).not.toContain('하위 에이전트 제외');
+    expect(head(out.html)).toContain('트리에 따로 없는 하위 에이전트 2개 포함');
+    expect(head(out.html)).not.toContain('하위 에이전트 제외');
   });
 
   it('the root marks the subagents’ share ≈ when any of it is estimated', () => {
@@ -977,21 +1107,31 @@ describe('panel — drill-down over the same node type (path · focused node · 
     expect(out.html).toContain('서브 3개 1000 tok · $0.75');
   });
 
-  it('the current crumb is styled by the attribute it carries; a lost focus falls back to the tree stop (review r1 fable)', () => {
+  it('the current crumb is styled by the attribute it carries (review r1 fable)', () => {
     expect(TEMPLATE).toContain('.pa-crumb[aria-current="page"] {');
     expect(TEMPLATE).toContain('.pa-crumb:not([aria-current="page"]):hover');
     expect(TEMPLATE).not.toContain('.pa-crumb[aria-current="true"]');
-    expect(fnBody('anFocusRestore')).toContain(`el.querySelector('.an-tree [role="treeitem"][tabindex="0"]')`);
-    // The header counts every node below; the subtree head counts direct children — different words.
+    // The header counts every node below; the subtree's bar counts its agents — different words.
     expect(fnBody('renderAgentFocus')).toContain("'하위 전체 ' + desc.n");
-    expect(fnBody('renderPanelAgents')).toContain('하위 에이전트 <b>');
   });
 
-  it('an unchanged panel writes nothing — focus, scroll and spinners survive a live update', () => {
+  it('an unchanged panel writes nothing — the crumbs, the tree’s focus and its spinners survive a live update', () => {
     const { m, out } = panel('toolu_explore', card());
     m.renderPanelAgents();
     m.renderPanelAgents();
     expect(out.writes).toBe(1);
+    expect(out.sets).toBe(1);
+  });
+
+  it('a live change to the subtree is data only: the markup stays, the element is given the new nodes', () => {
+    const s = card({ agents: [...AGENTS] });
+    const { m, out } = panel('toolu_explore', s);
+    m.renderPanelAgents();
+    (s.agents as Agent[])[1] = { ...AGENTS[1], status: 'completed', toolCalls: 9 };
+    m.renderPanelAgents();
+    expect(out.writes).toBe(1);
+    expect(out.sets).toBe(2);
+    expect(out.data?.nodes[0]).toMatchObject({ id: 'toolu_nested', status: 'done', toolCalls: 9 });
   });
 
   it('live updates repaint the focused node whatever it is — no main-only or subagent-only gate', () => {
@@ -1009,6 +1149,8 @@ describe('panel — drill-down over the same node type (path · focused node · 
   });
 });
 
+// Not a tree: one child's live block beside the call that started it (status, time, tools, what it does,
+// 열기) — so it keeps its own renderer, wlChildBlock, over the same node model.
 describe('work log — a child is one live block at the point it was started', () => {
   const ENTRY_FNS = [...NODE_FNS, 'decodeSlackEntities', 'wlChildBlock', 'wlToolSummary', 'renderWorkLogEntry'];
   const spawn = { seq: 2, ts: 0, kind: 'tool', tool: 'Agent', text: 'Agent {}', agentRef: 'toolu_explore' };
@@ -1124,15 +1266,15 @@ describe('live morph (review B r2) — a live update keeps the nodes that did no
     h(
       'div',
       { class: 'ag-tree' },
-      h('button', { class: 'ag-row is-main', 'data-agent-open': '' }, '메인'),
+      h('button', { class: 'ag-row is-main', 'data-mk': '' }, '메인'),
       h(
         'button',
-        { class: 'ag-row is-sub is-running', 'data-agent-open': 'toolu_a' },
+        { class: 'ag-row is-sub is-running', 'data-mk': 'toolu_a' },
         h('span', { class: 'ag-icon' }, h('span', { class: 'spinner ag-spinner' })),
         h('span', { class: 'ag-tools' }, tools),
         h('span', { class: 'ag-span' }, h('i', { style: width })),
       ),
-      h('button', { class: 'ag-row is-sub is-' + second, 'data-agent-open': 'toolu_b' }, second),
+      h('button', { class: 'ag-row is-sub is-' + second, 'data-mk': 'toolu_b' }, second),
     );
 
   it('a tool count and the waterfall move in place — the row, its spinner and its bar are the same nodes', () => {
@@ -1154,9 +1296,9 @@ describe('live morph (review B r2) — a live update keeps the nodes that did no
     const live = tree('툴 3', 'w', 'running');
     const b = live.kids[2];
     const fresh = tree('툴 3', 'w', 'running');
-    fresh.insertBefore(h('button', { class: 'ag-row is-sub', 'data-agent-open': 'toolu_new' }, 'new'), fresh.kids[2]);
+    fresh.insertBefore(h('button', { class: 'ag-row is-sub', 'data-mk': 'toolu_new' }, 'new'), fresh.kids[2]);
     morph.domMorph(live, fresh);
-    expect(live.kids.map((k) => k.getAttribute('data-agent-open'))).toEqual(['', 'toolu_a', 'toolu_new', 'toolu_b']);
+    expect(live.kids.map((k) => k.getAttribute('data-mk'))).toEqual(['', 'toolu_a', 'toolu_new', 'toolu_b']);
     expect(live.kids[3]).toBe(b);
   });
 
@@ -1179,7 +1321,7 @@ describe('live morph (review B r2) — a live update keeps the nodes that did no
     const fresh = tree('툴 3', 'w', 'running');
     fresh.removeChild(fresh.kids[1]);
     morph.domMorph(live, fresh);
-    expect(live.kids.map((k) => k.getAttribute('data-agent-open'))).toEqual(['', 'toolu_b']);
+    expect(live.kids.map((k) => k.getAttribute('data-mk'))).toEqual(['', 'toolu_b']);
     expect(live.kids[1]).toBe(b);
   });
 
@@ -1188,9 +1330,9 @@ describe('live morph (review B r2) — a live update keeps the nodes that did no
     const b = live.kids[2];
     const fresh = tree('툴 3', 'w', 'running');
     fresh.removeChild(fresh.kids[1]);
-    fresh.insertBefore(h('button', { class: 'ag-row is-sub', 'data-agent-open': 'toolu_c' }, 'c'), null);
+    fresh.insertBefore(h('button', { class: 'ag-row is-sub', 'data-mk': 'toolu_c' }, 'c'), null);
     morph.domMorph(live, fresh);
-    expect(live.kids.map((k) => k.getAttribute('data-agent-open'))).toEqual(['', 'toolu_b', 'toolu_c']);
+    expect(live.kids.map((k) => k.getAttribute('data-mk'))).toEqual(['', 'toolu_b', 'toolu_c']);
     expect(live.kids[1]).toBe(b);
   });
 
@@ -1201,7 +1343,7 @@ describe('live morph (review B r2) — a live update keeps the nodes that did no
         { class: 'card-body' },
         ...(withSub ? [h('div', { class: 'card-sub' }, 'issue title')] : []),
         h('div', { class: 'card-meta' }, 'meta'),
-        h('div', { class: 'ag-tree' }, h('button', { class: 'ag-row is-sub', 'data-agent-open': 'toolu_a' }, 'A')),
+        h('div', { class: 'ag-tree' }, h('button', { class: 'ag-row is-sub', 'data-mk': 'toolu_a' }, 'A')),
       );
     const live = body(false);
     const meta = live.kids[0];
@@ -1242,11 +1384,11 @@ describe('live morph (review B r2) — a live update keeps the nodes that did no
     expect(field.value).toBe('');
   });
 
-  it('nested tree items pair by node id inside their own group — a new grandchild keeps its siblings and their subtrees', () => {
+  it('nested keyed records pair inside their own group — a new grandchild keeps its siblings and their subtrees', () => {
     const item = (id: string, ...kids: FakeNode[]) =>
       h(
         'li',
-        { class: 'an is-running', 'data-agent-open': id },
+        { class: 'an is-running', 'data-mk': id },
         h('div', { class: 'an-row' }, id),
         ...(kids.length ? [h('ul', { class: 'an-kids', role: 'group' }, ...kids)] : []),
       );
@@ -1256,7 +1398,7 @@ describe('live morph (review B r2) — a live update keeps the nodes that did no
     const b = live.kids[0].kids[1].kids[1];
     morph.domMorph(live, h('ul', { class: 'an-tree' }, item('', item('a', item('a0'), item('a1')), item('b'))));
     expect(live.kids[0].kids[1].kids[0]).toBe(a);
-    expect(a.kids[1].kids.map((k) => k.getAttribute('data-agent-open'))).toEqual(['a0', 'a1']);
+    expect(a.kids[1].kids.map((k) => k.getAttribute('data-mk'))).toEqual(['a0', 'a1']);
     expect(a.kids[1].kids[1]).toBe(a1);
     expect(live.kids[0].kids[1].kids[1]).toBe(b);
   });
