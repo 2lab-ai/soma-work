@@ -51,7 +51,9 @@ jobs:
       (github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository)
     runs-on: [self-hosted, fable-m5max]
-    timeout-minutes: 15
+    # 25, not 15: on 2026-10-27, with the shared runner host at load 150-200, test:release took
+    # 12.1-14.3 min and 4 runs (main's push CI among them) were cancelled at 15 with no test failing.
+    timeout-minutes: 25
 
     steps:
       - uses: actions/checkout@v4
