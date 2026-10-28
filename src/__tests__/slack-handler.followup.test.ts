@@ -13,6 +13,7 @@ import {
   type FollowupQueueView,
   parseFollowupItemActionValue,
 } from '@soma/slack/followup-queue-blocks';
+import { parseFollowupQueueSnapshot } from '@soma/slack/followup-queue-store';
 import { getMetricsEmitter } from '../metrics/event-emitter';
 import { QueueHandler } from '../slack/commands/queue-handler';
 import { ThreadSurface } from '../slack/thread-surface';
@@ -321,6 +322,34 @@ describe('SlackHandler — follow-up queue host', () => {
   });
 
   /**
+   * work-m64 dev, 2026-10-28: an admin approved an environment skill while the requester's
+   * session was still running, the approval sent the requester's turn again with
+   * `ts: ''`, and the queue store refused it — "큐 저장에 실패 — …message.ts is not a
+   * non-empty string". The action handlers that inject a turn (env-skill and skill
+   * approvals, session actions) all send one without a Slack message of its own.
+   */
+  it('queues a turn sent without a Slack ts behind a running turn, each under its own key', async () => {
+    const { settle } = await startBusyTurn();
+
+    await handler.handleMessage(message({ ts: '', text: '어드민이 허용했습니다 — 이어서 진행하세요' }), say());
+    await handler.handleMessage(message({ ts: '', text: '세션 액션 — 두 번째' }), say());
+
+    const queued = items();
+    expect(queued, 'both turns are stored; the second is not a duplicate of the first').toHaveLength(2);
+    for (const item of queued) expect(item.message.ts).toMatch(/^\d+\.\d{6}$/);
+    expect(queued[0].eventKey).not.toBe(queued[1].eventKey);
+    // The production schema gate accepts what was saved.
+    expect(() => parseFollowupQueueSnapshot(saved[saved.length - 1])).not.toThrow();
+    expect(postSystemMessage).not.toHaveBeenCalledWith(
+      CHANNEL,
+      expect.stringContaining('큐 저장에 실패'),
+      expect.anything(),
+    );
+
+    await settle();
+  });
+
+  /**
    * Tail anchoring (A36) — the panel can only stay at the bottom of its thread
    * if it hears about EVERY message that lands below it. Bot writes report
    * themselves through the api helper; an inbound human reply never touches it,
@@ -346,6 +375,15 @@ describe('SlackHandler — follow-up queue host', () => {
     handlerAny.slackApi.notifyThreadPost = notifyThreadPost;
 
     await handler.handleMessage(message({ ts: '333.445', synthetic: true }), say());
+
+    expect(notifyThreadPost).not.toHaveBeenCalled();
+  });
+
+  it('reports nothing for a turn sent without a Slack ts — its minted ts names no message', async () => {
+    const notifyThreadPost = vi.fn();
+    handlerAny.slackApi.notifyThreadPost = notifyThreadPost;
+
+    await handler.handleMessage(message({ ts: '' }), say());
 
     expect(notifyThreadPost).not.toHaveBeenCalled();
   });

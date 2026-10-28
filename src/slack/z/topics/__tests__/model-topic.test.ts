@@ -121,6 +121,22 @@ describe('model-topic.applyModel', () => {
     expect(userSettingsStore.getUserDefaultModel('U_FABLE51')).toBe('claude-fable-5-1[1m]');
   });
 
+  it('resolves and persists `sol` as the newest sol [1m] id gpt-6.1-sol[1m]', async () => {
+    const r = await applyModel({ userId: 'U_SOL61', value: 'sol' });
+    expect(r.ok).toBe(true);
+    expect(r.description).toContain('gpt-6.1-sol[1m]');
+    const { userSettingsStore } = await import('../../../../user-settings-store');
+    expect(userSettingsStore.getUserDefaultModel('U_SOL61')).toBe('gpt-6.1-sol[1m]');
+  });
+
+  it('resolves and persists `sol[1m]` as gpt-6.1-sol[1m]', async () => {
+    const r = await applyModel({ userId: 'U_SOL61_1M', value: 'sol[1m]' });
+    expect(r.ok).toBe(true);
+    expect(r.description).toContain('gpt-6.1-sol[1m]');
+    const { userSettingsStore } = await import('../../../../user-settings-store');
+    expect(userSettingsStore.getUserDefaultModel('U_SOL61_1M')).toBe('gpt-6.1-sol[1m]');
+  });
+
   // --- Fake `grok-*[1m]`: rejected, never normalized ---
 
   it('rejects grok-4.6[1m] VISIBLY and suggests bare grok-4.6', async () => {

@@ -213,6 +213,12 @@ Copy the secret, then run its line. `cd /` matters because the broker user canno
 clears the clipboard. Then check with the same command using `check-policy` instead of `ingest …`, and run the
 installer again to start the daemon.
 
+**Approval buttons (optional).** With the app's app-level token stored as `slack broker-app-socket`, cards get
+승인 / 거부 buttons and the broker receives their clicks over Socket Mode. Create the token on the app's
+Basic Information page (App-Level Tokens, scope `connections:write`; the manifest turns on Socket Mode and
+interactivity), ingest it like the others (`ingest slack broker-app-socket`), and restart the daemon. Without it
+the cards carry no buttons and ✅ / ❌ reactions decide, as before; reactions keep working when buttons are on.
+
 ## Upgrade
 
 Build the new version (see "Before you start") and run `install.sh` again. The installer keeps `policy.json` and
