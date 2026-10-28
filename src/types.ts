@@ -36,6 +36,7 @@ export type {
   WorkflowType,
 } from 'somalib/model-commands/session-types';
 
+import type { SdkUsageBaseline, TaskUsage } from '@soma/slack/session-usage-math';
 import type {
   HandoffContext,
   RenewState,
@@ -111,6 +112,19 @@ export interface SessionUsage {
     }
   >;
 
+  /**
+   * Spend a result-less turn folded into the totals above, until the next
+   * resumed result settles it (`settleFoldedLiveUsage`). Runtime-only.
+   */
+  foldedLiveUsage?: {
+    inputTokens: number;
+    outputTokens: number;
+    cacheReadTokens: number;
+    cacheCreateTokens: number;
+    costUsd: number;
+    sdkSessionId?: string;
+  };
+
   lastUpdated: number; // Timestamp of last update
 }
 
@@ -122,6 +136,9 @@ export interface ActionPanelPRStatus {
   approved?: boolean; // true if PR has been approved
   head?: string; // source branch
   base?: string; // target branch
+  /** Fetch provenance — see `PRStatusInfo.fetchedForUrl` in @soma/slack/action-panel-builder. */
+  fetchedForUrl?: string;
+  linkStatusAtFetch?: string;
 }
 
 export interface ActionPanelState {
@@ -345,6 +362,12 @@ export interface SessionGoal {
  * to the package's compiled `dist/`, which is not guaranteed to exist when
  * this file is typechecked.
  */
+/** The cron job a session was created by (SSOT 2026-10-23). `id` is absent only when the fire carried none. */
+export interface SessionCronJob {
+  id?: string;
+  name: string;
+}
+
 export interface SessionIncidentRequest {
   readonly version: 1;
   readonly incident_id: string;
@@ -381,6 +404,18 @@ export interface ConversationSession {
   workflow?: WorkflowType; // Determined workflow type
   // Token usage tracking
   usage?: SessionUsage;
+  /**
+   * Last per-model running total the SDK reported for `sessionId` (persisted).
+   * A result's `modelUsage` is cumulative for the SDK session, so each turn
+   * counts only the growth past this — see `toTurnUsage`.
+   */
+  sdkUsageBaseline?: SdkUsageBaseline;
+  /**
+   * SSOT 2026-10-26 T3 — what the whole task spent (main agent + every
+   * subagent), across SDK sessions, restarts and resets. Fed the same per-turn
+   * spend as `usage.total*`; persisted, never reset. The dashboard card's total.
+   */
+  taskUsage?: TaskUsage;
   // Renew command state
   renewState?: RenewState;
   // User message to execute after renew (e.g., "/renew PR 리뷰해줘" → "PR 리뷰해줘")
@@ -491,6 +526,19 @@ export interface ConversationSession {
   isOnboarding?: boolean;
   // Session-unique base working directory (auto-created on new session, cleaned up on end)
   sessionWorkingDir?: string;
+  /**
+   * The cron job whose fire CREATED this session (SSOT 2026-10-23 T1/T3).
+   * Stamped once by `SessionInitializer`'s dispatch-bypass branch; a fire
+   * injected into an existing session never sets it. The dashboard files the
+   * session in the CRON lane under this job. Persisted and archived.
+   */
+  cronJob?: SessionCronJob;
+  /**
+   * The title is a placeholder (the cron job name) that the first clear title
+   * — the turn summary or a linked issue/PR — may replace (T2). Any explicit
+   * title write clears it.
+   */
+  titleProvisional?: boolean;
   /**
    * Set once by `SessionInitializer` from a verified incident turn; makes this
    * session incident-owned (restricted runtime, ordinary traffic refused in

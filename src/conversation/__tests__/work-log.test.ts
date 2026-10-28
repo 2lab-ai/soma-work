@@ -204,6 +204,40 @@ describe('work log store', () => {
     expect(again.entries[again.entries.length - 1].attributed).toBeUndefined();
   });
 
+  it('keeps the SDK tool-use id that pairs a tool_result with its call — clamped, absent when not given', async () => {
+    const call = await wl.appendWorkLog('conv-pair', {
+      kind: 'tool',
+      text: 'Read a.ts',
+      tool: 'Read',
+      toolUseId: 'toolu_01A',
+    });
+    const result = await wl.appendWorkLog('conv-pair', {
+      kind: 'tool_result',
+      text: 'Read ok',
+      tool: 'Read',
+      ok: true,
+      toolUseId: 'toolu_01A',
+    });
+    const long = await wl.appendWorkLog('conv-pair', {
+      kind: 'tool',
+      text: 'Bash ls',
+      tool: 'Bash',
+      toolUseId: 'y'.repeat(5000),
+    });
+    const plain = await wl.appendWorkLog('conv-pair', { kind: 'narration', text: 'thinking' });
+    expect(call.toolUseId).toBe('toolu_01A');
+    expect(result.toolUseId).toBe('toolu_01A');
+    expect(long.toolUseId?.length).toBe(wl.WORK_LOG_FIELD_MAX);
+    expect('toolUseId' in plain).toBe(false);
+    const page = await (await loadFresh()).readWorkLog('conv-pair');
+    expect(page.entries.map((e) => e.toolUseId?.slice(0, 9))).toEqual([
+      'toolu_01A',
+      'toolu_01A',
+      'yyyyyyyyy',
+      undefined,
+    ]);
+  });
+
   it('serializes concurrent appends so every line stays whole and ordered', async () => {
     const all = Array.from({ length: 50 }, (_, i) =>
       wl.appendWorkLog('conv-c', { kind: 'narration', text: `step ${i}` }),

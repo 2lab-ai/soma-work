@@ -9,11 +9,13 @@
  * and appends `invokedBlock` to that turn's dispatch prompt so the model
  * actually executes the skills.
  *
- * The `<invoked_skills>` block format is byte-identical to
- * `SkillForceHandler.execute` so the model sees the same structure whether a
- * skill was fired manually or via autoskill.
+ * The `<invoked_skills>` block format — including the `Base directory for this
+ * skill:` header line — is byte-identical to `SkillForceHandler.execute` so the
+ * model sees the same structure whether a skill was fired manually or via
+ * autoskill.
  */
 
+import * as path from 'node:path';
 import { resolveAutoskillContent } from '../skill-locator';
 import { userSettingsStore } from '../user-settings-store';
 import { ToolFormatter } from './tool-formatter';
@@ -41,7 +43,8 @@ export function buildAutoskillFire(userId: string, casterName: string): Autoskil
   for (const name of names) {
     const resolved = resolveAutoskillContent(name, userId);
     if (!resolved) continue; // skip unresolvable names silently (same as $skill)
-    blocks.push(`<${resolved.key}>\n${resolved.content}\n</${resolved.key}>`);
+    const header = `Base directory for this skill: ${path.dirname(resolved.file)}`;
+    blocks.push(`<${resolved.key}>\n${header}\n\n${resolved.content}\n</${resolved.key}>`);
     keys.push(resolved.key);
   }
   if (blocks.length === 0) return null;

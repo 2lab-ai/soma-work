@@ -34,14 +34,16 @@ import {
   resolveShowSummary,
 } from '../../claude-handler';
 import { CONFIG_FILE } from '../../env-paths';
+import { checkEnvSkillAccess, type EnvSkillRegistry, envSkillSandboxDenyRead } from '../../env-skill-registry';
 import type { IncidentEvidence, IncidentEvidenceConfig } from '../../incident/evidence';
 import { assertIncidentRequest, buildIncidentSdkOptions, type IncidentRequestLike } from '../../incident/sdk-options';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import { getPermissionGatedServers, loadMcpToolPermissions } from '../../mcp-tool-permission-config';
 import { resolveModelProfile } from '../../metrics/model-profile';
-import { clampEffortToModel } from '../../model-catalog';
+import { clampEffortToModel, modelCatalog } from '../../model-catalog';
 import { isSafePathSegment, normalizeTmpPath } from '../../path-utils';
 import type { SdkPluginPath } from '../../plugin/types';
+import { extendSandboxWithGrant, loadDeploySandboxGrant } from '../../sandbox/deploy-sandbox-grant';
 import { DEV_DOMAIN_ALLOWLIST } from '../../sandbox/dev-domain-allowlist';
 import type { SessionRegistry } from '../../session-registry';
 import type { ConversationSession, WorkflowType } from '../../types';
@@ -50,6 +52,29 @@ import { createTrackedClaudeProcessSpawner } from '../claude-child-process-regis
 import { createNativeWriteCheck } from '../policy/native-write-boundary';
 import type { SafetyClassifier } from '../policy/safety-classifier';
 import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from '../policy/tool-policy';
+
+/** The llmux catalog group whose streams report each call's usage on `message_start`. */
+const CLAUDE_GROUP = 'claude';
+/** Claude ids, for an id the catalog does not list (cold start, non-llmux auth). */
+const CLAUDE_MODEL_RE = /^claude-/i;
+
+/**
+ * Does this model's stream leave per-call usage to `message_delta`, so the
+ * harness must request partial messages to see it? Every non-claude llmux
+ * provider does (codex, grok — measured: `message_start.usage = {0, 0}`).
+ *
+ * The catalog group is the authority (the same predicate `host-pricing.ts`
+ * prices by); the id prefix only decides for an id the catalog does not
+ * list, so a claude session on an empty catalog is not flooded with frames.
+ * A false positive costs only frames: the mapper reads a delta only when its
+ * call's `message_start` was empty.
+ */
+function needsStreamedCallUsage(model: string): boolean {
+  const id = model.trim();
+  const group = modelCatalog.getGroupFor(id);
+  if (group) return group !== CLAUDE_GROUP;
+  return !CLAUDE_MODEL_RE.test(id);
+}
 
 /**
  * Structural logger surface used by the builder. The concrete `Logger`
@@ -82,6 +107,16 @@ export interface BuildStreamOptionsDeps {
     gated: string[],
   ) => string | null | undefined;
   /**
+   * The deploy-time environment plugins (`plugin.envPlugins`) and where their skills live — what
+   * step 6b of the policy checks a `Skill` call against. Absent → no environment skills.
+   */
+  getEnvSkillRegistry?: () => EnvSkillRegistry;
+  /**
+   * Enforcer of a step-6b denial: ask the admins for the skill (DM prompt + a notice in the
+   * thread). Fire-and-forget from the hook; the request store dedupes repeated calls per thread.
+   */
+  onEnvSkillDenied?: (denial: EnvSkillDenial) => Promise<void>;
+  /**
    * Auto-mode safety classifier (guardian). Consulted only when the policy
    * returns the `classify` decision (a dangerous-rule hit in `auto` mode).
    * When absent, `classify` fails closed to `ask` — i.e. auto mode degrades to
@@ -104,6 +139,18 @@ export interface BuildStreamOptionsDeps {
    */
   onIncidentEvidence?: (request: IncidentRequestLike, evidence: IncidentEvidence) => void;
 }
+
+/** A `Skill` call step 6b denied: who asked, for which environment skill, in which thread. */
+export interface EnvSkillDenial {
+  requesterId: string;
+  /** `plugin:skill` */
+  skillKey: string;
+  channel: string;
+  threadTs?: string;
+}
+
+/** The reason prefix step 6b of `evaluateToolPolicy` denies with (`env-skill: <plugin:skill>`). */
+const ENV_SKILL_REASON_PREFIX = 'env-skill: ';
 
 export interface BuildStreamOptionsInput {
   queryEnv: Record<string, string | undefined>;
@@ -226,6 +273,8 @@ export async function buildStreamOptions(
     const cachedPermConfig = CONFIG_FILE ? loadMcpToolPermissions(CONFIG_FILE) : {};
     const gatedServerNames = getPermissionGatedServers(cachedPermConfig);
     const hookSessionKey = deps.sessionRegistry.getSessionKey(slackContext.channel, slackContext.threadTs);
+    const envSkillScope = { channel: slackContext.channel, threadTs: slackContext.threadTs };
+    const envRegistry = deps.getEnvSkillRegistry?.();
 
     const policyHook = async (input: HookInput): Promise<HookJSONOutput> => {
       const toolName = (input as { tool_name?: string }).tool_name || '';
@@ -245,12 +294,32 @@ export async function buildStreamOptions(
             ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
             : null,
         ...(nativeWriteRoots ? { checkNativeWrite: createNativeWriteCheck(nativeWriteRoots, hookCwd) } : {}),
+        checkEnvSkillPermission: (tool, toolInput) =>
+          envRegistry
+            ? checkEnvSkillAccess(tool, toolInput, policyUser, envSkillScope, envRegistry, workingDirectory)
+            : null,
       };
 
       const result = evaluateToolPolicy(toolName, toolInput, ctx);
       switch (result.decision) {
-        case 'deny':
+        case 'deny': {
           logger.warn('Tool policy denied call', { tool: toolName, user: policyUser, reason: result.reason });
+          const envSkillKey = result.reason.startsWith(ENV_SKILL_REASON_PREFIX)
+            ? result.reason.slice(ENV_SKILL_REASON_PREFIX.length)
+            : null;
+          // Enforce step 6b: ask the admins — only for a denial that names one skill (`plugin:skill`);
+          // a read of other plugin files or an unnamed `Skill` call has no skill to grant. Never
+          // awaited — the denial must reach the model now.
+          if (envSkillKey?.includes(':') && deps.onEnvSkillDenied) {
+            void deps
+              .onEnvSkillDenied({ requesterId: policyUser, skillKey: envSkillKey, ...envSkillScope })
+              .catch((err: unknown) =>
+                logger.warn('Environment skill permission request failed', {
+                  user: policyUser,
+                  err: err instanceof Error ? err.message : String(err),
+                }),
+              );
+          }
           return {
             hookSpecificOutput: {
               hookEventName: 'PreToolUse',
@@ -258,6 +327,7 @@ export async function buildStreamOptions(
               ...(result.denyMessage ? { permissionDecisionReason: result.denyMessage } : {}),
             },
           };
+        }
         case 'classify': {
           // Auto mode: a dangerous-rule hit. Consult the guardian classifier;
           // fail closed to `ask` when no classifier is wired or it errors.
@@ -402,6 +472,19 @@ export async function buildStreamOptions(
     }
   }
 
+  // Per-call usage for non-claude models (sol[1m] context miscalculation,
+  // 2026-10-27). llmux's codex / grok providers send `message_start.usage =
+  // {0, 0}` and report each call's usage on `message_delta` only, and the
+  // pinned SDK copies `message_start` usage onto every assistant frame — so
+  // without partial messages the harness never sees a per-call reading and
+  // falls back to the turn's billing aggregate (every call summed) as the
+  // current context. The mapper reads the `message_delta` usage off these
+  // frames (`sdk-message-to-event.ts#mapStreamEvent`). Claude streams carry
+  // the reading on `message_start` already, so they skip the extra frames.
+  if (options.model && needsStreamedCallUsage(options.model)) {
+    options.includePartialMessages = true;
+  }
+
   // Set effort level only when explicitly configured. The value is clamped
   // to the model's llmux-catalog effort menu (e.g. grok-4.5 has no
   // xhigh/max → clamp to high) — the SAVED session/user effort is never
@@ -438,6 +521,15 @@ export async function buildStreamOptions(
       logger.debug('Thinking adaptive', { display: showSummary ? 'summarized' : 'omitted' });
     }
   }
+  // Sandbox: enabled by default for all users. Only admin-toggled
+  // `sandboxDisabled` (resolved above, with the write roots) skips it. When
+  // sandbox is active, a dev-domain allowlist (`DEV_DOMAIN_ALLOWLIST`) is
+  // applied to the network unless the user has set `networkDisabled=true`, in
+  // which case every outbound domain is blocked by the SDK default.
+  //
+  // Applies from the NEXT user turn \u2014 SDK sandbox config is captured at
+  // `query()` init and OS-enforced (Seatbelt on macOS, bubblewrap on
+  // Linux), so in-flight queries keep the previous policy.
   if (!sandboxDisabled) {
     const sandboxConfig: NonNullable<Options['sandbox']> = {
       enabled: true,
@@ -460,11 +552,45 @@ export async function buildStreamOptions(
     if (!networkDisabled) {
       sandboxConfig.network = { allowedDomains: [...DEV_DOMAIN_ALLOWLIST] };
     }
+    // Deploy-workflow grant (`config.json#deploySandbox`, written per runner
+    // by the fleet deploy): post-deploy QA, run in the requester's deploy
+    // session, needs a few host directories and the QA environment's
+    // hostnames. BOTH the turn's sender and the session owner must be listed
+    // (one person when they are the same): someone else replying in the
+    // thread runs without it, and so does a listed sender's turn in a session
+    // an unlisted user owns — the owner may steer messages into a running
+    // turn (`SessionRegistry.canInterrupt`), which would otherwise run them
+    // under the grant. Domains only extend an active allowlist;
+    // `networkDisabled` keeps every domain blocked.
+    if (session?.workflow === 'deploy' && session.ownerId && slackContext?.user) {
+      const owner = session.ownerId;
+      const grant = loadDeploySandboxGrant(CONFIG_FILE, logger);
+      if (grant?.users.includes(slackContext.user) && grant.users.includes(owner)) {
+        const added = extendSandboxWithGrant(sandboxConfig, grant, { network: !networkDisabled });
+        if (added.paths + added.domains > 0) {
+          // Counts only: the values are host topology.
+          logger.info('Deploy sandbox grant applied', added);
+        }
+      }
+    }
+    // Environment plugins: a non-admin's Bash must not read them by any spelling (relative paths,
+    // wildcards, symbolic links — what step 6b's text check cannot see). OS-enforced read deny
+    // of their directories, unless the all-environment-skills grant opens them.
+    if (slackContext?.user && !isAdminUser(slackContext.user)) {
+      const envRegistry = deps.getEnvSkillRegistry?.();
+      const denyRead = envRegistry ? envSkillSandboxDenyRead(envRegistry, slackContext.user) : [];
+      if (denyRead.length > 0) {
+        sandboxConfig.filesystem = {
+          ...(sandboxConfig.filesystem ?? {}),
+          denyRead: [...(sandboxConfig.filesystem?.denyRead ?? []), ...denyRead],
+        };
+      }
+    }
     options.sandbox = sandboxConfig;
     logger.debug('Sandbox enabled', {
       user: slackContext?.user,
       network: networkDisabled ? 'off' : 'on',
-      domains: networkDisabled ? 0 : DEV_DOMAIN_ALLOWLIST.length,
+      domains: sandboxConfig.network?.allowedDomains?.length ?? 0,
     });
   } else {
     logger.info('Sandbox disabled by admin setting', { user: slackContext?.user });

@@ -2,6 +2,35 @@
  * Conversation history types for recording and viewing session dialogues.
  */
 
+import type { TurnAttachment } from '@soma/slack/user-media';
+
+/**
+ * Who put a user-role turn into the conversation (dashboard SSOT 2026-10-27 T1).
+ * `system`: soma-work injected it — a synthetic event (restart resume, error
+ * retry, goal continuation, cron), a host continuation (renew/load, handoff,
+ * emergency compact) or the threshold auto-compact that swapped the user's
+ * message for `/compact`. `user`: a person sent it. Absent on turns recorded
+ * before the field existed: the dashboard then reads the text alone.
+ */
+export interface TurnOrigin {
+  by: 'user' | 'system';
+}
+
+/**
+ * A `/compact` turn's compaction (dashboard SSOT 2026-10-27 T2): how long it
+ * was expected to take when it started, and what the SDK reported when it
+ * ended. `endedAt` is absent while it runs and when it never finished.
+ */
+export interface TurnCompaction {
+  /** The conversation's previous compaction duration — absent when there was none. */
+  estimateMs?: number;
+  endedAt?: number;
+  durationMs?: number;
+  preTokens?: number;
+  postTokens?: number;
+  trigger?: 'manual' | 'auto';
+}
+
 /**
  * A single turn in a conversation (user message or assistant response)
  */
@@ -16,6 +45,16 @@ export interface ConversationTurn {
 
   // Content
   rawContent: string; // Full raw content
+  /**
+   * User turn: the files the user attached to this instruction (user media,
+   * SSOT 2026-10-25). The turn is their index; the bytes live in
+   * `src/conversation/user-media.ts`. Absent when none.
+   */
+  attachments?: TurnAttachment[];
+  /** User turn: who sent it (absent on older turns). */
+  origin?: TurnOrigin;
+  /** User turn that is a `/compact`: its compaction. */
+  compact?: TurnCompaction;
 
   // Assistant turn fields (populated for role === 'assistant')
   summaryTitle?: string; // 1-line title from SUMMARY_MODEL

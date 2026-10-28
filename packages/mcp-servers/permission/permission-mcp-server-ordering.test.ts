@@ -41,4 +41,26 @@ describe('permission_prompt ordering', () => {
     expect(cleanup).toHaveBeenCalledTimes(1);
     expect(JSON.parse((result.content[0] as { text: string }).text)).toMatchObject({ behavior: 'deny' });
   });
+
+  // SSOT 2026-10-24 D7 — the dashboard and the shared answer path accept only
+  // records this server wrote. mcp-tool-permission grant requests share the
+  // pending directory and must stay unanswerable by their own requester.
+  it('stamps its pending approval as a permission prompt', async () => {
+    vi.stubEnv('SLACK_BOT_TOKEN', 'xoxb-ordering-test');
+    vi.stubEnv('SLACK_CONTEXT', JSON.stringify({ channel: 'C1', threadTs: '1.000', user: 'U1' }));
+    const { getPermissionServer } = await import('./permission-mcp-server.js');
+    const server = getPermissionServer();
+
+    const stored: unknown[] = [];
+    vi.spyOn(sharedStore, 'storePendingApproval').mockImplementation(async (_id, approval) => {
+      stored.push(approval);
+    });
+    vi.spyOn(sharedStore, 'cleanup').mockResolvedValue(undefined);
+    const messenger = (server as unknown as { messenger: { sendPermissionRequest: () => Promise<unknown> } }).messenger;
+    vi.spyOn(messenger, 'sendPermissionRequest').mockRejectedValue(new Error('slack down'));
+
+    await server.handleTool('permission_prompt', { tool_name: 'Bash', input: { command: 'ls' } });
+
+    expect(stored).toEqual([expect.objectContaining({ kind: 'tool_permission', tool_name: 'Bash', user: 'U1' })]);
+  });
 });
