@@ -140,7 +140,7 @@ function validateMessage(value: unknown, where: string): { channel: string; ts: 
     for (const field of ['sourceChannel', 'sourceThreadTs']) {
       optionalText(route[field], `${where}.routeContext.${field}`);
     }
-    for (const field of ['skipAutoBotThread', 'compactRedispatch', 'goalContinuation']) {
+    for (const field of ['skipAutoBotThread', 'compactRedispatch', 'hostTurn', 'goalContinuation']) {
       optionalBool(route[field], `${where}.routeContext.${field}`);
     }
   }

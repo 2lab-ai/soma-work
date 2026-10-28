@@ -11,6 +11,7 @@
 -- models: src/agent-runtime/policy/tool-policy.ts:220-334 (evaluateToolPolicy)
 -- models: src/agent-runtime/policy/tool-policy.ts:343 (TOOL_POLICY_MATCHERS)
 -- models: src/agent-runtime/policy/tool-policy.ts:360 (INCIDENT_TOOL_POLICY_MATCHERS)
+-- models: src/agent-runtime/policy/native-write-boundary.ts:53-60 (NATIVE_WRITE_TOOLS)
 -- models: src/agent-runtime/policy/permission-mode.ts:28 (PermissionMode)
 -- models: src/hooks/bypass-permission-guard.ts:38-51 (NATIVE_BYPASS_TOOLS)
 import SomaVerify.Support.Json
@@ -20,7 +21,7 @@ import SomaVerify.Support.JsString
 # Model of `evaluateToolPolicy`
 
 `evaluateToolPolicy(toolName, toolInput, ctx)` is the single authorization decision for a tool
-call: a deny tier of seven guards, where the first guard that fires returns, then the incident
+call: a deny tier of eight guards, where the first guard that fires returns, then the incident
 READ-ONLY tier when `ctx.incidentReadOnly` is set, else a mode tier. This file transcribes it
 branch by branch; line numbers refer to `src/agent-runtime/policy/tool-policy.ts` unless another
 file is named.
@@ -30,10 +31,19 @@ and `evaluate` is `evaluateToolPolicy none`, the call with that property undefin
 of `Spec.lean`, `Proofs.lean`, `Simplification.lean` and `ProofsDevops.lean` is about `evaluate`, so
 the incident tier leaves each of them as it was; `ProofsIncident.lean` proves what the tier does.
 
+`ctx.checkNativeWrite`, the native write boundary (step 3b), is optional as well. Its value is
+the first argument of `evaluateToolPolicyWith`, the transcription of the whole function as it is
+now (phase 4 with step 3b), and `evaluateToolPolicyEnv` is that function with the property
+undefined, proved equal to `evaluateToolPolicyWith none` (`ProofsNativeWrite.lean`). So the
+theorems below about `evaluateToolPolicy`, `evaluate`, `evaluateToolPolicyEnv` and `evaluateEnv`
+are about sessions without a boundary, and `ProofsNativeWrite.lean` proves what the boundary adds.
+
 The guard primitives are inputs of the model, not part of it. `isSshCommand`,
 `isCrossUserAccess`, `bypassBashPermissionDecision`, the three sensitive-path checks, the three
 devops-secret checks (`devops-secret-guard.ts`), `handlePrIssuePrecondition`,
-`ctx.checkMcpToolPermission` and `ctx.checkEnvSkillPermission` appear through the values they return (`Primitives`). The model is about how the policy combines those values, which is also
+`ctx.checkMcpToolPermission` and `ctx.checkEnvSkillPermission` appear through the values they
+return (`Primitives`), and `ctx.checkNativeWrite` through the value it returns
+(`evaluateToolPolicyWith`'s first argument). The model is about how the policy combines those values, which is also
 what `tool-policy.lean-conformance.test.ts` exercises: it mocks the primitives and feeds each
 vector's values to the real function.
 
@@ -41,15 +51,17 @@ What the policy reads itself, and the model therefore transcribes:
 
 * the tool name, through `=== 'Bash'`, the `switch` in `checkSensitiveForTool` and in
   `checkDevopsSecretForTool`, `startsWith('mcp__')`, `=== PR_CREATE_MCP_TOOL`, `=== 'Skill'`,
-  `NATIVE_BYPASS_TOOLS.includes` and `allowedMcpTools.includes`;
+  `NATIVE_BYPASS_TOOLS.includes`, `NATIVE_WRITE_TOOLS.includes`, `ENV_GATED_TOOLS.includes` and
+  `allowedMcpTools.includes`;
 * `toolInput.command`, `toolInput.file_path`, `toolInput.pattern` and `toolInput.path`, after
   line 225 replaces an undefined `toolInput` with `{}`. `checkSensitiveForTool` picks the
   arguments of its sensitive-path check from them (lines 151-157), and `toolInput.path` also
   decides whether a Grep is checked at all (line 157). `sensitiveCall` is that call, arguments
   included. `checkDevopsSecretForTool` picks the arguments of its devops-secret check from them
   too (lines 182-190); `devopsCall` is that call;
-* `ctx.isAdmin`, `ctx.mode`, `ctx.aborted`, whether `ctx.handoffContext` is defined, and whether
-  `ctx.incidentReadOnly` is defined, with its `allowedMcpTools`.
+* `ctx.isAdmin`, `ctx.mode`, `ctx.aborted`, whether `ctx.handoffContext` is defined, whether
+  `ctx.incidentReadOnly` is defined, with its `allowedMcpTools`, and whether
+  `ctx.checkNativeWrite` is defined.
 
 The arguments of the sensitive-path and devops-secret checks are modelled; those of the other
 primitives are not. `Primitives.sensitive` is the value of the call `sensitiveCall` describes and
@@ -240,9 +252,16 @@ def nativeBypassTools : List String :=
   ["Write", "Edit", "NotebookEdit", "TodoWrite", "Read", "Glob", "Grep", "Task", "Agent",
     "WebFetch", "WebSearch", "KillShell"]
 
-/-- `TOOL_POLICY_MATCHERS` — line 343: `['Bash', NATIVE_BYPASS_TOOLS.join('|'), 'mcp__', 'Skill']`. -/
+/-- `NATIVE_WRITE_TOOLS` — native-write-boundary.ts:53-60, in source order: the native tools that
+can write a local path the call chooses. -/
+def nativeWriteTools : List String :=
+  ["Write", "Edit", "NotebookEdit", "Artifact", "EnterWorktree", "Agent"]
+
+/-- `TOOL_POLICY_MATCHERS` — lines 343-349: `['Bash', NATIVE_BYPASS_TOOLS.join('|'), 'mcp__', 'Skill',
+NATIVE_WRITE_TOOLS.filter((tool) => !NATIVE_BYPASS_TOOLS.includes(tool)).join('|')]`. -/
 def toolPolicyMatchers : List String :=
-  ["Bash", "|".intercalate nativeBypassTools, "mcp__", "Skill"]
+  ["Bash", "|".intercalate nativeBypassTools, "mcp__", "Skill",
+    "|".intercalate (nativeWriteTools.filter fun t => !nativeBypassTools.contains t)]
 
 /-- `INCIDENT_TOOL_POLICY_MATCHERS` — line 360: `[undefined]`, one entry without a matcher, which
 the SDK fires for every tool (lines 346-359). `none` is `undefined`. -/
@@ -379,6 +398,44 @@ def adminExemptGuards (incident : Option IncidentReadOnly) (i : Input) : Option 
     | some r => some r
     | none =>
     match sensitiveCheck i with
+    | some r => some r
+    | none => mcpCheck i
+  else none
+
+/-! ## The native write boundary (step 3b, lines 266-272)
+
+`ctx.checkNativeWrite` (lines 102-109) is optional. What the policy gets from it for one call is
+`nativeWrite : Option (Option String)`: `none` when the property is undefined, `some v` when it is
+set and the call returns `v` (`null` is `none`). The TS asks it only for a tool of
+`NATIVE_WRITE_TOOLS` (`&&`, line 267); the model takes the value as given, as it does for every
+primitive. The tool sets of steps 1-3 and 3b do not meet, but step 1b's does (`Write` and `Edit`
+consult the devops-secret check, which runs first), so the step can only change the result of a
+call to a native write tool whose devops-secret check came back clear. -/
+
+/-- 3b. Native write boundary — lines 266-272: for a tool of `NATIVE_WRITE_TOOLS`, when
+`ctx.checkNativeWrite` is set, any non-null value is a deny reason (`outside !== null`), the empty
+string included, and is surfaced to the model as the deny message. -/
+def nativeWriteCheck (nativeWrite : Option (Option String)) (i : Input) : Option Result :=
+  match nativeWrite with
+  | some (some outside) =>
+    if i.toolName ∈ nativeWriteTools then
+      some { decision := .deny, reason := "write-boundary: " ++ outside,
+             denyMessage := some outside }
+    else none
+  | _ => none
+
+/-- Steps 2-4 with step 3b between the sensitive-path and the MCP checks — lines 255-282.
+`nativeWrite` is what `ctx.checkNativeWrite` gives the call (`nativeWriteCheck`). -/
+def adminExemptGuardsWith (nativeWrite : Option (Option String))
+    (incident : Option IncidentReadOnly) (i : Input) : Option Result :=
+  if i.isAdmin = false ∨ incident.isSome = true then
+    match sshCheck i with
+    | some r => some r
+    | none =>
+    match sensitiveCheck i with
+    | some r => some r
+    | none =>
+    match nativeWriteCheck nativeWrite i with
     | some r => some r
     | none => mcpCheck i
   else none
@@ -524,5 +581,37 @@ def evaluateToolPolicyEnv (incident : Option IncidentReadOnly) (i : Input) : Res
 /-- `evaluateToolPolicyEnv` with `ctx.incidentReadOnly` undefined. -/
 def evaluateEnv (i : Input) : Result :=
   evaluateToolPolicyEnv none i
+
+/-! ## The native write boundary in the whole function
+
+`evaluateToolPolicyEnv` above is the function with `ctx.checkNativeWrite` undefined (step 3b never
+returns) and keeps its name, so every theorem about it and about `evaluateEnv` stands as proved.
+`evaluateToolPolicyWith` is the TS function now: the same chain, with `adminExemptGuardsWith` in
+place of `adminExemptGuards`. `ProofsNativeWrite.lean` proves the two agree whenever step 3b is
+silent, and what the step does when it fires. The conformance vectors are its output. -/
+
+/-- `evaluateToolPolicy` — lines 220-334, all of it: `nativeWrite` is what `ctx.checkNativeWrite`
+gives the call (`nativeWriteCheck`), `incident` is `ctx.incidentReadOnly`. The same steps as
+`evaluateToolPolicyEnv`, with step 3b in the non-admin block. -/
+def evaluateToolPolicyWith (nativeWrite : Option (Option String))
+    (incident : Option IncidentReadOnly) (i : Input) : Result :=
+  match abortGuard i with
+  | some r => r
+  | none =>
+  match devopsGuard i with
+  | some r => r
+  | none =>
+  match adminExemptGuardsWith nativeWrite incident i with
+  | some r => r
+  | none =>
+  match crossUserGuard i with
+  | some r => r
+  | none =>
+  match prIssueGuard i with
+  | some r => r
+  | none =>
+  match incident with
+  | some inc => evaluateIncidentReadOnly i.toolName inc
+  | none => modeTierEnv i
 
 end SomaVerify.ToolPolicy

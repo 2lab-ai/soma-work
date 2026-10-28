@@ -117,6 +117,13 @@ export interface MessageEvent {
      */
     compactRedispatch?: boolean;
     /**
+     * True for a post-compact replay of a host turn (a synthetic event — goal
+     * continuation, resume — the auto-compact intercepted or a compaction
+     * parked). The replay runs through the user-message path; this only makes
+     * the executor record the turn as soma-work's (`origin.by: 'system'`).
+     */
+    hostTurn?: boolean;
+    /**
      * True only for goal auto-continuation injections. Such a turn must
      * NEVER supersede a live request: if the slot is busy when this event
      * reaches concurrency control, the continuation is dropped (the active

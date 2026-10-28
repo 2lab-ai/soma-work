@@ -664,7 +664,14 @@ export class SlackHandler {
     // 1. StreamExecutor → EventRouter.dispatchPendingUserMessage
     //    Set on an already-constructed instance via a runtime field.
     (this.streamExecutor as any).deps.dispatchPendingUserMessage = (
-      ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean },
+      ctx: {
+        channel: string;
+        threadTs: string;
+        user: string;
+        ts: string;
+        verbatimPrompt?: boolean;
+        hostTurn?: boolean;
+      },
       text: string,
       opts?: { compactRedispatch?: boolean },
     ) => this.eventRouter.dispatchPendingUserMessage(ctx, text, opts);
@@ -2062,6 +2069,7 @@ export class SlackHandler {
         sourceThreadTs,
         sourceChannel,
         synthetic: event.synthetic,
+        hostTurn: event.routeContext?.hostTurn === true,
         literalPrompt,
       });
 
@@ -2343,6 +2351,8 @@ export class SlackHandler {
       sourceThreadTs?: string;
       sourceChannel?: string;
       synthetic?: boolean;
+      /** A post-compact replay of a host turn: recorded as soma-work's (routeContext.hostTurn). */
+      hostTurn?: boolean;
       /** The first turn's text is a goal objective — never an SDK slash command. */
       literalPrompt?: boolean;
       /**
@@ -2397,6 +2407,7 @@ export class SlackHandler {
       sourceThreadTs: context.sourceThreadTs,
       sourceChannel: context.sourceChannel,
       isUserInput: !context.synthetic,
+      hostTurn: context.hostTurn === true,
       literalPrompt: context.literalPrompt === true,
       // Same captured token, for the executor's own late-write fence.
       followupTurnEpoch: expectedTurnEpoch,

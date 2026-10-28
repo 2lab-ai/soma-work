@@ -593,10 +593,30 @@ describe('work log core (shipped wl* functions)', () => {
   });
 });
 
+// What an instruction row reads (SSOT 2026-10-28): the conversation's system-turn
+// reading and the skill badges.
+const WL_INSTRUCTION_FNS = [
+  'toNum',
+  'formatTokens',
+  'sysOneLine',
+  'sysBetween',
+  'sysResumeContext',
+  'sysTurnInfo',
+  'sysFactsHtml',
+  'estimateTokens',
+  'splitInvokedSkills',
+  'skillBadgesHtml',
+  'wlInstructionTurn',
+  'wlEntryFactsHtml',
+  'wlCutSkills',
+  'wlCutSkillsHtml',
+];
+const WL_INSTRUCTION_VARS = ['SYS_RESTART_HEADS', 'SYS_RESUME_CONTEXT', 'SYS_RETRY_MARK', '_skillBodies', '_skillSeq'];
+
 describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEntry + esc)', () => {
   const { renderWorkLogEntry } = load<{ renderWorkLogEntry(e: unknown): string }>(
-    ['decodeSlackEntities', 'esc', 'escAttr', 'wlToolSummary', 'renderWorkLogEntry'],
-    ['WL_LABELS'],
+    ['decodeSlackEntities', 'esc', 'escAttr', ...WL_INSTRUCTION_FNS, 'wlToolSummary', 'renderWorkLogEntry'],
+    ['WL_LABELS', ...WL_INSTRUCTION_VARS],
   );
   /** Every " left after removing the attributes we emit would be an attribute break-out. */
   const strayQuotes = (html: string) =>
@@ -1806,12 +1826,14 @@ describe('work-log entries open their raw output in place (shipped toggleWorkLog
         'wlEntryEl',
         'wlEntryBySeq',
         'wlFullText',
+        'escAttr',
+        ...WL_INSTRUCTION_FNS.filter((f) => f !== 'toNum'),
         'paintWorkLogDetail',
         'loadWorkLogDetail',
         'toggleWorkLogEntry',
         'retryWorkLogDetail',
       ],
-      ['WL_FORBIDDEN_MSG', 'WL_RAW_MISSING_MSG', 'WL_RAW_ERROR_MSG', 'WL_RAW_DAMAGED_MSG'],
+      ['WL_FORBIDDEN_MSG', 'WL_RAW_MISSING_MSG', 'WL_RAW_ERROR_MSG', 'WL_RAW_DAMAGED_MSG', ...WL_INSTRUCTION_VARS],
       { document, wlFetchJson, _wl: st },
       ['function setWl(s) { _wl = s; }'],
     );
@@ -1954,6 +1976,7 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
         'setTextIfChanged',
         'renderTaskMeta',
         'wlToolSummary',
+        ...WL_INSTRUCTION_FNS.filter((f) => f !== 'toNum'),
         'renderWorkLogEntry',
         'wlGroupOf',
         'wlBuildRows',
@@ -1983,7 +2006,7 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
         'setWorkLogOpen',
         'paintWorkLog',
       ],
-      ['WL_LABELS', 'WL_STOP_SEL'],
+      ['WL_LABELS', 'WL_STOP_SEL', ...WL_INSTRUCTION_VARS],
       {
         document,
         _wl: state,
