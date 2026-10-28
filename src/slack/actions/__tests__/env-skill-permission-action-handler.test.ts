@@ -89,10 +89,14 @@ describe('EnvSkillPermissionActionHandler', () => {
     });
     expect(h.grantSkill).not.toHaveBeenCalled();
     expect(h.requests.get('req-1').handled).toBe(true);
+    // The turn rides on the "이어서 실행합니다" notice (ts '1'): a real Slack message, so it
+    // has a queue identity when the session is still busy and its controls land somewhere
+    // the requester can see.
     expect(messageHandler).toHaveBeenCalledWith(
-      { user: 'U1', channel: 'C1', thread_ts: '171.1', ts: '', text: 'continue the deploy' },
+      { user: 'U1', channel: 'C1', thread_ts: '171.1', ts: '1', text: 'continue the deploy' },
       expect.any(Function),
     );
+    expect(slackApi.postMessage.mock.invocationCallOrder[0]).toBeLessThan(messageHandler.mock.invocationCallOrder[0]);
     // Every admin's copy of the prompt is closed, and the requester is told.
     expect(slackApi.updateMessage.mock.calls.map((c: any[]) => [c[0], c[1]])).toEqual([
       ['D1', '1.1'],

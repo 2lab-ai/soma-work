@@ -1,11 +1,12 @@
 /**
  * Locks the gpt-6 (2026-09-03 release) wiring, added 2026-09-07.
  *
- * Per the openai/codex model catalog there is exactly ONE gpt-6 tier —
- * `gpt-6-astra` (display "GPT-6-Astra"; efforts low/medium/high/xhigh/max/
- * ultra, catalog default effort low; context_window 272000, the same class as
- * gpt-5.5's 272k input cap, NOT gpt-5.6's 372k). There is no
- * gpt-6-sol/terra/luna. It is served through llmux's codex backend group
+ * `gpt-6-astra` was the first gpt-6 tier (display "GPT-6-Astra"; efforts
+ * low/medium/high/xhigh/max/ultra, catalog default effort low; context_window
+ * 272000, the same class as gpt-5.5's 272k input cap, NOT gpt-5.6's 372k).
+ * Upstream generation 6 later grew sol and luna tiers (2026-09-22); soma-work
+ * declares only astra statically, and the other tiers reach users through the
+ * llmux catalog overlay. It is served through llmux's codex backend group
  * (llmux forwards the slug verbatim and resolves the `astra` / `gpt-6`
  * aliases).
  *
@@ -58,7 +59,7 @@ function makeStore(): UserSettingsStore {
 }
 
 describe('gpt-6-astra — release wiring', () => {
-  it('lists the single REAL tier id; no sol/terra/luna sibling exists', () => {
+  it('lists the astra tier id statically; no other gpt-6 tier is declared', () => {
     const models = AVAILABLE_MODELS as readonly string[];
     expect(models).toContain('gpt-6-astra');
     expect(models).not.toContain('gpt-6');
@@ -95,7 +96,8 @@ describe('gpt-6-astra — release wiring', () => {
     // The older generations must NOT be silently upgraded.
     expect(MODEL_ALIASES['gpt5.6']).toBe('gpt-5.6-sol');
     expect(MODEL_ALIASES['gpt5.5']).toBe('gpt-5.5');
-    expect(MODEL_ALIASES.sol).toBe('gpt-5.6-sol');
+    // `sol` follows the newest sol generation (gpt-6.1-sol), not gpt-6-astra.
+    expect(MODEL_ALIASES.sol).toBe('gpt-6.1-sol[1m]');
   });
 
   it('resolveModelInput resolves the aliases to the [1m] variant, canonical stays bare', () => {
@@ -114,7 +116,7 @@ describe('gpt-6-astra — release wiring', () => {
 
   it('astra[1m] shorthand resolves to gpt-6-astra[1m] (matches sol[1m] rule)', () => {
     // Regression: the tier-shorthand + `[1m]` spelling must resolve — the same
-    // rule as `sol[1m]` → `gpt-5.6-sol[1m]` and `opus[1m]` → `claude-opus-5[1m]`.
+    // rule as `sol[1m]` → `gpt-6.1-sol[1m]` and `opus[1m]` → `claude-opus-5-5[1m]`.
     // Without an explicit `astra[1m]` alias entry, resolution falls through the
     // canonical policy (no row), AVAILABLE_MODELS (no match), MODEL_ALIASES (no
     // match), and the llmux catalog overlay (which advertises `astra` but not
