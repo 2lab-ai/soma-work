@@ -1577,6 +1577,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         // text for `/compact` and parked the words on `pendingUserText`.
         const compactTurn = isSlashCommand && trimmedText.split(/\s/)[0] === '/compact';
         const autoCompactTurn = compactTurn && !!session.pendingUserText;
+        const by = params.isUserInput === false || autoCompactTurn || params.hostTurn === true ? 'system' : 'user';
         recordUserTurn(
           session.conversationId,
           text || '',
@@ -1584,14 +1585,18 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           user,
           attachments?.length ? attachments : undefined,
           {
-            origin: {
-              by: params.isUserInput === false || autoCompactTurn || params.hostTurn === true ? 'system' : 'user',
-            },
+            origin: { by },
             ...(compactTurn ? { compact: true } : {}),
           },
         );
         const names = processedFiles.map((f) => f.name).join(' · ');
-        emitWorkLog({ kind: 'instruction', text: names ? `${text || ''}${text ? '\n' : ''}📎 ${names}` : text || '' });
+        // The work log's instruction says the same (SSOT 2026-10-28): who sent it, and a compaction turn.
+        emitWorkLog({
+          kind: 'instruction',
+          text: names ? `${text || ''}${text ? '\n' : ''}📎 ${names}` : text || '',
+          by,
+          ...(compactTurn ? { compactTurn: true as const } : {}),
+        });
       }
 
       // Store user instruction for SSOT tracking (only real user input, not auto-resume/continuation/renew)
