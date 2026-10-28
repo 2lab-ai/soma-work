@@ -25,7 +25,8 @@
  */
 
 export interface CompactDispatchPayload {
-  ctx: { channel: string; threadTs: string; user: string; ts: string };
+  /** `verbatimPrompt`: the text is a goal objective — replayed as the user's words. */
+  ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean };
   text: string;
 }
 
@@ -61,6 +62,14 @@ export interface CompactStateSession {
    * initiator attribution downstream).
    */
   compactPendingDispatches?: CompactDispatchPayload[] | null;
+  /** Threshold-checker → InputProcessor signal: intercept the next user turn into `/compact`. */
+  autoCompactPending?: boolean;
+  /**
+   * Runtime-only: wall-clock ms until which the threshold-triggered
+   * auto-compact stays paused after a `/compact` turn failed. See
+   * `pauseAutoCompactAfterFailure`.
+   */
+  autoCompactSuppressedUntilMs?: number | null;
 }
 
 /**
@@ -101,13 +110,19 @@ export function isCompactionInProgress(session: CompactStateSession, nowMs: numb
  */
 export function stashUserMessageDuringCompaction(
   session: CompactStateSession,
-  ctx: { channel: string; threadTs: string; user: string; ts: string },
+  ctx: { channel: string; threadTs: string; user: string; ts: string; verbatimPrompt?: boolean },
   text: string,
 ): void {
   if (!text) return;
   const queue = (session.compactPendingDispatches ??= []);
+  // A goal objective (`verbatimPrompt`) always gets its own entry: merged with
+  // ordinary text, one of the two would be replayed under the wrong rules.
+  if (ctx.verbatimPrompt) {
+    queue.push({ ctx, text });
+    return;
+  }
   const last = queue[queue.length - 1];
-  if (last && last.ctx.user === ctx.user) {
+  if (last && last.ctx.user === ctx.user && !last.ctx.verbatimPrompt) {
     last.text += `\n${text}`;
     return;
   }
@@ -137,4 +152,48 @@ export function promotePendingToDispatchQueue(session: CompactStateSession): voi
   session.pendingEventContext = null;
   const queue = (session.compactPendingDispatches ??= []);
   queue.unshift(payload);
+}
+
+/**
+ * Minimum pause after a failed `/compact` turn. Also the pause when the
+ * failure carries no retry-after hint.
+ */
+export const AUTO_COMPACT_FAILURE_COOLDOWN_MS = 10 * 60 * 1000;
+
+/** Upper bound on the pause, whatever retry-after the gateway advertises. */
+export const AUTO_COMPACT_FAILURE_COOLDOWN_MAX_MS = 6 * 60 * 60 * 1000;
+
+/**
+ * Compact retry loop breaker (field incident 2026-10-22).
+ *
+ * A failed `/compact` leaves context usage where it was. Without a pause the
+ * turn-end threshold check re-arms `autoCompactPending`, the strand-rescue
+ * replay of the intercepted message is intercepted AGAIN into `/compact`, and
+ * that fails the same way — a compact → fail → compact loop every few seconds
+ * for as long as the cause lasts (a pool-wide 429 lasted an hour).
+ *
+ * Pauses the threshold-triggered auto-compact for
+ * max(`retryAfterMs`, {@link AUTO_COMPACT_FAILURE_COOLDOWN_MS}), capped at
+ * {@link AUTO_COMPACT_FAILURE_COOLDOWN_MAX_MS}. Never shortens a pause that is
+ * already longer. Clears `autoCompactPending` so a flag armed by a racing turn
+ * cannot fire either. A manual `/compact` is not affected. Returns the
+ * pause end (ms).
+ */
+export function pauseAutoCompactAfterFailure(
+  session: CompactStateSession,
+  retryAfterMs?: number | null,
+  nowMs: number = Date.now(),
+): number {
+  const requested = typeof retryAfterMs === 'number' && Number.isFinite(retryAfterMs) ? retryAfterMs : 0;
+  const pauseMs = Math.min(Math.max(requested, AUTO_COMPACT_FAILURE_COOLDOWN_MS), AUTO_COMPACT_FAILURE_COOLDOWN_MAX_MS);
+  const until = Math.max(session.autoCompactSuppressedUntilMs ?? 0, nowMs + pauseMs);
+  session.autoCompactSuppressedUntilMs = until;
+  session.autoCompactPending = false;
+  return until;
+}
+
+/** True while a failure pause from {@link pauseAutoCompactAfterFailure} is in force. */
+export function isAutoCompactPaused(session: CompactStateSession, nowMs: number = Date.now()): boolean {
+  const until = session.autoCompactSuppressedUntilMs;
+  return typeof until === 'number' && nowMs < until;
 }

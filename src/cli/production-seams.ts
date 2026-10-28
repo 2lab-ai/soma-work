@@ -22,10 +22,8 @@
  */
 
 import { ensureDirectory } from '@soma/common/atomic-write';
-import { getSomaHome } from '@soma/common/soma-paths';
 import dotenv from 'dotenv';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import * as readline from 'readline';
 import { createDefaultDoctorDeps, type DoctorReport, type DoctorRuntimeAsset, runDoctor } from './doctor';
@@ -438,17 +436,6 @@ function receiptForProfile(profile: ProfileName, paths: ProfilePaths, runtime: R
     teamId: '',
     serviceEnvFiles: [runtimeEnvFile, paths.secretsFile],
   };
-}
-
-/**
- * Home directory for profile-scoped state.
- *
- * Delegates to `@soma/common/soma-paths`, which owns the
- * `SOMAWORK_HOME` → `SOMA_HOME` → OS-home precedence. Re-implementing the
- * lookup here is what let the canonical name go unread for a release.
- */
-export function resolveControllerHome(env: NodeJS.ProcessEnv = process.env): string {
-  return getSomaHome(env);
 }
 
 export { WORKSPACE_DIR_MODE };

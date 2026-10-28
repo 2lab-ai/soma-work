@@ -3,7 +3,8 @@
  * guard primitives (no mocks).
  *
  * Each `concrete` vector is a real call (a sensitive Read, `ssh`, a cross-user path, a
- * dangerous `rm -rf`, a safe `ls`, a denied MCP tool, a PR creation in a handoff session, ...).
+ * dangerous `rm -rf`, a safe `ls`, a denied MCP tool, a PR creation in a handoff session,
+ * `gh auth token`, a Read of the devops broker's files, ...).
  * It lists the primitive calls the policy makes for it with the values the model was given; this
  * suite first checks those values against the real primitives, then requires the real
  * `evaluateToolPolicy` to return the model's result. The sensitive-path entry, arguments
@@ -26,6 +27,7 @@ import { NATIVE_BYPASS_TOOLS } from '../../hooks/bypass-permission-guard';
 import { handlePrIssuePrecondition, type PrIssueGuardInput } from '../../hooks/pr-issue-guard';
 import { checkBashSensitivePaths, checkSensitiveGlob, checkSensitivePath } from '../../sensitive-path-filter';
 import type { HandoffContext } from '../../types';
+import { checkDevopsSecretCommand, checkDevopsSecretGlob, checkDevopsSecretPath } from '../policy/devops-secret-guard';
 import type { PermissionMode } from '../policy/permission-mode';
 import {
   evaluateToolPolicy,
@@ -47,7 +49,9 @@ type PrimitiveCall =
   | { fn: 'checkSensitiveGlob'; args: [string, string | null]; result: unknown }
   | { fn: 'isCrossUserAccess'; args: [string, string]; result: unknown }
   | { fn: 'handlePrIssuePrecondition'; args: [PrIssueGuardInput]; result: unknown }
-  | { fn: 'bypassBashPermissionDecision'; args: [string]; disabledRules: string[]; result: unknown };
+  | { fn: 'bypassBashPermissionDecision'; args: [string]; disabledRules: string[]; result: unknown }
+  | { fn: 'checkDevopsSecretCommand' | 'checkDevopsSecretPath'; args: [string]; result: unknown }
+  | { fn: 'checkDevopsSecretGlob'; args: [string, string]; result: unknown };
 
 interface ConcreteCase {
   kind: 'concrete';
@@ -61,6 +65,8 @@ interface ConcreteCase {
     aborted: boolean;
     handoffContext: HandoffContext | null;
     mcpDenied: string | null;
+    /** `ctx.checkEnvSkillPermission`'s value (phase 4): a reason, or null. */
+    envSkillDenied: string | null;
     disabledRules: string[];
     /** Present only for an incident session. */
     incidentReadOnly?: IncidentReadOnlyContext;
@@ -118,6 +124,12 @@ function call(pre: PrimitiveCall): unknown {
       return handlePrIssuePrecondition(pre.args[0]);
     case 'bypassBashPermissionDecision':
       return bypassBashPermissionDecision(pre.args[0], (id) => pre.disabledRules.includes(id));
+    case 'checkDevopsSecretCommand':
+      return checkDevopsSecretCommand(pre.args[0]);
+    case 'checkDevopsSecretPath':
+      return checkDevopsSecretPath(pre.args[0]);
+    case 'checkDevopsSecretGlob':
+      return checkDevopsSecretGlob(pre.args[0], pre.args[1]);
     default:
       // e.g. `no-sensitive-call`: a case that lists a sensitive-path check the model never makes.
       throw new Error(`unknown primitive call ${JSON.stringify(pre)}`);
@@ -133,6 +145,7 @@ function contextOf(c: ConcreteCase): ToolPolicyContext {
     isDangerousRuleDisabled: (id) => c.ctx.disabledRules.includes(id),
     handoffContext: c.ctx.handoffContext ?? undefined,
     checkMcpToolPermission: () => c.ctx.mcpDenied,
+    checkEnvSkillPermission: () => c.ctx.envSkillDenied,
     ...(c.ctx.incidentReadOnly ? { incidentReadOnly: c.ctx.incidentReadOnly } : {}),
   };
 }
@@ -147,6 +160,11 @@ describe('tool-policy Lean conformance vectors (real primitives)', () => {
     expect(vectors.module).toBe('tool-policy');
     expect(concrete.length).toBeGreaterThanOrEqual(12);
     expect(concrete.filter((c) => c.ctx.incidentReadOnly !== undefined).length).toBeGreaterThanOrEqual(5);
+    // The devops-secret step is exercised for real: denials through it, in every mode and for admins.
+    const devopsDenied = concrete.filter((c) => String(c.expect.reason).startsWith('devops-secret: '));
+    expect(devopsDenied.length).toBeGreaterThanOrEqual(8);
+    expect(new Set(devopsDenied.map((c) => c.ctx.mode))).toEqual(new Set(['auto', 'bypass', 'legacy']));
+    expect(devopsDenied.some((c) => c.ctx.isAdmin)).toBe(true);
     expect(new Set(concrete.map((c) => c.name)).size).toBe(concrete.length);
     // No home directory is committed: only the placeholder is, substituted above. (A home of
     // `/`, as in some containers, would match every path, so it is not checked.)

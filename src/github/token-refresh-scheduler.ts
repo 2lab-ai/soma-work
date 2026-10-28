@@ -1,5 +1,5 @@
 import { Logger } from '../logger';
-import { type GitHubApiClient, TokenInfo } from './api-client';
+import type { GitHubApiClient } from './api-client';
 import type { GitCredentialsManager } from './git-credentials-manager';
 
 const logger = new Logger('TokenRefreshScheduler');

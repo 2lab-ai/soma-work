@@ -20,7 +20,6 @@ import {
   type IncidentClassification,
   type IncidentRejectReason,
   type IncidentRequestField,
-  isUntrustedSenderRejection,
   type TrustedIncidentSource,
 } from '../incident-contract';
 
@@ -520,19 +519,5 @@ describe('classifyIncidentRequest — accepted result', () => {
     );
     expect(result.kind).toBe('rejected');
     expect(JSON.stringify(result)).not.toContain(secret);
-  });
-});
-
-describe('isUntrustedSenderRejection', () => {
-  it('separates sender-trust rejections from malformed-payload rejections', () => {
-    // The policy layer alerts on a trusted bot sending garbage; an untrusted
-    // sender is dropped quietly.
-    expect(isUntrustedSenderRejection('untrusted_channel')).toBe(true);
-    expect(isUntrustedSenderRejection('untrusted_team')).toBe(true);
-    expect(isUntrustedSenderRejection('missing_sender_identity')).toBe(true);
-    expect(isUntrustedSenderRejection('invalid_json')).toBe(false);
-    expect(isUntrustedSenderRejection('unknown_field')).toBe(false);
-    expect(isUntrustedSenderRejection('envelope_parent_mismatch')).toBe(false);
-    expect(isUntrustedSenderRejection('receiver_disabled')).toBe(false);
   });
 });

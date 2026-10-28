@@ -221,8 +221,18 @@ export interface ThreadSurfaceOutbox {
  * live turn's surface — the precise failure A28 exists to stop. In production
  * the two always travel together: the only producer of `expectedTurnEpoch` is a
  * dispatch whose `FollowupQueue.beginTurn` created the session snapshot the
- * epoch is read back from (`followup-dispatcher.ts` → `queue.beginTurn`), so an
- * unreadable epoch means the store is degraded, not that the host is young.
+ * epoch is read back from (`followup-dispatcher.ts` → `queue.beginTurn`). When
+ * that dispatch migrated into a bot work thread, its writes are addressed to the
+ * work-thread key while the generation lives under the source (slot) key: the
+ * view the host wires into THIS surface reports the SLOT's live `turnEpoch` for
+ * the work key as long as the migration is bound (one counter, never a copy, so
+ * a supersede of the slot fences the old turn at once; control payloads are
+ * minted from the host's separate control view, which keeps the work key's own
+ * counter that the dispatcher checks), and the release raises the work key's
+ * own counter to the slot's before the binding goes, so its next generation
+ * opens above every one the slot handed out (`FollowupQueue.raiseTurnEpochFloor`).
+ * Either way an unreadable epoch means the store is degraded, not that the host
+ * is young.
  */
 export interface ThreadSurfaceWriteOptions {
   expectedTurnEpoch?: number;
@@ -268,17 +278,10 @@ const REANCHOR_MIN_INTERVAL_MS = Number(process.env.SLACK_PANEL_REANCHOR_MIN_INT
 /**
  * Slack's hard per-message block cap
  * (docs.slack.dev/reference/block-kit/blocks — 50 blocks for `chat.update`).
- * The combined surface must fit header + status + Queue + controls inside it.
+ * The combined surface must fit header + status rail + controls inside it;
+ * the optional summary blocks are trimmed first.
  */
 const MAX_MESSAGE_BLOCKS = 50;
-
-/**
- * Queue page size INSIDE the combined message. The standalone queue surface
- * defaults to 10 (`followup-queue-blocks.ts:73`); here the header, the status
- * panel and the action rows share the same 50-block budget, so the embed is
- * capped tighter. Pagination keeps every backlog item reachable.
- */
-const FOLLOWUP_EMBED_PAGE_SIZE = 5;
 
 /**
  * A24b — Slack `data.error` codes that PROVE no message was created, and are
@@ -328,13 +331,6 @@ interface SessionRenderState {
   prCache: PRCacheEntry | null;
   // Dashboard v2.1 chunk I — leading+trailing debounce bookkeeping.
   lastEditMs: number;
-  /**
-   * U3/U9 — the ONLY queue-derived state the surface owns: which page of the
-   * follow-up queue this session is currently looking at (1-based). Items,
-   * states, freeze and epoch are never copied here; they are read from the
-   * injected queue view on every render.
-   */
-  followupPage: number;
   /**
    * A24b — whether the "delivery held, not retrying" warning reaction has
    * already been placed for this session. The condition is sticky by nature
@@ -417,7 +413,6 @@ export class ThreadSurface {
         pendingOverrides: null,
         prCache: null,
         lastEditMs: 0,
-        followupPage: 1,
         outboxWarned: false,
         epochUnverifiableWarned: false,
         address: null,
@@ -559,6 +554,14 @@ export class ThreadSurface {
     hasPendingChoice: boolean,
     options?: ThreadSurfaceWriteOptions,
   ): Promise<void> {
+    // `hasPendingChoice` is the turn result, taken before this write. An answer
+    // that landed since (a dashboard / Slack click during end-of-turn cleanup)
+    // already cleared the open-choice bit, and an open choice already has it
+    // up (raised when the choice was registered, or by the executor's
+    // end-of-turn status write). So the snapshot may lower the bit here but
+    // never re-open an answered choice — that left a NEEDS YOU card with no
+    // question to answer.
+    hasPendingChoice = hasPendingChoice && session.actionPanel?.waitingForChoice !== false;
     let agentPhase: string;
     if (hasPendingChoice) {
       agentPhase = '입력 대기';
@@ -691,10 +694,10 @@ export class ThreadSurface {
       await this.initialize(session, sessionKey);
       return;
     }
-    // Refresh PR cache if stale (non-blocking for render)
+    // Refresh PR cache if stale or no longer about the active link (non-blocking for render)
     if (session.links?.pr) {
       const state = this.getState(sessionKey);
-      if (!state.prCache || Date.now() - state.prCache.fetchedAt >= PR_CACHE_TTL_MS) {
+      if (!this.isPrCacheUsable(session, state)) {
         this.refreshPRStatus(session, sessionKey).catch(() => {});
       }
     }
@@ -705,42 +708,13 @@ export class ThreadSurface {
    * U3/U9 — re-render because the follow-up queue changed (enqueue, state
    * transition, freeze, drain). Forced: a queue change must always land, even
    * when the rest of the surface is byte-identical.
-   *
-   * `page` is optional; when given it becomes the session's current page
-   * (validated + clamped like {@link setFollowupPage}).
    */
-  async updateFollowup(session: ConversationSession, sessionKey: string, page?: number): Promise<void> {
-    if (page !== undefined) {
-      this.getState(sessionKey).followupPage = this.clampFollowupPage(sessionKey, page);
-    }
+  async updateFollowup(session: ConversationSession, sessionKey: string): Promise<void> {
     if (!session.actionPanel) {
       await this.initialize(session, sessionKey);
       return;
     }
     await this.renderViaFlush(session, sessionKey, true);
-  }
-
-  /**
-   * U3/U9 — move the embedded queue to `page` (1-based) and re-render.
-   *
-   * Input is validated and clamped, never trusted: a non-integer, a 0/negative
-   * page or a page past the end collapses to the nearest real page rather than
-   * rendering an empty queue. Returns the page actually applied.
-   *
-   * The session is looked up through the injected claude handler, so a Slack
-   * pagination click (which carries only `sessionKey` + `page`) renders the
-   * LATEST known session rather than a snapshot captured at button-mint time.
-   * No session known → the page is still recorded for the next render.
-   */
-  async setFollowupPage(sessionKey: string, page: number): Promise<number> {
-    const applied = this.clampFollowupPage(sessionKey, page);
-    this.getState(sessionKey).followupPage = applied;
-
-    const session = this.getLiveSession(sessionKey);
-    if (session?.actionPanel) {
-      await this.renderViaFlush(session, sessionKey, true);
-    }
-    return applied;
   }
 
   /**
@@ -1502,8 +1476,8 @@ export class ThreadSurface {
   /**
    * Build the combined header + panel blocks.
    *
-   * Layout:
-   *   header · status/metrics · divider · action rows · summary
+   * Layout (T2, via {@link ActionPanelBuilder.compose}):
+   *   first header block · status rail · rest of the header · controls · summary
    *
    * The follow-up Queue used to sit between the status block and the action
    * rows. It does NOT any more (A39): a queued message is posted as its own
@@ -1522,19 +1496,14 @@ export class ThreadSurface {
     const panelState = session.actionPanel || {};
     const choiceMessageLink = panelState.choiceMessageLink;
 
-    // Read PR status from per-session cache (never fetch in render path)
-    const prStatusInfo = this.getState(sessionKey).prCache;
-
     if (isClosed) {
       return this.buildClosedBlocks(session, sessionKey);
     }
 
-    const blocks: any[] = [];
+    // PR state from the per-session cache (never fetched in the render path),
+    // and only while it still describes the active PR link (T2).
+    const livePr = this.livePr(session, sessionKey);
 
-    // ── 1. Header section ──
-    blocks.push(...this.buildHeaderBlocks(session));
-
-    // ── 2. Status + fields section (from ActionPanelBuilder) ──
     const panelPayload = ActionPanelBuilder.build({
       sessionKey,
       workflow: session.workflow,
@@ -1554,22 +1523,12 @@ export class ThreadSurface {
       lastProgressAt: panelState.lastProgressAt,
       lastSignalAt: panelState.lastSignalAt,
       logVerbosity: session.logVerbosity,
-      prStatus: prStatusInfo?.prStatus,
-      prUrl: prStatusInfo?.prUrl,
+      prStatus: livePr,
     });
 
-    // ActionPanelBuilder.build() returns full blocks: status/metrics first and
-    // the action rows (plus their divider) last. The split is kept so the two
-    // halves stay in that order; nothing is inserted between them any more.
-    const panelBlocks = panelPayload.blocks;
-    const splitAt = ThreadSurface.actionRowsIndex(panelBlocks);
-    blocks.push(...panelBlocks.slice(0, splitAt));
-    const actionRows = panelBlocks.slice(splitAt);
+    // Title → status rail → the rest of the header → controls (T2).
+    const blocks = ActionPanelBuilder.compose(this.buildHeaderBlocks(session, sessionKey, livePr), panelPayload.blocks);
 
-    // ── 3. Action rows ──
-    blocks.push(...actionRows);
-
-    // ── 4. Summary section ──
     const summaryBlocks =
       session.actionPanel?.summaryBlocks && Array.isArray(session.actionPanel.summaryBlocks)
         ? session.actionPanel.summaryBlocks
@@ -1587,29 +1546,30 @@ export class ThreadSurface {
     return blocks;
   }
 
-  /**
-   * Index of the trailing action rows inside an ActionPanelBuilder payload.
-   * Walks back over the contiguous run of `actions` blocks and includes the
-   * divider that introduces them; a payload with no trailing actions (the
-   * closed panel) returns its length.
-   *
-   * This used to be the Queue's insertion point. Nothing is inserted there any
-   * more (A39) — the split survives because it is what keeps the status half
-   * and the action rows in that order.
-   */
-  private static actionRowsIndex(blocks: any[]): number {
-    let index = blocks.length;
-    while (index > 0 && blocks[index - 1]?.type === 'actions') index--;
-    if (index > 0 && index < blocks.length && blocks[index - 1]?.type === 'divider') index--;
-    return index;
+  /** The PR status the surface may present as live right now (T2). */
+  private livePr(session: ConversationSession, sessionKey: string): PRStatusInfo | undefined {
+    return ActionPanelBuilder.livePrStatus(session.links?.pr, this.getState(sessionKey).prCache?.prStatus);
   }
 
   /**
-   * Header blocks: title + context row.
+   * Header blocks for the combined surface: the panel states the session
+   * status, so the header suppresses its own (T2), and link rows get the live
+   * PR state for the URL it was fetched for.
    */
-  private buildHeaderBlocks(session: ConversationSession): any[] {
+  private buildHeaderBlocks(
+    session: ConversationSession,
+    sessionKey: string,
+    livePr: PRStatusInfo | undefined,
+    closed?: boolean,
+  ): any[] {
     const theme = threadSurfaceProviders.getSessionTheme(session.ownerId);
-    const payload = ThreadHeaderBuilder.fromSession(session, { theme });
+    const payload = ThreadHeaderBuilder.fromSession(session, {
+      closed,
+      theme,
+      sessionKey,
+      suppressSessionStatus: true,
+      liveLinkStatus: ThreadHeaderBuilder.livePrLinkStatus(livePr?.fetchedForUrl, livePr),
+    });
     return payload.blocks || [];
   }
 
@@ -1630,15 +1590,7 @@ export class ThreadSurface {
    *     freeze notice now live, because this panel no longer carries them.
    */
   private buildClosedBlocks(session: ConversationSession, sessionKey: string): any[] {
-    const prStatusInfo = this.getState(sessionKey).prCache;
-    const blocks: any[] = [];
-
-    // Header with closed flag
-    const theme = threadSurfaceProviders.getSessionTheme(session.ownerId);
-    const headerPayload = ThreadHeaderBuilder.fromSession(session, { closed: true, theme });
-    blocks.push(...(headerPayload.blocks || []));
-
-    // Closed panel
+    const livePr = this.livePr(session, sessionKey);
     const panelPayload = ActionPanelBuilder.build({
       sessionKey,
       workflow: session.workflow,
@@ -1646,12 +1598,9 @@ export class ThreadSurface {
       turnSummary: session.actionPanel?.turnSummary,
       contextRemainingPercent: this.getContextRemainingPercent(session),
       latestResponseLink: session.actionPanel?.latestResponseLink,
-      prStatus: prStatusInfo?.prStatus,
-      prUrl: prStatusInfo?.prUrl,
+      prStatus: livePr,
     });
-    blocks.push(...panelPayload.blocks);
-
-    return blocks;
+    return ActionPanelBuilder.compose(this.buildHeaderBlocks(session, sessionKey, livePr, true), panelPayload.blocks);
   }
 
   /**
@@ -1707,21 +1656,6 @@ export class ThreadSurface {
 
     if (!view && !error) return null;
     return { view, error };
-  }
-
-  /**
-   * Clamp a requested page into `[1, pageCount]` using the queue's own item
-   * count. Non-integers and non-finite input collapse to page 1. The renderer
-   * clamps again against the budget-derived page size, so this never renders
-   * an empty page even if the two disagree.
-   */
-  private clampFollowupPage(sessionKey: string, requested: number): number {
-    if (!Number.isFinite(requested)) return 1;
-    const page = Math.max(1, Math.floor(requested));
-    const view = this.readFollowup(sessionKey)?.view;
-    if (!view) return page;
-    const pageCount = Math.max(1, Math.ceil(view.items.length / FOLLOWUP_EMBED_PAGE_SIZE));
-    return Math.min(page, pageCount);
   }
 
   /**
@@ -1855,6 +1789,16 @@ export class ThreadSurface {
   // PR Status (out-of-render-path)
   // =========================================================================
 
+  /** Fresh, and {@link ActionPanelBuilder.livePrStatus} still accepts it for the active link. */
+  private isPrCacheUsable(session: ConversationSession, state: SessionRenderState): boolean {
+    const entry = state.prCache;
+    return (
+      !!entry &&
+      Date.now() - entry.fetchedAt < PR_CACHE_TTL_MS &&
+      ActionPanelBuilder.livePrStatus(session.links?.pr, entry.prStatus) !== undefined
+    );
+  }
+
   private async fetchPRStatusEntry(
     session: ConversationSession,
     state: SessionRenderState,
@@ -1862,8 +1806,8 @@ export class ThreadSurface {
     const prLink = session.links?.pr;
     if (!prLink || prLink.provider !== 'github') return null;
 
-    // Use cache if fresh
-    if (state.prCache && Date.now() - state.prCache.fetchedAt < PR_CACHE_TTL_MS) {
+    // Use cache if fresh AND still about this link (same URL, link not re-recorded since)
+    if (this.isPrCacheUsable(session, state)) {
       return state.prCache;
     }
 
@@ -1882,6 +1826,8 @@ export class ThreadSurface {
         approved: reviewStatus === 'approved',
         head: details.head,
         base: details.base,
+        fetchedForUrl: prLink.url,
+        linkStatusAtFetch: prLink.status,
       };
 
       // Also cache in session for action handlers
@@ -1894,6 +1840,8 @@ export class ThreadSurface {
           approved: prStatus.approved,
           head: prStatus.head,
           base: prStatus.base,
+          fetchedForUrl: prStatus.fetchedForUrl,
+          linkStatusAtFetch: prStatus.linkStatusAtFetch,
         };
       }
 

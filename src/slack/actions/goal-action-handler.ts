@@ -10,7 +10,8 @@ import {
   GOAL_UPDATE_MODAL_BLOCK_ID,
   type GoalActionValue,
 } from '../goal-blocks';
-import { resumeGoalLoop } from '../goal-loop-resume';
+import { HostGoalActionError } from '../goal-host-actions';
+import { getHostGoalActionHandler, resumeGoalLoop } from '../goal-loop-resume';
 import { deleteGoalById, findGoalById, formatGoalObjectiveForSlack } from '../session-goal';
 import type { SlackApiHelper } from '../slack-api-helper';
 import type { RespondFn } from './types';
@@ -64,7 +65,42 @@ export class GoalActionHandler {
         await respond({ response_type: 'ephemeral', replace_original: false, text: r.error });
         return;
       }
-      const { value, session } = r;
+      const { value, session, userId } = r;
+
+      // The current or a queued goal goes through the host — the same path as
+      // the dashboard — so a promoted goal starts with its opening turn
+      // admitted through the follow-up fence (SSOT 2026-10-21). A completed
+      // (history) goal has nothing to start and is removed locally below.
+      const hostAction = getHostGoalActionHandler();
+      const expect =
+        session.goal?.goalId === value.goalId
+          ? 'current'
+          : session.goalQueue?.some((g) => g.goalId === value.goalId)
+            ? 'queued'
+            : undefined;
+      if (hostAction && expect) {
+        try {
+          const outcome = await hostAction(
+            value.sessionKey,
+            { action: 'delete', goalId: value.goalId, expect },
+            userId,
+          );
+          const promoted = outcome.outcome === 'deleted' ? outcome.promoted : undefined;
+          await respond({
+            replace_original: true,
+            text: promoted
+              ? `🗑️ 진행중이던 goal을 삭제하고 다음 goal로 진행합니다:\n▶️ ${formatGoalObjectiveForSlack(promoted.objective)}`
+              : expect === 'current'
+                ? '🗑️ 진행중이던 goal을 삭제했습니다. (대기중인 goal 없음)'
+                : '🗑️ goal을 삭제했습니다.',
+          });
+        } catch (error) {
+          if (!(error instanceof HostGoalActionError)) throw error;
+          await respond({ response_type: 'ephemeral', replace_original: false, text: `⚠️ ${error.message}` });
+        }
+        return;
+      }
+
       const result = deleteGoalById(session, value.goalId);
       if (!result.deleted) {
         await respond({ response_type: 'ephemeral', replace_original: false, text: '⚠️ 이미 삭제된 goal입니다.' });
@@ -237,6 +273,20 @@ export class GoalActionHandler {
     return { value, session, goal };
   }
 
+  /**
+   * Same invalidation every goal-state change applies
+   * (`GoalHandler.persistGoalChange`). Continuation turns carry a one-line
+   * nudge; the objective reaches the model only through the
+   * `<session-goal>` system block, which is rebuilt only after
+   * `session.systemPrompt` is dropped. The epoch bump makes any in-flight
+   * completion eval discard its verdict instead of applying it.
+   */
+  private persistCapDecision(session: ConversationSession, goal: SessionGoal): void {
+    goal.epoch = (goal.epoch ?? 0) + 1;
+    session.systemPrompt = undefined;
+    this.ctx.claudeHandler.saveSessions();
+  }
+
   async handleContinueDm(body: any, respond: RespondFn): Promise<void> {
     try {
       const r = this.resolveCapDecision(body);
@@ -252,7 +302,7 @@ export class GoalActionHandler {
       r.goal.capDmPendingAt = undefined;
       r.goal.status = 'active';
       r.goal.updatedAt = Date.now();
-      this.ctx.claudeHandler.saveSessions();
+      this.persistCapDecision(r.session, r.goal);
       resumeGoalLoop(r.value.sessionKey);
       await respond({ replace_original: true, text: '✅ goal을 계속 진행합니다.' });
     } catch (error) {
@@ -279,7 +329,7 @@ export class GoalActionHandler {
       r.goal.status = 'paused';
       r.goal.capDmPendingAt = undefined;
       r.goal.updatedAt = Date.now();
-      this.ctx.claudeHandler.saveSessions();
+      this.persistCapDecision(r.session, r.goal);
       await respond({
         replace_original: true,
         text: '🛑 goal을 중단했습니다. (`goal resume`으로 다시 시작할 수 있습니다.)',

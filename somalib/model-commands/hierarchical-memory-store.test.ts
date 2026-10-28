@@ -12,8 +12,8 @@ import {
   HierarchicalMemoryFileStore,
   l1FilePath,
   legacyL1FilePath,
-  migrateLegacyL1,
   memoryRoot,
+  migrateLegacyL1,
 } from './hierarchical-memory-store';
 
 describe('HierarchicalMemoryFileStore', () => {
@@ -31,12 +31,16 @@ describe('HierarchicalMemoryFileStore', () => {
   });
 
   it('creates and reads an agent page with frontmatter + Current + History', () => {
-    const res = store.upsertPage(user, { type: 'agent', slug: 'build-system' }, {
-      title: 'Build system',
-      aliases: ['build', 'bun'],
-      current: 'Repo builds with bun.',
-      historyEntry: 'Confirmed bun build.',
-    });
+    const res = store.upsertPage(
+      user,
+      { type: 'agent', slug: 'build-system' },
+      {
+        title: 'Build system',
+        aliases: ['build', 'bun'],
+        current: 'Repo builds with bun.',
+        historyEntry: 'Confirmed bun build.',
+      },
+    );
     expect(res.ok).toBe(true);
     expect(res.id).toBe('agent/build-system');
 
@@ -67,7 +71,9 @@ describe('HierarchicalMemoryFileStore', () => {
     store.upsertPage(user, { type: 'project', project: 'soma-work', issue: '1234' }, { current: 'Issue spec' });
 
     expect(fs.existsSync(path.join(memoryRoot(dataDir, user), 'projects', 'soma-work', 'MEMORY.md'))).toBe(true);
-    expect(fs.existsSync(path.join(memoryRoot(dataDir, user), 'projects', 'soma-work', 'issues', '1234.md'))).toBe(true);
+    expect(fs.existsSync(path.join(memoryRoot(dataDir, user), 'projects', 'soma-work', 'issues', '1234.md'))).toBe(
+      true,
+    );
 
     expect(store.getPage(user, { type: 'project', project: 'soma-work' })?.current).toBe('Project notes');
     expect(store.getPage(user, { type: 'project', project: 'soma-work', issue: '1234' })?.current).toBe('Issue spec');
@@ -227,5 +233,81 @@ describe('HierarchicalMemoryFileStore.parseId', () => {
 
   it('rejects a traversing id', () => {
     expect(() => HierarchicalMemoryFileStore.parseId('agent/../../escape')).toThrow();
+  });
+});
+
+// SSOT 2026-10-23 T3 (review P1) — editing one episodic entry must never touch
+// the rest of the day file: legacy CRLF blocks, text before the first entry
+// and header-looking lines inside an entry all survive byte for byte.
+describe('episodic edits keep the rest of the day intact', () => {
+  const mk = () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'episodic-edit-'));
+    return { dir, store: new HierarchicalMemoryFileStore(dir) };
+  };
+  const dayFile = (dir: string) => path.join(dir, 'U1', 'memory', 'episodic', '2026-10-20.md');
+
+  it('a CRLF note is stored and read as one entry, and survives an edit of another entry', () => {
+    const { store } = mk();
+    store.appendEpisodic('U1', 'Ask: A\r\nDid: B', '2026-10-20');
+    store.appendEpisodic('U1', 'second', '2026-10-20');
+    let day = store.readEpisodicDay('U1', '2026-10-20');
+    expect(day.entries.map((e) => e.content)).toEqual(['Ask: A\nDid: B', 'second']);
+    expect(store.editEpisodicEntry('U1', '2026-10-20', 1, 'second (fixed)', day.revision!).ok).toBe(true);
+    day = store.readEpisodicDay('U1', '2026-10-20');
+    expect(day.entries.map((e) => e.content)).toEqual(['Ask: A\nDid: B', 'second (fixed)']);
+  });
+
+  it('a header-looking line inside a note does not split it', () => {
+    const { store } = mk();
+    store.appendEpisodic('U1', 'first\n## 12:00 - looks like a header\nstill first', '2026-10-20');
+    store.appendEpisodic('U1', 'second', '2026-10-20');
+    const day = store.readEpisodicDay('U1', '2026-10-20');
+    expect(day.entries).toHaveLength(2);
+    expect(day.entries[0].content).toContain('looks like a header');
+    const r = store.editEpisodicEntry('U1', '2026-10-20', 1, 'x\n## 13:00 - also a header', day.revision!);
+    expect(r.ok).toBe(true);
+    expect(store.readEpisodicDay('U1', '2026-10-20').entries).toHaveLength(2);
+  });
+
+  it('a note whose FIRST line looks like a header stays one entry, on append and on edit (review R2 P1)', () => {
+    const { store } = mk();
+    store.appendEpisodic('U1', '## 12:00 - Important title\nImportant body', '2026-10-20');
+    let day = store.readEpisodicDay('U1', '2026-10-20');
+    expect(day.entries).toHaveLength(1);
+    expect(day.entries[0].content).toContain('Important body');
+    expect(
+      store.editEpisodicEntry('U1', '2026-10-20', 0, '## 13:00 - Edited title\nEdited body', day.revision!).ok,
+    ).toBe(true);
+    day = store.readEpisodicDay('U1', '2026-10-20');
+    expect(day.entries).toHaveLength(1);
+    expect(day.entries[0].content).toContain('Edited body');
+    // and it stays one entry when edited again from what the tab shows
+    expect(store.editEpisodicEntry('U1', '2026-10-20', 0, day.entries[0].content, day.revision!).ok).toBe(true);
+    expect(store.readEpisodicDay('U1', '2026-10-20').entries).toHaveLength(1);
+  });
+
+  it('editing or deleting one entry leaves every other byte of the file as it was', () => {
+    const { dir, store } = mk();
+    fs.mkdirSync(path.dirname(dayFile(dir)), { recursive: true });
+    const legacy =
+      '# 2026-10-20\nnotes written by hand before any entry\r\n\r\n## 09:00 - legacy crlf\r\n\r\nold body\r\n';
+    fs.writeFileSync(dayFile(dir), legacy);
+    store.appendEpisodic('U1', 'keep me', '2026-10-20');
+    store.appendEpisodic('U1', 'edit me', '2026-10-20');
+    const before = fs.readFileSync(dayFile(dir), 'utf-8');
+    let day = store.readEpisodicDay('U1', '2026-10-20');
+    const idx = day.entries.findIndex((e) => e.content === 'edit me');
+    expect(store.editEpisodicEntry('U1', '2026-10-20', idx, 'edited', day.revision!).ok).toBe(true);
+    const after = fs.readFileSync(dayFile(dir), 'utf-8');
+    const cut = before.lastIndexOf('\n## ');
+    expect(after.slice(0, cut)).toBe(before.slice(0, cut));
+    expect(after).toContain(legacy);
+    day = store.readEpisodicDay('U1', '2026-10-20');
+    const keep = day.entries.findIndex((e) => e.content === 'keep me');
+    expect(store.editEpisodicEntry('U1', '2026-10-20', keep, null, day.revision!).ok).toBe(true);
+    const final = fs.readFileSync(dayFile(dir), 'utf-8');
+    expect(final).toContain(legacy);
+    expect(final).toContain('edited');
+    expect(final).not.toContain('keep me');
   });
 });

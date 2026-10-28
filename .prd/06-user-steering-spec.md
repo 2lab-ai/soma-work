@@ -74,7 +74,7 @@ Status: **in-progress** (2026-09-17, D1–D3 유저 확정) · 기준 커밋 mai
 - 바로 `!`(빈 프롬프트) = 중지만.
 
 ### 3.4 Edit / Cancel
-- **Cancel**: `queued`·`paused`·`failed`·`uncertain`은 즉시 `cancelled`. `steered`는 `cancel_async_message(uuid)` 시도 → 성공이면 `cancelled`, 이미 dequeue됐으면 "이미 전달됨"으로 거부(consumed로 전이). 실행 중(`dispatched`)은 거부 — 중지 버튼으로.
+- **Cancel**: `queued`·`paused`·`failed`·`uncertain`은 즉시 `cancelled`. `steered`는 `cancel_async_message(uuid)` 시도 → 성공이면 `cancelled`, 이미 dequeue됐으면 "이미 전달됨"으로 거부(consumed로 전이). 실행 중(`dispatched`)은 거부 — 스레드 `!` 또는 대시보드 Stop으로 중지(패널 중지 버튼은 2026-10-27 삭제).
 - **Edit**: 유저가 Slack에서 자기 큐 메시지를 **편집**(`message_changed` 이벤트)하면, 항목이 `queued`면 원문을 갱신(epoch bump). `steered`/`consumed`면 갱신 불가 → 안내 1줄. 별도 편집 UI는 만들지 않는다(Slack 편집이 곧 Edit).
 
 ### 3.5 표시 — 스레드 최하단 패널 (별도 워크스트림 `feat/queue-panel-tail`과 합류)

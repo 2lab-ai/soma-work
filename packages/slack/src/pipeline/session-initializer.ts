@@ -1,6 +1,8 @@
 import * as fs from 'node:fs';
+import { PLACEHOLDER_SESSION_TITLE, SESSION_RESET_TITLE } from '@soma/common/format/display-title';
 import { Logger } from '@soma/common/logger';
 import type { AssistantStatusManager } from '../assistant-status-manager';
+import { EFFORT_LEVELS } from '../command-parser';
 import { type CompactStateSession, isCompactionInProgress, stashUserMessageDuringCompaction } from '../compact-state';
 import type { ContextWindowManager } from '../context-window-manager';
 import {
@@ -17,6 +19,7 @@ import type { RequestAbortReason, RequestCoordinator } from '../request-coordina
 import type { SlackApiHelper } from '../slack-api-helper';
 import { ThreadHeaderBuilder } from '../thread-header-builder';
 import type { ThreadPanel } from '../thread-panel';
+import { resolveCronOrigin, skipDispatchTitle } from './cron-origin';
 import type { ConversationSession, MessageEvent, SayFn, SessionInitResult } from './types';
 
 export type { WorkflowType } from '../dispatch-abort';
@@ -301,7 +304,12 @@ export class SessionInitializer {
     // Replay stashes must preserve leading inline session directives
     // (`%model <v>` / `%nogoal`) that the message handler already stripped
     // off `event.text` — a replayed message re-parses them on re-entry.
-    const replayText = event.inlineDirectiveRawText || dispatchText;
+    // A goal objective (`routeContext.verbatimPrompt`) is the opposite: it
+    // replays exactly as dispatched and is never re-parsed, so the stash keeps
+    // the dispatch text and carries the marker on its context.
+    const verbatimReplay = event.routeContext?.verbatimPrompt === true;
+    const replayText = (verbatimReplay ? undefined : event.inlineDirectiveRawText) || dispatchText;
+    const replayCtx = { channel, threadTs, user, ts, ...(verbatimReplay ? { verbatimPrompt: true } : {}) };
     const skipAutoBotThread = event.routeContext?.skipAutoBotThread === true;
     // Whether the mention originated from inside an existing thread (thread_ts exists).
     // Used for sourceThread data linking — NOT for UX decisions.
@@ -373,6 +381,14 @@ export class SessionInitializer {
       this.logger.info('Applied cron model override to existing session', { sessionKey, model: event.modelOverride });
     }
 
+    // Per-task effort (dashboard "New task"): new or existing session alike.
+    if (event.effortOverride && (EFFORT_LEVELS as readonly string[]).includes(event.effortOverride)) {
+      if (session.effort !== event.effortOverride) {
+        session.effort = event.effortOverride;
+        this.logger.info('Applied per-task effort override', { sessionKey, effort: event.effortOverride });
+      }
+    }
+
     if (isNewSession) {
       this.logger.debug('Creating new session', { sessionKey, owner: userName });
 
@@ -407,15 +423,22 @@ export class SessionInitializer {
         const conversationId = providers.createConversation(channel, threadTs, user, userName);
         session.conversationId = conversationId;
 
-        // Always show conversation URL — it's essential for session review
-        const conversationUrl = providers.getConversationUrl(conversationId);
-        const convLinkResult = await this.deps.slackApi.postMessage(channel, `📝 <${conversationUrl}|대화 기록 보기>`, {
-          threadTs,
-        });
-        if (convLinkResult?.ts) {
-          (session.sourceThreadCleanupTs ??= []).push(convLinkResult.ts);
+        // Link the session's work log (📋 작업 로그 → its dashboard card) from the
+        // thread the user started — essential for session review. Undefined means
+        // the viewer is not listening; the conversation viewer is served by the same
+        // web server, so there is no live link to post instead.
+        const dashboardUrl = ThreadHeaderBuilder.resolveDashboardSessionUrl(session.ownerId || user, sessionKey);
+        if (dashboardUrl) {
+          const linkResult = await this.deps.slackApi.postMessage(
+            channel,
+            ThreadHeaderBuilder.formatDashboardLink(dashboardUrl),
+            { threadTs },
+          );
+          if (linkResult?.ts) {
+            (session.sourceThreadCleanupTs ??= []).push(linkResult.ts);
+          }
         }
-        this.logger.info('Conversation record created', { conversationId, url: conversationUrl });
+        this.logger.info('Conversation record created', { conversationId, workLogUrl: dashboardUrl ?? null });
       } catch (error) {
         this.logger.error('Failed to create conversation record (non-critical)', error);
       }
@@ -491,7 +514,23 @@ export class SessionInitializer {
     // skipDispatch: explicit flag to bypass workflow classification (cron, auto-resume, etc.)
     if (event.skipDispatch && this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       this.logger.info('skipDispatch — bypassing workflow classification, using default', { sessionKey });
-      this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'Direct (skipDispatch)');
+      // SSOT 2026-10-23 T1/T2: a session a cron fire creates starts under the
+      // job's name, marked provisional so the first clear title (turn summary,
+      // linked issue/PR) replaces it, and stamped with its job so the dashboard
+      // files it in the CRON lane. Every other bypass keeps its old title.
+      // Only a session this fire created: a restored session still in
+      // INITIALIZING (a stuck dispatch after a restart) is someone's thread,
+      // and a cron fire injected into it must not re-file it.
+      const cronOrigin = isNewSession ? resolveCronOrigin(event) : undefined;
+      if (cronOrigin) {
+        session.cronJob = cronOrigin.jobId
+          ? { id: cronOrigin.jobId, name: cronOrigin.jobName }
+          : { name: cronOrigin.jobName };
+        // Marked before transitionToMain persists the session, so a crash
+        // right after cannot turn the job name into a deliberate title.
+        if (!session.title) session.titleProvisional = true;
+      }
+      this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', skipDispatchTitle(cronOrigin));
     } else if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       if (forceWorkflow) {
         if (forceWorkflow === 'onboarding') {
@@ -511,7 +550,7 @@ export class SessionInitializer {
           channel,
           threadTs,
           forceWorkflow,
-          forceWorkflow === 'onboarding' ? 'Onboarding' : 'New Session',
+          forceWorkflow === 'onboarding' ? 'Onboarding' : PLACEHOLDER_SESSION_TITLE,
         );
         if (!ok) {
           throw providers.createDispatchAbortError(
@@ -552,7 +591,7 @@ export class SessionInitializer {
                   session.handoffContext,
                 );
               }
-              this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'New Session');
+              this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', PLACEHOLDER_SESSION_TITLE);
             }
           } finally {
             if (waitTimeoutId) clearTimeout(waitTimeoutId);
@@ -561,7 +600,7 @@ export class SessionInitializer {
           await this.dispatchWorkflow(channel, threadTs, dispatchText, sessionKey);
         } else {
           // No text available - use default workflow
-          this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'New Session');
+          this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', PLACEHOLDER_SESSION_TITLE);
         }
       }
     } else if (!isNewSession) {
@@ -782,7 +821,7 @@ export class SessionInitializer {
     if (event.routeContext?.compactRedispatch === true && this.deps.requestCoordinator.isRequestActive(sessionKey)) {
       this.logger.info('Post-compact replay lost the slot race — re-parking for the active turn', { sessionKey });
       if (dispatchText) {
-        stashUserMessageDuringCompaction(session, { channel, threadTs, user, ts }, replayText ?? dispatchText);
+        stashUserMessageDuringCompaction(session, replayCtx, replayText ?? dispatchText);
       }
       return {
         session,
@@ -809,6 +848,9 @@ export class SessionInitializer {
     // is already refused by CompactHandler while busy), the stream-executor
     // backstop claims the flag at query start.
     if (
+      // A goal objective that merely starts with `/compact` is a task, not a
+      // compaction turn (the executor wraps it — `literalPrompt`).
+      !verbatimReplay &&
       (dispatchText ?? '').trim().split(/\s/)[0] === '/compact' &&
       !this.deps.requestCoordinator.isRequestActive(sessionKey)
     ) {
@@ -824,7 +866,7 @@ export class SessionInitializer {
         user: userName,
       });
       if (dispatchText) {
-        stashUserMessageDuringCompaction(session, { channel, threadTs, user, ts }, replayText ?? dispatchText);
+        stashUserMessageDuringCompaction(session, replayCtx, replayText ?? dispatchText);
       }
       void this.deps.slackApi
         .postSystemMessage(channel, '🗜️ Compaction 진행 중 — 메시지는 완료 후 처리됩니다', { threadTs })
@@ -932,7 +974,7 @@ export class SessionInitializer {
         channel,
         threadTs,
         forceWorkflow,
-        forceWorkflow === 'onboarding' ? 'Onboarding' : 'Session Reset',
+        forceWorkflow === 'onboarding' ? 'Onboarding' : SESSION_RESET_TITLE,
       );
       if (!ok) {
         const currentSession = this.deps.claudeHandler.getSession(channel, threadTs);
@@ -951,7 +993,7 @@ export class SessionInitializer {
       await this.dispatchWorkflow(channel, threadTs, text, sessionKey);
     } else if (this.deps.claudeHandler.needsDispatch(channel, threadTs)) {
       // No text provided - use default workflow
-      this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', 'Session Reset');
+      this.deps.claudeHandler.transitionToMain(channel, threadTs, 'default', SESSION_RESET_TITLE);
     }
   }
 

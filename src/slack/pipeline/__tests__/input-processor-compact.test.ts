@@ -18,9 +18,9 @@ vi.mock('../../../user-settings-store', () => ({
   },
 }));
 
+import type { MessageEvent } from '@soma/slack/pipeline/types';
 import type { ConversationSession } from '../../../types';
 import { InputProcessor } from '../input-processor';
-import type { MessageEvent } from '../types';
 
 function makeSession(overrides: Partial<ConversationSession> = {}): ConversationSession {
   return {
@@ -92,6 +92,27 @@ describe('InputProcessor auto-compact interception (#617 AC3)', () => {
     expect(commandRouterRoute).not.toHaveBeenCalled();
   });
 
+  it('compact retry loop: a failure pause drops the pending flag and routes the message normally', async () => {
+    session.autoCompactSuppressedUntilMs = Date.now() + 60_000;
+    const event = makeEvent('original user message');
+
+    const result = await processor.routeCommand(event, vi.fn() as any);
+
+    expect(result.continueWithPrompt).toBeUndefined();
+    expect(session.autoCompactPending).toBe(false);
+    expect(session.pendingUserText).toBeNull();
+    expect(postSystemMessage).not.toHaveBeenCalled();
+    expect(commandRouterRoute).toHaveBeenCalledTimes(1);
+  });
+
+  it('compact retry loop: an expired failure pause intercepts as usual', async () => {
+    session.autoCompactSuppressedUntilMs = Date.now() - 1;
+
+    const result = await processor.routeCommand(makeEvent('original user message'), vi.fn() as any);
+
+    expect(result.continueWithPrompt).toBe('/compact');
+  });
+
   it('AC3 + inline directives: stash preserves directive-bearing raw text (codex review of #1268)', async () => {
     // The message handler stripped `%nogoal ` off event.text before routing;
     // the post-compact replay must re-enter with the ORIGINAL text so the
@@ -119,6 +140,19 @@ describe('InputProcessor auto-compact interception (#617 AC3)', () => {
     expect(result.handled).toBe(false);
     expect(commandRouterRoute).toHaveBeenCalledTimes(1);
     expect(session.pendingUserText).toBeNull();
+  });
+
+  it('forwards verbatimPrompt from the command result (goal objective, PR #305)', async () => {
+    session.autoCompactPending = false;
+    commandRouterRoute.mockResolvedValueOnce({
+      handled: true,
+      continueWithPrompt: '/compact 버그',
+      verbatimPrompt: true,
+    });
+
+    const result = await processor.routeCommand(makeEvent('goal /compact 버그'), vi.fn() as any);
+
+    expect(result).toMatchObject({ handled: true, continueWithPrompt: '/compact 버그', verbatimPrompt: true });
   });
 
   it('AC3: uses thread_ts||ts as threadTs (top-level message in thread-less DM)', async () => {

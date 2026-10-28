@@ -1,0 +1,21 @@
+{
+  "name": "@soma/mcp-server-devops-tools",
+  "version": "1.0.0",
+  "private": true,
+  "main": "./dist/devops-tools-mcp-server.js",
+  "types": "./dist/devops-tools-mcp-server.d.ts",
+  "exports": {
+    "./bin": "./dist/devops-tools-mcp-server.js"
+  },
+  "bin": {
+    "devops-tools-mcp-server": "./dist/devops-tools-mcp-server.js"
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.0",
+    "@soma/process-shared": "*"
+  }
+}

@@ -206,42 +206,6 @@ describe('CctStore.mutate deep-clone safety', () => {
   });
 });
 
-describe('CctStore.withLock serialization', () => {
-  let tmp: string;
-  beforeEach(async () => {
-    tmp = await makeTmpDir();
-  });
-  afterEach(async () => {
-    await fs.rm(tmp, { recursive: true, force: true });
-  });
-
-  it('serializes concurrent work so sentinels do not interleave', async () => {
-    const filePath = path.join(tmp, 'cct-store.json');
-    // Ensure file exists so lock path's realpath resolves.
-    await new CctStore(filePath).load();
-    const store = new CctStore(filePath);
-
-    const events: string[] = [];
-    const run = (tag: string) =>
-      store.withLock(async () => {
-        events.push(`start:${tag}`);
-        await new Promise((r) => setTimeout(r, 25));
-        events.push(`end:${tag}`);
-      });
-
-    await Promise.all([run('A'), run('B')]);
-
-    // Each start must be immediately followed by its matching end (no interleaving).
-    for (let i = 0; i < events.length; i += 2) {
-      const start = events[i];
-      const end = events[i + 1];
-      expect(start.startsWith('start:')).toBe(true);
-      expect(end.startsWith('end:')).toBe(true);
-      expect(start.slice(6)).toBe(end.slice(4));
-    }
-  });
-});
-
 describe('migrateLegacyCooldowns', () => {
   let tmp: string;
   beforeEach(async () => {

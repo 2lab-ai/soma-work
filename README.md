@@ -41,6 +41,13 @@ Bot:   [Analyzes uploaded code, identifies bottlenecks, proposes optimized versi
 - The 2026-05-18 research note on AI-agent-friendly project documentation is in [docs/research](./docs/misc/research/2026-05-18-ai-agent-docs-organization.md).
 - Slack Block Kit/API constraints are maintained in [docs/misc/reference/slack-block-kit.md](./docs/misc/reference/slack-block-kit.md).
 
+## zworkflow plugin
+
+The Claude Code plugin soma-work ships by default, `zworkflow`, lives in [`src/local/`](./src/local/).
+You can install it in your own Claude Code with `/plugin marketplace add 2lab-ai/soma-work` and
+`/plugin install zworkflow@soma-work`. Install, update, hooks, and a path that copies only the
+`using-intentfirst` and `using-ssot` skills are in the [zworkflow plugin README](./src/local/README.md).
+
 ---
 
 ## ✨ Key Features
@@ -89,9 +96,40 @@ Slack-native button/form UX for permission approvals, option selection, and sess
 
 Upload images (JPG/PNG/GIF/WebP), text, or code files directly in Slack. 50MB limit per file.
 
+### 🆕 Start a task from the dashboard
+
+The dashboard's **New task** button (top bar on desktop, `N` shortcut; floating button on phones) opens a composer: model (with a shared-pool quota battery), effort, Slack channel, per-task `autogoal` and `autoz` toggles, the instruction, and attachments — files, pasted screenshots, the phone camera and voice notes. The task starts as your own message on a new thread in the chosen channel, so its progress is visible in Slack. The channel list is the repo-mapped channels you are a member of; it defaults to the channel you last gave a command in. Turning `autoz` on appends `$autoz` to the instruction.
+
+### 🖼️ Dashboard Artifacts
+
+Every file the model sends to Slack (HTML reports, PNG, WAV/voice, video, PDF, text) and every markdown final answer shows up in the web dashboard: as chips on the session card, a thumbnail strip in the opened card, and a strip in the session panel's common surface with each answer's own files under it. Hover for a minimap preview, click for a full-size viewer (HTML runs sandboxed; audio plays straight from the card). Uploads made before the feature are backfilled from the session's work log.
+
+### 📎 Instruction attachments in the dashboard
+
+The files you attach to an instruction — screenshots, PDFs, text, voice notes, video — show up in the web dashboard with that instruction, not mixed into the model's artifacts. In the session panel they sit above your words (80px image tiles, "+N" past four, file cards with kind and size, voice notes play in place). The opened card's 지시 row shows them small, the card face shows a paperclip count, and a 지시 첨부 line in the panel's common surface (collapsed by default) lists every file of the session. Clicking one opens the same viewer as artifacts, paging through that instruction's files. A message you send while the model is working is recorded with its files once the model reads it. Videos and voice notes are kept too and play in the dashboard. Files the bot could not download (over 50 MB, or a failed download) still appear, with a link to Slack. Uploaded HTML, SVG and text never run in the dashboard.
+
+### 🧾 Turns you did not type, as one line
+
+In the session panel's conversation, and in an open inbox card's 지시 / 응답, a turn soma-work sent on its own reads as one line — who, when, a badge and what it did — instead of the raw prompt: **자동 압축** / **압축** (`/compact`), **시스템 재시작**, **자동 재시도** (after an error), **Goal #2/10** (goal continuation), **크론** (a cron fire), **세션 갱신** (`/renew` save and load), **백그라운드 재개 #1/6** (the turn kept going because background work was still running), and **자동 입력** for any other host turn. Click the line for its facts and the raw prompt. While a compaction runs, the line shows the elapsed time against an estimate (the conversation's previous compaction, else 2m 30s) with a progress bar; when it ends, it shows tokens before → after and how long it took. Skills an instruction invoked (`$skill`, autoskills) show as badges under your words — `local:using-ssot · ≈1.1K tokens` (an estimate) — and a badge opens that skill's text. In the inbox card, a running compaction's progress and then its result stand as the 응답, and an opened row or skill stays open while the card refreshes. Older turns are read from their text; a `/compact` recorded before this change shows as **압축**, because who sent it was not kept.
+
 ### 🔑 GitHub Integration
 
 GitHub App (recommended) or Personal Access Token authentication with automatic token renewal.
+
+### 🖥️ Web dashboard
+
+The dashboard (`/dashboard`, sign in with Slack) shows every session as a card and lets the session owner act on it:
+
+- **Three surfaces, three jobs**: one session shows up three ways, and each answers a different question. The **card** is triage — does it need me, is it moving (headline, why it is here, the current task, the subagent pulse, tokens · cost, status with how long a stopped card has been in its state (waiting since the question, done since the work finished), the context level that turns amber past 60% and red past 80%, and the PR badge with its state: open, draft, merged, closed). The **opened card** settles it in place, with sections that follow its state: a question or permission prompt first; while running, the task window, the agents (compact rows) and the latest instruction ↔ reply; when done, the reply, the artifacts and the goal — then the goal line, short refs and one control strip (model · effort, Stop / Close / Trash, Slack, 작업 로그). It never repeats the card's numbers. The **session panel** is for understanding and steering, laid out as a task view: a head chip with the session's status, live time and its one action; the task's common surface (세션 정보 — one summary line and the links, every number on demand —, the goal, 입력 필요, 산출물); then one tab per agent (Main always first and pinned at the left, then each subagent) with that agent's Tasks (folded), work log (folded) and instructions and answers (open — the latest exchange, earlier turns one tap away). The panel opens at its top, so the surface, the tabs and the latest answer are in view together. An answer shows as the rendered answer itself, with its raw summary and source at the foot. Under it, model · effort and a multiline message box that takes pasted or dropped images, files and voice notes. The panel shows only what matters by default; the **자세히** toggle button at the top right opens every section — the full session info, artifact thumbnails, every turn (saved per device). Spec: [`.prd/14-dashboard-task-view-spec.md`](./.prd/14-dashboard-task-view-spec.md). Every field has one home where it is shown in full; elsewhere it is a count, a badge or a link to that home. Spec: [`.prd/13-dashboard-three-surfaces-spec.md`](./.prd/13-dashboard-three-surfaces-spec.md).
+- **Main agent and its subagents — one recursive tree**: a card is the main agent, the root of the session's agent tree; the SDK subagents it starts with the `Agent` tool (and the ones they start) are nodes of the same type under it — each with its status, time, tool calls and its own task list and work log, drawn by the same renderer at every depth (an ARIA tree with the arrow keys). The side panel drills into any node — main included: its path (`메인 › A1 Explore › A3 …`), its header and its subtree — and in a parent's work log each spawned child is a live block. The main agent's tasks and log never mix with a subagent's. Spec: [`.prd/12-dashboard-agent-tree-spec.md`](./.prd/12-dashboard-agent-tree-spec.md).
+- **What happened to each task**: TodoWrite replaces the whole list, so a new plan drops the steps the old one did not finish. The task ledger records when a step left the list, and Tasks show each step as done, running, paused (it had started; the session stopped), waiting, stopped (a new plan dropped it after it ran) or not run (dropped before it ever started). Only a step that runs now spins. Earlier plans fold behind one line with their counts and open grouped by the moment a new plan replaced them; the card's task count leaves out steps that never ran. Spec: [`.prd/14-dashboard-task-view-spec.md`](./.prd/14-dashboard-task-view-spec.md) §3.
+- **Phones, foldables and PCs**: the layout follows the screen, not the device model. Below 840px the session panel is a full-screen sheet; from 840px (an unfolded iPhone Duo or Galaxy Z Fold8, tablets, PCs) it docks beside the board, which stays live, so you can open the next card with the panel still open. The board shows all three columns when it is at least 840px wide and scrolls them sideways below that. Folding, unfolding or rotating moves the cards to their new places (a fade only with reduced motion). In the panel, the agent tabs stay at the top of its scroll area and the composer stays above the on-screen keyboard. Below an 840×1000 window the CRON lane starts collapsed (its head plus any job waiting for a reply), and LLM capacity always starts collapsed (one chip per provider with both measures as max accounts' worth of the total and %, `Claude 지금 5.2/16.0 33% · 주 5.6/16.0 35%`; below 840px the chips wrap to a second row), so the board is on the first screen; your expand or collapse choice is kept on that device. Device sizes and sources: [`docs/misc/research/2026-10-24-dashboard-device-viewports.md`](./docs/misc/research/2026-10-24-dashboard-device-viewports.md).
+- **Model and effort, one click from the top**: the top bar shows your default model and effort for new sessions. Pick a value and it is saved at once — the same setting as `model set <m>` and `effort <level>`. With a session panel docked beside the board, "이 세션에도 적용" (on by default) also switches that session (on a phone the panel sheet covers the top bar — use the panel's own controls).
+- **Per-session model and effort**: the card and the top of the session panel switch one session only, like `%effort <level>`; the change applies from the next turn. When the model caps the level, the card shows the level that really runs.
+- **Permission prompts**: when a turn stops on a permission prompt (the Slack "🔐 Permission Request" card — for example a Bash command that matched a dangerous-command rule), its card moves to NEEDS YOU and the card and the session panel show the same prompt: the tool, its parameters, the matched rules and **Approve / Deny / Explain / Approve & disable rule (this session)**. Only the user the prompt was raised for sees the parameters and can answer — the same rule as the Slack buttons. Slack and the dashboard answer through one path (`src/permission-prompt-response.ts`), so whichever answers first wins and the other is told it was already answered. API: `GET /api/dashboard/session/:key/permission/:approvalId`, `POST /api/dashboard/session/:key/permission` (auth + CSRF).
+- **Settings page** (`/dashboard/settings`, "⚙ 설정" in the top bar): every personal setting a Slack command can change, grouped (model and effort, output, notifications, goals, autoskills, account, permissions). Choices save at once; typed values save with a button. Each row shows its default, a "기본값으로" reset when it differs, and the Slack command that does the same. Risky changes (bypass, sandbox off, network allowlist off) ask first. Admin-only rows show why they are locked.
+- **Memory tab** (`/dashboard/settings#memory`, "🧠 기억" in the top bar): every personal memory, viewable and editable — agent notes (`MEMORY.md`) and user profile (`USER.md`) one row per entry with a capacity meter (add, edit, delete with undo, clear all with a count-naming confirm); knowledge pages (agent / sites / concepts / projects / cron) with Current and the whole History editable, plus create and delete; episodic observations day by day, each entry editable or deletable, notes added to today. Every edit is conditional on the revision the tab loaded — when the agent or Slack changed it meanwhile, the tab reloads that part and keeps the draft. The host process, the model-command MCP subprocess and the dashboard all take the same per-user memory lock (`somalib/model-commands/memory-lock.ts`), so an edit and an agent append never lose each other. API: `/api/memory/*`, signed-in user only, auth + CSRF on writes.
+- **Personal settings API**: `GET /api/settings` and `PATCH /api/settings/:key` read and change every personal setting a Slack command can change, for the signed-in user only. Writes go through the same validators and `/z` card handlers as Slack; a contract test fails when a Slack settings command has no dashboard row.
 
 ### 🤖 Multi-Agent Architecture
 
@@ -157,8 +195,8 @@ Status and architecture note: [Sub-Agents](./docs/misc/guides/how-to-new-agent.m
        │
   ┌────▼─────────────────────────────────┐
   │         Internal MCP Servers          │
-  │  llm · model-command · slack-mcp      │
-  │  cron · agent · server-tools          │
+  │  model-command · slack-mcp · cron     │
+  │  agent · server-tools · devops-tools  │
   │  permission · mcp-tool-permission     │
   └─────────────────────────────────────────┘
 ```
@@ -175,8 +213,8 @@ Four prefix families — each with a clear, non-overlapping purpose:
 |--------|-------|-------------|---------|
 | `/z <topic> …` | Primary command surface (Block Kit UI where it makes sense) | User-global | `/z persona set linus` |
 | `%<sub> …` | **Current session only** — override without saving | Ephemeral (reset on `new`/`renew`) | `%model opus` |
-| `$<skill>` / `$<plugin>:<skill>` | **Force skill invocation** (reads `SKILL.md`, emits RPG banner) | Per-message | `$z`, `$stv:new-task` |
-| naked text | Whitelisted bare forms (see below) or chat / workflow dispatch | n/a | `sessions`, `new`, `fix PR 123` |
+| `$<skill>` / `$<plugin>:<skill>` | **Force skill invocation** (reads `SKILL.md`, emits RPG banner at `compact` and above — at `minimal` it is not posted; recorded in the dashboard work log when the session has a conversation) | Per-message | `$z`, `$stv:new-task` |
+| naked text | Bare command forms (see below) or chat / workflow dispatch | n/a | `sessions`, `new`, `fix PR 123` |
 
 > **Split history (#508)**: `$` used to double as both "force skill" and "session setting". It was split — `%` took over session settings, `$` is now skill-only. Legacy `$model` / `$verbosity` / `$effort` / `$thinking` / `$thinking_summary` still work during the deprecation grace period but emit a one-line notice nudging users to `%`.
 
@@ -192,7 +230,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z bypass [set on\|off]` | Toggle permission bypass |
 | `/z persona [set <name>\|list]` | Switch persona |
 | `/z model [set <name>\|list]` | Switch model (sonnet, opus, haiku) |
-| `/z verbosity [set <level>]` | Set output verbosity |
+| `/z verbosity [set <level>]` | Set output verbosity (`minimal` · `compact` · `detail` · `verbose`). The default is `minimal`: the thread shows the task list (the main agent's — a subagent's own list lives on its dashboard entry), questions/approvals, the final answer and errors; the model's running narration, tool calls, compaction notices and skill banners (`$skill` and autoskill included) go to the dashboard work log |
 | `/z session` · `sessions` | List active sessions (`sessions` naked form still accepted) |
 | `/z new` · `/z renew` | Reset / renew session (naked `new` / `renew` also accepted) |
 | `/z close` | Close current thread session |
@@ -259,6 +297,57 @@ for everyone — admins included:
   page. The legacy CCT view embedded in `auth` also pages slots; its management
   buttons and modal submissions return to the same auth view and page. The
   separate `cct` command keeps its existing behavior.
+
+### Dashboard capacity
+
+The web dashboard shows the same llmux pool as an **LLM 가용량** section between
+the stats strip and the Agent inbox (`GET /api/dashboard/capacity`, llmux read at
+most every 30 s; the page refetches every 60 s). It starts folded on every window
+(your unfold choice is kept per device); folded, one chip per subscription provider
+gives both windows as max accounts' worth of the total and %:
+`Claude 지금 5.2/16.0 33% · 주 5.6/16.0 35%`. Below 840px the chips wrap, breaking
+only between the two measures. A chip whose oldest reading is over a day old, or
+whose pool counts fewer than 80% of its accounts, carries a warning:
+`Codex 주 2.37/2.4 99% ⚠ 5일 전 · 3/5 반영`. Why two bars, 5h on top: see
+[`docs/misc/research/2026-10-25-capacity-dual-window.md`](./docs/misc/research/2026-10-25-capacity-dual-window.md).
+
+Unfolded, each provider (Claude, Codex; API-key pools have no plan unit and are
+not shown) is one simple card:
+
+- **Two bars** — `5시간 · 지금 쓸 수 있음` (the smaller of the 5h and weekly
+  remaining; 0 while blocked) and `일주일 · 이번 주 남음`, each
+  `x / total 계정 · %`, with one line for what raises it next — how much and when,
+  `다음 +1.0계정 · 1시간 23분 후` (the cause is named only when it is not the bar's
+  own reset, e.g. `· 차단 해제`; the account is in the tooltip; a 5시간 bar held by
+  the weekly limit reads `일주일 한도에 묶임 · 다음 …`). Codex (no 5h data) has the
+  weekly bar only. "계정" = max accounts' worth: tier weight (Max x20 = 1, x5 = ¼,
+  Pro $500 = 1, $200 = 0.4) × remaining — a normalised estimate, not tokens. The %
+  is from the raw ratio (100% only when full); a count that rounds to the total
+  keeps two decimals (`2.37 / 2.4 · 99%`).
+- **One muted disclosure line**, only what is non-zero:
+  `16/17 반영(차단 6 포함) · 제외 1(보류) · 측정 4시간 전` — accounts counted (and how
+  many of them are blocked right now), left out (paused / auth failure / no known lift = 보류, an untiered Codex account,
+  no weekly reading), Claude accounts counted on an assumed x20 plan and the oldest llmux reading when over an hour old.
+- **One timeline**, now → 24h (55% of the width) → 7d: ● is a gain to the 5시간 bar
+  (label above), ◆ a gain to the 일주일 bar (label below), in the bars' colours;
+  refills whose labels would collide merge into one marker with a span. Gains come
+  from replaying each account's resets in time order (blocks lifted first, then
+  5h, then weekly). With no 5h gain in 7 days the ● key says "늘어날 양 없음"; with only small ones
+  (each under 0.05) it gives their sum, `+0.1계정 미만` or e.g. `+0.1계정`, in the same words
+  as the bars' next line and the chip tooltip.
+- Tiers: llmux ≥ 0.2.26 reports each account's plan — Claude `rate_limit_tier`
+  (`default_claude_max_20x`), Codex `plan_type` (`pro` = $200, `promax` = $500) — and
+  the dashboard uses it with no configuration. Order: `SOMA_LLMUX_ACCOUNT_TIERS`
+  (`group:name=tier`, e.g. `claude:ai7=x20,claude:ai12=x5`) → the plan llmux reports → built-in defaults
+  (Codex `ai1`·`ai2` = Pro $200, `ai5`·`ai6` = Pro $500). A bare llmux `max` is
+  never read as x5/x20. An unmapped **Claude** account counts as Max x20 and is said
+  so — `티어 미지정 15(x20 가정)` on the card, `⚠ x20 가정 15` on the folded chip — so a
+  host without the map still shows its pool (2026-10-26). An unmapped
+  Codex account stays out of the totals (`제외 1(티어 미지정)`).
+- Not routed through llmux (`ccp` mode) → the section is hidden; llmux
+  unreachable → the section says so with a fixed reason.
+
+Spec: [`.prd/12-cron-lane-and-llm-capacity-spec.md`](./.prd/12-cron-lane-and-llm-capacity-spec.md).
 
 Wiring: [`src/slack/z/topics/auth-topic.ts`](./src/slack/z/topics/auth-topic.ts)
 → [`src/auth/llmux-client.ts`](./src/auth/llmux-client.ts) →
@@ -338,7 +427,7 @@ Overrides that apply **only to the current session** and do not persist. Cleared
 |---------|-------------|
 | `%` | Show session info (model, verbosity, effort, thinking flags) |
 | `%model [<name>]` | Get / set session model (e.g. `%model opus`) |
-| `%verbosity [<level>]` | Get / set session verbosity |
+| `%verbosity [<level>]` | Get / set session verbosity (same levels; default `minimal`, see `/z verbosity`) |
 | `%effort [<level>]` | Get / set session effort |
 | `%thinking [on\|off]` | Toggle extended thinking for this session |
 | `%thinking_summary [on\|off]` | Toggle thinking-output display |
@@ -347,7 +436,7 @@ Overrides that apply **only to the current session** and do not persist. Cleared
 
 ### `$` — forced skill invocation
 
-Forces the bot to read a skill's `SKILL.md` and follow it. Emits a red RPG banner ("⚡ skill 강제 발동") on resolution.
+Forces the bot to read a skill's `SKILL.md` and follow it. Emits a red RPG banner ("⚡ skill 강제 발동") on resolution at `compact` and above; at `minimal` the banner is not posted (the skill still runs). At every level the banner is recorded in the dashboard work log when the session has a conversation.
 
 | Syntax | Resolves to |
 |--------|-------------|
@@ -362,7 +451,7 @@ Nested `$plugin:skill` references inside skill content are resolved recursively 
 
 ### naked — bare-text compatibility
 
-A whitelist of bare (no-prefix) forms is still accepted for legacy reasons. Source of truth is split across two layers: [`src/slack/z/whitelist.ts`](./src/slack/z/whitelist.ts) (z-topic forms) and the `CommandParser.is*Command` matchers routed by [`src/slack/commands/command-router.ts`](./src/slack/commands/command-router.ts) (operational cards such as `auth`, `cct`).
+Bare (no-prefix) `[cmd] [args]` forms run through the same command handlers as their `/z` counterparts. The source of truth is the handler chain of [`CommandRouter`](./packages/slack/src/commands/command-router.ts) and its `CommandParser.is*Command` matchers (including operational cards such as `auth`, `cct`). In a DM, a non-admin may send only the inputs [`isDmAllowedForNonAdmin`](./packages/slack/src/z/whitelist.ts) accepts. Common forms:
 
 | Form | Notes |
 |------|-------|
@@ -381,9 +470,17 @@ A whitelist of bare (no-prefix) forms is still accepted for legacy reasons. Sour
 
 The Codex block in the key DM points `OPENAI_BASE_URL` at the advertised server's `/v1` endpoint and uses your same tenant key. Copy the complete `codex --model … -c …` invocation: its explicit Responses provider reads `OPENAI_API_KEY` even when you already use ChatGPT login or another provider. The exports apply to the current terminal; the invocation does not rewrite Codex config or login credentials. Use that invocation again for later llmux sessions. See [Codex gateway authentication](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway).
 
-Any free-form text not matching the whitelist is treated as a chat / workflow dispatch prompt.
+Any free-form text that no command handler claims is treated as a chat / workflow dispatch prompt.
 
-**Migration (#506)**: Legacy naked command forms (`persona linus`, `model sonnet`, `show_prompt`, …) outside this whitelist are deprecated. First use per user shows a tombstone hint; subsequent uses are dropped. Set `SOMA_ENABLE_LEGACY_SLASH=true` to restore the pre-refactor behavior during rollback.
+**Cron runs on the dashboard**: a session a cron fire creates starts under the job's name (not `Direct (skipDispatch)`); that title is provisional, so the first clear title — the turn summary or a linked issue/PR — replaces it, and the card fades the new title in. Its card leads with a **CRON** badge and lives in the dashboard's **CRON lane** above the columns: one tile per job with the schedule in words (cron is UTC), the next run, the last runs as a glyph-coded strip (✓ success · ✗ failed · ● running · ▲ needs you · ◌ no session), and the job's latest run as a live card. **지난 실행** opens a drawer with every kept run (the history keeps the last 20 per job) linked to its session, work log, conversation and Slack thread (`GET /api/dashboard/cron`). A cron fire injected into an existing session does not re-file that session.
+
+**Post-deploy QA**: a host can install an environment plugin (such as `acme-env`) that provides a `post-deploy` skill. The deploy workflow then runs post-deploy QA as its step 7, in the deploy session itself, for each repo whose deploy is confirmed (setup: [docs/runbook/add-new-deploy.md](docs/runbook/add-new-deploy.md) §8.5).
+
+**Environment skills need an admin's approval**: the skills of a deploy-time environment plugin run for admins (`ADMIN_USERS`) at once and for everyone else only on an admin's grant. A non-admin's `$plugin:skill` or the model's `Skill` call is stopped, every admin gets a DM with four buttons (1회 허용 for that thread, 이 스킬 항상 허용, 모든 환경 스킬 항상 허용, 거부), and on approval the requester's turn is sent again so the run continues (details: [docs/runbook/add-new-deploy.md](docs/runbook/add-new-deploy.md) §8.5).
+
+**Deploy release notes**: after a deploy, the deploy workflow writes the notes with `local:release-notes` and emits one `release_notes` directive per repo. The host posts a short root message — `repo target · version` plus up to three TL;DR lines — and the full notes as replies in its thread (cut losslessly, never truncated). The operator decides the channel with `SOMA_RELEASE_NOTES_CHANNELS` in the host's `.env` (for example `acme/app@deploy/dev2=C0DEV2CHAN1,*=session`): an exact `owner/repo@branch` or `branch` match goes to that channel, `*=session` keeps unmatched deploys in the deploy session's channel, and without `*` an unmatched deploy stays in the deploy thread. Unset means the deploy session's channel, as before. A failed post never moves the notes to another channel's root; they land in the deploy thread with a warning.
+
+**Bare commands (#531)**: Bare forms such as `persona linus` or `model sonnet` run directly through their handlers. The one-time tombstone hint that #506 Phase 1 showed for them was removed in #531. `SOMA_ENABLE_LEGACY_SLASH=true` only restores the legacy `/soma`, `/session` and `/new` slash commands.
 
 ---
 
@@ -508,6 +605,7 @@ GITHUB_TOKEN=ghp_...               # Fallback when GitHub App not configured
 CLAUDE_CODE_USE_BEDROCK=1          # Use AWS Bedrock
 CLAUDE_CODE_USE_VERTEX=1           # Use Google Vertex AI
 DEBUG=true
+SOMA_RELEASE_NOTES_CHANNELS=acme/app@deploy/dev2=C0123456789,*=session  # Where deploy release notes go
 ```
 
 #### 4. Configure MCP servers (optional)
@@ -691,7 +789,7 @@ src/                                # TypeScript source
 │   ├── pipeline/                   # Stream processing pipeline
 │   ├── directives/                 # Channel/session link directives
 │   ├── formatters/                 # Output formatters
-│   └── z/                          # /z command surface + naked whitelist
+│   └── z/                          # /z command surface + non-admin DM input gate
 ├── auth/                           # CCT lease + query env injection
 ├── conversation/                   # Conversation recording & replay
 ├── model-commands/                 # Model command catalog & validation
@@ -721,8 +819,10 @@ packages/                           # Workspace packages
 │   ├── slack-mcp/                  # Thread context + file upload
 │   ├── cron/                       # Cron job management
 │   ├── server-tools/               # Server administration
+│   ├── devops-tools/               # Keyless relay to the devops broker (gh / Cloudflare)
 │   ├── permission/                 # Permission prompt service
 │   └── mcp-tool-permission/        # Per-tool permission gating
+├── devops-broker/                  # Separate-OS-user broker: holds gh tokens + Cloudflare forge keys, admin-approved via its own Slack app
 ├── common/ · slack/ · process-shared/ · test-utils/
 
 somalib/                            # Shared soma-family library

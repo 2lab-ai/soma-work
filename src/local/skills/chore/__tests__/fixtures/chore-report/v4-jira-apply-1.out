@@ -1,0 +1,5 @@
+RESULT	FAIL	jira-transition	jira#TST-106	comment-rejected: 댓글 거부됨, 변경 없음	attempt=20261019T040000Z-0c0c0c0c
+RESULT	UNKNOWN	jira-transition	jira#TST-101	journal has a write of this attempt, outcome unread (run aborted at jira)	attempt=20261019T040000Z-0c0c0c0c
+RESULT	UNKNOWN	jira-transition	jira#TST-105	journal has a write of this attempt, outcome unread (run aborted at jira)	attempt=20261019T040000Z-0c0c0c0c
+RESULT	NOT-ATTEMPTED	jira-transition	jira#TST-102	run aborted at jira	attempt=20261019T040000Z-0c0c0c0c
+ABORTED	run_id=20261016T010203Z-1f2e3d4c	at=jira	ok=0	skip=0	fail=1	unknown=2	unattempted=1	reason=Jira 읽기 실패 — 잠시 뒤 같은 명령으로 다시 실행	attempt=20261019T040000Z-0c0c0c0c	scope=full	journal=/repo/.git/chore/20261016T010203Z-1f2e3d4c.journal

@@ -1,4 +1,5 @@
 import type { IncidentRequest } from '../incident-contract';
+import type { SdkUsageBaseline, TaskUsage } from '../session-usage-math';
 import type { SayPostSwitches } from '../stream-processor';
 
 export interface ProcessedFile {
@@ -11,6 +12,11 @@ export interface ProcessedFile {
   isAudio: boolean;
   size: number;
   tempPath?: string;
+  /** Slack file id and permalink — the dashboard keeps them with the user turn (user media). */
+  slackFileId?: string;
+  permalink?: string;
+  /** The bot could not fetch the file: over the download cap, or the download failed. `path` is ''. */
+  unavailable?: 'too_large' | 'download_failed';
 }
 
 export interface ConversationSession {
@@ -42,6 +48,12 @@ export interface ConversationSession {
     threadTs?: string;
     [key: string]: any;
   };
+  /** SSOT 2026-10-22 T5 — a dashboard model switch waiting for its compact (runtime-only). */
+  pendingModelSwitch?: { model: string; nickname: string; requestedAt: number; compactTs?: string; armed?: boolean };
+  /** Last per-model SDK running total for `sessionId` (persisted) — see `toTurnUsage`. */
+  sdkUsageBaseline?: SdkUsageBaseline;
+  /** What the whole task spent (persisted, never reset) — see `creditTaskSpend`. */
+  taskUsage?: TaskUsage;
   [key: string]: any;
 }
 
@@ -74,6 +86,24 @@ export interface MessageEvent {
   skipDispatch?: boolean;
   /** Model override for cron jobs (e.g. "claude-sonnet-4-20250514"). Applied at session creation. */
   modelOverride?: string;
+  /**
+   * The cron job behind a scheduled fire (SSOT 2026-10-23 T1). Read only
+   * together with `skipDispatch` (see `cron-origin.ts`): a session the fire
+   * creates is named after the job and stamped with it.
+   */
+  cron?: { jobId: string; jobName: string };
+  /**
+   * Per-task reasoning effort (dashboard "New task", SSOT 2026-10-23 T4).
+   * Applied to the session the message lands in, like `modelOverride`; an
+   * unknown level is ignored and the user's default stays.
+   */
+  effortOverride?: string;
+  /**
+   * Per-task autogoal toggle (dashboard "New task", SSOT 2026-10-23 T6). When
+   * set, it decides autogoal for this message instead of the sender's
+   * `autoGoalEnabled` setting — in both directions. The setting is unchanged.
+   */
+  autoGoalOverride?: boolean;
   routeContext?: {
     skipAutoBotThread?: boolean;
     sourceChannel?: string;
@@ -93,6 +123,24 @@ export interface MessageEvent {
      * turn wins), not aborted. See `GoalLoopController` (M2).
      */
     goalContinuation?: boolean;
+    /**
+     * True when `text` is a `/z` command's verbatim `continueWithPrompt` (a
+     * goal objective) that already went through command routing. The message
+     * path dispatches it as the user's words: no second command routing, no
+     * inline `%` directives, no `!` abort/steer, always a real turn. Set only
+     * by the `/z` consumers (DM branch, app_mention); survives the follow-up
+     * queue because stored messages are never rebuilt.
+     */
+    verbatimPrompt?: boolean;
+    /**
+     * The opening turn of the goal with this id (always together with
+     * `verbatimPrompt`). Set by the host when a goal command or a dashboard
+     * goal action starts a goal while it cannot dispatch directly; the message
+     * path runs it only while that goal is still the ACTIVE goal — a goal
+     * deleted or replaced while its opening turn waited in the follow-up queue
+     * never runs. Survives the queue for the same reason as `verbatimPrompt`.
+     */
+    goalOpeningId?: string;
     /**
      * Present ONLY on a turn the incident ingress itself built after the
      * contract accepted it (`event-router.ts` → `evaluateIncidentIngress`).

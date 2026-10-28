@@ -150,13 +150,6 @@ export function isNativeOneMModel(model: string): boolean {
   return NATIVE_ONE_M_RE.test(model);
 }
 
-/**
- * `CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE` value injected for native-1M models.
- * Kept as a named alias of {@link ONE_M_SDK_BLOCKING_LIMIT} because the pinned
- * SDK resolves native-1M ids to 200k; remove it together with that workaround.
- */
-export const NATIVE_ONE_M_SDK_BLOCKING_LIMIT = ONE_M_SDK_BLOCKING_LIMIT;
-
 /* ------------------------------------------------------------------ *
  * gpt-5.5 / gpt-5.6 (llmux codex backend)
  * ------------------------------------------------------------------ */
@@ -320,6 +313,14 @@ const POLICY_PROFILES: readonly ModelProfile[] = [
   },
   {
     modelId: 'claude-opus-5-5[1m]',
+    contextWindow: 1_000_000,
+    sdkBlockingLimit: ONE_M_SDK_BLOCKING_LIMIT,
+    autoCompactTokens: 750_000,
+    compactHeadroom: DEFAULT_COMPACT_HEADROOM,
+  },
+  {
+    // Sonnet's 1M opt-in — same Claude 1M policy as fable / opus (750k).
+    modelId: 'claude-sonnet-4-6[1m]',
     contextWindow: 1_000_000,
     sdkBlockingLimit: ONE_M_SDK_BLOCKING_LIMIT,
     autoCompactTokens: 750_000,

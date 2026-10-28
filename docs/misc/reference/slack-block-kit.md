@@ -314,7 +314,7 @@ legacy 텍스트 출력은 fallback `text`로만 유지되고, 주 UX는 버튼 
 
 | 모듈 | 역할 |
 |------|------|
-| `src/slack/z/ui-builder.ts` | `buildSettingCard`, `buildHelpCard`, `buildConfirmationCard`, `buildTombstoneCard` |
+| `src/slack/z/ui-builder.ts` | `buildSettingCard`, `buildHelpCard`, `buildConfirmationCard` |
 | `src/slack/z/topics/*-topic.ts` | 토픽별 `renderCard` / `apply` / `openModal` / `submitModal` (11개) |
 | `src/slack/z/topics/index.ts` | `buildDefaultTopicRegistry()` — 11 토픽을 한 번에 등록 |
 | `src/slack/actions/z-settings-actions.ts` | regex action/view 핸들러 (`ZSettingsActionHandler`) |
@@ -401,7 +401,7 @@ action handler가 카드를 교체(`replace`)할 때, **원래 전송한 surface
 
 ## 5) 이 리포 문서 연결
 
-- Slack UI 액션 패널 스펙: `docs/current/spec/13-slack-ui-action-panel.md`
+- Slack 세션 surface (헤더 · 상태 레일 · 컨트롤) 스펙: `docs/current/spec/13-slack-ui-action-panel.md`
 - `/z` 슬래시 커맨드 마스터 스펙: `docs/current/spec/z-command-master-spec.md` (§8 Block Kit, §15 actions/view id)
 
 ---

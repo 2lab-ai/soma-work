@@ -6,7 +6,7 @@
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { CronStorage, isValidCronExpression, isValidCronName, matchesCronExpression } from 'somalib/cron/cron-storage';
+import { CronStorage } from 'somalib/cron/cron-storage';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 describe('CronStorage', () => {
@@ -206,124 +206,8 @@ describe('CronStorage', () => {
   });
 });
 
-// --- Cron expression matching ---
-
-describe('matchesCronExpression', () => {
-  // All tests use explicit UTC dates (Z suffix) to ensure UTC-based matching
-  it('matches exact minute and hour in UTC', () => {
-    const date = new Date('2026-03-28T09:30:00Z');
-    expect(matchesCronExpression('30 9 * * *', date)).toBe(true);
-    expect(matchesCronExpression('31 9 * * *', date)).toBe(false);
-  });
-
-  it('matches day-of-week range in UTC', () => {
-    // 2026-03-28 is Saturday (dow=6) in UTC
-    const sat = new Date('2026-03-28T09:00:00Z');
-    expect(matchesCronExpression('0 9 * * 1-5', sat)).toBe(false); // Mon-Fri
-    expect(matchesCronExpression('0 9 * * 6', sat)).toBe(true);
-  });
-
-  it('matches wildcard', () => {
-    const date = new Date('2026-03-28T09:30:00Z');
-    expect(matchesCronExpression('* * * * *', date)).toBe(true);
-  });
-
-  it('matches step values in UTC', () => {
-    const date = new Date('2026-03-28T09:30:00Z');
-    expect(matchesCronExpression('*/15 * * * *', date)).toBe(true); // 30 % 15 === 0
-    expect(matchesCronExpression('*/7 * * * *', date)).toBe(false); // 30 % 7 !== 0 (0,7,14,21,28)
-  });
-
-  it('rejects invalid expression', () => {
-    const date = new Date();
-    expect(matchesCronExpression('invalid', date)).toBe(false);
-    expect(matchesCronExpression('', date)).toBe(false);
-  });
-
-  // --- B1 tests: matchesCronExpression must use UTC, not local time ---
-  // These tests explicitly verify getUTC*() vs get*() by asserting
-  // against known UTC component values that differ from common local
-  // timezones (e.g. KST/UTC+9, EST/UTC-5, IST/UTC+5:30).
-  it('B1: matches UTC hour regardless of server timezone', () => {
-    // 2026-03-29T00:30:00Z → UTC hour=0, min=30
-    // Any UTC+ timezone would see hour=9+ (KST), hour=5:30+ (IST), etc.
-    const date = new Date('2026-03-29T00:30:00Z');
-    expect(date.getUTCHours()).toBe(0); // sanity: confirm UTC
-    expect(matchesCronExpression('30 0 * * *', date)).toBe(true);
-    expect(matchesCronExpression('30 9 * * *', date)).toBe(false);
-  });
-
-  it('B1: matches UTC day-of-month across timezone date boundary', () => {
-    // 2026-03-28T23:00:00Z → UTC dom=28
-    // In UTC+1 and above, local dom=29
-    const date = new Date('2026-03-28T23:00:00Z');
-    expect(date.getUTCDate()).toBe(28); // sanity
-    expect(matchesCronExpression('0 23 28 * *', date)).toBe(true);
-    expect(matchesCronExpression('0 23 29 * *', date)).toBe(false);
-  });
-
-  it('B1: matches UTC day-of-week across timezone boundary', () => {
-    // 2026-03-28T23:00:00Z → UTC Saturday (dow=6)
-    // In UTC+1 and above, local Sunday (dow=0)
-    const date = new Date('2026-03-28T23:00:00Z');
-    expect(date.getUTCDay()).toBe(6); // sanity
-    expect(matchesCronExpression('0 23 * * 6', date)).toBe(true);
-    expect(matchesCronExpression('0 23 * * 0', date)).toBe(false);
-  });
-
-  it('B1: matches UTC minute across half-hour offset timezone', () => {
-    // 2026-03-29T00:15:00Z → UTC min=15
-    // In IST (UTC+5:30), local min=45
-    const date = new Date('2026-03-29T00:15:00Z');
-    expect(date.getUTCMinutes()).toBe(15); // sanity
-    expect(matchesCronExpression('15 0 * * *', date)).toBe(true);
-    expect(matchesCronExpression('45 0 * * *', date)).toBe(false); // would match IST local min
-  });
-
-  it('B1: matches UTC month across year boundary', () => {
-    // 2026-12-31T23:30:00Z → UTC month=12, dom=31
-    // In UTC+1 and above, local month=1 (January), dom=1
-    const date = new Date('2026-12-31T23:30:00Z');
-    expect(date.getUTCMonth()).toBe(11); // JS 0-based → cron 1-based = 12
-    expect(matchesCronExpression('30 23 31 12 *', date)).toBe(true); // UTC dec 31
-    expect(matchesCronExpression('30 23 1 1 *', date)).toBe(false); // would match UTC+1 jan 1
-  });
-});
-
-describe('isValidCronExpression', () => {
-  it('validates 5-field expressions', () => {
-    expect(isValidCronExpression('0 9 * * 1-5')).toBe(true);
-    expect(isValidCronExpression('*/15 * * * *')).toBe(true);
-    expect(isValidCronExpression('0 9 * * *')).toBe(true);
-    expect(isValidCronExpression('bad')).toBe(false);
-    expect(isValidCronExpression('0 9 * *')).toBe(false); // only 4 fields
-  });
-
-  it('rejects out-of-range values', () => {
-    expect(isValidCronExpression('61 * * * *')).toBe(false); // minute > 59
-    expect(isValidCronExpression('* 25 * * *')).toBe(false); // hour > 23
-    expect(isValidCronExpression('* * 32 * *')).toBe(false); // dom > 31
-    expect(isValidCronExpression('* * * 13 *')).toBe(false); // month > 12
-    expect(isValidCronExpression('* * * * 8')).toBe(false); // dow > 7
-    expect(isValidCronExpression('99 99 * * *')).toBe(false); // both out of range
-  });
-
-  it('rejects zero step and reversed ranges', () => {
-    expect(isValidCronExpression('*/0 * * * *')).toBe(false); // step 0
-    expect(isValidCronExpression('5-1 * * * *')).toBe(false); // reversed range
-    expect(isValidCronExpression('* 10-1/2 * * *')).toBe(false); // reversed range with step
-  });
-});
-
-describe('isValidCronName', () => {
-  it('validates cron names', () => {
-    expect(isValidCronName('daily-standup')).toBe(true);
-    expect(isValidCronName('my_cron_123')).toBe(true);
-    expect(isValidCronName('')).toBe(false);
-    expect(isValidCronName('has spaces')).toBe(false);
-    expect(isValidCronName('a'.repeat(65))).toBe(false);
-  });
-});
+// matchesCronExpression / isValidCronExpression / isValidCronName are soma-lib's
+// (re-exported by somalib/cron/cron-storage); soma-lib's cron-expression suite pins them.
 
 // --- updateJob — cron manage UI (T2.1) ---
 // Trace: cron/schedule 관리 UI — 모델·출력 대상 변경은 updateJob 경유
@@ -371,6 +255,15 @@ describe('CronStorage.updateJob', () => {
     // persisted
     const reloaded = storage.getJobsByOwner('U_OWNER')[0];
     expect(reloaded.modelConfig).toEqual({ type: 'custom', model: 'gpt-5.5' });
+  });
+
+  it('stamps scheduleChangedAt only when the expression actually changes', () => {
+    seed();
+    expect(storage.updateJob('U_OWNER', 'job-a', { prompt: 'new' })!.scheduleChangedAt).toBeUndefined();
+    expect(storage.updateJob('U_OWNER', 'job-a', { expression: '0 9 * * *' })!.scheduleChangedAt).toBeUndefined();
+    const edited = storage.updateJob('U_OWNER', 'job-a', { expression: '30 9 * * *' })!;
+    expect(edited.scheduleChangedAt).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/);
+    expect(storage.getJobsByOwner('U_OWNER')[0].scheduleChangedAt).toBe(edited.scheduleChangedAt);
   });
 
   it('clears modelConfig with null (default = creator current model)', () => {
@@ -439,5 +332,51 @@ describe('CronStorage.updateJob', () => {
     expect(updated!.lastRunAt).toBe('2026-01-02T03:04:00.000Z');
     expect(updated!.lastRunMinute).toBe('2026-01-02T03:04');
     expect(updated!.expression).toBe('*/5 * * * *');
+  });
+});
+
+// --- A job stored by an older build -------------------------------------------
+// Older builds stored deploy triggers on a job (deploy-triggered fires, since
+// removed); the fixture below keeps that key verbatim.
+// Nothing reads the key any more; a file that still has it must load and edit
+// like any other.
+describe('CronStorage — a stored job with a key this build does not know', () => {
+  let tmpFile: string;
+
+  beforeEach(() => {
+    tmpFile = path.join(os.tmpdir(), `cron-legacy-key-test-${Date.now()}-${Math.random().toString(36).slice(2)}.json`);
+    const legacyJob = {
+      id: 'job-legacy',
+      name: 'qa-lane',
+      expression: '0 9 * * *',
+      prompt: 'QA',
+      owner: 'U_OWNER',
+      channel: 'C1',
+      threadTs: null,
+      createdAt: '2026-10-21T00:00:00.000Z',
+      lastRunAt: null,
+      lastRunMinute: null,
+      onDeploy: [{ repo: 'acme/app', target: 'deploy/dev2' }],
+    };
+    fs.writeFileSync(tmpFile, JSON.stringify({ jobs: [legacyJob] }, null, 2), 'utf-8');
+  });
+
+  afterEach(() => {
+    for (const f of [tmpFile, `${tmpFile}.tmp`]) {
+      try {
+        fs.unlinkSync(f);
+      } catch {}
+    }
+  });
+
+  it('loads, lists and updates the job', () => {
+    const storage = new CronStorage(tmpFile);
+
+    expect(storage.getAll().map((j) => j.name)).toEqual(['qa-lane']);
+    expect(storage.getJobsByOwner('U_OWNER')).toHaveLength(1);
+
+    const updated = storage.updateJob('U_OWNER', 'qa-lane', { prompt: 'QA again' });
+    expect(updated).toMatchObject({ id: 'job-legacy', name: 'qa-lane', prompt: 'QA again' });
+    expect(new CronStorage(tmpFile).getJobsByOwner('U_OWNER')[0].prompt).toBe('QA again');
   });
 });

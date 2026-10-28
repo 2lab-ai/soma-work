@@ -6,6 +6,8 @@ A bad `ui` value never breaks boot: structurally invalid input degrades to the b
 
 On first boot, if `config.json` has no `ui` key, the full default composition is seeded into the file automatically — edit the settings right there. An existing `ui` key (even an empty `{}`) is never overwritten, so your edits are safe across restarts. `config.default.json` in the repo root remains the pristine reference copy of the defaults.
 
+Because the seed is a copy, a later change to the built-in defaults does not reach a `config.json` that already has `ui`. A field added to a default therefore ships with a one-time boot migration. The first one (2026-10-16) adds `dashboardLink` to the thread header: on the first boot after the upgrade, every `ui.threadheader` lines array (the base `lines` and each `themes.<name>.lines`) that does not mention `dashboardLink` at all gets `{ "field": "dashboardLink", "show": true }` — right before the first `links`/`linkhistory` field, or else as its own context line after the title line. An array that mentions it in any form (`"show": false` included) is left alone, and so is an array with no field the thread header knows (it falls back to the base lines or the built-in default anyway). Other keys, `${VAR}` placeholders included, keep their values; the file is rewritten with 2-space indentation. A marker `.threadheader-dashboard-link-once-2026-10-16.json` in the data directory makes this run once per data directory, so anything you change afterwards (removing the link included) stays. The boot log reports the outcome: `migrated`, `already-present`, `no-ui`, `marker-present`, `contended` (another program kept rewriting `config.json` during the update — nothing was written), or `failed`. The last two write no marker and are retried on the next boot.
+
 ## Surfaces
 
 | Surface | Where it appears |
@@ -80,11 +82,15 @@ Themes: `default`, `compact`, `minimal`.
 
 Only these fields exist per surface — anything else warns and is skipped.
 
-- `threadheader`: `title`, `owner`, `workflow`, `model`, `contextwindow`, `links`, `linkhistory`, `status`, `separator`
+- `threadheader`: `title`, `owner`, `workflow`, `model`, `contextwindow`, `links`, `linkhistory`, `dashboardLink`, `status`, `separator`
 - `turnend`: `status`, `title`, `threadlink`, `errorbody`, `persona`, `model`, `effort`, `startedat`, `contextwindow`, `duration`, `fivehour`, `sevenday`, `toolstats`, `separator`
 - `dashboardheader`: `title`, `owner`, `workflow`, `model`, `links`, `mergestats`, `tokens`, `cost`, `contextwindow`, `tasks`, `status`, `separator`
 
-A field that does not appear in the resolved lines is hidden. On the dashboard card, the pending-question block and action buttons are always shown regardless of configuration.
+Field names match case-insensitively. `dashboardLink` renders `📋 작업 로그`, the deep link to the session's card on the owner's dashboard (`/dashboard/<ownerId>?session=<sessionKey>`). When the conversation viewer (the web server that serves the dashboard) is not listening there is no URL and the field renders nothing. A new session also posts the same link into a thread a user started; that post is skipped in the same case. To hide the header link, set `{ "field": "dashboardLink", "show": false }` or remove that entry from each theme's lines in `config.json` — this controls the header field only.
+
+In the thread header, `status` (`⚫ _종료됨_`, or `_종료됨_` with `format: "closed-text"`) and the compact `headline` closed dot render only when the header stands alone. On the session surface the status rail directly under the first header row states the session state, so these two decorations are suppressed there and 종료됨 appears once. `linkhistory` shows a link's state as a word: the live PR state bare (`· Merged`), the state stored when the link was recorded as `· 기록 당시 Open`, or both as `· Merged (기록 당시 Open)` when they differ. The full surface layout is in `docs/current/spec/13-slack-ui-action-panel.md`.
+
+A field that does not appear in the resolved lines is hidden. The dashboard (Agent inbox) card is collapsed by default: its face shows the title, a one-line summary, the current task, the subagent pulse, `tokens` / `cost`, the status (with how long a card that is not running has been in its state: waiting since the question, done since the work finished), the `tasks` / `contextwindow` counts (the context count turns amber past 60% and red past 80%) and, under `links`, the PR badge (number and state: open, draft, merged, closed). The expanded card (spec 13, `.prd/13-dashboard-three-surfaces-spec.md`) keeps `model` (its model · effort switch), `links` (short refs and Slack) and `tasks` (the task window) under their gates, and never repeats the face's numbers. `owner`, `workflow`, `status` (last activity) and `mergestats` have no card reader any more: those values live in the session panel's 세션 정보, which is the complete record and ignores these gates — the fields stay valid in the registry, they just change nothing on the card. In the expanded card the pending-question block and the action buttons are always shown regardless of configuration.
 
 ## Slack constraints
 

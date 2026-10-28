@@ -121,12 +121,6 @@ describe('gpt-5.6 family — 372k window / 340k auto-compact (the key contract)'
     }
   });
 
-  it('does not disturb the gpt-5.5 window (275k) or claude windows', () => {
-    expect(resolveContextWindow('gpt-5.5')).toBe(275_000);
-    expect(resolveContextWindow('claude-fable-5')).toBe(1_000_000);
-    expect(resolveContextWindow('claude-opus-4-8[1m]')).toBe(1_000_000);
-  });
-
   it('resolveAutoCompactTokens returns the fixed 340k trigger for every tier', () => {
     expect(GPT_5_6_AUTO_COMPACT_TOKENS).toBe(340_000);
     for (const m of ['gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna']) {

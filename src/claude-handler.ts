@@ -12,11 +12,11 @@ import {
   query,
   type SDKMessage,
 } from '@anthropic-ai/claude-agent-sdk';
+import { adoptSdkSessionId } from '@soma/slack/session-usage-math';
 import * as fs from 'fs';
-import * as path from 'path';
 import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShotText } from './agent-runtime';
 import { liveAgentIds } from './agent-runtime/background-keepalive';
-import { buildStreamOptions } from './agent-runtime/claude-code/build-stream-options';
+import { buildStreamOptions, type EnvSkillDenial } from './agent-runtime/claude-code/build-stream-options';
 import type { SafetyClassifier } from './agent-runtime/policy/safety-classifier';
 import { buildSafetyClassifier } from './agent-runtime/policy/safety-classifier-factory';
 import { readUuidList, STEER_SETTLEMENT_SUBTYPE } from './agent-runtime/steer-settlement';
@@ -32,6 +32,7 @@ import { classifyTurnResult, isTurnProgressFrame } from './agent-runtime/turn-re
 import { ensureTenantKey } from './auth/llmux-tenant-keys';
 import { buildQueryEnv } from './auth/query-env-builder';
 import { getIncidentEvidenceConfig } from './config';
+import { envSkillRegistry } from './env-skill-registry';
 import {
   createIncidentEvidenceRegistry,
   type IncidentEvidenceRegistry,
@@ -48,8 +49,8 @@ import {
   type loadMcpToolPermissions,
   resolveGatedTool,
 } from './mcp-tool-permission-config';
+import { hostPricing } from './metrics/host-pricing-catalog';
 import {
-  calculateTokenCost,
   hasOneMSuffix,
   isOneMContextUnavailableSignal,
   ONE_M_CONTEXT_UNAVAILABLE_CODE,
@@ -62,7 +63,6 @@ import type {
   SessionIncidentRequest,
   SessionLink,
   SessionLinks,
-  SessionResourceSnapshot,
   SessionResourceUpdateRequest,
   SessionResourceUpdateResult,
   WorkflowType,
@@ -505,6 +505,11 @@ export class ClaudeHandler implements TurnSteeringPort {
   // path with no thread-side post.
   private compactHookBuilder?: CompactHookBuilder;
 
+  // Environment-skill gate (step 6b of the tool policy): asks the admins when a
+  // non-admin's `Skill` call is denied. Set by SlackHandler during bootstrap,
+  // which owns the Slack API; undefined in unit tests (the denial still holds).
+  private envSkillPermissionRequester?: (denial: EnvSkillDenial) => Promise<void>;
+
   constructor(mcpManager: McpManager) {
     this.mcpManager = mcpManager;
     this.sessionRegistry = new SessionRegistry();
@@ -518,6 +523,11 @@ export class ClaudeHandler implements TurnSteeringPort {
    */
   setCompactHookBuilder(builder: CompactHookBuilder): void {
     this.compactHookBuilder = builder;
+  }
+
+  /** Register who asks the admins for an environment skill step 6b denied. Called once during bootstrap. */
+  setEnvSkillPermissionRequester(requester: (denial: EnvSkillDenial) => Promise<void>): void {
+    this.envSkillPermissionRequester = requester;
   }
 
   /**
@@ -580,16 +590,8 @@ export class ClaudeHandler implements TurnSteeringPort {
     return this.sessionRegistry.getSessionKey(channelId, threadTs);
   }
 
-  getSessionKeyWithUser(userId: string, channelId: string, threadTs?: string): string {
-    return this.sessionRegistry.getSessionKeyWithUser(userId, channelId, threadTs);
-  }
-
   getSession(channelId: string, threadTs?: string): ConversationSession | undefined {
     return this.sessionRegistry.getSession(channelId, threadTs);
-  }
-
-  getSessionWithUser(userId: string, channelId: string, threadTs?: string): ConversationSession | undefined {
-    return this.sessionRegistry.getSessionWithUser(userId, channelId, threadTs);
   }
 
   getSessionByKey(sessionKey: string): ConversationSession | undefined {
@@ -620,6 +622,11 @@ export class ClaudeHandler implements TurnSteeringPort {
 
   updateSessionTitle(channelId: string, threadTs: string | undefined, title: string): void {
     this.sessionRegistry.updateSessionTitle(channelId, threadTs, title);
+  }
+
+  /** Write `title` only if the session still has a host stand-in title. */
+  fillPlaceholderSessionTitle(channelId: string, threadTs: string | undefined, title: string): boolean {
+    return this.sessionRegistry.fillPlaceholderSessionTitle(channelId, threadTs, title);
   }
 
   /**
@@ -676,16 +683,8 @@ export class ClaudeHandler implements TurnSteeringPort {
     this.sessionRegistry.setSessionLinks(channelId, threadTs, links);
   }
 
-  getSessionLinks(channelId: string, threadTs?: string): SessionLinks | undefined {
-    return this.sessionRegistry.getSessionLinks(channelId, threadTs);
-  }
-
   addSourceWorkingDir(channelId: string, threadTs: string | undefined, dirPath: string): boolean {
     return this.sessionRegistry.addSourceWorkingDir(channelId, threadTs, dirPath);
-  }
-
-  getSessionResourceSnapshot(channelId: string, threadTs?: string): SessionResourceSnapshot {
-    return this.sessionRegistry.getSessionResourceSnapshot(channelId, threadTs);
   }
 
   updateSessionResources(
@@ -725,24 +724,12 @@ export class ClaudeHandler implements TurnSteeringPort {
     return this.sessionRegistry.wakeFromSleep(channelId, threadTs);
   }
 
-  transitionToSleep(channelId: string, threadTs?: string): boolean {
-    return this.sessionRegistry.transitionToSleep(channelId, threadTs);
-  }
-
-  getSessionWorkflow(channelId: string, threadTs?: string): WorkflowType | undefined {
-    return this.sessionRegistry.getSessionWorkflow(channelId, threadTs);
-  }
-
   setActivityState(channelId: string, threadTs: string | undefined, state: ActivityState): void {
     this.sessionRegistry.setActivityState(channelId, threadTs, state);
   }
 
   setActivityStateByKey(sessionKey: string, state: ActivityState): void {
     this.sessionRegistry.setActivityStateByKey(sessionKey, state);
-  }
-
-  getActivityState(channelId: string, threadTs?: string): ActivityState | undefined {
-    return this.sessionRegistry.getActivityState(channelId, threadTs);
   }
 
   async cleanupInactiveSessions(maxAge?: number): Promise<void> {
@@ -1228,6 +1215,8 @@ export class ClaudeHandler implements TurnSteeringPort {
           promptBuilder: this.promptBuilder,
           sessionRegistry: this.sessionRegistry,
           checkMcpToolPermission: (a, b, c, d) => this.checkMcpToolPermission(a, b, c, d),
+          getEnvSkillRegistry: () => envSkillRegistry(this.mcpManager.getPluginManager()),
+          onEnvSkillDenied: this.envSkillPermissionRequester,
           safetyClassifier: this.getSafetyClassifier(),
           // Consulted only on the incident branch of the builder; passing them
           // unconditionally would be harmless, but keeping them absent makes the
@@ -1439,7 +1428,7 @@ export class ClaudeHandler implements TurnSteeringPort {
               turnStartSeq = frameSeq;
             }
             if (session) {
-              session.sessionId = message.session_id;
+              adoptSdkSessionId(session, message.session_id);
               this.logger.info('Session initialized', {
                 sessionId: message.session_id,
                 model: message.model,
@@ -2044,7 +2033,7 @@ export class ClaudeHandler implements TurnSteeringPort {
   ): AsyncIterable<AgentStreamEvent> {
     return runAgentStream(
       this.streamQuery(prompt, session, abortController, workingDirectory, slackContext, sessionKey),
-      { calculateTokenCost },
+      { calculateTokenCost: hostPricing.calculateTokenCost, hostPriced: hostPricing.hostPriced },
     );
   }
 

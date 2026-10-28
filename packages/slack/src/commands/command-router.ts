@@ -20,7 +20,53 @@ export interface CommandContext {
    * fresh-context start. Set for brand-new sessions and `new`-reset remainders.
    */
   deferSkillFire?: boolean;
+  /**
+   * Admit the opening turn of a goal this command just started (a fresh goal,
+   * or the next queued goal promoted by `goal done`) — SYNCHRONOUSLY, in the
+   * same step as the goal mutation.
+   *
+   * Supplied only by callers that run the command OUTSIDE a dispatch slot (the
+   * host's goal intake while a turn runs, see `slack-handler.ts`): there the
+   * handler must not hand the objective back as `continueWithPrompt` — the
+   * caller would have to admit it after the handler's awaits, and the running
+   * turn could end (and drive the goal loop on unrelated evidence) in between.
+   * Returns whether the opening turn was actually admitted; on `false` the
+   * handler undoes its mutation and reports the failure — it never falls back
+   * to `continueWithPrompt`.
+   */
+  admitOpening?: (opening: GoalOpening) => GoalOpeningAdmission;
 }
+
+/**
+ * The opening turn {@link CommandContext.admitOpening} is asked to admit.
+ */
+export interface GoalOpening {
+  goalId: string;
+  objective: string;
+  /**
+   * `set` — the goal this command itself set; `promoted` — the next queued
+   * goal that `goal done` started; `resumed` — a paused goal whose first turn
+   * never ran, re-opened by `goal resume`. Anything the message carried
+   * besides its text (attachments) belongs to the goal it SET, never to a
+   * promoted or resumed one.
+   */
+  cause: 'set' | 'promoted' | 'resumed';
+  /**
+   * The opening turn's text when it is not the objective: the `$skill` part
+   * of a `goal … $skill` split, run as a command (not verbatim) so the skill
+   * is resolved when the turn runs. It applies to whichever opening the split
+   * command produced (`goal done $skill` → the promoted goal's), exactly as
+   * the drained split's turn always ran the skill.
+   */
+  prompt?: string;
+}
+
+/**
+ * Result of {@link CommandContext.admitOpening}: `queued` — waits in the
+ * follow-up queue behind the running turn; `started` — took the free slot and
+ * runs now; `{ failed }` — nothing was admitted (the reason is user-facing).
+ */
+export type GoalOpeningAdmission = 'queued' | 'started' | { failed: string };
 
 /**
  * A forced `$skill` invocation that was deferred (see {@link CommandContext.deferSkillFire}).
@@ -57,6 +103,20 @@ export interface CommandResult {
    * instruction text (no `<invoked_skills>` block).
    */
   deferredSkillFire?: DeferredSkillFire;
+  /**
+   * `continueWithPrompt` is the user's own free text (a goal objective), not
+   * a host-built prompt. It has already been through command routing, so the
+   * `/z` callers (DM branch, app_mention) must mark the re-entered event
+   * `routeContext.verbatimPrompt` instead of letting the pipeline parse it as
+   * a command, an inline directive, or the `!` abort marker again.
+   */
+  verbatimPrompt?: boolean;
+  /**
+   * `goal <objective>` appended the goal to the queue behind the goal in
+   * flight — no opening turn exists for it yet, so nothing else the message
+   * carried (a `$skill` part, attachments) can ride along.
+   */
+  goalQueued?: boolean;
 }
 
 export type SayFn = (message: {
@@ -202,26 +262,45 @@ export class CommandRouter {
     // fire the skill, so we let the main handler loop pick up the full
     // text instead).
     if (this.goalHandler && CommandParser.isGoalCommand(routedText)) {
-      const skillRefPattern = /\$[\w-]+(?::[\w-]+)?/g;
-      let split: { goalText: string; skillText: string } | null = null;
-      let skillMatch = skillRefPattern.exec(routedText);
-      while (skillMatch !== null) {
-        if (this.skillForceHandler.canHandle(skillMatch[0], ctx.user)) {
-          split = {
-            goalText: routedText.slice(0, skillMatch.index).trim(),
-            skillText: routedText.slice(skillMatch.index).trim(),
-          };
-          break;
-        }
-        skillMatch = skillRefPattern.exec(routedText);
-      }
+      const split = this.findGoalSkillSplit(routedText, ctx.user);
 
       // Default: assume no session. Composition roots that wire `goalHandler`
       // must wire `hasActiveSession` to opt into the preprocessor.
       const sessionActive = this.hasActiveSession?.(ctx.channel, ctx.threadTs) ?? false;
       if (split && sessionActive) {
-        const goalResult = await this.goalHandler.execute({ ...ctx, text: split.goalText });
+        const goalCtx: CommandContext = { ...ctx, text: split.goalText };
+        const admit = ctx.admitOpening;
+        let skillRidesOpening = false;
+        if (admit) {
+          // Run at once by the host (a turn is running): the `$skill` part is
+          // the new goal's opening turn, admitted with the goal change — never
+          // fired here, outside the dispatch slot.
+          goalCtx.admitOpening = (opening) => {
+            skillRidesOpening = true;
+            return admit({ ...opening, prompt: split.skillText });
+          };
+        }
+        let goalResult: CommandResult;
+        try {
+          goalResult = await this.goalHandler.execute(goalCtx);
+        } catch (error: any) {
+          // Same contract as the handler loop below: a claimed command that
+          // crashes is CONSUMED visibly, never thrown past the router.
+          return this.reportHandlerCrash(this.goalHandler, routedText, threadTs, say, error);
+        }
         if (goalResult.continueWithPrompt === undefined) {
+          if (goalResult.goalQueued && !skillRidesOpening) {
+            // The goal waits behind the one in flight and a queued goal has no
+            // turn to carry the skill — say so instead of dropping it silently.
+            try {
+              await say({
+                text: `ℹ️ \`${split.skillText.split(/\s+/)[0].replace(/`/g, '')}\` was not run — the goal is queued behind the current one. Invoke the skill again once it starts.`,
+                thread_ts: threadTs,
+              });
+            } catch {
+              // Best-effort notice; the goal change itself stands.
+            }
+          }
           return goalResult;
         }
         if (this.skillForceHandler.canHandle(split.skillText, ctx.user)) {
@@ -282,25 +361,7 @@ export class CommandRouter {
             fallThroughGoalObjective = result.setGoalObjective;
           }
         } catch (error: any) {
-          this.logger.error('Error executing command handler', {
-            handler: handler.constructor.name,
-            error: error.message,
-          });
-          // 2026-07-09 incident guard: this text was CLAIMED by a handler
-          // (canHandle → true), so a crash must CONSUME the message — never
-          // let the raw command text fall through to session init, where
-          // autogoal promoted the literal string `goal` into a session goal
-          // after GoalHandler died on a Slack `invalid_blocks` error. Surface
-          // the failure visibly instead.
-          try {
-            await say({
-              text: `⚠️ \`${routedText.trim().split(/\s+/)[0]}\` 명령 처리 중 오류가 발생했습니다 (${handler.constructor.name}): ${error.message}`,
-              thread_ts: threadTs,
-            });
-          } catch {
-            // Error notice is best-effort — the command is consumed either way.
-          }
-          return { handled: true, error: error.message };
+          return this.reportHandlerCrash(handler, routedText, threadTs, say, error);
         }
       }
     }
@@ -320,6 +381,116 @@ export class CommandRouter {
     return fallThroughGoalObjective !== undefined
       ? { handled: false, setGoalObjective: fallThroughGoalObjective }
       : { handled: false };
+  }
+
+  /**
+   * A handler that CLAIMED the text crashed. 2026-07-09 incident guard: the
+   * message must be CONSUMED — never let the raw command text fall through to
+   * session init, where autogoal promoted the literal string `goal` into a
+   * session goal after GoalHandler died on a Slack `invalid_blocks` error.
+   * Surface the failure visibly instead.
+   */
+  private async reportHandlerCrash(
+    handler: CommandHandler,
+    routedText: string,
+    threadTs: string,
+    say: CommandContext['say'],
+    error: any,
+  ): Promise<CommandResult> {
+    this.logger.error('Error executing command handler', {
+      handler: handler.constructor.name,
+      error: error?.message,
+    });
+    try {
+      await say({
+        text: `⚠️ \`${routedText.trim().split(/\s+/)[0]}\` 명령 처리 중 오류가 발생했습니다 (${handler.constructor.name}): ${error?.message}`,
+        thread_ts: threadTs,
+      });
+    } catch {
+      // Error notice is best-effort — the command is consumed either way.
+    }
+    return { handled: true, error: error?.message };
+  }
+
+  /**
+   * `goal <objective> $skill` is TWO actions — a goal and a forced-skill turn.
+   * Returns the split point when a `$skill` token in a goal command resolves
+   * to a skill, else `null`. Shared by {@link route} and
+   * {@link isGoalCommandText} so the two cannot disagree on what a split is.
+   */
+  private findGoalSkillSplit(routedText: string, user?: string): { goalText: string; skillText: string } | null {
+    const skillRefPattern = /\$[\w-]+(?::[\w-]+)?/g;
+    let skillMatch = skillRefPattern.exec(routedText);
+    while (skillMatch !== null) {
+      if (this.skillForceHandler.canHandle(skillMatch[0], user)) {
+        return {
+          goalText: routedText.slice(0, skillMatch.index).trim(),
+          skillText: routedText.slice(skillMatch.index).trim(),
+        };
+      }
+      skillMatch = skillRefPattern.exec(routedText);
+    }
+    return null;
+  }
+
+  /**
+   * Does this text route to a goal command at all — including the
+   * `goal … $skill` split? Pure. The host uses it to dedupe a redelivered
+   * Slack event for anything that changes the goal list, whichever path
+   * (immediate intake, initial run, follow-up queue) the first delivery took.
+   */
+  routesToGoal(text: string): boolean {
+    const routedText = this.goalRoutedText(text);
+    return routedText !== null && CommandParser.isGoalCommand(routedText);
+  }
+
+  /**
+   * Would {@link route} run this text as the `goal … $skill` split (a goal
+   * change plus a forced-skill turn)? Pure. The session gate `route` also
+   * applies (`hasActiveSession`) is the caller's to check.
+   */
+  isGoalSkillSplitText(text: string, user?: string): boolean {
+    if (!this.goalHandler) return false;
+    const routedText = this.goalRoutedText(text);
+    if (!routedText || !CommandParser.isGoalCommand(routedText)) return false;
+    return this.findGoalSkillSplit(routedText, user) !== null;
+  }
+
+  /**
+   * The one predicate for "a goal command the host runs at once" — every
+   * ingress (typed thread message, `@bot` mention, file upload) asks it:
+   * {@link isGoalCommandText} or {@link isGoalSkillSplitText}.
+   */
+  isGoalIntakeText(text: string, user?: string): boolean {
+    return this.isGoalCommandText(text, user) || this.isGoalSkillSplitText(text, user);
+  }
+
+  /** `/z`-normalized text for the goal predicates, or `null` (directive, `new`, empty). */
+  private goalRoutedText(text: string): string | null {
+    const trimmed = (text ?? '').trim();
+    if (!trimmed || CommandParser.parseInlineSessionDirectives(trimmed)) return null;
+    const zPrefixRemainder = stripZPrefix(trimmed);
+    if (zPrefixRemainder !== null && !zPrefixRemainder) return null;
+    const routedText = zPrefixRemainder !== null ? translateToLegacy(zPrefixRemainder) : trimmed;
+    if (!routedText || CommandParser.isNewCommand(routedText)) return null;
+    return routedText;
+  }
+
+  /**
+   * Would {@link route} hand this text to `GoalHandler` ALONE?
+   *
+   * Pure, like {@link classifyText}: nothing is executed. Every goal form
+   * counts (`goal <objective>`, `goal done|pause|…`, `/z goal …`). Excluded:
+   *  - an inline `%` directive (`%nogoal goal …` is an instruction),
+   *  - the `goal … $skill` split ({@link isGoalSkillSplitText}),
+   *  - any text an earlier handler in the loop would claim first.
+   */
+  isGoalCommandText(text: string, user?: string): boolean {
+    if (!this.goalHandler) return false;
+    const routedText = this.goalRoutedText(text);
+    if (!routedText || !CommandParser.isGoalCommand(routedText)) return false;
+    if (this.findGoalSkillSplit(routedText, user)) return false;
+    return this.handlers.find((handler) => handler.canHandle(routedText, user)) === this.goalHandler;
   }
 
   /**

@@ -710,12 +710,6 @@ describe('SlackApiHelper', () => {
       const result3 = await p3;
       expect(result3).toEqual({ ts: '2', channel: 'C2', threadTs: undefined, echoedMessage: false });
     });
-
-    it('should report queue status correctly', () => {
-      const status = helper.getQueueStatus();
-      expect(status).toHaveProperty('queueLength');
-      expect(status).toHaveProperty('tokens');
-    });
   });
 
   describe('deleteThreadBotMessages', () => {

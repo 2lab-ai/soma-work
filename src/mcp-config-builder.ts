@@ -5,7 +5,7 @@
 
 import * as fs from 'node:fs';
 import * as path from 'node:path';
-import type { McpSdkServerConfigWithInstance } from '@anthropic-ai/claude-agent-sdk';
+import type { McpSdkServerConfigWithInstance, McpStdioServerConfig } from '@anthropic-ai/claude-agent-sdk';
 import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk';
 import { createPermissionPromptHandler, type PermissionRequestContext } from '@soma/mcp-server-permission';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
@@ -25,7 +25,6 @@ import type { McpManager } from './mcp-manager';
 import { mcpToolGrantStore } from './mcp-tool-grant-store';
 import {
   getPermissionGatedServers,
-  getRequiredLevel,
   levelSatisfies,
   loadMcpToolPermissions,
   type McpToolPermissionConfig,
@@ -33,19 +32,6 @@ import {
 } from './mcp-tool-permission-config';
 import { isSafePathSegment, normalizeTmpPath } from './path-utils';
 import { userSettingsStore } from './user-settings-store';
-
-const PERMISSION_SERVER_BASENAME = 'permission-mcp-server';
-const MODEL_COMMAND_SERVER_BASENAME = 'model-command-mcp-server';
-const SLACK_MCP_SERVER_BASENAME = 'slack-mcp-server';
-const SERVER_TOOLS_BASENAME = 'server-tools-mcp-server';
-const CRON_SERVER_BASENAME = 'cron-mcp-server';
-const MCP_TOOL_PERMISSION_SERVER_BASENAME = 'mcp-tool-permission-mcp-server';
-const AGENT_SERVER_BASENAME = 'agent-mcp-server';
-
-/** Root of the project (one level up from src/) */
-const PROJECT_ROOT = path.resolve(__dirname, '..');
-/** Directory containing extracted MCP servers */
-const MCP_SERVERS_DIR = path.join(PROJECT_ROOT, 'packages', 'mcp-servers');
 
 /** Native SDK tools that require terminal interaction — disallowed in Slack context */
 const NATIVE_INTERACTIVE_TOOLS = ['AskUserQuestion'];
@@ -56,50 +42,11 @@ const NATIVE_INTERACTIVE_TOOLS = ['AskUserQuestion'];
  */
 const NATIVE_CRON_TOOLS = ['CronCreate', 'CronDelete', 'CronList'];
 
-export interface PermissionServerPathResult {
-  resolvedPath: string | null;
-  fallbackUsed: boolean;
-  triedPaths: string[];
-}
-
-export function resolveInternalMcpServer(
-  baseDir: string,
-  basename: string,
-  runtimeExt: '.ts' | '.js',
-  existsSync: (path: string) => boolean = fs.existsSync,
-): PermissionServerPathResult {
-  const basePath = path.join(baseDir, basename);
-  const preferredPath = `${basePath}${runtimeExt}`;
-  const fallbackExt = runtimeExt === '.ts' ? '.js' : '.ts';
-  const fallbackPath = `${basePath}${fallbackExt}`;
-  const triedPaths = [preferredPath, fallbackPath];
-
-  if (existsSync(preferredPath)) {
-    return { resolvedPath: preferredPath, fallbackUsed: false, triedPaths };
-  }
-
-  if (existsSync(fallbackPath)) {
-    return { resolvedPath: fallbackPath, fallbackUsed: true, triedPaths };
-  }
-
-  return { resolvedPath: null, fallbackUsed: false, triedPaths };
-}
-
-export function resolvePermissionServerPath(
-  baseDir: string,
-  runtimeExt: '.ts' | '.js',
-  existsSync: (path: string) => boolean = fs.existsSync,
-): PermissionServerPathResult {
-  return resolveInternalMcpServer(baseDir, PERMISSION_SERVER_BASENAME, runtimeExt, existsSync);
-}
-
-export function resolveModelCommandServerPath(
-  baseDir: string,
-  runtimeExt: '.ts' | '.js',
-  existsSync: (path: string) => boolean = fs.existsSync,
-): PermissionServerPathResult {
-  return resolveInternalMcpServer(baseDir, MODEL_COMMAND_SERVER_BASENAME, runtimeExt, existsSync);
-}
+/**
+ * devops-tools calls can wait on an admin approval card: the MCP server stops waiting at 355 s at the
+ * latest, so the SDK's per-call wall clock must stay above that.
+ */
+const DEVOPS_TOOLS_CALL_TIMEOUT_MS = 360_000;
 
 /** True when the bot was mentioned inside an existing thread (not at the root). */
 export function isMidThreadMention(ctx?: { mentionTs?: string; threadTs?: string } | null): boolean {
@@ -229,6 +176,12 @@ export class McpConfigBuilder {
     // Conditionally add server-tools when config.json has server-tools section
     if (this.hasServerToolsConfig()) {
       internalServers['server-tools'] = this.buildServerToolsServer();
+    }
+
+    // devops-tools relays to the devops broker, which holds the keys and posts the approval cards;
+    // the bot side only registers it (.prd/16-devops-tools-architecture.md §2, §8).
+    if (slackContext && this.hasDevopsToolsConfig()) {
+      internalServers['devops-tools'] = this.buildDevopsToolsServer(slackContext);
     }
 
     // Add mcp-tool-permission server for permission request/check/revoke
@@ -416,87 +369,6 @@ export class McpConfigBuilder {
   }
 
   /**
-   * Resolve and cache an internal MCP server path with logging.
-   * Deduplicates the resolve/log/throw pattern used by all internal servers.
-   */
-  private resolveServerPath(
-    label: string,
-    basename: string,
-    serverDir: string,
-    cache: { path: string | null; checked: boolean; triedPaths: string[] },
-  ): string {
-    if (!cache.checked) {
-      const runtimeExt = __filename.endsWith('.ts') ? '.ts' : '.js';
-      const result = resolveInternalMcpServer(serverDir, basename, runtimeExt);
-      cache.checked = true;
-      cache.path = result.resolvedPath;
-      cache.triedPaths = result.triedPaths;
-
-      if (!result.resolvedPath) {
-        this.logger.error(`${label} MCP server file not found`, {
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      } else if (result.fallbackUsed) {
-        this.logger.warn(`${label} MCP server path fallback used`, {
-          resolvedPath: result.resolvedPath,
-          tried: result.triedPaths,
-          runtimeExt,
-        });
-      }
-    }
-
-    if (!cache.path) {
-      throw new Error(`${label} MCP server file not found. Tried: ${cache.triedPaths.join(', ')}`);
-    }
-
-    return cache.path;
-  }
-
-  /** Registry of server path caches — replaces 5 individual cache fields */
-  private serverPathRegistry = new Map<string, { path: string | null; checked: boolean; triedPaths: string[] }>();
-
-  /**
-   * Resolve an internal MCP server path with caching.
-   * Single entry point for all server path lookups.
-   */
-  private getServerPath(label: string, basename: string, subdir: string): string {
-    if (!this.serverPathRegistry.has(basename)) {
-      this.serverPathRegistry.set(basename, {
-        path: null,
-        checked: false,
-        triedPaths: [],
-      });
-    }
-    return this.resolveServerPath(
-      label,
-      basename,
-      path.join(MCP_SERVERS_DIR, subdir),
-      this.serverPathRegistry.get(basename)!,
-    );
-  }
-
-  private getPermissionServerPath(): string {
-    return this.getServerPath('Permission', PERMISSION_SERVER_BASENAME, 'permission');
-  }
-
-  private getModelCommandServerPath(): string {
-    return this.getServerPath('Model-command', MODEL_COMMAND_SERVER_BASENAME, 'model-command');
-  }
-
-  private getSlackMcpServerPath(): string {
-    return this.getServerPath('Slack-mcp', SLACK_MCP_SERVER_BASENAME, 'slack-mcp');
-  }
-
-  private getServerToolsServerPath(): string {
-    return this.getServerPath('Server-tools', SERVER_TOOLS_BASENAME, 'server-tools');
-  }
-
-  private getCronServerPath(): string {
-    return this.getServerPath('Cron', CRON_SERVER_BASENAME, 'cron');
-  }
-
-  /**
    * Build slack-mcp server configuration (thread context + file upload)
    */
   private buildSlackMcpServer(slackContext: SlackContext): Record<string, any> {
@@ -556,10 +428,6 @@ export class McpConfigBuilder {
         SOMA_AGENT_CONFIGS: JSON.stringify(safeConfigs),
       },
     };
-  }
-
-  private getAgentServerPath(): string {
-    return this.getServerPath('Agent', AGENT_SERVER_BASENAME, 'agent');
   }
 
   /**
@@ -762,6 +630,42 @@ export class McpConfigBuilder {
   }
 
   /**
+   * Check if config.json has a devops-tools section with a non-empty `permission` map. Unlike
+   * server-tools the section carries no server keys. Without the map the server would not be
+   * grant-gated (`applyPermissionGating` and the PreToolUse deny tier only gate servers that have
+   * one), so it is not registered at all.
+   */
+  private hasDevopsToolsConfig(): boolean {
+    const devopsTools = this.getRawConfig()?.['devops-tools'];
+    if (!devopsTools || typeof devopsTools !== 'object') return false;
+    if (!this.loadToolPermissions()['devops-tools']) {
+      this.logger.warn('devops-tools section has no valid permission map — server not registered');
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Build devops-tools MCP server configuration. The env carries the requester context and,
+   * optionally, the broker socket path — never a token: the broker alone holds the keys.
+   */
+  private buildDevopsToolsServer(slackContext: SlackContext): McpStdioServerConfig {
+    const command = this.getInternalServerCommand('devops-tools');
+    const env: Record<string, string> = { SLACK_CONTEXT: JSON.stringify(slackContext) };
+    const socketPath = this.getRawConfig()?.['devops-tools']?.socketPath;
+    if (typeof socketPath === 'string' && path.isAbsolute(socketPath)) {
+      // = BROKER_SOCKET_ENV in packages/process-shared/src/devops/protocol.ts
+      env.SOMA_DEVOPS_BROKER_SOCKET = socketPath;
+    }
+    return {
+      command: command.command,
+      args: command.args,
+      env,
+      timeout: DEVOPS_TOOLS_CALL_TIMEOUT_MS,
+    };
+  }
+
+  /**
    * Build server-tools MCP server configuration
    */
   private buildServerToolsServer(): Record<string, any> {
@@ -773,10 +677,6 @@ export class McpConfigBuilder {
         SOMA_CONFIG_FILE: CONFIG_FILE,
       },
     };
-  }
-
-  private getMcpToolPermissionServerPath(): string {
-    return this.getServerPath('Mcp-tool-permission', MCP_TOOL_PERMISSION_SERVER_BASENAME, 'mcp-tool-permission');
   }
 
   /**

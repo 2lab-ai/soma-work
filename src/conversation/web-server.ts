@@ -1,5 +1,9 @@
+import type { IncomingHttpHeaders } from 'node:http';
 import * as os from 'node:os';
+import fastifyCompress from '@fastify/compress';
 import fastifyFormbody from '@fastify/formbody';
+// Type-only: the plugin itself is registered by dashboard.ts via dynamic import.
+import type { WebSocket } from '@fastify/websocket';
 import Fastify, {
   type FastifyInstance,
   type FastifyReply,
@@ -13,21 +17,40 @@ import { config } from '../config';
 import { IS_DEV } from '../env-paths';
 import { registerHookRoutes } from '../hooks';
 import { Logger } from '../logger';
-import { registerDashboardRoutes, setSelfInstanceEnv } from './dashboard';
+import { registerArtifactRoutes } from './artifact-routes';
+import {
+  registerDashboardRoutes,
+  setSelfInstanceEnv,
+  startDashboardPermissionWatch,
+  stopDashboardPermissionWatch,
+} from './dashboard';
 import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
+import { registerMemoryRoutes } from './memory-routes';
 import {
   type AuthContext,
-  generateCsrfToken,
-  generateCsrfTokenForAdmin,
-  getDashboardUser,
+  exceedsAbsoluteSessionLifetime,
   getJwtSecret,
+  hasOAuthStateCookie,
+  loginReturnCookieFor,
   registerOAuthRoutes,
   validateCsrfToken,
   verifyDashboardTokenRaw,
 } from './oauth';
+import {
+  effectiveViewerUrl,
+  getInstanceId,
+  getPublicUrlStatus,
+  INSTANCE_HEADER,
+  isSecureViewerOrigin,
+  startPublicUrlCheck,
+  stopPublicUrlCheck,
+} from './public-url';
 import { getConversation, getTurnRawContent, listConversations } from './recorder';
+import { registerSettingsRoutes } from './settings-routes';
 import type { ConversationTurn } from './types';
+import { registerUserMediaRoutes } from './user-media-routes';
 import { renderConversationListPage, renderConversationViewPage } from './viewer';
+import { registerWorkLogRoutes } from './work-log-routes';
 
 const logger = new Logger('ConversationWebServer');
 
@@ -69,11 +92,7 @@ function buildAuthContext(request: FastifyRequest): AuthContext | null {
     const payload = verifyDashboardTokenRaw(cookieVal);
     if (payload) {
       // Enforce absolute max lifetime — reject sessions that exceeded 4x expiry (min 30 days)
-      const originalIat = (payload as any).originalIat || payload.iat;
-      const expiresIn = config.oauth.jwtExpiresIn;
-      const absoluteMax = Math.max(expiresIn * 4, 30 * 86400);
-      const now = Math.floor(Date.now() / 1000);
-      if (now - originalIat > absoluteMax) {
+      if (exceedsAbsoluteSessionLifetime(payload)) {
         // Session exceeded absolute max — force re-login
         return null;
       }
@@ -122,11 +141,10 @@ function maybeRotateJwt(request: FastifyRequest, reply: FastifyReply): void {
   const now = Math.floor(Date.now() / 1000);
   const expiresIn = config.oauth.jwtExpiresIn;
   const refreshWindow = Math.min(Math.floor(expiresIn * 0.15), 86400); // 15% of expiry, max 24h
-  const absoluteMax = Math.max(expiresIn * 4, 30 * 86400); // 4x expiry, min 30 days
-  const originalIat = (payload as any).originalIat || payload.iat;
+  const originalIat = payload.originalIat || payload.iat;
 
   // Force re-login if absolute max exceeded
-  if (now - originalIat > absoluteMax) return;
+  if (exceedsAbsoluteSessionLifetime(payload)) return;
 
   // Rotate if within refresh window
   const timeUntilExpiry = payload.exp - now;
@@ -141,7 +159,7 @@ function maybeRotateJwt(request: FastifyRequest, reply: FastifyReply): void {
       originalIat,
     };
     const newToken = jwt.sign(newPayload, secret, { expiresIn });
-    const secure = (config.conversation.viewerUrl || '').startsWith('https');
+    const secure = isSecureViewerOrigin();
     reply.header(
       'Set-Cookie',
       `${COOKIE_NAME}=${encodeURIComponent(newToken)}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${expiresIn}${secure ? '; Secure' : ''}`,
@@ -165,6 +183,9 @@ async function authMiddleware(request: FastifyRequest, reply: FastifyReply): Pro
         message: 'Valid Authorization header required',
       });
     } else {
+      // Remember a dashboard deep link so the next login lands on it (spec §3.4-3).
+      const nextCookie = request.method === 'GET' ? loginReturnCookieFor(request.url) : undefined;
+      if (nextCookie) reply.header('Set-Cookie', nextCookie);
       reply.redirect('/login');
     }
     return;
@@ -216,7 +237,8 @@ async function csrfMiddleware(request: FastifyRequest, reply: FastifyReply): Pro
   }
 
   if (!isValid) {
-    reply.status(403).send({ error: 'CSRF token validation failed' });
+    // `code` lets a client tell a stale token (refresh + retry) from a permission refusal.
+    reply.status(403).send({ error: 'CSRF token validation failed', code: 'csrf_failed' });
     return;
   }
 }
@@ -302,6 +324,8 @@ export { requireWriteAccess };
 
 let server: FastifyInstance | null = null;
 let activePort: number | null = null;
+/** True only between a successful listen() and stop/failure — links handed to Slack must resolve. */
+let listening = false;
 let heartbeatHandle: NodeJS.Timeout | null = null;
 let heartbeatPort: number | null = null;
 
@@ -355,7 +379,9 @@ function _resolveViewerHost(): string {
  *
  * `config.conversation.viewerUrl` (env `CONVERSATION_VIEWER_URL`) wins —
  * an explicit URL is the operator's intent and may include a scheme,
- * port, or reverse-proxy hostname that host-detection cannot infer.
+ * port, or reverse-proxy hostname that host-detection cannot infer —
+ * unless the public URL check proved another server answers there and the
+ * OAuth callback origin reaches this one (`effectiveViewerUrl`, public-url.ts).
  * Only when it's unset do we fall back to the detected hostname so that
  * links shared via Slack (e.g. the `dashboard` SSO URL, `/conversations`
  * links) are reachable from other devices on the network — `localhost`
@@ -363,9 +389,90 @@ function _resolveViewerHost(): string {
  * fail.
  */
 export function getViewerBaseUrl(): string {
-  if (config.conversation.viewerUrl) return config.conversation.viewerUrl;
+  const configured = effectiveViewerUrl();
+  if (configured) return configured;
   const port = activePort || getPort();
   return `http://${_resolveViewerHost()}:${port}`;
+}
+
+const LOOPBACK_HOSTNAMES = new Set(['127.0.0.1', 'localhost', '::1']);
+
+interface HostPort {
+  hostname: string;
+  port: string;
+}
+
+/**
+ * Split a Host value (`name`, `name:port`, `[v6]`, `[v6]:port`) into a
+ * lowercased hostname and port. A bare IPv6 literal (`::1`) has no port.
+ */
+function splitHost(value: string): HostPort {
+  const host = value.trim().toLowerCase();
+  if (host.startsWith('[')) {
+    const end = host.indexOf(']');
+    if (end === -1) return { hostname: host, port: '' };
+    const rest = host.slice(end + 1);
+    return { hostname: host.slice(1, end), port: rest.startsWith(':') ? rest.slice(1) : '' };
+  }
+  const colon = host.indexOf(':');
+  if (colon === -1 || colon !== host.lastIndexOf(':')) return { hostname: host, port: '' };
+  return { hostname: host.slice(0, colon), port: host.slice(colon + 1) };
+}
+
+/** The https origin browsers are sent to, or null when `url` is not https. */
+function httpsCanonical(url: string): { origin: string; hostname: string; port: string } | null {
+  if (!url) return null;
+  let canonical: URL;
+  try {
+    canonical = new URL(url);
+  } catch {
+    return null;
+  }
+  if (canonical.protocol !== 'https:') return null;
+  // URL.host omits the default port, and so do browsers in the Host header.
+  const target = splitHost(canonical.host);
+  return { origin: canonical.origin, hostname: target.hostname, port: target.port || '443' };
+}
+
+/**
+ * Redirect browsers that reach the viewer on a non-canonical origin to the
+ * https public URL links are minted on (`effectiveViewerUrl`: `viewerUrl`, or
+ * the proven callback origin while `viewerUrl` reaches another server).
+ *
+ * Once that URL is https every auth cookie carries `Secure` (oauth.ts), and
+ * a browser on plain `http://<host>:<port>` — the shape of links minted before
+ * `viewerUrl` was set — never stores it, so login from an old Slack link fails
+ * silently. Only GET/HEAD are redirected; loopback Hosts (health checks,
+ * in-process callers), `/health` and WebSocket upgrades are left alone, and
+ * nothing is redirected while that URL is not a valid https URL. The target is
+ * resolved per request, so it follows the public URL check.
+ */
+function registerCanonicalOriginRedirect(instance: FastifyInstance): void {
+  instance.addHook('onRequest', async (request, reply) => {
+    if (request.method !== 'GET' && request.method !== 'HEAD') return;
+    // Origin-form only; anything else is not a path we can append to origin.
+    if (!request.url.startsWith('/')) return;
+    if (request.url.split('?')[0] === '/health') return;
+    const upgrade = request.headers.upgrade;
+    if (typeof upgrade === 'string' && upgrade.toLowerCase().includes('websocket')) return;
+    const hostHeader = request.headers.host;
+    if (!hostHeader) return;
+    const target = httpsCanonical(effectiveViewerUrl());
+    if (!target) return;
+    // A sign-in that started on this origin finishes here: its state cookie is
+    // host-only, and the public URL may have changed while the user was away.
+    const callback = /^\/auth\/(google|microsoft)\/callback$/.exec(request.url.split('?')[0]);
+    if (callback && hasOAuthStateCookie(request, callback[1])) return;
+
+    const { hostname, port } = splitHost(hostHeader);
+    if (LOOPBACK_HOSTNAMES.has(hostname)) return;
+    if (hostname === target.hostname && (port || '443') === target.port) return;
+
+    // 302, not 301: viewerUrl is ops config that may be rolled back, and browsers cache a 301 past that.
+    return reply.redirect(`${target.origin}${request.url}`, 302);
+  });
+  const configured = httpsCanonical(config.conversation.viewerUrl || '');
+  if (configured) logger.info(`Canonical-origin redirect enabled: ${configured.origin}`);
 }
 
 /**
@@ -374,6 +481,20 @@ export function getViewerBaseUrl(): string {
  */
 export function getConversationUrl(conversationId: string): string {
   return `${getViewerBaseUrl()}/conversations/${conversationId}`;
+}
+
+/**
+ * Deep link to one session's card on the owner's dashboard
+ * (`/dashboard/<ownerId>?session=<sessionKey>`). Undefined unless the viewer is
+ * actually listening — a Slack thread must not carry a dead link when the
+ * viewer failed to start or has stopped — or when there is no owner or key.
+ * @public — injected once in src/index.ts (`setThreadHeaderProviders`).
+ */
+export function getDashboardSessionUrl(ownerId: string, sessionKey: string): string | undefined {
+  if (!listening || !ownerId || !sessionKey) return undefined;
+  const base = getViewerBaseUrl().replace(/\/+$/, '');
+  if (!base) return undefined;
+  return `${base}/dashboard/${encodeURIComponent(ownerId)}?session=${encodeURIComponent(sessionKey)}`;
 }
 
 /**
@@ -387,11 +508,19 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
   server = Fastify({ logger: false });
 
+  // Old `http://<host>:<port>` links → https viewerUrl, before any route runs.
+  registerCanonicalOriginRedirect(server);
+
   // Required for HTML form POSTs (e.g. the SSO session-switch interstitial
   // at `POST /auth/sso/confirm`, #704). Fastify does not parse
   // application/x-www-form-urlencoded by default; without this plugin the
   // handler would receive an empty `request.body`.
   await server.register(fastifyFormbody);
+
+  // Response compression, opt-in per route (dashboard.ts FIRST_LOAD_COMPRESSION).
+  // Off by default so byte-range routes (artifacts, user media) keep exact
+  // Content-Length / Content-Range semantics (#477).
+  await server.register(fastifyCompress, { global: false });
 
   // ---- HTML Routes (require auth when token is configured) ----
 
@@ -479,6 +608,11 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
           summarized: t.summarized,
           // Include rawContent only for user turns (they're short)
           rawContent: t.role === 'user' ? t.rawContent : undefined,
+          // A user turn's attached files (user media) — metadata only, the bytes have their own route.
+          attachments: t.role === 'user' ? t.attachments : undefined,
+          // Dashboard SSOT 2026-10-27: who put a user turn there, and a /compact turn's compaction.
+          origin: t.role === 'user' ? t.origin : undefined,
+          compact: t.role === 'user' ? t.compact : undefined,
         }));
 
         reply.send({
@@ -558,10 +692,19 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
   // ---- Dashboard Routes ----
   await registerDashboardRoutes(server, authMiddleware, csrfMiddleware);
+  await registerWorkLogRoutes(server, authMiddleware);
+  await registerArtifactRoutes(server, authMiddleware);
+  await registerUserMediaRoutes(server, authMiddleware);
+  // Personal settings (SSOT 2026-10-23 T2) — self only, auth + CSRF on writes.
+  registerSettingsRoutes(server, authMiddleware, csrfMiddleware);
+  // Personal memory — the settings page "기억" tab (SSOT 2026-10-23 T3).
+  registerMemoryRoutes(server, authMiddleware, csrfMiddleware);
 
   // Health check
   server.get('/health', async (_request, reply) => {
-    reply.send({ status: 'ok', service: 'conversation-viewer' });
+    // The id lets this instance recognise itself behind its public URL (public-url.ts).
+    reply.header(INSTANCE_HEADER, getInstanceId());
+    reply.send({ status: 'ok', service: 'conversation-viewer', publicUrl: getPublicUrlStatus() });
   });
 
   // Hook routes (no auth — localhost only)
@@ -587,6 +730,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
     try {
       await server.listen({ port, host });
       activePort = port;
+      listening = true;
       logger.info(`Conversation viewer started on ${host}:${port}`);
       logger.info(`View at: ${getViewerBaseUrl()}/conversations`);
       if (config.conversation.viewerToken) {
@@ -622,8 +766,15 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
       // self cards and the handler can fan out to siblings.
       setSelfInstanceEnv({ instanceName: resolvedInstanceName, port, host: heartbeatHost });
 
+      // Confirm the public URL reaches this instance, now and periodically.
+      startPublicUrlCheck();
+
+      // Permission prompts waiting in the shared store → cards (SSOT 2026-10-24).
+      startDashboardPermissionWatch();
+
       return;
     } catch (error) {
+      listening = false;
       if ((error as NodeJS.ErrnoException).code === 'EADDRINUSE' && attempt < MAX_PORT_RETRIES - 1) {
         logger.warn(`Port ${port} in use, trying ${port + 1}...`);
         continue;
@@ -638,6 +789,10 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
  * Stop the web server
  */
 export async function stopWebServer(): Promise<void> {
+  // Stop handing out dashboard links before the listener goes away.
+  listening = false;
+  stopPublicUrlCheck();
+  stopDashboardPermissionWatch();
   if (server) {
     // Flush hook state before closing
     try {
@@ -677,6 +832,27 @@ export async function injectWebServer(request: InjectRequest): Promise<InjectRes
   }
 
   return server.inject(request);
+}
+
+/**
+ * Open an in-process WebSocket (for tests) through `@fastify/websocket`'s
+ * `injectWS`, so upgrade requests run the same route + auth preHandler as a
+ * real browser. `onInit` sees the socket before it opens — attach `message`
+ * listeners there to catch the initial frames.
+ */
+export async function injectWebServerWS(
+  path: string,
+  upgradeContext: { headers?: IncomingHttpHeaders } = {},
+  onInit?: (ws: WebSocket) => void,
+): Promise<WebSocket> {
+  if (!server) {
+    throw new Error('Conversation web server is not running');
+  }
+  // Decorated only when dashboard.ts managed to register @fastify/websocket.
+  if (typeof server.injectWS !== 'function') {
+    throw new Error('WebSocket support is not registered');
+  }
+  return server.injectWS(path, upgradeContext, onInit ? { onInit } : {});
 }
 
 /**

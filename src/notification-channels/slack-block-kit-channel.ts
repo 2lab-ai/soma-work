@@ -24,6 +24,7 @@ import {
 } from '@soma/slack/surface-config';
 import { buildFeedbackContextActions } from '@soma/slack/turn-feedback-block-builder';
 import { Logger } from '../logger.js';
+import { buildWorkSessionKey } from '../session-identity.js';
 import type { CompletionMessageTracker } from '../slack/completion-message-tracker.js';
 import {
   buildThreadPermalink,
@@ -66,6 +67,17 @@ const LABEL_CONSUMING_FIELDS = new Set(['contextwindow', 'duration', 'fivehour',
  * it to the raw message before fencing, with its own `…(truncated)` marker).
  */
 const TRUNCATE_CONSUMING_FIELDS = new Set(['errorbody']);
+
+/**
+ * Tracker key for this event's session. MUST be the session-registry key
+ * (`buildWorkSessionKey`, what `SessionRegistry.getSessionKey` returns): the
+ * sweepers (`StreamExecutor` / `ChoiceActionHandler` `deleteAll`) and
+ * `ThreadSurface` protections are keyed by it, so any other format turns
+ * cleanup into a silent no-op.
+ */
+function trackerSessionKey(event: TurnCompletionEvent): string {
+  return buildWorkSessionKey(event.channel, event.threadTs);
+}
 
 export class SlackBlockKitChannel implements NotificationChannel {
   name = SLACK_BLOCK_KIT_CHANNEL_NAME;
@@ -143,7 +155,7 @@ export class SlackBlockKitChannel implements NotificationChannel {
    * itself, so the surface protects it instead of tracking it.
    */
   protectMessageTs(event: TurnCompletionEvent, messageTs: string): void {
-    this.completionMessageTracker?.protect(`${event.channel}-${event.threadTs}`, messageTs);
+    this.completionMessageTracker?.protect(trackerSessionKey(event), messageTs);
   }
 
   async send(event: TurnCompletionEvent): Promise<void> {
@@ -213,8 +225,7 @@ export class SlackBlockKitChannel implements NotificationChannel {
    */
   private trackCompletionMessage(result: any, event: TurnCompletionEvent): void {
     if (this.completionMessageTracker && result?.ts && event.category !== 'Exception' && event.category !== 'Stalled') {
-      const sessionKey = `${event.channel}-${event.threadTs}`;
-      this.completionMessageTracker.track(sessionKey, result.ts, event.category);
+      this.completionMessageTracker.track(trackerSessionKey(event), result.ts, event.category);
     }
   }
 

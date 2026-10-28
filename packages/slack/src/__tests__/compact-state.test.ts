@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import {
+  AUTO_COMPACT_FAILURE_COOLDOWN_MAX_MS,
+  AUTO_COMPACT_FAILURE_COOLDOWN_MS,
   COMPACTION_IN_PROGRESS_MAX_MS,
   type CompactStateSession,
+  isAutoCompactPaused,
   isCompactionInProgress,
+  pauseAutoCompactAfterFailure,
   promotePendingToDispatchQueue,
   stashUserMessageDuringCompaction,
 } from '../compact-state';
@@ -86,6 +90,21 @@ describe('stashUserMessageDuringCompaction', () => {
     ]);
   });
 
+  // PR #305: a goal objective (`verbatimPrompt`) replays as the user's words,
+  // never as a command. Merging it with ordinary text would change the
+  // meaning of one or the other, so it always gets its own entry.
+  it('never merges a verbatim goal objective with ordinary same-user text', () => {
+    const v1 = { ...u1, verbatimPrompt: true };
+    const s: CompactStateSession = { pendingUserText: 'first', pendingEventContext: u1 };
+    stashUserMessageDuringCompaction(s, v1, 'new dashboard 구현');
+    stashUserMessageDuringCompaction(s, u1, 'and then this');
+    expect(s.pendingUserText).toBe('first');
+    expect(s.compactPendingDispatches).toEqual([
+      { ctx: v1, text: 'new dashboard 구현' },
+      { ctx: u1, text: 'and then this' },
+    ]);
+  });
+
   it('ignores empty text', () => {
     const s: CompactStateSession = {};
     stashUserMessageDuringCompaction(s, u1, '');
@@ -123,5 +142,48 @@ describe('promotePendingToDispatchQueue', () => {
     const s: CompactStateSession = {};
     promotePendingToDispatchQueue(s);
     expect(s.compactPendingDispatches ?? null).toBeNull();
+  });
+});
+
+describe('pauseAutoCompactAfterFailure / isAutoCompactPaused (compact retry loop breaker)', () => {
+  it('pauses for the default cooldown when no retry-after is known, and clears a pending flag', () => {
+    const s: CompactStateSession = { autoCompactPending: true };
+    const until = pauseAutoCompactAfterFailure(s, null, NOW);
+    expect(until).toBe(NOW + AUTO_COMPACT_FAILURE_COOLDOWN_MS);
+    expect(s.autoCompactSuppressedUntilMs).toBe(until);
+    expect(s.autoCompactPending).toBe(false);
+  });
+
+  it('honours a longer advertised retry-after window (pool 429 "retry in 3653s")', () => {
+    const s: CompactStateSession = {};
+    expect(pauseAutoCompactAfterFailure(s, 3_653_000, NOW)).toBe(NOW + 3_653_000);
+  });
+
+  it('never pauses for less than the default cooldown', () => {
+    const s: CompactStateSession = {};
+    expect(pauseAutoCompactAfterFailure(s, 5_000, NOW)).toBe(NOW + AUTO_COMPACT_FAILURE_COOLDOWN_MS);
+  });
+
+  it('caps an absurd retry-after hint', () => {
+    const s: CompactStateSession = {};
+    expect(pauseAutoCompactAfterFailure(s, 1e12, NOW)).toBe(NOW + AUTO_COMPACT_FAILURE_COOLDOWN_MAX_MS);
+  });
+
+  it('never shortens a pause that is already longer', () => {
+    const s: CompactStateSession = {};
+    pauseAutoCompactAfterFailure(s, 3_653_000, NOW);
+    expect(pauseAutoCompactAfterFailure(s, null, NOW + 1_000)).toBe(NOW + 3_653_000);
+  });
+
+  it('is paused strictly before the end and not at or after it', () => {
+    const s: CompactStateSession = {};
+    const until = pauseAutoCompactAfterFailure(s, null, NOW);
+    expect(isAutoCompactPaused(s, until - 1)).toBe(true);
+    expect(isAutoCompactPaused(s, until)).toBe(false);
+  });
+
+  it('is not paused when no failure was recorded', () => {
+    expect(isAutoCompactPaused({}, NOW)).toBe(false);
+    expect(isAutoCompactPaused({ autoCompactSuppressedUntilMs: null }, NOW)).toBe(false);
   });
 });

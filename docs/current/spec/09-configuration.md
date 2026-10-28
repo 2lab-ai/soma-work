@@ -235,6 +235,7 @@ Slack 앱 설정 템플릿:
         "im:read",
         "im:write",
         "users:read",
+        "users:read.email",
         "reactions:read",
         "reactions:write"
       ]
@@ -255,6 +256,8 @@ Slack 앱 설정 템플릿:
   }
 }
 ```
+
+`users:read.email`은 사용자의 Slack 계정 이메일을 읽는 scope다: 프로필 이메일 자동 수집(`users.info`)과, `/z email`이 일치하지 않을 때의 대시보드 Google 로그인 fallback(`users.lookupByEmail`)이 쓴다. 로그인 fallback은 봇 클라이언트와 분리된 전용 Slack 클라이언트로 조회한다 — 다른 API의 rate limit이 봇 클라이언트 큐 전체를 멈춰도 로그인은 막히지 않는다. 조회 실패·타임아웃은 '계정 없음'(`no_match`)이 아니라 `lookup_unavailable`(잠시 후 다시 시도)로, scope 누락은 `lookup_misconfigured`(admin 문의)로 안내한다.
 
 ## 5. Data Files
 

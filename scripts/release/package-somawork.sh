@@ -375,10 +375,11 @@ fi
 if [[ -n "$DEPENDENCY_OVERLAY" ]]; then
   [[ -d "$DEPENDENCY_OVERLAY" ]] || die "--dependency-overlay is not a directory: $DEPENDENCY_OVERLAY"
   # Overlaid onto the payload ROOT, not into `node_modules`. `npm ci` does not
-  # put every production dependency in one directory: a workspace with an
-  # unhoistable dependency (here `somalib` -> the `soma-lib` tarball) gets its
-  # own nested `somalib/node_modules`. A flag that only accepted the root tree
-  # produced archives that were quietly missing it.
+  # always put every production dependency in one directory: a workspace whose
+  # pin the root cannot share gets its own nested `<workspace>/node_modules`
+  # (`somalib` -> soma-lib did until e9af688b aligned the pins). A flag that
+  # only accepted the root tree produced archives that were quietly missing it;
+  # the archive gate reads which nested trees to require from the lockfile.
   echo "==> production dependencies (supplied overlay)"
   cp -R "$DEPENDENCY_OVERLAY/." "$RUNTIME/"
 else

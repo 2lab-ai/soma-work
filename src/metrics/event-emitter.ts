@@ -206,8 +206,3 @@ export function getMetricsEmitter(): MetricsEventEmitter {
   }
   return _instance;
 }
-
-function initMetricsEmitter(store: MetricsEventStore): MetricsEventEmitter {
-  _instance = new MetricsEventEmitter(store);
-  return _instance;
-}

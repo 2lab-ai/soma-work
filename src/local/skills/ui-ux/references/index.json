@@ -31,6 +31,30 @@
       "accent": "#D60001",
       "default": false,
       "captured": "2026-06-30"
+    },
+    {
+      "name": "toss-blue",
+      "title": "Toss TDS Mobile — Toss Blue (TDS default accent)",
+      "source": "https://tossmini-docs.toss.im/tds-mobile/",
+      "path": "../toss-design/themes/toss-blue/design.md",
+      "tokens": "../toss-design/themes/toss-blue/tokens.css",
+      "family": "toss-design",
+      "tags": ["toss", "tds", "fintech", "mobile", "korean", "light", "list-rows", "pretendard", "blue"],
+      "accent": "#3182F6",
+      "default": false,
+      "captured": "2026-10-26"
+    },
+    {
+      "name": "toss-black",
+      "title": "Toss TDS Mobile — Toss Black (local derivative, near-black accent, light canvas)",
+      "source": "https://tossmini-docs.toss.im/tds-mobile/",
+      "path": "../toss-design/themes/toss-black/design.md",
+      "tokens": "../toss-design/themes/toss-black/tokens.css",
+      "family": "toss-design",
+      "tags": ["toss", "tds", "fintech", "mobile", "korean", "light", "monochrome", "pretendard", "black"],
+      "accent": "#191F28",
+      "default": false,
+      "captured": "2026-10-26"
     }
   ]
 }

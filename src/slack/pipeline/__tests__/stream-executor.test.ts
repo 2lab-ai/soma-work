@@ -62,6 +62,7 @@ vi.mock('../../../conversation', () => ({
   createConversation: vi.fn().mockReturnValue('conv_1'),
   recordAssistantTurn: vi.fn(),
   recordUserTurn: vi.fn(),
+  captureUserMedia: vi.fn(async () => []),
 }));
 
 vi.mock('../../../mcp-config-builder', () => ({
@@ -109,7 +110,7 @@ vi.mock('../../../token-manager', () => ({
   parseCooldownTime: vi.fn().mockReturnValue(null),
 }));
 
-import { LOG_DETAIL } from '@soma/slack/output-flags';
+import { getVerbosityFlags, LOG_DETAIL, LOG_MINIMAL, OutputFlag } from '@soma/slack/output-flags';
 import type { Continuation } from '../../../types';
 import { userSettingsStore } from '../../../user-settings-store';
 import { type ExecuteResult, StreamExecutor } from '../stream-executor';
@@ -373,7 +374,6 @@ describe('Abort handling', () => {
       },
       toolEventProcessor: {},
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
       },
       reactionManager: {
@@ -381,6 +381,8 @@ describe('Abort handling', () => {
       },
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {},
       todoDisplayManager: {},
@@ -1318,13 +1320,14 @@ describe('model-command integration', () => {
           snapshot: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 1 },
         }),
         getSessionByKey: vi.fn().mockReturnValue({ ownerId: 'U1' }),
+        updateSessionTitle: vi.fn(),
+        fillPlaceholderSessionTitle: vi.fn().mockReturnValue(true),
       },
       fileHandler: {
         cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
       },
       toolEventProcessor: {},
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
       },
       reactionManager: {
@@ -1332,6 +1335,8 @@ describe('model-command integration', () => {
       },
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {
         scheduleCleanup: vi.fn(),
@@ -1433,6 +1438,58 @@ describe('model-command integration', () => {
         operations: expect.any(Array),
       }),
     );
+  });
+
+  // Voice / image-only sessions: the model writes the intent title with the
+  // fill-only guard, so the host must route it to the guarded registry write.
+  function titleOnlyUpdateResult(params: Record<string, unknown>) {
+    return [
+      {
+        toolUseId: 'tool_title',
+        toolName: 'mcp__model-command__run',
+        result: JSON.stringify({
+          type: 'model_command_result',
+          commandId: 'UPDATE_SESSION',
+          ok: true,
+          payload: {
+            session: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 0 },
+            appliedOperations: 0,
+            request: { operations: [], ...params },
+            ...params,
+          },
+        }),
+      },
+    ];
+  }
+
+  it('routes UPDATE_SESSION { title, titleFillOnly: true } to the fill-only registry write', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({ title: '음성 지시 세션 제목', titleFillOnly: true }),
+      createSession(),
+      { channel: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100', say },
+    );
+
+    expect(deps.claudeHandler.fillPlaceholderSessionTitle).toHaveBeenCalledWith('C1', '171.100', '음성 지시 세션 제목');
+    expect(deps.claudeHandler.updateSessionTitle).not.toHaveBeenCalled();
+  });
+
+  it('keeps plain UPDATE_SESSION { title } as an unconditional rename (pr-review contract)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+
+    await (executor as any).handleModelCommandToolResults(
+      titleOnlyUpdateResult({ title: 'PR #42 merged' }),
+      createSession(),
+      { channel: 'C1', threadTs: '171.100', sessionKey: 'C1-171.100', say },
+    );
+
+    expect(deps.claudeHandler.updateSessionTitle).toHaveBeenCalledWith('C1', '171.100', 'PR #42 merged');
+    expect(deps.claudeHandler.fillPlaceholderSessionTitle).not.toHaveBeenCalled();
   });
 
   it('renders ASK_USER_QUESTION from command tool and marks waiting state', async () => {
@@ -2191,6 +2248,263 @@ describe('model-command integration', () => {
       expect(text).toMatch(/❌|⚠️/);
     });
   });
+
+  /**
+   * Spec 10 §3.2 — where each host-side model-command outcome goes. Every
+   * outcome writes exactly one work-log entry, at every verbosity; compact and
+   * up post every outcome to Slack. At `minimal`:
+   *   - posted (user-facing): an ASK_USER_QUESTION failure; a parse/connection
+   *     failure (command unknown — the #816 shape, MCP gone while the model was
+   *     asking); a host-side failure the model never sees because its tool
+   *     result said ok (UPDATE_SESSION host apply, SET_GOAL refusal);
+   *   - work log only: a failure the model receives in its own tool result
+   *     (argument error, wire-level isError on an ok body), and the 🎯/📋 goal
+   *     status notices (`STATUS_MESSAGE`, like goal-loop status notices).
+   */
+  describe('model-command outcomes by verbosity (spec 10 §3.2)', () => {
+    type PrivateExecutor = { handleModelCommandToolResults: (...args: unknown[]) => Promise<unknown> };
+
+    type MatrixSession = {
+      logVerbosity: number;
+      goal?: { objective?: string; status?: string };
+      goalQueue?: unknown[];
+      [key: string]: unknown;
+    };
+
+    interface Outcome {
+      name: string;
+      toolResult: unknown;
+      kind: 'error' | 'notice';
+      /** The exact text, in the work-log entry and (when posted) in Slack. */
+      text: string;
+      /** Compact and up post every outcome; this is the minimal cell. */
+      postedAtMinimal: boolean;
+      context?: Record<string, unknown>;
+      session?: () => Record<string, unknown>;
+      hostRejectsUpdate?: boolean;
+      /** The outcome's effect on the session, unchanged by verbosity. */
+      verify?: (session: MatrixSession) => void;
+    }
+
+    const OBJECTIVE = 'ship the goal feature';
+    const EVIDENCE = 'goal로 잡아줘: ship the goal feature';
+    const USER_TURN = { currentUserText: `이번 릴리즈 ${EVIDENCE}`, isUserInputTurn: true };
+
+    function run(commandId: string, body: Record<string, unknown>, toolUseId: string, isError = false) {
+      return {
+        toolUseId,
+        toolName: 'mcp__model-command__run',
+        result: JSON.stringify({ type: 'model_command_result', commandId, ...body }),
+        isError,
+      };
+    }
+
+    function failedRun(commandId: string, message: string) {
+      return run(commandId, { ok: false, error: { code: 'INVALID_ARGS', message } }, `tool_${commandId}_fail`);
+    }
+
+    const setGoal = run(
+      'SET_GOAL',
+      { ok: true, payload: { objective: OBJECTIVE, userRequestEvidence: EVIDENCE } },
+      'tool_goal',
+    );
+
+    const ARGUMENT_ERROR: Outcome = {
+      name: 'argument error',
+      toolResult: failedRun('UPDATE_SESSION', 'UPDATE_SESSION requires operations or title'),
+      kind: 'error',
+      text: '❌ MCP UPDATE_SESSION 실패: INVALID_ARGS — UPDATE_SESSION requires operations or title',
+      postedAtMinimal: false,
+    };
+
+    const OUTCOMES: Outcome[] = [
+      ARGUMENT_ERROR,
+      {
+        name: 'wire-level isError on an ok body',
+        toolResult: run('GET_MEMORY', { ok: true, payload: { memory: '', userMemory: '' } }, 'tool_outer_fail', true),
+        kind: 'error',
+        text: '❌ MCP GET_MEMORY 호출 실패 (wire-level isError=true). MCP 연결 상태를 확인해주세요.',
+        postedAtMinimal: false,
+      },
+      {
+        name: 'ASK_USER_QUESTION failure',
+        toolResult: failedRun('ASK_USER_QUESTION', 'question payload missing'),
+        kind: 'error',
+        text:
+          '❌ MCP ASK_USER_QUESTION 실패: INVALID_ARGS — question payload missing\n' +
+          '❌ 사용자 선택 UI를 띄우지 못했습니다. 같은 질문을 다시 호출하시거나 MCP 연결 상태를 확인하세요.',
+        postedAtMinimal: true,
+      },
+      {
+        name: 'parse failure',
+        toolResult: {
+          toolUseId: 'tool_parse_fail',
+          toolName: 'mcp__model-command__run',
+          result: 'Not connected',
+          isError: true,
+        },
+        kind: 'error',
+        text: '❌ MCP 응답 파싱 실패 (toolUseId: tool_parse_fail). raw: Not connected',
+        postedAtMinimal: true,
+      },
+      {
+        name: 'host-apply failure',
+        toolResult: run(
+          'UPDATE_SESSION',
+          {
+            ok: true,
+            payload: {
+              session: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 0 },
+              appliedOperations: 1,
+              request: { operations: [{ action: 'set_active', resourceType: 'issue' }] },
+            },
+          },
+          'tool_update_host_fail',
+        ),
+        hostRejectsUpdate: true,
+        kind: 'error',
+        text: '⚠️ Session update could not be applied on host (INVALID_OPERATION).',
+        postedAtMinimal: true,
+      },
+      {
+        name: 'SET_GOAL refusal',
+        toolResult: setGoal,
+        context: { currentUserText: EVIDENCE, isUserInputTurn: false },
+        kind: 'notice',
+        text:
+          '⚠️ SET_GOAL refused: not a direct user-input turn (synthetic/continuation turns cannot set goals). ' +
+          'A goal can only be set when the user explicitly asks for it in their current message.',
+        postedAtMinimal: true,
+        verify: (session) => expect(session.goal).toBeUndefined(),
+      },
+      {
+        name: 'goal started',
+        toolResult: setGoal,
+        context: USER_TURN,
+        kind: 'notice',
+        text: `🎯 Goal set by model (user-requested): \`${OBJECTIVE}\`\n> "${EVIDENCE}"`,
+        postedAtMinimal: false,
+        verify: (session) => expect(session.goal).toMatchObject({ objective: OBJECTIVE, status: 'active' }),
+      },
+      {
+        name: 'goal queued',
+        toolResult: setGoal,
+        context: USER_TURN,
+        session: () => ({
+          goal: {
+            goalId: 'goal-old',
+            objective: 'old objective',
+            status: 'active',
+            createdAt: 1,
+            updatedAt: 1,
+            createdBy: 'U1',
+            continuationCount: 0,
+            maxContinuations: 10,
+            epoch: 1,
+          },
+        }),
+        kind: 'notice',
+        text: `📋 Goal queued by model at position 1: \`${OBJECTIVE}\`\n> "${EVIDENCE}"`,
+        postedAtMinimal: false,
+        verify: (session) => {
+          expect(session.goal?.objective).toBe('old objective');
+          expect(session.goalQueue).toHaveLength(1);
+        },
+      },
+    ];
+
+    const LEVELS = ['minimal', 'compact', 'detail', 'verbose'] as const;
+    const MATRIX = OUTCOMES.flatMap((spec) =>
+      LEVELS.map((level) => ({ outcome: spec.name, level, posted: level !== 'minimal' || spec.postedAtMinimal, spec })),
+    );
+
+    function executorFor(spec: Outcome): PrivateExecutor {
+      const deps = createExecutorDeps();
+      deps.claudeHandler.saveSessions = vi.fn();
+      if (spec.hostRejectsUpdate) {
+        deps.claudeHandler.updateSessionResources = vi.fn().mockReturnValue({
+          ok: false,
+          reason: 'INVALID_OPERATION',
+          error: 'invalid request',
+          snapshot: { issues: [], prs: [], docs: [], active: {}, instructions: [], sequence: 0 },
+        });
+      }
+      return new StreamExecutor(deps) as unknown as PrivateExecutor;
+    }
+
+    function sessionAt(logVerbosity: number, spec: Outcome): MatrixSession {
+      return { ...createSession(), ...spec.session?.(), logVerbosity };
+    }
+
+    async function deliver(
+      executor: PrivateExecutor,
+      spec: Outcome,
+      session: unknown,
+      say: ReturnType<typeof vi.fn>,
+      workLog: ReturnType<typeof vi.fn>,
+    ) {
+      await executor.handleModelCommandToolResults([spec.toolResult], session, {
+        channel: 'C1',
+        threadTs: '171.100',
+        sessionKey: 'C1-171.100',
+        say,
+        workLog,
+        ...spec.context,
+      });
+    }
+
+    it.each(MATRIX)('$outcome at $level → posted: $posted', async ({ level, posted, spec }) => {
+      const session = sessionAt(getVerbosityFlags(level), spec);
+      const say = vi.fn().mockResolvedValue({ ts: 'warn_ts' });
+      const workLog = vi.fn();
+
+      await deliver(executorFor(spec), spec, session, say, workLog);
+
+      expect(workLog.mock.calls).toEqual([[{ kind: spec.kind, text: spec.text }]]);
+      expect(say.mock.calls).toEqual(posted ? [[{ text: spec.text, thread_ts: '171.100' }]] : []);
+      spec.verify?.(session);
+    });
+
+    it('a live verbosity change on the same session applies to the next outcome', async () => {
+      const executor = executorFor(ARGUMENT_ERROR);
+      const session = sessionAt(LOG_MINIMAL, ARGUMENT_ERROR);
+      const say = vi.fn().mockResolvedValue({ ts: 'warn_ts' });
+      const workLog = vi.fn();
+      const entry = { kind: 'error', text: ARGUMENT_ERROR.text };
+
+      await deliver(executor, ARGUMENT_ERROR, session, say, workLog);
+      expect(say).toHaveBeenCalledTimes(0);
+      expect(workLog.mock.calls).toEqual([[entry]]);
+
+      session.logVerbosity = getVerbosityFlags('compact');
+      await deliver(executor, ARGUMENT_ERROR, session, say, workLog);
+      expect(say.mock.calls).toEqual([[{ text: ARGUMENT_ERROR.text, thread_ts: '171.100' }]]);
+      expect(workLog.mock.calls).toEqual([[entry], [entry]]);
+
+      session.logVerbosity = LOG_MINIMAL;
+      await deliver(executor, ARGUMENT_ERROR, session, say, workLog);
+      expect(say).toHaveBeenCalledTimes(1);
+      expect(workLog.mock.calls).toEqual([[entry], [entry], [entry]]);
+    });
+
+    it('a throwing work-log sink never stops the Slack notice', async () => {
+      const say = vi.fn().mockResolvedValue({ ts: 'warn_ts' });
+      const workLog = vi.fn(() => {
+        throw new Error('sink down');
+      });
+
+      await deliver(
+        executorFor(ARGUMENT_ERROR),
+        ARGUMENT_ERROR,
+        sessionAt(getVerbosityFlags('compact'), ARGUMENT_ERROR),
+        say,
+        workLog,
+      );
+
+      expect(workLog).toHaveBeenCalledTimes(1);
+      expect(say).toHaveBeenCalledWith({ text: ARGUMENT_ERROR.text, thread_ts: '171.100' });
+    });
+  });
 });
 
 // ── File Access Blocked Error Recovery ──────────────────────────────────
@@ -2207,9 +2521,7 @@ describe('File access blocked error recovery', () => {
       },
       toolEventProcessor: { cleanup: vi.fn() },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('x'),
-        cleanup: vi.fn(),
       },
       reactionManager: {
         updateReaction: vi.fn().mockResolvedValue(undefined),
@@ -2218,6 +2530,8 @@ describe('File access blocked error recovery', () => {
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
         cleanup: vi.fn(),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: { scheduleCleanup: vi.fn() },
       todoDisplayManager: { cleanupSession: vi.fn(), cleanup: vi.fn() },
@@ -2823,9 +3137,7 @@ describe('Auto fallback compact — handleError arming', () => {
       fileHandler: { cleanupTempFiles: vi.fn().mockResolvedValue(undefined) },
       toolEventProcessor: { cleanup: vi.fn() },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('x'),
-        cleanup: vi.fn(),
       },
       reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
       contextWindowManager: { handlePromptTooLong: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
@@ -2879,6 +3191,22 @@ describe('Auto fallback compact — handleError arming', () => {
       threadTs: 't1',
       user: 'U1',
     });
+    expect(session.fallbackCompactPendingEventContext.verbatimPrompt).toBeUndefined();
+  });
+
+  it('keeps the goal-objective marker on the stash so the replay is not re-parsed (PR #305)', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue(undefined);
+    const session = { model: 'gpt-5.5', ownerId: 'U1' } as any;
+    const error = overflowError();
+    (error as any).failedTurnText = 'new dashboard 구현';
+    (error as any).failedTurnLiteral = true;
+
+    await (executor as any).handleError(error, session, 'C1:t1', 'C1', 't1', [], say);
+
+    expect(session.fallbackCompactPendingUserText).toBe('new dashboard 구현');
+    expect(session.fallbackCompactPendingEventContext).toMatchObject({ user: 'U1', verbatimPrompt: true });
   });
 
   it('does NOT arm for native-1M models (fable-5) — genuine 1M overflow clears session', async () => {
@@ -2971,9 +3299,7 @@ describe('Auto fallback compact — boundary restore (execute e2e)', () => {
         cleanup: vi.fn(),
       },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-        cleanup: vi.fn(),
       },
       reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
       contextWindowManager: {
@@ -3022,7 +3348,7 @@ describe('Auto fallback compact — boundary restore (execute e2e)', () => {
     const session = {
       sessionId: 'sess_fb',
       ownerId: 'U_TEST',
-      logVerbosity: 'detail',
+      logVerbosity: LOG_DETAIL,
       usage: {},
       terminated: false,
       model: 'claude-opus-4-8[1m]',
@@ -3432,9 +3758,7 @@ describe('Email guard in execute()', () => {
         cleanup: vi.fn(),
       },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-        cleanup: vi.fn(),
       },
       reactionManager: {
         updateReaction: vi.fn().mockResolvedValue(undefined),
@@ -3443,6 +3767,8 @@ describe('Email guard in execute()', () => {
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
         cleanup: vi.fn(),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {
         scheduleCleanup: vi.fn(),
@@ -3477,7 +3803,7 @@ describe('Email guard in execute()', () => {
       session: {
         sessionId: 'sess_1',
         ownerId: 'U_TEST',
-        logVerbosity: 'detail',
+        logVerbosity: LOG_DETAIL,
         usage: {},
       },
       sessionKey: 'C123:thread123',
@@ -3588,7 +3914,6 @@ describe('W3-B rate-limit rotation wiring', () => {
       fileHandler: { cleanupTempFiles: vi.fn().mockResolvedValue(undefined) },
       toolEventProcessor: {},
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
       },
       reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined) },
@@ -3883,9 +4208,7 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
         cleanup: vi.fn(),
       },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-        cleanup: vi.fn(),
       },
       reactionManager: {
         updateReaction: vi.fn().mockResolvedValue(undefined),
@@ -3894,6 +4217,8 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
         cleanup: vi.fn(),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {
         scheduleCleanup: vi.fn(),
@@ -3954,7 +4279,7 @@ describe('turnId propagation into ToolEventContext (#664)', () => {
       session: {
         sessionId: 'sess_tool_flow',
         ownerId: 'U_TEST',
-        logVerbosity: 'detail',
+        logVerbosity: LOG_DETAIL,
         usage: {},
         terminated: false,
       },
@@ -4075,7 +4400,6 @@ describe('stream-executor — B3 choice wiring', () => {
         fileHandler: { cleanupTempFiles: vi.fn().mockResolvedValue(undefined) },
         toolEventProcessor: {},
         statusReporter: {
-          updateStatusDirect: vi.fn().mockResolvedValue(undefined),
           getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
         },
         reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined) },
@@ -4412,9 +4736,7 @@ describe('stream-executor — epoch guard wiring (issue #688)', () => {
         cleanup: vi.fn(),
       },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-        cleanup: vi.fn(),
       },
       reactionManager: {
         updateReaction: vi.fn().mockResolvedValue(undefined),
@@ -4605,7 +4927,6 @@ describe('StreamExecutor — P5 completion snapshot + exclusion (#667)', () => {
       },
       toolEventProcessor: {},
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('warning'),
       },
       reactionManager: {
@@ -4613,6 +4934,8 @@ describe('StreamExecutor — P5 completion snapshot + exclusion (#667)', () => {
       },
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {},
       todoDisplayManager: {},
@@ -5071,7 +5394,6 @@ describe('turn-end surface guarantee — P0 holes', () => {
       },
       toolEventProcessor: {},
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
       },
       reactionManager: {
@@ -5079,6 +5401,8 @@ describe('turn-end surface guarantee — P0 holes', () => {
       },
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {},
       todoDisplayManager: {},
@@ -5152,8 +5476,9 @@ describe('turn-end surface guarantee — P0 holes', () => {
     );
 
     const matches = Array.from(src.matchAll(/abortController\.abort\('ghost-session'/g));
-    // Two sites: onToolUse self-abort + onToolResult self-abort.
-    expect(matches.length).toBe(2);
+    // Four sites: onToolUse and onToolResult each check before and again after
+    // their status-write awaits (a delete can land during the await).
+    expect(matches.length).toBe(4);
   });
 
   // -------------------------------------------------------------------------
@@ -5495,7 +5820,7 @@ describe('turn-end surface guarantee — P0 holes', () => {
   // 3s race; assert it resolves even when the inner promise never settles.
 
   it('C-5: cleanupTempFiles is wrapped with a finite timeout', async () => {
-    const wrapper = (await import('../stream-executor-cleanup-helpers')).cleanupWithTimeout as
+    const wrapper = (await import('@soma/slack/pipeline/stream-executor-cleanup-helpers')).cleanupWithTimeout as
       | ((cleanup: () => Promise<void>, timeoutMs: number) => Promise<void>)
       | undefined;
     // RED gate: helper file/export does not exist yet.
@@ -5577,9 +5902,11 @@ describe('turn-end surface guarantee — P0 holes', () => {
  *   - refuse when `userRequestEvidence` is not a verbatim substring of the
  *     current user message (`currentUserText`),
  *   - on success: apply an active goal to the session (epoch-fresh, cached
- *     system prompt invalidated), persist, and post a user-visible 🎯 notice
- *     that quotes the evidence.
- * Refusals are user-visible (⚠️ via context.say) and never mutate the session.
+ *     system prompt invalidated), persist, and post a 🎯 notice that quotes
+ *     the evidence.
+ * Refusals (⚠️) never mutate the session. Both notices reach Slack by
+ * verbosity — see `notices by verbosity` below; these cases run at the
+ * default `detail` (no `logVerbosity` on the session).
  */
 describe('SET_GOAL host-apply (#1082)', () => {
   function createExecutorDeps() {
@@ -5593,7 +5920,6 @@ describe('SET_GOAL host-apply (#1082)', () => {
       fileHandler: { cleanupTempFiles: vi.fn().mockResolvedValue(undefined) },
       toolEventProcessor: {},
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('stop_button'),
       },
       reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined) },
@@ -5853,6 +6179,50 @@ describe('SET_GOAL host-apply (#1082)', () => {
     expect(deps.claudeHandler.saveSessions).not.toHaveBeenCalled();
     expect(session.systemPrompt).toBe('cached prompt');
   });
+
+  /**
+   * Spec 10 §3.2 — the preset cells (posted? work-log kind? session effect?)
+   * are in `model-command outcomes by verbosity` under `model-command
+   * integration`. These pin which flag decides, which no preset tells apart:
+   * a refusal follows none (host-side, the MCP echo told the model ok), the
+   * 🎯/📋 notice follows `STATUS_MESSAGE` like goal-loop-controller's
+   * `postStatusNotice`.
+   */
+  describe('notices by verbosity (spec 10 §3.2)', () => {
+    async function handleGoal(logVerbosity: number, contextOverrides: Record<string, unknown>) {
+      const executor = new StreamExecutor(createExecutorDeps()) as unknown as {
+        handleModelCommandToolResults: (...args: unknown[]) => Promise<unknown>;
+      };
+      const session = { ...createSession(), logVerbosity };
+      const workLog = vi.fn();
+      const context = makeContext({ workLog, ...contextOverrides });
+      await executor.handleModelCommandToolResults(
+        [makeSetGoalToolResult('ship the goal feature', 'goal로 잡아줘: ship the goal feature')],
+        session,
+        context,
+      );
+      return { session, say: context.say as ReturnType<typeof vi.fn>, workLog };
+    }
+
+    const USER_TURN = { currentUserText: '이번 릴리즈 goal로 잡아줘: ship the goal feature', isUserInputTurn: true };
+    const SYNTHETIC_TURN = { currentUserText: 'goal로 잡아줘: ship the goal feature', isUserInputTurn: false };
+
+    it('a refusal follows no flag: posted even when the mask is 0', async () => {
+      const { say, workLog } = await handleGoal(0, SYNTHETIC_TURN);
+
+      expect(say).toHaveBeenCalledTimes(1);
+      expect(say.mock.calls[0]?.[0]?.text ?? '').toContain('⚠️ SET_GOAL refused');
+      expect(workLog).toHaveBeenCalledTimes(1);
+    });
+
+    it('the goal notice follows STATUS_MESSAGE, like goal-loop status notices', async () => {
+      const onlyStatus = await handleGoal(LOG_MINIMAL | OutputFlag.STATUS_MESSAGE, USER_TURN);
+      const onlyToolCall = await handleGoal(LOG_MINIMAL | OutputFlag.TOOL_CALL, USER_TURN);
+
+      expect(onlyStatus.say).toHaveBeenCalledTimes(1);
+      expect(onlyToolCall.say).not.toHaveBeenCalled();
+    });
+  });
 });
 
 describe('isRateLimitError (usage-limit detection)', () => {
@@ -6001,9 +6371,7 @@ describe('usage cap delivered as content triggers rotation (incident regression)
         cleanup: vi.fn(),
       },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-        cleanup: vi.fn(),
       },
       reactionManager: {
         updateReaction: vi.fn().mockResolvedValue(undefined),
@@ -6012,6 +6380,8 @@ describe('usage cap delivered as content triggers rotation (incident regression)
       contextWindowManager: {
         handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
         cleanup: vi.fn(),
+        calculateRemainingPercent: vi.fn().mockReturnValue(100),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
       },
       toolTracker: {
         scheduleCleanup: vi.fn(),
@@ -6055,7 +6425,7 @@ describe('usage cap delivered as content triggers rotation (incident regression)
       session: {
         sessionId: 'sess_cap',
         ownerId: 'U_TEST',
-        logVerbosity: 'detail',
+        logVerbosity: LOG_DETAIL,
         usage: {},
         terminated: false,
       },
@@ -6138,9 +6508,7 @@ describe('prompt-too-long delivered as content triggers auto fallback compact (f
         cleanup: vi.fn(),
       },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-        cleanup: vi.fn(),
       },
       reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
       contextWindowManager: {
@@ -6188,7 +6556,7 @@ describe('prompt-too-long delivered as content triggers auto fallback compact (f
     const session = {
       sessionId: 'sess_ptl',
       ownerId: 'U_TEST',
-      logVerbosity: 'detail',
+      logVerbosity: LOG_DETAIL,
       usage: {},
       terminated: false,
       model: 'gpt-5.5',
@@ -6229,6 +6597,41 @@ describe('prompt-too-long delivered as content triggers auto fallback compact (f
     // The error text must NOT be persisted as the assistant's answer.
     const { recordAssistantTurn } = await import('../../../conversation');
     expect(vi.mocked(recordAssistantTurn)).not.toHaveBeenCalledWith(expect.anything(), 'Prompt is too long');
+  });
+
+  it('marks the stash as a goal objective when the failed turn was literal (PR #305)', async () => {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+    const deps = createPtlDeps();
+    const executor = new StreamExecutor(deps);
+    const say = vi.fn().mockResolvedValue({ ts: 'msg_ts' });
+    const session = {
+      sessionId: 'sess_ptl_literal',
+      ownerId: 'U_TEST',
+      logVerbosity: LOG_DETAIL,
+      usage: {},
+      terminated: false,
+      model: 'gpt-5.5',
+    } as any;
+
+    await executor.execute({
+      session,
+      sessionKey: 'C555:t555',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [],
+      text: 'new dashboard 구현',
+      channel: 'C555',
+      threadTs: 't555',
+      user: 'U_TEST',
+      say,
+      isUserInput: true,
+      literalPrompt: true,
+    } as any);
+
+    expect(session.fallbackCompactPendingUserText).toBe('new dashboard 구현');
+    // Replayed after the emergency /compact as the user's words, not as `new`.
+    expect(session.fallbackCompactPendingEventContext).toMatchObject({ user: 'U_TEST', verbatimPrompt: true });
   });
 
   it('does NOT misfire on long prose that merely mentions the phrase', () => {
@@ -6333,9 +6736,7 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
         cleanup: vi.fn(),
       },
       statusReporter: {
-        updateStatusDirect: vi.fn().mockResolvedValue(undefined),
         getStatusEmoji: vi.fn().mockReturnValue('thinking_face'),
-        cleanup: vi.fn(),
       },
       reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
       contextWindowManager: {
@@ -6376,7 +6777,7 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     return {
       sessionId: SESSION_UUID,
       ownerId: 'U_TEST',
-      logVerbosity: 'detail',
+      logVerbosity: LOG_DETAIL,
       usage: {},
       terminated: false,
       model: 'claude-opus-4-8[1m]',
@@ -6636,7 +7037,7 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     const session = {
       sessionId: SESSION_UUID,
       ownerId: 'U_TEST',
-      logVerbosity: 'detail',
+      logVerbosity: LOG_DETAIL,
       usage: {},
       terminated: false,
       model: 'gpt-5.5',
@@ -6659,7 +7060,7 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     const session = {
       sessionId: SESSION_UUID,
       ownerId: 'U_TEST',
-      logVerbosity: 'detail',
+      logVerbosity: LOG_DETAIL,
       usage: {},
       terminated: false,
       model: 'gpt-5.5',
@@ -6682,7 +7083,7 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     const session = {
       sessionId: SESSION_UUID,
       ownerId: 'U_TEST',
-      logVerbosity: 'detail',
+      logVerbosity: LOG_DETAIL,
       usage: {},
       terminated: false,
       model: 'gpt-5.5',
@@ -6706,7 +7107,7 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     const session = {
       sessionId: SESSION_UUID,
       ownerId: 'U_TEST',
-      logVerbosity: 'detail',
+      logVerbosity: LOG_DETAIL,
       usage: {},
       terminated: false,
       model: 'claude-opus-4-8[1m]',
@@ -6722,5 +7123,141 @@ describe('compaction failure delivered as content (transcript repair + unwedge)'
     expect(say).not.toHaveBeenCalled();
     expect(deps.turnNotifier.notify).not.toHaveBeenCalled();
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
+  });
+});
+
+// ── Voice / image-only first message → intent title trigger (execute e2e) ──
+//
+// A voice memo or image arrives with no text, so intake stores the stand-in
+// title "New Session" and the dashboard card says nothing about the work. The
+// model is the only party that understands the attachment, so the host injects
+// a <session-title-pending> notice into the prompt of every real user turn
+// while the stand-in persists. This block runs the full execute() path and
+// asserts on the exact prompt handed to the agent runtime.
+describe('session-title-pending notice (execute e2e)', () => {
+  async function* doneStream() {
+    yield { type: 'result', subtype: 'success', total_cost_usd: 0, usage: {} };
+  }
+
+  function createDeps() {
+    return {
+      claudeHandler: {
+        setActivityState: vi.fn(),
+        clearSessionId: vi.fn(),
+        streamAgentEvents: vi.fn().mockImplementation(() => toAgentEvents(doneStream())),
+        getSessionRegistry: vi.fn().mockReturnValue({
+          beginTurn: vi.fn(),
+          endTurn: vi.fn(),
+          broadcastSessionUpdate: vi.fn(),
+          getActivityState: vi.fn().mockReturnValue('idle'),
+        }),
+      },
+      fileHandler: {
+        formatFilePrompt: vi
+          .fn()
+          .mockResolvedValue('Please analyze the uploaded files.\n\nUploaded files:\n\n## Audio: voice.m4a\n'),
+        cleanupTempFiles: vi.fn().mockResolvedValue(undefined),
+      },
+      toolEventProcessor: {
+        handleToolUse: vi.fn().mockResolvedValue(undefined),
+        handleToolResult: vi.fn().mockResolvedValue(undefined),
+        getLiveBackgroundWork: vi.fn().mockReturnValue({ count: 0, labels: [], signature: '' }),
+        cleanup: vi.fn(),
+      },
+      statusReporter: { getStatusEmoji: vi.fn().mockReturnValue('thinking_face') },
+      reactionManager: { updateReaction: vi.fn().mockResolvedValue(undefined), cleanup: vi.fn() },
+      contextWindowManager: {
+        handlePromptTooLong: vi.fn().mockResolvedValue(undefined),
+        calculateRemainingPercent: vi.fn().mockReturnValue(50),
+        updateContextEmoji: vi.fn().mockResolvedValue(undefined),
+        cleanup: vi.fn(),
+      },
+      toolTracker: { scheduleCleanup: vi.fn() },
+      todoDisplayManager: {
+        cleanupSession: vi.fn(),
+        cleanup: vi.fn(),
+        handleTodoUpdate: vi.fn().mockResolvedValue(undefined),
+      },
+      actionHandlers: {},
+      requestCoordinator: { removeController: vi.fn(), touchSession: vi.fn() },
+      slackApi: {
+        getUserProfile: vi.fn().mockResolvedValue({ email: 'user@example.com', displayName: 'User' }),
+        getClient: vi.fn().mockReturnValue({}),
+        getBotUserId: vi.fn().mockResolvedValue('U_BOT'),
+        deleteMessage: vi.fn().mockResolvedValue(undefined),
+        postSystemMessage: vi.fn().mockResolvedValue(undefined),
+      },
+      assistantStatusManager: {
+        setStatus: vi.fn().mockResolvedValue(undefined),
+        clearStatus: vi.fn().mockResolvedValue(undefined),
+        bumpEpoch: vi.fn().mockReturnValue(1),
+        getToolStatusText: vi.fn().mockReturnValue('running...'),
+        buildBashStatus: vi.fn().mockReturnValue('is running commands...'),
+        registerBackgroundBashActive: vi.fn().mockReturnValue(() => {}),
+      },
+      threadPanel: undefined,
+      dispatchPendingUserMessage: vi.fn().mockResolvedValue(undefined),
+    } as any;
+  }
+
+  function voiceOnlySession(title: string | undefined) {
+    return {
+      sessionId: 'sess_voice',
+      ownerId: 'U_TEST',
+      logVerbosity: LOG_DETAIL,
+      usage: {},
+      terminated: false,
+      model: 'claude-opus-4-6',
+      title,
+    } as any;
+  }
+
+  async function runTurn(session: any, overrides: Record<string, unknown> = {}) {
+    vi.mocked(userSettingsStore.getUserEmail).mockReturnValue('user@example.com');
+    const deps = createDeps();
+    const executor = new StreamExecutor(deps);
+    await executor.execute({
+      session,
+      sessionKey: 'C7:t7',
+      userName: 'testuser',
+      workingDirectory: '/tmp/test',
+      abortController: new AbortController(),
+      processedFiles: [{ name: 'voice.m4a', isAudio: true, path: '/tmp/voice.m4a' }],
+      text: '',
+      channel: 'C7',
+      threadTs: 't7',
+      user: 'U_TEST',
+      say: vi.fn().mockResolvedValue({ ts: 'msg_ts' }),
+      isUserInput: true,
+      ...overrides,
+    } as any);
+    return deps.claudeHandler.streamAgentEvents.mock.calls[0][0] as string;
+  }
+
+  it('injects the notice for a voice-only user turn while the title is the stand-in', async () => {
+    const session = voiceOnlySession('New Session');
+    const prompt = await runTurn(session);
+    expect(prompt).toContain('<session-title-pending>');
+    expect(prompt).toContain('"titleFillOnly": true');
+    expect(prompt).toContain('## Audio: voice.m4a');
+    expect(session.titleNoticeCount).toBe(1);
+  });
+
+  it('does not inject once the session has a real title', async () => {
+    const prompt = await runTurn(voiceOnlySession('음성·이미지 첫 지시 세션의 대시보드 제목 자동 갱신'));
+    expect(prompt).not.toContain('<session-title-pending>');
+  });
+
+  it('does not inject on a synthetic turn (auto-resume / continuation)', async () => {
+    const prompt = await runTurn(voiceOnlySession('New Session'), { isUserInput: false });
+    expect(prompt).not.toContain('<session-title-pending>');
+  });
+
+  it('stops after the cap', async () => {
+    const session = voiceOnlySession('New Session');
+    session.titleNoticeCount = 3;
+    const prompt = await runTurn(session);
+    expect(prompt).not.toContain('<session-title-pending>');
+    expect(session.titleNoticeCount).toBe(3);
   });
 });

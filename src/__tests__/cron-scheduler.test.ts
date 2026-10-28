@@ -3,7 +3,6 @@
  * Trace: docs/archive/features/cron-scheduler/trace.md, Scenarios 4-6
  */
 
-import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { type CronJob, CronStorage } from 'somalib/cron/cron-storage';

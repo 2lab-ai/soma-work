@@ -2,16 +2,14 @@
   "name": "@soma/slack",
   "version": "1.0.0",
   "private": true,
-  "main": "./dist/index.js",
-  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./dist/index.js",
     "./action-panel-builder": "./dist/action-panel-builder.js",
     "./actions": "./dist/actions/index.js",
     "./actions/click-classifier": "./dist/actions/click-classifier.js",
     "./actions/pending-form-store": "./dist/actions/pending-form-store.js",
     "./actions/pending-instruction-confirm-store": "./dist/actions/pending-instruction-confirm-store.js",
     "./actions/user-skill-action-kinds": "./dist/actions/user-skill-action-kinds.js",
+    "./agent-tree": "./dist/agent-tree.js",
     "./assistant-container": "./dist/assistant-container.js",
     "./assistant-status-manager": "./dist/assistant-status-manager.js",
     "./channel-description-cache": "./dist/channel-description-cache.js",
@@ -26,14 +24,16 @@
     "./cct/views": "./dist/cct/views.js",
     "./directives": "./dist/directives/index.js",
     "./directives/channel-message-directive": "./dist/directives/channel-message-directive.js",
+    "./directives/release-notes-directive": "./dist/directives/release-notes-directive.js",
     "./directives/session-link-directive": "./dist/directives/session-link-directive.js",
     "./context-window-manager": "./dist/context-window-manager.js",
     "./session-usage-math": "./dist/session-usage-math.js",
+    "./live-usage": "./dist/live-usage.js",
+    "./model-switch": "./dist/model-switch.js",
     "./directives/source-working-dir-directive": "./dist/directives/source-working-dir-directive.js",
     "./dispatch-abort": "./dist/dispatch-abort.js",
     "./event-router": "./dist/event-router.js",
     "./formatters": "./dist/formatters/index.js",
-    "./formatters/directory-formatter": "./dist/formatters/directory-formatter.js",
     "./formatters/markdown-to-blocks": "./dist/formatters/markdown-to-blocks.js",
     "./incident-contract": "./dist/incident-contract.js",
     "./handoff-budget": "./dist/handoff-budget.js",
@@ -45,7 +45,6 @@
     "./mrkdwn-escape": "./dist/mrkdwn-escape.js",
     "./output-flags": "./dist/output-flags.js",
     "./pipeline": "./dist/pipeline/index.js",
-    "./pipeline/effective-phase": "./dist/pipeline/effective-phase.js",
     "./pipeline/input-processor": "./dist/pipeline/input-processor.js",
     "./pipeline/session-initializer": "./dist/pipeline/session-initializer.js",
     "./pipeline/stream-executor": "./dist/pipeline/stream-executor.js",
@@ -54,6 +53,7 @@
     "./pipeline/transcript-sanitizer": "./dist/pipeline/transcript-sanitizer.js",
     "./pipeline/types": "./dist/pipeline/types.js",
     "./reaction-manager": "./dist/reaction-manager.js",
+    "./release-notes-poster": "./dist/release-notes-poster.js",
     "./release-notifier": "./dist/release-notifier.js",
     "./request-coordinator": "./dist/request-coordinator.js",
     "./session-manager": "./dist/session-manager.js",
@@ -80,12 +80,13 @@
     "./user-choice-handler": "./dist/user-choice-handler.js",
     "./user-choice-extractor": "./dist/user-choice-extractor.js",
     "./user-skill-file-roundtrip": "./dist/user-skill-file-roundtrip.js",
+    "./user-media": "./dist/user-media.js",
+    "./work-log": "./dist/work-log.js",
     "./z/capability": "./dist/z/capability.js",
     "./z/normalize": "./dist/z/normalize.js",
     "./z/respond": "./dist/z/respond.js",
     "./z/router": "./dist/z/router.js",
     "./z/strip-z-prefix": "./dist/z/strip-z-prefix.js",
-    "./z/tombstone": "./dist/z/tombstone.js",
     "./z/types": "./dist/z/types.js",
     "./z/ui-builder": "./dist/z/ui-builder.js",
     "./z/whitelist": "./dist/z/whitelist.js",
@@ -159,6 +160,9 @@
       "directives/channel-message-directive": [
         "dist/directives/channel-message-directive.d.ts"
       ],
+      "directives/release-notes-directive": [
+        "dist/directives/release-notes-directive.d.ts"
+      ],
       "directives/session-link-directive": [
         "dist/directives/session-link-directive.d.ts"
       ],
@@ -173,9 +177,6 @@
       ],
       "formatters": [
         "dist/formatters/index.d.ts"
-      ],
-      "formatters/directory-formatter": [
-        "dist/formatters/directory-formatter.d.ts"
       ],
       "formatters/markdown-to-blocks": [
         "dist/formatters/markdown-to-blocks.d.ts"
@@ -210,9 +211,6 @@
       "pipeline": [
         "dist/pipeline/index.d.ts"
       ],
-      "pipeline/effective-phase": [
-        "dist/pipeline/effective-phase.d.ts"
-      ],
       "pipeline/input-processor": [
         "dist/pipeline/input-processor.d.ts"
       ],
@@ -233,6 +231,9 @@
       ],
       "reaction-manager": [
         "dist/reaction-manager.d.ts"
+      ],
+      "release-notes-poster": [
+        "dist/release-notes-poster.d.ts"
       ],
       "release-notifier": [
         "dist/release-notifier.d.ts"
@@ -323,9 +324,6 @@
       ],
       "z/strip-z-prefix": [
         "dist/z/strip-z-prefix.d.ts"
-      ],
-      "z/tombstone": [
-        "dist/z/tombstone.d.ts"
       ],
       "z/types": [
         "dist/z/types.d.ts"

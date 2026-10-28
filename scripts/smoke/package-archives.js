@@ -91,20 +91,6 @@ const RUNTIME_EXTRA_REQUIRED_FILES = [
   'services/a2t/requirements.txt',
 ];
 
-/**
- * Workspace packages whose *production* entry point must resolve inside a
- * runtime archive.
- *
- * Derived from the archive's own root manifest `workspaces` patterns and each
- * workspace manifest's declared `main`/`exports['.']`, so this list does not go
- * stale when a package is added. It is the closure `npm ci --omit=dev
- * --workspaces --include-workspace-root` is supposed to have produced — and the
- * thing that had no real-archive assertion at all: only root `node_modules`
- * existence was checked, so an install missing an unhoistable nested tree (the
- * bug this task actually hit with `somalib/node_modules/soma-lib`) shipped green.
- */
-const REQUIRED_NESTED_DEPENDENCIES = ['somalib/node_modules/soma-lib/dist/index.js'];
-
 /** Which package installs which profile. `null` is the profile-less controller. */
 const EXPECTED_PROFILE = {
   'somawork-cli': null,
@@ -349,10 +335,11 @@ function readJson(file) {
 /**
  * Is this path inside an installed dependency tree?
  *
- * Any `node_modules` segment, not just a leading one: `npm ci` cannot hoist a
- * workspace's unhoistable dependency, so a production install also writes
- * `somalib/node_modules/soma-lib/**`. Treating only the root tree as dependency
- * territory made a correct archive fail on a published package's own `.d.ts`.
+ * Any `node_modules` segment, not just a leading one: when a workspace pins a
+ * version the root cannot share, `npm ci` installs it under the workspace's own
+ * `node_modules` (`somalib/node_modules/soma-lib/**` until e9af688b aligned the
+ * pins). Treating only the root tree as dependency territory made a correct
+ * archive fail on a published package's own `.d.ts`.
  */
 function isDependencyPath(rel) {
   return rel === 'node_modules' || rel.split('/').includes('node_modules');
@@ -822,7 +809,8 @@ function checkRuntimeArchive(asset, root, manifest, members) {
  *
  * Three questions, in increasing strength:
  *
- * 1. the nested trees `npm ci` cannot hoist are present;
+ * 1. every production dependency tree the archive's own lockfile installs
+ *    (root and workspace-nested) is present;
  * 2. every workspace package the archive's OWN root manifest expands to has the
  *    entry point that package's manifest declares (derived, so a new workspace
  *    is covered without editing this file);
@@ -832,12 +820,44 @@ function checkRuntimeDependencies(asset, root, layout) {
   const modules = path.join(root, 'node_modules');
   if (!check(fs.existsSync(modules), `${asset}: carries its production dependencies`)) return;
 
-  for (const rel of REQUIRED_NESTED_DEPENDENCIES) {
+  const installs = lockfileProductionInstalls(root);
+  if (check(installs !== null, `${asset}: carries a package-lock.json with a packages map`)) {
+    const missingInstalls = installs.filter((rel) => !fs.existsSync(path.join(root, rel, 'package.json')));
     check(
-      fs.existsSync(path.join(root, rel)),
-      `${asset}: carries the unhoistable workspace dependency ${rel}`,
+      missingInstalls.length === 0,
+      `${asset}: carries every production dependency tree its lockfile installs (root and workspace-nested)`,
+      missingInstalls
+        .slice(0, 8)
+        .map((rel) => `${rel}/package.json`)
+        .join(', '),
+    );
+    // A manifest is not a module: a tree whose built files were pruned still
+    // has its package.json. Resolve the entry each manifest declares.
+    const brokenEntries = installs
+      .filter((rel) => fs.existsSync(path.join(root, rel, 'package.json')))
+      .map((rel) => missingDependencyEntry(path.join(root, rel), rel))
+      .filter((missing) => missing !== null);
+    check(
+      brokenEntries.length === 0,
+      `${asset}: every production dependency's declared runtime entry is present`,
+      brokenEntries.slice(0, 8).join(', '),
     );
   }
+
+  // The entry check above cannot say which subpath the runtime loads (one
+  // surviving subpath satisfies it). Resolve what the shipped code actually
+  // requires, with Node's own resolver.
+  let unresolved;
+  try {
+    unresolved = unresolvedFirstPartyRequires(root);
+  } catch (error) {
+    unresolved = [`<scan failed: ${error && error.message ? error.message : String(error)}>`];
+  }
+  check(
+    unresolved.length === 0,
+    `${asset}: every dependency the shipped code requires resolves inside the archive`,
+    unresolved.slice(0, 8).join(', '),
+  );
 
   const workspaces = archiveWorkspaceEntries(root);
   check(workspaces.unsupported.length === 0, `${asset}: every workspace pattern is one this gate can expand`, workspaces.unsupported.join(', '));
@@ -865,11 +885,224 @@ function checkRuntimeDependencies(asset, root, layout) {
 }
 
 /**
+ * Every dependency tree the ARCHIVE's own `package-lock.json` installs for
+ * production — root (`node_modules/<name>`) and workspace-nested
+ * (`<workspace>/node_modules/<name>`) alike. Entries `npm ci --omit=dev` does
+ * not install (`dev`, `devOptional`) or may legitimately skip (`optional`), and
+ * workspace links (checked by entry point below), are excluded.
+ *
+ * Read from the lockfile, not hardcoded: a fixed path list
+ * (`somalib/node_modules/soma-lib/dist/index.js`) went stale when e9af688b
+ * aligned `somalib`'s soma-lib pin with the root's and the nested copy stopped
+ * existing — every real archive would have failed the gate, while a dropped
+ * root `node_modules/soma-lib` would not have been noticed at all.
+ *
+ * Returns lockfile keys (archive-relative package directories), sorted, or
+ * `null` when the archive has no readable lockfile `packages` map.
+ */
+function lockfileProductionInstalls(root) {
+  const lock = readJson(path.join(root, 'package-lock.json'));
+  const packages = lock === null ? null : lock.packages;
+  if (packages === null || typeof packages !== 'object' || Array.isArray(packages)) return null;
+  return Object.keys(packages)
+    .filter((key) => {
+      if (!key.split('/').includes('node_modules')) return false;
+      const meta = packages[key] || {};
+      return meta.dev !== true && meta.devOptional !== true && meta.optional !== true && meta.link !== true;
+    })
+    .sort();
+}
+
+/**
+ * Whether an installed dependency still carries the runtime files its manifest
+ * points at, resolved the way this CommonJS runtime loads it:
+ *
+ * 1. `exports` (Node prefers it over `main`): each subpath is resolved under
+ *    the `require` conditions (`require`, `node`, `default`, first match in
+ *    key order) — a surviving ESM build does not stand in for a pruned CJS
+ *    one. An ESM-only package (no require-resolvable target) is checked under
+ *    the `import` conditions instead. At least one resolved target must exist:
+ *    published packages do ship root targets that do not exist
+ *    (`@modelcontextprotocol/sdk` declares `./dist/cjs/index.js` and is only
+ *    imported by subpath), so requiring every target would refuse a correct
+ *    archive, while a tree whose built files were pruned has none.
+ *    `./package.json`, declaration and source-map targets are not code and do
+ *    not count. Targets must name the file exactly: Node applies no extension
+ *    or `index.js` lookup to `exports`. An `exports` with no code target
+ *    falls through to `main`.
+ * 2. `main` must resolve (require suffixes), else Node's fallback to the
+ *    package root `index.js`.
+ * 3. Neither: Node loads `index.js`, which must exist, unless the package is
+ *    types-only (declares `types`/`typings` and ships no `index.js`).
+ *
+ * Returns an archive-relative path that is missing (or an unreadable
+ * manifest), or null.
+ */
+function missingDependencyEntry(dir, rel) {
+  const manifest = readJson(path.join(dir, 'package.json'));
+  if (manifest === null) return `${rel}/package.json (unreadable)`;
+  const isFile = (file) => {
+    try {
+      return fs.statSync(file).isFile();
+    } catch {
+      return false;
+    }
+  };
+  // `require` semantics for `main` and the implicit entry.
+  const resolves = (target) =>
+    ['', '.js', '.json', '.node', '/index.js', '/index.json', '/index.node'].some((suffix) =>
+      isFile(path.join(dir, target) + suffix),
+    );
+  const existsExactly = (target) => isFile(path.join(dir, target));
+  const display = (target) => path.posix.join(rel, target.replace(/^\.\//, ''));
+
+  const requireTargets = exportEntryTargets(manifest.exports, REQUIRE_CONDITIONS);
+  const codeTargets =
+    requireTargets.length > 0 ? requireTargets : exportEntryTargets(manifest.exports, IMPORT_CONDITIONS);
+  if (codeTargets.length > 0) return codeTargets.some(existsExactly) ? null : display(codeTargets[0]);
+  if (typeof manifest.main === 'string' && manifest.main.length > 0) {
+    return resolves(manifest.main) || resolves('index') ? null : display(manifest.main);
+  }
+  if (manifest.exports !== undefined && manifest.exports !== null) return null;
+  if (resolves('index')) return null;
+  const typesOnly = typeof manifest.types === 'string' || typeof manifest.typings === 'string';
+  return typesOnly ? null : display('index.js');
+}
+
+const NON_CODE_TARGET = /(?:^|\/)package\.json$|\.d\.[cm]?ts$|\.map$/;
+const REQUIRE_CONDITIONS = new Set(['require', 'node', 'default']);
+const IMPORT_CONDITIONS = new Set(['import', 'node', 'default']);
+
+/**
+ * The file each concrete (non-wildcard) subpath of an `exports` field resolves
+ * to under `conditions` — Node's rule: in a condition object the first key
+ * (in key order) that is an active condition and resolves wins; arrays are
+ * fallbacks. Non-code targets are dropped.
+ */
+function exportEntryTargets(exported, conditions) {
+  if (exported === undefined || exported === null) return [];
+  const resolve = (node) => {
+    if (typeof node === 'string') return node;
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        const hit = resolve(item);
+        if (hit !== null) return hit;
+      }
+      return null;
+    }
+    if (typeof node === 'object' && node !== null) {
+      for (const [key, child] of Object.entries(node)) {
+        if (!conditions.has(key)) continue;
+        const hit = resolve(child);
+        if (hit !== null) return hit;
+      }
+    }
+    return null;
+  };
+  const isSubpathMap =
+    typeof exported === 'object' && !Array.isArray(exported) && Object.keys(exported).some((k) => k.startsWith('.'));
+  const entries = isSubpathMap
+    ? Object.entries(exported)
+        .filter(([key]) => !key.includes('*'))
+        .map(([, value]) => value)
+    : [exported];
+  return entries
+    .map(resolve)
+    .filter((target) => typeof target === 'string' && !target.includes('*') && !NON_CODE_TARGET.test(target));
+}
+
+/**
+ * Every bare `require('<specifier>')` in the archive's first-party JavaScript
+ * (everything outside dependency trees), resolved from the requiring file's
+ * directory with Node's own resolver — `exports` conditions, `main`,
+ * extensions and `index.js` exactly as the runtime will. Relative paths,
+ * `node:` and builtin modules are not dependencies and are skipped; a
+ * non-literal `require(expr)` cannot be read and is not seen. A package the
+ * file's own workspace (never the archive root) declares only in
+ * `devDependencies` is skipped too: the
+ * archive is installed with `--omit=dev` on purpose, and the staged
+ * `packages/test-utils` mock factories require `vitest` that way. A
+ * resolution that lands outside the archive root (an ancestor
+ * `node_modules`, a global folder) does not count as resolved.
+ *
+ * This is the check that knows which subpath the runtime loads: the
+ * per-package entry check passes `@modelcontextprotocol/sdk` while any one of
+ * its subpaths survives; this one fails when the subpath the code requires is
+ * gone.
+ *
+ * Returns `<file>: <specifier>` for every specifier that does not resolve.
+ */
+function unresolvedFirstPartyRequires(root) {
+  const missing = [];
+  const resolved = new Map();
+  const realRoot = fs.realpathSync(root);
+  const manifests = new Map();
+  // The nearest package.json at or above `dir`, inside the archive.
+  const nearestManifest = (dir) => {
+    if (manifests.has(dir)) return manifests.get(dir);
+    const own = readJson(path.join(dir, 'package.json'));
+    const parent = path.dirname(dir);
+    const found =
+      own !== null ? { dir, manifest: own } : dir === root || parent === dir ? null : nearestManifest(parent);
+    manifests.set(dir, found);
+    return found;
+  };
+  // Never the archive root's own manifest: the runtime's code (dist/) resolves
+  // to it, and a root devDependency required there is a runtime crash.
+  const devOnly = (found, name) =>
+    found !== null &&
+    found.dir !== root &&
+    Object.hasOwn(found.manifest.devDependencies || {}, name) &&
+    !['dependencies', 'optionalDependencies', 'peerDependencies'].some((field) =>
+      Object.hasOwn(found.manifest[field] || {}, name),
+    );
+  for (const { rel, dirent } of walk(root)) {
+    if (!dirent.isFile() || isDependencyPath(rel) || !/\.c?js$/.test(rel)) continue;
+    const source = fs.readFileSync(path.join(root, rel), 'utf8');
+    const fromDir = path.join(root, path.dirname(rel));
+    for (const match of source.matchAll(REQUIRE_CALL_RE)) {
+      const specifier = match[2];
+      if (specifier.startsWith('.') || specifier.startsWith('/') || specifier.startsWith('node:')) continue;
+      if (BUILTIN_MODULES.has(specifier)) continue;
+      const name = specifier.startsWith('@') ? specifier.split('/').slice(0, 2).join('/') : specifier.split('/')[0];
+      if (devOnly(nearestManifest(fromDir), name)) continue;
+      const key = `${fromDir}\0${specifier}`;
+      if (!resolved.has(key)) {
+        let ok = true;
+        try {
+          const target = fs.realpathSync(require.resolve(specifier, { paths: [fromDir] }));
+          ok = target === realRoot || target.startsWith(realRoot + path.sep);
+        } catch {
+          ok = false;
+        }
+        resolved.set(key, ok);
+      }
+      if (!resolved.get(key)) missing.push(`${rel}: ${specifier}`);
+    }
+  }
+  return missing;
+}
+
+const REQUIRE_CALL_RE = /\brequire\(\s*(['"])([^'"\n]+)\1\s*\)/g;
+const BUILTIN_MODULES = new Set(require('node:module').builtinModules);
+
+/**
+ * The subset of {@link lockfileProductionInstalls} that lives inside a
+ * workspace rather than the root tree — the trees a packaging step that copies
+ * only the root `node_modules` silently drops. Empty today; re-arms by itself
+ * if a workspace pin diverges again.
+ */
+function lockfileWorkspaceNestedInstalls(root) {
+  const installs = lockfileProductionInstalls(root);
+  return installs === null ? null : installs.filter((key) => key.split('/')[0] !== 'node_modules');
+}
+
+/**
  * Workspace entry points, expanded from the ARCHIVE's own root manifest.
  *
  * Only the bounded `<dir>/*` form the root manifest actually uses is supported;
  * anything else is reported rather than silently ignored. A package that
- * declares no `main`/`exports['.']` (`somalib` compiles in place) contributes no
+ * declares no entry point (`somalib` compiles in place) contributes no
  * requirement instead of a false one.
  */
 function archiveWorkspaceEntries(root) {
@@ -906,12 +1139,28 @@ function archiveWorkspaceEntries(root) {
   for (const dir of dirs.sort()) {
     const manifest = readJson(path.join(root, dir, 'package.json'));
     if (manifest === null) continue;
-    const exported = manifest.exports === undefined || manifest.exports === null ? undefined : manifest.exports['.'];
-    const entry = typeof manifest.main === 'string' ? manifest.main : typeof exported === 'string' ? exported : null;
-    if (entry === null) continue;
-    entries.push(path.posix.join(dir, entry.replace(/^\.\//, '')));
+    for (const entry of declaredEntryPoints(manifest)) {
+      entries.push(path.posix.join(dir, entry.replace(/^\.\//, '')));
+    }
   }
   return { entries, unsupported };
+}
+
+/**
+ * The entry points a workspace manifest declares: `main`, else `exports['.']`,
+ * else — for a subpath-only package such as `@soma/slack`, which has no root
+ * entry — every concrete (non-wildcard) `exports` target. `somalib` declares
+ * none of these and contributes nothing.
+ */
+function declaredEntryPoints(manifest) {
+  if (typeof manifest.main === 'string') return [manifest.main];
+  const exported = manifest.exports;
+  if (typeof exported === 'string') return [exported];
+  if (exported === null || typeof exported !== 'object') return [];
+  if (typeof exported['.'] === 'string') return [exported['.']];
+  return Object.entries(exported)
+    .filter(([key, target]) => !key.includes('*') && typeof target === 'string')
+    .map(([, target]) => target);
 }
 
 /**
@@ -1064,8 +1313,11 @@ function main() {
 module.exports = {
   DEPENDENCY_TEXT_PATTERNS,
   RUNTIME_EXTRA_REQUIRED_FILES,
-  REQUIRED_NESTED_DEPENDENCIES,
   archiveWorkspaceEntries,
+  lockfileProductionInstalls,
+  lockfileWorkspaceNestedInstalls,
+  missingDependencyEntry,
+  unresolvedFirstPartyRequires,
   isNativeExecutable,
   walk,
 };

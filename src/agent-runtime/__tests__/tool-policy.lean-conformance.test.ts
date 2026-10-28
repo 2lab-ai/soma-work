@@ -3,11 +3,12 @@
  * primitive results.
  *
  * `verification/lean/SomaVerify/ToolPolicy/Model.lean` transcribes the policy with the guard
- * primitives (`isSshCommand`, the sensitive-path checks, `isCrossUserAccess`,
- * `checkMcpToolPermission`, `handlePrIssuePrecondition`, `bypassBashPermissionDecision`) as
- * inputs. `Proofs.lean` proves the documented invariants of the phase-1 policy
- * (`ModelOriginal.lean`) and `Simplification.lean` proves they hold for `Model.lean` too, which
- * returns the phase-1 result for every input (`evaluate_toOriginal`). This suite ties the model to the
+ * primitives (`isSshCommand`, the sensitive-path checks, the devops-secret checks,
+ * `isCrossUserAccess`, `checkMcpToolPermission`, `handlePrIssuePrecondition`,
+ * `bypassBashPermissionDecision`) as inputs. `Proofs.lean` proves the documented invariants of the
+ * phase-1 policy (`ModelOriginal.lean`), `Simplification.lean` proves `Model.lean` returns the
+ * phase-1 result wherever its devops-secret step stays silent, and `ProofsDevops.lean` proves the
+ * invariants for `Model.lean` with that step. This suite ties the model to the
  * code: it mocks every primitive module the policy imports, and for each vector row feeds the
  * row's primitive results to the REAL `evaluateToolPolicy`, once per call of the row, requiring
  * the model's result exactly. The `table` rows are the full truth table: every mode, context
@@ -16,10 +17,11 @@
  * every deny condition, in every mode, for admins and non-admins (`ProofsIncident.lean` proves
  * what the incident tier does).
  *
- * The sensitive-path checks are held to their arguments as well: each call carries the check
- * and arguments the model says the policy passes (`sensitiveCall`), and the mocked checks answer
- * only that exact call, throwing on any other check or argument list. A slip in how the policy
- * picks those arguments from the tool input therefore fails the replay.
+ * The sensitive-path and devops-secret checks are held to their arguments as well: each call
+ * carries the check and arguments the model says the policy passes (`sensitiveCall`,
+ * `devopsCall`), and the mocked checks answer only that exact call, throwing on any other check or
+ * argument list. A slip in how the policy picks those arguments from the tool input therefore
+ * fails the replay.
  *
  * Real inputs through the real primitives are replayed by
  * `tool-policy.concrete.lean-conformance.test.ts` (`vi.mock` is file-scoped, hence two files).
@@ -45,6 +47,11 @@ vi.mock('../../sensitive-path-filter', () => ({
 vi.mock('../../hooks/pr-issue-guard', () => ({
   handlePrIssuePrecondition: vi.fn(),
 }));
+vi.mock('../policy/devops-secret-guard', () => ({
+  checkDevopsSecretCommand: vi.fn(),
+  checkDevopsSecretGlob: vi.fn(),
+  checkDevopsSecretPath: vi.fn(),
+}));
 
 import {
   type BypassBashPermissionResult,
@@ -60,8 +67,14 @@ import {
   type SensitivePathResult,
 } from '../../sensitive-path-filter';
 import type { HandoffContext } from '../../types';
+import { checkDevopsSecretCommand, checkDevopsSecretGlob, checkDevopsSecretPath } from '../policy/devops-secret-guard';
 import type { PermissionMode } from '../policy/permission-mode';
-import { evaluateToolPolicy, type IncidentReadOnlyContext, type ToolPolicyContext } from '../policy/tool-policy';
+import {
+  ENV_GATED_TOOLS,
+  evaluateToolPolicy,
+  type IncidentReadOnlyContext,
+  type ToolPolicyContext,
+} from '../policy/tool-policy';
 
 const repoRoot = path.resolve(__dirname, '../../..');
 
@@ -73,6 +86,10 @@ interface Primitives {
   /** The model treats `reason` as an opaque string; a boundary vector uses `''`. */
   prIssue: { blocked: boolean; reason?: string; message?: string };
   bash: BypassBashPermissionResult;
+  /** The devops-secret check's value: a reason, or null. */
+  devopsSecret: string | null;
+  /** `ctx.checkEnvSkillPermission`'s value (phase 4): a reason, or null. */
+  envSkillDenied: string | null;
 }
 
 /** A sensitive-path check call: the check and its arguments. */
@@ -82,12 +99,20 @@ interface SensitiveCall {
   args: Array<string | null>;
 }
 
+/** A devops-secret check call: the check and its arguments. */
+interface DevopsCall {
+  fn: 'checkDevopsSecretCommand' | 'checkDevopsSecretPath' | 'checkDevopsSecretGlob';
+  args: string[];
+}
+
 interface MockedCall {
   tool: string;
   /** `null` stands for an undefined `toolInput`. */
   input: Record<string, unknown> | null;
   /** The sensitive-path call the model says the policy makes; `null`: none. */
   sensitiveCall: SensitiveCall | null;
+  /** The devops-secret call the model says the policy makes; `null`: none. */
+  devopsCall: DevopsCall | null;
   expect: Record<string, unknown>;
 }
 
@@ -158,6 +183,19 @@ function mockSensitiveChecks(expected: SensitiveCall | null, value: SensitivePat
   );
 }
 
+/** The devops-secret checks answer only `expected`, with `value`, and throw on any other call. */
+function mockDevopsChecks(expected: DevopsCall | null, value: string | null): void {
+  const answer = (fn: DevopsCall['fn'], args: string[]): string | null => {
+    if (expected !== null && expected.fn === fn && isDeepStrictEqual(args, expected.args)) return value;
+    throw new Error(`unexpected ${fn}(${JSON.stringify(args)}); the model calls ${JSON.stringify(expected)}`);
+  };
+  vi.mocked(checkDevopsSecretCommand).mockImplementation((command) => answer('checkDevopsSecretCommand', [command]));
+  vi.mocked(checkDevopsSecretPath).mockImplementation((filePath) => answer('checkDevopsSecretPath', [filePath]));
+  vi.mocked(checkDevopsSecretGlob).mockImplementation((pattern, basePath) =>
+    answer('checkDevopsSecretGlob', [pattern, basePath]),
+  );
+}
+
 function mockPrimitives(prims: Primitives): void {
   vi.mocked(isSshCommand).mockReturnValue(prims.ssh);
   vi.mocked(isCrossUserAccess).mockReturnValue(prims.crossUser);
@@ -174,6 +212,7 @@ function contextOf(row: MockedRow): ToolPolicyContext {
     isDangerousRuleDisabled: () => false,
     handoffContext: row.handoff ? HANDOFF : undefined,
     checkMcpToolPermission: () => row.prims.mcpDenied,
+    checkEnvSkillPermission: () => row.prims.envSkillDenied,
     ...(row.incidentReadOnly ? { incidentReadOnly: row.incidentReadOnly } : {}),
   };
 }
@@ -188,6 +227,7 @@ function replay(selected: MockedRow[]): { mismatches: string[]; calls: number } 
     for (const call of row.calls) {
       calls += 1;
       mockSensitiveChecks(call.sensitiveCall, row.prims.sensitive);
+      mockDevopsChecks(call.devopsCall, row.prims.devopsSecret);
       let actual: unknown;
       try {
         // A JSON round trip drops `undefined` properties, which the vector file cannot hold.
@@ -228,11 +268,11 @@ describe('tool-policy Lean conformance vectors (mocked primitives)', () => {
     expect(toolchain).toBe(`leanprover/lean4:v${vectors.lean}`);
   });
 
-  it('hold the full truth table: 3 modes × 2^9 flag and primitive combinations, no repeats', () => {
+  it('hold the full truth table: 3 modes × 2^10 flag and primitive combinations, no repeats', () => {
     const table = rowsOf('table');
-    expect(table).toHaveLength(1536);
+    expect(table).toHaveLength(3072);
     const combinations = new Set(table.map(({ calls: _calls, ...context }) => JSON.stringify(context)));
-    expect(combinations.size).toBe(1536);
+    expect(combinations.size).toBe(3072);
     // One call per path through the policy's tool-name tests, the same nine in every row.
     const tools = JSON.stringify(table[0].calls.map((c) => [c.tool, c.input]));
     expect(table.every((row) => JSON.stringify(row.calls.map((c) => [c.tool, c.input])) === tools)).toBe(true);
@@ -246,6 +286,21 @@ describe('tool-policy Lean conformance vectors (mocked primitives)', () => {
     // The incident tier only allows or denies, and the rows reach both outcomes.
     const decisions = new Set(incident.flatMap((row) => row.calls.map((call) => call.expect.decision)));
     expect([...decisions].sort()).toEqual(['allow', 'deny']);
+  });
+
+  it('fire the environment-skill step (phase 4) on non-admin ENV_GATED_TOOLS calls only', () => {
+    const envDenials = rows.flatMap((row) =>
+      row.calls.filter((call) => String(call.expect.reason).startsWith('env-skill:')).map((call) => ({ row, call })),
+    );
+    expect(envDenials.length).toBeGreaterThan(0);
+    expect(envDenials.some(({ call }) => call.tool === 'Skill')).toBe(true);
+    expect(envDenials.some(({ call }) => call.tool === 'Read')).toBe(true);
+    for (const { row, call } of envDenials) {
+      expect(ENV_GATED_TOOLS).toContain(call.tool);
+      expect(row.isAdmin).toBe(false);
+      expect(row.incidentReadOnly).toBeUndefined();
+      expect(row.prims.envSkillDenied).not.toBeNull();
+    }
   });
 
   for (const kind of MOCKED_KINDS as MockedRow['kind'][]) {

@@ -21,8 +21,10 @@ import type { AgentStreamEvent } from '../stream-types';
 import { type CalculateTokenCost, createSdkMessageMapper } from './sdk-message-to-event';
 
 export interface StreamRunnerDeps {
-  /** Mirrors `streamProcessorProviders.calculateTokenCost` (injected → pure). */
+  /** Cost function, injected so the mapper stays pure. */
   calculateTokenCost: CalculateTokenCost;
+  /** Models the host prices itself (`SdkMessageMapperDeps.hostPriced`). */
+  hostPriced?: (model: string) => boolean;
 }
 
 /**
@@ -41,7 +43,7 @@ export async function* runAgentStreamFromSdk(
   sdkStream: AsyncIterable<SDKMessage>,
   deps: StreamRunnerDeps,
 ): AsyncGenerator<AgentStreamEvent, void, unknown> {
-  const mapper = createSdkMessageMapper({ calculateTokenCost: deps.calculateTokenCost });
+  const mapper = createSdkMessageMapper({ calculateTokenCost: deps.calculateTokenCost, hostPriced: deps.hostPriced });
   for await (const message of sdkStream) {
     for (const event of mapper.map(message)) {
       yield event;

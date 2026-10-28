@@ -27,7 +27,7 @@ describe('SummaryTimer — countdown tick callback', () => {
   });
 
   afterEach(() => {
-    timer.cancelAll();
+    vi.clearAllTimers();
     vi.useRealTimers();
   });
 
@@ -104,22 +104,6 @@ describe('SummaryTimer — countdown tick callback', () => {
     expect(tick).toHaveBeenCalledTimes(1);
     expect(cb).not.toHaveBeenCalled();
     expect(timer.has('s')).toBe(false);
-  });
-
-  it('cancelAll() clears intervals across multiple sessions', () => {
-    const t1 = vi.fn();
-    const t2 = vi.fn();
-    timer.start('a', vi.fn(), t1);
-    timer.start('b', vi.fn(), t2);
-
-    expect(t1).toHaveBeenCalledTimes(1);
-    expect(t2).toHaveBeenCalledTimes(1);
-
-    timer.cancelAll();
-
-    vi.advanceTimersByTime(SummaryTimer.DELAY_MS * 2);
-    expect(t1).toHaveBeenCalledTimes(1);
-    expect(t2).toHaveBeenCalledTimes(1);
   });
 
   it('a thrown tick callback does not kill the interval (still fires later ticks)', () => {
@@ -260,7 +244,7 @@ describe('SummaryService.displayCountdownOnThread()', () => {
     const countdownBlocks = session.actionPanel!.summaryBlocks!;
     expect((countdownBlocks[1] as any).text.text as string).toMatch(/Executive Summary in/);
 
-    service.displayOnThread(session, 'Final real summary body');
+    service.displayOnThread(session, '<tldr>\nFinal real summary body\n</tldr>\nfull document');
     const finalBlocks = session.actionPanel!.summaryBlocks!;
     const finalText = (finalBlocks[1] as any).text.text as string;
     expect(finalText).toContain('Final real summary body');

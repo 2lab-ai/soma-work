@@ -3,7 +3,6 @@ import {
   calculateTokenCost,
   classifyOneMUnavailable,
   FALLBACK_CONTEXT_WINDOW,
-  getMaxOutput,
   getModelPricing,
   getModelSpec,
   hasOneMSuffix,
@@ -17,8 +16,8 @@ import {
 
 describe('model-registry', () => {
   describe('PRICING_VERSION', () => {
-    it('should be 2026-06-09 (Fable 5 release)', () => {
-      expect(PRICING_VERSION).toBe('2026-06-09');
+    it('should be 2026-10-27 (Opus 5.5 / Fable 5.1 rows)', () => {
+      expect(PRICING_VERSION).toBe('2026-10-27');
     });
   });
 
@@ -32,6 +31,35 @@ describe('model-registry', () => {
       expect(spec.pricing.cache1hrWritePerMTok).toBe(20);
       expect(spec.contextWindow).toBe(1_000_000);
       expect(spec.maxOutput).toBe(128_000);
+    });
+
+    // Official first-party rates (claude-api reference, 2026-09-25), the same the
+    // Agent SDK prices its result `modelUsage` with — fitted from dev records:
+    // opus-5-5 4/20/0.2/5, fable-5-1 10/50/0.25/12.5 (max rel. error 1.4% / 0%).
+    it('returns Opus 5.5 spec — not the Opus 5 rates its id also contains', () => {
+      for (const id of ['claude-opus-5-5', 'claude-opus-5-5[1m]']) {
+        const p = getModelSpec(id).pricing;
+        expect([
+          p.inputPerMTok,
+          p.outputPerMTok,
+          p.cacheReadPerMTok,
+          p.cache5minWritePerMTok,
+          p.cache1hrWritePerMTok,
+        ]).toEqual([4, 20, 0.2, 5, 8]);
+      }
+      expect(getModelSpec('claude-opus-5').pricing.inputPerMTok).toBe(5);
+    });
+
+    it('returns Fable 5.1 spec — cache reads at $0.25, not Fable 5’s $1', () => {
+      const p = getModelSpec('claude-fable-5-1').pricing;
+      expect([
+        p.inputPerMTok,
+        p.outputPerMTok,
+        p.cacheReadPerMTok,
+        p.cache5minWritePerMTok,
+        p.cache1hrWritePerMTok,
+      ]).toEqual([10, 50, 0.25, 12.5, 20]);
+      expect(getModelSpec('claude-fable-5').pricing.cacheReadPerMTok).toBe(1);
     });
 
     it('returns Opus 4.7 spec', () => {
@@ -74,18 +102,13 @@ describe('model-registry', () => {
     it('returns fallback for unknown model', () => {
       const spec = getModelSpec('gpt-99-turbo');
       expect(spec.pricing.inputPerMTok).toBe(3);
+      expect(spec.pricing.outputPerMTok).toBe(15);
       expect(spec.contextWindow).toBe(200_000);
     });
 
     it('returns fallback for undefined', () => {
       const spec = getModelSpec(undefined);
       expect(spec.pricing.inputPerMTok).toBe(3);
-    });
-  });
-
-  describe('getMaxOutput', () => {
-    it('returns 128k for opus-4-6', () => {
-      expect(getMaxOutput('claude-opus-4-6-20250414')).toBe(128_000);
     });
   });
 
@@ -106,6 +129,15 @@ describe('model-registry', () => {
       const cost = calculateTokenCost('claude-sonnet-4-6-20250414', 1_000_000, 1_000_000, 0, 0);
       // 3 + 15 = 18
       expect(cost).toBeCloseTo(18, 2);
+    });
+
+    it('calculates Sonnet 4.6 cost with cache read and 5-min cache write tiers', () => {
+      const cost = calculateTokenCost('claude-sonnet-4-6-20250514', 1_000_000, 100_000, 500_000, 50_000);
+      // input: 1M/1M * 3 = 3
+      // output: 100k/1M * 15 = 1.5
+      // cacheRead: 500k/1M * 0.3 = 0.15
+      // cacheCreate: 50k/1M * 3.75 = 0.1875
+      expect(cost).toBeCloseTo(3 + 1.5 + 0.15 + 0.1875, 4);
     });
 
     it('uses fallback for unknown model', () => {

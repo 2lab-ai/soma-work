@@ -109,7 +109,7 @@ class ReadOnlyConfigLoad extends Error {}
  * which would reorder an operator's `config.json` on every seed/strip/save and
  * break `saveConfig`'s documented "2-space indent, insertion order" contract.
  */
-function writeConfigFileAtomically(configFile: string, content: string): void {
+export function writeConfigFileAtomically(configFile: string, content: string): void {
   atomicWriteFile(configFile, content, {
     mode: CONFIG_FILE_MODE,
     dirMode: CONFIG_DIR_MODE,
@@ -154,6 +154,16 @@ export interface Config {
    * rule below: never persist post-substitution values back to disk.
    */
   ui?: Record<string, unknown>;
+  /**
+   * Deploy-workflow sandbox grant, written per runner by the fleet deploy
+   * (`src/deploy/apply-deploy-sandbox.ts`) and read at query time straight
+   * from config.json by `src/sandbox/deploy-sandbox-grant.ts`, which owns its
+   * validation. Kept OPAQUE here for the same round-trip reason as `ui`:
+   * plugin-manager's `loadConfig` → spread → `saveConfig` would otherwise
+   * delete it, silently revoking the grant until the next deploy. Taken from
+   * the pre-substitution object, so no resolved `${VAR}` value is persisted.
+   */
+  deploySandbox?: Record<string, unknown>;
 }
 
 /**
@@ -577,6 +587,17 @@ export function loadConfig(configFile: string, opts: LoadConfigOptions = {}): Co
       // persist RESOLVED env values to disk — a secret disclosure and a
       // round-trip corruption that breaks env rotation (same hazard class as
       // the llmChat strip below).
+      // Pass through `deploySandbox` opaquely, pre-substitution, like `ui`
+      // (see Config.deploySandbox). Not seeded when absent: no key = no grant.
+      const rawDeploySandbox = (rawParsed as Record<string, unknown>).deploySandbox;
+      if (rawDeploySandbox && typeof rawDeploySandbox === 'object' && !Array.isArray(rawDeploySandbox)) {
+        result.deploySandbox = rawDeploySandbox as Record<string, unknown>;
+      } else if (rawDeploySandbox !== undefined) {
+        logger.warn(
+          `Ignoring config.json#"deploySandbox": expected a JSON object, got ${describeKind(rawDeploySandbox)}`,
+        );
+      }
+
       const rawUi = (rawParsed as Record<string, unknown>).ui;
       if (rawUi && typeof rawUi === 'object' && !Array.isArray(rawUi)) {
         result.ui = rawUi as Record<string, unknown>;

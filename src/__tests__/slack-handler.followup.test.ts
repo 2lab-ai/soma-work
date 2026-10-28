@@ -6,8 +6,16 @@ vi.mock('../slack/autoskill-fire', () => ({
 }));
 
 import type { FollowupQueueSnapshot } from '@soma/slack/followup-queue';
-import { FOLLOWUP_CANCEL_ACTION_ID } from '@soma/slack/followup-queue-blocks';
+import {
+  buildFollowupItemMessage,
+  FOLLOWUP_CANCEL_ACTION_ID,
+  FOLLOWUP_SEND_NOW_ACTION_ID,
+  type FollowupQueueView,
+  parseFollowupItemActionValue,
+} from '@soma/slack/followup-queue-blocks';
 import { getMetricsEmitter } from '../metrics/event-emitter';
+import { QueueHandler } from '../slack/commands/queue-handler';
+import { ThreadSurface } from '../slack/thread-surface';
 import { SlackHandler } from '../slack-handler';
 import { userSettingsStore } from '../user-settings-store';
 
@@ -87,6 +95,8 @@ describe('SlackHandler — follow-up queue host', () => {
   let abortSession: ReturnType<typeof vi.fn>;
   let lastTurnSucceeded: boolean;
   let emitFollowupQueue: ReturnType<typeof vi.spyOn>;
+  /** The ThreadPanel the handler built itself — kept for its production follow-up wiring. */
+  let realThreadPanel: any;
 
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -114,6 +124,7 @@ describe('SlackHandler — follow-up queue host', () => {
       saveSessions: vi.fn(),
       canInterrupt: vi.fn().mockReturnValue(true),
       setActivityStateByKey: vi.fn(),
+      broadcastSessionUpdate: vi.fn(),
     };
 
     const store = {
@@ -128,6 +139,7 @@ describe('SlackHandler — follow-up queue host', () => {
     const app = { client: {}, assistant: vi.fn() } as any;
     handler = new SlackHandler(app, claudeHandler as any, {} as any, { followupQueueStore: store });
     handlerAny = handler as any;
+    realThreadPanel = handlerAny.threadPanel;
 
     addReaction = vi.fn().mockResolvedValue(undefined);
     removeReaction = vi.fn().mockResolvedValue(undefined);
@@ -479,7 +491,11 @@ describe('SlackHandler — follow-up queue host', () => {
     registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
 
     const { settle } = await startBusyTurn();
-    await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
+    // Every goal command typed mid-turn runs at once since SSOT 2026-10-21 T1
+    // (see the describe below), so a goal command only reaches the queue as an
+    // item parked BEFORE that release and restored after a restart — the
+    // incident's own shape. Parked directly, as the restore would leave it.
+    await handlerAny.enqueueFollowup(SESSION_KEY, message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
     expect(items()[0].state).toBe('queued');
 
     // The drained `goal …` is routed to GoalHandler, which queues it behind the
@@ -568,7 +584,8 @@ describe('SlackHandler — follow-up queue host', () => {
     registrySession.goal = { goalId: 'g1', status: 'active', objective: '릴리즈', epoch: 0 };
 
     const { settle } = await startBusyTurn();
-    await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
+    // A goal command parked before SSOT 2026-10-21 T1 (restored after a restart).
+    await handlerAny.enqueueFollowup(SESSION_KEY, message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
     routeCommand.mockResolvedValueOnce({ handled: true, error: 'invalid_blocks' });
 
     handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['turn text']);
@@ -697,6 +714,437 @@ describe('SlackHandler — follow-up queue host', () => {
   });
 
   /**
+   * The turn generation of a migrated turn, as the thread surface sees it.
+   *
+   * The dispatch opens its generation under the SOURCE (slot) key
+   * (`runInitial` → `beginTurn(source)`), but every header write of the turn is
+   * addressed to the WORK key with that generation as `expectedTurnEpoch`, and
+   * the surface checks it against `getFollowupView(work).turnEpoch`. With
+   * nothing parked during the turn the work key had no queue session at all, so
+   * the surface read "unverifiable" and dropped the whole turn's header/task
+   * list (live 2026-10-19: 40 sessions, all `expected: 1`).
+   *
+   * One authoritative generation: while the pair is bound the work key READS
+   * the slot's live counter, and the release raises the work key's own counter
+   * to it — never a copy that could outlive a supersede of the slot.
+   */
+  /**
+   * dev fleet (2026-10-22): a turn hit a 429 and the handler armed a one-hour
+   * auto-retry, but the dashboard put the idle session in DONE and said
+   * nothing about the retry. Arming it must record when / which attempt / why
+   * on the session (what the card shows) and push the board.
+   */
+  describe('error auto-retry is visible on the dashboard', () => {
+    it('arming the retry records when, which attempt and the error, then pushes the board', async () => {
+      registrySession.errorRetryCount = 1;
+      registrySession.sessionId = 'sid-retry';
+      const reason =
+        'Claude pool rate-limited (surfaced as turn content): All 10 eligible accounts are rate-limited right now; retry in 6016s.';
+      startWithContinuation.mockRejectedValueOnce(new Error(`${reason}\nsecond line`));
+      createAgentSession.mockImplementationOnce(() => ({
+        startWithContinuation,
+        getLastTurnSucceeded: () => false,
+        getRetryAfterMs: () => 3_600_000,
+      }));
+
+      const before = Date.now();
+      await handler.handleMessage(message(), say());
+      try {
+        expect(registrySession.pendingRetryDetail).toEqual({ attempt: 1, maxAttempts: 3, reason });
+        expect(registrySession.pendingRetryAt).toBeGreaterThanOrEqual(before + 3_600_000);
+        expect(registrySession.pendingRetryTimer).toBeDefined();
+        expect(claudeHandler.broadcastSessionUpdate).toHaveBeenCalled();
+      } finally {
+        clearTimeout(registrySession.pendingRetryTimer);
+      }
+    });
+
+    it('the timer firing clears the record before it resumes the session', async () => {
+      registrySession.errorRetryCount = 1;
+      registrySession.sessionId = 'sid-retry';
+      startWithContinuation.mockRejectedValueOnce(new Error('429 rate-limited'));
+      createAgentSession.mockImplementationOnce(() => ({
+        startWithContinuation,
+        getLastTurnSucceeded: () => false,
+        getRetryAfterMs: () => 3_600_000,
+      }));
+      const resume = vi.fn().mockResolvedValue(undefined);
+      handlerAny.autoResumeSession = resume;
+      const realSetTimeout = globalThis.setTimeout;
+      let fire: (() => void) | undefined;
+      const spy = vi.spyOn(globalThis, 'setTimeout').mockImplementation(((fn: () => void, ms?: number) => {
+        if (ms === 3_600_000) {
+          fire = fn;
+          return realSetTimeout(() => undefined, 0);
+        }
+        return realSetTimeout(fn, ms);
+      }) as any);
+      try {
+        await handler.handleMessage(message(), say());
+      } finally {
+        spy.mockRestore();
+      }
+      expect(registrySession.pendingRetryDetail).toBeDefined();
+      expect(fire).toBeTypeOf('function');
+
+      fire!();
+      expect(registrySession.pendingRetryDetail).toBeUndefined();
+      expect(registrySession.pendingRetryAt).toBeUndefined();
+      expect(registrySession.pendingRetryTimer).toBeUndefined();
+      expect(resume).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  describe('bot-thread migration — the work-thread key reads the live slot generation', () => {
+    const WORK_KEY = 'C123:999.000';
+    let workSession: any;
+
+    const migratedResult = () => ({
+      session: workSession,
+      sessionKey: WORK_KEY,
+      isNewSession: true,
+      userName: 'Owner',
+      workingDirectory: '/tmp/work',
+      abortController: new AbortController(),
+      halted: false,
+    });
+    const queue = () => handlerAny.getFollowupQueue();
+
+    beforeEach(() => {
+      claudeHandler.getSessionKey.mockImplementation(
+        (channel: string, threadTs?: string) => `${channel}:${threadTs ?? ''}`,
+      );
+      workSession = { ...registrySession, threadTs: '999.000', threadRootTs: '999.000' };
+      claudeHandler.getSessionByKey.mockImplementation((key: string) =>
+        key === WORK_KEY ? workSession : registrySession,
+      );
+      initialize.mockImplementation(async () => migratedResult());
+    });
+
+    /** The view the SURFACE is wired with — the exact closure the handler gave its own ThreadPanel. */
+    const surfaceView = (key: string): FollowupQueueView | undefined => realThreadPanel.deps.getFollowupView(key);
+
+    /**
+     * The view the CONTROL side is wired with: the command router's `queue`
+     * handler, the one production caller of the item-message builder.
+     */
+    function controlView(key: string) {
+      const queueHandler = handlerAny.commandRouter.handlers.find((h: unknown) => h instanceof QueueHandler);
+      return queueHandler.deps.getFollowupView(key);
+    }
+
+    /**
+     * A REAL `ThreadSurface` reading the handler's queue view through the same
+     * two hooks the production panel is wired with — taken from the handler's
+     * own ThreadPanel. Acceptance is read off the session's `agentPhase`, which
+     * `setStatus` writes only after the epoch gate passed — independent of
+     * render debounce.
+     */
+    function workSurface() {
+      const surfaceSession: any = {
+        ...workSession,
+        actionPanel: { channelId: CHANNEL, messageTs: 'panel-ts', agentPhase: 'before' },
+      };
+      const surface = new ThreadSurface({
+        slackApi: {
+          getClient: vi.fn().mockReturnValue({}),
+          getPermalink: vi.fn().mockResolvedValue('https://slack.example/p'),
+          updateMessage: vi.fn().mockResolvedValue(undefined),
+          postMessage: vi.fn().mockResolvedValue({ ts: 'posted-ts' }),
+        },
+        claudeHandler: { getSessionByKey: vi.fn().mockReturnValue(surfaceSession) },
+        requestCoordinator: { isRequestActive: vi.fn().mockReturnValue(false) },
+        todoManager: { getTodos: vi.fn().mockReturnValue([]), getEffectiveStatus: vi.fn() },
+        getFollowupView: realThreadPanel.deps.getFollowupView,
+        getFollowupError: realThreadPanel.deps.getFollowupError,
+      } as any);
+      return { surface, surfaceSession };
+    }
+
+    /** One header write on the work key through a fresh real surface; `true` = the A28 gate let it land. */
+    async function lands(expectedTurnEpoch: number): Promise<boolean> {
+      const { surface, surfaceSession } = workSurface();
+      const phase = `write@${expectedTurnEpoch}`;
+      await surface.setStatus(surfaceSession, WORK_KEY, { agentPhase: phase }, { expectedTurnEpoch });
+      return surfaceSession.actionPanel.agentPhase === phase;
+    }
+
+    /** Start the migrating first mention and leave it running. */
+    async function startMigratedTurn() {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      // Ingress key = source thread `C123:111.222`; nothing is parked on the work key.
+      const first = handler.handleMessage(message({ ts: '222.333', text: '첫 지시' }), say());
+      await tick();
+      const turnEpoch = createAgentSession.mock.calls[0][2].turnEpoch as number;
+      return {
+        turnEpoch,
+        settle: async () => {
+          gate.resolve({ hasPendingChoice: false });
+          await first;
+        },
+      };
+    }
+
+    /** An ordinary dispatch on the WORK key — a reply in the work thread — left running. */
+    async function startWorkTurn(ts: string) {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const run = handler.handleMessage(message({ ts, thread_ts: '999.000', text: '다음 지시' }), say());
+      await tick();
+      const calls = createAgentSession.mock.calls;
+      return {
+        turnEpoch: calls[calls.length - 1][2].turnEpoch as number,
+        settle: async () => {
+          gate.resolve({ hasPendingChoice: false });
+          await run;
+        },
+      };
+    }
+
+    /** `!{prompt}` in the WORK thread: cuts the running turn through the slot key (`Send now`). */
+    function steerFromWorkThread() {
+      return handler.handleMessage(message({ ts: '333.444', thread_ts: '999.000', text: '!대신 이걸 해줘' }), say());
+    }
+
+    it('lets the migrated first turn write its own header on the work-thread key', async () => {
+      const turn = await startMigratedTurn();
+      try {
+        expect(turn.turnEpoch).toBe(1);
+        const { surface, surfaceSession } = workSurface();
+
+        await surface.setStatus(surfaceSession, WORK_KEY, { agentPhase: '작업 중' }, { expectedTurnEpoch: 1 });
+
+        expect(surfaceSession.actionPanel.agentPhase, 'the epoch-stamped write of turn 1 must land').toBe('작업 중');
+        expect(surfaceView(WORK_KEY)?.turnEpoch).toBe(1);
+      } finally {
+        await turn.settle();
+      }
+    });
+
+    it("overlays only the generation — the work thread shows its own parked items, never the slot's", async () => {
+      const turn = await startMigratedTurn();
+      try {
+        // One reply in each thread while the turn runs: the source-thread reply is
+        // parked under the slot key, the work-thread reply under the work key.
+        await handler.handleMessage(message({ ts: '333.444', text: '소스 스레드 후속' }), say());
+        await handler.handleMessage(message({ ts: '333.555', thread_ts: '999.000', text: '작업 스레드 후속' }), say());
+
+        const view = surfaceView(WORK_KEY);
+        expect(view?.turnEpoch).toBe(turn.turnEpoch);
+        expect(view?.items.map((item) => item.message.text)).toEqual(['작업 스레드 후속']);
+        // Read, not copied: the work key's own counter is untouched while bound.
+        expect(queue().getTurnEpoch(WORK_KEY)).toBe(0);
+      } finally {
+        await turn.settle();
+      }
+    });
+
+    it('fences turn 1 the moment Send now opens the next slot generation — before any rebind', async () => {
+      const gate1 = deferred<any>();
+      const gate2 = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate1.promise).mockImplementationOnce(() => gate2.promise);
+      const first = handler.handleMessage(message({ ts: '222.333', text: '첫 지시' }), say());
+      await tick();
+      expect(await lands(1)).toBe(true);
+
+      // The abort is delivered and `beginTurn(slot)` = 2 is committed; the
+      // dispatcher now waits for turn 1 to settle, so turn 2 has bound nothing.
+      const steering = steerFromWorkThread();
+      await tick();
+      expect(abortSession).toHaveBeenCalledWith(WORK_KEY, 'user-interrupted');
+      expect(queue().getTurnEpoch(SESSION_KEY)).toBe(2);
+      expect(createAgentSession).toHaveBeenCalledTimes(1);
+
+      expect(await lands(1), 'a superseded turn-1 write is fenced at once').toBe(false);
+      expect(await lands(2), 'the new generation is live on the work key before it rebinds').toBe(true);
+
+      gate1.resolve({ hasPendingChoice: false });
+      await first;
+      await vi.waitFor(() => expect(createAgentSession).toHaveBeenCalledTimes(2));
+      try {
+        expect(createAgentSession.mock.calls[1][2].turnEpoch).toBe(2);
+        expect(await lands(1)).toBe(false);
+        expect(await lands(2), 'turn 2 keeps writing once it has rebound').toBe(true);
+      } finally {
+        gate2.resolve({ hasPendingChoice: false });
+        await steering;
+      }
+    });
+
+    it('still fences a late turn-1 write once a later turn opens on the work-thread key', async () => {
+      const turn = await startMigratedTurn();
+      await turn.settle();
+
+      const next = await startWorkTurn('444.555');
+      try {
+        // A fresh generation — NOT a second "1" that a late turn-1 write would match.
+        expect(next.turnEpoch).toBe(turn.turnEpoch + 1);
+        expect(surfaceView(WORK_KEY)?.turnEpoch).toBe(turn.turnEpoch + 1);
+
+        expect(await lands(turn.turnEpoch), 'a superseded turn must not repaint the live turn').toBe(false);
+        // Positive control: the live turn's own generation still writes.
+        expect(await lands(next.turnEpoch)).toBe(true);
+      } finally {
+        await next.settle();
+      }
+    });
+
+    it('raises the work key past every slot generation on release, including one that never rebound', async () => {
+      // The `Send now` replacement dies before `initialize` returns, so it never
+      // rebinds: the slot reaches 2 while nothing ever stamped 2 on the work key.
+      initialize
+        .mockImplementationOnce(async () => migratedResult())
+        .mockImplementationOnce(async () => {
+          throw new Error('initialize failed');
+        });
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = handler.handleMessage(message({ ts: '222.333', text: '첫 지시' }), say());
+      await tick();
+      const steering = steerFromWorkThread();
+      await tick();
+      expect(queue().getTurnEpoch(SESSION_KEY)).toBe(2);
+
+      gate.resolve({ hasPendingChoice: false });
+      await first;
+      await steering;
+      expect(createAgentSession).toHaveBeenCalledTimes(1);
+
+      const next = await startWorkTurn('444.555');
+      try {
+        expect(next.turnEpoch, 'the next work-thread turn opens ABOVE every slot generation').toBe(3);
+        expect(await lands(1)).toBe(false);
+        expect(await lands(2), 'the never-rebound Send now generation is fenced too').toBe(false);
+        expect(await lands(3)).toBe(true);
+      } finally {
+        await next.settle();
+      }
+    });
+
+    it('rejects a stamped write while bound when the slot generation cannot be read', async () => {
+      const turn = await startMigratedTurn();
+      // A reply parked under the work key, so the work session itself exists and
+      // only the SLOT's counter is missing below.
+      await handler.handleMessage(message({ ts: '333.555', thread_ts: '999.000', text: '작업 스레드 후속' }), say());
+      const real = queue().snapshot.bind(queue());
+      const snapshot = vi.spyOn(queue(), 'snapshot');
+      try {
+        expect(await lands(1)).toBe(true);
+
+        snapshot.mockImplementation(() => {
+          const state = real();
+          state.sessions = state.sessions.filter((session: any) => session.sessionKey !== SESSION_KEY);
+          return state;
+        });
+        expect(surfaceView(WORK_KEY)?.turnEpoch).toBeUndefined();
+        expect(await lands(1), 'slot session missing = unverifiable, never "the work key\'s own 0"').toBe(false);
+
+        snapshot.mockImplementation(() => {
+          throw new Error('store unreadable');
+        });
+        expect(await lands(1), 'queue unreadable = unverifiable').toBe(false);
+      } finally {
+        snapshot.mockRestore();
+        await turn.settle();
+      }
+    });
+
+    /**
+     * The overlay is a SURFACE fact. A control payload is checked by the
+     * dispatcher against the queue's own counter for the key it is addressed
+     * to (`followup-dispatcher.ts` `staleTurn`, `FollowupQueue.reserve`), so it
+     * must be minted from that counter — on main the two were the same number.
+     */
+    it('gives control producers the counter the dispatcher checks (queue-command deps + item-message encoder), not the overlaid surface epoch', async () => {
+      const turn = await startMigratedTurn();
+      try {
+        await handler.handleMessage(message({ ts: '333.555', thread_ts: '999.000', text: '작업 스레드 후속' }), say());
+        expect(surfaceView(WORK_KEY)?.turnEpoch, 'the surface fence reads the slot').toBe(turn.turnEpoch);
+
+        const view = controlView(WORK_KEY);
+        const button = (view?.items ?? [])
+          .flatMap((entry: any) => buildFollowupItemMessage(entry, view?.turnEpoch ?? 0).blocks as any[])
+          .flatMap((block: any) => (block?.type === 'actions' ? block.elements : []))
+          .find((element: any) => element?.action_id === FOLLOWUP_SEND_NOW_ACTION_ID);
+        const value = parseFollowupItemActionValue(button?.value);
+        if (!value || value.turnEpoch === undefined) throw new Error('no Send now button was minted');
+        expect(value.sessionKey).toBe(WORK_KEY);
+        expect(value.turnEpoch).toBe(queue().getTurnEpoch(WORK_KEY));
+
+        const result = await handlerAny
+          .getFollowupDispatcher()
+          .sendNow(value.sessionKey, value.itemId, value.epoch, 'U_OWNER', value.turnEpoch);
+        expect(result.status === 'rejected' ? result.reason : result.status).not.toBe('stale-turn-epoch');
+        if (result.status === 'dispatched') await result.run.settled;
+      } finally {
+        await turn.settle();
+      }
+    });
+
+    it('mints a reaction Send now from the same counter while bound', async () => {
+      const turn = await startMigratedTurn();
+      try {
+        await handler.handleMessage(message({ ts: '333.555', thread_ts: '999.000', text: '작업 스레드 후속' }), say());
+        const checked = queue().getTurnEpoch(WORK_KEY);
+        const sendNow = vi.spyOn(handlerAny.getFollowupDispatcher(), 'sendNow');
+
+        await handlerAny.handleFollowupReactionControl({
+          channel: CHANNEL,
+          ts: '333.555',
+          reaction: 'ui_send_now',
+          user: 'U_OWNER',
+        });
+
+        expect(sendNow).toHaveBeenCalledTimes(1);
+        expect(sendNow.mock.calls[0][0]).toBe(WORK_KEY);
+        expect(sendNow.mock.calls[0][4]).toBe(checked);
+        const result: any = await sendNow.mock.results[0].value;
+        expect(result.status === 'rejected' ? result.reason : result.status).not.toBe('stale-turn-epoch');
+        if (result.status === 'dispatched') await result.run.settled;
+      } finally {
+        await turn.settle();
+      }
+    });
+
+    it('stays fail-closed when the release floor cannot be persisted', async () => {
+      const logError = vi.spyOn(handlerAny.logger, 'error');
+      const turn = await startMigratedTurn();
+      // The store refuses the release-time floor write — the only save between
+      // here and the end of the release.
+      saveError = new Error('disk full');
+      try {
+        await turn.settle();
+      } finally {
+        saveError = undefined;
+      }
+      expect(logError.mock.calls.some((call: any[]) => String(call[0]).includes('floor'))).toBe(true);
+      expect(await lands(1)).toBe(false);
+
+      // The store recovers. The next work-thread turn opens at the work key's
+      // own 1 (the floor never landed), which is turn 1's generation too — so it
+      // is fenced as a whole rather than letting turn 1 repaint it.
+      const second = await startWorkTurn('444.555');
+      try {
+        expect(second.turnEpoch).toBe(turn.turnEpoch);
+        expect(await lands(turn.turnEpoch)).toBe(false);
+      } finally {
+        await second.settle();
+      }
+
+      // The turn after that is strictly above every slot generation: it writes again.
+      const third = await startWorkTurn('555.666');
+      try {
+        expect(third.turnEpoch).toBe(turn.turnEpoch + 1);
+        expect(await lands(third.turnEpoch)).toBe(true);
+        expect(await lands(turn.turnEpoch)).toBe(false);
+      } finally {
+        await third.settle();
+      }
+    });
+  });
+
+  /**
    * An incident-owned thread is a bot-to-bot surface: an ordinary message in
    * it is dropped, never run. The package router drops mentions and plain
    * replies there, but a file upload into an existing session reaches this
@@ -802,6 +1250,31 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(steered.state).toBe('resolved');
       expect(abortSession).toHaveBeenCalledTimes(1);
       expect(processFiles.mock.calls[1][0].text).toBe('대신 이걸 해줘');
+    });
+
+    it('never steers or aborts with a `/z goal` objective that starts with `!` — it queues as a turn (review P1, PR #305)', async () => {
+      const { settle } = await startBusyTurn();
+
+      // The `/z` consumer marks a goal objective verbatim; its leading `!` is
+      // the user's words, not the steer marker.
+      await handler.handleMessage(
+        message({ ts: '333.555', text: '!important: ship it', routeContext: { verbatimPrompt: true } } as any),
+        say(),
+      );
+      await tick();
+
+      expect(abortSession).not.toHaveBeenCalled();
+      const queued = items().find((item: any) => item.message.text === '!important: ship it');
+      expect(queued, 'stored verbatim, `!` included').toBeDefined();
+      expect(queued.state).toBe('queued');
+      expect(queued.message.routeContext?.verbatimPrompt).toBe(true);
+
+      await settle();
+      await tick();
+      // Drained as an ordinary turn with its text intact; still no abort.
+      expect(abortSession).not.toHaveBeenCalled();
+      const lastCall = processFiles.mock.calls[processFiles.mock.calls.length - 1];
+      expect(lastCall?.[0].text).toBe('!important: ship it');
     });
 
     it('keeps an already-queued peer in FIFO and runs it after the steer', async () => {
@@ -2303,6 +2776,89 @@ describe('SlackHandler — follow-up queue host', () => {
       await settle();
     });
 
+    /**
+     * User media (SSOT 2026-10-25): a steered message never ran through the
+     * executor, so nothing recorded it — its text and its files were missing
+     * from the dashboard. Once the SDK confirms the model read it (`completed`,
+     * the only consumption receipt) the host records it as a user turn, files
+     * copied BEFORE the steer cleanup deletes them. A message returned to the
+     * queue is not recorded here: the drain runs it as an ordinary turn.
+     */
+    async function steerWithFile(text: string) {
+      const processed = [{ name: 'shot.png', path: '/tmp/slack-file-1-shot.png', isImage: true }];
+      processFiles.mockResolvedValue({ files: processed, shouldContinue: true });
+      const order: string[] = [];
+      const cleanupTempFiles = vi.fn(async () => {
+        order.push('cleanup');
+      });
+      handlerAny.fileHandler = { formatFilePrompt: vi.fn().mockResolvedValue('t'), cleanupTempFiles };
+      const attachments = [{ id: 'M1', name: 'shot.png', kind: 'image', mime: 'image/png', size: 3, stored: true }];
+      const capture = vi.fn(async () => {
+        order.push('capture');
+        return attachments;
+      });
+      const record = vi.fn(() => {
+        order.push('record');
+      });
+      handlerAny.userMediaRecorder = { capture, record };
+      registrySession.conversationId = 'conv_steer';
+      registrySession.ownerName = 'Owner';
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(
+        message({
+          ts: '1792900000.000100',
+          text,
+          files: [
+            {
+              id: 'F1',
+              name: 'shot.png',
+              mimetype: 'image/png',
+              filetype: 'png',
+              url_private: 'https://x/1',
+              url_private_download: 'https://x/1d',
+              size: 3,
+            },
+          ],
+        }),
+        say(),
+      );
+      return { uuid: steerTurn.mock.calls[0][1].uuid, settle, capture, record, order, processed, attachments };
+    }
+
+    it('records a consumed steered message — text and files — as a user turn, files copied before cleanup', async () => {
+      const { uuid, settle, capture, record, order, processed, attachments } = await steerWithFile('이것도 같이 봐줘');
+      expect(record).not.toHaveBeenCalled(); // not at steer time — the model has not read it yet
+
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'completed' });
+
+      expect(capture).toHaveBeenCalledWith('conv_steer', processed);
+      expect(record).toHaveBeenCalledWith(
+        'conv_steer',
+        '이것도 같이 봐줘',
+        expect.any(String),
+        'U_OWNER',
+        attachments,
+        {
+          timestamp: 1792900000000,
+          // A steered message is always a person's (dashboard SSOT 2026-10-27).
+          origin: { by: 'user' },
+        },
+      );
+      expect(order).toEqual(['capture', 'record', 'cleanup']);
+      await settle();
+    });
+
+    it('does not record a steered message the queue took back (discarded) — the drain will', async () => {
+      const { uuid, settle, record } = await steerWithFile('나중에 봐줘');
+
+      await lifecycle()({ sessionKey: SESSION_KEY, uuid, phase: 'discarded' });
+
+      expect(record).not.toHaveBeenCalled();
+      await settle();
+    });
+
     it('never fails the turn when the settlement itself cannot be recorded', async () => {
       const { settle } = await steerOne();
 
@@ -2708,6 +3264,79 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(outcome).toBe('already-delivered');
       // The model has it: the honest row is consumed history, not `cancelled`.
       expect(items()[0].state).toBe('resolved');
+      await settle();
+    });
+
+    /**
+     * User media (SSOT 2026-10-25, review gate P1): `already-dequeued` is a
+     * consumption receipt too — the model has the message — and the row is
+     * resolved, so no drain will ever run it. It must be recorded (text + files)
+     * here, before its files are deleted; a late `completed` frame must not
+     * record it a second time.
+     */
+    it('records an already-delivered message with its files before the cleanup, once', async () => {
+      const processed = [{ name: 'shot.png', path: '/tmp/slack-file-1-shot.png', isImage: true }];
+      processFiles.mockResolvedValue({ files: processed, shouldContinue: true });
+      const order: string[] = [];
+      handlerAny.fileHandler = {
+        formatFilePrompt: vi.fn().mockResolvedValue('t'),
+        cleanupTempFiles: vi.fn(async () => {
+          order.push('cleanup');
+        }),
+      };
+      const attachments = [{ id: 'M1', name: 'shot.png', kind: 'image', mime: 'image/png', size: 3, stored: true }];
+      const capture = vi.fn(async () => {
+        order.push('capture');
+        return attachments;
+      });
+      const record = vi.fn(() => {
+        order.push('record');
+      });
+      handlerAny.userMediaRecorder = { capture, record };
+      registrySession.conversationId = 'conv_cancel';
+      const steerTurn = vi.fn().mockReturnValue(true);
+      claudeHandler.steerTurn = steerTurn;
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(
+        message({
+          ts: '1792900000.000100',
+          text: '이것도 같이 봐줘',
+          files: [
+            {
+              id: 'F1',
+              name: 'shot.png',
+              mimetype: 'image/png',
+              filetype: 'png',
+              url_private: 'https://x/1',
+              url_private_download: 'https://x/1d',
+              size: 3,
+            },
+          ],
+        }),
+        say(),
+      );
+      const [item] = items();
+      const uuid = steerTurn.mock.calls[0][1].uuid;
+      claudeHandler.cancelSteeredMessage = vi.fn().mockResolvedValue('already-dequeued');
+
+      const outcome = await handlerAny.cancelSteeredFollowup(SESSION_KEY, item.id, item.epoch, uuid);
+
+      expect(outcome).toBe('already-delivered');
+      expect(record).toHaveBeenCalledWith(
+        'conv_cancel',
+        '이것도 같이 봐줘',
+        expect.any(String),
+        'U_OWNER',
+        attachments,
+        {
+          timestamp: 1792900000000,
+          // A steered message is always a person's (dashboard SSOT 2026-10-27).
+          origin: { by: 'user' },
+        },
+      );
+      expect(order).toEqual(['capture', 'record', 'cleanup']);
+      await handlerAny.streamExecutor.deps.onSteerLifecycle({ sessionKey: SESSION_KEY, uuid, phase: 'completed' });
+      expect(record).toHaveBeenCalledTimes(1);
       await settle();
     });
 
@@ -3238,6 +3867,67 @@ describe('SlackHandler — follow-up queue host', () => {
 
       gate.resolve({ hasPendingChoice: false });
       await first;
+    });
+
+    /**
+     * B3 — the background-task lifecycle tracker lives on the process-wide
+     * ToolEventProcessor and is documented as drained on session teardown.
+     * Nothing drained it since 59e5b457, so a deleted session left its live
+     * tasks and settled tombstones behind for the whole process lifetime, and a
+     * reused key inherited them (a tombstone silently refuses a fresh start).
+     */
+    it('drops the deleted session background-task tracking, live tasks and tombstones', async () => {
+      let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
+      claudeHandler.getSessionRegistry = () => ({
+        setBeforeSessionDelete: (cb: any) => {
+          beforeDelete = cb;
+        },
+      });
+      const { spawnedAny } = spawnHandler({ client: {}, assistant: vi.fn() } as any);
+      const tracker = spawnedAny.toolEventProcessor;
+      const lifecycle = (phase: 'started' | 'settled', taskId: string) =>
+        tracker.handleAgentTaskLifecycle({ type: 'agent_task_lifecycle', phase, taskId }, SESSION_KEY);
+      lifecycle('started', 'bg-live');
+      lifecycle('started', 'bg-done');
+      lifecycle('settled', 'bg-done');
+      expect(tracker.getLiveBackgroundWork(SESSION_KEY).count).toBe(1);
+
+      expect(beforeDelete, 'the registry seam was wired').toBeDefined();
+      beforeDelete?.(SESSION_KEY, registrySession, 'expired');
+
+      expect(tracker.getLiveBackgroundWork(SESSION_KEY).count, 'live tasks of a deleted session').toBe(0);
+      // Same key, next session: a task id the old session settled is a new task now.
+      lifecycle('started', 'bg-done');
+      expect(tracker.getLiveBackgroundWork(SESSION_KEY).count, 'a stale tombstone refused the start').toBe(1);
+    });
+
+    /**
+     * The drain must come LAST in the seam: if cancelling the session's
+     * follow-ups throws (e.g. the queue store cannot save), the registry refuses
+     * the deletion and keeps the session alive — so its live background tasks
+     * must still be tracked.
+     */
+    it('keeps background-task tracking when the follow-up cancel refuses the deletion', async () => {
+      let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
+      claudeHandler.getSessionRegistry = () => ({
+        setBeforeSessionDelete: (cb: any) => {
+          beforeDelete = cb;
+        },
+      });
+      const { spawnedAny } = spawnHandler({ client: {}, assistant: vi.fn() } as any);
+      const tracker = spawnedAny.toolEventProcessor;
+      tracker.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'started', taskId: 'bg-live' },
+        SESSION_KEY,
+      );
+      const queue = spawnedAny.getFollowupQueue();
+      vi.spyOn(queue, 'list').mockReturnValue([{ state: 'queued' }]);
+      vi.spyOn(queue, 'cancelSession').mockImplementation(() => {
+        throw new Error('disk full');
+      });
+
+      expect(() => beforeDelete?.(SESSION_KEY, registrySession, 'expired')).toThrow('disk full');
+      expect(tracker.getLiveBackgroundWork(SESSION_KEY).count, 'live tasks of a session that was NOT deleted').toBe(1);
     });
 
     /**
@@ -3877,6 +4567,1128 @@ describe('SlackHandler — follow-up queue host', () => {
 
       expect(ephemerals()).toEqual([]);
       expect(reactionsOn('333.444')).toEqual(DELIVERED_REACTIONS);
+    });
+  });
+  /**
+   * SSOT 2026-10-21 T1 — "채팅 스레드에서 goal을 추가로 입력한 내역이 goal로
+   * 추가되지 않고 채팅 스티어링 큐에 들어가서 처리됨".
+   *
+   * A goal command typed while the session's turn runs is run NOW by
+   * `GoalHandler` (the real one — only its Slack writes are observed): the
+   * goal state changes at once and never waits in the follow-up queue. When the
+   * command starts a goal (or `goal done` promotes the next one), its opening
+   * turn is admitted through the same fence in the same synchronous step — so
+   * it waits for the running turn instead of superseding it, and is never
+   * steered into it.
+   */
+  describe('goal commands typed during a running turn (SSOT T1)', () => {
+    let goalNotices: ReturnType<typeof vi.fn>;
+
+    beforeEach(() => {
+      // GoalHandler captured the handler's ORIGINAL api helper at construction;
+      // its writes are the ones a user sees for a goal command.
+      const goalApi = handlerAny.commandRouter.goalHandler.deps.slackApi;
+      goalNotices = vi.fn().mockResolvedValue({ ts: 'goal-notice' });
+      vi.spyOn(goalApi, 'postSystemMessage').mockImplementation(goalNotices as any);
+      registrySession.goalQueue = undefined;
+      registrySession.goalHistory = undefined;
+    });
+
+    const activeGoal = (overrides: Record<string, any> = {}) => ({
+      goalId: 'g1',
+      objective: '릴리즈',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: 'U_OWNER',
+      continuationCount: 0,
+      maxContinuations: 10,
+      epoch: 3,
+      ...overrides,
+    });
+
+    it('T1.1 adds `goal …` to the goal queue at once — nothing is parked, the running goal is untouched', async () => {
+      registrySession.goal = activeGoal();
+      const { settle } = await startBusyTurn();
+      // The running turn's own user message already moved the epoch; the goal
+      // command must not move it again.
+      const epochWhileRunning = registrySession.goal.epoch;
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
+
+      expect(items(), 'never parked in the follow-up (steering) queue').toHaveLength(0);
+      expect(registrySession.goalQueue).toHaveLength(1);
+      expect(registrySession.goalQueue[0]).toMatchObject({ objective: '두번째 목표', status: 'queued' });
+      // The in-flight eval of the running goal stays valid (M1): no epoch bump.
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', status: 'active', epoch: epochWhileRunning });
+      expect(goalNotices).toHaveBeenCalledWith(
+        CHANNEL,
+        expect.stringContaining('Goal queued at position 1'),
+        expect.anything(),
+      );
+      expect(abortSession).not.toHaveBeenCalled();
+
+      await settle();
+      expect(startWithContinuation, 'a queued goal starts no turn of its own').toHaveBeenCalledTimes(1);
+    });
+
+    it('T1.1 normalizes `/z goal …` the same way', async () => {
+      registrySession.goal = activeGoal();
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ ts: '333.444', text: '/z goal 세번째 목표' }), say());
+
+      expect(items()).toHaveLength(0);
+      expect(registrySession.goalQueue?.[0]).toMatchObject({ objective: '세번째 목표', status: 'queued' });
+      await settle();
+    });
+
+    it('T1.2 starts a goal at once when none is in flight; its opening turn waits for the slot and is never steered', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(true);
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+
+      expect(registrySession.goal).toMatchObject({ objective: '새 목표', status: 'active' });
+      const goalId = registrySession.goal.goalId;
+      const queued = items();
+      expect(queued).toHaveLength(1);
+      expect(queued[0].message.text, 'the opening turn is the objective, verbatim').toBe('새 목표');
+      expect(queued[0].message.routeContext).toMatchObject({ verbatimPrompt: true, goalOpeningId: goalId });
+      expect(queued[0].state).toBe('queued');
+      expect(claudeHandler.steerTurn, 'the opening turn is its own turn').not.toHaveBeenCalled();
+      expect(abortSession).not.toHaveBeenCalled();
+
+      await settle();
+      // Drained at the boundary as a real turn carrying the objective.
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+      expect(items()[0].state).toBe('resolved');
+    });
+
+    it('T1.2 admits the opening turn even when the Slack notice fails', async () => {
+      goalNotices.mockRejectedValue(new Error('slack down'));
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+
+      expect(registrySession.goal).toMatchObject({ objective: '새 목표', status: 'active' });
+      expect(items()).toHaveLength(1);
+      expect(items()[0].message.text).toBe('새 목표');
+      await settle();
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    });
+
+    it('T1.2 never credits the unrelated running turn as evidence for the goal that just started', async () => {
+      const goalDriver = vi.fn();
+      handler.setGoalTurnSettledHandler(goalDriver);
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      // The turn that was already running ends before the opening turn runs.
+      handlerAny.handleAssistantTurnCompleteForGoal(registrySession, SESSION_KEY, ['무관한 턴']);
+
+      expect(registrySession.goalLastTurnText).toBeUndefined();
+      expect(registrySession.goal.lastAssistantTurnSummary).toBeUndefined();
+      expect(goalDriver, 'the queued opening turn outranks the driver (§3.6)').not.toHaveBeenCalled();
+
+      await settle();
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+      expect(goalDriver).toHaveBeenCalledTimes(1);
+    });
+
+    it('T1.2 skips the opening turn when its goal is gone before the slot frees', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      expect(items()).toHaveLength(1);
+
+      // Deleted (dashboard / goal-list button) while the opening waits.
+      registrySession.goal = undefined;
+
+      await settle();
+      expect(startWithContinuation, 'a removed goal never runs').toHaveBeenCalledTimes(1);
+      expect(items()[0].state).toBe('resolved');
+      expect(postSystemMessage).toHaveBeenCalledWith(CHANNEL, expect.stringContaining('시작 전에'), expect.anything());
+    });
+
+    it('`goal done` with a queued next goal promotes it at once and queues its opening turn behind the running one', async () => {
+      registrySession.goal = activeGoal();
+      registrySession.goalQueue = [
+        { ...activeGoal({ goalId: 'g2', objective: '다음 목표', status: 'queued', epoch: 0 }) },
+      ];
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal done' }), say());
+
+      expect(registrySession.goal).toMatchObject({ goalId: 'g2', status: 'active' });
+      expect(startWithContinuation, 'nothing dispatched on top of the running turn').toHaveBeenCalledTimes(1);
+      expect(items()).toHaveLength(1);
+      expect(items()[0].message.text).toBe('다음 목표');
+      expect(items()[0].message.routeContext).toMatchObject({ goalOpeningId: 'g2' });
+
+      await settle();
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    });
+
+    it('T1.2 rolls the goal back when its opening turn cannot be stored — no active goal is left with nothing to start it', async () => {
+      const { settle } = await startBusyTurn();
+      saveError = new Error('disk full');
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+
+      expect(registrySession.goal, 'the activation is undone').toBeUndefined();
+      expect(items()).toHaveLength(0);
+      expect(goalNotices).toHaveBeenCalledWith(CHANNEL, expect.stringContaining('Goal was NOT set'), expect.anything());
+
+      saveError = undefined;
+      await settle();
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    });
+
+    it('T1.2 rolls the goal back when the queue is full', async () => {
+      const { settle } = await startBusyTurn();
+      vi.spyOn(handlerAny.followupQueue, 'enqueue').mockReturnValueOnce({
+        status: 'capacity',
+        pending: 100,
+        capacity: 100,
+      });
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+
+      expect(registrySession.goal).toBeUndefined();
+      expect(goalNotices).toHaveBeenCalledWith(CHANNEL, expect.stringContaining('Goal was NOT set'), expect.anything());
+      await settle();
+    });
+
+    it("`goal done` is undone when the next goal's opening turn cannot be stored", async () => {
+      const runningGoal = activeGoal();
+      registrySession.goal = runningGoal;
+      registrySession.goalQueue = [
+        { ...activeGoal({ goalId: 'g2', objective: '다음 목표', status: 'queued', epoch: 0 }) },
+      ];
+      const { settle } = await startBusyTurn();
+      saveError = new Error('disk full');
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal done' }), say());
+
+      expect(registrySession.goal, 'the same object an in-flight eval holds').toBe(runningGoal);
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', status: 'active' });
+      expect(registrySession.goalQueue.map((g: any) => g.goalId)).toEqual(['g2']);
+      expect(registrySession.goalHistory ?? []).toHaveLength(0);
+      expect(goalNotices).toHaveBeenCalledWith(
+        CHANNEL,
+        expect.stringContaining('Goal was NOT marked complete'),
+        expect.anything(),
+      );
+
+      saveError = undefined;
+      await settle();
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    });
+
+    it('runs a redelivered goal event once — the same goal is not appended twice', async () => {
+      registrySession.goal = activeGoal();
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
+
+      expect(registrySession.goalQueue).toHaveLength(1);
+      expect(items()).toHaveLength(0);
+      await settle();
+    });
+
+    it('ignores a redelivery of a goal event after the turn ended (busy first, idle second)', async () => {
+      registrySession.goal = activeGoal();
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
+      await settle();
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
+
+      expect(registrySession.goalQueue).toHaveLength(1);
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores a redelivery of an idle goal event while its opening turn runs (idle first, busy second)', async () => {
+      const gate = deferred<any>();
+      startWithContinuation.mockImplementationOnce(() => gate.promise);
+      const first = handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      await tick();
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+
+      expect(items(), 'the redelivery is not parked either').toHaveLength(0);
+      gate.resolve({ hasPendingChoice: false });
+      await first;
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    });
+
+    it('T1.3 runs a `goal … $skill` split at once: the goal starts now and the skill turn is its opening turn', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(true);
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표 $local:z' }), say());
+
+      expect(registrySession.goal, 'the goal is set now, not when the turn ends').toMatchObject({
+        objective: '새 목표',
+        status: 'active',
+      });
+      const goalId = registrySession.goal.goalId;
+      const queued = items();
+      expect(queued).toHaveLength(1);
+      expect(queued[0].message.text, 'the opening turn is the forced-skill turn').toBe('$local:z');
+      expect(queued[0].message.routeContext).toMatchObject({ goalOpeningId: goalId });
+      expect(
+        queued[0].message.routeContext?.verbatimPrompt,
+        'not verbatim: the `$skill` is resolved when the turn runs',
+      ).toBeUndefined();
+      expect(queued[0].state).toBe('queued');
+      expect(claudeHandler.steerTurn, 'the opening turn is its own turn').not.toHaveBeenCalled();
+      expect(abortSession).not.toHaveBeenCalled();
+
+      await settle();
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+      expect(
+        routeCommand,
+        'routed as a command when it runs, so SkillForceHandler fires the skill',
+      ).toHaveBeenLastCalledWith(expect.objectContaining({ text: '$local:z' }), expect.anything(), expect.anything());
+    });
+
+    it('T1.3 a split behind a goal in flight queues the goal at once — its skill part is dropped exactly as `route` drops it', async () => {
+      registrySession.goal = activeGoal();
+      const { settle } = await startBusyTurn();
+      const epochWhileRunning = registrySession.goal.epoch;
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표 $local:z' }), say());
+
+      expect(items(), 'never parked in the follow-up (steering) queue').toHaveLength(0);
+      expect(registrySession.goalQueue?.[0]).toMatchObject({ objective: '두번째 목표', status: 'queued' });
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', epoch: epochWhileRunning });
+      await settle();
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    });
+
+    const attachment = [
+      { id: 'F1', name: 'spec.md', mimetype: 'text/markdown', url_private_download: 'https://files.example/F1' },
+    ];
+
+    it('T1.4 runs `goal …` with an attachment at once — the files ride on the opening turn of the goal it set', async () => {
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표', files: attachment }), say());
+
+      expect(registrySession.goal).toMatchObject({ objective: '새 목표', status: 'active' });
+      expect(items()).toHaveLength(1);
+      expect(items()[0].message).toMatchObject({
+        text: '새 목표',
+        files: [expect.objectContaining({ id: 'F1' })],
+        routeContext: { verbatimPrompt: true, goalOpeningId: registrySession.goal.goalId },
+      });
+
+      await settle();
+      expect(processFiles).toHaveBeenLastCalledWith(
+        expect.objectContaining({ text: '새 목표', files: [expect.objectContaining({ id: 'F1' })] }),
+        expect.anything(),
+      );
+    });
+
+    it('T1.4 never hands a `goal done` attachment to the goal it promotes', async () => {
+      registrySession.goal = activeGoal();
+      registrySession.goalQueue = [
+        { ...activeGoal({ goalId: 'g2', objective: '다음 목표', status: 'queued', epoch: 0 }) },
+      ];
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal done', files: attachment }), say());
+
+      expect(registrySession.goal).toMatchObject({ goalId: 'g2', status: 'active' });
+      expect(items()).toHaveLength(1);
+      expect(items()[0].message.text).toBe('다음 목표');
+      expect(items()[0].message.files).toBeUndefined();
+      await settle();
+    });
+
+    it("T1.5 Cancel on a goal's queued opening turn deletes that goal — the next queued goal starts instead", async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      await handler.handleMessage(message({ ts: '444.555', text: 'goal 다음 목표' }), say());
+      await tick();
+      const cancelledGoalId = registrySession.goal.goalId;
+      expect(registrySession.goalQueue).toHaveLength(1);
+
+      // The opening item IS the user's `goal 새 목표` message: its Cancel control.
+      await handlerAny.handleFollowupReactionControl({
+        channel: CHANNEL,
+        ts: '333.444',
+        reaction: 'ui_cancel',
+        user: 'U_OWNER',
+      });
+
+      await vi.waitFor(() => expect(registrySession.goal?.objective).toBe('다음 목표'));
+      const opening = (id: string) => items().find((item: any) => item.message.routeContext?.goalOpeningId === id);
+      expect(opening(cancelledGoalId).state).toBe('cancelled');
+      expect(registrySession.goal.status).toBe('active');
+      expect(registrySession.goalQueue ?? []).toHaveLength(0);
+      expect(registrySession.goalHistory ?? [], 'deleted, not archived as done').toHaveLength(0);
+      expect(opening(registrySession.goal.goalId)?.state, 'the promoted goal gets its own opening').toBe('queued');
+
+      await settle();
+      expect(startWithContinuation, 'the promoted opening ran; the cancelled one did not').toHaveBeenCalledTimes(2);
+      expect(opening(registrySession.goal.goalId).message.text).toBe('다음 목표');
+    });
+
+    it('T1.5 the Cancel pauses the goal in the same step as the queue write — no eval or driver can act on it meanwhile', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      await tick();
+      const goal = registrySession.goal;
+      const epochBefore = goal.epoch ?? 0;
+      // Hold the delete at its anchor post: whatever is visible now is the fence.
+      const anchor = deferred<any>();
+      postSystemMessage.mockImplementationOnce(() => anchor.promise);
+
+      await handlerAny.handleFollowupReactionControl({
+        channel: CHANNEL,
+        ts: '333.444',
+        reaction: 'ui_cancel',
+        user: 'U_OWNER',
+      });
+      await vi.waitFor(() =>
+        expect(postSystemMessage).toHaveBeenCalledWith(
+          CHANNEL,
+          expect.stringContaining('Current goal deleted'),
+          expect.anything(),
+        ),
+      );
+
+      expect(registrySession.goal).toBe(goal);
+      expect(goal.status, 'paused before the delete awaits Slack').toBe('paused');
+      expect(goal.epoch, 'an in-flight eval of it is discarded (M1)').toBe(epochBefore + 1);
+
+      anchor.resolve({ ts: 'anchor' });
+      await vi.waitFor(() => expect(registrySession.goal).toBeUndefined());
+      await settle();
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    });
+
+    it('T1.5 leaves the goal paused — never active without a first turn — when it cannot be deleted', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      await tick();
+      postSystemMessage.mockRejectedValueOnce(new Error('slack down')); // the delete's anchor
+
+      await handlerAny.handleFollowupReactionControl({
+        channel: CHANNEL,
+        ts: '333.444',
+        reaction: 'ui_cancel',
+        user: 'U_OWNER',
+      });
+
+      await vi.waitFor(() =>
+        expect(postSystemMessage).toHaveBeenCalledWith(CHANNEL, expect.stringContaining('일시정지'), expect.anything()),
+      );
+      expect(registrySession.goal).toMatchObject({ objective: '새 목표', status: 'paused' });
+      await settle();
+      expect(startWithContinuation, 'the cancelled opening never ran').toHaveBeenCalledTimes(1);
+    });
+
+    it("T1.5 only the session owner or the goal's author may cancel its opening (cancelling deletes the goal)", async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      await tick();
+
+      await handlerAny.handleFollowupReactionControl({
+        channel: CHANNEL,
+        ts: '333.444',
+        reaction: 'ui_cancel',
+        user: 'U_INITIATOR',
+      });
+      await tick();
+      await tick();
+
+      expect(items()[0].state, 'the opening is not cancelled').toBe('queued');
+      expect(registrySession.goal).toMatchObject({ objective: '새 목표', status: 'active' });
+      expect(handlerAny.slackApi.postEphemeral.mock.calls.map((call: any[]) => String(call[2])).join('\n')).toContain(
+        'goal을 만든 사람만',
+      );
+      await settle();
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    });
+
+    it('T1.5 Cancel on an ordinary queued message leaves the goal alone', async () => {
+      registrySession.goal = activeGoal();
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: '이것도 같이 봐줘' }), say());
+      await tick();
+
+      await handlerAny.handleFollowupReactionControl({
+        channel: CHANNEL,
+        ts: '333.444',
+        reaction: 'ui_cancel',
+        user: 'U_OWNER',
+      });
+      await tick();
+      await tick();
+
+      expect(items()[0].state).toBe('cancelled');
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', status: 'active' });
+      await settle();
+    });
+
+    it('records on the goal that its opening has not reached the model — and clears it once it does', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      expect(registrySession.goal.openingPending).toBe(true);
+
+      await settle();
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+      expect(registrySession.goal.openingPending).toBeUndefined();
+    });
+
+    it('a Cancel on an opening row whose goal already had its first turn (a retried row) is an ordinary cancel', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      await tick();
+      // What the model boundary records once the opening ran (a run that later
+      // failed and was retried back into `queued` keeps it cleared).
+      registrySession.goal.openingPending = undefined;
+
+      await handlerAny.handleFollowupReactionControl({
+        channel: CHANNEL,
+        ts: '333.444',
+        reaction: 'ui_cancel',
+        user: 'U_OWNER',
+      });
+      await tick();
+      await tick();
+
+      expect(items()[0].state).toBe('cancelled');
+      expect(registrySession.goal).toMatchObject({ objective: '새 목표', status: 'active' });
+      await settle();
+    });
+
+    it('`goal resume` of a goal paused before its first turn re-admits that first turn (cancel whose delete failed)', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(false);
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      await tick();
+      postSystemMessage.mockRejectedValueOnce(new Error('slack down'));
+      await handlerAny.handleFollowupReactionControl({
+        channel: CHANNEL,
+        ts: '333.444',
+        reaction: 'ui_cancel',
+        user: 'U_OWNER',
+      });
+      await vi.waitFor(() => expect(registrySession.goal?.status).toBe('paused'));
+      expect(registrySession.goal.openingPending).toBe(true);
+
+      await handler.handleMessage(message({ ts: '555.666', text: 'goal resume' }), say());
+
+      expect(registrySession.goal).toMatchObject({ objective: '새 목표', status: 'active' });
+      const reopened = items().find(
+        (item: any) =>
+          item.message.ts === '555.666' && item.message.routeContext?.goalOpeningId === registrySession.goal.goalId,
+      );
+      expect(reopened?.state, 'a fresh first turn waits behind the running turn').toBe('queued');
+      expect(reopened.message.text).toBe('새 목표');
+
+      await settle();
+      expect(startWithContinuation, 'the resumed goal got its first turn').toHaveBeenCalledTimes(2);
+      expect(registrySession.goal.openingPending).toBeUndefined();
+    });
+
+    it('`goal resume` after the first turn was skipped because the goal was paused starts it from its first turn', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      await handler.handleMessage(message({ ts: '333.555', text: 'goal pause' }), say());
+      await settle();
+      expect(startWithContinuation, 'the opening was skipped (paused)').toHaveBeenCalledTimes(1);
+      expect(registrySession.goal).toMatchObject({ status: 'paused', openingPending: true });
+
+      await handler.handleMessage(message({ ts: '555.666', text: 'goal resume' }), say());
+      await vi.waitFor(() => expect(startWithContinuation).toHaveBeenCalledTimes(2));
+
+      expect(registrySession.goal).toMatchObject({ status: 'active' });
+      expect(registrySession.goal.openingPending).toBeUndefined();
+    });
+
+    it('`goal pause` + `goal resume` while the first turn still waits never admits a second first turn', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      await handler.handleMessage(message({ ts: '333.555', text: 'goal pause' }), say());
+      await handler.handleMessage(message({ ts: '333.666', text: 'goal resume' }), say());
+
+      const goalId = registrySession.goal.goalId;
+      const openings = items().filter((item: any) => item.message.routeContext?.goalOpeningId === goalId);
+      expect(openings, 'the waiting opening is reused').toHaveLength(1);
+      expect(registrySession.goal.status).toBe('active');
+
+      await settle();
+      expect(startWithContinuation, 'the first turn ran once').toHaveBeenCalledTimes(2);
+    });
+
+    it("`goal resume` while a paused goal's opening is being skipped admits a fresh first turn — it never reuses the skipping one", async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      await handler.handleMessage(message({ ts: '333.555', text: 'goal pause' }), say());
+      // Hold the skip at its notice: the opening is dispatched and committed to skipping.
+      const skipNotice = deferred<any>();
+      postSystemMessage.mockImplementation((_c: string, text: string) =>
+        String(text).includes('시작 전에') ? skipNotice.promise : Promise.resolve({ ts: 'm' }),
+      );
+      const settled = settle();
+      await vi.waitFor(() =>
+        expect(postSystemMessage).toHaveBeenCalledWith(
+          CHANNEL,
+          expect.stringContaining('시작 전에'),
+          expect.anything(),
+        ),
+      );
+
+      await handler.handleMessage(message({ ts: '333.666', text: 'goal resume' }), say());
+
+      const goalId = registrySession.goal.goalId;
+      const fresh = items().find(
+        (item: any) => item.message.ts === '333.666' && item.message.routeContext?.goalOpeningId === goalId,
+      );
+      expect(fresh?.state, 'a fresh opening waits behind the skipping one').toBe('queued');
+
+      skipNotice.resolve({ ts: 'm' });
+      await settled;
+      await vi.waitFor(() => expect(startWithContinuation).toHaveBeenCalledTimes(2));
+      expect(registrySession.goal).toMatchObject({ status: 'active' });
+      expect(registrySession.goal.openingPending).toBeUndefined();
+    });
+
+    it('an opening `$skill` that no handler claims any more still runs the objective (handled:false)', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표 $local:z' }), say());
+      routeCommand.mockResolvedValueOnce({ handled: false });
+
+      await settle();
+
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+      expect(postSystemMessage).toHaveBeenCalledWith(CHANNEL, expect.stringContaining('스킬 없이'), expect.anything());
+    });
+
+    it('a goal command whose attachments arrive in a second envelope gets them on its queued first turn', async () => {
+      const { settle } = await startBusyTurn();
+      // `app_mention` without files, then `file_share` with them — same message.
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표', files: attachment }), say());
+
+      expect(items()).toHaveLength(1);
+      expect(items()[0].message.files).toEqual([expect.objectContaining({ id: 'F1' })]);
+      expect(registrySession.goalQueue ?? [], 'the goal is not added twice').toHaveLength(0);
+      await settle();
+      expect(processFiles).toHaveBeenLastCalledWith(
+        expect.objectContaining({ files: [expect.objectContaining({ id: 'F1' })] }),
+        expect.anything(),
+      );
+    });
+
+    it('says so when late attachments can no longer ride along (the goal queued behind the one in flight)', async () => {
+      registrySession.goal = activeGoal();
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표', files: attachment }), say());
+
+      expect(registrySession.goalQueue).toHaveLength(1);
+      expect(postSystemMessage).toHaveBeenCalledWith(CHANNEL, expect.stringContaining('늦게 도착'), expect.anything());
+      await settle();
+    });
+
+    it('rolls the goal back when admitting its first turn throws', async () => {
+      const { settle } = await startBusyTurn();
+      vi.spyOn(handlerAny.followupQueue, 'list').mockImplementationOnce(() => {
+        throw new Error('queue read failed');
+      });
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+
+      expect(registrySession.goal, 'no active goal without its first turn').toBeUndefined();
+      expect(goalNotices).toHaveBeenCalledWith(CHANNEL, expect.stringContaining('Goal was NOT set'), expect.anything());
+      await settle();
+    });
+
+    it('T1.6 an edit of the goal message never rewrites its queued opening turn', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표' }), say());
+      expect(items()).toHaveLength(1);
+
+      await handlerAny.handleQueuedMessageEdit({
+        channel: CHANNEL,
+        ts: '333.444',
+        threadTs: THREAD_TS,
+        user: 'U_OWNER',
+        text: 'goal 바뀐 목표',
+      });
+
+      expect(items()[0].message.text, 'the opening stays the objective that was set').toBe('새 목표');
+      expect(registrySession.goal.objective).toBe('새 목표');
+      expect(postSystemMessage).toHaveBeenCalledWith(
+        CHANNEL,
+        expect.stringContaining('반영되지 않았습니다'),
+        expect.anything(),
+      );
+      await settle();
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    });
+
+    it('T1.7 a goal command that crashes is consumed visibly — its redelivery stays ignored, a resend runs', async () => {
+      const goalHandler = handlerAny.commandRouter.goalHandler;
+      const crash = vi.spyOn(goalHandler, 'execute').mockRejectedValueOnce(new Error('boom'));
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표 $local:z' }), say());
+
+      expect(crash).toHaveBeenCalledTimes(1);
+      expect(registrySession.goal).toBeUndefined();
+      expect(items(), 'a crash never parks the command').toHaveLength(0);
+      expect(addReaction).toHaveBeenCalledWith(CHANNEL, '333.444', 'warning');
+      crash.mockRestore();
+
+      // A Slack redelivery of the SAME event is still the same message.
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표 $local:z' }), say());
+      expect(registrySession.goal).toBeUndefined();
+
+      // The user's resend is a new message (new ts) and runs.
+      await handler.handleMessage(message({ ts: '333.555', text: 'goal 새 목표 $local:z' }), say());
+      expect(registrySession.goal).toMatchObject({ objective: '새 목표', status: 'active' });
+      await settle();
+    });
+
+    it('T1.3 an opening skill that no longer resolves still runs the objective — the goal never sits without a first turn', async () => {
+      const { settle } = await startBusyTurn();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 새 목표 $local:z' }), say());
+      expect(items()[0].message.text).toBe('$local:z');
+      // By the time the opening runs, the skill is gone (consumed, no prompt).
+      routeCommand.mockResolvedValueOnce({ handled: true });
+
+      await settle();
+
+      expect(startWithContinuation, 'the opening turn ran on the objective instead').toHaveBeenCalledTimes(2);
+      expect(items()[0].state).toBe('resolved');
+      expect(postSystemMessage).toHaveBeenCalledWith(CHANNEL, expect.stringContaining('새 목표'), expect.anything());
+    });
+
+    it('T1.3 says so when a split is queued behind the goal in flight and its skill part cannot ride along', async () => {
+      registrySession.goal = activeGoal();
+      const { settle } = await startBusyTurn();
+
+      const commandSay = say();
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표 $local:z' }), commandSay);
+
+      expect(registrySession.goalQueue?.[0]).toMatchObject({ objective: '두번째 목표' });
+      expect(commandSay, 'the dropped skill part is announced, never silent').toHaveBeenCalledWith(
+        expect.objectContaining({ text: expect.stringContaining('$local:z') }),
+      );
+      await settle();
+    });
+
+    /**
+     * #314 claimed a typed `goal …` that QUEUES behind the active goal bumps
+     * the active goal's epoch when it reaches `processMessage` (idle, or a
+     * restored parked item) — discarding its in-flight eval. It does not:
+     * `processMessage` routes commands and returns for a consumed one before
+     * the real-user-message reset. Pinned on both paths with the real router.
+     */
+    const realRoute = () =>
+      routeCommand.mockImplementationOnce(async (event: any, wrappedSay: any) =>
+        handlerAny.commandRouter.route({
+          user: event.user,
+          channel: event.channel,
+          threadTs: event.thread_ts || event.ts,
+          text: event.text,
+          say: wrappedSay,
+        }),
+      );
+
+    it('an idle `goal …` behind the active goal leaves it untouched — no epoch bump, no counter reset', async () => {
+      registrySession.goal = activeGoal({ continuationCount: 4 });
+      realRoute();
+
+      await handler.handleMessage(message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
+
+      expect(registrySession.goalQueue?.[0]).toMatchObject({ objective: '두번째 목표', status: 'queued' });
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', epoch: 3, continuationCount: 4 });
+      expect(startWithContinuation).not.toHaveBeenCalled();
+    });
+
+    it('a restored parked `goal …` drained behind the active goal leaves it untouched too', async () => {
+      registrySession.goal = activeGoal();
+      const { settle } = await startBusyTurn();
+      registrySession.goal.continuationCount = 4;
+      const epochWhileRunning = registrySession.goal.epoch;
+      await handlerAny.enqueueFollowup(SESSION_KEY, message({ ts: '333.444', text: 'goal 두번째 목표' }), say());
+      realRoute();
+
+      await settle();
+
+      expect(items()[0].state).toBe('resolved');
+      expect(registrySession.goalQueue?.[0]).toMatchObject({ objective: '두번째 목표', status: 'queued' });
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', epoch: epochWhileRunning, continuationCount: 4 });
+    });
+
+    it('falls back to the queue for an author the drain would refuse — no goal is changed', async () => {
+      vi.spyOn(userSettingsStore, 'isUserAccepted').mockImplementation((user: string) => user !== 'U_STRANGER');
+      registrySession.goal = activeGoal();
+      const { settle } = await startBusyTurn();
+
+      await handler.handleMessage(message({ user: 'U_STRANGER', ts: '333.444', text: 'goal 몰래' }), say());
+
+      expect(registrySession.goalQueue).toBeUndefined();
+      expect(items()).toHaveLength(1);
+      await settle();
+    });
+  });
+  /**
+   * SSOT 2026-10-21 T3 — goal-list changes from the dashboard work item (and
+   * the Slack goal-list Delete button, which shares this path). Driven through
+   * the real queue + dispatcher: a goal that STARTS gets its opening turn
+   * admitted through the fence in the same step as the change, an anchor notice
+   * that cannot be posted changes nothing, and a refused admission is undone.
+   */
+  describe('host goal actions — dashboard / goal-list Delete (SSOT T3)', () => {
+    let HostGoalActionError: any;
+
+    beforeEach(async () => {
+      HostGoalActionError = (await import('../slack/goal-host-actions')).HostGoalActionError;
+      registrySession.goal = undefined;
+      registrySession.goalQueue = undefined;
+      registrySession.goalHistory = undefined;
+      registrySession.terminated = undefined;
+    });
+
+    const goalOf = (overrides: Record<string, any> = {}) => ({
+      goalId: 'g1',
+      objective: '릴리즈',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: 'U_OWNER',
+      continuationCount: 0,
+      maxContinuations: 10,
+      epoch: 7,
+      ...overrides,
+    });
+
+    it('add behind a goal in flight: queued at once, no opening turn, the running goal untouched', async () => {
+      registrySession.goal = goalOf();
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: ' 다음 목표 ' });
+
+      expect(result).toMatchObject({ outcome: 'queued', position: 1 });
+      expect(registrySession.goalQueue[0]).toMatchObject({
+        objective: '다음 목표',
+        status: 'queued',
+        createdBy: 'U_OWNER',
+      });
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', epoch: 7 });
+      expect(items()).toHaveLength(0);
+      expect(postSystemMessage).toHaveBeenCalledWith(
+        CHANNEL,
+        expect.stringContaining('Goal added via dashboard'),
+        expect.anything(),
+      );
+      expect(postSystemMessage).toHaveBeenLastCalledWith(
+        CHANNEL,
+        expect.stringContaining('position 1'),
+        expect.anything(),
+      );
+    });
+
+    it('add with no goal while idle: the goal starts and its opening turn takes the slot', async () => {
+      const result = await handler.handleHostGoalAction(
+        SESSION_KEY,
+        { action: 'add', objective: '새 목표' },
+        'U_ADMIN',
+      );
+      await tick();
+
+      expect(result).toMatchObject({ outcome: 'started', opening: 'started' });
+      expect(registrySession.goal).toMatchObject({ objective: '새 목표', status: 'active', createdBy: 'U_ADMIN' });
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+      expect(items()).toHaveLength(0);
+    });
+
+    it('add with no goal while a turn runs: the opening turn waits in the queue, never steered', async () => {
+      claudeHandler.steerTurn = vi.fn().mockReturnValue(true);
+      const { settle } = await startBusyTurn();
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '새 목표' });
+
+      expect(result).toMatchObject({ outcome: 'started', opening: 'queued' });
+      expect(items()).toHaveLength(1);
+      expect(items()[0].message).toMatchObject({
+        text: '새 목표',
+        ts: 'm', // the anchor notice
+        routeContext: { verbatimPrompt: true, goalOpeningId: registrySession.goal.goalId },
+      });
+      await tick();
+      expect(claudeHandler.steerTurn).not.toHaveBeenCalled();
+
+      await settle();
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    });
+
+    it('changes nothing when the anchor notice cannot be posted (502)', async () => {
+      postSystemMessage.mockRejectedValueOnce(new Error('slack down'));
+
+      await expect(
+        handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '새 목표' }),
+      ).rejects.toMatchObject({
+        statusCode: 502,
+      });
+      expect(registrySession.goal).toBeUndefined();
+      expect(startWithContinuation).not.toHaveBeenCalled();
+    });
+
+    it('add whose goal in flight finished during the anchor await starts the goal — the anchor never promised "queued"', async () => {
+      registrySession.goal = goalOf();
+      postSystemMessage.mockImplementationOnce(async (_channel: string, text: string) => {
+        expect(text, 'the anchor is neutral about queued vs started').not.toMatch(/queued|starts now/i);
+        registrySession.goalHistory = [{ ...registrySession.goal, status: 'complete' }];
+        registrySession.goal = undefined;
+        return { ts: 'anchor' };
+      });
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '다음 목표' });
+
+      expect(result).toMatchObject({ outcome: 'started' });
+      expect(registrySession.goal).toMatchObject({ objective: '다음 목표', status: 'active' });
+      await tick();
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    });
+
+    it('add that would have started but finds a goal in flight after the anchor is queued — and says so', async () => {
+      postSystemMessage.mockImplementationOnce(async () => {
+        registrySession.goal = goalOf({ goalId: 'g9', objective: '방금 시작된 goal' });
+        return { ts: 'anchor' };
+      });
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '다음 목표' });
+
+      expect(result).toMatchObject({ outcome: 'queued', position: 1 });
+      expect(registrySession.goal).toMatchObject({ goalId: 'g9' });
+      expect(registrySession.goalQueue?.[0]).toMatchObject({ objective: '다음 목표', status: 'queued' });
+      expect(items()).toHaveLength(0);
+      expect(postSystemMessage).toHaveBeenLastCalledWith(
+        CHANNEL,
+        expect.stringContaining('position 1'),
+        expect.anything(),
+      );
+    });
+
+    it('says the author lost the right — not that the session changed — when the re-check after the anchor refuses', async () => {
+      const accepted = vi.spyOn(userSettingsStore, 'isUserAccepted').mockReturnValue(true);
+      postSystemMessage.mockImplementationOnce(async () => {
+        accepted.mockReturnValue(false);
+        return { ts: 'anchor' };
+      });
+
+      await expect(
+        handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '다음 목표' }),
+      ).rejects.toMatchObject({ statusCode: 403 });
+
+      expect(registrySession.goal).toBeUndefined();
+      expect(postSystemMessage).toHaveBeenLastCalledWith(CHANNEL, expect.stringContaining('권한'), expect.anything());
+    });
+
+    it('checks the author before posting anything, even when the add would only queue', async () => {
+      vi.spyOn(userSettingsStore, 'isUserAccepted').mockImplementation((user: string) => user !== 'U_STRANGER');
+      registrySession.goal = goalOf();
+
+      await expect(
+        handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '다음 목표' }, 'U_STRANGER'),
+      ).rejects.toMatchObject({ statusCode: 403 });
+
+      expect(postSystemMessage).not.toHaveBeenCalled();
+      expect(registrySession.goalQueue ?? []).toHaveLength(0);
+    });
+
+    it('refuses an invalid objective (400) and a missing / closed session (404 / 409)', async () => {
+      await expect(
+        handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: 'x'.repeat(4001) }),
+      ).rejects.toMatchObject({ statusCode: 400 });
+
+      claudeHandler.getSessionByKey.mockReturnValueOnce(undefined);
+      await expect(handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: 'x' })).rejects.toMatchObject({
+        statusCode: 404,
+      });
+
+      registrySession.terminated = true;
+      await expect(handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: 'x' })).rejects.toBeInstanceOf(
+        HostGoalActionError,
+      );
+    });
+
+    it('delete current: the next queued goal starts with its opening turn; the deleted goal is not archived as done', async () => {
+      registrySession.goal = goalOf();
+      registrySession.goalQueue = [
+        goalOf({ goalId: 'g2', objective: '다음 목표', status: 'queued', createdBy: 'U_OTHER' }),
+      ];
+      const { settle } = await startBusyTurn();
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, {
+        action: 'delete',
+        goalId: 'g1',
+        expect: 'current',
+      });
+
+      expect(result).toMatchObject({ outcome: 'deleted', goalId: 'g1', promoted: { goalId: 'g2' } });
+      expect(registrySession.goal).toMatchObject({ goalId: 'g2', status: 'active' });
+      expect(registrySession.goalHistory ?? []).toHaveLength(0);
+      expect(items()).toHaveLength(1);
+      expect(items()[0].message).toMatchObject({
+        text: '다음 목표',
+        user: 'U_OTHER',
+        routeContext: { goalOpeningId: 'g2' },
+      });
+      expect(abortSession, 'the running turn is not cut').not.toHaveBeenCalled();
+
+      await settle();
+      expect(startWithContinuation).toHaveBeenCalledTimes(2);
+    });
+
+    it('delete current with nothing queued leaves no goal and starts nothing', async () => {
+      registrySession.goal = goalOf();
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, {
+        action: 'delete',
+        goalId: 'g1',
+        expect: 'current',
+      });
+
+      expect(result).toEqual({ outcome: 'deleted', goalId: 'g1' });
+      expect(registrySession.goal).toBeUndefined();
+      await tick();
+      expect(startWithContinuation).not.toHaveBeenCalled();
+    });
+
+    it('undoes the delete when the promoted goal cannot be admitted (503) — current goal and queue restored', async () => {
+      registrySession.goal = goalOf();
+      registrySession.goalQueue = [goalOf({ goalId: 'g2', objective: '다음 목표', status: 'queued' })];
+      const { settle } = await startBusyTurn();
+      saveError = new Error('disk full');
+
+      await expect(
+        handler.handleHostGoalAction(SESSION_KEY, { action: 'delete', goalId: 'g1', expect: 'current' }),
+      ).rejects.toMatchObject({ statusCode: 503 });
+
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', status: 'active', epoch: registrySession.goal.epoch });
+      expect(registrySession.goalQueue.map((g: any) => g.goalId)).toEqual(['g2']);
+      saveError = undefined;
+      await settle();
+    });
+
+    it('refuses a stale delete (409): a queued goal that was promoted, a current goal that changed', async () => {
+      registrySession.goal = goalOf({ goalId: 'g2' });
+
+      await expect(
+        handler.handleHostGoalAction(SESSION_KEY, { action: 'delete', goalId: 'g2', expect: 'queued' }),
+      ).rejects.toMatchObject({ statusCode: 409 });
+      await expect(
+        handler.handleHostGoalAction(SESSION_KEY, { action: 'delete', goalId: 'g1', expect: 'current' }),
+      ).rejects.toMatchObject({ statusCode: 409 });
+      expect(registrySession.goal).toMatchObject({ goalId: 'g2', status: 'active' });
+    });
+
+    it('refuses (403) to start a goal whose opening turn the drain would refuse — nothing posted, nothing changed', async () => {
+      vi.spyOn(userSettingsStore, 'isUserAccepted').mockImplementation((user: string) => user !== 'U_PENDING');
+
+      await expect(
+        handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '새 목표' }, 'U_PENDING'),
+      ).rejects.toMatchObject({ statusCode: 403 });
+
+      registrySession.goal = goalOf();
+      registrySession.goalQueue = [
+        goalOf({ goalId: 'g2', objective: '다음', status: 'queued', createdBy: 'U_PENDING' }),
+      ];
+      await expect(
+        handler.handleHostGoalAction(SESSION_KEY, { action: 'delete', goalId: 'g1', expect: 'current' }),
+      ).rejects.toMatchObject({ statusCode: 403 });
+
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1' });
+      expect(postSystemMessage).not.toHaveBeenCalled();
+    });
+
+    it('does not run an opening turn whose goal is deleted during the awaits before the model call', async () => {
+      // The goal disappears while the opening turn is being acknowledged.
+      addReaction.mockImplementation(async (_c: string, _t: string, name: string) => {
+        if (name === 'eyes') registrySession.goal = undefined;
+      });
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '곧 지워질 목표' });
+      await tick();
+      await tick();
+
+      expect(result).toMatchObject({ outcome: 'started', opening: 'started' });
+      expect(startWithContinuation, 'the model never sees the deleted goal').not.toHaveBeenCalled();
+      expect(postSystemMessage).toHaveBeenCalledWith(CHANNEL, expect.stringContaining('시작 전에'), expect.anything());
+      expect(handlerAny.followupDispatcher.isBusy(SESSION_KEY)).toBe(false);
+    });
+
+    it('delete current removes a COMPLETED current goal (it is also in the history under the same id)', async () => {
+      const done = goalOf({ status: 'complete' });
+      registrySession.goal = done;
+      registrySession.goalHistory = [done];
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, {
+        action: 'delete',
+        goalId: 'g1',
+        expect: 'current',
+      });
+
+      expect(result).toEqual({ outcome: 'deleted', goalId: 'g1' });
+      expect(registrySession.goal).toBeUndefined();
+    });
+
+    it('re-checks the author of the goal that is ACTUALLY promoted after the anchor await', async () => {
+      vi.spyOn(userSettingsStore, 'isUserAccepted').mockImplementation((user: string) => user !== 'U_PENDING');
+      registrySession.goal = goalOf();
+      registrySession.goalQueue = [
+        goalOf({ goalId: 'g2', objective: '둘', status: 'queued', createdBy: 'U_OWNER' }),
+        goalOf({ goalId: 'g3', objective: '셋', status: 'queued', createdBy: 'U_PENDING' }),
+      ];
+      // While the anchor is being posted, g2 is removed from the queue.
+      postSystemMessage.mockImplementationOnce(async () => {
+        registrySession.goalQueue = registrySession.goalQueue.filter((g: any) => g.goalId !== 'g2');
+        return { ts: 'anchor' };
+      });
+
+      await expect(
+        handler.handleHostGoalAction(SESSION_KEY, { action: 'delete', goalId: 'g1', expect: 'current' }),
+      ).rejects.toMatchObject({ statusCode: 403 });
+
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', status: 'active' });
+      expect(registrySession.goalQueue.map((g: any) => g.goalId)).toEqual(['g3']);
+      expect(items()).toHaveLength(0);
+    });
+
+    it('delete queued removes only that goal', async () => {
+      registrySession.goal = goalOf();
+      registrySession.goalQueue = [
+        goalOf({ goalId: 'g2', objective: '둘', status: 'queued' }),
+        goalOf({ goalId: 'g3', objective: '셋', status: 'queued' }),
+      ];
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, {
+        action: 'delete',
+        goalId: 'g2',
+        expect: 'queued',
+      });
+
+      expect(result).toEqual({ outcome: 'deleted', goalId: 'g2' });
+      expect(registrySession.goalQueue.map((g: any) => g.goalId)).toEqual(['g3']);
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', epoch: 7 });
     });
   });
 });
