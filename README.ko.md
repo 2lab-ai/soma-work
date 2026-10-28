@@ -41,6 +41,13 @@ Bot:   [업로드된 코드 분석, 병목 지점 식별, 최적화된 버전 �
 - AI agent 친화적인 프로젝트 문서 정리 리서치는 [docs/research](./docs/misc/research/2026-05-18-ai-agent-docs-organization.md)에 있습니다.
 - Slack Block Kit/API 제약은 [docs/misc/reference/slack-block-kit.md](./docs/misc/reference/slack-block-kit.md)에 유지합니다.
 
+## zworkflow 플러그인
+
+soma-work가 기본으로 싣는 Claude Code 플러그인 `zworkflow`는 [`src/local/`](./src/local/)에 있습니다.
+내 Claude Code에서는 `/plugin marketplace add 2lab-ai/soma-work`와 `/plugin install zworkflow@soma-work`로
+설치합니다. 설치·업데이트·훅, 그리고 플러그인 없이 `using-intentfirst`·`using-ssot` 스킬만 복사하는 경로는
+[zworkflow 플러그인 README](./src/local/README.ko.md)에 있습니다.
+
 ---
 
 ## ✨ 주요 기능
@@ -93,6 +100,18 @@ Slack 네이티브 버튼/폼 UX로 권한 승인, 선택지, 세션 관리를 �
 
 대시보드의 **New task** 버튼(PC는 상단 바·`N` 단축키, 휴대폰은 플로팅 버튼)으로 작성 창을 엽니다. 모델(공유 풀 잔여량 배터리 표시), effort, Slack 채널, 작업 단위 `autogoal`·`autoz` 토글, 지시문, 첨부(파일·붙여넣은 스크린샷·휴대폰 카메라·음성 녹음)를 정하면, 고른 채널의 새 스레드에 내 메시지로 작업이 시작되어 진행이 Slack에 그대로 보입니다. 채널 목록은 내가 속한 repo 매핑 채널이고, 기본값은 마지막으로 명령을 내린 채널입니다. `autoz`를 켜면 지시 끝에 `$autoz`가 붙습니다.
 
+### 🖼️ 대시보드 산출물
+
+모델이 Slack으로 보낸 파일(HTML 리포트, PNG, WAV·음성, 영상, PDF, 텍스트)과 마크다운 최종 답변이 웹 대시보드에 모두 보인다: 세션 카드의 칩, 펼친 카드의 썸네일 스트립, 세션 패널의 고정 스트립과 답변마다 그 턴의 파일. 마우스를 올리면 미니맵 미리보기, 누르면 풀사이즈 뷰어(HTML은 샌드박스에서 실행, 오디오는 카드에서 바로 재생). 기능 도입 전 업로드는 세션 작업 로그에서 백필한다.
+
+### 📎 대시보드의 지시 첨부
+
+지시와 함께 보낸 파일(스크린샷, PDF, 텍스트, 음성, 영상)이 웹 대시보드에서 그 지시와 함께 보인다. 모델 산출물과 섞이지 않는다. 세션 패널에서는 지시 글 위에 놓인다(80px 이미지 타일, 4개를 넘으면 "+N", 종류·크기가 있는 파일 카드, 음성은 그 자리에서 재생). 펼친 카드의 지시 행에는 작게, 카드 앞면에는 클립 아이콘과 개수가 나오고, 패널의 고정 줄 "지시 첨부"(기본은 접힘)에 세션의 모든 파일이 모인다. 누르면 산출물과 같은 뷰어가 열리고 그 지시의 파일끼리 넘겨 본다. 모델이 일하는 중에 보낸 메시지는 모델이 읽은 시점에 파일과 함께 기록된다. 영상과 음성도 사본을 남겨 대시보드에서 재생된다. 봇이 받지 못한 파일(50 MB 초과, 다운로드 실패)도 Slack 링크와 함께 표시된다. 업로드된 HTML·SVG·텍스트는 대시보드에서 실행되지 않는다.
+
+### 🧾 직접 입력하지 않은 턴은 한 줄로
+
+세션 패널 대화창에서 soma-work가 스스로 보낸 턴은 원본 프롬프트 대신 한 줄로 보인다 — 누가, 언제, 뱃지, 무엇을 했는지: **자동 압축** / **압축** (`/compact`), **시스템 재시작**, **자동 재시도**(오류 뒤), **Goal #2/10**(goal continuation), **크론**(cron 실행), **세션 갱신**(`/renew` 저장·불러오기), 그 밖의 호스트 턴은 **자동 입력**. 줄을 누르면 세부 사항과 원본 프롬프트가 펼쳐진다. 압축이 도는 동안은 경과 시간과 예상 시간(대화의 직전 압축 시간, 없으면 2분 30초), 진행률 막대를 보여 주고, 끝나면 압축 전 → 후 토큰과 걸린 시간을 보여 준다. 지시가 발동한 스킬(`$skill`, autoskill)은 지시 아래 뱃지로 보인다 — `local:using-ssot · ≈1.1K tokens`(추정치). 뱃지를 누르면 그 스킬 본문이 펼쳐진다. 예전 턴은 텍스트로 판별한다. 이 변경 전에 기록된 `/compact`는 누가 보냈는지 남아 있지 않아 **압축**으로 보인다.
+
 ### 🔑 GitHub 연동
 
 GitHub App(권장) 또는 Personal Access Token 인증. 자동 토큰 갱신 지원.
@@ -101,8 +120,14 @@ GitHub App(권장) 또는 Personal Access Token 인증. 자동 토큰 갱신 지
 
 대시보드(`/dashboard`, Slack 로그인)는 모든 세션을 카드로 보여주고, 세션 소유자가 바로 조작할 수 있게 한다.
 
-- **최상단에서 모델·effort 원클릭 변경**: top bar에 새 세션의 기본 모델과 기본 effort가 있다. 값을 고르면 바로 저장된다 — Slack `model set <m>`, `effort <level>`과 같은 설정이다. 세션 패널이 열려 있으면 "이 세션에도 적용"(기본 켜짐)으로 그 세션도 함께 바뀐다.
+- **세 서피스, 세 가지 일**: 세션 하나가 세 군데에 나오고, 각자 다른 질문에 답한다. **카드**는 분류다 — 나를 기다리나, 움직이나(제목, 여기 있는 이유, 진행 중 task, 서브에이전트 펄스, 토큰·비용, 상태와 멈춘 카드가 그 상태에 든 지 얼마인지(질문 대기는 질문이 온 때부터, 완료는 작업이 끝난 때부터), 60%를 넘으면 호박색·80%를 넘으면 빨간색이 되는 컨텍스트, 상태(열림·초안·머지됨·닫힘)가 붙은 PR 배지). **펼친 카드**는 그 자리에서 처리하며, 섹션이 카드 상태를 따른다: 질문·권한 요청이 먼저, 실행 중이면 task 창·에이전트(compact 행)·최근 지시 ↔ 응답, 끝났으면 응답·산출물·goal — 그 뒤 goal 한 줄, 짧은 참조, 컨트롤 줄 하나(모델·effort, Stop / Close / Trash, Slack, 작업 로그). 카드의 숫자를 다시 그리지 않는다. **세션 패널**은 파악과 조종이다: 세션 상태·실시간 시간·액션 하나가 있는 머리 칩, 세션 정보(요약 한 줄과 링크, 펼치면 토큰 종류별·비용·컨텍스트와 autocompact·Σ·압축·세션·merge — 모두 실시간), goal 편집기, 자세한 에이전트 트리, 입력창 옆 모델·effort, 작업 로그와 대화. 필드마다 전부 보이는 집은 한 곳이고, 다른 곳에서는 숫자·배지·그 집으로 가는 링크다. 스펙: [`.prd/13-dashboard-three-surfaces-spec.md`](./.prd/13-dashboard-three-surfaces-spec.md).
+- **메인과 서브에이전트 — 하나의 재귀 트리**: 카드 하나가 메인 에이전트, 곧 세션 에이전트 트리의 루트다. 메인이 `Agent` 도구로 띄운 SDK 서브에이전트(와 그들이 다시 띄운 것)는 그 밑의 같은 타입 노드다 — 각자 상태·시간·툴 호출 수와 자기 태스크 목록·작업 로그를 갖고, 어느 깊이든 같은 렌더러로 그린다(방향키로 다루는 ARIA 트리). 사이드 패널은 메인을 포함한 어떤 노드로든 드릴한다 — 경로(`메인 › A1 Explore › A3 …`), 그 노드의 헤더와 하위 트리 — 부모의 작업 로그에서는 띄운 자식마다 실시간 블록이 보인다. 메인의 태스크·로그가 서브의 것과 섞이지 않는다. 스펙: [`.prd/12-dashboard-agent-tree-spec.md`](./.prd/12-dashboard-agent-tree-spec.md).
+- **폰·폴더블·PC**: 배치는 기종이 아니라 화면 크기를 따른다. 840px 미만에서는 세션 패널이 전체 화면 시트이고, 840px 이상(펼친 iPhone Duo·Galaxy Z Fold8, 태블릿, PC)에서는 보드 옆에 붙는다 — 보드가 살아 있어서 패널을 연 채로 다음 카드를 누를 수 있다. 보드는 폭이 840px 이상이면 3칸이 모두 보이고, 그보다 좁으면 옆으로 넘겨 본다. 접거나 펴거나 돌리면 카드가 새 자리로 움직인다(동작 줄이기 설정에서는 페이드만). 패널에서 Tasks·Artifacts는 고정이고 대화는 항상 패널의 절반 이상을 차지하며, 입력창은 화면 키보드 위에 남는다. 창이 840×1000보다 작으면 CRON 레인이 접힌 채로 시작하고(머리줄과 응답을 기다리는 잡만), LLM 가용량은 항상 접힌 채로 시작한다(공급자별 칩에 두 기준을 합계 대비 계정분과 %로, `Claude 지금 5.2/16.0 33% · 주 5.6/16.0 35%`, 840px 미만에서는 두 줄까지 감싼다). 그래서 보드가 첫 화면에 보이고, 펼치기·접기 선택은 그 기기에 저장된다. 기기 크기와 출처: [`docs/misc/research/2026-10-24-dashboard-device-viewports.md`](./docs/misc/research/2026-10-24-dashboard-device-viewports.md).
+- **최상단에서 모델·effort 원클릭 변경**: top bar에 새 세션의 기본 모델과 기본 effort가 있다. 값을 고르면 바로 저장된다 — Slack `model set <m>`, `effort <level>`과 같은 설정이다. 세션 패널이 보드 옆에 붙어 있으면 "이 세션에도 적용"(기본 켜짐)으로 그 세션도 함께 바뀐다(폰에서는 패널 시트가 top bar를 덮으므로 패널 자체의 컨트롤을 쓴다).
 - **세션별 모델·effort**: 카드와 세션 패널 맨 위에서 그 세션만 바꾼다(`%effort <level>`과 같은 범위). 다음 턴부터 적용되고, 모델이 effort를 낮춰 실행하면 실제 실행 값을 함께 보여준다.
+- **퍼미션 요청**: 턴이 퍼미션 요청(Slack의 "🔐 Permission Request" 카드 — 예: 위험 명령 규칙에 걸린 Bash 명령)에서 멈추면 그 카드가 NEEDS YOU로 옮겨지고, 카드와 세션 패널에 같은 요청이 뜬다: 도구, 파라미터, 매칭된 규칙, **Approve / Deny / Explain / Approve & disable rule (this session)**. 파라미터를 보고 응답할 수 있는 건 요청이 걸린 본인뿐이다 — Slack 버튼과 같은 규칙. Slack과 대시보드는 한 경로(`src/permission-prompt-response.ts`)로 응답하므로 먼저 누른 쪽이 이기고, 나머지는 이미 응답됐다고 안내받는다. API: `GET /api/dashboard/session/:key/permission/:approvalId`, `POST /api/dashboard/session/:key/permission` (auth + CSRF).
+- **설정 페이지**(`/dashboard/settings`, top bar의 "⚙ 설정"): Slack 명령으로 바꿀 수 있는 개인 설정 전부를 그룹(모델·effort, 출력, 알림, 목표, 자동 스킬, 계정, 권한)으로 보여준다. 선택형은 바로 저장되고, 직접 입력하는 값은 저장 버튼으로 저장한다. 행마다 기본값, 다를 때 "기본값으로" 되돌리기, 같은 일을 하는 Slack 명령이 보인다. 위험한 변경(bypass, 샌드박스 끄기, 네트워크 허용 목록 끄기)은 먼저 묻고, 관리자 전용 행은 잠긴 이유를 보여준다.
+- **기억 탭**(`/dashboard/settings#memory`, top bar의 "🧠 기억"): 개인 기억 전부를 보고 고친다 — 에이전트 노트(`MEMORY.md`)와 사용자 프로필(`USER.md`)은 항목마다 한 줄, 용량 미터, 추가·수정·삭제(되돌리기)·모두 지우기(개수를 밝힌 확인); 지식 페이지(agent / sites / concepts / projects / cron)는 Current와 History 전체를 편집·생성·삭제; 관찰 기록(에피소딕)은 날짜별로 항목을 고치거나 지우고 오늘 기록에 메모를 더한다. 모든 편집은 탭이 불러온 revision 조건부라, 그사이 에이전트나 Slack이 바꿨으면 그 부분을 다시 불러오고 작성하던 내용은 남긴다. host 프로세스·model-command MCP 서브프로세스·대시보드가 같은 사용자별 메모리 잠금(`somalib/model-commands/memory-lock.ts`)을 써서 편집과 에이전트 기록이 서로를 지우지 않는다. API: `/api/memory/*`, 로그인 본인만, 쓰기는 auth + CSRF.
 - **개인 설정 API**: `GET /api/settings`, `PATCH /api/settings/:key`로 Slack 명령으로 바꿀 수 있는 개인 설정 전부를 로그인한 본인 것만 읽고 바꾼다. 쓰기는 Slack과 같은 검증기·`/z` 카드 핸들러를 거치고, 대시보드에 없는 Slack 설정 명령이 생기면 계약 테스트가 실패한다.
 
 ### 🤖 서브 에이전트 (부분 구현 · 프로비저닝 미지원)
@@ -185,7 +210,10 @@ app-token 프롬프트는 금지된 자격증명 경로라 삭제됨), `scripts/
 - 모델 별칭 `fable`·`fable[1m]`·`fable-5-1`은 `claude-fable-5-1[1m]`을 선택한다. 1M 컨텍스트와 750k 자동 압축 기본값을 유지하며, 버전을 지정한 `fable-5`는 기존 `claude-fable-5[1m]`을 선택한다.
 - 모델 별칭 `opus`·`opus[1m]`·`opus-5-5`는 `claude-opus-5-5[1m]`(1M 컨텍스트, 750k 자동 압축 기본값)을 선택한다. 버전을 지정한 `opus-5`/`opus-5[1m]`은 기존 Opus 5 id를 그대로 선택한다.
 - naked `cron`/`schedule`(크론/스케줄): 잡별 모델/출력 대상 드롭다운 + 삭제 버튼이 달린 인터랙티브 카드로 목록·수정. 텍스트 명령도 지원 — `cron model <name> <default|opus|fable|fast|모델>` (default = 만든 사람의 현재 모델, opus/fable = 실행 시점의 최신 opus/fable) · `cron target <name> <channel|dm|thread>` · `cron delete <name>`; admin은 전체 유저 잡을 owner와 함께 보고 `<@owner>` 후행 인자 또는 카드에서 직접 타인 잡을 수정. 커맨드로 라우팅되므로 autogoal이 삼키지 않음.
-- **배포 트리거 크론 레인**: `onDeploy: [{ repo, target }]`를 등록한 크론 잡은 누구의 세션에서 돌린 배포든 해당 repo가 정확히 그 브랜치로 배포 성공했다고 deploy 워크플로우가 알리면(`deploy_completed` 디렉티브) 오너 권한으로, 그 잡 채널의 새 스레드에서 발동한다. 발동 프롬프트에는 어떤 배포인지(repo·브랜치·머지 SHA·배포한 사람)와 배포 스레드(채널 + 스레드 ts)가 붙는다. 레인은 세션이 가진 Slack 접근 수단으로 그 스레드에 직접 올린다(예: 환경의 봇 토큰으로 Slack Web API 호출). 내장 `send_thread_message` 도구는 레인 자신의 스레드에만 올리고, 하네스가 대신 올리지 않는다. 배포 스레드에는 한 줄로 시작된 레인, 또는 등록된 레인이 왜 시작되지 않았는지(배포 미확인·실패·읽을 수 없는 디렉티브)와 복구용 `cron run`을 알린다. 배포 때만 도는 레인은 크론 잡 대신 `DATA_DIR/deploy-lanes.json`의 항목(`name`·`owner`·`channel`·`prompt`·`onDeploy`)으로 등록한다 — 스케줄이 없고 크론 잡이 아니어서 `cron list`에 나오지 않는다. 상세: [docs/current/spec/cron-deploy-lanes.md](docs/current/spec/cron-deploy-lanes.md).
+- **대시보드의 크론 실행**: 크론 발동이 만든 세션은 `Direct (skipDispatch)`가 아니라 잡 이름으로 시작한다. 이 제목은 임시 제목이라 첫 명확한 제목(턴 요약·연결된 이슈/PR)이 오면 교체되고, 카드는 새 제목을 페이드인한다. 카드 머리 왼쪽에 **CRON** 뱃지가 붙고, 보드 칸 위의 **CRON 레인**에 들어간다 — 잡마다 타일 1개(스케줄 문장, cron은 UTC 기준·다음 실행·최근 실행 막대 ✓성공 ✗실패 ●실행 중 ▲응답 필요 ◌세션 없음)와 그 잡의 최신 실행 카드. **지난 실행**을 누르면 잡의 보관된 실행(잡당 최근 20회)을 세션·작업 로그·대화 기록·Slack 스레드와 연결해 보여 주는 서랍이 열린다(`GET /api/dashboard/cron`). 기존 세션에 주입된 크론 실행은 그 세션을 레인으로 옮기지 않는다.
+- **대시보드 LLM 가용량 (2026-10-25)**: 통계 줄과 Agent inbox 사이에 섹션이 있다(`GET /api/dashboard/capacity`, llmux 조회 30초 캐시·페이지 60초 재조회). 섹션은 모든 창에서 접힌 채로 시작하고, 펼치기 선택은 기기에 저장된다. 접힌 칩은 구독 프로바이더마다 두 기준을 합계 대비 계정과 %로 보여 준다(`Claude 지금 5.2/16.0 33% · 주 5.6/16.0 35%`). 840px 미만에서는 칩 줄이 감기고, 칩은 두 값 사이에서만 끊긴다. 가장 오래된 측정이 하루를 넘었거나 계정의 80% 미만만 반영된 칩에는 경고가 붙는다(`Codex 주 2.37/2.4 99% ⚠ 5일 전 · 3/5 반영`). 막대 두 줄(위 5시간, 아래 일주일)을 고른 근거는 리서치 문서에 있다: [`docs/misc/research/2026-10-25-capacity-dual-window.md`](./docs/misc/research/2026-10-25-capacity-dual-window.md). 펼치면 프로바이더마다 단순한 카드 하나가 나온다(Claude·Codex, API 키 풀은 플랜 단위가 없어 제외). 카드 구성은 다음과 같다. **막대 두 줄**: `5시간 · 지금 쓸 수 있음`(5h·주간 잔여 중 작은 쪽, 차단 중이면 0)과 `일주일 · 이번 주 남음`을 각각 `x / 합계 계정 · %`로 보여 주고, "다음 +1.0계정 · 1시간 23분 후" 한 줄을 붙인다(얼마나·언제만 쓰고, 막대 자기 리셋이 아닐 때만 원인을 붙인다. 예: "· 차단 해제". 계정 이름은 툴팁에 있다. 일주일 한도에 묶인 5시간 막대는 "일주일 한도에 묶임 · 다음 …"). 폰에서는 막대가 카드 폭 전체를 쓴다. Codex는 일주일 막대만 있다. "계정"은 티어 가중치(x20 = 1, x5 = ¼, $500 = 1, $200 = 0.4)에 잔여를 곱한 정규화 추정이고 토큰 수가 아니다. %는 실제 비율로 계산해 가득일 때만 100%로 표시하고, 합계로 반올림되는 수는 소수 둘째 자리까지 보인다(`2.37 / 2.4 · 99%`). **흐린 공개 줄 한 줄**: 0이 아닌 것만 보여 준다(`16/17 반영(차단 6 포함) · 제외 1(보류) · 측정 4시간 전`). **타임라인 하나**: 지금→24h(폭 55%)→7d 축에서 ●는 5시간 막대가 늘어나는 것(라벨 위), ◆는 일주일 막대가 늘어나는 것(라벨 아래)이고 막대와 같은 색이다. 겹치는 라벨은 하나로 합친다. 계정별 리셋을 시간순으로 재생해 계산한다. 7일 안에 5시간 쪽으로 늘어날 양이 없으면 범례에 "늘어날 양 없음"이라고 적고, 0.05 미만의 작은 증가만 있으면 그 합을 "+0.1계정 미만"이나 "+0.1계정"처럼 적는다(막대의 "다음" 줄, 칩 툴팁과 같은 말). llmux 0.2.26부터는 계정별 플랜을 llmux가 직접 알려 준다(Claude `rate_limit_tier` = `default_claude_max_20x` 등, Codex `plan_type` = `pro`($200)·`promax`($500)). 그래서 설정 없이 티어가 잡힌다. 우선순위는 `SOMA_LLMUX_ACCOUNT_TIERS` → llmux가 알려 준 플랜 → 기본값이다. `SOMA_LLMUX_ACCOUNT_TIERS`(`group:name=tier`, 예: `claude:ai7=x20,claude:ai12=x5`)는 기본값(Codex `ai1`·`ai2` = Pro $200, `ai5`·`ai6` = Pro $500) 위에 덮인다. llmux의 `max`만으로 x5/x20을 추측하지 않는다. 매핑이 없는 **Claude** 계정은 Max x20으로 세고 그렇다고 밝힌다(카드 `티어 미지정 15(x20 가정)`, 접힌 칩 `⚠ x20 가정 15`). 그래서 매핑이 없는 호스트도 풀을 보여 준다(2026-10-26). 매핑이 없는 Codex 계정은 합계에서 뺀다(`제외 1(티어 미지정)`). 스펙: [`.prd/12-cron-lane-and-llm-capacity-spec.md`](./.prd/12-cron-lane-and-llm-capacity-spec.md)
+- **배포 후 QA**: 호스트에 `post-deploy` 스킬을 제공하는 환경 플러그인(`acme-env` 같은)을 설치하면, deploy 워크플로우가 7단계로 배포가 확인된 repo마다 배포 세션 안에서 배포 후 QA를 돈다(설정: [docs/runbook/add-new-deploy.md](docs/runbook/add-new-deploy.md) §8.5).
+- **환경 스킬은 어드민 승인**: 배포 때 설치된 환경 플러그인의 스킬은 어드민(`ADMIN_USERS`)은 바로, 그 밖의 사람은 어드민이 허용했을 때만 돈다. 어드민이 아닌 사람의 `$plugin:skill`이나 모델의 `Skill` 호출은 멈추고, 어드민 전원에게 버튼 4개(1회 허용 = 그 스레드만, 이 스킬 항상 허용, 모든 환경 스킬 항상 허용, 거부)가 붙은 DM이 간다. 허용되면 요청한 턴을 다시 보내 이어서 실행한다(자세히: [docs/runbook/add-new-deploy.md](docs/runbook/add-new-deploy.md) §8.5).
 - **배포 릴리즈노트**: 배포가 끝나면 deploy 워크플로우가 `local:release-notes`로 노트를 쓰고 repo마다 `release_notes` 디렉티브를 하나 낸다. 호스트는 채널 루트에 짧은 헤더(`repo target · 버전` + TL;DR 최대 3줄)를, 그 스레드에 전문을 잘림 없이 나눠 올린다. 채널은 운영자가 호스트 `.env`의 `SOMA_RELEASE_NOTES_CHANNELS`로 정한다(예: `acme/app@deploy/dev2=C0DEV2CHAN1,*=session`). `owner/repo@branch` 또는 `branch`가 정확히 맞으면 그 채널, `*=session`이면 매핑 안 된 배포는 배포 세션 채널, `*`가 없으면 매핑 안 된 배포는 배포 스레드에만 남는다. 설정하지 않으면 예전처럼 배포 세션 채널이다. 게시가 실패해도 다른 채널 루트로 옮기지 않고 경고와 함께 배포 스레드에 남긴다.
 - naked `key` (= `auth key`): 자기 전용 llmux 클라이언트 키 + 로컬 Claude Code(`ANTHROPIC_BASE_URL`/`ANTHROPIC_API_KEY`)와 Codex(`OPENAI_BASE_URL`/`OPENAI_API_KEY`) 실행법을 DM으로 받음. 같은 유저는 항상 같은 키 — 봇 사용량과 로컬 사용량이 한 테넌트로 계측된다. 모든 유저 사용 가능(자기 키이므로), 시크릿은 DM으로만 전달.
   Codex 안내는 안내된 서버 주소의 `/v1`과 같은 테넌트 키를 사용한다. `codex --model … -c …` 명령 전체를 복사해야 기존 ChatGPT 로그인이나 다른 provider 설정이 있어도 명시한 Responses provider가 환경변수의 키를 사용한다. 환경변수는 현재 터미널에 적용되며, Codex 설정 파일과 로그인 정보는 덮어쓰지 않는다. 다음 llmux 세션도 같은 명령으로 시작한다. [Codex 게이트웨이 인증 문서](https://learn.chatgpt.com/docs/enterprise/connect-to-a-gateway).
@@ -446,7 +474,7 @@ src/                                # TypeScript 소스
 │   ├── actions/                    # 인터랙티브 액션 핸들러
 │   ├── commands/                   # 명령어 핸들러
 │   ├── pipeline/                   # 스트림 처리 파이프라인
-│   ├── directives/                 # 채널/세션 링크·배포 완료 디렉티브
+│   ├── directives/                 # 채널/세션 링크 디렉티브
 │   ├── formatters/                 # 출력 포맷터
 │   └── z/                          # /z 명령어 surface + 비-admin DM 입력 게이트
 ├── auth/                           # CCT lease + query env 주입
@@ -464,7 +492,8 @@ src/                                # TypeScript 소스
 └── local/                          # Claude Code SDK 확장 (skills/, agents/, hooks/)
 
 packages/                           # 워크스페이스 패키지
-├── mcp-servers/                    # 내장 MCP 서버 (agent, cron, model-command, ...)
+├── mcp-servers/                    # 내장 MCP 서버 (agent, cron, model-command, devops-tools, ...)
+├── devops-broker/                  # 별도 OS 유저 브로커: gh 토큰 + Cloudflare forge 키 보관, 자체 Slack 앱으로 admin 승인
 ├── common/ · slack/ · process-shared/ · test-utils/
 
 somalib/                            # soma 계열 공유 라이브러리

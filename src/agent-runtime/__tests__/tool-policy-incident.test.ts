@@ -37,6 +37,7 @@ function ctx(over: Partial<ToolPolicyContext> = {}): ToolPolicyContext {
     isDangerousRuleDisabled: () => false,
     handoffContext: undefined,
     checkMcpToolPermission: () => null,
+    checkEnvSkillPermission: () => null,
     incidentReadOnly: incidentCtx(),
     ...over,
   };

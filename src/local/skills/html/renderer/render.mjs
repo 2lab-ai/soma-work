@@ -14,7 +14,9 @@
  * The renderer expects a single, self-contained HTML file (CDN refs are OK
  * — Tailwind / Google Fonts / inline scripts all work). Headless Chromium
  * waits for `networkidle` before screenshotting, so externally-fetched
- * fonts have time to load.
+ * fonts have time to load. It then prints `fonts loaded: <families>` (from
+ * `document.fonts`) and `fonts used: <families>` (platform fonts Chromium drew
+ * sample text with) so callers can detect a silent fallback.
  *
  * Exit codes:
  *   0  PNG written
@@ -125,6 +127,39 @@ async function main() {
     if (geom.waitMs > 0 || args.waitMs > 0) {
       await page.waitForTimeout(args.waitMs ?? 500);
     }
+    // networkidle does not prove a web font was applied. Report the font
+    // families that actually finished loading so SKILL.md Step 6 can compare
+    // them with the design driver's declared family (silent fallback check).
+    const loadedFonts = await page
+      .evaluate(async () => {
+        await document.fonts.ready;
+        const names = new Set();
+        for (const face of document.fonts) if (face.status === 'loaded') names.add(face.family.replace(/["']/g, ''));
+        return [...names].sort();
+      })
+      .catch(() => null);
+    console.log(`fonts loaded: ${loadedFonts === null ? 'unknown' : loadedFonts.join(', ') || 'none'}`);
+    // "Loaded" is not "used": ask Chromium which platform fonts actually drew
+    // a sample of text elements (CSS.getPlatformFontsForNode).
+    let usedFonts = null;
+    try {
+      const cdp = await context.newCDPSession(page);
+      await cdp.send('DOM.enable');
+      await cdp.send('CSS.enable');
+      const { root } = await cdp.send('DOM.getDocument', { depth: 0 });
+      const names = new Set();
+      for (const selector of ['h1', 'h2', 'p', 'li', 'td', 'body']) {
+        const { nodeIds } = await cdp.send('DOM.querySelectorAll', { nodeId: root.nodeId, selector });
+        for (const nodeId of nodeIds.slice(0, 5)) {
+          const { fonts } = await cdp.send('CSS.getPlatformFontsForNode', { nodeId });
+          for (const f of fonts) names.add(f.familyName);
+        }
+      }
+      usedFonts = [...names].sort();
+    } catch {
+      usedFonts = null;
+    }
+    console.log(`fonts used: ${usedFonts === null ? 'unknown' : usedFonts.join(', ') || 'none'}`);
 
     if (geom.fullPage) {
       await page.screenshot({ path: outputPath, fullPage: true, type: 'png' });

@@ -2,7 +2,7 @@
 name: design
 description: Design advisor for HTML visual output — picks a deliberate design direction from a 20-philosophy style library, enforces an anti-AI-slop discipline, and supplies typography/scale/contrast/critique rules so generated HTML reads like a real design team made it, not a model's default. Distilled from the MIT-licensed huashu-design skill (alchaincyf / 花叔). Consumed by the `html` skill at generation time, and usable standalone for design-direction advice. Triggers on "디자인", "디자인 방향", "스타일 추천", "어떤 스타일", "비주얼 품질", "예쁘게", "design direction", "design style", "pick a style", "make it look good", "anti AI slop", "design review", "비평", "review this design".
 allowed-tools: Read, Grep, Glob, WebSearch
-version: 0.1.0
+version: 0.1.1
 license: MIT
 ---
 
@@ -105,6 +105,9 @@ look better," that urge is usually the slop signal — resist it.
 - **No tired fonts** — avoid Inter, Roboto, Arial/Helvetica, bare system stack,
   Fraunces, Space Grotesk. Use a display+body pairing with character
   (serif display + sans body, mono display + sans body, heavy + light).
+  Exception: a font that the active brand or named `ui-ux` reference specifies
+  (for example the `openai` reference's Inter stand-in) wins — this list
+  governs fonts you choose yourself.
 - **No invented color systems** — use the brand palette, sample from a reference
   screenshot, or adopt a known system (Radix Colors / Tailwind / brand). Define
   with `oklch()` so lightness shifts don't drift the hue.

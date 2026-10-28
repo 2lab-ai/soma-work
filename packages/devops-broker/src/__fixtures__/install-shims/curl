@@ -1,0 +1,18 @@
+#!/bin/bash
+# Test stand-in for /usr/bin/curl (install.test.ts): "downloads" a URL by copying $SHIM_DOWNLOADS/<last path
+# segment of the URL> to the -o file, and fails like curl -f on a 404 when there is no such fixture.
+set -euo pipefail
+{ printf 'curl'; printf ' %s' "$@"; printf '\n'; } >>"$SHIM_LOG"
+out='' url=''
+while [ $# -gt 0 ]; do
+  case $1 in
+    -o) out=$2; shift 2 ;;
+    --proto | --max-time) shift 2 ;;
+    -*) shift ;;
+    *) url=$1; shift ;;
+  esac
+done
+case $url in https://*) ;; *) echo "curl shim: not an https URL: $url" >&2; exit 1 ;; esac
+source_file="${SHIM_DOWNLOADS:-/nonexistent}/${url##*/}"
+[ -f "$source_file" ] || { echo 'curl: (22) The requested URL returned error: 404' >&2; exit 22; }
+cp "$source_file" "$out"
