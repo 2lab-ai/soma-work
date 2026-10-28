@@ -1,0 +1,7 @@
+VERIFY	UNRESOLVED	jira-transition	jira#TST-101	manual: 댓글을 보냈지만 지금 안 보임 — 다시 달지 않음
+VERIFY	OK	jira-transition	jira#TST-105	이번 실행이 옮김
+VERIFY	OK	jira-transition	jira#TST-102	이번 실행이 옮김
+VERIFY	RESOLVED	jira-transition	jira#TST-106	changed: 승인 뒤 상태가 바뀜 (지금 In Progress), 쓰기 없음
+VERIFY	OK	p-invariant	develop	present
+VERIFY	OK	p-invariant	deploy/staging	present
+VERIFY-SUMMARY	fail=0	warn=0	unresolved=1	run=complete	success=no
