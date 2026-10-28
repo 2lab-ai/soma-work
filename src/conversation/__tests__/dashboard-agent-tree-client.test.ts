@@ -353,6 +353,7 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
   });
 
   it('the page loads the element as a module script; the installed @2lab.ai/ui carries it and its chunks', async () => {
+    // The first import of the dashboard module transforms 21k lines — seconds on a loaded runner, so this test gets 60 s.
     const HEAD = TEMPLATE.slice(0, TEMPLATE.indexOf('<style>'));
     expect(HEAD).toContain(`<script type="module" src="/dashboard/ui/agent-tree.js?v=\${UI_LIB_VERSION}"></script>`);
     const { UI_LIB_FILE, uiLibDistDir } = await import('../dashboard');
@@ -363,7 +364,7 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
       expect(UI_LIB_FILE.test(file), file).toBe(true);
       expect(existsSync(join(dir, file)), file).toBe(true);
     }
-  });
+  }, 60_000);
 
   it('the card body carries a slot per session — static markup, so a moving agent never rewrites the body', () => {
     const html = ui.renderAgentTree(card(), 'working');
