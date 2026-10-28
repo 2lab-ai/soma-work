@@ -595,7 +595,7 @@ describe('work log core (shipped wl* functions)', () => {
 
 describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEntry + esc)', () => {
   const { renderWorkLogEntry } = load<{ renderWorkLogEntry(e: unknown): string }>(
-    ['decodeSlackEntities', 'esc', 'escAttr', 'renderWorkLogEntry'],
+    ['decodeSlackEntities', 'esc', 'escAttr', 'wlToolSummary', 'renderWorkLogEntry'],
     ['WL_LABELS'],
   );
   /** Every " left after removing the attributes we emit would be an attribute break-out. */
@@ -606,18 +606,25 @@ describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEn
   const tags = (html: string) =>
     (html.match(/<\/?([a-z0-9]+)/gi) ?? []).map((t) => t.replace(/[</]/g, '').toLowerCase());
 
-  it('tool name and text cannot inject markup or break out of the title attribute', () => {
-    const html = renderWorkLogEntry({
-      seq: 1,
-      ts: 0,
-      kind: 'tool',
-      tool: '<img src=x onerror=alert(1)>',
-      text: '"><script>alert(1)</script><a href="javascript:x">',
-    });
-    expect(new Set(tags(html))).toEqual(new Set(['div', 'span']));
-    expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
-    expect(html).toContain('title="&quot;&gt;&lt;script&gt;');
-    expect(strayQuotes(html)).toBe(false);
+  it('a tool call is one card element; its fallback text (shown only if the element never loads) is escaped', () => {
+    for (const kind of ['tool', 'tool_result']) {
+      const html = renderWorkLogEntry({
+        seq: 1,
+        ts: 0,
+        kind,
+        tool: '<img src=x onerror=alert(1)>',
+        text: '"><script>alert(1)</script><a href="javascript:x">',
+      });
+      const all = (html.match(/<\/?([a-z0-9-]+)/gi) ?? []).map((t) => t.replace(/[</]/g, '').toLowerCase());
+      expect(new Set(all)).toEqual(new Set(['div', 'ui-tool-call-card', 'span']));
+      expect(html).not.toContain('<img');
+      expect(html).not.toContain('<script');
+      expect(html).toContain('&lt;img src=x onerror=alert(1)&gt;');
+      // Every " left after removing the attributes we emit (and the escaped text) would be a break-out.
+      expect(html.replace(/\s(class|data-seq|lang|data-key)="[^"]*"/g, '')).not.toContain('"');
+    }
+    // A hostile seq cannot reach data-seq / data-key.
+    expect(renderWorkLogEntry({ seq: '5" onmouseover="x', kind: 'tool', text: 'x' })).toContain('data-key="0"');
   });
 
   it('narration, Slack-encoded instructions, odd kinds and seqs stay inert', () => {
@@ -638,8 +645,16 @@ describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEn
   });
 
   it('every entry is one root: a keyboard-reachable row that controls its (empty, hidden) detail block', () => {
+    expect(renderWorkLogEntry({ seq: 7, kind: 'tool', tool: 'Bash', text: 'Bash {"command":"ls"}' })).toBe(
+      '<div class="wl-entry wl-toolcall" data-seq="7"><ui-tool-call-card class="wl-card" lang="ko" data-key="7">' +
+        '<span class="wl-card-fallback"><span class="wl-tool-name">Bash</span> {&quot;command&quot;:&quot;ls&quot;}</span>' +
+        '</ui-tool-call-card></div>',
+    );
+    expect(renderWorkLogEntry({ seq: 9, kind: 'tool_result', tool: 'Bash', ok: false, text: 'Bash error' })).toBe(
+      '<div class="wl-entry wl-toolcall is-orphan" data-seq="9"><ui-tool-call-card class="wl-card" lang="ko" data-key="9">' +
+        '<span class="wl-card-fallback"><span class="wl-tool-name">Bash</span> 실패</span></ui-tool-call-card></div>',
+    );
     for (const e of [
-      { seq: 7, kind: 'tool', tool: 'Bash', text: 'Bash {"command":"ls"}' },
       { seq: 8, kind: 'narration', text: 'Reading the schema.' },
       { seq: 9, kind: 'final', text: 'Done.' },
     ]) {
@@ -657,64 +672,27 @@ describe('work-log entry rendering escapes hostile text (shipped renderWorkLogEn
       ).toBe(true);
     }
     // A hostile seq cannot reach the id / aria-controls values.
-    expect(renderWorkLogEntry({ seq: '5" onmouseover="x', kind: 'tool', text: 'x' })).toContain(
+    expect(renderWorkLogEntry({ seq: '5" onmouseover="x', kind: 'final', text: 'x' })).toContain(
       'aria-controls="wl-detail-0"',
     );
   });
 });
 
-describe('work-log tool rows print the tool name once (shipped renderWorkLogEntry)', () => {
-  const { renderWorkLogEntry } = load<{ renderWorkLogEntry(e: unknown): string }>(
-    ['decodeSlackEntities', 'esc', 'escAttr', 'renderWorkLogEntry'],
-    ['WL_LABELS'],
-  );
-  /** The visible pieces of a tool row: the tool-name span, the text span and its title. */
-  function row(e: Record<string, unknown>) {
-    const html = renderWorkLogEntry({ seq: 1, ts: 0, ...e });
-    const name = /<span class="wl-tool-name">([^<]*)<\/span>/.exec(html)?.[1] ?? null;
-    const m = /<span class="wl-text" title="([^"]*)">([^<]*)<\/span>/.exec(html);
-    return { name, text: m?.[2] ?? null, title: m?.[1] ?? null };
-  }
-
+describe('work-log tool call cards print the tool name once (shipped wlToolSummary)', () => {
+  const { wlToolSummary } = load<{ wlToolSummary(tool: string, text: string): string }>(['wlToolSummary'], []);
   // Stored entries carry the emitter's shape: `text` starts with the tool name
-  // (packages/slack/src/stream-processor.ts summarizeToolCall and the tool_result text).
-  it('a tool call shows its input after the name, not the name again', () => {
-    expect(row({ kind: 'tool', tool: 'Read', text: 'Read {"file_path":"/a.ts"}' })).toEqual({
-      name: 'Read',
-      text: '{&quot;file_path&quot;:&quot;/a.ts&quot;}',
-      title: 'Read {&quot;file_path&quot;:&quot;/a.ts&quot;}',
-    });
+  // (packages/slack/src/stream-processor.ts summarizeToolCall). The card shows
+  // the name on its own, so the summary is what follows.
+  it('a tool call summary is its input after the name, not the name again', () => {
+    expect(wlToolSummary('Read', 'Read {"file_path":"/a.ts"}')).toBe('{"file_path":"/a.ts"}');
   });
-
-  it('a tool result shows ok / error after the name', () => {
-    expect(row({ kind: 'tool_result', tool: 'Glob', ok: true, text: 'Glob ok' })).toEqual({
-      name: 'Glob',
-      text: 'ok',
-      title: 'Glob ok',
-    });
-    expect(row({ kind: 'tool_result', tool: 'Bash', ok: false, text: 'Bash error' })).toEqual({
-      name: 'Bash',
-      text: 'error',
-      title: 'Bash error',
-    });
+  it('a call without input (text is just the name) has no summary', () => {
+    expect(wlToolSummary('TodoRead', 'TodoRead')).toBe('');
   });
-
-  it('a call without input (text is just the name) shows the name once', () => {
-    expect(row({ kind: 'tool', tool: 'TodoRead', text: 'TodoRead' })).toEqual({
-      name: 'TodoRead',
-      text: '',
-      title: 'TodoRead',
-    });
-  });
-
-  it('text that does not start with "<tool> " is shown whole', () => {
-    expect(row({ kind: 'tool', tool: 'Read', text: 'Readme.md opened' }).text).toBe('Readme.md opened');
-    expect(row({ kind: 'tool', tool: 'Bash', text: 'backfill step 3' }).text).toBe('backfill step 3');
-    expect(row({ kind: 'tool', text: 'Read {"a":1}' })).toEqual({
-      name: null,
-      text: 'Read {&quot;a&quot;:1}',
-      title: 'Read {&quot;a&quot;:1}',
-    });
+  it('text that does not start with "<tool> " is kept whole', () => {
+    expect(wlToolSummary('Read', 'Readme.md opened')).toBe('Readme.md opened');
+    expect(wlToolSummary('Bash', 'backfill step 3')).toBe('backfill step 3');
+    expect(wlToolSummary('', 'Read {"a":1}')).toBe('Read {"a":1}');
   });
 });
 
@@ -1218,10 +1196,27 @@ describe('model-controlled values in card markup (shipped renderers)', () => {
   const cards = load<{
     renderTimeline(s: unknown): string;
     renderCardStatus(s: unknown, col: string): string;
-  }>(['esc', 'formatDuration', 'renderTimeline', 'renderCardStatus'], ['WAIT_SVG'], {
-    dhShow: () => true,
-    dhMax: (_f: string, d: number) => d,
-  });
+  }>(
+    [
+      'esc',
+      'escAttr',
+      'escJs',
+      'toNum',
+      'formatDuration',
+      'formatTaskTime',
+      'renderTaskMeta',
+      'renderTimelineItem',
+      'renderTimeline',
+      'pendingAutoResume',
+      'autoResumeLabel',
+      'renderCardStatus',
+    ],
+    ['WAIT_SVG', 'RESUME_SVG'],
+    {
+      dhShow: () => true,
+      dhMax: (_f: string, d: number) => d,
+    },
+  );
   const tags = (html: string) => (html.match(/<([a-z0-9]+)/gi) ?? []).map((t) => t.slice(1).toLowerCase());
 
   it('a string startedAt / completedAt cannot open a tag or an attribute in the task timeline', () => {
@@ -1387,10 +1382,17 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
     };
     let csrfRefreshes = 0;
     const io = load<{
-      generateTitleSub(convId: string): Promise<void>;
+      generateTitleSub(convId: string, regenerate?: boolean): Promise<void>;
       switchPanel(): void;
     }>(
-      ['generateTitleSub'],
+      [
+        'titleSubCanRegen',
+        'panelTitleSubCanRegen',
+        'titleSubEndpoint',
+        'isCsrfRejection',
+        'titleSubView',
+        'generateTitleSub',
+      ],
       ['_panelGen'],
       {
         document: { getElementById: (id: string) => (id === 'panel-title-sub-text' ? textEl : btn) },
@@ -1399,6 +1401,14 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
         refreshCsrfToken: async () => {
           csrfRefreshes++;
         },
+        // The viewer owns the open panel, so 🔄 is offered over a filled subtitle.
+        _panelTitleSub: '',
+        panelSessionKey: 'C1:t1',
+        _sessionCache: { 'C1:t1': { ownerId: 'U1' } },
+        _viewerUserId: 'U1',
+        _viewerIsAdmin: false,
+        _isAdminModeOn: () => false,
+        READ_ONLY_MSG: 'Read-only — not your session',
       },
       // What openPanel / closePanel do to the panel identity (dashboard.ts: _panelGen++).
       ['function switchPanel() { _panelGen++; }'],
@@ -1446,14 +1456,36 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
     expect(h.textEl.textContent).toBe('Generating title...');
   });
 
-  it('the current panel still gets its subtitle (and its 403 retry)', async () => {
+  it('the current panel still gets its subtitle (and its stale-CSRF retry)', async () => {
     const h = harness();
     let n = 0;
-    h.answers['conv-a'] = () => (++n === 1 ? { status: 403, json: async () => ({}) } : h.ok('A subtitle'));
+    const stale = { status: 403, json: async () => ({ error: 'CSRF token validation failed', code: 'csrf_failed' }) };
+    h.answers['conv-a'] = () => (++n === 1 ? stale : h.ok('A subtitle'));
     await h.io.generateTitleSub('conv-a');
     expect(h.posts).toHaveLength(2);
     expect(h.csrfRefreshes()).toBe(1);
     expect(h.textEl.textContent).toBe('A subtitle');
+  });
+
+  it('a permission 403 is not retried and is not shown as "Title generation failed"', async () => {
+    const h = harness();
+    h.answers['conv-a'] = () => ({ status: 403, json: async () => ({ error: 'Forbidden — write requires …' }) });
+    await h.io.generateTitleSub('conv-a');
+    expect(h.posts).toHaveLength(1);
+    expect(h.csrfRefreshes()).toBe(0);
+    expect(h.textEl.textContent).not.toBe('Title generation failed');
+    expect(h.btn.style.display).toBe('none');
+  });
+
+  it('a missing subtitle is filled through ensure-title; 🔄 over a stored one regenerates', async () => {
+    const h = harness();
+    h.answers['conv-a'] = () => h.ok('A subtitle');
+    await h.io.generateTitleSub('conv-a', false);
+    await h.io.generateTitleSub('conv-a', true);
+    expect(h.posts).toEqual([
+      '/api/dashboard/session/conv-a/ensure-title',
+      '/api/dashboard/session/conv-a/generate-title',
+    ]);
   });
 });
 
@@ -1524,7 +1556,6 @@ describe('WS session_update keeps sibling-instance cards (shipped mergeSiblingCa
 type DoneCard = { key: string; lastActivity: string; terminated?: boolean };
 type DonePlan = {
   done: Array<{ s: DoneCard; col: string }>;
-  olderCount: number;
   archivedCount: number;
 };
 
@@ -1698,6 +1729,7 @@ type FakeEl = {
   style: Record<string, string>;
   children: unknown[];
   setAttribute(k: string, v: string): void;
+  removeAttribute(k: string): void;
   getAttribute(k: string): string | null;
   querySelector(sel: string): FakeEl | null;
   querySelectorAll(sel: string): FakeEl[];
@@ -1716,6 +1748,9 @@ function fakeEl(over: Partial<FakeEl> = {}): FakeEl {
     children: [],
     setAttribute(k, v) {
       this.attrs[k] = String(v);
+    },
+    removeAttribute(k) {
+      delete this.attrs[k];
     },
     getAttribute(k) {
       return k in this.attrs ? this.attrs[k] : null;
@@ -1893,6 +1928,7 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
     const toggle = fakeEl();
     const count = fakeEl();
     const list = fakeEl({ hidden: true, scrollHeight: 900, clientHeight: 300, scrollTop: 600 });
+    (list as unknown as { appendChild(n: unknown): void }).appendChild = (n: unknown) => list.children.push(n);
     const document = {
       getElementById: (id: string) =>
         ({ 'worklog-toggle': toggle, 'worklog-count': count, 'worklog-list': list })[id] ?? null,
@@ -1910,16 +1946,56 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
       [
         'esc',
         'escAttr',
+        'toNum',
+        'formatDuration',
         'decodeSlackEntities',
         'setTextIfChanged',
+        'renderTaskMeta',
+        'wlToolSummary',
         'renderWorkLogEntry',
+        'wlGroupOf',
+        'wlBuildRows',
+        'wlTaskInfo',
+        'renderWorkLogGroupHead',
+        'renderWorkLogGroup',
+        'wlGroupOpen',
+        'wlGroupEl',
+        // Spec 12: the list shows the scope of the agent the panel shows (main here).
+        'wlScopeEntry',
+        'wlScopeEntries',
+        'wlLegacyMixed',
+        // Tool call cards: a paired result is not a row (pure pairing).
+        'wlPairKey',
+        'wlPairTools',
+        'wlPairsOf',
+        'wlCardHidden',
+        'wlVisible',
+        'wlIsCard',
+        'wlMarkStop',
+        'wlRenderList',
+        'wlAppendTail',
         'wlDetailOpen',
+        'wlNavRows',
         'wlEnsureTabStop',
+        'wlNamesNewAgent',
         'setWorkLogOpen',
         'paintWorkLog',
       ],
-      ['WL_LABELS'],
-      { document, _wl: state },
+      ['WL_LABELS', 'WL_STOP_SEL'],
+      {
+        document,
+        _wl: state,
+        // The cards' data needs the element (covered by the card suite below).
+        wlHydrateCards: () => {},
+        wlOnToolResult: () => false,
+        wlPaintCard: () => {},
+        panelSessionKey: null,
+        _sessionCache: {},
+        updateTimersIn: () => {},
+        _panelAgent: '',
+        _panelAgentIdsShown: {},
+        renderPanelAgents: () => {},
+      },
     );
     return { m, toggle, count, list };
   }
@@ -1944,13 +2020,15 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
   });
 
   it('tail-follow stops while an entry’s detail is open', () => {
-    const st = { entries: [{ seq: 1 }], painted: true, open: new Set([1]) };
+    // As wlMerge leaves it: state.entries already holds the added entry.
+    const st = { entries: [{ seq: 1 }, { seq: 2 }] as Array<{ seq: number }>, painted: true, open: new Set([1]) };
     const p = page(st);
     p.list.hidden = false;
     p.list.scrollTop = 600; // at the bottom (900 - 600 <= 300 + 40)
     p.m.paintWorkLog(st, [{ entry: { seq: 2, kind: 'tool', text: 'x' }, index: 1 }]);
     expect(p.list.scrollTop).toBe(600);
     st.open.clear();
+    st.entries.push({ seq: 3 });
     p.m.paintWorkLog(st, [{ entry: { seq: 3, kind: 'tool', text: 'y' }, index: 2 }]);
     expect(p.list.scrollTop).toBe(900);
   });
@@ -1964,12 +2042,17 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
     {
       document: { getElementById: (id: string) => (id === 'panel-tasks' ? container : null) },
       _panelTasksExpanded: false,
+      // The browser morphs the block; this fake writes it.
+      morphInnerHtml: (el: { innerHTML: string }, html: string) => {
+        el.innerHTML = html;
+      },
     },
   );
 
   it('zero or missing tasks show the header and an empty line', () => {
     for (const t of [[], undefined, null]) {
       container.innerHTML = '';
+      (container as { _html?: string })._html = undefined; // a fresh block (the same data on a live block writes nothing)
       renderPanelTasks(t);
       expect(container.style.display).toBe('');
       expect(container.innerHTML).toBe(
@@ -1993,10 +2076,12 @@ describe('stats: only the latest period / user selection paints (shipped loadSta
       });
     const painted: string[] = [];
     const m = load<{ loadStats(): Promise<void>; select(p: string, u: string): void }>(
-      ['statsJson', 'loadStats'],
-      ['_statsGen'],
+      ['statsJson', 'loadStats', 'markStatsLoading'],
+      ['_statsGen', 'STAT_IDS'],
       {
         fetch,
+        // The loading bars (markStatsLoading) find no elements in this harness.
+        document: { getElementById: () => null },
         currentPeriod: 'day',
         currentUserId: '',
         paintStats: (d: { tag?: string } | null) => painted.push(`stats:${d ? d.tag : 'dash'}`),
@@ -2175,34 +2260,29 @@ describe('DONE column: archived cards hide behind Show archives (shipped planDon
     planDoneColumn(IDLE, CLOSED, { now: NOW, showOlder: false, showArchives: false, revealKey: null, ...o });
   const keys = (p: DonePlan) => p.done.map((d) => d.s.key);
 
-  it('hides archived cards by default; sleeping ones stay', () => {
+  // SSOT 2026-10-22 T11/T12: no 7-day cutoff any more — every age is in, and
+  // planDoneGroups files the cards under the day they finished (earlier days
+  // start closed).
+  it('hides archived cards by default; sleeping ones stay, of any age', () => {
     const p = plan();
-    expect(keys(p)).toEqual(['idle-1', 'sleeping-recent']);
-    expect(p.done.map((d) => d.col)).toEqual(['idle', 'closed']);
-    expect(p).toMatchObject({ olderCount: 1, archivedCount: 2 });
+    expect(keys(p)).toEqual(['idle-1', 'sleeping-recent', 'sleeping-old']);
+    expect(p.done.map((d) => d.col)).toEqual(['idle', 'closed', 'closed']);
+    expect(p).toMatchObject({ archivedCount: 2 });
+    expect('olderCount' in p).toBe(false);
   });
 
-  it('Show older counts only cards that would appear: older non-archived unless archives are shown', () => {
-    expect(keys(plan({ showOlder: true }))).toEqual(['idle-1', 'sleeping-recent', 'sleeping-old']);
+  it('Show archives adds every archive, of any age', () => {
     const shown = plan({ showArchives: true });
-    expect(keys(shown)).toEqual(['idle-1', 'sleeping-recent', 'archived-recent']);
-    expect(shown).toMatchObject({ olderCount: 2, archivedCount: 2 });
-    expect(keys(plan({ showArchives: true, showOlder: true }))).toEqual([
-      'idle-1',
-      'sleeping-recent',
-      'archived-recent',
-      'sleeping-old',
-      'archived-old',
-    ]);
+    expect(keys(shown)).toEqual(['idle-1', 'sleeping-recent', 'archived-recent', 'sleeping-old', 'archived-old']);
+    expect(shown).toMatchObject({ archivedCount: 2 });
   });
 
-  it('a revealed (deep-linked) archive shows on its own, also when older than 7 days', () => {
+  it('a revealed (deep-linked) archive shows on its own, whatever its age', () => {
     const recent = plan({ revealKey: 'archived-recent' });
-    expect(keys(recent)).toEqual(['idle-1', 'sleeping-recent', 'archived-recent']);
-    expect(recent).toMatchObject({ olderCount: 1, archivedCount: 2 });
+    expect(keys(recent)).toEqual(['idle-1', 'sleeping-recent', 'archived-recent', 'sleeping-old']);
     const old = plan({ revealKey: 'archived-old' });
-    expect(keys(old)).toEqual(['idle-1', 'sleeping-recent', 'archived-old']);
-    expect(old).toMatchObject({ olderCount: 1, archivedCount: 2 });
+    expect(keys(old)).toEqual(['idle-1', 'sleeping-recent', 'sleeping-old', 'archived-old']);
+    expect(old).toMatchObject({ archivedCount: 2 });
   });
 });
 
@@ -2268,11 +2348,12 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
   function page(card: Card, opts: { showArchives?: boolean } = {}) {
     const calls = { loads: 0, toggled: [] as string[], panel: [] as unknown[][], scrolled: 0, stored: 0 };
     const cardEls: Record<string, { scrollIntoView(): void }> = Object.create(null);
+    const dayOpen: Record<string, boolean> = Object.create(null);
     const m = load<{
       openDeepLinkedSession(): void;
-      state(): { revealed: string | null; showOlder: boolean; link: string | null; showArchives: boolean };
+      state(): { revealed: string | null; dayOpen: string[]; link: string | null; showArchives: boolean };
     }>(
-      ['resolveDeepLinkKey', 'openDeepLinkedSession'],
+      ['toNum', 'doneTimeOf', 'dayKeyOf', 'resolveDeepLinkKey', 'openDeepLinkedSession'],
       [],
       {
         _deepLinkSession: 'work:C1:1700000000.000700',
@@ -2283,7 +2364,7 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
         _expanded: new Set<string>(),
         showArchives: !!opts.showArchives,
         showSleeping: true,
-        showOlderClosed: false,
+        _doneGroupOpen: dayOpen,
         _revealedKey: null,
         localStorage: {
           setItem: () => {
@@ -2297,7 +2378,7 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
         openPanel: (...a: unknown[]) => calls.panel.push(a),
       },
       [
-        'function state() { return { revealed: _revealedKey, showOlder: showOlderClosed, link: _deepLinkSession, showArchives: showArchives }; }',
+        'function state() { return { revealed: _revealedKey, dayOpen: Object.keys(_doneGroupOpen), link: _deepLinkSession, showArchives: showArchives }; }',
       ],
     );
     const render = () => {
@@ -2317,7 +2398,7 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
     p.m.openDeepLinkedSession(); // the card is hidden: reveal + re-render
     expect(p.m.state()).toEqual({
       revealed: KEY,
-      showOlder: false,
+      dayOpen: [],
       link: 'work:C1:1700000000.000700',
       showArchives: false,
     });
@@ -2331,10 +2412,14 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
     expect(p.calls.stored).toBe(0); // the stored Show archives choice is untouched
   });
 
-  it('an older sleeping card still opens the older group, as before', () => {
-    const p = page({ key: KEY });
+  it('a card in a closed DONE day opens that day (T12), then gives up if it still is not drawn', () => {
+    const p = page({ key: KEY, lastActivity: '2026-10-01T03:00:00.000Z' });
     p.m.openDeepLinkedSession();
-    expect(p.m.state()).toMatchObject({ revealed: null, showOlder: true });
+    expect(p.m.state().revealed).toBeNull();
+    expect(p.m.state().dayOpen).toHaveLength(1);
+    expect(p.calls.loads).toBe(1);
+    p.m.openDeepLinkedSession();
+    expect(p.m.state().link).toBeNull();
     expect(p.calls.loads).toBe(1);
   });
 });
@@ -2480,13 +2565,11 @@ describe('DONE column: sleeping cards hide behind the Sleeping toggle (shipped p
   const keys = (p: DonePlan) => p.done.map((d) => d.s.key);
 
   it('shows sleeping cards unless the toggle is off, and always counts them', () => {
-    expect(keys(plan())).toEqual(['idle-1', 'sleeping-recent', 'sleeping-mid']);
-    expect(plan()).toMatchObject({ sleepingCount: 3, archivedCount: 1, olderCount: 1 });
+    expect(keys(plan())).toEqual(['idle-1', 'sleeping-recent', 'sleeping-mid', 'sleeping-old']);
+    expect(plan()).toMatchObject({ sleepingCount: 3, archivedCount: 1 });
     const off = plan({ showSleeping: false });
     expect(keys(off)).toEqual(['idle-1']);
-    // Hidden sleeping cards are not "older" cards either: Show older would add nothing.
-    expect(off).toMatchObject({ sleepingCount: 3, archivedCount: 1, olderCount: 0 });
-    expect(keys(plan({ showSleeping: false, showOlder: true }))).toEqual(['idle-1']);
+    expect(off).toMatchObject({ sleepingCount: 3, archivedCount: 1 });
   });
 
   it('hiding sleeping leaves archives to their own toggle', () => {
@@ -2550,8 +2633,8 @@ describe('deep link to a hidden sleeping card reveals it (shipped openDeepLinked
   it('reveals the sleeping card for this page load without touching the stored choice', () => {
     const KEY = 'inst::work:C1:1700000000.000900';
     let loads = 0;
-    const m = load<{ openDeepLinkedSession(): void; state(): { revealed: string | null; showOlder: boolean } }>(
-      ['resolveDeepLinkKey', 'openDeepLinkedSession'],
+    const m = load<{ openDeepLinkedSession(): void; state(): { revealed: string | null; dayOpen: string[] } }>(
+      ['toNum', 'doneTimeOf', 'dayKeyOf', 'resolveDeepLinkKey', 'openDeepLinkedSession'],
       [],
       {
         _deepLinkSession: 'work:C1:1700000000.000900',
@@ -2562,7 +2645,7 @@ describe('deep link to a hidden sleeping card reveals it (shipped openDeepLinked
         _expanded: new Set<string>(),
         showArchives: false,
         showSleeping: false,
-        showOlderClosed: false,
+        _doneGroupOpen: Object.create(null),
         _revealedKey: null,
         loadSessions: () => {
           loads++;
@@ -2570,10 +2653,10 @@ describe('deep link to a hidden sleeping card reveals it (shipped openDeepLinked
         toggleCard: () => {},
         openPanel: () => {},
       },
-      ['function state() { return { revealed: _revealedKey, showOlder: showOlderClosed }; }'],
+      ['function state() { return { revealed: _revealedKey, dayOpen: Object.keys(_doneGroupOpen) }; }'],
     );
     m.openDeepLinkedSession();
-    expect(m.state()).toEqual({ revealed: KEY, showOlder: false });
+    expect(m.state()).toEqual({ revealed: KEY, dayOpen: [] });
     expect(loads).toBe(1);
   });
 });
@@ -2626,5 +2709,333 @@ describe('admin lifecycle form (shipped lifecycleToForm + lifecycleFromForm)', (
         boardArchiveWindowHours: '-1',
       }),
     ).toEqual({ ok: false, field: 'boardArchiveWindowHours' });
+  });
+});
+
+describe('답변하기 opens the panel on the open question (shipped renderMultiChoiceCard → openPanel)', () => {
+  // A panel-scroll model: question (when shown) · collapsed work-log header · turns,
+  // in that order (the template's #panel-scroll). The browser clamps scrollTop to
+  // the content, so a stale position from the previous opening shrinks with it.
+  const KEY = 'inst::work:C1:1700000000.000100';
+  const AREA_TOP = 200;
+  const VIEW = 600;
+  const WL_HEADER = 40;
+  const TURNS_LOADED = 4000;
+  const TURNS_PLACEHOLDER = 60;
+  type Session = Record<string, unknown>;
+  type Panel = {
+    openPanel(key: string, focusWorkLog?: boolean): void;
+    renderMultiChoiceCard(s: Session, faceSummary: string): string;
+    renderPanelQuestion(s: Session): void;
+    olderTurnsZone(firstTurnTop: number, areaTop: number): boolean;
+    panelOlderStep(armed: boolean, inZone: boolean, canLoad: boolean): { load: boolean; armed: boolean };
+    stick(): boolean;
+    armed(): boolean;
+  };
+
+  const waitingMulti = (over: Session = {}): Session => ({
+    key: KEY,
+    conversationId: 'conv1',
+    ownerId: 'U1',
+    activityState: 'waiting',
+    title: 'S',
+    pendingQuestion: {
+      type: 'user_choices',
+      title: '두 가지 확인',
+      questions: [
+        {
+          id: 'q1',
+          question: '첫 질문?',
+          choices: [
+            { id: '1', label: 'a' },
+            { id: '2', label: 'b' },
+          ],
+          recommendedChoiceId: '1',
+        },
+        { id: 'q2', question: '둘째 질문?', choices: [{ id: '1', label: 'c' }], recommendedChoiceId: '1' },
+      ],
+    },
+    ...over,
+  });
+
+  function page(opts: {
+    session: Session;
+    questionHeight?: number;
+    prevScrollTop?: number;
+    turns?: 'ok' | 'empty' | 'fail' | 'held';
+    settle?: 'ok' | 'empty' | 'fail';
+  }) {
+    const els: Record<string, FakeEl & Record<string, unknown>> = {};
+    const el = (id: string) => {
+      els[id] ??= Object.assign(fakeEl({ id }), { classList: { add() {}, remove() {} } });
+      return els[id];
+    };
+    const question = el('panel-question');
+    question.style.display = 'none';
+    el('panel-worklog').style.display = '';
+    const turns = el('panel-turns');
+    // openPanel's .then and .catch both end in a landing, so a harness gap (a new
+    // dependency of openPanel that is not injected) would silently run the
+    // failure path and still land. Make that loud: only a 'fail' run may show it.
+    const outcome = opts.turns === 'held' ? (opts.settle ?? 'ok') : (opts.turns ?? 'ok');
+    let turnsHtml = '';
+    Object.defineProperty(turns, 'innerHTML', {
+      get: () => turnsHtml,
+      set: (v: string) => {
+        if (v.includes('Failed to load conversation') && outcome !== 'fail')
+          throw new Error('openPanel took its failure path on a successful load: the harness is missing a dependency');
+        turnsHtml = v;
+      },
+      configurable: true,
+    });
+    const qH = () => (question.style.display === 'none' ? 0 : (opts.questionHeight ?? 420));
+    const tH = () => (turns.innerHTML.includes('class="turn') ? TURNS_LOADED : TURNS_PLACEHOLDER);
+    const scroll = el('panel-scroll');
+    let stored = opts.prevScrollTop ?? 0;
+    const height = () => qH() + WL_HEADER + tH();
+    const max = () => Math.max(0, height() - VIEW);
+    Object.defineProperties(scroll, {
+      scrollHeight: { get: height, configurable: true },
+      clientHeight: { value: VIEW, configurable: true },
+      scrollTop: {
+        get: () => Math.min(stored, max()),
+        set: (v: number) => {
+          stored = Math.max(0, Math.min(v, max()));
+        },
+        configurable: true,
+      },
+    });
+    Object.assign(scroll, {
+      scrollTo: ({ top }: { top: number }) => {
+        scroll.scrollTop = top;
+      },
+      getBoundingClientRect: () => ({ top: AREA_TOP, bottom: AREA_TOP + VIEW, height: VIEW }),
+    });
+    Object.assign(question, { getBoundingClientRect: () => ({ top: AREA_TOP - scroll.scrollTop, height: qH() }) });
+    Object.assign(el('panel-worklog'), {
+      getBoundingClientRect: () => ({ top: AREA_TOP + qH() - scroll.scrollTop, height: WL_HEADER }),
+    });
+    Object.assign(el('worklog-toggle'), { getBoundingClientRect: () => ({ top: 0, height: WL_HEADER }) });
+
+    let release: () => void = () => {};
+    const payload = { id: 'conv1', titleSub: 'sub', hasMore: false, turns: [{ id: 't1', role: 'assistant' }] };
+    const fetchImpl = () => {
+      if (opts.turns === 'fail') return Promise.reject(new Error('down'));
+      const res = { json: async () => (outcome === 'empty' ? { ...payload, turns: [] } : payload) };
+      if (opts.turns === 'held')
+        return new Promise((r, j) => (release = () => (outcome === 'fail' ? j(new Error('down')) : r(res))));
+      return Promise.resolve(res);
+    };
+    const cache: Record<string, Session> = { [KEY]: opts.session };
+    const m = load<Panel>(
+      [
+        'openPanel',
+        'turnsSkeletonHtml',
+        'renderPanelPermission',
+        'renderPermissionBlock',
+        'renderPanelQuestion',
+        // re-agent-run D9: both slots keep the 입력 필요 head in step.
+        'renderPanelNeedsHead',
+        'panelQuestionShown',
+        'renderMultiChoicePanel',
+        'renderMultiChoiceCard',
+        'esc',
+        'escAttr',
+        'escJs',
+        'choiceDataAttrs',
+        'stripRecommendedMarker',
+        'resolveRecommendedId',
+        'scrollPanelToWorkLog',
+        'workLogLandingTop',
+        'landPanel',
+        'olderTurnsZone',
+        'panelOlderStep',
+      ],
+      [
+        '_mcState',
+        '_panelLand',
+        '_panelLanded',
+        '_panelReturnFocus',
+        '_panelTurnsHasMore',
+        '_panelTurnsLoading',
+        '_panelTurnsOldestId',
+        '_panelGen',
+        '_panelOlderArmed',
+        '_panelStickBottom',
+        '_panelOnQuestion',
+      ],
+      {
+        document: { getElementById: el },
+        fetch: fetchImpl,
+        _sessionCache: cache,
+        currentUserId: 'U1',
+        READ_ONLY_MSG: 'read-only',
+        panelOpen: false,
+        panelSessionKey: null,
+        panelConvId: null,
+        _panelTasksExpanded: false,
+        resetWorkLog: () => {},
+        setWorkLogOpen: () => {},
+        renderPanelTasks: () => {},
+        _panelAgent: '',
+        _panelAgentListOpen: false,
+        renderTurn: (t: { id: string }) => `<div class="turn assistant" data-turn-id="${t.id}"></div>`,
+        attachRawToggleHandlers: () => {},
+        // Session artifacts (SSOT 2026-10-23): the panel strip and per-answer chips.
+        renderPanelArtifactsSection: () => {},
+        ensureArtifacts: () => {},
+        decoratePanelTurns: () => {},
+        isSiblingSession: () => false,
+        // main's own openPanel deps since this harness was written (#372 panel controls, spec 12 agent views).
+        renderPanelControls: () => {},
+        // Spec 13: the session parts go through one live path; a keyboard opening focuses its landing.
+        repaintPanelSession: () => {},
+        renderPanelComposer: () => {},
+        focusPanelLanding: () => {},
+        _panelTasksEarlier: false,
+        // SSOT 2026-10-24: openPanel marks the layout before the drawer changes it (layout-shift FLIP).
+        layoutBeforeChange: () => {},
+        renderPanelAgents: () => {},
+        panelAgentTasks: () => [],
+        panelAgentLabel: () => '',
+        generateTitleSub: () => {},
+        _panelTitleSub: '',
+        panelTitleSubCanRegen: () => true,
+        loadWorkLog: () => {},
+        renderMdBasic: String, // carries backticks, so it cannot be cooked; no question here has context
+        timeAgo: () => '',
+        safeHref: (u: string) => u,
+        formatTokens: String,
+        toNum: Number,
+      },
+      ['function stick() { return _panelStickBottom; }', 'function armed() { return _panelOlderArmed; }'],
+    );
+    /** Click the card's 답변하기 button: run its shipped onclick against the shipped openPanel. */
+    const clickAnswer = () => {
+      const html = m.renderMultiChoiceCard(cache[KEY], '');
+      // re-agent-inbox D10: the button is the card's primary (btn-choice btn-choice-primary).
+      const btn = /<button class="btn-choice[^"]*" onclick="([^"]+)"[^>]*>답변하기<\/button>/.exec(html);
+      if (!btn) throw new Error('no 답변하기 button on the card');
+      new Function('event', 'openPanel', btn[1])({ stopPropagation() {} }, m.openPanel);
+    };
+    /** The answer form's top edge is inside the visible scroll area. */
+    const formInView = () => {
+      const top = AREA_TOP - scroll.scrollTop;
+      return question.style.display !== 'none' && top >= AREA_TOP && top < AREA_TOP + VIEW;
+    };
+    return { m, scroll, question, cache, clickAnswer, formInView, release: () => release(), bottom: max };
+  }
+
+  it('lands on the answer form, not on the newest turns, and stays there while the panel settles', async () => {
+    const p = page({ session: waitingMulti() });
+    p.clickAnswer();
+    await flush();
+    await flush();
+    expect(p.formInView()).toBe(true);
+    expect(p.scroll.scrollTop).toBe(0);
+    // A later resize (subtitle, Tasks) must not drag the reader to the bottom.
+    expect(p.m.stick()).toBe(false);
+    // The first scroll event after this landing (first turn right under the form)
+    // loads no older turns by itself, like the 작업 로그 landing at the top.
+    const firstTurnTop = AREA_TOP + 420 + WL_HEADER - p.scroll.scrollTop;
+    const step = p.m.panelOlderStep(p.m.armed(), p.m.olderTurnsZone(firstTurnTop, AREA_TOP), true);
+    expect(step).toEqual({ load: false, armed: false });
+  });
+
+  it('lands on the form even when the panel was left scrolled down by the previous opening', async () => {
+    const p = page({ session: waitingMulti(), prevScrollTop: 3000 });
+    p.clickAnswer();
+    await flush();
+    await flush();
+    expect(p.formInView()).toBe(true);
+  });
+
+  it('the form is in view as soon as the panel opens, before the turns arrive', () => {
+    const p = page({ session: waitingMulti(), questionHeight: 900, prevScrollTop: 3000, turns: 'held' });
+    p.clickAnswer();
+    expect(p.formInView()).toBe(true);
+  });
+
+  it.each([
+    'ok',
+    'empty',
+    'fail',
+  ] as const)('a reader who scrolls down a tall form while the turns load is not pulled back (turns: %s)', async (outcome) => {
+    const p = page({ session: waitingMulti(), questionHeight: 900, turns: 'held', settle: outcome });
+    p.clickAnswer();
+    p.scroll.scrollTop = 200; // the reader moves to a later question before the response
+    p.release();
+    await flush();
+    await flush();
+    expect(p.scroll.scrollTop).toBe(200);
+  });
+
+  it('every 답변하기 opening lands on the form again, not only the first', async () => {
+    const p = page({ session: waitingMulti(), questionHeight: 900 });
+    p.clickAnswer();
+    await flush();
+    await flush();
+    p.scroll.scrollTop = 700; // read down past the form, then open it again
+    p.clickAnswer();
+    await flush();
+    await flush();
+    expect(p.formInView()).toBe(true);
+  });
+
+  it('a tall form whose turns fail to load still opens at its top', async () => {
+    const p = page({ session: waitingMulti(), questionHeight: 900, prevScrollTop: 3000, turns: 'fail' });
+    p.clickAnswer();
+    await flush();
+    await flush();
+    expect(p.formInView()).toBe(true);
+  });
+
+  it('a tall form whose conversation has no turns yet still opens at its top', async () => {
+    const p = page({ session: waitingMulti(), questionHeight: 900, prevScrollTop: 3000, turns: 'empty' });
+    p.clickAnswer();
+    await flush();
+    await flush();
+    expect(p.formInView()).toBe(true);
+  });
+
+  it('a waiting session with no recorded conversation opens at the top of its form', () => {
+    const p = page({ session: waitingMulti({ conversationId: undefined }), questionHeight: 900, prevScrollTop: 3000 });
+    p.clickAnswer();
+    expect(p.formInView()).toBe(true);
+  });
+
+  it('a question answered before the turns arrive lands on the newest turns instead', async () => {
+    const p = page({ session: waitingMulti(), turns: 'held' });
+    p.clickAnswer();
+    // The answer lands (here or in Slack): the WS session_update re-renders the panel question.
+    p.cache[KEY] = waitingMulti({ activityState: 'working', pendingQuestion: undefined });
+    p.m.renderPanelQuestion(p.cache[KEY]);
+    p.release();
+    await flush();
+    await flush();
+    expect(p.scroll.scrollTop).toBe(p.bottom());
+    expect(p.m.stick()).toBe(true);
+  });
+
+  it('an opening without an open question still lands on the newest turns and holds them', async () => {
+    const p = page({ session: waitingMulti({ activityState: 'idle', pendingQuestion: undefined }) });
+    p.m.openPanel(KEY);
+    await flush();
+    await flush();
+    expect(p.scroll.scrollTop).toBe(p.bottom());
+    expect(p.m.stick()).toBe(true);
+  });
+
+  it('작업 로그 on a waiting session keeps the work-log landing (top, or the header for a tall question)', async () => {
+    const short = page({ session: waitingMulti() });
+    short.m.openPanel(KEY, true);
+    await flush();
+    await flush();
+    expect(short.scroll.scrollTop).toBe(0);
+    const tall = page({ session: waitingMulti(), questionHeight: 900 });
+    tall.m.openPanel(KEY, true);
+    await flush();
+    await flush();
+    expect(tall.scroll.scrollTop).toBe(900);
   });
 });

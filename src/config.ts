@@ -1,8 +1,10 @@
 import { WebClient } from '@slack/web-api';
 import { parseBgKeepaliveMaxMs } from './agent-runtime/background-keepalive';
+import { type LlmuxTierId, parseLlmuxAccountTiers } from './auth/llmux-tiers';
 import { resolveIncidentEvidenceOrigin } from './incident/evidence';
 import { Logger } from './logger';
 import { DEFAULT_OAUTH_REFRESH_INTERVAL_MS } from './oauth/oauth-refresh-scheduler';
+import { parseReleaseNotesChannels, type ReleaseNotesChannelsConfig } from './release-notes-routes';
 import { normalizeSigningSecret, SIGNING_SECRET_MIN_LENGTH } from './slack-signing-secret';
 
 // Logger for preflight checks and config validation
@@ -305,6 +307,44 @@ export function getIncidentEvidenceConfig(): IncidentEvidenceConfig | null {
     );
     return null;
   }
+}
+
+/**
+ * Typed getter for `SOMA_RELEASE_NOTES_CHANNELS` (grammar in
+ * `release-notes-routes.ts`). Read on every call — it runs once per deploy, and
+ * a cached parse would outlive the env it was read from (tests reset env per
+ * file). Malformed entries are dropped individually and logged here; the
+ * poster also reports them in the deploy thread.
+ */
+export function getReleaseNotesChannels(): ReleaseNotesChannelsConfig {
+  const parsed = parseReleaseNotesChannels(process.env.SOMA_RELEASE_NOTES_CHANNELS);
+  if (parsed.invalid.length > 0) {
+    logger.warn('SOMA_RELEASE_NOTES_CHANNELS has malformed entries — they are ignored', { invalid: parsed.invalid });
+  }
+  return parsed;
+}
+
+/**
+ * Typed getter for `SOMA_LLMUX_ACCOUNT_TIERS` (SSOT 2026-10-23 T10; grammar in
+ * `auth/llmux-tiers.ts`): the operator's account → subscription tier map for
+ * the dashboard cooldown timeline. Returns the operator's entries only; the
+ * built-in defaults are applied last by `resolveAccountTier`. Malformed
+ * entries are dropped and logged once per distinct value.
+ */
+let _llmuxTiersMemo: { raw: string | undefined; tiers: Record<string, LlmuxTierId> } | null = null;
+export function getLlmuxAccountTiers(): Record<string, LlmuxTierId> {
+  const raw = process.env.SOMA_LLMUX_ACCOUNT_TIERS;
+  // Parsed (and a malformed entry warned about) once per distinct value — the
+  // capacity view reads this every 30 s.
+  if (_llmuxTiersMemo && _llmuxTiersMemo.raw === raw) return { ..._llmuxTiersMemo.tiers };
+  const parsed = parseLlmuxAccountTiers(raw);
+  if (parsed.invalid.length > 0) {
+    logger.warn('SOMA_LLMUX_ACCOUNT_TIERS has malformed entries — they are ignored', { invalid: parsed.invalid });
+  }
+  // Operator entries only: resolveAccountTier applies the built-in defaults
+  // last, so a bare-name override (`ai1=pro500`) still beats a scoped default.
+  _llmuxTiersMemo = { raw, tiers: { ...parsed.tiers } };
+  return { ..._llmuxTiersMemo.tiers };
 }
 
 export const config = {

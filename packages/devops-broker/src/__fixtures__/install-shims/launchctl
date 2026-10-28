@@ -1,0 +1,27 @@
+#!/bin/bash
+# Test stand-in for launchctl (install.test.ts): a loaded job is a marker file
+# $SHIM_STATE/launchd/<label>. bootstrap lints the plist the way launchd would refuse a bad one.
+set -euo pipefail
+{ printf 'launchctl'; printf ' %s' "$@"; printf '\n'; } >>"$SHIM_LOG"
+mkdir -p "$SHIM_STATE/launchd"
+case ${1:-} in
+  print)
+    label=${2#system/}
+    [ -e "$SHIM_STATE/launchd/$label" ] || { echo "Could not find service \"$label\" in domain for system" >&2; exit 113; }
+    echo "$2 = { state = running }"
+    ;;
+  bootstrap)
+    [ "$2" = system ] || { echo 'launchctl shim: only the system domain is supported' >&2; exit 2; }
+    /usr/bin/plutil -lint "$3" >/dev/null
+    touch "$SHIM_STATE/launchd/$(basename "$3" .plist)"
+    ;;
+  bootout)
+    label=${2#system/}
+    [ -e "$SHIM_STATE/launchd/$label" ] || { echo 'Boot-out failed: 3: No such process' >&2; exit 3; }
+    rm -f "$SHIM_STATE/launchd/$label"
+    ;;
+  *)
+    echo "launchctl shim: unsupported command ${1:-}" >&2
+    exit 2
+    ;;
+esac

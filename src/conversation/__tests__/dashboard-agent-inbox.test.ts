@@ -66,9 +66,11 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(TEMPLATE).not.toContain('id="cards-closed"');
   });
 
-  it('keeps the 7-day Show older toggle for closed cards', () => {
-    expect(TEMPLATE).toContain('Show older');
-    expect(TEMPLATE).toContain('function toggleOlderClosed()');
+  it('DONE files closed cards under the day they finished instead of a 7-day Show older toggle (T11/T12)', () => {
+    expect(TEMPLATE).not.toContain('Show older');
+    expect(TEMPLATE).not.toContain('function toggleOlderClosed()');
+    expect(TEMPLATE).toContain('function planDoneGroups(');
+    expect(TEMPLATE).toContain('function toggleDoneGroup(');
   });
 
   it('the stats strip leads the page and the board follows it (§3.1-2)', () => {
@@ -125,11 +127,12 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(toggle).toContain("btn.setAttribute('aria-pressed', pressed)");
   });
 
-  it('the DONE count is the cards it shows; Show older counts what expanding would add (§3.1-1)', () => {
+  it('the DONE count is every card under its day groups; the days come from planDoneGroups (T11/T12)', () => {
     const body = fnBody('renderBoard');
     expect(body).toContain('planDoneColumn(board.idle || [], board.closed || [], {');
     expect(body).toContain('done: plan.done.length');
-    expect(body).toContain('renderOlderToggle(plan.olderCount)');
+    expect(body).toContain('planDoneGroups(plan.done, Date.now(), _doneGroupOpen)');
+    expect(body).not.toContain('renderOlderToggle');
     expect(body).toContain('renderArchivesToggle(plan.archivedCount)');
     // The #814 tokens tooltip follows the board it describes.
     expect(body).toContain('updateTokenBreakdown();');
@@ -211,14 +214,19 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
 
   it('every card can open the panel; without a conversation the work log reads 작업 로그 없음', () => {
     const body = fnBody('renderCardBody');
-    expect(body).toMatch(/const worklogBtn = '<button type="button" class="btn-action btn-primary"/);
+    // re-agent-inbox D10: 작업 로그 is the primary unless the card holds a decision for this viewer.
+    expect(body).toMatch(
+      /const worklogBtn = '<button type="button" class="btn-action' \+ \(canDecideHere \? '' : ' btn-primary'\) \+ '"/,
+    );
     expect(TEMPLATE).toContain("var WL_EMPTY_MSG = '작업 로그 없음';");
     expect(fnBody('resetWorkLog')).toContain('WL_EMPTY_MSG');
     expect(fnBody('openPanel')).toContain('resetWorkLog(panelConvId, true)');
   });
 
   it('a WS session_update re-attaches sibling-instance cards from the last poll', () => {
-    expect(fnBody('connectWs')).toContain('renderBoard(mergeSiblingCards(msg.board))');
+    // The push goes through paintPushedBoard, which merges once the first poll has painted.
+    expect(fnBody('connectWs')).toContain('paintPushedBoard(msg.board)');
+    expect(fnBody('paintPushedBoard')).toContain('renderBoard(mergeSiblingCards(board))');
     expect(fnBody('loadSessions')).toContain('_lastPolledBoard = data.board;');
   });
 
@@ -239,7 +247,8 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
   });
 
   it('the 작업 로그 button opens the panel at the work log', () => {
-    expect(DASHBOARD_TS).toContain("openPanel(\\\\'' + escJs(s.key) + '\\\\',true)");
+    // A keyboard click (event.detail === 0) lands focus too (spec 13).
+    expect(DASHBOARD_TS).toContain("openPanel(\\\\'' + escJs(s.key) + '\\\\',true,");
     expect(TEMPLATE).toContain('작업 로그');
   });
 });
@@ -258,18 +267,22 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(fnBody('resetWorkLog')).toContain('_wl.closed = true');
   });
 
-  it('Tasks sit in a pinned block above the scroll area, after the token badges (§3.1-6)', () => {
+  it('Tasks sit in a pinned block above the scroll area, right under the header (§3.1-6)', () => {
     const panel = TEMPLATE.slice(TEMPLATE.indexOf('<div class="slide-panel" id="slide-panel">'));
-    const tokens = panel.indexOf('id="panel-tokens"');
-    const tasks = panel.indexOf('<div class="panel-tasks" id="panel-tasks"></div>');
+    const header = panel.indexOf('<div class="panel-header">');
+    const tasks = panel.indexOf(
+      '<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>',
+    );
     const scroll = panel.indexOf('<div class="panel-scroll" id="panel-scroll">');
     const command = panel.indexOf('<div class="panel-command" id="panel-command">');
-    expect(tokens).toBeGreaterThan(0);
-    expect(tasks).toBeGreaterThan(tokens);
+    expect(header).toBeGreaterThan(0);
+    expect(tasks).toBeGreaterThan(header);
     expect(scroll).toBeGreaterThan(tasks);
     expect(panel.slice(scroll, command)).not.toContain('panel-tasks');
+    // SSOT 2026-10-24: still pinned, but it yields height down to one 44px row
+    // (and scrolls inside) so the conversation keeps half the panel body.
     expect(TEMPLATE).toMatch(
-      /\n\.panel-tasks \{[^}]*flex: none;[^}]*max-height: min\(30vh, 240px\);[^}]*overflow-y: auto;/,
+      /\n\.panel-tasks \{[^}]*min-height: 44px;[^}]*max-height: min\(30vh, 240px\);[^}]*overflow-y: auto;/,
     );
     expect(fnBody('panelScrollAnchor')).not.toContain('#panel-tasks');
   });
@@ -451,7 +464,9 @@ describe('agent inbox board — motion contract (§4)', () => {
     expect(TEMPLATE).toMatch(
       /\.card \.context-bar-fill \{[^}]*transform-origin: left center;[^}]*transition: transform/,
     );
-    expect(fnBody('renderCardBody')).toContain('style="transform:scaleX(');
+    // The panel's 세션 정보 shows the context as a field of cells now (re-context-window D5/D18), not a bar.
+    expect(fnBody('contextBlockHtml')).toContain('<div class="cw-field" aria-hidden="true">');
+    expect(fnBody('panelInfoHtml')).not.toContain('transform:scaleX(');
   });
 
   it('board cards drop the star on the recommended choice (the solid primary marks it)', () => {
@@ -478,10 +493,10 @@ describe('agent inbox board — responsive (§5)', () => {
     expect(TEMPLATE).toContain('max-width: 1280px');
   });
 
-  it('640–1023px scrolls the three columns horizontally with snap', () => {
-    const block = TEMPLATE.match(/@media \(max-width: 1023px\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  it('a board narrower than 840px scrolls the three columns horizontally with snap (container query, SSOT 2026-10-24)', () => {
+    const block = TEMPLATE.match(/@container inbox \(max-width: 839px\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     expect(block).toContain('scroll-snap-type: x mandatory');
-    expect(block).toContain('minmax(300px');
+    expect(block).toContain('minmax(min(300px');
   });
 
   it('<640px raises tap targets to 44px', () => {

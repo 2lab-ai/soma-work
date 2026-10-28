@@ -109,10 +109,34 @@ export interface WorkLogInput {
   ok?: boolean;
   turnId?: string;
   ts?: number;
+  /**
+   * SSOT 2026-10-22 T10 — the task (`T<n>` of the session's task ledger) that
+   * was in progress when this entry was made, and its title then. The
+   * dashboard folds the log under these. Absent outside any task.
+   */
+  taskId?: string;
+  taskTitle?: string;
+  /**
+   * Spec 12 — the subagent that made this entry: the id of the tool call that
+   * started it (SDK `parent_tool_use_id`). Absent = the main agent.
+   */
+  agentId?: string;
+  /**
+   * Spec 12 — the subagent this entry starts or returns: set on an `Agent` /
+   * `Task` call and on its tool result, whoever made the call.
+   */
+  agentRef?: string;
   /** Full content behind `text` (tool input / result); stored apart, served only by readWorkLogRaw. */
   raw?: string;
   /** UTF-8 size of the original when the emitter already cut `raw`; ignored unless larger than `raw`. */
   rawBytes?: number;
+  /**
+   * SDK tool-use id of a `tool` / `tool_result` entry: the key that pairs a
+   * result with its call (the dashboard's tool call card) and that live
+   * observers (artifact capture) match on. Persisted, clamped to
+   * WORK_LOG_FIELD_MAX; entries written before it was kept have none.
+   */
+  toolUseId?: string;
 }
 /** An entry as pages and the broadcast carry it: its raw is described, never included. */
 export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes'> {
@@ -122,6 +146,12 @@ export interface WorkLogEntry extends Omit<WorkLogInput, 'raw' | 'rawBytes'> {
   rawBytes?: number;
   /** The stored raw is cut short of the original. */
   rawTruncated?: true;
+  /**
+   * Spec 12 — written by a store that records who made each entry. An entry
+   * without it predates agent attribution: a subagent's work may be filed in
+   * it as the main agent's, so the dashboard does not claim it is.
+   */
+  attributed?: true;
 }
 /** An entry line as stored: plus where its raw record sits in `<id>.raw.jsonl`. */
 type StoredWorkLogEntry = WorkLogEntry & { rawOffset?: number; rawLen?: number };
@@ -151,7 +181,7 @@ export interface WorkLogPage {
 
 /** Max characters kept per entry `text` (spec §3.3). */
 export const WORK_LOG_TEXT_MAX = 4000;
-/** Max characters kept for `tool` and `turnId`. */
+/** Max characters kept for `tool`, `turnId`, `taskId`, `taskTitle`, `agentId`, `agentRef` and `toolUseId`. */
 export const WORK_LOG_FIELD_MAX = 200;
 /** Max UTF-8 bytes kept per raw — defined once, next to the emitter's types. */
 export { WORK_LOG_RAW_MAX_BYTES };
@@ -1142,10 +1172,16 @@ export function appendWorkLog(conversationId: string, input: WorkLogInput): Prom
     ts: typeof input.ts === 'number' && Number.isFinite(input.ts) ? input.ts : Date.now(),
     kind: input.kind,
     text: clampChars(text, WORK_LOG_TEXT_MAX),
+    attributed: true,
   };
   if (input.tool !== undefined) fields.tool = clampChars(String(input.tool), WORK_LOG_FIELD_MAX);
   if (input.ok !== undefined) fields.ok = input.ok;
   if (input.turnId !== undefined) fields.turnId = clampChars(String(input.turnId), WORK_LOG_FIELD_MAX);
+  if (input.taskId !== undefined) fields.taskId = clampChars(String(input.taskId), WORK_LOG_FIELD_MAX);
+  if (input.taskTitle !== undefined) fields.taskTitle = clampChars(String(input.taskTitle), WORK_LOG_FIELD_MAX);
+  if (input.agentId !== undefined) fields.agentId = clampChars(String(input.agentId), WORK_LOG_FIELD_MAX);
+  if (input.agentRef !== undefined) fields.agentRef = clampChars(String(input.agentRef), WORK_LOG_FIELD_MAX);
+  if (input.toolUseId !== undefined) fields.toolUseId = clampChars(String(input.toolUseId), WORK_LOG_FIELD_MAX);
   const raw =
     input.raw != null
       ? pendingRaw(String(input.raw), input.rawBytes)

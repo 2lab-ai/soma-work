@@ -5,12 +5,12 @@
 
 import { Logger } from '@soma/common/logger';
 import type { AgentStreamEvent, AgentStreamEventOf, AgentUsage } from './agent-stream-types';
+import { type AgentTreeEvent, isAgentSpawnTool, isBackgroundAckText } from './agent-tree';
 import type { SlackMessagePayload } from './choice-message-builder';
 import {
   ChannelMessageDirectiveHandler,
-  DeployCompletedDirectiveHandler,
-  type DeployCompletedPayload,
-  type DeployCompletedRejection,
+  ReleaseNotesDirectiveHandler,
+  type ReleaseNotesPayload,
   SessionLinkDirectiveHandler,
   SourceWorkingDirDirectiveHandler,
 } from './directives';
@@ -18,6 +18,7 @@ import { markdownToBlocks, thinkingToQuoteBlock } from './formatters';
 // Direct module imports — going through the barrel (`./index`) creates a
 // `slack/index.ts → stream-processor.ts → index.ts` cycle that breaks
 // tree-shaking and risks init-order issues. See #745.
+import type { LiveUsageCall } from './live-usage';
 import { MessageFormatter } from './message-formatter';
 import {
   shouldOutput as checkOutputFlag,
@@ -366,6 +367,8 @@ export interface ToolUseEvent {
   id: string;
   name: string;
   input: any;
+  /** Spec 12 — the subagent that made the call; absent = the main agent. */
+  parentToolUseId?: string;
 }
 
 /**
@@ -376,6 +379,8 @@ export interface ToolResultEvent {
   toolName?: string;
   result: any;
   isError?: boolean;
+  /** Spec 12 — the subagent whose call this answers; absent = the main agent. */
+  parentToolUseId?: string;
 }
 
 /**
@@ -521,14 +526,19 @@ export interface StreamCallbacks {
   onInvalidateOldForms?: (sessionKey: string, newFormId: string) => Promise<void>;
   /** Called with usage data when stream completes */
   onUsageUpdate?: (usage: UsageData) => void;
+  /**
+   * SSOT 2026-10-22 T1/T2 — one API call's usage, reported while the turn
+   * runs (the result usage arrives only at its end). `messageId` identifies
+   * the call: a call reported on several frames carries the same id. Pure
+   * bookkeeping — a throw is swallowed.
+   */
+  onLiveUsage?: (call: LiveUsageCall) => void;
   /** Called when model outputs session_links JSON directive */
   onSessionLinksDetected?: (links: SessionLinks, context: StreamContext) => Promise<void>;
   /** Called when model outputs channel_message JSON directive */
   onChannelMessageDetected?: (messageText: string, context: StreamContext) => Promise<void>;
-  /** Called once per valid deploy_completed JSON directive (a multi-repo deploy emits several) */
-  onDeployCompletedDetected?: (payload: DeployCompletedPayload, context: StreamContext) => Promise<void>;
-  /** Called once per text segment whose deploy_completed attempts yielded no payload (bad field, broken JSON) */
-  onDeployCompletedRejected?: (rejections: DeployCompletedRejection[], context: StreamContext) => Promise<void>;
+  /** Called once per valid release_notes JSON directive (a multi-repo deploy emits several) */
+  onReleaseNotesDetected?: (payload: ReleaseNotesPayload, context: StreamContext) => Promise<void>;
   /** Called when model outputs source_working_dir JSON directive */
   onSourceWorkingDirDetected?: (dirPath: string, context: StreamContext) => Promise<void>;
   /** Called when a user choice UI is rendered */
@@ -560,6 +570,12 @@ export interface StreamCallbacks {
    * lives in the host, and a bug there must not kill the user's turn.
    */
   onSteerLifecycle?: (event: AgentStreamEventOf<'steer_lifecycle'>, context: StreamContext) => void | Promise<void>;
+  /**
+   * Spec 12 — what the session's agent tree needs to know: a subagent was
+   * started, made a TodoWrite list, returned, changed task state, and the turn
+   * ended. Pure bookkeeping: a throw is swallowed, nothing is rendered.
+   */
+  onAgentEvent?: (event: AgentTreeEvent, context: StreamContext) => void;
   /** Called before sending the final assistant message to append footer text */
   buildFinalResponseFooter?: (params: FinalResponseFooterParams) => Promise<string | undefined> | string | undefined;
   /**
@@ -836,6 +852,14 @@ export class AgentStreamProcessor {
   /** tool_use_id → tool name, so a `tool_result` work-log entry can name its tool. */
   private toolNamesById = new Map<string, string>();
   /**
+   * Spec 12 — the subagents this turn started (spawn call id → whether it was
+   * asked to run in the background), and every agent id seen, so a frame of
+   * an agent not seen before (a background agent of an earlier turn) is
+   * announced once.
+   */
+  private spawnedAgents = new Map<string, boolean>();
+  private seenAgents = new Set<string>();
+  /**
    * What became of every assistant text segment this turn, keyed by BOTH its
    * raw text (directives included — what the SDK `finalText` usually carries)
    * and its shown text (directives stripped). The result event dedupes against
@@ -849,8 +873,6 @@ export class AgentStreamProcessor {
   private suppressedByTrimmed = new Map<string, SegmentFate>();
   /** The latest withheld segment — the answer of a turn with no usable `finalText`. */
   private lastWithheld: SegmentFate | undefined;
-  /** Set once a cut turn's buffered deploy_completed has been dispatched (see dispatchDeployCompletedOnCut). */
-  private deployCutDispatched = false;
   /**
    * The latest segment that showed any text. When it is a suppressed
    * transport-error leak, the turn ends on that error (the executor recovers
@@ -931,6 +953,67 @@ export class AgentStreamProcessor {
     this.writeWorkLog(context, { kind: 'final', text });
   }
 
+  /** Spec 12 — hand one agent-tree event to the host; a throw is swallowed. */
+  private emitAgentEvent(context: StreamContext, event: AgentTreeEvent): void {
+    if (!this.callbacks.onAgentEvent) return;
+    try {
+      this.callbacks.onAgentEvent(event, context);
+    } catch (err) {
+      this.logger.debug('onAgentEvent callback threw — ignored', {
+        kind: event.kind,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+  }
+
+  /**
+   * Spec 12 — a tool call arrived: announce the agent it belongs to (first
+   * frame of an agent not seen before) and, for an `Agent` / `Task` call, the
+   * agent it starts. Once per call id.
+   */
+  private announceAgents(
+    callId: string,
+    name: string,
+    input: unknown,
+    parent: string | undefined,
+    context: StreamContext,
+  ): void {
+    if (!callId || this.spawnedAgents.has(callId)) return;
+    this.toolNamesById.set(callId, name);
+    if (parent) this.noteAgent(parent, context);
+    if (!isAgentSpawnTool(name)) return;
+    const args = (input ?? {}) as Record<string, unknown>;
+    const background = args.run_in_background === true;
+    this.spawnedAgents.set(callId, background);
+    this.seenAgents.add(callId);
+    this.emitAgentEvent(context, {
+      kind: 'spawn',
+      agentId: callId,
+      ...(parent ? { parentAgentId: parent } : {}),
+      ...(typeof args.subagent_type === 'string' && args.subagent_type ? { agentType: args.subagent_type } : {}),
+      ...(typeof args.description === 'string' && args.description ? { description: args.description } : {}),
+      background,
+      ts: Date.now(),
+    });
+  }
+
+  /**
+   * Spec 12 — a frame of agent `agentId`. The first one of an agent this turn
+   * did not start (a background agent of an earlier turn, a non-Agent spawner)
+   * announces it by id; the registry fills in what it knows.
+   */
+  private noteAgent(agentId: string, context: StreamContext): void {
+    if (this.seenAgents.has(agentId)) return;
+    this.seenAgents.add(agentId);
+    const spawner = this.toolNamesById.get(agentId);
+    this.emitAgentEvent(context, {
+      kind: 'spawn',
+      agentId,
+      ...(spawner && !isAgentSpawnTool(spawner) ? { agentType: spawner } : {}),
+      ts: Date.now(),
+    });
+  }
+
   private writeWorkLog(context: StreamContext, entry: WorkLogInput): void {
     if (!context.workLog) return;
     try {
@@ -972,7 +1055,6 @@ export class AgentStreamProcessor {
     this.lastShownSegment = undefined;
     this.pendingNarration = undefined;
     this.slackTextPosted = false;
-    this.deployCutDispatched = false;
     // Note: per-turn state fields (_lastAssistantTurnUsage, _lastToolName,
     // _endTurnInfo, _sdkResultError) are NOT reset
     // here — stream-executor constructs a fresh AgentStreamProcessor per turn,
@@ -1031,9 +1113,9 @@ export class AgentStreamProcessor {
     try {
       while (true) {
         if (abortSignal.aborted) {
-          await this.dispatchDeployCompletedOnCut(textBuf, context);
           const rescue = await this.flushTextOnExplicitInterrupt(textBuf, context, abortSignal);
           this.settleNarration(context);
+          this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
           return {
             success: true,
             messageCount: currentMessages.length,
@@ -1050,9 +1132,9 @@ export class AgentStreamProcessor {
           // any sockets it holds, in case the SDK didn't honor the abort
           // signal on its own. Throws are harmless here.
           await this.tryReturnIterator(iterator, 'abort');
-          await this.dispatchDeployCompletedOnCut(textBuf, context);
           const rescue = await this.flushTextOnExplicitInterrupt(textBuf, context, abortSignal);
           this.settleNarration(context);
+          this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
           return {
             success: true,
             messageCount: currentMessages.length,
@@ -1075,8 +1157,8 @@ export class AgentStreamProcessor {
             }
           }
           await this.tryReturnIterator(iterator, 'idle timeout');
-          await this.dispatchDeployCompletedOnCut(textBuf, context);
           this.settleNarration(context);
+          this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
           return { success: true, messageCount: currentMessages.length, aborted: true };
         }
 
@@ -1125,6 +1207,9 @@ export class AgentStreamProcessor {
           // compact_boundary, side-band lifecycle), which can arrive between
           // the answer and `result`.
           case 'thought_delta':
+            // A subagent's thinking (forwarded only with forwardSubagentText)
+            // is not the main agent's: it is never rendered.
+            if (event.parentToolUseId) break;
             await flushText();
             await flushToolCalls();
             await flushToolResults();
@@ -1132,6 +1217,14 @@ export class AgentStreamProcessor {
             thinkingBuf.push(event.text);
             break;
           case 'assistant_delta':
+            // A subagent's text goes to that agent's work log only — never to
+            // Slack, the main narration or the turn's collected text.
+            if (event.parentToolUseId) {
+              this.noteAgent(event.parentToolUseId, context);
+              const text = event.text.trim();
+              if (text) this.writeWorkLog(context, { kind: 'narration', text, agentId: event.parentToolUseId });
+              break;
+            }
             await flushThinking();
             await flushToolCalls();
             await flushToolResults();
@@ -1143,8 +1236,19 @@ export class AgentStreamProcessor {
             await flushText();
             await flushToolResults();
             this.settleNarration(context);
-            this._lastToolName = event.name;
-            toolCallBuf.push({ type: 'tool_use', id: event.toolCallId, name: event.name, input: event.input });
+            // The turn's last tool is the main agent's (a subagent's is its own).
+            if (!event.parentToolUseId) this._lastToolName = event.name;
+            // Spec 12: announce the agent this call belongs to / starts NOW — the
+            // call waits in the render buffer, and the SDK's task_started for a
+            // spawn can arrive before that buffer flushes (review R2).
+            this.announceAgents(event.toolCallId, event.name, event.input, event.parentToolUseId, context);
+            toolCallBuf.push({
+              type: 'tool_use',
+              id: event.toolCallId,
+              name: event.name,
+              input: event.input,
+              ...(event.parentToolUseId ? { parent_tool_use_id: event.parentToolUseId } : {}),
+            });
             break;
           case 'tool_result':
             await flushThinking();
@@ -1157,11 +1261,13 @@ export class AgentStreamProcessor {
               content: event.rawOutput ?? event.content,
               // Preserve absence (undefined, not false) for ToolFormatter parity.
               is_error: event.isError,
+              ...(event.parentToolUseId ? { parent_tool_use_id: event.parentToolUseId } : {}),
+              ...(event.agentOutcome ? { agent_outcome: event.agentOutcome } : {}),
             });
             break;
           case 'usage':
             await flushAll();
-            lastUsage = this.applyUsageEvent(event.usage, lastUsage);
+            lastUsage = this.applyUsageEvent(event.usage, lastUsage, event.parentToolUseId);
             break;
           case 'status':
             await flushAll();
@@ -1181,6 +1287,21 @@ export class AgentStreamProcessor {
             // render groups (it produces no Slack output — just a tracker-state
             // update) so an interleaved task_progress can't fragment streaming.
             await this.callbacks.onAgentTaskLifecycle?.(event, context);
+            this.emitAgentEvent(context, {
+              kind: 'lifecycle',
+              ...(event.toolUseId ? { agentId: event.toolUseId } : {}),
+              phase: event.phase,
+              taskId: event.taskId,
+              ...(event.taskType ? { taskType: event.taskType } : {}),
+              ...(event.status ? { status: event.status } : {}),
+              ...(event.subagentType ? { agentType: event.subagentType } : {}),
+              ...(event.description ? { description: event.description } : {}),
+              ...(event.background !== undefined ? { background: event.background } : {}),
+              ...(event.summary ? { summary: event.summary } : {}),
+              ...(event.lastToolName ? { lastTool: event.lastToolName } : {}),
+              ...(event.usage ? { usage: event.usage } : {}),
+              ts: Date.now(),
+            });
             break;
           case 'steer_lifecycle':
             // Side-band steering signal (which queued user message this turn
@@ -1233,6 +1354,7 @@ export class AgentStreamProcessor {
         await this.postLastWithheldIfSilent(context, lastUsage, undefined);
       }
       this.settleNarration(context);
+      this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
 
       // Merge per-turn usage from the last assistant message into the
       // aggregate UsageData so consumers can distinguish billing totals
@@ -1262,11 +1384,8 @@ export class AgentStreamProcessor {
         sdkResultError: this._sdkResultError,
       };
     } catch (error: any) {
-      // The turn dies here with text still buffered (a transport error, or an
-      // AbortError surfacing from a handler): a deploy it already reported must
-      // not be lost with it.
-      await this.dispatchDeployCompletedOnCut(textBuf, context);
       this.settleNarration(context);
+      this.emitAgentEvent(context, { kind: 'turn_end', ts: Date.now() });
       if (error.name === 'AbortError') {
         return { success: true, messageCount: currentMessages.length, aborted: true };
       }
@@ -1464,17 +1583,39 @@ export class AgentStreamProcessor {
       await this.callbacks.onStatusUpdate('working');
     }
 
-    // Check for TodoWrite tool
-    const todoTool = content.find((part: any) => part.type === 'tool_use' && part.name === 'TodoWrite');
+    // Spec 12: the agents these calls belong to / start were announced when
+    // the calls arrived (announceAgents); this is idempotent for any part that
+    // reached this method another way.
+    for (const part of content) {
+      if (part.type !== 'tool_use' || !part.id) continue;
+      this.announceAgents(part.id, part.name, part.input, part.parent_tool_use_id, context);
+    }
+
+    // Check for TodoWrite tool. The main agent's list is the session's task
+    // list (Slack plan block + dashboard ledger); a subagent's list is its own
+    // (spec 12) and never replaces it.
+    const todoTool = content.find(
+      (part: any) => part.type === 'tool_use' && part.name === 'TodoWrite' && !part.parent_tool_use_id,
+    );
     if (todoTool && this.callbacks.onTodoUpdate) {
       await this.callbacks.onTodoUpdate(todoTool.input, context);
+    }
+    for (const part of content) {
+      if (part.type === 'tool_use' && part.name === 'TodoWrite' && part.parent_tool_use_id) {
+        this.emitAgentEvent(context, {
+          kind: 'todos',
+          agentId: part.parent_tool_use_id,
+          todos: part.input?.todos,
+          ts: Date.now(),
+        });
+      }
     }
 
     // Emit RPG-style skill invocation announcement (PHASE=0 only — flavor text
     // is dropped from the P1 consolidated stream per plan v2 §5.1).
     if (!inTurn && this.shouldOutput(OutputFlag.SKILL_INVOCATION, context)) {
       for (const part of content) {
-        if (part.type === 'tool_use' && part.name === 'Skill') {
+        if (part.type === 'tool_use' && part.name === 'Skill' && !part.parent_tool_use_id) {
           const skillName = part.input?.skill || part.input?.name || 'unknown';
           const casterName = context.botUserId ? `<@${context.botUserId}>` : 'AI';
           const rpgMsg = ToolFormatter.formatSkillInvocationRPG(skillName, casterName);
@@ -1501,7 +1642,10 @@ export class AgentStreamProcessor {
     // Format and send tool use messages (render mode dispatch) — PHASE=0 only.
     const toolCallMode = getToolCallRenderMode(resolveVerbosityMask(context.logVerbosity));
     if (!inTurn && toolCallMode !== 'hidden') {
-      const toolContent = ToolFormatter.formatToolUse(enrichedContent, toolCallMode);
+      const toolContent = ToolFormatter.formatToolUse(
+        enrichedContent.filter((part: any) => !part.parent_tool_use_id),
+        toolCallMode,
+      );
       if (toolContent) {
         const tag = this.vtag(OutputFlag.TOOL_CALL, context);
         await context.say({
@@ -1518,7 +1662,13 @@ export class AgentStreamProcessor {
         id: part.id,
         name: part.name,
         input: part.input,
+        ...(part.parent_tool_use_id ? { parentToolUseId: part.parent_tool_use_id } : {}),
       }));
+    const parentOfCall = new Map<string, string>();
+    for (const part of content) {
+      if (part.type === 'tool_use' && part.id && part.parent_tool_use_id)
+        parentOfCall.set(part.id, part.parent_tool_use_id);
+    }
 
     for (const toolUse of toolUses) {
       this.logger.debug(
@@ -1527,78 +1677,36 @@ export class AgentStreamProcessor {
       );
       this.toolNamesById.set(toolUse.id, toolUse.name);
       const raw = toolInputRaw(toolUse.input);
+      const agentId = parentOfCall.get(toolUse.id);
       this.emitWorkLog(context, {
         kind: 'tool',
         tool: toolUse.name,
+        toolUseId: toolUse.id,
         text: summarizeToolCall(toolUse.name, toolUse.input),
         ...(raw !== undefined ? { raw } : {}),
+        ...(agentId ? { agentId } : {}),
+        ...(this.spawnedAgents.has(toolUse.id) ? { agentRef: toolUse.id } : {}),
       });
     }
 
-    // Track last tool name for endTurnInfo (Issue #42 S3)
-    if (toolUses.length > 0) {
-      this._lastToolName = toolUses[toolUses.length - 1].name;
+    // Track last tool name for endTurnInfo (Issue #42 S3) — the main agent's
+    // (a subagent's calls are in its own work log).
+    const mainToolUses = toolUses.filter((t) => !t.parentToolUseId);
+    if (mainToolUses.length > 0) {
+      this._lastToolName = mainToolUses[mainToolUses.length - 1].name;
     }
 
+    // Every call goes on, attributed: the executor keeps the Slack surfaces
+    // (current tool, tool rows, stats) to the main agent's (spec 12 §2.2).
     if (toolUses.length > 0 && this.callbacks.onToolUse) {
       await this.callbacks.onToolUse(toolUses, context);
     }
   }
 
   /**
-   * Extract every deploy_completed directive from `text`, hand each payload (and
-   * any rejected attempts) to the host, and return the text without the valid
-   * directives. Each callback runs in its own try, so a failing callback for one
-   * repo cannot skip the next.
-   */
-  private async dispatchDeployCompleted(text: string, context: StreamContext): Promise<string> {
-    const result = DeployCompletedDirectiveHandler.extract(text);
-    for (const payload of result.payloads) {
-      try {
-        await this.callbacks.onDeployCompletedDetected?.(payload, context);
-      } catch (error) {
-        this.logger.error('Failed to dispatch deploy_completed directive', { repo: payload.repo, error });
-      }
-    }
-    if (result.rejections.length > 0) {
-      try {
-        await this.callbacks.onDeployCompletedRejected?.(result.rejections, context);
-      } catch (error) {
-        this.logger.error('Failed to dispatch rejected deploy_completed directive', { error });
-      }
-    }
-    return result.cleanedText;
-  }
-
-  /**
-   * The turn is being cut with text still in the render buffer, so no
-   * `handleTextMessage` (and no result) will ever read it. Other directives in
-   * it stay undispatched — an interrupted turn must not fire them — but a
-   * deploy_completed reports a deploy that already happened: losing it would
-   * silently skip every lane. Dispatch it, and leave only the visible text in
-   * the buffer for the interrupt rescue.
-   */
-  private async dispatchDeployCompletedOnCut(textBuf: string[], context: StreamContext): Promise<void> {
-    // At most once per turn: an exit path that dispatched and then threw lands
-    // in the outer catch with the same buffer (rejections stay in it).
-    if (this.deployCutDispatched) return;
-    this.deployCutDispatched = true;
-    if (context.incidentAttempt) return;
-    const pending = textBuf.join('');
-    if (!pending.includes('deploy_completed')) return;
-    try {
-      const cleaned = await this.dispatchDeployCompleted(pending, context);
-      textBuf.length = 0;
-      if (cleaned) textBuf.push(cleaned);
-    } catch (error) {
-      this.logger.error('Failed to dispatch deploy_completed on a cut turn', { error });
-    }
-  }
-
-  /**
    * Extract and dispatch all response directives (session links, channel messages,
-   * deploy_completed signals, source working dirs) from text content. Returns the
-   * cleaned text with directives stripped.
+   * release notes, source working dirs) from text content. Returns the cleaned text
+   * with directives stripped.
    */
   private async extractAndDispatchDirectives(text: string, context: StreamContext): Promise<string> {
     let cleaned = text;
@@ -1628,12 +1736,21 @@ export class AgentStreamProcessor {
       this.logger.error('Failed to process channel message directive', { error });
     }
 
-    // A multi-repo deploy emits one per repo: each payload is dispatched in its
-    // own try, so a failing callback for one repo cannot skip the next.
+    // release_notes: one per repo, each dispatched in its own try.
     try {
-      cleaned = await this.dispatchDeployCompleted(cleaned, context);
+      const releaseNotesResult = ReleaseNotesDirectiveHandler.extract(cleaned);
+      if (releaseNotesResult.payloads.length > 0) {
+        cleaned = releaseNotesResult.cleanedText;
+        for (const payload of releaseNotesResult.payloads) {
+          try {
+            await this.callbacks.onReleaseNotesDetected?.(payload, context);
+          } catch (error) {
+            this.logger.error('Failed to handle release_notes directive', { repo: payload.repo, error });
+          }
+        }
+      }
     } catch (error) {
-      this.logger.error('Failed to process deploy_completed directive', { error });
+      this.logger.error('Failed to process release_notes directive', { error });
     }
 
     try {
@@ -1983,7 +2100,15 @@ export class AgentStreamProcessor {
   private async handleToolResultsContent(content: any[], context: StreamContext): Promise<void> {
     if (!content || content.length === 0) return;
 
-    const toolResults = ToolFormatter.extractToolResults(content);
+    const toolResults: ToolResultEvent[] = ToolFormatter.extractToolResults(content);
+    // Spec 12: who each result belongs to, and an Agent call's structured outcome.
+    const parentOfResult = new Map<string, string>();
+    const outcomeOfResult = new Map<string, { status: string; toolUses?: number; durationMs?: number }>();
+    for (const part of content) {
+      if (part?.type !== 'tool_result' || !part.tool_use_id) continue;
+      if (part.parent_tool_use_id) parentOfResult.set(part.tool_use_id, part.parent_tool_use_id);
+      if (part.agent_outcome) outcomeOfResult.set(part.tool_use_id, part.agent_outcome);
+    }
 
     // Correlate Task results with background task IDs for TaskOutput display
     this.correlateTaskResults(toolResults);
@@ -1992,15 +2117,46 @@ export class AgentStreamProcessor {
       const tool = toolResult.toolName ?? this.toolNamesById.get(toolResult.toolUseId) ?? 'unknown';
       this.toolNamesById.delete(toolResult.toolUseId);
       const ok = toolResult.isError !== true;
+      const agentId = parentOfResult.get(toolResult.toolUseId);
+      if (agentId) {
+        // The executor skips a subagent's results on the Slack tool surfaces
+        // (whose tracker would name them), so they travel named and attributed
+        // — the host's model-command and metrics handling reads both.
+        toolResult.parentToolUseId = agentId;
+        if (!toolResult.toolName && tool !== 'unknown') toolResult.toolName = tool;
+      }
+      const spawned = this.spawnedAgents.get(toolResult.toolUseId);
+      const rawFields = toolResultRaw(toolResult.result);
       this.emitWorkLog(context, {
         kind: 'tool_result',
         tool,
+        toolUseId: toolResult.toolUseId,
         ok,
         text: `${tool} ${ok ? 'ok' : 'error'}`,
-        ...toolResultRaw(toolResult.result),
+        ...rawFields,
+        ...(agentId ? { agentId } : {}),
+        ...(spawned !== undefined ? { agentRef: toolResult.toolUseId } : {}),
       });
+      if (spawned !== undefined) {
+        const outcome = outcomeOfResult.get(toolResult.toolUseId);
+        // A background start only acknowledges the run: the structured
+        // outcome decides, then the spawn input, then (last resort) the text.
+        // An error is never an acknowledgement — the agent did not start.
+        const ack =
+          ok && (outcome ? outcome.status !== 'completed' : spawned || isBackgroundAckText(rawFields?.raw ?? ''));
+        this.emitAgentEvent(context, {
+          kind: 'returned',
+          agentId: toolResult.toolUseId,
+          ok,
+          ack,
+          ...(outcome?.toolUses !== undefined ? { toolUses: outcome.toolUses } : {}),
+          ...(outcome?.durationMs !== undefined ? { durationMs: outcome.durationMs } : {}),
+          ts: Date.now(),
+        });
+      }
     }
 
+    // Every result goes on, attributed (see onToolUse above).
     if (toolResults.length > 0 && this.callbacks.onToolResult) {
       await this.callbacks.onToolResult(toolResults, context);
     }
@@ -2186,7 +2342,11 @@ export class AgentStreamProcessor {
    * usage (only `lastTurn*` fields) captured for the post-loop merge, and a
    * *cumulative* usage (token/cost fields) that becomes the turn's `UsageData`.
    */
-  private applyUsageEvent(u: AgentUsage, current: UsageData | undefined): UsageData | undefined {
+  private applyUsageEvent(
+    u: AgentUsage,
+    current: UsageData | undefined,
+    parentToolUseId?: string,
+  ): UsageData | undefined {
     const hasCumulative =
       u.inputTokens !== undefined ||
       u.outputTokens !== undefined ||
@@ -2216,7 +2376,20 @@ export class AgentStreamProcessor {
       // per-turn usage carries no context-state information — keep the last
       // meaningful snapshot instead of blanking the context display.
       if (perTurn.inputTokens + perTurn.outputTokens + perTurn.cacheReadTokens + perTurn.cacheCreateTokens > 0) {
-        this._lastAssistantTurnUsage = perTurn;
+        // Spec 12 §2.5: a subagent's call is spent (live totals) but read the
+        // subagent's own context — it is never the main agent's last turn.
+        if (!parentToolUseId) this._lastAssistantTurnUsage = perTurn;
+        if (this.callbacks.onLiveUsage) {
+          try {
+            this.callbacks.onLiveUsage({
+              messageId: u.lastTurnMessageId,
+              ...perTurn,
+              ...(parentToolUseId ? { sidechain: true } : {}),
+            });
+          } catch (error) {
+            this.logger.debug('onLiveUsage callback failed', { error: (error as Error)?.message ?? String(error) });
+          }
+        }
       }
     }
 
@@ -2351,8 +2524,6 @@ export class AgentStreamProcessor {
    *     dying turn's output to the turn the user just started.
    *   - No directive dispatch. `extractAndDispatchDirectives` has side effects
    *     (session links, channel posts); an interrupted turn must not fire them.
-   *     The one exception, deploy_completed, is dispatched (and removed from the
-   *     buffer) by `dispatchDeployCompletedOnCut` before this runs.
    *   - The transport-error leak guards still apply, so a partial
    *     "Prompt is too long" / compaction-failure frame is not shown raw.
    *   - Below `compact` (no `NARRATION` flag) nothing is appended: with no
