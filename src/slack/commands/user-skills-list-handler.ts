@@ -89,6 +89,23 @@ export function buildUserSkillListBlocks(userId: string): UserSkillListBlocks | 
   return { blocks, fallback, count: skills.length };
 }
 
+/** Shown instead of the list when the requester has no personal skill. */
+export const NO_PERSONAL_SKILLS_TEXT = '📭 등록된 personal skill이 없습니다. `MANAGE_SKILL` 커맨드로 만들 수 있습니다.';
+
+/**
+ * The requester's own list as one postable message: the interactive list, or a one-section
+ * empty state. Always carries blocks so it can replace a card in place (`chat.update` without
+ * `blocks` keeps the old ones).
+ */
+export function buildOwnSkillListMessage(userId: string): { text: string; blocks: any[] } {
+  const built = buildUserSkillListBlocks(userId);
+  if (built) return { text: built.fallback, blocks: built.blocks };
+  return {
+    text: NO_PERSONAL_SKILLS_TEXT,
+    blocks: [{ type: 'section', text: { type: 'mrkdwn', text: NO_PERSONAL_SKILLS_TEXT } }],
+  };
+}
+
 /**
  * Build blocks for ANOTHER user's skill list (`$user:{otherUser}`, S4).
  *
@@ -331,10 +348,7 @@ export class UserSkillsListHandler implements CommandHandler {
     const built = buildUserSkillListBlocks(user);
 
     if (!built) {
-      await say({
-        text: '📭 등록된 personal skill이 없습니다. `MANAGE_SKILL` 커맨드 또는 `skills` 도움말을 참고하세요.',
-        thread_ts: threadTs,
-      });
+      await say({ text: NO_PERSONAL_SKILLS_TEXT, thread_ts: threadTs });
       return { handled: true };
     }
 

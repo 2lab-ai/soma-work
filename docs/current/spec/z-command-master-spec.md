@@ -179,7 +179,7 @@ if (isDm && !isCleanup) {
 | `mcp` / `mcp list` / `mcp reload` / `servers` | `/z mcp` / `/z mcp list` / `/z mcp reload` (servers 제거) | ❌ 절단 |
 | `plugins add/update/...` / `플러그인 업데이트` | `/z plugin [add\|update\|...]` (한국어 제거, 단수 통일) | ❌ 절단 |
 | `marketplace add/remove` | `/z marketplace` / `/z marketplace add <x>` | ❌ 절단 |
-| `skills list/download` | `/z skill` / `/z skill list` / `/z skill download` | ❌ 절단 |
+| `skills list/download` | `/z skill` / `/z skill list` / `/z skill download` (naked `skill`·`skills`·`/skill`·`skill list`·`skill download`도 유지) | ✅ **유지** |
 | `cwd` / `set directory <p>` | `/z cwd` / `/z cwd set <p>` | ❌ 절단 |
 | `cct` / `set_cct <n>` / `nextcct` | `/z cct` / `/z cct set <n>` / `/z cct next` | ❌ 절단 |
 | `accept @U` / `deny @U` / `users` | `/z admin accept <@U>` / `/z admin deny <@U>` / `/z admin users` | ❌ 절단 |
@@ -245,11 +245,17 @@ Action ID: `z_setting_<topic>_set_<value>`, `z_setting_<topic>_cancel`, `z_help_
 
 `migrationHintShown` per-user 플래그 (user-settings-store, CAS/트랜잭션 보호).
 
-### 8-4. Block Kit 이관 대상
+### 8-4. Block Kit 카드 주제 (최종)
 
-**Phase A (이번 PR 필수)**: persona, model, verbosity, bypass, sandbox, theme (6개)
-**Phase B (이번 PR 포함)**: notify, memory, cct, cwd(모달), email(모달) (5개)
-**Phase C (텍스트 유지)**: context, compact, restore, close(이미 block), new, onboarding, renew, link, report, plugin, marketplace, mcp, skill, webhook, admin
+카드가 있는 주제 = `src/slack/z/topics/index.ts`에 등록된 `ZTopicBinding` = help 카드의 버튼(`DEFAULT_HELP_CATEGORIES`의 `card: true`). 두 집합은 `flow-e2e.test.ts`가 양방향으로 같게 고정한다.
+
+- **카드**: persona, model, verbosity, bypass, sandbox, theme, notify, memory, cct, cwd(모달), email(모달), auth, goal, usage, skill
+  - `skill`은 설정이 아니라 목록이다: 내 personal skill 목록(`$user`와 같은 UI)이 help 카드를 대체하고, 이어서 이 호스트의 환경 스킬 목록이 별도 메시지로 붙는다(`RenderResult.followUp`). `apply`가 없어 `z_setting_skill_set_*` 클릭은 무시된다.
+- **텍스트 명령**: new, close, renew, context, restore, link, compact, queue, session, mcp, plugin, marketplace, webhook, report, dashboard, onboarding, admin(accept/deny/users/config/session list)
+  - help 카드에 버튼이 아니라 `/z <command>` 칩으로 보인다. 🧵는 `SLASH_FORBIDDEN`(§5-4)에서 파생 — 스레드에서 `@봇 /z <command>`로만 실행된다.
+  - 이전 릴리즈의 help 카드에 남은 이 주제들의 버튼(`z_help_nav_<topic>`)은 "더 이상 사용되지 않는 버튼 — `/z help`" 안내로 답한다. 명령을 실행하지 않는다(help 탐색은 읽기 전용).
+
+텍스트 명령 주제의 카드를 "다음 Phase"로 예고하지 않는다. 새 카드를 만들면 바인딩 등록과 `card: true`를 같은 PR에서 한다.
 
 ## 9. 18가지 불일치 처리 (전부 명시)
 

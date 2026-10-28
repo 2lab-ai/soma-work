@@ -22,6 +22,7 @@ import { Logger } from './logger';
 import { isSafePathSegment } from './path-utils';
 import { parsePluginRef } from './plugin/config-parser';
 import { ENV_SKILL_GRANT_OWNER, type GrantScope, isEnvSkillUseAllowed, loadGrants } from './user-skill-grants-store';
+import { extractDescription } from './user-skill-store';
 
 const logger = new Logger('EnvSkillRegistry');
 
@@ -127,6 +128,50 @@ export function envSkillExists(skillKey: string, registry: EnvSkillRegistry): bo
   const skill = skillKey.slice(colon + 1);
   if (!registry.pluginNames.has(plugin) || !isSafePathSegment(plugin) || !isSafePathSegment(skill)) return false;
   return skillFileExists(registry, plugin, skill);
+}
+
+/** One skill of an environment plugin, as the `skill` command lists it. */
+export interface EnvSkillEntry {
+  /** `plugin:skill` — what a user types after `$` to run it. */
+  key: string;
+  plugin: string;
+  skill: string;
+  /** Frontmatter `description`, or '' when the SKILL.md has none. */
+  description: string;
+}
+
+/**
+ * Every skill the environment plugins of this host ship, sorted by key. A skill is a
+ * `<plugin>/skills/<skill>/` directory holding a SKILL.md; anything else is skipped.
+ */
+export function listEnvSkills(registry: EnvSkillRegistry): EnvSkillEntry[] {
+  const entries: EnvSkillEntry[] = [];
+  for (const plugin of registry.pluginNames) {
+    if (!isSafePathSegment(plugin)) continue;
+    const skillsDir = path.join(registry.pluginsDir, plugin, 'skills');
+    let dirs: fs.Dirent[];
+    try {
+      dirs = fs.readdirSync(skillsDir, { withFileTypes: true });
+    } catch {
+      continue; // plugin not installed (yet) on this host
+    }
+    for (const dir of dirs) {
+      if (!dir.isDirectory() || !isSafePathSegment(dir.name)) continue;
+      let content: string;
+      try {
+        content = fs.readFileSync(path.join(skillsDir, dir.name, 'SKILL.md'), 'utf-8');
+      } catch {
+        continue;
+      }
+      entries.push({
+        key: `${plugin}:${dir.name}`,
+        plugin,
+        skill: dir.name,
+        description: extractDescription(content),
+      });
+    }
+  }
+  return entries.sort((a, b) => a.key.localeCompare(b.key));
 }
 
 /**

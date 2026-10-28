@@ -1,5 +1,5 @@
 /**
- * `/z cwd` Block Kit topic — Phase 2 (#507).
+ * `/z cwd` Block Kit topic (#507).
  *
  * Read-only: working directories are fixed per user (`{BASE_DIRECTORY}/{userId}/`)
  * and cannot be changed via Slack. The card shows the current directory and

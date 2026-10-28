@@ -1,5 +1,6 @@
 import { setCommandRouterProviders } from '@soma/slack/commands/command-router';
 import type { ClaudeHandler } from '../../claude-handler';
+import { envSkillRegistry } from '../../env-skill-registry';
 import { getReportDeps } from '../../metrics';
 import { AdminHandler } from './admin-handler';
 import { AuthHandler } from './auth-handler';
@@ -107,7 +108,8 @@ setCommandRouterProviders({
         new EmailHandler(),
         new RateHandler(),
         new PersonaHandler(),
-        new SkillsHandler(),
+        // `skill` / `/skill` / `/z skill`: personal skill list, then this host's environment skills.
+        new SkillsHandler(() => envSkillRegistry((deps as any).mcpManager?.getPluginManager())),
         new MemoryHandler(),
         // Cron manage command — `cron`/`schedule` must be a routed command,
         // not plain text: plain text reaches the dispatch path where autogoal

@@ -1,5 +1,5 @@
 /**
- * Action + view handlers for `/z` Block Kit cards (Phase 2, #507).
+ * Action + view handlers for `/z` Block Kit cards (#507).
  *
  * Registers on the Bolt app:
  *   - action  /^z_setting_(.+)_set_(.+)$/              — apply an option
@@ -39,9 +39,10 @@ export interface ZTopicBinding {
   /**
    * Called when a user clicks a `z_setting_<topic>_set_<value>` button.
    * Return a human-readable confirmation summary on success. Throwing or
-   * returning null produces the generic "applied" fallback.
+   * returning null produces the generic "applied" fallback. Absent on a topic
+   * whose card is a list rather than a setting (`skill`) — set clicks are ignored.
    */
-  apply(args: {
+  apply?(args: {
     userId: string;
     value: string;
     actionId: string;
@@ -98,6 +99,8 @@ export interface ApplyResult {
 export interface RenderResult {
   text?: string;
   blocks: any[];
+  /** A second message posted after the card replaced the help card (`skill`: environment skills). */
+  followUp?: RenderResult;
 }
 
 /* ------------------------------------------------------------------ *
@@ -229,8 +232,8 @@ export class ZSettingsActionHandler {
     if (!match) return;
     const [, topic, value] = match;
     const binding = this.deps.registry.get(topic);
-    if (!binding) {
-      logger.warn('Unknown topic for z_setting_*_set_*', { topic, actionId });
+    if (!binding?.apply) {
+      logger.warn('No settable topic for z_setting_*_set_*', { topic, actionId });
       return;
     }
     const userId: string = body?.user?.id ?? '';
@@ -322,27 +325,29 @@ export class ZSettingsActionHandler {
     const zRespond = respondFromActionBody({ body, client, respond });
     const binding = this.deps.registry.get(topic);
     if (!binding) {
-      // Phase 3 topics surface an explicit notice instead of a silent no-op
-      // so the "no silent fallback" invariant (MASTER-SPEC §10) holds. The
-      // help card keeps non-Phase-2 buttons visible so users know the topic
-      // exists; clicking reveals a clear "coming soon" message.
-      logger.info('z_help_nav: unregistered Phase 3 topic', { topic, actionId });
-      await zRespond.replace({
-        text: `⏳ \`/z ${topic}\`는 Phase 3에서 Block Kit UI가 제공될 예정입니다. 지금은 텍스트 명령(\`/z ${topic} ...\`)을 사용해주세요.`,
-      });
+      // Help cards rendered by older releases carry buttons for topics that have no card (they are
+      // text commands). Answer visibly — never a silent no-op (MASTER-SPEC §10) — and never run
+      // the command: help navigation is read-only.
+      logger.info('z_help_nav: stale button for a topic without a card', { topic, actionId });
+      await zRespond.replace(
+        textCard(
+          `ℹ️ 이 버튼은 더 이상 사용되지 않습니다. \`/z ${topic.replace(/_/g, ' ')}\` 명령을 직접 입력하거나 \`/z help\`로 최신 도움말을 여세요.`,
+        ),
+      );
       return;
     }
     try {
-      const { blocks, text } = await binding.renderCard({
+      const card = await binding.renderCard({
         userId: body?.user?.id ?? '',
         issuedAt: Date.now(),
       });
-      await zRespond.replace({ text, blocks });
+      await zRespond.replace({ text: card.text, blocks: card.blocks });
+      if (card.followUp) {
+        await zRespond.send({ text: card.followUp.text, blocks: card.followUp.blocks, ephemeral: true });
+      }
     } catch (err) {
       logger.error('renderCard failed', { topic, err: (err as Error).message });
-      await zRespond.replace({
-        text: `❌ ${topic} 카드 로드 실패: ${(err as Error).message}`,
-      });
+      await zRespond.replace(textCard(`❌ ${topic} 카드 로드 실패: ${(err as Error).message}`));
     }
   }
 
@@ -365,4 +370,12 @@ export class ZSettingsActionHandler {
       logger.error('submitModal failed', { topic, err: (err as Error).message });
     }
   }
+}
+
+/**
+ * A text-only replacement that also replaces the blocks: `chat.update` with `text` alone keeps the
+ * previous blocks, so the old card would stay on screen.
+ */
+function textCard(text: string): { text: string; blocks: ZBlock[] } {
+  return { text, blocks: [{ type: 'section', text: { type: 'mrkdwn', text } }] };
 }

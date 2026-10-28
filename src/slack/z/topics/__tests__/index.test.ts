@@ -14,27 +14,28 @@ const EXPECTED_TOPICS = [
   'notify',
   'persona',
   'sandbox',
+  'skill',
   'theme',
   'usage',
   'verbosity',
 ];
 
 describe('topics/index.registerAllTopics', () => {
-  it('registers all Phase 2 topic bindings', () => {
+  it('registers every topic binding', () => {
     const registry = new ZTopicRegistry();
     registerAllTopics(registry);
     const topics = registry.topics().sort();
     expect(topics).toEqual([...EXPECTED_TOPICS].sort());
   });
 
-  it('each binding exposes apply + renderCard', () => {
+  it('each binding renders a card; every settings topic also applies (the skill list has nothing to set)', () => {
     const registry = new ZTopicRegistry();
     registerAllTopics(registry);
     for (const topic of EXPECTED_TOPICS) {
       const b = registry.get(topic);
       expect(b, `missing binding: ${topic}`).toBeDefined();
-      expect(typeof b?.apply).toBe('function');
       expect(typeof b?.renderCard).toBe('function');
+      expect(typeof b?.apply).toBe(topic === 'skill' ? 'undefined' : 'function');
     }
   });
 

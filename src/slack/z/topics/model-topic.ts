@@ -1,5 +1,5 @@
 /**
- * `/z model` Block Kit topic — Phase 2 (#507).
+ * `/z model` Block Kit topic (#507).
  */
 
 import { modelCatalog } from '../../../model-catalog';

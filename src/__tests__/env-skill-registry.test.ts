@@ -13,6 +13,7 @@ import {
   envSkillExists,
   envSkillRegistry,
   envSkillSandboxDenyRead,
+  listEnvSkills,
   resolveEnvSkillKey,
 } from '../env-skill-registry';
 import {
@@ -312,6 +313,31 @@ describe('env-skill-registry', () => {
     it('the reserved owner can never be a requester, so the "own skill" shortcut never opens it', () => {
       expect(isSkillUseAllowed(ENV_SKILL_GRANT_OWNER, 'acme-env:post-deploy', 'U1')).toBe(false);
       expect(isEnvSkillUseAllowed('acme-env:post-deploy', 'U1')).toBe(false);
+    });
+  });
+  // T2 (skill command): the `skill` list shows this host's environment skills after the personal ones.
+  describe('listEnvSkills', () => {
+    it('lists every skill of every environment plugin, sorted, with its frontmatter description', () => {
+      fs.writeFileSync(
+        path.join(pluginsDir, 'acme-env', 'skills', 'post-deploy', 'SKILL.md'),
+        '---\nname: post-deploy\ndescription: "QA the deploy range"\n---\n# post-deploy',
+      );
+      expect(listEnvSkills(registry)).toEqual([
+        { key: 'acme-env:post-deploy', plugin: 'acme-env', skill: 'post-deploy', description: 'QA the deploy range' },
+        { key: 'acme-env:staging-qa', plugin: 'acme-env', skill: 'staging-qa', description: '' },
+      ]);
+    });
+
+    it('skips plugins that are not environment plugins and directories without SKILL.md', () => {
+      fs.mkdirSync(path.join(pluginsDir, 'acme-env', 'skills', 'half-made'), { recursive: true });
+      const keys = listEnvSkills(registry).map((s) => s.key);
+      expect(keys).not.toContain('stv:new-task');
+      expect(keys).not.toContain('acme-env:half-made');
+    });
+
+    it('is empty on a host without environment plugins or with a missing plugin directory', () => {
+      expect(listEnvSkills({ pluginNames: new Set(), pluginsDir })).toEqual([]);
+      expect(listEnvSkills({ pluginNames: new Set(['ghost-env']), pluginsDir })).toEqual([]);
     });
   });
 });

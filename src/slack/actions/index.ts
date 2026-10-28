@@ -1,5 +1,6 @@
 import { setActionHandlersProviders } from '@soma/slack/actions';
 import { isAdminUser } from '../../admin-utils';
+import { envSkillRegistry } from '../../env-skill-registry';
 import { getTokenManager } from '../../token-manager';
 import { registerAuthActions } from '../auth/actions';
 import { registerCctActions } from '../cct/actions';
@@ -77,7 +78,9 @@ setActionHandlersProviders({
       choiceHandler,
     );
 
-    const zTopicRegistry = buildDefaultTopicRegistry();
+    const zTopicRegistry = buildDefaultTopicRegistry({
+      envSkillRegistry: () => envSkillRegistry(ctx.mcpManager?.getPluginManager()),
+    });
 
     return {
       permissionHandler,

@@ -39,21 +39,41 @@ describe('buildHelpCard', () => {
     expect((blocks[0] as any).type).toBe('header');
   });
 
-  it('renders at least one nav button per default category', () => {
-    const blocks = buildHelpCard({ issuedAt: 1 });
+  // T3: a help button either opens a real card or does not exist. Topics without a card are text
+  // commands and render as `/z <command>` chips — never as a button that promises a card.
+  it('renders card topics as nav buttons and every other topic as a `/z <command>` chip', () => {
+    const blocks = buildHelpCard({ issuedAt: 1 }) as any[];
     const actionIds: string[] = [];
-    for (const b of blocks as any[]) {
-      if (b.type === 'actions') {
-        for (const el of b.elements as any[]) {
-          if (typeof el.action_id === 'string') actionIds.push(el.action_id);
+    for (const b of blocks) {
+      if (b.type === 'actions') for (const el of b.elements as any[]) actionIds.push(el.action_id);
+    }
+    const contextText = blocks
+      .filter((b) => b.type === 'context')
+      .flatMap((b) => b.elements.map((e: any) => e.text))
+      .join('\n');
+    for (const cat of DEFAULT_HELP_CATEGORIES) {
+      for (const t of cat.topics) {
+        if (t.card) {
+          expect(actionIds, `nav button for card topic ${t.id}`).toContain(`z_help_nav_${t.id}`);
+        } else {
+          expect(actionIds, `no button for text topic ${t.id}`).not.toContain(`z_help_nav_${t.id}`);
+          expect(contextText, `chip for ${t.id}`).toContain(`\`/z ${t.label}\``);
         }
       }
     }
-    for (const cat of DEFAULT_HELP_CATEGORIES) {
-      for (const t of cat.topics) {
-        expect(actionIds, `nav action for ${t.id} missing`).toContain(`z_help_nav_${t.id}`);
-      }
-    }
+  });
+
+  it('prints the executable command, not the internal id, and flags thread-only commands', () => {
+    const text = JSON.stringify(buildHelpCard({ issuedAt: 1 }));
+    expect(text).toContain('`/z admin session list`');
+    expect(text).not.toContain('/z admin_session_list');
+    // `new` needs a thread (SLASH_FORBIDDEN) — the card says how to run it.
+    expect(text).toContain('`/z new`🧵');
+    expect(text).toContain('🧵');
+  });
+
+  it('never mentions a future phase', () => {
+    expect(JSON.stringify(buildHelpCard({ issuedAt: 1 }))).not.toMatch(/Phase/i);
   });
 
   it('accepts custom categories and emits one section + actions rows per category', () => {
@@ -63,8 +83,8 @@ describe('buildHelpCard', () => {
         {
           title: '*Test*',
           topics: [
-            { id: 'a', label: 'A' },
-            { id: 'b', label: 'B' },
+            { id: 'a', label: 'A', card: true },
+            { id: 'b', label: 'B', card: true },
           ],
         },
       ],
@@ -77,7 +97,7 @@ describe('buildHelpCard', () => {
   });
 
   it('chunks >5 topics into multiple actions rows', () => {
-    const topics = Array.from({ length: 7 }, (_, i) => ({ id: `t${i}`, label: `T${i}` }));
+    const topics = Array.from({ length: 7 }, (_, i) => ({ id: `t${i}`, label: `T${i}`, card: true }));
     const blocks = buildHelpCard({
       issuedAt: 3,
       categories: [{ title: '*Many*', topics }],
@@ -89,7 +109,7 @@ describe('buildHelpCard', () => {
   });
 });
 
-describe('buildSettingCard (Phase 2)', () => {
+describe('buildSettingCard', () => {
   it('renders header + current context as first two blocks', () => {
     const blocks = buildSettingCard({
       topic: 'persona',

@@ -1,14 +1,17 @@
 /**
- * `/z` topic registry wiring — Phase 2 (#507).
+ * `/z` topic registry wiring (#507).
  *
  * Single entry point that instantiates every `ZTopicBinding` produced by
- * the per-topic modules and registers them into a `ZTopicRegistry`.
+ * the per-topic modules and registers them into a `ZTopicRegistry`. A topic
+ * registered here is exactly a help-card button (`buildHelpCard`, `card: true`);
+ * `flow-e2e.test.ts` holds the two sets equal.
  *
  * Intentionally side-effect free — callers control registry lifetime and
  * test isolation. The bootstrap (`src/slack/actions/index.ts`) calls
  * `registerAllTopics()` once per process.
  */
 
+import type { EnvSkillRegistry } from '../../../env-skill-registry';
 import { ZTopicRegistry } from '../../actions/z-settings-actions';
 import { createAuthTopicBinding } from './auth-topic';
 import { createBypassTopicBinding } from './bypass-topic';
@@ -21,17 +24,23 @@ import { createModelTopicBinding } from './model-topic';
 import { createNotifyTopicBinding } from './notify-topic';
 import { createPersonaTopicBinding } from './persona-topic';
 import { createSandboxTopicBinding } from './sandbox-topic';
+import { createSkillTopicBinding } from './skill-topic';
 import { createThemeTopicBinding } from './theme-topic';
 import { createUsageTopicBinding } from './usage-topic';
 import { createVerbosityTopicBinding } from './verbosity-topic';
 
+export interface TopicRegistryOptions {
+  /** This host's environment plugins for the `skill` list — the plugin manager's in production. */
+  envSkillRegistry?: () => EnvSkillRegistry;
+}
+
 /**
- * Register every Phase 2 topic binding into the given registry.
+ * Register every topic binding into the given registry.
  *
  * Order is alphabetical (by topic id) and does not affect behaviour —
  * `ZTopicRegistry` stores one binding per topic name.
  */
-export function registerAllTopics(registry: ZTopicRegistry): void {
+export function registerAllTopics(registry: ZTopicRegistry, opts: TopicRegistryOptions = {}): void {
   registry.register(createAuthTopicBinding());
   registry.register(createBypassTopicBinding());
   registry.register(createCctTopicBinding());
@@ -43,14 +52,15 @@ export function registerAllTopics(registry: ZTopicRegistry): void {
   registry.register(createNotifyTopicBinding());
   registry.register(createPersonaTopicBinding());
   registry.register(createSandboxTopicBinding());
+  registry.register(createSkillTopicBinding(opts.envSkillRegistry));
   registry.register(createThemeTopicBinding());
   registry.register(createUsageTopicBinding());
   registry.register(createVerbosityTopicBinding());
 }
 
 /** Convenience: build + populate a registry in one call. */
-export function buildDefaultTopicRegistry(): ZTopicRegistry {
+export function buildDefaultTopicRegistry(opts: TopicRegistryOptions = {}): ZTopicRegistry {
   const registry = new ZTopicRegistry();
-  registerAllTopics(registry);
+  registerAllTopics(registry, opts);
   return registry;
 }

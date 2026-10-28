@@ -1,5 +1,5 @@
 /**
- * `/z persona` Block Kit topic — Phase 2 (#507).
+ * `/z persona` Block Kit topic (#507).
  *
  * Single source of truth for:
  *   - renderPersonaCard()        → default `/z persona` Block Kit card

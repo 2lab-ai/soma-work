@@ -8,7 +8,7 @@ import type { CommandContext, CommandDependencies, CommandHandler, CommandResult
 /**
  * Handles model commands (status/list/set) — persists to user default.
  *
- * Phase 2 (#507):
+ * #507:
  *   - bare `model` → Block Kit setting card (via /z topic builder)
  *   - `model list` → text listing (back-compat)
  *   - `model set <n>` → apply + text ack (back-compat)

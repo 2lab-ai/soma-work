@@ -7,7 +7,7 @@ import type { CommandContext, CommandHandler, CommandResult } from './types';
 /**
  * Handles persona commands (status/list/set).
  *
- * Phase 2 (#507):
+ * #507:
  *   - bare `persona` → Block Kit setting card (via /z topic builder)
  *   - `persona list` → text listing (back-compat)
  *   - `persona set <n>` → apply + text ack (back-compat)
@@ -22,7 +22,7 @@ export class PersonaHandler implements CommandHandler {
     const personaAction = CommandParser.parsePersonaCommand(text);
 
     if (personaAction.action === 'status') {
-      // Phase 2: render Block Kit card by default.
+      // Render the Block Kit card by default.
       const { text: fallback, blocks } = await renderPersonaCard({
         userId: user,
         issuedAt: Date.now(),

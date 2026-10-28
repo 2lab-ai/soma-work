@@ -1298,9 +1298,6 @@ export class CommandParser {
     'marketplace',
     'plugins',
     'plugin',
-    // Future: save/load (oh-my-claude skills)
-    'save',
-    'load',
     // Email — multi-word keys (detected via two-word `show_email` / `set_email` join)
     'set_email',
     'show_email',
@@ -1494,6 +1491,13 @@ export class CommandParser {
       '• `%thinking on|off` - Toggle extended thinking for this session',
       '• `%thinking_summary` - Show thinking summary display status',
       '• `%thinking_summary on|off` - Toggle thinking output display for this session',
+      '',
+      '*Skills:*',
+      "• `skill` or `/skill` - List your personal skills (run/edit/delete/rename/share), then this host's environment skills",
+      '• `skill download` - Export your personal skills as one markdown message',
+      '• `$<skill>` / `$plugin:skill` - Run a skill now (e.g. `$z`, `$user:my-deploy`)',
+      '• `$user` - Your personal skill list only',
+      '• `autoskill` - Skills applied automatically to every new session',
       '',
       '*Marketplace:*',
       '• `marketplace` or `/marketplace` - Show registered marketplaces',
