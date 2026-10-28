@@ -1204,6 +1204,8 @@ describe('model-controlled values in card markup (shipped renderers)', () => {
       'toNum',
       'formatDuration',
       'formatTaskTime',
+      // Task view T2: the meta and the 전체 task count read each task's fate.
+      'taskFateOf',
       'renderTaskMeta',
       'renderTimelineItem',
       'renderTimeline',
@@ -1211,7 +1213,7 @@ describe('model-controlled values in card markup (shipped renderers)', () => {
       'autoResumeLabel',
       'renderCardStatus',
     ],
-    ['WAIT_SVG', 'RESUME_SVG'],
+    ['WAIT_SVG', 'RESUME_SVG', 'TASK_FATE_LABEL'],
     {
       dhShow: () => true,
       dhMax: (_f: string, d: number) => d,
@@ -2035,29 +2037,61 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
 });
 
 describe('panel Tasks always render, also with no tasks (shipped renderPanelTasks)', () => {
-  const container = fakeEl({ style: { display: 'none' } });
-  const { renderPanelTasks } = load<{ renderPanelTasks(t: unknown): void }>(
-    ['esc', 'renderPanelTaskItem', 'renderPanelTasks'],
-    [],
-    {
-      document: { getElementById: (id: string) => (id === 'panel-tasks' ? container : null) },
-      _panelTasksExpanded: false,
-      // The browser morphs the block; this fake writes it.
-      morphInnerHtml: (el: { innerHTML: string }, html: string) => {
-        el.innerHTML = html;
+  // Task view T1.3: the Tasks section is a disclosure in the focused tab,
+  // folded by default (_panelTasksOpen); opened, the empty line shows.
+  const tasksSection = (open: boolean) => {
+    const container = fakeEl({ style: { display: 'none' } });
+    const { renderPanelTasks } = load<{ renderPanelTasks(t: unknown): void }>(
+      [
+        'esc',
+        'escAttr',
+        'toNum',
+        'agentIconHtml',
+        'taskFateOf',
+        'planSummaryHtml',
+        'planEarlierCounts',
+        'planEarlierGroups',
+        'planEarlierHtml',
+        'renderPanelTaskItem',
+        'renderPanelTasks',
+      ],
+      ['TASK_FATE_LABEL', 'PI_CHEV_SVG'],
+      {
+        document: { getElementById: (id: string) => (id === 'panel-tasks' ? container : null) },
+        _panelTasksOpen: open,
+        _panelTasksExpanded: false,
+        _panelTasksEarlier: false,
+        // The browser morphs the block; this fake writes it.
+        morphInnerHtml: (el: { innerHTML: string }, html: string) => {
+          el.innerHTML = html;
+        },
+        updateTimersIn: () => {},
       },
-    },
-  );
+    );
+    return { container, renderPanelTasks };
+  };
+  const CHEV = new Function(`${clientVar('PI_CHEV_SVG')}\nreturn PI_CHEV_SVG;`)() as string;
+  const head = (expanded: boolean) =>
+    `<button type="button" class="panel-sec-head panel-tasks-header" aria-expanded="${expanded}"` +
+    (expanded ? ' aria-controls="panel-tasks-body"' : '') +
+    ` onclick="togglePanelTasks()"><span class="ps-sec-title">Tasks</span><span class="ps-sec-sum">목록 없음</span>${CHEV}</button>`;
+  const LIVE = '<span class="ar-vh pl-live" role="status" aria-live="polite"></span>';
 
-  it('zero or missing tasks show the header and an empty line', () => {
-    for (const t of [[], undefined, null]) {
-      container.innerHTML = '';
-      (container as { _html?: string })._html = undefined; // a fresh block (the same data on a live block writes nothing)
-      renderPanelTasks(t);
-      expect(container.style.display).toBe('');
-      expect(container.innerHTML).toBe(
-        '<div class="panel-tasks-header"><span>Tasks</span></div><div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>',
-      );
+  it('zero or missing tasks show the header (folded: 목록 없음) and, opened, an empty line', () => {
+    expect(CHEV).toContain('<svg class="pi-chev"');
+    for (const open of [false, true]) {
+      const { container, renderPanelTasks } = tasksSection(open);
+      for (const t of [[], undefined, null]) {
+        container.innerHTML = '';
+        (container as { _html?: string })._html = undefined; // a fresh block (the same data on a live block writes nothing)
+        renderPanelTasks(t);
+        expect(container.style.display).toBe('');
+        expect(container.innerHTML).toBe(
+          open
+            ? `${head(true)}<div class="panel-tasks-body" id="panel-tasks-body"><div class="panel-tasks-empty">아직 작업 목록이 없습니다</div></div>${LIVE}`
+            : `${head(false)}${LIVE}`,
+        );
+      }
     }
   });
 });
@@ -2764,6 +2798,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     prevScrollTop?: number;
     turns?: 'ok' | 'empty' | 'fail' | 'held';
     settle?: 'ok' | 'empty' | 'fail';
+    /** 자세히 on: the whole conversation, landed on the newest turns. */
+    detail?: boolean;
   }) {
     const els: Record<string, FakeEl & Record<string, unknown>> = {};
     const el = (id: string) => {
@@ -2877,6 +2913,17 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         resetWorkLog: () => {},
         setWorkLogOpen: () => {},
         renderPanelTasks: () => {},
+        // Task view: openPanel resets the composer's attachments, the sections
+        // (folded; 자세히 opens them) and the 지시와 답변 disclosure.
+        pcReset: () => {},
+        resetPanelSections: () => {},
+        applyPanelConv: () => {},
+        _panelDetail: !!opts.detail,
+        _panelTasksOpen: false,
+        _agentConvRaw: null,
+        // The previous opening's answer observer (none in this harness).
+        _ansIo: null,
+        _panelScrollGen: 0, // #488: every landing scroll starts a new panel scroll generation
         _panelAgent: '',
         _panelAgentListOpen: false,
         renderTurn: (t: { id: string }) => `<div class="turn assistant" data-turn-id="${t.id}"></div>`,
@@ -2885,6 +2932,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         renderPanelArtifactsSection: () => {},
         ensureArtifacts: () => {},
         decoratePanelTurns: () => {},
+        // Task view: openPanel re-counts the 이전 대화 button when it replaces the turns.
+        renderConvEarlier: () => {},
         isSiblingSession: () => false,
         // main's own openPanel deps since this harness was written (#372 panel controls, spec 12 agent views).
         renderPanelControls: () => {},
@@ -3004,8 +3053,13 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     expect(p.formInView()).toBe(true);
   });
 
-  it('a question answered before the turns arrive lands on the newest turns instead', async () => {
-    const p = page({ session: waitingMulti(), turns: 'held' });
+  // Task view (T1.1 / T1.6): with no question the minimal panel lands at its top —
+  // the common surface, the tabs, the latest exchange; 자세히 lands on the newest turns.
+  it.each([
+    [false, 'the top'],
+    [true, 'the newest turns (자세히)'],
+  ] as const)('a question answered before the turns arrive lands on %s instead', async (detail, _where) => {
+    const p = page({ session: waitingMulti(), turns: 'held', detail });
     p.clickAnswer();
     // The answer lands (here or in Slack): the WS session_update re-renders the panel question.
     p.cache[KEY] = waitingMulti({ activityState: 'working', pendingQuestion: undefined });
@@ -3013,17 +3067,20 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     p.release();
     await flush();
     await flush();
-    expect(p.scroll.scrollTop).toBe(p.bottom());
-    expect(p.m.stick()).toBe(true);
+    expect(p.scroll.scrollTop).toBe(detail ? p.bottom() : 0);
+    expect(p.m.stick()).toBe(detail);
   });
 
-  it('an opening without an open question still lands on the newest turns and holds them', async () => {
-    const p = page({ session: waitingMulti({ activityState: 'idle', pendingQuestion: undefined }) });
+  it.each([
+    [false, 'the top, and does not hold the bottom'],
+    [true, 'the newest turns and holds them (자세히)'],
+  ] as const)('an opening without an open question lands on %s', async (detail, _where) => {
+    const p = page({ session: waitingMulti({ activityState: 'idle', pendingQuestion: undefined }), detail });
     p.m.openPanel(KEY);
     await flush();
     await flush();
-    expect(p.scroll.scrollTop).toBe(p.bottom());
-    expect(p.m.stick()).toBe(true);
+    expect(p.scroll.scrollTop).toBe(detail ? p.bottom() : 0);
+    expect(p.m.stick()).toBe(detail);
   });
 
   it('작업 로그 on a waiting session keeps the work-log landing (top, or the header for a tall question)', async () => {
