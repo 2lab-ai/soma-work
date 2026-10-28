@@ -138,6 +138,19 @@ describe('/z Block Kit flow — help card → nav → set', () => {
     expect(JSON.stringify(followUp)).toContain('환경 스킬');
   });
 
+  it('z_help_nav_skill inside a DM thread posts the environment skills into that thread', async () => {
+    const registry = buildDefaultTopicRegistry();
+    const handler = new ZSettingsActionHandler({ registry });
+    const client = makeClient();
+    const body: any = buildDmActionBody('z_help_nav_skill', 'UNOSKILLS');
+    body.message.thread_ts = '100.1';
+
+    await handler.handleHelpNav(body, client);
+
+    expect(client.chat.postMessage).toHaveBeenCalledTimes(1);
+    expect(client.chat.postMessage.mock.calls[0][0].thread_ts).toBe('100.1');
+  });
+
   it('a set click on a topic whose card has no settings is ignored', async () => {
     const registry = buildDefaultTopicRegistry();
     const handler = new ZSettingsActionHandler({ registry });

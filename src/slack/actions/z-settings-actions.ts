@@ -59,7 +59,13 @@ export interface ZTopicBinding {
    * Re-render the topic's setting card. Invoked on `z_help_nav_<topic>`.
    * Must return Block Kit blocks ready for replace().
    */
-  renderCard(args: { userId: string; issuedAt: number }): Promise<RenderResult>;
+  renderCard(args: {
+    userId: string;
+    issuedAt: number;
+    /** Where the card was opened — the `skill` list checks thread-scoped grants against it. */
+    channel?: string;
+    threadTs?: string;
+  }): Promise<RenderResult>;
   /**
    * Optional: handle an `z_setting_<topic>_open_modal` click → push a
    * `views.open` payload. Receives trigger_id + callback_id guidance.
@@ -340,6 +346,8 @@ export class ZSettingsActionHandler {
       const card = await binding.renderCard({
         userId: body?.user?.id ?? '',
         issuedAt: Date.now(),
+        channel: body?.container?.channel_id ?? body?.channel?.id,
+        threadTs: body?.container?.thread_ts ?? body?.message?.thread_ts,
       });
       await zRespond.replace({ text: card.text, blocks: card.blocks });
       if (card.followUp) {

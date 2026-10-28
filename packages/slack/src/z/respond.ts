@@ -196,6 +196,8 @@ export interface DmZRespondDeps {
    * cannot accidentally pass a user message ts into `chat.update`.
    */
   botMessageTs?: BotMessageTs;
+  /** The DM thread the card lives in — `send()` answers there instead of at the DM root. */
+  threadTs?: string;
 }
 
 export class DmZRespond implements ZRespond {
@@ -226,15 +228,17 @@ export class DmZRespond implements ZRespond {
       client,
       channel,
       botMessageTs: ts as BotMessageTs,
+      threadTs: body?.message?.thread_ts,
     });
   }
 
   async send(opts: { text?: string; blocks?: ZBlock[]; ephemeral?: boolean }): Promise<{ ts?: string }> {
-    const { client, channel } = this.deps;
+    const { client, channel, threadTs } = this.deps;
     const res = await client.chat.postMessage({
       channel,
       text: opts.text ?? '',
       blocks: opts.blocks as any,
+      ...(threadTs ? { thread_ts: threadTs } : {}),
     });
     const ts = (res as any).ts as string | undefined;
     if (ts) {

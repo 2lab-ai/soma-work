@@ -14,8 +14,9 @@ export function createSkillTopicBinding(
 ): ZTopicBinding {
   return {
     topic: 'skill',
-    async renderCard({ userId }) {
-      const [personal, env] = buildSkillListMessages(userId, envRegistry());
+    async renderCard({ userId, channel, threadTs }) {
+      const scope = channel ? { channel, threadTs } : undefined;
+      const [personal, env] = buildSkillListMessages(userId, envRegistry(), scope);
       return { ...personal, followUp: env };
     },
   };

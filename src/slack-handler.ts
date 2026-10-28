@@ -5360,6 +5360,8 @@ export class SlackHandler {
       const respond = new DmZRespond({
         client: this.slackApi.getClient(),
         channel: event.channel,
+        // `/z …` typed inside a DM thread answers in that thread; at the DM root it stays at the root.
+        threadTs: event.thread_ts,
       });
       const inv = normalizeZInvocation({
         source: 'dm',
