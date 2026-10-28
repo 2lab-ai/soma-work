@@ -187,3 +187,34 @@ describe('pauseAutoCompactAfterFailure / isAutoCompactPaused (compact retry loop
     expect(isAutoCompactPaused({ autoCompactSuppressedUntilMs: null }, NOW)).toBe(false);
   });
 });
+
+// A host turn soma-work injected (a goal continuation, a resume) that the
+// auto-compact intercepted or a compaction parked keeps saying so through the
+// replay: its entry is never merged with a person's words, either way.
+describe('host turns stay host turns through the replay queue', () => {
+  const host = { channel: 'C1', threadTs: 'T1', user: 'U1', ts: '1.0', hostTurn: true };
+  const person = { channel: 'C1', threadTs: 'T1', user: 'U1', ts: '2.0' };
+
+  it('a host turn gets its own entry; a person who writes next gets theirs', () => {
+    const s: CompactStateSession = {};
+    stashUserMessageDuringCompaction(s, host, '[goal-continuation] Continue');
+    stashUserMessageDuringCompaction(s, person, '이것도 해줘');
+    expect(s.compactPendingDispatches).toEqual([
+      { ctx: host, text: '[goal-continuation] Continue' },
+      { ctx: person, text: '이것도 해줘' },
+    ]);
+  });
+
+  it('a person’s words never merge into an intercepted host turn (pendingUserText)', () => {
+    const s: CompactStateSession = { pendingUserText: '[goal-continuation] Continue', pendingEventContext: host };
+    stashUserMessageDuringCompaction(s, person, '이것도 해줘');
+    expect(s.pendingUserText).toBe('[goal-continuation] Continue');
+    expect(s.compactPendingDispatches).toEqual([{ ctx: person, text: '이것도 해줘' }]);
+  });
+
+  it('promote carries the marker to the front of the queue', () => {
+    const s: CompactStateSession = { pendingUserText: '[goal-continuation] Continue', pendingEventContext: host };
+    promotePendingToDispatchQueue(s);
+    expect(s.compactPendingDispatches).toEqual([{ ctx: host, text: '[goal-continuation] Continue' }]);
+  });
+});
