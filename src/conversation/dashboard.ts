@@ -8822,7 +8822,7 @@ function formatNmSSs(ms) {
 //   .card-timer-live  data-leg-started / data-accumulated (renderCardStatus)
 //   .rel-time         data-ts  → "6m ago"
 //   .task-elapsed     data-since → running task duration
-//   .ap-expires       data-until → an approval card's time left
+// (An approval card's expiry is <ui-approval-card>'s own countdown.)
 function updateTimersIn(root) {
   var now = Date.now();
   var els = root.querySelectorAll('.card-timer-live');
@@ -8843,14 +8843,6 @@ function updateTimersIn(root) {
   for (var k = 0; k < run.length; k++) {
     var d = formatDuration(now - (Number(run[k].dataset.since) || now)) || '0s';
     if (run[k].textContent !== d) run[k].textContent = d;
-  }
-  // An approval card's expiry (re-agent-run D16): m:ss left, stopping at 0:00; the last minute warns.
-  var exp = root.querySelectorAll('.ap-expires');
-  for (var x = 0; x < exp.length; x++) {
-    var left = Math.max(0, Math.ceil(((Number(exp[x].dataset.until) || 0) - now) / 1000));
-    var et = '만료까지 ' + Math.floor(left / 60) + ':' + (left % 60 < 10 ? '0' : '') + (left % 60);
-    if (exp[x].textContent !== et) exp[x].textContent = et;
-    exp[x].classList.toggle('is-low', left <= 60);
   }
 }
 function updateTimers() { updateTimersIn(document); aqTick(); }
