@@ -1217,6 +1217,23 @@ describe('button clicks (decide)', () => {
     expect(events(pending.approvalId)).not.toContain('approval.approved');
   });
 
+  it('decides once when an approve and a deny click arrive together', async () => {
+    const approvals = await makeApprovals({ admins: [ADMIN, ADMIN_B] }, 60_000, { buttons: true });
+    const run = start(approvals, req());
+    const [pending] = await waitFor(() => run.pending.length > 0 && run.pending, 'pending');
+    const results = await Promise.all([
+      approvals.decide(click(card(ADMIN), pending.approvalId, ADMIN, 'approve')),
+      approvals.decide(click(card(ADMIN_B), pending.approvalId, ADMIN_B, 'deny')),
+      approvals.decide(click(card(ADMIN), pending.approvalId, ADMIN, 'approve')),
+    ]);
+    expect(results.filter((r) => r === 'accepted')).toHaveLength(1);
+    const outcome = await run.result;
+    expect(outcome.outcome).toBe('approved');
+    expect(events(pending.approvalId).filter((e) => e === 'approval.approved' || e === 'approval.denied')).toEqual([
+      'approval.approved',
+    ]);
+  });
+
   it('keeps reactions working when the cards have buttons', async () => {
     const approvals = await makeApprovals({}, 10, { buttons: true });
     const run = start(approvals, req());

@@ -211,6 +211,81 @@ describe('startSocketMode', () => {
     expect(h.logs.join('\n')).toContain('invalid_response');
   });
 
+  it('waits for Slack Retry-After on a 429 even when the local backoff is shorter', async () => {
+    const started = Date.now();
+    const h = harness([new Response('', { status: 429, headers: { 'retry-after': '1' } })]);
+    await waitFor(() => h.sockets[0], 'socket after the 429', 4000);
+    expect(h.fetchCalls).toHaveLength(2);
+    expect(Date.now() - started).toBeGreaterThanOrEqual(950);
+    expect(h.logs.join('\n')).toContain('ratelimited');
+  });
+
+  it('aborts an apps.connections.open still in flight on close and opens no socket', async () => {
+    let aborted = false;
+    const sockets: FakeSocket[] = [];
+    client = startSocketMode({
+      appToken: APP_TOKEN,
+      onClick: () => undefined,
+      log: () => undefined,
+      fetchImpl: ((_url: string, init?: RequestInit) =>
+        new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener('abort', () => {
+            aborted = true;
+            reject(Object.assign(new Error('aborted'), { name: 'AbortError' }));
+          });
+        })) as typeof fetch,
+      webSocket: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      backoff: { minMs: 5, maxMs: 20 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    await client.close();
+    expect(aborted).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(sockets).toEqual([]);
+  });
+
+  it('dispatches nothing after close, even a click that was already received', async () => {
+    const h = harness();
+    const socket = await waitFor(() => h.sockets[0], 'socket');
+    socket.receive({ envelope_id: 'env-q', type: 'interactive', payload: payload() });
+    await client?.close();
+    socket.receive({ envelope_id: 'env-late', type: 'interactive', payload: payload() });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(h.clicks).toEqual([]);
+  });
+
+  it('waits for a click already being handled before close resolves', async () => {
+    let finished = false;
+    const sockets: FakeSocket[] = [];
+    client = startSocketMode({
+      appToken: APP_TOKEN,
+      onClick: () =>
+        new Promise<void>((resolve) =>
+          setTimeout(() => {
+            finished = true;
+            resolve();
+          }, 50),
+        ),
+      log: () => undefined,
+      fetchImpl: (async () => new Response(JSON.stringify({ ok: true, url: WSS }), { status: 200 })) as typeof fetch,
+      webSocket: () => {
+        const socket = new FakeSocket();
+        sockets.push(socket);
+        return socket;
+      },
+      backoff: { minMs: 5, maxMs: 20 },
+    });
+    const socket = await waitFor(() => sockets[0], 'socket');
+    socket.receive({ envelope_id: 'env-w', type: 'interactive', payload: payload() });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await client.close();
+    expect(finished).toBe(true);
+  });
+
   it('stops reconnecting after close', async () => {
     const h = harness();
     const socket = await waitFor(() => h.sockets[0], 'socket');

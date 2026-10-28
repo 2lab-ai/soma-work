@@ -32,6 +32,7 @@ const APPROVAL_ID_RE = /^[A-Za-z0-9_-]{22}$/;
 const SLACK_ID_RE = /^[A-Z0-9]{2,32}$/;
 const MESSAGE_TS_RE = /^\d{1,12}\.\d{1,9}$/;
 const ERROR_CODE_RE = /^[a-z0-9_]{1,64}$/;
+const RETRY_AFTER_RE = /^\d{1,6}$/;
 
 type Json = Record<string, unknown>;
 
@@ -76,10 +77,13 @@ export function parseBlockActions(payload: unknown): ButtonClick[] {
 
 class SocketModeError extends Error {
   readonly code: string;
-  constructor(code: string) {
+  /** Slack's Retry-After on a 429, in seconds. */
+  readonly retryAfterSeconds?: number;
+  constructor(code: string, retryAfterSeconds?: number) {
     super(`apps.connections.open: ${code}`);
     this.name = 'SocketModeError';
     this.code = code;
+    if (retryAfterSeconds !== undefined) this.retryAfterSeconds = retryAfterSeconds;
   }
 }
 
@@ -101,6 +105,10 @@ export function startSocketMode(opts: {
   let current: WebSocketLike | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let failures = 0;
+  /** Aborts an apps.connections.open still in flight when the client closes. */
+  const stopping = new AbortController();
+  /** Clicks handed to onClick and not finished yet; close() waits for them. */
+  const dispatching = new Set<Promise<void>>();
 
   async function connectionUrl(): Promise<string> {
     let response: Response;
@@ -112,7 +120,7 @@ export function startSocketMode(opts: {
           'content-type': 'application/x-www-form-urlencoded',
         },
         body: '',
-        signal: AbortSignal.timeout(OPEN_TIMEOUT_MS),
+        signal: AbortSignal.any([AbortSignal.timeout(OPEN_TIMEOUT_MS), stopping.signal]),
       });
     } catch (err) {
       const name = (err as Error | undefined)?.name;
@@ -120,7 +128,11 @@ export function startSocketMode(opts: {
     }
     if (!response.ok) {
       await response.body?.cancel().catch(() => undefined);
-      throw new SocketModeError(response.status === 429 ? 'ratelimited' : `http_${response.status}`);
+      if (response.status === 429) {
+        const header = response.headers.get('retry-after')?.trim();
+        throw new SocketModeError('ratelimited', header && RETRY_AFTER_RE.test(header) ? Number(header) : undefined);
+      }
+      throw new SocketModeError(`http_${response.status}`);
     }
     let json: unknown;
     try {
@@ -138,9 +150,11 @@ export function startSocketMode(opts: {
     return json.url;
   }
 
-  function retryLater(): void {
+  /** Never sooner than the local backoff, nor than Slack's Retry-After when it sent one. */
+  function retryLater(retryAfterSeconds?: number): void {
     if (closed) return;
-    const delay = Math.min(backoff.maxMs, backoff.minMs * 2 ** Math.min(failures, 16));
+    const local = Math.min(backoff.maxMs, backoff.minMs * 2 ** Math.min(failures, 16));
+    const delay = Math.max(local, (retryAfterSeconds ?? 0) * 1000);
     failures += 1;
     timer = setTimeout(() => {
       timer = undefined;
@@ -154,10 +168,11 @@ export function startSocketMode(opts: {
     try {
       url = await connectionUrl();
     } catch (err) {
+      if (closed) return;
       opts.log(
         `socket mode: cannot open a connection (${err instanceof SocketModeError ? err.code : 'error'}); retrying`,
       );
-      retryLater();
+      retryLater(err instanceof SocketModeError ? err.retryAfterSeconds : undefined);
       return;
     }
     if (closed) return;
@@ -185,6 +200,8 @@ export function startSocketMode(opts: {
       retryLater();
     };
     socket.addEventListener('message', (event) => {
+      // A retired socket (closed client, or a connection already being replaced) dispatches nothing.
+      if (closed || ended) return;
       let message: unknown;
       try {
         message = JSON.parse(typeof event.data === 'string' ? event.data : String(event.data));
@@ -213,9 +230,16 @@ export function startSocketMode(opts: {
       }
       if (message.type !== 'interactive') return;
       for (const click of parseBlockActions(message.payload)) {
-        Promise.resolve()
-          .then(() => opts.onClick(click))
-          .catch(() => undefined);
+        const work = Promise.resolve()
+          .then(() => {
+            if (!closed) return opts.onClick(click);
+          })
+          .then(
+            () => undefined,
+            () => undefined,
+          );
+        dispatching.add(work);
+        void work.then(() => dispatching.delete(work));
       }
     });
     socket.addEventListener('close', () => end('closed'));
@@ -224,8 +248,10 @@ export function startSocketMode(opts: {
 
   void connect();
   return {
+    /** Stops reconnecting, aborts an open in flight, closes the socket, and waits for clicks already handed over. */
     async close() {
       closed = true;
+      stopping.abort();
       if (timer !== undefined) clearTimeout(timer);
       timer = undefined;
       const socket = current;
@@ -235,6 +261,7 @@ export function startSocketMode(opts: {
       } catch {
         // Already closed.
       }
+      while (dispatching.size > 0) await Promise.allSettled([...dispatching]);
     },
   };
 }
