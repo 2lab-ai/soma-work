@@ -396,9 +396,18 @@ describe('T1.4 · an assistant turn reads as its answer; Raw sits at the bottom'
 describe('T1.5 · the steering composer: multiline, images, files, voice', () => {
   const cmd = PAGE.slice(PAGE.indexOf('<div class="panel-command" id="panel-command">'), PAGE.indexOf('<!-- New task'));
 
-  it('is a textarea with attach / image / mic tools beside it', () => {
-    expect(cmd).toMatch(/<textarea id="cmd-input"/);
-    expect(cmd).not.toMatch(/<input type="text" id="cmd-input"/);
+  // Dashboard batch 2: the field is <ui-agent-steering>'s (multiline, grows with its text); the page's tools sit in
+  // its slot="tools" and the chips, the recorder and the error in slot="attachments".
+  it('is <ui-agent-steering> with the attach / image / mic tools in its field', () => {
+    expect(cmd).toContain('<ui-agent-steering id="cmd-steer" lang="ko">');
+    expect(cmd).not.toMatch(/<textarea|id="cmd-input"|id="cmd-send"/);
+    const tools = cmd.slice(cmd.indexOf('<span slot="tools" class="pc-tools">'), cmd.indexOf('</ui-agent-steering>'));
+    expect(tools).toContain('id="pc-attach"');
+    expect(tools).toContain('id="pc-mic"');
+    const top = cmd.slice(cmd.indexOf('<div slot="attachments" class="pc-top">'), cmd.indexOf('<span slot="tools"'));
+    expect(top).toContain('id="pc-attachments"');
+    expect(top).toContain('id="pc-recorder"');
+    expect(top).toContain('id="pc-error"');
     expect(cmd).toContain('id="pc-attach"');
     expect(cmd).toContain('id="pc-image"');
     expect(cmd).toMatch(/id="pc-mic"[^>]*aria-pressed="false"/);
@@ -407,24 +416,20 @@ describe('T1.5 · the steering composer: multiline, images, files, voice', () =>
     expect(cmd).toMatch(/<input type="file" id="pc-file-input" multiple hidden/);
     expect(cmd).toMatch(/<input type="file" id="pc-image-input" accept="image\/\*"/);
     // Model · effort sit above the composer.
-    expect(cmd.indexOf('id="panel-controls"')).toBeLessThan(cmd.indexOf('id="cmd-input"'));
+    expect(cmd.indexOf('id="panel-controls"')).toBeLessThan(cmd.indexOf('id="cmd-steer"'));
   });
 
   const pc = load<{
-    pcEnterAction(e: Record<string, unknown>, touch: boolean): string;
     pcCommandBody(message: string, files: Array<Record<string, unknown>>): unknown;
     pcCanSend(message: string, files: unknown[]): boolean;
-  }>(['pcEnterAction', 'pcCommandBody', 'pcCanSend'], []);
+  }>(['pcCommandBody', 'pcCanSend'], []);
 
-  it('Enter sends, Shift+Enter breaks the line, an IME composition (한글) never sends', () => {
-    expect(pc.pcEnterAction({ key: 'Enter' }, false)).toBe('send');
-    expect(pc.pcEnterAction({ key: 'Enter', shiftKey: true }, false)).toBe('newline');
-    expect(pc.pcEnterAction({ key: 'Enter', isComposing: true }, false)).toBe('none');
-    expect(pc.pcEnterAction({ key: 'Enter', keyCode: 229 }, false)).toBe('none');
-    expect(pc.pcEnterAction({ key: 'Enter', metaKey: true }, true)).toBe('send');
-    // On a phone Enter is a line break; the send button sends.
-    expect(pc.pcEnterAction({ key: 'Enter' }, true)).toBe('newline');
-    expect(pc.pcEnterAction({ key: 'a' }, false)).toBe('none');
+  // Enter sends, Shift+Enter breaks the line, an IME composition (한글, keyCode 229) never sends, a phone's Enter is a
+  // line break: the element's own keys now — @2lab.ai/ui agent-steering.test.ts "steerEnterAction: IME-safe, Shift
+  // and touch make a new line, ⌘/Ctrl steers only while running" and "Shift+Enter, IME composition and keyCode 229
+  // never send". The page keeps no key handler of its own.
+  it('the page has no key handler of its own on the composer', () => {
+    expect(TEMPLATE).not.toMatch(/function pcKeydown\(|function pcEnterAction\(|function pcAutosize\(/);
   });
 
   it('the body carries the files as base64 attachments; a files-only send is allowed', () => {
@@ -550,13 +555,17 @@ describe('review r1 · one send at a time; a failed multiline send retries witho
     TEMPLATE.indexOf('\nasync function sendCommand('),
     TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nasync function sendCommand(')),
   );
-  it('a second press while the first reads its files sends nothing', () => {
-    expect(send).toMatch(/if \(input\.disabled \|\| _pcSending\) return;/);
+  const submit = TEMPLATE.slice(
+    TEMPLATE.indexOf('\nfunction pcOnSubmit('),
+    TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction pcOnSubmit(')),
+  );
+  it('a second press while the first reads its files sends nothing (the note stays in the field)', () => {
+    expect(submit).toMatch(/if \(!panelSessionKey \|\| _pcSending \|\| !host \|\| host\._mode !== 'open'\) \{\s*e\.preventDefault\(\);/);
     expect(send.indexOf('_pcSending = true')).toBeLessThan(send.indexOf('await '));
   });
-  it('the retry link holds the message in a closure, not in a quoted handler', () => {
-    expect(send).not.toMatch(/sendRetry\(\\\\'/);
-    expect(send).toContain("addEventListener('click'");
+  it('a failed send retries through the element (its row\'s Retry re-emits ui-submit), never an inline handler', () => {
+    expect(send).toContain("el.setItemState(ref, 'failed', why.trim());");
+    expect(TEMPLATE).not.toMatch(/function sendRetry\(|class="cmd-retry"/);
   });
 });
 
@@ -588,8 +597,9 @@ describe('#488 · a voice note that is not filed in time stops the send instead 
     TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nasync function sendCommand(')),
   );
   it('a recording that does not settle within the wait aborts with a message; text and chips stay', () => {
-    expect(send).toMatch(/if \(!filed\) \{[^}]*pcSetError\(/);
-    expect(send.indexOf('if (!filed)')).toBeLessThan(send.indexOf('input.value = '));
+    expect(send).toMatch(/if \(!filed\) \{[^}]*pcSetError\([^}]*pcGiveBack\(el, ref, msg, sendingSessionKey\);/);
+    // Nothing is posted before it: the command route is reached only after the wait.
+    expect(send.indexOf('if (!filed)')).toBeLessThan(send.indexOf('acPost('));
   });
 });
 
@@ -1101,19 +1111,18 @@ describe('R8 review (fable P3) · input symmetry and a short body read at its to
 });
 
 describe('T1.5 · the session model sits above the steering input — on a phone too', () => {
-  it('markup: model · effort come before the composer row', () => {
+  it('markup: model · effort come before the composer', () => {
     expect(PAGE.indexOf('id="panel-controls"')).toBeGreaterThan(-1);
-    expect(PAGE.indexOf('id="panel-controls"')).toBeLessThan(PAGE.indexOf('id="pc-row"'));
+    expect(PAGE.indexOf('id="panel-controls"')).toBeLessThan(PAGE.indexOf('id="cmd-steer"'));
   });
 
-  it('narrow: model · effort and the tools on the first line, the field and Send on the line under it', () => {
-    expect(CSS).toContain('.panel-command .panel-controls { order: 1;');
-    expect(CSS).toContain('.panel-command .pc-tools { order: 2; margin-left: auto; }');
-    // Room for Send as wide as "Sending..." beside the field — it never drops to its own line.
-    expect(CSS).toMatch(/\.panel-command textarea \{ order: 4; flex: 1 1 calc\(100% - 140px\);/);
-    // The model's width is set once, by the task view rule (no dead 42% before it).
+  // Dashboard batch 2: the tools moved into <ui-agent-steering>'s field (slot="tools") and Send is the element's,
+  // so the narrow layout no longer re-orders a row of its own — model · effort on the first line, the composer under it.
+  it('narrow: model · effort on the first line, the composer (tools in its field) on the line under it', () => {
+    expect(CSS).toContain('.panel-command .panel-controls { min-width: 0; max-width: 100%; }');
+    expect(CSS).toContain('.panel-command .pc-steer-wrap { flex-basis: 100%; }');
     expect(CSS).not.toContain('.panel-command .panel-controls { padding: 0; flex: 0 1 auto; max-width: 42%; }');
-    expect(CSS).toContain('.panel-command .btn-send { order: 5; }');
+    expect(CSS).not.toMatch(/\.btn-send|\.panel-command textarea|\.panel-command-row|\.cmd-hint/);
   });
 });
 
