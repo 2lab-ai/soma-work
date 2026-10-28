@@ -588,6 +588,20 @@ export class PluginManager {
     return [...(this.pluginConfig.plugins || [])];
   }
 
+  /**
+   * Plugin names (`name` of `name@marketplace`) the fleet deploy installed as
+   * environment plugins (`plugin.envPlugins`). Their skills run for non-admins
+   * only on an admin's grant (`src/env-skill-registry.ts`).
+   */
+  getEnvPluginNames(): ReadonlySet<string> {
+    const names = new Set<string>();
+    for (const raw of this.pluginConfig.envPlugins || []) {
+      const ref = parsePluginRef(raw);
+      if (ref) names.add(ref.pluginName);
+    }
+    return names;
+  }
+
   /** Add a marketplace source. Persists to config.json when configFile is set. */
   addMarketplace(entry: MarketplaceEntry): CrudResult {
     if (!validateMarketplaceEntry(entry)) {

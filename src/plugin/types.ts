@@ -25,6 +25,12 @@ export interface PluginConfig {
   marketplace?: MarketplaceEntry[];
   /** Plugin references: "pluginName@marketplaceName" */
   plugins?: string[];
+  /**
+   * The plugin refs the fleet deploy installed as environment plugins
+   * (`src/deploy/apply-env-plugins.ts`). Their skills run for non-admins only on
+   * an admin's grant (`src/env-skill-registry.ts`). Append-only, like `plugins`.
+   */
+  envPlugins?: string[];
   /** Local directories loaded directly (dev mode) */
   localOverrides?: string[];
 }
