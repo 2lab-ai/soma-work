@@ -24,7 +24,16 @@ permissions:
 
 jobs:
   quality-gates:
-    # self-hosted: org has no hosted-runner budget (billing-blocked since legacy).
+    # GitHub-hosted: the repository is public, so standard hosted runners are free and unmetered.
+    # Until 2026-10-28 this job ran on `[self-hosted, fable-m5max]` — a maintainer's workstation,
+    # one job at a time, sharing its CPUs with unrelated builds. On 2026-10-27 the three PR gates
+    # asked that one machine for 3,049 runner-minutes in a 1,440-minute day and the queue reached
+    # 70 jobs. (It moved there on 2026-08-03 because of an org billing block while the repo was
+    # private.) macOS, not Linux: the test suite drives launchd/dscl/service.sh through shims
+    # written against the macOS userland, the platform the fleet runs on.
+    #
+    # The fork guard below is unchanged. On a hosted runner a fork PR can no longer reach a machine
+    # we own, but whether forks get this gate is a policy decision for its own change.
     #
     # This repository is public, and `pull_request` fires for fork PRs too. Every
     # step below executes repository code — `npm ci` runs install scripts, the
@@ -50,21 +59,21 @@ jobs:
       github.event_name == 'push' ||
       (github.event_name == 'pull_request' &&
       github.event.pull_request.head.repo.full_name == github.repository)
-    runs-on: [self-hosted, fable-m5max]
-    # 25, not 15: on 2026-10-27, with the shared runner host at load 150-200, test:release took
-    # 12.1-14.3 min and 4 runs (main's push CI among them) were cancelled at 15 with no test failing.
-    timeout-minutes: 25
+    runs-on: macos-latest
+    # A hosted macOS runner has 3 cores; test:release is serial (one worker). 30 leaves room for the
+    # first runs on it while its real duration is measured.
+    timeout-minutes: 30
 
     steps:
       - uses: actions/checkout@v4
 
       - name: Use Node.js 20
         uses: actions/setup-node@v4
-        # No `cache: 'npm'`: this runner is a persistent self-hosted Mac whose ~/.npm survives
-        # between runs; the cache restore downloaded a 2 GB archive at ~5 MB/s (7–9 min) and
-        # pushed quality-gates past its 15-minute timeout.
+        # `cache: 'npm'` on a hosted runner: each job starts from an empty ~/.npm. (It was off on the
+        # self-hosted Mac, whose ~/.npm persisted and whose 2 GB restore ran at ~5 MB/s.)
         with:
           node-version: '20'
+          cache: 'npm'
 
       - name: Install dependencies
         run: npm ci

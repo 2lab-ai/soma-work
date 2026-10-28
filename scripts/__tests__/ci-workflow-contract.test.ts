@@ -1,5 +1,5 @@
 /**
- * The self-hosted workflows' own contract: who may run them, and what they run.
+ * The pull-request gate workflows' own contract: who may run them, where, and what they run.
  *
  * Three workflows execute pull-request code on a persistent machine we own —
  * `.github/workflows/ci.yml` (the merge gate),
@@ -83,7 +83,23 @@ function runSteps(workflowPath: string, jobName: string): { name: string; run: s
 }
 
 /**
- * The shared guard assertion, applied to each self-hosted job independently.
+ * The three pull-request gates run on GitHub-hosted runners, never on a self-hosted machine.
+ * Until 2026-10-28 they shared one maintainer workstation (`[self-hosted, fable-m5max]`), one job
+ * at a time: on 2026-10-27 they asked it for 3,049 runner-minutes in a 1,440-minute day and the
+ * queue reached 70 jobs. The repository is public, so standard hosted runners are free and
+ * unmetered. Deploy jobs stay self-hosted: they run on the hosts they deploy to.
+ */
+function expectGitHubHosted(workflowPath: string, jobName: string, label: string): void {
+  const job = jobBlock(workflowPath, jobName);
+  const runsOn = job.match(/\n {4}runs-on: (.+)\n/);
+  expect(runsOn, `${workflowPath}:${jobName} has no runs-on`).not.toBeNull();
+  expect(runsOn?.[1], `${workflowPath}:${jobName} runs-on`).toBe(label);
+  // Exactly one runs-on, so a second (self-hosted) one cannot hide behind the first.
+  expect(job.match(/\n {4}runs-on: /g)?.length, `${workflowPath}:${jobName} runs-on count`).toBe(1);
+}
+
+/**
+ * The shared guard assertion, applied to each gate job independently.
  * Called from both suites below rather than looped over, so a failure names the
  * workflow that regressed.
  */
@@ -152,12 +168,11 @@ function expectContentsReadOnly(workflowPath: string, jobNames: string[]): void 
 }
 
 describe('CI workflow contract', () => {
-  it('still runs pull-request code on the self-hosted runner — the premise of the guard below', () => {
-    // Not an aspiration: the org has no hosted-runner budget, so this is a
-    // durable fact and the fork guard is not optional while it holds. If this
-    // assertion ever fails because the job moved to a hosted runner, the guard
-    // test below should be re-read as a policy choice rather than a necessity.
-    expect(jobBlock(CI_WORKFLOW, 'quality-gates')).toContain('runs-on: [self-hosted, fable-m5max]');
+  it('runs on a GitHub-hosted macOS runner, not on a self-hosted machine', () => {
+    // macOS: the suite drives launchd/dscl/service.sh through shims written for the macOS userland.
+    // The fork guard below is kept as a policy choice; on a hosted runner it no longer protects a
+    // machine we own.
+    expectGitHubHosted(CI_WORKFLOW, 'quality-gates', 'macos-latest');
 
     const workflow = read(CI_WORKFLOW);
     // …and it is still reachable from a pull request. A guard that works by
@@ -211,9 +226,9 @@ describe('CI workflow contract', () => {
 });
 
 describe('sanitize gate workflow contract', () => {
-  it('still runs pull-request code on the self-hosted runner, with a secret in scope', () => {
+  it('runs on a GitHub-hosted Linux runner, with a secret in scope', () => {
     const job = jobBlock(SANITIZE_WORKFLOW, 'scan');
-    expect(job).toContain('runs-on: [self-hosted, fable-m5max]');
+    expectGitHubHosted(SANITIZE_WORKFLOW, 'scan', 'ubuntu-latest');
     expect(job).toContain('SANITIZE_PATTERNS');
 
     const workflow = read(SANITIZE_WORKFLOW);
@@ -263,11 +278,10 @@ describe('sanitize gate workflow contract', () => {
 });
 
 describe('Lean verification workflow contract', () => {
-  it('still runs pull-request code on the self-hosted runner — the premise of the guard below', () => {
+  it('runs on a GitHub-hosted Linux runner that installs the Lean toolchain itself', () => {
     // Every step here runs code the pull request controls: the gate script, and
-    // whatever Lean elaborates while building the proofs, which can include
-    // arbitrary IO at build time. Same premise, same necessity, as ci.yml.
-    expect(jobBlock(LEAN_WORKFLOW, 'lean-verify')).toContain('runs-on: [self-hosted, fable-m5max]');
+    // whatever Lean elaborates while building the proofs.
+    expectGitHubHosted(LEAN_WORKFLOW, 'lean-verify', 'ubuntu-latest');
 
     const workflow = read(LEAN_WORKFLOW);
     // Still reachable from a pull request: a guard that works by dropping the
@@ -291,6 +305,7 @@ describe('Lean verification workflow contract', () => {
     // repository's own TypeScript, so it needs the dependencies.
     expect(steps.map((step) => step.run)).toEqual([
       'npm ci',
+      'curl -sSfL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh | sh -s -- -y --default-toolchain none',
       'bash scripts/verification/lean-verify.sh --check',
       'bash scripts/verification/lean-verify.sh --selftest',
     ]);
@@ -306,8 +321,8 @@ describe('Lean verification workflow contract', () => {
   });
 
   it('cancels the run a newer push supersedes, in a concurrency group apart from CI', () => {
-    // One self-hosted runner, close to 20 minutes a run: without a group, every
-    // push queued another full run behind the ones it had already made stale.
+    // Close to 20 minutes a run: without a group, every push queued another
+    // full run behind the ones it had already made stale.
     const concurrency = (workflowPath: string): Record<string, string> => {
       const block = read(workflowPath).match(/^concurrency:\n((?: {2}\S.*\n)+)/m);
       expect(block, `${workflowPath} has no top-level \`concurrency:\` block`).not.toBeNull();
