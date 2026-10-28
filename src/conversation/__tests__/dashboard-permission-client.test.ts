@@ -9,7 +9,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mockConfig = {
   conversation: {
@@ -207,15 +207,29 @@ describe('dashboard permission prompt → real server (shipped client code)', ()
     };
   }
 
-  beforeEach(async () => {
+  let answerPermissionPrompt: typeof import('../../permission-prompt-response').answerPermissionPrompt;
+  let issueSlackToken: typeof import('../oauth').issueSlackToken;
+  // One app for the suite: importing the 21k-line dashboard module (and the server's graph) per test took
+  // over the 10 s hook budget on a loaded runner (PR #536 review P3). Tests stay apart through what they
+  // own: a fresh channel / session key, approval ids of their own (cleaned up after each), the session
+  // accessor and answer handler set again, and a fresh sign-in (cookie + CSRF token) per test.
+  beforeAll(async () => {
     vi.resetModules();
     const webServer = await import('../web-server');
     injectWebServer = webServer.injectWebServer;
     stopWebServer = webServer.stopWebServer;
     dashboard = await import('../dashboard');
     ({ sharedStore } = await import('somalib/permission/shared-store'));
-    const { answerPermissionPrompt } = await import('../../permission-prompt-response');
+    ({ answerPermissionPrompt } = await import('../../permission-prompt-response'));
+    ({ issueSlackToken } = await import('../oauth'));
     await webServer.startWebServer({ listen: false });
+  }, 60_000);
+
+  afterAll(async () => {
+    await stopWebServer();
+  });
+
+  beforeEach(async () => {
     channel = `C_DPC_${Math.random().toString(36).slice(2, 10)}`;
     key = `${channel}:t1`;
     dashboard.setDashboardSessionAccessor(
@@ -237,7 +251,6 @@ describe('dashboard permission prompt → real server (shipped client code)', ()
     );
     dashboard.setDashboardPermissionAnswerHandler((a: any) => answerPermissionPrompt(a));
 
-    const { issueSlackToken } = await import('../oauth');
     const token = issueSlackToken({ slackUserId: 'U1', email: 'U1@slack.local', name: 'U1' });
     const sso = await injectWebServer({ method: 'GET', url: `/auth/sso?token=${encodeURIComponent(token)}` });
     const cookie = String(sso.headers['set-cookie']).split(';')[0];
@@ -250,7 +263,6 @@ describe('dashboard permission prompt → real server (shipped client code)', ()
 
   afterEach(async () => {
     for (const id of ids.splice(0)) await sharedStore.cleanup(id);
-    await stopWebServer();
   });
 
   it('T1.2 — the requester sees the Slack card: tool, its parameters, matched rule, four answers', async () => {
