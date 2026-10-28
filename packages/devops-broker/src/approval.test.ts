@@ -100,6 +100,7 @@ interface Extra {
   store?: StateStore<ApprovalState>;
   ledger?: Ledger;
   limits?: Partial<ApprovalLimits>;
+  buttons?: boolean;
 }
 
 /** Log lines the approvals wrote (the default writes to stderr). */
@@ -123,6 +124,7 @@ async function makeApprovals(
     now: () => clock,
     pollIntervalMs,
     limits: extra.limits,
+    buttons: extra.buttons,
     log: (line) => logged.push(line),
   });
   open.push(approvals);
@@ -1129,5 +1131,97 @@ describe('createApprovals', () => {
     // 6 cards → one round every 40 ms × ceil(6 / 2) = 120 ms → about 5 rounds of 6 calls in 600 ms.
     expect(made).toBeGreaterThan(0);
     expect(made).toBeLessThanOrEqual(6 * 6);
+  });
+});
+
+describe('button clicks (decide)', () => {
+  /** The click Socket Mode would deliver for `user` pressing a button on `message`. */
+  function click(message: FakeMessage, approvalId: string, user: string, action: 'approve' | 'deny' = 'approve') {
+    return { approvalId, action, user, channel: message.channel, messageTs: message.ts };
+  }
+
+  it('puts 승인 / 거부 buttons on the card and approves on the admin own click, consumed once', async () => {
+    const approvals = await makeApprovals({ admins: [ADMIN, ADMIN_B] }, 10, { buttons: true });
+    const run = start(approvals, req());
+    const [pending] = await waitFor(() => run.pending.length > 0 && run.pending, 'pending');
+    const blocks = JSON.stringify(card(ADMIN).blocks);
+    expect(blocks).toContain('"type":"actions"');
+    expect(blocks).toContain('devops_approval_approve');
+    expect(blocks).toContain('devops_approval_deny');
+
+    await expect(approvals.decide(click(card(ADMIN_B), pending.approvalId, ADMIN_B))).resolves.toBe('accepted');
+    const outcome = await run.result;
+    expect(outcome).toMatchObject({ outcome: 'approved', approvalId: pending.approvalId });
+    if (outcome.outcome !== 'approved') throw new Error('not approved');
+    await outcome.consume();
+    await expect(outcome.consume()).rejects.toMatchObject({ name: 'ApprovalConsumeError', reason: 'used' });
+    expect(rows().find((row) => row.event === 'approval.approved')).toMatchObject({ by: ADMIN_B });
+    // A second click on a decided card changes nothing.
+    await expect(approvals.decide(click(card(ADMIN), pending.approvalId, ADMIN, 'deny'))).resolves.toBe('ignored');
+    expect(stateOnDisk().approvals[pending.approvalId].status).toBe('consumed');
+    for (const admin of [ADMIN, ADMIN_B]) {
+      await waitFor(() => card(admin).updates.length > 0, 'approved card update');
+      expect(lastUpdateText(card(admin))).toContain('승인됨');
+      expect(lastUpdateText(card(admin))).not.toContain('"type":"actions"');
+    }
+  });
+
+  it('ignores clicks from non-admins and the bot, then denies on an admin 거부', async () => {
+    const approvals = await makeApprovals({}, 10, { buttons: true });
+    const run = start(approvals, req());
+    const [pending] = await waitFor(() => run.pending.length > 0 && run.pending, 'pending');
+    for (const user of [OTHER, BOT]) {
+      await expect(approvals.decide(click(card(ADMIN), pending.approvalId, user))).resolves.toBe('ignored');
+    }
+    expect(run.settled()).toBe(false);
+    expect(
+      rows()
+        .filter((row) => row.event === 'approval.click-ignored')
+        .map((row) => row.reason),
+    ).toEqual(['not-admin', 'not-admin']);
+    await expect(approvals.decide(click(card(ADMIN), pending.approvalId, ADMIN, 'deny'))).resolves.toBe('accepted');
+    const outcome = await run.result;
+    expect(outcome.outcome).toBe('denied');
+    expect(rows().find((row) => row.event === 'approval.denied')).toMatchObject({ by: ADMIN });
+  });
+
+  it('ignores a click that did not come from this approval own card, or names an unknown approval', async () => {
+    const approvals = await makeApprovals({}, 10, { buttons: true });
+    const first = start(approvals, req(1));
+    const second = start(approvals, req(2));
+    const [p1] = await waitFor(() => first.pending.length > 0 && first.pending, 'pending 1');
+    const [p2] = await waitFor(() => second.pending.length > 0 && second.pending, 'pending 2');
+    // Card 2's button cannot approve approval 1.
+    const wrong = { ...click(cardWith(ADMIN, p2.approvalId), p1.approvalId, ADMIN) };
+    await expect(approvals.decide(wrong)).resolves.toBe('ignored');
+    await expect(
+      approvals.decide({ ...click(card(ADMIN), p1.approvalId, ADMIN), approvalId: 'A'.repeat(22) }),
+    ).resolves.toBe('ignored');
+    expect(first.settled()).toBe(false);
+    expect(second.settled()).toBe(false);
+    expect(
+      rows()
+        .filter((row) => row.event === 'approval.click-ignored')
+        .map((row) => row.reason),
+    ).toEqual(['wrong-card', 'not-pending']);
+  });
+
+  it('does not approve on a click that arrives after the deadline', async () => {
+    const approvals = await makeApprovals({}, 60_000, { buttons: true });
+    const run = start(approvals, req());
+    const [pending] = await waitFor(() => run.pending.length > 0 && run.pending, 'pending');
+    clock += 301_000;
+    await approvals.decide(click(card(ADMIN), pending.approvalId, ADMIN));
+    const outcome = await run.result;
+    expect(outcome.outcome).toBe('expired');
+    expect(events(pending.approvalId)).not.toContain('approval.approved');
+  });
+
+  it('keeps reactions working when the cards have buttons', async () => {
+    const approvals = await makeApprovals({}, 10, { buttons: true });
+    const run = start(approvals, req());
+    await waitFor(() => run.pending.length > 0, 'pending');
+    fake.react(dm(ADMIN), card(ADMIN).ts, 'white_check_mark', ADMIN);
+    expect((await run.result).outcome).toBe('approved');
   });
 });
