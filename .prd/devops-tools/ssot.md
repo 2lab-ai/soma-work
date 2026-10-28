@@ -51,6 +51,22 @@ Status: in-progress · 작성 2026-10-26 · 기준 커밋 main `0a7a638e` · 유
 "이대로" = DM과 시연에 제시한 추천안 전부 → D1–D6 = ①(상세 §3). member 계정이 원문의 `<member 계정 메일>`인지는 답이 없어
 `[가정]`으로 두고 WU7 토큰 입력 때 확인한다(loop.md 열린 질문).
 
+### SSOT_5 — 2026-10-27 drift (치환본: 개발 봇 호스트 이름 → `work-m64`, 운영자 Mac 호스트 이름 → `<운영자 Mac>`. 나머지는 원문 그대로)
+
+> 뭔 마지막 블로커야 작업 하라고 그리고 <운영자 Mac>에는 배포 안해도 되 work-m64에만 필요한거야
+
+### SSOT_6 — 2026-10-28 drift (원문 그대로)
+
+> >진행하려면 Z님 Slack ID를 admins에 추가하거나
+>
+> 아니 이거 추가해 하
+
+확인 결과 브로커 정책 `admins`에 이미 그 ID 하나가 들어 있었다(변경 없음). 인용된 문장은 봇의 추정이었다.
+
+### SSOT_7 — 2026-10-28 drift (원문 그대로)
+
+> stage2는 지금 하는거 아님 일단 stage2 작업은 계획만 세우고 패스
+
 ## SSOT-TASK-TREE (ssot-task 레벨 — 각 줄의 출처 = 위 원문)
 
 - [x] **T1** — 지금 설정을 확인하고 환경별로 시각화 ← SSOT_1 "1. 현재 설정을 확인하고 … 시각화해서 줘"
@@ -59,7 +75,7 @@ Status: in-progress · 작성 2026-10-26 · 기준 커밋 main `0a7a638e` · 유
 - [ ] **T4** — 유저별 허락: 기본은 읽기, 쓰기는 어드민 허락 ← SSOT_1 "서버툴처럼 유저별 퍼미션 … 디폴트는 읽기 전용 … 쓰기를 하려면 어드민에게 권한"
 - [ ] **T5** — `work-m64` dev에 계정 2개(org-admin 계정, member 계정) ← SSOT_1 "지금 work-m64:dev에는 … 계정 2개"
 - [ ] **T6** — org-admin 계정으로 유저 추가·삭제, 레포 읽기·쓰기 권한 부여 — 모든 작업 어드민 최종 확인 ← SSOT_1 "어드민 권한까지 … 항상 모든 작업은 어드민에게 최종 컨펌"
-- [ ] **T7** — Cloudflare는 환경별(dev2·stage0·stage2) 포지키 하나씩 ← SSOT_1 "환경별로 있음 … 각각 환경별로 포지키를 받고"
+- [ ] **T7** — Cloudflare는 환경별(dev2·stage0·stage2) 포지키 하나씩 ← SSOT_1 "환경별로 있음 … 각각 환경별로 포지키를 받고" · stage2는 계획만(SSOT_7)
 - [ ] **T8** — 포지키로 무엇을 하든 매번 어드민 허락 → 3일 미만 단기 키 생성 → 그 키로 작업 ← SSOT_1 "항상 어드민에게 허락받고 숏리브드키(3일 미만)를 생성해서"
 - [ ] **T9** — 모델이 키를 직접 관리하지 않는다 (T3–T8 전체에 걸린 조건) ← SSOT_1 "이렇게 하는 이유는 모델이 직접 키를 관리하지 않기위해서임"
 - [ ] **T10** — 리서치 → /using-dotprd 계획 → 슬랙 DM 컨펌 → 진행 ← SSOT_1 "리서치해주고 … 컨펌 받고 진행"
@@ -71,6 +87,9 @@ Status: in-progress · 작성 2026-10-26 · 기준 커밋 main `0a7a638e` · 유
 Diff (SSOT_2): added = T11 · changed = T1(표 → AS-IS PRD 그림으로 재제출) · kept = T2–T10.
 Diff (SSOT_3): added = T12 · changed = T10(컨펌 시점 = 시연을 본 뒤) · kept = T1–T9, T11.
 Diff (SSOT_4): added = 없음 · changed = T10(컨펌 받음 → 진행 단계), T12 완료 · kept = T2–T9. D1–D6 = ①로 확정.
+Diff (SSOT_5): added = 없음 · changed = 없음(확정 스코프 6 재확인: 설치 대상은 `work-m64` dev 하나) · kept = T1–T12.
+Diff (SSOT_6): added = 없음 · changed = 없음(이미 충족) · kept = T1–T12.
+Diff (SSOT_7): added = 없음 · changed = T7(stage2 포지키 = 이번에는 계획만, 실행 보류 — loop.md "stage2 계획") · kept = T1–T6, T8–T12.
 
 ## 용어 고정
 
