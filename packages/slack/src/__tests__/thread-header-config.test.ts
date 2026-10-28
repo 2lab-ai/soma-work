@@ -189,7 +189,7 @@ describe('ThreadHeaderBuilder × ui.threadheader config', () => {
     const blocks = payload.blocks || [];
     expect(blocks[0].type).toBe('header');
     const text = allTexts(blocks);
-    // Compact's hardcoded headline "🔴 *Kim — Fix login bug*" must be gone
+    // Compact's hardcoded headline "⚫ *Kim — Fix login bug*" must be gone
     expect(text).not.toContain('Kim — Fix login bug');
     expect(text).toContain('`opus-4.6`');
   });
@@ -247,7 +247,11 @@ describe('ThreadHeaderBuilder × ui.threadheader config', () => {
 
   // -------------------------------------------------------------------------
   // Default parity — pinned literal output captured from the pre-rewrite
-  // implementation (hardcoded theme builders). MUST NOT change.
+  // implementation (hardcoded theme builders). The config rewrite must not
+  // change it. One deliberate change since: the 2026-10-27 surface redesign
+  // (T2, trinity-reviewed) replaced the renderer's colour glyphs — issue 📋 →
+  // 🗂, link status dots → words (`· 기록 당시 …` for a stored status), the
+  // closed marker 🔴 → ⚫. Layout, fields and order are unchanged.
   // -------------------------------------------------------------------------
 
   it('default theme output deep-equals the pre-rewrite output (no config)', () => {
@@ -271,13 +275,16 @@ describe('ThreadHeaderBuilder × ui.threadheader config', () => {
         {
           type: 'context',
           elements: [
-            { type: 'mrkdwn', text: '📋 <https://linear.app/x/issue/SOMA-1|SOMA-1>: Fix login bug 🔵' },
-            { type: 'mrkdwn', text: '🔀 <https://github.com/org/repo/pull/10|PR #10> 🟢' },
+            {
+              type: 'mrkdwn',
+              text: '🗂 <https://linear.app/x/issue/SOMA-1|SOMA-1>: Fix login bug · 기록 당시 In Progress',
+            },
+            { type: 'mrkdwn', text: '🔀 <https://github.com/org/repo/pull/10|PR #10> · 기록 당시 Open' },
           ],
         },
         {
           type: 'context',
-          elements: [{ type: 'mrkdwn', text: '🔴 _종료됨_' }],
+          elements: [{ type: 'mrkdwn', text: '⚫ _종료됨_' }],
         },
       ],
     });
@@ -290,7 +297,7 @@ describe('ThreadHeaderBuilder × ui.threadheader config', () => {
       blocks: [
         {
           type: 'section',
-          text: { type: 'mrkdwn', text: '🔴 *Kim — Fix login bug*' },
+          text: { type: 'mrkdwn', text: '⚫ *Kim — Fix login bug*' },
         },
         {
           type: 'context',

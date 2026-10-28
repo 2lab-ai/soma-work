@@ -64,6 +64,8 @@ describe('apply-env-plugins', () => {
         ],
         plugins: ['zworkflow@soma-work', 'acme-env@acme-env', 'acme-extra@acme-env'],
         localOverrides: [],
+        // Marked as environment plugins: their skills run for non-admins only on an admin's grant.
+        envPlugins: ['acme-env@acme-env', 'acme-extra@acme-env'],
       });
       expect(written.mcpServers).toEqual(original.mcpServers);
       // Replaced in place: no backup, no temp file left behind.
@@ -140,7 +142,7 @@ describe('apply-env-plugins', () => {
 
       const written = readJson(configFile);
       expect(Object.keys(written)).toEqual(Object.keys(original));
-      expect(Object.keys(written.plugin as object)).toEqual(['localOverrides', 'marketplace', 'plugins']);
+      expect(Object.keys(written.plugin as object)).toEqual(['localOverrides', 'marketplace', 'plugins', 'envPlugins']);
       for (const key of ['mcpServers', 'claude.env', 'agents', 'ui'] as const) {
         expect(written[key]).toEqual(original[key]);
       }
@@ -302,6 +304,35 @@ describe('apply-env-plugins', () => {
       const validated = validatePluginConfig(written);
       expect(validated.marketplace).toEqual(written.marketplace);
       expect(validated.plugins).toEqual(written.plugins);
+      expect(validated.envPlugins).toEqual(written.envPlugins);
+      expect(validated.envPlugins).toEqual(['acme-env@acme-env', 'acme-extra@acme-env', 'acme_tools@acme_tools']);
+    });
+
+    it('marks a config that already loads the plugin but lacks the marker (first deploy after the gate shipped)', () => {
+      const { targetDir, configFile } = makeTarget({
+        plugin: {
+          marketplace: [{ name: 'acme-env', repo: 'acme/env-plugins', ref: 'v1' }],
+          plugins: ['acme-env@acme-env', 'acme-extra@acme-env'],
+        },
+      });
+
+      const result = applyEnvPlugins({ targetDir, runnerLabel: 'runner-a', envPlugins: ENV_LINE });
+
+      expect(result.status).toBe('applied');
+      expect((readJson(configFile).plugin as { envPlugins: string[] }).envPlugins).toEqual([
+        'acme-env@acme-env',
+        'acme-extra@acme-env',
+      ]);
+      // Second run: nothing left to add.
+      expect(applyEnvPlugins({ targetDir, runnerLabel: 'runner-a', envPlugins: ENV_LINE }).status).toBe('unchanged');
+    });
+
+    it('refuses a config.json whose envPlugins marker is not an array', () => {
+      const { targetDir } = makeTarget({ plugin: { plugins: [], envPlugins: 'acme-env@acme-env' } });
+
+      expect(() => applyEnvPlugins({ targetDir, runnerLabel: 'runner-a', envPlugins: ENV_LINE })).toThrow(
+        /envPlugins" is not an array/,
+      );
     });
 
     it.each([

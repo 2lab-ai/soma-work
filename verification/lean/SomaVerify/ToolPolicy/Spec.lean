@@ -265,9 +265,9 @@ leaves true is proved for `evaluate` unchanged (`ProofsDevops.lean`); one it mak
 because the step denies calls the phase-1 code allowed or passed, is restated here with `DenyCond3`
 in place of `DenyCond`, and nothing else changed. -/
 
-/-- 223-224: "devops-secret (every mode, admins too): stored GitHub/keychain credentials and the
-devops broker's paths"; 160-161: the check runs for "Bash→command, Read/Edit/Write→file_path,
-Grep→path, Glob→pattern+path; any other tool → null"; 226: any non-null value denies. The value is
+/-- 238-239: "devops-secret (every mode, admins too): stored GitHub/keychain credentials and the
+devops broker's paths"; 175-176: the check runs for "Bash→command, Read/Edit/Write→file_path,
+Grep→path, Glob→pattern+path; any other tool → null"; 241: any non-null value denies. The value is
 `i.prims.devopsSecret`, the value of the call `devopsCall i`. The condition reads neither the admin
 flag nor the mode. -/
 def DevopsCond (i : Input) : Prop :=
@@ -278,13 +278,13 @@ def DevopsCond (i : Input) : Prop :=
 def DenyCond3 (i : Input) : Prop :=
   DevopsCond i ∨ DenyCond i
 
-/-- 227: the devops-secret denial, with `DEVOPS_SECRET_DENY_MESSAGE` (156-157), as a phase-1
+/-- 242: the devops-secret denial, with `DEVOPS_SECRET_DENY_MESSAGE` (163-164), as a phase-1
 result. -/
 def devopsDenial (reason : String) : Result :=
   { decision := .deny, reason := "devops-secret: " ++ reason,
     denyMessage := some devopsSecretDenyMessage }
 
-/-- Step 1b as a guard of the phase-1 tier (225-228): the denial when the tool consults a check
+/-- Step 1b as a guard of the phase-1 tier (240-243): the denial when the tool consults a check
 (`devopsTools`) and the check returns a reason. -/
 def devopsSecretGuard (i : Input) : Option Result :=
   match i.prims.devopsSecret with
@@ -292,7 +292,7 @@ def devopsSecretGuard (i : Input) : Option Result :=
   | none => none
 
 /-- The seven-guard deny tier: the phase-1 tier in its source order, with step 1b after the abort
-guard (219-228). -/
+guard (234-243). -/
 def denyTier3 : List (Input → Option Result) :=
   [abortGuard, devopsSecretGuard, sshGuard, sensitiveGuard, crossUserGuard, mcpGuard, prIssueGuard]
 
@@ -300,13 +300,13 @@ def denyTier3 : List (Input → Option Result) :=
 def DevopsGuardCondition : Prop :=
   ∀ i : Input, devopsSecretGuard i ≠ none ↔ DevopsCond i
 
-/-- 223, 227: when the abort guard has not returned, a devops-secret reason denies with that
+/-- 238, 242: when the abort guard has not returned, a devops-secret reason denies with that
 reason and the deny message, whatever else holds. -/
 def DevopsDenies (ev : Input → Result) : Prop :=
   ∀ (i : Input) (reason : String), ¬AbortCond i → i.toolName ∈ devopsTools →
     i.prims.devopsSecret = some reason → ev i = devopsDenial reason
 
-/-- 223: "every mode, admins too". A met devops-secret condition denies in every mode, for admins
+/-- 238: "every mode, admins too". A met devops-secret condition denies in every mode, for admins
 and non-admins alike. -/
 def DevopsIsolation (ev : Input → Result) : Prop :=
   ∀ i : Input, DevopsCond i → ∀ (mode : Mode) (isAdmin : Bool),
@@ -328,18 +328,18 @@ def DenyExactly3 (ev : Input → Result) : Prop :=
 def EvaluateWithSourceOrder3 (ev : Input → Result) : Prop :=
   ∀ i : Input, evaluateWith denyTier3 i = ev i
 
-/-- `DecisionOrderInvariant` for the seven-guard tier (214-215: "reordering the guards never
+/-- `DecisionOrderInvariant` for the seven-guard tier (229-230: "reordering the guards never
 changes the decision"). -/
 def DecisionOrderInvariant3 (ev : Input → Result) : Prop :=
   ∀ (guards : List (Input → Option Result)) (i : Input),
     guards.Perm denyTier3 → (evaluateWith guards i).decision = (ev i).decision
 
-/-- 214-215: "but can change the reported reason". -/
+/-- 229-230: "but can change the reported reason". -/
 def ReasonOrderDependent3 (ev : Input → Result) : Prop :=
   ∃ (guards : List (Input → Option Result)) (i : Input),
     guards.Perm denyTier3 ∧ (evaluateWith guards i).reason ≠ (ev i).reason
 
-/-- 214-215: "and denyMessage". -/
+/-- 229-230: "and denyMessage". -/
 def DenyMessageOrderDependent3 (ev : Input → Result) : Prop :=
   ∃ (guards : List (Input → Option Result)) (i : Input),
     guards.Perm denyTier3 ∧ (evaluateWith guards i).denyMessage ≠ (ev i).denyMessage
@@ -353,7 +353,7 @@ def ClassifyIff3 (ev : Input → Result) : Prop :=
   ∀ i : Input, (ev i).decision = .classify ↔
     i.mode = .auto ∧ i.toolName = "Bash" ∧ ¬DenyCond3 i ∧ i.prims.bash.decision = .ask
 
-/-- `AdminKeepsAbortCrossUserPrIssue` with the seventh guard, which 223 gives no admin
+/-- `AdminKeepsAbortCrossUserPrIssue` with the seventh guard, which 238 gives no admin
 exemption. -/
 def AdminKeepsAbortDevopsCrossUserPrIssue (ev : Input → Result) : Prop :=
   ∀ i : Input, i.isAdmin = true → AbortCond i ∨ DevopsCond i ∨ CrossUserCond i ∨ PrIssueCond i →
@@ -374,8 +374,9 @@ def AutoAllowsNonDangerous3 (ev : Input → Result) : Prop :=
   ∀ i : Input, i.mode = .auto → ¬DenyCond3 i → Governed i.toolName →
     (i.toolName = "Bash" → i.prims.bash.decision = .allow) → (ev i).decision = .allow
 
-/-- 59-61: `denyMessage` is "Only set for the PR-issue and devops-secret denies". Whenever it is
-set, the result is one of those two guards' own result. -/
+/-- 59-61: `denyMessage` was "Only set for the PR-issue and devops-secret denies" in phase 3, the
+function this section is about. Whenever it is set, the result is one of those two guards' own
+result. (Phase 4 adds the environment-skill deny, which sets it too; `ProofsEnvSkill.lean`.) -/
 def DenyMessageOnlyPrIssueOrDevops (ev : Input → Result) : Prop :=
   ∀ i : Input, (ev i).denyMessage ≠ none →
     prIssueGuard i = some (ev i) ∨ devopsSecretGuard i = some (ev i)
@@ -399,13 +400,13 @@ namespace SomaVerify.ToolPolicy
 
 open SomaVerify.JsString
 
-/-- 102-103: "`isAdmin` is ignored (the deny tier checks every caller as a non-admin)"; 230: "an
+/-- 109-110: "`isAdmin` is ignored (the deny tier checks every caller as a non-admin)"; 245: "an
 incident session gets no admin privilege". The deny conditions of an incident call are those of
 the same call made by a non-admin, the devops-secret step's included. -/
 def IncidentDenyCond (i : Input) : Prop :=
   Original.DenyCond3 { i with isAdmin := false }
 
-/-- (a) 183-186: "Never returns `pass` or falls through: an unknown tool (a future native tool, a
+/-- (a) 198-201: "Never returns `pass` or falls through: an unknown tool (a future native tool, a
 browser tool, a subagent) lands on the final deny, because `pass` would hand an unattended session
 back to the SDK's own permission logic." -/
 def IncidentNeverPass (ev : Option IncidentReadOnly → Input → Result) : Prop :=
@@ -416,47 +417,47 @@ def IncidentAllowOrDeny (ev : Option IncidentReadOnly → Input → Result) : Pr
   ∀ (inc : IncidentReadOnly) (i : Input),
     (ev (some inc) i).decision = .allow ∨ (ev (some inc) i).decision = .deny
 
-/-- (b) 110-112: "a list of exact MCP tool names. Everything else — Bash, every native tool,
-subagents, unknown tools — is denied"; 125: "matching is exact, never by prefix, wildcard or
-name inference"; 193-194: "Exact match, `mcp__` tools only: a native tool name in the allowlist
-can never reach this branch"; 188-189: the tier "Runs *after* the hard-deny tier". -/
+/-- (b) 117-119: "a list of exact MCP tool names. Everything else — Bash, every native tool,
+subagents, unknown tools — is denied"; 132: "matching is exact, never by prefix, wildcard or
+name inference"; 208-209: "Exact match, `mcp__` tools only: a native tool name in the allowlist
+can never reach this branch"; 203-204: the tier "Runs *after* the hard-deny tier". -/
 def IncidentAllowIff (ev : Option IncidentReadOnly → Input → Result) : Prop :=
   ∀ (inc : IncidentReadOnly) (i : Input),
     (ev (some inc) i).decision = .allow ↔
       ¬IncidentDenyCond i ∧ jsStartsWith i.toolName "mcp__" = true ∧
         i.toolName ∈ inc.allowedMcpTools
 
-/-- (b) 110-112 again, as deny-by-default: a call that is not an allow-listed `mcp__` tool is
+/-- (b) 117-119 again, as deny-by-default: a call that is not an allow-listed `mcp__` tool is
 denied, under every mode and admin flag. -/
 def IncidentDeniesOffAllowList (ev : Option IncidentReadOnly → Input → Result) : Prop :=
   ∀ (inc : IncidentReadOnly) (i : Input),
     ¬(jsStartsWith i.toolName "mcp__" = true ∧ i.toolName ∈ inc.allowedMcpTools) →
       (ev (some inc) i).decision = .deny
 
-/-- (c) 102-104: "`isAdmin` is ignored ... so `mode` is never read either"; 271: "(hard, mode- and
+/-- (c) 109-111: "`isAdmin` is ignored ... so `mode` is never read either"; 286: "(hard, mode- and
 admin-independent)". Changing the mode and the admin flag together changes nothing in the result,
 reason included. -/
 def IncidentModeAdminIndependent (ev : Option IncidentReadOnly → Input → Result) : Prop :=
   ∀ (inc : IncidentReadOnly) (i : Input) (mode : Mode) (isAdmin : Bool),
     ev (some inc) { i with mode := mode, isAdmin := isAdmin } = ev (some inc) i
 
-/-- (c) The admin flag alone: 102-103, "`isAdmin` is ignored". -/
+/-- (c) The admin flag alone: 109-110, "`isAdmin` is ignored". -/
 def IncidentAdminIndependent (ev : Option IncidentReadOnly → Input → Result) : Prop :=
   ∀ (inc : IncidentReadOnly) (i : Input) (isAdmin : Bool),
     ev (some inc) { i with isAdmin := isAdmin } = ev (some inc) i
 
-/-- (c) The mode alone: 104, "`mode` is never read". -/
+/-- (c) The mode alone: 111, "`mode` is never read". -/
 def IncidentModeIndependent (ev : Option IncidentReadOnly → Input → Result) : Prop :=
   ∀ (inc : IncidentReadOnly) (i : Input) (mode : Mode),
     ev (some inc) { i with mode := mode } = ev (some inc) i
 
-/-- (c) 103-104: "the incident tier alone decides what it lets through". When no hard deny fires,
+/-- (c) 110-111: "the incident tier alone decides what it lets through". When no hard deny fires,
 the result is the incident tier's, which takes only the tool name and the allowlist. -/
 def IncidentTierDecides (ev : Option IncidentReadOnly → Input → Result) : Prop :=
   ∀ (inc : IncidentReadOnly) (i : Input), ¬IncidentDenyCond i →
     ev (some inc) i = evaluateIncidentReadOnly i.toolName inc
 
-/-- (d) 188-189: "Runs *after* the hard-deny tier, so a revoked MCP grant or an aborted session
+/-- (d) 203-204: "Runs *after* the hard-deny tier, so a revoked MCP grant or an aborted session
 still wins over an allow-listed evidence tool". Under a met deny condition the result is that of
 the same call by a non-admin without an incident context: a denial, with the hard-deny guard's own
 reason. -/
@@ -464,7 +465,7 @@ def IncidentHardDenyWins (ev : Option IncidentReadOnly → Input → Result) : P
   ∀ (inc : IncidentReadOnly) (i : Input), IncidentDenyCond i →
     ev (some inc) i = ev none { i with isAdmin := false } ∧ (ev (some inc) i).decision = .deny
 
-/-- (e) 101: "**Absent (the default) → nothing changes.**" Without an incident context the result
+/-- (e) 108: "**Absent (the default) → nothing changes.**" Without an incident context the result
 is `evaluate`'s, the function `ProofsDevops.lean` proves the statements above for. -/
 def IncidentAbsentUnchanged (ev : Option IncidentReadOnly → Input → Result) : Prop :=
   ∀ i : Input, ev none i = evaluate i
