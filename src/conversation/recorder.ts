@@ -3,7 +3,7 @@ import { Logger } from '../logger';
 import { getMetricsEmitter } from '../metrics/event-emitter';
 import { ConversationStorage } from './storage';
 import { generateSessionSummaryTitle, type SessionSummaryTitleLinks, summarizeResponse } from './summarizer';
-import type { ConversationRecord, ConversationTurn } from './types';
+import type { ConversationRecord, ConversationTurn, TurnCompaction, TurnOrigin } from './types';
 import { getUserMediaStore, type TurnAttachment, type UserMediaFile } from './user-media';
 
 const logger = new Logger('ConversationRecorder');
@@ -209,6 +209,7 @@ export function captureUserMedia(conversationId: string, files: readonly UserMed
  * `attachments` — the files the user attached (from `captureUserMedia`); their
  * copies are committed once the turn is saved, before the dashboard is told.
  * `opts.timestamp` — when the user sent it, if earlier than now (a steered message).
+ * `opts.origin` — who put the turn there (dashboard SSOT 2026-10-27 T1).
  */
 export function recordUserTurn(
   conversationId: string,
@@ -216,10 +217,10 @@ export function recordUserTurn(
   userName?: string,
   userId?: string,
   attachments?: readonly TurnAttachment[],
-  opts: { timestamp?: number } = {},
+  opts: { timestamp?: number; origin?: TurnOrigin; compact?: boolean } = {},
 ): void {
   // Fire-and-forget
-  _recordUserTurnAsync(conversationId, content, userName, userId, attachments, opts.timestamp).catch((err) => {
+  _recordUserTurnAsync(conversationId, content, userName, userId, attachments, opts).catch((err) => {
     logger.error(`Failed to record user turn for ${conversationId}`, err);
   });
   // Metrics: emit turn_used event (fire-and-forget)
@@ -231,10 +232,10 @@ export function recordUserTurn(
 async function _recordUserTurnAsync(
   conversationId: string,
   content: string,
-  userName?: string,
-  userId?: string,
-  attachments?: readonly TurnAttachment[],
-  timestamp?: number,
+  userName: string | undefined,
+  userId: string | undefined,
+  attachments: readonly TurnAttachment[] | undefined,
+  opts: { timestamp?: number; origin?: TurnOrigin; compact?: boolean },
 ): Promise<void> {
   const record = await getOrLoadConversation(conversationId);
   if (!record) {
@@ -244,6 +245,10 @@ async function _recordUserTurnAsync(
   }
 
   const now = Date.now();
+  const { timestamp, origin } = opts;
+  // A compaction turn (the executor's flag) carries its record from the start —
+  // empty, or the conversation's previous compaction time as the estimate.
+  const estimateMs = opts.compact ? previousCompactionMs(record) : undefined;
   const turn: ConversationTurn = {
     id: randomUUID(),
     role: 'user',
@@ -252,6 +257,8 @@ async function _recordUserTurnAsync(
     userId,
     rawContent: content,
     ...(attachments && attachments.length > 0 ? { attachments: [...attachments] } : {}),
+    ...(origin ? { origin: { by: origin.by } } : {}),
+    ...(opts.compact ? { compact: estimateMs !== undefined ? { estimateMs } : {} } : {}),
   };
 
   record.turns.push(turn);
@@ -261,6 +268,81 @@ async function _recordUserTurnAsync(
   // Saved: the copies the turn lists may now be served — before anyone is told about it.
   if (turn.attachments) await getUserMediaStore().commit(conversationId, turn.attachments);
   if (_onTurnRecorded) _onTurnRecorded(conversationId, turn);
+}
+
+/**
+ * The longest a compaction may run before the END that arrives is not its own
+ * (`COMPACTION_IN_PROGRESS_MAX_MS` in @soma/slack/compact-state is 10 min) —
+ * with slack for the gap between the turn being recorded and the compaction
+ * starting.
+ */
+const COMPACT_RESULT_WINDOW_MS = 15 * 60 * 1000;
+
+/** The duration of the conversation's latest compaction that reported one. */
+function previousCompactionMs(record: ConversationRecord): number | undefined {
+  for (let i = record.turns.length - 1; i >= 0; i--) {
+    const ms = record.turns[i].compact?.durationMs;
+    if (typeof ms === 'number' && Number.isFinite(ms) && ms > 0) return ms;
+  }
+  return undefined;
+}
+
+/**
+ * Dashboard SSOT 2026-10-27 T2 — a compaction ended (the PostCompact hook /
+ * `compact_boundary`, once per cycle): write its numbers onto the `/compact`
+ * turn that ran it and push that turn to the dashboard again. The turn is the
+ * latest user turn when it is a compaction turn (`compact` set at record time
+ * from the executor's flag), recorded no longer ago than a
+ * compaction can run; a result already on it only gets its missing numbers. A
+ * compaction the SDK started inside an ordinary turn has no such turn —
+ * nothing is written. Returns whether a turn was written.
+ */
+export async function recordCompactResult(
+  conversationId: string,
+  result: Omit<TurnCompaction, 'estimateMs'> & { endedAt: number },
+): Promise<boolean> {
+  const record = await getOrLoadConversation(conversationId);
+  if (!record) return false;
+  let turn: ConversationTurn | undefined;
+  for (let i = record.turns.length - 1; i >= 0; i--) {
+    const t = record.turns[i];
+    if (t.role !== 'user') continue;
+    if (t.compact) turn = t;
+    break;
+  }
+  if (!turn) return false;
+  if (result.endedAt - turn.timestamp > COMPACT_RESULT_WINDOW_MS) return false;
+
+  // Already written (a second END of the cycle, or the SDK's boundary landing
+  // after the hook sealed it without numbers): fill what is missing, never
+  // overwrite.
+  const sealed = turn.compact?.endedAt !== undefined;
+  const compact: TurnCompaction = sealed ? { ...turn.compact } : { ...turn.compact, endedAt: result.endedAt };
+  let filled = false;
+  for (const key of ['durationMs', 'preTokens', 'postTokens'] as const) {
+    const v = result[key];
+    if (sealed && compact[key] !== undefined) continue;
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) {
+      compact[key] = v;
+      filled = true;
+    }
+  }
+  if ((result.trigger === 'manual' || result.trigger === 'auto') && !(sealed && compact.trigger)) {
+    compact.trigger = result.trigger;
+    filled = true;
+  }
+  if (sealed && !filled) return false;
+  turn.compact = compact;
+  record.updatedAt = Date.now();
+  await serializedSave(conversationId, record);
+  if (_onTurnRecorded) {
+    try {
+      _onTurnRecorded(conversationId, turn);
+    } catch (err) {
+      logger.warn('onTurnRecorded callback failed', { conversationId, turnId: turn.id, error: err });
+    }
+  }
+  return true;
 }
 
 /**

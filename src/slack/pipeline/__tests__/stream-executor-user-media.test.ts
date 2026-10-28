@@ -264,6 +264,7 @@ describe('user media — captured before the turn is recorded and before cleanup
       'testuser',
       'U_TEST',
       ATTACHMENTS,
+      { origin: { by: 'user' } },
     );
     expect(order).toEqual(['capture', 'record', 'cleanup']);
   });
@@ -271,20 +272,33 @@ describe('user media — captured before the turn is recorded and before cleanup
   it('records a files-only message as a user turn (no text)', async () => {
     const executor = new StreamExecutor(createDeps());
     await executor.execute(params('', [FILE]));
-    expect(vi.mocked(recordUserTurn)).toHaveBeenCalledWith('conv_um', '', 'testuser', 'U_TEST', ATTACHMENTS);
+    expect(vi.mocked(recordUserTurn)).toHaveBeenCalledWith('conv_um', '', 'testuser', 'U_TEST', ATTACHMENTS, {
+      origin: { by: 'user' },
+    });
   });
 
   it('does not capture anything for a text-only message', async () => {
     const executor = new StreamExecutor(createDeps());
     await executor.execute(params('그냥 텍스트', []));
     expect(vi.mocked(captureUserMedia)).not.toHaveBeenCalled();
-    expect(vi.mocked(recordUserTurn)).toHaveBeenCalledWith('conv_um', '그냥 텍스트', 'testuser', 'U_TEST', undefined);
+    expect(vi.mocked(recordUserTurn)).toHaveBeenCalledWith('conv_um', '그냥 텍스트', 'testuser', 'U_TEST', undefined, {
+      origin: { by: 'user' },
+    });
   });
 
   it('a failing capture never blocks the turn: the turn is recorded without attachments', async () => {
     vi.mocked(captureUserMedia).mockRejectedValueOnce(new Error('disk full'));
     const executor = new StreamExecutor(createDeps());
     await executor.execute(params('텍스트와 파일', [FILE]));
-    expect(vi.mocked(recordUserTurn)).toHaveBeenCalledWith('conv_um', '텍스트와 파일', 'testuser', 'U_TEST', undefined);
+    expect(vi.mocked(recordUserTurn)).toHaveBeenCalledWith(
+      'conv_um',
+      '텍스트와 파일',
+      'testuser',
+      'U_TEST',
+      undefined,
+      {
+        origin: { by: 'user' },
+      },
+    );
   });
 });

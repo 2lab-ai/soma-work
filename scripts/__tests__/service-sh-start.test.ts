@@ -104,6 +104,8 @@ function runStart(env: string, extraPath: string): RunResult {
         // The overrides are inert without this flag (service.sh resolve_env),
         // so the suite must opt in explicitly.
         SOMA_TEST_HARNESS: '1',
+        // Launchctl and the daemon are shims here: scale service.sh's real waits (pause).
+        SOMA_SERVICE_WAIT_SCALE: '0.05',
         // Force the user-domain path: an inherited SOMA_LAUNCHD_SYSTEM=1 (or a
         // real /Library/LaunchDaemons/<label>.plist on a deploy host) would
         // otherwise send this unit test through `sudo -n /bin/launchctl`.

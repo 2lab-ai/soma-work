@@ -11,7 +11,7 @@ import { getVerbosityFlags } from '../output-flags';
  * them. They are merged into one section of two short lines:
  *
  *   🟢 *작업 중* · 결과 반영 중 · 마지막 활동 0초 전
- *   ⏱ 4:02 · 🛠 17 · 🔇 minimal
+ *   ⏱ 4:02 · 🛠 17 · `minimal`
  *
  * Merged, not deleted: U9/A19 keeps every fact addressable (the progress age is
  * still a measured age, never invented), so these assertions are about LAYOUT.
@@ -54,7 +54,7 @@ describe('ActionPanelBuilder — compact status area', () => {
     expect(lines[0]).toContain('작업 중');
     expect(lines[0]).toContain('결과 반영 중');
     expect(lines[0]).toContain('마지막 활동 0초 전');
-    expect(lines[1]).toBe('⏱ 4:02 · 🛠 17 · 🔇 minimal');
+    expect(lines[1]).toBe('⏱ 4:02 · 🛠 17 · `minimal`');
   });
 
   it('spends exactly ONE block on the status area, with no separate metrics context', () => {
@@ -76,16 +76,15 @@ describe('ActionPanelBuilder — compact status area', () => {
     expect(lines[0]).toContain('분석 중');
   });
 
-  it('keeps the PR chip in its own column while the status column carries both lines', () => {
+  it('keeps the PR state on the timers line of the one full-width section (T2)', () => {
     const blocks = build({
       ...live,
       prStatus: { state: 'open', mergeable: true, draft: false, merged: false, approved: true },
     }).blocks;
     const section = statusSection(blocks);
 
-    expect(section.fields).toHaveLength(2);
-    expect(String(section.fields[0].text).split('\n')).toHaveLength(2);
-    expect(section.fields[1].text).toContain('*PR*');
+    expect(section.fields).toBeUndefined();
+    expect(String(section.text.text).split('\n')[1]).toBe('⏱ 4:02 · 🛠 17 · 🔀 Approved · Merge 가능 · `minimal`');
   });
 
   it('still shows the latest-response link (it just moved into the timers line)', () => {
@@ -95,10 +94,12 @@ describe('ActionPanelBuilder — compact status area', () => {
     expect(lines[1]).toContain('최신 응답');
   });
 
-  it('leaves the closed panel layout alone', () => {
+  it('renders the closed panel as the same single section (T2)', () => {
     const blocks = build({ closed: true, turnSummary: '⏱ 3:20 · 🛠 12' }).blocks;
 
-    expect(String(statusSection(blocks)?.text?.text ?? statusSection(blocks)?.fields?.[0]?.text)).toContain('종료됨');
-    expect(blocks.some((block: any) => block.type === 'context')).toBe(true);
+    expect(blocks).toHaveLength(1);
+    expect(String(statusSection(blocks)?.text?.text)).toContain('종료됨');
+    expect(String(statusSection(blocks)?.text?.text)).toContain('⏱ 3:20 · 🛠 12');
+    expect(blocks.some((block: any) => block.type === 'context')).toBe(false);
   });
 });

@@ -41,6 +41,13 @@ Bot:   [Analyzes uploaded code, identifies bottlenecks, proposes optimized versi
 - The 2026-05-18 research note on AI-agent-friendly project documentation is in [docs/research](./docs/misc/research/2026-05-18-ai-agent-docs-organization.md).
 - Slack Block Kit/API constraints are maintained in [docs/misc/reference/slack-block-kit.md](./docs/misc/reference/slack-block-kit.md).
 
+## zworkflow plugin
+
+The Claude Code plugin soma-work ships by default, `zworkflow`, lives in [`src/local/`](./src/local/).
+You can install it in your own Claude Code with `/plugin marketplace add 2lab-ai/soma-work` and
+`/plugin install zworkflow@soma-work`. Install, update, hooks, and a path that copies only the
+`using-intentfirst` and `using-ssot` skills are in the [zworkflow plugin README](./src/local/README.md).
+
 ---
 
 ## ✨ Key Features
@@ -100,6 +107,10 @@ Every file the model sends to Slack (HTML reports, PNG, WAV/voice, video, PDF, t
 ### 📎 Instruction attachments in the dashboard
 
 The files you attach to an instruction — screenshots, PDFs, text, voice notes, video — show up in the web dashboard with that instruction, not mixed into the model's artifacts. In the session panel they sit above your words (80px image tiles, "+N" past four, file cards with kind and size, voice notes play in place). The opened card's 지시 row shows them small, the card face shows a paperclip count, and a pinned 지시 첨부 line (collapsed by default) lists every file of the session. Clicking one opens the same viewer as artifacts, paging through that instruction's files. A message you send while the model is working is recorded with its files once the model reads it. Videos and voice notes are kept too and play in the dashboard. Files the bot could not download (over 50 MB, or a failed download) still appear, with a link to Slack. Uploaded HTML, SVG and text never run in the dashboard.
+
+### 🧾 Turns you did not type, as one line
+
+In the session panel's conversation, a turn soma-work sent on its own reads as one line — who, when, a badge and what it did — instead of the raw prompt: **자동 압축** / **압축** (`/compact`), **시스템 재시작**, **자동 재시도** (after an error), **Goal #2/10** (goal continuation), **크론** (a cron fire), **세션 갱신** (`/renew` save and load), and **자동 입력** for any other host turn. Click the line for its facts and the raw prompt. While a compaction runs, the line shows the elapsed time against an estimate (the conversation's previous compaction, else 2m 30s) with a progress bar; when it ends, it shows tokens before → after and how long it took. Skills an instruction invoked (`$skill`, autoskills) show as badges under your words — `local:using-ssot · ≈1.1K tokens` (an estimate) — and a badge opens that skill's text. Older turns are read from their text; a `/compact` recorded before this change shows as **압축**, because who sent it was not kept.
 
 ### 🔑 GitHub Integration
 
@@ -461,6 +472,8 @@ Any free-form text that no command handler claims is treated as a chat / workflo
 **Cron runs on the dashboard**: a session a cron fire creates starts under the job's name (not `Direct (skipDispatch)`); that title is provisional, so the first clear title — the turn summary or a linked issue/PR — replaces it, and the card fades the new title in. Its card leads with a **CRON** badge and lives in the dashboard's **CRON lane** above the columns: one tile per job with the schedule in words (cron is UTC), the next run, the last runs as a glyph-coded strip (✓ success · ✗ failed · ● running · ▲ needs you · ◌ no session), and the job's latest run as a live card. **지난 실행** opens a drawer with every kept run (the history keeps the last 20 per job) linked to its session, work log, conversation and Slack thread (`GET /api/dashboard/cron`). A cron fire injected into an existing session does not re-file that session.
 
 **Post-deploy QA**: a host can install an environment plugin (such as `acme-env`) that provides a `post-deploy` skill. The deploy workflow then runs post-deploy QA as its step 7, in the deploy session itself, for each repo whose deploy is confirmed (setup: [docs/runbook/add-new-deploy.md](docs/runbook/add-new-deploy.md) §8.5).
+
+**Environment skills need an admin's approval**: the skills of a deploy-time environment plugin run for admins (`ADMIN_USERS`) at once and for everyone else only on an admin's grant. A non-admin's `$plugin:skill` or the model's `Skill` call is stopped, every admin gets a DM with four buttons (1회 허용 for that thread, 이 스킬 항상 허용, 모든 환경 스킬 항상 허용, 거부), and on approval the requester's turn is sent again so the run continues (details: [docs/runbook/add-new-deploy.md](docs/runbook/add-new-deploy.md) §8.5).
 
 **Deploy release notes**: after a deploy, the deploy workflow writes the notes with `local:release-notes` and emits one `release_notes` directive per repo. The host posts a short root message — `repo target · version` plus up to three TL;DR lines — and the full notes as replies in its thread (cut losslessly, never truncated). The operator decides the channel with `SOMA_RELEASE_NOTES_CHANNELS` in the host's `.env` (for example `acme/app@deploy/dev2=C0DEV2CHAN1,*=session`): an exact `owner/repo@branch` or `branch` match goes to that channel, `*=session` keeps unmatched deploys in the deploy session's channel, and without `*` an unmatched deploy stays in the deploy thread. Unset means the deploy session's channel, as before. A failed post never moves the notes to another channel's root; they land in the deploy thread with a warning.
 
