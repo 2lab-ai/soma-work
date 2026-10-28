@@ -215,6 +215,32 @@ describe('SessionInitializer — bot-thread migration copies goal (#1082)', () =
     ]);
   });
 
+  it('re-parks a replayed host turn with its marker (a goal continuation stays a host turn)', async () => {
+    const live = makeOriginalSession({ threadTs: '111.222', sessionId: 'sess-h', activityState: 'working' });
+    mockClaudeHandler.getSession.mockReturnValue(live);
+    (sessionInitializer as any).deps.requestCoordinator.isRequestActive.mockReturnValue(true);
+
+    const result = await sessionInitializer.initialize(
+      {
+        user: 'U123',
+        channel: 'C123',
+        thread_ts: '111.222',
+        ts: '111.335',
+        text: '[goal-continuation] Continue',
+        routeContext: { compactRedispatch: true, hostTurn: true },
+      } as any,
+      '/test/dir',
+    );
+
+    expect(result.halted).toBe(true);
+    expect(live.compactPendingDispatches).toEqual([
+      {
+        ctx: { channel: 'C123', threadTs: '111.222', user: 'U123', ts: '111.335', hostTurn: true },
+        text: '[goal-continuation] Continue',
+      },
+    ]);
+  });
+
   it('does not claim the /compact turn marker for a verbatim objective that starts with /compact', async () => {
     const live = makeOriginalSession({ threadTs: '111.222', sessionId: 'sess-2' });
     mockClaudeHandler.getSession.mockReturnValue(live);

@@ -128,6 +128,7 @@ vi.mock('../../../token-manager', () => ({
 }));
 
 import { LOG_DETAIL } from '@soma/slack/output-flags';
+import { setStreamExecutorProviders } from '@soma/slack/pipeline/stream-executor';
 import { recordUserTurn } from '../../../conversation';
 import { StreamExecutor } from '../stream-executor';
 
@@ -245,6 +246,20 @@ describe('T1.1 — the recorded user turn says who put it there', () => {
   }
   const originOf = () => vi.mocked(recordUserTurn).mock.calls[0]?.[5];
 
+  it('the work log instruction says who sent it and whether it was a compaction', async () => {
+    const appendWorkLog = vi.fn();
+    setStreamExecutorProviders({ appendWorkLog });
+    const instr = () => appendWorkLog.mock.calls.map((c) => c[1]).filter((e) => e.kind === 'instruction');
+    await new StreamExecutor(createDeps()).execute(params('대시보드 고쳐줘', { isUserInput: true }));
+    expect(instr()[0]).toMatchObject({ kind: 'instruction', text: '대시보드 고쳐줘', by: 'user' });
+    expect('compactTurn' in instr()[0]).toBe(false);
+    appendWorkLog.mockClear();
+    await new StreamExecutor(createDeps()).execute(
+      params('/compact', { isUserInput: true }, { pendingUserText: '원래 보낸 메시지' }),
+    );
+    expect(instr()[0]).toMatchObject({ text: '/compact', by: 'system', compactTurn: true });
+  });
+
   it('a person typed it → user', async () => {
     await new StreamExecutor(createDeps()).execute(params('대시보드 고쳐줘', { isUserInput: true }));
     expect(vi.mocked(recordUserTurn)).toHaveBeenCalledWith(
@@ -261,6 +276,13 @@ describe('T1.1 — the recorded user turn says who put it there', () => {
     const text =
       '[goal-continuation] Continue working toward the active session goal (objective in <session-goal>). Auto-continuation 2/10.';
     await new StreamExecutor(createDeps()).execute(params(text, { isUserInput: false }));
+    expect(originOf()).toEqual({ origin: { by: 'system' } });
+  });
+
+  it('a host turn replayed after a compaction (hostTurn, through the user-message path) → system', async () => {
+    const text =
+      '[goal-continuation] Continue working toward the active session goal (objective in <session-goal>). Auto-continuation 3/10.';
+    await new StreamExecutor(createDeps()).execute(params(text, { isUserInput: true, hostTurn: true }));
     expect(originOf()).toEqual({ origin: { by: 'system' } });
   });
 
