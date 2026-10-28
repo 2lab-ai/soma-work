@@ -499,6 +499,16 @@ describe('the open cardâ€™s tree is <ui-agent-tree> (affectUI review batch 2) â€
     expect(nodeOf(d, 'toolu_nested')).not.toHaveProperty('tokens');
     // The task total less the subagents' share: the element adds the branch up again.
     expect(nodeOf(d, ':main')).toMatchObject({ tokens: 9_000, costUsd: 2.75 });
+    // Subagent cost estimates above the session total: the root keeps its tokens, never a false $0.
+    const over = ui.atCardData(
+      card({
+        tokenUsage: { totalInputTokens: 1000, totalOutputTokens: 1000, totalCacheReadTokens: 0, totalCacheCreateTokens: 0, totalCostUsd: 0.5 },
+        subagentSpend: { agents: 3, inputTokens: 100, outputTokens: 100, cacheReadTokens: 0, cacheCreateTokens: 0, costUsd: 0.75 },
+      }),
+      'working',
+    );
+    expect(nodeOf(over, ':main')).toMatchObject({ tokens: 1_800 });
+    expect(nodeOf(over, ':main')).not.toHaveProperty('costUsd');
   });
 
   it("the root's line is its current task only while the face's task row does not show it (spec 13)", () => {
