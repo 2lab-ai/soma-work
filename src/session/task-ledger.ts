@@ -158,8 +158,13 @@ export const MATCH_MIN = 0.45;
  * make two different tasks one.
  */
 export const REWRITE_TEXT_MIN = 0.3;
-/** API calls whose credit is remembered for a re-report. */
-const CALLS_MAX = 64;
+/**
+ * API calls whose credit is remembered for a re-report — the live frame and,
+ * later, the call's final usage from the transcript ({@link recreditTaskUsage}).
+ * A turn's calls (subagents' included) are read back within seconds, so this
+ * only has to outlast that window.
+ */
+const CALLS_MAX = 512;
 /**
  * Runtime only (never on the ledger object, so never in sessions.json): the
  * latest API calls' credits by call key, per ledger generation — applyTodoList
@@ -371,9 +376,20 @@ export function applyTodoList(ledger: TaskLedger | undefined, todos: readonly To
   const slot: (TaskRecord | undefined)[] = new Array(items.length);
   const used = new Set<string>();
 
+  // A finished list (every task completed) is over: a new list that names one
+  // of its tasks again as waiting or running is a new run of that work, not
+  // the old task reopened — reopening it would put both runs (and the gap
+  // between them) on one record. Live 2026-10-29: the same three steps run
+  // twice in one session read as one 65 s task each.
+  const finished = previousList.length > 0 && previousList.every((t) => t.status === 'completed');
   // 1. The same text.
   items.forEach((item, i) => {
-    const rec = previousList.find((t) => !used.has(t.id) && t.content === item.content);
+    const rec = previousList.find(
+      (t) =>
+        !used.has(t.id) &&
+        t.content === item.content &&
+        !(finished && t.status === 'completed' && item.status !== 'completed'),
+    );
     if (rec) {
       slot[i] = rec;
       used.add(rec.id);
@@ -617,6 +633,38 @@ export function creditTaskUsage(
   const keys = Object.keys(calls);
   for (let i = 0; i < keys.length - CALLS_MAX; i++) delete calls[keys[i]];
   CALL_CREDITS.set(ledger, calls);
+}
+
+/**
+ * Replace a call's live credit with its final usage (in place). The live frame
+ * of a Claude call carries its `message_start` usage: input and cache are
+ * final there, output is the few tokens counted at the start — the final
+ * count is only in the CLI's transcript. Only a call this ledger was credited
+ * with live is touched (the difference goes to the same tasks, or the same
+ * idle / outside window); an unknown call is never credited to whatever runs
+ * now. Returns whether anything changed.
+ */
+export function recreditTaskUsage(
+  ledger: TaskLedger | undefined,
+  key: string,
+  call: UsageCall,
+  costUsd: number,
+): boolean {
+  if (!ledger) return false;
+  const before = CALL_CREDITS.get(ledger)?.[key];
+  if (!before) return false;
+  const t = before.t;
+  if (
+    t.input === count(call.inputTokens) &&
+    t.output === count(call.outputTokens) &&
+    t.cacheRead === count(call.cacheReadTokens) &&
+    t.cacheCreate === count(call.cacheCreateTokens) &&
+    t.costUsd === count(costUsd)
+  ) {
+    return false;
+  }
+  creditTaskUsage(ledger, key, call, costUsd);
+  return true;
 }
 
 /** How an earlier task left the list, if it had not completed. */
