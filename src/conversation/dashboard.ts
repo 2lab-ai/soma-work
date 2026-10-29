@@ -6752,8 +6752,17 @@ function formatTaskTime(ts) {
 //
 // The board never carries the parameters (it is one document for every
 // viewer): the requester's page fetches them from the requester-only route.
-var _permDetails = Object.create(null); // approvalId → { input, truncated } | { error }
+var _permDetails = Object.create(null); // approvalId → { input, truncated } | { error, retry?, tries?, at? }
 var _permLoading = Object.create(null);
+// A load that failed for a reason that may pass (the network, a 5xx) is asked
+// again on a later push — AC_DETAIL_RETRY_MS after it failed, AC_DETAIL_TRIES
+// loads at most, so a failing route never spins. A refusal is an answer.
+var AC_DETAIL_RETRY_MS = 30000;
+var AC_DETAIL_TRIES = 3;
+function acDetailDue(detail, now) {
+  if (!detail) return true;
+  return !!detail.retry && toNum(detail.tries) < AC_DETAIL_TRIES && now - toNum(detail.at) >= AC_DETAIL_RETRY_MS;
+}
 // session key → { 'p|<approvalId>' | the question id → the card's state (sending · error · resolved) }.
 // Per session: a question has no request id (its id is its content), so two
 // sessions asking the same thing are two requests (PR #536 review P1).
@@ -6802,10 +6811,9 @@ function acPermissionData(s, p) {
     d.notice = isSiblingSession(s) ? '파라미터는 그 인스턴스의 대시보드에서 볼 수 있습니다' : '파라미터는 요청자만 볼 수 있습니다';
   } else {
     var detail = _permDetails[p.approvalId];
-    if (!detail) {
-      d.loading = true;
-      loadPermissionDetail(s.key, p.approvalId);
-    } else if (detail.error) d.notice = detail.error;
+    if (acDetailDue(detail, Date.now())) loadPermissionDetail(s.key, p.approvalId);
+    if (!detail) d.loading = true;
+    else if (detail.error) d.notice = detail.error;
     else {
       d.input = detail.input;
       if (detail.truncated) d.truncated = true;
@@ -6889,8 +6897,9 @@ function acQuestionHtml(s, q) {
 // the card shows it at once.
 function acPrefetch(s, col) {
   var list = col === 'closed' ? [] : (s && s.pendingPermissions) || [];
+  var now = Date.now();
   for (var i = 0; i < list.length; i++) {
-    if (!_permDetails[list[i].approvalId] && !acPermissionLock(s, list[i])) loadPermissionDetail(s.key, list[i].approvalId);
+    if (acDetailDue(_permDetails[list[i].approvalId], now) && !acPermissionLock(s, list[i])) loadPermissionDetail(s.key, list[i].approvalId);
   }
 }
 
@@ -7053,6 +7062,12 @@ function acFirstOpen(root) {
 function loadPermissionDetail(key, approvalId) {
   if (_permLoading[approvalId]) return;
   _permLoading[approvalId] = true;
+  var prev = _permDetails[approvalId];
+  var tries = (prev && prev.error ? toNum(prev.tries) : 0) + 1;
+  // retry: the failure may pass (acDetailDue) — the network, a 5xx, 429; any other status is an answer.
+  function failed(text, retry) {
+    _permDetails[approvalId] = { error: text, retry: retry, tries: tries, at: Date.now() };
+  }
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/permission/' + encodeURIComponent(approvalId);
   fetch(url)
     .then(function(res) {
@@ -7062,11 +7077,11 @@ function loadPermissionDetail(key, approvalId) {
         } else if (res.status === 404) {
           _permDetails[approvalId] = { error: '이미 응답되었거나 만료된 요청입니다' };
         } else {
-          _permDetails[approvalId] = { error: (body && body.error) || ('파라미터를 불러오지 못했습니다 (' + res.status + ')') };
+          failed((body && body.error) || ('파라미터를 불러오지 못했습니다 (' + res.status + ')'), res.status >= 500 || res.status === 429);
         }
       });
     })
-    .catch(function() { _permDetails[approvalId] = { error: '파라미터를 불러오지 못했습니다' }; })
+    .catch(function() { failed('파라미터를 불러오지 못했습니다', true); })
     .then(function() {
       delete _permLoading[approvalId];
       acRepaint(key);
