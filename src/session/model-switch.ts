@@ -191,8 +191,9 @@ export async function switchSessionModel(
       `${nickname}의 auto-compact(${k(autoCompactTokens)})가 지금 모델보다 작아 컨텍스트 확인·compact가 필요합니다 — 진행 중인 턴이 끝난 뒤 다시 시도하세요`,
     );
   }
-  // Unknown size (usage is not restored across a restart) is treated as too
-  // big when the target compacts earlier: compact first, never switch blind.
+  // Unknown size (no usage: saved before usage was persisted, or its saved
+  // usage was dropped as malformed) is treated as too big when the target
+  // compacts earlier: compact first, never switch blind.
   const needsCompact = usedTokens > autoCompactTokens || (shrinking && !sizeKnown && !!session.sessionId);
   if (needsCompact) {
     if (busy) {
