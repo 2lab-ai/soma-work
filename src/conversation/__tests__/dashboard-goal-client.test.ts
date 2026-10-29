@@ -294,6 +294,7 @@ describe('work item goal list — the goal being typed survives a live re-render
         },
         acHydrate: () => {}, // affectUI batch 1: the body's approval cards take their data
         atHydrate: () => {}, // affectUI batch 2: the body's agent tree takes its data
+        mpHydrate: () => {}, // the body's model picker takes its data (<ui-model-picker>)
       },
     );
 
@@ -319,6 +320,7 @@ describe('work item goal list — the goal being typed survives a live re-render
         },
         acHydrate: () => {}, // affectUI batch 1: the body's approval cards take their data
         atHydrate: () => {}, // affectUI batch 2: the body's agent tree takes its data
+        mpHydrate: () => {}, // the body's model picker takes its data (<ui-model-picker>)
       },
     );
     // innerHTML assignment builds a fresh, empty input.
