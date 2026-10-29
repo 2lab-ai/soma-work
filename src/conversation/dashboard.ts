@@ -10968,6 +10968,7 @@ function psecToNewest() {
   if (!box) return;
   psecSetTop(box, box.scrollHeight);
   box._armed = false;
+  box._anchor = null;
 }
 function psecJumpNewest() {
   psecToNewest();
@@ -10999,6 +11000,48 @@ function psecOnAppended(n, pinned) {
 // Older items went in above the reader: measured from the bottom, their place stays.
 function psecKeepPlace(box, fromBottom) {
   if (box) psecSetTop(box, box.scrollHeight - fromBottom);
+}
+// The item the reader is on — the first turn or work-log entry in view, else the
+// first task group — and how far below the box top it sits (null: none in view).
+var PSEC_ANCHOR_SELS = ['.turn[data-turn-id]', '.wl-entry[data-seq]', '.wl-group[data-task-id]'];
+function psecViewAnchor(box) {
+  var top = box.getBoundingClientRect().top;
+  for (var k = 0; k < PSEC_ANCHOR_SELS.length; k++) {
+    var rows = box.querySelectorAll(PSEC_ANCHOR_SELS[k]);
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i].getBoundingClientRect();
+      if (!r.height || r.bottom <= top) continue;
+      var attr = k === 0 ? 'data-turn-id' : k === 1 ? 'data-seq' : 'data-task-id';
+      var v = rows[i].getAttribute(attr) || '';
+      var key = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(v) : v;
+      return { sel: PSEC_ANCHOR_SELS[k].replace(']', '="' + key + '"]'), at: r.top - top };
+    }
+  }
+  return null;
+}
+// That item back where it was (false: it is gone). An entry folded into its task
+// group since is represented by the group's head.
+function psecRestoreAnchor(box, a) {
+  var el = a ? box.querySelector(a.sel) : null;
+  if (el && !el.getClientRects().length) el = el.closest ? el.closest('.wl-group') : null;
+  if (!el || !el.getClientRects().length) return false;
+  var shift = el.getBoundingClientRect().top - box.getBoundingClientRect().top - a.at;
+  if (Math.abs(shift) >= 1) psecSetTop(box, box.scrollTop + shift);
+  return true;
+}
+// A page went in above the reader: their item goes back where it was — and is
+// held there while what was added settles (answers and cards render after it),
+// until the reader scrolls. Without an item in view, measured from the bottom.
+var PSEC_HOLD_MS = 2000;
+function psecHoldPlace(box, anchor, fromBottom) {
+  if (!box) return;
+  if (psecRestoreAnchor(box, anchor)) {
+    box._anchor = anchor;
+    box._anchorUntil = Date.now() + PSEC_HOLD_MS;
+  } else {
+    box._anchor = null;
+    psecKeepPlace(box, fromBottom);
+  }
 }
 // What the top of a section shows: 'older' (a control: older items exist),
 // 'loading' (the control says the page is on its way), 'start' (everything is
@@ -11257,6 +11300,7 @@ function loadOlderWorkLog() {
       if (Math.abs(top - box._lastTop) < 1) return;
       var up = top < box._lastTop;
       box._lastTop = top;
+      box._anchor = null; // the reader's own place now
       _psecPin = psecAtBottom(box);
       if (_psecPin && _psecNew) psecSetNew(0);
       // The reader moving up arms the sentinel; a landing never does, nor does
@@ -11274,7 +11318,9 @@ function loadOlderWorkLog() {
   if (typeof ResizeObserver === 'function') {
     var pin = new ResizeObserver(function() {
       var box = psecBox();
-      if (box && !box.hidden && _psecPin) psecSetTop(box, box.scrollHeight);
+      if (!box || box.hidden) return;
+      if (_psecPin) psecSetTop(box, box.scrollHeight);
+      else if (box._anchor && Date.now() < box._anchorUntil) psecRestoreAnchor(box, box._anchor);
     });
     PSEC_ORDER.forEach(function(sec) {
       var box = document.getElementById('psec-' + sec);
@@ -15660,8 +15706,8 @@ function toggleWorkLogGroup(taskId) {
 // is painted from the state when it opens). Live entries at the end are
 // appended in place; any other batch (an older page, a backfill) re-renders the
 // list from state.entries, which keeps seq order and the task groups exact, and
-// keeps the reader's place: the row they were on goes back where it was — again
-// once the new cards have rendered (their height is known a frame later).
+// keeps the reader's place: the row they were on goes back where it was, held
+// there while the new cards render (psecHoldPlace).
 // At the newest the reader follows the tail — unless an entry's detail is open —
 // else the pill counts what arrived.
 function paintWorkLog(state, added) {
@@ -15685,7 +15731,7 @@ function paintWorkLog(state, added) {
   var n = state.entries.length;
   var tail = state.painted;
   for (var i = 0; tail && i < added.length; i++) if (added[i].index !== n - added.length + i) tail = false;
-  var anchor = !tail && state.painted && !pinned ? wlViewAnchor(box, list) : null;
+  var anchor = !tail && state.painted && !pinned ? psecViewAnchor(box) : null;
   var placeholder = list.querySelector('.wl-empty');
   if (placeholder) placeholder.remove();
   if (tail) wlAppendTail(state, list, added);
@@ -15699,40 +15745,9 @@ function paintWorkLog(state, added) {
   state.painted = true;
   if (first) psecToNewest();
   else if (!tail && pinned) psecSetTop(box, box.scrollHeight);
-  else if (!tail) {
-    if (!wlRestoreAnchor(box, list, anchor)) psecKeepPlace(box, fromBottom);
-    requestAnimationFrame(function() {
-      if (state === _wl && _psec === 'log' && !_psecPin) wlRestoreAnchor(box, list, anchor);
-    });
-  } else if (pinned && !wlDetailOpen(state)) psecOnAppended(1, true);
+  else if (!tail) psecHoldPlace(box, anchor, fromBottom);
+  else if (pinned && !wlDetailOpen(state)) psecOnAppended(1, true);
   else psecOnAppended(wlVisible(state, wlScopeEntries(added.map(function(a) { return a.entry; }))).length, false);
-}
-
-// The row the reader is on in 작업 로그 — the first entry in view, else the first
-// task group — and how far below the box top it sits (null: none in view).
-function wlViewAnchor(box, list) {
-  var top = box.getBoundingClientRect().top;
-  var sels = ['.wl-entry[data-seq]', '.wl-group[data-task-id]'];
-  for (var k = 0; k < sels.length; k++) {
-    var rows = list.querySelectorAll(sels[k]);
-    for (var i = 0; i < rows.length; i++) {
-      var r = rows[i].getBoundingClientRect();
-      if (!r.height || r.bottom <= top) continue;
-      var seq = rows[i].getAttribute('data-seq');
-      var task = rows[i].getAttribute('data-task-id') || '';
-      var key = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(task) : task;
-      return { sel: seq ? '.wl-entry[data-seq="' + seq + '"]' : '.wl-group[data-task-id="' + key + '"]', at: r.top - top };
-    }
-  }
-  return null;
-}
-// That row back where it was, after the list was painted again (false: it is gone).
-function wlRestoreAnchor(box, list, a) {
-  var el = a ? list.querySelector(a.sel) : null;
-  if (!el) return false;
-  var shift = el.getBoundingClientRect().top - box.getBoundingClientRect().top - a.at;
-  if (Math.abs(shift) >= 1) psecSetTop(box, box.scrollTop + shift);
-  return true;
 }
 
 // Owner-only log (403 on any path) — only for the conversation still open.
@@ -16599,12 +16614,13 @@ async function loadMorePanelTurns() {
     var turnsEl = document.getElementById('panel-turns');
     if (turns.length && _psec === 'conv' && !_panelAgent && box && turnsEl) {
       var fromBottom = box.scrollHeight - box.scrollTop;
+      var anchor = psecViewAnchor(box);
       var cid = data.id || requestConvId;
       turnsEl.insertAdjacentHTML('afterbegin', turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join(''));
       attachRawToggleHandlers();
       decoratePanelTurns();
       psecSyncControls('conv');
-      psecKeepPlace(box, fromBottom);
+      psecHoldPlace(box, anchor, fromBottom);
     }
   } catch (err) {
     if (requestGen !== _panelGen) return;

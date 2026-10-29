@@ -866,8 +866,9 @@ describe('T1.3 / SSOT 2026-10-29 · 지시와 답변 opens on its latest turns; 
       TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nasync function loadMorePanelTurns(')),
     );
     expect(more).toContain("'?limit=' + PANEL_TURNS_PAGE + '&before=' + encodeURIComponent(requestOldestId)");
-    // The page goes in above the reader, who keeps their place.
-    expect(more).toContain('psecKeepPlace(box, fromBottom);');
+    // The page goes in above the reader, who keeps their place: the turn they were on stays put.
+    expect(more.indexOf('var anchor = psecViewAnchor(box);')).toBeLessThan(more.indexOf("insertAdjacentHTML('afterbegin'"));
+    expect(more).toContain('psecHoldPlace(box, anchor, fromBottom);');
   });
 
   it('a page is due only for a reader who scrolled up near the top — or a box too short to scroll; never on a landing', () => {
