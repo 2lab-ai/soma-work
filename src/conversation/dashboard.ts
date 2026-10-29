@@ -16289,6 +16289,7 @@ function cronRunAsAq(r) {
 // session), an idle one is of unknown result (+미확인). Where a job's kept history (FIFO
 // historyCap) starts inside the window, the element turns the counts into lower bounds (≥)
 // from the jobs' kept records.
+// Every record goes, not just the last 24 hours: the element applies the window — do not cut it here.
 function cronDayRuns(plan) {
   var out = [];
   ((plan && plan.groups) || []).forEach(function(g) {

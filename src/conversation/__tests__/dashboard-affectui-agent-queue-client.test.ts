@@ -543,6 +543,21 @@ describe('laneData — the CRON plan as the element’s lane', () => {
     expect(day.cutFrom).toBe(NOWC - 45 * M);
   });
 
+  // #554 review P3: the host must not window runs24h again — the element does, and its ≥ needs every record.
+  it('cronDayRuns passes every record, older than 24 hours too: the element applies the window', () => {
+    const f = laneFns();
+    const old = [job('job-old', 'weekly-report', 30 * M, [run(10 * M), run(3 * 24 * HR), run(30 * 24 * HR)])];
+    const runs = f.cronDayRuns(f.planCronLane(empty, old, null));
+    expect(runs.map((r: any) => r.at)).toEqual([NOWC - 10 * M, NOWC - 3 * 24 * HR, NOWC - 30 * 24 * HR]);
+    // The element counts only the last 24 hours of them.
+    expect(lib.dayRuns(f.laneData(f.planCronLane(empty, old, null)).lane, NOWC).n).toBe(1);
+    // The intent is pinned where the next reader looks.
+    const head = TEMPLATE.slice(0, TEMPLATE.indexOf('\nfunction cronDayRuns('));
+    expect(head.slice(head.lastIndexOf('\n\n'))).toContain(
+      'Every record goes, not just the last 24 hours: the element applies the window',
+    );
+  });
+
   it('a live card with no record is not counted; an idle one is +미확인, never a success (review R1)', () => {
     const f = laneFns();
     const idle = card('k-old', 'job-qa', 'nightly-qa', { lastActivity: new Date(NOWC - 3 * HR).toISOString() });
