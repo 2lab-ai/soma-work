@@ -762,6 +762,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     const env = {
       _sessionCache: Object.create(null),
       _cardHost: Object.create(null),
+      _cardDrawn: Object.create(null),
       _expanded: new Set<string>(),
       _ioCache: Object.create(null),
       isSiblingSession: () => false,
@@ -781,6 +782,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     const io = load<{
       ensureCardIo(key: string, force?: boolean): void;
       invalidateCardIo(cid: string): void;
+      cardIoConsumer(cid: string): string | null;
       ioNeedsFetch(c: unknown, stamp: string, force: boolean, now: number, fromTimer?: boolean): boolean;
       releaseCardIoTimer(cid: string): void;
     }>(
@@ -810,7 +812,18 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
         activityState: 'waiting',
       };
       env._cardHost[key] = {}; // drawn by the board element
+      env._cardDrawn[key] = true;
       env._expanded.add(key);
+    };
+    // #560 review P3: a card in a closed DONE day is placed (in _cardHost) but not drawn.
+    const addStub = (key: string, cid: string) => {
+      addCard(key, cid);
+      delete env._cardDrawn[key];
+    };
+    // A card that left the board: renderBoard rebuilds both maps without it.
+    const leave = (key: string) => {
+      delete env._cardHost[key];
+      delete env._cardDrawn[key];
     };
     // Fire only the timers that are due; later ones stay pending.
     const advance = async (ms: number) => {
@@ -824,6 +837,8 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
       env,
       io,
       addCard,
+      addStub,
+      leave,
       advance,
       fetchCalls,
       fetchTimes,
@@ -843,6 +858,20 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
       },
     };
   }
+
+  it('a card left open in a closed DONE day (a stub, not drawn) consumes no 지시/응답 fetch or retry timer', async () => {
+    const h = harness();
+    h.setMode('up');
+    h.addStub('ks', 'cs');
+    expect(h.io.cardIoConsumer('cs')).toBeNull();
+    h.env._ioCache.cs = { state: 'ok', stamp: 'old', data: null, fails: 0, step: 0, retryAt: 0 };
+    h.io.invalidateCardIo('cs'); // a turn landed in its conversation
+    await flush();
+    expect(h.fetchCalls).toEqual([]);
+    // Drawn (its day opened): it is the consumer again.
+    h.env._cardDrawn.ks = true;
+    expect(h.io.cardIoConsumer('cs')).toBe('ks');
+  });
 
   it('a partial result (instruction ok, raw response failed) is kept and retried until the response loads', async () => {
     const h = harness({ noSummary: true });
@@ -1098,7 +1127,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     h.env._expanded.delete('kx');
     h.io.releaseCardIoTimer('cx'); // ky still shows it → kept
     expect(h.pendingTimers()).toEqual([1000]);
-    delete h.env._cardHost.ky; // ky left the board
+    h.leave('ky'); // ky left the board
     h.io.releaseCardIoTimer('cx');
     expect(h.pendingTimers()).toEqual([]);
     const n = h.fetchCalls.length;
@@ -1108,7 +1137,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
 
   it.each<[string, (h: ReturnType<typeof harness>) => void]>([
     ['closed', (h) => h.env._expanded.delete('kd')],
-    ['removed from the board', (h) => delete h.env._cardHost.kd],
+    ['removed from the board', (h) => h.leave('kd')],
   ])('a request that fails after its last card was %s arms no retry timer', async (_how, goAway) => {
     const h = harness();
     h.addCard('kd', 'cd');

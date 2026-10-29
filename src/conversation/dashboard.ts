@@ -8366,10 +8366,11 @@ function renderBoard(board, partial) {
   }
   syncCardBodies();
   // Open cards keep their 지시/응답 current (no DOM write unless a fetch settles).
-  _expanded.forEach(function(key) { if (_cardHost[key]) ensureCardIo(key, false); });
-  // A board with cards: on a phone the last card clears the floating button.
+  // Drawn ones only: a closed DONE day's cards are placed as stubs (_cardHost), not drawn.
+  _expanded.forEach(function(key) { if (_cardDrawn[key]) ensureCardIo(key, false); });
+  // A board with drawn cards: on a phone the last card clears the floating button.
   var inbox = document.getElementById('inbox');
-  if (inbox) inbox.classList.toggle('has-cards', Object.keys(_cardHost).length > 0);
+  if (inbox) inbox.classList.toggle('has-cards', Object.keys(_cardDrawn).length > 0);
   renderArchivesToggle(plan.archivedCount);
   renderSleepingToggle(plan.sleepingCount);
   paintCronDrawer();
@@ -11048,9 +11049,10 @@ function cancelCardIoRetry(cid) {
   delete _ioTimers[cid];
 }
 // The open card on the board that consumes this conversation's retry, or null.
-// A timer is armed only while one exists (retryCardIo fires into it).
+// A timer is armed only while one exists (retryCardIo fires into it). Drawn
+// cards only: a stub in a closed DONE day shows nothing.
 function cardIoConsumer(cid) {
-  for (var k in _cardHost) {
+  for (var k in _cardDrawn) {
     var s = _sessionCache[k];
     if (s && s.conversationId === cid && _expanded.has(k)) return k;
   }
@@ -11265,7 +11267,7 @@ function invalidateCardIo(cid) {
   if (!c) return;
   if (c.state === 'loading') { c.dirty = true; return; }
   c.stamp = null;
-  for (var k in _cardHost) {
+  for (var k in _cardDrawn) {
     var s = _sessionCache[k];
     if (s && s.conversationId === cid && _expanded.has(k)) ensureCardIo(k, false);
   }
