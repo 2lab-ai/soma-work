@@ -10142,7 +10142,8 @@ function applyPanelDetail() {
   var btn = document.getElementById('panel-detail-toggle');
   if (btn) btn.setAttribute('aria-pressed', _panelDetail ? 'true' : 'false');
 }
-// The sections an opening starts with: every one open with 자세히, else the defaults.
+// The sections an opening starts with: every one open with 자세히 — except the goal,
+// which always opens folded (SSOT 2026-10-29) — else the defaults.
 function resetPanelSections() {
   _panelInfoOpen = _panelDetail;
   _panelGoalOpen = false; // SSOT 2026-10-29: the goal opens folded — 자세히 and a goal landing too
@@ -15439,7 +15440,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   if (panelConvId && !isSiblingSession(s)) ensureArtifacts(panelConvId, true);
   if (panelConvId && !isSiblingSession(s) && s.userMedia && toNum(s.userMedia.count) > 0) ensureUserMedia(panelConvId);
   // Every opening starts with the defaults (§3.1-6, task view T1.3): Tasks
-  // folded — or every detail open with 자세히.
+  // folded — or every detail open with 자세히; the goal folded either way.
   resetPanelSections();
   _agentConvRaw = Object.create(null);
   // The previous opening's answers are gone from the list: stop watching them.
