@@ -305,6 +305,30 @@ describe('Dashboard — sessions waiting out an automatic resume, and the one cu
       }
       const msg = messages.find((m) => m.type === 'task_update');
       expect(msg.tasks.map((t: any) => t.status)).toEqual(['completed', 'in_progress', 'pending', 'pending']);
+      // SSOT 2026-10-29 T5: no work outside the tasks given → null (the client clears its 태스크 밖 row).
+      expect(msg.tasksOutside).toBeNull();
+    });
+
+    it('the task_update push carries the work no task got (SSOT 2026-10-29 T5 — the 태스크 밖 row)', async () => {
+      const webServer = await import('../web-server');
+      dashboard.setDashboardSessionAccessor(() => new Map([['C1:t1', session({ activityState: 'working' })]]));
+      const messages: any[] = [];
+      const headers = { cookie: `soma_dash_token=${encodeURIComponent('bearer:test-token')}` };
+      const ws = await webServer.injectWebServerWS('/ws/dashboard', { headers }, (socket: any) => {
+        socket.on('message', (data: any) => messages.push(JSON.parse(data.toString())));
+      });
+      const outside = {
+        toolCalls: 3,
+        agentToolCalls: 1,
+        tokens: { input: 100, output: 20, cacheRead: 0, cacheCreate: 0, costUsd: 0.01 },
+      };
+      try {
+        dashboard.broadcastTaskUpdate('C1:t1', snapshot(), [], outside);
+        await vi.waitFor(() => expect(messages.some((m) => m.type === 'task_update')).toBe(true));
+      } finally {
+        ws.terminate();
+      }
+      expect(messages.find((m) => m.type === 'task_update').tasksOutside).toEqual(outside);
     });
   });
 });

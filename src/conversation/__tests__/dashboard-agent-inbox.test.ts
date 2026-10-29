@@ -222,12 +222,23 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(fnBody('renderCardBody')).toContain('questionHtml = acQuestionHtml(s, s.pendingQuestion);');
   });
 
-  it('every card can open the panel; without a conversation the work log reads 작업 로그 없음', () => {
+  it('every card opens its detail card as it expands; without a conversation the work log reads 작업 로그 없음', () => {
     const body = fnBody('renderCardBody');
-    // re-agent-inbox D10: 작업 로그 is the primary unless the card holds a decision for this viewer.
-    expect(body).toMatch(
-      /const worklogBtn = '<button type="button" class="btn-action' \+ \(canDecideHere \? '' : ' btn-primary'\) \+ '"/,
+    // SSOT 2026-10-29 T2: no 작업 로그 button (nor its primary/steps-back logic) — expanding the
+    // card opens its detail card (the element's ui-toggle → openPanel(key)), folding it takes it
+    // out (deckDrop). The executed wiring is in dashboard-affectui-agent-inbox-client.test.ts.
+    expect(body).not.toContain('worklogBtn');
+    expect(body).not.toContain('canDecideHere');
+    expect(body).not.toContain('작업 로그</button>');
+    const toggle = fnBody('wireInbox');
+    expect(toggle).toContain('openPanel(key);');
+    expect(toggle).toContain('deckDrop(key);');
+    expect(toggle.indexOf('openPanel(key);')).toBeLessThan(toggle.indexOf('deckDrop(key);'));
+    // SSOT 2026-10-29 T1: the actions (Stop · Close · Trash) + Slack are the body's first row.
+    expect(body).toContain(
+      `const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col, 'card') + slackBtn + '</span></div>';`,
     );
+    expect(body).toMatch(/return '<div class="card-body">'\s*\+ actionsHtml\s*\+ permissionHtml/);
     expect(TEMPLATE).toContain("var WL_EMPTY_MSG = '작업 로그 없음';");
     // SSOT 2026-10-29: no conversation → no work-log state; the 작업 로그 tab reads 작업 로그 없음.
     expect(fnBody('resetWorkLog')).toContain('_wl = convId ? wlNewState(convId) : null;');
@@ -265,10 +276,14 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(TEMPLATE).toContain('응답');
   });
 
-  it('the 작업 로그 button opens the panel at the work log', () => {
-    // A keyboard click (event.detail === 0) lands focus too (spec 13).
-    expect(DASHBOARD_TS).toContain("openPanel(\\\\'' + escJs(s.key) + '\\\\',true,");
-    expect(TEMPLATE).toContain('작업 로그');
+  it('no card button opens the panel at the work log any more (SSOT 2026-10-29 T2)', () => {
+    // The removed 작업 로그 button was the only card control that passed `true` (the work-log
+    // landing). The detail card opens with the card (Chat, the default); the 작업 로그 tab is
+    // one click away in it.
+    expect(DASHBOARD_TS).not.toContain("openPanel(\\\\'' + escJs(s.key) + '\\\\',true,");
+    // (the same quoting is live on the goal line — the check above is not vacuous)
+    expect(DASHBOARD_TS).toContain("openPanel(\\\\'' + escJs(s.key) + '\\\\',\\\\'goal\\\\',");
+    expect(TEMPLATE).toContain('id="psec-tab-log" data-sec="log"');
   });
 });
 
@@ -288,7 +303,10 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
   });
 
   it('Tasks sit in the focused tab after the agent tabs, inside the one scroll area — no pinned block (task view T1)', () => {
-    const panel = TEMPLATE.slice(TEMPLATE.indexOf('<div class="slide-panel" id="slide-panel">'));
+    // SSOT 2026-10-29 T2: the panel carries the deck's depth (data-deck) from the start.
+    const panelAt = TEMPLATE.indexOf('<div class="slide-panel" id="slide-panel" data-deck="0">');
+    expect(panelAt).toBeGreaterThan(0);
+    const panel = TEMPLATE.slice(panelAt);
     const header = panel.indexOf('<div class="panel-header">');
     const scroll = panel.indexOf('<div class="panel-scroll" id="panel-scroll">');
     const surface = panel.indexOf('<section class="panel-surface" id="panel-surface"');
@@ -399,10 +417,14 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
 });
 
 describe('agent inbox board — deep link (§3.1-8)', () => {
-  it('reads ?session= and opens the card + panel at the work log', () => {
+  it('reads ?session= and opens the card + its detail card (on Chat, SSOT 2026-10-29 T2)', () => {
     expect(TEMPLATE).toContain('URLSearchParams(location.search)');
     expect(TEMPLATE).toContain(".get('session')");
-    expect(fnBody('openDeepLinkedSession')).toContain('openPanel(key, true)');
+    // Expanding the card already opened its detail card; the link only brings it to the
+    // front when something else is there — and lands on the default (no `true`, no 작업 로그).
+    const body = fnBody('openDeepLinkedSession');
+    expect(body).toContain('if (!panelOpen || panelSessionKey !== key) openPanel(key);');
+    expect(body).not.toContain('openPanel(key, true)');
   });
 
   it('retries on board renders for ~10s, then gives up silently', () => {
@@ -506,7 +528,8 @@ describe('agent inbox board — motion contract (§4)', () => {
   });
 
   it('reduced motion stops the spinner and shows a static working indicator (§4-8)', () => {
-    const reduced = TEMPLATE.match(/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+    // Every reduced-motion block (SSOT 2026-10-29 T2 added the detail deck's own, earlier in the sheet).
+    const reduced = (TEMPLATE.match(/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\n\}/g) ?? []).join('\n');
     expect(reduced).toContain('.spinner, .spin { animation: none !important; }');
     expect(reduced).toMatch(/\.spinner \{ border-color: var\(--st-run\); background: radial-gradient/);
   });
