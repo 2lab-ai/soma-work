@@ -603,7 +603,22 @@ export function creditTaskUsage(
   };
   const calls = CALL_CREDITS.get(ledger) ?? {};
   const before = key ? calls[key] : undefined;
-  if (before) {
+  if (before && key) {
+    // A call reported again is live: it moves to the newest place, inside the
+    // window that is never dropped (review R2, astra note 1).
+    delete calls[key];
+    calls[key] = before;
+    // A late live frame of a call whose final usage is in carries no more than
+    // it (the start-of-call count): it never undoes the correction (note 2).
+    if (
+      before.settled &&
+      t.input <= before.t.input &&
+      t.output <= before.t.output &&
+      t.cacheRead <= before.t.cacheRead &&
+      t.cacheCreate <= before.t.cacheCreate
+    ) {
+      return;
+    }
     const delta: TaskTokens = {
       input: t.input - before.t.input,
       output: t.output - before.t.output,
