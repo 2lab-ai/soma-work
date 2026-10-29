@@ -7584,6 +7584,15 @@ function acPermissionsHtml(s) {
 function acQuestionHtml(s, q) {
   return acSlotHtml(s.key, 'question', acQuestionId(q), '', '질문 — ' + String(q.question || ''));
 }
+// A collapsed card paints no approval card (cardParts), but the requester's
+// input is still fetched as the card's would be (acPermissionData), so opening
+// the card shows it at once.
+function acPrefetch(s, col) {
+  var list = col === 'closed' ? [] : (s && s.pendingPermissions) || [];
+  for (var i = 0; i < list.length; i++) {
+    if (!_permDetails[list[i].approvalId] && !acPermissionLock(s, list[i])) loadPermissionDetail(s.key, list[i].approvalId);
+  }
+}
 
 // What one slot's element shows now, from the session it belongs to.
 function acDataFor(el) {
@@ -8867,6 +8876,7 @@ var RESUME_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" str
 // so a key such as "__proto__" or "constructor" is just a key.
 var _cardEls = Object.create(null);  // session key → persistent card shell
 var _expanded = new Set();           // keys whose card is open
+var _cardClosing = Object.create(null); // key → timer: a closed card keeps its body until its collapse has run
 var _boardRenders = 0;
 var _ioCache = Object.create(null);  // conversationId → { state, stamp, data, dirty, fails, retryAt }
 var _cardSeq = 0; // D8 (re-agent-inbox): ids of the expand regions — never the session key
@@ -8889,6 +8899,7 @@ var MOTION = (function readMotionTokens() {
   return {
     move: ms('--dur-move', 320),
     fade: ms('--dur-fade', 180),
+    expand: ms('--dur-expand', 240),
     easeOut: str('--ease-out', 'cubic-bezier(0.23, 1, 0.32, 1)'),
     easeInOut: str('--ease-in-out', 'cubic-bezier(0.77, 0, 0.175, 1)'),
   };
@@ -9472,11 +9483,42 @@ function applyExpanded(el, open) {
 
 // One card's rendered parts. The HTML strings depend only on the data (clocks
 // are filled by the 1 Hz tick), so equal data gives equal strings.
+// body and tree exist only while the card is open (cardBodyShown): a collapsed
+// card's body is inert and drawn at height 0, so nothing in it — the agent
+// tree, the approval cards, the rows — is built or painted.
 // tree: the open card's <ui-agent-tree> data (atCardData), compared by its
 // signature — an agent's status, time or spend changes no markup.
 function cardParts(s, col) {
-  var tree = atCardData(s, col);
-  return { col: col, state: cardState(s, col), face: renderCardFace(s, col), body: renderCardBody(s, col), cid: s.conversationId || null, tree: tree, treeSig: tree ? JSON.stringify(tree) : '' };
+  var p = { col: col, state: cardState(s, col), face: renderCardFace(s, col), body: '', cid: s.conversationId || null, tree: null, treeSig: '' };
+  if (!cardBodyShown(s.key)) {
+    acPrefetch(s, col);
+    return p;
+  }
+  p.body = renderCardBody(s, col);
+  p.tree = atCardData(s, col);
+  p.treeSig = p.tree ? JSON.stringify(p.tree) : '';
+  return p;
+}
+// Open, or still closing: the collapse runs over the body, so it stays until then.
+function cardBodyShown(key) {
+  return _expanded.has(key) || !!_cardClosing[key];
+}
+// The card's body follows its open state (toggleCard). Opened, it is built at
+// once — its agent tree painted — before the row grows over it. Closed, it is
+// let go once the collapse has run (at once without motion): the agent tree
+// and every approval card leave the DOM with their shadow trees. Reopening
+// (or closing again) drops a release still pending.
+function syncCardBody(key, now) {
+  if (_cardClosing[key]) clearTimeout(_cardClosing[key]);
+  delete _cardClosing[key];
+  if (_expanded.has(key) || now || !canAnimate()) {
+    refreshCard(key);
+    return;
+  }
+  _cardClosing[key] = setTimeout(function() {
+    delete _cardClosing[key];
+    refreshCard(key);
+  }, Math.max(MOTION.expand, MOTION.fade) + 60);
 }
 function cardPartsDiffer(el, p) {
   return el.getAttribute('data-col') !== p.col || el.getAttribute('data-state') !== p.state
@@ -12993,6 +13035,7 @@ function toggleCard(key, instant) {
   if (open) _expanded.add(key);
   else _expanded.delete(key);
   if (!open) releaseCardIoTimer(el._cid);
+  syncCardBody(key, instant);
   if (instant) el.classList.add('no-motion');
   applyExpanded(el, open);
   if (instant) {
