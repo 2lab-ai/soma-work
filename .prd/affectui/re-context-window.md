@@ -1,6 +1,7 @@
 # re-context-window — Context Window → 패널 세션 정보의 컨텍스트 블록 + 카드 ctx 메트릭
 
 Status: 구현 (Phase B) · Date: 2026-10-26 · 기준 main `ff6c9ac` · 서브이슈 #441 (에픽 #437) · 브랜치 `feat/dashboard-affectui-context-window`
+> 2026-10-29: 인라인 사본(`contextBlockHtml` · `cwSay` · `cwCompactHtml` · `cwApply`/`cwBind` · `cwRoll`, `.cw-*` CSS)은 이 설계를 옮긴 라이브러리 요소 `@2lab.ai/ui` `<ui-context-window>`(0.4.2)로 바뀌었다. 칸·마크·단계·트레이·aria-live·hover·숫자 굴림·두 번 누르기(Esc·포커스 이탈 해제)·✓의 퇴장·`timeout`·경고 대비는 라이브러리 `context-window.test.ts`가, 카드 → 데이터 매핑(`cwData`)·`compactState` 기계(`cwObserve`)·소유자 게이트(`cwCanCompact`)·요청 경로(`cwCompact`, `ui-compact`)는 `dashboard-affectui-context-window-client.test.ts`가 고정한다. 차이: 관측된 남의 압축(자동·Slack) 3.2초 동안은 버튼을 숨긴다(트레이는 그대로 `새 압축 관측됨`).
 앞선 계약: [`../13-dashboard-three-surfaces-spec.md`](../13-dashboard-three-surfaces-spec.md) §3.7(ctx 단계)·§3.4(세션 정보),
 [`../11-dashboard-live-surfaces-spec.md`](../11-dashboard-live-surfaces-spec.md) · SSOT [`ssot.md`](ssot.md)
 
