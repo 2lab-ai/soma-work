@@ -222,6 +222,39 @@ describe('final usage from the transcript (T5 live follow-up)', () => {
     expect([...(await reader.read(other)).keys()]).toEqual(['late']);
   });
 
+  it('a turn-end (forced) read looks for a missing transcript again inside the retry window (review)', async () => {
+    const reader = createMainCallReader({ configDir, now: () => 0 });
+    const other = '00000000-1111-4222-8333-555555555555';
+    expect((await reader.read(other)).size).toBe(0);
+    fs.writeFileSync(path.join(path.dirname(file), `${other}.jsonl`), `${line('first', [1, 1, 1, 1])}\n`);
+    expect((await reader.read(other)).size).toBe(0); // throttled look-up
+    expect([...(await reader.read(other, { force: true })).keys()]).toEqual(['first']);
+  });
+
+  it('calls read before a later chunk fails are kept, not lost with the moved cursor (review)', async () => {
+    append(line('c1', [1, 5, 1, 1]), line('c2', [1, 6, 1, 1]));
+    const reader = createMainCallReader({ configDir, chunkBytes: line('c1', [1, 5, 1, 1]).length + 1 });
+    const open = fs.promises.open;
+    let reads = 0;
+    // The second chunk read fails.
+    (fs.promises as { open: typeof open }).open = (async (...a: Parameters<typeof open>) => {
+      const fh = await open(...a);
+      const read = fh.read.bind(fh);
+      (fh as { read: unknown }).read = (...r: unknown[]) => {
+        reads++;
+        if (reads === 2) return Promise.reject(new Error('EIO'));
+        return (read as (...x: unknown[]) => unknown)(...r);
+      };
+      return fh;
+    }) as typeof open;
+    try {
+      await expect(reader.read(SID)).rejects.toThrow('EIO');
+    } finally {
+      (fs.promises as { open: typeof open }).open = open;
+    }
+    expect([...(await reader.read(SID)).keys()]).toEqual(['c1', 'c2']);
+  });
+
   it('reconcileTaskCalls moves each known call to its final usage and reports whether anything changed', () => {
     const l = liveRun();
     const calls = new Map();

@@ -1057,8 +1057,12 @@ async function start() {
     const mainCallReader = createMainCallReader();
     const reconciledAt = new Map<string, number>();
     const RECONCILED_KEPT = 1024;
-    const reconcileTaskUsage = (sessionKey: string, session: ConversationSession, force: boolean) => {
-      const sid = session.sessionId;
+    const reconcileTaskUsage = (
+      sessionKey: string,
+      session: ConversationSession,
+      force: boolean,
+      sid: string | undefined = session.sessionId,
+    ) => {
       if (!sid || !session.taskLedger) return;
       const at = Date.now();
       if (!force && at - (reconciledAt.get(sessionKey) ?? 0) < 10_000) return;
@@ -1066,7 +1070,7 @@ async function start() {
       reconciledAt.set(sessionKey, at);
       while (reconciledAt.size > RECONCILED_KEPT) reconciledAt.delete(reconciledAt.keys().next().value as string);
       void mainCallReader
-        .read(sid)
+        .read(sid, { force })
         .then((calls) => {
           // The ledger object may have been replaced meanwhile (a new list): its credits moved with it.
           const ledger = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey)?.taskLedger;
@@ -1161,7 +1165,11 @@ async function start() {
         if (applyAgentEvent(session, event)) scheduleLiveSessionUpdate(sessionKey);
         refreshAgentSpend(sessionKey, session, event.kind === 'turn_end');
         // A turn's last call: its transcript line is written as the turn ends — read it just after.
-        if (event.kind === 'turn_end') setTimeout(() => reconcileTaskUsage(sessionKey, session, true), 1500).unref?.();
+        // The SDK session is taken now: a /new in the next 1.5 s must not point the read at the new transcript (review).
+        if (event.kind === 'turn_end') {
+          const sid = session.sessionId;
+          setTimeout(() => reconcileTaskUsage(sessionKey, session, true, sid), 1500).unref?.();
+        }
       },
     };
     setStreamExecutorProviders(workLogProviders);
