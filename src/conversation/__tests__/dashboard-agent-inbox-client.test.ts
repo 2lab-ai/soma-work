@@ -2015,12 +2015,14 @@ describe('작업 로그 is a section tab: painted only while shown, following th
         'psecOnAppended',
         'psecToNewest',
         'psecKeepPlace',
+        'psecTreeRoot',
         'psecViewAnchor',
+        'psecAnchorEl',
         'psecRestoreAnchor',
         'psecHoldPlace',
         'paintWorkLog',
       ],
-      ['WL_LABELS', 'WL_STOP_SEL', ...WL_INSTRUCTION_VARS, 'PSEC_ANCHOR_SELS', 'PSEC_HOLD_MS'],
+      ['WL_LABELS', 'WL_STOP_SEL', ...WL_INSTRUCTION_VARS, 'PSEC_ANCHORS', 'PSEC_ANCHOR_MAX', 'PSEC_HOLD_MS'],
       {
         document,
         _wl: state,
@@ -2083,6 +2085,112 @@ describe('작업 로그 is a section tab: painted only while shown, following th
   });
 });
 
+
+describe("an older page keeps the reader's row in place — several rows in view are kept, the first still shown wins (shipped psecViewAnchor / psecRestoreAnchor)", () => {
+  // A box at viewport y=100, 300px tall; rows at content offsets (y), 40px each.
+  type Row = {
+    attr: Record<string, string>;
+    y: number;
+    shown: boolean;
+    inDom: boolean;
+    group?: Row;
+    getAttribute(n: string): string | null;
+    getBoundingClientRect(): { top: number; bottom: number; height: number };
+    getClientRects(): unknown[];
+    closest(sel: string): Row | null;
+  };
+  function world(seqs: number[]) {
+    const rows: Row[] = [];
+    const groups: Row[] = [];
+    const box = {
+      scrollTop: 0,
+      clientHeight: 300,
+      _lastTop: 0,
+      getBoundingClientRect: () => ({ top: 100 }),
+      querySelector: (sel: string) => {
+        if (sel === 'ui-agent-tree') return null;
+        const m = /^\.(wl-entry|wl-group)\[(data-seq|data-task-id)="([^"]*)"\]$/.exec(sel);
+        if (!m) return null;
+        return [...rows, ...groups].find((r) => r.inDom && r.attr[m[2]] === m[3]) ?? null;
+      },
+      querySelectorAll: (sel: string) =>
+        sel === '.wl-entry[data-seq]'
+          ? rows.filter((r) => r.inDom)
+          : sel === '.wl-group[data-task-id]'
+            ? groups.filter((g) => g.inDom)
+            : [],
+    };
+    const make = (attr: Record<string, string>, y: number, list: Row[]): Row => {
+      const r: Row = {
+        attr,
+        y,
+        shown: true,
+        inDom: true,
+        getAttribute: (n) => r.attr[n] ?? null,
+        getBoundingClientRect: () => {
+          const top = 100 + r.y - box.scrollTop;
+          return r.shown ? { top, bottom: top + 40, height: 40 } : { top: 0, bottom: 0, height: 0 };
+        },
+        getClientRects: () => (r.shown ? [{}] : []),
+        closest: (sel) => (sel === '.wl-group' ? (r.group ?? null) : null),
+      };
+      list.push(r);
+      return r;
+    };
+    seqs.forEach((seq, i) => make({ 'data-seq': String(seq) }, i * 40, rows));
+    const m = load<{ psecViewAnchor(b: unknown): unknown[] | null; psecRestoreAnchor(b: unknown, a: unknown): boolean }>(
+      ['psecSetTop', 'psecTreeRoot', 'psecViewAnchor', 'psecAnchorEl', 'psecRestoreAnchor'],
+      ['PSEC_ANCHORS', 'PSEC_ANCHOR_MAX'],
+    );
+    const group = (taskId: string, y: number) => make({ 'data-task-id': taskId }, y, groups);
+    return { m, box, rows, group };
+  }
+
+  it('the rows in view, top first, at most six; a row above the box is not one', () => {
+    const w = world([10, 11, 12, 13, 14, 15, 16, 17, 18]);
+    w.box.scrollTop = 20; // row 10 is half above the top
+    const a = w.m.psecViewAnchor(w.box);
+    expect(a).toEqual([
+      { sel: '.wl-entry[data-seq="10"]', at: -20, tree: false },
+      { sel: '.wl-entry[data-seq="11"]', at: 20, tree: false },
+      { sel: '.wl-entry[data-seq="12"]', at: 60, tree: false },
+      { sel: '.wl-entry[data-seq="13"]', at: 100, tree: false },
+      { sel: '.wl-entry[data-seq="14"]', at: 140, tree: false },
+      { sel: '.wl-entry[data-seq="15"]', at: 180, tree: false },
+    ]);
+    w.box.scrollTop = 40;
+    expect(w.m.psecViewAnchor(w.box)?.[0]).toEqual({ sel: '.wl-entry[data-seq="11"]', at: 0, tree: false });
+  });
+
+  it('the page went in above and took the top row away (a result paired into its call card): the next row keeps the place', () => {
+    const w = world([10, 11, 12, 13]);
+    const a = w.m.psecViewAnchor(w.box);
+    // 500px of older entries above; row 10 is no longer a row of its own.
+    for (const r of w.rows) r.y += 500;
+    w.rows[0].inDom = false;
+    expect(w.m.psecRestoreAnchor(w.box, a)).toBe(true);
+    expect(w.box.scrollTop).toBe(500);
+    expect(w.rows[1].getBoundingClientRect().top).toBe(100 + 40);
+  });
+
+  it('an entry folded into its (closed) task group is represented by the group head — only when no row of its own is left', () => {
+    const w = world([10, 11]);
+    const a = w.m.psecViewAnchor(w.box);
+    const head = w.group('T1', 900);
+    for (const r of w.rows) {
+      r.shown = false;
+      r.group = head;
+    }
+    expect(w.m.psecRestoreAnchor(w.box, a)).toBe(true);
+    expect(w.box.scrollTop).toBe(900);
+    // Nothing left at all: the caller falls back to the distance from the bottom.
+    const gone = world([10]);
+    const b = gone.m.psecViewAnchor(gone.box);
+    gone.rows[0].inDom = false;
+    expect(gone.m.psecRestoreAnchor(gone.box, b)).toBe(false);
+    expect(gone.m.psecRestoreAnchor(gone.box, null)).toBe(false);
+  });
+});
 
 describe('panel Tasks always render, also with no tasks (shipped renderPanelTasks)', () => {
   // Task view T1.3: the Tasks section is a disclosure in the focused tab,

@@ -970,7 +970,8 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
         psecAtBottom: () => true,
         psecSyncControls: () => {},
         psecOnAppended: (n: number, pinned: boolean) => out.appended.push([n, pinned]),
-        psecKeepPlace: (_b: unknown, fromBottom: number) => out.kept.push(fromBottom),
+        psecViewAnchor: () => null,
+        psecHoldPlace: (_b: unknown, _a: unknown, fromBottom: number) => out.kept.push(fromBottom),
         psecAfterRender: (_el: unknown, fn: () => void) => fn(),
         psecMaybeFill: () => {
           out.filled++;
@@ -1144,13 +1145,13 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     expect(ids).not.toContain('g40');
     expect(ids.length).toBeLessThanOrEqual(1 + 20 + 15 + 5);
     expect(r.host._hidden).toBe(60 - (ids.length - 1));
-    // Scroll up: 20 more, the reader's place measured from the bottom of the box (kept before and after render).
+    // Scroll up: 20 more, the reader's row held in place once the element rendered (else the distance from the bottom).
     const before = ids.length;
     r.m.showMoreTree();
     const more = (r.out.data?.nodes ?? []).map((n) => n.id);
     for (let n = 21; n <= 60; n++) expect(more).toContain(`g${n}`);
     expect(more.length).toBeGreaterThan(before);
-    expect(r.out.kept).toEqual([2000 - 400, 2000 - 400]);
+    expect(r.out.kept).toEqual([2000 - 400]);
     expect(r.out.filled).toBe(1);
     expect(r.host._growing).toBe(false);
     // The markup is the same element: the step is data only.
