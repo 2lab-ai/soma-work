@@ -5,8 +5,10 @@
  * dashboard-three-surfaces-client.test.ts).
  *
  *   plan        = the Tasks section of the focused tab (task view T1.3: folded
- *                 by default; opened, a plan): original order, markers, rail,
- *                 a footer with the phase, announcements (D1–D7)
+ *                 by default; opened — SSOT 2026-10-29 T5 — the tasks that ran
+ *                 in the order they started, each row opening its detail, then
+ *                 the plan left, the never-run dropped ones folded, the totals):
+ *                 markers, rail, announcements (D1–D7)
  *   needs input = a header with a count, approval cards for permission prompts
  *                 and the single-choice question, the keyboard, the answered
  *                 row, the expiry clock (D8–D17)
@@ -81,41 +83,78 @@ function box(over: Record<string, unknown> = {}): El {
   } as El;
 }
 
-// ── Plan (D1–D7) ──
+// ── Plan (D1–D7) → the task runs (SSOT 2026-10-29 T5) ──
 type Task = {
   id: string;
   content: string;
   status: string;
   activeForm?: string;
   startedAt?: number;
+  firstStartedAt?: number;
   completedAt?: number;
   toolCalls?: number;
+  agentToolCalls?: number;
+  tokens?: { input?: number; output?: number; cacheRead?: number; cacheCreate?: number; costUsd?: number };
+  revisions?: Array<{ at: number; content: string }>;
+  mergedIds?: string[];
+  shared?: number;
+  startEstimated?: boolean;
   dropped?: 'started' | 'unstarted';
   removedAt?: number;
 };
-// The plan steps live in the opened Tasks section (task view T1.3) — D1–D7 are
-// pinned there; `open: false` is the folded default (the head only).
+// The Tasks section of the focused tab (task view T1.3) — D1–D7 were pinned on the plan;
+// SSOT 2026-10-29 T5 made the opened section the tasks that ran (each a row that opens its
+// detail), the plan left, the never-run dropped ones folded, and the totals. `open: false` is
+// the folded default (the head only). A row's toggleTaskRun repaints with the last render's data.
 function plan(opts: { expanded?: boolean; earlier?: boolean; open?: boolean } = {}) {
   const el = box();
   let writes = 0;
-  const m = load<{ renderPanelTasks(t: Task[] | null, label?: string, earlier?: Task[]): void }>(
+  type Render = (t: Task[] | null, label?: string, earlier?: Task[], outside?: unknown) => void;
+  let last: Parameters<Render> = [null];
+  const m = load<{
+    renderPanelTasks: Render;
+    toggleTaskRun(id: string): void;
+    formatTaskClock(ts: number): string;
+    formatTaskStamp(ts: number): string;
+  }>(
     [
       'esc',
       'escAttr',
+      'escJs',
       'toNum',
       'formatDuration',
       'formatTaskTime',
+      'formatTokens',
       'agentIconHtml',
       'taskFateOf',
       'renderPanelTaskItem',
-      'planFootHtml',
+      'taskIdNum',
+      'taskRunStart',
+      'taskRunEnd',
+      'taskRunsOf',
+      'taskTokTotal',
+      'formatTaskClock',
+      'formatTaskStamp',
+      'taskCount',
+      'taskRunNumbers',
+      'toggleTaskRun',
+      'renderTaskRun',
+      'taskRunDetailHtml',
+      'taskSkippedHtml',
+      'taskTotalsHtml',
       'planSummaryHtml',
-      'planEarlierCounts',
-      'planEarlierGroups',
-      'planEarlierHtml',
       'renderPanelTasks',
     ],
-    ['AGENT_STATUS_LABEL', 'TASK_FATE_LABEL', 'TASK_PAUSE_SVG', 'TASK_STOP_SVG', 'TASK_SKIP_SVG', 'PI_CHEV_SVG'],
+    [
+      'AGENT_STATUS_LABEL',
+      'TASK_FATE_LABEL',
+      'TASK_PAUSE_SVG',
+      'TASK_STOP_SVG',
+      'TASK_SKIP_SVG',
+      'PI_CHEV_SVG',
+      'TASK_RUNS_SHOWN',
+      '_panelTaskOpen',
+    ],
     {
       document: { getElementById: (id: string) => (id === 'panel-tasks' ? el : null) },
       _panelTasksOpen: opts.open !== false,
@@ -126,9 +165,21 @@ function plan(opts: { expanded?: boolean; earlier?: boolean; open?: boolean } = 
         e.innerHTML = h;
       },
       updateTimersIn: () => {},
+      repaintPanelTasks: () => m.renderPanelTasks(...last),
     },
   );
-  return { el, render: m.renderPanelTasks, writes: () => writes };
+  const render: Render = (...a) => {
+    last = a;
+    m.renderPanelTasks(...a);
+  };
+  return {
+    el,
+    render,
+    writes: () => writes,
+    toggle: m.toggleTaskRun,
+    clock: m.formatTaskClock,
+    stamp: m.formatTaskStamp,
+  };
 }
 const TASKS: Task[] = [
   { id: 'T1', content: 'Read the picker', status: 'completed', startedAt: T0, completedAt: T0 + 120_000, toolCalls: 8 },
@@ -142,11 +193,23 @@ const TASKS: Task[] = [
   },
   { id: 'T3', content: 'Open the PR', status: 'pending', toolCalls: 0 },
 ];
+// A row ends with its aside (a run's open detail holds an <ol> of its rewrites: a nested </li>).
 const rows = (html: string) =>
-  [...html.matchAll(/<li class="panel-task-item pl-step[^"]*"[^>]*>[\s\S]*?<\/li>/g)].map((m) => m[0]);
+  [
+    ...html.matchAll(
+      /<li class="panel-task-item pl-step[^"]*"[^>]*>[\s\S]*?<span class="pl-aside">(?:<span class="task-elapsed"[^>]*><\/span>|[^<]*)<\/span><\/li>/g,
+    ),
+  ].map((m) => m[0]);
+/** The run rows (renderTaskRun) only — not the plan left or the skipped. */
+const runRows = (html: string) => rows(html).filter((r) => r.includes('pl-step tr-run '));
+const idOf = (row: string) => /<span class="task-id">#(T\d+)<\/span>/.exec(row)?.[1];
+const metaOf = (row: string) => /<span class="tr-meta">([\s\S]*?)<\/span><span class="ar-vh">/.exec(row)?.[1];
+const detailOf = (row: string) => /<dl class="tr-detail">[\s\S]*?<\/dl>/.exec(row)?.[0] ?? '';
+const DOT = '<span class="pi-dot" aria-hidden="true">&middot;</span>';
+const TOKENS = { input: 1200, output: 300, cacheRead: 40_000, cacheCreate: 2_500, costUsd: 0.4567 }; // 44.0K, $0.46
 
-describe('plan — the Tasks section of the tab, in its own order (D1–D5)', () => {
-  it('T1.3: folded by default — the head is the plan in one line, no steps until it is opened', () => {
+describe('plan — the Tasks section of the tab: the tasks that ran, in the order they ran (D1–D5, SSOT 2026-10-29 T5)', () => {
+  it('T1.3: folded by default — the head is the runs in one line (SSOT 2026-10-29 T5), no rows until it is opened', () => {
     const p = plan({ open: false });
     p.render(TASKS);
     const html = p.el.innerHTML;
@@ -154,46 +217,68 @@ describe('plan — the Tasks section of the tab, in its own order (D1–D5)', ()
       '<button type="button" class="panel-sec-head panel-tasks-header" aria-expanded="false" onclick="togglePanelTasks()">',
     );
     expect(html).toContain('<span class="ps-sec-title">Tasks</span>');
-    // The step in progress (its activeForm) and done/total.
-    expect(text(html)).toContain('Rendering the bars·1/3');
+    // The run in progress (its activeForm), how many ran and completed, what is left of the plan.
+    expect(text(html)).toContain('Rendering the bars·실행 2 · 완료 1·남은 1');
     expect(html).not.toContain('panel-tasks-body');
     expect(rows(html)).toHaveLength(0);
     // The live region is written folded as well (D7 keeps announcing).
     expect(html).toContain('<span class="ar-vh pl-live" role="status" aria-live="polite"></span>');
+    // Nothing ran yet, all ran, a list a new plan dropped before it ran.
+    const idle = plan({ open: false });
+    idle.render([TASKS[2]]);
+    expect(text(idle.el.innerHTML)).toContain('실행 0 · 완료 0·남은 1');
+    idle.render([], '', [{ id: 'T0', content: 'x', status: 'pending', dropped: 'unstarted' }]);
+    expect(text(idle.el.innerHTML)).toContain('목록 없음·빠짐 1');
     const open = plan();
     open.render(TASKS);
     expect(open.el.innerHTML).toContain(
       'aria-expanded="true" aria-controls="panel-tasks-body" onclick="togglePanelTasks()">',
     );
     expect(open.el.innerHTML).toContain('<div class="panel-tasks-body" id="panel-tasks-body">');
+    // Two runs and the one step left of the plan; the head keeps the activeForm while open.
+    expect(runRows(open.el.innerHTML)).toHaveLength(2);
     expect(rows(open.el.innerHTML)).toHaveLength(3);
+    expect(open.el.innerHTML).toContain(
+      '<span class="ps-sec-now"><span class="spinner ag-spinner" aria-hidden="true"></span>Rendering the bars</span>',
+    );
   });
 
-  it('T2: a pending step that had started reads 멈춤 (paused), not 대기', () => {
+  it('T2: a step that had started and waits again reads 멈춤 (paused), not 대기 — a run, with no clock', () => {
     const p = plan();
     p.render([{ id: 'T7', content: 'Was running', status: 'pending', startedAt: T0, toolCalls: 3 }]);
-    const [r] = rows(p.el.innerHTML);
+    expect(p.el.innerHTML).toContain('<div class="tr-head">실행된 태스크 <span class="tr-count">1</span></div>');
+    expect(p.el.innerHTML).not.toContain('남은 계획');
+    const [r] = runRows(p.el.innerHTML);
     expect(r).toContain('data-step="paused"');
-    expect(r).toContain('pl-step paused');
-    expect(r).toContain('<span class="pl-fate">멈춤</span>');
+    expect(r).toContain('pl-step tr-run paused');
+    expect(r).toContain('<span class="pl-marker" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor"');
+    expect(r).toContain('<span class="task-text">Was running</span><span class="pl-fate">멈춤</span>');
     expect(r).toContain('<span class="ar-vh">, 멈춤</span>');
     expect(r).not.toContain('aria-current');
+    // Started, not ended: the start alone, no clock beside it.
+    expect(metaOf(r)).toBe(`${p.clock(T0)}${DOT}툴 3 · 토큰 기록 없음`);
+    expect(r).toContain('<span class="pl-aside"></span>');
   });
 
-  it('D1/D2: original order, one marker per state, the active step is the current one', () => {
+  it('D1/D2 (SSOT 2026-10-29 T5): the runs by start — not the list order — then the plan left; one marker per state; the active run is the current one', () => {
     const p = plan();
-    p.render([TASKS[2], TASKS[0], TASKS[1]]);
+    p.render([TASKS[2], TASKS[1], TASKS[0]]);
     const html = p.el.innerHTML;
-    expect(html).toContain('<ol class="pl-list" aria-label="계획 단계">');
+    expect(html).toContain('<ol class="pl-list tr-list" aria-label="실행된 태스크">');
+    expect(html).toContain(
+      '<div class="tr-head">남은 계획 <span class="tr-count">1</span></div><ol class="pl-list tr-plan" aria-label="남은 계획">',
+    );
+    expect(html.indexOf('tr-list')).toBeLessThan(html.indexOf('tr-plan'));
     const r = rows(html);
-    expect(r.map((x) => /data-step="(\w+)"/.exec(x)?.[1])).toEqual(['pending', 'done', 'active']);
-    expect(r[0]).toContain('<span class="pl-marker" aria-hidden="true"></span>');
-    expect(r[1]).toMatch(/<span class="pl-marker" aria-hidden="true"><svg/);
-    expect(r[2]).toContain('<span class="pl-marker" aria-hidden="true"><span class="spinner ag-spinner"');
+    expect(r.map(idOf)).toEqual(['T1', 'T2', 'T3']);
+    expect(r.map((x) => /data-step="(\w+)"/.exec(x)?.[1])).toEqual(['done', 'active', 'pending']);
+    expect(r[0]).toMatch(/<span class="pl-marker" aria-hidden="true"><svg/);
+    expect(r[1]).toContain('<span class="pl-marker" aria-hidden="true"><span class="spinner ag-spinner"');
+    expect(r[2]).toContain('<span class="pl-marker" aria-hidden="true"></span>');
     expect(r.filter((x) => x.includes('aria-current="step"'))).toHaveLength(1);
-    expect(r[2]).toContain('aria-current="step"');
+    expect(r[1]).toContain('aria-current="step"');
     // Every row says its state to a screen reader.
-    expect(r.map((x) => /<span class="ar-vh">, ([^<]+)<\/span>/.exec(x)?.[1])).toEqual(['대기', '완료', '진행 중']);
+    expect(r.map((x) => /<span class="ar-vh">, ([^<]+)<\/span>/.exec(x)?.[1])).toEqual(['완료', '진행 중', '대기']);
   });
 
   it('D3: the rail joins the markers; the segment under a done step fills', () => {
@@ -205,22 +290,61 @@ describe('plan — the Tasks section of the tab, in its own order (D1–D5)', ()
     expect(CSS).toMatch(/\.pl-earlier > \.pl-step::before, \.pl-earlier > \.pl-step::after \{ content: none; \}/);
   });
 
-  it('D4: id, title and tool chip on one line; the active step adds its activeForm', () => {
+  it('D4 (SSOT 2026-10-29 T5): a run row is #id · title over start → end · tool calls · tokens · cost', () => {
     const p = plan();
     p.render(TASKS);
     const r = rows(p.el.innerHTML);
     expect(r[0]).toContain(
-      '<span class="task-id">#T1</span><span class="task-text">Read the picker</span><span class="pl-chip">툴 8회</span>',
+      '<span class="pl-line"><span class="task-id">#T1</span><span class="task-text">Read the picker</span></span>',
     );
-    expect(r[1]).toContain('<span class="pl-sub">Rendering the bars</span>');
-    expect(r[0]).not.toContain('pl-sub');
-    expect(r[2]).not.toContain('pl-chip'); // pending: no tool count yet
-    const same = plan();
-    same.render([{ id: 'T9', content: 'Same', activeForm: 'Same', status: 'in_progress', startedAt: T0 }]);
-    expect(same.el.innerHTML).not.toContain('pl-sub');
+    expect(metaOf(r[0])).toBe(`${p.clock(T0)} → ${p.clock(T0 + 120_000)}${DOT}툴 8 · 토큰 기록 없음`);
+    expect(metaOf(r[1])).toBe(`${p.clock(T0 + 120_000)} → 진행 중${DOT}툴 11 · 토큰 기록 없음`);
+    expect(r[2]).not.toContain('pl-chip'); // the plan left: no tool count yet
+    // A run's clock has seconds (two runs a few seconds apart read apart).
+    expect(p.clock(T0)).toMatch(/^\d{2}:\d{2}:\d{2}$/);
+    // Recorded usage: tokens and cost; the subagents' tool calls apart; work shared with another
+    // run is its share (≈); a cost under half a cent is left out; an estimated start says ≈.
+    const q = plan();
+    q.render([
+      {
+        id: 'T4',
+        content: 'Review',
+        status: 'completed',
+        startedAt: T0,
+        completedAt: T0 + 90_000,
+        toolCalls: 8,
+        agentToolCalls: 5,
+        tokens: TOKENS,
+      },
+      {
+        id: 'T5',
+        content: 'Fix',
+        status: 'completed',
+        startedAt: T0 + 90_000,
+        completedAt: T0 + 120_000,
+        toolCalls: 4.5,
+        agentToolCalls: 2.4,
+        shared: 2,
+        tokens: TOKENS,
+      },
+      {
+        id: 'T6',
+        content: 'Note',
+        status: 'completed',
+        startedAt: T0 + 120_000,
+        completedAt: T0 + 125_000,
+        startEstimated: true,
+        toolCalls: 1,
+        tokens: { input: 100, output: 50, costUsd: 0.001 },
+      },
+    ]);
+    const s = runRows(q.el.innerHTML);
+    expect(metaOf(s[0])).toBe(`${q.clock(T0)} → ${q.clock(T0 + 90_000)}${DOT}툴 8 (+서브 5) · 44.0K tok · $0.46`);
+    expect(metaOf(s[1])).toContain(`${DOT}툴 ≈5 (+서브 ≈2) · ≈44.0K tok · ≈$0.46`);
+    expect(metaOf(s[2])).toBe(`≈${q.clock(T0 + 120_000)} → ${q.clock(T0 + 125_000)}${DOT}툴 1 · 150 tok`);
   });
 
-  it('D5: a done step shows its duration; the active one a 1 Hz clock, no Date.now() in the markup', () => {
+  it('D5: a done run shows its duration; the active one a 1 Hz clock from its first start, no Date.now() in the markup', () => {
     const p = plan();
     p.render(TASKS);
     const r = rows(p.el.innerHTML);
@@ -232,89 +356,234 @@ describe('plan — the Tasks section of the tab, in its own order (D1–D5)', ()
     // The same data writes nothing.
     p.render(TASKS);
     expect(p.writes()).toBe(1);
+    // A run that went back to waiting and started again counts from when it first started.
+    const again = plan();
+    again.render([{ id: 'T5', content: 'Again', status: 'in_progress', firstStartedAt: T0, startedAt: T0 + 60_000 }]);
+    expect(again.el.innerHTML).toContain(`<span class="task-elapsed" data-since="${T0}"></span>`);
   });
 });
 
-describe('plan footer — the phase from the steps (D6)', () => {
-  it('running: 실행 중 · done/total and the elapsed time since the first start', () => {
+describe('a run opens its detail (SSOT 2026-10-29 T5)', () => {
+  it("the row is a button — its onclick toggleTaskRun('T1') opens 시작 · 종료 · 소요 · 도구 · 토큰 · 비용 under it; a second press closes it", () => {
     const p = plan();
-    p.render(
-      TASKS.concat([
-        { id: 'T4', content: 'a', status: 'pending' },
-        { id: 'T5', content: 'b', status: 'pending' },
-      ]),
+    p.render([{ ...TASKS[0], agentToolCalls: 5, tokens: TOKENS }]);
+    const [row] = runRows(p.el.innerHTML);
+    const onclick = /<button type="button" class="tr-row" aria-expanded="false" onclick="([^"]+)">/.exec(row)?.[1];
+    expect(onclick).toBe("toggleTaskRun('T1')");
+    const press = () => new Function('toggleTaskRun', onclick ?? '')(p.toggle);
+    press();
+    const [opened] = runRows(p.el.innerHTML);
+    expect(opened).toContain('pl-step tr-run completed is-open');
+    expect(opened).toContain('<button type="button" class="tr-row" aria-expanded="true"');
+    // The detail sits under the row's button, inside the row.
+    expect(opened.indexOf('</button>')).toBeLessThan(opened.indexOf('<dl class="tr-detail">'));
+    expect(detailOf(opened)).toBe(
+      `<dl class="tr-detail"><dt>시작</dt><dd>${p.stamp(T0)}</dd><dt>종료</dt><dd>${p.stamp(T0 + 120_000)}</dd>` +
+        '<dt>소요</dt><dd>2m 0s</dd><dt>도구</dt><dd>메인 8회 · 서브에이전트 5회</dd>' +
+        '<dt>토큰</dt><dd>44.0K — 입력 1.2K · 출력 300 · 캐시 읽기 40.0K · 캐시 쓰기 2.5K</dd>' +
+        '<dt>비용</dt><dd>API 환산 $0.46</dd></dl>',
     );
-    const foot = /<div class="pl-foot"[\s\S]*?<\/div>/.exec(p.el.innerHTML)?.[0] ?? '';
-    expect(foot).toContain('data-phase="running"');
-    expect(text(foot)).toContain('실행 중 · 1/5');
-    expect(foot).toContain(
-      `<span class="pl-foot-time" aria-hidden="true"><span class="task-elapsed" data-since="${T0}"></span></span>`,
-    );
+    expect(p.stamp(T0)).toMatch(/^\d{1,2}\/\d{1,2} \d{2}:\d{2}:\d{2}$/);
+    press();
+    expect(p.el.innerHTML).not.toContain('tr-detail');
+    expect(p.el.innerHTML).toContain('aria-expanded="false" onclick="toggleTaskRun(');
   });
 
-  it('all done: 완료 · N/N and the static total; otherwise 대기 · d/N with no clock', () => {
-    const done = plan();
-    done.render([
-      { id: 'T1', content: 'a', status: 'completed', startedAt: T0, completedAt: T0 + 60_000 },
-      { id: 'T2', content: 'b', status: 'completed', startedAt: T0 + 60_000, completedAt: T0 + 540_000 },
+  it('shared work says 분배; the rewrites 문구 변경 (each with its time); no usage record: 기록 없음 — no task is ever folded into another (review R1)', () => {
+    const p = plan();
+    p.render([
+      {
+        id: 'T4',
+        content: 'Review the PR',
+        status: 'completed',
+        startedAt: T0,
+        completedAt: T0 + 90_000,
+        toolCalls: 4.5,
+        shared: 2,
+        tokens: TOKENS,
+        revisions: [
+          { at: T0 + 10_000, content: 'Review' },
+          { at: T0 + 20_000, content: 'Review <the> PR' },
+        ],
+      },
+      {
+        id: 'T5',
+        content: 'Old run',
+        status: 'completed',
+        startedAt: T0 + 90_000,
+        completedAt: T0 + 95_000,
+        toolCalls: 1,
+      },
     ]);
-    const f1 = /<div class="pl-foot"[\s\S]*?<\/div>/.exec(done.el.innerHTML)?.[0] ?? '';
-    expect(f1).toContain('data-phase="completed"');
-    expect(text(f1)).toContain('완료 · 2/2');
-    expect(f1).toContain('<span class="pl-foot-time" aria-hidden="true">9m 0s</span>');
-    const idle = plan();
-    idle.render([TASKS[0], TASKS[2], { id: 'T4', content: 'c', status: 'pending' }]);
-    const f2 = /<div class="pl-foot"[\s\S]*?<\/div>/.exec(idle.el.innerHTML)?.[0] ?? '';
-    expect(f2).toContain('data-phase="idle"');
-    expect(text(f2)).toContain('대기 · 1/3');
-    expect(f2).not.toContain('pl-foot-time');
-    expect(CSS).toMatch(/\.pl-foot \{[^}]*position: sticky;[^}]*bottom: 0;/);
+    p.toggle('T4');
+    p.toggle('T5');
+    const [shared, old] = runRows(p.el.innerHTML).map(detailOf);
+    expect(shared).toContain('<dt>도구</dt><dd>메인 5회</dd>');
+    expect(shared).toContain('<dt>분배</dt><dd>2개 태스크가 함께 진행 — 수치는 그 몫(1/2)</dd>');
+    expect(shared).not.toContain('합쳐짐');
+    expect(shared).toContain(
+      `<dt>문구 변경</dt><dd><ol class="tr-revs"><li><span class="tr-rev-at">${p.clock(T0 + 10_000)}</span> Review</li>` +
+        `<li><span class="tr-rev-at">${p.clock(T0 + 20_000)}</span> Review &lt;the&gt; PR</li></ol></dd></dl>`,
+    );
+    // A run from before per-task usage: the row says 토큰 기록 없음, the detail 기록 없음 — no cost row.
+    expect(metaOf(runRows(p.el.innerHTML)[1])).toContain('툴 1 · 토큰 기록 없음');
+    expect(old).toContain('<dt>토큰</dt><dd>기록 없음 (태스크별 집계 이전에 실행됨)</dd>');
+    expect(old).not.toContain('<dt>비용</dt>');
+    expect(old).not.toContain('분배');
   });
 
-  it('more than three done: the earliest fold behind one toggle, in place', () => {
-    const many: Task[] = [1, 2, 3, 4, 5].map((n) => ({ id: `T${n}`, content: `done ${n}`, status: 'completed' }));
-    many.push({ id: 'T6', content: 'now', status: 'in_progress' });
+  it('the run in progress ends 진행 중, a paused one 멈춤 (세션이 멈춤) — no 소요; an estimated start says how it is known', () => {
+    const p = plan();
+    p.render([
+      TASKS[1],
+      { id: 'T7', content: 'Was running', status: 'pending', startedAt: T0 + 200_000 },
+      {
+        id: 'T8',
+        content: 'Quick',
+        status: 'completed',
+        startedAt: T0 + 300_000,
+        completedAt: T0 + 305_000,
+        startEstimated: true,
+      },
+    ]);
+    for (const id of ['T2', 'T7', 'T8']) p.toggle(id);
+    const [active, paused, est] = runRows(p.el.innerHTML).map(detailOf);
+    expect(active).toContain('<dt>종료</dt><dd>진행 중</dd>');
+    expect(active).not.toContain('소요');
+    expect(paused).toContain('<dt>종료</dt><dd>멈춤 (세션이 멈춤)</dd>');
+    expect(paused).not.toContain('소요');
+    expect(est).toContain(`<dt>시작</dt><dd>${p.stamp(T0 + 300_000)} (≈ 진행 중 표시 없이 완료 — 직전 목록 시각)</dd>`);
+    expect(est).toContain('<dt>소요</dt><dd>5s</dd>');
+  });
+});
+
+describe('the run list folds past TASK_RUNS_SHOWN; replaced and skipped tasks; the totals (SSOT 2026-10-29 T5, was the D6 plan footer)', () => {
+  it('past 12 runs the oldest fold behind one toggle at the top of the list: 이전 실행 N개 보기 / 최근 12개만 보기', () => {
+    expect(clientVar('TASK_RUNS_SHOWN')).toBe('var TASK_RUNS_SHOWN = 12;');
+    const many: Task[] = Array.from({ length: 15 }, (_, i) => ({
+      id: `T${i + 1}`,
+      content: `run ${i + 1}`,
+      status: 'completed',
+      startedAt: T0 + i * 1000,
+      completedAt: T0 + i * 1000 + 500,
+    }));
     const p = plan();
     p.render(many);
     const html = p.el.innerHTML;
-    expect(rows(html).map((x) => /#(T\d)/.exec(x)?.[1])).toEqual(['T3', 'T4', 'T5', 'T6']);
-    expect(html.indexOf('Show 2 more completed')).toBeGreaterThan(-1);
-    expect(html.indexOf('Show 2 more completed')).toBeLessThan(html.indexOf('#T3'));
+    expect(runRows(html).map(idOf)).toEqual(many.slice(3).map((t) => t.id));
+    expect(html).toContain(
+      '<ol class="pl-list tr-list" aria-label="실행된 태스크"><li class="pl-fold"><button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()">&#x25BC; 이전 실행 3개 보기</button></li>',
+    );
+    // The count is every run, folded ones included.
+    expect(html).toContain('실행된 태스크 <span class="tr-count">15</span>');
     const open = plan({ expanded: true });
     open.render(many);
-    expect(rows(open.el.innerHTML)).toHaveLength(6);
-    expect(open.el.innerHTML).toContain('Hide completed');
+    expect(runRows(open.el.innerHTML)).toHaveLength(15);
+    expect(open.el.innerHTML).toContain(
+      '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()">&#x25B2; 최근 12개만 보기</button>',
+    );
+    const twelve = plan();
+    twelve.render(many.slice(0, 12));
+    expect(runRows(twelve.el.innerHTML)).toHaveLength(12);
+    expect(twelve.el.innerHTML).not.toContain('pl-fold');
   });
 
-  it('the earlier plans keep their toggle (counts by fate) and use the same rows, without the rail', () => {
+  it('a task a new plan replaced after it ran stays among the runs — 교체됨, its tools and how long it ran; one dropped before it ran is only behind 실행 전에 계획에서 빠짐', () => {
+    const earlier: Task[] = [
+      {
+        id: 'T0',
+        content: 'old one',
+        status: 'completed',
+        startedAt: T0 - 300_000,
+        completedAt: T0 - 240_000,
+        removedAt: T0,
+        toolCalls: 2,
+      },
+      {
+        id: 'T8',
+        content: 'replaced',
+        status: 'in_progress',
+        startedAt: T0 - 60_000,
+        dropped: 'started',
+        removedAt: T0,
+        toolCalls: 6,
+      },
+      { id: 'T9', content: 'never ran', status: 'pending', dropped: 'unstarted', removedAt: T0 },
+    ];
     const folded = plan();
-    folded.render([TASKS[1]], '', [{ id: 'T0', content: 'old one', status: 'completed' }]);
-    expect(folded.el.innerHTML).toContain('이전 계획 <span class="pl-earlier-counts">완료 1</span>');
-    expect(folded.el.innerHTML).toContain('aria-expanded="false"');
-    expect(folded.el.innerHTML).not.toContain('old one');
-    const p = plan({ earlier: true });
-    p.render([TASKS[1]], '', [{ id: 'T0', content: 'old one', status: 'completed' }]);
-    expect(p.el.innerHTML).toContain('이전 계획 <span class="pl-earlier-counts">완료 1</span>');
-    // A ledger entry without removedAt is grouped as 이전 기록.
-    expect(p.el.innerHTML).toContain(
-      '<div class="pl-earlier-group"><div class="pl-earlier-when">이전 기록</div><ol class="pl-list pl-earlier" aria-label="이전 기록">',
+    folded.render([TASKS[1]], '', earlier);
+    const html = folded.el.innerHTML;
+    // The earlier list's runs and the current one, in the order they ran.
+    expect(runRows(html).map(idOf)).toEqual(['T0', 'T8', 'T2']);
+    const t8 = runRows(html)[1];
+    expect(t8).toContain('data-step="dropped"');
+    expect(t8).toContain('<span class="task-text">replaced</span><span class="pl-fate">교체됨</span>');
+    expect(t8).toContain('<path d="M4.5 11.5l7-7"/>'); // the stop marker, never the spinner
+    expect(t8).not.toContain('spinner');
+    expect(t8).not.toContain('task-elapsed');
+    expect(metaOf(t8)).toBe(`${folded.clock(T0 - 60_000)} → ${folded.clock(T0)}${DOT}툴 6 · 토큰 기록 없음`);
+    expect(t8).toContain('<span class="pl-aside">1m 0s</span>');
+    // Never ran: not a run — folded behind its count.
+    expect(html).toContain(
+      '<button type="button" class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="false" onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()">&#x25BC; 실행 전에 계획에서 빠짐 <span class="pl-earlier-counts">1</span></button>',
     );
-    expect(p.el.innerHTML).toContain('old one');
-    // One group per replacement, newest first; dropped vs never-run by fate.
-    const at = T0 + 600_000;
-    const g = plan({ earlier: true });
-    g.render([TASKS[1]], '', [
-      { id: 'T0', content: 'old one', status: 'completed' },
-      { id: 'T8', content: 'stopped', status: 'in_progress', startedAt: T0, dropped: 'started', removedAt: at },
-      { id: 'T9', content: 'never ran', status: 'pending', dropped: 'unstarted', removedAt: at },
-    ]);
-    const html = g.el.innerHTML;
-    expect(html).toContain('<span class="pl-earlier-counts">완료 1 &middot; 중단 1 &middot; 실행 안 됨 1</span>');
-    const when = new Date(at).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit' });
-    expect(html.indexOf(`${when} 새 계획으로 교체`)).toBeGreaterThan(-1);
-    expect(html.indexOf(`${when} 새 계획으로 교체`)).toBeLessThan(html.indexOf('이전 기록'));
-    expect(html).toContain('data-step="dropped"');
-    expect(html).toContain('data-step="skipped"');
+    expect(html).not.toContain('never ran');
+    expect(text(html)).toContain('실행 3 · 완료 1·빠짐 1');
+    const p = plan({ earlier: true });
+    p.render([TASKS[1]], '', earlier);
+    expect(p.el.innerHTML).toContain('aria-expanded="true"');
+    const skipped = p.el.innerHTML.slice(p.el.innerHTML.indexOf('<ol class="pl-list pl-earlier"'));
+    expect(skipped).toMatch(/^<ol class="pl-list pl-earlier" aria-label="실행 전에 계획에서 빠진 태스크">/);
+    expect(skipped).toContain('data-step="skipped"');
+    expect(skipped).toContain('never ran');
+    expect(runRows(p.el.innerHTML).map(idOf)).toEqual(['T0', 'T8', 'T2']);
+  });
+
+  it('the foot: 합계 of every run — tool calls (+서브), tokens, cost — and 태스크 밖, the work no task got', () => {
+    const p = plan();
+    const ran: Task[] = [
+      {
+        ...TASKS[0],
+        toolCalls: 2.5,
+        agentToolCalls: 0.2,
+        shared: 2,
+        tokens: { input: 1000, output: 500, costUsd: 0.05 },
+      },
+      {
+        ...TASKS[1],
+        toolCalls: 2.5,
+        agentToolCalls: 0.2,
+        shared: 2,
+        tokens: { input: 3000, cacheRead: 500, costUsd: 0.1 },
+      },
+      TASKS[2],
+    ];
+    p.render(ran, '', [], { toolCalls: 0, tokens: { input: 1500, output: 500 } });
+    const html = p.el.innerHTML;
+    // Shares add up to whole calls (2.5 + 2.5); 0.4 subagent calls are none. The plan left counts nothing.
+    expect(html).toContain('<div class="tr-total"><span class="tr-total-k">합계</span>툴 5 · 5.0K tok · $0.15</div>');
+    // Work outside every task, tokens alone are enough to show it.
+    expect(html).toContain(
+      '<div class="tr-total tr-outside"><span class="tr-total-k">태스크 밖</span>툴 0 · 2.0K tok</div>',
+    );
+    // The foot closes the body, after the runs and the plan.
+    expect(html.indexOf('class="tr-total"')).toBeGreaterThan(html.indexOf('tr-plan'));
+    expect(html.indexOf('class="tr-total"')).toBeLessThan(html.indexOf('</div><span class="ar-vh pl-live"'));
+    p.render([TASKS[0], { ...TASKS[1], agentToolCalls: 7 }], '', [], { toolCalls: 4, agentToolCalls: 2 });
+    expect(p.el.innerHTML).toContain('<span class="tr-total-k">합계</span>툴 19 (+서브 7)</div>');
+    expect(p.el.innerHTML).toContain('<span class="tr-total-k">태스크 밖</span>툴 4 (+서브 2)');
+    // Nothing outside the tasks: no row for it. Nothing ran: no foot at all.
+    p.render(TASKS, '', [], null);
+    expect(p.el.innerHTML).not.toContain('tr-outside');
+    // Nothing ran yet but work was done (before the first list): only the 태스크 밖 row (review R1).
+    p.render([TASKS[2]], '', [], { toolCalls: 9 });
+    expect(p.el.innerHTML).not.toContain('<span class="tr-total-k">합계</span>');
+    expect(p.el.innerHTML).toContain('<span class="tr-total-k">태스크 밖</span>툴 9');
+    p.render([TASKS[2]], '', [], null);
+    expect(p.el.innerHTML).not.toContain('tr-total');
+    // The old plan footer is gone (its phase line is the head now).
+    expect(declarationCount('planFootHtml')).toBe(0);
+    expect(p.el.innerHTML).not.toContain('pl-foot');
   });
 });
 
@@ -322,14 +591,14 @@ describe('plan announcements (D7)', () => {
   const live = (html: string) =>
     /<span class="ar-vh pl-live" role="status" aria-live="polite">([^<]*)<\/span>/.exec(html)?.[1];
 
-  it('the first render is silent; a step that completes is announced once; its marker pops', () => {
+  it('the first render is silent; a step that completes is announced once; its run row pops', () => {
     const p = plan();
     p.render(TASKS);
     expect(live(p.el.innerHTML)).toBe('');
     const next = TASKS.map((t) => (t.id === 'T2' ? { ...t, status: 'completed', completedAt: T0 + 300_000 } : t));
     p.render(next);
     expect(live(p.el.innerHTML)).toBe('T2 완료: Render the bars');
-    expect(rows(p.el.innerHTML)[1]).toContain('pl-step completed pl-pop');
+    expect(rows(p.el.innerHTML)[1]).toContain('pl-step tr-run completed pl-pop');
     p.render(next);
     expect(live(p.el.innerHTML)).toBe('');
     expect(p.el.innerHTML).not.toContain('pl-pop');
@@ -648,8 +917,8 @@ describe('approval keyboard (D14) — the element’s own', () => {
     );
   });
 
-  it('Esc end to end: one the card handled (stopped in its shadow root) never reaches the page; one it let through closes the panel and denies nothing', () => {
-    // The page's document-level keydown handler (Escape closes the panel), cooked as served.
+  it('Esc end to end: one the card handled (stopped in its shadow root) never reaches the page; one it let through closes the detail card (SSOT 2026-10-29 T2) — the panel with it — and denies nothing', () => {
+    // The page's document-level keydown handler (Escape closes the open detail card), cooked as served.
     const start = TEMPLATE.indexOf(
       "document.addEventListener('keydown', function(e) {\n  // Escape in the artifact viewer",
     );
@@ -657,28 +926,71 @@ describe('approval keyboard (D14) — the element’s own', () => {
     const fnStart = TEMPLATE.indexOf('function(e) {', start);
     const fnText = cook(TEMPLATE.slice(fnStart, TEMPLATE.indexOf('\n});', fnStart) + 2));
     expect(fnText).not.toMatch(/answerPermission|ui-decide/);
+    // SSOT 2026-10-29 T2: ✕, the backdrop and Escape close the detail card — which folds its board
+    // card too (an open card always has its detail card) — not the bare panel.
+    expect(fnText).toContain('closeDetailCard()');
+    expect(fnText).not.toContain('closePanel()');
+    const KEY = 'inst::C1:t1';
     let closes = 0;
+    const folds: string[] = [];
+    const deck = [KEY];
     const inject: Record<string, unknown> = {
       panelOpen: true,
+      panelSessionKey: KEY,
       _panelControlsOpen: false,
       artModalIsOpen: () => false,
       _cronDrawerKey: null,
+      _deck: deck,
+      _sessionCache: { [KEY]: {} },
+      _expanded: new Set([KEY]),
+      folds,
       closePanel: () => closes++,
+      openPanel: () => {
+        throw new Error('no other detail card waits in the deck');
+      },
+      renderDeckNav: () => {},
       togglePanelControls: () => {},
       window: { matchMedia: () => ({ matches: false }) },
       document: { querySelector: () => null },
     };
-    const onDocument = new Function(...Object.keys(inject), `return ${fnText}`)(...Object.values(inject)) as (
-      e: unknown,
-    ) => void;
+    // The real closeDetailCard, cardFaceOf and the deck it leaves. The board card is a
+    // <ui-agent-inbox> card: closeDetailCard folds it the way a reader does, by clicking its face
+    // in the element's shadow root; the element answers with ui-toggle (expanded: false), whose
+    // handler (wireInbox) is cut down here to what a fold does to the deck.
+    const face = {
+      click: () => {
+        folds.push(KEY);
+        (inject._expanded as Set<string>).delete(KEY);
+        deckDropRef(KEY);
+      },
+    };
+    const li = { getAttribute: (n: string) => (n === 'data-card' ? KEY : null), querySelector: () => face };
+    inject._cardHost = { [KEY]: { shadowRoot: { querySelectorAll: () => [li] } } };
+    let deckDropRef: (k: string) => void = () => {};
+    inject.__setDrop = (f: (k: string) => void) => {
+      deckDropRef = f;
+    };
+    const body = [
+      clientFn('closeDetailCard'),
+      clientFn('cardFaceOf'),
+      clientFn('deckDrop'),
+      clientFn('deckNextAfter'),
+      clientFn('deckRemove'),
+      '__setDrop(deckDrop);',
+      `return ${fnText}`,
+    ].join('\n');
+    const onDocument = new Function(...Object.keys(inject), body)(...Object.values(inject)) as (e: unknown) => void;
     // Bubbling: the element's shadow-root listener first, then the document's — unless it stopped the event.
     const dispatch = (stoppedByCard: boolean) => {
       if (!stoppedByCard) onDocument({ key: 'Escape', target: {}, preventDefault() {}, defaultPrevented: false });
     };
     dispatch(true); // Esc on Deny / Approve: the card denied and stopped it
     expect(closes).toBe(0);
-    dispatch(false); // Esc on the card itself (the keyboard landing): the panel closes
-    expect(closes).toBe(1);
+    expect(folds).toEqual([]);
+    dispatch(false); // Esc on the card itself (the keyboard landing): its detail card closes
+    expect(folds).toEqual([KEY]); // the board card folds with it (its face clicked once)
+    expect(deck).toEqual([]);
+    expect(closes).toBe(1); // it was the only detail card: the panel closes — once, not again after the fold
   });
 });
 
@@ -1488,7 +1800,26 @@ describe('template hygiene', () => {
   it('each new client name is declared once; the replaced renderers are gone; the new CSS adds no colour tokens', () => {
     for (const name of [
       'renderPanelTaskItem',
-      'planFootHtml',
+      // SSOT 2026-10-29 T5: the task runs (they replace the plan footer and the earlier-plan groups).
+      'taskRunsOf',
+      'taskIdNum',
+      'taskRunStart',
+      'taskRunEnd',
+      'taskTokTotal',
+      'formatTaskClock',
+      'formatTaskStamp',
+      'taskCount',
+      'taskRunNumbers',
+      'toggleTaskRun',
+      'renderTaskRun',
+      'taskRunDetailHtml',
+      'taskSkippedHtml',
+      'taskTotalsHtml',
+      'panelAgentOutside',
+      'TASK_RUNS_SHOWN',
+      '_panelTaskOpen',
+      // SSOT 2026-10-29 T2: Escape closes the detail card.
+      'closeDetailCard',
       'renderPanelNeedsHead',
       'panelQuestionShown',
       'apAnnounce',
@@ -1520,6 +1851,11 @@ describe('template hygiene', () => {
       expect(declarationCount(name), name).toBe(1);
     }
     for (const gone of [
+      // SSOT 2026-10-29 T5: the plan footer and the earlier-plan groups gave way to the task runs.
+      'planFootHtml',
+      'planEarlierCounts',
+      'planEarlierGroups',
+      'planEarlierHtml',
       'renderPermissionBlock',
       'apDetails',
       'apPermissionCardHtml',
@@ -1537,7 +1873,9 @@ describe('template hygiene', () => {
       expect(declarationCount(gone), gone).toBe(0);
       expect(TEMPLATE, gone).not.toMatch(new RegExp(`\\b${gone}\\(`));
     }
-    const ours = CSS.split('\n').filter((l) => /^\s*\.(pl|ap|pn|ac)-|^\s*\.pi-details|^\s*\.ar-vh/.test(l));
+    // SSOT 2026-10-29 T5: the task runs' CSS (.tr-*) too.
+    const ours = CSS.split('\n').filter((l) => /^\s*\.(pl|ap|pn|ac|tr)-|^\s*\.pi-details|^\s*\.ar-vh/.test(l));
+    expect(ours.filter((l) => /^\s*\.tr-/.test(l)).length).toBeGreaterThan(5);
     expect(ours.length).toBeGreaterThan(10);
     for (const l of ours) expect(l, l).not.toMatch(/--[a-z-]+\s*:/);
   });
