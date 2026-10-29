@@ -513,17 +513,21 @@ describe('goals: completed goals open with their details (T6)', () => {
   });
 });
 
-describe('work log: every entry, however many (T9)', () => {
+describe('work log: the latest window on opening, older pages as the reader scrolls up (SSOT 2026-10-29; was T9 "every entry")', () => {
   type E = { seq: number; taskId?: string };
   const range = (a: number, b: number): E[] => Array.from({ length: b - a + 1 }, (_, i) => ({ seq: a + i }));
   const wl = load<{
     wlNewState(c: string): any;
+    wlLatestUrl(c: string): string;
+    wlOlderUrl(c: string, beforeSeq: number): string;
     wlLoadLatest(st: any, f: (u: string) => Promise<unknown>, on: (s: any, a: any[]) => void): Promise<string>;
-    wlLoadOlder(st: any, f: (u: string) => Promise<unknown>, on: (s: any, a: any[]) => void): Promise<unknown>;
+    wlLoadOlderPage(st: any, f: (u: string) => Promise<unknown>, on: (s: any, a: any[]) => void): Promise<unknown>;
   }>(
     [
       'wlNewState',
       'wlUrl',
+      'wlLatestUrl',
+      'wlOlderUrl',
       'wlValidSeq',
       'wlMerge',
       'wlPageMaxSeq',
@@ -535,103 +539,126 @@ describe('work log: every entry, however many (T9)', () => {
       'wlLoadLatest',
       'wlOnLive',
       'wlRecover',
-      'wlLoadOlder',
+      'wlLoadOlderPage',
     ],
-    ['WL_BACKFILL_MAX_PAGES'],
+    ['WL_BACKFILL_MAX_PAGES', 'WL_PAGE'],
   );
-  /** The real API: no afterSeq = the latest `size`; afterSeq = the first `size` after it. */
-  function server(log: E[], size: number) {
-    const calls: Array<string | null> = [];
+  /** The real API: no cursor = the latest `limit`; beforeSeq = the last `limit` before it; afterSeq = the first after it. */
+  function server(log: E[]) {
+    const calls: string[] = [];
     const fetchJson = async (url: string) => {
-      const q = new URL(url, 'http://h').searchParams.get('afterSeq');
-      calls.push(q);
-      const rest = q === null ? log : log.filter((e) => e.seq > Number(q));
-      return { entries: q === null ? rest.slice(-size) : rest.slice(0, size), hasMore: rest.length > size };
+      const q = new URL(url, 'http://h').searchParams;
+      calls.push(q.toString());
+      const limit = Number(q.get('limit') || 500);
+      if (q.has('beforeSeq')) {
+        const before = log.filter((e) => e.seq < Number(q.get('beforeSeq')));
+        return { entries: before.slice(-limit), hasMore: before.length > limit };
+      }
+      const after = q.has('afterSeq') ? log.filter((e) => e.seq > Number(q.get('afterSeq'))) : log;
+      return { entries: q.has('afterSeq') ? after.slice(0, limit) : after.slice(-limit), hasMore: after.length > limit };
     };
     return { calls, fetchJson };
   }
 
-  it('after the latest window, pages the older entries in until the log is whole', async () => {
-    const srv = server(range(1, 1200), 500);
-    const st = wl.wlNewState('c');
-    const painted: number[] = [];
-    const onAdded = (_s: unknown, a: Array<{ entry: E }>) => painted.push(...a.map((x) => x.entry.seq));
-    expect(await wl.wlLoadLatest(st, srv.fetchJson, onAdded)).toBe('ok');
-    expect(st.entries).toHaveLength(500);
-    await wl.wlLoadOlder(st, srv.fetchJson, onAdded);
-    expect(st.entries.map((e: E) => e.seq)).toEqual(range(1, 1200).map((e) => e.seq));
-    expect(srv.calls).toEqual([null, '0', '500']);
-    expect(new Set(painted).size).toBe(1200);
+  it('the URLs: the latest WL_PAGE (100), and the WL_PAGE before a seq', () => {
+    expect(Number(clientVar('WL_PAGE').match(/\d+/)?.[0])).toBe(100);
+    expect(wl.wlLatestUrl('c/1')).toBe('/api/dashboard/session/c%2F1/worklog?limit=100');
+    expect(wl.wlOlderUrl('c1', 784)).toBe('/api/dashboard/session/c1/worklog?beforeSeq=784&limit=100');
   });
 
-  it('the older pages paint once, after the last page — not a full re-render per page (review P1)', async () => {
-    const srv = server(range(1, 5000), 500);
+  it('an opening loads the latest 100 entries and nothing else — never the whole history', async () => {
+    const srv = server(range(1, 1200));
     const st = wl.wlNewState('c');
+    expect(await wl.wlLoadLatest(st, srv.fetchJson, () => {})).toBe('ok');
+    expect(st.entries.map((e: E) => e.seq)).toEqual(range(1101, 1200).map((e) => e.seq));
+    expect(st.olderPending).toBe(true); // older entries exist: the reader may page back
+    expect(srv.calls).toEqual(['limit=100']);
+  });
+
+  it('each older page is the 100 before the oldest held, merged by seq and painted once — down to the start', async () => {
+    const srv = server(range(1, 1200));
+    const st = wl.wlNewState('c');
+    await wl.wlLoadLatest(st, srv.fetchJson, () => {});
     let paints = 0;
-    await wl.wlLoadLatest(st, srv.fetchJson, () => {});
-    await wl.wlLoadOlder(st, srv.fetchJson, () => {
+    const onAdded = (_s: unknown, a: Array<{ entry: E; index: number }>) => {
       paints++;
-    });
-    expect(st.entries).toHaveLength(5000);
-    expect(srv.calls.length).toBe(11); // the latest window + 10 forward pages
-    expect(paints).toBe(1);
+      expect(a[0].index).toBe(0); // older entries go in above
+    };
+    expect(await wl.wlLoadOlderPage(st, srv.fetchJson, onAdded)).toBe('ok');
+    expect(st.entries[0].seq).toBe(1001);
+    expect(srv.calls[1]).toBe('beforeSeq=1101&limit=100');
+    while (st.olderPending) await wl.wlLoadOlderPage(st, srv.fetchJson, onAdded);
+    expect(st.entries.map((e: E) => e.seq)).toEqual(range(1, 1200).map((e) => e.seq));
+    expect(paints).toBe(11);
+    expect(srv.calls).toHaveLength(12);
+    // At the start: nothing more is asked.
+    await wl.wlLoadOlderPage(st, srv.fetchJson, onAdded);
+    expect(srv.calls).toHaveLength(12);
   });
 
-  it('an older page that fails keeps the history pending, so the next try asks again (review F8)', async () => {
-    const srv = server(range(1, 1200), 500);
+  it('one page at a time: a second ask while one is in flight shares it', async () => {
+    const srv = server(range(1, 1200));
     const st = wl.wlNewState('c');
     await wl.wlLoadLatest(st, srv.fetchJson, () => {});
-    await wl.wlLoadOlder(
+    const a = wl.wlLoadOlderPage(st, srv.fetchJson, () => {});
+    const b = wl.wlLoadOlderPage(st, srv.fetchJson, () => {});
+    expect(b).toBe(a);
+    await a;
+    expect(srv.calls).toEqual(['limit=100', 'beforeSeq=1101&limit=100']);
+    expect(st.olderLoading).toBeNull();
+  });
+
+  it('a page that fails keeps the older entries pending; the next try asks the same page (no gap)', async () => {
+    const srv = server(range(1, 1200));
+    const st = wl.wlNewState('c');
+    await wl.wlLoadLatest(st, srv.fetchJson, () => {});
+    const r = await wl.wlLoadOlderPage(
       st,
       async () => {
         throw Object.assign(new Error('HTTP 500'), { status: 500 });
       },
       () => {},
     );
+    expect(r).toBe('error');
     expect(st.olderPending).toBe(true);
-    await wl.wlLoadOlder(st, srv.fetchJson, () => {});
-    expect(st.entries).toHaveLength(1200);
-    expect(st.olderPending).toBe(false);
-  });
-
-  it('a retry after a partial success resumes where it stopped — no gap is left (review R2-2)', async () => {
-    const srv = server(range(1, 1200), 500);
-    const st = wl.wlNewState('c');
-    await wl.wlLoadLatest(st, srv.fetchJson, () => {});
-    let n = 0;
-    await wl.wlLoadOlder(
-      st,
-      async (u: string) => {
-        n++;
-        if (n === 2) throw Object.assign(new Error('HTTP 500'), { status: 500 });
-        return srv.fetchJson(u);
-      },
-      () => {},
-    );
-    expect(st.olderPending).toBe(true);
-    await wl.wlLoadOlder(st, srv.fetchJson, () => {});
-    expect(st.entries.map((e: E) => e.seq)).toEqual(range(1, 1200).map((e) => e.seq));
-    expect(st.olderPending).toBe(false);
+    await wl.wlLoadOlderPage(st, srv.fetchJson, () => {});
+    expect(srv.calls[1]).toBe('beforeSeq=1101&limit=100');
+    expect(st.entries.map((e: E) => e.seq)).toEqual(range(1001, 1200).map((e) => e.seq));
   });
 
   it('a log that fits the latest window asks for nothing more', async () => {
-    const srv = server(range(1, 40), 500);
+    const srv = server(range(1, 40));
     const st = wl.wlNewState('c');
     await wl.wlLoadLatest(st, srv.fetchJson, () => {});
-    await wl.wlLoadOlder(st, srv.fetchJson, () => {});
-    expect(srv.calls).toEqual([null]);
+    expect(st.olderPending).toBe(false);
+    await wl.wlLoadOlderPage(st, srv.fetchJson, () => {});
+    expect(srv.calls).toEqual(['limit=100']);
+  });
+
+  it('a server that keeps saying hasMore but brings nothing older ends the paging', async () => {
+    const st = wl.wlNewState('c');
+    const calls: string[] = [];
+    const stuck = async (url: string) => {
+      calls.push(url);
+      return { entries: calls.length === 1 ? range(901, 1000) : [], hasMore: true };
+    };
+    await wl.wlLoadLatest(st, stuck, () => {});
+    await wl.wlLoadOlderPage(st, stuck, () => {});
+    expect(st.olderPending).toBe(false);
+    await wl.wlLoadOlderPage(st, stuck, () => {});
+    expect(calls).toHaveLength(2);
   });
 
   it('stops for a closed panel and on 403', async () => {
-    const srv = server(range(1, 1200), 500);
+    const srv = server(range(1, 1200));
     const st = wl.wlNewState('c');
     await wl.wlLoadLatest(st, srv.fetchJson, () => {});
     st.closed = true;
-    await wl.wlLoadOlder(st, srv.fetchJson, () => {});
-    expect(srv.calls).toEqual([null]);
+    await wl.wlLoadOlderPage(st, srv.fetchJson, () => {});
+    expect(srv.calls).toEqual(['limit=100']);
     const st2 = wl.wlNewState('c');
     await wl.wlLoadLatest(st2, srv.fetchJson, () => {});
-    await wl.wlLoadOlder(
+    await wl.wlLoadOlderPage(
       st2,
       async () => {
         throw Object.assign(new Error('HTTP 403'), { status: 403 });
