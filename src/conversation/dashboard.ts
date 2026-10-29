@@ -5334,8 +5334,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* ── GOAL — the editor's home (spec 13) ── */
 .panel-goal { padding: 8px 16px; border-bottom: 1px solid var(--border); outline: none; }
 .panel-goal .card-goal { margin-top: 0; }
-/* The goal's home opens the objective folded to its first 3 lines (SSOT 2026-10-29, the
-   card's line is the summary); 펼치기 — or 자세히, or a goal landing — shows all of it. */
+/* The goal's home opens the objective folded to its first 3 lines on every opening
+   (SSOT 2026-10-29, the card's line is the summary); 펼치기 shows all of it. */
 .panel-goal .card-goal .cg-objective { -webkit-line-clamp: 3; line-height: 1.45; }
 .panel-goal .card-goal.is-open .cg-objective { display: block; -webkit-line-clamp: unset; overflow: visible; }
 .panel-goal:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
@@ -9524,10 +9524,11 @@ function applyPanelDetail() {
   var btn = document.getElementById('panel-detail-toggle');
   if (btn) btn.setAttribute('aria-pressed', _panelDetail ? 'true' : 'false');
 }
-// The sections an opening starts with: every one open with 자세히, else the defaults.
+// The sections an opening starts with: every one open with 자세히 — except the goal,
+// which always opens folded (SSOT 2026-10-29) — else the defaults.
 function resetPanelSections() {
   _panelInfoOpen = _panelDetail;
-  _panelGoalOpen = _panelDetail || _panelLand === 'goal';
+  _panelGoalOpen = false; // SSOT 2026-10-29: the goal opens folded — 자세히 and a goal landing too
   _panelTasksOpen = _panelDetail || _panelLand === 'tasks';
   _panelTasksExpanded = _panelTasksOpen;
   _panelTasksEarlier = _panelDetail;
@@ -10785,9 +10786,9 @@ document.addEventListener('ui-compact', function(e) {
   cwCompact();
 });
 
-// SSOT 2026-10-29 — like 세션 정보, the goal's objective opens folded to its
-// first 3 lines (resetPanelSections: open with 자세히 or a goal landing);
-// 펼치기 · 접기 toggles it for this opening.
+// SSOT 2026-10-29 — "Goal 도 디폴트로 collapsed": the goal's objective opens
+// folded to its first 3 lines on every opening (resetPanelSections — 자세히 and
+// a goal landing included); 펼치기 · 접기 toggles it for this opening.
 var _panelGoalOpen = false;
 var GOAL_FOLD_LINES = 3; // the CSS clamp of .panel-goal .card-goal .cg-objective
 function togglePanelGoal() {
@@ -14709,7 +14710,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   if (panelConvId && !isSiblingSession(s)) ensureArtifacts(panelConvId, true);
   if (panelConvId && !isSiblingSession(s) && s.userMedia && toNum(s.userMedia.count) > 0) ensureUserMedia(panelConvId);
   // Every opening starts with the defaults (§3.1-6, task view T1.3): Tasks
-  // folded — or every detail open with 자세히.
+  // folded — or every detail open with 자세히; the goal folded either way.
   resetPanelSections();
   _agentConvRaw = Object.create(null);
   // The previous opening's answers are gone from the list: stop watching them.

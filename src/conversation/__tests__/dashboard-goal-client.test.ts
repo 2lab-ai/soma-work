@@ -333,9 +333,8 @@ describe('work item goal list — the goal being typed survives a live re-render
 });
 
 // SSOT 2026-10-29 — "디테일 카드에서 Goal 도 디폴트로 collapsed 로 표시해줘. 첫 3줄 정도만
-// 표시되도록." The panel (Session Detail) is the goal's home: like 세션 정보 it opens
-// folded — the objective's first 3 lines — and 펼치기 (or 자세히, or a goal landing)
-// shows all of it.
+// 표시되도록." The panel (Session Detail) is the goal's home: every opening shows
+// the objective folded to its first 3 lines, and 펼치기 shows all of it.
 describe('panel goal — the objective opens folded to its first 3 lines', () => {
   const { renderCardGoal } = load<{ renderCardGoal(s: any, col: string, canEdit: boolean, open?: boolean): string }>(
     RENDER_FNS,
@@ -402,11 +401,12 @@ describe('panel goal — the objective opens folded to its first 3 lines', () =>
     )() as boolean;
   }
 
-  it('every opening starts folded — open with 자세히, or when the card sent the reader to the goal (관리 → / 보기 →)', () => {
+  it('every opening starts folded — 자세히 and a goal landing (관리 → / 보기 →) included', () => {
     expect(sections(false, '')).toBe(false);
     expect(sections(false, 'tasks')).toBe(false);
-    expect(sections(true, '')).toBe(true);
-    expect(sections(false, 'goal')).toBe(true);
+    expect(sections(true, '')).toBe(false);
+    expect(sections(false, 'goal')).toBe(false);
+    expect(sections(true, 'goal')).toBe(false);
   });
 
   it('togglePanelGoal flips the fold and repaints the panel goal; renderPanelGoal renders with it', () => {
