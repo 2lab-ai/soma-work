@@ -455,7 +455,7 @@ describe('work log: the latest window on opening, older pages as the reader scro
       'wlRecover',
       'wlLoadOlderPage',
     ],
-    ['WL_BACKFILL_MAX_PAGES', 'WL_PAGE'],
+    ['WL_BACKFILL_MAX_PAGES', 'WL_PAGE', 'WL_OLDER_EMPTY_MAX'],
   );
   /** The real API: no cursor = the latest `limit`; beforeSeq = the last `limit` before it; afterSeq = the first after it. */
   function server(log: E[]) {
@@ -552,7 +552,7 @@ describe('work log: the latest window on opening, older pages as the reader scro
     expect(srv.calls).toEqual(['limit=100']);
   });
 
-  it('a server that keeps saying hasMore but brings nothing older ends the paging', async () => {
+  it('a server that keeps saying hasMore but brings nothing older ends the paging after 3 such pages in a row', async () => {
     const st = wl.wlNewState('c');
     const calls: string[] = [];
     const stuck = async (url: string) => {
@@ -560,10 +560,39 @@ describe('work log: the latest window on opening, older pages as the reader scro
       return { entries: calls.length === 1 ? range(901, 1000) : [], hasMore: true };
     };
     await wl.wlLoadLatest(st, stuck, () => {});
+    expect(await wl.wlLoadOlderPage(st, stuck, () => {})).toBe('empty');
+    expect(st.olderPending).toBe(true);
+    await wl.wlLoadOlderPage(st, stuck, () => {});
     await wl.wlLoadOlderPage(st, stuck, () => {});
     expect(st.olderPending).toBe(false);
     await wl.wlLoadOlderPage(st, stuck, () => {});
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(4);
+    // The same page each time: the cursor did not move.
+    expect(new Set(calls.slice(1)).size).toBe(1);
+  });
+
+  // #542 review P3: the server stops a beforeSeq scan at its byte budget inside a long run of
+  // non-entry lines with an empty page and hasMore: true — that is not the start of the log.
+  it('an empty older page that says hasMore (a budget stop) keeps the paging: the same page is asked again', async () => {
+    const st = wl.wlNewState('c');
+    const calls: string[] = [];
+    let budgetStops = 1;
+    const srv = async (url: string) => {
+      const q = new URL(url, 'http://h').searchParams;
+      calls.push(q.toString());
+      if (!q.has('beforeSeq')) return { entries: range(901, 1000), hasMore: true };
+      if (budgetStops-- > 0) return { entries: [], hasMore: true };
+      return { entries: range(801, 900), hasMore: true };
+    };
+    await wl.wlLoadLatest(st, srv, () => {});
+    await wl.wlLoadOlderPage(st, srv, () => {});
+    expect(st.olderPending).toBe(true);
+    expect(await wl.wlLoadOlderPage(st, srv, () => {})).toBe('ok');
+    expect(calls.slice(1)).toEqual(['beforeSeq=901&limit=100', 'beforeSeq=901&limit=100']);
+    expect(st.entries[0].seq).toBe(801);
+    // A page that brings entries starts the count again.
+    expect(st.olderEmpty).toBe(0);
+    expect(st.olderPending).toBe(true);
   });
 
   it('stops for a closed panel and on 403', async () => {

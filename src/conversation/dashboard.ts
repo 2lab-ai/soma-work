@@ -10226,7 +10226,7 @@ function loadOlderWorkLog() {
   return run.then(function(r) {
     if (st !== _wl) return r;
     psecSyncControls('log');
-    // The next page when the top is still near the view; a failure waits for the reader.
+    // The next page when the top is still near the view; a failure or an empty page waits for the reader.
     if (r === 'ok') psecFillSoon('log');
     return r;
   });
@@ -13458,8 +13458,12 @@ function wlRecover(state, fetchJson, onAdded, reason) {
 // …?beforeSeq=&limit=, merged by seq like every page. Older entries sit below the
 // cursor, so the live / gap bookkeeping is untouched. One at a time (the promise
 // is state.olderLoading); a failed page keeps olderPending (the control offers it
-// again); a page that brings nothing older ends the paging, so a server that keeps
-// saying hasMore cannot spin it.
+// again). A page that brings nothing older but says hasMore — the server's scan
+// stopped at its byte budget inside a run of non-entry lines, not the start of the
+// log — keeps it too, and the same page is asked again: up to WL_OLDER_EMPTY_MAX
+// such pages in a row, so a server that keeps saying hasMore cannot spin it.
+// Resolves 'ok' (entries came in), 'empty' (none: the next waits for the reader), 'error'.
+var WL_OLDER_EMPTY_MAX = 3;
 function wlLoadOlderPage(state, fetchJson, onAdded) {
   if (!state || state.closed || state.denied || !state.latestOk || !state.olderPending) return Promise.resolve(null);
   if (state.olderLoading) return state.olderLoading;
@@ -13474,8 +13478,10 @@ function wlLoadOlderPage(state, fetchJson, onAdded) {
     var page = (data && data.entries) || [];
     var older = page.filter(function(e) { return e && wlValidSeq(e.seq) && e.seq < before; });
     var added = wlMerge(state, older);
-    state.olderPending = !!(data && data.hasMore === true) && added.length > 0;
-    if (added.length) onAdded(state, added);
+    state.olderEmpty = added.length ? 0 : (state.olderEmpty || 0) + 1;
+    state.olderPending = !!(data && data.hasMore === true) && state.olderEmpty < WL_OLDER_EMPTY_MAX;
+    if (!added.length) return 'empty';
+    onAdded(state, added);
     return 'ok';
   }, function(err) {
     state.olderLoading = null;
