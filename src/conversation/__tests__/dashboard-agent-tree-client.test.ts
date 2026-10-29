@@ -911,7 +911,8 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
       for (const t of timers.splice(0)) t.fn?.();
     };
     const body = () => host.kids[0] as FakeBody | undefined;
-    return { host, env, calls, timers, runTimers, place, push, toggle, body };
+    const fire = (name: string, e: unknown) => handlers[name](e);
+    return { host, env, calls, timers, runTimers, place, push, toggle, body, fire };
   }
   const moved = () => card({ agents: [{ ...AGENTS[0], toolCalls: 19 }, AGENTS[1], AGENTS[2]] });
 
@@ -1005,6 +1006,25 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
     still.toggle(false);
     expect(still.timers).toHaveLength(0);
     expect(still.host.kids).toHaveLength(0);
+  });
+
+  // #548 review P3: a card whose session left the cache (just off the board, before the next
+  // render drops it) has nothing to build — opening it would grow an empty body.
+  it('a card whose session left the cache does not open: the element’s ui-toggle is refused', () => {
+    const b = board();
+    b.place(card());
+    delete b.env._sessionCache[KEY];
+    let refused = 0;
+    const ev = { target: b.host, detail: { cardId: KEY, expanded: true }, preventDefault: () => refused++ };
+    b.fire('ui-toggle', ev);
+    expect(refused).toBe(1);
+    expect(b.env._expanded.has(KEY)).toBe(false);
+    expect(b.host.kids).toHaveLength(0);
+    expect(b.calls.io).toEqual([]);
+    // Closing is never refused (the element may hold it open from before).
+    const close = { target: b.host, detail: { cardId: KEY, expanded: false }, preventDefault: () => refused++ };
+    b.fire('ui-toggle', close);
+    expect(refused).toBe(1);
   });
 
   it("a collapsed card's permission prompts are prefetched as its approval cards would be — not when locked or closed", () => {
