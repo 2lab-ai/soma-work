@@ -125,11 +125,14 @@ describe('elapsed time and tool calls of a task (T7)', () => {
   });
 
   it('back to pending clears the times; reopening clears the end', () => {
-    let l = applyTodoList(undefined, [todo('A', 'completed')], 1000);
-    l = applyTodoList(l, [todo('A', 'in_progress')], 2000);
-    expect(ledgerTasks(l).current[0]).toMatchObject({ startedAt: 1000 });
+    // Reopening happens within a list still under way (B runs). A list whose
+    // every task completed is over: the same text afterwards is a new run
+    // (task-usage-reconcile.test.ts, live 2026-10-29).
+    let l = applyTodoList(undefined, [todo('A', 'completed'), todo('B', 'in_progress')], 1000);
+    l = applyTodoList(l, [todo('A', 'in_progress'), todo('B', 'in_progress')], 2000);
+    expect(ledgerTasks(l).current[0]).toMatchObject({ id: 'T1', startedAt: 1000 });
     expect(ledgerTasks(l).current[0].completedAt).toBeUndefined();
-    l = applyTodoList(l, [todo('A', 'pending')], 3000);
+    l = applyTodoList(l, [todo('A', 'pending'), todo('B', 'in_progress')], 3000);
     expect(ledgerTasks(l).current[0].startedAt).toBeUndefined();
   });
 
