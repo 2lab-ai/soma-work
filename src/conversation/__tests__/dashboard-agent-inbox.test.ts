@@ -249,7 +249,7 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(anchor).toBeGreaterThan(-1);
     expect(insert).toBeGreaterThan(anchor);
     expect(body.indexOf('psecHoldPlace(box, anchor, fromBottom);')).toBeGreaterThan(insert);
-    expect(fnBody('psecRestoreAnchor')).toContain('el.getBoundingClientRect().top - box.getBoundingClientRect().top - a.at');
+    expect(fnBody('psecRestoreAnchor')).toContain('el.getBoundingClientRect().top - box.getBoundingClientRect().top - a[i].at');
   });
 
   it('reopening a card retries a failed 지시/응답 fetch at once', () => {

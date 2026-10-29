@@ -11001,33 +11001,67 @@ function psecOnAppended(n, pinned) {
 function psecKeepPlace(box, fromBottom) {
   if (box) psecSetTop(box, box.scrollHeight - fromBottom);
 }
-// The item the reader is on — the first turn or work-log entry in view, else the
-// first task group — and how far below the box top it sits (null: none in view).
-var PSEC_ANCHOR_SELS = ['.turn[data-turn-id]', '.wl-entry[data-seq]', '.wl-group[data-task-id]'];
+// The items the reader is on — the first few turns, work-log entries (else task
+// groups) or agent-tree rows in view, top first — and how far below the box top
+// each sits (null: none in view). Several: a page can take the first one away (a
+// loose result paired into its call's card, an entry folded into its task group).
+var PSEC_ANCHORS = [['.turn', 'data-turn-id'], ['.wl-entry', 'data-seq'], ['.wl-group', 'data-task-id']];
+var PSEC_ANCHOR_MAX = 6;
+// The 에이전트 트리 tab's rows live in <ui-agent-tree>'s (open) shadow root.
+function psecTreeRoot(box) {
+  var tree = box.querySelector('ui-agent-tree');
+  return tree && tree.shadowRoot ? tree.shadowRoot : null;
+}
 function psecViewAnchor(box) {
   var top = box.getBoundingClientRect().top;
-  for (var k = 0; k < PSEC_ANCHOR_SELS.length; k++) {
-    var rows = box.querySelectorAll(PSEC_ANCHOR_SELS[k]);
-    for (var i = 0; i < rows.length; i++) {
-      var r = rows[i].getBoundingClientRect();
+  var bottom = top + box.clientHeight;
+  var out = [];
+  function take(base, attr, tree, root) {
+    var rows = root.querySelectorAll(base + '[' + attr + ']');
+    for (var i = 0; i < rows.length && out.length < PSEC_ANCHOR_MAX; i++) {
+      // A tree item holds its own row, then its children: the row is where it is.
+      var row = tree ? rows[i].firstElementChild : rows[i];
+      if (!row) continue;
+      var r = row.getBoundingClientRect();
       if (!r.height || r.bottom <= top) continue;
-      var attr = k === 0 ? 'data-turn-id' : k === 1 ? 'data-seq' : 'data-task-id';
+      if (r.top >= bottom) break;
       var v = rows[i].getAttribute(attr) || '';
       var key = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(v) : v;
-      return { sel: PSEC_ANCHOR_SELS[k].replace(']', '="' + key + '"]'), at: r.top - top };
+      out.push({ sel: base + '[' + attr + '="' + key + '"]', at: r.top - top, tree: tree });
     }
   }
-  return null;
+  var tr = psecTreeRoot(box);
+  if (tr) take('[role="treeitem"]', 'data-id', true, tr);
+  for (var k = 0; k < PSEC_ANCHORS.length && !out.length; k++) take(PSEC_ANCHORS[k][0], PSEC_ANCHORS[k][1], false, box);
+  return out.length ? out : null;
 }
-// That item back where it was (false: it is gone). An entry folded into its task
-// group since is represented by the group's head.
+// Where an anchor item is now: its element shown (fold: an entry folded into its
+// task group since is represented by the group's head), else null.
+function psecAnchorEl(box, c, fold) {
+  var el = null;
+  if (c.tree) {
+    var tr = psecTreeRoot(box);
+    var item = tr ? tr.querySelector(c.sel) : null;
+    el = item ? item.firstElementChild : null;
+  } else {
+    el = box.querySelector(c.sel);
+    if (el && fold && !el.getClientRects().length) el = el.closest ? el.closest('.wl-group') : null;
+  }
+  return el && el.getClientRects().length ? el : null;
+}
+// The first of those items still shown back where it was (false: all are gone).
 function psecRestoreAnchor(box, a) {
-  var el = a ? box.querySelector(a.sel) : null;
-  if (el && !el.getClientRects().length) el = el.closest ? el.closest('.wl-group') : null;
-  if (!el || !el.getClientRects().length) return false;
-  var shift = el.getBoundingClientRect().top - box.getBoundingClientRect().top - a.at;
-  if (Math.abs(shift) >= 1) psecSetTop(box, box.scrollTop + shift);
-  return true;
+  if (!a || !a.length) return false;
+  for (var pass = 0; pass < 2; pass++) {
+    for (var i = 0; i < a.length; i++) {
+      var el = psecAnchorEl(box, a[i], pass === 1);
+      if (!el) continue;
+      var shift = el.getBoundingClientRect().top - box.getBoundingClientRect().top - a[i].at;
+      if (Math.abs(shift) >= 1) psecSetTop(box, box.scrollTop + shift);
+      return true;
+    }
+  }
+  return false;
 }
 // A page went in above the reader: their item goes back where it was — and is
 // held there while what was added settles (answers and cards render after it),
@@ -11238,16 +11272,18 @@ function showMoreTree() {
   var box = psecBox('tree');
   var host = document.getElementById('panel-tree');
   if (!box || !host || !(host._hidden > 0)) return;
+  // The older agents go in where they belong in the tree (above the reader, or
+  // inside a branch they are reading): the row they are on keeps its place.
   var fromBottom = box.scrollHeight - box.scrollTop;
+  var anchor = psecViewAnchor(box);
   _treeWindow += AT_PANEL_WINDOW;
   paintTreeTab();
-  psecKeepPlace(box, fromBottom);
   // One step at a time: the next waits for this one's render (its height).
   host._growing = true;
   psecAfterRender(host.querySelector('ui-agent-tree'), function() {
     host._growing = false;
     if (_psec !== 'tree') return;
-    psecKeepPlace(box, fromBottom);
+    psecHoldPlace(box, anchor, fromBottom);
     psecSyncControls('tree');
     psecMaybeFill('tree');
   });
