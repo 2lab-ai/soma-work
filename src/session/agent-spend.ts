@@ -59,6 +59,12 @@ export interface AgentSpendReaderOptions {
   minIntervalMs?: number;
   /** Read chunk size (default 8 MiB); a read always continues to the file's end. */
   chunkBytes?: number;
+  /**
+   * Each read hands over the agent's calls with their final usage (by message
+   * id) — the task ledger replaces the calls' live credits with them
+   * (task-usage-reconcile). Returns whether the holder changed.
+   */
+  onCalls?: (holder: AgentSpendHolder, calls: ReadonlyMap<string, CallUsage>) => boolean;
 }
 
 export interface AgentSpendHolder {
@@ -91,7 +97,7 @@ const MAX_NEST_DEPTH = 16;
 /** A meta file this young that does not parse may still be being written: no seal until it settles. */
 const META_SETTLE_MS = 60_000;
 
-interface CallUsage extends TokenCounts {
+export interface CallUsage extends TokenCounts {
   model?: string;
 }
 
@@ -445,7 +451,9 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
   async function read(
     sid: string,
     taskId: string,
-  ): Promise<{ spend: AgentSpend; file: string; complete: boolean; size: number } | undefined> {
+  ): Promise<
+    { spend: AgentSpend; file: string; complete: boolean; size: number; calls: Map<string, CallUsage> } | undefined
+  > {
     if (!TASK_ID_RE.test(taskId)) return undefined;
     const dir = await subagentsDir(sid);
     if (!dir) return undefined;
@@ -482,7 +490,13 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
         await fh.close();
       }
     }
-    return { spend: priceCalls(state.calls, opts), file, complete: state.carry.length === 0, size: state.offset };
+    return {
+      spend: priceCalls(state.calls, opts),
+      file,
+      complete: state.carry.length === 0,
+      size: state.offset,
+      calls: state.calls,
+    };
   }
 
   async function run(holder: AgentSpendHolder, force: boolean): Promise<boolean> {
@@ -512,7 +526,7 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
       const last = readAt.get(id);
       if (!force && !ended && last !== undefined && now() - last < minInterval) continue;
       readAt.set(id, now());
-      let got: { spend: AgentSpend; file: string; complete: boolean; size: number } | undefined;
+      let got: Awaited<ReturnType<typeof read>>;
       try {
         got = await read(sid, taskId);
       } catch {
@@ -522,7 +536,7 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
       // Its record-less subagents. One that fails to read, or whose transcript
       // is not there yet (its meta is written at spawn), is left out of the
       // number and keeps the agent from being sealed — a later read adds it.
-      const nested: Array<{ spend: AgentSpend; file: string; complete: boolean; size: number }> = [];
+      const nested: Array<NonNullable<Awaited<ReturnType<typeof read>>>> = [];
       let nestedWhole = true;
       let children: string[] = [];
       try {
@@ -545,6 +559,15 @@ export function createAgentSpendReader(opts: AgentSpendReaderOptions): AgentSpen
         got.spend,
         nested.map((n) => n.spend),
       );
+      if (opts.onCalls) {
+        for (const r of [got, ...nested]) {
+          try {
+            if (opts.onCalls(holder, r.calls)) changed = true;
+          } catch {
+            // The ledger's correction never stops the spend read.
+          }
+        }
+      }
       const agent = holder.agents?.agents.find((a) => a.id === id);
       if (!agent) continue;
       if (!agent.sdkSessionId) {
