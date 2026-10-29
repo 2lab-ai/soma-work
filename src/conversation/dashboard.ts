@@ -3594,6 +3594,7 @@ function renderDashboardPage(userId?: string): string {
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <title>soma-work Dashboard</title>
 <script type="module" src="/dashboard/ui/tool-call-card.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/ai-answer.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/agent-tree.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/agent-steering.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/approval-card.js?v=${UI_LIB_VERSION}"></script>
@@ -5668,10 +5669,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .turn-instr.is-full, .slide-panel.is-detail .turn-instr { display: block; -webkit-line-clamp: unset; overflow: visible; }
 .turn-summary-title { font-weight: 700; font-size: 13px; margin-bottom: 2px; }
 .turn-summary-body { font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
-/* An assistant turn (task view T1.4): the answer itself, then Raw at its foot —
-   the turn's summary and the answer's source as written. */
-.turn-answer { margin-top: 4px; container: ans / inline-size; }
-.turn-answer .ans-card { margin-top: 2px; padding: 2px 0 0; border: 0; border-radius: 0; background: none; }
+/* An assistant turn (task view T1.4): the answer itself — @2lab.ai/ui
+   <ui-ai-answer flat> in the token wrapper (.ui-tok), the turn being its card —
+   then Raw at its foot: the turn's summary and the answer's source as written.
+   .ans-lite is the element's light-DOM line until the library has loaded. */
+.turn-answer { margin-top: 4px; }
+.ans-lite { font-size: 12px; color: var(--text-tertiary); }
 .turn-raw { margin-top: 6px; }
 .turn-raw summary.turn-expand-btn { cursor: pointer; color: var(--text-tertiary); font-size: 11px; padding: 2px 0; user-select: none; list-style: none; }
 .turn-raw summary.turn-expand-btn::-webkit-details-marker { display: none; }
@@ -5683,9 +5686,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .turn-raw-label:first-child { margin-top: 0; }
 .turn-raw-src { margin: 0; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-secondary); }
 .turn-raw-src:empty::before { content: '답변이 열리면 원문이 여기에 표시됩니다'; color: var(--text-tertiary); font-family: inherit; }
-/* AI answer (.prd/affectui/re-ai-answer.md) — the opened answer: the links it
-   holds as numbered cards and chips that light each other, copy. Theme
-   variables only (no new colours); the disclosure is the size container. */
+/* The answer's response time sits in the turn header (host; the element's own foot time is not used). */
 .turn-header .ans-took { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 .turn-header .ans-took:empty { display: none; }
 /* SSOT 2026-10-27 — a turn soma-work put there (compact, restart, retry, goal,
@@ -5749,45 +5750,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .skill-detail { margin-top: 6px; }
 .skill-detail-h { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; font-size: 12px; }
 @media (pointer: coarse) { .sys-row-in { min-height: 44px; } .turn.is-sys .turn-avatar { margin-top: 12px; } .skill-badge { min-height: 44px; } }
-.ans-card { margin-top: 6px; padding: 12px 14px 10px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); overflow: hidden; }
-.ans-card.is-in > * { animation: ans-in var(--dur-fade) var(--ease-out) both; }
-.ans-loading, .ans-empty { font-size: 12px; color: var(--text-tertiary); }
-.ans-error { margin-right: 8px; font-size: 12px; color: var(--text-secondary); }
-.ans-srcs { display: flex; gap: 8px; margin: -4px -14px 8px; padding: 4px 14px; list-style: none; overflow-x: auto; scrollbar-width: none; -webkit-mask: linear-gradient(90deg, transparent, black 12px, black calc(100% - 12px), transparent); mask: linear-gradient(90deg, transparent, black 12px, black calc(100% - 12px), transparent); }
-.ans-srcs::-webkit-scrollbar { display: none; }
-.ans-srcs > li { flex: none; display: flex; }
-.ans-src { display: flex; flex-direction: column; gap: 4px; width: 148px; min-height: 64px; padding: 8px 10px; border-radius: 10px; background: var(--surface-raised); color: inherit; text-decoration: none; transition: background-color var(--dur-press) ease, box-shadow var(--dur-press) ease; }
-.ans-card.is-in .ans-src { animation: ans-pop var(--dur-move) var(--ease-out) both; animation-delay: calc(var(--ans-i, 0) * 60ms); }
-.ans-src:hover { background: var(--ib-pill); }
-.ans-src.is-lit { box-shadow: inset 0 0 0 1.5px var(--text-tertiary); }
-.ans-src-site { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 11px; color: var(--text-secondary); }
-.ans-src-name { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.ans-src-num { flex: none; font-variant-numeric: tabular-nums; color: var(--text-tertiary); }
-.ans-src-title { display: -webkit-box; overflow: hidden; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-size: 12px; line-height: 1.4; color: var(--text); word-break: break-word; }
-.ans-label { margin: 0 0 6px; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
-.ans-card .ans-body { font-size: 13.5px; line-height: 1.6; }
-.ans-card .ans-body > :last-child { margin-bottom: 0; }
-.ans-card .ans-body h1, .ans-card .ans-body h2 { font-size: 1.15em; }
-.ans-card .ans-body h3, .ans-card .ans-body h4, .ans-card .ans-body h5, .ans-card .ans-body h6 { font-size: 1em; }
-.ans-body .ans-cite { display: inline-block; max-width: 16ch; height: 18px; margin: 0 1px 0 3px; padding: 0 6px; overflow: hidden; border-radius: 6px; background: var(--surface-raised); font-size: 11px; font-weight: 500; line-height: 18px; color: var(--text-secondary); text-decoration: none; white-space: nowrap; text-overflow: ellipsis; vertical-align: middle; transition: background-color var(--dur-press) ease, color var(--dur-press) ease; }
-.ans-body .ans-cite:hover { background: var(--ib-pill); color: var(--text); }
-.ans-body .ans-cite.is-lit { background: var(--text); color: var(--surface); }
-.ans-cite:focus-visible, .ans-src:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-.ans-foot { display: flex; align-items: center; gap: 10px; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--border); }
-.ans-status { font-size: 12px; color: var(--text-tertiary); }
-.ans-writing { display: flex; align-items: center; gap: 8px; font-size: 12px; }
-.ans-shimmer { color: transparent; background: linear-gradient(90deg, var(--text-tertiary) 38%, var(--text) 50%, var(--text-tertiary) 62%) 100% 0 / 300% 100% no-repeat; -webkit-background-clip: text; background-clip: text; animation: ans-sweep 1.6s linear infinite; }
-.ans-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--st-run); animation: ans-pulse 1s ease-in-out infinite; }
-@keyframes ans-in { from { opacity: 0; filter: blur(2px); transform: translateY(3px); } to { opacity: 1; filter: none; transform: none; } }
-@keyframes ans-pop { from { opacity: 0; transform: translateY(6px) scale(0.96); } to { opacity: 1; transform: none; } }
-@keyframes ans-sweep { from { background-position: 100% 0; } to { background-position: 0 0; } }
-@keyframes ans-pulse { 50% { transform: scale(0.6); opacity: 0.45; } }
-@container ans (min-width: 520px) {
-  .ans-card { padding: 16px 18px 12px; }
-  .ans-srcs { margin: -4px -18px 10px; padding: 4px 18px; }
-  .ans-src { width: 172px; }
-  .ans-card .ans-body { font-size: 14px; }
-}
 /* Slack link on cards */
 .slack-link { color: var(--accent); text-decoration: none; font-size: 0.85em; margin-left: 4px; opacity: 0.7; }
 .slack-link:hover { text-decoration: underline; opacity: 1; }
@@ -6058,18 +6020,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .mp-pop, .mp-pop[data-side="top"] { transform: none; }
   .mp-opt[data-lit] .mp-seg[data-on] { animation: none; transition-delay: 0s; }
   .mp-check { animation: none; }
-}
-/* AI answer (re-ai-answer D15 · D16): the chip's touch target, and reduced motion —
-   after the board's reduce block (the global rule only shortens durations, so
-   infinite loops would flicker). */
-@media (pointer: coarse) {
-  .ans-body .ans-cite { position: relative; overflow: visible; max-width: none; }
-  .ans-cite::after { content: ''; position: absolute; inset: -10px -4px; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .ans-shimmer, .ans-dot, .ans-src, .ans-card.is-in > * { animation: none !important; }
-  .ans-shimmer { background: none; color: var(--text-tertiary); }
-  .ans-src, .ans-body .ans-cite { transition: none; }
 }
 
 /* ── Agent inbox (re-agent-inbox D3) — the board's own reduced-motion rule, after the
@@ -10714,7 +10664,6 @@ function agentConvRawOf(seq) {
   return null;
 }
 function agentConvHtml(a, io, prompt, answer) {
-  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var name = a ? agentName(a) : '에이전트';
   var st = a ? agentStatusOf(a) : 'unknown';
   var html = '';
@@ -10730,17 +10679,13 @@ function agentConvHtml(a, io, prompt, answer) {
   }
   var body;
   if (io.result) {
-    var at = ' data-conv="agent" data-turn="' + escAttr(io.result.seq) + '"';
-    // A result that cannot be read reads as the agent's own one-line summary, if it has one.
-    var shown = answer === '' && a && a.summary ? a.summary : answer;
-    body = answer != null
-      ? '<div class="turn-answer"' + at + '><div class="ans-card">' + renderAnswerCard(shown, s) + '</div></div>'
-      : '<div class="turn-answer"' + at + '><div class="ans-card" aria-busy="true">' + ansStateHtml('loading') + '</div></div>';
+    // The answer is <ui-ai-answer flat> (its data: agentAnswerData).
+    body = '<div class="turn-answer ui-tok">' + ansSlotHtml('불러오는 중…') + '</div>';
     body += '<details class="turn-raw"><summary class="turn-expand-btn">Raw</summary><div class="turn-raw-body">'
       + (a && a.summary ? '<div class="turn-raw-label">요약</div><div>' + esc(a.summary) + '</div>' : '')
       + '<div class="turn-raw-label">원문</div><pre class="turn-raw-src">' + esc(answer || '') + '</pre></div></details>';
   } else if (st === 'running') {
-    body = '<div class="ans-writing"><span class="ans-shimmer">응답 작성 중</span><i class="ans-dot" aria-hidden="true"></i></div>';
+    body = '<div class="ui-tok">' + ansSlotHtml('응답 작성 중') + '</div>';
   } else {
     body = '<div class="turn-summary-body" style="color:var(--text-tertiary)">' + esc(a && a.summary ? a.summary : '작업 로그에 결과가 없습니다') + '</div>';
   }
@@ -10749,6 +10694,17 @@ function agentConvHtml(a, io, prompt, answer) {
     + '<span class="turn-time">' + esc(AGENT_STATUS_LABEL[st] || '') + '</span></div>'
     + body + '</div></div>';
   return html;
+}
+// Pure: what a subagent's answer element shows — the writing row while it runs
+// (no result yet), loading while its raw is fetched, then the answer (a result
+// that cannot be read reads as the agent's own one-line summary, if it has
+// one). Copy takes this text. No entry motion: the tab is painted again on
+// every poll and every return to the agent.
+function agentAnswerData(a, io, answer, s) {
+  if (!io.result) return { markdown: '', streaming: true };
+  if (answer == null) return { markdown: '', loading: true };
+  var shown = answer === '' && a && a.summary ? a.summary : answer;
+  return { markdown: String(shown), linkTitles: ansLinkTitles(s), animate: false };
 }
 // A subagent's 지시와 답변 — painted only while it is the section shown (the main
 // agent's turns are paintConvTab's). Its instruction is the spawn call in the
@@ -10764,10 +10720,10 @@ function renderAgentConv() {
   if (!io.spawn) wlSeekAgentSpawn(_wl, a);
   var prompt = io.spawn && io.spawn.rawBytes ? agentConvRawOf(io.spawn.seq) : null;
   var answer = io.result ? (io.result.rawBytes ? agentConvRawOf(io.result.seq) : String(io.result.text || '')) : null;
-  // 복사 reads an answer from the raw cache, like a turn's (copyAnswer).
-  if (io.result && typeof answer === 'string') _rawLoadedCache[ansCacheKey('agent', io.result.seq)] = answer;
   var html = io.spawn || io.result || a ? agentConvHtml(a, io, prompt != null ? agentPromptOf(prompt) : null, answer) : '<p class="panel-tasks-empty">이 에이전트의 지시와 결과를 찾지 못했습니다</p>';
-  if (writePanelPart(host, html)) ansBind(host);
+  writePanelPart(host, html);
+  var el = host.querySelector('ui-ai-answer');
+  if (el) ansSetData(el, agentAnswerData(a, io, answer, s));
 }
 // ── Section tabs (SSOT 2026-10-29) — 에이전트 트리 · 작업 로그 · 지시와 답변 ──
 // Inside the focused agent's tab, three section tabs, each with its own scroll
@@ -17054,15 +17010,15 @@ function renderTurn(t, _idx, _arr, convId) {
       body = '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">Generating summary...</div>';
     }
     // AI answer (task view T1.4, re-ai-answer D1): the answer itself is the
-    // turn — loaded as it nears the view (ansObserve) — and Raw at its foot
-    // holds the turn's summary and the answer's source as written. A turn
-    // with no recorded answer to load shows its summary.
+    // turn — <ui-ai-answer flat>, loaded as it nears the view
+    // (attachRawToggleHandlers) — and Raw at its foot holds the turn's summary
+    // and the answer's source as written. A turn with no recorded answer to
+    // load shows its summary.
     var answer = title + body;
     var raw = '';
     var cid = convId || panelConvId;
     if (t.id && cid) {
-      answer = '<div class="turn-answer" data-conv="' + esc(cid) + '" data-turn="' + esc(t.id) + '">'
-        + '<div class="ans-card" aria-busy="true">' + ansStateHtml('loading') + '</div></div>';
+      answer = '<div class="turn-answer ui-tok" data-conv="' + esc(cid) + '" data-turn="' + esc(t.id) + '">' + ansSlotHtml('불러오는 중…') + '</div>';
       raw = '<details class="turn-raw"><summary class="turn-expand-btn">Raw</summary><div class="turn-raw-body">'
         + '<div class="turn-raw-label">요약</div><div class="turn-raw-summary">' + title + body + '</div>'
         + '<div class="turn-raw-label">원문</div><pre class="turn-raw-src"></pre></div></details>';
@@ -17162,178 +17118,37 @@ function attachRawToggleHandlers() {
   }
 }
 
-// ── AI answer (.prd/affectui/re-ai-answer.md) ──
-// An assistant turn opened under "답변 전문": the raw answer rendered as a
-// document, the links it holds as numbered cards and link chips (links the
-// answer contains — not proven sources, so never called 출처/인용; the dashboard
-// knows no snippets, favicons or feedback), copy, the response time, and a row
-// while the answer is written.
+// ── AI answer (.prd/affectui/re-ai-answer.md) — @2lab.ai/ui <ui-ai-answer> ──
+// An assistant turn's face is its answer, drawn by the library element (flat:
+// the turn is its card): the markdown rendered safely, the links it holds as
+// numbered link cards and chips that light each other (links the answer
+// contains — not proven sources, so never called 출처/인용), Copy (the answer
+// and its numbered links), the loading / empty / failed states and the
+// 응답 작성 중 row. The dashboard fetches and caches the answer (ansLoad), titles
+// the links it knows (the session's PR and issue), draws the turn's summary
+// above an answer that is empty or failed, fills Raw, times the answer in the
+// turn header and keeps the writing row last.
 
-// &-entities back to text (the inverse of esc/escAttr) — for reading hrefs and
-// labels out of renderMarkdownDoc's own anchors.
-function ansUnesc(s) {
-  return String(s == null ? '' : s).replace(/&quot;/g, '"').replace(/&#39;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+// The element, and its light-DOM line until the library has loaded.
+function ansSlotHtml(lite) {
+  return '<ui-ai-answer flat lang="ko"><span class="ans-lite">' + esc(lite) + '</span></ui-ai-answer>';
 }
-// One source per URL: a trailing slash does not make another page.
-function ansKey(href) {
-  return String(href || '').replace(/\\/+$/, '');
+// Pure (D5): the link titles the dashboard already knows — the session's PR and
+// issue (the PR's wins when both are one URL).
+function ansLinkTitles(s) {
+  var t = {};
+  if (s && s.issueUrl && s.issueTitle) t[String(s.issueUrl)] = String(s.issueTitle);
+  if (s && s.prUrl && s.prTitle) t[String(s.prUrl)] = String(s.prTitle);
+  return t;
 }
-function ansDecode(s) {
-  try { return decodeURIComponent(s); } catch (_e) { return s; }
-}
-// mdInline's link target stops at the first ")" — parens inside a URL travel
-// percent-encoded, and renderAnswer reads them back (review R1).
-function ansParens(u) {
-  return String(u).replace(/\\(/g, '%28').replace(/\\)/g, '%29');
-}
-// D3 — one stretch of prose (no code span, no markdown link): <url>, <url|label>
-// and bare http(s) URLs become [label](url). A bare URL leaves its trailing
-// punctuation and an unmatched ")" outside the link.
-function ansLinkifyText(s) {
-  return String(s).replace(/<(https?:\\/\\/[^\\s<>|]+)(?:\\|([^<>]*))?>|https?:\\/\\/[^\\s<>\\[\\]"'\\x60]+/gi, function(m, url, label) {
-    if (url) {
-      var l = String(label || '').replace(/[\\[\\]]/g, '').trim();
-      return '[' + (l || url) + '](' + ansParens(url) + ')';
-    }
-    var u = m;
-    var tail = '';
-    for (var guard = 0; guard < 8; guard++) {
-      var p = u.match(/[.,;:!?*]+$/);
-      if (p) { tail = p[0] + tail; u = u.slice(0, u.length - p[0].length); continue; }
-      if (u.charAt(u.length - 1) === ')' && u.split('(').length < u.split(')').length) { tail = ')' + tail; u = u.slice(0, -1); continue; }
-      break;
-    }
-    return '[' + u + '](' + ansParens(u) + ')' + tail;
-  });
-}
-// D3 — the whole answer. Fenced blocks (also inside a > quote) and code spans stay
-// as written (renderMarkdownDoc's fence rule, mdInline's code-span rule). A
-// markdown link stays a link: its label may hold a code span, its target
-// balanced parens (encoded for mdInline).
-function ansLinkify(raw) {
-  var fence = '';
-  var fenceQuoted = false;
-  return String(raw == null ? '' : raw).replace(/\\r\\n?/g, '\\n').split('\\n').map(function(line) {
-    var quoted = /^\\s{0,3}>/.test(line);
-    var body = line.replace(/^(\\s{0,3}>\\s?)+/, '');
-    if (fence && fenceQuoted && !quoted) fence = '';
-    if (fence) {
-      if (body.trim().indexOf(fence) === 0) fence = '';
-      return line;
-    }
-    var f = body.match(/^\\s{0,3}(\\x60{3,}|~{3,})/);
-    if (f) { fence = f[1]; fenceQuoted = quoted; return line; }
-    return line.split(/(!?\\[[^\\]]+\\]\\((?:[^()\\s]|\\([^()\\s]*\\))+\\)|\\x60[^\\x60]+\\x60)/).map(function(part, i) {
-      if (!(i % 2)) return ansLinkifyText(part);
-      if (part.charAt(0) === '\\x60') return part;
-      var at = part.indexOf('](');
-      return part.slice(0, at + 2) + ansParens(part.slice(at + 2, -1)) + ')';
-    }).join('');
-  }).join('\\n');
-}
-// D5 — what a link card is called. Title: the session's own PR / issue title, else
-// the link's label, else read off the URL. Chip: the short name.
-function ansSourceOf(href, label, s) {
-  var m = String(href || '').match(/^https?:\\/\\/([^\\/?#]+)([^?#]*)(\\?[^#]*)?/i);
-  var host = m ? m[1].toLowerCase().replace(/^www\\./, '') : String(href || '');
-  var path = m ? m[2] : '';
-  var name = host;
-  var chip = host;
-  var title = '';
-  if (host === 'github.com') {
-    name = 'GitHub';
-    chip = 'GitHub';
-    var seg = path.split('/').filter(Boolean);
-    var repo = seg.slice(0, 2).join('/');
-    var num = seg.length >= 4 && /^\\d+$/.test(seg[3]) ? seg[3] : '';
-    if (num && seg[2] === 'pull') { title = 'PR #' + num + ' · ' + repo; chip = '#' + num; }
-    else if (num && seg[2] === 'issues') { title = '이슈 #' + num + ' · ' + repo; chip = '#' + num; }
-    else if (seg.length >= 4 && seg[2] === 'commit' && /^[0-9a-f]{7,40}$/i.test(seg[3])) { chip = seg[3].slice(0, 7); title = '커밋 ' + chip + ' · ' + repo; }
-    else title = repo ? repo + (seg.length > 2 ? ' · ' + ansDecode(seg.slice(2).join('/')) : '') : 'github.com';
-  } else {
-    title = ansDecode((path + (m && m[3] ? m[3] : '')).replace(/\\/+$/, '')) || host;
-  }
-  if (label) title = label;
-  if (s && s.prUrl && s.prTitle && ansKey(s.prUrl) === ansKey(href)) title = String(s.prTitle);
-  else if (s && s.issueUrl && s.issueTitle && ansKey(s.issueUrl) === ansKey(href)) title = String(s.issueTitle);
-  return { href: String(href || ''), name: name, title: title, chip: chip };
-}
-// D7 — a link chip, named after its card.
-function ansCiteHtml(src) {
-  return '<a class="ans-cite" data-ans-src="' + Number(src.n) + '" href="' + safeHref(src.href) + '" target="_blank" rel="noopener noreferrer" aria-label="'
-    + escAttr('링크 ' + src.n + ': ' + src.title + ' (' + src.name + ')') + '">' + esc(src.chip) + '</a>';
-}
-// D6 — the numbered link cards (sideways row); --ans-i staggers the entry.
-function ansSourcesHtml(srcs) {
-  if (!srcs || !srcs.length) return '';
-  return '<ol class="ans-srcs" aria-label="답변에 포함된 링크 ' + srcs.length + '개">' + srcs.map(function(src, i) {
-    return '<li style="--ans-i:' + Math.min(i, 6) + '"><a class="ans-src" data-ans-src="' + Number(src.n) + '" href="' + safeHref(src.href) + '" target="_blank" rel="noopener noreferrer" title="' + escAttr(src.href) + '">'
-      + '<span class="ans-src-site"><span class="ans-src-name">' + esc(src.name) + '</span><span class="ans-src-num">' + Number(src.n) + '</span></span>'
-      + '<span class="ans-src-title">' + esc(src.title) + '</span></a></li>';
-  }).join('') + '</ol>';
-}
-// D2 · D4 · D7 — the answer as a document. Links are numbered by first
-// appearance (one per URL); every link renderMarkdownDoc made becomes a chip — a
-// bare URL only the chip, a labelled link its words then the chip. A [1] the
-// answer writes without a link stays text.
-function renderAnswer(raw, s) {
-  var re = /<a href="([^"]*)" target="_blank" rel="noopener noreferrer">([\\s\\S]*?)<\\/a>/g;
-  var html = renderMarkdownDoc(ansLinkify(raw));
-  var byKey = Object.create(null);
-  var found = [];
-  var textOf = function(l) { return ansUnesc(String(l).replace(/<[^>]*>/g, '')); };
-  var hrefOf = function(h) { return ansUnesc(h).replace(/%28/gi, '(').replace(/%29/gi, ')'); };
-  html.replace(re, function(m, h, l) {
-    var href = hrefOf(h);
-    var text = textOf(l);
-    var key = ansKey(href);
-    var label = text && text !== href ? text : '';
-    if (!byKey[key]) {
-      byKey[key] = { href: href, label: label, n: found.length + 1 };
-      found.push(byKey[key]);
-    } else if (!byKey[key].label && label) {
-      byKey[key].label = label;
-    }
-    return m;
-  });
-  var sources = found.map(function(f) {
-    var src = ansSourceOf(f.href, f.label, s);
-    src.n = f.n;
-    return src;
-  });
-  html = html.replace(re, function(_m, h, l) {
-    var href = hrefOf(h);
-    return (textOf(l) === href ? '' : l) + ansCiteHtml(sources[byKey[ansKey(href)].n - 1]);
-  });
-  return { html: html, sources: sources };
-}
-// D13 — what the card says before (or instead of) an answer.
-function ansStateHtml(kind, detail) {
-  if (kind === 'error') {
-    return '<span class="ans-error">답변을 불러오지 못했습니다' + (detail ? ' (' + esc(detail) + ')' : '') + '</span>'
-      + '<button type="button" class="btn-action" data-ans-retry="1">다시 시도</button>';
-  }
-  if (kind === 'empty') return '<span class="ans-empty">기록된 답변 내용이 없습니다</span>';
-  return '<span class="ans-loading">불러오는 중…</span>';
-}
-// D6 · D9 · D10 — links first (where the reference puts sources), label, body, foot.
-function renderAnswerCard(raw, s) {
-  var text = String(raw == null ? '' : raw);
-  if (!text.trim()) return ansStateHtml('empty');
-  var a = renderAnswer(text, s);
-  var n = a.sources.length;
-  return ansSourcesHtml(a.sources)
-    + '<div class="ans-label">답변' + (n ? ' · 링크 ' + n : '') + '</div>'
-    + '<div class="ans-body md-doc">' + a.html + '</div>'
-    + '<div class="ans-foot"><button type="button" class="btn-action ans-copy">복사</button>'
-    + '<span class="ans-status" role="status" aria-live="polite"></span></div>';
-}
-// D10 — the answer as written (markdown kept: where it is pasted renders it)
-// plus its numbered links.
-function ansCopyText(raw, srcs) {
-  var text = String(raw == null ? '' : raw).trim();
-  if (!srcs || !srcs.length) return text;
-  return text + '\\n\\n링크:\\n' + srcs.map(function(src) { return '[' + src.n + '] ' + src.title + ' – ' + src.href; }).join('\\n');
+// An element's data, written only when it changed (a poll that changes
+// nothing re-renders nothing). Data set before the element is defined is
+// picked up when it upgrades.
+function ansSetData(el, d) {
+  var sig = JSON.stringify(d);
+  if (el._ansSig === sig) return;
+  el._ansSig = sig;
+  el.data = d;
 }
 // The panel's session, when it is the one this conversation belongs to (D5 titles).
 function ansSession(cid) {
@@ -17347,26 +17162,26 @@ function ansFallbackHtml(details) {
   var sum = body && body.querySelector ? body.querySelector('.turn-raw-summary') : null;
   return sum && sum.innerHTML ? '<div class="ans-fallback">' + sum.innerHTML + '</div>' : '';
 }
+// D1 · D13 — one answer's face: loading, failed (다시 시도 → ui-retry), or the
+// answer from the cache — filled into Raw as written too. An empty or failed
+// answer has the turn's summary above it. Entry motion (D15) only for an answer
+// that just arrived: one painted again from the cache (the turn re-rendered
+// when its summary landed, D14) does not replay it.
 function ansPaint(details, state, detail, animate) {
-  var card = details.querySelector('.ans-card');
-  if (!card) return;
-  if (state !== 'ok') {
-    card.innerHTML = (state === 'loading' ? '' : ansFallbackHtml(details)) + ansStateHtml(state, detail);
-    if (state === 'loading') card.setAttribute('aria-busy', 'true');
-    else card.removeAttribute('aria-busy');
-    return;
+  var el = details.querySelector('ui-ai-answer');
+  if (!el) return;
+  var raw = state === 'ok' ? _rawLoadedCache[ansCacheKey(details.dataset.conv, details.dataset.turn)] : '';
+  raw = typeof raw === 'string' ? raw : '';
+  if (state === 'ok') {
+    var src = details.parentNode && details.parentNode.querySelector ? details.parentNode.querySelector('.turn-raw-src') : null;
+    if (src && src.textContent !== raw) src.textContent = raw;
   }
-  var raw = _rawLoadedCache[ansCacheKey(details.dataset.conv, details.dataset.turn)];
-  // The answer as written, in Raw at the turn's foot.
-  var src = details.parentNode && details.parentNode.querySelector ? details.parentNode.querySelector('.turn-raw-src') : null;
-  if (src && src.textContent !== raw) src.textContent = raw;
-  card.innerHTML = String(raw || '').trim() ? renderAnswerCard(raw, ansSession(details.dataset.conv)) : ansFallbackHtml(details) + ansStateHtml('empty');
-  card.removeAttribute('aria-busy');
-  card.classList.remove('is-in');
-  if (animate && !reduceMotion()) {
-    void card.offsetWidth;
-    card.classList.add('is-in');
-  }
+  var old = details.querySelector('.ans-fallback');
+  if (old) old.remove();
+  if (state !== 'loading' && !raw.trim()) el.insertAdjacentHTML('beforebegin', ansFallbackHtml(details));
+  ansSetData(el, state === 'loading' ? { markdown: '', loading: true }
+    : state === 'error' ? { markdown: '', error: String(detail || 'Error'), canRetry: true }
+    : { markdown: raw, linkTitles: ansLinkTitles(ansSession(details.dataset.conv)), animate: !!animate });
 }
 // Turn ids are unique per conversation only: the raw cache is keyed by both.
 function ansCacheKey(convId, turnId) {
@@ -17417,111 +17232,16 @@ function ansLoad(details) {
   }, function(err) {
     details._ansLoading = false;
     if (!shown()) return;
-    ansPaint(details, 'error', err && err.message ? err.message : '');
+    ansPaint(details, 'error', err && (err.message || err.name));
   });
 }
-// D8 — light number n in this card (its link card and every chip of it);
-// on=false clears the card. A lit card outside the row slides the ROW
-// sideways — never the panel (no scrollIntoView).
-function ansLight(card, n, on) {
-  var els = card.querySelectorAll('[data-ans-src]');
-  for (var i = 0; i < els.length; i++) els[i].classList.toggle('is-lit', !!on && els[i].getAttribute('data-ans-src') === String(n));
-  if (!on) return;
-  var row = card.querySelector('.ans-srcs');
-  var src = row ? row.querySelector('.ans-src[data-ans-src="' + Number(n) + '"]') : null;
-  if (!src) return;
-  var rr = row.getBoundingClientRect();
-  var sr = src.getBoundingClientRect();
-  var left = sr.right > rr.right ? row.scrollLeft + (sr.right - rr.right) + 16
-    : sr.left < rr.left ? row.scrollLeft - (rr.left - sr.left) - 16 : null;
-  if (left === null) return;
-  row.scrollTo({ left: Math.max(0, left), behavior: reduceMotion() ? 'auto' : 'smooth' });
-}
-// D8 · D10 · D13 — one set of delegated listeners on the turns list.
-function ansBind(root) {
-  if (!root || root._ansBound) return;
-  root._ansBound = true;
-  var lit = function(e, on) {
-    var el = e.target && e.target.closest ? e.target.closest('[data-ans-src]') : null;
-    var card = el ? el.closest('.ans-card') : null;
-    if (!card) return;
-    var to = e.relatedTarget;
-    if (!on && to && to.closest && to.closest('[data-ans-src]') === el) return;
-    ansLight(card, el.getAttribute('data-ans-src'), on);
-  };
-  root.addEventListener('mouseover', function(e) { lit(e, true); });
-  root.addEventListener('mouseout', function(e) { lit(e, false); });
-  root.addEventListener('focusin', function(e) { lit(e, true); });
-  root.addEventListener('focusout', function(e) { lit(e, false); });
-  root.addEventListener('click', function(e) {
-    var t = e.target && e.target.closest ? e.target : null;
-    if (!t) return;
-    var copy = t.closest('.ans-copy');
-    if (copy) { copyAnswer(copy); return; }
-    var retry = t.closest('[data-ans-retry]');
-    var details = retry ? retry.closest('.turn-answer') : null;
-    if (details) ansLoad(details);
-  });
-}
-// D10 — clipboard, or (plain http, a refused permission) select the answer.
-function copyAnswer(btn) {
-  var details = btn.closest('.turn-answer');
-  var card = btn.closest('.ans-card');
-  if (!details || !card) return;
-  var raw = _rawLoadedCache[ansCacheKey(details.dataset.conv, details.dataset.turn)];
-  if (typeof raw !== 'string') return;
-  var srcs = renderAnswer(raw, ansSession(details.dataset.conv)).sources;
-  var status = card.querySelector('.ans-status');
-  var body = card.querySelector('.ans-body');
-  function say(label, msg) {
-    btn.textContent = label;
-    if (status) status.textContent = msg;
-    clearTimeout(btn._ansTimer);
-    btn._ansTimer = setTimeout(function() {
-      btn.textContent = '복사';
-      if (status) status.textContent = '';
-    }, 1500);
-  }
-  function selectIt() {
-    try {
-      var range = document.createRange();
-      range.selectNodeContents(body);
-      var sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-    } catch (_e) {}
-    say('복사', '선택했습니다 — ⌘C / Ctrl+C로 복사');
-  }
-  var text = ansCopyText(raw, srcs);
-  function done() {
-    say('복사됨', srcs.length ? '답변과 링크 ' + srcs.length + '개를 복사했습니다' : '답변을 복사했습니다');
-  }
-  // Without the Clipboard API (plain http): copy the RAW text from a temporary
-  // textarea — the rendered body shows chips (#999) where the URLs were.
-  function viaTextarea() {
-    try {
-      var ta = document.createElement('textarea');
-      ta.value = text;
-      ta.setAttribute('readonly', '');
-      ta.style.position = 'fixed';
-      ta.style.opacity = '0';
-      document.body.appendChild(ta);
-      ta.select();
-      var ok = document.execCommand('copy');
-      ta.remove();
-      if (btn.focus) btn.focus();
-      return !!ok;
-    } catch (_e) { return false; }
-  }
-  function fallback() {
-    if (viaTextarea()) done();
-    else selectIt();
-  }
-  try {
-    if (!navigator.clipboard || !navigator.clipboard.writeText) { fallback(); return; }
-    navigator.clipboard.writeText(text).then(done, fallback);
-  } catch (_e) { fallback(); }
-}
+// D13 — 다시 시도 on a failed answer fetches it again (only the answer element's
+// ui-retry: other library elements send one too).
+document.addEventListener('ui-retry', function(e) {
+  var el = e.target;
+  var details = el && el.tagName === 'UI-AI-ANSWER' && el.closest ? el.closest('.turn-answer[data-turn]') : null;
+  if (details) ansLoad(details);
+});
 // D11 — "응답 4분 12초": from the instruction to the recorded answer (queue and
 // tools included — the answer is recorded when its turn ends).
 function ansTookLabel(ms) {
@@ -17567,10 +17287,11 @@ function ansPendingHtml() {
   return '<div class="turn assistant ans-pending" aria-busy="true">'
     + '<div class="turn-avatar bot-avatar">&#x1F916;</div>'
     + '<div class="turn-body"><div class="turn-header"><span class="turn-name">Assistant</span></div>'
-    + '<div class="ans-writing"><span class="ans-shimmer">응답 작성 중</span><i class="ans-dot" aria-hidden="true"></i></div>'
+    + '<div class="ui-tok">' + ansSlotHtml('응답 작성 중') + '</div>'
     + '</div></div>';
 }
-// The writing row is always the list's last child — or absent.
+// The writing row is always the list's last child — or absent. Its element
+// shows only the writing row (streaming, no text yet).
 function syncAnsPending() {
   var turnsEl = document.getElementById('panel-turns');
   if (!turnsEl) return;
@@ -17583,10 +17304,13 @@ function syncAnsPending() {
     if (row) row.remove();
     return;
   }
-  if (!row) turnsEl.insertAdjacentHTML('beforeend', ansPendingHtml());
-  else if (row !== turnsEl.lastElementChild) turnsEl.appendChild(row);
+  if (!row) {
+    turnsEl.insertAdjacentHTML('beforeend', ansPendingHtml());
+    row = turnsEl.lastElementChild;
+  } else if (row !== turnsEl.lastElementChild) turnsEl.appendChild(row);
+  var el = row.querySelector('ui-ai-answer');
+  if (el) ansSetData(el, { markdown: '', streaming: true });
 }
-ansBind(document.getElementById('panel-turns'));
 
 // Panel subtitle (titleSub). Reads are open to every signed-in viewer (#716);
 // so is filling a MISSING subtitle (POST ensure-title — it never overwrites).
