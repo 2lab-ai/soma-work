@@ -54,7 +54,7 @@ export interface MainCallReader {
    * since the last read (review): a line read before its call's live credit
    * landed (catching up after a restart) is matched on a later read.
    */
-  read(sdkSessionId: string): Promise<Map<string, TranscriptCall>>;
+  read(sdkSessionId: string, opts?: { force?: boolean }): Promise<Map<string, TranscriptCall>>;
 }
 
 /** Calls kept per session — as many as the ledger remembers live credits for. */
@@ -126,14 +126,16 @@ export function createMainCallReader(opts: MainCallReaderOptions = {}): MainCall
     while (state.calls.size > CALLS_KEPT) state.calls.delete(state.calls.keys().next().value as string);
   }
 
-  async function readNew(sid: string, state: ReadState): Promise<Map<string, TranscriptCall>> {
-    const calls = new Map<string, TranscriptCall>();
+  /** Reads what was appended since the last read into `state.calls` (kept chunk by chunk). */
+  async function readNew(sid: string, state: ReadState, force: boolean): Promise<void> {
     if (!state.file) {
-      if (state.retryAt !== undefined && now() < state.retryAt) return calls;
+      // A turn end looks again even within the retry window (review: a short
+      // first turn would otherwise end before the transcript was looked for again).
+      if (!force && state.retryAt !== undefined && now() < state.retryAt) return;
       const found = findTranscriptPath(sid, opts.configDir ?? resolveClaudeConfigDir());
       if (!found) {
         state.retryAt = now() + MISSING_RETRY_MS;
-        return calls;
+        return;
       }
       state.file = found;
       state.retryAt = undefined;
@@ -143,9 +145,9 @@ export function createMainCallReader(opts: MainCallReaderOptions = {}): MainCall
       st = await fs.promises.lstat(state.file);
     } catch {
       state.file = undefined;
-      return calls;
+      return;
     }
-    if (!st.isFile() || st.isSymbolicLink()) return calls;
+    if (!st.isFile() || st.isSymbolicLink()) return;
     if (st.size < state.offset) {
       // Rewritten: start over (from the tail, as a first read).
       state.offset = -1;
@@ -157,7 +159,7 @@ export function createMainCallReader(opts: MainCallReaderOptions = {}): MainCall
       state.offset = Math.max(0, st.size - tailBytes);
       skipPartial = state.offset > 0;
     }
-    if (st.size === state.offset) return calls;
+    if (st.size === state.offset) return;
     const fh = await fs.promises.open(state.file, 'r');
     try {
       while (state.offset < st.size) {
@@ -179,16 +181,22 @@ export function createMainCallReader(opts: MainCallReaderOptions = {}): MainCall
         }
         const cut = bytes.lastIndexOf(0x0a);
         state.carry = cut >= 0 ? Buffer.from(bytes.subarray(cut + 1)) : Buffer.from(bytes);
-        if (cut >= 0) collectTranscriptCalls(bytes.subarray(0, cut).toString('utf8'), calls, true);
+        if (cut >= 0) {
+          // Kept as each chunk is read (review): a failure on a later chunk
+          // never loses the calls of the bytes the cursor already moved past.
+          const got = new Map<string, TranscriptCall>();
+          collectTranscriptCalls(bytes.subarray(0, cut).toString('utf8'), got, true);
+          keep(state, got);
+        }
       }
     } finally {
       await fh.close();
     }
-    return calls;
   }
 
   return {
-    read(sid: string): Promise<Map<string, TranscriptCall>> {
+    read(sid: string, readOpts?: { force?: boolean }): Promise<Map<string, TranscriptCall>> {
+      const force = readOpts?.force === true;
       let state = states.get(sid);
       if (state) {
         states.delete(sid); // re-insert: most recently used last
@@ -203,7 +211,7 @@ export function createMainCallReader(opts: MainCallReaderOptions = {}): MainCall
       const s = state;
       // One read at a time per session: two would hand out the same lines twice.
       const step = async () => {
-        keep(s, await readNew(sid, s));
+        await readNew(sid, s, force);
         return new Map(s.calls);
       };
       const run = s.busy.then(step, step);
