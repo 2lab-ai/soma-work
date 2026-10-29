@@ -242,15 +242,15 @@ describe('one tree element, two densities — compact on the card, rich in the p
     expect(declarationCount('AGENT_TREE_ROWS')).toBe(0);
   });
 
-  it('the panel subtree is rich — a card per agent with its spend, its brief and the waterfall on one axis', () => {
+  it('the panel tree (the 에이전트 트리 section tab) is rich — a card per agent with its spend, its brief and the waterfall on one axis', () => {
     const root = treeUi.agentTreeOf(card(), 'working');
     const d = treeUi.atTreeData(root, {
       s: card(),
       ns: 'p|k',
-      withRoot: false,
-      openDepth: 0,
+      withRoot: true,
+      openDepth: 64,
       density: 'rich',
-      title: '하위 에이전트',
+      title: '에이전트 트리',
     });
     expect(d.density).toBe('rich');
     // SSOT 2026-10-26 T2 — its own spend: every token kind it was billed for and the API-equivalent cost.
@@ -259,7 +259,9 @@ describe('one tree element, two densities — compact on the card, rich in the p
     // The waterfall needs every node's start (and end, when it ended) — the element puts them on one axis
     // (library: 'rich: cards with pill, summary, reason on needs_you / failed, branch cost, time and the waterfall').
     expect(nodeOf(d, 'toolu_nested')).toMatchObject({ startedAt: T0 + 10_000, endedAt: T0 + 51_000 });
-    expect(clientFn('renderPanelAgents')).toContain("density: 'rich', title: '하위 에이전트'");
+    // SSOT 2026-10-29: the tree is its own section tab (paintTreeTab), no longer under the agent's header.
+    expect(clientFn('paintTreeTab')).toContain("density: 'rich', title: '에이전트 트리'");
+    expect(clientFn('renderPanelAgents')).not.toContain('atTreeData(');
   });
 });
 
@@ -689,7 +691,7 @@ describe('one live path for the whole panel', () => {
     expect(clientFn('renderPanelComposer')).not.toMatch(/morphInnerHtml|innerHTML/);
   });
 
-  it('the page: chip in the header; 세션 정보 → goal → permission → question → agents → work log → turns in the scroll area', () => {
+  it('the page: chip in the header; 세션 정보 → goal → permission → question → agents → section tabs (트리 · 작업 로그 · 지시와 답변) in the scroll area', () => {
     const header = PAGE.slice(PAGE.indexOf('<div class="panel-header">'), PAGE.indexOf('<div class="panel-body"'));
     expect(header).toContain('id="panel-status"');
     const scroll = PAGE.slice(PAGE.indexOf('<div class="panel-scroll" id="panel-scroll">'));
@@ -699,7 +701,11 @@ describe('one live path for the whole panel', () => {
       'panel-permission',
       'panel-question',
       'panel-agents',
-      'panel-worklog',
+      'panel-sections',
+      'psec-tree',
+      'psec-log',
+      'worklog-list',
+      'psec-conv',
       'panel-turns',
     ];
     const at = ids.map((id) => scroll.indexOf(`id="${id}"`));
@@ -723,7 +729,7 @@ describe('landing follows the opening intent (executed)', () => {
       'panel-question': 300,
       'panel-agents': 420,
       'panel-tasks': 560,
-      'panel-worklog': 700,
+      'panel-sections': 700,
     };
     const scroll = {
       scrollTop: 900,
@@ -751,18 +757,24 @@ describe('landing follows the opening intent (executed)', () => {
       'panel-tabs': opts.tabs === undefined ? null : { offsetHeight: opts.tabs },
       'panel-goal': section('panel-goal'),
       'panel-agents': section('panel-agents'),
-      'panel-worklog': section('panel-worklog'),
-      'worklog-toggle': { getBoundingClientRect: (): Rect => ({ top: 0, bottom: 32, height: 32 }) },
+      'panel-sections': section('panel-sections'),
+      // The section box under the tabs: 260px, ending past the 400px view.
+      'panel-sections-body': {
+        getBoundingClientRect: (): Rect => {
+          const top = 100 + 740 - scroll.scrollTop;
+          return { top, bottom: top + 260, height: 260 };
+        },
+      },
       'panel-permission': section('panel-permission', false),
       'panel-question': section('panel-question', !!opts.question),
     };
-    const m = load<{ landPanel(): void; state(): { landed: boolean; stick: boolean } }>(
-      ['workLogLandingTop', 'scrollPanelToWorkLog', 'landPanel'],
+    const m = load<{ landPanel(): void; state(): { landed: boolean } }>(
+      ['psecLandingTop', 'landPanel'],
       ['_panelOnQuestion'],
       { document: { getElementById: (id: string) => els[id] ?? null } },
       [
-        `var _panelLand = ${JSON.stringify(intent)}; var _panelLanded = false; var _panelStickBottom = false; var _panelLandAt = null; var _panelScrollGen = 0; var _panelDetail = ${!!opts.detail};`,
-        'function state() { return { landed: _panelLanded, stick: _panelStickBottom }; }',
+        `var _panelLand = ${JSON.stringify(intent)}; var _panelLanded = false; var _panelLandAt = null; var _panelScrollGen = 0; var _panelDetail = ${!!opts.detail};`,
+        'function state() { return { landed: _panelLanded }; }',
       ],
     );
     return { m, scroll, tasks };
@@ -772,7 +784,7 @@ describe('landing follows the opening intent (executed)', () => {
     const r = rig('goal');
     r.m.landPanel();
     expect(r.scroll.scrollTop).toBe(80);
-    expect(r.m.state()).toEqual({ landed: true, stick: false });
+    expect(r.m.state()).toEqual({ landed: true });
     r.scroll.scrollTop = 40; // the reader scrolls; the turns arrive and land again
     r.m.landPanel();
     expect(r.scroll.scrollTop).toBe(40);
@@ -791,7 +803,7 @@ describe('landing follows the opening intent (executed)', () => {
     r.m.landPanel();
     expect(r.scroll.scrollTop).toBe(560 - 40);
     expect(r.scroll.calls).toEqual([520]);
-    expect(r.m.state()).toEqual({ landed: true, stick: false });
+    expect(r.m.state()).toEqual({ landed: true });
     r.scroll.scrollTop = 40; // the reader scrolls; the turns arrive and land again
     r.m.landPanel();
     expect(r.scroll.scrollTop).toBe(40);
@@ -799,25 +811,29 @@ describe('landing follows the opening intent (executed)', () => {
     const ask = rig('tasks', { question: true, tabs: 40 });
     ask.m.landPanel();
     expect(ask.scroll.scrollTop).toBe(520);
-    // No Tasks shown: the default landing — a question first, else the top of the
-    // minimal panel (task view: surface → tabs → latest exchange), or with 자세히 the newest turns.
+    // No Tasks shown: the default landing — a question first, else the section tabs
+    // in view (SSOT 2026-10-29: the box does not end in this 400px view, so the tabs
+    // come to the top), 자세히 alike — the newest turns are the box's own bottom.
     const none = rig('tasks', { tasksHidden: true });
     none.m.landPanel();
-    expect(none.scroll.scrollTop).toBe(0);
-    expect(none.m.state()).toEqual({ landed: false, stick: false });
+    expect(none.scroll.scrollTop).toBe(700);
+    expect(none.m.state()).toEqual({ landed: false });
     const noneDetail = rig('tasks', { tasksHidden: true, detail: true });
     noneDetail.m.landPanel();
-    expect(noneDetail.scroll.scrollTop).toBe(3000);
-    expect(noneDetail.m.state()).toEqual({ landed: false, stick: true });
+    expect(noneDetail.scroll.scrollTop).toBe(700);
+    expect(noneDetail.scroll.calls).not.toContain(3000);
     const noneAsk = rig('tasks', { tasksHidden: true, question: true });
     noneAsk.m.landPanel();
     expect(noneAsk.scroll.scrollTop).toBe(300);
   });
 
-  it('true (작업 로그) still lands on the work-log head', () => {
+  it('true (작업 로그) lands with the section tabs in view (its tab is the one shown) — a waiting question does not take it', () => {
     const r = rig('worklog');
     r.m.landPanel();
-    expect(r.scroll.calls.length).toBe(1);
+    expect(r.scroll.calls).toEqual([700]);
+    const ask = rig('worklog', { question: true });
+    ask.m.landPanel();
+    expect(ask.scroll.calls).toEqual([700]);
   });
 });
 
@@ -858,11 +874,15 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
           // Task view: a closing panel releases the composer and the answer observer.
           pcReset: () => {},
           _ansIo: null,
+          // SSOT 2026-10-29: a closed panel holds no section nodes and no pill.
+          psecClear: () => {},
+          psecSetNew: () => {},
         },
         [
           'var panelOpen = true, panelSessionKey = "k", panelConvId = null, _panelAgent = "", _panelAgentsHtml = "", _rawLoadedCache = {}, _panelGen = 0;',
           'var _panelTurnsHasMore = false, _panelTurnsLoading = false, _panelTurnsOldestId = null, _panelLand = "", _panelLanded = false;',
-          'var _panelStickBottom = false, _panelOnQuestion = false, _panelReturnFocus = __ret;',
+          'var _panelTurnsList = [], _panelTurnsMsg = "", PSEC_ORDER = ["tree", "log", "conv"];',
+          'var _panelOnQuestion = false, _panelReturnFocus = __ret;',
         ],
       );
       m.closePanel();
@@ -1199,7 +1219,6 @@ describe('a live repaint keeps the reader where they were reading (executed)', (
       ['PANEL_LIVE_SECTIONS'],
       {
         document: { getElementById: () => scroll, body: { contains: () => true } },
-        _panelStickBottom: false,
       },
     );
     const a = m.panelLiveAnchor();

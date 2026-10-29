@@ -717,13 +717,67 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
 });
 
 describe('[T3] session panel — turn-shaped skeleton instead of "Loading..."', () => {
-  it('openPanel no longer prints "Loading..."; it shows turn skeletons and marks the list busy', () => {
+  it('openPanel no longer prints "Loading..."; 지시와 답변 shows turn skeletons and marks the list busy until the turns land', () => {
     const body = clientFn('openPanel');
     expect(body).not.toContain('Loading...');
-    expect(body).toContain('turnsEl.innerHTML = turnsSkeletonHtml();');
-    expect(body).toContain("turnsEl.setAttribute('aria-busy', 'true');");
-    // Every way out of the load clears the busy state.
-    expect((body.match(/turnsEl\.removeAttribute\('aria-busy'\);/g) ?? []).length).toBeGreaterThanOrEqual(3);
+    // SSOT 2026-10-29: the opening marks 지시와 답변's data as loading; the tab paints from it (paintConvTab).
+    expect(body).toContain("_panelTurnsMsg = s.conversationId ? 'loading' : 'unrecorded';");
+    const attrs: Record<string, string> = {};
+    const turnsEl = {
+      innerHTML: '',
+      hidden: false,
+      firstChild: null,
+      setAttribute: (k: string, v: string) => {
+        attrs[k] = v;
+      },
+      removeAttribute: (k: string) => {
+        delete attrs[k];
+      },
+    };
+    const host = { innerHTML: '', firstChild: null, hidden: false, _html: '' };
+    const m = load<{ paintConvTab(): void; __set(n: string, v: unknown): void }>(
+      ['turnsSkeletonHtml', 'paintConvTab'],
+      ['PANEL_TURNS_MSG'],
+      {
+        document: {
+          getElementById: (id: string) => (id === 'panel-turns' ? turnsEl : id === 'panel-agent-conv' ? host : null),
+        },
+        _psec: 'conv',
+        _panelAgent: '',
+        _ansIo: null,
+        _panelTurnsList: [] as unknown[],
+        _panelTurnsCid: 'c',
+        _panelTurnsMsg: 'loading',
+        esc: (x: string) => x,
+        renderTurn: (t: { id: string }) => `<div class="turn" data-turn-id="${t.id}"></div>`,
+        attachRawToggleHandlers: () => {},
+        decoratePanelTurns: () => {},
+      },
+      ['function __set(n, v) { eval(n + " = v"); }'],
+    );
+    m.paintConvTab();
+    expect(turnsEl.innerHTML).toContain('sk-turn');
+    expect(attrs['aria-busy']).toBe('true');
+    // Every way out of the load clears the busy state: a failure, no turns, the turns.
+    m.__set('_panelTurnsMsg', 'failed');
+    m.paintConvTab();
+    expect(turnsEl.innerHTML).toContain('Failed to load conversation');
+    expect(attrs['aria-busy']).toBeUndefined();
+    m.__set('_panelTurnsMsg', 'loading');
+    m.paintConvTab();
+    m.__set('_panelTurnsMsg', 'none');
+    m.paintConvTab();
+    expect(turnsEl.innerHTML).toContain('No conversation turns');
+    expect(attrs['aria-busy']).toBeUndefined();
+    m.__set('_panelTurnsMsg', 'loading');
+    m.paintConvTab();
+    m.__set('_panelTurnsList', [{ id: 't1' }, { id: 't2' }]);
+    m.__set('_panelTurnsMsg', '');
+    m.paintConvTab();
+    expect(turnsEl.innerHTML).toBe(
+      '<div class="turn" data-turn-id="t1"></div><div class="turn" data-turn-id="t2"></div>',
+    );
+    expect(attrs['aria-busy']).toBeUndefined();
   });
 
   it('turnsSkeletonHtml: aria-hidden rows shaped like user / assistant turns', () => {

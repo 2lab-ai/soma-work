@@ -43,10 +43,17 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
+/** A client var whose value spans lines (`var X = {` … `\n};`). */
+function clientBlockVar(name: string): string {
+  const start = TEMPLATE.indexOf(`\nvar ${name} = {`);
+  if (start < 0) throw new Error(`client var ${name} not found`);
+  return cook(TEMPLATE.slice(start + 1, TEMPLATE.indexOf('\n};', start) + 3));
+}
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
   const names = Object.keys(inject);
   const setter = '__set: function(n, v) { eval(n + " = v"); }';
-  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${[...fns, setter].join(', ')} };`;
+  const varSrc = (v: string) => (TEMPLATE.includes(`\nvar ${v} = {\n`) ? clientBlockVar(v) : clientVar(v));
+  const body = `${vars.map(varSrc).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${[...fns, setter].join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 /** The page markup as served (the template between <body> and the first <script>). */
@@ -290,18 +297,43 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
     expect(at('id="panel-tabs"')).toBeGreaterThan(at('id="panel-artifacts"'));
   });
 
-  it('T1.2/T1.3 · the tab list, then one tab panel: Tasks · 작업 로그 · 지시와 답변, in that order', () => {
+  it('T1.2/T1.3 · the tab list, then one tab panel: Tasks, then the section tabs 에이전트 트리 · 작업 로그 · 지시와 답변 (SSOT 2026-10-29)', () => {
     expect(panel).toMatch(/<div class="panel-tabs" id="panel-tabs" role="tablist" aria-label="에이전트"/);
     const tabpanel = at('id="panel-tabpanel"');
     expect(panel).toMatch(/<section class="panel-tabpanel" id="panel-tabpanel" role="tabpanel"/);
     expect(tabpanel).toBeGreaterThan(at('id="panel-tabs"'));
     expect(at('id="panel-tasks"')).toBeGreaterThan(tabpanel);
-    expect(at('id="panel-worklog"')).toBeGreaterThan(at('id="panel-tasks"'));
-    expect(at('id="panel-conv"')).toBeGreaterThan(at('id="panel-worklog"'));
+    expect(panel).toMatch(
+      /<div class="panel-sections" id="panel-sections" role="tablist" aria-label="섹션" aria-orientation="horizontal">/,
+    );
+    expect(at('id="panel-sections"')).toBeGreaterThan(at('id="panel-tasks"'));
+    // The tabs in order, each controlling its own tab panel (its own scroll box).
+    expect(at('id="psec-tab-tree"')).toBeGreaterThan(at('id="panel-sections"'));
+    expect(at('id="psec-tab-log"')).toBeGreaterThan(at('id="psec-tab-tree"'));
+    expect(at('id="psec-tab-conv"')).toBeGreaterThan(at('id="psec-tab-log"'));
+    for (const sec of ['tree', 'log', 'conv']) {
+      expect(panel).toMatch(
+        new RegExp(`id="psec-tab-${sec}" data-sec="${sec}" aria-selected="(true|false)" aria-controls="psec-${sec}"`),
+      );
+      expect(panel).toMatch(
+        new RegExp(`<div class="psec" id="psec-${sec}" role="tabpanel" aria-labelledby="psec-tab-${sec}" tabindex="0"`),
+      );
+    }
+    expect(at('id="psec-tree"')).toBeGreaterThan(at('id="panel-sections-body"'));
+    expect(at('id="worklog-list"')).toBeGreaterThan(at('id="psec-log"'));
+    expect(at('id="panel-conv"')).toBeGreaterThan(at('id="psec-conv"'));
     expect(at('id="panel-turns"')).toBeGreaterThan(at('id="panel-conv"'));
-    // 지시와 답변 opens by default; 작업 로그 stays folded.
-    expect(panel).toMatch(/id="conv-toggle" aria-expanded="true"/);
-    expect(panel).toMatch(/id="worklog-toggle" aria-expanded="false"/);
+    // 지시와 답변 is the default tab: selected, the one tab stop, its panel the one shown.
+    expect(panel).toContain(
+      'id="psec-tab-conv" data-sec="conv" aria-selected="true" aria-controls="psec-conv" tabindex="0"',
+    );
+    expect(panel).toContain(
+      'id="psec-tab-log" data-sec="log" aria-selected="false" aria-controls="psec-log" tabindex="-1"',
+    );
+    expect(panel).toMatch(/id="psec-log" role="tabpanel"[^>]* hidden>/);
+    expect(panel).toMatch(/id="psec-conv" role="tabpanel"[^>]*tabindex="0">/);
+    // No disclosure heads for these sections any more.
+    expect(panel).not.toMatch(/id="(conv|worklog)-toggle"/);
   });
 
   it('T1.2 · the tab list sticks while the conversation scrolls, Main sticks at its left', () => {
@@ -309,9 +341,12 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
     expect(CSS).toMatch(/\.panel-tab\.is-main \{[^}]*position: sticky;[^}]*left: 0;/);
   });
 
-  it('T1.6 · minimal by default: the agent path and subtree only with 자세히', () => {
+  it('T1.6 · minimal by default: the agent path only with 자세히; the subtree is the 에이전트 트리 tab', () => {
     expect(CSS).toMatch(/\.slide-panel:not\(\.is-detail\) \.pa-bar/);
-    expect(CSS).toMatch(/\.slide-panel:not\(\.is-detail\) \.pa-tree/);
+    // The tree is a section tab of its own now: never hidden by the minimal view, never capped.
+    expect(CSS).not.toMatch(/\.slide-panel:not\(\.is-detail\) \.pa-tree/);
+    expect(CSS).toContain('.pa-tree { display: block; }');
+    expect(PAGE).toContain('<div class="psec-body panel-tree" id="panel-tree"></div>');
   });
 });
 
@@ -632,14 +667,12 @@ describe('#488 · every landing scroll starts a new panel scroll generation', ()
     TEMPLATE.indexOf('\nfunction landPanel('),
     TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction landPanel(')),
   );
-  const wl = TEMPLATE.slice(
-    TEMPLATE.indexOf('\nfunction scrollPanelToWorkLog('),
-    TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction scrollPanelToWorkLog(')),
-  );
-  it('the question / newest-turns landing and the work-log landing bump it too', () => {
-    const tail = land.slice(land.lastIndexOf('scrollEl.scrollTo(') - 200);
-    expect(tail).toContain('_panelScrollGen++');
-    expect(wl).toContain('_panelScrollGen++');
+  it('the question landing and the section-tabs landing (작업 로그 included) bump it too', () => {
+    const calls = land.split('scrollEl.scrollTo(');
+    expect(calls.length - 1).toBe(3); // the section landing, the question, the section tabs
+    for (let i = 0; i < calls.length - 1; i++) expect(calls[i].slice(-200)).toContain('_panelScrollGen++');
+    // 작업 로그 has no landing of its own: it is the section tab the opening selects.
+    expect(TEMPLATE).not.toContain('function scrollPanelToWorkLog(');
   });
 });
 
@@ -665,10 +698,10 @@ describe('#488 r4 (astra) · a send right after a recording timed out still wait
   });
 });
 
-describe('T1.1 / T1.6 · a minimal opening lands at the top: the surface, the tabs, the latest exchange', () => {
+describe('T1.1 / T1.6 · an opening lands with the section tabs in view: the top, or the tabs under the agent tabs', () => {
   type Rect = { top: number; bottom: number; height: number };
-  /** The default landing (no section intent, no question), minimal or 자세히. */
-  function rig(detail: boolean) {
+  /** The default landing (no section intent, no question), minimal or 자세히; the section box ends at boxBottom (content px). */
+  function rig(detail: boolean, boxBottom = 560, intent = '') {
     const scroll = {
       scrollTop: 0,
       scrollHeight: 2400,
@@ -680,6 +713,13 @@ describe('T1.1 / T1.6 · a minimal opening lands at the top: the surface, the ta
         this.calls.push(o.top);
       },
     };
+    const at = (y: number, h: number) => ({
+      getBoundingClientRect: (): Rect => ({
+        top: 100 + y - scroll.scrollTop,
+        bottom: 100 + y + h - scroll.scrollTop,
+        height: h,
+      }),
+    });
     const hidden = {
       style: { display: 'none' },
       getBoundingClientRect: (): Rect => ({ top: 0, bottom: 0, height: 0 }),
@@ -689,22 +729,23 @@ describe('T1.1 / T1.6 · a minimal opening lands at the top: the surface, the ta
       'panel-permission': hidden,
       'panel-question': hidden,
       'panel-needs-head': { hidden: true, offsetHeight: 0 },
+      'panel-sections': at(boxBottom - 300, 40),
+      'panel-sections-body': at(boxBottom - 260, 260),
+      'panel-tabs': { offsetHeight: 44 },
     };
-    const m = load<{ landPanel(): void; __set(n: string, v: unknown): void }>(['landPanel'], [], {
+    const m = load<{ landPanel(): void; __set(n: string, v: unknown): void }>(['psecLandingTop', 'landPanel'], [], {
       document: { getElementById: (id: string) => els[id] ?? null },
-      scrollPanelToWorkLog: () => {},
     });
-    m.__set('_panelLand', '');
+    m.__set('_panelLand', intent);
     m.__set('_panelLanded', false);
     m.__set('_panelLandAt', null);
     m.__set('_panelOnQuestion', false);
-    m.__set('_panelStickBottom', false);
     m.__set('_panelScrollGen', 0);
     m.__set('_panelDetail', detail);
     return { m, scroll };
   }
 
-  it('minimal: lands at 0 and does not hold the bottom; a later landing (turns arrived) leaves a reader who scrolled', () => {
+  it('the section box ends in view: lands at 0; a later landing (the turns arrived) leaves a reader who scrolled', () => {
     const r = rig(false);
     r.scroll.scrollTop = 900; // where the previous content left it
     r.m.landPanel();
@@ -716,95 +757,111 @@ describe('T1.1 / T1.6 · a minimal opening lands at the top: the surface, the ta
     expect(r.scroll.scrollTop).toBe(350);
   });
 
-  it('자세히: the whole conversation, landed on the newest turns as before', () => {
-    const r = rig(true);
+  it('a tall surface pushes the box past the view: the section tabs land right under the sticky agent tabs', () => {
+    const r = rig(false, 1400); // the tabs at 1100, the box ends at 1400 (view 600)
     r.m.landPanel();
-    expect(r.scroll.scrollTop).toBe(2400);
+    expect(r.scroll.scrollTop).toBe(1100 - 44);
   });
 
-  it('the landing never holds the bottom in minimal mode', () => {
+  it('자세히 lands the same way — the newest turns are at the bottom of the section box, not of the panel', () => {
+    const r = rig(true);
+    r.m.landPanel();
+    expect(r.scroll.scrollTop).toBe(0);
+    expect(r.scroll.calls).not.toContain(2400);
+  });
+
+  it('작업 로그 / ?session= land the same way, on the 작업 로그 tab (never on the question)', () => {
+    const r = rig(false, 1400, 'worklog');
+    r.m.landPanel();
+    expect(r.scroll.scrollTop).toBe(1056);
+  });
+
+  it('the landing never holds the panel at its bottom (the section box holds its own newest)', () => {
     const land = TEMPLATE.slice(
       TEMPLATE.indexOf('\nfunction landPanel('),
       TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction landPanel(')),
     );
-    expect(land).toMatch(/if \(!onQuestion && !_panelDetail\) \{/);
+    expect(land).not.toContain('scrollEl.scrollHeight');
+    expect(TEMPLATE).not.toContain('_panelStickBottom');
+    const m = load<{ psecLandingTop(secTop: number, boxBottom: number, view: number, under: number): number }>(
+      ['psecLandingTop'],
+      [],
+    );
+    expect(m.psecLandingTop(300, 560, 600, 44)).toBe(0); // the box ends in view: the top
+    expect(m.psecLandingTop(1100, 1400, 600, 44)).toBe(1056); // else the tabs under the agent tabs
+    expect(m.psecLandingTop(20, 900, 600, 44)).toBe(0); // never above the top
   });
 });
 
-describe('T1.3 / T1.6 · minimal 지시와 답변 is the latest exchange; 이전 대화 opens the rest', () => {
-  const turn = (role: string) => ({ classList: { contains: (c: string) => c === role } });
-
-  it('the latest exchange starts at the last instruction: the turns before it are counted', () => {
-    const m = load<{ convEarlierCount(nodes: unknown[]): number }>(['convEarlierCount'], []);
-    expect(m.convEarlierCount([])).toBe(0);
-    expect(m.convEarlierCount([turn('user'), turn('assistant')])).toBe(0);
-    expect(m.convEarlierCount([turn('user'), turn('assistant'), turn('user'), turn('assistant')])).toBe(2);
-    expect(m.convEarlierCount([turn('assistant'), turn('user')])).toBe(1);
-    expect(m.convEarlierCount([turn('assistant'), turn('assistant')])).toBe(0); // no instruction: all of it shows
-  });
-
-  function rig(nodes: unknown[], hasMore: boolean, all: boolean) {
-    const classes = new Set<string>();
-    const turns = {
-      classList: { toggle: (c: string, on: boolean) => (on ? classes.add(c) : classes.delete(c)) },
-      querySelectorAll: () => nodes,
+describe('T1.3 / SSOT 2026-10-29 · 지시와 답변 opens on its latest turns; scrolling up loads the ones before', () => {
+  /** psecSyncControls over a fake 지시와 답변 box: its top control and start marker. */
+  function rig(o: { turns: number; hasMore: boolean; loading?: boolean; agent?: string; shown?: string }) {
+    const attrs: Record<string, string> = {};
+    const btn = {
+      hidden: true,
+      textContent: '',
+      setAttribute: (k: string, v: string) => (attrs[k] = v),
+      removeAttribute: (k: string) => delete attrs[k],
+      hasAttribute: (k: string) => k in attrs,
     };
-    const btn = { hidden: true, textContent: '' };
-    const loads: number[] = [];
-    const m = load<{ renderConvEarlier(): void; showEarlierTurns(): void; __set(n: string, v: unknown): void }>(
-      ['convEarlierCount', 'renderConvEarlier', 'showEarlierTurns'],
-      [],
+    const start = { hidden: true };
+    const box = { querySelector: (q: string) => (q === '.psec-older' ? btn : q === '.psec-start' ? start : null) };
+    const m = load<{ psecSyncControls(sec: string): void; psecOlderState(sec: string): string }>(
+      ['psecBox', 'setTextIfChanged', 'psecOlderState', 'psecSyncControls'],
+      ['PSEC_TEXT'],
       {
-        document: {
-          getElementById: (id: string) => (id === 'panel-turns' ? turns : id === 'conv-earlier' ? btn : null),
-        },
-        loadMorePanelTurns: () => loads.push(1),
+        document: { getElementById: (id: string) => (id === 'psec-conv' ? box : null) },
+        _psec: o.shown ?? 'conv',
+        panelSessionKey: 'k',
+        _panelAgent: o.agent ?? '',
+        _panelTurnsList: Array.from({ length: o.turns }, (_, i) => ({ id: `t${i}` })),
+        _panelTurnsLoading: !!o.loading,
+        _panelTurnsHasMore: o.hasMore,
       },
     );
-    m.__set('_panelConvAll', all);
-    m.__set('_panelTurnsHasMore', hasMore);
-    m.__set('_panelAgent', ''); // the Main tab
-    return { m, btn, classes, loads };
+    return { m, btn, start, attrs };
   }
 
-  it('a button names how many turns wait above the latest exchange (+ when older pages are not loaded)', () => {
-    const nodes = [turn('user'), turn('assistant'), turn('user'), turn('assistant')];
-    const r = rig(nodes, false, false);
-    r.m.renderConvEarlier();
+  it('older turns on the server: a visible, focusable control at the top — 이전 대화 불러오기', () => {
+    const r = rig({ turns: 20, hasMore: true });
+    r.m.psecSyncControls('conv');
     expect(r.btn.hidden).toBe(false);
-    expect(r.btn.textContent).toBe('이전 대화 2개');
-    expect(r.classes.has('is-all')).toBe(false);
-    const more = rig(nodes, true, false);
-    more.m.renderConvEarlier();
-    expect(more.btn.textContent).toBe('이전 대화 2+개');
+    expect(r.btn.textContent).toBe('이전 대화 불러오기');
+    expect(r.start.hidden).toBe(true);
+    expect(r.attrs['aria-busy']).toBeUndefined();
   });
 
-  it('nothing above the latest exchange: no button', () => {
-    const r = rig([turn('user'), turn('assistant')], false, false);
-    r.m.renderConvEarlier();
-    expect(r.btn.hidden).toBe(true);
+  it('while the page loads the control says so (aria-busy); at the start it gives way to 대화의 시작', () => {
+    const busy = rig({ turns: 20, hasMore: true, loading: true });
+    busy.m.psecSyncControls('conv');
+    expect(busy.btn.textContent).toBe('이전 대화 불러오는 중…');
+    expect(busy.attrs['aria-busy']).toBe('true');
+    const all = rig({ turns: 12, hasMore: false });
+    all.m.psecSyncControls('conv');
+    expect(all.btn.hidden).toBe(true);
+    expect(all.start.hidden).toBe(false);
   });
 
-  it('이전 대화 shows every turn for this opening; with only older pages left it loads one', () => {
-    const r = rig([turn('user'), turn('assistant'), turn('user')], false, false);
-    r.m.showEarlierTurns();
-    expect(r.classes.has('is-all')).toBe(true);
-    expect(r.btn.hidden).toBe(true);
-    const older = rig([turn('user'), turn('assistant')], true, false);
-    older.m.renderConvEarlier();
-    expect(older.btn.textContent).toBe('이전 대화');
-    older.m.showEarlierTurns();
-    expect(older.loads).toEqual([1]);
+  it('no turns yet, a subagent tab, or another section shown: neither control nor marker', () => {
+    for (const o of [
+      { turns: 0, hasMore: true },
+      { turns: 5, hasMore: true, agent: 'toolu_a' },
+      { turns: 5, hasMore: true, shown: 'log' },
+    ]) {
+      const r = rig(o);
+      r.m.psecSyncControls('conv');
+      expect(r.btn.hidden).toBe(true);
+      expect(r.start.hidden).toBe(true);
+    }
   });
 
-  it('the markup and the style: the button above the turns; minimal hides the turns before the last instruction', () => {
+  it('the markup and the style: the control and the marker above the turns, in the conv box; no turn hidden by CSS', () => {
     expect(PAGE).toMatch(
-      /<button type="button" class="conv-earlier" id="conv-earlier" hidden onclick="showEarlierTurns\(\)"><\/button>\s*<div class="panel-turns" id="panel-turns">/,
+      /<div class="psec" id="psec-conv"[^>]*>\s*<button type="button" class="psec-older" data-sec="conv" hidden>이전 대화 불러오기<\/button>\s*<p class="psec-start" hidden>대화의 시작<\/p>\s*<div class="psec-body panel-conv" id="panel-conv">/,
     );
-    expect(CSS).toContain(
-      '.slide-panel:not(.is-detail) #panel-turns:not(.is-all) > .turn:has(~ .turn.user) { display: none; }',
-    );
-    expect(CSS).toMatch(/\.slide-panel\.is-detail \.conv-earlier\b[^{]*\{ display: none; \}/);
+    expect(CSS).not.toContain('#panel-turns:not(.is-all)');
+    expect(CSS).not.toContain('.conv-earlier');
+    expect(CSS).toMatch(/\.psec-older\[aria-busy="true"\] \{/);
   });
 
   it('minimal shows the artifacts as one row of name chips; 자세히 keeps the thumbnails', () => {
@@ -814,26 +871,50 @@ describe('T1.3 / T1.6 · minimal 지시와 답변 is the latest exchange; 이전
     expect(CSS).toContain('.slide-panel:not(.is-detail) .panel-artifacts { display: flex;');
   });
 
-  it('every opening starts at the latest exchange again; decorating the turns re-counts', () => {
+  it('every opening loads the latest 20 turns; each older page is the 20 before the oldest held', () => {
+    expect(TEMPLATE).toMatch(/^var PANEL_TURNS_PAGE = 20;/m);
     const open = TEMPLATE.slice(
       TEMPLATE.indexOf('\nfunction openPanel('),
       TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction openPanel(')),
     );
-    expect(open).toContain('_panelConvAll = false;');
-    const deco = TEMPLATE.slice(
-      TEMPLATE.indexOf('\nfunction decoratePanelTurns('),
-      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction decoratePanelTurns(')),
+    expect(open).toContain("'?limit=' + PANEL_TURNS_PAGE)");
+    expect(open).toContain('_panelTurnsList = [];');
+    const more = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nasync function loadMorePanelTurns('),
+      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nasync function loadMorePanelTurns(')),
     );
-    expect(deco.indexOf('renderConvEarlier()')).toBeGreaterThan(-1);
-    expect(deco.indexOf('renderConvEarlier()')).toBeLessThan(deco.indexOf('if (!turnsEl || !cid) return;'));
+    expect(more).toContain("'?limit=' + PANEL_TURNS_PAGE + '&before=' + encodeURIComponent(requestOldestId)");
+    // The page goes in above the reader, who keeps their place: the turn they were on stays put.
+    expect(more.indexOf('var anchor = psecViewAnchor(box);')).toBeLessThan(
+      more.indexOf("insertAdjacentHTML('afterbegin'"),
+    );
+    expect(more).toContain('psecHoldPlace(box, anchor, fromBottom);');
   });
 
-  it('a hidden first turn never starts loading older pages', () => {
-    const init = TEMPLATE.slice(
-      TEMPLATE.indexOf('(function initPanelScrollHandler()'),
-      TEMPLATE.indexOf('})();', TEMPLATE.indexOf('(function initPanelScrollHandler()')),
-    );
-    expect(init).toMatch(/if \(!first \|\| !first\.getClientRects\(\)\.length\) return;/);
+  it('a page is due only for a reader who scrolled up near the top — or a box too short to scroll; never on a landing', () => {
+    const m = load<{ psecPageDue(top: number, sh: number, ch: number, armed: boolean): boolean }>(['psecPageDue'], []);
+    expect(m.psecPageDue(4000, 4600, 600, false)).toBe(false); // landed at the newest
+    expect(m.psecPageDue(300, 4600, 600, false)).toBe(false); // near the top, but no reader scrolled
+    expect(m.psecPageDue(300, 4600, 600, true)).toBe(true); // the reader scrolled up within one box height
+    expect(m.psecPageDue(601, 4600, 600, true)).toBe(false); // more than one box height away
+    expect(m.psecPageDue(0, 500, 600, false)).toBe(true); // too short to scroll: fill it
+    expect(m.psecPageDue(0, 0, 0, true)).toBe(false); // a hidden box (no height) loads nothing
+  });
+
+  it("the reader's rows stay put while what is above them settles: no native scroll anchoring, the page holds the rows it read last (browser receipt)", () => {
+    // Native anchoring and the page's own correction fought: a late answer above moved the reader by its height.
+    expect(CSS).toMatch(/\n\.psec \{[^}]*overflow-anchor: none;/);
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelSections() {'));
+    const body = init.slice(0, init.indexOf('\n})();'));
+    // A reader's scroll reads the rows in view once a frame (not at the newest: that is pinned).
+    expect(body).toMatch(/if \(!_psecPin && !box\._capture\) \{[\s\S]*?box\._anchor = psecViewAnchor\(box\);/);
+    // A reader acting on a row (an entry's detail, a Raw) is not held against.
+    expect(body).toContain("['pointerdown', 'keydown'].forEach(function(type) {");
+    expect(body).toContain('box.addEventListener(type, function() { box._anchor = null; }, { passive: true });');
+    // Any size change: pinned → the newest; else the held rows back in place (no time limit).
+    expect(body).toContain('if (_psecPin) psecSetTop(box, box.scrollHeight);');
+    expect(body).toContain('else if (box._anchor) psecRestoreAnchor(box, box._anchor);');
+    expect(TEMPLATE).not.toContain('_anchorUntil');
   });
 });
 
@@ -920,9 +1001,12 @@ describe('browser receipt · a section landing is held while the panel settles, 
       TEMPLATE.indexOf('(function initPanelScrollHandler()'),
       TEMPLATE.indexOf('})();', TEMPLATE.indexOf('(function initPanelScrollHandler()')),
     );
-    expect(init).toMatch(/if \(_panelHold && panelOpen\) holdPanelLanding\(\);/);
-    expect(init).toMatch(/else if \(_panelHold && panelOpen\) holdPanelLanding\(\);/);
-    expect(init).toContain('_panelStickBottom = false; _panelHold = false;');
+    // The scroll handler and the resize observer both put a held landing back.
+    expect(init.split('if (_panelHold && panelOpen) holdPanelLanding();').length - 1).toBe(2);
+    expect(init.slice(init.indexOf('new ResizeObserver('))).toContain(
+      'if (_panelHold && panelOpen) holdPanelLanding();',
+    );
+    expect(init).toContain('panel.addEventListener(type, function() { _panelHold = false; }');
     const open = TEMPLATE.slice(
       TEMPLATE.indexOf('\nfunction openPanel('),
       TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction openPanel(')),
@@ -936,49 +1020,43 @@ describe('browser receipt · a section landing is held while the panel settles, 
   });
 });
 
-describe('R7 review (fable P2/P3) · the 이전 대화 button belongs to the main conversation; the hold is a settle window', () => {
-  const turn = (role: string) => ({ classList: { contains: (c: string) => c === role } });
-  function rig(nodes: unknown[], o: { agent?: string; hasMore?: boolean } = {}) {
-    const turns = { classList: { toggle: () => {} }, querySelectorAll: () => nodes };
-    const btn = { hidden: true, textContent: '' };
-    const m = load<{ renderConvEarlier(): void; __set(n: string, v: unknown): void }>(
-      ['convEarlierCount', 'renderConvEarlier'],
-      [],
-      {
-        document: {
-          getElementById: (id: string) => (id === 'panel-turns' ? turns : id === 'conv-earlier' ? btn : null),
-        },
-      },
-    );
-    m.__set('_panelConvAll', false);
-    m.__set('_panelTurnsHasMore', !!o.hasMore);
-    m.__set('_panelAgent', o.agent ?? '');
-    return { m, btn };
+describe('R7 review (fable P2/P3) · the 이전 대화 control belongs to the main conversation; the hold is a settle window', () => {
+  function rig(o: { agent?: string; hasMore?: boolean; turns?: number } = {}) {
+    const m = load<{ psecOlderState(sec: string): string }>(['psecOlderState'], [], {
+      _panelAgent: o.agent ?? '',
+      _panelTurnsList: Array.from({ length: o.turns ?? 0 }, (_, i) => ({ id: `t${i}` })),
+      _panelTurnsLoading: false,
+      _panelTurnsHasMore: !!o.hasMore,
+    });
+    return { m };
   }
 
-  it("a subagent tab never shows the main conversation's 이전 대화 button", () => {
-    const r = rig([turn('user'), turn('assistant'), turn('user')], { agent: 'toolu_lib' });
-    r.m.renderConvEarlier();
-    expect(r.btn.hidden).toBe(true);
+  it("a subagent tab never offers the main conversation's older turns", () => {
+    expect(rig({ turns: 3, hasMore: true }).m.psecOlderState('conv')).toBe('older');
+    expect(rig({ turns: 3, hasMore: true, agent: 'toolu_lib' }).m.psecOlderState('conv')).toBe('');
   });
 
-  it('no turns yet (loading, none recorded, a failed load): no button, whatever the last session left', () => {
-    const r = rig([], { hasMore: true });
-    r.m.renderConvEarlier();
-    expect(r.btn.hidden).toBe(true);
+  it('no turns yet (loading, none recorded, a failed load): no control, whatever the last session left', () => {
+    expect(rig({ hasMore: true }).m.psecOlderState('conv')).toBe('');
   });
 
-  it('switching tabs and replacing the turns re-count the button', () => {
-    const agentConv = TEMPLATE.slice(
-      TEMPLATE.indexOf('\nfunction renderAgentConv('),
-      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction renderAgentConv(')),
+  it('switching agent tabs and replacing the turns re-sync the control', () => {
+    const sel = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nfunction selectPanelAgent('),
+      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction selectPanelAgent(')),
     );
-    expect(agentConv).toContain('renderConvEarlier();');
+    expect(sel).toContain('selectPanelSection(_psec);');
+    const paint = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nfunction paintSection('),
+      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction paintSection(')),
+    );
+    expect(paint).toContain('psecSyncControls(sec);');
     const open = TEMPLATE.slice(
       TEMPLATE.indexOf('\nfunction openPanel('),
       TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction openPanel(')),
     );
-    expect(open.split('renderConvEarlier();').length - 1).toBeGreaterThanOrEqual(3);
+    // The turns arriving (or failing) re-sync it.
+    expect(open.split("psecSyncControls('conv');").length - 1).toBeGreaterThanOrEqual(2);
   });
 
   it('the hold lets go after the settle window, and a mouse press lets go at once', () => {
@@ -1054,7 +1132,6 @@ describe('R7 review (astra P2) · a panel read at its top stays at its top throu
       panelScrollAnchor: () => ({ el: row, top: row.getBoundingClientRect().top }),
     });
     m.__set('panelOpen', true);
-    m.__set('_panelStickBottom', false);
     m.__set('_panelScrollGen', 0);
     return { m, scroll, row };
   }
@@ -1086,29 +1163,57 @@ describe('R8 review (fable P3) · input symmetry and a short body read at its to
     expect(gen.slice(0, 200)).toContain("['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart']");
   });
 
-  it('a new turn follows the bottom only for a reader who is down there — a body that could not scroll stays at its top', () => {
-    type T = { role: string };
-    const run = (scrollTop: number, scrollHeight: number) => {
-      const scroll = { scrollTop, scrollHeight, clientHeight: 600 };
+  it('a new turn follows the newest only for a reader who is there — else their place stays and the pill counts it', () => {
+    type T = { role: string; id?: string };
+    const run = (scrollTop: number, o: { own?: boolean; shown?: string } = {}) => {
+      const box = { scrollTop, scrollHeight: 1000, clientHeight: 600, _lastTop: scrollTop };
       const turns = {
         insertAdjacentHTML: () => {
-          scroll.scrollHeight += 400;
+          box.scrollHeight += 400;
         },
       };
-      const m = load<{ appendTurnToPanel(t: T): void }>(['appendTurnToPanel'], [], {
-        document: {
-          getElementById: (id: string) => (id === 'panel-scroll' ? scroll : id === 'panel-turns' ? turns : null),
+      const pill = { hidden: true, textContent: '' };
+      const m = load<{ appendTurnToPanel(t: T, own?: boolean): void; __set(n: string, v: unknown): void }>(
+        [
+          'psecBox',
+          'psecAtBottom',
+          'psecSetTop',
+          'setTextIfChanged',
+          'psecSetNew',
+          'psecOnAppended',
+          'ptUpsert',
+          'appendTurnToPanel',
+        ],
+        [],
+        {
+          document: {
+            getElementById: (id: string) =>
+              id === 'psec-conv' ? box : id === 'panel-turns' ? turns : id === 'psec-pill' ? pill : null,
+          },
+          renderTurn: () => '<div class="turn user"></div>',
+          attachRawToggleHandlers: () => {},
+          decoratePanelTurns: () => {},
+          paintConvTab: () => {},
+          psecSyncControls: () => {},
+          psecToNewest: () => {},
         },
-        renderTurn: () => '<div class="turn user"></div>',
-        attachRawToggleHandlers: () => {},
-        decoratePanelTurns: () => {},
-        _panelStickBottom: false,
-      });
-      m.appendTurnToPanel({ role: 'user' });
-      return scroll.scrollTop;
+      );
+      m.__set('_psec', o.shown ?? 'conv');
+      m.__set('_panelAgent', '');
+      m.__set('_panelTurnsList', [{ id: 'a' }]);
+      m.__set('_panelTurnsMsg', '');
+      m.__set('_psecPin', true);
+      m.__set('_psecNew', 0);
+      m.appendTurnToPanel({ role: 'user', id: 'b' }, o.own);
+      return { top: box.scrollTop, pill };
     };
-    expect(run(0, 500)).toBe(0); // short body at its top: stays at the top
-    expect(run(400, 1000)).toBe(1400); // scrolled to the end: follows the new turn
+    expect(run(400).top).toBe(1400); // at the newest: follows the new turn
+    const reading = run(100); // reading higher up: stays, and is told
+    expect(reading.top).toBe(100);
+    expect(reading.pill.hidden).toBe(false);
+    expect(reading.pill.textContent).toBe('새 항목 1개 ↓');
+    expect(run(100, { own: true }).top).toBe(1400); // the reader's own instruction: goes to it
+    expect(run(100, { shown: 'log' }).top).toBe(100); // 지시와 답변 not shown: data only, nothing moves
   });
 });
 

@@ -56,7 +56,9 @@
  * Reads: every scan has a byte budget (WORK_LOG_SCAN_BUDGET_BYTES). The latest
  * window and the seed scan back from the end; `afterSeq` pages first try a
  * short backward scan (the reconnect case), else binary-search byte offsets
- * (lines are in seq order) and read forward. `hasMore` follows what the read
+ * (lines are in seq order) and read forward; `beforeSeq` pages (the reader
+ * scrolling back) binary-search the first line at or past `beforeSeq` and scan
+ * back from there. `hasMore` follows what the read
  * could prove, not merely whether it hit the budget (see WorkLogPage.hasMore).
  * When junk sits between `afterSeq` and the tail, the entries the backward scan
  * found are returned as soon as they provably start the page — the oldest one
@@ -175,8 +177,9 @@ export interface WorkLogRaw {
 export interface WorkLogPage {
   entries: WorkLogEntry[];
   /**
-   * Without `afterSeq`: older entries exist before the returned (latest)
-   * window — or the backward scan stopped at its byte budget, so there may be.
+   * Without `afterSeq` (the latest window, or a `beforeSeq` page): older
+   * entries exist before the returned window — or the backward scan stopped at
+   * its byte budget, so there may be.
    * With `afterSeq`: more entries than `limit` follow afterSeq — or the read
    * stopped at its budget before it could prove the page complete, so there
    * may be (the page can then be short or empty). It is false whenever the
@@ -544,6 +547,32 @@ async function findPageStart(
     else hi = mid;
   }
   return lo;
+}
+
+/**
+ * Byte offset of a line start (or `size`) such that every entry line at or
+ * after it has `seq >= beforeSeq` — where a `beforeSeq` page ends. Lines are in
+ * seq order, so this is a binary search on byte offsets. Only `hi` moves on
+ * evidence (a parsed line ≥ beforeSeq: it and everything after it are past the
+ * page); a missed or unparseable probe only raises `lo`, which costs scanning,
+ * never correctness. Out of budget, the current `hi` is still a valid (if late) end.
+ */
+async function findPageEnd(
+  fh: fs.promises.FileHandle,
+  size: number,
+  beforeSeq: number,
+  budget: Budget,
+): Promise<number> {
+  let lo = 0;
+  let hi = size;
+  while (hi - lo > WORK_LOG_READ_CHUNK_BYTES) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    const probe = await probeAfter(fh, size, mid, budget);
+    if (probe === 'budget') break;
+    if (probe && probe.seq >= beforeSeq) hi = probe.start;
+    else lo = mid;
+  }
+  return hi;
 }
 
 async function openForRead(filePath: string): Promise<{ fh: fs.promises.FileHandle; size: number } | null> {
@@ -1231,16 +1260,21 @@ function warnBudget(conversationId: string, mode: string, found: number): void {
 }
 
 /**
- * Without `afterSeq`: the latest `limit` entries (`hasMore` = older exist).
+ * Without `afterSeq` / `beforeSeq`: the latest `limit` entries (`hasMore` =
+ * older exist).
  * With `afterSeq`: the first `limit` entries with `seq > afterSeq`, for forward
- * paging (`hasMore` = newer exist past this page). `hasMore` is exactly
- * WorkLogPage.hasMore: a budget stop only sets it when completeness is not
- * proven. Waits for this process's pending writes to the same file first.
- * Unknown or unsafe ids read as empty.
+ * paging (`hasMore` = newer exist past this page).
+ * With `beforeSeq`: the last `limit` entries with `seq < beforeSeq`, for paging
+ * back from the oldest entry a reader holds (`hasMore` = older exist before
+ * this page, or the scan stopped at its byte budget). Not both: the caller
+ * (the route) refuses that; here `afterSeq` wins.
+ * `hasMore` is exactly WorkLogPage.hasMore: a budget stop only sets it when
+ * completeness is not proven. Waits for this process's pending writes to the
+ * same file first. Unknown or unsafe ids read as empty.
  */
 export async function readWorkLog(
   conversationId: string,
-  options: { afterSeq?: number; limit?: number } = {},
+  options: { afterSeq?: number; beforeSeq?: number; limit?: number } = {},
 ): Promise<WorkLogPage> {
   const empty: WorkLogPage = { entries: [], hasMore: false };
   const files = workLogPaths(conversationId);
@@ -1248,6 +1282,9 @@ export async function readWorkLog(
   const limit = options.limit ?? WORK_LOG_DEFAULT_LIMIT;
   if (!(limit > 0)) return empty;
   const { afterSeq } = options;
+  const beforeSeq = afterSeq === undefined ? options.beforeSeq : undefined;
+  // seqs start at 1: nothing is older than 1.
+  if (beforeSeq !== undefined && !(beforeSeq > 1)) return empty;
 
   await states.get(conversationId)?.queue;
 
@@ -1256,6 +1293,20 @@ export async function readWorkLog(
   const { fh, size } = opened;
   try {
     const budget: Budget = { left: WORK_LOG_SCAN_BUDGET_BYTES };
+
+    if (beforeSeq !== undefined) {
+      // Older page: from where entries reach beforeSeq, back towards the start.
+      const stop = await findPageEnd(fh, size, beforeSeq, budget);
+      const older: WorkLogEntry[] = [];
+      const end = await scanBackward(fh, stop, budget, (line) => {
+        const entry = parseEntry(line);
+        // A late end (out of budget, or no evidence) may still hold newer lines: skip them.
+        if (entry && entry.seq < beforeSeq) older.push(publicEntry(entry));
+        return older.length <= limit; // one extra tells us whether more exist
+      });
+      if (end === 'budget') warnBudget(conversationId, 'beforeSeq', older.length);
+      return { entries: older.slice(0, limit).reverse(), hasMore: older.length > limit || end === 'budget' };
+    }
 
     if (afterSeq === undefined) {
       const newest: WorkLogEntry[] = [];
