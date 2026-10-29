@@ -5333,7 +5333,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     session.usage.lastUpdated = Date.now();
     // SSOT 2026-10-26 T3 — the task total takes the same turn spend, settled
     // against its own (persisted) fold so a restart in between cannot count a
-    // folded call twice. It outlives restarts and resets; `usage` does not.
+    // folded call twice. It outlives restarts and resets; `usage` outlives only restarts.
     creditTaskSpend(session, usage);
     // The turn's calls are in the totals now — the live view stops adding them,
     // and the turn's end never folds them a second time.
@@ -5354,8 +5354,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // `activeLegGoalId`), resolved across active/queue/history so a `goal
     // done`/advance mid-turn doesn't misattribute spend to the promoted goal.
     // Live accumulation (not a snapshot diff of `session.usage.total*`) because
-    // `session.usage` is in-memory and reset on compaction — diffing would lose
-    // every token spent before the last compaction.
+    // `session.usage` is reset with the context (`/new`, CONTINUE_SESSION) —
+    // diffing would lose every token spent before the last reset.
     const legOwner = findGoalById(
       session as unknown as GoalQueueSession,
       session.activeLegGoalId as string | undefined,
