@@ -794,8 +794,12 @@ describe('panel scope (§4.3)', () => {
     // Live entries, older pages and recovery merges all paint through paintWorkLog — whichever
     // section tab is shown (SSOT 2026-10-29: the bar, and the 에이전트 트리 tab when it is the one shown).
     const paint = fnBody('paintWorkLog');
-    expect(paint).toMatch(/if \(wlNamesNewAgent\(added\)\) \{\s*renderPanelAgents\(\);\s*if \(_psec === 'tree'\) paintTreeTab\(\);/);
-    expect(paint.indexOf('wlNamesNewAgent(added)')).toBeLessThan(paint.indexOf("if (_psec !== 'log' || !list || !box)"));
+    expect(paint).toMatch(
+      /if \(wlNamesNewAgent\(added\)\) \{\s*renderPanelAgents\(\);\s*if \(_psec === 'tree'\) paintTreeTab\(\);/,
+    );
+    expect(paint.indexOf('wlNamesNewAgent(added)')).toBeLessThan(
+      paint.indexOf("if (_psec !== 'log' || !list || !box)"),
+    );
   });
 
   it('closing the panel forgets the agent bar it last wrote (review B r2)', () => {
@@ -1067,7 +1071,9 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     expect(out.data).toMatchObject({ density: 'rich', title: '에이전트 트리', selectedId: 'toolu_explore' });
     const ids = out.data?.nodes.map((n) => n.id) ?? [];
     expect(ids[0]).toBe(':main');
-    expect([...ids].sort()).toEqual([':main', 'toolu_explore', 'toolu_nested', 'toolu_lib', ...kids.map((k) => k.id)].sort());
+    expect([...ids].sort()).toEqual(
+      [':main', 'toolu_explore', 'toolu_nested', 'toolu_lib', ...kids.map((k) => k.id)].sort(),
+    );
     expect(out.data?.nodes.find((n) => n.id === 'k0')?.parentId).toBe('toolu_explore');
     // 12 agents: all of them fit the window — nothing waits above.
     expect(host._hidden).toBe(0);
@@ -1116,7 +1122,12 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     type W = { id: string; n?: number; children: W[] };
     const nd = (id: string, n: number | undefined, children: W[] = []): W => ({ id, n, children });
     // main → a(1) → b(2) → c(5); main → d(3); main → e(4); main → log-only x (no spawn number: the oldest).
-    const root = nd('', undefined, [nd('a', 1, [nd('b', 2, [nd('c', 5)])]), nd('d', 3), nd('e', 4), nd('x', undefined)]);
+    const root = nd('', undefined, [
+      nd('a', 1, [nd('b', 2, [nd('c', 5)])]),
+      nd('d', 3),
+      nd('e', 4),
+      nd('x', undefined),
+    ]);
     const two = w.atWindowOf(root, 2, null, null);
     expect(Object.keys(two.keep).sort()).toEqual(['a', 'b', 'c', 'e']);
     expect(two).toMatchObject({ hidden: 2, maxN: 5, newer: 0 });

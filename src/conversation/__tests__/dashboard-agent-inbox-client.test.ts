@@ -2085,7 +2085,6 @@ describe('작업 로그 is a section tab: painted only while shown, following th
   });
 });
 
-
 describe("an older page keeps the reader's row in place — several rows in view are kept, the first still shown wins (shipped psecViewAnchor / psecRestoreAnchor)", () => {
   // A box at viewport y=100, 300px tall; rows at content offsets (y), 40px each.
   type Row = {
@@ -2138,7 +2137,10 @@ describe("an older page keeps the reader's row in place — several rows in view
       return r;
     };
     seqs.forEach((seq, i) => make({ 'data-seq': String(seq) }, i * 40, rows));
-    const m = load<{ psecViewAnchor(b: unknown): unknown[] | null; psecRestoreAnchor(b: unknown, a: unknown): boolean }>(
+    const m = load<{
+      psecViewAnchor(b: unknown): unknown[] | null;
+      psecRestoreAnchor(b: unknown, a: unknown): boolean;
+    }>(
       ['psecSetTop', 'psecTreeRoot', 'psecViewAnchor', 'psecAnchorEl', 'psecRestoreAnchor'],
       ['PSEC_ANCHORS', 'PSEC_ANCHOR_MAX'],
     );
@@ -2398,10 +2400,16 @@ describe('panel landing and older-page loading (shipped psecLandingTop + psecPag
   });
 
   it('one page at a time: the wiring loads through psecMaybeFill, which asks only while the section says older', () => {
-    const fill = TEMPLATE.slice(TEMPLATE.indexOf('\nfunction psecMaybeFill('), TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction psecMaybeFill(')));
+    const fill = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nfunction psecMaybeFill('),
+      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction psecMaybeFill(')),
+    );
     expect(fill).toContain('psecPageDue(box.scrollTop, box.scrollHeight, box.clientHeight, box._armed)');
     expect(fill).toContain("if (psecOlderState(sec) === 'older') psecLoadOlder(sec);");
-    const load1 = TEMPLATE.slice(TEMPLATE.indexOf('\nfunction psecLoadOlder('), TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction psecLoadOlder(')));
+    const load1 = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nfunction psecLoadOlder('),
+      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction psecLoadOlder(')),
+    );
     expect(load1).toContain("if (sec !== _psec || psecOlderState(sec) !== 'older') return;");
   });
 });
