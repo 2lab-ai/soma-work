@@ -1158,7 +1158,9 @@ describe('the model menu closes on Escape before the panel does (executed)', () 
     const picker = { tagName: 'UI-MODEL-PICKER', getAttribute: (n: string) => (n === 'data-mp-key' ? 'k' : null) };
     m.mpOnOpenChange({ target: picker, detail: { open: false } });
     expect(repainted).toEqual(['k']); // the controls catch up on what they held while the menu was open
-    expect(clientFn('renderPanelControls')).toContain('if (!isPickingModel(el)) {');
+    // Held while its own session's menu is open (a menu of another session is closed: model-picker client test).
+    expect(clientFn('renderPanelControls')).toContain("var held = el.querySelector('ui-model-picker[open]');");
+    expect(clientFn('renderPanelControls')).toContain('if (!held) {');
   });
 
   it('the same-session re-landing leaves a send in flight alone; a send whose session left the board fails closed', () => {

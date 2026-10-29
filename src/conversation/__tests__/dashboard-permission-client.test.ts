@@ -75,6 +75,7 @@ const FNS = [
   'isPermissionRequester',
   'permissionSummary',
   'acPermissionLock',
+  'acDetailDue',
   'acPermissionData',
   'acSlotHtml',
   'acPermissionsHtml',
@@ -113,6 +114,8 @@ function load(inject: Record<string, unknown>): PermissionClient {
   const names = Object.keys(inject);
   const body = `${clientVar('AC_SENT')}
 ${clientVar('AC_SIBLING')}
+${clientVar('AC_DETAIL_RETRY_MS')}
+${clientVar('AC_DETAIL_TRIES')}
 var _permDetails = Object.create(null);
 var _permLoading = Object.create(null);
 var _acState = Object.create(null);

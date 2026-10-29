@@ -274,10 +274,11 @@ describe('phones — nothing zooms, nothing hides behind the FAB, nothing runs o
     const phone = cssBlock(PHONE);
     expect(phone).not.toBe('');
     // Only a board with cards gets the clearance: an empty page must not turn scrollable. The cards
-    // are inside the element, so renderBoard marks the inbox (.has-cards) instead of :has(.card).
+    // are inside the element, so renderBoard marks the inbox (.has-cards) instead of :has(.card) — drawn
+    // cards only (a closed DONE day's are stubs).
     expect(phone).toContain('.inbox.has-cards { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }');
     expect(clientFn('renderBoard')).toContain(
-      "if (inbox) inbox.classList.toggle('has-cards', Object.keys(_cardHost).length > 0);",
+      "if (inbox) inbox.classList.toggle('has-cards', Object.keys(_cardDrawn).length > 0);",
     );
     expect(phone).toContain('.td-menu { left: 12px; right: 12px; min-width: 0; max-width: none; }');
     expect(phone).toContain('.art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }');
