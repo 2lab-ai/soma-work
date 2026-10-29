@@ -3,7 +3,8 @@
  * cut out of renderDashboardPage()'s template (harness of
  * dashboard-live-surfaces-client.test.ts):
  *
- *   T3   a cron card carries a CRON badge at the left of its head
+ *   T3   a cron card carries a CRON badge at the left of its head (cardOf's lead;
+ *        <ui-agent-inbox> draws it)
  *   T4   cron cards leave the three columns for the CRON lane, grouped by job
  *   T5   run glyphs and schedule words (the lane's strip and the drawer rows)
  *   T7   the capacity section between the stats strip and the inbox
@@ -51,57 +52,41 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
-const SHOW_ALL = {
+// The card face is @2lab.ai/ui <ui-agent-inbox>'s: the page hands it the card
+// data (cardOf). Where the lead sits and how it is drawn is the element's
+// ('draws face extras: lead, owner badge, host metrics, titles, context level,
+// artifact count and chip buttons').
+const CARD_ENV = {
   dhShow: () => true,
-  dhMax: (_f: string, d: number) => d,
   dhTruncate: () => null,
   currentUserId: 'U1',
-  // #375 artifact chips on the face — not what these tests read.
-  isSiblingSession: () => false,
-  artFaceChips: () => '',
-  umFaceBadge: () => '',
+  _ownerIndex: null,
+  SELF_INSTANCE_NAME: 'inst',
 };
-const FACE_FNS = [
-  'esc',
-  'escAttr',
-  'escJs',
+const CARD_OF_FNS = [
   'toNum',
   'formatTokens',
-  'formatCount',
-  'cardTotalTokens',
-  'cardCurrentTask',
-  'renderCardTaskRow',
-  'agentStatusOf',
-  'agentCounts',
-  'renderCardAgents',
-  'renderCardUsage',
   'formatTaskTime',
+  'permissionSummary',
+  'cardSummary',
   'pendingAutoResume',
   'autoResumeLabel',
-  'cardSummary',
-  'doneTimeOf',
-  'cardAgo',
-  'renderCardStatus',
-  'renderOwnerBadge',
-  'renderCronBadge',
+  'cardCurrentTask',
+  'cardTaskRow',
+  'agentStatusOf',
+  'agentCounts',
+  'agentDotOf',
+  'cardTotalTokens',
   'ctxLevel',
   'ctxPercent',
-  'renderCardPr',
-  'renderCardFace',
+  'cardCtxTitle',
+  'cardPrMetric',
+  '_hashStr',
+  'ownerBadgeHue',
+  'isSiblingSession',
+  'cardOf',
 ];
-const FACE_VARS = [
-  'SPARK_SVG',
-  'WAIT_SVG',
-  'TASKS_SVG',
-  'CTX_SVG',
-  'PR_STATE_LABEL',
-  'PR_SVG',
-  'RESUME_SVG',
-  'CLOCK_SVG',
-  'AGENT_STATUS_LABEL',
-  'AGENT_DOTS_MAX',
-  'AGENTS_SVG',
-];
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
 
 function card(over: Record<string, unknown> = {}) {
   return {
@@ -121,25 +106,25 @@ function card(over: Record<string, unknown> = {}) {
 }
 
 describe('T3 — CRON badge at the left of the card head', () => {
-  const face = load<{ renderCardFace: (s: unknown, col: string) => string }>(FACE_FNS, FACE_VARS, SHOW_ALL);
+  const face = load<{ cardOf: (s: unknown, col: string) => Record<string, unknown> }>(
+    CARD_OF_FNS,
+    CARD_OF_VARS,
+    CARD_ENV,
+  );
 
   it('a cron card leads its head with the badge (clock + CRON), job name in the tooltip', () => {
-    const html = face.renderCardFace(
+    const c = face.cardOf(
       card({ cronJob: { id: 'job-1', name: 'nightly-qa' }, displayHeadline: 'QA pass: orders API' }),
       'working',
     );
-    const head = html.slice(0, html.indexOf('</div>'));
-    expect(head.indexOf('cron-badge')).toBeGreaterThan(-1);
-    expect(head.indexOf('cron-badge')).toBeLessThan(head.indexOf('card-title-text'));
-    expect(head).toContain('CRON');
-    expect(head).toContain('nightly-qa');
-    expect(head).toContain('QA pass: orders API');
+    expect(c.lead).toEqual({ text: 'CRON', glyph: 'clock', title: '크론 잡: nightly-qa' });
+    expect(c.title).toBe('QA pass: orders API');
   });
 
   it('a human card keeps the spark and has no badge', () => {
-    const html = face.renderCardFace(card(), 'working');
-    expect(html).not.toContain('cron-badge');
-    expect(html).toContain('card-spark');
+    // No lead: the element draws its default spark.
+    expect(face.cardOf(card(), 'working').lead).toBeUndefined();
+    expect(face.cardOf(card({ cronJob: { id: 'job-1' } }), 'working').lead).toBeUndefined();
   });
 });
 
@@ -345,16 +330,17 @@ describe('page wiring', () => {
     const capacity = page.indexOf(
       '<div class="capacity-host ui-tok" id="capacity" hidden><ui-agent-queue id="capacity-aq"',
     );
-    const inbox = page.indexOf('<section class="inbox" id="inbox"');
+    const inbox = page.indexOf('<section class="inbox ui-tok" id="inbox"');
     expect(stats).toBeGreaterThan(-1);
     expect(capacity).toBeGreaterThan(stats);
     expect(inbox).toBeGreaterThan(capacity);
   });
 
-  it('the CRON lane sits inside the inbox, above the kanban columns', () => {
-    const inbox = page.indexOf('<section class="inbox" id="inbox"');
+  it('the CRON lane sits inside the inbox, above the board element', () => {
+    const inbox = page.indexOf('<section class="inbox ui-tok" id="inbox"');
     const lane = page.indexOf('<div class="cron-lane ui-tok" id="cron-lane" hidden><ui-agent-queue id="cron-aq"');
-    const kanban = page.indexOf('<div class="kanban" id="kanban"');
+    const kanban = page.indexOf('<ui-agent-inbox id="kanban" class="kanban" view="board">');
+    expect(inbox).toBeGreaterThan(-1);
     expect(lane).toBeGreaterThan(inbox);
     expect(kanban).toBeGreaterThan(lane);
   });

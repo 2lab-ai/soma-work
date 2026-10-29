@@ -311,11 +311,58 @@ describe('mpHydrate — every picker under a root takes its session’s data, on
     m.mpHydrate(null);
   });
 
-  it('runs on every card pass and every panel-controls pass — also while an open menu holds them', () => {
-    const parts = clientFn('applyCardParts');
-    // After the body (held or morphed): not inside the body's morph branch.
-    const morphEnd = parts.indexOf('changed = true;\n  }', parts.indexOf('!isPickingModel(el._bodyEl)'));
-    expect(parts.indexOf('mpHydrate(el._bodyEl);')).toBeGreaterThan(morphEnd);
+  it('runs on every open card body paint and every panel-controls pass — also while an open menu holds them', () => {
+    const morphs: string[] = [];
+    const hydrated: unknown[] = [];
+    let picking = false;
+    const body = { parentNode: null as unknown, setAttribute: () => {} };
+    const host = {
+      appendChild: (k: typeof body) => {
+        k.parentNode = host;
+      },
+    };
+    const cache: Record<string, unknown> = { [KEY]: sess() };
+    const expanded = new Set<string>();
+    const m = load<{ paintCardBody(k: string): void }>(['cardBodyShown', 'paintCardBody'], [], {
+      _cardHost: { [KEY]: host },
+      _cardCol: { [KEY]: 'working' },
+      _cardDrawn: { [KEY]: true },
+      _cardBodies: {},
+      _sessionCache: cache,
+      _expanded: expanded,
+      _cardClosing: {},
+      document: { createElement: () => body },
+      renderCardBody: (s: { model: string }) => `[BODY:${s.model}]`,
+      isEditingGoal: () => false,
+      isPickingModel: () => picking,
+      captureGoalDraft: () => '',
+      restoreGoalDraft: () => {},
+      morphInnerHtml: (_e: unknown, h: string) => morphs.push(h),
+      updateTimersIn: () => {},
+      acHydrate: () => {},
+      mpHydrate: (root: unknown) => hydrated.push(root),
+      atCardData: () => null,
+      atHydrate: () => {},
+    });
+    // #548: a collapsed card has no body, so no picker to hydrate.
+    m.paintCardBody(KEY);
+    expect(hydrated).toHaveLength(0);
+    expanded.add(KEY);
+    m.paintCardBody(KEY);
+    expect(morphs).toEqual(['[BODY:claude-opus-5-5[1m]]']);
+    expect(hydrated).toHaveLength(1);
+    expect(hydrated[0]).toBe(body);
+    // An open menu holds the body still; its picker still takes the session's data.
+    picking = true;
+    cache[KEY] = sess({ model: 'claude-sonnet-4-6[1m]' });
+    m.paintCardBody(KEY);
+    expect(morphs).toHaveLength(1);
+    expect(hydrated).toHaveLength(2);
+    expect(hydrated[1]).toBe(body);
+    // Closed (ui-open-change → refreshCard): the held body catches up.
+    picking = false;
+    m.paintCardBody(KEY);
+    expect(morphs).toEqual(['[BODY:claude-opus-5-5[1m]]', '[BODY:claude-sonnet-4-6[1m]]']);
     const panel = clientFn('renderPanelControls');
     expect(panel.trim().endsWith('mpHydrate(el);\n}')).toBe(true);
   });

@@ -19,7 +19,7 @@ affectUI의 에이전트 UI 일곱 개를 해부해 레퍼런스마다 문서 �
 
 | 레퍼런스 [REF] | 사람이 얻는 결정 | 대시보드 화면 [CODE] | 문서 | 서브이슈 |
 |---|---|---|---|---|
-| Agent Inbox | 무엇이 나를 기다리나, 무엇이 움직이나 | 세션 보드 — `renderCardFace`·`renderCardBody` | [`re-agent-inbox`](affectui/re-agent-inbox.md) | #438 |
+| Agent Inbox | 무엇이 나를 기다리나, 무엇이 움직이나 | 세션 보드 — `cardOf`·`renderCardBody` (2026-10-29부터 `@2lab.ai/ui` `<ui-agent-inbox>`, 열린 카드 본문은 슬롯) | [`re-agent-inbox`](affectui/re-agent-inbox.md) | #438 |
 | Agent Run (screen) | 이 실행이 어디까지 왔고, 나에게 무엇을 묻나 | 세션 패널 — task·권한·질문·머리·세션 정보 | [`re-agent-run`](affectui/re-agent-run.md) | #439 |
 | AI Answer | 답이 무엇이고 근거가 어디인가 | 패널 대화의 모델 응답 — `renderTurn` (2026-10-29부터 `@2lab.ai/ui` `<ui-ai-answer>`) | [`re-ai-answer`](affectui/re-ai-answer.md) | #440 |
 | Context Window | 창이 얼마나 찼고 무엇으로 찼나 | 패널 세션 정보의 컨텍스트 — `panelInfoHtml` (2026-10-29부터 `@2lab.ai/ui` `<ui-context-window>`) | [`re-context-window`](affectui/re-context-window.md) | #441 |
