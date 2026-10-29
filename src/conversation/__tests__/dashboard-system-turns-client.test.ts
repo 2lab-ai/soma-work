@@ -79,6 +79,10 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
+/** A client var's value as the browser has it (its declaration cut out and run alone). */
+function clientVarValue(name: string): unknown {
+  return new Function(`${clientVar(name)}\nreturn ${name};`)();
+}
 
 const SYS_FNS = [
   'esc',
@@ -114,6 +118,8 @@ const SYS_VARS = [
   '_cpTimer',
   '_skillBodies',
   '_skillSeq',
+  // SSOT 2026-10-29 T7: the harness's row has its own avatar (a neutral gear), never the user's initial.
+  'SYS_AVATAR_SVG',
 ];
 
 type Info = { kind: string; label: string; line: string; raw: string; facts: [string, string][] } | null;
@@ -272,9 +278,15 @@ describe('C2 — the one-line row', () => {
     const raw = `${goalPrompt(2, 10, 'needs <evidence> & tests')}`;
     const out = renderTurn(user(raw, SYSTEM));
     expect(out).toMatch(/^<div class="turn user is-sys" data-sys="goal" data-turn-id="u1" data-ts="\d+">/);
-    expect(out).toContain('<div class="turn-avatar user-avatar">Z</div>');
+    // SSOT 2026-10-29 T7: the harness sent it — System, with its own avatar; the
+    // user's name only says whose session it ran in (the name's title).
+    expect(out).toContain(
+      `<div class="turn-avatar sys-avatar" aria-hidden="true">${clientVarValue('SYS_AVATAR_SVG')}</div>`,
+    );
     expect(out).toContain('<details class="sys-turn"><summary class="sys-row"><span class="sys-row-in">');
-    expect(out).toContain('<span class="turn-name">Z</span>');
+    expect(out).toContain('<span class="turn-name sys-name" title="하네스가 보낸 입력 — Z의 세션">System</span>');
+    expect(out).not.toContain('user-avatar');
+    expect(out).not.toContain('<span class="turn-name">Z</span>');
     expect(out).toContain('<span class="sys-badge" data-kind="goal">Goal #2/10</span>');
     expect(out).toContain('<span class="sys-line">직전 평가: needs &lt;evidence&gt; &amp; tests</span>');
     expect(out).toContain('<dt>회차</dt><dd>2 / 10</dd>');
@@ -283,6 +295,42 @@ describe('C2 — the one-line row', () => {
     );
     expect(out).toContain('&lt;previous-eval-reason&gt;');
     expect(out).not.toContain('turn-content'); // never the raw prompt as the face
+  });
+
+  it('SSOT 2026-10-29 T7 — a harness turn is System (gear avatar, never the user’s initial or name); a person’s turn keeps them', () => {
+    const { renderTurn } = api();
+    // The avatar is a drawn icon (no letter that could read as someone's initial).
+    const svg = String(clientVarValue('SYS_AVATAR_SVG'));
+    expect(svg).toMatch(/^<svg [^>]*viewBox="0 0 16 16"[^>]*>[\s\S]*<\/svg>$/);
+    const sysAvatar = `<div class="turn-avatar sys-avatar" aria-hidden="true">${svg}</div>`;
+    for (const t of [
+      user(RESTART_PROMPT, SYSTEM),
+      user('/compact', { ...SYSTEM, compact: {} }),
+      user(goalPrompt(1, 3), SYSTEM),
+    ]) {
+      const out = renderTurn(t);
+      expect(out).toContain('class="turn user is-sys"'); // still the user side of the conversation
+      expect(out).toContain(sysAvatar);
+      expect(out).toContain('>System</span>');
+      expect(out).not.toContain('user-avatar');
+      expect(out).not.toMatch(/<span class="turn-name[^"]*"[^>]*>Z<\/span>/);
+    }
+    // No recorded user: System with no title at all (never "User").
+    const anon = renderTurn(user(RESTART_PROMPT, { ...SYSTEM, userName: undefined }));
+    expect(anon).toContain('<span class="turn-name sys-name">System</span>');
+    expect(anon).not.toContain('>User<');
+    // The user's name lives only in the title, attribute-escaped (a quote cannot end it).
+    const odd = renderTurn(user(RESTART_PROMPT, { ...SYSTEM, userName: 'Z" onmouseover="x' }));
+    expect(odd).toContain(
+      '<span class="turn-name sys-name" title="하네스가 보낸 입력 — Z&quot; onmouseover=&quot;x의 세션">System</span>',
+    );
+    // A person's turn is theirs: their initial on the avatar, their name on the header.
+    const mine = renderTurn(user('배포까지 진행', PERSON));
+    expect(mine).toContain('<div class="turn user" data-turn-id="u1"');
+    expect(mine).toContain('<div class="turn-avatar user-avatar">Z</div>');
+    expect(mine).toContain('<span class="turn-name">Z</span>');
+    expect(mine).not.toContain('sys-avatar');
+    expect(mine).not.toContain('System');
   });
 
   it('files on a one-line turn (the message the auto-compact intercepted) open with it', () => {
@@ -848,7 +896,9 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
   it('a turn the user did not type: one line with its badge, opening to the facts and the raw prompt', () => {
     const c = card(user(goalPrompt(2, 10, 'No evidence: no files, diffs, or tests.'), SYSTEM));
     const out = c.html();
-    expect(out).toContain('<div class="io-label">지시<span class="io-who">Z</span></div>');
+    // SSOT 2026-10-29 T7: the harness sent it — the 지시 is System's, not the user's name.
+    expect(out).toContain('<div class="io-label">지시<span class="io-who is-sys">System</span></div>');
+    expect(out).not.toContain('<span class="io-who">Z</span>');
     expect(out).toContain(`<details class="io-sys" ontoggle="ioSysToggle(this,'${CID}')">`);
     expect(out).toContain('<span class="sys-badge" data-kind="goal">Goal #2/10</span>');
     expect(out).toContain('<span class="sys-line">직전 평가: No evidence: no files, diffs, or tests.</span>');
@@ -879,6 +929,10 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
     const out = card(user('배포까지 진행', PERSON)).html();
     expect(out).toContain('<div class="io-text">배포까지 진행</div>');
     expect(out).not.toContain('io-sys');
+    // SSOT 2026-10-29 T7: a person's 지시 keeps their name (System is only the harness's).
+    expect(out).toContain('<div class="io-label">지시<span class="io-who">Z</span></div>');
+    expect(out).not.toContain('is-sys');
+    expect(out).not.toContain('System');
   });
 
   it('skills: the user’s words, then one badge per skill — parsed from the whole turn, not the 500-character cut', () => {

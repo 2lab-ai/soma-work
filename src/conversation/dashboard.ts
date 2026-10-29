@@ -71,7 +71,14 @@ import {
   type ModelSwitchResult,
   usedContextTokens,
 } from '../session/model-switch';
-import { ledgerTasks, sanitizeTaskLedger, type TaskDropped } from '../session/task-ledger';
+import {
+  ledgerTasks,
+  sanitizeTaskLedger,
+  type TaskDropped,
+  type TaskRevision,
+  type TaskTokens,
+  type TaskWork,
+} from '../session/task-ledger';
 import { type ArchivedSession, getArchiveStore } from '../session-archive';
 import { buildWorkSessionKey, normalizeSessionKey } from '../session-identity';
 import {
@@ -277,6 +284,13 @@ export interface KanbanSession {
    */
   earlierTasks?: DashboardTask[];
   /**
+   * SSOT 2026-10-29 T5 — work no task got: done while none was in progress,
+   * and the next list completed none (tool calls, subagents' tool calls, usage).
+   */
+  tasksOutside?: TaskWork;
+  /** SSOT 2026-10-29 T8 — the Slack bot that runs this session, by the name Slack shows (its answers' name). */
+  botName?: string;
+  /**
    * Spec 12 — the subagents of this session (the main agent is the card
    * itself), in spawn order, each with its own tasks. At most
    * {@link AGENTS_ON_CARD_MAX}: running agents and their ancestors first, then
@@ -400,10 +414,22 @@ export interface DashboardTask {
   removedAt?: number;
   /**
    * Earlier tasks only (dashboard task view T2): it left the list before it
-   * completed — `started` it had run and was stopped (중단), `unstarted` it
-   * never ran (실행 안 됨). Such a task is never shown as running or waiting.
+   * completed — `started` it had run and a new plan replaced it (교체됨),
+   * `unstarted` it never ran (실행 안 됨). Such a task is never shown as running or waiting.
    */
   dropped?: TaskDropped;
+  /** First time it entered in_progress (kept when it went back to pending). */
+  firstStartedAt?: number;
+  /** SSOT 2026-10-29 T5 — the subagents' tool calls while it ran (its share). */
+  agentToolCalls?: number;
+  /** API usage while it ran (its share); absent = recorded before per-task usage (unknown). */
+  tokens?: TaskTokens;
+  /** Its earlier texts — the model rewrites a task as it goes. */
+  revisions?: TaskRevision[];
+  /** It went from waiting straight to completed: the start is the list before. */
+  startEstimated?: boolean;
+  /** It ran together with this many tasks (≥ 2: the numbers are its share). */
+  shared?: number;
 }
 
 /** One subagent as the card carries it (an `AgentRecord` of `session/agent-registry.ts`). */
@@ -611,6 +637,18 @@ export interface UserStats {
  * keeps backward compat with the existing dashboard.test.ts snapshots
  * that assert `key === 'C1:t1'` directly.
  */
+/**
+ * SSOT 2026-10-29 T8 — the Slack bot's name as Slack shows it (users.info of
+ * the bot user: display name, else real name), the name its answers carry in
+ * the dashboard's chat. '' until resolved (the chat then says Assistant). Each
+ * instance names its own sessions (`botName` on the card) — a sibling's cards
+ * arrive with that instance's bot.
+ */
+let _botDisplayName = '';
+export function setDashboardBotName(name: string | undefined): void {
+  _botDisplayName = typeof name === 'string' ? name.trim().slice(0, 80) : '';
+}
+
 let _selfInstanceEnv: InstanceEnvironment | null = null;
 
 /** Wire the local instance's env. Called by `startWebServer`. */
@@ -985,7 +1023,9 @@ function sendTitleSubResult(reply: any, result: TitleSubResult): void {
 
 // ── Task accessor ──────────────────────────────────────────────────
 
-type TaskAccessor = (sessionKey: string) => { current: DashboardTask[]; earlier: DashboardTask[] } | undefined;
+type TaskAccessor = (
+  sessionKey: string,
+) => { current: DashboardTask[]; earlier: DashboardTask[]; outside?: TaskWork } | undefined;
 let _getTasksFn: TaskAccessor | null = null;
 
 /** Register task accessor (called once at startup) */
@@ -1752,6 +1792,8 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...contextFields(s),
     tasks: normalizeTaskProgress(taskView?.current, sessionHasCurrentTask(s, autoResume)),
     earlierTasks: taskView?.earlier.length ? taskView.earlier : undefined,
+    tasksOutside: taskView?.outside,
+    botName: _botDisplayName || undefined,
     ...agentsToKanban(s.agents, true),
     slackThreadUrl:
       s.channelId && s.threadTs ? (buildThreadPermalink(s.channelId, s.threadTs) ?? undefined) : undefined,
@@ -1817,7 +1859,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
 }
 
 /** The task ledger an archive kept (T7/T8), as the card carries it. */
-function archivedTasks(archived: ArchivedSession): Pick<KanbanSession, 'tasks' | 'earlierTasks'> {
+function archivedTasks(archived: ArchivedSession): Pick<KanbanSession, 'tasks' | 'earlierTasks' | 'tasksOutside'> {
   const ledger = sanitizeTaskLedger(archived.taskLedger);
   if (!ledger) return {};
   const view = ledgerTasks(ledger);
@@ -1825,6 +1867,7 @@ function archivedTasks(archived: ArchivedSession): Pick<KanbanSession, 'tasks' |
   return {
     tasks: normalizeTaskProgress(view.current, false),
     earlierTasks: view.earlier.length ? view.earlier : undefined,
+    tasksOutside: view.outside,
   };
 }
 
@@ -1897,6 +1940,7 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
       finiteNumber(archived.doneAt) ??
       (Number.isFinite(Date.parse(archived.lastActivity)) ? Date.parse(archived.lastActivity) : undefined),
     ...archivedTasks(archived),
+    botName: _botDisplayName || undefined,
     ...agentsToKanban(sanitizeAgentRegistry(archived.agents), false),
     goal: goalToKanban(archived),
     artifacts: cardArtifacts(archived.conversationId),
@@ -2170,6 +2214,7 @@ export function broadcastTaskUpdate(
   sessionKey: string,
   tasks: DashboardTask[],
   earlierTasks: DashboardTask[] = [],
+  tasksOutside?: TaskWork,
 ): void {
   if (wsClients.size === 0) return;
   try {
@@ -2184,6 +2229,7 @@ export function broadcastTaskUpdate(
       sessionKey: wireKey,
       tasks: normalizeTaskProgress(tasks, sessionHasCurrentTask(live, deriveAutoResume(live, Date.now()))),
       earlierTasks,
+      tasksOutside: tasksOutside ?? null,
     });
     for (const client of wsClients) {
       try {
@@ -3587,6 +3633,8 @@ function renderDashboardPage(userId?: string): string {
   }
   const initRepresentativeModels = JSON.stringify(representativeModels).replace(/</g, '\\u003c');
   const initEffortLevels = JSON.stringify(EFFORT_LEVELS);
+  // T8: the bot's Slack name (escaped like the header config — it comes from Slack).
+  const initBotName = JSON.stringify(_botDisplayName || null).replace(/</g, '\\u003c');
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -3749,6 +3797,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   gap: 12px;
   min-height: 48px;
   min-width: 0;
+  /* SSOT 2026-10-29 T3: the top bar is always on screen — it stays at the top
+     while the board scrolls (the docked drawer sits under it: --topbar-b). Below
+     840px the sheet covers it (90 < the panel's 100); docked, it sits above the
+     panel (see the 840px block) so its menus stay clickable over the drawer. */
+  position: sticky;
+  top: 0;
+  z-index: 90;
 }
 .topbar h1 {
   font-size: 14px;
@@ -4179,6 +4234,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* ── CONTROL STRIP — the open card's last row (spec 13): model · effort switch · the state action · Slack · 작업 로그 ── */
 .card-foot-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--ib-card-border); }
 .card-foot-bar .card-actions { margin: 0 0 0 auto; }
+/* SSOT 2026-10-29 T1: the open card's actions (Stop · Close · Slack) — first row under the face. */
+.card-actions-bar { display: flex; justify-content: flex-end; margin: 0 0 10px; padding-bottom: 10px; border-bottom: 1px dashed var(--ib-card-border); }
+.card-actions-bar .card-actions { margin: 0; }
 .cfb-model { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; min-width: 0; color: var(--ib-muted); font-size: 13px; }
 .card-foot-bar + .cb-model-note { margin-top: 6px; }
 /* ── GOAL LINE — the goal on the open card, its home is the panel (spec 13) ── */
@@ -4986,6 +5044,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .psec-tab:hover { color: var(--text); }
 .psec-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
 .psec-tab:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; border-radius: 6px; }
+/* SSOT 2026-10-29 T6: Chat · 작업 로그 on the left at their own width; 에이전트 트리 at the right end. */
+.panel-sections .psec-tab { flex: 0 1 auto; padding: 6px 12px; }
+.panel-sections .psec-tab-tree { margin-left: auto; display: inline-flex; align-items: center; gap: 5px; font-weight: 500; }
+.psec-tab-tree svg { width: 13px; height: 13px; flex: none; }
 .panel-sections-body { position: relative; height: 60vh; min-height: 160px; }
 .psec { position: relative; height: 100%; overflow-y: auto; scroll-behavior: auto; outline: none; overflow-anchor: none; }
 .psec[hidden] { display: none; }
@@ -5123,16 +5185,27 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .pl-sub { display: block; margin-top: 1px; font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pl-aside { min-height: 18px; font-size: 12px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .pl-step[data-step="active"] .pl-aside { color: var(--text); }
+/* ── TASK RUNS (SSOT 2026-10-29 T5) — the tasks that ran: a row is a button
+   (title · start → end · tools · tokens · cost) opening its detail beneath. ── */
+.tr-head { display: flex; align-items: center; gap: 6px; margin: 6px 0 2px; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; color: var(--text-tertiary); }
+.tr-head + .pl-list { margin-bottom: 4px; }
+.tr-count { padding: 0 6px; border-radius: 99px; background: var(--ib-pill); color: var(--text-secondary); font-weight: 600; font-variant-numeric: tabular-nums; }
+.tr-row { display: block; width: 100%; margin: -3px -6px; padding: 3px 6px; border: 0; border-radius: 6px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
+.tr-row:hover { background: var(--ib-pill); }
+.tr-row:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 0; }
+.tr-meta { display: block; margin-top: 1px; font-size: 11.5px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.tr-run.is-open .tr-row { background: var(--ib-pill); }
+.tr-detail { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 12px; row-gap: 3px; margin: 6px 0 4px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); font-size: 12px; line-height: 17px; }
+.tr-detail dt { color: var(--text-tertiary); font-weight: 600; }
+.tr-detail dd { margin: 0; color: var(--text-secondary); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.tr-revs { margin: 0; padding-left: 16px; }
+.tr-revs li { margin: 1px 0; }
+.tr-rev-at { color: var(--text-tertiary); font-variant-numeric: tabular-nums; margin-right: 4px; }
+.tr-total { display: flex; gap: 8px; align-items: baseline; margin: 6px 0 2px; padding-top: 6px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+.tr-total + .tr-total { margin-top: 0; padding-top: 0; border-top: 0; }
+.tr-total-k { flex: none; font-weight: 700; color: var(--text-tertiary); }
 .pl-fold { padding: 2px 0 2px 28px; }
 .pl-earlier { opacity: 0.85; }
-.pl-foot { position: sticky; bottom: 0; z-index: 2; display: flex; align-items: center; gap: 8px; margin: 4px -16px -8px; padding: 7px 16px 8px; background: var(--surface); border-top: 1px solid var(--border); font-size: 12.5px; color: var(--text-secondary); }
-.pl-foot-st { display: inline-flex; align-items: center; gap: 7px; min-width: 0; color: var(--text); font-variant-numeric: tabular-nums; }
-.pl-foot-icon { display: inline-grid; place-items: center; width: 14px; height: 14px; color: var(--text-tertiary); }
-.pl-foot[data-phase="running"] .pl-foot-icon { color: var(--st-run); }
-.pl-foot[data-phase="completed"] .pl-foot-icon { color: var(--st-done); }
-.pl-foot-icon svg { width: 12px; height: 12px; }
-.pl-foot-icon .spinner { width: 11px; height: 11px; }
-.pl-foot-time { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
 /* Panel work log (.prd/10 §3.1-6, §3.3) — what the agent did, in order: the
    작업 로그 section tab, scrolled by its section box (newest at the bottom). */
 .worklog-list { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; line-height: 1.45; padding: 4px 16px 12px; }
@@ -5276,6 +5349,31 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 .panel-close:hover { color: var(--text); border-color: var(--accent); }
 .panel-header { flex-wrap: wrap; row-gap: 8px; }
+/* ── DETAIL DECK (SSOT 2026-10-29 T2) — every open card's detail card; the ones
+   waiting behind the front card show their top edges above it, and ‹ n / m ›
+   in the top right go through them. ── */
+.panel-deck-peek { display: none; flex: none; flex-direction: column; align-items: center; padding-top: 8px; background: var(--bg); }
+.slide-panel:not([data-deck="0"]) .panel-deck-peek { display: flex; }
+.panel-deck-peek span { display: block; height: 7px; border: 1px solid color-mix(in srgb, var(--text-tertiary) 45%, var(--border)); border-bottom: 0; border-radius: 10px 10px 0 0; background: color-mix(in srgb, var(--surface) 70%, var(--bg)); }
+.panel-deck-peek span:first-child { width: calc(100% - 48px); opacity: 0.75; }
+.panel-deck-peek span:last-child { width: calc(100% - 24px); }
+.slide-panel[data-deck="1"] .panel-deck-peek span:first-child { display: none; }
+.slide-panel:not([data-deck="0"]) .panel-header { border-top: 1px solid color-mix(in srgb, var(--text-tertiary) 45%, var(--border)); border-radius: 10px 10px 0 0; background: var(--surface); box-shadow: 0 -4px 10px -6px rgba(0, 0, 0, 0.25); }
+.panel-deck { display: inline-flex; align-items: center; gap: 2px; flex: none; height: 32px; padding: 0 2px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); }
+.panel-deck[hidden] { display: none; }
+.panel-deck .pd-btn { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: calc(var(--radius) - 2px); background: transparent; color: var(--text-secondary); cursor: pointer; }
+.panel-deck .pd-btn svg { width: 14px; height: 14px; }
+.panel-deck .pd-btn:hover { color: var(--text); background: var(--ib-pill, var(--surface)); }
+.panel-deck .pd-btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+.panel-deck .pd-pos { min-width: 34px; text-align: center; font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
+@keyframes deck-in-next { from { transform: translateX(18px); opacity: 0.35; } to { transform: none; opacity: 1; } }
+@keyframes deck-in-prev { from { transform: translateX(-18px); opacity: 0.35; } to { transform: none; opacity: 1; } }
+.slide-panel.deck-in-next .panel-header, .slide-panel.deck-in-next .panel-body { animation: deck-in-next var(--dur-move, 220ms) var(--ease-out); }
+.slide-panel.deck-in-prev .panel-header, .slide-panel.deck-in-prev .panel-body { animation: deck-in-prev var(--dur-move, 220ms) var(--ease-out); }
+@media (prefers-reduced-motion: reduce) {
+  .slide-panel.deck-in-next .panel-header, .slide-panel.deck-in-next .panel-body,
+  .slide-panel.deck-in-prev .panel-header, .slide-panel.deck-in-prev .panel-body { animation: none; }
+}
 /* ── SESSION CHIP — the panel head (spec 13): status · active time · retry · Slack · the one action ── */
 .panel-status { flex-basis: 100%; min-width: 0; }
 .panel-status:empty { display: none; }
@@ -5352,6 +5450,11 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .turn-avatar { width: 32px; height: 32px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; flex-shrink: 0; }
 .user-avatar { background: var(--accent); color: #fff; }
 .bot-avatar { background: var(--purple); font-size: 16px; }
+/* SSOT 2026-10-29 T7: the harness's turns — a neutral gear, never the user's colour or initial. */
+.sys-avatar { background: var(--surface-raised); color: var(--text-secondary); border: 1px solid var(--border); }
+.sys-avatar svg { width: 70%; height: 70%; }
+.turn-name.sys-name { color: var(--text-secondary); font-weight: 600; letter-spacing: 0.02em; }
+.io-label .io-who.is-sys { color: var(--text-tertiary); }
 .turn-body { flex: 1; min-width: 0; }
 .turn-header { font-size: 12px; color: var(--text-tertiary); margin-bottom: 4px; display: flex; gap: 8px; align-items: baseline; }
 .turn-name { font-weight: 700; color: var(--text-primary); font-size: 13px; text-transform: none; letter-spacing: 0; }
@@ -6203,6 +6306,7 @@ body.nt-open .new-task-fab { display: none !important; }
      away (--topbar-b, syncTopbarBottom), and the page narrows to what is left
      with its 1280px column centred there (never margin-right over width:100%). */
   :root { --panel-w: min(var(--panel-w-pref, 440px), 50vw); }
+  .topbar { z-index: 101; }
   .slide-panel { width: var(--panel-w); top: calc(var(--pv-t, 0px) + var(--topbar-b, 0px)); height: calc(var(--pv-h, 100dvh) - var(--topbar-b, 0px)); }
   .slide-panel-overlay.open { display: none; }
   .app:has(> .slide-panel.open) > .main {
@@ -6212,13 +6316,8 @@ body.nt-open .new-task-fab { display: none !important; }
   }
   .slide-panel.open ~ .new-task-fab { right: calc(var(--panel-w) + 16px); }
 }
-/* Task view: a short docked screen (a phone held sideways, an unfolded Duo) — under a
-   top bar that wraps to two lines the drawer kept a few dozen pixels to read in. It
-   takes the full height instead, over the top bar's right end (above its default
-   chips, which are back once the drawer closes). */
-@media (min-width: 840px) and (max-height: 560px) {
-  .slide-panel { top: var(--pv-t, 0px); height: var(--pv-h, 100dvh); z-index: 102; }
-}
+/* A short docked screen (a phone held sideways, an unfolded Duo) keeps the drawer
+   under the top bar too (SSOT 2026-10-29 T3: the top bar is always visible). */
 /* A short screen: the panel head drops its subtitle line unless 자세히 is on. */
 @media (max-height: 560px) {
   .slide-panel:not(.is-detail) #panel-title-sub { display: none !important; }
@@ -6235,7 +6334,6 @@ body.nt-open .new-task-fab { display: none !important; }
      defaults menu spans the bar instead of running off the edge, and the
      artifact viewer takes the whole screen. */
   .inbox.has-cards { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
-  .topbar { position: relative; }
   .topbar .topbar-defaults { position: static; }
   .td-menu { left: 12px; right: 12px; min-width: 0; max-width: none; }
   .art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
@@ -6416,8 +6514,10 @@ body.nt-open .new-task-fab { display: none !important; }
   </aside>
 
   <!-- Slide Panel for Session Detail -->
-  <div class="slide-panel-overlay" id="panel-overlay" onclick="closePanel()"></div>
-  <div class="slide-panel" id="slide-panel">
+  <div class="slide-panel-overlay" id="panel-overlay" onclick="closeDetailCard()"></div>
+  <div class="slide-panel" id="slide-panel" data-deck="0">
+    <!-- Detail deck (SSOT 2026-10-29 T2): the edges of the open cards' other detail cards, waiting behind this one. -->
+    <div class="panel-deck-peek" id="panel-deck-peek" aria-hidden="true"><span></span><span></span></div>
     <div class="panel-resize-handle" id="panel-resize-handle"></div>
     <div class="panel-header">
       <div style="flex:1;min-width:0">
@@ -6427,9 +6527,15 @@ body.nt-open .new-task-fab { display: none !important; }
           <button id="panel-title-sub-regen" class="btn-action" style="font-size:10px;padding:1px 6px;display:none" onclick="event.stopPropagation();generateTitleSub(panelConvId, !!_panelTitleSub)">&#x1F504;</button>
         </div>
       </div>
+      <!-- Detail deck (SSOT 2026-10-29 T2): every open card has its detail card here; ‹ › go through them. -->
+      <div class="panel-deck" id="panel-deck" role="group" aria-label="열린 작업 카드" hidden>
+        <button type="button" class="pd-btn" id="panel-deck-prev" aria-label="이전 작업 카드" onclick="deckGo(-1)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3.5L5.5 8l4.5 4.5"/></svg></button>
+        <span class="pd-pos" id="panel-deck-pos" aria-live="polite"></span>
+        <button type="button" class="pd-btn" id="panel-deck-next" aria-label="다음 작업 카드" onclick="deckGo(1)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5L10.5 8 6 12.5"/></svg></button>
+      </div>
       <!-- 자세히 (task view T1.6): the panel shows what matters by default; on, every detail of every section. Saved per device. -->
       <button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false" title="모든 세부 정보 보기" onclick="togglePanelDetail()"><svg class="pdt-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 4h10M3 8h10M3 12h6"/></svg><span class="pdt-label">자세히</span></button>
-      <button class="panel-close" aria-label="패널 닫기" title="패널 닫기" onclick="closePanel()">&#x2715;</button>
+      <button class="panel-close" aria-label="작업 카드 닫기" title="작업 카드 닫기 (카드도 접힘)" onclick="closeDetailCard()">&#x2715;</button>
       <!-- Session chip (spec 13): status · active time · retry · Slack · the session's one action. -->
       <div class="panel-status" id="panel-status"></div>
     </div>
@@ -6464,10 +6570,11 @@ body.nt-open .new-task-fab { display: none !important; }
         <!-- Section tabs (SSOT 2026-10-29): only the active section is in the DOM; each
              opens on its newest items and pages back as the reader scrolls up (a top
              control is the keyboard path), in its own scroll box. -->
+        <!-- SSOT 2026-10-29 T6: Chat (지시와 답변) first and the default; 에이전트 트리 at the strip's right end — the bottom view's top right. -->
         <div class="panel-sections" id="panel-sections" role="tablist" aria-label="섹션" aria-orientation="horizontal">
-          <button type="button" class="psec-tab" role="tab" id="psec-tab-tree" data-sec="tree" aria-selected="false" aria-controls="psec-tree" tabindex="-1">에이전트 트리</button>
+          <button type="button" class="psec-tab" role="tab" id="psec-tab-conv" data-sec="conv" aria-selected="true" aria-controls="psec-conv" tabindex="0" title="지시와 답변">Chat</button>
           <button type="button" class="psec-tab" role="tab" id="psec-tab-log" data-sec="log" aria-selected="false" aria-controls="psec-log" tabindex="-1">작업 로그</button>
-          <button type="button" class="psec-tab" role="tab" id="psec-tab-conv" data-sec="conv" aria-selected="true" aria-controls="psec-conv" tabindex="0">지시와 답변</button>
+          <button type="button" class="psec-tab psec-tab-tree" role="tab" id="psec-tab-tree" data-sec="tree" aria-selected="false" aria-controls="psec-tree" tabindex="-1"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="3.5" r="1.6"/><circle cx="12" cy="8" r="1.6"/><circle cx="12" cy="12.5" r="1.6"/><path d="M4 5.1v5.4c0 1.1.9 2 2 2h4.4M4 8h6.4"/></svg>에이전트 트리</button>
         </div>
         <div class="panel-sections-body" id="panel-sections-body">
           <div class="psec" id="psec-tree" role="tabpanel" aria-labelledby="psec-tab-tree" tabindex="0" hidden>
@@ -6597,6 +6704,8 @@ const INIT_USER = ${initUser};
 // buttons that would post to the wrong instance. null when single-instance
 // (no env wired) or pre-listen tests; the suppression check tolerates null.
 const SELF_INSTANCE_NAME = ${initSelfInstance};
+// SSOT 2026-10-29 T8: this instance's Slack bot name (null until resolved) — a card's own botName wins.
+const BOT_NAME = ${initBotName};
 // ui.dashboardheader (config.json#ui) — resolved card-header line composition.
 // renderCard() consults this to decide which sub-blocks to emit and with
 // what limits. Fields absent from the lines are hidden (isFieldVisible
@@ -7248,14 +7357,13 @@ async function answerChoice(key, qid, choiceId) {
 
 // The panel's Tasks section (dashboard task view T1.3): a disclosure in the
 // tab of the focused agent, folded by default. Folded, its head is the plan in
-// one line — the step in progress (or what the plan reads), done/total, how
-// many earlier steps a new plan dropped. Opened: the current list as a plan
-// (re-agent-run D1–D7) — a marker per step (check · spinner · pause · empty
-// ring) on one rail, the earliest completed steps folded past 3 — then the
-// earlier plans (T2), and a footer with the plan's phase. The first render of
-// a scope is the baseline; a step that completes after it is announced (and
-// its marker pops) once.
-function renderPanelTasks(tasks, scopeLabel, earlier) {
+// one line — the step in progress, how many tasks ran and completed, what is
+// left, how many a new plan dropped before they ran. Opened (SSOT 2026-10-29
+// T5): the tasks that ran in the order they ran (a row opens its detail), the
+// plan left, the dropped-before-running toggle and the totals. The first
+// render of a scope is the baseline; a step that completes after it is
+// announced (and its marker pops) once.
+function renderPanelTasks(tasks, scopeLabel, earlier, outside) {
   var container = document.getElementById('panel-tasks');
   if (!container) return;
   container.style.display = '';
@@ -7290,29 +7398,36 @@ function renderPanelTasks(tasks, scopeLabel, earlier) {
   var live = '<span class="ar-vh pl-live" role="status" aria-live="polite">' + esc(said.join('. ')) + '</span>';
   if (!_panelTasksOpen) { writePanelTasks(container, head + live); return; }
 
-  var body;
-  if (!list.length) {
+  // SSOT 2026-10-29 T5: the tasks that actually ran, in the order they ran —
+  // each with its start, end, tool calls and tokens (a row opens its detail) —
+  // then what is left of the plan; tasks a new plan dropped before they ran fold
+  // under one toggle. The model rewrites its list as it goes: the ledger keeps a
+  // rewritten task as one task (its earlier texts in the detail).
+  var runs = taskRunsOf(list, prev);
+  var body = '';
+  if (!runs.ran.length && !runs.plan.length) {
     body = '<div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>';
   } else {
-    // D6: the earliest completed steps fold past 3, behind one toggle in their place.
-    var COMPLETED_LIMIT = 3;
-    var doneAt = [];
-    for (var j = 0; j < list.length; j++) if (list[j].status === 'completed') doneAt.push(j);
-    var hiddenCount = doneAt.length - COMPLETED_LIMIT;
-    var hidden = Object.create(null);
-    if (!_panelTasksExpanded) for (var k = 0; k < hiddenCount; k++) hidden[doneAt[k]] = true;
-    var rows = '';
-    for (var n = 0; n < list.length; n++) {
-      if (hiddenCount > 0 && n === doneAt[0]) {
+    if (runs.ran.length) {
+      // Past TASK_RUNS_SHOWN the oldest runs fold behind one toggle at the top.
+      var hiddenRuns = _panelTasksExpanded ? 0 : Math.max(0, runs.ran.length - TASK_RUNS_SHOWN);
+      var rows = '';
+      if (runs.ran.length > TASK_RUNS_SHOWN) {
         rows += '<li class="pl-fold">' + (_panelTasksExpanded
-          ? '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()">&#x25B2; Hide completed</button>'
-          : '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()">&#x25BC; Show ' + hiddenCount + ' more completed</button>') + '</li>';
+          ? '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()">&#x25B2; 최근 ' + TASK_RUNS_SHOWN + '개만 보기</button>'
+          : '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()">&#x25BC; 이전 실행 ' + hiddenRuns + '개 보기</button>') + '</li>';
       }
-      if (!hidden[n]) rows += renderPanelTaskItem(list[n], !!changed[list[n].id]);
+      for (var r = hiddenRuns; r < runs.ran.length; r++) rows += renderTaskRun(runs.ran[r], !!changed[runs.ran[r].id]);
+      body += '<div class="tr-head">실행된 태스크 <span class="tr-count">' + runs.ran.length + '</span></div>'
+        + '<ol class="pl-list tr-list" aria-label="실행된 태스크">' + rows + '</ol>';
     }
-    body = '<ol class="pl-list" aria-label="계획 단계">' + rows + '</ol>';
+    if (runs.plan.length) {
+      body += '<div class="tr-head">남은 계획 <span class="tr-count">' + runs.plan.length + '</span></div>'
+        + '<ol class="pl-list tr-plan" aria-label="남은 계획">' + runs.plan.map(function(t) { return renderPanelTaskItem(t, !!changed[t.id]); }).join('') + '</ol>';
+    }
   }
-  var html = head + '<div class="panel-tasks-body" id="panel-tasks-body">' + body + planEarlierHtml(prev) + (list.length ? planFootHtml(list) : '') + '</div>' + live;
+  var html = head + '<div class="panel-tasks-body" id="panel-tasks-body">' + body + taskSkippedHtml(runs.skipped)
+    + (runs.ran.length || outside ? taskTotalsHtml(runs.ran, outside) : '') + '</div>' + live;
   // The clocks are filled at once (the 1 Hz tick keeps them going).
   if (writePanelTasks(container, html)) updateTimersIn(container);
   // Same data (a session push while a subagent is shown) writes nothing; a
@@ -7328,51 +7443,26 @@ function togglePanelTasks() {
   _panelTasksOpen = !_panelTasksOpen;
   repaintPanelTasks();
 }
-// The folded head's one line: the step in progress (its activeForm), else the
-// plan's state — then done/total, and what a new plan dropped before it ran.
+// The folded head's one line (SSOT 2026-10-29 T5): the step in progress (its
+// activeForm), then how many tasks ran and completed, what is left of the plan,
+// and how many a new plan dropped before they ran.
 function planSummaryHtml(tasks, earlier) {
-  var list = tasks || [];
+  var runs = taskRunsOf(tasks, earlier);
   var parts = [];
   var cur = null;
   var done = 0;
-  for (var i = 0; i < list.length; i++) {
-    if (list[i].status === 'completed') done++;
-    if (!cur && taskFateOf(list[i]) === 'active') cur = list[i];
+  for (var i = 0; i < runs.ran.length; i++) {
+    var f = taskFateOf(runs.ran[i]);
+    if (f === 'done') done++;
+    if (!cur && f === 'active') cur = runs.ran[i];
   }
   if (cur) parts.push('<span class="ps-sec-now">' + agentIconHtml('running') + esc(cur.activeForm || cur.content || '') + '</span>');
-  if (list.length) parts.push(done + '/' + list.length);
-  else parts.push('목록 없음');
-  var c = planEarlierCounts(earlier);
-  if (c.dropped || c.skipped) parts.push('이전 계획 중단 ' + c.dropped + ' · 실행 안 됨 ' + c.skipped);
+  if (runs.ran.length || runs.plan.length) {
+    parts.push('실행 ' + runs.ran.length + ' · 완료 ' + done);
+    if (runs.plan.length) parts.push('남은 ' + runs.plan.length);
+  } else parts.push('목록 없음');
+  if (runs.skipped.length) parts.push('빠짐 ' + runs.skipped.length);
   return parts.join('<span class="pi-dot" aria-hidden="true">&middot;</span>');
-}
-// D6: the plan's phase from its steps alone — the server already demotes an
-// idle session's in-progress task (normalizeTaskProgress) — with done/total (the
-// face's 완료/전체) and the time: since the first start while it runs, the
-// total once every step is done.
-function planFootHtml(tasks) {
-  var total = tasks.length;
-  var done = 0;
-  var running = false;
-  var first = 0;
-  var last = 0;
-  for (var i = 0; i < total; i++) {
-    var t = tasks[i];
-    if (t.status === 'completed') done++;
-    if (t.status === 'in_progress') running = true;
-    var st = Number(t.startedAt) || 0;
-    if (st && (!first || st < first)) first = st;
-    var ct = Number(t.completedAt) || 0;
-    if (ct > last) last = ct;
-  }
-  var phase = running ? 'running' : done === total ? 'completed' : 'idle';
-  var time = '';
-  if (phase === 'running' && first) time = '<span class="task-elapsed" data-since="' + first + '"></span>';
-  else if (phase === 'completed' && first && last > first) time = esc(formatDuration(last - first));
-  return '<div class="pl-foot" data-phase="' + phase + '">'
-    + '<span class="pl-foot-st"><span class="pl-foot-icon">' + agentIconHtml(phase) + '</span>' + esc(AGENT_STATUS_LABEL[phase] || '') + ' &middot; ' + done + '/' + total + '</span>'
-    + (time ? '<span class="pl-foot-time" aria-hidden="true">' + time + '</span>' : '')
-    + '</div>';
 }
 // ── Task fates (dashboard task view T2) ──
 // TodoWrite replaces the whole list. What a task is, in one word:
@@ -7382,69 +7472,22 @@ function planFootHtml(tasks) {
 //              server shows an idle session's in-progress task as pending,
 //              keeping its start time)
 //   pending  — waiting its turn in the current list
-//   dropped  — a later list dropped it after it had run (중단)
+//   dropped  — it ran, then a later list replaced it (교체됨 — its work stays on it)
 //   skipped  — a later list dropped it before it ever ran (실행 안 됨)
 // Only 'active' spins or ticks; a dropped task is never running or waiting.
-var TASK_FATE_LABEL = { done: '완료', active: '진행 중', paused: '멈춤', pending: '대기', dropped: '중단', skipped: '실행 안 됨' };
+var TASK_FATE_LABEL = { done: '완료', active: '진행 중', paused: '멈춤', pending: '대기', dropped: '교체됨', skipped: '실행 안 됨' };
 function taskFateOf(t) {
   if (!t) return 'pending';
   if (t.dropped === 'started') return 'dropped';
   if (t.dropped === 'unstarted') return 'skipped';
   if (t.status === 'completed') return 'done';
   if (t.status === 'in_progress') return 'active';
-  return toNum(t.startedAt) > 0 ? 'paused' : 'pending';
+  // It ran (and went back to waiting): paused — its run and numbers stay (review R1).
+  return toNum(t.startedAt) > 0 || toNum(t.firstStartedAt) > 0 ? 'paused' : 'pending';
 }
 var TASK_PAUSE_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5 4h2v8H5zM9 4h2v8H9z"/></svg>';
 var TASK_STOP_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M4.5 11.5l7-7"/></svg>';
 var TASK_SKIP_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4.5 8h7"/></svg>';
-// The earlier plans by fate: what completed, what stopped, what never ran.
-function planEarlierCounts(earlier) {
-  var c = { done: 0, dropped: 0, skipped: 0 };
-  var list = earlier || [];
-  for (var i = 0; i < list.length; i++) {
-    var f = taskFateOf(list[i]);
-    if (f === 'done') c.done++;
-    else if (f === 'skipped') c.skipped++;
-    else c.dropped++;
-  }
-  return c;
-}
-// One group per plan replacement: the tasks that left the list at the same
-// moment (removedAt), newest first, in their order; tasks a ledger kept
-// before that moment was recorded last (at 0).
-function planEarlierGroups(earlier) {
-  var groups = [];
-  var byAt = Object.create(null);
-  var list = earlier || [];
-  for (var i = 0; i < list.length; i++) {
-    var at = toNum(list[i] && list[i].removedAt);
-    var g = byAt[at];
-    if (!g) { g = byAt[at] = { at: at, tasks: [] }; groups.push(g); }
-    g.tasks.push(list[i]);
-  }
-  return groups.sort(function(a, b) { return b.at - a.at; });
-}
-// 이전 계획 (T2): one toggle with the counts by fate — folded by default, so a
-// long history of dropped steps never floods the plan; opened, a group per
-// plan replacement ("14:02 새 계획으로 교체").
-function planEarlierHtml(earlier) {
-  var prev = earlier || [];
-  if (!prev.length) return '';
-  var c = planEarlierCounts(prev);
-  var counts = [];
-  if (c.done) counts.push('완료 ' + c.done);
-  if (c.dropped) counts.push('중단 ' + c.dropped);
-  if (c.skipped) counts.push('실행 안 됨 ' + c.skipped);
-  var html = '<button type="button" class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="' + (_panelTasksEarlier ? 'true' : 'false') + '"'
-    + ' onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()">'
-    + (_panelTasksEarlier ? '&#x25B2; ' : '&#x25BC; ') + '이전 계획 <span class="pl-earlier-counts">' + counts.join(' &middot; ') + '</span></button>';
-  if (!_panelTasksEarlier) return html;
-  return html + planEarlierGroups(prev).map(function(g) {
-    var when = g.at ? esc(formatTaskTime(g.at)) + ' 새 계획으로 교체' : '이전 기록';
-    return '<div class="pl-earlier-group"><div class="pl-earlier-when">' + when + '</div>'
-      + '<ol class="pl-list pl-earlier" aria-label="' + escAttr(when) + '">' + g.tasks.map(function(t) { return renderPanelTaskItem(t); }).join('') + '</ol></div>';
-  }).join('');
-}
 // The focused node's earlier task lists: the main agent's (s.earlierTasks) or
 // the focused subagent's own.
 function panelAgentEarlier() {
@@ -7454,7 +7497,165 @@ function panelAgentEarlier() {
   return (a && a.earlierTasks) || [];
 }
 function repaintPanelTasks() {
-  renderPanelTasks(panelAgentTasks(), panelAgentLabel(), panelAgentEarlier());
+  renderPanelTasks(panelAgentTasks(), panelAgentLabel(), panelAgentEarlier(), panelAgentOutside());
+}
+// Work no task of the main agent got (a subagent's tab has none of its own).
+function panelAgentOutside() {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  return !_panelAgent && s ? s.tasksOutside || null : null;
+}
+
+// ── Task runs (SSOT 2026-10-29 T5) ──
+// The executed task list: every task that ran — completed, running, paused, or
+// replaced by a new plan after it ran — oldest start first; the plan left (the
+// current list's tasks that never started); and the tasks a new plan dropped
+// before they ran.
+var TASK_RUNS_SHOWN = 12; // runs shown before the oldest fold
+var _panelTaskOpen = Object.create(null); // task id → its run's detail is open
+function taskRunsOf(current, earlier) {
+  var ran = [];
+  var plan = [];
+  var skipped = [];
+  var all = (current || []).concat(earlier || []);
+  for (var i = 0; i < all.length; i++) {
+    var t = all[i];
+    if (!t) continue;
+    var f = taskFateOf(t);
+    if (f === 'skipped') skipped.push(t);
+    else if (f === 'pending') plan.push(t);
+    else ran.push(t);
+  }
+  ran.sort(function(a, b) { return taskRunStart(a) - taskRunStart(b) || taskIdNum(a) - taskIdNum(b); });
+  return { ran: ran, plan: plan, skipped: skipped };
+}
+function taskIdNum(t) { var m = /^T(\\d+)$/.exec(String((t && t.id) || '')); return m ? Number(m[1]) : 0; }
+function taskRunStart(t) { return toNum(t.firstStartedAt) || toNum(t.startedAt) || toNum(t.completedAt) || toNum(t.removedAt); }
+// When the run ended: completed, or left the plan (replaced); 0 while it runs or is paused.
+function taskRunEnd(t) {
+  var f = taskFateOf(t);
+  if (f === 'done') return toNum(t.completedAt);
+  if (f === 'dropped') return toNum(t.removedAt);
+  return 0;
+}
+function taskTokTotal(tk) {
+  return tk ? toNum(tk.input) + toNum(tk.output) + toNum(tk.cacheRead) + toNum(tk.cacheCreate) : 0;
+}
+// A clock time with seconds (the run's start and end).
+function formatTaskClock(ts) {
+  if (!ts) return '';
+  return new Date(ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+}
+function formatTaskStamp(ts) {
+  if (!ts) return '';
+  var d = new Date(ts);
+  return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + formatTaskClock(ts);
+}
+// A count that may be a share (tasks that ran together split their work): a whole number.
+function taskCount(n) { return Math.round(toNum(n)); }
+// The run's numbers in one line: tool calls (the subagents' apart), tokens, cost.
+function taskRunNumbers(t) {
+  var bits = [];
+  var approx = toNum(t.shared) > 1 ? '≈' : '';
+  bits.push('툴 ' + approx + taskCount(t.toolCalls) + (toNum(t.agentToolCalls) >= 0.5 ? ' (+서브 ' + approx + taskCount(t.agentToolCalls) + ')' : ''));
+  if (t.tokens) {
+    bits.push(approx + formatTokens(taskTokTotal(t.tokens)) + ' tok');
+    if (toNum(t.tokens.costUsd) >= 0.005) bits.push(approx + '$' + toNum(t.tokens.costUsd).toFixed(2));
+  } else bits.push('토큰 기록 없음');
+  return bits;
+}
+function toggleTaskRun(id) {
+  _panelTaskOpen[id] = !_panelTaskOpen[id];
+  repaintPanelTasks();
+}
+// One run: marker · #id title [fate] — start → end · tool calls · tokens · cost — duration.
+// The row is a button: it opens the run's detail under it.
+function renderTaskRun(t, pop) {
+  var st = taskFateOf(t);
+  var cls = st === 'done' ? 'completed' : st === 'active' ? 'in_progress' : st;
+  var marker = st === 'done' ? agentIconHtml('completed')
+    : st === 'active' ? agentIconHtml('running')
+    : st === 'paused' ? TASK_PAUSE_SVG
+    : TASK_STOP_SVG;
+  var start = taskRunStart(t);
+  var end = taskRunEnd(t);
+  var aside = st === 'active' && start ? '<span class="task-elapsed" data-since="' + start + '"></span>'
+    : start && end > start ? esc(formatDuration(end - start)) : '';
+  var when = (t.startEstimated ? '≈' : '') + formatTaskClock(start) + (end ? ' → ' + formatTaskClock(end) : st === 'active' ? ' → 진행 중' : '');
+  var fate = st === 'done' || st === 'active' ? '' : '<span class="pl-fate">' + TASK_FATE_LABEL[st] + '</span>';
+  var open = !!_panelTaskOpen[t.id];
+  var id = t.id ? String(t.id) : '';
+  return '<li class="panel-task-item pl-step tr-run ' + cls + (pop ? ' pl-pop' : '') + (open ? ' is-open' : '') + '" data-step="' + st + '"'
+    + (st === 'active' ? ' aria-current="step"' : '') + '>'
+    + '<span class="pl-marker" aria-hidden="true">' + marker + '</span>'
+    + '<span class="pl-main">'
+    + '<button type="button" class="tr-row" aria-expanded="' + (open ? 'true' : 'false') + '"'
+    + (id ? ' onclick="toggleTaskRun(\\'' + escJs(id) + '\\')"' : '') + '>'
+    + '<span class="pl-line">' + (id ? '<span class="task-id">#' + esc(id) + '</span>' : '')
+    + '<span class="task-text">' + esc(t.content) + '</span>' + fate + '</span>'
+    + '<span class="tr-meta">' + esc(when) + '<span class="pi-dot" aria-hidden="true">&middot;</span>' + esc(taskRunNumbers(t).join(' · ')) + '</span>'
+    + '<span class="ar-vh">, ' + TASK_FATE_LABEL[st] + '</span>'
+    + '</button>'
+    + (open ? taskRunDetailHtml(t, st) : '')
+    + '</span>'
+    + '<span class="pl-aside">' + aside + '</span>'
+    + '</li>';
+}
+// A run's detail: when it started and ended (and how that is known), the work
+// counted on it, its earlier texts and the tasks folded into it.
+function taskRunDetailHtml(t, st) {
+  var rows = [];
+  var start = taskRunStart(t);
+  var end = taskRunEnd(t);
+  rows.push(['시작', start ? formatTaskStamp(start) + (t.startEstimated ? ' (≈ 진행 중 표시 없이 완료 — 직전 목록 시각)' : '') : '—']);
+  rows.push(['종료', st === 'active' ? '진행 중' : st === 'paused' ? '멈춤 (세션이 멈춤)' : end ? formatTaskStamp(end) + (st === 'dropped' ? ' (새 계획으로 교체)' : '') : '—']);
+  if (start && end > start) rows.push(['소요', formatDuration(end - start)]);
+  rows.push(['도구', '메인 ' + taskCount(t.toolCalls) + '회' + (toNum(t.agentToolCalls) >= 0.5 ? ' · 서브에이전트 ' + taskCount(t.agentToolCalls) + '회' : '')]);
+  if (t.tokens) {
+    var tk = t.tokens;
+    rows.push(['토큰', formatTokens(taskTokTotal(tk)) + ' — 입력 ' + formatTokens(tk.input) + ' · 출력 ' + formatTokens(tk.output)
+      + ' · 캐시 읽기 ' + formatTokens(tk.cacheRead) + ' · 캐시 쓰기 ' + formatTokens(tk.cacheCreate)]);
+    rows.push(['비용', 'API 환산 $' + toNum(tk.costUsd).toFixed(2)]);
+  } else rows.push(['토큰', '기록 없음 (태스크별 집계 이전에 실행됨)']);
+  if (toNum(t.shared) > 1) rows.push(['분배', toNum(t.shared) + '개 태스크가 함께 진행 — 수치는 그 몫(1/' + toNum(t.shared) + ')']);
+  var html = '<dl class="tr-detail">' + rows.map(function(r) { return '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd>'; }).join('');
+  if (t.revisions && t.revisions.length) {
+    html += '<dt>문구 변경</dt><dd><ol class="tr-revs">' + t.revisions.map(function(r) {
+      return '<li><span class="tr-rev-at">' + esc(formatTaskClock(r.at)) + '</span> ' + esc(r.content) + '</li>';
+    }).join('') + '</ol></dd>';
+  }
+  return html + '</dl>';
+}
+// Tasks a new plan dropped before they ran: never work — one folded toggle.
+function taskSkippedHtml(skipped) {
+  if (!skipped || !skipped.length) return '';
+  var html = '<button type="button" class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="' + (_panelTasksEarlier ? 'true' : 'false') + '"'
+    + ' onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()">'
+    + (_panelTasksEarlier ? '&#x25B2; ' : '&#x25BC; ') + '실행 전에 계획에서 빠짐 <span class="pl-earlier-counts">' + skipped.length + '</span></button>';
+  if (!_panelTasksEarlier) return html;
+  return html + '<ol class="pl-list pl-earlier" aria-label="실행 전에 계획에서 빠진 태스크">' + skipped.map(function(t) { return renderPanelTaskItem(t); }).join('') + '</ol>';
+}
+// The foot: the runs' sums (tool calls, tokens, cost) and the work no task got.
+function taskTotalsHtml(ran, outside) {
+  var tools = 0;
+  var sub = 0;
+  var tok = 0;
+  var cost = 0;
+  var known = false;
+  for (var i = 0; i < ran.length; i++) {
+    tools += toNum(ran[i].toolCalls);
+    sub += toNum(ran[i].agentToolCalls);
+    if (ran[i].tokens) { known = true; tok += taskTokTotal(ran[i].tokens); cost += toNum(ran[i].tokens.costUsd); }
+  }
+  var bits = ['툴 ' + Math.round(tools) + (sub >= 0.5 ? ' (+서브 ' + Math.round(sub) + ')' : '')];
+  if (known) bits.push(formatTokens(tok) + ' tok', '$' + cost.toFixed(2));
+  // Nothing ran yet (work before the first list): no sum, only the work outside any task.
+  var html = ran.length ? '<div class="tr-total"><span class="tr-total-k">합계</span>' + esc(bits.join(' · ')) + '</div>' : '';
+  if (outside && (toNum(outside.toolCalls) || toNum(outside.agentToolCalls) || taskTokTotal(outside.tokens))) {
+    html += '<div class="tr-total tr-outside"><span class="tr-total-k">태스크 밖</span>' + esc('툴 ' + Math.round(toNum(outside.toolCalls))
+      + (toNum(outside.agentToolCalls) >= 0.5 ? ' (+서브 ' + Math.round(toNum(outside.agentToolCalls)) + ')' : '')
+      + ' · ' + formatTokens(taskTokTotal(outside.tokens)) + ' tok') + '</div>';
+  }
+  return html;
 }
 
 // One plan step (D1–D5): marker · #id title [툴 N회] (+ what it is doing now) ·
@@ -7470,7 +7671,7 @@ function renderPanelTaskItem(t, pop) {
     : st === 'dropped' ? TASK_STOP_SVG
     : st === 'skipped' ? TASK_SKIP_SVG : '';
   // SSOT 2026-10-22 T7: tool calls made while the task ran.
-  var chip = st !== 'pending' && st !== 'skipped' && t.toolCalls !== undefined ? '<span class="pl-chip">툴 ' + toNum(t.toolCalls) + '회</span>' : '';
+  var chip = st !== 'pending' && st !== 'skipped' && t.toolCalls !== undefined ? '<span class="pl-chip">툴 ' + Math.round(toNum(t.toolCalls)) + '회</span>' : '';
   var sub = st === 'active' && t.activeForm && t.activeForm !== t.content ? '<span class="pl-sub">' + esc(t.activeForm) + '</span>' : '';
   var fate = st === 'dropped' || st === 'skipped' || st === 'paused' ? '<span class="pl-fate">' + TASK_FATE_LABEL[st] + '</span>' : '';
   var aside = '';
@@ -8480,6 +8681,11 @@ function wireInbox(host) {
     if (open) {
       ensureCardIo(key, true);
       if (s && s.conversationId && s.artifacts && !isSiblingSession(s)) ensureArtifacts(s.conversationId);
+      // SSOT 2026-10-29 T2: its detail card opens beside the board, in front of the deck (focus stays on the card).
+      openPanel(key);
+    } else {
+      // Folded: its detail card leaves the deck (the next one comes forward, or the panel closes).
+      deckDrop(key);
     }
     // The cards below ride the growing (or shrinking) card: measured again once it has.
     scheduleLayoutRefresh(Math.max(MOTION.expand, MOTION.move) + 60);
@@ -8617,13 +8823,7 @@ function refreshCard(key) {
 
 // Second line of the collapsed card (§3.1-3): what the session needs or is doing.
 function cardSummary(s, col, headline) {
-  var tasks = s.tasks || [];
-  var current = null;
-  var lastDone = null;
-  for (var i = 0; i < tasks.length; i++) {
-    if (!current && tasks[i].status === 'in_progress') current = tasks[i];
-    if (tasks[i].status === 'completed') lastDone = tasks[i];
-  }
+  var current = cardCurrentTask(s);
   if (col !== 'closed' && s.pendingPermissions && s.pendingPermissions.length) return permissionSummary(s);
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return q.question || q.title;
@@ -8634,8 +8834,9 @@ function cardSummary(s, col, headline) {
   // only does when that row is hidden.
   if (col === 'working' && current && !dhShow('tasks')) return current.content;
   if (s.summaryTitle && s.summaryTitle !== headline) return s.summaryTitle;
-  var lastTask = lastDone || (tasks.length ? tasks[tasks.length - 1] : null);
-  if (lastTask) return lastTask.content;
+  // SSOT 2026-10-29 T4: the face names one task — the one in progress (the
+  // task row). The summary never falls back to another task (the last done or
+  // the last in the list read as a second task next to the running one).
   if (s.title && s.title !== headline) return s.title;
   return '';
 }
@@ -8899,7 +9100,8 @@ function renderTaskMeta(t) {
   else if (fate === 'dropped' || fate === 'skipped' || fate === 'paused') {
     parts.push(TASK_FATE_LABEL[fate] + (fate === 'dropped' && started && removed > started ? ' ' + formatDuration(removed - started) : ''));
   }
-  if (fate !== 'pending' && fate !== 'skipped') parts.push('<span class="tl-tools" title="툴 호출 수">툴 ' + toNum(t.toolCalls) + '회</span>');
+  // SSOT 2026-10-29 T5: a count shared by tasks that ran together is fractional — a whole number on screen.
+  if (fate !== 'pending' && fate !== 'skipped') parts.push('<span class="tl-tools" title="툴 호출 수">툴 ' + Math.round(toNum(t.toolCalls)) + '회</span>');
   return parts.join(' &middot; ');
 }
 function renderTimelineItem(t) {
@@ -9793,7 +9995,7 @@ function renderAgentConv() {
 // height of the view, the control itself the keyboard path — and the reader
 // keeps their place. A new item at the bottom follows a reader who is there; one
 // reading higher keeps their place and gets a pill that jumps to the newest.
-var PSEC_ORDER = ['tree', 'log', 'conv'];
+var PSEC_ORDER = ['conv', 'log', 'tree'];
 var PSEC_TEXT = {
   tree: { older: '이전 에이전트 보기', loading: '이전 에이전트 보기', start: '에이전트 트리의 시작' },
   log: { older: '이전 로그 불러오기', loading: '이전 로그 불러오는 중…', start: '작업 로그의 시작' },
@@ -10923,6 +11125,8 @@ function selectPanelAgent(agentId) {
   var before = document.activeElement;
   var focusInPanel = !!(before && before !== document.body && before.closest && before.closest('#slide-panel'));
   var next = agentId || '';
+  // Task ids belong to one agent (spec 12): an opened run's detail does not carry to another tab.
+  if (next !== _panelAgent) _panelTaskOpen = Object.create(null);
   if (_wl) {
     var saved = _wl.groupOpenBy || (_wl.groupOpenBy = Object.create(null));
     saved[_panelAgent] = _wl.groupOpen || Object.create(null);
@@ -11118,6 +11322,8 @@ function renderCardIo(s) {
   // 2026-10-28): its badge, opening to the facts and the raw prompt.
   var turn = d.instruction && d.instruction.turn ? d.instruction.turn : null;
   var info = turn ? sysTurnInfo(turn) : null;
+  // SSOT 2026-10-29 T7: the harness sent it — System, not the user's name.
+  if (info) who = '<span class="io-who is-sys">System</span>';
   var replyHtml = d.response && (d.response.title || d.response.body)
     ? '<div class="io-text">'
       + (d.response.title ? '<span class="io-title">' + esc(d.response.title) + '</span>' + (d.response.body ? '\\n' : '') : '')
@@ -11362,9 +11568,6 @@ function renderCardBody(s, col) {
   // viewer is not treated as owner so the server-side reject is expected.
   const isOwner = !!s.ownerId && s.ownerId === currentUserId;
   const isSibling = !!(SELF_INSTANCE_NAME && s.environment && s.environment.instanceName && s.environment.instanceName !== SELF_INSTANCE_NAME);
-  // re-agent-inbox D10: what this viewer can settle here — the owner's question on
-  // this instance, a permission prompt they asked for. One gate for the ink.
-  const canAnswerQuestion = !isSibling && isOwner && col === 'waiting' && !!s.pendingQuestion;
 
   // The open card's quick switch (T4/T5, 10-23 T1; re-model-picker D1): the
   // owner's one trigger opens the model · effort menu; others read model · level.
@@ -11434,22 +11637,18 @@ function renderCardBody(s, col) {
   else if (col === 'waiting') middle = ioHtml + artsHtml + tasksHtml + agentsHtml;
   else middle = ioHtml + artsHtml + agentsHtml;
 
-  // 작업 로그 opens the slide panel (details + message box) scrolled to the work
-  // log — for every card; without a conversation the log reads "작업 로그 없음".
-  // One primary per open card (re-agent-inbox D10): when this viewer can settle
-  // something here — the owner's pending question, a permission prompt they
-  // asked for — that decision is the primary and 작업 로그 steps back.
-  const canDecideHere = canAnswerQuestion
-    || (!isSibling && col !== 'closed' && (s.pendingPermissions || []).some(function(p) { return !!(p && p.requesterId && currentUserId && p.requesterId === currentUserId); }));
-  const worklogBtn = '<button type="button" class="btn-action' + (canDecideHere ? '' : ' btn-primary') + '" data-card-worklog onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',true,\\'\\',event.detail===0)">작업 로그</button>';
+  // SSOT 2026-10-29 T1/T2: the session's actions (Stop · Close · Trash) and
+  // Slack sit right under the face — one reach from the click that opened the
+  // card, never under a long body. There is no 작업 로그 button: an open card's
+  // detail is always beside the board (the detail deck, openPanel).
   const slackBtn = (dhShow('links') && s.slackThreadUrl)
     ? '<a class="btn-action" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>'
     : '';
-  const footHtml = '<div class="card-foot-bar">' + modelHtml
-    + '<span class="card-actions">' + sessionActionHtml(s, col, 'card') + slackBtn + worklogBtn + '</span></div>'
-    + modelNote;
+  const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col, 'card') + slackBtn + '</span></div>';
+  const footHtml = modelHtml ? '<div class="card-foot-bar">' + modelHtml + '</div>' + modelNote : modelNote;
 
   return '<div class="card-body">'
+    + actionsHtml
     + permissionHtml
     + renderCardResume(s, col)
     + questionHtml
@@ -12424,9 +12623,10 @@ function openDeepLinkedSession() {
   // The revealed older cron run only had to be on screen for the link.
   _cronRevealKey = null;
   // On its element — in a closed DONE day too (T12): the day opens, the card
-  // opens without a transition and scrolls to the centre.
+  // opens without a transition and scrolls to the centre — and its detail card
+  // with it (ui-toggle → openPanel); a card already open lands on Chat too (T6).
   host.reveal(key);
-  openPanel(key, true);
+  if (!panelOpen || panelSessionKey !== key) openPanel(key);
 }
 
 // The poll returns this instance's board merged with sibling instances' (#814);
@@ -13153,6 +13353,8 @@ function connectWs() {
         if (_sessionCache[msg.sessionKey]) {
           _sessionCache[msg.sessionKey].tasks = msg.tasks;
           _sessionCache[msg.sessionKey].earlierTasks = msg.earlierTasks && msg.earlierTasks.length ? msg.earlierTasks : undefined;
+          // SSOT 2026-10-29 T5: the work no task got rides with the list.
+          if ('tasksOutside' in msg) _sessionCache[msg.sessionKey].tasksOutside = msg.tasksOutside || undefined;
         }
         loadSessions();
         // The panel repaints through the node it shows: the cache now holds the
@@ -14761,6 +14963,11 @@ function holdPanelLanding() {
 function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   const s = _sessionCache[sessionKey];
   if (!s) return;
+  // The detail deck (SSOT 2026-10-29 T2): this session's detail card joins it
+  // (or comes to the front); a switch between cards slides in from its side.
+  var deckDir = panelOpen && panelSessionKey && panelSessionKey !== sessionKey
+    ? (_deck.indexOf(sessionKey) < 0 || _deck.indexOf(sessionKey) > _deck.indexOf(panelSessionKey) ? 1 : -1) : 0;
+  deckAdd(sessionKey);
   // The intent of this opening: true is the 작업 로그 landing, as before.
   _panelLand = focusWorkLog === true ? 'worklog' : (focusWorkLog || '');
   _panelLanded = false;
@@ -14785,6 +14992,8 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   if (!sameSession) {
     pcFreshSteer();
     pcReset();
+    // Another session's task ids (T1 …) are other tasks: no run's detail carries over.
+    _panelTaskOpen = Object.create(null);
   }
 
   // Reset pagination state before loading this session's turns. A new panel
@@ -14919,8 +15128,102 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
 
   if (panelConvId) loadWorkLog();
   sizePanelSections();
+  renderDeckNav(deckDir);
   // A keyboard opening puts focus where it landed (a click leaves it alone).
   if (byKey) focusPanelLanding();
+}
+
+// ── Detail deck (SSOT 2026-10-29 T2) ──
+// An open card always has its detail card beside the board. The panel shows one
+// of them; the others wait behind it — their edges peek above the panel and
+// ‹ n / m › in its top right go through them. Opening a card puts its detail
+// card in front; folding the card (or closing its detail card) takes it out
+// and the next one comes to the front — with none left the panel closes.
+var _deck = []; // session keys with a detail card in the deck, in opening order
+function deckAdd(key) {
+  if (_deck.indexOf(key) < 0) _deck.push(key);
+}
+function deckRemove(key) {
+  var i = _deck.indexOf(key);
+  if (i >= 0) _deck.splice(i, 1);
+}
+// Pure: the card that comes to the front when key leaves the deck — the
+// next one, else the one before (null: the deck is empty after it).
+function deckNextAfter(deck, key) {
+  var i = deck.indexOf(key);
+  if (i < 0) return deck.length ? deck[deck.length - 1] : null;
+  return deck[i + 1] || deck[i - 1] || null;
+}
+// Pure: the card one step (dir ±1) from key, wrapping round the deck.
+function deckStep(deck, key, dir) {
+  var n = deck.length;
+  if (!n) return null;
+  var i = deck.indexOf(key);
+  if (i < 0) return deck[0];
+  return deck[(((i + dir) % n) + n) % n];
+}
+function deckGo(dir) {
+  var k = deckStep(_deck, panelSessionKey, dir);
+  if (k && k !== panelSessionKey) openPanel(k);
+}
+// The detail card of key leaves the deck: the next one comes to the front, or the panel closes.
+function deckDrop(key) {
+  // A session gone from the board since it joined the deck is no next card (review R1).
+  for (var i = _deck.length - 1; i >= 0; i--) if (_deck[i] !== key && !_sessionCache[_deck[i]]) _deck.splice(i, 1);
+  var showing = panelOpen && panelSessionKey === key;
+  var next = showing ? deckNextAfter(_deck, key) : null;
+  deckRemove(key);
+  if (!showing) { renderDeckNav(0); return; }
+  if (next) openPanel(next);
+  else closePanel();
+}
+// ✕ / Escape / the sheet's backdrop: this detail card closes — and its card on
+// the board folds with it (an open card always has its detail card). The card
+// folds as a press on its face would (its <ui-agent-inbox> has no fold method);
+// the element's ui-toggle then takes the detail card out of the deck.
+function closeDetailCard() {
+  var key = panelSessionKey;
+  if (!key) { closePanel(); return; }
+  var face = _expanded.has(key) ? cardFaceOf(key) : null;
+  if (face) face.click();
+  if (_deck.indexOf(key) >= 0) deckDrop(key);
+}
+// The face of a card on its element (in the element's open shadow root), or null.
+function cardFaceOf(key) {
+  var host = _cardHost[key];
+  var root = host && host.shadowRoot;
+  if (!root) return null;
+  var cards = root.querySelectorAll('li.ib-card[data-card]');
+  for (var i = 0; i < cards.length; i++) {
+    if (cards[i].getAttribute('data-card') === key) return cards[i].querySelector('.ib-face[role="button"]');
+  }
+  return null;
+}
+// The deck's controls and the edges behind the panel; dir = the side a new front card came from.
+function renderDeckNav(dir) {
+  _deck = _deck.filter(function(k) { return !!_sessionCache[k]; });
+  var panel = document.getElementById('slide-panel');
+  var nav = document.getElementById('panel-deck');
+  if (!panel || !nav) return;
+  var n = _deck.length;
+  var i = _deck.indexOf(panelSessionKey);
+  var behind = panelOpen && i >= 0 ? Math.min(n - 1, 2) : 0;
+  panel.setAttribute('data-deck', String(behind));
+  nav.hidden = !(panelOpen && n > 1 && i >= 0);
+  if (!nav.hidden) {
+    var pos = document.getElementById('panel-deck-pos');
+    if (pos) pos.textContent = (i + 1) + ' / ' + n;
+    var nameOf = function(k) { var x = _sessionCache[k]; return x ? (x.displayHeadline || x.summaryTitle || x.title || '') : ''; };
+    var prev = document.getElementById('panel-deck-prev');
+    var next = document.getElementById('panel-deck-next');
+    if (prev) prev.title = '이전: ' + nameOf(deckStep(_deck, panelSessionKey, -1));
+    if (next) next.title = '다음: ' + nameOf(deckStep(_deck, panelSessionKey, 1));
+  }
+  if (dir && !reduceMotion()) {
+    panel.classList.remove('deck-in-next', 'deck-in-prev');
+    void panel.offsetWidth;
+    panel.classList.add(dir > 0 ? 'deck-in-next' : 'deck-in-prev');
+  }
 }
 // The landing target of this opening, for the keyboard: the answer form, the
 // goal section, the focused node's header, the Tasks head, the 작업 로그 tab —
@@ -15190,6 +15493,10 @@ function sysFactsHtml(facts) {
 }
 // One line: who · when · badge · what it did. Opens (a native disclosure) to its
 // facts and the raw prompt.
+// SSOT 2026-10-29 T7: a turn the harness sent (goal continuation, background
+// resume, cron, restart, auto-compact …) is not the user's — it reads as System,
+// with its own avatar, never the user's name and initial.
+var SYS_AVATAR_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M3.6 12.4l1.1-1.1M11.3 4.7l1.1-1.1"/></svg>';
 function renderSysTurn(t, info, attrs, time, initial, now, notLast, mediaHtml) {
   var st = info.kind === 'compact' ? cpState(t, now, notLast) : null;
   var live = st && st.phase === 'live';
@@ -15198,9 +15505,9 @@ function renderSysTurn(t, info, attrs, time, initial, now, notLast, mediaHtml) {
   if (live) cpEnsureTicker();
   return '<div class="turn user is-sys" data-sys="' + info.kind + '"' + attrs
     + (live ? ' data-cp-live="1" data-cp-start="' + st.start + '" data-cp-est="' + st.est + '"' : '') + '>'
-    + '<div class="turn-avatar user-avatar">' + esc(initial) + '</div>'
+    + '<div class="turn-avatar sys-avatar" aria-hidden="true">' + SYS_AVATAR_SVG + '</div>'
     + '<div class="turn-body"><details class="sys-turn"><summary class="sys-row"><span class="sys-row-in">'
-    + '<span class="turn-name">' + esc(t.userName || 'User') + '</span><span class="turn-time">' + esc(time) + '</span>'
+    + '<span class="turn-name sys-name"' + (t.userName ? ' title="' + escAttr('하네스가 보낸 입력 — ' + t.userName + '의 세션') + '"' : '') + '>System</span><span class="turn-time">' + esc(time) + '</span>'
     + '<span class="sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>' + line
     + '<span class="sys-chev" aria-hidden="true"></span></span></summary><div class="sys-detail">' + (mediaHtml || '') + sysFactsHtml(facts)
     + '<div class="sys-raw-h">원본 프롬프트</div><pre class="sys-raw">' + esc(info.raw) + '</pre></div></details></div></div>';
@@ -15363,6 +15670,11 @@ function skillPaneHtml(sk) {
     + '<pre class="skill-body">' + esc(sk.body) + '</pre>';
 }
 
+// SSOT 2026-10-29 T8: the answers' name — the Slack bot that runs the session
+// (its card's botName — a sibling instance's own bot), else this instance's.
+function botNameOf(s) {
+  return (s && s.botName) || BOT_NAME || 'Assistant';
+}
 function renderTurn(t, _idx, _arr, convId) {
   const time = new Date(t.timestamp).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit' });
   const initial = (t.userName || 'U').charAt(0).toUpperCase();
@@ -15387,7 +15699,7 @@ function renderTurn(t, _idx, _arr, convId) {
       ? '<div class="turn-content turn-instr" role="button" tabindex="0" title="눌러서 펼치기 · 접기" onclick="this.classList.toggle(\\'is-full\\')" onkeydown="if(event.key===\\'Enter\\'||event.key===\\' \\'){event.preventDefault();this.classList.toggle(\\'is-full\\')}">' + esc(said.text) + '</div>'
       : '';
     return '<div class="turn user"' + turnIdAttr + '>'
-      + '<div class="turn-avatar user-avatar">' + initial + '</div>'
+      + '<div class="turn-avatar user-avatar">' + esc(initial) + '</div>'
       + '<div class="turn-body">'
       + '<div class="turn-header"><span class="turn-name">' + esc(t.userName || 'User') + '</span><span class="turn-time">' + time + '</span></div>'
       + mediaHtml + textHtml + skillBadgesHtml(t.id, said.skills)
@@ -15425,7 +15737,7 @@ function renderTurn(t, _idx, _arr, convId) {
     return '<div class="turn assistant"' + turnIdAttr + '>'
       + '<div class="turn-avatar bot-avatar">&#x1F916;</div>'
       + '<div class="turn-body">'
-      + '<div class="turn-header"><span class="turn-name">Assistant</span><span class="turn-time">' + time + '</span><span class="ans-took"></span></div>'
+      + '<div class="turn-header"><span class="turn-name">' + esc(botNameOf(panelSessionKey ? _sessionCache[panelSessionKey] : null)) + '</span><span class="turn-time">' + time + '</span><span class="ans-took"></span></div>'
       + answer + turnArts + raw
       + '</div></div>';
   }
@@ -15698,7 +16010,7 @@ function ansPendingShow(s, convId, lastRole) {
 function ansPendingHtml() {
   return '<div class="turn assistant ans-pending" aria-busy="true">'
     + '<div class="turn-avatar bot-avatar">&#x1F916;</div>'
-    + '<div class="turn-body"><div class="turn-header"><span class="turn-name">Assistant</span></div>'
+    + '<div class="turn-body"><div class="turn-header"><span class="turn-name">' + esc(botNameOf(panelSessionKey ? _sessionCache[panelSessionKey] : null)) + '</span></div>'
     + '<div class="ui-tok">' + ansSlotHtml('응답 작성 중') + '</div>'
     + '</div></div>';
 }
@@ -15801,6 +16113,7 @@ async function generateTitleSub(convId, regenerate) {
 
 function closePanel() {
   var closingKey = panelSessionKey;
+  if (closingKey) deckRemove(closingKey);
   // Task view: a closed panel keeps no mic, no files and watches no answers.
   pcReset();
   if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
@@ -15829,6 +16142,7 @@ function closePanel() {
   _panelLanded = false;
   _panelHold = false;
   _panelOnQuestion = false;
+  renderDeckNav(0);
   // Focus goes back to whatever opened the panel (a tree item, a card button)
   // when it was in the panel; an opener that is gone (a folded DONE date, a
   // hidden archive) hands it to that session's open card (its 작업 로그), else
@@ -15856,7 +16170,7 @@ function closePanel() {
 document.addEventListener('keydown', function(e) {
   // Escape in the artifact viewer closes the viewer only (the dialog's own cancel).
   // The cron drawer opens over a docked panel: Escape closes only that, the topmost.
-  if (e.key === 'Escape' && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closePanel();
+  if (e.key === 'Escape' && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();
 });
 
 // The panel's own scroll (bound once): a held section landing goes back under
@@ -16514,7 +16828,7 @@ document.addEventListener('click', function(e) {
   var t = e.target && e.target.closest ? e.target : null;
   if (!t) return;
   var open = t.closest('[data-cron-open]');
-  if (open) { var k = open.getAttribute('data-cron-open'); closeCronDrawer(); openPanel(k, true); }
+  if (open) { var k = open.getAttribute('data-cron-open'); closeCronDrawer(); openPanel(k); }
 });
 // The lane's next-fire chip, a job's 지난 실행 or its run strip (<ui-agent-queue> ui-job-open):
 // the job's id is its group key.
@@ -18465,7 +18779,7 @@ function syncPanelViewport() {
   panel.style.setProperty('--pv-h', Math.round(vv.height) + 'px');
   panel.style.setProperty('--pv-t', Math.round(vv.offsetTop) + 'px');
 }
-// Docked, the drawer sits under the top bar until the bar scrolls away.
+// Docked, the drawer sits under the top bar (sticky, SSOT 2026-10-29 T3 — always on screen).
 function syncTopbarBottom() {
   var bar = document.querySelector('.topbar');
   if (!bar) return;

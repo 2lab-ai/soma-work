@@ -19,7 +19,9 @@
  *       Esc closes …', 'leaves Escape to a text field …', 'bodyMode slot: … keeps Esc')
  *   D8  aria-controls / inert expand region ('opens a card in place on click and says so (ui-toggle)')
  *   D4  the status icon's pop is the element's (agent-inbox.ts update step 8); the library has no test of it yet.
- * Kept here: D10 — one primary button per open card (the body is still the page's).
+ * Kept here: D10 — one primary button per open card (the body is still the page's); SSOT 2026-10-29
+ *   T1/T2: no 작업 로그 button, the actions bar (Stop · Close · Slack) is the body's first row, and
+ *   the element's ui-toggle opens / drops the card's detail card (openPanel / deckDrop).
  */
 
 import { readFileSync } from 'node:fs';
@@ -164,7 +166,7 @@ describe('D1 — the status the element tints: run · wait · done · rest (the 
     expect(c.summary).toBe('오류: 429');
   });
 
-  it('every card opens to the host body (bodyMode slot): approval cards, question, tree, goal, model, Stop / Close, 작업 로그', () => {
+  it('every card opens to the host body (bodyMode slot): Stop / Close, approval cards, question, tree, goal, model', () => {
     for (const col of ['waiting', 'working', 'idle', 'closed']) expect(cardOf(faceCard(), col).bodyMode).toBe('slot');
   });
 });
@@ -663,6 +665,8 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
       arts: [] as unknown[],
       bodies: [] as string[],
       modal: [] as unknown[][],
+      // SSOT 2026-10-29 T2: the card's detail card opens with it and leaves the deck as it folds.
+      order: [] as string[],
     };
     const env = {
       _expanded: new Set<string>(),
@@ -688,6 +692,8 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
       cardBodyShown: () => false,
       acPrefetch: () => {},
       openArtifactModal: (...a: unknown[]) => calls.modal.push(a),
+      openPanel: (...a: unknown[]) => calls.order.push(`openPanel(${a.join(',')})`),
+      deckDrop: (...a: unknown[]) => calls.order.push(`deckDrop(${a.join(',')})`),
     };
     const { wireInbox } = load<{ wireInbox(h: unknown): void }>(
       ['placeCard', 'inboxPaint', 'inboxChipOf', 'wireInbox'],
@@ -710,11 +716,33 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
     expect(w.calls.released).toEqual(['c1']);
   });
 
+  // SSOT 2026-10-29 T2: an open card always has its detail card beside the board. The element's
+  // ui-toggle is the one place a card opens or folds (click, Enter, Escape, reveal), so it is
+  // where the detail card follows: opened → openPanel(key) (in front of the deck, with the key
+  // alone — Chat, not the 작업 로그 landing); folded → deckDrop(key) (the next one comes forward,
+  // or the panel closes). There is no bring-to-front: a click on an open card folds it.
+  it('ui-toggle opens the card’s detail card (openPanel, key alone) after its body; folding it drops that from the deck (SSOT 2026-10-29 T2)', () => {
+    const w = wired();
+    w.handlers['ui-toggle']({ target: w.host, detail: { cardId: 'k1', expanded: true } });
+    expect(w.calls.order).toEqual(['openPanel(k1)']);
+    // The body and the 지시/응답 come first: the detail card opens on a card that is already drawn.
+    expect(w.calls.bodies).toEqual(['k1']);
+    expect(w.calls.io).toEqual([['k1', true]]);
+    w.handlers['ui-toggle']({ target: w.host, detail: { cardId: 'k1', expanded: false } });
+    expect(w.calls.order).toEqual(['openPanel(k1)', 'deckDrop(k1)']);
+    // Each card by its own key — a card with no conversation (no 지시/응답, no files) too.
+    w.handlers['ui-toggle']({ target: w.host, detail: { cardId: 'd1', expanded: true } });
+    w.handlers['ui-toggle']({ target: w.host, detail: { cardId: 'd1', expanded: false } });
+    expect(w.calls.order.slice(2)).toEqual(['openPanel(d1)', 'deckDrop(d1)']);
+  });
+
   it('the agent tree’s own ui-toggle inside an open body passes through untouched', () => {
     const w = wired();
     w.handlers['ui-toggle']({ target: { tagName: 'UI-AGENT-TREE' }, detail: { id: 'a1', expanded: true } });
     expect(w.env._expanded.size).toBe(0);
     expect(w.calls.bodies).toEqual([]);
+    // …and opens or drops no detail card.
+    expect(w.calls.order).toEqual([]);
   });
 
   it('ui-group-toggle: the reader’s day choice for the page, the day’s cards get their faces before the element draws them', () => {
@@ -825,30 +853,57 @@ describe('D10 — one primary button per open card', () => {
     lastActivity: new Date(T0).toISOString(),
     ...over,
   });
-  const worklog = (html: string) => /<button type="button" class="([^"]*)"[^>]*>작업 로그<\/button>/.exec(html)?.[1];
+  // SSOT 2026-10-29 T2: there is no 작업 로그 button any more — an open card's detail card is
+  // always beside the board (ui-toggle → openPanel), so the button had nothing left to open.
+  // What was its place is the actions bar (T1): Stop · Close · Trash + Slack, the body's first
+  // row, right under the face — one reach from the click that opened the card.
+  const ACTIONS_FIRST = '<div class="card-body"><div class="card-actions-bar"><span class="card-actions">';
+  const noWorklog = (html: string) => {
+    expect(html).not.toContain('작업 로그</button>');
+    // …nor any other opener of the work-log landing (openPanel(key, true, …)) on the card.
+    expect(html).not.toMatch(/openPanel\([^)]*,true\b/);
+    expect(html.startsWith(ACTIONS_FIRST)).toBe(true);
+  };
   const question = { type: 'user_choice', question: 'Ship it?', choices: [{ id: '1', label: 'Yes' }] };
   const perm = (requesterId: string) => ({ approvalId: 'ap1', toolName: 'Bash', requesterId });
 
-  it('nothing to answer here: 작업 로그 is the primary', () => {
-    expect(worklog(body(card({ activityState: 'working' }), 'working'))).toBe('btn-action btn-primary');
-    expect(worklog(body(card({ activityState: 'idle' }), 'idle'))).toBe('btn-action btn-primary');
+  it('nothing to answer here: no 작업 로그 and no primary — the actions bar leads the body (SSOT 2026-10-29 T1/T2)', () => {
+    for (const col of ['working', 'idle']) {
+      const html = body(card({ activityState: col }), col);
+      noWorklog(html);
+      // Nothing on the card asks for a decision, so nothing is drawn as the primary.
+      expect(html, col).not.toContain('btn-primary');
+    }
+    // The state action itself sits in that first row (a running card offers Stop).
+    const running = body(card({ activityState: 'working' }), 'working');
+    expect(running.indexOf('btn-stop')).toBeGreaterThan(0);
+    expect(running.indexOf('btn-stop')).toBeLessThan(running.indexOf('</div>'));
   });
 
-  it('my question or my permission prompt: the decision is the primary, 작업 로그 steps back', () => {
-    expect(worklog(body(card({ pendingQuestion: question }), 'waiting'))).toBe('btn-action');
-    expect(worklog(body(card({ pendingPermissions: [perm('U1')] }), 'working'))).toBe('btn-action');
+  it('my question or my permission prompt: the decision is the only call to action — no 작업 로그 beside it (SSOT 2026-10-29 T2)', () => {
+    const asked = body(card({ pendingQuestion: question }), 'waiting');
+    noWorklog(asked);
+    expect(asked).toContain('data-ac-kind="question"');
+    // The actions bar comes before the decision (T1: first row under the face).
+    expect(asked.indexOf('card-actions-bar')).toBeLessThan(asked.indexOf('data-ac-kind="question"'));
+    const prompted = body(card({ pendingPermissions: [perm('U1')] }), 'working');
+    noWorklog(prompted);
   });
 
-  it("someone else's decision (not the owner, not the requester, a sibling instance, a closed card): 작업 로그 stays primary", () => {
-    expect(worklog(body(card({ ownerId: 'U2', pendingQuestion: question }), 'waiting'))).toBe('btn-action btn-primary');
-    expect(worklog(body(card({ pendingPermissions: [perm('U2')] }), 'working'))).toBe('btn-action btn-primary');
-    expect(worklog(body(card({ pendingPermissions: [perm('U1')] }), 'closed'))).toBe('btn-action btn-primary');
+  it("someone else's decision (not the owner, not the requester, a sibling instance, a closed card): still no 작업 로그 (SSOT 2026-10-29 T2)", () => {
+    noWorklog(body(card({ ownerId: 'U2', pendingQuestion: question }), 'waiting'));
+    noWorklog(body(card({ pendingPermissions: [perm('U2')] }), 'working'));
+    noWorklog(body(card({ pendingPermissions: [perm('U1')] }), 'closed'));
     const sibling = {
       SELF_INSTANCE_NAME: 'a',
       isSiblingSession: () => true,
     };
     const s = card({ pendingQuestion: question, environment: { instanceName: 'b', host: 'h', port: 1 } });
-    expect(worklog(body(s, 'waiting', sibling))).toBe('btn-action btn-primary');
+    const there = body(s, 'waiting', sibling);
+    noWorklog(there);
+    // A sibling's action is disabled and names the instance to open — still in the first row.
+    expect(there).toContain('disabled');
+    expect(there.indexOf('→ b</button>')).toBeLessThan(there.indexOf('</span></div>'));
   });
 
   // affectUI batch 1: the single-choice question is the same <ui-approval-card> as the panel's. Who
@@ -873,24 +928,24 @@ describe('D10 — one primary button per open card', () => {
         READ_ONLY_MSG: '읽기 전용 — 내 세션이 아닙니다',
         isSiblingSession: () => sibling,
       }).acQuestionLock;
-    // Mine, here: the card answers, 작업 로그 steps back. No second set of choice buttons (the
-    // old ones lost their click handler with batch 1).
+    // Mine, here: the card answers (SSOT 2026-10-29 T2: there is no 작업 로그 beside it). No
+    // second set of choice buttons (the old ones lost their click handler with batch 1).
     const mine = body(card({ pendingQuestion: rec }), 'waiting');
     expect(slot(mine)).toBe('inst::C1:t1');
     expect(mine).not.toContain('data-choice-id');
-    expect(worklog(mine)).toBe('btn-action');
+    noWorklog(mine);
     expect(lockFor('U1', false)(card({ pendingQuestion: rec }))).toBe('');
-    // Mine on a sibling instance: the card is there but locked; 작업 로그 is the primary.
+    // Mine on a sibling instance: the card is there but locked; no 작업 로그 either.
     const sib = { SELF_INSTANCE_NAME: 'a', isSiblingSession: () => true };
     const s = card({ pendingQuestion: rec, environment: { instanceName: 'b', host: 'h', port: 1 } });
     const there = body(s, 'waiting', sib);
     expect(slot(there)).toBe('inst::C1:t1');
-    expect(worklog(there)).toBe('btn-action btn-primary');
+    noWorklog(there);
     expect(lockFor('U1', true)(s)).toBe('다른 인스턴스의 세션입니다 — 그 대시보드에서 응답하세요');
-    // Someone else's question: locked read-only, 작업 로그 the primary.
+    // Someone else's question: locked read-only; no 작업 로그.
     const theirs = body(card({ ownerId: 'U2', pendingQuestion: rec }), 'waiting');
     expect(slot(theirs)).toBe('inst::C1:t1');
-    expect(worklog(theirs)).toBe('btn-action btn-primary');
+    noWorklog(theirs);
     expect(lockFor('U1', false)(card({ ownerId: 'U2', pendingQuestion: rec }))).toBe('읽기 전용 — 내 세션이 아닙니다');
     // Only a waiting card asks.
     expect(slot(body(card({ pendingQuestion: rec, activityState: 'working' }), 'working'))).toBeUndefined();

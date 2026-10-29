@@ -162,6 +162,13 @@ function answerDom(conv = 'conv-run', turn = 't2', summary: Summary = SUMMARY) {
   };
   return { details, el, sets, rawSrc, inserts: () => inserts };
 }
+/**
+ * SSOT 2026-10-29 T8 — the assistant row's name is the Slack bot's
+ * (botNameOf: the panel session's botName, else the page's BOT_NAME, else
+ * Assistant). The page const is `const BOT_NAME = ${initBotName};` (not a
+ * cuttable var): null here, as on a page served before the bot's name resolved.
+ */
+const NAME_ENV = { BOT_NAME: null, panelSessionKey: null, _sessionCache: {} };
 const PAINT_FNS = [
   'esc',
   'ansLinkTitles',
@@ -177,9 +184,9 @@ const flush = () => new Promise((r) => setTimeout(r, 0));
 describe('D1 · task view T1.4 — the answer is the face (<ui-ai-answer flat>); the summary and the source sit in Raw', () => {
   const turn = (extra: Record<string, unknown>, cid = 'conv-run') => {
     const api = load<{ renderTurn(t: unknown, i?: number, arr?: unknown[], cid?: string): string }>(
-      ['esc', 'escJs', 'toNum', 'ansSlotHtml', 'renderTurn'],
+      ['esc', 'escJs', 'toNum', 'ansSlotHtml', 'botNameOf', 'renderTurn'],
       [],
-      { panelConvId: cid, _artCache: {}, renderTurnArtifacts: () => '' },
+      { ...NAME_ENV, panelConvId: cid, _artCache: {}, renderTurnArtifacts: () => '' },
     );
     return api.renderTurn({ id: 't2', role: 'assistant', timestamp: T0, ...extra }, 0, [], cid);
   };
@@ -302,6 +309,80 @@ describe('D1 · task view T1.4 — the answer is the face (<ui-ai-answer flat>);
     h.api.attachRawToggleHandlers();
     expect(h.observed).toEqual([]);
     expect(h.ansLoad.mock.calls).toEqual([[a], [b]]);
+  });
+});
+
+describe('SSOT 2026-10-29 T8 — an answer carries the Slack bot’s name: the session’s bot, else this instance’s, else Assistant', () => {
+  type Named = {
+    renderTurn(t: unknown, i?: number, arr?: unknown[], cid?: string): string;
+    ansPendingHtml(): string;
+    botNameOf(s: unknown): string;
+  };
+  const named = (env: { BOT_NAME?: string | null; panelSessionKey?: string | null; _sessionCache?: object }) =>
+    load<Named>(['esc', 'escJs', 'toNum', 'ansSlotHtml', 'botNameOf', 'renderTurn', 'ansPendingHtml'], [], {
+      ...NAME_ENV,
+      ...env,
+      panelConvId: 'conv-run',
+      _artCache: {},
+      renderTurnArtifacts: () => '',
+    });
+  // The assistant turn's header (name, then its time) and the writing row's (name only).
+  const header = (name: string) =>
+    `<div class="turn-header"><span class="turn-name">${name}</span><span class="turn-time">`;
+  const pendingHeader = (name: string) => `<div class="turn-header"><span class="turn-name">${name}</span></div>`;
+  const answer = (api: Named) => api.renderTurn({ id: 't2', role: 'assistant', timestamp: T0 }, 0, [], 'conv-run');
+
+  it('the panel session’s botName names its answers and the writing row — over this instance’s (a sibling’s card brings its own bot)', () => {
+    const api = named({
+      BOT_NAME: 'Soma (Dev)',
+      panelSessionKey: 'k',
+      _sessionCache: { k: { ...SESSION, botName: 'Soma Dev (Beta)' } },
+    });
+    const out = answer(api);
+    expect(out).toContain(header('Soma Dev (Beta)'));
+    expect(api.ansPendingHtml()).toContain(pendingHeader('Soma Dev (Beta)'));
+    expect(out).not.toContain('Soma (Dev)');
+    expect(out).not.toContain('>Assistant<');
+  });
+
+  it('a card without a botName (or no panel session, or one that left the board): this instance’s BOT_NAME', () => {
+    for (const env of [
+      { panelSessionKey: 'k', _sessionCache: { k: SESSION } },
+      { panelSessionKey: 'k', _sessionCache: { k: { ...SESSION, botName: '' } } },
+      { panelSessionKey: null, _sessionCache: { k: { ...SESSION, botName: 'Soma Dev (Beta)' } } },
+      { panelSessionKey: 'gone', _sessionCache: {} },
+    ]) {
+      const api = named({ BOT_NAME: 'Soma Dev (Beta)', ...env });
+      expect(answer(api)).toContain(header('Soma Dev (Beta)'));
+      expect(api.ansPendingHtml()).toContain(pendingHeader('Soma Dev (Beta)'));
+    }
+  });
+
+  it('neither (the bot’s name not resolved yet): Assistant — another session’s bot never names this panel’s answers', () => {
+    const api = named({
+      BOT_NAME: null,
+      panelSessionKey: 'k',
+      _sessionCache: { k: SESSION, other: { botName: 'Other Bot' } },
+    });
+    expect(answer(api)).toContain(header('Assistant'));
+    expect(api.ansPendingHtml()).toContain(pendingHeader('Assistant'));
+    expect(answer(api)).not.toContain('Other Bot');
+    expect(api.botNameOf(null)).toBe('Assistant');
+    expect(api.botNameOf(undefined)).toBe('Assistant');
+  });
+
+  it('the name is escaped text (it comes from Slack — markup never reaches the header)', () => {
+    const fromCard = named({
+      panelSessionKey: 'k',
+      _sessionCache: { k: { ...SESSION, botName: '<img src=x onerror=alert(1)> & "Q"' } },
+    });
+    const escaped = '&lt;img src=x onerror=alert(1)&gt; &amp; &quot;Q&quot;';
+    expect(answer(fromCard)).toContain(header(escaped));
+    expect(fromCard.ansPendingHtml()).toContain(pendingHeader(escaped));
+    expect(answer(fromCard)).not.toContain('<img');
+    const fromPage = named({ BOT_NAME: '<b>x' });
+    expect(answer(fromPage)).toContain(header('&lt;b&gt;x'));
+    expect(fromPage.ansPendingHtml()).toContain(pendingHeader('&lt;b&gt;x'));
   });
 });
 
@@ -446,9 +527,15 @@ describe('D12 — "응답 작성 중" while the session writes the answer', () =
   });
 
   it('ansPendingHtml: a busy assistant row holding the element, no turn identity', () => {
-    const { ansPendingHtml } = load<{ ansPendingHtml(): string }>(['esc', 'ansSlotHtml', 'ansPendingHtml'], []);
+    const { ansPendingHtml } = load<{ ansPendingHtml(): string }>(
+      ['esc', 'ansSlotHtml', 'botNameOf', 'ansPendingHtml'],
+      [],
+      NAME_ENV,
+    );
     const out = ansPendingHtml();
     expect(out).toContain('<div class="turn assistant ans-pending" aria-busy="true">');
+    // No session, no bot name resolved: the row says Assistant (T8's last fallback).
+    expect(out).toContain('<div class="turn-header"><span class="turn-name">Assistant</span></div>');
     expect(out).toContain(`<div class="ui-tok">${SLOT_WRITING}</div>`);
     expect(out).not.toContain('data-ts');
     expect(out).not.toContain('data-turn-id');
@@ -470,9 +557,10 @@ describe('D12 — "응답 작성 중" while the session writes the answer', () =
         appendChild: vi.fn(),
       };
       const api = load<{ syncAnsPending(): void }>(
-        ['esc', 'ansSlotHtml', 'ansSetData', 'ansPendingShow', 'ansPendingHtml', 'syncAnsPending'],
+        ['esc', 'ansSlotHtml', 'ansSetData', 'ansPendingShow', 'botNameOf', 'ansPendingHtml', 'syncAnsPending'],
         [],
         {
+          BOT_NAME: null, // SSOT 2026-10-29 T8: the writing row names the bot (botNameOf)
           document: { getElementById: () => turnsEl },
           panelOpen: true,
           panelSessionKey: 'k',
@@ -565,6 +653,7 @@ describe('D12 — the writing row through the real insert paths (cross-spec revi
         'ansSlotHtml',
         'ansSetData',
         'ansPendingShow',
+        'botNameOf',
         'ansPendingHtml',
         'syncAnsPending',
         'decorateAnswerTurns',
@@ -575,6 +664,7 @@ describe('D12 — the writing row through the real insert paths (cross-spec revi
       ],
       [],
       {
+        BOT_NAME: null, // SSOT 2026-10-29 T8: the writing row names the bot (botNameOf)
         document: {
           getElementById: (id: string) =>
             id === 'panel-turns' ? turnsEl : { scrollHeight: 0, scrollTop: 0, clientHeight: 0 },
@@ -1297,6 +1387,8 @@ describe('client hygiene', () => {
       'ansPendingHtml',
       'syncAnsPending',
       'agentAnswerData',
+      'botNameOf', // SSOT 2026-10-29 T8
+      'BOT_NAME',
     ]) {
       expect(declarationCount(name), name).toBe(1);
     }
