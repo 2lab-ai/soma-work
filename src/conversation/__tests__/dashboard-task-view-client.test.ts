@@ -393,7 +393,7 @@ describe('T1.2 · the agent tabs', () => {
 // ── T1.4 — the answer first, the raw record at its foot ──
 describe('T1.4 · an assistant turn reads as its answer; Raw sits at the bottom', () => {
   const env = load<{ renderTurn(t: unknown, i?: number, arr?: unknown[], convId?: string): string }>(
-    ['esc', 'escAttr', 'escJs', 'toNum', 'decodeSlackEntities', 'ansStateHtml', 'renderTurn'],
+    ['esc', 'escAttr', 'escJs', 'toNum', 'decodeSlackEntities', 'ansSlotHtml', 'renderTurn'],
     [],
     {
       panelConvId: 'conv-1',
@@ -411,8 +411,10 @@ describe('T1.4 · an assistant turn reads as its answer; Raw sits at the bottom'
   );
 
   it('the answer card is shown by default (not behind a closed disclosure)', () => {
-    expect(html).toContain('<div class="turn-answer" data-conv="conv-1" data-turn="t2">');
-    const answer = html.indexOf('class="turn-answer"');
+    expect(html).toContain(
+      '<div class="turn-answer ui-tok" data-conv="conv-1" data-turn="t2"><ui-ai-answer flat lang="ko">',
+    );
+    const answer = html.indexOf('class="turn-answer');
     const raw = html.indexOf('<details class="turn-raw"');
     expect(answer).toBeGreaterThan(-1);
     expect(raw).toBeGreaterThan(answer);

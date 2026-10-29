@@ -132,7 +132,7 @@ function api(extra: Record<string, unknown> = {}) {
     renderTurnArtifacts: () => '',
     umRegister: () => {},
     renderUserMedia: () => '',
-    ansStateHtml: () => '',
+    ansSlotHtml: () => '',
     setInterval,
     ...extra,
   });
@@ -832,7 +832,7 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
       renderTurnArtifacts: () => '',
       umRegister: () => {},
       renderUserMedia: () => '',
-      ansStateHtml: () => '',
+      ansSlotHtml: () => '',
       setInterval,
       _ioCache,
       _cardEls: { k1: {} },
