@@ -379,7 +379,7 @@ describe('D12 — 지금 압축: owner-gated (canCompact), confirmed by the elem
     const s = sess(over);
     const c = load<Flow>(
       ['toNum', 'cwCanCompact', 'cwObserve', 'cwCompact'],
-      ['_cw', '_cwSeq', 'CW_DONE_MS', 'CW_SAVED_MS', 'CW_FAIL_MS', 'CW_CEIL_MS'],
+      ['_cw', '_cwSeq', '_cwCeil', 'CW_DONE_MS', 'CW_SAVED_MS', 'CW_FAIL_MS', 'CW_CEIL_MS'],
       {
         panelSessionKey: s.key,
         _sessionCache: { [s.key]: s },
@@ -419,6 +419,49 @@ describe('D12 — 지금 압축: owner-gated (canCompact), confirmed by the elem
     expect(c.cwTestState().queued).toBe(false);
     expect(later).toHaveBeenCalledWith(300_000);
     expect(render).toHaveBeenCalledTimes(2);
+  });
+
+  // #547 review P3: each request armed a 5-minute repaint and none was ever cancelled.
+  it('one 5-minute ceiling per request: a new request lets the previous one’s timer go', async () => {
+    const timers = new Map<number, number>();
+    let next = 0;
+    const cleared: number[] = [];
+    const s = sess();
+    const c = load<Flow>(
+      ['toNum', 'cwCanCompact', 'cwObserve', 'cwLater', 'cwCompact'],
+      ['_cw', '_cwSeq', '_cwCeil', 'CW_DONE_MS', 'CW_SAVED_MS', 'CW_FAIL_MS', 'CW_CEIL_MS'],
+      {
+        panelSessionKey: s.key,
+        panelOpen: true,
+        _sessionCache: { [s.key]: s },
+        currentUserId: 'U1',
+        READ_ONLY_MSG: READ_ONLY,
+        isSiblingSession: () => false,
+        fetch: async () => ({ ok: false, status: 500 }),
+        _csrfToken: 'tok',
+        refreshCsrfToken: async () => {},
+        renderPanelInfo: () => {},
+        setTimeout: (_fn: () => void, ms: number) => {
+          timers.set(++next, ms);
+          return next;
+        },
+        clearTimeout: (id: number) => {
+          cleared.push(id);
+          timers.delete(id);
+        },
+      },
+      STATE,
+    );
+    const ceilings = () => [...timers.values()].filter((ms) => ms === 300_020).length;
+    await c.cwCompact(); // fails: the button is back at once for the next press
+    expect(c.cwTestState().req).toBe('failed');
+    expect(ceilings()).toBe(1);
+    await c.cwCompact();
+    await c.cwCompact();
+    expect(Number(c.cwTestState().reqId)).toBe(3);
+    // Three requests, one ceiling left: each new one cancelled the one before it.
+    expect(ceilings()).toBe(1);
+    expect(cleared.filter((id) => id > 0)).toHaveLength(2); // (the first request had none to clear)
   });
 
   it('gating is checked again at press time: a non-owner, a sleeping session or a request in flight sends nothing', async () => {

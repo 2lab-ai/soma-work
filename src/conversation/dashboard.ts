@@ -10572,6 +10572,7 @@ var CW_DONE_MS = 1500;
 var CW_SAVED_MS = 3200;
 var CW_FAIL_MS = 4000;
 var CW_CEIL_MS = 300000;
+var _cwCeil = 0; // the 5-minute ceiling timer of the latest request (cwCompact)
 var _cw = { key: '', gen: 0, count: 0, reqId: 0, req: '', reqAt: 0, obsInReq: false, queued: false, doneAt: 0, observedAt: 0, savedWait: 0, usedAtRise: 0, lcSeen: '', lcAtRise: '', savedAt: 0, failAt: 0, timedOutAt: 0 };
 var _cwSeq = 0; // request ids: an answer only ever updates the request it belongs to
 // The request (D12): sending, then sent (the server took it) until a compaction
@@ -10719,7 +10720,7 @@ function cwObserve(s, now) {
 }
 // Repaint the open panel's 세션 정보 once a timed state (done, saved, failed, the ceiling) ends.
 function cwLater(ms) {
-  setTimeout(function() { if (panelOpen) renderPanelInfo(); }, ms + 20);
+  return setTimeout(function() { if (panelOpen) renderPanelInfo(); }, ms + 20);
 }
 // 지금 압축 (D12): the element confirms it (the first press arms it for 4s, the
 // second sends ui-compact); this sends the owner's own 'compact --yes' — the
@@ -10742,7 +10743,9 @@ async function cwCompact() {
   _cw.queued = s.activityState === 'working' || s.activityState === 'waiting'; // a turn holds the slot: the command waits behind it
   _cw.failAt = 0;
   _cw.timedOutAt = 0;
-  cwLater(CW_CEIL_MS);
+  // One ceiling per request: a new request lets the previous one's go.
+  clearTimeout(_cwCeil);
+  _cwCeil = cwLater(CW_CEIL_MS);
   renderPanelInfo();
   var ok = false;
   try {
