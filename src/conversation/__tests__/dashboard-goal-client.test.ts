@@ -258,76 +258,61 @@ describe('work item goal list — controls (T3)', () => {
 });
 
 describe('work item goal list — the goal being typed survives a live re-render', () => {
+  const KEY = 'self::C1:t1';
   function fakeCard(activeIsInput: boolean, value: string) {
     const input = { classList: { contains: (c: string) => c === 'cg-add-input' }, value };
+    const host = { appendChild: () => {} };
     const body: any = {
       innerHTML: '<old>',
+      parentNode: host,
       contains: (node: unknown) => node === input,
       querySelector: (sel: string) => (sel === '.cg-add-input' ? body._input : null),
       _input: input,
     };
     const document = { activeElement: activeIsInput ? input : null };
-    const el: any = {
-      attrs: { 'data-col': 'working', 'data-state': 'working' },
-      getAttribute(n: string) {
-        return this.attrs[n];
-      },
-      setAttribute(n: string, v: string) {
-        this.attrs[n] = v;
-      },
-      _faceEl: { innerHTML: '' },
-      _faceHtml: 'face',
-      _bodyEl: body,
-      _bodyHtml: 'old-body',
-    };
-    return { el, body, input, document };
+    // The open card's body (#548: only an open card has one), in its slot on the element that draws it.
+    const bodies: Record<string, { el: unknown; html: string | null }> = { [KEY]: { el: body, html: 'old-body' } };
+    return { host, body, bodies, document };
   }
-  const parts = { col: 'working', state: 'working', face: 'face', body: 'new-body', cid: null };
-
-  it('does not replace the body while the goal input has focus (typing / IME untouched)', () => {
-    const { el, body, document } = fakeCard(true, '쓰는 중');
-    const { applyCardParts } = load<any>(
-      ['isEditingGoal', 'isPickingModel', 'captureGoalDraft', 'restoreGoalDraft', 'applyCardParts'],
+  function painter(c: ReturnType<typeof fakeCard>) {
+    return load<{ paintCardBody(k: string): void }>(
+      ['isEditingGoal', 'isPickingModel', 'captureGoalDraft', 'restoreGoalDraft', 'cardBodyShown', 'paintCardBody'],
       [],
       {
-        document,
+        document: c.document,
+        _cardHost: { [KEY]: c.host },
+        _cardCol: { [KEY]: 'working' },
+        _cardDrawn: { [KEY]: true },
+        _cardBodies: c.bodies,
+        _sessionCache: { [KEY]: card() },
+        _expanded: new Set([KEY]),
+        _cardClosing: {},
+        renderCardBody: () => 'new-body',
         updateTimersIn: () => {},
-        animateCountersIn: () => {},
         // The browser morphs the body; this fake body rebuilds on write.
         morphInnerHtml: (b: { innerHTML: string }, html: string) => {
           b.innerHTML = html;
         },
         acHydrate: () => {}, // affectUI batch 1: the body's approval cards take their data
-        atHydrate: () => {}, // affectUI batch 2: the body's agent tree takes its data
         mpHydrate: () => {}, // the body's model picker takes its data (<ui-model-picker>)
+        atCardData: () => null,
+        atHydrate: () => {}, // affectUI batch 2: the body's agent tree takes its data
       },
     );
+  }
 
-    applyCardParts(el, parts);
+  it('does not replace the body while the goal input has focus (typing / IME untouched)', () => {
+    const c = fakeCard(true, '쓰는 중');
+    painter(c).paintCardBody(KEY);
 
-    expect(body.innerHTML).toBe('<old>');
-    expect(el._bodyHtml).toBe('old-body');
+    expect(c.body.innerHTML).toBe('<old>');
+    expect(c.bodies[KEY].html).toBe('old-body');
   });
 
   it('carries an unfocused draft into the new body', () => {
-    const { el, body, document } = fakeCard(false, '나중에 보낼 goal');
+    const c = fakeCard(false, '나중에 보낼 goal');
+    const { body } = c;
     const fresh = { classList: { contains: () => true }, value: '' };
-    const { applyCardParts } = load<any>(
-      ['isEditingGoal', 'isPickingModel', 'captureGoalDraft', 'restoreGoalDraft', 'applyCardParts'],
-      [],
-      {
-        document,
-        updateTimersIn: () => {},
-        animateCountersIn: () => {},
-        // The browser morphs the body; this fake body rebuilds on write.
-        morphInnerHtml: (b: { innerHTML: string }, html: string) => {
-          b.innerHTML = html;
-        },
-        acHydrate: () => {}, // affectUI batch 1: the body's approval cards take their data
-        atHydrate: () => {}, // affectUI batch 2: the body's agent tree takes its data
-        mpHydrate: () => {}, // the body's model picker takes its data (<ui-model-picker>)
-      },
-    );
     // innerHTML assignment builds a fresh, empty input.
     Object.defineProperty(body, 'innerHTML', {
       set(v: string) {
@@ -339,9 +324,10 @@ describe('work item goal list — the goal being typed survives a live re-render
       },
     });
 
-    applyCardParts(el, parts);
+    painter(c).paintCardBody(KEY);
 
     expect(body._html).toBe('new-body');
+    expect(c.bodies[KEY].html).toBe('new-body');
     expect(fresh.value).toBe('나중에 보낼 goal');
   });
 });

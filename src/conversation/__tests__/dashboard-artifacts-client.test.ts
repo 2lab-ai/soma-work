@@ -3,7 +3,8 @@
  * code (cut out of renderDashboardPage()'s template literal and cooked exactly
  * as the browser receives it — the harness of dashboard-live-surfaces-client.test.ts):
  *
- *   T5  collapsed card face: an artifact row the board shows at a glance;
+ *   T5  collapsed card face: an artifact row the board shows at a glance (cardOf's
+ *       artifacts, drawn by <ui-agent-inbox>, a chip opens the viewer);
  *       expanded card: a "산출물" strip of thumbnails, audio playable in place
  *   T6  right panel: a pinned artifact strip, and the files each answer produced
  *   T2  hover → minimap preview (html rendered without scripts, no autoplay)
@@ -28,7 +29,16 @@ function assertUnique(name: string) {
   const n = (TEMPLATE.match(re) ?? []).length;
   if (n > 1) throw new Error(`client ${name} is declared ${n} times`);
 }
+// Cut + cooked once per name: the suites load the same functions many times.
+const cutCache = new Map<string, string>();
 function clientFn(name: string): string {
+  const hit = cutCache.get(name);
+  if (hit !== undefined) return hit;
+  const cut = cutClientFn(name);
+  cutCache.set(name, cut);
+  return cut;
+}
+function cutClientFn(name: string): string {
   assertUnique(name);
   const plain = TEMPLATE.indexOf(`\nfunction ${name}(`);
   const start = plain >= 0 ? plain : TEMPLATE.indexOf(`\nasync function ${name}(`);
@@ -118,39 +128,114 @@ const bigMov: Art = {
   permalink: 'https://example.slack.com/files/U/F5/huge.mov',
 };
 
+// The collapsed face is @2lab.ai/ui <ui-agent-inbox>'s: the page hands it the
+// newest files and the whole count in the card data (cardOf); the element draws
+// the chips, the "+N" and their accessible names ('draws face extras: lead,
+// owner badge, host metrics, titles, context level, artifact count and chip
+// buttons') and sends ui-artifact for a chip, which the page opens in the viewer.
+const CARD_OF_FNS = [
+  'toNum',
+  'formatTokens',
+  'formatTaskTime',
+  'permissionSummary',
+  'cardSummary',
+  'pendingAutoResume',
+  'autoResumeLabel',
+  'cardCurrentTask',
+  'cardTaskRow',
+  'agentStatusOf',
+  'agentCounts',
+  'agentDotOf',
+  'cardTotalTokens',
+  'ctxLevel',
+  'ctxPercent',
+  'cardCtxTitle',
+  'cardPrMetric',
+  '_hashStr',
+  'ownerBadgeHue',
+  'isSiblingSession',
+  'cardOf',
+];
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+
 describe('T5 — collapsed card face: artifacts visible on the board itself', () => {
-  const face = () => load<{ artFaceChips(s: unknown): string }>([...BASE_FNS, 'artFaceChips'], BASE_VARS);
+  const { cardOf } = load<{ cardOf(s: unknown, col: string): Record<string, unknown> }>(CARD_OF_FNS, CARD_OF_VARS, {
+    dhShow: () => true,
+    dhTruncate: () => null,
+    currentUserId: 'U1',
+    _ownerIndex: null,
+    SELF_INSTANCE_NAME: 'inst',
+  });
+  const face = (over: Record<string, unknown>) => cardOf({ key: 'inst::C1:t1', displayHeadline: 'h', ...over }, 'idle');
 
   it('a card with artifacts gets a row of chips with the count; none → nothing', () => {
-    const out = face().artFaceChips({
+    const c = face({
       conversationId: 'conv-1',
-      artifacts: { count: 6, files: 5, answers: 1, recent: [html, png, wav, answer] },
+      artifacts: { count: 6, files: 5, answers: 1, recent: [html, png, wav, answer, bigMov] },
     });
-    expect(out).toContain('class="card-arts"');
-    expect(out).toContain('data-art-cid="conv-1"');
-    for (const id of ['A1', 'A2', 'A3', 'A4']) expect(out).toContain(`data-art-id="${id}"`);
-    expect(out).toContain('+2');
-    expect(out).toContain('report.html');
-    // The face never pulls full images: glyph chips only (thumbnails start in the expanded body).
-    expect(out).not.toContain('<img');
-    expect(face().artFaceChips({ conversationId: 'c', artifacts: undefined })).toBe('');
-    expect(face().artFaceChips({ conversationId: undefined, artifacts: { count: 1, recent: [html] } })).toBe('');
+    // The newest four, by id, name and kind; the element shows "+2" from the count.
+    expect(c.artifactsCount).toBe(6);
+    expect(c.artifacts).toEqual([
+      { id: 'A1', name: 'report.html', kind: 'html' },
+      { id: 'A2', name: 'chart.png', kind: 'image' },
+      { id: 'A3', name: 'voice.wav', kind: 'audio' },
+      { id: 'A4', name: '배포 결과', kind: 'markdown' },
+    ]);
+    // The face never pulls full images: no content route on the board (thumbnails start in the open body).
+    expect(JSON.stringify(c)).not.toContain('/artifacts/');
+    expect(face({ conversationId: 'c', artifacts: undefined }).artifacts).toBeUndefined();
+    expect(face({ conversationId: undefined, artifacts: { count: 1, recent: [html] } }).artifacts).toBeUndefined();
+    expect(face({ conversationId: 'c', artifacts: { count: 0, recent: [] } }).artifactsCount).toBeUndefined();
   });
 
-  it('chip text is escaped', () => {
-    const out = face().artFaceChips({
-      conversationId: 'c',
-      artifacts: { count: 1, recent: [{ ...html, name: '<img src=x onerror=alert(1)>.html' }] },
-    });
-    expect(out).not.toContain('<img src=x');
-    expect(out).toContain('&lt;img src=x');
+  it('chip text is plain text (the element escapes it)', () => {
+    // Not escaped here, so never escaped twice: the element's
+    // 'escapes every host string of the face extras and groups' owns the escaping.
+    const name = '<img src=x onerror=alert(1)>.html';
+    const c = face({ conversationId: 'c', artifacts: { count: 1, recent: [{ ...html, name }] } });
+    expect(c.artifacts).toEqual([{ id: 'A1', name, kind: 'html' }]);
   });
 
-  it('renderCardFace shows the row; renderCardBody shows the strip', () => {
-    const faceSrc = clientFn('renderCardFace');
-    expect(faceSrc).toContain('artFaceChips(s)');
-    const bodySrc = clientFn('renderCardBody');
-    expect(bodySrc).toContain('renderCardArtifacts(s)');
+  it('a chip opens the viewer (ui-artifact); opening the card fetches the list; renderCardBody shows the strip', () => {
+    type Listener = (e: unknown) => void;
+    const on: Record<string, Listener> = {};
+    const host = {
+      addEventListener: (type: string, fn: Listener) => {
+        on[type] = fn;
+      },
+    };
+    const opened: unknown[][] = [];
+    const fetched: string[] = [];
+    const s = { key: 'k1', conversationId: 'conv-1', artifacts: { count: 1, recent: [png] } };
+    const { wireInbox } = load<{ wireInbox(h: unknown): void }>(['wireInbox'], [], {
+      _expanded: new Set<string>(),
+      _sessionCache: { k1: s },
+      _doneGroupOpen: {},
+      _cardCol: {},
+      _cardDrawn: {},
+      MOTION: { expand: 240, move: 320 },
+      releaseCardIoTimer: () => {},
+      syncCardBody: () => {},
+      syncCardBodies: () => {},
+      ensureCardIo: () => {},
+      isSiblingSession: () => false,
+      ensureArtifacts: (cid: string) => fetched.push(cid),
+      scheduleLayoutRefresh: () => {},
+      placeCard: () => {},
+      inboxPaint: () => {},
+      openArtifactModal: (...args: unknown[]) => opened.push(args),
+    });
+    wireInbox(host);
+    const chip = { focus() {} };
+    on['ui-artifact']({ target: host, detail: { cardId: 'k1', artifactId: 'A2' }, composedPath: () => [chip] });
+    // The chip is the opener focus returns to.
+    expect(opened).toEqual([['conv-1', 'A2', chip]]);
+    // An event from inside the open body (not the element's own) is not a chip.
+    on['ui-artifact']({ target: {}, detail: { cardId: 'k1', artifactId: 'A2' } });
+    expect(opened).toHaveLength(1);
+    on['ui-toggle']({ target: host, detail: { cardId: 'k1', expanded: true } });
+    expect(fetched).toEqual(['conv-1']);
+    expect(clientFn('renderCardBody')).toContain('renderCardArtifacts(s)');
   });
 });
 
