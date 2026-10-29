@@ -8514,9 +8514,20 @@ function wireInbox(host) {
     if (e.target !== host || !e.detail) return;
     var s = _sessionCache[String(e.detail.cardId)];
     if (!s || !s.conversationId) return;
-    var path = typeof e.composedPath === 'function' ? e.composedPath() : [];
-    openArtifactModal(s.conversationId, String(e.detail.artifactId), path[0] && path[0].focus ? path[0] : host);
+    var chip = inboxChipOf(host, String(e.detail.cardId), String(e.detail.artifactId));
+    openArtifactModal(s.conversationId, String(e.detail.artifactId), chip || host);
   });
+}
+// The file chip the reader pressed. The element emits ui-artifact on itself
+// (composedPath()[0] is the host), so the chip is found in its shadow root by
+// its key (data-key="art:<card>:<file>"); none (re-rendered away): null.
+function inboxChipOf(host, cardId, artifactId) {
+  var root = host && host.shadowRoot;
+  if (!root) return null;
+  var want = 'art:' + cardId + ':' + artifactId;
+  var chips = root.querySelectorAll('[data-art]');
+  for (var i = 0; i < chips.length; i++) if (chips[i].getAttribute('data-key') === want) return chips[i];
+  return null;
 }
 
 // Open, or still closing: the collapse runs over the body, so it stays until then.

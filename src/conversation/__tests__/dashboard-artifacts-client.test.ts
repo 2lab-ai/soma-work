@@ -207,7 +207,7 @@ describe('T5 — collapsed card face: artifacts visible on the board itself', ()
     const opened: unknown[][] = [];
     const fetched: string[] = [];
     const s = { key: 'k1', conversationId: 'conv-1', artifacts: { count: 1, recent: [png] } };
-    const { wireInbox } = load<{ wireInbox(h: unknown): void }>(['wireInbox'], [], {
+    const { wireInbox } = load<{ wireInbox(h: unknown): void }>(['inboxChipOf', 'wireInbox'], [], {
       _expanded: new Set<string>(),
       _sessionCache: { k1: s },
       _doneGroupOpen: {},
@@ -226,8 +226,10 @@ describe('T5 — collapsed card face: artifacts visible on the board itself', ()
       openArtifactModal: (...args: unknown[]) => opened.push(args),
     });
     wireInbox(host);
-    const chip = { focus() {} };
-    on['ui-artifact']({ target: host, detail: { cardId: 'k1', artifactId: 'A2' }, composedPath: () => [chip] });
+    const chip = { focus() {}, getAttribute: (n: string) => (n === 'data-key' ? 'art:k1:A2' : null) };
+    (host as Record<string, unknown>).shadowRoot = { querySelectorAll: () => [chip] };
+    // The element emits on itself: the browser's path starts at the host, the chip is in its shadow root.
+    on['ui-artifact']({ target: host, detail: { cardId: 'k1', artifactId: 'A2' }, composedPath: () => [host] });
     // The chip is the opener focus returns to.
     expect(opened).toEqual([['conv-1', 'A2', chip]]);
     // An event from inside the open body (not the element's own) is not a chip.
