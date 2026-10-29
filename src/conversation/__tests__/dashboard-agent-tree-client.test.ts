@@ -778,6 +778,8 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
           else if (!root.tree) root.tree = paintedTree();
         },
         acHydrate: () => {},
+        // #546: refreshCard also hydrates the card's <ui-model-picker> slots (none in this harness).
+        mpHydrate: () => {},
         updateTimersIn: () => {},
         animateCountersIn: () => {},
         canAnimate: () => opts.animate !== false,
