@@ -153,14 +153,13 @@ describe('a rewritten task is the same task (slot matching)', () => {
   });
 
   it('keeps the first text and the newest ones when a task is rewritten many times', () => {
-    let l = applyTodoList(undefined, [todo('Fix #455 flaky test, attempt v0', 'in_progress', 'Fixing 455')], 1);
-    for (let i = 1; i <= 20; i++)
-      l = applyTodoList(l, [todo(`Fix #455 flaky test, attempt v${i}`, 'in_progress', 'Fixing 455')], 1 + i);
+    let l = applyTodoList(undefined, [todo('Fix #455 v0', 'in_progress', 'Fixing 455')], 1);
+    for (let i = 1; i <= 20; i++) l = applyTodoList(l, [todo(`Fix #455 v${i}`, 'in_progress', 'Fixing 455')], 1 + i);
     const t = ledgerTasks(l).current[0];
     expect(t.id).toBe('T1');
     expect(t.revisions).toHaveLength(12);
-    expect(t.revisions?.[0].content).toBe('Fix #455 flaky test, attempt v0');
-    expect(t.revisions?.[11].content).toBe('Fix #455 flaky test, attempt v19');
+    expect(t.revisions?.[0].content).toBe('Fix #455 v0');
+    expect(t.revisions?.[11].content).toBe('Fix #455 v19');
   });
 
   it('text similarity: shared words, or one text extending the other', () => {
@@ -427,6 +426,14 @@ describe('review R1 — two tasks are never made one without the words saying so
     expect(changesTarget('Deploy to dev', 'Deploy to development — green')).toBe(false);
     expect(changesTarget('Deploy dev and prod', 'Deploy dev and prod — done')).toBe(false);
     expect(changesTarget('Merge PR #450.', 'Merge PR #450 (squash a1b2c3d)')).toBe(false);
+    // A word changing form is the same target (fable R4): the short-text rule keeps these one task.
+    expect(changesTarget('Fix flaky test', 'Fixed flaky test')).toBe(false);
+    expect(changesTarget('Write verdict', 'Wrote verdict')).toBe(true); // irregular form: not a head — known limit
+    expect(changesTarget('Fix #455 v0', 'Fix #455 v1')).toBe(false);
+    expect(changesTarget('Implement login API', 'Implement logout API')).toBe(true);
+    // Words written in around the same task are progress, not another target (R4 replay audit).
+    expect(changesTarget('Final terminal report', 'Final report with evidence')).toBe(false);
+    expect(changesTarget('CI 통과 확인', 'CI 통과 (runner 큐 대기)')).toBe(false);
     // New words for the same target are still a rewrite.
     expect(changesTarget('Fix #455', 'Fix #455 — merged (a1b2c3d)')).toBe(false);
     expect(changesTarget('Final report', 'Report')).toBe(false);
