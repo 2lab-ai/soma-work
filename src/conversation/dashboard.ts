@@ -3601,6 +3601,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/toaster.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/compact-breakdown.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/model-picker.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/agent-queue.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -5972,68 +5973,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .cron-badge svg { width: 12px; height: 12px; }
 .card .card-title-text.is-renamed { animation: title-swap var(--dur-expand) var(--ease-out); }
 @keyframes title-swap { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
-.cron-lane { background: var(--ib-col); border-radius: 14px; padding: 2px 4px 8px; margin-bottom: 12px; }
-.cron-lane[hidden] { display: none; }
-.cron-lane-head { display: flex; align-items: center; gap: 8px; padding: 10px 8px 8px 10px; min-height: 40px; }
-.cron-lane-head .col-spark { color: var(--ib-muted); }
-.cron-lane-head .col-spark svg { width: 14px; height: 14px; }
-.cron-lane-head h3 { font-size: 12px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ib-muted); margin: 0; }
-.cron-lane-head .count { background: var(--ib-pill); color: var(--ib-text-2); border-radius: 6px; padding: 1px 7px; font-size: 12px; font-weight: 500; min-width: 22px; text-align: center; font-variant-numeric: tabular-nums; }
-.cron-lane-note { font-size: 12px; font-weight: 600; }
-.cron-lane-note.is-run { color: var(--st-run); }
-.cron-lane-note.is-wait { color: var(--st-wait); }
-.cron-groups { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 320px), 1fr)); gap: 10px; padding: 0 4px; align-items: start; }
-.cron-group {
-  position: relative;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  min-width: 0;
-  padding: 10px;
-  border-radius: 12px;
-  border: 1px dashed var(--ib-card-border);
-  background: color-mix(in srgb, var(--ib-card) 45%, transparent);
-  transition: border-color 150ms ease;
-}
-.cron-group.is-running { border-style: solid; border-color: color-mix(in srgb, var(--st-run) 55%, transparent); }
-.cron-group.is-waiting { border-style: solid; border-color: var(--st-wait); }
-.cron-tile { display: flex; flex-direction: column; gap: 6px; min-width: 0; --st-color: var(--ib-text-2); }
-.cron-group.is-running .cron-tile { --st-color: var(--st-run); }
-.cron-group.is-waiting .cron-tile { --st-color: var(--st-wait); }
-.cron-tile-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.cron-name { flex: 1 1 auto; min-width: 0; font-size: 14px; font-weight: 600; color: var(--ib-text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cron-elsewhere { flex-shrink: 0; font-size: 11px; color: var(--ib-muted); border: 1px solid var(--ib-card-border); border-radius: 999px; padding: 0 6px; }
-.cron-history-btn {
-  flex-shrink: 0;
-  margin-left: auto;
-  min-height: 28px;
-  padding: 2px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--ib-card-border);
-  background: var(--ib-card);
-  color: var(--ib-text-2);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  transition: transform var(--dur-press) var(--ease-out), border-color 150ms ease;
-}
-.cron-history-btn:active:not(:focus-visible) { transform: scale(0.97); }
-.cron-history-btn:focus-visible, .cron-strip:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-@media (hover: hover) and (pointer: fine) { .cron-history-btn:hover { border-color: var(--ib-muted); color: var(--ib-text); } }
-.cron-sched { display: flex; flex-wrap: wrap; gap: 2px 10px; font-size: 12px; color: var(--ib-text-2); font-variant-numeric: tabular-nums; }
-.cron-expr { color: var(--ib-text); }
-.cron-strip { display: flex; align-items: flex-end; gap: 3px; height: 22px; padding: 2px 0; border: 0; background: none; cursor: pointer; width: max-content; max-width: 100%; }
-.cron-strip.is-empty { cursor: default; font-size: 12px; color: var(--ib-muted); height: auto; }
-.cr-tick { display: block; width: 8px; height: 16px; border-radius: 2px; background: var(--st-done); }
-.cr-tick.is-fail { background: var(--st-fail); height: 18px; }
-.cr-tick.is-none { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ib-muted); }
-.cr-tick.is-run { background: var(--st-run); animation: cr-pulse 1.6s ease-in-out infinite; }
-.cr-tick.is-wait { background: var(--st-wait); }
-@keyframes cr-pulse { 50% { opacity: 0.45; } }
-.cron-status { font-size: 12px; color: var(--ib-text-2); }
-.cron-status.is-run { color: var(--st-run); font-weight: 600; }
-.cron-status.is-wait { color: var(--st-wait); font-weight: 600; }
-.cron-status.is-fail { color: var(--st-fail); }
+/* LLM 가용량 and the CRON lane: @2lab.ai/ui <ui-agent-queue> (re-agent-queue), one each,
+   drawn with the dashboard tokens through their .ui-tok wrappers. The lane's job cards
+   are board cards in each job's box (.cron-cards, slot="job:<group key>"), light DOM. */
+.capacity-host { margin-bottom: 18px; }
+.cron-lane { margin-bottom: 12px; }
+.capacity-host[hidden], .cron-lane[hidden] { display: none; }
+.capacity-host > ui-agent-queue, .cron-lane > ui-agent-queue { display: block; min-width: 0; }
 .cron-cards { display: flex; flex-direction: column; gap: 8px; position: relative; }
 .cron-cards:empty { display: none; }
 .cron-drawer-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); opacity: 0; pointer-events: none; transition: opacity var(--dur-fade) var(--ease-out); z-index: 190; }
@@ -6077,182 +6023,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .cr-err { font-size: 12px; color: var(--st-fail); margin-top: 2px; }
 .cr-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .cr-actions .btn-action { text-decoration: none; }
+.aq-left { font-variant-numeric: tabular-nums; } /* the drawer's 다음 실행 countdown (aqTime) */
 
-/* ── LLM capacity v2 — two measures + replayed forecast (2026-10-25) ──
-   Colour is the window: teal = now · 5h, violet = this week · 7d. The tier is a
-   dot (Okabe–Ito orange/blue) plus its text, never a fill of its own. */
-.capacity { margin-bottom: 18px; background: var(--ib-col); border-radius: 14px; padding: 12px 14px 10px; color: var(--ib-text);
-  --cap-now: #2fbfa9; --cap-now-soft: rgba(47, 191, 169, 0.22); --cap-wk: #a08bff; --cap-wk-soft: rgba(160, 139, 255, 0.24); }
-[data-theme="light"] .capacity { --cap-now: #0f8f7e; --cap-now-soft: #c9ece6; --cap-wk: #6b4ee6; --cap-wk-soft: #e1dafc; }
-.capacity[hidden] { display: none; }
-.cap-head { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; margin-bottom: 4px; }
-.cap-title { margin: 0; font-size: 12px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ib-muted); }
-.cap-sub { font-size: 12px; color: var(--ib-text-2); }
-.cap-legend { margin-left: auto; display: flex; flex-wrap: wrap; gap: 4px 12px; font-size: 11px; color: var(--ib-text-2); }
-.cap-legend span { display: inline-flex; align-items: center; gap: 5px; }
-.cap-sw { display: inline-block; width: 10px; height: 10px; border-radius: 3px; }
-.cap-sw.is-now { background: var(--cap-now); }
-.cap-sw.is-wk { background: var(--cap-wk); }
-.cap-sw.is-dot { border-radius: 50%; width: 8px; height: 8px; }
-.cap-sw.tier-high { background: #e69f00; }
-.cap-sw.tier-low { background: #0072b2; }
-.cap-off { font-size: 13px; color: var(--ib-text-2); padding: 8px 0 10px; }
-.cap-prov { background: var(--ib-card); border-radius: 12px; padding: 14px 18px 12px; margin-top: 10px; box-shadow: inset 0 0 0 1px var(--ib-card-border); }
-.cap-chip i { font-style: normal; }
-.cap-chip em { font-style: normal; font-weight: 600; font-variant-numeric: tabular-nums; }
-.cap-summary .cap-m.is-now b, .cap-summary .cap-m.is-now em { color: var(--cap-now); }
-.cap-summary .cap-m.is-wk b, .cap-summary .cap-m.is-wk em { color: var(--cap-wk); }
-.cap-prov.is-empty { box-shadow: inset 0 0 0 1px var(--st-fail); }
-.cap-prov.is-low { box-shadow: inset 0 0 0 1px var(--st-wait); }
-.cap-pname { font-size: 16px; font-weight: 700; }
-.cap-disc { font-size: 12px; color: var(--ib-muted); margin: 2px 0 8px; }
-.cap-disc .cap-stale { color: var(--st-wait); font-weight: 600; }
-/* Simplified card: one bar per window — label | bar | "x / total 계정 %" — and a "다음 …" line. */
-.cap-bar-row { display: grid; grid-template-columns: 92px minmax(0, 1fr) 200px; align-items: center; gap: 4px 12px; margin: 8px 0; }
-.cap-bar-lbl { font-size: 14px; font-weight: 700; line-height: 1.2; }
-.cap-bar-lbl i { display: block; font-style: normal; font-weight: 400; font-size: 11px; color: var(--ib-muted); }
-.cap-bar-row.is-h5 .cap-bar-lbl { color: var(--cap-now); }
-.cap-bar-row.is-wk .cap-bar-lbl { color: var(--cap-wk); }
-.cap-bar { height: 26px; border-radius: 7px; background: var(--ib-pill); overflow: hidden; }
-.cap-bar > span { display: block; height: 100%; border-radius: 7px; }
-.cap-bar-row.is-h5 .cap-bar > span { background: var(--cap-now); }
-.cap-bar-row.is-wk .cap-bar > span { background: var(--cap-wk); }
-.cap-bar-val { font-size: 14px; color: var(--ib-text-2); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.cap-bar-val b { font-size: 19px; color: var(--ib-text); }
-.cap-bar-val em { font-style: normal; font-weight: 600; margin-left: 4px; }
-.cap-bar-next { grid-column: 2 / 4; font-size: 12px; color: var(--ib-text-2); }
-.cap-prov.is-empty .cap-bar-row.is-h5 .cap-bar-next { color: var(--st-fail); font-weight: 600; }
-.cap-tl-wrap { margin-top: 10px; border-top: 1px solid var(--ib-card-border); padding-top: 8px; }
-.cap-tl-h { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--ib-text-2); }
-.cap-tl-h i { font-style: normal; }
-.cap-tl-h .is-h5 { color: var(--cap-now); }
-.cap-tl-h .is-wk { color: var(--cap-wk); }
-.cap-prov svg { display: block; max-width: 100%; height: auto; overflow: visible; }
-.cap-prov svg text { font-family: inherit; }
-.cap-tl-axis { stroke: var(--ib-muted); stroke-opacity: 0.5; stroke-width: 2; }
-.cap-tl-tick { stroke: var(--ib-card-border); }
-.cap-tl-ax { fill: var(--ib-muted); font-size: 11px; }
-.cap-tl-mk.is-h5 { fill: var(--cap-now); stroke: var(--cap-now); }
-.cap-tl-mk.is-wk { fill: var(--cap-wk); stroke: var(--cap-wk); }
-.cap-tl-mk circle, .cap-tl-mk rect { stroke: var(--ib-card); stroke-width: 1.5; }
-.cap-tl-span { stroke-width: 5; stroke-linecap: round; }
-.cap-tl-mk text { stroke: none; font-size: 12.5px; font-weight: 700; }
-/* Phones (mockup v5): label and value share the first line, the bar takes the card's
-   full width on its own line, the "다음 …" line sits under it. */
-.cap-prov.is-narrow .cap-bar-row { grid-template-columns: minmax(0, 1fr) auto; gap: 4px 8px; margin: 10px 0; }
-.cap-prov.is-narrow .cap-bar-lbl { grid-row: 1; grid-column: 1; align-self: baseline; }
-.cap-prov.is-narrow .cap-bar-lbl i { display: inline; margin-left: 6px; }
-.cap-prov.is-narrow .cap-bar-val { grid-row: 1; grid-column: 2; align-self: baseline; }
-.cap-prov.is-narrow .cap-bar { grid-row: 2; grid-column: 1 / -1; height: 20px; }
-.cap-prov.is-narrow .cap-bar-next { grid-row: 3; grid-column: 1 / -1; }
-.cap-prov.is-narrow .cap-bar-val b { font-size: 16px; }
-.cap-prov.is-narrow .cap-tl-h-note { display: none; }
-@media (max-width: 760px) {
-  .cap-legend { margin-left: 0; }
-}
-/* ── Agent Queue grammar (affectUI #444, .prd/affectui/re-agent-queue.md) ──
-   Capacity = workers (llmux accounts as state marks), CRON lane = queue (the next fires,
-   four numbers, 24 hours of runs). One head pill with a live countdown, one polite region.
-   Colour is never the only signal: every state leads with a glyph or a word. */
-/* This region's own tokens (not the shared :root / light blocks): warning text that holds
-   4.5:1 — light --st-wait (#c2780a) is 3.5:1 on white, so it is never used as text. */
-:root { --aq-warn: var(--st-wait); --aq-warn-text: #f5a524; }
-[data-theme="light"] { --aq-warn-text: #9a5b00; }
-.aq-sr { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; border: 0; }
-.aq-head { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 10px; min-width: 0; }
-.aq-name { font-size: 12px; color: var(--ib-muted); white-space: nowrap; }
-.aq-pill { display: inline-flex; align-items: center; gap: 4px; min-height: 22px; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; line-height: 1.3; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--aq-pc, var(--ib-text-2)); background: color-mix(in srgb, var(--aq-pc, var(--ib-muted)) 14%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--aq-pc, var(--ib-muted)) 45%, transparent); }
-.aq-pill.is-ok { --aq-pc: var(--st-done); }
-.aq-pill.is-run { --aq-pc: var(--st-run); }
-.aq-pill.is-paused, .aq-pill.is-low, .aq-pill.is-wait { --aq-pc: var(--aq-warn); color: var(--aq-warn-text); }
-.aq-pill.is-empty { --aq-pc: var(--st-fail); color: var(--st-fail-text); }
-.aq-pill.is-unknown { --aq-pc: var(--ib-muted); }
-.aq-left { font-variant-numeric: tabular-nums; }
-.aq-col-head { display: flex; align-items: baseline; gap: 6px; font-size: 12px; color: var(--ib-muted); }
-.aq-col-head b { color: var(--ib-text); font-weight: 600; font-variant-numeric: tabular-nums; }
-.aq-workers { position: relative; margin-top: 10px; padding-top: 8px; border-top: 1px solid var(--ib-card-border); }
-.aq-marks { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
-.aq-mark { display: inline-flex; align-items: center; gap: 5px; min-height: 28px; padding: 0 9px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); font: inherit; font-size: 12px; white-space: nowrap; cursor: pointer; transition: background-color var(--dur-fade) var(--ease-out), color var(--dur-fade) var(--ease-out), border-color var(--dur-fade) var(--ease-out); }
-.aq-mark b { font-weight: 600; }
-.aq-mark.is-paused { color: var(--aq-warn-text); background: color-mix(in srgb, var(--aq-warn) 12%, var(--ib-card)); border-color: color-mix(in srgb, var(--aq-warn) 50%, transparent); }
-.aq-mark.is-spent, .aq-mark.is-unmeasured, .aq-mark.is-held { color: var(--ib-text-2); background: var(--ib-pill); }
-.aq-mark.is-out { color: var(--ib-muted); background: transparent; border-style: dashed; }
-.aq-mark[aria-expanded="true"] { border-color: var(--ib-text-2); }
-.aq-mark:focus-visible, .aq-q:focus-visible, .aq-pop-close:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-@media (hover: hover) and (pointer: fine) { .aq-mark:hover, .aq-q:hover { border-color: var(--ib-muted); } }
-.aq-wdot { flex: none; width: 7px; height: 7px; border-radius: 50%; }
-.aq-wdot.is-h5 { background: var(--cap-now); }
-.aq-wdot.is-wk { background: var(--cap-wk); }
-.aq-pop { position: absolute; z-index: 6; top: 100%; left: 8px; width: min(280px, calc(100% - 16px)); display: grid; gap: 10px; padding: 12px; border-radius: 12px; background: var(--ib-card); color: var(--ib-text); box-shadow: 0 0 0 1px var(--ib-card-border), var(--ib-shadow-raised); animation: aq-open var(--dur-fade) var(--ease-out); }
-.cap-prov.is-narrow .aq-pop { width: calc(100% - 24px); }
-@keyframes aq-open { from { opacity: 0; transform: translateY(-4px) scale(0.97); } to { opacity: 1; transform: none; } }
-.aq-pop-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.aq-pop-name { font-size: 14px; font-weight: 700; }
-.aq-pop-kind { flex: 1 1 auto; min-width: 0; font-size: 12px; color: var(--ib-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.aq-pop-close { flex: none; width: 28px; height: 28px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: none; color: var(--ib-text-2); font: inherit; font-size: 16px; line-height: 1; cursor: pointer; }
-.aq-pop-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 12px; margin: 0; padding: 10px 12px; border-radius: 10px; background: var(--ib-col); }
-.aq-pop-stats dt { font-size: 11px; color: var(--ib-muted); }
-.aq-pop-stats dd { margin: 0; font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; }
-.aq-pop-stats .is-wide { grid-column: 1 / -1; }
-.cap-bar { position: relative; }
-.cap-low { position: absolute; top: 0; bottom: 0; width: 0; border-left: 1px dashed var(--ib-text-2); opacity: 0.7; }
-.cap-tl-lim { fill: var(--st-fail); fill-opacity: 0.12; }
-.cap-tl-hatch { stroke: var(--st-fail); stroke-opacity: 0.4; stroke-width: 1.5; }
-.cap-chip .cap-chip-lim { color: var(--aq-warn-text); font-weight: 600; white-space: nowrap; }
-.cron-lane { container: aqlane / inline-size; }
-.aq-lane-top { padding: 0 4px 10px; }
-.aq-lane-top:empty { display: none; }
-.aq-stats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 0; padding: 12px 0; border-radius: 12px; background: var(--ib-card); box-shadow: inset 0 0 0 1px var(--ib-card-border); }
-.aq-stat { display: grid; gap: 2px; min-width: 0; padding: 0 16px; }
-.aq-stat + .aq-stat { border-left: 1px solid var(--ib-card-border); }
-.aq-stat dt { font-size: 12px; color: var(--ib-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.aq-stat dd { margin: 0; font-size: 16px; font-weight: 600; color: var(--ib-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
-.aq-stat[data-kind="failed"] dd { color: var(--st-fail-text); }
-.aq-of { margin-left: 4px; font-size: 13px; font-weight: 500; color: var(--ib-muted); }
-.aq-of.is-n { margin-left: 1px; }
-.aq-lane-body { display: grid; grid-template-columns: clamp(188px, 26%, 236px) minmax(0, 1fr); gap: 10px; align-items: start; padding: 0 4px; }
-.aq-lane-body .cron-groups { padding: 0; }
-.aq-queue { display: flex; flex-direction: column; gap: 6px; min-width: 0; padding: 10px; border-radius: 12px; border: 1px solid var(--ib-card-border); background: color-mix(in srgb, var(--ib-card) 45%, transparent); }
-.aq-queue:empty { display: none; }
-.aq-q { display: flex; align-items: center; gap: 6px; min-height: 28px; padding: 0 8px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); font: inherit; font-size: 12.5px; text-align: left; cursor: pointer; animation: aq-in var(--dur-fade) var(--ease-out); }
-.aq-q svg { flex: none; width: 12px; height: 12px; color: var(--ib-muted); }
-.aq-q-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.aq-q .aq-left { flex: none; font-size: 11.5px; color: var(--ib-muted); }
-.aq-more { align-self: flex-start; padding: 1px 8px; border-radius: 6px; background: var(--ib-pill); color: var(--ib-text-2); font-size: 11px; font-weight: 600; font-variant-numeric: tabular-nums; }
-.aq-empty { padding: 4px 2px; font-size: 12px; color: var(--ib-muted); }
-@keyframes aq-in { from { opacity: 0; } to { opacity: 1; } }
-.aq-chart { margin: 10px 4px 0; padding: 12px 14px 10px; border-radius: 12px; background: var(--ib-card); box-shadow: inset 0 0 0 1px var(--ib-card-border); }
-.aq-chart:empty { display: none; }
-.aq-chart-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 10px; font-size: 12px; }
-.aq-chart-title { font-weight: 500; color: var(--ib-text); }
-.aq-chart-head .aq-of { margin-left: auto; font-size: 12px; }
-.aq-plot { position: relative; height: 112px; margin-left: 26px; display: flex; align-items: stretch; gap: 2px; border-bottom: 1px solid var(--ib-card-border); }
-.aq-ch-grid { position: absolute; left: -26px; right: 0; top: 0; height: 0; border-top: 1px dashed var(--ib-pill); pointer-events: none; }
-.aq-ch-grid span { position: absolute; left: 0; top: -7px; width: 20px; text-align: right; font-size: 11px; line-height: 14px; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
-.aq-ch-cut { position: absolute; top: 0; bottom: 0; background: repeating-linear-gradient(-45deg, transparent 0 5px, color-mix(in srgb, var(--ib-muted) 22%, transparent) 5px 6px); }
-.aq-ch-col { position: relative; z-index: 1; flex: 1 1 0; min-width: 0; display: flex; flex-direction: column-reverse; }
-.aq-ch-ok, .aq-ch-run, .aq-ch-fail { display: block; transition: height var(--dur-expand) var(--ease-out); }
-.aq-ch-ok { background: var(--st-done); }
-.aq-ch-run { background: var(--st-run); }
-.aq-ch-fail { background: var(--st-fail); border-radius: 2px 2px 0 0; }
-.aq-ch-axis { display: flex; justify-content: space-between; margin: 6px 0 0 26px; font-size: 11px; color: var(--ib-muted); }
-.aq-ch-grid.is-zero { top: 100%; border-top: 0; }
-.aq-ch-key { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--ib-text-2); }
-.aq-chart-title + .aq-ch-key { margin-left: auto; }
-.aq-ch-key i { width: 8px; height: 8px; border-radius: 2px; }
-.aq-ch-key i.is-ok { background: var(--st-done); }
-.aq-ch-key i.is-run { background: var(--st-run); }
-.aq-ch-key i.is-fail { background: var(--st-fail); }
-.cron-lane.is-collapsed .aq-lane-top, .cron-lane.is-collapsed .aq-queue, .cron-lane.is-collapsed .aq-chart { display: none; }
-.cron-lane.is-collapsed .aq-lane-body { display: block; }
-@container aqlane (max-width: 599px) { .aq-lane-body { grid-template-columns: minmax(0, 1fr); } .aq-plot { height: 88px; } }
-@container aqlane (max-width: 560px) { .aq-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); row-gap: 12px; } .aq-stat { padding: 0 12px; } .aq-stat:nth-child(odd) { border-left: 0; } .aq-stat dd { font-size: 15px; } }
-@media (pointer: coarse) { .aq-mark, .aq-q { min-height: 44px; } .aq-pop-close { width: 44px; height: 44px; } }
 @media (prefers-reduced-motion: reduce) {
-  .aq-mark, .aq-q, .aq-pop, .aq-ch-ok, .aq-ch-run, .aq-ch-fail { animation: none; transition: none; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .cr-tick.is-run { animation: none; }
   .cron-drawer, .cron-drawer-overlay { transition: none; }
   .card .card-title-text.is-renamed { animation: title-fade var(--dur-fade) linear; }
 }
@@ -6763,9 +6536,8 @@ body.nt-open .new-task-fab { display: none !important; }
 @media (pointer: coarse) {
   /* Responsive (SSOT 2026-10-24) — 16px text: iOS does not zoom into a focused input. */
   .mc-custom-input input { font-size: 16px; }
-  /* The merged cron drawer and lane (#374): 44px touch targets. */
+  /* The merged cron drawer (#374): 44px touch targets (the lane's are <ui-agent-queue>'s own). */
   .cron-drawer-close { min-width: 44px; min-height: 44px; }
-  .cron-history-btn { min-height: 44px; }
 }
 @media (max-width: 639px) {
   /* Responsive (SSOT 2026-10-24) — phones: the last card clears the FAB (a board
@@ -6787,79 +6559,6 @@ body.nt-open .new-task-fab { display: none !important; }
 .cron-drawer { width: min(560px, 100%); height: 100vh; height: 100dvh; padding-right: env(safe-area-inset-right, 0px); }
 .cron-drawer-head { padding-top: max(16px, env(safe-area-inset-top, 0px)); }
 .cron-drawer-body { padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px)); }
-/* Secondary sections (#374 LLM capacity, CRON lane) — a disclosure each: collapsed
-   unless the window is at least 840×1000 or the reader opened it. Collapsed, the
-   capacity keeps one chip per provider on its title row and the CRON lane keeps its
-   head (count, running, needs-reply) plus every job that waits for a reply. */
-.sec-toggle {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 32px;
-  padding: 2px 10px;
-  border-radius: 8px;
-  border: 1px solid var(--ib-card-border);
-  background: var(--ib-card);
-  color: var(--ib-text-2);
-  font: inherit;
-  font-size: 12px;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-@media (pointer: coarse) { .sec-toggle { min-height: 44px; } }
-.sec-toggle svg { width: 12px; height: 12px; transition: transform var(--dur-press) var(--ease-out); }
-.sec-toggle[aria-expanded="true"] svg { transform: rotate(180deg); }
-.sec-toggle:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-.capacity { position: relative; }
-.capacity > .sec-toggle { position: absolute; top: 8px; right: 10px; }
-.capacity .cap-head { padding-right: 96px; }
-.capacity.is-collapsed { padding-bottom: 10px; }
-.capacity.is-collapsed .cap-head { flex-wrap: nowrap; align-items: center; margin-bottom: 0; min-height: 32px; }
-.capacity.is-collapsed .cap-sub, .capacity.is-collapsed .cap-legend, .capacity.is-collapsed .cap-rows, .capacity.is-collapsed .cap-off { display: none; }
-.capacity:not(.is-collapsed) .cap-summary { display: none; }
-.capacity .cap-title { flex: none; white-space: nowrap; }
-.cap-summary { display: flex; gap: 6px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
-@media (max-width: 639px) {
-  /* Phones: the collapsed row keeps every chip whole — a short title, an icon toggle
-     (its text stays the accessible name), tighter chips. */
-  .capacity.is-collapsed .cap-title-pre { display: none; }
-  .sec-toggle { padding: 2px 8px; min-width: 44px; justify-content: center; }
-  .sec-toggle .sec-toggle-text { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-  .capacity .cap-head { padding-right: 56px; }
-}
-.cap-chip {
-  flex: none;
-  display: inline-flex;
-  align-items: baseline;
-  gap: 4px;
-  padding: 2px 9px;
-  border-radius: 999px;
-  font-size: 12px;
-  line-height: 1.5;
-  white-space: nowrap;
-  color: var(--ib-text-2);
-  background: var(--ib-card);
-  box-shadow: inset 0 0 0 1px var(--ib-card-border);
-}
-@media (max-width: 839px) {
-  /* Below 840px every chip keeps labelled counts, totals and % for both windows
-     (requirement 1a, trinity mockup v5): the folded summary wraps to another row, and a
-     chip wider than the row breaks between its measures, never inside one. After the
-     base .cap-chip rule so it wins. */
-  .cap-chip { flex: 0 1 auto; min-width: 0; flex-wrap: wrap; white-space: normal; column-gap: 4px; }
-  .cap-chip .cap-m, .cap-chip .cap-chip-flag { white-space: nowrap; }
-  .capacity.is-collapsed .cap-summary { flex: 1 1 auto; flex-wrap: wrap; overflow-x: visible; gap: 4px; }
-}
-@media (max-width: 639px) { .cap-chip { padding: 2px 6px; font-size: 11px; } }
-.cap-chip b { font-weight: 700; color: var(--ib-text); font-variant-numeric: tabular-nums; }
-.cap-chip .cap-chip-flag { color: var(--st-wait); font-weight: 600; }
-.cap-chip.is-low { color: var(--st-wait); box-shadow: inset 0 0 0 1px var(--st-wait); }
-.cap-chip.is-empty, .cap-chip.is-error { color: var(--st-fail); box-shadow: inset 0 0 0 1px var(--st-fail); }
-.cron-lane-bar { display: flex; align-items: center; gap: 8px; padding-right: 8px; }
-.cron-lane-bar .cron-lane-head { flex: 1 1 auto; min-width: 0; }
-.cron-group[hidden] { display: none; }
-.cron-lane.is-collapsed { padding-bottom: 4px; }
 /* Task view (T1.6): minimal — the artifacts are one row of name chips, like a
    short panel body below; 자세히 shows them as thumbnails. */
 .slide-panel:not(.is-detail) .panel-artifacts { display: flex; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
@@ -6961,13 +6660,12 @@ body.nt-open .new-task-fab { display: none !important; }
       </div>
     </section>
 
-    <!-- LLM capacity (SSOT 2026-10-23 T7/T9/T10): the llmux cooldown timeline,
-         between the stats strip and the inbox. Hidden until loaded, and on a
-         deployment that does not route through llmux. -->
-    <section class="capacity" id="capacity" aria-label="LLM capacity" hidden>
-      <button type="button" class="sec-toggle" id="capacity-toggle" data-sec-toggle="capacity" aria-expanded="false" aria-controls="capacity-view"><span class="sec-toggle-text">&#xD3BC;&#xCE58;&#xAE30;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
-      <div class="capacity-view" id="capacity-view"></div>
-    </section>
+    <!-- LLM capacity (SSOT 2026-10-23 T7/T9/T10), between the stats strip and the inbox:
+         @2lab.ai/ui <ui-agent-queue> with providers only (paintCapacity gives it its data; its
+         own 펼치기 / 접기 sits in its head row), drawn with the dashboard tokens through its
+         token wrapper (.ui-tok). Hidden until loaded, and on a deployment that does not
+         route through llmux. -->
+    <div class="capacity-host ui-tok" id="capacity" hidden><ui-agent-queue id="capacity-aq" lang="ko"></ui-agent-queue></div>
 
     <!-- Agent inbox (.prd/10 §3.1) — the board, right under the stats strip. -->
     <section class="inbox" id="inbox" aria-label="Agent inbox">
@@ -6997,21 +6695,11 @@ body.nt-open .new-task-fab { display: none !important; }
           </div>
         </form>
       </dialog>
-      <!-- CRON lane (SSOT 2026-10-23 T4/T5): one tile per cron job, its latest run as a live card. -->
-      <div class="cron-lane" id="cron-lane" aria-label="Cron jobs" hidden>
-        <div class="cron-lane-bar">
-          <div class="cron-lane-head" id="cron-lane-head"></div>
-          <button type="button" class="sec-toggle" id="cron-toggle" data-sec-toggle="cron" aria-expanded="false" aria-controls="cron-lane-top cron-queue cron-groups cron-lane-chart"><span class="sec-toggle-text">&#xD3BC;&#xCE58;&#xAE30;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
-        </div>
-        <!-- Agent Queue grammar (#444): four numbers, the next-fire queue beside the job
-             groups, and 24 hours of runs — shown while the lane is unfolded. -->
-        <div class="aq-lane-top" id="cron-lane-top"></div>
-        <div class="aq-lane-body">
-          <div class="aq-queue" id="cron-queue" role="group" aria-label="다음 실행 순서" data-aq-rove="cron-queue"></div>
-          <div class="cron-groups" id="cron-groups"></div>
-        </div>
-        <div class="aq-chart" id="cron-lane-chart"></div>
-      </div>
+      <!-- CRON lane (SSOT 2026-10-23 T4/T5): @2lab.ai/ui <ui-agent-queue> with the lane only —
+           one tile per cron job, four numbers, the next-fire queue and 24 hours of runs
+           (syncCronLane gives it its data); each job's latest run is its board card, in the
+           job's slot (slot="job:<group key>"). -->
+      <div class="cron-lane ui-tok" id="cron-lane" hidden><ui-agent-queue id="cron-aq" lang="ko"></ui-agent-queue></div>
       <!-- How many need you and how many run, said politely (re-agent-inbox D6). -->
       <p id="inbox-live" class="ib-sr" role="status" aria-live="polite" aria-atomic="true"></p>
       <!-- Until the first board answer the columns show skeleton cards, not
@@ -7053,9 +6741,6 @@ body.nt-open .new-task-fab { display: none !important; }
     <div class="cron-drawer-meta" id="cron-drawer-meta"></div>
     <div class="cron-drawer-body" id="cron-drawer-body"></div>
   </aside>
-  <!-- Capacity + CRON announcements (#444 D4): one static polite region, outside every
-       re-rendered section, so a repaint never re-announces and a transition always is. -->
-  <div class="aq-sr" id="aq-live" aria-live="polite" aria-atomic="true"></div>
 
   <!-- Slide Panel for Session Detail -->
   <div class="slide-panel-overlay" id="panel-overlay" onclick="closePanel()"></div>
@@ -8983,7 +8668,7 @@ function renderBoard(board, partial) {
   // 2026-10-23 T4); the lane sections exist before the reconciler fills them.
   var cronPlan = planCronLane(board, _cronJobs, _cronRevealKey);
   _cronPlan = cronPlan;
-  syncCronLane(cronPlan, Date.now());
+  syncCronLane(cronPlan);
   board = cronPlan.board;
   var plan = planDoneColumn(board.idle || [], board.closed || [], {
     showArchives: showArchives,
@@ -17217,6 +16902,9 @@ async function steerAct(op, id, text) {
 // window is large (840 wide and 1000 tall — a QHD or full-screen desktop), or as the
 // reader chose. The choice is saved per device; the default never is. A folded CRON
 // lane still shows every job whose run waits for a reply (never hidden behind a fold).
+// Both are @2lab.ai/ui <ui-agent-queue> (re-agent-queue): its own 펼치기 / 접기 toggle in
+// each section's head row asks through ui-collapse; the page decides and hands the state
+// back as data.collapsed (paintCapacity, syncCronLane).
 var SEC_OPEN_QUERY = '(min-width: 840px) and (min-height: 1000px)';
 var _secMql = window.matchMedia ? window.matchMedia(SEC_OPEN_QUERY) : null;
 // Capacity v2 unfolded is taller than any common first screen (two measures, lanes and
@@ -17226,6 +16914,7 @@ var _secMql = window.matchMedia ? window.matchMedia(SEC_OPEN_QUERY) : null;
 var _secChoice = {};           // this page's choices, even when storage refuses the write
 var _cronLaneRevealed = false; // a deep link into a folded lane opens it for this page load
 var _cronFoldApplied = null;   // the fold the last CRON render used
+var _capFoldApplied = null;    // the fold the last capacity paint used
 var _boardFlipOff = false;     // a disclosure render leaves the board's motion to the coordinator
 function secOpen(saved, large) {
   if (saved === 'open') return true;
@@ -17249,25 +16938,11 @@ function renderBoardForLayout() {
 }
 function cronLaneFolded() { return !secIsOpen('cron'); }
 function secStateKey() { return (secIsOpen('capacity') ? 'C' : 'c') + (secIsOpen('cron') ? 'R' : 'r'); }
-// Classes and toggles follow the state; true when the CRON fold changed (the lane's
-// cards then need a render: a folded lane keeps them out of the DOM).
+// Runs on every layout check (each resize frame): a changed capacity fold repaints its
+// element; true when the CRON fold changed (the lane's data and cards then need a board
+// render: a folded lane keeps its cards out of the DOM).
 function applySectionState() {
-  var pairs = [['capacity', 'capacity'], ['cron', 'cron-lane']];
-  for (var i = 0; i < pairs.length; i++) {
-    var root = document.getElementById(pairs[i][1]);
-    if (!root) continue;
-    var open = secIsOpen(pairs[i][0]);
-    // Runs on every layout check (each resize frame): write only what changed.
-    if (root.classList.contains('is-collapsed') === open) root.classList.toggle('is-collapsed', !open);
-    var t = root.querySelector('[data-sec-toggle]');
-    if (t) {
-      var expanded = open ? 'true' : 'false';
-      if (t.getAttribute('aria-expanded') !== expanded) t.setAttribute('aria-expanded', expanded);
-      var label = t.querySelector('.sec-toggle-text');
-      var text = open ? '접기' : '펼치기';
-      if (label && label.textContent !== text) label.textContent = text;
-    }
-  }
+  if (_capFoldApplied !== null && _capFoldApplied !== !secIsOpen('capacity')) paintCapacity();
   var folded = cronLaneFolded();
   var changed = _cronFoldApplied !== null && _cronFoldApplied !== folded;
   _cronFoldApplied = folded;
@@ -17283,27 +16958,29 @@ function toggleSection(sec) {
   try { localStorage.setItem('soma-sec-' + sec, _secChoice[sec]); } catch (_e) {}
   if (sec === 'cron') _cronLaneRevealed = false;
   if (applySectionState()) renderBoardForLayout();
-  if (sec === 'capacity' && open) {
-    // Repack the timeline at the width it has now.
-    var view = document.getElementById('capacity-view');
-    if (view) view._html = null;
-    paintCapacity();
-  }
 }
-document.addEventListener('click', function(e) {
-  var t = e.target.closest && e.target.closest('[data-sec-toggle]');
-  if (t) toggleSection(t.getAttribute('data-sec-toggle'));
+// A section's own toggle (<ui-agent-queue> ui-collapse, detail.collapsed = the state asked
+// for): cancelled, so the element never folds on its own — the page's choice comes back
+// as data.collapsed and the toggle keeps the focus across that render (its data-key).
+document.addEventListener('ui-collapse', function(e) {
+  var id = e.target && e.target.id;
+  var sec = id === 'capacity-aq' ? 'capacity' : id === 'cron-aq' ? 'cron' : null;
+  if (!sec) return;
+  e.preventDefault();
+  if (secIsOpen(sec) === !!(e.detail && e.detail.collapsed)) toggleSection(sec);
 });
 
 // ── CRON lane (SSOT 2026-10-23 T3/T4/T5) ──
 // Sessions a cron fire created (KanbanSession.cronJob) leave the three columns
-// for one full-width lane above them: one tile per job — schedule, next run, the
-// last runs as a strip of glyph-coded ticks, and the job's latest run as a live
-// card. "지난 실행" opens a drawer with every kept run of the job.
+// for one full-width lane above them: @2lab.ai/ui <ui-agent-queue> with the lane only —
+// one tile per job (schedule, next run, the last runs as a glyph-coded strip), the four
+// numbers, the next-fire queue and 24 hours of runs. Each job's latest run is its board
+// card, in the job's slot (slot="job:<group key>"). "지난 실행" opens a drawer with
+// every kept run of the job.
 var CLOCK_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 4.8V8l2.2 1.4"/></svg>';
 var _cronJobs = [];          // GET /api/dashboard/cron — this instance's jobs
 var _cronPlan = null;        // last planCronLane() result
-var _cronGroupEls = Object.create(null); // group key → persistent lane section
+var _cronGroupEls = Object.create(null); // group key → the job's persistent card box (its slot)
 var _cronDrawerKey = null;   // group key the drawer shows, null when closed
 var _cronRevealKey = null;   // a deep-linked cron run shown as its job's card
 
@@ -17453,278 +17130,124 @@ function cronGroupRuns(g) {
   runs.sort(function(a, b) { return b.executedAt - a.executedAt; });
   return runs;
 }
-function renderCronStrip(g, nowMs) {
-  var runs = cronGroupRuns(g).slice(0, 12).reverse();
-  if (!runs.length) return '<div class="cron-strip is-empty">실행 기록 없음</div>';
-  return '<button type="button" class="cron-strip" data-cron-group="' + escAttr(g.key) + '" aria-label="' + escAttr(g.name + ' 최근 실행 ' + runs.length + '회 — 지난 실행 보기') + '">'
-    + runs.map(function(r) {
-      var gl = cronRunGlyph(r);
-      return '<i class="cr-tick is-' + gl.cls + '" title="' + escAttr(gl.glyph + ' ' + gl.label + ' · ' + cronRunWhen(r.executedAt, nowMs) + (r.session && r.session.headline ? ' · ' + r.session.headline : '')) + '"></i>';
-    }).join('')
-    + '</button>';
+// ── The lane as the element's data (re-agent-queue; @2lab.ai/ui <ui-agent-queue>) ──
+// A run as the element reads it, by the strip's rule (cronRunGlyph): ✓ ok · ● running ·
+// ▲ waiting · ✗ failed · ◌ unknown (a queue entry, a card with no record, a DM or a thread
+// reply), the glyph's words as its label. A card with no record yet is not one of the
+// job's kept records (recorded: false), so it never counts toward historyCap.
+var CRON_AQ_STATUS = { ok: 'ok', run: 'running', wait: 'waiting', fail: 'failed', none: 'unknown' };
+function cronRunAsAq(r) {
+  var gl = cronRunGlyph(r);
+  var out = { at: r.executedAt, status: CRON_AQ_STATUS[gl.cls] || 'unknown', label: gl.label };
+  if (r.error) out.error = String(r.error);
+  if (r.status === 'unrecorded') out.recorded = false;
+  return out;
 }
-function renderCronTileHead(g, nowMs) {
-  var j = g.job;
-  var runs = cronGroupRuns(g);
-  var sched = j ? cronScheduleLabel(j.expression, j.nextRunAt) : '';
-  // The time left counts down live (#444 D18 — aqTick rewrites the <time>).
-  var next = j && j.nextRunAt ? '다음 ' + esc(capClockLabel(j.nextRunAt / 1000, nowMs)) + ' (' + aqTime(j.nextRunAt, nowMs, ' 후') + ')' : '';
-  var last = runs[0];
-  var lastGl = last ? cronRunGlyph(last) : null;
-  var status = g.waiting ? '▲ 응답 필요'
-    : g.running ? '● 실행 중'
-    : lastGl ? lastGl.glyph + ' ' + lastGl.label + ' · ' + cronAgo(last.executedAt, nowMs)
-    : '아직 실행 없음';
-  return '<div class="cron-tile-head">'
-    + '<span class="cron-badge" aria-hidden="true">' + CLOCK_SVG + '<span class="cron-badge-text">CRON</span></span>'
-    + '<span class="cron-name" title="' + escAttr(g.name) + '">' + esc(g.name) + '</span>'
-    + (j ? '' : '<span class="cron-elsewhere" title="이 인스턴스에 없는 잡 — 삭제됐거나 다른 인스턴스의 잡이라 스케줄 정보가 없습니다">잡 정보 없음</span>')
-    + '<button type="button" class="cron-history-btn" data-cron-group="' + escAttr(g.key) + '">지난 실행 ' + runs.length + '</button>'
-    + '</div>'
-    + '<div class="cron-sched">'
-    + (sched ? '<span class="cron-expr" title="' + escAttr((j ? j.expression : '') + ' — cron 식은 UTC 기준') + '">' + esc(sched) + '</span>' : '')
-    + (next ? '<span class="cron-next">' + next + '</span>' : '')
-    + '</div>'
-    + renderCronStrip(g, nowMs)
-    + '<div class="cron-status is-' + (g.waiting ? 'wait' : g.running ? 'run' : lastGl ? lastGl.cls : 'none') + '">' + esc(status) + '</div>';
-}
-function renderCronLaneHead(plan) {
-  var n = plan.groups.length;
-  // Same words as before (spec 12 T4), as the queue grammar's pills (#444 D15).
-  return '<span class="col-spark" aria-hidden="true">' + CLOCK_SVG + '</span><h3>CRON</h3><span class="count">' + n + '</span>'
-    + (plan.runningCount ? aqPill('run', '● 실행 중 ' + plan.runningCount) : '')
-    + (plan.waitingCount ? aqPill('wait', '▲ 응답 필요 ' + plan.waitingCount) : '');
-}
-// ── The lane as a queue (affectUI Agent Queue, #444 D16/D17/D19) ──
-// The last 24 hours of the lane, from the run RECORDS only (review R1). When a record is
-// written depends on its path (cron-scheduler.ts): new_thread and idle_inject await the
-// injected turn until it settles, then write success / failed; dm and thread_reply write
-// after the message is sent; busy_queue writes 'queued' when it queues (the drain writes
-// nothing). So a run in progress has no record yet — its card is the 실행 중 tile. Whether
-// the session is busy NOW is the linked session's: the server keeps live + working/waiting
-// only on the newest run of a thread THIS job created; an injected run (someone else's
-// session) and earlier / queued runs come back idle (cron-view.ts buildCronJobsView). Same
-// rule as the strip (cronRunGlyph, trinity R2): failed → 실패; success whose session is live
-// and working/waiting again (a reply to wait for, a follow-up turn) → 진행 중; else → 성공. A queue entry is an event, not a run. A board card with no record yet is not
-// counted: it is either running (the 실행 중 tile shows it — the card IS the cron session) or
-// of unknown result, and its time may be its last activity. A job whose kept history (FIFO
-// historyCap) starts inside the window makes every count there a lower bound — say which, and
-// from when.
-function cronDayRuns(plan, nowMs) {
-  var from = nowMs - 86400000;
-  var runs = [];
-  var cut = [];
-  var pending = 0;
-  var unknown = 0;
+// The last 24 hours' counts (lane.runs24h — the element windows them), from the run RECORDS
+// only (review R1). When a record is written depends on its path (cron-scheduler.ts):
+// new_thread and idle_inject await the injected turn until it settles, then write success /
+// failed; dm and thread_reply write after the message is sent; busy_queue writes 'queued'
+// when it queues (the drain writes nothing). So a run in progress has no record yet — its
+// card is the 실행 중 tile. Whether the session is busy NOW is the linked session's: the
+// server keeps live + working/waiting only on the newest run of a thread THIS job created;
+// an injected run (someone else's session) and earlier / queued runs come back idle
+// (cron-view.ts buildCronJobsView). Same rule as the strip (cronRunGlyph, trinity R2):
+// failed → 실패; success whose session is live and working/waiting again (a reply to wait
+// for, a follow-up turn) → 진행 중; else → 성공. A queue entry is an event, not a run. A board
+// card with no record is not counted: a live one is the 실행 중 tile (the card IS the cron
+// session), an idle one is of unknown result (+미확인). Where a job's kept history (FIFO
+// historyCap) starts inside the window, the element turns the counts into lower bounds (≥)
+// from the jobs' kept records.
+function cronDayRuns(plan) {
+  var out = [];
   ((plan && plan.groups) || []).forEach(function(g) {
     cronGroupRuns(g).forEach(function(r) {
-      if (r.status === 'queued' || !(r.executedAt >= from)) return;
+      if (r.status === 'queued') return;
       var s = r.session;
       var live = !!(s && s.live && (s.activityState === 'working' || s.activityState === 'waiting'));
       if (r.status === 'unrecorded') {
-        if (live) pending++;
-        else unknown++;
+        if (!live) out.push({ at: r.executedAt, status: 'unknown', jobId: g.key });
         return;
       }
-      runs.push({ at: r.executedAt, kind: r.status === 'failed' ? 'fail' : live ? 'run' : 'ok' });
+      out.push({ at: r.executedAt, status: r.status === 'failed' ? 'failed' : live ? 'running' : 'ok', jobId: g.key });
     });
-    var kept = g.job && Array.isArray(g.job.runs) ? g.job.runs : [];
-    var cap = (g.job && g.job.historyCap) || 20;
-    if (kept.length && kept.length >= cap) {
-      var oldest = Math.min.apply(null, kept.map(function(r) { return r.executedAt; }));
-      if (oldest > from) cut.push({ name: g.name, from: oldest, cap: cap });
-    }
-  });
-  var count = function(kind) { return runs.filter(function(r) { return r.kind === kind; }).length; };
-  var cutFrom = cut.reduce(function(t, c) { return Math.max(t, c.from); }, 0);
-  return { from: from, runs: runs, n: runs.length, ok: count('ok'), f: count('fail'), run: count('run'), pending: pending, unknown: unknown, cut: cut, cutFrom: cutFrom };
-}
-// Four numbers, each from a named field (D16): the front of the queue, running r/N, and
-// the last 24 hours' runs and failures.
-function cronStats(plan, nowMs) {
-  var groups = (plan && plan.groups) || [];
-  var front = null;
-  groups.forEach(function(g) {
-    if (g.job && g.job.nextRunAt && (!front || g.job.nextRunAt < front.job.nextRunAt)) front = g;
-  });
-  var d = cronDayRuns(plan, nowMs);
-  var cutNote = d.cut.map(function(c) { return c.name + ' 기록은 보관 한도 ' + c.cap + '회라 ' + capClockLabel(c.from / 1000, nowMs) + '부터'; }).join(' · ');
-  var lb = d.cut.length ? '≥' : '';
-  var running = (plan && plan.runningCount) || 0;
-  var stat = function(label, value, title, kind) {
-    return '<div class="aq-stat"' + (kind ? ' data-kind="' + kind + '"' : '') + '><dt>' + label + '</dt><dd title="' + escAttr(title) + '">' + value + '</dd></div>';
-  };
-  return '<dl class="aq-stats">'
-    + (front
-      ? stat('다음 실행', aqTime(front.job.nextRunAt, nowMs, ' 후') + '<span class="aq-of">' + esc(front.name) + '</span>', 'KanbanCronJob.nextRunAt 중 가장 이른 것 — ' + front.name + ' ' + capClockLabel(front.job.nextRunAt / 1000, nowMs))
-      : stat('다음 실행', '—', '8일 안에 없음'))
-    + stat('실행 중', running + '<span class="aq-of is-n">/' + groups.length + '</span>', '레인의 잡 그룹 ' + groups.length + '개(다른 인스턴스 그룹 포함) 중 실행 중 카드가 있는 그룹 ' + running + '개 — 다음 실행 열은 이 인스턴스의 스케줄만 센다')
-    + stat('24시간 실행 기록', lb + d.n + (d.unknown ? '<span class="aq-of">+미확인 ' + d.unknown + '</span>' : ''),
-      '지난 24시간 실행 기록 ' + d.n + '건(대기열 항목 제외): 성공(세션 쉼) ' + d.ok + ' · 실패 ' + d.f + ' · 진행 중(성공 기록, 세션이 지금 실행 중·응답 대기) ' + d.run
-      + (d.pending || d.unknown ? ' · 기록 전 카드 ' + (d.pending + d.unknown) + '개(실행 중 ' + d.pending + ' · 결과 미확인 ' + d.unknown + ')는 세지 않음' : '')
-      + (cutNote ? ' · ' + cutNote : ''))
-    + stat('실패 · 24시간', lb + d.f, '지난 24시간 실패 기록' + (cutNote ? ' · ' + cutNote : ''), d.f > 0 ? 'failed' : '')
-    + '</dl>';
-}
-// The queue column (D17): this instance's jobs by their next fire, soonest first, four
-// chips then +N. A chip opens its job's drawer (the delegated [data-cron-group] click).
-function cronQueue(plan, nowMs, focusKey) {
-  var list = ((plan && plan.groups) || []).filter(function(g) { return g.job && g.job.nextRunAt; });
-  list.sort(function(a, b) { return a.job.nextRunAt - b.job.nextRunAt; });
-  var n = list.length;
-  var head = '<div class="aq-col-head" title="이 인스턴스의 잡 중 다음 실행이 8일 안에 있는 것 — 다른 인스턴스 그룹은 스케줄이 없어 빠진다"><span>다음 실행</span> <b>' + n + '</b></div>';
-  if (!n) return head + '<div class="aq-empty">8일 안에 예정 없음</div>';
-  var shown = list.slice(0, 4);
-  var stop = shown.some(function(g) { return g.key === focusKey; }) ? focusKey : shown[0].key;
-  return head + shown.map(function(g, i) {
-    var at = g.job.nextRunAt;
-    var said = g.name + ', ' + aqLeftSfx(at, nowMs, ' 후 실행') + ', ' + (i + 1) + '/' + n + ' — 지난 실행 보기';
-    return '<button type="button" class="aq-q" data-cron-group="' + escAttr(g.key) + '" data-aq-key="' + escAttr(g.key) + '" tabindex="' + (g.key === stop ? '0' : '-1') + '" aria-label="' + escAttr(said) + '">'
-      + CLOCK_SVG + '<span class="aq-q-name">' + esc(g.name) + '</span>' + aqTime(at, nowMs) + '</button>';
-  }).join('') + (n > 4 ? '<span class="aq-more">+' + (n - 4) + '</span>' : '');
-}
-var AQ_NICE = [4, 6, 8, 10, 12, 16, 20, 24, 30, 40, 50, 60, 80, 100, 120, 160, 200, 300, 400, 500, 600, 800, 1000];
-// 24 hours of run records (D19): one column per rolling hour ending now (so each is labelled
-// by its start, HH:MM부터 — PR review R1), 성공 · 진행 중 (a success record whose session is
-// busy again — the strip's ● / ▲) · 실패 stacked, by cronDayRuns' rule; cards with no record are
-// not drawn; the stretch a truncated history cannot speak for is hatched; an image with a
-// sentence for screen readers.
-function cronRunChart(plan, nowMs) {
-  var d = cronDayRuns(plan, nowMs);
-  var hr = 3600000;
-  var start = nowMs - 24 * hr;
-  var bins = [];
-  for (var k = 0; k < 24; k++) bins.push({ ok: 0, fail: 0, run: 0, at: start + k * hr });
-  d.runs.forEach(function(r) {
-    var i = Math.max(0, Math.min(23, Math.floor((r.at - start) / hr)));
-    bins[i][r.kind]++;
-  });
-  var peak = 0;
-  var peakAt = 0;
-  bins.forEach(function(b) {
-    if (b.ok + b.fail + b.run > peak) { peak = b.ok + b.fail + b.run; peakAt = b.at; }
-  });
-  var top = Math.max(peak, 4);
-  var max = AQ_NICE.filter(function(v) { return v >= top; })[0] || Math.ceil(top / 500) * 500;
-  var hm = function(ms) { var t = new Date(ms); return pad2(t.getHours()) + ':' + pad2(t.getMinutes()); };
-  var pct = function(v) { return ((v / max) * 100).toFixed(1) + '%'; };
-  var cut = d.cutFrom > start;
-  var said = '지난 24시간 크론 실행 기록 ' + d.n + '건: 성공 ' + d.ok + '건, 실패 ' + d.f + '건, 진행 중 ' + d.run + '건'
-    + (peak ? ', 가장 많은 1시간 ' + hm(peakAt) + '부터 ' + peak + '건' : '') + '.'
-    + (cut ? ' ' + capClockLabel(d.cutFrom / 1000, nowMs) + ' 이전은 일부 잡 기록이 잘림.' : '')
-    + (d.pending || d.unknown ? ' 기록 전 카드 ' + (d.pending + d.unknown) + '개는 세지 않음.' : '');
-  var hatch = cut
-    ? '<div class="aq-ch-cut" style="left:0;width:' + (((d.cutFrom - start) / (24 * hr)) * 100).toFixed(1) + '%" title="' + escAttr('이 구간은 ' + d.cut.map(function(c) { return c.name; }).join(', ') + ' 기록이 보관 한도로 잘려 실제보다 적을 수 있음') + '"></div>'
-    : '';
-  var cols = bins.map(function(b) {
-    return '<i class="aq-ch-col" title="' + hm(b.at) + '부터 1시간 · 성공 ' + b.ok + ' · 실패 ' + b.fail + ' · 진행 중 ' + b.run + '"><i class="aq-ch-ok" style="height:' + pct(b.ok) + '"></i><i class="aq-ch-run" style="height:' + pct(b.run) + '"></i><i class="aq-ch-fail" style="height:' + pct(b.fail) + '"></i></i>';
-  }).join('');
-  return '<div class="aq-chart-head"><span class="aq-chart-title">실행 기록 · 24시간</span>'
-    + '<span class="aq-ch-key" title="성공 기록, 세션 쉼"><i class="is-ok" aria-hidden="true"></i>성공</span><span class="aq-ch-key" title="성공 기록, 세션이 지금 실행 중·응답 대기"><i class="is-run" aria-hidden="true"></i>진행 중</span><span class="aq-ch-key" title="실패 기록"><i class="is-fail" aria-hidden="true"></i>실패</span></div>'
-    + '<div class="aq-plot" role="img" aria-label="' + escAttr(said) + '">' + hatch
-    + '<div class="aq-ch-grid" aria-hidden="true"><span>' + max + '</span></div><div class="aq-ch-grid is-zero" aria-hidden="true"><span>0</span></div>'
-    + cols + '</div>'
-    + '<div class="aq-ch-axis"><span>24시간 전</span><span>12시간 전</span><span>지금</span></div>';
-}
-// What the lane would announce (D4): per group, whether it waits for a reply and its
-// newest recorded run (a queue entry is an event, not a run).
-function cronAnnounceSnap(plan) {
-  var out = { groups: {} };
-  ((plan && plan.groups) || []).forEach(function(g) {
-    var newest = null;
-    (g.job && Array.isArray(g.job.runs) ? g.job.runs : []).forEach(function(r) {
-      if (r.status !== 'queued' && (!newest || r.executedAt > newest.executedAt)) newest = r;
-    });
-    out.groups[g.key] = { name: g.name, waiting: !!g.waiting, hasJob: !!g.job, at: newest ? newest.executedAt : 0, status: newest ? newest.status : '', error: newest && newest.error ? String(newest.error) : '' };
   });
   return out;
 }
-// One sentence or none: a newer failed run first, then a job that starts waiting. A group
-// (or its job data) seen for the first time is not news.
-function cronAnnounceDiff(prev, next) {
-  if (!prev || !next) return '';
-  var fail = '';
-  var wait = '';
-  for (var key in next.groups) {
-    var n = next.groups[key];
-    var p = prev.groups[key];
-    if (!p) continue;
-    if (!fail && n.hasJob && p.hasJob && n.status === 'failed' && n.at > p.at) {
-      var e = aqPlain(n.error, 80);
-      fail = '크론 ' + aqPlain(n.name, 60) + ' 실패' + (e ? ': ' + e : '');
+// The plan as the lane's data: one job per group, its id the group key (id:… / name:…), so
+// ui-job-open names the drawer to open and slot="job:<key>" the group's card box. A group
+// whose job is not on this instance has no schedule and says so (잡 정보 없음).
+function laneData(plan) {
+  var jobs = ((plan && plan.groups) || []).map(function(g) {
+    var j = g.job;
+    var job = {
+      id: g.key,
+      name: g.name,
+      runs: cronGroupRuns(g).map(cronRunAsAq),
+      state: g.waiting ? 'waiting' : g.running ? 'running' : 'idle',
+    };
+    if (j) {
+      job.expression = j.expression;
+      if (j.nextRunAt) job.nextRunAt = j.nextRunAt;
+      job.historyCap = j.historyCap || 20;
+    } else {
+      job.note = { text: '잡 정보 없음', title: '이 인스턴스에 없는 잡 — 삭제됐거나 다른 인스턴스의 잡이라 스케줄 정보가 없습니다' };
     }
-    if (!wait && n.waiting && !p.waiting) wait = '크론 ' + aqPlain(n.name, 60) + ' 응답 필요';
-  }
-  return fail || wait;
+    return job;
+  });
+  return { lane: { jobs: jobs, runs24h: cronDayRuns(plan) }, collapsible: true, collapsed: { lane: cronLaneFolded() } };
 }
-// Keep one persistent section per job group in #cron-groups, in plan order, so
-// the reconciler can move each job's live card into its section.
-function syncCronLane(plan, nowMs) {
+// Hand an element its data only when it changed — or once a minute, so the 24-hour window
+// and the timeline slide toward now (between renders the element ticks its own countdowns).
+// Rendered at once: the layout coordinator measures the page right after a fold.
+function aqPaint(el, data) {
+  if (!el) return false;
+  var sig = JSON.stringify(data) + '|' + Math.floor(Date.now() / 60000);
+  if (el._aqSig === sig) return false;
+  el._aqSig = sig;
+  el.data = data;
+  if (typeof el.renderNow === 'function') el.renderNow();
+  return true;
+}
+// One persistent card box per job group, a light-DOM child of the element in its job's slot,
+// so the reconciler moves each job's lead card under its tile and the element's re-renders
+// never touch it.
+function syncCronLane(plan) {
   var lane = document.getElementById('cron-lane');
-  var root = document.getElementById('cron-groups');
-  if (!lane || !root) return;
+  var el = document.getElementById('cron-aq');
+  if (!lane || !el) return;
   lane.hidden = plan.groups.length === 0;
-  var head = document.getElementById('cron-lane-head');
-  var headHtml = renderCronLaneHead(plan);
-  if (head && head._html !== headHtml) { head.innerHTML = headHtml; head._html = headHtml; }
   var keep = Object.create(null);
-  // Folded (SSOT 2026-10-24): only the jobs whose run waits for a reply stay out.
-  var folded = cronLaneFolded();
-  // The queue grammar (#444 D16/D17/D19): written only while unfolded (CSS hides them
-  // folded); the first render is the announcement baseline (D4).
-  if (!folded) {
-    aqWrite(document.getElementById('cron-lane-top'), cronStats(plan, nowMs));
-    aqWrite(document.getElementById('cron-queue'), cronQueue(plan, nowMs, _aqFocusKey['cron-queue']));
-    aqWrite(document.getElementById('cron-lane-chart'), cronRunChart(plan, nowMs));
-  }
-  var snap = cronAnnounceSnap(plan);
-  var news = cronAnnounceDiff(_aqCronSnap, snap);
-  _aqCronSnap = snap;
-  if (news) aqAnnounce(news);
   for (var i = 0; i < plan.groups.length; i++) {
     var g = plan.groups[i];
     keep[g.key] = true;
-    var sec = _cronGroupEls[g.key];
-    if (!sec) {
-      sec = document.createElement('section');
-      sec.className = 'cron-group';
-      sec.setAttribute('data-group', g.key);
-      var top = document.createElement('div');
-      top.className = 'cron-tile';
-      var cards = document.createElement('div');
-      cards.className = 'cards cron-cards';
-      sec.appendChild(top);
-      sec.appendChild(cards);
-      sec._headEl = top;
-      sec._cardsEl = cards;
-      sec._html = null;
-      _cronGroupEls[g.key] = sec;
+    var box = _cronGroupEls[g.key];
+    if (!box) {
+      box = document.createElement('div');
+      box.className = 'cards cron-cards';
+      box.setAttribute('slot', 'job:' + g.key);
+      _cronGroupEls[g.key] = box;
     }
-    var html = renderCronTileHead(g, nowMs);
-    if (sec._html !== html) { sec._headEl.innerHTML = html; sec._html = html; }
-    sec.classList.toggle('is-waiting', g.waiting);
-    sec.classList.toggle('is-running', g.running && !g.waiting);
-    sec.hidden = folded && !g.waiting;
-    sec.setAttribute('aria-label', g.name);
-    if (root.children[i] !== sec) root.insertBefore(sec, root.children[i] || null);
+    if (box.parentNode !== el) el.appendChild(box);
   }
   for (var key in _cronGroupEls) {
     if (keep[key]) continue;
     var old = _cronGroupEls[key];
     delete _cronGroupEls[key];
+    // Its card fades out first (the reconciler), then the box goes.
     setTimeout(function(node) { return function() { if (node.parentNode) node.parentNode.removeChild(node); }; }(old), MOTION.fade + 40);
   }
+  aqPaint(el, laneData(plan));
 }
 // Reconciler slots: each job group shows its lead card (waiting, else running,
-// else newest) in its own section.
+// else newest) in its own box.
 function cronLaneSlots(plan) {
   // A folded lane keeps no card of a job that does not wait for a reply in the DOM —
   // like a closed DONE day (T12) — so the layout coordinator never caches a hidden one.
   var folded = cronLaneFolded();
   return plan.groups.map(function(g) {
-    var sec = _cronGroupEls[g.key];
     var show = g.lead && !(folded && !g.waiting);
-    return { container: sec ? sec._cardsEl : null, items: show ? [{ s: g.lead, col: g.colOf[g.lead.key] }] : [] };
+    return { container: _cronGroupEls[g.key] || null, items: show ? [{ s: g.lead, col: g.colOf[g.lead.key] }] : [] };
   });
 }
 
@@ -17780,9 +17303,15 @@ function paintCronDrawer() {
     ? '<ol class="cron-runs">' + runs.map(function(r) { return renderCronRunRow(r, g, now); }).join('') + '</ol>'
     : '<p class="col-empty">아직 실행 기록이 없습니다</p>';
 }
-var _cronDrawerReturnFocus = null; // the control that opened the drawer
+// The control that opened the drawer, to return to on close: a press inside an element's
+// shadow root (the lane's 지난 실행, strip or next-fire chip) is that control — and its
+// data-key, because a lane render while the drawer is open replaces it.
+var _cronDrawerReturnFocus = null; // { el, host, key }
 function openCronDrawer(key) {
-  _cronDrawerReturnFocus = document.activeElement;
+  var host = document.activeElement;
+  var el = host;
+  while (el && el.shadowRoot && el.shadowRoot.activeElement) el = el.shadowRoot.activeElement;
+  _cronDrawerReturnFocus = { el: el, host: el !== host ? host : null, key: el && el.getAttribute ? el.getAttribute('data-key') : null };
   _cronDrawerKey = key;
   paintCronDrawer();
   var d = document.getElementById('cron-drawer');
@@ -17803,7 +17332,13 @@ function closeCronDrawer() {
   document.getElementById('cron-drawer-overlay').classList.remove('open');
   var back = _cronDrawerReturnFocus;
   _cronDrawerReturnFocus = null;
-  if (back && back.isConnected && typeof back.focus === 'function') back.focus();
+  var to = back && back.el;
+  if (to && !to.isConnected && back.host && back.key && back.host.shadowRoot) {
+    var same = back.host.shadowRoot.querySelectorAll('[data-key]');
+    to = null;
+    for (var i = 0; i < same.length && !to; i++) if (same[i].getAttribute('data-key') === back.key) to = same[i];
+  }
+  if (to && to.isConnected && typeof to.focus === 'function') to.focus();
 }
 document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape' && _cronDrawerKey) closeCronDrawer();
@@ -17812,9 +17347,14 @@ document.addEventListener('click', function(e) {
   var t = e.target && e.target.closest ? e.target : null;
   if (!t) return;
   var open = t.closest('[data-cron-open]');
-  if (open) { var k = open.getAttribute('data-cron-open'); closeCronDrawer(); openPanel(k, true); return; }
-  var g = t.closest('[data-cron-group]');
-  if (g) openCronDrawer(g.getAttribute('data-cron-group'));
+  if (open) { var k = open.getAttribute('data-cron-open'); closeCronDrawer(); openPanel(k, true); }
+});
+// The lane's next-fire chip, a job's 지난 실행 or its run strip (<ui-agent-queue> ui-job-open):
+// the job's id is its group key.
+document.addEventListener('ui-job-open', function(e) {
+  if (!e.target || e.target.id !== 'cron-aq') return;
+  var key = e.detail && e.detail.jobId;
+  if (key) openCronDrawer(String(key));
 });
 async function loadCronJobs() {
   if (document.hidden) return;
@@ -17827,13 +17367,8 @@ async function loadCronJobs() {
   } catch (e) { console.error('Failed to load cron jobs', e); }
 }
 
-// ── Agent Queue grammar (affectUI #444, .prd/affectui/re-agent-queue.md) ──
-// Shared by the capacity cards (workers = llmux accounts) and the CRON lane (queue =
-// scheduled fires): a glyph-led pill, a live countdown, one polite region, roving focus.
-var CAP_LOW_PCT = 20;          // capacity-view.ts CAPACITY_LOW_PCT — under it a pool reads "low"
-var _aqOpen = null;            // the account card open now ('group|name'), kept across repaints
-var _aqFocusKey = {};          // the roving tab stop per strip: data-aq-rove → data-aq-key
-var _aqCronSnap = null;        // the CRON lane's last announcement snapshot (D4)
+// ── The drawer's live countdowns (the Agent Queue grammar, #444 D3) ──
+// <ui-agent-queue> ticks its own; the drawer's 다음 실행 rides the page's 1 Hz tick.
 // Time left, floored (spec 12 T9): 1일 5시간 · 1시간 20분 · 24분 · 42초 · 곧 (D3).
 function aqLeft(atMs, nowMs) {
   var s = Math.floor((Number(atMs) - Number(nowMs)) / 1000);
@@ -17859,12 +17394,7 @@ function aqTime(atMs, nowMs, sfx) {
   if (!isFinite(at)) return '';
   return '<time class="aq-left" role="timer" datetime="' + new Date(at).toISOString() + '" data-aq-at="' + at + '"' + (sfx ? ' data-aq-sfx="' + escAttr(sfx) + '"' : '') + '>' + aqLeftSfx(at, nowMs, sfx) + '</time>';
 }
-// A status pill (D2). Its first character is a glyph — colour is never the only signal —
-// and it is not a live region: the markup repaints every 30 s; aqAnnounce speaks instead.
-function aqPill(state, html) {
-  return '<span class="aq-pill is-' + state + '">' + html + '</span>';
-}
-// Rides the shared 1 Hz tick (updateTimers → aqTick): capacity, the CRON lane and its drawer.
+// The drawer's countdowns ride the shared 1 Hz tick (updateTimers → aqTick).
 function aqTickIn(root, nowMs) {
   if (!root) return;
   var els = root.querySelectorAll('[data-aq-at]');
@@ -17875,143 +17405,16 @@ function aqTickIn(root, nowMs) {
 }
 function aqTick() {
   if (document.hidden) return;
-  var now = Date.now();
-  aqTickIn(document.getElementById('capacity'), now);
-  aqTickIn(document.getElementById('cron-lane'), now);
-  aqTickIn(document.getElementById('cron-drawer'), now);
+  aqTickIn(document.getElementById('cron-drawer'), Date.now());
 }
-// Tool- or user-written text as one plain line (review R1): control characters, newlines and
-// runs of whitespace become one space, then the length is capped. Markup always goes through
-// esc / escAttr; the live region is written with textContent only.
-function aqPlain(s, max) {
-  var t = String(s == null ? '' : s).replace(/[\\u0000-\\u001f\\u007f\\s]+/g, ' ').trim();
-  return max && t.length > max ? t.slice(0, max - 1) + '…' : t;
-}
-// One polite sentence (D4). Cleared first so the same words twice are still spoken.
-function aqAnnounce(msg) {
-  var el = document.getElementById('aq-live');
-  if (!el || !msg) return;
-  el.textContent = '';
-  setTimeout(function() { el.textContent = msg; }, 60);
-}
-// Roving focus (D12): one tab stop per [data-aq-rove] strip; arrows walk, Home / End jump.
-function aqRove(e, box) {
-  var step = { ArrowLeft: -1, ArrowUp: -1, ArrowRight: 1, ArrowDown: 1, Home: 'first', End: 'last' }[e.key];
-  if (step === undefined) return false;
-  var items = Array.prototype.slice.call(box.querySelectorAll('[data-aq-key]'));
-  var cur = e.target && e.target.closest ? e.target.closest('[data-aq-key]') : null;
-  var i = items.indexOf(cur);
-  if (i < 0) return false;
-  var j = step === 'first' ? 0 : step === 'last' ? items.length - 1 : Math.max(0, Math.min(items.length - 1, i + step));
-  e.preventDefault();
-  items.forEach(function(it, n) { it.setAttribute('tabindex', n === j ? '0' : '-1'); });
-  items[j].focus();
-  _aqFocusKey[box.getAttribute('data-aq-rove')] = items[j].getAttribute('data-aq-key');
-  return true;
-}
-// The item (data-aq-key) holding the focus inside root, 'pop' for an open card, or null.
-function aqFocusedKey(root) {
-  var a = document.activeElement;
-  if (!root || !a || a === root || !root.contains(a)) return null;
-  if (a.closest && a.closest('.aq-pop')) return 'pop';
-  return a.getAttribute ? a.getAttribute('data-aq-key') : null;
-}
-function aqFocusKey(root, key) {
-  if (!root || !key) return;
-  var els = root.querySelectorAll('[data-aq-key]');
-  for (var i = 0; i < els.length; i++) {
-    if (els[i].getAttribute('data-aq-key') === key) { els[i].focus(); return; }
-  }
-}
-function aqRestoreFocus(root, key) {
-  if (!root || !key) return;
-  if (key !== 'pop') { aqFocusKey(root, key); return; }
-  var close = root.querySelector('.aq-pop .aq-pop-close');
-  if (close) close.focus();
-}
-// Rewrite a part only when its markup changed, keeping the keyboard where it was.
-function aqWrite(el, html) {
-  if (!el || el._html === html) return;
-  var fk = aqFocusedKey(el);
-  el.innerHTML = html;
-  el._html = html;
-  aqRestoreFocus(el, fk);
-}
-// The account card sits under its mark, its left edge clamped into the strip (D11).
-function aqPlacePops(root) {
-  if (!root) return;
-  var pops = root.querySelectorAll('.aq-pop[data-aq-for]');
-  for (var i = 0; i < pops.length; i++) {
-    var pop = pops[i];
-    var box = pop.parentNode;
-    var key = pop.getAttribute('data-aq-for');
-    var marks = box.querySelectorAll('[data-aq-key]');
-    var mark = null;
-    for (var j = 0; j < marks.length; j++) if (marks[j].getAttribute('data-aq-key') === key) mark = marks[j];
-    if (!mark) continue;
-    pop.style.left = Math.max(8, Math.min(mark.offsetLeft, box.clientWidth - pop.offsetWidth - 8)) + 'px';
-    pop.style.top = (mark.offsetTop + mark.offsetHeight + 6) + 'px';
-  }
-}
-// After the key the keyboard was on moved or was dropped: its new place, else the first mark
-// of its group, else the section toggle — never another account at the old place (R3).
-function aqRefocusCapacity(view, from, to) {
-  if (!view) return;
-  if (to) { aqFocusKey(view, to); return; }
-  var group = String(from || '').split('|')[0];
-  var boxes = view.querySelectorAll('[data-aq-rove]');
-  var first = null;
-  for (var i = 0; i < boxes.length && !first; i++) {
-    if (boxes[i].getAttribute('data-aq-rove') === 'cap:' + group) first = boxes[i].querySelector('[data-aq-key]');
-  }
-  var el = first || document.getElementById('capacity-toggle');
-  if (el && typeof el.focus === 'function') el.focus();
-}
-function aqRepaintCapacity() {
-  var view = document.getElementById('capacity-view');
-  if (view) view._html = null;
-  paintCapacity();
-}
-function aqToggleCard(key) {
-  _aqOpen = _aqOpen === key ? null : key;
-  aqRepaintCapacity();
-  aqFocusKey(document.getElementById('capacity-view'), key);
-}
-function aqCloseCard(refocus) {
-  var key = _aqOpen;
-  if (!key) return;
-  _aqOpen = null;
-  aqRepaintCapacity();
-  if (refocus) aqFocusKey(document.getElementById('capacity-view'), key);
-}
-document.addEventListener('click', function(e) {
-  var t = e.target && e.target.closest ? e.target : null;
-  if (!t) return;
-  var mark = t.closest('.aq-mark[data-aq-key]');
-  if (mark) { aqToggleCard(mark.getAttribute('data-aq-key')); return; }
-  if (t.closest('.aq-pop-close')) { aqCloseCard(true); return; }
-  if (_aqOpen && !t.closest('.aq-pop')) aqCloseCard(false);
-});
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape' && _aqOpen) { aqCloseCard(true); return; }
-  var box = e.target && e.target.closest ? e.target.closest('[data-aq-rove]') : null;
-  if (box) aqRove(e, box);
-});
-document.addEventListener('focusin', function(e) {
-  var item = e.target && e.target.closest ? e.target.closest('[data-aq-key]') : null;
-  var box = item ? item.closest('[data-aq-rove]') : null;
-  if (box) _aqFocusKey[box.getAttribute('data-aq-rove')] = item.getAttribute('data-aq-key');
-});
 
-// ── LLM capacity v2 (2026-10-25) — the server (capacity-view.ts) counts each provider in
-// max accounts' worth (tier-weighted) and replays every account's resets in time order.
-// The section starts folded: one chip per provider with both windows as count and %.
-// Unfolded, each provider is a simplified card (renderCapacityGroup): a 5시간 bar and
-// an 일주일 bar, a muted disclosure line, and one timeline (● 5h reset, ◆ weekly reset).
-var CAP_TIERS = { 'claude-max-5x': { rank: 'low', short: 'x5', label: 'Max x5' }, 'claude-max-20x': { rank: 'high', short: 'x20', label: 'Max x20' }, 'chatgpt-pro-200': { rank: 'low', short: '$200', label: 'Pro ($200)' }, 'chatgpt-pro-500': { rank: 'high', short: '$500', label: 'Pro ($500)' } };
-var CAP_CAUSE = { '5h': { g: '●', label: '5h 리셋' }, '7d': { g: '◆', label: '주간 리셋' }, release: { g: '■', label: '차단 해제' } };
-var CAP_5H = 5 * 3600;
-var CAP_7D = 7 * 86400;
+// ── LLM capacity v2 (2026-10-25) and its accounts as workers (#444 D8–D14) — @2lab.ai/ui
+// <ui-agent-queue> with providers only. The server (capacity-view.ts) counts each provider in
+// max accounts' worth (tier-weighted) and replays every account's resets in time order, in
+// epoch SECONDS: the element is told so (timeUnit 's') and converts once. capData maps the
+// view; the element draws the folded chips, the bars, the disclosure line, the account marks
+// and their card, the 7-day timeline, ticks every countdown, and speaks a pool's change.
+var CAP_TIERS = { 'claude-max-5x': { short: 'x5', label: 'Max x5' }, 'claude-max-20x': { short: 'x20', label: 'Max x20' }, 'chatgpt-pro-200': { short: '$200', label: 'Pro ($200)' }, 'chatgpt-pro-500': { short: '$500', label: 'Pro ($500)' } };
 var _capacityView = null;
 
 // Floor to the minute and keep the minutes: 3h59m never reads "3h".
@@ -18031,531 +17434,87 @@ function capClockLabel(atSec, nowMs) {
   if (d.toDateString() === n.toDateString()) return hm;
   return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + hm;
 }
-function capFmt1(x) {
-  return (Math.round((Number(x) || 0) * 10) / 10).toFixed(1);
-}
-// Small gains are summed, never dropped — only their label shrinks. One phrase for the
-// chart key, the bars' next line and the chip tooltip (trinity mockup v5 r6, grok P1).
-function capGain(x) {
-  return x <= 0.0000001 ? '+0' : x < 0.05 ? '+0.1계정 미만' : '+' + capFmt1(x) + '계정';
-}
-// % from the raw ratio: 100% only when full (trinity simple r1, astra) — a count that
-// rounds to the total but is not full keeps two decimals instead (capCount).
-function capPct(v, t) {
-  if (!(t > 0)) return '—';
-  var p = (v / t) * 100;
-  return (p >= 99.95 ? 100 : Math.min(99, Math.round(p))) + '%';
-}
-// "2.37 / 2.4", never "2.4 / 2.4 99%".
-function capCount(v, t) {
-  return capFmt1(v) === capFmt1(t) && v < t - 0.005 ? (Math.round(v * 100) / 100).toFixed(2) : capFmt1(v);
-}
-// What raises a measure next: the first gain ≥ 0.05 inside the span, else the
-// small sum inside it and the next real gain after it.
-function capNextLine(g, key, span, nowSec, nowMs) {
-  var evs = g.events || [];
-  // The chip tooltip speaks the card's words: 계정, 시간·분, 5시간/일주일 리셋 (trinity mockup v5 r7).
-  var fmt = function(e) {
-    var c = CAP_CAUSE[e.cause] || CAP_CAUSE.release;
-    return '다음 +' + capFmt1(e[key]) + '계정 · ' + capDur(e.at - nowSec) + ' 후 (' + capClockLabel(e.at, nowMs) + ') · ' + c.g + ' ' + e.account + ' ' + (CAP_WORD[e.cause] || CAP_WORD.release);
-  };
-  for (var i = 0; i < evs.length; i++) {
-    if (evs[i].at <= nowSec + span && evs[i][key] >= 0.05) return fmt(evs[i]);
-  }
-  var small = 0;
-  var later = null;
-  for (var j = 0; j < evs.length; j++) {
-    if (evs[j].at <= nowSec + span) small += evs[j][key];
-    if (!later && evs[j][key] >= 0.05) later = evs[j];
-  }
-  var head = (span <= CAP_5H ? '5시간 안엔 ' : '7일 안엔 ') + (small > 0.0005 ? capGain(small) : '늘어날 양 없음');
-  return head + (later ? ' · ' + fmt(later) : '');
-}
-// Simplified card (2026-10-25, after the user found v2 unreadable; trinity simple r1):
-// per provider two bars — 5시간 (지금 쓸 수 있음) and 일주일 (이번 주 남음), each
-// "x / total 계정 · %" with one "다음 …" line — one muted disclosure line, and one
-// v1-style timeline where a 5h reset is a teal ● (label above) and a weekly reset a
-// violet ◆ (label below).
-var CAP_WORD = { '5h': '5시간 리셋', '7d': '일주일 리셋', release: '차단 해제' };
-function capDur(secs) {
-  var s = Math.max(0, Math.floor(Number(secs) || 0));
-  var m = Math.floor(s / 60);
-  var h = Math.floor(m / 60);
-  if (h >= 24) return Math.floor(h / 24) + '일 ' + (h % 24) + '시간';
-  if (h) return h + '시간 ' + (m % 60) + '분';
-  return Math.max(1, m) + '분';
-}
-// The first gain >= 0.05 within 7 days that raises this bar (key: dNow / dWeek), or null.
-function capNextEvent(g, key, nowSec) {
-  var evs = g.events || [];
-  for (var i = 0; i < evs.length; i++) {
-    if (evs[i].at > nowSec + CAP_7D) break;
-    if (evs[i][key] >= 0.05) return evs[i];
-  }
-  return null;
-}
-// Two tokens a reader needs, how much and when: "다음 +1.0계정 · 1시간 23분 후" (trinity
-// mockup v5, grok P1). The bar's own reset is implied by the bar; any other cause is named.
-function capNextShort(g, key, nowSec) {
-  var e = capNextEvent(g, key, nowSec);
-  if (!e) {
-    var small = (g.events || []).filter(function(x) { return x.at <= nowSec + CAP_7D; }).reduce(function(t, x) { return t + x[key]; }, 0);
-    return small > 0.0005 ? '7일 안 ' + capGain(small) + ' 회복' : '7일 안에 늘어날 양 없음';
-  }
-  var gain = '다음 +' + capFmt1(e[key]) + '계정 · ' + capDur(e.at - nowSec) + ' 후';
-  // The 5시간 bar rising at a weekly reset is held down by the weekly limit (trinity
-  // simple r2, fable): say so, so it never contradicts the ● key.
-  if (key === 'dNow' && e.cause === '7d') return '일주일 한도에 묶임 · ' + gain;
-  var own = key === 'dNow' ? e.cause === '5h' : e.cause === '7d';
-  return own ? gain : gain + ' · ' + (CAP_WORD[e.cause] || '');
-}
-function capBarRow(g, cls, label, sub, v, key, nowSec) {
-  var p = g.total > 0 ? Math.max(0, Math.min(1, v / g.total)) : 0;
-  var said = label + ' ' + capCount(v, g.total) + ' / ' + capFmt1(g.total) + ' 계정, ' + capPct(v, g.total);
-  var e = capNextEvent(g, key, nowSec);
-  var who = e ? ' title="' + escAttr((CAP_WORD[e.cause] || '') + ' · ' + e.account) + '"' : '';
-  return '<div class="cap-bar-row is-' + cls + '">'
-    + '<div class="cap-bar-lbl">' + label + '<i>' + sub + '</i></div>'
-    // The dashed line is where the pool turns "low" (#444 D9 — the reference's backpressure line).
-    + '<div class="cap-bar" role="img" aria-label="' + escAttr(said) + '"><span style="width:' + (p * 100).toFixed(1) + '%"></span><i class="cap-low" style="left:' + CAP_LOW_PCT + '%" title="' + CAP_LOW_PCT + '% 아래면 부족"></i></div>'
-    + '<div class="cap-bar-val"><b>' + capCount(v, g.total) + '</b> / ' + capFmt1(g.total) + ' 계정 <em>' + capPct(v, g.total) + '</em></div>'
-    + '<div class="cap-bar-next"' + who + '>' + esc(capNextShort(g, key, nowSec)) + '</div>'
-    + '</div>';
-}
-// One muted line, only what is non-zero: how many accounts the bars count, how many are
-// blocked right now, which are left out and why, estimates, and how old the oldest
-// llmux reading is (the fetch time sits in the section head).
-// Untiered accounts counted on an assumed plan (operator, 2026-10-26: a Claude account
-// with no tier is Max x20): { n, short } or null. Never silent — the card and the chip say it.
-function capAssumed(g) {
-  var au = (g.units || []).filter(function(x) { return x.counted && x.tierAssumed; });
-  var n = g.tierAssumed || au.length;
-  if (!n) return null;
-  var t = au.length ? CAP_TIERS[au[0].tier] : null;
-  return { n: n, short: t ? t.short : 'x20' };
-}
-function capDisclosure(g, nowSec) {
-  var u = g.units || [];
-  var blocked = u.filter(function(x) { return x.counted && x.blocked; }).length;
-  var ex = g.excluded || {};
-  var why = [];
-  if (ex.held) why.push('보류');
-  if (ex.unknownTier) why.push('티어 미지정');
-  if (ex.noMeasure) why.push('측정 없음');
-  var exN = (ex.held || 0) + (ex.unknownTier || 0) + (ex.noMeasure || 0);
-  // Short enough for a phone: "16/17 반영(차단 6 포함) · 제외 1(보류) · 측정 4시간 전".
-  // "(차단 6 포함)": the blocked accounts are inside the counted ones (trinity mockup v5, fable P2).
-  var parts = [g.countedAccounts + '/' + (g.accountCount || u.length) + ' 반영' + (blocked ? '(차단 ' + blocked + ' 포함)' : '')];
-  if (exN) parts.push('제외 ' + exN + '(' + why.join('·') + ')');
-  var asm = capAssumed(g);
-  if (asm) parts.push('티어 미지정 ' + asm.n + '(' + asm.short + ' 가정)');
-  if (g.estimated) parts.push('추정 ' + g.estimated);
-  if (g.unmeasured5h) parts.push('5시간 측정 없음 ' + g.unmeasured5h);
-  var html = esc(parts.join(' · '));
-  var age = g.oldestRefreshAt ? nowSec - g.oldestRefreshAt : 0;
-  // Over a day old, the reading that the bars rest on is flagged (trinity simple r2, fable).
-  if (age > 86400) html += ' · <b class="cap-stale">⚠ 측정 ' + esc(capDur(age).split(' ')[0]) + ' 전</b>';
-  else if (age > 3600) html += ' · ' + esc('측정 ' + capDur(age).split(' ')[0] + ' 전');
-  return html;
-}
-// now → 24h takes 55% of the width (0·1·3·6·12·24h), then days to 7d.
-function capAx(secs) {
-  var s = Number(secs) || 0;
-  if (s <= 0) return 0;
-  if (s >= CAP_7D) return 1;
-  if (s <= 86400) {
-    var st = [0, 3600, 10800, 21600, 43200, 86400];
-    for (var i = 1; i < st.length; i++) {
-      if (s <= st[i]) return ((i - 1) + (s - st[i - 1]) / (st[i] - st[i - 1])) * 0.11;
-    }
-  }
-  return 0.55 + ((s - 86400) / (6 * 86400)) * 0.45;
-}
-// One timeline: refills that raise a measure (5h by "now", weekly by "this week");
-// same-type refills closer than a label merge into one marker with a short span bar.
-function capTimeline(g, W, nowSec) {
-  var pad = 16;
-  var up = (g.events || []).some(function(e) { return e.cause !== '7d' && e.at <= nowSec + CAP_7D && e.dNow >= 0.05; });
-  // Room above the axis only when a 5h refill label needs it.
-  var y0 = up ? 46 : 20;
-  var h = y0 + 54;
-  var X = function(at) { return pad + capAx(at - nowSec) * (W - 2 * pad); };
-  var pts = [];
-  (g.events || []).forEach(function(e) {
-    if (e.at > nowSec + CAP_7D) return;
-    var d = e.cause === '7d' ? e.dWeek : e.dNow;
-    if (d < 0.05) return;
-    pts.push({ x: X(e.at), d: d, c: e.cause === '7d' ? 'wk' : 'h5', a: e.account, at: e.at });
-  });
-  // An all-blocked pool with nothing coming back in 7 days still gets its axis and its shaded
-  // stretch (final review) — the blank is the point.
-  if (!pts.length && g.state !== 'empty') return '';
-  var LW = W < 420 ? 46 : 64; // a label is at most "+10.3" (~40px): merge centres closer than that
-  var buckets = [];
-  pts.forEach(function(p) {
-    var same = buckets.filter(function(q) { return q.c === p.c; });
-    var b = same[same.length - 1];
-    if (b && p.x - (b.x0 + b.x1) / 2 < LW) { b.d += p.d; b.n++; b.x1 = p.x; b.names.push(p.a); }
-    else buckets.push({ x0: p.x, x1: p.x, d: p.d, c: p.c, n: 1, names: [p.a], at: p.at });
-  });
-  var s = '<svg class="cap-tl" width="' + W + '" height="' + h + '" viewBox="0 0 ' + W + ' ' + h + '" role="img" aria-label="앞으로 7일 동안 돌아오는 계정">';
-  // Every account blocked (#444 D13, spec 12 T9 v1): shade now → the first refill that
-  // raises the primary measure — the reference's rate-limited stretch.
-  if (g.state === 'empty') {
-    var lift = null;
-    (g.events || []).forEach(function(e) { if (lift === null && e[g.has5h ? 'dNow' : 'dWeek'] > 0) lift = e.at; });
-    var x1 = lift === null ? W - pad : X(lift);
-    var hid = 'aqh-' + String(g.group || 'g').replace(/[^a-z0-9_-]/gi, '');
-    var span = Math.max(0, x1 - pad).toFixed(1);
-    var until = lift === null ? '7일 안에 복귀 없음' : capClockLabel(lift, nowSec * 1000) + '까지';
-    s += '<defs><pattern id="' + hid + '" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line class="cap-tl-hatch" x1="0" y1="0" x2="0" y2="6"/></pattern></defs>';
-    s += '<rect class="cap-tl-lim" x="' + pad + '" y="0" width="' + span + '" height="' + (y0 + 14) + '"><title>' + esc('모두 막힘 — ' + until) + '</title></rect>';
-    s += '<rect x="' + pad + '" y="0" width="' + span + '" height="' + (y0 + 14) + '" fill="url(#' + hid + ')" aria-hidden="true"/>';
-  }
-  [[0, '지금'], [3600, '1h'], [21600, '6h'], [86400, '24h'], [3 * 86400, '3d'], [5 * 86400, '5d'], [7 * 86400, '7d']].forEach(function(t) {
-    var x = pad + capAx(t[0]) * (W - 2 * pad);
-    s += '<line class="cap-tl-tick" x1="' + x.toFixed(1) + '" x2="' + x.toFixed(1) + '" y1="' + (y0 - 6) + '" y2="' + (y0 + 6) + '"/>';
-    s += '<text class="cap-tl-ax" x="' + x.toFixed(1) + '" y="' + (h - 4) + '" text-anchor="middle">' + t[1] + '</text>';
-  });
-  s += '<line class="cap-tl-axis" x1="' + pad + '" x2="' + (W - pad) + '" y1="' + y0 + '" y2="' + y0 + '"/>';
-  buckets.forEach(function(b) {
-    var x = (b.x0 + b.x1) / 2;
-    var cls = 'is-' + b.c;
-    s += '<g class="cap-tl-mk ' + cls + '">';
-    if (b.x1 - b.x0 > 2) s += '<line class="cap-tl-span" x1="' + b.x0.toFixed(1) + '" x2="' + b.x1.toFixed(1) + '" y1="' + y0 + '" y2="' + y0 + '"/>';
-    if (b.c === 'h5') s += '<circle cx="' + x.toFixed(1) + '" cy="' + y0 + '" r="6.5"/>';
-    else s += '<rect x="' + (x - 6).toFixed(1) + '" y="' + (y0 - 6) + '" width="12" height="12" transform="rotate(45 ' + x.toFixed(1) + ' ' + y0 + ')"/>';
-    var tx = Math.max(pad + 14, Math.min(W - pad - 14, x));
-    s += '<text x="' + tx.toFixed(1) + '" y="' + (b.c === 'h5' ? y0 - 14 : y0 + 24) + '" text-anchor="middle">+' + capFmt1(b.d) + '</text>';
-    s += '<title>' + esc((b.c === 'h5' ? '5시간' : '일주일') + ' +' + capFmt1(b.d) + '계정 · ' + capDur(b.at - nowSec) + ' 후부터 · ' + b.names.join(', ')) + '</title></g>';
-  });
-  return s + '</svg>';
-}
-
-// The view is fetched every 60 s but painted every 30 s: an event whose time has come
-// is folded into the measures it moved, so nothing past reads as "to come".
-function capAdvance(g, nowSec) {
-  var evs = g.events || [];
-  var due = evs.filter(function(e) { return e.at <= nowSec; });
-  if (!due.length) return g;
-  var out = {};
-  for (var k in g) out[k] = g[k];
-  out.now = due.reduce(function(t, e) { return t + e.dNow; }, g.now);
-  out.week = due.reduce(function(t, e) { return t + e.dWeek; }, g.week);
-  out.events = evs.filter(function(e) { return e.at > nowSec; });
-  return out;
-}
-// ── Capacity as workers (affectUI Agent Queue, #444 D8–D14) ──
-// Each llmux account is a worker: usable, paused (a block with its own lift time), spent,
-// unmeasured, held or left out — read from CapacityUnit only. A mark carries a name, one
-// state word and a countdown; never a usage bar, % or tier (spec 12 §7). Numbers live in
-// the account's card.
-// Units at the boundary (review R1): capacity times (returnAt, events[].at) are epoch
-// SECONDS (capacity-view.ts); cron times and every aq* countdown are epoch MILLISECONDS.
-function capMs(atSec) {
-  return Number(atSec) * 1000;
-}
-// The state from the unit's own fields (review R1): counted / blocked / unmeasured5h / now.
-// binding only says which window binds first (5h or 7d) — it colours an ok mark's dot.
+// A unit's state from its own fields (review R1): counted / blocked / unmeasured5h / now —
+// binding only says which window binds first (5h or 7d). Held accounts are the element's
+// paused, the ones left out its excluded; a counted, blocked one is limited.
 function capUnitState(u) {
-  if (!u.counted) return u.excluded === 'held' ? 'held' : 'out';
-  if (u.blocked) return 'paused';
+  if (!u.counted) return u.excluded === 'held' ? 'paused' : 'excluded';
+  if (u.blocked) return 'limited';
   if (u.unmeasured5h) return 'unmeasured';
-  return Number(u.now) > 0 ? 'ok' : 'spent';
+  return Number(u.now) > 0 ? 'available' : 'spent';
 }
+// Why, as the element's reason keys (it says them in Korean); a block it has no word for is
+// 차단. A usable, spent or unmeasured account has none: its state word says it.
 function capReason(u) {
   var b = u.blocks || {};
-  if (u.excluded === 'held') return u.held === 'paused' ? '일시정지' : u.held === 'auth' ? '인증 실패' : '보류';
-  if (u.excluded === 'noMeasure') return '측정 없음';
-  if (u.excluded === 'unknownTier') return '티어 미지정';
-  if (b.weekly) return '주간 한도';
-  if (b.fiveHour) return '5시간 한도';
-  if (b.scopedUntil) return '모델 한도';
-  if (b.cooldownUntil) return '쿨다운';
-  if (u.blocked) return '차단';
-  var st = capUnitState(u);
-  return st === 'ok' ? '사용 가능' : st === 'unmeasured' ? '5시간 미측정' : '소진';
+  if (u.excluded === 'held') return u.held === 'paused' ? 'paused' : u.held === 'auth' ? 'auth' : 'held';
+  if (u.excluded === 'noMeasure') return 'noMeasure';
+  if (u.excluded === 'unknownTier') return 'unknownTier';
+  if (b.weekly) return 'weekly';
+  if (b.fiveHour) return '5h';
+  if (b.scopedUntil) return 'model';
+  if (b.cooldownUntil) return 'cooldown';
+  return u.blocked ? '차단' : '';
 }
-function capTierLabel(u) {
-  var t = CAP_TIERS[u.tier];
-  if (u.tierAssumed) return (t ? t.short : 'x20') + ' 가정';
-  return t ? t.label : '티어 미지정';
-}
-// Counted accounts that are blocked right now (held ones are out of the totals).
-function capPaused(g) {
-  return (g.units || []).filter(function(u) { return u.counted && u.blocked && !u.excluded; });
-}
-// The earliest return among them (epoch s), or null.
-function capFirstReturn(g) {
-  var at = null;
-  capPaused(g).forEach(function(u) { if (u.returnAt && (at === null || u.returnAt < at)) at = u.returnAt; });
-  return at;
-}
-// When an empty pool gets something back: the first return, else the first raise.
-function capEmptyAt(g, nowSec) {
-  var at = capFirstReturn(g);
-  if (at) return at;
-  var e = capNextEvent(g, g.has5h ? 'dNow' : 'dWeek', nowSec);
-  return e ? e.at : null;
-}
-// The provider pill (D8): 계산 불가 > 모두 막힘 / 소진 > 제한 p > 부족 > 사용 가능.
-function capProvPill(g, nowMs) {
-  var p = capPaused(g).length;
-  if (g.state === 'unknown' || !(g.total > 0)) return aqPill('unknown', '◌ 계산 불가');
-  if (g.state === 'empty') {
-    var at = capEmptyAt(g, nowMs / 1000);
-    return aqPill('empty', (p ? '✗ 모두 막힘' : '✗ 소진') + (at ? ' · ' + aqTime(capMs(at), nowMs, ' 후 복귀') : ''));
-  }
-  if (p) {
-    var back = capFirstReturn(g);
-    return aqPill('paused', '⏸ 제한 ' + p + (back ? ' · ' + aqTime(capMs(back), nowMs, ' 후 복귀') : ''));
-  }
-  if (g.state === 'low') return aqPill('low', '▲ 부족');
-  return aqPill('ok', '● 사용 가능');
-}
-function capProvHead(g, nowMs) {
-  var n = (g.units || []).length || g.accountCount || 0;
-  return '<div class="aq-head"><span class="cap-pname">' + esc(g.label) + '</span><span class="aq-name">llmux · 계정 ' + n + '</span>' + capProvPill(g, nowMs) + '</div>';
-}
-// A mark's identity (final review): the unit's place in the server's order (llmux order,
-// capacity-view.ts) plus its display name — never the name alone. Anonymous llmux masks
-// ai1@x and ai2@x both to "a***", so names collide; the raw email never reaches the client.
-// The key drives the mark, the card lookup, the roving tab stop and focus restore; if the
-// order shifts, an open card closes instead of showing another account.
-function capUnitKey(g, i, u) {
-  return g.group + '|' + i + '|' + u.name;
-}
-// Does a group show the same display name twice (anonymous llmux masks names to "a***")?
-function capDupNames(v, group) {
+// Does the group show the same display name twice (anonymous llmux masks names to "a***")?
+function capDupNames(g) {
   var seen = {};
   var dup = false;
-  ((v && v.groups) || []).forEach(function(g) {
-    if (g.group !== group) return;
-    (g.units || []).forEach(function(u) {
-      if (seen['#' + u.name]) dup = true;
-      seen['#' + u.name] = true;
-    });
+  (g.units || []).forEach(function(u) {
+    if (seen['#' + u.name]) dup = true;
+    seen['#' + u.name] = true;
   });
   return dup;
 }
-// Where a key points in a NEW capacity response (final review R3), or null when it cannot be
-// trusted. The folded usable mark (group|*ok) is a list, kept while its group exists. A unit
-// key is position + display name: with unique names it follows its account to its new place
-// (null when the account is gone); with a duplicate display name in the previous OR the new
-// response, position cannot tell two accounts apart across a reorder or a removal — dropped.
-function capRemapKey(prev, next, key) {
-  if (!key) return null;
-  var bar = key.indexOf('|');
-  if (bar < 0) return null;
-  var group = key.slice(0, bar);
-  var rest = key.slice(bar + 1);
-  var ng = null;
-  ((next && next.groups) || []).forEach(function(g) { if (g.group === group) ng = g; });
-  if (!ng) return null;
-  if (rest === '*ok') return key;
-  if (capDupNames(prev, group) || capDupNames(next, group)) return null;
-  var name = rest.slice(rest.indexOf('|') + 1);
-  var to = null;
-  (ng.units || []).forEach(function(u, i) { if (u.name === name) to = capUnitKey(ng, i, u); });
-  return to;
-}
-// The open card and every capacity roving stop after a capacity response. A NEW response
-// (another fetchedAtMs) remaps them (capRemapKey); a repaint of the same response keeps them.
-function capSelectionAfter(prev, next, open, focus) {
-  var fresh = !!(prev && next && prev.fetchedAtMs !== next.fetchedAtMs);
-  var out = { open: open || null, focus: {} };
-  for (var k in focus || {}) {
-    if (!fresh || k.indexOf('cap:') !== 0) out.focus[k] = focus[k];
-    else {
-      var f = capRemapKey(prev, next, focus[k]);
-      if (f) out.focus[k] = f;
-    }
-  }
-  if (fresh && out.open) out.open = capRemapKey(prev, next, out.open);
-  return out;
-}
-function capMark(g, u, key, nowMs, open, stop) {
-  var st = capUnitState(u);
+// One llmux account as a worker. Its id is its display name, so the open card and the roving
+// stop follow it to its new place in a new response — except in a pool that shows a name twice
+// (masked a***; the raw email never reaches the client): there its id carries the response's
+// fetch time and place, so it matches nothing in the next response and the card closes instead
+// of showing another account (final review R3). An assumed tier reads "x20 가정".
+function capAccount(u, i, mint) {
+  var t = CAP_TIERS[u.tier];
+  var a = { id: mint ? mint + '|' + i + '|' + u.name : u.name, name: u.name, state: capUnitState(u), fiveHour: u.now, weekly: u.week };
   var why = capReason(u);
-  var said = [u.name, capTierLabel(u), why];
-  var body = '<b>' + esc(u.name) + '</b>';
-  if (st === 'ok') {
-    body = '<i class="aq-wdot is-' + (u.binding === '5h' ? 'h5' : 'wk') + '" aria-hidden="true"></i>' + body;
-  } else if (st === 'paused') {
-    body = '⏸ ' + body + ' · ' + esc(why) + ' · ' + (u.returnAt ? aqTime(capMs(u.returnAt), nowMs) : '복귀 약속 없음');
-    said.push(u.returnAt ? aqLeftSfx(capMs(u.returnAt), nowMs, ' 후 복귀') : '복귀 약속 없음');
-  } else {
-    body += ' · ' + esc(why);
-  }
-  return '<button type="button" class="aq-mark is-' + st + '" data-aq-key="' + escAttr(key) + '" tabindex="' + (key === stop ? '0' : '-1') + '" aria-haspopup="dialog" aria-expanded="' + (key === open ? 'true' : 'false') + '" aria-label="' + escAttr(said.join(', ')) + '">' + body + '</button>';
+  if (why) a.reason = why;
+  if (u.returnAt) a.returnAt = u.returnAt;
+  if (u.binding) a.binding = u.binding;
+  if (u.tierAssumed) { a.tier = t ? t.short : 'x20'; a.tierAssumed = true; }
+  else if (t) a.tier = t.label;
+  if (u.estimated) a.estimated = true;
+  return a;
 }
-// The account card (D11): every row from a CapacityUnit field. The folded usable mark's
-// card lists the usable accounts instead.
-function capAccountCard(g, key, nowMs) {
-  var units = g.units || [];
-  var row = function(dt, dd, wide) { return '<div' + (wide ? ' class="is-wide"' : '') + '><dt>' + esc(dt) + '</dt><dd>' + dd + '</dd></div>'; };
-  var pct = function(x) { return Math.round((Number(x) || 0) * 100) + '%'; };
-  var close = '<button type="button" class="aq-pop-close" aria-label="닫기">×</button>';
-  if (key === g.group + '|*ok') {
-    var ok = units.filter(function(x) { return capUnitState(x) === 'ok'; });
-    return '<div class="aq-pop" role="dialog" aria-label="사용 가능 계정 세부" data-aq-for="' + escAttr(key) + '">'
-      + '<div class="aq-pop-head"><span class="aq-pop-name">사용 가능</span><span class="aq-pop-kind">' + esc(g.label + ' · 계정 ' + ok.length) + '</span>' + close + '</div>'
-      + '<dl class="aq-pop-stats">' + ok.map(function(x) { return row(x.name, '지금 ' + pct(x.now) + ' · 이번 주 ' + pct(x.week)); }).join('') + '</dl></div>';
-  }
-  var u = null;
-  units.forEach(function(x, i) { if (capUnitKey(g, i, x) === key) u = x; });
-  if (!u) return '';
-  var st = capUnitState(u);
-  var rows = [row('지금 쓸 수 있음', u.counted ? pct(u.now) : '—'), row('이번 주 남음', u.counted ? pct(u.week) : '—')];
-  // binding = which window binds first (5h or 7d), set for a usable account only.
-  if (u.binding) rows.push(row('먼저 닿는 창', u.binding === '5h' ? '5시간' : '일주일'));
-  rows.push(row('상태', esc(capReason(u))));
-  if (u.returnAt) rows.push(row('복귀', esc(capClockLabel(u.returnAt, nowMs)) + ' · ' + aqTime(capMs(u.returnAt), nowMs), true));
-  if (u.estimated) rows.push(row('추정', '지난 리셋을 가득으로 침'));
-  var tone = st === 'ok' ? 'ok' : st === 'paused' ? 'paused' : st === 'held' || st === 'out' ? 'unknown' : 'low';
-  return '<div class="aq-pop" role="dialog" aria-label="' + escAttr(u.name + ' 세부') + '" data-aq-for="' + escAttr(key) + '">'
-    + '<div class="aq-pop-head"><span class="aq-pop-name">' + esc(u.name) + '</span><span class="aq-pop-kind">' + esc(capTierLabel(u)) + '</span>' + aqPill(tone, esc(capReason(u))) + close + '</div>'
-    + '<dl class="aq-pop-stats">' + rows.join('') + '</dl></div>';
-}
-// The workers strip (D10): one mark per account in llmux order (no re-sorting on refresh),
-// one tab stop; narrow folds the usable accounts into one mark.
-function capWorkers(g, nowMs, narrow, open, focusKey) {
-  var units = g.units || [];
-  if (!units.length) return '';
-  var okN = units.filter(function(u) { return capUnitState(u) === 'ok'; }).length;
-  var okKey = g.group + '|*ok';
-  var keys = [];
-  var list = [];
-  units.forEach(function(u, i) {
-    if (narrow && capUnitState(u) === 'ok') {
-      if (keys.indexOf(okKey) < 0) { keys.push(okKey); list.push(null); }
-      return;
-    }
-    keys.push(capUnitKey(g, i, u));
-    list.push({ u: u, key: keys[keys.length - 1] });
-  });
-  var stop = keys.indexOf(focusKey) >= 0 ? focusKey : keys[0];
-  var marks = list.map(function(m) {
-    if (m) return capMark(g, m.u, m.key, nowMs, open, stop);
-    return '<button type="button" class="aq-mark is-ok" data-aq-key="' + escAttr(okKey) + '" tabindex="' + (okKey === stop ? '0' : '-1') + '" aria-haspopup="dialog" aria-expanded="' + (okKey === open ? 'true' : 'false') + '" aria-label="' + escAttr('사용 가능 계정 ' + okN + '개 — 목록 보기') + '">● 사용 가능 ' + okN + '</button>';
-  }).join('');
-  var card = open && keys.indexOf(open) >= 0 ? capAccountCard(g, open, nowMs) : '';
-  return '<div class="aq-workers" role="group" aria-label="' + escAttr(g.label + ' 계정 ' + okN + '/' + units.length + ' 사용 가능') + '" data-aq-rove="' + escAttr('cap:' + g.group) + '">'
-    + '<div class="aq-col-head"><span>계정</span> <b>' + okN + '/' + units.length + '</b></div>'
-    + '<div class="aq-marks">' + marks + '</div>' + card + '</div>';
-}
-// The folded chip's paused marker (D14): { html, said } or null.
-function capChipLim(g, nowMs) {
-  var p = capPaused(g).length;
-  if (!p) return null;
-  var at = capFirstReturn(g);
-  return {
-    html: ' <i class="cap-chip-lim">⏸ ' + p + (at ? ' · ' + aqTime(capMs(at), nowMs) : '') + '</i>',
-    said: ' · 제한 ' + p + (at ? ' — ' + aqLeftSfx(capMs(at), nowMs, ' 후 첫 복귀') : ''),
-  };
-}
-// One sentence or none per capacity load (D4): all blocked > recovered > under 20%.
-function capAnnounceDiff(prev, next, nowMs) {
-  if (!prev || !next || !prev.available || !next.available) return '';
-  var best = null;
-  var put = function(rank, msg) { if (!best || rank < best.rank) best = { rank: rank, msg: msg }; };
-  (next.groups || []).forEach(function(g) {
-    var p = null;
-    (prev.groups || []).forEach(function(x) { if (x.group === g.group) p = x; });
-    if (!p || p.state === g.state) return;
-    if (g.state === 'empty') {
-      var at = capEmptyAt(g, nowMs / 1000);
-      put(1, aqPlain(g.label, 40) + (capPaused(g).length ? ' 계정이 모두 막힘' : ' 쓸 수 있는 양 없음') + (at ? ' — ' + aqLeftSfx(capMs(at), nowMs, ' 후 복귀') : ''));
-    } else if (p.state === 'empty' && g.state !== 'unknown') {
-      var units = g.units || [];
-      put(4, aqPlain(g.label, 40) + ' 다시 사용 가능 — 계정 ' + units.filter(function(u) { return capUnitState(u) === 'ok'; }).length + '/' + units.length);
-    } else if (p.state === 'ok' && g.state === 'low') {
-      put(5, aqPlain(g.label, 40) + ' ' + (g.has5h ? '지금' : '이번 주') + ' ' + CAP_LOW_PCT + '% 아래 — ' + capCount(g.has5h ? g.now : g.week, g.total) + '/' + capFmt1(g.total) + ' 계정');
-    }
-  });
-  return best ? best.msg : '';
-}
-function renderCapacitySummary(v, nowMs) {
+// The capacity view as the element's data: groups → providers (has5h → two measures, else the
+// weekly one), units → accounts in llmux order, events → refills; the server's own counts for
+// the disclosure line; an unavailable view → its reason in place of the cards.
+function capData(v) {
+  var d = { timeUnit: 's', capacityNote: '계정 = 최대 플랜 계정 1개 분량 · llmux', collapsible: true, collapsed: { capacity: !secIsOpen('capacity') } };
+  if (v.fetchedAtMs) d.fetchedAt = v.fetchedAtMs / 1000;
   if (!v.available) {
-    return '<div class="cap-summary"><span class="cap-chip is-error" title="' + escAttr(v.reason || '') + '">가용량 미확인 · ' + esc(v.reason || '알 수 없는 오류') + '</span></div>';
+    d.capacityError = v.reason || '알 수 없는 오류';
+    return d;
   }
-  if (!v.groups || !v.groups.length) return '<div class="cap-summary"><span class="cap-chip is-unknown">계정 없음</span></div>';
-  var GLYPH = { low: '▲ ', empty: '✗ ', unknown: '◌ ' };
-  var WORD = { ok: '', low: ' · 부족', empty: ' · 소진', unknown: ' · 계산 불가' };
-  var nowSec = nowMs / 1000;
-  return '<div class="cap-summary">' + v.groups.map(function(g0) {
-    var g = capAdvance(g0, nowSec);
-    var state = g.state || 'unknown';
-    var known = g.total > 0;
-    var t = capFmt1(g.total);
-    // Both measures as max accounts' worth of the total and % (requirement 1a, also when
-    // folded, also on phones — trinity mockup v5, grok P1):
-    // "Claude 지금 5.2/16.0 33% · 주 5.6/16.0 35%". The folded row wraps rather than cut.
-    var meas = function(cls, word, v, withTotal) {
-      return '<span class="cap-m ' + cls + '"><i class="cap-chip-k">' + word + ' </i><b>' + capCount(v, g.total) + '</b>'
-        + (withTotal ? '<i class="cap-chip-of">/' + t + '</i>' : '') + ' <em>' + capPct(v, g.total) + '</em></span>';
+  d.providers = (v.groups || []).map(function(g) {
+    var mint = capDupNames(g) ? 'r' + v.fetchedAtMs : '';
+    var p = {
+      id: g.group,
+      name: g.label,
+      source: 'llmux',
+      total: g.total,
+      weekly: g.week,
+      state: g.state,
+      accountCount: g.accountCount,
+      countedAccounts: g.countedAccounts,
+      excluded: g.excluded,
+      estimated: g.estimated,
+      unmeasured5h: g.unmeasured5h,
+      refills: (g.events || []).map(function(e) { return { at: e.at, cause: e.cause, fiveHour: e.dNow, weekly: e.dWeek, account: e.account }; }),
+      accounts: (g.units || []).map(function(u, i) { return capAccount(u, i, mint); }),
     };
-    var nums = !known ? '<b>—</b>'
-      : g.has5h ? meas('is-now', '지금', g.now, true) + ' · ' + meas('is-wk', '주', g.week, true)
-      : meas('is-wk', '주', g.week, true);
-    // The folded chip is the default view, so it carries what the card's disclosure line
-    // flags (trinity mockup v5, astra P1): a reading over a day old, and a pool where a
-    // fifth or more of the accounts is left out of the total.
-    var age = g.oldestRefreshAt ? nowSec - g.oldestRefreshAt : 0;
-    var stale = age > 86400 ? capDur(age).split(' ')[0] + ' 전' : '';
-    var part = g.accountCount && g.countedAccounts < g.accountCount * 0.8 ? g.countedAccounts + '/' + g.accountCount + ' 반영' : '';
-    // …and accounts counted on an assumed plan (operator, 2026-10-26): "⚠ x20 가정 15".
-    var asm = capAssumed(g);
-    var flags = [stale, part, asm ? asm.short + ' 가정 ' + asm.n : ''].filter(Boolean);
-    var flag = flags.length ? ' <i class="cap-chip-flag">' + esc('⚠ ' + flags.join(' · ')) + '</i>' : '';
-    var said = !known ? '계산 불가 — 셀 수 있는 계정 없음'
-      : (g.has5h ? '5시간(지금) ' + capCount(g.now, g.total) + '/' + t + ' 계정 (' + capPct(g.now, g.total) + '), ' : '') + '일주일 ' + capCount(g.week, g.total) + '/' + t + ' 계정 (' + capPct(g.week, g.total) + ')';
-    said += [stale ? '측정 ' + stale : '', part, asm ? '티어 미지정 ' + asm.n + '(' + asm.short + ' 가정)' : ''].filter(Boolean).map(function(x) { return ' · ' + x; }).join('');
-    var next = known ? capNextLine(g, g.has5h ? 'dNow' : 'dWeek', g.has5h ? CAP_5H : CAP_7D, nowSec, nowMs) : '';
-    // Paused workers and the first return (#444 D14), between the measures and the ⚠ flag.
-    var lim = (g.units || []).length ? capChipLim(g, nowMs) : null;
-    var lead = said + (WORD[state] || '') + (lim ? lim.said : '') + (next ? ' — ' + next : '');
-    return '<span class="cap-chip is-' + state + '" title="' + escAttr(lead) + '" aria-label="' + escAttr(g.label + ' ' + lead) + '">'
-      + (GLYPH[state] || '') + esc(g.label) + ' ' + nums + (lim ? lim.html : '') + flag + '</span>';
-  }).join('') + '</div>';
-}
-function renderCapacityGroup(g, nowMs, width) {
-  var nowSec = nowMs / 1000;
-  var W = Math.max(260, (Number(width) || 900) - 36);
-  var narrow = W < 600;
-  var h = '<section class="cap-prov is-' + esc(g.state || 'unknown') + (narrow ? ' is-narrow' : '') + '" data-group="' + escAttr(g.group) + '" aria-label="' + escAttr(g.label + ' 가용량') + '">'
-    + capProvHead(g, nowMs)
-    + '<div class="cap-disc">' + capDisclosure(g, nowSec) + '</div>';
-  // The accounts as workers (#444 D10/D11): state marks, the open card kept across repaints.
-  var workers = capWorkers(g, nowMs, narrow, _aqOpen, _aqFocusKey['cap:' + g.group]);
-  if (!(g.total > 0)) return h + '<div class="cap-bar-next">계산 불가 — 셀 수 있는 계정이 없음</div>' + workers + '</section>';
-  if (g.has5h) h += capBarRow(g, 'h5', '5시간', '지금 쓸 수 있음', g.now, 'dNow', nowSec);
-  h += capBarRow(g, 'wk', '일주일', '이번 주 남음', g.week, 'dWeek', nowSec);
-  h += workers;
-  var tl = capTimeline(g, W, nowSec);
-  if (tl) {
-    // ● raises the 5시간 bar (a 5h reset, or a block lifting), ◆ the 일주일 bar — same colours as the bars.
-    // With no 5h gain in 7 days the ● would never appear — say so instead of a dead key.
-    var soon5 = (g.events || []).filter(function(e) { return e.cause !== '7d' && e.at <= nowSec + CAP_7D; });
-    var any5 = soon5.some(function(e) { return e.dNow >= 0.05; });
-    // Gains under the marker threshold are small, not nothing — the same words as the bars'
-    // next line and the chip tooltip (trinity mockup v5 r5, fable P1).
-    var sum5 = soon5.reduce(function(t, e) { return t + e.dNow; }, 0);
-    var note5 = any5 ? '' : sum5 > 0.0005 ? ' — 7일 안 ' + capGain(sum5) : ' — 7일 안에 늘어날 양 없음';
-    var key5 = g.has5h ? '<span><i class="is-h5">●</i> 5시간 리셋' + note5 + '</span>' : '';
-    h += '<div class="cap-tl-wrap"><div class="cap-tl-h">' + key5 + '<span><i class="is-wk">◆</i> 일주일 리셋</span><span class="cap-tl-h-note">앞으로 7일 동안 돌아오는 양(계정)</span></div>' + tl + '</div>';
-  }
-  return h + '</section>';
-}
-function renderCapacity(v, nowMs, widthPx) {
-  if (!v) return '';
-  var age = v.fetchedAtMs ? Math.max(0, Math.round((nowMs - v.fetchedAtMs) / 1000)) : null;
-  var fresh = age === null ? '' : ' · ' + (age < 60 ? age + '초 전' : Math.floor(age / 60) + '분 전') + ' 갱신';
-  var legend = '';
-  var head = '<div class="cap-head"><h2 class="cap-title"><span class="cap-title-pre">LLM </span>가용량</h2><span class="cap-sub">계정 = 최대 플랜 계정 1개 분량 · llmux' + esc(fresh) + '</span>' + renderCapacitySummary(v, nowMs) + legend + '</div>';
-  if (!v.available) return head + '<div class="cap-off">' + esc('가용량을 불러오지 못했습니다 — ' + (v.reason || '알 수 없는 오류')) + '</div>';
-  if (!v.groups || !v.groups.length) return head + '<div class="cap-off">llmux 풀에 계정이 없습니다</div>';
-  return head + '<div class="cap-rows">' + v.groups.map(function(g) { return renderCapacityGroup(capAdvance(g, nowMs / 1000), nowMs, widthPx); }).join('') + '</div>';
+    if (g.has5h) p.fiveHour = g.now;
+    if (g.oldestRefreshAt) p.measuredAt = g.oldestRefreshAt;
+    return p;
+  });
+  return d;
 }
 function paintCapacity() {
   var el = document.getElementById('capacity');
@@ -18564,33 +17523,8 @@ function paintCapacity() {
   var off = !_capacityView.available && /^auth mode/.test(_capacityView.reason || '');
   el.hidden = off;
   if (off) return;
-  // The section's inner width sizes every chart (SVG in px, labels unscaled).
-  var widthPx = el.clientWidth - 28;
-  var html = renderCapacity(_capacityView, Date.now(), widthPx);
-  // The view, never the section: its disclosure toggle is static (focus survives).
-  var view = document.getElementById('capacity-view') || el;
-  var shown = el._shown;
-  el._shown = true;
-  if (view._html !== html) {
-    // A repaint (fresh age, new snapshot) must not fold what the reader opened.
-    var opened = {};
-    Array.prototype.forEach.call(view.querySelectorAll('details[data-cap-key][open]'), function(d) { opened[d.getAttribute('data-cap-key')] = true; });
-    // …nor drop the keyboard: an account mark or its open card keeps the focus (#444 D11).
-    var focusKey = aqFocusedKey(view);
-    var openWas = _aqOpen;
-    view.innerHTML = html;
-    view._html = html;
-    Array.prototype.forEach.call(view.querySelectorAll('details[data-cap-key]'), function(d) { if (opened[d.getAttribute('data-cap-key')]) d.open = true; });
-    // An open key with no card any more (its account left, the strip folded) is forgotten, so
-    // it never reopens on its own (final review R3, fable P3) — and the keyboard is not lost.
-    if (_aqOpen && !view.querySelector('.aq-pop')) _aqOpen = null;
-    if (focusKey === 'pop' && !_aqOpen) aqRefocusCapacity(view, openWas, null);
-    else aqRestoreFocus(view, focusKey);
-    aqPlacePops(view);
-    // The section sits above the board, outside #inbox: no observer sees the board
-    // move when it appears or changes height, so the shift cache learns it here.
-    scheduleLayoutRefresh(40);
-  } else if (!shown) scheduleLayoutRefresh(40);
+  _capFoldApplied = !secIsOpen('capacity');
+  aqPaint(document.getElementById('capacity-aq'), capData(_capacityView));
 }
 async function loadCapacity() {
   if (document.hidden) return;
@@ -18598,25 +17532,8 @@ async function loadCapacity() {
     var res = await fetch('/api/dashboard/capacity');
     if (!res.ok) return;
     var data = await res.json();
-    var next = data.capacity || null;
-    // One polite sentence when a pool's state changes (#444 D4); the first load is the baseline.
-    var news = capAnnounceDiff(_capacityView, next, Date.now());
-    // A new response re-decides the open card and the roving stops (final review R3): a key
-    // follows its account, or is dropped where masked names make position ambiguous. Nothing
-    // is announced for it — the closed card is not news.
-    var prev = _capacityView;
-    var view = document.getElementById('capacity-view');
-    var fk = view ? aqFocusedKey(view) : null;
-    var wasPop = fk === 'pop';
-    if (wasPop) fk = _aqOpen;
-    var sel = capSelectionAfter(prev, next, _aqOpen, _aqFocusKey);
-    _aqOpen = sel.open;
-    _aqFocusKey = sel.focus;
-    _capacityView = next;
+    _capacityView = data.capacity || null;
     paintCapacity();
-    var fresh = !!(prev && next && prev.fetchedAtMs !== next.fetchedAtMs);
-    if (fresh && fk && !(wasPop && _aqOpen)) aqRefocusCapacity(view, fk, capRemapKey(prev, next, fk));
-    if (news) aqAnnounce(news);
   } catch (e) { console.error('Failed to load capacity', e); }
 }
 
@@ -20759,8 +19676,9 @@ applyPanelDetail();
 bindPanelTabs();
 setInterval(loadSessions, 30000);
 // CRON lane jobs and the llmux capacity view poll on their own cadence (the
-// server caches llmux for 30s); the timeline re-lays out every 30s so markers
-// slide toward now. A hidden tab polls nothing and catches up when shown.
+// server caches llmux for 30s); capacity is handed again every 30s, so its element
+// re-lays out once a minute and the timeline's markers slide toward now (it ticks
+// its countdowns itself). A hidden tab polls nothing and catches up when shown.
 loadCronJobs();
 loadCapacity();
 setInterval(loadCronJobs, 60000);
@@ -20769,23 +19687,19 @@ setInterval(paintCapacity, 30000);
 document.addEventListener('visibilitychange', function() {
   if (!document.hidden) { loadCapacity(); loadCronJobs(); }
 });
-var _capResizeTimer = null;
-window.addEventListener('resize', function() {
-  clearTimeout(_capResizeTimer);
-  _capResizeTimer = setTimeout(paintCapacity, 150);
-});
-// A docked session panel narrows the page without a window resize (SSOT
-// 2026-10-24): the timeline repacks its labels on its own width.
+// The capacity section sits above the board, outside #inbox: no observer sees the
+// board move when it appears, folds or changes height, so the shift cache learns it
+// here. (Its element sizes its own timeline on its own width — a docked session panel
+// narrows the page without a window resize, SSOT 2026-10-24.)
 (function initCapacityResize() {
   var cap = document.getElementById('capacity');
   if (!cap || typeof ResizeObserver === 'undefined') return;
-  var lastW = -1;
+  var lastH = -1;
   new ResizeObserver(function(entries) {
-    var w = Math.round(entries[0].contentRect.width);
-    if (w === lastW) return;
-    lastW = w;
-    clearTimeout(_capResizeTimer);
-    _capResizeTimer = setTimeout(paintCapacity, 150);
+    var h = Math.round(entries[0].contentRect.height);
+    if (h === lastH) return;
+    lastH = h;
+    scheduleLayoutRefresh(40);
   }).observe(cap);
 })();
 </script>
