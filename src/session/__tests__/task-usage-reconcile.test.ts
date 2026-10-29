@@ -192,10 +192,24 @@ describe('final usage from the transcript (T5 live follow-up)', () => {
     expect(recreditTaskUsage(l, 'm:active', call([2, 100, 1000, 10]), () => 0)).toBe(true);
     // The next call overflows the memory: the active one (newest) stays.
     creditTaskUsage(l, 'm:next', call([1, 1, 1, 1]), 0);
-    // Its live re-report replaces, never adds: input stays one call's worth.
+    // Its late live frame (start-of-call count) neither adds nor undoes the correction.
     creditTaskUsage(l, 'm:active', call([2, 24, 1000, 10]), 0);
     const t1 = ledgerTasks(l).current[0].tokens!;
     expect(t1.input).toBe(511 * 1 + 2 + 1);
+    expect(t1.output).toBe(511 + 100 + 1);
+  });
+
+  it('a call reported again moves to the newest place, back inside the window that is never dropped (astra note 1)', () => {
+    const l = applyTodoList(emptyTaskLedger(0), list(['in_progress', 'pending', 'pending']), 1);
+    for (let i = 0; i < 500; i++) creditTaskUsage(l, `m:old${i}`, call([1, 1, 1, 1]), 0);
+    creditTaskUsage(l, 'm:long', call([2, 24, 1000, 10]), 0);
+    expect(recreditTaskUsage(l, 'm:long', call([2, 50, 1000, 10]), () => 0)).toBe(true); // settled early
+    for (let i = 0; i < 50; i++) creditTaskUsage(l, `m:new${i}`, call([1, 1, 1, 1]), 0);
+    // Still streaming: its live frame moves it up. Without that, 20 more credits
+    // would push it out of the newest 64 and, settled, it would be dropped first.
+    creditTaskUsage(l, 'm:long', call([2, 24, 1000, 10]), 0);
+    for (let i = 0; i < 20; i++) creditTaskUsage(l, `m:more${i}`, call([1, 1, 1, 1]), 0);
+    expect(recreditTaskUsage(l, 'm:long', call([2, 900, 1000, 10]), () => 0)).toBe(true);
   });
 
   it('when the call memory is full, corrected calls go first; a call still waiting for its correction stays', () => {
