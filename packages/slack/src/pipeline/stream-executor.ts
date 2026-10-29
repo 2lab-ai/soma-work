@@ -28,6 +28,7 @@ import {
 import {
   clearLiveUsage,
   foldLiveUsage,
+  type LiveUsageCall,
   markLiveUsageBoundary,
   markLiveUsageSettled,
   recordLiveUsage,
@@ -263,10 +264,11 @@ export interface StreamExecutorProviders {
   postCompactStartingIfNeeded?: (...args: any[]) => Promise<unknown>;
   /**
    * SSOT 2026-10-22 T1/T2 — the session's live usage changed (one more API
-   * call of the running turn). The host pushes the card to the dashboard
-   * (throttled). Must be cheap and never throw. No-op by default.
+   * call of the running turn, or a re-report of one). The host pushes the card
+   * to the dashboard (throttled) and credits the call to the tasks in progress
+   * (2026-10-29 T5). Must be cheap and never throw. No-op by default.
    */
-  notifyLiveUsage?: (sessionKey: string) => void;
+  notifyLiveUsage?: (sessionKey: string, call?: LiveUsageCall) => void;
   /**
    * Spec 12 — one agent-tree event of this session's turn (a subagent
    * started, listed its tasks, returned, changed task state; the turn ended).
@@ -1749,7 +1751,13 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         channel,
         threadTs,
         sessionKey,
-        sessionId: session?.sessionId,
+        // A getter (2026-10-29 T5): a fresh SDK session adopts its id mid-stream
+        // (adoptSdkSessionId). A copy taken here stayed undefined for the whole
+        // first turn, so every TodoWrite of that turn was dropped (the task
+        // ledger first heard of those tasks already completed, with 0 tools).
+        get sessionId() {
+          return session?.sessionId;
+        },
         botUserId: await this.deps.slackApi.getBotUserId(),
         // Issue #525 P1: surface the per-turn id + ThreadPanel façade to the
         // stream processor so it can route text chunks into the B1 stream.
@@ -2114,7 +2122,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         onLiveUsage: (call) => {
           recordLiveUsage(session, call, turnId);
           try {
-            streamExecutorProviders.notifyLiveUsage(sessionKey);
+            streamExecutorProviders.notifyLiveUsage(sessionKey, call);
           } catch (err) {
             this.logger.debug('notifyLiveUsage failed', { error: (err as Error)?.message ?? String(err) });
           }

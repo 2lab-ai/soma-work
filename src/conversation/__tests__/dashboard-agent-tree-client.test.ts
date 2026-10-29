@@ -775,7 +775,16 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
     attrs: Record<string, string>;
   };
   function board(opts: { animate?: boolean } = {}) {
-    const calls = { treeData: 0, bodies: 0, morphs: 0, faces: 0, prefetch: [] as unknown[], io: [] as unknown[] };
+    const calls = {
+      treeData: 0,
+      bodies: 0,
+      morphs: 0,
+      faces: 0,
+      prefetch: [] as unknown[],
+      io: [] as unknown[],
+      // SSOT 2026-10-29 T2: opening a card opens its detail card; folding it drops that from the deck.
+      deck: [] as string[],
+    };
     const timers: Array<{ fn: (() => void) | null; ms: number }> = [];
     const paintedTree = (): FakeTree => {
       let d: unknown = null;
@@ -870,6 +879,8 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
       isSiblingSession: () => false,
       scheduleLayoutRefresh: () => {},
       openArtifactModal: () => {},
+      openPanel: (k: string) => calls.deck.push(`open ${k}`),
+      deckDrop: (k: string) => calls.deck.push(`drop ${k}`),
     };
     const fns = load<{
       placeCard(s: unknown, col: string, host: unknown, drawn: boolean): void;
@@ -944,6 +955,10 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
     expect(b.calls.io).toEqual([[KEY, true]]);
     // The slot is the one the card's ui-select listener answers (data-at-ns c|<key> → openPanel(key, 'agent', …)).
     expect(clientListener('ui-select')).toContain("openPanel(ns.slice(2), 'agent', agentId, _atKeyed);");
+    // SSOT 2026-10-29 T2: the card's detail card opened with it — once its body was built.
+    expect(b.calls.deck).toEqual([`open ${KEY}`]);
+    b.toggle(false);
+    expect(b.calls.deck).toEqual([`open ${KEY}`, `drop ${KEY}`]);
   });
 
   it('a live push on an open card repaints its tree only when the tree changed — same element, same markup', () => {
@@ -2061,14 +2076,34 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
           'agentIconHtml',
           'taskFateOf',
           'renderPanelTaskItem',
-          'planFootHtml',
+          // SSOT 2026-10-29 T5: the executed runs, the plan left, the skipped toggle and the totals
+          // replaced the plan footer and the earlier plans (planFootHtml / planEarlier* are gone).
+          'escJs',
+          'taskIdNum',
+          'taskRunStart',
+          'taskRunEnd',
+          'taskTokTotal',
+          'formatTaskClock',
+          'taskCount',
+          'taskRunNumbers',
+          'taskRunDetailHtml',
+          'renderTaskRun',
+          'taskRunsOf',
+          'taskSkippedHtml',
+          'taskTotalsHtml',
           'planSummaryHtml',
-          'planEarlierCounts',
-          'planEarlierGroups',
-          'planEarlierHtml',
           'renderPanelTasks',
         ],
-        ['AGENT_STATUS_LABEL', 'TASK_FATE_LABEL', 'TASK_PAUSE_SVG', 'TASK_STOP_SVG', 'TASK_SKIP_SVG', 'PI_CHEV_SVG'],
+        [
+          'AGENT_STATUS_LABEL',
+          'TASK_FATE_LABEL',
+          'TASK_PAUSE_SVG',
+          'TASK_STOP_SVG',
+          'TASK_SKIP_SVG',
+          'PI_CHEV_SVG',
+          'TASK_RUNS_SHOWN',
+          '_panelTaskOpen',
+        ],
         {
           document: { getElementById: (id: string) => (id === 'panel-tasks' ? container : null) },
           _panelTasksOpen: open,
@@ -2084,7 +2119,7 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
       m.renderPanelTasks(tasks, 'A1 Explore');
       m.renderPanelTasks(tasks, 'A1 Explore');
       expect(writes).toBe(1);
-      // A new step changes the folded head (1/1 → 1/2) as well as the open plan.
+      // A new step changes the folded head (실행 1 · 완료 1 → … · 남은 1) as well as the open view.
       m.renderPanelTasks([...tasks, { id: 'T2', content: 'b', status: 'pending' }], 'A1 Explore');
       expect(writes).toBe(2);
     }
