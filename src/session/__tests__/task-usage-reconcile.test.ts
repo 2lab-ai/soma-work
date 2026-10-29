@@ -173,12 +173,29 @@ describe('final usage from the transcript (T5 live follow-up)', () => {
     expect(ledgerTasks(l).current[0].tokens?.costUsd).toBeCloseTo(0.02);
   });
 
-  it('a correction for a task that left the ledger stays in the totals, outside any task (review)', () => {
+  it('a correction for a task that left the ledger leaves with it — nothing negative appears elsewhere (review R2)', () => {
     const l = liveRun();
-    // T1 is gone (TASK_LEDGER_MAX dropped it).
+    // T1 is gone (TASK_LEDGER_MAX dropped it, with all of its numbers).
     l.tasks = l.tasks.filter((t) => t.id !== 'T1');
-    expect(recreditTaskUsage(l, 'm:msg_7zy1', call([2, 326, 136683, 469]), () => 0)).toBe(true);
-    expect(l.outside?.tokens.output).toBe(326 - 24);
+    const before = JSON.stringify(ledgerTasks(l));
+    recreditTaskUsage(l, 'm:msg_7zy1', call([2, 326, 136683, 469]), () => -1);
+    expect(JSON.stringify(ledgerTasks(l))).toBe(before);
+    expect(l.outside).toBeUndefined();
+  });
+
+  it('a call still streaming is never dropped from the credit memory, even when marked settled early (review R2)', () => {
+    const l = applyTodoList(emptyTaskLedger(0), list(['in_progress', 'pending', 'pending']), 1);
+    // 511 calls that never settle (llmux providers write zeros to the transcript).
+    for (let i = 0; i < 511; i++) creditTaskUsage(l, `m:proxy${i}`, call([1, 1, 1, 1]), 0);
+    // The active call: credited live, then its first transcript line marks it settled.
+    creditTaskUsage(l, 'm:active', call([2, 24, 1000, 10]), 0);
+    expect(recreditTaskUsage(l, 'm:active', call([2, 100, 1000, 10]), () => 0)).toBe(true);
+    // The next call overflows the memory: the active one (newest) stays.
+    creditTaskUsage(l, 'm:next', call([1, 1, 1, 1]), 0);
+    // Its live re-report replaces, never adds: input stays one call's worth.
+    creditTaskUsage(l, 'm:active', call([2, 24, 1000, 10]), 0);
+    const t1 = ledgerTasks(l).current[0].tokens!;
+    expect(t1.input).toBe(511 * 1 + 2 + 1);
   });
 
   it('when the call memory is full, corrected calls go first; a call still waiting for its correction stays', () => {

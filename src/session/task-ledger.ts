@@ -623,15 +623,12 @@ export function creditTaskUsage(
       const ids = before.to;
       const targets = ledger.tasks.filter((x) => ids.includes(x.id));
       const k = 1 / ids.length;
+      // A task that left the ledger since (TASK_LEDGER_MAX) took all of its
+      // numbers with it; a late correction to it leaves with it too (review R2:
+      // a difference alone, put elsewhere, could read as negative spend).
       for (const x of targets) {
         x.tokens = x.tokens ?? zeroTokens();
         addTokens(x.tokens, delta, k);
-      }
-      // A task that left the ledger since (TASK_LEDGER_MAX): its share stays in the totals, outside any task (review).
-      const gone = ids.length - targets.length;
-      if (gone > 0) {
-        ledger.outside = ledger.outside ?? zeroWork();
-        addWork(ledger.outside, w, gone * k);
       }
     }
     return;
@@ -688,24 +685,32 @@ export function recreditTaskUsage(
   return true;
 }
 
+/** The newest call credits are never dropped: a call still streaming may be re-reported live (review R2). */
+const CALLS_RECENT_KEPT = 64;
+
 /**
- * Keep at most {@link CALLS_MAX} call credits: settled ones (final usage in)
- * go first, oldest first; a call still waiting for its final usage goes only
- * when that many newer ones wait too (review: a busy turn with many subagents
- * must not drop a call before its correction).
+ * Keep at most {@link CALLS_MAX} call credits. The newest
+ * {@link CALLS_RECENT_KEPT} always stay (a call still streaming is among them —
+ * dropping it would credit its next live frame from scratch). Of the rest,
+ * settled ones (a transcript reading is in) go first, oldest first; a call
+ * still waiting for its final usage goes only when that many newer ones wait
+ * too (review: a busy turn with many subagents must not drop it before its
+ * correction). `settled` only orders the dropping: a later, larger reading
+ * of a kept call is still taken.
  */
 function trimCalls(calls: Record<string, CallCredit>): void {
   const keys = Object.keys(calls);
   let excess = keys.length - CALLS_MAX;
   if (excess <= 0) return;
-  for (const k of keys) {
+  const old = keys.slice(0, Math.max(0, keys.length - CALLS_RECENT_KEPT));
+  for (const k of old) {
     if (excess <= 0) return;
     if (calls[k].settled) {
       delete calls[k];
       excess--;
     }
   }
-  for (const k of keys) {
+  for (const k of old) {
     if (excess <= 0) return;
     if (k in calls) {
       delete calls[k];
