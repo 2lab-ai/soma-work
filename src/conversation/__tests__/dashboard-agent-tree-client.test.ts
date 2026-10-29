@@ -1077,7 +1077,9 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
     pf.acPrefetch(s, 'waiting');
     expect(loads).toEqual(['net']); // gone / refused are answers; the third failure was the last try
     // The open card's approval card retries on the same terms.
-    expect(fnBody('acPermissionData')).toContain('if (acDetailDue(detail, Date.now())) loadPermissionDetail(s.key, p.approvalId);');
+    expect(fnBody('acPermissionData')).toContain(
+      'if (acDetailDue(detail, Date.now())) loadPermissionDetail(s.key, p.approvalId);',
+    );
   });
 
   it('loadPermissionDetail keeps how a load failed: network and 5xx may pass (tries counted), 404 and 403 are answers', async () => {
@@ -1111,7 +1113,8 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
     m.loadPermissionDetail(KEY, 'd');
     await settle();
     expect(details.d).toEqual({ error: '이미 응답되었거나 만료된 요청입니다' });
-    reply = () => Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ input: '{}', truncated: false }) });
+    reply = () =>
+      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ input: '{}', truncated: false }) });
     m.loadPermissionDetail(KEY, 'a');
     await settle();
     expect(details.a).toEqual({ input: '{}', truncated: false });

@@ -774,7 +774,9 @@ describe('D13 — loading, failed, empty: the element’s data, the summary abov
     expect(h({ title: 'Picker <b>bars</b>', body: '  Three\n bars.  ' })).toBe('Picker <b>bars</b> — Three bars.');
     expect(h({ body: 'Generating summary...' })).toBe('Generating summary...');
     // Summary failed + its 🔄 Retry (the button stays in Raw, where it works).
-    expect(h({ title: 'Picker bars', body: 'Summary failed ', button: '🔄 Retry' })).toBe('Picker bars — Summary failed');
+    expect(h({ title: 'Picker bars', body: 'Summary failed ', button: '🔄 Retry' })).toBe(
+      'Picker bars — Summary failed',
+    );
     expect(h({ title: '', body: '' })).toBeUndefined();
     expect(clientFn('ansPaint')).not.toContain('insertAdjacentHTML');
     expect(TEMPLATE).not.toContain('ans-fallback');
@@ -1152,7 +1154,9 @@ describe('a subagent’s 지시와 답변 — its answer on the same element', (
     // Nothing to retry: no repaint.
     m.agentConvRetry('8');
     expect(renders).toBe(3);
-    expect(clientFn('renderAgentConv')).toContain("var failed = io.result && io.result.rawBytes ? agentConvFailure(io.result.seq) : '';");
+    expect(clientFn('renderAgentConv')).toContain(
+      "var failed = io.result && io.result.rawBytes ? agentConvFailure(io.result.seq) : '';",
+    );
   });
 
   it('ui-retry from a subagent’s answer goes to its seq; a turn’s answer to ansLoad', () => {
