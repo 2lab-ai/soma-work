@@ -629,7 +629,7 @@ describe('panel goal — the full editor moved here, its draft safe across live 
   it('renders the shared goal component (current, queue, history, add) into #panel-goal with the card gates', () => {
     const src = clientFn('renderPanelGoal');
     expect(src).toContain("document.getElementById('panel-goal')");
-    expect(src).toContain('renderCardGoal(s, col, canEdit)');
+    expect(src).toContain('renderCardGoal(s, col, canEdit, _panelGoalOpen)');
     expect(src).toContain('isEditingGoal(el)');
     expect(src).toContain('captureGoalDraft(el)');
     expect(src).toContain('restoreGoalDraft(el, draft)');
@@ -1056,6 +1056,8 @@ describe('focus inside the goal section after its goal left (executed)', () => {
         currentUserId: 'U1',
         isSiblingSession: () => false,
         renderCardGoal: () => 'new',
+        _panelGoalOpen: false, // SSOT 2026-10-29: the objective's fold
+        syncGoalMore: () => {},
         morphInnerHtml: () => {
           inside = new Set(); // Q1's row (and its focused Delete) is gone
           doc.activeElement = doc.body;
