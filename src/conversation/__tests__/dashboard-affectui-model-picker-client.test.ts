@@ -1,18 +1,33 @@
 /**
  * affectUI Model Picker → the dashboard's model · effort picker, client half
- * (.prd/affectui/re-model-picker.md §4 D1–D18). Executes the shipped page code
- * cut out of renderDashboardPage()'s template literal and cooked exactly as the
- * browser receives it (the harness of dashboard-three-surfaces-client.test.ts).
+ * (.prd/affectui/re-model-picker.md §4 D1–D18). The trigger and its menu are
+ * @2lab.ai/ui <ui-model-picker> — the element the inline menu was ported to.
+ * Executes the shipped page code cut out of renderDashboardPage()'s template
+ * literal and cooked exactly as the browser receives it, with injected fakes:
+ * the host contract.
  *
- *   trigger   one button per surface (card control strip, panel composer)
- *   menu      listbox of the representative models with window · autocompact ·
- *             cost bars, the effort radiogroup, the price tray
- *   behaviour keyboard, placement, the one-write lock, live repaint guards
+ *   slot      the owner's element per surface (card strip, panel composer) in a
+ *             token wrapper; read-only viewers keep the plain text
+ *   data      mpData — the representative models keyed by nickname, the
+ *             session's model (outside the list: its short id), the levels its
+ *             model runs, the context, the writes in flight, the last refusal
+ *   events    ui-change → changeModel / changeEffort (cancelled: the server
+ *             decides), ui-open-change (closed) → the held surfaces repaint
+ *   guards    one write per session and operation, an open menu holds its
+ *             surface still while its data follows the session
+ *
+ * What the element itself does — the listbox and its keys, Tab past the last
+ * stop going home (D9), the meters, the tray and its roll, placement, closing
+ * when its trigger moves or leaves the view, the effort radiogroup, locked rows,
+ * the error and waiting lines, motion and touch sizes — is owned by the
+ * library's suite (@2lab.ai/ui src/components/model-picker/model-picker.test.ts);
+ * the list at the end names the library test that now covers each moved test.
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { UI_LIB_FILE, uiLibDistDir } from '../dashboard';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -39,14 +54,13 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
-function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, extra: string[] = []): T {
+function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
   const names = Object.keys(inject);
-  const extraNames = extra.map((src) => /^function (\w+)/.exec(src)?.[1] ?? '').filter(Boolean);
-  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${extra.join('\n')}\nreturn { ${[...fns, ...extraNames].join(', ')} };`;
+  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 const STYLE = TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>'));
-const strip = (html: string) => html.replace(/<[^>]*>/g, '');
+const HEAD = TEMPLATE.slice(0, TEMPLATE.indexOf('<style>'));
 
 const MODELS = [
   {
@@ -58,36 +72,12 @@ const MODELS = [
     price: { input: 5, output: 25 },
   },
   {
-    nickname: 'fable[1m]',
-    model: 'claude-fable-5-1[1m]',
-    label: 'Fable 5.1 (1M)',
-    contextWindow: 1_000_000,
-    autoCompactTokens: 750_000,
-    price: { input: 10, output: 50 },
-  },
-  {
     nickname: 'sonnet[1m]',
     model: 'claude-sonnet-4-6[1m]',
     label: 'Sonnet 4.6 (1M)',
     contextWindow: 1_000_000,
     autoCompactTokens: 750_000,
     price: { input: 3, output: 15 },
-  },
-  {
-    nickname: 'sol[1m]',
-    model: 'gpt-5.6-sol[1m]',
-    label: 'GPT-5.6 Sol (1M)',
-    contextWindow: 1_000_000,
-    autoCompactTokens: 600_000,
-    price: { input: 5, output: 30 },
-  },
-  {
-    nickname: 'astra[1m]',
-    model: 'gpt-6-astra[1m]',
-    label: 'GPT-6 Astra (1M)',
-    contextWindow: 1_000_000,
-    autoCompactTokens: 600_000,
-    price: { input: 10, output: 50 },
   },
   {
     nickname: 'grok[1m]',
@@ -98,871 +88,303 @@ const MODELS = [
   },
 ];
 const LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
-
-/** Every pure renderer of the menu, loaded together over the shared state. */
-const RENDER_FNS = [
-  'esc',
-  'escAttr',
-  'toNum',
-  'formatTokens',
-  'effortLabel',
-  'isBusy',
-  'setBusy',
-  'mpShort',
-  'mpOptions',
-  'mpCurrentIndex',
-  'mpOptId',
-  'mpIndexOf',
-  'mpActiveIndex',
-  'mpSegments',
-  'mpMax',
-  'mpMetersHtml',
-  'mpMoney',
-  'mpPriceWords',
-  'mpTray',
-  'mpEffortLevels',
-  'renderEffortControl',
-  'renderModelMenu',
-  'renderModelPicker',
-];
-const RENDER_VARS = ['_busy', '_mp', '_modelNotes', 'EFFORT_LABELS', 'MP_EFFORT_SHORT'];
-const STATE_FN = 'function mpState(patch) { if (patch) for (var k in patch) _mp[k] = patch[k]; return _mp; }';
-
-type Renderers = {
-  renderModelPicker(s: unknown, canSwitch: boolean, short: string, surface?: string): string;
-  renderModelMenu(s: unknown): string;
-  renderEffortControl(s: unknown): string;
-  mpSegments(v: unknown, max: unknown): number;
-  mpTray(o: unknown): { html: string; sr: string };
-  mpMoney(v: number, ref?: number): string;
-  setBusy(k: string, op: string, on: boolean): void;
-  mpState(patch?: Record<string, unknown>): Record<string, unknown>;
-};
-function renderers(models: unknown[] = MODELS): Renderers {
-  return load<Renderers>(RENDER_FNS, RENDER_VARS, { REPRESENTATIVE_MODELS: models, EFFORT_LEVELS: LEVELS }, [STATE_FN]);
-}
+const KEY = 'inst::C1:t1';
 const sess = (over: Record<string, unknown> = {}) => ({
-  key: 'inst::C1:t1',
+  key: KEY,
   model: 'claude-opus-5-5[1m]',
   effort: 'high',
   contextTokens: 500_000,
   ...over,
 });
-/** The option blocks of a rendered menu, in order. */
-function optionBlocks(html: string): string[] {
-  return html.split('<div class="mp-opt"').slice(1);
-}
-/** Filled segments per meter of one option block; '—' when the meter has no value. */
-function meterCounts(block: string): Array<number | string> {
-  return block
-    .split('<span class="mp-meter')
-    .slice(1)
-    .map((m) => (m.startsWith(' is-none') ? '—' : (m.split('</span></span>')[0].match(/data-on=""/g) ?? []).length));
+
+type Data = {
+  models: Array<Record<string, unknown>>;
+  value: Record<string, unknown>;
+  contextTokens: number;
+  busy: { model: boolean | string; effort: boolean };
+  error?: string;
+};
+function mapper(notes: Record<string, unknown> = {}) {
+  return load<{
+    mpData(s: unknown): Data;
+    setBusy(k: string, op: string, on: boolean): void;
+    renderModelPicker(s: unknown, can: boolean, short: string, surface?: string): string;
+    renderModelNote(s: unknown, picker?: boolean): string;
+  }>(
+    [
+      'esc',
+      'escAttr',
+      'toNum',
+      'isBusy',
+      'setBusy',
+      'mpShort',
+      'mpEffortLevels',
+      'mpData',
+      'renderModelPicker',
+      'renderModelNote',
+    ],
+    ['_busy'],
+    { REPRESENTATIVE_MODELS: MODELS, EFFORT_LEVELS: LEVELS, _modelNotes: notes },
+  );
 }
 
-// ── D1 — the trigger ──
-describe('D1 — one trigger per surface: glyph, model, effort, chevron', () => {
-  it('the owner gets a dialog trigger (no <select>) naming the model and the level that runs', () => {
-    const m = renderers();
-    const html = m.renderModelPicker(sess(), true, 'opus-5-5[1m]', 'card');
-    expect(html).not.toContain('<select');
-    expect(html).toContain(
-      '<button type="button" class="mp-trigger" aria-haspopup="dialog" aria-expanded="false" aria-controls="mp-menu"',
+// ── D1 — the slot ──
+describe('D1 — one <ui-model-picker> per surface for the owner; others read the text', () => {
+  it('the owner gets the element in a token wrapper, named by its session and surface', () => {
+    const m = mapper();
+    const card = m.renderModelPicker(sess(), true, 'opus-5-5[1m]', 'card');
+    expect(card).toBe(
+      `<span class="ui-tok mp-slot" data-mk="mp|card|${KEY}"><ui-model-picker lang="ko" data-mp-key="${KEY}" data-mp-surface="card">` +
+        '<span class="mp-fallback">opus-5-5[1m]</span></ui-model-picker></span>',
     );
-    expect(html).toContain('data-mp-key="inst::C1:t1" data-mp-surface="card"');
-    expect(html).toContain('aria-label="모델 Opus 5.5 (1M), effort High — 바꾸기"');
-    expect(html).toContain(
-      '<span class="mp-glyph" aria-hidden="true">O</span><span class="mp-name">Opus 5.5 (1M)</span>',
-    );
-    expect(html).toContain('<span class="mp-level">&middot; High</span>');
-    expect(html).toContain('<span class="mp-chev" aria-hidden="true"></span></button>');
-    // A capped level shows what really runs.
-    expect(m.renderModelPicker(sess({ effort: 'max', effortEffective: 'high' }), true, 'opus', 'panel')).toContain(
-      '&middot; High',
+    expect(card).not.toContain('<select');
+    // The composer's menu opens above its trigger.
+    expect(m.renderModelPicker(sess(), true, 'opus-5-5[1m]', 'panel')).toContain(
+      `<ui-model-picker lang="ko" side="top" data-mp-key="${KEY}" data-mp-surface="panel">`,
     );
   });
 
-  it('a model outside the list is named by its short id; the key is attribute-escaped', () => {
-    const m = renderers();
-    const html = m.renderModelPicker(
-      sess({ key: "self::C1:t'1", model: 'claude-haiku-4-5-20251001' }),
-      true,
-      'haiku-4-5',
-    );
-    expect(html).toContain('<span class="mp-name">haiku-4-5</span>');
-    expect(html).toContain('data-mp-key="self::C1:t&#39;1" data-mp-surface="card"');
-    expect(html).toContain('<span class="mp-glyph" aria-hidden="true">H</span>');
+  it('the key is attribute-escaped; an unnamed model reads 모델 until the library loads', () => {
+    const m = mapper();
+    const html = m.renderModelPicker(sess({ key: 'self::C1:t\'1"' }), true, '', 'card');
+    expect(html).toContain('data-mk="mp|card|self::C1:t&#39;1&quot;"');
+    expect(html).toContain('data-mp-key="self::C1:t&#39;1&quot;"');
+    expect(html).toContain('<span class="mp-fallback">모델</span>');
   });
 
   it('read-only viewers keep the plain text, byte for byte', () => {
-    const m = renderers();
-    expect(m.renderModelPicker(sess(), false, 'opus-5-5[1m]', 'card')).toBe(
+    expect(mapper().renderModelPicker(sess(), false, 'opus-5-5[1m]', 'card')).toBe(
       '<span class="cb-model-name">opus-5-5[1m]</span>',
     );
   });
 
-  it('a write in flight marks the trigger busy without disabling it; the open anchor says expanded', () => {
-    const m = renderers();
-    m.setBusy('inst::C1:t1', 'effort', true);
-    const busy = m.renderModelPicker(sess(), true, 'opus', 'card');
-    expect(busy).toContain('aria-busy="true"');
-    expect(busy).not.toContain(' disabled');
-    m.setBusy('inst::C1:t1', 'effort', false);
-    m.mpState({ key: 'inst::C1:t1', surface: 'panel' });
-    expect(m.renderModelPicker(sess(), true, 'opus', 'panel')).toContain('aria-expanded="true"');
-    expect(m.renderModelPicker(sess(), true, 'opus', 'card')).toContain('aria-expanded="false"');
+  it('the card strip: the owner gets the element alone, others the text and the level', () => {
+    const body = clientFn('renderCardBody');
+    expect(body).toContain("if (canSwitchModel) modelParts.push(renderModelPicker(s, true, modelShort, 'card'));");
+    expect(body).toContain('if (s.effort) modelParts.push(renderEffortPicker(s));');
+    expect(body).toContain('const modelNote = renderModelNote(s, canSwitchModel);');
+    // The owner's control: a live, non-sibling session (the server re-checks owner / admin on both routes).
+    expect(body).toContain(
+      "const canSwitchModel = isOwner && col !== 'closed' && !s.terminated && !isSiblingSession(s);",
+    );
   });
 });
 
-// ── D3 / D4 / D11 — the model list ──
-describe('D3 — the model list is a listbox of the representative models', () => {
-  it('six options in server order, the current one selected and checked, the active one the descendant', () => {
-    const m = renderers();
-    const html = m.renderModelMenu(sess());
-    expect(html).toContain(
-      '<div class="mp-list" role="listbox" aria-label="모델" tabindex="0" aria-activedescendant="mp-opt-0"',
-    );
-    expect([...html.matchAll(/data-mp-nick="([^"]*)"/g)].map((x) => x[1])).toEqual([
-      'opus[1m]',
-      'fable[1m]',
-      'sonnet[1m]',
-      'sol[1m]',
-      'astra[1m]',
-      'grok[1m]',
+// ── D3–D8 / D11 — the data the dashboard maps the session onto ──
+describe('mpData — the session as the element’s data', () => {
+  it('the representative models in server order, keyed by nickname; no price stays unknown', () => {
+    const d = mapper().mpData(sess());
+    expect(d.models).toEqual([
+      {
+        id: 'opus[1m]',
+        label: 'Opus 5.5 (1M)',
+        short: 'opus[1m]',
+        window: 1_000_000,
+        autoCompactAt: 750_000,
+        price: { input: 5, output: 25 },
+      },
+      {
+        id: 'sonnet[1m]',
+        label: 'Sonnet 4.6 (1M)',
+        short: 'sonnet[1m]',
+        window: 1_000_000,
+        autoCompactAt: 750_000,
+        price: { input: 3, output: 15 },
+      },
+      {
+        id: 'grok[1m]',
+        label: 'Grok 4.6 (500k)',
+        short: 'grok[1m]',
+        window: 500_000,
+        autoCompactAt: 450_000,
+        price: null,
+      },
     ]);
-    expect(html).toContain('id="mp-opt-0" role="option" data-mp-i="0" data-mp-nick="opus[1m]" aria-selected="true"');
-    expect(html).toContain('id="mp-opt-5" role="option" data-mp-i="5" data-mp-nick="grok[1m]" aria-selected="false"');
-    expect(html.match(/class="mp-check"/g)).toHaveLength(1);
-    expect(html).toContain('<span class="mp-title-name">Opus 5.5 (1M)</span>');
+    expect(d.contextTokens).toBe(500_000);
   });
 
-  it('the description line keeps the switch rule: a target below the context compacts first, never the current one', () => {
-    const html = renderers().renderModelMenu(sess());
-    expect(html).toContain('<span class="mp-desc">grok[1m] · autocompact 450.0K · compact 후 전환</span>');
-    expect(html).toContain('fable[1m] · autocompact 750.0K<');
-    expect(html).not.toContain('opus[1m] · autocompact 750.0K · compact');
+  it('value: the nickname of the row the session runs, the level set and the level that runs', () => {
+    const d = mapper().mpData(sess({ model: 'claude-sonnet-4-6[1m]', effort: 'max', effortEffective: 'high' }));
+    expect(d.value).toEqual({ model: 'sonnet[1m]', effort: 'max', effectiveEffort: 'high', effortLevels: LEVELS });
   });
 
-  it('a model outside the list is the current, unselectable first entry', () => {
-    const html = renderers().renderModelMenu(sess({ model: 'claude-haiku-4-5-20251001' }));
-    const blocks = optionBlocks(html);
-    expect(blocks).toHaveLength(7);
-    expect(blocks[0]).toContain('id="mp-opt-0" role="option" data-mp-i="0" aria-selected="true" aria-disabled="true"');
-    expect(blocks[0]).toContain('<span class="mp-title-name">haiku-4-5</span>');
-    expect(blocks[0]).not.toContain('data-mp-nick');
+  it('a model outside the list is named by its short id (the element’s first, unselectable row)', () => {
+    const d = mapper().mpData(sess({ model: 'claude-haiku-4-5-20251001' }));
+    expect(d.value.model).toBe('haiku-4-5');
+    expect(d.models.map((x) => x.id)).not.toContain('haiku-4-5');
   });
 
-  it('options carry their numbers as a sentence (the bars and the head are aria-hidden)', () => {
-    const html = renderers().renderModelMenu(sess());
-    expect(html).toContain(
-      'aria-label="Grok 4.6 (500k), grok[1m] · autocompact 450.0K · compact 후 전환. 창 500.0K, 가격 정보 없음"',
+  it('value.effortLevels: the levels the session’s model runs (catalog ∩ levels), all five without a menu — also outside the list', () => {
+    const m = mapper();
+    expect(m.mpData(sess({ effortLevels: ['high', 'low'] })).value.effortLevels).toEqual(['low', 'high']);
+    expect(
+      m.mpData(sess({ model: 'claude-haiku-4-5-20251001', effortLevels: ['low', 'medium', 'high'] })).value,
+    ).toMatchObject({ model: 'haiku-4-5', effortLevels: ['low', 'medium', 'high'] });
+    expect(m.mpData(sess()).value.effortLevels).toEqual(LEVELS);
+    expect(m.mpData(sess({ effortLevels: [] })).value.effortLevels).toEqual(LEVELS);
+    expect(m.mpData(sess({ effortLevels: ['ultra'] })).value.effortLevels).toEqual(LEVELS);
+  });
+
+  it('busy: a switch waiting for its compaction says so; a write in flight locks its part', () => {
+    const m = mapper();
+    expect(m.mpData(sess()).busy).toEqual({ model: false, effort: false });
+    expect(m.mpData(sess({ pendingModel: 'grok[1m]' })).busy.model).toBe('compact 후 grok[1m](으)로 전환 대기 중');
+    m.setBusy(KEY, 'model', true);
+    expect(m.mpData(sess()).busy).toEqual({ model: true, effort: false });
+    m.setBusy(KEY, 'model', false);
+    m.setBusy(KEY, 'effort', true);
+    expect(m.mpData(sess()).busy).toEqual({ model: false, effort: true });
+  });
+
+  it('error: the last refused write only — an info note is the host’s line', () => {
+    const notes: Record<string, unknown> = {};
+    const m = mapper(notes);
+    expect(m.mpData(sess())).not.toHaveProperty('error');
+    notes[KEY] = { text: 'sonnet[1m](으)로 전환 · autocompact 750.0K', error: false };
+    expect(m.mpData(sess())).not.toHaveProperty('error');
+    notes[KEY] = { text: '실행 중인 턴이 있어 전환할 수 없습니다', error: true };
+    expect(m.mpData(sess()).error).toBe('실행 중인 턴이 있어 전환할 수 없습니다');
+  });
+
+  it('renderModelNote: beside the picker only the info note — the element says waiting and refusals itself', () => {
+    const notes: Record<string, unknown> = {};
+    const m = mapper(notes);
+    const waiting = sess({ pendingModel: 'grok[1m]' });
+    expect(m.renderModelNote(waiting, true)).toBe('');
+    expect(m.renderModelNote(waiting, false)).toBe(
+      '<div class="cb-model-note" role="status">compact 후 grok[1m](으)로 전환합니다…</div>',
     );
-    expect(html).toContain(
-      'aria-label="Opus 5.5 (1M), opus[1m] · autocompact 750.0K. 창 1.0M, 입력 $5 · 출력 $25 / 백만 토큰"',
-    );
-    expect(html).toContain('<div class="mp-head" aria-hidden="true"><span>이 세션 모델</span>');
-    expect(html).toContain('<span class="mp-bars" aria-hidden="true">');
-  });
-
-  it('D11 — a waiting switch or a model write in flight locks every option and says why', () => {
-    const m = renderers();
-    const pending = m.renderModelMenu(sess({ pendingModel: 'grok[1m]' }));
-    expect(optionBlocks(pending).every((b) => b.includes('aria-disabled="true"'))).toBe(true);
-    expect(pending).toContain(
-      'role="listbox" aria-label="모델" tabindex="0" aria-activedescendant="mp-opt-0" aria-disabled="true"',
-    );
-    expect(pending).toContain('<div class="mp-wait">compact 후 grok[1m](으)로 전환 대기 중</div>');
-    m.setBusy('inst::C1:t1', 'model', true);
-    expect(m.renderModelMenu(sess())).toContain('<div class="mp-wait">모델 전환 중…</div>');
-  });
-
-  it('pointing (mouse or arrows) lights the active row; otherwise the current row is lit', () => {
-    const m = renderers();
-    m.mpState({ activeId: 'sol[1m]', pointing: false });
-    let blocks = optionBlocks(m.renderModelMenu(sess()));
-    expect(blocks[0]).toContain('data-lit=""');
-    expect(blocks[3]).toContain('data-active=""');
-    expect(blocks[3]).not.toContain('data-lit');
-    m.mpState({ activeId: 'sol[1m]', pointing: true });
-    const html = m.renderModelMenu(sess());
-    expect(html).toContain('aria-activedescendant="mp-opt-3" data-pointing=""');
-    blocks = optionBlocks(html);
-    expect(blocks[3]).toContain('data-lit=""');
-    expect(blocks[0]).not.toContain('data-lit');
-    m.mpState({ activeId: null, pointing: false });
+    notes[KEY] = { text: 'HTTP 409', error: true };
+    expect(m.renderModelNote(sess(), true)).toBe('');
+    expect(m.renderModelNote(sess(), false)).toBe('<div class="cb-model-note is-error" role="alert">HTTP 409</div>');
+    notes[KEY] = { text: '이미 opus[1m]입니다', error: false };
+    expect(m.renderModelNote(sess(), true)).toBe('<div class="cb-model-note" role="status">이미 opus[1m]입니다</div>');
   });
 });
 
-describe('D4 — window · autocompact · cost bars: real quantities only', () => {
-  it('segments = round(5·v/max), at least one for a known value, none for an unknown one', () => {
-    const m = renderers();
-    expect(m.mpSegments(1_000_000, 1_000_000)).toBe(5);
-    expect(m.mpSegments(500_000, 1_000_000)).toBe(3);
-    expect(m.mpSegments(600_000, 750_000)).toBe(4);
-    expect(m.mpSegments(450_000, 750_000)).toBe(3);
-    expect(m.mpSegments(15, 50)).toBe(2);
-    expect(m.mpSegments(25, 50)).toBe(3);
-    expect(m.mpSegments(1, 1000)).toBe(1);
-    expect(m.mpSegments(0, 50)).toBe(0);
-    expect(m.mpSegments(undefined, 50)).toBe(0);
-    expect(m.mpSegments(5, 0)).toBe(0);
-  });
-
-  it('each row draws its three meters against the largest of the menu; no price, no cost meter', () => {
-    const blocks = optionBlocks(renderers().renderModelMenu(sess()));
-    expect(blocks.map(meterCounts)).toEqual([
-      [5, 5, 3],
-      [5, 5, 5],
-      [5, 5, 2],
-      [5, 4, 3],
-      [5, 4, 5],
-      [3, 3, '—'],
-    ]);
-    expect(blocks[0]).toContain('<span class="mp-meter" style="--c:2"><span class="mp-seg" style="--s:0" data-on="">');
-  });
-});
-
-// ── D7 — effort ──
-describe('D7 — effort is a radiogroup of the levels the model runs', () => {
-  it('without a catalog menu: all five levels, the current checked and the only tab stop', () => {
-    const html = renderers().renderEffortControl(sess());
-    expect(html).toContain('role="radiogroup" aria-labelledby="mp-effort-label" style="--i:2;--n:5"');
-    expect([...html.matchAll(/data-mp-effort="([^"]*)"/g)].map((x) => x[1])).toEqual(LEVELS);
-    expect(html).toContain(
-      '<button type="button" class="mp-seg-btn" role="radio" data-mp-effort="high" aria-checked="true" tabindex="0" aria-label="High">High</button>',
-    );
-    expect(html.match(/tabindex="0"/g)).toHaveLength(1);
-    expect(html).toContain('aria-label="Extra high">XHigh</button>');
-    expect(html).toContain('<span class="mp-thumb" aria-hidden="true"></span>');
-    expect(html).not.toContain('mp-effort-cap');
-  });
-
-  it('with the model’s menu: only those levels; a capped level checks what runs and says what was set', () => {
-    const html = renderers().renderEffortControl(
-      sess({ effort: 'max', effortEffective: 'high', effortLevels: ['low', 'medium', 'high', 'ultra'] }),
-    );
-    expect([...html.matchAll(/data-mp-effort="([^"]*)"/g)].map((x) => x[1])).toEqual(['low', 'medium', 'high']);
-    expect(html).toContain('style="--i:2;--n:3"');
-    expect(html).toContain('data-mp-effort="high" aria-checked="true" tabindex="0"');
-    expect(html).toContain('<span class="mp-effort-cap">설정 Max &rarr; 이 모델은 High까지 실행</span>');
-  });
-
-  it('an effort write in flight disables the group', () => {
-    const m = renderers();
-    m.setBusy('inst::C1:t1', 'effort', true);
-    expect(m.renderEffortControl(sess())).toContain(
-      'role="radiogroup" aria-labelledby="mp-effort-label" aria-disabled="true"',
-    );
-  });
-
-  it('the menu carries it under the list, and a failed write shows in the menu too', () => {
-    const m = load<Renderers>(
-      RENDER_FNS,
-      ['_busy', '_mp', 'EFFORT_LABELS', 'MP_EFFORT_SHORT'],
-      {
-        REPRESENTATIVE_MODELS: MODELS,
-        EFFORT_LEVELS: LEVELS,
-        _modelNotes: { 'inst::C1:t1': { text: '종료된 세션', error: true } },
-      },
-      [STATE_FN],
-    );
-    const html = m.renderModelMenu(sess());
-    expect(html.indexOf('role="radiogroup"')).toBeGreaterThan(html.indexOf('role="listbox"'));
-    expect(html).toContain('<div class="mp-err" role="alert">종료된 세션</div>');
-    // The alert region is always there (empty without an error), so a failure while the menu is open is announced.
-    expect(renderers().renderModelMenu(sess())).toContain('<div class="mp-err" role="alert"></div>');
-  });
-});
-
-// ── D8 — tray ──
-describe('D8 — the tray: price per M tokens and window of the lit model', () => {
-  it('input · output price and window; an unknown price says so', () => {
-    const m = renderers();
-    const opus = m.mpTray({ m: MODELS[0] });
-    expect(strip(opus.html)).toBe('입력 $5 · 출력 $25 / M · 창 1.0M');
-    expect(opus.html).toContain('<b class="mp-roll" data-mp-roll="input">$5</b>');
-    expect(opus.html).toContain('<b class="mp-roll" data-mp-roll="output">$25</b>');
-    expect(opus.sr).toBe('Opus 5.5 (1M): 입력 $5 · 출력 $25 / 백만 토큰, 창 1.0M');
-    expect(strip(m.mpTray({ m: MODELS[5] }).html)).toBe('가격 정보 없음 · 창 500.0K');
-    expect(strip(m.mpTray({ m: null, outside: true }).html)).toBe('전환 목록 밖 모델 · 가격 정보 없음');
-  });
-
-  it('dollars: whole when the target is whole, cents otherwise', () => {
-    const m = renderers();
-    expect(m.mpMoney(25)).toBe('$25');
-    expect(m.mpMoney(12.37, 25)).toBe('$12');
-    expect(m.mpMoney(2.5)).toBe('$2.50');
-    expect(m.mpMoney(0.5, 0.5)).toBe('$0.50');
-  });
-
-  it('the foot has the key hints and one polite live region with the sentence', () => {
-    const html = renderers().renderModelMenu(sess());
-    expect(html).toContain(
-      '<span class="mp-keys" aria-hidden="true"><kbd>&#x2191;&#x2193;</kbd><kbd>&#x21B5;</kbd></span>',
-    );
-    expect(html).toContain(
-      '<span class="mp-sr" aria-live="polite">Opus 5.5 (1M): 입력 $5 · 출력 $25 / 백만 토큰, 창 1.0M</span>',
-    );
-    expect(html.match(/aria-live=/g)).toHaveLength(1);
-  });
-
-  it('the prices roll to the new row (ease-out over MP_ROLL_MS), and jump under reduced motion', () => {
-    let now = 1000;
-    const frames: Array<(t: number) => void> = [];
-    const els = [
-      { attr: 'input', textContent: '' },
-      { attr: 'output', textContent: '' },
-    ].map((e) => ({ ...e, getAttribute: () => e.attr }));
-    const menu = { querySelectorAll: () => els };
-    let reduce = false;
-    const m = load<{ mpRollTray(menu: unknown, to: unknown): void } & Renderers>(
-      ['toNum', 'mpMoney', 'mpRollTray'],
-      ['_mp', 'MP_ROLL_MS'],
-      {
-        performance: { now: () => now },
-        requestAnimationFrame: (f: (t: number) => void) => frames.push(f),
-        cancelAnimationFrame: () => {},
-        reduceMotion: () => reduce,
-      },
-      [STATE_FN],
-    );
-    m.mpRollTray(menu, { input: 5, output: 25 }); // first paint: nothing to roll from
-    expect(frames).toHaveLength(0);
-    m.mpRollTray(menu, { input: 10, output: 50 });
-    expect(els[1].textContent).toBe('$25'); // starts where it was
-    now += 280;
-    frames.shift()!(now);
-    const mid = Number(els[1].textContent.slice(1));
-    expect(mid).toBeGreaterThan(40); // ease-out: most of the way at half time
-    expect(mid).toBeLessThan(50);
-    now += 280;
-    frames.shift()!(now);
-    expect(els.map((e) => e.textContent)).toEqual(['$10', '$50']);
-    reduce = true;
-    m.mpRollTray(menu, { input: 3, output: 15 });
-    expect(frames).toHaveLength(0);
-    expect(m.mpState().shown).toEqual({ input: 3, output: 15 });
-  });
-});
-
-// ── D2 — placement ──
-describe('D2 — the menu is placed from the trigger, inside the viewport', () => {
-  type Place = { left: number; top: number; side: string };
-  const m = {
-    mpPlace: (r: unknown, w: number, h: number, vw: number, vh: number, side: string): Place =>
-      load<{ mpPlace(...a: unknown[]): Place }>(['mpPlace'], []).mpPlace(r, w, h, vw, vh, side),
-  };
-  const rect = (left: number, top: number) => ({
-    left,
-    top,
-    bottom: top + 30,
-    right: left + 150,
-    width: 150,
-    height: 30,
-  });
-
-  it('below the trigger, its left edge on the trigger’s (align start)', () => {
-    expect(m.mpPlace(rect(100, 200), 320, 400, 1440, 900, 'bottom')).toEqual({ left: 100, top: 236, side: 'bottom' });
-  });
-  it('flips above when there is no room below; the panel opens above and flips below when it must', () => {
-    expect(m.mpPlace(rect(100, 700), 320, 400, 1440, 900, 'bottom')).toEqual({ left: 100, top: 294, side: 'top' });
-    expect(m.mpPlace(rect(100, 700), 320, 400, 1440, 900, 'top')).toEqual({ left: 100, top: 294, side: 'top' });
-    expect(m.mpPlace(rect(100, 60), 320, 400, 1440, 900, 'top')).toEqual({ left: 100, top: 96, side: 'bottom' });
-  });
-  it('kept 12px inside the viewport edges', () => {
-    expect(m.mpPlace(rect(1300, 200), 320, 400, 1440, 900, 'bottom').left).toBe(1108);
-    expect(m.mpPlace(rect(4, 200), 320, 400, 1440, 900, 'bottom').left).toBe(12);
-    expect(m.mpPlace(rect(30, 200), 358, 400, 390, 844, 'bottom').left).toBe(20);
-    expect(m.mpPlace(rect(100, 300), 320, 800, 1440, 600, 'bottom').top).toBe(12);
-  });
-});
-
-describe('D2 — an anchor scrolled out of view closes the menu, sideways too (R1 astra P2)', () => {
-  const run = (rect: Record<string, number>) => {
-    const mpClose = vi.fn();
-    const menu = { offsetWidth: 320, offsetHeight: 400, style: {} as Record<string, string>, setAttribute: vi.fn() };
-    const m = load<{ mpReposition(): void } & Renderers>(
-      ['mpPlace', 'mpReposition'],
-      ['_mp'],
-      {
-        document: { getElementById: () => menu, documentElement: { clientWidth: 1440 } },
-        window: { innerHeight: 900 },
-        mpAnchor: () => ({ getBoundingClientRect: () => rect }),
-        mpClose,
-      },
-      [STATE_FN],
-    );
-    m.mpState({ key: 'k', surface: 'card' });
-    m.mpReposition();
-    return { mpClose, menu };
-  };
-  const at = (left: number, top: number) => ({
-    left,
-    right: left + 150,
-    top,
-    bottom: top + 30,
-    width: 150,
-    height: 30,
-  });
-  it('left or right of the viewport (a board scrolled sideways) closes it; in view it is placed', () => {
-    expect(run(at(-400, 300)).mpClose).toHaveBeenCalledWith(false);
-    expect(run(at(1500, 300)).mpClose).toHaveBeenCalledWith(false);
-    expect(run(at(100, 950)).mpClose).toHaveBeenCalledWith(false);
-    const ok = run(at(100, 300));
-    expect(ok.mpClose).not.toHaveBeenCalled();
-    expect(ok.menu.style).toEqual({ left: '100px', top: '336px' });
-  });
-});
-
-describe('D2 — an anchor whose card moves closes the menu (column move, FLIP, reflow); a scroll does not', () => {
-  const m = () =>
-    load<{
-      mpSpot(a: unknown): { left: number; top: number };
-      mpMoved(at: unknown, now: unknown): boolean;
-    }>(['mpSpot', 'mpMoved'], [], {
-      getComputedStyle: (n: { fixed?: boolean }) => ({ position: n.fixed ? 'fixed' : 'static' }),
-    });
-  const anchor = (top: number, pageScroll: number, colScroll: number) => {
-    const html = { nodeType: 1, scrollLeft: 0, scrollTop: pageScroll, parentNode: null };
-    const col = { nodeType: 1, scrollLeft: 0, scrollTop: colScroll, parentNode: html };
-    return { getBoundingClientRect: () => ({ left: 100, top }), parentNode: col };
-  };
-  // The panel's trigger: inside the fixed slide panel, which a page scroll does not move.
-  const inPanel = (top: number, pageScroll: number, panelScroll: number) => {
-    const html = { nodeType: 1, scrollLeft: 0, scrollTop: pageScroll, parentNode: null };
-    const panel = { nodeType: 1, scrollLeft: 0, scrollTop: 0, fixed: true, parentNode: html };
-    const inner = { nodeType: 1, scrollLeft: 0, scrollTop: panelScroll, parentNode: panel };
-    return { getBoundingClientRect: () => ({ left: 1060, top }), parentNode: inner };
-  };
-  it('a fixed ancestor ends the walk: a page scroll under the panel is not a move (R1 fable P1)', () => {
-    const at = m().mpSpot(inPanel(830, 0, 0));
-    expect(m().mpMoved(at, m().mpSpot(inPanel(830, 400, 0)))).toBe(false); // the page scrolled, the panel did not move
-    expect(m().mpMoved(at, m().mpSpot(inPanel(790, 0, 40)))).toBe(false); // a scroll inside the panel
-    expect(m().mpMoved(at, m().mpSpot(inPanel(600, 0, 0)))).toBe(true); // the composer moved
-    // A wheel over the menu stays in the menu (no scroll chained to the page).
-    expect(/\.mp-pop \{[^}]*\}/.exec(STYLE)?.[0]).toContain('overscroll-behavior: contain;');
-  });
-  it('the spot takes every ancestor’s scroll out: page or column scrolls keep it, a layout move changes it', () => {
-    const at = m().mpSpot(anchor(500, 0, 0));
-    expect(at).toEqual({ left: 100, top: 500 });
-    expect(m().mpMoved(at, m().mpSpot(anchor(380, 120, 0)))).toBe(false); // page scrolled 120
-    expect(m().mpMoved(at, m().mpSpot(anchor(440, 0, 60)))).toBe(false); // column scrolled 60
-    expect(m().mpMoved(at, m().mpSpot(anchor(820, 0, 0)))).toBe(true); // the card moved down
-    expect(m().mpMoved(at, m().mpSpot(anchor(501, 0, 0)))).toBe(false); // sub-pixel jitter
-    expect(m().mpMoved(null, at)).toBe(false);
-  });
-  it('the watcher runs only while the menu is open', () => {
-    expect(clientFn('mpOpen')).toContain('_mp.at = mpSpot(btn);');
-    expect(clientFn('mpOpen')).toContain('if (!_mp.watch) _mp.watch = setInterval(mpWatch, MP_WATCH_MS);');
-    expect(clientFn('mpClose')).toContain('clearInterval(_mp.watch);');
-    expect(clientFn('mpWatch')).toContain('if (!a || mpMoved(_mp.at, mpSpot(a))) {\n    mpClose(false);');
-  });
-});
-
-// ── D9 / D11 — keyboard and picking ──
-describe('D9 — keyboard: list arrows, pick, Escape, effort arrows', () => {
-  function setup(over: Record<string, unknown> = {}) {
-    const writes: string[] = [];
-    const list = { classList: { contains: (c: string) => c === 'mp-list' }, focus: vi.fn() };
-    const menu = {
-      classList: { add: vi.fn(), remove: vi.fn() },
-      setAttribute: vi.fn(),
-      removeAttribute: vi.fn(),
-      querySelector: (sel: string) => (sel === '.mp-list' ? list : null),
-      querySelectorAll: () => [],
+// ── D12 — the data follows the session ──
+describe('mpHydrate — every picker under a root takes its session’s data, only where it changed', () => {
+  function setup() {
+    const cache: Record<string, unknown> = { [KEY]: sess() };
+    const el = (key: string) => {
+      const sets: unknown[] = [];
+      const node: Record<string, unknown> = {
+        getAttribute: (n: string) => (n === 'data-mp-key' ? key : null),
+        sets,
+      };
+      Object.defineProperty(node, 'data', { set: (v) => sets.push(v), get: () => sets[sets.length - 1] });
+      return node as { sets: unknown[]; data: Data };
     };
-    const trigger = {
-      attrs: { 'data-mp-key': 'k', 'data-mp-surface': 'card', 'aria-expanded': 'true' } as Record<string, string>,
-      getAttribute(n: string) {
-        return this.attrs[n];
+    const a = el(KEY);
+    const gone = el('gone::C9:t9');
+    let selector = '';
+    const root = {
+      querySelectorAll: (sel: string) => {
+        selector = sel;
+        return [a, gone];
       },
-      setAttribute(n: string, v: string) {
-        this.attrs[n] = v;
-      },
-      focus: vi.fn(),
     };
-    const document = {
-      getElementById: (id: string) => (id === 'mp-menu' ? menu : null),
-      querySelectorAll: (sel: string) => (sel === '.mp-trigger' ? [trigger] : []),
-    };
+    const m = load<{ mpHydrate(root: unknown): void; setBusy(k: string, op: string, on: boolean): void }>(
+      ['toNum', 'isBusy', 'setBusy', 'mpShort', 'mpEffortLevels', 'mpData', 'mpHydrate'],
+      ['_busy'],
+      { REPRESENTATIVE_MODELS: MODELS, EFFORT_LEVELS: LEVELS, _modelNotes: {}, _sessionCache: cache },
+    );
+    return { m, a, gone, root, cache, selector: () => selector };
+  }
+
+  it('sets the data once; a pass that changes nothing writes nothing; a change writes again', () => {
+    const { m, a, gone, root, cache, selector } = setup();
+    m.mpHydrate(root);
+    expect(selector()).toBe('ui-model-picker[data-mp-key]');
+    expect(a.sets).toHaveLength(1);
+    expect(a.data.value.model).toBe('opus[1m]');
+    expect(gone.sets).toHaveLength(0); // no session, no data
+    m.mpHydrate(root);
+    expect(a.sets).toHaveLength(1);
+    cache[KEY] = sess({ model: 'claude-sonnet-4-6[1m]' });
+    m.mpHydrate(root);
+    expect(a.sets).toHaveLength(2);
+    expect(a.data.value.model).toBe('sonnet[1m]');
+    m.setBusy(KEY, 'effort', true);
+    m.mpHydrate(root);
+    expect(a.data.busy.effort).toBe(true);
+    m.mpHydrate(null);
+  });
+
+  it('runs on every card pass and every panel-controls pass — also while an open menu holds them', () => {
+    const parts = clientFn('applyCardParts');
+    // After the body (held or morphed): not inside the body's morph branch.
+    const morphEnd = parts.indexOf('changed = true;\n  }', parts.indexOf('!isPickingModel(el._bodyEl)'));
+    expect(parts.indexOf('mpHydrate(el._bodyEl);')).toBeGreaterThan(morphEnd);
+    const panel = clientFn('renderPanelControls');
+    expect(panel.trim().endsWith('mpHydrate(el);\n}')).toBe(true);
+  });
+});
+
+// ── D11 / D15–D17 — the element's events ──
+describe('ui-change → the existing writes; the server decides', () => {
+  function setup() {
     const changeModel = vi.fn();
     const changeEffort = vi.fn();
-    const cache: Record<string, unknown> = { k: sess({ key: 'k', ...over }) };
-    const m = load<
-      Renderers & {
-        mpMenuKey(e: unknown): void;
-        mpTriggerKey(e: unknown, btn: unknown): void;
-        mpMenuPointer(e: unknown): void;
-        mpPickId(id: string): void;
-        mpWatch(): void;
-      }
-    >(
-      [
-        ...RENDER_FNS,
-        'mpLit',
-        'mpAnchor',
-        'mpRepaint',
-        'mpClose',
-        'mpPick',
-        'mpPickId',
-        'mpPickEffort',
-        'mpListKey',
-        'mpEffortKey',
-        'mpMenuKey',
-        'mpMenuPointer',
-        'mpSig',
-        'mpMoved',
-        'mpWatch',
-      ],
-      RENDER_VARS,
-      {
-        REPRESENTATIVE_MODELS: MODELS,
-        EFFORT_LEVELS: LEVELS,
-        document,
-        _sessionCache: cache,
-        mpSpot: () => ({ left: 0, top: 0 }),
-        morphInnerHtml: (_el: unknown, html: string) => writes.push(html),
-        mpRollTray: () => {},
-        mpReposition: () => {},
-        refreshCard: vi.fn(),
-        repaintPanelControlsFor: vi.fn(),
-        changeModel,
-        changeEffort,
-      },
-      [STATE_FN],
-    );
-    m.mpState({ key: 'k', surface: 'card', activeId: null, pointing: false });
-    const key = (k: string, target: unknown = list, shiftKey = false) => {
-      const e = { key: k, target, shiftKey, preventDefault: vi.fn(), stopPropagation: vi.fn() };
-      m.mpMenuKey(e);
+    const m = load<{ mpOnChange(e: unknown): void }>(['mpOnChange'], [], { changeModel, changeEffort });
+    const picker = { tagName: 'UI-MODEL-PICKER', getAttribute: (n: string) => (n === 'data-mp-key' ? KEY : null) };
+    const fire = (detail: unknown, target: unknown = picker) => {
+      const e = { target, detail, preventDefault: vi.fn() };
+      m.mpOnChange(e);
       return e;
     };
-    // The mouse over a row: the row element carries its model's nickname (the outside row none).
-    const point = (nick: string | null) =>
-      m.mpMenuPointer({
-        pointerType: 'mouse',
-        target: { closest: () => ({ getAttribute: (n: string) => (n === 'data-mp-nick' ? nick : null) }) },
-      });
-    return { m, key, point, cache, list, trigger, writes, changeModel, changeEffort };
+    return { changeModel, changeEffort, fire };
   }
 
-  it('↓ ↑ wrap, Home and End jump; arrows point (the active row lights up)', () => {
-    const { m, key, writes } = setup();
-    expect(key('ArrowDown').preventDefault).toHaveBeenCalled();
-    expect(m.mpState()).toMatchObject({ activeId: 'fable[1m]', pointing: true });
-    expect(writes[writes.length - 1]).toContain('aria-activedescendant="mp-opt-1" data-pointing=""');
-    key('ArrowUp');
-    key('ArrowUp');
-    expect(m.mpState().activeId).toBe('grok[1m]');
-    key('Home');
-    expect(m.mpState().activeId).toBe('opus[1m]');
-    key('End');
-    expect(m.mpState().activeId).toBe('grok[1m]');
-    key('ArrowDown');
-    expect(m.mpState().activeId).toBe('opus[1m]');
-  });
-
-  it('Enter picks another model: the menu closes, focus goes back to the trigger, the switch is posted', () => {
-    const { m, key, trigger, changeModel } = setup();
-    key('End');
-    key('Enter');
-    expect(changeModel).toHaveBeenCalledWith('k', 'grok[1m]');
-    expect(m.mpState().key).toBeNull();
-    expect(trigger.attrs['aria-expanded']).toBe('false');
-    expect(trigger.focus).toHaveBeenCalled();
-  });
-
-  it('Space on the current model just closes; Escape closes without letting the panel see it', () => {
-    const a = setup();
-    a.key(' ');
-    expect(a.changeModel).not.toHaveBeenCalled();
-    expect(a.m.mpState().key).toBeNull();
-    const b = setup();
-    const e = b.key('Escape');
-    expect(e.stopPropagation).toHaveBeenCalled();
-    expect(b.m.mpState().key).toBeNull();
-    expect(b.trigger.focus).toHaveBeenCalled();
-  });
-
-  it('a locked list (waiting switch) ignores Enter and stays open', () => {
-    const { m, key, changeModel } = setup({ pendingModel: 'grok[1m]' });
-    key('ArrowDown');
-    key('Enter');
-    expect(changeModel).not.toHaveBeenCalled();
-    expect(m.mpState().key).toBe('k');
-  });
-
-  it('Tab leaves the menu back on the trigger from its last stop; Shift+Tab from the list', () => {
-    const a = setup();
-    a.key('Tab', a.list, true);
-    expect(a.m.mpState().key).toBeNull();
-    expect(a.trigger.focus).toHaveBeenCalled();
-    const b = setup();
-    const radio = { classList: { contains: () => false }, closest: () => radio, parentNode: null };
-    b.key('Tab', radio);
-    expect(b.m.mpState().key).toBeNull();
-  });
-
-  it('effort: → selects the next level at once and moves focus to it; ← wraps', () => {
-    const { key, changeEffort } = setup();
-    const btns = LEVELS.map((l) => ({
-      level: l,
-      focus: vi.fn(),
-      getAttribute: (n: string) => (n === 'data-mp-effort' ? l : null),
-    }));
-    const group = { querySelectorAll: () => btns, getAttribute: () => null };
-    // indexOf over the group compares identity: the button objects themselves are the targets.
-    const target = (i: number) =>
-      Object.assign(btns[i], {
-        classList: { contains: () => false },
-        closest: (sel: string) => (sel === '.mp-seg-btn' ? btns[i] : null),
-        parentNode: group,
-      });
-    key('ArrowRight', target(2));
-    expect(changeEffort).toHaveBeenCalledWith('k', 'xhigh');
-    expect(btns[3].focus).toHaveBeenCalled();
-    key('ArrowLeft', target(0));
-    expect(changeEffort).toHaveBeenLastCalledWith('k', 'max');
-  });
-
-  it('the pointed row is its model, not its position: the session leaves the off-list model, Enter does not pick the row below (R1 astra P1)', () => {
-    // Haiku is outside the list, so it is row 0 and Opus row 1; point at Opus.
-    const a = setup({ model: 'claude-haiku-4-5-20251001' });
-    a.point('opus[1m]');
-    expect(a.writes[a.writes.length - 1]).toContain('aria-activedescendant="mp-opt-1"');
-    // The session switches to Opus elsewhere: the temporary first row drops out of the list.
-    a.cache.k = sess({ key: 'k', model: 'claude-opus-5-5[1m]' });
-    a.key('Enter');
-    expect(a.changeModel).not.toHaveBeenCalled(); // Opus is the session's model now — nothing to switch (not fable[1m])
-    expect(a.m.mpState().key).toBeNull();
-    // Same start, the session moves to Sonnet instead: Enter switches to the Opus the user points at.
-    const b = setup({ model: 'claude-haiku-4-5-20251001' });
-    b.point('opus[1m]');
-    b.cache.k = sess({ key: 'k', model: 'claude-sonnet-4-6[1m]' });
-    b.key('Enter');
-    expect(b.changeModel).toHaveBeenCalledWith('k', 'opus[1m]');
-    // A click names its row by the model it showed; a row that left the list picks nothing.
-    const c = setup({ model: 'claude-haiku-4-5-20251001' });
-    c.cache.k = sess({ key: 'k', model: 'claude-opus-5-5[1m]' });
-    c.m.mpPickId('');
-    expect(c.changeModel).not.toHaveBeenCalled();
-    expect(c.m.mpState().key).toBe('k');
-  });
-
-  it('an open menu follows its session on any update path (the card holds its body while it is open)', () => {
-    const a = setup({ model: 'claude-haiku-4-5-20251001' });
-    a.point('opus[1m]');
-    const painted = a.writes.length;
-    a.m.mpWatch(); // nothing changed: no repaint
-    expect(a.writes.length).toBe(painted);
-    a.cache.k = sess({ key: 'k', model: 'claude-opus-5-5[1m]' });
-    a.m.mpWatch();
-    const html = a.writes[a.writes.length - 1];
-    expect(a.writes.length).toBe(painted + 1);
-    expect(html).toContain('aria-activedescendant="mp-opt-0"'); // Opus, now first and current, still the pointed row
-    expect(html).toContain('id="mp-opt-0" role="option" data-mp-i="0" data-mp-nick="opus[1m]" aria-selected="true"');
-  });
-
-  it('Escape on an open trigger closes the menu and stops there (no card or panel Escape)', () => {
-    const mpClose = vi.fn();
-    const m = load<{ mpTriggerKey(e: unknown, btn: unknown): void } & Renderers>(
-      ['mpTriggerKey'],
-      ['_mp'],
-      { mpClose, mpOpen: vi.fn() },
-      [STATE_FN],
-    );
-    m.mpState({ key: 'k' });
-    const e = { key: 'Escape', preventDefault: vi.fn(), stopPropagation: vi.fn() };
-    m.mpTriggerKey(e, { getAttribute: (n: string) => (n === 'aria-expanded' ? 'true' : null) });
-    expect(e.stopPropagation).toHaveBeenCalled();
-    expect(mpClose).toHaveBeenCalledWith(true);
-    // The menu's own keydown stops every key (the board's shortcuts, the card's and the panel's Escape).
-    expect(clientFn('mpMenuKey')).toMatch(/if \(!_mp\.key\) return;\n {2}e\.stopPropagation\(\);/);
-    expect(clientFn('mpHost')).toContain("el.addEventListener('keydown', mpMenuKey);");
-  });
-
-  it('the trigger opens on ↓ / ↑ (Enter and Space are the button’s own click)', () => {
-    const mpOpen = vi.fn();
-    const m = load<{ mpTriggerKey(e: unknown, btn: unknown): void }>(['mpTriggerKey'], [], { mpOpen });
-    const e = { key: 'ArrowDown', preventDefault: vi.fn() };
-    m.mpTriggerKey(e, 'BTN');
-    expect(mpOpen).toHaveBeenCalledWith('BTN');
+  it('a model pick is cancelled (no optimistic value) and posted for its session', () => {
+    const { changeModel, changeEffort, fire } = setup();
+    const e = fire({ model: 'grok[1m]', effort: 'high', changed: 'model' });
     expect(e.preventDefault).toHaveBeenCalled();
-    m.mpTriggerKey({ key: 'Enter', preventDefault: vi.fn() }, 'BTN');
-    expect(mpOpen).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('D9 — Tab moves between the menu’s two stops itself; past them focus goes home (R1 grok P1)', () => {
-  // A fake DOM in which focus() moves document.activeElement and fires the page's focusin
-  // listener (mpOutside), and an unprevented Tab does what a browser would in the worst
-  // case: focus the page's next stop, outside the menu.
-  function dom() {
-    const doc: { activeElement: unknown } = { activeElement: null };
-    let m: {
-      mpMenuKey(e: unknown): void;
-      mpOutside(e: unknown): void;
-      mpState(p?: Record<string, unknown>): Record<string, unknown>;
-    };
-    const node = (cls: string, attrs: Record<string, string> = {}) => {
-      const n: any = {
-        cls,
-        attrs: { ...attrs },
-        classList: { contains: (c: string) => c === cls, add() {}, remove() {} },
-        getAttribute(k: string) {
-          return k in n.attrs ? n.attrs[k] : null;
-        },
-        setAttribute(k: string, v: string) {
-          n.attrs[k] = v;
-        },
-        removeAttribute(k: string) {
-          delete n.attrs[k];
-        },
-        closest: (sel: string) => (sel === '.mp-seg-btn' && cls === 'mp-seg-btn' ? n : null),
-        contains: (x: unknown) => x === n,
-        focus() {
-          doc.activeElement = n;
-          m.mpOutside({ target: n });
-        },
-      };
-      return n;
-    };
-    const list = node('mp-list');
-    const level = node('mp-seg-btn', { tabindex: '0' });
-    const other = node('mp-seg-btn', { tabindex: '-1' });
-    const menu = node('mp-pop', { id: 'mp-menu' });
-    menu.contains = (x: unknown) => x === menu || x === list || x === level || x === other;
-    menu.querySelector = (sel: string) =>
-      sel === '.mp-list' ? list : sel === '.mp-seg-btn[tabindex="0"]' ? level : null;
-    const trigger = node('mp-trigger', { 'data-mp-key': 'k', 'data-mp-surface': 'panel', 'aria-expanded': 'true' });
-    const pageNext = node('cmd-steer');
-    const document = {
-      getElementById: (id: string) => (id === 'mp-menu' ? menu : null),
-      querySelectorAll: (sel: string) => (sel === '.mp-trigger' ? [trigger] : []),
-      get activeElement() {
-        return doc.activeElement;
-      },
-    };
-    m = load<typeof m>(
-      ['mpAnchor', 'mpInside', 'mpOutside', 'mpClose', 'mpMenuKey'],
-      ['_mp'],
-      {
-        document,
-        refreshCard: () => {},
-        repaintPanelControlsFor: () => {},
-        clearInterval: () => {},
-        cancelAnimationFrame: () => {},
-      },
-      [STATE_FN],
-    );
-    const open = () => {
-      m.mpState({ key: 'k', surface: 'panel' });
-      trigger.attrs['aria-expanded'] = 'true';
-      doc.activeElement = list;
-    };
-    const press = (key: string, shiftKey = false) => {
-      const e = {
-        key,
-        shiftKey,
-        target: doc.activeElement,
-        defaultPrevented: false,
-        preventDefault() {
-          this.defaultPrevented = true;
-        },
-        stopPropagation() {},
-      };
-      m.mpMenuKey(e);
-      if (key === 'Tab' && !e.defaultPrevented) pageNext.focus();
-    };
-    return { m, doc, list, level, trigger, open, press };
-  }
-
-  it('list → Tab → the checked level; Shift+Tab → back on the list; the menu stays open', () => {
-    const d = dom();
-    d.open();
-    d.press('Tab');
-    expect(d.doc.activeElement).toBe(d.level);
-    expect(d.m.mpState().key).toBe('k');
-    d.press('Tab', true);
-    expect(d.doc.activeElement).toBe(d.list);
-    expect(d.m.mpState().key).toBe('k');
+    expect(changeModel).toHaveBeenCalledWith(KEY, 'grok[1m]');
+    expect(changeEffort).not.toHaveBeenCalled();
   });
 
-  it('Tab past the level or Shift+Tab before the list: closed, focus on the trigger (a later Escape is the trigger’s, not the panel’s)', () => {
-    const a = dom();
-    a.open();
-    a.press('Tab');
-    a.press('Tab');
-    expect(a.m.mpState().key).toBeNull();
-    expect(a.doc.activeElement).toBe(a.trigger);
-    expect(a.trigger.attrs['aria-expanded']).toBe('false');
-    const b = dom();
-    b.open();
-    b.press('Tab', true);
-    expect(b.m.mpState().key).toBeNull();
-    expect(b.doc.activeElement).toBe(b.trigger);
-  });
-});
-
-describe('D9 — every open starts fresh; the current row closes', () => {
-  it('reopening the same session from the other surface starts on its model, unlit (R1 grok P3)', () => {
-    const menu = { removeAttribute() {}, classList: { add() {} }, querySelector: () => ({ focus() {} }) };
-    const btn = (surface: string) => ({
-      attrs: { 'data-mp-key': 'k', 'data-mp-surface': surface } as Record<string, string>,
-      getAttribute(n: string) {
-        return this.attrs[n] ?? null;
-      },
-      setAttribute(n: string, v: string) {
-        this.attrs[n] = v;
-      },
-    });
-    const m = load<{ mpOpen(b: unknown): void } & Renderers>(
-      ['mpOptions', 'mpCurrentIndex', 'mpOpen'],
-      ['_mp'],
-      {
-        REPRESENTATIVE_MODELS: MODELS,
-        _sessionCache: { k: sess({ key: 'k', model: 'claude-sonnet-4-6[1m]' }) },
-        mpHost: () => menu,
-        mpClose: function (this: unknown) {
-          (m as Renderers).mpState({ key: null, surface: null });
-        },
-        mpRepaint: () => {},
-        mpSpot: () => ({ left: 0, top: 0 }),
-        setInterval: () => 1,
-        MP_WATCH_MS: 150,
-        mpWatch: () => {},
-      },
-      [STATE_FN],
-    );
-    m.mpOpen(btn('card'));
-    expect(m.mpState()).toMatchObject({ key: 'k', surface: 'card', activeId: null, pointing: false });
-    m.mpState({ activeId: 'grok[1m]', pointing: true });
-    m.mpOpen(btn('panel'));
-    expect(m.mpState()).toMatchObject({ key: 'k', surface: 'panel', activeId: null, pointing: false });
-  });
-
-  it('Enter on the current row closes — also when the session’s model is outside the list (R1 fable P3)', () => {
-    const mpClose = vi.fn();
-    const changeModel = vi.fn();
-    const m = load<{ mpPick(i: number): void } & Renderers>(
-      ['isBusy', 'mpOptions', 'mpCurrentIndex', 'mpPick'],
-      ['_mp', '_busy'],
-      {
-        REPRESENTATIVE_MODELS: MODELS,
-        _sessionCache: { k: sess({ key: 'k', model: 'claude-haiku-4-5-20251001' }) },
-        mpClose,
-        changeModel,
-      },
-      [STATE_FN],
-    );
-    m.mpState({ key: 'k' });
-    m.mpPick(0);
-    expect(mpClose).toHaveBeenCalledWith(true);
+  it('a level pick is cancelled and posted as effort', () => {
+    const { changeModel, changeEffort, fire } = setup();
+    const e = fire({ model: 'opus[1m]', effort: 'low', changed: 'effort' });
+    expect(e.preventDefault).toHaveBeenCalled();
+    expect(changeEffort).toHaveBeenCalledWith(KEY, 'low');
     expect(changeModel).not.toHaveBeenCalled();
   });
 
-  it('the menu element exists from boot, so every trigger’s aria-controls names it (R1 fable P3)', () => {
-    expect(TEMPLATE).toMatch(/\nmpHost\(\);\n/);
+  it('another element’s ui-change (the usage breakdown) is not the picker’s', () => {
+    const { changeModel, changeEffort, fire } = setup();
+    const e = fire({ value: 'user' }, { tagName: 'UI-COMPACT-BREAKDOWN', id: 'usage-cb', getAttribute: () => null });
+    expect(e.preventDefault).not.toHaveBeenCalled();
+    fire(null);
+    expect(changeModel).not.toHaveBeenCalled();
+    expect(changeEffort).not.toHaveBeenCalled();
+  });
+
+  it('the page listens once, at the document (the events are composed)', () => {
+    expect(TEMPLATE).toContain("\ndocument.addEventListener('ui-change', mpOnChange);\n");
+    expect(TEMPLATE).toContain("\ndocument.addEventListener('ui-open-change', mpOnOpenChange);\n");
+    expect(declarationCount('mpOnChange')).toBe(1);
+    expect(declarationCount('mpOnOpenChange')).toBe(1);
+  });
+});
+
+describe('ui-open-change — a closed menu lets its surfaces catch up (D12)', () => {
+  it('closed: the card and the panel controls repaint; opened: nothing', () => {
+    const refreshCard = vi.fn();
+    const repaintPanelControlsFor = vi.fn();
+    const m = load<{ mpOnOpenChange(e: unknown): void }>(['mpOnOpenChange'], [], {
+      refreshCard,
+      repaintPanelControlsFor,
+    });
+    const picker = { tagName: 'UI-MODEL-PICKER', getAttribute: (n: string) => (n === 'data-mp-key' ? KEY : null) };
+    m.mpOnOpenChange({ target: picker, detail: { open: true } });
+    expect(refreshCard).not.toHaveBeenCalled();
+    m.mpOnOpenChange({ target: picker, detail: { open: false } });
+    expect(refreshCard).toHaveBeenCalledWith(KEY);
+    expect(repaintPanelControlsFor).toHaveBeenCalledWith(KEY);
+    m.mpOnOpenChange({ target: { tagName: 'UI-AGENT-TREE', getAttribute: () => KEY }, detail: { open: false } });
+    expect(refreshCard).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -997,167 +419,147 @@ describe('D11 — one write per session and operation, by value', () => {
     expect(notes.k).toEqual({ text: 'sonnet[1m](으)로 전환 · autocompact 750000', error: false });
   });
 
-  it('an effort change the server accepted is the session’s level at once (the menu does not wait for the poll)', async () => {
-    const cache: Record<string, any> = { k: { key: 'k', effort: 'max', effortEffective: 'high' } };
+  it('an effort change the server accepted is the session’s level at once (the open menu does not wait for the poll)', async () => {
+    const cache: Record<string, { key: string; effort: string; effortEffective?: string }> = {
+      k: { key: 'k', effort: 'max', effortEffective: 'high' },
+    };
     const repaints: string[] = [];
     const m = load<{ changeEffort(k: string, l: string): Promise<void> }>(
       ['isBusy', 'setBusy', 'effortLabel', 'effortSwitchNote', 'mpApplyEffort', 'changeEffort'],
-      ['_busy', 'EFFORT_LABELS', '_mp'],
+      ['_busy', 'EFFORT_LABELS'],
       {
         postEffortSwitch: async () => ({ ok: true, result: { status: 'switched', effort: 'low', effective: 'low' } }),
         _modelNotes: {},
         _sessionCache: cache,
-        refreshCard: () => {},
-        repaintPanelControlsFor: () => {},
-        mpRepaint: () => repaints.push(cache.k.effort),
+        // Both surfaces hydrate their pickers on repaint (also a held one).
+        refreshCard: () => repaints.push(`card:${cache.k.effort}`),
+        repaintPanelControlsFor: () => repaints.push(`panel:${cache.k.effort}`),
         loadSessions: () => {},
       },
-      [STATE_FN],
     );
-    (m as unknown as Renderers).mpState?.({ key: 'k' });
     await m.changeEffort('k', 'low');
     expect(cache.k.effort).toBe('low');
     expect(cache.k.effortEffective).toBeUndefined();
-    expect(repaints[repaints.length - 1]).toBe('low');
+    expect(repaints).toEqual(['card:max', 'panel:max', 'card:low', 'panel:low']);
   });
 });
 
 // ── D12 — live repaint guards ──
-describe('D12 — an open menu holds its anchor still', () => {
-  it('isPickingModel sees an expanded trigger inside the root', () => {
+describe('D12 — an open menu holds its surface still', () => {
+  it('isPickingModel sees an open picker inside the root', () => {
     const m = load<{ isPickingModel(root: unknown): boolean }>(['isPickingModel'], []);
-    expect(
-      m.isPickingModel({ querySelector: (s: string) => (s === '.mp-trigger[aria-expanded="true"]' ? {} : null) }),
-    ).toBe(true);
+    expect(m.isPickingModel({ querySelector: (s: string) => (s === 'ui-model-picker[open]' ? {} : null) })).toBe(true);
     expect(m.isPickingModel({ querySelector: () => null })).toBe(false);
+    expect(m.isPickingModel(null)).toBe(false);
   });
 
-  it('the panel controls: one trigger after "이 세션" for the owner, text for others; skipped while their menu is open', () => {
+  it('the panel controls: the element after "이 세션" for the owner, text for others; held while open, the data still set', () => {
     const writes: string[] = [];
+    const hydrated: unknown[] = [];
     let open = false;
-    const el = {
-      _html: '',
-      querySelector: (s: string) => (open && s === '.mp-trigger[aria-expanded="true"]' ? {} : null),
-    };
-    const mpRepaint = vi.fn();
-    const m = load<{ renderPanelControls(s: unknown): void }>(
-      ['renderPanelControls'],
-      ['_mp'],
-      {
-        document: { getElementById: (id: string) => (id === 'panel-controls' ? el : null) },
-        currentUserId: 'U1',
-        isSiblingSession: () => false,
-        esc: (x: string) => x,
-        renderModelPicker: (_s: unknown, can: boolean, _short: string, surface: string) => `[M:${can}:${surface}]`,
-        renderEffortPicker: () => '[E]',
-        renderModelNote: () => '[NOTE]',
-        morphInnerHtml: (_e: unknown, h: string) => writes.push(h),
-        mpRepaint,
-      },
-      [STATE_FN],
-    );
+    const el = { _html: '', querySelector: (s: string) => (open && s === 'ui-model-picker[open]' ? {} : null) };
+    const m = load<{ renderPanelControls(s: unknown): void }>(['isPickingModel', 'renderPanelControls'], [], {
+      document: { getElementById: (id: string) => (id === 'panel-controls' ? el : null) },
+      currentUserId: 'U1',
+      isSiblingSession: () => false,
+      esc: (x: string) => x,
+      renderModelPicker: (_s: unknown, can: boolean, _short: string, surface: string) => `[M:${can}:${surface}]`,
+      renderEffortPicker: () => '[E]',
+      renderModelNote: (_s: unknown, picker: boolean) => `[NOTE:${picker}]`,
+      morphInnerHtml: (_e: unknown, h: string) => writes.push(h),
+      mpHydrate: (root: unknown) => hydrated.push(root),
+    });
     m.renderPanelControls({ key: 'k', ownerId: 'U1', model: 'claude-opus-5-5[1m]', effort: 'high' });
-    expect(writes[writes.length - 1]).toBe('<span class="pc-scope">이 세션</span>[M:true:panel][NOTE]');
+    expect(writes[writes.length - 1]).toBe('<span class="pc-scope">이 세션</span>[M:true:panel][NOTE:true]');
     m.renderPanelControls({ key: 'k2', ownerId: 'U2', model: 'claude-opus-5-5[1m]', effort: 'high' });
-    expect(writes[writes.length - 1]).toBe('<span class="pc-scope">이 세션</span>[M:false:panel][E][NOTE]');
+    expect(writes[writes.length - 1]).toBe('<span class="pc-scope">이 세션</span>[M:false:panel][E][NOTE:false]');
+    // A sleeping or terminated session reads the text.
+    m.renderPanelControls({ key: 'k', ownerId: 'U1', model: 'm', sessionState: 'SLEEPING' });
+    expect(writes[writes.length - 1]).toContain('[M:false:panel]');
     open = true;
-    (m as unknown as Renderers).mpState({ key: 'k' });
     const before = writes.length;
+    const passes = hydrated.length;
     m.renderPanelControls({ key: 'k', ownerId: 'U1', model: 'claude-fable-5-1[1m]', effort: 'low' });
     expect(writes.length).toBe(before);
-    expect(mpRepaint).toHaveBeenCalled(); // the open menu follows the session instead
-  });
-
-  it('the card strip: the owner gets the trigger alone, others the text and the level', () => {
-    const body = clientFn('renderCardBody');
-    expect(body).toContain("renderModelPicker(s, true, modelShort, 'card')");
-    expect(body).not.toContain('renderEffortPicker(s, canSwitchModel)');
+    expect(hydrated.length).toBe(passes + 1); // the open menu follows the session through its data
+    expect(hydrated[hydrated.length - 1]).toBe(el);
   });
 });
 
-// ── D13–D15 — CSS ──
-describe('D13–D15 — motion, tokens, responsive', () => {
-  it('the menu is a fixed, 320px-at-most popover with its own container', () => {
-    const rule = /\.mp-pop \{[^}]*\}/.exec(STYLE)?.[0] ?? '';
-    expect(rule).toContain('position: fixed;');
-    expect(rule).toContain('width: min(320px, calc(100vw - 32px));');
-    expect(rule).toContain('container-type: inline-size;');
-    expect(rule).toContain('transform: translateY(-4px) scale(0.96);');
-    expect(STYLE).toContain('.mp-pop.is-open { opacity: 1; visibility: visible; transform: none;');
-    expect(STYLE).toContain('transform: translateY(4px) scale(0.96)');
-  });
-
-  it('bars fill in order on the lit row; other rows step back while pointing; the thumb slides over n levels', () => {
-    expect(STYLE).toContain('calc(var(--c) * 70ms + var(--s) * 45ms)');
-    expect(STYLE).toContain('.mp-list[data-pointing] .mp-opt:not([data-active]) { opacity: 0.5; }');
-    expect(STYLE).toContain('grid-template-columns: repeat(var(--n), 1fr)');
-    expect(STYLE).toContain('transform: translateX(calc(var(--i) * 100%))');
-    expect(STYLE).toContain('@keyframes mp-fill');
-  });
-
-  it('every new colour token has a light value', () => {
-    const dark = /:root \{ (--mp-[^}]*)\}/.exec(STYLE)?.[1] ?? '';
-    const light = /\[data-theme="light"\] \{ (--mp-[^}]*)\}/.exec(STYLE)?.[1] ?? '';
-    const names = (s: string) => [...s.matchAll(/(--mp-[a-z-]+):/g)].map((x) => x[1]).sort();
-    expect(names(dark).length).toBeGreaterThan(0);
-    expect(names(light)).toEqual(names(dark));
-  });
-
-  // The menu's own touch block (#441's context block shares the media string with a one-line block of its own).
-  const MP_TOUCH = '@media (pointer: coarse), (max-width: 639px) {\n  .mp-trigger';
-  it('narrow container, narrow or touch screens — in the menu’s own block (the shared 44px block stays as it was)', () => {
-    expect(STYLE).toMatch(/@container \(max-width: 300px\) \{[^@]*\.mp-keys/);
-    const own = STYLE.slice(STYLE.indexOf(MP_TOUCH));
-    const block = own.slice(0, own.indexOf('\n}\n'));
-    expect(block).toContain('.mp-trigger, .mp-seg-btn { min-height: 44px; }');
-    expect(block).toContain('.mp-opt { min-height: 54px; }');
-    // After the shared blocks: tests (and readers) take the first touch / reduced-motion block as the board's.
-    expect(STYLE.indexOf(MP_TOUCH)).toBeGreaterThan(STYLE.indexOf('@media (max-width: 639px), (pointer: coarse) {'));
-    expect(STYLE.indexOf('@media all and (prefers-reduced-motion: reduce) {')).toBeGreaterThan(
-      STYLE.indexOf('@media (prefers-reduced-motion: reduce) {'),
-    );
-    const shared = STYLE.slice(STYLE.indexOf('@media (max-width: 639px), (pointer: coarse) {'));
-    expect(shared.slice(0, shared.indexOf('\n}\n'))).not.toContain('.mp-');
-  });
-
-  it('reduced motion: no scale, no staggered fill — the delays go too, not only the durations', () => {
-    // Its own block (all and …): the shared reduced-motion block, which other tests read as the first one, stays first.
-    const own = STYLE.slice(STYLE.indexOf('@media all and (prefers-reduced-motion: reduce) {'));
-    expect(own.slice(0, own.indexOf('\n}\n'))).toContain(
-      '.mp-opt[data-lit] .mp-seg[data-on] { animation: none; transition-delay: 0s; }',
-    );
-  });
-});
-
-// ── D16 — the folds are gone ──
-describe('D16 — one trigger does the fold’s job', () => {
-  it('no fold toggles, no <select> pickers, no fold state', () => {
-    for (const gone of [
-      'cfb-model-toggle',
-      'pc-toggle',
-      'pc-pick',
-      'toggleCardModel',
-      'togglePanelControls',
-      '_panelControlsOpen',
-      '_cardModelOpen',
-      'cb-model-select',
-      'resetPicker',
-    ]) {
-      expect(TEMPLATE.includes(gone), gone).toBe(false);
+// ── the page ──
+describe('the page loads the element; the inline menu is gone', () => {
+  it('model-picker.js is a module script next to the other elements, served from the installed library', () => {
+    expect(HEAD).toContain(`<script type="module" src="/dashboard/ui/model-picker.js?v=\${UI_LIB_VERSION}"></script>`);
+    const dir = uiLibDistDir();
+    expect(dir).toBeTruthy();
+    expect(existsSync(join(dir as string, 'model-picker.js'))).toBe(true);
+    const imports = readFileSync(join(dir as string, 'model-picker.js'), 'utf-8').match(/from\s*"\.\/([^"]+)"/g) ?? [];
+    for (const imp of imports) {
+      const file = /"\.\/([^"]+)"/.exec(imp)?.[1] as string;
+      expect(UI_LIB_FILE.test(file), file).toBe(true);
+      expect(existsSync(join(dir as string, file)), file).toBe(true);
     }
   });
 
-  it('the page script declares every menu function once', () => {
-    for (const name of [
+  it('the slot takes no box and hands the element the dashboard tokens', () => {
+    expect(STYLE).toContain('.mp-slot { display: contents; }');
+    expect(STYLE).toMatch(/\.wl-toolcall, \.ui-tok \{[^}]*--ui-ib-seg: var\(--ib-seg\)/);
+  });
+
+  it('no inline menu: its renderer, state, body host, styles and folds are gone', () => {
+    for (const gone of [
       'mpOpen',
       'mpClose',
       'mpRepaint',
       'mpPlace',
       'mpHost',
+      'mpMenuKey',
+      'mpWatch',
       'renderModelMenu',
       'renderEffortControl',
+      '_mp',
+      'MP_EFFORT_SHORT',
+      'MP_ROLL_MS',
+      'MP_WATCH_MS',
     ]) {
-      expect(declarationCount(name), name).toBe(1);
+      expect(declarationCount(gone), gone).toBe(0);
+    }
+    expect(TEMPLATE).not.toContain("'mp-menu'");
+    expect(STYLE).not.toContain('.mp-pop');
+    expect(STYLE).not.toContain('.mp-trigger');
+    expect(STYLE).not.toContain('--mp-well');
+    for (const gone of [
+      'cfb-model-toggle',
+      'pc-toggle',
+      'pc-pick',
+      'toggleCardModel',
+      '_cardModelOpen',
+      'cb-model-select',
+    ]) {
+      expect(TEMPLATE.includes(gone), gone).toBe(false);
     }
   });
+
+  // Moved to the library (@2lab.ai/ui src/components/model-picker/model-picker.test.ts), which owns them now:
+  //   D1 trigger: glyph · model · “· level” · chevron, aria   → 'draws one trigger: avatar letter, model, “· effort”, chevron — closed and inert menu'
+  //   D1 busy trigger, never disabled                          → 'locks rows while a model write runs and levels while an effort write runs'
+  //   D3 listbox: rows in order, ✓ current, outside first row  → 'lists every model with meters, ✓ on the current one, and a tray for it'
+  //   D3 the switch rule (compact 후 전환)                      → 'marks a row whose auto-compact point is below the context as switching after compaction'
+  //   D3/D11 locked rows while a switch waits or runs          → 'locks rows while a model write runs and levels while an effort write runs'
+  //   D4 meters round(5v/max), — when unknown                  → 'fills 1–5 segments against the largest value, 0 when unknown', 'measures window · compaction · cost per model; …'
+  //   D7 effort radiogroup, capped level, only the model's     → 'offers only the levels the model runs; arrows select at once and keep the menu open'
+  //   D7 the session model's levels, also outside the list     → 'value.effortLevels: the session model’s own levels win over the row’s, also outside the list'
+  //   D8 tray, dollars, live region, roll                      → 'formats tokens and dollars the way the dashboard menu does', 'says “—” for an unknown price and never guesses one'
+  //   D2 placement under / over, flip, 12px                    → 'places the menu under the trigger, flips when there is no room, keeps 12px inside'
+  //   D2 a moved or scrolled-away anchor closes the menu       → 'counts only a layout move above 2px as moved' (+ the 150 ms watch in model-picker.ts #tick)
+  //   D9 keys: arrows, Home / End, Enter, Esc, ↓ on trigger    → 'opens from the trigger click and from ↓, …', 'moves with ↑ ↓ (wrapping) · Home · End …', 'Esc closes, returns focus to the trigger and stops there'
+  //   D9 Tab past the last stop goes home (R1 grok P1)         → 'Tab: list → checked level, Shift+Tab back; past either end the menu closes onto the trigger (D9)', 'Tab from the list goes home when the model has no effort levels'
+  //   D9 the pointed row is its model (R1 astra P1)            → 'remembers the pointed row by model, not by position'
+  //   D9 the current row only closes (R1 fable P3)             → 'closes on the current row without a change; a click picks by data-k'
+  //   D9 every open starts on the session's model (R1 grok P3) → 'opens from the trigger click and from ↓, focusing the list on the current model'
+  //   D17 no optimistic value when the host prevents           → 'keeps data.value when the host prevents ui-change'
+  //   D18 one menu: a press outside closes it                  → 'a press outside closes it; a press inside does not'
+  //   a failed write: alert in the menu, else under trigger    → 'announces an error: in the open menu, else under the trigger'
+  //   Korean strings                                           → 'speaks Korean with lang="ko"'
+  //   D13–D15 motion, light tokens, touch sizes, reduced motion → the element's styles (model-picker/styles.ts, the ported block)
 });

@@ -1,6 +1,7 @@
 # affectUI Model Picker → 대시보드 모델 · effort 선택기
 
 Status: 구현(Phase B) · 작성 2026-10-26 · 기준 main `ff6c9ac` · 에픽 #437 / 서브이슈 #442 · SSOT [`ssot.md`](ssot.md)
+> 2026-10-29: 인라인 사본(트리거 마크업, `_mp` · `mp*` 메뉴 함수, `renderModelMenu` · `renderEffortControl`, `#mp-menu`, `.mp-*` 스타일)은 이 설계를 옮긴 라이브러리 요소 `@2lab.ai/ui` `<ui-model-picker>`(0.4.2)로 바뀌었다. 목록·미터·트레이·배치·키보드(D9 Tab 귀가 포함)·effort 라디오는 라이브러리 `model-picker.test.ts`가, 데이터 매핑(`mpData` — 닉네임 id, 목록 밖 모델은 짧은 id, `value.effortLevels`, 대기 중 전환 · 쓰기 중 · 거절)·`ui-change` → `changeModel` / `changeEffort`·열린 메뉴의 카드 고정은 `dashboard-affectui-model-picker-client.test.ts`가 고정한다(머리말 끝 표가 옮긴 테스트의 대응). 차이: 대기 중 전환 문구는 소유자에게 트리거 아래 `compact 후 X(으)로 전환 대기 중` 하나로, 거절 사유는 카드 아래 줄 대신 트리거 아래(닫힘)나 메뉴 안(열림)에.
 앞선 계약: [`../13-dashboard-three-surfaces-spec.md`](../13-dashboard-three-surfaces-spec.md) §3.1(모델 · effort의 집 — 펼친 카드 컨트롤 줄, 패널 입력창 옆),
 SSOT 2026-10-22 T4/T5(대표 모델 전환 · compact 후 전환), 2026-10-23 T1(세션 effort) · T6(상단 기본값 칩)
 
