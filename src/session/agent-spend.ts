@@ -99,6 +99,8 @@ const META_SETTLE_MS = 60_000;
 
 export interface CallUsage extends TokenCounts {
   model?: string;
+  /** The line has a stop reason: the call finished (the task ledger settles its credit only then). */
+  final?: boolean;
 }
 
 interface FileState {
@@ -143,6 +145,7 @@ function collectCalls(text: string, calls: Map<string, CallUsage>): void {
       outputTokens: count(u.output_tokens),
       cacheReadTokens: count(u.cache_read_input_tokens),
       cacheCreateTokens: count(u.cache_creation_input_tokens),
+      ...(typeof m.stop_reason === 'string' && m.stop_reason ? { final: true } : {}),
     });
   }
 }

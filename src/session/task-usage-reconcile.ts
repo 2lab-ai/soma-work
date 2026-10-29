@@ -34,6 +34,8 @@ export interface TranscriptCall {
   outputTokens: number;
   cacheReadTokens: number;
   cacheCreateTokens: number;
+  /** The line has a stop reason: the call finished and this is its final usage. */
+  final?: boolean;
 }
 
 export interface MainCallReaderOptions {
@@ -96,6 +98,7 @@ export function collectTranscriptCalls(text: string, into: Map<string, Transcrip
       outputTokens: count(u.output_tokens),
       cacheReadTokens: count(u.cache_read_input_tokens),
       cacheCreateTokens: count(u.cache_creation_input_tokens),
+      ...(typeof m.stop_reason === 'string' && m.stop_reason ? { final: true } : {}),
     });
   }
 }
