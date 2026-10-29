@@ -1971,7 +1971,7 @@ describe('작업 로그 is a section tab: painted only while shown, following th
         return tmp;
       },
     };
-    const m = load<{ setWorkLogOpen(open: boolean): void; paintWorkLog(s: unknown, added: unknown[]): void }>(
+    const m = load<{ paintWorkLog(s: unknown, added: unknown[]): void }>(
       [
         'esc',
         'escAttr',
