@@ -620,13 +620,17 @@ describe('wiring — the lane’s job boxes, the paint, the fold, the drawer', (
     const document = { getElementById: (id: string) => els[id] ?? null, createElement: () => fakeEl() };
     const later: Array<() => void> = [];
     const aqPaint = vi.fn();
-    const f = load<Fns>([...LANE_FNS, 'syncCronLane', 'cronLaneSlots'], ['CRON_AQ_STATUS', '_cronGroupEls'], {
-      cronLaneFolded: () => folded,
-      document,
-      aqPaint,
-      MOTION: { fade: 180 },
-      setTimeout: (fn: () => void) => later.push(fn),
-    });
+    const f = load<Fns>(
+      [...LANE_FNS, 'laneSig', 'syncCronLane', 'cronLaneSlots'],
+      ['CRON_AQ_STATUS', '_cronGroupEls', '_cronJobsRev'],
+      {
+        cronLaneFolded: () => folded,
+        document,
+        aqPaint,
+        MOTION: { fade: 180 },
+        setTimeout: (fn: () => void) => later.push(fn),
+      },
+    );
     return { f, els, aqPaint, later };
   }
 
@@ -667,6 +671,58 @@ describe('wiring — the lane’s job boxes, the paint, the fold, the drawer', (
     shut.f.syncCronLane(ps);
     const shown = shut.f.cronLaneSlots(ps).flatMap((s: any) => s.items.map((i: any) => i.s.key));
     expect(shown).toEqual(['k-dig']);
+  });
+
+  // #554 review P3: every board render used to build the lane and JSON.stringify all of it.
+  it('the lane is rebuilt only when what it is made of changed — a jobs fetch, a card, the fold — or a minute on', async () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    vi.setSystemTime(NOWC);
+    try {
+      let folded = false;
+      const els: Record<string, FakeEl> = { 'cron-lane': fakeEl('cron-lane'), 'cron-aq': fakeEl('cron-aq') };
+      const aqPaint = vi.fn();
+      const f = load<Fns>(
+        [...LANE_FNS, 'laneSig', 'syncCronLane', 'loadCronJobs'],
+        ['CRON_AQ_STATUS', '_cronGroupEls', '_cronJobs', '_cronJobsRev'],
+        {
+          cronLaneFolded: () => folded,
+          document: { getElementById: (id: string) => els[id] ?? null, createElement: () => fakeEl(), hidden: false },
+          aqPaint,
+          MOTION: { fade: 180 },
+          setTimeout: () => {},
+          fetch: async () => ({ ok: true, json: async () => ({ jobs: JOBS }) }),
+          currentUserId: 'U1',
+          _lastBoardData: null,
+          renderBoard: () => {},
+        },
+      );
+      const plan = (board = BOARD) => f.planCronLane(board, JOBS, null);
+      f.syncCronLane(plan());
+      expect(aqPaint).toHaveBeenCalledTimes(1);
+      // The next board render (a push elsewhere on the board): a new plan with the same lane — nothing built.
+      f.syncCronLane(plan());
+      expect(aqPaint).toHaveBeenCalledTimes(1);
+      // A cron card moves column.
+      const moved = { ...BOARD, working: [], waiting: [...BOARD.waiting, ...BOARD.working] };
+      f.syncCronLane(plan(moved));
+      expect(aqPaint).toHaveBeenCalledTimes(2);
+      expect(aqPaint).toHaveBeenLastCalledWith(els['cron-aq'], f.laneData(plan(moved)));
+      // A jobs fetch (its records, schedules and caps): a new revision.
+      await f.loadCronJobs();
+      f.syncCronLane(plan(moved));
+      expect(aqPaint).toHaveBeenCalledTimes(3);
+      // The fold.
+      folded = true;
+      f.syncCronLane(plan(moved));
+      expect(aqPaint).toHaveBeenCalledTimes(4);
+      // A minute on: the 24-hour window slides.
+      vi.setSystemTime(NOWC + 60_000);
+      f.syncCronLane(plan(moved));
+      expect(aqPaint).toHaveBeenCalledTimes(5);
+      expect(clientFn('laneSig')).not.toContain('JSON.stringify');
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('an element is handed its data only when it changed, or once a minute; rendered at once', () => {

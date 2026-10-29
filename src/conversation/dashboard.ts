@@ -16113,6 +16113,7 @@ document.addEventListener('ui-collapse', function(e) {
 // every kept run of the job.
 var CLOCK_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 4.8V8l2.2 1.4"/></svg>';
 var _cronJobs = [];          // GET /api/dashboard/cron — this instance's jobs
+var _cronJobsRev = 0;        // bumped by every jobs fetch (laneSig)
 var _cronPlan = null;        // last planCronLane() result
 var _cronGroupEls = Object.create(null); // group key → the job's persistent card box (its slot)
 var _cronDrawerKey = null;   // group key the drawer shows, null when closed
@@ -16327,6 +16328,24 @@ function laneData(plan) {
   });
   return { lane: { jobs: jobs, runs24h: cronDayRuns(plan) }, collapsible: true, collapsed: { lane: cronLaneFolded() } };
 }
+// What the lane's data is made of, cheaply — compared on every board render instead
+// of building laneData and serializing it: the jobs (their run records, schedules
+// and caps change only with a fetch: its revision), each group in order with its
+// live state and its cards (key, column, time — a card's run on the strip), and the fold.
+function laneSig(plan) {
+  var parts = [_cronJobsRev, cronLaneFolded() ? 1 : 0];
+  var groups = (plan && plan.groups) || [];
+  for (var i = 0; i < groups.length; i++) {
+    var g = groups[i];
+    var cards = [];
+    for (var j = 0; j < g.cards.length; j++) {
+      var c = g.cards[j];
+      cards.push(c.key + ':' + g.colOf[c.key] + ':' + (Number(c.activeLegStartedAtMs) || cronCardTime(c)));
+    }
+    parts.push(g.key + '|' + g.name + '|' + (g.job ? 'j' : '') + (g.waiting ? 'w' : '') + (g.running ? 'r' : '') + '|' + cards.join(','));
+  }
+  return parts.join(';');
+}
 // Hand an element its data only when it changed — or once a minute, so the 24-hour window
 // and the timeline slide toward now (between renders the element ticks its own countdowns).
 // Rendered at once: the layout coordinator measures the page right after a fold.
@@ -16367,6 +16386,10 @@ function syncCronLane(plan) {
     // Its card fades out first (its <ui-agent-inbox>), then the box goes.
     setTimeout(function(node) { return function() { if (node.parentNode) node.parentNode.removeChild(node); }; }(old), MOTION.fade + 40);
   }
+  // The data is built (and compared, aqPaint) only when what it is made of changed, or a minute on.
+  var sig = laneSig(plan) + '#' + Math.floor(Date.now() / 60000);
+  if (el._laneSig === sig) return;
+  el._laneSig = sig;
   aqPaint(el, laneData(plan));
 }
 // The lane's card slots: each job group shows its lead card (waiting, else running,
@@ -16493,6 +16516,7 @@ async function loadCronJobs() {
     if (!res.ok) return;
     var data = await res.json();
     _cronJobs = Array.isArray(data.jobs) ? data.jobs : [];
+    _cronJobsRev++;
     if (_lastBoardData) renderBoard(_lastBoardData);
   } catch (e) { console.error('Failed to load cron jobs', e); }
 }
