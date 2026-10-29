@@ -40,6 +40,7 @@ registerSkillStore({
 import { App, LogLevel, SocketModeReceiver } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import type { AgentTreeEvent } from '@soma/slack/agent-tree';
+import type { LiveUsageCall } from '@soma/slack/live-usage';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
@@ -62,6 +63,7 @@ import {
   initRecorder,
   matchSlackUsersByEmail,
   scheduleLiveSessionUpdate,
+  setDashboardBotName,
   setDashboardChoiceAnswerHandler,
   setDashboardCloseHandler,
   setDashboardCommandHandler,
@@ -129,7 +131,7 @@ import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
 import { switchSessionEffort } from './session/effort-switch';
 import { productionModelCatalogDeps } from './session/model-catalog-deps';
 import { switchSessionModel } from './session/model-switch';
-import { applyTodoList, ledgerTasks } from './session/task-ledger';
+import { applyTodoList, creditTaskUsage, emptyTaskLedger, ledgerTasks } from './session/task-ledger';
 import { canApplySummaryTitle } from './session-title-policy';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
@@ -669,6 +671,16 @@ async function start() {
         const { setBotDisplayName } = await import('./slack/tool-formatter');
         setBotDisplayName(authContext.botName);
       }
+      // SSOT 2026-10-29 T8 — the dashboard's chat names the answers after the
+      // bot as Slack shows it (users.info: display name, else real name — not
+      // the auth.test handle). Off the startup path; on failure the handle.
+      setDashboardBotName(authContext.botName);
+      void slackApi
+        .getUserProfile(authContext.userId)
+        .then((p) => {
+          if (p.displayName && p.displayName !== authContext.userId) setDashboardBotName(p.displayName);
+        })
+        .catch(() => {});
       timing(`Slack workspace URL: ${authContext.url}, bot: ${authContext.botName ?? 'unknown'}`);
     } catch (error) {
       logger.error('Failed to initialize Slack workspace URL — thread permalinks will be unavailable', error);
@@ -999,7 +1011,7 @@ async function start() {
       if (!owner) return;
       owner.taskLedger = applyTodoList(owner.taskLedger, todos, Date.now());
       const view = ledgerTasks(owner.taskLedger);
-      broadcastTaskUpdate(sessionKey, view.current, view.earlier);
+      broadcastTaskUpdate(sessionKey, view.current, view.earlier, view.outside);
     });
 
     // Connect dashboard: real-time conversation turn updates
@@ -1036,7 +1048,7 @@ async function start() {
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
       recordAgentEvent: (sessionKey: string, event: AgentTreeEvent) => void;
-      notifyLiveUsage: (sessionKey: string) => void;
+      notifyLiveUsage: (sessionKey: string, call?: LiveUsageCall) => void;
       priceLiveUsage: (
         model: string | undefined,
         t: { inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreateTokens: number },
@@ -1044,7 +1056,28 @@ async function start() {
     } = {
       // SSOT 2026-10-22 T1/T2 — a running turn made another API call: push the
       // card (≤ 1/s per session) so its token / cost totals grow live.
-      notifyLiveUsage: (sessionKey: string) => scheduleLiveSessionUpdate(sessionKey),
+      // 2026-10-29 T5: the call also counts on the tasks in progress — tokens
+      // and its API-equivalent cost (priced like the live totals), main agent
+      // and subagents alike (a subagent works for the main task that spawned it).
+      notifyLiveUsage: (sessionKey: string, call?: LiveUsageCall) => {
+        if (call) {
+          const session = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
+          if (session) {
+            // Work before the first TodoWrite is held too (review R1: it was dropped).
+            session.taskLedger = session.taskLedger ?? emptyTaskLedger(Date.now());
+            const key = call.messageId ? `${call.sidechain ? 's:' : 'm:'}${call.messageId}` : undefined;
+            const cost = calculateTokenCost(
+              session.model,
+              call.inputTokens,
+              call.outputTokens,
+              call.cacheReadTokens,
+              call.cacheCreateTokens,
+            );
+            creditTaskUsage(session.taskLedger, key, call, Number.isFinite(cost) ? cost : 0);
+          }
+        }
+        scheduleLiveSessionUpdate(sessionKey);
+      },
       priceLiveUsage: (model, t) =>
         calculateTokenCost(model, t.inputTokens, t.outputTokens, t.cacheReadTokens, t.cacheCreateTokens),
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => {

@@ -162,11 +162,17 @@ describe('drawer — a sheet below 840px, docked beside the board from 840px', (
 });
 
 describe("panel body — one scroll area: the task surface, the sticky agent tabs, the focused agent's tab", () => {
-  const panel = TEMPLATE.slice(TEMPLATE.indexOf('<div class="slide-panel" id="slide-panel">'));
+  // SSOT 2026-10-29 T2: the panel carries the detail deck's depth (data-deck) from the start.
+  const panel = TEMPLATE.slice(TEMPLATE.indexOf('<div class="slide-panel" id="slide-panel" data-deck="0">'));
   const at = (s: string) => panel.indexOf(s);
 
   it('header (자세히) → body (scroll: surface → tabs → tabpanel) → composer', () => {
+    expect(panel).not.toBe('');
     expect(at('<div class="panel-header">')).toBeGreaterThan(0);
+    // SSOT 2026-10-29 T2: the peeking edges of the deck sit above the head; ‹ n / m › in the head before 자세히.
+    expect(at('id="panel-deck-peek"')).toBeLessThan(at('<div class="panel-header">'));
+    expect(at('id="panel-deck"')).toBeGreaterThan(at('<div class="panel-header">'));
+    expect(at('id="panel-deck"')).toBeLessThan(at('id="panel-detail-toggle"'));
     expect(at('id="panel-detail-toggle"')).toBeGreaterThan(at('<div class="panel-header">'));
     expect(at('<div class="panel-body" id="panel-body">')).toBeGreaterThan(at('id="panel-detail-toggle"'));
     expect(at('<div class="panel-scroll" id="panel-scroll">')).toBeGreaterThan(at('id="panel-body"'));
@@ -193,7 +199,7 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
       expect(at(`id="${id}"`), id).toBeLessThan(question);
     }
     expect(at('id="panel-agents"')).toBeGreaterThan(question);
-    // SSOT 2026-10-29: then the section tabs (에이전트 트리 · 작업 로그 · 지시와 답변).
+    // SSOT 2026-10-29: then the section tabs (T6: Chat · 작업 로그 · 에이전트 트리).
     expect(at('id="panel-agents"')).toBeLessThan(at('id="panel-sections"'));
     expect(at('id="panel-sections"')).toBeLessThan(at('id="worklog-list"'));
     // Model · effort sit beside the composer, outside the scroll area.
@@ -618,6 +624,30 @@ describe('drawer follows the visual viewport (keyboard) and sits under the top b
     expect(body).toContain("'--topbar-b'");
     expect(body).toContain('Math.max(0,');
   });
+
+  // SSOT 2026-10-29 T3: the top bar is always on screen — sticky at the top while the board
+  // scrolls, above the board's own layers — so the docked drawer always sits under it
+  // (--topbar-b), on every screen: the phone's static bar and the short docked screen's
+  // full-height drawer over the bar are gone.
+  it('the top bar is sticky at the top on every screen; the docked drawer always stays under it (SSOT 2026-10-29 T3)', () => {
+    const bar = /\n\.topbar \{[^}]*\}/.exec(TEMPLATE)?.[0] ?? '';
+    expect(bar).toContain('position: sticky;');
+    expect(bar).toContain('top: 0;');
+    expect(bar).toContain('z-index: 90;');
+    // No screen takes the stickiness back.
+    expect(cssBlock(PHONE)).not.toBe('');
+    expect(cssBlock(PHONE)).not.toMatch(/\.topbar \{ position: relative; \}/);
+    expect(TEMPLATE).not.toMatch(/^\s*\.topbar \{ position: (relative|static)/m);
+    // The short docked screen (a phone held sideways, an unfolded Duo) no longer lifts the drawer
+    // over the bar: the docked rule (under the bar) is the only top it gets.
+    expect(TEMPLATE).not.toContain('@media (min-width: 840px) and (max-height: 560px) {');
+    expect(TEMPLATE).not.toMatch(
+      /\.slide-panel \{ top: var\(--pv-t, 0px\); height: var\(--pv-h, 100dvh\); z-index: 102; \}/,
+    );
+    expect(cssBlock(DOCKED)).toContain('top: calc(var(--pv-t, 0px) + var(--topbar-b, 0px));');
+    // Docked, the bar stays above the drawer beside it too (its menus open over the drawer's head).
+    expect(cssBlock(DOCKED)).toContain('.topbar { z-index: 101; }');
+  });
 });
 
 describe('views merged from #374 follow the same device contract', () => {
@@ -679,8 +709,9 @@ describe('merged views — trinity code review R4 follow-ups', () => {
   });
 
   it('Escape with a docked panel and the cron drawer open closes the drawer only (the topmost)', () => {
+    // SSOT 2026-10-29 T2: without the drawer, Escape closes the front detail card (closeDetailCard).
     expect(TEMPLATE).toContain(
-      "if (e.key === 'Escape' && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closePanel();",
+      "if (e.key === 'Escape' && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();",
     );
   });
 

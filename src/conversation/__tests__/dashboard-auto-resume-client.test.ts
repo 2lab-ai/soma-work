@@ -185,6 +185,8 @@ describe('a RUNNING card waiting out an automatic resume (cardOf + the open card
         'formatTaskTime',
         'pendingAutoResume',
         'autoResumeLabel',
+        // SSOT 2026-10-29 T4: the summary reads the running task through the face's own helper.
+        'cardCurrentTask',
         'cardSummary',
         'renderCardResume',
         'isBusy',
@@ -241,8 +243,62 @@ describe('a RUNNING card waiting out an automatic resume (cardOf + the open card
     // spec 13: through the one live path (repaintPanelSession → repaintPanelScope → repaintPanelTasks).
     expect(ws).toContain('repaintPanelSession();');
     expect(TEMPLATE.slice(TEMPLATE.indexOf('\nfunction repaintPanelScope('))).toContain('repaintPanelTasks();');
+    // SSOT 2026-10-29 T5: with the work no task got (the main agent's 태스크 밖 row).
     expect(TEMPLATE.slice(TEMPLATE.indexOf('\nfunction repaintPanelTasks('))).toContain(
-      'renderPanelTasks(panelAgentTasks(), panelAgentLabel(), panelAgentEarlier());',
+      'renderPanelTasks(panelAgentTasks(), panelAgentLabel(), panelAgentEarlier(), panelAgentOutside());',
     );
+    // …which rides the task_update push with the list (null clears it; a server without it leaves it).
+    expect(ws).toContain(
+      "if ('tasksOutside' in msg) _sessionCache[msg.sessionKey].tasksOutside = msg.tasksOutside || undefined;",
+    );
+  });
+});
+
+// SSOT 2026-10-29 T4: the face names one task — the one in progress (card.task, the task row).
+// The summary line used to fall back to the last completed task (or the last in the list), which
+// read as a second task next to the running one.
+describe('the card summary never names a task other than the running one (SSOT 2026-10-29 T4)', () => {
+  const shown = load<Card>(CARD_OF_FNS, CARD_OF_VARS, {
+    // The task row is shown: it names the running task, the summary does not repeat it.
+    dhShow: () => true,
+    dhTruncate: () => null,
+    currentUserId: 'U1',
+    _ownerIndex: null,
+    SELF_INSTANCE_NAME: '',
+  });
+  const tasks = [
+    { id: 'T1', content: 'Read the spec', status: 'completed' },
+    { id: 'T2', content: 'Write the parser', status: 'in_progress', startedAt: AT },
+    { id: 'T3', content: 'Ship it', status: 'pending' },
+  ];
+
+  it('a running task and a completed task: the completed task never reaches the summary', () => {
+    const s = { key: 'k', displayHeadline: 'Headline', activityState: 'working', tasks };
+    // Task row hidden: the summary is the running task.
+    expect(card.cardOf(s, 'working').summary).toBe('Write the parser');
+    // Task row shown: the row is the running task; the summary falls to the session's own titles — or nothing.
+    const face = shown.cardOf(s, 'working');
+    expect(face.task).toEqual({ label: 'Write the parser', id: 'T2', startedAt: AT });
+    expect(face.summary).toBeUndefined();
+    expect(shown.cardSummary({ ...s, summaryTitle: 'Parser work' }, 'working', 'Headline')).toBe('Parser work');
+    expect(shown.cardSummary({ ...s, title: 'Thread title' }, 'working', 'Headline')).toBe('Thread title');
+    for (const m of [card, shown]) {
+      for (const col of ['working', 'waiting', 'idle', 'closed']) {
+        const text = JSON.stringify(m.cardOf(s, col));
+        expect(text, col).not.toContain('Read the spec');
+        expect(text, col).not.toContain('Ship it');
+      }
+    }
+  });
+
+  it('no running task (done, or waiting on its next step): no task text at all — not the last done, not the last listed', () => {
+    const idle = { key: 'k', activityState: 'idle', tasks: tasks.map((t) => ({ ...t, status: 'completed' })) };
+    expect(card.cardSummary(idle, 'idle', 'Headline')).toBe('');
+    expect(card.cardSummary({ ...idle, title: 'Thread title' }, 'idle', 'Headline')).toBe('Thread title');
+    // A title that is the headline is not said twice.
+    expect(card.cardSummary({ ...idle, title: 'Headline' }, 'idle', 'Headline')).toBe('');
+    const between = { key: 'k', activityState: 'working', tasks: [tasks[0], tasks[2]] };
+    expect(card.cardSummary(between, 'working', 'Headline')).toBe('');
+    expect(card.cardOf(between, 'working').summary).toBeUndefined();
   });
 });

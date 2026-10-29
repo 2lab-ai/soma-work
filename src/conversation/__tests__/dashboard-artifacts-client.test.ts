@@ -206,6 +206,7 @@ describe('T5 — collapsed card face: artifacts visible on the board itself', ()
     };
     const opened: unknown[][] = [];
     const fetched: string[] = [];
+    const panels: string[] = [];
     const s = { key: 'k1', conversationId: 'conv-1', artifacts: { count: 1, recent: [png] } };
     const { wireInbox } = load<{ wireInbox(h: unknown): void }>(['inboxChipOf', 'wireInbox'], [], {
       _expanded: new Set<string>(),
@@ -224,6 +225,10 @@ describe('T5 — collapsed card face: artifacts visible on the board itself', ()
       placeCard: () => {},
       inboxPaint: () => {},
       openArtifactModal: (...args: unknown[]) => opened.push(args),
+      // SSOT 2026-10-29 T2: the opened card's detail card opens with it (covered in
+      // dashboard-affectui-agent-inbox-client.test.ts) — a chip opens the viewer, never that.
+      openPanel: (k: string) => panels.push(k),
+      deckDrop: () => {},
     });
     wireInbox(host);
     const chip = { focus() {}, getAttribute: (n: string) => (n === 'data-key' ? 'art:k1:A2' : null) };
@@ -235,8 +240,10 @@ describe('T5 — collapsed card face: artifacts visible on the board itself', ()
     // An event from inside the open body (not the element's own) is not a chip.
     on['ui-artifact']({ target: {}, detail: { cardId: 'k1', artifactId: 'A2' } });
     expect(opened).toHaveLength(1);
+    expect(panels).toEqual([]);
     on['ui-toggle']({ target: host, detail: { cardId: 'k1', expanded: true } });
     expect(fetched).toEqual(['conv-1']);
+    expect(panels).toEqual(['k1']);
     expect(clientFn('renderCardBody')).toContain('renderCardArtifacts(s)');
   });
 });
@@ -402,8 +409,9 @@ describe('T3 — full-size modal', () => {
   it('the dialog exists; Escape in the modal does not also close the slide panel', () => {
     expect(TEMPLATE).toMatch(/<dialog id="art-modal"/);
     // The cron drawer over a docked panel takes Escape first too (SSOT 2026-10-24, trinity R4).
+    // SSOT 2026-10-29 T2: what Escape closes is the front detail card (closeDetailCard folds its card too).
     expect(TEMPLATE).toMatch(
-      /if \(e\.key === 'Escape' && panelOpen && !artModalIsOpen\(\) && !_cronDrawerKey\) closePanel\(\);/,
+      /if \(e\.key === 'Escape' && panelOpen && !artModalIsOpen\(\) && !_cronDrawerKey\) closeDetailCard\(\);/,
     );
   });
 });

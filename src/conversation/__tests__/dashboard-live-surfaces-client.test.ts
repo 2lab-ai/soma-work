@@ -329,7 +329,10 @@ describe('panel task rows carry id, elapsed time and tool calls (T7/T8)', () => 
       toolCalls: 6,
     });
     expect(dropped).toContain('data-step="dropped"');
-    expect(dropped).toContain('<span class="pl-fate">중단</span><span class="pl-chip">툴 6회</span>');
+    // SSOT 2026-10-29 T5: a task a new plan replaced after it ran reads 교체됨 (was 중단) —
+    // its work stays on it, it was not stopped.
+    expect(dropped).toContain('<span class="pl-fate">교체됨</span><span class="pl-chip">툴 6회</span>');
+    expect(dropped).not.toContain('중단');
     expect(dropped).toContain('<span class="pl-aside">1m 0s</span>');
     expect(dropped).not.toContain('aria-current');
     const skipped = renderPanelTaskItem({
