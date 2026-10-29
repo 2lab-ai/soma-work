@@ -2277,14 +2277,18 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
         'toNum',
         'agentIconHtml',
         'taskFateOf',
+        // SSOT 2026-10-29 T5: the head and the body read the runs (taskRunsOf); the skipped
+        // toggle replaced the earlier plans (planEarlier* are gone).
+        'taskIdNum',
+        'taskRunStart',
+        'taskRunsOf',
         'planSummaryHtml',
-        'planEarlierCounts',
-        'planEarlierGroups',
-        'planEarlierHtml',
+        'taskSkippedHtml',
+        'taskTotalsHtml',
         'renderPanelTaskItem',
         'renderPanelTasks',
       ],
-      ['TASK_FATE_LABEL', 'PI_CHEV_SVG'],
+      ['TASK_FATE_LABEL', 'PI_CHEV_SVG', 'TASK_RUNS_SHOWN'],
       {
         document: { getElementById: (id: string) => (id === 'panel-tasks' ? container : null) },
         _panelTasksOpen: open,
@@ -2587,7 +2591,9 @@ describe('Show archives choice persists (shipped readShowArchives + toggleArchiv
 
 describe('deep link to a hidden archived card still opens it (shipped openDeepLinkedSession)', () => {
   type Card = { key: string; terminated?: boolean; lastActivity?: string };
-  function page(card: Card, opts: { showArchives?: boolean } = {}) {
+  // SSOT 2026-10-29 T2: `panelOn` is the session the panel already shows (on the page, reveal opens
+  // the card → ui-toggle → openPanel(key); the reveal stub below does not).
+  function page(card: Card, opts: { showArchives?: boolean; panelOn?: string } = {}) {
     const calls = { loads: 0, revealed: [] as string[], panel: [] as unknown[][], stored: 0 };
     // The element each card is drawn by (_cardHost): a closed DONE day's card is on it too, as a stub.
     const hosts: Record<string, { reveal?(k: string): boolean }> = Object.create(null);
@@ -2617,6 +2623,8 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
           calls.loads++;
         },
         openPanel: (...a: unknown[]) => calls.panel.push(a),
+        panelOpen: !!opts.panelOn,
+        panelSessionKey: opts.panelOn ?? null,
         window: { customElements: {} },
         customElements: {
           whenDefined: () => ({
@@ -2654,9 +2662,26 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
     // el.reveal: opens its closed DONE day if it is in one, opens the card, scrolls it to the centre
     // (@2lab.ai/ui agent-inbox.test.ts owns that).
     expect(p.calls.revealed).toEqual([KEY]);
-    expect(p.calls.panel).toEqual([[KEY, true]]);
+    // SSOT 2026-10-29 T2: the panel opens with the key alone — no `true` (the 작업 로그
+    // landing): a deep link lands on the detail card's default, Chat.
+    expect(p.calls.panel).toEqual([[KEY]]);
     expect(p.m.state().link).toBeNull();
     expect(p.calls.stored).toBe(0); // the stored Show archives choice is untouched
+  });
+
+  it('a link to the session the panel already shows does not open it twice (SSOT 2026-10-29 T2)', () => {
+    // Revealing the card opened it, and its detail card with it (ui-toggle → openPanel): the
+    // link only reveals — a second openPanel would reset the landing.
+    const p = page({ key: KEY, terminated: true }, { showArchives: true, panelOn: KEY });
+    p.render();
+    p.m.openDeepLinkedSession();
+    expect(p.calls.revealed).toEqual([KEY]);
+    expect(p.calls.panel).toEqual([]);
+    // Another session in front (the card was open already, its detail card behind): brought there.
+    const q = page({ key: KEY, terminated: true }, { showArchives: true, panelOn: 'inst::other' });
+    q.render();
+    q.m.openDeepLinkedSession();
+    expect(q.calls.panel).toEqual([[KEY]]);
   });
 
   it('waits for <ui-agent-inbox> to be defined before it reveals (the module can land after the first answer)', () => {
@@ -2668,7 +2693,7 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
     p.render(true);
     p.defined();
     expect(p.calls.revealed).toEqual([KEY]);
-    expect(p.calls.panel).toEqual([[KEY, true]]);
+    expect(p.calls.panel).toEqual([[KEY]]); // SSOT 2026-10-29 T2: on Chat (no `true`)
   });
 
   it('a card on no element that no toggle hides is given up', () => {
@@ -2903,6 +2928,8 @@ describe('deep link to a hidden sleeping card reveals it (shipped openDeepLinked
           loads++;
         },
         openPanel: () => {},
+        panelOpen: false,
+        panelSessionKey: null,
       },
       ['function state() { return { revealed: _revealedKey }; }'],
     );
@@ -2981,6 +3008,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     section(): string;
     turnsMsg(): string;
     turnsHeld(): number;
+    deck(): string[];
   };
 
   const waitingMulti = (over: Session = {}): Session => ({
@@ -3100,8 +3128,11 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'psecLandingTop',
         'landPanel',
         'ptUpsert',
+        // SSOT 2026-10-29 T2: every opening puts the session's detail card in the deck.
+        'deckAdd',
       ],
       [
+        '_deck',
         '_mcState',
         '_panelLand',
         '_panelLanded',
@@ -3182,6 +3213,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         _panelTitleSub: '',
         panelTitleSubCanRegen: () => true,
         loadWorkLog: () => {},
+        // SSOT 2026-10-29 T2: the deck's ‹ n / m › and peeking edges (none in this harness).
+        renderDeckNav: () => {},
         renderMdBasic: String, // carries backticks, so it cannot be cooked; no question here has context
         timeAgo: () => '',
         safeHref: (u: string) => u,
@@ -3192,6 +3225,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'function section() { return _psec; }',
         'function turnsMsg() { return _panelTurnsMsg; }',
         'function turnsHeld() { return _panelTurnsList.length; }',
+        'function deck() { return _deck.slice(); }',
       ],
     );
     /** Click the card's 답변하기 button: run its shipped onclick against the shipped openPanel. */
@@ -3228,6 +3262,11 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     expect(p.m.section()).toBe('conv');
     expect(p.settled()).toBe('');
     expect(p.m.turnsHeld()).toBe(1);
+    // SSOT 2026-10-29 T2: the opening put the session's detail card in the deck — once.
+    expect(p.m.deck()).toEqual([KEY]);
+    p.clickAnswer();
+    await flush();
+    expect(p.m.deck()).toEqual([KEY]);
   });
 
   // affectUI batch 1: the single-choice question is a <ui-approval-card> in the same slot — the

@@ -1122,10 +1122,17 @@ describe('Dashboard API', () => {
     // A card click no longer opens the panel — it expands the card in place
     // through a delegated listener (.prd/10 §3.1-4), so it has no inline handler.
     // Spec 13: exactly 1 doAction builder (sessionActionHtml — stop / close / trash, shared by the
-    // open card and the panel head) and 5 openPanel builders: 작업 로그, 답변하기, 전체 task N개 →,
-    // the goal line's 관리 → / 보기 →, the artifacts' 전체 N개 →.
+    // open card and the panel head) and 4 openPanel builders: 답변하기, 전체 task N개 →, the goal
+    // line's 관리 → / 보기 →, the artifacts' 전체 N개 →. SSOT 2026-10-29 T2 removed the open card's
+    // 작업 로그 button (openPanel(key,true,'',…) — an open card's detail card is always beside the
+    // board now, the detail deck); the three left that pass an empty agent id still pin its \'\'.
     expect(correctDoAction!.length).toBe(1);
-    expect(correctOpenPanel!.length).toBe(5);
+    expect(correctOpenPanel!.length).toBe(4);
+    expect(script.match(/\\',\\'\\',event\.detail===0\)/g)?.length).toBe(3);
+    expect(script).not.toContain("',true,\\'\\',event.detail===0)");
+    // The panel's ✕ and backdrop close the front detail card (and fold its card): no string arguments.
+    expect(html).toContain('<div class="slide-panel-overlay" id="panel-overlay" onclick="closeDetailCard()"></div>');
+    expect(html).toMatch(/<button class="panel-close"[^>]*onclick="closeDetailCard\(\)">/);
   });
 
   it('should have all inline handlers escaped consistently', async () => {
@@ -1978,5 +1985,103 @@ describe('DASHBOARD_HEADER_CONFIG injection', () => {
     expect(match![1]).not.toContain('</script>');
     const lines = JSON.parse(match![1]);
     expect(lines[0].fields[0].label).toBe('</script><b>');
+  });
+});
+
+// ── SSOT 2026-10-29 T8 — the Slack bot's name (setDashboardBotName) ──
+// The answers in the dashboard's chat carry the bot's Slack name: the page gets
+// this instance's as `const BOT_NAME` (the client's fallback), and every card
+// this instance serves carries it as `botName` (a sibling's cards bring theirs).
+describe('BOT_NAME injection (SSOT 2026-10-29 T8)', () => {
+  let webServer: typeof import('../web-server');
+  let setDashboardBotName: typeof import('../dashboard')['setDashboardBotName'];
+  let setDashboardSessionAccessor: typeof import('../dashboard')['setDashboardSessionAccessor'];
+
+  beforeEach(async () => {
+    vi.resetModules();
+    mockConfig.conversation.viewerToken = 'test-token';
+
+    webServer = await import('../web-server');
+    // The same module instance the served page reads (resetModules: fresh per test).
+    const dashboard = await import('../dashboard');
+    setDashboardBotName = dashboard.setDashboardBotName;
+    setDashboardSessionAccessor = dashboard.setDashboardSessionAccessor;
+
+    await webServer.startWebServer({ listen: false });
+  });
+
+  afterEach(async () => {
+    // The name is module state: never let one test's bot name another's page.
+    setDashboardBotName('');
+    await webServer.stopWebServer();
+  });
+
+  async function servedBotNameLine(): Promise<string> {
+    const res = await webServer.injectWebServer({ method: 'GET', url: '/dashboard', headers: AUTH_HEADER });
+    expect(res.statusCode).toBe(200);
+    const match = res.body.match(/^const BOT_NAME = .*;$/m);
+    expect(match, 'BOT_NAME assignment not found in served HTML').toBeTruthy();
+    return (match as RegExpMatchArray)[0];
+  }
+
+  it('serves the bot’s Slack name as a JSON string literal', async () => {
+    setDashboardBotName('Soma Dev (Beta)');
+    expect(await servedBotNameLine()).toBe('const BOT_NAME = "Soma Dev (Beta)";');
+  });
+
+  it('escapes < in the name (it comes from Slack) — no </script> can end the page script', async () => {
+    setDashboardBotName('<b>x');
+    expect(await servedBotNameLine()).toBe('const BOT_NAME = "\\u003cb>x";');
+    setDashboardBotName('</script><img src=x onerror=alert(1)>');
+    const line = await servedBotNameLine();
+    expect(line).not.toContain('</script>');
+    // Still the same name once the browser reads the literal.
+    expect(JSON.parse(line.slice('const BOT_NAME = '.length, -1))).toBe('</script><img src=x onerror=alert(1)>');
+  });
+
+  it('null until the name resolves (empty, blank or absent) — the client then says Assistant', async () => {
+    expect(await servedBotNameLine()).toBe('const BOT_NAME = null;');
+    for (const name of ['', '   ', undefined]) {
+      setDashboardBotName(name);
+      expect(await servedBotNameLine()).toBe('const BOT_NAME = null;');
+    }
+  });
+
+  it('trims the name and caps it at 80 characters', async () => {
+    setDashboardBotName('  Soma Dev (Beta)  ');
+    expect(await servedBotNameLine()).toBe('const BOT_NAME = "Soma Dev (Beta)";');
+    setDashboardBotName('x'.repeat(100));
+    expect(await servedBotNameLine()).toBe(`const BOT_NAME = "${'x'.repeat(80)}";`);
+  });
+
+  it('every card this instance serves carries the name as botName (absent until it resolves)', async () => {
+    const sessions = new Map<string, Record<string, unknown>>();
+    sessions.set('C1:t1', {
+      sessionId: 'sid1',
+      title: 'Working session',
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      workflow: 'default',
+      model: 'claude-opus-4-6',
+      channelId: 'C1',
+      threadTs: 't1',
+      activityState: 'working',
+      state: 'MAIN',
+      lastActivity: new Date('2026-03-29T10:00:00Z'),
+    });
+    setDashboardSessionAccessor(() => sessions);
+    const board = async () => {
+      const res = await webServer.injectWebServer({
+        method: 'GET',
+        url: '/api/dashboard/sessions',
+        headers: AUTH_HEADER,
+      });
+      expect(res.statusCode).toBe(200);
+      return JSON.parse(res.body).board;
+    };
+
+    expect((await board()).working[0]).not.toHaveProperty('botName');
+    setDashboardBotName('Soma Dev (Beta)');
+    expect((await board()).working[0].botName).toBe('Soma Dev (Beta)');
   });
 });
