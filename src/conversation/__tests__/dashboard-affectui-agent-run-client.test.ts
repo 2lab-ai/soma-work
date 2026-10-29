@@ -413,6 +413,7 @@ function cards(
       'isPermissionRequester',
       'acPermissionLock',
       'acQuestionLock',
+      'acDetailDue',
       'acPermissionData',
       'acQuestionId',
       'acQuestionData',
@@ -422,7 +423,7 @@ function cards(
       'stripRecommendedMarker',
       'resolveRecommendedId',
     ],
-    ['AC_SIBLING'],
+    ['AC_SIBLING', 'AC_DETAIL_RETRY_MS', 'AC_DETAIL_TRIES'],
     {
       currentUserId: opts.user ?? 'U1',
       READ_ONLY_MSG: '읽기 전용 — 내 세션이 아닙니다',
@@ -1084,6 +1085,7 @@ describe('an answer’s state belongs to its session and leaves with its request
         'acQuestionLock',
         'acQuestionId',
         'acQuestionData',
+        'acDetailDue',
         'acPermissionData',
         'stripRecommendedMarker',
         'resolveRecommendedId',
@@ -1095,7 +1097,7 @@ describe('an answer’s state belongs to its session and leaves with its request
         'answerPermission',
         ...extra,
       ],
-      ['AC_SENT', 'AC_SIBLING'],
+      ['AC_SENT', 'AC_SIBLING', 'AC_DETAIL_RETRY_MS', 'AC_DETAIL_TRIES'],
       {
         _acState: state,
         _sessionCache: cache,
@@ -1495,6 +1497,7 @@ describe('template hygiene', () => {
       // affectUI batch 1: <ui-approval-card>
       'acPermissionLock',
       'acQuestionLock',
+      'acDetailDue',
       'acPermissionData',
       'acQuestionId',
       'acQuestionData',
