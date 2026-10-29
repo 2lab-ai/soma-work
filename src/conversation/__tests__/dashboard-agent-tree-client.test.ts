@@ -1503,6 +1503,26 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     expect(r.out.appended).toEqual([[1, false]]);
   });
 
+  // #542 review P3: the library's UiElement has no updateComplete — the step waits one frame, nothing else.
+  it('psecAfterRender waits one frame after the tree renders (the element has no updateComplete)', async () => {
+    const frames: Array<() => void> = [];
+    const { psecAfterRender } = load<{ psecAfterRender(el: unknown, fn: () => void): void }>(['psecAfterRender'], [], {
+      requestAnimationFrame: (f: () => void) => frames.push(f),
+    });
+    let ran = 0;
+    // Even an element that offered a promise is not waited on: one frame is the contract.
+    psecAfterRender({ updateComplete: Promise.resolve() }, () => ran++);
+    await Promise.resolve();
+    expect(ran).toBe(0);
+    expect(frames).toHaveLength(1);
+    frames[0]();
+    expect(ran).toBe(1);
+    psecAfterRender(null, () => ran++);
+    frames[1]();
+    expect(ran).toBe(2);
+    expect(clientFn('psecAfterRender')).not.toContain('updateComplete');
+  });
+
   // RED (SSOT T2/T3) — what a subagent spent (its own API calls: tokens and
   // API-equivalent cost), never the SDK's context size; the root is the task total.
   const SPEND = {

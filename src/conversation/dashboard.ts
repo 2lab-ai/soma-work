@@ -10067,11 +10067,10 @@ function psecMaybeFill(sec) {
 function psecFillSoon(sec) {
   requestAnimationFrame(function() { psecMaybeFill(sec); });
 }
-// After a <ui-agent-tree> renders new data (its update is async), else after a frame.
-function psecAfterRender(el, fn) {
-  var p = el && el.updateComplete;
-  if (p && typeof p.then === 'function') p.then(fn, fn);
-  else requestAnimationFrame(function() { fn(); });
+// After a <ui-agent-tree> renders new data: one frame (the library's elements
+// expose no update promise — an UiElement renders on the next microtask).
+function psecAfterRender(_el, fn) {
+  requestAnimationFrame(function() { fn(); });
 }
 // The section box takes the rest of the panel (psecHeightOf) as the parts above it change.
 function sizePanelSections() {
