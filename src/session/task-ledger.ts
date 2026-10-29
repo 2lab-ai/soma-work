@@ -129,6 +129,10 @@ interface CallCredit {
   /** Task ids that got the credit, or `idle` / `outside`. */
   to: string[] | 'idle' | 'outside';
   t: TaskTokens;
+  /** The model the live credit was priced at (a later correction re-prices on the same basis). */
+  model?: string;
+  /** Its final usage from the transcript is in: the first to go when the memory is full (review). */
+  settled?: boolean;
 }
 
 export interface TaskLedger {
@@ -485,7 +489,7 @@ export function applyTodoList(ledger: TaskLedger | undefined, todos: readonly To
     const calls: Record<string, CallCredit> = {};
     for (const key of Object.keys(prevCalls)) {
       const c = prevCalls[key];
-      calls[key] = c.to === 'idle' ? { to: idleTo ?? 'outside', t: c.t } : c;
+      calls[key] = c.to === 'idle' ? { ...c, to: idleTo ?? 'outside' } : c;
     }
     CALL_CREDITS.set(next, calls);
   }
@@ -587,6 +591,7 @@ export function creditTaskUsage(
   key: string | undefined,
   call: UsageCall,
   costUsd: number,
+  model?: string,
 ): void {
   if (!ledger) return;
   const t: TaskTokens = {
@@ -617,21 +622,24 @@ export function creditTaskUsage(
     } else {
       const ids = before.to;
       const targets = ledger.tasks.filter((x) => ids.includes(x.id));
-      if (targets.length) {
-        const k = 1 / ids.length;
-        for (const x of targets) {
-          x.tokens = x.tokens ?? zeroTokens();
-          addTokens(x.tokens, delta, k);
-        }
+      const k = 1 / ids.length;
+      for (const x of targets) {
+        x.tokens = x.tokens ?? zeroTokens();
+        addTokens(x.tokens, delta, k);
+      }
+      // A task that left the ledger since (TASK_LEDGER_MAX): its share stays in the totals, outside any task (review).
+      const gone = ids.length - targets.length;
+      if (gone > 0) {
+        ledger.outside = ledger.outside ?? zeroWork();
+        addWork(ledger.outside, w, gone * k);
       }
     }
     return;
   }
   const got = creditWork(ledger, { toolCalls: 0, agentToolCalls: 0, tokens: t });
   if (!key) return;
-  calls[key] = { to: got.length ? got.map((x) => x.id) : 'idle', t };
-  const keys = Object.keys(calls);
-  for (let i = 0; i < keys.length - CALLS_MAX; i++) delete calls[keys[i]];
+  calls[key] = { to: got.length ? got.map((x) => x.id) : 'idle', t, ...(model ? { model } : {}) };
+  trimCalls(calls);
   CALL_CREDITS.set(ledger, calls);
 }
 
@@ -648,11 +656,22 @@ export function recreditTaskUsage(
   ledger: TaskLedger | undefined,
   key: string,
   call: UsageCall,
-  costUsd: number,
+  price: (creditedModel: string | undefined) => number,
 ): boolean {
   if (!ledger) return false;
   const before = CALL_CREDITS.get(ledger)?.[key];
   if (!before) return false;
+  // A reading needs a prompt side (review: llmux non-Claude providers write
+  // all-zero usage into the transcript while their live reading — from
+  // `message_delta` — is the real one). Unreported is not zero.
+  if (count(call.inputTokens) + count(call.cacheReadTokens) + count(call.cacheCreateTokens) === 0) return false;
+  let costUsd = 0;
+  try {
+    costUsd = price(before.model);
+  } catch {
+    costUsd = 0;
+  }
+  if (!Number.isFinite(costUsd)) costUsd = 0;
   const t = before.t;
   if (
     t.input === count(call.inputTokens) &&
@@ -661,10 +680,38 @@ export function recreditTaskUsage(
     t.cacheCreate === count(call.cacheCreateTokens) &&
     t.costUsd === count(costUsd)
   ) {
+    before.settled = true;
     return false;
   }
   creditTaskUsage(ledger, key, call, costUsd);
+  before.settled = true;
   return true;
+}
+
+/**
+ * Keep at most {@link CALLS_MAX} call credits: settled ones (final usage in)
+ * go first, oldest first; a call still waiting for its final usage goes only
+ * when that many newer ones wait too (review: a busy turn with many subagents
+ * must not drop a call before its correction).
+ */
+function trimCalls(calls: Record<string, CallCredit>): void {
+  const keys = Object.keys(calls);
+  let excess = keys.length - CALLS_MAX;
+  if (excess <= 0) return;
+  for (const k of keys) {
+    if (excess <= 0) return;
+    if (calls[k].settled) {
+      delete calls[k];
+      excess--;
+    }
+  }
+  for (const k of keys) {
+    if (excess <= 0) return;
+    if (k in calls) {
+      delete calls[k];
+      excess--;
+    }
+  }
 }
 
 /** How an earlier task left the list, if it had not completed. */
@@ -841,7 +888,7 @@ export function closeTaskList(ledger: TaskLedger | undefined, now: number): Task
     const carried: Record<string, CallCredit> = {};
     for (const key of Object.keys(calls)) {
       const c = calls[key];
-      carried[key] = c.to === 'idle' ? { to: 'outside', t: c.t } : c;
+      carried[key] = c.to === 'idle' ? { ...c, to: 'outside' } : c;
     }
     CALL_CREDITS.set(out, carried);
   }

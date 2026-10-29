@@ -24,7 +24,7 @@ import {
   recreditTaskUsage,
   type TaskLedger,
 } from '../task-ledger';
-import { collectTranscriptCalls, createMainCallReader, reconcileTaskCalls } from '../task-usage-reconcile';
+import { CALLS_KEPT, collectTranscriptCalls, createMainCallReader, reconcileTaskCalls } from '../task-usage-reconcile';
 
 const SID = '5a1c0d2e-7b3f-4c8a-9e61-2f4d8b0c9a17';
 let configDir: string;
@@ -96,21 +96,23 @@ describe('final usage from the transcript (T5 live follow-up)', () => {
     const l = liveRun();
     expect(ledgerTasks(l).current[0].tokens?.output).toBe(24);
     // T1 completed meanwhile; its call's final usage still lands on T1, not on T2 (running now).
-    expect(recreditTaskUsage(l, 'm:msg_7zy1', call([2, 326, 136683, 469]), 0.5)).toBe(true);
+    expect(recreditTaskUsage(l, 'm:msg_7zy1', call([2, 326, 136683, 469]), () => 0.5)).toBe(true);
     const after = ledgerTasks(l).current;
     expect(after[0].tokens).toMatchObject({ input: 2, output: 326, cacheRead: 136683, cacheCreate: 469, costUsd: 0.5 });
     expect(after[1].tokens?.output).toBe(24);
     // Idempotent: the same usage again changes nothing.
-    expect(recreditTaskUsage(l, 'm:msg_7zy1', call([2, 326, 136683, 469]), 0.5)).toBe(false);
+    expect(recreditTaskUsage(l, 'm:msg_7zy1', call([2, 326, 136683, 469]), () => 0.5)).toBe(false);
   });
 
   it('a call the ledger never saw live is never credited to whatever runs now', () => {
     const l = liveRun();
-    expect(recreditTaskUsage(l, 'm:msg_from_before_restart', { inputTokens: 9, outputTokens: 999 }, 1)).toBe(false);
+    expect(recreditTaskUsage(l, 'm:msg_from_before_restart', { inputTokens: 9, outputTokens: 999 }, () => 1)).toBe(
+      false,
+    );
     expect(ledgerTasks(l).current[1].tokens?.output).toBe(24);
   });
 
-  it('the reader returns the main agent calls written since its last read; the last line of a call wins', async () => {
+  it('the reader returns the latest main agent calls on every read; the last line of a call wins', async () => {
     const reader = createMainCallReader({ configDir });
     append(
       line('msg_7zy1', [2, 24, 136683, 469]),
@@ -122,13 +124,72 @@ describe('final usage from the transcript (T5 live follow-up)', () => {
     const first = await reader.read(SID);
     expect([...first.keys()]).toEqual(['msg_7zy1']);
     expect(first.get('msg_7zy1')).toMatchObject({ outputTokens: 326, model: 'claude-opus-5-5' });
-    // Only what was appended since — and a half-written line waits for its end.
+    // Every read returns the latest calls (review: a line read before its live
+    // credit landed is matched later) — and a half-written line waits for its end.
     const last = line('msg_Ubmv', [2, 362, 137585, 701]);
     fs.appendFileSync(file, `${line('msg_GNhj', [2, 547, 137152, 433])}\n${last.slice(0, 40)}`);
-    expect([...(await reader.read(SID)).keys()]).toEqual(['msg_GNhj']);
+    expect([...(await reader.read(SID)).keys()]).toEqual(['msg_7zy1', 'msg_GNhj']);
     fs.appendFileSync(file, `${last.slice(40)}\n`);
-    expect([...(await reader.read(SID)).keys()]).toEqual(['msg_Ubmv']);
-    expect((await reader.read(SID)).size).toBe(0);
+    expect([...(await reader.read(SID)).keys()]).toEqual(['msg_7zy1', 'msg_GNhj', 'msg_Ubmv']);
+  });
+
+  it('a call whose line was read before its live credit is still corrected on a later read (review)', async () => {
+    const reader = createMainCallReader({ configDir });
+    append(line('msg_early', [2, 300, 1000, 10]));
+    let l = applyTodoList(emptyTaskLedger(0), list(['in_progress', 'pending', 'pending']), 1);
+    expect(reconcileTaskCalls(l, await reader.read(SID), 'm:', price)).toBe(false); // not credited yet
+    creditTaskUsage(l, 'm:msg_early', call([2, 24, 1000, 10]), 0); // the live frame lands after
+    l = applyTodoList(l, list(['in_progress', 'pending', 'pending']), 2);
+    expect(reconcileTaskCalls(l, await reader.read(SID), 'm:', price)).toBe(true);
+    expect(ledgerTasks(l).current[0].tokens?.output).toBe(300);
+  });
+
+  it('keeps at most CALLS_KEPT calls per session, newest last', async () => {
+    const reader = createMainCallReader({ configDir });
+    append(...Array.from({ length: CALLS_KEPT + 3 }, (_, i) => line(`m${i}`, [1, 1, 1, 1])));
+    const got = await reader.read(SID);
+    expect(got.size).toBe(CALLS_KEPT);
+    expect([...got.keys()][0]).toBe('m3');
+  });
+
+  it('an all-zero transcript reading never wipes a live credit (llmux non-Claude providers, review)', () => {
+    const l = liveRun();
+    const calls = new Map();
+    collectTranscriptCalls(line('msg_GNhj', [0, 0, 0, 0]), calls, true);
+    expect(reconcileTaskCalls(l, calls, 'm:', price)).toBe(false);
+    expect(ledgerTasks(l).current[1].tokens).toMatchObject({ input: 2, output: 24, cacheRead: 137152 });
+  });
+
+  it('a correction is priced at the model its live credit used, not whatever the session runs now (review)', () => {
+    const l = applyTodoList(emptyTaskLedger(0), list(['in_progress', 'pending', 'pending']), 1);
+    creditTaskUsage(l, 'm:x', call([2, 24, 1000, 10]), 0.01, 'claude-opus-5-5[1m]');
+    const seen: Array<string | undefined> = [];
+    const calls = new Map([['x', { model: 'claude-opus-5-5', ...call([2, 300, 1000, 10]) }]]);
+    reconcileTaskCalls(l, calls, 'm:', (_c, credited) => {
+      seen.push(credited);
+      return 0.02;
+    });
+    expect(seen).toEqual(['claude-opus-5-5[1m]']);
+    expect(ledgerTasks(l).current[0].tokens?.costUsd).toBeCloseTo(0.02);
+  });
+
+  it('a correction for a task that left the ledger stays in the totals, outside any task (review)', () => {
+    const l = liveRun();
+    // T1 is gone (TASK_LEDGER_MAX dropped it).
+    l.tasks = l.tasks.filter((t) => t.id !== 'T1');
+    expect(recreditTaskUsage(l, 'm:msg_7zy1', call([2, 326, 136683, 469]), () => 0)).toBe(true);
+    expect(l.outside?.tokens.output).toBe(326 - 24);
+  });
+
+  it('when the call memory is full, corrected calls go first; a call still waiting for its correction stays', () => {
+    const l = applyTodoList(emptyTaskLedger(0), list(['in_progress', 'pending', 'pending']), 1);
+    creditTaskUsage(l, 'm:settled', call([1, 1, 1, 1]), 0);
+    creditTaskUsage(l, 'm:waiting', call([1, 1, 1, 1]), 0);
+    expect(recreditTaskUsage(l, 'm:settled', call([1, 9, 1, 1]), () => 0)).toBe(true);
+    for (let i = 0; i < 511; i++) creditTaskUsage(l, `m:fill${i}`, call([1, 1, 1, 1]), 0);
+    // 513 credits: the settled one went, the waiting one is still correctable.
+    expect(recreditTaskUsage(l, 'm:settled', call([1, 10, 1, 1]), () => 0)).toBe(false);
+    expect(recreditTaskUsage(l, 'm:waiting', call([1, 9, 1, 1]), () => 0)).toBe(true);
   });
 
   it('a first read starts near the end of a long transcript and skips the cut line', async () => {
@@ -142,11 +203,12 @@ describe('final usage from the transcript (T5 live follow-up)', () => {
     expect([...got.keys()]).toEqual(['new_1']);
   });
 
-  it('reads of one session never hand out the same lines twice, even when they overlap', async () => {
+  it('overlapping reads of one session read each line once and agree', async () => {
     append(line('a', [1, 2, 3, 4]));
     const reader = createMainCallReader({ configDir });
     const [x, y] = await Promise.all([reader.read(SID), reader.read(SID)]);
-    expect(x.size + y.size).toBe(1);
+    expect([...x.keys()]).toEqual(['a']);
+    expect([...y.keys()]).toEqual(['a']);
   });
 
   it('a missing transcript reads as no calls (and is looked for again later, not on every call)', async () => {
