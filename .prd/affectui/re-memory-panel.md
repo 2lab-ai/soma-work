@@ -1,6 +1,7 @@
 # affectUI Memory Panel → 설정 › 기억 › 개인 메모리 (L1)
 
 Status: 구현(Phase B) · 작성 2026-10-26 · 기준 main `ff6c9ac` · 에픽 #437 / 서브이슈 #443 · SSOT [`ssot.md`](ssot.md)
+> 2026-10-29: 인라인 사본(`renderL1Card` … `l1PanelFocus`, `.mm-*`)은 이 설계를 옮긴 라이브러리 요소 `@2lab.ai/ui` `<ui-memory-panel>`(0.4.2)로 바뀌었다. 렌더·키보드·트레이·되돌리기는 라이브러리 `memory-panel.test.ts`가, 데이터·경로·한 번에 한 쓰기·`refuse()`는 `settings-memory-tab.test.ts`가 고정한다. 아래 D/T 번호와 새 테스트의 대응은 `dashboard-affectui-memory-panel.test.ts` 머리말 표. 차이: `모두 지우기`는 대화상자 대신 두 번 누르기, 헤더 개수 배지는 칩의 `전체 N`으로.
 앞선 계약: SSOT 2026-10-23 T3/T5(기억 탭 — 항목마다 한 행, 저장소마다 용량 미터, 한 항목 삭제는 즉시 + 되돌리기, `모두 지우기`는 개수를
 말하는 확인, 모든 편집은 불러온 revision 조건부 · 409면 초안 보존) — 조사 원문 [`docs/misc/research/2026-10-23-dashboard-settings-memory-ui.md`](../../docs/misc/research/2026-10-23-dashboard-settings-memory-ui.md)
 
