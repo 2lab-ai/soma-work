@@ -1154,6 +1154,8 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     expect(r.out.kept).toEqual([2000 - 400]);
     expect(r.out.filled).toBe(1);
     expect(r.host._growing).toBe(false);
+    // The reader is still at the top (the root and branches stay there): the next step waits for them to scroll up again.
+    expect((r.box as Record<string, unknown>)._armed).toBe(false);
     // The markup is the same element: the step is data only.
     expect(r.out.writes).toBe(1);
     // A new agent while the reader reads higher: their place stays and the pill counts it.
