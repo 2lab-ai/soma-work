@@ -835,7 +835,8 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
       ansSlotHtml: () => '',
       setInterval,
       _ioCache,
-      _cardEls: { k1: {} },
+      // The element that draws card k1 (ioRefreshCards repaints the cards on it).
+      _cardHost: { k1: {} },
       _sessionCache: { k1: session },
       refreshCard,
       Date: FrozenDate,
@@ -1019,8 +1020,11 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
           delete attrs[k];
         },
         querySelector: (sel: string) => (sel === '.cp-slot' ? slot : null),
+        // The open card's body: its slot on the board element names the session.
         closest: (sel: string) =>
-          sel === '.card' ? { getAttribute: (k: string) => (k === 'data-session-key' ? key : null) } : null,
+          sel === '.card-slot[data-session-key]'
+            ? { getAttribute: (k: string) => (k === 'data-session-key' ? key : null) }
+            : null,
       };
     }
     const working = node(NOWT - 45_000, 'w');

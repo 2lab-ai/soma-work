@@ -761,7 +761,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     };
     const env = {
       _sessionCache: Object.create(null),
-      _cardEls: Object.create(null),
+      _cardHost: Object.create(null),
       _expanded: new Set<string>(),
       _ioCache: Object.create(null),
       isSiblingSession: () => false,
@@ -809,7 +809,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
         lastActivity: '2026-10-16T01:00:00.000Z',
         activityState: 'waiting',
       };
-      env._cardEls[key] = { _cid: cid };
+      env._cardHost[key] = {}; // drawn by the board element
       env._expanded.add(key);
     };
     // Fire only the timers that are due; later ones stay pending.
@@ -930,7 +930,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     // Let every backoff timer fire, interleaved with board re-renders.
     for (let i = 0; i < 12; i++) {
       await h.advance(60_000);
-      h.io.ensureCardIo('kc', false); // reconcileBoard on every push
+      h.io.ensureCardIo('kc', false); // renderBoard on every push
       await flush();
     }
     const cap = Number(clientVar('IO_AUTO_RETRIES').match(/\d+/)?.[0]);
@@ -980,7 +980,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     await flush();
     expect(h.env._ioCache.c2.state).toBe('error');
     h.setMode('up');
-    h.io.ensureCardIo('k2', true); // toggleCard(open) passes force
+    h.io.ensureCardIo('k2', true); // ui-toggle (open) passes force
     await flush();
     expect(h.fetchCalls).toHaveLength(2);
     expect(h.env._ioCache.c2.state).toBe('ok');
@@ -1098,7 +1098,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     h.env._expanded.delete('kx');
     h.io.releaseCardIoTimer('cx'); // ky still shows it → kept
     expect(h.pendingTimers()).toEqual([1000]);
-    delete h.env._cardEls.ky; // ky left the board
+    delete h.env._cardHost.ky; // ky left the board
     h.io.releaseCardIoTimer('cx');
     expect(h.pendingTimers()).toEqual([]);
     const n = h.fetchCalls.length;
@@ -1108,7 +1108,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
 
   it.each<[string, (h: ReturnType<typeof harness>) => void]>([
     ['closed', (h) => h.env._expanded.delete('kd')],
-    ['removed from the board', (h) => delete h.env._cardEls.kd],
+    ['removed from the board', (h) => delete h.env._cardHost.kd],
   ])('a request that fails after its last card was %s arms no retry timer', async (_how, goAway) => {
     const h = harness();
     h.addCard('kd', 'cd');
@@ -1116,7 +1116,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     h.io.ensureCardIo('kd', true); // the opening fetch is in flight
     await flush();
     goAway(h);
-    h.io.releaseCardIoTimer('cd'); // what toggleCard / applyBoardPlan do; nothing is pending yet
+    h.io.releaseCardIoTimer('cd'); // what ui-toggle (closed) / renderBoard (gone) do; nothing is pending yet
     inFlight.reject();
     await flush();
     expect(h.env._ioCache.cd.state).toBe('error');
@@ -1149,7 +1149,7 @@ describe('card 지시/응답 freshness and retry (shipped ensureCardIo)', () => 
     const newStampAndRender = async () => {
       stampN++;
       h.env._sessionCache.ko.lastActivity = new Date(Date.UTC(2026, 9, 16, 1, 0, stampN)).toISOString();
-      h.io.ensureCardIo('ko', false); // reconcileBoard on a board push
+      h.io.ensureCardIo('ko', false); // renderBoard on a board push
       await flush();
     };
     h.io.ensureCardIo('ko', true); // opening fetch fails at t0
@@ -1213,31 +1213,62 @@ const HOSTILE = [
   '&quot; already-encoded &amp;',
 ];
 
+/** The board's card mapper (cardOf → <ui-agent-inbox> card data) and what it reads, as shipped. */
+const CARD_OF_FNS = [
+  'toNum',
+  'formatTokens',
+  'formatTaskTime',
+  'permissionSummary',
+  'cardSummary',
+  'pendingAutoResume',
+  'autoResumeLabel',
+  'cardCurrentTask',
+  'cardTaskRow',
+  'agentStatusOf',
+  'agentCounts',
+  'agentDotOf',
+  'cardTotalTokens',
+  'ctxLevel',
+  'ctxPercent',
+  'cardCtxTitle',
+  'cardPrMetric',
+  '_hashStr',
+  'ownerBadgeHue',
+  'isSiblingSession',
+  'cardOf',
+];
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+type CardData = Record<string, unknown> & {
+  badge?: { text: string; hue: number; title: string };
+  since?: number;
+  elapsedMs?: number;
+};
+
 describe('model-controlled values in card markup (shipped renderers)', () => {
   const cards = load<{
     renderTimeline(s: unknown): string;
-    renderCardStatus(s: unknown, col: string): string;
+    cardOf(s: unknown, col: string): CardData;
   }>(
     [
       'esc',
       'escAttr',
       'escJs',
-      'toNum',
       'formatDuration',
-      'formatTaskTime',
       // Task view T2: the meta and the 전체 task count read each task's fate.
       'taskFateOf',
       'renderTaskMeta',
       'renderTimelineItem',
       'renderTimeline',
-      'pendingAutoResume',
-      'autoResumeLabel',
-      'renderCardStatus',
+      ...CARD_OF_FNS,
     ],
-    ['WAIT_SVG', 'RESUME_SVG', 'TASK_FATE_LABEL'],
+    ['TASK_FATE_LABEL', ...CARD_OF_VARS],
     {
       dhShow: () => true,
+      dhTruncate: () => null,
       dhMax: (_f: string, d: number) => d,
+      currentUserId: 'U1',
+      _ownerIndex: null,
+      SELF_INSTANCE_NAME: '',
     },
   );
   const tags = (html: string) => (html.match(/<([a-z0-9]+)/gi) ?? []).map((t) => t.slice(1).toLowerCase());
@@ -1259,11 +1290,16 @@ describe('model-controlled values in card markup (shipped renderers)', () => {
     }
   });
 
-  it('timer data attributes on the status line are always plain numbers', () => {
+  it('the status clock takes plain numbers only — a hostile stamp never reaches the card (the element writes text)', () => {
     for (const bad of HOSTILE) {
-      const html = cards.renderCardStatus({ activeLegStartedAtMs: bad, activeAccumulatedMs: bad }, 'working');
-      expect(html).not.toMatch(/onerror|onmouseover|<img/);
-      expect(html).toMatch(/data-leg-started="\d+" data-accumulated="\d+"/);
+      for (const col of ['working', 'waiting', 'idle', 'closed']) {
+        const card = cards.cardOf(
+          { key: 'k', activeLegStartedAtMs: bad, activeAccumulatedMs: bad, waitingSince: bad, finishedAt: bad },
+          col,
+        );
+        for (const v of [card.since, card.elapsedMs])
+          expect(v === undefined || Number.isFinite(v), String(v)).toBe(true);
+      }
     }
   });
 });
@@ -2523,26 +2559,26 @@ describe('Show archives choice persists (shipped readShowArchives + toggleArchiv
 describe('deep link to a hidden archived card still opens it (shipped openDeepLinkedSession)', () => {
   type Card = { key: string; terminated?: boolean; lastActivity?: string };
   function page(card: Card, opts: { showArchives?: boolean } = {}) {
-    const calls = { loads: 0, toggled: [] as string[], panel: [] as unknown[][], scrolled: 0, stored: 0 };
-    const cardEls: Record<string, { scrollIntoView(): void }> = Object.create(null);
-    const dayOpen: Record<string, boolean> = Object.create(null);
+    const calls = { loads: 0, revealed: [] as string[], panel: [] as unknown[][], stored: 0 };
+    // The element each card is drawn by (_cardHost): a closed DONE day's card is on it too, as a stub.
+    const hosts: Record<string, { reveal?(k: string): boolean }> = Object.create(null);
+    let whenDefined: (() => void) | null = null;
     const m = load<{
       openDeepLinkedSession(): void;
-      state(): { revealed: string | null; dayOpen: string[]; link: string | null; showArchives: boolean };
+      state(): { revealed: string | null; link: string | null; showArchives: boolean };
     }>(
-      ['toNum', 'doneTimeOf', 'dayKeyOf', 'resolveDeepLinkKey', 'openDeepLinkedSession'],
-      [],
+      ['resolveDeepLinkKey', 'openDeepLinkedSession'],
+      ['_deepLinkWaiting'],
       {
         _deepLinkSession: 'work:C1:1700000000.000700',
         _deepLinkDeadline: Date.now() + 10_000,
         _sessionCache: { [card.key]: card },
         SELF_INSTANCE_NAME: 'inst',
-        _cardEls: cardEls,
-        _expanded: new Set<string>(),
+        _cardHost: hosts,
         showArchives: !!opts.showArchives,
         showSleeping: true,
-        _doneGroupOpen: dayOpen,
         _revealedKey: null,
+        _cronRevealKey: null,
         localStorage: {
           setItem: () => {
             calls.stored++;
@@ -2551,88 +2587,105 @@ describe('deep link to a hidden archived card still opens it (shipped openDeepLi
         loadSessions: () => {
           calls.loads++;
         },
-        toggleCard: (k: string) => calls.toggled.push(k),
         openPanel: (...a: unknown[]) => calls.panel.push(a),
-      },
-      [
-        'function state() { return { revealed: _revealedKey, dayOpen: Object.keys(_doneGroupOpen), link: _deepLinkSession, showArchives: showArchives }; }',
-      ],
-    );
-    const render = () => {
-      cardEls[card.key] = {
-        scrollIntoView: () => {
-          calls.scrolled++;
+        window: { customElements: {} },
+        customElements: {
+          whenDefined: () => ({
+            // biome-ignore lint/suspicious/noThenProperty: a hand-driven thenable — the test decides when the element is defined
+            then: (fn: () => void) => {
+              whenDefined = fn;
+            },
+          }),
         },
-      };
+      },
+      ['function state() { return { revealed: _revealedKey, link: _deepLinkSession, showArchives: showArchives }; }'],
+    );
+    const render = (defined = true) => {
+      hosts[card.key] = defined
+        ? {
+            reveal: (k: string) => {
+              calls.revealed.push(k);
+              return true;
+            },
+          }
+        : {};
     };
-    return { m, calls, render };
+    return { m, calls, render, defined: () => whenDefined?.() };
   }
   // The board key of an archived session (archivedToKanban): "<inst>::archived_<registry key>_<archivedAt>".
   const KEY = 'inst::archived_work:C1:1700000000.000700_1792000000000';
 
-  it('reveals just that archive for this page load, then expands it and opens the panel', () => {
+  it('reveals just that archive for this page load, then reveals it on its element and opens the panel', () => {
     const p = page({ key: KEY, terminated: true });
     p.m.openDeepLinkedSession(); // the card is hidden: reveal + re-render
-    expect(p.m.state()).toEqual({
-      revealed: KEY,
-      dayOpen: [],
-      link: 'work:C1:1700000000.000700',
-      showArchives: false,
-    });
+    expect(p.m.state()).toEqual({ revealed: KEY, link: 'work:C1:1700000000.000700', showArchives: false });
     expect(p.calls.loads).toBe(1);
     p.render(); // the re-render drew it (planDoneColumn keeps a revealed key, any age)
     p.m.openDeepLinkedSession();
-    expect(p.calls.toggled).toEqual([KEY]);
-    expect(p.calls.scrolled).toBe(1);
+    // el.reveal: opens its closed DONE day if it is in one, opens the card, scrolls it to the centre
+    // (@2lab.ai/ui agent-inbox.test.ts owns that).
+    expect(p.calls.revealed).toEqual([KEY]);
     expect(p.calls.panel).toEqual([[KEY, true]]);
     expect(p.m.state().link).toBeNull();
     expect(p.calls.stored).toBe(0); // the stored Show archives choice is untouched
   });
 
-  it('a card in a closed DONE day opens that day (T12), then gives up if it still is not drawn', () => {
+  it('waits for <ui-agent-inbox> to be defined before it reveals (the module can land after the first answer)', () => {
+    const p = page({ key: KEY, lastActivity: '2026-10-01T03:00:00.000Z' });
+    p.render(false);
+    p.m.openDeepLinkedSession();
+    expect(p.calls.revealed).toEqual([]);
+    expect(p.m.state().link).toBe('work:C1:1700000000.000700');
+    p.render(true);
+    p.defined();
+    expect(p.calls.revealed).toEqual([KEY]);
+    expect(p.calls.panel).toEqual([[KEY, true]]);
+  });
+
+  it('a card on no element that no toggle hides is given up', () => {
     const p = page({ key: KEY, lastActivity: '2026-10-01T03:00:00.000Z' });
     p.m.openDeepLinkedSession();
-    expect(p.m.state().revealed).toBeNull();
-    expect(p.m.state().dayOpen).toHaveLength(1);
-    expect(p.calls.loads).toBe(1);
-    p.m.openDeepLinkedSession();
     expect(p.m.state().link).toBeNull();
-    expect(p.calls.loads).toBe(1);
+    expect(p.calls.loads).toBe(0);
+    expect(p.calls.revealed).toEqual([]);
   });
 });
 
-describe('All Users: owner badge on every card (shipped assignOwnerHues + ownerBadgeHue + renderOwnerBadge)', () => {
+describe('All Users: owner badge on every card (shipped assignOwnerHues + ownerBadgeHue + cardOf)', () => {
   type Badge = {
     assignOwnerHues(ids: string[]): Record<string, number>;
     ownerBadgeHue(id: string): number;
-    renderOwnerBadge(s: Record<string, unknown>): string;
+    cardOf(s: Record<string, unknown>, col: string): CardData;
   };
   const badge = (currentUserId: string, owners: string[] = []) => {
     const m = load<Badge>(
-      ['esc', 'escAttr', '_hashStr', 'assignOwnerHues', 'ownerBadgeHue', 'renderOwnerBadge'],
-      ['OWNER_BADGE_HUES'],
-      { currentUserId, _ownerIndex: null },
+      ['assignOwnerHues', ...CARD_OF_FNS],
+      CARD_OF_VARS,
+      { currentUserId, _ownerIndex: null, dhShow: () => true, dhTruncate: () => null, SELF_INSTANCE_NAME: '' },
       ['function setIndex(i) { _ownerIndex = i; }'],
     ) as Badge & { setIndex(i: unknown): void };
     m.setIndex(m.assignOwnerHues(owners));
     return m;
   };
+  const badgeOf = (m: Badge, s: Record<string, unknown>) => m.cardOf({ key: 'k', ...s }, 'idle').badge;
   // Slack-style member ids. Under a bare hash % 8 the first two pairs collide
   // (U01ZHG7K2QD / U07KQ2M4XR1 on 3, U05HJ1WQ9DA / U06TF4YQ8BN on 0).
   const TEAM = ['U01ZHG7K2QD', 'U07KQ2M4XR1', 'U03BN8TZP6E', 'U05HJ1WQ9DA', 'U06TF4YQ8BN'];
   const all = badge('', TEAM);
 
-  it('shows the owner name in All Users mode only, full name in title', () => {
-    const html = all.renderOwnerBadge({ ownerId: TEAM[1], ownerName: 'Alice' });
-    expect(html).toBe(`<span class="owner-badge" data-hue="${all.ownerBadgeHue(TEAM[1])}" title="Alice">Alice</span>`);
-    expect(badge(TEAM[1], TEAM).renderOwnerBadge({ ownerId: TEAM[1], ownerName: 'Alice' })).toBe('');
-    expect(all.renderOwnerBadge({})).toBe('');
+  it('names the owner in All Users mode only, full name in title (the element draws badge, right end of the head)', () => {
+    expect(badgeOf(all, { ownerId: TEAM[1], ownerName: 'Alice' })).toEqual({
+      text: 'Alice',
+      hue: all.ownerBadgeHue(TEAM[1]),
+      title: 'Alice',
+    });
+    expect(badgeOf(badge(TEAM[1], TEAM), { ownerId: TEAM[1], ownerName: 'Alice' })).toBeUndefined();
+    expect(badgeOf(all, {})).toBeUndefined();
   });
 
-  it('escapes the name in text and title', () => {
-    const html = all.renderOwnerBadge({ ownerId: 'U0BADNAME01', ownerName: '<img src=x onerror=alert(1)> "q" \'s' });
-    expect(html).not.toContain('<img');
-    expect(html).toContain('title="&lt;img src=x onerror=alert(1)&gt; &quot;q&quot; &#39;s"');
+  it('hands the name over as text — the element escapes it (badge is text only, @2lab.ai/ui agent-inbox.test.ts)', () => {
+    const name = '<img src=x onerror=alert(1)> "q" \'s';
+    expect(badgeOf(all, { ownerId: 'U0BADNAME01', ownerName: name })).toMatchObject({ text: name, title: name });
   });
 
   it('owners on the board never share a colour while there are ≤ 8 of them; hash slot first, then probing', () => {
@@ -2653,9 +2706,9 @@ describe('All Users: owner badge on every card (shipped assignOwnerHues + ownerB
     const a = all.assignOwnerHues(TEAM);
     const b = all.assignOwnerHues([...TEAM].reverse().concat(TEAM[0], TEAM[2], ''));
     expect(b).toEqual(a);
-    const x = all.renderOwnerBadge({ ownerId: TEAM[2], ownerName: 'Bob' });
-    const y = all.renderOwnerBadge({ ownerId: TEAM[2], ownerName: 'Bob (renamed)' });
-    expect(x.match(/data-hue="(\d)"/)?.[1]).toBe(y.match(/data-hue="(\d)"/)?.[1]);
+    const x = badgeOf(all, { ownerId: TEAM[2], ownerName: 'Bob' });
+    const y = badgeOf(all, { ownerId: TEAM[2], ownerName: 'Bob (renamed)' });
+    expect(x?.hue).toBe(y?.hue);
     // An owner not on the board (yet) falls back to the hash slot.
     expect(all.ownerBadgeHue('U0NOTONBRD1')).toBe(all.assignOwnerHues(['U0NOTONBRD1']).U0NOTONBRD1);
   });
@@ -2705,14 +2758,8 @@ describe('muted text contrast ≥ 4.5:1 on every surface it sits on (CSS tokens)
         });
       }
     }
-    // Owner badges (All Users): each of the 8 hues, its text on its own fill.
-    it(`${theme}: owner badge text on its fill, all 8 hues`, () => {
-      for (let i = 0; i < 8; i++) {
-        expect(t[`ob-${i}-fg`], `--ob-${i}-fg`).toMatch(/^#/);
-        expect(t[`ob-${i}-bg`], `--ob-${i}-bg`).toMatch(/^#/);
-        expect(ratio(t[`ob-${i}-fg`], t[`ob-${i}-bg`]), `hue ${i}`).toBeGreaterThanOrEqual(4.5);
-      }
-    });
+    // Owner badges (All Users) are <ui-agent-inbox>'s badge.hue tints now — eight hues mixed from the card and
+    // the ink (@2lab.ai/ui agent-inbox styles.ts, docs 'badge': ≥ 4.5:1 in both themes); the page keeps no --ob-* pair.
   }
 });
 
@@ -2810,30 +2857,28 @@ describe('deep link to a hidden sleeping card reveals it (shipped openDeepLinked
   it('reveals the sleeping card for this page load without touching the stored choice', () => {
     const KEY = 'inst::work:C1:1700000000.000900';
     let loads = 0;
-    const m = load<{ openDeepLinkedSession(): void; state(): { revealed: string | null; dayOpen: string[] } }>(
-      ['toNum', 'doneTimeOf', 'dayKeyOf', 'resolveDeepLinkKey', 'openDeepLinkedSession'],
-      [],
+    const m = load<{ openDeepLinkedSession(): void; state(): { revealed: string | null } }>(
+      ['resolveDeepLinkKey', 'openDeepLinkedSession'],
+      ['_deepLinkWaiting'],
       {
         _deepLinkSession: 'work:C1:1700000000.000900',
         _deepLinkDeadline: Date.now() + 10_000,
         _sessionCache: { [KEY]: { key: KEY, lastActivity: new Date().toISOString() } },
         SELF_INSTANCE_NAME: 'inst',
-        _cardEls: Object.create(null),
-        _expanded: new Set<string>(),
+        _cardHost: Object.create(null),
         showArchives: false,
         showSleeping: false,
-        _doneGroupOpen: Object.create(null),
         _revealedKey: null,
+        _cronRevealKey: null,
         loadSessions: () => {
           loads++;
         },
-        toggleCard: () => {},
         openPanel: () => {},
       },
-      ['function state() { return { revealed: _revealedKey, dayOpen: Object.keys(_doneGroupOpen) }; }'],
+      ['function state() { return { revealed: _revealedKey }; }'],
     );
     m.openDeepLinkedSession();
-    expect(m.state()).toEqual({ revealed: KEY, dayOpen: [] });
+    expect(m.state()).toEqual({ revealed: KEY });
     expect(loads).toBe(1);
   });
 });

@@ -175,7 +175,7 @@ const TREE_FNS = [
   'atNode',
   'atTreeData',
   'cardCurrentTask',
-  'renderCardTaskRow',
+  'cardTaskRow',
   'atCardData',
 ];
 const TREE_VARS = ['AGENT_STATUS_LABEL', 'AT_ROOT', 'AT_STATUS', 'AT_ROOT_STATUS', '_anOpen'];
@@ -838,14 +838,13 @@ describe('landing follows the opening intent (executed)', () => {
 });
 
 describe('focus goes back to whatever opened the panel (executed)', () => {
-  it('Escape / × from inside the panel → the opener; gone or inert → the card face; focus elsewhere → untouched', () => {
-    const run = (o: { inPanel: boolean; present: boolean; inert?: boolean }) => {
+  // The card face is the element's now (its focus is its own: 'Enter and Space toggle the focused card; Esc
+  // closes it and returns focus to its face'); an opener that is gone hands focus to the session's open card —
+  // its 작업 로그 button in the card's slot body — else the board heading.
+  it('Escape / × from inside the panel → the opener; gone or inert → the open card’s 작업 로그, else the heading; focus elsewhere → untouched', () => {
+    const run = (o: { inPanel: boolean; present: boolean; inert?: boolean; cardOpen?: boolean }) => {
       const focused: string[] = [];
       const panel = { classList: { remove() {} } };
-      const doc: Record<string, unknown> = {
-        getElementById: (id: string) => (id === 'slide-panel' || id === 'panel-overlay' ? panel : null),
-        querySelector: () => null,
-      };
       // focus() moves document.activeElement, except into an inert (folded) card.
       const el = (name: string, inert = false) => {
         const node: Record<string, unknown> = {
@@ -853,12 +852,23 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
             focused.push(name);
             if (!inert) doc.activeElement = node;
           },
+          hasAttribute: () => true,
+          setAttribute: () => {},
         };
         return node;
       };
+      const heading = el('heading');
+      const doc: Record<string, unknown> = {
+        getElementById: (id: string) => (id === 'slide-panel' || id === 'panel-overlay' ? panel : null),
+        querySelector: (sel: string) => (sel === '.board-title, h1, h2' ? heading : null),
+      };
       const opener = el('opener', !!o.inert);
-      const face = el('face');
-      doc.body = { contains: (n: unknown) => (n === opener ? o.present : n === face) };
+      const log = el('worklog');
+      const body = {
+        isConnected: true,
+        querySelector: (sel: string) => (sel === '[data-card-worklog]' ? log : null),
+      };
+      doc.body = { contains: (n: unknown) => (n === opener ? o.present : true) };
       doc.activeElement = o.inPanel
         ? { closest: (sel: string) => (sel === '#slide-panel' ? panel : null) }
         : { closest: () => null };
@@ -869,7 +879,7 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
           document: doc,
           layoutBeforeChange: () => {},
           resetWorkLog: () => {},
-          _cardEls: { k: { _faceEl: face } },
+          _cardBodies: o.cardOpen === false ? {} : { k: { el: body } },
           __ret: opener,
           // Task view: a closing panel releases the composer and the answer observer.
           pcReset: () => {},
@@ -881,7 +891,7 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
         [
           'var panelOpen = true, panelSessionKey = "k", panelConvId = null, _panelAgent = "", _panelAgentsHtml = "", _rawLoadedCache = {}, _panelGen = 0;',
           'var _panelTurnsHasMore = false, _panelTurnsLoading = false, _panelTurnsOldestId = null, _panelLand = "", _panelLanded = false;',
-          'var _panelTurnsList = [], _panelTurnsMsg = "", PSEC_ORDER = ["tree", "log", "conv"];',
+          'var _panelTurnsList = [], _panelTurnsMsg = "", PSEC_ORDER = ["tree", "log", "conv"], _panelHold = false;',
           'var _panelOnQuestion = false, _panelReturnFocus = __ret;',
         ],
       );
@@ -889,8 +899,9 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
       return focused;
     };
     expect(run({ inPanel: true, present: true })).toEqual(['opener']);
-    expect(run({ inPanel: true, present: false })).toEqual(['face']); // a folded DONE date dropped it
-    expect(run({ inPanel: true, present: true, inert: true })).toEqual(['opener', 'face']); // inside a folded card
+    expect(run({ inPanel: true, present: false })).toEqual(['worklog']); // a folded DONE date dropped it
+    expect(run({ inPanel: true, present: true, inert: true })).toEqual(['opener', 'worklog']); // inside a folded card
+    expect(run({ inPanel: true, present: false, cardOpen: false })).toEqual(['heading']); // the card is closed
     expect(run({ inPanel: false, present: true })).toEqual([]); // the reader already moved on
   });
 });
@@ -1323,53 +1334,40 @@ describe('interaction state survives live renders on both surfaces', () => {
 // badge, status foot. Added where the research names a triage field the face
 // lacked: the outcome (PR number + state), recency on a card that is not
 // moving, and the context level as a warning, not just a number.
-const FACE_FNS = [
-  'esc',
-  'escAttr',
-  'escJs',
+// The face is @2lab.ai/ui <ui-agent-inbox>'s now: the page hands it the card
+// data (cardOf), text only; the element draws, tints and escapes it ('draws face
+// extras: lead, owner badge, host metrics, titles, context level, artifact count
+// and chip buttons', 'escapes every host string of the face extras and groups').
+const CARD_OF_FNS = [
   'toNum',
   'formatTokens',
-  'formatCount',
-  'cardTotalTokens',
-  'cardCurrentTask',
-  'renderCardTaskRow',
-  'agentStatusOf',
-  'agentCounts',
-  'renderCardAgents',
-  'renderCardUsage',
   'formatTaskTime',
+  'permissionSummary',
+  'cardSummary',
   'pendingAutoResume',
   'autoResumeLabel',
-  'cardSummary',
-  'doneTimeOf',
-  'cardAgo',
-  'renderCardStatus',
-  'renderOwnerBadge',
+  'cardCurrentTask',
+  'cardTaskRow',
+  'agentStatusOf',
+  'agentCounts',
+  'agentDotOf',
+  'cardTotalTokens',
   'ctxLevel',
   'ctxPercent',
-  'renderCardPr',
-  'renderCardFace',
+  'cardCtxTitle',
+  'cardPrMetric',
+  '_hashStr',
+  'ownerBadgeHue',
+  'isSiblingSession',
+  'cardOf',
 ];
-const FACE_VARS = [
-  'SPARK_SVG',
-  'WAIT_SVG',
-  'TASKS_SVG',
-  'CTX_SVG',
-  'RESUME_SVG',
-  'PR_STATE_LABEL',
-  'PR_SVG',
-  'AGENT_STATUS_LABEL',
-  'AGENT_DOTS_MAX',
-  'AGENTS_SVG',
-];
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
 const FACE_ENV = {
   dhShow: () => true,
-  dhMax: (_f: string, d: number) => d,
   dhTruncate: () => null,
   currentUserId: 'U1',
-  isSiblingSession: () => false,
-  artFaceChips: () => '',
-  umFaceBadge: () => '',
+  _ownerIndex: null,
+  SELF_INSTANCE_NAME: 'inst',
 };
 const LAST = '2026-10-25T10:00:00.000Z';
 const faceCard = (over: Record<string, unknown> = {}) => ({
@@ -1384,133 +1382,137 @@ const faceCard = (over: Record<string, unknown> = {}) => ({
   tokenUsage: { totalInputTokens: 10, totalOutputTokens: 5, totalCostUsd: 0.1, contextUsagePercent: 12 },
   ...over,
 });
-type Face = { renderCardFace(s: unknown, col: string): string; ctxLevel(p: unknown): string };
+type FaceCard = Record<string, unknown> & { metrics?: Array<Record<string, unknown>>; titles?: Record<string, string> };
+type Face = { cardOf(s: unknown, col: string): FaceCard; ctxLevel(p: unknown): string };
 
 describe('collapsed face — the outcome: PR number and state, a badge, not a link', () => {
-  const face = load<Face>(FACE_FNS, FACE_VARS, FACE_ENV);
+  const face = load<Face>(CARD_OF_FNS, CARD_OF_VARS, FACE_ENV);
   const pr = { prUrl: 'https://github.com/o/r/pull/12', prShortRef: 'PR-12', prTitle: 'feat: surfaces' };
+  const prOf = (over: Record<string, unknown>, col = 'idle') =>
+    (face.cardOf(faceCard({ ...pr, ...over }), col).metrics ?? []).find((m) => m.glyph === 'pr');
 
-  it('shows the PR number with its state as a word and a class, and the title as a tooltip', () => {
-    const html = face.renderCardFace(faceCard({ ...pr, prStatus: 'merged' }), 'closed');
-    expect(html).toMatch(/<span class="metric card-pr is-merged" title="PR #12 머지됨 — feat: surfaces">/);
-    expect(html).toContain('#12');
-    // The face's name is built from its content: a space keeps "#12 머지됨" two words.
-    expect(html).toContain('<span class="cpr-state"> 머지됨</span>');
+  it('shows the PR number with its state as a word and a tone, and the title as a tooltip', () => {
+    const c = face.cardOf(faceCard({ ...pr, prStatus: 'merged' }), 'closed');
+    // A space keeps "#12 머지됨" two words.
+    expect(c.metrics).toEqual([
+      { text: '#12 머지됨', glyph: 'pr', title: 'PR #12 머지됨 — feat: surfaces', tone: 'done' },
+    ]);
     // The face is one toggle: no link inside it (the open card and 세션 정보 hold the links).
-    expect(html).not.toContain('<a ');
+    expect(JSON.stringify(c)).not.toContain('github.com');
   });
 
-  it('each known state has its own class and word', () => {
-    expect(face.renderCardFace(faceCard({ ...pr, prStatus: 'open' }), 'idle')).toContain('card-pr is-open');
-    expect(face.renderCardFace(faceCard({ ...pr, prStatus: 'draft' }), 'idle')).toContain('> 초안<');
-    expect(face.renderCardFace(faceCard({ ...pr, prStatus: 'closed' }), 'idle')).toContain('card-pr is-closed');
+  it('each known state has its own tone and word', () => {
+    expect(prOf({ prStatus: 'open' })).toMatchObject({ text: '#12 열림', tone: 'run' });
+    expect(prOf({ prStatus: 'draft' })?.text).toBe('#12 초안');
+    expect(prOf({ prStatus: 'draft' })?.tone).toBeUndefined();
+    expect(prOf({ prStatus: 'closed' })).toMatchObject({ text: '#12 닫힘', tone: 'fail' });
   });
 
   it('the state is a word on screen, never colour alone; the colour follows it', () => {
-    // A sighted touch or keyboard reader has no tooltip: the word is not clipped.
-    expect(TEMPLATE).toMatch(/\.card-pr \.cpr-state \{[^}]*\}/);
-    expect(TEMPLATE).not.toMatch(/\.cpr-state \{[^}]*clip:/);
-    expect(TEMPLATE).toMatch(/\.card-metrics \.card-pr\.is-open \{[^}]*var\(--st-run\)/);
-    expect(TEMPLATE).toMatch(/\.card-metrics \.card-pr\.is-merged \{[^}]*var\(--st-done\)/);
-    expect(TEMPLATE).toMatch(/\.card-metrics \.card-pr\.is-closed \{[^}]*var\(--st-fail-text\)/);
+    // Every tone comes with its word in the metric's text (the element colours it by data-tone).
+    for (const st of ['open', 'draft', 'merged', 'closed']) {
+      const m = prOf({ prStatus: st });
+      expect(m?.text, st).toMatch(/^#12 \S+$/);
+    }
   });
 
   it('a state in capitals still reads as that state', () => {
-    expect(face.renderCardFace(faceCard({ ...pr, prStatus: 'MERGED' }), 'idle')).toContain('card-pr is-merged');
+    expect(prOf({ prStatus: 'MERGED' })).toMatchObject({ text: '#12 머지됨', tone: 'done' });
   });
 
-  it('a short ref in another shape is printed escaped', () => {
-    const html = face.renderCardFace(faceCard({ ...pr, prShortRef: '<b>x</b>', prStatus: 'open' }), 'idle');
-    expect(html).toContain('&lt;b&gt;x&lt;/b&gt;');
-    expect(html).not.toContain('<b>x</b>');
+  it('a short ref in another shape is carried whole, as text (the element escapes it)', () => {
+    expect(prOf({ prShortRef: '<b>x</b>', prStatus: 'open' })).toMatchObject({
+      text: '<b>x</b> 열림',
+      title: 'PR <b>x</b> 열림 — feat: surfaces',
+    });
   });
 
   it('an unknown or hostile state renders the bare number', () => {
-    const html = face.renderCardFace(faceCard({ ...pr, prStatus: '"><img src=x onerror=alert(1)>' }), 'idle');
-    expect(html).toContain('<span class="metric card-pr" title="PR #12 — feat: surfaces">');
-    expect(html).not.toMatch(/onerror|<img/);
-    expect(face.renderCardFace(faceCard(pr), 'idle')).not.toContain('cpr-state');
+    const m = prOf({ prStatus: '"><img src=x onerror=alert(1)>' });
+    expect(m).toEqual({ text: '#12', glyph: 'pr', title: 'PR #12 — feat: surfaces' });
+    expect(prOf({})).toEqual({ text: '#12', glyph: 'pr', title: 'PR #12 — feat: surfaces' });
   });
 
   it('no PR, or the links field hidden: no badge', () => {
-    expect(face.renderCardFace(faceCard(), 'idle')).not.toContain('card-pr');
-    const noLinks = load<Face>(FACE_FNS, FACE_VARS, { ...FACE_ENV, dhShow: (f: string) => f !== 'links' });
-    expect(noLinks.renderCardFace(faceCard({ ...pr, prStatus: 'open' }), 'idle')).not.toContain('card-pr');
+    expect(face.cardOf(faceCard(), 'idle').metrics).toBeUndefined();
+    const noLinks = load<Face>(CARD_OF_FNS, CARD_OF_VARS, { ...FACE_ENV, dhShow: (f: string) => f !== 'links' });
+    expect(noLinks.cardOf(faceCard({ ...pr, prStatus: 'open' }), 'idle').metrics).toBeUndefined();
   });
 
   it('the face click handler leaves the badge to the toggle (nothing to skip) — it is not interactive', () => {
-    expect(clientFn('renderCardPr')).not.toMatch(/<a |<button|onclick|tabindex/);
+    expect(clientFn('cardPrMetric')).not.toMatch(/<a |<button|onclick|tabindex|href/);
   });
 });
 
 describe('collapsed face — recency on a card that is not moving', () => {
-  const face = load<Face>(FACE_FNS, FACE_VARS, FACE_ENV);
-  const ts = String(Date.parse(LAST));
-
-  const stamp = (t: number | string) => `<span class="st-ago"><span class="rel-time" data-ts="${t}"></span></span>`;
+  const face = load<Face>(CARD_OF_FNS, CARD_OF_VARS, FACE_ENV);
   const DONE = Date.parse(LAST) + 40 * 60_000; // the turn ran 40 minutes after the last instruction
   const WAIT = Date.parse(LAST) + 30 * 60_000; // the question came 30 minutes in
 
   it('a finished card counts from when its work finished (finishedAt), not from the last instruction', () => {
     // lastActivity moves on user input only: after a 40-minute turn it would overstate by 40 minutes.
     for (const col of ['idle', 'closed']) {
-      const html = face.renderCardFace(faceCard({ finishedAt: DONE, doneAt: DONE }), col);
-      expect(html, col).toContain(stamp(DONE));
-      expect(html, col).not.toContain(`data-ts="${ts}"`);
+      expect(face.cardOf(faceCard({ finishedAt: DONE, doneAt: DONE }), col).since, col).toBe(DONE);
     }
     // Only an inferred finish (doneAt from lastActivity, a legacy record): no stamp — never a wrong age.
-    expect(face.renderCardFace(faceCard({ doneAt: Date.parse(LAST) }), 'idle')).not.toContain('rel-time');
-    expect(face.renderCardFace(faceCard(), 'closed')).not.toContain('rel-time');
+    expect(face.cardOf(faceCard({ doneAt: Date.parse(LAST) }), 'idle').since).toBeUndefined();
+    expect(face.cardOf(faceCard(), 'closed').since).toBeUndefined();
   });
 
   it('a waiting card counts from when it started waiting (waitingSince) — without that stamp, nothing', () => {
-    expect(face.renderCardFace(faceCard({ waitingSince: WAIT, doneAt: DONE }), 'waiting')).toContain(stamp(WAIT));
+    expect(face.cardOf(faceCard({ waitingSince: WAIT, doneAt: DONE }), 'waiting').since).toBe(WAIT);
     // A wrong number is worse than none on a triage surface: never the last instruction.
-    expect(face.renderCardFace(faceCard(), 'waiting')).not.toContain('rel-time');
+    expect(face.cardOf(faceCard(), 'waiting').since).toBeUndefined();
   });
 
   it('a running card shows its live timer instead; an armed resume shows its own time', () => {
-    expect(
-      face.renderCardFace(faceCard({ activityState: 'working', activeLegStartedAtMs: 5 }), 'working'),
-    ).not.toContain('rel-time');
+    // The running clock counts from the leg's start (the element's 'Running · 3m 49s').
+    expect(face.cardOf(faceCard({ activityState: 'working', activeLegStartedAtMs: 5 }), 'working')).toMatchObject({
+      status: 'running',
+      since: 5,
+    });
     const resume = faceCard({
       autoResume: { kind: 'retry', at: Date.parse(LAST) + 60_000, attempt: 1, maxAttempts: 3, reason: 'rate limit' },
     });
-    expect(face.renderCardFace(resume, 'working')).not.toContain('rel-time');
+    const c = face.cardOf(resume, 'working');
+    expect(c.status).toBe('waiting');
+    expect(String(c.statusText)).toMatch(/자동 재개 · 시도 1\/3$/);
+    expect(c.since).toBeUndefined();
   });
 
-  it('no clock in the markup: an unparsable stamp shows nothing, equal data renders equal HTML', () => {
-    expect(face.renderCardFace(faceCard({ finishedAt: 'not a number' }), 'idle')).not.toContain('rel-time');
-    expect(face.renderCardFace(faceCard({ waitingSince: 'x' }), 'waiting')).not.toContain('rel-time');
+  it('no clock in the data: an unparsable stamp shows nothing, equal data gives an equal card', () => {
+    expect(face.cardOf(faceCard({ finishedAt: 'not a number' }), 'idle').since).toBeUndefined();
+    expect(face.cardOf(faceCard({ waitingSince: 'x' }), 'waiting').since).toBeUndefined();
     const done = faceCard({ finishedAt: Date.parse(LAST) });
-    expect(face.renderCardFace(done, 'idle')).toBe(face.renderCardFace(done, 'idle'));
+    expect(JSON.stringify(face.cardOf(done, 'idle'))).toBe(JSON.stringify(face.cardOf(done, 'idle')));
   });
 });
 
 describe('collapsed face — the context level is a warning, the panel bar uses the same levels', () => {
-  const face = load<Face>(FACE_FNS, FACE_VARS, FACE_ENV);
-  const ctx = (pct: number) => faceCard({ tokenUsage: { totalInputTokens: 1, contextUsagePercent: pct } });
+  const face = load<Face>(CARD_OF_FNS, CARD_OF_VARS, FACE_ENV);
+  const ctx = (pct: number) =>
+    face.cardOf(faceCard({ tokenUsage: { totalInputTokens: 1, contextUsagePercent: pct } }), 'idle');
 
   it('over 60% amber, over 80% red with the band in the tooltip; below, the plain number', () => {
     expect(face.ctxLevel(12)).toBe('');
     expect(face.ctxLevel(61)).toBe('ctx-warn');
     expect(face.ctxLevel(81)).toBe('ctx-danger');
     expect(face.ctxLevel('x')).toBe('');
-    expect(face.renderCardFace(ctx(12), 'idle')).toContain('<span class="metric" title="Context window used">');
-    expect(face.renderCardFace(ctx(65), 'idle')).toContain(
-      '<span class="metric ctx-warn" title="Context window used">',
-    );
-    expect(face.renderCardFace(ctx(90), 'idle')).toContain(
-      '<span class="metric ctx-danger" title="Context window used — 80% 넘게 찼다">',
-    );
+    expect(ctx(12)).toMatchObject({ contextPct: 12, contextLevel: '', titles: { context: 'Context window used' } });
+    expect(ctx(65)).toMatchObject({ contextLevel: 'warn', titles: { context: 'Context window used' } });
+    expect(ctx(90)).toMatchObject({
+      contextLevel: 'danger',
+      titles: { context: 'Context window used — 80% 넘게 찼다' },
+    });
   });
 
   it('red text clears 4.5:1 on the dimmed (sleeping / archived) card too; a crowded metrics row wraps inside the card', () => {
-    expect(TEMPLATE).toMatch(/\.card-metrics \.metric\.ctx-danger \{[^}]*var\(--st-fail-text\)/);
-    expect(TEMPLATE).toMatch(/\.card-metrics \.card-pr\.is-closed \{[^}]*var\(--st-fail-text\)/);
+    // The page keeps the red text token (dark and light) and hands it to the element through the
+    // token wrapper; the element's styles colour the danger metric with it and wrap its metrics row
+    // ('draws face extras: … context level …' checks the level; the layout is its styles.ts).
     expect(TEMPLATE.match(/--st-fail-text: #[0-9a-f]{6};/g)?.length).toBe(2); // dark and light
-    expect(TEMPLATE).toMatch(/\.card-metrics \{[^}]*flex-wrap: wrap;[^}]*max-width: 100%;/);
-    expect(TEMPLATE).toMatch(/\.card-foot \{[^}]*flex-wrap: wrap;/);
+    expect(TEMPLATE).toMatch(/\.ui-tok \{[^}]*--ui-st-fail-text: var\(--st-fail-text\);/);
+    expect(TEMPLATE).toContain('<section class="inbox ui-tok" id="inbox"');
   });
 
   it('one threshold table for both surfaces', () => {
@@ -1519,10 +1521,6 @@ describe('collapsed face — the context level is a warning, the panel bar uses 
     expect(clientFn('panelInfoHtml')).toContain(
       'ctxLevel(ctx, s.contextTokens, s.autoCompactTokens, s.compactPending)',
     );
-    expect(clientFn('renderCardFace')).toContain(
-      'ctxLevel(ctxPct, s.contextTokens, s.autoCompactTokens, s.compactPending)',
-    );
-    expect(TEMPLATE).toMatch(/\.card-metrics \.metric\.ctx-warn svg \{[^}]*var\(--st-wait\)/);
-    expect(TEMPLATE).toMatch(/\.card-metrics \.metric\.ctx-danger \{[^}]*var\(--st-fail-text\)/);
+    expect(clientFn('cardOf')).toContain('ctxLevel(ctxPct, s.contextTokens, s.autoCompactTokens, s.compactPending)');
   });
 });

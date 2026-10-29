@@ -164,11 +164,11 @@ describe('slot — two <ui-agent-queue>, each in a token wrapper', () => {
     const capacity = TEMPLATE.indexOf(
       '<div class="capacity-host ui-tok" id="capacity" hidden><ui-agent-queue id="capacity-aq" lang="ko"></ui-agent-queue></div>',
     );
-    const inbox = TEMPLATE.indexOf('<section class="inbox" id="inbox"');
+    const inbox = TEMPLATE.indexOf('<section class="inbox ui-tok" id="inbox"');
     const lane = TEMPLATE.indexOf(
       '<div class="cron-lane ui-tok" id="cron-lane" hidden><ui-agent-queue id="cron-aq" lang="ko"></ui-agent-queue></div>',
     );
-    const kanban = TEMPLATE.indexOf('<div class="kanban" id="kanban"');
+    const kanban = TEMPLATE.indexOf('<ui-agent-inbox id="kanban" class="kanban" view="board">');
     expect(stats).toBeGreaterThan(-1);
     expect(capacity).toBeGreaterThan(stats);
     expect(inbox).toBeGreaterThan(capacity);
