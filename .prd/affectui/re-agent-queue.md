@@ -1,6 +1,7 @@
 # Agent Queue → LLM 가용량 · CRON 레인
 
 Status: 구현 [SHIPPED] · 2026-10-26 · 기준 main `ff6c9ac` · 이슈 #444 (에픽 #437) · 후속 #447 · SSOT [`ssot.md`](ssot.md)
+> 2026-10-29: 인라인 사본(가용량 `renderCapacity*` · `cap*` 렌더러, 레인 `renderCronTileHead` · `renderCronLaneHead` · `renderCronStrip` · `cronStats` · `cronQueue` · `cronRunChart` · `cron*Announce*`, `aq*` 문법(알약 · 로빙 · 계정 카드 · `#aq-live`), `.sec-toggle` 접기 버튼, `.cap-*` · `.aq-*` · 타일 CSS)은 이 설계를 옮긴 라이브러리 요소 `@2lab.ai/ui` `<ui-agent-queue>`(0.4.2)로 바뀌었다 — 공급자만 받는 `#capacity-aq`, 레인만 받는 `#cron-aq` 두 개. 알약·막대·20% 선·마크·계정 카드·로빙·타임라인·접힌 칩·네 숫자·다음 실행 줄·스트립·24시간 차트·카운트다운·알림은 라이브러리 `agent-queue.test.ts`가, 데이터 매핑(`capData` — 초 단위 `timeUnit:'s'`, 이유 키, 티어 라벨, 가려진 이름의 응답별 id; `laneData` — 그룹 키 = 잡 id, 스트립 글리프 규칙, 기록만 세는 `runs24h`, `historyCap` · `recorded:false`, `잡 정보 없음` 노트)·잡별 카드 상자(`slot="job:<그룹 키>"`, 보드 카드는 그대로 리컨실러가 채움)·`ui-collapse` → 페이지의 접기(`toggleSection`)·`ui-job-open` → 서랍은 `dashboard-affectui-agent-queue-client.test.ts`가 고정한다. 서랍(지난 실행)은 페이지 것으로 남는다. 레인 카드의 껍데기(보드 카드)는 agent-inbox 교체(6/6)의 몫.
 앞선 계약: [`../12-cron-lane-and-llm-capacity-spec.md`](../12-cron-lane-and-llm-capacity-spec.md) T4·T5·T7·T9, §6(v2), §7(단순화 카드)
 
 증거 라벨: **[REF]** = affectui.com/components/agent-queue 페이지·docs 청크·데모 CSS·번들(2026-10-26 판독, Pro 항목 — 코드·CSS 미반입) ·

@@ -1,22 +1,31 @@
 /**
- * affectUI Agent Queue → LLM 가용량 · CRON 레인 (#444, .prd/affectui/re-agent-queue.md D1–D20).
+ * affectUI Agent Queue → LLM 가용량 · CRON 레인, client half (#444, .prd/affectui/re-agent-queue.md D1–D20).
+ * Both sections are @2lab.ai/ui <ui-agent-queue> — the element the inline copy was ported to — one
+ * instance with providers only (#capacity-aq), one with the lane only (#cron-aq). Executes the shipped
+ * page code cut out of renderDashboardPage()'s template literal and cooked exactly as the browser
+ * receives it, with injected fakes: the host contract.
  *
- * Executes the shipped client code cut out of renderDashboardPage()'s template (harness of
- * dashboard-cron-capacity-client.test.ts). Capacity input is the real buildCapacityView output.
+ *   slot      two elements in token wrappers, the script that defines them, no inline copy left
+ *   capData   the capacity view (epoch seconds) → providers / accounts / refills, reason keys, tier
+ *             labels, the error, the fold; ids that never cross a masked pool's responses (R3)
+ *   laneData  the CRON plan → jobs keyed by group key, runs by the strip's glyph rule, runs24h from
+ *             the records only, historyCap and recorded:false for the lower bounds, the job note
+ *   wiring    the job boxes in their slots, the reconciler's lead cards, one paint per change,
+ *             ui-collapse → the page's fold, ui-job-open → the drawer, focus back from the drawer
  *
- *   D1   two sections, one grammar — static live region, lane holders
- *   D2   pill · D3 live countdown · D4 one polite announcement per load
- *   D5   tokens · D6 motion · D7 container queries
- *   D8   provider head pill · D9 20% line · D10 account marks · D11 account card
- *   D12  roving focus · D13 all-blocked shading · D14 folded chip marker
- *   D15  lane head pills · D16 four tiles · D17 next-fire queue · D18 live tile countdown
- *   D19  24h run chart · D20 the drawer stays the pinned card
+ * The parity checks run the host's data through the library's own logic (dayRuns, poolState,
+ * firstReturn, nextRefill — exported by @2lab.ai/ui). What the element itself draws and does — pills,
+ * bars, the 20% line, marks and the account card, roving focus, the timeline, the folded chips, the
+ * four numbers, the queue, the strip, the chart, live countdowns and announcements — is owned by the
+ * library's suite (src/components/agent-queue/agent-queue.test.ts); the table at the end names the
+ * library test that now covers each moved test.
  */
 
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { buildCapacityView, CAPACITY_LOW_PCT } from '../capacity-view';
+import { UI_LIB_FILE, uiLibDistDir } from '../dashboard';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -49,8 +58,36 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
+/** A page-level `document.addEventListener(type, function(e) {…});`, run against a fake document. */
+function docListener(type: string, inject: Record<string, unknown>): (e: unknown) => void {
+  const head = `document.addEventListener('${type}', function(e) {`;
+  const start = TEMPLATE.indexOf(head);
+  if (start < 0) throw new Error(`no document ${type} listener`);
+  if (TEMPLATE.indexOf(head, start + 1) >= 0) throw new Error(`${type} listened twice`);
+  const src = cook(TEMPLATE.slice(start, TEMPLATE.indexOf('\n});\n', start) + 4));
+  let handler: ((e: unknown) => void) | null = null;
+  const document = { addEventListener: (_t: string, f: (e: unknown) => void) => (handler = f) };
+  const names = Object.keys(inject);
+  new Function('document', ...names, src)(document, ...names.map((n) => inject[n]));
+  if (!handler) throw new Error('listener not registered');
+  return handler;
+}
 
-// ── capacity fixture (synthetic, the harness's fixtures-agent-queue.ts shape) ──
+// The library's own logic, for parity. The package root (the entry tsc's node resolution can type;
+// '@2lab.ai/ui/agent-queue' is an exports subpath it cannot) defines the element classes at load,
+// which needs an HTMLElement to extend — no customElements here, so nothing is registered.
+type Lib = Record<string, (...args: any[]) => any> & { LOW_PCT: number };
+let lib: Lib;
+const hadHTMLElement = 'HTMLElement' in globalThis;
+beforeAll(async () => {
+  if (!hadHTMLElement) (globalThis as any).HTMLElement = class {};
+  lib = (await import('@2lab.ai/ui')) as unknown as Lib;
+}, 60_000);
+afterAll(() => {
+  if (!hadHTMLElement) delete (globalThis as any).HTMLElement;
+});
+
+// ── capacity fixture: the real buildCapacityView output (epoch seconds) ──
 const NOW_S = 1_800_000_000;
 const NOW = NOW_S * 1000;
 const H = 3600;
@@ -65,555 +102,249 @@ const a = (over: Record<string, unknown>) => ({
   seven_day: null,
   ...over,
 });
+// ai4 and ai9 carry no tier: Claude counts them on an assumed Max x20 (operator, 2026-10-26).
 const TIERS = {
   'claude:ai1': 'claude-max-20x',
-  'claude:ai2': 'claude-max-20x',
   'claude:ai3': 'claude-max-5x',
   'claude:ai6': 'claude-max-20x',
-  'claude:ai7': 'claude-max-20x',
-  'claude:ai8': 'claude-max-20x',
-  'claude:ai9': 'claude-max-20x',
   'claude:aa': 'claude-max-20x',
   'claude:ab': 'claude-max-20x',
 };
-const view = (accounts: Record<string, unknown>[]) =>
-  buildCapacityView({ current: null, accounts } as never, TIERS as never, NOW) as any;
-const ai1 = a({ name: 'claude:ai1@c', group: 'claude', five_hour: w(0.35, 2 * H + 600), seven_day: w(0.42, 3 * D) });
-const ai2 = a({ name: 'claude:ai2@c', group: 'claude', five_hour: w(0.9, 40 * 60), seven_day: w(0.61, 2 * D + 5 * H) });
-const ai3 = a({
-  name: 'claude:ai3@c',
-  group: 'claude',
-  blocked: '5h 100.0% > 99%',
-  five_hour: w(1, 80 * 60),
-  seven_day: w(0.7, 4 * D),
-});
-const ai4 = a({
-  name: 'claude:ai4@c',
-  group: 'claude',
-  status: 'cooldown',
-  blocked: 'cooldown',
-  cooldown_until: NOW_S + 25 * 60,
-  five_hour: w(0.2, 3 * H),
-  seven_day: w(0.3, 5 * D),
-});
-const ai6 = a({ name: 'claude:ai6@c', group: 'claude', blocked: 'paused', five_hour: w(0, H), seven_day: w(0, D) });
-const codex = [
-  a({ name: 'codex:ai5@c', group: 'codex', type: 'codex', seven_day: w(0.5, 3 * D + 2 * H) }),
-  a({ name: 'codex:ai1@c', group: 'codex', type: 'codex', seven_day: w(0.95, 20 * H) }),
-  a({ name: 'codex:ai2@c', group: 'codex', type: 'codex', blocked: '7d 100.0% > 99%', seven_day: w(1, D + 5 * H) }),
-  a({ name: 'codex:ai9@c', group: 'codex', type: 'codex', seven_day: w(0, D) }),
-];
-const MAIN = view([ai1, ai2, ai3, ai4, ai6, ...codex]);
-const CLAUDE = MAIN.groups.find((g: any) => g.group === 'claude');
-const CODEX = MAIN.groups.find((g: any) => g.group === 'codex');
-// every Claude account blocked: ai3 (5h ceiling, back at +80m) and ai7 (weekly ceiling)
-const ai7 = a({
-  name: 'claude:ai7@c',
-  group: 'claude',
-  blocked: '7d 100.0% > 99%',
-  five_hour: w(0, H),
-  seven_day: w(1, 2 * D),
-});
-const EMPTY = view([ai3, ai7]).groups[0];
-// a usable but low pool: 10% left now
-const LOW = view([a({ name: 'claude:ai8@c', group: 'claude', five_hour: w(0.9, H), seven_day: w(0.1, 2 * D) })])
-  .groups[0];
-// unblocked and no 5h reading · weekly spent without a block · no weekly reading at all
-const ODD = view([
+const POOL = [
+  // usable, the week binds first; its reading is 4 hours old
+  a({
+    name: 'claude:ai1@c',
+    group: 'claude',
+    five_hour: w(0.35, 2 * H + 600),
+    seven_day: w(0.42, 3 * D),
+    last_refresh_ms: NOW - 4 * H * 1000,
+  }),
+  // 5h ceiling, back at the 5h reset in 80 minutes
+  a({
+    name: 'claude:ai3@c',
+    group: 'claude',
+    blocked: '5h 100.0% > 99%',
+    five_hour: w(1, 80 * 60),
+    seven_day: w(0.7, 4 * D),
+  }),
+  // a cooldown longer than the throttle: back in 25 minutes (untiered → x20 assumed)
+  a({
+    name: 'claude:ai4@c',
+    group: 'claude',
+    status: 'cooldown',
+    blocked: 'cooldown',
+    cooldown_until: NOW_S + 25 * 60,
+    five_hour: w(0.2, 3 * H),
+    seven_day: w(0.3, 5 * D),
+  }),
+  // paused by the operator: held out of the totals
+  a({ name: 'claude:ai6@c', group: 'claude', blocked: 'paused', five_hour: w(0, H), seven_day: w(0, D) }),
+  // unblocked, no 5h reading (untiered → x20 assumed) · the week spent without a block · no reading at all
   a({ name: 'claude:ai9@c', group: 'claude', seven_day: w(0.2, 2 * D) }),
   a({ name: 'claude:aa@c', group: 'claude', five_hour: w(0.1, H), seven_day: w(1, 2 * D) }),
   a({ name: 'claude:ab@c', group: 'claude' }),
-  a({ name: 'claude:ai1@c', group: 'claude', five_hour: w(0.2, H), seven_day: w(0.2, 2 * D) }),
-]).groups[0];
-const UNKNOWN = view([a({ name: 'codex:ai9@c', group: 'codex', type: 'codex', seven_day: w(0, D) })]).groups[0];
-
-const AQ_VARS = ['CAP_TIERS', 'CAP_CAUSE', 'CAP_WORD', 'CAP_5H', 'CAP_7D', 'CAP_LOW_PCT', '_aqOpen', '_aqFocusKey'];
-const AQ_FNS = [
-  'esc',
-  'escAttr',
-  'pad2',
-  'capCountdown',
-  'capClockLabel',
-  'capFmt1',
-  'capGain',
-  'capPct',
-  'capCount',
-  'capNextLine',
-  'capDur',
-  'capNextEvent',
-  'capNextShort',
-  'capBarRow',
-  'capAssumed',
-  'capDisclosure',
-  'capAx',
-  'capTimeline',
-  'capAdvance',
-  'aqLeft',
-  'aqLeftSfx',
-  'aqTime',
-  'aqPill',
-  'aqPlain',
-  'capUnitState',
-  'capReason',
-  'capTierLabel',
-  'capMs',
-  'capPaused',
-  'capFirstReturn',
-  'capEmptyAt',
-  'capProvPill',
-  'capProvHead',
-  'capUnitKey',
-  'capDupNames',
-  'capRemapKey',
-  'capSelectionAfter',
-  'capMark',
-  'capAccountCard',
-  'capWorkers',
-  'capChipLim',
-  'capAnnounceDiff',
-  'renderCapacitySummary',
-  'renderCapacityGroup',
-  'renderCapacity',
+  // Codex: weekly window only; one at its weekly ceiling, one with no tier (left out)
+  a({ name: 'codex:ai5@c', group: 'codex', type: 'codex', seven_day: w(0.5, 3 * D + 2 * H) }),
+  a({ name: 'codex:ai2@c', group: 'codex', type: 'codex', blocked: '7d 100.0% > 99%', seven_day: w(1, D + 5 * H) }),
+  a({ name: 'codex:ai9@c', group: 'codex', type: 'codex', seven_day: w(0, D) }),
 ];
-type Cap = Record<string, (...args: any[]) => any>;
-/** Loaded on first use, so a missing function fails its own tests (RED per decision), not the file. */
-function lazyFns(fns: string[], vars: string[]): Cap {
-  let loaded: Cap | null = null;
-  return new Proxy({} as Cap, {
-    get: (_t, k: string) => {
-      if (!loaded) loaded = load<Cap>(fns, vars);
-      return loaded[k];
-    },
-  });
-}
-function once<T>(f: () => T): () => T {
-  let v: { x: T } | null = null;
-  return () => {
-    if (!v) v = { x: f() };
-    return v.x;
-  };
-}
-const cap = lazyFns(AQ_FNS, AQ_VARS);
-// Cutting ~40 functions out of the 15k-line template is slow on a loaded machine: pay it once,
-// outside any single test's 5 s budget (each function is still looked up by name, so a missing
-// one fails here and every test that needs it).
-beforeAll(() => {
-  try {
-    void cap.aqLeft;
-    void cron.aqLeft;
-  } catch {
-    // reported by the tests themselves
-  }
-}, 120_000);
-/** A live countdown; its suffix (" 후 복귀") lives inside it so the tick can say "곧 복귀". */
-const timeAt = (ms: number, text: string, sfx = '') =>
-  `<time class="aq-left" role="timer" datetime="${new Date(ms).toISOString()}" data-aq-at="${ms}"${sfx ? ` data-aq-sfx="${sfx}"` : ''}>${text}${sfx}</time>`;
-/** A local "HH:MM" (the chart labels each rolling hour by its start). */
-const hhmm = (ms: number) => {
-  const t = new Date(ms);
-  return `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`;
-};
+const view = (accounts: Record<string, unknown>[], atMs = NOW, anonymous = false) =>
+  buildCapacityView({ current: null, email_anonymous: anonymous, accounts } as never, TIERS as never, atMs) as any;
+const MAIN = { ...view(POOL), fetchedAtMs: NOW - 12_000 };
+const CLAUDE = MAIN.groups.find((g: any) => g.group === 'claude');
 
-describe('D1 — two sections, one grammar', () => {
-  it('the live region is static, polite and outside both re-rendered sections', () => {
-    const live = '<div class="aq-sr" id="aq-live" aria-live="polite" aria-atomic="true"></div>';
-    expect(TEMPLATE).toContain(live);
-    const at = TEMPLATE.indexOf(live);
-    expect(at).toBeGreaterThan(TEMPLATE.indexOf('<aside class="cron-drawer"'));
-    const capAt = TEMPLATE.indexOf('<section class="capacity" id="capacity"');
-    expect(at < capAt || at > TEMPLATE.indexOf('</section>', capAt)).toBe(true);
-  });
-  it('the CRON lane holds the tiles, the queue column and the chart; the groups keep their id', () => {
-    const lane = TEMPLATE.slice(
-      TEMPLATE.indexOf('<div class="cron-lane" id="cron-lane"'),
-      TEMPLATE.indexOf('<div class="kanban" id="kanban"'),
+type Fns = Record<string, (...args: any[]) => any>;
+const CAP_FNS = ['capUnitState', 'capReason', 'capDupNames', 'capAccount', 'capData'];
+const capFns = (open = false) =>
+  load<Fns>(CAP_FNS, ['CAP_TIERS'], { secIsOpen: (s: string) => s === 'capacity' && open });
+
+describe('slot — two <ui-agent-queue>, each in a token wrapper', () => {
+  it('LLM 가용량 sits between the stats strip and the inbox; the CRON lane inside the inbox, above the columns', () => {
+    const stats = TEMPLATE.indexOf('<section class="stats" id="stats"');
+    const capacity = TEMPLATE.indexOf(
+      '<div class="capacity-host ui-tok" id="capacity" hidden><ui-agent-queue id="capacity-aq" lang="ko"></ui-agent-queue></div>',
     );
-    expect(lane).toContain('<div class="aq-lane-top" id="cron-lane-top"></div>');
-    expect(lane).toContain(
-      '<div class="aq-queue" id="cron-queue" role="group" aria-label="다음 실행 순서" data-aq-rove="cron-queue"></div>',
+    const inbox = TEMPLATE.indexOf('<section class="inbox" id="inbox"');
+    const lane = TEMPLATE.indexOf(
+      '<div class="cron-lane ui-tok" id="cron-lane" hidden><ui-agent-queue id="cron-aq" lang="ko"></ui-agent-queue></div>',
     );
-    expect(lane).toContain('<div class="cron-groups" id="cron-groups"></div>');
-    expect(lane).toContain('<div class="aq-chart" id="cron-lane-chart"></div>');
-    expect(lane.indexOf('id="cron-queue"')).toBeLessThan(lane.indexOf('id="cron-groups"'));
-    expect(lane.indexOf('id="cron-groups"')).toBeLessThan(lane.indexOf('id="cron-lane-chart"'));
-    // the fold controls every part it hides (PR review R1)
-    expect(lane).toContain('aria-controls="cron-lane-top cron-queue cron-groups cron-lane-chart"');
+    const kanban = TEMPLATE.indexOf('<div class="kanban" id="kanban"');
+    expect(stats).toBeGreaterThan(-1);
+    expect(capacity).toBeGreaterThan(stats);
+    expect(inbox).toBeGreaterThan(capacity);
+    expect(lane).toBeGreaterThan(inbox);
+    expect(kanban).toBeGreaterThan(lane);
+    expect(TEMPLATE.match(/<ui-agent-queue /g)?.length).toBe(2);
   });
-});
 
-describe('D2 — the pill', () => {
-  it('a glyph-led status word, never a live region', () => {
-    expect(cap.aqPill('paused', '⏸ 제한 2')).toBe('<span class="aq-pill is-paused">⏸ 제한 2</span>');
-    expect(cap.aqPill('ok', '● 사용 가능')).not.toMatch(/role=|aria-live/);
+  it('the page loads the element from the installed library, and the route serves it', () => {
+    expect(TEMPLATE).toContain(
+      '<script type="module" src="/dashboard/ui/agent-queue.js?v=${UI_LIB_VERSION}"></script>',
+    );
+    expect(UI_LIB_FILE.test('agent-queue.js')).toBe(true);
+    const dir = uiLibDistDir();
+    expect(dir && existsSync(join(dir, 'agent-queue.js'))).toBe(true);
   });
-});
 
-describe('D3 — a live countdown', () => {
-  it('days · hours · minutes (floored) · seconds · soon', () => {
-    expect(cap.aqLeft(NOW + (D + 5 * H + 59) * 1000, NOW)).toBe('1일 5시간');
-    expect(cap.aqLeft(NOW + (80 * 60 + 59) * 1000, NOW)).toBe('1시간 20분');
-    expect(cap.aqLeft(NOW + (24 * 60 + 59) * 1000, NOW)).toBe('24분');
-    expect(cap.aqLeft(NOW + 42_500, NOW)).toBe('42초');
-    expect(cap.aqLeft(NOW, NOW)).toBe('곧');
-    expect(cap.aqLeft(NOW - 5000, NOW)).toBe('곧');
-  });
-  it('a <time role="timer"> carries the epoch it counts to', () => {
-    expect(cap.aqTime(NOW + 25 * 60_000, NOW)).toBe(timeAt(NOW + 25 * 60_000, '25분'));
-  });
-  it('"곧" never reads "곧 후" (PR review R1)', () => {
-    expect(cap.aqLeftSfx(NOW, NOW, ' 후 실행')).toBe('곧 실행');
-    expect(cap.aqLeftSfx(NOW - 1, NOW, ' 후')).toBe('곧');
-    expect(cap.aqLeftSfx(NOW + 60_000, NOW, ' 후 복귀')).toBe('1분 후 복귀');
-    expect(cap.aqTime(NOW - 5000, NOW, ' 후 복귀')).toContain('>곧 복귀</time>');
-    const due = cron.planCronLane({ working: [], waiting: [], idle: [], closed: [] }, [job('j', 'due', -M, [])], null);
-    expect(cron.cronQueue(due, NOW, null)).toContain('aria-label="due, 곧 실행, 1/1');
-    expect(cron.cronStats(due, NOW)).toContain('data-aq-sfx=" 후">곧</time>');
-    for (const out of [
-      cron.cronQueue(due, NOW, null),
-      cron.cronStats(due, NOW),
-      cron.renderCronTileHead(due.groups[0], NOW),
+  it('no inline copy is left: renderers, grammar, toggles, live region and their styles are gone', () => {
+    for (const name of [
+      'renderCapacity',
+      'renderCapacitySummary',
+      'renderCapacityGroup',
+      'capWorkers',
+      'capAccountCard',
+      'capTimeline',
+      'capSelectionAfter',
+      'capAnnounceDiff',
+      'renderCronTileHead',
+      'renderCronLaneHead',
+      'renderCronStrip',
+      'cronStats',
+      'cronQueue',
+      'cronRunChart',
+      'cronAnnounceDiff',
+      'aqPill',
+      'aqAnnounce',
+      'aqRove',
+      'aqWrite',
+      'aqToggleCard',
     ])
-      expect(out).not.toContain('곧 후');
+      expect(TEMPLATE, name).not.toMatch(new RegExp(`function ${name}\\(`));
+    for (const id of ['aq-live', 'capacity-view', 'capacity-toggle', 'cron-toggle', 'cron-lane-head', 'cron-groups'])
+      expect(TEMPLATE, id).not.toContain(`id="${id}"`);
+    for (const sel of [
+      '.sec-toggle',
+      '.cap-chip',
+      '.cap-prov',
+      '.aq-mark',
+      '.aq-pop',
+      '.aq-stats',
+      '.cron-tile',
+      '.cr-tick',
+    ])
+      expect(TEMPLATE, sel).not.toContain(`${sel} {`);
+    expect(TEMPLATE).not.toContain('data-sec-toggle');
+    expect(TEMPLATE).not.toContain('data-cron-group');
+    // The board cards' CRON badge and the drawer stay the page's.
+    expect(TEMPLATE).toContain('.cron-badge {');
+    expect(TEMPLATE).toContain('id="cron-drawer"');
   });
-  it('capacity speaks epoch seconds, cron epoch ms — both read "24분" (review R1)', () => {
-    expect(cap.capMs(NOW_S)).toBe(NOW);
-    const cool = a({ ...ai4, cooldown_until: NOW_S + 24 * 60 });
-    const g = view([ai1, cool]).groups[0];
-    expect(g.units[1].returnAt).toBe(NOW_S + 24 * 60); // seconds, as the server sends it
-    expect(cap.capProvHead(g, NOW)).toContain(timeAt((NOW_S + 24 * 60) * 1000, '24분', ' 후 복귀'));
-    const q = cron.cronQueue(
-      cron.planCronLane({ working: [], waiting: [], idle: [], closed: [] }, [job('j', 'soon', 24 * M, [])], null),
-      NOW,
-      null,
-    );
-    expect(q).toContain(timeAt(NOW + 24 * M, '24분'));
+});
+
+describe('capData — the capacity view as the element’s providers', () => {
+  it('epoch seconds are said once (timeUnit s); the note, the fetch time and the page’s fold ride along', () => {
+    const d = capFns(false).capData(MAIN);
+    expect(d.timeUnit).toBe('s');
+    expect(d.fetchedAt).toBe((NOW - 12_000) / 1000);
+    expect(d.capacityNote).toBe('계정 = 최대 플랜 계정 1개 분량 · llmux');
+    expect(d.collapsible).toBe(true);
+    expect(d.collapsed).toEqual({ capacity: true });
+    expect(capFns(true).capData(MAIN).collapsed).toEqual({ capacity: false });
+    expect(d.capacityError).toBeUndefined();
+    expect(d.providers.map((p: any) => p.id)).toEqual(['claude', 'codex']);
   });
-  it('the tick rewrites only what changed, and rests while the tab is hidden', () => {
-    const { aqTickIn, aqTick } = load<Cap>(['aqLeft', 'aqLeftSfx', 'aqTickIn', 'aqTick'], [], {
-      document: { hidden: true, getElementById: vi.fn() },
+
+  it('a provider keeps the server’s numbers: both measures only with a 5h window, its counts, its oldest reading', () => {
+    const [claude, codex] = capFns().capData(MAIN).providers;
+    expect(claude).toMatchObject({
+      id: 'claude',
+      name: CLAUDE.label,
+      source: 'llmux',
+      total: CLAUDE.total,
+      fiveHour: CLAUDE.now,
+      weekly: CLAUDE.week,
+      state: CLAUDE.state,
+      accountCount: 7,
+      countedAccounts: 5,
+      excluded: { unknownTier: 0, held: 1, noMeasure: 1 },
+      estimated: CLAUDE.estimated,
+      unmeasured5h: CLAUDE.unmeasured5h,
+      measuredAt: CLAUDE.oldestRefreshAt,
     });
-    let writes = 0;
-    const el = {
-      _t: '',
-      getAttribute: (n: string) => (n === 'data-aq-at' ? String(NOW + 90_000) : null),
-      get textContent() {
-        return this._t;
-      },
-      set textContent(v: string) {
-        writes++;
-        this._t = v;
-      },
-    };
-    const root = { querySelectorAll: (sel: string) => (sel === '[data-aq-at]' ? [el] : []) };
-    aqTickIn(root, NOW);
-    expect(el.textContent).toBe('1분');
-    aqTickIn(root, NOW + 1000);
-    expect(writes).toBe(1);
-    aqTickIn(root, NOW + 31_000);
-    expect(el.textContent).toBe('59초');
-    expect(writes).toBe(2);
-    // the suffix rides along, and at zero "곧" drops its "후" (PR review R1)
-    const sfx = {
-      _t: '',
-      getAttribute: (n: string) =>
-        n === 'data-aq-at' ? String(NOW + 90_000) : n === 'data-aq-sfx' ? ' 후 복귀' : null,
-      textContent: '',
-    };
-    const root2 = { querySelectorAll: () => [sfx] };
-    aqTickIn(root2, NOW);
-    expect(sfx.textContent).toBe('1분 후 복귀');
-    aqTickIn(root2, NOW + 90_000);
-    expect(sfx.textContent).toBe('곧 복귀');
-    // hidden → no lookup at all
-    const doc = { hidden: true, getElementById: vi.fn() };
-    load<Cap>(['aqLeft', 'aqLeftSfx', 'aqTickIn', 'aqTick'], [], { document: doc }).aqTick();
-    expect(doc.getElementById).not.toHaveBeenCalled();
-    expect(typeof aqTick).toBe('function');
-    // one 1 Hz tick for the page (review R1): an additive call on the shared timer path
-    expect(clientFn('updateTimers')).toContain('updateTimersIn(document); aqTick();');
-    expect(TEMPLATE).not.toMatch(/setInterval\(aqTick/);
-    for (const id of ['capacity', 'cron-lane', 'cron-drawer'])
-      expect(clientFn('aqTick')).toContain(`getElementById('${id}')`);
+    expect(CLAUDE.oldestRefreshAt).toBeGreaterThan(0);
+    expect('fiveHour' in codex).toBe(false);
+    expect(codex.weekly).toBe(MAIN.groups[1].week);
+  });
+
+  it('events become refills: same time (seconds), cause and account; dNow → fiveHour, dWeek → weekly', () => {
+    const [claude] = capFns().capData(MAIN).providers;
+    expect(claude.refills).toHaveLength(CLAUDE.events.length);
+    CLAUDE.events.forEach((e: any, i: number) => {
+      expect(claude.refills[i]).toEqual({
+        at: e.at,
+        cause: e.cause,
+        fiveHour: e.dNow,
+        weekly: e.dWeek,
+        account: e.account,
+      });
+    });
+  });
+
+  it('each unit is a worker: its state and reason key from its own fields, its tier as a label, in llmux order', () => {
+    const [claude, codex] = capFns().capData(MAIN).providers;
+    const by = (p: any) => Object.fromEntries(p.accounts.map((x: any) => [x.name, x]));
+    const c = by(claude);
+    expect(claude.accounts.map((x: any) => x.name)).toEqual(CLAUDE.units.map((u: any) => u.name));
+    expect(c.ai1).toMatchObject({ id: 'ai1', state: 'available', binding: '7d', tier: 'Max x20' });
+    expect(c.ai1.reason).toBeUndefined();
+    expect(c.ai3).toMatchObject({ state: 'limited', reason: '5h', tier: 'Max x5', returnAt: NOW_S + 80 * 60 });
+    expect(c.ai4).toMatchObject({
+      state: 'limited',
+      reason: 'cooldown',
+      tier: 'x20',
+      tierAssumed: true,
+      returnAt: NOW_S + 25 * 60,
+    });
+    expect(c.ai6).toMatchObject({ state: 'paused', reason: 'paused' });
+    expect(c.ai9).toMatchObject({ state: 'unmeasured', tier: 'x20', tierAssumed: true });
+    expect(c.aa).toMatchObject({ state: 'spent' });
+    expect(c.ab).toMatchObject({ state: 'excluded', reason: 'noMeasure' });
+    const x = by(codex);
+    expect(x.ai2).toMatchObject({ state: 'limited', reason: 'weekly', tier: 'Pro ($200)' });
+    expect(x.ai5).toMatchObject({ state: 'available', tier: 'Pro ($500)' });
+    expect(x.ai9).toMatchObject({ state: 'excluded', reason: 'unknownTier' });
+    expect(x.ai9.tier).toBeUndefined();
+    // the account card's numbers: this account's own 0..1
+    expect(c.ai1.fiveHour).toBe(CLAUDE.units.find((u: any) => u.name === 'ai1').now);
+  });
+
+  it('every reason llmux can give has a key the element says in Korean; a block it has no word for is 차단', () => {
+    const { capReason, capUnitState } = capFns();
+    const u = (over: Record<string, unknown>) => ({ counted: true, blocked: false, blocks: {}, now: 0.5, ...over });
+    expect(capReason(u({ counted: false, excluded: 'held', held: 'auth' }))).toBe('auth');
+    expect(capReason(u({ counted: false, excluded: 'held', held: 'other' }))).toBe('held');
+    expect(capReason(u({ blocked: true, blocks: { weekly: true } }))).toBe('weekly');
+    expect(capReason(u({ blocked: true, blocks: { scopedUntil: 1 } }))).toBe('model');
+    expect(capReason(u({ blocked: true, blocks: {} }))).toBe('차단');
+    expect(capReason(u({}))).toBe('');
+    expect(capUnitState(u({ counted: false, excluded: 'held' }))).toBe('paused');
+    expect(capUnitState(u({ counted: false, excluded: 'unknownTier' }))).toBe('excluded');
+  });
+
+  it('parity: the library reads the mapped pool as the server counted it (state, ⏸ first return, next gain, 20% line)', () => {
+    const d = lib.normalize(capFns().capData(MAIN));
+    const [claude, codex] = d.providers;
+    expect(lib.poolState(claude)).toBe(CLAUDE.state);
+    expect(lib.poolState(codex)).toBe(MAIN.groups[1].state);
+    // the chip's / pill's "⏸ 2 · 24분": the first return among the counted, blocked accounts
+    expect(lib.firstReturn(claude)).toBe((NOW_S + 25 * 60) * 1000);
+    // the 5시간 bar's "다음 +0.7계정 · 25분 후 · 차단 해제": ai4's cooldown lifting
+    const next = lib.nextRefill(claude, 'fiveHour', NOW);
+    expect(next).toMatchObject({ at: (NOW_S + 25 * 60) * 1000, cause: 'release', account: 'ai4' });
+    expect(lib.LOW_PCT).toBe(CAPACITY_LOW_PCT);
+  });
+
+  it('an unreadable view is its reason, in place of the cards', () => {
+    const { capData } = capFns();
+    const off = capData({ available: false, reason: 'llmux unreachable', fetchedAtMs: NOW, groups: [] });
+    expect(off.capacityError).toBe('llmux unreachable');
+    expect(off.providers).toBeUndefined();
+    expect(capData({ available: false, fetchedAtMs: NOW, groups: [] }).capacityError).toBe('알 수 없는 오류');
   });
 });
 
-describe('D4 — one polite sentence per load', () => {
-  const snapOf = (g: any, state: string) => ({ available: true, groups: [{ ...g, state }] });
-  it('the first load is a baseline', () => {
-    expect(cap.capAnnounceDiff(null, MAIN, NOW)).toBe('');
-  });
-  it('entering all-blocked, recovering, and dropping under 20% each have a sentence', () => {
-    expect(cap.capAnnounceDiff(snapOf(EMPTY, 'ok'), { available: true, groups: [EMPTY] }, NOW)).toBe(
-      'Claude 계정이 모두 막힘 — 1시간 20분 후 복귀',
-    );
-    expect(cap.capAnnounceDiff(snapOf(CLAUDE, 'empty'), MAIN, NOW)).toBe('Claude 다시 사용 가능 — 계정 2/5');
-    expect(cap.capAnnounceDiff(snapOf(LOW, 'ok'), { available: true, groups: [LOW] }, NOW)).toBe(
-      'Claude 지금 20% 아래 — 0.1/1.0 계정',
-    );
-  });
-  it('a countdown that only moved says nothing; the gravest change wins', () => {
-    const moved = { available: true, groups: [{ ...CLAUDE, events: [] }, CODEX] };
-    expect(cap.capAnnounceDiff(MAIN, moved, NOW + 60_000)).toBe('');
-    const prev = {
-      available: true,
-      groups: [
-        { ...LOW, group: 'x', state: 'ok' },
-        { ...EMPTY, state: 'ok' },
-      ],
-    };
-    const next = { available: true, groups: [{ ...LOW, group: 'x' }, EMPTY] };
-    expect(cap.capAnnounceDiff(prev, next, NOW)).toBe('Claude 계정이 모두 막힘 — 1시간 20분 후 복귀');
-  });
-  it('the loaders wire it: capacity on each fetch, the lane on each board render', () => {
-    expect(clientFn('loadCapacity')).toContain('capAnnounceDiff(');
-    expect(clientFn('loadCapacity')).toContain('aqAnnounce(');
-    expect(clientFn('syncCronLane')).toContain('cronAnnounceDiff(');
-    expect(clientFn('syncCronLane')).toContain('aqAnnounce(');
-    expect(clientFn('aqAnnounce')).toContain("getElementById('aq-live')");
-  });
-});
-
-describe('D5–D7 — tokens, motion, responsive', () => {
-  it('D5: warning text has its own token, darker in light theme (4.5:1 on white)', () => {
-    // the region's own token blocks, not the shared :root (~3137) / light (~3203) blocks
-    expect(TEMPLATE).toContain('\n:root { --aq-warn: var(--st-wait); --aq-warn-text: #f5a524; }\n');
-    expect(TEMPLATE).toContain('\n[data-theme="light"] { --aq-warn-text: #9a5b00; }\n');
-  });
-  it('D6: reduced motion stops every queue animation; nothing loops forever', () => {
-    expect(TEMPLATE).toMatch(
-      /@media \(prefers-reduced-motion: reduce\) \{[^@]*\.aq-mark, \.aq-q, \.aq-pop, \.aq-ch-ok, \.aq-ch-run, \.aq-ch-fail \{ animation: none; transition: none; \}/,
-    );
-    const aqRules = TEMPLATE.split('\n').filter((l) => /^\.aq-/.test(l));
-    expect(aqRules.length).toBeGreaterThan(10);
-    for (const l of aqRules) expect(l).not.toContain('infinite');
-  });
-  it('D7: the lane is a size container — 2×2 tiles at 560, stacked queue and a short chart under 600', () => {
-    expect(TEMPLATE).toContain('.cron-lane { container: aqlane / inline-size; }');
-    expect(TEMPLATE).toMatch(/\.aq-plot \{[^}]*height: 112px;/);
-    expect(TEMPLATE).toMatch(
-      /@container aqlane \(max-width: 599px\) \{ \.aq-lane-body \{ grid-template-columns: minmax\(0, 1fr\); \} \.aq-plot \{ height: 88px; \} \}/,
-    );
-    expect(TEMPLATE).toMatch(
-      /@container aqlane \(max-width: 560px\) \{ \.aq-stats \{ grid-template-columns: repeat\(2, minmax\(0, 1fr\)\);/,
-    );
-    expect(TEMPLATE).toContain('@media (pointer: coarse) { .aq-mark, .aq-q { min-height: 44px; }');
-  });
-});
-
-describe('D8 — the provider head says whether its workers are paused, and until when', () => {
-  it('blocked accounts: "⏸ 제한 p" with the earliest return counting down', () => {
-    const h = cap.capProvHead(CLAUDE, NOW);
-    expect(h).toContain(
-      '<div class="aq-head"><span class="cap-pname">Claude</span><span class="aq-name">llmux · 계정 5</span>',
-    );
-    expect(h).toContain(
-      `<span class="aq-pill is-paused">⏸ 제한 2 · ${timeAt((NOW_S + 25 * 60) * 1000, '25분', ' 후 복귀')}</span>`,
-    );
-  });
-  it('all blocked > blocked > low > ok; nothing countable reads 계산 불가', () => {
-    expect(cap.capProvHead(EMPTY, NOW)).toContain(
-      `<span class="aq-pill is-empty">✗ 모두 막힘 · ${timeAt((NOW_S + 80 * 60) * 1000, '1시간 20분', ' 후 복귀')}</span>`,
-    );
-    expect(cap.capProvHead(LOW, NOW)).toContain('<span class="aq-pill is-low">▲ 부족</span>');
-    const okOnly = view([ai1, ai2]).groups[0];
-    expect(cap.capProvHead(okOnly, NOW)).toContain('<span class="aq-pill is-ok">● 사용 가능</span>');
-    expect(cap.capProvHead(UNKNOWN, NOW)).toContain('<span class="aq-pill is-unknown">◌ 계산 불가</span>');
-    const spent = { ...EMPTY, units: [], events: [] };
-    expect(cap.capProvHead(spent, NOW)).toContain('<span class="aq-pill is-empty">✗ 소진</span>');
-  });
-  it('the card leads with that head', () => {
-    const html = cap.renderCapacity(MAIN, NOW, 1200);
-    expect(html).toContain('<div class="aq-head"><span class="cap-pname">Claude</span>');
-    expect(html).not.toContain('<div class="cap-pname">');
-  });
-});
-
-describe('D9 — the 20% line on each bar', () => {
-  it('a dashed mark at CAPACITY_LOW_PCT inside the bar', () => {
-    const row = cap.capBarRow(CLAUDE, 'h5', '5시간', '지금 쓸 수 있음', CLAUDE.now, 'dNow', NOW_S);
-    expect(row).toMatch(
-      /<div class="cap-bar" role="img" aria-label="[^"]*"><span style="width:[\d.]+%"><\/span><i class="cap-low" style="left:20%" title="20% 아래면 부족"><\/i><\/div>/,
-    );
-    expect(new Function(`${clientVar('CAP_LOW_PCT')} return CAP_LOW_PCT;`)()).toBe(CAPACITY_LOW_PCT);
-  });
-});
-
-/** A mark's key in the CLAUDE fixture: its place in the server's order + its display name. */
-const K = (name: string) => `claude|${['ai1', 'ai2', 'ai3', 'ai4', 'ai6'].indexOf(name)}|${name}`;
-
-describe('D10 — account marks (workers)', () => {
-  const workers = once(() => cap.capWorkers(CLAUDE, NOW, false, null, null));
-  const mark = (name: string) => {
-    const html = workers();
-    const i = html.indexOf(`data-aq-key="${K(name)}"`);
-    return html.slice(html.lastIndexOf('<button', i), html.indexOf('</button>', i) + 9);
-  };
-  it('a group named by its count, one mark per account in llmux order', () => {
-    expect(workers()).toContain(
-      '<div class="aq-workers" role="group" aria-label="Claude 계정 2/5 사용 가능" data-aq-rove="cap:claude">',
-    );
-    expect(workers()).toContain('<div class="aq-col-head"><span>계정</span> <b>2/5</b></div>');
-    const order = ['ai1', 'ai2', 'ai3', 'ai4', 'ai6'].map((n) => workers().indexOf(`data-aq-key="${K(n)}"`));
-    expect(order.every((x, i) => x > 0 && (i === 0 || x > order[i - 1]))).toBe(true);
-  });
-  it('usable marks show the window that caps them; paused marks the reason and the return', () => {
-    expect(mark('ai1')).toContain('class="aq-mark is-ok"');
-    expect(mark('ai1')).toContain('<i class="aq-wdot is-wk" aria-hidden="true"></i><b>ai1</b>');
-    expect(mark('ai2')).toContain('<i class="aq-wdot is-h5" aria-hidden="true"></i>');
-    expect(mark('ai3')).toContain('class="aq-mark is-paused"');
-    expect(mark('ai3')).toContain(`⏸ <b>ai3</b> · 5시간 한도 · ${timeAt((NOW_S + 80 * 60) * 1000, '1시간 20분')}`);
-    expect(mark('ai3')).toContain('aria-label="ai3, Max x5, 5시간 한도, 1시간 20분 후 복귀"');
-    expect(mark('ai4')).toContain('· 쿨다운 ·');
-    expect(mark('ai4')).toContain('aria-label="ai4, x20 가정, 쿨다운, 25분 후 복귀"');
-    expect(mark('ai6')).toContain('class="aq-mark is-held"');
-    expect(mark('ai6')).toContain('<b>ai6</b> · 일시정지');
-  });
-  it('spent, unmeasured and left-out accounts each say so', () => {
-    const odd = cap.capWorkers(ODD, NOW, false, null, null);
-    expect(odd).toMatch(
-      /class="aq-mark is-unmeasured"[^>]*data-aq-key="claude\|\d+\|ai9"[\s\S]*?<b>ai9<\/b> · 5시간 미측정/,
-    );
-    expect(odd).toMatch(/class="aq-mark is-spent"[^>]*data-aq-key="claude\|\d+\|aa"[\s\S]*?<b>aa<\/b> · 소진/);
-    expect(odd).toMatch(/class="aq-mark is-out"[^>]*data-aq-key="claude\|\d+\|ab"[\s\S]*?<b>ab<\/b> · 측정 없음/);
-    expect(cap.capWorkers(CODEX, NOW, false, null, null)).toMatch(
-      /is-out"[^>]*data-aq-key="codex\|\d+\|ai9"[\s\S]*?티어 미지정/,
-    );
-    expect(
-      cap.capReason({ blocked: true, counted: true, blocks: { weekly: true, fiveHour: true, cooldownUntil: 1 } }),
-    ).toBe('주간 한도');
-  });
-  it('the state comes from counted / blocked / unmeasured5h / now — binding only names the window (review R1)', () => {
-    expect(cap.capUnitState({ counted: true, blocked: false, unmeasured5h: false, now: 0.2 })).toBe('ok');
-    expect(cap.capUnitState({ counted: true, blocked: false, unmeasured5h: false, now: 0, binding: '7d' })).toBe(
-      'spent',
-    );
-    expect(cap.capUnitState({ counted: true, blocked: true, now: 0 })).toBe('paused');
-    expect(cap.capUnitState({ counted: true, blocked: false, unmeasured5h: true, now: 0 })).toBe('unmeasured');
-    expect(cap.capUnitState({ counted: false, blocked: true, excluded: 'held' })).toBe('held');
-    expect(cap.capUnitState({ counted: false, excluded: 'unknownTier', now: 0.5 })).toBe('out');
-  });
-  it('no usage bars, no %, no tier on a mark — 12 §7 stays', () => {
-    const marks = workers().slice(workers().indexOf('<div class="aq-marks">'));
-    expect(marks).not.toContain('style="width');
-    expect(marks).not.toContain('%');
-    expect(marks).not.toMatch(/>x20<|>Max x/);
-    for (const gone of ['cap-units', 'cap-unitbar', '계정분', '상한']) expect(workers()).not.toContain(gone);
-  });
-  it('one tab stop: the first mark, or the last one focused', () => {
-    expect(mark('ai1')).toContain('tabindex="0"');
-    expect(mark('ai3')).toContain('tabindex="-1"');
-    const again = cap.capWorkers(CLAUDE, NOW, false, null, K('ai3'));
-    expect(again).toContain(`data-aq-key="${K('ai3')}" tabindex="0"`);
-    expect(again).toContain(`data-aq-key="${K('ai1')}" tabindex="-1"`);
-  });
-  it('narrow: the usable accounts fold into one mark; the exceptions stay', () => {
-    const n = cap.capWorkers(CLAUDE, NOW, true, null, null);
-    expect(n).toContain('data-aq-key="claude|*ok"');
-    expect(n).toContain('● 사용 가능 2');
-    expect(n).not.toContain(`data-aq-key="${K('ai1')}"`);
-    expect(n).toContain(`data-aq-key="${K('ai3')}"`);
-  });
-  it('the card shows them between its bars and its timeline', () => {
-    const card = cap.renderCapacityGroup(CLAUDE, NOW, 1200);
-    expect(card.indexOf('class="aq-workers"')).toBeGreaterThan(card.indexOf('cap-bar-row is-wk'));
-    expect(card.indexOf('class="aq-workers"')).toBeLessThan(card.indexOf('class="cap-tl-wrap"'));
-  });
-});
-
-describe('D11 — the account card', () => {
-  const opened = once(() => cap.capWorkers(CLAUDE, NOW, false, K('ai3'), null));
-  it('a dialog with a close button, opened from its mark', () => {
-    expect(opened()).toMatch(/data-aq-key="claude\|2\|ai3"[^>]*aria-expanded="true"/);
-    expect(opened().match(/aria-expanded="true"/g)?.length).toBe(1);
-    expect(opened()).toContain('<div class="aq-pop" role="dialog" aria-label="ai3 세부" data-aq-for="claude|2|ai3">');
-    expect(opened()).toContain('<button type="button" class="aq-pop-close" aria-label="닫기">×</button>');
-    expect(opened().match(/class="aq-pop"/g)?.length).toBe(1);
-  });
-  it('every row comes from a CapacityUnit field', () => {
-    expect(opened()).toContain('<span class="aq-pop-kind">Max x5</span>');
-    expect(opened()).toContain('<dt>지금 쓸 수 있음</dt><dd>0%</dd>');
-    expect(opened()).toContain('<dt>이번 주 남음</dt><dd>30%</dd>');
-    expect(opened()).toContain('<dt>상태</dt><dd>5시간 한도</dd>');
-    expect(opened()).toMatch(
-      /<div class="is-wide"><dt>복귀<\/dt><dd>\d\d:\d\d · <time class="aq-left"[^>]*>1시간 20분<\/time><\/dd>/,
-    );
-    const ok = cap.capWorkers(CLAUDE, NOW, false, K('ai1'), null);
-    expect(ok).toContain('<dt>먼저 닿는 창</dt><dd>일주일</dd>');
-    expect(ok).toContain('<dt>지금 쓸 수 있음</dt><dd>58%</dd>');
-    expect(cap.capWorkers(CLAUDE, NOW, false, K('ai4'), null)).toContain('<span class="aq-pop-kind">x20 가정</span>');
-    for (const gone of ['계정분', '상한']) expect(opened()).not.toContain(gone);
-  });
-  it('the folded usable mark opens a list of its accounts', () => {
-    const n = cap.capWorkers(CLAUDE, NOW, true, 'claude|*ok', null);
-    expect(n).toContain('aria-label="사용 가능 계정 세부"');
-    expect(n).toContain('<dt>ai1</dt><dd>지금 58% · 이번 주 58%</dd>');
-    expect(n).toContain('<dt>ai2</dt><dd>지금 10% · 이번 주 39%</dd>');
-  });
-  it('a repaint keeps it open and keeps the focus where it was', () => {
-    const paint = clientFn('paintCapacity');
-    expect(paint).toContain('aqFocusedKey(');
-    expect(paint).toContain('aqRestoreFocus(');
-    expect(paint).toContain('aqPlacePops(');
-    expect(clientFn('renderCapacityGroup')).toContain('_aqOpen');
-  });
-});
-
-describe('D10–D12 — identity is the place in the server order, never the (masked) name (final review)', () => {
+describe('identity — never the (masked) name alone (final review R3)', () => {
   // email_anonymous: llmux masks ai1@corp.example and ai2@corp.example both to "a***".
-  const masked = buildCapacityView(
-    {
-      current: null,
-      email_anonymous: true,
-      accounts: [
-        a({
-          name: 'claude:ai1@corp.example',
-          group: 'claude',
-          blocked: '5h 100.0% > 99%',
-          five_hour: w(1, 40 * 60),
-          seven_day: w(0.5, 3 * D),
-        }),
-        a({ name: 'claude:ai2@corp.example', group: 'claude', five_hour: w(0.2, H), seven_day: w(0.1, 3 * D) }),
-      ],
-    } as never,
-    {} as never,
-    NOW,
-  ).groups[0] as any;
-  it('the server gives both the same display name and no raw email', () => {
-    expect(masked.units.map((u: any) => u.name)).toEqual(['a***', 'a***']);
-    expect(JSON.stringify(masked)).not.toContain('corp.example');
-  });
-  it('each mark has its own key; selecting the blocked first one opens ITS card', () => {
-    const html = cap.capWorkers(masked, NOW, false, 'claude|0|a***', null);
-    expect(html).toContain('data-aq-key="claude|0|a***" tabindex="0"');
-    expect(html).toContain('data-aq-key="claude|1|a***" tabindex="-1"');
-    expect(html.match(/tabindex="0"/g)?.length).toBe(1);
-    expect(html.match(/aria-expanded="true"/g)?.length).toBe(1);
-    expect(html).toMatch(/data-aq-key="claude\|0\|a\*\*\*"[^>]*aria-expanded="true"/);
-    const card = html.slice(html.indexOf('<div class="aq-pop"'));
-    expect(card).toContain('data-aq-for="claude|0|a***"');
-    expect(card).toContain('<dt>상태</dt><dd>5시간 한도</dd>');
-    expect(card).not.toContain('사용 가능');
-    // and the second one opens its own
-    const second = cap.capWorkers(masked, NOW, false, 'claude|1|a***', 'claude|1|a***');
-    const card2 = second.slice(second.indexOf('<div class="aq-pop"'));
-    expect(card2).toContain('<dt>상태</dt><dd>사용 가능</dd>');
-    expect(second).toContain('data-aq-key="claude|1|a***" tabindex="0"');
-    expect(second.match(/tabindex="0"/g)?.length).toBe(1);
-    expect(html + second).not.toContain('corp.example');
-  });
-  it('a key whose place now holds another account opens nothing (the order shifted)', () => {
-    expect(cap.capWorkers(masked, NOW, false, 'claude|0|ai9', null)).not.toContain('class="aq-pop"');
-  });
-  it('the same key drives the card lookup, the roving stop and focus restore', () => {
-    expect(clientFn('capAccountCard')).toContain('capUnitKey(g, i, x) === key');
-    expect(clientFn('capWorkers')).toContain('keys.push(capUnitKey(g, i, u));');
-    expect(clientFn('paintCapacity')).toContain('aqRestoreFocus(view, focusKey);');
-  });
-});
-
-describe('D10–D12 — a new response re-decides the selection (final review R3)', () => {
-  // Two real successive llmux responses, 60 s apart. llmux orders a group by `order` (the
-  // scheduler's pick order — it changes), then name (slack/auth/capacity.ts groupAccounts).
   const blocked = (order: number) =>
     a({
       name: 'claude:ai1@corp.example',
@@ -625,173 +356,38 @@ describe('D10–D12 — a new response re-decides the selection (final review R3
     });
   const usable = (order: number) =>
     a({ name: 'claude:ai2@corp.example', group: 'claude', order, five_hour: w(0.2, H), seven_day: w(0.1, 3 * D) });
-  const respond = (anonymous: boolean, accounts: Record<string, unknown>[], atMs: number) =>
-    buildCapacityView({ current: null, email_anonymous: anonymous, accounts } as never, {} as never, atMs) as any;
-  const r1 = respond(true, [blocked(1), usable(2)], NOW);
-  const OPEN = 'claude|0|a***'; // the blocked ai1, picked by the reader
-  const FOCUS = { 'cap:claude': OPEN, 'cron-queue': 'id:job-qa' };
-  it('the masked pool reads a*** twice — position is the only handle', () => {
+  const ids = (v: any) =>
+    capFns()
+      .capData(v)
+      .providers[0].accounts.map((x: any) => x.id);
+
+  it('a masked pool: each a*** has its own id, tied to this response — the next one matches none of them', () => {
+    const r1 = view([blocked(1), usable(2)], NOW, true);
+    const r2 = view([blocked(2), usable(1)], NOW + 60_000, true);
     expect(r1.groups[0].units.map((u: any) => u.name)).toEqual(['a***', 'a***']);
-    expect(cap.capDupNames(r1, 'claude')).toBe(true);
+    const i1 = ids(r1);
+    const i2 = ids(r2);
+    expect(new Set(i1).size).toBe(2);
+    expect(i1.filter((id: string) => i2.includes(id))).toEqual([]);
+    // so the element closes an open card and resets the strip's stop (library: “closes the card when
+    // its account leaves the data”) instead of showing the other a***
+    expect(JSON.stringify(capFns().capData(r1))).not.toContain('corp.example');
   });
-  it('(a) the two a*** swap places → the card closes and the tab stop resets, never showing the other account', () => {
-    const r2 = respond(true, [blocked(2), usable(1)], NOW + 60_000);
-    // the hazard: the kept key now opens the OTHER account's card
-    const stale = cap.capWorkers(r2.groups[0], NOW, false, OPEN, null);
-    expect(stale.slice(stale.indexOf('<div class="aq-pop"'))).toContain('<dt>상태</dt><dd>사용 가능</dd>');
-    const sel = cap.capSelectionAfter(r1, r2, OPEN, FOCUS);
-    expect(sel.open).toBeNull();
-    expect(sel.focus['cap:claude']).toBeUndefined();
-    expect(sel.focus['cron-queue']).toBe('id:job-qa'); // other strips untouched
-    expect(cap.capWorkers(r2.groups[0], NOW, false, sel.open, sel.focus['cap:claude'])).not.toContain('class="aq-pop"');
-  });
-  it('(b) the first a*** is gone → the card closes (the survivor also reads a*** at place 0)', () => {
-    const r2 = respond(true, [usable(2)], NOW + 60_000);
-    expect(r2.groups[0].units.map((u: any) => u.name)).toEqual(['a***']);
-    expect(cap.capRemapKey(r1, r2, OPEN)).toBeNull();
-    expect(cap.capSelectionAfter(r1, r2, OPEN, FOCUS).open).toBeNull();
-  });
-  it('(c) unique names: the selection survives a refresh, and follows its account when the order changes', () => {
-    const u1 = respond(false, [blocked(1), usable(2)], NOW);
-    expect(u1.groups[0].units.map((u: any) => u.name)).toEqual(['ai1', 'ai2']);
-    const same = respond(false, [blocked(1), usable(2)], NOW + 60_000);
-    expect(cap.capSelectionAfter(u1, same, 'claude|0|ai1', { 'cap:claude': 'claude|0|ai1' })).toEqual({
-      open: 'claude|0|ai1',
-      focus: { 'cap:claude': 'claude|0|ai1' },
-    });
-    const swapped = respond(false, [blocked(2), usable(1)], NOW + 60_000);
-    const sel = cap.capSelectionAfter(u1, swapped, 'claude|0|ai1', { 'cap:claude': 'claude|0|ai1' });
-    expect(sel.open).toBe('claude|1|ai1');
-    expect(sel.focus['cap:claude']).toBe('claude|1|ai1');
-    const card = cap.capWorkers(swapped.groups[0], NOW, false, sel.open, sel.focus['cap:claude']);
-    expect(card.slice(card.indexOf('<div class="aq-pop"'))).toContain('<dt>상태</dt><dd>5시간 한도</dd>');
-    // gone → closed
-    expect(cap.capRemapKey(u1, respond(false, [usable(2)], NOW + 60_000), 'claude|0|ai1')).toBeNull();
-  });
-  it('a repaint of the same response keeps everything; the folded usable list survives a new one', () => {
-    expect(cap.capSelectionAfter(r1, { ...r1 }, OPEN, FOCUS)).toEqual({ open: OPEN, focus: FOCUS });
-    const r2 = respond(true, [blocked(2), usable(1)], NOW + 60_000);
-    expect(cap.capRemapKey(r1, r2, 'claude|*ok')).toBe('claude|*ok');
-    expect(cap.capRemapKey(r1, { ...r2, groups: [] }, 'claude|*ok')).toBeNull();
-  });
-  it('the page wires it: load re-decides, paint forgets a key with no card, focus never lands on another account', () => {
-    const load = clientFn('loadCapacity');
-    expect(load).toContain('var sel = capSelectionAfter(prev, next, _aqOpen, _aqFocusKey);');
-    expect(load).toContain('_aqOpen = sel.open;');
-    expect(load).toContain('_aqFocusKey = sel.focus;');
-    expect(load).toContain('aqRefocusCapacity(view, fk, capRemapKey(prev, next, fk));');
-    expect(load).not.toMatch(/aqAnnounce\([^)]*(닫|close)/);
-    const paint = clientFn('paintCapacity');
-    expect(paint).toContain("if (_aqOpen && !view.querySelector('.aq-pop')) _aqOpen = null;");
-  });
-  it('focus falls back to the group’s first mark, else the section toggle', () => {
-    const focus = vi.fn();
-    const toggleFocus = vi.fn();
-    const mark = { focus, getAttribute: () => 'claude|0|a***' };
-    const box = { getAttribute: () => 'cap:claude', querySelector: () => mark };
-    const view = { querySelectorAll: (sel: string) => (sel === '[data-aq-rove]' ? [box] : []) };
-    const doc = { getElementById: (id: string) => (id === 'capacity-toggle' ? { focus: toggleFocus } : null) };
-    const f = load<Cap>(['aqFocusKey', 'aqRefocusCapacity'], [], { document: doc });
-    f.aqRefocusCapacity(view, 'claude|0|a***', null);
-    expect(focus).toHaveBeenCalled();
-    f.aqRefocusCapacity({ querySelectorAll: () => [] }, 'codex|0|x', null);
-    expect(toggleFocus).toHaveBeenCalled();
-  });
-});
 
-describe('D12 — roving focus', () => {
-  const items = ['claude|0|ai1', 'claude|1|ai2', 'claude|2|ai3'].map((k) => {
-    const attrs: Record<string, string> = { 'data-aq-key': k, tabindex: '-1' };
-    const item: any = {
-      focus: vi.fn(),
-      getAttribute: (n: string) => attrs[n],
-      setAttribute: (n: string, v: string) => {
-        attrs[n] = v;
-      },
-      attrs,
-    };
-    item.closest = () => item;
-    return item;
-  });
-  const box = { querySelectorAll: () => items, getAttribute: () => 'cap:claude' };
-  const rove = lazyFns(['aqRove'], ['_aqFocusKey']);
-  const key = (k: string, from: number) => {
-    const e = { key: k, target: items[from], preventDefault: vi.fn() };
-    return { handled: rove.aqRove(e, box), e };
-  };
-  it('arrows walk, Home and End jump, the tab stop follows', () => {
-    expect(key('ArrowRight', 0).handled).toBe(true);
-    expect(items[1].focus).toHaveBeenCalled();
-    expect(items[1].attrs.tabindex).toBe('0');
-    expect(items[0].attrs.tabindex).toBe('-1');
-    key('End', 0);
-    expect(items[2].attrs.tabindex).toBe('0');
-    key('Home', 2);
-    expect(items[0].attrs.tabindex).toBe('0');
-    key('ArrowUp', 0);
-    expect(items[0].attrs.tabindex).toBe('0');
-    key('ArrowDown', 1);
-    expect(items[2].attrs.tabindex).toBe('0');
-  });
-  it('other keys pass through', () => {
-    const { handled, e } = key('a', 0);
-    expect(handled).toBe(false);
-    expect(e.preventDefault).not.toHaveBeenCalled();
-  });
-  it('Escape closes the card and returns focus to its mark', () => {
-    expect(TEMPLATE).toContain("if (e.key === 'Escape' && _aqOpen) { aqCloseCard(true); return; }");
-    expect(clientFn('aqCloseCard')).toContain('aqFocusKey(');
-  });
-});
-
-describe('D13 — the all-blocked stretch on the timeline', () => {
-  it('shaded from now to the first refill, only when every account is blocked', () => {
-    const W = 800;
-    const tl = cap.capTimeline(EMPTY, W, NOW_S);
-    const m = /<rect class="cap-tl-lim" x="16" y="0" width="([\d.]+)"/.exec(tl);
-    expect(m).not.toBeNull();
-    const x1 = 16 + cap.capAx(80 * 60) * (W - 32);
-    expect(Number(m?.[1])).toBeCloseTo(x1 - 16, 0);
-    expect(tl).toMatch(/<title>모두 막힘 — \d\d:\d\d까지<\/title>/);
-    expect(cap.capTimeline(CLAUDE, W, NOW_S)).not.toContain('cap-tl-lim');
-  });
-  it('all blocked with nothing coming back in 7 days: the axis and a stretch to its end (final review)', () => {
-    const W = 800;
-    const none = { ...EMPTY, events: [] };
-    const tl = cap.capTimeline(none, W, NOW_S);
-    expect(tl).toContain('<svg class="cap-tl"');
-    expect(tl).toContain('class="cap-tl-axis"');
-    expect(tl).toMatch(new RegExp(`<rect class="cap-tl-lim" x="16" y="0" width="${(W - 32).toFixed(1)}"`));
-    expect(tl).toContain('<title>모두 막힘 — 7일 안에 복귀 없음</title>');
-    // and the card draws it
-    expect(cap.renderCapacityGroup(none, NOW, W + 36)).toContain('cap-tl-lim');
-    // a pool that is not empty and has nothing coming still draws no timeline
-    expect(cap.capTimeline({ ...LOW, events: [] }, W, NOW_S)).toBe('');
-    expect(cap.capTimeline(LOW, W, NOW_S)).not.toContain('cap-tl-lim');
-  });
-});
-
-describe('D14 — the folded chip says how many are paused', () => {
-  const summary = once(() => cap.renderCapacitySummary(MAIN, NOW));
-  it('after the measures, before the ⚠ flag, with the first return counting down', () => {
-    expect(summary()).toMatch(/cap-chip is-ok"[^>]*>Claude <span class="cap-m is-now">/);
-    expect(summary()).toContain(
-      `<em>54%</em></span> <i class="cap-chip-lim">⏸ 2 · ${timeAt((NOW_S + 25 * 60) * 1000, '25분')}</i> <i class="cap-chip-flag">⚠ x20 가정 1</i>`,
-    );
-    expect(summary()).toMatch(/aria-label="Claude [^"]*제한 2 — 25분 후 첫 복귀/);
-  });
-  it('a pool with nothing blocked has no marker', () => {
-    expect(cap.renderCapacitySummary({ available: true, groups: [view([ai1, ai2]).groups[0]] }, NOW)).not.toContain(
-      'cap-chip-lim',
-    );
+  it('unique names: the id is the name, so the open card and the stop follow the account when the order changes', () => {
+    const r1 = view([blocked(1), usable(2)]);
+    const r2 = view([blocked(2), usable(1)], NOW + 60_000);
+    expect(ids(r1)).toEqual(['ai1', 'ai2']);
+    expect(ids(r2)).toEqual(['ai2', 'ai1']);
   });
 });
 
 // ── CRON fixture ──
 const M = 60_000;
 const HR = 3_600_000;
+const NOWC = NOW;
 const run = (ago: number, over: Record<string, unknown> = {}) => ({
-  executedAt: NOW - ago,
+  executedAt: NOWC - ago,
   status: 'success',
   executionPath: 'new_thread',
   ...over,
@@ -805,7 +401,7 @@ const job = (id: string, name: string, nextIn: number | null, runs: unknown[], o
   mode: 'default',
   target: 'channel',
   model: 'default',
-  nextRunAt: nextIn === null ? null : NOW + nextIn,
+  nextRunAt: nextIn === null ? null : NOWC + nextIn,
   lastRunAt: null,
   historyCap: 20,
   runs,
@@ -828,126 +424,139 @@ const JOBS = [
     { historyCap: 3 },
   ),
   job('job-retro', 'weekly-retro', 6 * 24 * HR, [run(5 * 24 * HR, { executionPath: 'dm' })]),
-  job('job-monthly', 'monthly-bill', null, []),
+  job('job-monthly', 'monthly-bill', null, [], { historyCap: undefined }),
 ];
-const card = (key: string, jobId: string, name: string, over: Record<string, unknown> = {}) => ({
+const card = (key: string, jobId: string | null, name: string, over: Record<string, unknown> = {}) => ({
   key,
   title: name,
   displayHeadline: name,
-  cronJob: { id: jobId, name },
-  lastActivity: new Date(NOW - M).toISOString(),
+  cronJob: jobId ? { id: jobId, name } : { name },
+  lastActivity: new Date(NOWC - M).toISOString(),
   ...over,
 });
 const BOARD = {
-  working: [card('k-qa', 'job-qa', 'nightly-qa', { activeLegStartedAtMs: NOW - 4 * M })],
+  working: [card('k-qa', 'job-qa', 'nightly-qa', { activeLegStartedAtMs: NOWC - 4 * M })],
   waiting: [card('k-dig', 'job-digest', 'morning-digest')],
-  idle: [],
+  idle: [card('k-notes', null, 'release-notes', { lastActivity: new Date(NOWC - 3 * HR).toISOString() })],
   closed: [],
 };
-const CRON_VARS = ['CLOCK_SVG', 'AQ_NICE'];
-const CRON_FNS = [
-  'esc',
-  'escAttr',
-  'pad2',
-  'capCountdown',
-  'capClockLabel',
-  'capDur',
-  'aqLeft',
-  'aqLeftSfx',
-  'aqTime',
-  'aqPill',
-  'aqPlain',
+const LANE_FNS = [
   'isCronCard',
   'cronGroupKey',
   'cronCardTime',
   'planCronLane',
   'cronRunGlyph',
-  'cronScheduleLabel',
-  'cronAgo',
-  'cronRunWhen',
   'cronCardAsRun',
   'cronGroupRuns',
-  'renderCronStrip',
-  'renderCronTileHead',
-  'renderCronLaneHead',
+  'cronRunAsAq',
   'cronDayRuns',
-  'cronStats',
-  'cronQueue',
-  'cronRunChart',
-  'cronAnnounceSnap',
-  'cronAnnounceDiff',
+  'laneData',
 ];
-const cron = lazyFns(CRON_FNS, CRON_VARS);
-const plan = once(() => cron.planCronLane(BOARD, JOBS, null));
-const groupOf = (id: string) => plan().groups.find((g: any) => g.jobId === id);
+const laneFns = (folded = false) => load<Fns>(LANE_FNS, ['CRON_AQ_STATUS'], { cronLaneFolded: () => folded });
+const empty = { working: [], waiting: [], idle: [], closed: [] };
 
-describe('D15 — the lane head keeps its words as pills', () => {
-  it('● 실행 중 n · ▲ 응답 필요 n', () => {
-    const h = cron.renderCronLaneHead(plan());
-    expect(h).toContain('<h3>CRON</h3><span class="count">5</span>');
-    expect(h).toContain('<span class="aq-pill is-run">● 실행 중 1</span>');
-    expect(h).toContain('<span class="aq-pill is-wait">▲ 응답 필요 1</span>');
-    expect(h).not.toContain('cron-lane-note');
+describe('laneData — the CRON plan as the element’s lane', () => {
+  it('one job per group, keyed by the group key, with its schedule, its cap and its live state', () => {
+    const f = laneFns();
+    const d = f.laneData(f.planCronLane(BOARD, JOBS, null));
+    expect(d.collapsible).toBe(true);
+    expect(d.collapsed).toEqual({ lane: false });
+    expect(laneFns(true).laneData(f.planCronLane(BOARD, JOBS, null)).collapsed).toEqual({ lane: true });
+    const by = Object.fromEntries(d.lane.jobs.map((j: any) => [j.id, j]));
+    expect(Object.keys(by).sort()).toEqual(
+      ['id:job-deps', 'id:job-digest', 'id:job-monthly', 'id:job-qa', 'id:job-retro', 'name:release-notes'].sort(),
+    );
+    expect(by['id:job-digest']).toMatchObject({ name: 'morning-digest', state: 'waiting', nextRunAt: NOWC + 14 * HR });
+    expect(by['id:job-qa']).toMatchObject({ state: 'running', expression: '0 * * * *', historyCap: 20 });
+    expect(by['id:job-deps']).toMatchObject({ state: 'idle', historyCap: 3 });
+    // a job with no cap of its own keeps the store's default (20); no next fire → none given
+    expect(by['id:job-monthly'].historyCap).toBe(20);
+    expect('nextRunAt' in by['id:job-monthly']).toBe(false);
   });
-});
 
-describe('D16 — four numbers, each from a named field', () => {
-  const stats = once(() => cron.cronStats(plan(), NOW));
-  it('next fire, running r/N, 24h runs and 24h failures', () => {
-    expect(stats()).toMatch(/^<dl class="aq-stats">/);
-    expect(stats()).toMatch(
-      new RegExp(
-        `<dt>다음 실행</dt><dd title="[^"]*nextRunAt[^"]*">${timeAt(NOW + 12 * M, '12분', ' 후').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}<span class="aq-of">dependency-audit</span></dd>`,
-      ),
-    );
-    expect(stats()).toMatch(
-      /<dt>실행 중<\/dt><dd title="[^"]*다른 인스턴스 그룹 포함[^"]*">1<span class="aq-of is-n">\/5<\/span><\/dd>/,
-    );
-    // new_thread / idle_inject write success once the fired turn settles (dm / thread_reply once
-    // sent); 진행 중 = a success record whose own session is busy again (strip's ● / ▲)
-    expect(stats()).toMatch(
-      /<dt>24시간 실행 기록<\/dt><dd title="지난 24시간 실행 기록 5건\(대기열 항목 제외\): 성공\(세션 쉼\) 3 · 실패 1 · 진행 중\(성공 기록, 세션이 지금 실행 중·응답 대기\) 1[^"]*">≥5<\/dd>/,
-    );
-    expect(stats()).toMatch(
-      /<div class="aq-stat" data-kind="failed"><dt>실패 · 24시간<\/dt><dd title="[^"]*">≥1<\/dd>/,
-    );
+  it('a group whose job is not on this instance: 잡 정보 없음 with why, and no schedule', () => {
+    const f = laneFns();
+    const notes = f
+      .laneData(f.planCronLane(BOARD, JOBS, null))
+      .lane.jobs.find((j: any) => j.id === 'name:release-notes');
+    expect(notes.note).toEqual({
+      text: '잡 정보 없음',
+      title: '이 인스턴스에 없는 잡 — 삭제됐거나 다른 인스턴스의 잡이라 스케줄 정보가 없습니다',
+    });
+    expect(notes.expression).toBeUndefined();
+    expect(notes.historyCap).toBeUndefined();
   });
-  it('a job whose kept history starts inside the window turns the counts into lower bounds, and says why', () => {
-    expect(stats()).toMatch(/title="[^"]*dependency-audit 기록은 보관 한도 3회라 \d\d:\d\d부터[^"]*">≥5</);
-    const d = cron.cronDayRuns(plan(), NOW);
-    // records only: qa 1h ok + 2h failed · deps 15m + 45m ok (the queue entry is not a run) ·
-    // digest 22m in progress — its turn settled (success recorded) and the session it created now
-    // waits for a reply (the strip's rule, trinity R2). The running qa card has no record yet.
-    expect([d.n, d.ok, d.f, d.run, d.pending, d.unknown]).toEqual([5, 3, 1, 1, 1, 0]);
-    expect(stats()).toMatch(/기록 전 카드 1개\(실행 중 1 · 결과 미확인 0\)는 세지 않음/);
-    expect(d.cutFrom).toBe(NOW - 45 * M);
+
+  it('runs keep the strip’s glyph rule: every state its own status and words; a card with no record is not a record', () => {
+    const { cronRunAsAq } = laneFns();
+    const live = (activityState: string) => ({ boardKey: 'k', live: true, activityState });
+    expect(cronRunAsAq(run(M))).toEqual({ at: NOWC - M, status: 'ok', label: '성공' });
+    expect(cronRunAsAq(run(M, { status: 'failed', error: 'staging 502' }))).toEqual({
+      at: NOWC - M,
+      status: 'failed',
+      label: '실패',
+      error: 'staging 502',
+    });
+    expect(cronRunAsAq(run(M, { session: live('working') })).status).toBe('running');
+    expect(cronRunAsAq(run(M, { session: live('waiting') })).status).toBe('waiting');
+    expect(
+      cronRunAsAq(run(M, { status: 'queued', executionPath: 'busy_queue', session: live('working') })),
+    ).toMatchObject({
+      status: 'unknown',
+      label: '대기열에 넣음 (세션 사용 중 — 이후 실행 결과는 기록 없음)',
+    });
+    expect(cronRunAsAq(run(M, { executionPath: 'dm' }))).toMatchObject({
+      status: 'unknown',
+      label: 'DM 전송 (세션 없음)',
+    });
+    expect(cronRunAsAq(run(M, { executionPath: 'thread_reply' }))).toMatchObject({
+      status: 'unknown',
+      label: '스레드 답글 (세션 없음)',
+    });
+    const unrecorded = cronRunAsAq({
+      executedAt: NOWC - M,
+      status: 'unrecorded',
+      session: { live: false, activityState: 'idle' },
+    });
+    expect(unrecorded).toEqual({
+      at: NOWC - M,
+      status: 'unknown',
+      label: '실행 기록 없음 (보드 카드만 있음)',
+      recorded: false,
+    });
   });
-  it('no next fire and no failure read plainly', () => {
-    const plain = cron.planCronLane({ working: [], waiting: [], idle: [], closed: [] }, [JOBS[4]], null);
-    const out = cron.cronStats(plain, NOW);
-    expect(out).toContain('<dt>다음 실행</dt><dd title="8일 안에 없음">—</dd>');
-    expect(out).toContain('<div class="aq-stat"><dt>실패 · 24시간</dt>');
-    expect(out).toMatch(/<dt>24시간 실행 기록<\/dt><dd title="[^"]*">0<\/dd>/);
+
+  it('runs24h counts the records only; through the library: 5 records, ≥ from where a capped history starts', () => {
+    const f = laneFns();
+    const d = f.laneData(f.planCronLane(BOARD, JOBS, null));
+    // the strip shows the running qa card before its record exists — never one of the kept records
+    const qa = d.lane.jobs.find((j: any) => j.id === 'id:job-qa');
+    expect(qa.runs.filter((r: any) => r.recorded === false)).toHaveLength(1);
+    expect(d.lane.runs24h.every((r: any) => typeof r.jobId === 'string')).toBe(true);
+    const day = lib.dayRuns(d.lane, NOWC);
+    // records only: qa 1h ok + 2h failed · deps 15m + 45m ok (the queue entry is not a run) · digest 22m in
+    // progress (its turn settled, its session now waits). The running qa card and the other instance's idle
+    // card have no record: the first is the 실행 중 tile, the second +미확인.
+    expect([day.n, day.ok, day.fail, day.run, day.unknown]).toEqual([5, 3, 1, 1, 1]);
+    // dependency-audit keeps 3 records (the queue entry is one) at its cap of 3, the oldest 45m ago
+    expect(day.cut).toEqual([{ name: 'dependency-audit', from: NOWC - 45 * M, cap: 3 }]);
+    expect(day.cutFrom).toBe(NOWC - 45 * M);
   });
-  it('a card with no record is never a success: not counted, not drawn, named as unknown (review R1)', () => {
-    const idle = card('k-old', 'job-qa', 'nightly-qa', { lastActivity: new Date(NOW - 3 * HR).toISOString() });
-    const p = cron.planCronLane({ ...BOARD, idle: [idle] }, JOBS, null);
-    const d = cron.cronDayRuns(p, NOW);
-    expect([d.n, d.ok, d.unknown]).toEqual([5, 3, 1]);
-    expect(cron.cronStats(p, NOW)).toMatch(/">≥5<span class="aq-of">\+미확인 1<\/span><\/dd>/);
-    const ch = cron.cronRunChart(p, NOW);
-    const sums = [...ch.matchAll(/title="\d\d:\d\d부터 1시간 · 성공 (\d+) · 실패 (\d+) · 진행 중 (\d+)"/g)];
-    expect(sums.reduce((t, m) => t + Number(m[1]), 0)).toBe(3);
-    expect(ch).toContain('기록 전 카드 2개는 세지 않음.');
+
+  it('a live card with no record is not counted; an idle one is +미확인, never a success (review R1)', () => {
+    const f = laneFns();
+    const idle = card('k-old', 'job-qa', 'nightly-qa', { lastActivity: new Date(NOWC - 3 * HR).toISOString() });
+    const runs = f.cronDayRuns(f.planCronLane({ ...BOARD, idle: [...BOARD.idle, idle] }, JOBS, null));
+    const unknown = runs.filter((r: any) => r.status === 'unknown');
+    expect(unknown.map((r: any) => r.jobId).sort()).toEqual(['id:job-qa', 'name:release-notes']);
+    expect(runs.some((r: any) => r.at === NOWC - 4 * M)).toBe(false); // the running qa card
   });
-  it('the tiles and the chart agree with the strip on every record shape the server emits (trinity R2)', () => {
-    // cron-view.ts buildCronJobsView: an injected run (someone else's session) comes back
-    // live:true but idle; an earlier run in a reused thread and a queued fire come back
-    // live:false, idle. Only the newest run of a thread this job created keeps working/waiting.
+
+  it('the 24h counts and the strip agree on every record shape the server emits (trinity R2)', () => {
+    const f = laneFns();
     const shape = (session: Record<string, unknown>) => [
       job('job-s', 'shape', 30 * M, [run(10 * M, { session: { headline: 'h', boardKey: 'k-x', ...session } })]),
     ];
-    const empty = { working: [], waiting: [], idle: [], closed: [] };
     const cases: [Record<string, unknown>, 'ok' | 'run'][] = [
       [{ live: true, activityState: 'idle' }, 'ok'], // injected into a human session
       [{ live: false, activityState: 'idle', earlierInThread: true }, 'ok'], // an earlier run of the thread
@@ -955,201 +564,287 @@ describe('D16 — four numbers, each from a named field', () => {
       [{ live: true, activityState: 'waiting' }, 'run'], // its own session waits for a reply
     ];
     for (const [session, kind] of cases) {
-      const p = cron.planCronLane(empty, shape(session), null);
-      const d = cron.cronDayRuns(p, NOW);
-      expect([d.ok, d.run]).toEqual(kind === 'ok' ? [1, 0] : [0, 1]);
-      // the strip's glyph for the same record says the same thing
-      const glyph = cron.cronRunGlyph(p.groups[0].job.runs[0]).cls;
-      expect(kind === 'run' ? ['run', 'wait'] : ['ok']).toContain(glyph);
+      const d = f.laneData(f.planCronLane(empty, shape(session), null));
+      const day = lib.dayRuns(d.lane, NOWC);
+      expect([day.ok, day.run]).toEqual(kind === 'ok' ? [1, 0] : [0, 1]);
+      expect(lib.runKind(d.lane.jobs[0].runs[0].status)).toBe(kind);
     }
-    const running = cron.planCronLane(empty, shape({ live: true, activityState: 'working' }), null);
-    expect(cron.cronRunChart(running, NOW)).toMatch(/<i class="aq-ch-run" style="height:[1-9][\d.]*%"><\/i>/);
-    expect(cron.cronStats(running, NOW)).toContain('진행 중(성공 기록, 세션이 지금 실행 중·응답 대기) 1');
   });
 });
 
-describe('D17 — the next-fire queue', () => {
-  it('soonest first, each chip a button that opens its job’s drawer', () => {
-    const q = cron.cronQueue(plan(), NOW, null);
-    // the queue is this instance's schedules; the 실행 중 tile's N also counts other instances' groups
-    expect(q).toMatch(
-      /<div class="aq-col-head" title="[^"]*다른 인스턴스 그룹은 스케줄이 없어 빠진다"><span>다음 실행<\/span> <b>4<\/b><\/div>/,
-    );
-    const order = ['job-deps', 'job-qa', 'job-digest', 'job-retro'].map((id) =>
-      q.indexOf(`data-cron-group="id:${id}"`),
-    );
-    expect(order.every((x, i) => x > 0 && (i === 0 || x > order[i - 1]))).toBe(true);
-    expect(q).not.toContain('job-monthly');
-    expect(q).toContain(
-      `<button type="button" class="aq-q" data-cron-group="id:job-deps" data-aq-key="id:job-deps" tabindex="0" aria-label="dependency-audit, 12분 후 실행, 1/4 — 지난 실행 보기">`,
-    );
-    expect(q).toContain(`<span class="aq-q-name">dependency-audit</span>${timeAt(NOW + 12 * M, '12분')}</button>`);
-    expect(q).toMatch(/data-aq-key="id:job-qa" tabindex="-1"/);
-    expect(cron.cronQueue(plan(), NOW, 'id:job-qa')).toMatch(/data-aq-key="id:job-qa" tabindex="0"/);
-  });
-  it('four chips, then +N; an empty queue says so', () => {
-    const many = [0, 1, 2, 3, 4, 5].map((i) => job(`j${i}`, `job ${i}`, (i + 1) * M, []));
-    const q = cron.cronQueue(
-      cron.planCronLane({ working: [], waiting: [], idle: [], closed: [] }, many, null),
-      NOW,
-      null,
-    );
-    expect(q.match(/class="aq-q"/g)?.length).toBe(4);
-    expect(q).toContain('<span class="aq-more">+2</span>');
-    const none = cron.planCronLane({ working: [], waiting: [], idle: [], closed: [] }, [JOBS[4]], null);
-    expect(cron.cronQueue(none, NOW, null)).toContain('<div class="aq-empty">8일 안에 예정 없음</div>');
-  });
-});
+// ── fakes for the DOM-touching glue ──
+type FakeEl = {
+  id?: string;
+  hidden: boolean;
+  className: string;
+  children: FakeEl[];
+  parentNode: FakeEl | null;
+  attrs: Record<string, string>;
+  setAttribute(k: string, v: string): void;
+  getAttribute(k: string): string | null;
+  appendChild(c: FakeEl): FakeEl;
+  removeChild(c: FakeEl): FakeEl;
+  [k: string]: unknown;
+};
+function fakeEl(id?: string): FakeEl {
+  return {
+    id,
+    hidden: false,
+    className: '',
+    children: [],
+    parentNode: null,
+    attrs: {},
+    setAttribute(k, v) {
+      this.attrs[k] = v;
+    },
+    getAttribute(k) {
+      return this.attrs[k] ?? null;
+    },
+    appendChild(c) {
+      if (c.parentNode) c.parentNode.removeChild(c);
+      this.children.push(c);
+      c.parentNode = this;
+      return c;
+    },
+    removeChild(c) {
+      this.children = this.children.filter((x) => x !== c);
+      c.parentNode = null;
+      return c;
+    },
+  };
+}
 
-describe('D18 — the tile counts down live', () => {
-  it('the next fire’s remaining time is a <time data-aq-at>', () => {
-    const h = cron.renderCronTileHead(groupOf('job-deps'), NOW);
-    expect(h).toMatch(
-      new RegExp(
-        `다음 \\d\\d:\\d\\d \\(${timeAt(NOW + 12 * M, '12분', ' 후').replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\)`,
-      ),
-    );
-  });
-});
+describe('wiring — the lane’s job boxes, the paint, the fold, the drawer', () => {
+  function lane(folded = false) {
+    const els: Record<string, FakeEl> = { 'cron-lane': fakeEl('cron-lane'), 'cron-aq': fakeEl('cron-aq') };
+    const document = { getElementById: (id: string) => els[id] ?? null, createElement: () => fakeEl() };
+    const later: Array<() => void> = [];
+    const aqPaint = vi.fn();
+    const f = load<Fns>([...LANE_FNS, 'syncCronLane', 'cronLaneSlots'], ['CRON_AQ_STATUS', '_cronGroupEls'], {
+      cronLaneFolded: () => folded,
+      document,
+      aqPaint,
+      MOTION: { fade: 180 },
+      setTimeout: (fn: () => void) => later.push(fn),
+    });
+    return { f, els, aqPaint, later };
+  }
 
-describe('D19 — 24 hours of runs', () => {
-  const chart = once(() => cron.cronRunChart(plan(), NOW));
-  it('24 rolling-hour columns, each labelled by its start, that add up to the 24h tile', () => {
-    expect(chart().match(/class="aq-ch-col"/g)?.length).toBe(24);
-    const sums = [...chart().matchAll(/title="(\d\d:\d\d)부터 1시간 · 성공 (\d+) · 실패 (\d+) · 진행 중 (\d+)"/g)];
-    expect(sums.length).toBe(24);
-    // a column is the hour from its start, not a clock hour (PR review R1)
-    expect(sums[0][1]).toBe(hhmm(NOW - 24 * HR));
-    expect(sums[23][1]).toBe(hhmm(NOW - HR));
-    expect(sums.reduce((t, m) => t + Number(m[2]) + Number(m[3]) + Number(m[4]), 0)).toBe(5);
-    expect(sums.reduce((t, m) => t + Number(m[3]), 0)).toBe(1);
-    expect(sums.reduce((t, m) => t + Number(m[4]), 0)).toBe(1);
-    expect(chart()).toMatch(/<i class="aq-ch-fail" style="height:[1-9][\d.]*%"><\/i>/);
-    expect(chart()).toMatch(/<i class="aq-ch-run" style="height:[1-9][\d.]*%"><\/i>/);
-    // the legend defines its words: 성공 = a success record whose session rests
-    expect(chart()).toContain(
-      '<span class="aq-ch-key" title="성공 기록, 세션 쉼"><i class="is-ok" aria-hidden="true"></i>성공</span>',
+  it('each job group has one box in its job’s slot, kept across renders; a group that goes, goes after its fade', () => {
+    const { f, els, aqPaint, later } = lane();
+    const p1 = f.planCronLane(BOARD, JOBS, null);
+    f.syncCronLane(p1);
+    const el = els['cron-aq'];
+    expect(els['cron-lane'].hidden).toBe(false);
+    expect(el.children.map((c) => c.getAttribute('slot')).sort()).toEqual(
+      p1.groups.map((g: any) => `job:${g.key}`).sort(),
     );
-    expect(chart()).toContain(
-      '<span class="aq-ch-key" title="성공 기록, 세션이 지금 실행 중·응답 대기"><i class="is-run" aria-hidden="true"></i>진행 중</span>',
-    );
+    expect(el.children.every((c) => c.className === 'cards cron-cards')).toBe(true);
+    expect(aqPaint).toHaveBeenLastCalledWith(el, f.laneData(p1));
+    const qaBox = el.children.find((c) => c.getAttribute('slot') === 'job:id:job-qa');
+    // next render: the same box; the other instance's group is gone
+    const p2 = f.planCronLane({ ...BOARD, idle: [] }, JOBS, null);
+    f.syncCronLane(p2);
+    expect(el.children.find((c) => c.getAttribute('slot') === 'job:id:job-qa')).toBe(qaBox);
+    expect(el.children.some((c) => c.getAttribute('slot') === 'job:name:release-notes')).toBe(true);
+    later.forEach((fn) => fn());
+    expect(el.children.some((c) => c.getAttribute('slot') === 'job:name:release-notes')).toBe(false);
+    f.syncCronLane(f.planCronLane(empty, [], null));
+    expect(els['cron-lane'].hidden).toBe(true);
   });
-  it('hatches the stretch a truncated history cannot speak for', () => {
-    expect(chart()).toContain(
-      '<div class="aq-ch-cut" style="left:0;width:96.9%" title="이 구간은 dependency-audit 기록이 보관 한도로 잘려 실제보다 적을 수 있음"></div>',
-    );
-  });
-  it('is an image with a sentence', () => {
-    expect(chart()).toContain('<span class="aq-chart-title">실행 기록 · 24시간</span>');
-    expect(chart()).toMatch(
-      /<div class="aq-plot" role="img" aria-label="지난 24시간 크론 실행 기록 5건: 성공 3건, 실패 1건, 진행 중 1건, 가장 많은 1시간 \d\d:\d\d부터 4건\. \d\d:\d\d 이전은 일부 잡 기록이 잘림\. 기록 전 카드 1개는 세지 않음\.">/,
-    );
-    expect(chart()).toContain(
-      '<div class="aq-ch-axis"><span>24시간 전</span><span>12시간 전</span><span>지금</span></div>',
-    );
-  });
-});
 
-describe('D4 (lane) — the lane announces a new failure or a new wait, never on its first sight', () => {
-  const snap0 = once(() => cron.cronAnnounceSnap(plan()));
-  it('baseline', () => {
-    expect(cron.cronAnnounceDiff(null, snap0())).toBe('');
-    expect(cron.cronAnnounceDiff(snap0(), snap0())).toBe('');
+  it('the reconciler puts each job’s lead card in its box; folded, only the jobs that wait for a reply keep theirs', () => {
+    const open = lane(false);
+    const p = open.f.planCronLane(BOARD, JOBS, null);
+    open.f.syncCronLane(p);
+    const slots = open.f.cronLaneSlots(p);
+    const box = (key: string) => open.els['cron-aq'].children.find((c) => c.getAttribute('slot') === `job:${key}`);
+    const qa = slots[p.groups.findIndex((g: any) => g.key === 'id:job-qa')];
+    expect(qa.container).toBe(box('id:job-qa'));
+    expect(qa.items.map((i: any) => i.s.key)).toEqual(['k-qa']);
+    const shut = lane(true);
+    const ps = shut.f.planCronLane(BOARD, JOBS, null);
+    shut.f.syncCronLane(ps);
+    const shown = shut.f.cronLaneSlots(ps).flatMap((s: any) => s.items.map((i: any) => i.s.key));
+    expect(shown).toEqual(['k-dig']);
   });
-  it('a newer failed run, then a job that starts waiting — failure first', () => {
-    const failed = JOBS.map((j: any) =>
-      j.id === 'job-deps'
-        ? { ...j, runs: [run(1 * M, { status: 'failed', error: `npm audit timed out ${'x'.repeat(90)}` }), ...j.runs] }
-        : j,
-    );
-    const p1 = cron.planCronLane(BOARD, failed, null);
-    const msg = cron.cronAnnounceDiff(snap0(), cron.cronAnnounceSnap(p1));
-    expect(msg.startsWith('크론 dependency-audit 실패: npm audit timed out x')).toBe(true);
-    expect(msg.length).toBeLessThanOrEqual('크론 dependency-audit 실패: '.length + 80);
-    expect(msg.endsWith('…')).toBe(true);
-    const board2 = { ...BOARD, waiting: [...BOARD.waiting, card('k-qa2', 'job-qa', 'nightly-qa')] };
-    const p2 = cron.planCronLane(board2, JOBS, null);
-    expect(cron.cronAnnounceDiff(snap0(), cron.cronAnnounceSnap(p2))).toBe('크론 nightly-qa 응답 필요');
-  });
-  it('a job seen for the first time is not news', () => {
-    const before = cron.cronAnnounceSnap(cron.planCronLane(BOARD, [], null));
-    expect(cron.cronAnnounceDiff(before, snap0())).toBe('');
-  });
-});
 
-describe('D20 — the drawer stays the pinned card', () => {
-  it('a queue chip reaches the drawer through the existing delegated click', () => {
-    expect(TEMPLATE).toMatch(
-      /var g = t\.closest\('\[data-cron-group\]'\);\s*if \(g\) openCronDrawer\(g\.getAttribute\('data-cron-group'\)\);/,
-    );
-    expect(cron.cronQueue(plan(), NOW, null)).toContain('data-cron-group="id:job-deps"');
-    expect(TEMPLATE).toMatch(/Escape[\s\S]{0,200}closeCronDrawer/);
+  it('an element is handed its data only when it changed, or once a minute; rendered at once', () => {
+    let now = NOWC;
+    const { aqPaint } = load<Fns>(['aqPaint'], [], { Date: { now: () => now } });
+    const el: any = { renderNow: vi.fn() };
+    expect(aqPaint(el, { a: 1 })).toBe(true);
+    expect(el.data).toEqual({ a: 1 });
+    expect(el.renderNow).toHaveBeenCalledTimes(1);
+    expect(aqPaint(el, { a: 1 })).toBe(false);
+    expect(aqPaint(el, { a: 2 })).toBe(true);
+    now += 60_000;
+    expect(aqPaint(el, { a: 2 })).toBe(true);
+    expect(el.renderNow).toHaveBeenCalledTimes(3);
+    // before the module has defined the element: data only (it moves through the setter on upgrade)
+    const early: any = {};
+    expect(aqPaint(early, { a: 1 })).toBe(true);
+    expect(early.data).toEqual({ a: 1 });
   });
-});
 
-describe('R1 — names, errors and labels are text, never markup', () => {
-  const evil = '<script>alert(1)</script>"q\'';
-  it('the tiles, the queue and the chart escape a job name (text and attributes)', () => {
-    const jobs = [
-      job('job-x', evil, 5 * M, [run(10 * M, { status: 'failed', error: '<img src=x onerror=alert(1)>' })], {
-        historyCap: 1,
-      }),
-    ];
-    const p = cron.planCronLane({ working: [], waiting: [], idle: [], closed: [] }, jobs, null);
-    const outs = [
-      cron.cronStats(p, NOW),
-      cron.cronQueue(p, NOW, null),
-      cron.cronRunChart(p, NOW),
-      cron.renderCronTileHead(p.groups[0], NOW),
-    ];
-    for (const out of outs) {
-      expect(out).not.toMatch(/<script|<img|"q'/);
-      expect(out).toContain('&lt;script&gt;alert(1)&lt;/script&gt;');
-    }
-    expect(cron.cronRunChart(p, NOW)).toMatch(/class="aq-ch-cut"[^>]*title="이 구간은 &lt;script&gt;/);
+  it('paintCapacity: hidden on an auth-mode deployment; else the mapped view, and the fold it used', () => {
+    const els: Record<string, any> = { capacity: { hidden: true }, 'capacity-aq': {} };
+    const paints: unknown[] = [];
+    const mk = (v: unknown) =>
+      new Function(
+        'document',
+        'secIsOpen',
+        'aqPaint',
+        'capData',
+        `var _capacityView = ${JSON.stringify(v)}; var _capFoldApplied = null;\n${clientFn('paintCapacity')}\npaintCapacity(); return _capFoldApplied;`,
+      )(
+        { getElementById: (id: string) => els[id], hidden: false },
+        () => false,
+        (_el: unknown, d: unknown) => paints.push(d),
+        (x: any) => ({ mapped: x.available }),
+      );
+    expect(mk({ available: false, reason: 'auth mode — no llmux', groups: [] })).toBe(null);
+    expect(els.capacity.hidden).toBe(true);
+    expect(paints).toEqual([]);
+    expect(mk({ available: true, groups: [] })).toBe(true);
+    expect(els.capacity.hidden).toBe(false);
+    expect(paints).toEqual([{ mapped: true }]);
+    // the loader only fetches and paints: selection, focus and announcements are the element's
+    const loader = clientFn('loadCapacity');
+    expect(loader).toContain('_capacityView = data.capacity || null;');
+    expect(loader).toContain('paintCapacity();');
   });
-  it('an announced error is one plain, capped line', () => {
-    const empty = { working: [], waiting: [], idle: [], closed: [] };
-    const base = [job('job-y', 'nightly\nqa', 5 * M, [run(30 * M)])];
-    const prev = cron.cronAnnounceSnap(cron.planCronLane(empty, base, null));
-    const bad = [
-      job('job-y', 'nightly\nqa', 5 * M, [
-        run(M, { status: 'failed', error: `boom\n\tat x\u0007${'y'.repeat(200)}` }),
-        run(30 * M),
-      ]),
-    ];
-    const msg = cron.cronAnnounceDiff(prev, cron.cronAnnounceSnap(cron.planCronLane(empty, bad, null)));
-    expect(msg.startsWith('크론 nightly qa 실패: boom at x y')).toBe(true);
-    expect([...msg].some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f)).toBe(false);
-    expect(msg.endsWith('…')).toBe(true);
-    expect(cap.aqPlain('a\r\n\tb\u0000c', 0)).toBe('a b c');
+
+  it('ui-collapse: the page decides — cancelled, and toggled only when the press asks for a change', () => {
+    const toggleSection = vi.fn();
+    let open = { capacity: false, cron: true } as Record<string, boolean>;
+    const on = docListener('ui-collapse', { secIsOpen: (s: string) => open[s], toggleSection });
+    const ev = (id: string, collapsed: boolean) => ({
+      target: { id },
+      detail: { section: 'x', collapsed },
+      preventDefault: vi.fn(),
+    });
+    const unfold = ev('capacity-aq', false);
+    on(unfold);
+    expect(unfold.preventDefault).toHaveBeenCalled();
+    expect(toggleSection).toHaveBeenLastCalledWith('capacity');
+    on(ev('cron-aq', true));
+    expect(toggleSection).toHaveBeenLastCalledWith('cron');
+    open = { capacity: true, cron: false };
+    toggleSection.mockClear();
+    on(ev('cron-aq', true)); // already folded
+    const other = ev('model-picker', true);
+    on(other);
+    expect(toggleSection).not.toHaveBeenCalled();
+    expect(other.preventDefault).not.toHaveBeenCalled();
   });
-  it('an account name and a provider label are escaped on the mark, the card and the head', () => {
-    const name = '<img src=x onerror=alert(1)>"';
-    const g = {
-      group: 'claude',
-      label: 'Claude<b>',
-      has5h: true,
-      total: 1,
-      now: 0,
-      week: 0.5,
-      state: 'empty',
-      events: [],
-      units: [
-        { name, counted: true, blocked: true, blocks: { fiveHour: true }, returnAt: NOW_S + 600, now: 0, week: 0.5 },
-      ],
+
+  it('the fold reaches the elements: capacity repaints when its fold changed; a CRON change asks for a board render', () => {
+    const paintCapacity = vi.fn();
+    let capOpen = false;
+    let cronOpen = true;
+    const body = `var _capFoldApplied = true; var _cronFoldApplied = null;\n${clientFn('applySectionState')}\nreturn applySectionState;`;
+    const apply = new Function('secIsOpen', 'cronLaneFolded', 'paintCapacity', body)(
+      (s: string) => (s === 'capacity' ? capOpen : cronOpen),
+      () => !cronOpen,
+      paintCapacity,
+    );
+    expect(apply()).toBe(false); // the first CRON state is the baseline
+    expect(paintCapacity).not.toHaveBeenCalled();
+    capOpen = true;
+    cronOpen = false;
+    expect(apply()).toBe(true);
+    expect(paintCapacity).toHaveBeenCalledTimes(1);
+    const toggle = clientFn('toggleSection');
+    expect(toggle.indexOf('layoutBeforeChange()')).toBeLessThan(toggle.indexOf('applySectionState()'));
+    expect(toggle).toContain('if (applySectionState()) renderBoardForLayout();');
+  });
+
+  it('ui-job-open from the lane opens its job’s drawer (the job id is the group key)', () => {
+    const openCronDrawer = vi.fn();
+    const on = docListener('ui-job-open', { openCronDrawer });
+    on({ target: { id: 'cron-aq' }, detail: { jobId: 'id:job-qa' } });
+    expect(openCronDrawer).toHaveBeenCalledWith('id:job-qa');
+    on({ target: { id: 'capacity-aq' }, detail: { jobId: 'x' } });
+    expect(openCronDrawer).toHaveBeenCalledTimes(1);
+  });
+
+  it('closing the drawer returns focus inside the element — to the same control, or its re-rendered twin by data-key', () => {
+    const focus = vi.fn();
+    const twinFocus = vi.fn();
+    const btn: any = { isConnected: true, focus, getAttribute: (k: string) => (k === 'data-key' ? 'runs-abc' : null) };
+    const twin: any = { isConnected: true, focus: twinFocus, getAttribute: () => 'runs-abc' };
+    const shadowRoot: any = { activeElement: btn, querySelectorAll: () => [twin] };
+    const host: any = { shadowRoot, getAttribute: () => null };
+    const drawer = fakeEl('cron-drawer') as any;
+    drawer.classList = { add() {}, remove() {} };
+    drawer.removeAttribute = () => {};
+    const els: Record<string, any> = {
+      'cron-drawer': drawer,
+      'cron-drawer-overlay': { classList: { add() {}, remove() {} } },
+      'cron-drawer-close': { focus() {} },
     };
-    const out = cap.capProvHead(g, NOW) + cap.capWorkers(g, NOW, false, `claude|0|${name}`, null);
-    expect(out).not.toMatch(/<img|Claude<b>/);
-    expect(out).toContain('&lt;img src=x onerror=alert(1)&gt;');
-    expect(out).toContain('aria-label="&lt;img src=x onerror=alert(1)&gt;&quot; 세부"');
-    expect(out).toContain('Claude&lt;b&gt;');
-    const prev = { available: true, groups: [{ ...g, label: 'Claude\n<b>', state: 'ok' }] };
-    expect(cap.capAnnounceDiff(prev, { available: true, groups: [{ ...g, label: 'Claude\n<b>' }] }, NOW)).toBe(
-      'Claude <b> 계정이 모두 막힘 — 10분 후 복귀',
-    );
-    // the region is written as text, never as markup
-    expect(clientFn('aqAnnounce')).toContain('el.textContent = msg;');
-    expect(clientFn('aqAnnounce')).not.toContain('innerHTML');
+    const document = { activeElement: host, getElementById: (id: string) => els[id] };
+    const f = load<Fns>(['openCronDrawer', 'closeCronDrawer'], ['_cronDrawerReturnFocus'], {
+      document,
+      paintCronDrawer: () => {},
+      _cronDrawerKey: null,
+    });
+    f.openCronDrawer('id:job-qa');
+    f.closeCronDrawer();
+    expect(focus).toHaveBeenCalledTimes(1);
+    // a lane render while the drawer was open replaced the control
+    f.openCronDrawer('id:job-qa');
+    btn.isConnected = false;
+    f.closeCronDrawer();
+    expect(twinFocus).toHaveBeenCalledTimes(1);
+  });
+
+  it('D20 — the drawer stays the page’s: rows per run, Escape closes it, its countdown rides the page tick', () => {
+    expect(clientFn('renderCronRunRow')).toContain('data-cron-open');
+    expect(clientFn('paintCronDrawer')).toContain('cronGroupRuns(g)');
+    expect(TEMPLATE).toMatch(/Escape[\s\S]{0,200}closeCronDrawer/);
+    const tick = clientFn('aqTick');
+    expect(tick).toContain("getElementById('cron-drawer')");
+    expect(tick).not.toContain("getElementById('capacity')");
+    expect(clientFn('renderCronDrawerMeta')).toContain('aqTime(j.nextRunAt');
   });
 });
+
+/*
+ * Moved tests → the library suite that now owns the behaviour
+ * (@2lab.ai/ui src/components/agent-queue/agent-queue.test.ts, 0.4.2):
+ *
+ *   D1  two sections, static live region ............ 'announces state changes once, never the first data',
+ *                                                      'writes the live region as text only'
+ *   D2  pill · D8 provider head pill ................. 'draws the provider card: head, disclosure, two bars, marks, timeline',
+ *                                                      'says all limited, counts down to the first return and shades the timeline'
+ *   D3  live countdown, "곧" never "곧 후", s vs ms .... 'floors time left and never says “in soon”',
+ *                                                      'renders the same countdown from seconds and from milliseconds',
+ *                                                      'ticks countdowns in place once a second, without re-rendering'
+ *   D4  one polite sentence (capacity, lane) ......... 'builds announcement sentences from data changes'
+ *   D5–D7 tokens, motion, container queries .......... styles.ts (--aq-warn-text, reduced motion, @container aqlane/aqcap)
+ *   D9  the 20% line ................................. 'draws the provider card…' (+ LOW_PCT parity above)
+ *   D10 account marks · narrow fold .................. 'folds the usable accounts into one mark when narrow, with a list card'
+ *   D11 the account card ............................. 'emits ui-account-open and opens the account card; Esc closes and refocuses the mark',
+ *                                                      'closes the card from its close button, a second press, and an outside click'
+ *   D10–D12 identity / new response (R3) ............. 'closes the card when its account leaves the data' (+ identity tests above)
+ *   D12 roving focus ................................. 'roves the account marks with one tab stop; arrows, Home and End',
+ *                                                      'keeps the roving stop across a re-render'
+ *   D13 all-blocked stretch .......................... 'says all limited, counts down to the first return and shades the timeline'
+ *   D14 folded chip · ⏸ marker · ⚠ flags .............. 'collapsed capacity: the head and one chip per provider — measures, ⏸ limited · first return, ⚠ flags'
+ *   D15 lane head pills · D16 four numbers ........... 'draws four stats, the queue, job cards and a 24-hour chart'
+ *   D16 lower bounds with runs24h .................... 'keeps the lower bounds when runs24h supplies the counts (the kept records decide)',
+ *                                                      'never counts a run shown before its record exists toward historyCap'
+ *   D17 the next-fire queue, +N, empty ............... 'shows +N past four queued jobs', 'says so when nothing is scheduled'
+ *   D18 the tile counts down live .................... 'ticks countdowns in place once a second, without re-rendering'
+ *   D19 24 hours of runs, hatch, sentence ............ 'marks lower bounds and hatches the truncated stretch'
+ *   R1  names, errors, labels are text ............... 'escapes every host-written string, in text and in attributes'
+ *   other instance's job (잡 정보 없음) ............... 'draws a job note after the name, escaped, with its tooltip'
+ *   folded lane: only the waiting jobs ............... 'collapsed lane: the head and only the jobs waiting for a reply — no stats, queue or chart'
+ *   the fold toggle (펼치기 / 접기) ................... 'collapsible: the toggle in each head says what a press does and sends a cancelable ui-collapse',
+ *                                                      'speaks Korean when folded: 펼치기 / 접기 and the dashboard’s chip words'
+ *   the lead card under its tile ..................... 'per-job slot: the host’s live card sits under its tile and survives every re-render',
+ *                                                      'per-job slot: a slotted card does not swallow Esc or keep the account card open on a press'
+ *   D20 the drawer stays the page's .................. above ('D20 — the drawer stays the page’s')
+ */
