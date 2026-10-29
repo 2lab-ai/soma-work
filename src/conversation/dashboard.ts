@@ -6625,9 +6625,10 @@ function dhTruncate(field) {
   return (f && typeof f.truncate === 'number') ? f.truncate : null;
 }
 let currentUserId = INIT_USER || '';
-// Displayed + placeholder copy when a non-owner views a session. Kept here so
-// wording edits only touch one place instead of four button sites + panel.
-const READ_ONLY_MSG = 'Read-only — not your session';
+// Displayed + placeholder copy when a non-owner views a session (Korean, like
+// every other reason the page gives). Kept here so wording edits only touch one
+// place: the action buttons, 지금 압축, the subtitle, a question card's lock.
+const READ_ONLY_MSG = '읽기 전용 — 내 세션이 아닙니다';
 let currentPeriod = 'day';
 let ws = null;
 let panelOpen = false;
@@ -6779,7 +6780,7 @@ function acPermissionLock(s, p) {
 }
 function acQuestionLock(s) {
   if (isSiblingSession(s)) return AC_SIBLING;
-  return s.ownerId && s.ownerId === currentUserId ? '' : '읽기 전용 — 내 세션이 아닙니다';
+  return s.ownerId && s.ownerId === currentUserId ? '' : READ_ONLY_MSG;
 }
 
 // DashboardPermissionRequest (+ the requester's input, + this page's answer) → the card's data.

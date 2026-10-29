@@ -425,6 +425,7 @@ function cards(
     ['AC_SIBLING'],
     {
       currentUserId: opts.user ?? 'U1',
+      READ_ONLY_MSG: '읽기 전용 — 내 세션이 아닙니다',
       isSiblingSession: () => !!opts.sibling,
       _permDetails: opts.details ?? { approval_a1: { input: INPUT, truncated: false } },
       _acState: opts.state ?? {},

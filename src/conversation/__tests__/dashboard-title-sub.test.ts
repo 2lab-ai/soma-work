@@ -538,7 +538,7 @@ interface TitleSubClient {
 const FNS = ['titleSubCanRegen', 'titleSubEndpoint', 'isCsrfRejection', 'titleSubView'];
 function client(): TitleSubClient {
   const body = `${FNS.map(clientFn).join('\n')}\nreturn { ${FNS.join(', ')} };`;
-  return new Function('READ_ONLY_MSG', body)('Read-only — not your session') as TitleSubClient;
+  return new Function('READ_ONLY_MSG', body)('읽기 전용 — 내 세션이 아닙니다') as TitleSubClient;
 }
 
 describe('panel subtitle client (shipped code)', () => {
