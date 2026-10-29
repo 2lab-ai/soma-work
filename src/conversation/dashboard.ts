@@ -15504,18 +15504,30 @@ function ansSession(cid) {
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   return s && s.conversationId === cid ? s : null;
 }
-// Task view T1.4 — the turn's summary (kept in its Raw), the face when the
-// answer cannot be read (none recorded, or not this viewer's to read).
-function ansFallbackHtml(details) {
+// Task view T1.4 — the turn's summary (kept in its Raw) as one line of text:
+// the heading (the element's title) of an answer that cannot be read (none
+// recorded, or not this viewer's to read). Its title, then its body's own
+// words — not a button's (Summary failed's 🔄 Retry works in Raw).
+function ansSummaryTitle(details) {
   var body = details.parentNode;
   var sum = body && body.querySelector ? body.querySelector('.turn-raw-summary') : null;
-  return sum && sum.innerHTML ? '<div class="ans-fallback">' + sum.innerHTML + '</div>' : '';
+  if (!sum) return '';
+  var head = sum.querySelector('.turn-summary-title');
+  var text = sum.querySelector('.turn-summary-body');
+  var words = text ? String(text.textContent || '') : '';
+  var btn = text && text.querySelector ? text.querySelector('button') : null;
+  if (btn) words = words.replace(String(btn.textContent || ''), '');
+  return [head ? String(head.textContent || '') : '', words]
+    .map(function(x) { return x.replace(/\\s+/g, ' ').trim(); })
+    .filter(Boolean)
+    .join(' — ');
 }
 // D1 · D13 — one answer's face: loading, failed (다시 시도 → ui-retry), or the
 // answer from the cache — filled into Raw as written too. An empty or failed
-// answer has the turn's summary above it. Entry motion (D15) only for an answer
-// that just arrived: one painted again from the cache (the turn re-rendered
-// when its summary landed, D14) does not replay it.
+// answer is headed by the turn's summary (the element's title: nothing is
+// inserted beside it). Entry motion (D15) only for an answer that just
+// arrived: one painted again from the cache (the turn re-rendered when its
+// summary landed, D14) does not replay it.
 function ansPaint(details, state, detail, animate) {
   var el = details.querySelector('ui-ai-answer');
   if (!el) return;
@@ -15525,12 +15537,12 @@ function ansPaint(details, state, detail, animate) {
     var src = details.parentNode && details.parentNode.querySelector ? details.parentNode.querySelector('.turn-raw-src') : null;
     if (src && src.textContent !== raw) src.textContent = raw;
   }
-  var old = details.querySelector('.ans-fallback');
-  if (old) old.remove();
-  if (state !== 'loading' && !raw.trim()) el.insertAdjacentHTML('beforebegin', ansFallbackHtml(details));
-  ansSetData(el, state === 'loading' ? { markdown: '', loading: true }
+  var d = state === 'loading' ? { markdown: '', loading: true }
     : state === 'error' ? { markdown: '', error: String(detail || 'Error'), canRetry: true }
-    : { markdown: raw, linkTitles: ansLinkTitles(ansSession(details.dataset.conv)), animate: !!animate });
+    : { markdown: raw, linkTitles: ansLinkTitles(ansSession(details.dataset.conv)), animate: !!animate };
+  var title = state !== 'loading' && !raw.trim() ? ansSummaryTitle(details) : '';
+  if (title) d.title = title;
+  ansSetData(el, d);
 }
 // Turn ids are unique per conversation only: the raw cache is keyed by both.
 function ansCacheKey(convId, turnId) {

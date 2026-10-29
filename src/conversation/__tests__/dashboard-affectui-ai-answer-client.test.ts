@@ -110,25 +110,37 @@ const FIXTURE = [
   '',
   `See \`src/conversation/dashboard.ts\` and ${PR} for the diff.`,
 ].join('\n');
-/** The turn's summary, as renderTurn puts it in Raw (task view T1.4). */
-const SUMMARY =
-  '<div class="turn-summary-title">Picker bars</div><div class="turn-summary-body">Three bars per model.</div>';
+/** The turn's summary, as renderTurn puts it in Raw (task view T1.4): its title and body (a button: Summary failed's 🔄 Retry). */
+type Summary = { title?: string; body?: string; button?: string } | null;
+const SUMMARY: Summary = { title: 'Picker bars', body: 'Three bars per model.' };
+/** What the element is titled with when the answer is empty or failed (#552 review P3). */
+const SUMMARY_TITLE = 'Picker bars — Three bars per model.';
 const SLOT_LOADING = '<ui-ai-answer flat lang="ko"><span class="ans-lite">불러오는 중…</span></ui-ai-answer>';
 const SLOT_WRITING = '<ui-ai-answer flat lang="ko"><span class="ans-lite">응답 작성 중</span></ui-ai-answer>';
 
 type Data = Record<string, unknown>;
 /**
  * One answer in a turn as ansPaint sees it: the element (its data setter
- * counts writes), the summary line it may insert before itself, and the turn
- * body's Raw (요약 + 원문).
+ * counts writes; nothing is ever inserted beside it), and the turn body's Raw
+ * (요약 + 원문).
  */
-function answerDom(conv = 'conv-run', turn = 't2', summary = SUMMARY) {
+function answerDom(conv = 'conv-run', turn = 't2', summary: Summary = SUMMARY) {
   const rawSrc = { textContent: '' };
-  const turnBody = {
+  const sum = summary && {
     querySelector: (sel: string) =>
-      sel === '.turn-raw-src' ? rawSrc : sel === '.turn-raw-summary' ? { innerHTML: summary } : null,
+      sel === '.turn-summary-title' && summary.title !== undefined
+        ? { textContent: summary.title }
+        : sel === '.turn-summary-body' && summary.body !== undefined
+          ? {
+              textContent: summary.body + (summary.button ?? ''),
+              querySelector: (b: string) => (b === 'button' && summary.button ? { textContent: summary.button } : null),
+            }
+          : null,
   };
-  let fallback: { html: string; remove(): void } | null = null;
+  const turnBody = {
+    querySelector: (sel: string) => (sel === '.turn-raw-src' ? rawSrc : sel === '.turn-raw-summary' ? sum : null),
+  };
+  let inserts = 0;
   const sets: Data[] = [];
   let data: Data | undefined;
   const el = {
@@ -139,31 +151,23 @@ function answerDom(conv = 'conv-run', turn = 't2', summary = SUMMARY) {
       data = v;
       sets.push(v as Data);
     },
-    insertAdjacentHTML: (pos: string, html: string) => {
-      if (pos !== 'beforebegin') throw new Error(`summary goes before the element, not ${pos}`);
-      if (!html) return;
-      const f = {
-        html,
-        remove: () => {
-          if (fallback === f) fallback = null;
-        },
-      };
-      fallback = f;
+    insertAdjacentHTML: () => {
+      inserts++;
     },
   };
   const details = {
     dataset: { conv, turn },
     parentNode: turnBody,
-    querySelector: (sel: string) => (sel === 'ui-ai-answer' ? el : sel === '.ans-fallback' ? fallback : null),
+    querySelector: (sel: string) => (sel === 'ui-ai-answer' ? el : null),
   };
-  return { details, el, sets, rawSrc, fallback: () => fallback?.html ?? '' };
+  return { details, el, sets, rawSrc, inserts: () => inserts };
 }
 const PAINT_FNS = [
   'esc',
   'ansLinkTitles',
   'ansSetData',
   'ansSession',
-  'ansFallbackHtml',
+  'ansSummaryTitle',
   'ansCacheKey',
   'ansPaint',
   'ansLoad',
@@ -692,7 +696,7 @@ describe('D12 · review R1 (P1) — a failed send is found although the writing 
 });
 
 describe('D13 — loading, failed, empty: the element’s data, the summary above, Raw', () => {
-  const harness = (cache: Record<string, string>, fetchImpl: unknown, summary = SUMMARY) => {
+  const harness = (cache: Record<string, string>, fetchImpl: unknown, summary: Summary = SUMMARY) => {
     const dom = answerDom('conv-run', 't2', summary);
     const api = load<{ ansLoad(d: unknown): void }>(PAINT_FNS, [], {
       _rawLoadedCache: cache,
@@ -712,22 +716,22 @@ describe('D13 — loading, failed, empty: the element’s data, the summary abov
     h.api.ansLoad(h.details);
     expect(fetch).not.toHaveBeenCalled();
     expect(h.sets).toEqual([{ markdown: '**hi**', linkTitles: TITLES, animate: false }]);
-    expect(h.fallback()).toBe('');
+    expect(h.inserts()).toBe(0);
     expect(h.rawSrc.textContent).toBe('**hi**');
   });
 
-  it('a failed request: loading, then the summary above “failed” with 다시 시도; a good one fills the cache and enters', async () => {
+  it('a failed request: loading, then “failed” with 다시 시도 headed by the summary; a good one fills the cache and enters', async () => {
     const bad = harness(
       {},
       vi.fn(() => Promise.resolve({ ok: false, status: 404 })),
     );
     bad.api.ansLoad(bad.details);
     expect(bad.el.data).toEqual({ markdown: '', loading: true });
-    expect(bad.fallback()).toBe('');
     await flush();
-    // Task view T1.4: the answer is the face, so a failure shows the summary first.
-    expect(bad.fallback()).toBe(`<div class="ans-fallback">${SUMMARY}</div>`);
-    expect(bad.el.data).toEqual({ markdown: '', error: 'HTTP 404', canRetry: true });
+    // Task view T1.4: the answer is the face, so a failure shows the summary first — as the element's
+    // title (#552 review P3: no line re-inserted beside the element on every paint).
+    expect(bad.el.data).toEqual({ markdown: '', error: 'HTTP 404', canRetry: true, title: SUMMARY_TITLE });
+    expect(bad.inserts()).toBe(0);
     expect(bad.rawSrc.textContent).toBe('');
 
     const cache: Record<string, string> = {};
@@ -738,7 +742,6 @@ describe('D13 — loading, failed, empty: the element’s data, the summary abov
     expect(fetch).toHaveBeenCalledWith('/api/conversations/conv-run/turns/t2/raw');
     expect(cache['conv-run:t2']).toBe(FIXTURE);
     expect(ok.el.data).toEqual({ markdown: FIXTURE, linkTitles: TITLES, animate: true });
-    expect(ok.fallback()).toBe('');
     expect(ok.rawSrc.textContent).toBe(FIXTURE);
   });
 
@@ -746,20 +749,35 @@ describe('D13 — loading, failed, empty: the element’s data, the summary abov
     const h = harness({}, () => Promise.reject(Object.assign(new Error(''), { name: 'TypeError' })));
     h.api.ansLoad(h.details);
     await flush();
-    expect(h.el.data).toEqual({ markdown: '', error: 'TypeError', canRetry: true });
+    expect(h.el.data).toEqual({ markdown: '', error: 'TypeError', canRetry: true, title: SUMMARY_TITLE });
   });
 
-  it('an empty answer: the summary above the element’s empty line; with no summary yet, only that line', async () => {
+  it('an empty answer: the element’s empty line headed by the summary; with no summary yet, only that line', async () => {
     const empty = harness({}, () => Promise.resolve({ ok: true, json: () => Promise.resolve({ raw: '  ' }) }));
     empty.api.ansLoad(empty.details);
     await flush();
-    expect(empty.fallback()).toBe(`<div class="ans-fallback">${SUMMARY}</div>`);
-    expect(empty.el.data).toMatchObject({ markdown: '  ' }); // the element says 기록된 답변 내용이 없습니다
+    // the element says 기록된 답변 내용이 없습니다 under the summary
+    expect(empty.el.data).toMatchObject({ markdown: '  ', title: SUMMARY_TITLE });
+    expect(empty.inserts()).toBe(0);
 
-    const bare = harness({ 'conv-run:t2': '' }, vi.fn(), '');
+    const bare = harness({ 'conv-run:t2': '' }, vi.fn(), null);
     bare.api.ansLoad(bare.details);
-    expect(bare.fallback()).toBe('');
-    expect(bare.el.data).toMatchObject({ markdown: '' });
+    expect(bare.el.data).toEqual({ markdown: '', linkTitles: TITLES, animate: false });
+  });
+
+  it('the summary as one heading line: its title, then its body’s own words — not a button’s, not the markup', async () => {
+    const h = (summary: Summary) => {
+      const x = harness({ 'conv-run:t2': '' }, vi.fn(), summary);
+      x.api.ansLoad(x.details);
+      return (x.el.data as Data).title;
+    };
+    expect(h({ title: 'Picker <b>bars</b>', body: '  Three\n bars.  ' })).toBe('Picker <b>bars</b> — Three bars.');
+    expect(h({ body: 'Generating summary...' })).toBe('Generating summary...');
+    // Summary failed + its 🔄 Retry (the button stays in Raw, where it works).
+    expect(h({ title: 'Picker bars', body: 'Summary failed ', button: '🔄 Retry' })).toBe('Picker bars — Summary failed');
+    expect(h({ title: '', body: '' })).toBeUndefined();
+    expect(clientFn('ansPaint')).not.toContain('insertAdjacentHTML');
+    expect(TEMPLATE).not.toContain('ans-fallback');
   });
 
   it('다시 시도 (ui-retry) fetches again, then the answer replaces the summary', async () => {
@@ -789,11 +807,11 @@ describe('D13 — loading, failed, empty: the element’s data, the summary abov
     expect(fetch).toHaveBeenCalledTimes(1);
     handlers[0](from('UI-AI-ANSWER'));
     expect(h.el.data).toEqual({ markdown: '', loading: true });
-    expect(h.fallback()).toBe('');
     await flush();
     expect(fetch).toHaveBeenCalledTimes(2);
+    // The answer replaces the summary: no title on a readable answer.
     expect(h.el.data).toEqual({ markdown: 'second try', linkTitles: TITLES, animate: true });
-    expect(h.fallback()).toBe('');
+    expect(h.inserts()).toBe(0);
   });
 });
 
@@ -1175,7 +1193,7 @@ describe('client hygiene', () => {
       'ansLinkTitles',
       'ansSetData',
       'ansSession',
-      'ansFallbackHtml',
+      'ansSummaryTitle',
       'ansPaint',
       'ansCacheKey',
       'ansLoad',
