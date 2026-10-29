@@ -562,7 +562,7 @@ describe('panel header — the session chip and its one action', () => {
 describe('세션 정보 — the complete numbers, live, behind one summary line', () => {
   const info = (s: Record<string, unknown>, open: boolean) =>
     load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
-      // contextBlockHtml: the context block at the top of the open body (re-context-window D5) — empty without contextParts.
+      // cwSlotHtml: the context block (<ui-context-window>) at the top of the open body (re-context-window D5) — empty without contextParts.
       // panelDetailsHtml: 세부 right after it (re-agent-run D19).
       [
         'esc',
@@ -570,13 +570,13 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
         'toNum',
         'ctxLevel',
         'ctxPercent',
-        'contextBlockHtml',
+        'cwSlotHtml',
         'pendingAutoResume',
         'rootStatusOf',
         'panelDetailsHtml',
         'panelInfoHtml',
       ],
-      ['PI_CHEV_SVG'],
+      ['PI_CHEV_SVG', '_cw'],
       {
         formatTokens: (n: number) => `${n}`,
         formatNmSSs: (n: number) => `${n}ms`,
@@ -1546,11 +1546,11 @@ describe('collapsed face — the context level is a warning, the panel bar uses 
   });
 
   it('one threshold table for both surfaces', () => {
-    // re-context-window D9/D16: the same ctxLevel, given the auto-compact point, on the face, the summary and the block.
+    // re-context-window D9/D16: the same ctxLevel, given the auto-compact point, on the face and the summary; the
+    // block (<ui-context-window>) measures the same table (library context-window.test.ts "measures the level against the auto-compact point").
     expect(clientFn('panelInfoHtml')).toContain(
       'ctxLevel(ctx, s.contextTokens, s.autoCompactTokens, s.compactPending)',
     );
-    expect(clientFn('contextBlockHtml')).toContain('ctxLevel(pct, used, auto, s.compactPending)');
     expect(clientFn('renderCardFace')).toContain(
       'ctxLevel(ctxPct, s.contextTokens, s.autoCompactTokens, s.compactPending)',
     );
