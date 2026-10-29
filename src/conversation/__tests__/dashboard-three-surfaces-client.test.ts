@@ -242,15 +242,15 @@ describe('one tree element, two densities — compact on the card, rich in the p
     expect(declarationCount('AGENT_TREE_ROWS')).toBe(0);
   });
 
-  it('the panel subtree is rich — a card per agent with its spend, its brief and the waterfall on one axis', () => {
+  it('the panel tree (the 에이전트 트리 section tab) is rich — a card per agent with its spend, its brief and the waterfall on one axis', () => {
     const root = treeUi.agentTreeOf(card(), 'working');
     const d = treeUi.atTreeData(root, {
       s: card(),
       ns: 'p|k',
-      withRoot: false,
-      openDepth: 0,
+      withRoot: true,
+      openDepth: 64,
       density: 'rich',
-      title: '하위 에이전트',
+      title: '에이전트 트리',
     });
     expect(d.density).toBe('rich');
     // SSOT 2026-10-26 T2 — its own spend: every token kind it was billed for and the API-equivalent cost.
@@ -259,7 +259,9 @@ describe('one tree element, two densities — compact on the card, rich in the p
     // The waterfall needs every node's start (and end, when it ended) — the element puts them on one axis
     // (library: 'rich: cards with pill, summary, reason on needs_you / failed, branch cost, time and the waterfall').
     expect(nodeOf(d, 'toolu_nested')).toMatchObject({ startedAt: T0 + 10_000, endedAt: T0 + 51_000 });
-    expect(clientFn('renderPanelAgents')).toContain("density: 'rich', title: '하위 에이전트'");
+    // SSOT 2026-10-29: the tree is its own section tab (paintTreeTab), no longer under the agent's header.
+    expect(clientFn('paintTreeTab')).toContain("density: 'rich', title: '에이전트 트리'");
+    expect(clientFn('renderPanelAgents')).not.toContain('atTreeData(');
   });
 });
 
