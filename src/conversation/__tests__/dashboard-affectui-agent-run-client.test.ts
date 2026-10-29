@@ -1454,8 +1454,8 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
         formatNmSSs: (n: number) => `${n}ms`,
         cardTotalTokens: () => 1,
         safeHref: (u: string) => u,
-        // #441's context block is pinned by its own suite; here it only has to sit first in the body.
-        contextBlockHtml: () => '<section class="cw" aria-label="컨텍스트"></section>',
+        // The context block (<ui-context-window>'s slot) is pinned by its own suite; here it only has to sit first in the body.
+        cwSlotHtml: () => '<div class="ui-tok cw-slot"><ui-context-window lang="ko"></ui-context-window></div>',
       },
     ).panelInfoHtml;
     const open = info(CARD(), true);
@@ -1463,8 +1463,8 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
     for (const gone of ['소유자', '워크플로', '환경', '비용']) expect(grid, gone).not.toContain(gone);
     for (const kept of ['입력', '출력', '캐시 읽기', '캐시 쓰기']) expect(grid, kept).toContain(kept);
     const at = (needle: string) => open.indexOf(needle);
-    // The context block: this branch's .pi-ctx, or #441's .cw once it lands — first in the body either way.
-    const context = at('class="cw') >= 0 ? at('class="cw') : at('class="pi-ctx"');
+    // The context block (<ui-context-window>) — first in the body.
+    const context = at('class="ui-tok cw-slot"');
     const order = [
       at('class="pi-body"'),
       context,
