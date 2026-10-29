@@ -1037,11 +1037,11 @@ describe('a subagent’s 지시와 답변 — its answer on the same element', (
         formatTaskTime: () => '10:00',
       },
     ).agentConvHtml(a, io, 'the prompt', answer);
-  const data = (a: unknown, io: unknown, answer: string | null, s: unknown = SESSION) =>
-    load<{ agentAnswerData(a: unknown, io: unknown, answer: string | null, s: unknown): Data }>(
+  const data = (a: unknown, io: unknown, answer: string | null, s: unknown = SESSION, failed = '') =>
+    load<{ agentAnswerData(a: unknown, io: unknown, answer: string | null, s: unknown, failed: string): Data }>(
       ['ansLinkTitles', 'agentAnswerData'],
       [],
-    ).agentAnswerData(a, io, answer, s);
+    ).agentAnswerData(a, io, answer, s, failed);
   const done = { status: 'completed', description: 'Map the picker', summary: 'Tray reads MODEL_STATS.' };
   const result = { seq: 7, text: 'Task ok' };
 
@@ -1082,9 +1082,96 @@ describe('a subagent’s 지시와 답변 — its answer on the same element', (
   it('renderAgentConv writes the markup, then the element’s data — no copy cache, no listeners of its own', () => {
     const fn = clientFn('renderAgentConv');
     expect(fn).toMatch(
-      /writePanelPart\(host, html\);\s*var el = host\.querySelector\('ui-ai-answer'\);\s*if \(el\) ansSetData\(el, agentAnswerData\(a, io, answer, s\)\);/,
+      /writePanelPart\(host, html\);\s*var el = host\.querySelector\('ui-ai-answer'\);\s*if \(el\) ansSetData\(el, agentAnswerData\(a, io, answer, s, failed\)\);/,
     );
     expect(fn).not.toContain('_rawLoadedCache');
+  });
+
+  // #552 review P3: a raw that failed to load read as the agent's summary (or as "no answer recorded"),
+  // with no way to ask again — the main agent's answers say failed and offer 다시 시도.
+  it('a raw that failed to load: failed with 다시 시도, headed by the agent’s summary — never an empty answer', () => {
+    const big = { seq: 7, text: 'Task ok', rawBytes: 4096 };
+    expect(data(done, { result: big }, '', SESSION, 'HTTP 502')).toEqual({
+      markdown: '',
+      error: 'HTTP 502',
+      canRetry: true,
+      title: 'Tray reads MODEL_STATS.',
+    });
+    expect(data({ ...done, summary: '' }, { result: big }, '', SESSION, 'TypeError')).toEqual({
+      markdown: '',
+      error: 'TypeError',
+      canRetry: true,
+    });
+    // The answer slot names the work-log entry its raw comes from: the retry path is by seq.
+    expect(html(done, { spawn: null, result: big }, '')).toContain(
+      `<div class="turn-answer ui-tok" data-seq="7">${SLOT_LOADING}</div>`,
+    );
+  });
+
+  it('agentConvRawOf keeps the failure; 다시 시도 (ui-retry by seq) forgets it and loads again', async () => {
+    let reply: { status: string; raw?: string; error?: string } = { status: 'error', error: 'HTTP 502' };
+    const loads: number[] = [];
+    let renders = 0;
+    const later: Array<() => void> = [];
+    const m = load<{
+      agentConvRawOf(seq: number): string | null;
+      agentConvFailure(seq: number): string;
+      agentConvRetry(seq: string): void;
+    }>(['agentConvRawOf', 'agentConvFailure', 'agentConvRetry'], ['_agentConvRaw', '_agentConvFailed'], {
+      _wl: { convId: 'c' },
+      _panelGen: 1,
+      wlFetchJson: () => {},
+      wlRawLoad: (_st: unknown, seq: number) => {
+        loads.push(seq);
+        return Promise.resolve(reply);
+      },
+      renderAgentConv: () => renders++,
+      setTimeout: (fn: () => void) => later.push(fn),
+    });
+    expect(m.agentConvRawOf(7)).toBeNull();
+    await flush();
+    expect(m.agentConvRawOf(7)).toBe('');
+    expect(m.agentConvFailure(7)).toBe('HTTP 502');
+    expect(renders).toBe(1);
+    // A later render does not ask again by itself before the pause (#488).
+    m.agentConvRawOf(7);
+    expect(loads).toEqual([7]);
+    // 다시 시도: forgotten, the tab is painted again — and that render loads it.
+    reply = { status: 'ok', raw: 'the answer' };
+    m.agentConvRetry('7');
+    expect(m.agentConvFailure(7)).toBe('');
+    expect(renders).toBe(2);
+    expect(m.agentConvRawOf(7)).toBeNull();
+    await flush();
+    expect(m.agentConvRawOf(7)).toBe('the answer');
+    expect(loads).toEqual([7, 7]);
+    // The pause of the first failure ends after the retry landed: it forgets nothing.
+    for (const fn of later) fn();
+    expect(m.agentConvRawOf(7)).toBe('the answer');
+    expect(loads).toEqual([7, 7]);
+    // Nothing to retry: no repaint.
+    m.agentConvRetry('8');
+    expect(renders).toBe(3);
+    expect(clientFn('renderAgentConv')).toContain("var failed = io.result && io.result.rawBytes ? agentConvFailure(io.result.seq) : '';");
+  });
+
+  it('ui-retry from a subagent’s answer goes to its seq; a turn’s answer to ansLoad', () => {
+    const at = TEMPLATE.indexOf("document.addEventListener('ui-retry'");
+    const listener = cook(TEMPLATE.slice(at, TEMPLATE.indexOf('\n});\n', at) + 4));
+    const handlers: Array<(e: unknown) => void> = [];
+    const retried: string[] = [];
+    const loaded: unknown[] = [];
+    new Function('document', 'ansLoad', 'agentConvRetry', listener)(
+      { addEventListener: (_n: string, fn: (e: unknown) => void) => handlers.push(fn) },
+      (d: unknown) => loaded.push(d),
+      (seq: string) => retried.push(seq),
+    );
+    const sub = { getAttribute: (n: string) => (n === 'data-seq' ? '7' : null) };
+    handlers[0]({
+      target: { tagName: 'UI-AI-ANSWER', closest: (sel: string) => (sel === '.turn-answer[data-seq]' ? sub : null) },
+    });
+    expect(retried).toEqual(['7']);
+    expect(loaded).toEqual([]);
   });
 });
 

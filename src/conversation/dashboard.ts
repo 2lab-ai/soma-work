@@ -9662,6 +9662,7 @@ function agentPromptOf(raw) {
   return text;
 }
 var _agentConvRaw = Object.create(null); // work-log seq → its loaded raw (this panel opening)
+var _agentConvFailed = Object.create(null); // work-log seq → { error } of a load that failed (this panel opening)
 function agentConvRawOf(seq) {
   var key = String(seq);
   if (Object.prototype.hasOwnProperty.call(_agentConvRaw, key)) return _agentConvRaw[key];
@@ -9671,14 +9672,34 @@ function agentConvRawOf(seq) {
   wlRawLoad(_wl, seq, wlFetchJson).then(function(r) {
     if (gen !== _panelGen) return;
     _agentConvRaw[key] = r && r.status === 'ok' ? r.raw : '';
-    // #488: a transient failure is tried again on a later render (a poll, a log
-    // page) — after a pause, so a failing load never spins.
+    // A transient failure: the answer says so and offers 다시 시도 (agentConvRetry);
+    // #488: it is also tried again on a later render (a poll, a log page) — after
+    // a pause, so a failing load never spins.
     if (r && r.status === 'error') {
-      setTimeout(function() { if (gen === _panelGen && _agentConvRaw[key] === '') delete _agentConvRaw[key]; }, 15000);
+      var failure = _agentConvFailed[key] = { error: String(r.error || 'Error') };
+      setTimeout(function() {
+        if (gen !== _panelGen || _agentConvFailed[key] !== failure) return;
+        delete _agentConvFailed[key];
+        delete _agentConvRaw[key];
+      }, 15000);
     }
     renderAgentConv();
   });
   return null;
+}
+// Why a subagent's raw failed to load ('' = it did not).
+function agentConvFailure(seq) {
+  var f = _agentConvFailed[String(seq)];
+  return f ? f.error : '';
+}
+// 다시 시도 on a subagent's answer (ui-retry; its slot names the work-log seq):
+// the failure is forgotten and the tab painted again, which loads it again.
+function agentConvRetry(seq) {
+  var key = String(seq);
+  if (!_agentConvFailed[key]) return;
+  delete _agentConvFailed[key];
+  delete _agentConvRaw[key];
+  renderAgentConv();
 }
 function agentConvHtml(a, io, prompt, answer) {
   var name = a ? agentName(a) : '에이전트';
@@ -9696,8 +9717,10 @@ function agentConvHtml(a, io, prompt, answer) {
   }
   var body;
   if (io.result) {
-    // The answer is <ui-ai-answer flat> (its data: agentAnswerData).
-    body = '<div class="turn-answer ui-tok">' + ansSlotHtml('불러오는 중…') + '</div>';
+    // The answer is <ui-ai-answer flat> (its data: agentAnswerData); one read from
+    // its raw names the work-log entry (data-seq: 다시 시도 → agentConvRetry).
+    var seq = io.result.rawBytes ? ' data-seq="' + Math.floor(Number(io.result.seq) || 0) + '"' : '';
+    body = '<div class="turn-answer ui-tok"' + seq + '>' + ansSlotHtml('불러오는 중…') + '</div>';
     body += '<details class="turn-raw"><summary class="turn-expand-btn">Raw</summary><div class="turn-raw-body">'
       + (a && a.summary ? '<div class="turn-raw-label">요약</div><div>' + esc(a.summary) + '</div>' : '')
       + '<div class="turn-raw-label">원문</div><pre class="turn-raw-src">' + esc(answer || '') + '</pre></div></details>';
@@ -9715,10 +9738,16 @@ function agentConvHtml(a, io, prompt, answer) {
 // Pure: what a subagent's answer element shows — the writing row while it runs
 // (no result yet), loading while its raw is fetched, then the answer (a result
 // that cannot be read reads as the agent's own one-line summary, if it has
-// one). Copy takes this text. No entry motion: the tab is painted again on
-// every poll and every return to the agent.
-function agentAnswerData(a, io, answer, s) {
+// one). A raw that failed to load (failed: why) says so with 다시 시도, headed
+// by that summary — never as an empty answer. Copy takes this text. No entry
+// motion: the tab is painted again on every poll and every return to the agent.
+function agentAnswerData(a, io, answer, s, failed) {
   if (!io.result) return { markdown: '', streaming: true };
+  if (failed) {
+    var d = { markdown: '', error: String(failed), canRetry: true };
+    if (a && a.summary) d.title = String(a.summary);
+    return d;
+  }
   if (answer == null) return { markdown: '', loading: true };
   var shown = answer === '' && a && a.summary ? a.summary : answer;
   return { markdown: String(shown), linkTitles: ansLinkTitles(s), animate: false };
@@ -9737,10 +9766,11 @@ function renderAgentConv() {
   if (!io.spawn) wlSeekAgentSpawn(_wl, a, _panelAgent);
   var prompt = io.spawn && io.spawn.rawBytes ? agentConvRawOf(io.spawn.seq) : null;
   var answer = io.result ? (io.result.rawBytes ? agentConvRawOf(io.result.seq) : String(io.result.text || '')) : null;
+  var failed = io.result && io.result.rawBytes ? agentConvFailure(io.result.seq) : '';
   var html = io.spawn || io.result || a ? agentConvHtml(a, io, prompt != null ? agentPromptOf(prompt) : null, answer) : '<p class="panel-tasks-empty">이 에이전트의 지시와 결과를 찾지 못했습니다</p>';
   writePanelPart(host, html);
   var el = host.querySelector('ui-ai-answer');
-  if (el) ansSetData(el, agentAnswerData(a, io, answer, s));
+  if (el) ansSetData(el, agentAnswerData(a, io, answer, s, failed));
 }
 // ── Section tabs (SSOT 2026-10-29) — 에이전트 트리 · 작업 로그 · 지시와 답변 ──
 // Inside the focused agent's tab, three section tabs, each with its own scroll
@@ -13576,7 +13606,7 @@ function wlRawLoad(state, seq, fetchJson) {
     if (status === 403) return { status: 'denied' };
     if (status === 503 && err.code === 'unavailable') return { status: 'damaged' };
     if (cache[seq] === p) delete cache[seq];
-    return { status: 'error' };
+    return { status: 'error', error: String((err && (err.message || err.name)) || 'Error') };
   });
   cache[seq] = p;
   return p;
@@ -14766,6 +14796,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // folded — or every detail open with 자세히; the goal folded either way.
   resetPanelSections();
   _agentConvRaw = Object.create(null);
+  _agentConvFailed = Object.create(null);
   // The previous opening's answers are gone from the list: stop watching them.
   if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
   _panelOnQuestion = false;
@@ -15600,8 +15631,15 @@ function ansLoad(details) {
 // ui-retry: other library elements send one too).
 document.addEventListener('ui-retry', function(e) {
   var el = e.target;
-  var details = el && el.tagName === 'UI-AI-ANSWER' && el.closest ? el.closest('.turn-answer[data-turn]') : null;
-  if (details) ansLoad(details);
+  if (!el || el.tagName !== 'UI-AI-ANSWER' || !el.closest) return;
+  var details = el.closest('.turn-answer[data-turn]');
+  if (details) {
+    ansLoad(details);
+    return;
+  }
+  // A subagent's answer: its raw is a work-log entry's, named by seq.
+  var sub = el.closest('.turn-answer[data-seq]');
+  if (sub) agentConvRetry(sub.getAttribute('data-seq'));
 });
 // D11 — "응답 4분 12초": from the instruction to the recorded answer (queue and
 // tools included — the answer is recorded when its turn ends).
