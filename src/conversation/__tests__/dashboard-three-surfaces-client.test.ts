@@ -1133,51 +1133,19 @@ describe('the composer follows the session live (executed)', () => {
 });
 
 describe('the model menu closes on Escape before the panel does (executed)', () => {
-  it('Escape in the open menu closes the menu, back on its trigger, and stops there: the panel stays open', () => {
-    // The fold toggle is gone (re-model-picker D16): the composer's one trigger opens the menu above it.
-    const trigger = {
-      attrs: { 'data-mp-key': 'k', 'data-mp-surface': 'panel', 'aria-expanded': 'true' } as Record<string, string>,
-      getAttribute(n: string) {
-        return this.attrs[n];
-      },
-      setAttribute(n: string, v: string) {
-        this.attrs[n] = v;
-      },
-      focused: false,
-      focus() {
-        this.focused = true;
-      },
-    };
-    const menu = { classList: { remove: () => {} }, setAttribute: () => {} };
+  it('Escape in the open menu closes it, back on its trigger, and stops there; the controls then catch up', () => {
+    // The menu is <ui-model-picker>: its Escape closes onto the trigger and stops inside the element, so the
+    // document's panel Escape never sees it — owned by the library's 'Esc closes, returns focus to the trigger
+    // and stops there' (@2lab.ai/ui model-picker.test.ts). The host half: the close repaints what it held.
     const repainted: string[] = [];
-    const m = load<{ mpMenuKey(e: unknown): void }>(
-      ['mpAnchor', 'mpClose', 'mpMenuKey'],
-      ['_mp'],
-      {
-        document: {
-          getElementById: (id: string) => (id === 'mp-menu' ? menu : null),
-          querySelectorAll: () => [trigger],
-        },
-        refreshCard: () => {},
-        repaintPanelControlsFor: (k: string) => repainted.push(k),
-        clearInterval: () => {},
-      },
-      ['function mpSet(k, w) { _mp.key = k; _mp.surface = w; }'],
-    ) as { mpMenuKey(e: unknown): void; mpSet(k: string, w: string): void };
-    m.mpSet('k', 'panel');
-    let stopped = false;
-    m.mpMenuKey({
-      key: 'Escape',
-      target: { classList: { contains: () => true } },
-      preventDefault() {},
-      stopPropagation() {
-        stopped = true;
-      },
+    const m = load<{ mpOnOpenChange(e: unknown): void }>(['mpOnOpenChange'], [], {
+      refreshCard: () => {},
+      repaintPanelControlsFor: (k: string) => repainted.push(k),
     });
-    expect(stopped).toBe(true); // the document's panel Escape never sees it
-    expect(trigger.attrs['aria-expanded']).toBe('false');
-    expect(trigger.focused).toBe(true);
+    const picker = { tagName: 'UI-MODEL-PICKER', getAttribute: (n: string) => (n === 'data-mp-key' ? 'k' : null) };
+    m.mpOnOpenChange({ target: picker, detail: { open: false } });
     expect(repainted).toEqual(['k']); // the controls catch up on what they held while the menu was open
+    expect(clientFn('renderPanelControls')).toContain('if (!isPickingModel(el)) {');
   });
 
   it('the same-session re-landing leaves a send in flight alone; a send whose session left the board fails closed', () => {
@@ -1320,8 +1288,8 @@ describe('interaction state survives live renders on both surfaces', () => {
     expect(clientFn('changeEffort')).toContain("setBusy(key, 'effort', true)");
     expect(clientFn('goalAction')).toContain("setBusy(key, 'goal', true)");
     expect(clientFn('doAction')).toContain("setBusy(key, 'action', true)");
-    expect(clientFn('renderModelPicker')).toContain("isBusy(s.key, 'model')");
-    expect(clientFn('renderEffortControl')).toContain("isBusy(s.key, 'effort')");
+    expect(clientFn('mpData')).toContain("isBusy(s.key, 'model')");
+    expect(clientFn('mpData')).toContain("isBusy(s.key, 'effort')");
     expect(clientFn('renderCardGoal')).toContain("isBusy(s.key, 'goal')");
     expect(clientFn('sessionActionHtml')).toContain("isBusy(s.key, 'action')");
   });
