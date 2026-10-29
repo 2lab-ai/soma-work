@@ -575,6 +575,12 @@ export interface UsageCall {
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheCreateTokens?: number;
+  /**
+   * The reading is the call's final usage — its transcript line has a stop
+   * reason. A line written while the call still streams has `stop_reason:
+   * null` and a provisional output (measured: 4 tokens): never final.
+   */
+  final?: boolean;
 }
 
 function count(v: unknown): number {
@@ -692,11 +698,11 @@ export function recreditTaskUsage(
     t.cacheCreate === count(call.cacheCreateTokens) &&
     t.costUsd === count(costUsd)
   ) {
-    before.settled = true;
+    if (call.final) before.settled = true;
     return false;
   }
   creditTaskUsage(ledger, key, call, costUsd);
-  before.settled = true;
+  if (call.final) before.settled = true;
   return true;
 }
 

@@ -34,7 +34,12 @@ type Status = 'pending' | 'in_progress' | 'completed';
 const list = (statuses: Status[]) =>
   ['date -u 실행', 'ls | wc -l 실행', '두 결과 한 줄 보고'].map((content, i) => ({ content, status: statuses[i] }));
 
-function line(id: string, u: [number, number, number, number], extra: Record<string, unknown> = {}) {
+function line(
+  id: string,
+  u: [number, number, number, number],
+  extra: Record<string, unknown> = {},
+  stop: string | null = 'tool_use',
+) {
   return JSON.stringify({
     type: 'assistant',
     isSidechain: false,
@@ -43,6 +48,7 @@ function line(id: string, u: [number, number, number, number], extra: Record<str
       id,
       model: 'claude-opus-5-5',
       role: 'assistant',
+      stop_reason: stop,
       content: [{ type: 'tool_use', name: 'TodoWrite' }],
       usage: {
         input_tokens: u[0],
@@ -183,43 +189,46 @@ describe('final usage from the transcript (T5 live follow-up)', () => {
     expect(l.outside).toBeUndefined();
   });
 
-  it('a call still streaming is never dropped from the credit memory, even when marked settled early (review R2)', () => {
+  it('a streaming line (no stop reason) never settles a call: astra R2 scenario keeps the active call (review R3)', () => {
     const l = applyTodoList(emptyTaskLedger(0), list(['in_progress', 'pending', 'pending']), 1);
-    // 511 calls that never settle (llmux providers write zeros to the transcript).
-    for (let i = 0; i < 511; i++) creditTaskUsage(l, `m:proxy${i}`, call([1, 1, 1, 1]), 0);
-    // The active call: credited live, then its first transcript line marks it settled.
+    // 448 calls that never settle (llmux providers write zeros to the transcript).
+    for (let i = 0; i < 448; i++) creditTaskUsage(l, `m:proxy${i}`, call([1, 1, 1, 1]), 0);
     creditTaskUsage(l, 'm:active', call([2, 24, 1000, 10]), 0);
-    expect(recreditTaskUsage(l, 'm:active', call([2, 100, 1000, 10]), () => 0)).toBe(true);
-    // The next call overflows the memory: the active one (newest) stays.
-    creditTaskUsage(l, 'm:next', call([1, 1, 1, 1]), 0);
-    // Its late live frame (start-of-call count) neither adds nor undoes the correction.
+    // Its first transcript line while it still streams: stop_reason null, provisional output.
+    const partial = new Map();
+    collectTranscriptCalls(line('active', [2, 4, 1000, 10], {}, null), partial, true);
+    expect(partial.get('active')?.final).toBeUndefined();
+    reconcileTaskCalls(l, partial, 'm:', () => 0);
+    // 64 subagent calls land while the main call is still generating.
+    for (let i = 0; i < 64; i++) creditTaskUsage(l, `s:sub${i}`, call([1, 1, 1, 1]), 0);
+    // Its next live frame replaces (never adds): input stays one call's worth.
     creditTaskUsage(l, 'm:active', call([2, 24, 1000, 10]), 0);
     const t1 = ledgerTasks(l).current[0].tokens!;
-    expect(t1.input).toBe(511 * 1 + 2 + 1);
-    expect(t1.output).toBe(511 + 100 + 1);
+    expect(t1.input).toBe(448 + 2 + 64);
+    // The final line (stop reason set) still lands on it.
+    const done = new Map();
+    collectTranscriptCalls(line('active', [2, 326, 1000, 10]), done, true);
+    expect(done.get('active')?.final).toBe(true);
+    expect(reconcileTaskCalls(l, done, 'm:', () => 0)).toBe(true);
+    expect(ledgerTasks(l).current[0].tokens?.output).toBe(448 + 326 + 64);
   });
 
-  it('a call reported again moves to the newest place, back inside the window that is never dropped (astra note 1)', () => {
+  it('a late live frame (start-of-call count) never undoes a final correction (astra note 2)', () => {
     const l = applyTodoList(emptyTaskLedger(0), list(['in_progress', 'pending', 'pending']), 1);
-    for (let i = 0; i < 500; i++) creditTaskUsage(l, `m:old${i}`, call([1, 1, 1, 1]), 0);
-    creditTaskUsage(l, 'm:long', call([2, 24, 1000, 10]), 0);
-    expect(recreditTaskUsage(l, 'm:long', call([2, 50, 1000, 10]), () => 0)).toBe(true); // settled early
-    for (let i = 0; i < 50; i++) creditTaskUsage(l, `m:new${i}`, call([1, 1, 1, 1]), 0);
-    // Still streaming: its live frame moves it up. Without that, 20 more credits
-    // would push it out of the newest 64 and, settled, it would be dropped first.
-    creditTaskUsage(l, 'm:long', call([2, 24, 1000, 10]), 0);
-    for (let i = 0; i < 20; i++) creditTaskUsage(l, `m:more${i}`, call([1, 1, 1, 1]), 0);
-    expect(recreditTaskUsage(l, 'm:long', call([2, 900, 1000, 10]), () => 0)).toBe(true);
+    creditTaskUsage(l, 'm:x', call([2, 24, 1000, 10]), 0);
+    expect(recreditTaskUsage(l, 'm:x', { ...call([2, 326, 1000, 10]), final: true }, () => 0)).toBe(true);
+    creditTaskUsage(l, 'm:x', call([2, 24, 1000, 10]), 0);
+    expect(ledgerTasks(l).current[0].tokens?.output).toBe(326);
   });
 
-  it('when the call memory is full, corrected calls go first; a call still waiting for its correction stays', () => {
+  it('when the call memory is full, settled (final) calls go first; a call still waiting for its correction stays', () => {
     const l = applyTodoList(emptyTaskLedger(0), list(['in_progress', 'pending', 'pending']), 1);
-    creditTaskUsage(l, 'm:settled', call([1, 1, 1, 1]), 0);
     creditTaskUsage(l, 'm:waiting', call([1, 1, 1, 1]), 0);
-    expect(recreditTaskUsage(l, 'm:settled', call([1, 9, 1, 1]), () => 0)).toBe(true);
+    creditTaskUsage(l, 'm:settled', call([1, 1, 1, 1]), 0);
+    expect(recreditTaskUsage(l, 'm:settled', { ...call([1, 9, 1, 1]), final: true }, () => 0)).toBe(true);
     for (let i = 0; i < 511; i++) creditTaskUsage(l, `m:fill${i}`, call([1, 1, 1, 1]), 0);
-    // 513 credits: the settled one went, the waiting one is still correctable.
-    expect(recreditTaskUsage(l, 'm:settled', call([1, 10, 1, 1]), () => 0)).toBe(false);
+    // 513 credits: the settled one went (though newer than `waiting`), the waiting one is still correctable.
+    expect(recreditTaskUsage(l, 'm:settled', { ...call([1, 10, 1, 1]), final: true }, () => 0)).toBe(false);
     expect(recreditTaskUsage(l, 'm:waiting', call([1, 9, 1, 1]), () => 0)).toBe(true);
   });
 
