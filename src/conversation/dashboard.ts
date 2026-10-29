@@ -10927,6 +10927,7 @@ function psecClear(sec) {
       tree._html = '';
       tree._tree = null;
       tree._hidden = 0;
+      tree._growing = false;
     }
     _treeMaxN = null;
   }
@@ -10947,11 +10948,17 @@ function selectPanelSection(sec, focus) {
   for (var i = 0; i < PSEC_ORDER.length; i++) if (PSEC_ORDER[i] !== sec) psecClear(PSEC_ORDER[i]);
   if (panelSessionKey) paintSection(sec);
   psecToNewest();
-  psecMaybeFill(sec);
+  psecFillSoon(sec);
   if (focus) {
     var tab = document.getElementById('psec-tab-' + sec);
     if (tab) tab.focus();
   }
+}
+// A scroll the page makes (a landing, a kept place, following the newest): the
+// box's scroll handler knows it for its own and reads no reader intent into it.
+function psecSetTop(box, top) {
+  if (Math.abs(box.scrollTop - top) >= 1) box.scrollTop = top;
+  box._lastTop = box.scrollTop;
 }
 // The section shown, at its newest item; a later scroll up is the reader's.
 function psecToNewest() {
@@ -10959,8 +10966,7 @@ function psecToNewest() {
   _psecPin = true;
   psecSetNew(0);
   if (!box) return;
-  box.scrollTop = box.scrollHeight;
-  box._lastTop = box.scrollTop;
+  psecSetTop(box, box.scrollHeight);
   box._armed = false;
 }
 function psecJumpNewest() {
@@ -10982,7 +10988,7 @@ function psecOnAppended(n, pinned) {
   var box = psecBox();
   if (!box || !(n > 0)) return;
   if (pinned) {
-    box.scrollTop = box.scrollHeight;
+    psecSetTop(box, box.scrollHeight);
     _psecPin = true;
     return;
   }
@@ -10990,10 +10996,7 @@ function psecOnAppended(n, pinned) {
 }
 // Older items went in above the reader: measured from the bottom, their place stays.
 function psecKeepPlace(box, fromBottom) {
-  if (!box) return;
-  var top = box.scrollHeight - fromBottom;
-  if (Math.abs(box.scrollTop - top) >= 1) box.scrollTop = top;
-  box._lastTop = box.scrollTop;
+  if (box) psecSetTop(box, box.scrollHeight - fromBottom);
 }
 // What the top of a section shows: 'older' (a control: older items exist),
 // 'loading' (the control says the page is on its way), 'start' (everything is
@@ -11013,6 +11016,7 @@ function psecOlderState(sec) {
   }
   var host = document.getElementById('panel-tree');
   if (!host || !host._tree) return '';
+  if (host._growing) return 'loading';
   return host._hidden > 0 ? 'older' : 'start';
 }
 function psecSyncControls(sec) {
@@ -11038,13 +11042,26 @@ function psecLoadOlder(sec) {
   else if (sec === 'log') loadOlderWorkLog();
   else showMoreTree();
 }
-// A section shorter than its box cannot be scrolled up: fill it page by page
-// while older items exist (the reader would otherwise have only the control).
+// Pure: whether the next older page is due — the box cannot scroll (the reader
+// would otherwise have only the control), or the reader moved up since the
+// landing (armed) and the top (the sentinel) is within one box height of the view.
+function psecPageDue(scrollTop, scrollHeight, clientHeight, armed) {
+  if (!(clientHeight > 0)) return false;
+  if (scrollHeight <= clientHeight + 1) return true;
+  return !!armed && scrollTop <= clientHeight;
+}
+// After a landing, a page, a scroll or the sentinel: the next older page when it
+// is due — so a page that still leaves the top near the view brings the next.
 function psecMaybeFill(sec) {
   var box = psecBox(sec);
-  if (!box || sec !== _psec || box.hidden || !box.clientHeight) return;
-  if (box.scrollHeight > box.clientHeight + 1) return;
+  if (!box || sec !== _psec || box.hidden) return;
+  if (!psecPageDue(box.scrollTop, box.scrollHeight, box.clientHeight, box._armed)) return;
   if (psecOlderState(sec) === 'older') psecLoadOlder(sec);
+}
+// psecMaybeFill once the section's elements have rendered (<ui-tool-call-card>,
+// <ui-agent-tree> render on the next microtask): their height decides.
+function psecFillSoon(sec) {
+  requestAnimationFrame(function() { psecMaybeFill(sec); });
 }
 // After a <ui-agent-tree> renders new data (its update is async), else after a frame.
 function psecAfterRender(el, fn) {
@@ -11180,9 +11197,13 @@ function showMoreTree() {
   _treeWindow += AT_PANEL_WINDOW;
   paintTreeTab();
   psecKeepPlace(box, fromBottom);
+  // One step at a time: the next waits for this one's render (its height).
+  host._growing = true;
   psecAfterRender(host.querySelector('ui-agent-tree'), function() {
+    host._growing = false;
     if (_psec !== 'tree') return;
     psecKeepPlace(box, fromBottom);
+    psecSyncControls('tree');
     psecMaybeFill('tree');
   });
 }
@@ -11195,8 +11216,8 @@ function loadOlderWorkLog() {
   return run.then(function(r) {
     if (st !== _wl) return r;
     psecSyncControls('log');
-    // A box still too short to scroll takes the next page; a failure waits for the reader.
-    if (r === 'ok') psecMaybeFill('log');
+    // The next page when the top is still near the view; a failure waits for the reader.
+    if (r === 'ok') psecFillSoon('log');
     return r;
   });
 }
@@ -11230,24 +11251,28 @@ function loadOlderWorkLog() {
     box.addEventListener('scroll', function() {
       if (sec !== _psec) return;
       var top = box.scrollTop;
-      // The reader moving up arms the sentinel (a landing or a kept place never does).
-      if (top < box._lastTop - 1) box._armed = true;
+      // The page's own scroll (psecSetTop) — or none: no reader intent in it.
+      if (Math.abs(top - box._lastTop) < 1) return;
+      var up = top < box._lastTop;
       box._lastTop = top;
       _psecPin = psecAtBottom(box);
       if (_psecPin && _psecNew) psecSetNew(0);
-      if (box._armed && box._near) psecLoadOlder(sec);
+      // The reader moving up arms the sentinel; a landing never does, nor does
+      // the box shrinking under a reader at the newest (they stay there).
+      if (up && !_psecPin) box._armed = true;
+      psecMaybeFill(sec);
     }, { passive: true });
+    // The sentinel: the top control, observed within one box height above the view.
     if (btn && typeof IntersectionObserver === 'function') {
       new IntersectionObserver(function(entries) {
-        for (var i = 0; i < entries.length; i++) box._near = entries[i].isIntersecting;
-        if (box._near && box._armed) psecLoadOlder(sec);
+        for (var i = 0; i < entries.length; i++) if (entries[i].isIntersecting) psecMaybeFill(sec);
       }, { root: box, rootMargin: '100% 0px 0px 0px' }).observe(btn);
     }
   });
   if (typeof ResizeObserver === 'function') {
     var pin = new ResizeObserver(function() {
       var box = psecBox();
-      if (box && !box.hidden && _psecPin) box.scrollTop = box.scrollHeight;
+      if (box && !box.hidden && _psecPin) psecSetTop(box, box.scrollHeight);
     });
     PSEC_ORDER.forEach(function(sec) {
       var box = document.getElementById('psec-' + sec);
@@ -15241,7 +15266,7 @@ function loadWorkLog() {
     // 'denied' was already shown by showWorkLogDenied (state.onDenied).
     if (result !== 'denied' && !st.entries.length && _psec === 'log') paintLogTab();
     psecSyncControls('log');
-    psecMaybeFill('log');
+    psecFillSoon('log');
     // Spec 12: agents that wrote to the log but are not on the card get a place in the agent bar.
     if (result === 'ok') renderPanelAgents();
     if (result === 'ok' && _psec === 'tree') paintTreeTab();
