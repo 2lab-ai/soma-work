@@ -11470,21 +11470,30 @@ function mpData(s) {
   if (note && note.error) d.error = note.text;
   return d;
 }
+// What mpData reads that can change, as one string (the model list and the
+// level set are the page's constants) — compared on every card render instead
+// of serializing the data itself.
+function mpDataSig(s) {
+  var note = _modelNotes[s.key];
+  return [
+    s.key, s.model, s.effort, s.effortEffective, s.pendingModel, toNum(s.contextTokens), String(s.effortLevels || ''),
+    isBusy(s.key, 'model'), isBusy(s.key, 'effort'), note && note.error ? note.text : '',
+  ].join('|');
+}
 // Set every picker's data under root — only where it changed (a push that
-// changes nothing on it writes nothing). An open menu follows its session this
-// way while its surface holds still (isPickingModel). Data set before the
-// element is defined is taken when it upgrades.
+// changes nothing on it builds and writes nothing). An open menu follows its
+// session this way while its surface holds still (isPickingModel). Data set
+// before the element is defined is taken when it upgrades.
 function mpHydrate(root) {
   if (!root || !root.querySelectorAll) return;
   var els = root.querySelectorAll('ui-model-picker[data-mp-key]');
   for (var i = 0; i < els.length; i++) {
     var s = _sessionCache[els[i].getAttribute('data-mp-key')];
     if (!s) continue;
-    var d = mpData(s);
-    var sig = JSON.stringify(d);
+    var sig = mpDataSig(s);
     if (els[i]._mpSig === sig) continue;
     els[i]._mpSig = sig;
-    els[i].data = d;
+    els[i].data = mpData(s);
   }
 }
 // A pick leaves the element as ui-change (re-model-picker D11): cancelled, so it
