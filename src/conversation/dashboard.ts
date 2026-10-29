@@ -4575,6 +4575,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   overflow: hidden;
 }
 .card-goal .cg-gap { margin-top: 3px; color: var(--ib-muted); overflow-wrap: anywhere; }
+.card-goal .cg-more { display: inline-flex; align-items: center; min-height: 24px; margin-top: 2px; padding: 0; font: inherit; font-size: 11.5px; color: var(--ib-text-2); background: none; border: 0; cursor: pointer; }
+.card-goal .cg-more:hover { color: var(--ib-text); text-decoration: underline; }
+.card-goal .cg-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.card-goal .cg-more[hidden] { display: none; }
 .card-goal .cg-empty { color: var(--ib-muted); }
 .card-goal .cg-row { display: flex; align-items: flex-start; gap: 6px; }
 .card-goal .cg-row > :first-child { flex: 1; min-width: 0; }
@@ -5532,8 +5536,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* ── GOAL — the editor's home (spec 13) ── */
 .panel-goal { padding: 8px 16px; border-bottom: 1px solid var(--border); outline: none; }
 .panel-goal .card-goal { margin-top: 0; }
-/* The goal's home shows the whole objective (the card's line is the summary). */
-.panel-goal .card-goal .cg-objective { display: block; -webkit-line-clamp: unset; overflow: visible; }
+/* The goal's home opens the objective folded to its first 3 lines (SSOT 2026-10-29, the
+   card's line is the summary); 펼치기 — or 자세히, or a goal landing — shows all of it. */
+.panel-goal .card-goal .cg-objective { -webkit-line-clamp: 3; line-height: 1.45; }
+.panel-goal .card-goal.is-open .cg-objective { display: block; -webkit-line-clamp: unset; overflow: visible; }
 .panel-goal:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
 .panel-tasks-earlier { opacity: 0.85; }
 /* Scroll container: the common surface (large UIAskQ choices included), the
@@ -10139,6 +10145,7 @@ function applyPanelDetail() {
 // The sections an opening starts with: every one open with 자세히, else the defaults.
 function resetPanelSections() {
   _panelInfoOpen = _panelDetail;
+  _panelGoalOpen = _panelDetail || _panelLand === 'goal';
   _panelTasksOpen = _panelDetail || _panelLand === 'tasks';
   _panelTasksExpanded = _panelTasksOpen;
   _panelTasksEarlier = _panelDetail;
@@ -11396,6 +11403,26 @@ document.addEventListener('ui-compact', function(e) {
   cwCompact();
 });
 
+// SSOT 2026-10-29 — like 세션 정보, the goal's objective opens folded to its
+// first 3 lines (resetPanelSections: open with 자세히 or a goal landing);
+// 펼치기 · 접기 toggles it for this opening.
+var _panelGoalOpen = false;
+var GOAL_FOLD_LINES = 3; // the CSS clamp of .panel-goal .card-goal .cg-objective
+function togglePanelGoal() {
+  _panelGoalOpen = !_panelGoalOpen;
+  renderPanelGoal();
+}
+// The toggle shows only where the fold cuts something: the objective runs past
+// its 3 lines (scrollHeight is the whole text, folded or open). An unknown line
+// height keeps it, so the text can always be opened.
+function syncGoalMore(root) {
+  var obj = root.querySelector('.cg-objective');
+  var more = root.querySelector('.cg-more');
+  if (!obj || !more) return;
+  var lh = parseFloat(getComputedStyle(obj).lineHeight);
+  more.hidden = lh > 0 && obj.scrollHeight <= lh * GOAL_FOLD_LINES + 1;
+}
+
 // The goal's home (spec 13, moved from the card): the shared goal component —
 // current, queue, add / delete, the completed goals (T6) — with the card's
 // gates. Typing survives every live render: while its input has focus nothing
@@ -11407,7 +11434,7 @@ function renderPanelGoal() {
   var col = s ? sessionColOf(panelSessionKey) : '';
   var isOwner = !!(s && s.ownerId) && s.ownerId === currentUserId;
   var canEdit = isOwner && !isSiblingSession(s);
-  var html = s ? renderCardGoal(s, col, canEdit) : '';
+  var html = s ? renderCardGoal(s, col, canEdit, _panelGoalOpen) : '';
   if (!html) {
     el.style.display = 'none';
     if (el._html) el.innerHTML = '';
@@ -11428,6 +11455,12 @@ function renderPanelGoal() {
   morphInnerHtml(el, html);
   el._html = html;
   restoreGoalDraft(el, draft);
+  // The fold toggle follows the text's height: now, and whenever the section resizes (panel width, first layout).
+  syncGoalMore(el);
+  if (!el._goalRo && typeof ResizeObserver === 'function') {
+    el._goalRo = new ResizeObserver(function() { syncGoalMore(el); });
+    el._goalRo.observe(el);
+  }
   // Its goal left (deleted, started, finished): focus lands on the section, never on another goal's control.
   var now = document.activeElement;
   if (hadFocus && (!now || now === document.body || !el.contains(now)) && el.focus) el.focus({ preventScroll: true });
@@ -12279,7 +12312,7 @@ function toggleGoalHistory(key) {
 }
 var _goalErrors = Object.create(null); // card key -> last refused goal action (shown until the next success)
 
-function renderCardGoal(s, col, canEdit) {
+function renderCardGoal(s, col, canEdit, open) {
   var g = s.goal || null;
   var live = col !== 'closed' && !s.terminated;
   // Read-only viewers and closed sessions only see a goal list that exists.
@@ -12289,7 +12322,7 @@ function renderCardGoal(s, col, canEdit) {
   var key = escJs(s.key);
   var queue = (g && g.queue) || [];
   var cur = g && g.current;
-  var html = '<div class="card-goal">';
+  var html = '<div class="card-goal' + (open ? ' is-open' : '') + '">';
   html += '<div class="cg-head"><span class="cg-label">&#x1F3AF; Goal</span>';
   if (cur) {
     html += '<span class="cg-status cg-' + escAttr(cur.status) + '">' + esc(GOAL_STATUS_LABELS[cur.status] || cur.status) + '</span>';
@@ -12308,10 +12341,14 @@ function renderCardGoal(s, col, canEdit) {
   html += '</div>';
   if (cur) {
     var dropLabel = queue.length ? '현재 goal 삭제 · 다음 시작' : '현재 goal 삭제';
-    html += '<div class="cg-row" data-mk="' + escAttr('goal:' + cur.goalId) + '"><div class="cg-objective" title="' + escAttr(cur.objective) + '">' + esc(cur.objective) + '</div>'
+    html += '<div class="cg-row" data-mk="' + escAttr('goal:' + cur.goalId) + '"><div class="cg-objective" id="panel-goal-obj" title="' + escAttr(cur.objective) + '">' + esc(cur.objective) + '</div>'
       + '<button type="button" class="cg-btn cg-danger"' + dis
       + ' onclick="event.stopPropagation();goalAction(\\'' + key + '\\',{action:\\'delete\\',goalId:\\'' + escJs(cur.goalId) + '\\',expect:\\'current\\'},this)">'
       + dropLabel + '</button></div>';
+    // SSOT 2026-10-29 — folded to its first 3 lines until opened; reading, so never disabled.
+    // syncGoalMore keeps the toggle to an objective that runs past those lines.
+    html += '<button type="button" class="cg-more" aria-expanded="' + (open ? 'true' : 'false') + '" aria-controls="panel-goal-obj"'
+      + ' onclick="event.stopPropagation();togglePanelGoal()">' + (open ? '접기 &#x25B2;' : '펼치기 &#x25BC;') + '</button>';
     if (cur.status === 'active' && cur.lastEvalReason) {
       html += '<div class="cg-gap">남은 것: ' + esc(String(cur.lastEvalReason).slice(0, 300)) + '</div>';
     }
