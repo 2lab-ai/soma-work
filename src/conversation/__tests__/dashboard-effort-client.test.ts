@@ -43,29 +43,23 @@ function jsonResponse(status: number, body: unknown) {
 }
 
 describe('card effort picker (T1)', () => {
-  // The owner's <select> became the model menu's radiogroup (.prd/affectui/re-model-picker.md D7).
-  const { renderEffortPicker } = load<{ renderEffortPicker(s: any, canSwitch: boolean): string }>(
-    ['esc', 'escAttr', 'escJs', 'effortLabel', 'isBusy', 'mpEffortLevels', 'renderEffortControl', 'renderEffortPicker'],
-    ['EFFORT_LABELS', 'MP_EFFORT_SHORT', '_busy'],
-    { EFFORT_LEVELS: LEVELS },
+  // The owner's level is a control of <ui-model-picker> (.prd/affectui/re-model-picker.md D7): the
+  // dashboard hands it value.effortLevels (mpData — dashboard-affectui-model-picker-client.test.ts) and
+  // the library's suite owns the radiogroup ('offers only the levels the model runs; arrows select at
+  // once and keep the menu open'). Others read the level as text.
+  const { renderEffortPicker } = load<{ renderEffortPicker(s: Record<string, unknown>): string }>(
+    ['esc', 'escAttr', 'effortLabel', 'renderEffortPicker'],
+    ['EFFORT_LABELS'],
   );
 
-  it('the owner gets the five levels as one radiogroup, the current level checked; a pick goes through the menu', () => {
-    const html = renderEffortPicker({ key: "self::C1:t'1", effort: 'high' }, true);
-    expect(html).toContain('role="radiogroup"');
-    expect(html.match(/role="radio" /g)).toHaveLength(5);
-    expect(html).toContain('data-mp-effort="high" aria-checked="true" tabindex="0" aria-label="High">High</button>');
-    expect(html).toContain('aria-label="Extra high">XHigh</button>');
-    // No inline handler carries the session key: the menu's delegated click and keys pick (changeEffort(key, level)).
-    expect(html).not.toContain('onchange');
-    expect(html).not.toContain('self::C1');
-  });
-
   it('a non-owner sees the level as text, with the level the model really runs', () => {
-    const html = renderEffortPicker({ key: 'k', effort: 'max', effortEffective: 'high' }, false);
+    const html = renderEffortPicker({ key: 'k', effort: 'max', effortEffective: 'high' });
     expect(html).not.toContain('<select');
     expect(html).toContain('Max &rarr; High');
     expect(html).toContain('이 모델은 High까지 실행합니다');
+    expect(renderEffortPicker({ key: 'k', effort: 'high' })).toBe(
+      '<span class="meta-effort" title="Reasoning effort">High</span>',
+    );
   });
 });
 
