@@ -2136,7 +2136,9 @@ describe("an older page keeps the reader's row in place — several rows in view
       list.push(r);
       return r;
     };
-    seqs.forEach((seq, i) => make({ 'data-seq': String(seq) }, i * 40, rows));
+    seqs.forEach((seq, i) => {
+      make({ 'data-seq': String(seq) }, i * 40, rows);
+    });
     const m = load<{
       psecViewAnchor(b: unknown): unknown[] | null;
       psecRestoreAnchor(b: unknown, a: unknown): boolean;
