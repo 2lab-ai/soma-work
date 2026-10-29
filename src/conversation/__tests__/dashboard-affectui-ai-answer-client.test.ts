@@ -203,14 +203,15 @@ describe('D1 · task view T1.4 — the answer is the face; the summary and the s
         unobserved.push(el);
       }
     }
-    const scroll = { id: 'panel-scroll' };
+    // SSOT 2026-10-29: the turns scroll in the 지시와 답변 section box.
+    const scroll = { id: 'psec-conv' };
     const ansLoad = vi.fn();
     const api = load<{ attachRawToggleHandlers(): void }>(['ansCacheKey', 'attachRawToggleHandlers'], [], {
       document: {
         getElementById: (id: string) =>
           id === 'panel-turns'
             ? { querySelectorAll: (sel: string) => (sel === '.turn-answer[data-turn]' ? els : []) }
-            : id === 'panel-scroll'
+            : id === 'psec-conv'
               ? scroll
               : null,
       },
@@ -223,7 +224,7 @@ describe('D1 · task view T1.4 — the answer is the face; the summary and the s
   };
   const answerEl = (turnId: string) => ({ dataset: { conv: 'conv-run', turn: turnId } });
 
-  it('every answer loads as it nears the view: observed once, rooted at the panel scroll, 800px ahead', () => {
+  it('every answer loads as it nears the view: observed once, rooted at the 지시와 답변 box, 800px ahead', () => {
     const a = answerEl('t2');
     const b = answerEl('t4');
     const cached = answerEl('t6');
@@ -818,6 +819,7 @@ describe('D12 — the writing row through the real insert paths (cross-spec revi
         'syncAnsPending',
         'decorateAnswerTurns',
         'decoratePanelTurns',
+        'ptUpsert',
         'appendTurnToPanel',
         'updateTurnInPanel',
       ],
@@ -846,9 +848,18 @@ describe('D12 — the writing row through the real insert paths (cross-spec revi
         _artCache: {},
         artInTurn: () => false,
         renderTurnArtifacts: () => '',
-        // Task view: decorating the turns re-counts the 이전 대화 fold (not under test here).
-        renderConvEarlier: () => {},
-        _panelStickBottom: false, // appendTurnToPanel: a body read at its top stays there
+        // SSOT 2026-10-29: 지시와 답변's data (the instruction already on the list) and its
+        // section box — the follow / pill decision is not under test here.
+        _panelTurnsList: [{ role: 'user', timestamp: T0 }],
+        _panelTurnsMsg: '',
+        _psec: 'conv',
+        _panelAgent: '',
+        psecBox: () => ({ scrollHeight: 0, scrollTop: 0, clientHeight: 0 }),
+        psecAtBottom: () => true,
+        psecOnAppended: () => {},
+        paintConvTab: () => {},
+        psecSyncControls: () => {},
+        psecToNewest: () => {},
       },
     );
     const order = () =>
@@ -1260,6 +1271,7 @@ describe('D14 — the answer survives its summary landing; an open Raw stays ope
     const newEl = { querySelector: (sel: string) => (sel === '.turn-raw' ? rawEl : null) };
     const existing = {
       querySelector: (sel: string) => (sel === '.turn-raw[open]' && rawWasOpen ? {} : null),
+      getAttribute: (n: string) => (n === 'data-turn-id' ? 't2' : null),
       replaceWith: vi.fn(),
     };
     const fetch = vi.fn();
@@ -1272,6 +1284,7 @@ describe('D14 — the answer survives its summary landing; an open Raw stays ope
         'ansPaint',
         'ansLoad',
         'attachRawToggleHandlers',
+        'ptUpsert',
         'updateTurnInPanel',
       ],
       [],
@@ -1285,6 +1298,7 @@ describe('D14 — the answer survives its summary landing; an open Raw stays ope
         },
         renderTurn: () => '<div></div>',
         decoratePanelTurns: () => {},
+        _panelTurnsList: [{ id: 't2' }], // 지시와 답변's data (SSOT 2026-10-29): updated in place
         IntersectionObserver: io,
         _ansIo: null,
         _rawLoadedCache: { 'conv-run:t2': FIXTURE },

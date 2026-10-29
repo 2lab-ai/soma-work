@@ -148,6 +148,44 @@ describe('GET /api/dashboard/session/:conversationId/worklog', () => {
     expect(await get('?afterSeq=9007199254740991')).toEqual([[], false]);
   });
 
+  it('pages back: beforeSeq = the last `limit` entries before it, hasMore = older exist (the panel scrolling up)', async () => {
+    for (let i = 1; i <= 6; i++) await workLog.appendWorkLog('conv-1', { kind: 'narration', text: `n${i}` });
+    const get = async (qs: string): Promise<[number[], boolean]> => {
+      const res = await web.injectWebServer({
+        method: 'GET',
+        url: `/api/dashboard/session/conv-1/worklog${qs}`,
+        headers: AUTH_HEADER,
+      });
+      expect(res.statusCode).toBe(200);
+      const body = JSON.parse(res.body) as { entries: Array<{ seq: number }>; hasMore: boolean };
+      return [body.entries.map((e) => e.seq), body.hasMore];
+    };
+    // The reader holds the latest window [5, 6] and scrolls up from its oldest entry.
+    expect(await get('?limit=2')).toEqual([[5, 6], true]);
+    expect(await get('?beforeSeq=5&limit=2')).toEqual([[3, 4], true]);
+    expect(await get('?beforeSeq=3&limit=2')).toEqual([[1, 2], false]);
+    expect(await get('?beforeSeq=2&limit=2')).toEqual([[1], false]);
+    // Nothing is older than seq 1.
+    expect(await get('?beforeSeq=1')).toEqual([[], false]);
+    expect(await get('?beforeSeq=0')).toEqual([[], false]);
+    // Past the newest: the latest `limit` entries; default limit: everything before it.
+    expect(await get('?beforeSeq=9007199254740991&limit=3')).toEqual([[4, 5, 6], true]);
+    expect(await get('?beforeSeq=6')).toEqual([[1, 2, 3, 4, 5], false]);
+  });
+
+  it.each([
+    '?afterSeq=1&beforeSeq=5',
+    '?beforeSeq=5&afterSeq=0',
+  ])('rejects %s (forward and backward at once) with 400 bad_request', async (qs) => {
+    const res = await web.injectWebServer({
+      method: 'GET',
+      url: `/api/dashboard/session/conv-1/worklog${qs}`,
+      headers: AUTH_HEADER,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'bad_request' });
+  });
+
   it.each([
     '?limit=0',
     '?limit=501',
@@ -165,6 +203,13 @@ describe('GET /api/dashboard/session/:conversationId/worklog', () => {
     '?afterSeq=0x10',
     '?afterSeq=',
     '?afterSeq=99999999999999999999',
+    '?beforeSeq=-1',
+    '?beforeSeq=abc',
+    '?beforeSeq=1.5',
+    '?beforeSeq=1e3',
+    '?beforeSeq=',
+    '?beforeSeq=1&beforeSeq=2',
+    '?beforeSeq=99999999999999999999',
   ])('rejects %s with 400 bad_request instead of switching modes', async (qs) => {
     const res = await web.injectWebServer({
       method: 'GET',

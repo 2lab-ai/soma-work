@@ -228,8 +228,10 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
       /const worklogBtn = '<button type="button" class="btn-action' \+ \(canDecideHere \? '' : ' btn-primary'\) \+ '"/,
     );
     expect(TEMPLATE).toContain("var WL_EMPTY_MSG = '작업 로그 없음';");
-    expect(fnBody('resetWorkLog')).toContain('WL_EMPTY_MSG');
-    expect(fnBody('openPanel')).toContain('resetWorkLog(panelConvId, true)');
+    // SSOT 2026-10-29: no conversation → no work-log state; the 작업 로그 tab reads 작업 로그 없음.
+    expect(fnBody('resetWorkLog')).toContain('_wl = convId ? wlNewState(convId) : null;');
+    expect(fnBody('paintLogTab')).toContain('var msg = !st ? WL_EMPTY_MSG');
+    expect(fnBody('openPanel')).toContain('resetWorkLog(panelConvId);');
   });
 
   it('a WS session_update re-attaches sibling-instance cards from the last poll', () => {
@@ -239,10 +241,17 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(fnBody('loadSessions')).toContain('_lastPolledBoard = data.board;');
   });
 
-  it('older panel turns keep the reading position (anchored on the first visible element)', () => {
+  it('older panel turns keep the reading position (anchored on the first turn in view of the 지시와 답변 box)', () => {
     const body = fnBody('loadMorePanelTurns');
-    expect(body).toContain('panelScrollAnchor(scrollEl)');
-    expect(body).toContain('anchor.el.getBoundingClientRect().top - anchor.top');
+    // SSOT 2026-10-29: the box's first turn in view, captured before the page goes in, held after.
+    const anchor = body.indexOf('var anchor = psecViewAnchor(box);');
+    const insert = body.indexOf("turnsEl.insertAdjacentHTML('afterbegin'");
+    expect(anchor).toBeGreaterThan(-1);
+    expect(insert).toBeGreaterThan(anchor);
+    expect(body.indexOf('psecHoldPlace(box, anchor, fromBottom);')).toBeGreaterThan(insert);
+    expect(fnBody('psecRestoreAnchor')).toContain(
+      'el.getBoundingClientRect().top - box.getBoundingClientRect().top - a[i].at',
+    );
   });
 
   it('reopening a card retries a failed 지시/응답 fetch at once', () => {
@@ -263,8 +272,9 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
 });
 
 describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
-  it('has a work log section in the panel', () => {
-    expect(TEMPLATE).toContain('id="panel-worklog"');
+  it('has a work log section tab in the panel (SSOT 2026-10-29)', () => {
+    expect(TEMPLATE).toContain('id="psec-tab-log" data-sec="log"');
+    expect(TEMPLATE).toContain('<div class="psec" id="psec-log" role="tabpanel" aria-labelledby="psec-tab-log"');
     expect(TEMPLATE).toContain('작업 로그 없음');
   });
 
@@ -286,8 +296,9 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     const tasks = panel.indexOf(
       '<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>',
     );
-    const worklog = panel.indexOf('<div class="panel-worklog" id="panel-worklog"');
-    const conv = panel.indexOf('<div class="panel-conv" id="panel-conv">');
+    const sections = panel.indexOf('<div class="panel-sections" id="panel-sections" role="tablist"');
+    const worklog = panel.indexOf('<div class="psec" id="psec-log" role="tabpanel"');
+    const conv = panel.indexOf('<div class="psec-body panel-conv" id="panel-conv">');
     const command = panel.indexOf('<div class="panel-command" id="panel-command">');
     expect(header).toBeGreaterThan(0);
     expect(scroll).toBeGreaterThan(header);
@@ -295,7 +306,8 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(tabs).toBeGreaterThan(surface);
     expect(tabpanel).toBeGreaterThan(tabs);
     expect(tasks).toBeGreaterThan(tabpanel);
-    expect(worklog).toBeGreaterThan(tasks);
+    expect(sections).toBeGreaterThan(tasks);
+    expect(worklog).toBeGreaterThan(sections);
     expect(conv).toBeGreaterThan(worklog);
     expect(command).toBeGreaterThan(conv);
     // Nothing of Tasks between the header and the scroll area any more.
@@ -314,52 +326,54 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(fnBody('renderPanelTasks')).toContain(
       'if (!_panelTasksOpen) { writePanelTasks(container, head + live); return; }',
     );
-    expect(fnBody('panelScrollAnchor')).not.toContain('#panel-tasks');
+    // The panel's own anchor: the question, Tasks (now in the scroll area) and the section tabs —
+    // the turns and log rows are their section box's (psecViewAnchor).
+    expect(fnBody('panelScrollAnchor')).toContain("'#panel-question, #panel-tasks, #panel-sections'");
   });
 
-  it('the work log header is a disclosure button; the list starts hidden (§3.1-6)', () => {
+  it('the work log is a section tab with its own scroll box — no disclosure header, never hidden-but-rendered (§3.1-6, SSOT 2026-10-29)', () => {
     expect(TEMPLATE).toContain(
-      '<button type="button" class="panel-worklog-header" id="worklog-toggle" aria-expanded="false" aria-controls="worklog-list" onclick="toggleWorkLogSection()">',
+      '<div class="psec-body worklog-list" id="worklog-list" role="log" aria-label="작업 로그"></div>',
     );
-    expect(TEMPLATE).toContain(
-      '<div class="worklog-list" id="worklog-list" role="log" aria-live="polite" aria-label="작업 로그" hidden></div>',
-    );
-    expect(TEMPLATE).toContain('.worklog-list[hidden] { display: none; }');
+    expect(TEMPLATE).not.toContain('id="worklog-toggle"');
+    expect(TEMPLATE).not.toContain('.worklog-list[hidden]');
+    // The box scrolls, not the list: the list has no height cap of its own.
+    expect(TEMPLATE).toMatch(/\n\.psec \{ position: relative; height: 100%; overflow-y: auto;/);
+    expect(/\n\.worklog-list \{[^}]*\}/.exec(TEMPLATE)?.[0] ?? '').not.toMatch(/max-height|overflow/);
   });
 
-  it('every opening starts with the work log collapsed — only 자세히 opens it, never the landing (§3.1-6, §3.1-7, task view T1.6)', () => {
+  it('an opening names its section tab — 작업 로그 / ?session= open on the work log; the list is painted only while it is shown (§3.1-6, §3.1-7)', () => {
     const body = fnBody('openPanel');
-    const reset = body.indexOf('resetWorkLog(panelConvId, true);');
+    const reset = body.indexOf('resetWorkLog(panelConvId);');
     expect(reset).toBeGreaterThan(-1);
-    expect(body.indexOf('resetPanelSections();')).toBeGreaterThan(reset);
-    expect(body.indexOf('setWorkLogOpen(_panelDetail);')).toBeGreaterThan(reset);
-    // The one call: the 자세히 switch (off by default, saved per device) — no other exception.
-    expect(body.match(/setWorkLogOpen\(/g) ?? []).toHaveLength(1);
-    expect(body).not.toContain('setWorkLogOpen(_panelFocusWorkLog)');
+    expect(body.indexOf('_psec = psecForLanding(_panelLand);')).toBeGreaterThan(-1);
+    expect(body.indexOf('selectPanelSection(_psec);')).toBeGreaterThan(reset);
+    expect(fnBody('psecForLanding')).toContain("land === 'worklog' ? 'log'");
     expect(TEMPLATE).toMatch(/^var _panelDetail = false;/m);
     expect(fnBody('panelDetailFrom')).toContain("return saved === '1';");
-    // 작업 로그 / ?session= land with the collapsed header in view, not inside the log.
-    expect(fnBody('scrollPanelToWorkLog')).toContain('workLogLandingTop(');
-    expect(fnBody('scrollPanelToWorkLog')).not.toContain('list.scrollTop');
-    // Expanding only shows what was already fetched on open.
-    expect(fnBody('toggleWorkLogSection')).not.toContain('loadWorkLog');
-    expect(fnBody('toggleWorkLogSection')).not.toContain('fetch');
+    // 자세히 no longer opens the work log: it is a tab of its own.
+    expect(fnBody('togglePanelDetail')).not.toMatch(/worklog|WorkLog/);
+    // A batch is painted only while 작업 로그 is shown; else the tab paints from the state when opened.
+    expect(fnBody('paintWorkLog')).toContain("if (_psec !== 'log' || !list || !box) {");
+    expect(fnBody('paintLogTab')).toContain('wlRenderList(st, list);');
   });
 
-  it('a default landing stays on the newest turns only until the reader touches the panel (§3.1-6)', () => {
+  it('a section opens on its newest items; any reader input ends the settle hold (§3.1-6)', () => {
     const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelScrollHandler() {'));
     // Task view: a mouse press (a scrollbar drag) is the reader's input too.
     expect(init).toContain("['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart'].forEach(");
     expect(init).toContain("document.getElementById('slide-panel')");
-    expect(init).toContain('_panelStickBottom = false;');
+    expect(init).toContain('_panelHold = false;');
+    expect(fnBody('selectPanelSection')).toContain('psecToNewest();');
   });
 
-  it('older turns load from a user scroll near the first turn, armed once per approach (§3.1-6)', () => {
-    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelScrollHandler() {'));
-    expect(init).toContain('panelOlderStep(_panelOlderArmed, inZone, canLoad)');
-    expect(init).toContain("turnsEl.querySelector('.turn')");
-    expect(init).not.toContain('scrollEl.scrollTop < 100');
-    expect(fnBody('openPanel')).toContain('_panelOlderArmed = false;');
+  it('older items load as the reader scrolls up toward the top of a section — armed by the reader, never by a landing (§3.1-6, SSOT 2026-10-29)', () => {
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelSections() {'));
+    expect(init).toContain('if (up && !_psecPin) box._armed = true;');
+    expect(init).toContain('new IntersectionObserver(');
+    expect(init).toContain("rootMargin: '100% 0px 0px 0px'");
+    expect(fnBody('psecToNewest')).toContain('box._armed = false;');
+    expect(fnBody('psecPageDue')).toContain('return !!armed && scrollTop <= clientHeight;');
   });
 
   it('entry rows toggle on click, Enter and Space; detail buttons do not toggle (§3.1-6)', () => {

@@ -300,6 +300,41 @@ describe('work log store', () => {
     expect(await wl.readWorkLog('conv-p', { afterSeq: 10 })).toEqual({ entries: [], hasMore: false });
   });
 
+  it('with beforeSeq returns the LAST `limit` entries before it; hasMore = older entries exist', async () => {
+    for (let i = 1; i <= 10; i++) await wl.appendWorkLog('conv-b', { kind: 'narration', text: `n${i}` });
+
+    // The dashboard holds the latest window [8, 9, 10] and pages back from its oldest seq.
+    const page1 = await wl.readWorkLog('conv-b', { beforeSeq: 8, limit: 3 });
+    expect(seqs(page1)).toEqual([5, 6, 7]);
+    expect(page1.hasMore).toBe(true);
+    const page2 = await wl.readWorkLog('conv-b', { beforeSeq: 5, limit: 3 });
+    expect(seqs(page2)).toEqual([2, 3, 4]);
+    expect(page2.hasMore).toBe(true);
+    const first = await wl.readWorkLog('conv-b', { beforeSeq: 2, limit: 3 });
+    expect(seqs(first)).toEqual([1]);
+    expect(first.hasMore).toBe(false);
+    expect(await wl.readWorkLog('conv-b', { beforeSeq: 4, limit: 3 })).toMatchObject({ hasMore: false });
+    // Nothing is older than the first seq; a missing log is empty.
+    expect(await wl.readWorkLog('conv-b', { beforeSeq: 1 })).toEqual({ entries: [], hasMore: false });
+    expect(await wl.readWorkLog('conv-b', { beforeSeq: 0 })).toEqual({ entries: [], hasMore: false });
+    expect(await wl.readWorkLog('conv-missing', { beforeSeq: 9 })).toEqual({ entries: [], hasMore: false });
+    // Past the newest seq it is the latest window.
+    expect(seqs(await wl.readWorkLog('conv-b', { beforeSeq: 1_000_000, limit: 2 }))).toEqual([9, 10]);
+  });
+
+  it('beforeSeq pages across seq holes (a restart resumes above the reservation) without losing entries', async () => {
+    // 1..5, then a hole up to 1001 (a fresh seed), then 1001..1005.
+    writeRaw('conv-hole', [1, 2, 3, 4, 5, 1001, 1002, 1003, 1004, 1005].map((n) => line(n)).join(''));
+    expect(seqs(await wl.readWorkLog('conv-hole', { beforeSeq: 1003, limit: 3 }))).toEqual([5, 1001, 1002]);
+    expect(seqs(await wl.readWorkLog('conv-hole', { beforeSeq: 1001, limit: 3 }))).toEqual([3, 4, 5]);
+    expect(seqs(await wl.readWorkLog('conv-hole', { beforeSeq: 700, limit: 10 }))).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  it('afterSeq and beforeSeq together: the forward page (the route refuses the pair)', async () => {
+    for (let i = 1; i <= 6; i++) await wl.appendWorkLog('conv-ab', { kind: 'narration', text: `n${i}` });
+    expect(seqs(await wl.readWorkLog('conv-ab', { afterSeq: 2, beforeSeq: 4, limit: 2 }))).toEqual([3, 4]);
+  });
+
   it('defaults to the latest 500 entries', async () => {
     writeRaw('conv-e', Array.from({ length: 520 }, (_, i) => line(i + 1)).join(''));
     const page = await wl.readWorkLog('conv-e');
@@ -422,6 +457,21 @@ describe('work log store', () => {
       }
     });
 
+    it('beforeSeq deep in the history pages back from the right place, reading a small part of the file', async () => {
+      for (const beforeSeq of [6, 778, 10_000, 15_001, N - 600, N]) {
+        counter.bytes = 0;
+        const page = await wl.readWorkLog('conv-big', { beforeSeq, limit: 5 });
+        expect(seqs(page)).toEqual([5, 4, 3, 2, 1].map((k) => beforeSeq - k));
+        expect(page.entries[4].text.endsWith(`#${beforeSeq - 1}`)).toBe(true);
+        expect(page.hasMore).toBe(beforeSeq - 5 > 1); // seq 1 is the first entry
+        // Binary search for the page end + a short backward read: well under the file.
+        expect(counter.bytes).toBeLessThan(fileSize / 10);
+      }
+      const head = await wl.readWorkLog('conv-big', { beforeSeq: 4, limit: 5 });
+      expect(seqs(head)).toEqual([1, 2, 3]);
+      expect(head.hasMore).toBe(false);
+    });
+
     it('seeds from the reservation, reading only the tail (for the trailing newline and quarantine)', async () => {
       fs.writeFileSync(sidecarFile('conv-big'), JSON.stringify({ reservedSeq: N + 999 }));
       const next = await wl.appendWorkLog('conv-big', { kind: 'notice', text: 'after restart' });
@@ -459,6 +509,14 @@ describe('work log store', () => {
           const page = await wl.readWorkLog('conv-junk', { afterSeq: 995, limit: 10 });
           expect(seqs(page)).toEqual([996, 997, 998, 999, 1000]);
           expect(page.hasMore).toBe(true);
+          expect(counter.bytes).toBeLessThanOrEqual(wl.WORK_LOG_SCAN_BUDGET_BYTES);
+        });
+
+        it('a beforeSeq read stays within the budget; hasMore says the page may not be complete', async () => {
+          const page = await wl.readWorkLog('conv-junk', { beforeSeq: 996, limit: 10 });
+          // The junk after the entries gives the search no end: the scan from the end stops at its budget.
+          expect(page.hasMore).toBe(true);
+          expect(page.entries.every((e) => e.seq < 996)).toBe(true);
           expect(counter.bytes).toBeLessThanOrEqual(wl.WORK_LOG_SCAN_BUDGET_BYTES);
         });
 
