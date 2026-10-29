@@ -1040,46 +1040,49 @@ async function start() {
     // tasks' credits are replaced with it: the main agent's calls here, at most
     // every 10 s while a turn runs and at its end; the subagents' calls as the
     // spend reader reads their transcripts (`onCalls`).
-    const priceTranscriptCall = (sessionModel: string | undefined, c: TranscriptCall) =>
-      calculateTokenCost(
-        c.model && hasModelPricing(c.model) ? c.model : sessionModel,
-        c.inputTokens,
-        c.outputTokens,
-        c.cacheReadTokens,
-        c.cacheCreateTokens,
-      );
+    const priceTranscriptCall = (model: string | undefined, c: TranscriptCall) =>
+      calculateTokenCost(model, c.inputTokens, c.outputTokens, c.cacheReadTokens, c.cacheCreateTokens);
     const agentSpendReader = createAgentSpendReader({
       price: (model, t) =>
         calculateTokenCost(model, t.inputTokens, t.outputTokens, t.cacheReadTokens, t.cacheCreateTokens),
       isPriced: hasModelPricing,
       onCalls: (holder, calls) => {
         const session = holder as ConversationSession;
-        return reconcileTaskCalls(session.taskLedger, calls, 's:', (c) => priceTranscriptCall(session.model, c));
+        // A subagent's call is priced by its own model when the table knows it (live used the session's).
+        return reconcileTaskCalls(session.taskLedger, calls, 's:', (c, credited) =>
+          priceTranscriptCall(c.model && hasModelPricing(c.model) ? c.model : (credited ?? session.model), c),
+        );
       },
     });
     const mainCallReader = createMainCallReader();
     const reconciledAt = new Map<string, number>();
+    const RECONCILED_KEPT = 1024;
     const reconcileTaskUsage = (sessionKey: string, session: ConversationSession, force: boolean) => {
       const sid = session.sessionId;
       if (!sid || !session.taskLedger) return;
       const at = Date.now();
       if (!force && at - (reconciledAt.get(sessionKey) ?? 0) < 10_000) return;
+      reconciledAt.delete(sessionKey);
       reconciledAt.set(sessionKey, at);
+      while (reconciledAt.size > RECONCILED_KEPT) reconciledAt.delete(reconciledAt.keys().next().value as string);
       void mainCallReader
         .read(sid)
         .then((calls) => {
           // The ledger object may have been replaced meanwhile (a new list): its credits moved with it.
           const ledger = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey)?.taskLedger;
-          // The main agent's calls run on the session model — the price its live credit used.
+          // The main agent's calls: re-priced at the model their live credit used (a /model since does not re-price them).
           if (
-            reconcileTaskCalls(ledger, calls, 'm:', (c) =>
-              priceTranscriptCall(session.model, { ...c, model: undefined }),
-            )
+            reconcileTaskCalls(ledger, calls, 'm:', (c, credited) => priceTranscriptCall(credited ?? session.model, c))
           ) {
             scheduleLiveSessionUpdate(sessionKey);
           }
         })
-        .catch(() => {});
+        .catch((error) => {
+          logger.debug('Task usage reconcile failed', {
+            sessionKey,
+            error: (error as Error)?.message ?? String(error),
+          });
+        });
     };
     const refreshAgentSpend = (sessionKey: string, session: ConversationSession, force: boolean) => {
       if (!session.agents?.agents.length) return;
@@ -1115,7 +1118,7 @@ async function start() {
               call.cacheReadTokens,
               call.cacheCreateTokens,
             );
-            creditTaskUsage(session.taskLedger, key, call, Number.isFinite(cost) ? cost : 0);
+            creditTaskUsage(session.taskLedger, key, call, Number.isFinite(cost) ? cost : 0, session.model);
             // The calls before this one have their final usage in the transcript by now.
             reconcileTaskUsage(sessionKey, session, false);
           }

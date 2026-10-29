@@ -48,9 +48,17 @@ export interface MainCallReaderOptions {
 }
 
 export interface MainCallReader {
-  /** The main agent's calls whose transcript lines were written since the last read of this session. */
+  /**
+   * The session's latest main-agent calls ({@link CALLS_KEPT}, newest last) with
+   * their final usage. Every read returns them all, not only the lines new
+   * since the last read (review): a line read before its call's live credit
+   * landed (catching up after a restart) is matched on a later read.
+   */
   read(sdkSessionId: string): Promise<Map<string, TranscriptCall>>;
 }
+
+/** Calls kept per session — as many as the ledger remembers live credits for. */
+export const CALLS_KEPT = 512;
 
 const SYNTHETIC_MODEL = '<synthetic>';
 const DEFAULT_CHUNK_BYTES = 8 * 1024 * 1024;
@@ -93,6 +101,8 @@ export function collectTranscriptCalls(text: string, into: Map<string, Transcrip
 }
 
 interface ReadState {
+  /** The latest calls (newest last), at most {@link CALLS_KEPT}. */
+  calls: Map<string, TranscriptCall>;
   file?: string;
   /** When a missing transcript may be searched for again. */
   retryAt?: number;
@@ -107,6 +117,14 @@ export function createMainCallReader(opts: MainCallReaderOptions = {}): MainCall
   const tailBytes = Math.max(0, opts.tailBytes ?? DEFAULT_TAIL_BYTES);
   const maxSessions = Math.max(1, opts.maxSessions ?? DEFAULT_MAX_SESSIONS);
   const states = new Map<string, ReadState>();
+
+  function keep(state: ReadState, fresh: Map<string, TranscriptCall>): void {
+    for (const [id, c] of fresh) {
+      state.calls.delete(id); // re-insert: newest last
+      state.calls.set(id, c);
+    }
+    while (state.calls.size > CALLS_KEPT) state.calls.delete(state.calls.keys().next().value as string);
+  }
 
   async function readNew(sid: string, state: ReadState): Promise<Map<string, TranscriptCall>> {
     const calls = new Map<string, TranscriptCall>();
@@ -132,6 +150,7 @@ export function createMainCallReader(opts: MainCallReaderOptions = {}): MainCall
       // Rewritten: start over (from the tail, as a first read).
       state.offset = -1;
       state.carry = Buffer.alloc(0);
+      state.calls.clear();
     }
     let skipPartial = false;
     if (state.offset < 0) {
@@ -174,7 +193,7 @@ export function createMainCallReader(opts: MainCallReaderOptions = {}): MainCall
       if (state) {
         states.delete(sid); // re-insert: most recently used last
       } else {
-        state = { offset: -1, carry: Buffer.alloc(0), busy: Promise.resolve() };
+        state = { calls: new Map(), offset: -1, carry: Buffer.alloc(0), busy: Promise.resolve() };
       }
       states.set(sid, state);
       while (states.size > maxSessions) {
@@ -183,10 +202,11 @@ export function createMainCallReader(opts: MainCallReaderOptions = {}): MainCall
       }
       const s = state;
       // One read at a time per session: two would hand out the same lines twice.
-      const run = s.busy.then(
-        () => readNew(sid, s),
-        () => readNew(sid, s),
-      );
+      const step = async () => {
+        keep(s, await readNew(sid, s));
+        return new Map(s.calls);
+      };
+      const run = s.busy.then(step, step);
       s.busy = run.catch(() => undefined);
       return run;
     },
@@ -196,24 +216,20 @@ export function createMainCallReader(opts: MainCallReaderOptions = {}): MainCall
 /**
  * Re-credit every call in `calls` the ledger was credited with live under
  * `prefix + id` (`m:` main agent, `s:` subagent) with its final usage, priced
- * by `price`. Returns whether any task's numbers changed.
+ * by `price` (`creditedModel` = the model its live credit was priced at).
+ * A call with no prompt side in the transcript is skipped (unreported, not
+ * zero). Returns whether any task's numbers changed.
  */
 export function reconcileTaskCalls(
   ledger: TaskLedger | undefined,
   calls: ReadonlyMap<string, TranscriptCall>,
   prefix: 'm:' | 's:',
-  price: (call: TranscriptCall) => number,
+  price: (call: TranscriptCall, creditedModel: string | undefined) => number,
 ): boolean {
   if (!ledger || calls.size === 0) return false;
   let changed = false;
   for (const [id, call] of calls) {
-    let cost = 0;
-    try {
-      cost = price(call);
-    } catch {
-      cost = 0;
-    }
-    if (recreditTaskUsage(ledger, `${prefix}${id}`, call, Number.isFinite(cost) ? cost : 0)) changed = true;
+    if (recreditTaskUsage(ledger, `${prefix}${id}`, call, (m) => price(call, m))) changed = true;
   }
   return changed;
 }
