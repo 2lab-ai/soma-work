@@ -11287,6 +11287,10 @@ function showMoreTree() {
     if (_psec !== 'tree') return;
     psecHoldPlace(box, anchor, fromBottom);
     psecSyncControls('tree');
+    // The root and the branches stay at the top (older agents go in inside them),
+    // so the reader is still there: the next step waits for them to scroll up again
+    // (or the control) — unless the box is still too short to scroll.
+    box._armed = false;
     psecMaybeFill('tree');
   });
 }
