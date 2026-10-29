@@ -514,8 +514,8 @@ describe('agent inbox board — motion contract (§4)', () => {
     expect(TEMPLATE).toMatch(
       /\.card \.context-bar-fill \{[^}]*transform-origin: left center;[^}]*transition: transform/,
     );
-    // The panel's 세션 정보 shows the context as a field of cells now (re-context-window D5/D18), not a bar.
-    expect(fnBody('contextBlockHtml')).toContain('<div class="cw-field" aria-hidden="true">');
+    // The panel's 세션 정보 shows the context as <ui-context-window>'s field of cells now (re-context-window D5/D18), not a bar.
+    expect(fnBody('cwSlotHtml')).toContain('<ui-context-window lang="ko"');
     expect(fnBody('panelInfoHtml')).not.toContain('transform:scaleX(');
   });
 

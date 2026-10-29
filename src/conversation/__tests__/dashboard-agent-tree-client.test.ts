@@ -778,6 +778,8 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
           else if (!root.tree) root.tree = paintedTree();
         },
         acHydrate: () => {},
+        // #546: refreshCard also hydrates the card's <ui-model-picker> slots (none in this harness).
+        mpHydrate: () => {},
         updateTimersIn: () => {},
         animateCountersIn: () => {},
         canAnimate: () => opts.animate !== false,
@@ -1957,7 +1959,7 @@ describe('task total on the face and in 세션 정보 (SSOT T3)', () => {
         safeHref: (h: string) => h,
         ctxPercent: (n: number) => String(n),
         panelDetailsHtml: () => '',
-        contextBlockHtml: () => '',
+        cwSlotHtml: () => '',
       },
     );
     const open = f.panelInfoHtml({ tokenUsage: u, subagentSpend: sub, lastActivity: new Date().toISOString() }, true);
