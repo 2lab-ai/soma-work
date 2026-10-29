@@ -504,7 +504,8 @@ describe('D12 — an open menu holds its surface still', () => {
     const writes: string[] = [];
     const hydrated: unknown[] = [];
     let open = false;
-    const el = { _html: '', querySelector: (s: string) => (open && s === 'ui-model-picker[open]' ? {} : null) };
+    const picker = { getAttribute: (n: string) => (n === 'data-mp-key' ? 'k' : null) };
+    const el = { _html: '', querySelector: (s: string) => (open && s === 'ui-model-picker[open]' ? picker : null) };
     const m = load<{ renderPanelControls(s: unknown): void }>(['isPickingModel', 'renderPanelControls'], [], {
       document: { getElementById: (id: string) => (id === 'panel-controls' ? el : null) },
       currentUserId: 'U1',
@@ -530,6 +531,42 @@ describe('D12 — an open menu holds its surface still', () => {
     expect(writes.length).toBe(before);
     expect(hydrated.length).toBe(passes + 1); // the open menu follows the session through its data
     expect(hydrated[hydrated.length - 1]).toBe(el);
+  });
+
+  // #546 review P3: openPanel from a deep link (?session=) can move the panel to another session
+  // while the menu is open — the held picker is the OLD session's, so it is not held.
+  it('the panel moved to another session under an open menu: that menu closes and the controls follow the new session', () => {
+    const writes: string[] = [];
+    const hydrated: unknown[] = [];
+    const picker: Record<string, unknown> = {
+      open: true,
+      getAttribute: (n: string) => (n === 'data-mp-key' ? 'old' : null),
+    };
+    const el = {
+      _html: '',
+      querySelector: (s: string) => (picker.open && s === 'ui-model-picker[open]' ? picker : null),
+    };
+    const m = load<{ renderPanelControls(s: unknown): void }>(['isPickingModel', 'renderPanelControls'], [], {
+      document: { getElementById: (id: string) => (id === 'panel-controls' ? el : null) },
+      currentUserId: 'U1',
+      isSiblingSession: () => false,
+      esc: (x: string) => x,
+      renderModelPicker: (s: { key: string }, can: boolean, _short: string, surface: string) =>
+        `[M:${s.key}:${can}:${surface}]`,
+      renderEffortPicker: () => '[E]',
+      renderModelNote: () => '',
+      morphInnerHtml: (_e: unknown, h: string) => writes.push(h),
+      mpHydrate: (root: unknown) => hydrated.push(root),
+    });
+    // Its own session: held (no write).
+    m.renderPanelControls({ key: 'old', ownerId: 'U1', model: 'claude-opus-5-5[1m]' });
+    expect(writes).toEqual([]);
+    expect(picker.open).toBe(true);
+    // Another session: the old menu is closed (no ui-open-change) and the controls are written for the new one.
+    m.renderPanelControls({ key: 'new', ownerId: 'U1', model: 'claude-opus-5-5[1m]' });
+    expect(picker.open).toBe(false);
+    expect(writes).toEqual(['<span class="pc-scope">이 세션</span>[M:new:true:panel]']);
+    expect(hydrated).toEqual([el, el]);
   });
 });
 
