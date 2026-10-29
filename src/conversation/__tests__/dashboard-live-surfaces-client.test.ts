@@ -595,6 +595,59 @@ describe('work log: the latest window on opening, older pages as the reader scro
     expect(st.olderPending).toBe(true);
   });
 
+  // #562 review P3: past a run of non-entry lines longer than one scan budget the server's search
+  // lands after the run every time; its byte cursor (nextBeforeOffset) is what gets the next page through.
+  it("an empty page's byte cursor is sent with the next page and moves it on, until entries come", async () => {
+    const st = wl.wlNewState('c');
+    const calls: string[] = [];
+    const cursors = [9_000_000, 1_000_000];
+    const srv = async (url: string) => {
+      const q = new URL(url, 'http://h').searchParams;
+      calls.push(q.toString());
+      if (!q.has('beforeSeq')) return { entries: range(901, 1000), hasMore: true };
+      const next = cursors.shift();
+      if (next !== undefined) return { entries: [], hasMore: true, nextBeforeOffset: next };
+      return { entries: range(801, 900), hasMore: true };
+    };
+    await wl.wlLoadLatest(st, srv, () => {});
+    expect(await wl.wlLoadOlderPage(st, srv, () => {})).toBe('empty');
+    expect(await wl.wlLoadOlderPage(st, srv, () => {})).toBe('empty');
+    // Two empty pages, but each moved the cursor: they do not count towards the stop.
+    expect(st.olderPending).toBe(true);
+    expect(await wl.wlLoadOlderPage(st, srv, () => {})).toBe('ok');
+    expect(calls.slice(1)).toEqual([
+      'beforeSeq=901&limit=100',
+      'beforeSeq=901&limit=100&beforeOffset=9000000',
+      'beforeSeq=901&limit=100&beforeOffset=1000000',
+    ]);
+    expect(st.entries[0].seq).toBe(801);
+    // Entries came without a cursor: the next page searches from the oldest held again.
+    expect(st.olderOffset).toBeUndefined();
+  });
+
+  it('a cursor that does not move counts as an empty page (a server repeating one cannot spin the paging)', async () => {
+    const st = wl.wlNewState('c');
+    const calls: string[] = [];
+    const srv = async (url: string) => {
+      const q = new URL(url, 'http://h').searchParams;
+      calls.push(q.toString());
+      if (!q.has('beforeSeq')) return { entries: range(901, 1000), hasMore: true };
+      return { entries: [], hasMore: true, nextBeforeOffset: 5000 };
+    };
+    await wl.wlLoadLatest(st, srv, () => {});
+    for (let i = 0; i < 6; i++) await wl.wlLoadOlderPage(st, srv, () => {});
+    expect(st.olderPending).toBe(false);
+    // The first stop set the cursor; the next 3 repeated it.
+    expect(calls).toHaveLength(5);
+  });
+
+  it('the older-page URL carries a byte cursor only when given one', () => {
+    expect(wl.wlOlderUrl('c1', 784)).toBe('/api/dashboard/session/c1/worklog?beforeSeq=784&limit=100');
+    expect((wl as any).wlOlderUrl('c1', 784, 4096)).toBe(
+      '/api/dashboard/session/c1/worklog?beforeSeq=784&limit=100&beforeOffset=4096',
+    );
+  });
+
   it('stops for a closed panel and on 403', async () => {
     const srv = server(range(1, 1200));
     const st = wl.wlNewState('c');
