@@ -9712,7 +9712,7 @@ function renderAgentConv() {
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var a = panelAgentOf(s);
   var io = agentConvEntries(_wl && _wl.entries, _panelAgent, !!(a && a.background));
-  if (!io.spawn) wlSeekAgentSpawn(_wl, a);
+  if (!io.spawn) wlSeekAgentSpawn(_wl, a, _panelAgent);
   var prompt = io.spawn && io.spawn.rawBytes ? agentConvRawOf(io.spawn.seq) : null;
   var answer = io.result ? (io.result.rawBytes ? agentConvRawOf(io.result.seq) : String(io.result.text || '')) : null;
   var html = io.spawn || io.result || a ? agentConvHtml(a, io, prompt != null ? agentPromptOf(prompt) : null, answer) : '<p class="panel-tasks-empty">이 에이전트의 지시와 결과를 찾지 못했습니다</p>';
@@ -13486,13 +13486,19 @@ function wlLoadOlderPage(state, fetchJson, onAdded) {
   return run;
 }
 // A subagent's tab whose spawn call is older than the log window: page back for
-// it — while older entries exist and the window has not reached back past the
-// agent's start (its call cannot be older than that).
-function wlSeekAgentSpawn(state, a) {
+// it — while older entries exist, the window has not reached back past the
+// agent's start (its call cannot be older than that), and for at most
+// WL_SEEK_MAX_PAGES pages per agent: one the bar does not know (a log-only
+// agent has no start) would otherwise fetch the whole log looking for it.
+var WL_SEEK_MAX_PAGES = 20;
+function wlSeekAgentSpawn(state, a, agentId) {
   if (!state || !state.olderPending || state.olderLoading) return;
   var start = toNum(a && a.startedAt);
   var oldest = state.entries.length ? toNum(state.entries[0].ts) : 0;
   if (start && oldest && oldest < start - 60000) return;
+  var seek = state.seek && state.seek.id === agentId ? state.seek : (state.seek = { id: agentId, pages: 0 });
+  if (seek.pages >= WL_SEEK_MAX_PAGES) return;
+  seek.pages++;
   loadOlderWorkLog();
 }
 

@@ -585,6 +585,37 @@ describe('work log: the latest window on opening, older pages as the reader scro
     expect(st2.denied).toBe(true);
   });
 
+  // #542 review P3: a subagent tab looking for its spawn call walks back a bounded number of pages.
+  it('a subagent tab seeks its spawn call back at most WL_SEEK_MAX_PAGES (20) pages — also for an agent the bar does not know', () => {
+    let pages = 0;
+    const seek = load<{ wlSeekAgentSpawn(st: any, a: any, id: string): void }>(
+      ['wlSeekAgentSpawn'],
+      ['WL_SEEK_MAX_PAGES'],
+      {
+        toNum: (v: unknown) => Number(v) || 0,
+        loadOlderWorkLog: () => {
+          pages++;
+        },
+      },
+    );
+    const st = { olderPending: true, olderLoading: null, entries: [{ seq: 90_000, ts: 1_000 }] };
+    // A log-only agent (panelAgentOf null: no start time, so no floor) used to page to the start of the log.
+    for (let i = 0; i < 50; i++) seek.wlSeekAgentSpawn(st, null, 'toolu_logonly');
+    expect(pages).toBe(20);
+    // Another agent's tab has its own walk.
+    for (let i = 0; i < 50; i++) seek.wlSeekAgentSpawn(st, null, 'toolu_other');
+    expect(pages).toBe(40);
+    // A known agent still stops once the window reaches back past its start.
+    const known = { olderPending: true, olderLoading: null, entries: [{ seq: 5, ts: 1_000 }] };
+    seek.wlSeekAgentSpawn(known, { startedAt: 100_000 }, 'toolu_known');
+    expect(pages).toBe(40);
+    // Nothing while a page is in flight or nothing older exists.
+    seek.wlSeekAgentSpawn({ ...st, olderLoading: Promise.resolve() }, null, 'toolu_x');
+    seek.wlSeekAgentSpawn({ ...st, olderPending: false }, null, 'toolu_x');
+    expect(pages).toBe(40);
+    expect(clientFn('renderAgentConv')).toContain('wlSeekAgentSpawn(_wl, a, _panelAgent);');
+  });
+
   it('recovery no longer stops at 20 pages (10,000 entries)', () => {
     expect(Number(clientVar('WL_BACKFILL_MAX_PAGES').match(/\d+/)?.[0])).toBeGreaterThanOrEqual(1000);
   });
