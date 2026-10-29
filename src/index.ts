@@ -132,6 +132,7 @@ import { switchSessionEffort } from './session/effort-switch';
 import { productionModelCatalogDeps } from './session/model-catalog-deps';
 import { switchSessionModel } from './session/model-switch';
 import { applyTodoList, creditTaskUsage, emptyTaskLedger, ledgerTasks } from './session/task-ledger';
+import { createMainCallReader, reconcileTaskCalls, type TranscriptCall } from './session/task-usage-reconcile';
 import { canApplySummaryTitle } from './session-title-policy';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
@@ -1034,11 +1035,59 @@ async function start() {
     // events and its subagents' tool entries (≤ 1 read / 10 s per running
     // agent); a turn end reads every agent not sealed yet and seals the ended
     // ones. Off the hot path: the card is pushed when a number changed.
+    // 2026-10-29 T5 (live follow-up) — a call's live frame carries only the
+    // output counted at its start; its final usage is in the transcript. The
+    // tasks' credits are replaced with it: the main agent's calls here, at most
+    // every 10 s while a turn runs and at its end; the subagents' calls as the
+    // spend reader reads their transcripts (`onCalls`).
+    const priceTranscriptCall = (model: string | undefined, c: TranscriptCall) =>
+      calculateTokenCost(model, c.inputTokens, c.outputTokens, c.cacheReadTokens, c.cacheCreateTokens);
     const agentSpendReader = createAgentSpendReader({
       price: (model, t) =>
         calculateTokenCost(model, t.inputTokens, t.outputTokens, t.cacheReadTokens, t.cacheCreateTokens),
       isPriced: hasModelPricing,
+      onCalls: (holder, calls) => {
+        const session = holder as ConversationSession;
+        // A subagent's call is priced by its own model when the table knows it (live used the session's).
+        return reconcileTaskCalls(session.taskLedger, calls, 's:', (c, credited) =>
+          priceTranscriptCall(c.model && hasModelPricing(c.model) ? c.model : (credited ?? session.model), c),
+        );
+      },
     });
+    const mainCallReader = createMainCallReader();
+    const reconciledAt = new Map<string, number>();
+    const RECONCILED_KEPT = 1024;
+    const reconcileTaskUsage = (
+      sessionKey: string,
+      session: ConversationSession,
+      force: boolean,
+      sid: string | undefined = session.sessionId,
+    ) => {
+      if (!sid || !session.taskLedger) return;
+      const at = Date.now();
+      if (!force && at - (reconciledAt.get(sessionKey) ?? 0) < 10_000) return;
+      reconciledAt.delete(sessionKey);
+      reconciledAt.set(sessionKey, at);
+      while (reconciledAt.size > RECONCILED_KEPT) reconciledAt.delete(reconciledAt.keys().next().value as string);
+      void mainCallReader
+        .read(sid, { force })
+        .then((calls) => {
+          // The ledger object may have been replaced meanwhile (a new list): its credits moved with it.
+          const ledger = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey)?.taskLedger;
+          // The main agent's calls: re-priced at the model their live credit used (a /model since does not re-price them).
+          if (
+            reconcileTaskCalls(ledger, calls, 'm:', (c, credited) => priceTranscriptCall(credited ?? session.model, c))
+          ) {
+            scheduleLiveSessionUpdate(sessionKey);
+          }
+        })
+        .catch((error) => {
+          logger.debug('Task usage reconcile failed', {
+            sessionKey,
+            error: (error as Error)?.message ?? String(error),
+          });
+        });
+    };
     const refreshAgentSpend = (sessionKey: string, session: ConversationSession, force: boolean) => {
       if (!session.agents?.agents.length) return;
       void agentSpendReader.refresh(session, { force }).then((changed) => {
@@ -1073,7 +1122,9 @@ async function start() {
               call.cacheReadTokens,
               call.cacheCreateTokens,
             );
-            creditTaskUsage(session.taskLedger, key, call, Number.isFinite(cost) ? cost : 0);
+            creditTaskUsage(session.taskLedger, key, call, Number.isFinite(cost) ? cost : 0, session.model);
+            // The calls before this one have their final usage in the transcript by now.
+            reconcileTaskUsage(sessionKey, session, false);
           }
         }
         scheduleLiveSessionUpdate(sessionKey);
@@ -1113,6 +1164,12 @@ async function start() {
         if (!session) return;
         if (applyAgentEvent(session, event)) scheduleLiveSessionUpdate(sessionKey);
         refreshAgentSpend(sessionKey, session, event.kind === 'turn_end');
+        // A turn's last call: its transcript line is written as the turn ends — read it just after.
+        // The SDK session is taken now: a /new in the next 1.5 s must not point the read at the new transcript (review).
+        if (event.kind === 'turn_end') {
+          const sid = session.sessionId;
+          setTimeout(() => reconcileTaskUsage(sessionKey, session, true, sid), 1500).unref?.();
+        }
       },
     };
     setStreamExecutorProviders(workLogProviders);
