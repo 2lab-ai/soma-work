@@ -880,6 +880,22 @@ describe('T1.3 / SSOT 2026-10-29 · 지시와 답변 opens on its latest turns; 
     expect(m.psecPageDue(0, 500, 600, false)).toBe(true); // too short to scroll: fill it
     expect(m.psecPageDue(0, 0, 0, true)).toBe(false); // a hidden box (no height) loads nothing
   });
+
+  it("the reader's rows stay put while what is above them settles: no native scroll anchoring, the page holds the rows it read last (browser receipt)", () => {
+    // Native anchoring and the page's own correction fought: a late answer above moved the reader by its height.
+    expect(CSS).toMatch(/\n\.psec \{[^}]*overflow-anchor: none;/);
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelSections() {'));
+    const body = init.slice(0, init.indexOf('\n})();'));
+    // A reader's scroll reads the rows in view once a frame (not at the newest: that is pinned).
+    expect(body).toMatch(/if \(!_psecPin && !box\._capture\) \{[\s\S]*?box\._anchor = psecViewAnchor\(box\);/);
+    // A reader acting on a row (an entry's detail, a Raw) is not held against.
+    expect(body).toContain("['pointerdown', 'keydown'].forEach(function(type) {");
+    expect(body).toContain('box.addEventListener(type, function() { box._anchor = null; }, { passive: true });');
+    // Any size change: pinned → the newest; else the held rows back in place (no time limit).
+    expect(body).toContain('if (_psecPin) psecSetTop(box, box.scrollHeight);');
+    expect(body).toContain('else if (box._anchor) psecRestoreAnchor(box, box._anchor);');
+    expect(TEMPLATE).not.toContain('_anchorUntil');
+  });
 });
 
 describe('browser receipt · a section landing cut short by a short body lands once the body grows', () => {

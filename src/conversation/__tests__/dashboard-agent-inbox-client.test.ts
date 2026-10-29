@@ -2022,7 +2022,7 @@ describe('작업 로그 is a section tab: painted only while shown, following th
         'psecHoldPlace',
         'paintWorkLog',
       ],
-      ['WL_LABELS', 'WL_STOP_SEL', ...WL_INSTRUCTION_VARS, 'PSEC_ANCHORS', 'PSEC_ANCHOR_MAX', 'PSEC_HOLD_MS'],
+      ['WL_LABELS', 'WL_STOP_SEL', ...WL_INSTRUCTION_VARS, 'PSEC_ANCHORS', 'PSEC_ANCHOR_MAX'],
       {
         document,
         _wl: state,
@@ -2146,18 +2146,22 @@ describe("an older page keeps the reader's row in place — several rows in view
     return { m, box, rows, group };
   }
 
-  it('the rows in view, top first, at most six; a row above the box is not one', () => {
+  it('the rows in view, top first (those wholly below the top edge before the one it cuts), at most six; a row above the box is not one', () => {
     const w = world([10, 11, 12, 13, 14, 15, 16, 17, 18]);
-    w.box.scrollTop = 20; // row 10 is half above the top
+    w.box.scrollTop = 20; // row 10 is half above the top: the edge cuts it (it may still grow) — it comes last
     const a = w.m.psecViewAnchor(w.box);
     expect(a).toEqual([
-      { sel: '.wl-entry[data-seq="10"]', at: -20, tree: false },
       { sel: '.wl-entry[data-seq="11"]', at: 20, tree: false },
       { sel: '.wl-entry[data-seq="12"]', at: 60, tree: false },
       { sel: '.wl-entry[data-seq="13"]', at: 100, tree: false },
       { sel: '.wl-entry[data-seq="14"]', at: 140, tree: false },
       { sel: '.wl-entry[data-seq="15"]', at: 180, tree: false },
+      { sel: '.wl-entry[data-seq="16"]', at: 220, tree: false },
     ]);
+    // Only a cut row in view (a tall one): it is the anchor.
+    const tall = world([10]);
+    tall.box.scrollTop = 20;
+    expect(tall.m.psecViewAnchor(tall.box)).toEqual([{ sel: '.wl-entry[data-seq="10"]', at: -20, tree: false }]);
     w.box.scrollTop = 40;
     expect(w.m.psecViewAnchor(w.box)?.[0]).toEqual({ sel: '.wl-entry[data-seq="11"]', at: 0, tree: false });
   });
