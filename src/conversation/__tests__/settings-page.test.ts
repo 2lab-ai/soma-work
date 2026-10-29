@@ -42,7 +42,7 @@ function row(over: Record<string, unknown> = {}) {
 describe('settings page shell', () => {
   it('the whole page script parses, and the page links back to the dashboard', () => {
     const html = renderSettingsPage();
-    const script = /<script>([\s\S]*)<\/script>\s*<\/body>/.exec(html)![1];
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1]; // the page script (the library elements load as modules after it)
     expect(() => new Function(script)).not.toThrow();
     expect(html).toContain('<a class="back" href="/dashboard">');
     expect(html).toContain('<a href="#preferences">개인 설정</a>');
