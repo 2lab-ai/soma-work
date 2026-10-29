@@ -58,6 +58,22 @@ describe('HelpHandler.execute', () => {
     expect(actionIds).toContain('z_help_nav_bypass');
   });
 
+  // I1.3: the text help documents the skill list command (it had no Skills section).
+  it('text help documents the skill list command', async () => {
+    const { ctx, sayMock } = makeCtx();
+    await new HelpHandler().execute(ctx);
+    const text: string = sayMock.mock.calls[0][0].text;
+    expect(text).toContain('*Skills:*');
+    expect(text).toContain('• `skill` or `/skill`');
+    expect(text).toContain('`skill download`');
+  });
+
+  it('help card offers the skill button', async () => {
+    const { ctx, sayMock } = makeCtx();
+    await new HelpHandler().execute(ctx);
+    expect(JSON.stringify(sayMock.mock.calls[0][0].blocks)).toContain('z_help_nav_skill');
+  });
+
   it('top-level block is a header with plain_text', async () => {
     const { ctx, sayMock } = makeCtx();
     await new HelpHandler().execute(ctx);

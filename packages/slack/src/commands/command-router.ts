@@ -208,18 +208,16 @@ export class CommandRouter {
 
     const zPrefixRemainder = stripZPrefix(originalText.trim());
     if (zPrefixRemainder !== null) {
-      if (!zPrefixRemainder) {
-        await say({ text: CommandParser.getHelpMessage(), thread_ts: threadTs });
-        return { handled: true };
-      }
+      // Bare `/z` is `help` — the same card every other entry point shows.
+      const remainder = zPrefixRemainder || 'help';
       if (ctx.threadTs === ctx.channel) {
-        const { topic, verb, arg } = parseTopic(zPrefixRemainder);
+        const { topic, verb, arg } = parseTopic(remainder);
         if (topic && isSlashForbidden(topic, verb, arg)) {
           await say({ text: SLASH_FORBIDDEN_MESSAGE, thread_ts: threadTs });
           return { handled: true };
         }
       }
-      ctx.text = translateToLegacy(zPrefixRemainder);
+      ctx.text = translateToLegacy(remainder);
     }
 
     const routedText = ctx.text ?? originalText;

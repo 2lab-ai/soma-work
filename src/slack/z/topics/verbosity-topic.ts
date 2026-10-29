@@ -1,5 +1,5 @@
 /**
- * `/z verbosity` Block Kit topic — Phase 2 (#507).
+ * `/z verbosity` Block Kit topic (#507).
  */
 
 import { type LogVerbosity, VERBOSITY_NAMES } from '@soma/slack/output-flags';

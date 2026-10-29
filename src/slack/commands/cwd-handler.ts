@@ -6,7 +6,7 @@ import type { CommandContext, CommandDependencies, CommandHandler, CommandResult
  *
  * Working directories are now fixed per user: {BASE_DIRECTORY}/{userId}/
  * - Users cannot set custom working directories (security isolation).
- * - Phase 2 (#507): `cwd` (get) renders a read-only Block Kit card via the
+ * - #507: `cwd` (get) renders a read-only Block Kit card via the
  *   /z cwd topic module. The legacy set-path branch still emits a plain
  *   system message explaining why it is disabled.
  */

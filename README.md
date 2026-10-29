@@ -225,7 +225,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 
 | Command | Description |
 |---------|-------------|
-| `/z help` | Show all topics |
+| `/z help` · `help` | Help card: buttons open the topics that have a Block Kit card; every other topic is listed as a `/z <command>` to type (🧵 = run it in a thread) |
 | `/z cwd [set <path>]` | Show / set working directory |
 | `/z mcp [list\|reload]` | List MCP servers / reload config |
 | `/z bypass [set on\|off]` | Toggle permission bypass |
@@ -244,7 +244,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z auth [llmux\|cct\|switch <name>\|key]` | Auth backend card: read-only capacity overview by provider (see [Auth capacity overview](#auth-capacity-overview)) + runtime mode switch (llmux default / cct legacy) and account switch/add/remove behind explicit Admin mode; `key` DMs your personal llmux client key |
 | `/z marketplace [add <x>]` | Plugin marketplace |
 | `/z plugin [add\|update\|remove\|rollback\|backups]` | Manage installed plugins |
-| `/z skill [list\|download]` | Skills directory |
+| `/z skill [list\|download]` · `skill` · `/skill` | Lists the skills you can run: your personal skills first (buttons to run, edit, delete, rename, share — the `$user` list), then this host's environment skills. A non-admin sees an environment skill's description only after an admin granted it. `download` exports your personal skills. The `/z help` card's **skill** button opens the same lists |
 | `/z report [today\|daily\|weekly]` | Usage reports |
 
 ### llmux SDK authentication

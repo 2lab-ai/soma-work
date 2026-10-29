@@ -1,5 +1,5 @@
 /**
- * `/z notify` Block Kit topic — Phase 2 (#507).
+ * `/z notify` Block Kit topic (#507).
  *
  * - Slack DM on/off toggle: two simple `set_dm_on` / `set_dm_off` buttons.
  * - Telegram: `set_tg_clear` and an `open_modal` extra action that pushes a

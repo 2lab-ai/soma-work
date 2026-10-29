@@ -5,7 +5,7 @@ import type { CommandContext, CommandHandler, CommandResult } from './types';
 /**
  * Handles bypass permission commands.
  *
- * Phase 2 (#507):
+ * #507:
  *   - bare `bypass` / `bypass status` → Block Kit card via renderBypassCard
  *   - `bypass on|off` → applyBypass + text ack (back-compat)
  */

@@ -1,7 +1,6 @@
 /**
- * Block Kit builders for the `/z` surface.
- *
- * Phase 2 lands full `buildSettingCard` + `buildHelpCard` navigation.
+ * Block Kit builders for the `/z` surface: `buildHelpCard`, `buildSettingCard`,
+ * `buildConfirmationCard`.
  *
  * All block_ids are generated deterministically via `zBlockId()`:
  *   `z_<topic>_<issuedAt>_<index>`
@@ -16,6 +15,7 @@
  * See: docs/current/spec/z-command-master-spec.md §8 / §15.
  */
 
+import { isSlashForbidden } from './capability';
 import type { ZBlock } from './types';
 
 /** Deterministic block_id generator.
@@ -38,33 +38,40 @@ export function zBlockId(topic: string, issuedAt: number, index: number): string
  * buildHelpCard
  * ------------------------------------------------------------------ */
 
-/** One navigable help category. */
+/** One help category: card topics render as buttons, the rest as `/z <command>` chips. */
 export interface HelpCategory {
   /** Heading shown above the button row (markdown). */
   title: string;
   /** One-line description (markdown, optional). */
   description?: string;
-  /** Topics to list as nav buttons. Each becomes `z_help_nav_<topic>`. */
   topics: Array<{
-    id: string; // topic id (used in action_id)
-    label: string; // button label
-    /** If true, button renders as a hint-only link (no action). */
-    noop?: boolean;
+    /** Topic id — the `z_help_nav_<id>` action id of a card topic. */
+    id: string;
+    /** The command after `/z` (`admin session list`) — the button label of a card topic. */
+    label: string;
+    /**
+     * True when the topic has a registered Block Kit card (`src/slack/z/topics/index.ts`): it
+     * renders as a button that opens the card. Every other topic is a text command and renders as
+     * a `/z <label>` chip — never a button that promises a card. `flow-e2e.test.ts` holds the
+     * card topics equal to the registry.
+     */
+    card?: boolean;
   }>;
 }
 
 export interface HelpCardOptions {
   issuedAt: number;
-  /** When omitted, the default 6-category Phase 2 layout is used. */
+  /** When omitted, {@link DEFAULT_HELP_CATEGORIES} is used. */
   categories?: HelpCategory[];
 }
 
-/** Default help categories shipped in Phase 2. */
 export const DEFAULT_HELP_CATEGORIES: HelpCategory[] = [
   {
     title: '*🗂️ Session*',
     description: '세션 생성·전환·종료 · 컨텍스트·테마 관리',
     topics: [
+      { id: 'goal', label: 'goal', card: true },
+      { id: 'theme', label: 'theme', card: true },
       { id: 'new', label: 'new' },
       { id: 'close', label: 'close' },
       { id: 'renew', label: 'renew' },
@@ -72,38 +79,37 @@ export const DEFAULT_HELP_CATEGORIES: HelpCategory[] = [
       { id: 'restore', label: 'restore' },
       { id: 'link', label: 'link' },
       { id: 'compact', label: 'compact' },
-      { id: 'goal', label: 'goal' },
       { id: 'queue', label: 'queue' },
       { id: 'session', label: 'session' },
-      { id: 'theme', label: 'theme' },
+      { id: 'onboarding', label: 'onboarding' },
     ],
   },
   {
     title: '*🎭 Persona & Model*',
     description: '페르소나, 모델, 출력 상세도',
     topics: [
-      { id: 'persona', label: 'persona' },
-      { id: 'model', label: 'model' },
-      { id: 'verbosity', label: 'verbosity' },
+      { id: 'persona', label: 'persona', card: true },
+      { id: 'model', label: 'model', card: true },
+      { id: 'verbosity', label: 'verbosity', card: true },
     ],
   },
   {
     title: '*🛡️ Permissions*',
     description: '권한 우회 · 샌드박스 격리',
     topics: [
-      { id: 'bypass', label: 'bypass' },
-      { id: 'sandbox', label: 'sandbox' },
+      { id: 'bypass', label: 'bypass', card: true },
+      { id: 'sandbox', label: 'sandbox', card: true },
     ],
   },
   {
     title: '*🧠 Memory & Tools*',
-    description: '기억, CCT 토큰, MCP, 스킬, 플러그인',
+    description: '기억, CCT 토큰, 스킬, MCP, 플러그인',
     topics: [
-      { id: 'memory', label: 'memory' },
-      { id: 'cct', label: 'cct' },
-      { id: 'auth', label: 'auth' },
+      { id: 'memory', label: 'memory', card: true },
+      { id: 'cct', label: 'cct', card: true },
+      { id: 'auth', label: 'auth', card: true },
+      { id: 'skill', label: 'skill', card: true },
       { id: 'mcp', label: 'mcp' },
-      { id: 'skill', label: 'skill' },
       { id: 'plugin', label: 'plugin' },
       { id: 'marketplace', label: 'marketplace' },
     ],
@@ -112,17 +118,17 @@ export const DEFAULT_HELP_CATEGORIES: HelpCategory[] = [
     title: '*🔔 Integrations*',
     description: '알림·웹훅·이메일·작업 디렉토리·리포트',
     topics: [
-      { id: 'notify', label: 'notify' },
+      { id: 'notify', label: 'notify', card: true },
+      { id: 'email', label: 'email', card: true },
+      { id: 'cwd', label: 'cwd', card: true },
       { id: 'webhook', label: 'webhook' },
-      { id: 'email', label: 'email' },
-      { id: 'cwd', label: 'cwd' },
       { id: 'report', label: 'report' },
     ],
   },
   {
     title: '*📊 Usage*',
     description: '토큰 사용량 조회 · 개인 통계 카드',
-    topics: [{ id: 'usage', label: 'usage' }],
+    topics: [{ id: 'usage', label: 'usage', card: true }],
   },
   {
     title: '*📈 Dashboard*',
@@ -142,12 +148,18 @@ export const DEFAULT_HELP_CATEGORIES: HelpCategory[] = [
   },
 ];
 
+/** `/z <label>` chip; 🧵 marks a command that needs a thread (cannot run as the `/z` slash command). */
+function commandChip(label: string): string {
+  const [topic, verb, arg] = label.split(' ');
+  return `\`/z ${label}\`${isSlashForbidden(topic, verb, arg) ? '🧵' : ''}`;
+}
+
 /**
- * The `/z` help card — shown when `/z` is invoked with no remainder.
+ * The `/z` help card — shown by `help`, `/z`, and `/z help`.
  *
- * Phase 2 layout: categorized Block Kit with nav buttons. Clicking a nav
- * button replaces the card with the topic's setting card (see
- * `z_help_nav_<topic>` handler in `z-settings-actions.ts`).
+ * Card topics are buttons; clicking one replaces the help card with the topic's card (see the
+ * `z_help_nav_<topic>` handler in `z-settings-actions.ts`). Every other topic is a text command,
+ * listed as a `/z <command>` chip under its category.
  */
 export function buildHelpCard(opts: HelpCardOptions): ZBlock[] {
   const { issuedAt } = opts;
@@ -167,7 +179,9 @@ export function buildHelpCard(opts: HelpCardOptions): ZBlock[] {
     elements: [
       {
         type: 'mrkdwn',
-        text: '카테고리 버튼을 누르면 해당 설정 카드로 이동합니다. ' + '`/z <topic>`로 직접 열 수도 있습니다.',
+        text:
+          '버튼은 설정 카드를 엽니다. `/z …` 명령은 직접 입력해서 실행합니다. ' +
+          '🧵 표시는 스레드에서 `@봇 /z <command>`로만 실행됩니다.',
       },
     ],
   });
@@ -184,18 +198,27 @@ export function buildHelpCard(opts: HelpCardOptions): ZBlock[] {
 
     // Slack actions block limit: 25 elements. Chunk into rows of 5 for
     // visual balance and button-width consistency.
+    const cards = cat.topics.filter((t) => t.card);
     const chunkSize = 5;
-    for (let i = 0; i < cat.topics.length; i += chunkSize) {
-      const chunk = cat.topics.slice(i, i + chunkSize);
+    for (let i = 0; i < cards.length; i += chunkSize) {
       blocks.push({
         type: 'actions',
         block_id: zBlockId('help', issuedAt, idx++),
-        elements: chunk.map((topic) => ({
+        elements: cards.slice(i, i + chunkSize).map((topic) => ({
           type: 'button',
           action_id: `z_help_nav_${topic.id}`,
           text: { type: 'plain_text', text: topic.label, emoji: true },
           value: topic.id,
         })),
+      });
+    }
+
+    const commands = cat.topics.filter((t) => !t.card);
+    if (commands.length > 0) {
+      blocks.push({
+        type: 'context',
+        block_id: zBlockId('help', issuedAt, idx++),
+        elements: [{ type: 'mrkdwn', text: commands.map((t) => commandChip(t.label)).join('  ') }],
       });
     }
   }
@@ -206,7 +229,7 @@ export function buildHelpCard(opts: HelpCardOptions): ZBlock[] {
     elements: [
       {
         type: 'mrkdwn',
-        text: '_팁: `$`, `%model <v>`, `%verbosity <v>` 등 세션 전용 명령은 그대로 동작합니다._',
+        text: '_팁: `%`, `%model <v>`, `%verbosity <v>` 등 세션 전용 명령은 스레드에서 동작합니다. `$<skill>`은 스킬을 바로 실행합니다._',
       },
     ],
   });
@@ -215,7 +238,7 @@ export function buildHelpCard(opts: HelpCardOptions): ZBlock[] {
 }
 
 /* ------------------------------------------------------------------ *
- * buildSettingCard — Phase 2 full implementation
+ * buildSettingCard
  * ------------------------------------------------------------------ */
 
 export interface SettingCardOption {
@@ -251,7 +274,7 @@ export interface SettingCardOptions {
   options: SettingCardOption[];
   /**
    * Extra (non-"set") buttons — typically used for "Open modal" / "Remove"
-   * flows in Phase B handlers. Rendered in their own actions block below
+   * flows. Rendered in their own actions block below
    * the options grid.
    */
   extraActions?: SettingCardExtraAction[];

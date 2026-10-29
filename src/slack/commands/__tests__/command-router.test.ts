@@ -63,6 +63,7 @@ import { PromptHandler } from '../prompt-handler';
 import { RateHandler } from '../rate-handler';
 import { RenewHandler } from '../renew-handler';
 import { SkillForceHandler } from '../skill-force-handler';
+import { SkillsHandler } from '../skills-handler';
 import { VerbosityHandler } from '../verbosity-handler';
 
 /**
@@ -288,6 +289,47 @@ describe('CommandRouter — bare [cmd] [args] routing (restored #530)', () => {
     const { result } = await runBare('show prompt');
     expect(executeSpy).toHaveBeenCalledTimes(1);
     expect(result.handled).toBe(true);
+  });
+});
+
+/**
+ * T1: `skill` is a command in every form a user types it. Before this fix every bare/slash form
+ * fell through to the ❓ "명령어를 인식할 수 없습니다" hint because no handler claimed it.
+ */
+describe('CommandRouter — skill list command', () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it.each([
+    'skill',
+    'skills',
+    '/skill',
+    '/skills',
+    '/z skill',
+    '/z skills',
+    'skill list',
+    '/z skill list',
+  ])('%j reaches SkillsHandler and never the ❓ hint', async (text) => {
+    const executeSpy = vi.spyOn(SkillsHandler.prototype, 'execute').mockResolvedValue({ handled: true });
+    const say = vi.fn().mockResolvedValue(undefined);
+    const router = new CommandRouter(buildDeps());
+    const result = await router.route({ text, user: 'U1', channel: 'C1', threadTs: 'T1', say } as any);
+    expect(executeSpy).toHaveBeenCalledTimes(1);
+    expect(result.handled).toBe(true);
+    expect(say).not.toHaveBeenCalledWith(
+      expect.objectContaining({ text: expect.stringContaining('인식할 수 없습니다') }),
+    );
+  });
+
+  it('bare `/z` typed in a thread posts the same help card as `help`', async () => {
+    const say = vi.fn().mockResolvedValue(undefined);
+    const router = new CommandRouter(buildDeps());
+    const result = await router.route({ text: '/z', user: 'U1', channel: 'C1', threadTs: 'T1', say } as any);
+    expect(result.handled).toBe(true);
+    const payload = say.mock.calls[0][0];
+    expect(payload.thread_ts).toBe('T1');
+    expect(JSON.stringify(payload.blocks)).toContain('z_help_nav_skill');
   });
 });
 

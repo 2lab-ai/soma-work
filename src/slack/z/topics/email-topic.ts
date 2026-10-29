@@ -1,5 +1,5 @@
 /**
- * `/z email` Block Kit topic — Phase 2 (#507).
+ * `/z email` Block Kit topic (#507).
  *
  * - Card shows current email + a "변경" button that opens a modal.
  * - Modal is a single plain_text_input; submit validates RFC-ish email

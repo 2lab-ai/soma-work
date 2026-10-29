@@ -139,6 +139,12 @@ interface ResolvedClick {
   messageTs?: string;
   threadTs?: string;
   triggerId?: string;
+  /**
+   * The list is an ephemeral message (a help card opened by slash `/z`). Its click payload has no
+   * `message`; `messageTs` is unset (`chat.update` cannot edit an ephemeral) and `threadTs` is the
+   * thread it sits in, or unset at channel root.
+   */
+  ephemeral?: boolean;
 }
 
 /**
@@ -610,6 +616,18 @@ export class UserSkillMenuActionHandler {
     // Cross-user invoke (S4): re-inject `$<@owner>:skill` so SkillForceHandler
     // resolves the owner's skill (owner-scoped nested refs included).
     const isCrossUser = !!value.ownerId && value.ownerId !== value.requesterId;
+
+    // An ephemeral list opened outside a thread (slash `/z` at channel root) has no thread to run
+    // in — replying under the ephemeral's ts would land on a dead thread. Say how to run it instead.
+    if (click.ephemeral && !threadTs) {
+      const ref = isCrossUser ? `$<@${value.ownerId}>:${value.skillName}` : `$user:${value.skillName}`;
+      await respond({
+        response_type: 'ephemeral',
+        text: `ℹ️ 스레드 밖에서 연 목록이라 여기서는 발동할 수 없습니다. 스레드에서 \`${ref}\`을 입력하세요.`,
+        replace_original: false,
+      });
+      return;
+    }
     if (isCrossUser) {
       const ownerId = value.ownerId as string;
       if (!userSkillExists(ownerId, value.skillName)) {
@@ -905,14 +923,16 @@ export class UserSkillMenuActionHandler {
       ? (rawKind as SkillMenuKind)
       : VALUE_KIND_INVOKE;
 
-    const messageTs: string | undefined = body?.message?.ts;
+    const ephemeral = body?.container?.is_ephemeral === true;
+    const messageTs: string | undefined = ephemeral ? undefined : body?.message?.ts;
     return {
       value: { kind, skillName, requesterId, ownerId },
       clickerId: body?.user?.id,
-      channel: body?.channel?.id,
+      channel: body?.channel?.id ?? body?.container?.channel_id,
       messageTs,
-      threadTs: body?.message?.thread_ts || messageTs,
+      threadTs: ephemeral ? body?.container?.thread_ts : body?.message?.thread_ts || messageTs,
       triggerId: body?.trigger_id,
+      ephemeral,
     };
   }
 

@@ -1,5 +1,5 @@
 /**
- * `/z sandbox` Block Kit topic — Phase 2 (#507).
+ * `/z sandbox` Block Kit topic (#507).
  *
  * Sandbox on/off plus network allowlist toggle.
  * - Sandbox on/off is admin-only; enforcement lives in `applySandbox`.

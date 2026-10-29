@@ -6,7 +6,7 @@ import type { CommandContext, CommandHandler, CommandResult } from './types';
 /**
  * Handles email commands (show email / set email <address>).
  *
- * Phase 2 (#507): bare `email` renders a Block Kit card with a "변경" modal
+ * #507: bare `email` renders a Block Kit card with a "변경" modal
  * button. `set email <address>` keeps the CLI-style text ack for back-compat.
  */
 export class EmailHandler implements CommandHandler {

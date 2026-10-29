@@ -60,7 +60,7 @@ export class NotifyHandler implements CommandHandler {
         break;
 
       case 'status': {
-        // Phase 2 (#507): render Block Kit card by default.
+        // #507: render Block Kit card by default.
         try {
           const { text: fallback, blocks } = await renderNotifyCard({
             userId: user,

@@ -1,5 +1,5 @@
 /**
- * `/z session theme` Block Kit topic — Phase 2 (#507).
+ * `/z session theme` Block Kit topic (#507).
  *
  * Rendered for the `theme` subcommand (default=show) and reused when the
  * user clicks the Theme button in the help card.
