@@ -173,6 +173,43 @@ describe('GET /api/dashboard/session/:conversationId/worklog', () => {
     expect(await get('?beforeSeq=6')).toEqual([[1, 2, 3, 4, 5], false]);
   });
 
+  it('passes beforeOffset (the previous page byte cursor) to the read and returns nextBeforeOffset', async () => {
+    const read = vi
+      .spyOn(workLog, 'readWorkLog')
+      .mockResolvedValue({ entries: [], hasMore: true, nextBeforeOffset: 4096 });
+    const res = await web.injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/session/conv-1/worklog?beforeSeq=900&beforeOffset=9000000&limit=10',
+      headers: AUTH_HEADER,
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body)).toEqual({ entries: [], hasMore: true, nextBeforeOffset: 4096 });
+    expect(read).toHaveBeenCalledWith('conv-1', {
+      afterSeq: undefined,
+      beforeSeq: 900,
+      beforeOffset: 9_000_000,
+      limit: 10,
+    });
+    read.mockRestore();
+  });
+
+  it.each([
+    '?beforeOffset=100',
+    '?afterSeq=1&beforeOffset=100',
+    '?beforeSeq=5&beforeOffset=0',
+    '?beforeSeq=5&beforeOffset=-1',
+    '?beforeSeq=5&beforeOffset=abc',
+    '?beforeSeq=5&beforeOffset=1.5',
+  ])('rejects %s (a byte cursor needs a beforeSeq page and a positive integer) with 400', async (qs) => {
+    const res = await web.injectWebServer({
+      method: 'GET',
+      url: `/api/dashboard/session/conv-1/worklog${qs}`,
+      headers: AUTH_HEADER,
+    });
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body)).toEqual({ error: 'bad_request' });
+  });
+
   it.each([
     '?afterSeq=1&beforeSeq=5',
     '?beforeSeq=5&afterSeq=0',
