@@ -129,6 +129,10 @@ interface CallCredit {
   /** Task ids that got the credit, or `idle` / `outside`. */
   to: string[] | 'idle' | 'outside';
   t: TaskTokens;
+  /** The model the live credit was priced at (a later correction re-prices on the same basis). */
+  model?: string;
+  /** Its final usage from the transcript is in: the first to go when the memory is full (review). */
+  settled?: boolean;
 }
 
 export interface TaskLedger {
@@ -158,8 +162,13 @@ export const MATCH_MIN = 0.45;
  * make two different tasks one.
  */
 export const REWRITE_TEXT_MIN = 0.3;
-/** API calls whose credit is remembered for a re-report. */
-const CALLS_MAX = 64;
+/**
+ * API calls whose credit is remembered for a re-report — the live frame and,
+ * later, the call's final usage from the transcript ({@link recreditTaskUsage}).
+ * A turn's calls (subagents' included) are read back within seconds, so this
+ * only has to outlast that window.
+ */
+const CALLS_MAX = 512;
 /**
  * Runtime only (never on the ledger object, so never in sessions.json): the
  * latest API calls' credits by call key, per ledger generation — applyTodoList
@@ -371,9 +380,20 @@ export function applyTodoList(ledger: TaskLedger | undefined, todos: readonly To
   const slot: (TaskRecord | undefined)[] = new Array(items.length);
   const used = new Set<string>();
 
+  // A finished list (every task completed) is over: a new list that names one
+  // of its tasks again as waiting or running is a new run of that work, not
+  // the old task reopened — reopening it would put both runs (and the gap
+  // between them) on one record. Live 2026-10-29: the same three steps run
+  // twice in one session read as one 65 s task each.
+  const finished = previousList.length > 0 && previousList.every((t) => t.status === 'completed');
   // 1. The same text.
   items.forEach((item, i) => {
-    const rec = previousList.find((t) => !used.has(t.id) && t.content === item.content);
+    const rec = previousList.find(
+      (t) =>
+        !used.has(t.id) &&
+        t.content === item.content &&
+        !(finished && t.status === 'completed' && item.status !== 'completed'),
+    );
     if (rec) {
       slot[i] = rec;
       used.add(rec.id);
@@ -469,7 +489,7 @@ export function applyTodoList(ledger: TaskLedger | undefined, todos: readonly To
     const calls: Record<string, CallCredit> = {};
     for (const key of Object.keys(prevCalls)) {
       const c = prevCalls[key];
-      calls[key] = c.to === 'idle' ? { to: idleTo ?? 'outside', t: c.t } : c;
+      calls[key] = c.to === 'idle' ? { ...c, to: idleTo ?? 'outside' } : c;
     }
     CALL_CREDITS.set(next, calls);
   }
@@ -555,6 +575,12 @@ export interface UsageCall {
   outputTokens?: number;
   cacheReadTokens?: number;
   cacheCreateTokens?: number;
+  /**
+   * The reading is the call's final usage — its transcript line has a stop
+   * reason. A line written while the call still streams has `stop_reason:
+   * null` and a provisional output (measured: 4 tokens): never final.
+   */
+  final?: boolean;
 }
 
 function count(v: unknown): number {
@@ -571,6 +597,7 @@ export function creditTaskUsage(
   key: string | undefined,
   call: UsageCall,
   costUsd: number,
+  model?: string,
 ): void {
   if (!ledger) return;
   const t: TaskTokens = {
@@ -582,7 +609,22 @@ export function creditTaskUsage(
   };
   const calls = CALL_CREDITS.get(ledger) ?? {};
   const before = key ? calls[key] : undefined;
-  if (before) {
+  if (before && key) {
+    // A call reported again is live: it moves to the newest place, inside the
+    // window that is never dropped (review R2, astra note 1).
+    delete calls[key];
+    calls[key] = before;
+    // A late live frame of a call whose final usage is in carries no more than
+    // it (the start-of-call count): it never undoes the correction (note 2).
+    if (
+      before.settled &&
+      t.input <= before.t.input &&
+      t.output <= before.t.output &&
+      t.cacheRead <= before.t.cacheRead &&
+      t.cacheCreate <= before.t.cacheCreate
+    ) {
+      return;
+    }
     const delta: TaskTokens = {
       input: t.input - before.t.input,
       output: t.output - before.t.output,
@@ -601,22 +643,101 @@ export function creditTaskUsage(
     } else {
       const ids = before.to;
       const targets = ledger.tasks.filter((x) => ids.includes(x.id));
-      if (targets.length) {
-        const k = 1 / ids.length;
-        for (const x of targets) {
-          x.tokens = x.tokens ?? zeroTokens();
-          addTokens(x.tokens, delta, k);
-        }
+      const k = 1 / ids.length;
+      // A task that left the ledger since (TASK_LEDGER_MAX) took all of its
+      // numbers with it; a late correction to it leaves with it too (review R2:
+      // a difference alone, put elsewhere, could read as negative spend).
+      for (const x of targets) {
+        x.tokens = x.tokens ?? zeroTokens();
+        addTokens(x.tokens, delta, k);
       }
     }
     return;
   }
   const got = creditWork(ledger, { toolCalls: 0, agentToolCalls: 0, tokens: t });
   if (!key) return;
-  calls[key] = { to: got.length ? got.map((x) => x.id) : 'idle', t };
-  const keys = Object.keys(calls);
-  for (let i = 0; i < keys.length - CALLS_MAX; i++) delete calls[keys[i]];
+  calls[key] = { to: got.length ? got.map((x) => x.id) : 'idle', t, ...(model ? { model } : {}) };
+  trimCalls(calls);
   CALL_CREDITS.set(ledger, calls);
+}
+
+/**
+ * Replace a call's live credit with its final usage (in place). The live frame
+ * of a Claude call carries its `message_start` usage: input and cache are
+ * final there, output is the few tokens counted at the start — the final
+ * count is only in the CLI's transcript. Only a call this ledger was credited
+ * with live is touched (the difference goes to the same tasks, or the same
+ * idle / outside window); an unknown call is never credited to whatever runs
+ * now. Returns whether anything changed.
+ */
+export function recreditTaskUsage(
+  ledger: TaskLedger | undefined,
+  key: string,
+  call: UsageCall,
+  price: (creditedModel: string | undefined) => number,
+): boolean {
+  if (!ledger) return false;
+  const before = CALL_CREDITS.get(ledger)?.[key];
+  if (!before) return false;
+  // A reading needs a prompt side (review: llmux non-Claude providers write
+  // all-zero usage into the transcript while their live reading — from
+  // `message_delta` — is the real one). Unreported is not zero.
+  if (count(call.inputTokens) + count(call.cacheReadTokens) + count(call.cacheCreateTokens) === 0) return false;
+  let costUsd = 0;
+  try {
+    costUsd = price(before.model);
+  } catch {
+    costUsd = 0;
+  }
+  if (!Number.isFinite(costUsd)) costUsd = 0;
+  const t = before.t;
+  if (
+    t.input === count(call.inputTokens) &&
+    t.output === count(call.outputTokens) &&
+    t.cacheRead === count(call.cacheReadTokens) &&
+    t.cacheCreate === count(call.cacheCreateTokens) &&
+    t.costUsd === count(costUsd)
+  ) {
+    if (call.final) before.settled = true;
+    return false;
+  }
+  creditTaskUsage(ledger, key, call, costUsd);
+  if (call.final) before.settled = true;
+  return true;
+}
+
+/** The newest call credits are never dropped: a call still streaming may be re-reported live (review R2). */
+const CALLS_RECENT_KEPT = 64;
+
+/**
+ * Keep at most {@link CALLS_MAX} call credits. The newest
+ * {@link CALLS_RECENT_KEPT} always stay (a call still streaming is among them —
+ * dropping it would credit its next live frame from scratch). Of the rest,
+ * settled ones (a transcript reading is in) go first, oldest first; a call
+ * still waiting for its final usage goes only when that many newer ones wait
+ * too (review: a busy turn with many subagents must not drop it before its
+ * correction). `settled` only orders the dropping: a later, larger reading
+ * of a kept call is still taken.
+ */
+function trimCalls(calls: Record<string, CallCredit>): void {
+  const keys = Object.keys(calls);
+  let excess = keys.length - CALLS_MAX;
+  if (excess <= 0) return;
+  const old = keys.slice(0, Math.max(0, keys.length - CALLS_RECENT_KEPT));
+  for (const k of old) {
+    if (excess <= 0) return;
+    if (calls[k].settled) {
+      delete calls[k];
+      excess--;
+    }
+  }
+  for (const k of old) {
+    if (excess <= 0) return;
+    if (k in calls) {
+      delete calls[k];
+      excess--;
+    }
+  }
 }
 
 /** How an earlier task left the list, if it had not completed. */
@@ -793,7 +914,7 @@ export function closeTaskList(ledger: TaskLedger | undefined, now: number): Task
     const carried: Record<string, CallCredit> = {};
     for (const key of Object.keys(calls)) {
       const c = calls[key];
-      carried[key] = c.to === 'idle' ? { to: 'outside', t: c.t } : c;
+      carried[key] = c.to === 'idle' ? { ...c, to: 'outside' } : c;
     }
     CALL_CREDITS.set(out, carried);
   }
