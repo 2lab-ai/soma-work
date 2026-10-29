@@ -677,7 +677,8 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
       const on = listener('ui-toggle', {
         _anOpen: anOpen,
         refreshCard: (k: string) => calls.push(`card ${k}`),
-        renderPanelAgents: () => calls.push('panel'),
+        // SSOT 2026-10-29: the panel's tree is the 에이전트 트리 section tab.
+        paintTreeTab: () => calls.push('panel'),
       });
       on({ target: tree(NS), detail: { id: 'b', expanded: true } });
       on({ target: tree('p|k'), detail: { id: 'c', expanded: false } });
@@ -790,8 +791,15 @@ describe('panel scope (§4.3)', () => {
     expect(m.wlNamesNewAgent([A({ agentRef: 'toolu_new' })])).toBe(true);
     expect(m.wlNamesNewAgent([A({ agentId: 'toolu_new' })])).toBe(true);
     expect(m.wlNamesNewAgent([A({ agentRef: 'toolu_known' }), A({ agentId: 'toolu_known' }), A({})])).toBe(false);
-    // Live entries, older pages and recovery merges all paint through paintWorkLog.
-    expect(fnBody('paintWorkLog')).toContain('if (wlNamesNewAgent(added)) renderPanelAgents();');
+    // Live entries, older pages and recovery merges all paint through paintWorkLog — whichever
+    // section tab is shown (SSOT 2026-10-29: the bar, and the 에이전트 트리 tab when it is the one shown).
+    const paint = fnBody('paintWorkLog');
+    expect(paint).toMatch(
+      /if \(wlNamesNewAgent\(added\)\) \{\s*renderPanelAgents\(\);\s*if \(_psec === 'tree'\) paintTreeTab\(\);/,
+    );
+    expect(paint.indexOf('wlNamesNewAgent(added)')).toBeLessThan(
+      paint.indexOf("if (_psec !== 'log' || !list || !box)"),
+    );
   });
 
   it('closing the panel forgets the agent bar it last wrote (review B r2)', () => {
@@ -822,28 +830,34 @@ describe('panel scope (§4.3)', () => {
     expect(main.panelAgentLabel()).toBe('');
   });
 
-  it('wiring: openPanel takes the agent, the scope switch repaints Tasks and the log', () => {
+  it('wiring: openPanel takes the agent, the scope switch repaints Tasks and the section shown', () => {
     expect(fnBody('openPanel')).toContain("_panelAgent = agentId ? String(agentId) : '';");
     // Spec 13: openPanel goes through the one live path (repaintPanelSession → repaintPanelScope).
     expect(fnBody('openPanel')).toContain('repaintPanelSession();');
     expect(fnBody('repaintPanelScope')).toContain('renderPanelAgents();');
     expect(fnBody('repaintPanelScope')).toContain('repaintPanelTasks();');
     expect(fnBody('selectPanelAgent')).toContain('repaintPanelTasks();');
-    expect(fnBody('selectPanelAgent')).toContain('repaintWorkLogScope();');
+    // SSOT 2026-10-29: the section tab shown stays and is painted again for the new scope.
+    expect(fnBody('selectPanelAgent')).toContain('selectPanelSection(_psec);');
+    expect(fnBody('paintLogTab')).toContain('wlRenderList(st, list);');
     // Paired tool results live in their call's card (wlVisible), so they are not rows.
     expect(fnBody('wlRenderList')).toContain('wlBuildRows(wlVisible(state, wlScopeEntries(state.entries)))');
-    // Counts what the list shows: a paired result lives in its call's card.
+    // This agent's log empty (entries of others only): the empty line, on a live paint and on a tab paint.
     expect(fnBody('paintWorkLog')).toContain(
-      'var scopedCount = wlVisible(state, wlScopeEntries(state.entries)).length;',
+      "if (!wlScopeEntries(state.entries).length) showWorkLogEmpty('이 에이전트의 작업 로그 없음');",
     );
-    expect(fnBody('paintWorkLog')).toContain("if (!scopedCount) showWorkLogEmpty('이 에이전트의 작업 로그 없음');");
+    expect(fnBody('paintLogTab')).toContain(
+      "if (!wlScopeEntries(st.entries).length) showWorkLogEmpty('이 에이전트의 작업 로그 없음');",
+    );
+    // The pill counts what the list shows: a paired result lives in its call's card.
+    expect(fnBody('paintWorkLog')).toContain('wlVisible(state, wlScopeEntries(added.map(');
     expect(fnBody('renderCardFace')).toContain('+ renderCardAgents(s)');
     expect(fnBody('renderCardBody')).toContain('const agentsHtml = renderAgentTree(s, col);');
     expect(TEMPLATE).toContain('<div class="panel-agents" id="panel-agents" style="display:none"></div>');
   });
 });
 
-describe('panel — drill-down over the same node type (path · focused node · its subtree)', () => {
+describe('panel — the path · the focused node, and the 에이전트 트리 tab over the same node type', () => {
   const PANEL_FNS = [
     ...NODE_FNS,
     'renderAgentFocus',
@@ -903,6 +917,78 @@ describe('panel — drill-down over the same node type (path · focused node · 
       },
     );
     return { m, el, out };
+  }
+  // The 에이전트 트리 section tab (SSOT 2026-10-29): the session's whole tree — the main agent at its
+  // root, the focused agent selected — windowed to the newest agents (atWindowOf).
+  const TAB_FNS = [
+    ...NODE_FNS,
+    'panelLogOnlyAgents',
+    'sessionColOf',
+    'atIdOf',
+    'atRootReason',
+    'atNode',
+    'atTreeData',
+    'atSlotHtml',
+    'atPaint',
+    'atWindowOf',
+    'writePanelPart',
+    'paintTreeTab',
+    'showMoreTree',
+  ];
+  function treeTab(focus: string, s: Record<string, unknown>, extra: Record<string, unknown> = {}) {
+    const out = {
+      html: '',
+      writes: 0,
+      sets: 0,
+      data: null as TreeData | null,
+      appended: [] as unknown[][],
+      kept: [] as number[],
+      filled: 0,
+    };
+    const tree: Record<string, unknown> = {};
+    Object.defineProperty(tree, 'data', {
+      set(v: TreeData) {
+        out.sets++;
+        out.data = v;
+      },
+    });
+    const host: Record<string, unknown> = {
+      querySelector: (sel: string) => (sel === 'ui-agent-tree' && out.html.includes('<ui-agent-tree') ? tree : null),
+    };
+    const box = { scrollHeight: 2000, scrollTop: 400, clientHeight: 500 };
+    const m = load<{ paintTreeTab(): void; showMoreTree(): void }>(
+      TAB_FNS,
+      AGENT_VARS.filter((v) => !(v in extra)),
+      {
+        document: { getElementById: (id: string) => (id === 'panel-tree' ? host : null), activeElement: null },
+        panelSessionKey: 'k',
+        _sessionCache: { k: s },
+        _lastBoardData: { working: [s] },
+        _panelAgent: focus,
+        _wl: { entries: [] },
+        _psec: 'tree',
+        _treeWindow: 20,
+        _treeMaxN: null,
+        AT_PANEL_WINDOW: 20,
+        psecBox: () => box,
+        psecAtBottom: () => true,
+        psecSyncControls: () => {},
+        psecOnAppended: (n: number, pinned: boolean) => out.appended.push([n, pinned]),
+        psecViewAnchor: () => null,
+        psecHoldPlace: (_b: unknown, _a: unknown, fromBottom: number) => out.kept.push(fromBottom),
+        psecAfterRender: (_el: unknown, fn: () => void) => fn(),
+        psecMaybeFill: () => {
+          out.filled++;
+        },
+        updateTimersIn: () => {},
+        morphInnerHtml: (_el: unknown, h: string) => {
+          out.writes++;
+          out.html = h;
+        },
+        ...extra,
+      },
+    );
+    return { m, host, box, out };
   }
   const chain = (): Agent[] => [
     { id: 'a', n: 1, type: 'Explore', status: 'running', startedAt: T0, toolCalls: 1 },
@@ -968,7 +1054,7 @@ describe('panel — drill-down over the same node type (path · focused node · 
     expect(out.html).toContain('41s');
   });
 
-  it("the focused node's subtree is a rich <ui-agent-tree>: every descendant, its children at the top", () => {
+  it('the 에이전트 트리 tab is a rich <ui-agent-tree>: the main agent at its root, every agent below it, the focused one selected', () => {
     const kids = Array.from({ length: 9 }, (_, i) => ({
       id: `k${i}`,
       n: 10 + i,
@@ -976,37 +1062,117 @@ describe('panel — drill-down over the same node type (path · focused node · 
       status: 'completed',
       startedAt: T0 + i,
     }));
-    const { m, out } = panel('toolu_explore', card({ agents: [...AGENTS, ...kids] }));
-    m.renderPanelAgents();
-    expect(out.html).toContain(
-      '<div class="pa-tree ui-tok"><ui-agent-tree lang="ko" data-at-ns="p|k"><span class="at-fallback">하위 에이전트 10</span></ui-agent-tree></div>',
+    const { m, host, out } = treeTab('toolu_explore', card({ agents: [...AGENTS, ...kids] }));
+    m.paintTreeTab();
+    expect(out.html).toBe(
+      '<div class="pa-tree ui-tok"><ui-agent-tree lang="ko" data-at-ns="p|k"><span class="at-fallback">에이전트 트리</span></ui-agent-tree></div>',
     );
-    // The element's bar is the subtree's head (its title, counts and branch cost).
-    expect(out.data).toMatchObject({ density: 'rich', title: '하위 에이전트', selectedId: null });
-    expect(out.data?.nodes.map((n) => n.id)).toEqual(['toolu_nested', ...kids.map((k) => k.id)]);
-    expect(out.data?.nodes.every((n) => !('parentId' in n))).toBe(true);
-    // A leaf that is focused has no subtree.
-    const leaf = panel('toolu_lib', card());
-    leaf.m.renderPanelAgents();
-    expect(leaf.out.html).not.toContain('ui-agent-tree');
+    // The element's bar is the tree's head (its title, counts and branch cost).
+    expect(out.data).toMatchObject({ density: 'rich', title: '에이전트 트리', selectedId: 'toolu_explore' });
+    const ids = out.data?.nodes.map((n) => n.id) ?? [];
+    expect(ids[0]).toBe(':main');
+    expect([...ids].sort()).toEqual(
+      [':main', 'toolu_explore', 'toolu_nested', 'toolu_lib', ...kids.map((k) => k.id)].sort(),
+    );
+    expect(out.data?.nodes.find((n) => n.id === 'k0')?.parentId).toBe('toolu_explore');
+    // 12 agents: all of them fit the window — nothing waits above.
+    expect(host._hidden).toBe(0);
+    // The Main tab focused: the root is the one selected.
+    const main = treeTab('', card());
+    main.m.paintTreeTab();
+    expect(main.out.data?.selectedId).toBe(':main');
+    // A session without subagents: a line, no element.
+    const none = treeTab('', card({ agents: undefined, agentsTotal: undefined }));
+    none.m.paintTreeTab();
+    expect(none.out.html).toBe('<p class="psec-empty">이 세션에는 하위 에이전트가 없습니다</p>');
+    expect(none.host._tree).toBeNull();
+    expect(none.out.sets).toBe(0);
+    // Another section shown: the tab paints nothing (it is painted from its data when opened).
+    const away = treeTab('', card(), { _psec: 'conv' });
+    away.m.paintTreeTab();
+    expect(away.out.writes).toBe(0);
   });
 
-  it('drilling in opens what was folded below — and a node the user folded stays folded across the drill', () => {
-    const atRoot = panel('', card({ agents: chain() }));
-    atRoot.m.renderPanelAgents();
-    // From the root: a open (b shows), b folded (c does not).
-    expect(atRoot.out.data?.expanded).toEqual(['a']);
-    const intoA = panel('a', card({ agents: chain() }));
-    intoA.m.renderPanelAgents();
-    expect(intoA.out.data?.nodes.map((n) => [n.id, n.parentId ?? ''])).toEqual([
-      ['b', ''],
+  it('every branch is open by default — and a node the user folded stays folded, whichever agent is focused', () => {
+    const open = treeTab('', card({ agents: chain() }));
+    open.m.paintTreeTab();
+    expect(open.out.data?.nodes.map((n) => [n.id, n.parentId ?? ''])).toEqual([
+      [':main', ''],
+      ['a', ':main'],
+      ['b', 'a'],
       ['c', 'b'],
       ['d', 'c'],
     ]);
-    expect(intoA.out.data?.expanded).toEqual(['b']);
-    const folded = panel('a', card({ agents: chain() }), { _anOpen: { 'p|k|b': false } });
-    folded.m.renderPanelAgents();
-    expect(folded.out.data?.expanded).toEqual([]);
+    expect(open.out.data?.expanded).toEqual([':main', 'a', 'b', 'c']);
+    const folded = treeTab('c', card({ agents: chain() }), { _anOpen: { 'p|k|b': false } });
+    folded.m.paintTreeTab();
+    expect(folded.out.data?.expanded).toEqual([':main', 'a', 'c']);
+    expect(folded.out.data?.selectedId).toBe('c');
+  });
+
+  it('atWindowOf: the newest n agents by spawn order, the ancestors that connect them, the focused one; what waits above', () => {
+    const w = load<{
+      atWindowOf(
+        anchor: unknown,
+        n: number,
+        pin: string | null,
+        after: number | null,
+      ): { keep: Record<string, boolean>; hidden: number; maxN: number; newer: number };
+    }>(['toNum', 'atWindowOf'], []);
+    type W = { id: string; n?: number; children: W[] };
+    const nd = (id: string, n: number | undefined, children: W[] = []): W => ({ id, n, children });
+    // main → a(1) → b(2) → c(5); main → d(3); main → e(4); main → log-only x (no spawn number: the oldest).
+    const root = nd('', undefined, [
+      nd('a', 1, [nd('b', 2, [nd('c', 5)])]),
+      nd('d', 3),
+      nd('e', 4),
+      nd('x', undefined),
+    ]);
+    const two = w.atWindowOf(root, 2, null, null);
+    expect(Object.keys(two.keep).sort()).toEqual(['a', 'b', 'c', 'e']);
+    expect(two).toMatchObject({ hidden: 2, maxN: 5, newer: 0 });
+    // The focused agent stays in view though it is older than the window.
+    expect(Object.keys(w.atWindowOf(root, 2, 'd', null).keep).sort()).toEqual(['a', 'b', 'c', 'd', 'e']);
+    // One step up shows more; past the oldest, everything (the log-only agent last).
+    expect(w.atWindowOf(root, 4, null, null).hidden).toBe(1);
+    expect(w.atWindowOf(root, 40, null, null)).toMatchObject({ hidden: 0 });
+    // Live arrivals: how many are newer than the newest the tree last showed.
+    expect(w.atWindowOf(root, 2, null, 3).newer).toBe(2);
+  });
+
+  it('a big tree opens on its newest 20 agents; scrolling up shows 20 more, the reader keeping their place; a live arrival is counted', () => {
+    // 60 agents in a 3-level tree: 5 leads, 15 under them, 40 under those.
+    const agents: Agent[] = Array.from({ length: 60 }, (_, i) => {
+      const n = i + 1;
+      const parentId = n <= 5 ? undefined : n <= 20 ? `g${((n - 6) % 5) + 1}` : `g${((n - 21) % 15) + 6}`;
+      return { id: `g${n}`, n, parentId, type: 'Explore', status: 'completed', startedAt: T0 + n };
+    });
+    const s = card({ agents });
+    const r = treeTab('', s, { psecAtBottom: () => false });
+    r.m.paintTreeTab();
+    const ids = (r.out.data?.nodes ?? []).map((n) => n.id);
+    // The newest 20 (g41…g60) and what connects them to the root: ≤ 25 tree nodes.
+    for (let n = 41; n <= 60; n++) expect(ids).toContain(`g${n}`);
+    expect(ids).not.toContain('g40');
+    expect(ids.length).toBeLessThanOrEqual(1 + 20 + 15 + 5);
+    expect(r.host._hidden).toBe(60 - (ids.length - 1));
+    // Scroll up: 20 more, the reader's row held in place once the element rendered (else the distance from the bottom).
+    const before = ids.length;
+    r.m.showMoreTree();
+    const more = (r.out.data?.nodes ?? []).map((n) => n.id);
+    for (let n = 21; n <= 60; n++) expect(more).toContain(`g${n}`);
+    expect(more.length).toBeGreaterThan(before);
+    expect(r.out.kept).toEqual([2000 - 400]);
+    expect(r.out.filled).toBe(1);
+    expect(r.host._growing).toBe(false);
+    // The reader is still at the top (the root and branches stay there): the next step waits for them to scroll up again.
+    expect((r.box as Record<string, unknown>)._armed).toBe(false);
+    // The markup is the same element: the step is data only.
+    expect(r.out.writes).toBe(1);
+    // A new agent while the reader reads higher: their place stays and the pill counts it.
+    agents.push({ id: 'g61', n: 61, parentId: 'g60', type: 'Plan', status: 'running', startedAt: T0 + 61 });
+    r.m.paintTreeTab();
+    expect(r.out.appended).toEqual([[1, false]]);
   });
 
   // RED (SSOT T2/T3) — what a subagent spent (its own API calls: tokens and
@@ -1031,8 +1197,8 @@ describe('panel — drill-down over the same node type (path · focused node · 
 
   it('every subagent node in the panel tree carries its own spend; the header says when it is an estimate (≈)', () => {
     const lib = { ...AGENTS[2], spend: { ...SPEND, costUsd: 0.5, unpricedModels: ['grok-4.7-build'] } };
-    const root = panel('', card({ agents: [{ ...AGENTS[0], spend: SPEND }, AGENTS[1], lib] }));
-    root.m.renderPanelAgents();
+    const root = treeTab('', card({ agents: [{ ...AGENTS[0], spend: SPEND }, AGENTS[1], lib] }));
+    root.m.paintTreeTab();
     const nodes = root.out.data?.nodes ?? [];
     expect(nodes.find((n) => n.id === 'toolu_explore')).toMatchObject({ tokens: 10_000, costUsd: 1.234 });
     expect(nodes.find((n) => n.id === 'toolu_lib')).toMatchObject({ tokens: 10_000, costUsd: 0.5 });
@@ -1120,18 +1286,25 @@ describe('panel — drill-down over the same node type (path · focused node · 
     m.renderPanelAgents();
     m.renderPanelAgents();
     expect(out.writes).toBe(1);
-    expect(out.sets).toBe(1);
+    // The 에이전트 트리 tab alike: the same markup and data write nothing.
+    const t = treeTab('toolu_explore', card());
+    t.m.paintTreeTab();
+    t.m.paintTreeTab();
+    expect(t.out.writes).toBe(1);
+    expect(t.out.sets).toBe(1);
   });
 
-  it('a live change to the subtree is data only: the markup stays, the element is given the new nodes', () => {
+  it('a live change to the tree is data only: the markup stays, the element is given the new nodes', () => {
     const s = card({ agents: [...AGENTS] });
-    const { m, out } = panel('toolu_explore', s);
-    m.renderPanelAgents();
+    const { m, out } = treeTab('toolu_explore', s);
+    m.paintTreeTab();
     (s.agents as Agent[])[1] = { ...AGENTS[1], status: 'completed', toolCalls: 9 };
-    m.renderPanelAgents();
+    m.paintTreeTab();
     expect(out.writes).toBe(1);
     expect(out.sets).toBe(2);
-    expect(out.data?.nodes[0]).toMatchObject({ id: 'toolu_nested', status: 'done', toolCalls: 9 });
+    expect(out.data?.nodes.find((n) => n.id === 'toolu_nested')).toMatchObject({ status: 'done', toolCalls: 9 });
+    // No new agent: nothing is counted on the pill.
+    expect(out.appended).toEqual([]);
   });
 
   it('live updates repaint the focused node whatever it is — no main-only or subagent-only gate', () => {

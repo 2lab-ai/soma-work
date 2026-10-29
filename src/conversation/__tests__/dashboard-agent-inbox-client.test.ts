@@ -82,6 +82,7 @@ describe('work log core (shipped wl* functions)', () => {
     [
       'wlNewState',
       'wlUrl',
+      'wlLatestUrl',
       'wlValidSeq',
       'wlMerge',
       'wlPageMaxSeq',
@@ -94,7 +95,7 @@ describe('work log core (shipped wl* functions)', () => {
       'wlOnLive',
       'wlRecover',
     ],
-    ['WL_BACKFILL_MAX_PAGES'],
+    ['WL_BACKFILL_MAX_PAGES', 'WL_PAGE'],
   );
   const seqs = (s: WlState) => s.entries.map((e) => e.seq);
   const range = (a: number, b: number): Entry[] => Array.from({ length: b - a + 1 }, (_, i) => ({ seq: a + i }));
@@ -1947,15 +1948,19 @@ describe('work-log rows: one tab stop, arrows move it (shipped wlRovingIndex)', 
   });
 });
 
-describe('work-log section collapses; the count and tail-follow keep working (shipped setWorkLogOpen + paintWorkLog)', () => {
-  function page(state: Record<string, unknown>) {
-    const toggle = fakeEl();
-    const count = fakeEl();
-    const list = fakeEl({ hidden: true, scrollHeight: 900, clientHeight: 300, scrollTop: 600 });
-    (list as unknown as { appendChild(n: unknown): void }).appendChild = (n: unknown) => list.children.push(n);
+describe('작업 로그 is a section tab: painted only while shown, following the newest or counting on the pill (shipped paintWorkLog; SSOT 2026-10-29)', () => {
+  function page(state: Record<string, unknown>, shown = 'log') {
+    // The section box scrolls; each row appended grows it by 50px.
+    const box = fakeEl({ scrollHeight: 900, clientHeight: 300, scrollTop: 600 }) as FakeEl & Record<string, unknown>;
+    box._lastTop = 600;
+    const list = fakeEl();
+    (list as unknown as { appendChild(n: unknown): void }).appendChild = (n: unknown) => {
+      list.children.push(n);
+      box.scrollHeight += 50;
+    };
+    const pill = fakeEl({ hidden: true });
     const document = {
-      getElementById: (id: string) =>
-        ({ 'worklog-toggle': toggle, 'worklog-count': count, 'worklog-list': list })[id] ?? null,
+      getElementById: (id: string) => ({ 'psec-log': box, 'worklog-list': list, 'psec-pill': pill })[id] ?? null,
       createElement: () => {
         const tmp: Record<string, unknown> = {};
         Object.defineProperty(tmp, 'innerHTML', {
@@ -1966,7 +1971,7 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
         return tmp;
       },
     };
-    const m = load<{ setWorkLogOpen(open: boolean): void; paintWorkLog(s: unknown, added: unknown[]): void }>(
+    const m = load<{ paintWorkLog(s: unknown, added: unknown[]): void }>(
       [
         'esc',
         'escAttr',
@@ -2003,10 +2008,21 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
         'wlNavRows',
         'wlEnsureTabStop',
         'wlNamesNewAgent',
-        'setWorkLogOpen',
+        'psecBox',
+        'psecAtBottom',
+        'psecSetTop',
+        'psecSetNew',
+        'psecOnAppended',
+        'psecToNewest',
+        'psecKeepPlace',
+        'psecTreeRoot',
+        'psecViewAnchor',
+        'psecAnchorEl',
+        'psecRestoreAnchor',
+        'psecHoldPlace',
         'paintWorkLog',
       ],
-      ['WL_LABELS', 'WL_STOP_SEL', ...WL_INSTRUCTION_VARS],
+      ['WL_LABELS', 'WL_STOP_SEL', ...WL_INSTRUCTION_VARS, 'PSEC_ANCHORS', 'PSEC_ANCHOR_MAX'],
       {
         document,
         _wl: state,
@@ -2020,42 +2036,167 @@ describe('work-log section collapses; the count and tail-follow keep working (sh
         _panelAgent: '',
         _panelAgentIdsShown: {},
         renderPanelAgents: () => {},
+        paintTreeTab: () => {},
+        psecSyncControls: () => {},
+        _psec: shown,
+        _psecPin: true,
+        _psecNew: 0,
       },
     );
-    return { m, toggle, count, list };
+    return { m, box, list, pill };
   }
 
-  it('collapsed / expanded follows aria-expanded; expanding shows the newest entries', () => {
-    const p = page({});
-    p.m.setWorkLogOpen(false);
-    expect(p.toggle.attrs['aria-expanded']).toBe('false');
-    expect(p.list.hidden).toBe(true);
-    p.m.setWorkLogOpen(true);
-    expect(p.toggle.attrs['aria-expanded']).toBe('true');
-    expect(p.list.hidden).toBe(false);
-    expect(p.list.scrollTop).toBe(900);
+  it('another section shown: the entries stay in the state, nothing is painted — the tab paints them when opened', () => {
+    const st = { entries: [{ seq: 1 }, { seq: 2 }], painted: true };
+    const p = page(st, 'conv');
+    p.m.paintWorkLog(st, [{ entry: { seq: 2, kind: 'notice', text: 'live' }, index: 1 }]);
+    expect(p.list.children).toHaveLength(0);
+    expect(p.list.innerHTML).toBe('');
+    expect(st.painted).toBe(false); // the tab renders the whole state when it opens (paintLogTab)
   });
 
-  it('entries painted while collapsed still update the count', () => {
-    const st = { entries: [{ seq: 1 }, { seq: 2 }], painted: true };
+  it('at the newest the reader follows the tail; reading higher, their place stays and the pill counts', () => {
+    const st = { entries: [{ seq: 1 }, { seq: 2 }] as Array<{ seq: number }>, painted: true };
     const p = page(st);
-    p.m.paintWorkLog(st, [{ entry: { seq: 2, kind: 'notice', text: 'live' }, index: 1 }]);
-    expect(p.count.textContent).toBe('2');
-    expect(p.list.hidden).toBe(true);
+    p.m.paintWorkLog(st, [{ entry: { seq: 2, kind: 'notice', text: 'x' }, index: 1 }]);
+    expect(p.box.scrollTop).toBe(950); // followed (the box grew by the row)
+    expect(p.pill.hidden).toBe(true);
+    p.box.scrollTop = 100; // the reader reads higher up
+    p.box._lastTop = 100;
+    st.entries.push({ seq: 3 });
+    p.m.paintWorkLog(st, [{ entry: { seq: 3, kind: 'notice', text: 'y' }, index: 2 }]);
+    expect(p.box.scrollTop).toBe(100);
+    expect(p.pill.hidden).toBe(false);
+    expect(p.pill.textContent).toBe('새 항목 1개 ↓');
   });
 
   it('tail-follow stops while an entry’s detail is open', () => {
     // As wlMerge leaves it: state.entries already holds the added entry.
     const st = { entries: [{ seq: 1 }, { seq: 2 }] as Array<{ seq: number }>, painted: true, open: new Set([1]) };
     const p = page(st);
-    p.list.hidden = false;
-    p.list.scrollTop = 600; // at the bottom (900 - 600 <= 300 + 40)
+    p.box.scrollTop = 600; // at the bottom (900 - 300)
     p.m.paintWorkLog(st, [{ entry: { seq: 2, kind: 'tool', text: 'x' }, index: 1 }]);
-    expect(p.list.scrollTop).toBe(600);
+    expect(p.box.scrollTop).toBe(600);
     st.open.clear();
+    p.box.scrollTop = p.box.scrollHeight - p.box.clientHeight; // back at the newest
     st.entries.push({ seq: 3 });
     p.m.paintWorkLog(st, [{ entry: { seq: 3, kind: 'tool', text: 'y' }, index: 2 }]);
-    expect(p.list.scrollTop).toBe(900);
+    expect(p.box.scrollTop).toBe(p.box.scrollHeight);
+  });
+});
+
+describe("an older page keeps the reader's row in place — several rows in view are kept, the first still shown wins (shipped psecViewAnchor / psecRestoreAnchor)", () => {
+  // A box at viewport y=100, 300px tall; rows at content offsets (y), 40px each.
+  type Row = {
+    attr: Record<string, string>;
+    y: number;
+    shown: boolean;
+    inDom: boolean;
+    group?: Row;
+    getAttribute(n: string): string | null;
+    getBoundingClientRect(): { top: number; bottom: number; height: number };
+    getClientRects(): unknown[];
+    closest(sel: string): Row | null;
+  };
+  function world(seqs: number[]) {
+    const rows: Row[] = [];
+    const groups: Row[] = [];
+    const box = {
+      scrollTop: 0,
+      clientHeight: 300,
+      _lastTop: 0,
+      getBoundingClientRect: () => ({ top: 100 }),
+      querySelector: (sel: string) => {
+        if (sel === 'ui-agent-tree') return null;
+        const m = /^\.(wl-entry|wl-group)\[(data-seq|data-task-id)="([^"]*)"\]$/.exec(sel);
+        if (!m) return null;
+        return [...rows, ...groups].find((r) => r.inDom && r.attr[m[2]] === m[3]) ?? null;
+      },
+      querySelectorAll: (sel: string) =>
+        sel === '.wl-entry[data-seq]'
+          ? rows.filter((r) => r.inDom)
+          : sel === '.wl-group[data-task-id]'
+            ? groups.filter((g) => g.inDom)
+            : [],
+    };
+    const make = (attr: Record<string, string>, y: number, list: Row[]): Row => {
+      const r: Row = {
+        attr,
+        y,
+        shown: true,
+        inDom: true,
+        getAttribute: (n) => r.attr[n] ?? null,
+        getBoundingClientRect: () => {
+          const top = 100 + r.y - box.scrollTop;
+          return r.shown ? { top, bottom: top + 40, height: 40 } : { top: 0, bottom: 0, height: 0 };
+        },
+        getClientRects: () => (r.shown ? [{}] : []),
+        closest: (sel) => (sel === '.wl-group' ? (r.group ?? null) : null),
+      };
+      list.push(r);
+      return r;
+    };
+    seqs.forEach((seq, i) => {
+      make({ 'data-seq': String(seq) }, i * 40, rows);
+    });
+    const m = load<{
+      psecViewAnchor(b: unknown): unknown[] | null;
+      psecRestoreAnchor(b: unknown, a: unknown): boolean;
+    }>(
+      ['psecSetTop', 'psecTreeRoot', 'psecViewAnchor', 'psecAnchorEl', 'psecRestoreAnchor'],
+      ['PSEC_ANCHORS', 'PSEC_ANCHOR_MAX'],
+    );
+    const group = (taskId: string, y: number) => make({ 'data-task-id': taskId }, y, groups);
+    return { m, box, rows, group };
+  }
+
+  it('the rows in view, top first (those wholly below the top edge before the one it cuts), at most six; a row above the box is not one', () => {
+    const w = world([10, 11, 12, 13, 14, 15, 16, 17, 18]);
+    w.box.scrollTop = 20; // row 10 is half above the top: the edge cuts it (it may still grow) — it comes last
+    const a = w.m.psecViewAnchor(w.box);
+    expect(a).toEqual([
+      { sel: '.wl-entry[data-seq="11"]', at: 20, tree: false },
+      { sel: '.wl-entry[data-seq="12"]', at: 60, tree: false },
+      { sel: '.wl-entry[data-seq="13"]', at: 100, tree: false },
+      { sel: '.wl-entry[data-seq="14"]', at: 140, tree: false },
+      { sel: '.wl-entry[data-seq="15"]', at: 180, tree: false },
+      { sel: '.wl-entry[data-seq="16"]', at: 220, tree: false },
+    ]);
+    // Only a cut row in view (a tall one): it is the anchor.
+    const tall = world([10]);
+    tall.box.scrollTop = 20;
+    expect(tall.m.psecViewAnchor(tall.box)).toEqual([{ sel: '.wl-entry[data-seq="10"]', at: -20, tree: false }]);
+    w.box.scrollTop = 40;
+    expect(w.m.psecViewAnchor(w.box)?.[0]).toEqual({ sel: '.wl-entry[data-seq="11"]', at: 0, tree: false });
+  });
+
+  it('the page went in above and took the top row away (a result paired into its call card): the next row keeps the place', () => {
+    const w = world([10, 11, 12, 13]);
+    const a = w.m.psecViewAnchor(w.box);
+    // 500px of older entries above; row 10 is no longer a row of its own.
+    for (const r of w.rows) r.y += 500;
+    w.rows[0].inDom = false;
+    expect(w.m.psecRestoreAnchor(w.box, a)).toBe(true);
+    expect(w.box.scrollTop).toBe(500);
+    expect(w.rows[1].getBoundingClientRect().top).toBe(100 + 40);
+  });
+
+  it('an entry folded into its (closed) task group is represented by the group head — only when no row of its own is left', () => {
+    const w = world([10, 11]);
+    const a = w.m.psecViewAnchor(w.box);
+    const head = w.group('T1', 900);
+    for (const r of w.rows) {
+      r.shown = false;
+      r.group = head;
+    }
+    expect(w.m.psecRestoreAnchor(w.box, a)).toBe(true);
+    expect(w.box.scrollTop).toBe(900);
+    // Nothing left at all: the caller falls back to the distance from the bottom.
+    const gone = world([10]);
+    const b = gone.m.psecViewAnchor(gone.box);
+    gone.rows[0].inDom = false;
+    expect(gone.m.psecRestoreAnchor(gone.box, b)).toBe(false);
+    expect(gone.m.psecRestoreAnchor(gone.box, null)).toBe(false);
   });
 });
 
@@ -2227,72 +2368,51 @@ describe('stats: only the latest period / user selection paints (shipped loadSta
   });
 });
 
-describe('panel landing and older-turn loading (shipped workLogLandingTop + olderTurnsZone + panelOlderStep)', () => {
+describe('panel landing and older-page loading (shipped psecLandingTop + psecPageDue + psecMaybeFill; SSOT 2026-10-29)', () => {
   const m = load<{
-    workLogLandingTop(sectionTop: number, headerHeight: number, viewHeight: number): number;
-    olderTurnsZone(firstTurnTop: number, areaTop: number): boolean;
-    panelOlderStep(armed: boolean, inZone: boolean, canLoad: boolean): { load: boolean; armed: boolean };
-  }>(['workLogLandingTop', 'olderTurnsZone', 'panelOlderStep'], []);
+    psecLandingTop(secTop: number, boxBottom: number, view: number, under: number): number;
+    psecPageDue(scrollTop: number, scrollHeight: number, clientHeight: number, armed: boolean): boolean;
+  }>(['psecLandingTop', 'psecPageDue'], []);
 
-  it('작업 로그 / ?session= land at the top when the collapsed header fits there, else on the header', () => {
-    expect(m.workLogLandingTop(0, 40, 400)).toBe(0); // no question: the log heads the scroll area
-    expect(m.workLogLandingTop(180, 40, 400)).toBe(0); // a short question above it: both in view
-    expect(m.workLogLandingTop(520, 40, 400)).toBe(520); // a tall question: bring the header up
+  it('작업 로그 / ?session= land at the top when the section box ends in view, else on the section tabs under the agent tabs', () => {
+    expect(m.psecLandingTop(80, 560, 600, 44)).toBe(0); // no question: the tabs and the box fit
+    expect(m.psecLandingTop(260, 600, 600, 44)).toBe(0); // a short question above it: all in view
+    expect(m.psecLandingTop(520, 1100, 600, 44)).toBe(476); // a tall question: bring the tabs up
   });
 
-  it('the first turn within 100px of the area top (or below it) is the load-older zone', () => {
-    expect(m.olderTurnsZone(300, 300)).toBe(true);
-    expect(m.olderTurnsZone(350, 300)).toBe(true); // header above it, turn in view
-    expect(m.olderTurnsZone(201, 300)).toBe(true);
-    expect(m.olderTurnsZone(199, 300)).toBe(false);
-    expect(m.olderTurnsZone(-4000, 300)).toBe(false); // far above: reading newer turns
+  it('the top of the section within one box height of the view is the load-older zone — for a reader who scrolled up', () => {
+    expect(m.psecPageDue(0, 5000, 600, true)).toBe(true);
+    expect(m.psecPageDue(600, 5000, 600, true)).toBe(true);
+    expect(m.psecPageDue(601, 5000, 600, true)).toBe(false);
+    expect(m.psecPageDue(4400, 5000, 600, true)).toBe(false); // far below: reading newer items
   });
 
-  it('one load per approach: entering the zone loads once, leaving it re-arms; a landing never loads', () => {
-    const run = (events: Array<[boolean, boolean]>) => {
-      let armed = false; // openPanel starts disarmed
-      const loads: number[] = [];
-      events.forEach(([inZone, canLoad], i) => {
-        const step = m.panelOlderStep(armed, inZone, canLoad);
-        armed = step.armed;
-        if (step.load) loads.push(i);
-      });
-      return loads;
-    };
-    // Landing at the top (작업 로그): in the zone from the start → nothing loads.
-    expect(
-      run([
-        [true, true],
-        [true, true],
-        [true, true],
-      ]),
-    ).toEqual([]);
-    // Landing at the bottom, scrolling up into the zone, staying there (anchored insert) → one load.
-    expect(
-      run([
-        [false, true],
-        [true, true],
-        [true, true],
-        [true, true],
-      ]),
-    ).toEqual([1]);
-    // Out and back in → the next page.
-    expect(
-      run([
-        [false, true],
-        [true, true],
-        [false, true],
-        [true, true],
-      ]),
-    ).toEqual([1, 3]);
-    // In the zone while a load is in flight: the arm is kept for when it can load.
-    expect(
-      run([
-        [false, true],
-        [true, false],
-        [true, true],
-      ]),
-    ).toEqual([2]);
+  it('a landing never loads; the reader moving up arms it; a page that leaves the top in the zone brings the next', () => {
+    // Landed at the newest of a long box: not armed, nothing due — even at the top.
+    expect(m.psecPageDue(4400, 5000, 600, false)).toBe(false);
+    expect(m.psecPageDue(0, 5000, 600, false)).toBe(false);
+    // The reader scrolls up into the zone (armed): one page.
+    expect(m.psecPageDue(200, 5000, 600, true)).toBe(true);
+    // The page went in above (place kept: +2000px) — out of the zone: no more.
+    expect(m.psecPageDue(2200, 7000, 600, true)).toBe(false);
+    // A short page left the top in the zone: the next one is due.
+    expect(m.psecPageDue(500, 5300, 600, true)).toBe(true);
+    // A box too short to scroll fills page by page, armed or not.
+    expect(m.psecPageDue(0, 400, 600, false)).toBe(true);
+  });
+
+  it('one page at a time: the wiring loads through psecMaybeFill, which asks only while the section says older', () => {
+    const fill = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nfunction psecMaybeFill('),
+      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction psecMaybeFill(')),
+    );
+    expect(fill).toContain('psecPageDue(box.scrollTop, box.scrollHeight, box.clientHeight, box._armed)');
+    expect(fill).toContain("if (psecOlderState(sec) === 'older') psecLoadOlder(sec);");
+    const load1 = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nfunction psecLoadOlder('),
+      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction psecLoadOlder(')),
+    );
+    expect(load1).toContain("if (sec !== _psec || psecOlderState(sec) !== 'older') return;");
   });
 });
 
@@ -2770,24 +2890,23 @@ describe('admin lifecycle form (shipped lifecycleToForm + lifecycleFromForm)', (
 });
 
 describe('답변하기 opens the panel on the open question (shipped renderMultiChoiceCard → openPanel)', () => {
-  // A panel-scroll model: question (when shown) · collapsed work-log header · turns,
-  // in that order (the template's #panel-scroll). The browser clamps scrollTop to
-  // the content, so a stale position from the previous opening shrinks with it.
+  // A panel-scroll model: question (when shown) · the section tabs · the section
+  // box, in that order (the template's #panel-scroll; SSOT 2026-10-29 — the turns
+  // scroll in the box, not in the panel). The browser clamps scrollTop to the
+  // content, so a stale position from the previous opening shrinks with it.
   const KEY = 'inst::work:C1:1700000000.000100';
   const AREA_TOP = 200;
   const VIEW = 600;
-  const WL_HEADER = 40;
-  const TURNS_LOADED = 4000;
-  const TURNS_PLACEHOLDER = 60;
+  const SEC_TABS = 40;
+  const SEC_BOX = 300;
   type Session = Record<string, unknown>;
   type Panel = {
     openPanel(key: string, focusWorkLog?: boolean): void;
     renderMultiChoiceCard(s: Session, faceSummary: string): string;
     renderPanelQuestion(s: Session): void;
-    olderTurnsZone(firstTurnTop: number, areaTop: number): boolean;
-    panelOlderStep(armed: boolean, inZone: boolean, canLoad: boolean): { load: boolean; armed: boolean };
-    stick(): boolean;
-    armed(): boolean;
+    section(): string;
+    turnsMsg(): string;
+    turnsHeld(): number;
   };
 
   const waitingMulti = (over: Session = {}): Session => ({
@@ -2831,27 +2950,14 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     };
     const question = el('panel-question');
     question.style.display = 'none';
-    el('panel-worklog').style.display = '';
-    const turns = el('panel-turns');
     // openPanel's .then and .catch both end in a landing, so a harness gap (a new
     // dependency of openPanel that is not injected) would silently run the
-    // failure path and still land. Make that loud: only a 'fail' run may show it.
+    // failure path and still land. Make that loud: only a 'fail' run may end failed.
     const outcome = opts.turns === 'held' ? (opts.settle ?? 'ok') : (opts.turns ?? 'ok');
-    let turnsHtml = '';
-    Object.defineProperty(turns, 'innerHTML', {
-      get: () => turnsHtml,
-      set: (v: string) => {
-        if (v.includes('Failed to load conversation') && outcome !== 'fail')
-          throw new Error('openPanel took its failure path on a successful load: the harness is missing a dependency');
-        turnsHtml = v;
-      },
-      configurable: true,
-    });
     const qH = () => (question.style.display === 'none' ? 0 : (opts.questionHeight ?? 420));
-    const tH = () => (turns.innerHTML.includes('class="turn') ? TURNS_LOADED : TURNS_PLACEHOLDER);
     const scroll = el('panel-scroll');
     let stored = opts.prevScrollTop ?? 0;
-    const height = () => qH() + WL_HEADER + tH();
+    const height = () => qH() + SEC_TABS + SEC_BOX;
     const max = () => Math.max(0, height() - VIEW);
     Object.defineProperties(scroll, {
       scrollHeight: { get: height, configurable: true },
@@ -2871,10 +2977,15 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
       getBoundingClientRect: () => ({ top: AREA_TOP, bottom: AREA_TOP + VIEW, height: VIEW }),
     });
     Object.assign(question, { getBoundingClientRect: () => ({ top: AREA_TOP - scroll.scrollTop, height: qH() }) });
-    Object.assign(el('panel-worklog'), {
-      getBoundingClientRect: () => ({ top: AREA_TOP + qH() - scroll.scrollTop, height: WL_HEADER }),
+    Object.assign(el('panel-sections'), {
+      getBoundingClientRect: () => ({ top: AREA_TOP + qH() - scroll.scrollTop, height: SEC_TABS }),
     });
-    Object.assign(el('worklog-toggle'), { getBoundingClientRect: () => ({ top: 0, height: WL_HEADER }) });
+    Object.assign(el('panel-sections-body'), {
+      getBoundingClientRect: () => {
+        const top = AREA_TOP + qH() + SEC_TABS - scroll.scrollTop;
+        return { top, bottom: top + SEC_BOX, height: SEC_BOX };
+      },
+    });
 
     let release: () => void = () => {};
     const payload = { id: 'conv1', titleSub: 'sub', hasMore: false, turns: [{ id: 't1', role: 'assistant' }] };
@@ -2911,24 +3022,30 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'choiceDataAttrs',
         'stripRecommendedMarker',
         'resolveRecommendedId',
-        'scrollPanelToWorkLog',
-        'workLogLandingTop',
+        'psecForLanding',
+        'psecLandingTop',
         'landPanel',
-        'olderTurnsZone',
-        'panelOlderStep',
+        'ptUpsert',
       ],
       [
         '_mcState',
         '_panelLand',
         '_panelLanded',
+        '_panelLandAt',
         '_panelReturnFocus',
         '_panelTurnsHasMore',
         '_panelTurnsLoading',
         '_panelTurnsOldestId',
+        '_panelTurnsList',
+        '_panelTurnsCid',
+        '_panelTurnsMsg',
         '_panelGen',
-        '_panelOlderArmed',
-        '_panelStickBottom',
         '_panelOnQuestion',
+        'PANEL_TURNS_PAGE',
+        'AT_PANEL_WINDOW',
+        '_psec',
+        '_treeWindow',
+        '_treeMaxN',
       ],
       {
         // affectUI batch 2b: openPanel gives each opening a fresh <ui-agent-steering>; this harness has no composer.
@@ -2947,13 +3064,18 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         panelConvId: null,
         _panelTasksExpanded: false,
         resetWorkLog: () => {},
-        setWorkLogOpen: () => {},
         renderPanelTasks: () => {},
-        // Task view: openPanel resets the composer's attachments, the sections
-        // (folded; 자세히 opens them) and the 지시와 답변 disclosure.
+        // Task view: openPanel resets the composer's attachments and the sections
+        // (folded; 자세히 opens them); the section tab of the opening is painted
+        // from its data (covered in dashboard-panel-sections-client.test.ts).
         pcReset: () => {},
         resetPanelSections: () => {},
-        applyPanelConv: () => {},
+        selectPanelSection: () => {},
+        sizePanelSections: () => {},
+        paintConvTab: () => {},
+        psecSyncControls: () => {},
+        psecToNewest: () => {},
+        psecMaybeFill: () => {},
         _panelDetail: !!opts.detail,
         _panelTasksOpen: false,
         _agentConvRaw: null,
@@ -2968,8 +3090,6 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         renderPanelArtifactsSection: () => {},
         ensureArtifacts: () => {},
         decoratePanelTurns: () => {},
-        // Task view: openPanel re-counts the 이전 대화 button when it replaces the turns.
-        renderConvEarlier: () => {},
         isSiblingSession: () => false,
         // main's own openPanel deps since this harness was written (#372 panel controls, spec 12 agent views).
         renderPanelControls: () => {},
@@ -2993,7 +3113,11 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         formatTokens: String,
         toNum: Number,
       },
-      ['function stick() { return _panelStickBottom; }', 'function armed() { return _panelOlderArmed; }'],
+      [
+        'function section() { return _psec; }',
+        'function turnsMsg() { return _panelTurnsMsg; }',
+        'function turnsHeld() { return _panelTurnsList.length; }',
+      ],
     );
     /** Click the card's 답변하기 button: run its shipped onclick against the shipped openPanel. */
     const clickAnswer = () => {
@@ -3008,7 +3132,14 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
       const top = AREA_TOP - scroll.scrollTop;
       return question.style.display !== 'none' && top >= AREA_TOP && top < AREA_TOP + VIEW;
     };
-    return { m, scroll, question, cache, clickAnswer, formInView, release: () => release(), bottom: max };
+    /** The turns' outcome as 지시와 답변 holds it — only a 'fail' run may end failed (see above). */
+    const settled = () => {
+      const msg = m.turnsMsg();
+      if (msg === 'failed' && outcome !== 'fail')
+        throw new Error('openPanel took its failure path on a successful load: the harness is missing a dependency');
+      return msg;
+    };
+    return { m, scroll, question, cache, clickAnswer, formInView, settled, release: () => release(), bottom: max };
   }
 
   it('lands on the answer form, not on the newest turns, and stays there while the panel settles', async () => {
@@ -3018,13 +3149,10 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     await flush();
     expect(p.formInView()).toBe(true);
     expect(p.scroll.scrollTop).toBe(0);
-    // A later resize (subtitle, Tasks) must not drag the reader to the bottom.
-    expect(p.m.stick()).toBe(false);
-    // The first scroll event after this landing (first turn right under the form)
-    // loads no older turns by itself, like the 작업 로그 landing at the top.
-    const firstTurnTop = AREA_TOP + 420 + WL_HEADER - p.scroll.scrollTop;
-    const step = p.m.panelOlderStep(p.m.armed(), p.m.olderTurnsZone(firstTurnTop, AREA_TOP), true);
-    expect(step).toEqual({ load: false, armed: false });
+    // 답변하기 opens on 지시와 답변, its turns held as its data (the box holds their scroll).
+    expect(p.m.section()).toBe('conv');
+    expect(p.settled()).toBe('');
+    expect(p.m.turnsHeld()).toBe(1);
   });
 
   // affectUI batch 1: the single-choice question is a <ui-approval-card> in the same slot — the
@@ -3051,7 +3179,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     await flush();
     await flush();
     expect(p.formInView()).toBe(true);
-    expect(p.m.stick()).toBe(false);
+    expect(p.m.section()).toBe('conv');
   });
 
   it('lands on the form even when the panel was left scrolled down by the previous opening', async () => {
@@ -3116,13 +3244,14 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     expect(p.formInView()).toBe(true);
   });
 
-  // Task view (T1.1 / T1.6): with no question the minimal panel lands at its top —
-  // the common surface, the tabs, the latest exchange; 자세히 lands on the newest turns.
+  // Task view (T1.1 / T1.6; section tabs 2026-10-29): with no question the panel
+  // lands with the section tabs in view — the top when the section box ends in
+  // view — minimal or 자세히 alike: the newest turns are the box's own bottom.
   it.each([
     [false, 'the top'],
-    [true, 'the newest turns (자세히)'],
+    [true, 'the top (자세히 too)'],
   ] as const)('a question answered before the turns arrive lands on %s instead', async (detail, _where) => {
-    const p = page({ session: waitingMulti(), turns: 'held', detail });
+    const p = page({ session: waitingMulti(), turns: 'held', detail, prevScrollTop: 3000 });
     p.clickAnswer();
     // The answer lands (here or in Slack): the WS session_update re-renders the panel question.
     p.cache[KEY] = waitingMulti({ activityState: 'working', pendingQuestion: undefined });
@@ -3130,32 +3259,38 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     p.release();
     await flush();
     await flush();
-    expect(p.scroll.scrollTop).toBe(detail ? p.bottom() : 0);
-    expect(p.m.stick()).toBe(detail);
+    expect(p.scroll.scrollTop).toBe(0);
+    expect(p.m.section()).toBe('conv');
   });
 
   it.each([
-    [false, 'the top, and does not hold the bottom'],
-    [true, 'the newest turns and holds them (자세히)'],
-  ] as const)('an opening without an open question lands on %s', async (detail, _where) => {
+    [false, 'the top'],
+    [true, 'the top (자세히 too)'],
+  ] as const)('an opening without an open question lands on %s, on 지시와 답변', async (detail, _where) => {
     const p = page({ session: waitingMulti({ activityState: 'idle', pendingQuestion: undefined }), detail });
     p.m.openPanel(KEY);
     await flush();
     await flush();
-    expect(p.scroll.scrollTop).toBe(detail ? p.bottom() : 0);
-    expect(p.m.stick()).toBe(detail);
+    expect(p.scroll.scrollTop).toBe(0);
+    expect(p.m.section()).toBe('conv');
+    expect(p.settled()).toBe('');
   });
 
-  it('작업 로그 on a waiting session keeps the work-log landing (top, or the header for a tall question)', async () => {
-    const short = page({ session: waitingMulti() });
+  it('작업 로그 on a waiting session opens on the 작업 로그 tab (the top while its box fits, else the box brought into view)', async () => {
+    const short = page({ session: waitingMulti(), questionHeight: 200 }); // 200 + tabs + box ends at 540 ≤ 600
     short.m.openPanel(KEY, true);
     await flush();
     await flush();
     expect(short.scroll.scrollTop).toBe(0);
+    expect(short.m.section()).toBe('log');
+    // A tall question: the section tabs go up toward the top — as far as the panel
+    // scrolls, which leaves the whole box in view at its foot.
     const tall = page({ session: waitingMulti(), questionHeight: 900 });
     tall.m.openPanel(KEY, true);
     await flush();
     await flush();
-    expect(tall.scroll.scrollTop).toBe(900);
+    expect(tall.scroll.scrollTop).toBe(tall.bottom());
+    expect(tall.scroll.scrollTop).toBeGreaterThan(0);
+    expect(tall.m.section()).toBe('log');
   });
 });
