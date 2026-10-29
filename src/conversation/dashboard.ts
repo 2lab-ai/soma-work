@@ -10992,6 +10992,8 @@ function psecOnAppended(n, pinned) {
     _psecPin = true;
     return;
   }
+  // Not followed (reading higher, or an entry's detail open): growth no longer pins.
+  _psecPin = false;
   psecSetNew(_psecNew + n);
 }
 // Older items went in above the reader: measured from the bottom, their place stays.
@@ -15658,7 +15660,8 @@ function toggleWorkLogGroup(taskId) {
 // is painted from the state when it opens). Live entries at the end are
 // appended in place; any other batch (an older page, a backfill) re-renders the
 // list from state.entries, which keeps seq order and the task groups exact, and
-// keeps the reader's place (measured from the bottom: the batch went in above).
+// keeps the reader's place: the row they were on goes back where it was — again
+// once the new cards have rendered (their height is known a frame later).
 // At the newest the reader follows the tail — unless an entry's detail is open —
 // else the pill counts what arrived.
 function paintWorkLog(state, added) {
@@ -15682,6 +15685,7 @@ function paintWorkLog(state, added) {
   var n = state.entries.length;
   var tail = state.painted;
   for (var i = 0; tail && i < added.length; i++) if (added[i].index !== n - added.length + i) tail = false;
+  var anchor = !tail && state.painted && !pinned ? wlViewAnchor(box, list) : null;
   var placeholder = list.querySelector('.wl-empty');
   if (placeholder) placeholder.remove();
   if (tail) wlAppendTail(state, list, added);
@@ -15694,9 +15698,41 @@ function paintWorkLog(state, added) {
   var first = !state.painted;
   state.painted = true;
   if (first) psecToNewest();
-  else if (!tail) psecKeepPlace(box, fromBottom);
-  else if (pinned && !wlDetailOpen(state)) psecOnAppended(1, true);
+  else if (!tail && pinned) psecSetTop(box, box.scrollHeight);
+  else if (!tail) {
+    if (!wlRestoreAnchor(box, list, anchor)) psecKeepPlace(box, fromBottom);
+    requestAnimationFrame(function() {
+      if (state === _wl && _psec === 'log' && !_psecPin) wlRestoreAnchor(box, list, anchor);
+    });
+  } else if (pinned && !wlDetailOpen(state)) psecOnAppended(1, true);
   else psecOnAppended(wlVisible(state, wlScopeEntries(added.map(function(a) { return a.entry; }))).length, false);
+}
+
+// The row the reader is on in 작업 로그 — the first entry in view, else the first
+// task group — and how far below the box top it sits (null: none in view).
+function wlViewAnchor(box, list) {
+  var top = box.getBoundingClientRect().top;
+  var sels = ['.wl-entry[data-seq]', '.wl-group[data-task-id]'];
+  for (var k = 0; k < sels.length; k++) {
+    var rows = list.querySelectorAll(sels[k]);
+    for (var i = 0; i < rows.length; i++) {
+      var r = rows[i].getBoundingClientRect();
+      if (!r.height || r.bottom <= top) continue;
+      var seq = rows[i].getAttribute('data-seq');
+      var task = rows[i].getAttribute('data-task-id') || '';
+      var key = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(task) : task;
+      return { sel: seq ? '.wl-entry[data-seq="' + seq + '"]' : '.wl-group[data-task-id="' + key + '"]', at: r.top - top };
+    }
+  }
+  return null;
+}
+// That row back where it was, after the list was painted again (false: it is gone).
+function wlRestoreAnchor(box, list, a) {
+  var el = a ? list.querySelector(a.sel) : null;
+  if (!el) return false;
+  var shift = el.getBoundingClientRect().top - box.getBoundingClientRect().top - a.at;
+  if (Math.abs(shift) >= 1) psecSetTop(box, box.scrollTop + shift);
+  return true;
 }
 
 // Owner-only log (403 on any path) — only for the conversation still open.
