@@ -1,16 +1,25 @@
 /**
- * affectUI Agent Inbox → the session board (.prd/affectui/re-agent-inbox.md §4).
+ * affectUI Agent Inbox → the session board on @2lab.ai/ui <ui-agent-inbox> (.prd/affectui/re-agent-inbox.md §4).
  * Executes the shipped client code cut out of renderDashboardPage()'s template
  * literal, cooked as the browser receives it (the harness of
  * dashboard-three-surfaces-client.test.ts), with injected fakes — no DOM.
  *
- *   D1  the face's status tag carries a tone: run · wait · done · rest
- *   D4  a state change pops the status icon (only a change, only with motion)
- *   D5  the new state shows in place first; the card changes column 900ms later
- *   D6  a polite announcement of how many need you and how many run
- *   D7  Escape closes the open card and puts focus back on its face
- *   D8  the face names the region it opens (aria-controls)
- *   D10 one primary button per open card: the decision, else 작업 로그
+ * The host contract: the card each session becomes (cardOf — status, face extras,
+ * gates), the board's wording (data.strings), the columns and DONE day groups
+ * renderBoard hands the element (closed days as stubs, load, announce counts),
+ * the open card's body in its slot (built only while open, #548) and the
+ * element's events (ui-toggle, ui-group-toggle, ui-artifact).
+ *
+ * The element's own behaviour is @2lab.ai/ui's (src/components/agent-inbox/agent-inbox.test.ts):
+ *   D1  tones from status ('maps status to tone, extension to glyph, counts to dots')
+ *   D5  status in place first, the move 900 ms later ('pure helpers: holds …', 'shows a new status in place
+ *       first …', 're-renders on its own when the hold ends', 'moves at once with reduced motion')
+ *   D6  polite, coalesced announcement ('announces counts politely …', 'announces the host counts (data.announce)')
+ *   D7  Esc closes the open card, focus back on its face — from the slotted body too ('Enter and Space toggle …;
+ *       Esc closes …', 'leaves Escape to a text field …', 'bodyMode slot: … keeps Esc')
+ *   D8  aria-controls / inert expand region ('opens a card in place on click and says so (ui-toggle)')
+ *   D4  the status icon's pop is the element's (agent-inbox.ts update step 8); the library has no test of it yet.
+ * Kept here: D10 — one primary button per open card (the body is still the page's).
  */
 
 import { readFileSync } from 'node:fs';
@@ -65,55 +74,41 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
 }
 
 const T0 = 1_700_000_000_000;
+const MIN = 60_000;
 
-// ── D1 — tone on the face ──
-const FACE_FNS = [
-  'esc',
-  'escAttr',
-  'escJs',
+// ── D1 — the card the element draws (cardOf): status, extras, wording ──
+const CARD_OF_FNS = [
   'toNum',
   'formatTokens',
-  'formatCount',
-  'cardTotalTokens',
-  'cardCurrentTask',
-  'renderCardTaskRow',
-  'agentStatusOf',
-  'agentCounts',
-  'renderCardAgents',
-  'renderCardUsage',
   'formatTaskTime',
+  'permissionSummary',
+  'cardSummary',
   'pendingAutoResume',
   'autoResumeLabel',
-  'cardSummary',
-  'doneTimeOf',
-  'cardAgo',
-  'renderCardStatus',
-  'renderOwnerBadge',
+  'cardCurrentTask',
+  'cardTaskRow',
+  'agentStatusOf',
+  'agentCounts',
+  'agentDotOf',
+  'cardTotalTokens',
   'ctxLevel',
-  'renderCardPr',
-  'renderCardFace',
+  'ctxPercent',
+  'cardCtxTitle',
+  'cardPrMetric',
+  '_hashStr',
+  'ownerBadgeHue',
+  'isSiblingSession',
+  'cardOf',
 ];
-const FACE_VARS = [
-  'SPARK_SVG',
-  'WAIT_SVG',
-  'TASKS_SVG',
-  'CTX_SVG',
-  'RESUME_SVG',
-  'PR_STATE_LABEL',
-  'PR_SVG',
-  'AGENT_STATUS_LABEL',
-  'AGENT_DOTS_MAX',
-  'AGENTS_SVG',
-];
-const FACE_ENV = {
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+const CARD_ENV = {
   dhShow: () => true,
-  dhMax: (_f: string, d: number) => d,
   dhTruncate: () => null,
   currentUserId: 'U1',
-  isSiblingSession: () => false,
-  artFaceChips: () => '',
-  umFaceBadge: () => '',
+  _ownerIndex: null,
+  SELF_INSTANCE_NAME: 'inst',
 };
+type Card = Record<string, unknown>;
 const faceCard = (over: Record<string, unknown> = {}) => ({
   key: 'inst::C1:t1',
   displayHeadline: 'Agent inbox',
@@ -125,477 +120,625 @@ const faceCard = (over: Record<string, unknown> = {}) => ({
   lastActivity: '2026-10-25T10:00:00.000Z',
   ...over,
 });
+const mapper = (env: Record<string, unknown> = {}) =>
+  load<{ cardOf(s: unknown, col: string): Card }>(CARD_OF_FNS, CARD_OF_VARS, { ...CARD_ENV, ...env });
 
-describe('D1 — the status tag carries a tone', () => {
-  const face = load<{ renderCardFace(s: unknown, col: string): string }>(FACE_FNS, FACE_VARS, FACE_ENV);
-  const tone = (html: string) => /<span class="card-status" data-tone="([a-z]+)">/.exec(html)?.[1];
-
-  it('waiting → wait, working → run, idle → done, closed (sleeping or archived) → rest', () => {
-    expect(tone(face.renderCardFace(faceCard({ activityState: 'waiting' }), 'waiting'))).toBe('wait');
-    expect(tone(face.renderCardFace(faceCard({ activityState: 'working', activeLegStartedAtMs: T0 }), 'working'))).toBe(
-      'run',
-    );
-    expect(tone(face.renderCardFace(faceCard(), 'idle'))).toBe('done');
-    expect(tone(face.renderCardFace(faceCard({ sessionState: 'SLEEPING' }), 'closed'))).toBe('rest');
-    expect(tone(face.renderCardFace(faceCard({ terminated: true }), 'closed'))).toBe('rest');
-  });
-
-  it('an armed automatic resume in RUNNING is a wait, not a run', () => {
-    const s = faceCard({ autoResume: { kind: 'error-retry', at: T0, attempt: 1, maxAttempts: 3, reason: '429' } });
-    const html = face.renderCardFace(s, 'working');
-    expect(tone(html)).toBe('wait');
-    expect(html).toContain('is-resume'); // the status markup inside is unchanged
-  });
-
-  it('the status markup keeps its parts: icon, text, prefix, clock, recency', () => {
-    const html = face.renderCardFace(faceCard({ finishedAt: T0 }), 'idle');
-    expect(html).toContain(
-      '<span class="card-status" data-tone="done"><span class="st-icon"><span class="st-dot"></span></span><span class="st-text"><span class="st-prefix">Done in </span>',
-    );
-    expect(html).toContain(`<span class="st-ago"><span class="rel-time" data-ts="${T0}"></span></span>`);
-  });
-});
-
-// ── D4 — the status icon pops on a state change ──
-describe('D4 — a state change pops the status icon', () => {
-  function fakeCard(state: string | null) {
-    const icon = {
-      calls: [] as unknown[][],
-      animate(...a: unknown[]) {
-        this.calls.push(a);
-        return {};
-      },
-    };
-    const face = {
-      innerHTML: '',
-      querySelector: (sel: string) => (sel === '.card-status .st-icon' ? icon : null),
-    };
-    const body = { innerHTML: '', querySelector: () => null };
-    const attrs: Record<string, string | undefined> = { 'data-col': 'waiting' };
-    if (state) attrs['data-state'] = state;
-    const el = {
-      attrs,
-      getAttribute(n: string) {
-        return this.attrs[n] ?? null;
-      },
-      setAttribute(n: string, v: string) {
-        this.attrs[n] = v;
-      },
-      _faceEl: face,
-      _faceHtml: 'old-face',
-      _bodyEl: body,
-      _bodyHtml: 'body',
-    };
-    return { el, icon };
-  }
-  function applier(opts: { animate?: boolean; reduce?: boolean } = {}) {
-    return load<{ applyCardParts(el: unknown, p: unknown): boolean }>(
-      ['isEditingGoal', 'isPickingModel', 'captureGoalDraft', 'restoreGoalDraft', 'popStatusIcon', 'applyCardParts'],
-      [],
-      {
-        document: { activeElement: null },
-        updateTimersIn: () => {},
-        animateCountersIn: () => {},
-        morphInnerHtml: () => {},
-        acHydrate: () => {}, // affectUI batch 1: the body's approval cards take their data
-        atHydrate: () => {}, // affectUI batch 2: the body's agent tree takes its data
-        mpHydrate: () => {}, // the body's model picker takes its data (<ui-model-picker>)
-        canAnimate: () => opts.animate !== false,
-        reduceMotion: () => !!opts.reduce,
-        MOTION: { move: 320, easeOut: 'cubic-bezier(0.23, 1, 0.32, 1)' },
-      },
-    );
-  }
-  const parts = (state: string, face = 'new-face') => ({ col: 'working', state, face, body: 'body', cid: null });
-
-  it('a card that moved from waiting to working pops once: 320ms, scale 0.6 → 1, ease-out', () => {
-    const { el, icon } = fakeCard('waiting');
-    applier().applyCardParts(el, parts('working'));
-    expect(icon.calls.length).toBe(1);
-    const [frames, timing] = icon.calls[0] as [unknown, { duration: number; easing: string }];
-    expect(frames).toEqual([
-      { opacity: 0, transform: 'scale(0.6)' },
-      { opacity: 1, transform: 'scale(1)' },
-    ]);
-    expect(timing.duration).toBe(320);
-    expect(timing.easing).toBe('cubic-bezier(0.23, 1, 0.32, 1)');
-  });
-
-  it('no pop: same state with a new face, a brand-new card, reduced motion, a hidden tab', () => {
-    const same = fakeCard('waiting');
-    applier().applyCardParts(same.el, parts('waiting'));
-    expect(same.icon.calls.length).toBe(0);
-    const fresh = fakeCard(null);
-    applier().applyCardParts(fresh.el, parts('working'));
-    expect(fresh.icon.calls.length).toBe(0);
-    const reduced = fakeCard('waiting');
-    applier({ reduce: true }).applyCardParts(reduced.el, parts('working'));
-    expect(reduced.icon.calls.length).toBe(0);
-    const hidden = fakeCard('waiting');
-    applier({ animate: false }).applyCardParts(hidden.el, parts('working'));
-    expect(hidden.icon.calls.length).toBe(0);
-  });
-});
-
-// ── D5 — state first, column later ──
-describe('D5 — holdLanes: the new state in place first, the move 900ms later', () => {
-  type Hold = { from: string; to: string; until: number };
-  const holdLanes = (
-    want: Record<string, string>,
-    drawn: Record<string, string>,
-    holds: Record<string, Hold>,
-    now: number,
-    on: boolean,
-  ) => loadHold().holdLanes(want, drawn, holds, now, on);
-  const loadHold = () =>
-    load<{
-      holdLanes(
-        want: Record<string, string>,
-        drawn: Record<string, string>,
-        holds: Record<string, { from: string; to: string; until: number }>,
-        now: number,
-        on: boolean,
-      ): {
-        lanes: Record<string, string>;
-        holds: Record<string, { from: string; to: string; until: number }>;
-        wakeAt: number;
-      };
-    }>(['holdLanes'], ['BOARD_HOLD_MS']);
-
-  it('a change first seen keeps the card where it is drawn and wakes at now + 900', () => {
-    const r = holdLanes({ a: 'working', b: 'waiting' }, { a: 'waiting', b: 'waiting' }, {}, T0, true);
-    expect(r.lanes).toEqual({ a: 'waiting', b: 'waiting' });
-    expect(r.holds.a).toEqual({ from: 'waiting', to: 'working', until: T0 + 900 });
-    expect(r.holds.b).toBeUndefined();
-    expect(r.wakeAt).toBe(T0 + 900);
-  });
-
-  it('at the deadline the card goes to its new column and the hold is gone', () => {
-    const held = { a: { from: 'waiting', to: 'working', until: T0 + 900 } };
-    const early = holdLanes({ a: 'working' }, { a: 'waiting' }, held, T0 + 899, true);
-    expect(early.lanes.a).toBe('waiting');
-    expect(early.wakeAt).toBe(T0 + 900);
-    const due = holdLanes({ a: 'working' }, { a: 'waiting' }, held, T0 + 900, true);
-    expect(due.lanes.a).toBe('working');
-    expect(due.holds.a).toBeUndefined();
-    expect(due.wakeAt).toBe(0);
-  });
-
-  it('data that flips back drops the hold; a second target keeps the first deadline', () => {
-    const held = { a: { from: 'waiting', to: 'working', until: T0 + 900 } };
-    const back = holdLanes({ a: 'waiting' }, { a: 'waiting' }, held, T0 + 300, true);
-    expect(back.lanes.a).toBe('waiting');
-    expect(back.holds.a).toBeUndefined();
-    const retarget = holdLanes({ a: 'done' }, { a: 'waiting' }, held, T0 + 300, true);
-    expect(retarget.holds.a).toEqual({ from: 'waiting', to: 'done', until: T0 + 900 });
-  });
-
-  it('no hold without motion, for a card not drawn yet, and holds of cards that left are dropped', () => {
-    const off = holdLanes({ a: 'working' }, { a: 'waiting' }, {}, T0, false);
-    expect(off.lanes.a).toBe('working');
-    expect(off.holds).toEqual({});
-    const fresh = holdLanes({ a: 'working' }, {}, {}, T0, true);
-    expect(fresh.lanes.a).toBe('working');
-    const gone = holdLanes({}, { a: 'waiting' }, { a: { from: 'waiting', to: 'working', until: T0 + 900 } }, T0, true);
-    expect(gone.holds).toEqual({});
-  });
-
-  it('the hold is 900ms', () => {
-    expect(clientVar('BOARD_HOLD_MS')).toBe('var BOARD_HOLD_MS = 900;');
-  });
-});
-
-describe('D5 — applyLaneHolds: a held card stays in its container with its new state, counted there', () => {
-  function container(id: string) {
-    return { id, children: [] as unknown[] };
-  }
-  function setup(now: number, on = true) {
-    const cWaiting = container('cards-waiting');
-    const cWorking = container('cards-working');
-    const cDay = container('day-1');
-    const elA = { _colId: 'waiting', parentNode: cWaiting };
-    const elB = { _colId: 'waiting', parentNode: cWaiting };
-    cWaiting.children.push(elA, elB);
-    const timers: Array<{ ms: number; fn: () => void }> = [];
-    const env = {
-      _cardEls: { a: elA, b: elB } as Record<string, unknown>,
-      _laneHolds: Object.create(null),
-      _laneHoldTimer: 0,
-      _lastBoardData: { waiting: [], working: [] },
-      canAnimate: () => on,
-      reduceMotion: () => false,
-      renderBoard: () => {},
-      Date: { now: () => now },
-      setTimeout: (fn: () => void, ms: number) => {
-        timers.push({ ms, fn });
-        return timers.length;
-      },
-      clearTimeout: () => {},
-    };
-    const fns = load<{ applyLaneHolds(slots: unknown[], counts: Record<string, number>): void }>(
-      ['holdLanes', 'applyLaneHolds'],
-      ['BOARD_HOLD_MS'],
-      env,
-    );
-    const sa = { key: 'a' };
-    const sb = { key: 'b' };
-    const slots = [
-      { colId: 'waiting', container: cWaiting, items: [{ s: sb, col: 'waiting' }] },
-      { colId: 'working', container: cWorking, items: [{ s: sa, col: 'working' }] },
-      { colId: 'done', day: 'd1', container: cDay, items: [] },
-    ];
-    const counts = { waiting: 1, working: 1, done: 0 };
-    return { fns, slots, counts, timers, sa };
-  }
-
-  it('the answered card stays first in NEEDS YOU, drawn as working; badges count where it is drawn', () => {
-    const { fns, slots, counts, timers, sa } = setup(T0);
-    fns.applyLaneHolds(slots, counts);
-    const waiting = slots[0].items as Array<{ s: unknown; col: string }>;
-    expect(waiting.map((i) => i.s)).toEqual([sa, { key: 'b' }]);
-    expect(waiting[0].col).toBe('working'); // the new state, in the old place
-    expect(slots[1].items).toEqual([]);
-    expect(counts).toEqual({ waiting: 2, working: 0, done: 0 });
-    expect(timers.length).toBe(1);
-    expect(timers[0].ms).toBeGreaterThanOrEqual(900);
-  });
-
-  it('two cards leaving one column together keep their order there during the hold (astra P2)', () => {
-    const c = container('cards-waiting');
-    const w = container('cards-working');
-    const els: Record<string, { _colId: string; parentNode: unknown }> = {};
-    for (const k of ['a', 'b', 'c']) {
-      els[k] = { _colId: 'waiting', parentNode: c };
-      c.children.push(els[k]);
-    }
-    const fns = load<{ applyLaneHolds(slots: unknown[], counts: Record<string, number>): void }>(
-      ['holdLanes', 'applyLaneHolds'],
-      ['BOARD_HOLD_MS'],
-      {
-        _cardEls: els,
-        _laneHolds: Object.create(null),
-        _laneHoldTimer: 0,
-        _lastBoardData: null,
-        canAnimate: () => true,
-        reduceMotion: () => false,
-        renderBoard: () => {},
-        Date: { now: () => T0 },
-        setTimeout: () => 1,
-        clearTimeout: () => {},
-      },
-    );
-    // a and b both start running — in either order in the RUNNING data.
-    for (const order of [
-      ['a', 'b'],
-      ['b', 'a'],
-    ]) {
-      const slots = [
-        { colId: 'waiting', container: c, items: [{ s: { key: 'c' }, col: 'waiting' }] },
-        { colId: 'working', container: w, items: order.map((k) => ({ s: { key: k }, col: 'working' })) },
-      ];
-      const counts = { waiting: 1, working: 2 };
-      fns.applyLaneHolds(slots, counts);
-      expect(
-        (slots[0].items as Array<{ s: { key: string } }>).map((i) => i.s.key),
-        order.join(''),
-      ).toEqual(['a', 'b', 'c']);
-      expect(counts).toEqual({ waiting: 3, working: 0 });
-    }
-  });
-
-  it('without motion the card moves at once and nothing is scheduled', () => {
-    const { fns, slots, counts, timers, sa } = setup(T0, false);
-    fns.applyLaneHolds(slots, counts);
-    expect((slots[1].items as Array<{ s: unknown }>).map((i) => i.s)).toEqual([sa]);
-    expect(counts).toEqual({ waiting: 1, working: 1, done: 0 });
-    expect(timers.length).toBe(0);
-  });
-});
-
-// ── D6 — the announcer ──
-describe('D6 — a polite announcement of the board', () => {
-  function announcer() {
-    // The region counts its writes, so "said once" and "said nothing" are observable.
-    const live = {
-      text: '',
-      writes: [] as string[],
-      get textContent() {
-        return this.text;
-      },
-      set textContent(v: string) {
-        this.text = v;
-        this.writes.push(v);
-      },
-    };
-    const timers: Array<{ fn: () => void }> = [];
-    const fns = load<{ boardAnnounceText(w: number, r: number): string; announceBoard(w: number, r: number): void }>(
-      ['setTextIfChanged', 'boardAnnounceText', 'announceBoard'],
-      ['ANNOUNCE_MS', '_announceTimer', '_announceText'],
-      {
-        document: { getElementById: (id: string) => (id === 'inbox-live' ? live : null) },
-        setTimeout: (fn: () => void) => {
-          timers.push({ fn });
-          return timers.length;
-        },
-      },
-    );
-    const flush = () => {
-      const due = timers.splice(0);
-      for (const t of due) t.fn();
-    };
-    return { fns, live, timers, flush };
-  }
-  const say = (w: number, r: number) => `응답이 필요한 세션 ${w}개, 실행 중 ${r}개`;
-
-  it('says how many need you and how many run', () => {
-    expect(announcer().fns.boardAnnounceText(2, 3)).toBe(say(2, 3));
-  });
-
-  it('the first sentence goes into the empty region at once — the same counts again inside the window keep it (PR #450 R1 P1)', () => {
-    const { fns, live, timers, flush } = announcer();
-    fns.announceBoard(2, 1);
-    fns.announceBoard(2, 1); // loadSessions / a WS push re-render with the same counts
-    expect(live.textContent).toBe(say(2, 1));
-    expect(timers.length).toBe(0);
-    flush();
-    expect(live.textContent).toBe(say(2, 1));
-    expect(live.writes).toEqual([say(2, 1)]);
-  });
-
-  it('a burst of real changes within a second is said once — the last text', () => {
-    const { fns, live, timers, flush } = announcer();
-    fns.announceBoard(1, 0);
-    fns.announceBoard(2, 0);
-    fns.announceBoard(2, 1);
-    expect(timers.length).toBe(1);
-    expect(live.textContent).toBe(say(1, 0));
-    flush();
-    expect(live.textContent).toBe(say(2, 1));
-    expect(live.writes).toEqual([say(1, 0), say(2, 1)]);
-  });
-
-  it('a change that returns before the flush says nothing new; the next change is said', () => {
-    const { fns, live, timers, flush } = announcer();
-    fns.announceBoard(2, 1);
-    fns.announceBoard(3, 1);
-    fns.announceBoard(2, 1);
-    flush();
-    expect(live.writes).toEqual([say(2, 1)]);
-    fns.announceBoard(3, 1);
-    expect(timers.length).toBe(1);
-    flush();
-    expect(live.textContent).toBe(say(3, 1));
-  });
-
-  it('the same counts again schedule nothing', () => {
-    const { fns, timers } = announcer();
-    fns.announceBoard(2, 1);
-    fns.announceBoard(2, 1);
-    expect(timers.length).toBe(0);
-  });
-
-  it('coalesces over ANNOUNCE_MS = 1000', () => {
-    expect(clientVar('ANNOUNCE_MS')).toBe('var ANNOUNCE_MS = 1000;');
-  });
-});
-
-// ── D7 — Escape ──
-describe('D7 — Escape closes the open card and puts focus back on its face', () => {
-  function setup(targetInCard: boolean, open = true, extra: Record<string, unknown> = {}) {
-    const focus: unknown[] = [];
-    const toggled: Array<[string, boolean]> = [];
-    const faceEl = { focus: (o: unknown) => focus.push(o) };
-    const card = {
-      _faceEl: faceEl,
-      getAttribute: (n: string) => (n === 'data-session-key' ? 'k1' : null),
-    };
-    const root = { contains: (n: unknown) => n === card };
-    const target = { closest: (sel: string) => (targetInCard && sel === '.card.is-expanded' ? card : null), ...extra };
-    let stopped = 0;
-    const e = { key: 'Escape', target, stopPropagation: () => stopped++ };
-    const env = {
-      _expanded: new Set<string>(open ? ['k1'] : []),
-      toggleCard: (k: string, instant: boolean) => toggled.push([k, instant]),
-    };
-    const { closeCardOnEscape } = load<{ closeCardOnEscape(e: unknown, root: unknown): boolean }>(
-      ['closeCardOnEscape'],
-      [],
-      env,
-    );
-    return { run: () => closeCardOnEscape(e, root), focus, toggled, stopped: () => stopped };
-  }
-
-  it('inside an open card: closes it without motion, focuses its face, keeps the panel', () => {
-    const t = setup(true);
-    expect(t.run()).toBe(true);
-    expect(t.toggled).toEqual([['k1', true]]);
-    expect(t.focus).toEqual([{ preventScroll: true }]);
-    expect(t.stopped()).toBe(1);
-  });
-
-  it('a text field, a select or an editable region keeps its own Escape — the card stays open (fable P2)', () => {
-    for (const extra of [
-      { tagName: 'INPUT' },
-      { tagName: 'textarea' },
-      { tagName: 'SELECT' },
-      { tagName: 'DIV', isContentEditable: true },
-    ]) {
-      const t = setup(true, true, extra);
-      expect(t.run(), JSON.stringify(extra)).toBe(false);
-      expect(t.toggled).toEqual([]);
-      expect(t.stopped()).toBe(0);
-    }
-    // A button inside the open card still closes it.
-    expect(setup(true, true, { tagName: 'BUTTON' }).run()).toBe(true);
-  });
-
-  it('outside an open card: untouched (the panel handler still sees it)', () => {
-    const t = setup(false);
-    expect(t.run()).toBe(false);
-    expect(t.toggled).toEqual([]);
-    expect(t.stopped()).toBe(0);
-  });
-
-  it('is wired to the board roots', () => {
-    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initBoardInteractions() {'));
-    expect(init.slice(0, init.indexOf('})();'))).toContain(
-      "if (e.key === 'Escape') { closeCardOnEscape(e, root); return; }",
-    );
-  });
-});
-
-// ── D8 — aria-controls ──
-describe('D8 — the face names the region it opens', () => {
-  function fakeEl(tag: string) {
-    const attrs: Record<string, string> = {};
-    return {
-      tag,
-      id: '',
-      className: '',
-      kids: [] as unknown[],
-      setAttribute(n: string, v: string) {
-        attrs[n] = v;
-      },
-      getAttribute(n: string) {
-        return attrs[n] ?? null;
-      },
-      appendChild(k: unknown) {
-        this.kids.push(k);
-      },
-    };
-  }
-  type Shell = { _faceEl: ReturnType<typeof fakeEl>; _expandEl: ReturnType<typeof fakeEl> };
-  it('aria-controls → the expand id; ids are unique and never carry the session key', () => {
-    const { createCardShell } = load<{ createCardShell(key: string): Shell }>(['createCardShell'], ['_cardSeq'], {
-      document: { createElement: fakeEl },
+describe('D1 — the status the element tints: run · wait · done · rest (the tones are the element’s)', () => {
+  const { cardOf } = mapper();
+  it('waiting → waiting since it started waiting; working → running from the leg plus the time before it', () => {
+    expect(cardOf(faceCard({ activityState: 'waiting', waitingSince: T0 }), 'waiting')).toMatchObject({
+      status: 'waiting',
+      since: T0,
     });
-    const a = createCardShell('self::C1:t1');
-    const b = createCardShell('self::C2:t2');
-    expect(a._faceEl.getAttribute('aria-controls')).toBe(a._expandEl.id);
-    expect(b._faceEl.getAttribute('aria-controls')).toBe(b._expandEl.id);
-    expect(a._expandEl.id).toMatch(/^card-x-\d+$/);
-    expect(a._expandEl.id).not.toBe(b._expandEl.id);
-    expect(a._expandEl.getAttribute('inert')).toBe('');
+    const run = cardOf(faceCard({ activityState: 'working', activeLegStartedAtMs: T0 }), 'working');
+    expect(run).toMatchObject({ status: 'running', since: T0, elapsedMs: 120_000 });
+    expect(run.statusText).toBeUndefined();
+  });
+
+  it('idle → "Done in <active time>" since it finished; idle without active time → "Idle" in the done tone', () => {
+    expect(cardOf(faceCard({ finishedAt: T0 }), 'idle')).toMatchObject({
+      status: 'done',
+      elapsedMs: 120_000,
+      since: T0,
+    });
+    const idle = cardOf(faceCard({ activeAccumulatedMs: 0 }), 'idle');
+    expect(idle).toMatchObject({ status: 'done', statusText: 'Idle' });
+    expect(idle.since).toBeUndefined(); // only the exact finish stamp, never lastActivity
+  });
+
+  it('closed → the rest tone, Sleeping or Archived', () => {
+    expect(cardOf(faceCard({ sessionState: 'SLEEPING', finishedAt: T0 }), 'closed')).toMatchObject({
+      status: 'idle',
+      statusText: 'Sleeping',
+      since: T0,
+    });
+    expect(cardOf(faceCard({ terminated: true }), 'closed')).toMatchObject({ status: 'idle', statusText: 'Archived' });
+  });
+
+  it('an armed automatic resume in RUNNING waits: the wait tone, its label, no clock; the reason leads the summary', () => {
+    const s = faceCard({ autoResume: { kind: 'error-retry', at: T0, attempt: 1, maxAttempts: 3, reason: '429' } });
+    const c = cardOf(s, 'working');
+    expect(c.status).toBe('waiting');
+    expect(String(c.statusText)).toMatch(/자동 재개 · 시도 1\/3$/);
+    expect(c.since).toBeUndefined();
+    expect(c.summary).toBe('오류: 429');
+  });
+
+  it('every card opens to the host body (bodyMode slot): approval cards, question, tree, goal, model, Stop / Close, 작업 로그', () => {
+    for (const col of ['waiting', 'working', 'idle', 'closed']) expect(cardOf(faceCard(), col).bodyMode).toBe('slot');
+  });
+});
+
+describe('the face extras the board keeps (cardOf → lead, badge, metrics, titles, context level, file chips)', () => {
+  const s = faceCard({
+    activityState: 'working',
+    activeLegStartedAtMs: T0,
+    conversationId: 'conv-1',
+    cronJob: { id: 'j1', name: 'nightly' },
+    prUrl: 'https://github.com/o/r/pull/12',
+    prShortRef: 'PR-12',
+    prStatus: 'MERGED',
+    prTitle: 'billing',
+    userMedia: { count: 2 },
+    artifacts: {
+      count: 7,
+      recent: [
+        { id: 'a1', name: 'shot.png', kind: 'image' },
+        { id: 'a2', name: 'r.html', kind: 'html' },
+        { id: 'a3', name: 'n.md', kind: 'markdown' },
+        { id: 'a4', name: 'x.csv', kind: 'text' },
+        { id: 'a5', name: 'y.pdf', kind: 'pdf' },
+      ],
+    },
+    tasks: [
+      { id: 'T1', content: 'Read', status: 'completed' },
+      { id: 'T2', content: 'Write the parser', activeForm: 'Writing', status: 'in_progress', startedAt: T0 },
+    ],
+    agents: [
+      { status: 'completed' },
+      { status: 'running' },
+      { status: 'stopped' },
+      { status: 'failed' },
+      { status: 'weird' },
+      { status: 'running' },
+      { status: 'completed' },
+    ],
+    agentsTotal: 9,
+    tokenUsage: {
+      totalInputTokens: 1000,
+      totalOutputTokens: 200,
+      totalCacheReadTokens: 30_000,
+      totalCacheCreateTokens: 500,
+      totalCostUsd: 1.25,
+      contextUsagePercent: 72.4,
+    },
+    subagentSpend: { agents: 7 },
+    contextTokens: 610_000,
+    autoCompactTokens: 750_000,
+  });
+
+  it('a cron run leads with the CRON clock, titled with its job; others keep the spark', () => {
+    const { cardOf } = mapper();
+    expect(cardOf(s, 'working').lead).toEqual({ text: 'CRON', glyph: 'clock', title: '크론 잡: nightly' });
+    expect(cardOf(faceCard(), 'idle').lead).toBeUndefined();
+  });
+
+  it('the PR state is a word and a tone, the media count a paperclip with its accessible name — text only', () => {
+    const { cardOf } = mapper();
+    expect(cardOf(s, 'working').metrics).toEqual([
+      { text: '2', glyph: 'attach', title: '지시 첨부 2개', label: '지시 첨부 2개' },
+      { text: '#12 머지됨', glyph: 'pr', title: 'PR #12 머지됨 — billing', tone: 'done' },
+    ]);
+    const open = cardOf({ ...s, prStatus: 'open', userMedia: null }, 'working').metrics as Card[];
+    expect(open).toEqual([{ text: '#12 열림', glyph: 'pr', title: 'PR #12 열림 — billing', tone: 'run' }]);
+    expect(cardOf({ ...s, prStatus: 'weird', userMedia: null }, 'working').metrics).toEqual([
+      { text: '#12', glyph: 'pr', title: 'PR #12 — billing' },
+    ]);
+  });
+
+  it('the task row, sub-agents in spawn order (stopped is a square), tokens · cost with the task-total titles', () => {
+    const { cardOf } = mapper();
+    const c = cardOf(s, 'working');
+    expect(c.task).toEqual({ label: 'Write the parser', id: 'T2', startedAt: T0 });
+    expect(c.agents).toEqual({
+      total: 9,
+      running: 2,
+      done: 2,
+      failed: 1,
+      dots: ['done', 'running', 'stopped', 'failed', 'unknown', 'running'],
+    });
+    expect(c.tokens).toBe(31_700);
+    expect(c.costUsd).toBe(1.25);
+    expect((c.titles as Card).tokens).toBe(
+      '총 토큰 (task 합계: 메인 + 서브에이전트 7개) — 입력 1.0K · 출력 200 · 캐시 읽기 30.0K · 캐시 쓰기 500',
+    );
+    expect((c.titles as Card).cost).toBe('API 환산 비용 (task 합계: 메인 + 서브에이전트 7개)');
+    // No task row once the session is done; the steps metric stays.
+    expect(cardOf(s, 'idle').task).toBeUndefined();
+    expect(cardOf(s, 'idle').steps).toEqual({ done: 1, total: 2 });
+  });
+
+  it('the context level and tooltip come from the auto-compact point (re-context-window D16)', () => {
+    const { cardOf } = mapper();
+    const c = cardOf(s, 'working');
+    expect(c.contextPct).toBe(72.4);
+    expect(c.contextLevel).toBe('warn'); // 610K of 750K ≥ 0.8
+    expect((c.titles as Card).context).toBe('컨텍스트 72% · 자동 압축 750K까지 140K');
+    expect(cardOf({ ...s, compactPending: true }, 'working').contextLevel).toBe('danger');
+    expect(cardOf({ ...s, contextTokens: 0, autoCompactTokens: 0 }, 'working').contextLevel).toBe('warn'); // > 60 band
+  });
+
+  it('the newest four files are chip buttons (ui-artifact) with the whole count; none for a sibling instance', () => {
+    const { cardOf } = mapper();
+    const c = cardOf(s, 'working');
+    expect(c.artifactsCount).toBe(7);
+    expect(c.artifacts).toEqual([
+      { id: 'a1', name: 'shot.png', kind: 'image' },
+      { id: 'a2', name: 'r.html', kind: 'html' },
+      { id: 'a3', name: 'n.md', kind: 'markdown' },
+      { id: 'a4', name: 'x.csv', kind: 'text' },
+    ]);
+    const sib = cardOf({ ...s, environment: { instanceName: 'other' } }, 'working');
+    expect(sib.artifacts).toBeUndefined();
+    expect(sib.metrics).toEqual([{ text: '#12 머지됨', glyph: 'pr', title: 'PR #12 머지됨 — billing', tone: 'done' }]);
+  });
+
+  it('the header fields gate what the face carries (title, tasks, tokens, cost, context, links)', () => {
+    const { cardOf } = mapper({ dhShow: () => false });
+    const c = cardOf(s, 'working');
+    expect(c.title).toBe('');
+    for (const k of ['task', 'steps', 'tokens', 'costUsd', 'contextPct', 'titles']) expect(c[k]).toBeUndefined();
+    expect(c.metrics).toEqual([{ text: '2', glyph: 'attach', title: '지시 첨부 2개', label: '지시 첨부 2개' }]);
+    expect(mapper({ dhTruncate: () => 5 }).cardOf(s, 'working').title).toBe('Agent');
+  });
+
+  it('equal data gives an equal card (the clocks are the element’s tick, not the data)', () => {
+    const { cardOf } = mapper();
+    expect(JSON.stringify(cardOf(s, 'working'))).toBe(JSON.stringify(cardOf(JSON.parse(JSON.stringify(s)), 'working')));
+  });
+});
+
+describe('the board’s wording (data.strings over lang="en")', () => {
+  const src = TEMPLATE.slice(TEMPLATE.indexOf('var BOARD_STRINGS = {'));
+  const strings = new Function(
+    'timeAgo',
+    'formatNmSSs',
+    'ART_KIND_LABEL',
+    `${cook(src.slice(0, src.indexOf('\n};\n') + 4))}\nreturn BOARD_STRINGS;`,
+  )(
+    () => '6m ago',
+    (ms: number) => `${Math.floor(ms / 60000)}m ${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}s`,
+    { image: '이미지' },
+  );
+  it('Korean sub-agents, file chips and announcement; the board’s clock and age; no "<title>: <word>." lead', () => {
+    expect(strings.agents).toBe('서브에이전트');
+    expect(strings.agentsRunning(2)).toBe('실행 2');
+    expect(strings.agentsFailed(1)).toBe('실패 1');
+    expect(strings.arts).toBe('모델이 만든 산출물');
+    expect(strings.artOpen('a.png', 'image')).toBe('이미지 a.png — 크게 보기');
+    expect(strings.artOpen('x.bin', 'file')).toBe('파일 x.bin — 크게 보기');
+    expect(strings.announce(3, 8)).toBe('응답이 필요한 세션 3개, 실행 중 8개');
+    expect(strings.changed('Deploy', 'Running')).toBe('');
+    expect(strings.duration(187_000)).toBe('3m 07s');
+    expect(strings.ago(T0)).toBe('6m ago');
+    // English status words stay the element's own (Waiting for you, Running, Done in …).
+    expect(strings.status).toBeUndefined();
+  });
+});
+
+// load() returns only the named functions: the state seam is a shipped-scope function compiled in the same body.
+function loadWithState<T>(fns: string[], vars: string[], inject: Record<string, unknown>, seam: string): T {
+  const names = Object.keys(inject);
+  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${seam}\nreturn { ${[...fns, /^function (\w+)/.exec(seam)?.[1]].join(', ')} };`;
+  return new Function(...names, body)(...names.map((n) => inject[n])) as T;
+}
+
+// ── renderBoard → the board element's data (columns, DONE by day, load, announce) ──
+type Plan = {
+  cols: Array<{
+    id: string;
+    label: string;
+    keys: string[];
+    groups?: Array<{ id: string; label: string; open: boolean; keys: string[] }>;
+  }>;
+  load: string;
+  announce: unknown;
+};
+function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen?: Record<string, boolean> } = {}) {
+  const kanban: {
+    _ibPlan?: Plan;
+    data?: { columns: Array<Record<string, unknown>>; expanded: string[]; load: string; announce: unknown };
+  } = {};
+  const inbox = { classList: { toggle: () => {} } };
+  const calls = { ensureIo: [] as string[], released: [] as unknown[], deepLink: 0 };
+  const expanded = new Set<string>(opts.expanded ?? []);
+  const m = loadWithState<{
+    renderBoard(board: unknown, partial?: boolean): void;
+    state(): { host: Record<string, unknown>; drawn: Record<string, boolean>; data: Record<string, Card> };
+  }>(
+    [
+      'toNum',
+      'planDoneColumn',
+      'doneTimeOf',
+      'dayKeyOf',
+      'doneDayLabel',
+      'planDoneGroups',
+      'isCronCard',
+      'cronGroupKey',
+      'cronCardTime',
+      'planCronLane',
+      'cardBodyShown',
+      'placeCard',
+      'inboxPaint',
+      'renderBoard',
+    ],
+    ['BOARD_LABELS', '_cardHost', '_cardCol', '_cardData', '_cardDrawn', '_cardClosing', '_boardRenders'],
+    {
+      document: { getElementById: (id: string) => (id === 'kanban' ? kanban : id === 'inbox' ? inbox : null) },
+      _boardLoad: opts.boardLoad ?? 'ready',
+      _sessionCache: Object.create(null),
+      _acState: {},
+      acEvict: () => {},
+      _envIndex: null,
+      _buildEnvIndex: () => ({}),
+      _ownerIndex: null,
+      assignOwnerHues: () => ({}),
+      _lastBoardData: null,
+      _cronJobs: [],
+      _cronPlan: null,
+      _cronRevealKey: null,
+      syncCronLane: () => {},
+      cronLaneSlots: () => [],
+      paintCronLaneCards: () => {},
+      showArchives: false,
+      showSleeping: true,
+      _revealedKey: null,
+      _doneGroupOpen: opts.groupOpen ?? Object.create(null),
+      _expanded: expanded,
+      BOARD_STRINGS: {},
+      cardOf: (s: { key: string }, col: string) => ({ id: s.key, title: s.key, status: col, bodyMode: 'slot' }),
+      acPrefetch: () => {},
+      releaseCardIoTimer: (cid: unknown) => calls.released.push(cid),
+      syncCardBodies: () => {},
+      ensureCardIo: (k: string) => calls.ensureIo.push(k),
+      renderArchivesToggle: () => {},
+      renderSleepingToggle: () => {},
+      paintCronDrawer: () => {},
+      updateTokenBreakdown: () => {},
+      scheduleLayoutRefresh: () => {},
+      MOTION: { move: 320 },
+      openDeepLinkedSession: () => {
+        calls.deepLink++;
+      },
+    },
+    'function state() { return { host: _cardHost, drawn: _cardDrawn, data: _cardData }; }',
+  );
+  return { m, kanban, calls, expanded };
+}
+
+describe('renderBoard → the board element: NEEDS YOU · RUNNING · DONE by finish day (T11/T12)', () => {
+  const now = Date.now();
+  const s = (key: string, over: Record<string, unknown> = {}) => ({
+    key,
+    lastActivity: new Date(now).toISOString(),
+    ...over,
+  });
+  const board = () => ({
+    waiting: [s('w1'), s('cronw', { cronJob: { id: 'j1', name: 'nightly' } })],
+    working: [s('r1'), s('r2')],
+    idle: [s('d-today', { doneAt: now - MIN }), s('d-old', { doneAt: now - 5 * 24 * 60 * MIN })],
+    closed: [s('z', { doneAt: now - 2 * MIN })],
+  });
+
+  it('columns of keys in order, the cron run taken out for its lane; each card drawn with its column', () => {
+    const h = boardHarness();
+    h.m.renderBoard(board(), false);
+    const plan = h.kanban._ibPlan as Plan;
+    expect(plan.cols.map((c) => [c.id, c.label, c.keys])).toEqual([
+      ['waiting', 'NEEDS YOU', ['w1']],
+      ['working', 'RUNNING', ['r1', 'r2']],
+      ['done', 'DONE', []],
+    ]);
+    const cols = h.kanban.data?.columns ?? [];
+    expect((cols[0].cards as Card[]).map((c) => [c.id, c.status])).toEqual([['w1', 'waiting']]);
+    expect((cols[1].cards as Card[]).map((c) => c.id)).toEqual(['r1', 'r2']);
+  });
+
+  it('DONE is day groups, newest first: Today open; an earlier day closed, its cards counted as stubs, never drawn', () => {
+    const h = boardHarness();
+    h.m.renderBoard(board(), false);
+    const done = (h.kanban.data?.columns ?? [])[2] as {
+      groups: Array<{ id: string; label: string; open: boolean; cards: Card[] }>;
+    };
+    expect(done.groups.map((g) => [g.label, g.open, g.cards.map((c) => c.id)])).toEqual([
+      ['Today', true, ['d-today', 'z']],
+      [expect.any(String), false, ['d-old']],
+    ]);
+    const st = h.m.state();
+    expect(st.drawn['d-today']).toBe(true);
+    expect(st.drawn['d-old']).toBeUndefined();
+    // A stub carries no face — the element only counts it (and reveal can open its day).
+    expect(st.data['d-old']).toEqual({ id: 'd-old', title: '', status: 'done', bodyMode: 'slot' });
+    expect(st.host['d-old']).toBe(h.kanban);
+  });
+
+  it('the reader’s day choice rules (an opened earlier day draws its cards)', () => {
+    const old = dayKey(now - 5 * 24 * 60 * MIN);
+    const h = boardHarness({ groupOpen: { [old]: true } });
+    h.m.renderBoard(board(), false);
+    expect(h.m.state().drawn['d-old']).toBe(true);
+  });
+
+  it('D6: the announcement counts the data as it came — CRON runs that wait included', () => {
+    const h = boardHarness();
+    h.m.renderBoard(board(), false);
+    expect(h.kanban.data?.announce).toEqual({ needs: 2, running: 2 });
+    expect(h.kanban.data?.load).toBe('ready');
+  });
+
+  it('a partial paint (under 다시 시도, or while loading) makes no claims: load failed / loading', () => {
+    const failed = boardHarness({ boardLoad: 'failed' });
+    failed.m.renderBoard(board());
+    expect(failed.kanban.data?.load).toBe('failed');
+    const loading = boardHarness({ boardLoad: 'loading' });
+    loading.m.renderBoard(board());
+    expect(loading.kanban.data?.load).toBe('loading');
+  });
+
+  it('open cards are passed as expanded (a card that moved elements opens there), refetch their 지시/응답, and close for good when they leave', () => {
+    const h = boardHarness({ expanded: ['r1'] });
+    h.m.renderBoard(board(), false);
+    expect(h.kanban.data?.expanded).toEqual(['r1']);
+    expect(h.calls.ensureIo).toEqual(['r1']);
+    const b = board();
+    b.working = [s('r2')];
+    h.m.renderBoard(b, false);
+    expect(h.expanded.has('r1')).toBe(false);
+    expect(h.calls.deepLink).toBe(2);
+  });
+});
+function dayKey(ms: number): string {
+  const d = new Date(ms);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+// ── The open card's body: the host's light DOM in the card's slot (#548: only while open) ──
+type FakeEl = {
+  tag: string;
+  className: string;
+  innerHTML: string;
+  parentNode: FakeEl | null;
+  kids: FakeEl[];
+  attrs: Record<string, string>;
+  isConnected: boolean;
+  setAttribute(n: string, v: string): void;
+  getAttribute(n: string): string | null;
+  appendChild(k: FakeEl): void;
+  removeChild(k: FakeEl): void;
+};
+function fakeEl(tag: string): FakeEl {
+  const el: FakeEl = {
+    tag,
+    className: '',
+    innerHTML: '',
+    parentNode: null,
+    kids: [],
+    attrs: {},
+    isConnected: true,
+    setAttribute(n, v) {
+      this.attrs[n] = v;
+    },
+    getAttribute(n) {
+      return this.attrs[n] ?? null;
+    },
+    appendChild(k) {
+      if (k.parentNode) k.parentNode.removeChild(k);
+      this.kids.push(k);
+      k.parentNode = this;
+    },
+    removeChild(k) {
+      this.kids = this.kids.filter((x) => x !== k);
+      k.parentNode = null;
+    },
+  };
+  return el;
+}
+function bodyHarness() {
+  const host = fakeEl('ui-agent-inbox');
+  const lane = fakeEl('ui-agent-inbox');
+  const env = {
+    _cardHost: Object.create(null) as Record<string, FakeEl>,
+    _cardCol: Object.create(null) as Record<string, string>,
+    _cardDrawn: Object.create(null) as Record<string, boolean>,
+    _sessionCache: Object.create(null) as Record<string, unknown>,
+    _expanded: new Set<string>(),
+    _cardClosing: Object.create(null) as Record<string, unknown>,
+    _cardBodies: Object.create(null) as Record<string, { el: FakeEl; html: string | null }>,
+    document: { createElement: fakeEl },
+    renderCardBody: (s: { key: string }, col: string) => `<div class="card-body">${s.key}|${col}</div>`,
+    isEditingGoal: () => false,
+    isPickingModel: () => false,
+    captureGoalDraft: () => null,
+    restoreGoalDraft: () => {},
+    morphInnerHtml: (el: FakeEl, html: string) => {
+      el.innerHTML = html;
+    },
+    updateTimersIn: () => {},
+    acHydrate: () => {},
+    mpHydrate: () => {},
+    atCardData: () => null,
+    atHydrate: () => {},
+  };
+  const m = load<{ paintCardBody(k: string): void; cardBodyShown(k: string): boolean }>(
+    ['cardBodyShown', 'paintCardBody'],
+    [],
+    env,
+  );
+  const add = (key: string, col = 'waiting', on = host) => {
+    env._sessionCache[key] = { key };
+    env._cardHost[key] = on;
+    env._cardCol[key] = col;
+    env._cardDrawn[key] = true;
+  };
+  return { m, env, host, lane, add };
+}
+
+describe('the open card’s body is the host’s, in the card’s slot — built only while open (#548)', () => {
+  it('a collapsed card builds no body; opened, a light-DOM div in slot="body:<key>" on the element that draws it', () => {
+    const h = bodyHarness();
+    h.add('k1');
+    h.m.paintCardBody('k1');
+    expect(h.host.kids).toHaveLength(0);
+    h.env._expanded.add('k1');
+    h.m.paintCardBody('k1');
+    expect(h.host.kids).toHaveLength(1);
+    const b = h.host.kids[0];
+    expect(b.attrs).toEqual({ slot: 'body:k1', 'data-session-key': 'k1' });
+    expect(b.className).toBe('card-slot');
+    expect(b.innerHTML).toBe('<div class="card-body">k1|waiting</div>');
+  });
+
+  it('kept while it collapses, let go once closed; a card in a closed DONE day builds none even when open', () => {
+    const h = bodyHarness();
+    h.add('k1');
+    h.env._expanded.add('k1');
+    h.m.paintCardBody('k1');
+    h.env._expanded.delete('k1');
+    h.env._cardClosing.k1 = 1;
+    h.m.paintCardBody('k1');
+    expect(h.host.kids).toHaveLength(1);
+    delete h.env._cardClosing.k1;
+    h.m.paintCardBody('k1');
+    expect(h.host.kids).toHaveLength(0);
+    expect(h.env._cardBodies.k1).toBeUndefined();
+    h.env._expanded.add('k1');
+    delete h.env._cardDrawn.k1;
+    h.m.paintCardBody('k1');
+    expect(h.host.kids).toHaveLength(0);
+  });
+
+  it('follows its card to another element (board ↔ a CRON job’s) and is rewritten only when its markup changed', () => {
+    const h = bodyHarness();
+    h.add('k1');
+    h.env._expanded.add('k1');
+    h.m.paintCardBody('k1');
+    const b = h.host.kids[0];
+    h.env._cardHost.k1 = h.lane;
+    h.m.paintCardBody('k1');
+    expect(h.host.kids).toHaveLength(0);
+    expect(h.lane.kids).toEqual([b]);
+    b.innerHTML = 'kept';
+    h.m.paintCardBody('k1');
+    expect(b.innerHTML).toBe('kept');
+    h.env._cardCol.k1 = 'working';
+    h.m.paintCardBody('k1');
+    expect(b.innerHTML).toBe('<div class="card-body">k1|working</div>');
+  });
+});
+
+describe('the element’s events (wireInbox): open / close, a DONE day, a file chip', () => {
+  function wired() {
+    const handlers: Record<string, (e: unknown) => void> = {};
+    const host = {
+      _ibPlan: {
+        cols: [
+          {
+            id: 'done',
+            label: 'DONE',
+            keys: [],
+            groups: [{ id: '2026-10-20', label: '10월 20일 (화)', open: false, keys: ['d1'] }],
+          },
+        ],
+        load: 'ready',
+        announce: false,
+      },
+      data: null as unknown,
+      addEventListener: (n: string, fn: (e: unknown) => void) => {
+        handlers[n] = fn;
+      },
+    };
+    const calls = {
+      io: [] as unknown[][],
+      released: [] as unknown[],
+      arts: [] as unknown[],
+      bodies: [] as string[],
+      modal: [] as unknown[][],
+    };
+    const env = {
+      _expanded: new Set<string>(),
+      _sessionCache: { k1: { key: 'k1', conversationId: 'c1', artifacts: { count: 1 } }, d1: { key: 'd1' } } as Record<
+        string,
+        unknown
+      >,
+      _cardHost: Object.create(null),
+      _cardCol: { d1: 'idle' } as Record<string, string>,
+      _cardData: Object.create(null),
+      _cardDrawn: Object.create(null),
+      _doneGroupOpen: Object.create(null),
+      BOARD_STRINGS: {},
+      isSiblingSession: () => false,
+      releaseCardIoTimer: (cid: unknown) => calls.released.push(cid),
+      syncCardBody: (k: string) => calls.bodies.push(k),
+      syncCardBodies: () => {},
+      ensureCardIo: (...a: unknown[]) => calls.io.push(a),
+      ensureArtifacts: (cid: unknown) => calls.arts.push(cid),
+      scheduleLayoutRefresh: () => {},
+      MOTION: { move: 320, expand: 240 },
+      cardOf: (s: { key: string }, col: string) => ({ id: s.key, title: s.key, status: col }),
+      cardBodyShown: () => false,
+      acPrefetch: () => {},
+      openArtifactModal: (...a: unknown[]) => calls.modal.push(a),
+    };
+    const { wireInbox } = load<{ wireInbox(h: unknown): void }>(['placeCard', 'inboxPaint', 'wireInbox'], [], env);
+    wireInbox(host);
+    return { host, handlers, calls, env };
+  }
+
+  it('ui-toggle from the element: the open state, the body, the 지시/응답 (forced) and files; closing releases the retry', () => {
+    const w = wired();
+    w.handlers['ui-toggle']({ target: w.host, detail: { cardId: 'k1', expanded: true } });
+    expect(w.env._expanded.has('k1')).toBe(true);
+    expect(w.calls.bodies).toEqual(['k1']);
+    expect(w.calls.io).toEqual([['k1', true]]);
+    expect(w.calls.arts).toEqual(['c1']);
+    w.handlers['ui-toggle']({ target: w.host, detail: { cardId: 'k1', expanded: false } });
+    expect(w.env._expanded.has('k1')).toBe(false);
+    expect(w.calls.released).toEqual(['c1']);
+  });
+
+  it('the agent tree’s own ui-toggle inside an open body passes through untouched', () => {
+    const w = wired();
+    w.handlers['ui-toggle']({ target: { tagName: 'UI-AGENT-TREE' }, detail: { id: 'a1', expanded: true } });
+    expect(w.env._expanded.size).toBe(0);
+    expect(w.calls.bodies).toEqual([]);
+  });
+
+  it('ui-group-toggle: the reader’s day choice for the page, the day’s cards get their faces before the element draws them', () => {
+    const w = wired();
+    w.handlers['ui-group-toggle']({ target: w.host, detail: { columnId: 'done', groupId: '2026-10-20', open: true } });
+    expect(w.env._doneGroupOpen['2026-10-20']).toBe(true);
+    expect(w.env._cardDrawn.d1).toBe(true);
+    const data = w.host.data as { columns: Array<{ groups: Array<{ open: boolean; cards: Card[] }> }> };
+    expect(data.columns[0].groups[0]).toMatchObject({ open: true, cards: [{ id: 'd1', title: 'd1', status: 'idle' }] });
+    w.handlers['ui-group-toggle']({ target: w.host, detail: { columnId: 'done', groupId: '2026-10-20', open: false } });
+    expect(w.env._cardDrawn.d1).toBeUndefined();
+    expect((w.host.data as typeof data).columns[0].groups[0].cards[0]).toEqual({
+      id: 'd1',
+      title: '',
+      status: 'done',
+      bodyMode: 'slot',
+    });
+  });
+
+  it('ui-artifact opens the viewer on that session’s file, focus returning to the chip', () => {
+    const w = wired();
+    const chip = { focus: () => {} };
+    w.handlers['ui-artifact']({
+      target: w.host,
+      detail: { cardId: 'k1', artifactId: 'a7' },
+      composedPath: () => [chip, w.host],
+    });
+    expect(w.calls.modal).toEqual([['c1', 'a7', chip]]);
   });
 });
 

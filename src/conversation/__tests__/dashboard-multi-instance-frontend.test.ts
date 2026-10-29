@@ -25,11 +25,11 @@ describe('Dashboard multi-instance frontend (#814)', () => {
     expect(DASHBOARD_TS).toContain('#EC7063');
   });
 
-  it('exposes getEnvBadgeColor for renderCard', () => {
+  it('exposes getEnvBadgeColor for renderCardBody', () => {
     expect(DASHBOARD_TS).toContain('function getEnvBadgeColor');
   });
 
-  it('renderCard suppresses the env badge when only one env is in the cache', () => {
+  it('renderCardBody suppresses the env badge when only one env is in the cache', () => {
     // The condition `_envCount() > 1` is the gate. Drop it and a
     // single-instance deploy gets a meaningless badge on every card.
     expect(DASHBOARD_TS).toContain('_envCount() > 1');
@@ -52,11 +52,13 @@ describe('Dashboard multi-instance frontend (#814)', () => {
   });
 
   it('CSS `.env-badge` rule is present in the inline style block', () => {
-    expect(DASHBOARD_TS).toContain('.card .card-refs .env-badge');
+    // The open card's body is the page's (a light-DOM slot of <ui-agent-inbox>): its
+    // rules are scoped by .card-body, not by the old inline .card.
+    expect(DASHBOARD_TS).toContain('.card-body .card-refs .env-badge');
   });
 
   // PR #815 review #1 — sibling cards must not invite action clicks.
-  it('renderCard suppresses action buttons on sibling cards (env mismatch)', () => {
+  it('renderCardBody suppresses action buttons on sibling cards (env mismatch)', () => {
     // The bundle must declare SELF_INSTANCE_NAME and the isSibling check.
     expect(DASHBOARD_TS).toContain('SELF_INSTANCE_NAME');
     expect(DASHBOARD_TS).toContain('s.environment.instanceName !== SELF_INSTANCE_NAME');
