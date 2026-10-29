@@ -27,9 +27,8 @@
  *                                              incl. `work_log` entries (owner/admin scoped)
  */
 
-import { readFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import { constants as zlibConstants } from 'node:zlib';
 import type { FollowupItem, FollowupItemState } from '@soma/slack/followup-queue';
 import type { FollowupQueueView } from '@soma/slack/followup-queue-blocks';
@@ -116,10 +115,14 @@ import {
 } from './permission-prompts';
 import { getConversation, resummarizeTurn } from './recorder';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
+import { UI_LIB_FILE, UI_LIB_VERSION, uiLibDistDir } from './ui-lib';
 import { getUserMediaStore } from './user-media';
 import type { WorkLogEntry } from './work-log';
 
 const logger = new Logger('Dashboard');
+
+/** The @2lab.ai/ui build the /dashboard/ui route serves — moved to ./ui-lib (the settings page loads it too). */
+export { UI_LIB_FILE, uiLibDistDir };
 
 /** Who reads a usage report: an admin or an operator token sees per-user spend; everyone else the totals and models. */
 export interface UsageViewer {
@@ -136,37 +139,6 @@ export function usageForViewer<T extends { byUser: unknown; tokenRankings: unkno
 ): T {
   if (viewer?.isAdmin || viewer?.mode === 'bearer_header' || viewer?.mode === 'bearer_cookie') return report;
   return { ...report, byUser: {}, tokenRankings: [], costRankings: [] };
-}
-
-/** A file the /dashboard/ui route serves: a flat `dist/*.js` name of @2lab.ai/ui (no dirs, no dots-only names). */
-export const UI_LIB_FILE = /^[A-Za-z0-9_][A-Za-z0-9_-]*\.js$/;
-let uiLibDir: string | null | undefined;
-/** Installed @2lab.ai/ui version — busts the browser cache of the entry file (served for an hour) on upgrade. */
-const UI_LIB_VERSION = encodeURIComponent(uiLibVersion());
-// The package is located with require.resolve (a path, not a load) and its
-// manifest read as a file: the import graph (scripts/verification) follows
-// every module load, and createRequire / node:module are loads it cannot follow.
-function uiLibPackageJson(): string {
-  return require.resolve('@2lab.ai/ui/package.json');
-}
-function uiLibVersion(): string {
-  try {
-    return String(JSON.parse(readFileSync(uiLibPackageJson(), 'utf8')).version || '0');
-  } catch {
-    return '0';
-  }
-}
-/** `dist/` of the installed @2lab.ai/ui, or null (logged once) when the package is missing. */
-export function uiLibDistDir(): string | null {
-  if (uiLibDir === undefined) {
-    try {
-      uiLibDir = join(dirname(uiLibPackageJson()), 'dist');
-    } catch (err) {
-      uiLibDir = null;
-      logger.error('@2lab.ai/ui is not installed — the work log tool call cards cannot load', err);
-    }
-  }
-  return uiLibDir;
 }
 
 // ── Types ──────────────────────────────────────────────────────────
