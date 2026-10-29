@@ -8450,9 +8450,15 @@ function wireInbox(host) {
     if (e.target !== host || !e.detail) return;
     var key = String(e.detail.cardId);
     var open = !!e.detail.expanded;
+    var s = _sessionCache[key];
+    // A card whose session left the cache (off the board, before the next render
+    // drops it) has nothing to build: it stays closed instead of growing an empty body.
+    if (open && !s) {
+      e.preventDefault();
+      return;
+    }
     if (open) _expanded.add(key);
     else _expanded.delete(key);
-    var s = _sessionCache[key];
     if (!open) releaseCardIoTimer(s ? s.conversationId : null);
     syncCardBody(key, false);
     if (open) {
