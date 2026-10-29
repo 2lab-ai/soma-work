@@ -11631,7 +11631,15 @@ function renderPanelControls(s) {
   var el = document.getElementById('panel-controls');
   if (!el || !s) return;
   // An open menu holds its anchor here still until it closes; it follows the session through its data.
-  if (!isPickingModel(el)) {
+  // Only its own session's: a panel that moved to another session under it (openPanel from a deep
+  // link) closes it (no ui-open-change) and is written for the new session — a pick there would go
+  // to the session it was opened for.
+  var held = el.querySelector('ui-model-picker[open]');
+  if (held && held.getAttribute('data-mp-key') !== s.key) {
+    held.open = false;
+    held = null;
+  }
+  if (!held) {
     var isOwner = !!s.ownerId && s.ownerId === currentUserId;
     var canSwitch = isOwner && !s.terminated && s.sessionState !== 'SLEEPING' && !isSiblingSession(s);
     var modelShort = esc(s.model || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
