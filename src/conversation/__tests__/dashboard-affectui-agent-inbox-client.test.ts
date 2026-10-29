@@ -689,7 +689,11 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
       acPrefetch: () => {},
       openArtifactModal: (...a: unknown[]) => calls.modal.push(a),
     };
-    const { wireInbox } = load<{ wireInbox(h: unknown): void }>(['placeCard', 'inboxPaint', 'wireInbox'], [], env);
+    const { wireInbox } = load<{ wireInbox(h: unknown): void }>(
+      ['placeCard', 'inboxPaint', 'inboxChipOf', 'wireInbox'],
+      [],
+      env,
+    );
     wireInbox(host);
     return { host, handlers, calls, env };
   }
@@ -730,15 +734,33 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
     });
   });
 
-  it('ui-artifact opens the viewer on that session’s file, focus returning to the chip', () => {
+  // #560 review P2: the element emits ui-artifact on itself, so composedPath()[0] is the host (no
+  // tabindex: focus never came back). The chip is found in its shadow root by its key.
+  it('ui-artifact opens the viewer on that session’s file, focus returning to the chip in the element’s shadow root', () => {
     const w = wired();
-    const chip = { focus: () => {} };
-    w.handlers['ui-artifact']({
-      target: w.host,
-      detail: { cardId: 'k1', artifactId: 'a7' },
-      composedPath: () => [chip, w.host],
-    });
+    const chipOf = (key: string) => ({ focus: () => {}, getAttribute: (n: string) => (n === 'data-key' ? key : null) });
+    const other = chipOf('art:k1:a6');
+    const chip = chipOf('art:k1:a7');
+    let asked = '';
+    (w.host as Record<string, unknown>).shadowRoot = {
+      querySelectorAll: (sel: string) => {
+        asked = sel;
+        return [other, chip];
+      },
+    };
+    const fire = () =>
+      w.handlers['ui-artifact']({
+        target: w.host,
+        detail: { cardId: 'k1', artifactId: 'a7' },
+        composedPath: () => [w.host, { tagName: 'BODY' }], // what the browser gives: the host first
+      });
+    fire();
+    expect(asked).toBe('[data-art]');
     expect(w.calls.modal).toEqual([['c1', 'a7', chip]]);
+    // The chip is gone (a re-render): the element itself.
+    (w.host as Record<string, unknown>).shadowRoot = { querySelectorAll: () => [other] };
+    fire();
+    expect(w.calls.modal[1]).toEqual(['c1', 'a7', w.host]);
   });
 });
 
