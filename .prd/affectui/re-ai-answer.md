@@ -1,6 +1,7 @@
 # RE — AI Answer → 세션 패널 대화의 모델 응답 턴
 
 Status: 구현 [SHIPPED] · Date: 2026-10-26 · 기준 main `ff6c9ac` · 이슈 #440 (에픽 #437) · SSOT [`ssot.md`](ssot.md)
+> 2026-10-29: 인라인 사본(`ansLinkify` … `renderAnswerCard`, `ansLight` · `ansBind` · `copyAnswer`, `.ans-card` · `.ans-src` · `.ans-cite` · `.ans-foot` · `.ans-writing` 스타일)은 이 설계를 옮긴 라이브러리 요소 `@2lab.ai/ui` `<ui-ai-answer flat lang="ko">`(0.4.2)로 바뀌었다 — 턴 답변, `응답 작성 중` 행, 서브에이전트 답변 모두. 링크화·마크다운·링크 카드/칩·점등·복사·상태 문구는 라이브러리 `ai-answer.test.ts`가, 불러오기·캐시·경합 가드(`ansLoad`)·`linkTitles`(세션 PR/이슈 제목)·실패/빈 답변 위의 요약·Raw·헤더의 응답 시간·`animate`(캐시에서 다시 그린 답변은 진입 모션 없음)·`ui-retry` → `ansLoad`는 `dashboard-affectui-ai-answer-client.test.ts`가 고정한다(머리말 표가 옮긴 테스트의 대응). 차이: 복사·다시 시도 버튼은 라이브러리 모양(`.ans-btn`), 실패 문구는 `--st-fail-text`, 서브에이전트 답변을 요약으로 대신할 때 복사도 그 요약을 담는다.
 레퍼런스: <https://www.affectui.com/components/ai-answer> — affectUI **Pro**. 코드·CSS 본문·SVG는 옮기지 않는다. 구조·상태·수치만 읽고,
 대시보드 토큰(`--surface*`, `--text*`, `--ib-*`, `--st-*`, `--ease-out`, `--dur-*`)으로 다시 짠다.
 
