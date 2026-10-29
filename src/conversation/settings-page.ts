@@ -23,6 +23,7 @@
  */
 
 import { MEMORY_CLIENT_JS, MEMORY_TAB_CSS, MEMORY_TAB_HTML } from './settings-memory-tab';
+import { UI_LIB_VERSION } from './ui-lib';
 
 export interface SettingsPageTab {
   id: string;
@@ -43,13 +44,30 @@ export const SETTINGS_PAGE_CSS = String.raw`
   --accent: #4d9de0; --green: #3ecf8e; --yellow: #f6c90e; --red: #f26b6b;
   --danger-bg: rgba(242,107,107,0.08);
   --ease-out: cubic-bezier(0.23, 1, 0.32, 1); --dur-press: 160ms; --dur-fade: 180ms;
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", sans-serif; --radius: 10px;
+  /* the dashboard's status and pill tones, for the @2lab.ai/ui elements (usage bar) */
+  --ib-pill: #2f2f35; --st-wait: #f5a524; --st-done: #3fb968; --st-fail: #f26b6b;
 }
 [data-theme="light"] {
   --bg: #f7f7f7; --surface: #ffffff; --surface-raised: #f1f1f1; --border: #e4e4e4;
   --text: #18181a; --text-secondary: #57575d; --text-tertiary: #68686f;
-  --accent: #1f6fb5; --green: #13795b; --red: #c0392b; --danger-bg: rgba(192,57,43,0.06);
+  --accent: #1f6fb5; --green: #13795b; --yellow: #9a6700; --red: #c0392b; --danger-bg: rgba(192,57,43,0.06);
+  --ib-pill: #e2e2e2; --st-wait: #c2780a; --st-done: #137a3e; --st-fail: #d43a3a;
 }
-html, body { background: var(--bg); color: var(--text); font: 14px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", sans-serif; }
+html, body { background: var(--bg); color: var(--text); font: 14px/1.5 var(--font); }
+/* @2lab.ai/ui elements (the 기억 tab's <ui-memory-panel>) draw with these tokens: each --ui-* an element
+   reads is set on its wrapper from the same-named page token. Not on the element itself — its shadow :host
+   defines --border: var(--ui-border, …), so --ui-border: var(--border) there is a cycle. Inherited from the
+   wrapper, the values arrive resolved and follow the theme switch (the dashboard's .ui-tok, same names). */
+.ui-tok {
+  --ui-bg: var(--bg); --ui-surface: var(--surface); --ui-surface-raised: var(--surface-raised);
+  --ui-border: var(--border); --ui-border-focus: var(--border-focus); --ui-text: var(--text);
+  --ui-text-secondary: var(--text-secondary); --ui-text-tertiary: var(--text-tertiary); --ui-accent: var(--accent);
+  --ui-green: var(--green); --ui-yellow: var(--yellow); --ui-red: var(--red); --ui-ib-pill: var(--ib-pill);
+  --ui-st-wait: var(--st-wait); --ui-st-done: var(--st-done); --ui-st-fail: var(--st-fail);
+  --ui-ease-out: var(--ease-out); --ui-dur-press: var(--dur-press); --ui-dur-fade: var(--dur-fade);
+  --ui-radius: var(--radius); --ui-font: var(--font);
+}
 a { color: var(--accent); }
 code { font-family: "SF Mono", "Fira Code", ui-monospace, monospace; font-size: 12px; }
 .topbar { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 0 20px; background: var(--surface); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
@@ -531,6 +549,7 @@ ${MEMORY_TAB_HTML}
   </form>
 </dialog>
 <script>${MEMORY_CLIENT_JS}${TAB_HOOKS_JS}${SETTINGS_CLIENT_JS}</script>
+<script type="module" src="/dashboard/ui/memory-panel.js?v=${UI_LIB_VERSION}"></script>
 </body>
 </html>`;
 }

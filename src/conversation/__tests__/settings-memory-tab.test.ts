@@ -5,6 +5,8 @@
  * a conflicting edit reloads and keeps the user's draft.
  */
 
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { MEMORY_CLIENT_JS } from '../settings-memory-tab';
 import { renderSettingsPage, SETTINGS_CLIENT_JS } from '../settings-page';
@@ -29,35 +31,6 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
-// The memory-panel helpers the L1 functions call (#443 — pinned in
-// dashboard-affectui-memory-panel.test.ts): loaded alongside them, no assertion here changes.
-const L1_PANEL_FNS = [
-  'fmtNum',
-  'l1El',
-  'l1Fold',
-  'l1Reduced',
-  'l1FocusAct',
-  'l1Grow',
-  'l1Matches',
-  'l1ApplyView',
-  'l1Sync',
-  'l1Roll',
-  'l1TrayState',
-  'l1PaintTray',
-  'l1Notice',
-  'l1UndoArm',
-  'l1OpenDrafts',
-  'l1AddOpen',
-  'l1AddClose',
-  'l1Reveal',
-  'l1FocusAfterDelete',
-  'l1Say',
-  'l1Held',
-  'l1Unsay',
-  'l1TrayHeld',
-  'l1TrayHold',
-];
-
 function block(over: Record<string, unknown> = {}) {
   return {
     entries: ['테스트 전에 빌드', '배포는 dev 먼저'],
@@ -75,8 +48,67 @@ describe('기억 tab shell', () => {
     const html = renderSettingsPage();
     expect(html).toContain('<a href="#memory">기억</a>');
     expect(html).toContain('<div data-tab="memory" class="page" hidden>');
-    const script = /<script>([\s\S]*)<\/script>\s*<\/body>/.exec(html)![1];
+    const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
     expect(() => new Function(script)).not.toThrow();
+  });
+
+  it('개인 메모리 is the library element: its script from /dashboard/ui, inside the settings token bridge', async () => {
+    const html = renderSettingsPage();
+    const { UI_LIB_FILE, UI_LIB_VERSION, uiLibDistDir } = await import('../ui-lib');
+    expect(html).toContain(`<script type="module" src="/dashboard/ui/memory-panel.js?v=${UI_LIB_VERSION}"></script>`);
+    expect(UI_LIB_FILE.test('memory-panel.js')).toBe(true);
+    expect(existsSync(join(uiLibDistDir() as string, 'memory-panel.js'))).toBe(true); // the pinned build ships it
+    expect(html).toContain('<div class="ui-tok"><ui-memory-panel id="l1-panel" lang="ko"></ui-memory-panel></div>');
+    // the bridge: every token the element reads, from the same-named settings token, both themes
+    const css = /<style>([\s\S]*?)<\/style>/.exec(html)![1];
+    const bridge = /\.ui-tok \{([^}]*)\}/.exec(css)![1];
+    for (const t of [
+      'bg',
+      'surface',
+      'surface-raised',
+      'border',
+      'border-focus',
+      'text',
+      'text-secondary',
+      'text-tertiary',
+      'accent',
+      'yellow',
+      'red',
+      'ib-pill',
+      'st-wait',
+      'st-done',
+      'st-fail',
+      'ease-out',
+      'dur-press',
+      'dur-fade',
+      'radius',
+      'font',
+    ]) {
+      expect(bridge, t).toContain(`--ui-${t}: var(--${t});`);
+      expect(/:root \{[^}]*\}/.exec(css)![0], t).toContain(`--${t}:`);
+    }
+    // light: the settings page's darker amber for the warn band (was .mm's --mm-warn), and the status tones
+    expect(/\[data-theme="light"\] \{[^}]*\}/.exec(css)![0]).toMatch(/--yellow: #9a6700;[\s\S]*--st-wait: #c2780a;/);
+  });
+
+  it('the inline 개인 메모리 renderer is gone: no chips, tray, cards or .mm-* styles of its own', () => {
+    const html = renderSettingsPage();
+    for (const gone of [
+      'id="l1-chips"',
+      'id="l1-foot"',
+      'id="l1-undo"',
+      'id="l1-total"',
+      'class="mm',
+      '.mm-',
+      '.meter-line',
+      'renderL1Card',
+      'l1TrayHold',
+    ]) {
+      expect(html, gone).not.toContain(gone);
+    }
+    // 지식 페이지 and 관찰 기록 stay inline
+    expect(html).toContain('id="mem-page-list"');
+    expect(html).toContain('id="mem-ep-body"');
   });
 
   it('the memory script ships byte for byte (no template-literal syntax)', () => {
@@ -85,256 +117,339 @@ describe('기억 tab shell', () => {
   });
 });
 
-describe('개인 메모리 cards', () => {
-  const r = load<{ renderL1Card(t: string, b: any, editing: any): string }>(
-    ['esc', 'escAttr', 'fmtNum', 'renderL1Card'],
-    ['L1_LABELS', 'L1_FILES'],
-    { _memUndo: null },
-  );
+// ── 개인 메모리 = <ui-memory-panel> (@2lab.ai/ui) — the host glue ──
+// The element's rendering, chips, search, edit, delete + undo, add, clear and refuse() are pinned by the
+// library's src/components/memory-panel/memory-panel.test.ts. Here: what the tab hands it (data), where each
+// of its write events goes (route, revision, CSRF via apiWrite), one write at a time, and how a refusal comes back.
+const L1_GLUE_FNS = [
+  'memStatus',
+  'memHold',
+  'esc',
+  'loadMemory',
+  'l1Stores',
+  'paintL1',
+  'l1Route',
+  'l1OnWrite',
+  'l1Say',
+  'l1Held',
+  'l1Unsay',
+  'l1Write',
+];
+const L1_GLUE_VARS = ['L1_LABELS', 'L1_FILES', 'L1_TARGETS', 'L1_EMPTY', 'L1_WRITES'];
 
-  it('one row per entry with edit / delete, a meter with visible numbers, an add box with the per-entry cap', () => {
-    const html = r.renderL1Card('memory', block(), null);
-    expect(html).toContain('에이전트 노트');
-    expect(html).toContain('MEMORY.md');
-    expect(html).toContain('<meter min="0" max="2200"');
-    expect(html).toContain('30 / 2,200자');
-    expect(html.match(/<li>/g)).toHaveLength(2);
-    expect(html).toContain('onclick="l1EditStart(\'memory\',1)"');
-    expect(html).toContain('onclick="l1Delete(\'memory\',0)"');
-    expect(html).toContain('한 항목 최대 660자');
-    expect(html).toContain('모두 지우기');
-    expect(html).not.toContain('§');
+/** The element as the host sees it: `data` in, cancelable `ui-*` events out, `refuse()`. */
+function fakePanel() {
+  const listeners: Record<string, Array<(e: any) => void>> = {};
+  const panel: any = {
+    datas: [] as any[],
+    log: [] as string[],
+    get data() {
+      return this.datas[this.datas.length - 1];
+    },
+    set data(v: any) {
+      this.datas.push(v);
+      this.log.push('data');
+    },
+    addEventListener: vi.fn((type: string, fn: (e: any) => void) => {
+      (listeners[type] ||= []).push(fn);
+    }),
+    refuse: vi.fn(() => {
+      panel.log.push('refuse');
+      return true;
+    }),
+    /** Dispatch like the element: the same detail object the listener got goes to refuse(). */
+    fire(type: string, detail: Record<string, unknown>) {
+      const e = {
+        type,
+        detail,
+        currentTarget: panel,
+        defaultPrevented: false,
+        preventDefault() {
+          this.defaultPrevented = true;
+        },
+      };
+      for (const fn of listeners[type] || []) fn(e);
+      return e;
+    },
+  };
+  return panel;
+}
+
+function l1Env(opts: { apiWrite?: any; fetch?: any; mem?: any } = {}) {
+  const panel = fakePanel();
+  const els: Record<string, any> = {
+    'l1-panel': panel,
+    'mem-l1-body': { innerHTML: '<div class="notice">불러오는 중…</div>' },
+    'mem-status': { textContent: '', className: '', setAttribute: vi.fn() },
+  };
+  const mem = opts.mem ?? { l1: { memory: block(), user: block({ entries: ['직접적인 말투'], revision: 'u1' }) } };
+  const fns = load<any>(L1_GLUE_FNS, L1_GLUE_VARS, {
+    document: { getElementById: (id: string) => els[id] ?? null },
+    _mem: mem,
+    _memLoaded: true,
+    apiWrite: opts.apiWrite ?? vi.fn(async () => ({ ok: true, data: { ok: true, l1: block({ revision: 'r2' }) } })),
+    fetch:
+      opts.fetch ?? vi.fn(async () => ({ ok: true, json: async () => ({ l1: mem.l1, pages: [], episodicDates: [] }) })),
+    paintPageList: () => {},
+    paintDates: () => {},
   });
+  fns.paintL1();
+  return { fns, panel, els, mem, status: els['mem-status'] };
+}
+const tick = () => new Promise((r) => setTimeout(r, 0));
 
-  it('marks a full store and escapes entry text', () => {
-    const html = r.renderL1Card(
-      'user',
-      block({ entries: ['<script>x</script>'], totalChars: 1375, charLimit: 1375 }),
-      null,
-    );
-    expect(html).toContain('meter-line is-full');
-    expect(html).toContain('가득 참');
-    expect(html).not.toContain('<script>x');
-  });
-
-  it('edit mode shows a textarea with the entry and save / cancel', () => {
-    const html = r.renderL1Card('memory', block(), { index: 0, text: '테스트 전에 빌드' });
-    expect(html).toContain('<textarea id="l1-edit-memory"');
-    expect(html).toContain('onclick="l1Save(\'memory\',0)"');
-  });
-});
-
-describe('개인 메모리 undo (review R5)', () => {
-  it('undo asks for an exact restore, and a refused restore keeps the text in the add box and the undo offered', async () => {
-    const addBox: any = { value: '' };
-    const status: any = { textContent: '', setAttribute() {} };
-    const long = '긴 노트 '.repeat(140); // 700 chars: more than a new note may have, saved by Slack
-    const apiWrite = vi.fn().mockResolvedValueOnce({ ok: false, status: 400, error: '저장 실패' });
-    const fns = load<any>(
-      [
-        'l1Undo',
-        'l1Write',
-        'memStatus',
-        'restoreL1Draft',
-        'l1Busy',
-        'esc',
-        'escAttr',
-        'memHold',
-        'memKeepDraft',
-        'memRecover',
-        'paintRecover',
-        ...L1_PANEL_FNS,
+describe('개인 메모리 — the data <ui-memory-panel> is given', () => {
+  it('one store per L1 block: label, file, limits, the store’s separator, entries, and the tab’s empty line', () => {
+    const { panel, els } = l1Env({
+      mem: {
+        l1: {
+          memory: block(),
+          user: block({ entries: [], charLimit: 1375, perEntryCap: 412, totalChars: 0, revision: 'u1' }),
+        },
+      },
+    });
+    expect(panel.data).toEqual({
+      stores: [
+        {
+          id: 'memory',
+          label: '에이전트 노트',
+          file: 'MEMORY.md',
+          limit: 2200,
+          perEntryLimit: 660,
+          separator: '\n§\n',
+          entries: ['테스트 전에 빌드', '배포는 dev 먼저'],
+          empty: '비어 있음 — Slack에서 "기억해줘"라고 하거나 아래에서 추가하세요.',
+        },
+        expect.objectContaining({ id: 'user', label: '사용자 프로필', file: 'USER.md', limit: 1375, entries: [] }),
       ],
-      ['L1_LABELS'],
-      {
-        document: { getElementById: (id: string) => (id === 'l1-new-memory' ? addBox : status) },
-        _mem: { l1: { memory: { entries: [], revision: 'r2' } } },
-        _memUndo: { target: 'memory', text: long },
-        apiWrite,
-        paintL1: () => {},
-        loadMemory: async () => {},
-      },
-    );
-    await fns.l1Undo();
-    expect(apiWrite).toHaveBeenCalledWith('POST', '/api/memory/l1/memory', {
-      text: long,
-      revision: 'r2',
-      restore: true,
     });
-    expect(addBox.value).toBe(long);
+    expect(els['mem-l1-body'].innerHTML).toBe(''); // the loading notice goes once data is in
+  });
+
+  it('the usage the element counts (entries joined with the separator) is the store’s own totalChars', async () => {
+    const store = await import('../../user-memory-store');
+    const user = 'U-l1-usage';
+    store.addMemory(user, 'memory', '테스트 전에 빌드');
+    store.addMemory(user, 'memory', '여러 줄\n노트');
+    const b = store.loadMemoryWithRevision(user, 'memory');
+    const { panel } = l1Env({ mem: { l1: { memory: { ...b, perEntryCap: 660 }, user: block() } } });
+    const s = panel.data.stores[0];
+    expect(s.entries.join(s.separator).length).toBe(b.totalChars);
+  });
+
+  it('each write event is bound once, however often the stores are repainted', () => {
+    const { fns, panel } = l1Env();
+    fns.paintL1();
+    fns.paintL1();
+    expect(panel.addEventListener.mock.calls.map((c: unknown[]) => c[0])).toEqual([
+      'ui-add',
+      'ui-edit',
+      'ui-delete',
+      'ui-restore',
+      'ui-clear',
+    ]);
+    expect(panel.datas).toHaveLength(3);
   });
 });
 
-describe('개인 메모리 — a repaint keeps what is typed (review R9)', () => {
-  const L1_FNS = [
-    'esc',
-    'escAttr',
-    'fmtNum',
-    'renderL1Card',
-    'paintL1',
-    'l1Write',
-    'l1EditStart',
-    'l1Save',
-    'l1Add',
-    'l1Delete',
-    'l1Cancel',
-    'l1Busy',
-    'memStatus',
-    'restoreL1Draft',
-    'memHold',
-    'memKeepDraft',
-    'memRecover',
-    'paintRecover',
-    ...L1_PANEL_FNS,
-  ];
-  function l1Page() {
-    const els: Record<string, any> = { status: { textContent: '', setAttribute() {} } };
-    const body: any = {};
-    let html = '';
-    Object.defineProperty(body, 'innerHTML', {
-      get: () => html,
-      set: (v: string) => {
-        html = v;
-        for (const k of Object.keys(els)) if (k.startsWith('l1-')) delete els[k];
-        for (const m of v.matchAll(/<textarea id="([^"]+)"[^>]*>([\s\S]*?)<\/textarea>/g)) {
-          els[m[1]] = {
-            value: m[2]
-              .replace(/&lt;/g, '<')
-              .replace(/&gt;/g, '>')
-              .replace(/&quot;/g, '"')
-              .replace(/&#39;/g, "'")
-              .replace(/&amp;/g, '&'),
-            focus() {},
-          };
-        }
-      },
-    });
-    els['mem-l1-body'] = body;
-    return { els, doc: { getElementById: (id: string) => els[id] ?? (id.startsWith('l1-') ? null : els.status) } };
-  }
-  const block = (entries: string[], revision: string) => ({
-    entries,
-    charLimit: 2200,
-    totalChars: 10,
-    percentUsed: 1,
-    perEntryCap: 660,
-    revision,
+describe('개인 메모리 — each write goes to its L1 route with the loaded revision', () => {
+  it('add / edit / delete / undo / clear: method, route, body', async () => {
+    const apiWrite = vi.fn(async () => ({ ok: true, data: { ok: true, l1: block() } })); // the revision stays r1
+    const { panel } = l1Env({ apiWrite });
+    const long = '긴 노트 '.repeat(140); // a note Slack saved: longer than a new note may be
+    const sent: Array<[string, Record<string, unknown>]> = [
+      ['ui-add', { store: 'memory', text: '새 메모' }],
+      ['ui-edit', { store: 'memory', index: 1, text: '고친 메모', previous: '배포는 dev 먼저' }],
+      ['ui-delete', { store: 'memory', index: 0, text: '테스트 전에 빌드' }],
+      ['ui-restore', { store: 'memory', index: 0, text: long }],
+      ['ui-clear', { store: 'user' }],
+    ];
+    for (const [type, detail] of sent) {
+      expect(panel.fire(type, detail).defaultPrevented).toBe(false);
+      await tick();
+    }
+    expect(apiWrite.mock.calls).toEqual([
+      ['POST', '/api/memory/l1/memory', { text: '새 메모', revision: 'r1' }],
+      ['PUT', '/api/memory/l1/memory/1', { text: '고친 메모', revision: 'r1' }],
+      ['DELETE', '/api/memory/l1/memory/0', { revision: 'r1' }],
+      ['POST', '/api/memory/l1/memory', { text: long, revision: 'r1', restore: true }], // the exact note (review R5)
+      ['DELETE', '/api/memory/l1/user', { revision: 'u1' }],
+    ]);
+    expect(panel.refuse).not.toHaveBeenCalled();
   });
 
-  it('deleting one entry keeps the editor of another, re-attached to the same text, and keeps the add boxes', async () => {
-    const p = l1Page();
-    const mem: any = { l1: { memory: block(['e0', 'e1', 'e2'], 'r1'), user: block(['u0'], 'u1') } };
-    const fns = load<any>(L1_FNS, ['L1_LABELS', 'L1_FILES'], {
-      document: p.doc,
-      _mem: mem,
-      _memUndo: null,
-      apiWrite: vi.fn(async () => ({ ok: true, data: { ok: true, l1: block(['e1', 'e2'], 'r2') } })),
-      loadMemory: async () => {},
-    });
-    fns.paintL1();
-    fns.l1EditStart('memory', 1);
-    p.els['l1-edit-memory'].value = 'e1, edited';
-    p.els['l1-new-user'].value = 'a profile note in progress';
-    await fns.l1Delete('memory', 0);
-    expect(p.els['l1-edit-memory']?.value).toBe('e1, edited');
-    expect(p.els['mem-l1-body'].innerHTML).toContain("l1Save('memory',0)"); // now entry 0
-    expect(p.els['l1-new-user'].value).toBe('a profile note in progress');
-  });
-
-  it('a successful save of the editor closes it; cancel closes it; an add clears only its own box', async () => {
-    const p = l1Page();
-    const mem: any = { l1: { memory: block(['e0'], 'r1'), user: block([], 'u1') } };
+  it('the answer’s block is the next data, and the next write sends its revision', async () => {
     const apiWrite = vi
       .fn()
-      .mockResolvedValueOnce({ ok: true, data: { ok: true, l1: block(['e0, edited'], 'r2') } })
-      .mockResolvedValueOnce({ ok: true, data: { ok: true, l1: block(['e0, edited', 'new'], 'r3') } });
-    const fns = load<any>(L1_FNS, ['L1_LABELS', 'L1_FILES'], {
-      document: p.doc,
-      _mem: mem,
-      _memUndo: null,
-      apiWrite,
-      loadMemory: async () => {},
+      .mockResolvedValueOnce({ ok: true, data: { ok: true, l1: block({ entries: ['a', 'b', 'c'], revision: 'r2' }) } })
+      .mockResolvedValueOnce({ ok: true, data: { ok: true, l1: block({ entries: ['a', 'c'], revision: 'r3' }) } });
+    const { panel, mem } = l1Env({ apiWrite });
+    panel.fire('ui-add', { store: 'memory', text: 'c' });
+    await tick();
+    expect(mem.l1.memory.revision).toBe('r2');
+    expect(panel.data.stores[0].entries).toEqual(['a', 'b', 'c']);
+    panel.fire('ui-delete', { store: 'memory', index: 1, text: 'b' });
+    await tick();
+    expect(apiWrite).toHaveBeenLastCalledWith('DELETE', '/api/memory/l1/memory/1', { revision: 'r2' });
+    expect(panel.data.stores[0].entries).toEqual(['a', 'c']);
+  });
+
+  it('an edit or delete whose entry is not the one this tab has at that index is refused and reloads; nothing is sent', async () => {
+    const apiWrite = vi.fn();
+    const fetch = vi.fn(async () => ({ ok: true, json: async () => ({ l1: { memory: block(), user: block() } }) }));
+    const { panel } = l1Env({ apiWrite, fetch });
+    panel.fire('ui-edit', { store: 'memory', index: 1, text: 'x', previous: 'not this one' });
+    panel.fire('ui-delete', { store: 'memory', index: 0, text: 'not this one either' });
+    await tick();
+    expect(apiWrite).not.toHaveBeenCalled();
+    expect(panel.refuse).toHaveBeenCalledTimes(2);
+    expect(panel.refuse.mock.calls[0][0].type).toBe('ui-edit');
+    expect(fetch).toHaveBeenCalled();
+  });
+
+  it('an event for a store this tab does not have is cancelled', () => {
+    const apiWrite = vi.fn();
+    const { panel } = l1Env({ apiWrite });
+    expect(panel.fire('ui-add', { store: 'pages', text: 'x' }).defaultPrevented).toBe(true);
+    expect(apiWrite).not.toHaveBeenCalled();
+  });
+});
+
+describe('개인 메모리 — one memory write at a time (review R10, R11)', () => {
+  it('while any write of the tab is out, every element write is cancelled and #mem-status says 저장 중', async () => {
+    let answer: (v: unknown) => void = () => {};
+    const apiWrite = vi.fn(() => new Promise((res) => (answer = res)));
+    const { fns, panel, status } = l1Env({ apiWrite });
+    panel.fire('ui-delete', { store: 'memory', index: 0, text: '테스트 전에 빌드' });
+    expect(fns.memHold.at).toBeGreaterThan(0); // pages and episodic wait for it too
+    for (const [type, detail] of [
+      ['ui-delete', { store: 'memory', index: 0, text: '테스트 전에 빌드' }], // a second click: no double delete
+      ['ui-edit', { store: 'memory', index: 1, text: 'x', previous: '배포는 dev 먼저' }],
+      ['ui-add', { store: 'user', text: 'y' }],
+      ['ui-restore', { store: 'memory', index: 0, text: 'z' }],
+      ['ui-clear', { store: 'user' }],
+    ] as const) {
+      expect(panel.fire(type, detail).defaultPrevented).toBe(true); // the element keeps what was typed
+    }
+    expect(status.textContent).toContain('저장 중');
+    expect(apiWrite).toHaveBeenCalledTimes(1);
+    answer({ ok: true, data: { ok: true, l1: block({ entries: ['배포는 dev 먼저'], revision: 'r2' }) } });
+    await tick();
+    expect(fns.memHold.at).toBe(0);
+    expect(status.textContent).toBe(''); // the success clears the 저장 중 it caused
+    expect(panel.fire('ui-add', { store: 'user', text: 'y' }).defaultPrevented).toBe(false);
+  });
+
+  it('a page or episodic write that is out holds the element too', () => {
+    const apiWrite = vi.fn();
+    const { fns, panel, status } = l1Env({ apiWrite });
+    fns.memHold.at = Date.now();
+    expect(panel.fire('ui-add', { store: 'memory', text: 'x' }).defaultPrevented).toBe(true);
+    expect(apiWrite).not.toHaveBeenCalled();
+    expect(status.textContent).toContain('저장 중');
+  });
+});
+
+describe('개인 메모리 — a refused write comes back through el.refuse()', () => {
+  it('a 409 reloads the stores (still holding the tab), then refuses the same event; the full message stays in #mem-status (review P1)', async () => {
+    let reload: (v: unknown) => void = () => {};
+    const apiWrite = vi.fn(async () => ({ ok: false, status: 409, error: 'conflict' }));
+    const fetch = vi.fn(() => new Promise((res) => (reload = res)));
+    const { fns, panel, status } = l1Env({ apiWrite, fetch });
+    const e = panel.fire('ui-edit', { store: 'memory', index: 1, text: '고친 배포 규칙', previous: '배포는 dev 먼저' });
+    await tick();
+    expect(fns.memHold.at).toBeGreaterThan(0); // the 409 is in, the reload is out: still held
+    expect(panel.fire('ui-add', { store: 'memory', text: 'x' }).defaultPrevented).toBe(true);
+    reload({
+      ok: true,
+      json: async () => ({
+        l1: { memory: block({ entries: ['테스트 전에 빌드', '에이전트가 바꾼 항목'], revision: 'r5' }), user: block() },
+        pages: [],
+        episodicDates: [],
+      }),
     });
-    fns.paintL1();
-    fns.l1EditStart('memory', 0);
-    p.els['l1-edit-memory'].value = 'e0, edited';
-    await fns.l1Save('memory', 0);
-    expect(p.els['l1-edit-memory']).toBeUndefined();
-    p.els['l1-new-memory'].value = 'new';
-    p.els['l1-new-user'].value = 'keep me';
-    await fns.l1Add('memory');
-    expect(p.els['l1-new-memory'].value).toBe('');
-    expect(p.els['l1-new-user'].value).toBe('keep me');
-    fns.l1EditStart('memory', 1);
-    fns.l1Cancel();
-    expect(p.els['l1-edit-memory']).toBeUndefined();
+    await tick();
+    expect(fns.memHold.at).toBe(0);
+    expect(panel.data.stores[0].entries).toEqual(['테스트 전에 빌드', '에이전트가 바꾼 항목']); // the truth first …
+    expect(panel.refuse).toHaveBeenCalledTimes(1); // … then the refusal, which puts the draft back
+    expect(panel.refuse.mock.calls[0][0]).toBe(e);
+    expect(panel.log.slice(-2)).toEqual(['data', 'refuse']);
+    expect(status.textContent).toContain('최신 내용을 불러왔습니다');
+    expect(status.textContent).toContain('편집 칸에 그대로');
+    expect(status.className).toContain('is-error');
   });
 
-  it('a 409 reload keeps an open editor of the other card (review R10, fable)', async () => {
-    const p = l1Page();
-    p.els['mem-recover'] = { innerHTML: '' };
-    const mem: any = { l1: { memory: block(['e0'], 'r1'), user: block(['u0', 'u1'], 'u1') } };
-    const fresh = {
-      l1: { memory: block(['e0', 'agent note'], 'r2'), user: block(['u0', 'u1'], 'u1') },
-      pages: [],
-      episodicDates: [],
-    };
-    const fns = load<any>(
-      [...L1_FNS, 'loadMemory', 'memKeepDraft', 'memRecover', 'paintRecover', 'memHold', 'esc', 'escAttr'],
-      ['L1_LABELS', 'L1_FILES', '_memLoaded'],
-      {
-        document: p.doc,
-        _mem: mem,
-        _memUndo: null,
-        apiWrite: vi.fn(async () => ({ ok: false, status: 409, error: 'changed' })),
-        fetch: vi.fn(async () => ({ ok: true, json: async () => fresh })),
-        paintPageList: () => {},
-        paintDates: () => {},
-      },
+  it('a 409 whose reload fails still releases the hold and refuses (the optimistic change rolls back) (review R12)', async () => {
+    const apiWrite = vi.fn(async () => ({ ok: false, status: 409, error: 'conflict' }));
+    const fetch = vi.fn(async () => ({ ok: false, status: 500, json: async () => ({ error: 'boom' }) }));
+    const { fns, panel, status } = l1Env({ apiWrite, fetch });
+    panel.fire('ui-delete', { store: 'memory', index: 0, text: '테스트 전에 빌드' });
+    await tick();
+    await tick();
+    expect(fns.memHold.at).toBe(0);
+    expect(panel.refuse).toHaveBeenCalledTimes(1);
+    expect(panel.datas).toHaveLength(1); // no new data: the element keeps its last stores
+    expect(status.textContent).toContain('최신 내용은 불러오지 못했습니다');
+    expect(status.textContent).toContain('다시 적용하세요');
+  });
+
+  it('over the limit, a lock or a network error: refused with the reason, no reload, the store unchanged', async () => {
+    const fetch = vi.fn();
+    for (const r of [
+      { ok: false, status: 400, error: '에이전트 노트 용량(2200자)을 넘습니다' },
+      { ok: false, status: 503, error: '잠시 후 다시 시도하세요' },
+    ]) {
+      const apiWrite = vi.fn(async () => r);
+      const { panel, status, mem } = l1Env({ apiWrite, fetch });
+      const e = panel.fire('ui-add', { store: 'memory', text: '새 메모' });
+      await tick();
+      expect(panel.refuse).toHaveBeenCalledWith(e, `저장하지 못했습니다: ${r.error}`);
+      expect(status.textContent).toBe(`저장하지 못했습니다: ${r.error}`);
+      expect(mem.l1.memory.revision).toBe('r1');
+    }
+    const thrown = l1Env({ apiWrite: vi.fn(async () => Promise.reject(new Error('offline'))), fetch });
+    thrown.panel.fire('ui-restore', { store: 'memory', index: 0, text: '되돌릴 노트' });
+    await tick();
+    expect(thrown.panel.refuse).toHaveBeenCalledWith(
+      expect.objectContaining({ type: 'ui-restore' }),
+      '저장하지 못했습니다: offline',
     );
-    fns.paintL1();
-    fns.l1EditStart('user', 1);
-    p.els['l1-edit-user'].value = 'u1, edited';
-    p.els['l1-new-memory'].value = 'a new memory note';
-    await fns.l1Add('memory');
-    expect(p.els['l1-edit-user']?.value).toBe('u1, edited');
-    expect(p.els['l1-new-memory'].value).toBe('a new memory note');
+    expect(thrown.fns.memHold.at).toBe(0);
+    expect(fetch).not.toHaveBeenCalled();
   });
 
-  it('a failed reload after a 409 keeps the cards and every draft on screen (review R12, astra)', async () => {
-    const p = l1Page();
-    p.els['mem-recover'] = { innerHTML: '' };
-    const mem: any = { l1: { memory: block(['e0', 'e1'], 'r1'), user: block([], 'u1') } };
-    const fns = load<any>(
-      [...L1_FNS, 'loadMemory', 'memKeepDraft', 'memRecover', 'paintRecover', 'memHold'],
-      ['L1_LABELS', 'L1_FILES'],
-      {
-        document: p.doc,
-        _mem: mem,
-        _memUndo: null,
-        _memLoaded: true,
-        apiWrite: vi.fn(async () => ({ ok: false, status: 409, error: 'changed' })),
-        fetch: vi.fn(async () => ({ ok: false, status: 500, json: async () => ({ error: 'boom' }) })),
-        paintPageList: () => {},
-        paintDates: () => {},
-      },
-    );
-    fns.paintL1();
-    fns.l1EditStart('memory', 1);
-    p.els['l1-edit-memory'].value = 'e1, edited';
-    p.els['l1-new-user'].value = 'a profile note';
-    await fns.l1Delete('memory', 0);
-    expect(p.els['l1-edit-memory']?.value).toBe('e1, edited');
-    expect(p.els['l1-new-user'].value).toBe('a profile note');
+  it('a successful L1 write clears the alert L1 left; a message another section wrote since stays', async () => {
+    const apiWrite = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: false, status: 400, error: 'no' })
+      .mockResolvedValueOnce({ ok: true, data: { ok: true, l1: block() } })
+      .mockResolvedValueOnce({ ok: false, status: 400, error: 'no' })
+      .mockResolvedValueOnce({ ok: true, data: { ok: true, l1: block() } });
+    const { fns, panel, status } = l1Env({ apiWrite });
+    panel.fire('ui-add', { store: 'memory', text: 'a' });
+    await tick();
+    expect(status.textContent).toBe('저장하지 못했습니다: no');
+    panel.fire('ui-add', { store: 'memory', text: 'a' });
+    await tick();
+    expect(status.textContent).toBe('');
+    panel.fire('ui-add', { store: 'memory', text: 'a' });
+    await tick();
+    fns.memStatus('페이지를 지웠습니다', false); // another section
+    panel.fire('ui-add', { store: 'memory', text: 'a' });
+    await tick();
+    expect(status.textContent).toBe('페이지를 지웠습니다');
   });
+});
 
-  it('the first memory load is applied even while a note is being added (review R13, fable)', async () => {
-    const p = l1Page();
+describe('개인 메모리 — loads around writes (review R12, R13)', () => {
+  it('the first memory load is applied even while a note is being added', async () => {
     let loadAnswer: (v: unknown) => void = () => {};
-    const fns = load<any>([...L1_FNS, 'loadMemory', 'memHold'], ['L1_LABELS', 'L1_FILES', '_memLoaded'], {
-      document: p.doc,
+    const panel = fakePanel();
+    const els: Record<string, any> = { 'l1-panel': panel, 'mem-l1-body': { innerHTML: 'x' } };
+    const fns = load<any>(L1_GLUE_FNS, L1_GLUE_VARS, {
+      document: { getElementById: (id: string) => els[id] ?? null },
       _mem: null,
-      _memUndo: null,
+      _memLoaded: false,
       apiWrite: vi.fn(),
       fetch: vi.fn(() => new Promise((res) => (loadAnswer = res))),
       paintPageList: () => {},
@@ -344,339 +459,61 @@ describe('개인 메모리 — a repaint keeps what is typed (review R9)', () =>
     fns.memHold.at = Date.now(); // a note for today is out
     loadAnswer({
       ok: true,
-      json: async () => ({ l1: { memory: block(['e0'], 'r1'), user: block([], 'u1') }, pages: [], episodicDates: [] }),
+      json: async () => ({ l1: { memory: block({ entries: ['e0'] }), user: block() }, pages: [], episodicDates: [] }),
     });
     await first;
-    expect(p.els['mem-l1-body'].innerHTML).toContain('e0');
+    expect(panel.data.stores[0].entries).toEqual(['e0']);
   });
 
-  it('a memory load answered during a write, or older than another, does not repaint (review R12, astra)', async () => {
-    const p = l1Page();
-    const mem: any = { l1: { memory: block(['e0'], 'r1'), user: block([], 'u1') } };
+  it('a load answered during a write, or older than another, does not replace the data', async () => {
     const loads: Array<(v: unknown) => void> = [];
     let answer: (v: unknown) => void = () => {};
-    const fns = load<any>([...L1_FNS, 'loadMemory', 'memHold'], ['L1_LABELS', 'L1_FILES'], {
-      document: p.doc,
-      _mem: mem,
-      _memUndo: null,
-      _memLoaded: true,
+    const { fns, panel } = l1Env({
       apiWrite: vi.fn(() => new Promise((res) => (answer = res))),
       fetch: vi.fn(() => new Promise((res) => loads.push(res))),
-      paintPageList: () => {},
-      paintDates: () => {},
     });
-    fns.paintL1();
     const late = fns.loadMemory(); // a load from an earlier tab switch is still out
-    p.els['l1-new-memory'].value = 'new note';
-    const adding = fns.l1Add('memory');
-    loads[0]({
-      ok: true,
-      json: async () => ({ l1: { memory: block(['e0'], 'r1'), user: block([], 'u1') }, pages: [], episodicDates: [] }),
-    });
+    panel.fire('ui-add', { store: 'memory', text: 'new note' });
+    const fresh = { l1: { memory: block({ entries: ['stale'] }), user: block() }, pages: [], episodicDates: [] };
+    for (const res of loads) res({ ok: true, json: async () => fresh });
     await late;
-    expect(p.els['l1-new-memory'].disabled).toBe(true); // the late load did not repaint the locked card
-    answer({ ok: true, data: { ok: true, l1: block(['e0', 'new note'], 'r2') } });
-    await adding;
-  });
-
-  it('a draft that cannot go back into an empty box is kept in the recovery box, never dropped (review R10)', async () => {
-    const p = l1Page();
-    p.els['mem-recover'] = { innerHTML: '' };
-    const mem: any = { l1: { memory: block(['e0', 'e1'], 'r1'), user: block([], 'u1') } };
-    const fns = load<any>(
-      [...L1_FNS, 'memKeepDraft', 'memRecover', 'paintRecover', 'memHold', 'esc', 'escAttr'],
-      ['L1_LABELS', 'L1_FILES'],
-      {
-        document: p.doc,
-        _mem: mem,
-        _memUndo: null,
-        apiWrite: vi.fn(),
-        loadMemory: async () => {},
-      },
-    );
-    fns.paintL1();
-    p.els['l1-new-memory'].value = 'something else being added';
-    fns.restoreL1Draft('memory', 'the refused edit', 0, 'gone');
-    expect(p.els['l1-new-memory'].value).toBe('something else being added');
-    expect(p.els['mem-recover'].innerHTML).toContain('the refused edit');
-  });
-
-  it('while an L1 write is out, opening another editor waits (review R10, astra)', async () => {
-    const p = l1Page();
-    const mem: any = { l1: { memory: block(['e0', 'e1'], 'r1'), user: block([], 'u1') } };
-    let answer: (v: unknown) => void = () => {};
-    const fns = load<any>([...L1_FNS, 'memHold'], ['L1_LABELS', 'L1_FILES'], {
-      document: p.doc,
-      _mem: mem,
-      _memUndo: null,
-      apiWrite: vi.fn(() => new Promise((res) => (answer = res))),
-      loadMemory: async () => {},
+    expect(panel.datas).toHaveLength(1); // the write's own data comes with its answer
+    answer({
+      ok: true,
+      data: { ok: true, l1: block({ entries: ['테스트 전에 빌드', '배포는 dev 먼저', 'new note'], revision: 'r2' }) },
     });
-    fns.paintL1();
-    fns.l1EditStart('memory', 0);
-    p.els['l1-edit-memory'].value = 'e0, edited';
-    const saving = fns.l1Save('memory', 0);
-    fns.l1EditStart('memory', 1);
-    expect(p.els['mem-l1-body'].innerHTML).toContain("l1Save('memory',0)"); // still the first editor
-    expect(p.els.status.textContent).toContain('저장 중');
-    answer({ ok: true, data: { ok: true, l1: block(['e0, edited', 'e1'], 'r2') } });
-    await saving;
+    await tick();
+    expect(panel.data.stores[0].entries).toEqual(['테스트 전에 빌드', '배포는 dev 먼저', 'new note']);
   });
 
-  it('a 409 holds the tab until its reload is done; undo and clear wait for a write (review R11, astra)', async () => {
-    const p = l1Page();
-    p.els['mem-recover'] = { innerHTML: '' };
-    const mem: any = { l1: { memory: block(['e0'], 'r1'), user: block([], 'u1') } };
-    let reload: (v: unknown) => void = () => {};
-    const fns = load<any>([...L1_FNS, 'loadMemory', 'l1Undo', 'l1Clear'], ['L1_LABELS', 'L1_FILES', '_memLoaded'], {
-      document: p.doc,
-      _mem: mem,
-      _memUndo: { target: 'user', text: 'old note' },
-      apiWrite: vi.fn(async () => ({ ok: false, status: 409, error: 'changed' })),
-      fetch: vi.fn(() => new Promise((res) => (reload = res))),
+  it('a failed first load shows the alert in the list; a failed later load keeps the stores and reports in #mem-status', async () => {
+    const panel = fakePanel();
+    const els: Record<string, any> = {
+      'l1-panel': panel,
+      'mem-l1-body': { innerHTML: '' },
+      'mem-status': { textContent: '', className: '', setAttribute: vi.fn() },
+    };
+    const fetch = vi.fn(async () => ({ ok: false, status: 500, json: async () => ({ error: 'boom' }) }));
+    const deps = {
+      document: { getElementById: (id: string) => els[id] ?? null },
+      _mem: null as any,
+      _memLoaded: false,
+      apiWrite: vi.fn(),
+      fetch,
       paintPageList: () => {},
       paintDates: () => {},
-      confirmDialog: async () => true,
-    });
-    fns.paintL1();
-    fns.l1EditStart('memory', 0);
-    p.els['l1-edit-memory'].value = 'e0, edited';
-    const saving = fns.l1Save('memory', 0);
-    await Promise.resolve();
-    await Promise.resolve();
-    // the 409 is in, the reload is out: still held
-    expect(p.els['l1-edit-memory'].disabled).toBe(true);
-    await fns.l1Undo();
-    await fns.l1Clear('memory');
-    expect(p.els['mem-l1-body'].innerHTML).toContain("l1Save('memory',0)");
-    reload({
-      ok: true,
-      json: async () => ({
-        l1: { memory: block(['e0', 'agent'], 'r2'), user: block([], 'u1') },
-        pages: [],
-        episodicDates: [],
-      }),
-    });
-    await saving;
-    expect(p.els['l1-edit-memory'].value).toBe('e0, edited');
-  });
-
-  it('a save answered after the hold expired closes only its own editor (review R11, fable)', async () => {
-    const p = l1Page();
-    p.els['mem-recover'] = { innerHTML: '' };
-    const mem: any = { l1: { memory: block(['e0', 'e1'], 'r1'), user: block([], 'u1') } };
-    let answer: (v: unknown) => void = () => {};
-    const fns = load<any>([...L1_FNS, 'memHold'], ['L1_LABELS', 'L1_FILES'], {
-      document: p.doc,
-      _mem: mem,
-      _memUndo: null,
-      apiWrite: vi.fn(() => new Promise((res) => (answer = res))),
-      loadMemory: async () => {},
-    });
-    fns.paintL1();
-    fns.l1EditStart('memory', 0);
-    p.els['l1-edit-memory'].value = 'e0, edited';
-    const saving = fns.l1Save('memory', 0);
-    fns.memHold.at = 0; // (defense: the hold is gone — the UI never releases it before the answer, review R11)
-    fns.l1EditStart('memory', 1); // the user moves on to another entry
-    p.els['l1-edit-memory'].value = 'e1, edited';
-    answer({ ok: true, data: { ok: true, l1: block(['e0, edited', 'e1'], 'r2') } });
-    await saving;
-    expect(p.els['l1-edit-memory']?.value).toBe('e1, edited');
-  });
-
-  it('switching between two identical entries keeps the first draft (review R11, astra)', () => {
-    const p = l1Page();
-    p.els['mem-recover'] = { innerHTML: '' };
-    const mem: any = { l1: { memory: block(['same', 'same'], 'r1'), user: block([], 'u1') } };
-    const fns = load<any>(L1_FNS, ['L1_LABELS', 'L1_FILES'], {
-      document: p.doc,
-      _mem: mem,
-      _memUndo: null,
-      apiWrite: vi.fn(),
-      loadMemory: async () => {},
-    });
-    fns.paintL1();
-    fns.l1EditStart('memory', 0);
-    p.els['l1-edit-memory'].value = 'first, edited';
-    fns.l1EditStart('memory', 1);
-    expect(p.els['l1-new-memory'].value + p.els['mem-recover'].innerHTML).toContain('first, edited');
-  });
-
-  it('the L1 editor and the add box are locked while their write is out (review R9, astra)', async () => {
-    const p = l1Page();
-    const mem: any = { l1: { memory: block(['e0'], 'r1'), user: block([], 'u1') } };
-    let answer: (v: unknown) => void = () => {};
-    const apiWrite = vi.fn(() => new Promise((res) => (answer = res)));
-    const fns = load<any>(L1_FNS, ['L1_LABELS', 'L1_FILES'], {
-      document: p.doc,
-      _mem: mem,
-      _memUndo: null,
-      apiWrite,
-      loadMemory: async () => {},
-    });
-    fns.paintL1();
-    fns.l1EditStart('memory', 0);
-    p.els['l1-edit-memory'].value = 'e0, edited';
-    const saving = fns.l1Save('memory', 0);
-    expect(p.els['l1-edit-memory'].disabled).toBe(true);
-    expect(p.els['l1-new-memory'].disabled).toBe(true);
-    answer({ ok: false, status: 400, error: 'no' });
-    await saving;
-    expect(p.els['l1-edit-memory'].disabled).toBe(false);
-    expect(p.els['l1-new-memory'].disabled).toBe(false);
-  });
-
-  it('a second click while an L1 write is out sends nothing (no double delete)', async () => {
-    const p = l1Page();
-    const mem: any = { l1: { memory: block(['e0', 'keep me'], 'r1'), user: block([], 'u1') } };
-    let answer: (v: unknown) => void = () => {};
-    const apiWrite = vi.fn(() => new Promise((res) => (answer = res)));
-    const fns = load<any>(L1_FNS, ['L1_LABELS', 'L1_FILES'], {
-      document: p.doc,
-      _mem: mem,
-      _memUndo: null,
-      apiWrite,
-      loadMemory: async () => {},
-    });
-    fns.paintL1();
-    const first = fns.l1Delete('memory', 0);
-    await fns.l1Delete('memory', 0);
-    expect(apiWrite).toHaveBeenCalledTimes(1);
-    answer({ ok: true, data: { ok: true, l1: block(['keep me'], 'r2') } });
-    await first;
-  });
-});
-
-describe('개인 메모리 writes', () => {
-  function env(apiWrite: any, extra: Record<string, unknown> = {}) {
-    const status: any = { textContent: '', className: '', setAttribute: vi.fn() };
-    const elements: Record<string, any> = {
-      'mem-status': status,
-      'l1-new-memory': { value: '새 메모' },
-      'l1-edit-memory': { value: '고친 메모' },
     };
-    const mem = { l1: { memory: block(), user: block({ revision: 'u1' }) } };
-    const deps: Record<string, any> = {
-      _mem: mem,
-      _memUndo: null,
-      document: { getElementById: (id: string) => elements[id] ?? null },
-      apiWrite,
-      paintL1: vi.fn(),
-      loadMemory: vi.fn(async () => {}),
-      confirmDialog: vi.fn(async () => true),
-      ...extra,
-    };
-    const fns = load<any>(
-      [
-        'memStatus',
-        'restoreL1Draft',
-        'l1Write',
-        'l1Add',
-        'l1Save',
-        'l1Delete',
-        'l1Undo',
-        'l1Clear',
-        'l1Busy',
-        'esc',
-        'escAttr',
-        'memHold',
-        'memKeepDraft',
-        'memRecover',
-        'paintRecover',
-        ...L1_PANEL_FNS,
-      ],
-      ['L1_LABELS'],
-      deps,
-    );
-    return { fns, deps, status, mem };
-  }
-
-  it('after a 409 a draft for one of two identical notes goes to the add box, not the first match (review R3 P1)', async () => {
-    const apiWrite = vi.fn(async () => ({ ok: false, status: 409, error: 'conflict' }));
-    const { fns, deps, mem } = env(apiWrite);
-    mem.l1.memory = block({ entries: ['dup', 'dup'], revision: 'r1' });
-    deps.document.getElementById = (id: string) =>
-      id === 'l1-edit-memory'
-        ? { value: 'mine' }
-        : id === 'l1-new-memory'
-          ? addBox
-          : { textContent: '', setAttribute() {} };
-    const addBox: any = { value: '' };
-    await fns.l1Save('memory', 1);
-    expect(deps.paintL1).not.toHaveBeenCalledWith(expect.objectContaining({ text: 'mine' }));
-    expect(addBox.value).toBe('mine');
-  });
-
-  it('add / save / delete send the loaded revision to the right route', async () => {
-    const apiWrite = vi.fn(async () => ({ ok: true, data: { l1: block({ revision: 'r2' }) } }));
-    const { fns } = env(apiWrite);
-    await fns.l1Add('memory');
-    expect(apiWrite).toHaveBeenLastCalledWith('POST', '/api/memory/l1/memory', { text: '새 메모', revision: 'r1' });
-    await fns.l1Save('memory', 1);
-    expect(apiWrite).toHaveBeenLastCalledWith('PUT', '/api/memory/l1/memory/1', { text: '고친 메모', revision: 'r2' });
-    await fns.l1Delete('memory', 0);
-    expect(apiWrite).toHaveBeenLastCalledWith('DELETE', '/api/memory/l1/memory/0', { revision: 'r2' });
-  });
-
-  it('an L1 draft goes back to its own entry only when that entry is unchanged (review R2 P1)', async () => {
-    const apiWrite = vi.fn(async () => ({ ok: false, status: 409, error: 'conflict' }));
-    const addBox: any = { value: '' };
-    const { fns, deps, status } = env(apiWrite);
-    deps.document.getElementById = (id: string) =>
-      id === 'mem-status' ? status : id === 'l1-new-memory' ? addBox : null;
-    // the stores reloaded: entry 1 was "배포는 dev 먼저", now something else sits there
-    deps._mem.l1.memory = block({ entries: ['테스트 전에 빌드', '다른 항목'] });
-    deps.loadMemory = vi.fn(async () => {});
-    await fns.l1Write(
-      'PUT',
-      '/api/memory/l1/memory/1',
-      { text: '고친 배포 규칙', revision: 'r1' },
-      '고친 배포 규칙',
-      1,
-      '배포는 dev 먼저',
-    );
-    expect(deps.paintL1).not.toHaveBeenCalledWith({ target: 'memory', index: 1, text: '고친 배포 규칙' });
-    expect(addBox.value).toBe('고친 배포 규칙');
-  });
-
-  it('a single delete offers undo, which adds the text back', async () => {
-    const apiWrite = vi.fn(async () => ({ ok: true, data: { l1: block({ revision: 'r9' }) } }));
-    const { fns } = env(apiWrite);
-    // l1Delete stores the undo in the module-level _memUndo — read it back via l1Undo's call.
-    await fns.l1Delete('memory', 1);
-    await fns.l1Undo();
-    expect(apiWrite).toHaveBeenLastCalledWith('POST', '/api/memory/l1/memory', {
-      text: '배포는 dev 먼저',
-      revision: 'r9',
-      restore: true, // the exact note back (review R5)
-    });
-  });
-
-  it('clear all confirms and names the count; cancel sends nothing', async () => {
-    const apiWrite = vi.fn(async () => ({ ok: true, data: { l1: block({ entries: [] }) } }));
-    const confirmDialog = vi.fn(async () => false);
-    const { fns } = env(apiWrite, { confirmDialog });
-    await fns.l1Clear('memory');
-    expect(confirmDialog).toHaveBeenCalledWith(expect.objectContaining({ action: '2개 모두 지우기' }));
-    expect(apiWrite).not.toHaveBeenCalled();
-  });
-
-  it('a 409 reloads the stores and puts the WHOLE draft back in an edit box (review P1)', async () => {
-    const long = '긴 초안 '.repeat(120);
-    const apiWrite = vi.fn(async () => ({ ok: false, status: 409, error: 'conflict' }));
-    const addBox: any = { value: '' };
-    const { fns, deps, status } = env(apiWrite);
-    deps.document.getElementById = (id: string) =>
-      id === 'mem-status' ? status : id === 'l1-new-memory' ? addBox : null;
-    expect(
-      await fns.l1Write('PUT', '/api/memory/l1/memory/1', { text: long, revision: 'r1' }, long, 1, '배포는 dev 먼저'),
-    ).toBe(false);
-    expect(deps.loadMemory).toHaveBeenCalled();
-    expect(deps.paintL1).toHaveBeenLastCalledWith({ target: 'memory', index: 1, text: long });
-    expect(status.textContent).toContain('편집 칸에 그대로');
-    expect(await fns.l1Write('POST', '/api/memory/l1/memory', { text: long, revision: 'r1' }, long)).toBe(false);
-    expect(addBox.value).toBe(long);
+    expect(await load<any>(L1_GLUE_FNS, L1_GLUE_VARS, deps).loadMemory()).toBe(false);
+    expect(els['mem-l1-body'].innerHTML).toContain('role="alert"');
+    expect(els['mem-l1-body'].innerHTML).toContain('boom');
+    deps._mem = { l1: { memory: block(), user: block() } };
+    els['mem-l1-body'].innerHTML = '';
+    const later = load<any>(L1_GLUE_FNS, L1_GLUE_VARS, deps);
+    later.paintL1();
+    expect(await later.loadMemory()).toBe(false);
+    expect(els['mem-l1-body'].innerHTML).toBe('');
+    expect(els['mem-status'].textContent).toBe('boom');
+    expect(panel.datas).toHaveLength(1);
   });
 });
 
@@ -1916,40 +1753,14 @@ describe('관찰 기록 (에피소딕)', () => {
     expect(apiWrite).toHaveBeenCalledWith('DELETE', '/api/memory/episodic/2026-10-20/0', { revision: 'd20' });
   });
 
-  it('clear-all and page delete send the revision the confirmation was about (review R3 P1)', async () => {
+  it('clear-all sends the revision of the stores on screen; page delete the one its dialog was about (review R3 P1)', async () => {
+    // 모두 지우기 is the element's two-press confirm: the first press names the count, and data that changes the
+    // count disarms it (memory-panel.test.ts "Clear all needs a second press that names the count"). ui-clear
+    // then goes out with the revision of the stores the element was showing.
     const apiWrite = vi.fn(async () => ({ ok: true, data: { l1: block({ entries: [], revision: 'r9' }) } }));
-    const mem: any = { l1: { memory: block(), user: block({ revision: 'u1' }) } };
-    const fns = load<any>(
-      [
-        'memStatus',
-        'restoreL1Draft',
-        'l1Write',
-        'l1Clear',
-        'l1Busy',
-        'esc',
-        'escAttr',
-        'memHold',
-        'memKeepDraft',
-        'memRecover',
-        'paintRecover',
-        ...L1_PANEL_FNS,
-      ],
-      ['L1_LABELS'],
-      {
-        _mem: mem,
-        _memUndo: null, // the tray (#443) reads the undo state when it reports the clear
-        document: { getElementById: () => ({ textContent: '', setAttribute() {} }) },
-        apiWrite,
-        paintL1: () => {},
-        loadMemory: async () => {},
-        confirmDialog: async () => {
-          // the list was reloaded under the open dialog: more entries, a newer revision
-          mem.l1.memory = block({ entries: ['a', 'b', 'c'], revision: 'r-newer' });
-          return true;
-        },
-      },
-    );
-    await fns.l1Clear('memory');
+    const { panel } = l1Env({ apiWrite });
+    panel.fire('ui-clear', { store: 'memory' });
+    await tick();
     expect(apiWrite).toHaveBeenLastCalledWith('DELETE', '/api/memory/l1/memory', { revision: 'r1' });
 
     const pageApi = vi.fn(async () => ({ ok: true, data: {} }));
