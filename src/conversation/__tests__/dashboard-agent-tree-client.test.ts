@@ -564,14 +564,17 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
     expect(desc.anDesc(ui.agentTreeOf(card({ agents: ring }), 'working')).n).toBe(65);
   });
 
-  it('the data travels with the card’s parts: a tree-only change is a change, painted where it changed', () => {
+  it('the data travels with the open card’s parts: a tree-only change is a change, painted where it changed', () => {
     const parts = load<{
       cardParts(s: unknown, col: string): Record<string, unknown>;
       cardPartsDiffer(el: unknown, p: unknown): boolean;
-    }>([...AGENT_FNS, 'cardParts', 'cardPartsDiffer'], AGENT_VARS, {
+    }>([...AGENT_FNS, 'cardBodyShown', 'cardParts', 'cardPartsDiffer'], AGENT_VARS, {
       cardState: () => 'working',
       renderCardFace: () => 'face',
       renderCardBody: () => 'body',
+      _expanded: new Set([KEY]),
+      _cardClosing: {},
+      acPrefetch: () => {},
     });
     const p = parts.cardParts(card(), 'working');
     expect(p.tree).toEqual(ui.atCardData(card(), 'working'));
@@ -698,6 +701,234 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
   //   description ids never collide               → 'fmtCost, initials and idPart'
   //   hostile text is text                        → 'escapes every host string'
   //   the 1 s clock                               → 'running times tick on one shared timer, stop when nothing runs and on disconnect'
+});
+
+// Board perf (Z, 2026-10-29: "지금 너무 많아서 최신 컴퓨터인데도 느림"): every collapsed card held a painted
+// <ui-agent-tree> nobody could see. A collapsed card's body is inert and drawn at height 0, so it is not
+// built at all — no tree data, no tree, no approval card — until the card opens, and it goes once it closes.
+describe('a collapsed card builds no body — the agent tree is painted only while the card is open', () => {
+  const KEY = 'inst::C1:t1';
+  type FakeTree = { writes: number; data: unknown };
+  type FakeBody = { html: string; tree: FakeTree | null };
+  function board(opts: { animate?: boolean } = {}) {
+    const calls = { treeData: 0, bodies: 0, morphs: 0, prefetch: [] as unknown[], order: [] as string[] };
+    const timers: Array<{ fn: (() => void) | null; ms: number }> = [];
+    const expanded = new Set<string>();
+    const closing: Record<string, unknown> = {};
+    const cardEls: Record<string, unknown> = {};
+    const cache: Record<string, unknown> = {};
+    const paintedTree = (): FakeTree => {
+      let d: unknown = null;
+      const t = { writes: 0 } as FakeTree;
+      Object.defineProperty(t, 'data', {
+        get: () => d,
+        set: (v) => {
+          t.writes++;
+          d = v;
+        },
+      });
+      return t;
+    };
+    const fns = load<{
+      cardParts(s: unknown, col: string): Record<string, unknown>;
+      cardPartsDiffer(el: unknown, p: unknown): boolean;
+      patchCard(el: unknown, s: unknown, col: string): boolean;
+      toggleCard(key: string, instant?: boolean): void;
+    }>(
+      [
+        'cardBodyShown',
+        'cardParts',
+        'cardPartsDiffer',
+        'syncCardBody',
+        'isEditingGoal',
+        'isPickingModel',
+        'captureGoalDraft',
+        'restoreGoalDraft',
+        'popStatusIcon',
+        'applyCardParts',
+        'atPaint',
+        'atHydrate',
+        'patchCard',
+        'refreshCard',
+        'toggleCard',
+      ],
+      [],
+      {
+        _expanded: expanded,
+        _cardClosing: closing,
+        _cardEls: cardEls,
+        _sessionCache: cache,
+        cardState: (_s: unknown, col: string) => col,
+        renderCardFace: () => 'face',
+        renderCardBody: (s: unknown, col: string) => {
+          calls.bodies++;
+          return `<div class="card-body">${ui.renderAgentTree(s, col)}</div>`;
+        },
+        atCardData: (s: unknown, col: string) => {
+          calls.treeData++;
+          return ui.atCardData(s, col);
+        },
+        acPrefetch: (s: unknown, col: string) => calls.prefetch.push([(s as { key: string }).key, col]),
+        // The slot is the same element across a morph; markup without it takes the element — and its shadow tree — away.
+        morphInnerHtml: (root: FakeBody, html: string) => {
+          calls.morphs++;
+          calls.order.push('body');
+          root.html = html;
+          if (!html.includes('<ui-agent-tree')) root.tree = null;
+          else if (!root.tree) root.tree = paintedTree();
+        },
+        acHydrate: () => {},
+        updateTimersIn: () => {},
+        animateCountersIn: () => {},
+        canAnimate: () => opts.animate !== false,
+        reduceMotion: () => false,
+        MOTION: { move: 320, fade: 180, expand: 240, easeOut: 'ease-out' },
+        setTimeout: (fn: () => void, ms: number) => timers.push({ fn, ms }),
+        clearTimeout: (id: number) => {
+          if (timers[id - 1]) timers[id - 1].fn = null;
+        },
+        applyExpanded: (el: { open?: boolean }, open: boolean) => {
+          calls.order.push(open ? 'open' : 'close');
+          el.open = open;
+        },
+        releaseCardIoTimer: () => {},
+        ensureCardIo: () => {},
+        ensureArtifacts: () => {},
+        isSiblingSession: () => false,
+        document: { activeElement: null },
+      },
+    );
+    const body: FakeBody & Record<string, unknown> = {
+      html: '',
+      tree: null,
+      querySelector: (sel: string) => (sel === 'ui-agent-tree[data-at-ns]' ? body.tree : null),
+      contains: () => false,
+    };
+    const attrs: Record<string, string> = { 'data-col': 'working' };
+    const el = {
+      getAttribute: (n: string) => attrs[n] ?? null,
+      setAttribute: (n: string, v: string) => {
+        attrs[n] = v;
+      },
+      classList: { add: () => {}, remove: () => {} },
+      offsetHeight: 0,
+      _faceEl: { innerHTML: '', querySelector: () => null },
+      _faceHtml: null,
+      _bodyEl: body,
+      _bodyHtml: null as string | null,
+      _treeSig: '',
+    };
+    cardEls[KEY] = el;
+    const runTimers = () => {
+      for (const t of timers.splice(0)) t.fn?.();
+    };
+    return { ...fns, el, body, calls, timers, runTimers, expanded, closing };
+  }
+  const moved = () => card({ agents: [{ ...AGENTS[0], toolCalls: 19 }, AGENTS[1], AGENTS[2]] });
+
+  it('a collapsed card computes no tree data and holds no painted tree — a live push on it builds nothing', () => {
+    const b = board();
+    b.patchCard(b.el, card(), 'working');
+    b.patchCard(b.el, moved(), 'working');
+    expect(b.calls).toMatchObject({ treeData: 0, bodies: 0, morphs: 1 });
+    expect(b.body).toMatchObject({ html: '', tree: null });
+    expect(b.el._treeSig).toBe('');
+    // The reconciler sees nothing to write for it: its agents move no markup and no tree.
+    expect(b.cardParts(moved(), 'working')).toMatchObject({ body: '', tree: null, treeSig: '' });
+    expect(b.cardPartsDiffer(b.el, b.cardParts(moved(), 'working'))).toBe(false);
+    // Its permission prompts' inputs are still fetched (acPrefetch), so opening shows them at once.
+    expect(b.calls.prefetch).toContainEqual([KEY, 'working']);
+  });
+
+  it('expanding builds the body and paints the tree before the row grows; the element keeps ui-select → openPanel', () => {
+    const b = board();
+    b.patchCard(b.el, card(), 'working');
+    b.calls.order.length = 0;
+    b.toggleCard(KEY);
+    expect(b.calls.order).toEqual(['body', 'open']);
+    expect(b.body.html).toContain(`<ui-agent-tree lang="ko" data-at-ns="c|${KEY}">`);
+    expect(b.body.tree).toMatchObject({ writes: 1, data: ui.atCardData(card(), 'working') });
+    expect(b.calls.treeData).toBe(1);
+    // The slot is the one the card's ui-select listener answers (data-at-ns c|<key> → openPanel(key, 'agent', …)).
+    expect(clientListener('ui-select')).toContain("openPanel(ns.slice(2), 'agent', agentId, _atKeyed);");
+  });
+
+  it('a live push on an expanded card repaints its tree only when the tree changed — same element, same markup', () => {
+    const b = board();
+    b.patchCard(b.el, card(), 'working');
+    b.toggleCard(KEY);
+    const tree = b.body.tree as FakeTree;
+    const morphs = b.calls.morphs;
+    b.patchCard(b.el, card(), 'working');
+    expect(tree.writes).toBe(1);
+    b.patchCard(b.el, moved(), 'working');
+    expect(tree.writes).toBe(2);
+    expect(tree.data).toEqual(ui.atCardData(moved(), 'working'));
+    expect(b.body.tree).toBe(tree);
+    expect(b.calls.morphs).toBe(morphs);
+  });
+
+  it('collapsing frees the tree once the collapse has run; a push meanwhile keeps the body it runs over', () => {
+    const b = board();
+    b.patchCard(b.el, card(), 'working');
+    b.toggleCard(KEY);
+    const tree = b.body.tree as FakeTree;
+    b.toggleCard(KEY);
+    expect(b.calls.order.slice(-1)).toEqual(['close']);
+    expect(b.timers.map((t) => t.ms)).toEqual([300]); // the expand duration (240 ms) and a margin
+    b.patchCard(b.el, moved(), 'working');
+    expect(b.body.tree).toBe(tree);
+    expect(tree.writes).toBe(2);
+    b.runTimers();
+    expect(b.body).toMatchObject({ html: '', tree: null });
+    expect(b.el._treeSig).toBe('');
+    expect(b.closing).toEqual({});
+    // Collapsed again: pushes compute nothing.
+    const before = b.calls.treeData;
+    b.patchCard(b.el, card(), 'working');
+    expect(b.calls.treeData).toBe(before);
+  });
+
+  it('reopening while it closes keeps the painted tree; without motion (a keyboard toggle, a hidden tab) it goes at once', () => {
+    const b = board();
+    b.patchCard(b.el, card(), 'working');
+    b.toggleCard(KEY);
+    const tree = b.body.tree as FakeTree;
+    b.toggleCard(KEY);
+    b.toggleCard(KEY);
+    b.runTimers();
+    expect(b.body.tree).toBe(tree);
+    expect(tree.writes).toBe(1);
+    b.toggleCard(KEY, true);
+    expect(b.timers).toHaveLength(0);
+    expect(b.body.tree).toBeNull();
+    const still = board({ animate: false });
+    still.patchCard(still.el, card(), 'working');
+    still.toggleCard(KEY);
+    expect(still.body.tree).not.toBeNull();
+    still.toggleCard(KEY);
+    expect(still.timers).toHaveLength(0);
+    expect(still.body.tree).toBeNull();
+  });
+
+  it("a collapsed card's permission prompts are prefetched as its approval cards would be — not when locked or closed", () => {
+    const loads: string[] = [];
+    const pf = load<{ acPrefetch(s: unknown, col: string): void }>(['acPrefetch'], [], {
+      _permDetails: { done: { input: '{}' } },
+      acPermissionLock: (_s: unknown, p: { approvalId: string }) => (p.approvalId === 'theirs' ? 'locked' : ''),
+      loadPermissionDetail: (_k: string, id: string) => loads.push(id),
+    });
+    const s = {
+      key: KEY,
+      pendingPermissions: [{ approvalId: 'mine' }, { approvalId: 'done' }, { approvalId: 'theirs' }],
+    };
+    pf.acPrefetch(s, 'waiting');
+    pf.acPrefetch(s, 'closed');
+    pf.acPrefetch({ key: KEY }, 'waiting');
+    expect(loads).toEqual(['mine']);
+    // The open card's approval card asks for the same input on the same terms.
+    expect(fnBody('acPermissionData')).toContain('loadPermissionDetail(s.key, p.approvalId);');
+  });
 });
 
 describe('panel scope (§4.3)', () => {
