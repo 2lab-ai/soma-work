@@ -1726,7 +1726,7 @@ describe('task total on the face and in 세션 정보 (SSOT T3)', () => {
         safeHref: (h: string) => h,
         ctxPercent: (n: number) => String(n),
         panelDetailsHtml: () => '',
-        contextBlockHtml: () => '',
+        cwSlotHtml: () => '',
       },
     );
     const open = f.panelInfoHtml({ tokenUsage: u, subagentSpend: sub, lastActivity: new Date().toISOString() }, true);
