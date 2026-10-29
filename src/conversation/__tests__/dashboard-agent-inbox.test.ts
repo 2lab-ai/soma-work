@@ -228,8 +228,10 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
       /const worklogBtn = '<button type="button" class="btn-action' \+ \(canDecideHere \? '' : ' btn-primary'\) \+ '"/,
     );
     expect(TEMPLATE).toContain("var WL_EMPTY_MSG = '작업 로그 없음';");
-    expect(fnBody('resetWorkLog')).toContain('WL_EMPTY_MSG');
-    expect(fnBody('openPanel')).toContain('resetWorkLog(panelConvId, true)');
+    // SSOT 2026-10-29: no conversation → no work-log state; the 작업 로그 tab reads 작업 로그 없음.
+    expect(fnBody('resetWorkLog')).toContain('_wl = convId ? wlNewState(convId) : null;');
+    expect(fnBody('paintLogTab')).toContain('var msg = !st ? WL_EMPTY_MSG');
+    expect(fnBody('openPanel')).toContain('resetWorkLog(panelConvId);');
   });
 
   it('a WS session_update re-attaches sibling-instance cards from the last poll', () => {
@@ -239,10 +241,15 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(fnBody('loadSessions')).toContain('_lastPolledBoard = data.board;');
   });
 
-  it('older panel turns keep the reading position (anchored on the first visible element)', () => {
+  it('older panel turns keep the reading position (anchored on the first turn in view of the 지시와 답변 box)', () => {
     const body = fnBody('loadMorePanelTurns');
-    expect(body).toContain('panelScrollAnchor(scrollEl)');
-    expect(body).toContain('anchor.el.getBoundingClientRect().top - anchor.top');
+    // SSOT 2026-10-29: the box's first turn in view, captured before the page goes in, held after.
+    const anchor = body.indexOf('var anchor = psecViewAnchor(box);');
+    const insert = body.indexOf("turnsEl.insertAdjacentHTML('afterbegin'");
+    expect(anchor).toBeGreaterThan(-1);
+    expect(insert).toBeGreaterThan(anchor);
+    expect(body.indexOf('psecHoldPlace(box, anchor, fromBottom);')).toBeGreaterThan(insert);
+    expect(fnBody('psecRestoreAnchor')).toContain('el.getBoundingClientRect().top - box.getBoundingClientRect().top - a.at');
   });
 
   it('reopening a card retries a failed 지시/응답 fetch at once', () => {
@@ -317,7 +324,9 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(fnBody('renderPanelTasks')).toContain(
       'if (!_panelTasksOpen) { writePanelTasks(container, head + live); return; }',
     );
-    expect(fnBody('panelScrollAnchor')).not.toContain('#panel-tasks');
+    // The panel's own anchor: the question, Tasks (now in the scroll area) and the section tabs —
+    // the turns and log rows are their section box's (psecViewAnchor).
+    expect(fnBody('panelScrollAnchor')).toContain("'#panel-question, #panel-tasks, #panel-sections'");
   });
 
   it('the work log is a section tab with its own scroll box — no disclosure header, never hidden-but-rendered (§3.1-6, SSOT 2026-10-29)', () => {
