@@ -911,7 +911,8 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
       for (const t of timers.splice(0)) t.fn?.();
     };
     const body = () => host.kids[0] as FakeBody | undefined;
-    return { host, env, calls, timers, runTimers, place, push, toggle, body };
+    const fire = (name: string, e: unknown) => handlers[name](e);
+    return { host, env, calls, timers, runTimers, place, push, toggle, body, fire };
   }
   const moved = () => card({ agents: [{ ...AGENTS[0], toolCalls: 19 }, AGENTS[1], AGENTS[2]] });
 
@@ -1007,13 +1008,36 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
     expect(still.host.kids).toHaveLength(0);
   });
 
+  // #548 review P3: a card whose session left the cache (just off the board, before the next
+  // render drops it) has nothing to build — opening it would grow an empty body.
+  it('a card whose session left the cache does not open: the element’s ui-toggle is refused', () => {
+    const b = board();
+    b.place(card());
+    delete b.env._sessionCache[KEY];
+    let refused = 0;
+    const ev = { target: b.host, detail: { cardId: KEY, expanded: true }, preventDefault: () => refused++ };
+    b.fire('ui-toggle', ev);
+    expect(refused).toBe(1);
+    expect(b.env._expanded.has(KEY)).toBe(false);
+    expect(b.host.kids).toHaveLength(0);
+    expect(b.calls.io).toEqual([]);
+    // Closing is never refused (the element may hold it open from before).
+    const close = { target: b.host, detail: { cardId: KEY, expanded: false }, preventDefault: () => refused++ };
+    b.fire('ui-toggle', close);
+    expect(refused).toBe(1);
+  });
+
   it("a collapsed card's permission prompts are prefetched as its approval cards would be — not when locked or closed", () => {
     const loads: string[] = [];
-    const pf = load<{ acPrefetch(s: unknown, col: string): void }>(['acPrefetch'], [], {
-      _permDetails: { done: { input: '{}' } },
-      acPermissionLock: (_s: unknown, p: { approvalId: string }) => (p.approvalId === 'theirs' ? 'locked' : ''),
-      loadPermissionDetail: (_k: string, id: string) => loads.push(id),
-    });
+    const pf = load<{ acPrefetch(s: unknown, col: string): void }>(
+      ['toNum', 'acDetailDue', 'acPrefetch'],
+      ['AC_DETAIL_RETRY_MS', 'AC_DETAIL_TRIES'],
+      {
+        _permDetails: { done: { input: '{}' } },
+        acPermissionLock: (_s: unknown, p: { approvalId: string }) => (p.approvalId === 'theirs' ? 'locked' : ''),
+        loadPermissionDetail: (_k: string, id: string) => loads.push(id),
+      },
+    );
     const s = {
       key: KEY,
       pendingPermissions: [{ approvalId: 'mine' }, { approvalId: 'done' }, { approvalId: 'theirs' }],
@@ -1024,6 +1048,76 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
     expect(loads).toEqual(['mine']);
     // The open card's approval card asks for the same input on the same terms.
     expect(fnBody('acPermissionData')).toContain('loadPermissionDetail(s.key, p.approvalId);');
+  });
+
+  // #548 review P3: a failed prefetch stayed { error } for good.
+  it('a prefetch that failed for a passing reason is asked again on a later push, 30 s on, at most 3 loads', () => {
+    let now = 1_000_000;
+    const loads: string[] = [];
+    const details: Record<string, Record<string, unknown>> = {
+      net: { error: '파라미터를 불러오지 못했습니다', retry: true, tries: 1, at: now },
+      gone: { error: '이미 응답되었거나 만료된 요청입니다' },
+      refused: { error: '파라미터를 불러오지 못했습니다 (403)', retry: false, tries: 1, at: now - 60_000 },
+      spent: { error: '파라미터를 불러오지 못했습니다 (502)', retry: true, tries: 3, at: now - 60_000 },
+    };
+    const pf = load<{ acPrefetch(s: unknown, col: string): void }>(
+      ['toNum', 'acDetailDue', 'acPrefetch'],
+      ['AC_DETAIL_RETRY_MS', 'AC_DETAIL_TRIES'],
+      {
+        _permDetails: details,
+        acPermissionLock: () => '',
+        loadPermissionDetail: (_k: string, id: string) => loads.push(id),
+        Date: { now: () => now },
+      },
+    );
+    const s = { key: KEY, pendingPermissions: Object.keys(details).map((approvalId) => ({ approvalId })) };
+    pf.acPrefetch(s, 'waiting');
+    expect(loads).toEqual([]); // a push right after the failure asks nothing
+    now += 30_000;
+    pf.acPrefetch(s, 'waiting');
+    expect(loads).toEqual(['net']); // gone / refused are answers; the third failure was the last try
+    // The open card's approval card retries on the same terms.
+    expect(fnBody('acPermissionData')).toContain(
+      'if (acDetailDue(detail, Date.now())) loadPermissionDetail(s.key, p.approvalId);',
+    );
+  });
+
+  it('loadPermissionDetail keeps how a load failed: network and 5xx may pass (tries counted), 404 and 403 are answers', async () => {
+    const now = 5_000_000;
+    const details: Record<string, Record<string, unknown>> = {};
+    let reply: () => Promise<unknown> = () => Promise.reject(new Error('offline'));
+    const m = load<{ loadPermissionDetail(k: string, id: string): void }>(['toNum', 'loadPermissionDetail'], [], {
+      _permDetails: details,
+      _permLoading: {},
+      acRepaint: () => {},
+      fetch: () => reply(),
+      Date: { now: () => now },
+    });
+    const settle = () => new Promise((r) => setTimeout(r, 0));
+    m.loadPermissionDetail(KEY, 'a');
+    await settle();
+    expect(details.a).toEqual({ error: '파라미터를 불러오지 못했습니다', retry: true, tries: 1, at: now });
+    m.loadPermissionDetail(KEY, 'a');
+    await settle();
+    expect(details.a).toMatchObject({ retry: true, tries: 2 });
+    const res = (status: number) => () => Promise.resolve({ ok: false, status, json: () => Promise.resolve({}) });
+    reply = res(502);
+    m.loadPermissionDetail(KEY, 'b');
+    await settle();
+    expect(details.b).toEqual({ error: '파라미터를 불러오지 못했습니다 (502)', retry: true, tries: 1, at: now });
+    reply = res(403);
+    m.loadPermissionDetail(KEY, 'c');
+    await settle();
+    expect(details.c).toMatchObject({ retry: false });
+    reply = res(404);
+    m.loadPermissionDetail(KEY, 'd');
+    await settle();
+    expect(details.d).toEqual({ error: '이미 응답되었거나 만료된 요청입니다' });
+    reply = () =>
+      Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ input: '{}', truncated: false }) });
+    m.loadPermissionDetail(KEY, 'a');
+    await settle();
+    expect(details.a).toEqual({ input: '{}', truncated: false });
   });
 });
 
@@ -1501,6 +1595,26 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     agents.push({ id: 'g61', n: 61, parentId: 'g60', type: 'Plan', status: 'running', startedAt: T0 + 61 });
     r.m.paintTreeTab();
     expect(r.out.appended).toEqual([[1, false]]);
+  });
+
+  // #542 review P3: the library's UiElement has no updateComplete — the step waits one frame, nothing else.
+  it('psecAfterRender waits one frame after the tree renders (the element has no updateComplete)', async () => {
+    const frames: Array<() => void> = [];
+    const { psecAfterRender } = load<{ psecAfterRender(el: unknown, fn: () => void): void }>(['psecAfterRender'], [], {
+      requestAnimationFrame: (f: () => void) => frames.push(f),
+    });
+    let ran = 0;
+    // Even an element that offered a promise is not waited on: one frame is the contract.
+    psecAfterRender({ updateComplete: Promise.resolve() }, () => ran++);
+    await Promise.resolve();
+    expect(ran).toBe(0);
+    expect(frames).toHaveLength(1);
+    frames[0]();
+    expect(ran).toBe(1);
+    psecAfterRender(null, () => ran++);
+    frames[1]();
+    expect(ran).toBe(2);
+    expect(clientFn('psecAfterRender')).not.toContain('updateComplete');
   });
 
   // RED (SSOT T2/T3) — what a subagent spent (its own API calls: tokens and

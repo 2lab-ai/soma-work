@@ -285,7 +285,7 @@ describe('mpHydrate — every picker under a root takes its session’s data, on
       },
     };
     const m = load<{ mpHydrate(root: unknown): void; setBusy(k: string, op: string, on: boolean): void }>(
-      ['toNum', 'isBusy', 'setBusy', 'mpShort', 'mpEffortLevels', 'mpData', 'mpHydrate'],
+      ['toNum', 'isBusy', 'setBusy', 'mpShort', 'mpEffortLevels', 'mpData', 'mpDataSig', 'mpHydrate'],
       ['_busy'],
       { REPRESENTATIVE_MODELS: MODELS, EFFORT_LEVELS: LEVELS, _modelNotes: {}, _sessionCache: cache },
     );
@@ -309,6 +309,55 @@ describe('mpHydrate — every picker under a root takes its session’s data, on
     m.mpHydrate(root);
     expect(a.data.busy.effort).toBe(true);
     m.mpHydrate(null);
+  });
+
+  // #546 review P3: a field-tuple signature, not JSON.stringify(mpData(s)) on every card render.
+  it('mpData is built only when a field it reads changed (mpDataSig) — every such field writes again', () => {
+    let built = 0;
+    const cache: Record<string, Record<string, unknown>> = { [KEY]: sess() };
+    const notes: Record<string, { text: string; error: boolean }> = {};
+    const sets: unknown[] = [];
+    const node: Record<string, unknown> = { getAttribute: (n: string) => (n === 'data-mp-key' ? KEY : null) };
+    Object.defineProperty(node, 'data', { set: (v) => sets.push(v) });
+    const root = { querySelectorAll: () => [node] };
+    const m = load<{ mpHydrate(root: unknown): void; setBusy(k: string, op: string, on: boolean): void }>(
+      ['toNum', 'isBusy', 'setBusy', 'mpDataSig', 'mpHydrate'],
+      ['_busy'],
+      {
+        _sessionCache: cache,
+        _modelNotes: notes,
+        mpData: () => {
+          built++;
+          return { n: built };
+        },
+      },
+    );
+    m.mpHydrate(root);
+    m.mpHydrate(root);
+    expect([built, sets.length]).toEqual([1, 1]);
+    const changes: Array<() => void> = [
+      () => (cache[KEY] = sess({ model: 'claude-sonnet-4-6[1m]' })),
+      () => (cache[KEY] = { ...cache[KEY], effort: 'max' }),
+      () => (cache[KEY] = { ...cache[KEY], effortEffective: 'high' }),
+      () => (cache[KEY] = { ...cache[KEY], pendingModel: 'fable[1m]' }),
+      () => (cache[KEY] = { ...cache[KEY], contextTokens: 600_000 }),
+      () => (cache[KEY] = { ...cache[KEY], effortLevels: ['low', 'high'] }),
+      () => m.setBusy(KEY, 'model', true),
+      () => m.setBusy(KEY, 'effort', true),
+      () => (notes[KEY] = { text: '전환 실패', error: true }),
+      () => (notes[KEY] = { text: '다른 실패', error: true }),
+    ];
+    for (const [i, change] of changes.entries()) {
+      change();
+      m.mpHydrate(root);
+      m.mpHydrate(root);
+      expect([built, sets.length], `change ${i}`).toEqual([i + 2, i + 2]);
+    }
+    // An info note is the host's line, not the picker's data: nothing to write.
+    notes[KEY] = { text: 'effort 높음 · 다음 턴부터 적용', error: false };
+    m.mpHydrate(root);
+    expect(built).toBe(changes.length + 2);
+    expect(clientFn('mpHydrate')).not.toContain('JSON.stringify');
   });
 
   it('runs on every open card body paint and every panel-controls pass — also while an open menu holds them', () => {
@@ -504,7 +553,8 @@ describe('D12 — an open menu holds its surface still', () => {
     const writes: string[] = [];
     const hydrated: unknown[] = [];
     let open = false;
-    const el = { _html: '', querySelector: (s: string) => (open && s === 'ui-model-picker[open]' ? {} : null) };
+    const picker = { getAttribute: (n: string) => (n === 'data-mp-key' ? 'k' : null) };
+    const el = { _html: '', querySelector: (s: string) => (open && s === 'ui-model-picker[open]' ? picker : null) };
     const m = load<{ renderPanelControls(s: unknown): void }>(['isPickingModel', 'renderPanelControls'], [], {
       document: { getElementById: (id: string) => (id === 'panel-controls' ? el : null) },
       currentUserId: 'U1',
@@ -530,6 +580,42 @@ describe('D12 — an open menu holds its surface still', () => {
     expect(writes.length).toBe(before);
     expect(hydrated.length).toBe(passes + 1); // the open menu follows the session through its data
     expect(hydrated[hydrated.length - 1]).toBe(el);
+  });
+
+  // #546 review P3: openPanel from a deep link (?session=) can move the panel to another session
+  // while the menu is open — the held picker is the OLD session's, so it is not held.
+  it('the panel moved to another session under an open menu: that menu closes and the controls follow the new session', () => {
+    const writes: string[] = [];
+    const hydrated: unknown[] = [];
+    const picker: Record<string, unknown> = {
+      open: true,
+      getAttribute: (n: string) => (n === 'data-mp-key' ? 'old' : null),
+    };
+    const el = {
+      _html: '',
+      querySelector: (s: string) => (picker.open && s === 'ui-model-picker[open]' ? picker : null),
+    };
+    const m = load<{ renderPanelControls(s: unknown): void }>(['isPickingModel', 'renderPanelControls'], [], {
+      document: { getElementById: (id: string) => (id === 'panel-controls' ? el : null) },
+      currentUserId: 'U1',
+      isSiblingSession: () => false,
+      esc: (x: string) => x,
+      renderModelPicker: (s: { key: string }, can: boolean, _short: string, surface: string) =>
+        `[M:${s.key}:${can}:${surface}]`,
+      renderEffortPicker: () => '[E]',
+      renderModelNote: () => '',
+      morphInnerHtml: (_e: unknown, h: string) => writes.push(h),
+      mpHydrate: (root: unknown) => hydrated.push(root),
+    });
+    // Its own session: held (no write).
+    m.renderPanelControls({ key: 'old', ownerId: 'U1', model: 'claude-opus-5-5[1m]' });
+    expect(writes).toEqual([]);
+    expect(picker.open).toBe(true);
+    // Another session: the old menu is closed (no ui-open-change) and the controls are written for the new one.
+    m.renderPanelControls({ key: 'new', ownerId: 'U1', model: 'claude-opus-5-5[1m]' });
+    expect(picker.open).toBe(false);
+    expect(writes).toEqual(['<span class="pc-scope">이 세션</span>[M:new:true:panel]']);
+    expect(hydrated).toEqual([el, el]);
   });
 });
 
