@@ -295,8 +295,9 @@ function only(a: Set<string>, b: Set<string>): string[] {
  *     "Review and merge PR #450." → "… PR #451.");
  *   - each names one environment and they differ ("Deploy the dashboard to dev
  *     and verify" → "… to prod …"; development = dev, production = prod);
- *   - a short text (3 words or fewer) swaps a word ("Implement login API" →
- *     "Implement logout API").
+ *   - a short text (3 words or fewer) swaps exactly one word for another
+ *     ("Implement login API" → "Implement logout API"); a word changing form
+ *     (fix → fixed, v0 → v1) is no swap.
  */
 export function changesTarget(a: string, b: string): boolean {
   const ra = refsOf(a);
@@ -307,7 +308,21 @@ export function changesTarget(a: string, b: string): boolean {
   if (ea.size === 1 && eb.size === 1 && [...ea][0] !== [...eb][0]) return true;
   const wa = targetWords(a);
   const wb = targetWords(b);
-  return Math.min(wa.size, wb.size) <= 3 && only(wa, wb).length > 0 && only(wb, wa).length > 0;
+  if (Math.min(wa.size, wb.size) > 3) return false;
+  // A word changing form is the same target (review R4): fix → fixed, v0 → v1.
+  const gone = only(wa, wb);
+  const came = only(wb, wa);
+  const unexplained = (xs: string[], ys: string[]) => xs.filter((x) => !ys.some((y) => sameWordForm(x, y)));
+  // Exactly one word swapped for another, nothing else changed (login → logout).
+  // Words added or dropped around it are progress written in ("Final terminal
+  // report" → "Final report with evidence"), not another target (review R4 replay).
+  return wa.size === wb.size && unexplained(gone, came).length === 1 && unexplained(came, gone).length === 1;
+}
+
+/** Two words are one word in another form: one is the other's head (fix / fixed), or both are versions (v0 / v1). */
+function sameWordForm(x: string, y: string): boolean {
+  if (/^v\d+$/.test(x) && /^v\d+$/.test(y)) return true;
+  return Math.min(x.length, y.length) >= 3 && (x.startsWith(y) || y.startsWith(x));
 }
 
 /** How alike two task texts are, 0..1: shared words (Jaccard), or 0.9 when one extends the other. */
