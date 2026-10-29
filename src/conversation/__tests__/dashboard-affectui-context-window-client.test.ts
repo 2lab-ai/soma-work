@@ -59,7 +59,8 @@ const CSS = TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</styl
 const HEAD = TEMPLATE.slice(0, TEMPLATE.indexOf('<style>'));
 
 const NOW = 1_800_000_000_000;
-const READ_ONLY = 'Read-only — not your session';
+/** The page's own non-owner reason (one constant: compact, the action buttons, the subtitle, a question card). */
+const READ_ONLY = /^const READ_ONLY_MSG = '([^']*)';$/m.exec(TEMPLATE)?.[1] ?? '';
 const CW_FNS = ['esc', 'escAttr', 'toNum', 'formatTokens', 'cwPhase', 'cwCanCompact', 'cwData', 'cwSlotHtml'];
 const CW_VARS = ['CW_DONE_MS', 'CW_SAVED_MS', 'CW_FAIL_MS', 'CW_CEIL_MS', '_cw'];
 const STATE = ['function cwTestState() { return _cw; }', 'function cwTestSet(o) { _cw = o; }'];
@@ -310,6 +311,16 @@ describe('D12 — 지금 압축: owner-gated (canCompact), confirmed by the elem
     expect(data().canCompact).toBe(true);
   });
 
+  // #547 review P3: the element's title says the reason — in Korean, like every other reason here.
+  it('the non-owner reason is Korean like the others, and the one constant every surface uses', () => {
+    expect(READ_ONLY).toBe('읽기 전용 — 내 세션이 아닙니다');
+    expect(data({ ownerId: 'U2' }).canCompact).toBe('읽기 전용 — 내 세션이 아닙니다');
+    // The question card's lock says the same through the same constant (no second copy of the words).
+    expect(clientFn('acQuestionLock')).toContain(': READ_ONLY_MSG;');
+    expect(TEMPLATE.split('읽기 전용 — 내 세션이 아닙니다').length - 1).toBe(1);
+    expect(TEMPLATE).not.toContain('Read-only — not your session');
+  });
+
   it('disabled with the reason: not the owner (fails closed), another instance, a switch waiting on a compact, a compact already scheduled', () => {
     expect(data({ ownerId: 'U2' }).canCompact).toBe(READ_ONLY);
     expect(data({ ownerId: undefined }).canCompact).toBe(READ_ONLY);
@@ -368,7 +379,7 @@ describe('D12 — 지금 압축: owner-gated (canCompact), confirmed by the elem
     const s = sess(over);
     const c = load<Flow>(
       ['toNum', 'cwCanCompact', 'cwObserve', 'cwCompact'],
-      ['_cw', '_cwSeq', 'CW_DONE_MS', 'CW_SAVED_MS', 'CW_FAIL_MS', 'CW_CEIL_MS'],
+      ['_cw', '_cwSeq', '_cwCeil', 'CW_DONE_MS', 'CW_SAVED_MS', 'CW_FAIL_MS', 'CW_CEIL_MS'],
       {
         panelSessionKey: s.key,
         _sessionCache: { [s.key]: s },
@@ -408,6 +419,49 @@ describe('D12 — 지금 압축: owner-gated (canCompact), confirmed by the elem
     expect(c.cwTestState().queued).toBe(false);
     expect(later).toHaveBeenCalledWith(300_000);
     expect(render).toHaveBeenCalledTimes(2);
+  });
+
+  // #547 review P3: each request armed a 5-minute repaint and none was ever cancelled.
+  it('one 5-minute ceiling per request: a new request lets the previous one’s timer go', async () => {
+    const timers = new Map<number, number>();
+    let next = 0;
+    const cleared: number[] = [];
+    const s = sess();
+    const c = load<Flow>(
+      ['toNum', 'cwCanCompact', 'cwObserve', 'cwLater', 'cwCompact'],
+      ['_cw', '_cwSeq', '_cwCeil', 'CW_DONE_MS', 'CW_SAVED_MS', 'CW_FAIL_MS', 'CW_CEIL_MS'],
+      {
+        panelSessionKey: s.key,
+        panelOpen: true,
+        _sessionCache: { [s.key]: s },
+        currentUserId: 'U1',
+        READ_ONLY_MSG: READ_ONLY,
+        isSiblingSession: () => false,
+        fetch: async () => ({ ok: false, status: 500 }),
+        _csrfToken: 'tok',
+        refreshCsrfToken: async () => {},
+        renderPanelInfo: () => {},
+        setTimeout: (_fn: () => void, ms: number) => {
+          timers.set(++next, ms);
+          return next;
+        },
+        clearTimeout: (id: number) => {
+          cleared.push(id);
+          timers.delete(id);
+        },
+      },
+      STATE,
+    );
+    const ceilings = () => [...timers.values()].filter((ms) => ms === 300_020).length;
+    await c.cwCompact(); // fails: the button is back at once for the next press
+    expect(c.cwTestState().req).toBe('failed');
+    expect(ceilings()).toBe(1);
+    await c.cwCompact();
+    await c.cwCompact();
+    expect(Number(c.cwTestState().reqId)).toBe(3);
+    // Three requests, one ceiling left: each new one cancelled the one before it.
+    expect(ceilings()).toBe(1);
+    expect(cleared.filter((id) => id > 0)).toHaveLength(2); // (the first request had none to clear)
   });
 
   it('gating is checked again at press time: a non-owner, a sleeping session or a request in flight sends nothing', async () => {

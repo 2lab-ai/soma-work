@@ -6625,9 +6625,10 @@ function dhTruncate(field) {
   return (f && typeof f.truncate === 'number') ? f.truncate : null;
 }
 let currentUserId = INIT_USER || '';
-// Displayed + placeholder copy when a non-owner views a session. Kept here so
-// wording edits only touch one place instead of four button sites + panel.
-const READ_ONLY_MSG = 'Read-only — not your session';
+// Displayed + placeholder copy when a non-owner views a session (Korean, like
+// every other reason the page gives). Kept here so wording edits only touch one
+// place: the action buttons, 지금 압축, the subtitle, a question card's lock.
+const READ_ONLY_MSG = '읽기 전용 — 내 세션이 아닙니다';
 let currentPeriod = 'day';
 let ws = null;
 let panelOpen = false;
@@ -6751,8 +6752,17 @@ function formatTaskTime(ts) {
 //
 // The board never carries the parameters (it is one document for every
 // viewer): the requester's page fetches them from the requester-only route.
-var _permDetails = Object.create(null); // approvalId → { input, truncated } | { error }
+var _permDetails = Object.create(null); // approvalId → { input, truncated } | { error, retry?, tries?, at? }
 var _permLoading = Object.create(null);
+// A load that failed for a reason that may pass (the network, a 5xx) is asked
+// again on a later push — AC_DETAIL_RETRY_MS after it failed, AC_DETAIL_TRIES
+// loads at most, so a failing route never spins. A refusal is an answer.
+var AC_DETAIL_RETRY_MS = 30000;
+var AC_DETAIL_TRIES = 3;
+function acDetailDue(detail, now) {
+  if (!detail) return true;
+  return !!detail.retry && toNum(detail.tries) < AC_DETAIL_TRIES && now - toNum(detail.at) >= AC_DETAIL_RETRY_MS;
+}
 // session key → { 'p|<approvalId>' | the question id → the card's state (sending · error · resolved) }.
 // Per session: a question has no request id (its id is its content), so two
 // sessions asking the same thing are two requests (PR #536 review P1).
@@ -6779,7 +6789,7 @@ function acPermissionLock(s, p) {
 }
 function acQuestionLock(s) {
   if (isSiblingSession(s)) return AC_SIBLING;
-  return s.ownerId && s.ownerId === currentUserId ? '' : '읽기 전용 — 내 세션이 아닙니다';
+  return s.ownerId && s.ownerId === currentUserId ? '' : READ_ONLY_MSG;
 }
 
 // DashboardPermissionRequest (+ the requester's input, + this page's answer) → the card's data.
@@ -6801,10 +6811,9 @@ function acPermissionData(s, p) {
     d.notice = isSiblingSession(s) ? '파라미터는 그 인스턴스의 대시보드에서 볼 수 있습니다' : '파라미터는 요청자만 볼 수 있습니다';
   } else {
     var detail = _permDetails[p.approvalId];
-    if (!detail) {
-      d.loading = true;
-      loadPermissionDetail(s.key, p.approvalId);
-    } else if (detail.error) d.notice = detail.error;
+    if (acDetailDue(detail, Date.now())) loadPermissionDetail(s.key, p.approvalId);
+    if (!detail) d.loading = true;
+    else if (detail.error) d.notice = detail.error;
     else {
       d.input = detail.input;
       if (detail.truncated) d.truncated = true;
@@ -6888,8 +6897,9 @@ function acQuestionHtml(s, q) {
 // the card shows it at once.
 function acPrefetch(s, col) {
   var list = col === 'closed' ? [] : (s && s.pendingPermissions) || [];
+  var now = Date.now();
   for (var i = 0; i < list.length; i++) {
-    if (!_permDetails[list[i].approvalId] && !acPermissionLock(s, list[i])) loadPermissionDetail(s.key, list[i].approvalId);
+    if (acDetailDue(_permDetails[list[i].approvalId], now) && !acPermissionLock(s, list[i])) loadPermissionDetail(s.key, list[i].approvalId);
   }
 }
 
@@ -7052,6 +7062,12 @@ function acFirstOpen(root) {
 function loadPermissionDetail(key, approvalId) {
   if (_permLoading[approvalId]) return;
   _permLoading[approvalId] = true;
+  var prev = _permDetails[approvalId];
+  var tries = (prev && prev.error ? toNum(prev.tries) : 0) + 1;
+  // retry: the failure may pass (acDetailDue) — the network, a 5xx, 429; any other status is an answer.
+  function failed(text, retry) {
+    _permDetails[approvalId] = { error: text, retry: retry, tries: tries, at: Date.now() };
+  }
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/permission/' + encodeURIComponent(approvalId);
   fetch(url)
     .then(function(res) {
@@ -7061,11 +7077,11 @@ function loadPermissionDetail(key, approvalId) {
         } else if (res.status === 404) {
           _permDetails[approvalId] = { error: '이미 응답되었거나 만료된 요청입니다' };
         } else {
-          _permDetails[approvalId] = { error: (body && body.error) || ('파라미터를 불러오지 못했습니다 (' + res.status + ')') };
+          failed((body && body.error) || ('파라미터를 불러오지 못했습니다 (' + res.status + ')'), res.status >= 500 || res.status === 429);
         }
       });
     })
-    .catch(function() { _permDetails[approvalId] = { error: '파라미터를 불러오지 못했습니다' }; })
+    .catch(function() { failed('파라미터를 불러오지 못했습니다', true); })
     .then(function() {
       delete _permLoading[approvalId];
       acRepaint(key);
@@ -8350,10 +8366,11 @@ function renderBoard(board, partial) {
   }
   syncCardBodies();
   // Open cards keep their 지시/응답 current (no DOM write unless a fetch settles).
-  _expanded.forEach(function(key) { if (_cardHost[key]) ensureCardIo(key, false); });
-  // A board with cards: on a phone the last card clears the floating button.
+  // Drawn ones only: a closed DONE day's cards are placed as stubs (_cardHost), not drawn.
+  _expanded.forEach(function(key) { if (_cardDrawn[key]) ensureCardIo(key, false); });
+  // A board with drawn cards: on a phone the last card clears the floating button.
   var inbox = document.getElementById('inbox');
-  if (inbox) inbox.classList.toggle('has-cards', Object.keys(_cardHost).length > 0);
+  if (inbox) inbox.classList.toggle('has-cards', Object.keys(_cardDrawn).length > 0);
   renderArchivesToggle(plan.archivedCount);
   renderSleepingToggle(plan.sleepingCount);
   paintCronDrawer();
@@ -8449,9 +8466,15 @@ function wireInbox(host) {
     if (e.target !== host || !e.detail) return;
     var key = String(e.detail.cardId);
     var open = !!e.detail.expanded;
+    var s = _sessionCache[key];
+    // A card whose session left the cache (off the board, before the next render
+    // drops it) has nothing to build: it stays closed instead of growing an empty body.
+    if (open && !s) {
+      e.preventDefault();
+      return;
+    }
     if (open) _expanded.add(key);
     else _expanded.delete(key);
-    var s = _sessionCache[key];
     if (!open) releaseCardIoTimer(s ? s.conversationId : null);
     syncCardBody(key, false);
     if (open) {
@@ -8492,9 +8515,20 @@ function wireInbox(host) {
     if (e.target !== host || !e.detail) return;
     var s = _sessionCache[String(e.detail.cardId)];
     if (!s || !s.conversationId) return;
-    var path = typeof e.composedPath === 'function' ? e.composedPath() : [];
-    openArtifactModal(s.conversationId, String(e.detail.artifactId), path[0] && path[0].focus ? path[0] : host);
+    var chip = inboxChipOf(host, String(e.detail.cardId), String(e.detail.artifactId));
+    openArtifactModal(s.conversationId, String(e.detail.artifactId), chip || host);
   });
+}
+// The file chip the reader pressed. The element emits ui-artifact on itself
+// (composedPath()[0] is the host), so the chip is found in its shadow root by
+// its key (data-key="art:<card>:<file>"); none (re-rendered away): null.
+function inboxChipOf(host, cardId, artifactId) {
+  var root = host && host.shadowRoot;
+  if (!root) return null;
+  var want = 'art:' + cardId + ':' + artifactId;
+  var chips = root.querySelectorAll('[data-art]');
+  for (var i = 0; i < chips.length; i++) if (chips[i].getAttribute('data-key') === want) return chips[i];
+  return null;
 }
 
 // Open, or still closing: the collapse runs over the body, so it stays until then.
@@ -9640,6 +9674,7 @@ function agentPromptOf(raw) {
   return text;
 }
 var _agentConvRaw = Object.create(null); // work-log seq → its loaded raw (this panel opening)
+var _agentConvFailed = Object.create(null); // work-log seq → { error } of a load that failed (this panel opening)
 function agentConvRawOf(seq) {
   var key = String(seq);
   if (Object.prototype.hasOwnProperty.call(_agentConvRaw, key)) return _agentConvRaw[key];
@@ -9649,14 +9684,34 @@ function agentConvRawOf(seq) {
   wlRawLoad(_wl, seq, wlFetchJson).then(function(r) {
     if (gen !== _panelGen) return;
     _agentConvRaw[key] = r && r.status === 'ok' ? r.raw : '';
-    // #488: a transient failure is tried again on a later render (a poll, a log
-    // page) — after a pause, so a failing load never spins.
+    // A transient failure: the answer says so and offers 다시 시도 (agentConvRetry);
+    // #488: it is also tried again on a later render (a poll, a log page) — after
+    // a pause, so a failing load never spins.
     if (r && r.status === 'error') {
-      setTimeout(function() { if (gen === _panelGen && _agentConvRaw[key] === '') delete _agentConvRaw[key]; }, 15000);
+      var failure = _agentConvFailed[key] = { error: String(r.error || 'Error') };
+      setTimeout(function() {
+        if (gen !== _panelGen || _agentConvFailed[key] !== failure) return;
+        delete _agentConvFailed[key];
+        delete _agentConvRaw[key];
+      }, 15000);
     }
     renderAgentConv();
   });
   return null;
+}
+// Why a subagent's raw failed to load ('' = it did not).
+function agentConvFailure(seq) {
+  var f = _agentConvFailed[String(seq)];
+  return f ? f.error : '';
+}
+// 다시 시도 on a subagent's answer (ui-retry; its slot names the work-log seq):
+// the failure is forgotten and the tab painted again, which loads it again.
+function agentConvRetry(seq) {
+  var key = String(seq);
+  if (!_agentConvFailed[key]) return;
+  delete _agentConvFailed[key];
+  delete _agentConvRaw[key];
+  renderAgentConv();
 }
 function agentConvHtml(a, io, prompt, answer) {
   var name = a ? agentName(a) : '에이전트';
@@ -9674,8 +9729,10 @@ function agentConvHtml(a, io, prompt, answer) {
   }
   var body;
   if (io.result) {
-    // The answer is <ui-ai-answer flat> (its data: agentAnswerData).
-    body = '<div class="turn-answer ui-tok">' + ansSlotHtml('불러오는 중…') + '</div>';
+    // The answer is <ui-ai-answer flat> (its data: agentAnswerData); one read from
+    // its raw names the work-log entry (data-seq: 다시 시도 → agentConvRetry).
+    var seq = io.result.rawBytes ? ' data-seq="' + Math.floor(Number(io.result.seq) || 0) + '"' : '';
+    body = '<div class="turn-answer ui-tok"' + seq + '>' + ansSlotHtml('불러오는 중…') + '</div>';
     body += '<details class="turn-raw"><summary class="turn-expand-btn">Raw</summary><div class="turn-raw-body">'
       + (a && a.summary ? '<div class="turn-raw-label">요약</div><div>' + esc(a.summary) + '</div>' : '')
       + '<div class="turn-raw-label">원문</div><pre class="turn-raw-src">' + esc(answer || '') + '</pre></div></details>';
@@ -9693,10 +9750,16 @@ function agentConvHtml(a, io, prompt, answer) {
 // Pure: what a subagent's answer element shows — the writing row while it runs
 // (no result yet), loading while its raw is fetched, then the answer (a result
 // that cannot be read reads as the agent's own one-line summary, if it has
-// one). Copy takes this text. No entry motion: the tab is painted again on
-// every poll and every return to the agent.
-function agentAnswerData(a, io, answer, s) {
+// one). A raw that failed to load (failed: why) says so with 다시 시도, headed
+// by that summary — never as an empty answer. Copy takes this text. No entry
+// motion: the tab is painted again on every poll and every return to the agent.
+function agentAnswerData(a, io, answer, s, failed) {
   if (!io.result) return { markdown: '', streaming: true };
+  if (failed) {
+    var d = { markdown: '', error: String(failed), canRetry: true };
+    if (a && a.summary) d.title = String(a.summary);
+    return d;
+  }
   if (answer == null) return { markdown: '', loading: true };
   var shown = answer === '' && a && a.summary ? a.summary : answer;
   return { markdown: String(shown), linkTitles: ansLinkTitles(s), animate: false };
@@ -9712,13 +9775,14 @@ function renderAgentConv() {
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var a = panelAgentOf(s);
   var io = agentConvEntries(_wl && _wl.entries, _panelAgent, !!(a && a.background));
-  if (!io.spawn) wlSeekAgentSpawn(_wl, a);
+  if (!io.spawn) wlSeekAgentSpawn(_wl, a, _panelAgent);
   var prompt = io.spawn && io.spawn.rawBytes ? agentConvRawOf(io.spawn.seq) : null;
   var answer = io.result ? (io.result.rawBytes ? agentConvRawOf(io.result.seq) : String(io.result.text || '')) : null;
+  var failed = io.result && io.result.rawBytes ? agentConvFailure(io.result.seq) : '';
   var html = io.spawn || io.result || a ? agentConvHtml(a, io, prompt != null ? agentPromptOf(prompt) : null, answer) : '<p class="panel-tasks-empty">이 에이전트의 지시와 결과를 찾지 못했습니다</p>';
   writePanelPart(host, html);
   var el = host.querySelector('ui-ai-answer');
-  if (el) ansSetData(el, agentAnswerData(a, io, answer, s));
+  if (el) ansSetData(el, agentAnswerData(a, io, answer, s, failed));
 }
 // ── Section tabs (SSOT 2026-10-29) — 에이전트 트리 · 작업 로그 · 지시와 답변 ──
 // Inside the focused agent's tab, three section tabs, each with its own scroll
@@ -10067,11 +10131,10 @@ function psecMaybeFill(sec) {
 function psecFillSoon(sec) {
   requestAnimationFrame(function() { psecMaybeFill(sec); });
 }
-// After a <ui-agent-tree> renders new data (its update is async), else after a frame.
-function psecAfterRender(el, fn) {
-  var p = el && el.updateComplete;
-  if (p && typeof p.then === 'function') p.then(fn, fn);
-  else requestAnimationFrame(function() { fn(); });
+// After a <ui-agent-tree> renders new data: one frame (the library's elements
+// expose no update promise — an UiElement renders on the next microtask).
+function psecAfterRender(_el, fn) {
+  requestAnimationFrame(function() { fn(); });
 }
 // The section box takes the rest of the panel (psecHeightOf) as the parts above it change.
 function sizePanelSections() {
@@ -10226,7 +10289,7 @@ function loadOlderWorkLog() {
   return run.then(function(r) {
     if (st !== _wl) return r;
     psecSyncControls('log');
-    // The next page when the top is still near the view; a failure waits for the reader.
+    // The next page when the top is still near the view; a failure or an empty page waits for the reader.
     if (r === 'ok') psecFillSoon('log');
     return r;
   });
@@ -10572,6 +10635,7 @@ var CW_DONE_MS = 1500;
 var CW_SAVED_MS = 3200;
 var CW_FAIL_MS = 4000;
 var CW_CEIL_MS = 300000;
+var _cwCeil = 0; // the 5-minute ceiling timer of the latest request (cwCompact)
 var _cw = { key: '', gen: 0, count: 0, reqId: 0, req: '', reqAt: 0, obsInReq: false, queued: false, doneAt: 0, observedAt: 0, savedWait: 0, usedAtRise: 0, lcSeen: '', lcAtRise: '', savedAt: 0, failAt: 0, timedOutAt: 0 };
 var _cwSeq = 0; // request ids: an answer only ever updates the request it belongs to
 // The request (D12): sending, then sent (the server took it) until a compaction
@@ -10719,7 +10783,7 @@ function cwObserve(s, now) {
 }
 // Repaint the open panel's 세션 정보 once a timed state (done, saved, failed, the ceiling) ends.
 function cwLater(ms) {
-  setTimeout(function() { if (panelOpen) renderPanelInfo(); }, ms + 20);
+  return setTimeout(function() { if (panelOpen) renderPanelInfo(); }, ms + 20);
 }
 // 지금 압축 (D12): the element confirms it (the first press arms it for 4s, the
 // second sends ui-compact); this sends the owner's own 'compact --yes' — the
@@ -10742,7 +10806,9 @@ async function cwCompact() {
   _cw.queued = s.activityState === 'working' || s.activityState === 'waiting'; // a turn holds the slot: the command waits behind it
   _cw.failAt = 0;
   _cw.timedOutAt = 0;
-  cwLater(CW_CEIL_MS);
+  // One ceiling per request: a new request lets the previous one's go.
+  clearTimeout(_cwCeil);
+  _cwCeil = cwLater(CW_CEIL_MS);
   renderPanelInfo();
   var ok = false;
   try {
@@ -10983,9 +11049,10 @@ function cancelCardIoRetry(cid) {
   delete _ioTimers[cid];
 }
 // The open card on the board that consumes this conversation's retry, or null.
-// A timer is armed only while one exists (retryCardIo fires into it).
+// A timer is armed only while one exists (retryCardIo fires into it). Drawn
+// cards only: a stub in a closed DONE day shows nothing.
 function cardIoConsumer(cid) {
-  for (var k in _cardHost) {
+  for (var k in _cardDrawn) {
     var s = _sessionCache[k];
     if (s && s.conversationId === cid && _expanded.has(k)) return k;
   }
@@ -11200,7 +11267,7 @@ function invalidateCardIo(cid) {
   if (!c) return;
   if (c.state === 'loading') { c.dirty = true; return; }
   c.stamp = null;
-  for (var k in _cardHost) {
+  for (var k in _cardDrawn) {
     var s = _sessionCache[k];
     if (s && s.conversationId === cid && _expanded.has(k)) ensureCardIo(k, false);
   }
@@ -11471,21 +11538,30 @@ function mpData(s) {
   if (note && note.error) d.error = note.text;
   return d;
 }
+// What mpData reads that can change, as one string (the model list and the
+// level set are the page's constants) — compared on every card render instead
+// of serializing the data itself.
+function mpDataSig(s) {
+  var note = _modelNotes[s.key];
+  return [
+    s.key, s.model, s.effort, s.effortEffective, s.pendingModel, toNum(s.contextTokens), String(s.effortLevels || ''),
+    isBusy(s.key, 'model'), isBusy(s.key, 'effort'), note && note.error ? note.text : '',
+  ].join('|');
+}
 // Set every picker's data under root — only where it changed (a push that
-// changes nothing on it writes nothing). An open menu follows its session this
-// way while its surface holds still (isPickingModel). Data set before the
-// element is defined is taken when it upgrades.
+// changes nothing on it builds and writes nothing). An open menu follows its
+// session this way while its surface holds still (isPickingModel). Data set
+// before the element is defined is taken when it upgrades.
 function mpHydrate(root) {
   if (!root || !root.querySelectorAll) return;
   var els = root.querySelectorAll('ui-model-picker[data-mp-key]');
   for (var i = 0; i < els.length; i++) {
     var s = _sessionCache[els[i].getAttribute('data-mp-key')];
     if (!s) continue;
-    var d = mpData(s);
-    var sig = JSON.stringify(d);
+    var sig = mpDataSig(s);
     if (els[i]._mpSig === sig) continue;
     els[i]._mpSig = sig;
-    els[i].data = d;
+    els[i].data = mpData(s);
   }
 }
 // A pick leaves the element as ui-change (re-model-picker D11): cancelled, so it
@@ -11632,7 +11708,15 @@ function renderPanelControls(s) {
   var el = document.getElementById('panel-controls');
   if (!el || !s) return;
   // An open menu holds its anchor here still until it closes; it follows the session through its data.
-  if (!isPickingModel(el)) {
+  // Only its own session's: a panel that moved to another session under it (openPanel from a deep
+  // link) closes it (no ui-open-change) and is written for the new session — a pick there would go
+  // to the session it was opened for.
+  var held = el.querySelector('ui-model-picker[open]');
+  if (held && held.getAttribute('data-mp-key') !== s.key) {
+    held.open = false;
+    held = null;
+  }
+  if (!held) {
     var isOwner = !!s.ownerId && s.ownerId === currentUserId;
     var canSwitch = isOwner && !s.terminated && s.sessionState !== 'SLEEPING' && !isSiblingSession(s);
     var modelShort = esc(s.model || '').replace(/^claude-/, '').replace(/-\\d{8}$/, '');
@@ -13458,8 +13542,12 @@ function wlRecover(state, fetchJson, onAdded, reason) {
 // …?beforeSeq=&limit=, merged by seq like every page. Older entries sit below the
 // cursor, so the live / gap bookkeeping is untouched. One at a time (the promise
 // is state.olderLoading); a failed page keeps olderPending (the control offers it
-// again); a page that brings nothing older ends the paging, so a server that keeps
-// saying hasMore cannot spin it.
+// again). A page that brings nothing older but says hasMore — the server's scan
+// stopped at its byte budget inside a run of non-entry lines, not the start of the
+// log — keeps it too, and the same page is asked again: up to WL_OLDER_EMPTY_MAX
+// such pages in a row, so a server that keeps saying hasMore cannot spin it.
+// Resolves 'ok' (entries came in), 'empty' (none: the next waits for the reader), 'error'.
+var WL_OLDER_EMPTY_MAX = 3;
 function wlLoadOlderPage(state, fetchJson, onAdded) {
   if (!state || state.closed || state.denied || !state.latestOk || !state.olderPending) return Promise.resolve(null);
   if (state.olderLoading) return state.olderLoading;
@@ -13474,8 +13562,10 @@ function wlLoadOlderPage(state, fetchJson, onAdded) {
     var page = (data && data.entries) || [];
     var older = page.filter(function(e) { return e && wlValidSeq(e.seq) && e.seq < before; });
     var added = wlMerge(state, older);
-    state.olderPending = !!(data && data.hasMore === true) && added.length > 0;
-    if (added.length) onAdded(state, added);
+    state.olderEmpty = added.length ? 0 : (state.olderEmpty || 0) + 1;
+    state.olderPending = !!(data && data.hasMore === true) && state.olderEmpty < WL_OLDER_EMPTY_MAX;
+    if (!added.length) return 'empty';
+    onAdded(state, added);
     return 'ok';
   }, function(err) {
     state.olderLoading = null;
@@ -13486,13 +13576,19 @@ function wlLoadOlderPage(state, fetchJson, onAdded) {
   return run;
 }
 // A subagent's tab whose spawn call is older than the log window: page back for
-// it — while older entries exist and the window has not reached back past the
-// agent's start (its call cannot be older than that).
-function wlSeekAgentSpawn(state, a) {
+// it — while older entries exist, the window has not reached back past the
+// agent's start (its call cannot be older than that), and for at most
+// WL_SEEK_MAX_PAGES pages per agent: one the bar does not know (a log-only
+// agent has no start) would otherwise fetch the whole log looking for it.
+var WL_SEEK_MAX_PAGES = 20;
+function wlSeekAgentSpawn(state, a, agentId) {
   if (!state || !state.olderPending || state.olderLoading) return;
   var start = toNum(a && a.startedAt);
   var oldest = state.entries.length ? toNum(state.entries[0].ts) : 0;
   if (start && oldest && oldest < start - 60000) return;
+  var seek = state.seek && state.seek.id === agentId ? state.seek : (state.seek = { id: agentId, pages: 0 });
+  if (seek.pages >= WL_SEEK_MAX_PAGES) return;
+  seek.pages++;
   loadOlderWorkLog();
 }
 
@@ -13523,7 +13619,7 @@ function wlRawLoad(state, seq, fetchJson) {
     if (status === 403) return { status: 'denied' };
     if (status === 503 && err.code === 'unavailable') return { status: 'damaged' };
     if (cache[seq] === p) delete cache[seq];
-    return { status: 'error' };
+    return { status: 'error', error: String((err && (err.message || err.name)) || 'Error') };
   });
   cache[seq] = p;
   return p;
@@ -14713,6 +14809,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // folded — or every detail open with 자세히; the goal folded either way.
   resetPanelSections();
   _agentConvRaw = Object.create(null);
+  _agentConvFailed = Object.create(null);
   // The previous opening's answers are gone from the list: stop watching them.
   if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
   _panelOnQuestion = false;
@@ -15451,18 +15548,30 @@ function ansSession(cid) {
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   return s && s.conversationId === cid ? s : null;
 }
-// Task view T1.4 — the turn's summary (kept in its Raw), the face when the
-// answer cannot be read (none recorded, or not this viewer's to read).
-function ansFallbackHtml(details) {
+// Task view T1.4 — the turn's summary (kept in its Raw) as one line of text:
+// the heading (the element's title) of an answer that cannot be read (none
+// recorded, or not this viewer's to read). Its title, then its body's own
+// words — not a button's (Summary failed's 🔄 Retry works in Raw).
+function ansSummaryTitle(details) {
   var body = details.parentNode;
   var sum = body && body.querySelector ? body.querySelector('.turn-raw-summary') : null;
-  return sum && sum.innerHTML ? '<div class="ans-fallback">' + sum.innerHTML + '</div>' : '';
+  if (!sum) return '';
+  var head = sum.querySelector('.turn-summary-title');
+  var text = sum.querySelector('.turn-summary-body');
+  var words = text ? String(text.textContent || '') : '';
+  var btn = text && text.querySelector ? text.querySelector('button') : null;
+  if (btn) words = words.replace(String(btn.textContent || ''), '');
+  return [head ? String(head.textContent || '') : '', words]
+    .map(function(x) { return x.replace(/\\s+/g, ' ').trim(); })
+    .filter(Boolean)
+    .join(' — ');
 }
 // D1 · D13 — one answer's face: loading, failed (다시 시도 → ui-retry), or the
 // answer from the cache — filled into Raw as written too. An empty or failed
-// answer has the turn's summary above it. Entry motion (D15) only for an answer
-// that just arrived: one painted again from the cache (the turn re-rendered
-// when its summary landed, D14) does not replay it.
+// answer is headed by the turn's summary (the element's title: nothing is
+// inserted beside it). Entry motion (D15) only for an answer that just
+// arrived: one painted again from the cache (the turn re-rendered when its
+// summary landed, D14) does not replay it.
 function ansPaint(details, state, detail, animate) {
   var el = details.querySelector('ui-ai-answer');
   if (!el) return;
@@ -15472,12 +15581,12 @@ function ansPaint(details, state, detail, animate) {
     var src = details.parentNode && details.parentNode.querySelector ? details.parentNode.querySelector('.turn-raw-src') : null;
     if (src && src.textContent !== raw) src.textContent = raw;
   }
-  var old = details.querySelector('.ans-fallback');
-  if (old) old.remove();
-  if (state !== 'loading' && !raw.trim()) el.insertAdjacentHTML('beforebegin', ansFallbackHtml(details));
-  ansSetData(el, state === 'loading' ? { markdown: '', loading: true }
+  var d = state === 'loading' ? { markdown: '', loading: true }
     : state === 'error' ? { markdown: '', error: String(detail || 'Error'), canRetry: true }
-    : { markdown: raw, linkTitles: ansLinkTitles(ansSession(details.dataset.conv)), animate: !!animate });
+    : { markdown: raw, linkTitles: ansLinkTitles(ansSession(details.dataset.conv)), animate: !!animate };
+  var title = state !== 'loading' && !raw.trim() ? ansSummaryTitle(details) : '';
+  if (title) d.title = title;
+  ansSetData(el, d);
 }
 // Turn ids are unique per conversation only: the raw cache is keyed by both.
 function ansCacheKey(convId, turnId) {
@@ -15535,8 +15644,15 @@ function ansLoad(details) {
 // ui-retry: other library elements send one too).
 document.addEventListener('ui-retry', function(e) {
   var el = e.target;
-  var details = el && el.tagName === 'UI-AI-ANSWER' && el.closest ? el.closest('.turn-answer[data-turn]') : null;
-  if (details) ansLoad(details);
+  if (!el || el.tagName !== 'UI-AI-ANSWER' || !el.closest) return;
+  var details = el.closest('.turn-answer[data-turn]');
+  if (details) {
+    ansLoad(details);
+    return;
+  }
+  // A subagent's answer: its raw is a work-log entry's, named by seq.
+  var sub = el.closest('.turn-answer[data-seq]');
+  if (sub) agentConvRetry(sub.getAttribute('data-seq'));
 });
 // D11 — "응답 4분 12초": from the instruction to the recorded answer (queue and
 // tools included — the answer is recorded when its turn ends).
@@ -16010,6 +16126,7 @@ document.addEventListener('ui-collapse', function(e) {
 // every kept run of the job.
 var CLOCK_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 4.8V8l2.2 1.4"/></svg>';
 var _cronJobs = [];          // GET /api/dashboard/cron — this instance's jobs
+var _cronJobsRev = 0;        // bumped by every jobs fetch (laneSig)
 var _cronPlan = null;        // last planCronLane() result
 var _cronGroupEls = Object.create(null); // group key → the job's persistent card box (its slot)
 var _cronDrawerKey = null;   // group key the drawer shows, null when closed
@@ -16185,6 +16302,7 @@ function cronRunAsAq(r) {
 // session), an idle one is of unknown result (+미확인). Where a job's kept history (FIFO
 // historyCap) starts inside the window, the element turns the counts into lower bounds (≥)
 // from the jobs' kept records.
+// Every record goes, not just the last 24 hours: the element applies the window — do not cut it here.
 function cronDayRuns(plan) {
   var out = [];
   ((plan && plan.groups) || []).forEach(function(g) {
@@ -16223,6 +16341,24 @@ function laneData(plan) {
     return job;
   });
   return { lane: { jobs: jobs, runs24h: cronDayRuns(plan) }, collapsible: true, collapsed: { lane: cronLaneFolded() } };
+}
+// What the lane's data is made of, cheaply — compared on every board render instead
+// of building laneData and serializing it: the jobs (their run records, schedules
+// and caps change only with a fetch: its revision), each group in order with its
+// live state and its cards (key, column, time — a card's run on the strip), and the fold.
+function laneSig(plan) {
+  var parts = [_cronJobsRev, cronLaneFolded() ? 1 : 0];
+  var groups = (plan && plan.groups) || [];
+  for (var i = 0; i < groups.length; i++) {
+    var g = groups[i];
+    var cards = [];
+    for (var j = 0; j < g.cards.length; j++) {
+      var c = g.cards[j];
+      cards.push(c.key + ':' + g.colOf[c.key] + ':' + (Number(c.activeLegStartedAtMs) || cronCardTime(c)));
+    }
+    parts.push(g.key + '|' + g.name + '|' + (g.job ? 'j' : '') + (g.waiting ? 'w' : '') + (g.running ? 'r' : '') + '|' + cards.join(','));
+  }
+  return parts.join(';');
 }
 // Hand an element its data only when it changed — or once a minute, so the 24-hour window
 // and the timeline slide toward now (between renders the element ticks its own countdowns).
@@ -16264,6 +16400,10 @@ function syncCronLane(plan) {
     // Its card fades out first (its <ui-agent-inbox>), then the box goes.
     setTimeout(function(node) { return function() { if (node.parentNode) node.parentNode.removeChild(node); }; }(old), MOTION.fade + 40);
   }
+  // The data is built (and compared, aqPaint) only when what it is made of changed, or a minute on.
+  var sig = laneSig(plan) + '#' + Math.floor(Date.now() / 60000);
+  if (el._laneSig === sig) return;
+  el._laneSig = sig;
   aqPaint(el, laneData(plan));
 }
 // The lane's card slots: each job group shows its lead card (waiting, else running,
@@ -16390,6 +16530,7 @@ async function loadCronJobs() {
     if (!res.ok) return;
     var data = await res.json();
     _cronJobs = Array.isArray(data.jobs) ? data.jobs : [];
+    _cronJobsRev++;
     if (_lastBoardData) renderBoard(_lastBoardData);
   } catch (e) { console.error('Failed to load cron jobs', e); }
 }
