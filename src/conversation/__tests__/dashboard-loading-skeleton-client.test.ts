@@ -173,7 +173,7 @@ const LOAD_VARS = ['_boardLoad', '_heldWsBoard', '_sessionsInflight', 'BOARD_LOA
 
 // renderBoard with the load state it reads (_boardLoad) and writes through setBoardLoad,
 // on the served board: the plan it hands the element, its columns and its load.
-function boardFlow(cardOf?: (s: { key: string }, col: string) => unknown) {
+function boardFlow(cardOf?: (s: { key: string }, col: string) => unknown, over: Record<string, unknown> = {}) {
   const d = fakeDocument(['kanban', 'board-error', 'inbox']);
   const loads: number[] = [];
   const m = load<{
@@ -235,6 +235,7 @@ function boardFlow(cardOf?: (s: { key: string }, col: string) => unknown) {
       scheduleLayoutRefresh: () => {},
       MOTION: { move: 320 },
       openDeepLinkedSession: () => {},
+      ...over,
     },
   );
   const kanban = d.byId.kanban;
@@ -352,6 +353,28 @@ describe('[T2] board — skeleton until the first board paints', () => {
     expect(h.kanban.data?.columns.every((c) => c.cards.length === 0)).toBe(true);
     const ls = clientFn('loadSessions');
     expect(ls.indexOf("setBoardLoad('failed');")).toBeGreaterThan(ls.indexOf('} catch (e) {'));
+  });
+});
+
+// #560 review P3: a closed DONE day's cards are placed as stubs (counted, not drawn) — they are in
+// _cardHost, but nothing of theirs is on the page.
+describe('a closed DONE day’s cards are stubs: no clearance, no 지시/응답 fetch for one left open', () => {
+  it('the phone clearance and the open cards’ fetches follow the drawn cards, not every placed one', () => {
+    const io: string[] = [];
+    const expanded = new Set<string>(['old']); // opened, then its day closed
+    const h = boardFlow(undefined, { _expanded: expanded, ensureCardIo: (k: string) => io.push(k) });
+    const tenDaysAgo = new Date(Date.now() - 10 * 86_400_000).toISOString();
+    const onlyClosedDay = { waiting: [], working: [], idle: [{ key: 'old', lastActivity: tenDaysAgo }], closed: [] };
+    h.m.renderBoard(onlyClosedDay, false);
+    const done = h.kanban.data?.columns[2] as unknown as { groups: Array<{ open: boolean; cards: unknown[] }> };
+    expect(done.groups.map((g) => g.open)).toEqual([false]);
+    expect(h.d.byId.inbox.classes.has('has-cards')).toBe(false);
+    expect(io).toEqual([]);
+    // A drawn card: the clearance, and its fetch when it is open.
+    expanded.add('w1');
+    h.m.renderBoard({ ...flowBoard(), idle: onlyClosedDay.idle }, false);
+    expect(h.d.byId.inbox.classes.has('has-cards')).toBe(true);
+    expect(io).toEqual(['w1']);
   });
 });
 
