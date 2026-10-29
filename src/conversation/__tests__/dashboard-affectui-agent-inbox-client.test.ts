@@ -848,6 +848,7 @@ describe('D10 — one primary button per open card', () => {
     const lockFor = (viewer: string, sibling: boolean) =>
       load<{ acQuestionLock(s: unknown): string }>(['acQuestionLock'], ['AC_SIBLING'], {
         currentUserId: viewer,
+        READ_ONLY_MSG: '읽기 전용 — 내 세션이 아닙니다',
         isSiblingSession: () => sibling,
       }).acQuestionLock;
     // Mine, here: the card answers, 작업 로그 steps back. No second set of choice buttons (the

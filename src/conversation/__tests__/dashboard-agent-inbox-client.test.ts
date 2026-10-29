@@ -1467,7 +1467,7 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
         _viewerUserId: 'U1',
         _viewerIsAdmin: false,
         _isAdminModeOn: () => false,
-        READ_ONLY_MSG: 'Read-only — not your session',
+        READ_ONLY_MSG: '읽기 전용 — 내 세션이 아닙니다',
       },
       // What openPanel / closePanel do to the panel identity (dashboard.ts: _panelGen++).
       ['function switchPanel() { _panelGen++; }'],

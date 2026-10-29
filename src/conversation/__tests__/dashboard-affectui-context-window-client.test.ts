@@ -59,7 +59,8 @@ const CSS = TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</styl
 const HEAD = TEMPLATE.slice(0, TEMPLATE.indexOf('<style>'));
 
 const NOW = 1_800_000_000_000;
-const READ_ONLY = 'Read-only — not your session';
+/** The page's own non-owner reason (one constant: compact, the action buttons, the subtitle, a question card). */
+const READ_ONLY = /^const READ_ONLY_MSG = '([^']*)';$/m.exec(TEMPLATE)?.[1] ?? '';
 const CW_FNS = ['esc', 'escAttr', 'toNum', 'formatTokens', 'cwPhase', 'cwCanCompact', 'cwData', 'cwSlotHtml'];
 const CW_VARS = ['CW_DONE_MS', 'CW_SAVED_MS', 'CW_FAIL_MS', 'CW_CEIL_MS', '_cw'];
 const STATE = ['function cwTestState() { return _cw; }', 'function cwTestSet(o) { _cw = o; }'];
@@ -308,6 +309,16 @@ describe('D10/D12 — compactState: one state, the most urgent first', () => {
 describe('D12 — 지금 압축: owner-gated (canCompact), confirmed by the element, sent as `compact --yes`', () => {
   it('the owner may: true', () => {
     expect(data().canCompact).toBe(true);
+  });
+
+  // #547 review P3: the element's title says the reason — in Korean, like every other reason here.
+  it('the non-owner reason is Korean like the others, and the one constant every surface uses', () => {
+    expect(READ_ONLY).toBe('읽기 전용 — 내 세션이 아닙니다');
+    expect(data({ ownerId: 'U2' }).canCompact).toBe('읽기 전용 — 내 세션이 아닙니다');
+    // The question card's lock says the same through the same constant (no second copy of the words).
+    expect(clientFn('acQuestionLock')).toContain(': READ_ONLY_MSG;');
+    expect(TEMPLATE.split('읽기 전용 — 내 세션이 아닙니다').length - 1).toBe(1);
+    expect(TEMPLATE).not.toContain('Read-only — not your session');
   });
 
   it('disabled with the reason: not the owner (fails closed), another instance, a switch waiting on a compact, a compact already scheduled', () => {
