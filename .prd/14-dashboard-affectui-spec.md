@@ -22,11 +22,9 @@ affectUI의 에이전트 UI 일곱 개를 해부해 레퍼런스마다 문서 �
 | Agent Inbox | 무엇이 나를 기다리나, 무엇이 움직이나 | 세션 보드 — `renderCardFace`·`renderCardBody` | [`re-agent-inbox`](affectui/re-agent-inbox.md) | #438 |
 | Agent Run (screen) | 이 실행이 어디까지 왔고, 나에게 무엇을 묻나 | 세션 패널 — task·권한·질문·머리·세션 정보 | [`re-agent-run`](affectui/re-agent-run.md) | #439 |
 | AI Answer | 답이 무엇이고 근거가 어디인가 | 패널 대화의 모델 응답 — `renderTurn` (2026-10-29부터 `@2lab.ai/ui` `<ui-ai-answer>`) | [`re-ai-answer`](affectui/re-ai-answer.md) | #440 |
-| Context Window | 창이 얼마나 찼고 무엇으로 찼나 | 패널 세션 정보의 컨텍스트 — `panelInfoHtml` | [`re-context-window`](affectui/re-context-window.md) | #441 |
+| Context Window | 창이 얼마나 찼고 무엇으로 찼나 | 패널 세션 정보의 컨텍스트 — `panelInfoHtml` (2026-10-29부터 `@2lab.ai/ui` `<ui-context-window>`) | [`re-context-window`](affectui/re-context-window.md) | #441 |
 | Model Picker | 어떤 모델·effort가 얼마인가 | 모델·effort 선택 — `renderModelPicker`·`renderEffortPicker` (2026-10-29부터 `@2lab.ai/ui` `<ui-model-picker>`) | [`re-model-picker`](affectui/re-model-picker.md) | #442 |
 | Memory Panel | 에이전트가 나에 대해 무엇을 기억하나, 고치거나 지우기 | 설정 › 기억 › 개인 메모리 — `settings-memory-tab.ts` | [`re-memory-panel`](affectui/re-memory-panel.md) | #443 |
-| Model Picker | 어떤 모델·effort가 얼마인가 | 모델·effort 선택 — `renderModelPicker`·`renderEffortPicker` | [`re-model-picker`](affectui/re-model-picker.md) | #442 |
-| Memory Panel | 에이전트가 나에 대해 무엇을 기억하나, 고치거나 지우기 | 설정 › 기억 › 개인 메모리 — `settings-memory-tab.ts` (2026-10-29부터 `@2lab.ai/ui` `<ui-memory-panel>`) | [`re-memory-panel`](affectui/re-memory-panel.md) | #443 |
 | Agent Queue | 일이 얼마나 쌓였고 얼마나 빨리 빠지나 | LLM 가용량 · 크론 레인 | [`re-agent-queue`](affectui/re-agent-queue.md) | #444 |
 
 ## 2. 판독 방법 [REF]
