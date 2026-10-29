@@ -4,7 +4,13 @@
  */
 
 import { LOG_VERBOSITY_MASK_VERSION, upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
-import { sanitizeSdkUsageBaseline, sanitizeTaskUsage, type TaskUsage } from '@soma/slack/session-usage-math';
+import {
+  sanitizeSdkUsageBaseline,
+  sanitizeSessionUsage,
+  sanitizeTaskUsage,
+  type TaskUsage,
+  toPersistedSessionUsage,
+} from '@soma/slack/session-usage-math';
 import * as fs from 'fs';
 import * as path from 'path';
 import { applyInstructionOperations } from 'somalib/model-commands/catalog';
@@ -14,6 +20,7 @@ import { Logger } from './logger';
 import { getMetricsEmitter } from './metrics/event-emitter';
 import { repriceBaseline } from './metrics/host-pricing';
 import { hostPricing } from './metrics/host-pricing-catalog';
+import { resolveContextWindow } from './metrics/model-registry';
 import { normalizeTmpPath } from './path-utils';
 import { loseRunningAgents, sanitizeAgentRegistry } from './session/agent-registry';
 import { sanitizeCronJob } from './session/cron-job';
@@ -199,6 +206,11 @@ interface SerializedSession {
    * `src/conversation/instructions-summarizer.ts`.
    */
   instructionsCompletedSummary?: { summary: string; upstreamHash: string };
+  /**
+   * The context fill, its window and the session totals (`ConversationSession.usage`),
+   * without the runtime-only fold — see `toPersistedSessionUsage`; sanitized on load.
+   */
+  usage?: unknown;
   /** Last SDK running total per model — see `ConversationSession.sdkUsageBaseline`. */
   sdkUsageBaseline?: unknown;
   /** SSOT 2026-10-26 T3 — what the whole task spent; sanitized on load. */
@@ -2025,6 +2037,10 @@ export class SessionRegistry {
             // doesn't pay a cold summary rebuild). Safe to omit — the block
             // builder falls back to a placeholder and the async regen kicks in.
             instructionsCompletedSummary: session.instructionsCompletedSummary,
+            // Context fill + window + totals — without it every restart blanked the
+            // context gauge and hid a full context from the compact threshold
+            // until the next turn ended. The runtime-only fold is left out.
+            usage: session.usage ? toPersistedSessionUsage(session.usage, session.sessionId) : undefined,
             // Last SDK running total — without it a restart would re-count it into the goal's spend
             sdkUsageBaseline: session.sdkUsageBaseline,
             taskUsage: session.taskUsage,
@@ -2072,6 +2088,11 @@ export class SessionRegistry {
       // Skip if already archived (prevents duplicates on repeated restarts)
       if (getArchiveStore().exists(serialized.key)) return;
 
+      // Coerce serialized model string against AVAILABLE_MODELS. Known-legacy
+      // ids pass through unchanged; unknown or case-drifted values normalize
+      // to DEFAULT_MODEL. Preserves undefined when the session was saved
+      // without a model (unchanged behavior from verbatim passthrough).
+      const model = serialized.model === undefined ? undefined : coerceToAvailableModel(serialized.model);
       const session: ConversationSession = {
         ownerId: serialized.ownerId || serialized.userId,
         ownerName: serialized.ownerName,
@@ -2082,11 +2103,7 @@ export class SessionRegistry {
         isActive: false,
         lastActivity,
         title: serialized.title,
-        // Coerce serialized model string against AVAILABLE_MODELS. Known-legacy
-        // ids pass through unchanged; unknown or case-drifted values normalize
-        // to DEFAULT_MODEL. Preserves undefined when the session was saved
-        // without a model (unchanged behavior from verbatim passthrough).
-        model: serialized.model === undefined ? undefined : coerceToAvailableModel(serialized.model),
+        model,
         state: serialized.state || 'MAIN',
         workflow: serialized.workflow || 'default',
         links: serialized.links,
@@ -2103,6 +2120,7 @@ export class SessionRegistry {
         // SSOT 2026-10-26 T3 — the closed card keeps the task's total (partial
         // when the session spent before the total existed).
         taskUsage: restoreTaskUsage(serialized),
+        usage: restoreSessionUsage(serialized.usage, model),
         // A cron run archived while the process was down stays filed under its job.
         cronJob: sanitizeCronJob(serialized.cronJob),
         activityState: serialized.activityState || 'idle',
@@ -2182,6 +2200,11 @@ export class SessionRegistry {
             : undefined;
 
         const resolvedOwnerId = serialized.ownerId || serialized.userId;
+        // Coerce serialized model string against AVAILABLE_MODELS. Known-legacy
+        // ids pass through unchanged; unknown or case-drifted values normalize
+        // to DEFAULT_MODEL. Preserves undefined when the session was saved
+        // without a model (unchanged behavior from verbatim passthrough).
+        const model = serialized.model === undefined ? undefined : coerceToAvailableModel(serialized.model);
         const session: ConversationSession = {
           ownerId: resolvedOwnerId, // Fallback for legacy sessions
           ownerName: serialized.ownerName,
@@ -2193,11 +2216,7 @@ export class SessionRegistry {
           lastActivity,
           workingDirectory: serialized.workingDirectory,
           title: serialized.title,
-          // Coerce serialized model string against AVAILABLE_MODELS. Known-legacy
-          // ids pass through unchanged; unknown or case-drifted values normalize
-          // to DEFAULT_MODEL. Preserves undefined when the session was saved
-          // without a model (unchanged behavior from verbatim passthrough).
-          model: serialized.model === undefined ? undefined : coerceToAvailableModel(serialized.model),
+          model,
           state: sleptOnLoad ? 'SLEEPING' : serialized.state || 'MAIN', // Default to MAIN for legacy sessions
           workflow: serialized.workflow || 'default', // Default to 'default' for legacy sessions
           links: serialized.links,
@@ -2319,6 +2338,10 @@ export class SessionRegistry {
               : finiteStamp(serialized.activityStateChangedAt),
           // Cached completed-summary (may be stale — block builder validates via hash).
           instructionsCompletedSummary: serialized.instructionsCompletedSummary,
+          // The context fill, its window and the session totals, as saved (sanitized).
+          // Nothing re-arms auto-compact here: `autoCompactPending` is reset
+          // below and the threshold is only checked at a turn's end.
+          usage: restoreSessionUsage(serialized.usage, model),
           // Repriced: llmux models moved from the SDK's default rate to the host table (`metrics/host-pricing.ts`).
           sdkUsageBaseline: repriceBaseline(sanitizeSdkUsageBaseline(serialized.sdkUsageBaseline), hostPricing),
           taskUsage: restoreTaskUsage(serialized),
@@ -2507,6 +2530,15 @@ export class SessionRegistry {
     }
     return count;
   }
+}
+
+/**
+ * The saved `session.usage` of a loaded session, sanitized. A window that is
+ * not > 0 is re-sized from the session model; with no model the usage is
+ * dropped rather than given a guessed window.
+ */
+function restoreSessionUsage(raw: unknown, model: string | undefined): ConversationSession['usage'] {
+  return sanitizeSessionUsage(raw, model ? resolveContextWindow(model) : undefined);
 }
 
 /**

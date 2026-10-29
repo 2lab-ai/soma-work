@@ -177,6 +177,21 @@ describe('SessionRegistry — session.usage persistence', () => {
     expect(restored?.usage?.currentCacheReadTokens).toBe(354_320);
   });
 
+  it('a fold of another SDK session (never settled) is final spend and stays in the saved totals', () => {
+    const folded = {
+      inputTokens: 200,
+      outputTokens: 20,
+      cacheReadTokens: 1_000,
+      cacheCreateTokens: 50,
+      costUsd: 0.5,
+      sdkSessionId: 'sdk-OLD',
+    };
+    const restored = roundTrip('171.311', { ...usageSample(), foldedLiveUsage: folded });
+    const { modelTotals: _, ...totals } = usageSample();
+    expect(restored?.usage).toMatchObject(totals);
+    expect(restored?.usage?.foldedLiveUsage).toBeUndefined();
+  });
+
   it('a session without usage still loads without it', () => {
     expect(roundTrip('171.304', undefined)?.usage).toBeUndefined();
   });
