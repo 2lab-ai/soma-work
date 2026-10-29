@@ -245,8 +245,8 @@ export interface SessionGoal {
   // ── Per-goal accounting (live-accumulated; survives compaction) ────────
   // Credited while THIS goal is the active goal: ms from the turn timer
   // (begin/end/orphan-sweep) and the same aggregate token deltas added to
-  // `session.usage.total*`. `session.usage` is in-memory and reset on
-  // compaction, so we accumulate per-goal at the source rather than diffing.
+  // `session.usage.total*`. `session.usage` is reset with the context (`/new`,
+  // CONTINUE_SESSION), so we accumulate per-goal at the source rather than diffing.
   /** Wall-clock active turn time attributed to this goal (ms). */
   activeMsUsed?: number;
   tokensInput?: number;
