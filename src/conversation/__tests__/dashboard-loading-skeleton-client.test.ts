@@ -195,6 +195,7 @@ function boardFlow(cardOf?: (s: { key: string }, col: string) => unknown, over: 
       'planCronLane',
       'cardBodyShown',
       'placeCard',
+      'syncHasCards',
       'renderBoard',
       ...BOARD_FNS,
     ],

@@ -95,18 +95,22 @@ export async function registerWorkLogRoutes(
 ): Promise<void> {
   server.get<{
     Params: { conversationId: string };
-    Querystring: { afterSeq?: string; beforeSeq?: string; limit?: string };
+    Querystring: { afterSeq?: string; beforeSeq?: string; beforeOffset?: string; limit?: string };
   }>('/api/dashboard/session/:conversationId/worklog', { preHandler: [authMiddleware] }, async (request, reply) => {
     try {
       const limit = parseStrictInt(request.query.limit, 1, WORK_LOG_DEFAULT_LIMIT);
       const afterSeq = parseStrictInt(request.query.afterSeq, 0, Number.MAX_SAFE_INTEGER);
       const beforeSeq = parseStrictInt(request.query.beforeSeq, 0, Number.MAX_SAFE_INTEGER);
+      // The previous older page's byte cursor (WorkLogPage.nextBeforeOffset): only for a beforeSeq page.
+      const beforeOffset = parseStrictInt(request.query.beforeOffset, 1, Number.MAX_SAFE_INTEGER);
       // Forward and backward paging at once has no meaning: refuse it rather than pick one.
       if (
         limit === null ||
         afterSeq === null ||
         beforeSeq === null ||
-        (afterSeq !== undefined && beforeSeq !== undefined)
+        beforeOffset === null ||
+        (afterSeq !== undefined && beforeSeq !== undefined) ||
+        (beforeOffset !== undefined && beforeSeq === undefined)
       ) {
         reply.status(400).send({ error: 'bad_request' });
         return;
@@ -124,12 +128,13 @@ export async function registerWorkLogRoutes(
         return;
       }
 
-      const { entries, hasMore } = await readWorkLog(conversationId, {
+      const { entries, hasMore, nextBeforeOffset } = await readWorkLog(conversationId, {
         afterSeq,
         beforeSeq,
+        ...(beforeOffset !== undefined ? { beforeOffset } : {}),
         limit: limit ?? WORK_LOG_DEFAULT_LIMIT,
       });
-      reply.send({ entries, hasMore });
+      reply.send(nextBeforeOffset !== undefined ? { entries, hasMore, nextBeforeOffset } : { entries, hasMore });
     } catch (error) {
       logger.error('Error reading work log', error);
       reply.status(500).send({ error: 'Internal Server Error' });

@@ -537,6 +537,44 @@ describe('work log store', () => {
       });
     }
 
+    it('a beforeSeq page that stops inside a long run of junk hands back a byte cursor that gets past it', async () => {
+      // Entries 1..1000, 9 MB of junk (more than one scan budget), entries 1001..1004.
+      writeRaw('conv-gap', Array.from({ length: 1000 }, (_, i) => line(i + 1)).join(''));
+      appendRaw('conv-gap', junkLines());
+      appendRaw('conv-gap', [1001, 1002, 1003, 1004].map((n) => line(n)).join(''));
+      const first = await wl.readWorkLog('conv-gap', { beforeSeq: 1005, limit: 10 });
+      expect(seqs(first)).toEqual([1001, 1002, 1003, 1004]);
+      expect(first.hasMore).toBe(true);
+      expect(typeof first.nextBeforeOffset).toBe('number');
+
+      // Without the cursor the next page is the same empty answer every time (the search lands after the junk).
+      const stuck = await wl.readWorkLog('conv-gap', { beforeSeq: 1001, limit: 10 });
+      expect(stuck.entries).toEqual([]);
+      expect(stuck.hasMore).toBe(true);
+
+      // With it, each page resumes where the last one stopped — each within one budget — and reaches 991..1000.
+      let cursor = first.nextBeforeOffset;
+      let page = first;
+      for (let hop = 0; hop < 3 && cursor !== undefined; hop++) {
+        const counter = countReads();
+        page = await wl.readWorkLog('conv-gap', { beforeSeq: 1001, beforeOffset: cursor, limit: 10 });
+        expect(counter.bytes).toBeLessThanOrEqual(wl.WORK_LOG_SCAN_BUDGET_BYTES);
+        vi.restoreAllMocks();
+        if (page.entries.length) break;
+        expect(page.nextBeforeOffset).toBeLessThan(cursor as number);
+        cursor = page.nextBeforeOffset;
+      }
+      expect(seqs(page)).toEqual([991, 992, 993, 994, 995, 996, 997, 998, 999, 1000]);
+      expect(page.hasMore).toBe(true);
+    });
+
+    it('a beforeOffset past the end of the log (it was replaced since) is ignored', async () => {
+      writeRaw('conv-off', Array.from({ length: 20 }, (_, i) => line(i + 1)).join(''));
+      const page = await wl.readWorkLog('conv-off', { beforeSeq: 11, beforeOffset: 10 ** 12, limit: 3 });
+      expect(seqs(page)).toEqual([8, 9, 10]);
+      expect(page.nextBeforeOffset).toBeUndefined();
+    });
+
     it('without a sidecar an unreadable tail fails closed instead of guessing from the file size', async () => {
       writeRaw('conv-legacy', Array.from({ length: 50 }, (_, i) => line(i + 1)).join(''));
       appendRaw('conv-legacy', Buffer.alloc(JUNK_BYTES, 0x0a));
