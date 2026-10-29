@@ -153,7 +153,7 @@ describe('switchSessionModel (T4/T5)', () => {
     expect(calls.compact).toEqual(['k']);
   });
 
-  it('context size unknown (restart: usage not restored) and a smaller target threshold: compact first (review P1)', async () => {
+  it('context size unknown (no usage — e.g. restored from a sessions.json saved without it) and a smaller target threshold: compact first (review P1)', async () => {
     const session: Record<string, any> = { model: 'claude-opus-5-5[1m]', sessionId: 's' };
     const { d, calls } = deps(session);
     expect((await switchSessionModel('k', 'grok[1m]', d)).status).toBe('compacting');
@@ -240,7 +240,7 @@ describe('switchSessionModel (T4/T5)', () => {
   });
 
   it('shrinking is judged against the session’s effective threshold, override included (review R2-3)', async () => {
-    // Opus 1M at a 900k override, size unknown after a restart; sonnet[1m] compacts at 750k.
+    // Opus 1M at a 900k override, size unknown (no usage); sonnet[1m] compacts at 750k.
     const session: Record<string, any> = { model: 'claude-opus-5-5[1m]', autoCompactTokens: 900_000, sessionId: 's' };
     const { d, calls } = deps(session);
     expect((await switchSessionModel('k', 'sonnet[1m]', d)).status).toBe('compacting');
