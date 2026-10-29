@@ -8569,9 +8569,7 @@ function renderBoard(board, partial) {
   // Open cards keep their 지시/응답 current (no DOM write unless a fetch settles).
   // Drawn ones only: a closed DONE day's cards are placed as stubs (_cardHost), not drawn.
   _expanded.forEach(function(key) { if (_cardDrawn[key]) ensureCardIo(key, false); });
-  // A board with drawn cards: on a phone the last card clears the floating button.
-  var inbox = document.getElementById('inbox');
-  if (inbox) inbox.classList.toggle('has-cards', Object.keys(_cardDrawn).length > 0);
+  syncHasCards();
   renderArchivesToggle(plan.archivedCount);
   renderSleepingToggle(plan.sleepingCount);
   paintCronDrawer();
@@ -8659,6 +8657,12 @@ function paintCronLaneCards(slots) {
 }
 
 // The element's events, wired once per element (the board's at load, a CRON job's when made).
+// A board with drawn cards: on a phone the last card clears the floating button.
+// After every board render and every DONE day opened or closed.
+function syncHasCards() {
+  var inbox = document.getElementById('inbox');
+  if (inbox) inbox.classList.toggle('has-cards', Object.keys(_cardDrawn).length > 0);
+}
 function wireInbox(host) {
   // Open / close: the body follows (built before the row grows, let go after
   // it has collapsed), then the open card's 지시/응답 and artifacts are fetched.
@@ -8713,6 +8717,7 @@ function wireInbox(host) {
     });
     inboxPaint(host);
     syncCardBodies();
+    syncHasCards();
     scheduleLayoutRefresh(MOTION.move + 60);
   });
   // A file chip on the face opens the viewer (never the card). The chip is the
@@ -13577,8 +13582,11 @@ function wlUrl(convId, afterSeq) {
 function wlLatestUrl(convId) {
   return wlUrl(convId, null) + '?limit=' + WL_PAGE;
 }
-function wlOlderUrl(convId, beforeSeq) {
-  return wlUrl(convId, null) + '?beforeSeq=' + Math.max(0, Math.floor(Number(beforeSeq) || 0)) + '&limit=' + WL_PAGE;
+// offset: the previous page's byte cursor (nextBeforeOffset) — the scan resumes there.
+function wlOlderUrl(convId, beforeSeq, offset) {
+  var url = wlUrl(convId, null) + '?beforeSeq=' + Math.max(0, Math.floor(Number(beforeSeq) || 0)) + '&limit=' + WL_PAGE;
+  var off = Math.floor(Number(offset) || 0);
+  return off > 0 ? url + '&beforeOffset=' + off : url;
 }
 function wlValidSeq(seq) {
   return typeof seq === 'number' && Number.isSafeInteger(seq) && seq > 0;
@@ -13746,8 +13754,10 @@ function wlRecover(state, fetchJson, onAdded, reason) {
 // is state.olderLoading); a failed page keeps olderPending (the control offers it
 // again). A page that brings nothing older but says hasMore — the server's scan
 // stopped at its byte budget inside a run of non-entry lines, not the start of the
-// log — keeps it too, and the same page is asked again: up to WL_OLDER_EMPTY_MAX
-// such pages in a row, so a server that keeps saying hasMore cannot spin it.
+// log — keeps it too. Its byte cursor (nextBeforeOffset, state.olderOffset) goes
+// with the next ask so the scan resumes where it stopped; an empty page that did
+// not move the cursor further back counts, and WL_OLDER_EMPTY_MAX of those in a
+// row end the paging, so a server that keeps saying hasMore cannot spin it.
 // Resolves 'ok' (entries came in), 'empty' (none: the next waits for the reader), 'error'.
 var WL_OLDER_EMPTY_MAX = 3;
 function wlLoadOlderPage(state, fetchJson, onAdded) {
@@ -13758,13 +13768,17 @@ function wlLoadOlderPage(state, fetchJson, onAdded) {
     state.olderPending = false;
     return Promise.resolve(null);
   }
-  var run = fetchJson(wlOlderUrl(state.convId, before)).then(function(data) {
+  var run = fetchJson(wlOlderUrl(state.convId, before, state.olderOffset)).then(function(data) {
     state.olderLoading = null;
     if (state.closed) return null;
     var page = (data && data.entries) || [];
     var older = page.filter(function(e) { return e && wlValidSeq(e.seq) && e.seq < before; });
     var added = wlMerge(state, older);
-    state.olderEmpty = added.length ? 0 : (state.olderEmpty || 0) + 1;
+    var prev = state.olderOffset;
+    var next = data && data.nextBeforeOffset;
+    state.olderOffset = typeof next === 'number' && Number.isSafeInteger(next) && next > 0 ? next : undefined;
+    var moved = !added.length && state.olderOffset !== undefined && (prev === undefined || state.olderOffset < prev);
+    state.olderEmpty = added.length || moved ? 0 : (state.olderEmpty || 0) + 1;
     state.olderPending = !!(data && data.hasMore === true) && state.olderEmpty < WL_OLDER_EMPTY_MAX;
     if (!added.length) return 'empty';
     onAdded(state, added);

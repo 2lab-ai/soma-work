@@ -372,6 +372,7 @@ function boardHarness(opts: { boardLoad?: string; expanded?: string[]; groupOpen
       'cardBodyShown',
       'placeCard',
       'inboxPaint',
+      'syncHasCards',
       'renderBoard',
     ],
     ['BOARD_LABELS', '_cardHost', '_cardCol', '_cardData', '_cardDrawn', '_cardClosing', '_boardRenders'],
@@ -668,7 +669,14 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
       // SSOT 2026-10-29 T2: the card's detail card opens with it and leaves the deck as it folds.
       order: [] as string[],
     };
+    const inboxClass = new Set<string>();
+    const inbox = {
+      classList: {
+        toggle: (c: string, on: boolean) => (on ? inboxClass.add(c) : inboxClass.delete(c)),
+      },
+    };
     const env = {
+      document: { getElementById: (id: string) => (id === 'inbox' ? inbox : null) },
       _expanded: new Set<string>(),
       _sessionCache: { k1: { key: 'k1', conversationId: 'c1', artifacts: { count: 1 } }, d1: { key: 'd1' } } as Record<
         string,
@@ -696,12 +704,12 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
       deckDrop: (...a: unknown[]) => calls.order.push(`deckDrop(${a.join(',')})`),
     };
     const { wireInbox } = load<{ wireInbox(h: unknown): void }>(
-      ['placeCard', 'inboxPaint', 'inboxChipOf', 'wireInbox'],
+      ['placeCard', 'inboxPaint', 'inboxChipOf', 'syncHasCards', 'wireInbox'],
       [],
       env,
     );
     wireInbox(host);
-    return { host, handlers, calls, env };
+    return { host, handlers, calls, env, inboxClass };
   }
 
   it('ui-toggle from the element: the open state, the body, the 지시/응답 (forced) and files; closing releases the retry', () => {
@@ -752,8 +760,11 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
     expect(w.env._cardDrawn.d1).toBe(true);
     const data = w.host.data as { columns: Array<{ groups: Array<{ open: boolean; cards: Card[] }> }> };
     expect(data.columns[0].groups[0]).toMatchObject({ open: true, cards: [{ id: 'd1', title: 'd1', status: 'idle' }] });
+    // #562 review P3: a board whose only cards were in that closed day gets the phone's bottom room now, not at the next push.
+    expect(w.inboxClass.has('has-cards')).toBe(true);
     w.handlers['ui-group-toggle']({ target: w.host, detail: { columnId: 'done', groupId: '2026-10-20', open: false } });
     expect(w.env._cardDrawn.d1).toBeUndefined();
+    expect(w.inboxClass.has('has-cards')).toBe(false);
     expect((w.host.data as typeof data).columns[0].groups[0].cards[0]).toEqual({
       id: 'd1',
       title: '',

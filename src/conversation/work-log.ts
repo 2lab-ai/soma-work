@@ -188,6 +188,15 @@ export interface WorkLogPage {
    * an entry with seq afterSeq + 1).
    */
   hasMore: boolean;
+  /**
+   * A `beforeSeq` page whose backward scan stopped at its byte budget: the file
+   * offset it stopped at. Passed back as `beforeOffset` (with the same
+   * `beforeSeq`, or the oldest seq now held), the next page resumes the scan
+   * there instead of searching from `beforeSeq` again — which, past a run of
+   * non-entry lines longer than one budget, lands after that run every time and
+   * never gets through it.
+   */
+  nextBeforeOffset?: number;
 }
 
 /** Max characters kept per entry `text` (spec §3.3). */
@@ -1274,7 +1283,7 @@ function warnBudget(conversationId: string, mode: string, found: number): void {
  */
 export async function readWorkLog(
   conversationId: string,
-  options: { afterSeq?: number; beforeSeq?: number; limit?: number } = {},
+  options: { afterSeq?: number; beforeSeq?: number; beforeOffset?: number; limit?: number } = {},
 ): Promise<WorkLogPage> {
   const empty: WorkLogPage = { entries: [], hasMore: false };
   const files = workLogPaths(conversationId);
@@ -1295,17 +1304,34 @@ export async function readWorkLog(
     const budget: Budget = { left: WORK_LOG_SCAN_BUDGET_BYTES };
 
     if (beforeSeq !== undefined) {
-      // Older page: from where entries reach beforeSeq, back towards the start.
-      const stop = await findPageEnd(fh, size, beforeSeq, budget);
+      // Older page: from where the previous page's scan stopped (its cursor), or
+      // from where entries reach beforeSeq, back towards the start. A cursor past
+      // the end of the file (the log was replaced since) is not trusted.
+      const from = options.beforeOffset;
+      const resume = from !== undefined && Number.isSafeInteger(from) && from > 0 && from <= size;
+      const stop = resume ? from : await findPageEnd(fh, size, beforeSeq, budget);
       const older: WorkLogEntry[] = [];
-      const end = await scanBackward(fh, stop, budget, (line) => {
-        const entry = parseEntry(line);
-        // A late end (out of budget, or no evidence) may still hold newer lines: skip them.
-        if (entry && entry.seq < beforeSeq) older.push(publicEntry(entry));
-        return older.length <= limit; // one extra tells us whether more exist
-      });
+      const cover = { offset: stop };
+      const end = await scanBackward(
+        fh,
+        stop,
+        budget,
+        (line) => {
+          const entry = parseEntry(line);
+          // A late end (out of budget, or no evidence) may still hold newer lines: skip them.
+          if (entry && entry.seq < beforeSeq) older.push(publicEntry(entry));
+          return older.length <= limit; // one extra tells us whether more exist
+        },
+        cover,
+      );
       if (end === 'budget') warnBudget(conversationId, 'beforeSeq', older.length);
-      return { entries: older.slice(0, limit).reverse(), hasMore: older.length > limit || end === 'budget' };
+      const page: WorkLogPage = {
+        entries: older.slice(0, limit).reverse(),
+        hasMore: older.length > limit || end === 'budget',
+      };
+      // Only a budget stop with fewer than a page leaves older lines unexamined below this page.
+      if (end === 'budget' && older.length <= limit) page.nextBeforeOffset = cover.offset;
+      return page;
     }
 
     if (afterSeq === undefined) {
