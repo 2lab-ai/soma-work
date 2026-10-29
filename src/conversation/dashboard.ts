@@ -5264,7 +5264,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .psec-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
 .psec-tab:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; border-radius: 6px; }
 .panel-sections-body { position: relative; height: 60vh; min-height: 160px; }
-.psec { position: relative; height: 100%; overflow-y: auto; scroll-behavior: auto; outline: none; }
+.psec { position: relative; height: 100%; overflow-y: auto; scroll-behavior: auto; outline: none; overflow-anchor: none; }
 .psec[hidden] { display: none; }
 .psec:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
 .psec-older { display: block; margin: 10px auto 2px; padding: 5px 14px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
@@ -11002,9 +11002,10 @@ function psecKeepPlace(box, fromBottom) {
   if (box) psecSetTop(box, box.scrollHeight - fromBottom);
 }
 // The items the reader is on — the first few turns, work-log entries (else task
-// groups) or agent-tree rows in view, top first — and how far below the box top
-// each sits (null: none in view). Several: a page can take the first one away (a
-// loose result paired into its call's card, an entry folded into its task group).
+// groups) or agent-tree rows in view, those wholly below the top edge first (the
+// one the edge cuts may still grow: an answer loading), top first — and how far
+// below the box top each sits (null: none in view). Several: a page can take one
+// away (a loose result paired into its call's card, an entry folded into its group).
 var PSEC_ANCHORS = [['.turn', 'data-turn-id'], ['.wl-entry', 'data-seq'], ['.wl-group', 'data-task-id']];
 var PSEC_ANCHOR_MAX = 6;
 // The 에이전트 트리 tab's rows live in <ui-agent-tree>'s (open) shadow root.
@@ -11016,6 +11017,7 @@ function psecViewAnchor(box) {
   var top = box.getBoundingClientRect().top;
   var bottom = top + box.clientHeight;
   var out = [];
+  var cut = [];
   function take(base, attr, tree, root) {
     var rows = root.querySelectorAll(base + '[' + attr + ']');
     for (var i = 0; i < rows.length && out.length < PSEC_ANCHOR_MAX; i++) {
@@ -11027,12 +11029,13 @@ function psecViewAnchor(box) {
       if (r.top >= bottom) break;
       var v = rows[i].getAttribute(attr) || '';
       var key = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(v) : v;
-      out.push({ sel: base + '[' + attr + '="' + key + '"]', at: r.top - top, tree: tree });
+      (r.top >= top ? out : cut).push({ sel: base + '[' + attr + '="' + key + '"]', at: r.top - top, tree: tree });
     }
   }
   var tr = psecTreeRoot(box);
   if (tr) take('[role="treeitem"]', 'data-id', true, tr);
-  for (var k = 0; k < PSEC_ANCHORS.length && !out.length; k++) take(PSEC_ANCHORS[k][0], PSEC_ANCHORS[k][1], false, box);
+  for (var k = 0; k < PSEC_ANCHORS.length && !out.length && !cut.length; k++) take(PSEC_ANCHORS[k][0], PSEC_ANCHORS[k][1], false, box);
+  out = out.concat(cut).slice(0, PSEC_ANCHOR_MAX);
   return out.length ? out : null;
 }
 // Where an anchor item is now: its element shown (fold: an entry folded into its
@@ -11065,13 +11068,12 @@ function psecRestoreAnchor(box, a) {
 }
 // A page went in above the reader: their item goes back where it was — and is
 // held there while what was added settles (answers and cards render after it),
-// until the reader scrolls. Without an item in view, measured from the bottom.
-var PSEC_HOLD_MS = 2000;
+// until the reader moves on. Without an item in view, measured from the bottom.
+// (The boxes have no native scroll anchoring: the place is this page's to keep.)
 function psecHoldPlace(box, anchor, fromBottom) {
   if (!box) return;
   if (psecRestoreAnchor(box, anchor)) {
     box._anchor = anchor;
-    box._anchorUntil = Date.now() + PSEC_HOLD_MS;
   } else {
     box._anchor = null;
     psecKeepPlace(box, fromBottom);
@@ -11328,6 +11330,11 @@ function loadOlderWorkLog() {
     if (!box) return;
     var btn = box.querySelector('.psec-older');
     if (btn) btn.addEventListener('click', function() { psecLoadOlder(sec); });
+    // The reader acting on a row (an entry's detail, a Raw, a fold) changes the
+    // list by their own hand: nothing is held against it.
+    ['pointerdown', 'keydown'].forEach(function(type) {
+      box.addEventListener(type, function() { box._anchor = null; }, { passive: true });
+    });
     box._lastTop = 0;
     box.addEventListener('scroll', function() {
       if (sec !== _psec) return;
@@ -11336,9 +11343,18 @@ function loadOlderWorkLog() {
       if (Math.abs(top - box._lastTop) < 1) return;
       var up = top < box._lastTop;
       box._lastTop = top;
-      box._anchor = null; // the reader's own place now
       _psecPin = psecAtBottom(box);
       if (_psecPin && _psecNew) psecSetNew(0);
+      // The reader's own place now: the rows they see, read once a frame — what
+      // changes above them later (an answer, a card rendering) does not move them.
+      box._anchor = null;
+      if (!_psecPin && !box._capture) {
+        box._capture = true;
+        requestAnimationFrame(function() {
+          box._capture = false;
+          if (sec === _psec && !_psecPin && !box.hidden) box._anchor = psecViewAnchor(box);
+        });
+      }
       // The reader moving up arms the sentinel; a landing never does, nor does
       // the box shrinking under a reader at the newest (they stay there).
       if (up && !_psecPin) box._armed = true;
@@ -11356,7 +11372,7 @@ function loadOlderWorkLog() {
       var box = psecBox();
       if (!box || box.hidden) return;
       if (_psecPin) psecSetTop(box, box.scrollHeight);
-      else if (box._anchor && Date.now() < box._anchorUntil) psecRestoreAnchor(box, box._anchor);
+      else if (box._anchor) psecRestoreAnchor(box, box._anchor);
     });
     PSEC_ORDER.forEach(function(sec) {
       var box = document.getElementById('psec-' + sec);
