@@ -303,23 +303,33 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
     expect(panel).toMatch(/<section class="panel-tabpanel" id="panel-tabpanel" role="tabpanel"/);
     expect(tabpanel).toBeGreaterThan(at('id="panel-tabs"'));
     expect(at('id="panel-tasks"')).toBeGreaterThan(tabpanel);
-    expect(panel).toMatch(/<div class="panel-sections" id="panel-sections" role="tablist" aria-label="섹션" aria-orientation="horizontal">/);
+    expect(panel).toMatch(
+      /<div class="panel-sections" id="panel-sections" role="tablist" aria-label="섹션" aria-orientation="horizontal">/,
+    );
     expect(at('id="panel-sections"')).toBeGreaterThan(at('id="panel-tasks"'));
     // The tabs in order, each controlling its own tab panel (its own scroll box).
     expect(at('id="psec-tab-tree"')).toBeGreaterThan(at('id="panel-sections"'));
     expect(at('id="psec-tab-log"')).toBeGreaterThan(at('id="psec-tab-tree"'));
     expect(at('id="psec-tab-conv"')).toBeGreaterThan(at('id="psec-tab-log"'));
     for (const sec of ['tree', 'log', 'conv']) {
-      expect(panel).toMatch(new RegExp(`id="psec-tab-${sec}" data-sec="${sec}" aria-selected="(true|false)" aria-controls="psec-${sec}"`));
-      expect(panel).toMatch(new RegExp(`<div class="psec" id="psec-${sec}" role="tabpanel" aria-labelledby="psec-tab-${sec}" tabindex="0"`));
+      expect(panel).toMatch(
+        new RegExp(`id="psec-tab-${sec}" data-sec="${sec}" aria-selected="(true|false)" aria-controls="psec-${sec}"`),
+      );
+      expect(panel).toMatch(
+        new RegExp(`<div class="psec" id="psec-${sec}" role="tabpanel" aria-labelledby="psec-tab-${sec}" tabindex="0"`),
+      );
     }
     expect(at('id="psec-tree"')).toBeGreaterThan(at('id="panel-sections-body"'));
     expect(at('id="worklog-list"')).toBeGreaterThan(at('id="psec-log"'));
     expect(at('id="panel-conv"')).toBeGreaterThan(at('id="psec-conv"'));
     expect(at('id="panel-turns"')).toBeGreaterThan(at('id="panel-conv"'));
     // 지시와 답변 is the default tab: selected, the one tab stop, its panel the one shown.
-    expect(panel).toContain('id="psec-tab-conv" data-sec="conv" aria-selected="true" aria-controls="psec-conv" tabindex="0"');
-    expect(panel).toContain('id="psec-tab-log" data-sec="log" aria-selected="false" aria-controls="psec-log" tabindex="-1"');
+    expect(panel).toContain(
+      'id="psec-tab-conv" data-sec="conv" aria-selected="true" aria-controls="psec-conv" tabindex="0"',
+    );
+    expect(panel).toContain(
+      'id="psec-tab-log" data-sec="log" aria-selected="false" aria-controls="psec-log" tabindex="-1"',
+    );
     expect(panel).toMatch(/id="psec-log" role="tabpanel"[^>]* hidden>/);
     expect(panel).toMatch(/id="psec-conv" role="tabpanel"[^>]*tabindex="0">/);
     // No disclosure heads for these sections any more.
@@ -704,7 +714,11 @@ describe('T1.1 / T1.6 · an opening lands with the section tabs in view: the top
       },
     };
     const at = (y: number, h: number) => ({
-      getBoundingClientRect: (): Rect => ({ top: 100 + y - scroll.scrollTop, bottom: 100 + y + h - scroll.scrollTop, height: h }),
+      getBoundingClientRect: (): Rect => ({
+        top: 100 + y - scroll.scrollTop,
+        bottom: 100 + y + h - scroll.scrollTop,
+        height: h,
+      }),
     });
     const hidden = {
       style: { display: 'none' },
@@ -829,7 +843,11 @@ describe('T1.3 / SSOT 2026-10-29 · 지시와 답변 opens on its latest turns; 
   });
 
   it('no turns yet, a subagent tab, or another section shown: neither control nor marker', () => {
-    for (const o of [{ turns: 0, hasMore: true }, { turns: 5, hasMore: true, agent: 'toolu_a' }, { turns: 5, hasMore: true, shown: 'log' }]) {
+    for (const o of [
+      { turns: 0, hasMore: true },
+      { turns: 5, hasMore: true, agent: 'toolu_a' },
+      { turns: 5, hasMore: true, shown: 'log' },
+    ]) {
       const r = rig(o);
       r.m.psecSyncControls('conv');
       expect(r.btn.hidden).toBe(true);
@@ -867,7 +885,9 @@ describe('T1.3 / SSOT 2026-10-29 · 지시와 답변 opens on its latest turns; 
     );
     expect(more).toContain("'?limit=' + PANEL_TURNS_PAGE + '&before=' + encodeURIComponent(requestOldestId)");
     // The page goes in above the reader, who keeps their place: the turn they were on stays put.
-    expect(more.indexOf('var anchor = psecViewAnchor(box);')).toBeLessThan(more.indexOf("insertAdjacentHTML('afterbegin'"));
+    expect(more.indexOf('var anchor = psecViewAnchor(box);')).toBeLessThan(
+      more.indexOf("insertAdjacentHTML('afterbegin'"),
+    );
     expect(more).toContain('psecHoldPlace(box, anchor, fromBottom);');
   });
 
@@ -983,7 +1003,9 @@ describe('browser receipt · a section landing is held while the panel settles, 
     );
     // The scroll handler and the resize observer both put a held landing back.
     expect(init.split('if (_panelHold && panelOpen) holdPanelLanding();').length - 1).toBe(2);
-    expect(init.slice(init.indexOf('new ResizeObserver('))).toContain('if (_panelHold && panelOpen) holdPanelLanding();');
+    expect(init.slice(init.indexOf('new ResizeObserver('))).toContain(
+      'if (_panelHold && panelOpen) holdPanelLanding();',
+    );
     expect(init).toContain('panel.addEventListener(type, function() { _panelHold = false; }');
     const open = TEMPLATE.slice(
       TEMPLATE.indexOf('\nfunction openPanel('),
@@ -1152,7 +1174,16 @@ describe('R8 review (fable P3) · input symmetry and a short body read at its to
       };
       const pill = { hidden: true, textContent: '' };
       const m = load<{ appendTurnToPanel(t: T, own?: boolean): void; __set(n: string, v: unknown): void }>(
-        ['psecBox', 'psecAtBottom', 'psecSetTop', 'setTextIfChanged', 'psecSetNew', 'psecOnAppended', 'ptUpsert', 'appendTurnToPanel'],
+        [
+          'psecBox',
+          'psecAtBottom',
+          'psecSetTop',
+          'setTextIfChanged',
+          'psecSetNew',
+          'psecOnAppended',
+          'ptUpsert',
+          'appendTurnToPanel',
+        ],
         [],
         {
           document: {

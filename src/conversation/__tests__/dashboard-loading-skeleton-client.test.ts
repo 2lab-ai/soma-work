@@ -739,7 +739,9 @@ describe('[T3] session panel — turn-shaped skeleton instead of "Loading..."', 
       ['turnsSkeletonHtml', 'paintConvTab'],
       ['PANEL_TURNS_MSG'],
       {
-        document: { getElementById: (id: string) => (id === 'panel-turns' ? turnsEl : id === 'panel-agent-conv' ? host : null) },
+        document: {
+          getElementById: (id: string) => (id === 'panel-turns' ? turnsEl : id === 'panel-agent-conv' ? host : null),
+        },
         _psec: 'conv',
         _panelAgent: '',
         _ansIo: null,
@@ -772,7 +774,9 @@ describe('[T3] session panel — turn-shaped skeleton instead of "Loading..."', 
     m.__set('_panelTurnsList', [{ id: 't1' }, { id: 't2' }]);
     m.__set('_panelTurnsMsg', '');
     m.paintConvTab();
-    expect(turnsEl.innerHTML).toBe('<div class="turn" data-turn-id="t1"></div><div class="turn" data-turn-id="t2"></div>');
+    expect(turnsEl.innerHTML).toBe(
+      '<div class="turn" data-turn-id="t1"></div><div class="turn" data-turn-id="t2"></div>',
+    );
     expect(attrs['aria-busy']).toBeUndefined();
   });
 

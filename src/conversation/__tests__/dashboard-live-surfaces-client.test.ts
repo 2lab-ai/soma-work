@@ -555,7 +555,10 @@ describe('work log: the latest window on opening, older pages as the reader scro
         return { entries: before.slice(-limit), hasMore: before.length > limit };
       }
       const after = q.has('afterSeq') ? log.filter((e) => e.seq > Number(q.get('afterSeq'))) : log;
-      return { entries: q.has('afterSeq') ? after.slice(0, limit) : after.slice(-limit), hasMore: after.length > limit };
+      return {
+        entries: q.has('afterSeq') ? after.slice(0, limit) : after.slice(-limit),
+        hasMore: after.length > limit,
+      };
     };
     return { calls, fetchJson };
   }
