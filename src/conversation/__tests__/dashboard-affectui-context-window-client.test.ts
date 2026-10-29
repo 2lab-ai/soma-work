@@ -666,58 +666,46 @@ describe('D8/D9 — the level against the auto-compact point (face and summary; 
   });
 });
 
-// The face's ctx metric (D16) — the face layout is the board's; only the class and tooltip change.
-const FACE_FNS = [
-  'esc',
-  'escAttr',
-  'escJs',
+// The face's ctx metric (D16) — the face is <ui-agent-inbox>'s; the board's card mapper (cardOf) hands it the
+// level (contextLevel) and the tooltip (titles.context), the element rounds and caps the % it draws.
+const CARD_OF_FNS = [
   'toNum',
   'formatTokens',
-  'formatCount',
-  'cardTotalTokens',
-  'cardCurrentTask',
-  'renderCardTaskRow',
-  'agentStatusOf',
-  'agentCounts',
-  'renderCardAgents',
-  'renderCardUsage',
   'formatTaskTime',
+  'permissionSummary',
+  'cardSummary',
   'pendingAutoResume',
   'autoResumeLabel',
-  'cardSummary',
-  'doneTimeOf',
-  'cardAgo',
-  'renderCardStatus',
-  'renderOwnerBadge',
+  'cardCurrentTask',
+  'cardTaskRow',
+  'agentStatusOf',
+  'agentCounts',
+  'agentDotOf',
+  'cardTotalTokens',
   'ctxLevel',
   'ctxPercent',
-  'renderCardPr',
-  'renderCardFace',
+  'cardCtxTitle',
+  'cardPrMetric',
+  '_hashStr',
+  'ownerBadgeHue',
+  'isSiblingSession',
+  'cardOf',
 ];
-const FACE_VARS = [
-  'SPARK_SVG',
-  'WAIT_SVG',
-  'TASKS_SVG',
-  'CTX_SVG',
-  'RESUME_SVG',
-  'PR_STATE_LABEL',
-  'PR_SVG',
-  'AGENT_STATUS_LABEL',
-  'AGENT_DOTS_MAX',
-  'AGENTS_SVG',
-];
-const FACE_ENV = {
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+const CARD_ENV = {
   dhShow: () => true,
-  dhMax: (_f: string, d: number) => d,
   dhTruncate: () => null,
   currentUserId: 'U1',
-  isSiblingSession: () => false,
-  artFaceChips: () => '',
-  umFaceBadge: () => '',
+  _ownerIndex: null,
+  SELF_INSTANCE_NAME: '',
 };
 
 describe('D16 — the face ctx metric and the summary line use the same level and say the distance', () => {
-  const face = load<{ renderCardFace(s: unknown, col: string): string }>(FACE_FNS, FACE_VARS, FACE_ENV);
+  const face = load<{ cardOf(s: unknown, col: string): Record<string, unknown> & { titles?: { context?: string } } }>(
+    CARD_OF_FNS,
+    CARD_OF_VARS,
+    CARD_ENV,
+  );
   const card = (over: Record<string, unknown>) => ({
     key: 'inst::C1:t1',
     displayHeadline: 'Context',
@@ -728,37 +716,37 @@ describe('D16 — the face ctx metric and the summary line use the same level an
     autoCompactTokens: 750_000,
     ...over,
   });
-  const ctx = (pct: number, used?: number, extra: Record<string, unknown> = {}) =>
-    face.renderCardFace(
+  const ctx = (pct: number, used?: number, extra: Record<string, unknown> = {}) => {
+    const c = face.cardOf(
       card({ tokenUsage: { totalInputTokens: 1, contextUsagePercent: pct }, contextTokens: used, ...extra }),
       'idle',
     );
+    return [c.contextLevel, c.titles?.context];
+  };
 
   it('point known: the level against it, the tooltip says how far', () => {
-    expect(ctx(41.2, 412_000)).toContain('<span class="metric" title="컨텍스트 41% · 자동 압축 750K까지 338K">');
-    expect(ctx(62, 620_000)).toContain('<span class="metric ctx-warn" title="컨텍스트 62% · 자동 압축 750K까지 130K">');
-    expect(ctx(72, 720_000)).toContain(
-      '<span class="metric ctx-danger" title="컨텍스트 72% · 자동 압축 750K까지 30K">',
-    );
-    expect(ctx(76, 760_000, { compactPending: true })).toContain(
-      '<span class="metric ctx-danger" title="컨텍스트 76% · 다음 입력 때 자동 압축">',
-    );
-    expect(ctx(80, 800_000)).toContain('title="컨텍스트 80% · 자동 압축 지점을 넘음"');
+    expect(ctx(41.2, 412_000)).toEqual(['', '컨텍스트 41% · 자동 압축 750K까지 338K']);
+    expect(ctx(62, 620_000)).toEqual(['warn', '컨텍스트 62% · 자동 압축 750K까지 130K']);
+    expect(ctx(72, 720_000)).toEqual(['danger', '컨텍스트 72% · 자동 압축 750K까지 30K']);
+    expect(ctx(76, 760_000, { compactPending: true })).toEqual(['danger', '컨텍스트 76% · 다음 입력 때 자동 압축']);
+    expect(ctx(80, 800_000)[1]).toBe('컨텍스트 80% · 자동 압축 지점을 넘음');
   });
 
   it('point unknown: the window bands and the old words, unchanged', () => {
-    expect(ctx(65)).toContain('<span class="metric ctx-warn" title="Context window used">');
-    expect(ctx(90)).toContain('<span class="metric ctx-danger" title="Context window used — 80% 넘게 찼다">');
+    expect(ctx(65)).toEqual(['warn', 'Context window used']);
+    expect(ctx(90)).toEqual(['danger', 'Context window used — 80% 넘게 찼다']);
     // PR review R1 (P3): the "over 80%" words follow the number, not the level (a scheduled compact is danger at 50%).
-    expect(ctx(50, undefined, { compactPending: true, autoCompactTokens: 0 })).toContain(
-      '<span class="metric ctx-danger" title="Context window used">',
-    );
+    expect(ctx(50, undefined, { compactPending: true, autoCompactTokens: 0 })).toEqual([
+      'danger',
+      'Context window used',
+    ]);
   });
 
   it('one percent everywhere (PR review R1 P2): face, 세션 정보 summary and the block pill round and cap at 100', () => {
     // The block's pill is <ui-context-window>'s: Σparts / window (the server's contextUsagePercent formula), rounded, capped.
-    for (const fn of ['renderCardFace', 'panelInfoHtml']) expect(clientFn(fn), fn).toContain('ctxPercent(');
-    expect(ctx(104.6, 1_046_000, { autoCompactTokens: 0 })).toContain('100%</span>');
+    // The face's % is <ui-agent-inbox>'s: Math.round(Math.min(contextPct, 100)) — the same rule (ctxPercent).
+    for (const fn of ['cardCtxTitle', 'panelInfoHtml']) expect(clientFn(fn), fn).toContain('ctxPercent(');
+    expect(ctx(104.6, 1_000_000, { autoCompactTokens: 900_000 })[1]).toBe('컨텍스트 100% · 자동 압축 지점을 넘음');
     const info = load<{ panelInfoHtml(s: unknown, open: boolean): string }>(
       [...CW_FNS, 'ctxLevel', 'ctxPercent', 'pendingAutoResume', 'rootStatusOf', 'panelDetailsHtml', 'panelInfoHtml'],
       [...CW_VARS, 'PI_CHEV_SVG'],

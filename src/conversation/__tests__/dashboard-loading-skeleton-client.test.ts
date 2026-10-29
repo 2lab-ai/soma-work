@@ -5,13 +5,20 @@
  * three columns and "-" in the stats strip, then cards popped in. These tests
  * pin the loading contract (ssot-task IDs in brackets):
  *
- *   [T2] the board shows card-shaped skeletons, no count and no empty hint until
- *        the first board paints; the stats strip shows skeleton bars, not "-"
- *   [T2] the skeleton is first-load only — a background poll never brings it back
+ *   [T2] the board is handed load 'loading' until the first board paints; the
+ *        stats strip shows skeleton bars, not "-"
+ *   [T2] the loading state is first-load only — a background poll never brings it back
  *   [T2] stats start in parallel with the board, not after it
- *   [T3] a failed first load stops the skeleton and offers 다시 시도
+ *   [T3] a failed first load hands the board load 'failed' and offers 다시 시도
  *   [T3] the session panel shows turn-shaped skeleton rows, not "Loading..."
  *   [T3] reduced motion: a still skeleton; skeleton nodes are aria-hidden
+ *
+ * The board is @2lab.ai/ui <ui-agent-inbox>: the page hands it a load state
+ * (kb._ibPlan.load → inboxPaint → data.load) and the element draws what that
+ * means — skeleton cards and aria-busy while loading, no counts, no empty hints
+ * and no announcement until ready (library src/components/agent-inbox/agent-inbox.test.ts,
+ * 'load: loading draws skeletons with no counts or empty hints; failed keeps cards
+ * and makes no claims'). The #board-error bar with 다시 시도 stays the page's.
  *
  * Executes the shipped client code cut out of renderDashboardPage()'s template
  * literal (the harness of dashboard-three-surfaces-client.test.ts).
@@ -66,26 +73,26 @@ function between(src: string, from: string, to: string): string {
   if (b < 0) throw new Error(`marker not found: ${to}`);
   return src.slice(a, b);
 }
-function column(id: 'waiting' | 'working' | 'done'): string {
-  const start = PAGE.indexOf(`<section class="kanban-col" id="col-${id}"`);
-  if (start < 0) throw new Error(`column ${id} not found`);
-  return PAGE.slice(start, PAGE.indexOf('</section>', start));
-}
-
 // ── Fake DOM ──
+type Plan = { cols: Array<{ id: string; label: string; keys: string[] }>; load: string; announce: unknown };
+type BoardData = {
+  columns: Array<{ id: string; label: string; cards: Array<{ id: string }> }>;
+  load: string;
+  announce: unknown;
+  expanded: string[];
+};
 type FakeEl = {
   id?: string;
+  _ibPlan?: Plan;
+  data?: BoardData;
   hidden: boolean;
   textContent: string;
   innerHTML: string;
-  dataset: Record<string, string>;
   attrs: Record<string, string>;
   classes: Set<string>;
-  removed: boolean;
   setAttribute(k: string, v: string): void;
   removeAttribute(k: string): void;
   getAttribute(k: string): string | null;
-  remove(): void;
   classList: {
     add(c: string): void;
     remove(c: string): void;
@@ -99,10 +106,8 @@ function el(id?: string, classes: string[] = []): FakeEl {
     hidden: false,
     textContent: '',
     innerHTML: '',
-    dataset: {},
     attrs: {},
     classes: new Set(classes),
-    removed: false,
     setAttribute(k, v) {
       this.attrs[k] = String(v);
     },
@@ -111,9 +116,6 @@ function el(id?: string, classes: string[] = []): FakeEl {
     },
     getAttribute(k) {
       return k in this.attrs ? this.attrs[k] : null;
-    },
-    remove() {
-      this.removed = true;
     },
     classList: {
       add: (c) => e.classes.add(c),
@@ -128,53 +130,146 @@ function el(id?: string, classes: string[] = []): FakeEl {
   };
   return e;
 }
-function fakeDocument(ids: string[], skeletons = 3) {
+/** What inboxPaint reads besides the plan: the open cards, the cards, the board's wording. */
+const paintEnv = () => ({ _expanded: new Set<string>(), _cardData: {}, BOARD_STRINGS: {} });
+/** The board as served: initBoardInteractions (an IIFE of the page) run on a fake #kanban. */
+const INIT_BOARD = (() => {
+  const start = TEMPLATE.indexOf('(function initBoardInteractions() {');
+  if (start < 0) throw new Error('initBoardInteractions not found');
+  return cook(TEMPLATE.slice(start, TEMPLATE.indexOf('\n})();', start) + 6));
+})();
+function serve(kanban: FakeEl, wired: unknown[] = []): void {
+  const env: Record<string, unknown> = {
+    document: { getElementById: (id: string) => (id === 'kanban' ? kanban : null) },
+    wireInbox: (host: unknown) => wired.push(host),
+    setBoardView: () => {},
+    defaultBoardView: () => 'board',
+    savedBoardView: () => null,
+    applySectionState: () => {},
+    window: { innerWidth: 1280 },
+    ...paintEnv(),
+  };
+  const names = Object.keys(env);
+  new Function(...names, `${clientVar('BOARD_LABELS')}\n${clientFn('inboxPaint')}\n${INIT_BOARD}`)(
+    ...names.map((n) => env[n]),
+  );
+}
+function fakeDocument(ids: string[]) {
   const byId: Record<string, FakeEl> = {};
   for (const id of ids) byId[id] = el(id);
-  const skels = Array.from({ length: skeletons }, () => el(undefined, ['col-skel']));
-  const statLoading = ['stat-sessions', 'stat-tokens', 'stat-cost'].map((id) => byId[id]).filter(Boolean);
+  if (byId.kanban) serve(byId.kanban);
   return {
     byId,
-    skels,
     document: {
       getElementById: (id: string) => byId[id] ?? null,
-      querySelectorAll: (sel: string) => {
-        if (sel === '.col-skel') return skels.filter((s) => !s.removed);
-        if (sel.includes('is-loading')) return statLoading.filter((s) => s.classes.has('is-loading'));
-        return [];
-      },
+      querySelectorAll: () => [],
     },
   };
 }
 
-const BOARD_FNS = ['setBoardLoad', 'retryBoardLoad'];
+// setBoardLoad repaints the board element through the page's inboxPaint.
+const BOARD_FNS = ['inboxPaint', 'setBoardLoad', 'retryBoardLoad'];
 const LOAD_VARS = ['_boardLoad', '_heldWsBoard', '_sessionsInflight', 'BOARD_LOAD_TIMEOUT_MS'];
 
+// renderBoard with the load state it reads (_boardLoad) and writes through setBoardLoad,
+// on the served board: the plan it hands the element, its columns and its load.
+function boardFlow(cardOf?: (s: { key: string }, col: string) => unknown) {
+  const d = fakeDocument(['kanban', 'board-error', 'inbox']);
+  const loads: number[] = [];
+  const m = load<{
+    renderBoard(board: unknown, partial?: boolean): void;
+    setBoardLoad(s: string): void;
+    retryBoardLoad(): void;
+    _state: { _boardLoad: string };
+  }>(
+    [
+      'toNum',
+      'planDoneColumn',
+      'doneTimeOf',
+      'dayKeyOf',
+      'doneDayLabel',
+      'planDoneGroups',
+      'isCronCard',
+      'cronGroupKey',
+      'cronCardTime',
+      'planCronLane',
+      'cardBodyShown',
+      'placeCard',
+      'renderBoard',
+      ...BOARD_FNS,
+    ],
+    ['BOARD_LABELS', '_cardHost', '_cardCol', '_cardData', '_cardDrawn', '_cardClosing', '_boardRenders', '_boardLoad'],
+    {
+      document: d.document,
+      loadSessions: () => loads.push(1),
+      _sessionCache: Object.create(null),
+      _acState: {},
+      acEvict: () => {},
+      _envIndex: null,
+      _buildEnvIndex: () => ({}),
+      _ownerIndex: null,
+      assignOwnerHues: () => ({}),
+      _lastBoardData: null,
+      _cronJobs: [],
+      _cronPlan: null,
+      _cronRevealKey: null,
+      syncCronLane: () => {},
+      cronLaneSlots: () => [],
+      paintCronLaneCards: () => {},
+      showArchives: false,
+      showSleeping: true,
+      _revealedKey: null,
+      _doneGroupOpen: Object.create(null),
+      _expanded: new Set<string>(),
+      BOARD_STRINGS: {},
+      cardOf:
+        cardOf ?? ((s: { key: string }, col: string) => ({ id: s.key, title: s.key, status: col, bodyMode: 'slot' })),
+      acPrefetch: () => {},
+      releaseCardIoTimer: () => {},
+      syncCardBodies: () => {},
+      ensureCardIo: () => {},
+      renderArchivesToggle: () => {},
+      renderSleepingToggle: () => {},
+      paintCronDrawer: () => {},
+      updateTokenBreakdown: () => {},
+      scheduleLayoutRefresh: () => {},
+      MOTION: { move: 320 },
+      openDeepLinkedSession: () => {},
+    },
+  );
+  const kanban = d.byId.kanban;
+  return { d, m, kanban, loads, ids: (col: number) => (kanban.data?.columns[col].cards ?? []).map((c) => c.id) };
+}
+const flowBoard = () => {
+  const at = new Date().toISOString();
+  const s = (key: string) => ({ key, lastActivity: at });
+  return { waiting: [s('w1')], working: [s('r1'), s('r2')], idle: [], closed: [] };
+};
+
 describe('[T2] board — skeleton until the first board paints', () => {
-  it('the served board starts loading: aria-busy, data-load="loading"', () => {
-    const kanban = between(PAGE, '<div class="kanban" id="kanban"', '>');
-    expect(kanban).toContain('data-load="loading"');
-    expect(kanban).toContain('aria-busy="true"');
+  it('the served board starts loading: the element is handed load "loading", three empty columns, no announcement', () => {
+    const inbox = between(PAGE, '<section class="inbox ui-tok" id="inbox"', '</section>');
+    expect(inbox).toContain('<ui-agent-inbox id="kanban" class="kanban" view="board"></ui-agent-inbox>');
+    // Skeleton cards, counts and empty hints are the element's: the page serves none of its own.
+    for (const gone of ['class="col-skel"', 'class="sk-card"', 'id="count-', 'class="col-empty"']) {
+      expect(inbox, gone).not.toContain(gone);
+    }
+    const kanban = el('kanban');
+    const wired: unknown[] = [];
+    serve(kanban, wired);
+    expect(wired).toEqual([kanban]);
+    expect(kanban._ibPlan?.load).toBe('loading');
+    expect(kanban.data?.load).toBe('loading');
+    expect(kanban.data?.announce).toBe(false);
+    expect(kanban.data?.columns.map((c) => [c.id, c.label, c.cards])).toEqual([
+      ['waiting', 'NEEDS YOU', []],
+      ['working', 'RUNNING', []],
+      ['done', 'DONE', []],
+    ]);
   });
 
-  it('each column carries card-shaped skeletons, hidden from assistive tech', () => {
-    for (const id of ['waiting', 'working', 'done'] as const) {
-      const col = column(id);
-      const skel = between(col, '<div class="col-skel"', '</div>\n');
-      expect(skel, id).toContain('aria-hidden="true"');
-      expect((col.match(/class="sk-card"/g) ?? []).length, id).toBeGreaterThanOrEqual(2);
-    }
-  });
-
-  it('no false empty state: no "0" count and no "Nothing here" before data', () => {
-    for (const id of ['waiting', 'working', 'done'] as const) {
-      const col = column(id);
-      expect(col, id).toContain(`<span class="count" id="count-${id}"></span>`);
-      expect(col, id).not.toContain(`id="count-${id}">0<`);
-      // The hint is still in the page (a loaded, empty column says it), just hidden.
-      expect(col, id).toContain(`<div class="col-empty" id="empty-${id}" hidden>Nothing here</div>`);
-    }
-  });
+  // Deleted: 'each column carries card-shaped skeletons, hidden from assistive tech' — library 'load: loading draws skeletons with no counts or empty hints; failed keeps cards and makes no claims'.
+  // Deleted: 'no false empty state: no "0" count and no "Nothing here" before data' — library 'load: loading draws skeletons with no counts or empty hints; failed keeps cards and makes no claims'.
 
   it('a board-wide error with 다시 시도 exists, hidden until a first load fails', () => {
     const err = between(PAGE, '<div class="board-error" id="board-error"', '</div>');
@@ -182,56 +277,81 @@ describe('[T2] board — skeleton until the first board paints', () => {
     expect(err).toContain('hidden');
     expect(err).toContain('onclick="retryBoardLoad()"');
     expect(err).toContain('다시 시도');
-    // Inside the inbox, right before the columns.
-    expect(PAGE.indexOf('id="board-error"')).toBeGreaterThan(PAGE.indexOf('<section class="inbox" id="inbox"'));
-    expect(PAGE.indexOf('id="board-error"')).toBeLessThan(PAGE.indexOf('<div class="kanban" id="kanban"'));
+    // Inside the inbox, right before the board element.
+    expect(PAGE.indexOf('id="board-error"')).toBeGreaterThan(PAGE.indexOf('<section class="inbox ui-tok" id="inbox"'));
+    expect(PAGE.indexOf('id="board-error"')).toBeLessThan(PAGE.indexOf('<ui-agent-inbox id="kanban"'));
   });
 
-  it('setBoardLoad("ready") ends the busy state and hides the error', () => {
+  it('setBoardLoad("ready") ends the loading state on the element and hides the error', () => {
     const d = fakeDocument(['kanban', 'board-error']);
     const m = load<{ setBoardLoad(s: string): void; _state: { _boardLoad: string } }>(BOARD_FNS, ['_boardLoad'], {
       document: d.document,
       loadSessions: () => {},
+      ...paintEnv(),
     });
     expect(m._state._boardLoad).toBe('loading');
     m.setBoardLoad('failed');
+    expect(d.byId.kanban.data?.load).toBe('failed');
     expect(d.byId['board-error'].hidden).toBe(false);
     m.setBoardLoad('ready');
     expect(m._state._boardLoad).toBe('ready');
-    expect(d.byId.kanban.dataset.load).toBe('ready');
-    expect(d.byId.kanban.attrs['aria-busy']).toBe('false');
+    expect(d.byId.kanban._ibPlan?.load).toBe('ready');
+    expect(d.byId.kanban.data?.load).toBe('ready');
     expect(d.byId['board-error'].hidden).toBe(true);
   });
 
-  it('first load only: once ready, nothing brings the skeleton or the error back', () => {
+  it('first load only: once ready, nothing brings the loading state or the error back', () => {
     const d = fakeDocument(['kanban', 'board-error']);
     const m = load<{ setBoardLoad(s: string): void; _state: { _boardLoad: string } }>(BOARD_FNS, ['_boardLoad'], {
       document: d.document,
       loadSessions: () => {},
+      ...paintEnv(),
     });
     m.setBoardLoad('ready');
     m.setBoardLoad('loading');
     m.setBoardLoad('failed');
     expect(m._state._boardLoad).toBe('ready');
-    expect(d.byId.kanban.dataset.load).toBe('ready');
+    expect(d.byId.kanban.data?.load).toBe('ready');
     expect(d.byId['board-error'].hidden).toBe(true);
   });
 
-  it('renderBoard drops the skeleton nodes after the reconciler; only a poll answer latches ready', () => {
-    const body = clientFn('renderBoard');
-    // Only a certified paint drops them: after a partial paint, 다시 시도 still has a
-    // loading cue for the columns the partial data left empty (#487 review, astra P2).
-    const drop = "if (!partial) document.querySelectorAll('.col-skel').forEach(function(n) { n.remove(); });";
-    expect(body).toContain(drop);
-    // After the reconciler has drawn real cards: a render that throws on the way leaves
-    // the skeleton, and loadSessions' catch shows 다시 시도 (review R1, fable P2).
-    expect(body.indexOf(drop)).toBeGreaterThan(body.indexOf('reconcileBoard('));
-    // A WebSocket push is this instance's cards only — it never certifies the board (review R2).
-    expect(body).not.toContain('setBoardLoad(');
+  it('renderBoard hands the element the load state; only a poll answer latches ready', () => {
+    const h = boardFlow();
+    // Partial data under the error (a held push after a failed first load): its cards, load failed.
+    h.m.setBoardLoad('failed');
+    h.m.renderBoard(flowBoard());
+    expect(h.kanban.data?.load).toBe('failed');
+    expect(h.ids(1)).toEqual(['r1', 'r2']);
+    // 다시 시도: loading again (the element draws skeletons only where no card is drawn).
+    h.m.retryBoardLoad();
+    expect(h.loads).toHaveLength(1);
+    expect(h.kanban.data?.load).toBe('loading');
+    expect(h.d.byId['board-error'].hidden).toBe(true);
+    // A re-render meanwhile (cron poll, visibility, toggles) of partial data stays partial.
+    h.m.renderBoard(flowBoard());
+    expect(h.kanban.data?.load).toBe('loading');
+    // The poll answer is a certified paint; renderBoard itself never latches the load state.
+    h.m.renderBoard(flowBoard(), false);
+    expect(h.kanban.data?.load).toBe('ready');
+    expect(h.m._state._boardLoad).toBe('loading');
+    expect(clientFn('renderBoard')).not.toContain('setBoardLoad(');
+    // loadSessions latches it right after the certified paint.
     const ls = clientFn('loadSessions');
     expect(ls.indexOf("setBoardLoad('ready');")).toBeGreaterThan(ls.indexOf('renderBoard(data.board, false);'));
-    // A loaded, empty column still says it.
-    expect(clientFn('reconcileBoard')).toContain('if (empty && empty.hidden !== has) empty.hidden = has;');
+    h.m.setBoardLoad('ready');
+    h.m.renderBoard(flowBoard());
+    expect(h.kanban.data?.load).toBe('ready');
+  });
+
+  it('a render that throws before the element gets its data leaves it loading; loadSessions then shows 다시 시도', () => {
+    const h = boardFlow(() => {
+      throw new Error('bad card');
+    });
+    expect(() => h.m.renderBoard(flowBoard(), false)).toThrow('bad card');
+    expect(h.kanban.data?.load).toBe('loading');
+    expect(h.kanban.data?.columns.every((c) => c.cards.length === 0)).toBe(true);
+    const ls = clientFn('loadSessions');
+    expect(ls.indexOf("setBoardLoad('failed');")).toBeGreaterThan(ls.indexOf('} catch (e) {'));
   });
 });
 
@@ -256,16 +376,17 @@ describe('[T3] board — a failed first load stops the skeleton', () => {
       _sessionCache: {},
       repaintPanelSession: () => {},
       console: { error: () => {} },
+      ...paintEnv(),
     });
     return { d, m, renderBoard };
   }
 
-  it('network error on the first load → failed: error shown, skeleton stopped', async () => {
+  it('network error on the first load → failed: error shown, the element told (it stops the skeleton)', async () => {
     const { d, m } = loadSessionsWith(() => Promise.reject(new Error('offline')));
     await m.loadSessions();
     expect(m._state._boardLoad).toBe('failed');
-    expect(d.byId.kanban.dataset.load).toBe('failed');
-    expect(d.byId.kanban.attrs['aria-busy']).toBe('false');
+    expect(d.byId.kanban._ibPlan?.load).toBe('failed');
+    expect(d.byId.kanban.data?.load).toBe('failed');
     expect(d.byId['board-error'].hidden).toBe(false);
   });
 
@@ -297,11 +418,11 @@ describe('[T3] board — a failed first load stops the skeleton', () => {
     );
     await m.loadSessions();
     expect(m._state._boardLoad).toBe('failed');
+    expect(d.byId.kanban.data?.load).toBe('failed');
     fail = false;
     m.retryBoardLoad();
     expect(m._state._boardLoad).toBe('loading');
-    expect(d.byId.kanban.dataset.load).toBe('loading');
-    expect(d.byId.kanban.attrs['aria-busy']).toBe('true');
+    expect(d.byId.kanban.data?.load).toBe('loading');
     expect(d.byId['board-error'].hidden).toBe(true);
     // A poll answer is a certified paint (partial = false).
     await vi.waitFor(() => expect(renderBoard).toHaveBeenCalledWith(board, false));
@@ -335,6 +456,7 @@ describe('[T2] board — only a poll answer certifies the board (review R1/R2)',
         _sessionCache: {},
         repaintPanelSession: () => {},
         console: { error: () => {} },
+        ...paintEnv(),
       },
       ['function select(u) { currentUserId = u; }'],
     );
@@ -498,6 +620,7 @@ describe('[T3] first load is bounded; partial data is never announced as the boa
         _sessionCache: {},
         repaintPanelSession: () => {},
         console: { error: () => {} },
+        ...paintEnv(),
       },
       ['function select(u) { currentUserId = u; }'],
     );
@@ -643,8 +766,18 @@ describe('[T3] first load is bounded; partial data is never announced as the boa
     // Anything painted before the board is certified is partial — also a re-render during
     // 다시 시도 (cron poll, visibility, toggles) of the partial cards (#487 review, fable P2).
     expect(body).toContain("if (partial === undefined) partial = _boardLoad !== 'ready';");
-    expect(body).toContain('if (!partial) announceBoard(');
     expect(clientFn('loadSessions')).toContain('renderBoard(data.board, false);');
+    // The counts always travel (data.announce: the data as it came); the element says them only
+    // when load is ready (library 'announces the host counts (data.announce), and nothing with
+    // announce: false' and 'load: loading draws skeletons … failed keeps cards and makes no claims').
+    const h = boardFlow();
+    h.m.renderBoard(flowBoard());
+    expect(h.kanban.data).toMatchObject({ load: 'loading', announce: { needs: 1, running: 2 } });
+    h.m.setBoardLoad('failed');
+    h.m.renderBoard(flowBoard());
+    expect(h.kanban.data).toMatchObject({ load: 'failed', announce: { needs: 1, running: 2 } });
+    h.m.renderBoard(flowBoard(), false);
+    expect(h.kanban.data).toMatchObject({ load: 'ready', announce: { needs: 1, running: 2 } });
   });
 });
 
@@ -825,17 +958,6 @@ describe('[T3] skeleton motion and accessibility', () => {
     expect(blocks.some((b) => /\.sk\b[^{]*\{[^}]*animation: none !important/.test(b))).toBe(true);
   });
 
-  it('skeletons show only while the board is loading, and only in columns with no cards yet', () => {
-    expect(CSS).toMatch(/\.kanban:not\(\[data-load="loading"\]\) \.col-skel \{ display: none; \}/);
-    // 다시 시도 after a partial paint: a column showing partial cards needs no skeleton above them.
-    expect(CSS).toMatch(/\.kanban-col:has\(> \.cards:not\(:empty\)\) \.col-skel \{ display: none; \}/);
-  });
-
-  it('counts and "Nothing here" are claims about the whole board: only a certified (ready) board shows them (#482)', () => {
-    // 다시 시도 after a partial paint (loading), or partial cards under the error (failed).
-    expect(CSS).toMatch(/\.kanban:not\(\[data-load="ready"\]\) \.col-empty \{ display: none; \}/);
-    expect(CSS).toMatch(
-      /\.kanban:not\(\[data-load="ready"\]\) \.kanban-col-header \.count:not\(:empty\) \{ visibility: hidden; \}/,
-    );
-  });
+  // Deleted: 'skeletons show only while the board is loading, and only in columns with no cards yet' — library 'load: loading draws skeletons with no counts or empty hints; failed keeps cards and makes no claims'.
+  // Deleted: 'counts and "Nothing here" are claims about the whole board: only a certified (ready) board shows them (#482)' — library 'load: loading draws skeletons with no counts or empty hints; failed keeps cards and makes no claims'.
 });

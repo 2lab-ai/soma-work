@@ -3599,6 +3599,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/agent-steering.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/context-window.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/approval-card.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/agent-inbox.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/toaster.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/compact-breakdown.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/model-picker.js?v=${UI_LIB_VERSION}"></script>
@@ -3662,17 +3663,6 @@ function renderDashboardPage(userId?: string): string {
   --st-done: #3fb968;
   --st-fail: #f26b6b;
   --st-fail-text: #f26b6b; /* red as 13px text: ≥ 4.5:1 on the card and the dimmed card */
-  /* Owner badges (All Users, .prd/10 §3.1-3) — 8 hues, ordered so neighbouring
-     slots are far apart: blue · amber · green · rose · teal · orange · violet · olive.
-     Each text colour clears 4.5:1 on its own fill. */
-  --ob-0-bg: #233b57; --ob-0-fg: #aacef8;
-  --ob-1-bg: #574723; --ob-1-fg: #f8e1aa;
-  --ob-2-bg: #235735; --ob-2-fg: #aaf8c4;
-  --ob-3-bg: #572330; --ob-3-fg: #f8aabe;
-  --ob-4-bg: #235755; --ob-4-fg: #aaf8f6;
-  --ob-5-bg: #573323; --ob-5-fg: #f8c1aa;
-  --ob-6-bg: #3b2357; --ob-6-fg: #ceaaf8;
-  --ob-7-bg: #475723; --ob-7-fg: #e1f8aa;
 }
 
 /* ── LIGHT THEME — override surface & text planes ── */
@@ -3712,14 +3702,6 @@ function renderDashboardPage(userId?: string): string {
   --st-done: #137a3e;
   --st-fail: #d43a3a;
   --st-fail-text: #c02f2f; /* #d43a3a is 4.4:1 on the dimmed card (#f8f8f8); this is 5.4:1 */
-  --ob-0-bg: #d9e9fc; --ob-0-fg: #0e3562;
-  --ob-1-bg: #fcf2d9; --ob-1-fg: #62490e;
-  --ob-2-bg: #d9fce5; --ob-2-fg: #0e622a;
-  --ob-3-bg: #fcd9e2; --ob-3-fg: #620e23;
-  --ob-4-bg: #d9fcfb; --ob-4-fg: #0e625f;
-  --ob-5-bg: #fce4d9; --ob-5-fg: #62270e;
-  --ob-6-bg: #e9d9fc; --ob-6-fg: #350e62;
-  --ob-7-bg: #f2fcd9; --ob-7-fg: #49620e;
 }
 [data-theme="light"] ::selection { background: var(--accent); color: #fff; }
 [data-theme="light"] ::-webkit-scrollbar-thumb { background: #c8cdd5; border-color: var(--bg); }
@@ -4066,36 +4048,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .stat-card .delta.negative { color: var(--red); }
 
 /* ═══ AGENT INBOX BOARD (.prd/10 §3.1) ═══
-   NEEDS YOU (waiting) · RUNNING (working) · DONE (idle, then closed).
-   Card shells persist across renders (keyed reconciler in the client JS), so
-   every transition below animates a live node — nothing is rebuilt per poll. */
+   NEEDS YOU (waiting) · RUNNING (working) · DONE (idle, then closed) — the
+   board and its cards are @2lab.ai/ui <ui-agent-inbox>; the rules here are the
+   page around it and the open card's body (light DOM in the card's slot). */
 /* The inbox is the size container for the board columns (SSOT 2026-10-24): a docked
    drawer narrows it, so the column layout follows its width, not the viewport. */
 .inbox { margin-bottom: 28px; container: inbox / inline-size; }
-/* Status tag tones (.prd/affectui/re-agent-inbox.md D1): the face's status is a
-   tinted pill. Text on its tint is ≥ 4.5:1 in both themes (dark 6.5–7.8:1,
-   light 5.5–6.5:1). The board's own token blocks — the shared ones stay untouched. */
-:root {
-  --st-run-bg: #1d2a47;
-  --st-run-fg: #a3bdff;
-  --st-wait-bg: #3a2a12;
-  --st-wait-fg: #ffb35c;
-  --st-done-bg: #14301f;
-  --st-done-fg: #5fd68e;
-  --st-rest-bg: #2f2f35;
-  --st-rest-fg: #b4b4bb;
-}
-[data-theme="light"] {
-  --st-run-bg: #e8eeff;
-  --st-run-fg: #2453c7;
-  --st-wait-bg: #fff1dc;
-  --st-wait-fg: #8f5300;
-  --st-done-bg: #e3f5e9;
-  --st-done-fg: #136c39;
-  --st-rest-bg: #efefef;
-  --st-rest-fg: #555558;
-}
-/* D6: the board's polite announcement, visually hidden. */
+/* Visually hidden text (screen readers only). */
 .ib-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .inbox-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 16px; min-width: 0; }
 .crumbs { display: flex; align-items: baseline; gap: 10px; font-size: 17px; line-height: 1.3; min-width: 0; white-space: nowrap; overflow: hidden; }
@@ -4157,18 +4116,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .lifecycle-dialog .lc-actions { display: flex; justify-content: flex-end; gap: 8px; }
 .lifecycle-dialog .lc-save { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
 
-/* Board = 3 equal columns. No overflow clip on columns: a card flying between
-   columns must stay visible over its neighbours. */
-.kanban { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; align-items: start; }
-.kanban-col { position: relative; background: var(--ib-col); border-radius: 14px; padding: 2px 4px 4px; min-width: 0; display: flex; flex-direction: column; }
-.kanban-col-header { display: flex; align-items: center; gap: 8px; padding: 10px 8px 8px 10px; min-height: 40px; }
+/* The board: @2lab.ai/ui <ui-agent-inbox> (re-agent-inbox) — its columns, cards, day groups, skeletons
+   and narrow / list layouts are the element's, drawn with the dashboard tokens through .ui-tok (#inbox).
+   An open card's body is light DOM in the card's slot (.card-slot > .card-body), styled here. */
+ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0; }
 .col-spark { color: var(--ib-spark); display: inline-flex; flex-shrink: 0; }
-.col-spark svg, .card-spark svg { width: 14px; height: 14px; }
-.kanban-col-header h3 { flex: 1; text-align: center; font-size: 12px; font-weight: 500; letter-spacing: 0.14em; text-transform: uppercase; color: var(--ib-muted); white-space: nowrap; }
-.kanban-col-header .count { background: var(--ib-pill); color: var(--ib-text-2); border-radius: 6px; padding: 1px 7px; font-size: 12px; font-weight: 500; min-width: 22px; text-align: center; font-variant-numeric: tabular-nums; }
-.kanban-col .cards { position: relative; display: flex; flex-direction: column; gap: 8px; }
+.col-spark svg { width: 14px; height: 14px; }
 .col-empty { text-align: center; color: var(--ib-muted); font-size: 13px; padding: 14px 8px 18px; }
-.col-foot:empty { display: none; }
 
 /* ── Loading skeletons — the shape of what is coming, never a false "0 · Nothing
    here". The board shows them until its first answer (data-load="loading"); the
@@ -4176,23 +4130,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    staggered per card; still under reduced motion. ── */
 @keyframes sk-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 .sk { background: var(--ib-pill); border-radius: 6px; animation: sk-pulse 1.6s ease-in-out infinite; }
-.col-skel { display: flex; flex-direction: column; gap: 8px; }
-.kanban:not([data-load="loading"]) .col-skel { display: none; }
-.kanban-col:has(> .cards:not(:empty)) .col-skel { display: none; }
-/* Counts and "Nothing here" are claims about the whole board: only a certified
-   (ready) board makes them — not 다시 시도 after a partial paint, not this
-   instance's cards shown under the error. */
-.kanban:not([data-load="ready"]) .col-empty { display: none; }
-.kanban:not([data-load="ready"]) .kanban-col-header .count:not(:empty) { visibility: hidden; }
-.sk-card { background: var(--ib-card); border: 1px solid var(--ib-card-border); border-radius: 12px; box-shadow: var(--ib-shadow); padding: 14px; display: flex; flex-direction: column; gap: 10px; }
-.sk-card .sk-title { height: 14px; width: 68%; }
-.sk-card .sk-meta { height: 10px; width: 42%; }
-.sk-card .sk-pill { height: 20px; width: 34%; border-radius: 999px; }
-.sk-card:nth-child(2) .sk { animation-delay: 120ms; }
-.sk-card:nth-child(3) .sk { animation-delay: 240ms; }
-.kanban-col-header .count:empty { min-height: 18px; }
-.kanban[data-load="loading"] .kanban-col-header .count:empty { animation: sk-pulse 1.6s ease-in-out infinite; }
-.kanban:not([data-load="loading"]) .kanban-col-header .count:empty { visibility: hidden; }
 .board-error { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 12px; padding: 12px 16px; border-radius: 12px; background: var(--ib-col); color: var(--ib-text-2); font-size: 13px; }
 .board-error[hidden] { display: none; }
 /* Stats values: a bar where the number will be. */
@@ -4211,140 +4148,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .sk-turn:nth-child(2) .sk { animation-delay: 120ms; }
 .sk-turn:nth-child(3) .sk { animation-delay: 240ms; }
 
-/* List = the same columns stacked as full-width sections (same DOM, §4-4). */
-.kanban[data-view="list"] { grid-template-columns: minmax(0, 1fr); }
-.kanban[data-view="list"] .kanban-col-header h3 { flex: 0 0 auto; text-align: left; }
-.kanban[data-view="list"] .card-summary { -webkit-line-clamp: 1; }
-.kanban[data-view="list"] .col-empty { padding: 10px 8px 16px; }
-
-/* ── CARD — collapsed face + in-place expansion ── */
-.card {
-  position: relative;
-  background: var(--ib-card);
-  border: 1px solid var(--ib-card-border);
-  border-radius: 12px;
-  box-shadow: var(--ib-shadow);
-  color: var(--ib-text);
-  transition: border-color 150ms ease, box-shadow 150ms ease;
-  --st-color: var(--ib-muted);
-}
-.card[data-state="waiting"] { --st-color: var(--st-wait); }
-.card[data-state="working"] { --st-color: var(--st-run); }
-.card[data-state="idle"] { --st-color: var(--st-done); }
-/* Closed cards are dimmed with colour, not opacity — opacity would fight the
-   enter/exit fades and make each card its own stacking context. */
-.card[data-state="sleeping"], .card[data-state="archived"] { background: var(--ib-card-dim); box-shadow: none; }
-.card[data-state="sleeping"] .card-title-text, .card[data-state="archived"] .card-title-text { color: var(--ib-text-2); font-weight: 500; }
-.card[data-state="sleeping"] .card-summary, .card[data-state="archived"] .card-summary { color: var(--ib-muted); }
-.card.is-flying { z-index: 5; box-shadow: var(--ib-shadow-raised); }
-.card.is-exiting { position: absolute; z-index: 1; pointer-events: none; }
-.card-face { padding: 12px 14px; cursor: pointer; border-radius: 11px; container: cardface / inline-size; }
-.card-face:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-.card-head { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.card-spark { flex-shrink: 0; display: inline-flex; color: var(--st-color); }
-.card .card-title-text { flex: 1 1 auto; font-size: 15px; font-weight: 600; line-height: 1.3; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-/* Owner badge (All Users, §3.1-3): right end of the head. It keeps its width up
-   to its cap, so the title truncates first; a longer name ends in an ellipsis
-   (full name in title). The colour slot comes from ownerBadgeHue(ownerId). */
-.owner-badge {
-  flex: 0 0 auto;
-  margin-left: auto;
-  max-inline-size: min(45%, 168px);
-  padding: 2px 8px;
-  border-radius: 999px;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.35;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  background: var(--ob-bg);
-  color: var(--ob-fg);
-}
-.owner-badge[data-hue="0"] { --ob-bg: var(--ob-0-bg); --ob-fg: var(--ob-0-fg); }
-.owner-badge[data-hue="1"] { --ob-bg: var(--ob-1-bg); --ob-fg: var(--ob-1-fg); }
-.owner-badge[data-hue="2"] { --ob-bg: var(--ob-2-bg); --ob-fg: var(--ob-2-fg); }
-.owner-badge[data-hue="3"] { --ob-bg: var(--ob-3-bg); --ob-fg: var(--ob-3-fg); }
-.owner-badge[data-hue="4"] { --ob-bg: var(--ob-4-bg); --ob-fg: var(--ob-4-fg); }
-.owner-badge[data-hue="5"] { --ob-bg: var(--ob-5-bg); --ob-fg: var(--ob-5-fg); }
-.owner-badge[data-hue="6"] { --ob-bg: var(--ob-6-bg); --ob-fg: var(--ob-6-fg); }
-.owner-badge[data-hue="7"] { --ob-bg: var(--ob-7-bg); --ob-fg: var(--ob-7-fg); }
-.card-summary {
-  margin-top: 6px;
-  font-size: 13.5px;
-  line-height: 1.45;
-  color: var(--ib-text-2);
-  display: -webkit-box;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  overflow: hidden;
-  overflow-wrap: anywhere;
-}
-.card-foot { margin-top: 10px; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 13px; color: var(--ib-text-2); min-width: 0; }
-/* D1 — the status tag: a tinted pill, sized to its content (the metrics keep the
-   right edge; a narrow foot wraps them below as before). Tone from data-tone. */
-.card-status { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 100%; flex: 0 1 auto; height: 24px; padding: 0 10px 0 8px; border-radius: 999px; font-size: 12.5px; font-weight: 500; white-space: nowrap; overflow: hidden; font-variant-numeric: tabular-nums; }
-.card-status[data-tone="run"] { background: var(--st-run-bg); color: var(--st-run-fg); }
-.card-status[data-tone="wait"] { background: var(--st-wait-bg); color: var(--st-wait-fg); }
-.card-status[data-tone="done"] { background: var(--st-done-bg); color: var(--st-done-fg); }
-.card-status[data-tone="rest"] { background: var(--st-rest-bg); color: var(--st-rest-fg); }
-.card-status .st-text { overflow: hidden; text-overflow: ellipsis; }
-.card-status .st-icon { flex-shrink: 0; display: inline-flex; align-items: center; color: var(--st-color); }
-.card-status .st-icon svg { width: 12px; height: 12px; }
-/* D2 — the state word ("Running · ", "Done in ") shows in both views and goes
-   only when the face has 300px of content or less. */
-@container cardface (max-width: 300px) {
-  .card-status .st-prefix { display: none; }
-}
-.st-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--st-color); display: inline-block; }
-.st-dot.is-hollow { background: transparent; box-shadow: inset 0 0 0 1.5px var(--st-color); }
+/* The working ring (the agent tree's running icons, the panel). */
 .spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--ib-pill); border-top-color: var(--st-run); border-right-color: var(--st-run); display: inline-block; animation: spin 0.9s linear infinite; }
-/* D3 — on the tint the ring's track follows the icon colour, not the grey pill token. */
-.card-status .spinner { border-color: color-mix(in srgb, currentColor 25%, transparent); border-top-color: currentColor; border-right-color: currentColor; }
-.card-metrics { display: inline-flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; row-gap: 4px; max-width: 100%; color: var(--ib-muted); flex-shrink: 0; margin-left: auto; font-variant-numeric: tabular-nums; }
-.card-metrics .metric { display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; }
-.card-metrics .metric + .metric { border-left: 1px solid var(--ib-card-border); }
-.card-metrics .metric:last-child { padding-right: 0; }
-.card-metrics svg { width: 13px; height: 13px; }
-/* spec 13 §3.7: context level (the icon at a warning — amber text is under
-   4.5:1 on the light card — and the whole metric near autocompaction), the PR
-   badge's state as a word and a colour (never colour alone), recency. A narrow
-   card wraps its metrics under the status instead of cutting the status, and
-   a crowded metrics row wraps inside itself instead of spilling out. */
-.card-metrics .metric.ctx-warn svg { color: var(--st-wait); }
-.card-metrics .metric.ctx-danger { color: var(--st-fail-text); font-weight: 600; }
-.card-metrics .card-pr.is-open { color: var(--st-run); }
-.card-metrics .card-pr.is-merged { color: var(--st-done); }
-.card-metrics .card-pr.is-closed { color: var(--st-fail-text); }
-.card-pr .cpr-state { font-size: 12px; white-space: nowrap; }
-.card-status .st-ago { color: inherit; }
-.card-status .st-ago::before { content: "·"; margin: 0 6px; }
-/* SSOT 2026-10-22 T3 — the task in progress on the collapsed face. */
-.card-task { margin-top: 8px; display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 13px; color: var(--ib-text); background: var(--ib-pill); border-radius: 8px; padding: 5px 9px; }
-.card-task .ct-id { flex-shrink: 0; color: var(--ib-muted); font-variant-numeric: tabular-nums; font-size: 12px; }
-.card-task .ct-name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.card-task .ct-time { flex-shrink: 0; color: var(--ib-text-2); font-variant-numeric: tabular-nums; }
-/* SSOT 2026-10-22 T1/T2 — total tokens · cost, counted up live (startCountUp). */
-.card-usage { margin-top: 8px; display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; font-size: 13px; color: var(--ib-text-2); font-variant-numeric: tabular-nums; }
-.card-usage .cnt { color: var(--ib-text); font-weight: 600; }
-.card-usage .cu-unit { margin-left: 3px; color: var(--ib-muted); }
-.card-usage .cu-sep { color: var(--ib-muted); }
-
-/* ═══ AGENT TREE (.prd/12 §4) — the main agent and the subagents it started ═══
-   Status always reads as icon + word; colour is a third cue, never the only one. */
-.card-agents { margin-top: 8px; display: flex; align-items: center; gap: 7px; min-width: 0; font-size: 12.5px; color: var(--ib-text-2); }
-.card-agents > svg { width: 14px; height: 14px; flex-shrink: 0; color: var(--ib-muted); }
-.ag-dots { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; }
-.ag-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ib-muted); display: inline-block; }
-.ag-dot.is-running { background: var(--st-run); animation: agPulse 1.6s ease-in-out infinite; }
-.ag-dot.is-completed { background: var(--st-done); }
-.ag-dot.is-failed { background: var(--st-fail); }
-.ag-dot.is-stopped { background: var(--ib-muted); border-radius: 2px; }
-.ag-dot.is-unknown { background: transparent; box-shadow: inset 0 0 0 1.5px var(--ib-muted); }
-.ag-dots-more { font-size: 11px; color: var(--ib-muted); margin-left: 2px; font-variant-numeric: tabular-nums; }
-.ca-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
-.ca-text b { color: var(--ib-text); font-weight: 600; }
-.ca-text .ca-fail { color: var(--st-fail); font-weight: 600; }
 @keyframes agPulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
 
 /* The open card's agent tree: @2lab.ai/ui <ui-agent-tree> (compact) in a
@@ -4362,21 +4167,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .ag-model { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ib-text-2); }
 .ag-st { color: var(--ag-c); font-weight: 600; }
 .ag-more { margin: 4px 2px 0; font-size: 12px; color: var(--ib-muted); }
-/* Armed automatic resume (turn retry / goal re-check): the clock in the status
-   line and the open card's resume row take the "waiting" hue, not the run hue. */
-.st-icon.is-resume, .card-resume svg { color: var(--st-wait); }
+/* Armed automatic resume (turn retry / goal re-check): the open card's resume
+   row takes the "waiting" hue, not the run hue. */
+.card-resume svg { color: var(--st-wait); }
 .card-resume { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 10px; padding: 8px 10px; border-radius: 8px; background: var(--ib-pill); font-size: 12.5px; line-height: 1.45; color: var(--ib-text-2); }
 .card-resume svg { width: 13px; height: 13px; flex-shrink: 0; margin-top: 2px; }
 .card-resume .cr-when { font-weight: 600; color: var(--ib-text); }
 .card-resume .cr-reason { overflow-wrap: anywhere; }
 
-/* Expansion — grid row 0fr → 1fr. min-height/overflow live on the grid item
-   so the row can collapse to zero; siblings below move with the animated row. */
-.card-expand { display: grid; grid-template-rows: 0fr; transition: grid-template-rows var(--dur-expand) var(--ease-out); }
-.card.is-expanded .card-expand { grid-template-rows: 1fr; }
-.card-expand-inner { min-height: 0; overflow: hidden; opacity: 0; transition: opacity var(--dur-expand) var(--ease-out); }
-.card.is-expanded .card-expand-inner { opacity: 1; }
-.card.no-motion .card-expand, .card.no-motion .card-expand-inner { transition: none; }
 .card-body { margin: 0 14px; padding: 12px 0 14px; border-top: 1px solid var(--ib-card-border); font-size: 13px; color: var(--ib-text-2); }
 /* ── CONTROL STRIP — the open card's last row (spec 13): model · effort switch · the state action · Slack · 작업 로그 ── */
 .card-foot-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--ib-card-border); }
@@ -4409,7 +4207,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .mp-fallback { color: var(--ib-text); }
 
 /* ── SHORT REFS ROW — PROJ-123 · PR-123 ── */
-.card .card-refs {
+.card-body .card-refs {
   display: flex;
   gap: 6px;
   align-items: baseline;
@@ -4420,16 +4218,16 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   margin-top: 6px;
   flex-wrap: wrap;
 }
-.card .card-refs a {
+.card-body .card-refs a {
   color: var(--accent);
   text-decoration: none;
   font-weight: 600;
 }
-.card .card-refs a:focus-visible { text-decoration: underline; }
-.card .card-refs .ref-sep { color: var(--ib-muted); opacity: 0.6; }
+.card-body .card-refs a:focus-visible { text-decoration: underline; }
+.card-body .card-refs .ref-sep { color: var(--ib-muted); opacity: 0.6; }
 
 /* ── ENV BADGE — multi-instance origin tag (#814) ── */
-.card .card-refs .env-badge {
+.card-body .card-refs .env-badge {
   display: inline-block;
   padding: 1px 6px;
   border-radius: 6px;
@@ -4475,10 +4273,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 
 /* ── CONTEXT USAGE BAR ── */
-.card .context-bar { margin-top: 8px; height: 4px; background: var(--ib-pill); border-radius: 2px; overflow: hidden; }
-.card .context-bar-fill { width: 100%; height: 100%; border-radius: 2px; transform-origin: left center; transition: transform 0.3s var(--ease-out); background: var(--st-run); }
-.card .context-bar-fill.ctx-warn { background: var(--st-wait); }
-.card .context-bar-fill.ctx-danger { background: var(--st-fail); }
+.card-body .context-bar { margin-top: 8px; height: 4px; background: var(--ib-pill); border-radius: 2px; overflow: hidden; }
+.card-body .context-bar-fill { width: 100%; height: 100%; border-radius: 2px; transform-origin: left center; transition: transform 0.3s var(--ease-out); background: var(--st-run); }
+.card-body .context-bar-fill.ctx-warn { background: var(--st-wait); }
+.card-body .context-bar-fill.ctx-danger { background: var(--st-fail); }
 
 /* ── TASK TIMELINE — dot + step + time; only the current step's dot is solid ── */
 .tl-wrap { margin-top: 10px; }
@@ -4575,6 +4373,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   overflow: hidden;
 }
 .card-goal .cg-gap { margin-top: 3px; color: var(--ib-muted); overflow-wrap: anywhere; }
+.card-goal .cg-more { display: inline-flex; align-items: center; min-height: 24px; margin-top: 2px; padding: 0; font: inherit; font-size: 11.5px; color: var(--ib-text-2); background: none; border: 0; cursor: pointer; }
+.card-goal .cg-more:hover { color: var(--ib-text); text-decoration: underline; }
+.card-goal .cg-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.card-goal .cg-more[hidden] { display: none; }
 .card-goal .cg-empty { color: var(--ib-muted); }
 .card-goal .cg-row { display: flex; align-items: flex-start; gap: 6px; }
 .card-goal .cg-row > :first-child { flex: 1; min-width: 0; }
@@ -4695,15 +4497,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    title, progress and 답변하기, in the card's own button language. The
    single-choice question and the permission prompts are <ui-approval-card>s,
    which draw their own answers. */
-.card .card-question { margin-top: 12px; padding: 10px 12px; background: var(--ib-col); border: 0; border-radius: 8px; }
-.card .card-question-text { font-size: 13px; color: var(--ib-text); margin-bottom: 8px; }
-.card .card-question-multi { font-size: 12px; color: var(--ib-muted); }
-.card .btn-choice { font-size: 13px; padding: 5px 12px; min-height: 32px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); text-align: left; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
+.card-body .card-question { margin-top: 12px; padding: 10px 12px; background: var(--ib-col); border: 0; border-radius: 8px; }
+.card-body .card-question-text { font-size: 13px; color: var(--ib-text); margin-bottom: 8px; }
+.card-body .card-question-multi { font-size: 12px; color: var(--ib-muted); }
+.card-body .btn-choice { font-size: 13px; padding: 5px 12px; min-height: 32px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); text-align: left; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
 /* D10: one primary per open card — the owner's 답변하기 on this instance is ink.
    Doubled classes beat the shared card / hover rules later in the sheet. */
-.card .btn-choice.btn-choice-primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
+.card-body .btn-choice.btn-choice-primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
 @media (hover: hover) and (pointer: fine) {
-  .card .btn-choice.btn-choice-primary:hover:not(:disabled) { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
+  .card-body .btn-choice.btn-choice-primary:hover:not(:disabled) { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
 }
 
 /* ── PANEL PENDING QUESTION ── */
@@ -5532,8 +5334,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* ── GOAL — the editor's home (spec 13) ── */
 .panel-goal { padding: 8px 16px; border-bottom: 1px solid var(--border); outline: none; }
 .panel-goal .card-goal { margin-top: 0; }
-/* The goal's home shows the whole objective (the card's line is the summary). */
-.panel-goal .card-goal .cg-objective { display: block; -webkit-line-clamp: unset; overflow: visible; }
+/* The goal's home opens the objective folded to its first 3 lines on every opening
+   (SSOT 2026-10-29, the card's line is the summary); 펼치기 shows all of it. */
+.panel-goal .card-goal .cg-objective { -webkit-line-clamp: 3; line-height: 1.45; }
+.panel-goal .card-goal.is-open .cg-objective { display: block; -webkit-line-clamp: unset; overflow: visible; }
 .panel-goal:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
 .panel-tasks-earlier { opacity: 0.85; }
 /* Scroll container: the common surface (large UIAskQ choices included), the
@@ -5642,9 +5446,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .slack-link { color: var(--accent); text-decoration: none; font-size: 0.85em; margin-left: 4px; opacity: 0.7; }
 .slack-link:hover { text-decoration: underline; opacity: 1; }
 /* PR status badges */
-.card .card-links .pr-badge { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 10px; font-weight: 700; margin-left: 3px; text-transform: uppercase; letter-spacing: 0.03em; }
-.card .card-links .pr-open { background: rgba(96,165,250,0.15); color: var(--accent); }
-.card .card-links .pr-merged { background: rgba(167,139,250,0.15); color: var(--purple); }
+.card-body .card-links .pr-badge { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 10px; font-weight: 700; margin-left: 3px; text-transform: uppercase; letter-spacing: 0.03em; }
+.card-body .card-links .pr-open { background: rgba(96,165,250,0.15); color: var(--accent); }
+.card-body .card-links .pr-merged { background: rgba(167,139,250,0.15); color: var(--purple); }
 
 /* ── COMMAND INPUT — flat ── */
 .panel-command {
@@ -5670,43 +5474,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .pc-recorder { margin: 0 0 8px; }
 .pc-error { margin: 0 0 6px; font-size: 12px; color: var(--st-fail); }
 
-/* ── DONE by finish day (SSOT 2026-10-22 T11/T12) ── */
-#cards-done { gap: 4px; }
-.done-group { display: flex; flex-direction: column; gap: 8px; }
-.done-group.is-stale { display: none; }
-.done-group-head { display: flex; align-items: center; gap: 8px; width: 100%; font: inherit; font-size: 12px; font-weight: 600; letter-spacing: 0.04em; color: var(--ib-text-2); background: none; border: 0; border-radius: 8px; padding: 6px 8px; min-height: 32px; cursor: pointer; text-align: left; }
-.done-group-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-.done-group-head .dg-chev { width: 12px; height: 12px; flex-shrink: 0; color: var(--ib-muted); transition: transform var(--dur-press) var(--ease-out); }
-.done-group-head[aria-expanded="true"] .dg-chev { transform: rotate(90deg); }
-.done-group-head .dg-label { flex: 1 1 auto; }
-.done-group-head .count { background: var(--ib-pill); color: var(--ib-text-2); border-radius: 6px; padding: 1px 7px; font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums; }
-.done-group-cards[hidden] { display: none; }
-/* ── CLOSED CARDS — legacy foot of DONE (now always empty) ── */
-.show-older-btn {
-  background: transparent;
-  border: 1px dashed var(--ib-card-border);
-  border-radius: 10px;
-  color: var(--ib-muted);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  padding: 6px 12px;
-  cursor: pointer;
-  margin: 8px 0 2px;
-  width: 100%;
-  transition: border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-  text-align: center;
-  min-height: 32px;
-}
 
 /* ── PRESS — buttons and segments give 0.97 feedback (§4-5), pointer presses only:
    a keyboard-focused control matches :focus-visible, so Space/Enter never scale it (§4-9). ── */
-.btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .archives-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+.btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .archives-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
-  .card:hover { border-color: var(--ib-muted); }
-  .card[data-state="sleeping"]:hover, .card[data-state="archived"]:hover { border-color: var(--ib-card-border); }
   .seg-btn:hover { color: var(--ib-text); }
   .archives-btn:hover { color: var(--ib-text); }
   .wl-row:hover { background: var(--surface-raised); }
@@ -5714,12 +5488,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .btn-action:hover:not(:disabled) { border-color: var(--ib-muted); }
   .btn-action.btn-primary:hover:not(:disabled) { opacity: 0.88; }
   .btn-action.btn-stop:hover:not(:disabled) { border-color: var(--st-fail); }
-  .show-older-btn:hover { border-color: var(--ib-muted); color: var(--ib-text); }
   .stats-more:hover { background: var(--surface-raised); color: var(--text); }
-  .card .card-refs a:hover { text-decoration: underline; }
+  .card-body .card-refs a:hover { text-decoration: underline; }
   .btn-choice:hover:not(:disabled) { border-color: var(--accent); background: rgba(77,157,224,0.18); color: var(--text); }
   .btn-choice-recommended:hover:not(:disabled) { background: #256f38; color: white; border-color: #256f38; }
-  .card .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--ib-card); color: var(--ib-text); }
+  .card-body .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--ib-card); color: var(--ib-text); }
 }
 
 /* ── BOARD RESPONSIVE (.prd/10 §5, SSOT 2026-10-24) ──
@@ -5727,16 +5500,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    that always fit · <840 the three columns scroll sideways inside the board (the
    page itself never scrolls horizontally). <640 viewport: List by default, 44px
    taps. A docked drawer narrows the inbox, so this is not a viewport query. */
-@container inbox (max-width: 839px) {
-  .kanban[data-view="board"] {
-    grid-template-columns: repeat(3, minmax(min(300px, 84cqi), 1fr));
-    overflow-x: auto;
-    scroll-snap-type: x mandatory;
-    overscroll-behavior-x: contain;
-    padding-bottom: 8px;
-  }
-  .kanban[data-view="board"] > .kanban-col { scroll-snap-align: start; }
-}
 @media (max-width: 1023px) {
   /* Top bar: brand · status · account on the first row, the nav on its own row below, full labels. */
   .topbar { flex-wrap: wrap; padding: 8px 20px; row-gap: 8px; }
@@ -5794,10 +5557,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .crumbs { font-size: 15px; gap: 7px; }
   /* Selectors carry an extra class so they beat the later @media (pointer: coarse) 40px rules. */
   .seg .seg-btn { min-height: 44px; padding: 6px 14px; }
-  .card .btn-action, .col-foot .show-older-btn, .card .btn-choice { min-height: 44px; }
-  .card .btn-action { padding: 8px 14px; }
-  .card-face { padding: 14px; }
-  .card-metrics .metric { padding: 0 7px; }
+  .card-body .btn-action, .card-body .btn-choice { min-height: 44px; }
+  .card-body .btn-action { padding: 8px 14px; }
 }
 
 /* ── RESPONSIVE — Bauhaus grid adapts ── */
@@ -5820,18 +5581,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  /* Agent dots: a static running indicator. */
-  .ag-dot.is-running { animation: none !important; }
-  /* §4-8: no movement or scale — the expanded body only cross-fades. These
-     selectors are more specific than the * rule above, so they win. */
-  .card-expand { transition: none !important; }
-  .card-expand-inner { transition: opacity var(--dur-fade) linear !important; }
-  .btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .archives-btn:active:not(:focus-visible), .show-older-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: none; }
+  .btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .archives-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   /* Loading skeletons hold still. */
-  .sk, .is-loading, .kanban-col-header .count:empty { animation: none !important; }
-  .wl-group-head .wl-g-chev, .done-group-head .dg-chev { transition: none; }
+  .sk, .is-loading { animation: none !important; }
+  .wl-group-head .wl-g-chev { transition: none; }
   .spinner { border-color: var(--st-run); background: radial-gradient(circle, var(--st-run) 0 2px, transparent 2.5px); }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -5883,9 +5638,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   #theme-toggle::after { content: ''; position: absolute; inset: 0 -6px; }
   .period-btn { min-height: 44px; }
   .stats-more { min-height: 44px; }
-  .seg .seg-btn, .card .btn-action, .card .btn-choice, .col-foot .show-older-btn { min-height: 44px; }
+  .seg .seg-btn, .card-body .btn-action, .card-body .btn-choice { min-height: 44px; }
   .inbox-head .archives-btn { min-height: 44px; }
-  .card .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
+  .card-body .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
   .panel-close { width: 44px; height: 44px; }
   #panel-title-sub-regen { min-width: 44px; min-height: 44px; }
   .pi-links a, .pi-head, .panel-tasks-toggle, .turn .btn-action { min-height: 44px; }
@@ -5898,12 +5653,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .mc-custom-input input, .mc-custom-input button { min-height: 44px; }
 }
 
-/* ── Agent inbox (re-agent-inbox D3) — the board's own reduced-motion rule, after the
-   shared reduce / touch blocks: the pill's static ring stays whole in its icon colour. ── */
-@media (prefers-reduced-motion: reduce) {
-  /* D3: the static ring (shared rule) stays whole, in the pill's icon colour. */
-  .card-status .spinner { border-color: currentColor; }
-}
 /* ── CRON badge · lane · drawer (SSOT 2026-10-23 T3/T4/T5) ── */
 .cron-badge {
   flex-shrink: 0;
@@ -5921,8 +5670,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-color, var(--ib-muted)) 45%, transparent);
 }
 .cron-badge svg { width: 12px; height: 12px; }
-.card .card-title-text.is-renamed { animation: title-swap var(--dur-expand) var(--ease-out); }
-@keyframes title-swap { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 /* LLM 가용량 and the CRON lane: @2lab.ai/ui <ui-agent-queue> (re-agent-queue), one each,
    drawn with the dashboard tokens through their .ui-tok wrappers. The lane's job cards
    are board cards in each job's box (.cron-cards, slot="job:<group key>"), light DOM. */
@@ -5931,7 +5678,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .capacity-host[hidden], .cron-lane[hidden] { display: none; }
 .capacity-host > ui-agent-queue, .cron-lane > ui-agent-queue { display: block; min-width: 0; }
 .cron-cards { display: flex; flex-direction: column; gap: 8px; position: relative; }
-.cron-cards:empty { display: none; }
+.cron-cards:empty, .cron-cards:has(> .cron-inbox.is-empty) { display: none; }
 .cron-drawer-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); opacity: 0; pointer-events: none; transition: opacity var(--dur-fade) var(--ease-out); z-index: 190; }
 .cron-drawer-overlay.open { opacity: 1; pointer-events: auto; }
 .cron-drawer {
@@ -5977,9 +5724,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 @media (prefers-reduced-motion: reduce) {
   .cron-drawer, .cron-drawer-overlay { transition: none; }
-  .card .card-title-text.is-renamed { animation: title-fade var(--dur-fade) linear; }
 }
-@keyframes title-fade { from { opacity: 0; } to { opacity: 1; } }
 
 /* ═══ New task (SSOT 2026-10-23) — entry button, floating button, composer ═══
    PC: a gradient pill in the top bar (rotating sheen ring, one attention pulse,
@@ -6272,15 +6017,11 @@ body.nt-open .new-task-fab { display: none !important; }
 .art-k-markdown { --art-tint: var(--accent); }
 .art-k-pdf { --art-tint: var(--red); }
 .art-k-text, .art-k-file { --art-tint: var(--text-secondary); }
-.card-arts { display: flex; align-items: center; gap: 5px; margin-top: 8px; min-width: 0; overflow: hidden; }
-.card-arts-label { display: inline-flex; align-items: center; gap: 3px; flex-shrink: 0; font-size: 11px; font-weight: 600; color: var(--ib-text-2); font-variant-numeric: tabular-nums; }
 .art-chip { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 150px; height: 24px; padding: 0 8px; border: 1px solid var(--ib-card-border); border-radius: 999px; background: var(--ib-pill); color: var(--ib-text); font: inherit; font-size: 11.5px; line-height: 1; cursor: zoom-in; transition: border-color var(--speed) var(--ease), background var(--speed) var(--ease), transform var(--dur-press) var(--ease-out); }
 .art-chip .art-glyph { color: var(--art-tint); }
 .art-chip:focus-visible { border-color: var(--art-tint, var(--accent)); background: var(--surface-raised); outline: none; }
 .art-chip:active:not(:focus-visible) { transform: scale(0.97); }
 .art-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.card-arts .art-chip { flex: 1 1 0; max-width: 160px; }
-.art-more { flex-shrink: 0; font-size: 11px; color: var(--ib-muted); }
 .card-artifacts { margin-top: 12px; }
 .art-section-label { display: flex; align-items: center; gap: 6px; }
 .art-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
@@ -6345,7 +6086,6 @@ body.nt-open .new-task-fab { display: none !important; }
 .um-compact .um-open .art-glyph { width: 14px; height: 14px; }
 .um-compact .um-file .um-play { width: 24px; height: 24px; margin-right: 4px; }
 .io-row .um-media { margin: 4px 0 6px; }
-.metric.um-face svg { width: 12px; height: 12px; }
 .panel-user-media { margin-bottom: 6px; }
 .panel-um-head { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px; padding: 2px 0; border: none; background: none; color: var(--text); font: inherit; font-size: 12px; font-weight: 600; text-align: left; cursor: pointer; }
 .panel-um-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
@@ -6494,7 +6234,7 @@ body.nt-open .new-task-fab { display: none !important; }
      with cards only — an empty page must not turn scrollable), the
      defaults menu spans the bar instead of running off the edge, and the
      artifact viewer takes the whole screen. */
-  .inbox:has(.card) { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
+  .inbox.has-cards { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
   .topbar { position: relative; }
   .topbar .topbar-defaults { position: static; }
   .td-menu { left: 12px; right: 12px; min-width: 0; max-width: none; }
@@ -6618,7 +6358,9 @@ body.nt-open .new-task-fab { display: none !important; }
     <div class="capacity-host ui-tok" id="capacity" hidden><ui-agent-queue id="capacity-aq" lang="ko"></ui-agent-queue></div>
 
     <!-- Agent inbox (.prd/10 §3.1) — the board, right under the stats strip. -->
-    <section class="inbox" id="inbox" aria-label="Agent inbox">
+    <!-- The board and the CRON lane's cards are @2lab.ai/ui <ui-agent-inbox> elements: the token
+         wrapper (.ui-tok) hands them the dashboard tokens. -->
+    <section class="inbox ui-tok" id="inbox" aria-label="Agent inbox">
       <div class="inbox-head">
         <nav class="crumbs" aria-label="Breadcrumb"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
         <div class="inbox-tools">
@@ -6647,36 +6389,17 @@ body.nt-open .new-task-fab { display: none !important; }
       </dialog>
       <!-- CRON lane (SSOT 2026-10-23 T4/T5): @2lab.ai/ui <ui-agent-queue> with the lane only —
            one tile per cron job, four numbers, the next-fire queue and 24 hours of runs
-           (syncCronLane gives it its data); each job's latest run is its board card, in the
-           job's slot (slot="job:<group key>"). -->
+           (syncCronLane gives it its data); each job's latest run is its board card — a one-column
+           <ui-agent-inbox> (paintCronLaneCards) in the job's slot box (slot="job:<group key>"). -->
       <div class="cron-lane ui-tok" id="cron-lane" hidden><ui-agent-queue id="cron-aq" lang="ko"></ui-agent-queue></div>
-      <!-- How many need you and how many run, said politely (re-agent-inbox D6). -->
-      <p id="inbox-live" class="ib-sr" role="status" aria-live="polite" aria-atomic="true"></p>
       <!-- Until the first board answer the columns show skeleton cards, not
            "0 · Nothing here" (a false empty board). A first load that fails says so
            here and offers a retry; the 30 s poll keeps retrying on its own. -->
       <div class="board-error" id="board-error" role="alert" hidden><span>보드를 불러오지 못했습니다.</span><button type="button" class="archives-btn" onclick="retryBoardLoad()">다시 시도</button></div>
-      <div class="kanban" id="kanban" data-view="board" data-load="loading" aria-busy="true">
-        <section class="kanban-col" id="col-waiting" data-col="waiting" aria-labelledby="col-waiting-name count-waiting">
-          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-waiting-name">NEEDS YOU</h3><span class="count" id="count-waiting"></span></div>
-          <div class="col-skel" aria-hidden="true"><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div></div>
-          <div class="cards" id="cards-waiting"></div>
-          <div class="col-empty" id="empty-waiting" hidden>Nothing here</div>
-        </section>
-        <section class="kanban-col" id="col-working" data-col="working" aria-labelledby="col-working-name count-working">
-          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-working-name">RUNNING</h3><span class="count" id="count-working"></span></div>
-          <div class="col-skel" aria-hidden="true"><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div></div>
-          <div class="cards" id="cards-working"></div>
-          <div class="col-empty" id="empty-working" hidden>Nothing here</div>
-        </section>
-        <section class="kanban-col" id="col-done" data-col="done" aria-labelledby="col-done-name count-done">
-          <div class="kanban-col-header"><span class="col-spark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg></span><h3 id="col-done-name">DONE</h3><span class="count" id="count-done"></span></div>
-          <div class="col-skel" aria-hidden="true"><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div><div class="sk-card"><div class="sk sk-title"></div><div class="sk sk-meta"></div><div class="sk sk-pill"></div></div></div>
-          <div class="cards" id="cards-done"></div>
-          <div class="col-empty" id="empty-done" hidden>Nothing here</div>
-          <div class="col-foot" id="foot-done"></div>
-        </section>
-      </div>
+      <!-- The board (re-agent-inbox): NEEDS YOU · RUNNING · DONE (by finish day) — renderBoard gives it its
+           data; each open card's body is a light-DOM child in the card's slot (slot="body:<key>"). It says how
+           many need you and how many run, politely (D6). -->
+      <ui-agent-inbox id="kanban" class="kanban" view="board"></ui-agent-inbox>
     </section>
   </div>
 
@@ -7160,7 +6883,7 @@ function acPermissionsHtml(s) {
 function acQuestionHtml(s, q) {
   return acSlotHtml(s.key, 'question', acQuestionId(q), '', '질문 — ' + String(q.question || ''));
 }
-// A collapsed card paints no approval card (cardParts), but the requester's
+// A collapsed card paints no approval card (placeCard), but the requester's
 // input is still fetched as the card's would be (acPermissionData), so opening
 // the card shows it at once.
 function acPrefetch(s, col) {
@@ -8189,57 +7912,6 @@ function spendTitle(sp) {
   if (sp.unpricedModels && sp.unpricedModels.length) t += ' · 단가표에 없는 모델(' + sp.unpricedModels.join(', ') + ')은 기본 단가로 추정';
   return t;
 }
-// Full digits for tokens (a count-up should visibly count), dollars for cost.
-function formatCount(kind, v) {
-  v = Math.max(0, toNum(v));
-  if (kind === 'cost') return '$' + v.toFixed(2);
-  return Math.round(v).toLocaleString('en-US');
-}
-// Count-up (§4 motion tokens: ease-out). Each card number remembers what it
-// shows across face re-renders ("<card key>|<kind>"); a higher value counts up
-// from there, a new value mid-count continues from the number on screen. The
-// first paint, a lower value, background tabs and reduced motion set the value
-// at once.
-var COUNT_UP_MS = 900;
-var _counters = Object.create(null); // "<card key>|<kind>" → { shown, raf, el }
-function countUpValue(from, to, p) {
-  var e = 1 - Math.pow(1 - p, 3);
-  return p >= 1 ? to : from + (to - from) * e;
-}
-function startCountUp(el, id) {
-  var kind = el.getAttribute('data-cnt');
-  var to = toNum(el.getAttribute('data-to'));
-  var c = _counters[id];
-  if (!c) { _counters[id] = { shown: to, raf: 0, el: el }; return; }
-  c.el = el;
-  if (c.raf) { cancelAnimationFrame(c.raf); c.raf = 0; }
-  var from = c.shown;
-  if (from === to || to < from || !canAnimate() || reduceMotion()) {
-    c.shown = to;
-    el.textContent = formatCount(kind, to);
-    return;
-  }
-  el.textContent = formatCount(kind, from);
-  var t0 = performance.now();
-  function step(now) {
-    var p = Math.min(1, (now - t0) / COUNT_UP_MS);
-    c.shown = countUpValue(from, to, p);
-    c.el.textContent = formatCount(kind, c.shown);
-    c.raf = p < 1 ? requestAnimationFrame(step) : 0;
-  }
-  c.raf = requestAnimationFrame(step);
-}
-function animateCountersIn(root, key) {
-  var els = root.querySelectorAll('.cnt');
-  for (var i = 0; i < els.length; i++) startCountUp(els[i], key + '|' + els[i].getAttribute('data-cnt'));
-}
-function dropCounters(key) {
-  ['tok', 'cost'].forEach(function(kind) {
-    var c = _counters[key + '|' + kind];
-    if (c && c.raf) cancelAnimationFrame(c.raf);
-    delete _counters[key + '|' + kind];
-  });
-}
 // Dashboard v2.1 — \`Nm SSs\` for the 1s live tick. Mirrors packages/common/src/format/duration.ts.
 function formatNmSSs(ms) {
   if (!ms || ms < 0 || isNaN(ms)) return '0m 00s';
@@ -8250,9 +7922,10 @@ function formatNmSSs(ms) {
 }
 // 1-Hz tick: fill every time-dependent text from its data-* attrs.
 // Runs unconditionally of WS state — WS feeds new data-* values, tick reads them.
-// Card HTML never embeds Date.now(): the reconciler compares rendered strings,
-// so a clock in the markup would make every poll look like a change.
-//   .card-timer-live  data-leg-started / data-accumulated (renderCardStatus)
+// Body HTML never embeds Date.now(): the body is rewritten when its string
+// changes, so a clock in the markup would make every poll look like a change.
+// (The card faces' clocks are <ui-agent-inbox>'s own tick.)
+//   .card-timer-live  data-leg-started / data-accumulated (the agent tree's root)
 //   .rel-time         data-ts  → "6m ago"
 //   .task-elapsed     data-since → running task duration
 // (An approval card's expiry is <ui-approval-card>'s own countdown.)
@@ -8434,37 +8107,49 @@ function _envCount() {
   return Object.keys(_envIndex).length;
 }
 
-// ── Agent inbox board (.prd/10 §3.1, §4) ──
+// ── Agent inbox board (.prd/10 §3.1, §4) on @2lab.ai/ui <ui-agent-inbox> ──
 // NEEDS YOU = waiting · RUNNING = working · DONE = idle, then closed (SLEEPING +
 // archives; archives behind the Archives toggle, sleeping cards behind the
 // Sleeping toggle), filed under the day the work finished (T11/T12). The server
 // buckets (KanbanBoard) are unchanged — only the client folds idle + closed
 // into one column.
-var BOARD_COLS = ['waiting', 'working', 'done'];
-var SPARK_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M7 1.5c.5 3.3 2.2 5 5.5 5.5-3.3.5-5 2.2-5.5 5.5C6.5 9.2 4.8 7.5 1.5 7c3.3-.5 5-2.2 5.5-5.5z"/><circle cx="13" cy="12.6" r="1.3"/></svg>';
-var WAIT_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 1.8 15 14H1z"/></svg>';
-var TASKS_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.2l1.4 1.4 2.4-2.6M2.5 10.2l1.4 1.4 2.4-2.6M9 4.5h4.5M9 10.5h4.5"/></svg>';
-var CTX_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="8" cy="8" r="5.6"/><path d="M8 8V2.4A5.6 5.6 0 0 1 13.6 8z" fill="currentColor" stroke="none"/></svg>';
-var RESUME_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 4.6V8l2.3 1.5"/></svg>';
-
-// Board state that survives re-renders — the DOM is reused, never rebuilt.
-// Every dictionary keyed by a session key or conversation id is prototype-free,
-// so a key such as "__proto__" or "constructor" is just a key.
-var _cardEls = Object.create(null);  // session key → persistent card shell
+// The element (re-agent-inbox D1–D10) draws the board: keyed cards that keep
+// their node, the new status shown in place for 900 ms before a card changes
+// column (D5), FLIP moves, enter / exit fades, the status icon's pop (D4),
+// tokens · cost counting up, the 1 Hz clocks, the polite announcement (D6), the
+// DONE day groups, skeletons until the first answer, Board ↔ List glides. The
+// page maps each session to a card (cardOf), builds the columns and the day
+// groups, and owns the open card's body: the card's <slot name="body:<key>">
+// takes a light-DOM div holding renderCardBody's markup — approval cards, the
+// question, the agent tree, the goal line, model · effort, Stop / Close, 작업 로그
+// and every gate (D10). A collapsed card builds no body (#548).
+var BOARD_LABELS = { waiting: 'NEEDS YOU', working: 'RUNNING', done: 'DONE' };
 var _expanded = new Set();           // keys whose card is open
 var _cardClosing = Object.create(null); // key → timer: a closed card keeps its body until its collapse has run
 var _boardRenders = 0;
 var _ioCache = Object.create(null);  // conversationId → { state, stamp, data, dirty, fails, retryAt }
-var _cardSeq = 0; // D8 (re-agent-inbox): ids of the expand regions — never the session key
-// D5 (re-agent-inbox): a card whose column changed shows its new state where it
-// is drawn first and changes column BOARD_HOLD_MS later (at once without motion).
-var BOARD_HOLD_MS = 900;
-var _laneHolds = Object.create(null); // session key → { from, to, until }
-var _laneHoldTimer = 0;
-// D6: the board's polite announcement — a burst within ANNOUNCE_MS is said once.
-var ANNOUNCE_MS = 1000;
-var _announceTimer = 0;
-var _announceText = '';
+// What the elements draw, rebuilt by every board render. Prototype-free, so a
+// key such as "__proto__" or "constructor" is just a key.
+var _cardHost = Object.create(null);  // session key → the <ui-agent-inbox> that holds its card (the board, or a CRON job's)
+var _cardCol = Object.create(null);   // session key → the column its card is drawn with (waiting / working / idle / closed)
+var _cardData = Object.create(null);  // session key → the card the element was given (cardOf)
+var _cardDrawn = Object.create(null); // session key → true when drawn (not in a closed DONE day)
+var _cardBodies = Object.create(null); // session key → { el, html } — its light-DOM body while open or closing
+
+// The board's wording (data.strings over lang="en"): English status words,
+// Korean sub-agents, tooltips and announcement — as before the element.
+var BOARD_STRINGS = {
+  agents: '서브에이전트',
+  agentsRunning: function(n) { return '실행 ' + n; },
+  agentsFailed: function(n) { return '실패 ' + n; },
+  arts: '모델이 만든 산출물',
+  artOpen: function(name, kind) { return (ART_KIND_LABEL[kind] || '파일') + ' ' + name + ' — 크게 보기'; },
+  announce: function(w, r) { return '응답이 필요한 세션 ' + w + '개, 실행 중 ' + r + '개'; },
+  // The sentence is the counts only, never "<title>: <word>." first.
+  changed: function() { return ''; },
+  ago: function(at) { return timeAgo(at); },
+  duration: function(ms) { return formatNmSSs(ms); },
+};
 
 // Motion tokens come from the CSS custom properties so CSS transitions and
 // WAAPI share one source of truth (§4 table).
@@ -8521,7 +8206,8 @@ function planDoneColumn(idle, closed, o) {
 // finish time; else its last activity), in the viewer's calendar: Today, 어제,
 // then every earlier day, newest first, the cards in a day newest first. Today
 // and 어제 start open; earlier days start closed and open on a click. The
-// reader's choice per day lasts for the page (_doneGroupOpen).
+// reader's choice per day lasts for the page (_doneGroupOpen) — the element's
+// day groups (columns[].groups) tell it through ui-group-toggle.
 var _doneGroupOpen = Object.create(null); // day key → open (reader's choice)
 var DAY_MS = 24 * 60 * 60 * 1000;
 function doneTimeOf(s) {
@@ -8568,12 +8254,6 @@ function planDoneGroups(done, now, opened) {
     return { key: k, label: doneDayLabel(k, now), open: open, items: list.map(function(x) { return x.item; }) };
   });
 }
-function toggleDoneGroup(key) {
-  var g = (_lastDoneGroups || []).filter(function(x) { return x.key === key; })[0];
-  _doneGroupOpen[key] = !(g && g.open);
-  if (_lastBoardData) renderBoard(_lastBoardData);
-}
-var _lastDoneGroups = null;
 var _lastBoardData = null;
 // A targeted card push (sessionUpdated) lands in the last board too, so a
 // re-render from it (a DONE day toggle) never rolls the card back.
@@ -8609,567 +8289,296 @@ function renderBoard(board, partial) {
   var owners = [];
   for (var ok in _sessionCache) owners.push(_sessionCache[ok].ownerId || _sessionCache[ok].ownerName || '');
   _ownerIndex = assignOwnerHues(owners);
-  function tag(col) { return function(s) { return { s: s, col: col }; }; }
   _lastBoardData = board;
-  // D6: how many need you and how many run — the data as it came (CRON runs
-  // waiting on a reply included), before the lane takes its runs and any hold.
-  if (!partial) announceBoard((board.waiting || []).length, (board.working || []).length);
   // Cron runs leave the columns for the CRON lane, one group per job (SSOT
-  // 2026-10-23 T4); the lane sections exist before the reconciler fills them.
+  // 2026-10-23 T4); the lane sections exist before their elements are filled.
   var cronPlan = planCronLane(board, _cronJobs, _cronRevealKey);
   _cronPlan = cronPlan;
   syncCronLane(cronPlan);
-  board = cronPlan.board;
-  var plan = planDoneColumn(board.idle || [], board.closed || [], {
+  var rest = cronPlan.board;
+  var plan = planDoneColumn(rest.idle || [], rest.closed || [], {
     showArchives: showArchives,
     showSleeping: showSleeping,
     revealKey: _revealedKey,
   });
-  var doneGroups = planDoneGroups(plan.done, Date.now(), _doneGroupOpen);
-  _lastDoneGroups = doneGroups;
-  reconcileBoard({
-    waiting: (board.waiting || []).map(tag('waiting')),
-    working: (board.working || []).map(tag('working')),
-    doneGroups: doneGroups,
-    cron: cronLaneSlots(cronPlan),
-  }, {
-    waiting: (board.waiting || []).length,
-    working: (board.working || []).length,
-    // The DONE badge counts every card under its day groups, open or closed
-    // (hidden archives / sleeping cards are not in it).
-    done: plan.done.length,
-  });
-  // The certified board is drawn: the skeleton goes for good. After the
-  // reconciler, so a render that throws on the way leaves it, and loadSessions'
-  // catch shows 다시 시도. A partial paint keeps it: 다시 시도 still needs a loading
-  // cue for the columns the partial data left empty.
-  if (!partial) document.querySelectorAll('.col-skel').forEach(function(n) { n.remove(); });
+  var groups = planDoneGroups(plan.done, Date.now(), _doneGroupOpen);
+  var kb = document.getElementById('kanban');
+  var prevHost = _cardHost;
+  _cardHost = Object.create(null);
+  _cardCol = Object.create(null);
+  _cardData = Object.create(null);
+  _cardDrawn = Object.create(null);
+  function keys(list, col, host) {
+    return (list || []).map(function(s) { placeCard(s, col, host, true); return s.key; });
+  }
+  if (kb) {
+    kb._ibPlan = {
+      cols: [
+        { id: 'waiting', label: BOARD_LABELS.waiting, keys: keys(rest.waiting, 'waiting', kb) },
+        { id: 'working', label: BOARD_LABELS.working, keys: keys(rest.working, 'working', kb) },
+        {
+          id: 'done',
+          label: BOARD_LABELS.done,
+          keys: [],
+          // A closed day's cards are counted, not drawn: they get no face until the day opens (T12).
+          groups: groups.map(function(g) {
+            return {
+              id: g.key,
+              label: g.label,
+              open: g.open,
+              keys: g.items.map(function(it) { placeCard(it.s, it.col, kb, g.open); return it.s.key; }),
+            };
+          }),
+        },
+      ],
+      load: partial ? (_boardLoad === 'loading' ? 'loading' : 'failed') : 'ready',
+      // D6: how many need you and how many run — the data as it came (CRON runs
+      // waiting on a reply included), before the lane takes its runs and any hold.
+      announce: { needs: (board.waiting || []).length, running: (board.working || []).length },
+    };
+    inboxPaint(kb);
+  }
+  // The CRON lane (Option A): each job's lead run in its own one-column element.
+  paintCronLaneCards(cronLaneSlots(cronPlan));
+  // Cards that left every element: closed for good (a card that comes back
+  // comes back closed), their bodies and retry timers released.
+  for (var gone in prevHost) {
+    if (_cardHost[gone]) continue;
+    _expanded.delete(gone);
+    var goneS = _sessionCache[gone];
+    releaseCardIoTimer(goneS ? goneS.conversationId : null);
+  }
+  syncCardBodies();
+  // Open cards keep their 지시/응답 current (no DOM write unless a fetch settles).
+  _expanded.forEach(function(key) { if (_cardHost[key]) ensureCardIo(key, false); });
+  // A board with cards: on a phone the last card clears the floating button.
+  var inbox = document.getElementById('inbox');
+  if (inbox) inbox.classList.toggle('has-cards', Object.keys(_cardHost).length > 0);
   renderArchivesToggle(plan.archivedCount);
   renderSleepingToggle(plan.sleepingCount);
   paintCronDrawer();
   // The #814 tokens tooltip describes this board (user switch, WS push).
   updateTokenBreakdown();
   _boardRenders++;
-  // The board moved: the layout-shift cache measures it again once its own
-  // enter / move animations have settled (SSOT 2026-10-24).
+  // The board moved: the layout-shift cache measures it again once the
+  // element's enter / move animations have settled (SSOT 2026-10-24).
   scheduleLayoutRefresh(MOTION.move + 40);
   openDeepLinkedSession();
 }
 
-// Keyed reconciler (§3.1-6). Each card keeps its DOM node for its whole life:
-// it is moved between columns, only the parts whose HTML changed are
-// rewritten, and every card whose on-screen position moved is FLIPped from
-// where it was (§4-2).
-// Pass 1 plans against the stored HTML and node order without writing. If
-// nothing differs it stops there — a same-data render writes nothing and
-// leaves a running entrance or exit alone.
-function reconcileBoard(plan, counts) {
-  var wanted = Object.create(null);
-  var slots = [];
-  var changed = false;
-  // NEEDS YOU and RUNNING: one card container each. DONE: one per finish day
-  // (T11), whose cards are in the DOM only while the day is open (T12).
-  ['waiting', 'working'].forEach(function(colId) {
-    slots.push({ colId: colId, container: document.getElementById('cards-' + colId), items: plan[colId] || [] });
-  });
-  var doneRoot = document.getElementById('cards-done');
-  var groups = plan.doneGroups || [];
-  var sig = doneGroupsSig(groups);
-  if (doneRoot && doneRoot._sig !== sig) changed = true;
-  for (var gi = 0; gi < groups.length; gi++) {
-    slots.push({
-      colId: 'done',
-      day: groups[gi].key,
-      container: doneRoot ? doneGroupCards(doneRoot, groups[gi].key) : null,
-      items: groups[gi].open ? groups[gi].items : [],
+// One card on an element this render: where it is, with what, and its data —
+// the full card when drawn, a stub (counted, never drawn) in a closed day.
+function placeCard(s, col, host, drawn) {
+  _cardHost[s.key] = host;
+  _cardCol[s.key] = col;
+  if (drawn) {
+    _cardData[s.key] = cardOf(s, col);
+    _cardDrawn[s.key] = true;
+    // A collapsed card paints no approval card, but the requester's input is
+    // fetched as the card's would be (acPermissionData), so opening it shows it at once.
+    if (!cardBodyShown(s.key)) acPrefetch(s, col);
+  } else {
+    _cardData[s.key] = { id: s.key, title: '', status: col === 'closed' ? 'idle' : 'done', bodyMode: 'slot' };
+  }
+}
+
+// An element's data from its plan: columns (and DONE's day groups) of keys, the
+// cards from _cardData. expanded: the open cards it holds, so a card that moves
+// between the board and a CRON job's element opens there too (the element opens
+// a listed card only the first time it draws it).
+function inboxPaint(host) {
+  var p = host._ibPlan;
+  if (!p) return;
+  var open = [];
+  function cards(list) {
+    return list.map(function(k) {
+      if (_expanded.has(k)) open.push(k);
+      return _cardData[k];
     });
   }
-  // CRON lane: one slot per job section (SSOT 2026-10-23 T4).
-  (plan.cron || []).forEach(function(c) {
-    slots.push({ colId: 'cron', container: c.container, items: c.items });
+  var columns = p.cols.map(function(c) {
+    var col = { id: c.id, label: c.label, cards: cards(c.keys) };
+    if (c.bare) col.bare = true;
+    if (c.groups) col.groups = c.groups.map(function(g) { return { id: g.id, label: g.label, open: g.open, cards: cards(g.keys) }; });
+    return col;
   });
-  // D5: a card whose column changed stays where it is drawn for a beat.
-  applyLaneHolds(slots, counts);
-  var shown = Object.create(null);
-  for (var si = 0; si < slots.length; si++) shown[slots[si].colId] = (shown[slots[si].colId] || 0) + slots[si].items.length;
-  for (var c = 0; c < slots.length; c++) {
-    var slot = slots[c];
-    var rows = [];
-    for (var i = 0; i < slot.items.length; i++) {
-      var s = slot.items[i].s;
-      if (wanted[s.key]) continue; // a key listed twice renders once
-      wanted[s.key] = true;
-      var parts = cardParts(s, slot.items[i].col);
-      var el = _cardEls[s.key];
-      if (!el || !slot.container || slot.container.children[rows.length] !== el || cardPartsDiffer(el, parts)) changed = true;
-      rows.push({ key: s.key, parts: parts });
-    }
-    if (!slot.container || slot.container.children.length !== rows.length) changed = true;
-    slot.rows = rows;
-  }
-  // Counts and empty hints are compared before they are written.
-  for (var b = 0; b < BOARD_COLS.length; b++) {
-    var colId = BOARD_COLS[b];
-    setTextIfChanged(document.getElementById('count-' + colId), String(counts[colId] || 0));
-    var has = colId === 'done' ? groups.length > 0 : (shown[colId] || 0) > 0;
-    var empty = document.getElementById('empty-' + colId);
-    if (empty && empty.hidden !== has) empty.hidden = has;
-  }
-  for (var g in _cardEls) {
-    if (!wanted[g]) { changed = true; break; }
-  }
-  if (changed) applyBoardPlan(slots, wanted, doneRoot, groups, sig);
-  // Open cards keep their 지시/응답 current (no DOM write unless a fetch settles).
-  _expanded.forEach(function(key) { if (_cardEls[key]) ensureCardIo(key, false); });
+  host.data = { columns: columns, load: p.load, announce: p.announce, expanded: open, strings: BOARD_STRINGS, openLabel: false };
 }
 
-// Pure (D5): the column each card is drawn in this render. want = the column
-// its data puts it in; drawn = the column it is drawn in now (cards on screen
-// only); holds = the running holds. A card whose column changed stays where it
-// is drawn until its deadline (now + BOARD_HOLD_MS when the change is first
-// seen). Data that returns to the drawn column drops the hold; a new target
-// keeps the first deadline. on = false (no motion, first paint, hidden tab)
-// moves every card at once. Returns the columns, the holds still running and
-// the earliest deadline (0 = none).
-function holdLanes(want, drawn, holds, now, on) {
-  var lanes = Object.create(null);
-  var next = Object.create(null);
-  var wakeAt = 0;
-  for (var key in want) {
-    var to = want[key];
-    var from = drawn[key];
-    lanes[key] = to;
-    if (!on || !from || from === to) continue;
-    var h = holds[key];
-    var until = h && h.from === from ? h.until : now + BOARD_HOLD_MS;
-    if (now >= until) continue;
-    lanes[key] = from;
-    next[key] = { from: from, to: to, until: until };
-    if (!wakeAt || until < wakeAt) wakeAt = until;
-  }
-  return { lanes: lanes, holds: next, wakeAt: wakeAt };
-}
-// D5 on the reconciler's slots: a held card leaves its new column's slot and
-// goes back into the slot that holds its node now, at its place there — drawn
-// with its new state (the item keeps its new col). The column badges count it
-// where it is drawn. One timer renders the board again at the earliest deadline.
-// A held card whose place is gone (a DONE day that left) moves at once.
-function applyLaneHolds(slots, counts) {
-  function isLane(c) { return c === 'waiting' || c === 'working' || c === 'done'; }
-  var want = Object.create(null);
-  var drawn = Object.create(null);
+// The CRON lane (Option A): each job's card box (cronLaneSlots) holds its own
+// <ui-agent-inbox view="list"> with one bare column — the job's lead run as the
+// same card as on the board (cardOf), its body in the same slot. A run that
+// moves between the lane and the board leaves one element and enters the other.
+// The lane says nothing itself: the board's announcement counts its runs.
+function paintCronLaneCards(slots) {
   for (var i = 0; i < slots.length; i++) {
-    if (!isLane(slots[i].colId)) continue;
-    for (var j = 0; j < slots[i].items.length; j++) {
-      var key = slots[i].items[j].s.key;
-      want[key] = slots[i].colId;
-      var node = _cardEls[key];
-      if (node && isLane(node._colId)) drawn[key] = node._colId;
+    var box = slots[i].container;
+    if (!box) continue;
+    var el = box._inbox;
+    if (!el) {
+      el = document.createElement('ui-agent-inbox');
+      el.className = 'cron-inbox';
+      el.setAttribute('view', 'list');
+      wireInbox(el);
+      box._inbox = el;
     }
-  }
-  var r = holdLanes(want, drawn, _laneHolds, Date.now(), canAnimate() && !reduceMotion());
-  // Take every held item out of its new column first, then put them back into
-  // the slot that holds their node, in the container's order (ascending index),
-  // so cards leaving one column together keep their order there.
-  var moves = [];
-  for (var a = 0; a < slots.length; a++) {
-    var slot = slots[a];
-    if (!isLane(slot.colId)) continue;
-    for (var b = slot.items.length - 1; b >= 0; b--) {
-      var item = slot.items[b];
-      var k = item.s.key;
-      var lane = r.lanes[k];
-      if (!lane || lane === slot.colId) continue;
-      var el = _cardEls[k];
-      var home = null;
-      for (var c = 0; c < slots.length; c++) {
-        if (slots[c].colId === lane && el && slots[c].container && slots[c].container === el.parentNode) { home = slots[c]; break; }
-      }
-      if (!home) { delete r.holds[k]; continue; }
-      slot.items.splice(b, 1);
-      moves.push({ item: item, home: home, at: Array.prototype.indexOf.call(home.container.children, el) });
-      counts[lane] = (counts[lane] || 0) + 1;
-      counts[slot.colId] = Math.max(0, (counts[slot.colId] || 0) - 1);
-    }
-  }
-  moves.sort(function(x, y) { return x.at - y.at; });
-  for (var m = 0; m < moves.length; m++) {
-    var mv = moves[m];
-    mv.home.items.splice(Math.max(0, Math.min(mv.at, mv.home.items.length)), 0, mv.item);
-  }
-  _laneHolds = r.holds;
-  if (_laneHoldTimer) { clearTimeout(_laneHoldTimer); _laneHoldTimer = 0; }
-  if (r.wakeAt) {
-    _laneHoldTimer = setTimeout(function() {
-      _laneHoldTimer = 0;
-      if (_lastBoardData) renderBoard(_lastBoardData);
-    }, Math.max(0, r.wakeAt - Date.now()) + 20);
+    if (el.parentNode !== box) box.appendChild(el);
+    var items = slots[i].items;
+    var lead = items.length ? items[0].s : null;
+    el._ibPlan = {
+      cols: [{
+        id: 'cron',
+        label: lead && lead.cronJob ? String(lead.cronJob.name || '') : '',
+        bare: true,
+        keys: items.map(function(it) { placeCard(it.s, it.col, el, true); return it.s.key; }),
+      }],
+      load: 'ready',
+      announce: false,
+    };
+    el.classList.toggle('is-empty', !items.length);
+    inboxPaint(el);
   }
 }
 
-// D6 (re-agent-inbox): the board's polite announcement — the reference's
-// "N need you, M running", in the page's language.
-function boardAnnounceText(w, r) {
-  return '응답이 필요한 세션 ' + w + '개, 실행 중 ' + r + '개';
-}
-// The first sentence goes into the empty region at once. After that only a real
-// change is said: the same sentence arms nothing, and a burst of changes within
-// ANNOUNCE_MS is said once (the last text — nothing if it came back to what the
-// region already says), so a busy board does not chatter.
-function announceBoard(w, r) {
-  var live = document.getElementById('inbox-live');
-  if (!live) return;
-  _announceText = boardAnnounceText(w, r);
-  if (!live.textContent && !_announceTimer) { live.textContent = _announceText; return; }
-  if (_announceTimer || live.textContent === _announceText) return;
-  _announceTimer = setTimeout(function() {
-    _announceTimer = 0;
-    setTextIfChanged(document.getElementById('inbox-live'), _announceText);
-  }, ANNOUNCE_MS);
-}
-
-// What the DONE day sections look like (label, count, open) — a change re-plans.
-function doneGroupsSig(groups) {
-  return groups.map(function(g) { return g.key + '|' + g.label + '|' + g.items.length + '|' + (g.open ? 1 : 0); }).join(';');
-}
-function doneGroupSection(doneRoot, key) {
-  var kids = doneRoot.children;
-  for (var i = 0; i < kids.length; i++) if (kids[i].getAttribute('data-day') === key && !kids[i]._stale) return kids[i];
-  return null;
-}
-function doneGroupCards(doneRoot, key) {
-  var sec = doneGroupSection(doneRoot, key);
-  return sec ? sec._cardsEl : null;
-}
-function renderDoneGroupHead(g) {
-  return '<svg class="dg-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 4l4 4-4 4"/></svg>'
-    + '<span class="dg-label">' + esc(g.label) + '</span><span class="count">' + g.items.length + '</span>';
-}
-// Make #cards-done hold one section per day, in order, with current heads.
-// A day that is gone leaves once its cards have faded out.
-function syncDoneGroups(doneRoot, groups, sig) {
-  var keep = Object.create(null);
-  for (var i = 0; i < groups.length; i++) {
-    var g = groups[i];
-    keep[g.key] = true;
-    var sec = doneGroupSection(doneRoot, g.key);
-    if (!sec) {
-      sec = document.createElement('section');
-      sec.className = 'done-group';
-      sec.setAttribute('data-day', g.key);
-      var head = document.createElement('button');
-      head.type = 'button';
-      head.className = 'done-group-head';
-      head.addEventListener('click', function(ev) {
-        var day = ev.currentTarget.parentNode.getAttribute('data-day');
-        toggleDoneGroup(day);
+// The element's events, wired once per element (the board's at load, a CRON job's when made).
+function wireInbox(host) {
+  // Open / close: the body follows (built before the row grows, let go after
+  // it has collapsed), then the open card's 지시/응답 and artifacts are fetched.
+  // The agent tree in an open body sends its own ui-toggle through here: not ours.
+  host.addEventListener('ui-toggle', function(e) {
+    if (e.target !== host || !e.detail) return;
+    var key = String(e.detail.cardId);
+    var open = !!e.detail.expanded;
+    if (open) _expanded.add(key);
+    else _expanded.delete(key);
+    var s = _sessionCache[key];
+    if (!open) releaseCardIoTimer(s ? s.conversationId : null);
+    syncCardBody(key, false);
+    if (open) {
+      ensureCardIo(key, true);
+      if (s && s.conversationId && s.artifacts && !isSiblingSession(s)) ensureArtifacts(s.conversationId);
+    }
+    // The cards below ride the growing (or shrinking) card: measured again once it has.
+    scheduleLayoutRefresh(Math.max(MOTION.expand, MOTION.move) + 60);
+  });
+  // A DONE day opened or closed (a click, or reveal for a deep link): the
+  // reader's choice for the page; the day's cards get their faces (or stubs)
+  // now, so the element's own render right after this draws them.
+  host.addEventListener('ui-group-toggle', function(e) {
+    if (e.target !== host || !e.detail) return;
+    var day = String(e.detail.groupId);
+    var open = !!e.detail.open;
+    _doneGroupOpen[day] = open;
+    var p = host._ibPlan;
+    if (!p) return;
+    p.cols.forEach(function(c) {
+      (c.groups || []).forEach(function(g) {
+        if (c.id !== String(e.detail.columnId) || g.id !== day) return;
+        g.open = open;
+        g.keys.forEach(function(k) {
+          var s = _sessionCache[k];
+          if (s) placeCard(s, _cardCol[k] || 'idle', host, open);
+          if (!open) delete _cardDrawn[k];
+        });
       });
-      var cards = document.createElement('div');
-      cards.className = 'cards done-group-cards';
-      sec.appendChild(head);
-      sec.appendChild(cards);
-      sec._headEl = head;
-      sec._cardsEl = cards;
-      sec._headHtml = null;
-    }
-    var html = renderDoneGroupHead(g);
-    if (sec._headHtml !== html) { sec._headEl.innerHTML = html; sec._headHtml = html; }
-    var exp = g.open ? 'true' : 'false';
-    if (sec._headEl.getAttribute('aria-expanded') !== exp) sec._headEl.setAttribute('aria-expanded', exp);
-    if (sec._cardsEl.hidden === g.open) sec._cardsEl.hidden = !g.open;
-    if (doneRoot.children[i] !== sec) doneRoot.insertBefore(sec, doneRoot.children[i] || null);
-  }
-  var kids = Array.prototype.slice.call(doneRoot.children);
-  for (var j = 0; j < kids.length; j++) {
-    var old = kids[j];
-    if (keep[old.getAttribute('data-day')] && !old._stale) continue;
-    if (old._stale) continue;
-    old._stale = true;
-    old.classList.add('is-stale');
-    setTimeout(function(node) { return function() { if (node.parentNode) node.parentNode.removeChild(node); }; }(old), MOTION.fade + 40);
-  }
-  doneRoot._sig = sig;
+    });
+    inboxPaint(host);
+    syncCardBodies();
+    scheduleLayoutRefresh(MOTION.move + 60);
+  });
+  // A file chip on the face opens the viewer (never the card). The chip is the
+  // opener focus returns to.
+  host.addEventListener('ui-artifact', function(e) {
+    if (e.target !== host || !e.detail) return;
+    var s = _sessionCache[String(e.detail.cardId)];
+    if (!s || !s.conversationId) return;
+    var path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+    openArtifactModal(s.conversationId, String(e.detail.artifactId), path[0] && path[0].focus ? path[0] : host);
+  });
 }
 
-function applyBoardPlan(slots, wanted, doneRoot, groups, sig) {
-  var animate = canAnimate();
-  var first = animate ? measureCards() : null;
-  var firstCol = Object.create(null);
-  for (var k0 in _cardEls) firstCol[k0] = _cardEls[k0]._colId;
-  if (doneRoot) syncDoneGroups(doneRoot, groups || [], sig);
-  for (var c = 0; c < slots.length; c++) {
-    var slot = slots[c];
-    var container = slot.container || (slot.day && doneRoot ? doneGroupCards(doneRoot, slot.day) : null);
-    if (!container) continue;
-    for (var r = 0; r < slot.rows.length; r++) {
-      var row = slot.rows[r];
-      var el = _cardEls[row.key];
-      if (!el) {
-        el = createCardShell(row.key);
-        _cardEls[row.key] = el;
-        el._isNew = true;
-      }
-      applyCardParts(el, row.parts);
-      el._colId = slot.colId;
-      applyExpanded(el, _expanded.has(row.key));
-      if (container.children[r] !== el) container.insertBefore(el, container.children[r] || null);
-    }
-  }
-  for (var gone in _cardEls) {
-    if (wanted[gone]) continue;
-    var goneCid = _cardEls[gone]._cid;
-    exitCard(_cardEls[gone], first ? first[gone] : null);
-    delete _cardEls[gone];
-    dropCounters(gone);
-    releaseCardIoTimer(goneCid);
-  }
-  for (var key in _cardEls) {
-    var card = _cardEls[key];
-    if (card._isNew) {
-      card._isNew = false;
-      if (animate) enterCard(card);
-      continue;
-    }
-    // A disclosure render (renderBoardForLayout): the layout coordinator moves every
-    // card from where it was before the section changed — not from this half-step.
-    if (!animate || !first[key] || _boardFlipOff) continue;
-    // Interrupted move: the first box was read mid-flight (translate included),
-    // so cancelling and re-FLIPping restarts from where the card is drawn.
-    var wasFlying = card.classList.contains('is-flying');
-    if (card._flip) { card._flip.cancel(); card._flip = null; }
-    if (wasFlying) card.classList.remove('is-flying');
-    var a = first[key];
-    var b = boxOf(card);
-    var dx = a.x - b.x;
-    var dy = a.y - b.y;
-    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
-    playFlip(card, dx, dy, wasFlying || firstCol[key] !== card._colId);
-  }
-}
-
-// Top-left of the card's full-size box as drawn. Taken from the rect centre and
-// the untransformed size, so a card mid-entrance (scale 0.97) measures where its
-// box really is — no entrance has to be cut short to measure it — while a FLIP
-// translate in flight is included.
-function boxOf(el) {
-  var r = el.getBoundingClientRect();
-  return { x: r.left + r.width / 2 - el.offsetWidth / 2, y: r.top + r.height / 2 - el.offsetHeight / 2 };
-}
-function measureCards() {
-  var boxes = Object.create(null);
-  for (var k in _cardEls) boxes[k] = boxOf(_cardEls[k]);
-  return boxes;
-}
-
-// Move = translate only (widths snap; text never stretches). The card that
-// changes column flies raised above its neighbours (shadow + z-index). The
-// translate is added on top of whatever runs already, so a card still in its
-// entrance keeps scaling while it moves.
-function playFlip(el, dx, dy, raise) {
-  noteFlipTarget(el);
-  if (reduceMotion()) {
-    // §4-8: no travel — a card that changed column fades in where it landed.
-    if (raise) el._enter = el.animate([{ opacity: 0 }, { opacity: 1 }], { duration: MOTION.fade, easing: 'linear' });
-    return;
-  }
-  if (raise) el.classList.add('is-flying');
-  var anim = el.animate(
-    [{ transform: 'translate(' + dx + 'px, ' + dy + 'px)' }, { transform: 'translate(0, 0)' }],
-    { duration: MOTION.move, easing: MOTION.easeInOut, composite: 'add' }
-  );
-  el._flip = anim;
-  anim.onfinish = function() {
-    if (el._flip !== anim) return;
-    el._flip = null;
-    el.classList.remove('is-flying');
-  };
-}
-
-// Enter: opacity 0 + scale(0.97) → 1 (never from scale(0)).
-function enterCard(el) {
-  var frames = reduceMotion()
-    ? [{ opacity: 0 }, { opacity: 1 }]
-    : [{ opacity: 0, transform: 'scale(0.97)' }, { opacity: 1, transform: 'scale(1)' }];
-  var anim = el.animate(frames, { duration: MOTION.fade, easing: MOTION.easeOut });
-  el._enter = anim;
-  anim.onfinish = function() { if (el._enter === anim) el._enter = null; };
-}
-
-// Exit: opacity only. The card leaves the column's card list (re-parented to
-// the column, absolutely placed where it was drawn) so the remaining cards
-// FLIP into the gap and later renders never see it; it removes itself when
-// its fade finishes.
-function exitCard(el, box) {
-  if (el._flip) { el._flip.cancel(); el._flip = null; }
-  var list = el.parentNode;
-  var host = list && list.parentNode;
-  if (!list) return;
-  if (!box || !host || !canAnimate()) { list.removeChild(el); return; }
-  var hr = host.getBoundingClientRect();
-  var width = el.offsetWidth;
-  el.removeAttribute('data-session-key');
-  el.setAttribute('aria-hidden', 'true');
-  el.setAttribute('inert', '');
-  el.classList.add('is-exiting');
-  el.style.left = (box.x - hr.left) + 'px';
-  el.style.top = (box.y - hr.top) + 'px';
-  el.style.width = width + 'px';
-  host.appendChild(el);
-  var anim = el.animate([{ opacity: 1 }, { opacity: 0 }], { duration: MOTION.fade, easing: MOTION.easeOut, fill: 'forwards' });
-  el._exit = anim;
-  anim.onfinish = anim.oncancel = function() { if (el.parentNode) el.parentNode.removeChild(el); };
-}
-
-// Persistent shell: .card > .card-face (collapsed view, the toggle target)
-// + .card-expand (grid row 0fr↔1fr) > .card-expand-inner (expanded body).
-function createCardShell(key) {
-  var el = document.createElement('div');
-  el.className = 'card';
-  el.setAttribute('data-session-key', key);
-  var face = document.createElement('div');
-  face.className = 'card-face';
-  face.setAttribute('role', 'button');
-  face.setAttribute('tabindex', '0');
-  face.setAttribute('aria-expanded', 'false');
-  var expand = document.createElement('div');
-  expand.className = 'card-expand';
-  expand.id = 'card-x-' + (++_cardSeq);
-  expand.setAttribute('inert', '');
-  face.setAttribute('aria-controls', expand.id);
-  var inner = document.createElement('div');
-  inner.className = 'card-expand-inner';
-  expand.appendChild(inner);
-  el.appendChild(face);
-  el.appendChild(expand);
-  el._faceEl = face;
-  el._expandEl = expand;
-  el._bodyEl = inner;
-  el._faceHtml = null;
-  el._bodyHtml = null;
-  return el;
-}
-
-function applyExpanded(el, open) {
-  if (el.classList.contains('is-expanded') === open) return;
-  el.classList.toggle('is-expanded', open);
-  el._faceEl.setAttribute('aria-expanded', open ? 'true' : 'false');
-  if (open) el._expandEl.removeAttribute('inert');
-  else el._expandEl.setAttribute('inert', '');
-}
-
-// One card's rendered parts. The HTML strings depend only on the data (clocks
-// are filled by the 1 Hz tick), so equal data gives equal strings.
-// body and tree exist only while the card is open (cardBodyShown): a collapsed
-// card's body is inert and drawn at height 0, so nothing in it — the agent
-// tree, the approval cards, the rows — is built or painted.
-// tree: the open card's <ui-agent-tree> data (atCardData), compared by its
-// signature — an agent's status, time or spend changes no markup.
-function cardParts(s, col) {
-  var p = { col: col, state: cardState(s, col), face: renderCardFace(s, col), body: '', cid: s.conversationId || null, tree: null, treeSig: '' };
-  if (!cardBodyShown(s.key)) {
-    acPrefetch(s, col);
-    return p;
-  }
-  p.body = renderCardBody(s, col);
-  p.tree = atCardData(s, col);
-  p.treeSig = p.tree ? JSON.stringify(p.tree) : '';
-  return p;
-}
 // Open, or still closing: the collapse runs over the body, so it stays until then.
 function cardBodyShown(key) {
   return _expanded.has(key) || !!_cardClosing[key];
 }
-// The card's body follows its open state (toggleCard). Opened, it is built at
-// once — its agent tree painted — before the row grows over it. Closed, it is
-// let go once the collapse has run (at once without motion): the agent tree
-// and every approval card leave the DOM with their shadow trees. Reopening
-// (or closing again) drops a release still pending.
+// The card's body follows its open state. Opened, it is built at once — its
+// agent tree painted — before the row grows over it. Closed, it is let go once
+// the collapse has run (at once without motion): the agent tree and every
+// approval card leave the DOM with their shadow trees. Reopening (or closing
+// again) drops a release still pending.
 function syncCardBody(key, now) {
   if (_cardClosing[key]) clearTimeout(_cardClosing[key]);
   delete _cardClosing[key];
   if (_expanded.has(key) || now || !canAnimate()) {
-    refreshCard(key);
+    paintCardBody(key);
     return;
   }
   _cardClosing[key] = setTimeout(function() {
     delete _cardClosing[key];
-    refreshCard(key);
+    paintCardBody(key);
   }, Math.max(MOTION.expand, MOTION.fade) + 60);
 }
-function cardPartsDiffer(el, p) {
-  return el.getAttribute('data-col') !== p.col || el.getAttribute('data-state') !== p.state
-    || el._faceHtml !== p.face || el._bodyHtml !== p.body || (el._treeSig || '') !== (p.treeSig || '');
+function syncCardBodies() {
+  var keys = Object.create(null);
+  for (var k in _cardBodies) keys[k] = true;
+  _expanded.forEach(function(x) { keys[x] = true; });
+  for (var c in _cardClosing) keys[c] = true;
+  for (var key in keys) paintCardBody(key);
 }
-// Each part is replaced only when its HTML string changed, so untouched cards
-// keep their nodes, an open card keeps its state, and a running transition is
-// never cut.
-function applyCardParts(el, p) {
-  el._cid = p.cid; // bookkeeping only (timer release), not a DOM write
-  var changed = false;
-  var prevState = el.getAttribute('data-state');
-  if (el.getAttribute('data-col') !== p.col) { el.setAttribute('data-col', p.col); changed = true; }
-  if (prevState !== p.state) { el.setAttribute('data-state', p.state); changed = true; }
-  if (el._faceHtml !== p.face) {
-    // A renamed card (a cron run taking its real title, SSOT 2026-10-23 T2)
-    // fades the new title in instead of snapping.
-    var oldTitleEl = el._faceEl.querySelector('.card-title-text');
-    var oldTitle = oldTitleEl ? oldTitleEl.textContent : null;
-    el._faceEl.innerHTML = p.face;
-    el._faceHtml = p.face;
-    var newTitleEl = el._faceEl.querySelector('.card-title-text');
-    if (oldTitle !== null && newTitleEl && newTitleEl.textContent !== oldTitle && canAnimate()) newTitleEl.classList.add('is-renamed');
-    updateTimersIn(el._faceEl);
-    animateCountersIn(el._faceEl, el.getAttribute('data-session-key'));
-    changed = true;
-  }
-  // D4 (re-agent-inbox): a card on screen whose state changed pops its new
-  // status icon — never a new card, a same-state rewrite, or without motion.
-  if (prevState && prevState !== p.state && canAnimate() && !reduceMotion()) popStatusIcon(el._faceEl);
-  if (el._bodyHtml !== p.body && !isEditingGoal(el._bodyEl) && !isPickingModel(el._bodyEl)) {
-    var goalDraft = captureGoalDraft(el._bodyEl);
-    // Spec 12 §4.4: morphed, not rewritten — a focused control, a running
-    // spinner and a scrolled list survive a live update (the agent tree
-    // keeps its own focus: its element stays, only its data changes).
-    morphInnerHtml(el._bodyEl, p.body);
-    restoreGoalDraft(el._bodyEl, goalDraft);
-    el._bodyHtml = p.body;
-    updateTimersIn(el._bodyEl);
-    changed = true;
-  }
-  // The body's approval cards: their data (the requester's input, an answer in
-  // flight) changes without their markup — set on every pass, written only
-  // where it changed.
-  acHydrate(el._bodyEl);
-  // The model picker likewise (the session's model, effort, writes in flight) —
-  // also while an open menu holds the body still.
-  mpHydrate(el._bodyEl);
-  // The agent tree likewise (every agent's status, time and spend; the folds).
-  if ((el._treeSig || '') !== (p.treeSig || '')) changed = true;
-  el._treeSig = p.treeSig || '';
-  atHydrate(el._bodyEl, p);
-  return changed;
-}
-// D4: scale 0.6 → 1 with a fade, the board's move duration on the entry curve.
-function popStatusIcon(face) {
-  var icon = face && face.querySelector ? face.querySelector('.card-status .st-icon') : null;
-  if (!icon || typeof icon.animate !== 'function') return;
-  icon.animate([{ opacity: 0, transform: 'scale(0.6)' }, { opacity: 1, transform: 'scale(1)' }], { duration: MOTION.move, easing: MOTION.easeOut });
-}
-// Single-card path (sessionUpdated push, title patch, 지시/응답 arrival) —
-// the same compare-then-write as the reconciler.
-function patchCard(el, s, col) {
-  _sessionCache[s.key] = s;
-  return applyCardParts(el, cardParts(s, col));
-}
-function refreshCard(key) {
-  var el = _cardEls[key];
+// The open card's body: a light-DOM child of the element that draws the card,
+// in the card's slot (slot="body:<key>"). Morphed, not rewritten (spec 12 §4.4):
+// a focused control, a running spinner, a scrolled list, a goal draft and an
+// open model menu survive a live update.
+function paintCardBody(key) {
+  var host = _cardHost[key];
   var s = _sessionCache[key];
-  if (el && s) patchCard(el, s, el.getAttribute('data-col') || 'idle');
+  var b = _cardBodies[key];
+  if (!host || !s || !_cardDrawn[key] || !cardBodyShown(key)) {
+    if (b) {
+      if (b.el.parentNode) b.el.parentNode.removeChild(b.el);
+      delete _cardBodies[key];
+    }
+    return;
+  }
+  if (!b) {
+    var el = document.createElement('div');
+    el.className = 'card-slot';
+    el.setAttribute('slot', 'body:' + key);
+    el.setAttribute('data-session-key', key);
+    b = _cardBodies[key] = { el: el, html: null };
+  }
+  if (b.el.parentNode !== host) host.appendChild(b.el);
+  var col = _cardCol[key];
+  var html = renderCardBody(s, col);
+  if (b.html !== html && !isEditingGoal(b.el) && !isPickingModel(b.el)) {
+    var goalDraft = captureGoalDraft(b.el);
+    morphInnerHtml(b.el, html);
+    restoreGoalDraft(b.el, goalDraft);
+    b.html = html;
+    updateTimersIn(b.el);
+  }
+  // The body's approval cards and model picker take their data where it
+  // changed (also while an open menu holds the body still), the agent tree its
+  // own (every agent's status, time and spend; the folds).
+  acHydrate(b.el);
+  mpHydrate(b.el);
+  var tree = atCardData(s, col);
+  atHydrate(b.el, { tree: tree, treeSig: tree ? JSON.stringify(tree) : '' });
 }
-
-function cardState(s, col) {
-  if (col === 'closed') return s.terminated ? 'archived' : 'sleeping';
-  return col;
+// Single-card path (sessionUpdated push, title patch, 지시/응답 arrival, a write
+// in flight) — the card's face data where it changed, then its body.
+function refreshCard(key) {
+  var host = _cardHost[key];
+  var s = _sessionCache[key];
+  if (!host || !s) return;
+  if (_cardDrawn[key]) {
+    var c = cardOf(s, _cardCol[key] || 'idle');
+    if (JSON.stringify(c) !== JSON.stringify(_cardData[key])) {
+      _cardData[key] = c;
+      inboxPaint(host);
+    }
+  }
+  paintCardBody(key);
 }
 
 // Second line of the collapsed card (§3.1-3): what the session needs or is doing.
@@ -9187,7 +8596,7 @@ function cardSummary(s, col, headline) {
   // Waiting out a retry: the error behind it is what this card is "doing".
   var resume = pendingAutoResume(s, col);
   if (resume && resume.reason) return '오류: ' + resume.reason;
-  // The task row (renderCardTaskRow) names the running task — the summary
+  // The task row (cardTaskRow) names the running task — the summary
   // only does when that row is hidden.
   if (col === 'working' && current && !dhShow('tasks')) return current.content;
   if (s.summaryTitle && s.summaryTitle !== headline) return s.summaryTitle;
@@ -9217,41 +8626,6 @@ function autoResumeLabel(r) {
   var max = Number(r.maxAttempts) || 0;
   if (attempt && max) text += ' · 시도 ' + attempt + '/' + max;
   return text;
-}
-
-// Status at the foot of the card (the tinted tag, re-agent-inbox D1). The
-// "Running · " / "Done in " prefix shows in both views and hides only on a narrow
-// card (≤ 300px of face content, D2) — same DOM everywhere.
-function renderCardStatus(s, col) {
-  var resume = pendingAutoResume(s, col);
-  if (resume) {
-    return '<span class="st-icon is-resume">' + RESUME_SVG + '</span><span class="st-text" title="' + escAttr(resume.reason || '') + '">' + esc(autoResumeLabel(resume)) + '</span>';
-  }
-  if (col === 'waiting') {
-    return '<span class="st-icon">' + WAIT_SVG + '</span><span class="st-text">Waiting for you' + cardAgo(s, col) + '</span>';
-  }
-  if (col === 'closed') {
-    return '<span class="st-icon"><span class="st-dot is-hollow"></span></span><span class="st-text">' + (s.terminated ? 'Archived' : 'Sleeping') + cardAgo(s, col) + '</span>';
-  }
-  var acc = Number(s.activeAccumulatedMs) || 0;
-  var leg = col === 'working' ? (Number(s.activeLegStartedAtMs) || 0) : 0;
-  var timer = '<span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="' + acc + '" title="Active time"></span>';
-  if (col === 'working') {
-    return '<span class="st-icon"><span class="spinner"></span></span><span class="st-text"><span class="st-prefix">Running &middot; </span>' + timer + '</span>';
-  }
-  if (!acc) return '<span class="st-icon"><span class="st-dot"></span></span><span class="st-text">Idle' + cardAgo(s, col) + '</span>';
-  return '<span class="st-icon"><span class="st-dot"></span></span><span class="st-text"><span class="st-prefix">Done in </span>' + timer + cardAgo(s, col) + '</span>';
-}
-// Recency (spec 13 §3.7 — the compact tier's "updated_at", Jira's days in
-// column): a card that is not moving says how long it has been in its state —
-// a waiting card since it started waiting (waitingSince), a finished one since
-// its work finished (finishedAt). Only exact stamps: without one, no age —
-// never lastActivity, which moves on user input only and after a long turn
-// would overstate. The stamp only; the 1 Hz tick writes "12m ago", so equal
-// data renders equal HTML.
-function cardAgo(s, col) {
-  var t = toNum(s && (col === 'waiting' ? s.waitingSince : s.finishedAt));
-  return t > 0 ? '<span class="st-ago"><span class="rel-time" data-ts="' + t + '"></span></span>' : '';
 }
 
 // Owner badge (§3.1-3): in the All Users view every card head names its owner,
@@ -9295,55 +8669,18 @@ function ownerBadgeHue(ownerId) {
   var slot = _ownerIndex ? _ownerIndex[id] : undefined;
   return typeof slot === 'number' ? slot : _hashStr(id) % OWNER_BADGE_HUES;
 }
-function renderOwnerBadge(s) {
-  if (currentUserId) return '';
-  var name = s.ownerName || s.ownerId;
-  if (!name) return '';
-  return '<span class="owner-badge" data-hue="' + ownerBadgeHue(s.ownerId || name) + '" title="' + escAttr(name) + '">' + esc(name) + '</span>';
-}
-
 // The task in progress (SSOT 2026-10-22 T3): first in_progress task in list order.
 function cardCurrentTask(s) {
   var tasks = (s && s.tasks) || [];
   for (var i = 0; i < tasks.length; i++) if (tasks[i] && tasks[i].status === 'in_progress') return tasks[i];
   return null;
 }
-// Collapsed face row (T3): "#T2 Write the parser · 3m 12s" — while the session
-// runs or waits on the user. The time is filled by the 1 Hz tick.
-function renderCardTaskRow(s, col) {
-  if (!dhShow('tasks') || (col !== 'working' && col !== 'waiting')) return '';
-  var t = cardCurrentTask(s);
-  if (!t) return '';
-  var started = Number(t.startedAt) || 0;
-  return '<div class="card-task" title="' + escAttr(t.activeForm || t.content || '') + '">'
-    + (t.id ? '<span class="ct-id">#' + esc(t.id) + '</span>' : '')
-    + '<span class="ct-name">' + esc(t.content || '') + '</span>'
-    + (started ? '<span class="ct-time task-elapsed" data-since="' + started + '"></span>' : '')
-    + '</div>';
+// The face's task row (T3): the task in progress, while the session runs or
+// waits on the user (gated by the 'tasks' header field); null when none.
+function cardTaskRow(s, col) {
+  if (!dhShow('tasks') || (col !== 'working' && col !== 'waiting')) return null;
+  return cardCurrentTask(s);
 }
-// Collapsed face row (T1/T2): total tokens · API-equivalent cost, each a
-// count-up target (startCountUp). Gated by the 'tokens' / 'cost' header fields.
-function renderCardUsage(s) {
-  var u = s.tokenUsage;
-  if (!u) return '';
-  var parts = [];
-  // SSOT 2026-10-26 T3 — the task total: main agent and every subagent.
-  var sub = s.subagentSpend;
-  var who = 'task 합계: 메인 + 서브에이전트' + (sub && toNum(sub.agents) > 0 ? ' ' + toNum(sub.agents) + '개' : '');
-  var partial = toNum(u.partialSince) > 0 ? ' · 부분 합계 (' + new Date(toNum(u.partialSince)).toLocaleString() + ' 이후 집계)' : '';
-  if (dhShow('tokens')) {
-    var tok = cardTotalTokens(u);
-    var tip = '입력 ' + formatTokens(u.totalInputTokens) + ' · 출력 ' + formatTokens(u.totalOutputTokens)
-      + ' · 캐시 읽기 ' + formatTokens(u.totalCacheReadTokens) + ' · 캐시 쓰기 ' + formatTokens(u.totalCacheCreateTokens);
-    parts.push('<span class="cu-item" title="' + escAttr('총 토큰 (' + who + ') — ' + tip + partial) + '"><span class="cnt" data-cnt="tok" data-to="' + tok + '">' + formatCount('tok', tok) + '</span><span class="cu-unit">tok</span></span>');
-  }
-  if (dhShow('cost')) {
-    var cost = toNum(u.totalCostUsd);
-    parts.push('<span class="cu-item" title="' + escAttr('API 환산 비용 (' + who + ')' + partial) + '"><span class="cnt" data-cnt="cost" data-to="' + cost + '">' + formatCount('cost', cost) + '</span></span>');
-  }
-  return parts.length ? '<div class="card-usage">' + parts.join('<span class="cu-sep" aria-hidden="true">&middot;</span>') + '</div>' : '';
-}
-
 // Context level, one table for the face metric, the 세션 정보 summary and the
 // context block. With the session's auto-compact point (re-context-window D9):
 // from 0.8 of it a warning, from 0.95 danger — the point is where the history
@@ -9364,77 +8701,148 @@ function ctxPercent(pct) {
   return Math.round(Math.min(toNum(pct), 100));
 }
 // The outcome on the face (spec 13 §3.7 — the compact tier's PR link in Copilot
-// and Devin): the PR number and its state as a badge. The face is one toggle,
-// so the badge is not a link; the open card's short ref and the titled link in
-// 세션 정보 are. The state is a word on screen ("#12 머지됨" — the face's name
-// is built from its content, the space keeps two words) and a class (colour);
-// an unknown state shows the bare number. The title adds the PR's title.
+// and Devin): the PR number and its state as a metric. The face is one toggle,
+// so the metric is not a link; the open card's short ref and the titled link in
+// 세션 정보 are. The state is a word on screen ("#12 머지됨") and a tone (colour,
+// never alone); an unknown state shows the bare number. The title adds the PR's title.
 var PR_STATE_LABEL = { open: '열림', draft: '초안', merged: '머지됨', closed: '닫힘' };
-var PR_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="3.5" r="1.6"/><circle cx="4" cy="12.5" r="1.6"/><circle cx="12" cy="12.5" r="1.6"/><path d="M4 5.1v5.8M12 10.9V6.5c0-1.1-.9-2-2-2H7.5M9 3L7.5 4.5 9 6"/></svg>';
-function renderCardPr(s) {
-  if (!dhShow('links') || !s.prUrl || !s.prShortRef) return '';
-  var m = /(\\d+)$/.exec(String(s.prShortRef));
-  var num = m ? '#' + m[1] : String(s.prShortRef);
+var PR_STATE_TONE = { open: 'run', merged: 'done', closed: 'fail' };
+function cardPrMetric(s) {
+  if (!dhShow('links') || !s.prUrl || !s.prShortRef) return null;
+  var ref = String(s.prShortRef);
+  var m = /([0-9]+)$/.exec(ref);
+  var num = m ? '#' + m[1] : ref;
   var raw = String(s.prStatus || '').toLowerCase(); // a resource may say "MERGED"
   var st = Object.prototype.hasOwnProperty.call(PR_STATE_LABEL, raw) ? raw : '';
   var word = st ? PR_STATE_LABEL[st] : '';
-  var tip = 'PR ' + num + (word ? ' ' + word : '') + (s.prTitle ? ' — ' + s.prTitle : '');
-  return '<span class="metric card-pr' + (st ? ' is-' + st : '') + '" title="' + escAttr(tip) + '">' + PR_SVG + esc(num)
-    + (word ? '<span class="cpr-state"> ' + word + '</span>' : '') + '</span>';
+  var metric = { text: num + (word ? ' ' + word : ''), glyph: 'pr', title: 'PR ' + num + (word ? ' ' + word : '') + (s.prTitle ? ' — ' + s.prTitle : '') };
+  if (PR_STATE_TONE[st]) metric.tone = PR_STATE_TONE[st];
+  return metric;
+}
+// The context metric's tooltip (re-context-window D16): how far to the session's
+// auto-compact point when it is known.
+function cardCtxTitle(s, pct) {
+  var auto = toNum(s.autoCompactTokens), used = toNum(s.contextTokens);
+  if (!(auto > 0 && used > 0)) return 'Context window used' + (toNum(pct) > 80 ? ' — 80% 넘게 찼다' : '');
+  var short = function(n) { return formatTokens(n).replace(/[.]0(?=[KMBT]$)/, ''); };
+  return '컨텍스트 ' + ctxPercent(pct) + '% · ' + (s.compactPending ? '다음 입력 때 자동 압축'
+    : used >= auto ? '자동 압축 지점을 넘음'
+    : '자동 압축 ' + short(auto) + '까지 ' + short(auto - used));
+}
+// A sub-agent's dot on the face, in spawn order (a stopped one is a square).
+function agentDotOf(a) {
+  var st = agentStatusOf(a);
+  return st === 'completed' ? 'done' : st === 'running' || st === 'failed' || st === 'stopped' ? st : 'unknown';
 }
 
-// Collapsed face (§2.1 reference anatomy, audited in spec 13 §3.7): ✦ +
-// headline [+ owner badge] / why-here line / current task / subagent pulse /
-// tokens · cost / artifact chips / status · recency, tasks done/total ·
-// context % (levelled) · media · PR.
-function renderCardFace(s, col) {
+// One session as the element's card (§2.1 reference anatomy, audited in spec 13
+// §3.7): ✦ (or the CRON badge) + headline [+ owner badge] / why-here line /
+// current task / sub-agents / tokens · cost / artifact chips / status · recency,
+// tasks done/total · context % (levelled) · media · PR. Text only — the element
+// escapes it. Equal data gives an equal card (clocks are the element's tick).
+function cardOf(s, col) {
   // Server-resolved headline (#762) — displayHeadline reflects the full
   // priority chain (summaryTitle then issueTitle then prTitle then title then
   // 'Untitled'). The local fallback covers the WS patch path where
   // summaryTitleChanged / sessionUpdated may have rewritten only a subset.
   var headline = s.displayHeadline || s.summaryTitle || s.title;
-  var titleTrunc = dhTruncate('title');
-  var titleHtml = dhShow('title')
-    ? '<span class="card-title-text">' + esc(titleTrunc ? String(headline || '').slice(0, titleTrunc) : headline) + '</span>'
-    : '';
+  var trunc = dhTruncate('title');
+  var card = {
+    id: s.key,
+    title: dhShow('title') ? String(trunc ? String(headline || '').slice(0, trunc) : (headline || '')) : '',
+    status: 'done',
+    bodyMode: 'slot',
+  };
   var summary = cardSummary(s, col, headline);
-  var metrics = [];
-  if (dhShow('tasks') && s.tasks && s.tasks.length > 0) {
-    var doneCount = s.tasks.filter(function(t) { return t.status === 'completed'; }).length;
-    metrics.push('<span class="metric" title="Tasks done / total">' + TASKS_SVG + doneCount + '/' + s.tasks.length + '</span>');
+  if (summary) card.summary = summary;
+  // Status (the tinted tag, re-agent-inbox D1): an armed automatic resume waits.
+  var resume = pendingAutoResume(s, col);
+  var acc = Number(s.activeAccumulatedMs) || 0;
+  if (resume) {
+    card.status = 'waiting';
+    card.statusText = autoResumeLabel(resume);
+  } else if (col === 'waiting') {
+    card.status = 'waiting';
+    if (toNum(s.waitingSince) > 0) card.since = toNum(s.waitingSince);
+  } else if (col === 'working') {
+    card.status = 'running';
+    var leg = Number(s.activeLegStartedAtMs) || 0;
+    if (leg) card.since = leg;
+    if (acc) card.elapsedMs = acc;
+  } else if (col === 'closed') {
+    card.status = 'idle';
+    card.statusText = s.terminated ? 'Archived' : 'Sleeping';
+  } else if (acc) {
+    card.elapsedMs = acc;
+  } else {
+    card.statusText = 'Idle';
   }
-  var ctxPct = s.tokenUsage ? (s.tokenUsage.contextUsagePercent || 0) : 0;
-  if (dhShow('contextwindow') && ctxPct > 0) {
-    // re-context-window D16: the level against the auto-compact point when known, the tooltip says how far.
-    var ctxLv = ctxLevel(ctxPct, s.contextTokens, s.autoCompactTokens, s.compactPending);
-    var ctxAuto = toNum(s.autoCompactTokens), ctxUsed = toNum(s.contextTokens);
-    var ctxTip = 'Context window used' + (toNum(ctxPct) > 80 ? ' — 80% 넘게 찼다' : '');
-    if (ctxAuto > 0 && ctxUsed > 0) {
-      ctxTip = '컨텍스트 ' + ctxPercent(ctxPct) + '% · ' + (s.compactPending ? '다음 입력 때 자동 압축'
-        : ctxUsed >= ctxAuto ? '자동 압축 지점을 넘음'
-        : '자동 압축 ' + formatTokens(ctxAuto).replace(/\\.0(?=[KMBT]$)/, '') + '까지 ' + formatTokens(ctxAuto - ctxUsed).replace(/\\.0(?=[KMBT]$)/, ''));
+  // Recency (spec 13 §3.7): a finished card since its work finished — only the
+  // exact stamp, never lastActivity.
+  if ((col === 'idle' || col === 'closed') && toNum(s.finishedAt) > 0) card.since = toNum(s.finishedAt);
+  // The task in progress (T3), while the session runs or waits on the user.
+  var task = cardTaskRow(s, col);
+  if (task) {
+    card.task = { label: String(task.content || '') };
+    if (task.id) card.task.id = String(task.id);
+    if (Number(task.startedAt) > 0) card.task.startedAt = Number(task.startedAt);
+  }
+  var agents = s.agents || [];
+  if (agents.length) {
+    var ac = agentCounts(agents);
+    card.agents = { total: Math.max(toNum(s.agentsTotal), agents.length), running: ac.running, done: ac.completed, failed: ac.failed, dots: agents.slice(0, 6).map(agentDotOf) };
+  }
+  var titles = {};
+  // Total tokens · API-equivalent cost (T1/T2), the task total: main agent and
+  // every subagent (SSOT 2026-10-26 T3). Gated by the 'tokens' / 'cost' fields.
+  var u = s.tokenUsage;
+  if (u) {
+    var sub = s.subagentSpend;
+    var who = 'task 합계: 메인 + 서브에이전트' + (sub && toNum(sub.agents) > 0 ? ' ' + toNum(sub.agents) + '개' : '');
+    var part = toNum(u.partialSince) > 0 ? ' · 부분 합계 (' + new Date(toNum(u.partialSince)).toLocaleString() + ' 이후 집계)' : '';
+    if (dhShow('tokens')) {
+      card.tokens = cardTotalTokens(u);
+      titles.tokens = '총 토큰 (' + who + ') — 입력 ' + formatTokens(u.totalInputTokens) + ' · 출력 ' + formatTokens(u.totalOutputTokens)
+        + ' · 캐시 읽기 ' + formatTokens(u.totalCacheReadTokens) + ' · 캐시 쓰기 ' + formatTokens(u.totalCacheCreateTokens) + part;
     }
-    metrics.push('<span class="metric' + (ctxLv ? ' ' + ctxLv : '') + '" title="' + escAttr(ctxTip) + '">'
-      + CTX_SVG + ctxPercent(ctxPct) + '%</span>');
+    if (dhShow('cost')) {
+      card.costUsd = toNum(u.totalCostUsd);
+      titles.cost = 'API 환산 비용 (' + who + ')' + part;
+    }
   }
+  var sibling = isSiblingSession(s);
+  // Artifacts (T5): the newest few as chips that open the viewer (ui-artifact),
+  // never an image on the face. A sibling instance's files are not on this disk.
+  var arts = s.artifacts;
+  if (!sibling && s.conversationId && arts && toNum(arts.count) > 0 && arts.recent && arts.recent.length) {
+    card.artifactsCount = toNum(arts.count);
+    card.artifacts = arts.recent.slice(0, 4).map(function(a) { return { id: String(a.id), name: String(a.name || ''), kind: a.kind || 'file' }; });
+  }
+  if (dhShow('tasks') && s.tasks && s.tasks.length) {
+    card.steps = { done: s.tasks.filter(function(t) { return t.status === 'completed'; }).length, total: s.tasks.length };
+  }
+  var ctxPct = u ? (u.contextUsagePercent || 0) : 0;
+  if (dhShow('contextwindow') && ctxPct > 0) {
+    // re-context-window D16: the level against the auto-compact point when known.
+    var lv = ctxLevel(ctxPct, s.contextTokens, s.autoCompactTokens, s.compactPending);
+    card.contextPct = ctxPct;
+    card.contextLevel = lv === 'ctx-danger' ? 'danger' : lv === 'ctx-warn' ? 'warn' : '';
+    titles.context = cardCtxTitle(s, ctxPct);
+  }
+  if (titles.tokens || titles.cost || titles.context) card.titles = titles;
+  var metrics = [];
   // User media (SSOT 2026-10-25): a paperclip count, no image on the board.
-  var umBadge = isSiblingSession(s) ? '' : umFaceBadge(s);
-  if (umBadge) metrics.push(umBadge);
-  var prBadge = renderCardPr(s);
-  if (prBadge) metrics.push(prBadge);
+  var media = !sibling && s.conversationId ? toNum(s.userMedia && s.userMedia.count) : 0;
+  if (media > 0) metrics.push({ text: String(media), glyph: 'attach', title: '지시 첨부 ' + media + '개', label: '지시 첨부 ' + media + '개' });
+  var pr = cardPrMetric(s);
+  if (pr) metrics.push(pr);
+  if (metrics.length) card.metrics = metrics;
   // A cron run leads with the CRON badge instead of the spark (SSOT 2026-10-23 T3).
-  var lead = s.cronJob && s.cronJob.name ? renderCronBadge(s) : '<span class="card-spark">' + SPARK_SVG + '</span>';
-  // The status tag's tone (re-agent-inbox D1): an armed automatic resume waits.
-  var tone = (pendingAutoResume(s, col) || col === 'waiting') ? 'wait' : col === 'working' ? 'run' : col === 'closed' ? 'rest' : 'done';
-  return '<div class="card-head">' + lead + titleHtml + renderOwnerBadge(s) + '</div>'
-    + (summary ? '<div class="card-summary">' + esc(summary) + '</div>' : '')
-    + renderCardTaskRow(s, col)
-    + renderCardAgents(s)
-    + renderCardUsage(s)
-    + (isSiblingSession(s) ? '' : artFaceChips(s))
-    + '<div class="card-foot"><span class="card-status" data-tone="' + tone + '">' + renderCardStatus(s, col) + '</span>'
-    + (metrics.length ? '<span class="card-metrics">' + metrics.join('') + '</span>' : '')
-    + '</div>';
+  if (s.cronJob && s.cronJob.name) card.lead = { text: 'CRON', glyph: 'clock', title: '크론 잡: ' + s.cronJob.name };
+  // Owner badge (§3.1-3): in the All Users view every card names its owner.
+  var owner = currentUserId ? '' : s.ownerName || s.ownerId || '';
+  if (owner) card.badge = { text: String(owner), hue: ownerBadgeHue(s.ownerId || owner), title: String(owner) };
+  return card;
 }
 
 // Task window on the open card (§3.1-4, spec 13): list order, the in-progress
@@ -9504,8 +8912,6 @@ function renderTimeline(s) {
 // subagent) started, in spawn order. Each has its own tasks and its own work
 // log (entries with its agentId). Status always shows as an icon AND a word.
 var AGENT_STATUS_LABEL = { running: '실행 중', completed: '완료', failed: '실패', stopped: '중단', unknown: '확인 불가', waiting: '입력 대기', idle: '대기', resuming: '재개 대기', sleeping: '휴면', archived: '보관' };
-var AGENT_DOTS_MAX = 6; // status dots on the collapsed face before +N
-var AGENTS_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="4" cy="3.5" r="1.8"/><circle cx="12" cy="8" r="1.8"/><circle cx="12" cy="13" r="1.8"/><path d="M4 5.3v5.2c0 1.4 1.1 2.5 2.5 2.5h3.7M4 8h6.2"/></svg>';
 var _anOpen = Object.create(null); // tree namespace|node id → a fold the user chose (absent = the default)
 var _panelAgent = ''; // the node the open panel shows ('' = the root, the main agent)
 var _panelAgentIdsShown = Object.create(null); // agent ids the panel tree knows now
@@ -9525,23 +8931,6 @@ function agentCounts(agents) {
     c[st] = (c[st] || 0) + 1;
   }
   return c;
-}
-// Collapsed face row (§4.1): status dots + "서브에이전트 4 · 실행 2 · 실패 1".
-function renderCardAgents(s) {
-  var list = (s && s.agents) || [];
-  if (!list.length) return '';
-  var total = Math.max(toNum(s.agentsTotal), list.length);
-  var c = agentCounts(list);
-  var dots = '';
-  for (var i = 0; i < list.length && i < AGENT_DOTS_MAX; i++) dots += '<i class="ag-dot is-' + agentStatusOf(list[i]) + '"></i>';
-  if (list.length > AGENT_DOTS_MAX) dots += '<span class="ag-dots-more">+' + (list.length - AGENT_DOTS_MAX) + '</span>';
-  var parts = ['서브에이전트 <b>' + total + '</b>'];
-  if (c.running) parts.push('실행 ' + c.running);
-  if (c.failed) parts.push('<span class="ca-fail">실패 ' + c.failed + '</span>');
-  var words = '서브에이전트 ' + total + (c.running ? ', 실행 ' + c.running : '') + (c.failed ? ', 실패 ' + c.failed : '');
-  return '<div class="card-agents" title="' + escAttr(words) + '">' + AGENTS_SVG
-    + '<span class="ag-dots" aria-hidden="true">' + dots + '</span>'
-    + '<span class="ca-text">' + parts.join(' &middot; ') + '</span></div>';
 }
 // Status icon: shape + the word next to it; colour is a third cue, never the only one.
 function agentIconHtml(st) {
@@ -9588,7 +8977,7 @@ function agentActivity(a) {
 // fields: active time instead of a run time, the model, the session's tasks.
 
 // The root's status from lifecycle evidence — never "stopped" for a closed card.
-// Same order as the card's status line (renderCardStatus): a waiting card
+// Same order as the card's status (cardOf): a waiting card
 // reads waiting even while its activity says working.
 function rootStatusOf(s, col) {
   if (s && s.terminated) return 'archived';
@@ -9903,7 +9292,7 @@ function atTreeData(anchor, o) {
 function atCardData(s, col) {
   if (!s || !s.agents || !s.agents.length) return null;
   return atTreeData(agentTreeOf(s, col, null), {
-    s: s, ns: 'c|' + s.key, withRoot: true, openDepth: 1, density: 'compact', title: '에이전트', rootLine: !renderCardTaskRow(s, col),
+    s: s, ns: 'c|' + s.key, withRoot: true, openDepth: 1, density: 'compact', title: '에이전트', rootLine: !cardTaskRow(s, col),
   });
 }
 // One tree's slot: the token wrapper (.ui-tok) and the element, named by its
@@ -9920,7 +9309,7 @@ function atPaint(el, d, sig) {
   el._atSig = sig;
   el.data = d;
 }
-// The open card's tree takes the data of its card's parts (cardParts).
+// The open card's tree takes its data from the body's paint (paintCardBody).
 function atHydrate(body, p) {
   var el = p && p.tree && body && body.querySelector ? body.querySelector('ui-agent-tree[data-at-ns]') : null;
   if (el) atPaint(el, p.tree, p.treeSig);
@@ -10004,8 +9393,7 @@ function panelLogOnlyAgents(s) {
 }
 // The board column a session sits in (the panel's root status reads it).
 function sessionColOf(key) {
-  var el = typeof _cardEls !== 'undefined' ? _cardEls[key] : null;
-  var onCard = el && el.getAttribute ? el.getAttribute('data-col') : '';
+  var onCard = typeof _cardCol !== 'undefined' ? _cardCol[key] : '';
   if (onCard) return onCard;
   var s = _sessionCache[key];
   var cols = ['working', 'waiting', 'idle', 'closed'];
@@ -10136,9 +9524,11 @@ function applyPanelDetail() {
   var btn = document.getElementById('panel-detail-toggle');
   if (btn) btn.setAttribute('aria-pressed', _panelDetail ? 'true' : 'false');
 }
-// The sections an opening starts with: every one open with 자세히, else the defaults.
+// The sections an opening starts with: every one open with 자세히 — except the goal,
+// which always opens folded (SSOT 2026-10-29) — else the defaults.
 function resetPanelSections() {
   _panelInfoOpen = _panelDetail;
+  _panelGoalOpen = false; // SSOT 2026-10-29: the goal opens folded — 자세히 and a goal landing too
   _panelTasksOpen = _panelDetail || _panelLand === 'tasks';
   _panelTasksExpanded = _panelTasksOpen;
   _panelTasksEarlier = _panelDetail;
@@ -11396,6 +10786,26 @@ document.addEventListener('ui-compact', function(e) {
   cwCompact();
 });
 
+// SSOT 2026-10-29 — "Goal 도 디폴트로 collapsed": the goal's objective opens
+// folded to its first 3 lines on every opening (resetPanelSections — 자세히 and
+// a goal landing included); 펼치기 · 접기 toggles it for this opening.
+var _panelGoalOpen = false;
+var GOAL_FOLD_LINES = 3; // the CSS clamp of .panel-goal .card-goal .cg-objective
+function togglePanelGoal() {
+  _panelGoalOpen = !_panelGoalOpen;
+  renderPanelGoal();
+}
+// The toggle shows only where the fold cuts something: the objective runs past
+// its 3 lines (scrollHeight is the whole text, folded or open). An unknown line
+// height keeps it, so the text can always be opened.
+function syncGoalMore(root) {
+  var obj = root.querySelector('.cg-objective');
+  var more = root.querySelector('.cg-more');
+  if (!obj || !more) return;
+  var lh = parseFloat(getComputedStyle(obj).lineHeight);
+  more.hidden = lh > 0 && obj.scrollHeight <= lh * GOAL_FOLD_LINES + 1;
+}
+
 // The goal's home (spec 13, moved from the card): the shared goal component —
 // current, queue, add / delete, the completed goals (T6) — with the card's
 // gates. Typing survives every live render: while its input has focus nothing
@@ -11407,7 +10817,7 @@ function renderPanelGoal() {
   var col = s ? sessionColOf(panelSessionKey) : '';
   var isOwner = !!(s && s.ownerId) && s.ownerId === currentUserId;
   var canEdit = isOwner && !isSiblingSession(s);
-  var html = s ? renderCardGoal(s, col, canEdit) : '';
+  var html = s ? renderCardGoal(s, col, canEdit, _panelGoalOpen) : '';
   if (!html) {
     el.style.display = 'none';
     if (el._html) el.innerHTML = '';
@@ -11428,6 +10838,12 @@ function renderPanelGoal() {
   morphInnerHtml(el, html);
   el._html = html;
   restoreGoalDraft(el, draft);
+  // The fold toggle follows the text's height: now, and whenever the section resizes (panel width, first layout).
+  syncGoalMore(el);
+  if (!el._goalRo && typeof ResizeObserver === 'function') {
+    el._goalRo = new ResizeObserver(function() { syncGoalMore(el); });
+    el._goalRo.observe(el);
+  }
   // Its goal left (deleted, started, finished): focus lands on the section, never on another goal's control.
   var now = document.activeElement;
   if (hadFocus && (!now || now === document.body || !el.contains(now)) && el.focus) el.focus({ preventScroll: true });
@@ -11569,7 +10985,7 @@ function cancelCardIoRetry(cid) {
 // The open card on the board that consumes this conversation's retry, or null.
 // A timer is armed only while one exists (retryCardIo fires into it).
 function cardIoConsumer(cid) {
-  for (var k in _cardEls) {
+  for (var k in _cardHost) {
     var s = _sessionCache[k];
     if (s && s.conversationId === cid && _expanded.has(k)) return k;
   }
@@ -11679,7 +11095,7 @@ function ioSkillToggle(cid, i) {
   ioRefreshCards(cid);
 }
 function ioRefreshCards(cid) {
-  for (var k in _cardEls) {
+  for (var k in _cardHost) {
     var s = _sessionCache[k];
     if (s && s.conversationId === cid) refreshCard(k);
   }
@@ -11771,7 +11187,7 @@ function retryCardIo(cid) {
 function settleCardIo(cid, entry) {
   var wasDirty = !!(_ioCache[cid] && _ioCache[cid].dirty);
   _ioCache[cid] = entry;
-  for (var k in _cardEls) {
+  for (var k in _cardHost) {
     var s = _sessionCache[k];
     if (s && s.conversationId === cid) refreshCard(k);
   }
@@ -11784,7 +11200,7 @@ function invalidateCardIo(cid) {
   if (!c) return;
   if (c.state === 'loading') { c.dirty = true; return; }
   c.stamp = null;
-  for (var k in _cardEls) {
+  for (var k in _cardHost) {
     var s = _sessionCache[k];
     if (s && s.conversationId === cid && _expanded.has(k)) ensureCardIo(k, false);
   }
@@ -11795,6 +11211,7 @@ function invalidateCardIo(cid) {
 // buttons. Every field the old card face showed is still gated by dhShow().
 // The open card's resume row: when / which attempt, and the full error line
 // the collapsed face clamps to two lines.
+var RESUME_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 4.6V8l2.3 1.5"/></svg>';
 function renderCardResume(s, col) {
   var r = pendingAutoResume(s, col);
   if (!r) return '';
@@ -11957,7 +11374,7 @@ function renderCardBody(s, col) {
   // asked for — that decision is the primary and 작업 로그 steps back.
   const canDecideHere = canAnswerQuestion
     || (!isSibling && col !== 'closed' && (s.pendingPermissions || []).some(function(p) { return !!(p && p.requesterId && currentUserId && p.requesterId === currentUserId); }));
-  const worklogBtn = '<button type="button" class="btn-action' + (canDecideHere ? '' : ' btn-primary') + '" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',true,\\'\\',event.detail===0)">작업 로그</button>';
+  const worklogBtn = '<button type="button" class="btn-action' + (canDecideHere ? '' : ' btn-primary') + '" data-card-worklog onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',true,\\'\\',event.detail===0)">작업 로그</button>';
   const slackBtn = (dhShow('links') && s.slackThreadUrl)
     ? '<a class="btn-action" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>'
     : '';
@@ -12279,7 +11696,7 @@ function toggleGoalHistory(key) {
 }
 var _goalErrors = Object.create(null); // card key -> last refused goal action (shown until the next success)
 
-function renderCardGoal(s, col, canEdit) {
+function renderCardGoal(s, col, canEdit, open) {
   var g = s.goal || null;
   var live = col !== 'closed' && !s.terminated;
   // Read-only viewers and closed sessions only see a goal list that exists.
@@ -12289,7 +11706,7 @@ function renderCardGoal(s, col, canEdit) {
   var key = escJs(s.key);
   var queue = (g && g.queue) || [];
   var cur = g && g.current;
-  var html = '<div class="card-goal">';
+  var html = '<div class="card-goal' + (open ? ' is-open' : '') + '">';
   html += '<div class="cg-head"><span class="cg-label">&#x1F3AF; Goal</span>';
   if (cur) {
     html += '<span class="cg-status cg-' + escAttr(cur.status) + '">' + esc(GOAL_STATUS_LABELS[cur.status] || cur.status) + '</span>';
@@ -12308,10 +11725,14 @@ function renderCardGoal(s, col, canEdit) {
   html += '</div>';
   if (cur) {
     var dropLabel = queue.length ? '현재 goal 삭제 · 다음 시작' : '현재 goal 삭제';
-    html += '<div class="cg-row" data-mk="' + escAttr('goal:' + cur.goalId) + '"><div class="cg-objective" title="' + escAttr(cur.objective) + '">' + esc(cur.objective) + '</div>'
+    html += '<div class="cg-row" data-mk="' + escAttr('goal:' + cur.goalId) + '"><div class="cg-objective" id="panel-goal-obj" title="' + escAttr(cur.objective) + '">' + esc(cur.objective) + '</div>'
       + '<button type="button" class="cg-btn cg-danger"' + dis
       + ' onclick="event.stopPropagation();goalAction(\\'' + key + '\\',{action:\\'delete\\',goalId:\\'' + escJs(cur.goalId) + '\\',expect:\\'current\\'},this)">'
       + dropLabel + '</button></div>';
+    // SSOT 2026-10-29 — folded to its first 3 lines until opened; reading, so never disabled.
+    // syncGoalMore keeps the toggle to an objective that runs past those lines.
+    html += '<button type="button" class="cg-more" aria-expanded="' + (open ? 'true' : 'false') + '" aria-controls="panel-goal-obj"'
+      + ' onclick="event.stopPropagation();togglePanelGoal()">' + (open ? '접기 &#x25B2;' : '펼치기 &#x25BC;') + '</button>';
     if (cur.status === 'active' && cur.lastEvalReason) {
       html += '<div class="cg-gap">남은 것: ' + esc(String(cur.lastEvalReason).slice(0, 300)) + '</div>';
     }
@@ -12437,52 +11858,14 @@ async function addGoalFromCard(key, form) {
   loadSessions();
 }
 
-// Card click = expand / collapse in place (§3.1-4). Keyboard toggles skip the
-// transition (§4-9). Cards below ride the animated grid row, so they slide
-// with the expansion instead of needing a separate FLIP pass.
-function toggleCard(key, instant) {
-  var el = _cardEls[key];
-  if (!el) return;
-  var open = !_expanded.has(key);
-  if (open) _expanded.add(key);
-  else _expanded.delete(key);
-  if (!open) releaseCardIoTimer(el._cid);
-  syncCardBody(key, instant);
-  if (instant) el.classList.add('no-motion');
-  applyExpanded(el, open);
-  if (instant) {
-    void el.offsetHeight;
-    el.classList.remove('no-motion');
-  }
-  if (open) {
-    ensureCardIo(key, true);
-    var opened = _sessionCache[key];
-    if (opened && opened.conversationId && opened.artifacts && !isSiblingSession(opened)) ensureArtifacts(opened.conversationId);
-  }
-}
+// Card click / Enter / Space = expand / collapse in place (§3.1-4), Esc inside
+// an open card closes it — the element's (ui-toggle; keyboard without the
+// transition, a finished text selection is not a toggle). The page follows
+// through wireInbox: the body, the 지시/응답 and artifacts fetches.
 
-// Escape (re-agent-inbox D7): inside an open card — its face or its body — it
-// closes that card (keyboard: no motion) and puts focus back on the face. It
-// stops there, so a docked panel stays open; anywhere else, and in a text field,
-// a select or an editable region, it is left alone.
-function closeCardOnEscape(e, root) {
-  // A text field, a select or an editable region keeps its own Escape (clear, cancel, IME).
-  var t = e.target;
-  var tag = t && t.tagName ? String(t.tagName).toUpperCase() : '';
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (t && t.isContentEditable)) return false;
-  var card = t && t.closest ? t.closest('.card.is-expanded') : null;
-  if (!card || !root.contains(card)) return false;
-  var key = card.getAttribute('data-session-key');
-  if (!key || !_expanded.has(key)) return false;
-  e.stopPropagation();
-  toggleCard(key, true);
-  if (card._faceEl && card._faceEl.focus) card._faceEl.focus({ preventScroll: true });
-  return true;
-}
-
-// Board ↔ List (§3.1-2, §4-4): CSS re-lays out the very same nodes and each
-// card / column header FLIPs from its old slot (translate only). The choice is
-// remembered only when the user makes it; keyboard activation does not animate.
+// Board ↔ List (§3.1-2, §4-4): the element re-lays out the very same cards and
+// glides each card and column head from its old place (translate only). The
+// choice is remembered only when the reader makes it.
 function setBoardView(view, ev) {
   if (view !== 'board' && view !== 'list') return;
   if (ev) {
@@ -12494,52 +11877,31 @@ function setBoardView(view, ev) {
     if (segs[i].getAttribute('aria-pressed') !== pressed) segs[i].setAttribute('aria-pressed', pressed);
   }
   var kb = document.getElementById('kanban');
-  if (kb.getAttribute('data-view') === view) return;
-  var movers = (ev && ev.detail > 0 && canAnimate()) ? collectViewMovers() : null;
-  var before = movers ? movers.map(function(m) { return m.getBoundingClientRect(); }) : null;
-  kb.setAttribute('data-view', view);
-  // A user switch animates itself here; the layout-shift coordinator adopts the
-  // result so it never animates the same change a second time (SSOT 2026-10-24).
-  if (!movers) {
-    if (ev) adoptLayoutTargets(null);
-    return;
-  }
-  if (reduceMotion()) {
-    kb.animate([{ opacity: 0 }, { opacity: 1 }], { duration: MOTION.fade, easing: 'linear' });
-    adoptLayoutTargets(null);
-    return;
-  }
-  var targets = new Map();
-  for (var j = 0; j < movers.length; j++) {
-    var el = movers[j];
-    if (el._flip) { el._flip.cancel(); el._flip = null; }
-    var b = el.getBoundingClientRect();
-    targets.set(el, { left: b.left, top: b.top });
-    var dx = before[j].left - b.left;
-    var dy = before[j].top - b.top;
-    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
-    playFlip(el, dx, dy, false);
-  }
-  adoptLayoutTargets(targets);
+  if (!kb || kb.getAttribute('view') === view) return;
+  kb.setAttribute('view', view);
+  // A reader's switch glides in the element; the layout-shift coordinator takes
+  // the result as the new layout so it never animates the same change twice
+  // (SSOT 2026-10-24). Without an event the coordinator runs the only glide.
+  if (ev) adoptLayout();
 }
-function collectViewMovers() {
+// The board's elements on screen: the board, and each CRON job's.
+function boardHosts() {
   var out = [];
-  var heads = document.querySelectorAll('#kanban .kanban-col-header');
-  for (var i = 0; i < heads.length; i++) out.push(heads[i]);
-  // Only what is rendered: a hidden element measures as a 0×0 box at the top-left.
-  for (var k in _cardEls) if (_cardEls[k].getClientRects().length) out.push(_cardEls[k]);
+  var kb = document.getElementById('kanban');
+  if (kb) out.push(kb);
+  var lane = document.querySelectorAll('ui-agent-inbox.cron-inbox');
+  for (var i = 0; i < lane.length; i++) if (lane[i].isConnected && lane[i].getClientRects().length) out.push(lane[i]);
   return out;
 }
 
 // ── Layout shift (SSOT 2026-10-24) — fold, unfold, rotate, dock ──
 // One coordinator. A change of the layout mode {board columns, panel
-// closed|sheet|docked, applied view} animates the board from where it was on
-// screen to where it is now (FLIP). A resize handler can only read the new
-// layout, so the "before" is a cache of the last layout targets, refreshed when
-// the board settles (render, scroll end, transition end, a finished shift). A
-// further resize while the cards still fly retargets them from the spot they are
-// visibly at — the last target plus their current translate — never from the
-// original spot (resize bursts have no measured interval to lean on).
+// closed|sheet|docked, applied view, the sections above the board} glides the
+// board's cards from where they were on screen to where they are now
+// (<ui-agent-inbox> flipFrom). A resize handler can only read the new layout,
+// so the "before" is a cache of each element's measure(), refreshed when the
+// board settles (render, scroll end, transition end, a finished shift) and
+// corrected for the page's scroll since.
 function defaultBoardView(innerWidth, saved) {
   if (saved === 'board' || saved === 'list') return saved;
   return innerWidth < 640 ? 'list' : 'board';
@@ -12557,21 +11919,9 @@ function layoutModeOf(innerW, inboxW, panelOpen, view) {
 function layoutModeKey(m) {
   return m.cols + '|' + m.panel + '|' + m.view + (m.sec ? '|' + m.sec : '');
 }
-function parseTranslate(t) {
-  var m = /^matrix(3d)?\\(([^)]*)\\)$/.exec(t || '');
-  if (!m) return { x: 0, y: 0 };
-  var v = m[2].split(',').map(function(n) { return parseFloat(n) || 0; });
-  return m[1] ? { x: v[12], y: v[13] } : { x: v[4], y: v[5] };
-}
-function flipVisualPos(target, t) {
-  return { left: target.left + t.x, top: target.top + t.y };
-}
-function sameSpot(a, b) {
-  return Math.abs(a.left - b.left) < 0.5 && Math.abs(a.top - b.top) < 0.5;
-}
-var _layoutRects = new Map(); // mover → its last layout target { left, top } (viewport, at _layoutScroll)
-var _layoutScroll = { x: 0, y: 0, k: 0 }; // window and board scroll when the cache was taken
-var _lastScroll = { x: 0, y: 0, k: 0 }; // the scroll the reader last saw (scroll events)
+var _layoutSnap = []; // [element, its measure()] when the cache was taken
+var _layoutScroll = { x: 0, y: 0 }; // window scroll when the cache was taken
+var _lastScroll = { x: 0, y: 0 }; // the scroll the reader last saw (scroll events)
 var _layoutModeKey = '';
 var _layoutShiftUntil = 0;
 var _layoutCheckQueued = false;
@@ -12588,15 +11938,14 @@ function currentLayoutMode() {
     window.innerWidth,
     inbox ? inbox.getBoundingClientRect().width : 0,
     !!(panel && panel.classList.contains('open')),
-    kb ? kb.getAttribute('data-view') : ''
+    kb ? kb.getAttribute('view') : ''
   );
   // The secondary sections above the board (capacity, CRON lane) move it too.
   m.sec = secStateKey();
   return m;
 }
 function layoutScrollNow() {
-  var kb = document.getElementById('kanban');
-  return { x: window.scrollX, y: window.scrollY, k: kb ? kb.scrollLeft : 0 };
+  return { x: window.scrollX, y: window.scrollY };
 }
 // The first panel row in view and its offset in the scroll area — restored after
 // a shift reflows the drawer, so the reader keeps their place.
@@ -12618,7 +11967,7 @@ function restorePanelAnchor(a) {
   var drift = a.el.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - a.offset;
   if (Math.abs(drift) > 0.5) scrollEl.scrollTo({ top: scrollEl.scrollTop + drift, behavior: 'instant' });
 }
-// Measure the settled layout (never mid-shift: flying cards are not at their targets).
+// Measure the settled layout (never mid-shift: gliding cards are not at their places).
 // A refresh that finds a new mode is a shift the coordinator has not seen yet (a
 // timer can run between the resize and its event): hand it over instead, so the
 // cache still holds the layout the reader saw.
@@ -12627,48 +11976,17 @@ function refreshLayoutCache() {
   if (_layoutModeKey && layoutModeKey(currentLayoutMode()) !== _layoutModeKey) { requestLayoutCheck(); return; }
   measureLayout();
 }
-// The board's own sideways scroll (dk) moves only what is inside #kanban — not a
-// CRON lane card above it (#374). Both cache paths use this one rule.
-function boardScrollShift(el, dk) {
-  var kb = document.getElementById('kanban');
-  return kb && kb.contains(el) ? dk : 0;
-}
-// Where an element's layout box is now: its drawn box minus a running FLIP's
-// translate, so a card in flight is cached at its landing spot.
-function layoutSpotOf(el) {
-  var t = el._flip ? parseTranslate(getComputedStyle(el).transform) : { x: 0, y: 0 };
-  var r = el.getBoundingClientRect();
-  return { left: r.left - t.x, top: r.top - t.y };
-}
-// Every FLIP (a live board render moving a card, a view switch, a shift) lands its
-// element on a new spot; the shift cache learns it at once, so a shift during the
-// flight starts from where the card really is (in the cache's scroll basis).
-function noteFlipTarget(el) {
-  var r = el.getBoundingClientRect();
-  var now = layoutScrollNow();
-  _layoutRects.set(el, {
-    left: r.left + (now.x - _layoutScroll.x) + boardScrollShift(el, now.k - _layoutScroll.k),
-    top: r.top + (now.y - _layoutScroll.y),
-  });
-}
 function measureLayout() {
-  var next = new Map();
-  var movers = collectViewMovers();
-  for (var i = 0; i < movers.length; i++) next.set(movers[i], layoutSpotOf(movers[i]));
-  _layoutRects = next;
+  _layoutSnap = boardHosts().filter(function(el) { return typeof el.measure === 'function'; }).map(function(el) { return [el, el.measure()]; });
   _layoutScroll = layoutScrollNow();
   _lastScroll = _layoutScroll;
   _layoutModeKey = layoutModeKey(currentLayoutMode());
   _panelAnchor = capturePanelAnchor();
   _layoutPanelW = panelOpen ? document.getElementById('slide-panel').getBoundingClientRect().width : 0;
 }
-// A user Board/List switch (setBoardView with an event) plays its own FLIP; the
-// coordinator takes its targets as the new layout instead of animating it again.
-function adoptLayoutTargets(targets) {
-  if (!targets) { _layoutShiftUntil = 0; measureLayout(); return; }
-  _layoutRects = targets;
-  _layoutScroll = layoutScrollNow();
-  _lastScroll = _layoutScroll;
+// A reader's Board/List switch (setBoardView with an event) glides in the
+// element; the coordinator takes it as the new layout once it has landed.
+function adoptLayout() {
   _layoutModeKey = layoutModeKey(currentLayoutMode());
   _layoutShiftUntil = Date.now() + MOTION.move;
   scheduleLayoutRefresh(MOTION.move + 40);
@@ -12688,6 +12006,13 @@ function layoutBeforeChange() {
   refreshLayoutCache();
   requestLayoutCheck();
 }
+// The cached spots where the reader saw them: moved by the page's scroll since.
+function scrolledSpots(layout, sx, sy) {
+  var spots = Object.create(null);
+  var from = (layout && layout.spots) || {};
+  for (var k in from) spots[k] = { x: from[k].x - sx, y: from[k].y - sy };
+  return { spots: spots };
+}
 function runLayoutCheck() {
   var kb = document.getElementById('kanban');
   if (!kb) return;
@@ -12697,49 +12022,32 @@ function runLayoutCheck() {
   if (frame !== null && frame === _layoutCheckFrame) return;
   _layoutCheckFrame = frame;
   // The default view follows the screen until the reader picks one (no event:
-  // setBoardView neither saves it nor plays its own FLIP — this runs the only one).
+  // setBoardView neither saves it nor adopts it — this runs the only glide).
   var autoView = defaultBoardView(window.innerWidth, savedBoardView());
-  if (kb.getAttribute('data-view') !== autoView) setBoardView(autoView);
+  if (kb.getAttribute('view') !== autoView) setBoardView(autoView);
   // The secondary sections' defaults follow the window in this same frame, so a
   // fold or a window change that also folds them is one shift.
   if (applySectionState()) renderBoardForLayout();
   var mode = currentLayoutMode();
   var changed = layoutModeKey(mode) !== _layoutModeKey;
   var flying = Date.now() < _layoutShiftUntil;
-  if (!changed && !flying) { measureLayout(); return; }
+  // Unchanged: a settled board is measured again; a glide in flight lands where
+  // its element puts it (it is measured once it has landed).
+  if (!changed) { if (!flying) measureLayout(); return; }
   var anchor = _panelAnchor;
   var gen = _panelScrollGen;
-  var sx = _lastScroll.x - _layoutScroll.x, sy = _lastScroll.y - _layoutScroll.y, sk = _lastScroll.k - _layoutScroll.k;
+  var sx = _lastScroll.x - _layoutScroll.x, sy = _lastScroll.y - _layoutScroll.y;
   var animate = canAnimate();
   var reduce = reduceMotion();
-  var vw = window.innerWidth, vh = window.innerHeight;
-  var movers = collectViewMovers();
-  var next = new Map();
-  for (var i = 0; i < movers.length; i++) {
-    var el = movers[i];
-    var cached = _layoutRects.get(el);
-    // The last target, where the reader saw it (scroll since the cache taken out;
-    // the board's own sideways scroll moves only what is inside it, not the CRON lane).
-    var target = cached ? { left: cached.left - sx - boardScrollShift(el, sk), top: cached.top - sy } : null;
-    // getBoundingClientRect includes a running FLIP; its translate gives the layout spot.
-    var t = el._flip ? parseTranslate(getComputedStyle(el).transform) : { x: 0, y: 0 };
-    var r = el.getBoundingClientRect();
-    var layout = { left: r.left - t.x, top: r.top - t.y };
-    next.set(el, layout);
-    // Its layout did not move: a running flight still lands right — leave it alone.
-    if (target && sameSpot(target, layout)) continue;
-    if (el._flip) { el._flip.cancel(); el._flip = null; el.classList.remove('is-flying'); }
-    if (!target || !animate || reduce) continue;
-    // Where it is visibly now: the last target plus its current translate.
-    var f = flipVisualPos(target, t);
-    var seenBefore = f.left < vw && f.left + r.width > 0 && f.top < vh && f.top + r.height > 0;
-    var seenNow = layout.left < vw && layout.left + r.width > 0 && layout.top < vh && layout.top + r.height > 0;
-    if (!seenBefore && !seenNow) continue;
-    var dx = f.left - layout.left, dy = f.top - layout.top;
-    if (Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
-    playFlip(el, dx, dy, false);
+  // Every card and head glides from where the reader saw it (the element does
+  // nothing on its first paint, in a hidden tab or under reduced motion).
+  if (animate && !reduce) {
+    for (var i = 0; i < _layoutSnap.length; i++) {
+      var el = _layoutSnap[i][0];
+      if (el.isConnected && typeof el.flipFrom === 'function') el.flipFrom(scrolledSpots(_layoutSnap[i][1], sx, sy));
+    }
   }
-  if (changed && animate && reduce) kb.animate([{ opacity: 0 }, { opacity: 1 }], { duration: MOTION.fade, easing: 'linear' });
+  if (animate && reduce) kb.animate([{ opacity: 0 }, { opacity: 1 }], { duration: MOTION.fade, easing: 'linear' });
   // The open drawer's own width (sheet ↔ dock) animates with the cards: from its
   // visible width (mid-flight, the running animation's) to the new one. Only here —
   // a CSS width transition would trail every desktop window drag.
@@ -12760,9 +12068,6 @@ function runLayoutCheck() {
     }
   }
   _layoutPanelW = toW;
-  _layoutRects = next;
-  _layoutScroll = layoutScrollNow();
-  _lastScroll = _layoutScroll;
   _layoutModeKey = layoutModeKey(mode);
   restorePanelAnchor(anchor);
   _layoutShiftUntil = Date.now() + MOTION.move;
@@ -12989,6 +12294,7 @@ function resolveDeepLinkKey(ref, keys, selfInstance) {
   }
   return best;
 }
+var _deepLinkWaiting = false; // waiting for <ui-agent-inbox> to be defined
 function openDeepLinkedSession() {
   if (!_deepLinkSession) return;
   // The window bounds the whole attempt: a card that first shows up on a
@@ -12996,7 +12302,8 @@ function openDeepLinkedSession() {
   if (Date.now() > _deepLinkDeadline) { _deepLinkSession = null; return; }
   var key = resolveDeepLinkKey(_deepLinkSession, Object.keys(_sessionCache), SELF_INSTANCE_NAME);
   if (!key) return;
-  if (!_cardEls[key]) {
+  var host = _cardHost[key];
+  if (!host) {
     var linked = _sessionCache[key];
     // An older run of a cron job (the CRON lane shows one card per job): show
     // that run as the job's card and retry on that render.
@@ -13018,21 +12325,23 @@ function openDeepLinkedSession() {
       loadSessions();
       return;
     }
-    // In a closed DONE day (T12) — open that day and retry on that render.
-    var day = linked ? dayKeyOf(doneTimeOf(linked)) : null;
-    if (day && _doneGroupOpen[day] !== true) {
-      _doneGroupOpen[day] = true;
-      loadSessions();
-    } else {
-      _deepLinkSession = null;
+    _deepLinkSession = null;
+    return;
+  }
+  // The element's module can land after the first board answer: retry once it is defined.
+  if (typeof host.reveal !== 'function') {
+    if (!_deepLinkWaiting && window.customElements) {
+      _deepLinkWaiting = true;
+      customElements.whenDefined('ui-agent-inbox').then(function() { _deepLinkWaiting = false; openDeepLinkedSession(); });
     }
     return;
   }
   _deepLinkSession = null;
   // The revealed older cron run only had to be on screen for the link.
   _cronRevealKey = null;
-  if (!_expanded.has(key)) toggleCard(key, true);
-  _cardEls[key].scrollIntoView({ block: 'center' });
+  // On its element — in a closed DONE day too (T12): the day opens, the card
+  // opens without a transition and scrolls to the centre.
+  host.reveal(key);
   openPanel(key, true);
 }
 
@@ -13064,10 +12373,12 @@ var _boardLoad = 'loading';
 function setBoardLoad(state) {
   if (_boardLoad === 'ready') return;
   _boardLoad = state;
+  // The board element's load state (data.load): skeletons and aria-busy while
+  // loading; no counts, hints or announcement until a certified paint says ready.
   var kb = document.getElementById('kanban');
-  if (kb) {
-    kb.dataset.load = state;
-    kb.setAttribute('aria-busy', state === 'loading' ? 'true' : 'false');
+  if (kb && kb._ibPlan && kb._ibPlan.load !== 'ready') {
+    kb._ibPlan.load = state;
+    inboxPaint(kb);
   }
   var err = document.getElementById('board-error');
   if (err) err.hidden = state !== 'failed';
@@ -13829,15 +13140,12 @@ function connectWs() {
         // Patch just this card through the same keyed path as the board
         // reconciler so the link-derived title flow (which fires before the
         // next full board push) lands immediately without rebuilding the node
-        // (an open card stays open). The column comes from the card's data-col.
+        // (an open card stays open). The column is the one the card is drawn in.
         var updatedKey = msg.session.key;
         _sessionCache[updatedKey] = msg.session;
         acEvict(updatedKey, msg.session);
         patchLastBoard(msg.session);
-        var existingCard = _cardEls[updatedKey];
-        if (existingCard) {
-          patchCard(existingCard, msg.session, existingCard.getAttribute('data-col') || 'idle');
-        }
+        if (_cardHost[updatedKey]) refreshCard(updatedKey);
         if (panelOpen && panelSessionKey === updatedKey) {
           renderPanelPermission(msg.session);
           var pt2 = document.getElementById('panel-title');
@@ -15402,7 +14710,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   if (panelConvId && !isSiblingSession(s)) ensureArtifacts(panelConvId, true);
   if (panelConvId && !isSiblingSession(s) && s.userMedia && toNum(s.userMedia.count) > 0) ensureUserMedia(panelConvId);
   // Every opening starts with the defaults (§3.1-6, task view T1.3): Tasks
-  // folded — or every detail open with 자세히.
+  // folded — or every detail open with 자세히; the goal folded either way.
   resetPanelSections();
   _agentConvRaw = Object.create(null);
   // The previous opening's answers are gone from the list: stop watching them.
@@ -15844,7 +15152,7 @@ function cpTick() {
   }
   for (var j = 0; j < cardNodes.length; j++) {
     var cn = cardNodes[j];
-    var card = cn.closest ? cn.closest('.card') : null;
+    var card = cn.closest ? cn.closest('.card-slot[data-session-key]') : null;
     var cs = card ? _sessionCache[card.getAttribute('data-session-key')] : null;
     var cstart = toNum(cn.getAttribute('data-cp-start'));
     var cslot = cn.querySelector('.cp-slot');
@@ -16407,7 +15715,8 @@ function closePanel() {
   _panelOnQuestion = false;
   // Focus goes back to whatever opened the panel (a tree item, a card button)
   // when it was in the panel; an opener that is gone (a folded DONE date, a
-  // hidden archive) hands it to that session's card, else the board heading.
+  // hidden archive) hands it to that session's open card (its 작업 로그), else
+  // the board heading.
   var back = _panelReturnFocus;
   _panelReturnFocus = null;
   var a = document.activeElement;
@@ -16418,10 +15727,11 @@ function closePanel() {
     back.focus({ preventScroll: true });
     if (document.activeElement === back) return;
   }
-  var face = closingKey && _cardEls[closingKey] ? _cardEls[closingKey]._faceEl : null;
-  if (face && document.body.contains(face)) {
-    face.focus({ preventScroll: true });
-    if (document.activeElement === face) return;
+  var body = closingKey && _cardBodies[closingKey] ? _cardBodies[closingKey].el : null;
+  var log = body && body.isConnected ? body.querySelector('[data-card-worklog]') : null;
+  if (log) {
+    log.focus({ preventScroll: true });
+    if (document.activeElement === log) return;
   }
   var heading = document.querySelector('.board-title, h1, h2');
   if (heading && heading.focus) { if (!heading.hasAttribute('tabindex')) heading.setAttribute('tabindex', '-1'); heading.focus({ preventScroll: true }); }
@@ -16639,7 +15949,6 @@ var _secChoice = {};           // this page's choices, even when storage refuses
 var _cronLaneRevealed = false; // a deep link into a folded lane opens it for this page load
 var _cronFoldApplied = null;   // the fold the last CRON render used
 var _capFoldApplied = null;    // the fold the last capacity paint used
-var _boardFlipOff = false;     // a disclosure render leaves the board's motion to the coordinator
 function secOpen(saved, large) {
   if (saved === 'open') return true;
   if (saved === 'closed') return false;
@@ -16654,11 +15963,9 @@ function secIsOpen(sec) {
   return secOpen(saved, sec === 'capacity' ? false : !!(_secMql && _secMql.matches));
 }
 // A render for a disclosure change: entering and leaving cards animate as usual; the
-// board's moves are the coordinator's, from the spots cached before the change.
+// board's moves are the coordinator's (flipFrom), from the spots cached before the change.
 function renderBoardForLayout() {
-  if (!_lastBoardData) return;
-  _boardFlipOff = true;
-  try { renderBoard(_lastBoardData); } finally { _boardFlipOff = false; }
+  if (_lastBoardData) renderBoard(_lastBoardData);
 }
 function cronLaneFolded() { return !secIsOpen('cron'); }
 function secStateKey() { return (secIsOpen('capacity') ? 'C' : 'c') + (secIsOpen('cron') ? 'R' : 'r'); }
@@ -16708,10 +16015,6 @@ var _cronGroupEls = Object.create(null); // group key → the job's persistent c
 var _cronDrawerKey = null;   // group key the drawer shows, null when closed
 var _cronRevealKey = null;   // a deep-linked cron run shown as its job's card
 
-function renderCronBadge(s) {
-  var name = (s && s.cronJob && s.cronJob.name) || '';
-  return '<span class="cron-badge" title="' + escAttr('크론 잡: ' + name) + '">' + CLOCK_SVG + '<span class="cron-badge-text">CRON</span></span>';
-}
 function isCronCard(s) {
   return !!(s && s.cronJob && s.cronJob.name);
 }
@@ -16958,13 +16261,13 @@ function syncCronLane(plan) {
     if (keep[key]) continue;
     var old = _cronGroupEls[key];
     delete _cronGroupEls[key];
-    // Its card fades out first (the reconciler), then the box goes.
+    // Its card fades out first (its <ui-agent-inbox>), then the box goes.
     setTimeout(function(node) { return function() { if (node.parentNode) node.parentNode.removeChild(node); }; }(old), MOTION.fade + 40);
   }
   aqPaint(el, laneData(plan));
 }
-// Reconciler slots: each job group shows its lead card (waiting, else running,
-// else newest) in its own box.
+// The lane's card slots: each job group shows its lead card (waiting, else running,
+// else newest) in its own box — a one-column <ui-agent-inbox> there (paintCronLaneCards).
 function cronLaneSlots(plan) {
   // A folded lane keeps no card of a job that does not wait for a reply in the DOM —
   // like a closed DONE day (T12) — so the layout coordinator never caches a hidden one.
@@ -17401,16 +16704,6 @@ function umMissingReason(a) {
   return '이 파일은 대시보드에 사본이 없습니다. Slack에서 열 수 있습니다.';
 }
 
-// Collapsed card face: a paperclip and the count. Never an image — a board of
-// cards must not pull every screenshot.
-function umFaceBadge(s) {
-  var n = toNum(s && s.userMedia && s.userMedia.count);
-  if (!s || !s.conversationId || !(n > 0)) return '';
-  return '<span class="metric um-face" title="지시 첨부 ' + n + '개" aria-label="지시 첨부 ' + n + '개">'
-    + '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 7.5l-5.4 5.4a3.2 3.2 0 0 1-4.5-4.5l5.6-5.6a2.1 2.1 0 0 1 3 3L6.6 11.4a1.1 1.1 0 0 1-1.5-1.5L10.2 4.8"/></svg>'
-    + n + '</span>';
-}
-
 // Pinned row of the panel: "지시 첨부 N", collapsed by default so it costs one
 // line; opened, the session's files in a compact strip. Nothing when none.
 function renderPanelUserMedia(list, cid, open) {
@@ -17487,20 +16780,6 @@ function artChip(cid, a) {
   return '<button type="button" class="art-chip art-k-' + escAttr(a.kind || 'file') + '" data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id)
     + '" aria-label="' + escAttr(artKindLabel(a) + ' ' + a.name + ' — 크게 보기') + '">'
     + artGlyph(a.kind) + '<span class="art-chip-name">' + esc(a.name) + '</span></button>';
-}
-
-// Collapsed card (T5): the newest few as chips + "+N". The face never fetches an
-// image — a board of cards must not pull every PNG; thumbnails start in the body.
-function artFaceChips(s) {
-  var sum = s && s.artifacts;
-  if (!s || !s.conversationId || !sum || !(toNum(sum.count) > 0) || !sum.recent || !sum.recent.length) return '';
-  var shown = sum.recent.slice(0, 4);
-  var more = toNum(sum.count) - shown.length;
-  return '<div class="card-arts" data-art-cid="' + escAttr(s.conversationId) + '">'
-    + '<span class="card-arts-label" title="모델이 만든 산출물">' + artGlyph('file') + toNum(sum.count) + '</span>'
-    + shown.map(function(a) { return artChip(s.conversationId, a); }).join('')
-    + (more > 0 ? '<span class="art-more">+' + more + '</span>' : '')
-    + '</div>';
 }
 
 // Files newest first, then answers newest first: the html/png the user looks for
@@ -18131,36 +17410,26 @@ function artHandleKey(e) {
   }
 })();
 
-// ── Board interactions — card face click / Enter / Space expands in place.
-// Delegated from #kanban so the reconciler never re-binds per card. (Drag and
-// drop and its confirm dialogs were removed: .prd/10 §3.1-5 — the same Stop / Close / Trash
-// actions live on the open card.)
+// ── The board element: its events (wireInbox), skeleton cards until the first
+// answer (no counts, no "Nothing here"), the view. Face click / Enter / Space
+// and Esc are the element's own. (Drag and drop and its confirm dialogs were
+// removed: .prd/10 §3.1-5 — the same Stop / Close / Trash actions live on the
+// open card.)
 (function initBoardInteractions() {
   var kb = document.getElementById('kanban');
-  // The CRON lane holds the same cards (SSOT 2026-10-23 T4): same handlers.
-  [kb, document.getElementById('cron-lane')].forEach(function(root) {
-    if (!root) return;
-    root.addEventListener('click', function(e) {
-      // An artifact chip on the face opens its viewer (initArtifactInteractions), not the card.
-      if (e.target.closest('[data-art-id]')) return;
-      var face = e.target.closest('.card-face');
-      if (!face || !root.contains(face)) return;
-      var key = face.parentNode.getAttribute('data-session-key');
-      if (!key) return;
-      // Finishing a text selection inside the face is not a toggle.
-      if (window.getSelection && String(window.getSelection())) return;
-      toggleCard(key, e.detail === 0);
-    });
-    root.addEventListener('keydown', function(e) {
-      if (e.key === 'Escape') { closeCardOnEscape(e, root); return; }
-      if (e.key !== 'Enter' && e.key !== ' ') return;
-      var face = e.target;
-      if (!face.classList || !face.classList.contains('card-face')) return;
-      e.preventDefault();
-      var key = face.parentNode.getAttribute('data-session-key');
-      if (key) toggleCard(key, true);
-    });
-  });
+  if (kb) {
+    wireInbox(kb);
+    kb._ibPlan = {
+      cols: [
+        { id: 'waiting', label: BOARD_LABELS.waiting, keys: [] },
+        { id: 'working', label: BOARD_LABELS.working, keys: [] },
+        { id: 'done', label: BOARD_LABELS.done, keys: [] },
+      ],
+      load: 'loading',
+      announce: false,
+    };
+    inboxPaint(kb);
+  }
   // View: the saved choice, else List on narrow screens (§3.1-2); runLayoutCheck
   // re-evaluates the default when a fold or rotation crosses 640px.
   setBoardView(defaultBoardView(window.innerWidth, savedBoardView()));
@@ -19094,11 +18363,6 @@ function syncTopbarBottom() {
     scheduleLayoutRefresh(120);
   }
   window.addEventListener('scroll', onScroll, { passive: true });
-  var kb = document.getElementById('kanban');
-  if (kb) {
-    kb.addEventListener('scroll', onScroll, { passive: true });
-    kb.addEventListener('transitionend', function() { scheduleLayoutRefresh(60); });
-  }
   var ps = document.getElementById('panel-scroll');
   if (ps) ps.addEventListener('scroll', function() { scheduleLayoutRefresh(120); }, { passive: true });
   // The reader's own input in the panel: a shift no longer restores the old place.

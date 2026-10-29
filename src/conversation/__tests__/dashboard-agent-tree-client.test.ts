@@ -5,7 +5,9 @@
  *
  *   §4.0  one node type: the main agent is the root of the session's agent
  *         tree (agentTreeOf), its status from lifecycle evidence
- *   §4.1  collapsed card: one agents row — status dots + "서브에이전트 N · 실행 r · 실패 f"
+ *   §4.1  collapsed card: the sub-agents the face carries (cardOf agents —
+ *         the counts and a dot per agent in spawn order); the element draws the
+ *         row in the board's words (data.strings: 서브에이전트 N · 실행 r · 실패 f)
  *   §4.2  open card: @2lab.ai/ui <ui-agent-tree>, compact (affectUI review
  *         batch 2) — the host contract: the slot markup, the data the
  *         dashboard maps the session onto (atCardData / atTreeData), the folds
@@ -40,7 +42,16 @@ function assertUnique(name: string) {
   const n = declarationCount(name);
   if (n > 1) throw new Error(`client ${name} is declared ${n} times`);
 }
+// Cut + cooked once per name: the suites load the same functions many times (a loaded runner timed out).
+const cutCache = new Map<string, string>();
 function clientFn(name: string): string {
+  const hit = cutCache.get(name);
+  if (hit !== undefined) return hit;
+  const cut = cutClientFn(name);
+  cutCache.set(name, cut);
+  return cut;
+}
+function cutClientFn(name: string): string {
   assertUnique(name);
   let start = TEMPLATE.indexOf(`\nfunction ${name}(`);
   if (start < 0) start = TEMPLATE.indexOf(`\nasync function ${name}(`);
@@ -103,23 +114,15 @@ const TREE_FNS = [
   'atNode',
   'atTreeData',
   'cardCurrentTask',
-  'renderCardTaskRow',
+  'cardTaskRow',
   'atCardData',
   'atSlotHtml',
   'atPaint',
   'atHydrate',
   'renderAgentTree',
 ];
-const AGENT_FNS = [...TREE_FNS, 'agentCounts', 'renderCardAgents'];
-const AGENT_VARS = [
-  'AGENT_STATUS_LABEL',
-  'AGENT_DOTS_MAX',
-  'AGENTS_SVG',
-  'AT_ROOT',
-  'AT_STATUS',
-  'AT_ROOT_STATUS',
-  '_anOpen',
-];
+const AGENT_FNS = [...TREE_FNS, 'agentCounts', 'agentDotOf'];
+const AGENT_VARS = ['AGENT_STATUS_LABEL', 'AT_ROOT', 'AT_STATUS', 'AT_ROOT_STATUS', '_anOpen'];
 
 type Agent = Record<string, unknown>;
 type Node = Record<string, any> & { id: string; children: Node[] };
@@ -140,7 +143,6 @@ type TNode = {
 };
 type TreeData = { nodes: TNode[]; density: string; title: string; selectedId: null; expanded: string[] };
 interface AgentUi {
-  renderCardAgents(s: unknown): string;
   renderAgentTree(s: unknown, col?: string): string;
   agentTreeOf(s: unknown, col?: string, extras?: string[]): Node;
   rootStatusOf(s: unknown, col?: string): string;
@@ -150,6 +152,39 @@ interface AgentUi {
   atHydrate(body: unknown, p: unknown): void;
 }
 const ui = load<AgentUi>(AGENT_FNS, AGENT_VARS);
+// The card the board element draws for a session (cardOf), with what it reads.
+const CARD_OF_FNS = [
+  'toNum',
+  'formatTokens',
+  'formatTaskTime',
+  'permissionSummary',
+  'cardSummary',
+  'pendingAutoResume',
+  'autoResumeLabel',
+  'cardCurrentTask',
+  'cardTaskRow',
+  'agentStatusOf',
+  'agentCounts',
+  'agentDotOf',
+  'cardTotalTokens',
+  'ctxLevel',
+  'ctxPercent',
+  'cardCtxTitle',
+  'cardPrMetric',
+  '_hashStr',
+  'ownerBadgeHue',
+  'isSiblingSession',
+  'cardOf',
+];
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+type FaceCard = Record<string, unknown> & { titles?: Record<string, string> };
+const face = load<{ cardOf(s: unknown, col: string): FaceCard }>(CARD_OF_FNS, CARD_OF_VARS, {
+  dhShow: () => true,
+  dhTruncate: () => null,
+  currentUserId: 'U1',
+  _ownerIndex: null,
+  SELF_INSTANCE_NAME: 'inst',
+});
 
 const T0 = 1_700_000_000_000;
 const AGENTS: Agent[] = [
@@ -207,31 +242,34 @@ const card = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-describe('collapsed card agents row (§4.1)', () => {
-  it('says how many subagents run and failed — in words, the dots are extra', () => {
-    const html = ui.renderCardAgents(card());
-    expect(html).toContain('class="card-agents"');
-    expect(html).toContain('서브에이전트 <b>3</b>');
-    expect(html).toContain('실행 1');
-    expect(html).toContain('<span class="ca-fail">실패 1</span>');
-    expect(html.match(/class="ag-dot /g)).toHaveLength(3);
-    expect(html).toContain('ag-dot is-running');
-    expect(html).toContain('title="서브에이전트 3, 실행 1, 실패 1"');
+// The row itself — the words, a dot per agent, +N past six, the tooltip — is the element's
+// (@2lab.ai/ui agent-inbox.test.ts 'renders the face: task, sub-agents, tokens · cost, files, …' and
+// 'maps status to tone, extension to glyph, counts to dots'); the words are the board's data.strings.
+describe('collapsed card agents row (§4.1) — the counts and dots the face carries (cardOf)', () => {
+  it('counts the subagents that run, finished and failed; a dot per agent in spawn order', () => {
+    expect(face.cardOf(card(), 'working').agents).toEqual({
+      total: 3,
+      running: 1,
+      done: 1,
+      failed: 1,
+      dots: ['running', 'failed', 'done'],
+    });
   });
 
-  it('caps the dots and counts the agents beyond the card', () => {
+  it('caps the dots at six and counts the agents beyond the card', () => {
     const many = Array.from({ length: 9 }, (_, i) => ({ id: `a${i}`, n: i + 1, status: 'completed', startedAt: T0 }));
-    const html = ui.renderCardAgents(card({ agents: many, agentsTotal: 12 }));
-    expect(html.match(/class="ag-dot /g)).toHaveLength(6);
-    expect(html).toContain('+3');
-    expect(html).toContain('서브에이전트 <b>12</b>');
-    expect(html).not.toContain('실행');
-    expect(html).not.toContain('실패');
+    expect(face.cardOf(card({ agents: many, agentsTotal: 12 }), 'working').agents).toEqual({
+      total: 12,
+      running: 0,
+      done: 9,
+      failed: 0,
+      dots: ['done', 'done', 'done', 'done', 'done', 'done'],
+    });
   });
 
-  it('a card without subagents has no row', () => {
-    expect(ui.renderCardAgents(card({ agents: undefined }))).toBe('');
-    expect(ui.renderCardAgents(card({ agents: [] }))).toBe('');
+  it('a card without subagents carries no agents', () => {
+    expect(face.cardOf(card({ agents: undefined }), 'working')).not.toHaveProperty('agents');
+    expect(face.cardOf(card({ agents: [] }), 'working')).not.toHaveProperty('agents');
   });
 });
 
@@ -564,33 +602,52 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
     expect(desc.anDesc(ui.agentTreeOf(card({ agents: ring }), 'working')).n).toBe(65);
   });
 
-  it('the data travels with the open card’s parts: a tree-only change is a change, painted where it changed', () => {
-    const parts = load<{
-      cardParts(s: unknown, col: string): Record<string, unknown>;
-      cardPartsDiffer(el: unknown, p: unknown): boolean;
-    }>([...AGENT_FNS, 'cardBodyShown', 'cardParts', 'cardPartsDiffer'], AGENT_VARS, {
-      cardState: () => 'working',
-      renderCardFace: () => 'face',
-      renderCardBody: () => 'body',
-      _expanded: new Set([KEY]),
-      _cardClosing: {},
-      acPrefetch: () => {},
-    });
-    const p = parts.cardParts(card(), 'working');
-    expect(p.tree).toEqual(ui.atCardData(card(), 'working'));
-    expect(p.treeSig).toBe(JSON.stringify(p.tree));
-    const el = {
-      getAttribute: (n: string) => (n === 'data-col' ? 'working' : 'working'),
-      _faceHtml: 'face',
-      _bodyHtml: 'body',
-      _treeSig: p.treeSig,
+  it('the data travels with the open card’s body paint: a tree-only change is a change, painted where it changed', () => {
+    const hydrated: Array<{ tree: TreeData | null; treeSig: string }> = [];
+    const cache: Record<string, unknown> = { [KEY]: card() };
+    const body = { parentNode: null as unknown, setAttribute: () => {} };
+    const host = {
+      appendChild: (k: typeof body) => {
+        k.parentNode = host;
+      },
     };
-    expect(parts.cardPartsDiffer(el, p)).toBe(false);
-    const moved = parts.cardParts(card({ agents: [{ ...AGENTS[0], toolCalls: 19 }, AGENTS[1], AGENTS[2]] }), 'working');
-    expect(moved.body).toBe(p.body);
-    expect(parts.cardPartsDiffer(el, moved)).toBe(true);
-    expect(fnBody('applyCardParts')).toContain('atHydrate(el._bodyEl, p);');
-    expect(parts.cardParts(card({ agents: [] }), 'working')).toMatchObject({ tree: null, treeSig: '' });
+    const markup: string[] = [];
+    const m = load<{ paintCardBody(k: string): void }>(
+      [...AGENT_FNS.filter((f) => f !== 'atHydrate'), 'cardBodyShown', 'paintCardBody'],
+      AGENT_VARS,
+      {
+        _cardHost: { [KEY]: host },
+        _cardCol: { [KEY]: 'working' },
+        _cardDrawn: { [KEY]: true },
+        _cardBodies: {},
+        _sessionCache: cache,
+        _expanded: new Set([KEY]),
+        _cardClosing: {},
+        document: { createElement: () => body },
+        renderCardBody: (s: unknown, col: string) => ui.renderAgentTree(s, col),
+        isEditingGoal: () => false,
+        isPickingModel: () => false,
+        captureGoalDraft: () => '',
+        restoreGoalDraft: () => {},
+        morphInnerHtml: (_el: unknown, html: string) => markup.push(html),
+        updateTimersIn: () => {},
+        acHydrate: () => {},
+        mpHydrate: () => {},
+        atHydrate: (_b: unknown, p: { tree: TreeData | null; treeSig: string }) => hydrated.push(p),
+      },
+    );
+    m.paintCardBody(KEY);
+    const tree = ui.atCardData(card(), 'working');
+    expect(hydrated[0]).toEqual({ tree, treeSig: JSON.stringify(tree) });
+    // A tool count moved: the body's markup is the same (written once), the tree's data is new.
+    cache[KEY] = card({ agents: [{ ...AGENTS[0], toolCalls: 19 }, AGENTS[1], AGENTS[2]] });
+    m.paintCardBody(KEY);
+    expect(markup).toHaveLength(1);
+    expect(hydrated[1].treeSig).not.toBe(hydrated[0].treeSig);
+    expect(hydrated[1].tree?.nodes.find((n) => n.id === 'toolu_explore')?.toolCalls).toBe(19);
+    cache[KEY] = card({ agents: [] });
+    m.paintCardBody(KEY);
+    expect(hydrated[2]).toEqual({ tree: null, treeSig: '' });
   });
 
   it('atPaint / atHydrate set the element’s data only where it changed (a push that changes nothing writes nothing)', () => {
@@ -704,19 +761,22 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
 });
 
 // Board perf (Z, 2026-10-29: "지금 너무 많아서 최신 컴퓨터인데도 느림"): every collapsed card held a painted
-// <ui-agent-tree> nobody could see. A collapsed card's body is inert and drawn at height 0, so it is not
-// built at all — no tree data, no tree, no approval card — until the card opens, and it goes once it closes.
+// <ui-agent-tree> nobody could see. A collapsed card's body is not built at all — no tree data, no tree, no
+// approval card — until the card opens (ui-toggle from the board element), and it goes once it closes (#548).
+// Its body is a light-DOM div in the card's slot (slot="body:<key>") on the element that draws the card.
 describe('a collapsed card builds no body — the agent tree is painted only while the card is open', () => {
   const KEY = 'inst::C1:t1';
   type FakeTree = { writes: number; data: unknown };
-  type FakeBody = { html: string; tree: FakeTree | null };
+  type FakeBody = {
+    html: string;
+    tree: FakeTree | null;
+    parentNode: unknown;
+    className: string;
+    attrs: Record<string, string>;
+  };
   function board(opts: { animate?: boolean } = {}) {
-    const calls = { treeData: 0, bodies: 0, morphs: 0, prefetch: [] as unknown[], order: [] as string[] };
+    const calls = { treeData: 0, bodies: 0, morphs: 0, faces: 0, prefetch: [] as unknown[], io: [] as unknown[] };
     const timers: Array<{ fn: (() => void) | null; ms: number }> = [];
-    const expanded = new Set<string>();
-    const closing: Record<string, unknown> = {};
-    const cardEls: Record<string, unknown> = {};
-    const cache: Record<string, unknown> = {};
     const paintedTree = (): FakeTree => {
       let d: unknown = null;
       const t = { writes: 0 } as FakeTree;
@@ -729,188 +789,222 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
       });
       return t;
     };
+    const makeBody = () => {
+      const b: FakeBody & Record<string, unknown> = {
+        html: '',
+        tree: null,
+        parentNode: null,
+        className: '',
+        attrs: {},
+        setAttribute: (n: string, v: string) => {
+          b.attrs[n] = v;
+        },
+        querySelector: (sel: string) => (sel === 'ui-agent-tree[data-at-ns]' ? b.tree : null),
+        contains: () => false,
+      };
+      return b;
+    };
+    const handlers: Record<string, (e: unknown) => void> = {};
+    const host = {
+      kids: [] as FakeBody[],
+      data: null as unknown,
+      _ibPlan: { cols: [{ id: 'working', label: 'RUNNING', keys: [KEY] }], load: 'ready', announce: false },
+      appendChild: (k: FakeBody) => {
+        host.kids.push(k);
+        k.parentNode = host;
+      },
+      removeChild: (k: FakeBody) => {
+        host.kids = host.kids.filter((x) => x !== k);
+        k.parentNode = null;
+      },
+      addEventListener: (n: string, fn: (e: unknown) => void) => {
+        handlers[n] = fn;
+      },
+    };
+    const env = {
+      _expanded: new Set<string>(),
+      _cardClosing: Object.create(null) as Record<string, unknown>,
+      _sessionCache: Object.create(null) as Record<string, unknown>,
+      _cardHost: Object.create(null) as Record<string, unknown>,
+      _cardCol: Object.create(null) as Record<string, string>,
+      _cardData: Object.create(null) as Record<string, unknown>,
+      _cardDrawn: Object.create(null) as Record<string, boolean>,
+      _cardBodies: Object.create(null) as Record<string, unknown>,
+      _doneGroupOpen: Object.create(null),
+      BOARD_STRINGS: {},
+      document: { activeElement: null, createElement: makeBody },
+      // The face: what the element draws collapsed (the agents' tool calls stand in for its data here).
+      cardOf: (s: { key: string; agents?: Agent[] }, col: string) => {
+        calls.faces++;
+        return { id: s.key, status: col, tools: (s.agents ?? []).map((a) => a.toolCalls) };
+      },
+      renderCardBody: (s: unknown, col: string) => {
+        calls.bodies++;
+        return `<div class="card-body">${ui.renderAgentTree(s, col)}</div>`;
+      },
+      atCardData: (s: unknown, col: string) => {
+        calls.treeData++;
+        return ui.atCardData(s, col);
+      },
+      acPrefetch: (s: unknown, col: string) => calls.prefetch.push([(s as { key: string }).key, col]),
+      // The slot is the same element across a morph; markup without it takes the element — and its shadow tree — away.
+      morphInnerHtml: (root: FakeBody, html: string) => {
+        calls.morphs++;
+        root.html = html;
+        if (!html.includes('<ui-agent-tree')) root.tree = null;
+        else if (!root.tree) root.tree = paintedTree();
+      },
+      acHydrate: () => {},
+      // #546: the body's <ui-model-picker> slots take their data on the same paint (none in this harness).
+      mpHydrate: () => {},
+      updateTimersIn: () => {},
+      canAnimate: () => opts.animate !== false,
+      MOTION: { move: 320, fade: 180, expand: 240 },
+      setTimeout: (fn: () => void, ms: number) => timers.push({ fn, ms }),
+      clearTimeout: (id: number) => {
+        if (timers[id - 1]) timers[id - 1].fn = null;
+      },
+      releaseCardIoTimer: () => {},
+      ensureCardIo: (...a: unknown[]) => calls.io.push(a),
+      ensureArtifacts: () => {},
+      isSiblingSession: () => false,
+      scheduleLayoutRefresh: () => {},
+      openArtifactModal: () => {},
+    };
     const fns = load<{
-      cardParts(s: unknown, col: string): Record<string, unknown>;
-      cardPartsDiffer(el: unknown, p: unknown): boolean;
-      patchCard(el: unknown, s: unknown, col: string): boolean;
-      toggleCard(key: string, instant?: boolean): void;
+      placeCard(s: unknown, col: string, host: unknown, drawn: boolean): void;
+      refreshCard(key: string): void;
+      wireInbox(host: unknown): void;
     }>(
       [
         'cardBodyShown',
-        'cardParts',
-        'cardPartsDiffer',
         'syncCardBody',
+        'syncCardBodies',
         'isEditingGoal',
         'isPickingModel',
         'captureGoalDraft',
         'restoreGoalDraft',
-        'popStatusIcon',
-        'applyCardParts',
         'atPaint',
         'atHydrate',
-        'patchCard',
+        'placeCard',
+        'inboxPaint',
+        'paintCardBody',
         'refreshCard',
-        'toggleCard',
+        'wireInbox',
       ],
       [],
-      {
-        _expanded: expanded,
-        _cardClosing: closing,
-        _cardEls: cardEls,
-        _sessionCache: cache,
-        cardState: (_s: unknown, col: string) => col,
-        renderCardFace: () => 'face',
-        renderCardBody: (s: unknown, col: string) => {
-          calls.bodies++;
-          return `<div class="card-body">${ui.renderAgentTree(s, col)}</div>`;
-        },
-        atCardData: (s: unknown, col: string) => {
-          calls.treeData++;
-          return ui.atCardData(s, col);
-        },
-        acPrefetch: (s: unknown, col: string) => calls.prefetch.push([(s as { key: string }).key, col]),
-        // The slot is the same element across a morph; markup without it takes the element — and its shadow tree — away.
-        morphInnerHtml: (root: FakeBody, html: string) => {
-          calls.morphs++;
-          calls.order.push('body');
-          root.html = html;
-          if (!html.includes('<ui-agent-tree')) root.tree = null;
-          else if (!root.tree) root.tree = paintedTree();
-        },
-        acHydrate: () => {},
-        // #546: refreshCard also hydrates the card's <ui-model-picker> slots (none in this harness).
-        mpHydrate: () => {},
-        updateTimersIn: () => {},
-        animateCountersIn: () => {},
-        canAnimate: () => opts.animate !== false,
-        reduceMotion: () => false,
-        MOTION: { move: 320, fade: 180, expand: 240, easeOut: 'ease-out' },
-        setTimeout: (fn: () => void, ms: number) => timers.push({ fn, ms }),
-        clearTimeout: (id: number) => {
-          if (timers[id - 1]) timers[id - 1].fn = null;
-        },
-        applyExpanded: (el: { open?: boolean }, open: boolean) => {
-          calls.order.push(open ? 'open' : 'close');
-          el.open = open;
-        },
-        releaseCardIoTimer: () => {},
-        ensureCardIo: () => {},
-        ensureArtifacts: () => {},
-        isSiblingSession: () => false,
-        document: { activeElement: null },
-      },
+      env,
     );
-    const body: FakeBody & Record<string, unknown> = {
-      html: '',
-      tree: null,
-      querySelector: (sel: string) => (sel === 'ui-agent-tree[data-at-ns]' ? body.tree : null),
-      contains: () => false,
+    fns.wireInbox(host);
+    // A board render places the card on its element; a live push (sessionUpdated) refreshes it.
+    const place = (s: { key: string }) => {
+      env._sessionCache[s.key] = s;
+      fns.placeCard(s, 'working', host, true);
     };
-    const attrs: Record<string, string> = { 'data-col': 'working' };
-    const el = {
-      getAttribute: (n: string) => attrs[n] ?? null,
-      setAttribute: (n: string, v: string) => {
-        attrs[n] = v;
-      },
-      classList: { add: () => {}, remove: () => {} },
-      offsetHeight: 0,
-      _faceEl: { innerHTML: '', querySelector: () => null },
-      _faceHtml: null,
-      _bodyEl: body,
-      _bodyHtml: null as string | null,
-      _treeSig: '',
+    const push = (s: { key: string }) => {
+      env._sessionCache[s.key] = s;
+      fns.refreshCard(s.key);
     };
-    cardEls[KEY] = el;
+    // The board element's ui-toggle: the reader opened (or closed) the card.
+    const toggle = (expanded: boolean) => handlers['ui-toggle']({ target: host, detail: { cardId: KEY, expanded } });
     const runTimers = () => {
       for (const t of timers.splice(0)) t.fn?.();
     };
-    return { ...fns, el, body, calls, timers, runTimers, expanded, closing };
+    const body = () => host.kids[0] as FakeBody | undefined;
+    return { host, env, calls, timers, runTimers, place, push, toggle, body };
   }
   const moved = () => card({ agents: [{ ...AGENTS[0], toolCalls: 19 }, AGENTS[1], AGENTS[2]] });
 
   it('a collapsed card computes no tree data and holds no painted tree — a live push on it builds nothing', () => {
     const b = board();
-    b.patchCard(b.el, card(), 'working');
-    b.patchCard(b.el, moved(), 'working');
-    expect(b.calls).toMatchObject({ treeData: 0, bodies: 0, morphs: 1 });
-    expect(b.body).toMatchObject({ html: '', tree: null });
-    expect(b.el._treeSig).toBe('');
-    // The reconciler sees nothing to write for it: its agents move no markup and no tree.
-    expect(b.cardParts(moved(), 'working')).toMatchObject({ body: '', tree: null, treeSig: '' });
-    expect(b.cardPartsDiffer(b.el, b.cardParts(moved(), 'working'))).toBe(false);
+    b.place(card());
+    b.push(moved());
+    expect(b.calls).toMatchObject({ treeData: 0, bodies: 0, morphs: 0 });
+    expect(b.host.kids).toHaveLength(0);
+    expect(b.env._cardBodies[KEY]).toBeUndefined();
+    // The face took the push (the element draws it), where it changed.
+    expect(b.env._cardData[KEY]).toEqual({ id: KEY, status: 'working', tools: [19, 3, 31] });
     // Its permission prompts' inputs are still fetched (acPrefetch), so opening shows them at once.
     expect(b.calls.prefetch).toContainEqual([KEY, 'working']);
   });
 
-  it('expanding builds the body and paints the tree before the row grows; the element keeps ui-select → openPanel', () => {
+  it('opening builds the body in the card’s slot and paints the tree before the row grows; the element keeps ui-select → openPanel', () => {
     const b = board();
-    b.patchCard(b.el, card(), 'working');
-    b.calls.order.length = 0;
-    b.toggleCard(KEY);
-    expect(b.calls.order).toEqual(['body', 'open']);
-    expect(b.body.html).toContain(`<ui-agent-tree lang="ko" data-at-ns="c|${KEY}">`);
-    expect(b.body.tree).toMatchObject({ writes: 1, data: ui.atCardData(card(), 'working') });
+    b.place(card());
+    b.toggle(true);
+    // Built inside the element's ui-toggle — before the element grows the row over it.
+    const body = b.body() as FakeBody;
+    expect(body.className).toBe('card-slot');
+    expect(body.attrs).toEqual({ slot: `body:${KEY}`, 'data-session-key': KEY });
+    expect(body.html).toContain(`<ui-agent-tree lang="ko" data-at-ns="c|${KEY}">`);
+    expect(body.tree).toMatchObject({ writes: 1, data: ui.atCardData(card(), 'working') });
     expect(b.calls.treeData).toBe(1);
+    // The open card's 지시/응답 is fetched at once.
+    expect(b.calls.io).toEqual([[KEY, true]]);
     // The slot is the one the card's ui-select listener answers (data-at-ns c|<key> → openPanel(key, 'agent', …)).
     expect(clientListener('ui-select')).toContain("openPanel(ns.slice(2), 'agent', agentId, _atKeyed);");
   });
 
-  it('a live push on an expanded card repaints its tree only when the tree changed — same element, same markup', () => {
+  it('a live push on an open card repaints its tree only when the tree changed — same element, same markup', () => {
     const b = board();
-    b.patchCard(b.el, card(), 'working');
-    b.toggleCard(KEY);
-    const tree = b.body.tree as FakeTree;
+    b.place(card());
+    b.toggle(true);
+    const body = b.body() as FakeBody;
+    const tree = body.tree as FakeTree;
     const morphs = b.calls.morphs;
-    b.patchCard(b.el, card(), 'working');
+    b.push(card());
     expect(tree.writes).toBe(1);
-    b.patchCard(b.el, moved(), 'working');
+    b.push(moved());
     expect(tree.writes).toBe(2);
     expect(tree.data).toEqual(ui.atCardData(moved(), 'working'));
-    expect(b.body.tree).toBe(tree);
+    expect(b.host.kids).toEqual([body]);
+    expect(body.tree).toBe(tree);
     expect(b.calls.morphs).toBe(morphs);
   });
 
-  it('collapsing frees the tree once the collapse has run; a push meanwhile keeps the body it runs over', () => {
+  it('closing frees the tree once the collapse has run; a push meanwhile keeps the body it runs over', () => {
     const b = board();
-    b.patchCard(b.el, card(), 'working');
-    b.toggleCard(KEY);
-    const tree = b.body.tree as FakeTree;
-    b.toggleCard(KEY);
-    expect(b.calls.order.slice(-1)).toEqual(['close']);
+    b.place(card());
+    b.toggle(true);
+    const body = b.body() as FakeBody;
+    const tree = body.tree as FakeTree;
+    b.toggle(false);
     expect(b.timers.map((t) => t.ms)).toEqual([300]); // the expand duration (240 ms) and a margin
-    b.patchCard(b.el, moved(), 'working');
-    expect(b.body.tree).toBe(tree);
+    b.push(moved());
+    expect(b.body()).toBe(body);
+    expect(body.tree).toBe(tree);
     expect(tree.writes).toBe(2);
     b.runTimers();
-    expect(b.body).toMatchObject({ html: '', tree: null });
-    expect(b.el._treeSig).toBe('');
-    expect(b.closing).toEqual({});
+    expect(b.host.kids).toHaveLength(0);
+    expect(body.parentNode).toBeNull();
+    expect(b.env._cardBodies[KEY]).toBeUndefined();
+    expect(b.env._cardClosing).toEqual({});
     // Collapsed again: pushes compute nothing.
     const before = b.calls.treeData;
-    b.patchCard(b.el, card(), 'working');
+    b.push(card());
     expect(b.calls.treeData).toBe(before);
+    expect(b.host.kids).toHaveLength(0);
   });
 
-  it('reopening while it closes keeps the painted tree; without motion (a keyboard toggle, a hidden tab) it goes at once', () => {
+  it('reopening while it closes keeps the painted tree; without motion (a hidden tab, reduced motion) it goes at once', () => {
     const b = board();
-    b.patchCard(b.el, card(), 'working');
-    b.toggleCard(KEY);
-    const tree = b.body.tree as FakeTree;
-    b.toggleCard(KEY);
-    b.toggleCard(KEY);
+    b.place(card());
+    b.toggle(true);
+    const body = b.body() as FakeBody;
+    const tree = body.tree as FakeTree;
+    b.toggle(false);
+    b.toggle(true);
     b.runTimers();
-    expect(b.body.tree).toBe(tree);
+    expect(b.host.kids).toEqual([body]);
+    expect(body.tree).toBe(tree);
     expect(tree.writes).toBe(1);
-    b.toggleCard(KEY, true);
-    expect(b.timers).toHaveLength(0);
-    expect(b.body.tree).toBeNull();
     const still = board({ animate: false });
-    still.patchCard(still.el, card(), 'working');
-    still.toggleCard(KEY);
-    expect(still.body.tree).not.toBeNull();
-    still.toggleCard(KEY);
+    still.place(card());
+    still.toggle(true);
+    expect(still.body()?.tree).not.toBeNull();
+    still.toggle(false);
     expect(still.timers).toHaveLength(0);
-    expect(still.body.tree).toBeNull();
+    expect(still.host.kids).toHaveLength(0);
   });
 
   it("a collapsed card's permission prompts are prefetched as its approval cards would be — not when locked or closed", () => {
@@ -1084,7 +1178,8 @@ describe('panel scope (§4.3)', () => {
     );
     // The pill counts what the list shows: a paired result lives in its call's card.
     expect(fnBody('paintWorkLog')).toContain('wlVisible(state, wlScopeEntries(added.map(');
-    expect(fnBody('renderCardFace')).toContain('+ renderCardAgents(s)');
+    // The collapsed card's agents are the face's data (cardOf); the open card's tree is in its body.
+    expect(fnBody('cardOf')).toContain('dots: agents.slice(0, 6).map(agentDotOf)');
     expect(fnBody('renderCardBody')).toContain('const agentsHtml = renderAgentTree(s, col);');
     expect(TEMPLATE).toContain('<div class="panel-agents" id="panel-agents" style="display:none"></div>');
   });
@@ -1914,9 +2009,9 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
     expect(body).not.toContain('replaceChild');
   });
   it('a changed card body is morphed into place, not rewritten', () => {
-    const body = fnBody('applyCardParts');
-    expect(body).toContain('morphInnerHtml(el._bodyEl, p.body);');
-    expect(body).not.toContain('_bodyEl.innerHTML =');
+    const body = fnBody('paintCardBody');
+    expect(body).toContain('morphInnerHtml(b.el, html);');
+    expect(body).not.toContain('.innerHTML =');
   });
 });
 
@@ -1938,15 +2033,16 @@ describe('task total on the face and in 세션 정보 (SSOT T3)', () => {
   };
 
   it('the face total says it is the whole task — main and subagents — and when it is partial', () => {
-    const f = load<{ renderCardUsage(s: unknown): string }>(
-      ['esc', 'escAttr', 'toNum', 'cardTotalTokens', 'spendTotal', 'spendText', 'renderCardUsage'],
-      [],
-      { formatCount: (_k: string, n: number) => String(n) },
-    );
-    const whole = f.renderCardUsage({ tokenUsage: u, subagentSpend: sub });
-    expect(whole).toContain('메인 + 서브에이전트 2개');
-    expect(whole).not.toContain('부분 합계');
-    expect(f.renderCardUsage({ tokenUsage: { ...u, partialSince: 1_700_000_000_000 } })).toContain('부분 합계');
+    // The face's tokens · cost are the card's data (cardOf); the element draws them with these titles.
+    const whole = face.cardOf({ key: 'k', tokenUsage: u, subagentSpend: sub }, 'working');
+    expect(whole.tokens).toBe(10_000);
+    expect(whole.costUsd).toBe(3.5);
+    expect(whole.titles?.tokens).toContain('(task 합계: 메인 + 서브에이전트 2개)');
+    expect(whole.titles?.cost).toBe('API 환산 비용 (task 합계: 메인 + 서브에이전트 2개)');
+    expect(whole.titles?.tokens).not.toContain('부분 합계');
+    const partial = face.cardOf({ key: 'k', tokenUsage: { ...u, partialSince: 1_700_000_000_000 } }, 'working');
+    expect(partial.titles?.tokens).toContain('부분 합계');
+    expect(partial.titles?.cost).toContain('부분 합계');
   });
 
   it('세션 정보 lists the subagents’ share and, for a partial total, since when it counts', () => {

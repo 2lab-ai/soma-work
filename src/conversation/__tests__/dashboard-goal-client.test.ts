@@ -88,8 +88,13 @@ function clickTargets(html: string): any[][] {
       .replace(/&quot;/g, '"')
       .replace(/&#39;/g, "'")
       .replace(/&amp;/g, '&');
-    // The completed-goals toggle (T6) only opens a list — not a goal action.
-    new Function('event', 'goalAction', 'toggleGoalHistory', js)(event, goalAction, () => {});
+    // The completed-goals toggle (T6) and the objective's fold only open — not goal actions.
+    new Function('event', 'goalAction', 'toggleGoalHistory', 'togglePanelGoal', js)(
+      event,
+      goalAction,
+      () => {},
+      () => {},
+    );
   }
   return calls;
 }
@@ -186,8 +191,8 @@ describe('work item goal list — controls (T3)', () => {
     ] as const) {
       const html = renderCardGoal(card(), col, canEdit);
       const all = html.match(/<button[^>]*>/g) ?? [];
-      // Opening the completed goals (T6) is reading, so it stays enabled.
-      const buttons = all.filter((b) => !b.includes('cg-history-toggle'));
+      // Opening the completed goals (T6) or the folded objective is reading, so it stays enabled.
+      const buttons = all.filter((b) => !b.includes('cg-history-toggle') && !b.includes('cg-more'));
       expect(all.filter((b) => b.includes('cg-history-toggle'))).toEqual([expect.not.stringContaining(' disabled')]);
       expect(buttons.length).toBe(3);
       for (const b of buttons) expect(b).toContain(' disabled');
@@ -253,76 +258,61 @@ describe('work item goal list — controls (T3)', () => {
 });
 
 describe('work item goal list — the goal being typed survives a live re-render', () => {
+  const KEY = 'self::C1:t1';
   function fakeCard(activeIsInput: boolean, value: string) {
     const input = { classList: { contains: (c: string) => c === 'cg-add-input' }, value };
+    const host = { appendChild: () => {} };
     const body: any = {
       innerHTML: '<old>',
+      parentNode: host,
       contains: (node: unknown) => node === input,
       querySelector: (sel: string) => (sel === '.cg-add-input' ? body._input : null),
       _input: input,
     };
     const document = { activeElement: activeIsInput ? input : null };
-    const el: any = {
-      attrs: { 'data-col': 'working', 'data-state': 'working' },
-      getAttribute(n: string) {
-        return this.attrs[n];
-      },
-      setAttribute(n: string, v: string) {
-        this.attrs[n] = v;
-      },
-      _faceEl: { innerHTML: '' },
-      _faceHtml: 'face',
-      _bodyEl: body,
-      _bodyHtml: 'old-body',
-    };
-    return { el, body, input, document };
+    // The open card's body (#548: only an open card has one), in its slot on the element that draws it.
+    const bodies: Record<string, { el: unknown; html: string | null }> = { [KEY]: { el: body, html: 'old-body' } };
+    return { host, body, bodies, document };
   }
-  const parts = { col: 'working', state: 'working', face: 'face', body: 'new-body', cid: null };
-
-  it('does not replace the body while the goal input has focus (typing / IME untouched)', () => {
-    const { el, body, document } = fakeCard(true, '쓰는 중');
-    const { applyCardParts } = load<any>(
-      ['isEditingGoal', 'isPickingModel', 'captureGoalDraft', 'restoreGoalDraft', 'applyCardParts'],
+  function painter(c: ReturnType<typeof fakeCard>) {
+    return load<{ paintCardBody(k: string): void }>(
+      ['isEditingGoal', 'isPickingModel', 'captureGoalDraft', 'restoreGoalDraft', 'cardBodyShown', 'paintCardBody'],
       [],
       {
-        document,
+        document: c.document,
+        _cardHost: { [KEY]: c.host },
+        _cardCol: { [KEY]: 'working' },
+        _cardDrawn: { [KEY]: true },
+        _cardBodies: c.bodies,
+        _sessionCache: { [KEY]: card() },
+        _expanded: new Set([KEY]),
+        _cardClosing: {},
+        renderCardBody: () => 'new-body',
         updateTimersIn: () => {},
-        animateCountersIn: () => {},
         // The browser morphs the body; this fake body rebuilds on write.
         morphInnerHtml: (b: { innerHTML: string }, html: string) => {
           b.innerHTML = html;
         },
         acHydrate: () => {}, // affectUI batch 1: the body's approval cards take their data
-        atHydrate: () => {}, // affectUI batch 2: the body's agent tree takes its data
         mpHydrate: () => {}, // the body's model picker takes its data (<ui-model-picker>)
+        atCardData: () => null,
+        atHydrate: () => {}, // affectUI batch 2: the body's agent tree takes its data
       },
     );
+  }
 
-    applyCardParts(el, parts);
+  it('does not replace the body while the goal input has focus (typing / IME untouched)', () => {
+    const c = fakeCard(true, '쓰는 중');
+    painter(c).paintCardBody(KEY);
 
-    expect(body.innerHTML).toBe('<old>');
-    expect(el._bodyHtml).toBe('old-body');
+    expect(c.body.innerHTML).toBe('<old>');
+    expect(c.bodies[KEY].html).toBe('old-body');
   });
 
   it('carries an unfocused draft into the new body', () => {
-    const { el, body, document } = fakeCard(false, '나중에 보낼 goal');
+    const c = fakeCard(false, '나중에 보낼 goal');
+    const { body } = c;
     const fresh = { classList: { contains: () => true }, value: '' };
-    const { applyCardParts } = load<any>(
-      ['isEditingGoal', 'isPickingModel', 'captureGoalDraft', 'restoreGoalDraft', 'applyCardParts'],
-      [],
-      {
-        document,
-        updateTimersIn: () => {},
-        animateCountersIn: () => {},
-        // The browser morphs the body; this fake body rebuilds on write.
-        morphInnerHtml: (b: { innerHTML: string }, html: string) => {
-          b.innerHTML = html;
-        },
-        acHydrate: () => {}, // affectUI batch 1: the body's approval cards take their data
-        atHydrate: () => {}, // affectUI batch 2: the body's agent tree takes its data
-        mpHydrate: () => {}, // the body's model picker takes its data (<ui-model-picker>)
-      },
-    );
     // innerHTML assignment builds a fresh, empty input.
     Object.defineProperty(body, 'innerHTML', {
       set(v: string) {
@@ -334,9 +324,122 @@ describe('work item goal list — the goal being typed survives a live re-render
       },
     });
 
-    applyCardParts(el, parts);
+    painter(c).paintCardBody(KEY);
 
     expect(body._html).toBe('new-body');
+    expect(c.bodies[KEY].html).toBe('new-body');
     expect(fresh.value).toBe('나중에 보낼 goal');
+  });
+});
+
+// SSOT 2026-10-29 — "디테일 카드에서 Goal 도 디폴트로 collapsed 로 표시해줘. 첫 3줄 정도만
+// 표시되도록." The panel (Session Detail) is the goal's home: every opening shows
+// the objective folded to its first 3 lines, and 펼치기 shows all of it.
+describe('panel goal — the objective opens folded to its first 3 lines', () => {
+  const { renderCardGoal } = load<{ renderCardGoal(s: any, col: string, canEdit: boolean, open?: boolean): string }>(
+    RENDER_FNS,
+    RENDER_VARS,
+  );
+  const CSS = TEMPLATE.slice(0, TEMPLATE.indexOf('</style>'));
+  function rule(selector: string): string {
+    const at = CSS.indexOf(`\n${selector} {`);
+    if (at < 0) throw new Error(`no CSS rule ${selector}`);
+    return CSS.slice(at, CSS.indexOf('}', at));
+  }
+
+  it('folded by default: no is-open, a 펼치기 that names the objective it opens', () => {
+    const html = renderCardGoal(card(), 'working', true);
+    expect(html).toContain('<div class="card-goal">');
+    expect(html).toContain('id="panel-goal-obj"');
+    const more = html.match(/<button[^>]*class="cg-more"[^>]*>[^<]*/)?.[0] ?? '';
+    expect(more).toContain('aria-expanded="false"');
+    expect(more).toContain('aria-controls="panel-goal-obj"');
+    expect(more).toContain('togglePanelGoal()');
+    expect(more).toContain('펼치기');
+  });
+
+  it('open: is-open on the goal, the toggle reads 접기', () => {
+    const html = renderCardGoal(card(), 'working', true, true);
+    expect(html).toContain('<div class="card-goal is-open">');
+    const more = html.match(/<button[^>]*class="cg-more"[^>]*>[^<]*/)?.[0] ?? '';
+    expect(more).toContain('aria-expanded="true"');
+    expect(more).toContain('접기');
+  });
+
+  it('no current goal, no fold toggle', () => {
+    expect(renderCardGoal(card({ goal: undefined }), 'idle', true)).not.toContain('cg-more');
+  });
+
+  it('reading, not writing: the toggle stays enabled for a read-only viewer and on a closed session', () => {
+    for (const [col, canEdit] of [
+      ['working', false],
+      ['closed', true],
+    ] as const) {
+      const more = renderCardGoal(card(), col, canEdit).match(/<button[^>]*class="cg-more"[^>]*>/)?.[0] ?? '';
+      expect(more).not.toBe('');
+      expect(more).not.toContain(' disabled');
+    }
+  });
+
+  it('CSS: the panel clamps the objective to 3 lines; is-open shows all of it', () => {
+    const folded = rule('.panel-goal .card-goal .cg-objective');
+    expect(folded).toContain('-webkit-line-clamp: 3');
+    expect(folded).not.toContain('unset');
+    const open = rule('.panel-goal .card-goal.is-open .cg-objective');
+    expect(open).toContain('-webkit-line-clamp: unset');
+    expect(open).toContain('overflow: visible');
+    expect(rule('.card-goal .cg-more[hidden]')).toContain('display: none');
+  });
+
+  function sections(detail: boolean, land: string) {
+    return new Function(
+      `var _panelDetail = ${detail}, _panelLand = ${JSON.stringify(land)};
+       var _panelInfoOpen, _panelTasksOpen, _panelTasksExpanded, _panelTasksEarlier, _panelGoalOpen;
+       ${clientFn('resetPanelSections')}
+       resetPanelSections();
+       return _panelGoalOpen;`,
+    )() as boolean;
+  }
+
+  it('every opening starts folded — 자세히 and a goal landing (관리 → / 보기 →) included', () => {
+    expect(sections(false, '')).toBe(false);
+    expect(sections(false, 'tasks')).toBe(false);
+    expect(sections(true, '')).toBe(false);
+    expect(sections(false, 'goal')).toBe(false);
+    expect(sections(true, 'goal')).toBe(false);
+  });
+
+  it('togglePanelGoal flips the fold and repaints the panel goal; renderPanelGoal renders with it', () => {
+    const renderPanelGoal = vi.fn();
+    const flip = new Function(
+      'renderPanelGoal',
+      `var _panelGoalOpen = false;
+       ${clientFn('togglePanelGoal')}
+       togglePanelGoal(); var a = _panelGoalOpen;
+       togglePanelGoal(); return [a, _panelGoalOpen];`,
+    )(renderPanelGoal);
+    expect(flip).toEqual([true, false]);
+    expect(renderPanelGoal).toHaveBeenCalledTimes(2);
+    expect(clientFn('renderPanelGoal')).toContain('renderCardGoal(s, col, canEdit, _panelGoalOpen)');
+    expect(clientFn('renderPanelGoal')).toContain('syncGoalMore(el)');
+  });
+
+  it('the toggle shows only when the objective runs past 3 lines (measured, folded or open)', () => {
+    function measure(scrollHeight: number, lineHeight: string) {
+      const more = { hidden: false };
+      const obj = { scrollHeight };
+      const root = {
+        querySelector: (sel: string) => (sel === '.cg-objective' ? obj : sel === '.cg-more' ? more : null),
+      };
+      new Function(
+        'getComputedStyle',
+        `${clientVar('GOAL_FOLD_LINES')}\n${clientFn('syncGoalMore')}\nreturn syncGoalMore;`,
+      )(() => ({ lineHeight }))(root);
+      return more.hidden;
+    }
+    expect(measure(18 * 4, '18px')).toBe(false); // 4 lines: something is cut
+    expect(measure(18 * 3, '18px')).toBe(true); // fits: nothing to open
+    expect(measure(18, '18px')).toBe(true);
+    expect(measure(18 * 3, 'normal')).toBe(false); // unknown line height: keep the way to open it
   });
 });

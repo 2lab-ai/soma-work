@@ -6,8 +6,9 @@
  *
  * A RUNNING card whose session is idle because a retry timer or a goal
  * re-check will start it again shows: when it resumes, which attempt, and the
- * error behind it — never the "Running" spinner, and never a Stop button for a
- * turn that is not running.
+ * error behind it — never the running status, and never a Stop button for a
+ * turn that is not running. The face is the board element's (@2lab.ai/ui
+ * <ui-agent-inbox>); the page hands it the card data (cardOf).
  */
 
 import { readFileSync } from 'node:fs';
@@ -38,31 +39,53 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
+// The face is now @2lab.ai/ui <ui-agent-inbox>'s: the page hands it the card
+// data (cardOf) — status, statusText and summary as text, escaped by the
+// element ('escapes every user and model string'). The open card's resume row
+// (renderCardResume) is still the page's.
+const CARD_OF_FNS = [
+  'toNum',
+  'formatTokens',
+  'formatTaskTime',
+  'permissionSummary',
+  'cardSummary',
+  'pendingAutoResume',
+  'autoResumeLabel',
+  'cardCurrentTask',
+  'cardTaskRow',
+  'agentStatusOf',
+  'agentCounts',
+  'agentDotOf',
+  'cardTotalTokens',
+  'ctxLevel',
+  'ctxPercent',
+  'cardCtxTitle',
+  'cardPrMetric',
+  '_hashStr',
+  'ownerBadgeHue',
+  'isSiblingSession',
+  'cardOf',
+];
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+
 interface Card {
   pendingAutoResume(s: unknown, col: string): unknown;
   autoResumeLabel(r: unknown): string;
-  renderCardStatus(s: unknown, col: string): string;
   cardSummary(s: unknown, col: string, headline: string): string;
-  renderCardResume(s: unknown, col: string): string;
+  cardOf(s: unknown, col: string): Record<string, unknown>;
 }
 
-const card = load<Card>(
-  [
-    'esc',
-    'escAttr',
-    'toNum',
-    'formatTaskTime',
-    'pendingAutoResume',
-    'autoResumeLabel',
-    'doneTimeOf',
-    'cardAgo',
-    'renderCardStatus',
-    'cardSummary',
-    'renderCardResume',
-  ],
-  ['WAIT_SVG', 'RESUME_SVG'],
+const card = load<Card>(CARD_OF_FNS, CARD_OF_VARS, {
   // The task row is hidden here, so the summary line names the running task.
-  { dhShow: () => false },
+  dhShow: () => false,
+  dhTruncate: () => null,
+  currentUserId: 'U1',
+  _ownerIndex: null,
+  SELF_INSTANCE_NAME: '',
+});
+const resumeRow = load<{ renderCardResume(s: unknown, col: string): string }>(
+  ['esc', 'toNum', 'formatTaskTime', 'pendingAutoResume', 'autoResumeLabel', 'renderCardResume'],
+  ['RESUME_SVG'],
 );
 
 const AT = Date.UTC(2026, 9, 22, 10, 24);
@@ -80,19 +103,19 @@ function resuming(autoResume: Record<string, unknown>, overrides: Record<string,
   };
 }
 
-describe('a RUNNING card waiting out an automatic resume (shipped card renderers)', () => {
-  it('a 429 turn retry: resume time, attempt n/3 and the error — no Running spinner', () => {
+describe('a RUNNING card waiting out an automatic resume (cardOf + the open card’s resume row)', () => {
+  it('a 429 turn retry: the wait status, resume time, attempt n/3 and the error — no Running clock', () => {
     const s = resuming({ kind: 'error-retry', at: AT, attempt: 1, maxAttempts: 3, reason: RATE_LIMIT });
-    const html = card.renderCardStatus(s, 'working');
+    const c = card.cardOf(s, 'working');
 
-    expect(html).toContain('is-resume');
-    expect(html).toContain(`${atText} 자동 재개 · 시도 1/3`);
-    expect(html).toContain(`title="${RATE_LIMIT}"`);
-    expect(html).not.toContain('spinner');
-    expect(html).not.toContain('Running');
+    expect(c.status).toBe('waiting');
+    expect(c.statusText).toBe(`${atText} 자동 재개 · 시도 1/3`);
+    expect(c.since).toBeUndefined();
+    expect(c.elapsedMs).toBeUndefined();
+    expect(c.summary).toBe(`오류: ${RATE_LIMIT}`);
 
     expect(card.cardSummary(s, 'working', 'headline')).toBe(`오류: ${RATE_LIMIT}`);
-    const row = card.renderCardResume(s, 'working');
+    const row = resumeRow.renderCardResume(s, 'working');
     expect(row).toContain('class="card-resume"');
     expect(row).toContain(`${atText} 자동 재개 · 시도 1/3`);
     expect(row).toContain(RATE_LIMIT);
@@ -106,41 +129,50 @@ describe('a RUNNING card waiting out an automatic resume (shipped card renderers
       maxAttempts: 3,
       reason: 'one-shot dispatch aborted during pool rate-limit retry wait',
     });
-    expect(card.renderCardStatus(s, 'working')).toContain(`${atText} Goal 판정 재시도 · 시도 2/3`);
+    expect(card.cardOf(s, 'working')).toMatchObject({
+      status: 'waiting',
+      statusText: `${atText} Goal 판정 재시도 · 시도 2/3`,
+    });
   });
 
   it('a goal completion check running now has no clock and no error line', () => {
     const s = resuming({ kind: 'goal-eval' });
     expect(card.autoResumeLabel(s.autoResume)).toBe('Goal 완료 판정 중');
-    expect(card.renderCardStatus(s, 'working')).toContain('Goal 완료 판정 중');
+    expect(card.cardOf(s, 'working')).toMatchObject({ status: 'waiting', statusText: 'Goal 완료 판정 중' });
     expect(card.cardSummary(s, 'working', 'headline')).not.toContain('오류');
-    expect(card.renderCardResume(s, 'working')).not.toContain('cr-reason');
+    expect(resumeRow.renderCardResume(s, 'working')).not.toContain('cr-reason');
   });
 
-  it('a turn that is actually running wins over an armed retry: spinner, current task, no resume row', () => {
+  it('a turn that is actually running wins over an armed retry: running, current task, no resume row', () => {
     const s = resuming(
       { kind: 'error-retry', at: AT, attempt: 1, maxAttempts: 3, reason: RATE_LIMIT },
       { activityState: 'working', tasks: [{ content: 'T1.5 변이 실행', status: 'in_progress' }] },
     );
     expect(card.pendingAutoResume(s, 'working')).toBeNull();
-    expect(card.renderCardStatus(s, 'working')).toContain('spinner');
+    const c = card.cardOf(s, 'working');
+    expect(c.status).toBe('running');
+    expect(c.statusText).toBeUndefined();
     expect(card.cardSummary(s, 'working', 'headline')).toBe('T1.5 변이 실행');
-    expect(card.renderCardResume(s, 'working')).toBe('');
+    expect(resumeRow.renderCardResume(s, 'working')).toBe('');
   });
 
   it('outside the RUNNING column an autoResume field changes nothing', () => {
     const s = resuming({ kind: 'error-retry', at: AT, attempt: 1, maxAttempts: 3, reason: RATE_LIMIT });
     expect(card.pendingAutoResume(s, 'idle')).toBeNull();
-    expect(card.renderCardStatus(s, 'idle')).toContain('Done in');
+    // "Done in <active time>": the element words it from status done + elapsedMs.
+    const c = card.cardOf(s, 'idle');
+    expect(c).toMatchObject({ status: 'done', elapsedMs: 3_485_924 });
+    expect(c.statusText).toBeUndefined();
   });
 
   it('a hostile error line is text, never markup', () => {
     const bad = '"><img src=x onerror=alert(1)>';
     const s = resuming({ kind: 'error-retry', at: AT, attempt: 1, maxAttempts: 3, reason: bad });
-    for (const html of [card.renderCardStatus(s, 'working'), card.renderCardResume(s, 'working')]) {
-      expect(html).not.toContain('<img');
-      expect(html).not.toMatch(/="\s*onerror/);
-    }
+    // The face carries it as plain text; the element escapes it ('escapes every user and model string').
+    expect(card.cardOf(s, 'working').summary).toBe(`오류: ${bad}`);
+    const html = resumeRow.renderCardResume(s, 'working');
+    expect(html).not.toContain('<img');
+    expect(html).not.toMatch(/="\s*onerror/);
   });
 
   it('the open card offers Close, not Stop, while it waits (no turn to stop); a running card keeps Stop', () => {

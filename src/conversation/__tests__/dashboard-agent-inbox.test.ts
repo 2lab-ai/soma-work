@@ -47,17 +47,17 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(TEMPLATE).toContain('innerWidth < 640');
   });
 
-  it('renders three columns in order NEEDS YOU → RUNNING → DONE', () => {
-    const waiting = TEMPLATE.indexOf('id="col-waiting"');
-    const working = TEMPLATE.indexOf('id="col-working"');
-    const done = TEMPLATE.indexOf('id="col-done"');
+  it('renders three columns in order NEEDS YOU → RUNNING → DONE (the element draws them from renderBoard’s plan)', () => {
+    expect(TEMPLATE).toContain("var BOARD_LABELS = { waiting: 'NEEDS YOU', working: 'RUNNING', done: 'DONE' };");
+    const body = fnBody('renderBoard');
+    const waiting = body.indexOf("{ id: 'waiting', label: BOARD_LABELS.waiting");
+    const working = body.indexOf("{ id: 'working', label: BOARD_LABELS.working");
+    const done = body.indexOf("id: 'done',");
     expect(waiting).toBeGreaterThan(-1);
     expect(working).toBeGreaterThan(waiting);
     expect(done).toBeGreaterThan(working);
-    expect(TEMPLATE).toContain('NEEDS YOU');
-    expect(TEMPLATE).toContain('RUNNING');
-    expect(TEMPLATE).toContain('>DONE<');
-    expect(TEMPLATE).toContain('Nothing here');
+    // "Nothing here" is the element's own empty text (lang="en").
+    expect(TEMPLATE).toContain('<ui-agent-inbox id="kanban" class="kanban" view="board"></ui-agent-inbox>');
   });
 
   it('drops the old 4-column idle/closed containers', () => {
@@ -70,14 +70,16 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(TEMPLATE).not.toContain('Show older');
     expect(TEMPLATE).not.toContain('function toggleOlderClosed()');
     expect(TEMPLATE).toContain('function planDoneGroups(');
-    expect(TEMPLATE).toContain('function toggleDoneGroup(');
+    // The day heads are the element's (columns[].groups); the reader's choice comes back as ui-group-toggle.
+    expect(fnBody('wireInbox')).toContain("host.addEventListener('ui-group-toggle', function(e) {");
+    expect(fnBody('wireInbox')).toContain('_doneGroupOpen[day] = open;');
   });
 
   it('the stats strip leads the page and the board follows it (§3.1-2)', () => {
     const main = TEMPLATE.slice(TEMPLATE.indexOf('<div class="main">'));
     const strip = main.indexOf('<section class="stats" id="stats"');
     const detailAt = main.indexOf('<div class="stats-detail" id="stats-detail" hidden>');
-    const board = main.indexOf('<section class="inbox" id="inbox"');
+    const board = main.indexOf('<section class="inbox ui-tok" id="inbox"');
     expect(strip).toBeGreaterThan(0);
     expect(detailAt).toBeGreaterThan(strip);
     expect(board).toBeGreaterThan(detailAt);
@@ -129,21 +131,23 @@ describe('agent inbox board — layout (§3.1)', () => {
 
   it('the DONE count is every card under its day groups; the days come from planDoneGroups (T11/T12)', () => {
     const body = fnBody('renderBoard');
-    expect(body).toContain('planDoneColumn(board.idle || [], board.closed || [], {');
-    expect(body).toContain('done: plan.done.length');
+    expect(body).toContain('planDoneColumn(rest.idle || [], rest.closed || [], {');
     expect(body).toContain('planDoneGroups(plan.done, Date.now(), _doneGroupOpen)');
+    // DONE = one group per day; the element counts every group, open or closed (a closed day's cards are stubs).
+    expect(body).toContain('groups: groups.map(function(g) {');
+    expect(body).toContain('placeCard(it.s, it.col, kb, g.open)');
     expect(body).not.toContain('renderOlderToggle');
     expect(body).toContain('renderArchivesToggle(plan.archivedCount)');
     // The #814 tokens tooltip follows the board it describes.
     expect(body).toContain('updateTokenBreakdown();');
   });
 
-  it('every card head carries the owner badge (All Users only — the renderer decides) (§3.1-3)', () => {
-    expect(fnBody('renderCardFace')).toContain("titleHtml + renderOwnerBadge(s) + '</div>'");
-    expect(fnBody('renderOwnerBadge')).toContain('if (currentUserId) return');
-    // The title truncates first; the badge keeps its size up to its cap.
-    expect(TEMPLATE).toMatch(/\.card \.card-title-text \{[^}]*flex: 1 1 auto;/);
-    expect(TEMPLATE).toMatch(/\.owner-badge \{[^}]*flex: 0 0 auto;[^}]*text-overflow: ellipsis;/);
+  it('every card head carries the owner badge (All Users only — the mapper decides) (§3.1-3)', () => {
+    // The element draws it at the right end of the head; the title truncates first (its styles).
+    expect(fnBody('cardOf')).toContain("var owner = currentUserId ? '' : s.ownerName || s.ownerId || '';");
+    expect(fnBody('cardOf')).toContain(
+      'card.badge = { text: String(owner), hue: ownerBadgeHue(s.ownerId || owner), title: String(owner) };',
+    );
   });
 });
 
@@ -162,54 +166,51 @@ describe('agent inbox board — drag and drop removed (§3.1-5)', () => {
   });
 });
 
-describe('agent inbox board — keyed reconciler (§3.1-6)', () => {
-  it('cards are keyed by the raw session key (attribute-escaped)', () => {
-    expect(TEMPLATE).toContain("data-session-key', key");
+// The keyed reconciler — persistent card nodes, a part rewritten only when its HTML changed, a same-data render
+// that writes nothing, FLIP — is <ui-agent-inbox>'s (@2lab.ai/ui agent-inbox.test.ts: 'keeps focus on a face
+// across data renders', 'shows a new status in place first …'). The page keeps its side of it.
+describe('agent inbox board — keyed cards (§3.1-6)', () => {
+  it('cards are keyed by the raw session key; an open card’s body is in that key’s slot', () => {
+    expect(fnBody('cardOf')).toContain('id: s.key,');
+    expect(fnBody('paintCardBody')).toContain("el.setAttribute('slot', 'body:' + key);");
   });
 
-  it('renderBoard no longer rewrites columns with innerHTML', () => {
+  it('renderBoard hands the element its data — it never writes the columns itself', () => {
     const body = fnBody('renderBoard');
     expect(body).not.toBe('');
     expect(body).not.toContain('innerHTML');
-    expect(body).toContain('reconcileBoard(');
+    expect(body).toContain('inboxPaint(kb);');
+    expect(body).toContain('paintCronLaneCards(cronLaneSlots(cronPlan));');
   });
 
-  it('the reconciler only replaces a card part when its HTML changed', () => {
-    const body = fnBody('applyCardParts');
-    expect(body).not.toBe('');
-    expect(body).toContain('_faceHtml !==');
-    expect(body).toContain('_bodyHtml !==');
-    expect(fnBody('patchCard')).toContain('applyCardParts(');
-  });
-
-  it('a same-data render stops before touching the DOM or a running entrance/exit (§3.1-6)', () => {
-    const body = fnBody('reconcileBoard');
-    expect(body).toContain('if (changed) applyBoardPlan(');
-    // Nothing on the planning path finishes entrances or removes fading cards.
-    expect(TEMPLATE).not.toContain('clearExitingCards');
-    expect(fnBody('measureCards')).not.toContain('.finish(');
-    expect(fnBody('exitCard')).toContain('anim.onfinish = anim.oncancel');
+  it('a single card is repainted only when its card data changed; its body only when its markup changed', () => {
+    const refresh = fnBody('refreshCard');
+    expect(refresh).toContain('if (JSON.stringify(c) !== JSON.stringify(_cardData[key])) {');
+    expect(fnBody('paintCardBody')).toContain(
+      'if (b.html !== html && !isEditingGoal(b.el) && !isPickingModel(b.el)) {',
+    );
+    expect(fnBody('paintCardBody')).toContain('morphInnerHtml(b.el, html);');
   });
 
   it('dictionaries keyed by session keys / conversation ids are prototype-free', () => {
-    expect(TEMPLATE).toContain('var _cardEls = Object.create(null);');
-    expect(TEMPLATE).toContain('var _ioCache = Object.create(null);');
+    for (const v of ['_cardHost', '_cardCol', '_cardData', '_cardDrawn', '_cardBodies', '_ioCache', '_cardClosing'])
+      expect(TEMPLATE, v).toMatch(new RegExp(`var ${v} = Object\\.create\\(null\\);`));
     expect(TEMPLATE).toContain('let _sessionCache = Object.create(null);');
-    expect(fnBody('reconcileBoard')).toContain('var wanted = Object.create(null);');
+    expect(fnBody('renderBoard')).toContain('_cardHost = Object.create(null);');
     expect(fnBody('renderBoard')).toContain('_sessionCache = Object.create(null);');
   });
 
-  it('sessionUpdated goes through the same patch path', () => {
+  it('sessionUpdated goes through the same single-card path', () => {
     const ws = fnBody('connectWs');
     expect(ws).toContain("msg.type === 'sessionUpdated'");
-    expect(ws).toContain('patchCard(');
+    expect(ws).toContain('if (_cardHost[updatedKey]) refreshCard(updatedKey);');
     expect(ws).not.toContain('replaceWith(');
   });
 });
 
 describe('agent inbox board — expanded card (§3.1-4)', () => {
-  it('card click toggles expansion in place instead of opening the panel', () => {
-    expect(TEMPLATE).toContain('function toggleCard(');
+  it('card click toggles expansion in place instead of opening the panel (the element’s ui-toggle)', () => {
+    expect(fnBody('wireInbox')).toContain("host.addEventListener('ui-toggle', function(e) {");
     expect(TEMPLATE).not.toContain('onclick="openPanel(');
   });
 
@@ -255,7 +256,7 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
   });
 
   it('reopening a card retries a failed 지시/응답 fetch at once', () => {
-    expect(fnBody('toggleCard')).toContain('ensureCardIo(key, true)');
+    expect(fnBody('wireInbox')).toContain('ensureCardIo(key, true)');
   });
 
   it('lazy-loads the latest instruction/response pair with limit=2', () => {
@@ -485,9 +486,9 @@ describe('agent inbox board — motion contract (§4)', () => {
     expect(TEMPLATE).toContain('--dur-fade: 180ms;');
   });
 
-  it('expands with grid-template-rows 0fr → 1fr', () => {
-    expect(TEMPLATE).toContain('grid-template-rows: 0fr;');
-    expect(TEMPLATE).toContain('grid-template-rows: 1fr;');
+  it('the open card grows in place (0fr → 1fr) in the element; the page keeps no expansion rules', () => {
+    expect(TEMPLATE).not.toContain('.card-expand');
+    expect(TEMPLATE).not.toContain('.card.is-expanded');
   });
 
   it('runs FLIP through WAAPI and honours reduced motion', () => {
@@ -512,7 +513,7 @@ describe('agent inbox board — motion contract (§4)', () => {
 
   it('the context fill animates transform scaleX, not width', () => {
     expect(TEMPLATE).toMatch(
-      /\.card \.context-bar-fill \{[^}]*transform-origin: left center;[^}]*transition: transform/,
+      /\.card-body \.context-bar-fill \{[^}]*transform-origin: left center;[^}]*transition: transform/,
     );
     // The panel's 세션 정보 shows the context as <ui-context-window>'s field of cells now (re-context-window D5/D18), not a bar.
     expect(fnBody('cwSlotHtml')).toContain('<ui-context-window lang="ko"');
@@ -548,10 +549,10 @@ describe('agent inbox board — responsive (§5)', () => {
     expect(TEMPLATE).toContain('max-width: 1280px');
   });
 
-  it('a board narrower than 840px scrolls the three columns horizontally with snap (container query, SSOT 2026-10-24)', () => {
-    const block = TEMPLATE.match(/@container inbox \(max-width: 839px\) \{[\s\S]*?\n\}/)?.[0] ?? '';
-    expect(block).toContain('scroll-snap-type: x mandatory');
-    expect(block).toContain('minmax(min(300px');
+  it('a board narrower than 840px scrolls its columns sideways with snap — the element’s own container query', () => {
+    // @2lab.ai/ui agent-inbox styles.ts: @container ib (max-width: 839px) … scroll-snap-type: x mandatory.
+    expect(TEMPLATE).not.toMatch(/@container inbox \(max-width: 839px\)/);
+    expect(TEMPLATE).toContain('.inbox { margin-bottom: 28px; container: inbox / inline-size; }');
   });
 
   it('<640px raises tap targets to 44px', () => {
