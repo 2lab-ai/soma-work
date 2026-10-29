@@ -285,7 +285,7 @@ describe('mpHydrate — every picker under a root takes its session’s data, on
       },
     };
     const m = load<{ mpHydrate(root: unknown): void; setBusy(k: string, op: string, on: boolean): void }>(
-      ['toNum', 'isBusy', 'setBusy', 'mpShort', 'mpEffortLevels', 'mpData', 'mpHydrate'],
+      ['toNum', 'isBusy', 'setBusy', 'mpShort', 'mpEffortLevels', 'mpData', 'mpDataSig', 'mpHydrate'],
       ['_busy'],
       { REPRESENTATIVE_MODELS: MODELS, EFFORT_LEVELS: LEVELS, _modelNotes: {}, _sessionCache: cache },
     );
@@ -309,6 +309,55 @@ describe('mpHydrate — every picker under a root takes its session’s data, on
     m.mpHydrate(root);
     expect(a.data.busy.effort).toBe(true);
     m.mpHydrate(null);
+  });
+
+  // #546 review P3: a field-tuple signature, not JSON.stringify(mpData(s)) on every card render.
+  it('mpData is built only when a field it reads changed (mpDataSig) — every such field writes again', () => {
+    let built = 0;
+    const cache: Record<string, Record<string, unknown>> = { [KEY]: sess() };
+    const notes: Record<string, { text: string; error: boolean }> = {};
+    const sets: unknown[] = [];
+    const node: Record<string, unknown> = { getAttribute: (n: string) => (n === 'data-mp-key' ? KEY : null) };
+    Object.defineProperty(node, 'data', { set: (v) => sets.push(v) });
+    const root = { querySelectorAll: () => [node] };
+    const m = load<{ mpHydrate(root: unknown): void; setBusy(k: string, op: string, on: boolean): void }>(
+      ['toNum', 'isBusy', 'setBusy', 'mpDataSig', 'mpHydrate'],
+      ['_busy'],
+      {
+        _sessionCache: cache,
+        _modelNotes: notes,
+        mpData: () => {
+          built++;
+          return { n: built };
+        },
+      },
+    );
+    m.mpHydrate(root);
+    m.mpHydrate(root);
+    expect([built, sets.length]).toEqual([1, 1]);
+    const changes: Array<() => void> = [
+      () => (cache[KEY] = sess({ model: 'claude-sonnet-4-6[1m]' })),
+      () => (cache[KEY] = { ...cache[KEY], effort: 'max' }),
+      () => (cache[KEY] = { ...cache[KEY], effortEffective: 'high' }),
+      () => (cache[KEY] = { ...cache[KEY], pendingModel: 'fable[1m]' }),
+      () => (cache[KEY] = { ...cache[KEY], contextTokens: 600_000 }),
+      () => (cache[KEY] = { ...cache[KEY], effortLevels: ['low', 'high'] }),
+      () => m.setBusy(KEY, 'model', true),
+      () => m.setBusy(KEY, 'effort', true),
+      () => (notes[KEY] = { text: '전환 실패', error: true }),
+      () => (notes[KEY] = { text: '다른 실패', error: true }),
+    ];
+    for (const [i, change] of changes.entries()) {
+      change();
+      m.mpHydrate(root);
+      m.mpHydrate(root);
+      expect([built, sets.length], `change ${i}`).toEqual([i + 2, i + 2]);
+    }
+    // An info note is the host's line, not the picker's data: nothing to write.
+    notes[KEY] = { text: 'effort 높음 · 다음 턴부터 적용', error: false };
+    m.mpHydrate(root);
+    expect(built).toBe(changes.length + 2);
+    expect(clientFn('mpHydrate')).not.toContain('JSON.stringify');
   });
 
   it('runs on every open card body paint and every panel-controls pass — also while an open menu holds them', () => {
