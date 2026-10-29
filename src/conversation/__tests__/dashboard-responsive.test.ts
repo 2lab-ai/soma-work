@@ -181,7 +181,9 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
       expect(at(`id="${id}"`), id).toBeLessThan(question);
     }
     expect(at('id="panel-agents"')).toBeGreaterThan(question);
-    expect(at('id="panel-agents"')).toBeLessThan(at('id="panel-worklog"'));
+    // SSOT 2026-10-29: then the section tabs (에이전트 트리 · 작업 로그 · 지시와 답변).
+    expect(at('id="panel-agents"')).toBeLessThan(at('id="panel-sections"'));
+    expect(at('id="panel-sections"')).toBeLessThan(at('id="worklog-list"'));
     // Model · effort sit beside the composer, outside the scroll area.
     expect(at('id="panel-controls"')).toBeGreaterThan(at('<div class="panel-command" id="panel-command">'));
   });
