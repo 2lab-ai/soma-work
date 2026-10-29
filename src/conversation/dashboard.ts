@@ -5131,7 +5131,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .pa-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 14px; line-height: 1.35; }
 .pa-name .ag-type { font-weight: 650; }
 .pa-name .ag-id { font-size: 12px; }
-.pa-tree { display: block; margin-top: 10px; max-height: min(48vh, 440px); overflow-y: auto; overscroll-behavior: contain; }
+.pa-tree { display: block; }
 .pa-sum { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 7px; margin-top: 4px; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .pa-st { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; }
 .pa-st svg, .pa-st .spinner { width: 12px; height: 12px; }
@@ -5255,9 +5255,29 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   outline: none;
 }
 .panel-tasks-body { padding: 2px 0 6px; }
-.panel-conv { padding: 4px 0 0; }
-.panel-conv > .panel-sec-head { padding: 4px 16px; width: 100%; }
-.panel-conv-body[hidden] { display: none; }
+/* Section tabs (SSOT 2026-10-29): 에이전트 트리 · 작업 로그 · 지시와 답변 — each its own
+   scroll box (the reader's place is per tab), sized by sizePanelSections to the rest
+   of the panel; the active one is the only one painted. */
+.panel-sections { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.psec-tab { flex: 1 1 0; min-width: 0; min-height: 38px; padding: 6px 8px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--text-secondary); font: inherit; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: color var(--speed) var(--ease), border-color var(--speed) var(--ease); }
+.psec-tab:hover { color: var(--text); }
+.psec-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.psec-tab:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; border-radius: 6px; }
+.panel-sections-body { position: relative; height: 60vh; min-height: 160px; }
+.psec { position: relative; height: 100%; overflow-y: auto; scroll-behavior: auto; outline: none; }
+.psec[hidden] { display: none; }
+.psec:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
+.psec-older { display: block; margin: 10px auto 2px; padding: 5px 14px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
+.psec-older:hover { color: var(--text); border-color: var(--text-tertiary); }
+.psec-older:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.psec-older[aria-busy="true"] { cursor: progress; font-style: italic; color: var(--text-tertiary); }
+.psec-start { margin: 12px 0 2px; text-align: center; font-size: 11.5px; color: var(--text-tertiary); }
+.psec-older[hidden], .psec-start[hidden], .psec-pill[hidden] { display: none; }
+.psec-empty { margin: 24px 16px; text-align: center; font-size: 12px; color: var(--text-tertiary); }
+.psec-pill { position: absolute; left: 50%; bottom: 12px; z-index: 4; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 4px 14px; border: 1px solid var(--accent); border-radius: 999px; background: var(--accent); color: #fff; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18); }
+.psec-pill:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.panel-tree { padding: 6px 16px 12px; }
+.panel-conv { padding: 0; }
 .panel-agent-conv { padding: 6px 16px 10px; }
 /* 자세히 (T1.6) — a button that behaves like a toggle (HIG Toggles: outside a list,
    not a switch; the background tells the state); the panel's class gates the
@@ -5284,7 +5304,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* Minimal by default: the agent path, the subtree and the main agent's own
    header are for 자세히 — the tabs already say where the reader is. */
 .slide-panel:not(.is-detail) .pa-bar,
-.slide-panel:not(.is-detail) .pa-tree,
 .slide-panel:not(.is-detail) .panel-agents.is-main { display: none !important; }
 .slide-panel:not(.is-detail) .panel-arts-hint { display: none; }
 .slide-panel:not(.is-detail) .panel-goal.is-empty { display: none !important; }
@@ -5391,33 +5410,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .pl-foot-icon svg { width: 12px; height: 12px; }
 .pl-foot-icon .spinner { width: 11px; height: 11px; }
 .pl-foot-time { margin-left: auto; font-variant-numeric: tabular-nums; white-space: nowrap; }
-/* Panel work log (.prd/10 §3.1-6, §3.3) — what the agent did, in order. The
-   header is a disclosure button (collapsed unless the panel was opened from
-   작업 로그); the count keeps counting while it is closed. Own scroll box so
-   live appends tail-follow without moving the turn list. */
-.panel-worklog { padding: 4px 16px 6px; border-bottom: 1px solid var(--border); }
-.panel-worklog-header {
-  font: inherit;
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--text-secondary);
-  letter-spacing: 0.04em;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-height: 32px;
-  padding: 4px 0;
-  background: none;
-  border: 0;
-  text-align: left;
-  cursor: pointer;
-}
-.panel-worklog-header .wl-count { font-weight: 600; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
-.panel-worklog-header .wl-chevron { width: 12px; height: 12px; margin-left: auto; flex-shrink: 0; transition: transform var(--dur-expand) var(--ease-out); }
-.panel-worklog-header[aria-expanded="true"] .wl-chevron { transform: rotate(180deg); }
-.worklog-list { max-height: min(48vh, 440px); overflow-y: auto; display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; line-height: 1.45; margin: 2px 0 4px; }
-.worklog-list[hidden] { display: none; }
+/* Panel work log (.prd/10 §3.1-6, §3.3) — what the agent did, in order: the
+   작업 로그 section tab, scrolled by its section box (newest at the bottom). */
+.worklog-list { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; line-height: 1.45; padding: 4px 16px 12px; }
 .wl-empty { color: var(--text-tertiary); font-size: 12px; padding: 6px 0; }
 .wl-entry { color: var(--text); min-width: 0; }
 /* SSOT 2026-10-22 T10 — entries folded under the task they were made in. */
@@ -5680,12 +5675,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .panel-goal .card-goal .cg-objective { display: block; -webkit-line-clamp: unset; overflow: visible; }
 .panel-goal:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
 .panel-tasks-earlier { opacity: 0.85; }
-/* Scroll container: wraps panel-question + panel-worklog + panel-turns so
-   large UIAskQ choices scroll together with the chat content. Tasks sit pinned
-   above it and .panel-command stays pinned below, both non-scrolling siblings. */
+/* Scroll container: the common surface (large UIAskQ choices included), the
+   agent tabs, Tasks and the section tabs scroll together; each section scrolls
+   in its own box inside it, and .panel-command stays pinned below. */
 .panel-scroll { flex: 1 1 auto; overflow-y: auto; scroll-behavior: smooth; min-height: 0; }
 .panel-turns { padding: 10px 16px; }
-.panel-turns-loading { text-align: center; font-size: 11px; color: var(--text-tertiary); padding: 8px 0; font-style: italic; }
 /* Slack-style turns */
 .turn { margin-bottom: 8px; padding: 8px 10px; border-radius: var(--radius); display: flex; gap: 10px; align-items: flex-start; }
 .turn.user { background: var(--surface-raised); border-left: 3px solid var(--accent); }
@@ -5705,13 +5699,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* An assistant turn (task view T1.4): the answer itself, then Raw at its foot —
    the turn's summary and the answer's source as written. */
 .turn-answer { margin-top: 4px; container: ans / inline-size; }
-/* Task view (T1.3 / T1.6): minimal 지시와 답변 is the latest exchange — the last
-   instruction and what followed it; 이전 대화 (or 자세히) shows the turns before it. */
-.slide-panel:not(.is-detail) #panel-turns:not(.is-all) > .turn:has(~ .turn.user) { display: none; }
-.conv-earlier { display: block; margin: 10px auto 0; padding: 5px 14px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
-.conv-earlier:hover { color: var(--text); border-color: var(--text-tertiary); }
-.conv-earlier:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.conv-earlier[hidden], .slide-panel.is-detail .conv-earlier { display: none; }
 .turn-answer .ans-card { margin-top: 2px; padding: 2px 0 0; border: 0; border-radius: 0; background: none; }
 .turn-raw { margin-top: 6px; }
 .turn-raw summary.turn-expand-btn { cursor: pointer; color: var(--text-tertiary); font-size: 11px; padding: 2px 0; user-select: none; list-style: none; }
@@ -5902,7 +5889,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   .archives-btn:hover { color: var(--ib-text); }
   .wl-row:hover { background: var(--surface-raised); }
   .wl-detail-btn:hover { color: var(--text); border-color: var(--text-tertiary); }
-  .panel-worklog-header:hover { color: var(--text); }
   .btn-action:hover:not(:disabled) { border-color: var(--ib-muted); }
   .btn-action.btn-primary:hover:not(:disabled) { opacity: 0.88; }
   .btn-action.btn-stop:hover:not(:disabled) { border-color: var(--st-fail); }
@@ -5949,7 +5935,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   /* The path shrinks to "‹ parent › here". */
   .pa-crumb.is-far, .pa-sep.is-far { display: none; }
   .pa-crumb.is-up::before { content: '\\2039\\00a0'; }
-  .pa-tree { max-height: min(56vh, 480px); }
   .wl-child { grid-template-columns: 16px minmax(0, 1fr); }
   .wc-meta { grid-column: 2; grid-row: auto; flex-wrap: wrap; }
 
@@ -6035,7 +6020,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* ── TOUCH — coarse pointer enlargement ── */
 @media (pointer: coarse) {
   .btn-action { min-height: 40px; padding: 8px 12px; font-size: 12px; }
-  .pc-tool, .panel-tab, .panel-sec-head, .panel-detail-toggle { min-height: 44px; }
+  .pc-tool, .panel-tab, .psec-tab, .psec-older, .psec-pill, .panel-sec-head, .panel-detail-toggle { min-height: 44px; }
   .pc-tool { width: 44px; height: 44px; }
   .panel-close { width: 40px; height: 40px; }
   .topbar .nav a, .topbar .nav .user-select { min-height: 40px; padding: 8px 16px; }
@@ -6084,7 +6069,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   #panel-title-sub-regen { min-width: 44px; min-height: 44px; }
   .pi-links a, .pi-head, .panel-tasks-toggle, .turn .btn-action { min-height: 44px; }
   .ps-actions .btn-action, .ps-slack, .cgl-go, .card-more-link, .tl-toggle { min-height: 44px; }
-  .panel-worklog-header, .wl-detail-btn { min-height: 44px; }
+  .wl-detail-btn { min-height: 44px; }
   .worklog-list .wl-row { min-height: 44px; display: flex; flex-direction: column; justify-content: center; }
   .wl-tool > .wl-row, .wl-tool_result > .wl-row, .worklog-list .wl-row.wl-line { flex-direction: row; align-items: center; }
   .turn-raw summary.turn-expand-btn { min-height: 44px; display: flex; align-items: center; }
@@ -7243,9 +7228,10 @@ body.nt-open .new-task-fab { display: none !important; }
       <!-- Session chip (spec 13): status · active time · retry · Slack · the session's one action. -->
       <div class="panel-status" id="panel-status"></div>
     </div>
-    <!-- Body (task view, SSOT 2026-10-27): one scroll area — the task's common
-         surface on top, then the agent tabs (sticky while the conversation
-         scrolls) and the focused agent's tab: Tasks · 작업 로그 · 지시와 답변. -->
+    <!-- Body (task view, SSOT 2026-10-27; section tabs 2026-10-29): one scroll area — the
+         task's common surface on top, then the agent tabs (sticky) and the focused
+         agent's tab: Tasks, then the section tabs 에이전트 트리 · 작업 로그 · 지시와 답변,
+         each with its own scroll box. -->
     <div class="panel-body" id="panel-body">
     <div class="panel-scroll" id="panel-scroll">
       <section class="panel-surface" id="panel-surface" aria-label="작업 정보">
@@ -7266,24 +7252,39 @@ body.nt-open .new-task-fab { display: none !important; }
       <!-- Agent tabs (task view T1.2): Main always first and pinned at the left, then every subagent in spawn order. -->
       <div class="panel-tabs" id="panel-tabs" role="tablist" aria-label="에이전트" aria-orientation="horizontal"></div>
       <section class="panel-tabpanel" id="panel-tabpanel" role="tabpanel" aria-labelledby="panel-tab-main" tabindex="-1">
-        <!-- The focused agent (.prd/12 §4.3): its header; with 자세히, its path and subtree. -->
+        <!-- The focused agent (.prd/12 §4.3): its header; with 자세히, its path. -->
         <div class="panel-agents" id="panel-agents" style="display:none"></div>
         <!-- Tasks (task view T1.3): folded to one line by default. -->
         <div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>
-        <div class="panel-worklog" id="panel-worklog" style="display:none">
-          <button type="button" class="panel-worklog-header" id="worklog-toggle" aria-expanded="false" aria-controls="worklog-list" onclick="toggleWorkLogSection()"><span>작업 로그</span><span class="wl-count" id="worklog-count"></span><svg class="wl-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
-          <div class="worklog-list" id="worklog-list" role="log" aria-live="polite" aria-label="작업 로그" hidden></div>
+        <!-- Section tabs (SSOT 2026-10-29): only the active section is in the DOM; each
+             opens on its newest items and pages back as the reader scrolls up (a top
+             control is the keyboard path), in its own scroll box. -->
+        <div class="panel-sections" id="panel-sections" role="tablist" aria-label="섹션" aria-orientation="horizontal">
+          <button type="button" class="psec-tab" role="tab" id="psec-tab-tree" data-sec="tree" aria-selected="false" aria-controls="psec-tree" tabindex="-1">에이전트 트리</button>
+          <button type="button" class="psec-tab" role="tab" id="psec-tab-log" data-sec="log" aria-selected="false" aria-controls="psec-log" tabindex="-1">작업 로그</button>
+          <button type="button" class="psec-tab" role="tab" id="psec-tab-conv" data-sec="conv" aria-selected="true" aria-controls="psec-conv" tabindex="0">지시와 답변</button>
         </div>
-        <!-- 지시와 답변 (task view T1.3): open by default — the main agent's turns, a subagent's instruction and result. -->
-        <div class="panel-conv" id="panel-conv">
-          <button type="button" class="panel-sec-head panel-conv-header" id="conv-toggle" aria-expanded="true" aria-controls="panel-conv-body" onclick="togglePanelConv()"><span class="ps-sec-title">지시와 답변</span><span class="ps-sec-sum" id="conv-count"></span><svg class="pi-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
-          <div class="panel-conv-body" id="panel-conv-body">
-            <div class="panel-agent-conv" id="panel-agent-conv" hidden></div>
-            <button type="button" class="conv-earlier" id="conv-earlier" hidden onclick="showEarlierTurns()"></button>
-            <div class="panel-turns" id="panel-turns">
-              <p style="color:var(--text-secondary);text-align:center;margin-top:40px">Click a session card to view details</p>
+        <div class="panel-sections-body" id="panel-sections-body">
+          <div class="psec" id="psec-tree" role="tabpanel" aria-labelledby="psec-tab-tree" tabindex="0" hidden>
+            <button type="button" class="psec-older" data-sec="tree" hidden>이전 에이전트 보기</button>
+            <p class="psec-start" hidden>에이전트 트리의 시작</p>
+            <div class="psec-body panel-tree" id="panel-tree"></div>
+          </div>
+          <div class="psec" id="psec-log" role="tabpanel" aria-labelledby="psec-tab-log" tabindex="0" hidden>
+            <button type="button" class="psec-older" data-sec="log" hidden>이전 로그 불러오기</button>
+            <p class="psec-start" hidden>작업 로그의 시작</p>
+            <div class="psec-body worklog-list" id="worklog-list" role="log" aria-label="작업 로그"></div>
+          </div>
+          <div class="psec" id="psec-conv" role="tabpanel" aria-labelledby="psec-tab-conv" tabindex="0">
+            <button type="button" class="psec-older" data-sec="conv" hidden>이전 대화 불러오기</button>
+            <p class="psec-start" hidden>대화의 시작</p>
+            <div class="psec-body panel-conv" id="panel-conv">
+              <div class="panel-agent-conv" id="panel-agent-conv" hidden></div>
+              <div class="panel-turns" id="panel-turns"></div>
             </div>
           </div>
+          <!-- New items while the reader is up the list: one press goes to the newest. -->
+          <button type="button" class="psec-pill" id="psec-pill" hidden></button>
         </div>
       </section>
     </div>
@@ -10352,21 +10353,23 @@ function atNode(n, parentId, s, rootLine) {
 // Pure: the subtree of anchor (an agentTreeOf node) as <ui-agent-tree> data —
 // its nodes in spawn order (the anchor itself first when withRoot, else its
 // children at the top) and the open branches: the reader's fold for this tree
-// and node (_anOpen), else open down to openDepth. Folds and selection are
-// the host's (controlled): the element asks, the next paint answers.
+// and node (_anOpen), else open down to openDepth. o.keep (atWindowOf): only
+// the agents it names. Folds and selection are the host's (controlled): the
+// element asks, the next paint answers.
 function atTreeData(anchor, o) {
   var nodes = [];
   var expanded = [];
   function visit(n, parentId, depth) {
     var id = atIdOf(n);
     nodes.push(atNode(n, parentId, o.s, o.rootLine));
-    if (!n.children.length) return;
+    var kids = o.keep ? n.children.filter(function(c) { return !!o.keep[c.id]; }) : n.children;
+    if (!kids.length) return;
     var k = o.ns + '|' + id;
     if (Object.prototype.hasOwnProperty.call(_anOpen, k) ? !!_anOpen[k] : depth <= o.openDepth) expanded.push(id);
-    for (var i = 0; i < n.children.length; i++) visit(n.children[i], id, depth + 1);
+    for (var i = 0; i < kids.length; i++) visit(kids[i], id, depth + 1);
   }
   if (o.withRoot) visit(anchor, '', 0);
-  else for (var i = 0; i < anchor.children.length; i++) visit(anchor.children[i], '', 0);
+  else for (var i = 0; i < anchor.children.length; i++) if (!o.keep || o.keep[anchor.children[i].id]) visit(anchor.children[i], '', 0);
   return { nodes: nodes, density: o.density, title: o.title, selectedId: null, expanded: expanded };
 }
 // The open card's tree: the main agent at its root, compact (null: no subagents, no tree).
@@ -10406,8 +10409,8 @@ function renderAgentTree(s, col) {
 }
 // What a tree asks for. Card: open the panel on that agent — by keyboard,
 // focus lands on its header (openPanel's landing) and closing the panel gives
-// it back to the tree, the opener. Panel: drill into it; the chosen node's
-// header takes focus (the item it was is no longer in the subtree).
+// it back to the tree, the opener. Panel (the 에이전트 트리 tab): focus that
+// agent — the tabs, Tasks and the other sections follow; its header takes focus.
 document.addEventListener('ui-select', function(e) {
   var el = e.target;
   if (!el || el.tagName !== 'UI-AGENT-TREE' || !e.detail) return;
@@ -10430,7 +10433,7 @@ document.addEventListener('ui-toggle', function(e) {
   var ns = el.getAttribute('data-at-ns') || '';
   _anOpen[ns + '|' + String(e.detail.id)] = !!e.detail.expanded;
   if (ns.indexOf('c|') === 0) refreshCard(ns.slice(2));
-  else renderPanelAgents();
+  else paintTreeTab();
 });
 document.addEventListener('keydown', function() { _atKeyed = true; }, true);
 document.addEventListener('pointerdown', function() { _atKeyed = false; }, true);
@@ -10524,8 +10527,8 @@ function renderAgentFocus(node, s) {
     + '</div>';
 }
 // The panel's agent section (§4.3), a drill-down over the same tree: the path
-// (the focused node's chain from the root), the focused node's header, and its
-// subtree as a tree — its children open, deeper parents folded.
+// (the focused node's chain from the root) and the focused node's header. Its
+// subtree is the 에이전트 트리 section tab (paintTreeTab).
 function renderPanelAgents() {
   var el = document.getElementById('panel-agents');
   if (!el) return;
@@ -10561,23 +10564,14 @@ function renderPanelAgents() {
   var html = chain.length > 1 || !node ? '<div class="pa-bar"><nav class="pa-path" aria-label="에이전트 경로">' + path + '</nav></div>' : '';
   if (node) html += renderAgentFocus(node, s);
   else html += '<div class="pa-focus is-unknown"><div class="pa-sum">카드 목록 밖의 에이전트 — 작업 로그만 있어요</div></div>';
-  // Its subtree: <ui-agent-tree>, rich — a card per agent on one waterfall
-  // axis, every branch's spend rolled up; the element's bar is its head.
-  var tree = null;
-  if (node && node.children.length) {
-    tree = atTreeData(node, { s: s, ns: 'p|' + panelSessionKey, withRoot: false, openDepth: 0, density: 'rich', title: '하위 에이전트' });
-    html += atSlotHtml('pa-tree', 'p|' + panelSessionKey, '하위 에이전트 ' + node.children.length);
-  }
   // A live update (sessionUpdated, a board push) with the same markup writes
-  // nothing; a changed section is morphed, so a focused crumb stays. The
-  // tree's data is set apart, where it changed (the element keeps its focus).
+  // nothing; a changed section is morphed, so a focused crumb stays.
   if (html !== _panelAgentsHtml || el.style.display !== '') {
     el.style.display = '';
     morphInnerHtml(el, html);
     _panelAgentsHtml = html;
     updateTimersIn(el);
   }
-  if (tree) atPaint(el.querySelector('ui-agent-tree'), tree, JSON.stringify(tree));
 }
 // Everything in the panel that follows the focused node, after any live
 // update — whichever node it is (no main-only or subagent-only gate). Each part
@@ -10586,6 +10580,11 @@ function repaintPanelScope() {
   renderPanelTabs();
   renderPanelAgents();
   repaintPanelTasks();
+  renderPanelSections();
+  // The section tab shown: the tree follows the agents; the work log's heads,
+  // child blocks and cards their data; a subagent's 지시와 답변 its log. The
+  // others are painted when they are opened.
+  if (_psec === 'tree') paintTreeTab();
   wlRefreshGroupHeads();
   wlRefreshChildBlocks();
   wlRefreshCards();
@@ -10593,13 +10592,11 @@ function repaintPanelScope() {
 }
 // ── Task view (SSOT 2026-10-27) — 자세히, agent tabs, 지시와 답변 ──
 // 자세히 (T1.6): the panel shows what matters by default — one line of 세션 정보,
-// what needs the user, the artifacts, the tabs, the conversation; Tasks and the
-// work log folded. On, every section opens: the full 세션 정보, the plan with
-// every completed step and the earlier plans, the work log, the agent's path
-// and subtree. The choice is saved per device.
+// what needs the user, the artifacts, the tabs, the section tabs; Tasks folded.
+// On, every detail opens: the full 세션 정보, the plan with every completed step
+// and the earlier plans, the agent's path. The choice is saved per device.
 var PANEL_DETAIL_KEY = 'soma-panel-detail';
 var _panelDetail = false;
-var _panelConvOpen = true; // 지시와 답변 is open by default (T1.3)
 function panelDetailFrom(saved) {
   return saved === '1';
 }
@@ -10618,7 +10615,6 @@ function resetPanelSections() {
   _panelTasksOpen = _panelDetail || _panelLand === 'tasks';
   _panelTasksExpanded = _panelTasksOpen;
   _panelTasksEarlier = _panelDetail;
-  _panelConvOpen = true;
 }
 function togglePanelDetail() {
   _panelDetail = !_panelDetail;
@@ -10626,8 +10622,6 @@ function togglePanelDetail() {
   applyPanelDetail();
   resetPanelSections();
   if (!panelSessionKey) return;
-  setWorkLogOpen(_panelDetail);
-  applyPanelConv();
   repaintPanelSession();
 }
 
@@ -10700,19 +10694,9 @@ function bindPanelTabs() {
   el.addEventListener('keydown', panelTabsKey);
 }
 
-// 지시와 답변 (T1.3): open by default; folded, its head still says where the
-// conversation stands. The main agent's tab shows the session's turns; a
-// subagent's tab shows what it was told and what it answered (renderAgentConv).
-function applyPanelConv() {
-  var btn = document.getElementById('conv-toggle');
-  var body = document.getElementById('panel-conv-body');
-  if (btn) btn.setAttribute('aria-expanded', _panelConvOpen ? 'true' : 'false');
-  if (body) body.hidden = !_panelConvOpen;
-}
-function togglePanelConv() {
-  _panelConvOpen = !_panelConvOpen;
-  applyPanelConv();
-}
+// 지시와 답변 (T1.3; a section tab since 2026-10-29): the main agent's tab shows
+// the session's turns (paintConvTab); a subagent's tab shows what it was told
+// and what it answered (renderAgentConv).
 // Pure: a subagent's instruction (the call that started it) and its result,
 // from the work log — the latest of each.
 // A background agent's spawn result only acknowledges its start (as the work
@@ -10794,31 +10778,490 @@ function agentConvHtml(a, io, prompt, answer) {
     + body + '</div></div>';
   return html;
 }
+// A subagent's 지시와 답변 — painted only while it is the section shown (the main
+// agent's turns are paintConvTab's). Its instruction is the spawn call in the
+// work log: a log window that does not reach back to it yet pages back for it
+// (wlSeekAgentSpawn), so the tab fills without the reader opening 작업 로그.
 function renderAgentConv() {
   var host = document.getElementById('panel-agent-conv');
-  var turns = document.getElementById('panel-turns');
-  var sum = document.getElementById('conv-count');
-  if (!host || !turns) return;
-  renderConvEarlier(); // the 이전 대화 button belongs to the main conversation
-  if (!_panelAgent) {
-    host.hidden = true;
-    turns.hidden = false;
-    if (sum) setTextIfChanged(sum, '');
-    return;
-  }
-  turns.hidden = true;
+  if (!host || !_panelAgent || _psec !== 'conv') return;
   host.hidden = false;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var a = panelAgentOf(s);
   var io = agentConvEntries(_wl && _wl.entries, _panelAgent, !!(a && a.background));
+  if (!io.spawn) wlSeekAgentSpawn(_wl, a);
   var prompt = io.spawn && io.spawn.rawBytes ? agentConvRawOf(io.spawn.seq) : null;
   var answer = io.result ? (io.result.rawBytes ? agentConvRawOf(io.result.seq) : String(io.result.text || '')) : null;
-  if (sum) setTextIfChanged(sum, a ? (AGENT_STATUS_LABEL[agentStatusOf(a)] || '') : '');
   // 복사 reads an answer from the raw cache, like a turn's (copyAnswer).
   if (io.result && typeof answer === 'string') _rawLoadedCache[ansCacheKey('agent', io.result.seq)] = answer;
   var html = io.spawn || io.result || a ? agentConvHtml(a, io, prompt != null ? agentPromptOf(prompt) : null, answer) : '<p class="panel-tasks-empty">이 에이전트의 지시와 결과를 찾지 못했습니다</p>';
   if (writePanelPart(host, html)) ansBind(host);
 }
+// ── Section tabs (SSOT 2026-10-29) — 에이전트 트리 · 작업 로그 · 지시와 답변 ──
+// Inside the focused agent's tab, three section tabs, each with its own scroll
+// box (the reader's place is per tab). Only the active one is in the DOM: the
+// others keep their data (the work-log state, the turns, the agents) and are
+// painted from it when they are opened. Each opens on its newest items, at its
+// bottom; scrolling up pages back — a sentinel (the top control) within one box
+// height of the view, the control itself the keyboard path — and the reader
+// keeps their place. A new item at the bottom follows a reader who is there; one
+// reading higher keeps their place and gets a pill that jumps to the newest.
+var PSEC_ORDER = ['tree', 'log', 'conv'];
+var PSEC_TEXT = {
+  tree: { older: '이전 에이전트 보기', loading: '이전 에이전트 보기', start: '에이전트 트리의 시작' },
+  log: { older: '이전 로그 불러오기', loading: '이전 로그 불러오는 중…', start: '작업 로그의 시작' },
+  conv: { older: '이전 대화 불러오기', loading: '이전 대화 불러오는 중…', start: '대화의 시작' },
+};
+var PANEL_TURNS_PAGE = 20; // turns per page of 지시와 답변
+var AT_PANEL_WINDOW = 20; // agents per step of 에이전트 트리
+var _psec = 'conv'; // the section tab shown
+var _psecPin = true; // the reader is at the newest (the bottom) of the section shown
+var _psecNew = 0; // items that arrived below a reader reading higher up
+var _treeWindow = AT_PANEL_WINDOW; // how many of the newest agents the tree shows (this opening)
+var _treeMaxN = null; // the newest spawn number the tree showed (null: not painted yet)
+
+// Pure: the section an opening lands on — 작업 로그 / ?session= → 작업 로그, a tree
+// item → 에이전트 트리, else (답변하기, a blocker, a card) → 지시와 답변.
+function psecForLanding(land) {
+  return land === 'worklog' ? 'log' : land === 'agent' ? 'tree' : 'conv';
+}
+// Pure: the tab a key moves to on the section tablist (-1: not a tab key). The arrows wrap.
+function psecKeyTarget(key, i, n) {
+  if (!(n > 0) || i < 0) return -1;
+  if (key === 'ArrowRight') return (i + 1) % n;
+  if (key === 'ArrowLeft') return (i - 1 + n) % n;
+  if (key === 'Home') return 0;
+  if (key === 'End') return n - 1;
+  return -1;
+}
+// Pure: the section box height — the rest of the panel under the surface, Tasks
+// and the tabs while that is at least 45% of it (the panel does not scroll and
+// the newest item sits at its bottom), else 45%; never more than the view under
+// the sticky tab strips.
+function psecHeightOf(view, top, over) {
+  return Math.max(160, Math.min(view - over, Math.max(view - top, Math.round(view * 0.45))));
+}
+// Pure: where an opening without a section landing puts the panel's scroll — the
+// top when the section box ends in view, else the section tabs right under the
+// sticky agent tabs (the whole box in view).
+function psecLandingTop(secTop, boxBottom, view, under) {
+  return boxBottom <= view + 1 ? 0 : Math.max(0, secTop - under);
+}
+// Pure: the agents the tree shows — the newest n under anchor by spawn order
+// (agents known only from the log have none: the oldest), the agent pinned in
+// view (the focused one), and the ancestors that connect them to the anchor.
+// keep[id] = shown; hidden = how many wait above; maxN = the newest spawn
+// number; newer = how many are newer than after (live arrivals).
+function atWindowOf(anchor, n, pin, after) {
+  var all = [];
+  var parent = Object.create(null);
+  (function walk(x) {
+    for (var i = 0; i < x.children.length; i++) {
+      var c = x.children[i];
+      parent[c.id] = x;
+      all.push(c);
+      walk(c);
+    }
+  })(anchor);
+  var order = all.slice().sort(function(a, b) { return toNum(a.n) - toNum(b.n); });
+  var shown = order.slice(Math.max(0, order.length - Math.max(0, n)));
+  var keep = Object.create(null);
+  var add = function(node) {
+    for (var cur = node; cur && cur !== anchor && !keep[cur.id]; cur = parent[cur.id]) keep[cur.id] = true;
+  };
+  for (var j = 0; j < shown.length; j++) add(shown[j]);
+  var count = 0;
+  var maxN = 0;
+  var newer = 0;
+  for (var k = 0; k < order.length; k++) {
+    var o = order[k];
+    if (pin && o.id === pin) add(o);
+    var on = toNum(o.n);
+    if (on > maxN) maxN = on;
+    if (after !== null && after !== undefined && on > after) newer++;
+  }
+  for (var id in keep) if (keep[id]) count++;
+  return { keep: keep, hidden: order.length - count, maxN: maxN, newer: newer };
+}
+
+function psecBox(sec) {
+  return document.getElementById('psec-' + (sec || _psec));
+}
+function psecAtBottom(box) {
+  return !!box && box.scrollHeight - box.clientHeight - box.scrollTop <= 4;
+}
+// The tab strip and the panels: aria-selected, the one tab stop, the one panel shown.
+function renderPanelSections() {
+  for (var i = 0; i < PSEC_ORDER.length; i++) {
+    var sec = PSEC_ORDER[i];
+    var on = sec === _psec;
+    var tab = document.getElementById('psec-tab-' + sec);
+    if (tab) {
+      if (tab.getAttribute('aria-selected') !== String(on)) tab.setAttribute('aria-selected', String(on));
+      if (tab.getAttribute('tabindex') !== (on ? '0' : '-1')) tab.setAttribute('tabindex', on ? '0' : '-1');
+    }
+    var box = psecBox(sec);
+    if (box && box.hidden === on) box.hidden = !on;
+  }
+}
+// A section not shown holds no nodes: its DOM goes, its data stays.
+function psecClear(sec) {
+  if (sec === 'conv') {
+    if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
+    var turns = document.getElementById('panel-turns');
+    var host = document.getElementById('panel-agent-conv');
+    if (turns && turns.firstChild) turns.innerHTML = '';
+    if (host) {
+      if (host.firstChild) host.innerHTML = '';
+      host._html = '';
+      host.hidden = true;
+    }
+  } else if (sec === 'log') {
+    var list = document.getElementById('worklog-list');
+    if (list && list.firstChild) list.innerHTML = '';
+    if (_wl) _wl.painted = false;
+  } else if (sec === 'tree') {
+    var tree = document.getElementById('panel-tree');
+    if (tree) {
+      if (tree.firstChild) tree.innerHTML = '';
+      tree._html = '';
+      tree._tree = null;
+      tree._hidden = 0;
+    }
+    _treeMaxN = null;
+  }
+  psecSyncControls(sec);
+}
+function paintSection(sec) {
+  if (sec === 'conv') paintConvTab();
+  else if (sec === 'log') paintLogTab();
+  else paintTreeTab();
+  psecSyncControls(sec);
+}
+// Show the section tab sec: the others leave the DOM; this one is painted from
+// its data and lands on its newest items. focus: the tab takes focus (keys).
+function selectPanelSection(sec, focus) {
+  if (PSEC_ORDER.indexOf(sec) < 0) sec = 'conv';
+  _psec = sec;
+  renderPanelSections();
+  for (var i = 0; i < PSEC_ORDER.length; i++) if (PSEC_ORDER[i] !== sec) psecClear(PSEC_ORDER[i]);
+  if (panelSessionKey) paintSection(sec);
+  psecToNewest();
+  psecMaybeFill(sec);
+  if (focus) {
+    var tab = document.getElementById('psec-tab-' + sec);
+    if (tab) tab.focus();
+  }
+}
+// The section shown, at its newest item; a later scroll up is the reader's.
+function psecToNewest() {
+  var box = psecBox();
+  _psecPin = true;
+  psecSetNew(0);
+  if (!box) return;
+  box.scrollTop = box.scrollHeight;
+  box._lastTop = box.scrollTop;
+  box._armed = false;
+}
+function psecJumpNewest() {
+  psecToNewest();
+  var box = psecBox();
+  if (box && box.focus) box.focus({ preventScroll: true });
+}
+function psecSetNew(n) {
+  _psecNew = Math.max(0, n);
+  var pill = document.getElementById('psec-pill');
+  if (!pill) return;
+  var show = _psecNew > 0;
+  if (show) setTextIfChanged(pill, '새 항목 ' + _psecNew + '개 ↓');
+  if (pill.hidden === show) pill.hidden = !show;
+}
+// n new items landed at the bottom of the section shown: a reader who was at the
+// newest (pinned) stays there; one reading higher keeps their place and is told.
+function psecOnAppended(n, pinned) {
+  var box = psecBox();
+  if (!box || !(n > 0)) return;
+  if (pinned) {
+    box.scrollTop = box.scrollHeight;
+    _psecPin = true;
+    return;
+  }
+  psecSetNew(_psecNew + n);
+}
+// Older items went in above the reader: measured from the bottom, their place stays.
+function psecKeepPlace(box, fromBottom) {
+  if (!box) return;
+  var top = box.scrollHeight - fromBottom;
+  if (Math.abs(box.scrollTop - top) >= 1) box.scrollTop = top;
+  box._lastTop = box.scrollTop;
+}
+// What the top of a section shows: 'older' (a control: older items exist),
+// 'loading' (the control says the page is on its way), 'start' (everything is
+// shown), or '' (nothing — loading, empty, a subagent's 지시와 답변).
+function psecOlderState(sec) {
+  if (sec === 'conv') {
+    if (_panelAgent || !_panelTurnsList.length) return '';
+    if (_panelTurnsLoading) return 'loading';
+    return _panelTurnsHasMore ? 'older' : 'start';
+  }
+  if (sec === 'log') {
+    var st = _wl;
+    if (!st || !st.loaded || !st.latestOk || st.denied) return '';
+    if (st.olderLoading) return 'loading';
+    if (st.olderPending) return 'older';
+    return wlScopeEntries(st.entries).length ? 'start' : '';
+  }
+  var host = document.getElementById('panel-tree');
+  if (!host || !host._tree) return '';
+  return host._hidden > 0 ? 'older' : 'start';
+}
+function psecSyncControls(sec) {
+  var box = psecBox(sec);
+  if (!box) return;
+  var btn = box.querySelector('.psec-older');
+  var start = box.querySelector('.psec-start');
+  var st = sec === _psec && panelSessionKey ? psecOlderState(sec) : '';
+  if (btn) {
+    var show = st === 'older' || st === 'loading';
+    if (btn.hidden === show) btn.hidden = !show;
+    if (show) setTextIfChanged(btn, PSEC_TEXT[sec][st === 'loading' ? 'loading' : 'older']);
+    if (st === 'loading') btn.setAttribute('aria-busy', 'true');
+    else if (btn.hasAttribute('aria-busy')) btn.removeAttribute('aria-busy');
+  }
+  if (start && start.hidden === (st === 'start')) start.hidden = st !== 'start';
+}
+// The page before the oldest item shown — for the control, the sentinel and the
+// scroll; one at a time, nothing at the start.
+function psecLoadOlder(sec) {
+  if (sec !== _psec || psecOlderState(sec) !== 'older') return;
+  if (sec === 'conv') loadMorePanelTurns();
+  else if (sec === 'log') loadOlderWorkLog();
+  else showMoreTree();
+}
+// A section shorter than its box cannot be scrolled up: fill it page by page
+// while older items exist (the reader would otherwise have only the control).
+function psecMaybeFill(sec) {
+  var box = psecBox(sec);
+  if (!box || sec !== _psec || box.hidden || !box.clientHeight) return;
+  if (box.scrollHeight > box.clientHeight + 1) return;
+  if (psecOlderState(sec) === 'older') psecLoadOlder(sec);
+}
+// After a <ui-agent-tree> renders new data (its update is async), else after a frame.
+function psecAfterRender(el, fn) {
+  var p = el && el.updateComplete;
+  if (p && typeof p.then === 'function') p.then(fn, fn);
+  else requestAnimationFrame(function() { fn(); });
+}
+// The section box takes the rest of the panel (psecHeightOf) as the parts above it change.
+function sizePanelSections() {
+  var scroll = document.getElementById('panel-scroll');
+  var body = document.getElementById('panel-sections-body');
+  if (!scroll || !body) return;
+  var view = scroll.clientHeight;
+  if (!view) return;
+  var tabs = document.getElementById('panel-tabs');
+  var secs = document.getElementById('panel-sections');
+  var top = body.getBoundingClientRect().top - scroll.getBoundingClientRect().top + scroll.scrollTop;
+  var h = psecHeightOf(view, top, (tabs ? tabs.offsetHeight : 0) + (secs ? secs.offsetHeight : 0));
+  if (body._h === h) return;
+  body._h = h;
+  body.style.height = h + 'px';
+}
+
+// 지시와 답변's data for this opening: the turns loaded (oldest first), the id of
+// their conversation, and what the list says before or without turns.
+var _panelTurnsList = [];
+var _panelTurnsCid = '';
+var _panelTurnsMsg = ''; // 'loading' | 'none' | 'failed' | 'unrecorded' | '' (the turns)
+var PANEL_TURNS_MSG = { none: 'No conversation turns', failed: 'Failed to load conversation', unrecorded: 'No conversation recorded' };
+// Pure: a turn into the list — in place of the one with its id (or replaceId:
+// an optimistic turn the server's took over), else at the end.
+function ptUpsert(list, turn, replaceId) {
+  var id = replaceId || (turn && turn.id);
+  if (id) {
+    for (var i = list.length - 1; i >= 0; i--) {
+      if (list[i] && list[i].id === id) {
+        list[i] = turn;
+        return 'update';
+      }
+    }
+  }
+  list.push(turn);
+  return 'append';
+}
+// 지시와 답변 painted from its data: the main agent's turns, or a subagent's
+// instruction and answer (renderAgentConv).
+function paintConvTab() {
+  var turnsEl = document.getElementById('panel-turns');
+  var host = document.getElementById('panel-agent-conv');
+  if (!turnsEl || !host || _psec !== 'conv') return;
+  if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
+  if (_panelAgent) {
+    if (turnsEl.firstChild) turnsEl.innerHTML = '';
+    turnsEl.removeAttribute('aria-busy');
+    turnsEl.hidden = true;
+    renderAgentConv();
+    return;
+  }
+  if (host.firstChild) host.innerHTML = '';
+  host._html = '';
+  host.hidden = true;
+  turnsEl.hidden = false;
+  if (_panelTurnsMsg === 'loading') {
+    turnsEl.innerHTML = turnsSkeletonHtml();
+    turnsEl.setAttribute('aria-busy', 'true');
+    return;
+  }
+  turnsEl.removeAttribute('aria-busy');
+  if (!_panelTurnsList.length) {
+    turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">' + esc(PANEL_TURNS_MSG[_panelTurnsMsg] || PANEL_TURNS_MSG.none) + '</p>';
+    return;
+  }
+  var list = _panelTurnsList;
+  var cid = _panelTurnsCid;
+  turnsEl.innerHTML = list.map(function(t, i) { return renderTurn(t, i, list, cid); }).join('');
+  attachRawToggleHandlers();
+  decoratePanelTurns();
+}
+// 작업 로그 painted from the work-log state — the entries loaded (the latest
+// window and the older pages the reader scrolled up to) — or what it says without them.
+function paintLogTab() {
+  var list = document.getElementById('worklog-list');
+  if (!list || _psec !== 'log') return;
+  var st = _wl;
+  if (!st || st.denied || !st.entries.length) {
+    var msg = !st ? WL_EMPTY_MSG : st.denied ? WL_FORBIDDEN_MSG : st.loaded ? WL_EMPTY_MSG : '불러오는 중…';
+    list.innerHTML = '<div class="wl-empty">' + esc(msg) + '</div>';
+    if (st) st.painted = false;
+    return;
+  }
+  wlRenderList(st, list);
+  updateTimersIn(list);
+  wlEnsureTabStop(list);
+  if (!wlScopeEntries(st.entries).length) showWorkLogEmpty('이 에이전트의 작업 로그 없음');
+  st.painted = true;
+}
+// 에이전트 트리: the session's agents in <ui-agent-tree> (rich — a card per agent on
+// one waterfall axis, every branch's spend rolled up), the main agent at its
+// root and the focused one selected — the newest _treeWindow agents with what
+// connects them (atWindowOf); scrolling up shows AT_PANEL_WINDOW more of the
+// agents already loaded. A live arrival below a reader reading higher is counted.
+function paintTreeTab() {
+  var host = document.getElementById('panel-tree');
+  if (!host || _psec !== 'tree') return;
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var root = s ? agentTreeOf(s, sessionColOf(panelSessionKey), panelLogOnlyAgents(s)) : null;
+  if (!root || !root.children.length) {
+    host._tree = null;
+    host._hidden = 0;
+    writePanelPart(host, s ? '<p class="psec-empty">이 세션에는 하위 에이전트가 없습니다</p>' : '');
+    psecSyncControls('tree');
+    return;
+  }
+  var ns = 'p|' + panelSessionKey;
+  var win = atWindowOf(root, _treeWindow, _panelAgent, _treeMaxN);
+  var d = atTreeData(root, { s: s, ns: ns, withRoot: true, openDepth: 64, density: 'rich', title: '에이전트 트리', keep: win.keep });
+  d.selectedId = _panelAgent ? String(_panelAgent) : AT_ROOT;
+  var newer = _treeMaxN === null ? 0 : win.newer;
+  _treeMaxN = win.maxN;
+  host._tree = d;
+  host._hidden = win.hidden;
+  var pinned = psecAtBottom(psecBox('tree'));
+  writePanelPart(host, atSlotHtml('pa-tree', ns, '에이전트 트리'));
+  atPaint(host.querySelector('ui-agent-tree'), d, JSON.stringify(d));
+  psecSyncControls('tree');
+  if (newer) psecOnAppended(newer, pinned);
+}
+function showMoreTree() {
+  var box = psecBox('tree');
+  var host = document.getElementById('panel-tree');
+  if (!box || !host || !(host._hidden > 0)) return;
+  var fromBottom = box.scrollHeight - box.scrollTop;
+  _treeWindow += AT_PANEL_WINDOW;
+  paintTreeTab();
+  psecKeepPlace(box, fromBottom);
+  psecAfterRender(host.querySelector('ui-agent-tree'), function() {
+    if (_psec !== 'tree') return;
+    psecKeepPlace(box, fromBottom);
+    psecMaybeFill('tree');
+  });
+}
+// The work log's older page (the reader scrolling up, or the fill of a short box).
+function loadOlderWorkLog() {
+  var st = _wl;
+  if (!st) return Promise.resolve(null);
+  var run = wlLoadOlderPage(st, wlFetchJson, paintWorkLog);
+  psecSyncControls('log');
+  return run.then(function(r) {
+    if (st !== _wl) return r;
+    psecSyncControls('log');
+    // A box still too short to scroll takes the next page; a failure waits for the reader.
+    if (r === 'ok') psecMaybeFill('log');
+    return r;
+  });
+}
+// One-time wiring: the tablist (click, ←/→/Home/End with automatic activation),
+// the pill, each box's top control and sentinel, the scroll that tracks where
+// the reader is (at the newest: pinned; moving up: older pages may load), the
+// newest kept in view while content grows under a pinned reader, and the box's size.
+(function initPanelSections() {
+  var strip = document.getElementById('panel-sections');
+  if (!strip) return;
+  strip.addEventListener('click', function(e) {
+    var t = e.target && e.target.closest ? e.target.closest('[data-sec]') : null;
+    var sec = t ? t.getAttribute('data-sec') : '';
+    if (sec && sec !== _psec) selectPanelSection(sec);
+  });
+  strip.addEventListener('keydown', function(e) {
+    var tabs = Array.prototype.slice.call(strip.querySelectorAll('[role="tab"]'));
+    var to = psecKeyTarget(e.key, tabs.indexOf(e.target), tabs.length);
+    if (to < 0) return;
+    e.preventDefault();
+    selectPanelSection(tabs[to].getAttribute('data-sec'), true);
+  });
+  var pill = document.getElementById('psec-pill');
+  if (pill) pill.addEventListener('click', psecJumpNewest);
+  PSEC_ORDER.forEach(function(sec) {
+    var box = document.getElementById('psec-' + sec);
+    if (!box) return;
+    var btn = box.querySelector('.psec-older');
+    if (btn) btn.addEventListener('click', function() { psecLoadOlder(sec); });
+    box._lastTop = 0;
+    box.addEventListener('scroll', function() {
+      if (sec !== _psec) return;
+      var top = box.scrollTop;
+      // The reader moving up arms the sentinel (a landing or a kept place never does).
+      if (top < box._lastTop - 1) box._armed = true;
+      box._lastTop = top;
+      _psecPin = psecAtBottom(box);
+      if (_psecPin && _psecNew) psecSetNew(0);
+      if (box._armed && box._near) psecLoadOlder(sec);
+    }, { passive: true });
+    if (btn && typeof IntersectionObserver === 'function') {
+      new IntersectionObserver(function(entries) {
+        for (var i = 0; i < entries.length; i++) box._near = entries[i].isIntersecting;
+        if (box._near && box._armed) psecLoadOlder(sec);
+      }, { root: box, rootMargin: '100% 0px 0px 0px' }).observe(btn);
+    }
+  });
+  if (typeof ResizeObserver === 'function') {
+    var pin = new ResizeObserver(function() {
+      var box = psecBox();
+      if (box && !box.hidden && _psecPin) box.scrollTop = box.scrollHeight;
+    });
+    PSEC_ORDER.forEach(function(sec) {
+      var box = document.getElementById('psec-' + sec);
+      var body = box ? box.querySelector('.psec-body') : null;
+      if (body) pin.observe(body);
+      if (box) pin.observe(box);
+    });
+    var size = new ResizeObserver(function() { sizePanelSections(); });
+    ['panel-scroll', 'panel-surface', 'panel-tabs', 'panel-agents', 'panel-tasks', 'panel-sections'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el) size.observe(el);
+    });
+  }
+})();
 // ── The panel as a whole (spec 13 — "understand and steer") ──
 // One live path writes every part of the open panel that follows the session:
 // the head chip, 세션 정보, the goal editor, the composer's model · effort and
@@ -10839,14 +11282,14 @@ function repaintPanelSession() {
   syncAnsPending(); // re-ai-answer D12 — the 응답 작성 중 row follows the session state
   restorePanelLiveAnchor(anchor);
 }
-// The reader's place across a live repaint: the anchor the older-turns loader
-// keeps (panelScrollAnchor — the question, the work log, a turn) — unless the
+// The reader's place across a live repaint: the anchor a layout shift keeps
+// (panelScrollAnchor — the question, Tasks, the section tabs) — unless the
 // reader is looking at a live section itself (it changes under them by
-// design), the panel follows the newest turns, or it rests at the top.
+// design) or the panel rests at its top. Inside a section box the box keeps it.
 var PANEL_LIVE_SECTIONS = { 'panel-info': true, 'panel-goal': true, 'panel-agents': true };
 function panelLiveAnchor() {
   var scrollEl = document.getElementById('panel-scroll');
-  if (!scrollEl || _panelStickBottom || scrollEl.scrollTop <= 0) return null;
+  if (!scrollEl || scrollEl.scrollTop <= 0) return null;
   var top = scrollEl.getBoundingClientRect().top;
   // Task view: the sections sit in the common surface and the tab panel.
   var kids = scrollEl.querySelectorAll('#panel-surface > *, #panel-tabpanel > *');
@@ -11498,8 +11941,10 @@ function renderPanelGoal() {
   if (hadFocus && (!now || now === document.body || !el.contains(now)) && el.focus) el.focus({ preventScroll: true });
 }
 
-// Switch the panel's scope: its Tasks and work log follow the chosen agent.
-// The work log keeps one open/closed map of task groups per agent.
+// Switch the panel's scope: its Tasks and section tabs follow the chosen agent
+// (the section shown stays — the reader's tab is kept for the opening — and is
+// painted again for the new scope, at its newest). The work log keeps one
+// open/closed map of task groups per agent.
 function selectPanelAgent(agentId) {
   var before = document.activeElement;
   var focusInPanel = !!(before && before !== document.body && before.closest && before.closest('#slide-panel'));
@@ -11514,8 +11959,7 @@ function selectPanelAgent(agentId) {
   renderPanelTabs();
   renderPanelAgents();
   repaintPanelTasks();
-  repaintWorkLogScope();
-  renderAgentConv();
+  selectPanelSection(_psec);
   // A keyboard choice (a list row, 서브에이전트 열기) went with the list it was
   // in: focus lands on the agent now shown, not on <body>.
   var after = document.activeElement;
@@ -11525,16 +11969,6 @@ function selectPanelAgent(agentId) {
       || document.querySelector('#panel-agents .pa-crumb[aria-current="page"]');
     if (here && here.focus) here.focus();
   }
-}
-function repaintWorkLogScope() {
-  var list = document.getElementById('worklog-list');
-  if (!_wl || !list) return;
-  if (!_wl.entries.length) return;
-  wlRenderList(_wl, list);
-  updateTimersIn(list);
-  setTextIfChanged(document.getElementById('worklog-count'), String(wlVisible(_wl, wlScopeEntries(_wl.entries)).length));
-  wlEnsureTabStop(list);
-  if (!wlScopeEntries(_wl.entries).length) showWorkLogEmpty('이 에이전트의 작업 로그 없음');
 }
 // Pure: how an entry reads in the scope of the given agent ('' = main), or null
 // when it is not in that scope. The main agent's scope = entries without an
@@ -13132,7 +13566,6 @@ function capturePanelAnchor() {
 function restorePanelAnchor(a) {
   var scrollEl = document.getElementById('panel-scroll');
   if (!scrollEl || !panelOpen) return;
-  if (_panelStickBottom) { scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' }); return; }
   // Never pull the reader back from a place they scrolled to themselves.
   if (!a || a.gen !== _panelScrollGen) return;
   if (a.atTop) { if (scrollEl.scrollTop !== 0) scrollEl.scrollTo({ top: 0, behavior: 'instant' }); return; }
@@ -14300,13 +14733,23 @@ function connectWs() {
             var pending = document.querySelector('.turn.user[style*="opacity"]');
             if (pending) pending.style.opacity = '';
             // The server's turn takes over the optimistic one, so a later push for
-            // it (a /compact result, SSOT 2026-10-27) finds it by its real id.
+            // it (a /compact result, SSOT 2026-10-27) finds it by its real id —
+            // on the list, or in 지시와 답변's data while another section is shown.
             var opts = document.querySelectorAll('#panel-turns .turn.user[data-turn-id^="optimistic-"]');
             var optEl = opts.length ? opts[opts.length - 1] : null;
             if (optEl && msg.turn.id) updateTurnInPanel(optEl, msg.turn);
+            else if (msg.turn.id) {
+              var optId = '';
+              for (var oi = _panelTurnsList.length - 1; oi >= 0 && !optId; oi--) {
+                var ot = _panelTurnsList[oi];
+                if (ot && ot._optimistic && String(ot.id || '').indexOf('optimistic-') === 0) optId = ot.id;
+              }
+              if (optId) ptUpsert(_panelTurnsList, msg.turn, optId);
+            }
           } else {
             // Check if this turn already exists (e.g., summary update for existing assistant turn).
-            // If so, replace in-place instead of appending a duplicate.
+            // If so, replace in-place instead of appending a duplicate (appendTurnToPanel
+            // updates 지시와 답변's data in place for a turn not on the list).
             var existingTurn = msg.turn.id ? document.querySelector('[data-turn-id="' + CSS.escape(msg.turn.id) + '"]') : null;
             if (existingTurn) {
               updateTurnInPanel(existingTurn, msg.turn);
@@ -14437,7 +14880,9 @@ function updateTokenBreakdown() {
 // GET /api/dashboard/session/:conversationId/worklog → { entries, hasMore }:
 // without afterSeq the LATEST page, with afterSeq=N (integer ≥ 0) the FIRST
 // page after N — so afterSeq=0 is the oldest page and the initial load must
-// omit it. Live entries arrive as WS { type: 'work_log', conversationId,
+// omit it — and with beforeSeq=N the LAST page before N (the reader scrolling
+// up; SSOT 2026-10-29). The panel loads the latest WL_PAGE entries and older
+// pages only as the reader scrolls up (wlLoadOlderPage). Live entries arrive as WS { type: 'work_log', conversationId,
 // entry } once the line is on disk. 403 = not the session owner (no retry),
 // 404 = no log for this conversation.
 // Entries merge by seq identity into one seq-ordered list, so a live entry that
@@ -14456,6 +14901,8 @@ function updateTokenBreakdown() {
 // A safety bound against a server that never stops saying hasMore — not a
 // size limit: 2000 pages of 500 is a million entries (SSOT 2026-10-22 T9).
 var WL_BACKFILL_MAX_PAGES = 2000;
+// The latest window an opening loads, and each older page (SSOT 2026-10-29).
+var WL_PAGE = 100;
 var WL_LABELS = { instruction: '지시', narration: '', tool: '', tool_result: '', final: '응답', notice: '알림', error: '오류' };
 var WL_EMPTY_MSG = '작업 로그 없음';
 var _wlCardsWait = false;
@@ -14486,6 +14933,13 @@ function wlUrl(convId, afterSeq) {
   if (afterSeq === null || afterSeq === undefined) return base;
   var n = Math.max(0, Math.floor(Number(afterSeq) || 0));
   return base + '?afterSeq=' + n;
+}
+// The latest WL_PAGE entries; the WL_PAGE entries before seq beforeSeq.
+function wlLatestUrl(convId) {
+  return wlUrl(convId, null) + '?limit=' + WL_PAGE;
+}
+function wlOlderUrl(convId, beforeSeq) {
+  return wlUrl(convId, null) + '?beforeSeq=' + Math.max(0, Math.floor(Number(beforeSeq) || 0)) + '&limit=' + WL_PAGE;
 }
 function wlValidSeq(seq) {
   return typeof seq === 'number' && Number.isSafeInteger(seq) && seq > 0;
@@ -14561,13 +15015,13 @@ function wlLoadLatest(state, fetchJson, onAdded) {
   // The latest window holds the newest entries at request time — including
   // any live entry we already held — so it confirms up to both.
   var sentMax = state.maxSeq;
-  state.latest = fetchJson(wlUrl(state.convId, null)).then(function(data) {
+  state.latest = fetchJson(wlLatestUrl(state.convId)).then(function(data) {
     if (state.closed) return 'closed';
     var page = (data && data.entries) || [];
     var added = wlMerge(state, page);
     state.loaded = true;
     state.latestOk = true;
-    // Entries older than this window exist: wlLoadOlder brings them in (T9).
+    // Entries older than this window exist: the reader scrolling up brings them in (wlLoadOlderPage).
     state.olderPending = !!(data && data.hasMore === true);
     wlConfirm(state, Math.max(wlPageMaxSeq(page), sentMax));
     if (added.length) onAdded(state, added);
@@ -14646,53 +15100,47 @@ function wlRecover(state, fetchJson, onAdded, reason) {
   return run;
 }
 
-// Every entry, not just the latest window (SSOT 2026-10-22 T9): when the
-// latest page said older entries exist, page forward from the start of the log
-// (afterSeq=0, 500 per page) up to the oldest entry held, merging each page.
-// Older entries sit below the cursor, so the live / gap bookkeeping is
-// untouched. Stops on the last page, at the held entries, when the panel moved
-// on, on 403, or after WL_BACKFILL_MAX_PAGES pages. The pages are painted ONCE,
-// after the last one — a full re-render per page would be quadratic in the
-// log's size.
-function wlLoadOlder(state, fetchJson, onAdded) {
-  if (state.closed || state.denied || !state.olderPending) return Promise.resolve(null);
-  // The range to fill is fixed by the first attempt (below the latest window)
-  // and progress is kept, so a retry after a failed page resumes where it
-  // stopped instead of mistaking the pages it already holds for the boundary.
-  if (state.olderStopAt === undefined) state.olderStopAt = state.entries.length ? state.entries[0].seq : Infinity;
-  var stopAt = state.olderStopAt;
-  var from = state.olderFrom || 0;
-  var pages = 0;
-  var gathered = [];
-  // ok = the range up to the held entries is complete; a failed page keeps
-  // olderPending so the next recovery (reconnect) tries again.
-  function finish(ok) {
-    if (ok) state.olderPending = false;
-    if (gathered.length && !state.closed && !state.denied) onAdded(state, gathered);
-    return null;
+// The page before the oldest entry held (SSOT 2026-10-29) — the reader scrolling
+// up, or a subagent's tab looking for the call that started it: GET
+// …?beforeSeq=&limit=, merged by seq like every page. Older entries sit below the
+// cursor, so the live / gap bookkeeping is untouched. One at a time (the promise
+// is state.olderLoading); a failed page keeps olderPending (the control offers it
+// again); a page that brings nothing older ends the paging, so a server that keeps
+// saying hasMore cannot spin it.
+function wlLoadOlderPage(state, fetchJson, onAdded) {
+  if (!state || state.closed || state.denied || !state.latestOk || !state.olderPending) return Promise.resolve(null);
+  if (state.olderLoading) return state.olderLoading;
+  var before = state.entries.length ? state.entries[0].seq : 0;
+  if (!(before > 1)) {
+    state.olderPending = false;
+    return Promise.resolve(null);
   }
-  function step() {
-    if (state.closed || state.denied) return null;
-    pages++;
-    return fetchJson(wlUrl(state.convId, from)).then(function(data) {
-      if (state.closed) return null;
-      var page = (data && data.entries) || [];
-      var older = page.filter(function(e) { return e && wlValidSeq(e.seq) && e.seq < stopAt; });
-      gathered = gathered.concat(wlMerge(state, older));
-      var top = wlPageMaxSeq(page);
-      var more = !!(data && data.hasMore === true);
-      if (more && top > from && top < stopAt && pages < WL_BACKFILL_MAX_PAGES) {
-        from = top;
-        state.olderFrom = top;
-        return step();
-      }
-      return finish(true);
-    }, function(err) {
-      if (wlStatusOf(err) === 'denied') wlDeny(state);
-      return finish(false);
-    });
-  }
-  return step();
+  var run = fetchJson(wlOlderUrl(state.convId, before)).then(function(data) {
+    state.olderLoading = null;
+    if (state.closed) return null;
+    var page = (data && data.entries) || [];
+    var older = page.filter(function(e) { return e && wlValidSeq(e.seq) && e.seq < before; });
+    var added = wlMerge(state, older);
+    state.olderPending = !!(data && data.hasMore === true) && added.length > 0;
+    if (added.length) onAdded(state, added);
+    return 'ok';
+  }, function(err) {
+    state.olderLoading = null;
+    if (wlStatusOf(err) === 'denied') wlDeny(state);
+    return 'error';
+  });
+  state.olderLoading = run;
+  return run;
+}
+// A subagent's tab whose spawn call is older than the log window: page back for
+// it — while older entries exist and the window has not reached back past the
+// agent's start (its call cannot be older than that).
+function wlSeekAgentSpawn(state, a) {
+  if (!state || !state.olderPending || state.olderLoading) return;
+  var start = toNum(a && a.startedAt);
+  var oldest = state.entries.length ? toNum(state.entries[0].ts) : 0;
+  if (start && oldest && oldest < start - 60000) return;
+  loadOlderWorkLog();
 }
 
 // Raw output of one entry (§3.1-6). An entry with rawBytes has its full output
@@ -14772,38 +15220,35 @@ function wlFetchJson(url) {
   });
 }
 
-// visible: the panel is open (a session without a conversation still shows
-// the section, reading "작업 로그 없음").
-function resetWorkLog(convId, visible) {
+// A new work-log state for the conversation the panel opens (none: the panel
+// closed, or a session without a conversation — 작업 로그 reads "작업 로그 없음").
+// The list itself is the 작업 로그 tab's (paintLogTab).
+function resetWorkLog(convId) {
   if (_wl) _wl.closed = true; // late responses for the previous conversation are dropped
   _wl = convId ? wlNewState(convId) : null;
   if (_wl) _wl.onDenied = showWorkLogDenied;
-  var section = document.getElementById('panel-worklog');
   var list = document.getElementById('worklog-list');
-  setTextIfChanged(document.getElementById('worklog-count'), '');
-  if (section) section.style.display = visible ? '' : 'none';
-  if (list) list.innerHTML = !visible ? '' : '<div class="wl-empty">' + (convId ? '불러오는 중…' : WL_EMPTY_MSG) + '</div>';
+  if (list && list.firstChild) list.innerHTML = '';
 }
 
+// The latest window only (SSOT 2026-10-29): older pages wait for the reader to
+// scroll up in 작업 로그 — never the whole history on an opening.
 function loadWorkLog() {
   var st = _wl;
   if (!st) return;
   wlLoadLatest(st, wlFetchJson, paintWorkLog).then(function(result) {
     if (st.closed) return;
     // 'denied' was already shown by showWorkLogDenied (state.onDenied).
-    if (result !== 'denied' && !st.entries.length) showWorkLogEmpty(WL_EMPTY_MSG);
-    // T9: the whole log, not just its latest 500 entries.
-    if (result === 'ok') wlLoadOlder(st, wlFetchJson, paintWorkLog);
+    if (result !== 'denied' && !st.entries.length && _psec === 'log') paintLogTab();
+    psecSyncControls('log');
+    psecMaybeFill('log');
     // Spec 12: agents that wrote to the log but are not on the card get a place in the agent bar.
     if (result === 'ok') renderPanelAgents();
-    // No re-landing here: the log is collapsed, so its arrival moves nothing,
-    // and a reader who already scrolled is left where they are.
+    if (result === 'ok' && _psec === 'tree') paintTreeTab();
   });
 }
 function recoverWorkLog() {
   if (_wl) wlRecover(_wl, wlFetchJson, paintWorkLog);
-  // An older page that failed earlier is asked for again (T9).
-  if (_wl && _wl.olderPending && _wl.loaded) wlLoadOlder(_wl, wlFetchJson, paintWorkLog);
 }
 function pushLiveWorkLog(convId, entry) {
   if (!_wl || _wl.convId !== convId) return;
@@ -14820,22 +15265,6 @@ function wlNamesNewAgent(added) {
     if (e.agentRef && !_panelAgentIdsShown[e.agentRef]) return true;
   }
   return false;
-}
-
-// Work-log section open / closed (§3.1-6). Every panel opening starts closed
-// (openPanel); 작업 로그 and ?session= only change where the panel lands.
-// Opening only shows what loadWorkLog already fetched — it never asks again.
-function setWorkLogOpen(open) {
-  var toggle = document.getElementById('worklog-toggle');
-  var list = document.getElementById('worklog-list');
-  if (toggle) toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
-  if (!list) return;
-  list.hidden = !open;
-  if (open) list.scrollTop = list.scrollHeight;
-}
-function toggleWorkLogSection() {
-  var toggle = document.getElementById('worklog-toggle');
-  setWorkLogOpen(!(toggle && toggle.getAttribute('aria-expanded') === 'true'));
 }
 
 // One entry's detail (§3.1-6): a click on its row opens the full output under
@@ -15200,38 +15629,49 @@ function toggleWorkLogGroup(taskId) {
   if (body) body.hidden = !open;
 }
 
-// Paint merged entries: live entries at the end are appended in place; any
-// other batch (the older pages, a backfill) re-renders the list from
-// state.entries, which keeps seq order and the task groups exact.
+// Paint merged entries — only while 작업 로그 is the section shown (else the tab
+// is painted from the state when it opens). Live entries at the end are
+// appended in place; any other batch (an older page, a backfill) re-renders the
+// list from state.entries, which keeps seq order and the task groups exact, and
+// keeps the reader's place (measured from the bottom: the batch went in above).
+// At the newest the reader follows the tail — unless an entry's detail is open —
+// else the pill counts what arrived.
 function paintWorkLog(state, added) {
   if (state !== _wl || !added.length) return;
-  var list = document.getElementById('worklog-list');
-  if (!list) return;
-  var atBottom = list.scrollHeight - list.scrollTop <= list.clientHeight + 40;
-  var placeholder = list.querySelector('.wl-empty');
-  if (placeholder) placeholder.remove();
-  var n = state.entries.length;
-  var tail = state.painted;
-  for (var i = 0; tail && i < added.length; i++) if (added[i].index !== n - added.length + i) tail = false;
-  var keepTop = !tail && state.painted ? list.scrollHeight - list.scrollTop : null;
-  if (tail) wlAppendTail(state, list, added);
-  else wlRenderList(state, list);
-  updateTimersIn(list);
-  // What the list shows: a paired result lives in its call's card, so it is not counted twice.
-  var scopedCount = wlVisible(state, wlScopeEntries(state.entries)).length;
-  setTextIfChanged(document.getElementById('worklog-count'), String(scopedCount));
-  // Spec 12: entries of another agent arrived while this agent's log is empty — keep the empty line.
-  if (!scopedCount) showWorkLogEmpty('이 에이전트의 작업 로그 없음');
-  wlEnsureTabStop(list);
-  if (wlNamesNewAgent(added)) renderPanelAgents();
+  // Spec 12: entries that name an agent the bar does not show yet.
+  if (wlNamesNewAgent(added)) {
+    renderPanelAgents();
+    if (_psec === 'tree') paintTreeTab();
+  }
   // Task view T1.3: a subagent tab's 지시와 답변 comes from these entries — the
   // tab may have opened (or the result may land) before they did.
   if (_panelAgent) renderAgentConv();
-  // Tail-follow, unless the reader has an entry's detail open; older entries
-  // arriving above keep the reader's place.
-  if (!state.painted || (atBottom && !wlDetailOpen(state))) list.scrollTop = list.scrollHeight;
-  else if (keepTop !== null) list.scrollTop = list.scrollHeight - keepTop;
+  var list = document.getElementById('worklog-list');
+  var box = psecBox('log');
+  if (_psec !== 'log' || !list || !box) {
+    state.painted = false;
+    return;
+  }
+  var pinned = psecAtBottom(box);
+  var fromBottom = box.scrollHeight - box.scrollTop;
+  var n = state.entries.length;
+  var tail = state.painted;
+  for (var i = 0; tail && i < added.length; i++) if (added[i].index !== n - added.length + i) tail = false;
+  var placeholder = list.querySelector('.wl-empty');
+  if (placeholder) placeholder.remove();
+  if (tail) wlAppendTail(state, list, added);
+  else wlRenderList(state, list);
+  updateTimersIn(list);
+  // Spec 12: entries of another agent arrived while this agent's log is empty — keep the empty line.
+  if (!wlScopeEntries(state.entries).length) showWorkLogEmpty('이 에이전트의 작업 로그 없음');
+  wlEnsureTabStop(list);
+  psecSyncControls('log');
+  var first = !state.painted;
   state.painted = true;
+  if (first) psecToNewest();
+  else if (!tail) psecKeepPlace(box, fromBottom);
+  else if (pinned && !wlDetailOpen(state)) psecOnAppended(1, true);
+  else psecOnAppended(wlVisible(state, wlScopeEntries(added.map(function(a) { return a.entry; }))).length, false);
 }
 
 // Owner-only log (403 on any path) — only for the conversation still open.
@@ -15239,9 +15679,8 @@ function showWorkLogDenied(state) {
   if (state !== _wl || state.closed) return;
   // Live entries painted before the 403 go too: the log is owner-only.
   state.entries = [];
-  var list = document.getElementById('worklog-list');
-  setTextIfChanged(document.getElementById('worklog-count'), '');
-  if (list) list.innerHTML = '<div class="wl-empty">' + esc(WL_FORBIDDEN_MSG) + '</div>';
+  if (_psec === 'log') paintLogTab();
+  psecSyncControls('log');
 }
 function showWorkLogEmpty(message) {
   var list = document.getElementById('worklog-list');
@@ -15759,35 +16198,21 @@ function wlSetTabStop(list, row) {
   });
 })();
 
-// Where an opening from 작업 로그 / ?session= lands (§3.1-6): the top of the
-// scroll area when the collapsed work-log header fits there (a short pending
-// question above it stays in view), else the header itself.
-function workLogLandingTop(sectionTop, headerHeight, viewHeight) {
-  return sectionTop + headerHeight <= viewHeight ? 0 : sectionTop;
-}
-// Bring the collapsed work-log header into view, one click from its entries.
-function scrollPanelToWorkLog() {
-  var scrollEl = document.getElementById('panel-scroll');
-  var section = document.getElementById('panel-worklog');
-  var toggle = document.getElementById('worklog-toggle');
-  if (!scrollEl || !section || section.style.display === 'none') return;
-  var sectionTop = scrollEl.scrollTop + section.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top;
-  var headerHeight = toggle ? toggle.getBoundingClientRect().height : 0;
-  _panelScrollGen++; // #488: a layout anchor from before this landing must not pull it back
-  scrollEl.scrollTo({ top: workLogLandingTop(sectionTop, headerHeight, scrollEl.clientHeight), behavior: 'instant' });
-}
 // Where an opening lands (§3.1-6, spec 13) — on open, and again once the
-// scroll area has its content. By the opening's intent (_panelLand):
-//   worklog (작업 로그 / ?session=): the work-log header;
+// scroll area has its content. Its section tab is psecForLanding's (작업 로그,
+// 에이전트 트리 or 지시와 답변), landed on its newest items in its own box; the
+// panel's scroll, by the opening's intent (_panelLand):
 //   goal / agent / tasks (관리 →, a tree item, 전체 N개 → 상세, 전체 task →):
 //     that section at the top of the scroll area (under the sticky agent tabs),
 //     once per opening — the turns loading below it never drag it away;
 //   answer, default: the permission or question the session waits on, which
 //     sits in the common surface at the top, so the answer form is in view at
-//     once; with none shown (none, or answered while the turns loaded) the
-//     newest turns, held while the panel settles until the reader acts. The
-//     question landing is made once per opening: turns load below the form and
-//     do not move it, and a reader who scrolled meanwhile stays.
+//     once. The question landing is made once per opening: turns load below the
+//     form and do not move it, and a reader who scrolled meanwhile stays;
+//   worklog (작업 로그 / ?session=), or no question: the section tabs in view —
+//     the top when the section box ends in view, else the tabs under the agent
+//     tabs (psecLandingTop) — made again as the parts arrive, unless the reader
+//     scrolled since.
 var _panelOnQuestion = false;
 var _panelLandAt = null; // where the last section landing left the scroll (null = none yet this opening)
 var _panelHold = false; // a landed section is held in place while the panel settles, until the reader acts
@@ -15795,7 +16220,6 @@ var _panelHoldUntil = 0; // the settle window (3 s): after it, the panel's own m
 function landPanel() {
   var scrollEl = document.getElementById('panel-scroll');
   if (!scrollEl) return;
-  if (_panelLand === 'worklog') { scrollPanelToWorkLog(); return; }
   // Task view: Tasks sit in the tab under the sticky agent tabs — a tasks
   // opening lands on the (unfolded) plan's head, just under the tab strip.
   if (_panelLand === 'goal' || _panelLand === 'agent' || _panelLand === 'tasks') {
@@ -15804,7 +16228,6 @@ function landPanel() {
     if (sec && sec.style.display !== 'none') {
       // The reader scrolled since the last try: they stay where they are.
       if (_panelLandAt !== null && Math.abs(scrollEl.scrollTop - _panelLandAt) > 1) { _panelLanded = true; return; }
-      _panelStickBottom = false;
       var tabs = _panelLand === 'goal' ? null : document.getElementById('panel-tabs');
       var under = tabs ? tabs.offsetHeight || 0 : 0;
       var target = scrollEl.scrollTop + sec.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - under;
@@ -15822,40 +16245,43 @@ function landPanel() {
       return;
     }
   }
-  // What the session waits on: a permission prompt (above the question slot)
-  // or an open question. Either is where the panel lands.
-  var permission = document.getElementById('panel-permission');
-  var question = document.getElementById('panel-question');
-  var target = permission && permission.style.display !== 'none' ? permission
-    : question && question.style.display !== 'none' ? question : null;
-  var onQuestion = !!target;
-  if (onQuestion && _panelOnQuestion) return;
-  _panelOnQuestion = onQuestion;
-  // The question sits under the session info that scrolls with the
-  // conversation (SSOT 2026-10-24), so land on its own offset, not on 0.
-  // The 입력 필요 head sits right above it: land with the head in view (re-agent-run D9).
-  var needsHead = document.getElementById('panel-needs-head');
-  var headH = onQuestion && needsHead && !needsHead.hidden ? (needsHead.offsetHeight || 0) : 0;
-  var questionTop = onQuestion
-    ? Math.max(0, scrollEl.scrollTop + target.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - headH)
-    : 0;
-  if (!onQuestion && !_panelDetail) {
-    // Task view (minimal): land at the top — the common surface, the tabs, and
-    // under them the latest exchange (the turns before it are folded). Made
-    // again as the turns arrive, but a reader who scrolled since stays.
-    if (_panelLandAt !== null && Math.abs(scrollEl.scrollTop - _panelLandAt) > 1) return;
-    _panelScrollGen++;
-    scrollEl.scrollTo({ top: 0, behavior: 'instant' });
-    _panelLandAt = scrollEl.scrollTop;
-    _panelStickBottom = false;
-    return;
+  if (_panelLand !== 'worklog') {
+    // What the session waits on: a permission prompt (above the question slot)
+    // or an open question. Either is where the panel lands.
+    var permission = document.getElementById('panel-permission');
+    var question = document.getElementById('panel-question');
+    var target = permission && permission.style.display !== 'none' ? permission
+      : question && question.style.display !== 'none' ? question : null;
+    var onQuestion = !!target;
+    if (onQuestion && _panelOnQuestion) return;
+    _panelOnQuestion = onQuestion;
+    if (onQuestion) {
+      // The question sits under the session info that scrolls with the
+      // conversation (SSOT 2026-10-24), so land on its own offset, not on 0.
+      // The 입력 필요 head sits right above it: land with the head in view (re-agent-run D9).
+      var needsHead = document.getElementById('panel-needs-head');
+      var headH = needsHead && !needsHead.hidden ? (needsHead.offsetHeight || 0) : 0;
+      var questionTop = Math.max(0, scrollEl.scrollTop + target.getBoundingClientRect().top - scrollEl.getBoundingClientRect().top - headH);
+      // Instant: the panel's scroll is the reader's place at once.
+      // #488: the landing is the reader's new place — a layout anchor from before it is stale.
+      _panelScrollGen++;
+      scrollEl.scrollTo({ top: questionTop, behavior: 'instant' });
+      return;
+    }
   }
-  // Instant: under scroll-behavior: smooth the glide down from 0 passed
-  // through scrollTop < 100 and set off the load-older-turns handler.
-  // #488: the landing is the reader's new place — a layout anchor from before it is stale.
+  // The section tabs in view; a reader who scrolled since the last landing stays.
+  if (_panelLandAt !== null && Math.abs(scrollEl.scrollTop - _panelLandAt) > 1) return;
+  var secs = document.getElementById('panel-sections');
+  var body = document.getElementById('panel-sections-body');
+  var tabs = document.getElementById('panel-tabs');
+  var top = 0;
+  if (secs && body) {
+    var base = scrollEl.getBoundingClientRect().top - scrollEl.scrollTop;
+    top = psecLandingTop(secs.getBoundingClientRect().top - base, body.getBoundingClientRect().bottom - base, scrollEl.clientHeight, tabs ? tabs.offsetHeight || 0 : 0);
+  }
   _panelScrollGen++;
-  scrollEl.scrollTo({ top: onQuestion ? questionTop : scrollEl.scrollHeight, behavior: 'instant' });
-  _panelStickBottom = !onQuestion;
+  scrollEl.scrollTo({ top: top, behavior: 'instant' });
+  _panelLandAt = scrollEl.scrollTop;
 }
 
 // A held section landing: the section goes back under the tabs when the panel
@@ -15878,8 +16304,8 @@ function holdPanelLanding() {
 
 // ── Slide Panel ──
 // focusWorkLog = opened from a card's 작업 로그 button or a ?session= deep link:
-// the work log stays collapsed like every opening, but the panel lands with its
-// header in view instead of on the newest turns.
+// the panel opens on its 작업 로그 tab (true), or names another landing
+// ('answer', 'agent', 'goal', 'tasks' — psecForLanding picks the section tab).
 function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   const s = _sessionCache[sessionKey];
   if (!s) return;
@@ -15888,7 +16314,10 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   _panelLanded = false;
   _panelLandAt = null;
   _panelHold = false;
-  _panelConvAll = false; // 지시와 답변 starts at the latest exchange again
+  // The section tab of this opening (the reader's choice then holds until it closes).
+  _psec = psecForLanding(_panelLand);
+  _treeWindow = AT_PANEL_WINDOW;
+  _treeMaxN = null;
   // The control that opened it gets focus back on close (not a control inside the panel).
   var opener = document.activeElement;
   if (opener && opener !== document.body && !(opener.closest && opener.closest('#slide-panel'))) _panelReturnFocus = document.activeElement;
@@ -15913,24 +16342,23 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   _panelTurnsHasMore = false;
   _panelTurnsLoading = false;
   _panelTurnsOldestId = null;
+  _panelTurnsList = [];
+  _panelTurnsCid = '';
+  _panelTurnsMsg = s.conversationId ? 'loading' : 'unrecorded';
 
   panelSessionKey = sessionKey;
   panelConvId = s.conversationId || null;
-  resetWorkLog(panelConvId, true);
+  resetWorkLog(panelConvId);
   // Artifacts (T6): the summary now, the full list as soon as it arrives.
   renderPanelArtifactsSection();
   if (panelConvId && !isSiblingSession(s)) ensureArtifacts(panelConvId, true);
   if (panelConvId && !isSiblingSession(s) && s.userMedia && toNum(s.userMedia.count) > 0) ensureUserMedia(panelConvId);
-  // Every opening starts with the defaults (§3.1-6, task view T1.3): the work
-  // log and Tasks folded, 지시와 답변 open — or every section open with 자세히.
+  // Every opening starts with the defaults (§3.1-6, task view T1.3): Tasks
+  // folded — or every detail open with 자세히.
   resetPanelSections();
-  setWorkLogOpen(_panelDetail);
-  applyPanelConv();
   _agentConvRaw = Object.create(null);
   // The previous opening's answers are gone from the list: stop watching them.
   if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
-  _panelOlderArmed = false; // a landing never loads older turns by itself
-  _panelStickBottom = false;
   _panelOnQuestion = false;
 
   // #762 — single source of truth for headline. displayHeadline carries the
@@ -15966,17 +16394,18 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   renderPanelQuestion(s);
 
 
-  // Conversation turns — paginated (infinite scroll: latest 30, load older on scroll-up)
-  const turnsEl = document.getElementById('panel-turns');
+  // The section tab of this opening, painted from its data (지시와 답변: the
+  // skeleton while the turns load) and landed on its newest items.
+  selectPanelSection(_psec);
+  sizePanelSections();
+  landPanel(); // the answer form is in view while the turns load
+
+  // 지시와 답변: the latest PANEL_TURNS_PAGE turns; older pages as the reader scrolls up.
   if (s.conversationId) {
-    turnsEl.innerHTML = turnsSkeletonHtml();
-    turnsEl.setAttribute('aria-busy', 'true');
-    renderConvEarlier();
-    landPanel(); // the answer form is in view while the turns load
     _panelTurnsLoading = true;
     var loadingConvId = s.conversationId;
     var loadingGen = _panelGen;
-    fetch('/api/dashboard/session/' + encodeURIComponent(loadingConvId) + '?limit=30')
+    fetch('/api/dashboard/session/' + encodeURIComponent(loadingConvId) + '?limit=' + PANEL_TURNS_PAGE)
       .then(function(r) { return r.json(); })
       .then(function(data) {
         // If the panel was switched, closed or reopened while loading, discard this result.
@@ -15993,36 +16422,34 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
           generateTitleSub(loadingConvId, false); // fill: allowed for every signed-in viewer
         }
 
-        if (!data.turns || data.turns.length === 0) {
-          turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation turns</p>';
-          turnsEl.removeAttribute('aria-busy');
-          landPanel();
-          _panelTurnsLoading = false;
-          return;
-        }
-        var cid = data.id;
-        _panelTurnsHasMore = !!data.hasMore;
-        _panelTurnsOldestId = data.turns[0] && data.turns[0].id;
-        turnsEl.innerHTML = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
-        turnsEl.removeAttribute('aria-busy');
-        attachRawToggleHandlers();
-        decoratePanelTurns();
-        landPanel();
+        var turns = (data && data.turns) || [];
+        // A turn pushed while the page loaded (WS) and not in it stays, after it.
+        var pushed = _panelTurnsList;
+        _panelTurnsList = turns.slice();
+        for (var i = 0; i < pushed.length; i++) ptUpsert(_panelTurnsList, pushed[i]);
+        _panelTurnsCid = data.id || loadingConvId;
+        _panelTurnsHasMore = turns.length > 0 && !!data.hasMore;
+        _panelTurnsOldestId = turns.length ? turns[0].id : null;
+        _panelTurnsMsg = _panelTurnsList.length ? '' : 'none';
         _panelTurnsLoading = false;
+        if (_psec === 'conv') {
+          paintConvTab();
+          psecSyncControls('conv');
+          psecToNewest();
+          psecMaybeFill('conv');
+        }
+        landPanel();
       })
       .catch(function() {
         if (loadingGen !== _panelGen) return;
-        turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">Failed to load conversation</p>';
-        turnsEl.removeAttribute('aria-busy');
-        renderConvEarlier();
-        landPanel();
         _panelTurnsLoading = false;
+        _panelTurnsMsg = _panelTurnsList.length ? '' : 'failed';
+        if (_psec === 'conv') {
+          paintConvTab();
+          psecSyncControls('conv');
+        }
+        landPanel();
       });
-  } else {
-    turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">No conversation recorded</p>';
-    turnsEl.removeAttribute('aria-busy');
-    renderConvEarlier();
-    landPanel();
   }
 
   // Command input — always visible; disabled + hint for terminated / sleeping
@@ -16038,17 +16465,19 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   panelOpen = true;
 
   if (panelConvId) loadWorkLog();
+  sizePanelSections();
   // A keyboard opening puts focus where it landed (a click leaves it alone).
   if (byKey) focusPanelLanding();
 }
 // The landing target of this opening, for the keyboard: the answer form, the
-// goal section, the focused node's header, the Tasks head — else the heading.
+// goal section, the focused node's header, the Tasks head, the 작업 로그 tab —
+// else the heading.
 function focusPanelLanding() {
   var t = null;
   if (_panelLand === 'goal') t = document.querySelector('#panel-goal .cg-add-input') || document.getElementById('panel-goal');
   else if (_panelLand === 'agent') t = document.querySelector('#panel-agents .pa-focus');
   else if (_panelLand === 'tasks') t = document.getElementById('panel-tasks');
-  else if (_panelLand === 'worklog') t = document.getElementById('worklog-toggle');
+  else if (_panelLand === 'worklog') t = document.getElementById('psec-tab-log');
   if (!t || t.style.display === 'none') {
     // The first approval card still waiting on an answer, itself — its focus()
     // lands on the card, not a button: Esc there still closes the panel, ⌘↵
@@ -16060,15 +16489,17 @@ function focusPanelLanding() {
   if (t && t.focus) t.focus({ preventScroll: true });
 }
 
-// ── Pagination state for panel chat (infinite scroll) ──
+// ── Pagination state for 지시와 답변 (recent-first; older pages on scroll up) ──
 var _panelTurnsHasMore = false;
 var _panelTurnsLoading = false;
 var _panelTurnsOldestId = null;
 var _panelGen = 0; // bumped by openPanel / closePanel — the identity of one panel opening
 
+// The first part of the panel the reader sees (the question, Tasks, the section
+// tabs) and where it is — kept across a layout shift and a live repaint above it.
 function panelScrollAnchor(scrollEl) {
   var viewTop = scrollEl.getBoundingClientRect().top;
-  var nodes = scrollEl.querySelectorAll('#panel-question, #panel-worklog, #panel-turns > .turn');
+  var nodes = scrollEl.querySelectorAll('#panel-question, #panel-tasks, #panel-sections');
   for (var i = 0; i < nodes.length; i++) {
     var r = nodes[i].getBoundingClientRect();
     if (r.height > 0 && r.bottom > viewTop) return { el: nodes[i], top: r.top };
@@ -16076,82 +16507,56 @@ function panelScrollAnchor(scrollEl) {
   return null;
 }
 
+// The page of turns before the oldest one held — the reader scrolling up in
+// 지시와 답변 (or its top control). The turns go in above the reader, who keeps
+// their place (measured from the bottom of the box).
 async function loadMorePanelTurns() {
   if (_panelTurnsLoading || !_panelTurnsHasMore || !panelConvId || !_panelTurnsOldestId) return;
-  var turnsEl = document.getElementById('panel-turns');
-  var scrollEl = document.getElementById('panel-scroll');
-  if (!turnsEl || !scrollEl) return;
-
   _panelTurnsLoading = true;
   var requestConvId = panelConvId;
   var requestGen = _panelGen; // this panel opening; any switch/close/reopen makes it stale
   var requestOldestId = _panelTurnsOldestId;
-
-  // Loading spinner at top of turns list.
-  var spinner = document.createElement('div');
-  spinner.className = 'panel-turns-loading';
-  spinner.textContent = '\uC774\uC804 \uBA54\uC2DC\uC9C0 \uB85C\uB529...';
-  turnsEl.insertBefore(spinner, turnsEl.firstChild);
-
+  psecSyncControls('conv'); // 이전 대화 불러오는 중…
+  var ok = false;
   try {
     var url = '/api/dashboard/session/' + encodeURIComponent(requestConvId)
-      + '?limit=30&before=' + encodeURIComponent(requestOldestId);
+      + '?limit=' + PANEL_TURNS_PAGE + '&before=' + encodeURIComponent(requestOldestId);
     var r = await fetch(url);
     var data = await r.json();
-
     // Discard a stale response: the panel was switched, closed or reopened
     // (same session included) while this request was in flight.
-    if (requestGen !== _panelGen) {
-      if (spinner.parentNode) spinner.remove();
-      return;
+    if (requestGen !== _panelGen) return;
+    ok = true;
+    var turns = (data && data.turns) || [];
+    _panelTurnsHasMore = turns.length > 0 && !!data.hasMore;
+    if (turns.length) {
+      _panelTurnsOldestId = turns[0].id;
+      _panelTurnsList = turns.concat(_panelTurnsList);
     }
-
-    // Keep the reading position: capture the first element the reader can see
-    // (question / tasks / work log / a turn) NOW — after the response, so a
-    // scroll made while the request was pending is respected — and after the
-    // spinner goes and the older turns land, scroll by however far it moved.
-    var anchor = panelScrollAnchor(scrollEl);
-    if (spinner.parentNode) spinner.remove();
-
-    if (data.turns && data.turns.length > 0) {
-      _panelTurnsOldestId = data.turns[0].id;
-      _panelTurnsHasMore = !!data.hasMore;
-      var cid = data.id;
-      var html = data.turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join('');
-      turnsEl.insertAdjacentHTML('afterbegin', html);
+    _panelTurnsLoading = false;
+    var box = psecBox('conv');
+    var turnsEl = document.getElementById('panel-turns');
+    if (turns.length && _psec === 'conv' && !_panelAgent && box && turnsEl) {
+      var fromBottom = box.scrollHeight - box.scrollTop;
+      var cid = data.id || requestConvId;
+      turnsEl.insertAdjacentHTML('afterbegin', turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join(''));
       attachRawToggleHandlers();
       decoratePanelTurns();
-      // Restore scroll position so the user stays anchored on what they were reading.
-      // behavior 'instant': .panel-scroll is scroll-behavior: smooth, which would
-      // otherwise show the jump and then glide back.
-      if (anchor && anchor.el.isConnected) {
-        var drift = anchor.el.getBoundingClientRect().top - anchor.top;
-        if (drift) scrollEl.scrollTo({ top: scrollEl.scrollTop + drift, behavior: 'instant' });
-      }
-    } else {
-      _panelTurnsHasMore = false;
-      if (anchor && anchor.el.isConnected) {
-        var drift0 = anchor.el.getBoundingClientRect().top - anchor.top;
-        if (drift0) scrollEl.scrollTo({ top: scrollEl.scrollTop + drift0, behavior: 'instant' });
-      }
+      psecSyncControls('conv');
+      psecKeepPlace(box, fromBottom);
     }
   } catch (err) {
-    if (requestGen !== _panelGen) {
-      // A stale failure must not move the panel that replaced it.
-      if (spinner.parentNode) spinner.remove();
-      return;
-    }
-    var errAnchor = panelScrollAnchor(scrollEl);
-    if (spinner.parentNode) spinner.remove();
-    if (errAnchor && errAnchor.el.isConnected) {
-      var drift1 = errAnchor.el.getBoundingClientRect().top - errAnchor.top;
-      if (drift1) scrollEl.scrollTo({ top: scrollEl.scrollTop + drift1, behavior: 'instant' });
-    }
+    if (requestGen !== _panelGen) return;
     console.error('loadMorePanelTurns failed', err);
   } finally {
     // Only the current generation owns the in-flight flag; a stale request
     // settling must not clear the flag of the load that replaced it.
-    if (requestGen === _panelGen) _panelTurnsLoading = false;
+    if (requestGen === _panelGen) {
+      _panelTurnsLoading = false;
+      psecSyncControls('conv');
+      // A box still too short to scroll takes the next page; a failure waits for the reader.
+      if (ok) psecMaybeFill('conv');
+    }
   }
 }
 
@@ -16572,22 +16977,35 @@ function renderTurn(t, _idx, _arr, convId) {
   }
 }
 
-function appendTurnToPanel(turn) {
-  const turnsEl = document.getElementById('panel-turns');
-  // Scroll container is now .panel-scroll (parent of .panel-turns). Bottom-stick
-  // logic must read from the scroll parent, not from panel-turns itself.
-  const scrollEl = document.getElementById('panel-scroll') || turnsEl;
-  // At the end the reader follows the new turn; a short body read at its top (the
-  // minimal landing, nothing to scroll yet) stays at its top unless the bottom is held.
-  const wasAtBottom = (scrollEl.scrollTop > 0 || _panelStickBottom) && scrollEl.scrollHeight - scrollEl.scrollTop <= scrollEl.clientHeight + 40;
+// A new turn (a WS push, or this browser's own instruction — own: the reader
+// goes to it): into 지시와 답변's data, and onto the list when that is shown —
+// followed by a reader at the newest, else counted on the pill. A turn the
+// list already holds (by id) is updated in place instead.
+function appendTurnToPanel(turn, own) {
+  var had = _panelTurnsList.length;
+  if (ptUpsert(_panelTurnsList, turn) === 'update') return;
+  if (_panelTurnsMsg !== 'loading') _panelTurnsMsg = '';
+  if (_psec !== 'conv' || _panelAgent || _panelTurnsMsg === 'loading') return;
+  var turnsEl = document.getElementById('panel-turns');
+  var box = psecBox('conv');
+  if (!turnsEl || !box) return;
+  if (!had) {
+    paintConvTab();
+    psecSyncControls('conv');
+    psecToNewest();
+    return;
+  }
+  var pinned = !!own || psecAtBottom(box);
   turnsEl.insertAdjacentHTML('beforeend', renderTurn(turn));
-  if (wasAtBottom) scrollEl.scrollTop = scrollEl.scrollHeight;
   attachRawToggleHandlers();
   decoratePanelTurns();
+  psecOnAppended(1, pinned);
 }
 
 /** Replace an existing turn element in-place (e.g., when summary arrives for an assistant turn). */
 function updateTurnInPanel(existingEl, turn) {
+  // 지시와 답변's data first (an optimistic turn is taken over by the server's).
+  ptUpsert(_panelTurnsList, turn, existingEl.getAttribute('data-turn-id') || turn.id);
   var tmp = document.createElement('div');
   tmp.innerHTML = renderTurn(turn);
   var newEl = tmp.firstElementChild;
@@ -16632,7 +17050,7 @@ function attachRawToggleHandlers() {
           _ansIo.unobserve(en.target);
           ansLoad(en.target);
         });
-      }, { root: document.getElementById('panel-scroll'), rootMargin: '800px 0px' });
+      }, { root: document.getElementById('psec-conv'), rootMargin: '800px 0px' });
     }
     if (cached || !_ansIo) ansLoad(el);
     else _ansIo.observe(el);
@@ -17160,11 +17578,15 @@ function closePanel() {
   _panelTurnsHasMore = false;
   _panelTurnsLoading = false;
   _panelTurnsOldestId = null;
-  resetWorkLog(null, false);
+  _panelTurnsList = [];
+  _panelTurnsMsg = '';
+  resetWorkLog(null);
+  // A closed panel holds no section nodes.
+  for (var si = 0; si < PSEC_ORDER.length; si++) psecClear(PSEC_ORDER[si]);
+  psecSetNew(0);
   _panelLand = '';
   _panelLanded = false;
   _panelHold = false;
-  _panelStickBottom = false;
   _panelOnQuestion = false;
   // Focus goes back to whatever opened the panel (a tree item, a card button)
   // when it was in the panel; an opener that is gone (a folded DONE date, a
@@ -17194,64 +17616,35 @@ document.addEventListener('keydown', function(e) {
   if (e.key === 'Escape' && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closePanel();
 });
 
-// Scroll-up-to-load-more handler (bound once on panel-scroll).
-// Older turns load when the first turn comes within 100px of the top of the
-// scroll area (or sits below it, under the question / work log). One load per
-// approach: entering the zone loads once and disarms; leaving it re-arms. An
-// opening starts disarmed, so landing at the top (작업 로그 / ?session=) loads
-// nothing by itself, and an insert that keeps the reader in place (the new
-// first turn still in the zone) cannot cascade into the next page.
-var _panelOlderArmed = false;
-var _panelStickBottom = false; // a default landing keeps the newest turns in view until the reader acts
-function olderTurnsZone(firstTurnTop, areaTop) {
-  return firstTurnTop >= areaTop - 100;
-}
-function panelOlderStep(armed, inZone, canLoad) {
-  if (!inZone) return { load: false, armed: true };
-  if (armed && canLoad) return { load: true, armed: false };
-  return { load: false, armed: armed };
-}
+// The panel's own scroll (bound once): a held section landing goes back under
+// the tabs while the panel settles, until the reader acts; a section landing the
+// body was still too short for lands as it grows. Older pages and the newest
+// items are each section box's (initPanelSections).
 (function initPanelScrollHandler() {
   var scrollEl = document.getElementById('panel-scroll');
-  var turnsEl = document.getElementById('panel-turns');
-  if (!scrollEl || !turnsEl) return;
-  var lastTop = 0;
+  if (!scrollEl) return;
   scrollEl.addEventListener('scroll', function() {
     if (_panelHold && panelOpen) holdPanelLanding();
-    // Only the reader moving up ends the stick; the area shrinking under a
-    // resting scrollTop (a late subtitle) does not.
-    var top = scrollEl.scrollTop;
-    if (top < lastTop && scrollEl.scrollHeight - scrollEl.clientHeight - top > 4) _panelStickBottom = false;
-    lastTop = top;
-    var first = turnsEl.querySelector('.turn');
-    // Folded under 이전 대화 (minimal): no older pages until the reader opens them.
-    if (!first || !first.getClientRects().length) return;
-    var inZone = olderTurnsZone(first.getBoundingClientRect().top, scrollEl.getBoundingClientRect().top);
-    var canLoad = _panelTurnsHasMore && !_panelTurnsLoading && !!panelConvId && !!_panelTurnsOldestId;
-    var step = panelOlderStep(_panelOlderArmed, inZone, canLoad);
-    _panelOlderArmed = step.armed;
-    if (step.load) loadMorePanelTurns();
   }, { passive: true });
-  // Any input inside the panel (expanding the work log, reading, typing) means
-  // the reader took over: stop holding the newest turns.
+  // Any input inside the panel (reading, typing, a tab) means the reader took over.
   var panel = document.getElementById('slide-panel');
   if (panel) {
     ['pointerdown', 'mousedown', 'keydown', 'wheel', 'touchstart'].forEach(function(type) {
-      panel.addEventListener(type, function() { _panelStickBottom = false; _panelHold = false; }, { passive: true, capture: true });
+      panel.addEventListener(type, function() { _panelHold = false; }, { passive: true, capture: true });
     });
   }
-  // The area shrinking (a subtitle arriving) or the turns growing after the
-  // landing (late fonts, images) both leave the default landing short of the end.
   if (typeof ResizeObserver === 'function') {
-    var stick = new ResizeObserver(function() {
-      if (_panelStickBottom) scrollEl.scrollTo({ top: scrollEl.scrollHeight, behavior: 'instant' });
-      else if (_panelHold && panelOpen) holdPanelLanding();
-      // A section landing the body was still too short for (the answers load
-      // after the turns) lands as it grows; a reader who scrolled meanwhile stays.
+    var land = new ResizeObserver(function() {
+      if (_panelHold && panelOpen) holdPanelLanding();
+      // A section landing the body was still too short for (the parts load
+      // after the opening) lands as it grows; a reader who scrolled meanwhile stays.
       else if (panelOpen && !_panelLanded && (_panelLand === 'goal' || _panelLand === 'agent' || _panelLand === 'tasks')) landPanel();
     });
-    stick.observe(scrollEl);
-    stick.observe(turnsEl);
+    land.observe(scrollEl);
+    ['panel-surface', 'panel-sections-body'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el) land.observe(el);
+    });
   }
 })();
 
@@ -17326,7 +17719,7 @@ async function sendCommand(text, ref) {
       rawContent: shown,
       origin: { by: 'user' },
       _optimistic: true,
-    });
+    }, true);
   }
 
   var why = '';
@@ -19398,37 +19791,9 @@ function renderPanelArtifactsSection() {
 
 // Files each answer produced, under that answer: walk the turns in order; an
 // artifact goes to the first answer whose turn window holds its turn start.
-// 지시와 답변 (minimal, T1.3 / T1.6): the latest exchange — the last instruction
-// and what followed it. The turns before it wait behind 이전 대화 for this
-// opening; 자세히 shows every turn.
-var _panelConvAll = false;
-function convEarlierCount(nodes) {
-  for (var i = nodes.length - 1; i >= 0; i--) if (nodes[i].classList.contains('user')) return i;
-  return 0;
-}
-function renderConvEarlier() {
-  var turnsEl = document.getElementById('panel-turns');
-  var btn = document.getElementById('conv-earlier');
-  if (!turnsEl || !btn) return;
-  turnsEl.classList.toggle('is-all', _panelConvAll);
-  var nodes = turnsEl.querySelectorAll(':scope > .turn');
-  var n = convEarlierCount(nodes);
-  // The main conversation's, with turns in it: never on a subagent tab, a skeleton or a placeholder.
-  var show = !_panelAgent && !_panelConvAll && nodes.length > 0 && (n > 0 || !!_panelTurnsHasMore);
-  btn.hidden = !show;
-  if (show) btn.textContent = n > 0 ? '이전 대화 ' + n + (_panelTurnsHasMore ? '+' : '') + '개' : '이전 대화';
-}
-function showEarlierTurns() {
-  _panelConvAll = true;
-  renderConvEarlier();
-  // Every loaded turn is the latest exchange: the older ones are a page away.
-  var turnsEl = document.getElementById('panel-turns');
-  if (_panelTurnsHasMore && convEarlierCount(turnsEl ? turnsEl.querySelectorAll(':scope > .turn') : []) === 0) loadMorePanelTurns();
-}
 function decoratePanelTurns() {
   var turnsEl = document.getElementById('panel-turns');
   var cid = panelConvId;
-  renderConvEarlier();
   if (!turnsEl || !cid) return;
   var c = _artCache[cid];
   var list = (c && c.list) || [];
