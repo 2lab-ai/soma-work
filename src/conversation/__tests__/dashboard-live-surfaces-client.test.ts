@@ -6,6 +6,7 @@
  *
  *   T1/T2  collapsed card: total tokens + API-equivalent cost, counted up live
  *   T3     collapsed card: the task in progress — its id, name and running time
+ *          (the collapsed card is <ui-agent-inbox>'s; the page hands it cardOf's data)
  *   T7/T8  task timeline / panel: task ids, elapsed time and tool calls of
  *          completed tasks, earlier tasks on demand
  */
@@ -51,50 +52,37 @@ const SHOW_ALL = {
   dhMax: (_f: string, d: number) => d,
   dhTruncate: () => null,
   currentUserId: 'U1',
-  // The artifact row has its own suite (dashboard-artifacts-client.test.ts).
-  isSiblingSession: () => false,
-  artFaceChips: () => '',
-  umFaceBadge: () => '',
 };
-const FACE_FNS = [
-  'esc',
-  'escAttr',
-  'escJs',
+// The collapsed face is @2lab.ai/ui <ui-agent-inbox>'s: the page hands it the
+// card data (cardOf), text and numbers only; the element draws, escapes, ticks
+// and counts it up ('renders the face: task, sub-agents, tokens · cost, files,
+// status tag with a live clock, metrics', 'escapes every user and model string').
+const CARD_ENV = { ...SHOW_ALL, _ownerIndex: null, SELF_INSTANCE_NAME: 'inst' };
+const CARD_OF_FNS = [
   'toNum',
   'formatTokens',
-  'formatCount',
-  'cardTotalTokens',
-  'cardCurrentTask',
-  'renderCardTaskRow',
-  'agentStatusOf',
-  'agentCounts',
-  'renderCardAgents',
-  'renderCardUsage',
   'formatTaskTime',
+  'permissionSummary',
+  'cardSummary',
   'pendingAutoResume',
   'autoResumeLabel',
-  'cardSummary',
-  'doneTimeOf',
-  'cardAgo',
-  'renderCardStatus',
-  'renderOwnerBadge',
+  'cardCurrentTask',
+  'cardTaskRow',
+  'agentStatusOf',
+  'agentCounts',
+  'agentDotOf',
+  'cardTotalTokens',
   'ctxLevel',
   'ctxPercent',
-  'renderCardPr',
-  'renderCardFace',
+  'cardCtxTitle',
+  'cardPrMetric',
+  '_hashStr',
+  'ownerBadgeHue',
+  'isSiblingSession',
+  'cardOf',
 ];
-const FACE_VARS = [
-  'SPARK_SVG',
-  'WAIT_SVG',
-  'TASKS_SVG',
-  'CTX_SVG',
-  'PR_STATE_LABEL',
-  'PR_SVG',
-  'RESUME_SVG',
-  'AGENT_STATUS_LABEL',
-  'AGENT_DOTS_MAX',
-  'AGENTS_SVG',
-];
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+type Face = { cardOf(s: unknown, col: string): Record<string, unknown>; cardTotalTokens(u: unknown): number };
 
 function workingCard(over: Record<string, unknown> = {}) {
   return {
@@ -130,16 +118,13 @@ function workingCard(over: Record<string, unknown> = {}) {
 }
 
 describe('collapsed card: total tokens and cost (T1/T2)', () => {
-  const face = load<{ renderCardFace(s: unknown, col: string): string; cardTotalTokens(u: unknown): number }>(
-    FACE_FNS,
-    FACE_VARS,
-    SHOW_ALL,
-  );
+  const face = load<Face>(CARD_OF_FNS, CARD_OF_VARS, CARD_ENV);
 
   it('shows the session total of every token kind and the API-equivalent cost, as count-up targets', () => {
-    const html = face.renderCardFace(workingCard(), 'working');
-    expect(html).toContain('<span class="cnt" data-cnt="tok" data-to="6500">6,500</span>');
-    expect(html).toContain('<span class="cnt" data-cnt="cost" data-to="1.2345">$1.23</span>');
+    const c = face.cardOf(workingCard(), 'working');
+    // The numbers the element counts up to; it formats them ("6,500", "$1.23").
+    expect(c.tokens).toBe(6500);
+    expect(c.costUsd).toBe(1.2345);
   });
 
   it('total = input + output + cache read + cache write', () => {
@@ -155,59 +140,62 @@ describe('collapsed card: total tokens and cost (T1/T2)', () => {
   });
 
   it('every column shows it, also a finished card; a card without usage shows no usage row', () => {
-    expect(face.renderCardFace(workingCard(), 'idle')).toContain('data-cnt="tok"');
-    expect(face.renderCardFace(workingCard(), 'closed')).toContain('data-cnt="cost"');
-    expect(face.renderCardFace(workingCard({ tokenUsage: undefined }), 'working')).not.toContain('card-usage');
+    expect(face.cardOf(workingCard(), 'idle').tokens).toBe(6500);
+    expect(face.cardOf(workingCard(), 'closed').costUsd).toBe(1.2345);
+    const none = face.cardOf(workingCard({ tokenUsage: undefined }), 'working');
+    expect(none.tokens).toBeUndefined();
+    expect(none.costUsd).toBeUndefined();
   });
 
   it('follows the dashboard header fields: tokens and cost hide independently', () => {
-    const noCost = load<{ renderCardFace(s: unknown, col: string): string }>(FACE_FNS, FACE_VARS, {
-      ...SHOW_ALL,
-      dhShow: (f: string) => f !== 'cost',
-    });
-    const html = noCost.renderCardFace(workingCard(), 'working');
-    expect(html).toContain('data-cnt="tok"');
-    expect(html).not.toContain('data-cnt="cost"');
+    const noCost = load<Face>(CARD_OF_FNS, CARD_OF_VARS, { ...CARD_ENV, dhShow: (f: string) => f !== 'cost' });
+    const c = noCost.cardOf(workingCard(), 'working');
+    expect(c.tokens).toBe(6500);
+    expect(c.costUsd).toBeUndefined();
+    const noTokens = load<Face>(CARD_OF_FNS, CARD_OF_VARS, { ...CARD_ENV, dhShow: (f: string) => f !== 'tokens' });
+    const d = noTokens.cardOf(workingCard(), 'working');
+    expect(d.tokens).toBeUndefined();
+    expect(d.costUsd).toBe(1.2345);
   });
 
   it('a hostile number renders as a plain number', () => {
-    const html = face.renderCardFace(
+    const c = face.cardOf(
       workingCard({ tokenUsage: { totalInputTokens: '"><img src=x onerror=alert(1)>', totalCostUsd: 'x' } }),
       'working',
     );
-    expect(html).not.toMatch(/onerror|<img/);
-    expect(html).toContain('data-to="0"');
+    expect(c.tokens).toBe(0);
+    expect(c.costUsd).toBe(0);
+    expect(JSON.stringify(c)).not.toMatch(/onerror|<img/);
   });
 });
 
 describe('collapsed card: the task in progress (T3)', () => {
-  const face = load<{ renderCardFace(s: unknown, col: string): string }>(FACE_FNS, FACE_VARS, SHOW_ALL);
+  const face = load<Face>(CARD_OF_FNS, CARD_OF_VARS, CARD_ENV);
 
   it('names the running task with its id and a live elapsed timer', () => {
-    const html = face.renderCardFace(workingCard(), 'working');
-    expect(html).toContain('<span class="ct-id">#T2</span>');
-    expect(html).toContain('<span class="ct-name">Write the parser</span>');
-    expect(html).toContain('<span class="ct-time task-elapsed" data-since="61000"></span>');
+    // The element ticks the timer from startedAt.
+    expect(face.cardOf(workingCard(), 'working').task).toEqual({
+      label: 'Write the parser',
+      id: 'T2',
+      startedAt: 61_000,
+    });
   });
 
   it('the summary line no longer repeats the task the task row already shows', () => {
-    const html = face.renderCardFace(
-      workingCard({ summaryTitle: 'Parser rewrite', displayHeadline: 'Headline' }),
-      'working',
-    );
-    expect(html).toContain('<div class="card-summary">Parser rewrite</div>');
-    expect(html.match(/Write the parser/g)).toHaveLength(1);
+    const c = face.cardOf(workingCard({ summaryTitle: 'Parser rewrite', displayHeadline: 'Headline' }), 'working');
+    expect(c.summary).toBe('Parser rewrite');
+    expect(JSON.stringify(c).match(/Write the parser/g)).toHaveLength(1);
   });
 
   it('a waiting card still shows its task; finished cards and cards without a running task show none', () => {
-    expect(face.renderCardFace(workingCard(), 'waiting')).toContain('card-task');
-    expect(face.renderCardFace(workingCard(), 'idle')).not.toContain('card-task');
+    expect(face.cardOf(workingCard(), 'waiting').task).toBeDefined();
+    expect(face.cardOf(workingCard(), 'idle').task).toBeUndefined();
     const noneRunning = workingCard({ tasks: [{ id: 'T1', content: 'a', status: 'pending', toolCalls: 0 }] });
-    expect(face.renderCardFace(noneRunning, 'working')).not.toContain('card-task');
+    expect(face.cardOf(noneRunning, 'working').task).toBeUndefined();
   });
 
-  it('escapes the task name and id', () => {
-    const html = face.renderCardFace(
+  it('the task name and id are text for the element to escape; a start time that is not a number is dropped', () => {
+    const c = face.cardOf(
       workingCard({
         tasks: [
           { id: '<b>', content: '<img src=x onerror=alert(1)>', status: 'in_progress', startedAt: 'x', toolCalls: 0 },
@@ -215,87 +203,13 @@ describe('collapsed card: the task in progress (T3)', () => {
       }),
       'working',
     );
-    expect(html).not.toMatch(/<img|<b>/);
-    expect(html).not.toContain('data-since="x"');
+    expect(c.task).toEqual({ label: '<img src=x onerror=alert(1)>', id: '<b>' });
   });
 });
 
-describe('count-up animation of the usage numbers (T1/T2)', () => {
-  function rig(opts: { animate?: boolean; reduce?: boolean } = {}) {
-    const frames: Array<(t: number) => void> = [];
-    let now = 0;
-    const m = load<{
-      startCountUp(el: unknown, id: string): void;
-      countUpValue(from: number, to: number, p: number): number;
-    }>(['toNum', 'formatCount', 'countUpValue', 'startCountUp'], ['COUNT_UP_MS', '_counters'], {
-      canAnimate: () => opts.animate !== false,
-      reduceMotion: () => !!opts.reduce,
-      requestAnimationFrame: (f: (t: number) => void) => frames.push(f),
-      cancelAnimationFrame: () => {},
-      performance: { now: () => now },
-    });
-    const el = (to: number, kind = 'tok') => {
-      const attrs: Record<string, string> = { 'data-cnt': kind, 'data-to': String(to) };
-      return { textContent: '', getAttribute: (k: string) => attrs[k] ?? null };
-    };
-    const run = (ms: number) => {
-      now += ms;
-      const f = frames.shift();
-      if (f) f(now);
-    };
-    return { m, el, run, frames };
-  }
-
-  it('the first paint shows the value as is; a higher value counts up to it frame by frame', () => {
-    const r = rig();
-    const a = r.el(1000);
-    r.m.startCountUp(a, 'k|tok');
-    expect(r.frames).toHaveLength(0);
-    const b = r.el(2000);
-    r.m.startCountUp(b, 'k|tok');
-    expect(b.textContent).toBe('1,000');
-    const seen: number[] = [];
-    for (let i = 0; i < 40 && r.frames.length; i++) {
-      r.run(50);
-      seen.push(Number(b.textContent.replace(/,/g, '')));
-    }
-    expect(seen[seen.length - 1]).toBe(2000);
-    expect(seen.every((v, i) => i === 0 || v >= seen[i - 1])).toBe(true);
-    expect(seen.some((v) => v > 1000 && v < 2000)).toBe(true);
-  });
-
-  it('a new value mid-count continues from the number on screen', () => {
-    const r = rig();
-    r.m.startCountUp(r.el(0), 'k|tok');
-    const b = r.el(1000);
-    r.m.startCountUp(b, 'k|tok');
-    r.run(300);
-    const mid = Number(b.textContent.replace(/,/g, ''));
-    const c = r.el(3000);
-    r.m.startCountUp(c, 'k|tok');
-    expect(Number(c.textContent.replace(/,/g, ''))).toBe(mid);
-  });
-
-  it('cost counts in dollars; a lower value and reduced motion jump straight to the value', () => {
-    const r = rig();
-    r.m.startCountUp(r.el(5, 'cost'), 'k|cost');
-    const lower = r.el(2, 'cost');
-    r.m.startCountUp(lower, 'k|cost');
-    expect(lower.textContent).toBe('$2.00');
-    const calm = rig({ reduce: true });
-    calm.m.startCountUp(calm.el(1), 'k|tok');
-    const up = calm.el(9999);
-    calm.m.startCountUp(up, 'k|tok');
-    expect(up.textContent).toBe('9,999');
-    expect(calm.frames).toHaveLength(0);
-  });
-
-  it('eases out: fast first, settling on the target', () => {
-    expect(rig().m.countUpValue(0, 100, 0)).toBe(0);
-    expect(rig().m.countUpValue(0, 100, 1)).toBe(100);
-    expect(rig().m.countUpValue(0, 100, 0.5)).toBeGreaterThan(50);
-  });
-});
+// Count-up of the usage numbers (T1/T2) is the element's (agent-inbox.ts #countUp, 900 ms ease-out, none
+// with reduced motion) — the library's 'renders the face: task, sub-agents, tokens · cost, …' owns the usage
+// row; the count-up itself has no library test yet.
 
 describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
   // Task view T2: the meta and the 전체 task count read each task's fate.

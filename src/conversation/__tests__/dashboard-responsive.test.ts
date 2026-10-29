@@ -17,6 +17,12 @@
  *     animates the cards from where they were on screen to where they are
  *     now; a further resize while they fly retargets from the visible spot.
  *
+ * The board is @2lab.ai/ui <ui-agent-inbox>: its columns (the sideways snap of
+ * a narrow board too), its Board ↔ List FLIP and its glides are the element's
+ * (library src/components/agent-inbox/agent-inbox.test.ts, 'motion for host
+ * layout changes'). The page keeps the coordinator: it caches each element's
+ * measure() and hands it back to flipFrom() on a mode change.
+ *
  * These are static contracts plus executions of the pure client helpers cut
  * out of renderDashboardPage() (the harness of the other *-client tests).
  * The real-browser sweep is scripts/screenshot-responsive.ts.
@@ -24,7 +30,7 @@
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -48,9 +54,15 @@ function clientVar(name: string): string {
   return cook(m[1]);
 }
 function load<T>(fns: string[], vars: string[] = []): T {
-  return new Function(
-    `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`,
-  )() as T;
+  return loadWith<T>(fns, vars, {});
+}
+/** load() with injected fakes; `seam` is a shipped-scope function compiled in the same body (state reads). */
+function loadWith<T>(fns: string[], vars: string[], inject: Record<string, unknown>, seam = ''): T {
+  const names = Object.keys(inject);
+  const seamName = /^function (\w+)/.exec(seam)?.[1];
+  const out = seamName ? [...fns, seamName] : fns;
+  const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${seam}\nreturn { ${out.join(', ')} };`;
+  return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 function cssBlock(opening: string): string {
   const i = TEMPLATE.indexOf(opening);
@@ -231,12 +243,14 @@ describe('board columns follow the inbox width, not the viewport', () => {
     expect(rule('.inbox')).toContain('container: inbox / inline-size');
   });
 
-  it('a board narrower than 840px scrolls its three columns sideways with snap', () => {
-    const narrow = cssBlock('@container inbox (max-width: 839px) {');
-    expect(narrow).toContain('.kanban[data-view="board"]');
-    expect(narrow).toContain('grid-template-columns: repeat(3, minmax(min(300px, 84cqi), 1fr));');
-    expect(narrow).toContain('scroll-snap-type: x mandatory');
-    expect(narrow).toContain('overflow-x: auto');
+  it('a board narrower than 840px: the element snaps its own columns; the page only lets it shrink to the inbox', () => {
+    // The sideways snap is the element's own container query (@2lab.ai/ui agent-inbox styles.ts,
+    // '@container ib (max-width: 839px)'; no library test pins it yet). The page keeps no board
+    // column rules: it gives the elements the inbox width, never their content's.
+    expect(cssBlock('@container inbox (max-width: 839px) {')).not.toContain('.kanban');
+    expect(rule('ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox')).toContain('display: block; min-width: 0;');
+    // The coordinator's mode flips at the same 840px of inbox width (layoutModeOf, below).
+    expect(clientFn('layoutModeOf')).toContain("cols: inboxW >= 840 ? 'full' : 'snap'");
   });
 
   it('no viewport media query decides the board columns any more', () => {
@@ -259,8 +273,12 @@ describe('phones — nothing zooms, nothing hides behind the FAB, nothing runs o
   it('below 640px the page clears the FAB, the defaults menu spans the bar, the artifact viewer is full screen', () => {
     const phone = cssBlock(PHONE);
     expect(phone).not.toBe('');
-    // Only a board with cards gets the clearance: an empty page must not turn scrollable.
-    expect(phone).toContain('.inbox:has(.card) { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }');
+    // Only a board with cards gets the clearance: an empty page must not turn scrollable. The cards
+    // are inside the element, so renderBoard marks the inbox (.has-cards) instead of :has(.card).
+    expect(phone).toContain('.inbox.has-cards { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }');
+    expect(clientFn('renderBoard')).toContain(
+      "if (inbox) inbox.classList.toggle('has-cards', Object.keys(_cardHost).length > 0);",
+    );
     expect(phone).toContain('.td-menu { left: 12px; right: 12px; min-width: 0; max-width: none; }');
     expect(phone).toContain('.art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }');
   });
@@ -276,13 +294,16 @@ describe('layout transition — pure helpers', () => {
       view: string,
     ): { cols: string; panel: string; view: string };
     layoutModeKey(m: { cols: string; panel: string; view: string }): string;
-    parseTranslate(t: string): { x: number; y: number };
-    flipVisualPos(target: { left: number; top: number }, t: { x: number; y: number }): { left: number; top: number };
+    scrolledSpots(
+      layout: { spots: Record<string, { x: number; y: number }> } | null,
+      sx: number,
+      sy: number,
+    ): { spots: Record<string, { x: number; y: number }> };
   };
   // Loaded lazily so each test reports its own RED instead of failing collection.
   let cached: Helpers | null = null;
   const helpers = (): Helpers => {
-    cached ??= load<Helpers>(['defaultBoardView', 'layoutModeOf', 'layoutModeKey', 'parseTranslate', 'flipVisualPos']);
+    cached ??= load<Helpers>(['defaultBoardView', 'layoutModeOf', 'layoutModeKey', 'scrolledSpots']);
     return cached;
   };
   const h = new Proxy({} as Helpers, { get: (_t, k) => helpers()[k as keyof Helpers] });
@@ -319,30 +340,125 @@ describe('layout transition — pure helpers', () => {
     expect(key(1200, 1160, false)).toBe(key(1920, 1240, false));
   });
 
-  it('parseTranslate reads the translation of a computed transform', () => {
-    expect(h.parseTranslate('none')).toEqual({ x: 0, y: 0 });
-    expect(h.parseTranslate('matrix(1, 0, 0, 1, 12.5, -4)')).toEqual({ x: 12.5, y: -4 });
-    expect(h.parseTranslate('matrix3d(1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 7, 8, 0, 1)')).toEqual({ x: 7, y: 8 });
+  it('scrolledSpots: the cached spots where the reader saw them, moved by the page scroll since', () => {
+    const cache = { spots: { 'c:a': { x: 10, y: 300 }, 'h:waiting': { x: 0, y: 40 } } };
+    // The page scrolled 120px down (and 5px right) since the cache: everything sat that much higher.
+    expect(h.scrolledSpots(cache, 5, 120)).toEqual({
+      spots: { 'c:a': { x: 5, y: 180 }, 'h:waiting': { x: -5, y: -80 } },
+    });
+    expect(h.scrolledSpots(cache, 0, 0)).toEqual(cache);
+    expect(cache.spots['c:a']).toEqual({ x: 10, y: 300 }); // the cache itself is never moved
+    expect(h.scrolledSpots(null, 3, 4)).toEqual({ spots: {} });
   });
 
-  it('flipVisualPos: the visible spot of a flying card is its last target plus the current translate', () => {
-    // Target B = 100; flying from A = 70 means translate(A − B) = −30 at the start.
-    expect(h.flipVisualPos({ left: 100, top: 50 }, { x: -30, y: 10 })).toEqual({ left: 70, top: 60 });
-    expect(h.flipVisualPos({ left: 100, top: 50 }, { x: 0, y: 0 })).toEqual({ left: 100, top: 50 });
-  });
+  // Deleted: 'parseTranslate reads the translation of a computed transform' — library 'measure() before a host layout change, flipFrom() after it, glides every card from where it was'.
+  // Deleted: 'flipVisualPos: the visible spot of a flying card is its last target plus the current translate' — library 'measure() before a host layout change, flipFrom() after it, glides every card from where it was'.
 });
+
+// ── The coordinator, executed: runLayoutCheck on fake elements (measure() / flipFrom()) ──
+type Spots = { spots: Record<string, { x: number; y: number }> };
+type FakeHost = { isConnected: boolean; flipFrom: ReturnType<typeof vi.fn> };
+function coordinator(o: {
+  fromKey?: string;
+  mode?: { cols: string; panel: string; view: string };
+  snap?: Array<[FakeHost, Spots]>;
+  scrolled?: { x: number; y: number };
+  reduce?: boolean;
+  flying?: boolean;
+  autoView?: string;
+}) {
+  const kb = { getAttribute: (k: string) => (k === 'view' ? 'board' : null), animate: vi.fn() };
+  const calls = { setBoardView: [] as unknown[][], measure: 0, restore: [] as unknown[], timers: 0 };
+  const m = loadWith<{
+    runLayoutCheck(): void;
+    state(): { key: string; until: number };
+  }>(
+    ['layoutModeKey', 'scrolledSpots', 'runLayoutCheck'],
+    [],
+    {
+      document: { getElementById: (id: string) => (id === 'kanban' ? kb : null) },
+      window: { innerWidth: 1280 },
+      _layoutCheckFrame: null,
+      defaultBoardView: () => o.autoView ?? 'board',
+      savedBoardView: () => null,
+      setBoardView: (...a: unknown[]) => calls.setBoardView.push(a),
+      applySectionState: () => false,
+      renderBoardForLayout: () => {},
+      currentLayoutMode: () => o.mode ?? { cols: 'snap', panel: 'closed', view: 'board' },
+      _layoutModeKey: o.fromKey ?? 'full|closed|board',
+      _layoutShiftUntil: o.flying ? Date.now() + 10_000 : 0,
+      measureLayout: () => {
+        calls.measure++;
+      },
+      _panelAnchor: null,
+      _panelScrollGen: 0,
+      _layoutScroll: { x: 0, y: 0 },
+      _lastScroll: o.scrolled ?? { x: 0, y: 0 },
+      canAnimate: () => true,
+      reduceMotion: () => !!o.reduce,
+      _layoutSnap: o.snap ?? [],
+      MOTION: { move: 320, fade: 160, easeOut: 'ease-out' },
+      panelOpen: false,
+      _layoutPanelW: 0,
+      restorePanelAnchor: (a: unknown) => calls.restore.push(a),
+      refreshLayoutCache: () => {},
+      setTimeout: () => {
+        calls.timers++;
+      },
+    },
+    'function state() { return { key: _layoutModeKey, until: _layoutShiftUntil }; }',
+  );
+  return { m, kb, calls };
+}
+const host = (connected = true): FakeHost => ({ isConnected: connected, flipFrom: vi.fn() });
 
 describe('layout transition — one coordinator', () => {
   it('runLayoutCheck re-evaluates the default view without saving it, then animates from the visible spot', () => {
-    const body = clientFn('runLayoutCheck');
-    expect(body).toContain('defaultBoardView(window.innerWidth, savedBoardView())');
-    // No event argument: setBoardView neither saves nor plays its own FLIP.
-    expect(body).toMatch(/setBoardView\(autoView\)/);
-    expect(body).toContain('parseTranslate(getComputedStyle(el).transform)');
-    expect(body).toContain('el._flip.cancel()');
-    expect(body).toContain('playFlip(el, dx, dy, false)');
-    expect(body).toContain('reduceMotion()');
-    expect(body).toContain('restorePanelAnchor(');
+    expect(clientFn('runLayoutCheck')).toContain('defaultBoardView(window.innerWidth, savedBoardView())');
+    // A fold below 640px: the default view follows, with no event — setBoardView neither saves it nor adopts it.
+    const auto = coordinator({ autoView: 'list' });
+    auto.m.runLayoutCheck();
+    expect(auto.calls.setBoardView).toEqual([['list']]);
+    // A mode change: each cached element glides from where the reader saw it — its measure(),
+    // moved by the page scroll since (the element retargets a card still in flight itself).
+    const board = host();
+    const lane = host();
+    const gone = host(false);
+    const at = (x: number, y: number) => ({ x, y });
+    const c = coordinator({
+      snap: [
+        [board, { spots: { 'c:a': at(10, 300), 'h:waiting': at(10, 40) } }],
+        [lane, { spots: { 'c:cron': at(20, 900) } }],
+        [gone, { spots: { 'c:old': at(0, 0) } }],
+      ],
+      scrolled: at(0, 100),
+    });
+    c.m.runLayoutCheck();
+    expect(board.flipFrom).toHaveBeenCalledWith({ spots: { 'c:a': at(10, 200), 'h:waiting': at(10, -60) } });
+    expect(lane.flipFrom).toHaveBeenCalledWith({ spots: { 'c:cron': at(20, 800) } });
+    expect(gone.flipFrom).not.toHaveBeenCalled();
+    expect(c.kb.animate).not.toHaveBeenCalled();
+    expect(c.calls.restore).toEqual([null]);
+    expect(c.m.state().key).toBe('snap|closed|board');
+    expect(c.m.state().until).toBeGreaterThan(Date.now());
+    expect(c.calls.timers).toBe(1);
+    // Reduced motion: no glide, the board fades in place.
+    const still = host();
+    const r = coordinator({ snap: [[still, { spots: {} }]], reduce: true });
+    r.m.runLayoutCheck();
+    expect(still.flipFrom).not.toHaveBeenCalled();
+    expect(r.kb.animate).toHaveBeenCalledWith([{ opacity: 0 }, { opacity: 1 }], { duration: 160, easing: 'linear' });
+  });
+
+  it('an unchanged mode measures a settled board again and leaves a glide in flight alone', () => {
+    const settled = host();
+    const a = coordinator({ fromKey: 'snap|closed|board', snap: [[settled, { spots: {} }]] });
+    a.m.runLayoutCheck();
+    expect(a.calls.measure).toBe(1);
+    expect(settled.flipFrom).not.toHaveBeenCalled();
+    const b = coordinator({ fromKey: 'snap|closed|board', flying: true });
+    b.m.runLayoutCheck();
+    expect(b.calls.measure).toBe(0);
   });
 
   it('it starts on a mode change and retargets while cards are still flying', () => {
@@ -372,32 +488,101 @@ describe('layout transition — one coordinator', () => {
 });
 
 describe('layout transition — review fixes (trinity code review R1)', () => {
-  it('a user Board/List switch hands its own FLIP targets to the coordinator, so nothing animates twice', () => {
-    const body = clientFn('setBoardView');
-    // The FLIP path adopts the targets it measured; the no-animation user path adopts the settled layout.
-    expect(body).toContain('adoptLayoutTargets(targets)');
-    expect(body).toContain('adoptLayoutTargets(null)');
-    expect(clientFn('adoptLayoutTargets')).toContain('_layoutModeKey = layoutModeKey(currentLayoutMode())');
+  it('a user Board/List switch glides in the element and the coordinator adopts it, so nothing animates twice', () => {
+    const attrs: Record<string, string> = { view: 'board' };
+    const kb = {
+      getAttribute: (k: string) => attrs[k] ?? null,
+      setAttribute: (k: string, v: string) => {
+        attrs[k] = v;
+      },
+    };
+    const seg = (view: string) => {
+      const a: Record<string, string> = { 'data-view': view, 'aria-pressed': String(view === 'board') };
+      return {
+        a,
+        getAttribute: (k: string) => a[k] ?? null,
+        setAttribute: (k: string, v: string) => {
+          a[k] = v;
+        },
+      };
+    };
+    const segs = [seg('board'), seg('list')];
+    const saved: string[] = [];
+    let adopted = 0;
+    const { setBoardView } = loadWith<{ setBoardView(view: string, ev?: unknown): void }>(['setBoardView'], [], {
+      document: { querySelectorAll: () => segs, getElementById: (id: string) => (id === 'kanban' ? kb : null) },
+      localStorage: { setItem: (_k: string, v: string) => saved.push(v) },
+      adoptLayout: () => {
+        adopted++;
+      },
+    });
+    // The reader's switch (an event): saved, the element's view attribute (it FLIPs), adopted.
+    setBoardView('list', {});
+    expect(attrs.view).toBe('list');
+    expect(saved).toEqual(['list']);
+    expect(segs.map((b) => b.a['aria-pressed'])).toEqual(['false', 'true']);
+    expect(adopted).toBe(1);
+    // The default following the screen (no event): not saved, not adopted — the coordinator runs the only glide.
+    setBoardView('board');
+    expect(attrs.view).toBe('board');
+    expect(saved).toEqual(['list']);
+    expect(adopted).toBe(1);
+    // The view it already has, or no view at all: nothing moves.
+    setBoardView('board', {});
+    setBoardView('grid', {});
+    expect(adopted).toBe(1);
+    const adopt = clientFn('adoptLayout');
+    expect(adopt).toContain('_layoutModeKey = layoutModeKey(currentLayoutMode())');
+    expect(adopt).toContain('_layoutShiftUntil = Date.now() + MOTION.move');
   });
 
-  it('an element whose layout did not move keeps its flight: no cancel, no second FLIP', () => {
-    const { sameSpot } = load<{
-      sameSpot(a: { left: number; top: number }, b: { left: number; top: number }): boolean;
-    }>(['sameSpot']);
-    expect(sameSpot({ left: 10, top: 20 }, { left: 10.4, top: 19.7 })).toBe(true);
-    expect(sameSpot({ left: 10, top: 20 }, { left: 11, top: 20 })).toBe(false);
-    const body = clientFn('runLayoutCheck');
-    expect(body).toContain('sameSpot(target, layout)');
-  });
+  // Deleted: 'an element whose layout did not move keeps its flight: no cancel, no second FLIP' — library 'measure() before a host layout change, flipFrom() after it, glides every card from where it was'.
 
-  it('every FLIP (board render, view switch, shift) records its landing spot in the shift cache (trinity review R2)', () => {
-    // A card that moves column on a live render flies to a new spot; a shift during
-    // that flight must not add the render's translate to the old spot.
-    expect(clientFn('playFlip')).toContain('noteFlipTarget(el)');
-    expect(clientFn('noteFlipTarget')).toContain('_layoutRects.set(el,');
-    // The cache stores layout spots, never a mid-flight drawn box.
-    expect(clientFn('measureLayout')).toContain('layoutSpotOf(');
-    expect(clientFn('layoutSpotOf')).toContain('parseTranslate(getComputedStyle(el).transform)');
+  it('the shift cache is each element’s own measure(), taken once the board has settled (trinity review R2)', () => {
+    // Cards gliding after a render, a view switch or a shift are not at their places: the
+    // cache is refreshed after the glide (renderBoard, adoptLayout) and never mid-shift.
+    expect(clientFn('renderBoard')).toContain('scheduleLayoutRefresh(MOTION.move + 40);');
+    expect(clientFn('refreshLayoutCache')).toContain('if (Date.now() < _layoutShiftUntil) return;');
+    const kbSnap = { spots: { 'c:a': { x: 1, y: 2 } } };
+    const laneSnap = { spots: { 'c:cron': { x: 3, y: 4 } } };
+    const kb = { measure: () => kbSnap };
+    const lane = { isConnected: true, getClientRects: () => [{}], measure: () => laneSnap };
+    const upgrading = { isConnected: true, getClientRects: () => [{}] }; // not defined yet: no measure()
+    const m = loadWith<{
+      measureLayout(): void;
+      state(): { snap: unknown[]; scroll: unknown; last: unknown; key: string; anchor: unknown };
+    }>(
+      ['boardHosts', 'layoutModeKey', 'measureLayout'],
+      [],
+      {
+        document: {
+          getElementById: (id: string) => (id === 'kanban' ? kb : null),
+          querySelectorAll: () => [lane, upgrading],
+        },
+        currentLayoutMode: () => ({ cols: 'full', panel: 'closed', view: 'list' }),
+        layoutScrollNow: () => ({ x: 0, y: 75 }),
+        capturePanelAnchor: () => 'anchor',
+        panelOpen: false,
+        _layoutSnap: [],
+        _layoutScroll: null,
+        _lastScroll: null,
+        _layoutModeKey: '',
+        _panelAnchor: null,
+        _layoutPanelW: 0,
+      },
+      'function state() { return { snap: _layoutSnap, scroll: _layoutScroll, last: _lastScroll, key: _layoutModeKey, anchor: _panelAnchor }; }',
+    );
+    m.measureLayout();
+    expect(m.state()).toEqual({
+      snap: [
+        [kb, kbSnap],
+        [lane, laneSnap],
+      ],
+      scroll: { x: 0, y: 75 },
+      last: { x: 0, y: 75 },
+      key: 'full|closed|list',
+      anchor: 'anchor',
+    });
   });
 
   it('the drawer width animates only on a sheet ↔ dock change (or its retarget), never under a handle drag (trinity R2, fable)', () => {
@@ -474,20 +659,22 @@ describe('settings page — reached from the dashboard top bar', () => {
 });
 
 describe('merged views — trinity code review R4 follow-ups', () => {
-  it('the board scroll compensation applies only to movers inside the kanban (CRON lane cards sit outside it)', () => {
-    // One rule for both paths that use the board's scrollLeft: reading the cache
-    // (runLayoutCheck) and writing a FLIP's landing spot into it (noteFlipTarget, R5).
-    const make = new Function('document', `${clientFn('boardScrollShift')}\nreturn boardScrollShift;`);
-    const inside = {};
-    const shift = make({ getElementById: () => ({ contains: (el: unknown) => el === inside }) }) as (
-      el: unknown,
-      dk: number,
-    ) => number;
-    expect(shift(inside, 295)).toBe(295);
-    expect(shift({}, 295)).toBe(0);
-    expect(clientFn('runLayoutCheck')).toContain('cached.left - sx - boardScrollShift(el, sk)');
-    expect(clientFn('noteFlipTarget')).toContain('boardScrollShift(el, now.k - _layoutScroll.k)');
-    expect(clientFn('noteFlipTarget')).not.toContain('+ (now.k - _layoutScroll.k)');
+  it('scroll compensation is per element: the board and each CRON job’s element are measured on their own', () => {
+    // The kanban-only shift (boardScrollShift) is gone: every element's measure() is its own, so
+    // the CRON lane's cards (outside the board) and the board's get the same page-scroll correction.
+    const board = host();
+    const lane = host();
+    const c = coordinator({
+      snap: [
+        [board, { spots: { 'c:a': { x: 300, y: 500 } } }],
+        [lane, { spots: { 'c:cron': { x: 40, y: 200 } } }],
+      ],
+      scrolled: { x: 0, y: 50 },
+    });
+    c.m.runLayoutCheck();
+    expect(board.flipFrom).toHaveBeenCalledWith({ spots: { 'c:a': { x: 300, y: 450 } } });
+    expect(lane.flipFrom).toHaveBeenCalledWith({ spots: { 'c:cron': { x: 40, y: 150 } } });
+    expect(clientFn('runLayoutCheck')).not.toContain('boardScrollShift');
   });
 
   it('Escape with a docked panel and the cron drawer open closes the drawer only (the topmost)', () => {
@@ -584,7 +771,17 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
   });
 
   it('elements that are not rendered never enter the shift cache (no FLIP from the top-left corner)', () => {
-    expect(clientFn('collectViewMovers')).toContain('getClientRects().length');
+    const kb = { id: 'kanban' };
+    const shown = { isConnected: true, getClientRects: () => [{}] };
+    const folded = { isConnected: true, getClientRects: () => [] }; // a folded CRON lane: display none
+    const detached = { isConnected: false, getClientRects: () => [{}] };
+    const { boardHosts } = loadWith<{ boardHosts(): unknown[] }>(['boardHosts'], [], {
+      document: {
+        getElementById: (id: string) => (id === 'kanban' ? kb : null),
+        querySelectorAll: (sel: string) => (sel === 'ui-agent-inbox.cron-inbox' ? [shown, folded, detached] : []),
+      },
+    });
+    expect(boardHosts()).toEqual([kb, shown]);
   });
 
   it('a capacity paint that changes the page height refreshes the shift cache (it sits above the board, outside #inbox)', () => {
@@ -599,11 +796,22 @@ describe('secondary sections (#374 LLM capacity, CRON lane) — a disclosure on 
 
 describe('secondary sections — trinity code review R1 follow-ups (astra)', () => {
   it('a disclosure render leaves every board move to the coordinator (no FLIP from a half-revealed lane)', () => {
-    expect(clientFn('applyBoardPlan')).toContain('_boardFlipOff');
-    expect(clientFn('renderBoardForLayout')).toContain('_boardFlipOff = true;');
-    expect(clientFn('toggleSection')).toContain('renderBoardForLayout()');
-    expect(clientFn('runLayoutCheck')).toContain('renderBoardForLayout()');
-    expect(clientFn('toggleSection')).not.toContain('renderBoard(_lastBoardData)');
+    // The layout is measured before the fold changes it (layoutBeforeChange); the render after it only
+    // re-plans the board — the element glides only what its own data moved (library 'measure() before a
+    // host layout change, flipFrom() after it, glides every card from where it was').
+    const toggle = clientFn('toggleSection');
+    expect(toggle.indexOf('layoutBeforeChange()')).toBeLessThan(toggle.indexOf('renderBoardForLayout()'));
+    expect(toggle).not.toContain('renderBoard(_lastBoardData)');
+    expect(clientFn('runLayoutCheck')).toContain('if (applySectionState()) renderBoardForLayout();');
+    let rendered: unknown = null;
+    const { renderBoardForLayout } = loadWith<{ renderBoardForLayout(): void }>(['renderBoardForLayout'], [], {
+      _lastBoardData: { waiting: [] },
+      renderBoard: (b: unknown, ...rest: unknown[]) => {
+        rendered = [b, ...rest];
+      },
+    });
+    renderBoardForLayout();
+    expect(rendered).toEqual([{ waiting: [] }]);
   });
 
   it('a toggle works for this page even when storage refuses the write', () => {

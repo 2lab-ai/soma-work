@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { type AgentRegistry, applyAgentEvent } from '../../session/agent-registry';
 
 /**
@@ -90,6 +90,13 @@ describe('Dashboard — agent tree payload (spec 12 §3)', () => {
   let injectWebServer: any;
   let dashboard: any;
 
+  // The first import transforms the whole web server and the dashboard page: tens of seconds on a busy
+  // runner. Pay it once here, so each test below only re-evaluates the cached transform.
+  beforeAll(async () => {
+    await import('../web-server');
+    await import('../dashboard');
+  }, 300_000);
+
   beforeEach(async () => {
     vi.resetModules();
     archives.length = 0;
@@ -99,10 +106,10 @@ describe('Dashboard — agent tree payload (spec 12 §3)', () => {
     injectWebServer = webServer.injectWebServer;
     dashboard = await import('../dashboard');
     await startWebServer({ listen: false });
-  });
+  }, 60_000);
 
   afterEach(async () => {
-    await stopWebServer();
+    await stopWebServer?.();
   });
 
   async function board(sessions: Map<string, any>) {

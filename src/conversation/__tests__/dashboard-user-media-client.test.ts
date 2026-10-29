@@ -8,7 +8,8 @@
  *       image in a fixed box; every tile is a button named by its action
  *   C2  the open card's 지시 row: compact thumbnails, and a files-only
  *       instruction is not "기록된 지시 없음"
- *   C3  the card face: a paperclip count only (no image is fetched on the board)
+ *   C3  the card face: a paperclip count only (no image is fetched on the board) —
+ *       a host metric in cardOf's data, drawn by <ui-agent-inbox>
  *   C4  the viewer reuse: an id registered as user media resolves to the media
  *       content route; the viewer pages within the same instruction; html never
  *       gets scripts in the viewer
@@ -172,16 +173,55 @@ describe('C2 — open card 지시 row', () => {
   });
 });
 
+// The face is @2lab.ai/ui <ui-agent-inbox>'s: the page hands it the paperclip as a
+// host metric in the card data (cardOf); the element draws and escapes it
+// ('draws face extras: lead, owner badge, host metrics, …').
+const CARD_OF_FNS = [
+  'toNum',
+  'formatTokens',
+  'formatTaskTime',
+  'permissionSummary',
+  'cardSummary',
+  'pendingAutoResume',
+  'autoResumeLabel',
+  'cardCurrentTask',
+  'cardTaskRow',
+  'agentStatusOf',
+  'agentCounts',
+  'agentDotOf',
+  'cardTotalTokens',
+  'ctxLevel',
+  'ctxPercent',
+  'cardCtxTitle',
+  'cardPrMetric',
+  '_hashStr',
+  'ownerBadgeHue',
+  'isSiblingSession',
+  'cardOf',
+];
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+
 describe('C3 — card face: a paperclip count only', () => {
+  const { cardOf } = load<{ cardOf(s: unknown, col: string): Record<string, unknown> }>(CARD_OF_FNS, CARD_OF_VARS, {
+    dhShow: () => true,
+    dhTruncate: () => null,
+    currentUserId: 'U1',
+    _ownerIndex: null,
+    SELF_INSTANCE_NAME: 'inst',
+  });
+  const face = (over: Record<string, unknown>) => cardOf({ key: 'inst::C3:t3', displayHeadline: 'h', ...over }, 'idle');
+
   it('shows the count and fetches nothing', () => {
-    const { umFaceBadge } = load<{ umFaceBadge(s: unknown): string }>([...BASE_FNS, 'umFaceBadge'], BASE_VARS);
-    const out = umFaceBadge({ conversationId: 'c3', userMedia: { count: 3 } });
-    expect(out).toContain('um-face');
-    expect(out).toContain('3');
-    expect(out).toContain('지시 첨부 3개');
-    expect(out).not.toContain('<img');
-    expect(umFaceBadge({ conversationId: 'c3' })).toBe('');
-    expect(umFaceBadge({ conversationId: 'c3', userMedia: { count: 0 } })).toBe('');
+    const c = face({ conversationId: 'c3', userMedia: { count: 3 } });
+    expect(c.metrics).toEqual([{ text: '3', glyph: 'attach', title: '지시 첨부 3개', label: '지시 첨부 3개' }]);
+    // No image, no media route on the board.
+    expect(JSON.stringify(c)).not.toContain('/media/');
+    expect(face({ conversationId: 'c3' }).metrics).toBeUndefined();
+    expect(face({ conversationId: 'c3', userMedia: { count: 0 } }).metrics).toBeUndefined();
+    // A sibling instance's files are not on this disk.
+    expect(
+      face({ conversationId: 'c3', userMedia: { count: 3 }, environment: { instanceName: 'other' } }).metrics,
+    ).toBeUndefined();
   });
 });
 
