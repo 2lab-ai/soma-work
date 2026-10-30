@@ -194,6 +194,9 @@ describe('deploy-qa precondition gate (step 5.5)', () => {
     expect(args).toMatch(
       /does not accept `decisions=`[^\n]*invoke this skill directly[^\n]*`env=<the profile skill the gate file names>`/,
     );
+    // The direct call never skips the env-skill admin gate, and never widens the run's scope.
+    expect(args).toMatch(/does not accept `decisions=`[^\n]*`--preflight`[^\n]*`applies` or `partial: …`/);
+    expect(args).toMatch(/does not accept `decisions=`[^\n]*`keys=`/);
   });
 
   it('maps a skipped key to deferred and lists the gate first in the report input', () => {
