@@ -1176,8 +1176,10 @@ describe('T1.6 · HIG: outside a list the 자세히 toggle is a button that beha
       /<button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false"[^>]*><svg class="pdt-icon"/,
     );
     expect(PAGE).not.toContain('pdt-switch');
+    // Tone pass P2: "pressed" is the neutral chip (--ib-pill, a --ib-muted edge), not an accent fill —
+    // the accent is for links, focus and progress only.
     expect(CSS).toMatch(
-      /\.panel-detail-toggle\[aria-pressed="true"\] \{ background: var\(--accent\); border-color: var\(--accent\); color: #fff; \}/,
+      /\.panel-detail-toggle\[aria-pressed="true"\] \{ background: var\(--ib-pill\); border-color: var\(--ib-muted\); color: var\(--text\); \}/,
     );
   });
 });
