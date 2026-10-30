@@ -309,6 +309,43 @@ describe('SessionRegistry — a save that fails mid-write (#612 R4, astra P1)', 
   });
 });
 
+describe('SessionRegistry — the replace keeps the file’s access mode (#612 R5, astra P1)', () => {
+  beforeEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+    __resetSessionLifecyclePolicyForTests(path.join(TEST_DATA_DIR, 'session-lifecycle.json'));
+  });
+  afterEach(() => {
+    __resetSessionLifecyclePolicyForTests();
+    if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true });
+  });
+
+  it.each([0o600, 0o640])('R9 — a sessions.json at mode %o keeps that mode after a save', (mode) => {
+    const reg = new SessionRegistry();
+    reg.createTask(TASK_INPUT);
+    fs.chmodSync(SESSIONS_FILE, mode);
+    reg.createTask({ ...TASK_INPUT, title: 'second' });
+    expect(fs.statSync(SESSIONS_FILE).mode & 0o777).toBe(mode);
+  });
+
+  it('R9 — a first save creates sessions.json owner-only', () => {
+    new SessionRegistry().createTask(TASK_INPUT);
+    expect(fs.statSync(SESSIONS_FILE).mode & 0o777).toBe(0o600);
+  });
+
+  it('R10 — a temp file left by a save that died before its rename is swept on load', () => {
+    const reg = new SessionRegistry();
+    reg.createTask(TASK_INPUT);
+    const orphan = `${SESSIONS_FILE}.4242.11111111-2222-4333-8444-555555555555.tmp`;
+    fs.writeFileSync(orphan, '[{"partial":');
+    const unrelated = path.join(TEST_DATA_DIR, 'other.json.tmp');
+    fs.writeFileSync(unrelated, 'x');
+    expect(new SessionRegistry().loadSessions()).toBe(1);
+    expect(fs.existsSync(orphan)).toBe(false);
+    expect(fs.existsSync(unrelated)).toBe(true);
+  });
+});
+
 describe('SessionRegistry — Slack-less task review fixes (#612 R1)', () => {
   beforeEach(() => {
     if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true });
