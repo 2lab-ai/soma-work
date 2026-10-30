@@ -655,6 +655,12 @@ interface StreamExecuteParams {
    */
   hostTurn?: boolean;
   /**
+   * The context a Slack-less task's turn runs under (#597/#598 ④a), built by
+   * the host (`executionContextForTask`). Opaque here — this package does not
+   * import the runtime. Present → the runtime gets it and no Slack context.
+   */
+  executionContext?: unknown;
+  /**
    * The text is a goal objective dispatched as the goal's opening turn: never
    * forward it to the SDK as a local slash command, whatever it starts with.
    * Set by slack-handler; the adapter carries it on the first dispatch turn
@@ -1408,7 +1414,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           logger: this.logger,
         });
       }
-      this.deps.claudeHandler.setActivityState(channel, threadTs, 'working');
+      this.setActivity(session, sessionKey, channel, threadTs, 'working');
       // Epoch-scoped like every other status write on this turn (#688): a
       // superseded turn's late working-state write must not overwrite the
       // newer turn's status.
@@ -1550,7 +1556,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // is a user turn too: its instruction IS the files (user media).
       const hasInput = !!text || processedFiles.length > 0;
       // Auto-create conversation if session lost its conversationId (e.g., after restart backfill miss)
-      if (!session.conversationId && hasInput && channel) {
+      if (!session.conversationId && hasInput && (channel || session.slackless === true)) {
         try {
           session.conversationId = createConversation(channel, session.threadTs || '', user, userName);
           this.logger.info('Auto-created conversation for session missing conversationId', {
@@ -1956,7 +1962,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             ctx.sessionKey,
             // Callback to record merge stats into session
             (_sessionKey: string, prNumber: number, linesAdded: number, linesDeleted: number) => {
-              this.deps.claudeHandler.addMergeStats(ctx.channel, ctx.threadTs, prNumber, linesAdded, linesDeleted);
+              if (session.slackless === true) {
+                this.deps.claudeHandler.addMergeStatsByKey(ctx.sessionKey, prNumber, linesAdded, linesDeleted);
+              } else {
+                this.deps.claudeHandler.addMergeStats(ctx.channel, ctx.threadTs, prNumber, linesAdded, linesDeleted);
+              }
             },
           );
           const commandResult = await this.handleModelCommandToolResults(allToolResults, session, ctx, turnEpochToken);
@@ -2039,7 +2049,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           await this.updateToolCallMessage(ch, ts, text);
         },
         onSessionLinksDetected: async (links) => {
-          this.deps.claudeHandler.setSessionLinks(channel, threadTs, links as any);
+          if (session.slackless === true) this.deps.claudeHandler.setSessionLinksByKey(sessionKey, links as any);
+          else this.deps.claudeHandler.setSessionLinks(channel, threadTs, links as any);
           this.logger.info('Session links updated from model directive', {
             sessionKey,
             hasIssue: !!links.issue,
@@ -2099,7 +2110,10 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
         },
         onSourceWorkingDirDetected: async (dirPath) => {
           try {
-            const added = this.deps.claudeHandler.addSourceWorkingDir(channel, threadTs, dirPath);
+            const added =
+              session.slackless === true
+                ? this.deps.claudeHandler.addSourceWorkingDirByKey(sessionKey, dirPath)
+                : this.deps.claudeHandler.addSourceWorkingDir(channel, threadTs, dirPath);
             if (added) {
               this.logger.info('Source working dir directive processed', {
                 sessionKey,
@@ -2412,12 +2426,14 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           session,
           abortController,
           workingDirectory,
-          slackContext,
+          // A Slack-less task's turn carries its execution context and no Slack context (#598 ④a).
+          params.executionContext ? undefined : slackContext,
           // 6th arg: the steering registry key. The handler stamps the uuids it
           // mints for messages pushed into THIS turn under this key, so the
           // `steer_lifecycle` frames it emits join back to the host's queue for
           // the same session.
           sessionKey,
+          params.executionContext,
         ),
         streamContext,
         abortController.signal,
@@ -2658,7 +2674,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // so transitioning to idle would cause dashboard to briefly flicker to "대기" column.
       const hasContinuation = Boolean(toolContinuation);
       if (!hasContinuation) {
-        this.deps.claudeHandler.setActivityState(channel, threadTs, hasPendingChoice ? 'waiting' : 'idle');
+        this.setActivity(session, sessionKey, channel, threadTs, hasPendingChoice ? 'waiting' : 'idle');
         await this.updateRuntimeStatus(
           session,
           sessionKey,
@@ -3498,6 +3514,32 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
   private static readonly FALLBACK_COMPACT_FAILURE_COOLDOWN_MS = 5 * 60 * 1000;
 
   /**
+   * Activity state for this turn's session. A Slack-less task goes by its task
+   * key — a Slack key cannot be built from its empty channel (#598 ④a).
+   */
+  private setActivity(
+    session: ConversationSession,
+    sessionKey: string,
+    channel: string,
+    threadTs: string | undefined,
+    state: 'working' | 'waiting' | 'idle',
+  ): void {
+    if (session.slackless === true) this.deps.claudeHandler.setActivityStateByKey(sessionKey, state);
+    else this.deps.claudeHandler.setActivityState(channel, threadTs, state);
+  }
+
+  /** Drop the SDK session id (invalid resume recovery), by task key for a Slack-less task (#598 ④a). */
+  private clearSdkSession(
+    session: ConversationSession,
+    sessionKey: string,
+    channel: string,
+    threadTs: string | undefined,
+  ): void {
+    if (session.slackless === true) this.deps.claudeHandler.clearSessionIdByKey(sessionKey);
+    else this.deps.claudeHandler.clearSessionId(channel, threadTs);
+  }
+
+  /**
    * Handle execution errors. Returns retryAfterMs if the error is recoverable
    * and retry budget remains, so the caller can schedule an auto-retry.
    */
@@ -3531,7 +3573,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
      */
     interruptFlushFailed?: InterruptFlushFailure,
   ): Promise<number | undefined> {
-    this.deps.claudeHandler.setActivityState(channel, threadTs, 'idle');
+    this.setActivity(session, sessionKey, channel, threadTs, 'idle');
 
     // ── Compaction-failure recovery rails (content-shaped SDK compact
     // errors thrown by execute()'s guards — see textIndicatesCompactionFailure
@@ -3589,7 +3631,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
 
       let sessionResetNote = '';
       if (emptyBlock400) {
-        this.deps.claudeHandler.clearSessionId(channel, threadTs);
+        this.clearSdkSession(session, sessionKey, channel, threadTs);
         sessionResetNote = ' 대화 기록이 복구 불가능하게 손상되어 세션을 초기화했습니다.';
       }
 
@@ -3772,7 +3814,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           originalModel: session.fallbackCompactOriginalModel,
         });
       } else if (sessionCleared) {
-        this.deps.claudeHandler.clearSessionId(channel, threadTs);
+        this.clearSdkSession(session, sessionKey, channel, threadTs);
 
         if (this.isImageProcessingError(error)) {
           this.logger.warn('Session cleared due to image processing error', {
@@ -6031,7 +6073,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       session.actionPanel = { pendingQuestion: question };
     }
 
-    this.deps.claudeHandler.setActivityState(context.channel, context.threadTs, 'waiting');
+    this.setActivity(session, context.sessionKey, context.channel, context.threadTs, 'waiting');
     await this.updateRuntimeStatus(
       session,
       context.sessionKey,

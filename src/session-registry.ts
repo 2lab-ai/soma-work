@@ -1337,7 +1337,20 @@ export class SessionRegistry {
     linesAdded: number,
     linesDeleted: number,
   ): void {
-    const session = this.getSession(channelId, threadTs);
+    this.addMergeStatsOn(this.getSession(channelId, threadTs), prNumber, linesAdded, linesDeleted);
+  }
+
+  /** The same by session key (#598 ④a). */
+  addMergeStatsByKey(sessionKey: string, prNumber: number, linesAdded: number, linesDeleted: number): void {
+    this.addMergeStatsOn(this.getSessionByKey(sessionKey), prNumber, linesAdded, linesDeleted);
+  }
+
+  private addMergeStatsOn(
+    session: ConversationSession | undefined,
+    prNumber: number,
+    linesAdded: number,
+    linesDeleted: number,
+  ): void {
     if (!session) return;
 
     if (!session.mergeStats) {
@@ -1374,6 +1387,19 @@ export class SessionRegistry {
    * Set multiple session links at once
    */
   setSessionLinks(channelId: string, threadTs: string | undefined, links: SessionLinks): void {
+    const operations = this.sessionLinkOperations(links);
+    if (operations.length === 0) return;
+    this.updateSessionResources(channelId, threadTs, { operations });
+  }
+
+  /** The same by session key (#598 ④a). */
+  setSessionLinksByKey(sessionKey: string, links: SessionLinks): void {
+    const operations = this.sessionLinkOperations(links);
+    if (operations.length === 0) return;
+    this.updateSessionResourcesByKey(sessionKey, { operations });
+  }
+
+  private sessionLinkOperations(links: SessionLinks): SessionResourceOperation[] {
     const operations: SessionResourceOperation[] = [];
 
     if (links.issue) {
@@ -1398,11 +1424,7 @@ export class SessionRegistry {
       });
     }
 
-    if (operations.length === 0) {
-      return;
-    }
-
-    this.updateSessionResources(channelId, threadTs, { operations });
+    return operations;
   }
 
   /**
@@ -1434,7 +1456,18 @@ export class SessionRegistry {
     threadTs: string | undefined,
     request: SessionResourceUpdateRequest,
   ): SessionResourceUpdateResult {
-    const session = this.getSession(channelId, threadTs);
+    return this.updateSessionResourcesOn(this.getSession(channelId, threadTs), request);
+  }
+
+  /** The same by session key (#598 ④a). */
+  updateSessionResourcesByKey(sessionKey: string, request: SessionResourceUpdateRequest): SessionResourceUpdateResult {
+    return this.updateSessionResourcesOn(this.getSessionByKey(sessionKey), request);
+  }
+
+  private updateSessionResourcesOn(
+    session: ConversationSession | undefined,
+    request: SessionResourceUpdateRequest,
+  ): SessionResourceUpdateResult {
     if (!session) {
       return {
         ok: false,
@@ -1591,6 +1624,13 @@ export class SessionRegistry {
     }
   }
 
+  /** A session's registry key: its task key for a Slack-less task, its Slack key otherwise (#598 ④a). */
+  private keyOf(session: ConversationSession): string {
+    return session.slackless === true && session.taskId
+      ? buildTaskSessionKey(session.taskId)
+      : this.getSessionKey(session.channelId, session.threadTs);
+  }
+
   private applySessionResourceOperations(
     session: ConversationSession,
     operations: SessionResourceOperation[],
@@ -1627,9 +1667,8 @@ export class SessionRegistry {
         //       (single source of truth via stdout parsing). Only issue_created is emitted here.
         if (existingIndex < 0 && operation.resourceType === 'issue') {
           const emitter = getMetricsEmitter();
-          const sessionKey = this.getSessionKey(session.channelId, session.threadTs);
           emitter
-            .emitGitHubEvent('issue_created', session.ownerId, session.ownerName || 'unknown', sessionKey, {
+            .emitGitHubEvent('issue_created', session.ownerId, session.ownerName || 'unknown', this.keyOf(session), {
               url: normalized.url,
             })
             .catch((err) => this.logger.debug('metrics emit failed', err));
@@ -1770,11 +1809,18 @@ export class SessionRegistry {
    * This forces a new Claude session on the next request
    */
   clearSessionId(channelId: string, threadTs: string | undefined): void {
-    const session = this.getSession(channelId, threadTs);
+    this.clearSessionIdOn(this.getSession(channelId, threadTs), { channelId, threadTs });
+  }
+
+  /** The same by session key — a Slack-less task has no channel/thread (#598 ④a). */
+  clearSessionIdByKey(sessionKey: string): void {
+    this.clearSessionIdOn(this.getSessionByKey(sessionKey), { sessionKey });
+  }
+
+  private clearSessionIdOn(session: ConversationSession | undefined, where: Record<string, unknown>): void {
     if (session) {
       this.logger.info('Clearing sessionId for session', {
-        channelId,
-        threadTs,
+        ...where,
         previousSessionId: session.sessionId,
       });
       session.sessionId = undefined;
@@ -2006,10 +2052,15 @@ export class SessionRegistry {
    * The directory must already exist on disk.
    */
   addSourceWorkingDir(channel: string, threadTs: string | undefined, dirPath: string): boolean {
-    const key = this.getSessionKey(channel, threadTs);
+    return this.addSourceWorkingDirByKey(this.getSessionKey(channel, threadTs), dirPath);
+  }
+
+  /** The same by session key (#598 ④a). */
+  addSourceWorkingDirByKey(sessionKey: string, dirPath: string): boolean {
+    const key = normalizeSessionKey(sessionKey);
     const session = this.sessions.get(key);
     if (!session) {
-      this.logger.warn('Cannot add source working dir: session not found', { channel, threadTs, key, dirPath });
+      this.logger.warn('Cannot add source working dir: session not found', { key, dirPath });
       return false;
     }
 
