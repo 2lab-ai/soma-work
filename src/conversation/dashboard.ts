@@ -4977,6 +4977,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    (.panel-deck-peek above the header — the element's peek sits under its own nav). */
 .panel-deck { flex: none; }
 .panel-deck[hidden] { display: none; }
+/* The subtitle is one line that ellipsizes: squeezed beside the nav it stacked one or two characters a line
+   (phones also drop 자세히's word while the deck is shown — the phone block below). */
+#panel-title-sub-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The deck switch (renderDeckNav → deckSlide) is WAAPI, not keyframes: the header and body glide in from
    the side the new front card came from, added onto whatever is still running — a quick second switch
    retargets from where they are drawn instead of restarting. Under reduced motion there is no slide. */
@@ -5136,6 +5139,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   /* The path shrinks to "‹ parent › here". */
   .pa-crumb.is-far, .pa-sep.is-far { display: none; }
   .pa-crumb.is-up::before { content: '\\2039\\00a0'; }
+  /* Panel head with the deck shown: <ui-deck-nav>'s 44px targets left the title ~85px, so 자세히 is its
+     icon alone (the word stays its accessible name) and the title gets the word's width back. */
+  .slide-panel:not([data-deck="0"]) .panel-detail-toggle { width: 44px; padding: 0; justify-content: center; }
+  .slide-panel:not([data-deck="0"]) .pdt-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
   /* Stats strip: period control + 자세히 on the first row, the numbers on the
      second. The period tabs share the row's width and keep 44px height with
