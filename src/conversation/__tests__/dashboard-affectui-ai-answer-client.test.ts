@@ -703,7 +703,7 @@ describe('the page loads the element; the inline renderer is gone', () => {
       '<div class="psec psec-el ui-tok" id="psec-conv" role="tabpanel" aria-labelledby="psec-tab-conv">',
     );
     expect(TEMPLATE).toContain('<ui-conversation class="panel-conv" id="panel-conv" lang="ko"></ui-conversation>');
-    expect(CSS).toMatch(/\.wl-toolcall, \.ui-tok \{[^}]*--ui-surface-raised: var\(--surface-raised\)/);
+    expect(CSS).toMatch(/\.ui-tok \{[^}]*--ui-surface-raised: var\(--surface-raised\)/);
   });
 
   it('D3 — the inline turn renderer, its answer slots and their styles are gone', () => {

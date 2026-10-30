@@ -1183,17 +1183,23 @@ describe('panel scope (§4.3)', () => {
     expect(LOG[1]).toHaveProperty('taskId', 'T2');
   });
 
-  it('rows say 지시 / 결과 / 배경 실행 시작 in a subagent scope', () => {
-    const r = load<{ renderWorkLogEntry(e: unknown): string }>(
-      [...NODE_FNS, 'decodeSlackEntities', 'wlChildBlock', 'wlToolSummary', 'renderWorkLogEntry'],
+  it('rows say 지시 / 결과 / 배경 실행 시작 in a subagent scope (<ui-work-log> rows, not cards)', () => {
+    const r = load<{ wlEntryOf(st: unknown, e: unknown): Record<string, unknown> }>(
+      [...NODE_FNS, 'decodeSlackEntities', 'wlToolSummary', 'wlEntryOf'],
       [...AGENT_VARS, 'WL_LABELS'],
-      { panelSessionKey: 'k', _sessionCache: { k: card() } },
+      {
+        panelSessionKey: 'k',
+        _sessionCache: { k: card() },
+        wlCardData: () => ({ status: 'success' }),
+        wlAgentOf: (id: string) => ({ id }),
+      },
     );
-    expect(r.renderWorkLogEntry({ ...LOG[1], _role: 'spawn' })).toContain('<span class="wl-role">지시</span>');
-    expect(r.renderWorkLogEntry({ ...LOG[4], _role: 'result' })).toContain('<span class="wl-role">결과</span>');
-    expect(r.renderWorkLogEntry({ ...LOG[4], _role: 'ack' })).toContain('<span class="wl-role">배경 실행 시작</span>');
-    expect(r.renderWorkLogEntry({ ...LOG[1], _role: 'spawn' })).not.toContain('wl-agent-link');
-    expect(r.renderWorkLogEntry(LOG[4])).not.toContain('wl-agent-link');
+    const ST = { entries: [] };
+    expect(r.wlEntryOf(ST, { ...LOG[1], _role: 'spawn' })).toMatchObject({ kind: 'instruction', label: '지시' });
+    expect(r.wlEntryOf(ST, { ...LOG[4], _role: 'result' })).toMatchObject({ kind: 'final', label: '결과' });
+    expect(r.wlEntryOf(ST, { ...LOG[4], _role: 'ack' })).toMatchObject({ kind: 'notice', label: '배경 실행 시작' });
+    expect(r.wlEntryOf(ST, { ...LOG[1], _role: 'spawn' })).not.toHaveProperty('agent');
+    expect(r.wlEntryOf(ST, LOG[4])).not.toHaveProperty('agent');
   });
 
   it('a failed background spawn result is not labelled a background start (review B-P2)', () => {
@@ -1233,9 +1239,7 @@ describe('panel scope (§4.3)', () => {
     expect(paint).toMatch(
       /if \(wlNamesNewAgent\(added\)\) \{\s*renderPanelAgents\(\);\s*if \(_psec === 'tree'\) paintTreeTab\(\);/,
     );
-    expect(paint.indexOf('wlNamesNewAgent(added)')).toBeLessThan(
-      paint.indexOf("if (_psec !== 'log' || !list || !box)"),
-    );
+    expect(paint.indexOf('wlNamesNewAgent(added)')).toBeLessThan(paint.indexOf("if (_psec !== 'log') {"));
   });
 
   it('closing the panel forgets the agent bar it last wrote (review B r2)', () => {
@@ -1275,18 +1279,13 @@ describe('panel scope (§4.3)', () => {
     expect(fnBody('selectPanelAgent')).toContain('repaintPanelTasks();');
     // SSOT 2026-10-29: the section tab shown stays and is painted again for the new scope.
     expect(fnBody('selectPanelAgent')).toContain('selectPanelSection(_psec);');
-    expect(fnBody('paintLogTab')).toContain('wlRenderList(st, list);');
-    // Paired tool results live in their call's card (wlVisible), so they are not rows.
-    expect(fnBody('wlRenderList')).toContain('wlBuildRows(wlVisible(state, wlScopeEntries(state.entries)))');
-    // This agent's log empty (entries of others only): the empty line, on a live paint and on a tab paint.
-    expect(fnBody('paintWorkLog')).toContain(
-      "if (!wlScopeEntries(state.entries).length) showWorkLogEmpty('이 에이전트의 작업 로그 없음');",
+    // Paired tool results live in their call's card (wlVisible), so they are not rows: the log's data is
+    // the scope's visible entries.
+    expect(fnBody('wlLogData')).toContain('d.groups = wlGroupsOf(st, wlVisible(st, scoped));');
+    // This agent's log empty (entries of others only): <ui-work-log>'s empty line says so.
+    expect(fnBody('wlLogData')).toContain(
+      "if (st.entries.length && !scoped.length) d.emptyText = '이 에이전트의 작업 로그 없음';",
     );
-    expect(fnBody('paintLogTab')).toContain(
-      "if (!wlScopeEntries(st.entries).length) showWorkLogEmpty('이 에이전트의 작업 로그 없음');",
-    );
-    // The pill counts what the list shows: a paired result lives in its call's card.
-    expect(fnBody('paintWorkLog')).toContain('wlVisible(state, wlScopeEntries(added.map(');
     // The collapsed card's agents are the face's data (cardOf); the open card's tree is in its body.
     expect(fnBody('cardOf')).toContain('dots: agents.slice(0, 6).map(agentDotOf)');
     expect(fnBody('renderCardBody')).toContain('const agentsHtml = renderAgentTree(s, col);');
@@ -1774,51 +1773,52 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     const r = fnBody('repaintPanelScope');
     expect(r).toContain('renderPanelAgents();');
     expect(r).toContain('repaintPanelTasks();');
-    expect(r).toContain('wlRefreshGroupHeads();');
-    expect(r).toContain('wlRefreshChildBlocks();');
+    // The work log's group heads (the ledger), child rows and cards: one paint of its data.
+    expect(r).toContain('wlPaint();');
   });
 });
 
-// Not a tree: one child's live block beside the call that started it (status, time, tools, what it does,
-// 열기) — so it keeps its own renderer, wlChildBlock, over the same node model.
-describe('work log — a child is one live block at the point it was started', () => {
-  const ENTRY_FNS = [...NODE_FNS, 'decodeSlackEntities', 'wlChildBlock', 'wlToolSummary', 'renderWorkLogEntry'];
+// Not a tree: one child's live row beside the call that started it (status, time, tools, what it does,
+// 열기) — <ui-work-log>'s agent row, from wlAgentOf over the same node model.
+describe('work log — a child is one live row at the point it was started', () => {
+  const ENTRY_FNS = [...NODE_FNS, 'decodeSlackEntities', 'wlToolSummary', 'wlAgentOf', 'wlEntryOf'];
   const spawn = { seq: 2, ts: 0, kind: 'tool', tool: 'Agent', text: 'Agent {}', agentRef: 'toolu_explore' };
   const r = (agents: Agent[] = AGENTS) =>
-    load<{ renderWorkLogEntry(e: unknown): string }>(ENTRY_FNS, [...AGENT_VARS, 'WL_LABELS'], {
-      panelSessionKey: 'k',
-      _sessionCache: { k: card({ agents }) },
-    });
-
-  it("the spawn row carries the child's block — status, time, tools, current task, 열기 — beside the row, not inside it", () => {
-    const html = r().renderWorkLogEntry(spawn);
-    expect(html).toContain(
-      'class="wl-agent-link wl-child is-running" tabindex="-1" data-agent="toolu_explore" data-agent-block="toolu_explore"',
+    load<{ wlEntryOf(st: unknown, e: unknown): Record<string, unknown> }>(
+      ENTRY_FNS,
+      [...AGENT_VARS, 'WL_LABELS', 'WL_AGENT_STATUS'],
+      {
+        panelSessionKey: 'k',
+        _sessionCache: { k: card({ agents }) },
+        wlCardData: () => ({ status: 'running' }),
+      },
     );
-    expect(html).toContain('<span class="ag-st">실행 중</span>');
-    expect(html).toContain('툴 18');
-    expect(html).toContain('#T1 Reading the mapper');
-    expect(html).toContain('열기 &rarr;');
-    expect(html).toContain('aria-label="A1 Explore 열기 — 실행 중, 툴 18"');
-    // The call itself is a tool call card; the child's block sits beside it, never inside it.
-    const cardEnd = html.indexOf('</ui-tool-call-card>');
-    expect(cardEnd).toBeGreaterThan(0);
-    expect(html.indexOf('wl-agent-link')).toBeGreaterThan(cardEnd);
+
+  it("the spawn call is a card entry carrying the child's row — status, time, tools, current task (열기 is the element's)", () => {
+    const x = r().wlEntryOf({ entries: [] }, spawn);
+    expect(x).toMatchObject({ id: '2', kind: 'tool', tool: { name: 'Agent', status: 'running' } });
+    expect(x.agent).toEqual({
+      id: 'toolu_explore',
+      name: 'A1 Explore',
+      status: 'running',
+      tools: 18,
+      startedAt: expect.any(Number),
+      activity: '#T1 Reading the mapper',
+    });
   });
 
-  it('a block whose agent has not arrived yet reads 확인 불가 (it morphs when the agent does)', () => {
-    const html = r([]).renderWorkLogEntry({ ...spawn, agentRef: 'toolu_ghost' });
-    expect(html).toContain('data-agent-block="toolu_ghost"');
-    expect(html).toContain('확인 불가');
+  it('a row whose agent has not arrived yet reads 확인 불가 (unknown) until it does', () => {
+    expect(r([]).wlEntryOf({ entries: [] }, { ...spawn, agentRef: 'toolu_ghost' }).agent).toEqual({
+      id: 'toolu_ghost',
+      name: '에이전트 _ghost',
+      status: 'unknown',
+      tools: 0,
+    });
   });
 
-  it('a live update morphs each visible block in place and keeps its roving stop', () => {
-    const body = fnBody('wlRefreshChildBlocks');
-    expect(body).toContain('[data-agent-block]');
-    expect(body).toContain('if (el._html === html) continue;');
-    expect(body).toContain("fresh.setAttribute('tabindex', el.getAttribute('tabindex') || '-1');");
-    expect(body).toContain('domMorph(el, fresh);');
-    expect(body).toContain('updateTimersIn(el);');
+  it('a live update paints the log’s data again — the element rebuilds only the rows whose data changed', () => {
+    expect(fnBody('repaintPanelScope')).toContain('wlPaint();');
+    expect(fnBody('wlPaint')).toContain('if (el._wlSig !== sig) {');
   });
 });
 
@@ -2045,15 +2045,10 @@ describe('live morph (review B r2) — a live update keeps the nodes that did no
 });
 
 describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the arrow path', () => {
-  it('the arrow rows include the link, the tab stop can sit on it, and Enter on it is left to the button', () => {
-    expect(fnBody('wlNavRows')).toContain("'.wl-group-head, .wl-row, .wl-agent-link, ui-tool-call-card.wl-card'");
-    // One stop selector for both (rows, heads, links and tool call cards).
-    expect(TEMPLATE).toMatch(
-      /var WL_STOP_SEL = '[^']*\.wl-agent-link\[tabindex="0"\][^']*ui-tool-call-card\[data-stop="1"\]';/,
-    );
-    expect(fnBody('wlSetTabStop')).toContain('list.querySelectorAll(WL_STOP_SEL)');
-    expect(fnBody('wlEnsureTabStop')).toContain('list.querySelector(WL_STOP_SEL)');
-    expect(TEMPLATE).toContain("if (isLink && (e.key === 'Enter' || e.key === ' ')) return;");
+  it('the child row is on <ui-work-log>’s arrow path (its own data-nav); 열기 opens that agent (ui-open)', () => {
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initWorkLog() {'));
+    expect(init.slice(0, init.indexOf('\n})();'))).toContain('if (id) selectPanelAgent(String(id));');
+    expect(TEMPLATE).not.toMatch(/^var WL_STOP_SEL/m);
   });
   it('choosing an agent by keyboard leaves focus on the agent now shown, not on <body> (review B r3)', () => {
     const body = fnBody('selectPanelAgent');
@@ -2152,11 +2147,10 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
     // Each switch repaints the card as it starts (busy, spec 13) and as it settles.
     expect(refreshed).toBe(4);
   });
-  it('a group head is morphed, not replaced, and skipped when its markup is unchanged', () => {
-    const body = fnBody('wlRefreshGroupHead');
-    expect(body).toContain('if (head._html === html) return;');
-    expect(body).toContain('domMorph(head, fresh);');
-    expect(body).not.toContain('replaceChild');
+  it('a work-log group head is <ui-work-log>’s: patched in place when its data changed, left alone when not', () => {
+    // The element compares the head's markup itself (patchGroup); the page only hands it the data.
+    expect(TEMPLATE).not.toMatch(/\nfunction wlRefreshGroupHead\(/);
+    expect(fnBody('wlPaint')).toContain('el.data = d;');
   });
   it('a changed card body is morphed into place, not rewritten', () => {
     const body = fnBody('paintCardBody');
