@@ -1271,7 +1271,9 @@ describe('Dashboard API', () => {
     // Button content: the two SVG glyphs, no text and no emoji
     const btnMatch = html.match(/<button[^>]*id="theme-toggle"[^>]*>(.*?)<\/button>/);
     expect(btnMatch).not.toBeNull();
-    expect(btnMatch![1]).toMatch(/^<svg class="ic-sun"[^>]*aria-hidden="true">.*<\/svg><svg class="ic-moon"[^>]*aria-hidden="true">.*<\/svg>$/);
+    expect(btnMatch![1]).toMatch(
+      /^<svg class="ic-sun"[^>]*aria-hidden="true">.*<\/svg><svg class="ic-moon"[^>]*aria-hidden="true">.*<\/svg>$/,
+    );
     expect(btnMatch![1].replace(/<[^>]+>/g, '').trim()).toBe('');
     expect(html).not.toContain('\\1F319');
   });

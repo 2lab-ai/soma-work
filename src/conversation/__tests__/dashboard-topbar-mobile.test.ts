@@ -56,7 +56,9 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
     });
 
     it('대화 (Conversations) is one full label (no short variant), an SVG glyph instead of an emoji', () => {
-      expect(DASHBOARD_TS).toMatch(/<a href="\/conversations" title="[^"]+"><svg [^>]*aria-hidden="true">[\s\S]*?<\/svg>대화<\/a>/);
+      expect(DASHBOARD_TS).toMatch(
+        /<a href="\/conversations" title="[^"]+"><svg [^>]*aria-hidden="true">[\s\S]*?<\/svg>대화<\/a>/,
+      );
       expect(DASHBOARD_TS).not.toContain('&#x1F4DD;');
       expect(DASHBOARD_TS).not.toContain('nav-icon');
     });
@@ -256,7 +258,9 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
   describe('JS — connectWs handlers maintain state, title + aria-label (STRINGS)', () => {
     it('the words are Korean, sentence case, "…" not "..."', () => {
       expect(DASHBOARD_TS).toContain("  wsLive: '실시간',\n  wsLiveLabel: '실시간 업데이트: 연결됨',");
-      expect(DASHBOARD_TS).toContain("  wsReconnecting: '다시 연결 중…',\n  wsReconnectingLabel: '실시간 업데이트: 다시 연결 중',");
+      expect(DASHBOARD_TS).toContain(
+        "  wsReconnecting: '다시 연결 중…',\n  wsReconnectingLabel: '실시간 업데이트: 다시 연결 중',",
+      );
       expect(DASHBOARD_TS).not.toContain('Reconnecting...');
     });
 

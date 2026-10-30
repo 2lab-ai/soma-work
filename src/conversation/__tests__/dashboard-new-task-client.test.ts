@@ -127,13 +127,24 @@ describe('T1 — the New task entry is always in reach, calm', () => {
   // Tone pass P3 (ui.2lab.ai: one calm ink primary, no decorative motion): the entry no longer
   // animates on its own — no sheen, pulse, glow, ring or hover lift; the FAB arrives once.
   it('both entries are the calm ink primary; the FAB arrives once (0.95 → 1, 240ms); reduced motion stills it', () => {
-    for (const gone of [/@keyframes nt-sheen/, /@keyframes nt-pulse/, /@keyframes nt-ring/, /conic-gradient/, /\.new-task-btn::(before|after)/, /\.new-task-fab::after/])
+    for (const gone of [
+      /@keyframes nt-sheen/,
+      /@keyframes nt-pulse/,
+      /@keyframes nt-ring/,
+      /conic-gradient/,
+      /\.new-task-btn::(before|after)/,
+      /\.new-task-fab::after/,
+    ])
       expect(css, String(gone)).not.toMatch(gone);
     expect(css).not.toMatch(/\.new-task-btn\s*\{[^}]*animation:/);
     expect(css).not.toMatch(/\.new-task-btn:hover\s*\{[^}]*transform/);
     expect(css).toMatch(/\.new-task-btn\s*\{[^}]*background: var\(--ib-text\);[^}]*color: var\(--ib-card\);/);
-    expect(css).toMatch(/\.new-task-fab\s*\{[^}]*background: var\(--ib-text\);[^}]*animation: nt-fab-in 240ms var\(--ease-out\) both;/);
-    expect(css).toContain('@keyframes nt-fab-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: none; } }');
+    expect(css).toMatch(
+      /\.new-task-fab\s*\{[^}]*background: var\(--ib-text\);[^}]*animation: nt-fab-in 240ms var\(--ease-out\) both;/,
+    );
+    expect(css).toContain(
+      '@keyframes nt-fab-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: none; } }',
+    );
     expect(css).toMatch(/\.nt-submit\s*\{[^}]*background: var\(--ib-text\);/);
     expect(html).toMatch(/id="new-task-btn"[^>]*>[\s\S]*?<kbd class="nt-kbd" aria-hidden="true">N<\/kbd><\/button>/);
     const reduced = mediaBlock('@media (prefers-reduced-motion: reduce) {\n  /* New task');
