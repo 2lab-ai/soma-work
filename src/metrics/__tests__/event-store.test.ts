@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { __resetMetricsEnsureCache, MetricsEventStore, mergeJsonl } from '../event-store';
+import * as zlib from 'zlib';
+import { __closeMetricsDbs, __resetMetricsEnsureCache, MetricsEventStore, mergeJsonl } from '../event-store';
 import type { MetricsEvent } from '../types';
 
 // Contract tests — Scenario 1: MetricsEventStore (JSONL Storage Layer)
@@ -27,6 +28,7 @@ describe('MetricsEventStore', () => {
   beforeEach(() => {
     // Reset module-level migration cache so each test gets a fresh ensureDir run
     __resetMetricsEnsureCache();
+    __closeMetricsDbs();
     // Clean test directory
     if (fs.existsSync(TEST_DATA_DIR)) {
       fs.rmSync(TEST_DATA_DIR, { recursive: true });
@@ -37,23 +39,23 @@ describe('MetricsEventStore', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    __closeMetricsDbs();
     if (fs.existsSync(TEST_DATA_DIR)) {
       fs.rmSync(TEST_DATA_DIR, { recursive: true });
     }
   });
 
-  // Trace: Scenario 1, Section 3a — append writes to correct date-based file
-  it('append_writesToCorrectDateFile', async () => {
+  // Trace: Scenario 1, Section 3a — append writes to the event's report-day partition
+  it('append_writesToCorrectDayPartition', async () => {
     const event = makeEvent({ timestamp: new Date('2026-03-25T10:00:00Z').getTime() });
     await store.append(event);
 
-    const filePath = path.join(TEST_METRICS_DIR, 'metrics-events-2026-03-25.jsonl');
-    expect(fs.existsSync(filePath)).toBe(true);
-
-    const content = fs.readFileSync(filePath, 'utf-8').trim();
-    const parsed = JSON.parse(content);
-    expect(parsed.id).toBe('test-id-1');
-    expect(parsed.eventType).toBe('session_created');
+    expect(fs.existsSync(path.join(TEST_METRICS_DIR, 'metrics.sqlite3'))).toBe(true);
+    const events = await store.readRange('2026-03-25', '2026-03-25');
+    expect(events).toHaveLength(1);
+    expect(events[0].id).toBe('test-id-1');
+    expect(events[0].eventType).toBe('session_created');
+    expect(await store.readRange('2026-03-24', '2026-03-24')).toEqual([]);
   });
 
   // Trace: Scenario 1, Section 3b — readRange returns sorted events
@@ -79,77 +81,89 @@ describe('MetricsEventStore', () => {
   it('readRange_skipsCorruptedLines', async () => {
     fs.mkdirSync(TEST_METRICS_DIR, { recursive: true });
     const filePath = path.join(TEST_METRICS_DIR, 'metrics-events-2026-03-25.jsonl');
-    const validEvent = JSON.stringify(makeEvent());
-    fs.writeFileSync(filePath, `${validEvent}\n{corrupted json\n${validEvent}\n`);
+    const a = JSON.stringify(makeEvent({ id: 'a' }));
+    const b = JSON.stringify(makeEvent({ id: 'b' }));
+    const body = `${a}\n{corrupted json\n${b}\n`;
+    fs.writeFileSync(filePath, body);
 
     const events = await store.readRange('2026-03-25', '2026-03-25');
     expect(events).toHaveLength(2); // 2 valid, 1 skipped
+    // The source file is a backup now: never modified.
+    expect(fs.readFileSync(filePath, 'utf-8')).toBe(body);
   });
 
-  // #477: a month of stats was 30 serial file reads — each one a separate trip
-  // through the libuv threadpool, so on a busy host the request took seconds.
-  // The day files are now read together (bounded), in date order.
-  it('readRange_readsDayFilesConcurrently_inDateOrder', async () => {
+  // #477 successor: day files are imported once; a range is one indexed query,
+  // returned in date order.
+  it('readRange_returnsImportedDayFilesInDateOrder', async () => {
     fs.mkdirSync(TEST_METRICS_DIR, { recursive: true });
     const days = ['2026-03-20', '2026-03-21', '2026-03-22', '2026-03-23', '2026-03-24'];
     for (const [i, d] of days.entries()) {
-      // Same timestamp everywhere: the result order then comes from the read order alone.
+      // Same timestamp everywhere: the result order then comes from the import order alone.
       const line = JSON.stringify(makeEvent({ id: `d${i}`, timestamp: 1 }));
       fs.writeFileSync(path.join(TEST_METRICS_DIR, `metrics-events-${d}.jsonl`), `${line}\n`);
     }
-    // Run the one-time directory setup first, so the reads are all that is left to await.
-    await store.readRange(days[0], days[0]);
-    const realReadFile = fs.promises.readFile;
-    const gates: Array<() => void> = [];
-    const spy = vi.spyOn(fs.promises, 'readFile').mockImplementation(
-      ((...args: Parameters<typeof realReadFile>) =>
-        new Promise((resolve, reject) => {
-          gates.push(() => realReadFile(...args).then(resolve, reject));
-        })) as typeof realReadFile,
-    );
-
-    const pending = store.readRange(days[0], days[days.length - 1]);
-    try {
-      // Every day's read is in flight before any of them has finished.
-      await vi.waitFor(() => expect(spy).toHaveBeenCalledTimes(days.length));
-    } finally {
-      // Always: unhook, then finish the held reads in reverse — nothing leaks into the next test.
-      spy.mockRestore();
-      for (const open of gates.reverse()) open();
-    }
-    // The events still come back in date order.
-    const events = await pending;
+    const events = await store.readRange(days[0], days[days.length - 1]);
     expect(events.map((e) => e.id)).toEqual(['d0', 'd1', 'd2', 'd3', 'd4']);
+    // A second read does not re-read unchanged files.
+    const spy = vi.spyOn(fs.promises, 'readFile');
+    await store.readRange(days[0], days[days.length - 1]);
+    expect(spy).not.toHaveBeenCalled();
   });
 
-  it('readRange_boundsConcurrentReads_forLongRanges', async () => {
-    const realReadFile = fs.promises.readFile;
-    let inFlight = 0;
-    let peak = 0;
-    vi.spyOn(fs.promises, 'readFile').mockImplementation((async (...args: Parameters<typeof realReadFile>) => {
-      inFlight++;
-      peak = Math.max(peak, inFlight);
-      try {
-        await new Promise((r) => setTimeout(r, 1));
-        return await realReadFile(...args);
-      } finally {
-        inFlight--;
-      }
-    }) as typeof realReadFile);
-    // A year of days (the 'all' report range): never a year of open files at once.
+  it('readRange_reimportsAFileWhoseSizeChanged', async () => {
+    fs.mkdirSync(TEST_METRICS_DIR, { recursive: true });
+    const filePath = path.join(TEST_METRICS_DIR, 'metrics-events-2026-03-25.jsonl');
+    fs.writeFileSync(filePath, `${JSON.stringify(makeEvent({ id: 'x1' }))}\n`);
+    expect(await store.readRange('2026-03-25', '2026-03-25')).toHaveLength(1);
+    fs.appendFileSync(filePath, `${JSON.stringify(makeEvent({ id: 'x2' }))}\n`);
+    const events = await store.readRange('2026-03-25', '2026-03-25');
+    expect(events.map((e) => e.id).sort()).toEqual(['x1', 'x2']);
+  });
+
+  it('readRange_yearRange_returnsEmptyWithoutDayFiles', async () => {
     const events = await store.readRange('2025-03-26', '2026-03-25');
     expect(events).toEqual([]);
-    expect(peak).toBeGreaterThan(1);
-    expect(peak).toBeLessThanOrEqual(8);
+  });
+
+  it('exportPastDays_backsUpDbOnlyDays_neverOverwrites', async () => {
+    const archive = path.join(TEST_METRICS_DIR, 'archive');
+    const decode = (file: string) =>
+      zlib
+        .zstdDecompressSync(fs.readFileSync(path.join(archive, file)))
+        .toString('utf-8')
+        .trim()
+        .split('\n')
+        .map((l) => JSON.parse(l).id);
+    // The first append of the (real) day already backs up the past day it wrote.
+    await store.append(makeEvent({ id: 'p1', timestamp: new Date('2026-03-20T10:00:00Z').getTime() }));
+    expect(decode('metrics-events-2026-03-20.jsonl.zst')).toEqual(['p1']);
+    // A later event for that day: the next export is a NEW generation; the old one stays.
+    await store.append(makeEvent({ id: 'p2', timestamp: new Date('2026-03-20T11:00:00Z').getTime() }));
+    expect(await store.exportPastDays('2026-03-25')).toEqual(['metrics-events-2026-03-20.1.jsonl.zst']);
+    expect(decode('metrics-events-2026-03-20.1.jsonl.zst')).toEqual(['p1', 'p2']);
+    expect(decode('metrics-events-2026-03-20.jsonl.zst')).toEqual(['p1']);
+    // Unchanged day: nothing new.
+    expect(await store.exportPastDays('2026-03-25')).toEqual([]);
+  });
+
+  it('exportPastDays_skipsDaysBackedByTheirJsonlFile', async () => {
+    fs.mkdirSync(TEST_METRICS_DIR, { recursive: true });
+    fs.writeFileSync(
+      path.join(TEST_METRICS_DIR, 'metrics-events-2026-03-19.jsonl'),
+      `${JSON.stringify(makeEvent({ id: 'j1', timestamp: new Date('2026-03-19T10:00:00Z').getTime() }))}\n`,
+    );
+    expect(await store.exportPastDays('2026-03-25')).toEqual([]);
   });
 
   // Trace: Scenario 1, Section 4 — file created on first write
-  it('append_fileCreatedOnFirstWrite', async () => {
-    const filePath = path.join(TEST_METRICS_DIR, 'metrics-events-2026-03-25.jsonl');
-    expect(fs.existsSync(filePath)).toBe(false);
+  it('append_databaseCreatedOnFirstWrite', async () => {
+    const dbPath = path.join(TEST_METRICS_DIR, 'metrics.sqlite3');
+    expect(fs.existsSync(dbPath)).toBe(false);
 
     await store.append(makeEvent());
-    expect(fs.existsSync(filePath)).toBe(true);
+    expect(fs.existsSync(dbPath)).toBe(true);
+    // No new JSONL day file is written any more.
+    expect(fs.existsSync(path.join(TEST_METRICS_DIR, 'metrics-events-2026-03-25.jsonl'))).toBe(false);
   });
 
   // Trace: Scenario 1, Section 3b — multi-day aggregation
@@ -469,19 +483,15 @@ describe('MetricsEventStore', () => {
       s1.readRange('2026-03-20', '2026-03-20'),
     ]);
 
-    // ensureDirOnce runs readdir twice per migration run:
-    //   1. cleanupStaleTmp(metricsDir) → readdir on TEST_METRICS_DIR
-    //   2. migrateLegacyFiles(dataDir, metricsDir) → readdir on TEST_DATA_DIR
-    // Both should fire exactly once total despite 2 instances & 3 concurrent ops.
+    // The legacy migration (migrateLegacyFiles → readdir on TEST_DATA_DIR) must
+    // fire exactly once despite 2 instances & 3 concurrent ops. (TEST_METRICS_DIR
+    // is also listed by the per-operation day-file import check, so its count is
+    // not a migration signal any more.)
     const dataDirCalls = readdirSpy.mock.calls.filter(
       (c) => path.resolve(String(c[0])) === path.resolve(TEST_DATA_DIR),
     );
-    const metricsDirCalls = readdirSpy.mock.calls.filter(
-      (c) => path.resolve(String(c[0])) === path.resolve(TEST_METRICS_DIR),
-    );
 
     expect(dataDirCalls).toHaveLength(1);
-    expect(metricsDirCalls).toHaveLength(1);
 
     readdirSpy.mockRestore();
   });
