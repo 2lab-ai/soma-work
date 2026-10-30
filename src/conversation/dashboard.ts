@@ -3928,13 +3928,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .app { display: flex; flex-direction: column; min-height: 100vh; padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
 
 /* ── TOPBAR — strict horizontal grid ──
-   One row from 1024px; below that the nav (user select · 대화 · 설정 · 기억 · admin
-   toggle) takes its own row under brand · status · account (BOARD RESPONSIVE).
+   One row from 1200px; below that the nav (user select · 대화 · 설정 · 기억 · admin
+   toggle) takes its own row under brand · status · account (BOARD RESPONSIVE). 1200, not
+   1024: with the defaults chips, the admin toggle, the sound speaker and the theme toggle
+   the one-row admin bar no longer fits a 1024px window.
    No control ever wraps or cuts its label: everything is nowrap and flex: none.
    Only user names are ever shortened, always with a visible ellipsis and the
    full name in title: the pill's name when its row is full, and the selected
-   user's name when it is wider than its cap — 180px on the one-row bar (≥1024,
-   even when the row has room), the whole nav row below 1024px. */
+   user's name when it is wider than its cap — 180px on the one-row bar (≥1200,
+   even when the row has room), the whole nav row below 1200px. */
 .topbar {
   /* ui.2lab.ai's app bar: the page colour at 86% over what scrolls under it, blurred,
      one hairline; opaque when the reader asks for less transparency (below). */
@@ -3972,11 +3974,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .topbar h1 .brand-mark { width: 22px; height: 22px; flex: none; }
 .brand-mark .bm-bg { fill: var(--text); }
 .brand-mark .bm-cell { fill: var(--surface); }
-/* One row (≥1024): the nav never shrinks below its controls (so none of them
+/* One row (≥1200): the nav never shrinks below its controls (so none of them
    paints past it into the account group); the selected name is capped instead
    (.user-select max-inline-size), and the account group is what gives way — the
    pill's name ends in an ellipsis. The cap keeps the pill's glyph and a realistic
-   name whole at 1024px even with "다시 연결 중…" and touch padding. */
+   name whole at 1200px even with "다시 연결 중…" and touch padding. */
 .topbar .nav { display: flex; gap: 6px; margin-left: auto; align-items: center; flex: none; }
 .topbar .topbar-account { display: flex; gap: 6px; align-items: center; min-width: 0; flex: 0 1 auto; }
 /* SSOT 2026-10-23 T6 — the owner's default model / effort, one click from the top. */
@@ -5635,7 +5637,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    that always fit · <840 the three columns scroll sideways inside the board (the
    page itself never scrolls horizontally). <640 viewport: List by default, 44px
    taps. A docked drawer narrows the inbox, so this is not a viewport query. */
-@media (max-width: 1023px) {
+@media (max-width: 1199px) {
   /* Top bar: brand · status · account on the first row, the nav on its own row below, full labels. */
   .topbar { flex-wrap: wrap; padding: 8px 20px; row-gap: 8px; }
   /* Basis 0: the account group never pushes itself onto a row of its own — a
@@ -5718,7 +5720,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, #sound-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   /* Loading skeletons hold still. */
@@ -5770,7 +5772,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   #theme-toggle { min-block-size: 44px; position: relative; }
   #theme-toggle::after { content: ''; position: absolute; inset: 0 -6px; }
   #sound-toggle { min-block-size: 44px; position: relative; }
-  #sound-toggle::after { content: ''; position: absolute; inset: 0 -3px; }
+  /* Grows left only: the theme toggle's own area already covers the 6px gap between them. */
+  #sound-toggle::after { content: ''; position: absolute; inset: 0 0 0 -6px; }
   .topbar .td-chip { min-height: 44px; }
   .stats-more { min-height: 44px; }
   .card-body .btn-choice { min-height: 44px; }
@@ -6356,7 +6359,7 @@ ${pageTokenAliases()}
         href="/login"
         title="계정 — 다른 계정으로 전환하거나 로그아웃합니다"
       ><span class="user-pill-prefix"><i data-ui-icon="user" class="ic-user"></i><svg class="ic-admin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2l4.8 1.9v3.5c0 2.9-2 5.1-4.8 6.2-2.8-1.1-4.8-3.3-4.8-6.2V4.1z"/><path d="M5.9 8.1l1.5 1.5 2.8-2.9"/></svg><span class="ar-vh">로그인 계정 </span></span><b id="user-pill-name">…</b></a>
-      <button id="sound-toggle" type="button" onclick="toggleSound()" onpointerenter="somaSoundWarm()" onfocus="somaSoundWarm()" onpointerdown="somaSoundWarm()" aria-pressed="false" aria-label="소리 켜기" title="인터페이스 소리"><i data-ui-icon="sound" class="ic-sound"></i><i data-ui-icon="sound-off" class="ic-sound-off"></i></button>
+      <button id="sound-toggle" type="button" onclick="toggleSound()" onpointerenter="somaSoundWarm()" onfocus="somaSoundWarm()" onpointerdown="somaSoundWarm()" aria-pressed="false" aria-label="인터페이스 소리" title="인터페이스 소리"><i data-ui-icon="sound" class="ic-sound"></i><i data-ui-icon="sound-off" class="ic-sound-off"></i></button>
       <button id="theme-toggle" onclick="toggleTheme()" aria-label="테마 전환"><i data-ui-icon="sun" class="ic-sun"></i><i data-ui-icon="moon" class="ic-moon"></i></button>
     </div>
   </div>
