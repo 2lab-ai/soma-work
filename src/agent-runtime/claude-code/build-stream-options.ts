@@ -49,7 +49,7 @@ import type { SessionRegistry } from '../../session-registry';
 import type { ConversationSession, WorkflowType } from '../../types';
 import { DEFAULT_THINKING_ENABLED, userSettingsStore } from '../../user-settings-store';
 import { createTrackedClaudeProcessSpawner } from '../claude-child-process-registry';
-import { type ExecutionContext, executionContextFromSlack } from '../execution-context';
+import { type ExecutionContext, ExecutionContextMissingError, executionContextFromSlack } from '../execution-context';
 import { createNativeWriteCheck } from '../policy/native-write-boundary';
 import type { SafetyClassifier } from '../policy/safety-classifier';
 import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from '../policy/tool-policy';
@@ -190,8 +190,25 @@ export async function buildStreamOptions(
   input: BuildStreamOptionsInput,
   deps: BuildStreamOptionsDeps,
 ): Promise<BuildStreamOptionsResult> {
-  const { queryEnv, session, abortController, workingDirectory, slackContext } = input;
+  const { queryEnv, session, abortController, slackContext } = input;
   const { logger } = deps;
+
+  // A context and a Slack event that name different users cannot both be right.
+  if (input.executionContext && slackContext?.user && input.executionContext.userId !== slackContext.user) {
+    throw new ExecutionContextMissingError('the execution context and the Slack event name different users');
+  }
+  // A task runs in the directory its context validated — never in a caller's
+  // argument (#613 R1, .prd/17 D6/T8): a different one is refused, a missing
+  // one is the task's.
+  let workingDirectory = input.workingDirectory;
+  if (input.executionContext?.origin === 'task') {
+    const taskDirectory = input.executionContext.workingDirectory;
+    if (!taskDirectory) throw new ExecutionContextMissingError('task context has no working directory');
+    if (workingDirectory && normalizeTmpPath(path.resolve(workingDirectory)) !== taskDirectory) {
+      throw new ExecutionContextMissingError('working directory differs from the task’s');
+    }
+    workingDirectory = taskDirectory;
+  }
 
   // SDK 0.3 child-process env, set BEFORE the incident branch on purpose: both
   // flags remove behaviour rather than grant capability, and the incident path

@@ -17,7 +17,7 @@ import { afterAll, describe, expect, it, vi } from 'vitest';
 import type { McpConfig, SlackContext } from '../../mcp-config-builder';
 import type { ConversationSession } from '../../types';
 import { type BuildStreamOptionsDeps, buildStreamOptions } from '../claude-code/build-stream-options';
-import { type ExecutionContext, executionContextForTask } from '../execution-context';
+import { type ExecutionContext, ExecutionContextMissingError, executionContextForTask } from '../execution-context';
 
 const USER = 'U0PARITY01';
 const OTHER = 'U0OTHER001';
@@ -200,6 +200,58 @@ describe('T7 — same input, same decision: Slack session vs Slack-less task', (
     const out = await h.task(input);
     expect(decisionOf(out)).toBe('deny');
     expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(/approv/i);
+  });
+});
+
+describe('a task runs in the directory its context validated (#613 R1, D6/T8)', () => {
+  it('a caller’s different working directory is refused, not used', async () => {
+    const ctx = taskContext();
+    await expect(
+      buildStreamOptions({ queryEnv: {}, workingDirectory: `/tmp/${OTHER}/x`, executionContext: ctx }, makeDeps()),
+    ).rejects.toBeInstanceOf(ExecutionContextMissingError);
+  });
+
+  it('with no directory argument the task’s own directory becomes the cwd', async () => {
+    const ctx = taskContext();
+    const { options } = await buildStreamOptions({ queryEnv: {}, executionContext: ctx }, makeDeps());
+    expect(options.cwd).toBe(ctx.workingDirectory);
+  });
+
+  it('a context and a Slack event naming different users is refused', async () => {
+    const ctx = taskContext();
+    await expect(
+      buildStreamOptions(
+        { queryEnv: {}, executionContext: ctx, slackContext: { ...slackContext, user: OTHER } as SlackContext },
+        makeDeps(),
+      ),
+    ).rejects.toBeInstanceOf(ExecutionContextMissingError);
+  });
+});
+
+describe('a Slack turn — the speaker decides, not the session owner (#613 R1)', () => {
+  it('mode and admin come from the Slack event user, as before #597', async () => {
+    const { userSettingsStore } = await import('../../user-settings-store');
+    const spy = vi
+      .spyOn(userSettingsStore, 'getUserPermissionMode')
+      .mockImplementation((u: string) => (u === 'U0SPEAKER1' ? 'legacy' : 'bypass'));
+    try {
+      const deps = makeDeps();
+      await buildStreamOptions(
+        {
+          queryEnv: {},
+          workingDirectory: WORK_DIR,
+          session: { ownerId: 'U0OWNER001', workflow: 'default' } as ConversationSession,
+          slackContext: { ...slackContext, user: 'U0SPEAKER1' } as SlackContext,
+        },
+        deps,
+      );
+      const ctx = (deps.mcpConfigBuilder.buildConfig as ReturnType<typeof vi.fn>).mock.calls[0][2] as ExecutionContext;
+      expect(ctx.userId).toBe('U0SPEAKER1');
+      expect(ctx.permissionMode).toBe('legacy');
+      expect(spy).not.toHaveBeenCalledWith('U0OWNER001');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });
 
