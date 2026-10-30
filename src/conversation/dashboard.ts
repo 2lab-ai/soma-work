@@ -3854,6 +3854,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/dialog.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/drawer.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/conversation.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/work-log.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4222,24 +4223,23 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .stats-more[aria-expanded="true"] svg { transform: rotate(180deg); }
 .stats-detail { margin-top: 12px; }
 
-/* ── EXPAND / COLLAPSE (P6) — the library disclosure recipe for 자세히 (.stats), 세션 정보 (.panel-info), a
-   work-log task group (.wl-group) and the completed goals (.cg-hx): the region is the last row of its host's
-   grid and that row goes 0fr ↔ 1fr on --dur-expand (ease-out) with an opacity fade. Closed, the region is
+/* ── EXPAND / COLLAPSE (P6) — the library disclosure recipe for 자세히 (.stats), 세션 정보 (.panel-info) and the
+   completed goals (.cg-hx): the region is the last row of its host's grid and that row goes 0fr ↔ 1fr on
+   --dur-expand (ease-out) with an opacity fade. Closed, the region is
    [hidden] + inert but still painted at 0 rows, so it leaves the way it came (세션 정보, drawn only while
    open, folds first: .xp-shut). It clips only while the row moves (.xp-moving, xpMove), so focus rings
    inside are whole once it has settled. The panel's ResizeObserver re-measures the sections on every frame
    of it (sizePanelSections). ── */
-.stats, .wl-group, .cg-hx, .panel-info { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; align-content: start; transition: grid-template-rows var(--dur-expand) var(--ease-out); }
+.stats, .cg-hx, .panel-info { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; align-content: start; transition: grid-template-rows var(--dur-expand) var(--ease-out); }
 .cg-hx { grid-template-rows: 1fr; }
 .panel-info:has(> .pi-links) { grid-template-rows: auto auto 1fr; }
-.stats:has(> .stats-detail[hidden]), .wl-group:has(> .wl-group-body[hidden]), .panel-info.xp-shut { grid-template-rows: auto 0fr; }
+.stats:has(> .stats-detail[hidden]), .panel-info.xp-shut { grid-template-rows: auto 0fr; }
 .panel-info.xp-shut:has(> .pi-links) { grid-template-rows: auto auto 0fr; }
 .cg-hx:has(> .cg-hx-in[hidden]), .cg-hx.xp-shut { grid-template-rows: 0fr; }
-.stats-detail, .wl-group-body, .cg-hx-in, .panel-info > .pi-body { min-height: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s; }
+.stats-detail, .cg-hx-in, .panel-info > .pi-body { min-height: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s; }
 .stats-detail[hidden], .cg-hx-in[hidden] { display: block; }
-.wl-group-body[hidden] { display: flex; }
-.stats-detail[hidden], .wl-group-body[hidden], .cg-hx-in[hidden], .cg-hx.xp-shut > .cg-hx-in, .panel-info.xp-shut > .pi-body { opacity: 0; visibility: hidden; overflow: hidden; margin-top: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s linear var(--dur-expand); }
-.xp-moving > .stats-detail, .xp-moving > .wl-group-body, .xp-moving > .cg-hx-in, .xp-moving > .pi-body { overflow: hidden; }
+.stats-detail[hidden], .cg-hx-in[hidden], .cg-hx.xp-shut > .cg-hx-in, .panel-info.xp-shut > .pi-body { opacity: 0; visibility: hidden; overflow: hidden; margin-top: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s linear var(--dur-expand); }
+.xp-moving > .stats-detail, .xp-moving > .cg-hx-in, .xp-moving > .pi-body { overflow: hidden; }
 .usage-cb-wrap { max-width: 440px; margin-bottom: 12px; }
 
 /* ── STATS GRID — the cards behind 자세히: 5 columns, 2 below 1100px ── */
@@ -4953,21 +4953,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .pa-desc { margin-top: 2px; font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pa-desc .pa-act { color: var(--text-tertiary); }
 .tasks-scope { font-weight: 600; color: var(--text); }
-.wl-role { flex-shrink: 0; font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 6px; background: var(--ib-pill); color: var(--text); }
-.wl-agent-io .wl-row { background: var(--ib-pill); }
-.wl-agent-link { display: block; margin: 0 0 4px 22px; padding: 2px 0; border: 0; background: none; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; }
-.wl-agent-link:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; border-radius: 6px; }
 /* A child's block in its parent's log: the same node at row density. */
-.wl-child { --ag-c: var(--text-tertiary); font-family: var(--font); line-height: 1.45; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; column-gap: 8px; row-gap: 2px; align-items: center; width: calc(100% - 22px); margin: 2px 0 6px 22px; padding: 7px 10px; border: 1px solid var(--ib-card-border); border-radius: 8px; background: var(--ib-card); color: var(--text); font-size: 12.5px; text-align: left; }
-.wl-child.is-running { --ag-c: var(--st-run); border-color: color-mix(in srgb, var(--st-run) 35%, var(--ib-card-border)); }
-.wl-child.is-completed { --ag-c: var(--st-done); }
-.wl-child.is-failed { --ag-c: var(--st-fail); }
-.wl-child .ag-icon { grid-column: 1; grid-row: 1; }
-.wc-name { grid-column: 2; grid-row: 1; display: flex; align-items: baseline; gap: 6px; min-width: 0; }
-.wc-meta { grid-column: 3; grid-row: 1; display: inline-flex; align-items: baseline; gap: 7px; font-size: 12px; color: var(--text-secondary); white-space: nowrap; font-variant-numeric: tabular-nums; }
-.wc-act { grid-column: 2 / 4; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-tertiary); }
-.wc-open { grid-column: 2 / 4; font-size: 12px; color: var(--accent); }
-.wl-legacy { margin: 4px 0 6px; padding: 6px 10px; border-radius: 6px; background: var(--ib-pill); color: var(--text-secondary); font-size: 12px; }
 /* Panel body (task view, SSOT 2026-10-27): one scroll area between the head and
    the composer — the task's common surface, then the agent tabs (sticky at its
    top while the conversation scrolls) and the focused agent's tab. Nothing is
@@ -5087,7 +5073,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    the panel's box only gives it the height. */
 .psec.psec-el { overflow: hidden; display: flex; flex-direction: column; }
 .psec-el > * { flex: 1 1 auto; min-height: 0; }
-.psec-el > ui-conversation { padding: 4px 8px 0; }
+.psec-el > ui-conversation, .psec-el > ui-work-log { padding: 4px 8px 0; }
 .cv-arts-slot .turn-arts-row { margin-top: 2px; }
 .psec[hidden] { display: none; }
 .psec:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
@@ -5244,77 +5230,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .pl-earlier { opacity: 0.85; }
 /* Panel work log (.prd/10 §3.1-6, §3.3) — what the agent did, in order: the
    작업 로그 section tab, scrolled by its section box (newest at the bottom). */
-.worklog-list { display: flex; flex-direction: column; gap: 4px; font-size: 12.5px; line-height: 1.45; padding: 4px 16px 12px; }
-.wl-empty { color: var(--text-tertiary); font-size: 12px; padding: 6px 0; }
-.wl-entry { color: var(--text); min-width: 0; }
 /* SSOT 2026-10-22 T10 — entries folded under the task they were made in. */
-.wl-group { min-width: 0; }
-.wl-group-head { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px 6px; border-radius: 6px; background: var(--surface-raised); cursor: pointer; font-weight: 600; }
-.wl-group-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-.wl-group-head .wl-g-chev { color: var(--text-tertiary); }
-.wl-group-head[aria-expanded="true"] .wl-g-chev { transform: none; }
-.wl-group-head .wl-g-id { flex-shrink: 0; color: var(--text-tertiary); font-variant-numeric: tabular-nums; font-weight: 500; }
-.wl-group-head .wl-g-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.wl-group-head .wl-g-count { flex-shrink: 0; background: var(--surface); border-radius: 6px; padding: 0 6px; font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.wl-group-head .wl-g-meta { flex-shrink: 0; font-size: 11px; font-weight: 500; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.wl-group-body { display: flex; flex-direction: column; gap: 4px; padding-left: 12px; border-left: 2px solid var(--border); margin-left: 6px; margin-top: 4px; }
-.wl-head { display: flex; align-items: baseline; gap: 6px; font-size: 11px; color: var(--text-tertiary); }
-.wl-label { font-weight: 600; }
-.wl-head .wl-time { margin-left: auto; }
-.wl-time { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 /* Each entry = a row (role=button: click, Enter or Space opens its raw output
    below it) + its detail block. */
-.wl-row { border-radius: 6px; cursor: pointer; min-width: 0; }
-.wl-row:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-.wl-row[aria-expanded="true"] { background: var(--surface-raised); }
-.wl-row > .wl-text { white-space: pre-wrap; overflow-wrap: anywhere; }
-.wl-line { display: flex; align-items: baseline; gap: 8px; }
-.wl-line > .wl-text { flex: 1; min-width: 0; }
-.wl-narration .wl-text { color: var(--text-secondary); }
-.wl-detail { margin: 4px 0 6px; min-width: 0; font-family: var(--font); }
-.wl-detail-bar { display: flex; justify-content: flex-end; gap: 6px; margin-bottom: 4px; }
-.wl-detail-btn { font: inherit; font-size: 11px; font-weight: 600; color: var(--text-secondary); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 3px 10px; min-height: 26px; cursor: pointer; }
-.wl-detail-msg { font-size: 12px; color: var(--text-tertiary); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.wl-detail-note { font-size: 11px; color: var(--yellow); margin-bottom: 4px; }
-.wl-raw {
-  margin: 0;
-  padding: 8px 10px;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  font-family: var(--mono);
-  font-size: 11.5px;
-  line-height: 1.5;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: min(36vh, 320px);
-  overflow: auto;
-}
-.wl-instruction { background: var(--tint-accent-soft); border-left: 2px solid var(--accent); border-radius: 6px; padding: 6px 8px; margin: 4px 0; }
-.wl-instruction .wl-label { color: var(--tint-accent-fg); }
-.wl-instruction.is-sys { background: transparent; border-left-color: var(--border); padding: 3px 8px; }
-.wl-instruction.is-sys .wl-head { align-items: center; gap: 8px; min-width: 0; font-size: 12px; }
-.wl-sys-line { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
-.wl-entry > .skill-badges { margin: 4px 0 2px; }
-.wl-detail > .sys-facts { margin: 6px 0 8px; }
-.wl-final { border-left: 2px solid var(--green); padding: 4px 8px; margin: 4px 0; }
-.wl-final .wl-label { color: var(--green); }
-.wl-notice .wl-row > .wl-text { color: var(--text-tertiary); font-style: italic; }
-.wl-error { border-left: 2px solid var(--red); padding: 4px 8px; }
-.wl-error .wl-label, .wl-error .wl-row > .wl-text { color: var(--red); }
-.wl-tool, .wl-tool_result {
-  font-family: var(--mono);
-  font-size: 11.5px;
-  color: var(--text-secondary);
-  min-width: 0;
-}
-.wl-tool > .wl-row, .wl-tool_result > .wl-row { display: flex; align-items: baseline; gap: 6px; min-width: 0; }
-.wl-tool .wl-text, .wl-tool_result .wl-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wl-tool-name { color: var(--text); font-weight: 600; flex-shrink: 0; }
-.wl-mark { flex-shrink: 0; width: 1em; text-align: center; color: var(--text-tertiary); }
-.wl-tool_result .wl-mark { color: var(--green); }
-.wl-tool_result.is-fail .wl-mark, .wl-tool_result.is-fail .wl-tool-name { color: var(--red); }
 /* A tool call and its result: one @2lab.ai/ui <ui-tool-call-card>, drawn with
    the dashboard's own tokens: each --ui-* the element reads is set here, on the
    wrapper, from the same-named dashboard token. Not on the element itself — its
@@ -5323,7 +5242,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    the values arrive already resolved and follow the theme switch. The same
    mapping serves every other library element's wrapper (.ui-tok: the approval
    cards, the toaster, the usage breakdown). */
-.wl-toolcall, .ui-tok {
+.ui-tok {
   --ui-bg: var(--bg); --ui-surface: var(--surface); --ui-surface-raised: var(--surface-raised);
   --ui-border: var(--border); --ui-border-focus: var(--border-focus); --ui-text: var(--text);
   --ui-text-secondary: var(--text-secondary); --ui-text-tertiary: var(--text-tertiary); --ui-accent: var(--accent);
@@ -5339,7 +5258,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   --ui-dur-move: var(--dur-move); --ui-dur-fade: var(--dur-fade); --ui-radius: var(--radius);
   --ui-font: var(--font); --ui-mono: var(--mono);
 }
-.wl-toolcall { display: grid; gap: 4px; min-width: 0; }
 .worklog-list ui-tool-call-card { display: block; min-width: 0; }
 .wl-card-fallback {
   display: block; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px;
@@ -5536,8 +5454,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
   .archives-btn:hover { color: var(--ib-text); }
-  .wl-row:hover { background: var(--surface-raised); }
-  .wl-detail-btn:hover { color: var(--text); border-color: var(--text-tertiary); }
   .stats-more:hover { background: var(--surface-raised); color: var(--text); }
   .card-body .card-refs a:hover { text-decoration: underline; }
   .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--surface-raised); color: var(--text); }
@@ -5569,8 +5485,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   /* The path shrinks to "‹ parent › here". */
   .pa-crumb.is-far, .pa-sep.is-far { display: none; }
   .pa-crumb.is-up::before { content: '\\2039\\00a0'; }
-  .wl-child { grid-template-columns: 16px minmax(0, 1fr); }
-  .wc-meta { grid-column: 2; grid-row: auto; flex-wrap: wrap; }
 
   /* Stats strip: period control + 자세히 on the first row, the numbers on the
      second. The period tabs share the row's width and keep 44px height with
@@ -5625,9 +5539,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .chart-row { flex-direction: column; }
 }
 @media (hover: hover) and (pointer: fine) {
-  .wl-child:hover { border-color: var(--ib-muted); }
   .pa-crumb:not([aria-current="page"]):hover { background: var(--surface-raised); color: var(--text); }
-  .wl-agent-link:not(.wl-child):hover { text-decoration: underline; }
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
@@ -5636,7 +5548,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .spinner, .spin { animation: none !important; }
   /* Loading skeletons hold still. */
   .sk, .is-loading { animation: none !important; }
-  .wl-group-head .wl-g-chev { transition: none; }
   .spinner { border-color: var(--st-run); background: radial-gradient(circle, var(--st-run) 0 2px, transparent 2.5px); }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -5689,9 +5600,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .card-body .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
   .pi-links a, .pi-head, .panel-tasks-toggle { min-height: 44px; }
   .ps-actions .ui-btn, .ps-slack, .cgl-go, .card-more-link, .tl-toggle { min-height: 44px; }
-  .wl-detail-btn { min-height: 44px; }
-  .worklog-list .wl-row { min-height: 44px; display: flex; flex-direction: column; justify-content: center; }
-  .wl-tool > .wl-row, .wl-tool_result > .wl-row, .worklog-list .wl-row.wl-line { flex-direction: row; align-items: center; }
   .panel-question .btn-choice, .mc-q-choices .btn-choice, .mc-q-edit-btn { min-height: 44px; }
   .mc-custom-input input, .mc-custom-input button { min-height: 44px; }
 }
@@ -6424,10 +6332,11 @@ ${pageTokenAliases()}
             <p class="psec-start" hidden>에이전트 트리의 시작</p>
             <div class="psec-body panel-tree" id="panel-tree"></div>
           </div>
-          <div class="psec" id="psec-log" role="tabpanel" aria-labelledby="psec-tab-log" tabindex="0" hidden>
-            <button type="button" class="psec-older" data-sec="log" hidden>이전 로그 불러오기</button>
-            <p class="psec-start" hidden>작업 로그의 시작</p>
-            <div class="psec-body worklog-list" id="worklog-list" role="log" aria-label="작업 로그"></div>
+          <!-- 작업 로그 (D3 F-01..F-10): @2lab.ai/ui <ui-work-log> — task groups, entry rows, the raw viewer,
+               child agents, its own scroll box (pages older entries in on scroll-up); the tool cards are
+               this page's <ui-tool-call-card> children in each entry's tool-<seq> slot (wlPaint). -->
+          <div class="psec psec-el ui-tok" id="psec-log" role="tabpanel" aria-labelledby="psec-tab-log" hidden>
+            <ui-work-log class="worklog-list" id="worklog-list" lang="ko"></ui-work-log>
           </div>
           <!-- 지시와 답변 (D3 G-01..G-13, E-25): @2lab.ai/ui <ui-conversation> — its own scroll box
                (<ui-log-scroller>: follows the newest turn, keeps the place while older pages go in
@@ -9655,13 +9564,11 @@ function repaintPanelScope() {
   renderPanelAgents();
   repaintPanelTasks();
   renderPanelSections();
-  // The section tab shown: the tree follows the agents; the work log's heads,
-  // child blocks and cards their data; a subagent's 지시와 답변 its log. The
-  // others are painted when they are opened.
+  // The section tab shown: the tree follows the agents; the work log's group
+  // heads (the task ledger), child agents and cards their data; a subagent's
+  // 지시와 답변 its log. The others are painted when they are opened.
   if (_psec === 'tree') paintTreeTab();
-  wlRefreshGroupHeads();
-  wlRefreshChildBlocks();
-  wlRefreshCards();
+  wlPaint();
   renderAgentConv();
 }
 // ── Task view (SSOT 2026-10-27) — 자세히, agent tabs, 지시와 답변 ──
@@ -9933,13 +9840,13 @@ function renderAgentConv() {
 var PSEC_ORDER = ['conv', 'log', 'tree'];
 var PSEC_TEXT = {
   tree: { older: '이전 에이전트 보기', loading: '이전 에이전트 보기', start: '에이전트 트리의 시작' },
-  log: { older: '이전 로그 불러오기', loading: '이전 로그 불러오는 중…', start: '작업 로그의 시작' },
 };
 // The sections a library element draws as its own scroll box — it lands on the
 // newest item, follows it, pages older ones in on scroll-up (ui-load-older →
 // this page's loader), keeps the reader's place and says what arrived below:
-// 지시와 답변 (<ui-conversation>). The others are this page's boxes (psecBox).
-var PSEC_EL = { conv: 'panel-conv' };
+// 지시와 답변 (<ui-conversation>), 작업 로그 (<ui-work-log>). 에이전트 트리 is this
+// page's box (psecBox; D3-GAPS G1-1).
+var PSEC_EL = { conv: 'panel-conv', log: 'worklog-list' };
 function psecEl(sec) {
   var id = PSEC_EL[sec || _psec];
   return id ? document.getElementById(id) : null;
@@ -10046,8 +9953,7 @@ function psecClear(sec) {
       convSetData(conv, { turns: [] });
     }
   } else if (sec === 'log') {
-    var list = document.getElementById('worklog-list');
-    if (list && list.firstChild) list.innerHTML = '';
+    wlClear();
     if (_wl) _wl.painted = false;
   } else if (sec === 'tree') {
     var tree = document.getElementById('panel-tree');
@@ -10064,7 +9970,7 @@ function psecClear(sec) {
 }
 function paintSection(sec) {
   if (sec === 'conv') convPaint();
-  else if (sec === 'log') paintLogTab();
+  else if (sec === 'log') wlPaint();
   else paintTreeTab();
   psecSyncControls(sec);
 }
@@ -10135,12 +10041,10 @@ function psecOnAppended(n, pinned) {
 function psecKeepPlace(box, fromBottom) {
   if (box) psecSetTop(box, box.scrollHeight - fromBottom);
 }
-// The items the reader is on — the first few work-log entries (else task
-// groups) or agent-tree rows in view, those wholly below the top edge first (the
-// one the edge cuts may still grow: an answer loading), top first — and how far
-// below the box top each sits (null: none in view). Several: a page can take one
-// away (a loose result paired into its call's card, an entry folded into its group).
-var PSEC_ANCHORS = [['.wl-entry', 'data-seq'], ['.wl-group', 'data-task-id']];
+// The items the reader is on — the first few agent-tree rows in view, those
+// wholly below the top edge first (the one the edge cuts may still grow), top
+// first — and how far below the box top each sits (null: none in view). Several:
+// a step of older agents can take one away.
 var PSEC_ANCHOR_MAX = 6;
 // The 에이전트 트리 tab's rows live in <ui-agent-tree>'s (open) shadow root.
 function psecTreeRoot(box) {
@@ -10148,55 +10052,43 @@ function psecTreeRoot(box) {
   return tree && tree.shadowRoot ? tree.shadowRoot : null;
 }
 function psecViewAnchor(box) {
+  var tr = psecTreeRoot(box);
+  if (!tr) return null;
   var top = box.getBoundingClientRect().top;
   var bottom = top + box.clientHeight;
   var out = [];
   var cut = [];
-  function take(base, attr, tree, root) {
-    var rows = root.querySelectorAll(base + '[' + attr + ']');
-    for (var i = 0; i < rows.length && out.length < PSEC_ANCHOR_MAX; i++) {
-      // A tree item holds its own row, then its children: the row is where it is.
-      var row = tree ? rows[i].firstElementChild : rows[i];
-      if (!row) continue;
-      var r = row.getBoundingClientRect();
-      if (!r.height || r.bottom <= top) continue;
-      if (r.top >= bottom) break;
-      var v = rows[i].getAttribute(attr) || '';
-      var key = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(v) : v;
-      (r.top >= top ? out : cut).push({ sel: base + '[' + attr + '="' + key + '"]', at: r.top - top, tree: tree });
-    }
+  var rows = tr.querySelectorAll('[role="treeitem"][data-id]');
+  for (var i = 0; i < rows.length && out.length < PSEC_ANCHOR_MAX; i++) {
+    // A tree item holds its own row, then its children: the row is where it is.
+    var row = rows[i].firstElementChild;
+    if (!row) continue;
+    var r = row.getBoundingClientRect();
+    if (!r.height || r.bottom <= top) continue;
+    if (r.top >= bottom) break;
+    var v = rows[i].getAttribute('data-id') || '';
+    var key = typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(v) : v;
+    (r.top >= top ? out : cut).push({ sel: '[role="treeitem"][data-id="' + key + '"]', at: r.top - top });
   }
-  var tr = psecTreeRoot(box);
-  if (tr) take('[role="treeitem"]', 'data-id', true, tr);
-  for (var k = 0; k < PSEC_ANCHORS.length && !out.length && !cut.length; k++) take(PSEC_ANCHORS[k][0], PSEC_ANCHORS[k][1], false, box);
   out = out.concat(cut).slice(0, PSEC_ANCHOR_MAX);
   return out.length ? out : null;
 }
-// Where an anchor item is now: its element shown (fold: an entry folded into its
-// task group since is represented by the group's head), else null.
-function psecAnchorEl(box, c, fold) {
-  var el = null;
-  if (c.tree) {
-    var tr = psecTreeRoot(box);
-    var item = tr ? tr.querySelector(c.sel) : null;
-    el = item ? item.firstElementChild : null;
-  } else {
-    el = box.querySelector(c.sel);
-    if (el && fold && !el.getClientRects().length) el = el.closest ? el.closest('.wl-group') : null;
-  }
+// Where an anchor row is now (its tree item shown), else null.
+function psecAnchorEl(box, c) {
+  var tr = psecTreeRoot(box);
+  var item = tr ? tr.querySelector(c.sel) : null;
+  var el = item ? item.firstElementChild : null;
   return el && el.getClientRects().length ? el : null;
 }
-// The first of those items still shown back where it was (false: all are gone).
+// The first of those rows still shown back where it was (false: all are gone).
 function psecRestoreAnchor(box, a) {
   if (!a || !a.length) return false;
-  for (var pass = 0; pass < 2; pass++) {
-    for (var i = 0; i < a.length; i++) {
-      var el = psecAnchorEl(box, a[i], pass === 1);
-      if (!el) continue;
-      var shift = el.getBoundingClientRect().top - box.getBoundingClientRect().top - a[i].at;
-      if (Math.abs(shift) >= 1) psecSetTop(box, box.scrollTop + shift);
-      return true;
-    }
+  for (var i = 0; i < a.length; i++) {
+    var el = psecAnchorEl(box, a[i]);
+    if (!el) continue;
+    var shift = el.getBoundingClientRect().top - box.getBoundingClientRect().top - a[i].at;
+    if (Math.abs(shift) >= 1) psecSetTop(box, box.scrollTop + shift);
+    return true;
   }
   return false;
 }
@@ -10218,13 +10110,6 @@ function psecHoldPlace(box, anchor, fromBottom) {
 // shown), or '' (nothing — loading, empty, a section an element draws).
 function psecOlderState(sec) {
   if (PSEC_EL[sec]) return '';
-  if (sec === 'log') {
-    var st = _wl;
-    if (!st || !st.loaded || !st.latestOk || st.denied) return '';
-    if (st.olderLoading) return 'loading';
-    if (st.olderPending) return 'older';
-    return wlScopeEntries(st.entries).length ? 'start' : '';
-  }
   var host = document.getElementById('panel-tree');
   if (!host || !host._tree) return '';
   if (host._growing) return 'loading';
@@ -10249,8 +10134,7 @@ function psecSyncControls(sec) {
 // scroll; one at a time, nothing at the start.
 function psecLoadOlder(sec) {
   if (sec !== _psec || psecOlderState(sec) !== 'older') return;
-  if (sec === 'log') loadOlderWorkLog();
-  else showMoreTree();
+  showMoreTree();
 }
 // Pure: whether the next older page is due — the box cannot scroll (the reader
 // would otherwise have only the control), or the reader moved up since the
@@ -10316,24 +10200,6 @@ function ptUpsert(list, turn, replaceId) {
   list.push(turn);
   return 'append';
 }
-// 작업 로그 painted from the work-log state — the entries loaded (the latest
-// window and the older pages the reader scrolled up to) — or what it says without them.
-function paintLogTab() {
-  var list = document.getElementById('worklog-list');
-  if (!list || _psec !== 'log') return;
-  var st = _wl;
-  if (!st || st.denied || !st.entries.length) {
-    var msg = !st ? WL_EMPTY_MSG : st.denied ? WL_FORBIDDEN_MSG : st.loaded ? WL_EMPTY_MSG : '불러오는 중…';
-    list.innerHTML = '<div class="wl-empty">' + esc(msg) + '</div>';
-    if (st) st.painted = false;
-    return;
-  }
-  wlRenderList(st, list);
-  updateTimersIn(list);
-  wlEnsureTabStop(list);
-  if (!wlScopeEntries(st.entries).length) showWorkLogEmpty('이 에이전트의 작업 로그 없음');
-  st.painted = true;
-}
 // 에이전트 트리: the session's agents in <ui-agent-tree> (rich — a card per agent on
 // one waterfall axis, every branch's spend rolled up), the main agent at its
 // root and the focused one selected — the newest _treeWindow agents with what
@@ -10389,17 +10255,17 @@ function showMoreTree() {
     psecMaybeFill('tree');
   });
 }
-// The work log's older page (the reader scrolling up, or the fill of a short box).
+// The work log's older page — <ui-work-log> asks for it (ui-load-older) as the
+// reader scrolls up, or to fill a box too short to scroll. The element shows
+// the page on its way and keeps the reader's place when it lands; a failure or
+// an empty page settles its loading row and waits for the reader.
 function loadOlderWorkLog() {
   var st = _wl;
   if (!st) return Promise.resolve(null);
   var run = wlLoadOlderPage(st, wlFetchJson, paintWorkLog);
-  psecSyncControls('log');
+  wlPaint();
   return run.then(function(r) {
-    if (st !== _wl) return r;
-    psecSyncControls('log');
-    // The next page when the top is still near the view; a failure or an empty page waits for the reader.
-    if (r === 'ok') psecFillSoon('log');
+    if (st === _wl) wlPaint();
     return r;
   });
 }
@@ -13919,26 +13785,6 @@ function formatBytes(n) {
   if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MiB';
   return (n / 1073741824).toFixed(1) + ' GiB';
 }
-// The detail block under an open entry: the full output in a <pre> (with a
-// copy button), or the line for a load in flight / not stored / owner-only /
-// a damaged log / any other failure (the only one with 다시 시도).
-function renderWorkLogDetail(r) {
-  if (r.status === 'loading') return '<div class="wl-detail-msg is-loading">원본 출력 불러오는 중…</div>';
-  if (r.status === 'missing') return '<div class="wl-detail-msg">' + esc(WL_RAW_MISSING_MSG) + '</div>';
-  if (r.status === 'denied') return '<div class="wl-detail-msg">' + esc(WL_FORBIDDEN_MSG) + '</div>';
-  if (r.status === 'damaged') return '<div class="wl-detail-msg">' + esc(WL_RAW_DAMAGED_MSG) + '</div>';
-  if (r.status === 'error') {
-    return '<div class="wl-detail-msg">' + esc(WL_RAW_ERROR_MSG)
-      + '<button type="button" class="wl-detail-btn" data-wl-act="retry">다시 시도</button></div>';
-  }
-  var note = r.truncated
-    ? '<div class="wl-detail-note">저장된 앞 256 KiB만 표시 — 원본 ' + formatBytes(r.bytes) + '</div>'
-    : '';
-  return note
-    + '<div class="wl-detail-bar"><button type="button" class="wl-detail-btn" data-wl-act="copy">복사</button></div>'
-    + '<pre class="wl-raw">' + esc(r.raw) + '</pre>';
-}
-
 // ── DOM side ──
 // A failed answer rejects with err.status and err.code — the error string of a
 // JSON error body ({ error: 'unavailable' }), or null for anything else (an
@@ -13959,13 +13805,22 @@ function wlFetchJson(url) {
 
 // A new work-log state for the conversation the panel opens (none: the panel
 // closed, or a session without a conversation — 작업 로그 reads "작업 로그 없음").
-// The list itself is the 작업 로그 tab's (paintLogTab).
+// The list itself is the 작업 로그 tab's (wlPaint).
 function resetWorkLog(convId) {
   if (_wl) _wl.closed = true; // late responses for the previous conversation are dropped
   _wl = convId ? wlNewState(convId) : null;
   if (_wl) _wl.onDenied = showWorkLogDenied;
-  var list = document.getElementById('worklog-list');
-  if (list && list.firstChild) list.innerHTML = '';
+  wlClear();
+}
+// The log element holds nothing (another section shown, another conversation):
+// no groups, no cards; it lands on the newest again when painted.
+function wlClear() {
+  var el = wlEl();
+  if (!el) return;
+  var cards = el.querySelectorAll('ui-tool-call-card.wl-card');
+  for (var i = 0; i < cards.length; i++) cards[i].remove();
+  el._wlSig = '';
+  el.data = { groups: [] };
 }
 
 // The latest window only (SSOT 2026-10-29): older pages wait for the reader to
@@ -13975,10 +13830,9 @@ function loadWorkLog() {
   if (!st) return;
   wlLoadLatest(st, wlFetchJson, paintWorkLog).then(function(result) {
     if (st.closed) return;
-    // 'denied' was already shown by showWorkLogDenied (state.onDenied).
-    if (result !== 'denied' && !st.entries.length && _psec === 'log') paintLogTab();
-    psecSyncControls('log');
-    psecFillSoon('log');
+    // 'denied' was already shown by showWorkLogDenied (state.onDenied); an
+    // empty or failed first page ends the element's loading state.
+    if (result !== 'denied') wlPaint();
     // Spec 12: agents that wrote to the log but are not on the card get a place in the agent bar.
     if (result === 'ok') renderPanelAgents();
     if (result === 'ok' && _psec === 'tree') paintTreeTab();
@@ -14004,21 +13858,26 @@ function wlNamesNewAgent(added) {
   return false;
 }
 
-// One entry's detail (§3.1-6): a click on its row opens the full output under
-// it, a second click closes it. state.open = the seqs open now.
-function wlDetailOpen(state) {
-  return !!(state && state.open && state.open.size);
-}
-function wlEntryEl(seq) {
-  var list = document.getElementById('worklog-list');
-  return list ? list.querySelector('.wl-entry[data-seq="' + Math.floor(Number(seq) || 0) + '"]') : null;
+// ── 작업 로그 — @2lab.ai/ui <ui-work-log> (D3: F-01..F-10) ──
+// The section is the library element: groups (a task: #id · title · count ·
+// time, the newest open; a run of entries outside any task: its own group,
+// open), entry rows (an instruction with the skills it invoked, progress, a
+// response, a notice, an error, a turn soma-work sent as its one line), tool
+// calls (this page's <ui-tool-call-card> in the entry's tool-<seq> slot),
+// child agents (열기 → that agent's tab), the raw viewer (size, 복사, 다시
+// 시도), the owner-only / empty / legacy states — and the scroll box (its
+// <ui-log-scroller>: it follows the newest entry, pages older ones in on
+// scroll-up — ui-load-older → loadOlderWorkLog — and keeps the reader's place).
+// The page keeps the data layer (merged entries, paging, live WS, the raw
+// cache) and hands the element data built from it (wlPaint).
+function wlEl() {
+  return document.getElementById('worklog-list');
 }
 function wlEntryBySeq(state, seq) {
   var list = (state && state.entries) || [];
   for (var i = 0; i < list.length; i++) if (list[i].seq === seq) return list[i];
   return null;
 }
-// What the row stands for, in full — for an entry without stored raw output.
 // An instruction entry as the conversation's turn: who sent it (by, kept
 // since SSOT 2026-10-28) and a compaction turn; older entries carry neither
 // and are read from their text.
@@ -14030,12 +13889,13 @@ function wlInstructionTurn(e, text) {
     compact: e.compactTurn === true ? {} : undefined,
   };
 }
-// The facts an opened instruction row shows above its raw prompt — '' for a
-// person's instruction and every other entry.
-function wlEntryFactsHtml(e) {
+// The facts an opened instruction row shows with its raw prompt (one line:
+// the element's raw viewer note) — '' for a person's instruction and every
+// other entry.
+function wlEntryFactsText(e) {
   if (!e || e.kind !== 'instruction') return '';
   var info = sysTurnInfo(wlInstructionTurn(e, decodeSlackEntities(String(e.text || ''))));
-  return info ? sysFactsHtml(info.facts) : '';
+  return info ? info.facts.map(function(f) { return f[0] + ': ' + f[1]; }).join(' · ') : '';
 }
 // An instruction text cut inside its <invoked_skills> block: the words before
 // it, the names of the skills that start before the cut (in order, the last
@@ -14057,147 +13917,139 @@ function wlCutSkills(text) {
   if (!names.length) return null;
   return { words: text.slice(0, at), names: names, more: !/^\\s*<\\/invoked_skills>/.test(inner.slice(i)) };
 }
-function wlCutSkillsHtml(seq, cut) {
-  var badge = function(name, label) {
-    return '<button type="button" class="skill-badge" aria-expanded="false" data-wl-seq="' + seq + '" data-wl-skill="' + escAttr(name) + '" onclick="wlSkillOpen(this)"'
-      + ' title="원본에서 스킬 본문과 토큰 수를 불러옵니다"><span class="skill-name">' + label + '</span></button>';
-  };
-  var html = '';
-  for (var i = 0; i < cut.names.length; i++) html += badge(cut.names[i], esc(cut.names[i]));
-  if (cut.more) html += badge('', '…');
-  return '<div class="skill-badges" role="group" aria-label="활성화된 스킬">' + html + '</div>';
-}
-// A badge of a cut entry: load the stored original once, redraw the badges
-// with every skill and its estimated tokens, and open the one clicked.
-function wlSkillOpen(btn) {
-  var st = _wl;
-  if (!st || st.closed || !btn) return Promise.resolve();
-  var seq = Math.floor(Number(btn.getAttribute('data-wl-seq')) || 0);
-  var want = btn.getAttribute('data-wl-skill') || '';
-  var group = btn.parentNode;
-  btn.setAttribute('aria-busy', 'true');
-  return wlRawLoad(st, seq, wlFetchJson).then(function(r) {
-    btn.removeAttribute('aria-busy');
-    if (st !== _wl) return;
-    var skills = r && r.status === 'ok' ? splitInvokedSkills(decodeSlackEntities(r.raw)).skills : [];
-    if (!skills.length) {
-      btn.setAttribute('title', '원본을 불러오지 못했습니다');
-      return;
-    }
-    if (group) group.outerHTML = skillBadgesHtml('wl' + seq, skills);
-    var list = document.querySelectorAll('[data-skill^="skd-wl' + seq + '-"]');
-    for (var i = 0; i < list.length; i++) {
-      var n = list[i].querySelector('.skill-name');
-      if (want && n && n.textContent === want) {
-        skillToggle(list[i]);
-        break;
-      }
-    }
-  });
-}
+// What the row stands for, in full — for an entry without stored raw output.
 function wlFullText(e) {
   var text = String(e.text || '');
   return e.kind === 'instruction' ? decodeSlackEntities(text) : text;
 }
-// Paints only while that entry is still open in the conversation still shown —
-// a late answer for a closed row or a previous conversation is dropped.
-function paintWorkLogDetail(state, seq, result) {
-  if (state !== _wl || state.closed || !state.open || !state.open.has(seq)) return;
-  var el = wlEntryEl(seq);
-  var detail = el && el.querySelector('.wl-detail');
-  if (detail) detail.innerHTML = wlEntryFactsHtml(wlEntryBySeq(state, seq)) + renderWorkLogDetail(result);
-}
-function loadWorkLogDetail(state, seq) {
-  var entry = wlEntryBySeq(state, seq);
-  if (!entry) return;
-  if (!(toNum(entry.rawBytes) > 0)) {
-    paintWorkLogDetail(state, seq, { status: 'ok', raw: wlFullText(entry), bytes: 0, truncated: false });
-    return;
-  }
-  paintWorkLogDetail(state, seq, { status: 'loading' });
-  wlRawLoad(state, seq, wlFetchJson).then(function(result) {
-    paintWorkLogDetail(state, seq, result);
+// The stored original of one entry: loaded once (wlRawLoad caches the promise
+// on the state), its outcome kept on the state for the element's data
+// (st.rawDone[seq]) and the log painted again when it lands.
+function wlRawFetch(st, seq) {
+  if (!st || st.closed) return;
+  var done = st.rawDone || (st.rawDone = Object.create(null));
+  if (done[seq] && done[seq].status !== 'error') return;
+  var e = wlEntryBySeq(st, seq);
+  if (!e || !(toNum(e.rawBytes) > 0)) return;
+  wlRawLoad(st, seq, wlFetchJson).then(function(r) {
+    if (st !== _wl || st.closed) return;
+    done[seq] = r;
+    wlPaintSoon();
   });
 }
-function toggleWorkLogEntry(seq) {
-  var st = _wl;
-  if (!st || st.closed) return;
-  var el = wlEntryEl(seq);
-  var row = el && el.querySelector('.wl-row');
-  var detail = el && el.querySelector('.wl-detail');
-  if (!row || !detail) return;
-  var open = st.open || (st.open = new Set());
-  if (open.has(seq)) {
-    open.delete(seq);
-    row.setAttribute('aria-expanded', 'false');
-    detail.hidden = true;
-    detail.innerHTML = '';
-    return;
+// An entry's raw output as the element's viewer shows it (only while its row
+// is open): the stored original, or the entry's own text when nothing is
+// stored; the facts of a turn soma-work sent as the viewer's note.
+function wlRawView(st, e) {
+  var facts = wlEntryFactsText(e);
+  var v;
+  if (!(toNum(e.rawBytes) > 0)) v = { state: 'ready', text: wlFullText(e) };
+  else {
+    var r = st.rawDone && st.rawDone[e.seq];
+    if (!r) return { state: 'loading' };
+    if (r.status === 'missing') return { state: 'missing', note: WL_RAW_MISSING_MSG };
+    if (r.status === 'denied') return { state: 'denied', note: WL_FORBIDDEN_MSG };
+    if (r.status === 'damaged') return { state: 'error', note: WL_RAW_DAMAGED_MSG, canRetry: false };
+    if (r.status !== 'ok') return { state: 'error', note: WL_RAW_ERROR_MSG, canRetry: true };
+    v = { state: 'ready', text: String(r.raw), bytes: toNum(r.bytes) };
+    if (r.truncated) v.truncated = true;
   }
-  open.add(seq);
-  row.setAttribute('aria-expanded', 'true');
-  detail.hidden = false;
-  loadWorkLogDetail(st, seq);
+  if (facts) v.note = facts;
+  return v;
 }
-function retryWorkLogDetail(seq) {
-  if (_wl && _wl.open && _wl.open.has(seq)) loadWorkLogDetail(_wl, seq);
+// A child agent the entry started, as the element's row (status, name, time,
+// tools, what it does now; 열기). One that has not reached the card yet reads
+// 확인 불가 until it does.
+var WL_AGENT_STATUS = { running: 'running', waiting: 'waiting', completed: 'done', failed: 'failed', stopped: 'stopped' };
+function wlAgentOf(id) {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var list = (s && s.agents) || [];
+  var a = null;
+  for (var i = 0; i < list.length; i++) if (list[i] && list[i].id === id) { a = list[i]; break; }
+  var node = a ? agentNodeOf(a) : { id: String(id), status: 'unknown', logOnly: true, toolCalls: 0, children: [] };
+  var out = { id: String(id), name: agentNodeName(node), status: WL_AGENT_STATUS[node.status] || 'unknown', tools: Math.round(toNum(node.toolCalls)) };
+  var started = Number(node.startedAt) || 0;
+  if (started) out.startedAt = started;
+  var ms = toNum(node.durationMs) || (Number(node.endedAt) && started ? Number(node.endedAt) - started : 0);
+  if (ms > 0) out.duration = ms;
+  var act = agentActivity(node);
+  if (act) out.activity = act;
+  return out;
 }
-// Copies the text the <pre> shows. Without clipboard access (plain http, a
-// denied permission) the text is selected instead, so the user can copy it.
-function copyWorkLogDetail(seq, btn) {
-  var el = wlEntryEl(seq);
-  var pre = el && el.querySelector('.wl-raw');
-  if (!pre) return;
-  function say(label) {
-    if (!btn) return;
-    btn.textContent = label;
-    setTimeout(function() { btn.textContent = '복사'; }, 1500);
+// One entry as the element's data. A tool call is a card (this page's, in its
+// tool-<seq> slot; a result whose call is on screen lives in the call's card
+// and is not here — wlVisible); a spawn call carries its child's row. Spec 12:
+// a subagent scope's 지시 / 결과 rows stay rows. Every other row opens to its
+// raw output (raw only while open: the element keeps which rows are open).
+function wlEntryOf(st, e) {
+  var seq = Math.floor(Number(e.seq) || 0);
+  var kind = Object.prototype.hasOwnProperty.call(WL_LABELS, e.kind) ? e.kind : 'narration';
+  var x = { id: String(seq) };
+  if (typeof e.ts === 'number' && isFinite(e.ts)) x.at = e.ts;
+  var text = String(e.text || '');
+  var tool = e.tool ? String(e.tool) : '';
+  if ((kind === 'tool' || kind === 'tool_result') && !e._role) {
+    var card = wlCardData(st, seq, false);
+    x.kind = 'tool';
+    x.tool = { name: tool || '툴', status: card ? card.status : 'interrupted' };
+    var sum = kind === 'tool' ? wlToolSummary(tool, text) : e.ok === false ? '실패' : '완료';
+    if (sum) x.tool.summary = sum;
+    if (kind === 'tool' && e.agentRef) x.agent = wlAgentOf(String(e.agentRef));
+    return x;
   }
-  function selectIt() {
-    try {
-      var range = document.createRange();
-      range.selectNodeContents(pre);
-      var sel = window.getSelection();
-      sel.removeAllRanges();
-      sel.addRange(range);
-    } catch (_e) {}
-    say('선택됨');
-  }
-  try {
-    if (!navigator.clipboard || !navigator.clipboard.writeText) { selectIt(); return; }
-    navigator.clipboard.writeText(pre.textContent || '').then(function() { say('복사됨'); }, selectIt);
-  } catch (_e) { selectIt(); }
-}
-
-// ── Work log under its tasks (SSOT 2026-10-22 T10) ──
-// An entry made while a task was in progress carries that task (taskId /
-// taskTitle). The list shows such entries folded under one header per task —
-// at the place of the task's first entry, titled by its latest — and every
-// other entry (instructions, final answers, anything outside a task) in line.
-// A header is a row button: it opens / closes its entries. A task's group
-// starts open when it is the newest group the list has seen, closed otherwise;
-// the reader's choice then stays (state.groupOpen).
-function wlGroupOf(e) {
-  return e && typeof e.taskId === 'string' && e.taskId ? e.taskId : '';
-}
-// Pure: the list as rows, in seq order of first appearance.
-function wlBuildRows(entries) {
-  var rows = [];
-  var groups = Object.create(null);
-  var list = entries || [];
-  for (var i = 0; i < list.length; i++) {
-    var e = list[i];
-    var g = wlGroupOf(e);
-    if (!g) { rows.push({ entry: e }); continue; }
-    var grp = groups[g];
-    if (!grp) {
-      grp = groups[g] = { taskId: g, title: '', entries: [] };
-      rows.push({ group: grp });
+  if (kind === 'tool' || kind === 'tool_result') {
+    x.kind = e._role === 'spawn' ? 'instruction' : e._role === 'ack' ? 'notice' : kind === 'tool_result' && e.ok === false ? 'error' : 'final';
+    x.label = e._role === 'spawn' ? '지시' : e._role === 'result' ? '결과' : '배경 실행 시작';
+    var shown = tool && text === tool ? '' : tool && text.indexOf(tool + ' ') === 0 ? text.slice(tool.length + 1) : text;
+    x.text = (tool ? tool + ' ' : '') + shown;
+  } else if (kind === 'instruction') {
+    var words = decodeSlackEntities(text);
+    // A turn soma-work sent reads as the conversation's one line (SSOT 2026-10-28): badge, what it did, time.
+    var info = sysTurnInfo(wlInstructionTurn(e, words));
+    if (info) {
+      x.kind = 'system';
+      x.system = { kind: info.kind === 'bgwork' ? 'background' : info.kind, label: info.label };
+      x.text = info.kind === 'compact' ? '컨텍스트 압축 (/compact)' : info.line;
+    } else {
+      // A person's: the words, and the skills it invoked as chips. The stored
+      // text is cut at 4,000 characters, so a skill block is usually cut too:
+      // the names readable before the cut until the original (loaded with the
+      // log, wlPaint) gives every skill its text and tokens.
+      var split = splitInvokedSkills(words);
+      var cut = toNum(e.rawBytes) > 0 ? wlCutSkills(split.text) : null;
+      var full = cut && st.rawDone && st.rawDone[seq] && st.rawDone[seq].status === 'ok'
+        ? splitInvokedSkills(decodeSlackEntities(String(st.rawDone[seq].raw))).skills : null;
+      x.kind = 'instruction';
+      x.text = (cut ? cut.words : split.text).replace(/\\s+$/, '');
+      var skills = full && full.length ? full : split.skills;
+      var chips = skills.map(function(sk) { return { name: sk.name, tokens: sk.tokens, text: sk.body }; });
+      if (cut && !(full && full.length)) chips = chips.concat(cut.names.map(function(n) { return { name: n }; }));
+      if (chips.length) x.skills = chips;
     }
-    grp.entries.push(e);
-    if (e.taskTitle) grp.title = String(e.taskTitle);
+  } else {
+    x.kind = kind;
+    x.text = text;
   }
-  return rows;
+  x.hasRaw = true;
+  if (st.open && st.open.has(seq)) x.raw = wlRawView(st, e);
+  return x;
+}
+// Pure: a run of entries outside any task — what its head says (the kind of
+// its first entry; an instruction's first line of words).
+var WL_RUN_TITLE = { instruction: '지시', narration: '진행', final: '응답', notice: '알림', error: '오류', tool: '도구 호출', system: '시스템' };
+function wlRunTitle(first) {
+  var t = WL_RUN_TITLE[first.kind] || '진행';
+  if (first.kind === 'system' && first.system) return first.system.label || t;
+  var line = first.kind === 'instruction' ? String(first.text || '').split('\\n')[0].trim() : '';
+  return line ? t + ' · ' + line : t;
+}
+// Open state of a group: the reader's choice (the element's ui-toggle, kept
+// across repaints and tab switches), else open when it is the newest task
+// group at first sight — a run outside any task is open.
+function wlGroupOpen(state, id, newest) {
+  var map = state.groupOpen || (state.groupOpen = Object.create(null));
+  if (!(id in map)) map[id] = !!newest;
+  return map[id];
 }
 // The task behind a group, from the open session's task ledger (status, time, tool calls).
 function wlTaskInfo(taskId) {
@@ -14208,176 +14060,139 @@ function wlTaskInfo(taskId) {
   for (var i = 0; i < all.length; i++) if (all[i] && all[i].id === taskId) return all[i];
   return null;
 }
-function renderWorkLogGroupHead(grp, open, task) {
-  var meta = task ? renderTaskMeta(task) : '';
-  var title = (task && task.content) || grp.title || '';
-  return '<div class="wl-group-head" role="button" tabindex="-1" aria-expanded="' + (open ? 'true' : 'false') + '">'
-    + '<span class="wl-g-chev chev is-right" aria-hidden="true"></span>'
-    + '<span class="wl-g-id">#' + esc(grp.taskId) + '</span>'
-    + '<span class="wl-g-title">' + esc(title) + '</span>'
-    + '<span class="wl-g-count">' + grp.entries.length + '</span>'
-    + (meta ? '<span class="wl-g-meta">' + meta + '</span>' : '')
-    + '</div>';
+function wlGroupOf(e) {
+  return e && typeof e.taskId === 'string' && e.taskId ? e.taskId : '';
 }
-// A closed group holds no entry nodes: its entries are rendered when it opens
-// (wlFillGroupBody), so a long log's DOM stays the size of what is open.
-function renderWorkLogGroup(grp, open, task) {
-  return '<div class="wl-group" data-task-id="' + escAttr(grp.taskId) + '">'
-    + renderWorkLogGroupHead(grp, open, task)
-    + (open
-      ? '<div class="wl-group-body" data-filled="1">' + grp.entries.map(renderWorkLogEntry).join('') + '</div>'
-      : '<div class="wl-group-body" hidden inert></div>')
-    + '</div>';
-}
-// Render a group's entries into its (empty) body; open details come back open.
-function wlFillGroupBody(state, grpEl, taskId) {
-  var body = grpEl.querySelector('.wl-group-body');
-  if (!body || body.getAttribute('data-filled') === '1') return;
-  var entries = wlVisible(state, wlScopeEntries(state.entries)).filter(function(x) { return wlGroupOf(x) === taskId; });
-  body.innerHTML = entries.map(renderWorkLogEntry).join('');
-  body.setAttribute('data-filled', '1');
-  wlHydrateCards(body);
+// SSOT 2026-10-22 T10 — an entry made while a task was in progress carries
+// that task (taskId / taskTitle): one group per task, at the place of its
+// first entry, titled by the ledger (else its latest entry's title); the
+// entries outside a task in runs, each its own group in line. A folded group
+// is handed its count, not its entries: a long log's DOM stays the size of
+// what is open — and the element's scroller never holds the reader's place on
+// rows clipped inside a folded group (D3-GAPS G2-1).
+function wlGroupsOf(st, entries) {
+  var rows = [];
+  var byTask = Object.create(null);
+  var run = null;
+  var newest = '';
   for (var i = 0; i < entries.length; i++) {
-    var seq = entries[i].seq;
-    if (!state.open || !state.open.has(seq)) continue;
-    var el = wlEntryEl(seq);
-    var row = el && el.querySelector('.wl-row');
-    var detail = el && el.querySelector('.wl-detail');
-    if (!row || !detail) continue;
-    row.setAttribute('aria-expanded', 'true');
-    detail.hidden = false;
-    loadWorkLogDetail(state, seq);
+    var e = entries[i];
+    var g = wlGroupOf(e);
+    if (g) {
+      run = null;
+      var grp = byTask[g];
+      if (!grp) {
+        grp = byTask[g] = { id: 'task:' + g, taskId: g, title: '', at: e.ts, list: [] };
+        rows.push(grp);
+      }
+      grp.list.push(e);
+      if (e.taskTitle) grp.title = String(e.taskTitle);
+      newest = grp.id;
+      continue;
+    }
+    if (!run) {
+      run = { id: 'run:' + Math.floor(Number(e.seq) || 0), at: e.ts, list: [] };
+      rows.push(run);
+    }
+    run.list.push(e);
   }
-  updateTimersIn(body);
+  return rows.map(function(r) {
+    var out = { id: r.id };
+    if (typeof r.at === 'number' && isFinite(r.at)) out.at = r.at;
+    if (r.taskId) {
+      var task = wlTaskInfo(r.taskId);
+      out.ref = '#' + r.taskId;
+      out.title = (task && task.content) || r.title || '';
+      out.open = wlGroupOpen(st, r.id, r.id === newest);
+    } else {
+      out.ref = '';
+      out.title = wlRunTitle(wlEntryOf(st, r.list[0]));
+      out.open = wlGroupOpen(st, r.id, true);
+    }
+    out.count = r.list.length;
+    out.entries = out.open ? r.list.map(function(e) { return wlEntryOf(st, e); }) : [];
+    return out;
+  });
 }
-// Open state of a group: the reader's choice, else open when it is the newest group.
-function wlGroupOpen(state, taskId, newest) {
-  var map = state.groupOpen || (state.groupOpen = Object.create(null));
-  if (!(taskId in map)) map[taskId] = !!newest;
-  return map[taskId];
-}
-function wlGroupEl(list, taskId) {
-  var groups = list.querySelectorAll('.wl-group');
-  for (var i = 0; i < groups.length; i++) if (groups[i].getAttribute('data-task-id') === taskId) return groups[i];
-  return null;
-}
-// The whole list from state.entries; open details are re-opened (raw output is cached on the state).
-function wlRenderList(state, list) {
-  // Spec 12: only the agent the panel shows (the main agent by default).
-  var rows = wlBuildRows(wlVisible(state, wlScopeEntries(state.entries)));
-  var newest = null;
-  for (var i = rows.length - 1; i >= 0; i--) if (rows[i].group) { newest = rows[i].group; break; }
+// The element's data for the log the panel shows: its groups, paging, and what
+// it says without entries (owner-only, none, none for this agent, loading).
+function wlLogData(st) {
+  var d = { label: '작업 로그', startText: '작업 로그의 시작', emptyText: WL_EMPTY_MSG };
+  if (!st) return Object.assign(d, { groups: [] });
+  if (st.denied) return Object.assign(d, { groups: [], denied: WL_FORBIDDEN_MSG });
+  var scoped = wlScopeEntries(st.entries);
+  if (st.entries.length && !scoped.length) d.emptyText = '이 에이전트의 작업 로그 없음';
+  d.groups = wlGroupsOf(st, wlVisible(st, scoped));
+  d.hasMore = !!(st.loaded && st.latestOk && st.olderPending);
+  d.loading = !st.loaded || !!st.olderLoading;
   // A log from before agent attribution that started subagents: its "main"
   // entries may be a subagent's — say so instead of claiming they are main's.
-  var legacy = !_panelAgent && wlLegacyMixed(state.entries)
-    ? '<div class="wl-legacy" role="note">이전 통합 로그 — 메인/서브 귀속 미확인</div>'
-    : '';
-  list.innerHTML = legacy + rows.map(function(r) {
-    if (r.entry) return renderWorkLogEntry(r.entry);
-    return renderWorkLogGroup(r.group, wlGroupOpen(state, r.group.taskId, r.group === newest), wlTaskInfo(r.group.taskId));
-  }).join('');
-  if (state.open) state.open.forEach(function(seq) {
-    var el = wlEntryEl(seq);
-    var row = el && el.querySelector('.wl-row');
-    var detail = el && el.querySelector('.wl-detail');
-    if (!row || !detail) return;
-    row.setAttribute('aria-expanded', 'true');
-    detail.hidden = false;
-    loadWorkLogDetail(state, seq);
+  if (!_panelAgent && wlLegacyMixed(st.entries)) d.legacy = '이전 통합 로그 — 메인/서브 귀속 미확인';
+  return d;
+}
+// The cards the tool entries ask for: this page's <ui-tool-call-card> in each
+// entry's tool-<seq> slot (created once, removed when its entry leaves),
+// hydrated with their data (wlHydrateCards).
+function wlCardSlots(el, d) {
+  var want = Object.create(null);
+  (d.groups || []).forEach(function(g) {
+    (g.entries || []).forEach(function(x) { if (x.kind === 'tool') want[x.id] = x; });
   });
-  wlHydrateCards(list);
-}
-// Live entries at the end of the log: append in place (a task's entry into its
-// group, a new task as a new — open — group at the end).
-function wlAppendTail(state, list, added) {
-  var tmp = document.createElement('div');
-  var scoped = wlScopeEntries(added.map(function(a) { return a.entry; }));
-  for (var i = 0; i < scoped.length; i++) {
-    var e = scoped[i];
-    var g = wlGroupOf(e);
-    if (wlCardHidden(state, e)) {
-      wlOnToolResult(state, e);
-      if (g) {
-        var ownGrp = wlGroupEl(list, g);
-        if (ownGrp) wlRefreshGroupHead(state, ownGrp, g);
-      }
-      continue;
-    }
-    if (!g) {
-      tmp.innerHTML = renderWorkLogEntry(e);
-      if (tmp.firstElementChild) list.appendChild(tmp.firstElementChild);
-      continue;
-    }
-    var grpEl = wlGroupEl(list, g);
-    if (!grpEl) {
-      var grp = { taskId: g, title: e.taskTitle ? String(e.taskTitle) : '', entries: [e] };
-      tmp.innerHTML = renderWorkLogGroup(grp, wlGroupOpen(state, g, true), wlTaskInfo(g));
-      if (tmp.firstElementChild) list.appendChild(tmp.firstElementChild);
-      continue;
-    }
-    var body = grpEl.querySelector('.wl-group-body');
-    // A closed group renders its entries when it opens; only its head changes now.
-    if (body && body.getAttribute('data-filled') === '1') {
-      tmp.innerHTML = renderWorkLogEntry(e);
-      if (tmp.firstElementChild) body.appendChild(tmp.firstElementChild);
-    }
-    wlRefreshGroupHead(state, grpEl, g);
+  var cards = el.querySelectorAll('ui-tool-call-card.wl-card');
+  for (var i = 0; i < cards.length; i++) {
+    var key = cards[i].getAttribute('data-key') || '';
+    if (want[key]) delete want[key];
+    else cards[i].remove();
   }
-  wlHydrateCards(list);
+  for (var k in want) {
+    var c = document.createElement('ui-tool-call-card');
+    c.className = 'wl-card';
+    c.setAttribute('lang', 'ko');
+    c.setAttribute('slot', 'tool-' + k);
+    c.setAttribute('data-key', k);
+    // Each card's header is its own tab stop: the element's rows rove inside it,
+    // a slotted card cannot join that (D3-GAPS G2-3).
+    c.setAttribute('data-stop', '1');
+    // Light-DOM text: shown until the element is defined (its shadow root has no slot).
+    c.innerHTML = '<span class="wl-card-fallback"><span class="wl-tool-name">' + esc(want[k].tool.name) + '</span> ' + esc(want[k].tool.summary || '') + '</span>';
+    el.appendChild(c);
+  }
 }
-function wlRefreshGroupHead(state, grpEl, taskId) {
-  var head = grpEl.querySelector('.wl-group-head');
-  if (!head) return;
-  var entries = wlVisible(state, wlScopeEntries(state.entries)).filter(function(x) { return wlGroupOf(x) === taskId; });
-  var title = '';
-  for (var i = 0; i < entries.length; i++) if (entries[i].taskTitle) title = String(entries[i].taskTitle);
-  var html = renderWorkLogGroupHead({ taskId: taskId, title: title, entries: entries }, head.getAttribute('aria-expanded') === 'true', wlTaskInfo(taskId));
-  if (head._html === html) return; // same data → the head (and its focus) is left alone
-  var tmp = document.createElement('div');
-  tmp.innerHTML = html;
-  var fresh = tmp.firstElementChild;
-  if (!fresh) return;
-  fresh.setAttribute('tabindex', head.getAttribute('tabindex') === '0' ? '0' : '-1');
-  // Morphed, not replaced: a reader whose focus is on the head keeps it (Spec 12 —
-  // a subagent scope refreshes its heads on every session push).
-  domMorph(head, fresh);
-  head._html = html;
-  updateTimersIn(head);
-}
-// Task status / time / tool calls changed (task_update): refresh every group head.
-function wlRefreshGroupHeads() {
-  var list = document.getElementById('worklog-list');
-  if (!list || !_wl) return;
-  var groups = list.querySelectorAll('.wl-group');
-  for (var i = 0; i < groups.length; i++) wlRefreshGroupHead(_wl, groups[i], groups[i].getAttribute('data-task-id'));
-}
-function toggleWorkLogGroup(taskId) {
+// 작업 로그 painted from the work-log state — only while it is the section
+// shown (the others hold no nodes; it is painted again when it opens). A cut
+// instruction's original is loaded so its skill chips get their text.
+function wlPaint() {
+  var el = wlEl();
+  if (!el || _psec !== 'log') return;
   var st = _wl;
-  var list = document.getElementById('worklog-list');
-  if (!st || st.closed || !list) return;
-  var grpEl = wlGroupEl(list, taskId);
-  if (!grpEl) return;
-  var head = grpEl.querySelector('.wl-group-head');
-  var body = grpEl.querySelector('.wl-group-body');
-  var open = !(head && head.getAttribute('aria-expanded') === 'true');
-  (st.groupOpen || (st.groupOpen = Object.create(null)))[taskId] = open;
-  if (open) wlFillGroupBody(st, grpEl, taskId);
-  if (head) head.setAttribute('aria-expanded', open ? 'true' : 'false');
-  xpMove(grpEl);
-  if (body) {
-    body.hidden = !open;
-    body.inert = !open;
+  var d = wlLogData(st);
+  wlCardSlots(el, d);
+  var sig = JSON.stringify(d);
+  if (el._wlSig !== sig) {
+    el._wlSig = sig;
+    el.data = d;
   }
+  if (!st) return;
+  st.painted = true;
+  wlHydrateCards(el);
+  (d.groups || []).forEach(function(g) {
+    (g.entries || []).forEach(function(x) {
+      if (x.kind === 'instruction' && x.skills && x.skills.some(function(sk) { return sk.text === undefined; })) wlRawFetch(st, Number(x.id));
+    });
+  });
 }
-
-// Paint merged entries — only while 작업 로그 is the section shown (else the tab
-// is painted from the state when it opens). Live entries at the end are
-// appended in place; any other batch (an older page, a backfill) re-renders the
-// list from state.entries, which keeps seq order and the task groups exact, and
-// keeps the reader's place: the row they were on goes back where it was, held
-// there while the new cards render (psecHoldPlace).
-// At the newest the reader follows the tail — unless an entry's detail is open —
-// else the pill counts what arrived.
+var _wlPaintQueued = false;
+function wlPaintSoon() {
+  if (_wlPaintQueued) return;
+  _wlPaintQueued = true;
+  requestAnimationFrame(function() {
+    _wlPaintQueued = false;
+    wlPaint();
+  });
+}
+// Merged entries (a live entry, an older page, a backfill): the agents they
+// name, a subagent's 지시와 답변, a card whose result arrived — then the log.
+// The element keeps the reader's place and follows a reader at the newest.
 function paintWorkLog(state, added) {
   if (state !== _wl || !added.length) return;
   // Spec 12: entries that name an agent the bar does not show yet.
@@ -14388,47 +14203,23 @@ function paintWorkLog(state, added) {
   // Task view T1.3: a subagent tab's 지시와 답변 comes from these entries — the
   // tab may have opened (or the result may land) before they did.
   if (_panelAgent) renderAgentConv();
-  var list = document.getElementById('worklog-list');
-  var box = psecBox('log');
-  if (_psec !== 'log' || !list || !box) {
+  if (_psec !== 'log') {
     state.painted = false;
     return;
   }
-  var pinned = psecAtBottom(box);
-  var fromBottom = box.scrollHeight - box.scrollTop;
-  var n = state.entries.length;
-  var tail = state.painted;
-  for (var i = 0; tail && i < added.length; i++) if (added[i].index !== n - added.length + i) tail = false;
-  var anchor = !tail && state.painted && !pinned ? psecViewAnchor(box) : null;
-  var placeholder = list.querySelector('.wl-empty');
-  if (placeholder) placeholder.remove();
-  if (tail) wlAppendTail(state, list, added);
-  else wlRenderList(state, list);
-  updateTimersIn(list);
-  // Spec 12: entries of another agent arrived while this agent's log is empty — keep the empty line.
-  if (!wlScopeEntries(state.entries).length) showWorkLogEmpty('이 에이전트의 작업 로그 없음');
-  wlEnsureTabStop(list);
-  psecSyncControls('log');
-  var first = !state.painted;
-  state.painted = true;
-  if (first) psecToNewest();
-  else if (!tail && pinned) psecSetTop(box, box.scrollHeight);
-  else if (!tail) psecHoldPlace(box, anchor, fromBottom);
-  else if (pinned && !wlDetailOpen(state)) psecOnAppended(1, true);
-  else psecOnAppended(wlVisible(state, wlScopeEntries(added.map(function(a) { return a.entry; }))).length, false);
+  // A result for a call whose card is open: the card fetches its output.
+  for (var i = 0; i < added.length; i++) {
+    var e = added[i] && added[i].entry;
+    if (e && wlCardHidden(state, e)) wlOnToolResult(state, e);
+  }
+  wlPaint();
 }
-
 // Owner-only log (403 on any path) — only for the conversation still open.
 function showWorkLogDenied(state) {
   if (state !== _wl || state.closed) return;
   // Live entries painted before the 403 go too: the log is owner-only.
   state.entries = [];
-  if (_psec === 'log') paintLogTab();
-  psecSyncControls('log');
-}
-function showWorkLogEmpty(message) {
-  var list = document.getElementById('worklog-list');
-  if (list && !list.querySelector('.wl-entry')) list.innerHTML = '<div class="wl-empty">' + esc(message || WL_EMPTY_MSG) + '</div>';
+  wlPaint();
 }
 
 // ── Tool calls as cards (@2lab.ai/ui <ui-tool-call-card>) ──
@@ -14606,10 +14397,6 @@ function wlHydrateCards(root) {
   }
   for (var i = 0; i < cards.length; i++) wlPaintCard(_wl, cards[i]);
 }
-// Session pushes: a running call whose session stopped reads 결과 없음.
-function wlRefreshCards() {
-  wlHydrateCards(document.getElementById('worklog-list'));
-}
 // A stored raw → the card's text for that part (args / result) and its note.
 function wlPartLoad(state, e) {
   if (!e) return Promise.resolve(null);
@@ -14672,274 +14459,67 @@ function wlOnToolResult(state, e) {
   else if (el) wlPaintCard(state, el);
   return true;
 }
-function renderWorkLogEntry(e) {
-  var kind = Object.prototype.hasOwnProperty.call(WL_LABELS, e.kind) ? e.kind : 'narration';
-  var time = typeof e.ts === 'number' && isFinite(e.ts)
-    ? new Date(e.ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })
-    : '';
-  var timeHtml = time ? '<span class="wl-time">' + time + '</span>' : '';
-  var seq = Math.floor(Number(e.seq) || 0);
-  var seqAttr = ' data-seq="' + seq + '"';
-  // One root per entry: the row (role=button, out of the tab order — the list
-  // keeps one roving stop) and its detail block (§3.1-6).
-  function rowOpen(extra) {
-    return '<div class="wl-row' + (extra || '') + '" role="button" tabindex="-1" aria-expanded="false" aria-controls="wl-detail-' + seq + '">';
-  }
-  // aria-live="off": the list is role=log (polite), and an opened raw output
-  // of up to 256 KiB must not be read out in full.
-  var detailHtml = '<div class="wl-detail" id="wl-detail-' + seq + '" aria-live="off" hidden></div>';
-  var text = String(e.text || '');
-  // A tool call is one card (@2lab.ai/ui <ui-tool-call-card>, hydrated by
-  // wlHydrateCards): the call's entry carries it, its result fills it. A result
-  // whose call is on screen is never rendered on its own (wlCardHidden); one
-  // whose call is not (an older page, a log cut short) is its own card.
-  // Spec 12's 지시 / 결과 rows of a subagent scope stay rows.
-  if ((kind === 'tool' || kind === 'tool_result') && !e._role) {
-    var cardLink = kind === 'tool' && e.agentRef ? wlChildBlock(String(e.agentRef)) : '';
-    // Light-DOM text: shown until the element is defined — and for good if its
-    // module never loads (the card's shadow root has no slot, so it hides it).
-    var fbTool = e.tool ? String(e.tool) : '';
-    var fbText = kind === 'tool' ? wlToolSummary(fbTool, text) : (e.ok === false ? '실패' : '완료');
-    return '<div class="wl-entry wl-toolcall' + (kind === 'tool_result' ? ' is-orphan' : '') + '"' + seqAttr + '>'
-      + '<ui-tool-call-card class="wl-card" lang="ko" data-key="' + seq + '">'
-      + '<span class="wl-card-fallback"><span class="wl-tool-name">' + esc(fbTool) + '</span> ' + esc(fbText) + '</span>'
-      + '</ui-tool-call-card>'
-      + cardLink + '</div>';
-  }
-  if (kind === 'tool' || kind === 'tool_result') {
-    var fail = kind === 'tool_result' && e.ok === false;
-    var mark = kind === 'tool' ? '&#x25B8;' : (fail ? '&#x2717;' : '&#x2713;');
-    // The emitter's text starts with the tool name ("Read {...}", "Glob ok");
-    // the name already has its own span, so the text shows only what follows.
-    var shown = text;
-    var tool = e.tool ? String(e.tool) : '';
-    if (tool && text === tool) shown = '';
-    else if (tool && text.indexOf(tool + ' ') === 0) shown = text.slice(tool.length + 1);
-    // Spec 12: in a subagent's scope the call that started it reads 지시 and
-    // its result 결과 (a background start: 배경 실행 시작); elsewhere a spawn
-    // call carries the child's live block (wlChildBlock).
-    var role = e._role === 'spawn' ? '지시' : e._role === 'result' ? '결과' : e._role === 'ack' ? '배경 실행 시작' : '';
-    var link = kind === 'tool' && e.agentRef && !e._role ? wlChildBlock(String(e.agentRef)) : '';
-    return '<div class="wl-entry wl-' + kind + (fail ? ' is-fail' : '') + (role ? ' wl-agent-io' : '') + '"' + seqAttr + '>' + rowOpen()
-      + '<span class="wl-mark">' + mark + '</span>'
-      + (role ? '<span class="wl-role">' + role + '</span>' : '')
-      + (tool ? '<span class="wl-tool-name">' + esc(tool) + '</span>' : '')
-      + '<span class="wl-text" title="' + escAttr(text) + '">' + esc(shown) + '</span>'
-      + timeHtml + '</div>' + link + detailHtml + '</div>';
-  }
-  if (kind === 'instruction') {
-    text = decodeSlackEntities(text);
-    // A turn soma-work sent reads as the conversation's one line (SSOT
-    // 2026-10-28): badge, what it did, time. The row opens to its facts and
-    // the raw prompt (wlEntryFactsHtml + the stored original).
-    var info = sysTurnInfo(wlInstructionTurn(e, text));
-    if (info) {
-      return '<div class="wl-entry wl-instruction is-sys"' + seqAttr + '>' + rowOpen()
-        + '<div class="wl-head"><span class="ui-chip sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>'
-        + '<span class="wl-sys-line">' + esc(info.kind === 'compact' ? '컨텍스트 압축 (/compact)' : info.line) + '</span>' + timeHtml + '</div>'
-        + '</div>' + detailHtml + '</div>';
-    }
-    // A person's: the words on the row, the skills it invoked as badges beside
-    // it — outside the row, whose click opens the original.
-    var split = splitInvokedSkills(text);
-    // The stored text is cut at 4,000 characters, so a skill block is usually
-    // cut too: the words, and the skill names readable before the cut; the
-    // badges load the stored original (wlSkillOpen).
-    // Only a text that was cut (its original stored apart) can hold a cut
-    // block; a short one that merely mentions the tag is words. A first turn's
-    // two blocks: the closed one and the cut one read as one row of badges.
-    var cut = toNum(e.rawBytes) > 0 ? wlCutSkills(split.text) : null;
-    if (cut && split.skills.length) cut.names = split.skills.map(function(sk) { return sk.name; }).concat(cut.names);
-    if (split.skills.length || cut) {
-      var words = cut ? cut.words : split.text;
-      return '<div class="wl-entry wl-instruction"' + seqAttr + '>' + rowOpen()
-        + '<div class="wl-head"><span class="wl-label">' + WL_LABELS.instruction + '</span>' + timeHtml + '</div>'
-        + (words.trim() ? '<div class="wl-text">' + esc(words.replace(/\\s+$/, '')) + '</div>' : '')
-        + '</div>' + (cut ? wlCutSkillsHtml(seq, cut) : skillBadgesHtml('wl' + seq, split.skills)) + detailHtml + '</div>';
-    }
-  }
-  var label = WL_LABELS[kind];
-  if (!label) {
-    // Narration: the text with its time on the right of the same line.
-    return '<div class="wl-entry wl-' + kind + '"' + seqAttr + '>' + rowOpen(' wl-line') + '<div class="wl-text">' + esc(text) + '</div>' + timeHtml + '</div>' + detailHtml + '</div>';
-  }
-  return '<div class="wl-entry wl-' + kind + '"' + seqAttr + '>' + rowOpen()
-    + '<div class="wl-head"><span class="wl-label">' + label + '</span>' + timeHtml + '</div>'
-    + '<div class="wl-text">' + esc(text) + '</div>'
-    + '</div>' + detailHtml + '</div>';
-}
-
-// Spec 12 (recursive): in a parent's log the call that started a child carries
-// the child's block — the same node at row density: status in words, time,
-// tools, its current activity, 열기. It sits beside the entry's row (never
-// inside the row's button) and is the arrow path's stop for that child. A
-// child that has not reached the card yet reads 확인 불가 until it does.
-function wlChildBlock(id) {
-  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  var list = (s && s.agents) || [];
-  var a = null;
-  for (var i = 0; i < list.length; i++) if (list[i] && list[i].id === id) { a = list[i]; break; }
-  var node = a ? agentNodeOf(a) : { id: String(id), status: 'unknown', logOnly: true, toolCalls: 0, children: [] };
-  var st = node.status;
-  var time = agentTimeHtml(node);
-  var act = agentActivity(node);
-  var label = agentNodeName(node) + ' 열기 — ' + (AGENT_STATUS_LABEL[st] || '') + ', 툴 ' + toNum(node.toolCalls);
-  return '<button type="button" class="wl-agent-link wl-child is-' + st + '" tabindex="-1" data-agent="' + escAttr(id) + '" data-agent-block="' + escAttr(id) + '" aria-label="' + escAttr(label) + '">'
-    + '<span class="ag-icon">' + agentIconHtml(st) + '</span>'
-    + '<span class="wc-name">' + agentNodeLine(node) + '</span>'
-    + '<span class="wc-meta"><span class="ag-st">' + esc(AGENT_STATUS_LABEL[st] || '') + '</span>'
-    + (time ? '<span class="ag-time">' + time + '</span>' : '')
-    + '<span class="ag-tools">툴 ' + toNum(node.toolCalls) + '</span></span>'
-    + (act ? '<span class="wc-act">' + esc(act) + '</span>' : '')
-    + '<span class="wc-open">열기 &rarr;</span></button>';
-}
-// A live update (sessionUpdated, a board push) morphs every child block on
-// screen in place — same button, same roving stop, new status / time / tools.
-function wlRefreshChildBlocks() {
-  var list = document.getElementById('worklog-list');
-  if (!list) return;
-  var els = list.querySelectorAll('[data-agent-block]');
-  for (var i = 0; i < els.length; i++) {
-    var el = els[i];
-    var html = wlChildBlock(el.getAttribute('data-agent-block') || '');
-    if (el._html === html) continue;
-    var tmp = document.createElement('div');
-    tmp.innerHTML = html;
-    var fresh = tmp.firstChild;
-    if (!fresh) continue;
-    fresh.setAttribute('tabindex', el.getAttribute('tabindex') || '-1');
-    domMorph(el, fresh);
-    el._html = html;
-    updateTimersIn(el);
-  }
-}
-
-// Roving tabindex (§3.1-6): the list is one tab stop. The first paint puts it
-// on the newest row (where the tail-followed list is looking); focusing a row
-// (click, arrows) moves it there. ArrowUp / ArrowDown step, Home / End jump.
-function wlRovingIndex(key, i, n) {
-  if (n <= 0) return -1;
-  if (key === 'ArrowDown') return Math.min(n - 1, i + 1);
-  if (key === 'ArrowUp') return Math.max(0, i - 1);
-  if (key === 'Home') return 0;
-  if (key === 'End') return n - 1;
-  return -1;
-}
-// The rows the arrows move between: entry rows, task-group heads and a spawn
-// row's 서브에이전트 열기 (Spec 12) that are on screen (a closed group's are not).
-function wlNavRows(list) {
-  var all = list.querySelectorAll('.wl-group-head, .wl-row, .wl-agent-link, ui-tool-call-card.wl-card');
-  var out = [];
-  for (var i = 0; i < all.length; i++) {
-    var body = all[i].closest ? all[i].closest('.wl-group-body') : null;
-    if (body && body.hidden) continue;
-    out.push(all[i]);
-  }
-  return out;
-}
-var WL_STOP_SEL = '.wl-row[tabindex="0"], .wl-group-head[tabindex="0"], .wl-agent-link[tabindex="0"], ui-tool-call-card[data-stop="1"]';
 function wlIsCard(el) {
   return !!(el && el.tagName === 'UI-TOOL-CALL-CARD');
 }
-// A card is a stop through its header button: data-stop marks it, and its
-// data turns the button's tabindex to 0 (focusable).
-function wlMarkStop(el, on) {
-  if (wlIsCard(el)) {
-    if (on) el.setAttribute('data-stop', '1');
-    else el.removeAttribute('data-stop');
-    if (_wl) wlPaintCard(_wl, el);
-    return;
-  }
-  el.setAttribute('tabindex', on ? '0' : '-1');
-}
-function wlEnsureTabStop(list) {
-  if (!list || !list.querySelector || list.querySelector(WL_STOP_SEL)) return;
-  var rows = wlNavRows(list);
-  if (rows.length) wlMarkStop(rows[rows.length - 1], true);
-}
-function wlSetTabStop(list, row) {
-  var old = list.querySelectorAll(WL_STOP_SEL);
-  for (var i = 0; i < old.length; i++) if (old[i] !== row) wlMarkStop(old[i], false);
-  if (wlIsCard(row) ? row.getAttribute('data-stop') !== '1' : row.getAttribute('tabindex') !== '0') wlMarkStop(row, true);
-}
-
-// Rows open / close their detail on click, Enter or Space; clicks inside an
-// open detail (the <pre>, 복사, 다시 시도) never toggle it.
-(function initWorkLogInteractions() {
-  var list = document.getElementById('worklog-list');
-  if (!list) return;
-  function seqOf(node) {
-    var entry = node && node.closest('.wl-entry');
-    return entry ? Math.floor(Number(entry.getAttribute('data-seq')) || 0) : 0;
-  }
-  list.addEventListener('click', function(e) {
-    // Spec 12: a spawn row's 열기 → switches the panel to that subagent.
-    var agentLink = e.target.closest('.wl-agent-link');
-    if (agentLink && list.contains(agentLink)) {
-      selectPanelAgent(agentLink.getAttribute('data-agent') || '');
+// The element's requests: a group or a row opened / closed (the page keeps
+// which; a row's raw output loads when it opens), 다시 시도 on a raw output,
+// 열기 on a child agent (Spec 12: the panel switches to it), the page before the
+// oldest entry; and a card's own open / close and 다시 시도 (wlToggleCard).
+(function initWorkLog() {
+  var el = wlEl();
+  if (!el) return;
+  el.addEventListener('ui-toggle', function(e) {
+    var st = _wl;
+    if (wlIsCard(e.target)) {
+      e.preventDefault();
+      wlToggleCard(st, e.target, !!(e.detail && e.detail.open));
       return;
     }
-    var btn = e.target.closest('.wl-detail-btn');
-    if (btn && list.contains(btn)) {
-      var act = btn.getAttribute('data-wl-act');
-      if (act === 'retry') retryWorkLogDetail(seqOf(btn));
-      else if (act === 'copy') copyWorkLogDetail(seqOf(btn), btn);
-      return;
+    if (e.target !== el || !st || st.closed) return;
+    var d = e.detail || {};
+    if (d.kind === 'group') {
+      (st.groupOpen || (st.groupOpen = Object.create(null)))[d.id] = !!d.open;
+    } else if (d.kind === 'entry') {
+      var seq = Math.floor(Number(d.id) || 0);
+      var open = st.open || (st.open = new Set());
+      if (d.open) {
+        open.add(seq);
+        wlRawFetch(st, seq);
+      } else open.delete(seq);
     }
-    if (e.target.closest('.wl-detail')) return;
-    var head = e.target.closest('.wl-group-head');
-    if (head && list.contains(head)) {
-      var grp = head.closest('.wl-group');
-      if (grp) toggleWorkLogGroup(grp.getAttribute('data-task-id'));
-      return;
-    }
-    var row = e.target.closest('.wl-row');
-    if (!row || !list.contains(row)) return;
-    // Finishing a text selection inside the row is not a toggle.
-    if (window.getSelection && String(window.getSelection())) return;
-    toggleWorkLogEntry(seqOf(row));
+    wlPaint();
   });
-  // A card says it opened / closed: the list keeps that (state.open) and
-  // fetches its input and output; 다시 시도 fetches them again.
-  list.addEventListener('ui-toggle', function(e) {
-    if (!wlIsCard(e.target)) return;
-    e.preventDefault();
-    wlToggleCard(_wl, e.target, !!(e.detail && e.detail.open));
+  el.addEventListener('ui-retry', function(e) {
+    var st = _wl;
+    if (e.target !== el || !st || st.closed) return;
+    var seq = Math.floor(Number(e.detail && e.detail.id) || 0);
+    if (st.rawDone) delete st.rawDone[seq];
+    wlRawFetch(st, seq);
   });
-  list.addEventListener('ui-reload', function(e) {
+  el.addEventListener('ui-open', function(e) {
+    if (e.target !== el) return;
+    var id = e.detail && e.detail.id;
+    if (id) selectPanelAgent(String(id));
+  });
+  el.addEventListener('ui-load-older', function(e) {
+    var st = _wl;
+    if (!st || st.closed || st.denied || !st.latestOk || !st.olderPending || st.olderLoading) {
+      e.preventDefault();
+      return;
+    }
+    loadOlderWorkLog();
+  });
+  el.addEventListener('ui-reload', function(e) {
     if (!wlIsCard(e.target) || !_wl || _wl.closed) return;
     wlLoadCardDetail(_wl, Math.floor(Number(e.target.getAttribute('data-key')) || 0));
   });
-  list.addEventListener('keydown', function(e) {
-    var row = e.target;
-    var isHead = !!(row.classList && row.classList.contains('wl-group-head'));
-    var isLink = !!(row.classList && row.classList.contains('wl-agent-link'));
-    var isCard = wlIsCard(row);
-    if (!row.classList || (!isHead && !isLink && !isCard && !row.classList.contains('wl-row'))) return;
-    // A card's header is a real button: Enter / Space are its own (ui-toggle).
-    if (isCard && (e.key === 'Enter' || e.key === ' ')) return;
-    // 서브에이전트 열기 is a real button: Enter / Space click it (the delegated handler opens the agent).
-    if (isLink && (e.key === 'Enter' || e.key === ' ')) return;
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      if (isHead) {
-        var grp = row.closest('.wl-group');
-        if (grp) toggleWorkLogGroup(grp.getAttribute('data-task-id'));
-      } else {
-        toggleWorkLogEntry(seqOf(row));
-      }
-      return;
-    }
-    var rows = wlNavRows(list);
-    var j = wlRovingIndex(e.key, rows.indexOf(row), rows.length);
-    if (j < 0) return;
-    e.preventDefault();
-    rows[j].focus(); // focusin moves the tab stop
-  });
-  list.addEventListener('focusin', function(e) {
-    var row = e.target;
-    if (row && row.classList && (row.classList.contains('wl-row') || row.classList.contains('wl-group-head') || row.classList.contains('wl-agent-link') || wlIsCard(row))) wlSetTabStop(list, row);
-  });
+  if (window.customElements && customElements.whenDefined) {
+    customElements.whenDefined('ui-work-log').then(function() {
+      el._wlSig = '';
+      wlPaint();
+    });
+  }
 })();
 
 // Where an opening lands (§3.1-6, spec 13) — on open, and again once the

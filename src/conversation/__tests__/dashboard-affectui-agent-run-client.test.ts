@@ -820,7 +820,7 @@ describe('permission approval card (D10–D13)', () => {
     );
     expect(html).not.toContain('onclick=');
     // The tokens reach the element from its wrapper (.ui-tok), never on the element (a custom-property cycle).
-    expect(CSS).toMatch(/\.wl-toolcall, \.ui-tok \{[^}]*--ui-border: var\(--border\);/);
+    expect(CSS).toMatch(/\.ui-tok \{[^}]*--ui-border: var\(--border\);/);
   });
 
   it('the data: tool, rules, the requester-only input, times, Explain and disable-rule — the element draws label, icon, title, risk, rows and answers', () => {

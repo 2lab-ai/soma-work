@@ -328,96 +328,66 @@ describe('opening a card fetches its input and output (shipped wlToggleCard + wl
   });
 });
 
-describe('a live result fills its call card instead of adding a row (shipped wlAppendTail)', () => {
-  it('appends the call as a card, then routes its result to that card; the group head refreshes', () => {
-    const appended: string[] = [];
-    const routed: number[] = [];
-    const list = {
-      appendChild: (n: { html: string }) => appended.push(n.html),
-      querySelectorAll: () => [],
-    };
+describe('a live result fills its call card instead of adding a row (shipped wlLogData + wlCardSlots + paintWorkLog)', () => {
+  it('the call is one card entry (its slot holds the page’s card); its result is not an entry — it goes to that card', () => {
     const st = {
       entries: [
         { seq: 1, ts: 0, kind: 'tool', tool: 'Read', text: 'Read a', toolUseId: 'a' },
         { seq: 2, ts: 9, kind: 'tool_result', tool: 'Read', ok: true, toolUseId: 'a' },
       ],
+      loaded: true,
+      latestOk: true,
     };
-    const m = load<{ wlAppendTail(st: unknown, list: unknown, added: unknown[]): void }>(
+    const m = load<{ wlLogData(st: unknown): { groups: Array<{ entries: Array<Record<string, unknown>> }> } }>(
       [
         ...PAIR_FNS,
+        'wlEntryBySeq',
+        'wlCallLive',
+        'wlCardData',
         'wlGroupOf',
-        'wlAppendTail',
+        'wlGroupOpen',
+        'wlRunTitle',
+        'wlGroupsOf',
         'wlToolSummary',
-        'renderWorkLogEntry',
-        'esc',
-        'escAttr',
+        'wlEntryOf',
+        'wlLogData',
         'decodeSlackEntities',
       ],
-      ['WL_LABELS'],
+      ['WL_LABELS', 'WL_RUN_TITLE', 'WL_EMPTY_MSG', 'WL_FORBIDDEN_MSG'],
       {
-        document: {
-          createElement: () => {
-            const tmp: Record<string, unknown> = {};
-            Object.defineProperty(tmp, 'innerHTML', {
-              set(v: string) {
-                tmp.firstElementChild = { html: v };
-              },
-            });
-            return tmp;
-          },
-        },
         _panelAgent: '',
         panelSessionKey: null,
         _sessionCache: {},
         wlScopeEntries: (e: unknown[]) => e,
-        wlOnToolResult: (_s: unknown, e: Entry) => routed.push(e.seq),
-        wlHydrateCards: () => {},
-        wlGroupEl: () => null,
-        wlRefreshGroupHead: () => {},
-        wlChildBlock: () => '',
+        wlLegacyMixed: () => false,
+        wlTaskInfo: () => null,
+        wlAgentOf: (id: string) => ({ id }),
       },
     );
-    m.wlAppendTail(st, list, [
-      { entry: st.entries[0], index: 0 },
-      { entry: st.entries[1], index: 1 },
+    const d = m.wlLogData(st);
+    expect(d.groups).toHaveLength(1);
+    expect(d.groups[0].entries).toEqual([
+      { id: '1', at: 0, kind: 'tool', tool: { name: 'Read', status: 'success', summary: 'a' } },
     ]);
-    expect(appended).toHaveLength(1);
-    expect(appended[0]).toContain('<ui-tool-call-card class="wl-card" lang="ko" data-key="1">');
-    expect(routed).toEqual([2]);
+    // A live result arrives: paintWorkLog routes it to its call's card (wlOnToolResult), then paints.
+    const paint = clientFn('paintWorkLog');
+    expect(paint).toContain('if (e && wlCardHidden(state, e)) wlOnToolResult(state, e);');
+    expect(paint.indexOf('wlOnToolResult')).toBeLessThan(paint.indexOf('wlPaint();'));
   });
 });
 
-describe('the roving tab stop can sit on a card (shipped wlMarkStop)', () => {
-  it('a card stop is data-stop + a repaint (its header button takes tabindex 0); a row keeps tabindex', () => {
-    const painted: unknown[] = [];
-    const m = load<{ wlMarkStop(el: unknown, on: boolean): void }>(['wlIsCard', 'wlMarkStop'], [], {
-      _wl: {},
-      wlPaintCard: (_s: unknown, el: unknown) => painted.push(el),
-    });
-    const attrs: Record<string, string> = {};
-    const card = {
-      tagName: 'UI-TOOL-CALL-CARD',
-      setAttribute: (k: string, v: string) => {
-        attrs[k] = v;
-      },
-      removeAttribute: (k: string) => {
-        delete attrs[k];
-      },
-    };
-    m.wlMarkStop(card, true);
-    expect(attrs['data-stop']).toBe('1');
-    m.wlMarkStop(card, false);
-    expect(attrs['data-stop']).toBeUndefined();
-    expect(painted).toEqual([card, card]);
-    const rowAttrs: Record<string, string> = {};
-    m.wlMarkStop({ tagName: 'DIV', setAttribute: (k: string, v: string) => (rowAttrs[k] = v) }, true);
-    expect(rowAttrs.tabindex).toBe('0');
+describe('a card is a tab stop of its own; it handles its own Enter / Space (shipped wlCardSlots, initWorkLog)', () => {
+  it('each card is created with data-stop (its header button takes tabindex 0 through its data; D3-GAPS G2-3)', () => {
+    expect(clientFn('wlCardSlots')).toContain("c.setAttribute('data-stop', '1');");
+    expect(clientFn('wlPaintCard')).toContain("var d = wlCardData(state, key, el.getAttribute('data-stop') === '1');");
   });
 
-  it('a card handles its own Enter / Space; the arrows reach it like any row', () => {
-    expect(TEMPLATE).toContain("if (isCard && (e.key === 'Enter' || e.key === ' ')) return;");
-    expect(TEMPLATE).toContain("list.addEventListener('ui-toggle', function(e) {");
-    expect(TEMPLATE).toContain("list.addEventListener('ui-reload', function(e) {");
+  it('the page answers a card’s ui-toggle (its open state and detail) and ui-reload; the rest is the element’s', () => {
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initWorkLog() {'));
+    const body = init.slice(0, init.indexOf('\n})();'));
+    expect(body).toContain('if (wlIsCard(e.target)) {');
+    expect(body).toContain('wlToggleCard(st, e.target, !!(e.detail && e.detail.open));');
+    expect(body).toContain("el.addEventListener('ui-reload', function(e) {");
   });
 });
 
@@ -435,8 +405,8 @@ describe('the library build is served from the dashboard origin (server half)', 
       expect(i, sel).toBeGreaterThan(0);
       return TEMPLATE.slice(i, TEMPLATE.indexOf('}', i));
     };
-    // One mapping for every library element's wrapper (.wl-toolcall, and .ui-tok for the batch-1 elements).
-    const wrapper = css('.wl-toolcall, .ui-tok');
+    // One mapping for every library element's wrapper (.ui-tok: the section boxes hold the log and its cards).
+    const wrapper = css('.ui-tok');
     for (const t of ['border', 'surface', 'text', 'st-done', 'st-fail', 'st-run'])
       expect(wrapper).toContain(`--ui-${t}: var(--${t});`);
     expect(css('.worklog-list ui-tool-call-card')).not.toContain('--ui-');

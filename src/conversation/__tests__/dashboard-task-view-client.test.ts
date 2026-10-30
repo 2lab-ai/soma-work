@@ -552,11 +552,13 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
         new RegExp(`id="psec-tab-${sec}" data-sec="${sec}" aria-selected="(true|false)" aria-controls="psec-${sec}"`),
       );
     }
-    for (const sec of ['tree', 'log']) {
-      expect(panel).toMatch(
-        new RegExp(`<div class="psec" id="psec-${sec}" role="tabpanel" aria-labelledby="psec-tab-${sec}" tabindex="0"`),
-      );
-    }
+    expect(panel).toMatch(
+      /<div class="psec" id="psec-tree" role="tabpanel" aria-labelledby="psec-tab-tree" tabindex="0"/,
+    );
+    // D3: 작업 로그 is <ui-work-log>'s own scroll box (its viewport is the tab stop).
+    expect(panel).toContain(
+      '<div class="psec psec-el ui-tok" id="psec-log" role="tabpanel" aria-labelledby="psec-tab-log" hidden>',
+    );
     // D3 E-25: 지시와 답변's box is <ui-conversation>'s own scroller (its viewport is the one tab stop).
     expect(panel).toContain(
       '<div class="psec psec-el ui-tok" id="psec-conv" role="tabpanel" aria-labelledby="psec-tab-conv">',
