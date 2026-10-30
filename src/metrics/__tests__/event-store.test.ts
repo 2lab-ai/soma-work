@@ -186,6 +186,14 @@ describe('MetricsEventStore', () => {
     expect(ids).toEqual(['odd', 'ok']);
   });
 
+  it.skipIf(!SQLITE)('append_spillsToTheDayFile_whenTheDatabaseCannotOpen', async () => {
+    // A directory where the database file should be: SQLite cannot open it.
+    fs.mkdirSync(path.join(TEST_METRICS_DIR, 'metrics.sqlite3'), { recursive: true });
+    await store.append(makeEvent({ id: 'spilled' }));
+    const filePath = path.join(TEST_METRICS_DIR, 'metrics-events-2026-03-25.jsonl');
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf-8').trim()).id).toBe('spilled');
+  });
+
   it.skipIf(SQLITE)('jsonlFallback_appendWritesTheDayFile', async () => {
     await store.append(makeEvent());
     const filePath = path.join(TEST_METRICS_DIR, 'metrics-events-2026-03-25.jsonl');

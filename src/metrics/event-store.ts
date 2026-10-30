@@ -673,8 +673,15 @@ export class MetricsEventStore {
    */
   async append(event: MetricsEvent): Promise<void> {
     const day = timestampToDateStr(event.timestamp);
+    let db: DatabaseSync | null = null;
     try {
-      const db = await this.db(false);
+      db = await this.db(false);
+    } catch (err) {
+      // Database unusable (cannot open, corrupt, import failed): the event
+      // still goes to its day file, which a later sync imports.
+      logger.error('[metrics] database unavailable — event spilled to the day file', err);
+    }
+    try {
       if (!db) {
         await this.appendJsonl(day, event);
         return;
