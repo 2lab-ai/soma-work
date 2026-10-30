@@ -294,6 +294,64 @@ describe('SlackHandler — resume after an auto-compact stop (T3)', () => {
     expect(routedTexts().some((t) => /\[auto-compact\]/.test(t))).toBe(false);
   });
 
+  /**
+   * The host's drain that the `Send now` follow-through and the Resume / Retry
+   * controls call (`followup-actions.ts` → `deps.runDrain`). It is the second
+   * boundary a dispatcher run settles into, beside `drainFollowups`, and the
+   * auto-compact hand-off must happen there too.
+   */
+  const runDrain = (report?: unknown) => handlerAny.followupActionDeps.runDrain(SESSION_KEY, report);
+  const resumed = () => routedTexts().some((t) => /\[auto-compact\]/.test(t));
+  async function until(cond: () => boolean): Promise<void> {
+    for (let i = 0; i < 50 && !cond(); i++) await tick();
+  }
+
+  it('Send now: a click whose own run was stopped by auto-compact resumes the work (empty queue)', async () => {
+    await runDrain({
+      sessionKey: SESSION_KEY,
+      runId: 9,
+      turnEpoch: 1,
+      kind: 'send-now',
+      itemId: `${SESSION_KEY}#1`,
+      outcome: { result: 'interrupted', reason: 'auto-compact' },
+      itemDisposition: 'uncertain',
+      canDrain: true,
+    });
+    await until(resumed);
+    expect(resumed()).toBe(true);
+  });
+
+  it('Resume / Retry: a drained run stopped by auto-compact resumes the work', async () => {
+    // A queued item the interrupt left in place (an interrupt does not drain).
+    await startTurnStoppedWith('user-interrupted', async () => {
+      await handler.handleMessage(message({ ts: '222.666', text: '남은 지시' }), say());
+      await tick();
+    });
+    expect(routedTexts()).not.toContain('남은 지시');
+
+    const controller = new AbortController();
+    initialize.mockImplementationOnce(async () => ({
+      session: registrySession,
+      sessionKey: SESSION_KEY,
+      isNewSession: false,
+      userName: 'Owner',
+      workingDirectory: '/tmp/work',
+      abortController: controller,
+      halted: false,
+    }));
+    const gate = deferred<any>();
+    startWithContinuation.mockImplementationOnce(() => gate.promise);
+
+    const drained = runDrain();
+    await until(() => routedTexts().includes('남은 지시'));
+    expect(routedTexts()).toContain('남은 지시');
+    controller.abort('auto-compact');
+    gate.resolve({ hasPendingChoice: false });
+    await drained;
+    await until(resumed);
+    expect(resumed()).toBe(true);
+  });
+
   it('a user interrupt still parks the queue (unchanged)', async () => {
     await startTurnStoppedWith('user-interrupted', async () => {
       await handler.handleMessage(message({ ts: '222.555', text: '세번째 지시' }), say());
