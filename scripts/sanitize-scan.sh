@@ -21,6 +21,14 @@
 #
 # A hit names the commits that carry it and the published branches that reach
 # them. It never prints the matching text: the repository and its logs are public.
+#
+# Known leaks (scripts/sanitize-known-leaks.txt, #610): a commit that is already
+# published everywhere cannot be taken back by failing every later PR. Listed by
+# full id, its own additions — the text it added that matches, in its diff and its
+# commit object — are tolerated wherever they persist. Nothing else is: a
+# different hit, another commit adding the same text again (or repeating it in its
+# message), a branch or tag name, an annotated tag message. The list carries
+# commit ids only, never the text.
 set -euo pipefail
 P="${SANITIZE_PATTERNS:-}"
 if [ -z "$P" ]; then echo "SANITIZE_PATTERNS env var required" >&2; exit 2; fi
@@ -35,20 +43,61 @@ fi
 
 git rev-parse --verify -q HEAD >/dev/null || { echo "sanitize-scan: no HEAD to scan" >&2; exit 2; }
 
-# Commits (their messages included), trees, blobs, and, outside a PR, annotated
-# tag objects. Every git step must succeed: a failed listing is an error, never
-# an empty — and therefore clean — result.
-objects() {
-  local list tags=''
-  list=$(git rev-list --objects "${revs[@]}") || return 1
-  [ "$pr" = 1 ] || tags=$(git for-each-ref --format='%(objectname)' refs/tags) || return 1
-  { printf '%s\n' "$list" | cut -d' ' -f1; [ -z "$tags" ] || printf '%s\n' "$tags"; } | sort -u
+# What a commit adds: its commit object (message included) and the added side of
+# its diff, paths included. Never printed.
+added_text() {
+  local body patch
+  body=$(git cat-file commit "$1") || return 1
+  patch=$(git show -U0 --format= --no-color --no-ext-diff --no-textconv "$1") || return 1
+  printf '%s\n' "$body"
+  printf '%s\n' "$patch" | sed -n 's/^+//p'
 }
 
+# KNOWN: the matches listed commits added, one per line. An unreadable listed
+# commit is an error, never an empty exemption.
+KNOWN=$(mktemp "${TMPDIR:-/tmp}/sanitize-known.XXXXXX") || exit 2
+trap 'rm -f "$KNOWN"' EXIT
+exempt=()
+list="$(git rev-parse --show-toplevel)/scripts/sanitize-known-leaks.txt"
+if [ -f "$list" ]; then
+  while read -r sha _; do
+    case "$sha" in '' | '#'*) continue ;; esac
+    if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+      echo "sanitize-scan: $list: entries are full 40-hex commit ids — not a clean result" >&2
+      exit 2
+    fi
+    if [ "$(git cat-file -t "$sha" 2>/dev/null)" != commit ]; then
+      echo "sanitize-scan: known leak $sha is not a commit in this clone — nothing exempted for it" >&2
+      continue
+    fi
+    text=$(added_text "$sha") && { printf '%s\n' "$text" | grep -a -i -o -E "$P" >>"$KNOWN" || [ "$?" = 1 ]; } || {
+      echo "sanitize-scan: could not read known leak $sha — not a clean result" >&2
+      exit 2
+    }
+    exempt+=("$sha")
+  done <"$list"
+fi
+is_exempt() {
+  local e
+  for e in ${exempt[@]+"${exempt[@]}"}; do [ "$e" = "$1" ] && return 0; done
+  return 1
+}
+
+# Commits (their messages included), trees and blobs. Every git step must
+# succeed: a failed listing is an error, never an empty — and therefore clean —
+# result.
 object_contents() {
-  local ids
-  ids=$(objects) || return 1
-  printf '%s\n' "$ids" | git cat-file --batch
+  local list
+  list=$(git rev-list --objects "${revs[@]}") || return 1
+  printf '%s\n' "$list" | cut -d' ' -f1 | sort -u | git cat-file --batch
+}
+
+# Outside a PR, annotated tag objects (their messages): never exempt.
+tag_contents() {
+  local tags
+  [ "$pr" = 0 ] || return 0
+  tags=$(git for-each-ref --format='%(objectname) %(objecttype)' refs/tags) || return 1
+  printf '%s\n' "$tags" | awk '$2 == "tag" { print $1 }' | git cat-file --batch
 }
 
 ref_names() {
@@ -59,24 +108,37 @@ ref_names() {
   fi
 }
 
-# Matching lines in a command's output. Fails closed: only grep's "no match"
-# (status 1) counts as zero; any other failure stops the scan with status 2.
+# Matches in a command's output, as "unknown known": a match equal to text a
+# listed commit added is known (`known` is the file of that text — /dev/null for
+# what is never exempt). Fails closed: only grep's "no match" (status 1) counts
+# as zero; any other failure stops the scan with status 2.
 count() {
-  local r
-  r=$("$@" | grep -a -i -c -E "$P"; st=("${PIPESTATUS[@]}"); echo "${st[0]} ${st[1]}") || true
+  local r known=$1
+  shift
+  r=$("$@" | grep -a -i -o -E "$P" | awk -v kf="$known" '
+    BEGIN { while ((getline l < kf) > 0) k[l] = 1 }
+    { if ($0 in k) n++; else u++ }
+    END { print u + 0, n + 0 }'; st=("${PIPESTATUS[@]}"); echo "${st[0]} ${st[1]} ${st[2]}") || true
   set -- $r
-  if [ "$#" != 3 ] || [ "$2" != 0 ] || [ "$3" -gt 1 ]; then
-    echo "sanitize-scan: scan step failed ($*) — not a clean result" >&2
+  if [ "$#" != 5 ] || [ "$3" != 0 ] || [ "$4" -gt 1 ] || [ "$5" != 0 ]; then
+    echo "sanitize-scan: scan step failed (${*:3}) — not a clean result" >&2
     exit 2
   fi
-  echo "$1"
+  echo "$1 $2"
 }
 
-a=$(count object_contents) || exit 2
-b=$(count git rev-list --objects "${revs[@]}") || exit 2
-c=$(count ref_names) || exit 2
-echo "sanitize-scan: objects=$a paths=$b refs=$c"
-if [ "$a" = "0" ] && [ "$b" = "0" ] && [ "$c" = "0" ]; then
+# A failing count exits its own subshell with 2: check each before reading it.
+r=$(count "$KNOWN" object_contents) || exit 2
+read -r a ka <<<"$r"
+r=$(count "$KNOWN" git rev-list --objects "${revs[@]}") || exit 2
+read -r b kb <<<"$r"
+r=$(count /dev/null tag_contents) || exit 2
+read -r t _ <<<"$r"
+r=$(count /dev/null ref_names) || exit 2
+read -r c _ <<<"$r"
+known=$((ka + kb))
+echo "sanitize-scan: objects=$a paths=$b tags=$t refs=$c known=$known"
+if [ "$a$b$t$c$known" = "00000" ]; then
   echo "sanitize-scan: clean"
   exit 0
 fi
@@ -89,13 +151,31 @@ redact() {
     if printf '%s' "$ref" | grep -q -i -E "$P"; then echo '<redacted ref>'; else echo "$ref"; fi
   done
 }
+# A commit is a hit when what it adds matches. A listed commit is a known leak;
+# a commit that only removes matching lines is the cleanup. Unreadable means hit.
+adds_hit() {
+  local text n
+  text=$(added_text "$1") || return 0
+  n=$(printf '%s\n' "$text" | grep -a -i -c -E "$P") || true
+  [ "${n:-0}" != 0 ]
+}
 attributed=1
 shas=$({
   git log "${revs[@]}" -i -G"$P" --format=%H 2>/dev/null &&
     git log "${revs[@]}" -i -E --grep="$P" --format=%H 2>/dev/null
 } | sort -u) || attributed=0
 in_head=0
+hits=0
 for sha in $shas; do
+  if is_exempt "$sha"; then
+    echo "sanitize-scan: known leak $sha — exempted (scripts/sanitize-known-leaks.txt)" >&2
+    continue
+  fi
+  if ! adds_hit "$sha"; then
+    echo "sanitize-scan: commit $sha only removes matching lines" >&2
+    continue
+  fi
+  hits=1
   if git merge-base --is-ancestor "$sha" HEAD 2>/dev/null; then
     in_head=1
     where='in HEAD'
@@ -106,7 +186,16 @@ for sha in $shas; do
     reach='(branch lookup failed)'
   echo "sanitize-scan: hit in commit $sha ($where)${reach:+ — reached by: $reach}" >&2
 done
-if [ -n "$shas" ] && [ "$pr" = 0 ]; then
+# Only known text was found: clean, once attribution shows no other commit added it.
+if [ "$a$b$t$c" = "0000" ] && [ "$attributed" = 1 ] && [ "$hits" = 0 ]; then
+  echo "sanitize-scan: clean — $known match(es) are known-leak text, and no other commit adds it"
+  exit 0
+fi
+if [ "$a$b$t$c" = "0000" ] && [ "$attributed" = 0 ]; then
+  echo "sanitize-scan: could not tell whether another commit adds known-leak text (git log failed) — not a clean result" >&2
+  exit 2
+fi
+if [ "$hits" = 1 ] && [ "$pr" = 0 ]; then
   if [ "$in_head" = 1 ]; then
     echo "sanitize-scan: HEAD itself carries a hit" >&2
   else
@@ -114,9 +203,10 @@ if [ -n "$shas" ] && [ "$pr" = 0 ]; then
   fi
 fi
 [ "$c" = "0" ] || echo "sanitize-scan: a branch or tag name is a hit (name withheld)" >&2
+[ "$t" = "0" ] || echo "sanitize-scan: an annotated tag message is a hit" >&2
 if [ "$attributed" = 0 ]; then
   echo "sanitize-scan: could not attribute the hit (git log failed; a pattern git cannot compile?) — rerun the scan locally to locate it" >&2
-elif [ -z "$shas" ] && [ "$c" = "0" ]; then
+elif [ "$hits" = 0 ] && [ "$c$t" = "00" ]; then
   echo "sanitize-scan: no commit diff or message matched — the hit is in a binary file, a path name, a merge resolution, an annotated tag message, or uses a grep-only regex extension" >&2
 fi
 echo "sanitize-scan: FORBIDDEN PATTERN FOUND" >&2
