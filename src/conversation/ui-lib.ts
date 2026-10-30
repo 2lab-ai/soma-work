@@ -57,7 +57,8 @@ export function uiLibTokensCss(): string {
       try {
         const css = readFileSync(join(dir, 'tokens.css'), 'utf8');
         // Inlined into a <style> element: anything that could close it is refused.
-        if (/<\/?\s*style|<!--|<script/i.test(css)) logger.error('@2lab.ai/ui tokens.css is not plain CSS — not inlined');
+        if (/<\/?\s*style|<!--|<script/i.test(css))
+          logger.error('@2lab.ai/ui tokens.css is not plain CSS — not inlined');
         else uiTokens = css.trim();
       } catch (err) {
         logger.error('@2lab.ai/ui tokens.css is missing — the pages have no colour tokens', err);
