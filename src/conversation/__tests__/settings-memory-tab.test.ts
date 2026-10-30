@@ -92,7 +92,9 @@ describe('기억 tab shell', () => {
     }
     expect(html).toContain(`<style id="ui-tokens">\n${uiLibTokensCss()}\n${pageTokenAliases()}\n</style>`);
     // light: the warn band's amber and the status tones are the library's light palette, not a drifted copy
-    expect(uiLibTokensCss()).toMatch(/:root, \[data-theme="light"\] \{[^}]*--ui-yellow: #[0-9a-f]{6};[^}]*--ui-st-wait: #[0-9a-f]{6};/);
+    expect(uiLibTokensCss()).toMatch(
+      /:root, \[data-theme="light"\] \{[^}]*--ui-yellow: #[0-9a-f]{6};[^}]*--ui-st-wait: #[0-9a-f]{6};/,
+    );
     expect(css).not.toMatch(/--(bg|surface|text|accent|yellow|st-wait): #/);
   });
 
