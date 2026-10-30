@@ -260,7 +260,9 @@ export function validateModelCommandRunArgs(args: unknown): ValidationResult {
           aliases,
           current: str(params.current),
           history: str(params.history),
-          content: str(params.content),
+          // `text` is the spelling models reach for (41 of 43 episodic_append
+          // failures in production); it can only mean the observation here.
+          content: str(params.content) ?? str(params.text),
           date: str(params.date),
           query: str(params.query),
         },
@@ -512,7 +514,10 @@ function parseSessionOperation(
   }
 
   if (action === 'add') {
-    const link = normalizeLink(raw.link, resourceType as SessionResourceType);
+    // The advertised schema puts `url` on every operation (remove/set_active
+    // read it), so accept it here too as shorthand for `link: { url }`.
+    const rawLink = raw.link ?? (typeof raw.url === 'string' ? { url: raw.url } : undefined);
+    const link = normalizeLink(rawLink, resourceType as SessionResourceType);
     if (!link) {
       return invalidArgs('add operation requires link with url');
     }
