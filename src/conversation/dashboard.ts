@@ -3847,6 +3847,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/compact-breakdown.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/model-picker.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/agent-queue.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/segmented.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4181,9 +4182,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* ── MAIN — stats strip, then the board; capped at 1280px and centred (.prd/10 §3.1-2, §5) ── */
 .main { flex: 1; padding: 20px; width: 100%; max-width: 1280px; margin: 0 auto; min-width: 0; }
 
-/* ── PERIOD SELECTOR — the page's one segmented control (.seg / .seg-btn, below): the selected
-   period is the raised neutral chip, never an accent fill. .period-bar / .period-btn stay as hooks. ── */
-.period-btn { white-space: nowrap; }
+/* ── PERIOD SELECTOR — @2lab.ai/ui <ui-segmented> (B-02), the same control as Board | List (D-02):
+   the selected period is the raised neutral chip that slides; .period-bar places it. ── */
 
 /* ── STATS STRIP — leads the page, above the board (.prd/10 §3.1-2) ──
    One row from 640px: period · 세션 · 토큰 · 비용 · 자세히. Below 640px the
@@ -4291,25 +4291,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .crumbs { display: flex; align-items: baseline; gap: 10px; font-size: 17px; line-height: 1.3; min-width: 0; white-space: nowrap; overflow: hidden; }
 .crumbs .crumb-root, .crumbs .crumb-sep { color: var(--ib-muted); }
 .crumbs .crumb-cur { color: var(--ib-text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
-.seg { display: inline-flex; padding: 3px; gap: 2px; background: var(--ib-seg); border-radius: 10px; flex-shrink: 0; }
-.seg-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: 0;
-  background: transparent;
-  color: var(--ib-muted);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 500;
-  padding: 6px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  min-height: 32px;
-  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease, transform var(--dur-press) var(--ease-out);
-}
-.seg-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
-.seg-btn[aria-pressed="true"] { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
+.view-seg { flex-shrink: 0; }
 /* Board header tools: Show archives, then Board | List. Below 640px the tools
    take their own row under the breadcrumb. */
 .inbox-tools { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
@@ -5682,11 +5664,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* PRESS — one rule for every button-like control: scale(.97) on --dur-press ease-out (each control's own
    transition carries the transform), pointer presses only — never a keyboard press (:focus-visible). The
    56px FAB presses to .95. */
-:is(.seg-btn, .archives-btn, .btn-choice, .btn-hero-recommended, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+:is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
-  .seg-btn:hover { color: var(--ib-text); }
   .archives-btn:hover { color: var(--ib-text); }
   .wl-row:hover { background: var(--surface-raised); }
   .wl-detail-btn:hover { color: var(--text); border-color: var(--text-tertiary); }
@@ -5729,7 +5710,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
      narrower sides, so the row fits 320px with the coarse-pointer padding. */
   .stats-strip { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "period more" "nums nums"; gap: 8px 12px; }
   .stats-strip .period-bar { min-width: 0; }
-  .stats-strip .seg .period-btn { flex: 1 1 auto; justify-content: center; padding-left: 9px; padding-right: 9px; }
   /* Top bar: the status badge becomes a 10px dot (aria-label preserved for SR),
      the account glyph goes, and the user select fills the nav row (which
      wraps rather than overflow on very small screens). Labels stay whole. */
@@ -5761,7 +5741,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .inbox-tools { flex: 1 1 auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; row-gap: 8px; }
   .crumbs { font-size: 15px; gap: 7px; }
   /* Selectors carry an extra class so they beat the later @media (pointer: coarse) 40px rules. */
-  .seg .seg-btn { min-height: 44px; padding: 6px 14px; }
   .card-body .btn-choice { min-height: 44px; }
 }
 
@@ -5785,7 +5764,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.seg-btn, .archives-btn, .btn-choice, .btn-hero-recommended, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   /* Loading skeletons hold still. */
@@ -5802,7 +5781,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 @media (pointer: coarse) {
   .panel-tab, .psec-tab, .psec-older, .psec-pill, .panel-sec-head, .panel-detail-toggle { min-height: 44px; }
   .topbar .nav a, .topbar .nav .user-select { min-height: 40px; padding: 8px 16px; }
-  .period-btn { min-height: 40px; }
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
 }
 /* ── #800: TOUCH x NARROW — restore tight padding so the coarse-pointer
@@ -5838,9 +5816,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   #theme-toggle { min-block-size: 44px; position: relative; }
   #theme-toggle::after { content: ''; position: absolute; inset: 0 -6px; }
   .topbar .td-chip { min-height: 44px; }
-  .period-btn { min-height: 44px; }
   .stats-more { min-height: 44px; }
-  .seg .seg-btn, .card-body .btn-choice { min-height: 44px; }
+  .card-body .btn-choice { min-height: 44px; }
   .inbox-head .archives-btn { min-height: 44px; }
   .card-body .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
   .pi-links a, .pi-head, .panel-tasks-toggle { min-height: 44px; }
@@ -6455,11 +6432,7 @@ ${pageTokenAliases()}
          other cards and the charts below the strip (kept in localStorage). -->
     <section class="stats" id="stats" aria-label="사용량">
       <div class="stats-strip">
-        <div class="period-bar seg" role="group" aria-label="&#xAE30;&#xAC04;">
-          <button type="button" class="period-btn seg-btn active" data-period="day" aria-pressed="true" onclick="setPeriod('day')">&#xC624;&#xB298;</button>
-          <button type="button" class="period-btn seg-btn" data-period="week" aria-pressed="false" onclick="setPeriod('week')">&#xC9C0;&#xB09C; 7&#xC77C;</button>
-          <button type="button" class="period-btn seg-btn" data-period="month" aria-pressed="false" onclick="setPeriod('month')">&#xC9C0;&#xB09C; 30&#xC77C;</button>
-        </div>
+        <ui-segmented class="period-bar" id="period-seg" full></ui-segmented>
         <div class="strip-nums">
           <div class="strip-num"><span class="label">&#xC138;&#xC158;</span><span class="value is-loading" id="stat-sessions"></span></div>
           <div class="strip-num"><span class="label">&#xD1A0;&#xD070;</span><span class="value" id="stat-tokens-wrap"><span id="stat-tokens" class="is-loading"></span><span id="stat-tokens-tooltip" role="tooltip"></span></span></div>
@@ -6498,10 +6471,7 @@ ${pageTokenAliases()}
           <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="3" rx="0.8"/><path d="M3 6v6.2c0 .5.4.8.8.8h8.4c.4 0 .8-.3.8-.8V6M6.5 8.6h3"/></svg><span id="archives-label">Archives</span></button>
           <button type="button" class="archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><i data-ui-icon="moon"></i><span id="sleeping-label">Sleeping</span></button>
           <button type="button" class="archives-btn" id="lifecycle-btn" style="display:none" title="세션 수명 주기 (관리자)" onclick="openLifecycleDialog()"><i data-ui-icon="clock"></i><span>수명 주기</span></button>
-          <div class="seg" role="group" aria-label="보드 보기">
-            <button type="button" class="seg-btn" data-view="board" aria-pressed="true" onclick="setBoardView('board', event)"><i data-ui-icon="board"></i><span>보드</span></button>
-            <button type="button" class="seg-btn" data-view="list" aria-pressed="false" onclick="setBoardView('list', event)"><i data-ui-icon="list"></i><span>목록</span></button>
-          </div>
+          <ui-segmented class="view-seg" id="view-seg"></ui-segmented>
         </div>
       </div>
       <dialog id="lifecycle-dialog" class="lifecycle-dialog" aria-labelledby="lifecycle-title" oncancel="event.preventDefault();closeLifecycleDialog()">
@@ -8274,14 +8244,15 @@ function selectUser(userId) {
   loadCronJobs();
 }
 
-// ── Period ──
+// ── Period ── <ui-segmented id="period-seg"> (B-02): the page hands it the choice and answers ui-change.
+var PERIOD_OPTIONS = [{ value: 'day', label: '오늘' }, { value: 'week', label: '지난 7일' }, { value: 'month', label: '지난 30일' }];
+function paintPeriodSeg() {
+  var seg = document.getElementById('period-seg');
+  if (seg) seg.data = { label: '기간', value: currentPeriod, options: PERIOD_OPTIONS };
+}
 function setPeriod(period) {
   currentPeriod = period;
-  document.querySelectorAll('.period-btn').forEach(function(b) {
-    var on = b.dataset.period === period;
-    b.classList.toggle('active', on);
-    b.setAttribute('aria-pressed', on ? 'true' : 'false');
-  });
+  paintPeriodSeg();
   loadStats();
 }
 
@@ -12351,16 +12322,15 @@ async function addGoalFromCard(key, form) {
 // Board ↔ List (§3.1-2, §4-4): the element re-lays out the very same cards and
 // glides each card and column head from its old place (translate only). The
 // choice is remembered only when the reader makes it.
+// <ui-segmented id="view-seg"> (D-02): Board | List with the icon set's glyphs.
+var VIEW_OPTIONS = [{ value: 'board', label: '보드', icon: 'board' }, { value: 'list', label: '목록', icon: 'list' }];
 function setBoardView(view, ev) {
   if (view !== 'board' && view !== 'list') return;
   if (ev) {
     try { localStorage.setItem('soma-board-view', view); } catch (_e) {}
   }
-  var segs = document.querySelectorAll('.seg-btn[data-view]');
-  for (var i = 0; i < segs.length; i++) {
-    var pressed = segs[i].getAttribute('data-view') === view ? 'true' : 'false';
-    if (segs[i].getAttribute('aria-pressed') !== pressed) segs[i].setAttribute('aria-pressed', pressed);
-  }
+  var seg = document.getElementById('view-seg');
+  if (seg && (!seg.data || seg.data.value !== view)) seg.data = { label: '보드 보기', value: view, options: VIEW_OPTIONS };
   var kb = document.getElementById('kanban');
   if (!kb || kb.getAttribute('view') === view) return;
   kb.setAttribute('view', view);
@@ -18239,6 +18209,15 @@ function artHandleKey(e) {
   setBoardView(defaultBoardView(window.innerWidth, savedBoardView()));
   // The secondary sections' disclosure state, before the first board render.
   applySectionState();
+})();
+// The two <ui-segmented> controls (B-02 period, D-02 Board | List): a reader's choice arrives as
+// ui-change — the element has already moved its chip; the page follows through.
+(function initSegmented() {
+  var viewSeg = document.getElementById('view-seg');
+  if (viewSeg) viewSeg.addEventListener('ui-change', function(e) { setBoardView(e.detail.value, e); });
+  paintPeriodSeg();
+  var periodSeg = document.getElementById('period-seg');
+  if (periodSeg) periodSeg.addEventListener('ui-change', function(e) { setPeriod(e.detail.value); });
 })();
 // Spec 12 §4.3 — the panel's agent section: a path step drills into that node
 // (a subtree row is <ui-agent-tree>'s ui-select).
