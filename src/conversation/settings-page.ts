@@ -121,7 +121,7 @@ section.group > header p { font-size: 12px; color: var(--text-secondary); margin
 .btn.link { background: none; border: 0; padding: 0; min-height: 0; color: var(--accent); font-weight: 500; }
 .btn.danger { background: var(--st-fail); border-color: var(--st-fail); color: var(--ib-card); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-:is(.btn, .side nav .navbtn, .chip button, .pages-list .pg):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+:is(.btn, .side nav .navbtn, .chip button):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 .btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 /* The library segmented control: a recessed track, the selected option a raised chip. */
 fieldset.seg { border: 0; display: inline-flex; flex-wrap: wrap; background: var(--ib-seg); border-radius: 10px; padding: 3px; gap: 2px; }
@@ -183,7 +183,7 @@ dialog .actions { display: flex; justify-content: flex-end; gap: 8px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.btn, .side nav .navbtn, .chip button, .pages-list .pg):active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.btn, .side nav .navbtn, .chip button):active:not(:disabled):not(:focus-visible) { transform: none; }
 }
 `;
 
@@ -706,6 +706,8 @@ if (typeof applyFilter === 'function') applyFilter();
 </script>
 <script type="module" src="/dashboard/ui/tabs.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/memory-panel.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/knowledge-pages.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/episode-log.js?v=${UI_LIB_VERSION}"></script>
 </body>
 </html>`;
 }
