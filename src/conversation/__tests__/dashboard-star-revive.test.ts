@@ -225,6 +225,14 @@ describe('Dashboard — task star + revive (SSOT 2026-10-30)', () => {
     expect(trash).not.toHaveBeenCalled();
   });
 
+  it('the trash guard also holds for a legacy-form key (C1-t1 → work:C1:t1)', async () => {
+    const trash = vi.fn();
+    dashboard.setDashboardTrashHandler(trash);
+    sessions.set('work:C1:t1', liveSession({ starred: true }));
+    expect((await post('trash', {}, AUTH_HEADER, 'C1-t1')).statusCode).toBe(409);
+    expect(trash).not.toHaveBeenCalled();
+  });
+
   it('T2.1 — the board lists starred cards first in their column and marks them', async () => {
     sessions = new Map([
       ['C1:a', liveSession({ threadTs: 'a', lastActivity: new Date('2026-10-29T00:00:00Z') })],
