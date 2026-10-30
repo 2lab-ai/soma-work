@@ -3856,6 +3856,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/stat-strip.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/bar-chart.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/file-card.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/composer.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -5726,17 +5727,7 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-toggle[aria-pressed="true"] .nt-switch::after { transform: translateX(10px); }
 .nt-toggle-note { font-size: 11px; font-weight: 500; color: var(--text-tertiary); }
 
-.nt-compose { position: relative; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); transition: border-color var(--dur-press) var(--ease-out), box-shadow var(--dur-press) var(--ease-out); }
-.nt-compose:focus-within { border-color: var(--border-focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--border-focus) 18%, transparent); }
-.nt-prompt { display: block; width: 100%; min-height: 150px; max-height: 44vh; padding: 12px 14px; border: 0; outline: none; resize: none; background: transparent; color: var(--text); font: inherit; font-size: 14px; line-height: 1.55; }
-.nt-prompt::placeholder { color: var(--text-tertiary); }
-.nt-drop-hint { position: absolute; inset: 0; display: none; place-items: center; border-radius: inherit; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--tint-accent-fg); font-size: 13px; font-weight: 600; pointer-events: none; }
-.nt-compose.is-drag { border-color: var(--accent); border-style: dashed; }
-.nt-compose.is-drag .nt-drop-hint { display: grid; }
-.nt-count { align-self: flex-end; padding: 0 10px 6px; font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 
-.nt-attachments { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 4px; scroll-snap-type: x proximity; scrollbar-width: thin; }
-.nt-attachments:empty { display: none; }
 .nt-att { position: relative; flex: none; display: flex; align-items: center; gap: 8px; height: 58px; max-width: 230px; padding: 0 32px 0 6px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); scroll-snap-align: start; animation: nt-att-in 240ms var(--ease-out) both; }
 .nt-att-thumb { display: grid; place-items: center; flex: none; width: 44px; height: 44px; border-radius: 8px; background: var(--bg); color: var(--text-secondary); object-fit: cover; overflow: hidden; }
 .nt-att-thumb svg { width: 20px; height: 20px; }
@@ -5759,14 +5750,10 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-error[hidden] { display: none; }
 .nt-empty { margin: 0; color: var(--text-secondary); font-size: 12.5px; }
 
-.nt-toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 12px 12px 10px; border-top: 1px solid var(--border); background: var(--surface); }
-.nt-tools { display: flex; align-items: center; gap: 2px; }
-.nt-tool-camera { display: none; }
-.nt-tool-mic[aria-pressed="true"] { background: var(--tint-fail-bg); color: var(--tint-fail-fg); }
-.nt-status { flex: 1; min-width: 0; overflow: hidden; color: var(--text-secondary); font-size: 12px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.nt-composer { display: block; }
+.nt-foot { display: flex; align-items: center; gap: 8px; min-height: 18px; margin: 0; }
+.nt-status { flex: 1; min-width: 0; overflow: hidden; color: var(--text-secondary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .nt-submit-hint { flex: none; font-size: 11px; color: var(--text-tertiary); }
-.nt-submit { flex: none; }
-.nt-submit.is-busy svg { animation: nt-spin 0.9s linear infinite; }
 
 
 /* The FAB arrives: opacity + scale from 0.95 (never from nothing), 240ms ease-out — once. */
@@ -5803,9 +5790,7 @@ body.nt-open .new-task-fab { display: none !important; }
   .nt-config { flex-wrap: nowrap; overflow-x: auto; margin: 0 -14px; padding: 0 14px 2px; scrollbar-width: none; }
   .nt-config::-webkit-scrollbar { display: none; }
   .nt-chip select { max-width: 150px; }
-  .nt-compose { flex: 1 1 auto; min-height: 140px; }
-  .nt-prompt { flex: 1; max-height: none; }
-  .nt-toolbar { padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)); }
+  .nt-body { padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
   .nt-submit-hint, .nt-head-hint { display: none; }
 }
 @media (pointer: coarse) {
@@ -5813,14 +5798,13 @@ body.nt-open .new-task-fab { display: none !important; }
      and the camera button (capture="environment" opens the camera directly). */
   .nt-battery-btn, .nt-toggle, .nt-chip, .nt-rec-btn { min-height: 44px; min-width: 44px; }
   .nt-att-remove { width: 28px; height: 28px; }
-  .nt-prompt, .nt-chip select { font-size: 16px; }
-  .nt-tool-camera { display: inline-grid; }
+  .nt-chip select { font-size: 16px; }
   .nt-kbd, .nt-submit-hint, .nt-head-hint { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   /* New task — no arrival, slide or scale; changes are instant. */
   .new-task-btn, .new-task-fab, .nt-dialog, .nt-att,
-  .nt-rec-dot, .nt-battery-fill, .nt-fab-label, .nt-fab-icon, .nt-submit svg { animation: none !important; transition: none !important; }
+  .nt-rec-dot, .nt-battery-fill, .nt-fab-label, .nt-fab-icon { animation: none !important; transition: none !important; }
 }
 /* ── Session artifacts (SSOT 2026-10-23): face chips, strips, minimap, viewer ── */
 .art-glyph { width: 14px; height: 14px; flex-shrink: 0; }
@@ -6298,7 +6282,7 @@ ${pageTokenAliases()}
        button scrolls away), the composer dialog, and the launch toast. -->
   <button type="button" class="new-task-fab" id="new-task-fab" aria-label="새 작업 시작" onclick="openNewTask()"><i data-ui-icon="plus" class="nt-fab-icon"></i><span class="nt-fab-label">새 작업</span></button>
   <dialog id="nt-dialog" class="nt-dialog" aria-labelledby="nt-title" onclose="ntOnClosed()">
-    <form id="nt-form" class="nt-form" onsubmit="submitNewTask(event)" novalidate>
+    <form id="nt-form" class="nt-form" onsubmit="event.preventDefault()" novalidate>
       <header class="nt-head">
         <button type="button" class="ui-icon-btn nt-close" aria-label="닫기" onclick="closeNewTask()"><i data-ui-icon="close"></i></button>
         <h2 id="nt-title">새 작업</h2>
@@ -6316,29 +6300,15 @@ ${pageTokenAliases()}
           <button type="button" class="nt-toggle" id="nt-autoz" aria-pressed="false" title="켜면 지시 끝에 $autoz를 붙여 autoz 스킬이 끝까지 자동으로 진행합니다" onclick="ntToggle('autoz')"><span class="nt-switch" aria-hidden="true"></span><span>autoz</span></button>
           <span class="nt-toggle-note">이 작업에만 적용 · 설정은 그대로</span>
         </div>
-        <div class="nt-compose" id="nt-compose">
-          <label class="nt-sr" for="nt-prompt">작업 지시</label>
-          <textarea id="nt-prompt" class="nt-prompt" rows="6" placeholder="무엇을 할까요? 예) soma-work 대시보드 개선해줘" oninput="ntOnInput()"></textarea>
-          <span class="nt-count" id="nt-count" aria-hidden="true"></span>
-          <div class="nt-drop-hint" aria-hidden="true">여기에 놓으면 첨부됩니다</div>
-        </div>
-        <div class="nt-attachments" id="nt-attachments" aria-live="polite" aria-label="첨부 파일"></div>
-        <div class="nt-recorder" id="nt-recorder" role="status" aria-label="녹음 중" hidden><span class="nt-rec-dot" aria-hidden="true"></span><span id="nt-rec-time">0:00</span><span class="nt-rec-meter" aria-hidden="true"><span class="nt-rec-level" id="nt-rec-level"></span></span><button type="button" class="nt-rec-btn" onclick="ntStopRecording(false)">취소</button><button type="button" class="nt-rec-btn is-primary" onclick="ntStopRecording(true)">완료</button></div>
+        <!-- The instruction, its files and the voice note — @2lab.ai/ui <ui-composer> (D2 H-05..H-09): the field grows
+             with its text, drop / paste / attach / record, chips with thumbnails and play, 작업 시작. ⌘/Ctrl+Enter
+             sends; a plain Enter is a new line (ntInit). The page answers ui-submit (it posts), ui-input (the draft),
+             ui-files (the total size), ui-tool (카메라 on touch: the native camera input below). -->
+        <ui-composer id="nt-composer" class="nt-composer" lang="ko"></ui-composer>
+        <input type="file" id="nt-camera-input" accept="image/*" capture="environment" hidden onchange="ntAddCamera(this.files); this.value = ''">
         <p class="nt-error" id="nt-error" role="alert" hidden></p>
+        <p class="nt-foot"><span class="nt-status" id="nt-status" role="status" aria-live="polite"></span><span class="nt-submit-hint" aria-hidden="true">⌘↵</span></p>
       </div>
-      <footer class="nt-toolbar">
-        <div class="nt-tools">
-          <button type="button" class="ui-icon-btn nt-tool nt-tool-camera" id="nt-camera" aria-label="사진 찍기" title="사진 찍기" onclick="ntEl('nt-camera-input').click()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 6.5h3l1.5-2h6l1.5 2h3v9.5h-15z"/><circle cx="10" cy="11" r="3"/></svg></button>
-          <button type="button" class="ui-icon-btn nt-tool" id="nt-attach" aria-label="파일 첨부" title="파일 첨부" onclick="ntEl('nt-file-input').click()"><i data-ui-icon="attach"></i></button>
-          <button type="button" class="ui-icon-btn nt-tool nt-tool-mic" id="nt-mic" aria-label="음성 녹음" aria-pressed="false" title="음성 녹음" onclick="ntToggleRecording()"><i data-ui-icon="mic"></i></button>
-          <input type="file" id="nt-camera-input" accept="image/*" capture="environment" hidden onchange="ntAddFiles(this.files, 'camera'); this.value = ''">
-          <input type="file" id="nt-file-input" multiple hidden onchange="ntAddFiles(this.files, 'file'); this.value = ''">
-          <input type="file" id="nt-audio-input" accept="audio/*" capture hidden onchange="ntAddFiles(this.files, 'voice'); this.value = ''">
-        </div>
-        <span class="nt-status" id="nt-status" role="status" aria-live="polite"></span>
-        <span class="nt-submit-hint" id="nt-submit-hint" aria-hidden="true">⌘↵</span>
-        <button type="submit" class="ui-btn is-primary is-lg nt-submit" id="nt-submit">작업 시작<i data-ui-icon="arrow-right"></i></button>
-      </footer>
     </form>
   </dialog>
 </div>
@@ -18089,17 +18059,13 @@ var NT_DRAFT_KEY = 'soma-nt-draft';
 var NT_MAX_RECORD_SEC = 600;
 var NT_ICON_X = '<i data-ui-icon="close"></i>';
 var NT_ICON_FILE = '<i data-ui-icon="file"></i>';
-var NT_ICON_PLAY = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5 3.5v9l7.5-4.5z"/></svg>';
-var NT_ICON_PAUSE = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.5 3.5h2.5v9H4.5zM9 3.5h2.5v9H9z"/></svg>';
 var _ntCtx = null;
 var _ntState = null;
-var _ntFiles = [];
-var _ntSeq = 0;
 var _ntBusy = false;
 var _ntRequestId = null;
-var _ntRec = null;
-var _ntAudio = null;
-var _ntPlayingId = 0;
+// The text handed to <ui-composer> (a saved draft at first, '' after a launch): it applies a value only when it
+// differs from the last one, so a repaint while someone types never resets the field.
+var _ntValue = null;
 
 function ntBatteryView(b) {
   if (!b || typeof b.level !== 'number') {
@@ -18216,9 +18182,9 @@ function ntReadDraft() {
   }
 }
 
-function ntSaveDraft() {
+function ntSaveDraft(text) {
   try {
-    if (_ntState && _ntState.prompt) localStorage.setItem(NT_DRAFT_KEY, JSON.stringify({ prompt: _ntState.prompt }));
+    if (text) localStorage.setItem(NT_DRAFT_KEY, JSON.stringify({ prompt: text }));
     else localStorage.removeItem(NT_DRAFT_KEY);
   } catch (e) {}
 }
@@ -18248,11 +18214,11 @@ async function openNewTask() {
   });
   if (!_ntRequestId) _ntRequestId = ntNewRequestId();
   if (_ntState) ntRender();
-  else ntEl('nt-submit').disabled = true;
+  else paintNtComposer();
   if (!ntIsTouch()) {
     setTimeout(function () {
-      var p = ntEl('nt-prompt');
-      if (p && dlg.open) p.focus();
+      var c = ntEl('nt-composer');
+      if (c && dlg.open) c.focus();
     }, 60);
   }
   ntSetStatus(_ntCtx ? '' : '불러오는 중…');
@@ -18262,7 +18228,7 @@ async function openNewTask() {
 function closeNewTask() {
   var dlg = ntEl('nt-dialog');
   if (!dlg || !dlg.open) return;
-  if (_ntRec) ntStopRecording(false);
+  ntQuietComposer();
   dlg.classList.remove('is-shown');
   var reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   setTimeout(function () {
@@ -18272,8 +18238,7 @@ function closeNewTask() {
 
 function ntOnClosed() {
   document.body.classList.remove('nt-open');
-  if (_ntRec) ntStopRecording(false);
-  if (_ntAudio) _ntAudio.pause();
+  ntQuietComposer();
   var dlg = ntEl('nt-dialog');
   if (dlg) dlg.classList.remove('is-shown');
 }
@@ -18349,13 +18314,47 @@ function ntRender() {
   }
   ntEl('nt-autogoal').setAttribute('aria-pressed', _ntState.autogoal ? 'true' : 'false');
   ntEl('nt-autoz').setAttribute('aria-pressed', _ntState.autoz ? 'true' : 'false');
-  var p = ntEl('nt-prompt');
-  if (p.value !== _ntState.prompt) p.value = _ntState.prompt;
   ntRenderBattery();
-  ntRenderFiles();
-  ntRenderCount();
-  ntAutosize();
-  ntUpdateSubmit();
+  paintNtComposer();
+}
+
+// <ui-composer id="nt-composer">: the instruction field, attachments, voice and 작업 시작. The limits come from the
+// context (before it: the element's defaults); 카메라 is a tool on touch screens only (PC has drop and paste).
+function ntComposerData() {
+  if (_ntValue === null) {
+    var draft = ntReadDraft();
+    _ntValue = draft && typeof draft.prompt === 'string' ? draft.prompt : '';
+  }
+  var d = {
+    label: '작업 지시',
+    placeholder: '무엇을 할까요? 예) soma-work 대시보드 개선해줘',
+    value: _ntValue,
+    image: false,
+    submitLabel: '작업 시작',
+    busy: _ntBusy,
+    minRows: 6,
+    maxRows: 14,
+    tools: ntIsTouch() ? [{ id: 'camera', label: '카메라', showLabel: true }] : [],
+  };
+  var lim = _ntCtx && _ntCtx.limits;
+  if (lim) {
+    d.maxLength = lim.maxPromptChars;
+    d.maxFiles = lim.maxFiles;
+    d.maxFileSize = lim.maxFileBytes;
+  }
+  return d;
+}
+function paintNtComposer() {
+  var el = ntEl('nt-composer');
+  if (el) el.data = ntComposerData();
+}
+// Closing the sheet discards a recording in progress: the composer drops it when it turns read-only.
+function ntQuietComposer() {
+  var el = ntEl('nt-composer');
+  if (!el || !el.data) return;
+  var d = el.data;
+  el.data = Object.assign({}, d, { disabled: true });
+  el.data = d;
 }
 
 function ntRenderBattery() {
@@ -18396,7 +18395,6 @@ function ntOnEffortChange() {
 
 function ntOnChannelChange() {
   _ntState.channelId = ntEl('nt-channel').value || null;
-  ntUpdateSubmit();
 }
 
 function ntToggle(which) {
@@ -18410,34 +18408,6 @@ function ntToggle(which) {
   }
 }
 
-function ntOnInput() {
-  if (!_ntState) return;
-  _ntState.prompt = ntEl('nt-prompt').value;
-  ntSaveDraft();
-  ntAutosize();
-  ntRenderCount();
-  ntUpdateSubmit();
-}
-
-function ntRenderCount() {
-  var max = _ntCtx ? _ntCtx.limits.maxPromptChars : 12000;
-  var len = (_ntState && _ntState.prompt ? _ntState.prompt : '').length;
-  var el = ntEl('nt-count');
-  el.textContent = len > max * 0.8 ? len + ' / ' + max : '';
-}
-
-function ntAutosize() {
-  var p = ntEl('nt-prompt');
-  if (!p || (window.matchMedia && window.matchMedia('(max-width: 639px)').matches)) return;
-  p.style.height = 'auto';
-  p.style.height = Math.min(p.scrollHeight + 2, Math.round(window.innerHeight * 0.44)) + 'px';
-}
-
-function ntUpdateSubmit() {
-  var b = ntEl('nt-submit');
-  if (b) b.disabled = _ntBusy || !ntCanSubmit(_ntState, _ntFiles);
-}
-
 function ntKindOf(mime) {
   var t = String(mime || '');
   if (t.indexOf('image/') === 0) return 'image';
@@ -18446,292 +18416,59 @@ function ntKindOf(mime) {
   return 'file';
 }
 
-function ntAddFiles(list, source) {
-  Array.prototype.slice.call(list || []).forEach(function (f) {
-    var type = f.type || 'application/octet-stream';
-    var name = f.name || 'file';
-    if (source === 'camera' && ntKindOf(type) === 'image') {
-      var ext = (name.split('.').pop() || 'jpg').toLowerCase();
-      name = 'photo-' + ntStamp(new Date()) + '.' + ext;
-    }
-    ntAddBlob(f, name, type, source);
+// 카메라 (touch): the native camera input; a photo is named for when it was taken, then handed to the composer.
+function ntAddCamera(list) {
+  var el = ntEl('nt-composer');
+  if (!el || !list || !list.length) return;
+  var files = Array.prototype.slice.call(list).map(function (f) {
+    var type = f.type || 'image/jpeg';
+    if (ntKindOf(type) !== 'image') return f;
+    var ext = (String(f.name || '').split('.').pop() || 'jpg').toLowerCase();
+    return new File([f], 'photo-' + ntStamp(new Date()) + '.' + ext, { type: type, lastModified: f.lastModified });
   });
+  el.addFiles(files);
 }
 
-function ntAddBlob(blob, name, mimetype, source, extra) {
-  var limits = _ntCtx ? _ntCtx.limits : { maxFiles: 10, maxFileBytes: 20971520, maxTotalBytes: 31457280 };
-  if (_ntFiles.length >= limits.maxFiles) {
-    ntSetError('첨부는 최대 ' + limits.maxFiles + '개까지 가능합니다');
-    return;
-  }
-  if (!blob.size) {
-    ntSetError(name + ' — 빈 파일은 첨부할 수 없습니다');
-    return;
-  }
-  if (blob.size > limits.maxFileBytes) {
-    ntSetError(name + ' — 파일 하나는 ' + ntFormatBytes(limits.maxFileBytes) + '까지 첨부할 수 있습니다');
-    return;
-  }
-  var total = _ntFiles.reduce(function (sum, f) {
-    return sum + f.size;
-  }, 0);
-  if (total + blob.size > limits.maxTotalBytes) {
-    ntSetError('첨부는 모두 합쳐 ' + ntFormatBytes(limits.maxTotalBytes) + '까지입니다');
-    return;
-  }
-  ntSetError('');
-  var entry = {
-    id: ++_ntSeq,
-    name: name,
-    mimetype: mimetype,
-    size: blob.size,
-    kind: ntKindOf(mimetype),
-    data: null,
-    url: null,
-    duration: extra && extra.duration ? extra.duration : 0,
-    source: source,
-  };
-  if (entry.kind === 'image' || entry.kind === 'audio') {
-    try {
-      entry.url = URL.createObjectURL(blob);
-    } catch (e) {}
-  }
-  entry.ready = new Promise(function (resolve, reject) {
+// The composer's files as the request's attachments (base64, as the server takes them).
+function ntReadFile(f) {
+  return new Promise(function (resolve, reject) {
     var reader = new FileReader();
     reader.onload = function () {
       var s = String(reader.result || '');
       var comma = s.indexOf(',');
-      entry.data = comma >= 0 ? s.slice(comma + 1) : '';
-      resolve();
+      resolve({ name: f.name || 'file', mimetype: f.type || 'application/octet-stream', data: comma >= 0 ? s.slice(comma + 1) : '' });
     };
     reader.onerror = function () {
-      reject(new Error(name));
+      reject(new Error('read:' + (f.name || 'file')));
     };
-    reader.readAsDataURL(blob);
+    reader.readAsDataURL(f);
   });
-  entry.ready.catch(function () {
-    ntRemoveFile(entry.id);
-    ntSetError(name + ' — 파일을 읽지 못했습니다');
-  });
-  _ntFiles.push(entry);
-  ntRenderFiles();
-  ntUpdateSubmit();
-  var box = ntEl('nt-attachments');
-  if (box) box.scrollLeft = box.scrollWidth;
 }
 
-function ntRemoveFile(id) {
-  _ntFiles = _ntFiles.filter(function (f) {
-    if (f.id === id && f.url) {
-      try {
-        URL.revokeObjectURL(f.url);
-      } catch (e) {}
-    }
-    return f.id !== id;
-  });
-  if (_ntPlayingId === id && _ntAudio) _ntAudio.pause();
-  ntRenderFiles();
-  ntUpdateSubmit();
-}
-
-function ntRenderFiles() {
-  var box = ntEl('nt-attachments');
-  if (!box) return;
-  box.innerHTML = _ntFiles
-    .map(function (f) {
-      var thumb;
-      if (f.kind === 'image' && f.url) {
-        thumb = '<img class="nt-att-thumb" src="' + escAttr(f.url) + '" alt="">';
-      } else if (f.kind === 'audio' && f.url) {
-        var playing = _ntPlayingId === f.id;
-        thumb = '<button type="button" class="nt-att-play" aria-label="' + escAttr(f.name) + (playing ? ' 정지' : ' 재생') + '" onclick="ntPlay(' + f.id + ')">' + (playing ? NT_ICON_PAUSE : NT_ICON_PLAY) + '</button>';
-      } else {
-        thumb = '<span class="nt-att-thumb" aria-hidden="true">' + NT_ICON_FILE + '</span>';
-      }
-      var meta = (f.duration ? ntFormatDuration(f.duration) + ' · ' : '') + ntFormatBytes(f.size);
-      return (
-        '<div class="nt-att" data-id="' + f.id + '">' + thumb +
-        '<span class="nt-att-text"><span class="nt-att-name" title="' + escAttr(f.name) + '">' + esc(f.name) + '</span>' +
-        '<span class="nt-att-meta">' + esc(meta) + '</span></span>' +
-        '<button type="button" class="nt-att-remove" aria-label="' + escAttr(f.name) + ' 삭제" onclick="ntRemoveFile(' + f.id + ')">' + NT_ICON_X + '</button></div>'
-      );
-    })
-    .join('');
-}
-
-function ntPlay(id) {
-  var f = _ntFiles.find(function (x) {
-    return x.id === id;
-  });
-  if (!f || !f.url) return;
-  if (!_ntAudio) {
-    _ntAudio = new Audio();
-    _ntAudio.onended = _ntAudio.onpause = function () {
-      _ntPlayingId = 0;
-      ntRenderFiles();
-    };
-  }
-  if (_ntPlayingId === id) {
-    _ntAudio.pause();
-    return;
-  }
-  _ntAudio.src = f.url;
-  _ntPlayingId = id;
-  _ntAudio.play().catch(function () {
-    _ntPlayingId = 0;
-  });
-  ntRenderFiles();
-}
-
-async function ntToggleRecording() {
-  if (_ntRec) {
-    ntStopRecording(true);
-    return;
-  }
-  var canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
-  if (!canRecord) {
-    ntEl('nt-audio-input').click();
-    return;
-  }
-  var stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (e) {
-    ntSetError('마이크를 쓸 수 없습니다 (' + (e && e.name ? e.name : '권한 거부') + ') — 기기 녹음기로 녹음해 첨부해 주세요');
-    ntEl('nt-audio-input').click();
-    return;
-  }
-  var mime = ntPickRecorderMime(function (t) {
-    return MediaRecorder.isTypeSupported(t);
-  });
-  var recorder;
-  try {
-    recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-  } catch (e) {
-    recorder = new MediaRecorder(stream);
-  }
-  var state = {
-    recorder: recorder,
-    stream: stream,
-    chunks: [],
-    started: Date.now(),
-    mime: recorder.mimeType || mime || 'audio/mp4',
-    keep: true,
-    finished: false,
-    timer: 0,
-    raf: 0,
-    audioCtx: null,
-  };
-  _ntRec = state;
-  recorder.ondataavailable = function (ev) {
-    if (ev.data && ev.data.size) state.chunks.push(ev.data);
-  };
-  recorder.onstop = function () {
-    ntFinishRecording(state);
-  };
-  recorder.start(1000);
-  try {
-    var AC = window.AudioContext || window.webkitAudioContext;
-    state.audioCtx = new AC();
-    var analyser = state.audioCtx.createAnalyser();
-    analyser.fftSize = 512;
-    state.audioCtx.createMediaStreamSource(stream).connect(analyser);
-    var buf = new Uint8Array(analyser.fftSize);
-    var tick = function () {
-      if (_ntRec !== state) return;
-      analyser.getByteTimeDomainData(buf);
-      var peak = 0;
-      for (var i = 0; i < buf.length; i++) {
-        var v = Math.abs(buf[i] - 128);
-        if (v > peak) peak = v;
-      }
-      ntEl('nt-rec-level').style.width = Math.min(100, Math.round((peak / 128) * 160)) + '%';
-      state.raf = requestAnimationFrame(tick);
-    };
-    tick();
-  } catch (e) {}
-  ntEl('nt-recorder').hidden = false;
-  ntEl('nt-rec-time').textContent = '0:00';
-  var mic = ntEl('nt-mic');
-  mic.setAttribute('aria-pressed', 'true');
-  mic.setAttribute('aria-label', '녹음 완료');
-  state.timer = setInterval(function () {
-    var sec = Math.floor((Date.now() - state.started) / 1000);
-    ntEl('nt-rec-time').textContent = ntFormatDuration(sec);
-    if (sec >= NT_MAX_RECORD_SEC) ntStopRecording(true);
-  }, 250);
-  if (navigator.vibrate) {
-    try {
-      navigator.vibrate(12);
-    } catch (e) {}
-  }
-}
-
-function ntStopRecording(keep) {
-  var state = _ntRec;
-  if (!state) return;
-  _ntRec = null;
-  state.keep = keep;
-  state.stoppedAt = Date.now();
-  clearInterval(state.timer);
-  cancelAnimationFrame(state.raf);
-  try {
-    if (state.recorder.state !== 'inactive') state.recorder.stop();
-    else ntFinishRecording(state);
-  } catch (e) {
-    ntFinishRecording(state);
-  }
-  state.stream.getTracks().forEach(function (t) {
-    t.stop();
-  });
-  if (state.audioCtx) {
-    try {
-      state.audioCtx.close();
-    } catch (e) {}
-  }
-  ntEl('nt-recorder').hidden = true;
-  var mic = ntEl('nt-mic');
-  mic.setAttribute('aria-pressed', 'false');
-  mic.setAttribute('aria-label', '음성 녹음');
-}
-
-function ntFinishRecording(state) {
-  if (state.finished) return;
-  state.finished = true;
-  if (!state.keep || !state.chunks.length) return;
-  var type = String(state.mime).split(';')[0] || 'audio/mp4';
-  var blob = new Blob(state.chunks, { type: type });
-  var sec = Math.max(1, Math.round(((state.stoppedAt || Date.now()) - state.started) / 1000));
-  ntAddBlob(blob, 'voice-' + ntStamp(new Date()) + '.' + ntExtForMime(type), type, 'voice', { duration: sec });
-}
-
-async function submitNewTask(ev) {
-  if (ev) ev.preventDefault();
-  if (_ntBusy || !_ntCtx || !_ntState) return;
-  if (_ntRec) {
-    ntStopRecording(true);
-    await new Promise(function (resolve) {
-      setTimeout(resolve, 300);
-    });
-  }
-  _ntState.prompt = ntEl('nt-prompt').value;
-  if (!ntCanSubmit(_ntState, _ntFiles)) {
+// ui-submit (cancelled: the page sends, and the composer keeps the text and files until the task is launched).
+async function submitNewTask(detail) {
+  var el = ntEl('nt-composer');
+  if (_ntBusy || !_ntCtx || !_ntState || !el) return;
+  var files = (detail && detail.files) || el.files || [];
+  _ntState.prompt = detail ? String(detail.text || '') : el.value;
+  if (!ntCanSubmit(_ntState, files)) {
     ntSetError(_ntState.channelId ? '작업 지시를 쓰거나 파일을 첨부해 주세요' : '작업을 올릴 채널을 골라 주세요');
     return;
   }
   _ntBusy = true;
   ntSetError('');
-  var btn = ntEl('nt-submit');
-  btn.classList.add('is-busy');
-  ntUpdateSubmit();
+  paintNtComposer();
   try {
-    if (_ntFiles.length) ntSetStatus('첨부 준비 중…');
-    await Promise.all(
-      _ntFiles.map(function (f) {
-        return f.ready;
-      }),
-    );
-    var body = JSON.stringify(ntBuildPayload(_ntState, _ntFiles, _ntRequestId));
+    if (files.length) ntSetStatus('첨부 준비 중…');
+    var attachments;
+    try {
+      attachments = await Promise.all(files.map(ntReadFile));
+    } catch (readErr) {
+      ntSetStatus('');
+      ntSetError(String(readErr.message || '').slice(5) + ' — 파일을 읽지 못했습니다');
+      return;
+    }
+    var body = JSON.stringify(ntBuildPayload(_ntState, attachments, _ntRequestId));
     ntSetStatus('작업을 올리는 중…');
     var res = await ntPostTask(body);
     // Only a stale CSRF token is worth one retry (not "no Slack identity").
@@ -18751,8 +18488,7 @@ async function submitNewTask(ev) {
     ntSetError('작업을 시작하지 못했습니다 — 네트워크를 확인하고 다시 눌러 주세요 (같은 요청은 두 번 실행되지 않습니다)');
   } finally {
     _ntBusy = false;
-    btn.classList.remove('is-busy');
-    ntUpdateSubmit();
+    paintNtComposer();
   }
 }
 
@@ -18788,14 +18524,9 @@ function ntOnLaunched(data) {
   // The next task starts clean: a new idempotency key, no text, no files;
   // the channel just used stays selected.
   _ntRequestId = ntNewRequestId();
-  _ntFiles.forEach(function (f) {
-    if (f.url) {
-      try {
-        URL.revokeObjectURL(f.url);
-      } catch (e) {}
-    }
-  });
-  _ntFiles = [];
+  var composer = ntEl('nt-composer');
+  if (composer && typeof composer.clear === 'function') composer.clear();
+  _ntValue = '';
   _ntState = ntDefaultState(_ntCtx, null);
   _ntState.channelId = data.channel || _ntState.channelId;
   try {
@@ -18858,49 +18589,41 @@ function ntInit() {
   dlg.addEventListener('click', function (e) {
     if (e.target === dlg) closeNewTask();
   });
-  // PC: drop files anywhere on the composer; paste screenshots into the text.
-  // (File drop into the composer only — board cards stay non-draggable, §3.1-5.)
-  var compose = ntEl('nt-compose');
-  var hasFiles = function (e) {
-    return !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0);
-  };
-  dlg.ondragenter = function (e) {
-    if (!hasFiles(e)) return;
-    e.preventDefault();
-    compose.classList.add('is-drag');
-  };
-  dlg.ondragover = function (e) {
-    if (!hasFiles(e)) return;
-    e.preventDefault();
-    compose.classList.add('is-drag');
-  };
-  dlg.ondragleave = function (e) {
-    if (!e.relatedTarget || !dlg.contains(e.relatedTarget)) compose.classList.remove('is-drag');
-  };
-  dlg.ondrop = function (e) {
-    compose.classList.remove('is-drag');
-    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
-    e.preventDefault();
-    ntAddFiles(e.dataTransfer.files, 'dragged');
-  };
-  var prompt = ntEl('nt-prompt');
-  prompt.addEventListener('paste', function (e) {
-    var files = e.clipboardData && e.clipboardData.files ? Array.prototype.slice.call(e.clipboardData.files) : [];
-    if (!files.length) return;
-    if (!e.clipboardData.getData('text/plain')) e.preventDefault();
-    files.forEach(function (f) {
-      var type = f.type || 'application/octet-stream';
-      var generic = !f.name || f.name === 'image.png' || f.name === 'image.jpeg';
-      var name = generic ? 'screenshot-' + ntStamp(new Date()) + '.' + (type.split('/')[1] || 'png') : f.name;
-      ntAddBlob(f, name, type, 'paste');
-    });
+  // <ui-composer id="nt-composer"> (D2 H-05..H-09): it takes drops and pasted screenshots itself (named
+  // screenshot-…), records the voice note, and sends on ⌘/Ctrl+Enter.
+  var composer = ntEl('nt-composer');
+  // A plain Enter is a new line here (a long instruction; ⌘/Ctrl+Enter starts the task): the event stops at the
+  // element before its own Enter-sends rule, and the field still takes the line break.
+  composer.addEventListener(
+    'keydown',
+    function (e) {
+      if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) e.stopPropagation();
+    },
+    true,
+  );
+  composer.addEventListener('ui-input', function (e) {
+    var v = e.detail ? String(e.detail.value || '') : '';
+    if (_ntState) _ntState.prompt = v;
+    ntSaveDraft(v);
   });
-  prompt.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      submitNewTask();
+  // The server also caps the files together: the one that crosses it goes back out, with the reason.
+  composer.addEventListener('ui-files', function (e) {
+    var files = (e.detail && e.detail.files) || [];
+    var max = _ntCtx ? _ntCtx.limits.maxTotalBytes : 0;
+    var total = files.reduce(function (sum, f) { return sum + (f.size || 0); }, 0);
+    if (max && total > max && files.length) {
+      composer.removeFile(files.length - 1);
+      ntSetError('첨부는 모두 합쳐 ' + ntFormatBytes(max) + '까지입니다');
     }
   });
+  composer.addEventListener('ui-submit', function (e) {
+    e.preventDefault();
+    submitNewTask(e.detail);
+  });
+  composer.addEventListener('ui-tool', function (e) {
+    if (e.detail && e.detail.id === 'camera') ntEl('nt-camera-input').click();
+  });
+  paintNtComposer();
   // N opens the composer from anywhere outside a text field.
   document.addEventListener('keydown', function (e) {
     var key = String(e.key || '').toLowerCase();
