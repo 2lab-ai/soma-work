@@ -1255,6 +1255,8 @@ describe('Dashboard API', () => {
     expect(html.substring(foucIdx, styleIdx)).toContain('data-theme');
   });
 
+  // Tone pass P4: the theme toggle is the site's 34px icon button — the sun / moon are 16-grid SVGs
+  // (no emoji, no ::before content), the visible one chosen by data-theme in CSS; Korean label.
   it('should have theme toggle button with aria-label and no hardcoded emoji', async () => {
     const res = await injectWebServer({
       method: 'GET',
@@ -1265,14 +1267,16 @@ describe('Dashboard API', () => {
     const html: string = res.body;
     // Button must exist with aria-label
     expect(html).toContain('id="theme-toggle"');
-    expect(html).toContain('aria-label="Toggle theme"');
-    // Button content must be empty — icon is rendered via CSS ::before
+    expect(html).toContain('aria-label="테마 전환"');
+    // Button content: the two SVG glyphs, no text and no emoji
     const btnMatch = html.match(/<button[^>]*id="theme-toggle"[^>]*>(.*?)<\/button>/);
     expect(btnMatch).not.toBeNull();
-    expect(btnMatch![1].trim()).toBe('');
+    expect(btnMatch![1]).toMatch(/^<svg class="ic-sun"[^>]*aria-hidden="true">.*<\/svg><svg class="ic-moon"[^>]*aria-hidden="true">.*<\/svg>$/);
+    expect(btnMatch![1].replace(/<[^>]+>/g, '').trim()).toBe('');
+    expect(html).not.toContain('\\1F319');
   });
 
-  it('should have CSS pseudo-element rules for theme icon', async () => {
+  it('should have CSS rules that pick the theme icon by data-theme', async () => {
     const res = await injectWebServer({
       method: 'GET',
       url: '/dashboard',
@@ -1280,9 +1284,10 @@ describe('Dashboard API', () => {
     });
 
     const html: string = res.body;
-    // CSS must define ::before for theme-toggle
-    expect(html).toContain('#theme-toggle::before');
-    expect(html).toContain('[data-theme="light"] #theme-toggle::before');
+    // CSS shows the sun in the dark theme and the moon in the light one; no ::before glyph is left
+    expect(html).toContain('#theme-toggle .ic-moon, [data-theme="light"] #theme-toggle .ic-sun { display: none; }');
+    expect(html).toContain('[data-theme="light"] #theme-toggle .ic-moon { display: block; }');
+    expect(html).not.toContain('#theme-toggle::before');
   });
 
   it('should have theme JS functions in inline script', async () => {
