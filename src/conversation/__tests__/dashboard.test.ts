@@ -994,9 +994,9 @@ describe('Dashboard API', () => {
     // NOT '' (empty string concat) which was the bug before PR #280
     // Check doAction onclick builders have properly escaped quotes
     expect(script).toContain("doAction(\\''");
-    // Spec 13: one builder (sessionActionHtml) serves the card and the panel head;
-    // the action name is a closed set (stop · close · trash) joined in escaped quotes.
-    expect(script).toContain("\\',\\'' + kind + '\\')");
+    // Spec 13: one decision (sessionActionsOf) serves the card and the panel head; the
+    // card's builder joins the action name — a closed set (stop · close · trash) — in escaped quotes.
+    expect(script).toContain("\\',\\'' + a.id + '\\')");
     expect(script).toContain("var kind = running ? 'stop' : (col === 'closed' && s.terminated ? 'trash' : 'close');");
     // Check openPanel onclick builder
     expect(script).toContain("openPanel(\\''");
