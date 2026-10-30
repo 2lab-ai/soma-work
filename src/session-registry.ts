@@ -1307,7 +1307,15 @@ export class SessionRegistry {
    * sanitizes to nothing leaves the current title in place.
    */
   updateSessionTitle(channelId: string, threadTs: string | undefined, title: string): void {
-    const session = this.getSession(channelId, threadTs);
+    this.updateSessionTitleOn(this.getSession(channelId, threadTs), title);
+  }
+
+  /** The same by session key (#615 R1). */
+  updateSessionTitleByKey(sessionKey: string, title: string): void {
+    this.updateSessionTitleOn(this.getSessionByKey(sessionKey), title);
+  }
+
+  private updateSessionTitleOn(session: ConversationSession | undefined, title: string): void {
     const clean = sanitizeSessionTitle(title);
     if (session && clean) {
       session.title = clean;

@@ -1166,6 +1166,19 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       say,
     } = params;
 
+    // A Slack-less task's turn and its execution context come together (#615 R1):
+    // `slackless` routes the registry writes by key, the context is what the
+    // runtime runs under. One without the other is a caller bug — refuse it
+    // before anything runs rather than half-run a Slack path with an empty channel.
+    const taskTurn = session.slackless === true;
+    if (taskTurn !== (params.executionContext !== undefined)) {
+      throw new Error(
+        taskTurn
+          ? 'Slack-less task turn refused: no execution context'
+          : 'Slack turn refused: an execution context is only for a Slack-less task',
+      );
+    }
+
     // Issue #688 — capture per-turn status epoch. Every clearStatus call
     // emitted by this execute() carries `expectedEpoch: epoch` so that a
     // stale clear from a previous (aborted) turn cannot kill a newer
@@ -1744,7 +1757,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       }
 
       // Create Slack context for permission prompts + channel description for system prompt
-      const channelDescription = await getChannelDescription(this.deps.slackApi.getClient(), channel);
+      // A task has no channel to describe (#615 R1).
+      const channelDescription = channel ? await getChannelDescription(this.deps.slackApi.getClient(), channel) : '';
       // Fetch structured repo info from channel registry (parsed from channel description)
       const channelInfo = getChannel(channel);
       const slackContext = {
@@ -2436,7 +2450,7 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           abortController,
           workingDirectory,
           // A Slack-less task's turn carries its execution context and no Slack context (#598 ④a).
-          params.executionContext ? undefined : slackContext,
+          taskTurn ? undefined : slackContext,
           // 6th arg: the steering registry key. The handler stamps the uuids it
           // mints for messages pushed into THIS turn under this key, so the
           // `steer_lifecycle` frames it emits join back to the host's queue for

@@ -135,7 +135,7 @@ import { switchSessionModel } from './session/model-switch';
 import { applyTodoList, creditTaskUsage, emptyTaskLedger, ledgerTasks } from './session/task-ledger';
 import { createMainCallReader, reconcileTaskCalls, type TranscriptCall } from './session/task-usage-reconcile';
 import { resolveArchivedResume } from './session-archive';
-import { canApplySummaryTitle } from './session-title-policy';
+import { applySummaryTitle } from './session-title-policy';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
@@ -1265,36 +1265,32 @@ async function start() {
     // Connect summary generation: update session title on Slack thread header
     setOnSummaryGeneratedCallback((conversationId, _turn, summaryTitle) => {
       const registry = claudeHandler.getSessionRegistry();
-      const allSessions = registry.getAllSessions();
-      const session = [...allSessions.values()].find((s) => s.conversationId === conversationId);
-      if (!session) {
+      // By registry key, so a Slack-less task's card gets its summary title too (#615 R1).
+      const result = applySummaryTitle(registry, conversationId, summaryTitle, {
+        renderThread: (session) => slackHandler.requestThreadSurfaceRender(session),
+        scheduleLiveUpdate: scheduleLiveSessionUpdate,
+      });
+      if (result.outcome === 'no-session') {
         logger.warn('Summary generated but no active session found', {
           conversationId,
           summaryTitle,
-          totalActiveSessions: allSessions.size,
+          totalActiveSessions: registry.getAllSessions().size,
         });
-        return;
-      }
-      // Guard: only overwrite title when it hasn't been deliberately set
-      // (e.g. by dispatch or issue linking). Treat conversationId-equal titles as "empty",
-      // and a provisional cron job-name title as a placeholder (SSOT 2026-10-23 T2).
-      if (!canApplySummaryTitle(session)) {
+      } else if (result.outcome === 'kept') {
+        // Guard: only overwrite title when it hasn't been deliberately set
+        // (e.g. by dispatch or issue linking) — see canApplySummaryTitle.
         logger.debug('Skipping summary title — session already has a deliberate title', {
           conversationId,
-          existingTitle: session.title,
+          existingTitle: result.session.title,
           summaryTitle,
         });
-        return;
+      } else {
+        logger.debug('Summary title applied to session', {
+          conversationId,
+          summaryTitle,
+          sessionKey: result.sessionKey,
+        });
       }
-      registry.updateSessionTitle(session.channelId, session.threadTs, summaryTitle);
-      slackHandler.requestThreadSurfaceRender(session);
-      // The dashboard card shows the new headline now, not at the next poll.
-      scheduleLiveSessionUpdate(registry.getSessionKey(session.channelId, session.threadTs));
-      logger.debug('Summary title applied to session', {
-        conversationId,
-        summaryTitle,
-        sessionKey: `${session.channelId}:${session.threadTs}`,
-      });
     });
 
     // Connect OAuth: email → Slack user lookup for dashboard login

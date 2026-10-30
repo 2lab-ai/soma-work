@@ -232,10 +232,28 @@ function invalidResumeTurn(): () => AsyncGenerator<unknown> {
     })();
 }
 
+/**
+ * A channel/thread form of a registry call: like the real one, it throws for an
+ * empty channel — so a missed site fails the task turn instead of passing
+ * silently (#615 R1).
+ */
+function slackKeyed() {
+  return vi.fn((channel: string) => {
+    if (!channel) throw new Error('Invalid channelId (IDENTITY_EMPTY): ""');
+  });
+}
+
 function taskDeps(stream: () => AsyncGenerator<unknown> = toolTurn()) {
   const deps = createDeps(stream);
   Object.assign(deps.claudeHandler, {
-    addMergeStats: vi.fn(),
+    setActivityState: slackKeyed(),
+    clearSessionId: slackKeyed(),
+    setSessionLinks: slackKeyed(),
+    addSourceWorkingDir: slackKeyed(),
+    addMergeStats: slackKeyed(),
+    updateSessionTitle: slackKeyed(),
+    fillPlaceholderSessionTitle: slackKeyed(),
+    updateSessionResources: slackKeyed(),
     setActivityStateByKey: vi.fn(),
     clearSessionIdByKey: vi.fn(),
     setSessionLinksByKey: vi.fn(),
@@ -262,7 +280,8 @@ describe('StreamExecutor — a Slack-less task turn, registry and runtime half (
 
   it('the runtime gets the execution context and no Slack context', async () => {
     const deps = taskDeps();
-    await new StreamExecutor(deps).execute(taskParams());
+    const result = await new StreamExecutor(deps).execute(taskParams());
+    expect(result.success).toBe(true);
     const args = deps.claudeHandler.streamAgentEvents.mock.calls[0] as unknown[];
     expect(args[4]).toBeUndefined(); // slackContext
     expect(args[5]).toBe(TASK_KEY); // sessionKey
@@ -344,5 +363,35 @@ describe('StreamExecutor — a Slack-less task turn, registry and runtime half (
     expect(deps.claudeHandler.clearSessionId).not.toHaveBeenCalled();
     expect(deps.claudeHandler.clearSessionIdByKey).toHaveBeenCalledWith(TASK_KEY);
     expect(deps.claudeHandler.setActivityState).not.toHaveBeenCalled();
+  });
+
+  it('a Slack-less session with no execution context is refused before anything runs (#615 R1)', async () => {
+    const deps = taskDeps();
+    const params = taskParams();
+    params.executionContext = undefined;
+    await expect(new StreamExecutor(deps).execute(params)).rejects.toThrow(/execution context/);
+    expect(deps.claudeHandler.setActivityStateByKey).not.toHaveBeenCalled();
+    expect(deps.claudeHandler.streamAgentEvents).not.toHaveBeenCalled();
+  });
+
+  it('an execution context alongside a Slack session is refused (#615 R1)', async () => {
+    const deps = taskDeps();
+    const params = { ...createParams(createSession(LOG_MINIMAL)), executionContext: TASK_CONTEXT };
+    await expect(new StreamExecutor(deps).execute(params)).rejects.toThrow(/execution context/);
+    expect(deps.claudeHandler.setActivityState).not.toHaveBeenCalled();
+    expect(deps.claudeHandler.streamAgentEvents).not.toHaveBeenCalled();
+  });
+
+  it('a task turn does not ask Slack for a channel description (#615 R1)', async () => {
+    const describeChannel = vi.fn(async () => '');
+    setStreamExecutorProviders({ getChannelDescription: describeChannel });
+    try {
+      await new StreamExecutor(taskDeps()).execute(taskParams());
+      expect(describeChannel).not.toHaveBeenCalled();
+      await new StreamExecutor(taskDeps()).execute(createParams(createSession(LOG_MINIMAL)));
+      expect(describeChannel).toHaveBeenCalledWith(expect.anything(), CHANNEL);
+    } finally {
+      setStreamExecutorProviders({ getChannelDescription: async () => '' });
+    }
   });
 });
