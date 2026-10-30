@@ -121,21 +121,35 @@ export function executionContextForTask(session: ConversationSession): TaskExecu
 /**
  * The real location of `p` in its `/tmp` form: symlinks are resolved on the
  * deepest part that exists, and a part not created yet is appended as named.
+ * Fail closed (#613 R2): a dangling link, a part that is a regular file, or a
+ * location that cannot be resolved has no context.
  */
 function realDirectory(p: string): string {
   const pending: string[] = [];
   let existing = p;
-  while (!fs.existsSync(existing)) {
+  // lstat, not exists: a dangling link exists as a link and must not read as "not created yet".
+  while (!lstatOrUndefined(existing)) {
     const parent = path.dirname(existing);
     if (parent === existing) break;
     pending.unshift(path.basename(existing));
     existing = parent;
   }
-  let real = existing;
+  let real: string;
   try {
     real = fs.realpathSync(existing);
   } catch {
-    // Unreadable: judge the path as named.
+    throw new ExecutionContextMissingError('task working directory cannot be resolved');
+  }
+  if (!fs.statSync(real).isDirectory()) {
+    throw new ExecutionContextMissingError('task working directory runs through something that is not a directory');
   }
   return normalizeTmpPath(path.join(real, ...pending));
+}
+
+function lstatOrUndefined(p: string): fs.Stats | undefined {
+  try {
+    return fs.lstatSync(p);
+  } catch {
+    return undefined;
+  }
 }

@@ -108,6 +108,20 @@ describe('executionContextForTask — symlinks (#613 R1)', () => {
     ).toThrow(ExecutionContextMissingError);
   });
 
+  it('refuses a dangling symlink inside the owner’s root (#613 R2)', () => {
+    fs.symlinkSync(`${ownerRoot}/nowhere`, `${ownerRoot}/session_dangling`);
+    expect(() =>
+      executionContextForTask(task({ ownerId: OWNER, workingDirectory: `${ownerRoot}/session_dangling` })),
+    ).toThrow(ExecutionContextMissingError);
+  });
+
+  it('refuses a path that runs through a regular file (#613 R2)', () => {
+    fs.writeFileSync(`${ownerRoot}/afile`, 'x');
+    expect(() => executionContextForTask(task({ ownerId: OWNER, workingDirectory: `${ownerRoot}/afile/sub` }))).toThrow(
+      ExecutionContextMissingError,
+    );
+  });
+
   it('accepts a real directory inside the owner’s root, in its /tmp form', () => {
     const ctx = executionContextForTask(task({ ownerId: OWNER, workingDirectory: `${ownerRoot}/session_real` }));
     expect(ctx.workingDirectory).toBe(`${ownerRoot}/session_real`);

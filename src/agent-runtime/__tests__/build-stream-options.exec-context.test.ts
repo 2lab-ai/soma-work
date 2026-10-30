@@ -217,6 +217,26 @@ describe('a task runs in the directory its context validated (#613 R1, D6/T8)', 
     expect(options.cwd).toBe(ctx.workingDirectory);
   });
 
+  it('a task whose directory cannot be made is refused — never run in the server’s directory (#613 R2)', async () => {
+    const blocked = `/tmp/${USER}/session_exec_ctx_blocked`;
+    fs.rmSync(blocked, { recursive: true, force: true });
+    const ctx = executionContextForTask({
+      ownerId: USER,
+      slackless: true,
+      taskId: TASK_ID,
+      channelId: '',
+      workingDirectory: `${blocked}/sub`,
+    } as ConversationSession);
+    fs.writeFileSync(blocked, 'a file where the directory should be');
+    try {
+      await expect(buildStreamOptions({ queryEnv: {}, executionContext: ctx }, makeDeps())).rejects.toBeInstanceOf(
+        ExecutionContextMissingError,
+      );
+    } finally {
+      fs.rmSync(blocked, { force: true });
+    }
+  });
+
   it('a context and a Slack event naming different users is refused', async () => {
     const ctx = taskContext();
     await expect(

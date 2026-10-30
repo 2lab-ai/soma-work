@@ -742,6 +742,10 @@ export async function buildStreamOptions(
     }
     if (fs.existsSync(workingDirectory)) {
       options.cwd = workingDirectory;
+    } else if (execCtx?.origin === 'task') {
+      // A task runs in its validated directory or not at all — never in the
+      // server's directory, which an unset cwd would hand the SDK child (#613 R2).
+      throw new ExecutionContextMissingError('task working directory cannot be created');
     }
 
     // Expand SDK's allowed directory scope to user's root /tmp/{userId} directory.
