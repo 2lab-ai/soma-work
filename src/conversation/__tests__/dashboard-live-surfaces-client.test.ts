@@ -364,7 +364,7 @@ describe('goals: completed goals open with their details (T6)', () => {
       'isBusy',
       'renderCardGoal',
     ],
-    ['GOAL_STATUS_LABELS', '_goalErrors', 'GOAL_VIA_LABELS', '_busy'],
+    ['GOAL_STATUS_LABELS', 'GOAL_SVG', '_goalErrors', 'GOAL_VIA_LABELS', '_busy'],
     { _goalHistoryOpen: open },
   );
   const card = (history: unknown[], over: Record<string, unknown> = {}) => ({

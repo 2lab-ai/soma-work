@@ -120,6 +120,7 @@ const SYS_VARS = [
   '_skillSeq',
   // SSOT 2026-10-29 T7: the harness's row has its own avatar (a neutral gear), never the user's initial.
   'SYS_AVATAR_SVG',
+  'BOT_AVATAR_SVG',
 ];
 
 type Info = { kind: string; label: string; line: string; raw: string; facts: [string, string][] } | null;

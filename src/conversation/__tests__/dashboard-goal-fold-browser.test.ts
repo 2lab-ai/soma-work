@@ -58,6 +58,7 @@ const FNS = [
 ];
 const VARS = [
   'GOAL_STATUS_LABELS',
+  'GOAL_SVG',
   'GOAL_VIA_LABELS',
   '_goalHistoryOpen',
   '_goalErrors',

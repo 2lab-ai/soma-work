@@ -501,6 +501,52 @@ describe('agent inbox board — deep link (§3.1-8)', () => {
   });
 });
 
+// Tone pass P7 — surfaces and elevation: two levels of shadow (the library's --ib-shadow at rest,
+// --ib-shadow-raised for what floats), no colour rails on the turns, glyphs instead of emoji.
+describe('tone pass P7 — surfaces and elevation', () => {
+  const rule = (sel: string) => {
+    const at = TEMPLATE.indexOf(`\n${sel} {`);
+    expect(at, sel).toBeGreaterThan(0);
+    return TEMPLATE.slice(at, TEMPLATE.indexOf('}', at));
+  };
+
+  it('stat cards and charts are 12px cards on --ib-shadow; menus, dialogs, the peek, the viewer and tooltips are raised', () => {
+    for (const sel of ['.stat-card', '.chart-container']) {
+      expect(rule(sel), sel).toContain('border-radius: 12px;');
+      expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow);');
+    }
+    for (const sel of [
+      '.td-menu',
+      '.nt-dialog',
+      '.art-peek',
+      '.art-modal',
+      '#stat-tokens-tooltip',
+      '.bar .bar-tooltip',
+    ]) {
+      expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow-raised)');
+    }
+  });
+
+  it('turns carry no colour rail; who spoke is a neutral 24px glyph tile with a hairline — the bot an SVG', () => {
+    expect(TEMPLATE).not.toMatch(/\.turn\.(user|assistant|is-sys) \{[^}]*border-left/);
+    const tile = rule('.turn-avatar');
+    expect(tile).toContain('width: 24px; height: 24px;');
+    expect(tile).toContain('box-shadow: inset 0 0 0 1px var(--border);');
+    expect(tile).not.toMatch(/var\(--(accent|purple)\)/);
+    expect(TEMPLATE).not.toMatch(/\.(user|bot)-avatar \{[^}]*var\(--(accent|purple)\)/);
+    expect(TEMPLATE).not.toContain('&#x1F916;');
+    expect(
+      TEMPLATE.match(/<div class="turn-avatar bot-avatar" aria-hidden="true">' \+ BOT_AVATAR_SVG \+ '<\/div>/g),
+    ).toHaveLength(3);
+  });
+
+  it('the goal mark is the target glyph, not the bullseye emoji', () => {
+    expect(TEMPLATE).not.toContain('&#x1F3AF;');
+    expect(TEMPLATE.match(/<span class="cgl-icon" aria-hidden="true">' \+ GOAL_SVG \+ '<\/span>/g)).toHaveLength(2);
+    expect(TEMPLATE).toContain(`<span class="cg-label">' + GOAL_SVG + 'Goal</span>`);
+  });
+});
+
 describe('agent inbox board — motion contract (§4)', () => {
   // P10 (tone pass): the tokens come from @2lab.ai/ui's tokens.css, emitted into the page, and the
   // dashboard's names are aliases of the library's --ui-* — one source, the values verbatim.
@@ -552,7 +598,9 @@ describe('agent inbox board — motion contract (§4)', () => {
       const selectors = topLevel(rule.slice(0, rule.indexOf('{')));
       for (const sel of selectors) expect(sel, sel).toContain(':not(:focus-visible)');
     }
-    expect(TEMPLATE).toMatch(/:is\([^)]*\.stats-more[^)]*\):active:not\(:disabled\):not\(:focus-visible\) \{ transform: scale\(0\.97\); \}/);
+    expect(TEMPLATE).toMatch(
+      /:is\([^)]*\.stats-more[^)]*\):active:not\(:disabled\):not\(:focus-visible\) \{ transform: scale\(0\.97\); \}/,
+    );
   });
 
   it('reduced motion stops the spinner and shows a static working indicator (§4-8)', () => {
