@@ -531,10 +531,27 @@ describe('agent inbox board — motion contract (§4)', () => {
   it('presses scale to 0.97 — pointer presses only, never keyboard activation (§4-5, §4-9)', () => {
     const rules = TEMPLATE.match(/^[^\n{]*:active[^\n{]*\{[^}]*transform: scale\(0\.97\)[^}]*\}/gm) ?? [];
     expect(rules.length).toBeGreaterThan(0);
+    // Tone pass P6: one shared press rule lists its controls in :is(…) — split on top-level commas only,
+    // so each selector (the whole :is(…):active… one included) must still exclude keyboard presses.
+    const topLevel = (list: string) => {
+      const out: string[] = [];
+      let depth = 0;
+      let cur = '';
+      for (const ch of list) {
+        if (ch === '(') depth++;
+        if (ch === ')') depth--;
+        if (ch === ',' && depth === 0) {
+          out.push(cur);
+          cur = '';
+        } else cur += ch;
+      }
+      return [...out, cur];
+    };
     for (const rule of rules) {
-      const selectors = rule.slice(0, rule.indexOf('{')).split(',');
+      const selectors = topLevel(rule.slice(0, rule.indexOf('{')));
       for (const sel of selectors) expect(sel, sel).toContain(':not(:focus-visible)');
     }
+    expect(TEMPLATE).toMatch(/:is\([^)]*\.stats-more[^)]*\):active:not\(:disabled\):not\(:focus-visible\) \{ transform: scale\(0\.97\); \}/);
   });
 
   it('reduced motion stops the spinner and shows a static working indicator (§4-8)', () => {
