@@ -3702,13 +3702,17 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    user's name when it is wider than its cap — 180px on the one-row bar (≥1024,
    even when the row has room), the whole nav row below 1024px. */
 .topbar {
-  background: var(--surface);
+  /* ui.2lab.ai's app bar: the page colour at 86% over what scrolls under it, blurred,
+     one hairline; opaque when the reader asks for less transparency (below). */
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
   padding: 0 20px;
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 48px;
+  min-height: 56px;
   min-width: 0;
   /* SSOT 2026-10-29 T3: the top bar is always on screen — it stays at the top
      while the board scrolls (the docked drawer sits under it: --topbar-b). Below
@@ -3728,6 +3732,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   white-space: nowrap;
   flex: none;
 }
+@media (prefers-reduced-transparency: reduce) {
+  .topbar { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
 .topbar h1 .brand-mark { width: 22px; height: 22px; flex: none; }
 .brand-mark .bm-bg { fill: var(--text); }
 .brand-mark .bm-cell { fill: var(--surface); }
@@ -3743,13 +3750,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    clickable while a session panel is open — that is when "열린 세션에도 적용" exists. */
 .topbar .topbar-defaults { position: relative; z-index: 101; display: flex; gap: 6px; align-items: center; flex: none; }
 .topbar .topbar-defaults[hidden] { display: none; }
-.topbar .td-chip { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 12px; color: var(--text-secondary); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; min-height: 30px; cursor: pointer; white-space: nowrap; transition: border-color var(--dur-press) var(--ease-out), transform var(--dur-press) var(--ease-out); }
-.topbar .td-chip b { color: var(--text); font-weight: 600; }
-.topbar .td-chip[aria-expanded="true"] { border-color: var(--ib-muted); background: var(--ib-pill); color: var(--text); }
+/* The defaults are triggers in the library's .mp-trigger shape: a neutral well, 8px, a chevron. */
+.topbar .td-chip { --td-well: color-mix(in srgb, var(--ib-text) 6%, var(--ib-card)); display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 13px; font-weight: 500; color: var(--ib-text-2); background: var(--ib-seg); border: 1px solid var(--ib-card-border); border-radius: 8px; padding: 0 8px 0 10px; min-height: 30px; cursor: pointer; white-space: nowrap; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
+.topbar .td-chip b { color: var(--ib-text); font-weight: 500; }
+.topbar .td-chip[aria-expanded="true"] { background: var(--td-well); color: var(--ib-text); }
 .topbar .td-chip:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .topbar .td-chip:active:not(:focus-visible) { transform: scale(0.97); }
-@media (hover: hover) and (pointer: fine) { .topbar .td-chip:hover { border-color: var(--ib-muted); color: var(--text); } }
-.topbar .td-caret { font-size: 10px; color: var(--text-tertiary); }
+@media (hover: hover) and (pointer: fine) { .topbar .td-chip:hover { background: var(--td-well); color: var(--ib-text); } }
+.topbar .td-caret { width: 12px; height: 12px; flex: none; color: var(--ib-muted); transition: transform var(--dur-move) var(--ease-out); }
+.topbar .td-chip[aria-expanded="true"] .td-caret { transform: rotate(180deg); }
 .td-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 120; min-width: 260px; max-width: min(360px, 92vw); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 14px 32px rgba(0,0,0,0.35); padding: 6px; }
 .td-menu[hidden] { display: none; }
 .td-menu .tdm-head { font-size: 11px; font-weight: 600; color: var(--text-tertiary); padding: 6px 8px 4px; }
@@ -3763,23 +3772,26 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .td-menu .tdm-scope input { margin-top: 2px; }
 .topbar .td-status { font-size: 12px; color: var(--text-secondary); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar .td-status.is-error { color: var(--red); }
+/* Nav: the site's chip links — no box at rest, the --ib-pill chip on hover; the user
+   select is a trigger (a neutral well with a hairline) because it opens a list. */
 .topbar .nav a,
 .topbar .nav .user-select {
-  background: var(--surface-raised);
+  background: transparent;
   color: var(--text-secondary);
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: 8px;
-  padding: 6px 12px;
+  padding: 6px 10px;
   text-decoration: none;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 500;
   cursor: pointer;
-  transition: border-color var(--speed) var(--ease), color var(--speed) var(--ease);
+  transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease;
   min-height: 32px;
   white-space: nowrap;
   flex: none;
 }
-.topbar .nav a { display: inline-flex; align-items: center; gap: 4px; }
+.topbar .nav a { display: inline-flex; align-items: center; gap: 6px; }
+.topbar .nav a svg { width: 15px; height: 15px; flex: none; }
 /* User select: a visible label sized to the selected option, with the native
    <select> laid transparently over it (it still takes every click, tap and key).
    A native select cannot show an ellipsis in WebKit — it hard-cuts the text —
@@ -3793,6 +3805,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   flex: 0 1 auto;
   min-width: 0;
   max-inline-size: 180px;
+  background: var(--ib-seg);
+  border-color: var(--ib-card-border);
+  color: var(--ib-text);
   /* WebKit counts the ellipsized label's full text in this box's scrollable
      overflow and passes it up to the page (25px of sideways scroll at 320px
      with a long name selected); nothing in here is meant to extend past it. */
@@ -3826,26 +3841,28 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   font: inherit;
 }
 .topbar .user-select:has(select:focus-visible) { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-.topbar .nav a:hover,
-.topbar .nav .user-select:hover { border-color: var(--ib-muted); color: var(--text); }
+@media (hover: hover) and (pointer: fine) {
+  .topbar .nav a:hover { background: var(--ib-pill); color: var(--text); }
+  .topbar .nav .user-select:hover { background: color-mix(in srgb, var(--ib-text) 6%, var(--ib-card)); }
+}
 
-/* ── USER PILL — "Logged in as <name>", links to the /login account page, rendered from /auth/me ── */
+/* ── USER PILL — the signed-in name, links to the /login account page, rendered from /auth/me ── */
 .topbar .user-pill {
   display: none; /* toggled by JS once /auth/me resolves */
   text-decoration: none;
   align-items: center;
   gap: 6px;
-  background: var(--surface-raised);
+  background: transparent;
   color: var(--text-secondary);
   border: 1px solid var(--border);
   border-radius: 999px;
-  padding: 6px 12px;
-  font-size: 12px;
+  padding: 5px 12px 5px 8px;
+  font-size: 13px;
   font-weight: 500;
   line-height: 1;
   min-height: 32px;
   cursor: pointer;
-  transition: border-color var(--speed) var(--ease);
+  transition: background-color 150ms ease, color 150ms ease;
   white-space: nowrap;
   max-width: 260px;
   min-width: 0;
@@ -3853,9 +3870,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.topbar .user-pill-prefix { display: inline-flex; flex: none; color: var(--text-tertiary); }
+.topbar .user-pill-prefix svg { width: 15px; height: 15px; }
+.topbar .user-pill .ic-admin, .topbar .user-pill.is-admin .ic-user { display: none; }
+.topbar .user-pill.is-admin .ic-admin { display: block; }
 .topbar .user-pill b {
   color: var(--text);
-  font-weight: 600;
+  font-weight: 500;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
@@ -3863,61 +3884,70 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   white-space: nowrap;
   display: inline-block;
 }
-.topbar .user-pill.is-admin b::before { content: '★ '; color: var(--accent); }
-.topbar .user-pill:hover { border-color: var(--ib-muted); color: var(--text); }
+@media (hover: hover) and (pointer: fine) { .topbar .user-pill:hover { background: var(--ib-pill); color: var(--text); } }
 .topbar .user-pill:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 
 /* ── ADMIN MODE TOGGLE — visible only for ADMIN_USERS (#716) ── */
 .topbar .admin-toggle {
-  background: var(--surface-raised);
+  background: transparent;
   color: var(--text-secondary);
   border: 1px solid var(--border);
   border-radius: 8px;
-  padding: 6px 12px;
-  font-size: 12px;
+  padding: 6px 10px;
+  font-size: 13px;
   font-weight: 500;
   cursor: pointer;
   min-height: 32px;
   white-space: nowrap;
   flex: none;
   align-items: center;
-  transition: border-color var(--speed) var(--ease), color var(--speed) var(--ease), background var(--speed) var(--ease);
+  transition: border-color 150ms ease, color 150ms ease, background-color 150ms ease;
 }
-.topbar .admin-toggle:hover { border-color: var(--ib-muted); color: var(--text); }
+@media (hover: hover) and (pointer: fine) { .topbar .admin-toggle:hover { border-color: var(--ib-muted); color: var(--text); } }
 .topbar .admin-toggle[aria-pressed="true"] {
   background: rgba(248, 81, 73, 0.18);
   border-color: var(--red, #f85149);
   color: var(--red, #f85149);
 }
 .topbar .admin-toggle[aria-pressed="true"]:hover { background: rgba(248, 81, 73, 0.28); }
+/* The site's 34px icon button: the sun in the dark theme, the moon in the light one (the theme it switches to). */
 #theme-toggle {
-  background: var(--surface-raised);
+  display: inline-grid;
+  place-items: center;
+  inline-size: 34px;
+  block-size: 34px;
+  padding: 0;
+  background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  padding: 6px 10px;
-  font-size: 16px;
-  line-height: 1;
+  color: var(--text-secondary);
   cursor: pointer;
-  min-height: 32px;
-  display: flex;
   flex: none;
-  align-items: center;
-  justify-content: center;
-  transition: border-color var(--speed) var(--ease), transform 0.2s var(--ease);
+  transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
 }
-#theme-toggle::before { content: '\\1F319'; }
-[data-theme="light"] #theme-toggle::before { content: '\\2600\\FE0F'; }
-#theme-toggle:hover { border-color: var(--ib-muted); transform: scale(1.1); }
+#theme-toggle svg { width: 16px; height: 16px; }
+#theme-toggle .ic-moon, [data-theme="light"] #theme-toggle .ic-sun { display: none; }
+[data-theme="light"] #theme-toggle .ic-moon { display: block; }
+@media (hover: hover) and (pointer: fine) { #theme-toggle:hover { background: var(--ib-pill); color: var(--text); } }
+/* Live updates: a tone dot and a word (library status: never colour alone). The tone moves with
+   the state in 300ms; the word is the tone mixed 70% toward the ink (≥ 4.5:1 on the bar). */
 .ws-badge {
-  padding: 4px 12px;
+  --ws-tone: var(--text-tertiary);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
   border-radius: 999px;
-  font-size: 12px;
+  font-size: 12.5px;
   font-weight: 500;
-  background: var(--surface-raised);
-  border: 1px solid var(--border);
+  color: color-mix(in srgb, var(--ws-tone) 70%, var(--text));
   white-space: nowrap;
   flex: none;
+  transition: color 300ms ease, background-color 300ms ease;
 }
+.ws-badge::before { content: ''; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ws-tone); transition: background-color 300ms ease; }
+.ws-badge[data-state="live"] { --ws-tone: var(--st-done); }
+.ws-badge[data-state="reconnecting"] { --ws-tone: var(--st-wait); }
 
 /* ── MAIN — stats strip, then the board; capped at 1280px and centred (.prd/10 §3.1-2, §5) ── */
 .main { flex: 1; padding: 20px; width: 100%; max-width: 1280px; margin: 0 auto; min-width: 0; }
@@ -5529,6 +5559,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
     inline-size: 10px;
     block-size: 10px;
     padding: 0;
+    background: var(--ws-tone);
     border-radius: 50%;
     text-indent: 100%;
     white-space: nowrap;
@@ -6244,39 +6275,39 @@ ${pageTokenAliases()}
 <div class="app">
   <div class="topbar">
     <h1><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect class="bm-bg" width="32" height="32" rx="8"/><rect class="bm-cell" x="7" y="7" width="7" height="7" rx="1.5"/><rect class="bm-cell" x="18" y="7" width="7" height="7" rx="1.5" opacity=".55"/><rect class="bm-cell" x="7" y="18" width="7" height="7" rx="1.5" opacity=".55"/><rect class="bm-cell" x="18" y="18" width="7" height="7" rx="1.5" opacity=".25"/></svg>soma-work</h1>
-    <span class="ws-badge" id="ws-status" role="status" aria-label="WebSocket: Connecting">Connecting...</span>
+    <span class="ws-badge" id="ws-status" role="status" aria-label="실시간 업데이트: 연결 중" data-state="connecting">연결 중…</span>
     <div class="topbar-defaults" id="topbar-defaults" hidden>
-      <button type="button" class="td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" aria-controls="td-menu" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><span class="td-caret" aria-hidden="true">&#x25BE;</span></button>
-      <button type="button" class="td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" aria-controls="td-menu" title="새 세션의 기본 effort — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">Effort </span><b id="td-effort-value">…</b><span class="td-caret" aria-hidden="true">&#x25BE;</span></button>
+      <button type="button" class="td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" aria-controls="td-menu" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><svg class="td-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
+      <button type="button" class="td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" aria-controls="td-menu" title="새 세션의 기본 effort — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">Effort </span><b id="td-effort-value">…</b><svg class="td-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
       <div class="td-menu" id="td-menu" role="menu" hidden></div>
       <span class="td-status" id="td-status" role="status" aria-live="polite"></span>
     </div>
-    <button type="button" class="new-task-btn" id="new-task-btn" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><span class="nt-plus" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></span><span class="nt-btn-label">New task</span><kbd class="nt-kbd" aria-hidden="true">N</kbd></button>
+    <button type="button" class="new-task-btn" id="new-task-btn" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><span class="nt-plus" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></span><span class="nt-btn-label">새 작업</span><kbd class="nt-kbd" aria-hidden="true">N</kbd></button>
     <div class="nav">
-      <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">All Users</span><select id="user-select" title="All Users" onchange="selectUser(this.value)">
-        <option value="">All Users</option>
+      <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">모든 사용자</span><select id="user-select" title="모든 사용자" aria-label="보드에 보일 사용자" onchange="selectUser(this.value)">
+        <option value="">모든 사용자</option>
       </select></span>
-      <a href="/conversations"><span aria-hidden="true">&#x1F4DD;</span>Conversations</a>
-      <a href="/dashboard/settings" id="settings-link" title="개인 설정 — Slack 명령으로 바꾸던 설정을 여기서 확인하고 바꿉니다"><span aria-hidden="true">&#x2699;&#xFE0F;</span>설정</a>
-      <a href="/dashboard/settings#memory" id="memory-link" title="기억 — 에이전트가 기억하는 개인 메모리와 관찰 기록을 보고 고칩니다"><span aria-hidden="true">&#x1F9E0;</span>기억</a>
+      <a href="/conversations" title="대화 — 지난 대화를 모두 봅니다"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3.5h10a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H8.2L5 14v-2.5H3a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1z"/></svg>대화</a>
+      <a href="/dashboard/settings" id="settings-link" title="개인 설정 — Slack 명령으로 바꾸던 설정을 여기서 확인하고 바꿉니다"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 5h6.5M12.5 5h1M2.5 11h1M7 11h6.5"/><circle cx="10.75" cy="5" r="1.75"/><circle cx="5.25" cy="11" r="1.75"/></svg>설정</a>
+      <a href="/dashboard/settings#memory" id="memory-link" title="기억 — 에이전트가 기억하는 개인 메모리와 관찰 기록을 보고 고칩니다"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4.2C6.6 3.3 4.7 3 2.5 3.3v9.4c2.2-.3 4.1 0 5.5.9 1.4-.9 3.3-1.2 5.5-.9V3.3C11.3 3 9.4 3.3 8 4.2zM8 4.2v9.4"/></svg>기억</a>
       <button
         id="admin-mode-toggle"
         type="button"
         class="admin-toggle"
         style="display:none"
         aria-pressed="false"
-        title="Toggle admin write mode (#716)"
+        title="관리자 쓰기 모드 — 켜면 다른 사람의 세션도 바꿀 수 있습니다 (#716)"
         onclick="toggleAdminMode()"
-      ><span id="admin-mode-label"><span class="admin-mode-prefix">Admin: </span><span class="admin-mode-state">OFF</span></span></button>
+      ><span id="admin-mode-label"><span class="admin-mode-prefix">관리자 </span><span class="admin-mode-state">끔</span></span></button>
     </div>
     <div class="topbar-account">
       <a
         class="user-pill"
         id="user-pill"
         href="/login"
-        title="Account — switch account or sign out"
-      ><span class="user-pill-prefix">Logged in as </span><b id="user-pill-name">…</b></a>
-      <button id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme"></button>
+        title="계정 — 다른 계정으로 전환하거나 로그아웃합니다"
+      ><span class="user-pill-prefix"><svg class="ic-user" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="5.5" r="2.5"/><path d="M3 13.5c.6-2.3 2.6-3.7 5-3.7s4.4 1.4 5 3.7"/></svg><svg class="ic-admin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2l4.8 1.9v3.5c0 2.9-2 5.1-4.8 6.2-2.8-1.1-4.8-3.3-4.8-6.2V4.1z"/><path d="M5.9 8.1l1.5 1.5 2.8-2.9"/></svg><span class="ar-vh">로그인 계정 </span></span><b id="user-pill-name">…</b></a>
+      <button id="theme-toggle" onclick="toggleTheme()" aria-label="테마 전환"><svg class="ic-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1"/></svg><svg class="ic-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"/></svg></button>
     </div>
   </div>
 
@@ -6563,6 +6594,21 @@ ${pageTokenAliases()}
 
 <script>
 const INIT_USER = ${initUser};
+// The page chrome's words, in one place and one language (the library's STRINGS pattern, lang="ko"):
+// sentence case, "…" not "...", the library's short status vocabulary.
+var STRINGS = {
+  wsLive: '실시간',
+  wsLiveLabel: '실시간 업데이트: 연결됨',
+  wsReconnecting: '다시 연결 중…',
+  wsReconnectingLabel: '실시간 업데이트: 다시 연결 중',
+  on: '켬',
+  off: '끔',
+  adminOn: '관리자 켬',
+  adminOff: '관리자 끔',
+  viewerAdmin: '관리자',
+  themeToDark: '어두운 테마로 전환',
+  themeToLight: '밝은 테마로 전환',
+};
 // #814 — name of the dashboard's *home* instance (the one that served this
 // HTML). Used by renderCard() to detect sibling cards and suppress action
 // buttons that would post to the wrong instance. null when single-instance
@@ -6623,7 +6669,7 @@ function getPreferredTheme() {
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
   var btn = document.getElementById('theme-toggle');
-  if (btn) btn.setAttribute('aria-label', theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme');
+  if (btn) btn.setAttribute('aria-label', theme === 'light' ? STRINGS.themeToDark : STRINGS.themeToLight);
 }
 function toggleTheme() {
   var current = document.documentElement.getAttribute('data-theme') || 'dark';
@@ -7561,11 +7607,11 @@ function renderPanelTaskItem(t, pop) {
 let _csrfToken = '';
 
 /*
- * Populate the "Logged in as <name>" pill in the topbar.
+ * Populate the signed-in user's pill in the topbar.
  *
  * Rendered from /auth/me for three session types:
  *   - OAuth JWT (Google/Microsoft/Slack SSO) — shows user.name.
- *   - bearer_cookie (admin viewer token) — shows "Admin" with a star marker.
+ *   - bearer_cookie (admin viewer token) — shows 관리자 with the admin shield glyph.
  *   - unauthenticated (/auth/me → 401) — pill stays hidden; auth middleware
  *     is about to redirect us to /login anyway.
  *
@@ -7582,7 +7628,7 @@ function _applyUserPill(data) {
   if (data && data.user && data.user.name) {
     label = data.user.name;
   } else if (data && data.isAdmin) {
-    label = 'Admin';
+    label = STRINGS.viewerAdmin;
     isAdmin = true;
   }
   if (!label) {
@@ -7643,12 +7689,12 @@ function _renderAdminModeButton() {
   const on = _isAdminModeOn();
   btn.setAttribute('aria-pressed', on ? 'true' : 'false');
   // Prefer split-span structure (prefix + state): only the ON/OFF state is
-  // rewritten, the "Admin: " prefix stays as rendered. Falls back to flat
+  // rewritten, the "관리자 " prefix stays as rendered. Falls back to flat
   // textContent if the spans haven't been rendered yet (e.g. legacy
   // template / unit test setup).
   const stateEl = lbl.querySelector('.admin-mode-state');
-  if (stateEl) stateEl.textContent = on ? 'ON' : 'OFF';
-  else lbl.textContent = on ? 'Admin: ON' : 'Admin: OFF';
+  if (stateEl) stateEl.textContent = on ? STRINGS.on : STRINGS.off;
+  else lbl.textContent = on ? STRINGS.adminOn : STRINGS.adminOff;
 }
 function toggleAdminMode() {
   _setAdminMode(!_isAdminModeOn());
@@ -13171,23 +13217,19 @@ function connectWs() {
   const statusEl = document.getElementById('ws-status');
 
   ws.onopen = function() {
-    statusEl.textContent = 'Live';
-    statusEl.title = 'WebSocket: Live';
-    statusEl.setAttribute('aria-label', 'WebSocket: Live');
-    statusEl.style.background = 'rgba(62,207,142,0.2)';
-    statusEl.style.borderColor = 'var(--green)';
-    statusEl.style.color = 'var(--green)';
+    statusEl.dataset.state = 'live';
+    statusEl.textContent = STRINGS.wsLive;
+    statusEl.title = STRINGS.wsLiveLabel;
+    statusEl.setAttribute('aria-label', STRINGS.wsLiveLabel);
     // Reconnect: recover the work-log entries broadcast while we were offline
     // (from the HTTP cursor; afterSeq=0 when the log was still empty).
     if (panelOpen && _wl) recoverWorkLog();
   };
   ws.onclose = function() {
-    statusEl.textContent = 'Reconnecting...';
-    statusEl.title = 'WebSocket: Reconnecting';
-    statusEl.setAttribute('aria-label', 'WebSocket: Reconnecting');
-    statusEl.style.background = '';
-    statusEl.style.borderColor = '';
-    statusEl.style.color = 'var(--yellow)';
+    statusEl.dataset.state = 'reconnecting';
+    statusEl.textContent = STRINGS.wsReconnecting;
+    statusEl.title = STRINGS.wsReconnectingLabel;
+    statusEl.setAttribute('aria-label', STRINGS.wsReconnectingLabel);
     setTimeout(connectWs, 3000);
   };
   ws.onerror = function() { ws.close(); };
