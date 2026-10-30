@@ -9,7 +9,10 @@ import { bumpGoalEpoch } from '../goal-continuation';
 import {
   advanceGoalQueue,
   enqueueOrActivateGoal,
+  formatDisplacedGoalLine,
   formatGoalObjectiveForSlack,
+  formatOutOfBudgetGoalLine,
+  isGoalOutOfBudget,
   restoreGoalState,
   snapshotGoalState,
 } from '../session-goal';
@@ -191,7 +194,7 @@ export class GoalHandler implements CommandHandler {
       // eval). The running goal owns the loop untouched until it completes and
       // advances the queue. Just persist the appended queue entry.
       this.deps.claudeHandler.saveSessions();
-      const queuedNotice = `📋 Goal queued at position ${result.position}: ${this.formatObjectiveForSlack(objective)}\n_It will start automatically when the current goal completes._`;
+      const queuedNotice = `📋 Goal queued at position ${result.position}: ${this.formatObjectiveForSlack(objective)}\n_It will start automatically when the current goal completes or uses up its auto-continuation budget._`;
       if (ctx.admitOpening) {
         // The queue entry is already saved: a Slack failure must not turn a
         // done change into a crash (the host keeps the redelivery claim).
@@ -203,6 +206,9 @@ export class GoalHandler implements CommandHandler {
     }
 
     this.persistGoalChange(session);
+    // The new goal took the slot of a goal parked at its budget (10/10) —
+    // say where that goal went instead of letting it vanish from view.
+    const displacedLine = result.displaced ? `\n${formatDisplacedGoalLine(result.displaced)}` : '';
 
     if (ctx.admitOpening && snapshot) {
       // Outside a dispatch slot (a turn is running): the opening turn is
@@ -222,14 +228,14 @@ export class GoalHandler implements CommandHandler {
       await this.notifyBestEffort(
         ctx.channel,
         ctx.threadTs,
-        `🎯 Goal set: ${this.formatObjectiveForSlack(objective)}\n_${GoalHandler.openingHint(admission)}_`,
+        `🎯 Goal set: ${this.formatObjectiveForSlack(objective)}\n_${GoalHandler.openingHint(admission)}_${displacedLine}`,
       );
       return { handled: true };
     }
 
     await this.deps.slackApi.postSystemMessage(
       ctx.channel,
-      `🎯 Goal set: ${this.formatObjectiveForSlack(objective)}\n_Continuing with goal context._`,
+      `🎯 Goal set: ${this.formatObjectiveForSlack(objective)}\n_Continuing with goal context._${displacedLine}`,
       { threadTs: ctx.threadTs },
     );
 
@@ -354,6 +360,14 @@ export class GoalHandler implements CommandHandler {
     // eval-`complete` advance semantics identical.
     const next = advanceGoalQueue(session);
     this.persistGoalChange(session);
+
+    if (next && isGoalOutOfBudget(next)) {
+      // Only goals parked at their budget were waiting. Completing this goal
+      // is not the owner approving more turns for that one — no opening turn;
+      // a message in the thread resets its counter and continues it.
+      await this.notifyBestEffort(channel, threadTs, `✅ Goal marked complete.\n${formatOutOfBudgetGoalLine(next)}`);
+      return { handled: true };
+    }
 
     if (next && admitOpening && snapshot) {
       // Same contract as `setGoal`: the promoted goal's opening turn is

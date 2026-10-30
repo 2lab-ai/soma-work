@@ -6018,6 +6018,44 @@ describe('SET_GOAL host-apply (#1082)', () => {
     expect(notice).toContain('goal로 잡아줘');
   });
 
+  it('SSOT 2026-10-30 T1: a goal parked at 10/10 yields to the SET_GOAL goal, and the move is posted at every verbosity', async () => {
+    const deps = createExecutorDeps();
+    const executor = new StreamExecutor(deps);
+    const session = createSession();
+    session.logVerbosity = LOG_MINIMAL;
+    const parked = {
+      goalId: 'g-parked',
+      objective: 'old goal',
+      status: 'active',
+      createdAt: 1,
+      updatedAt: 1,
+      createdBy: 'U1',
+      continuationCount: 0, // the user's message in this turn reset it
+      maxContinuations: 10,
+      epoch: 4,
+      capReachedAt: 123,
+    };
+    session.goal = parked;
+    const context = makeContext({
+      currentUserText: '이거 goal로 잡아줘: ship the goal feature',
+      isUserInputTurn: true,
+    });
+
+    await (executor as any).handleModelCommandToolResults(
+      [makeSetGoalToolResult('ship the goal feature', 'goal로 잡아줘: ship the goal feature')],
+      session,
+      context,
+    );
+
+    expect(session.goal).toMatchObject({ objective: 'ship the goal feature', status: 'active' });
+    expect(session.goalQueue).toEqual([expect.objectContaining({ goalId: 'g-parked', status: 'queued' })]);
+    const sayCalls = (context.say as ReturnType<typeof vi.fn>).mock.calls.map((c) => c[0]?.text ?? '');
+    const notice = sayCalls.find((t: string) => t.includes('🎯'));
+    expect(notice, 'posted even at minimal — the goal list changed').toBeDefined();
+    expect(notice).toContain('back of the queue');
+    expect(notice).toContain('old goal');
+  });
+
   it('refuses on a synthetic/continuation turn (isUserInputTurn !== true) without mutating the session', async () => {
     const deps = createExecutorDeps();
     const executor = new StreamExecutor(deps);
