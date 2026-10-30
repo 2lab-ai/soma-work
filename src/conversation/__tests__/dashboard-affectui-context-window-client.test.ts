@@ -826,7 +826,7 @@ describe('D16 — the face ctx metric and the summary line use the same level an
     const open = info(s, true);
     const body = open.slice(open.indexOf('class="pi-body"'));
     expect(body.indexOf('<div class="ui-tok cw-slot"')).toBeGreaterThan(0);
-    expect(body.indexOf('<div class="ui-tok cw-slot"')).toBeLessThan(body.indexOf('class="pi-grid"'));
+    expect(body.indexOf('<div class="ui-tok cw-slot"')).toBeLessThan(body.indexOf('class="ui-dl pi-grid"'));
     for (const label of ['누적 입력', '누적 출력', '누적 캐시 읽기', '누적 캐시 쓰기'])
       expect(body).toContain(`<dt>${label}</dt>`);
   });
