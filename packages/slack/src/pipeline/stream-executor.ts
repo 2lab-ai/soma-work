@@ -76,7 +76,8 @@ import {
 } from '../stream-processor';
 import type { SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer';
-import type { ThreadPanel, TurnAddress, TurnContext, TurnEndReason } from '../thread-panel';
+import type { TurnAddress, TurnContext, TurnEndReason } from '../thread-panel';
+import type { TurnPanelPort } from '../turn-panel-port';
 import type { TodoDisplayManager } from '../todo-display-manager';
 import type { ToolEventProcessor } from '../tool-event-processor';
 import type { ToolTracker } from '../tool-tracker';
@@ -577,7 +578,7 @@ interface StreamExecutorDeps {
   requestCoordinator: RequestCoordinator;
   slackApi: SlackApiHelper;
   assistantStatusManager: AssistantStatusManager;
-  threadPanel?: ThreadPanel;
+  threadPanel?: TurnPanelPort;
   turnNotifier?: TurnNotifier;
   summaryTimer?: SummaryTimer;
   completionMessageTracker?: CompletionMessageTracker;
