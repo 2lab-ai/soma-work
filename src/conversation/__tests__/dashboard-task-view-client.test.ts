@@ -68,26 +68,34 @@ const CSS = cook(
 
 const T0 = 1_700_000_000_000;
 const BASE_FNS = ['esc', 'escAttr', 'toNum', 'formatDuration', 'formatTaskTime', 'agentIconHtml'];
-const BASE_VARS = [
-  'AGENT_STATUS_LABEL',
-  'AGENT_STATUS_TONE',
-  'TASK_FATE_LABEL',
-  'TASK_PAUSE_SVG',
-  'TASK_STOP_SVG',
-  'TASK_SKIP_SVG',
-  'PI_CHEV_SVG',
-];
+const BASE_VARS = ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'TASK_FATE_LABEL', 'TASK_RUN_STATUS', 'PI_CHEV_SVG'];
 
 type Task = Record<string, unknown>;
 const text = (html: string) => html.replace(/<[^>]+>/g, '').replace(/&middot;/g, '·');
 
 // ── T2 — what a later list did to a task ──
+// D3 E-22/E-23: a run is <ui-task-runs>' and a plan step <ui-task-plan>'s; the page hands each its fate as data.
 describe('T2 · a dropped task never reads as running or waiting', () => {
   const plan = load<{
     taskFateOf(t: Task): string;
-    renderPanelTaskItem(t: Task, pop?: boolean): string;
+    taskRunsData(ran: Task[]): Array<Record<string, any>>;
+    taskPlanData(runs: unknown): Record<string, any>;
+    taskRunsOf(current: Task[], earlier: Task[]): unknown;
     renderTaskMeta(t: Task): string;
-  }>([...BASE_FNS, 'taskFateOf', 'renderPanelTaskItem', 'renderTaskMeta'], BASE_VARS);
+  }>(
+    [
+      ...BASE_FNS,
+      'taskFateOf',
+      'taskIdNum',
+      'taskRunStart',
+      'taskRunEnd',
+      'taskRunsOf',
+      'taskRunsData',
+      'taskPlanData',
+      'renderTaskMeta',
+    ],
+    BASE_VARS,
+  );
 
   it('names every fate: done · running · paused · waiting · replaced (dropped after it ran) · not run (dropped before)', () => {
     expect(plan.taskFateOf({ status: 'completed' })).toBe('done');
@@ -100,49 +108,33 @@ describe('T2 · a dropped task never reads as running or waiting', () => {
 
   // SSOT 2026-10-29 T5: a task a new plan replaced after it ran reads 교체됨 (was 중단) — it
   // was not stopped, a new list took its place, and its work stays counted on it.
-  it('a task a new plan replaced while it ran reads 교체됨 (SSOT 2026-10-29 T5) with no spinner and no live clock', () => {
-    const html = plan.renderPanelTaskItem({
-      id: 'T2',
-      content: 'RED 테스트',
-      status: 'in_progress',
-      startedAt: T0,
-      removedAt: T0 + 90_000,
-      toolCalls: 3,
-      dropped: 'started',
-    });
-    expect(html).toContain('data-step="dropped"');
-    expect(html).toContain('<span class="pl-fate">교체됨</span>');
-    expect(html).not.toContain('중단');
-    expect(html).not.toContain('task-elapsed');
-    expect(html).not.toContain('spinner');
-    expect(html).not.toContain('aria-current');
-    expect(html).toContain('1m 30s');
+  it('a task a new plan replaced while it ran is a dropped run (SSOT 2026-10-29 T5): ended when it left — no clock, never running', () => {
+    const [run] = plan.taskRunsData([
+      {
+        id: 'T2',
+        content: 'RED 테스트',
+        status: 'in_progress',
+        startedAt: T0,
+        removedAt: T0 + 90_000,
+        toolCalls: 3,
+        dropped: 'started',
+      },
+    ]);
+    expect(run).toMatchObject({ status: 'dropped', startedAt: T0, endedAt: T0 + 90_000, toolCalls: 3 });
   });
 
-  it('a task dropped before it ran reads 실행 안 됨, never 대기', () => {
-    const html = plan.renderPanelTaskItem({
-      id: 'T3',
-      content: '구현',
-      status: 'pending',
-      toolCalls: 0,
-      dropped: 'unstarted',
-    });
-    expect(html).toContain('data-step="skipped"');
-    expect(html).toContain('실행 안 됨');
-    expect(html).not.toContain('대기');
+  it('a task dropped before it ran is a dropped step of the plan’s earlier fold, never a waiting step', () => {
+    const d = plan.taskPlanData(
+      plan.taskRunsOf([], [{ id: 'T3', content: '구현', status: 'pending', toolCalls: 0, dropped: 'unstarted' }]),
+    );
+    expect(d.steps).toEqual([]);
+    expect(d.earlier[0].steps[0]).toMatchObject({ ref: '#T3', label: '구현', fate: 'dropped' });
   });
 
-  it('a task the session stopped on reads 멈춤 (it had started), not 대기', () => {
-    const html = plan.renderPanelTaskItem({
-      id: 'T4',
-      content: '검증',
-      status: 'pending',
-      startedAt: T0,
-      toolCalls: 2,
-    });
-    expect(html).toContain('data-step="paused"');
-    expect(html).toContain('멈춤');
-    expect(html).not.toContain('task-elapsed');
+  it('a task the session stopped on is a paused run (it had started), not a waiting step — no end, so no clock', () => {
+    const [run] = plan.taskRunsData([{ id: 'T4', content: '검증', status: 'pending', startedAt: T0, toolCalls: 2 }]);
+    expect(run).toMatchObject({ status: 'paused', startedAt: T0 });
+    expect('endedAt' in run).toBe(false);
   });
 
   it('the work-log group head of a replaced task carries no live clock and reads 교체됨 (SSOT 2026-10-29 T5)', () => {
@@ -237,23 +229,25 @@ describe('SSOT 2026-10-29 T5 · taskRunsOf: the runs, the plan left and the skip
 });
 
 describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left, the skipped folded, the totals', () => {
-  function container() {
-    return {
-      style: { display: '' },
-      _html: '',
-      innerHTML: '',
-      _planScope: null as unknown,
-      _planSeen: null as unknown,
-    };
-  }
-  const el = container();
-  // toggleTaskRun repaints through repaintPanelTasks (the focused agent's lists): here, this test's lists.
-  let repaint = () => {};
+  // D3 E-22/E-23: the open section is <ui-task-runs> + <ui-task-plan>; these fakes keep the data each is handed.
+  type Fake = { data?: Record<string, any>; opened: string[]; setOpen(id: string, open: boolean): void };
+  const fake = (): Fake => ({
+    opened: [],
+    setOpen(id: string, o: boolean) {
+      if (o) this.opened.push(id);
+    },
+  });
+  const el = {
+    style: { display: '' },
+    _html: '',
+    innerHTML: '',
+    _planScope: null as unknown,
+    _planSeen: null as unknown,
+  };
+  let runsEl = fake();
+  let planEl = fake();
   const env = load<{
     renderPanelTasks(tasks: Task[] | undefined, scope: string, earlier: Task[], outside?: unknown): void;
-    toggleTaskRun(id: string): void;
-    formatTaskClock(ts: number): string;
-    formatTaskStamp(ts: number): string;
     __set(n: string, v: unknown): void;
   }>(
     [
@@ -261,32 +255,34 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
       'escJs',
       'formatTokens',
       'taskFateOf',
-      'renderPanelTaskItem',
       'taskIdNum',
       'taskRunStart',
       'taskRunEnd',
       'taskRunsOf',
       'taskTokTotal',
-      'formatTaskClock',
-      'formatTaskStamp',
-      'taskCount',
-      'taskRunNumbers',
-      'toggleTaskRun',
-      'renderTaskRun',
-      'taskRunDetailHtml',
-      'taskSkippedHtml',
       'taskTotalsHtml',
+      'taskElData',
+      'taskRunsData',
+      'taskPlanData',
+      'taskRunsRestore',
       'planSummaryHtml',
       'renderPanelTasks',
     ],
     [...BASE_VARS, '_panelTasksOpen', '_panelTasksExpanded', '_panelTasksEarlier', 'TASK_RUNS_SHOWN', '_panelTaskOpen'],
     {
-      document: { getElementById: (id: string) => (id === 'panel-tasks' ? el : null) },
+      document: {
+        getElementById: (id: string) =>
+          id === 'panel-tasks'
+            ? el
+            : id === 'panel-task-runs' && el.innerHTML.includes(id)
+              ? runsEl
+              : id === 'panel-task-plan' && el.innerHTML.includes(id)
+                ? planEl
+                : null,
+      },
       morphInnerHtml: (target: { innerHTML: string }, html: string) => {
         target.innerHTML = html;
       },
-      updateTimersIn: () => {},
-      repaintPanelTasks: () => repaint(),
     },
   );
   const current: Task[] = [
@@ -333,22 +329,18 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
       toolCalls: 5,
     },
   ];
-  // A row ends with its aside (an open detail may hold a nested list).
-  const runRows = (html: string) =>
-    [
-      ...html.matchAll(
-        /<li class="panel-task-item pl-step tr-run[^"]*"[^>]*>[\s\S]*?<span class="pl-aside">(?:<span class="task-elapsed"[^>]*><\/span>|[^<]*)<\/span><\/li>/g,
-      ),
-    ].map((m) => m[0]);
-  const runIds = (html: string) => runRows(html).map((x) => /<span class="task-id">#(T\d+)<\/span>/.exec(x)?.[1]);
-  const open = (o: { earlier?: boolean } = {}) => {
+  const runIds = () => (runsEl.data?.runs ?? []).map((r: { id: string }) => r.id);
+  const open = (taskOpen: Record<string, boolean> = {}) => {
     env.__set('_panelTasksOpen', true);
     env.__set('_panelTasksExpanded', false);
-    env.__set('_panelTasksEarlier', !!o.earlier);
-    env.__set('_panelTaskOpen', Object.create(null));
+    env.__set('_panelTasksEarlier', false);
+    env.__set('_panelTaskOpen', taskOpen);
+    runsEl = fake();
+    planEl = fake();
+    el._html = '';
   };
 
-  it('folds by default: one head — the running step, 실행 N · 완료 d, 남은 p, 빠짐 s — no list', () => {
+  it('folds by default: one head — the running step, 실행 N · 완료 d, 남은 p, 빠짐 s — no elements', () => {
     env.__set('_panelTasksOpen', false);
     env.renderPanelTasks(current, '', earlier);
     expect(el.innerHTML).toContain('aria-expanded="false"');
@@ -357,7 +349,7 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
     );
     // Four ran (two completed), one is left of the plan, two were dropped before they ran.
     expect(text(el.innerHTML)).toContain('ledger 수정 중·실행 4 · 완료 2·남은 1·빠짐 2');
-    expect(el.innerHTML).not.toContain('pl-list');
+    expect(el.innerHTML).not.toContain('ui-task-');
     // No list at all: 목록 없음 (still counting what a new plan dropped).
     env.renderPanelTasks([], '', []);
     expect(text(el.innerHTML)).toContain('목록 없음');
@@ -365,87 +357,72 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
     expect(text(el.innerHTML)).toContain('목록 없음·빠짐 2');
   });
 
-  it('opened: 실행된 태스크 in the order they started, then 남은 계획, then the skipped toggle, then the totals', () => {
+  it('opened: 실행된 태스크 in the order they started, then 남은 계획 (the skipped in its earlier fold), then the totals', () => {
     open();
     env.renderPanelTasks(current, '', earlier);
     const html = el.innerHTML;
     expect(html).toContain('aria-expanded="true"');
-    expect(html).toContain(
-      '<div class="tr-head">실행된 태스크 <span class="tr-count">4</span></div><ol class="pl-list tr-list" aria-label="실행된 태스크">',
-    );
-    expect(runIds(html)).toEqual(['T1', 'T2', 'T8', 'T5']);
-    expect(html).toContain(
-      '<div class="tr-head">남은 계획 <span class="tr-count">1</span></div><ol class="pl-list tr-plan" aria-label="남은 계획">',
-    );
-    const at = ['pl-list tr-list', 'pl-list tr-plan', '실행 전에 계획에서 빠짐', 'class="tr-total"'].map((n) =>
-      html.indexOf(n),
-    );
+    expect(runsEl.data).toMatchObject({ title: '실행된 태스크', totals: false });
+    expect(runIds()).toEqual(['T1', 'T2', 'T8', 'T5']);
+    expect(planEl.data?.title).toBe('남은 계획');
+    // The plan left is a waiting step: no clock, no tools yet.
+    expect(planEl.data?.steps).toEqual([{ id: 'T6', ref: '#T6', label: '화면 수정', status: 'pending' }]);
+    const at = ['<ui-task-runs', '<ui-task-plan', 'class="tr-total"'].map((n) => html.indexOf(n));
     expect(at.every((i) => i > -1)).toBe(true);
     expect([...at].sort((a, b) => a - b)).toEqual(at);
-    // The plan left is the plan step it was (renderPanelTaskItem): waiting, no clock, no tools yet.
-    const plan = html.slice(html.indexOf('class="pl-list tr-plan"'), html.indexOf('</ol>', html.indexOf('tr-plan')));
-    expect(plan).toContain('data-step="pending"');
-    expect(plan).toContain('#T6');
-    // Only the running task spins and is the current step.
-    expect(html.match(/data-step="active"/g)?.length).toBe(1);
-    expect(html.match(/aria-current="step"/g)?.length).toBe(1);
+    // Only the running task runs.
+    expect(
+      runsEl.data?.runs.filter((r: { status: string }) => r.status === 'running').map((r: { id: string }) => r.id),
+    ).toEqual(['T5']);
   });
 
-  it('a task a new plan replaced after it ran is a run: 교체됨, its tools and how long it ran — never a clock', () => {
+  it('a task a new plan replaced after it ran is a run: dropped, its tools and how long it ran — never a clock', () => {
     open();
     env.renderPanelTasks(current, '', earlier);
-    const t2 = runRows(el.innerHTML).find((r) => r.includes('#T2')) ?? '';
-    expect(t2).toContain('data-step="dropped"');
-    expect(t2).toContain('<span class="task-text">RED</span><span class="pl-fate">교체됨</span>');
-    expect(t2).toContain('<span class="ar-vh">, 교체됨</span>');
-    expect(t2).toContain(
-      `<span class="tr-meta">${env.formatTaskClock(T0 - 90_000)} → ${env.formatTaskClock(T0 - 30_000)}<span class="pi-dot" aria-hidden="true">&middot;</span>툴 4 · 토큰 기록 없음</span>`,
-    );
-    expect(t2).toContain('<span class="pl-aside">1m 0s</span>');
-    expect(t2).not.toContain('task-elapsed');
-    expect(t2).not.toContain('spinner');
+    const t2 = runsEl.data?.runs.find((r: { id: string }) => r.id === 'T2');
+    expect(t2).toEqual({
+      id: 'T2',
+      ref: '#T2',
+      title: 'RED',
+      status: 'dropped',
+      startedAt: T0 - 90_000,
+      endedAt: T0 - 30_000,
+      tools: [{ name: '메인', count: 4 }],
+      toolCalls: 4,
+    });
   });
 
-  it('a task a new plan dropped before it ran is never a run: it waits behind 실행 전에 계획에서 빠짐 N', () => {
+  it('a task a new plan dropped before it ran is never a run: it waits in the plan’s earlier fold, in the list’s order', () => {
     open();
     env.renderPanelTasks(current, '', earlier);
-    expect(runIds(el.innerHTML)).not.toContain('T3');
-    expect(runIds(el.innerHTML)).not.toContain('T4');
-    expect(el.innerHTML).toContain(
-      '<button type="button" class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="false" onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()"><span class="chev" aria-hidden="true"></span>실행 전에 계획에서 빠짐 <span class="pl-earlier-counts">2</span></button>',
-    );
-    expect(el.innerHTML).not.toContain('#T3');
-    open({ earlier: true });
-    env.renderPanelTasks(current, '', earlier);
-    const skipped = el.innerHTML.slice(el.innerHTML.indexOf('<ol class="pl-list pl-earlier"'));
-    expect(skipped).toMatch(/^<ol class="pl-list pl-earlier" aria-label="실행 전에 계획에서 빠진 태스크">/);
-    expect(skipped.match(/data-step="skipped"/g)?.length).toBe(2);
-    expect(skipped.indexOf('#T4')).toBeLessThan(skipped.indexOf('#T3'));
-    expect(runIds(el.innerHTML)).toEqual(['T1', 'T2', 'T8', 'T5']);
+    expect(runIds()).not.toContain('T3');
+    expect(runIds()).not.toContain('T4');
+    expect(planEl.data?.earlier).toEqual([
+      {
+        id: 'skipped',
+        title: '실행 전에 계획에서 빠진 태스크',
+        steps: [
+          { id: 'skipped:T4', ref: '#T4', label: 'PR', status: 'pending', fate: 'dropped' },
+          { id: 'skipped:T3', ref: '#T3', label: '구현', status: 'pending', fate: 'dropped' },
+        ],
+      },
+    ]);
   });
 
-  it("the row is a button: its onclick toggleTaskRun('T2') opens the run's detail under it, and closes it again", () => {
-    open();
-    repaint = () => env.renderPanelTasks(current, '', earlier);
-    repaint();
-    const row = runRows(el.innerHTML).find((r) => r.includes('#T2')) ?? '';
-    const onclick = /<button type="button" class="tr-row" aria-expanded="false" onclick="([^"]+)">/.exec(row)?.[1];
-    expect(onclick).toBe("toggleTaskRun('T2')");
-    new Function('toggleTaskRun', onclick ?? '')(env.toggleTaskRun);
-    const opened = runRows(el.innerHTML).find((r) => r.includes('#T2')) ?? '';
-    expect(opened).toContain('pl-step tr-run dropped is-open');
-    expect(opened).toContain('<button type="button" class="tr-row" aria-expanded="true"');
-    expect(opened).toContain(
-      `<dl class="tr-detail"><dt>시작</dt><dd>${env.formatTaskStamp(T0 - 90_000)}</dd>` +
-        `<dt>종료</dt><dd>${env.formatTaskStamp(T0 - 30_000)} (새 계획으로 교체)</dd>` +
-        '<dt>소요</dt><dd>1m 0s</dd><dt>도구</dt><dd>메인 4회</dd>' +
-        '<dt>토큰</dt><dd>기록 없음 (태스크별 집계 이전에 실행됨)</dd></dl>',
-    );
-    // Only that run opened.
-    expect(el.innerHTML.match(/class="tr-detail"/g)?.length).toBe(1);
-    new Function('toggleTaskRun', onclick ?? '')(env.toggleTaskRun);
-    expect(el.innerHTML).not.toContain('tr-detail');
-    repaint = () => {};
+  it('a run’s detail is the element’s; the runs the reader opened open again in a new element (setOpen)', () => {
+    open({ T2: true });
+    env.renderPanelTasks(current, '', earlier);
+    expect(runsEl.opened).toEqual(['T2']);
+    // T8's detail: the main agent's and the subagents' tool calls, tokens with the cache, cost.
+    expect(runsEl.data?.runs.find((r: { id: string }) => r.id === 'T8')).toMatchObject({
+      tools: [
+        { name: '메인', count: 1 },
+        { name: '서브에이전트', count: 3 },
+      ],
+      toolCalls: 4,
+      tokens: { input: 1000, output: 500, cacheRead: 0, cacheWrite: 0 },
+      costUsd: 0.05,
+    });
   });
 
   it('an opened run’s detail is keyed by task id, so it never carries to another session or another agent’s tab', () => {
@@ -476,12 +453,13 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
       [],
     );
     expect(el.innerHTML).toContain('<div class="tr-total"><span class="tr-total-k">합계</span>툴 2</div>');
-    // Nothing ran yet: no totals.
+    // Nothing ran yet: no totals, no runs element.
     env.renderPanelTasks([{ id: 'T1', content: 'a', status: 'pending' }], '', []);
     expect(el.innerHTML).not.toContain('tr-total');
-    expect(el.innerHTML).not.toContain('실행된 태스크');
+    expect(el.innerHTML).not.toContain('ui-task-runs');
+    // No list: the plan element's empty state.
     env.renderPanelTasks([], '', []);
-    expect(el.innerHTML).toContain('<div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>');
+    expect(planEl.data).toEqual({ title: '계획', steps: [] });
   });
 });
 
