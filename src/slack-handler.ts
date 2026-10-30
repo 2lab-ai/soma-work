@@ -7,6 +7,7 @@ import {
   type DispatchOutcome,
   type DispatchRequest,
   FollowupDispatcher,
+  isAutoCompactStop,
   type RunReport,
 } from '@soma/slack/followup-dispatcher';
 import {
@@ -5063,7 +5064,51 @@ export class SlackHandler {
     // `queued` would have the drain below deliver them a second time (§3.2).
     await this.sweepSteerBucketsIfIdle(sessionKey);
     const last = report.canDrain ? await this.runFollowupDrainLoop(sessionKey) : undefined;
-    this.releaseDeferredGoalDriver(sessionKey, last ?? report);
+    const final = last ?? report;
+    if (isAutoCompactStop(final.outcome)) this.resumeAfterAutoCompactStop(sessionKey);
+    this.releaseDeferredGoalDriver(sessionKey, final);
+  }
+
+  /** The host turn that resumes the work an `auto-compact` stop interrupted. */
+  static readonly AUTO_COMPACT_CONTINUATION_TEXT =
+    '[auto-compact] The context reached the auto-compact threshold mid-turn, so the turn was stopped and the conversation compacted. Continue the interrupted work from where it stopped.';
+
+  /**
+   * Resume the work of a turn stopped by `auto-compact`, now that its slot is
+   * closed and the queue had nothing left to run. A synthetic host turn enters
+   * through `handleMessage` like the goal loop's continuation: the busy fence
+   * drops it if anything took the session meanwhile, and the armed flag turns
+   * it into `/compact` and replays it after the compaction. A goal session gets
+   * its continuation from the goal loop instead — a second one would race it.
+   */
+  private resumeAfterAutoCompactStop(sessionKey: string): void {
+    const session = this.claudeHandler.getSessionByKey?.(sessionKey);
+    if (!session || session.terminated) return;
+    if ((session.goal as { status?: string } | undefined)?.status === 'active') return;
+    if (this.followupDispatcher?.isBusy(sessionKey)) return;
+    const user = session.ownerId;
+    if (!session.channelId || !session.threadTs || !user) return;
+    const event = {
+      type: 'message',
+      user,
+      channel: session.channelId,
+      thread_ts: session.threadTs,
+      ts: `${Date.now() / 1000}`,
+      text: SlackHandler.AUTO_COMPACT_CONTINUATION_TEXT,
+      synthetic: true,
+      skipDispatch: true,
+      routeContext: { skipAutoBotThread: true, hostTurn: true },
+    };
+    this.logger.info('Auto-compact stop: resuming the work (compacts first)', { sessionKey });
+    void this.handleMessage(
+      event as unknown as MessageEvent,
+      this.threadSay(session.channelId, session.threadTs),
+    ).catch((err: unknown) => {
+      this.logger.warn('Auto-compact stop: resume failed — the next message will compact', {
+        sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    });
   }
 
   /**
