@@ -30,6 +30,7 @@ import * as jwt from 'jsonwebtoken';
 import { isAdminUser } from '../admin-utils';
 import { config } from '../config';
 import { Logger } from '../logger';
+import { loginErrorMessage, renderLoginPage, renderSsoConfirmPage } from './auth-pages';
 import { effectiveViewerUrl, isSecureViewerOrigin } from './public-url';
 
 const logger = new Logger('OAuth');
@@ -784,11 +785,20 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
   // ── Login page — also the account page of a signed-in browser ──
   // `no-store`: the page names the signed-in account, so neither a shared
   // cache nor the back button may show it after sign-out.
+  // A failed sign-in comes back as `?error=<code>[&email=…]`: the card's alert line, drawn by the server.
   server.get('/login', async (request, reply) => {
+    const query = (request.query ?? {}) as { error?: unknown; email?: unknown };
     reply
       .type('text/html; charset=utf-8')
       .header('Cache-Control', 'no-store')
-      .send(renderLoginPage({ googleEnabled, microsoftEnabled, session: _getCurrentSession(request) }));
+      .send(
+        renderLoginPage({
+          googleEnabled,
+          microsoftEnabled,
+          session: _getCurrentSession(request),
+          error: loginErrorMessage(query.error, query.email),
+        }),
+      );
   });
 
   // ── Google OAuth ──
@@ -1107,297 +1117,4 @@ export async function registerOAuthRoutes(server: FastifyInstance): Promise<void
       microsoft: microsoftEnabled,
     });
   }
-}
-
-// ── SSO session-switch interstitial ──
-
-/**
- * HTML escape helper for the SSO confirm page. Output is inserted into
- * an HTML document, so `<`, `>`, `&`, `"`, `'` must be neutralised.
- * `user.name` and `user.email` ultimately flow from Slack users.info /
- * OAuth userinfo which is mostly trusted, but rendering unescaped would
- * still expose every OAuth provider's display-name field as a potential
- * XSS vector — not worth the risk.
- */
-function _htmlEscape(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;')
-    .replace(/'/g, '&#39;');
-}
-
-/**
- * Render the session-switch confirmation page served by `GET /auth/sso`
- * when the browser already has a session for a different user. The user
- * must click "Continue as <name>" to POST to `/auth/sso/confirm`, which
- * consumes the jti and swaps the cookie. Clicking "Cancel" keeps the
- * existing session — no token is consumed, so a fresh `dashboard` call
- * is NOT required.
- *
- * The hidden `token` field carries the original exchange JWT verbatim.
- * Since the token itself is signed+expiring+single-use, we don't need a
- * separate CSRF token on this form — an attacker who could forge this
- * POST already has the exchange token, in which case the victim was
- * going to be impersonated anyway via the GET path.
- */
-function renderSsoConfirmPage(
-  token: string,
-  current: { kind: 'jwt'; user: DashboardUser } | { kind: 'bearer' },
-  requested: { sub: string; name: string; email: string },
-): string {
-  const currentName = _htmlEscape(
-    current.kind === 'jwt' ? current.user.name || current.user.slackUserId : 'Admin (API token)',
-  );
-  const currentEmail = _htmlEscape(current.kind === 'jwt' ? current.user.email || '' : '');
-  const requestedName = _htmlEscape(requested.name || requested.sub);
-  const requestedEmail = _htmlEscape(requested.email || '');
-  const tokenEsc = _htmlEscape(token);
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>soma-work — Confirm session switch</title>
-<style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-:root { --bg: #0d1117; --surface: #161b22; --border: #30363d; --text: #e6edf3; --text-muted: #8b949e; --accent: #58a6ff; --red: #f85149; }
-body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: var(--bg); color: var(--text); display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 24px; }
-.card { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 32px; width: 420px; }
-.card h1 { font-size: 1.2em; margin-bottom: 12px; }
-.card p { color: var(--text-muted); font-size: 0.9em; margin-bottom: 16px; line-height: 1.5; }
-.who { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 14px; margin-bottom: 8px; font-size: 0.85em; }
-.who b { color: var(--text); }
-.who.current { border-left: 3px solid var(--text-muted); }
-.who.requested { border-left: 3px solid var(--accent); }
-.actions { display: flex; gap: 10px; margin-top: 20px; }
-button, .btn-cancel { flex: 1; padding: 10px; border-radius: 8px; font-size: 0.95em; cursor: pointer; text-align: center; text-decoration: none; display: inline-block; border: 1px solid var(--border); }
-.btn-confirm { background: var(--accent); color: #000; border: none; font-weight: 600; }
-.btn-cancel { background: var(--surface); color: var(--text); }
-.btn-cancel:hover { border-color: var(--red); color: var(--red); }
-</style>
-</head>
-<body>
-<form class="card" method="POST" action="/auth/sso/confirm">
-  <h1>Switch accounts?</h1>
-  <p>You are about to replace your current dashboard session. This will log you out of the account below.</p>
-  <div class="who current"><b>Currently signed in:</b> ${currentName}${currentEmail ? ` &lt;${currentEmail}&gt;` : ''}</div>
-  <div class="who requested"><b>New session:</b> ${requestedName}${requestedEmail ? ` &lt;${requestedEmail}&gt;` : ''}</div>
-  <input type="hidden" name="token" value="${tokenEsc}" />
-  <div class="actions">
-    <a class="btn-cancel" href="/dashboard">Cancel</a>
-    <button type="submit" class="btn-confirm">Continue as ${requestedName}</button>
-  </div>
-</form>
-</body>
-</html>`;
-}
-
-// ── Login page HTML ──
-
-const GOOGLE_ICON =
-  '<svg viewBox="0 0 24 24" aria-hidden="true"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92a5.06 5.06 0 0 1-2.2 3.32v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.1z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>';
-const MICROSOFT_ICON =
-  '<svg viewBox="0 0 21 21" aria-hidden="true"><rect x="1" y="1" width="9" height="9" fill="#f25022"/><rect x="11" y="1" width="9" height="9" fill="#7fba00"/><rect x="1" y="11" width="9" height="9" fill="#00a4ef"/><rect x="11" y="11" width="9" height="9" fill="#ffb900"/></svg>';
-
-// A Map, not an object: the claim is a string, and an object lookup would also
-// answer for inherited keys such as `constructor`.
-const PROVIDER_LABELS = new Map<string, string>([
-  ['google', 'Google'],
-  ['microsoft', 'Microsoft'],
-  ['slack', 'Slack'],
-]);
-
-/**
- * The signed-in account block: who the browser is signed in as, where the
- * dashboard is, and an explicit sign-out. Every value is HTML-escaped — the
- * name and email come from the provider or from Slack.
- */
-function renderAccountBlock(session: CurrentSession): string {
-  const user = session.kind === 'jwt' ? session.user : null;
-  const name = user ? user.name || user.email || user.slackUserId : 'Admin';
-  const provider = user ? PROVIDER_LABELS.get(user.provider) : undefined;
-  const meta = user
-    ? [user.email, provider ? `via ${provider}` : ''].filter(Boolean).join(' · ')
-    : 'Viewer token session';
-  const initial = Array.from(name)[0]?.toUpperCase() ?? '?';
-  const dashboardHref = user ? `/dashboard/${encodeURIComponent(user.slackUserId)}` : '/dashboard';
-  return `
-    <section class="account" aria-label="Current account">
-      <p class="account-label">Signed in as</p>
-      <div class="account-row">
-        <span class="avatar" aria-hidden="true">${_htmlEscape(initial)}</span>
-        <div class="account-text">
-          <p class="account-name">${_htmlEscape(name)}</p>
-          <p class="account-meta">${_htmlEscape(meta)}</p>
-        </div>
-      </div>
-      <a class="btn btn-primary" href="${_htmlEscape(dashboardHref)}">Continue to dashboard</a>
-      <a class="btn btn-quiet" href="/auth/logout">Sign out</a>
-    </section>`;
-}
-
-/**
- * `/login`. Signed out: the provider buttons and the Slack `dashboard` hint.
- * Signed in: the account block first, then the same sign-in options under
- * "Use a different account" — Google opens its account chooser
- * (`prompt=select_account`), and a cancelled or failed switch keeps the
- * current session.
- */
-function renderLoginPage(opts: {
-  googleEnabled: boolean;
-  microsoftEnabled: boolean;
-  session: CurrentSession | null;
-}): string {
-  const { googleEnabled, microsoftEnabled, session } = opts;
-  const providerButtons = [
-    googleEnabled
-      ? `<a href="/auth/google" class="btn btn-google">${GOOGLE_ICON}<span>Sign in with Google</span></a>`
-      : '',
-    microsoftEnabled
-      ? `<a href="/auth/microsoft" class="btn btn-microsoft">${MICROSOFT_ICON}<span>Sign in with Microsoft</span></a>`
-      : '',
-  ].join('');
-  const slackHint =
-    '<p class="slack-hint">Slack 스레드에서 <code>dashboard</code>를 입력하면 로그인 링크를 받습니다.</p>';
-  const signIn = providerButtons
-    ? `${providerButtons}<div class="divider"><span>or</span></div>${slackHint}`
-    : slackHint;
-  const body = session
-    ? `${renderAccountBlock(session)}
-    <div class="divider"><span>Use a different account</span></div>
-    ${signIn}`
-    : signIn;
-
-  return `<!DOCTYPE html>
-<html lang="ko">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>soma-work — Sign in</title>
-<script>
-// Same theme choice as the dashboard (soma-theme, else the OS preference).
-(function () {
-  var t = null;
-  try { t = localStorage.getItem('soma-theme'); } catch (_e) {}
-  if (t !== 'light' && t !== 'dark') {
-    t = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
-  }
-  document.documentElement.setAttribute('data-theme', t);
-})();
-</script>
-<style>
-* { margin: 0; padding: 0; box-sizing: border-box; }
-/* Dashboard surface tokens (dashboard.ts :root / [data-theme="light"]). */
-:root {
-  --bg: #1c1c1f; --surface: #232327; --surface-raised: #2a2a2f; --border: #34343a; --border-focus: #4d9de0;
-  --text: #ededf0; --text-secondary: #a8a8b0; --text-tertiary: #93939b;
-  --accent: #4d9de0; --accent-hover: #3b82c4; --on-accent: #0b1220; --red: #f26b6b;
-  --google-bg: #131314; --google-border: #8e918f; --google-text: #e3e3e3;
-  --ms-bg: #2f2f2f; --ms-border: #2f2f2f; --ms-text: #ffffff;
-}
-[data-theme="light"] {
-  --bg: #f7f7f7; --surface: #ffffff; --surface-raised: #f1f1f1; --border: #e4e4e4; --border-focus: #1f6dc2;
-  --text: #18181a; --text-secondary: #57575d; --text-tertiary: #68686f;
-  --accent: #1f6dc2; --accent-hover: #1a5ca6; --on-accent: #ffffff; --red: #c43c3c;
-  --google-bg: #ffffff; --google-border: #747775; --google-text: #1f1f1f;
-  --ms-bg: #ffffff; --ms-border: #8c8c8c; --ms-text: #5e5e5e;
-}
-body {
-  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-  background: var(--bg); color: var(--text);
-  min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px;
-  -webkit-font-smoothing: antialiased;
-}
-.login { width: 100%; max-width: 360px; }
-.brand { text-align: center; margin-bottom: 20px; }
-.brand h1 { font-size: 20px; font-weight: 700; letter-spacing: -0.01em; }
-.brand p { color: var(--text-secondary); font-size: 13px; margin-top: 4px; }
-.panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 24px; }
-.btn {
-  display: flex; align-items: center; justify-content: center; gap: 10px; width: 100%; min-height: 44px;
-  padding: 0 16px; border-radius: 8px; border: 1px solid var(--border); font: inherit; font-size: 14px; font-weight: 600;
-  text-decoration: none; color: var(--text); background: var(--surface-raised); cursor: pointer;
-  transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease;
-}
-.btn + .btn { margin-top: 10px; }
-.btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-.btn svg { width: 18px; height: 18px; flex: none; }
-.btn-google { background: var(--google-bg); border-color: var(--google-border); color: var(--google-text); }
-.btn-microsoft { background: var(--ms-bg); border-color: var(--ms-border); color: var(--ms-text); }
-.btn-google:hover, .btn-microsoft:hover { border-color: var(--accent); }
-.btn-primary { background: var(--accent); border-color: var(--accent); color: var(--on-accent); }
-.btn-primary:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
-.btn-quiet { background: transparent; color: var(--text-secondary); }
-.btn-quiet:hover { color: var(--red); border-color: var(--red); }
-.account-label { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-tertiary); margin-bottom: 10px; }
-.account-row { display: flex; align-items: center; gap: 12px; margin-bottom: 18px; min-width: 0; }
-.avatar {
-  flex: none; width: 40px; height: 40px; border-radius: 50%; display: grid; place-items: center;
-  background: var(--surface-raised); border: 1px solid var(--border); font-weight: 700; color: var(--accent);
-}
-.account-text { min-width: 0; }
-.account-name { font-weight: 600; font-size: 15px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.account-meta { color: var(--text-secondary); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.divider { display: flex; align-items: center; gap: 12px; margin: 20px 0; color: var(--text-tertiary); font-size: 12px; }
-.divider::before, .divider::after { content: ''; flex: 1; border-top: 1px solid var(--border); }
-.slack-hint { color: var(--text-secondary); font-size: 13px; line-height: 1.6; text-align: center; }
-.slack-hint code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; color: var(--accent); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; }
-.error-msg { border: 1px solid var(--red); color: var(--red); padding: 10px 12px; border-radius: 8px; margin-bottom: 18px; font-size: 13px; line-height: 1.5; }
-@media (prefers-reduced-motion: reduce) { .btn { transition: none; } }
-</style>
-</head>
-<body>
-<main class="login">
-  <header class="brand">
-    <h1>⚡ soma-work</h1>
-    ${session ? '' : '<p>Sign in to your dashboard</p>'}
-  </header>
-  <div class="panel">
-    <div id="error" role="alert"></div>
-    ${body}
-  </div>
-</main>
-
-<script>
-// Show error from query params
-// Render error text as a text node so any attacker-controlled URL
-// parameter (e.g. ?error=no_match&email=<img onerror=...>) is neutered —
-// innerHTML on user-controlled data is reflected XSS (Oracle re-review,
-// pre-existing). The wrapper div is created imperatively.
-function _showError(msg) {
-  const el = document.getElementById('error');
-  if (!el) return;
-  const wrap = document.createElement('div');
-  wrap.className = 'error-msg';
-  wrap.textContent = msg;
-  el.replaceChildren(wrap);
-}
-const params = new URLSearchParams(location.search);
-const err = params.get('error');
-if (err) {
-  const emailParam = params.get('email') || 'this email';
-  const msgs = {
-    'google_denied': 'Google sign-in was cancelled.',
-    'google_failed': 'Google sign-in failed. Please try again.',
-    'google_unverified': 'Your Google email address is not verified. Verify it in your Google account, or sign in with the Slack dashboard link.',
-    'microsoft_denied': 'Microsoft sign-in was cancelled.',
-    'microsoft_failed': 'Microsoft sign-in failed. Please try again.',
-    // emailParam is inserted as text only via _showError — do NOT switch
-    // this branch back to innerHTML.
-    'no_match': 'No matching Slack account found for ' + emailParam + '. Contact your admin.',
-    'lookup_unavailable': 'Could not reach Slack to look up your account. Please try again in a moment.',
-    'lookup_misconfigured': 'This server cannot look up Slack accounts for Google sign-in yet. Contact your admin, or sign in with the Slack dashboard link.',
-    'ambiguous_email': 'Several Slack users registered this email via /z email, so the dashboard cannot pick one account. Keep it on one Slack user, or sign in with the Slack dashboard link.',
-    'state_mismatch': 'Authentication state mismatch. Please try again.',
-    'sso_missing': 'Slack SSO link is missing a token. Request a new dashboard link in Slack.',
-    'sso_invalid': 'Slack SSO link expired or is invalid. Request a new dashboard link in Slack.',
-    'sso_consumed': 'Slack SSO link was already used. Request a new dashboard link in Slack.',
-  };
-  _showError(msgs[err] || 'Authentication error.');
-}
-</script>
-</body>
-</html>`;
 }
