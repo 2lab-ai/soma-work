@@ -5746,6 +5746,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .topbar .nav a, .topbar .nav .user-select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }
   #theme-toggle { min-block-size: 44px; position: relative; }
   #theme-toggle::after { content: ''; position: absolute; inset: 0 -6px; }
+  .topbar .td-chip { min-height: 44px; }
   .period-btn { min-height: 44px; }
   .stats-more { min-height: 44px; }
   .seg .seg-btn, .card-body .btn-action, .card-body .btn-choice { min-height: 44px; }
