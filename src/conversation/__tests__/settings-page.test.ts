@@ -196,22 +196,9 @@ describe('tone pass P9 — the settings page speaks the dashboard language', () 
     expect(css).toContain('@starting-style { dialog[open] { opacity: 0; transform: scale(0.97); } }');
   });
 
-  it('기억 tab: the page id keeps 4.5:1 on the pill chip; its own fields get the page focus ring', () => {
-    // --text-tertiary on --ib-pill is 4.27 (light) / 4.36 (dark); --text-secondary is 5.54 / 5.63
-    expect(css).toContain('.pages-list .pg[aria-current="true"] .lock { color: var(--text-secondary); }');
-    expect(css).toContain('.pages-list .pg:hover .lock { color: var(--text-secondary); }');
-    expect(css).toMatch(
-      /\.pages-detail \.field input\[type="text"\], \.pages-detail \.field select \{[^}]*border-radius: 8px;/,
-    );
-    for (const sel of [
-      '.pages-list .pg:focus-visible',
-      '.pages-detail .field select:focus-visible',
-      '.ep-bar select:focus-visible',
-    ]) {
-      expect(css, sel).toMatch(
-        new RegExp(`${sel.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}[^{]*\\{ outline: 2px solid var\\(--border-focus\\);`),
-      );
-    }
+  it('기억 tab: no page-list, field or day-view styles of its own — <ui-knowledge-pages> and <ui-episode-log> draw them', () => {
+    for (const gone of ['.pages-list', '.pages-detail', '.ep-bar', '.ep-entry', '.ep-add'])
+      expect(css, gone).not.toContain(gone);
   });
 });
 
