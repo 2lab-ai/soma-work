@@ -5352,13 +5352,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 @media (hover: hover) and (pointer: fine) { .panel-deck .pd-btn:hover { color: var(--text); background: var(--ib-pill, var(--surface)); } }
 .panel-deck .pd-btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .panel-deck .pd-pos { min-width: 34px; text-align: center; font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
-@keyframes deck-in-next { from { transform: translateX(18px); opacity: 0.35; } to { transform: none; opacity: 1; } }
-@keyframes deck-in-prev { from { transform: translateX(-18px); opacity: 0.35; } to { transform: none; opacity: 1; } }
-.slide-panel.deck-in-next .panel-header, .slide-panel.deck-in-next .panel-body { animation: deck-in-next var(--dur-move, 220ms) var(--ease-out); }
-.slide-panel.deck-in-prev .panel-header, .slide-panel.deck-in-prev .panel-body { animation: deck-in-prev var(--dur-move, 220ms) var(--ease-out); }
+/* The deck switch (renderDeckNav → deckSlide) is WAAPI, not keyframes: the header and body glide in from
+   the side the new front card came from, added onto whatever is still running — a quick second switch
+   retargets from where they are drawn instead of restarting. */
 @media (prefers-reduced-motion: reduce) {
-  .slide-panel.deck-in-next .panel-header, .slide-panel.deck-in-next .panel-body,
-  .slide-panel.deck-in-prev .panel-header, .slide-panel.deck-in-prev .panel-body { animation: none; }
 }
 /* ── SESSION CHIP — the panel head (spec 13): status · active time · retry · Slack · the one action ── */
 .panel-status { flex-basis: 100%; min-width: 0; }
@@ -13282,18 +13279,42 @@ function markStatsLoading() {
 }
 
 // A failed load shows a dash rather than the previous period's number.
-function setStat(id, text) {
+// With a value and its format (the strip's 세션 · 토큰 · 비용), the figure rolls from the one it
+// showed to the new one — the library's rolling figure, 620ms ease-out quart; the first paint, after a
+// dash and under reduced motion it jumps.
+var STAT_ROLL_MS = 620;
+function setStat(id, text, value, fmt) {
   var el = document.getElementById(id);
   if (!el) return;
-  el.textContent = text;
+  if (el._roll) { cancelAnimationFrame(el._roll); el._roll = 0; }
+  var from = el._shown;
+  el._shown = typeof value === 'number' && isFinite(value) ? value : undefined;
   el.classList.remove('is-loading');
   el.classList.toggle('no-data', text === '\\u2014');
+  if (!fmt || typeof from !== 'number' || el._shown === undefined || from === value || reduceMotion() || typeof requestAnimationFrame !== 'function') {
+    el.textContent = text;
+    return;
+  }
+  var t0 = 0;
+  var step = function(now) {
+    if (!t0) t0 = now;
+    var p = Math.min(1, (now - t0) / STAT_ROLL_MS);
+    var k = 1 - Math.pow(1 - p, 4);
+    var v = from + (value - from) * k;
+    el._shown = p < 1 ? v : value;
+    el.textContent = p < 1 ? fmt(v) : text;
+    el._roll = p < 1 ? requestAnimationFrame(step) : 0;
+  };
+  el.textContent = fmt(from);
+  el._roll = requestAnimationFrame(step);
 }
+function fmtCount(n) { return String(Math.round(n)); }
+function fmtUsd(n) { return '$' + toNum(n).toFixed(2); }
 
 function paintStats(data) {
   var t = data && data.totals;
   var dash = '\\u2014';
-  setStat('stat-sessions', t ? String(toNum(t.sessionsCreated)) : dash);
+  setStat('stat-sessions', t ? String(toNum(t.sessionsCreated)) : dash, t ? toNum(t.sessionsCreated) : null, fmtCount);
   setStat('stat-turns', t ? String(toNum(t.turnsUsed)) : dash);
   setStat('stat-prs', t ? String(toNum(t.prsCreated)) : dash);
   setStat('stat-merged', t ? String(toNum(t.prsMerged)) : dash);
@@ -13363,8 +13384,9 @@ function paintUsage(report) {
   _usageReport = report || null;
   paintUsageBreakdown();
   var t = report && report.totals;
-  setStat('stat-tokens', t ? formatTokens(toNum(t.totalInputTokens) + toNum(t.totalOutputTokens)) : '\\u2014');
-  setStat('stat-cost', t ? '$' + toNum(t.totalCostUsd).toFixed(2) : '\\u2014');
+  var tok = t ? toNum(t.totalInputTokens) + toNum(t.totalOutputTokens) : null;
+  setStat('stat-tokens', t ? formatTokens(tok) : '\\u2014', tok, formatTokens);
+  setStat('stat-cost', t ? '$' + toNum(t.totalCostUsd).toFixed(2) : '\\u2014', t ? toNum(t.totalCostUsd) : null, fmtUsd);
 }
 
 function renderCharts(days) {
@@ -15322,10 +15344,22 @@ function renderDeckNav(dir) {
     if (prev) prev.title = '이전: ' + nameOf(deckStep(_deck, panelSessionKey, -1));
     if (next) next.title = '다음: ' + nameOf(deckStep(_deck, panelSessionKey, 1));
   }
-  if (dir && !reduceMotion()) {
-    panel.classList.remove('deck-in-next', 'deck-in-prev');
-    void panel.offsetWidth;
-    panel.classList.add(dir > 0 ? 'deck-in-next' : 'deck-in-prev');
+  if (dir && !reduceMotion()) deckSlide(panel, dir);
+}
+// The deck switch (P6): the header and body glide 18px in from the side the new front card came from,
+// on --dur-move ease-out. The offset is composited ('add') onto any slide still running, so a quick
+// second switch carries on from where they are drawn; the fade restarts from the drawn opacity.
+var DECK_SLIDE_MS = 320;
+function deckSlide(panel, dir) {
+  var parts = panel.querySelectorAll ? panel.querySelectorAll('.panel-header, .panel-body') : [];
+  for (var i = 0; i < parts.length; i++) {
+    var el = parts[i];
+    if (typeof el.animate !== 'function') continue;
+    var from = el._deckFade && el._deckFade.playState === 'running' ? Number(getComputedStyle(el).opacity) : 0.35;
+    if (el._deckFade) el._deckFade.cancel();
+    el.animate([{ transform: 'translateX(' + (dir > 0 ? 18 : -18) + 'px)' }, { transform: 'translateX(0)' }],
+      { duration: DECK_SLIDE_MS, easing: 'cubic-bezier(0.23, 1, 0.32, 1)', composite: 'add' });
+    el._deckFade = el.animate([{ opacity: Math.min(from, 1) }, { opacity: 1 }], { duration: DECK_SLIDE_MS, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' });
   }
 }
 // The landing target of this opening, for the keyboard: the answer form, the
