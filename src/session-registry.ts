@@ -626,6 +626,9 @@ export class SessionRegistry {
   adoptTaskId(sessionKey: string, taskId: string): boolean {
     const session = this.sessions.get(normalizeSessionKey(sessionKey));
     if (!session || !taskId) return false;
+    // A Slack-less task is keyed by its task id — moving the id would leave the
+    // key behind (#612 review). Only bot-thread migration adopts, onto a Slack session.
+    if (session.slackless) return false;
     const holder = this.sessionsByTaskId.get(taskId);
     if (holder && holder !== session) return false;
     if (session.taskId === taskId) return true;
@@ -2474,6 +2477,7 @@ export class SessionRegistry {
         userId: serialized.userId,
         channelId: serialized.channelId,
         threadTs: serialized.threadTs,
+        slackless: serialized.slackless === true ? true : undefined,
         sessionId: serialized.sessionId,
         isActive: false,
         lastActivity,
@@ -2542,6 +2546,9 @@ export class SessionRegistry {
       const applyLifecycle = !isSessionLifecyclePolicyDegraded();
       let sleptOnLoadCount = 0;
       let mintedTaskIdCount = 0;
+      // Task keys taken by a Slack-less record earlier in THIS load pass (a reload of the
+      // same registry is not a duplicate; a second record with one task id in one file is).
+      const slacklessKeysThisLoad = new Set<string>();
       this._crashRecoveredSessions = [];
 
       for (const serialized of sessionsArray) {
@@ -2820,9 +2827,18 @@ export class SessionRegistry {
           // A Slack-less task (#596) is keyed by its task id — only when the
           // record says so: an unmarked record with no channel stays quarantined,
           // and so does a Slack-less one with no task id.
-          derivedKey = slackless
-            ? buildTaskSessionKey(serialized.taskId ?? '')
-            : this.getSessionKey(serialized.channelId, serialized.threadTs);
+          if (slackless) {
+            // A Slack-less record has no Slack binding at all — anything else is corrupt.
+            if (serialized.channelId || serialized.threadTs) {
+              throw new Error('Slack-less record with a channel or thread');
+            }
+            derivedKey = buildTaskSessionKey(serialized.taskId ?? '');
+            if (slacklessKeysThisLoad.has(derivedKey)) {
+              throw new Error('duplicate Slack-less task id in this file');
+            }
+          } else {
+            derivedKey = this.getSessionKey(serialized.channelId, serialized.threadTs);
+          }
         } catch (keyError) {
           this.logger.warn('Skipped session with underivable key on load', {
             key: serialized.key,
@@ -2835,7 +2851,10 @@ export class SessionRegistry {
         const restored = this.restoredTaskId(serialized.taskId, this.sessions.get(derivedKey));
         session.taskId = restored.taskId;
         // Its id was taken by another live session and re-minted: the task key follows the id.
-        if (slackless) derivedKey = buildTaskSessionKey(restored.taskId);
+        if (slackless) {
+          derivedKey = buildTaskSessionKey(restored.taskId);
+          slacklessKeysThisLoad.add(derivedKey);
+        }
         if (restored.minted) mintedTaskIdCount++;
         this.putSession(derivedKey, session);
         loaded++;
@@ -2857,7 +2876,10 @@ export class SessionRegistry {
         //   actively processing and the user is still waiting for output.
         // A session that went to sleep while the process was down is not resumed:
         // it still gets the restart notice it was promised (symmetry), never an auto-resume.
-        if (serialized.shutdownNotificationSent) {
+        if (slackless) {
+          // No Slack thread to resume or notify — a Slack-less task never enters
+          // crash recovery until it can run (#597/#598, #612 review).
+        } else if (serialized.shutdownNotificationSent) {
           this._crashRecoveredSessions.push({
             channelId: serialized.channelId,
             threadTs: serialized.threadTs,

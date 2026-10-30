@@ -1314,10 +1314,13 @@ export class SessionInitializer {
     const origSessionKey = this.deps.claudeHandler.getSessionKey(channel, threadTs);
     this.deps.claudeHandler.terminateSession(origSessionKey);
     if (inheritedTaskId) {
-      this.deps.claudeHandler.adoptTaskId(
+      const adopted = this.deps.claudeHandler.adoptTaskId(
         this.deps.claudeHandler.getSessionKey(channel, rootResult.ts),
         inheritedTaskId,
       );
+      if (!adopted) {
+        this.logger.warn('🧵 Task id not moved to the bot-thread session', { channel, taskId: inheritedTaskId });
+      }
     }
 
     // 1. Clean up only the init clutter we posted (dispatch status, conversation-history link).

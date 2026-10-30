@@ -136,6 +136,30 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     expect(cardB?.threadTotalActiveMs).toBe(2_000);
   });
 
+  it('#612 R1 — routes that run or steer a turn refuse a Slack-less task with 409; close is still allowed', async () => {
+    const reg = new SessionRegistry();
+    const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const key = encodeURIComponent(`task:${task.taskId}`);
+    const headers = { ...AUTH_HEADER, 'X-Admin-Mode': 'on', 'content-type': 'application/json' };
+    const goal = await injectWebServer({
+      method: 'POST',
+      url: `/api/dashboard/session/${key}/goal`,
+      headers,
+      payload: JSON.stringify({ action: 'add', objective: 'do it' }),
+    });
+    expect(goal.statusCode).toBe(409);
+    const command = await injectWebServer({
+      method: 'POST',
+      url: `/api/dashboard/session/${key}/command`,
+      headers,
+      payload: JSON.stringify({ message: 'hello' }),
+    });
+    expect(command.statusCode).toBe(409);
+    const close = await injectWebServer({ method: 'POST', url: `/api/dashboard/session/${key}/close`, headers });
+    expect(close.statusCode).not.toBe(409);
+  });
+
   it('a never-run Slack session is still off the board (the board filter change is for Slack-less tasks only)', async () => {
     const reg = new SessionRegistry();
     reg.createSession('U1', 'Alice', 'C1', '500.001'); // no SDK turn yet

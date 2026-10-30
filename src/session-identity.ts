@@ -58,6 +58,9 @@ export function buildWorkSessionKey(channelId: string, threadTs?: string): strin
  */
 export function buildTaskSessionKey(taskId: string): string {
   if (!taskId) throw new Error('buildTaskSessionKey: taskId is required');
+  // A separator would make the key parse as something else (a legacy or Slack
+  // key) — a record on disk can be forged, so refuse it here (#612 review).
+  if (/[:/\\\s]/.test(taskId)) throw new Error('buildTaskSessionKey: taskId has a separator');
   return `task:${taskId}`;
 }
 
@@ -87,6 +90,8 @@ export function buildLegacySessionKey(channelId: string, threadTs?: string): str
  *   them miss, exactly as they did before.
  */
 export function normalizeSessionKey(key: string): string {
+  // A Slack-less task key is already canonical — by construction, not by the fallbacks below.
+  if (key.startsWith('task:')) return key;
   try {
     parseSessionKey(key);
     return key;

@@ -269,3 +269,91 @@ describe('SessionRegistry — Slack-less task save failure (T5)', () => {
     expect(reg.getAllSessions().size).toBe(0);
   });
 });
+
+describe('SessionRegistry — Slack-less task review fixes (#612 R1)', () => {
+  beforeEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    fs.mkdirSync(path.join(TEST_DATA_DIR, 'archives'), { recursive: true });
+    __resetSessionLifecyclePolicyForTests(path.join(TEST_DATA_DIR, 'session-lifecycle.json'));
+  });
+  afterEach(() => {
+    __resetSessionLifecyclePolicyForTests();
+    if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true });
+  });
+
+  const slacklessRecord = (over: Record<string, unknown> = {}) => ({
+    key: 'task:x',
+    ownerId: 'U1',
+    ownerName: 'User',
+    userId: 'U1',
+    channelId: '',
+    taskId: '11111111-1111-4111-8111-111111111111',
+    slackless: true,
+    workingDirectory: '/work/U1/repo',
+    isActive: true,
+    lastActivity: new Date().toISOString(),
+    state: 'MAIN',
+    activityState: 'idle',
+    ...over,
+  });
+
+  it('R1 — adoptTaskId refuses a Slack-less task: its key and its id never drift apart', () => {
+    const reg = new SessionRegistry();
+    const task = reg.createTask(TASK_INPUT);
+    const id = task.taskId!;
+    expect(reg.adoptTaskId(`task:${id}`, '22222222-2222-4222-8222-222222222222')).toBe(false);
+    expect(task.taskId).toBe(id);
+    expect(reg.getSessionByTaskId(id)).toBe(task);
+    expect(reg.getSessionByKey(`task:${id}`)).toBe(task);
+  });
+
+  it('R2 — a Slack-less record with a separator in its task id, a channel, a thread or no task id is quarantined on load', () => {
+    fs.writeFileSync(
+      SESSIONS_FILE,
+      JSON.stringify([
+        slacklessRecord({ taskId: 'a:b' }),
+        slacklessRecord({ taskId: 'a/b' }),
+        slacklessRecord({ taskId: '33333333-3333-4333-8333-333333333333', channelId: 'C1' }),
+        slacklessRecord({ taskId: '44444444-4444-4444-8444-444444444444', threadTs: '1.1' }),
+        slacklessRecord({ taskId: undefined }),
+      ]),
+    );
+    const reg = new SessionRegistry();
+    expect(reg.loadSessions()).toBe(0);
+    expect(reg.getAllSessions().size).toBe(0);
+  });
+
+  it('R3 — two Slack-less records with one task id in the same file: the second is quarantined, the first keeps its owner', () => {
+    fs.writeFileSync(
+      SESSIONS_FILE,
+      JSON.stringify([slacklessRecord({ ownerId: 'U1' }), slacklessRecord({ ownerId: 'U2', ownerName: 'Other' })]),
+    );
+    const reg = new SessionRegistry();
+    expect(reg.loadSessions()).toBe(1);
+    const task = reg.getSessionByTaskId('11111111-1111-4111-8111-111111111111');
+    expect(task?.ownerId).toBe('U1');
+    // A reload of the same registry is not a duplicate.
+    reg.saveSessions();
+    expect(reg.loadSessions()).toBe(1);
+    expect(reg.getSessionByTaskId('11111111-1111-4111-8111-111111111111')).toBeDefined();
+  });
+
+  it('R4 — a Slack-less task is never queued for crash recovery (no Slack thread to resume or notify)', () => {
+    fs.writeFileSync(SESSIONS_FILE, JSON.stringify([slacklessRecord({ activityState: 'working' })]));
+    const reg = new SessionRegistry();
+    expect(reg.loadSessions()).toBe(1);
+    expect(reg.getCrashRecoveredSessions()).toHaveLength(0);
+  });
+
+  it('R5 — an archived Slack-less task keeps its slackless mark', () => {
+    const reg = new SessionRegistry();
+    const task = reg.createTask(TASK_INPUT);
+    reg.terminateSession(`task:${task.taskId}`);
+    const dir = path.join(TEST_DATA_DIR, 'archives');
+    const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json'));
+    expect(files.length).toBe(1);
+    const archived = JSON.parse(fs.readFileSync(path.join(dir, files[0]), 'utf8'));
+    expect(archived.slackless).toBe(true);
+    expect(archived.taskId).toBe(task.taskId);
+  });
+});

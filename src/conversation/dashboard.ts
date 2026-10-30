@@ -758,10 +758,21 @@ function resolveSelfActionKey(wireKey: string, reply: any): string | null {
  * endpoint shares. Returns null if either check failed (the reply has
  * already been sent).
  */
-function resolveSelfActionKeyAndOwner(request: any, reply: any): { wireKey: string; originalKey: string } | null {
+function resolveSelfActionKeyAndOwner(
+  request: any,
+  reply: any,
+  opts: { allowSlackless?: boolean } = {},
+): { wireKey: string; originalKey: string } | null {
   const wireKey: string = request.params?.key ?? '';
   const originalKey = resolveSelfActionKey(wireKey, reply);
   if (originalKey === null) return null;
+  // Fail closed (#612 review): a Slack-less task cannot run or be steered until its
+  // execution context exists (#597/#598). Only routes that do not start a turn
+  // (stop / close / trash) opt in.
+  if (!opts.allowSlackless && _getSessionsFn?.()?.get(originalKey)?.slackless === true) {
+    reply.status(409).send({ error: 'task not runnable yet' });
+    return null;
+  }
   if (!requireSessionOwner(request, reply, originalKey)) return null;
   return { wireKey, originalKey };
 }
@@ -2983,7 +2994,7 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/stop',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
       if (!resolved) return;
       const { wireKey: key, originalKey } = resolved;
       try {
@@ -3005,7 +3016,7 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/close',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
       if (!resolved) return;
       const { wireKey: key, originalKey } = resolved;
       try {
@@ -3026,7 +3037,7 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/trash',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
       if (!resolved) return;
       const { wireKey: key, originalKey } = resolved;
       // A starred session is pinned on top of the board; hiding it would
