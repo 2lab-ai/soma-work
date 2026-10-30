@@ -53,7 +53,15 @@ const RENDER_FNS = [
   'setBusy',
   'renderCardGoal',
 ];
-const RENDER_VARS = ['GOAL_STATUS_LABELS', 'GOAL_SVG', 'GOAL_VIA_LABELS', '_goalHistoryOpen', '_goalErrors', '_busy'];
+const RENDER_VARS = [
+  'GOAL_STATUS_LABELS',
+  'GOAL_STATUS_TONE',
+  'GOAL_SVG',
+  'GOAL_VIA_LABELS',
+  '_goalHistoryOpen',
+  '_goalErrors',
+  '_busy',
+];
 
 function card(overrides: Record<string, any> = {}) {
   return {
@@ -340,7 +348,7 @@ describe('panel goal — the objective opens folded to its first 3 lines', () =>
     RENDER_FNS,
     RENDER_VARS,
   );
-  const CSS = TEMPLATE.slice(0, TEMPLATE.indexOf('</style>'));
+  const CSS = TEMPLATE.slice(0, TEMPLATE.indexOf('</style>', TEMPLATE.indexOf('<style>')));
   function rule(selector: string): string {
     const at = CSS.indexOf(`\n${selector} {`);
     if (at < 0) throw new Error(`no CSS rule ${selector}`);

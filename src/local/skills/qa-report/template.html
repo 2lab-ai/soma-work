@@ -44,6 +44,9 @@ h2 { font-size:16px; line-height:1.25; margin:16px 0 8px; }
 .call .ch { font-size:12px; margin-top:8px; } .mth { font-weight:700; margin-right:4px; }
 .st { font-weight:700; color:var(--ok); } .st.e { color:var(--bad); }
 pre { white-space:pre-wrap; word-break:break-word; background:var(--code); border-radius:8px; padding:8px; font-size:12px; margin:4px 0; max-height:480px; overflow:auto; }
+.pre { background:var(--card); border:1px solid var(--warn); border-radius:8px; padding:8px 12px; margin:8px 0 16px; }
+.pre table { border-collapse:collapse; width:100%; font-size:12px; }
+.pre th, .pre td { text-align:left; vertical-align:top; padding:4px 8px 4px 0; border-bottom:1px solid var(--line); }
 .shot { display:block; max-width:100%; margin-top:8px; border:1px solid var(--line); border-radius:8px; }
 @media (max-width:900px) { .app { display:block; } .left, .right { width:100%; position:static; height:auto; border-left:0; } }
 </style>
@@ -130,6 +133,8 @@ pre { white-space:pre-wrap; word-break:break-word; background:var(--code); borde
     var h = '<div class="case ' + k + '"><div class="cs">' + esc(c.id) + ' · ' + esc(c.type || '?') + ' · ' + esc(c.severity || '?') +
       ' <span class="tag ' + (c.status === 'pass' ? 'ok' : hi ? 'bad' : 'warn') + '">' + esc(c.status) + '</span></div>';
     if (c.desc) h += '<div>' + esc(c.desc) + '</div>';
+    if (c.precondition) h += '<div class="w">precondition ' + esc(c.precondition) + ' — not run for real</div>';
+    if (c.evidence && c.evidence.mocked && [].concat(c.evidence.mocked).length) h += '<div class="w">mocked: ' + esc([].concat(c.evidence.mocked).join(', ')) + ' — does not prove server behaviour</div>';
     if (c.status === 'pass' && !n.length && !s) h += '<div class="w">pass without evidence</div>';
     var au = c.auth;
     h += '<div class="lbl">account</div><div>' + (au && (au.accountRef || typeof au === 'string') ? esc(typeof au === 'string' ? au : au.accountRef) : NONE) + '</div>';
@@ -164,6 +169,23 @@ pre { white-space:pre-wrap; word-break:break-word; background:var(--code); borde
   }
   var L = '<h1>' + esc(M.title || 'QA report') + '</h1><div class="sub">' +
     esc([M.repo, M.target, M.range, M.status, M.versionStart || M.versionEnd ? 'version ' + (M.versionStart || '?') + ' → ' + (M.versionEnd || '?') : '', M.generatedAt].filter(Boolean).join(' · ')) + '</div>';
+  // Preconditions lead: what was missing, which cases it blocked, and who decided what.
+  var PRE = [].concat(D.preconditions || []);
+  function decided(p) {
+    var d = p.decision;
+    if (!d || d === 'pending') return p.status === 'met' || p.status === 'provisionable' ? 'not needed' : 'waiting for the requester';
+    return esc(d) + ' by ' + esc(p.confirmedBy || '?') + (p.confirmedAt ? ' · ' + esc(p.confirmedAt) : '');
+  }
+  if (PRE.length) {
+    var open = PRE.filter(function (p) { return p.status !== 'met' && p.status !== 'provisionable'; });
+    L += '<h2>Preconditions — ' + open.length + ' open of ' + PRE.length + '</h2><div class="pre">' +
+      (open.length ? '<p class="w">QA could not test the cases below for real because these preconditions were missing.</p>' : '') +
+      '<table><thead><tr><th>key</th><th>precondition</th><th>needed</th><th>blocks cases</th><th>status</th><th>decision</th></tr></thead><tbody>' +
+      PRE.map(function (p) {
+        return '<tr><td class="k">' + esc(p.key) + '</td><td>' + esc(p.id) + ' · ' + esc(p.kind || '?') + '</td><td>' + esc(p.need || '') + '</td><td>' +
+          esc([].concat(p.cases || []).join(', ')) + '</td><td>' + esc(p.status || '?') + '</td><td>' + decided(p) + '</td></tr>';
+      }).join('') + '</tbody></table></div>';
+  }
   if (M.ssot) L += '<h2>Request</h2><div class="ssot">' + esc(M.ssot) + '</div>';
   L += '<div class="kpis">' + ORDER.concat(Object.keys(counts).filter(function (v) { return ORDER.indexOf(v) < 0; })).filter(function (v) { return counts[v]; })
     .map(function (v) { return '<div class="kpi"><b>' + counts[v] + '</b>' + esc(v) + '</div>'; }).join('') +
