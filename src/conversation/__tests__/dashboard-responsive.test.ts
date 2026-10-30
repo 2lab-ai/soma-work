@@ -185,8 +185,8 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
     expect(
       at('<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>'),
     ).toBeGreaterThan(at('id="panel-tabpanel"'));
-    expect(at('id="panel-turns"')).toBeGreaterThan(at('id="panel-tasks"'));
-    expect(at('<div class="panel-command" id="panel-command">')).toBeGreaterThan(at('id="panel-turns"'));
+    expect(at('id="panel-conv"')).toBeGreaterThan(at('id="panel-tasks"'));
+    expect(at('<div class="panel-command" id="panel-command">')).toBeGreaterThan(at('id="panel-conv"'));
     // One scroll area in the body.
     expect(panel.slice(0, at('id="panel-command"')).split('class="panel-scroll"').length - 1).toBe(1);
   });
