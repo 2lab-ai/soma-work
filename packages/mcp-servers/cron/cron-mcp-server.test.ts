@@ -186,6 +186,44 @@ describe('handleCreate', () => {
     expect(r.text).toBe('Error: threadTs is required when target is "thread"');
   });
 
+  // The schema promises "threadTs: If omitted, uses active session", but the
+  // validator rejected target=thread without it. 6 production calls in 30 days
+  // sent { target: 'thread' } with no threadTs/channel — "post back into this
+  // thread" — and each was retried verbatim because the error does not say
+  // where a threadTs comes from. Default to the calling thread.
+  it('defaults threadTs to the calling thread when target=thread and channel is omitted', () => {
+    const r = handleCreate(
+      { name: 'watch', expression: '*/10 * * * *', prompt: 'hi', target: 'thread' },
+      { ...baseContext, threadTs: '1793328833.592' },
+      storage,
+    );
+    expect(r.isError).toBeFalsy();
+    const job = storage.getAll().find((j) => j.name === 'watch');
+    expect(job?.channel).toBe('C_DEFAULT');
+    expect(job?.threadTs).toBe('1793328833.592');
+    expect(job?.target).toBe('thread');
+  });
+
+  it('defaults threadTs to the calling thread when channel is the calling channel', () => {
+    const r = handleCreate(
+      { name: 'watch', expression: '*/10 * * * *', prompt: 'hi', channel: 'C_DEFAULT', target: 'thread' },
+      { ...baseContext, threadTs: '1793328833.592' },
+      storage,
+    );
+    expect(r.isError).toBeFalsy();
+    expect(storage.getAll().find((j) => j.name === 'watch')?.threadTs).toBe('1793328833.592');
+  });
+
+  it('does not borrow the calling thread for a different channel', () => {
+    const r = handleCreate(
+      { name: 'watch', expression: '*/10 * * * *', prompt: 'hi', channel: 'C_OTHER', target: 'thread' },
+      { ...baseContext, threadTs: '1793328833.592' },
+      storage,
+    );
+    expect(r.isError).toBe(true);
+    expect(r.text).toBe('Error: threadTs is required when target is "thread"');
+  });
+
   // --- Validation: model_type ---
 
   it('rejects invalid model_type', () => {
