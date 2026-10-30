@@ -388,6 +388,22 @@ describe('PromptBuilder', () => {
       expect(prompt).toContain('persistent memory across sessions');
     });
 
+    // 43 of 99 production episodic_append calls failed because the guidance
+    // named the op but not its field (the model guessed `text`), while page_get
+    // — shown with its literal field — failed 0 of 211. Name the field, and
+    // spell the project id prefix the way ids actually start (`project/`, not
+    // the on-disk dir `projects/` — 3 page_upsert failures).
+    it('memory guidance names the episodic_append field and the real id prefixes', async () => {
+      const { formatMemoryForPrompt } = await import('../user-memory-store');
+      vi.mocked(formatMemoryForPrompt).mockReturnValueOnce('<memory>\nx\n</memory>');
+
+      const prompt = builder.buildSystemPrompt('U123', 'default');
+
+      expect(prompt).toContain('op=episodic_append with `content`');
+      expect(prompt).toContain('agent/sites/concepts/project/cron');
+      expect(prompt).not.toContain('concepts/projects/cron');
+    });
+
     it('should append personal skills block when listUserSkills returns entries', async () => {
       // Covers applyPersonalSkills happy path (prompt-builder.ts lines 438-453).
       const { listUserSkills } = await import('../user-skill-store');

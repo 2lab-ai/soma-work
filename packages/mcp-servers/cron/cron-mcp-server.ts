@@ -107,7 +107,13 @@ function validateCreateInput(args: Record<string, any>, context: CronContext): V
     return { ok: false, errorText: `Error: Invalid channel '${targetChannel}'` };
   }
 
-  const modeTarget = validateModeAndTarget(args);
+  // threadTs is documented as "If omitted, uses active session": for a thread
+  // target in the calling channel, the calling thread is the only sensible
+  // default. Another channel never borrows it — that ts would point nowhere.
+  const threadTs =
+    args.threadTs || (args.target === 'thread' && targetChannel === context.channel ? context.threadTs : undefined);
+
+  const modeTarget = validateModeAndTarget({ ...args, threadTs });
   if (!modeTarget.ok) return { ok: false, errorText: modeTarget.errorText };
 
   return {
@@ -117,7 +123,7 @@ function validateCreateInput(args: Record<string, any>, context: CronContext): V
       expression: args.expression,
       prompt: args.prompt,
       targetChannel,
-      threadTs: args.threadTs || undefined,
+      threadTs: threadTs || undefined,
       effectiveMode: modeTarget.effectiveMode,
       effectiveTarget: modeTarget.effectiveTarget,
     },
