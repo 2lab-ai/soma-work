@@ -12902,12 +12902,12 @@ async function saveLifecycle(ev) {
 // registry key WITHOUT the #814 instance prefix ("work:C123:1700000000.000100"),
 // while board cards are keyed "<instanceName>::work:C123:…" (composeSessionKey).
 // Until a card matches (board still loading, sibling instance), retry on each
-// board render for ~10 s, then give up silently.
+// board render for ~10 s from the first one, then give up silently.
 var DEEP_LINK_WINDOW_MS = 10000;
 var _deepLinkSession = (function() {
   try { return new URLSearchParams(location.search).get('session'); } catch (_e) { return null; }
 })();
-var _deepLinkDeadline = Date.now() + DEEP_LINK_WINDOW_MS;
+var _deepLinkDeadline = 0; // set by the first board render (openDeepLinkedSession)
 // Pure: which board key does a ?session= value point at? Exact key first, then
 // this instance's prefixed key, then the one card whose key ends in "::<ref>".
 // Ambiguous suffix matches (same thread on two siblings) resolve to nothing.
@@ -12937,7 +12937,11 @@ var _deepLinkWaiting = false; // waiting for <ui-agent-inbox> to be defined
 function openDeepLinkedSession() {
   if (!_deepLinkSession) return;
   // The window bounds the whole attempt: a card that first shows up on a
-  // later poll (30 s) must not pop the panel open long after page load.
+  // later poll (30 s) must not pop the panel open long after page load. It
+  // starts at the first board answer, not at page load (2026-10-30): a first
+  // board slower than the window (a slow phone link, a busy server) dropped
+  // the link before any card existed — the page loaded, the session never opened.
+  if (!_deepLinkDeadline) _deepLinkDeadline = Date.now() + DEEP_LINK_WINDOW_MS;
   if (Date.now() > _deepLinkDeadline) { _deepLinkSession = null; return; }
   var key = resolveDeepLinkKey(_deepLinkSession, Object.keys(_sessionCache), SELF_INSTANCE_NAME);
   if (!key) return;
