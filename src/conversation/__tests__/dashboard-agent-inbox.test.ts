@@ -79,7 +79,8 @@ describe('agent inbox board — layout (§3.1)', () => {
   it('the stats strip leads the page and the board follows it (§3.1-2)', () => {
     const main = TEMPLATE.slice(TEMPLATE.indexOf('<div class="main">'));
     const strip = main.indexOf('<section class="stats" id="stats"');
-    const detailAt = main.indexOf('<div class="stats-detail" id="stats-detail" hidden>');
+    // Tone pass P6: closed, 자세히's region is hidden and inert (it folds to 0 rows).
+    const detailAt = main.indexOf('<div class="stats-detail" id="stats-detail" hidden inert>');
     const board = main.indexOf('<section class="inbox ui-tok" id="inbox"');
     expect(strip).toBeGreaterThan(0);
     expect(detailAt).toBeGreaterThan(strip);
