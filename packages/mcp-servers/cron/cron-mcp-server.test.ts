@@ -183,45 +183,50 @@ describe('handleCreate', () => {
       storage,
     );
     expect(r.isError).toBe(true);
-    expect(r.text).toBe('Error: threadTs is required when target is "thread"');
+    expect(r.text).toMatch(/^Error: threadTs is required when target is "thread"/);
   });
 
-  // The schema promises "threadTs: If omitted, uses active session", but the
-  // validator rejected target=thread without it. 6 production calls in 30 days
-  // sent { target: 'thread' } with no threadTs/channel — "post back into this
-  // thread" — and each was retried verbatim because the error does not say
-  // where a threadTs comes from. Default to the calling thread.
-  it('defaults threadTs to the calling thread when target=thread and channel is omitted', () => {
+  // 6 production calls in 30 days sent { target: 'thread' } with no threadTs to
+  // keep "autoz 계속 …" / "Read the last 3 lines …" running in the calling
+  // thread, and each was retried verbatim. target=thread only posts the prompt
+  // text (cron-scheduler executeWithThreadReply — the model never runs), so a
+  // silent default would turn a hard error into a cron that does nothing. The
+  // error has to carry the recovery instead: what thread does, and the exact
+  // threadTs that runs the prompt in the calling thread.
+  it('target=thread without threadTs explains the target and names the calling thread', () => {
     const r = handleCreate(
       { name: 'watch', expression: '*/10 * * * *', prompt: 'hi', target: 'thread' },
       { ...baseContext, threadTs: '1793328833.592' },
       storage,
     );
-    expect(r.isError).toBeFalsy();
-    const job = storage.getAll().find((j) => j.name === 'watch');
-    expect(job?.channel).toBe('C_DEFAULT');
-    expect(job?.threadTs).toBe('1793328833.592');
-    expect(job?.target).toBe('thread');
+    expect(r.isError).toBe(true);
+    expect(r.text).toMatch(/^Error: threadTs is required when target is "thread"/);
+    expect(r.text).toContain('posts the prompt text');
+    expect(r.text).toContain('threadTs: "1793328833.592"');
+    expect(storage.getAll().find((j) => j.name === 'watch')).toBeUndefined();
   });
 
-  it('defaults threadTs to the calling thread when channel is the calling channel', () => {
-    const r = handleCreate(
-      { name: 'watch', expression: '*/10 * * * *', prompt: 'hi', channel: 'C_DEFAULT', target: 'thread' },
-      { ...baseContext, threadTs: '1793328833.592' },
-      storage,
-    );
-    expect(r.isError).toBeFalsy();
-    expect(storage.getAll().find((j) => j.name === 'watch')?.threadTs).toBe('1793328833.592');
-  });
-
-  it('does not borrow the calling thread for a different channel', () => {
+  it('does not offer the calling thread for a different channel', () => {
     const r = handleCreate(
       { name: 'watch', expression: '*/10 * * * *', prompt: 'hi', channel: 'C_OTHER', target: 'thread' },
       { ...baseContext, threadTs: '1793328833.592' },
       storage,
     );
     expect(r.isError).toBe(true);
-    expect(r.text).toBe('Error: threadTs is required when target is "thread"');
+    expect(r.text).not.toContain('1793328833.592');
+  });
+
+  it('the hinted retry (no target, threadTs) runs the prompt in the calling thread', () => {
+    const r = handleCreate(
+      { name: 'watch', expression: '*/10 * * * *', prompt: 'hi', threadTs: '1793328833.592' },
+      { ...baseContext, threadTs: '1793328833.592' },
+      storage,
+    );
+    expect(r.isError).toBeFalsy();
+    const job = storage.getAll().find((j) => j.name === 'watch');
+    expect(job?.target ?? 'channel').toBe('channel'); // channel is stored as undefined
+    expect(job?.threadTs).toBe('1793328833.592');
+    expect(job?.channel).toBe('C_DEFAULT');
   });
 
   // --- Validation: model_type ---

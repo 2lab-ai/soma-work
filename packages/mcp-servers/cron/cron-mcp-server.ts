@@ -98,6 +98,20 @@ function validateModeAndTarget(
   return { ok: true, effectiveMode, effectiveTarget };
 }
 
+/**
+ * target=thread without threadTs. Models send it meaning "keep running this in
+ * my thread" and retry it verbatim, but target=thread only posts the prompt
+ * text (no model run). Say so, and name the call that does run it — with the
+ * calling thread's ts when the job stays in the calling channel.
+ */
+function threadTargetHint(targetChannel: string, context: CronContext): string {
+  const runIt =
+    context.threadTs && targetChannel === context.channel
+      ? `To run the prompt in this thread, omit target and pass threadTs: "${context.threadTs}".`
+      : "To run the prompt in a thread, omit target and pass that thread's threadTs.";
+  return `Error: threadTs is required when target is "thread". target "thread" only posts the prompt text into the thread; the model does not run it. ${runIt}`;
+}
+
 function validateCreateInput(args: Record<string, any>, context: CronContext): ValidationResult {
   const requiredErr = validateRequiredArgs(args);
   if (requiredErr) return { ok: false, errorText: requiredErr };
@@ -107,13 +121,11 @@ function validateCreateInput(args: Record<string, any>, context: CronContext): V
     return { ok: false, errorText: `Error: Invalid channel '${targetChannel}'` };
   }
 
-  // threadTs is documented as "If omitted, uses active session": for a thread
-  // target in the calling channel, the calling thread is the only sensible
-  // default. Another channel never borrows it — that ts would point nowhere.
-  const threadTs =
-    args.threadTs || (args.target === 'thread' && targetChannel === context.channel ? context.threadTs : undefined);
+  if (args.target === 'thread' && !args.threadTs) {
+    return { ok: false, errorText: threadTargetHint(targetChannel, context) };
+  }
 
-  const modeTarget = validateModeAndTarget({ ...args, threadTs });
+  const modeTarget = validateModeAndTarget(args);
   if (!modeTarget.ok) return { ok: false, errorText: modeTarget.errorText };
 
   return {
@@ -123,7 +135,7 @@ function validateCreateInput(args: Record<string, any>, context: CronContext): V
       expression: args.expression,
       prompt: args.prompt,
       targetChannel,
-      threadTs: threadTs || undefined,
+      threadTs: args.threadTs || undefined,
       effectiveMode: modeTarget.effectiveMode,
       effectiveTarget: modeTarget.effectiveTarget,
     },
