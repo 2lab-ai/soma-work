@@ -3930,13 +3930,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 
 /* ── TOPBAR — @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14) ──
    The bar is the library's: 56px (52 on phones), translucent over the page, one hairline;
-   brand · 대화 · 설정 · 기억 · actions · status · account · theme, the links folded into 메뉴
-   whenever the bar is short of room. The header around it stays at the top while the board
-   scrolls (SSOT 2026-10-29 T3; the docked drawer sits under it: --topbar-b). The page's own
-   controls are the bar's actions — the scope group (default model / effort, the board's user,
-   admin write mode) and 새 작업. Below 1280px the scope group takes the row under the bar
-   (#topbar-sub, placeTopbarScope) and wraps there instead of crowding the one-row bar. No
-   control cuts its label; only the selected user's name ends in an ellipsis (full name in title). */
+   brand (the page's h1) · 대화 · 설정 · 기억 · toolbar · actions · status · account · theme, the
+   links folded into 메뉴 whenever the bar is short of room. The header around it stays at the top
+   while the board scrolls (SSOT 2026-10-29 T3; the docked drawer sits under it: --topbar-b). The
+   page's own controls: the scope group (default model / effort, the board's user, admin write
+   mode) is the bar's toolbar — inline while it fits, the bar's own wrapping row under it below
+   toolbarAt (1280px) or when it would overflow (0.10.0, D2-GAPS G1-1) — and 새 작업 its action.
+   No control cuts its label; only the selected user's name ends in an ellipsis (full name in title). */
 .topbar {
   position: sticky;
   top: 0;
@@ -3946,25 +3946,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* Until the element is defined: its height, none of the raw controls. */
 ui-app-bar:not(:defined) { display: block; height: 56px; }
 ui-app-bar:not(:defined) > * { visibility: hidden; }
-/* The row under the bar: the bar's own surface (86% page colour over a blur, one hairline). */
-.topbar-sub {
-  display: flex;
-  align-items: center;
-  min-width: 0;
-  padding: 8px 20px;
-  background: color-mix(in srgb, var(--bg) 86%, transparent);
-  -webkit-backdrop-filter: saturate(1.4) blur(10px);
-  backdrop-filter: saturate(1.4) blur(10px);
-  border-bottom: 1px solid var(--border);
-}
-.topbar-sub[hidden] { display: none; }
-@media (prefers-reduced-transparency: reduce) {
-  .topbar-sub { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
-}
 .topbar-scope { display: flex; align-items: center; gap: 6px; min-width: 0; flex: none; }
-.topbar-sub .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; }
-/* The row under the bar is the user select's cap: only a name wider than it ends in an ellipsis. */
-.topbar-sub .user-select { max-inline-size: 100%; }
+/* In the bar's row under it (toolbar-row) the scope group wraps, and the row is the user select's cap:
+   only a name wider than it ends in an ellipsis. */
+ui-app-bar[toolbar-row] .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; }
+ui-app-bar[toolbar-row] .user-select { max-inline-size: 100%; }
 /* 새 작업 in the bar: the ink kit button; its word steps aside on a narrow bar (the + and title stay). */
 ui-app-bar[narrow] .nt-btn-label { display: none; }
 /* SSOT 2026-10-23 T6 — the owner's default model / effort, one click from the top. */
@@ -5439,11 +5425,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .wl-child { grid-template-columns: 16px minmax(0, 1fr); }
   .wc-meta { grid-column: 2; grid-row: auto; flex-wrap: wrap; }
 
-  /* Top bar (the app bar narrows itself: the status dot, the account's initials, 메뉴):
-     the row under it keeps the bar's 12px sides, and the user select fills what the
-     chips leave of its line (it wraps rather than overflow). Labels stay whole. */
-  .topbar-sub { padding: 8px 12px; }
-  .topbar-sub .user-select { flex: 1 1 auto; }
+  /* Top bar (the app bar narrows itself: the status dot, the account's initials, 메뉴; its
+     toolbar row keeps 12px sides): the user select fills what the chips leave of its line
+     (it wraps rather than overflow). Labels stay whole. */
+  ui-app-bar[toolbar-row] .user-select { flex: 1 1 auto; }
   .topbar .admin-toggle { padding: 4px 10px; }
   .inbox-head { margin-bottom: 12px; flex-wrap: wrap; row-gap: 8px; }
   /* The tools take the row under the breadcrumb; on the narrowest screens
@@ -5986,15 +5971,14 @@ ${pageTokenAliases()}
 </head>
 <body>
 <div class="app">
-  <!-- The top bar is @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14): brand, the 대화 · 설정 · 기억 links
-       (folded into 메뉴 when the bar is short of room), the live-update status, the signed-in account and the
-       theme toggle are its data (paintAppBar); the page's own controls are its actions — the scope group
-       (default model / effort, the board's user, admin write mode) and 새 작업. Below TOPBAR_SCOPE_MIN the
-       scope group leaves the bar for the row under it (#topbar-sub, placeTopbarScope): the bar is one row. -->
+  <!-- The top bar is @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14): brand (the page's h1), the 대화 · 설정 ·
+       기억 links with their titles (folded into 메뉴 when the bar is short of room), the live-update status, the
+       signed-in account and the theme toggle are its data (paintAppBar). The page's own controls: the scope group
+       (default model / effort, the board's user, admin write mode) is its toolbar — the bar's own row under it
+       below toolbarAt or when it would overflow — and 새 작업 its action. -->
   <header class="topbar" id="topbar">
-    <h1 class="ar-vh">soma-work</h1>
     <ui-app-bar id="app-bar" lang="ko">
-    <div class="topbar-scope" id="topbar-scope" slot="actions">
+    <div class="topbar-scope" id="topbar-scope" slot="toolbar">
     <div class="topbar-defaults" id="topbar-defaults" hidden>
       <button type="button" class="td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
       <button type="button" class="td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 effort — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">Effort </span><b id="td-effort-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
@@ -6016,7 +6000,6 @@ ${pageTokenAliases()}
     </div>
     <button type="button" class="ui-btn is-primary new-task-btn" id="new-task-btn" slot="actions" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><i data-ui-icon="plus"></i><span class="nt-btn-label">새 작업</span><kbd class="ui-kbd nt-kbd" aria-hidden="true">N</kbd></button>
     </ui-app-bar>
-    <div class="topbar-sub" id="topbar-sub" hidden></div>
   </header>
 
   <div class="main">
@@ -6254,9 +6237,11 @@ const INIT_USER = ${initUser};
 // The page chrome's words, in one place and one language (the library's STRINGS pattern, lang="ko"):
 // sentence case, "…" not "...", the library's short status vocabulary.
 var STRINGS = {
-  // The live-update status in the app bar (a tone dot and these words; narrow, the dot alone).
+  // The live-update status in the app bar (a tone dot and these words; narrow, the dot alone), read after
+  // what it is about: "실시간 업데이트: 연결됨" (its description — visually hidden, and its hover title).
+  wsAbout: '실시간 업데이트',
   wsConnecting: '연결 중…',
-  wsLive: '실시간 연결됨',
+  wsLive: '연결됨',
   wsReconnecting: '다시 연결 중…',
   on: '켬',
   off: '끔',
@@ -6348,21 +6333,26 @@ let _viewerUserId = ''; // the signed-in user (/auth/me) — not currentUserId, 
 // The page hands the bar its data — brand, the three page links, the live-update status, the signed-in
 // account and the current theme — and answers its events: ui-theme-change (the page owns the theme and
 // its storage), ui-navigate / ui-account (not cancelled: the links are real links). The bar draws and
-// folds them; the page's own controls ride in its actions slot (placeTopbarScope).
+// folds them; the page's own controls ride in its toolbar (the scope group) and actions (새 작업) slots.
+// The brand is the page's h1; each link's title says what the page is for (its hover title, and the
+// folded menu row's second line); the status says what it is about before its word.
 var APP_BAR_NAV = [
-  { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat' },
-  { id: 'settings', label: '설정', href: '/dashboard/settings', icon: 'gear' },
-  { id: 'memory', label: '기억', href: '/dashboard/settings#memory', icon: 'brain' },
+  { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat', title: '지난 대화를 모두 봅니다' },
+  { id: 'settings', label: '설정', href: '/dashboard/settings', icon: 'gear', title: 'Slack 명령으로 바꾸던 설정을 여기서 확인하고 바꿉니다' },
+  { id: 'memory', label: '기억', href: '/dashboard/settings#memory', icon: 'brain', title: '에이전트가 기억하는 개인 메모리와 관찰 기록을 보고 고칩니다' },
 ];
-var _appBarStatus = { tone: 'run', label: STRINGS.wsConnecting, live: true };
+// The scope group takes the bar's row under it below this bar width (it may also when the bar would overflow).
+var APP_BAR_TOOLBAR_AT = 1280;
+var _appBarStatus = { tone: 'run', label: STRINGS.wsConnecting, live: true, description: STRINGS.wsAbout };
 var _appBarAccount = null; // { name, href, role? } once /auth/me resolves; null = no pill
 function paintAppBar() {
   var bar = document.getElementById('app-bar');
   if (!bar) return;
   var data = {
-    brand: { label: 'soma-work', mark: true },
+    brand: { label: 'soma-work', mark: true, heading: true },
     nav: APP_BAR_NAV,
     navLabel: '주 메뉴',
+    toolbarAt: APP_BAR_TOOLBAR_AT,
     status: _appBarStatus,
     theme: document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
   };
@@ -6408,38 +6398,6 @@ window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', fu
     if (t === 'light' || t === 'dark') setTheme(t);
   });
 })();
-// The scope group (default model / effort · the board's user · admin write mode) rides in the bar's
-// actions on a wide screen; below TOPBAR_SCOPE_MIN it takes the row under the bar, where it may wrap —
-// the bar is one 56px row and folds only its own links. Moved as a whole, so its state goes with it.
-var TOPBAR_SCOPE_MIN = 1280;
-function placeTopbarScope() {
-  var bar = document.getElementById('app-bar');
-  var sub = document.getElementById('topbar-sub');
-  var scope = document.getElementById('topbar-scope');
-  if (!bar || !sub || !scope) return;
-  var wide = !window.matchMedia || window.matchMedia('(min-width: ' + TOPBAR_SCOPE_MIN + 'px)').matches;
-  if (wide) {
-    if (scope.parentElement !== bar) {
-      closeDefaultsMenu();
-      scope.slot = 'actions';
-      bar.insertBefore(scope, document.getElementById('new-task-btn'));
-    }
-    sub.hidden = true;
-  } else {
-    if (scope.parentElement !== sub) {
-      closeDefaultsMenu();
-      scope.removeAttribute('slot');
-      sub.appendChild(scope);
-    }
-    sub.hidden = false;
-  }
-}
-placeTopbarScope();
-if (window.matchMedia) {
-  var _topbarScopeMq = window.matchMedia('(min-width: ' + TOPBAR_SCOPE_MIN + 'px)');
-  if (_topbarScopeMq.addEventListener) _topbarScopeMq.addEventListener('change', placeTopbarScope);
-}
-
 // ── Panel resize — drag the left edge of the docked drawer (SSOT 2026-10-24) ──
 // The drag stores a width preference (--panel-w-pref, localStorage); CSS decides
 // the applied width — the whole screen as a sheet (<840px), min(preference, 50vw)
@@ -13219,14 +13177,14 @@ function connectWs() {
 
   // The app bar's status (role=status, polite): a tone dot and a word; the dot pulses while live.
   ws.onopen = function() {
-    _appBarStatus = { tone: 'done', label: STRINGS.wsLive, live: true };
+    _appBarStatus = { tone: 'done', label: STRINGS.wsLive, live: true, description: STRINGS.wsAbout };
     paintAppBar();
     // Reconnect: recover the work-log entries broadcast while we were offline
     // (from the HTTP cursor; afterSeq=0 when the log was still empty).
     if (panelOpen && _wl) recoverWorkLog();
   };
   ws.onclose = function() {
-    _appBarStatus = { tone: 'wait', label: STRINGS.wsReconnecting, live: true };
+    _appBarStatus = { tone: 'wait', label: STRINGS.wsReconnecting, live: true, description: STRINGS.wsAbout };
     paintAppBar();
     setTimeout(connectWs, 3000);
   };
