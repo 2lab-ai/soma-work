@@ -117,7 +117,8 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(detail).toContain('<ui-stat-strip id="stats-grid" class="stats-grid" lang="ko">');
     const cards = fnBody('statCardsData');
     expect(cards).toContain("layout: 'cards',");
-    for (const label of ['턴 사용', 'PR 생성', 'PR 머지', '머지 코드', '워크플로우']) expect(cards, label).toContain(`label: '${label}'`);
+    for (const label of ['턴 사용', 'PR 생성', 'PR 머지', '머지 코드', '워크플로우'])
+      expect(cards, label).toContain(`label: '${label}'`);
   });
 
   it('D2 — the stats strip is answered, not drawn: period · figures · 자세히 in, ui-period / ui-more answered', () => {
@@ -215,13 +216,10 @@ describe('agent inbox board — drag and drop removed (§3.1-5)', () => {
   it('has no draggable cards, drag listeners, or confirm() prompts', () => {
     expect(TEMPLATE).not.toContain('draggable=');
     expect(TEMPLATE).not.toContain("'dragstart'");
-    // Task view T1.5: the one 'drop' listener is the session composer's file
-    // drop (#panel-command, files only) — never a board card or column.
-    expect(TEMPLATE.match(/'drop'/g) ?? []).toHaveLength(1);
-    const pc = fnBody('pcInit');
-    expect(pc).toContain("var host = document.getElementById('panel-command');");
-    expect(pc).toContain("host.addEventListener('drop', function(e) {");
-    expect(pc).toContain("Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0");
+    // Task view T1.5 / D4 E-30: a file dropped on the session composer is the slotted <ui-composer>'s own drop —
+    // the page listens for no 'drop' at all, so never on a board card or column.
+    expect(TEMPLATE).not.toContain("'drop'");
+    expect(TEMPLATE).toContain('<ui-composer id="pc-composer" slot="composer" lang="ko"></ui-composer>');
     expect(TEMPLATE).not.toContain('confirm(');
   });
 });

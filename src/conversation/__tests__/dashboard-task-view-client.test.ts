@@ -70,7 +70,8 @@ const T0 = 1_700_000_000_000;
 const BASE_FNS = ['esc', 'escAttr', 'toNum', 'formatDuration', 'formatTaskTime', 'agentIconHtml'];
 const BASE_VARS = [
   'AGENT_STATUS_LABEL',
-  'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
   'TASK_FATE_LABEL',
   'TASK_PAUSE_SVG',
   'TASK_STOP_SVG',
@@ -673,25 +674,16 @@ describe('T1.4 · an assistant turn reads as its answer; Raw sits at the bottom'
 describe('T1.5 · the steering composer: multiline, images, files, voice', () => {
   const cmd = PAGE.slice(PAGE.indexOf('<div class="panel-command" id="panel-command">'), PAGE.indexOf('<!-- New task'));
 
-  // Dashboard batch 2: the field is <ui-agent-steering>'s (multiline, grows with its text); the page's tools sit in
-  // its slot="tools" and the chips, the recorder and the error in slot="attachments".
-  it('is <ui-agent-steering> with the attach / image / mic tools in its field', () => {
-    expect(cmd).toContain('<ui-agent-steering id="cmd-steer" lang="ko">');
-    expect(cmd).not.toMatch(/<textarea|id="cmd-input"|id="cmd-send"/);
-    const tools = cmd.slice(cmd.indexOf('<span slot="tools" class="pc-tools">'), cmd.indexOf('</ui-agent-steering>'));
-    expect(tools).toContain('id="pc-attach"');
-    expect(tools).toContain('id="pc-mic"');
-    const top = cmd.slice(cmd.indexOf('<div slot="attachments" class="pc-top">'), cmd.indexOf('<span slot="tools"'));
-    expect(top).toContain('id="pc-attachments"');
-    expect(top).toContain('id="pc-recorder"');
-    expect(top).toContain('id="pc-error"');
-    expect(cmd).toContain('id="pc-attach"');
-    expect(cmd).toContain('id="pc-image"');
-    expect(cmd).toMatch(/id="pc-mic"[^>]*aria-pressed="false"/);
-    expect(cmd).toContain('id="pc-attachments"');
-    expect(cmd).toContain('id="pc-recorder"');
-    expect(cmd).toMatch(/<input type="file" id="pc-file-input" multiple hidden/);
-    expect(cmd).toMatch(/<input type="file" id="pc-image-input" accept="image\/\*"/);
+  // D4 E-30 (@2lab.ai/ui 0.10.0): the field is a <ui-composer slot="composer"> inside <ui-agent-steering> — attach,
+  // image, voice, their chips, the recorder, the limits and the error line are the composer's (library:
+  // agent-steering.test.ts 'the composer is the field: the built-in one, attachments and tools step aside').
+  it('is <ui-agent-steering> with a <ui-composer slot="composer"> as its field', () => {
+    expect(cmd).toContain(
+      '<ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"></ui-composer></ui-agent-steering>',
+    );
+    expect(cmd).not.toMatch(/<textarea|id="cmd-input"|id="cmd-send"|slot="tools"|slot="attachments"|type="file"/);
+    for (const id of ['pc-attach', 'pc-image', 'pc-mic', 'pc-attachments', 'pc-recorder', 'pc-error'])
+      expect(cmd, id).not.toContain(`id="${id}"`);
     // Model · effort sit above the composer.
     expect(cmd.indexOf('id="panel-controls"')).toBeLessThan(cmd.indexOf('id="cmd-steer"'));
   });
@@ -749,68 +741,65 @@ describe('review r1 · a subagent tab never shows a background start acknowledge
   });
 });
 
+// D4 E-30: the recording is the slotted composer's. A card switch puts a fresh steering with a fresh composer in —
+// the old one disconnects, which discards its recording and releases the microphone (a prompt still pending too):
+// library composer.test.ts 'disabling the composer discards a recording; disconnecting does too'. Closing the panel
+// or a session closing to this viewer resets it (pcReset).
 describe('review r1 · a recording belongs to the card it was started for', () => {
-  type Rec = Record<string, unknown>;
-  function harness() {
-    const added: string[] = [];
-    const env = load<{
-      pcRecCurrent(gen: number, key: string): boolean;
-      pcFinishRecording(state: Rec): void;
-      __set(n: string, v: unknown): void;
-    }>(['pcRecCurrent', 'pcFinishRecording'], [], {
-      _pcRecGen: 0,
-      panelSessionKey: 'A',
-      panelOpen: true,
-      Blob: class {
-        constructor(
-          public parts: unknown[],
-          public opts: unknown,
-        ) {}
+  type Node = Record<string, any>;
+  function fakeDoc(old: Node | null, composer: Node | null) {
+    const made: Node[] = [];
+    const document = {
+      getElementById: (id: string) => (id === 'cmd-steer' ? old : id === 'pc-composer' ? composer : null),
+      createElement: (tag: string) => {
+        const n: Node = { tag, attrs: {}, children: [] as Node[] };
+        n.setAttribute = (k: string, v: string) => (n.attrs[k] = v);
+        n.appendChild = (c: Node) => n.children.push(c);
+        made.push(n);
+        return n;
       },
-      ntStamp: () => 'stamp',
-      ntExtForMime: () => 'm4a',
-      pcAddBlob: (_b: unknown, name: string) => added.push(name),
-    });
-    return { env, added };
+    };
+    return { document, made };
   }
-  const state = (o: Rec = {}) => ({
-    keep: true,
-    finished: false,
-    chunks: [1],
-    mime: 'audio/mp4',
-    started: 0,
-    stoppedAt: 2000,
-    gen: 0,
-    key: 'A',
-    resolve: () => {},
-    ...o,
+  it('a card switch: a fresh steering holding a fresh composer with the limits; the files kept for Retry go', () => {
+    const replaced: Node[] = [];
+    const old: Node = { replaceWith: (n: Node) => replaced.push(n) };
+    const { document } = fakeDoc(old, null);
+    const env = load<{ pcFreshSteer(): void; __set(n: string, v: unknown): void }>(
+      ['pcComposerData', 'pcComposerSetup', 'pcFreshSteer'],
+      ['PC_LIMITS', '_pcNoteFiles'],
+      { document },
+    );
+    env.__set('_pcNoteFiles', { 'as-1': ['a.png'] });
+    env.pcFreshSteer();
+    expect(replaced).toHaveLength(1);
+    const el = replaced[0];
+    expect([el.tag, el.id, el.attrs.lang]).toEqual(['ui-agent-steering', 'cmd-steer', 'ko']);
+    expect(el.children).toHaveLength(1);
+    const c = el.children[0];
+    expect([c.tag, c.id, c.slot, c.attrs.lang]).toEqual(['ui-composer', 'pc-composer', 'composer', 'ko']);
+    expect(c.data).toEqual({ maxFiles: 10, maxFileSize: 20971520, maxTotalBytes: 31457280, minRows: 1, maxRows: 8 });
+    expect(TEMPLATE).toMatch(/_pcNoteFiles = Object\.create\(null\);\n\}/);
   });
-
-  it('files the voice note on the card it was recorded for', () => {
-    const { env, added } = harness();
-    env.pcFinishRecording(state());
-    expect(added).toEqual(['voice-stamp.m4a']);
-  });
-  it('a recorder that stops after the panel moved to another card, or closed, attaches nothing', () => {
-    const moved = harness();
-    moved.env.__set('panelSessionKey', 'B');
-    moved.env.pcFinishRecording(state());
-    expect(moved.added).toEqual([]);
-    const closed = harness();
-    closed.env.__set('panelOpen', false);
-    closed.env.pcFinishRecording(state());
-    expect(closed.added).toEqual([]);
-    const reset = harness();
-    reset.env.__set('_pcRecGen', 1);
-    reset.env.pcFinishRecording(state());
-    expect(reset.added).toEqual([]);
-  });
-  it('the send waits on the recording itself — the done promise settles either way', () => {
-    const { env } = harness();
-    let settled = 0;
-    env.__set('panelSessionKey', 'B');
-    env.pcFinishRecording(state({ resolve: () => settled++ }));
-    expect(settled).toBe(1);
+  it('pcReset discards a recording (or a pending prompt), stops a preview and drops every file; the text stays', () => {
+    const calls: string[] = [];
+    const composer: Node = {
+      value: '쓰던 글',
+      files: ['a', 'b', 'c'],
+      cancelRecording: () => calls.push('cancel'),
+      pause: () => calls.push('pause'),
+      removeFile: (i: number) => {
+        calls.push(`remove ${i}`);
+        composer.files.splice(i, 1);
+      },
+    };
+    const { document } = fakeDoc(null, composer);
+    load<{ pcReset(): void }>(['pcReset'], [], { document }).pcReset();
+    expect(calls).toEqual(['cancel', 'pause', 'remove 2', 'remove 1', 'remove 0']);
+    expect(composer.files).toEqual([]);
+    expect(composer.value).toBe('쓰던 글');
+    // Not upgraded yet (no methods): nothing to reset, nothing throws.
+    expect(() => load<{ pcReset(): void }>(['pcReset'], [], fakeDoc(null, {})).pcReset()).not.toThrow();
   });
   it('closing the panel resets the composer (mic, files) and stops watching answers', () => {
     const close = TEMPLATE.slice(
@@ -819,11 +808,8 @@ describe('review r1 · a recording belongs to the card it was started for', () =
     );
     expect(close).toContain('pcReset();');
     expect(close).toMatch(/_ansIo\.disconnect\(\)/);
-    const reset = TEMPLATE.slice(
-      TEMPLATE.indexOf('\nfunction pcReset('),
-      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction pcReset(')),
-    );
-    expect(reset).toContain('_pcRecGen++');
+    // A mode away from open (ended, read-only) resets it too.
+    expect(TEMPLATE).toContain("if (mode !== 'open') pcReset();");
   });
 });
 
@@ -870,15 +856,18 @@ describe('browser receipt · a section landing is not undone by the layout coord
 });
 
 // ── #488 (review P2/P3, closed in this PR) ──
+// #488 (D4 E-30): a send while recording is the composer's — it files the voice note first, then emits ui-submit with
+// the text and the note together (library composer.test.ts 'sending while recording files the note first, then
+// submits text and note together'). The page has no recorder to wait on.
 describe('#488 · a voice note that is not filed in time stops the send instead of dropping it', () => {
   const send = TEMPLATE.slice(
     TEMPLATE.indexOf('\nasync function sendCommand('),
     TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nasync function sendCommand(')),
   );
-  it('a recording that does not settle within the wait aborts with a message; text and chips stay', () => {
-    expect(send).toMatch(/if \(!filed\) \{[^}]*pcSetError\([^}]*pcGiveBack\(el, ref, msg, sendingSessionKey\);/);
-    // Nothing is posted before it: the command route is reached only after the wait.
-    expect(send.indexOf('if (!filed)')).toBeLessThan(send.indexOf('acPost('));
+  it('the page waits on no recording of its own: the files arrive with the note, read before anything is posted', () => {
+    expect(send).not.toMatch(/_pcRec|_pcFiling|pcStopRecording|filing/);
+    expect(send).toContain('attachments = await Promise.all(list.map(ntReadFile));');
+    expect(send.indexOf('Promise.all(list.map(ntReadFile))')).toBeLessThan(send.indexOf('acPost('));
   });
 });
 
@@ -915,28 +904,6 @@ describe('#488 · every landing scroll starts a new panel scroll generation', ()
     for (let i = 0; i < calls.length - 1; i++) expect(calls[i].slice(-200)).toContain('_panelScrollGen++');
     // 작업 로그 has no landing of its own: it is the section tab the opening selects.
     expect(TEMPLATE).not.toContain('function scrollPanelToWorkLog(');
-  });
-});
-
-describe('#488 r4 (astra) · a send right after a recording timed out still waits for that recording', () => {
-  const send = TEMPLATE.slice(
-    TEMPLATE.indexOf('\nasync function sendCommand('),
-    TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nasync function sendCommand(')),
-  );
-  const stop = TEMPLATE.slice(
-    TEMPLATE.indexOf('\nfunction pcStopRecording('),
-    TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction pcStopRecording(')),
-  );
-  const reset = TEMPLATE.slice(
-    TEMPLATE.indexOf('\nfunction pcReset('),
-    TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction pcReset(')),
-  );
-  it('a stopping recording stays pending (_pcFiling) until filed; every send waits on it; a reset forgets it', () => {
-    expect(stop).toMatch(/_pcFiling = state\.done/);
-    expect(send).toMatch(/var filing = _pcRec \? pcStopRecording\(true\) : _pcFiling;/);
-    expect(reset).toMatch(/_pcFiling = null/);
-    // r4 (fable P3): a dropped recording (keep = false, a reset) leaves nothing for the next send to wait on.
-    expect(stop).toMatch(/if \(keep\) \{\s*_pcFiling = state\.done;/);
   });
 });
 
