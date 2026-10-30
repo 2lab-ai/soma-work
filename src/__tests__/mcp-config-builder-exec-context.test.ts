@@ -47,7 +47,8 @@ function mcpManager(servers: Record<string, unknown> = {}) {
   } as any;
 }
 
-function taskCtx(overrides: Partial<ExecutionContext> = {}): ExecutionContext {
+// A hand-built context: only a test may forge one (the type is branded so production code cannot).
+function taskCtx(overrides: Record<string, unknown> = {}): ExecutionContext {
   return {
     origin: 'task',
     userId: 'U_TASK',
@@ -57,7 +58,7 @@ function taskCtx(overrides: Partial<ExecutionContext> = {}): ExecutionContext {
     taskId: '11111111-2222-4333-8444-555555555555',
     workingDirectory: '/tmp/U_TASK/session_x',
     ...overrides,
-  };
+  } as unknown as ExecutionContext;
 }
 
 describe('McpConfigBuilder — execution context (#597)', () => {

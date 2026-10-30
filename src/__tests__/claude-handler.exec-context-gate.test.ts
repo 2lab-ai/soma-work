@@ -27,24 +27,27 @@ vi.mock('../auth/llmux-tenant-keys', () => ({ ensureTenantKey: vi.fn(async () =>
 vi.mock('../auth/query-env-builder', () => ({ buildQueryEnv: () => ({ env: {} }) }));
 vi.mock('../agent-runtime/claude-code/build-stream-options', () => ({ buildStreamOptions: buildOptionsMock }));
 
-import { type ExecutionContext, ExecutionContextMissingError } from '../agent-runtime/execution-context';
+import {
+  type ExecutionContext,
+  ExecutionContextMissingError,
+  executionContextForTask,
+} from '../agent-runtime/execution-context';
 import { ClaudeHandler } from '../claude-handler';
 import type { SlackContext } from '../mcp-config-builder';
 import type { McpManager } from '../mcp-manager';
+import type { ConversationSession } from '../types';
 
 function newHandler(): ClaudeHandler {
   return new ClaudeHandler({ getPluginManager: () => null } as unknown as McpManager);
 }
 
-const taskContext: ExecutionContext = Object.freeze({
-  origin: 'task',
-  userId: 'U1',
-  isAdmin: false,
-  permissionMode: 'auto',
-  sessionKey: 'task:11111111-2222-4333-8444-555555555555',
+const taskContext: ExecutionContext = executionContextForTask({
+  ownerId: 'U1',
+  slackless: true,
   taskId: '11111111-2222-4333-8444-555555555555',
+  channelId: '',
   workingDirectory: '/tmp/U1/session_x',
-});
+} as ConversationSession);
 
 describe('ClaudeHandler.streamQuery — the execution-context gate (#597)', () => {
   beforeEach(() => {

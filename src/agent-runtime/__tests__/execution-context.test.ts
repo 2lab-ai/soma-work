@@ -6,7 +6,8 @@
  * owner, id or working directory cannot be vouched for gets no context, and a
  * turn with no context is refused (it never falls back to `bypass`).
  */
-import { describe, expect, it } from 'vitest';
+import * as fs from 'node:fs';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ConversationSession } from '../../types';
 import { ExecutionContextMissingError, executionContextForTask, executionContextFromSlack } from '../execution-context';
 
@@ -77,6 +78,39 @@ describe('executionContextForTask (#597)', () => {
     expect(() => executionContextForTask(task(overrides as Partial<ConversationSession>))).toThrow(
       ExecutionContextMissingError,
     );
+  });
+});
+
+describe('executionContextForTask — symlinks (#613 R1)', () => {
+  const OWNER = 'U0EXECCTXOWN';
+  const OTHER = 'U0EXECCTXOTH';
+  const ownerRoot = `/tmp/${OWNER}`;
+  const otherRoot = `/tmp/${OTHER}`;
+  beforeEach(() => {
+    fs.mkdirSync(`${ownerRoot}/session_real`, { recursive: true });
+    fs.mkdirSync(`${otherRoot}/target`, { recursive: true });
+    fs.symlinkSync(`${otherRoot}/target`, `${ownerRoot}/session_link`);
+  });
+  afterEach(() => {
+    fs.rmSync(ownerRoot, { recursive: true, force: true });
+    fs.rmSync(otherRoot, { recursive: true, force: true });
+  });
+
+  it('refuses a task directory that is a symlink out of the owner’s root', () => {
+    expect(() =>
+      executionContextForTask(task({ ownerId: OWNER, workingDirectory: `${ownerRoot}/session_link` })),
+    ).toThrow(ExecutionContextMissingError);
+  });
+
+  it('refuses a not-yet-created directory under such a symlink', () => {
+    expect(() =>
+      executionContextForTask(task({ ownerId: OWNER, workingDirectory: `${ownerRoot}/session_link/sub` })),
+    ).toThrow(ExecutionContextMissingError);
+  });
+
+  it('accepts a real directory inside the owner’s root, in its /tmp form', () => {
+    const ctx = executionContextForTask(task({ ownerId: OWNER, workingDirectory: `${ownerRoot}/session_real` }));
+    expect(ctx.workingDirectory).toBe(`${ownerRoot}/session_real`);
   });
 });
 

@@ -9,6 +9,7 @@
  * `bypass` (the old `!slackContext → bypass` default in mcp-config-builder).
  */
 
+import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { isAdminUser } from '../admin-utils';
 import { isSafePathSegment, normalizeTmpPath } from '../path-utils';
@@ -19,7 +20,16 @@ import type { PermissionMode } from './policy/permission-mode';
 
 export type ExecutionOrigin = 'slack' | 'task';
 
+declare const vouchedByServer: unique symbol;
+
+/**
+ * Built once per turn by one of the two factories below — never assembled by
+ * hand, never cached across turns (an admin removal or a mode change applies
+ * from the next turn). The brand makes "the server built it" a type: a plain
+ * object literal is not an ExecutionContext (#613 R1).
+ */
 export interface ExecutionContext {
+  readonly [vouchedByServer]: true;
   readonly origin: ExecutionOrigin;
   readonly userId: string;
   readonly isAdmin: boolean;
@@ -70,7 +80,7 @@ export function executionContextFromSlack(input: {
   return Object.freeze({
     ...contextFor('slack', input.user, input.sessionKey),
     ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {}),
-  });
+  }) as ExecutionContext;
 }
 
 /**
@@ -93,7 +103,9 @@ export function executionContextForTask(session: ConversationSession): TaskExecu
   }
   const raw = session.workingDirectory;
   if (!raw || !path.isAbsolute(raw)) throw new ExecutionContextMissingError('task has no absolute working directory');
-  const workingDirectory = normalizeTmpPath(path.resolve(raw));
+  // Judged by where it really is: a symlink inside the owner's root that leads
+  // out of it does not pass (#613 R1).
+  const workingDirectory = realDirectory(path.resolve(raw));
   const ownerRoot = `/tmp/${ownerId}`;
   if (!workingDirectory.startsWith(`${ownerRoot}/`)) {
     throw new ExecutionContextMissingError('task working directory is outside the owner’s /tmp root');
@@ -103,5 +115,27 @@ export function executionContextForTask(session: ConversationSession): TaskExecu
     origin: 'task',
     taskId: session.taskId,
     workingDirectory,
-  });
+  }) as TaskExecutionContext;
+}
+
+/**
+ * The real location of `p` in its `/tmp` form: symlinks are resolved on the
+ * deepest part that exists, and a part not created yet is appended as named.
+ */
+function realDirectory(p: string): string {
+  const pending: string[] = [];
+  let existing = p;
+  while (!fs.existsSync(existing)) {
+    const parent = path.dirname(existing);
+    if (parent === existing) break;
+    pending.unshift(path.basename(existing));
+    existing = parent;
+  }
+  let real = existing;
+  try {
+    real = fs.realpathSync(existing);
+  } catch {
+    // Unreadable: judge the path as named.
+  }
+  return normalizeTmpPath(path.join(real, ...pending));
 }

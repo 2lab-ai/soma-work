@@ -10,6 +10,7 @@
 
 import type { SDKMessage } from '@anthropic-ai/claude-agent-sdk';
 import { beforeAll, describe, expect, it, vi } from 'vitest';
+import { executionContextFromSlack } from '../agent-runtime/execution-context';
 import { ClaudeHandler } from '../claude-handler';
 import { McpManager } from '../mcp-manager';
 import type { ConversationSession } from '../types';
@@ -29,13 +30,10 @@ const optedIn = process.env.SOMA_TEST_REAL_SDK === '1';
 
 const canRun = optedIn && !isNestedSession && !isCI;
 
-// A turn runs only under an execution context (#597). This suite is a non-Slack caller.
-const INTEGRATION_CONTEXT = Object.freeze({
-  origin: 'task' as const,
-  userId: 'U_INTEGRATION',
-  isAdmin: false,
-  permissionMode: 'bypass' as const,
-  sessionKey: 'task:integration',
+// A turn runs only under an execution context (#597), built by its factory.
+const INTEGRATION_CONTEXT = executionContextFromSlack({
+  user: 'U_INTEGRATION',
+  sessionKey: 'work:C_INTEGRATION:integration',
   workingDirectory: '/tmp',
 });
 const describeWithCredentials = canRun ? describe : describe.skip;
