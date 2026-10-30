@@ -3694,7 +3694,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .app { display: flex; flex-direction: column; min-height: 100vh; padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
 
 /* ── TOPBAR — strict horizontal grid ──
-   One row from 1024px; below that the nav (user select · Conversations · admin
+   One row from 1024px; below that the nav (user select · 대화 · 설정 · 기억 · admin
    toggle) takes its own row under brand · status · account (BOARD RESPONSIVE).
    No control ever wraps or cuts its label: everything is nowrap and flex: none.
    Only user names are ever shortened, always with a visible ellipsis and the
@@ -3741,8 +3741,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* One row (≥1024): the nav never shrinks below its controls (so none of them
    paints past it into the account group); the selected name is capped instead
    (.user-select max-inline-size), and the account group is what gives way — the
-   pill's name ends in an ellipsis. The cap keeps "Logged in as <realistic name>"
-   whole at 1024px even with "Reconnecting..." and touch padding. */
+   pill's name ends in an ellipsis. The cap keeps the pill's glyph and a realistic
+   name whole at 1024px even with "다시 연결 중…" and touch padding. */
 .topbar .nav { display: flex; gap: 6px; margin-left: auto; align-items: center; flex: none; }
 .topbar .topbar-account { display: flex; gap: 6px; align-items: center; min-width: 0; flex: 0 1 auto; }
 /* SSOT 2026-10-23 T6 — the owner's default model / effort, one click from the top. */
@@ -5549,7 +5549,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .stats-strip .period-bar { min-width: 0; }
   .stats-strip .seg .period-btn { flex: 1 1 auto; justify-content: center; padding-left: 9px; padding-right: 9px; }
   /* Top bar: the status badge becomes a 10px dot (aria-label preserved for SR),
-     the "Logged in as" prefix goes, and the user select fills the nav row (which
+     the account glyph goes, and the user select fills the nav row (which
      wraps rather than overflow on very small screens). Labels stay whole. */
   .topbar { padding: 6px 12px; gap: 6px 8px; }
   .topbar h1 { font-size: 14px; gap: 6px; }
@@ -5567,6 +5567,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
     flex-shrink: 0;
     min-width: 0;
   }
+  .topbar .ws-badge::before { display: none; }
   .topbar .nav .user-select { flex: 1 1 auto; }
   .topbar .user-pill { padding: 4px 10px; }
   .topbar .user-pill-prefix { display: none; }
