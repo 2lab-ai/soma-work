@@ -843,6 +843,7 @@ describe('D10 — one primary button per open card', () => {
         'cardCurrentTask',
         'renderCardResume',
         'isBusy',
+        'sessionActionsOf',
         'sessionActionHtml',
         'cardGoalLine',
         // affectUI batch 1: the prompts and the single-choice question are <ui-approval-card> slots.
@@ -852,15 +853,7 @@ describe('D10 — one primary button per open card', () => {
         'acQuestionHtml',
         'renderCardBody',
       ],
-      [
-        'RESUME_SVG',
-        'GOAL_STATUS_LABELS',
-        'GOAL_STATUS_TONE',
-        'GOAL_SVG',
-        'SESSION_ACTION_ARIA',
-        'SESSION_ACTION_TONE',
-        '_busy',
-      ],
+      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', 'SESSION_ACTION_TONE', '_busy'],
       { ...STUBS, ...inject },
     ).renderCardBody(s, col);
   const card = (over: Record<string, unknown> = {}) => ({
@@ -1040,6 +1033,7 @@ describe('D10 — the open card renders one approval card per prompt; only what 
         'cardCurrentTask',
         'renderCardResume',
         'isBusy',
+        'sessionActionsOf',
         'sessionActionHtml',
         'cardGoalLine',
         'isPermissionRequester',
@@ -1055,7 +1049,6 @@ describe('D10 — the open card renders one approval card per prompt; only what 
         'GOAL_STATUS_LABELS',
         'GOAL_STATUS_TONE',
         'GOAL_SVG',
-        'SESSION_ACTION_ARIA',
         'SESSION_ACTION_TONE',
         '_busy',
         'AC_SIBLING',

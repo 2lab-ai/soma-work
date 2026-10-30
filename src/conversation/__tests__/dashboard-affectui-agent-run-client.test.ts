@@ -19,6 +19,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { uiLibDistDir } from '../dashboard';
+import { uiLibKitCss } from '../ui-lib';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -747,11 +748,14 @@ function answers(
 
 describe('needs-input header (D8/D9)', () => {
   it('the page: a hidden header right before the permission slot, a live status line, no live region on the cards', () => {
-    const head = PAGE.indexOf('<div class="panel-needs-head" id="panel-needs-head" tabindex="-1" hidden>');
+    // D3 E-13: the kit's section head with its count badge (wait tone, the arrival pop).
+    const head = PAGE.indexOf(
+      '<div class="ui-section-head panel-needs-head" id="panel-needs-head" tabindex="-1" hidden>',
+    );
     expect(head).toBeGreaterThan(0);
     expect(head).toBeLessThan(PAGE.indexOf('id="panel-permission"'));
     expect(PAGE).toContain(
-      '<span class="pn-title">입력 필요</span><span class="pn-count" id="panel-needs-count"></span>',
+      '<h4>입력 필요</h4><span class="ui-count" id="panel-needs-count" data-tone="wait" data-pop></span>',
     );
     expect(PAGE).toContain('<p class="ar-vh" id="panel-needs-status" role="status" aria-live="polite"></p>');
     expect(PAGE).toContain('<div class="panel-permission" id="panel-permission" style="display:none"></div>');
@@ -770,12 +774,13 @@ describe('needs-input header (D8/D9)', () => {
     expect(els['panel-needs-count'].textContent).toBe('3');
     m.renderPanelNeedsHead(SESSION({ pendingPermissions: [], activityState: 'working', pendingQuestion: q }));
     expect(els['panel-needs-head'].hidden).toBe(true);
-    expect(CSS).toMatch(/\.pn-count \{[^}]*animation: pn-pop var\(--dur-move\) var\(--ease-out\) both;/);
-    // The badge reads in both themes: ink on an amber tint, no hard-coded colour.
-    const badge = /\.pn-count \{[^}]*\}/.exec(CSS)?.[0] ?? '';
-    expect(badge).toContain('color: var(--text);');
-    expect(badge).toContain('background: color-mix(in srgb, var(--st-wait) 24%, transparent);');
-    expect(badge).not.toMatch(/#[0-9a-f]{3,6}\b/i);
+    // The badge is the kit's (an amber tint in both themes, the pop on arrival, a fade under reduced
+    // motion); the page draws none of its own.
+    const kit = uiLibKitCss();
+    expect(kit).toMatch(/\.ui-count\[data-tone="wait"\] \{[^}]*color-mix\(in srgb, var\(--ui-st-wait\)/);
+    expect(kit).toMatch(/\.ui-count\[data-pop\] \{[^}]*animation: ui-count-pop/);
+    expect(CSS).not.toMatch(/\.pn-count \{/);
+    expect(CSS).not.toContain('@keyframes pn-pop');
   });
 
   it('landing keeps the header in view (offset by its height); keyboard landing focuses the first open card itself, not a button', () => {
@@ -1661,54 +1666,32 @@ const CARD = (over: Record<string, unknown> = {}) => ({
   ...over,
 });
 
-describe('panel head (D18)', () => {
+// D3 E-08: the head is <ui-status-bar> (its chip, its clock, its buttons); the page hands it data.
+describe('panel head (D18) — <ui-status-bar>', () => {
   const head = (s: Record<string, unknown>, col: string) =>
-    load<{ panelHeadHtml(s: unknown, col: string): string }>(
-      [
-        'esc',
-        'escAttr',
-        'escJs',
-        'toNum',
-        'formatTaskTime',
-        'pendingAutoResume',
-        'autoResumeLabel',
-        'rootStatusOf',
-        'agentIconHtml',
-        'isBusy',
-        'sessionActionHtml',
-        'panelHeadHtml',
-      ],
-      ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'SESSION_ACTION_ARIA', 'SESSION_ACTION_TONE', '_busy'],
-      {
-        currentUserId: 'U1',
-        SELF_INSTANCE_NAME: '',
-        READ_ONLY_MSG: 'read only',
-        safeHref: (u: string) => u,
-        isSiblingSession: () => false,
-      },
-    ).panelHeadHtml(s, col);
+    load<{ panelHeadData(s: unknown, col: string): Record<string, unknown> }>(
+      ['toNum', 'pendingAutoResume', 'rootStatusOf', 'isBusy', 'sessionActionsOf', 'panelHeadData'],
+      ['AGENT_STATUS_LABEL', 'PS_BAR_STATUS', '_busy'],
+      { currentUserId: 'U1', SELF_INSTANCE_NAME: '', READ_ONLY_MSG: 'read only' },
+    ).panelHeadData(s, col);
 
-  it('running: the pill, 시작 HH:MM · the elapsed time of this turn, Stop', () => {
-    const html = head(CARD(), 'working');
-    expect(html).toContain('class="ui-status is-pill ps-chip" data-tone="run" data-live>');
-    expect(html).toContain('<span class="ps-time" title="이번 턴 시작 · 경과">');
-    expect(text(html)).toContain('시작 ');
-    expect(html).toContain(`<span class="card-timer-live" data-leg-started="${T0}" data-accumulated="0"></span>`);
-    expect(html).toContain('aria-label="Stop — 세션 중지"');
+  it('running: the running chip, 시작 HH:MM · the elapsed time of this turn (the bar ticks it), Stop', () => {
+    const d = head(CARD(), 'working');
+    expect(d).toMatchObject({ status: 'running', words: { running: '실행 중' }, startedAt: T0 });
+    expect(d.activeMs).toBeUndefined();
+    expect(d.actions).toContainEqual({ id: 'stop', label: 'Stop', tone: 'danger', icon: 'stop' });
   });
 
-  it('not running: the total active time, labelled', () => {
-    const html = head(CARD({ activityState: 'idle' }), 'idle');
-    expect(html).toContain(
-      '<span class="ps-time" title="활성 시간">활성 <span class="card-timer-live" data-leg-started="0" data-accumulated="65000"></span></span>',
-    );
-    expect(text(html)).not.toContain('시작 ');
+  it('not running: the total active time (the bar labels it 활성)', () => {
+    const d = head(CARD({ activityState: 'idle' }), 'idle');
+    expect(d).toMatchObject({ status: 'idle', activeMs: 65_000 });
+    expect(d.startedAt).toBeUndefined();
   });
 
-  it("the chip is the kit's tinted status pill (.ui-status.is-pill) — the page draws no chip of its own", () => {
+  it('the chip is the bar’s (icon + word in the st-* tones) — the page draws no chip of its own', () => {
     expect(CSS).not.toMatch(/\.ps-chip \{/);
     expect(CSS).not.toMatch(/\.ps-icon \{/);
-    expect(head(CARD({ activityState: 'idle' }), 'idle')).toMatch(/<span class="ui-status is-pill ps-chip">/);
+    expect(PAGE).toContain('<ui-status-bar class="panel-status" id="panel-status" lang="ko"></ui-status-bar>');
   });
 });
 
@@ -1722,7 +1705,8 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
 
   it('에이전트 · 시작한 사람 · 도구 호출 · 비용 · 활성 시간 · 워크플로 · 환경', () => {
     const html = details(CARD());
-    expect(html.startsWith('<dl class="pi-details">')).toBe(true);
+    // D3 E-10: the kit's fact list.
+    expect(html.startsWith('<dl class="ui-dl pi-details">')).toBe(true);
     expect(row(html, '에이전트')).toBe('opus-5-5[1m]');
     expect(row(html, '시작한 사람')).toBe('Zhuge');
     expect(row(html, '도구 호출')).toBe('<span title="메인 7 · 서브에이전트 7">14</span>');
@@ -1770,7 +1754,7 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
       },
     ).panelInfoHtml;
     const open = info(CARD(), true);
-    const grid = /<dl class="pi-grid">[\s\S]*?<\/dl>/.exec(open)?.[0] ?? '';
+    const grid = /<dl class="ui-dl pi-grid">[\s\S]*?<\/dl>/.exec(open)?.[0] ?? '';
     for (const gone of ['소유자', '워크플로', '환경', '비용']) expect(grid, gone).not.toContain(gone);
     for (const kept of ['입력', '출력', '캐시 읽기', '캐시 쓰기']) expect(grid, kept).toContain(kept);
     const at = (needle: string) => open.indexOf(needle);
@@ -1779,8 +1763,8 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
     const order = [
       at('class="pi-body"'),
       context,
-      at('<dl class="pi-details">'),
-      at('<dl class="pi-grid">'),
+      at('<dl class="ui-dl pi-details">'),
+      at('<dl class="ui-dl pi-grid">'),
       at('class="pi-thread"'),
     ];
     expect(order.every((i) => i >= 0)).toBe(true);
@@ -1840,6 +1824,13 @@ describe('template hygiene', () => {
       '_acState',
       'AC_SENT',
       'AC_SIBLING',
+      // D3 E-08 / E-05: the head and the deck nav are elements fed from these.
+      'sessionActionsOf',
+      'panelHeadData',
+      'panelHeadNoteHtml',
+      'onPanelHeadAction',
+      'PS_BAR_STATUS',
+      'onDeckPage',
     ]) {
       expect(declarationCount(name), name).toBe(1);
     }
@@ -1872,6 +1863,11 @@ describe('template hygiene', () => {
       'AP_KBD_APPROVE',
       'AP_ANSWERED',
       'AP_SENT',
+      // D3 E-08 / E-05: the chip row and the deck's own ‹ › stepping are the elements'.
+      'panelHeadHtml',
+      'SESSION_ACTION_ARIA',
+      'deckGo',
+      'deckStep',
     ]) {
       expect(declarationCount(gone), gone).toBe(0);
       expect(TEMPLATE, gone).not.toMatch(new RegExp(`\\b${gone}\\(`));
@@ -1880,7 +1876,9 @@ describe('template hygiene', () => {
     const ours = CSS.split('\n').filter((l) => /^\s*\.(pl|ap|pn|ac|tr)-|^\s*\.pi-details|^\s*\.ar-vh/.test(l));
     // D3: only the sums (.tr-total*) are the page's now.
     expect(ours.filter((l) => /^\s*\.tr-/.test(l)).every((l) => /^\s*\.tr-total/.test(l))).toBe(true);
-    expect(ours.length).toBeGreaterThan(10);
+    // D3 E-10 / E-13: 세부 is the kit's .ui-dl and the count the kit's .ui-count — no .pi-details / .pn-* rules.
+    expect(ours.filter((l) => /^\s*\.(pi-details|pn-)/.test(l))).toEqual([]);
+    expect(ours.length).toBeGreaterThan(3);
     for (const l of ours) expect(l, l).not.toMatch(/--[a-z-]+\s*:/);
   });
 });

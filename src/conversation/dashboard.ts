@@ -3858,6 +3858,8 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/choice-form.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/task-runs.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/task-plan.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/status-bar.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/deck-nav.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4610,12 +4612,11 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    <ui-approval-card> in its slot (.ac-slot) — the card's own look is the
    library's. No new tokens. */
 .ar-vh { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
-.panel-needs-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px 8px; font-size: 13px; font-weight: 650; color: var(--text); }
+/* D3 E-13: the head is the kit's section head (.ui-section-head) with its count badge (.ui-count, wait tone,
+   the arrival pop on [data-pop]); the page adds its padding and keeps the focus ring inside the scroll box. */
+.panel-needs-head { padding: 12px 16px 8px; }
 .panel-needs-head[hidden] { display: none; }
-.panel-needs-head:focus { outline: none; }
-.panel-needs-head:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
-.pn-count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: color-mix(in srgb, var(--st-wait) 24%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-wait) 55%, transparent); color: var(--text); font-size: 11px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; animation: pn-pop var(--dur-move) var(--ease-out) both; }
-@keyframes pn-pop { from { opacity: 0; transform: scale(0.6); } }
+.panel-needs-head:focus-visible { outline-offset: -2px; }
 /* One section: no rule between a prompt and the question card under it. */
 .panel-permission:has(+ .panel-question[data-ap="card"]:not([style*="none"])) { border-bottom: 0; }
 /* The <ui-approval-card> slots (batch 1): a gap between two prompts, and the open card's off what follows. */
@@ -4972,27 +4973,17 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-deck-peek span:last-child { width: calc(100% - 24px); }
 .slide-panel[data-deck="1"] .panel-deck-peek span:first-child { display: none; }
 .slide-panel:not([data-deck="0"]) .panel-header { border-top: 1px solid color-mix(in srgb, var(--text-tertiary) 45%, var(--border)); border-radius: 10px 10px 0 0; background: var(--surface); box-shadow: 0 -4px 10px -6px var(--scrim); }
-.panel-deck { display: inline-flex; align-items: center; gap: 2px; flex: none; height: 32px; padding: 0 2px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); }
+/* D3 E-05: ‹ n / m › is <ui-deck-nav> (its own pill, 44px on coarse pointers); the edges behind stay the page's
+   (.panel-deck-peek above the header — the element's peek sits under its own nav). */
+.panel-deck { flex: none; }
 .panel-deck[hidden] { display: none; }
-.panel-deck .pd-pos { min-width: 34px; text-align: center; font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
 /* The deck switch (renderDeckNav → deckSlide) is WAAPI, not keyframes: the header and body glide in from
    the side the new front card came from, added onto whatever is still running — a quick second switch
    retargets from where they are drawn instead of restarting. Under reduced motion there is no slide. */
-/* ── SESSION CHIP — the panel head (spec 13): status · active time · retry · Slack · the one action ── */
+/* ── SESSION HEAD — the panel head (spec 13, D3 E-08): <ui-status-bar> draws status · time · Slack · actions
+   (44px targets on coarse pointers, reduced motion); the page adds only an armed resume in its slot. ── */
 .panel-status { flex-basis: 100%; min-width: 0; }
-.panel-status:empty { display: none; }
-.ps-row { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12.5px; color: var(--text-secondary); }
-/* re-agent-run D18: the session's status is the kit's tinted status pill (.ui-status.is-pill). */
-.ps-label { font-size: 11px; font-weight: 600; color: var(--text-tertiary); }
-.ps-time { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; font-variant-numeric: tabular-nums; white-space: nowrap; }
-.ps-clock { flex: none; width: 13px; height: 13px; color: var(--text-tertiary); }
-.ps-dot { color: var(--text-tertiary); }
-.ps-actions { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
-.ps-actions .ui-btn { min-height: 30px; padding: 3px 12px; font-size: 12.5px; }
-.ps-slack { display: inline-flex; align-items: center; min-height: 30px; padding: 0 8px; border-radius: 8px; font-size: 12.5px; font-weight: 600; color: var(--accent); text-decoration: none; }
-.ps-slack:focus-visible { text-decoration: underline; }
-@media (hover: hover) and (pointer: fine) { .ps-slack:hover { text-decoration: underline; } }
-.ps-resume { margin-top: 4px; font-size: 12px; color: var(--st-wait); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ps-resume { min-width: 0; font-size: 12px; color: var(--st-wait); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* ── 세션 정보 — one summary line + the links; opened, every number (spec 13) ── */
 .panel-info { padding: 6px 16px 8px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); }
 .panel-info:empty { display: none; }
@@ -5008,16 +4999,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .pi-links a:focus-visible { text-decoration: underline; }
 @media (hover: hover) and (pointer: fine) { .pi-links a:hover { text-decoration: underline; } }
 .pi-body { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
-.pi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px 12px; margin: 0; }
-.pi-grid > div { min-width: 0; }
-.pi-grid dt { font-size: 11px; font-weight: 500; color: var(--text-tertiary); }
-.pi-grid dd { margin: 1px 0 0; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .pi-muted { color: var(--text-tertiary); font-weight: 400; }
 /* 세부 (re-agent-run D19): label left, value right. */
-.pi-details { display: grid; gap: 7px; margin: 0; }
-.pi-details > div { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; min-width: 0; }
-.pi-details dt { flex: none; color: var(--text-tertiary); font-size: 12px; }
-.pi-details dd { min-width: 0; margin: 0; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; text-align: right; overflow-wrap: anywhere; }
+/* 세부 and the token rows are the kit's fact list (.ui-dl, D3 E-10 — the disclosure itself stays: see D3-GAPS G6-2). */
 .pi-thread { font-variant-numeric: tabular-nums; }
 .pi-resume { color: var(--st-wait); overflow-wrap: anywhere; }
 /* The summary line's ctx % carries the context level (re-context-window D16). */
@@ -5263,7 +5247,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .inbox-head .archives-btn { min-height: 44px; }
   .card-body .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
   .pi-links a, .pi-head, .panel-tasks-toggle { min-height: 44px; }
-  .ps-actions .ui-btn, .ps-slack, .cgl-go, .card-more-link, .tl-toggle { min-height: 44px; }
+  .cgl-go, .card-more-link, .tl-toggle { min-height: 44px; }
 }
 
 /* ── CRON badge · lane · drawer (SSOT 2026-10-23 T3/T4/T5) ── */
@@ -5934,17 +5918,13 @@ ${pageTokenAliases()}
           <button type="button" id="panel-title-sub-regen" class="ui-icon-btn is-sm" style="display:none" aria-label="부제 다시 만들기" title="부제 다시 만들기" onclick="event.stopPropagation();generateTitleSub(panelConvId, !!_panelTitleSub)"><i data-ui-icon="refresh"></i></button>
         </div>
       </div>
-      <!-- Detail deck (SSOT 2026-10-29 T2): every open card has its detail card here; ‹ › go through them. -->
-      <div class="panel-deck" id="panel-deck" role="group" aria-label="열린 작업 카드" hidden>
-        <button type="button" class="ui-icon-btn is-sm" id="panel-deck-prev" aria-label="이전 작업 카드" onclick="deckGo(-1)"><i data-ui-icon="chevron-left"></i></button>
-        <span class="pd-pos" id="panel-deck-pos" aria-live="polite"></span>
-        <button type="button" class="ui-icon-btn is-sm" id="panel-deck-next" aria-label="다음 작업 카드" onclick="deckGo(1)"><i data-ui-icon="chevron-right"></i></button>
-      </div>
+      <!-- Detail deck (SSOT 2026-10-29 T2, D3 E-05): every open card has its detail card here; <ui-deck-nav>'s ‹ n / m › (and ←/→ on it) go through them, round the end. -->
+      <ui-deck-nav class="panel-deck" id="panel-deck" lang="ko" wrap hidden></ui-deck-nav>
       <!-- 자세히 (task view T1.6): the panel shows what matters by default; on, every detail of every section. Saved per device. -->
       <button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false" title="모든 세부 정보 보기" onclick="togglePanelDetail()"><i data-ui-icon="list" class="pdt-icon"></i><span class="pdt-label">자세히</span></button>
       <button type="button" class="ui-icon-btn is-bordered panel-close" aria-label="작업 카드 닫기" title="작업 카드 닫기 (카드도 접힘)" onclick="closeDetailCard()"><i data-ui-icon="close"></i></button>
-      <!-- Session chip (spec 13): status · active time · retry · Slack · the session's one action. -->
-      <div class="panel-status" id="panel-status"></div>
+      <!-- Session head (spec 13, D3 E-08): <ui-status-bar> — status · this turn's time · Slack · the session's actions; an armed resume in its slot. -->
+      <ui-status-bar class="panel-status" id="panel-status" lang="ko"></ui-status-bar>
     </div>
     <!-- Body (task view, SSOT 2026-10-27; section tabs 2026-10-29): one scroll area — the
          task's common surface on top, then the agent tabs (sticky) and the focused
@@ -5957,10 +5937,10 @@ ${pageTokenAliases()}
         <div class="panel-info" id="panel-info"></div>
         <!-- Goal (spec 13): the editor's home — current, queue, add / delete, completed goals. -->
         <div class="panel-goal" id="panel-goal" role="region" tabindex="-1" aria-label="Goal" style="display:none"></div>
-        <!-- 입력 필요 (re-agent-run D8–D17): a head with the count, approval cards for the
+        <!-- 입력 필요 (re-agent-run D8–D17): a head with the count (kit section head + count, D3 E-13), approval cards for the
              permission prompts and the question; one polite status line says arrivals and
              answers (the cards themselves are not a live region — their expiry clock ticks). -->
-        <div class="panel-needs-head" id="panel-needs-head" tabindex="-1" hidden><span class="pn-title">입력 필요</span><span class="pn-count" id="panel-needs-count"></span></div>
+        <div class="ui-section-head panel-needs-head" id="panel-needs-head" tabindex="-1" hidden><h4>입력 필요</h4><span class="ui-count" id="panel-needs-count" data-tone="wait" data-pop></span></div>
         <div class="panel-permission" id="panel-permission" style="display:none"></div>
         <div class="panel-question" id="panel-question" style="display:none"></div>
         <p class="ar-vh" id="panel-needs-status" role="status" aria-live="polite"></p>
@@ -10068,41 +10048,68 @@ function steerItemOf(s, id) {
   return null;
 }
 
-// The head chip: the session's status in the root vocabulary (only the icon
-// and the word are announced, never the ticking clock), its live active time,
-// an armed resume's when / attempt / why, Slack, and the session's one action.
-function panelHeadHtml(s, col) {
+// The panel head (spec 13) — @2lab.ai/ui <ui-status-bar> (D3 E-08): the session's status
+// in the root vocabulary (rootStatusOf onto the bar's six states, the page's words — 재개
+// 대기 / 휴면 / 보관 keep theirs; the bar announces a change, never the ticking clock);
+// a turn in flight reads 시작 HH:MM · its own elapsed time, ticking in place (re-agent-run
+// D18), otherwise the session's total 활성 time (also in 세부 — D19); Slack; the session's
+// actions (sessionActionsOf — Stop takes the bar's two presses, then is busy until the next
+// data). An armed resume's when / attempt / why is a note in the bar's slot.
+var PS_BAR_STATUS = { running: 'running', waiting: 'waiting', resuming: 'waiting', idle: 'idle', sleeping: 'idle', archived: 'idle' };
+function panelHeadData(s, col) {
   var st = rootStatusOf(s, col);
-  var acc = toNum(s.activeAccumulatedMs);
+  var bar = PS_BAR_STATUS[st] || 'idle';
+  var words = {};
+  words[bar] = AGENT_STATUS_LABEL[st] || '';
+  var d = { status: bar, words: words };
   var leg = st === 'running' || st === 'waiting' ? (Number(s.activeLegStartedAtMs) || 0) : 0;
-  // re-agent-run D18: a turn in flight reads 시작 HH:MM · its own elapsed time;
-  // otherwise the session's total active time (also in 세부 — D19).
-  var timer = '';
-  if (leg) {
-    timer = '<span class="ps-time" title="이번 턴 시작 · 경과">'
-      + '<i data-ui-icon="clock" class="ps-clock"></i>'
-      + '시작 ' + esc(formatTaskTime(leg)) + '<span class="ps-dot" aria-hidden="true">&middot;</span>'
-      + '<span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="0"></span></span>';
-  } else if (acc) {
-    timer = '<span class="ps-time" title="활성 시간">활성 <span class="card-timer-live" data-leg-started="0" data-accumulated="' + acc + '"></span></span>';
-  }
+  var acc = toNum(s.activeAccumulatedMs);
+  if (leg) d.startedAt = leg;
+  else if (acc) d.activeMs = acc;
+  if (s.slackThreadUrl) d.link = { id: 'slack', href: String(s.slackThreadUrl), label: 'Slack' };
+  d.actions = sessionActionsOf(s, col).map(function(a) {
+    var x = { id: a.id, label: a.label };
+    if (a.id === 'stop' && !a.sibling) { x.tone = 'danger'; x.icon = 'stop'; }
+    if (a.lock) x.disabled = a.lock;
+    if (a.busy) x.busy = true;
+    return x;
+  });
+  return d;
+}
+// The bar's slot: an armed resume (what starts the session again, when, which attempt; why on hover).
+function panelHeadNoteHtml(s, col) {
   var resume = pendingAutoResume(s, col);
-  var slack = s.slackThreadUrl
-    ? '<a class="ps-slack" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener" aria-label="Slack 스레드 열기" title="Slack 스레드">Slack</a>'
-    : '';
-  return '<div class="ps-row">'
-    + '<span class="ui-status is-pill ps-chip"' + (AGENT_STATUS_TONE[st] ? ' data-tone="' + AGENT_STATUS_TONE[st] + '"' : '') + (st === 'running' ? ' data-live' : '') + '>'
-    + '<span class="ps-label">세션</span><span class="ps-word" role="status">' + esc(AGENT_STATUS_LABEL[st] || '') + '</span></span>'
-    + timer
-    + '<span class="ps-actions">' + slack + sessionActionHtml(s, col, 'panel') + '</span>'
-    + '</div>'
-    + (resume ? '<div class="ps-resume" title="' + escAttr(resume.reason || '') + '">' + esc(autoResumeLabel(resume)) + '</div>' : '');
+  return resume ? '<span class="ps-resume" title="' + escAttr(resume.reason || '') + '">' + esc(autoResumeLabel(resume)) + '</span>' : '';
 }
 function renderPanelHead() {
   var el = document.getElementById('panel-status');
   if (!el) return;
-  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  writePanelPart(el, s ? panelHeadHtml(s, sessionColOf(panelSessionKey)) : '');
+  var key = panelSessionKey;
+  var s = key ? _sessionCache[key] : null;
+  if (!el._wired) {
+    el._wired = true;
+    el.addEventListener('ui-action', onPanelHeadAction);
+  }
+  var col = s ? sessionColOf(key) : '';
+  writePanelPart(el, s ? panelHeadNoteHtml(s, col) : '');
+  var data = s ? panelHeadData(s, col) : null;
+  var sig = JSON.stringify(data);
+  el._key = key;
+  // Same data, same object: the bar keeps an armed Stop and its pending busy across live repaints.
+  if (el._sig === sig) return;
+  el._sig = sig;
+  el.data = data;
+}
+// The bar's ui-action: the session it was drawn for (the deck may have moved on since). The
+// Slack link opens in a new tab by itself.
+function onPanelHeadAction(e) {
+  var id = e.detail && e.detail.id;
+  var key = e.currentTarget && e.currentTarget._key;
+  var s = key ? _sessionCache[key] : null;
+  if (!s || !id || id === 'slack') return;
+  if (id === 'star') doStar(key, s.starred !== true);
+  else if (id === 'revive') doRevive(key);
+  else if (id === 'stop' || id === 'close' || id === 'trash') doAction(key, id);
 }
 
 // 세션 정보: a disclosure whose button is the one-line summary (owner ·
@@ -10145,7 +10152,7 @@ function panelInfoHtml(s, open, col) {
     if (toNum(u.partialSince) > 0) rows.push(['집계 시작', '<span class="rel-time" data-ts="' + toNum(u.partialSince) + '"></span> (그 전 지출 미포함)']);
   }
   // Open body order (re-agent-run D19 · re-context-window D5): the context block (cwSlotHtml, prepended on return) → 세부 → token grid → thread.
-  var body = panelDetailsHtml(s, col) + '<dl class="pi-grid">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
+  var body = panelDetailsHtml(s, col) + '<dl class="ui-dl pi-grid">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
   var thread = ['&Sigma; ' + formatNmSSs(toNum(s.threadTotalActiveMs)), '압축 ' + toNum(s.compactionCount), '세션 ' + toNum(s.threadSessionCount)];
   if (s.mergeStats) thread.push('+' + toNum(s.mergeStats.totalLinesAdded) + ' / -' + toNum(s.mergeStats.totalLinesDeleted));
   body += '<div class="pi-thread">' + thread.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</div>';
@@ -10178,7 +10185,7 @@ function panelDetailsHtml(s, col) {
   if (acc || leg) rows.push(['활성 시간', '<span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="' + acc + '"></span>']);
   if (s.workflow) rows.push(['워크플로', esc(s.workflow)]);
   if (s.environment && s.environment.instanceName) rows.push(['환경', esc(s.environment.instanceName) + ' <span class="pi-muted">' + esc((s.environment.host || '') + ':' + (s.environment.port || '')) + '</span>']);
-  return '<dl class="pi-details">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
+  return '<dl class="ui-dl pi-details">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
 }
 function renderPanelInfo() {
   var el = document.getElementById('panel-info');
@@ -10882,53 +10889,57 @@ function renderCardResume(s, col) {
     + '</div></div>';
 }
 
-// The session's one state action — the same on the open card and in the
-// panel head (spec 13): Stop while a turn runs, else Close; Trash once
-// archived. Owner-gated (the server's requireSessionOwner is the guard; this
-// is UX, fail closed on a missing ownerId); a sibling instance's session is a
-// disabled pointer to that instance (#814 — posting here would fail server-side);
-// a write in flight renders busy on both surfaces. In the panel the button is
-// named for what it does to the session, never confused with closing the panel.
-var SESSION_ACTION_ARIA = { stop: '세션 중지', close: '세션 종료', trash: '세션 휴지통으로' };
-// The kit button per action: Stop reads as the danger tone, Trash as a quiet one.
-var SESSION_ACTION_TONE = { stop: ' is-danger', close: '', trash: ' is-quiet' };
-function sessionActionHtml(s, col, where) {
+// The session's actions (spec 13) as data — the same on the open card (kit buttons,
+// sessionActionHtml) and in the panel head (<ui-status-bar>, panelHeadData): ★ Star
+// (pinned on top, kept alive — starring a sleeping or archived card brings it back),
+// 살리기 on a sleeping or archived card (the conversation continues), then the state
+// action — Stop while a turn runs, else Close; Trash once archived. Owner-gated (the
+// server's requireSessionOwner is the guard; this is UX, fail closed on a missing
+// ownerId): lock says why it cannot be pressed here ('' = it can). A sibling
+// instance's session is one locked pointer to that instance (#814 — posting here
+// would fail server-side). A write in flight is busy on both surfaces (Stop / Close /
+// Trash: 'action'; Star and 살리기 share 'life' — SSOT 2026-10-30).
+function sessionActionsOf(s, col) {
   var running = col === 'working' && !pendingAutoResume(s, col);
   var kind = running ? 'stop' : (col === 'closed' && s.terminated ? 'trash' : 'close');
   var label = kind === 'stop' ? 'Stop' : (kind === 'trash' ? 'Trash' : 'Close');
-  // The accessible name keeps the visible label first (WCAG 2.5.3), then says what it does to the session.
-  var aria = where === 'panel' ? ' aria-label="' + label + ' — ' + SESSION_ACTION_ARIA[kind] + '"' : '';
   var env = s.environment;
   if (SELF_INSTANCE_NAME && env && env.instanceName && env.instanceName !== SELF_INSTANCE_NAME) {
-    return '<button class="ui-btn' + SESSION_ACTION_TONE[kind] + '" data-action="' + kind + '" disabled' + aria
-      + ' title="' + escAttr('Open ' + env.instanceName + ' (' + (env.host || '') + ':' + (env.port || '') + ') to act on this session') + '">'
-      + label + ' \u2192 ' + esc(env.instanceName) + '</button>';
+    return [{ id: kind, label: label + ' \\u2192 ' + env.instanceName, busy: false, sibling: true,
+      lock: 'Open ' + env.instanceName + ' (' + (env.host || '') + ':' + (env.port || '') + ') to act on this session' }];
   }
   var isOwner = !!s.ownerId && s.ownerId === currentUserId;
-  var busy = isBusy(s.key, 'action');
-  // SSOT 2026-10-30: ★ Star (pinned on top, kept alive — starring a sleeping or
-  // archived card brings it back) and 살리기 on a sleeping or archived card (the
-  // conversation continues), before the state action. One write in flight per
-  // session for both ('life').
+  var lock = isOwner ? '' : READ_ONLY_MSG;
   var lifeBusy = isBusy(s.key, 'life');
   var starred = s.starred === true;
   var closed = col === 'closed' || s.terminated === true || s.sessionState === 'SLEEPING';
-  var lifeOff = isOwner && !lifeBusy ? '' : ' disabled';
-  var starTip = !isOwner ? READ_ONLY_MSG
-    : starred ? '즐겨찾기 해제 — 다시 자동 sleep·보관 대상이 돼요'
-    : '즐겨찾기 — 항상 맨 위, 자동 sleep·보관 안 함' + (closed ? ' (지금 살려요)' : '');
-  var starBtn = '<button type="button" class="ui-btn" data-action="star" aria-pressed="' + starred + '"' + lifeOff
-    + (lifeBusy ? ' aria-busy="true"' : '') + ' title="' + escAttr(starTip) + '"'
-    + ' onclick="event.stopPropagation();doStar(\\'' + escJs(s.key) + '\\',' + !starred + ')">'
-    + (starred ? '&#x2605; Starred' : '&#x2606; Star') + '</button>';
-  var reviveBtn = closed
-    ? '<button type="button" class="ui-btn" data-action="revive"' + lifeOff + (lifeBusy ? ' aria-busy="true"' : '')
-      + ' title="' + escAttr(isOwner ? '대화를 이어갈 수 있게 세션을 살려요 (작업 폴더 파일은 복구되지 않아요)' : READ_ONLY_MSG) + '"'
-      + ' onclick="event.stopPropagation();doRevive(\\'' + escJs(s.key) + '\\')">살리기</button>'
-    : '';
-  return starBtn + reviveBtn + '<button class="ui-btn' + SESSION_ACTION_TONE[kind] + '" data-action="' + kind + '"' + (isOwner && !busy ? '' : ' disabled') + (busy ? ' aria-busy="true"' : '') + aria
-    + (isOwner ? '' : ' title="' + escAttr(READ_ONLY_MSG) + '"')
-    + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'' + kind + '\\')">' + label + '</button>';
+  var out = [{ id: 'star', label: starred ? '\\u2605 Starred' : '\\u2606 Star', pressed: starred, lock: lock, busy: lifeBusy,
+    tip: !isOwner ? READ_ONLY_MSG
+      : starred ? '즐겨찾기 해제 — 다시 자동 sleep·보관 대상이 돼요'
+      : '즐겨찾기 — 항상 맨 위, 자동 sleep·보관 안 함' + (closed ? ' (지금 살려요)' : '') }];
+  if (closed) out.push({ id: 'revive', label: '살리기', lock: lock, busy: lifeBusy,
+    tip: isOwner ? '대화를 이어갈 수 있게 세션을 살려요 (작업 폴더 파일은 복구되지 않아요)' : READ_ONLY_MSG });
+  out.push({ id: kind, label: label, lock: lock, busy: isBusy(s.key, 'action') });
+  return out;
+}
+// The open card's action buttons (kit .ui-btn): Stop reads as the danger tone, Trash as a quiet one.
+var SESSION_ACTION_TONE = { stop: ' is-danger', close: '', trash: ' is-quiet' };
+function sessionActionHtml(s, col) {
+  var key = escJs(s.key);
+  return sessionActionsOf(s, col).map(function(a) {
+    var off = (a.lock || a.busy ? ' disabled' : '') + (a.busy ? ' aria-busy="true"' : '');
+    if (a.sibling) return '<button class="ui-btn' + SESSION_ACTION_TONE[a.id] + '" data-action="' + a.id + '" disabled title="' + escAttr(a.lock) + '">' + esc(a.label) + '</button>';
+    if (a.id === 'star') {
+      return '<button type="button" class="ui-btn" data-action="star" aria-pressed="' + a.pressed + '"' + off + ' title="' + escAttr(a.tip) + '"'
+        + ' onclick="event.stopPropagation();doStar(\\'' + key + '\\',' + !a.pressed + ')">' + esc(a.label) + '</button>';
+    }
+    if (a.id === 'revive') {
+      return '<button type="button" class="ui-btn" data-action="revive"' + off + ' title="' + escAttr(a.tip) + '"'
+        + ' onclick="event.stopPropagation();doRevive(\\'' + key + '\\')">' + esc(a.label) + '</button>';
+    }
+    return '<button class="ui-btn' + SESSION_ACTION_TONE[a.id] + '" data-action="' + a.id + '"' + off + (a.lock ? ' title="' + escAttr(a.lock) + '"' : '')
+      + ' onclick="event.stopPropagation();doAction(\\'' + key + '\\',\\'' + a.id + '\\')">' + esc(a.label) + '</button>';
+  }).join('');
 }
 
 // The goal on the open card (spec 13): one line — objective · status · n/max ·
@@ -11054,7 +11065,7 @@ function renderCardBody(s, col) {
   const slackBtn = (dhShow('links') && s.slackThreadUrl)
     ? '<a class="ui-btn" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>'
     : '';
-  const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col, 'card') + slackBtn + '</span></div>';
+  const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col) + slackBtn + '</span></div>';
   const footHtml = modelHtml ? '<div class="card-foot-bar">' + modelHtml + '</div>' + modelNote : modelNote;
 
   return '<div class="card-body">'
@@ -14291,18 +14302,6 @@ function deckNextAfter(deck, key) {
   if (i < 0) return deck.length ? deck[deck.length - 1] : null;
   return deck[i + 1] || deck[i - 1] || null;
 }
-// Pure: the card one step (dir ±1) from key, wrapping round the deck.
-function deckStep(deck, key, dir) {
-  var n = deck.length;
-  if (!n) return null;
-  var i = deck.indexOf(key);
-  if (i < 0) return deck[0];
-  return deck[(((i + dir) % n) + n) % n];
-}
-function deckGo(dir) {
-  var k = deckStep(_deck, panelSessionKey, dir);
-  if (k && k !== panelSessionKey) openPanel(k);
-}
 // The detail card of key leaves the deck: the next one comes to the front, or the panel closes.
 function deckDrop(key) {
   // A session gone from the board since it joined the deck is no next card (review R1).
@@ -14337,6 +14336,9 @@ function cardFaceOf(key) {
   return null;
 }
 // The deck's controls and the edges behind the panel; dir = the side a new front card came from.
+// <ui-deck-nav> (D3 E-05) takes the deck as data — how many, which is in front, their names
+// (its ‹ › title "이전: <name>", its position said once) — and asks with ui-page; the page
+// opens that card, which repaints this with the new front.
 function renderDeckNav(dir) {
   _deck = _deck.filter(function(k) { return !!_sessionCache[k]; });
   var panel = document.getElementById('slide-panel');
@@ -14347,16 +14349,27 @@ function renderDeckNav(dir) {
   var behind = panelOpen && i >= 0 ? Math.min(n - 1, 2) : 0;
   panel.setAttribute('data-deck', String(behind));
   nav.hidden = !(panelOpen && n > 1 && i >= 0);
+  if (!nav._wired) {
+    nav._wired = true;
+    nav.addEventListener('ui-page', onDeckPage);
+  }
   if (!nav.hidden) {
-    var pos = document.getElementById('panel-deck-pos');
-    if (pos) pos.textContent = (i + 1) + ' / ' + n;
-    var nameOf = function(k) { var x = _sessionCache[k]; return x ? (x.displayHeadline || x.summaryTitle || x.title || '') : ''; };
-    var prev = document.getElementById('panel-deck-prev');
-    var next = document.getElementById('panel-deck-next');
-    if (prev) prev.title = '이전: ' + nameOf(deckStep(_deck, panelSessionKey, -1));
-    if (next) next.title = '다음: ' + nameOf(deckStep(_deck, panelSessionKey, 1));
+    var titles = _deck.map(function(k) { var x = _sessionCache[k]; return x ? String(x.displayHeadline || x.summaryTitle || x.title || '') : ''; });
+    var data = { count: n, index: i, titles: titles, label: '열린 작업 카드' };
+    var sig = JSON.stringify(data);
+    if (nav._sig !== sig) {
+      nav._sig = sig;
+      nav._keys = _deck.slice();
+      nav.data = data;
+    }
   }
   if (dir && !reduceMotion()) deckSlide(panel, dir);
+}
+// ‹ / › (or ←/→ on the nav): the card at that place in the deck the nav was drawn for comes to the front.
+function onDeckPage(e) {
+  var keys = (e.currentTarget && e.currentTarget._keys) || [];
+  var k = e.detail ? keys[e.detail.index] : null;
+  if (k && k !== panelSessionKey && _sessionCache[k]) openPanel(k);
 }
 // The deck switch (P6): the header and body glide 18px in from the side the new front card came from,
 // on --dur-move ease-out. The offset is composited ('add') onto any slide still running, so a quick
