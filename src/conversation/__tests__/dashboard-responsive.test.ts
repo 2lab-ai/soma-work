@@ -506,21 +506,12 @@ describe('layout transition — review fixes (trinity code review R1)', () => {
         attrs[k] = v;
       },
     };
-    const seg = (view: string) => {
-      const a: Record<string, string> = { 'data-view': view, 'aria-pressed': String(view === 'board') };
-      return {
-        a,
-        getAttribute: (k: string) => a[k] ?? null,
-        setAttribute: (k: string, v: string) => {
-          a[k] = v;
-        },
-      };
-    };
-    const segs = [seg('board'), seg('list')];
+    // D1 (D-02): Board | List is <ui-segmented id="view-seg"> — the page hands it the value.
+    const seg: { data?: { value: string; label: string; options: { value: string }[] } } = {};
     const saved: string[] = [];
     let adopted = 0;
-    const { setBoardView } = loadWith<{ setBoardView(view: string, ev?: unknown): void }>(['setBoardView'], [], {
-      document: { querySelectorAll: () => segs, getElementById: (id: string) => (id === 'kanban' ? kb : null) },
+    const { setBoardView } = loadWith<{ setBoardView(view: string, ev?: unknown): void }>(['setBoardView'], ['VIEW_OPTIONS'], {
+      document: { getElementById: (id: string) => (id === 'kanban' ? kb : id === 'view-seg' ? seg : null) },
       localStorage: { setItem: (_k: string, v: string) => saved.push(v) },
       adoptLayout: () => {
         adopted++;
@@ -530,7 +521,9 @@ describe('layout transition — review fixes (trinity code review R1)', () => {
     setBoardView('list', {});
     expect(attrs.view).toBe('list');
     expect(saved).toEqual(['list']);
-    expect(segs.map((b) => b.a['aria-pressed'])).toEqual(['false', 'true']);
+    expect(seg.data?.value).toBe('list');
+    expect(seg.data?.label).toBe('보드 보기');
+    expect(seg.data?.options.map((o) => o.value)).toEqual(['board', 'list']);
     expect(adopted).toBe(1);
     // The default following the screen (no event): not saved, not adopted — the coordinator runs the only glide.
     setBoardView('board');
