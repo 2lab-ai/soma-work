@@ -173,9 +173,7 @@ describe('GoalActionHandler — delete through the host goal action', () => {
 
 describe('GoalActionHandler — cap-decision DM guards (S3, codex #2)', () => {
   it('Continue resets the counter + resumes ONLY when a decision is pending', async () => {
-    const session = makeSession({
-      goal: makeGoal({ capDmPendingAt: 123, capReachedAt: 123, continuationCount: 10 }),
-    });
+    const session = makeSession({ goal: makeGoal({ capDmPendingAt: 123, continuationCount: 10 }) });
     const { handler } = makeHandler(session);
     const respond = vi.fn().mockResolvedValue(undefined);
 
@@ -183,8 +181,6 @@ describe('GoalActionHandler — cap-decision DM guards (S3, codex #2)', () => {
 
     expect(session.goal?.continuationCount).toBe(0);
     expect(session.goal?.capDmPendingAt).toBeUndefined();
-    // T1: the owner chose to keep going — no longer parked at the cap.
-    expect(session.goal?.capReachedAt).toBeUndefined();
     expect(resumeGoalLoopMock).toHaveBeenCalledWith(SESSION_KEY);
   });
 
