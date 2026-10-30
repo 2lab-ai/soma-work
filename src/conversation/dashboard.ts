@@ -8014,6 +8014,26 @@ var _statsDetailOpen = false;
 function setStripFigure(key, value, loading) {
   _strip[key] = { value: typeof value === 'number' && isFinite(value) ? value : null, loading: !!loading };
 }
+// A load's answer lands on the strip. <ui-stat-strip> forgets a figure under its loading bar, so the answer would
+// jump (D2-GAPS G2-1); as before the swap, a figure that had a value rolls from it: the strip gets that value back
+// first and, once it has drawn it (its render is a microtask), the new one.
+function landStripFigures(vals) {
+  var from = {};
+  Object.keys(vals).forEach(function(k) {
+    var was = _strip[k];
+    setStripFigure(k, vals[k], false);
+    if (was.loading && was.value !== null && _strip[k].value !== null && was.value !== _strip[k].value) from[k] = was.value;
+  });
+  var keys = Object.keys(from);
+  var to = {};
+  keys.forEach(function(k) { to[k] = _strip[k].value; _strip[k].value = from[k]; });
+  paintStatsStrip();
+  if (!keys.length) return;
+  queueMicrotask(function() {
+    keys.forEach(function(k) { if (!_strip[k].loading && _strip[k].value === from[k]) _strip[k].value = to[k]; });
+    paintStatsStrip();
+  });
+}
 function statsStripData() {
   var tokens = { key: 'tokens', label: '토큰', value: _strip.tokens.value, format: 'tokens', loading: _strip.tokens.loading };
   if (_tokenBreakdown) tokens.breakdown = _tokenBreakdown;
@@ -13199,7 +13219,8 @@ function statsJson(url) {
 
 var STAT_IDS = ['stat-turns', 'stat-prs', 'stat-merged', 'stat-merge-lines', 'stat-workflows'];
 function markStatsLoading() {
-  // The strip keeps each figure's last value under its loading bar, so the next one rolls from it.
+  // The page keeps each strip figure's last value under its loading bar, so the answer rolls from it
+  // (landStripFigures).
   ['sessions', 'tokens', 'cost'].forEach(function(k) { setStripFigure(k, _strip[k].value, true); });
   paintStatsStrip();
   STAT_IDS.forEach(function(id) {
@@ -13253,8 +13274,7 @@ function fmtCount(n) { return String(Math.round(n)); }
 function paintStats(data) {
   var t = data && data.totals;
   var dash = '\\u2014';
-  setStripFigure('sessions', t ? toNum(t.sessionsCreated) : null, false);
-  paintStatsStrip();
+  landStripFigures({ sessions: t ? toNum(t.sessionsCreated) : null });
   setStat('stat-turns', t ? String(toNum(t.turnsUsed)) : dash, t ? toNum(t.turnsUsed) : null, fmtCount);
   setStat('stat-prs', t ? String(toNum(t.prsCreated)) : dash, t ? toNum(t.prsCreated) : null, fmtCount);
   setStat('stat-merged', t ? String(toNum(t.prsMerged)) : dash, t ? toNum(t.prsMerged) : null, fmtCount);
@@ -13324,9 +13344,10 @@ function paintUsage(report) {
   _usageReport = report || null;
   paintUsageBreakdown();
   var t = report && report.totals;
-  setStripFigure('tokens', t ? toNum(t.totalInputTokens) + toNum(t.totalOutputTokens) : null, false);
-  setStripFigure('cost', t ? toNum(t.totalCostUsd) : null, false);
-  paintStatsStrip();
+  landStripFigures({
+    tokens: t ? toNum(t.totalInputTokens) + toNum(t.totalOutputTokens) : null,
+    cost: t ? toNum(t.totalCostUsd) : null,
+  });
 }
 
 function renderCharts(days) {
@@ -17984,9 +18005,10 @@ function artHandleKey(e) {
 })();
 // <ui-disclosure> (K-06): Raw, a system turn and a card's system instruction open and close by
 // themselves; the page only keeps a card's choice across its morph re-render (_ioOpen).
-// <ui-tooltip> (B-04, B-08) never opens on touch — there is no hover to end it. The breakdown and the chart values
-// exist nowhere else, so on this page a tap on a tooltip's trigger toggles it (the element's show() / hide()); a tap
-// anywhere else closes it, as do the element's own Esc, focus-out and scroll-away rules.
+// <ui-tooltip> (B-08) never opens on touch — there is no hover to end it. The chart values exist nowhere else, so
+// on this page a tap on a tooltip's trigger toggles it (the element's show() / hide()); a tap anywhere else closes
+// it, as do the element's own Esc, focus-out and scroll-away rules. (The token breakdown, B-04, is
+// <ui-stat-strip>'s: its figure is a button whose press toggles the card — touch too.)
 var _tapTip = null;
 (function initTooltipTap() {
   var pressed = null;
