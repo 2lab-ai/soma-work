@@ -336,12 +336,22 @@ describe('the dashboard', () => {
 describe('the settings page', () => {
   it('its own controls sound through bindSound: options select, switches toggle, save taps', () => {
     const js = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
-    expect(js).toContain(`data-ui-sound="select" onchange="onChoice(this)">`);
-    expect(js).toMatch(
-      /<select id="f-' \+ escAttr\(row\.key\) \+ '" data-key="' \+ escAttr\(row\.key\) \+ '" data-ui-sound="select"/,
+    expect(js).toContain(`'" data-ui-sound="' + soundCue(row, 'select') + '" onchange="onChoice(this)"><span>'`);
+    expect(js).toContain(
+      `'<select id="f-' + escAttr(row.key) + '" data-key="' + escAttr(row.key) + '" data-ui-sound="' + soundCue(row, 'select') + '"`,
     );
-    expect(js).toContain(`role="switch" data-ui-sound="toggle"`);
+    expect(js).toContain(`role="switch" data-ui-sound="' + soundCue(row, 'toggle') + '"`);
     expect(js).toContain(`class="btn primary" data-ui-sound data-key=`);
+  });
+
+  it('a setting that asks first stays silent: its change fires before the dialog, so a cancel would still sound', () => {
+    const js = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
+    const src = js.match(/function soundCue\(row, cue\) \{[\s\S]*?\n\}/)?.[0];
+    expect(src).toBeDefined();
+    const soundCue = new Function(`${src}; return soundCue;`)() as (row: { danger?: boolean }, cue: string) => string;
+    expect(soundCue({ danger: true }, 'toggle')).toBe('off');
+    expect(soundCue({}, 'toggle')).toBe('toggle');
+    expect(soundCue({ danger: false }, 'select')).toBe('select');
   });
 
   it('has the same speaker before its theme button, and the same script in <head>', () => {
