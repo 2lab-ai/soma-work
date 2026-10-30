@@ -609,6 +609,33 @@ describe('gate.mjs answer + decide — run only on a recorded answer that still 
     expect(r.stderr).toContain('case QA-3 lists P1 but P1.cases does not list QA-3');
   });
 
+  it('a skipped key stays skipped even if its precondition is met later (the requester chose skip)', () => {
+    const g = planned('PROJ-46');
+    const run = runGate('d-skip-met', g);
+    gate(['answer', '--gate', run, '--key', 'PROJ-46', '--decision', 'skipped', '--by', 'U_REQ', '--ref', '2.4']);
+    const r = gate([
+      'decide',
+      '--gate',
+      run,
+      '--key',
+      'PROJ-46',
+      '--current',
+      current('d-skip-met', g, { P1: 'met', P2: 'met' }),
+    ]);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.out).toMatchObject({ action: 'skip', runCases: [] });
+  });
+
+  it('merge --carry asks again for a precondition answered provided that is still missing', () => {
+    const old = runGate('c-prov-old', planned('PROJ-47'));
+    gate(['answer', '--gate', old, '--key', 'PROJ-47', '--decision', 'provided', '--by', 'U_REQ', '--ref', '2.5']);
+    const out = join(dir, 'c-prov-new.json');
+    const r = gate(['merge', '--out', out, '--carry', old, sealed('c-prov-k.json', planned('PROJ-47'))]);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.out).toMatchObject({ ask: true });
+    expect(JSON.parse(readFileSync(out, 'utf8')).status).toBe('pending');
+  });
+
   it('answer with nothing to answer for that key fails instead of reporting success', () => {
     const g = planned('PROJ-45');
     g.preconditions = g.preconditions.map((x) => ({ ...x, status: 'met' }));

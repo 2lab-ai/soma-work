@@ -42,7 +42,7 @@ Write the whole form in every shell call, both timeouts included (shell state do
 1. `<KEY>` must fully match `keyPattern`; otherwise verdict `blocked`, reason `key-mismatch`. Read the issue: state, assignee, description, linked PRs.
 2. Deploy check: read the running version → `env.versionStart`. With `mergeShas`, for each `<repo>:<mergeSha>` read that repo's running commit per its `deploy` entry and require a GitHub call to `repos/<repo>/compare/<mergeSha>...<runningSha>` piped to `jq -r .status` ∈ `ahead|identical`. Health unreachable, version or commit unreadable, or any other status → verdict `blocked`, reason `not-deployed`.
 3. Build cases for the QA level: `catalog=` first; otherwise derive them from the issue text and the PR diffs. At `high` and `max`, fill the Coverage matrix (below) before anything else happens. Zero cases → verdict `blocked`, reason `no cases`.
-4. Precondition gate (below). With `--plan`, stop after it and return. A gap the requester has not answered ends the call here: no case runs.
+4. At `high` and `max`: Precondition gate (below); `default` and `medium` skip it. With `--plan`, stop after it and return. A gap the requester has not answered ends the call here: no case runs.
 5. Run the cases one at a time and collect evidence (see Evidence). With `decisions=`, run only the cases the gate's `decide` returned in `runCases`; record each of its `blockedCases` as `status: "blocked"` with `precondition: "<id>"` and its reason as `actual`.
 6. Generation check (below), after the cases.
 7. Aggregate the verdict (fail-closed):
@@ -98,7 +98,7 @@ The fingerprint covers the frozen plan (case IDs, assertions, severities, covera
 
 ## Generation check
 
-Read the running version after the cases and again immediately before any transition. If it differs from `versionStart`, the run is superseded: set `versionStart` to the new version, re-run step 2 for it, re-run the cases once, re-aggregate the verdict (step 7) and decide the transition again from the new results, checking again at both points. A second change in the same call → verdict `blocked`, reason `superseded: <v1>→<v2>→<v3>`, no transition. At most one retry per call. `env.versionEnd` = the last version read.
+Read the running version after the cases and again immediately before any transition. If it differs from `versionStart`, the run is superseded: set `versionStart` to the new version, re-run step 2 for it; with a gate, run `decide` again with the new inputs — an `ask` ends the call `blocked`, reason `waiting for precondition confirmation`, before any case re-runs; re-run the cases once, re-aggregate the verdict (step 7) and decide the transition again from the new results, checking again at both points. A second change in the same call → verdict `blocked`, reason `superseded: <v1>→<v2>→<v3>`, no transition. At most one retry per call. `env.versionEnd` = the last version read.
 
 ## Tracker reconcile
 
