@@ -789,6 +789,10 @@ export class SessionRegistry {
     const session = this.sessions.get(key);
     if (!session) return { ok: false, code: 'not_found', message: '세션을 찾을 수 없어요' };
     if (session.terminated) return { ok: false, code: 'terminated', message: '종료 중인 세션이에요' };
+    // Trashed = hidden from the board; a star pins it on top. The two exclude each other.
+    if (starred && session.trashed) {
+      return { ok: false, code: 'conflict', message: '휴지통에 있는 세션에는 별을 달 수 없어요' };
+    }
 
     const revived = starred && session.state === 'SLEEPING';
     if (revived) this.wakeSession(session);

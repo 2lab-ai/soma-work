@@ -3022,7 +3022,7 @@ export async function registerDashboardRoutes(
       const { wireKey: key, originalKey } = resolved;
       // A starred session is pinned on top of the board; hiding it would
       // contradict the star (SSOT 2026-10-30). Unstar it first.
-      if (getAllSessions().get(originalKey)?.starred === true) {
+      if (getAllSessions().get(normalizeSessionKey(originalKey))?.starred === true) {
         reply.status(409).send({ error: '즐겨찾기한 세션은 휴지통으로 옮길 수 없어요 — 먼저 별을 해제하세요' });
         return;
       }

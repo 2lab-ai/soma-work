@@ -118,6 +118,37 @@ describe('SessionRegistry — task star (T1, T3, T5)', () => {
     expect(cb.onExpiry).not.toHaveBeenCalled();
   });
 
+  it('T3 race — a star that lands while the sweep awaits onSleep leaves the session awake, in memory and on disk', async () => {
+    updateSessionLifecyclePolicy({ sleepAfterMs: 2 * HOUR });
+    const reg = new SessionRegistry();
+    const session = reg.createSession('U1', 'User', 'C1', '600.009');
+    session.sessionId = 's-race';
+    session.state = 'MAIN';
+    session.lastActivity = new Date(Date.now() - 3 * HOUR);
+    const key = reg.getSessionKey('C1', '600.009');
+    const cb = callbacks();
+    // The Slack sleep notice is awaited; the owner presses ☆ Star meanwhile.
+    cb.onSleep.mockImplementation(async () => {
+      expect(reg.setStarred(key, true)).toMatchObject({ ok: true, starred: true, revived: true });
+    });
+    reg.setExpiryCallbacks(cb);
+
+    await reg.cleanupInactiveSessions();
+
+    expect(session.state).toBe('MAIN');
+    expect(session.starred).toBe(true);
+    const onDisk = JSON.parse(fs.readFileSync(path.join(TEST_DATA_DIR, 'sessions.json'), 'utf-8')) as Array<{
+      threadTs: string;
+      state: string;
+      starred?: boolean;
+    }>;
+    expect(onDisk.find((r) => r.threadTs === '600.009')).toMatchObject({ state: 'MAIN', starred: true });
+    // And the next sweep leaves it alone.
+    session.lastActivity = new Date(Date.now() - 40 * DAY);
+    await reg.cleanupInactiveSessions();
+    expect(session.state).toBe('MAIN');
+  });
+
   it('T5 — starring a sleeping session wakes it', () => {
     const reg = new SessionRegistry();
     const session = reg.createSession('U1', 'User', 'C1', '600.003');
@@ -208,6 +239,15 @@ describe('SessionRegistry — task star (T1, T3, T5)', () => {
     expect(reg.setStarred(reg.getSessionKey('C1', '700.005'), true)).toMatchObject({ ok: false, code: 'terminated' });
     expect(session.starred).toBeUndefined();
     expect(reg.setStarred('work:C9:nope', true)).toMatchObject({ ok: false, code: 'not_found' });
+  });
+
+  it('refuses to star a trashed session (hidden vs pinned exclude each other)', () => {
+    const reg = new SessionRegistry();
+    const session = reg.createSession('U1', 'User', 'C1', '700.006');
+    session.sessionId = 's-trashed';
+    session.trashed = true;
+    expect(reg.setStarred(reg.getSessionKey('C1', '700.006'), true)).toMatchObject({ ok: false, code: 'conflict' });
+    expect(session.starred).toBeUndefined();
   });
 
   it('T3.3 — the lifecycle-change preview never counts a starred session', () => {
