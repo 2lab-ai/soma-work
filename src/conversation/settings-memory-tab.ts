@@ -79,10 +79,13 @@ textarea:focus-visible { outline: 2px solid var(--border-focus); outline-offset:
 /* Tone pass P9: the page list reads like the side nav — the --ib-pill chip on hover and for the open page. */
 .pages-list .pg { display: block; width: 100%; text-align: left; font: inherit; font-size: 13px; color: var(--text); background: none; border: 0; border-radius: 8px; padding: 6px 8px; cursor: pointer; transition: background-color 150ms ease, transform var(--dur-press) var(--ease-out); }
 .pages-list .pg[aria-current="true"] { background: var(--ib-pill); font-weight: 600; }
-@media (hover: hover) and (pointer: fine) { .pages-list .pg:hover { background: var(--ib-pill); } }
+/* On the pill the page id steps up to the secondary ink: tertiary is 4.3:1 there, secondary 5.5:1 (light and dark). */
+.pages-list .pg[aria-current="true"] .lock { color: var(--text-secondary); }
+@media (hover: hover) and (pointer: fine) { .pages-list .pg:hover { background: var(--ib-pill); } .pages-list .pg:hover .lock { color: var(--text-secondary); } }
 .pages-detail .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
 .pages-detail .field label { font-size: 12px; font-weight: 600; }
-.pages-detail .field input[type="text"] { font: inherit; font-size: 13px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
+.pages-detail .field input[type="text"], .pages-detail .field select { font: inherit; font-size: 13px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; min-height: 34px; }
+.pages-list .pg:focus-visible, .pages-list input:focus-visible, .pages-detail .field input:focus-visible, .pages-detail .field select:focus-visible, .ep-bar select:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .pages-detail .hist { display: flex; gap: 6px; margin-bottom: 4px; }
 .pages-detail .hist input { flex: 1; }
 .pages-detail .meta { font-size: 11px; color: var(--text-tertiary); margin-bottom: 8px; }
