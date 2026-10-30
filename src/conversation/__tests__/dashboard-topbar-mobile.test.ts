@@ -10,9 +10,10 @@
  *     state, the account from /auth/me (a link to /login), the current theme;
  *   - the events it answers — ui-theme-change applies and stores the theme (stored only while it
  *     differs from the OS); links are real links (ui-navigate / ui-account not cancelled);
- *   - its own controls in the bar's actions slot — the scope group (default model / effort, the
- *     board's user, admin write mode) and 새 작업 — and where the scope group goes on a narrower
- *     screen (the row under the bar, placeTopbarScope), so the one-row bar never overflows;
+ *   - its own controls in the bar's slots — the scope group (default model / effort, the board's
+ *     user, admin write mode) in the toolbar slot (the bar's own row under it below toolbarAt or
+ *     when it would overflow, 0.10.0 — D2-GAPS G1-1) and 새 작업 in the actions slot;
+ *   - the brand as the page's h1, each link's title, the status's description (D2-GAPS G1-2..G1-4);
  *   - no page overflow sideways, 44px targets for its own controls on touch, the docked drawer under
  *     the header (--topbar-b).
  *
@@ -67,18 +68,21 @@ function cssRule(selector: string): string {
 
 type BarData = {
   brand?: { label: string; mark?: unknown };
-  nav?: Array<{ id: string; label: string; href: string; icon: string }>;
+  nav?: Array<{ id: string; label: string; href: string; icon: string; title?: string }>;
   navLabel?: string;
-  status?: { tone: string; label: string; live?: boolean };
+  toolbarAt?: number;
+  status?: { tone: string; label: string; live?: boolean; description?: string };
   account?: { name: string; href?: string };
   theme?: string;
 };
 
 describe('the top bar is <ui-app-bar> (A-03..A-14)', () => {
-  it('a sticky header holds the bar and the row under it; the element module is served', () => {
+  it('a sticky header holds the bar alone (its toolbar row is its own); the element module is served', () => {
     expect(HEADER).toContain('<ui-app-bar id="app-bar" lang="ko">');
-    expect(HEADER).toMatch(/<\/ui-app-bar>\s*<div class="topbar-sub" id="topbar-sub" hidden><\/div>\s*$/);
-    expect(HEADER).toContain('<h1 class="ar-vh">soma-work</h1>');
+    expect(HEADER).toMatch(/<\/ui-app-bar>\s*$/);
+    // The brand is the page's h1 (brand.heading) — no visually hidden one of the page's own.
+    expect(HEADER).not.toContain('<h1');
+    expect(TEMPLATE).not.toMatch(/id="topbar-sub"|\.topbar-sub\b|placeTopbarScope|TOPBAR_SCOPE_MIN/);
     expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/app-bar.js?v=${UI_LIB_VERSION}"></script>');
     const bar = cssRule('.topbar');
     expect(bar).toMatch(/position: sticky;\s*top: 0;\s*z-index: 90;/);
@@ -101,8 +105,8 @@ describe('the top bar is <ui-app-bar> (A-03..A-14)', () => {
       expect(TEMPLATE, String(gone)).not.toMatch(gone);
   });
 
-  it("the page's controls ride in the actions slot: the scope group, then 새 작업", () => {
-    const scope = HEADER.indexOf('<div class="topbar-scope" id="topbar-scope" slot="actions">');
+  it("the page's controls ride in the bar's slots: the scope group its toolbar, 새 작업 its action", () => {
+    const scope = HEADER.indexOf('<div class="topbar-scope" id="topbar-scope" slot="toolbar">');
     const defaults = HEADER.indexOf('id="topbar-defaults"');
     const user = HEADER.indexOf('id="user-select"');
     const admin = HEADER.indexOf('id="admin-mode-toggle"');
@@ -124,9 +128,9 @@ describe('the top bar is <ui-app-bar> (A-03..A-14)', () => {
       /<span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">[^<]+<\/span><select id="user-select" title="[^"]+" aria-label="보드에 보일 사용자"/,
     );
     expect(cssRule('.topbar .user-select select')).toMatch(/opacity: 0;/);
-    // In the bar the selected name is capped; in the row under it the row is the cap.
+    // In the bar the selected name is capped; in the bar's row under it the row is the cap.
     expect(TEMPLATE).toMatch(/\.topbar \.user-select \{[^}]*max-inline-size: 180px;/);
-    expect(TEMPLATE).toContain('.topbar-sub .user-select { max-inline-size: 100%; }');
+    expect(TEMPLATE).toContain('ui-app-bar[toolbar-row] .user-select { max-inline-size: 100%; }');
   });
 
   it('admin-mode-label is split into prefix + state spans (JS rewrites 켬/끔 only)', () => {
@@ -151,23 +155,38 @@ describe('paintAppBar — the data the page hands the bar', () => {
     return { bar, document };
   }
 
-  it('brand, the three page links (routes unchanged), the status, the theme; no account before /auth/me', () => {
+  it('brand (the h1), the three page links (routes unchanged, titled), the toolbar width, the status, the theme; no account before /auth/me', () => {
     const h = harness('light');
     const { paintAppBar } = load<{ paintAppBar(): void }>(
       ['paintAppBar'],
-      ['APP_BAR_NAV', '_appBarStatus', '_appBarAccount'],
+      ['APP_BAR_NAV', 'APP_BAR_TOOLBAR_AT', '_appBarStatus', '_appBarAccount'],
       { document: h.document, STRINGS },
     );
     paintAppBar();
     const d = h.bar.data as BarData;
-    expect(d.brand).toEqual({ label: 'soma-work', mark: true });
+    expect(d.brand).toEqual({ label: 'soma-work', mark: true, heading: true });
+    // Each link says what its page is for (the old nav's titles): its hover title and the folded menu row's line.
     expect(d.nav).toEqual([
-      { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat' },
-      { id: 'settings', label: '설정', href: '/dashboard/settings', icon: 'gear' },
-      { id: 'memory', label: '기억', href: '/dashboard/settings#memory', icon: 'brain' },
+      { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat', title: '지난 대화를 모두 봅니다' },
+      {
+        id: 'settings',
+        label: '설정',
+        href: '/dashboard/settings',
+        icon: 'gear',
+        title: 'Slack 명령으로 바꾸던 설정을 여기서 확인하고 바꿉니다',
+      },
+      {
+        id: 'memory',
+        label: '기억',
+        href: '/dashboard/settings#memory',
+        icon: 'brain',
+        title: '에이전트가 기억하는 개인 메모리와 관찰 기록을 보고 고칩니다',
+      },
     ]);
     expect(d.navLabel).toBe('주 메뉴');
-    expect(d.status).toEqual({ tone: 'run', label: '연결 중…', live: true });
+    // The scope group takes the bar's row under it below a 1280px bar (as the page's own row did).
+    expect(d.toolbarAt).toBe(1280);
+    expect(d.status).toEqual({ tone: 'run', label: '연결 중…', live: true, description: '실시간 업데이트' });
     expect(d.theme).toBe('light');
     expect('account' in d).toBe(false);
   });
@@ -177,7 +196,7 @@ describe('paintAppBar — the data the page hands the bar', () => {
     const h = harness();
     const m = load<{ _applyUserPill(d: unknown): void; paintAppBar(): void; account(): unknown }>(
       ['_applyUserPill', 'paintAppBar'],
-      ['APP_BAR_NAV', '_appBarStatus', '_appBarAccount'],
+      ['APP_BAR_NAV', 'APP_BAR_TOOLBAR_AT', '_appBarStatus', '_appBarAccount'],
       { document: h.document, STRINGS, localStorage: { removeItem() {} } },
       ['function account() { return _appBarAccount; }'],
     );
@@ -191,7 +210,7 @@ describe('paintAppBar — the data the page hands the bar', () => {
     expect(h.bar.data && 'account' in h.bar.data).toBe(false);
   });
 
-  it('the live-update status follows the socket: 연결 중… → 실시간 연결됨 (done) → 다시 연결 중… (wait)', () => {
+  it('the live-update status follows the socket: 연결 중… → 연결됨 (done) → 다시 연결 중… (wait), each about 실시간 업데이트', () => {
     let sock: { onopen?: () => void; onclose?: () => void } = {};
     function WebSocket(this: typeof sock) {
       // biome-ignore lint/complexity/noUselessThisAlias: the stub hands its instance to the test
@@ -213,12 +232,14 @@ describe('paintAppBar — the data the page hands the bar', () => {
       },
       ['function status() { return _appBarStatus; }'],
     );
-    expect(m.status()).toEqual({ tone: 'run', label: '연결 중…', live: true });
+    // The bar reads the description first: "실시간 업데이트: 연결됨" — the old badge's accessible name (G1-4).
+    const about = '실시간 업데이트';
+    expect(m.status()).toEqual({ tone: 'run', label: '연결 중…', live: true, description: about });
     m.connectWs();
     sock.onopen?.();
-    expect(m.status()).toEqual({ tone: 'done', label: '실시간 연결됨', live: true });
+    expect(m.status()).toEqual({ tone: 'done', label: '연결됨', live: true, description: about });
     sock.onclose?.();
-    expect(m.status()).toEqual({ tone: 'wait', label: '다시 연결 중…', live: true });
+    expect(m.status()).toEqual({ tone: 'wait', label: '다시 연결 중…', live: true, description: about });
     expect(painted.length).toBe(2);
     // Korean, sentence case, "…" not "..."; no badge element of the page's own (the tone is the bar's).
     for (const w of [STRINGS.wsConnecting, STRINGS.wsLive, STRINGS.wsReconnecting])
@@ -282,89 +303,14 @@ describe('theme — the bar asks, the page applies and stores', () => {
   });
 });
 
-describe('placeTopbarScope — the scope group in the bar on a wide screen, in the row under it below', () => {
-  function harness(wide: boolean) {
-    const sub: { hidden: boolean; children: unknown[]; appendChild(n: { parentElement: unknown }): void } = {
-      hidden: true,
-      children: [],
-      appendChild(n) {
-        n.parentElement = sub;
-        this.children.push(n);
-      },
-    };
-    const newTask = { id: 'new-task-btn' };
-    const bar = {
-      inserted: [] as unknown[],
-      insertBefore(n: { parentElement: unknown }, ref: unknown) {
-        n.parentElement = bar;
-        this.inserted.push([n, ref]);
-      },
-    };
-    const attrs: Record<string, string> = {};
-    const scope = {
-      parentElement: bar as unknown,
-      get slot() {
-        return attrs.slot ?? '';
-      },
-      set slot(v: string) {
-        attrs.slot = v;
-      },
-      removeAttribute: (k: string) => delete attrs[k],
-    };
-    attrs.slot = 'actions';
-    const byId: Record<string, unknown> = {
-      'app-bar': bar,
-      'topbar-sub': sub,
-      'topbar-scope': scope,
-      'new-task-btn': newTask,
-    };
-    let closed = 0;
-    const m = load<{ placeTopbarScope(): void }>(['placeTopbarScope'], ['TOPBAR_SCOPE_MIN'], {
-      document: { getElementById: (id: string) => byId[id] ?? null },
-      window: { matchMedia: (q: string) => ({ matches: wide && q === '(min-width: 1280px)' }) },
-      closeDefaultsMenu: () => closed++,
-    });
-    return { m, bar, sub, scope, newTask, attrs, closed: () => closed };
-  }
-
-  it('below 1280px it leaves the bar for the row under it (no slot), and the row shows', () => {
-    const h = harness(false);
-    h.m.placeTopbarScope();
-    expect(h.scope.parentElement).toBe(h.sub);
-    expect(h.attrs.slot).toBeUndefined();
-    expect(h.sub.hidden).toBe(false);
-    expect(h.closed()).toBe(1); // an open defaults menu does not travel with its chip
-    h.m.placeTopbarScope();
-    expect(h.closed()).toBe(1); // already there: nothing moves
-  });
-
-  it('from 1280px it is the bar’s action again, before 새 작업, and the row hides', () => {
-    const h = harness(true);
-    h.scope.parentElement = h.sub;
-    delete h.attrs.slot;
-    h.m.placeTopbarScope();
-    expect(h.scope.parentElement).toBe(h.bar);
-    expect(h.attrs.slot).toBe('actions');
-    expect(h.bar.inserted).toEqual([[h.scope, h.newTask]]);
-    expect(h.sub.hidden).toBe(true);
-  });
-
-  it('runs at load and on every crossing of the breakpoint', () => {
-    expect(TEMPLATE).toContain('var TOPBAR_SCOPE_MIN = 1280;');
-    expect(TEMPLATE).toMatch(/\nplaceTopbarScope\(\);\n/);
-    expect(TEMPLATE).toMatch(/_topbarScopeMq\.addEventListener\('change', placeTopbarScope\)/);
-  });
-
-  it('the row under the bar is the bar’s surface and wraps its controls; opaque on reduced transparency', () => {
-    const sub = cssRule('.topbar-sub');
-    expect(sub).toContain('background: color-mix(in srgb, var(--bg) 86%, transparent);');
-    expect(sub).toContain('backdrop-filter: saturate(1.4) blur(10px);');
-    expect(sub).toContain('border-bottom: 1px solid var(--border);');
-    expect(TEMPLATE).toContain('.topbar-sub[hidden] { display: none; }');
-    expect(TEMPLATE).toContain('.topbar-sub .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; }');
-    expect(TEMPLATE).toMatch(
-      /@media \(prefers-reduced-transparency: reduce\) \{\n {2}\.topbar-sub \{ background: var\(--bg\); -webkit-backdrop-filter: none; backdrop-filter: none; \}/,
-    );
+// The scope group's place (inline in the bar while it fits, the bar's wrapping row under it below toolbarAt or when
+// it would overflow, its nodes never moved) is the bar's: library app-bar.test.ts (appBarToolbarRow, toolbar-row).
+describe('the scope group is the bar’s toolbar — the bar places it', () => {
+  it('in the bar’s row under it the group wraps and the user select fills what the chips leave on a phone', () => {
+    expect(TEMPLATE).toContain('ui-app-bar[toolbar-row] .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; }');
+    const phone = TEMPLATE.slice(TEMPLATE.indexOf('@media (max-width: 639px) {'));
+    expect(phone).toContain('ui-app-bar[toolbar-row] .user-select { flex: 1 1 auto; }');
+    expect(TEMPLATE).toContain('var APP_BAR_TOOLBAR_AT = 1280;');
   });
 });
 
