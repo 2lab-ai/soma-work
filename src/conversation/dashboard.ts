@@ -6121,18 +6121,18 @@ ${pageTokenAliases()}
       <div class="inbox-head">
         <nav class="crumbs" aria-label="위치"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
         <div class="inbox-tools">
-          <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="3" rx="0.8"/><path d="M3 6v6.2c0 .5.4.8.8.8h8.4c.4 0 .8-.3.8-.8V6M6.5 8.6h3"/></svg><span id="archives-label">Archives</span></button>
-          <button type="button" class="archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><i data-ui-icon="moon"></i><span id="sleeping-label">Sleeping</span></button>
+          <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="3" rx="0.8"/><path d="M3 6v6.2c0 .5.4.8.8.8h8.4c.4 0 .8-.3.8-.8V6M6.5 8.6h3"/></svg><span id="archives-label">보관함</span></button>
+          <button type="button" class="archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><i data-ui-icon="moon"></i><span id="sleeping-label">휴면</span></button>
           <button type="button" class="archives-btn" id="lifecycle-btn" style="display:none" title="세션 수명 주기 (관리자)" onclick="openLifecycleDialog()"><i data-ui-icon="clock"></i><span>수명 주기</span></button>
           <ui-segmented class="view-seg" id="view-seg"></ui-segmented>
         </div>
       </div>
       <ui-dialog id="lifecycle-dialog" class="lifecycle-dialog" heading="세션 수명 주기" size="sm" lang="ko">
         <form id="lifecycle-form" onsubmit="saveLifecycle(event)" oninput="armLifecycleSave(null)">
-          <p class="lc-note"><span id="lifecycle-scope">이 인스턴스</span>에만 적용되고, 다음 정리 주기(최대 5분)부터 반영됩니다. 값을 줄이면 그 기준을 넘긴 세션이 바로 Sleeping이 되거나 종료됩니다 — 저장 전에 몇 개인지 알려 줍니다. Sleeping 전환이 12시간 이하이면 12시간 전 확인 알림은 보내지 않습니다.</p>
-          <label>마지막 활동 후 Sleeping 전환 <span class="lc-unit">시간</span><input id="lc-sleepAfterHours" type="number" min="1" max="720" step="any" required></label>
-          <label>Sleeping 후 Archive(종료) 전환 <span class="lc-unit">일</span><input id="lc-archiveAfterDays" type="number" min="0.05" max="365" step="any" required></label>
-          <label>보드에 Archive 표시 기간 <span class="lc-unit">시간</span><input id="lc-boardArchiveWindowHours" type="number" min="0" max="8760" step="any" required></label>
+          <p class="lc-note"><span id="lifecycle-scope">이 인스턴스</span>에만 적용되고, 다음 정리 주기(최대 5분)부터 반영됩니다. 값을 줄이면 그 기준을 넘긴 세션이 바로 휴면이 되거나 종료됩니다 — 저장 전에 몇 개인지 알려 줍니다. 휴면 전환이 12시간 이하이면 12시간 전 확인 알림은 보내지 않습니다.</p>
+          <label>마지막 활동 후 휴면 전환 <span class="lc-unit">시간</span><input id="lc-sleepAfterHours" type="number" min="1" max="720" step="any" required></label>
+          <label>휴면 후 보관(종료) 전환 <span class="lc-unit">일</span><input id="lc-archiveAfterDays" type="number" min="0.05" max="365" step="any" required></label>
+          <label>보드에 보관함 표시 기간 <span class="lc-unit">시간</span><input id="lc-boardArchiveWindowHours" type="number" min="0" max="8760" step="any" required></label>
           <p class="lc-status" id="lifecycle-status" role="status" aria-live="polite"></p>
         </form>
         <div slot="footer" class="lc-actions">
@@ -6152,7 +6152,7 @@ ${pageTokenAliases()}
       <!-- The board (re-agent-inbox): NEEDS YOU · RUNNING · DONE (by finish day) — renderBoard gives it its
            data; each open card's body is a light-DOM child in the card's slot (slot="body:<key>"). It says how
            many need you and how many run, politely (D6). -->
-      <ui-agent-inbox id="kanban" class="kanban" view="board"></ui-agent-inbox>
+      <ui-agent-inbox id="kanban" class="kanban" view="board" lang="ko"></ui-agent-inbox>
     </section>
   </div>
 
@@ -6364,6 +6364,18 @@ var STRINGS = {
   mcCustomPlaceholder: '직접 입력…',
   mcSubmitting: '제출 중…',
   effortTitle: '추론 강도',
+  // The board (D2 group 6) in the language of <ui-agent-inbox lang="ko">, whose own words (입력 대기 · 비어 있음 ·
+  // 완료 · …) match: the column heads, the finish-day heads, the status words the page sets, the two toggles.
+  boardNeeds: '응답 필요',
+  boardRunning: '실행 중',
+  boardDone: '완료',
+  today: '오늘',
+  yesterday: '어제',
+  statusIdle: '대기',
+  statusSleeping: '휴면',
+  statusArchived: '보관됨',
+  archives: '보관함',
+  sleeping: '휴면',
 };
 // #814 — name of the dashboard's *home* instance (the one that served this
 // HTML). Used by renderCard() to detect sibling cards and suppress action
@@ -8133,7 +8145,7 @@ function _envCount() {
 // takes a light-DOM div holding renderCardBody's markup — approval cards, the
 // question, the agent tree, the goal line, model · effort, Stop / Close, 작업 로그
 // and every gate (D10). A collapsed card builds no body (#548).
-var BOARD_LABELS = { waiting: 'NEEDS YOU', working: 'RUNNING', done: 'DONE' };
+var BOARD_LABELS = { waiting: STRINGS.boardNeeds, working: STRINGS.boardRunning, done: STRINGS.boardDone };
 var _expanded = new Set();           // keys whose card is open
 var _cardClosing = Object.create(null); // key → timer: a closed card keeps its body until its collapse has run
 var _boardRenders = 0;
@@ -8146,20 +8158,24 @@ var _cardData = Object.create(null);  // session key → the card the element wa
 var _cardDrawn = Object.create(null); // session key → true when drawn (not in a closed DONE day)
 var _cardBodies = Object.create(null); // session key → { el, html } — its light-DOM body while open or closing
 
-// The board's wording (data.strings over lang="en"): English status words,
-// Korean sub-agents, tooltips and announcement — as before the element.
+// The board's wording: <ui-agent-inbox lang="ko">'s table (status words, sub-agents, the announcement, the
+// relative time), with the page's differences on top (data.strings).
 var BOARD_STRINGS = {
-  agents: '서브에이전트',
-  agentsRunning: function(n) { return '실행 ' + n; },
-  agentsFailed: function(n) { return '실패 ' + n; },
-  arts: '모델이 만든 산출물',
   artOpen: function(name, kind) { return (ART_KIND_LABEL[kind] || '파일') + ' ' + name + ' — 크게 보기'; },
-  announce: function(w, r) { return '응답이 필요한 세션 ' + w + '개, 실행 중 ' + r + '개'; },
   // The sentence is the counts only, never "<title>: <word>." first.
   changed: function() { return ''; },
-  ago: function(at) { return timeAgo(at); },
-  duration: function(ms) { return formatNmSSs(ms); },
+  // A run's clock in Korean (the table's is 7m 12s).
+  duration: function(ms) { return fmtRunKo(ms); },
 };
+// 12초 · 7분 05초 · 2시간 3분 — a running card's clock.
+function fmtRunKo(ms) {
+  var sec = Math.max(0, Math.floor(toNum(ms) / 1000));
+  if (sec < 60) return sec + '초';
+  var m = Math.floor(sec / 60);
+  var r = sec % 60;
+  if (m < 60) return m + '분 ' + (r < 10 ? '0' + r : r) + '초';
+  return Math.floor(m / 60) + '시간 ' + (m % 60) + '분';
+}
 
 // Motion tokens come from the CSS custom properties so CSS transitions and
 // WAAPI share one source of truth (§4 table).
@@ -8233,10 +8249,10 @@ function dayKeyOf(ms) {
   return d.getFullYear() + '-' + (m < 10 ? '0' + m : m) + '-' + (day < 10 ? '0' + day : day);
 }
 function doneDayLabel(key, now) {
-  if (key === dayKeyOf(now)) return 'Today';
+  if (key === dayKeyOf(now)) return STRINGS.today;
   var y = new Date(now);
   y.setDate(y.getDate() - 1);
-  if (key === dayKeyOf(y.getTime())) return '어제';
+  if (key === dayKeyOf(y.getTime())) return STRINGS.yesterday;
   var parts = key.split('-');
   var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
   var opts = { month: 'long', day: 'numeric', weekday: 'short' };
@@ -8438,6 +8454,7 @@ function paintCronLaneCards(slots) {
       el = document.createElement('ui-agent-inbox');
       el.className = 'cron-inbox';
       el.setAttribute('view', 'list');
+      el.setAttribute('lang', 'ko');
       wireInbox(el);
       box._inbox = el;
     }
@@ -8814,11 +8831,11 @@ function cardOf(s, col) {
     if (acc) card.elapsedMs = acc;
   } else if (col === 'closed') {
     card.status = 'idle';
-    card.statusText = s.terminated ? 'Archived' : 'Sleeping';
+    card.statusText = s.terminated ? STRINGS.statusArchived : STRINGS.statusSleeping;
   } else if (acc) {
     card.elapsedMs = acc;
   } else {
-    card.statusText = 'Idle';
+    card.statusText = STRINGS.statusIdle;
   }
   // Recency (spec 13 §3.7): a finished card since its work finished — only the
   // exact stamp, never lastActivity.
@@ -12278,7 +12295,7 @@ function renderArchivesToggle(archivedCount) {
   if (btn.hidden !== hide) btn.hidden = hide;
   var pressed = showArchives ? 'true' : 'false';
   if (btn.getAttribute('aria-pressed') !== pressed) btn.setAttribute('aria-pressed', pressed);
-  setTextIfChanged(label, 'Archives (' + archivedCount + ')');
+  setTextIfChanged(label, STRINGS.archives + ' (' + archivedCount + ')');
 }
 
 // ── Sleeping — the same on / off toggle for sleeping (closed, not archived)
@@ -12303,7 +12320,7 @@ function renderSleepingToggle(sleepingCount) {
   if (btn.hidden !== hide) btn.hidden = hide;
   var pressed = showSleeping ? 'true' : 'false';
   if (btn.getAttribute('aria-pressed') !== pressed) btn.setAttribute('aria-pressed', pressed);
-  setTextIfChanged(label, 'Sleeping (' + sleepingCount + ')');
+  setTextIfChanged(label, STRINGS.sleeping + ' (' + sleepingCount + ')');
 }
 
 // ── Session lifecycle policy (sleep / archive / board windows). The board
@@ -12354,7 +12371,7 @@ function openLifecycleDialog() {
   }
   armLifecycleSave(null);
   setTextIfChanged(document.getElementById('lifecycle-scope'), SELF_INSTANCE_NAME ? '이 인스턴스(' + SELF_INSTANCE_NAME + ')' : '이 인스턴스');
-  setLifecycleStatus(_lifecycle.degraded ? '저장된 정책 파일을 읽을 수 없어 Sleeping/종료 전환을 멈춘 상태입니다. 저장하면 다시 시작합니다.' : '', !!_lifecycle.degraded);
+  setLifecycleStatus(_lifecycle.degraded ? '저장된 정책 파일을 읽을 수 없어 휴면/종료 전환을 멈춘 상태입니다. 저장하면 다시 시작합니다.' : '', !!_lifecycle.degraded);
   // <ui-dialog> (J-01): show() opens it modal at once (focus trap, Esc / scrim / ✕ close it, focus goes back to the
   // opener); the first field takes focus as the native dialog gave it.
   if (typeof dlg.show !== 'function') return;
@@ -12393,8 +12410,8 @@ function setLifecycleStatus(text, isError) {
   el.classList.toggle('is-error', !!isError);
 }
 var LIFECYCLE_LABELS = {
-  sleepAfterHours: 'Sleeping 전환', archiveAfterDays: 'Archive 전환', boardArchiveWindowHours: 'Archive 표시 기간',
-  sleepAfterMs: 'Sleeping 전환', archiveAfterMs: 'Archive 전환', boardArchiveWindowMs: 'Archive 표시 기간',
+  sleepAfterHours: '휴면 전환', archiveAfterDays: '보관 전환', boardArchiveWindowHours: '보관함 표시 기간',
+  sleepAfterMs: '휴면 전환', archiveAfterMs: '보관 전환', boardArchiveWindowMs: '보관함 표시 기간',
 };
 async function saveLifecycle(ev) {
   if (ev) ev.preventDefault();
@@ -12434,8 +12451,8 @@ async function saveLifecycle(ev) {
     var data = await res.json().catch(function() { return {}; });
     if (res.status === 409 && data && data.needsConfirm) {
       armLifecycleSave(body);
-      setLifecycleStatus('이 값으로 저장하면 다음 정리 주기에 ' + (data.willSleep || 0) + '개 세션이 Sleeping으로, '
-        + (data.willArchive || 0) + '개 세션이 종료(Archive)됩니다. 종료는 되돌릴 수 없습니다. 그래도 저장하려면 한 번 더 누르세요.', true);
+      setLifecycleStatus('이 값으로 저장하면 다음 정리 주기에 ' + (data.willSleep || 0) + '개 세션이 휴면으로, '
+        + (data.willArchive || 0) + '개 세션이 종료(보관)됩니다. 종료는 되돌릴 수 없습니다. 그래도 저장하려면 한 번 더 누르세요.', true);
       return;
     }
     armLifecycleSave(null);
