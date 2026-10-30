@@ -653,17 +653,12 @@ describe('views merged from #374 follow the same device contract', () => {
   it('the cron run drawer fills the visible viewport (not 100vh behind the Safari toolbar) and keeps clear of the insets', () => {
     // viewport-fit=cover makes env() insets real: a drawer pinned to the right edge
     // must pad for the landscape iPhone notch side and the home indicator.
-    const drawer = /^\.cron-drawer \{[^}]*\}/m.exec(RESP_TAIL)?.[0] ?? '';
-    expect(drawer).toContain('height: 100dvh');
-    expect(drawer).toContain('padding-right: env(safe-area-inset-right, 0px)');
-    // 100vw counts a classic scrollbar: a narrow window would push the drawer's left
-    // edge off screen (the device sweep caught -8px in WebKit). A fixed box's 100% is
-    // the viewport without the scrollbar.
-    expect(drawer).toContain('width: min(560px, 100%)');
-    expect(RESP_TAIL).toMatch(/^\.cron-drawer-head \{[^}]*padding-top: max\(16px, env\(safe-area-inset-top, 0px\)\)/m);
-    expect(RESP_TAIL).toMatch(
-      /^\.cron-drawer-body \{[^}]*padding-bottom: calc\(24px \+ env\(safe-area-inset-bottom, 0px\)\)/m,
-    );
+    // D1 (C-05): the drawer is @2lab.ai/ui <ui-drawer mode="sheet"> — a fixed native dialog (inset 0, so the
+    // visible viewport; its panel min(width, 100%) — never 100vw) with the bottom inset of its own.
+    expect(TEMPLATE).toContain('<ui-drawer class="cron-drawer" id="cron-drawer" mode="sheet" width="560" max-width="560" lang="ko">');
+    // The page adds the notch side and the top inset through the element's parts.
+    expect(RESP_TAIL).toContain('.cron-drawer::part(panel) { padding-right: env(safe-area-inset-right, 0px); }');
+    expect(RESP_TAIL).toContain('.cron-drawer::part(header) { padding-top: max(14px, env(safe-area-inset-top, 0px)); }');
   });
 });
 
@@ -708,7 +703,8 @@ describe('merged views — trinity code review R4 follow-ups', () => {
   it('Escape with a docked panel and the cron drawer open closes the drawer only (the topmost)', () => {
     // SSOT 2026-10-29 T2: without the drawer, Escape closes the front detail card (closeDetailCard).
     expect(TEMPLATE).toContain(
-      "if (e.key === 'Escape' && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();",
+      // D1 (C-05): <ui-drawer> takes the key (preventDefault) before the page's listener; the panel leaves it be.
+      "if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();",
     );
   });
 
@@ -730,7 +726,8 @@ describe('merged views — trinity code review R4 follow-ups', () => {
     const block = coarse.slice(0, coarse.indexOf('\n}'));
     // D1: the close button is the kit's icon button — 44px on touch is ui-kit.css's own rule.
     expect(block).not.toContain('.cron-drawer-close');
-    expect(TEMPLATE).toContain('<button type="button" class="ui-icon-btn" id="cron-drawer-close"');
+    // D1 (C-05): the close button is <ui-drawer>'s own — 44px on touch / narrow screens is the element's rule.
+    expect(TEMPLATE).not.toContain('id="cron-drawer-close"');
     // 지난 실행, the strip, the queue chips, the marks and the fold toggle: @2lab.ai/ui agent-queue
     // styles.ts, '@media (pointer: coarse)' — 44px.
     expect(block).not.toContain('.cron-history-btn');
