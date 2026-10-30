@@ -364,7 +364,7 @@ describe('goals: completed goals open with their details (T6)', () => {
       'isBusy',
       'renderCardGoal',
     ],
-    ['GOAL_STATUS_LABELS', '_goalErrors', 'GOAL_VIA_LABELS', '_busy'],
+    ['GOAL_STATUS_LABELS', 'GOAL_SVG', '_goalErrors', 'GOAL_VIA_LABELS', '_busy'],
     { _goalHistoryOpen: open },
   );
   const card = (history: unknown[], over: Record<string, unknown> = {}) => ({
@@ -768,7 +768,8 @@ describe('work log folds under the task each entry was made in (T10)', () => {
     expect(html).toContain('1m 0s');
     expect(html).toContain('툴 2회');
     // A closed group holds no entry nodes until it is opened (review P1: DOM size).
-    expect(html).toContain('<div class="wl-group-body" hidden></div>');
+    // Tone pass P6: a closed group's body is hidden and inert (it folds to 0 rows instead of vanishing).
+    expect(html).toContain('<div class="wl-group-body" hidden inert></div>');
     expect(html).not.toContain('data-seq="2"');
     const open = m.renderWorkLogGroup(
       { taskId: 'T1', title: 'Explore', entries: [E(2, 'T1', 'Explore'), E(3, 'T1', 'Explore')] },

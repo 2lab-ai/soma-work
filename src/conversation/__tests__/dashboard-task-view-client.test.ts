@@ -409,7 +409,7 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
     expect(runIds(el.innerHTML)).not.toContain('T3');
     expect(runIds(el.innerHTML)).not.toContain('T4');
     expect(el.innerHTML).toContain(
-      '<button type="button" class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="false" onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()">&#x25BC; 실행 전에 계획에서 빠짐 <span class="pl-earlier-counts">2</span></button>',
+      '<button type="button" class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="false" onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()"><span class="chev" aria-hidden="true"></span>실행 전에 계획에서 빠짐 <span class="pl-earlier-counts">2</span></button>',
     );
     expect(el.innerHTML).not.toContain('#T3');
     open({ earlier: true });
@@ -627,7 +627,7 @@ describe('T1.2 · the agent tabs', () => {
 describe('T1.4 · an assistant turn reads as its answer; Raw sits at the bottom', () => {
   const env = load<{ renderTurn(t: unknown, i?: number, arr?: unknown[], convId?: string): string }>(
     ['esc', 'escAttr', 'escJs', 'toNum', 'decodeSlackEntities', 'ansSlotHtml', 'botNameOf', 'renderTurn'],
-    [],
+    ['BOT_AVATAR_SVG'],
     {
       // SSOT 2026-10-29 T8: the answer's name is the session's Slack bot (none resolved here: Assistant).
       BOT_NAME: null,
@@ -1176,8 +1176,10 @@ describe('T1.6 · HIG: outside a list the 자세히 toggle is a button that beha
       /<button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false"[^>]*><svg class="pdt-icon"/,
     );
     expect(PAGE).not.toContain('pdt-switch');
+    // Tone pass P2: "pressed" is the neutral chip (--ib-pill, a --ib-muted edge), not an accent fill —
+    // the accent is for links, focus and progress only.
     expect(CSS).toMatch(
-      /\.panel-detail-toggle\[aria-pressed="true"\] \{ background: var\(--accent\); border-color: var\(--accent\); color: #fff; \}/,
+      /\.panel-detail-toggle\[aria-pressed="true"\] \{ background: var\(--ib-pill\); border-color: var\(--ib-muted\); color: var\(--text\); \}/,
     );
   });
 });

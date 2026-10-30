@@ -56,6 +56,10 @@ function cook(fragment: string): string {
   if (fragment.includes('`') || fragment.includes('${')) throw new Error('fragment is not a plain template slice');
   return new Function(`return \`${fragment}\`;`)() as string;
 }
+/** The page's chrome words (STRINGS — tone pass P8: Korean, "…", no emoji), as served. */
+const STRINGS = new Function(
+  `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
+)() as Record<string, string>;
 function declarationCount(name: string): number {
   const re = new RegExp(`^(?:async function|function|var|let|const) ${name.replace(/[$]/g, '\\$')}\\b`, 'gm');
   return (TEMPLATE.match(re) ?? []).length;
@@ -168,7 +172,7 @@ function answerDom(conv = 'conv-run', turn = 't2', summary: Summary = SUMMARY) {
  * Assistant). The page const is `const BOT_NAME = ${initBotName};` (not a
  * cuttable var): null here, as on a page served before the bot's name resolved.
  */
-const NAME_ENV = { BOT_NAME: null, panelSessionKey: null, _sessionCache: {} };
+const NAME_ENV = { BOT_NAME: null, panelSessionKey: null, _sessionCache: {}, STRINGS };
 const PAINT_FNS = [
   'esc',
   'ansLinkTitles',
@@ -185,7 +189,7 @@ describe('D1 · task view T1.4 — the answer is the face (<ui-ai-answer flat>);
   const turn = (extra: Record<string, unknown>, cid = 'conv-run') => {
     const api = load<{ renderTurn(t: unknown, i?: number, arr?: unknown[], cid?: string): string }>(
       ['esc', 'escJs', 'toNum', 'ansSlotHtml', 'botNameOf', 'renderTurn'],
-      [],
+      ['BOT_AVATAR_SVG'],
       { ...NAME_ENV, panelConvId: cid, _artCache: {}, renderTurnArtifacts: () => '' },
     );
     return api.renderTurn({ id: 't2', role: 'assistant', timestamp: T0, ...extra }, 0, [], cid);
@@ -210,13 +214,13 @@ describe('D1 · task view T1.4 — the answer is the face (<ui-ai-answer flat>);
     expect(out).not.toContain('답변 전문');
   });
 
-  it('Summary failed + Retry and "Generating summary..." are kept (in Raw)', () => {
+  // Tone pass P8: in Korean with "…" and no emoji — was "Summary failed" + "🔄 Retry" / "Generating summary...".
+  it('요약 실패 + 다시 시도 and 요약 만드는 중… are kept (in Raw)', () => {
     expect(turn({ summarized: true })).toMatch(
-      /<div class="turn-raw-summary"><div class="turn-summary-body"[^>]*>Summary failed <button[^>]*resummarize\(/,
+      /<div class="turn-raw-summary"><div class="turn-summary-body"[^>]*>요약 실패 <button[^>]*resummarize\([^>]*>다시 시도<\/button>/,
     );
-    expect(turn({})).toMatch(
-      /<div class="turn-raw-summary"><div class="turn-summary-body"[^>]*>Generating summary\.\.\./,
-    );
+    expect(turn({})).toMatch(/<div class="turn-raw-summary"><div class="turn-summary-body"[^>]*>요약 만드는 중…</);
+    expect(clientFn('renderTurn')).not.toContain('1F504');
   });
 
   it('a turn with no answer to load (no id or no conversation) shows its summary as before', () => {
@@ -319,13 +323,17 @@ describe('SSOT 2026-10-29 T8 — an answer carries the Slack bot’s name: the s
     botNameOf(s: unknown): string;
   };
   const named = (env: { BOT_NAME?: string | null; panelSessionKey?: string | null; _sessionCache?: object }) =>
-    load<Named>(['esc', 'escJs', 'toNum', 'ansSlotHtml', 'botNameOf', 'renderTurn', 'ansPendingHtml'], [], {
-      ...NAME_ENV,
-      ...env,
-      panelConvId: 'conv-run',
-      _artCache: {},
-      renderTurnArtifacts: () => '',
-    });
+    load<Named>(
+      ['esc', 'escJs', 'toNum', 'ansSlotHtml', 'botNameOf', 'renderTurn', 'ansPendingHtml'],
+      ['BOT_AVATAR_SVG'],
+      {
+        ...NAME_ENV,
+        ...env,
+        panelConvId: 'conv-run',
+        _artCache: {},
+        renderTurnArtifacts: () => '',
+      },
+    );
   // The assistant turn's header (name, then its time) and the writing row's (name only).
   const header = (name: string) =>
     `<div class="turn-header"><span class="turn-name">${name}</span><span class="turn-time">`;
@@ -529,7 +537,7 @@ describe('D12 — "응답 작성 중" while the session writes the answer', () =
   it('ansPendingHtml: a busy assistant row holding the element, no turn identity', () => {
     const { ansPendingHtml } = load<{ ansPendingHtml(): string }>(
       ['esc', 'ansSlotHtml', 'botNameOf', 'ansPendingHtml'],
-      [],
+      ['BOT_AVATAR_SVG'],
       NAME_ENV,
     );
     const out = ansPendingHtml();
@@ -558,7 +566,7 @@ describe('D12 — "응답 작성 중" while the session writes the answer', () =
       };
       const api = load<{ syncAnsPending(): void }>(
         ['esc', 'ansSlotHtml', 'ansSetData', 'ansPendingShow', 'botNameOf', 'ansPendingHtml', 'syncAnsPending'],
-        [],
+        ['BOT_AVATAR_SVG'],
         {
           BOT_NAME: null, // SSOT 2026-10-29 T8: the writing row names the bot (botNameOf)
           document: { getElementById: () => turnsEl },
@@ -662,7 +670,7 @@ describe('D12 — the writing row through the real insert paths (cross-spec revi
         'appendTurnToPanel',
         'updateTurnInPanel',
       ],
-      [],
+      ['BOT_AVATAR_SVG'],
       {
         BOT_NAME: null, // SSOT 2026-10-29 T8: the writing row names the bot (botNameOf)
         document: {
@@ -1121,7 +1129,7 @@ describe('a subagent’s 지시와 답변 — its answer on the same element', (
   const html = (a: unknown, io: unknown, answer: string | null) =>
     load<{ agentConvHtml(a: unknown, io: unknown, prompt: string | null, answer: string | null): string }>(
       ['esc', 'ansSlotHtml', 'agentConvHtml'],
-      [],
+      ['BOT_AVATAR_SVG'],
       {
         agentName: () => 'A1 Explore',
         agentStatusOf: (x: { status: string }) => x.status,
