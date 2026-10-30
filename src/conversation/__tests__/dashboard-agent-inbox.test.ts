@@ -13,6 +13,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { pageTokenAliases, uiLibTokensCss } from '../ui-lib';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 // Only the page template — server code above it must not satisfy (or trip)
@@ -499,13 +500,21 @@ describe('agent inbox board — deep link (§3.1-8)', () => {
 });
 
 describe('agent inbox board — motion contract (§4)', () => {
-  it('declares the motion tokens verbatim', () => {
-    expect(TEMPLATE).toContain('--ease-out: cubic-bezier(0.23, 1, 0.32, 1);');
-    expect(TEMPLATE).toContain('--ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);');
-    expect(TEMPLATE).toContain('--dur-press: 160ms;');
-    expect(TEMPLATE).toContain('--dur-expand: 240ms;');
-    expect(TEMPLATE).toContain('--dur-move: 320ms;');
-    expect(TEMPLATE).toContain('--dur-fade: 180ms;');
+  // P10 (tone pass): the tokens come from @2lab.ai/ui's tokens.css, emitted into the page, and the
+  // dashboard's names are aliases of the library's --ui-* — one source, the values verbatim.
+  it("declares the motion tokens verbatim (the library's tokens, aliased to the dashboard names)", () => {
+    expect(TEMPLATE).toContain('${uiLibTokensCss()}');
+    expect(TEMPLATE).toContain('${pageTokenAliases()}');
+    const tokens = uiLibTokensCss();
+    expect(tokens).toContain('--ui-ease-out: cubic-bezier(0.23, 1, 0.32, 1);');
+    expect(tokens).toContain('--ui-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);');
+    expect(tokens).toContain('--ui-dur-press: 160ms;');
+    expect(tokens).toContain('--ui-dur-expand: 240ms;');
+    expect(tokens).toContain('--ui-dur-move: 320ms;');
+    expect(tokens).toContain('--ui-dur-fade: 180ms;');
+    const aliases = pageTokenAliases();
+    for (const n of ['ease-out', 'ease-in-out', 'dur-press', 'dur-expand', 'dur-move', 'dur-fade'])
+      expect(aliases).toContain(`--${n}: var(--ui-${n});`);
   });
 
   it('the open card grows in place (0fr → 1fr) in the element; the page keeps no expansion rules', () => {

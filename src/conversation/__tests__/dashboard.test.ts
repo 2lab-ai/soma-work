@@ -1309,15 +1309,16 @@ describe('Dashboard API', () => {
     });
 
     const html: string = res.body;
-    // Light theme block must override functional colors
-    const lightBlock = html.match(/\[data-theme="light"\]\s*\{([^}]+)\}/);
+    // P10 (tone pass): the light theme block is @2lab.ai/ui's tokens.css — it overrides the
+    // functional colors as --ui-*, and the dashboard's names are aliases of them.
+    const tokens = html.slice(html.indexOf('<style id="ui-tokens">'));
+    const lightBlock = tokens.match(/\[data-theme="light"\]\s*\{([^}]+)\}/);
     expect(lightBlock).not.toBeNull();
     const block = lightBlock![1];
-    expect(block).toContain('--green:');
-    expect(block).toContain('--yellow:');
-    expect(block).toContain('--red:');
-    expect(block).toContain('--purple:');
-    expect(block).toContain('--orange:');
+    for (const c of ['green', 'yellow', 'red', 'purple', 'orange']) {
+      expect(block).toContain(`--ui-${c}:`);
+      expect(html).toContain(`--${c}: var(--ui-${c});`);
+    }
   });
 
   it('should auto-clear localStorage when toggled theme matches OS preference', async () => {
