@@ -356,4 +356,73 @@ describe('SessionRegistry — Slack-less task review fixes (#612 R1)', () => {
     expect(archived.slackless).toBe(true);
     expect(archived.taskId).toBe(task.taskId);
   });
+
+  function closeAndReadArchive(reg: SessionRegistry, taskId: string) {
+    reg.terminateSession(`task:${taskId}`);
+    const dir = path.join(TEST_DATA_DIR, 'archives');
+    const file = fs.readdirSync(dir).find((f) => f.endsWith('.json'))!;
+    return JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
+  }
+
+  it('R6 — restoring an archived Slack-less task brings it back under its task key, still Slack-less (#612 R2)', () => {
+    const reg = new SessionRegistry();
+    const task = reg.createTask(TASK_INPUT);
+    const archived = closeAndReadArchive(reg, task.taskId!);
+    expect(reg.getSessionByKey(`task:${task.taskId}`)).toBeUndefined();
+
+    const outcome = reg.restoreArchivedSession(archived, '/work/U1/repo');
+    expect(outcome).toMatchObject({ ok: true, sessionKey: `task:${task.taskId}` });
+    const back = reg.getSessionByKey(`task:${task.taskId}`)!;
+    expect(back.slackless).toBe(true); // the run guards (dashboard 409, goal resume skip) read this
+    expect(back.taskId).toBe(task.taskId);
+    expect(back.channelId).toBe('');
+    expect(back.threadTs).toBeUndefined();
+    expect(reg.getSessionByTaskId(task.taskId!)).toBe(back);
+  });
+
+  it('R6 — a Slack-less archive whose task id another live session holds is refused, not given a new id (#612 R2)', () => {
+    const reg = new SessionRegistry();
+    const task = reg.createTask(TASK_INPUT);
+    const archived = closeAndReadArchive(reg, task.taskId!);
+    const other = reg.createSession('U1', 'User', 'C9', '900.001');
+    expect(reg.adoptTaskId(reg.getSessionKey('C9', '900.001'), task.taskId!)).toBe(true);
+
+    const outcome = reg.restoreArchivedSession(archived, '/work/U1/repo');
+    expect(outcome).toMatchObject({ ok: false, code: 'conflict' });
+    expect(reg.getSessionByKey(`task:${task.taskId}`)).toBeUndefined();
+    expect(reg.getSessionByTaskId(task.taskId!)).toBe(other);
+  });
+
+  it('R7 — a session whose key cannot be built is left out of the save; every other session is still saved (#612 R2)', () => {
+    const reg = new SessionRegistry();
+    const good = reg.createTask(TASK_INPUT);
+    const bad = reg.createTask({ ...TASK_INPUT, title: 'bad' });
+    bad.taskId = 'a:b'; // only a direct write can get here; createTask and the loader refuse it
+    const slack = reg.createSession('U1', 'User', 'C1', '100.001');
+    slack.sessionId = 'sdk-1';
+    reg.saveSessions();
+    const saved = readSaved();
+    expect(saved.map((r) => r.key).sort()).toEqual([`task:${good.taskId}`, 'C1-100.001'].sort());
+  });
+
+  it('R6 — a malformed Slack-less archive (a channel, or a bad task id) is refused without throwing (#612 R2)', () => {
+    const reg = new SessionRegistry();
+    const base = {
+      archivedAt: 1793600000000,
+      archiveReason: 'sleep_expired',
+      ownerId: 'U1',
+      slackless: true as const,
+      lastActivity: new Date().toISOString(),
+    };
+    const cases = [
+      { ...base, sessionKey: 'task:t-1', taskId: 't-1', channelId: 'C1', threadTs: '1.1' },
+      { ...base, sessionKey: 'task:a:b', taskId: 'a:b', channelId: '' },
+      { ...base, sessionKey: 'task:', channelId: '' },
+    ];
+    for (const archived of cases) {
+      const outcome = reg.restoreArchivedSession(archived as any, '/work/U1/repo');
+      expect(outcome).toMatchObject({ ok: false, code: 'conflict' });
+    }
+    expect(reg.getAllSessions().size).toBe(0);
+  });
 });

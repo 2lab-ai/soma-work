@@ -766,6 +766,8 @@ function resolveSelfActionKeyAndOwner(
   const wireKey: string = request.params?.key ?? '';
   const originalKey = resolveSelfActionKey(wireKey, reply);
   if (originalKey === null) return null;
+  // Owner first: someone else's task answers 403, not a hint of what it is.
+  if (!requireSessionOwner(request, reply, originalKey)) return null;
   // Fail closed (#612 review): a Slack-less task cannot run or be steered until its
   // execution context exists (#597/#598). Only routes that do not start a turn
   // (stop / close / trash) opt in.
@@ -773,7 +775,6 @@ function resolveSelfActionKeyAndOwner(
     reply.status(409).send({ error: 'task not runnable yet' });
     return null;
   }
-  if (!requireSessionOwner(request, reply, originalKey)) return null;
   return { wireKey, originalKey };
 }
 

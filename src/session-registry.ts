@@ -576,7 +576,10 @@ export class SessionRegistry {
    *   takes it over via `adoptTaskId` only after the original is terminated;
    *   a refused termination leaves it on the original) or an archive revive
    *   (restoreArchivedSession). At most one live session holds a task id: a
-   *   duplicate met on load or revive gets a fresh id instead. A session
+   *   duplicate met on load or revive gets a fresh id instead. A Slack-less
+   *   task (`task:<taskId>` key) never lets the two split: on load its key
+   *   follows a fresh id (a duplicate inside one file is quarantined); on
+   *   revive a taken id is refused rather than replaced. A session
    *   saved before task ids existed gets one on its first load, written back
    *   at once so the next restart keeps it.
    * - `sessionId` (SDK run session): set by the first SDK turn; cleared by
@@ -1008,7 +1011,23 @@ export class SessionRegistry {
    * The lookup and the insert run with no await between them.
    */
   restoreArchivedSession(archived: ArchivedSession, cwd: string): SessionLifecycleOutcome {
-    const key = this.getSessionKey(archived.channelId, archived.threadTs);
+    // A Slack-less task lives under `task:<taskId>` only — never a Slack key —
+    // and must come back still marked, or the run guards (dashboard 409, goal
+    // resume skip) stop covering it (#612 R2). A record that is not a clean
+    // Slack-less archive is refused, not reshaped.
+    const slackless = archived.slackless === true;
+    const unrestorable = { ok: false, code: 'conflict', message: '이 태스크 기록은 되살릴 수 없어요' } as const;
+    let key: string;
+    if (slackless) {
+      if (archived.channelId || archived.threadTs || typeof archived.taskId !== 'string') return unrestorable;
+      try {
+        key = buildTaskSessionKey(archived.taskId);
+      } catch {
+        return unrestorable;
+      }
+    } else {
+      key = this.getSessionKey(archived.channelId, archived.threadTs);
+    }
     const existing = this.sessions.get(key);
     if (existing) {
       if (existing.terminated) return { ok: false, code: 'terminated', message: '종료 중인 세션이에요' };
@@ -1024,6 +1043,11 @@ export class SessionRegistry {
       return this.reviveSession(key);
     }
 
+    const restoredTask = this.restoredTaskId(archived.taskId);
+    // Its key is its task id: a fresh id would split the two.
+    if (slackless && restoredTask.minted) {
+      return { ok: false, code: 'conflict', message: '이 태스크 ID는 다른 세션이 쓰고 있어요' };
+    }
     const model = archived.model === undefined ? undefined : coerceToAvailableModel(archived.model);
     const doneAt = finiteStamp(archived.doneAt);
     // The restored goal is a new generation: an evaluation, retry or
@@ -1039,11 +1063,12 @@ export class SessionRegistry {
       ownerId: archived.ownerId,
       ownerName: archived.ownerName,
       userId: archived.ownerId, // Legacy field
-      channelId: archived.channelId,
-      threadTs: archived.threadTs,
+      channelId: slackless ? '' : archived.channelId,
+      threadTs: slackless ? undefined : archived.threadTs,
+      slackless: slackless ? true : undefined,
       sessionId: archived.sessionId,
       conversationId: archived.conversationId,
-      taskId: this.restoredTaskId(archived.taskId).taskId,
+      taskId: restoredTask.taskId,
       isActive: true,
       // The revive is the user's own action: the idle clock starts now.
       lastActivity: new Date(),
@@ -2324,19 +2349,31 @@ export class SessionRegistry {
           // createTask reported it created only because it was saved.
           session.slackless
         ) {
-          this.ensureSessionLinkState(session);
-          sessionsArray.push({
-            // Rollback compatibility: persist the LEGACY key form. The
-            // running (post-4d) loader ignores this field and re-derives the
-            // canonical key from channelId/threadTs; a pre-4d binary loads it
-            // verbatim and derives legacy keys for lookup — so this exact
-            // form is what keeps sessions.json loadable after an emergency
-            // rollback. See buildLegacySessionKey. A Slack-less task has no
-            // channel/thread: its key is the task key (#596).
-            key:
+          // Rollback compatibility: persist the LEGACY key form. The
+          // running (post-4d) loader ignores this field and re-derives the
+          // canonical key from channelId/threadTs; a pre-4d binary loads it
+          // verbatim and derives legacy keys for lookup — so this exact
+          // form is what keeps sessions.json loadable after an emergency
+          // rollback. See buildLegacySessionKey. A Slack-less task has no
+          // channel/thread: its key is the task key (#596).
+          let persistedKey: string;
+          try {
+            persistedKey =
               session.slackless && session.taskId
                 ? buildTaskSessionKey(session.taskId)
-                : buildLegacySessionKey(session.channelId, session.threadTs),
+                : buildLegacySessionKey(session.channelId, session.threadTs);
+          } catch (keyError) {
+            // One record whose key cannot be built is left out — it must not
+            // take every other session's save down with it (#612 R2).
+            this.logger.warn('Session left out of the save: its key cannot be built', {
+              taskId: session.taskId,
+              error: (keyError as Error)?.message,
+            });
+            continue;
+          }
+          this.ensureSessionLinkState(session);
+          sessionsArray.push({
+            key: persistedKey,
             ownerId: session.ownerId,
             ownerName: session.ownerName,
             userId: session.userId, // Legacy field
