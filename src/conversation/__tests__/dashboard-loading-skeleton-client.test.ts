@@ -808,15 +808,17 @@ describe('[T3] first load is bounded; partial data is never announced as the boa
 });
 
 describe('[T2] stats strip — skeleton bars, started in parallel with the board', () => {
-  const STAT_IDS = [
-    'stat-sessions',
-    'stat-tokens',
-    'stat-cost',
-    'stat-turns',
-    'stat-prs',
-    'stat-merged',
-    'stat-merge-lines',
-  ];
+  // The cards behind 자세히 are the page's; 세션 · 토큰 · 비용 are <ui-stat-strip id="stats-strip">'s data (D2).
+  const STAT_IDS = ['stat-turns', 'stat-prs', 'stat-merged', 'stat-merge-lines'];
+  const STRIP_FNS = ['setStripFigure', 'landStripFigures', 'statsStripData', 'paintStatsStrip'];
+  const STRIP_VARS = ['_strip', '_tokenBreakdown', '_statsDetailOpen', 'PERIOD_OPTIONS'];
+  type StripMetric = { key: string; value: number | null; loading: boolean };
+  const figures = (strip: FakeEl) =>
+    ((strip.data as unknown as { metrics: StripMetric[] }).metrics ?? []).map((x) => ({
+      key: x.key,
+      value: x.value,
+      loading: x.loading,
+    }));
 
   it('every stat value is served loading, without a "-" placeholder', () => {
     for (const id of STAT_IDS) {
@@ -828,20 +830,29 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
     expect(PAGE).toMatch(
       /id="stat-workflows"[^>]*class="[^"]*is-loading|class="[^"]*is-loading[^"]*"[^>]*id="stat-workflows"/,
     );
+    // The strip's three figures start as skeleton bars (data.metrics[].loading) until their answer lands.
+    const m = load<{ statsStripData(): { metrics: StripMetric[] } }>(['statsStripData'], STRIP_VARS, {
+      currentPeriod: 'day',
+    });
+    expect(m.statsStripData().metrics.map((x) => [x.key, x.value, x.loading])).toEqual([
+      ['sessions', null, true],
+      ['tokens', null, true],
+      ['cost', null, true],
+    ]);
   });
 
   it('setStat ends the loading bar for that value', () => {
-    const d = fakeDocument(['stat-sessions']);
-    d.byId['stat-sessions'].classes.add('is-loading');
+    const d = fakeDocument(['stat-turns']);
+    d.byId['stat-turns'].classes.add('is-loading');
     const m = load<{ setStat(id: string, t: string): void }>(['setStat', 'stopStatRoll'], [], { document: d.document });
-    m.setStat('stat-sessions', '12');
-    expect(d.byId['stat-sessions'].textContent).toBe('12');
-    expect(d.byId['stat-sessions'].classes.has('is-loading')).toBe(false);
+    m.setStat('stat-turns', '12');
+    expect(d.byId['stat-turns'].textContent).toBe('12');
+    expect(d.byId['stat-turns'].classes.has('is-loading')).toBe(false);
   });
 
-  it('a strip figure rolls from the one it showed (620ms ease-out quart); first paint, dashes and reduced motion jump', () => {
-    const d = fakeDocument(['stat-sessions']);
-    const target = d.byId['stat-sessions'];
+  it('a card figure rolls from the one it showed (620ms ease-out quart); first paint, dashes and reduced motion jump', () => {
+    const d = fakeDocument(['stat-turns', 'stats-strip']);
+    const target = d.byId['stat-turns'];
     const frames: Array<(now: number) => void> = [];
     const cancelled: number[] = [];
     let reduce = false;
@@ -849,21 +860,26 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
       setStat(id: string, t: string, v?: number | null, f?: (n: number) => string): void;
       markStatsLoading(): void;
       fmtCount(n: number): string;
-    }>(['setStat', 'stopStatRoll', 'fmtCount', 'markStatsLoading'], ['STAT_ROLL_MS', 'STAT_IDS'], {
-      document: d.document,
-      reduceMotion: () => reduce,
-      requestAnimationFrame: (cb: (now: number) => void) => frames.push(cb),
-      cancelAnimationFrame: (id: number) => cancelled.push(id),
-    });
+    }>(
+      ['setStat', 'stopStatRoll', 'fmtCount', 'markStatsLoading', ...STRIP_FNS],
+      ['STAT_ROLL_MS', 'STAT_IDS', ...STRIP_VARS],
+      {
+        document: d.document,
+        currentPeriod: 'day',
+        reduceMotion: () => reduce,
+        requestAnimationFrame: (cb: (now: number) => void) => frames.push(cb),
+        cancelAnimationFrame: (id: number) => cancelled.push(id),
+      },
+    );
     const fmt = (n: number) => m.fmtCount(n);
     const run = (now: number) => frames.splice(0).forEach((cb) => cb(now));
     // First paint: no figure was shown, so it jumps.
-    m.setStat('stat-sessions', '10', 10, fmt);
+    m.setStat('stat-turns', '10', 10, fmt);
     expect(target.textContent).toBe('10');
     expect(frames).toHaveLength(0);
     // A change rolls: it starts on the old figure, is past halfway at a quarter of the time
     // (ease-out quart: 1 - 0.75^4 ≈ 0.68), and lands on the served text.
-    m.setStat('stat-sessions', '110', 110, fmt);
+    m.setStat('stat-turns', '110', 110, fmt);
     expect(target.textContent).toBe('10');
     run(1000);
     run(1000 + 155);
@@ -873,7 +889,7 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
     expect(target.textContent).toBe('110');
     expect(frames).toHaveLength(0);
     // A new load stops a roll in flight: the bar shows, not a number drawn over it.
-    m.setStat('stat-sessions', '20', 20, fmt);
+    m.setStat('stat-turns', '20', 20, fmt);
     expect(frames).toHaveLength(1);
     m.markStatsLoading();
     expect(cancelled).toHaveLength(1);
@@ -881,41 +897,90 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
     expect(target.classes.has('is-loading')).toBe(true);
     // A dash jumps, and the figure after a dash jumps too.
     frames.length = 0;
-    m.setStat('stat-sessions', '\u2014', null, fmt);
+    m.setStat('stat-turns', '\u2014', null, fmt);
     expect(target.textContent).toBe('\u2014');
-    m.setStat('stat-sessions', '30', 30, fmt);
+    m.setStat('stat-turns', '30', 30, fmt);
     expect(target.textContent).toBe('30');
     expect(frames).toHaveLength(0);
     // Reduced motion jumps.
     reduce = true;
-    m.setStat('stat-sessions', '40', 40, fmt);
+    m.setStat('stat-turns', '40', 40, fmt);
     expect(target.textContent).toBe('40');
     expect(frames).toHaveLength(0);
+  });
+
+  it('a strip figure rolls from the one it showed: after a load the strip gets the old value back, then the new one', async () => {
+    // <ui-stat-strip> rolls a figure whose value changes (620ms ease-out quart; first value, dashes and reduced
+    // motion jump) but forgets it under a loading bar (D2-GAPS G2-1). The page hands the old value first.
+    const d = fakeDocument(['stats-strip']);
+    const strip = d.byId['stats-strip'];
+    const writes: StripMetric[][] = [];
+    let data: unknown;
+    Object.defineProperty(strip, 'data', {
+      get: () => data,
+      set: (v) => {
+        data = v;
+        writes.push(figures(strip));
+      },
+    });
+    const m = load<{ markStatsLoading(): void; landStripFigures(v: Record<string, number | null>): void }>(
+      ['markStatsLoading', 'stopStatRoll', ...STRIP_FNS],
+      ['STAT_IDS', ...STRIP_VARS],
+      { document: d.document, currentPeriod: 'day' },
+    );
+    const sessions = () => writes.map((w) => w.find((x) => x.key === 'sessions'));
+    // First answer: one write, the value (the element jumps to it).
+    m.landStripFigures({ sessions: 10 });
+    expect(sessions()).toEqual([{ key: 'sessions', value: 10, loading: false }]);
+    // A new load: the bar, with the last value kept under it.
+    writes.length = 0;
+    m.markStatsLoading();
+    expect(writes.at(-1)?.map((x) => x.loading)).toEqual([true, true, true]);
+    expect(sessions().at(-1)).toEqual({ key: 'sessions', value: 10, loading: true });
+    // Its answer: the old value first (the element jumps to it), then — once drawn — the new one (it rolls).
+    writes.length = 0;
+    m.landStripFigures({ sessions: 25 });
+    expect(sessions()).toEqual([{ key: 'sessions', value: 10, loading: false }]);
+    await Promise.resolve();
+    expect(sessions()).toEqual([
+      { key: 'sessions', value: 10, loading: false },
+      { key: 'sessions', value: 25, loading: false },
+    ]);
+    // A failed answer is a dash (null): no hand-off, one write.
+    m.markStatsLoading();
+    writes.length = 0;
+    m.landStripFigures({ sessions: null });
+    await Promise.resolve();
+    expect(sessions()).toEqual([{ key: 'sessions', value: null, loading: false }]);
+    // A load that starts before the second write wins: the bar stays.
+    m.landStripFigures({ sessions: 5 });
+    m.markStatsLoading();
+    m.landStripFigures({ sessions: 6 });
+    m.markStatsLoading();
+    await Promise.resolve();
+    expect(sessions().at(-1)).toEqual({ key: 'sessions', value: 5, loading: true });
   });
 
   it('every stats load (first load, period, user) shows bars until its answer lands', () => {
     const body = clientFn('loadStats');
     expect(body).toContain('markStatsLoading();');
     expect(body.indexOf('markStatsLoading();')).toBeLessThan(body.indexOf('statsJson('));
-    const d = fakeDocument([
-      'stat-sessions',
-      'stat-tokens',
-      'stat-cost',
-      'stat-turns',
-      'stat-prs',
-      'stat-merged',
-      'stat-merge-lines',
-      'stat-workflows',
-      'chart-row',
-    ]);
-    const m = load<{ markStatsLoading(): void }>(['markStatsLoading', 'stopStatRoll'], ['STAT_IDS'], {
-      document: d.document,
-    });
+    const d = fakeDocument([...STAT_IDS, 'stat-workflows', 'chart-row', 'stats-strip']);
+    const m = load<{ markStatsLoading(): void }>(
+      ['markStatsLoading', 'stopStatRoll', ...STRIP_FNS],
+      ['STAT_IDS', ...STRIP_VARS],
+      {
+        document: d.document,
+        currentPeriod: 'week',
+      },
+    );
     m.markStatsLoading();
     for (const id of [...STAT_IDS, 'stat-workflows']) {
       expect(d.byId[id].classes.has('is-loading'), id).toBe(true);
       expect(d.byId[id].textContent, id).toBe('');
     }
+    expect(figures(d.byId['stats-strip']).map((x) => x.loading)).toEqual([true, true, true]);
+    expect((d.byId['stats-strip'].data as unknown as { period: { value: string } }).period.value).toBe('week');
   });
 
   it('paintStats ends the workflows and chart bars', () => {
