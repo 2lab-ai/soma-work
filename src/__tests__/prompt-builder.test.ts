@@ -333,6 +333,10 @@ describe('PromptBuilder', () => {
       expect(step7).toMatch(
         /When the requester answers in this thread[^\n]*`gate\.mjs answer`[^\n]*`decisions=<gate file>`/,
       );
+      // The resume never depends on the environment wrapper accepting `decisions=` (#591).
+      expect(step7).toMatch(
+        /does not accept `decisions=`[^\n]*`zworkflow:deploy-qa`[^\n]*`env=<the profile skill the gate file names>`[^\n]*`decisions=<gate file>`/,
+      );
       // The precondition wait is the only wait; the preflight rule still never parks the deploy.
       const preflight = prompt.slice(
         prompt.indexOf('#### Post-Deploy QA Preflight'),

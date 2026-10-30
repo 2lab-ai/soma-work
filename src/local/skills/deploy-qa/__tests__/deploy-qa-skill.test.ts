@@ -189,6 +189,13 @@ describe('deploy-qa precondition gate (step 5.5)', () => {
     );
   });
 
+  it('can be resumed directly when the environment wrapper does not forward decisions= (#591)', () => {
+    const args = md.slice(md.indexOf('## Args'), md.indexOf('## Profile'));
+    expect(args).toMatch(
+      /does not accept `decisions=`[^\n]*invoke this skill directly[^\n]*`env=<the profile skill the gate file names>`/,
+    );
+  });
+
   it('maps a skipped key to deferred and lists the gate first in the report input', () => {
     expect(md).toContain('`deferred`, reason `precondition-skipped by <who>`');
     expect(steps).toContain('`preconditions`');
