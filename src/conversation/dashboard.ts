@@ -5718,60 +5718,35 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 
 /* ═══ New task (SSOT 2026-10-23) — entry button, floating button, composer ═══
-   PC: a gradient pill in the top bar (rotating sheen ring, one attention pulse,
-   N shortcut) opens a centered dialog. Phones: an extended floating button in
-   the thumb zone opens a full-screen sheet sized to the visual viewport, so
-   the toolbar stays above the keyboard. */
+   The page's call to action, calm (ui.2lab.ai's one ink primary): PC an ink pill in
+   the top bar with its N key hint opens a centered dialog; phones an ink extended
+   floating button in the thumb zone opens a full-screen sheet sized to the visual
+   viewport, so the toolbar stays above the keyboard. No sheen, pulse, glow, ring or
+   hover lift — it moves only when pressed (0.97) and when the FAB arrives. */
 .new-task-btn {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   flex: none;
   height: 32px;
-  padding: 0 10px 0 8px;
-  border: 0;
+  padding: 0 6px 0 10px;
+  border: 1px solid var(--ib-text);
   border-radius: 999px;
-  background: transparent;
-  color: #fff;
+  background: var(--ib-text);
+  color: var(--ib-card);
   font: inherit;
   font-size: 13px;
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
-  box-shadow: 0 6px 18px -6px rgba(107, 147, 242, 0.75);
-  transition: transform var(--dur-press) var(--ease-out), filter var(--dur-press) var(--ease-out), box-shadow var(--dur-press) var(--ease-out);
-  animation: nt-pulse 2.4s var(--ease-out) 0.8s 2;
+  transition: opacity 150ms ease, transform var(--dur-press) var(--ease-out);
 }
-.new-task-btn::before {
-  content: '';
-  position: absolute;
-  z-index: -2;
-  left: -50%;
-  top: 50%;
-  width: 200%;
-  aspect-ratio: 1;
-  translate: 0 -50%;
-  background: conic-gradient(#6b93f2, #b28dff, #3ecf8e, #f6c90e, #6b93f2);
-  animation: nt-sheen 4.5s linear infinite;
-}
-.new-task-btn::after {
-  content: '';
-  position: absolute;
-  z-index: -1;
-  inset: 1.5px;
-  border-radius: inherit;
-  background: linear-gradient(135deg, #3f6fe0, #6d4fe0);
-}
-.new-task-btn:hover { transform: translateY(-1px); filter: brightness(1.08); box-shadow: 0 10px 24px -8px rgba(107, 147, 242, 0.9); }
+@media (hover: hover) and (pointer: fine) { .new-task-btn:hover { opacity: 0.88; } }
 .new-task-btn:active:not(:focus-visible) { transform: scale(0.97); }
 .new-task-btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-.nt-plus { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: rgba(255, 255, 255, 0.2); transition: transform var(--dur-move) var(--ease-out); }
-.nt-plus svg { width: 12px; height: 12px; }
-.new-task-btn:hover .nt-plus { transform: rotate(90deg); }
-.nt-kbd { font: inherit; font-size: 10px; font-weight: 700; line-height: 1; padding: 3px 5px; border-radius: 6px; background: rgba(255, 255, 255, 0.18); color: rgba(255, 255, 255, 0.9); }
+.nt-plus { display: inline-grid; place-items: center; width: 14px; height: 14px; }
+.nt-plus svg { width: 14px; height: 14px; }
+.nt-kbd { font: inherit; font-size: 10.5px; font-weight: 600; line-height: 1; min-width: 18px; padding: 3px 5px; border-radius: 6px; text-align: center; background: color-mix(in srgb, var(--ib-card) 16%, transparent); color: color-mix(in srgb, var(--ib-card) 82%, transparent); }
 
 .new-task-fab {
   position: fixed;
@@ -5785,18 +5760,17 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   padding: 0 20px 0 17px;
   border: 0;
   border-radius: 999px;
-  background: linear-gradient(135deg, #3f6fe0, #6d4fe0);
-  color: #fff;
+  background: var(--ib-text);
+  color: var(--ib-card);
   font: inherit;
   font-size: 15px;
   font-weight: 600;
   cursor: pointer;
-  box-shadow: 0 12px 30px -10px rgba(79, 123, 232, 0.85), 0 2px 6px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--ib-shadow-raised);
   transition: padding var(--dur-expand) var(--ease-out), gap var(--dur-expand) var(--ease-out), transform var(--dur-press) var(--ease-out);
-  animation: nt-fab-in 420ms var(--ease-out) both;
+  animation: nt-fab-in 240ms var(--ease-out) both;
   -webkit-tap-highlight-color: transparent;
 }
-.new-task-fab::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; animation: nt-ring 3.2s var(--ease-out) 1.2s infinite; }
 .new-task-fab:active:not(:focus-visible) { transform: scale(0.95); }
 .new-task-fab:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 3px; }
 .nt-fab-icon { width: 22px; height: 22px; flex: none; transition: transform var(--dur-move) var(--ease-out); }
@@ -5927,22 +5901,16 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-tool-mic[aria-pressed="true"] { background: rgba(242, 107, 107, 0.15); color: var(--red); }
 .nt-status { flex: 1; min-width: 0; overflow: hidden; color: var(--text-secondary); font-size: 12px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .nt-submit-hint { flex: none; font-size: 11px; color: var(--text-tertiary); }
-.nt-submit { display: inline-flex; align-items: center; gap: 6px; flex: none; height: 38px; padding: 0 16px; border: 0; border-radius: 10px; background: linear-gradient(135deg, #3f6fe0, #6d4fe0); color: #fff; font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; box-shadow: 0 6px 16px -6px rgba(79, 123, 232, 0.8); transition: transform var(--dur-press) var(--ease-out), filter var(--dur-press) var(--ease-out), opacity var(--dur-press) var(--ease-out); }
+.nt-submit { display: inline-flex; align-items: center; gap: 6px; flex: none; height: 38px; padding: 0 16px; border: 1px solid var(--ib-text); border-radius: 10px; background: var(--ib-text); color: var(--ib-card); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; transition: transform var(--dur-press) var(--ease-out), opacity var(--dur-press) var(--ease-out); }
 .nt-submit svg { width: 16px; height: 16px; }
-.nt-submit:hover:not(:disabled) { filter: brightness(1.08); }
+.nt-submit:hover:not(:disabled) { opacity: 0.88; }
 .nt-submit:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
-.nt-submit:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+.nt-submit:disabled { opacity: 0.45; cursor: not-allowed; }
 .nt-submit.is-busy svg { animation: nt-spin 0.9s linear infinite; }
 
 
-@keyframes nt-sheen { to { rotate: 360deg; } }
-@keyframes nt-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(123, 156, 240, 0.6), 0 6px 18px -6px rgba(107, 147, 242, 0.75); }
-  70% { box-shadow: 0 0 0 12px rgba(123, 156, 240, 0), 0 6px 18px -6px rgba(107, 147, 242, 0.75); }
-  100% { box-shadow: 0 0 0 0 rgba(123, 156, 240, 0), 0 6px 18px -6px rgba(107, 147, 242, 0.75); }
-}
-@keyframes nt-fab-in { from { opacity: 0; transform: translateY(16px) scale(0.6); } to { opacity: 1; transform: none; } }
-@keyframes nt-ring { 0% { box-shadow: 0 0 0 0 rgba(123, 156, 240, 0.5); } 60%, 100% { box-shadow: 0 0 0 16px rgba(123, 156, 240, 0); } }
+/* The FAB arrives: opacity + scale from 0.95 (never from nothing), 240ms ease-out — once. */
+@keyframes nt-fab-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: none; } }
 @keyframes nt-att-in { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: none; } }
 @keyframes nt-rec { 50% { opacity: 0.35; transform: scale(0.8); } }
 @keyframes nt-blink { 50% { opacity: 0.45; } }
@@ -5992,8 +5960,8 @@ body.nt-open .new-task-fab { display: none !important; }
   .nt-kbd, .nt-submit-hint, .nt-head-hint { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  /* New task — no rotation, pulse, ring or slide; changes are instant. */
-  .new-task-btn, .new-task-btn::before, .new-task-fab, .new-task-fab::after, .nt-dialog, .nt-att,
+  /* New task — no arrival, slide or scale; changes are instant. */
+  .new-task-btn, .new-task-fab, .nt-dialog, .nt-att,
   .nt-rec-dot, .nt-battery-fill, .nt-plus, .nt-fab-label, .nt-fab-icon, .nt-submit svg { animation: none !important; transition: none !important; }
 }
 /* ── Session artifacts (SSOT 2026-10-23): face chips, strips, minimap, viewer ── */
@@ -6283,7 +6251,7 @@ ${pageTokenAliases()}
       <div class="td-menu" id="td-menu" role="menu" hidden></div>
       <span class="td-status" id="td-status" role="status" aria-live="polite"></span>
     </div>
-    <button type="button" class="new-task-btn" id="new-task-btn" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><span class="nt-plus" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></span><span class="nt-btn-label">New task</span><kbd class="nt-kbd" aria-hidden="true">N</kbd></button>
+    <button type="button" class="new-task-btn" id="new-task-btn" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><span class="nt-plus" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></span><span class="nt-btn-label">New task</span><kbd class="nt-kbd" aria-hidden="true">N</kbd></button>
     <div class="nav">
       <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">All Users</span><select id="user-select" title="All Users" onchange="selectUser(this.value)">
         <option value="">All Users</option>
