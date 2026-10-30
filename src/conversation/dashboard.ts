@@ -3851,6 +3851,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/disclosure.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/tooltip.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/menu.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/dialog.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4309,18 +4310,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .archives-btn[hidden] { display: none; }
 .archives-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
 .archives-btn[aria-pressed="true"] { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
-/* Session lifecycle dialog (admin) */
-.lifecycle-dialog { margin: auto; border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; background: var(--bg-card, var(--ib-col)); color: var(--ib-text); max-width: 420px; width: calc(100% - 32px); }
-.lifecycle-dialog::backdrop { background: var(--scrim); }
-/* Dialogs come and go the same way (P6): the box opacity + scale(.97) on --dur-expand, its scrim a 180ms fade;
-   closing, both leave in 180ms (.is-closing, dialogCloseSoftly) before close(). */
-.lifecycle-dialog[open] { animation: dlg-in var(--dur-expand) var(--ease-out); }
-.lifecycle-dialog[open]::backdrop, .art-modal[open]::backdrop { animation: scrim-in var(--dur-fade) var(--ease-out); }
-.lifecycle-dialog.is-closing, .art-modal.is-closing { opacity: 0; transform: scale(0.98); transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out); }
-.lifecycle-dialog.is-closing::backdrop, .art-modal.is-closing::backdrop { opacity: 0; transition: opacity var(--dur-fade) var(--ease-out); }
+/* Session lifecycle dialog (admin, J-01) — @2lab.ai/ui <ui-dialog size="sm">: the element draws the panel, the
+   scrim, the enter / exit motion and the phone sheet; the page keeps only its form's rules.
+   The artifact viewer comes and goes the same way (P6): opacity + scale(.97) on --dur-expand, its scrim a 180ms
+   fade; closing, both leave in 180ms (.is-closing, dialogCloseSoftly) before close(). */
+.art-modal[open]::backdrop { animation: scrim-in var(--dur-fade) var(--ease-out); }
+.art-modal.is-closing { opacity: 0; transform: scale(0.98); transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out); }
+.art-modal.is-closing::backdrop { opacity: 0; transition: opacity var(--dur-fade) var(--ease-out); }
 @keyframes dlg-in { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
 @keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
-.lifecycle-dialog h3 { margin: 0 0 4px; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
 .lifecycle-dialog .lc-note { margin: 0 0 12px; font-size: 12px; color: var(--ib-muted); }
 .lifecycle-dialog label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 8px; font-size: 13px; margin-bottom: 10px; }
 .lifecycle-dialog label input { grid-column: 1 / -1; font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--ib-seg); color: var(--ib-text); }
@@ -4328,7 +4326,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .lifecycle-dialog .lc-status { min-height: 1.2em; margin: 4px 0 8px; font-size: 12px; color: var(--ib-muted); }
 .lifecycle-dialog .lc-status.is-error { color: var(--st-fail-text); }
 .lifecycle-dialog .lc-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.lifecycle-dialog .lc-save { background: var(--ib-text); color: var(--ib-card); }
 
 /* The board: @2lab.ai/ui <ui-agent-inbox> (re-agent-inbox) — its columns, cards, day groups, skeletons
    and narrow / list layouts are the element's, drawn with the dashboard tokens through .ui-tok (#inbox).
@@ -6203,8 +6200,8 @@ body.nt-open .new-task-fab { display: none !important; }
   .art-chip, .art-open, .art-play, .art-peek, .art-peek.open { transition: none; }
   .art-modal[open] { animation: none; }
   /* Gentler, not zero: a dialog's scrim still fades (opacity only, ≤ 180ms). */
-  .lifecycle-dialog[open], .art-modal[open] { animation: none; }
-  .lifecycle-dialog[open]::backdrop, .art-modal[open]::backdrop { animation: scrim-in 120ms ease both !important; }
+  .art-modal[open] { animation: none; }
+  .art-modal[open]::backdrop { animation: scrim-in 120ms ease both !important; }
 }
 @media (hover: none) {
   .art-chip { height: 32px; }
@@ -6403,20 +6400,19 @@ ${pageTokenAliases()}
           <ui-segmented class="view-seg" id="view-seg"></ui-segmented>
         </div>
       </div>
-      <dialog id="lifecycle-dialog" class="lifecycle-dialog" aria-labelledby="lifecycle-title" oncancel="event.preventDefault();closeLifecycleDialog()">
-        <form method="dialog" onsubmit="saveLifecycle(event)" oninput="armLifecycleSave(null)">
-          <h3 id="lifecycle-title">세션 수명 주기</h3>
+      <ui-dialog id="lifecycle-dialog" class="lifecycle-dialog" heading="세션 수명 주기" size="sm" lang="ko">
+        <form id="lifecycle-form" onsubmit="saveLifecycle(event)" oninput="armLifecycleSave(null)">
           <p class="lc-note"><span id="lifecycle-scope">이 인스턴스</span>에만 적용되고, 다음 정리 주기(최대 5분)부터 반영됩니다. 값을 줄이면 그 기준을 넘긴 세션이 바로 Sleeping이 되거나 종료됩니다 — 저장 전에 몇 개인지 알려 줍니다. Sleeping 전환이 12시간 이하이면 12시간 전 확인 알림은 보내지 않습니다.</p>
           <label>마지막 활동 후 Sleeping 전환 <span class="lc-unit">시간</span><input id="lc-sleepAfterHours" type="number" min="1" max="720" step="any" required></label>
           <label>Sleeping 후 Archive(종료) 전환 <span class="lc-unit">일</span><input id="lc-archiveAfterDays" type="number" min="0.05" max="365" step="any" required></label>
           <label>보드에 Archive 표시 기간 <span class="lc-unit">시간</span><input id="lc-boardArchiveWindowHours" type="number" min="0" max="8760" step="any" required></label>
           <p class="lc-status" id="lifecycle-status" role="status" aria-live="polite"></p>
-          <div class="lc-actions">
-            <button type="button" class="archives-btn" onclick="closeLifecycleDialog()">취소</button>
-            <button type="submit" class="archives-btn lc-save" id="lifecycle-save">저장</button>
-          </div>
         </form>
-      </dialog>
+        <div slot="footer" class="lc-actions">
+          <button type="button" class="ui-btn" onclick="closeLifecycleDialog()">취소</button>
+          <button type="submit" form="lifecycle-form" class="ui-btn is-primary lc-save" id="lifecycle-save">저장</button>
+        </div>
+      </ui-dialog>
       <!-- CRON lane (SSOT 2026-10-23 T4/T5): @2lab.ai/ui <ui-agent-queue> with the lane only —
            one tile per cron job, four numbers, the next-fire queue and 24 hours of runs
            (syncCronLane gives it its data); each job's latest run is its board card — a one-column
@@ -12563,17 +12559,18 @@ function openLifecycleDialog() {
     if (input) input.value = String(form[k]);
   }
   armLifecycleSave(null);
-  dialogKeep(dlg);
   setTextIfChanged(document.getElementById('lifecycle-scope'), SELF_INSTANCE_NAME ? '이 인스턴스(' + SELF_INSTANCE_NAME + ')' : '이 인스턴스');
   setLifecycleStatus(_lifecycle.degraded ? '저장된 정책 파일을 읽을 수 없어 Sleeping/종료 전환을 멈춘 상태입니다. 저장하면 다시 시작합니다.' : '', !!_lifecycle.degraded);
-  if (typeof dlg.showModal === 'function') dlg.showModal();
-  else dlg.setAttribute('open', '');
+  // <ui-dialog> (J-01): show() opens it modal at once (focus trap, Esc / scrim / ✕ close it, focus goes back to the
+  // opener); the first field takes focus as the native dialog gave it.
+  if (typeof dlg.show !== 'function') return;
+  dlg.show();
+  var first = document.getElementById('lc-sleepAfterHours');
+  if (first) first.focus();
 }
 function closeLifecycleDialog() {
   var dlg = document.getElementById('lifecycle-dialog');
-  if (!dlg) return;
-  if (typeof dlg.close === 'function') dialogCloseSoftly(dlg);
-  else dlg.removeAttribute('open');
+  if (dlg && typeof dlg.hide === 'function') dlg.hide();
 }
 // A dialog leaves the way it came (P6): its box and scrim fade out in 180ms (.is-closing), then close() —
 // at once under reduced motion. Opening it again meanwhile keeps it (dialogKeep).
