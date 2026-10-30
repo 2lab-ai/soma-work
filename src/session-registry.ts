@@ -2486,12 +2486,25 @@ export class SessionRegistry {
 
       // Write a temp file beside it, then rename over it: a write that fails
       // halfway (a full disk) leaves the saved sessions exactly as they were
-      // (#612 R4). No .bak and no fsync per save — this file is megabytes and
-      // saved on the event loop many times a minute; the shared atomicWriteJson
-      // reads, validates and copies the previous file on every call.
+      // (#612 R4). Durability on power loss is unchanged — the old direct write
+      // had no fsync either. Not the shared helpers: atomic-json's
+      // atomicWriteJson reads, validates and backs up the previous file on every
+      // call, and atomic-write's atomicWriteFile always fsyncs the file and the
+      // directory and key-sorts the whole value — per save, on the event loop,
+      // for a file of megabytes saved many times a minute.
       const tempFile = `${SESSIONS_FILE}.${process.pid}.${randomUUID()}.tmp`;
+      // The replace keeps the live file's access mode (a first save is
+      // owner-only); it is set on the temp file BEFORE the rename, or the
+      // umask default would widen a 0600 file (#612 R5).
+      let mode = 0o600;
       try {
-        fs.writeFileSync(tempFile, JSON.stringify(sessionsArray, null, 2));
+        mode = fs.statSync(SESSIONS_FILE).mode & 0o777;
+      } catch {
+        // First save: no file yet.
+      }
+      try {
+        fs.writeFileSync(tempFile, JSON.stringify(sessionsArray, null, 2), { mode });
+        fs.chmodSync(tempFile, mode); // writeFileSync's mode is masked by the umask
         fs.renameSync(tempFile, SESSIONS_FILE);
       } catch (writeError) {
         try {
@@ -2505,6 +2518,31 @@ export class SessionRegistry {
     } catch (error) {
       this.logger.error('Failed to save sessions', error);
       if (throwOnError) throw error;
+    }
+  }
+
+  /**
+   * A save that died between its temp write and its rename leaves
+   * `sessions.json.<pid>.<uuid>.tmp` behind (megabytes each). Nothing is
+   * saving while the registry loads, so every such file is an orphan (#612 R5).
+   */
+  private sweepOrphanSaveTempFiles(): void {
+    const dir = path.dirname(SESSIONS_FILE);
+    const prefix = `${path.basename(SESSIONS_FILE)}.`;
+    let names: string[];
+    try {
+      names = fs.readdirSync(dir);
+    } catch {
+      return;
+    }
+    for (const name of names) {
+      if (!name.startsWith(prefix) || !name.endsWith('.tmp')) continue;
+      try {
+        fs.rmSync(path.join(dir, name), { force: true });
+        this.logger.warn('Removed a sessions.json temp file left by an interrupted save', { file: name });
+      } catch {
+        // Best effort: an orphan only costs disk space.
+      }
     }
   }
 
@@ -2585,6 +2623,7 @@ export class SessionRegistry {
    * Load sessions from file after restart
    */
   loadSessions(): number {
+    this.sweepOrphanSaveTempFiles();
     try {
       if (!fs.existsSync(SESSIONS_FILE)) {
         this.logger.debug('No sessions file found');
