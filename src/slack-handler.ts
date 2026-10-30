@@ -7,6 +7,7 @@ import {
   type DispatchOutcome,
   type DispatchRequest,
   FollowupDispatcher,
+  isAutoCompactStop,
   type RunReport,
 } from '@soma/slack/followup-dispatcher';
 import {
@@ -439,7 +440,13 @@ export class SlackHandler {
     // all. The closure reads the queue as a runtime field: it is built later in
     // this constructor, and a stop cannot occur before then.
     this.requestCoordinator = new RequestCoordinator({
-      beforeAbort: (sessionKey, reason) => this.freezeFollowupOnStop(sessionKey, reason),
+      beforeAbort: (sessionKey, reason) => {
+        this.freezeFollowupOnStop(sessionKey, reason);
+        // After the freeze (a refused freeze refuses the stop): the stop is
+        // recorded even with an empty queue, where the freeze records nothing,
+        // so a pending auto-compact continuation can see it.
+        this.noteSessionStop(sessionKey);
+      },
     });
     this.toolTracker = new ToolTracker();
     this.reactionManager = new ReactionManager(this.slackApi);
@@ -888,8 +895,12 @@ export class SlackHandler {
       refresh: (sessionKey) => this.refreshFollowupSurface(sessionKey),
       // The host owns the drain loop; the action module never re-enters the
       // dispatcher itself.
-      runDrain: (sessionKey) =>
+      runDrain: (sessionKey, settled) =>
         this.runFollowupDrainLoop(sessionKey).then((last) => {
+          // The other boundary a dispatcher run settles into (`Send now`,
+          // Resume, Retry): an auto-compact stop — the click's own run, or the
+          // drain's last — hands its work on here exactly as in `drainFollowups`.
+          this.resumeIfAutoCompactStop(sessionKey, last ?? settled);
           // A human-driven drain (Resume / Retry) is a boundary too: release
           // the §3.6 deferral it may just have cleared instead of waiting for
           // a turn end that a deferred loop would never produce.
@@ -5063,7 +5074,74 @@ export class SlackHandler {
     // `queued` would have the drain below deliver them a second time (§3.2).
     await this.sweepSteerBucketsIfIdle(sessionKey);
     const last = report.canDrain ? await this.runFollowupDrainLoop(sessionKey) : undefined;
-    this.releaseDeferredGoalDriver(sessionKey, last ?? report);
+    const final = last ?? report;
+    this.resumeIfAutoCompactStop(sessionKey, final);
+    this.releaseDeferredGoalDriver(sessionKey, final);
+  }
+
+  /**
+   * At a drain boundary: if the last run settled there was stopped by
+   * `auto-compact`, resume its work. Every boundary a dispatcher run settles
+   * into calls this — `drainFollowups` and the action controls' `runDrain`.
+   */
+  private resumeIfAutoCompactStop(sessionKey: string, final: RunReport | undefined): void {
+    if (final && isAutoCompactStop(final.outcome)) this.resumeAfterAutoCompactStop(sessionKey);
+  }
+
+  /** Record a stop-class abort on the session (`beforeAbort`). */
+  private noteSessionStop(sessionKey: string): void {
+    const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
+    if (session) session.lastStopAtMs = Date.now();
+  }
+
+  /** The host turn that resumes the work an `auto-compact` stop interrupted. */
+  static readonly AUTO_COMPACT_CONTINUATION_TEXT =
+    '[auto-compact] The context reached the auto-compact threshold mid-turn, so the turn was stopped and the conversation compacted. Continue the interrupted work from where it stopped.';
+
+  /**
+   * Resume the work of a turn stopped by `auto-compact`, now that its slot is
+   * closed and the queue had nothing left to run. A synthetic host turn enters
+   * through `handleMessage` like the goal loop's continuation: the busy fence
+   * drops it if anything took the session meanwhile, and the armed flag turns
+   * it into `/compact` and replays it after the compaction. A goal session gets
+   * its continuation from the goal loop instead — a second one would race it.
+   */
+  private resumeAfterAutoCompactStop(sessionKey: string): void {
+    const session = this.claudeHandler.getSessionByKey?.(sessionKey);
+    if (!session || session.terminated) return;
+    if ((session.goal as { status?: string } | undefined)?.status === 'active') return;
+    if (this.followupDispatcher?.isBusy(sessionKey)) return;
+    // The user stopped the session after the auto-compact stop: theirs is the
+    // last word. No automatic continuation — the armed flag still compacts
+    // their next message first.
+    const stoppedAt = session.autoCompactStoppedAtMs;
+    if (session.lastStopAtMs !== undefined && stoppedAt !== undefined && session.lastStopAtMs >= stoppedAt) {
+      this.logger.info('Auto-compact stop: not resuming — the session was stopped after it', { sessionKey });
+      return;
+    }
+    const user = session.ownerId;
+    if (!session.channelId || !session.threadTs || !user) return;
+    const event = {
+      type: 'message',
+      user,
+      channel: session.channelId,
+      thread_ts: session.threadTs,
+      ts: `${Date.now() / 1000}`,
+      text: SlackHandler.AUTO_COMPACT_CONTINUATION_TEXT,
+      synthetic: true,
+      skipDispatch: true,
+      routeContext: { skipAutoBotThread: true, hostTurn: true },
+    };
+    this.logger.info('Auto-compact stop: resuming the work (compacts first)', { sessionKey });
+    void this.handleMessage(
+      event as unknown as MessageEvent,
+      this.threadSay(session.channelId, session.threadTs),
+    ).catch((err: unknown) => {
+      this.logger.warn('Auto-compact stop: resume failed — the next message will compact', {
+        sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    });
   }
 
   /**

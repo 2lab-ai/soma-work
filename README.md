@@ -417,9 +417,15 @@ uses, and removes the old stored per-user percentage once the conversion
 succeeds. A conversion that would land above the model's safe maximum fails
 visibly instead of silently clamping.
 
-soma-work's own turn-end checker is the sole automatic-compaction authority —
+soma-work's own threshold checker is the sole automatic-compaction authority —
 the Claude Agent SDK's built-in autocompaction is disabled for every resolved
 model profile, so exactly one scheduler ever decides when a session compacts.
+The checker runs as each API call of a turn lands, not only when the turn ends.
+A turn that crosses the threshold is stopped, the conversation is compacted,
+and the work continues automatically (goal sessions through their goal loop).
+A turn that started already over the threshold is not stopped — the next turn
+compacts. After a restart, a session whose saved context is at or over its
+threshold compacts before its next turn.
 
 ### `%` — session-scoped (ephemeral)
 

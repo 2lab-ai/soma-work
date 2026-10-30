@@ -774,6 +774,13 @@ export interface ConversationSession {
   // breaks the compact → fail → compact loop. Cleared by a successful
   // compaction. See `pauseAutoCompactAfterFailure` in @soma/slack/compact-state.
   autoCompactSuppressedUntilMs?: number | null;
+  // Runtime-only (not serialized): when the running turn was stopped because
+  // it crossed the auto-compact threshold (stream-executor, abort reason
+  // `auto-compact`), and when the session was last stopped by a stop-class
+  // abort (user stop / close / shutdown, slack-handler `beforeAbort`). A stop
+  // after the auto-compact stop cancels the automatic continuation.
+  autoCompactStoppedAtMs?: number;
+  lastStopAtMs?: number;
   /**
    * Session-scoped auto-compact threshold in TOKENS, set by `/autocompact
    * <tokens>` and cleared by `/autocompact reset`. Wins over the model's

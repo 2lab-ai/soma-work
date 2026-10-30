@@ -70,6 +70,17 @@ export type RunOutcome = DispatchOutcome | { result: 'denied'; reason: string } 
 /** `uncertain-unrecorded` = the fact is known but the queue has no transition for it yet. */
 export type ItemDisposition = 'none' | 'resolved' | 'failed' | 'uncertain' | 'uncertain-unrecorded';
 
+/**
+ * The turn was stopped because it crossed the auto-compact threshold
+ * (`stream-executor`, abort reason `auto-compact`). Not a user's stop: the
+ * outcome stays `interrupted` (an item it carried is `uncertain`, honestly),
+ * but the drain boundary opens — queued work runs next, and the armed flag
+ * turns that next turn into `/compact` first.
+ */
+export function isAutoCompactStop(outcome: { result: string; reason?: string }): boolean {
+  return outcome.result === 'interrupted' && outcome.reason === 'auto-compact';
+}
+
 export interface RunReport {
   sessionKey: string;
   runId: number;
@@ -1190,7 +1201,7 @@ export class FollowupDispatcher {
       itemId: run.itemId,
       outcome,
       itemDisposition,
-      canDrain: outcome.result === 'safe',
+      canDrain: outcome.result === 'safe' || isAutoCompactStop(outcome),
     };
   }
 
