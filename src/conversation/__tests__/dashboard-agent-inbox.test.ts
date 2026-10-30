@@ -51,7 +51,13 @@ describe('agent inbox board — layout (§3.1)', () => {
   });
 
   it('renders three columns in order NEEDS YOU → RUNNING → DONE (the element draws them from renderBoard’s plan)', () => {
-    expect(TEMPLATE).toContain("var BOARD_LABELS = { waiting: 'NEEDS YOU', working: 'RUNNING', done: 'DONE' };");
+    // D2 group 6: the heads are the page's STRINGS, in Korean like <ui-agent-inbox lang="ko">.
+    expect(TEMPLATE).toContain(
+      'var BOARD_LABELS = { waiting: STRINGS.boardNeeds, working: STRINGS.boardRunning, done: STRINGS.boardDone };',
+    );
+    expect(TEMPLATE).toContain("boardNeeds: '응답 필요',");
+    expect(TEMPLATE).toContain("boardRunning: '실행 중',");
+    expect(TEMPLATE).toContain("boardDone: '완료',");
     const body = fnBody('renderBoard');
     const waiting = body.indexOf("{ id: 'waiting', label: BOARD_LABELS.waiting");
     const working = body.indexOf("{ id: 'working', label: BOARD_LABELS.working");
@@ -60,7 +66,7 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(working).toBeGreaterThan(waiting);
     expect(done).toBeGreaterThan(working);
     // "Nothing here" is the element's own empty text (lang="en").
-    expect(TEMPLATE).toContain('<ui-agent-inbox id="kanban" class="kanban" view="board"></ui-agent-inbox>');
+    expect(TEMPLATE).toContain('<ui-agent-inbox id="kanban" class="kanban" view="board" lang="ko"></ui-agent-inbox>');
   });
 
   it('drops the old 4-column idle/closed containers', () => {
@@ -178,7 +184,8 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(TEMPLATE).toContain('var showArchives = readShowArchives();');
     const toggle = fnBody('renderArchivesToggle');
     // A toggle button: the label stays "Archives (N)", aria-pressed carries the state.
-    expect(toggle).toContain("'Archives (' + archivedCount + ')'");
+    expect(toggle).toContain("STRINGS.archives + ' (' + archivedCount + ')'");
+    expect(TEMPLATE).toContain("archives: '보관함',");
     expect(toggle).not.toContain('Show archives');
     expect(toggle).not.toContain('Hide archives');
     expect(toggle).toContain('archivedCount === 0');

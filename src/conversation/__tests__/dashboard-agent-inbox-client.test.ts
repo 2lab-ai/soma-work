@@ -60,6 +60,7 @@ function clientVar(name: string): string {
  * reach shipped vars) and returned next to the shipped ones.
  */
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, seams: string[] = []): T {
+  inject = { STRINGS: STRINGS, ...inject };
   const names = Object.keys(inject);
   const seamNames = seams.map((src) => /^function (\w+)/.exec(src)?.[1] ?? '');
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${seams.join('\n')}\nreturn { ${[...fns, ...seamNames].join(', ')} };`;
@@ -2355,8 +2356,14 @@ describe('stats: only the latest period / user selection paints (shipped loadSta
       ['_statsGen', 'STAT_IDS'],
       {
         fetch,
-        // The loading bars (markStatsLoading) find no elements in this harness.
+        // The loading bars (markStatsLoading) find no elements in this harness; the strip and the charts
+        // (<ui-stat-strip>, <ui-bar-chart>, D2) are painted elsewhere.
         document: { getElementById: () => null },
+        setStripFigure: () => {},
+        paintStatsStrip: () => {},
+        paintCharts: () => {},
+        _strip: { sessions: { value: null }, tokens: { value: null }, cost: { value: null } },
+        _chartDays: [],
         currentPeriod: 'day',
         currentUserId: '',
         paintStats: (d: { tag?: string } | null) => painted.push(`stats:${d ? d.tag : 'dash'}`),
