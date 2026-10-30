@@ -63,7 +63,7 @@ export interface CheckAndSchedulePendingCompactArgs {
    * Runs synchronously right after the flag is set, before any await — so a
    * caller can save the session before a restart could drop the decision.
    */
-  onArmed?: () => void;
+  onArmed?: (decision: { usedTokens: number; thresholdTokens: number }) => void;
 }
 
 /**
@@ -135,7 +135,7 @@ export async function checkAndSchedulePendingCompact(args: CheckAndSchedulePendi
 
   session.autoCompactPending = true;
   try {
-    onArmed?.();
+    onArmed?.({ usedTokens, thresholdTokens: effective.tokens });
   } catch (err) {
     logger?.warn('checkAndSchedulePendingCompact: onArmed threw — ignored', {
       error: (err as Error)?.message ?? String(err),

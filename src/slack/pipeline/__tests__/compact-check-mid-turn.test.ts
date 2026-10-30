@@ -312,7 +312,7 @@ describe('a turn that crosses the trigger is stopped and continued after /compac
     };
   }
 
-  it('stops the running turn quietly (reason auto-compact) and dispatches a host continuation', async () => {
+  it("stops the running turn quietly (reason auto-compact) — the hand-off is the dispatcher's, not this turn's", async () => {
     let release!: () => void;
     const held = new Promise<void>((r) => {
       release = r;
@@ -324,40 +324,16 @@ describe('a turn that crosses the trigger is stopped and continued after /compac
     release();
     await done;
 
-    // The continuation goes through the message pipeline, where the armed flag
-    // turns it into `/compact` and replays it after the compaction.
+    // Armed and saved; the work is resumed once the dispatch slot is closed
+    // (slack-handler `resumeAfterAutoCompactStop`, see
+    // `slack-handler.auto-compact-resume.test.ts`) — never from inside this turn.
     expect(session.autoCompactPending).toBe(true);
-    expect(deps.dispatchPendingUserMessage).toHaveBeenCalledTimes(1);
-    const [ctx, text] = (deps.dispatchPendingUserMessage as any).mock.calls[0];
-    expect(ctx).toMatchObject({ channel: 'C1', threadTs: 't1', user: 'U_TEST', hostTurn: true });
-    expect(String(text)).toMatch(/continue/i);
+    expect(deps.dispatchPendingUserMessage).not.toHaveBeenCalled();
     // A quiet stop: the SDK session survives for the compaction to resume.
     expect(session.sessionId).toBe('sess_long_turn');
   });
-
-  it('a goal session is left to its goal loop — no second continuation', async () => {
-    let release!: () => void;
-    const held = new Promise<void>((r) => {
-      release = r;
-    });
-    const session = makeSession();
-    session.goal = { goalId: 'g1', objective: '$fix', status: 'active', createdBy: 'U_TEST' };
-    const { deps, done, abortController } = await runTurn(crossingStream(held), session);
-
-    await vi.waitFor(() => expect(abortController.signal.aborted).toBe(true), { timeout: 3_000 });
-    release();
-    await done;
-    expect(deps.dispatchPendingUserMessage).not.toHaveBeenCalled();
-  });
 });
 
-/**
- * ssot-task: T3 — the mid-turn reading is THIS turn's context, not the larger
- * of it and whatever was stored. A compaction whose boundary carried no
- * `post_tokens` leaves the pre-compact figure stored; carrying it into the next
- * turn would arm (and stop) that turn on its first small call — a
- * stop → compact → stop loop.
- */
 describe('a stale stored occupancy does not arm the next turn (T3)', () => {
   it('a stored 950k with a 120k first call reads 120k and stays disarmed', async () => {
     const session = makeSession();
@@ -382,5 +358,37 @@ describe('a stale stored occupancy does not arm the next turn (T3)', () => {
     expect(session.autoCompactPending).not.toBe(true);
     expect(occupancyOf(session)).toBe(2 + 300 + 118_000 + 1_000);
     expect(deps.dispatchPendingUserMessage).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * ssot-task: T3 — livelock breaker. A turn that STARTED over the trigger (a
+ * compaction left the context above a low user trigger, e.g. `/autocompact
+ * 100k`) is armed but not stopped: stopping it would compact, replay, cross
+ * again on the first call and stop again — paid compactions, no progress.
+ */
+describe('a turn that started over the trigger is armed, not stopped (T3)', () => {
+  it('stored 760k at turn start, calls at 770k → armed, the turn runs on', async () => {
+    const session = makeSession();
+    session.usage.currentCacheReadTokens = 760_000;
+    async function* stream() {
+      yield call('msg_1', 768_000);
+      yield call('msg_2', 772_000);
+      yield {
+        type: 'result',
+        subtype: 'success',
+        total_cost_usd: 0,
+        usage: {
+          input_tokens: 4,
+          output_tokens: 600,
+          cache_read_input_tokens: 1_540_000,
+          cache_creation_input_tokens: 2_000,
+        },
+      };
+    }
+    const { done, abortController } = await runTurn(stream, session);
+    await done;
+    expect(session.autoCompactPending).toBe(true);
+    expect(abortController.signal.aborted).toBe(false);
   });
 });
