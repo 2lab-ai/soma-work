@@ -80,9 +80,16 @@ describe('ClaudeHandler.streamQuery — the execution-context gate (#597)', () =
   });
 
   it('a Slack-less task passes the gate, and its context reaches the option builder', async () => {
+    const session = {
+      ownerId: 'U1',
+      userId: 'U1',
+      slackless: true,
+      taskId: taskContext.taskId,
+      channelId: '',
+    } as unknown as ConversationSession;
     const it = newHandler().streamQuery(
       'hi',
-      undefined,
+      session,
       undefined,
       taskContext.workingDirectory,
       undefined,
@@ -129,6 +136,20 @@ describe('ClaudeHandler.streamQuery — the execution-context gate (#597)', () =
     it('a Slack context alongside a task context is refused — a task turn has no Slack thread', async () => {
       const slack = { user: 'U1', channel: 'C1', threadTs: '1.1' } as SlackContext;
       await expect(run(taskSession(), taskContext.sessionKey, slack).next()).rejects.toBeInstanceOf(
+        ExecutionContextMissingError,
+      );
+    });
+
+    it('a task turn without its session or its key is refused — both are required (#613 R3)', async () => {
+      await expect(run(undefined, taskContext.sessionKey).next()).rejects.toBeInstanceOf(ExecutionContextMissingError);
+      await expect(
+        newHandler().streamQuery('hi', taskSession(), undefined, undefined, undefined, undefined, taskContext).next(),
+      ).rejects.toBeInstanceOf(ExecutionContextMissingError);
+      expect(leaseMock).not.toHaveBeenCalled();
+    });
+
+    it('a session that is not Slack-less is refused for a task context (#613 R3)', async () => {
+      await expect(run(taskSession({ slackless: undefined }), taskContext.sessionKey).next()).rejects.toBeInstanceOf(
         ExecutionContextMissingError,
       );
     });

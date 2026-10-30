@@ -1170,10 +1170,16 @@ export class ClaudeHandler implements TurnSteeringPort {
     // never come from two different tasks.
     if (executionContext?.origin === 'task') {
       if (slackContext) throw new ExecutionContextMissingError('a task turn carries no Slack context');
-      if (sessionKey && sessionKey !== executionContext.sessionKey) {
-        throw new ExecutionContextMissingError('session key differs from the task’s');
+      // Both are required (#613 R3): an omitted session or key is not a match.
+      if (!sessionKey || sessionKey !== executionContext.sessionKey) {
+        throw new ExecutionContextMissingError('session key is not the task’s');
       }
-      if (session && (session.taskId !== executionContext.taskId || session.ownerId !== executionContext.userId)) {
+      if (
+        !session ||
+        session.slackless !== true ||
+        session.taskId !== executionContext.taskId ||
+        session.ownerId !== executionContext.userId
+      ) {
         throw new ExecutionContextMissingError('session is not the task’s');
       }
     }

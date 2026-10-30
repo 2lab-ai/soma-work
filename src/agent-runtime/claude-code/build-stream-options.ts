@@ -742,7 +742,13 @@ export async function buildStreamOptions(
 
   // Set working directory \u2014 ensure it exists to prevent ENOENT on spawn
   if (workingDirectory) {
-    if (!fs.existsSync(workingDirectory)) {
+    if (execCtx?.origin === 'task') {
+      // A task's directory exists before its turn (the run entry point makes it):
+      // nothing is created here, so no recursive mkdir can follow a link out (#613 R3).
+      if (!fs.existsSync(workingDirectory)) {
+        throw new ExecutionContextMissingError('task working directory does not exist');
+      }
+    } else if (!fs.existsSync(workingDirectory)) {
       logger.warn('Working directory does not exist, recreating', { workingDirectory });
       try {
         fs.mkdirSync(workingDirectory, { recursive: true });
