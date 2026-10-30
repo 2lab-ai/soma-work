@@ -316,14 +316,13 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(fnBody('loadSessions')).toContain('_lastPolledBoard = data.board;');
   });
 
-  it('older panel turns keep the reading position (anchored on the first turn in view of the 지시와 답변 box)', () => {
+  it('older panel turns keep the reading position (D3: <ui-conversation> prepends the page above the rows in view)', () => {
     const body = fnBody('loadMorePanelTurns');
-    // SSOT 2026-10-29: the box's first turn in view, captured before the page goes in, held after.
-    const anchor = body.indexOf('var anchor = psecViewAnchor(box);');
-    const insert = body.indexOf("turnsEl.insertAdjacentHTML('afterbegin'");
-    expect(anchor).toBeGreaterThan(-1);
-    expect(insert).toBeGreaterThan(anchor);
-    expect(body.indexOf('psecHoldPlace(box, anchor, fromBottom);')).toBeGreaterThan(insert);
+    // The page goes into the data, oldest first; the element's log scroller holds the rows the reader was on.
+    expect(body).toContain('_panelTurnsList = turns.concat(_panelTurnsList);');
+    expect(body).toContain('convPaint();');
+    expect(body).not.toContain('insertAdjacentHTML');
+    // The boxes this page still draws (작업 로그, 에이전트 트리) keep their own anchor.
     expect(fnBody('psecRestoreAnchor')).toContain(
       'el.getBoundingClientRect().top - box.getBoundingClientRect().top - a[i].at',
     );
@@ -380,7 +379,7 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     );
     const sections = panel.indexOf('<div class="panel-sections" id="panel-sections" role="tablist"');
     const worklog = panel.indexOf('<div class="psec" id="psec-log" role="tabpanel"');
-    const conv = panel.indexOf('<div class="psec-body panel-conv" id="panel-conv">');
+    const conv = panel.indexOf('<ui-conversation class="panel-conv" id="panel-conv" lang="ko">');
     const command = panel.indexOf('<div class="panel-command" id="panel-command">');
     expect(header).toBeGreaterThan(0);
     expect(scroll).toBeGreaterThan(header);
@@ -594,17 +593,11 @@ describe('tone pass P7 — surfaces and elevation', () => {
     expect(TEMPLATE).not.toContain('tooltip-open');
   });
 
-  it('turns carry no colour rail; who spoke is a neutral 24px glyph tile with a hairline — the bot an SVG', () => {
+  it('turns carry no colour rail and no emoji avatar (D3: the turn chrome is <ui-conversation>’s own — neutral tiles, the icon set’s bot)', () => {
     expect(TEMPLATE).not.toMatch(/\.turn\.(user|assistant|is-sys) \{[^}]*border-left/);
-    const tile = rule('.turn-avatar');
-    expect(tile).toContain('width: 24px; height: 24px;');
-    expect(tile).toContain('box-shadow: inset 0 0 0 1px var(--border);');
-    expect(tile).not.toMatch(/var\(--(accent|purple)\)/);
-    expect(TEMPLATE).not.toMatch(/\.(user|bot)-avatar \{[^}]*var\(--(accent|purple)\)/);
+    expect(TEMPLATE).not.toContain('.turn-avatar');
     expect(TEMPLATE).not.toContain('&#x1F916;');
-    expect(
-      TEMPLATE.match(/<div class="turn-avatar bot-avatar" aria-hidden="true">' \+ BOT_AVATAR_SVG \+ '<\/div>/g),
-    ).toHaveLength(3);
+    expect(TEMPLATE).not.toContain('BOT_AVATAR_SVG');
   });
 
   it('the goal mark is the target glyph, not the bullseye emoji', () => {
@@ -688,7 +681,6 @@ describe('tone pass P8 — copy and glyphs', () => {
       'summaryFailed',
       'summaryPending',
       'retry',
-      'retrying',
       'titlePending',
       'titleFailed',
       'error',

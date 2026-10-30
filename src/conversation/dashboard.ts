@@ -3857,6 +3857,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/bar-chart.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/file-card.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/composer.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/conversation.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4219,17 +4220,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* Stats values: a bar where the number will be. */
 .stat-card .value.is-loading { display: inline-block; vertical-align: middle; width: 3.2em; height: 0.9em; border-radius: 6px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
 .stat-card .value.is-loading { width: 64px; height: 22px; }
-/* Panel turns: rows shaped like a user / assistant turn. */
-.sk-turn { margin-bottom: 8px; padding: 8px 10px; border-radius: 10px; display: flex; gap: 10px; align-items: flex-start; border-left: 3px solid var(--ib-pill); }
-.sk-turn.user { background: var(--surface-raised); }
-.sk-turn .sk-avatar { width: 32px; height: 32px; border-radius: 6px; flex-shrink: 0; }
-.sk-turn-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding-top: 2px; }
-.sk-turn .sk-line { height: 10px; }
 .io-row.io-skel { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
 .io-skel .sk-line { height: 10px; }
 .io-skel + .io-skel .sk { animation-delay: 120ms; }
-.sk-turn:nth-child(2) .sk { animation-delay: 120ms; }
-.sk-turn:nth-child(3) .sk { animation-delay: 240ms; }
 
 /* The working ring (the agent tree's running icons, the panel). */
 .spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--ib-pill); border-top-color: var(--st-run); border-right-color: var(--st-run); display: inline-block; animation: spin 0.9s linear infinite; }
@@ -4360,6 +4353,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .io-row { border-radius: 8px; padding: 8px 10px; background: var(--ib-col); min-width: 0; }
 .io-label { font-size: 11px; font-weight: 600; color: var(--ib-muted); margin-bottom: 3px; display: flex; gap: 6px; align-items: baseline; }
 .io-label .io-who { font-weight: 500; letter-spacing: 0; }
+.io-label .io-who.is-sys { color: var(--text-tertiary); }
 .io-text { font-size: 13px; line-height: 1.45; color: var(--ib-text); white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden; }
 .io-text .io-title { font-weight: 600; }
 .io-text.is-muted, .io-muted { color: var(--ib-muted); }
@@ -4943,6 +4937,13 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .psec-tab-tree svg { width: 13px; height: 13px; flex: none; }
 .panel-sections-body { position: relative; height: 60vh; min-height: 160px; }
 .psec { position: relative; height: 100%; overflow-y: auto; scroll-behavior: auto; outline: none; overflow-anchor: none; }
+/* D3 E-25 — a section a library element draws is its own scroll box (<ui-conversation>'s
+   <ui-log-scroller>: the pin, the older-page row, the kept place, the new-items pill):
+   the panel's box only gives it the height. */
+.psec.psec-el { overflow: hidden; display: flex; flex-direction: column; }
+.psec-el > * { flex: 1 1 auto; min-height: 0; }
+.psec-el > ui-conversation { padding: 4px 8px 0; }
+.cv-arts-slot .turn-arts-row { margin-top: 2px; }
 .psec[hidden] { display: none; }
 .psec:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
 .psec-older { display: block; margin: 10px auto 2px; padding: 5px 14px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
@@ -4955,8 +4956,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .psec-pill { position: absolute; left: 50%; bottom: 12px; z-index: 4; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 4px 14px; border: 1px solid var(--ib-text); border-radius: 999px; background: var(--ib-text); color: var(--ib-card); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: var(--ib-shadow-raised); }
 .psec-pill:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .panel-tree { padding: 6px 16px 12px; }
-.panel-conv { padding: 0; }
-.panel-agent-conv { padding: 6px 16px 10px; }
 /* 자세히 (T1.6) — a button that behaves like a toggle (HIG Toggles: outside a list,
    not a switch; the background tells the state); the panel's class gates the
    detail-only parts. */
@@ -5311,37 +5310,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    agent tabs, Tasks and the section tabs scroll together; each section scrolls
    in its own box inside it, and .panel-command stays pinned below. */
 .panel-scroll { flex: 1 1 auto; overflow-y: auto; scroll-behavior: smooth; min-height: 0; }
-.panel-turns { padding: 10px 16px; }
-/* Slack-style turns — no colour rails (P7): the instruction sits on a raised tint, the answer on the
-   panel, and who spoke is a neutral 24px glyph tile with a hairline: the user's initial, the bot glyph. */
-.turn { margin-bottom: 8px; padding: 8px 10px; border-radius: 10px; display: flex; gap: 10px; align-items: flex-start; }
-.turn.user { background: var(--surface-raised); }
-.turn.assistant { background: transparent; }
-.turn-avatar { width: 24px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 600; flex-shrink: 0; background: var(--ib-pill); color: var(--text-secondary); box-shadow: inset 0 0 0 1px var(--border); }
-.turn-avatar svg { width: 14px; height: 14px; }
-.user-avatar { color: var(--text); }
-/* SSOT 2026-10-29 T7: the harness's turns — a neutral gear, never the user's colour or initial. */
-.sys-avatar { background: transparent; }
-.turn-name.sys-name { color: var(--text-secondary); font-weight: 600; }
-.io-label .io-who.is-sys { color: var(--text-tertiary); }
-.turn-body { flex: 1; min-width: 0; }
-.turn-header { font-size: 12px; color: var(--text-tertiary); margin-bottom: 4px; display: flex; gap: 8px; align-items: baseline; }
-.turn-name { font-weight: 600; color: var(--text); font-size: 13px; }
-.turn-time { font-size: 11px; color: var(--text-tertiary); }
-.turn-content { font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
-.turn-instr { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 12; overflow: hidden; cursor: pointer; }
-.turn-instr.is-full, .slide-panel.is-detail .turn-instr { display: block; -webkit-line-clamp: unset; overflow: visible; }
-.turn-summary-title { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
-.turn-summary-body { font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
-/* An assistant turn (task view T1.4): the answer itself — @2lab.ai/ui
-   <ui-ai-answer flat> in the token wrapper (.ui-tok), the turn being its card —
-   then Raw at its foot: the turn's summary and the answer's source as written.
-   .ans-lite is the element's light-DOM line until the library has loaded. */
-.turn-answer { margin-top: 4px; }
-.ans-lite { font-size: 12px; color: var(--text-tertiary); }
-.turn-raw { margin-top: 6px; }
-/* Raw — @2lab.ai/ui <ui-disclosure> (K-06): a quiet row; the element turns the chevron and grows the region. */
-.turn-raw::part(summary) { width: auto; padding: 2px 6px 2px 2px; font-size: 11.5px; font-weight: 500; color: var(--text-tertiary); }
 /* P8: the text triangles are the icon set's chevron (16 grid, 1.5 stroke, round caps), drawn as a mask so
    it takes currentColor; .chev points down, .is-up / .is-right turn it, and a toggle's aria-expanded
    turns it open. */
@@ -5349,32 +5317,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .chev { display: inline-block; flex-shrink: 0; width: 12px; height: 12px; vertical-align: -2px; background: currentColor; -webkit-mask: var(--chev) center / contain no-repeat; mask: var(--chev) center / contain no-repeat; transition: transform var(--dur-press) var(--ease-out); }
 .chev.is-up, [aria-expanded="true"] > .chev { transform: rotate(180deg); }
 .chev.is-right { transform: rotate(-90deg); }
-.turn-raw-body { margin-top: 4px; padding: 8px 10px; border-radius: 8px; background: var(--surface-raised); font-size: 12px; color: var(--text-secondary); }
-.turn-raw-label { font-size: 11px; font-weight: 600; color: var(--text-tertiary); margin: 6px 0 2px; }
-.turn-raw-label:first-child { margin-top: 0; }
-.turn-raw-src { margin: 0; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 11.5px/1.5 var(--mono); color: var(--text-secondary); }
-.turn-raw-src:empty::before { content: '답변이 열리면 원문이 여기에 표시됩니다'; color: var(--text-tertiary); font-family: inherit; }
-/* The answer's response time sits in the turn header (host; the element's own foot time is not used). */
-.turn-header .ans-took { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
-.turn-header .ans-took:empty { display: none; }
-/* SSOT 2026-10-27 — a turn soma-work put there (compact, restart, retry, goal,
-   cron, renew): one quiet line — who · when · badge · what it did — that opens
-   (native disclosure) to its facts and the raw prompt. */
-.turn.is-sys { padding: 3px 10px; background: transparent; }
-.turn.is-sys .turn-avatar { width: 20px; height: 20px; margin-top: 2px; font-size: 11px; border-radius: 6px; }
-.sys-turn { container: sysrow / inline-size; }
-/* A narrow row drops what is said elsewhere, so elapsed / estimate stay whole:
-   "압축 중" (the badge says it) at ≤ 420px — the default 440px drawer's row is
-   ~355px and keeps the name — and the name too (the avatar shows it) at
-   ≤ 340px, a phone's full-width panel. */
-@container sysrow (max-width: 420px) { .cp-verb { display: none; } }
-@container sysrow (max-width: 340px) { .sys-row-in .turn-name { display: none; } }
-@container sysrow (max-width: 280px) { .cp-pct { display: none; } }
-.sys-turn::part(summary) { padding: 2px 6px; font-size: 12px; font-weight: 400; color: var(--text-tertiary); }
-.sys-row-in { display: flex; align-items: center; gap: 8px; min-height: 24px; min-width: 0; font-size: 12px; color: var(--text-tertiary); }
-.sys-row-in .turn-name { font-size: 12px; }
-.sys-row-in .turn-time { flex: none; white-space: nowrap; }
-.sys-row-in .turn-name { flex: none; max-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The kit chip (.ui-chip) with its kind's colour on the word and the hairline. */
 .sys-badge { flex: none; }
 .sys-badge[data-kind="compact"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
@@ -5388,9 +5330,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    so the bar gives way first, then the line truncates from its end. Weights
    stay ≥ 1: below 1 the flex algorithm hands out only that fraction of the
    space and the row would overflow. */
-/* A running line's parts are the row's own flex items: the times never shrink
-   (no sub-pixel ellipsis); only the overdue words take the ellipsis. */
-.turn[data-cp-live] .cp-slot > .sys-line { display: contents; }
 .cp-time { flex: none; white-space: nowrap; }
 .cp-over { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .cp-bar { flex: 0 1000 120px; min-width: 0; max-width: 120px; height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; }
@@ -5413,7 +5352,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .skill-tok { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .skill-detail { margin-top: 6px; }
 .skill-detail-h { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; font-size: 12px; }
-@media (pointer: coarse) { .turn.is-sys .turn-avatar { margin-top: 12px; } .skill-badge { min-height: 44px; } }
+@media (pointer: coarse) { .skill-badge { min-height: 44px; } }
 /* Slack link on cards */
 .slack-link { color: var(--accent); text-decoration: none; font-size: 0.85em; margin-left: 4px; opacity: 0.7; }
 @media (hover: hover) and (pointer: fine) { .slack-link:hover { text-decoration: underline; opacity: 1; } }
@@ -6237,13 +6176,12 @@ ${pageTokenAliases()}
             <p class="psec-start" hidden>작업 로그의 시작</p>
             <div class="psec-body worklog-list" id="worklog-list" role="log" aria-label="작업 로그"></div>
           </div>
-          <div class="psec" id="psec-conv" role="tabpanel" aria-labelledby="psec-tab-conv" tabindex="0">
-            <button type="button" class="psec-older" data-sec="conv" hidden>이전 대화 불러오기</button>
-            <p class="psec-start" hidden>대화의 시작</p>
-            <div class="psec-body panel-conv" id="panel-conv">
-              <div class="panel-agent-conv" id="panel-agent-conv" hidden></div>
-              <div class="panel-turns" id="panel-turns"></div>
-            </div>
+          <!-- 지시와 답변 (D3 G-01..G-13, E-25): @2lab.ai/ui <ui-conversation> — its own scroll box
+               (<ui-log-scroller>: follows the newest turn, keeps the place while older pages go in
+               above, the "new" pill); the dashboard hands it turns (convPaint) and answers
+               ui-load-older / ui-retry. The files beside a turn are its slotted children. -->
+          <div class="psec psec-el ui-tok" id="psec-conv" role="tabpanel" aria-labelledby="psec-tab-conv">
+            <ui-conversation class="panel-conv" id="panel-conv" lang="ko"></ui-conversation>
           </div>
           <!-- New items while the reader is up the list: one press goes to the newest. -->
           <button type="button" class="psec-pill" id="psec-pill" hidden></button>
@@ -6351,8 +6289,6 @@ var STRINGS = {
   summaryFailed: '요약 실패',
   summaryPending: '요약 만드는 중…',
   retry: '다시 시도',
-  retrying: '다시 시도 중…',
-  queued: '요청함',
   titlePending: '부제 만드는 중…',
   titleFailed: '부제를 만들지 못했습니다',
   titleCooldown: '부제를 만들지 못했습니다 — 1분 뒤 다시 시도하세요',
@@ -7788,18 +7724,6 @@ function resolveRecommendedId(explicitId, options) {
   if (explicitId && (options || []).some(function(o) { return o.id === explicitId; })) return explicitId;
   var legacy = (options || []).find(function(o) { return /\\(Recommended(?:\\s*·\\s*\\d+\\/\\d+)?\\)\\s*$/i.test(o.label || ''); });
   return legacy ? legacy.id : null;
-}
-async function resummarize(convId, turnId, btn) {
-  btn.disabled = true;
-  btn.textContent = STRINGS.retrying;
-  try {
-    const res = await fetch('/api/dashboard/session/' + encodeURIComponent(convId) + '/resummarize/' + encodeURIComponent(turnId), { method: 'POST' });
-    if (!res.ok) throw new Error('Failed');
-    btn.textContent = STRINGS.queued;
-  } catch(e) {
-    btn.disabled = false;
-    btn.textContent = STRINGS.retry;
-  }
 }
 function timeAgo(iso) {
   const ms = Date.now() - new Date(iso).getTime();
@@ -9683,7 +9607,7 @@ function bindPanelTabs() {
 }
 
 // 지시와 답변 (T1.3; a section tab since 2026-10-29): the main agent's tab shows
-// the session's turns (paintConvTab); a subagent's tab shows what it was told
+// the session's turns (convPaint); a subagent's tab shows what it was told
 // and what it answered (renderAgentConv).
 // Pure: a subagent's instruction (the call that started it) and its result,
 // from the work log — the latest of each.
@@ -9750,39 +9674,41 @@ function agentConvRetry(seq) {
   delete _agentConvRaw[key];
   renderAgentConv();
 }
-function agentConvHtml(a, io, prompt, answer) {
+// Pure: a subagent's 지시와 답변 as the element's turns — the instruction Main
+// sent (the prompt as sent; its one-line preview when the raw cannot be read)
+// and the answer (ad: agentAnswerData); while it runs with no result, the
+// writing row; without one at all, the agent's own one-line summary.
+function agentConvTurns(agentId, a, io, prompt, answer, ad) {
+  var base = 'agent:' + String(agentId || '');
   var name = a ? agentName(a) : '에이전트';
-  var st = a ? agentStatusOf(a) : 'unknown';
-  var html = '';
+  var turns = [];
   if (io.spawn || (a && a.description)) {
-    // The prompt as sent; its one-line preview when the raw cannot be read (not stored, not this viewer's).
     var said = prompt || (io.spawn ? String(io.spawn.text || '') : '');
-    html += '<div class="turn user"><div class="turn-avatar user-avatar">M</div><div class="turn-body">'
-      + '<div class="turn-header"><span class="turn-name">지시 · Main</span>'
-      + (io.spawn && io.spawn.ts ? '<span class="turn-time">' + esc(formatTaskTime(io.spawn.ts)) + '</span>' : '') + '</div>'
-      + (a && a.description ? '<div class="turn-summary-title">' + esc(a.description) + '</div>' : '')
-      + (said ? '<div class="turn-content agent-prompt">' + esc(said) + '</div>' : '')
-      + '</div></div>';
+    var desc = a && a.description ? String(a.description) : '';
+    var u = { id: base + ':spawn', role: 'user', name: '지시 · Main', text: desc && said && said.indexOf(desc) !== 0 ? desc + '\\n\\n' + said : said || desc };
+    if (io.spawn && toNum(io.spawn.ts) > 0) u.at = toNum(io.spawn.ts);
+    turns.push(u);
   }
-  var body;
+  var r = { id: base + ':result', role: 'assistant', name: name };
+  if (a && a.summary) r.summary = { text: String(a.summary) };
   if (io.result) {
-    // The answer is <ui-ai-answer flat> (its data: agentAnswerData); one read from
-    // its raw names the work-log entry (data-seq: 다시 시도 → agentConvRetry).
-    var seq = io.result.rawBytes ? ' data-seq="' + Math.floor(Number(io.result.seq) || 0) + '"' : '';
-    body = '<div class="turn-answer ui-tok"' + seq + '>' + ansSlotHtml('불러오는 중…') + '</div>';
-    body += '<ui-disclosure class="turn-raw" summary="Raw" flush><div class="turn-raw-body">'
-      + (a && a.summary ? '<div class="turn-raw-label">요약</div><div>' + esc(a.summary) + '</div>' : '')
-      + '<div class="turn-raw-label">원문</div><pre class="turn-raw-src">' + esc(answer || '') + '</pre></div></ui-disclosure>';
-  } else if (st === 'running') {
-    body = '<div class="ui-tok">' + ansSlotHtml('응답 작성 중') + '</div>';
-  } else {
-    body = '<div class="turn-summary-body" style="color:var(--text-tertiary)">' + esc(a && a.summary ? a.summary : '작업 로그에 결과가 없습니다') + '</div>';
+    if (toNum(io.result.ts) > 0) r.at = toNum(io.result.ts);
+    r.markdown = String(ad.markdown || '');
+    if (ad.loading) r.loading = true;
+    if (ad.error) {
+      r.error = String(ad.error);
+      r.canRetry = true;
+    }
+    if (ad.linkTitles && Object.keys(ad.linkTitles).length) r.linkTitles = ad.linkTitles;
+    if (typeof answer === 'string' && answer) r.source = answer;
+    turns.push(r);
+    return { turns: turns, pending: false };
   }
-  html += '<div class="turn assistant"><div class="turn-avatar bot-avatar" aria-hidden="true">' + BOT_AVATAR_SVG + '</div><div class="turn-body">'
-    + '<div class="turn-header"><span class="turn-name">' + esc(name) + '</span>'
-    + '<span class="turn-time">' + esc(AGENT_STATUS_LABEL[st] || '') + '</span></div>'
-    + body + '</div></div>';
-  return html;
+  if (a && agentStatusOf(a) === 'running') return { turns: turns, pending: true };
+  r.markdown = '';
+  if (!r.summary) r.summary = { text: '작업 로그에 결과가 없습니다' };
+  turns.push(r);
+  return { turns: turns, pending: false };
 }
 // Pure: what a subagent's answer element shows — the writing row while it runs
 // (no result yet), loading while its raw is fetched, then the answer (a result
@@ -9802,13 +9728,13 @@ function agentAnswerData(a, io, answer, s, failed) {
   return { markdown: String(shown), linkTitles: ansLinkTitles(s), animate: false };
 }
 // A subagent's 지시와 답변 — painted only while it is the section shown (the main
-// agent's turns are paintConvTab's). Its instruction is the spawn call in the
-// work log: a log window that does not reach back to it yet pages back for it
-// (wlSeekAgentSpawn), so the tab fills without the reader opening 작업 로그.
+// agent's turns are convPaint's), in the same <ui-conversation>. Its instruction
+// is the spawn call in the work log: a log window that does not reach back to it
+// yet pages back for it (wlSeekAgentSpawn), so the tab fills without the reader
+// opening 작업 로그. 다시 시도 on its answer reloads the raw (agentConvRetry).
 function renderAgentConv() {
-  var host = document.getElementById('panel-agent-conv');
-  if (!host || !_panelAgent || _psec !== 'conv') return;
-  host.hidden = false;
+  var el = convEl();
+  if (!el || !_panelAgent || _psec !== 'conv') return;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var a = panelAgentOf(s);
   var io = agentConvEntries(_wl && _wl.entries, _panelAgent, !!(a && a.background));
@@ -9816,10 +9742,20 @@ function renderAgentConv() {
   var prompt = io.spawn && io.spawn.rawBytes ? agentConvRawOf(io.spawn.seq) : null;
   var answer = io.result ? (io.result.rawBytes ? agentConvRawOf(io.result.seq) : String(io.result.text || '')) : null;
   var failed = io.result && io.result.rawBytes ? agentConvFailure(io.result.seq) : '';
-  var html = io.spawn || io.result || a ? agentConvHtml(a, io, prompt != null ? agentPromptOf(prompt) : null, answer) : '<p class="panel-tasks-empty">이 에이전트의 지시와 결과를 찾지 못했습니다</p>';
-  writePanelPart(host, html);
-  var el = host.querySelector('ui-ai-answer');
-  if (el) ansSetData(el, agentAnswerData(a, io, answer, s, failed));
+  var built = io.spawn || io.result || a
+    ? agentConvTurns(_panelAgent, a, io, prompt != null ? agentPromptOf(prompt) : null, answer, agentAnswerData(a, io, answer, s, failed))
+    : { turns: [], pending: false };
+  el._agentSeq = io.result && io.result.rawBytes ? Math.floor(Number(io.result.seq) || 0) : null;
+  convSlots(el, [], '');
+  convSetData(el, {
+    turns: built.turns,
+    pending: built.pending,
+    assistantName: a ? agentName(a) : '에이전트',
+    clampLines: _panelDetail ? 200 : 12,
+    label: '지시와 답변',
+    emptyText: '이 에이전트의 지시와 결과를 찾지 못했습니다',
+    startText: '',
+  });
 }
 // ── Section tabs (SSOT 2026-10-29) — 에이전트 트리 · 작업 로그 · 지시와 답변 ──
 // Inside the focused agent's tab, three section tabs, each with its own scroll
@@ -9834,8 +9770,16 @@ var PSEC_ORDER = ['conv', 'log', 'tree'];
 var PSEC_TEXT = {
   tree: { older: '이전 에이전트 보기', loading: '이전 에이전트 보기', start: '에이전트 트리의 시작' },
   log: { older: '이전 로그 불러오기', loading: '이전 로그 불러오는 중…', start: '작업 로그의 시작' },
-  conv: { older: '이전 대화 불러오기', loading: '이전 대화 불러오는 중…', start: '대화의 시작' },
 };
+// The sections a library element draws as its own scroll box — it lands on the
+// newest item, follows it, pages older ones in on scroll-up (ui-load-older →
+// this page's loader), keeps the reader's place and says what arrived below:
+// 지시와 답변 (<ui-conversation>). The others are this page's boxes (psecBox).
+var PSEC_EL = { conv: 'panel-conv' };
+function psecEl(sec) {
+  var id = PSEC_EL[sec || _psec];
+  return id ? document.getElementById(id) : null;
+}
 var PANEL_TURNS_PAGE = 20; // turns per page of 지시와 답변
 var AT_PANEL_WINDOW = 20; // agents per step of 에이전트 트리
 var _psec = 'conv'; // the section tab shown
@@ -9932,13 +9876,10 @@ function renderPanelSections() {
 function psecClear(sec) {
   if (sec === 'conv') {
     if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
-    var turns = document.getElementById('panel-turns');
-    var host = document.getElementById('panel-agent-conv');
-    if (turns && turns.firstChild) turns.innerHTML = '';
-    if (host) {
-      if (host.firstChild) host.innerHTML = '';
-      host._html = '';
-      host.hidden = true;
+    var conv = convEl();
+    if (conv) {
+      convSlots(conv, [], '');
+      convSetData(conv, { turns: [] });
     }
   } else if (sec === 'log') {
     var list = document.getElementById('worklog-list');
@@ -9958,7 +9899,7 @@ function psecClear(sec) {
   psecSyncControls(sec);
 }
 function paintSection(sec) {
-  if (sec === 'conv') paintConvTab();
+  if (sec === 'conv') convPaint();
   else if (sec === 'log') paintLogTab();
   else paintTreeTab();
   psecSyncControls(sec);
@@ -9989,6 +9930,11 @@ function psecToNewest() {
   var box = psecBox();
   _psecPin = true;
   psecSetNew(0);
+  var el = psecEl();
+  if (el) {
+    if (typeof el.scrollToLatest === 'function') el.scrollToLatest({ smooth: false });
+    return;
+  }
   if (!box) return;
   psecSetTop(box, box.scrollHeight);
   box._armed = false;
@@ -10025,12 +9971,12 @@ function psecOnAppended(n, pinned) {
 function psecKeepPlace(box, fromBottom) {
   if (box) psecSetTop(box, box.scrollHeight - fromBottom);
 }
-// The items the reader is on — the first few turns, work-log entries (else task
+// The items the reader is on — the first few work-log entries (else task
 // groups) or agent-tree rows in view, those wholly below the top edge first (the
 // one the edge cuts may still grow: an answer loading), top first — and how far
 // below the box top each sits (null: none in view). Several: a page can take one
 // away (a loose result paired into its call's card, an entry folded into its group).
-var PSEC_ANCHORS = [['.turn', 'data-turn-id'], ['.wl-entry', 'data-seq'], ['.wl-group', 'data-task-id']];
+var PSEC_ANCHORS = [['.wl-entry', 'data-seq'], ['.wl-group', 'data-task-id']];
 var PSEC_ANCHOR_MAX = 6;
 // The 에이전트 트리 tab's rows live in <ui-agent-tree>'s (open) shadow root.
 function psecTreeRoot(box) {
@@ -10105,13 +10051,9 @@ function psecHoldPlace(box, anchor, fromBottom) {
 }
 // What the top of a section shows: 'older' (a control: older items exist),
 // 'loading' (the control says the page is on its way), 'start' (everything is
-// shown), or '' (nothing — loading, empty, a subagent's 지시와 답변).
+// shown), or '' (nothing — loading, empty, a section an element draws).
 function psecOlderState(sec) {
-  if (sec === 'conv') {
-    if (_panelAgent || !_panelTurnsList.length) return '';
-    if (_panelTurnsLoading) return 'loading';
-    return _panelTurnsHasMore ? 'older' : 'start';
-  }
+  if (PSEC_EL[sec]) return '';
   if (sec === 'log') {
     var st = _wl;
     if (!st || !st.loaded || !st.latestOk || st.denied) return '';
@@ -10143,8 +10085,7 @@ function psecSyncControls(sec) {
 // scroll; one at a time, nothing at the start.
 function psecLoadOlder(sec) {
   if (sec !== _psec || psecOlderState(sec) !== 'older') return;
-  if (sec === 'conv') loadMorePanelTurns();
-  else if (sec === 'log') loadOlderWorkLog();
+  if (sec === 'log') loadOlderWorkLog();
   else showMoreTree();
 }
 // Pure: whether the next older page is due — the box cannot scroll (the reader
@@ -10159,7 +10100,7 @@ function psecPageDue(scrollTop, scrollHeight, clientHeight, armed) {
 // is due — so a page that still leaves the top near the view brings the next.
 function psecMaybeFill(sec) {
   var box = psecBox(sec);
-  if (!box || sec !== _psec || box.hidden) return;
+  if (!box || PSEC_EL[sec] || sec !== _psec || box.hidden) return;
   if (!psecPageDue(box.scrollTop, box.scrollHeight, box.clientHeight, box._armed)) return;
   if (psecOlderState(sec) === 'older') psecLoadOlder(sec);
 }
@@ -10194,7 +10135,8 @@ function sizePanelSections() {
 var _panelTurnsList = [];
 var _panelTurnsCid = '';
 var _panelTurnsMsg = ''; // 'loading' | 'none' | 'failed' | 'unrecorded' | '' (the turns)
-var PANEL_TURNS_MSG = { none: 'No conversation turns', failed: 'Failed to load conversation', unrecorded: 'No conversation recorded' };
+var _panelTurnsWhy = ''; // why the first page failed (the element's error)
+var _panelOlderWhy = ''; // why the last older page failed ('' = it did not)
 // Pure: a turn into the list — in place of the one with its id (or replaceId:
 // an optimistic turn the server's took over), else at the end.
 function ptUpsert(list, turn, replaceId) {
@@ -10209,40 +10151,6 @@ function ptUpsert(list, turn, replaceId) {
   }
   list.push(turn);
   return 'append';
-}
-// 지시와 답변 painted from its data: the main agent's turns, or a subagent's
-// instruction and answer (renderAgentConv).
-function paintConvTab() {
-  var turnsEl = document.getElementById('panel-turns');
-  var host = document.getElementById('panel-agent-conv');
-  if (!turnsEl || !host || _psec !== 'conv') return;
-  if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
-  if (_panelAgent) {
-    if (turnsEl.firstChild) turnsEl.innerHTML = '';
-    turnsEl.removeAttribute('aria-busy');
-    turnsEl.hidden = true;
-    renderAgentConv();
-    return;
-  }
-  if (host.firstChild) host.innerHTML = '';
-  host._html = '';
-  host.hidden = true;
-  turnsEl.hidden = false;
-  if (_panelTurnsMsg === 'loading') {
-    turnsEl.innerHTML = turnsSkeletonHtml();
-    turnsEl.setAttribute('aria-busy', 'true');
-    return;
-  }
-  turnsEl.removeAttribute('aria-busy');
-  if (!_panelTurnsList.length) {
-    turnsEl.innerHTML = '<p style="color:var(--text-secondary);text-align:center;margin-top:40px">' + esc(PANEL_TURNS_MSG[_panelTurnsMsg] || PANEL_TURNS_MSG.none) + '</p>';
-    return;
-  }
-  var list = _panelTurnsList;
-  var cid = _panelTurnsCid;
-  turnsEl.innerHTML = list.map(function(t, i) { return renderTurn(t, i, list, cid); }).join('');
-  attachRawToggleHandlers();
-  decoratePanelTurns();
 }
 // 작업 로그 painted from the work-log state — the entries loaded (the latest
 // window and the older pages the reader scrolled up to) — or what it says without them.
@@ -10354,7 +10262,7 @@ function loadOlderWorkLog() {
   if (pill) pill.addEventListener('click', psecJumpNewest);
   PSEC_ORDER.forEach(function(sec) {
     var box = document.getElementById('psec-' + sec);
-    if (!box) return;
+    if (!box || PSEC_EL[sec]) return;
     var btn = box.querySelector('.psec-older');
     if (btn) btn.addEventListener('click', function() { psecLoadOlder(sec); });
     // The reader acting on a row (an entry's detail, a Raw, a fold) changes the
@@ -10402,7 +10310,7 @@ function loadOlderWorkLog() {
       else if (box._anchor) psecRestoreAnchor(box, box._anchor);
     });
     PSEC_ORDER.forEach(function(sec) {
-      var box = document.getElementById('psec-' + sec);
+      var box = PSEC_EL[sec] ? null : document.getElementById('psec-' + sec);
       var body = box ? box.querySelector('.psec-body') : null;
       if (body) pin.observe(body);
       if (box) pin.observe(box);
@@ -10431,7 +10339,7 @@ function repaintPanelSession() {
   renderPanelControls(s);
   renderPanelComposer(s);
   repaintPanelScope();
-  syncAnsPending(); // re-ai-answer D12 — the 응답 작성 중 row follows the session state
+  convPaint(); // re-ai-answer D12 — the 응답 작성 중 row (and a /compact's progress) follow the session state
   restorePanelLiveAnchor(anchor);
 }
 // The reader's place across a live repaint: the anchor a layout shift keeps
@@ -13401,33 +13309,20 @@ function connectWs() {
               && (msg.turn.rawContent || '').trim() === _lastSentContent.trim()) {
             _lastSentContent = '';
             _lastSentTime = 0;
-            // Remove pending style from optimistic turn if present
-            var pending = document.querySelector('.turn.user[style*="opacity"]');
-            if (pending) pending.style.opacity = '';
             // The server's turn takes over the optimistic one, so a later push for
-            // it (a /compact result, SSOT 2026-10-27) finds it by its real id —
-            // on the list, or in 지시와 답변's data while another section is shown.
-            var opts = document.querySelectorAll('#panel-turns .turn.user[data-turn-id^="optimistic-"]');
-            var optEl = opts.length ? opts[opts.length - 1] : null;
-            if (optEl && msg.turn.id) updateTurnInPanel(optEl, msg.turn);
-            else if (msg.turn.id) {
+            // it (a /compact result, SSOT 2026-10-27) finds it by its real id.
+            if (msg.turn.id) {
               var optId = '';
               for (var oi = _panelTurnsList.length - 1; oi >= 0 && !optId; oi--) {
                 var ot = _panelTurnsList[oi];
                 if (ot && ot._optimistic && String(ot.id || '').indexOf('optimistic-') === 0) optId = ot.id;
               }
-              if (optId) ptUpsert(_panelTurnsList, msg.turn, optId);
+              if (optId) appendTurnToPanel(msg.turn, false, optId);
             }
           } else {
-            // Check if this turn already exists (e.g., summary update for existing assistant turn).
-            // If so, replace in-place instead of appending a duplicate (appendTurnToPanel
-            // updates 지시와 답변's data in place for a turn not on the list).
-            var existingTurn = msg.turn.id ? document.querySelector('[data-turn-id="' + CSS.escape(msg.turn.id) + '"]') : null;
-            if (existingTurn) {
-              updateTurnInPanel(existingTurn, msg.turn);
-            } else {
-              appendTurnToPanel(msg.turn);
-            }
+            // A turn already held (a summary landing on its answer) is updated in
+            // place in 지시와 답변's data; a new one goes at the end.
+            appendTurnToPanel(msg.turn);
           }
         }
       } else if (msg.type === 'session_action') {
@@ -15028,6 +14923,8 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   _panelTurnsList = [];
   _panelTurnsCid = '';
   _panelTurnsMsg = s.conversationId ? 'loading' : 'unrecorded';
+  _panelTurnsWhy = '';
+  _panelOlderWhy = '';
 
   panelSessionKey = sessionKey;
   panelConvId = s.conversationId || null;
@@ -15041,6 +14938,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   resetPanelSections();
   _agentConvRaw = Object.create(null);
   _agentConvFailed = Object.create(null);
+  _ansFailed = Object.create(null);
   // The previous opening's answers are gone from the list: stop watching them.
   if (_ansIo) { _ansIo.disconnect(); _ansIo = null; }
   _panelOnQuestion = false;
@@ -15085,56 +14983,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   landPanel(); // the answer form is in view while the turns load
 
   // 지시와 답변: the latest PANEL_TURNS_PAGE turns; older pages as the reader scrolls up.
-  if (s.conversationId) {
-    _panelTurnsLoading = true;
-    var loadingConvId = s.conversationId;
-    var loadingGen = _panelGen;
-    fetch('/api/dashboard/session/' + encodeURIComponent(loadingConvId) + '?limit=' + PANEL_TURNS_PAGE)
-      .then(function(r) { return r.json(); })
-      .then(function(data) {
-        // If the panel was switched, closed or reopened while loading, discard this result.
-        if (loadingGen !== _panelGen) return;
-
-        // Handle titleSub
-        var tSubText = document.getElementById('panel-title-sub-text');
-        var tSubBtn = document.getElementById('panel-title-sub-regen');
-        if (data.titleSub) {
-          _panelTitleSub = data.titleSub;
-          tSubText.textContent = data.titleSub;
-          tSubBtn.style.display = panelTitleSubCanRegen() ? 'inline-block' : 'none';
-        } else if (loadingConvId) {
-          generateTitleSub(loadingConvId, false); // fill: allowed for every signed-in viewer
-        }
-
-        var turns = (data && data.turns) || [];
-        // A turn pushed while the page loaded (WS) and not in it stays, after it.
-        var pushed = _panelTurnsList;
-        _panelTurnsList = turns.slice();
-        for (var i = 0; i < pushed.length; i++) ptUpsert(_panelTurnsList, pushed[i]);
-        _panelTurnsCid = data.id || loadingConvId;
-        _panelTurnsHasMore = turns.length > 0 && !!data.hasMore;
-        _panelTurnsOldestId = turns.length ? turns[0].id : null;
-        _panelTurnsMsg = _panelTurnsList.length ? '' : 'none';
-        _panelTurnsLoading = false;
-        if (_psec === 'conv') {
-          paintConvTab();
-          psecSyncControls('conv');
-          psecToNewest();
-          psecMaybeFill('conv');
-        }
-        landPanel();
-      })
-      .catch(function() {
-        if (loadingGen !== _panelGen) return;
-        _panelTurnsLoading = false;
-        _panelTurnsMsg = _panelTurnsList.length ? '' : 'failed';
-        if (_psec === 'conv') {
-          paintConvTab();
-          psecSyncControls('conv');
-        }
-        landPanel();
-      });
-  }
+  loadPanelTurns(true);
 
   // Command input — always visible; disabled + hint for terminated / sleeping
   // sessions, or when viewer is not the session owner (#708 read-only mode).
@@ -15279,6 +15128,62 @@ function focusPanelLanding() {
   if (t && t.focus) t.focus({ preventScroll: true });
 }
 
+// 지시와 답변's first page: the latest PANEL_TURNS_PAGE turns of the open
+// session (older pages come as the reader scrolls up). land: the panel lands
+// once they are in (an opening); a Try again on a failed load does not.
+function loadPanelTurns(land) {
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  if (!s || !s.conversationId) return;
+  _panelTurnsLoading = true;
+  _panelTurnsWhy = '';
+  var loadingConvId = s.conversationId;
+  var loadingGen = _panelGen;
+  fetch('/api/dashboard/session/' + encodeURIComponent(loadingConvId) + '?limit=' + PANEL_TURNS_PAGE)
+    .then(function(r) {
+      if (r && r.ok === false) throw new Error('HTTP ' + r.status);
+      return r.json();
+    })
+    .then(function(data) {
+      // If the panel was switched, closed or reopened while loading, discard this result.
+      if (loadingGen !== _panelGen) return;
+
+      // Handle titleSub
+      var tSubText = document.getElementById('panel-title-sub-text');
+      var tSubBtn = document.getElementById('panel-title-sub-regen');
+      if (data.titleSub) {
+        _panelTitleSub = data.titleSub;
+        tSubText.textContent = data.titleSub;
+        tSubBtn.style.display = panelTitleSubCanRegen() ? 'inline-block' : 'none';
+      } else if (loadingConvId) {
+        generateTitleSub(loadingConvId, false); // fill: allowed for every signed-in viewer
+      }
+
+      var turns = (data && data.turns) || [];
+      // A turn pushed while the page loaded (WS) and not in it stays, after it.
+      var pushed = _panelTurnsList;
+      _panelTurnsList = turns.slice();
+      for (var i = 0; i < pushed.length; i++) ptUpsert(_panelTurnsList, pushed[i]);
+      _panelTurnsCid = data.id || loadingConvId;
+      _panelTurnsHasMore = turns.length > 0 && !!data.hasMore;
+      _panelTurnsOldestId = turns.length ? turns[0].id : null;
+      _panelTurnsMsg = _panelTurnsList.length ? '' : 'none';
+      _panelTurnsLoading = false;
+      if (_psec === 'conv') {
+        convPaint();
+        psecToNewest();
+      }
+      if (land) landPanel();
+    })
+    .catch(function(err) {
+      if (loadingGen !== _panelGen) return;
+      _panelTurnsLoading = false;
+      _panelTurnsMsg = _panelTurnsList.length ? '' : 'failed';
+      _panelTurnsWhy = String((err && err.message) || '네트워크 오류');
+      if (_psec === 'conv') convPaint();
+      if (land) landPanel();
+    });
+}
+
 // ── Pagination state for 지시와 답변 (recent-first; older pages on scroll up) ──
 var _panelTurnsHasMore = false;
 var _panelTurnsLoading = false;
@@ -15297,69 +15202,46 @@ function panelScrollAnchor(scrollEl) {
   return null;
 }
 
-// The page of turns before the oldest one held — the reader scrolling up in
-// 지시와 답변 (or its top control). The turns go in above the reader, who keeps
-// their place (measured from the bottom of the box).
+// The page of turns before the oldest one held — the element asks for it as the
+// reader scrolls up in 지시와 답변 (ui-load-older; its top row is the keyboard
+// path). The turns go in above the reader, who keeps their place (the element
+// holds the rows they were on); a page that fails says so above the turns with
+// 다시 시도, and the element waits for the reader before asking again.
 async function loadMorePanelTurns() {
   if (_panelTurnsLoading || !_panelTurnsHasMore || !panelConvId || !_panelTurnsOldestId) return;
   _panelTurnsLoading = true;
+  _panelOlderWhy = '';
   var requestConvId = panelConvId;
   var requestGen = _panelGen; // this panel opening; any switch/close/reopen makes it stale
   var requestOldestId = _panelTurnsOldestId;
-  psecSyncControls('conv'); // 이전 대화 불러오는 중…
-  var ok = false;
+  convPaint(); // 이전 대화 불러오는 중…
   try {
     var url = '/api/dashboard/session/' + encodeURIComponent(requestConvId)
       + '?limit=' + PANEL_TURNS_PAGE + '&before=' + encodeURIComponent(requestOldestId);
     var r = await fetch(url);
+    if (r && r.ok === false) throw new Error('HTTP ' + r.status);
     var data = await r.json();
     // Discard a stale response: the panel was switched, closed or reopened
     // (same session included) while this request was in flight.
     if (requestGen !== _panelGen) return;
-    ok = true;
     var turns = (data && data.turns) || [];
     _panelTurnsHasMore = turns.length > 0 && !!data.hasMore;
     if (turns.length) {
       _panelTurnsOldestId = turns[0].id;
       _panelTurnsList = turns.concat(_panelTurnsList);
     }
-    _panelTurnsLoading = false;
-    var box = psecBox('conv');
-    var turnsEl = document.getElementById('panel-turns');
-    if (turns.length && _psec === 'conv' && !_panelAgent && box && turnsEl) {
-      var fromBottom = box.scrollHeight - box.scrollTop;
-      var anchor = psecViewAnchor(box);
-      var cid = data.id || requestConvId;
-      turnsEl.insertAdjacentHTML('afterbegin', turns.map(function(t, i, arr) { return renderTurn(t, i, arr, cid); }).join(''));
-      attachRawToggleHandlers();
-      decoratePanelTurns();
-      psecSyncControls('conv');
-      psecHoldPlace(box, anchor, fromBottom);
-    }
   } catch (err) {
     if (requestGen !== _panelGen) return;
+    _panelOlderWhy = String((err && err.message) || '네트워크 오류');
     console.error('loadMorePanelTurns failed', err);
   } finally {
     // Only the current generation owns the in-flight flag; a stale request
     // settling must not clear the flag of the load that replaced it.
     if (requestGen === _panelGen) {
       _panelTurnsLoading = false;
-      psecSyncControls('conv');
-      // A box still too short to scroll takes the next page; a failure waits for the reader.
-      if (ok) psecMaybeFill('conv');
+      convPaint();
     }
   }
-}
-
-// The turns while they load: rows shaped like a user / assistant / user turn
-// (spec: skeletons, not a "Loading..." line). Decorative — the list carries
-// aria-busy while it loads.
-function turnsSkeletonHtml() {
-  function row(role, a, b) {
-    return '<div class="sk-turn ' + role + '"><div class="sk sk-avatar"></div><div class="sk-turn-body">'
-      + '<div class="sk sk-line" style="width:' + a + '%"></div><div class="sk sk-line" style="width:' + b + '%"></div></div></div>';
-  }
-  return '<div class="sk-turns" aria-hidden="true">' + row('user', 38, 72) + row('assistant', 46, 88) + row('user', 30, 64) + '</div>';
 }
 
 // ── Turns the user did not type (SSOT 2026-10-27 T1–T5) ──
@@ -15499,11 +15381,15 @@ function cpProgressHtml(elapsed, est) {
 // The one line of a /compact turn: progress while it runs, its numbers once done.
 function cpLineHtml(info, st, now) {
   if (st.phase === 'live') return cpProgressHtml((now || Date.now()) - st.start, st.est);
+  return '<span class="sys-line">' + esc(cpDoneText(info, st)) + '</span>';
+}
+// Pure: a /compact that is not running, in words — its numbers once done.
+function cpDoneText(info, st) {
   var parts = [info.label + ' 처리'];
   var c = st.c;
   if (st.phase === 'done' && c.preTokens != null && c.postTokens != null) parts.push(formatTokens(c.preTokens) + ' → ' + formatTokens(c.postTokens) + ' 토큰');
   if (st.phase === 'done' && toNum(c.durationMs) > 0) parts.push(formatDuration(c.durationMs));
-  return '<span class="sys-line">' + esc(parts.join(' · ')) + '</span>';
+  return parts.join(' · ');
 }
 function cpFacts(st) {
   var c = st.c;
@@ -15525,72 +15411,23 @@ function sysFactsHtml(facts) {
     return '<dt>' + esc(f[0]) + '</dt><dd' + (f[2] ? ' class="' + f[2] + '"' : '') + '>' + esc(f[1]) + '</dd>';
   }).join('') + '</dl>';
 }
-// One line: who · when · badge · what it did. Opens (a native disclosure) to its
-// facts and the raw prompt.
-// SSOT 2026-10-29 T7: a turn the harness sent (goal continuation, background
-// resume, cron, restart, auto-compact …) is not the user's — it reads as System,
-// with its own avatar, never the user's name and initial.
-// P7: the 2lab icon set's bot and target glyphs (16 grid, 1.5 stroke, round caps, currentColor) — the
-// answer tile and the goal mark, in place of the robot and bullseye emoji.
-var BOT_AVATAR_SVG = '<i data-ui-icon="bot"></i>';
-var SYS_AVATAR_SVG = '<i data-ui-icon="gear"></i>';
-function renderSysTurn(t, info, attrs, time, initial, now, notLast, mediaHtml) {
-  var st = info.kind === 'compact' ? cpState(t, now, notLast) : null;
-  var live = st && st.phase === 'live';
-  var facts = st ? info.facts.concat(cpFacts(st)) : info.facts;
-  var line = st ? '<span class="cp-slot">' + cpLineHtml(info, st, now) + '</span>' : '<span class="sys-line">' + esc(info.line) + '</span>';
-  if (live) cpEnsureTicker();
-  return '<div class="turn user is-sys" data-sys="' + info.kind + '"' + attrs
-    + (live ? ' data-cp-live="1" data-cp-start="' + st.start + '" data-cp-est="' + st.est + '"' : '') + '>'
-    + '<div class="turn-avatar sys-avatar" aria-hidden="true">' + SYS_AVATAR_SVG + '</div>'
-    + '<div class="turn-body"><ui-disclosure class="sys-turn" flush><span slot="summary" class="sys-row-in">'
-    + '<span class="turn-name sys-name"' + (t.userName ? ' title="' + escAttr('하네스가 보낸 입력 — ' + t.userName + '의 세션') + '"' : '') + '>System</span><span class="turn-time">' + esc(time) + '</span>'
-    + '<span class="ui-chip sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>' + line
-    + '</span><div class="sys-detail">' + (mediaHtml || '') + sysFactsHtml(facts)
-    + '<div class="sys-raw-h">원본 프롬프트</div><pre class="sys-raw">' + esc(info.raw) + '</pre></div></ui-disclosure></div></div>';
-}
 function cpEnsureTicker() {
   if (_cpTimer || typeof setInterval !== 'function') return;
   _cpTimer = setInterval(cpTick, 1000);
 }
-// Every second while a compaction runs in the open panel: its elapsed time and
-// progress. It stops being live once a later turn landed, the session stopped
-// working, or it outlived any compaction — then it says no result was kept.
+// Every second while a compaction runs in an open card: its elapsed time and
+// progress. It stops being live once the session stopped working, or it
+// outlived any compaction — then it says no result was kept.
 function cpTick() {
-  var nodes = document.querySelectorAll('#panel-turns .turn[data-cp-live]');
   // An open inbox card's 응답 (ioCompactOutHtml): live while its session works.
+  // (지시와 답변's own /compact row ticks inside <ui-conversation>.)
   var cardNodes = document.querySelectorAll('.card-io [data-cp-live]');
-  if (!nodes.length && !cardNodes.length) {
+  if (!cardNodes.length) {
     clearInterval(_cpTimer);
     _cpTimer = 0;
     return;
   }
-  // Turns only: the 응답 작성 중 row (.ans-pending, no data-ts) follows a running
-  // /compact as the list's last child (syncAnsPending reads turns the same way).
-  var all = document.querySelectorAll('#panel-turns > .turn[data-ts]');
-  var last = all.length ? all[all.length - 1] : null;
-  // The board refills the cache in one pass: a session missing from a loaded
-  // board is not running; before the board's first load it is undecided.
-  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  var boardLoaded = Object.keys(_sessionCache).length > 0;
-  var working = s ? s.activityState === 'working' : !boardLoaded;
   var now = Date.now();
-  for (var i = 0; i < nodes.length; i++) {
-    var node = nodes[i];
-    var start = toNum(node.getAttribute('data-cp-start'));
-    var est = toNum(node.getAttribute('data-cp-est')) || CP_DEFAULT_EST_MS;
-    var slot = node.querySelector('.cp-slot');
-    if (node === last && working && now - start < CP_MAX_MS) {
-      if (slot) slot.innerHTML = cpProgressHtml(now - start, est);
-      continue;
-    }
-    // Ended without a result: the line and 상태 a fresh render of it shows.
-    node.removeAttribute('data-cp-live');
-    var badge = node.querySelector('.sys-badge');
-    var state = node.querySelector('.cp-state');
-    if (slot) slot.innerHTML = '<span class="sys-line">' + esc((badge ? badge.textContent : '압축') + ' 처리') + '</span>';
-    if (state) state.textContent = '결과 기록 없음';
-  }
   for (var j = 0; j < cardNodes.length; j++) {
     var cn = cardNodes[j];
     var card = cn.closest ? cn.closest('.card-slot[data-session-key]') : null;
@@ -15712,169 +15549,283 @@ function skillPaneHtml(sk) {
 function botNameOf(s) {
   return (s && s.botName) || BOT_NAME || 'Assistant';
 }
-function renderTurn(t, _idx, _arr, convId) {
-  const time = new Date(t.timestamp).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit' });
-  const initial = (t.userName || 'U').charAt(0).toUpperCase();
-  var turnIdAttr = (t.id ? ' data-turn-id="' + esc(t.id) + '"' : '') + ' data-ts="' + toNum(t.timestamp) + '"';
-  if (t.role === 'user') {
-    // User media (SSOT 2026-10-25): the files sit above the words, as chat apps
-    // show an attachment with its message; a files-only turn has no empty text.
-    var umCid = convId || panelConvId;
-    var atts = Array.isArray(t.attachments) ? t.attachments : [];
-    if (atts.length) umRegister(umCid, atts, t);
-    var mediaHtml = atts.length ? renderUserMedia(umCid, atts) : '';
-    // SSOT 2026-10-27 T1 — a turn soma-work put there reads as one line; its
-    // files (the message the auto-compact intercepted) open with it. A batch
-    // tells whether a later turn follows (then a /compact is not running).
-    var sys = sysTurnInfo(t);
-    if (sys) return renderSysTurn(t, sys, turnIdAttr, time, initial, 0, !!(_arr && typeof _idx === 'number' && _idx < _arr.length - 1), mediaHtml);
-    // T5 — an <invoked_skills> block becomes badges under the words.
-    var said = splitInvokedSkills(decodeSlackEntities(t.rawContent || ''));
-    // Task view T1.3: the whole instruction — a long one folds to 12 lines until
-    // clicked (자세히 shows it whole).
-    var textHtml = said.text
-      ? '<div class="turn-content turn-instr" role="button" tabindex="0" title="눌러서 펼치기 · 접기" onclick="this.classList.toggle(\\'is-full\\')" onkeydown="if(event.key===\\'Enter\\'||event.key===\\' \\'){event.preventDefault();this.classList.toggle(\\'is-full\\')}">' + esc(said.text) + '</div>'
-      : '';
-    return '<div class="turn user"' + turnIdAttr + '>'
-      + '<div class="turn-avatar user-avatar">' + esc(initial) + '</div>'
-      + '<div class="turn-body">'
-      + '<div class="turn-header"><span class="turn-name">' + esc(t.userName || 'User') + '</span><span class="turn-time">' + time + '</span></div>'
-      + mediaHtml + textHtml + skillBadgesHtml(t.id, said.skills)
-      + '</div></div>';
-  } else {
-    const title = t.summaryTitle ? '<div class="turn-summary-title">' + esc(t.summaryTitle) + '</div>' : '';
-    var body;
-    if (t.summaryBody) {
-      body = '<div class="turn-summary-body">' + esc(t.summaryBody) + '</div>';
-    } else if (t.summarized) {
-      body = '<div class="turn-summary-body" style="color:var(--text-tertiary);font-style:italic">' + STRINGS.summaryFailed + ' <button type="button" class="ui-btn is-sm" style="margin-left:8px" onclick="event.stopPropagation();resummarize(\\'' + escJs(convId || panelConvId) + '\\',\\'' + escJs(t.id) + '\\',this)">' + STRINGS.retry + '</button></div>';
+// ── 지시와 답변 — @2lab.ai/ui <ui-conversation> (D3: G-01..G-13, E-25) ──
+// The section's turns are the library element's: the instruction (clamped,
+// the media above it, the skills it invoked as chips), the answer (a nested
+// <ui-ai-answer flat>, its response time in the head, Raw: summary · source),
+// a turn soma-work put there (one line + badge that opens to its facts and the
+// raw prompt; a running /compact's progress ticking in place), the writing row,
+// and the scroll box itself (<ui-log-scroller>: it follows the newest turn,
+// keeps the reader's place while an older page goes in above, and counts what
+// arrived below). The dashboard keeps the data — the pages it fetched
+// (_panelTurnsList), the answers it loaded (_rawLoadedCache), the files of each
+// turn — hands the element turns built from it (convPaint), and answers its
+// requests: ui-load-older → loadMorePanelTurns, ui-retry → the answer (or the
+// page) again.
+function convEl() {
+  return document.getElementById('panel-conv');
+}
+// What the list says without turns (G-13: in Korean, the element's own empty state).
+var CONV_EMPTY = { none: '아직 대화가 없습니다', unrecorded: '기록된 대화가 없습니다' };
+// Pure: the turn's summary — the heading of an answer that is empty or failed,
+// and Raw's 요약 view: its title and body, else that it is still being made or failed.
+function convSummaryOf(t) {
+  var title = t && t.summaryTitle ? String(t.summaryTitle) : '';
+  var text = t && t.summaryBody ? String(t.summaryBody) : t && t.summarized ? STRINGS.summaryFailed : STRINGS.summaryPending;
+  var out = {};
+  if (title) out.title = title;
+  if (text) out.text = text;
+  return out;
+}
+// Pure: a turn soma-work put there (sysTurnInfo) as the element's system turn —
+// its badge (kind + label), one line, the facts and the raw prompt. A /compact
+// still running (the latest turn of a working session, younger than a
+// compaction can run) carries its progress; once done, its numbers.
+function convSysTurn(t, info, id, at, c, notLast) {
+  var x = { id: id, role: 'system', name: 'System', kind: info.kind === 'bgwork' ? 'background' : info.kind, label: info.label, text: info.line };
+  if (at) x.at = at;
+  var facts = info.facts;
+  if (info.kind === 'compact') {
+    var st = cpState(t, c.now, notLast);
+    if (st.phase === 'live' && !c.working) st.phase = 'unknown';
+    facts = facts.concat(cpFacts(st));
+    if (st.phase === 'live') x.progress = { startedAt: st.start, estimateMs: st.est, verb: '압축 중…' };
+    else x.text = cpDoneText(info, st);
+  }
+  // The files the turn carried (the message an auto-compact intercepted): a
+  // system turn has no media slot in the element (D3-GAPS G1-2) — their names.
+  var atts = Array.isArray(t.attachments) ? t.attachments.filter(function(f) { return f && f.id; }) : [];
+  if (atts.length) facts = facts.concat([['첨부 파일', atts.map(function(f) { return String(f.name || f.id); }).join(', ')]]);
+  if (facts.length) x.facts = facts.map(function(f) { return [String(f[0]), String(f[1])]; });
+  if (info.raw) x.raw = String(info.raw);
+  return x;
+}
+// Pure: the element's turns for the main agent's turns (oldest first), and the
+// slotted children they ask for — a user's files (media-<id>) and the files an
+// answer produced (attachments-<id>: an artifact goes to the first answer whose
+// turn window holds its turn start). c: { cid, bot, now, working, answers
+// (cache key → raw), failed (cache key → why), arts, titles }.
+function convTurnsOf(list, c) {
+  var turns = [];
+  var slots = [];
+  var used = Object.create(null);
+  var start = 0;
+  for (var i = 0; i < list.length; i++) {
+    var t = list[i];
+    if (!t) continue;
+    var ts = toNum(t.timestamp);
+    var id = String(t.id || (t.role + ':' + ts + ':' + i));
+    var at = ts > 0 ? ts : 0;
+    var prev = i > 0 ? list[i - 1] : null;
+    if (t.role === 'user') {
+      var atts = Array.isArray(t.attachments) ? t.attachments.filter(function(a) { return a && a.id; }) : [];
+      var sys = sysTurnInfo(t);
+      if (sys) turns.push(convSysTurn(t, sys, id, at, c, i < list.length - 1));
+      else {
+        var said = splitInvokedSkills(decodeSlackEntities(t.rawContent || ''));
+        var u = { id: id, role: 'user', name: String(t.userName || 'User'), text: said.text };
+        if (at) u.at = at;
+        if (atts.length) {
+          u.media = true;
+          slots.push({ name: 'media-' + id, kind: 'media', list: atts, turn: t });
+        }
+        if (said.skills.length) u.skills = said.skills.map(function(sk) { return { name: sk.name, tokens: sk.tokens, text: sk.body }; });
+        turns.push(u);
+      }
     } else {
-      body = '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">' + STRINGS.summaryPending + '</div>';
+      var a = { id: id, role: 'assistant', name: c.bot };
+      if (at) a.at = at;
+      var sum = convSummaryOf(t);
+      if (sum.title || sum.text) a.summary = sum;
+      // D11 — from the instruction to the recorded answer; an optimistic
+      // instruction carries this browser's clock, not the server's: no time.
+      var pts = prev ? toNum(prev.timestamp) : 0;
+      if (prev && prev.role === 'user' && pts > 0 && ts > pts && String(prev.id || '').indexOf('optimistic-') !== 0) a.responseMs = ts - pts;
+      if (t.id && c.cid) {
+        var key = ansCacheKey(c.cid, t.id);
+        var raw = c.answers[key];
+        if (typeof raw === 'string') {
+          a.markdown = raw;
+          if (c.titles && Object.keys(c.titles).length) a.linkTitles = c.titles;
+        } else if (c.failed[key]) {
+          a.markdown = '';
+          a.error = String(c.failed[key]);
+          a.canRetry = true;
+        } else a.loading = true;
+      } else a.markdown = '';
+      var mine = (c.arts || []).filter(function(x) { return x && !used[x.id] && artInTurn(x, start, ts); });
+      mine.forEach(function(x) { used[x.id] = true; });
+      if (mine.length) {
+        a.attachments = true;
+        slots.push({ name: 'attachments-' + id, kind: 'arts', list: mine, start: start, end: ts });
+      }
+      turns.push(a);
     }
-    // AI answer (task view T1.4, re-ai-answer D1): the answer itself is the
-    // turn — <ui-ai-answer flat>, loaded as it nears the view
-    // (attachRawToggleHandlers) — and Raw at its foot holds the turn's summary
-    // and the answer's source as written. A turn with no recorded answer to
-    // load shows its summary.
-    var answer = title + body;
-    var raw = '';
-    var cid = convId || panelConvId;
-    if (t.id && cid) {
-      answer = '<div class="turn-answer ui-tok" data-conv="' + esc(cid) + '" data-turn="' + esc(t.id) + '">' + ansSlotHtml('불러오는 중…') + '</div>';
-      raw = '<ui-disclosure class="turn-raw" summary="Raw" flush><div class="turn-raw-body">'
-        + '<div class="turn-raw-label">요약</div><div class="turn-raw-summary">' + title + body + '</div>'
-        + '<div class="turn-raw-label">원문</div><pre class="turn-raw-src"></pre></div></ui-disclosure>';
+    start = ts;
+  }
+  return { turns: turns, slots: slots };
+}
+// The slotted children the turns ask for: written when their markup changed,
+// removed when no turn asks for them (the files keep the page's own handlers:
+// the viewer, the hover preview — they stay in the light DOM).
+function convSlots(el, slots, cid) {
+  var want = Object.create(null);
+  for (var i = 0; i < slots.length; i++) {
+    var sl = slots[i];
+    if (sl.kind === 'media') umRegister(cid, sl.list, sl.turn);
+    want[sl.name] = sl.kind === 'media' ? renderUserMedia(cid, sl.list) : renderTurnArtifacts(sl.list, cid, sl.start, sl.end);
+  }
+  var kids = Array.prototype.slice.call(el.children);
+  for (var k = 0; k < kids.length; k++) {
+    var name = kids[k].getAttribute('slot') || '';
+    if (!(name in want)) {
+      kids[k].remove();
+      continue;
     }
-    // SSOT 2026-10-23 T6 — the files and markdown answer this turn produced, under
-    // it. decoratePanelTurns() re-files them whenever turns or artifacts change.
-    var artsStart = 0;
-    if (_arr && typeof _idx === 'number' && _idx > 0 && _arr[_idx - 1]) artsStart = toNum(_arr[_idx - 1].timestamp);
-    var artCached = cid ? _artCache[cid] : null;
-    var turnArts = '<div class="turn-arts">' + (artCached && artCached.list ? renderTurnArtifacts(artCached.list, cid, artsStart, toNum(t.timestamp)) : '') + '</div>';
-    return '<div class="turn assistant"' + turnIdAttr + '>'
-      + '<div class="turn-avatar bot-avatar" aria-hidden="true">' + BOT_AVATAR_SVG + '</div>'
-      + '<div class="turn-body">'
-      + '<div class="turn-header"><span class="turn-name">' + esc(botNameOf(panelSessionKey ? _sessionCache[panelSessionKey] : null)) + '</span><span class="turn-time">' + time + '</span><span class="ans-took"></span></div>'
-      + answer + turnArts + raw
-      + '</div></div>';
+    if (kids[k]._html !== want[name]) {
+      kids[k].innerHTML = want[name];
+      kids[k]._html = want[name];
+    }
+    delete want[name];
+  }
+  for (var n in want) {
+    var d = document.createElement('div');
+    d.slot = n;
+    d.className = n.indexOf('media-') === 0 ? 'cv-media-slot' : 'cv-arts-slot';
+    d.innerHTML = want[n];
+    d._html = want[n];
+    el.appendChild(d);
   }
 }
-
-// A new turn (a WS push, or this browser's own instruction — own: the reader
-// goes to it): into 지시와 답변's data, and onto the list when that is shown —
-// followed by a reader at the newest, else counted on the pill. A turn the
-// list already holds (by id) is updated in place instead.
-function appendTurnToPanel(turn, own) {
-  var had = _panelTurnsList.length;
-  if (ptUpsert(_panelTurnsList, turn) === 'update') return;
-  if (_panelTurnsMsg !== 'loading') _panelTurnsMsg = '';
-  if (_psec !== 'conv' || _panelAgent || _panelTurnsMsg === 'loading') return;
-  var turnsEl = document.getElementById('panel-turns');
-  var box = psecBox('conv');
-  if (!turnsEl || !box) return;
-  if (!had) {
-    paintConvTab();
-    psecSyncControls('conv');
-    psecToNewest();
+// The element's data, written only when it changed (a poll that changes
+// nothing re-renders nothing); the turns still loading their answer are
+// watched once the element has rendered them.
+function convSetData(el, d) {
+  var sig = JSON.stringify(d);
+  if (el._convSig === sig) return;
+  el._convSig = sig;
+  el.data = d;
+  queueMicrotask(function() { convWatchAnswers(el); });
+}
+// The section's data now: the main agent's turns, or a subagent's 지시와 답변.
+function convPaint() {
+  var el = convEl();
+  if (!el || _psec !== 'conv') return;
+  if (_panelAgent) {
+    renderAgentConv();
     return;
   }
-  var pinned = !!own || psecAtBottom(box);
-  turnsEl.insertAdjacentHTML('beforeend', renderTurn(turn));
-  attachRawToggleHandlers();
-  decoratePanelTurns();
-  psecOnAppended(1, pinned);
+  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
+  var cid = _panelTurnsCid || panelConvId || '';
+  // The board refills the cache in one pass: a session missing from a loaded
+  // board is not running; before the board's first load it is undecided.
+  var working = s ? s.activityState === 'working' : Object.keys(_sessionCache).length === 0;
+  var built = convTurnsOf(_panelTurnsList, {
+    cid: cid, bot: botNameOf(s), now: Date.now(), working: working,
+    answers: _rawLoadedCache, failed: _ansFailed,
+    arts: cid && _artCache[cid] ? _artCache[cid].list || [] : [],
+    titles: ansLinkTitles(ansSession(cid)),
+  });
+  var last = _panelTurnsList.length ? _panelTurnsList[_panelTurnsList.length - 1] : null;
+  var msg = _panelTurnsMsg;
+  var d = {
+    turns: built.turns,
+    hasMore: !!_panelTurnsHasMore,
+    loading: msg === 'loading' || !!_panelTurnsLoading,
+    // D12 — the writing row: the session works and the latest turn is the instruction.
+    pending: ansPendingShow(s, panelConvId, last ? last.role : ''),
+    assistantName: botNameOf(s),
+    // T1.3 — a long instruction folds to 12 lines; 자세히 shows it whole.
+    clampLines: _panelDetail ? 200 : 12,
+    label: '지시와 답변',
+    emptyText: CONV_EMPTY[msg] || CONV_EMPTY.none,
+    startText: '대화의 시작',
+  };
+  var why = msg === 'failed' ? _panelTurnsWhy || '네트워크 오류' : _panelOlderWhy;
+  if (why) d.error = why;
+  convSlots(el, built.slots, cid);
+  convSetData(el, d);
 }
-
-/** Replace an existing turn element in-place (e.g., when summary arrives for an assistant turn). */
-function updateTurnInPanel(existingEl, turn) {
-  // 지시와 답변's data first (an optimistic turn is taken over by the server's).
-  ptUpsert(_panelTurnsList, turn, existingEl.getAttribute('data-turn-id') || turn.id);
-  var tmp = document.createElement('div');
-  tmp.innerHTML = renderTurn(turn);
-  var newEl = tmp.firstElementChild;
-  if (newEl) {
-    // re-ai-answer D14 — the answer stays (painted again from the cache), and so
-    // does an open Raw.
-    var rawOpen = !!existingEl.querySelector('.turn-raw[open]');
-    // #488: the old answer leaves the list — stop watching it.
-    var oldAnswer = existingEl.querySelector('.turn-answer');
-    if (_ansIo && oldAnswer) _ansIo.unobserve(oldAnswer);
-    // SSOT 2026-10-27 — so does a one-line row (a /compact result landing).
-    var sysOpen = !!existingEl.querySelector('.sys-turn[open]');
-    existingEl.replaceWith(newEl);
-    var rawEl = rawOpen ? newEl.querySelector('.turn-raw') : null;
-    if (rawEl) rawEl.setAttribute('open', '');
-    var sysEl = sysOpen ? newEl.querySelector('.sys-turn') : null;
-    if (sysEl) sysEl.setAttribute('open', '');
-    attachRawToggleHandlers();
-    decoratePanelTurns();
-  } else {
-    console.warn('updateTurnInPanel: no element for turn', turn.id);
+// Several answers land in one frame: one paint.
+var _convPaintQueued = false;
+function convPaintSoon() {
+  if (_convPaintQueued) return;
+  _convPaintQueued = true;
+  requestAnimationFrame(function() {
+    _convPaintQueued = false;
+    convPaint();
+  });
+}
+// A new turn (a WS push, or this browser's own instruction — own: the reader
+// goes to it) into 지시와 답변's data, in place of the one with its id
+// (replaceId: the optimistic turn the server's took over), else at the end.
+// The element follows a reader at the newest and counts it for one higher up.
+function appendTurnToPanel(turn, own, replaceId) {
+  if (!turn) return;
+  ptUpsert(_panelTurnsList, turn, replaceId);
+  if (_panelTurnsMsg !== 'loading') _panelTurnsMsg = '';
+  if (_psec !== 'conv' || _panelAgent || _panelTurnsMsg === 'loading') return;
+  convPaint();
+  var el = convEl();
+  if (own && el && typeof el.scrollToLatest === 'function') el.scrollToLatest();
+}
+// A turn leaves the data (an instruction that could not be sent).
+function dropTurnFromPanel(id) {
+  for (var i = _panelTurnsList.length - 1; i >= 0; i--) {
+    if (_panelTurnsList[i] && _panelTurnsList[i].id === id) {
+      _panelTurnsList.splice(i, 1);
+      convPaint();
+      return true;
+    }
   }
+  return false;
 }
 
 var _rawLoadedCache = Object.create(null);
-// Task view T1.4 — every answer in the turns list loads as it nears the view
-// (one fetch per answer, then the cache); an answer already cached paints at once.
+// Cache key → why its answer could not be had (this panel opening): the answer
+// says so with 다시 시도 (the element's ui-retry with the turn id).
+var _ansFailed = Object.create(null);
+// Task view T1.4 — every answer loads as its turn nears the view (one fetch per
+// answer, then the cache); an answer already cached is in the turn at once.
 var _ansIo = null;
-function attachRawToggleHandlers() {
-  var turnsEl = document.getElementById('panel-turns');
-  if (!turnsEl) return;
-  var els = turnsEl.querySelectorAll('.turn-answer[data-turn]');
-  for (var i = 0; i < els.length; i++) {
-    var el = els[i];
-    if (el._ansObserved) continue;
-    el._ansObserved = true;
-    var cached = typeof _rawLoadedCache[ansCacheKey(el.dataset.conv, el.dataset.turn)] === 'string';
-    if (!cached && !_ansIo && typeof IntersectionObserver === 'function') {
+function convWatchAnswers(el) {
+  if (!el || typeof el.turnElement !== 'function' || _psec !== 'conv' || _panelAgent) return;
+  var d = el.data;
+  var turns = d && d.turns ? d.turns : [];
+  var cid = _panelTurnsCid || panelConvId || '';
+  // #488 — a turn rebuilt (or gone) is a new node: the one it replaced is no longer watched.
+  if (_ansIo) _ansIo._nodes = _ansIo._nodes.filter(function(n) {
+    if (n.isConnected) return true;
+    _ansIo.unobserve(n);
+    return false;
+  });
+  for (var i = 0; i < turns.length; i++) {
+    if (!turns[i].loading) continue;
+    var node = el.turnElement(turns[i].id);
+    if (!node || node._ansWatched) continue;
+    node._ansWatched = true;
+    node._ansCid = cid;
+    if (!_ansIo && typeof IntersectionObserver === 'function') {
       _ansIo = new IntersectionObserver(function(entries) {
         entries.forEach(function(en) {
           if (!en.isIntersecting) return;
           _ansIo.unobserve(en.target);
-          ansLoad(en.target);
+          _ansIo._nodes = _ansIo._nodes.filter(function(n) { return n !== en.target; });
+          convLoadAnswer(en.target._ansCid, en.target.getAttribute('data-item'));
         });
-      }, { root: document.getElementById('psec-conv'), rootMargin: '800px 0px' });
+      }, { rootMargin: '800px 0px' });
+      _ansIo._nodes = [];
     }
-    if (cached || !_ansIo) ansLoad(el);
-    else _ansIo.observe(el);
+    if (_ansIo) {
+      _ansIo.observe(node);
+      _ansIo._nodes.push(node);
+    } else convLoadAnswer(cid, turns[i].id);
   }
 }
-
-// ── AI answer (.prd/affectui/re-ai-answer.md) — @2lab.ai/ui <ui-ai-answer> ──
-// An assistant turn's face is its answer, drawn by the library element (flat:
-// the turn is its card): the markdown rendered safely, the links it holds as
-// numbered link cards and chips that light each other (links the answer
-// contains — not proven sources, so never called 출처/인용), Copy (the answer
-// and its numbered links), the loading / empty / failed states and the
-// 응답 작성 중 row. The dashboard fetches and caches the answer (ansLoad), titles
-// the links it knows (the session's PR and issue), draws the turn's summary
-// above an answer that is empty or failed, fills Raw, times the answer in the
-// turn header and keeps the writing row last.
-
-// The element, and its light-DOM line until the library has loaded.
-function ansSlotHtml(lite) {
-  return '<ui-ai-answer flat lang="ko"><span class="ans-lite">' + esc(lite) + '</span></ui-ai-answer>';
-}
+// ── AI answer (.prd/affectui/re-ai-answer.md) ──
+// The dashboard fetches and caches each answer (convLoadAnswer), titles the
+// links it knows (the session's PR and issue), and hands the element the turn
+// with the answer, loading, or why it failed (다시 시도 → ui-retry).
 // Pure (D5): the link titles the dashboard already knows — the session's PR and
 // issue (the PR's wins when both are one URL).
 function ansLinkTitles(s) {
@@ -15883,195 +15834,103 @@ function ansLinkTitles(s) {
   if (s && s.prUrl && s.prTitle) t[String(s.prUrl)] = String(s.prTitle);
   return t;
 }
-// An element's data, written only when it changed (a poll that changes
-// nothing re-renders nothing). Data set before the element is defined is
-// picked up when it upgrades.
-function ansSetData(el, d) {
-  var sig = JSON.stringify(d);
-  if (el._ansSig === sig) return;
-  el._ansSig = sig;
-  el.data = d;
-}
 // The panel's session, when it is the one this conversation belongs to (D5 titles).
 function ansSession(cid) {
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   return s && s.conversationId === cid ? s : null;
 }
-// Task view T1.4 — the turn's summary (kept in its Raw) as one line of text:
-// the heading (the element's title) of an answer that cannot be read (none
-// recorded, or not this viewer's to read). Its title, then its body's own
-// words — not a button's (Summary failed's 🔄 Retry works in Raw).
-function ansSummaryTitle(details) {
-  var body = details.parentNode;
-  var sum = body && body.querySelector ? body.querySelector('.turn-raw-summary') : null;
-  if (!sum) return '';
-  var head = sum.querySelector('.turn-summary-title');
-  var text = sum.querySelector('.turn-summary-body');
-  var words = text ? String(text.textContent || '') : '';
-  var btn = text && text.querySelector ? text.querySelector('button') : null;
-  if (btn) words = words.replace(String(btn.textContent || ''), '');
-  return [head ? String(head.textContent || '') : '', words]
-    .map(function(x) { return x.replace(/\\s+/g, ' ').trim(); })
-    .filter(Boolean)
-    .join(' — ');
-}
-// D1 · D13 — one answer's face: loading, failed (다시 시도 → ui-retry), or the
-// answer from the cache — filled into Raw as written too. An empty or failed
-// answer is headed by the turn's summary (the element's title: nothing is
-// inserted beside it). Entry motion (D15) only for an answer that just
-// arrived: one painted again from the cache (the turn re-rendered when its
-// summary landed, D14) does not replay it.
-function ansPaint(details, state, detail, animate) {
-  var el = details.querySelector('ui-ai-answer');
-  if (!el) return;
-  var raw = state === 'ok' ? _rawLoadedCache[ansCacheKey(details.dataset.conv, details.dataset.turn)] : '';
-  raw = typeof raw === 'string' ? raw : '';
-  if (state === 'ok') {
-    var src = details.parentNode && details.parentNode.querySelector ? details.parentNode.querySelector('.turn-raw-src') : null;
-    if (src && src.textContent !== raw) src.textContent = raw;
-  }
-  var d = state === 'loading' ? { markdown: '', loading: true }
-    : state === 'error' ? { markdown: '', error: String(detail || 'Error'), canRetry: true }
-    : { markdown: raw, linkTitles: ansLinkTitles(ansSession(details.dataset.conv)), animate: !!animate };
-  var title = state !== 'loading' && !raw.trim() ? ansSummaryTitle(details) : '';
-  if (title) d.title = title;
-  ansSetData(el, d);
-}
 // Turn ids are unique per conversation only: the raw cache is keyed by both.
 function ansCacheKey(convId, turnId) {
   return String(convId || '') + ':' + String(turnId || '');
 }
-// The request in flight per cache key and panel opening — a disclosure re-rendered
-// mid-fetch (D14) joins it instead of asking again.
+// The request in flight per cache key and panel opening — a turn rebuilt
+// mid-fetch joins it instead of asking again.
 var _ansInflight = Object.create(null);
-// D1 · D13 — first open fetches; later opens use the cache. A response lands only
-// while it is current (review R1): it fills the cache only for this panel opening
-// (_panelGen) and if no newer request replaced it, and paints only a disclosure
-// that is still in the turns list.
-function ansLoad(details) {
-  var key = ansCacheKey(details.dataset.conv, details.dataset.turn);
-  if (typeof _rawLoadedCache[key] === 'string') {
-    if (!details._ansPainted) ansPaint(details, 'ok', '', false);
-    details._ansPainted = true;
-    return;
-  }
-  if (details._ansLoading) return;
-  details._ansLoading = true;
-  ansPaint(details, 'loading');
+// D1 · D13 — the first time a turn nears the view its answer is fetched; later
+// paints use the cache. A response lands only while it is current (review R1):
+// for this panel opening (_panelGen) and if no newer request replaced it.
+function convLoadAnswer(cid, id) {
+  if (!cid || !id) return;
+  var key = ansCacheKey(cid, id);
+  if (typeof _rawLoadedCache[key] === 'string' || _ansFailed[key]) return;
   var gen = _panelGen;
   var req = _ansInflight[key];
-  if (!req || req.gen !== gen) {
-    req = { gen: gen };
-    req.promise = fetch('/api/conversations/' + encodeURIComponent(details.dataset.conv) + '/turns/' + encodeURIComponent(details.dataset.turn) + '/raw')
-      .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-      .then(function(data) {
-        var newest = _ansInflight[key] === req;
-        if (newest) delete _ansInflight[key];
-        if (newest && req.gen === _panelGen) _rawLoadedCache[key] = data && typeof data.raw === 'string' ? data.raw : '';
-      }, function(err) {
-        if (_ansInflight[key] === req) delete _ansInflight[key];
-        throw err;
-      });
-    _ansInflight[key] = req;
-  }
-  var shown = function() {
-    var turnsEl = document.getElementById('panel-turns');
-    return gen === _panelGen && !!turnsEl && turnsEl.contains(details);
-  };
-  req.promise.then(function() {
-    details._ansLoading = false;
-    if (typeof _rawLoadedCache[key] !== 'string' || !shown()) return;
-    details._ansPainted = true;
-    ansPaint(details, 'ok', '', true);
-  }, function(err) {
-    details._ansLoading = false;
-    if (!shown()) return;
-    ansPaint(details, 'error', err && (err.message || err.name));
-  });
+  if (req && req.gen === gen) return;
+  req = { gen: gen };
+  _ansInflight[key] = req;
+  fetch('/api/conversations/' + encodeURIComponent(cid) + '/turns/' + encodeURIComponent(id) + '/raw')
+    .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+    .then(function(data) {
+      if (_ansInflight[key] !== req) return;
+      delete _ansInflight[key];
+      if (req.gen !== _panelGen) return;
+      _rawLoadedCache[key] = data && typeof data.raw === 'string' ? data.raw : '';
+      convPaintSoon();
+    }, function(err) {
+      if (_ansInflight[key] !== req) return;
+      delete _ansInflight[key];
+      if (req.gen !== _panelGen) return;
+      _ansFailed[key] = String((err && (err.message || err.name)) || 'Error');
+      convPaintSoon();
+    });
 }
-// D13 — 다시 시도 on a failed answer fetches it again (only the answer element's
-// ui-retry: other library elements send one too).
-document.addEventListener('ui-retry', function(e) {
-  var el = e.target;
-  if (!el || el.tagName !== 'UI-AI-ANSWER' || !el.closest) return;
-  var details = el.closest('.turn-answer[data-turn]');
-  if (details) {
-    ansLoad(details);
+// D13 — 다시 시도: on an answer (the turn's id) fetches it again; on the list
+// (id null) the page that failed — the first, or the older one.
+function convRetry(id) {
+  if (id === null || id === undefined) {
+    if (_panelAgent) return;
+    if (_panelTurnsMsg === 'failed') {
+      _panelTurnsMsg = 'loading';
+      _panelTurnsWhy = '';
+      convPaint();
+      loadPanelTurns();
+    } else if (_panelOlderWhy) {
+      _panelOlderWhy = '';
+      convPaint();
+      loadMorePanelTurns();
+    }
     return;
   }
-  // A subagent's answer: its raw is a work-log entry's, named by seq.
-  var sub = el.closest('.turn-answer[data-seq]');
-  if (sub) agentConvRetry(sub.getAttribute('data-seq'));
-});
-// D11 — "응답 4분 12초": from the instruction to the recorded answer (queue and
-// tools included — the answer is recorded when its turn ends).
-function ansTookLabel(ms) {
-  var v = Number(ms);
-  if (!isFinite(v) || v <= 0) return '';
-  if (v < 1000) return '응답 1초 미만';
-  var sec = Math.floor(v / 1000);
-  if (sec < 60) return '응답 ' + sec + '초';
-  var min = Math.floor(sec / 60);
-  if (min < 60) return '응답 ' + min + '분 ' + (sec % 60) + '초';
-  return '응답 ' + Math.floor(min / 60) + '시간 ' + (min % 60) + '분';
-}
-function ansTookFor(prevRole, prevTs, ts) {
-  return prevRole === 'user' && toNum(prevTs) > 0 ? ansTookLabel(toNum(ts) - toNum(prevTs)) : '';
-}
-// D11 · D12 — walk the turns in DOM order (every insert path ends here via
-// decoratePanelTurns): fill each answer's time, then the writing row.
-function decorateAnswerTurns() {
-  var turnsEl = document.getElementById('panel-turns');
-  if (!turnsEl) return;
-  var nodes = turnsEl.querySelectorAll('.turn[data-ts]');
-  for (var i = 0; i < nodes.length; i++) {
-    var took = nodes[i].classList.contains('assistant') ? nodes[i].querySelector('.ans-took') : null;
-    if (!took) continue;
-    var prev = i > 0 ? nodes[i - 1] : null;
-    var prevTs = prev ? toNum(prev.getAttribute('data-ts')) : 0;
-    var ts = toNum(nodes[i].getAttribute('data-ts'));
-    // An optimistic instruction carries this browser's clock, not the server's: no time.
-    var optimistic = prev && /^optimistic-/.test(prev.getAttribute('data-turn-id') || '');
-    var label = prev && !optimistic ? ansTookFor(prev.classList.contains('user') ? 'user' : 'assistant', prevTs, ts) : '';
-    if (took.textContent !== label) took.textContent = label;
-    if (label) took.setAttribute('title', '지시 ' + formatTaskTime(prevTs) + ' → 응답 ' + formatTaskTime(ts));
-    else took.removeAttribute('title');
+  if (_panelAgent) {
+    var el = convEl();
+    if (el && el._agentSeq != null) agentConvRetry(el._agentSeq);
+    return;
   }
-  syncAnsPending();
+  var cid = _panelTurnsCid || panelConvId || '';
+  var key = ansCacheKey(cid, id);
+  if (!_ansFailed[key]) return;
+  delete _ansFailed[key];
+  convPaint();
+  convLoadAnswer(cid, id);
 }
 // D12 — the same rule the card's 응답 row uses (renderCardIo): the session is
 // working and the latest turn is the instruction.
 function ansPendingShow(s, convId, lastRole) {
   return !!(s && convId && s.conversationId === convId && s.activityState === 'working' && lastRole === 'user');
 }
-function ansPendingHtml() {
-  return '<div class="turn assistant ans-pending" aria-busy="true">'
-    + '<div class="turn-avatar bot-avatar" aria-hidden="true">' + BOT_AVATAR_SVG + '</div>'
-    + '<div class="turn-body"><div class="turn-header"><span class="turn-name">' + esc(botNameOf(panelSessionKey ? _sessionCache[panelSessionKey] : null)) + '</span></div>'
-    + '<div class="ui-tok">' + ansSlotHtml('응답 작성 중') + '</div>'
-    + '</div></div>';
-}
-// The writing row is always the list's last child — or absent. Its element
-// shows only the writing row (streaming, no text yet).
-function syncAnsPending() {
-  var turnsEl = document.getElementById('panel-turns');
-  if (!turnsEl) return;
-  var s = panelOpen && panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  var turns = turnsEl.querySelectorAll('.turn[data-ts]');
-  var last = turns.length ? turns[turns.length - 1] : null;
-  var lastRole = last ? (last.classList.contains('user') ? 'user' : 'assistant') : '';
-  var row = turnsEl.querySelector('.ans-pending');
-  if (!ansPendingShow(s, panelConvId, lastRole)) {
-    if (row) row.remove();
-    return;
+// One-time wiring: the element's requests (older page, try again) and, once its
+// module has loaded, a paint of what it was handed before it could render.
+(function initConversation() {
+  var el = convEl();
+  if (!el) return;
+  el.addEventListener('ui-load-older', function(e) {
+    if (_panelAgent || !_panelTurnsHasMore || _panelTurnsLoading) {
+      e.preventDefault();
+      return;
+    }
+    loadMorePanelTurns();
+  });
+  el.addEventListener('ui-retry', function(e) {
+    var d = e.detail || {};
+    convRetry(d.id);
+  });
+  if (window.customElements && customElements.whenDefined) {
+    customElements.whenDefined('ui-conversation').then(function() {
+      el._convSig = '';
+      convPaint();
+    });
   }
-  if (!row) {
-    turnsEl.insertAdjacentHTML('beforeend', ansPendingHtml());
-    row = turnsEl.lastElementChild;
-  } else if (row !== turnsEl.lastElementChild) turnsEl.appendChild(row);
-  var el = row.querySelector('ui-ai-answer');
-  if (el) ansSetData(el, { markdown: '', streaming: true });
-}
+})();
 
 // Panel subtitle (titleSub). Reads are open to every signed-in viewer (#716);
 // so is filling a MISSING subtitle (POST ensure-title — it never overwrites).
@@ -16165,6 +16024,9 @@ function closePanel() {
   _panelAgent = '';
   _panelAgentsHtml = '';
   _rawLoadedCache = Object.create(null);
+  _ansFailed = Object.create(null);
+  _panelOlderWhy = '';
+  _panelTurnsWhy = '';
   _panelGen++;
   _panelTurnsHasMore = false;
   _panelTurnsLoading = false;
@@ -16347,10 +16209,7 @@ async function sendCommand(text, ref) {
   // Not sent: the note's row says so with Retry (the element's), and the
   // optimistic turn leaves the transcript — found by its own id, not by being the
   // list's last child (the 응답 작성 중 row may follow it, re-ai-answer D12).
-  if (optimisticId) {
-    var turn = document.querySelector('.turn.user[data-turn-id="' + optimisticId + '"]');
-    if (turn) turn.remove();
-  }
+  if (optimisticId) dropTurnFromPanel(optimisticId);
   if (ref) el.setItemState(ref, 'failed', why.trim());
   dashToast({ title: '메시지를 보내지 못했어요', description: why.trim(), tone: 'error' });
 }
@@ -17615,7 +17474,9 @@ function renderPanelArtifactsSection() {
   var html = cid ? (umHtml ? '<div class="panel-user-media" id="panel-user-media">' + umHtml + '</div>' : '') + renderPanelArtifacts(list, cid, artPanelVariant()) : '';
   el.innerHTML = html;
   el.style.display = html ? '' : 'none';
-  decoratePanelTurns();
+  // The files each answer produced go under it (convTurnsOf: an artifact goes to
+  // the first answer whose turn window holds its turn start).
+  convPaint();
 }
 
 // The panel's strip is a row of name chips in the minimal view (자세히 off) or on a short panel body (≤ 560px:
@@ -17630,30 +17491,6 @@ function syncPanelArtVariant() {
   var v = artPanelVariant();
   var cards = document.querySelectorAll('#panel-artifacts .art-strip-panel ui-file-card');
   for (var i = 0; i < cards.length; i++) if (cards[i].getAttribute('variant') !== v) cards[i].setAttribute('variant', v);
-}
-
-// Files each answer produced, under that answer: walk the turns in order; an
-// artifact goes to the first answer whose turn window holds its turn start.
-function decoratePanelTurns() {
-  var turnsEl = document.getElementById('panel-turns');
-  var cid = panelConvId;
-  if (!turnsEl || !cid) return;
-  var c = _artCache[cid];
-  var list = (c && c.list) || [];
-  var used = Object.create(null);
-  var start = 0;
-  var nodes = turnsEl.querySelectorAll('.turn[data-ts]');
-  for (var i = 0; i < nodes.length; i++) {
-    var ts = toNum(nodes[i].getAttribute('data-ts'));
-    var slot = nodes[i].querySelector('.turn-arts');
-    if (slot) {
-      var mine = list.filter(function(a) { return !used[a.id] && artInTurn(a, start, ts); });
-      mine.forEach(function(a) { used[a.id] = true; });
-      slot.innerHTML = renderTurnArtifacts(mine, cid, start, ts);
-    }
-    start = ts;
-  }
-  decorateAnswerTurns(); // re-ai-answer D11 · D12
 }
 
 function artPeekEl() {

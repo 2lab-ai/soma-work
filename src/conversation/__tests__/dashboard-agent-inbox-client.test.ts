@@ -1590,10 +1590,9 @@ describe('escaping order and inline-handler escaping in the template', () => {
   it('text is sliced before it is escaped (an entity is never cut in half)', () => {
     expect(TEMPLATE).not.toMatch(/esc\([^()]*\)\.slice\(/);
   });
-  it('the resummarize handler escapes its single-quoted JS arguments with escJs', () => {
-    expect(TEMPLATE).toContain(
-      "resummarize(\\\\'' + escJs(convId || panelConvId) + '\\\\',\\\\'' + escJs(t.id) + '\\\\',this)",
-    );
+  it('no inline handler string carries a turn’s ids any more (D3: the summary is <ui-conversation> data, not a button)', () => {
+    expect(TEMPLATE).not.toContain('resummarize(\\\\');
+    expect(TEMPLATE).not.toMatch(/\nasync function resummarize\(/);
   });
 });
 
@@ -3125,7 +3124,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     const m = load<Panel>(
       [
         'openPanel',
-        'turnsSkeletonHtml',
+        'loadPanelTurns',
         'renderPanelPermission',
         // affectUI batch 1: the prompts are <ui-approval-card> slots (none in this harness).
         'acPermissionsHtml',
@@ -3167,6 +3166,9 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         '_panelTurnsList',
         '_panelTurnsCid',
         '_panelTurnsMsg',
+        '_panelTurnsWhy',
+        '_panelOlderWhy',
+        '_ansFailed',
         '_panelGen',
         '_panelOnQuestion',
         'PANEL_TURNS_PAGE',
@@ -3200,7 +3202,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         resetPanelSections: () => {},
         selectPanelSection: () => {},
         sizePanelSections: () => {},
-        paintConvTab: () => {},
+        // D3: 지시와 답변 is <ui-conversation>, painted from the data (convPaint; none in this harness).
+        convPaint: () => {},
         psecSyncControls: () => {},
         psecToNewest: () => {},
         psecMaybeFill: () => {},
@@ -3213,12 +3216,9 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         _panelScrollGen: 0, // #488: every landing scroll starts a new panel scroll generation
         _panelAgent: '',
         _panelAgentListOpen: false,
-        renderTurn: (t: { id: string }) => `<div class="turn assistant" data-turn-id="${t.id}"></div>`,
-        attachRawToggleHandlers: () => {},
         // Session artifacts (SSOT 2026-10-23): the panel strip and per-answer chips.
         renderPanelArtifactsSection: () => {},
         ensureArtifacts: () => {},
-        decoratePanelTurns: () => {},
         isSiblingSession: () => false,
         // main's own openPanel deps since this harness was written (#372 panel controls, spec 12 agent views).
         renderPanelControls: () => {},
