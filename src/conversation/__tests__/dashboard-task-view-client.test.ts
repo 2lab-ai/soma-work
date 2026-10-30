@@ -70,7 +70,7 @@ const T0 = 1_700_000_000_000;
 const BASE_FNS = ['esc', 'escAttr', 'toNum', 'formatDuration', 'formatTaskTime', 'agentIconHtml'];
 const BASE_VARS = [
   'AGENT_STATUS_LABEL',
-  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH',
   'TASK_FATE_LABEL',
   'TASK_PAUSE_SVG',
   'TASK_STOP_SVG',

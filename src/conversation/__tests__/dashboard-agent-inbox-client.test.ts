@@ -1272,7 +1272,7 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH', 'OWNER_BADGE_HUES'];
 type CardData = Record<string, unknown> & {
   badge?: { text: string; hue: number; title: string };
   since?: number;

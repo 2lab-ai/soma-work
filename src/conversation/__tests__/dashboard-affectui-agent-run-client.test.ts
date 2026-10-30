@@ -149,7 +149,7 @@ function plan(opts: { expanded?: boolean; earlier?: boolean; open?: boolean } = 
     ],
     [
       'AGENT_STATUS_LABEL',
-      'AGENT_STATUS_TONE',
+      'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH',
       'TASK_FATE_LABEL',
       'TASK_PAUSE_SVG',
       'TASK_STOP_SVG',
@@ -254,7 +254,7 @@ describe('plan — the Tasks section of the tab: the tasks that ran, in the orde
     const [r] = runRows(p.el.innerHTML);
     expect(r).toContain('data-step="paused"');
     expect(r).toContain('pl-step tr-run paused');
-    expect(r).toContain('<span class="pl-marker" aria-hidden="true"><svg viewBox="0 0 16 16" fill="currentColor"');
+    expect(r).toContain('<span class="pl-marker" aria-hidden="true"><i data-ui-icon="pause"></i>');
     expect(r).toContain('<span class="task-text">Was running</span><span class="pl-fate">멈춤</span>');
     expect(r).toContain('<span class="ar-vh">, 멈춤</span>');
     expect(r).not.toContain('aria-current');
@@ -521,7 +521,7 @@ describe('the run list folds past TASK_RUNS_SHOWN; replaced and skipped tasks; t
     const t8 = runRows(html)[1];
     expect(t8).toContain('data-step="dropped"');
     expect(t8).toContain('<span class="task-text">replaced</span><span class="pl-fate">교체됨</span>');
-    expect(t8).toContain('<path d="M4.5 11.5l7-7"/>'); // the stop marker, never the spinner
+    expect(t8).toContain('<i data-ui-icon="ban"></i>'); // the stop marker (the library's ban glyph), never the spinner
     expect(t8).not.toContain('spinner');
     expect(t8).not.toContain('task-elapsed');
     expect(metaOf(t8)).toBe(`${folded.clock(T0 - 60_000)} → ${folded.clock(T0)}${DOT}툴 6 · 토큰 기록 없음`);
@@ -1685,7 +1685,7 @@ describe('panel head (D18)', () => {
         'sessionActionHtml',
         'panelHeadHtml',
       ],
-      ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'SESSION_ACTION_ARIA', 'SESSION_ACTION_TONE', '_busy'],
+      ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH', 'SESSION_ACTION_ARIA', 'SESSION_ACTION_TONE', '_busy'],
       {
         currentUserId: 'U1',
         SELF_INSTANCE_NAME: '',
@@ -1716,6 +1716,17 @@ describe('panel head (D18)', () => {
     expect(CSS).not.toMatch(/\.ps-chip \{/);
     expect(CSS).not.toMatch(/\.ps-icon \{/);
     expect(head(CARD({ activityState: 'idle' }), 'idle')).toMatch(/<span class="ui-status is-pill ps-chip">/);
+  });
+
+  it('D4 g1: sleeping and archived read the idle tone with their glyph in place of the dot (kit 0.8.0)', () => {
+    const sleeping = head(CARD({ activityState: 'idle' }), 'closed');
+    expect(sleeping).toContain(
+      '<span class="ui-status is-pill ps-chip" data-tone="idle"><i data-ui-icon="moon"></i><span class="ps-label">세션</span><span class="ps-word" role="status">휴면</span>',
+    );
+    const archived = head(CARD({ activityState: 'idle', terminated: true }), 'closed');
+    expect(archived).toContain(
+      '<span class="ui-status is-pill ps-chip" data-tone="idle"><i data-ui-icon="archive"></i><span class="ps-label">세션</span>',
+    );
   });
 });
 
