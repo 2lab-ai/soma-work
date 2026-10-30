@@ -3849,6 +3849,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/agent-queue.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/segmented.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/disclosure.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/tooltip.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4465,47 +4466,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   color: color-mix(in srgb, var(--env-tone, var(--ib-muted)) 70%, var(--ib-text));
   vertical-align: baseline;
 }
-/* Topbar tooltip — env-grouped token breakdown (#814) */
-#stat-tokens-wrap {
-  position: relative;
-  display: inline-block;
-}
-/* The tooltip pops like a menu (from its figure, centred) and leaves in 180ms. */
-#stat-tokens-tooltip {
-  display: none;
-  position: absolute;
-  top: 100%;
-  left: 50%;
-  transform: translateX(-50%) translateY(-4px) scale(0.96);
-  transform-origin: top center;
-  opacity: 0;
-  margin-top: 6px;
-  background: var(--surface);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: var(--ib-shadow-raised);
-  padding: 6px 10px;
-  font-size: 0.78em;
-  font-weight: 400;
-  white-space: nowrap;
-  z-index: 50;
-  pointer-events: none;
-  transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out), display var(--dur-fade) allow-discrete;
-}
-#stat-tokens-wrap.tooltip-open #stat-tokens-tooltip,
-#stat-tokens-wrap:hover #stat-tokens-tooltip { display: block; opacity: 1; transform: translateX(-50%); transition: opacity 160ms var(--ease-out), transform 220ms var(--ease-out), display 220ms allow-discrete; }
-@starting-style {
-  #stat-tokens-wrap.tooltip-open #stat-tokens-tooltip,
-  #stat-tokens-wrap:hover #stat-tokens-tooltip { opacity: 0; transform: translateX(-50%) translateY(-4px) scale(0.96); }
-}
-@media (hover: none) {
-  /* On touch devices :hover is sticky after a tap and never closes —
-     gate visibility entirely on the explicit tooltip-open class
-     toggled by the tap handler in updateTokenBreakdown(). */
-  #stat-tokens-wrap:hover #stat-tokens-tooltip { display: none; opacity: 0; }
-  #stat-tokens-wrap.tooltip-open #stat-tokens-tooltip { display: block; opacity: 1; transform: translateX(-50%); }
-}
+/* Token breakdown (#814, B-04) — @2lab.ai/ui <ui-tooltip variant="card">: it pops below the figure after the hover
+   delay, at once on keyboard focus, and on this page a tap toggles it (initTooltipTap). */
+#stat-tokens-tooltip { vertical-align: baseline; }
 
 /* ── CONTEXT USAGE BAR ── */
 .card-body .context-bar { margin-top: 8px; height: 4px; background: var(--ib-pill); border-radius: 2px; overflow: hidden; }
@@ -4937,25 +4900,11 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 .chart-container h4 { font-size: 12.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
 .bar-chart { display: flex; align-items: flex-end; gap: 2px; height: 80px; }
-.bar { background: var(--accent); border-radius: 3px 3px 0 0; min-width: 4px; flex: 1; transition: height var(--dur-move) var(--ease-out), opacity 150ms ease; position: relative; }
+.bar { background: var(--accent); border-radius: 3px 3px 0 0; min-width: 4px; flex: 1; transition: height var(--dur-move) var(--ease-out), opacity 150ms ease; }
 @media (hover: hover) and (pointer: fine) { .bar:hover { opacity: 0.75; } }
-.bar .bar-tooltip {
-  display: none;
-  position: absolute;
-  bottom: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  padding: 4px 8px;
-  border-radius: 8px;
-  box-shadow: var(--ib-shadow-raised);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  z-index: 10;
-}
-.bar:hover .bar-tooltip { display: block; }
+/* Each bar is the trigger of its own <ui-tooltip> (B-08): the element takes the bar's flex share and full height. */
+.bar-chart > ui-tooltip { display: block; flex: 1; min-width: 4px; height: 100%; }
+.bar-chart > ui-tooltip::part(root) { height: 100%; align-items: flex-end; }
 .bar-labels { display: flex; gap: 2px; margin-top: 4px; }
 .bar-labels span { flex: 1; text-align: center; font-size: 10px; color: var(--text-tertiary); font-weight: 500; font-variant-numeric: tabular-nums; }
 
@@ -6425,7 +6374,7 @@ ${pageTokenAliases()}
         <ui-segmented class="period-bar" id="period-seg" full></ui-segmented>
         <div class="strip-nums">
           <div class="strip-num"><span class="label">&#xC138;&#xC158;</span><span class="value is-loading" id="stat-sessions"></span></div>
-          <div class="strip-num"><span class="label">&#xD1A0;&#xD070;</span><span class="value" id="stat-tokens-wrap"><span id="stat-tokens" class="is-loading"></span><span id="stat-tokens-tooltip" role="tooltip"></span></span></div>
+          <div class="strip-num"><span class="label">&#xD1A0;&#xD070;</span><span class="value" id="stat-tokens-wrap"><ui-tooltip id="stat-tokens-tooltip" variant="card" placement="bottom" disabled><span id="stat-tokens" class="is-loading"></span></ui-tooltip></span></div>
           <div class="strip-num"><span class="label">&#xBE44;&#xC6A9;</span><span class="value is-loading" id="stat-cost"></span></div>
         </div>
         <button type="button" class="stats-more" id="stats-more" aria-expanded="false" aria-controls="stats-detail" onclick="toggleStatsDetail()"><span>&#xC790;&#xC138;&#xD788;</span><i data-ui-icon="chevron-down"></i></button>
@@ -13571,7 +13520,7 @@ function renderBarChart(title, days, valueFn, color) {
   const bars = days.map(function(d, i) {
     const h = Math.max(2, (values[i] / max) * 100);
     const label = d.date.slice(5);
-    return '<div class="bar" style="height:' + h + '%;background:' + color + '"><div class="bar-tooltip">' + label + ': ' + values[i] + '</div></div>';
+    return '<ui-tooltip text="' + escAttr(label + ': ' + values[i]) + '"><div class="bar" style="height:' + h + '%;background:' + color + '"></div></ui-tooltip>';
   }).join('');
   const labels = days.map(function(d) { return '<span>' + d.date.slice(8) + '</span>'; }).join('');
   return '<div class="chart-container"><h4>' + title + '</h4><div class="bar-chart">' + bars + '</div><div class="bar-labels">' + labels + '</div></div>';
@@ -13759,13 +13708,17 @@ function updateTokenBreakdown() {
   // tooltip dark so the topbar stays the same shape it was before #814.
   // Runs on every board render (renderBoard) and stats load — it writes only
   // what changed.
+  // <ui-tooltip id="stat-tokens-tooltip"> (B-04): the page hands it the text; the figure is its trigger, a tab stop
+  // only while there is something to describe.
   var tip = document.getElementById('stat-tokens-tooltip');
+  var fig = document.getElementById('stat-tokens');
   var wrap = document.getElementById('stat-tokens-wrap');
-  if (!tip || !wrap) return;
+  if (!tip || !fig || !wrap) return;
   var envNames = Object.keys(byEnv).filter(function(n) { return n.length > 0; });
   if (envNames.length < 2) {
-    if (tip._html !== '') { tip.textContent = ''; tip._html = ''; }
-    if (wrap.classList.contains('tooltip-open')) wrap.classList.remove('tooltip-open');
+    if (tip.getAttribute('text')) tip.removeAttribute('text');
+    if (!tip.hasAttribute('disabled')) tip.setAttribute('disabled', '');
+    if (fig.hasAttribute('tabindex')) fig.removeAttribute('tabindex');
     if (wrap.hasAttribute('data-has-breakdown')) wrap.removeAttribute('data-has-breakdown');
     return;
   }
@@ -13774,23 +13727,15 @@ function updateTokenBreakdown() {
   var parts = [];
   for (var i = 0; i < envNames.length; i++) {
     var n = envNames[i];
-    parts.push(esc(n) + ': ' + formatTokens(byEnv[n].tokens));
+    parts.push(n + ': ' + formatTokens(byEnv[n].tokens));
   }
   parts.push('Total: ' + formatTokens(totalTokens));
-  var html = '보드 세션 기준 &middot; ' + parts.join(' &middot; ');
-  if (tip._html !== html) { tip.innerHTML = html; tip._html = html; }
+  // Plain text: the element never parses it as HTML.
+  var text = '보드 세션 기준 · ' + parts.join(' · ');
+  if (tip.getAttribute('text') !== text) tip.setAttribute('text', text);
+  if (tip.hasAttribute('disabled')) tip.removeAttribute('disabled');
+  if (fig.getAttribute('tabindex') !== '0') fig.setAttribute('tabindex', '0');
   if (!wrap.hasAttribute('data-has-breakdown')) wrap.setAttribute('data-has-breakdown', 'true');
-  // Mobile (no-hover) tap-toggle wiring — attach once.
-  if (!wrap.hasAttribute('data-tap-bound')) {
-    wrap.setAttribute('data-tap-bound', 'true');
-    wrap.addEventListener('click', function() {
-      // Only toggle on touch-likely devices; on hover-capable devices the
-      // CSS :hover rule already handles it and a click adds noise.
-      if (window.matchMedia('(hover: none)').matches) {
-        wrap.classList.toggle('tooltip-open');
-      }
-    });
-  }
 }
 
 // ── Panel work log (.prd/10 §3.1-7, §3.3) ──
@@ -18212,6 +18157,26 @@ function artHandleKey(e) {
 })();
 // <ui-disclosure> (K-06): Raw, a system turn and a card's system instruction open and close by
 // themselves; the page only keeps a card's choice across its morph re-render (_ioOpen).
+// <ui-tooltip> (B-04, B-08) never opens on touch — there is no hover to end it. The breakdown and the chart values
+// exist nowhere else, so on this page a tap on a tooltip's trigger toggles it (the element's show() / hide()); a tap
+// anywhere else closes it, as do the element's own Esc, focus-out and scroll-away rules.
+var _tapTip = null;
+(function initTooltipTap() {
+  var pressed = null;
+  document.addEventListener('pointerdown', function(e) {
+    pressed = null;
+    if (e.pointerType !== 'touch') return;
+    var tip = e.target && e.target.closest ? e.target.closest('ui-tooltip') : null;
+    if (_tapTip && _tapTip !== tip) { _tapTip.hide(); _tapTip = null; }
+    if (tip) pressed = { tip: tip, open: _tapTip === tip };
+  }, true);
+  document.addEventListener('click', function(e) {
+    var p = pressed;
+    pressed = null;
+    if (!p || !p.tip.contains(e.target) || p.tip.hasAttribute('disabled')) return;
+    if (p.open) { p.tip.hide(); _tapTip = null; } else { p.tip.show(); _tapTip = p.tip.open ? p.tip : null; }
+  });
+})();
 (function initDisclosures() {
   document.addEventListener('ui-toggle', function(e) {
     var t = e.target;
