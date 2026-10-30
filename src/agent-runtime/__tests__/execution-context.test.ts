@@ -122,6 +122,18 @@ describe('executionContextForTask — symlinks (#613 R1)', () => {
     );
   });
 
+  it('refuses a path it cannot inspect — an unreadable part is not "not created yet" (#613 R3)', () => {
+    fs.mkdirSync(`${ownerRoot}/locked`);
+    fs.chmodSync(`${ownerRoot}/locked`, 0o000);
+    try {
+      expect(() =>
+        executionContextForTask(task({ ownerId: OWNER, workingDirectory: `${ownerRoot}/locked/sub` })),
+      ).toThrow(ExecutionContextMissingError);
+    } finally {
+      fs.chmodSync(`${ownerRoot}/locked`, 0o700);
+    }
+  });
+
   it('accepts a real directory inside the owner’s root, in its /tmp form', () => {
     const ctx = executionContextForTask(task({ ownerId: OWNER, workingDirectory: `${ownerRoot}/session_real` }));
     expect(ctx.workingDirectory).toBe(`${ownerRoot}/session_real`);
