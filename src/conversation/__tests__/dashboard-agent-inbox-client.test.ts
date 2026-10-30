@@ -2953,6 +2953,93 @@ describe('deep link to a hidden sleeping card reveals it (shipped openDeepLinked
   });
 });
 
+describe('deep link window starts at the first board answer, not at page load (shipped openDeepLinkedSession)', () => {
+  // 2026-10-30: a first board that took longer than the window to arrive (a slow
+  // phone link, a busy server) dropped the link before any card existed — the page
+  // loaded and the session never opened. The window bounds the attempt, not the load.
+  const KEY = 'inst::work:C1:1700000000.000950';
+  function page(t0: number) {
+    let now = t0;
+    const calls = { panel: [] as unknown[][], revealed: [] as string[] };
+    const hosts: Record<string, { reveal(k: string): boolean }> = Object.create(null);
+    const cache: Record<string, unknown> = Object.create(null);
+    const m = load<{ openDeepLinkedSession(partial?: boolean): void; state(): { link: string | null } }>(
+      ['resolveDeepLinkKey', 'openDeepLinkedSession'],
+      // The shipped declarations, evaluated at "page load" (t0).
+      ['_deepLinkWaiting', 'DEEP_LINK_WINDOW_MS', '_deepLinkDeadline'],
+      {
+        Date: { now: () => now },
+        _deepLinkSession: 'work:C1:1700000000.000950',
+        _sessionCache: cache,
+        SELF_INSTANCE_NAME: 'inst',
+        _cardHost: hosts,
+        showArchives: false,
+        showSleeping: true,
+        _revealedKey: null,
+        _cronRevealKey: null,
+        loadSessions: () => {},
+        openPanel: (...a: unknown[]) => calls.panel.push(a),
+        panelOpen: false,
+        panelSessionKey: null,
+      },
+      ['function state() { return { link: _deepLinkSession }; }'],
+    );
+    // A board render that carries the linked card and draws it.
+    const drawn = () => {
+      cache[KEY] = { key: KEY, lastActivity: new Date(t0).toISOString() };
+      hosts[KEY] = {
+        reveal: (k: string) => {
+          calls.revealed.push(k);
+          return true;
+        },
+      };
+    };
+    return { m, calls, drawn, at: (ms: number) => (now = t0 + ms) };
+  }
+
+  it('a first board 15 s after load still opens the linked session', () => {
+    const p = page(1_800_000_000_000);
+    p.at(15_000); // the first board answer lands late
+    p.drawn();
+    p.m.openDeepLinkedSession();
+    expect(p.calls.revealed).toEqual([KEY]);
+    expect(p.calls.panel).toEqual([[KEY]]);
+    expect(p.m.state().link).toBeNull();
+  });
+
+  it('a card that first shows up more than 10 s after the first board does not pop the panel', () => {
+    const p = page(1_800_000_000_000);
+    p.at(15_000); // first board: the linked session is not on it yet
+    p.m.openDeepLinkedSession();
+    expect(p.m.state().link).toBe('work:C1:1700000000.000950');
+    p.at(15_000 + 10_001); // a later poll draws it — past the window
+    p.drawn();
+    p.m.openDeepLinkedSession();
+    expect(p.calls.panel).toEqual([]);
+    expect(p.m.state().link).toBeNull();
+  });
+
+  it('a partial board (this instance only, under a failed load) does not start the window', () => {
+    const p = page(1_800_000_000_000);
+    p.at(20_000); // the first load timed out: this instance's held cards are painted as partial
+    p.m.openDeepLinkedSession(true);
+    expect(p.m.state().link).toBe('work:C1:1700000000.000950');
+    p.at(31_000); // the next poll is the first complete board, and it carries the (sibling) card
+    p.drawn();
+    p.m.openDeepLinkedSession(false);
+    expect(p.calls.panel).toEqual([[KEY]]);
+    expect(p.m.state().link).toBeNull();
+  });
+
+  it('a partial board that carries the linked card still opens it', () => {
+    const p = page(1_800_000_000_000);
+    p.at(20_000);
+    p.drawn();
+    p.m.openDeepLinkedSession(true);
+    expect(p.calls.panel).toEqual([[KEY]]);
+  });
+});
+
 describe('admin lifecycle form (shipped lifecycleToForm + lifecycleFromForm)', () => {
   const HOUR = 60 * 60 * 1000;
   const DAY = 24 * HOUR;
