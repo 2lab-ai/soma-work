@@ -539,11 +539,15 @@ describe('tone pass P7 — surfaces and elevation', () => {
       '.nt-dialog',
       '.art-peek',
       '.art-modal',
-      '#stat-tokens-tooltip',
-      '.bar .bar-tooltip',
     ]) {
       expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow-raised)');
     }
+    // D1 (B-04, B-08): the token breakdown and the bar values are @2lab.ai/ui <ui-tooltip> — the element draws
+    // its own surface (the breakdown its raised card variant); the page keeps no tooltip rule.
+    expect(TEMPLATE).toContain('<ui-tooltip id="stat-tokens-tooltip" variant="card" placement="bottom" disabled>');
+    expect(TEMPLATE).toContain(`return '<ui-tooltip text="' + escAttr(label + ': ' + values[i]) + '"><div class="bar"`);
+    expect(TEMPLATE).not.toContain('bar-tooltip');
+    expect(TEMPLATE).not.toContain('tooltip-open');
   });
 
   it('turns carry no colour rail; who spoke is a neutral 24px glyph tile with a hairline — the bot an SVG', () => {

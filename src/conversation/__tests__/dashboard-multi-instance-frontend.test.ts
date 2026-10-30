@@ -49,9 +49,11 @@ describe('Dashboard multi-instance frontend (#814)', () => {
     expect(DASHBOARD_TS).toContain('data-has-breakdown');
   });
 
-  it('mobile tap-toggle uses (hover: none) media query', () => {
-    expect(DASHBOARD_TS).toContain('@media (hover: none)');
-    expect(DASHBOARD_TS).toContain("matchMedia('(hover: none)')");
+  it('touch still reaches the breakdown: a tap on the figure toggles the tooltip (D1 B-04)', () => {
+    // <ui-tooltip> never opens on touch by itself; the page answers a touch tap with its show() / hide().
+    expect(DASHBOARD_TS).toContain('<ui-tooltip id="stat-tokens-tooltip" variant="card" placement="bottom" disabled>');
+    expect(DASHBOARD_TS).toContain("if (e.pointerType !== 'touch') return;");
+    expect(DASHBOARD_TS).toContain('if (p.open) { p.tip.hide(); _tapTip = null; } else { p.tip.show(); _tapTip = p.tip.open ? p.tip : null; }');
   });
 
   it('updateTokenBreakdown suppresses the tooltip when fewer than 2 envs are present', () => {
