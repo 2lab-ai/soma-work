@@ -22,6 +22,7 @@ import type { TaskLedger } from './session/task-ledger';
 import type {
   ActivityState,
   ConversationSession,
+  HandoffContext,
   SessionCronJob,
   SessionGoal,
   SessionIncidentRequest,
@@ -116,6 +117,14 @@ export interface ArchivedSession {
   /** Incident ownership: a revived incident session must stay restricted. */
   incidentRequest?: SessionIncidentRequest;
   incidentAttemptFinishedId?: string;
+  /**
+   * Handoff enforcement state: the context drives the PR-issue precondition
+   * (tool-policy) and the budget caps automatic handoffs. A revive restores
+   * both as they were; an archive written before they were kept has no
+   * `autoHandoffBudget` field (see resolveArchivedResume).
+   */
+  handoffContext?: HandoffContext;
+  autoHandoffBudget?: number;
 }
 
 /**
@@ -188,6 +197,8 @@ function sessionToArchive(
     sessionWorkingDir: session.sessionWorkingDir,
     incidentRequest: session.incidentRequest ? JSON.parse(JSON.stringify(session.incidentRequest)) : undefined,
     incidentAttemptFinishedId: session.incidentAttemptFinishedId,
+    handoffContext: session.handoffContext ? JSON.parse(JSON.stringify(session.handoffContext)) : undefined,
+    autoHandoffBudget: session.autoHandoffBudget,
   };
 }
 
@@ -372,9 +383,13 @@ export type SessionLifecycleOutcome =
         | 'no_conversation'
         | 'transcript_missing'
         | 'invalid_cwd'
-        | 'incident_provenance';
+        | 'incident_provenance'
+        | 'handoff_provenance';
       message: string;
     };
+
+/** Workflows a forced handoff enters; their sessions carry `handoffContext` (session-initializer). */
+const HANDOFF_WORKFLOWS: ReadonlySet<string> = new Set(['z-plan-to-work', 'z-epic-update']);
 
 type ResumeRefusal = Extract<SessionLifecycleOutcome, { ok: false }>;
 
@@ -447,6 +462,20 @@ export function resolveArchivedResume(
   }
   if (!archived.incidentRequest && opts.incidentChannelIds?.includes(archived.channelId)) {
     return { ok: false, code: 'incident_provenance', message: '인시던트 채널의 세션은 소유 정보 없이 살릴 수 없어요' };
+  }
+  // A handoff session archived before its handoff state was kept would come
+  // back without the PR-issue precondition it ran under. Fail closed.
+  if (
+    archived.workflow &&
+    HANDOFF_WORKFLOWS.has(archived.workflow) &&
+    !archived.handoffContext &&
+    archived.autoHandoffBudget === undefined
+  ) {
+    return {
+      ok: false,
+      code: 'handoff_provenance',
+      message: '핸드오프 세션은 핸드오프 정보가 남아 있지 않아 살릴 수 없어요',
+    };
   }
   const transcript = findTranscriptPath(archived.sessionId, opts.configDir);
   if (!transcript) {

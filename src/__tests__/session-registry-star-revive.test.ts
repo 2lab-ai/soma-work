@@ -323,6 +323,42 @@ describe('SessionRegistry — revive (T4)', () => {
     expect(next.getSession('C1', '800.001')?.sessionId).toBe('7f3c2a10-0000-4000-8000-000000000001');
   });
 
+  it('T4.2 review — a handoff session comes back with its handoff context and its consumed budget', () => {
+    const reg = new SessionRegistry();
+    const handoffContext = { handoffKind: 'plan-to-work', chainId: 'ch-1', hopBudget: 1 } as any;
+    reg.restoreArchivedSession(
+      archived({ workflow: 'z-plan-to-work' as any, handoffContext, autoHandoffBudget: 0 }),
+      '/tmp/U1/session_1793000000000_ab12cd34',
+    );
+    const s = reg.getSession('C1', '800.001');
+    expect(s?.handoffContext).toEqual(handoffContext);
+    expect(s?.autoHandoffBudget).toBe(0);
+  });
+
+  it('T4.2 review — an archive from before the budget was kept restores with no handoff budget (fail closed)', () => {
+    const reg = new SessionRegistry();
+    reg.restoreArchivedSession(archived(), '/tmp/U1/session_1793000000000_ab12cd34');
+    expect(reg.getSession('C1', '800.001')?.autoHandoffBudget).toBe(0);
+  });
+
+  it('T4.2 review — the restored goal is a new generation: an evaluation started before the close is fenced out', () => {
+    const reg = new SessionRegistry();
+    const goal = {
+      goalId: 'g-1',
+      objective: 'ship it',
+      status: 'active',
+      epoch: 7,
+      createdAt: 1,
+      pendingEval: { requestedAt: 123, turnId: 't-1' },
+    } as any;
+    reg.restoreArchivedSession(archived({ goal }), '/tmp/U1/session_1793000000000_ab12cd34');
+    const restored = reg.getSession('C1', '800.001')?.goal;
+    expect(restored?.goalId).toBe('g-1');
+    // The goal loop's epoch guard (goalId + epoch) no longer matches a snapshot taken before the close.
+    expect(restored?.epoch).toBe(8);
+    expect(restored?.pendingEval).toBeUndefined();
+  });
+
   it('T4.2 — an incident-owned archive comes back still restricted', () => {
     const reg = new SessionRegistry();
     const incidentRequest = { incident_id: 'INC-1', attempt_id: 'A-1' } as any;

@@ -865,6 +865,15 @@ export class SessionRegistry {
 
     const model = archived.model === undefined ? undefined : coerceToAvailableModel(archived.model);
     const doneAt = finiteStamp(archived.doneAt);
+    // The restored goal is a new generation: an evaluation, retry or
+    // continuation started for the closed session snapshotted (goalId, epoch)
+    // of THIS goal — advancing the epoch makes the goal loop's guard discard
+    // it instead of acting on the old object. Its lease went with that object.
+    const goal = migrateLegacyGoal(archived.goal);
+    if (goal) {
+      goal.epoch = (goal.epoch ?? 0) + 1;
+      goal.pendingEval = undefined;
+    }
     const session: ConversationSession = {
       ownerId: archived.ownerId,
       ownerName: archived.ownerName,
@@ -892,7 +901,7 @@ export class SessionRegistry {
         ? archived.instructions.map((i) => ({ ...i, status: i.status ?? 'active' }))
         : [],
       mergeStats: archived.mergeStats,
-      goal: migrateLegacyGoal(archived.goal),
+      goal,
       goalHistory: migrateLegacyGoalArray(archived.goalHistory),
       taskLedger: sanitizeTaskLedger(archived.taskLedger),
       agents: loseRunningAgents(sanitizeAgentRegistry(archived.agents), Date.now()),
@@ -907,7 +916,11 @@ export class SessionRegistry {
       // Incident ownership comes back with it: the thread stays restricted.
       incidentRequest: archived.incidentRequest,
       incidentAttemptFinishedId: archived.incidentAttemptFinishedId,
-      autoHandoffBudget: DEFAULT_AUTO_HANDOFF_BUDGET,
+      // Handoff enforcement state as it was: the PR-issue precondition keeps
+      // applying, and a consumed budget stays consumed. An archive from
+      // before the budget was kept gets none (fail closed).
+      handoffContext: archived.handoffContext,
+      autoHandoffBudget: typeof archived.autoHandoffBudget === 'number' ? archived.autoHandoffBudget : 0,
       compactEpoch: 0,
       compactPostedByEpoch: {},
       compactionRehydratedByEpoch: {},
@@ -2313,8 +2326,10 @@ export class SessionRegistry {
         // Preserve handoff metadata for diagnostic parity when archiving.
         handoffContext: serialized.handoffContext,
         // What a later revive needs (SSOT 2026-10-30 T4.2): the cwd the SDK
-        // filed the transcript under, and incident ownership (fail closed).
+        // filed the transcript under, incident ownership (fail closed), and
+        // the handoff budget (with handoffContext above).
         sessionWorkingDir: serialized.sessionWorkingDir,
+        autoHandoffBudget: serialized.autoHandoffBudget,
         incidentRequest:
           typeof serialized.incidentRequest === 'object' && serialized.incidentRequest !== null
             ? serialized.incidentRequest

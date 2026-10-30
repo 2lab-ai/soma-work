@@ -203,6 +203,7 @@ describe('Dashboard — task star + revive (SSOT 2026-10-30)', () => {
     ['transcript_missing', 422],
     ['invalid_cwd', 422],
     ['incident_provenance', 422],
+    ['handoff_provenance', 422],
     ['no_conversation', 422],
     ['conflict', 409],
     ['terminated', 409],

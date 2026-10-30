@@ -792,6 +792,7 @@ const LIFECYCLE_REFUSAL_STATUS: Record<Extract<SessionLifecycleOutcome, { ok: fa
   transcript_missing: 422,
   invalid_cwd: 422,
   incident_provenance: 422,
+  handoff_provenance: 422,
 };
 
 function sendLifecycleRefusal(reply: any, outcome: Extract<SessionLifecycleOutcome, { ok: false }>): void {
