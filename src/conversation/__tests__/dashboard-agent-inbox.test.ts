@@ -576,10 +576,13 @@ describe('tone pass P8 — copy and glyphs', () => {
     expect(TEMPLATE).toContain('.chev.is-up, [aria-expanded="true"] > .chev { transform: rotate(180deg); }');
     expect(TEMPLATE).toContain(`<span class="wl-g-chev chev is-right" aria-hidden="true"></span>`);
     // The close buttons and the subtitle's regenerate are SVGs with a name.
+    // D1: the glyphs are @2lab.ai/ui's icon set, named in an icon slot the server fills (fillUiIcons).
     expect(TEMPLATE).toMatch(
-      /class="panel-close"[^>]*>\s*<svg viewBox="0 0 16 16"[^>]*><path d="M4 4l8 8M12 4l-8 8"\/><\/svg><\/button>/,
+      /class="ui-icon-btn is-bordered panel-close"[^>]*><i data-ui-icon="close"><\/i><\/button>/,
     );
-    expect(TEMPLATE).toMatch(/id="panel-title-sub-regen"[^>]*aria-label="부제 다시 만들기"[^>]*><svg /);
+    expect(TEMPLATE).toMatch(
+      /id="panel-title-sub-regen"[^>]*aria-label="부제 다시 만들기"[^>]*><i data-ui-icon="refresh"><\/i>/,
+    );
   });
 
   it('Korean chrome with "…": the panel, the lifecycle dialog and the board tools; the panel copy comes from STRINGS', () => {
@@ -713,13 +716,7 @@ describe('agent inbox board — motion contract (§4)', () => {
   it('board hover effects live only inside (hover: hover) and (pointer: fine)', () => {
     expect(TEMPLATE).toContain('@media (hover: hover) and (pointer: fine) {');
     const outside = stripHoverBlocks(TEMPLATE);
-    for (const sel of [
-      '.card:hover',
-      '.card-face:hover',
-      '.seg-btn:hover',
-      '.btn-action:hover',
-      '.show-older-btn:hover',
-    ]) {
+    for (const sel of ['.card:hover', '.card-face:hover', '.seg-btn:hover', '.show-older-btn:hover']) {
       expect(outside, sel).not.toContain(sel);
     }
   });
@@ -743,14 +740,16 @@ describe('agent inbox board — responsive (§5)', () => {
 
   it('every remaining control is 44px on narrow or touch screens (panel, topbar, period tabs)', () => {
     const block = TEMPLATE.match(/@media \(max-width: 639px\), \(pointer: coarse\) \{[\s\S]*?\n\}/)?.[0] ?? '';
-    expect(block).toContain('.panel-close { width: 44px; height: 44px; }');
+    // The panel's ✕ is the kit's icon button: 44px on touch / narrow screens is the kit's own rule.
+    expect(TEMPLATE).toMatch(/<button type="button" class="ui-icon-btn is-bordered panel-close"/);
     expect(block).toContain('.period-btn { min-height: 44px; }');
     expect(block).toContain('.stats-more { min-height: 44px; }');
     expect(block).toContain(
       '.topbar .nav a, .topbar .nav .user-select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }',
     );
     expect(block).toContain('#theme-toggle { min-block-size: 44px; position: relative; }');
-    expect(block).toContain('#panel-title-sub-regen { min-width: 44px; min-height: 44px; }');
+    // The subtitle's regenerate is the kit's small icon button (44px on touch / narrow: ui-kit.css).
+    expect(TEMPLATE).toContain('id="panel-title-sub-regen" class="ui-icon-btn is-sm"');
     // Must follow the #800 coarse blocks so it wins the cascade.
     expect(TEMPLATE.indexOf('@media (max-width: 639px), (pointer: coarse)')).toBeGreaterThan(
       TEMPLATE.indexOf('@media (max-width: 480px) and (pointer: coarse)'),

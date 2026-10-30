@@ -51,14 +51,12 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
     it('user-pill prefix is a dedicated span that CSS can hide at narrow viewports', () => {
       // The account glyph (person, or the shield for an admin viewer) plus a screen-reader-only phrase.
       expect(DASHBOARD_TS).toMatch(
-        /<span class="user-pill-prefix"><svg class="ic-user"[^>]*>[\s\S]*?<\/svg><svg class="ic-admin"[^>]*>[\s\S]*?<\/svg><span class="ar-vh">로그인 계정 <\/span><\/span><b id="user-pill-name">/,
+        /<span class="user-pill-prefix"><i data-ui-icon="user" class="ic-user"><\/i><svg class="ic-admin"[^>]*>[\s\S]*?<\/svg><span class="ar-vh">로그인 계정 <\/span><\/span><b id="user-pill-name">/,
       );
     });
 
     it('대화 (Conversations) is one full label (no short variant), an SVG glyph instead of an emoji', () => {
-      expect(DASHBOARD_TS).toMatch(
-        /<a href="\/conversations" title="[^"]+"><svg [^>]*aria-hidden="true">[\s\S]*?<\/svg>대화<\/a>/,
-      );
+      expect(DASHBOARD_TS).toMatch(/<a href="\/conversations" title="[^"]+"><i data-ui-icon="chat"><\/i>대화<\/a>/);
       expect(DASHBOARD_TS).not.toContain('&#x1F4DD;');
       expect(DASHBOARD_TS).not.toContain('nav-icon');
     });

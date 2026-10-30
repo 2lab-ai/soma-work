@@ -59,7 +59,7 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
-const STYLE = TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>'));
+const STYLE = TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>', TEMPLATE.indexOf('<style>')));
 const HEAD = TEMPLATE.slice(0, TEMPLATE.indexOf('<style>'));
 
 const MODELS = [

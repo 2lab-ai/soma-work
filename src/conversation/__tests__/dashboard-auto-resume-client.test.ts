@@ -66,7 +66,7 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'OWNER_BADGE_HUES'];
 
 interface Card {
   pendingAutoResume(s: unknown, col: string): unknown;
@@ -194,7 +194,15 @@ describe('a RUNNING card waiting out an automatic resume (cardOf + the open card
         'cardGoalLine',
         'renderCardBody',
       ],
-      ['RESUME_SVG', 'SESSION_ACTION_ARIA', 'GOAL_STATUS_LABELS', 'GOAL_SVG', '_busy'],
+      [
+        'RESUME_SVG',
+        'SESSION_ACTION_ARIA',
+        'SESSION_ACTION_TONE',
+        'GOAL_STATUS_LABELS',
+        'GOAL_STATUS_TONE',
+        'GOAL_SVG',
+        '_busy',
+      ],
       {
         effortLabel: (e: string) => e,
         dhShow: () => false,
@@ -228,12 +236,12 @@ describe('a RUNNING card waiting out an automatic resume (cardOf + the open card
       lastActivity: '2026-10-22T09:24:00Z',
     };
     const waitingHtml = body.renderCardBody(waiting, 'working');
-    expect(waitingHtml).toContain('btn-close');
-    expect(waitingHtml).not.toContain('btn-stop');
+    expect(waitingHtml).toContain('data-action="close"');
+    expect(waitingHtml).not.toContain('data-action="stop"');
     expect(waitingHtml).toContain('class="card-resume"');
 
     const runningHtml = body.renderCardBody({ ...waiting, activityState: 'working' }, 'working');
-    expect(runningHtml).toContain('btn-stop');
+    expect(runningHtml).toContain('data-action="stop"');
     expect(runningHtml).not.toContain('class="card-resume"');
   });
 

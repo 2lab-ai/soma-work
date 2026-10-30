@@ -179,7 +179,7 @@ const TREE_FNS = [
   'cardTaskRow',
   'atCardData',
 ];
-const TREE_VARS = ['AGENT_STATUS_LABEL', 'AT_ROOT', 'AT_STATUS', 'AT_ROOT_STATUS', '_anOpen'];
+const TREE_VARS = ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'AT_ROOT', 'AT_STATUS', 'AT_ROOT_STATUS', '_anOpen'];
 type TreeNode = Record<string, unknown> & { id: string; status: string };
 type TreeData = { nodes: TreeNode[]; density: string; title: string; expanded: string[] };
 
@@ -312,7 +312,15 @@ describe('expanded body — face + delta, sections keyed on state', () => {
         'cardGoalLine',
         'renderCardBody',
       ],
-      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_SVG', 'SESSION_ACTION_ARIA', '_busy'],
+      [
+        'RESUME_SVG',
+        'GOAL_STATUS_LABELS',
+        'GOAL_STATUS_TONE',
+        'GOAL_SVG',
+        'SESSION_ACTION_ARIA',
+        'SESSION_ACTION_TONE',
+        '_busy',
+      ],
       { ...STUBS, ...inject },
     ).renderCardBody(s, col);
 
@@ -349,7 +357,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
     expect(html).not.toContain('[ARTS]');
-    expect(html).toContain('btn-stop');
+    expect(html).toContain('data-action="stop"');
   });
 
   it('needs you: the ask first, then the latest exchange and the evidence (artifacts), then the work', () => {
@@ -358,7 +366,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
     const order = ['[Q]', '[IO]', '[ARTS]', '[TASKS]', '[AGENTS]'].map((m) => html.indexOf(m));
     expect(order.every((i) => i >= 0)).toBe(true);
     expect([...order].sort((a, b) => a - b)).toEqual(order);
-    expect(html).toContain('btn-close');
+    expect(html).toContain('data-action="close"');
   });
 
   it('a permission prompt heads the body whatever the column; an armed resume heads a running card', () => {
@@ -373,8 +381,8 @@ describe('expanded body — face + delta, sections keyed on state', () => {
       'working',
     );
     expect(resume.indexOf('class="card-resume"')).toBeLessThan(resume.indexOf('[TASKS]'));
-    expect(resume).toContain('btn-close');
-    expect(resume).not.toContain('btn-stop');
+    expect(resume).toContain('data-action="close"');
+    expect(resume).not.toContain('data-action="stop"');
   });
 
   it('done (idle / closed): the outcome — latest exchange, artifacts, agents, goal — no task window', () => {
@@ -402,10 +410,10 @@ describe('expanded body — face + delta, sections keyed on state', () => {
       true,
     );
     const bar = html.slice(0, html.indexOf('</span></div>') + '</span></div>'.length);
-    expect(bar).toContain('btn-stop');
+    expect(bar).toContain('data-action="stop"');
     expect(bar).toContain('href="https://slack/x"');
     // The bar is above the work: the task window, the agents, the latest exchange.
-    expect(html.indexOf('btn-stop')).toBeLessThan(html.indexOf('[TASKS]'));
+    expect(html.indexOf('data-action="stop"')).toBeLessThan(html.indexOf('[TASKS]'));
     expect(html).not.toContain('작업 로그</button>');
     const foot = html.slice(html.indexOf('class="card-foot-bar"'));
     expect(foot).toBe('class="card-foot-bar"><span class="cfb-model">[MODEL]</span></div></div>');
@@ -415,7 +423,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
     const read = body(card(), 'working', { currentUserId: 'U2' });
     expect(read.slice(read.indexOf('class="card-foot-bar"'))).toContain('[MODEL][EFFORT]');
     // A reader's state action is in the bar too (disabled, read-only), never in the foot.
-    expect(read.slice(read.indexOf('class="card-foot-bar"'))).not.toContain('btn-stop');
+    expect(read.slice(read.indexOf('class="card-foot-bar"'))).not.toContain('data-action="stop"');
     // The switch is not the body's first line.
     expect(html.indexOf('[MODEL]')).toBeGreaterThan(html.indexOf('[IO]'));
   });
@@ -529,7 +537,7 @@ describe('panel header — the session chip and its one action', () => {
         'sessionActionHtml',
         'panelHeadHtml',
       ],
-      ['AGENT_STATUS_LABEL', 'SESSION_ACTION_ARIA', '_busy'],
+      ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'SESSION_ACTION_ARIA', 'SESSION_ACTION_TONE', '_busy'],
       {
         currentUserId: 'U1',
         SELF_INSTANCE_NAME: '',
@@ -542,14 +550,14 @@ describe('panel header — the session chip and its one action', () => {
 
   it('a running session: 세션 · 실행 중 (announced), 시작 HH:MM · this turn’s live time, Slack, and Stop', () => {
     const html = head(card(), 'working');
-    expect(html).toContain('class="ps-chip is-running"');
+    expect(html).toContain('class="ui-status is-pill ps-chip" data-tone="run" data-live>');
     expect(html).toContain('<span class="ps-label">세션</span>');
     expect(html).toContain('<span class="ps-word" role="status">실행 중</span>');
     // re-agent-run D18: the head times this turn from its start; the session's Σ active time is in 세부 (D19).
     expect(html).toContain('시작 ');
     expect(html).toContain('class="card-timer-live" data-leg-started="' + T0 + '" data-accumulated="0"');
     expect(html).toContain('href="https://slack/x"');
-    expect(html).toContain('btn-stop');
+    expect(html).toContain('data-action="stop"');
     // The accessible name keeps the visible label first (WCAG 2.5.3).
     expect(html).toContain('aria-label="Stop — 세션 중지"');
   });
@@ -557,7 +565,7 @@ describe('panel header — the session chip and its one action', () => {
   it('idle → Close, archived → Trash, sleeping → Close; the words follow the root vocabulary', () => {
     expect(head(card({ activityState: 'idle' }), 'idle')).toContain('aria-label="Close — 세션 종료"');
     const archived = head(card({ activityState: 'idle', terminated: true }), 'closed');
-    expect(archived).toContain('btn-trash');
+    expect(archived).toContain('data-action="trash"');
     expect(archived).toContain('>보관</span>');
     expect(head(card({ activityState: 'idle' }), 'closed')).toContain('>휴면</span>');
   });
@@ -576,11 +584,11 @@ describe('panel header — the session chip and its one action', () => {
   });
 
   it('a reader who does not own it, or a sibling instance, gets a disabled action', () => {
-    expect(head(card({ ownerId: 'U9' }), 'working')).toMatch(/btn-stop"[^>]* disabled/);
+    expect(head(card({ ownerId: 'U9' }), 'working')).toMatch(/data-action="stop"[^>]* disabled/);
     const sib = head(card({ environment: { instanceName: 'other', host: 'h', port: 1 } }), 'working', {
       SELF_INSTANCE_NAME: 'me',
     });
-    expect(sib).toMatch(/btn-stop" disabled/);
+    expect(sib).toMatch(/data-action="stop" disabled/);
   });
 });
 
@@ -1384,7 +1392,15 @@ describe('a live goal update never rebinds a focused control to another goal (ex
         'isBusy',
         'renderCardGoal',
       ],
-      ['GOAL_STATUS_LABELS', 'GOAL_SVG', 'GOAL_VIA_LABELS', '_goalHistoryOpen', '_goalErrors', '_busy'],
+      [
+        'GOAL_STATUS_LABELS',
+        'GOAL_STATUS_TONE',
+        'GOAL_SVG',
+        'GOAL_VIA_LABELS',
+        '_goalHistoryOpen',
+        '_goalErrors',
+        '_busy',
+      ],
     );
     const html = goal.renderCardGoal(card(), 'working', true);
     expect(html).toContain('data-mk="goal:g1"');
@@ -1605,6 +1621,7 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
       ],
       [
         'AGENT_STATUS_LABEL',
+        'AGENT_STATUS_TONE',
         'TASK_FATE_LABEL',
         'TASK_PAUSE_SVG',
         'TASK_STOP_SVG',
@@ -1709,12 +1726,12 @@ describe('interaction state survives live renders on both surfaces', () => {
   it('a busy action renders disabled and aria-busy, whoever renders it', () => {
     const m = load<{ sessionActionHtml(s: unknown, col: string, where: string): string }>(
       ['esc', 'escAttr', 'escJs', 'toNum', 'pendingAutoResume', 'isBusy', 'sessionActionHtml'],
-      ['SESSION_ACTION_ARIA'],
+      ['SESSION_ACTION_ARIA', 'SESSION_ACTION_TONE'],
       { _busy: { 'inst::C1:t1|action': true }, currentUserId: 'U1', SELF_INSTANCE_NAME: '', READ_ONLY_MSG: 'ro' },
     );
     const html = m.sessionActionHtml(card(), 'working', 'panel');
     expect(html).toContain('aria-busy="true"');
-    expect(html).toMatch(/btn-stop"[^>]* disabled/);
+    expect(html).toMatch(/data-action="stop"[^>]* disabled/);
   });
 
   it('a live repaint keeps the reader where they were reading', () => {
@@ -1726,7 +1743,9 @@ describe('interaction state survives live renders on both surfaces', () => {
   it('closing the panel and ending the session are different names', () => {
     const header = PAGE.slice(PAGE.indexOf('<div class="panel-header">'), PAGE.indexOf('<div class="panel-body"'));
     // SSOT 2026-10-29 T2: ✕ closes this session's detail card (and folds its card) — not "the panel".
-    expect(header).toMatch(/class="panel-close"[^>]*aria-label="작업 카드 닫기"[^>]*onclick="closeDetailCard\(\)"/);
+    expect(header).toMatch(
+      /class="ui-icon-btn is-bordered panel-close"[^>]*aria-label="작업 카드 닫기"[^>]*onclick="closeDetailCard\(\)"/,
+    );
     expect(header).not.toContain('onclick="closePanel()"');
     // The overlay (the sheet's backdrop) does the same.
     expect(PAGE).toContain('<div class="slide-panel-overlay" id="panel-overlay" onclick="closeDetailCard()"></div>');
@@ -1766,7 +1785,7 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'OWNER_BADGE_HUES'];
 const FACE_ENV = {
   dhShow: () => true,
   dhTruncate: () => null,

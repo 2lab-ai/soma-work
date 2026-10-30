@@ -32,7 +32,12 @@ function clientVar(name: string): string {
   return cook(m[1]);
 }
 
-const CSS = cook(TEMPLATE.slice(TEMPLATE.indexOf('<style>') + '<style>'.length, TEMPLATE.indexOf('</style>')));
+const CSS = cook(
+  TEMPLATE.slice(
+    TEMPLATE.indexOf('<style>') + '<style>'.length,
+    TEMPLATE.indexOf('</style>', TEMPLATE.indexOf('<style>')),
+  ),
+);
 const FNS = [
   'esc',
   'escAttr',
@@ -58,6 +63,7 @@ const FNS = [
 ];
 const VARS = [
   'GOAL_STATUS_LABELS',
+  'GOAL_STATUS_TONE',
   'GOAL_SVG',
   'GOAL_VIA_LABELS',
   '_goalHistoryOpen',

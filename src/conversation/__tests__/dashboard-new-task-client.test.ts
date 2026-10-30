@@ -71,6 +71,7 @@ vi.mock('../../session-archive', () => ({
 
 let html = '';
 let css = '';
+let kit = '';
 let script = '';
 
 beforeAll(async () => {
@@ -84,6 +85,7 @@ beforeAll(async () => {
   expect(res.statusCode).toBe(200);
   html = res.body;
   css = html.match(/<style>([\s\S]*?)<\/style>/)![1];
+  kit = html.match(/<style id="ui-kit">([\s\S]*?)<\/style>/)![1];
   script = html.match(/<script>([\s\S]*?)<\/script>/)![1];
   (globalThis as any).__stopNewTaskServer = webServer.stopWebServer;
 }, 180_000);
@@ -138,15 +140,21 @@ describe('T1 — the New task entry is always in reach, calm', () => {
       expect(css, String(gone)).not.toMatch(gone);
     expect(css).not.toMatch(/\.new-task-btn\s*\{[^}]*animation:/);
     expect(css).not.toMatch(/\.new-task-btn:hover\s*\{[^}]*transform/);
-    expect(css).toMatch(/\.new-task-btn\s*\{[^}]*background: var\(--ib-text\);[^}]*color: var\(--ib-card\);/);
+    // D1: the top-bar entry is the kit's ink primary (.ui-btn.is-primary, ui-kit.css) with a kit key for N.
+    expect(html).toMatch(/<button type="button" class="ui-btn is-primary new-task-btn" id="new-task-btn"/);
+    expect(kit).toMatch(
+      /\.ui-btn\.is-primary \{ background: var\(--ui-ib-text\); border-color: var\(--ui-ib-text\); color: var\(--ui-ib-card\); \}/,
+    );
     expect(css).toMatch(
       /\.new-task-fab\s*\{[^}]*background: var\(--ib-text\);[^}]*animation: nt-fab-in 240ms var\(--ease-out\) both;/,
     );
     expect(css).toContain(
       '@keyframes nt-fab-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: none; } }',
     );
-    expect(css).toMatch(/\.nt-submit\s*\{[^}]*background: var\(--ib-text\);/);
-    expect(html).toMatch(/id="new-task-btn"[^>]*>[\s\S]*?<kbd class="nt-kbd" aria-hidden="true">N<\/kbd><\/button>/);
+    expect(html).toMatch(/<button type="submit" class="ui-btn is-primary is-lg nt-submit" id="nt-submit">/);
+    expect(html).toMatch(
+      /id="new-task-btn"[^>]*>[\s\S]*?<kbd class="ui-kbd nt-kbd" aria-hidden="true">N<\/kbd><\/button>/,
+    );
     const reduced = mediaBlock('@media (prefers-reduced-motion: reduce) {\n  /* New task');
     expect(reduced).toMatch(/\.new-task-btn/);
     expect(reduced).toMatch(/\.new-task-fab/);
@@ -245,14 +253,18 @@ describe('T12 — PC and phone layouts are designed separately', () => {
 
   it('touch: 44px targets and 16px text in the instruction field (no iOS zoom)', () => {
     const coarse = mediaBlock('@media (pointer: coarse) {\n  /* New task');
-    expect(coarse).toMatch(/\.nt-tool[^{]*\{[^}]*min-(height|width):\s*44px/);
+    // The tools are the kit's icon buttons: 44px on touch is ui-kit.css's own rule.
+    expect(html).toMatch(/<button type="button" class="ui-icon-btn nt-tool" id="nt-attach"/);
+    expect(kit).toMatch(
+      /@media \(pointer: coarse\), \(max-width: 639px\) \{[^@]*\.ui-icon-btn, \.ui-icon-btn\.is-sm, \.ui-icon-btn\.is-bordered \{ width: 44px; height: 44px; \}/,
+    );
     expect(coarse).toMatch(/\.nt-prompt[^{]*\{[^}]*font-size:\s*16px/);
   });
 
   it('the camera button is shown on touch devices only (PC gets drop / paste instead)', () => {
     expect(css).toMatch(/\.nt-tool-camera\s*\{[^}]*display:\s*none/);
     const coarse = mediaBlock('@media (pointer: coarse) {\n  /* New task');
-    expect(coarse).toMatch(/\.nt-tool-camera\s*\{[^}]*display:\s*inline-flex/);
+    expect(coarse).toMatch(/\.nt-tool-camera\s*\{[^}]*display:\s*inline-grid/);
   });
 
   it('the whole page script still compiles', () => {

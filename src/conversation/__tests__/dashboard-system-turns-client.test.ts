@@ -288,7 +288,7 @@ describe('C2 — the one-line row', () => {
     expect(out).toContain('<span class="turn-name sys-name" title="하네스가 보낸 입력 — Z의 세션">System</span>');
     expect(out).not.toContain('user-avatar');
     expect(out).not.toContain('<span class="turn-name">Z</span>');
-    expect(out).toContain('<span class="sys-badge" data-kind="goal">Goal #2/10</span>');
+    expect(out).toContain('<span class="ui-chip sys-badge" data-kind="goal">Goal #2/10</span>');
     expect(out).toContain('<span class="sys-line">직전 평가: needs &lt;evidence&gt; &amp; tests</span>');
     expect(out).toContain('<dt>회차</dt><dd>2 / 10</dd>');
     expect(out).toContain(
@@ -302,7 +302,7 @@ describe('C2 — the one-line row', () => {
     const { renderTurn } = api();
     // The avatar is a drawn icon (no letter that could read as someone's initial).
     const svg = String(clientVarValue('SYS_AVATAR_SVG'));
-    expect(svg).toMatch(/^<svg [^>]*viewBox="0 0 16 16"[^>]*>[\s\S]*<\/svg>$/);
+    expect(svg).toBe('<i data-ui-icon="gear"></i>'); // the icon set's gear, filled in by the server
     const sysAvatar = `<div class="turn-avatar sys-avatar" aria-hidden="true">${svg}</div>`;
     for (const t of [
       user(RESTART_PROMPT, SYSTEM),
@@ -354,7 +354,7 @@ describe('C2 — the one-line row', () => {
 
   it('a restart row says so in one line', () => {
     const out = api().renderTurn(user(RESTART_PROMPT, SYSTEM));
-    expect(out).toContain('<span class="sys-badge" data-kind="restart">시스템 재시작</span>');
+    expect(out).toContain('<span class="ui-chip sys-badge" data-kind="restart">시스템 재시작</span>');
     expect(out).toContain('<span class="sys-line">중단된 작업 자동 재개</span>');
     expect(out).toContain('<pre class="sys-raw">The service was restarted and the previous task was interrupted.');
   });
@@ -386,7 +386,7 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
   it('running: elapsed / default estimate, %, a progressbar — and the ticker starts', () => {
     const a = api();
     const out = a.renderTurn(user('/compact', { ...SYSTEM, compact: {}, timestamp: Date.now() - 42_000 }));
-    expect(out).toContain('<span class="sys-badge" data-kind="compact">자동 압축</span>');
+    expect(out).toContain('<span class="ui-chip sys-badge" data-kind="compact">자동 압축</span>');
     expect(out).toContain('data-cp-live="1"');
     expect(out).toContain('data-cp-est="150000"');
     expect(out).toContain('<span class="cp-time"><span class="cp-verb">압축 중 · </span>0:42 / 약 2:30</span>');
@@ -435,7 +435,7 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
       }),
     );
     expect(out).not.toContain('data-cp-live');
-    expect(out).toContain('<span class="sys-badge" data-kind="compact">자동 압축</span>');
+    expect(out).toContain('<span class="ui-chip sys-badge" data-kind="compact">자동 압축</span>');
     expect(out).toContain('<span class="sys-line">자동 압축 처리 · 182.3K → 31.0K 토큰 · 2m 14s</span>');
     expect(out).toContain('<dt>상태</dt><dd class="cp-state">완료</dd>');
     expect(out).toContain('<dt>압축 전 → 후</dt><dd>182,340 → 31,020 토큰 (−83%)</dd>');
@@ -824,7 +824,7 @@ describe('C5 — background-work-resume reads as its own badge', () => {
   it('renderTurn: one line with its badge', () => {
     const out = api().renderTurn(user(one, SYSTEM));
     expect(out).toContain('data-sys="bgwork"');
-    expect(out).toContain('<span class="sys-badge" data-kind="bgwork">백그라운드 재개 #1/6</span>');
+    expect(out).toContain('<span class="ui-chip sys-badge" data-kind="bgwork">백그라운드 재개 #1/6</span>');
   });
 });
 
@@ -901,7 +901,7 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
     expect(out).toContain('<div class="io-label">지시<span class="io-who is-sys">System</span></div>');
     expect(out).not.toContain('<span class="io-who">Z</span>');
     expect(out).toContain(`<details class="io-sys" ontoggle="ioSysToggle(this,'${CID}')">`);
-    expect(out).toContain('<span class="sys-badge" data-kind="goal">Goal #2/10</span>');
+    expect(out).toContain('<span class="ui-chip sys-badge" data-kind="goal">Goal #2/10</span>');
     expect(out).toContain('<span class="sys-line">직전 평가: No evidence: no files, diffs, or tests.</span>');
     expect(out).toContain('<dt>회차</dt><dd>2 / 10</dd>');
     expect(out).toContain('<pre class="sys-raw">[goal-continuation] Continue working');
@@ -911,10 +911,10 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
 
   it('restart (recorded before origins were kept) and background-work-resume read the same way', () => {
     const r = card(user(`${RESTART_PROMPT}\n\n--- 중단 시점 컨텍스트 ---\n세션 제목: 대시보드`)).html();
-    expect(r).toContain('<span class="sys-badge" data-kind="restart">시스템 재시작</span>');
+    expect(r).toContain('<span class="ui-chip sys-badge" data-kind="restart">시스템 재시작</span>');
     expect(r).toContain('<span class="sys-line">중단된 작업 자동 재개 · 대시보드</span>');
     const b = card(user(buildBackgroundWaitPrompt({ count: 1, labels: ['local_bash'] } as never, 2, 6), SYSTEM)).html();
-    expect(b).toContain('<span class="sys-badge" data-kind="bgwork">백그라운드 재개 #2/6</span>');
+    expect(b).toContain('<span class="ui-chip sys-badge" data-kind="bgwork">백그라운드 재개 #2/6</span>');
   });
 
   it('the row stays open across the card re-render (the morph drops attributes the markup lacks)', () => {
@@ -991,7 +991,7 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
       working: true,
     });
     const out = c.html();
-    expect(out).toContain('<span class="sys-badge" data-kind="compact">자동 압축</span>');
+    expect(out).toContain('<span class="ui-chip sys-badge" data-kind="compact">자동 압축</span>');
     expect(out).toContain('<span class="sys-line">컨텍스트 압축 (/compact)</span>');
     expect(out).toContain(
       `<div class="io-cp" data-cp-live="1" data-cp-start="${NOW - 30_000}" data-cp-est="120000" data-cp-label="자동 압축">`,
@@ -1137,7 +1137,7 @@ describe('C7 — the work log (작업 로그): an instruction entry reads like t
       '<div class="wl-row" role="button" tabindex="-1" aria-expanded="false" aria-controls="wl-detail-5">',
     );
     expect(out).toMatch(
-      /<div class="wl-head"><span class="sys-badge" data-kind="goal">Goal #2\/10<\/span><span class="wl-sys-line">직전 평가: No evidence: no files, diffs, or tests\.<\/span><span class="wl-time">/,
+      /<div class="wl-head"><span class="ui-chip sys-badge" data-kind="goal">Goal #2\/10<\/span><span class="wl-sys-line">직전 평가: No evidence: no files, diffs, or tests\.<\/span><span class="wl-time">/,
     );
     expect(out).not.toContain('[goal-continuation]');
     expect(out).not.toContain('<span class="wl-label">지시</span>');

@@ -1271,7 +1271,7 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'OWNER_BADGE_HUES'];
 type CardData = Record<string, unknown> & {
   badge?: { text: string; hue: number; title: string };
   since?: number;
@@ -2317,7 +2317,7 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
   const LIVE = '<span class="ar-vh pl-live" role="status" aria-live="polite"></span>';
 
   it('zero or missing tasks show the header (folded: 목록 없음) and, opened, an empty line', () => {
-    expect(CHEV).toContain('<svg class="pi-chev"');
+    expect(CHEV).toContain('<i data-ui-icon="chevron-down" class="pi-chev"></i>');
     for (const open of [false, true]) {
       const { container, renderPanelTasks } = tasksSection(open);
       for (const t of [[], undefined, null]) {

@@ -91,7 +91,9 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 /** The <style> block as served. */
-const CSS = cook(TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>')));
+const CSS = cook(
+  TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>', TEMPLATE.indexOf('<style>'))),
+);
 /** The page's <head> as written (module tags carry `${UI_LIB_VERSION}`). */
 const HEAD = TEMPLATE.slice(TEMPLATE.indexOf('<head>'), TEMPLATE.indexOf('</head>'));
 

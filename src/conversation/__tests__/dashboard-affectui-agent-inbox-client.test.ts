@@ -102,7 +102,7 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'OWNER_BADGE_HUES'];
 const CARD_ENV = {
   dhShow: () => true,
   dhTruncate: () => null,
@@ -852,7 +852,15 @@ describe('D10 — one primary button per open card', () => {
         'acQuestionHtml',
         'renderCardBody',
       ],
-      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_SVG', 'SESSION_ACTION_ARIA', '_busy'],
+      [
+        'RESUME_SVG',
+        'GOAL_STATUS_LABELS',
+        'GOAL_STATUS_TONE',
+        'GOAL_SVG',
+        'SESSION_ACTION_ARIA',
+        'SESSION_ACTION_TONE',
+        '_busy',
+      ],
       { ...STUBS, ...inject },
     ).renderCardBody(s, col);
   const card = (over: Record<string, unknown> = {}) => ({
@@ -887,8 +895,8 @@ describe('D10 — one primary button per open card', () => {
     }
     // The state action itself sits in that first row (a running card offers Stop).
     const running = body(card({ activityState: 'working' }), 'working');
-    expect(running.indexOf('btn-stop')).toBeGreaterThan(0);
-    expect(running.indexOf('btn-stop')).toBeLessThan(running.indexOf('</div>'));
+    expect(running.indexOf('data-action="stop"')).toBeGreaterThan(0);
+    expect(running.indexOf('data-action="stop"')).toBeLessThan(running.indexOf('</div>'));
   });
 
   it('my question or my permission prompt: the decision is the only call to action — no 작업 로그 beside it (SSOT 2026-10-29 T2)', () => {
@@ -1041,7 +1049,16 @@ describe('D10 — the open card renders one approval card per prompt; only what 
         'acQuestionHtml',
         'renderCardBody',
       ],
-      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_SVG', 'SESSION_ACTION_ARIA', '_busy', 'AC_SIBLING'],
+      [
+        'RESUME_SVG',
+        'GOAL_STATUS_LABELS',
+        'GOAL_STATUS_TONE',
+        'GOAL_SVG',
+        'SESSION_ACTION_ARIA',
+        'SESSION_ACTION_TONE',
+        '_busy',
+        'AC_SIBLING',
+      ],
       { ...STUBS, currentUserId: viewer, isSiblingSession: () => sibling },
     );
   }

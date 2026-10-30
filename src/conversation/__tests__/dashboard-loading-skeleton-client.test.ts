@@ -64,7 +64,9 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
 /** The page markup as served (between <body> and the first <script>). */
 const PAGE = cook(TEMPLATE.slice(TEMPLATE.indexOf('<body'), TEMPLATE.indexOf('<script>', TEMPLATE.indexOf('<body'))));
 /** The page CSS as served (the first <style> block). */
-const CSS = cook(TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>')));
+const CSS = cook(
+  TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>', TEMPLATE.indexOf('<style>'))),
+);
 
 function between(src: string, from: string, to: string): string {
   const a = src.indexOf(from);

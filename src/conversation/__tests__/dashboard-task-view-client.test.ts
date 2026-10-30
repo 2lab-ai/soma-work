@@ -62,12 +62,15 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
 }
 /** The page markup as served (the template between <body> and the first <script>). */
 const PAGE = cook(TEMPLATE.slice(TEMPLATE.indexOf('<body'), TEMPLATE.indexOf('<script>', TEMPLATE.indexOf('<body'))));
-const CSS = cook(TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>')));
+const CSS = cook(
+  TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>', TEMPLATE.indexOf('<style>'))),
+);
 
 const T0 = 1_700_000_000_000;
 const BASE_FNS = ['esc', 'escAttr', 'toNum', 'formatDuration', 'formatTaskTime', 'agentIconHtml'];
 const BASE_VARS = [
   'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
   'TASK_FATE_LABEL',
   'TASK_PAUSE_SVG',
   'TASK_STOP_SVG',
@@ -1173,7 +1176,7 @@ describe('browser receipt · a section landing cut short by a short body lands o
 describe('T1.6 · HIG: outside a list the 자세히 toggle is a button that behaves like a toggle, not a switch', () => {
   it('a pressed-state button whose background changes — no switch knob in the panel head', () => {
     expect(PAGE).toMatch(
-      /<button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false"[^>]*><svg class="pdt-icon"/,
+      /<button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false"[^>]*><i data-ui-icon="list" class="pdt-icon"><\/i>/,
     );
     expect(PAGE).not.toContain('pdt-switch');
     // Tone pass P2: "pressed" is the neutral chip (--ib-pill, a --ib-muted edge), not an accent fill —
