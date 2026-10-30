@@ -42,10 +42,15 @@ function clientVar(name: string): string {
   return cook(m[1]);
 }
 /** A top-level `document.addEventListener('<ev>', function(e) { … });` of the page script. */
-function clientListener(ev: string): string {
-  const at = TEMPLATE.indexOf(`\ndocument.addEventListener('${ev}', function(e) {`);
-  if (at < 0) throw new Error(`listener ${ev} not found`);
-  return cook(TEMPLATE.slice(at + 1, TEMPLATE.indexOf('\n});', at) + 4));
+// The page's document-level listener for ev — the one whose body names `needle` when the page has several
+// (D3 group 3 added <ui-choice-form>'s ui-change listener above the usage breakdown's).
+function clientListener(ev: string, needle = ''): string {
+  const head = `\ndocument.addEventListener('${ev}', function(e) {`;
+  for (let at = TEMPLATE.indexOf(head); at >= 0; at = TEMPLATE.indexOf(head, at + 1)) {
+    const src = TEMPLATE.slice(at + 1, TEMPLATE.indexOf('\n});', at) + 4);
+    if (src.includes(needle)) return cook(src);
+  }
+  throw new Error(`listener ${ev} (${needle}) not found`);
 }
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, extra: string[] = []): T {
   const names = Object.keys(inject);
@@ -384,7 +389,7 @@ describe('<ui-compact-breakdown> — where the usage goes: by model for everyone
       ['toNum', 'fmtUsd', 'usageBreakdownData', 'paintUsageBreakdown', 'paintUsage'],
       ['_usageView', '_usageReport', 'USAGE_VIEWS'],
       env,
-      [clientListener('ui-change')],
+      [clientListener('ui-change', 'usage-cb')],
     );
     m.paintUsage(REPORT);
     m.paintUsage(REPORT);
