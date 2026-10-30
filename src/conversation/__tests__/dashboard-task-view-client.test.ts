@@ -409,7 +409,7 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
     expect(runIds(el.innerHTML)).not.toContain('T3');
     expect(runIds(el.innerHTML)).not.toContain('T4');
     expect(el.innerHTML).toContain(
-      '<button type="button" class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="false" onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()">&#x25BC; 실행 전에 계획에서 빠짐 <span class="pl-earlier-counts">2</span></button>',
+      '<button type="button" class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="false" onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()"><span class="chev" aria-hidden="true"></span>실행 전에 계획에서 빠짐 <span class="pl-earlier-counts">2</span></button>',
     );
     expect(el.innerHTML).not.toContain('#T3');
     open({ earlier: true });

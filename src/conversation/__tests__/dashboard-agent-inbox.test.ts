@@ -120,7 +120,10 @@ describe('agent inbox board — layout (§3.1)', () => {
       '<button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()">',
     );
     expect(btn).toBeGreaterThan(0);
-    expect(head.indexOf('class="seg" role="group" aria-label="Board layout"')).toBeGreaterThan(btn);
+    // Tone pass P8: the group's name and its two buttons are Korean (보드 · 목록).
+    expect(head.indexOf('class="seg" role="group" aria-label="보드 보기"')).toBeGreaterThan(btn);
+    expect(head).toContain('<span>보드</span></button>');
+    expect(head).toContain('<span>목록</span></button>');
     expect(TEMPLATE).toContain("var SHOW_ARCHIVES_KEY = 'soma-show-archives';");
     expect(TEMPLATE).toContain('var showArchives = readShowArchives();');
     const toggle = fnBody('renderArchivesToggle');
@@ -544,6 +547,83 @@ describe('tone pass P7 — surfaces and elevation', () => {
     expect(TEMPLATE).not.toContain('&#x1F3AF;');
     expect(TEMPLATE.match(/<span class="cgl-icon" aria-hidden="true">' \+ GOAL_SVG \+ '<\/span>/g)).toHaveLength(2);
     expect(TEMPLATE).toContain(`<span class="cg-label">' + GOAL_SVG + 'Goal</span>`);
+  });
+});
+
+// Tone pass P8 — copy: Korean chrome from one STRINGS table, "…" not "...", no emoji in labels; the
+// text triangles and the close / regenerate characters are the icon set's 16-grid stroke glyphs.
+describe('tone pass P8 — copy and glyphs', () => {
+  it('no emoji or text triangles in the chrome: close, regenerate, warnings, chevrons are glyphs', () => {
+    for (const s of [
+      '&#x1F504;',
+      '\\uD83D\\uDD04',
+      '&#x2715;',
+      '&#xD7;</button>',
+      '\\u274C',
+      '\\u26A0\\uFE0F',
+      '\\uD83D\\uDCCB',
+      '\\u2705',
+    ]) {
+      expect(TEMPLATE, s).not.toContain(s);
+    }
+    for (const s of ['&#x25B2;', '&#x25BC;', "'\\\\25B6 '", "'\\\\25BC '", '▶ 수동 실행', "'🔐 '"]) {
+      expect(TEMPLATE, s).not.toContain(s);
+    }
+    // One chevron: the icon set's, drawn as a mask in currentColor, turned by aria-expanded.
+    expect(TEMPLATE).toMatch(
+      /\n\.chev, \.turn-raw summary\.turn-expand-btn::before \{[^}]*mask: var\(--chev\) center \/ contain no-repeat;/,
+    );
+    expect(TEMPLATE).toContain('.chev.is-up, [aria-expanded="true"] > .chev { transform: rotate(180deg); }');
+    expect(TEMPLATE).toContain(`<span class="wl-g-chev chev is-right" aria-hidden="true"></span>`);
+    // The close buttons and the subtitle's regenerate are SVGs with a name.
+    expect(TEMPLATE).toMatch(
+      /class="panel-close"[^>]*>\s*<svg viewBox="0 0 16 16"[^>]*><path d="M4 4l8 8M12 4l-8 8"\/><\/svg><\/button>/,
+    );
+    expect(TEMPLATE).toMatch(/id="panel-title-sub-regen"[^>]*aria-label="부제 다시 만들기"[^>]*><svg /);
+  });
+
+  it('Korean chrome with "…": the panel, the lifecycle dialog and the board tools; the panel copy comes from STRINGS', () => {
+    for (const s of [
+      'Session Detail</h3>',
+      '>Session lifecycle<',
+      'title="Session lifecycle (admin)"',
+      'aria-label="Usage stats"',
+      'aria-label="Breadcrumb"',
+      '<span>Lifecycle</span>',
+    ]) {
+      expect(TEMPLATE, s).not.toContain(s);
+    }
+    expect(TEMPLATE).toContain('<h3 id="panel-title" tabindex="-1">작업 카드</h3>');
+    expect(TEMPLATE).toContain('<h3 id="lifecycle-title">세션 수명 주기</h3>');
+    for (const s of [
+      "'Retrying...'",
+      'Generating summary...',
+      "'Generating title...'",
+      "previous || 'Error'",
+      'Multi-choice data unavailable',
+      'Multi-choice questions could not be loaded',
+      'Title generation failed',
+    ]) {
+      expect(TEMPLATE, s).not.toContain(s);
+    }
+    const table = TEMPLATE.slice(
+      TEMPLATE.indexOf('var STRINGS = {'),
+      TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')),
+    );
+    for (const k of [
+      'summaryFailed',
+      'summaryPending',
+      'retry',
+      'retrying',
+      'titlePending',
+      'titleFailed',
+      'error',
+      'mcUnavailable',
+      'mcLoadFailed',
+    ]) {
+      expect(table, k).toMatch(new RegExp(`\\n  ${k}: '[^']+'`));
+    }
+    expect(table).not.toMatch(/\.\.\./);
   });
 });
 

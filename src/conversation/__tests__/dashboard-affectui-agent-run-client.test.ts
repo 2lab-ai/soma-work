@@ -472,7 +472,7 @@ describe('the run list folds past TASK_RUNS_SHOWN; replaced and skipped tasks; t
     const html = p.el.innerHTML;
     expect(runRows(html).map(idOf)).toEqual(many.slice(3).map((t) => t.id));
     expect(html).toContain(
-      '<ol class="pl-list tr-list" aria-label="실행된 태스크"><li class="pl-fold"><button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()">&#x25BC; 이전 실행 3개 보기</button></li>',
+      '<ol class="pl-list tr-list" aria-label="실행된 태스크"><li class="pl-fold"><button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()"><span class="chev" aria-hidden="true"></span>이전 실행 3개 보기</button></li>',
     );
     // The count is every run, folded ones included.
     expect(html).toContain('실행된 태스크 <span class="tr-count">15</span>');
@@ -480,7 +480,7 @@ describe('the run list folds past TASK_RUNS_SHOWN; replaced and skipped tasks; t
     open.render(many);
     expect(runRows(open.el.innerHTML)).toHaveLength(15);
     expect(open.el.innerHTML).toContain(
-      '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()">&#x25B2; 최근 12개만 보기</button>',
+      '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()"><span class="chev is-up" aria-hidden="true"></span>최근 12개만 보기</button>',
     );
     const twelve = plan();
     twelve.render(many.slice(0, 12));
@@ -525,7 +525,7 @@ describe('the run list folds past TASK_RUNS_SHOWN; replaced and skipped tasks; t
     expect(t8).toContain('<span class="pl-aside">1m 0s</span>');
     // Never ran: not a run — folded behind its count.
     expect(html).toContain(
-      '<button type="button" class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="false" onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()">&#x25BC; 실행 전에 계획에서 빠짐 <span class="pl-earlier-counts">1</span></button>',
+      '<button type="button" class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="false" onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()"><span class="chev" aria-hidden="true"></span>실행 전에 계획에서 빠짐 <span class="pl-earlier-counts">1</span></button>',
     );
     expect(html).not.toContain('never ran');
     expect(text(html)).toContain('실행 3 · 완료 1·빠짐 1');

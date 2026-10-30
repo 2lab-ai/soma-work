@@ -4713,6 +4713,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   color: var(--tint-done-fg);
   font-weight: 600;
 }
+.mc-q-selected .mc-sel-mark { display: inline-flex; flex-shrink: 0; color: var(--st-done); }
+.mc-q-selected .mc-sel-mark svg { width: 14px; height: 14px; }
 .mc-q-selected .mc-sel-label {
   flex: 1;
   min-width: 0;
@@ -13019,7 +13021,7 @@ function renderMultiChoicePanel(s) {
     if (sel) {
       // Show selected answer with edit button
       html += '<div class="mc-q-selected">'
-        + '<span>\\u2705</span>'
+        + '<span class="mc-sel-mark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-6.5"/></svg></span>'
         + '<span class="mc-sel-label">' + esc(sel.label) + '</span>'
         + '<button class="mc-q-edit-btn" onclick="event.stopPropagation();editMc(\\'' + escJs(key) + '\\',' + qi + ')">' + STRINGS.mcChange + '</button>'
         + '</div>';
