@@ -54,7 +54,9 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
 /** The page markup as served (the template between <body> and the first <script>). */
 const PAGE = cook(TEMPLATE.slice(TEMPLATE.indexOf('<body'), TEMPLATE.indexOf('<script>', TEMPLATE.indexOf('<body'))));
 /** The page CSS as served. */
-const CSS = cook(TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>')));
+const CSS = cook(
+  TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>', TEMPLATE.indexOf('<style>'))),
+);
 const text = (html: string) => html.replace(/<[^>]+>/g, '').replace(/&middot;/g, '·');
 
 const T0 = 1_700_000_000_000;
@@ -147,6 +149,7 @@ function plan(opts: { expanded?: boolean; earlier?: boolean; open?: boolean } = 
     ],
     [
       'AGENT_STATUS_LABEL',
+      'AGENT_STATUS_TONE',
       'TASK_FATE_LABEL',
       'TASK_PAUSE_SVG',
       'TASK_STOP_SVG',
@@ -272,7 +275,7 @@ describe('plan — the Tasks section of the tab: the tasks that ran, in the orde
     const r = rows(html);
     expect(r.map(idOf)).toEqual(['T1', 'T2', 'T3']);
     expect(r.map((x) => /data-step="(\w+)"/.exec(x)?.[1])).toEqual(['done', 'active', 'pending']);
-    expect(r[0]).toMatch(/<span class="pl-marker" aria-hidden="true"><svg/);
+    expect(r[0]).toContain('<span class="pl-marker" aria-hidden="true"><i data-ui-icon="check"></i>');
     expect(r[1]).toContain('<span class="pl-marker" aria-hidden="true"><span class="spinner ag-spinner"');
     expect(r[2]).toContain('<span class="pl-marker" aria-hidden="true"></span>');
     expect(r.filter((x) => x.includes('aria-current="step"'))).toHaveLength(1);
@@ -1682,7 +1685,7 @@ describe('panel head (D18)', () => {
         'sessionActionHtml',
         'panelHeadHtml',
       ],
-      ['AGENT_STATUS_LABEL', 'SESSION_ACTION_ARIA', '_busy'],
+      ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'SESSION_ACTION_ARIA', 'SESSION_ACTION_TONE', '_busy'],
       {
         currentUserId: 'U1',
         SELF_INSTANCE_NAME: '',
@@ -1694,7 +1697,7 @@ describe('panel head (D18)', () => {
 
   it('running: the pill, 시작 HH:MM · the elapsed time of this turn, Stop', () => {
     const html = head(CARD(), 'working');
-    expect(html).toContain('class="ps-chip is-running"');
+    expect(html).toContain('class="ui-status is-pill ps-chip" data-tone="run" data-live>');
     expect(html).toContain('<span class="ps-time" title="이번 턴 시작 · 경과">');
     expect(text(html)).toContain('시작 ');
     expect(html).toContain(`<span class="card-timer-live" data-leg-started="${T0}" data-accumulated="0"></span>`);
@@ -1709,10 +1712,10 @@ describe('panel head (D18)', () => {
     expect(text(html)).not.toContain('시작 ');
   });
 
-  it('the chip is a tinted pill (markup unchanged)', () => {
-    expect(CSS).toMatch(
-      /\.ps-chip \{[^}]*border-radius: 99px;[^}]*background: color-mix\(in srgb, var\(--ag-c\) 13%, transparent\);[^}]*border: 0;/,
-    );
+  it("the chip is the kit's tinted status pill (.ui-status.is-pill) — the page draws no chip of its own", () => {
+    expect(CSS).not.toMatch(/\.ps-chip \{/);
+    expect(CSS).not.toMatch(/\.ps-icon \{/);
+    expect(head(CARD({ activityState: 'idle' }), 'idle')).toMatch(/<span class="ui-status is-pill ps-chip">/);
   });
 });
 

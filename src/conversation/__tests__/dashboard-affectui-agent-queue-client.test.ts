@@ -847,22 +847,21 @@ describe('wiring — the lane’s job boxes, the paint, the fold, the drawer', (
     const twin: any = { isConnected: true, focus: twinFocus, getAttribute: () => 'runs-abc' };
     const shadowRoot: any = { activeElement: btn, querySelectorAll: () => [twin] };
     const host: any = { shadowRoot, getAttribute: () => null };
+    // D1 (C-05): the drawer is @2lab.ai/ui <ui-drawer> — the page opens and closes it with show() / hide().
     const drawer = fakeEl('cron-drawer') as any;
-    drawer.classList = { add() {}, remove() {} };
-    drawer.removeAttribute = () => {};
-    const els: Record<string, any> = {
-      'cron-drawer': drawer,
-      'cron-drawer-overlay': { classList: { add() {}, remove() {} } },
-      'cron-drawer-close': { focus() {} },
-    };
+    drawer.show = vi.fn();
+    drawer.hide = vi.fn();
+    const els: Record<string, any> = { 'cron-drawer': drawer };
     const document = { activeElement: host, getElementById: (id: string) => els[id] };
-    const f = load<Fns>(['openCronDrawer', 'closeCronDrawer'], ['_cronDrawerReturnFocus'], {
+    const f = load<Fns>(['openCronDrawer', 'cronDrawerShut', 'closeCronDrawer'], ['_cronDrawerReturnFocus'], {
       document,
       paintCronDrawer: () => {},
       _cronDrawerKey: null,
     });
     f.openCronDrawer('id:job-qa');
+    expect(drawer.show).toHaveBeenCalledTimes(1);
     f.closeCronDrawer();
+    expect(drawer.hide).toHaveBeenCalledTimes(1);
     expect(focus).toHaveBeenCalledTimes(1);
     // a lane render while the drawer was open replaced the control
     f.openCronDrawer('id:job-qa');
@@ -871,10 +870,44 @@ describe('wiring — the lane’s job boxes, the paint, the fold, the drawer', (
     expect(twinFocus).toHaveBeenCalledTimes(1);
   });
 
+  it('focus lands only after the modal sheet has closed, then the next step runs (a run opens its panel)', () => {
+    const focus = vi.fn();
+    const btn: any = { isConnected: true, focus, getAttribute: () => 'runs-abc' };
+    const host: any = { shadowRoot: { activeElement: btn, querySelectorAll: () => [] }, getAttribute: () => null };
+    const dialog = { open: true };
+    const drawer = fakeEl('cron-drawer') as any;
+    drawer.show = vi.fn();
+    drawer.hide = vi.fn();
+    drawer.shadowRoot = { querySelector: (s: string) => (s === 'dialog' ? dialog : null) };
+    const frames: Array<() => void> = [];
+    const document = { activeElement: host, getElementById: (id: string) => (id === 'cron-drawer' ? drawer : null) };
+    const f = load<Fns>(['openCronDrawer', 'cronDrawerShut', 'closeCronDrawer'], ['_cronDrawerReturnFocus'], {
+      document,
+      paintCronDrawer: () => {},
+      _cronDrawerKey: null,
+      requestAnimationFrame: (cb: () => void) => frames.push(cb),
+    });
+    f.openCronDrawer('id:job-qa');
+    const after = vi.fn(() => expect(focus).toHaveBeenCalledTimes(1));
+    (f.closeCronDrawer as (after?: () => void) => void)(after);
+    // still modal (the exit runs): the page is inert, nothing moves yet
+    expect(focus).not.toHaveBeenCalled();
+    expect(after).not.toHaveBeenCalled();
+    frames.shift()!();
+    expect(focus).not.toHaveBeenCalled();
+    dialog.open = false; // the element's exit ended
+    frames.shift()!();
+    expect(focus).toHaveBeenCalledTimes(1);
+    expect(after).toHaveBeenCalledTimes(1);
+  });
+
   it('D20 — the drawer stays the page’s: rows per run, Escape closes it, its countdown rides the page tick', () => {
     expect(clientFn('renderCronRunRow')).toContain('data-cron-open');
     expect(clientFn('paintCronDrawer')).toContain('cronGroupRuns(g)');
-    expect(TEMPLATE).toMatch(/Escape[\s\S]{0,200}closeCronDrawer/);
+    // Escape, the scrim and ✕ are the element's ui-close, answered by the page's own close (focus return).
+    expect(TEMPLATE).toContain(
+      "if (d) d.addEventListener('ui-close', function(e) { e.preventDefault(); closeCronDrawer(); });",
+    );
     const tick = clientFn('aqTick');
     expect(tick).toContain("getElementById('cron-drawer')");
     expect(tick).not.toContain("getElementById('capacity')");

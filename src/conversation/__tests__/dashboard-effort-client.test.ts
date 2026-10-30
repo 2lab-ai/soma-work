@@ -128,39 +128,40 @@ describe('top-bar default chips (T6)', () => {
   });
 
   it('the menu lists the options with the current one checked; the open owned session gets the scope box', () => {
+    // D1 (A-07): the defaults menu is @2lab.ai/ui <ui-menu> — the page hands it rows (data), never markup.
+    type Item = { kind: string; value?: string; label?: string; description?: string; checked?: boolean };
     const scope = vi.fn();
-    const fns = load<{ renderDefaultsMenu(kind: string): string }>(
-      ['esc', 'escAttr', 'escJs', 'renderDefaultsMenu'],
-      [],
+    const fns = load<{ defaultsMenuData(kind: string): { label: string; items: Item[] } }>(
+      ['defaultsMenuData'],
+      ['TD_ALSO_SESSION', '_tdAlsoSession'],
       { _myDefaults: defaults(), defaultsScopeSession: scope },
     );
     scope.mockReturnValue(null);
-    let html = fns.renderDefaultsMenu('model');
-    expect(html).toContain('새 세션 기본 모델');
-    expect(html).toContain('aria-checked="true"');
-    expect(html.match(/role="menuitemradio"/g)).toHaveLength(2);
-    expect(html).not.toContain('tdm-also-session');
-    // Values travel in data-* attributes, read by pickDefaultFrom (no inline JS strings).
-    expect(html).not.toMatch(/pickDefault\(\\?'/);
-    const picks: any[][] = [];
-    const { pickDefaultFrom } = load<{ pickDefaultFrom(el: any): void }>(['pickDefaultFrom'], [], {
-      pickDefault: (...a: any[]) => picks.push(a),
-    });
-    for (const m of html.matchAll(
-      /<button [^>]*data-td-kind="([^"]*)" data-td-value="([^"]*)" onclick="pickDefaultFrom\(this\)"/g,
-    )) {
-      const attrs: Record<string, string> = { 'data-td-kind': m[1], 'data-td-value': m[2].replace(/&amp;/g, '&') };
-      pickDefaultFrom({ getAttribute: (n: string) => attrs[n] });
-    }
-    expect(picks).toEqual([
-      ['model', 'opus[1m]'],
-      ['model', 'grok[1m]'],
-    ]);
+    let d = fns.defaultsMenuData('model');
+    expect(d.label).toBe('새 세션 기본 모델');
+    expect(d.items[0]).toEqual({ kind: 'heading', label: '새 세션 기본 모델' });
+    const radios = d.items.filter((it) => it.kind === 'radio');
+    expect(radios.map((it) => it.value)).toEqual(['opus[1m]', 'grok[1m]']);
+    expect(radios.filter((it) => it.checked)).toHaveLength(1);
+    expect(d.items.some((it) => it.kind === 'checkbox')).toBe(false);
+    // A pick arrives as the element's ui-select (values as data, never inside inline JS) and is saved by kind.
+    expect(TEMPLATE).toContain("if (d.kind === 'radio' && _tdMenuKind) pickDefault(_tdMenuKind, d.value);");
+    expect(TEMPLATE).not.toContain('pickDefaultFrom');
 
     scope.mockReturnValue({ key: 'self::C1:t1', displayHeadline: '대시보드 개선' });
-    html = fns.renderDefaultsMenu('effort');
-    expect(html).toContain('id="tdm-also-session" checked');
-    expect(html).toContain('열린 세션에도 적용 &mdash; 대시보드 개선');
+    d = fns.defaultsMenuData('effort');
+    expect(d.items[d.items.length - 1]).toEqual({
+      kind: 'checkbox',
+      value: 'td-also-session',
+      label: '열린 세션에도 적용',
+      description: '대시보드 개선',
+      checked: true,
+    });
+    // The box is answered too (a checkbox row keeps the menu open), and it is on again each time the menu opens.
+    expect(TEMPLATE).toContain(
+      "if (d.kind === 'checkbox' && d.value === TD_ALSO_SESSION) { _tdAlsoSession = !!d.checked; return; }",
+    );
+    expect(clientFn('openDefaultsMenu')).toContain('_tdAlsoSession = true;');
   });
 
   it('only an owned, live, local open session is a scope target', () => {
@@ -189,8 +190,7 @@ describe('top-bar default chips (T6)', () => {
     const postEffortSwitch = vi.fn(async () => ({ ok: true, result: { status: 'switched', effort: 'low' } }));
     const postModelSwitch = vi.fn();
     const status: any = { textContent: '', classList: { toggle: vi.fn() } };
-    const checkbox = { checked: true };
-    const document = { getElementById: (id: string) => (id === 'tdm-also-session' ? checkbox : status) };
+    const document = { getElementById: () => status };
     const myDefaults: any = defaults();
     const env = {
       document,
@@ -209,21 +209,22 @@ describe('top-bar default chips (T6)', () => {
       loadSessions: vi.fn(),
     };
     // Spec 13: the session branch takes the per-session busy lock and repaints the panel's picker.
-    const { pickDefault } = load<{ pickDefault(kind: string, value: string): Promise<void> }>(
-      ['isBusy', 'setBusy', 'setDefaultsStatus', 'pickDefault'],
-      ['_busy'],
-      { ...env, repaintPanelControlsFor: vi.fn() },
-    );
-    await pickDefault('effort', 'low');
+    // The scope box's state is the page's (_tdAlsoSession, answered from <ui-menu>'s ui-select).
+    const withBox = (on: boolean) =>
+      load<{ pickDefault(kind: string, value: string): Promise<void> }>(
+        ['isBusy', 'setBusy', 'setDefaultsStatus', 'pickDefault'],
+        ['_busy'],
+        { ...env, _tdAlsoSession: on, repaintPanelControlsFor: vi.fn() },
+      ).pickDefault;
+    await withBox(true)('effort', 'low');
     expect(patchSetting).toHaveBeenCalledWith('defaultEffort', 'low');
     expect(postEffortSwitch).toHaveBeenCalledWith('self::C1:t1', 'low');
     expect(postModelSwitch).not.toHaveBeenCalled();
     expect(myDefaults.effort.value).toBe('low');
     expect(status.textContent).toBe('기본 effort → LOW (새 세션부터) · 열린 세션에도 적용');
 
-    checkbox.checked = false;
     postEffortSwitch.mockClear();
-    await pickDefault('effort', 'high');
+    await withBox(false)('effort', 'high');
     expect(postEffortSwitch).not.toHaveBeenCalled();
   });
 
@@ -234,7 +235,8 @@ describe('top-bar default chips (T6)', () => {
       ['setDefaultsStatus', 'pickDefault'],
       [],
       {
-        document: { getElementById: (id: string) => (id === 'tdm-also-session' ? { checked: true } : status) },
+        document: { getElementById: () => status },
+        _tdAlsoSession: true,
         _myDefaults: defaults(),
         patchSetting: async () => ({ ok: false, error: 'effort는 low, medium, high, xhigh, max 중 하나여야 합니다' }),
         postEffortSwitch,
@@ -267,9 +269,9 @@ describe('top-bar chips stay clickable while a session panel is open (T6, review
   });
 
   it('the model scope box is offered only for a model the session switch accepts (a representative nickname)', () => {
-    const fns = load<{ renderDefaultsMenu(kind: string): string }>(
-      ['esc', 'escAttr', 'escJs', 'renderDefaultsMenu'],
-      [],
+    const fns = load<{ defaultsMenuData(kind: string): { items: { kind: string }[] } }>(
+      ['defaultsMenuData'],
+      ['TD_ALSO_SESSION', '_tdAlsoSession'],
       {
         _myDefaults: {
           model: {
@@ -284,7 +286,7 @@ describe('top-bar chips stay clickable while a session panel is open (T6, review
         REPRESENTATIVE_MODELS: [{ nickname: 'opus[1m]' }],
       },
     );
-    expect(fns.renderDefaultsMenu('model')).toContain('tdm-also-session');
+    expect(fns.defaultsMenuData('model').items.some((it) => it.kind === 'checkbox')).toBe(true);
     const picks: string[] = [];
     const only = load<{ sessionAcceptsModel(v: string): boolean }>(['sessionAcceptsModel'], [], {
       REPRESENTATIVE_MODELS: [{ nickname: 'opus[1m]' }],

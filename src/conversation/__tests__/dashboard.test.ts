@@ -1132,7 +1132,9 @@ describe('Dashboard API', () => {
     expect(script).not.toContain("',true,\\'\\',event.detail===0)");
     // The panel's ✕ and backdrop close the front detail card (and fold its card): no string arguments.
     expect(html).toContain('<div class="slide-panel-overlay" id="panel-overlay" onclick="closeDetailCard()"></div>');
-    expect(html).toMatch(/<button class="panel-close"[^>]*onclick="closeDetailCard\(\)">/);
+    expect(html).toMatch(
+      /<button type="button" class="ui-icon-btn is-bordered panel-close"[^>]*onclick="closeDetailCard\(\)">/,
+    );
   });
 
   it('should have all inline handlers escaped consistently', async () => {
@@ -1272,7 +1274,7 @@ describe('Dashboard API', () => {
     const btnMatch = html.match(/<button[^>]*id="theme-toggle"[^>]*>(.*?)<\/button>/);
     expect(btnMatch).not.toBeNull();
     expect(btnMatch![1]).toMatch(
-      /^<svg class="ic-sun"[^>]*aria-hidden="true">.*<\/svg><svg class="ic-moon"[^>]*aria-hidden="true">.*<\/svg>$/,
+      /^<svg [^>]*data-icon="sun" class="ic-sun"[^>]*aria-hidden="true">.*<\/svg><svg [^>]*data-icon="moon" class="ic-moon"[^>]*aria-hidden="true">.*<\/svg>$/,
     );
     expect(btnMatch![1].replace(/<[^>]+>/g, '').trim()).toBe('');
     expect(html).not.toContain('\\1F319');
