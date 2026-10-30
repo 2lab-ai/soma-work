@@ -748,6 +748,24 @@ export class ClaudeHandler implements TurnSteeringPort {
     this.sessionRegistry.setActivityStateByKey(sessionKey, state);
   }
 
+  // By-key forms of the calls a turn makes (#598 ④a): a Slack-less task has no
+  // channel/thread to build a Slack key from.
+  clearSessionIdByKey(sessionKey: string): void {
+    this.sessionRegistry.clearSessionIdByKey(sessionKey);
+  }
+
+  setSessionLinksByKey(sessionKey: string, links: SessionLinks): void {
+    this.sessionRegistry.setSessionLinksByKey(sessionKey, links);
+  }
+
+  addSourceWorkingDirByKey(sessionKey: string, dirPath: string): boolean {
+    return this.sessionRegistry.addSourceWorkingDirByKey(sessionKey, dirPath);
+  }
+
+  addMergeStatsByKey(sessionKey: string, prNumber: number, linesAdded: number, linesDeleted: number): void {
+    this.sessionRegistry.addMergeStatsByKey(sessionKey, prNumber, linesAdded, linesDeleted);
+  }
+
   async cleanupInactiveSessions(maxAge?: number): Promise<void> {
     return this.sessionRegistry.cleanupInactiveSessions(maxAge);
   }
