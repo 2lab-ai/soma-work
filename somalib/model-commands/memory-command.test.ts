@@ -152,6 +152,17 @@ describe('MEMORY page ops accept the canonical page id', () => {
     expect(day.episodic).toContain('묻지 말고 진행');
   });
 
+  it('episodic_append stores an observation passed as `body` (+ title) through the validated path', () => {
+    const validated = validateModelCommandRunArgs({
+      commandId: 'MEMORY',
+      params: { op: 'episodic_append', title: '리포트', body: '2026-10-30: 리포트 작성함', date: '2026-10-30' },
+    });
+    if (!validated.ok) throw new Error('unreachable');
+    expect(payloadOf(runModelCommand(validated.request, ctx())).ok).toBe(true);
+    const day = payloadOf(run({ op: 'episodic_get', date: '2026-10-30' })) as { episodic?: string };
+    expect(day.episodic).toContain('리포트 작성함');
+  });
+
   it('page_upsert creates a project→issue page from `id`', () => {
     const up = payloadOf(run({ op: 'page_upsert', id: 'project/soma-work/1234', current: 'spec' }));
     expect(up.ok).toBe(true);
