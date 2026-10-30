@@ -150,7 +150,7 @@ describe('top-bar default chips (T6)', () => {
 
     scope.mockReturnValue({ key: 'self::C1:t1', displayHeadline: '대시보드 개선' });
     d = fns.defaultsMenuData('effort');
-    expect(d.items.at(-1)).toEqual({
+    expect(d.items[d.items.length - 1]).toEqual({
       kind: 'checkbox',
       value: 'td-also-session',
       label: '열린 세션에도 적용',
