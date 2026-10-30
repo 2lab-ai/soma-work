@@ -442,7 +442,7 @@ function viewTurn(t) {
   var s = t.summary || {};
   v.markdown = t.summaryState === 'done'
     ? '**' + String(s.title || '').trim() + '**' + (s.text ? '\n\n' + String(s.text).trim() : '')
-    : t.summaryState === 'failed' ? '_요약하지 못했습니다._' : '_요약을 만드는 중입니다._';
+    : t.summaryState === 'failed' ? '*요약하지 못했습니다.*' : '*요약을 만드는 중입니다.*';
   v.source = '';
   v.attachments = true;
   if (t.loading) v.loading = true;
@@ -483,7 +483,8 @@ async function loadRaw(id) {
     var slot = btn && btn.closest ? btn.closest('[slot]') : null;
     if (slot && slot.parentNode) slot.parentNode.removeChild(slot);
   } else {
-    next.error = '원본 응답을 불러오지 못했습니다' + (res ? ' (HTTP ' + res.status + ')' : ' — 네트워크 오류');
+    // The element says "답변을 불러오지 못했습니다 (…)" around this: only the cause goes in.
+    next.error = res ? 'HTTP ' + res.status : '네트워크 오류';
     if (btn) { btn.disabled = false; btn.removeAttribute('aria-busy'); }
   }
   replaceTurn(next);

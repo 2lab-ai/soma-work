@@ -366,10 +366,10 @@ describe('client: what <ui-conversation> is shown (viewTurn)', () => {
       attachments: true,
     });
     expect(viewTurn({ id: 'a', role: 'assistant', at: 1, summaryState: 'failed' }).markdown).toBe(
-      '_요약하지 못했습니다._',
+      '*요약하지 못했습니다.*',
     );
     expect(viewTurn({ id: 'a', role: 'assistant', at: 1, summaryState: 'pending' }).markdown).toBe(
-      '_요약을 만드는 중입니다._',
+      '*요약을 만드는 중입니다.*',
     );
   });
 
@@ -454,7 +454,7 @@ describe('client: the raw output on request (G5-2, loadRaw)', () => {
   it('a failed fetch: the error (with the status) and Try again, the button usable again; a second press while loading is ignored', async () => {
     const h = harness(async () => ({ ok: false, status: 404, json: async () => ({ error: 'Turn not found' }) }));
     await h.api.loadRaw('a');
-    expect(h.conv.data.turns[1]).toMatchObject({ error: '원본 응답을 불러오지 못했습니다 (HTTP 404)', canRetry: true });
+    expect(h.conv.data.turns[1]).toMatchObject({ error: 'HTTP 404', canRetry: true });
     expect(h.conv.data.turns[1]).not.toHaveProperty('loading');
     expect(h.turns[1].loading).toBe(false);
     expect(h.btn.disabled).toBe(false);
@@ -463,7 +463,7 @@ describe('client: the raw output on request (G5-2, loadRaw)', () => {
       throw new Error('offline');
     });
     await net.api.loadRaw('a');
-    expect(net.conv.data.turns[1].error).toBe('원본 응답을 불러오지 못했습니다 — 네트워크 오류');
+    expect(net.conv.data.turns[1].error).toBe('네트워크 오류');
     net.turns[1].loading = true;
     await net.api.loadRaw('a');
     expect(net.fetch).toHaveBeenCalledTimes(1);
