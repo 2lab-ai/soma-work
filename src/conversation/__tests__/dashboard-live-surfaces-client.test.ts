@@ -292,60 +292,57 @@ describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
   });
 });
 
-describe('panel task rows carry id, elapsed time and tool calls (T7/T8)', () => {
-  const { renderPanelTaskItem } = load<{ renderPanelTaskItem(t: unknown): string }>(
-    [
-      'esc',
-      'escAttr',
-      'toNum',
-      'formatDuration',
-      'formatTaskTime',
-      'agentIconHtml',
-      'taskFateOf',
-      'renderPanelTaskItem',
-    ],
-    ['TASK_FATE_LABEL', 'TASK_PAUSE_SVG', 'TASK_STOP_SVG', 'TASK_SKIP_SVG'],
+// D3 E-22/E-23: a panel task is a <ui-task-runs> run (or a <ui-task-plan> step); the page hands it the id,
+// the times and the tool calls — the element draws the duration, the chip and the status word.
+describe('panel task runs carry id, times and tool calls (T7/T8)', () => {
+  const { taskRunsData, taskPlanData, taskRunsOf } = load<{
+    taskRunsData(ran: unknown[]): Array<Record<string, any>>;
+    taskPlanData(runs: unknown): Record<string, any>;
+    taskRunsOf(current: unknown[], earlier?: unknown[]): unknown;
+  }>(
+    ['toNum', 'taskFateOf', 'taskIdNum', 'taskRunStart', 'taskRunEnd', 'taskRunsOf', 'taskRunsData', 'taskPlanData'],
+    ['TASK_RUN_STATUS'],
   );
-  it('completed: id, duration and tool count', () => {
-    const html = renderPanelTaskItem({
+  it('completed: id, start and end, tool count', () => {
+    const [run] = taskRunsData([
+      { id: 'T4', content: 'Build', status: 'completed', startedAt: 5, completedAt: 9, toolCalls: 12 },
+    ]);
+    expect(run).toMatchObject({
       id: 'T4',
-      content: 'Build',
-      status: 'completed',
-      startedAt: 0,
-      completedAt: 0,
+      ref: '#T4',
+      title: 'Build',
+      status: 'done',
+      startedAt: 5,
+      endedAt: 9,
       toolCalls: 12,
     });
-    expect(html).toContain('<span class="task-id">#T4</span>');
-    expect(html).toContain('툴 12회');
   });
   it('task view T2: a step a later plan dropped after it ran keeps its tools and time; one that never ran has neither', () => {
-    const dropped = renderPanelTaskItem({
-      id: 'T5',
-      content: 'Stopped',
-      status: 'in_progress',
-      dropped: 'started',
-      startedAt: 1000,
-      removedAt: 61_000,
-      toolCalls: 6,
-    });
-    expect(dropped).toContain('data-step="dropped"');
-    // SSOT 2026-10-29 T5: a task a new plan replaced after it ran reads 교체됨 (was 중단) —
-    // its work stays on it, it was not stopped.
-    expect(dropped).toContain('<span class="pl-fate">교체됨</span><span class="pl-chip">툴 6회</span>');
-    expect(dropped).not.toContain('중단');
-    expect(dropped).toContain('<span class="pl-aside">1m 0s</span>');
-    expect(dropped).not.toContain('aria-current');
-    const skipped = renderPanelTaskItem({
-      id: 'T6',
-      content: 'Never ran',
-      status: 'pending',
-      dropped: 'unstarted',
-      toolCalls: 0,
-    });
-    expect(skipped).toContain('data-step="skipped"');
-    expect(skipped).toContain('<span class="pl-fate">실행 안 됨</span>');
-    expect(skipped).not.toContain('pl-chip');
-    expect(skipped).toContain('<span class="ar-vh">, 실행 안 됨</span>');
+    const [dropped] = taskRunsData([
+      {
+        id: 'T5',
+        content: 'Stopped',
+        status: 'in_progress',
+        dropped: 'started',
+        startedAt: 1000,
+        removedAt: 61_000,
+        toolCalls: 6,
+      },
+    ]);
+    // SSOT 2026-10-29 T5: a task a new plan replaced after it ran is dropped (교체됨), its work stays on it —
+    // never running, its time from its start to when it left.
+    expect(dropped).toMatchObject({ status: 'dropped', startedAt: 1000, endedAt: 61_000, toolCalls: 6 });
+    const runs = taskRunsOf(
+      [],
+      [{ id: 'T6', content: 'Never ran', status: 'pending', dropped: 'unstarted', toolCalls: 0 }],
+    );
+    const plan = taskPlanData(runs);
+    expect(plan.steps).toEqual([]);
+    expect(plan.earlier[0].steps).toEqual([
+      { id: 'skipped:T6', ref: '#T6', label: 'Never ran', status: 'pending', fate: 'dropped' },
+    ]);
+    // A plan step carries no tool count (nothing ran).
+    expect('toolCalls' in plan.earlier[0].steps[0]).toBe(false);
   });
 });
 

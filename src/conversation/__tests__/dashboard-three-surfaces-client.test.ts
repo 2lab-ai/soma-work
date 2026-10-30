@@ -1594,8 +1594,11 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
   // SSOT 2026-10-29 T5: the earlier lists are not a separate "이전 계획" block any more. Every
   // task that ran — the current list's and the earlier lists' alike — is one run in the order
   // it ran; a task a new plan dropped before it ran folds under 실행 전에 계획에서 빠짐.
+  // D3 E-22/E-23: opened, the runs are <ui-task-runs>' data and the plan left <ui-task-plan>'s.
   const rig = (open: boolean) => {
     const el = { style: {} as Record<string, string>, _html: '', innerHTML: '' };
+    const runsEl: { data?: Record<string, any> } = {};
+    const planEl: { data?: Record<string, any> } = {};
     const m = load<{ renderPanelTasks(tasks: unknown[], label: string, earlier: unknown[]): void }>(
       [
         'esc',
@@ -1606,19 +1609,16 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
         'formatTaskTime',
         'agentIconHtml',
         'taskFateOf',
-        'renderPanelTaskItem',
         'taskIdNum',
         'taskRunStart',
         'taskRunEnd',
         'taskTokTotal',
-        'formatTaskClock',
-        'taskCount',
-        'taskRunNumbers',
-        'taskRunDetailHtml',
-        'renderTaskRun',
         'taskRunsOf',
-        'taskSkippedHtml',
         'taskTotalsHtml',
+        'taskElData',
+        'taskRunsData',
+        'taskPlanData',
+        'taskRunsRestore',
         'planSummaryHtml',
         'renderPanelTasks',
       ],
@@ -1626,15 +1626,24 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
         'AGENT_STATUS_LABEL',
         'AGENT_STATUS_TONE',
         'TASK_FATE_LABEL',
-        'TASK_PAUSE_SVG',
-        'TASK_STOP_SVG',
-        'TASK_SKIP_SVG',
         'PI_CHEV_SVG',
         'TASK_RUNS_SHOWN',
+        'TASK_RUN_STATUS',
         '_panelTaskOpen',
       ],
       {
-        document: { getElementById: () => el },
+        document: {
+          getElementById: (id: string) =>
+            id === 'panel-task-runs'
+              ? el.innerHTML.includes(id)
+                ? runsEl
+                : null
+              : id === 'panel-task-plan'
+                ? el.innerHTML.includes(id)
+                  ? planEl
+                  : null
+                : el,
+        },
         _panelTasksOpen: open,
         _panelTasksExpanded: true,
         _panelTasksEarlier: true,
@@ -1642,7 +1651,6 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
         morphInnerHtml: (e: { innerHTML: string }, h: string) => {
           e.innerHTML = h;
         },
-        updateTimersIn: () => {},
       },
     );
     m.renderPanelTasks(
@@ -1653,11 +1661,11 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
         { id: 'T2', content: 'never ran', status: 'pending', dropped: 'unstarted' },
       ],
     );
-    return el;
+    return { innerHTML: el.innerHTML, runs: runsEl.data, plan: planEl.data };
   };
 
   it('folded by default (task view T1.3): one head — the runs in one line, no rows (SSOT 2026-10-29 T5)', () => {
-    const html = rig(false).innerHTML;
+    const { innerHTML: html } = rig(false);
     expect(html).toContain(
       '<button type="button" class="panel-sec-head panel-tasks-header" aria-expanded="false" onclick="togglePanelTasks()">',
     );
@@ -1672,23 +1680,19 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
     expect(html).not.toContain('old one');
   });
 
-  it("opened, the earlier list's run is among the runs in start order; the never-run task sits in the skipped toggle (SSOT 2026-10-29 T5)", () => {
-    const html = rig(true).innerHTML;
+  it("opened, the earlier list's run is among the runs in start order; the never-run task sits in the plan's earlier fold (SSOT 2026-10-29 T5)", () => {
+    const r = rig(true);
+    const html = r.innerHTML;
     expect(html).toContain('aria-expanded="true" aria-controls="panel-tasks-body"');
-    expect(html).toContain('<div class="panel-tasks-body" id="panel-tasks-body">');
-    expect(html).toContain('<div class="tr-head">실행된 태스크 <span class="tr-count">2</span></div>');
+    expect(html).toContain('<div class="panel-tasks-body ui-tok" id="panel-tasks-body">');
     // The earlier list's completed task ran first: it comes first.
-    expect(html.indexOf('old one')).toBeGreaterThan(-1);
-    expect(html.indexOf('old one')).toBeLessThan(html.indexOf('>now<'));
-    const runs = html.slice(html.indexOf('<ol class="pl-list tr-list"'), html.indexOf('</ol>'));
-    expect(runs).not.toContain('never ran');
-    // Nothing of the plan is left to run.
-    expect(html).not.toContain('남은 계획');
-    // The never-run task: one toggle (open here), its row reads 실행 안 됨.
-    expect(html).toContain('실행 전에 계획에서 빠짐 <span class="pl-earlier-counts">1</span>');
-    const skipped = html.slice(html.indexOf('<ol class="pl-list pl-earlier"'));
-    expect(skipped).toContain('never ran');
-    expect(skipped).toContain('<span class="pl-fate">실행 안 됨</span>');
+    expect(r.runs?.runs.map((x: { title: string }) => x.title)).toEqual(['old one', 'now']);
+    // Nothing of the plan is left to run; the never-run task is the plan's earlier fold, dropped.
+    expect(r.plan?.steps).toEqual([]);
+    expect(r.plan?.earlier[0].steps).toEqual([
+      { id: 'skipped:T2', ref: '#T2', label: 'never ran', status: 'pending', fate: 'dropped' },
+    ]);
+    expect(JSON.stringify(r.runs)).not.toContain('never ran');
     // The foot sums the runs.
     expect(html).toContain('<div class="tr-total"><span class="tr-total-k">합계</span>툴 4</div>');
     expect(html).not.toContain('이전 계획');
