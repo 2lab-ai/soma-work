@@ -1272,7 +1272,10 @@ export class SessionInitializer {
       return undefined;
     }
 
-    const botSession = this.deps.claudeHandler.createSession(user, userName, channel, rootResult.ts, session.model);
+    // Same task, new thread: the bot-thread session inherits the task id (#595).
+    const botSession = this.deps.claudeHandler.createSession(user, userName, channel, rootResult.ts, session.model, {
+      taskId: session.taskId,
+    });
     botSession.threadModel = 'bot-initiated';
     botSession.threadRootTs = rootResult.ts;
     botSession.links = session.links;

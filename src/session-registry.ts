@@ -3,6 +3,7 @@
  * Extracted from claude-handler.ts (Phase 5.1)
  */
 
+import { randomUUID } from 'node:crypto';
 import { LOG_VERBOSITY_MASK_VERSION, upgradeLegacyVerbosityMask } from '@soma/slack/output-flags';
 import {
   sanitizeSdkUsageBaseline,
@@ -178,6 +179,8 @@ interface SerializedSession {
   sessionWorkingDir?: string;
   // Conversation record ID (links session to conversation history)
   conversationId?: string;
+  // Task id (#595) — absent in files written before it existed
+  taskId?: string;
   // Merge code change stats
   mergeStats?: {
     totalLinesAdded: number;
@@ -361,6 +364,12 @@ function finiteStamp(v: unknown): number | undefined {
 
 export class SessionRegistry {
   private sessions: Map<string, ConversationSession> = new Map();
+  /**
+   * Task id → session (#595). Mirrors `sessions`: every insert and removal
+   * goes through `putSession` / `removeSession`, so the two maps never
+   * disagree. See `getSessionByTaskId` for the id lifecycle contract.
+   */
+  private sessionsByTaskId: Map<string, ConversationSession> = new Map();
   private logger = new Logger('SessionRegistry');
   private expiryCallbacks?: SessionExpiryCallbacks;
   private beforeSessionDelete?: BeforeSessionDeleteCallback;
@@ -537,6 +546,74 @@ export class SessionRegistry {
   }
 
   /**
+   * Get a session by its task id — the address of a task that is not its
+   * Slack channel/thread (#595). O(1). `getSession(channel, threadTs)` is
+   * unchanged and stays the Slack path; this lookup sits beside it.
+   *
+   * ID lifecycle contract — three ids, three lifetimes:
+   *
+   * - `taskId` (this lookup): minted at `createSession`, persisted in
+   *   sessions.json and in the archive. It does NOT change on `/new` or
+   *   `/renew` (resetSessionContext), CONTINUE_SESSION, invalid-resume
+   *   recovery (clearSessionId), error retry, model change, sleep/wake,
+   *   restart (loadSessions), bot-thread migration (the new thread's session
+   *   inherits it via `createSession(..., { taskId })`) or an archive revive
+   *   (restoreArchivedSession). At most one live session holds a task id: a
+   *   duplicate met on load or revive gets a fresh id instead. A session
+   *   saved before task ids existed gets one on its first load, written back
+   *   at once so the next restart keeps it.
+   * - `sessionId` (SDK run session): set by the first SDK turn; cleared by
+   *   `/new` (resetSessionContext) and invalid-resume recovery
+   *   (clearSessionId); the next turn sets a new one. Independent of taskId.
+   * - `conversationId` (conversation record: work log, artifacts, user media,
+   *   `/api/dashboard/session/:conversationId/*`): created after the session
+   *   at Slack session init, where a failure is non-critical — a session can
+   *   lack one until a later turn creates it or the startup backfill finds
+   *   it. Carried across reset and bot-thread migration. It is NOT the task
+   *   id (not guaranteed to exist at creation, written before it is durable,
+   *   assigned outside the registry, not unique after the backfill); the
+   *   session links the two — `getSessionByTaskId(id)?.conversationId`.
+   */
+  getSessionByTaskId(taskId: string): ConversationSession | undefined {
+    return this.sessionsByTaskId.get(taskId);
+  }
+
+  /** Insert under `key`; a different session already there loses its task-id entry. */
+  private putSession(key: string, session: ConversationSession): void {
+    const previous = this.sessions.get(key);
+    if (previous && previous !== session) this.unindexTask(previous);
+    this.sessions.set(key, session);
+    if (session.taskId) this.sessionsByTaskId.set(session.taskId, session);
+  }
+
+  private removeSession(key: string): void {
+    const session = this.sessions.get(key);
+    this.sessions.delete(key);
+    if (session) this.unindexTask(session);
+  }
+
+  /** Drop the task-id entry only while it still names this session — an inheritor keeps its own. */
+  private unindexTask(session: ConversationSession): void {
+    if (session.taskId && this.sessionsByTaskId.get(session.taskId) === session) {
+      this.sessionsByTaskId.delete(session.taskId);
+    }
+  }
+
+  /**
+   * The task id for a session coming back from disk (load, archive revive):
+   * the saved one when it is a non-empty string no other live session holds
+   * (`replacing` — the session this one replaces under its key — does not
+   * count, so loading the same file twice keeps the ids), otherwise a fresh one.
+   */
+  private restoredTaskId(saved: unknown, replacing?: ConversationSession): { taskId: string; minted: boolean } {
+    if (typeof saved === 'string' && saved !== '') {
+      const holder = this.sessionsByTaskId.get(saved);
+      if (!holder || holder === replacing) return { taskId: saved, minted: false };
+    }
+    return { taskId: randomUUID(), minted: true };
+  }
+
+  /**
    * Find a session that was created from a mid-thread mention in the given thread.
    * Reverse lookup: original thread → bot-initiated session.
    */
@@ -643,9 +720,22 @@ export class SessionRegistry {
     channelId: string,
     threadTs?: string,
     model?: string,
+    options?: {
+      /**
+       * Inherit this task id instead of minting one — the same task moving to
+       * a new session (bot-thread migration). The previous holder gives it up.
+       */
+      taskId?: string;
+    },
   ): ConversationSession {
     // Get user's default model if not provided
     const sessionModel = model || userSettingsStore.getUserDefaultModel(ownerId);
+
+    const inheritedTaskId = options?.taskId || undefined;
+    if (inheritedTaskId) {
+      const holder = this.sessionsByTaskId.get(inheritedTaskId);
+      if (holder) holder.taskId = undefined;
+    }
 
     const session: ConversationSession = {
       ownerId,
@@ -653,6 +743,7 @@ export class SessionRegistry {
       userId: ownerId, // Legacy field
       channelId,
       threadTs,
+      taskId: inheritedTaskId ?? randomUUID(),
       isActive: true,
       lastActivity: new Date(),
       model: sessionModel,
@@ -681,7 +772,7 @@ export class SessionRegistry {
       pendingEventContext: null,
     };
 
-    this.sessions.set(this.getSessionKey(channelId, threadTs), session);
+    this.putSession(this.getSessionKey(channelId, threadTs), session);
 
     // Metrics: emit session_created event (fire-and-forget)
     getMetricsEmitter()
@@ -882,6 +973,7 @@ export class SessionRegistry {
       threadTs: archived.threadTs,
       sessionId: archived.sessionId,
       conversationId: archived.conversationId,
+      taskId: this.restoredTaskId(archived.taskId).taskId,
       isActive: true,
       // The revive is the user's own action: the idle clock starts now.
       lastActivity: new Date(),
@@ -936,7 +1028,7 @@ export class SessionRegistry {
       pendingUserText: null,
       pendingEventContext: null,
     };
-    this.sessions.set(key, session);
+    this.putSession(key, session);
     this.logger.info('Archived session restored from the dashboard', {
       sessionKey: key,
       sessionId: session.sessionId,
@@ -1912,7 +2004,7 @@ export class SessionRegistry {
 
     this.cleanupSourceWorkingDirs(session);
     this.clearOnIdleCallbacks(sessionKey); // Clean up any pending cron callbacks
-    this.sessions.delete(sessionKey);
+    this.removeSession(sessionKey);
     this.logger.info('Session terminated', { sessionKey, ownerId: session.ownerId });
 
     this.saveSessions();
@@ -1987,7 +2079,7 @@ export class SessionRegistry {
 
           this.cleanupSourceWorkingDirs(session);
           this.clearOnIdleCallbacks(key); // Clean up any pending cron callbacks
-          this.sessions.delete(key);
+          this.removeSession(key);
           cleaned++;
         }
         // Sleeping sessions don't get warnings
@@ -2215,6 +2307,7 @@ export class SessionRegistry {
             sessionWorkingDir: session.sessionWorkingDir,
             // Conversation record ID
             conversationId: session.conversationId,
+            taskId: session.taskId,
             // Merge code change stats
             mergeStats: session.mergeStats,
             // User SSOT instructions (persisted)
@@ -2306,6 +2399,7 @@ export class SessionRegistry {
         links: serialized.links,
         linkHistory: serialized.linkHistory,
         conversationId: serialized.conversationId,
+        taskId: typeof serialized.taskId === 'string' ? serialized.taskId : undefined,
         mergeStats: serialized.mergeStats,
         instructions: serialized.instructions,
         goal: migrateLegacyGoal(serialized.goal),
@@ -2362,6 +2456,7 @@ export class SessionRegistry {
       // Unreadable saved policy: load every session as it was (see cleanupInactiveSessions).
       const applyLifecycle = !isSessionLifecyclePolicyDegraded();
       let sleptOnLoadCount = 0;
+      let mintedTaskIdCount = 0;
       this._crashRecoveredSessions = [];
 
       for (const serialized of sessionsArray) {
@@ -2644,7 +2739,10 @@ export class SessionRegistry {
           });
           continue;
         }
-        this.sessions.set(derivedKey, session);
+        const restored = this.restoredTaskId(serialized.taskId, this.sessions.get(derivedKey));
+        session.taskId = restored.taskId;
+        if (restored.minted) mintedTaskIdCount++;
+        this.putSession(derivedKey, session);
         loaded++;
 
         // Decide whether to enqueue this session for restart/crash recovery.
@@ -2696,6 +2794,13 @@ export class SessionRegistry {
       // crash before the next save reloads them awake and restarts their clock.
       if (sleptOnLoadCount > 0) {
         this.logger.info(`Put ${sleptOnLoadCount} stale session(s) to sleep on load`);
+      }
+      // A task id minted here (a file from before task ids, or a duplicate)
+      // is written back now: the next restart must find the same task.
+      if (mintedTaskIdCount > 0) {
+        this.logger.info(`Assigned task ids to ${mintedTaskIdCount} loaded session(s)`);
+      }
+      if (sleptOnLoadCount > 0 || mintedTaskIdCount > 0) {
         this.saveSessions();
       }
 

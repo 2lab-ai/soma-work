@@ -49,6 +49,8 @@ export interface ArchivedSession {
   sessionKey: string;
   sessionId?: string;
   conversationId?: string; // → conversations/{id}.json
+  /** Task id (#595) — a revive brings it back. Absent in archives written before it existed. */
+  taskId?: string;
 
   // Owner
   ownerId: string;
@@ -157,6 +159,7 @@ function sessionToArchive(
     sessionKey,
     sessionId: session.sessionId,
     conversationId: session.conversationId,
+    taskId: session.taskId,
 
     ownerId: session.ownerId,
     ownerName: session.ownerName,

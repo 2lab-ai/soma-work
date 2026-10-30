@@ -491,6 +491,13 @@ export interface ConversationSession {
   sleepStartedAt?: Date;
   // Conversation history recording ID
   conversationId?: string;
+  /**
+   * Task id (#595): the address of this task that is not its Slack
+   * channel/thread. Minted by SessionRegistry and set on every session it
+   * holds; never changes for the life of the task. Lifecycle contract and
+   * lookup: `SessionRegistry.getSessionByTaskId`.
+   */
+  taskId?: string;
   // Bot activity state (working/waiting/idle)
   activityState?: ActivityState;
   activityStateChangedAt?: number;
