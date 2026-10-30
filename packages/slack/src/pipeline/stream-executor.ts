@@ -237,6 +237,8 @@ export interface StreamExecutorProviders {
    */
   captureMemoryTurn?: (userId: string, userText: string, assistantText: string) => void;
   scheduleLinkDerivedTitleRefresh?: (claudeHandler: any, channel: string, threadTs: string, reason: string) => void;
+  /** A Slack-less task's link-derived title refresh, by its task key (#598 ④a). */
+  scheduleLinkDerivedTitleRefreshByKey?: (claudeHandler: any, sessionKey: string, reason: string) => void;
   isMidThreadMention?: (input: { threadTs?: string; mentionTs?: string }) => boolean;
   getMetricsEmitter?: () => {
     emit?: (...args: any[]) => unknown;
@@ -308,6 +310,7 @@ let streamExecutorProviders: Required<StreamExecutorProviders> = {
   recordAgentEvent: () => {},
   captureMemoryTurn: () => {},
   scheduleLinkDerivedTitleRefresh: () => {},
+  scheduleLinkDerivedTitleRefreshByKey: () => {},
   isMidThreadMention: () => false,
   getMetricsEmitter: () => ({ emit: () => {}, emitTokenUsage: async () => undefined }),
   classifyOneMUnavailable: (text) => {
@@ -512,6 +515,8 @@ const captureMemoryTurn = (userId: string, userText: string, assistantText: stri
   streamExecutorProviders.captureMemoryTurn(userId, userText, assistantText);
 const scheduleLinkDerivedTitleRefresh = (claudeHandler: any, channel: string, threadTs: string, reason: string) =>
   streamExecutorProviders.scheduleLinkDerivedTitleRefresh(claudeHandler, channel, threadTs, reason);
+const scheduleLinkDerivedTitleRefreshByKey = (claudeHandler: any, sessionKey: string, reason: string) =>
+  streamExecutorProviders.scheduleLinkDerivedTitleRefreshByKey(claudeHandler, sessionKey, reason);
 const isMidThreadMention = (input: { threadTs?: string; mentionTs?: string }) =>
   streamExecutorProviders.isMidThreadMention(input);
 const getMetricsEmitter = () => streamExecutorProviders.getMetricsEmitter();
@@ -2058,7 +2063,11 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             hasDoc: !!links.doc,
           });
 
-          scheduleLinkDerivedTitleRefresh(this.deps.claudeHandler, channel, threadTs, 'mid-conversation');
+          if (session.slackless === true) {
+            scheduleLinkDerivedTitleRefreshByKey(this.deps.claudeHandler, sessionKey, 'mid-conversation');
+          } else {
+            scheduleLinkDerivedTitleRefresh(this.deps.claudeHandler, channel, threadTs, 'mid-conversation');
+          }
         },
         onChannelMessageDetected: async (messageText) => {
           try {

@@ -296,9 +296,24 @@ describe('StreamExecutor — a Slack-less task turn, registry and runtime half (
     expect(args[4]).toBeDefined(); // the Slack context as before
   });
 
-  it('session links and a source directory go by the task key', async () => {
+  it('session links, their title refresh and a source directory go by the task key', async () => {
+    const bySlack = vi.fn();
+    const byKey = vi.fn();
+    setStreamExecutorProviders({
+      scheduleLinkDerivedTitleRefresh: bySlack,
+      scheduleLinkDerivedTitleRefreshByKey: byKey,
+    });
     const deps = taskDeps(directiveTurn());
-    await new StreamExecutor(deps).execute(taskParams());
+    try {
+      await new StreamExecutor(deps).execute(taskParams());
+    } finally {
+      setStreamExecutorProviders({
+        scheduleLinkDerivedTitleRefresh: () => {},
+        scheduleLinkDerivedTitleRefreshByKey: () => {},
+      });
+    }
+    expect(bySlack).not.toHaveBeenCalled();
+    expect(byKey).toHaveBeenCalledWith(deps.claudeHandler, TASK_KEY, 'mid-conversation');
     expect(deps.claudeHandler.setSessionLinks).not.toHaveBeenCalled();
     expect(deps.claudeHandler.setSessionLinksByKey).toHaveBeenCalledWith(
       TASK_KEY,
