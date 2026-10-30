@@ -17,7 +17,7 @@
  */
 
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -202,6 +202,122 @@ describe('sanitize-scan.sh — push scope', () => {
   it('treats a local run like a push', () => {
     git('update-ref', 'refs/remotes/origin/feature/dirty', dirty);
     expect(scan('').status).toBe(1);
+  });
+});
+
+/**
+ * Incident #610 (2026-10-30): commit 9d7422e1 (#586) carried a hit into main, deploy/dev and a dev
+ * tag, and from then on every PR failed `scan` on that one commit — a PR is judged on what it would
+ * merge, and that includes main. The owner's decision: record the already-published commit as a known
+ * leak. What it added stays tolerated wherever it persists; anything else still fails — a different
+ * hit, another commit adding the same text again, a branch or tag name, an annotated tag message.
+ */
+describe('sanitize-scan.sh — known leaks', () => {
+  function listKnown(...lines: string[]) {
+    // Untracked, like the checkout CI scans: the list file itself is not part of the synthetic history.
+    mkdirSync(path.join(repo, 'scripts'), { recursive: true });
+    writeFileSync(path.join(repo, 'scripts', 'sanitize-known-leaks.txt'), `${lines.join('\n')}\n`);
+  }
+
+  // The leak is published: main carries the dirty commit, and work continues on top of it.
+  function publishDirtyMain(): string {
+    git('checkout', '-q', '--detach', dirty);
+    const next = commit('c.txt', 'later work\n', 'later work');
+    git('update-ref', 'refs/remotes/origin/main', next);
+    return next;
+  }
+
+  it('passes push and PR scans once the published commit is listed, naming it as exempted', () => {
+    publishDirtyMain();
+    listKnown('# known leaks', `${dirty}  #610 already published`);
+    for (const event of ['push', 'pull_request']) {
+      const r = scan(event);
+      expect(r.out, event).toContain('sanitize-scan: clean');
+      expect(r.out, event).toContain(`known leak ${dirty}`);
+      expect(r.out, event).not.toMatch(/forbidden-token-\d/);
+      expect(r.status, event).toBe(0);
+    }
+  });
+
+  it('fails without the entry — the same history is red until it is listed', () => {
+    publishDirtyMain();
+    const r = scan('pull_request');
+    expect(r.status).toBe(1);
+    expect(r.out).toContain(dirty);
+  });
+
+  it('still fails a different hit next to the known leak, naming only the new commit as a hit', () => {
+    publishDirtyMain();
+    listKnown(dirty);
+    const bad = commit('d.txt', 'fixture forbidden-token-456\n', 'another fixture');
+    const r = scan('pull_request');
+    expect(r.status).toBe(1);
+    expect(r.out).toContain(`hit in commit ${bad}`);
+    expect(r.out).not.toContain(`hit in commit ${dirty}`);
+    expect(r.out).not.toMatch(/forbidden-token-\d/);
+  });
+
+  it('fails another commit that adds the known text again', () => {
+    publishDirtyMain();
+    listKnown(dirty);
+    const copy = commit('e.txt', `copied ${SECRET_TEXT}\n`, 'copy');
+    const r = scan('pull_request');
+    expect(r.status).toBe(1);
+    expect(r.out).toContain(`hit in commit ${copy}`);
+    expect(r.out).not.toMatch(/forbidden-token-\d/);
+  });
+
+  it('fails a commit message that repeats the known text', () => {
+    publishDirtyMain();
+    listKnown(dirty);
+    writeFileSync(path.join(repo, 'f.txt'), 'ok\n');
+    git('add', 'f.txt');
+    git('commit', '-q', '-m', `follow-up to ${SECRET_TEXT}`);
+    const bad = git('rev-parse', 'HEAD');
+    const r = scan('pull_request');
+    expect(r.status).toBe(1);
+    expect(r.out).toContain(`hit in commit ${bad}`);
+  });
+
+  it('passes a later commit that removes the known leak', () => {
+    publishDirtyMain();
+    listKnown(dirty);
+    git('rm', '-q', 'b.txt');
+    git('commit', '-q', '-m', 'drop fixture');
+    const r = scan('pull_request');
+    expect(r.out).toContain('sanitize-scan: clean');
+    expect(r.status).toBe(0);
+  });
+
+  it('never exempts a branch name, a tag name or an annotated tag message', () => {
+    publishDirtyMain();
+    listKnown(dirty);
+    git('update-ref', `refs/remotes/origin/${SECRET_TEXT}`, dirty);
+    expect(scan('push').status).toBe(1);
+    git('update-ref', '-d', `refs/remotes/origin/${SECRET_TEXT}`);
+    git('tag', SECRET_TEXT, dirty);
+    expect(scan('push').status).toBe(1);
+    git('tag', '-d', SECRET_TEXT);
+    git('tag', '-a', 'v3', '-m', `note ${SECRET_TEXT}`, dirty);
+    const r = scan('push');
+    expect(r.status).toBe(1);
+    expect(r.out).not.toMatch(/forbidden-token-\d/);
+  });
+
+  it('refuses an abbreviated or malformed entry instead of guessing', () => {
+    publishDirtyMain();
+    listKnown(dirty.slice(0, 8));
+    const r = scan('pull_request');
+    expect(r.out).not.toContain('sanitize-scan: clean');
+    expect(r.status).toBe(2);
+  });
+
+  it('exempts nothing for an entry that is not in the clone, and says so', () => {
+    publishDirtyMain();
+    listKnown('0123456789abcdef0123456789abcdef01234567');
+    const r = scan('pull_request');
+    expect(r.status).toBe(1);
+    expect(r.out).toContain('0123456789abcdef0123456789abcdef01234567');
   });
 });
 
