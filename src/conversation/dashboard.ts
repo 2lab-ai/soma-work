@@ -6259,11 +6259,10 @@ ${pageTokenAliases()}
           <span class="nt-toggle-note">이 작업에만 적용 · 설정은 그대로</span>
         </div>
         <!-- The instruction, its files and the voice note — @2lab.ai/ui <ui-composer> (D2 H-05..H-09): the field grows
-             with its text, drop / paste / attach / record, chips with thumbnails and play, 작업 시작. ⌘/Ctrl+Enter
-             sends; a plain Enter is a new line (ntInit). The page answers ui-submit (it posts), ui-input (the draft),
-             ui-files (the total size), ui-tool (카메라 on touch: the native camera input below). -->
+             with its text, drop / paste / attach / record / phone camera, chips with thumbnails and play, 작업 시작.
+             ⌘/Ctrl+Enter sends; a plain Enter is a new line (enter: 'newline'); the files are capped each and
+             together (maxTotalBytes). The page answers ui-submit (it posts) and ui-input (the draft). -->
         <ui-composer id="nt-composer" class="nt-composer" lang="ko"></ui-composer>
-        <input type="file" id="nt-camera-input" accept="image/*" capture="environment" hidden onchange="ntAddCamera(this.files); this.value = ''">
         <p class="nt-error" id="nt-error" role="alert" hidden></p>
         <p class="nt-foot"><span class="nt-status" id="nt-status" role="status" aria-live="polite"></span><span class="nt-submit-hint" aria-hidden="true">⌘↵</span></p>
       </div>
@@ -18260,7 +18259,10 @@ function ntRender() {
 }
 
 // <ui-composer id="nt-composer">: the instruction field, attachments, voice and 작업 시작. The limits come from the
-// context (before it: the element's defaults); 카메라 is a tool on touch screens only (PC has drop and paste).
+// context (before it: the element's defaults) — maxTotalBytes is the server's cap on all files together (the
+// element rejects the file that crosses it and says so). A plain Enter is a new line, ⌘/Ctrl+Enter starts the task
+// (enter: 'newline', with its key hint on desktop); 카메라 is the element's own tool on touch screens (the back
+// camera; PC has drop and paste).
 function ntComposerData() {
   if (_ntValue === null) {
     var draft = ntReadDraft();
@@ -18275,13 +18277,16 @@ function ntComposerData() {
     busy: _ntBusy,
     minRows: 6,
     maxRows: 14,
-    tools: ntIsTouch() ? [{ id: 'camera', label: '카메라', showLabel: true }] : [],
+    enter: 'newline',
+    hint: true,
+    camera: 'environment',
   };
   var lim = _ntCtx && _ntCtx.limits;
   if (lim) {
     d.maxLength = lim.maxPromptChars;
     d.maxFiles = lim.maxFiles;
     d.maxFileSize = lim.maxFileBytes;
+    d.maxTotalBytes = lim.maxTotalBytes;
   }
   return d;
 }
@@ -18289,13 +18294,12 @@ function paintNtComposer() {
   var el = ntEl('nt-composer');
   if (el) el.data = ntComposerData();
 }
-// Closing the sheet discards a recording in progress: the composer drops it when it turns read-only.
+// Closing the sheet discards a recording in progress and stops a voice note's preview (the text and files stay).
 function ntQuietComposer() {
   var el = ntEl('nt-composer');
-  if (!el || !el.data) return;
-  var d = el.data;
-  el.data = Object.assign({}, d, { disabled: true });
-  el.data = d;
+  if (!el || typeof el.cancelRecording !== 'function') return;
+  el.cancelRecording();
+  el.pause();
 }
 
 function ntRenderBattery() {
@@ -18355,19 +18359,6 @@ function ntKindOf(mime) {
   if (t.indexOf('audio/') === 0) return 'audio';
   if (t.indexOf('video/') === 0) return 'video';
   return 'file';
-}
-
-// 카메라 (touch): the native camera input; a photo is named for when it was taken, then handed to the composer.
-function ntAddCamera(list) {
-  var el = ntEl('nt-composer');
-  if (!el || !list || !list.length) return;
-  var files = Array.prototype.slice.call(list).map(function (f) {
-    var type = f.type || 'image/jpeg';
-    if (ntKindOf(type) !== 'image') return f;
-    var ext = (String(f.name || '').split('.').pop() || 'jpg').toLowerCase();
-    return new File([f], 'photo-' + ntStamp(new Date()) + '.' + ext, { type: type, lastModified: f.lastModified });
-  });
-  el.addFiles(files);
 }
 
 // The composer's files as the request's attachments (base64, as the server takes them).
@@ -18531,38 +18522,17 @@ function ntInit() {
     if (e.target === dlg) closeNewTask();
   });
   // <ui-composer id="nt-composer"> (D2 H-05..H-09): it takes drops and pasted screenshots itself (named
-  // screenshot-…), records the voice note, and sends on ⌘/Ctrl+Enter.
+  // screenshot-…), records the voice note, opens the phone camera, caps the files (each and together) and sends
+  // on ⌘/Ctrl+Enter (enter: 'newline').
   var composer = ntEl('nt-composer');
-  // A plain Enter is a new line here (a long instruction; ⌘/Ctrl+Enter starts the task): the event stops at the
-  // element before its own Enter-sends rule, and the field still takes the line break.
-  composer.addEventListener(
-    'keydown',
-    function (e) {
-      if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) e.stopPropagation();
-    },
-    true,
-  );
   composer.addEventListener('ui-input', function (e) {
     var v = e.detail ? String(e.detail.value || '') : '';
     if (_ntState) _ntState.prompt = v;
     ntSaveDraft(v);
   });
-  // The server also caps the files together: the one that crosses it goes back out, with the reason.
-  composer.addEventListener('ui-files', function (e) {
-    var files = (e.detail && e.detail.files) || [];
-    var max = _ntCtx ? _ntCtx.limits.maxTotalBytes : 0;
-    var total = files.reduce(function (sum, f) { return sum + (f.size || 0); }, 0);
-    if (max && total > max && files.length) {
-      composer.removeFile(files.length - 1);
-      ntSetError('첨부는 모두 합쳐 ' + ntFormatBytes(max) + '까지입니다');
-    }
-  });
   composer.addEventListener('ui-submit', function (e) {
     e.preventDefault();
     submitNewTask(e.detail);
-  });
-  composer.addEventListener('ui-tool', function (e) {
-    if (e.detail && e.detail.id === 'camera') ntEl('nt-camera-input').click();
   });
   paintNtComposer();
   // N opens the composer from anywhere outside a text field.
