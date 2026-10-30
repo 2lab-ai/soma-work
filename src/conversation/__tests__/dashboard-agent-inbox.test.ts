@@ -773,10 +773,10 @@ describe('agent inbox board — responsive (§5)', () => {
     // The period tabs are <ui-segmented>: 44px on touch / narrow screens is the element's own rule.
     expect(TEMPLATE).not.toContain('.period-btn');
     expect(block).toContain('.stats-more { min-height: 44px; }');
-    expect(block).toContain(
-      '.topbar .nav a, .topbar .nav .user-select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }',
-    );
-    expect(block).toContain('#theme-toggle { min-block-size: 44px; position: relative; }');
+    // The app bar's links, account and theme toggle are 44px on coarse pointers by the element's own rule;
+    // the page's controls in its actions are the page's.
+    expect(block).toContain('.topbar .user-select, .topbar .admin-toggle, .topbar .td-chip { min-height: 44px; }');
+    expect(block).not.toContain('#theme-toggle');
     // The subtitle's regenerate is the kit's small icon button (44px on touch / narrow: ui-kit.css).
     expect(TEMPLATE).toContain('id="panel-title-sub-regen" class="ui-icon-btn is-sm"');
     // Must follow the #800 coarse blocks so it wins the cascade.

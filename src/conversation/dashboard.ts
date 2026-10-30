@@ -3853,6 +3853,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/menu.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/dialog.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/drawer.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/app-bar.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -3924,58 +3925,45 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    the iPhone Duo cover). */
 .app { display: flex; flex-direction: column; min-height: 100vh; padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
 
-/* ── TOPBAR — strict horizontal grid ──
-   One row from 1024px; below that the nav (user select · 대화 · 설정 · 기억 · admin
-   toggle) takes its own row under brand · status · account (BOARD RESPONSIVE).
-   No control ever wraps or cuts its label: everything is nowrap and flex: none.
-   Only user names are ever shortened, always with a visible ellipsis and the
-   full name in title: the pill's name when its row is full, and the selected
-   user's name when it is wider than its cap — 180px on the one-row bar (≥1024,
-   even when the row has room), the whole nav row below 1024px. */
+/* ── TOPBAR — @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14) ──
+   The bar is the library's: 56px (52 on phones), translucent over the page, one hairline;
+   brand · 대화 · 설정 · 기억 · actions · status · account · theme, the links folded into 메뉴
+   whenever the bar is short of room. The header around it stays at the top while the board
+   scrolls (SSOT 2026-10-29 T3; the docked drawer sits under it: --topbar-b). The page's own
+   controls are the bar's actions — the scope group (default model / effort, the board's user,
+   admin write mode) and 새 작업. Below 1280px the scope group takes the row under the bar
+   (#topbar-sub, placeTopbarScope) and wraps there instead of crowding the one-row bar. No
+   control cuts its label; only the selected user's name ends in an ellipsis (full name in title). */
 .topbar {
-  /* ui.2lab.ai's app bar: the page colour at 86% over what scrolls under it, blurred,
-     one hairline; opaque when the reader asks for less transparency (below). */
-  background: color-mix(in srgb, var(--bg) 86%, transparent);
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--border);
-  padding: 0 20px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 56px;
-  min-width: 0;
-  /* SSOT 2026-10-29 T3: the top bar is always on screen — it stays at the top
-     while the board scrolls (the docked drawer sits under it: --topbar-b). Below
-     840px the sheet covers it (90 < the panel's 100); docked, it sits above the
-     panel (see the 840px block) so its menus stay clickable over the drawer. */
   position: sticky;
   top: 0;
   z-index: 90;
+  min-width: 0;
 }
-.topbar h1 {
-  display: inline-flex;
+/* Until the element is defined: its height, none of the raw controls. */
+ui-app-bar:not(:defined) { display: block; height: 56px; }
+ui-app-bar:not(:defined) > * { visibility: hidden; }
+/* The row under the bar: the bar's own surface (86% page colour over a blur, one hairline). */
+.topbar-sub {
+  display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 15px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
-  white-space: nowrap;
-  flex: none;
+  min-width: 0;
+  padding: 8px 20px;
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  -webkit-backdrop-filter: saturate(1.4) blur(10px);
+  backdrop-filter: saturate(1.4) blur(10px);
+  border-bottom: 1px solid var(--border);
 }
+.topbar-sub[hidden] { display: none; }
 @media (prefers-reduced-transparency: reduce) {
-  .topbar { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .topbar-sub { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
 }
-.topbar h1 .brand-mark { width: 22px; height: 22px; flex: none; }
-.brand-mark .bm-bg { fill: var(--text); }
-.brand-mark .bm-cell { fill: var(--surface); }
-/* One row (≥1024): the nav never shrinks below its controls (so none of them
-   paints past it into the account group); the selected name is capped instead
-   (.user-select max-inline-size), and the account group is what gives way — the
-   pill's name ends in an ellipsis. The cap keeps the pill's glyph and a realistic
-   name whole at 1024px even with "다시 연결 중…" and touch padding. */
-.topbar .nav { display: flex; gap: 6px; margin-left: auto; align-items: center; flex: none; }
-.topbar .topbar-account { display: flex; gap: 6px; align-items: center; min-width: 0; flex: 0 1 auto; }
+.topbar-scope { display: flex; align-items: center; gap: 6px; min-width: 0; flex: none; }
+.topbar-sub .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; }
+/* The row under the bar is the user select's cap: only a name wider than it ends in an ellipsis. */
+.topbar-sub .user-select { max-inline-size: 100%; }
+/* 새 작업 in the bar: the ink kit button; its word steps aside on a narrow bar (the + and title stay). */
+ui-app-bar[narrow] .nt-btn-label { display: none; }
 /* SSOT 2026-10-23 T6 — the owner's default model / effort, one click from the top. */
 /* Above the full-screen panel overlay (99) and the panel (100): the chips stay
    clickable while a session panel is open — that is when "열린 세션에도 적용" exists. */
@@ -3996,10 +3984,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 #td-menu { position: absolute; }
 .topbar .td-status { font-size: 12px; color: var(--text-secondary); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar .td-status.is-error { color: var(--red); }
-/* Nav: the site's chip links — no box at rest, the --ib-pill chip on hover; the user
-   select is a trigger (a neutral well with a hairline) because it opens a list. */
-.topbar .nav a,
-.topbar .nav .user-select {
+/* The user select is a trigger (a neutral well with a hairline) because it opens a list. */
+.topbar .user-select {
   background: transparent;
   color: var(--text-secondary);
   border: 1px solid transparent;
@@ -4014,13 +4000,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   white-space: nowrap;
   flex: none;
 }
-.topbar .nav a { display: inline-flex; align-items: center; gap: 6px; }
-.topbar .nav a svg { width: 15px; height: 15px; flex: none; }
 /* User select: a visible label sized to the selected option, with the native
    <select> laid transparently over it (it still takes every click, tap and key).
    A native select cannot show an ellipsis in WebKit — it hard-cuts the text —
    so the label carries the ellipsis and the select carries the full name in title. */
-.topbar .nav .user-select {
+.topbar .user-select {
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -4066,50 +4050,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .topbar .user-select:has(select:focus-visible) { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 @media (hover: hover) and (pointer: fine) {
-  .topbar .nav a:hover { background: var(--ib-pill); color: var(--text); }
-  .topbar .nav .user-select:hover { background: color-mix(in srgb, var(--ib-text) 6%, var(--ib-card)); }
+  .topbar .user-select:hover { background: color-mix(in srgb, var(--ib-text) 6%, var(--ib-card)); }
 }
-
-/* ── USER PILL — the signed-in name, links to the /login account page, rendered from /auth/me ── */
-.topbar .user-pill {
-  display: none; /* toggled by JS once /auth/me resolves */
-  text-decoration: none;
-  align-items: center;
-  gap: 6px;
-  background: transparent;
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 5px 12px 5px 8px;
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 1;
-  min-height: 32px;
-  cursor: pointer;
-  transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-  white-space: nowrap;
-  max-width: 260px;
-  min-width: 0;
-  flex: 0 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.topbar .user-pill-prefix { display: inline-flex; flex: none; color: var(--text-tertiary); }
-.topbar .user-pill-prefix svg { width: 15px; height: 15px; }
-.topbar .user-pill .ic-admin, .topbar .user-pill.is-admin .ic-user { display: none; }
-.topbar .user-pill.is-admin .ic-admin { display: block; }
-.topbar .user-pill b {
-  color: var(--text);
-  font-weight: 500;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  display: inline-block;
-}
-@media (hover: hover) and (pointer: fine) { .topbar .user-pill:hover { background: var(--ib-pill); color: var(--text); } }
-.topbar .user-pill:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 
 /* ── ADMIN MODE TOGGLE — visible only for ADMIN_USERS (#716) ── */
 .topbar .admin-toggle {
@@ -4135,45 +4077,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   color: var(--tint-fail-fg);
 }
 @media (hover: hover) and (pointer: fine) { .topbar .admin-toggle[aria-pressed="true"]:hover { background: var(--tint-fail-bg-2); color: var(--tint-fail-fg); } }
-/* The site's 34px icon button: the sun in the dark theme, the moon in the light one (the theme it switches to). */
-#theme-toggle {
-  display: inline-grid;
-  place-items: center;
-  inline-size: 34px;
-  block-size: 34px;
-  padding: 0;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  flex: none;
-  transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-}
-#theme-toggle svg { width: 16px; height: 16px; }
-#theme-toggle .ic-moon, [data-theme="light"] #theme-toggle .ic-sun { display: none; }
-[data-theme="light"] #theme-toggle .ic-moon { display: block; }
-@media (hover: hover) and (pointer: fine) { #theme-toggle:hover { background: var(--ib-pill); color: var(--text); } }
-/* Live updates: a tone dot and a word (library status: never colour alone). The tone moves with
-   the state in 300ms; the word is the tone mixed 70% toward the ink (≥ 4.5:1 on the bar). */
-.ws-badge {
-  --ws-tone: var(--text-tertiary);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 2px;
-  border-radius: 999px;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: color-mix(in srgb, var(--ws-tone) 70%, var(--text));
-  white-space: nowrap;
-  flex: none;
-  transition: color 300ms ease, background-color 300ms ease;
-}
-.ws-badge::before { content: ''; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ws-tone); transition: background-color 300ms ease; }
-.ws-badge[data-state="live"] { --ws-tone: var(--st-done); }
-.ws-badge[data-state="reconnecting"] { --ws-tone: var(--st-wait); }
-
 /* ── MAIN — stats strip, then the board; capped at 1280px and centred (.prd/10 §3.1-2, §5) ── */
 .main { flex: 1; padding: 20px; width: 100%; max-width: 1280px; margin: 0 auto; min-width: 0; }
 
@@ -5592,7 +5495,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* PRESS — one rule for every button-like control: scale(.97) on --dur-press ease-out (each control's own
    transition carries the transform), pointer presses only — never a keyboard press (:focus-visible). The
    56px FAB presses to .95. */
-:is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+:is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
@@ -5610,18 +5513,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    that always fit · <840 the three columns scroll sideways inside the board (the
    page itself never scrolls horizontally). <640 viewport: List by default, 44px
    taps. A docked drawer narrows the inbox, so this is not a viewport query. */
-@media (max-width: 1023px) {
-  /* Top bar: brand · status · account on the first row, the nav on its own row below, full labels. */
-  .topbar { flex-wrap: wrap; padding: 8px 20px; row-gap: 8px; }
-  /* Basis 0: the account group never pushes itself onto a row of its own — a
-     long name ends in an ellipsis inside the pill instead. */
-  .topbar .topbar-account { flex: 1 1 0; justify-content: flex-end; }
-  .topbar .nav { order: 1; flex: 1 0 100%; margin-left: 0; flex-wrap: wrap; min-width: 0; }
-  /* The nav row is full width: a selected name can use all of it (the other
-     controls move to the next line first); only a name wider than the row ends
-     in an ellipsis. */
-  .topbar .nav .user-select { max-inline-size: 100%; }
-}
 @media (max-width: 639px) {
   .topbar .td-prefix, .topbar .td-status { display: none; }
   .main { padding: 14px 12px; }
@@ -5638,31 +5529,12 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
      narrower sides, so the row fits 320px with the coarse-pointer padding. */
   .stats-strip { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "period more" "nums nums"; gap: 8px 12px; }
   .stats-strip .period-bar { min-width: 0; }
-  /* Top bar: the status badge becomes a 10px dot (aria-label preserved for SR),
-     the account glyph goes, and the user select fills the nav row (which
-     wraps rather than overflow on very small screens). Labels stay whole. */
-  .topbar { padding: 6px 12px; gap: 6px 8px; }
-  .topbar h1 { font-size: 14px; gap: 6px; }
-  .topbar h1 .brand-mark { width: 20px; height: 20px; }
-  .topbar .ws-badge {
-    display: inline-block;
-    inline-size: 10px;
-    block-size: 10px;
-    padding: 0;
-    background: var(--ws-tone);
-    border-radius: 50%;
-    text-indent: 100%;
-    white-space: nowrap;
-    overflow: hidden;
-    flex-shrink: 0;
-    min-width: 0;
-  }
-  .topbar .ws-badge::before { display: none; }
-  .topbar .nav .user-select { flex: 1 1 auto; }
-  .topbar .user-pill { padding: 4px 10px; }
-  .topbar .user-pill-prefix { display: none; }
+  /* Top bar (the app bar narrows itself: the status dot, the account's initials, 메뉴):
+     the row under it keeps the bar's 12px sides, and the user select fills what the
+     chips leave of its line (it wraps rather than overflow). Labels stay whole. */
+  .topbar-sub { padding: 8px 12px; }
+  .topbar-sub .user-select { flex: 1 1 auto; }
   .topbar .admin-toggle { padding: 4px 10px; }
-  #theme-toggle { inline-size: 32px; block-size: 32px; padding: 0; flex-shrink: 0; }
   .inbox-head { margin-bottom: 12px; flex-wrap: wrap; row-gap: 8px; }
   /* The tools take the row under the breadcrumb; on the narrowest screens
      (320px) Show archives sits above Board | List instead of overflowing. */
@@ -5692,7 +5564,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   /* Loading skeletons hold still. */
@@ -5708,24 +5580,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* ── TOUCH — coarse pointer enlargement ── */
 @media (pointer: coarse) {
   .panel-tab, .psec-tab, .psec-older, .psec-pill, .panel-sec-head, .panel-detail-toggle { min-height: 44px; }
-  .topbar .nav a, .topbar .nav .user-select { min-height: 40px; padding: 8px 16px; }
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
 }
-/* ── #800: TOUCH x NARROW — restore tight padding so the coarse-pointer
-   tap-target (16px horizontal) does not push the topbar past mobile
-   widths. min-height stays at 40px for touch-target accessibility
-   (WCAG 2.5.5); only the inline padding shrinks. These blocks must
-   stay AFTER @media (pointer: coarse) in source order so the more
-   specific (combined) query wins the cascade. ── */
-@media (max-width: 680px) and (pointer: coarse) {
-  .topbar .nav a, .topbar .nav .user-select { padding: 4px 8px; }
-}
-@media (max-width: 480px) and (pointer: coarse) {
-  .topbar .nav a, .topbar .nav .user-select { padding: 4px 6px; }
-}
-/* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens.
-   Heights only, so the #800 topbar width fit is untouched; the theme toggle keeps
-   its 32px square (pinned by #800) and gets a 44px-wide hit slop instead. ── */
+/* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens (heights only). ── */
 /* The composer's model · effort trigger shares the input's line on a narrow or a
    short screen (a phone sideways), so the reading area keeps its room; its menu opens above. */
 @media (max-width: 639px), (max-height: 560px) {
@@ -5740,10 +5597,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .panel-command .pc-steer-wrap { flex-basis: 100%; }
 }
 @media (max-width: 639px), (pointer: coarse) {
-  .topbar .nav a, .topbar .nav .user-select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }
-  #theme-toggle { min-block-size: 44px; position: relative; }
-  #theme-toggle::after { content: ''; position: absolute; inset: 0 -6px; }
-  .topbar .td-chip { min-height: 44px; }
+  .topbar .user-select, .topbar .admin-toggle, .topbar .td-chip { min-height: 44px; }
   .stats-more { min-height: 44px; }
   .card-body .btn-choice { min-height: 44px; }
   .inbox-head .archives-btn { min-height: 44px; }
@@ -6241,10 +6095,6 @@ body.nt-open .new-task-fab { display: none !important; }
      defaults menu spans the bar instead of running off the edge, and the
      artifact viewer takes the whole screen. */
   .inbox.has-cards { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
-  /* The defaults chips take their own row under brand · status · account: sharing the brand row
-     they could leave the account group (basis 0) no width at all, its pill and theme toggle
-     painting over the chips. */
-  .topbar .topbar-defaults { position: static; order: 1; flex: 0 0 100%; }
   .art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
   .art-modal-head { flex-wrap: wrap; row-gap: 6px; }
 }
@@ -6294,43 +6144,38 @@ ${pageTokenAliases()}
 </head>
 <body>
 <div class="app">
-  <div class="topbar">
-    <h1><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect class="bm-bg" width="32" height="32" rx="8"/><rect class="bm-cell" x="7" y="7" width="7" height="7" rx="1.5"/><rect class="bm-cell" x="18" y="7" width="7" height="7" rx="1.5" opacity=".55"/><rect class="bm-cell" x="7" y="18" width="7" height="7" rx="1.5" opacity=".55"/><rect class="bm-cell" x="18" y="18" width="7" height="7" rx="1.5" opacity=".25"/></svg>soma-work</h1>
-    <span class="ws-badge" id="ws-status" role="status" aria-label="실시간 업데이트: 연결 중" data-state="connecting">연결 중…</span>
+  <!-- The top bar is @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14): brand, the 대화 · 설정 · 기억 links
+       (folded into 메뉴 when the bar is short of room), the live-update status, the signed-in account and the
+       theme toggle are its data (paintAppBar); the page's own controls are its actions — the scope group
+       (default model / effort, the board's user, admin write mode) and 새 작업. Below TOPBAR_SCOPE_MIN the
+       scope group leaves the bar for the row under it (#topbar-sub, placeTopbarScope): the bar is one row. -->
+  <header class="topbar" id="topbar">
+    <h1 class="ar-vh">soma-work</h1>
+    <ui-app-bar id="app-bar" lang="ko">
+    <div class="topbar-scope" id="topbar-scope" slot="actions">
     <div class="topbar-defaults" id="topbar-defaults" hidden>
       <button type="button" class="td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
       <button type="button" class="td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 effort — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">Effort </span><b id="td-effort-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
       <ui-menu id="td-menu" lang="ko"></ui-menu>
       <span class="td-status" id="td-status" role="status" aria-live="polite"></span>
     </div>
-    <button type="button" class="ui-btn is-primary new-task-btn" id="new-task-btn" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><i data-ui-icon="plus"></i><span class="nt-btn-label">새 작업</span><kbd class="ui-kbd nt-kbd" aria-hidden="true">N</kbd></button>
-    <div class="nav">
-      <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">모든 사용자</span><select id="user-select" title="모든 사용자" aria-label="보드에 보일 사용자" onchange="selectUser(this.value)">
-        <option value="">모든 사용자</option>
-      </select></span>
-      <a href="/conversations" title="대화 — 지난 대화를 모두 봅니다"><i data-ui-icon="chat"></i>대화</a>
-      <a href="/dashboard/settings" id="settings-link" title="개인 설정 — Slack 명령으로 바꾸던 설정을 여기서 확인하고 바꿉니다"><i data-ui-icon="gear"></i>설정</a>
-      <a href="/dashboard/settings#memory" id="memory-link" title="기억 — 에이전트가 기억하는 개인 메모리와 관찰 기록을 보고 고칩니다"><i data-ui-icon="brain"></i>기억</a>
-      <button
-        id="admin-mode-toggle"
-        type="button"
-        class="admin-toggle"
-        style="display:none"
-        aria-pressed="false"
-        title="관리자 쓰기 모드 — 켜면 다른 사람의 세션도 바꿀 수 있습니다 (#716)"
-        onclick="toggleAdminMode()"
-      ><span id="admin-mode-label"><span class="admin-mode-prefix">관리자 </span><span class="admin-mode-state">끔</span></span></button>
+    <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">모든 사용자</span><select id="user-select" title="모든 사용자" aria-label="보드에 보일 사용자" onchange="selectUser(this.value)">
+      <option value="">모든 사용자</option>
+    </select></span>
+    <button
+      id="admin-mode-toggle"
+      type="button"
+      class="admin-toggle"
+      style="display:none"
+      aria-pressed="false"
+      title="관리자 쓰기 모드 — 켜면 다른 사람의 세션도 바꿀 수 있습니다 (#716)"
+      onclick="toggleAdminMode()"
+    ><span id="admin-mode-label"><span class="admin-mode-prefix">관리자 </span><span class="admin-mode-state">끔</span></span></button>
     </div>
-    <div class="topbar-account">
-      <a
-        class="user-pill"
-        id="user-pill"
-        href="/login"
-        title="계정 — 다른 계정으로 전환하거나 로그아웃합니다"
-      ><span class="user-pill-prefix"><i data-ui-icon="user" class="ic-user"></i><svg class="ic-admin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2l4.8 1.9v3.5c0 2.9-2 5.1-4.8 6.2-2.8-1.1-4.8-3.3-4.8-6.2V4.1z"/><path d="M5.9 8.1l1.5 1.5 2.8-2.9"/></svg><span class="ar-vh">로그인 계정 </span></span><b id="user-pill-name">…</b></a>
-      <button id="theme-toggle" onclick="toggleTheme()" aria-label="테마 전환"><i data-ui-icon="sun" class="ic-sun"></i><i data-ui-icon="moon" class="ic-moon"></i></button>
-    </div>
-  </div>
+    <button type="button" class="ui-btn is-primary new-task-btn" id="new-task-btn" slot="actions" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><i data-ui-icon="plus"></i><span class="nt-btn-label">새 작업</span><kbd class="ui-kbd nt-kbd" aria-hidden="true">N</kbd></button>
+    </ui-app-bar>
+    <div class="topbar-sub" id="topbar-sub" hidden></div>
+  </header>
 
   <div class="main">
     <!-- Stats strip (.prd/10 §3.1-2) leads; the agent inbox board follows it.
@@ -6605,17 +6450,15 @@ const INIT_USER = ${initUser};
 // The page chrome's words, in one place and one language (the library's STRINGS pattern, lang="ko"):
 // sentence case, "…" not "...", the library's short status vocabulary.
 var STRINGS = {
-  wsLive: '실시간',
-  wsLiveLabel: '실시간 업데이트: 연결됨',
+  // The live-update status in the app bar (a tone dot and these words; narrow, the dot alone).
+  wsConnecting: '연결 중…',
+  wsLive: '실시간 연결됨',
   wsReconnecting: '다시 연결 중…',
-  wsReconnectingLabel: '실시간 업데이트: 다시 연결 중',
   on: '켬',
   off: '끔',
   adminOn: '관리자 켬',
   adminOff: '관리자 끔',
   viewerAdmin: '관리자',
-  themeToDark: '어두운 테마로 전환',
-  themeToLight: '밝은 테마로 전환',
   // P8: the panel's turn summaries, subtitle and the legacy question form — Korean, "…", no emoji.
   summaryFailed: '요약 실패',
   summaryPending: '요약 만드는 중…',
@@ -6685,7 +6528,32 @@ let _panelTitleSub = ''; // the subtitle the open panel shows ('' = none yet)
 let _viewerIsAdmin = false; // /auth/me says ADMIN_USERS (or viewer token); UX only, the server re-checks
 let _viewerUserId = ''; // the signed-in user (/auth/me) — not currentUserId, which is the board filter
 
-// ── Theme toggle — sun/moon ──
+// ── Top bar — @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14) ──
+// The page hands the bar its data — brand, the three page links, the live-update status, the signed-in
+// account and the current theme — and answers its events: ui-theme-change (the page owns the theme and
+// its storage), ui-navigate / ui-account (not cancelled: the links are real links). The bar draws and
+// folds them; the page's own controls ride in its actions slot (placeTopbarScope).
+var APP_BAR_NAV = [
+  { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat' },
+  { id: 'settings', label: '설정', href: '/dashboard/settings', icon: 'gear' },
+  { id: 'memory', label: '기억', href: '/dashboard/settings#memory', icon: 'brain' },
+];
+var _appBarStatus = { tone: 'run', label: STRINGS.wsConnecting, live: true };
+var _appBarAccount = null; // { name, href, role? } once /auth/me resolves; null = no pill
+function paintAppBar() {
+  var bar = document.getElementById('app-bar');
+  if (!bar) return;
+  var data = {
+    brand: { label: 'soma-work', mark: true },
+    nav: APP_BAR_NAV,
+    navLabel: '주 메뉴',
+    status: _appBarStatus,
+    theme: document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
+  };
+  if (_appBarAccount) data.account = _appBarAccount;
+  bar.data = data;
+}
+// ── Theme — the bar's sun / moon; stored only while it differs from the OS ──
 function getPreferredTheme() {
   var saved = localStorage.getItem('soma-theme');
   if (saved) return saved;
@@ -6693,12 +6561,9 @@ function getPreferredTheme() {
 }
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
-  var btn = document.getElementById('theme-toggle');
-  if (btn) btn.setAttribute('aria-label', theme === 'light' ? STRINGS.themeToDark : STRINGS.themeToLight);
+  paintAppBar();
 }
-function toggleTheme() {
-  var current = document.documentElement.getAttribute('data-theme') || 'dark';
-  var next = current === 'dark' ? 'light' : 'dark';
+function setTheme(next) {
   var osTheme = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
   if (next === osTheme) {
     localStorage.removeItem('soma-theme');
@@ -6707,7 +6572,11 @@ function toggleTheme() {
   }
   applyTheme(next);
 }
-// Sync icon on load
+function toggleTheme() {
+  var current = document.documentElement.getAttribute('data-theme') || 'dark';
+  setTheme(current === 'dark' ? 'light' : 'dark');
+}
+// Sync the bar on load
 applyTheme(getPreferredTheme());
 // Listen for OS theme changes (if user hasn't manually chosen)
 window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function(e) {
@@ -6715,6 +6584,45 @@ window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', fu
     applyTheme(e.matches ? 'light' : 'dark');
   }
 });
+(function initAppBar() {
+  var bar = document.getElementById('app-bar');
+  if (!bar) return;
+  bar.addEventListener('ui-theme-change', function(e) {
+    var t = e.detail && e.detail.theme;
+    if (t === 'light' || t === 'dark') setTheme(t);
+  });
+})();
+// The scope group (default model / effort · the board's user · admin write mode) rides in the bar's
+// actions on a wide screen; below TOPBAR_SCOPE_MIN it takes the row under the bar, where it may wrap —
+// the bar is one 56px row and folds only its own links. Moved as a whole, so its state goes with it.
+var TOPBAR_SCOPE_MIN = 1280;
+function placeTopbarScope() {
+  var bar = document.getElementById('app-bar');
+  var sub = document.getElementById('topbar-sub');
+  var scope = document.getElementById('topbar-scope');
+  if (!bar || !sub || !scope) return;
+  var wide = !window.matchMedia || window.matchMedia('(min-width: ' + TOPBAR_SCOPE_MIN + 'px)').matches;
+  if (wide) {
+    if (scope.parentElement !== bar) {
+      closeDefaultsMenu();
+      scope.slot = 'actions';
+      bar.insertBefore(scope, document.getElementById('new-task-btn'));
+    }
+    sub.hidden = true;
+  } else {
+    if (scope.parentElement !== sub) {
+      closeDefaultsMenu();
+      scope.removeAttribute('slot');
+      sub.appendChild(scope);
+    }
+    sub.hidden = false;
+  }
+}
+placeTopbarScope();
+if (window.matchMedia) {
+  var _topbarScopeMq = window.matchMedia('(min-width: ' + TOPBAR_SCOPE_MIN + 'px)');
+  if (_topbarScopeMq.addEventListener) _topbarScopeMq.addEventListener('change', placeTopbarScope);
+}
 
 // ── Panel resize — drag the left edge of the docked drawer (SSOT 2026-10-24) ──
 // The drag stores a width preference (--panel-w-pref, localStorage); CSS decides
@@ -7632,12 +7540,12 @@ function renderPanelTaskItem(t, pop) {
 let _csrfToken = '';
 
 /*
- * Populate the signed-in user's pill in the topbar.
+ * The signed-in account in the app bar (data.account of <ui-app-bar id="app-bar">).
  *
  * Rendered from /auth/me for three session types:
  *   - OAuth JWT (Google/Microsoft/Slack SSO) — shows user.name.
- *   - bearer_cookie (admin viewer token) — shows 관리자 with the admin shield glyph.
- *   - unauthenticated (/auth/me → 401) — pill stays hidden; auth middleware
+ *   - bearer_cookie (admin viewer token) — shows 관리자.
+ *   - unauthenticated (/auth/me → 401) — no account pill; auth middleware
  *     is about to redirect us to /login anyway.
  *
  * The pill is a link to /login, which for a signed-in browser is the account
@@ -7645,25 +7553,16 @@ let _csrfToken = '';
  * out (GET /auth/logout).
  */
 function _applyUserPill(data) {
-  const pill = document.getElementById('user-pill');
-  const nameEl = document.getElementById('user-pill-name');
-  if (!pill || !nameEl) return;
   let label = '';
-  let isAdmin = false;
   if (data && data.user && data.user.name) {
     label = data.user.name;
   } else if (data && data.isAdmin) {
     label = STRINGS.viewerAdmin;
-    isAdmin = true;
   }
-  if (!label) {
-    pill.style.display = 'none';
-    return;
-  }
-  nameEl.textContent = label;
-  nameEl.title = label; // the name may end in an ellipsis
-  pill.style.display = 'inline-flex';
-  pill.classList.toggle('is-admin', isAdmin);
+  // The app bar's account pill: initials, the name (ellipsis past 160px), a link to the account page.
+  _appBarAccount = label ? { name: label, href: '/login' } : null;
+  paintAppBar();
+  if (!label) return;
 
   // #716: admin-mode toggle visibility. Only ADMIN_USERS members see
   // the button; clicking it stores soma_admin_mode in localStorage and
@@ -13497,22 +13396,18 @@ function renderBarChart(title, days, valueFn, color) {
 function connectWs() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(proto + '//' + location.host + '/ws/dashboard');
-  const statusEl = document.getElementById('ws-status');
 
+  // The app bar's status (role=status, polite): a tone dot and a word; the dot pulses while live.
   ws.onopen = function() {
-    statusEl.dataset.state = 'live';
-    statusEl.textContent = STRINGS.wsLive;
-    statusEl.title = STRINGS.wsLiveLabel;
-    statusEl.setAttribute('aria-label', STRINGS.wsLiveLabel);
+    _appBarStatus = { tone: 'done', label: STRINGS.wsLive, live: true };
+    paintAppBar();
     // Reconnect: recover the work-log entries broadcast while we were offline
     // (from the HTTP cursor; afterSeq=0 when the log was still empty).
     if (panelOpen && _wl) recoverWorkLog();
   };
   ws.onclose = function() {
-    statusEl.dataset.state = 'reconnecting';
-    statusEl.textContent = STRINGS.wsReconnecting;
-    statusEl.title = STRINGS.wsReconnectingLabel;
-    statusEl.setAttribute('aria-label', STRINGS.wsReconnectingLabel);
+    _appBarStatus = { tone: 'wait', label: STRINGS.wsReconnecting, live: true };
+    paintAppBar();
     setTimeout(connectWs, 3000);
   };
   ws.onerror = function() { ws.close(); };

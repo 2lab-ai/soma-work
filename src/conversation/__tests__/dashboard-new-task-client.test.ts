@@ -107,11 +107,10 @@ function mediaBlock(prelude: string): string {
 }
 
 describe('T1 — the New task entry is always in reach, calm', () => {
-  it('PC: a primary button sits in the top bar, before the nav, with an N shortcut', () => {
-    const topbar = html.slice(html.indexOf('<div class="topbar">'), html.indexOf('<div class="nav">'));
-    expect(topbar).toContain('id="new-task-btn"');
-    expect(topbar).toMatch(/<button[^>]*id="new-task-btn"[^>]*aria-keyshortcuts="n"/);
-    expect(topbar).toMatch(/id="new-task-btn"[^>]*onclick="openNewTask\(\)"/);
+  it('PC: a primary button sits in the app bar (its actions slot, before the status) with an N shortcut', () => {
+    const bar = html.slice(html.indexOf('<ui-app-bar id="app-bar"'), html.indexOf('</ui-app-bar>'));
+    expect(bar).toMatch(/<button[^>]*id="new-task-btn" slot="actions"[^>]*aria-keyshortcuts="n"/);
+    expect(bar).toMatch(/id="new-task-btn"[^>]*onclick="openNewTask\(\)"/);
   });
 
   it('phones: a floating action button, clear of the home indicator', () => {
