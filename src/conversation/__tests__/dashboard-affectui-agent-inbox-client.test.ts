@@ -310,23 +310,21 @@ describe('the board’s wording (lang="ko" + data.strings, D2 group 6)', () => {
   const strings = new Function(
     'ART_KIND_LABEL',
     'toNum',
-    `${cook(src.slice(0, src.indexOf('\n};\n') + 4))}\n${clientFn('fmtRunKo')}\nreturn BOARD_STRINGS;`,
+    `${cook(src.slice(0, src.indexOf('\n};\n') + 4))}\nreturn BOARD_STRINGS;`,
   )({ image: '이미지' }, (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0));
-  it('the element’s Korean table (status words, sub-agents, announcement, age); the page’s file chips, clock and no lead', () => {
+  it('the element’s Korean table (status words, sub-agents, announcement, age, clock); the page’s file chips and no lead', () => {
     // Both boards (the kanban and every CRON lane) speak Korean: the element's own words.
     expect(TEMPLATE).toContain('<ui-agent-inbox id="kanban" class="kanban" view="board" lang="ko"></ui-agent-inbox>');
     expect(TEMPLATE).toContain("el.setAttribute('lang', 'ko');");
     // What the ko table already says is not repeated; the English age (timeAgo) is gone.
-    for (const k of ['agents', 'agentsRunning', 'agentsFailed', 'arts', 'announce', 'ago', 'status']) {
+    // The clock too: the ko table's duration is Korean since 0.10.0 (D2-GAPS G6-1 — the page's fmtRunKo is gone).
+    for (const k of ['agents', 'agentsRunning', 'agentsFailed', 'arts', 'announce', 'ago', 'status', 'duration']) {
       expect(strings[k], k).toBeUndefined();
     }
     expect(strings.artOpen('a.png', 'image')).toBe('이미지 a.png — 크게 보기');
     expect(strings.artOpen('x.bin', 'file')).toBe('파일 x.bin — 크게 보기');
     expect(strings.changed('Deploy', '실행 중')).toBe('');
-    // A running card's clock in Korean (was 3m 07s).
-    expect(strings.duration(12_000)).toBe('12초');
-    expect(strings.duration(187_000)).toBe('3분 07초');
-    expect(strings.duration(7_380_000)).toBe('2시간 3분');
+    expect(TEMPLATE).not.toContain('function fmtRunKo(');
   });
 });
 

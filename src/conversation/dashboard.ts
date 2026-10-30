@@ -8049,18 +8049,8 @@ var BOARD_STRINGS = {
   artOpen: function(name, kind) { return (ART_KIND_LABEL[kind] || '파일') + ' ' + name + ' — 크게 보기'; },
   // The sentence is the counts only, never "<title>: <word>." first.
   changed: function() { return ''; },
-  // A run's clock in Korean (the table's is 7m 12s).
-  duration: function(ms) { return fmtRunKo(ms); },
+  // A running card's clock is the ko table's own (12초 · 3분 7초 · 2시간 3분 — 0.10.0, D2-GAPS G6-1).
 };
-// 12초 · 7분 05초 · 2시간 3분 — a running card's clock.
-function fmtRunKo(ms) {
-  var sec = Math.max(0, Math.floor(toNum(ms) / 1000));
-  if (sec < 60) return sec + '초';
-  var m = Math.floor(sec / 60);
-  var r = sec % 60;
-  if (m < 60) return m + '분 ' + (r < 10 ? '0' + r : r) + '초';
-  return Math.floor(m / 60) + '시간 ' + (m % 60) + '분';
-}
 
 // Motion tokens come from the CSS custom properties so CSS transitions and
 // WAAPI share one source of truth (§4 table).
