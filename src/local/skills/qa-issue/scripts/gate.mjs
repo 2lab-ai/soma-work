@@ -186,7 +186,8 @@ function merge(argv) {
     keys[g.key] = g;
   }
   const all = Object.values(keys);
-  const open = all.flatMap((g) => g.preconditions.filter((p) => p.status === 'missing' && !DECISIONS.includes(p.decision)));
+  // Open = missing and not ended by the requester: only `waived` and `skipped` end a gap that stays missing.
+  const open = all.flatMap((g) => g.preconditions.filter((p) => p.status === 'missing' && p.decision !== 'waived' && p.decision !== 'skipped'));
   const missing = all.reduce((n, g) => n + missingIds(g).length, 0);
   const run = {
     gateId: basename(out).replace(/\.json$/, ''),
@@ -253,21 +254,21 @@ function decide(argv) {
   const unanswered = [];
   const stillMissing = [];
   const blocked = new Map();
-  let skippedBy = null;
+  // The requester chose to skip this key: that holds even if a precondition is met now.
+  const skipped = g.preconditions.find((p) => p.decision === 'skipped');
+  if (skipped) {
+    say({ key, action: 'skip', reason: `precondition-skipped by ${skipped.confirmedBy}`, runCases: [], blockedCases: [] });
+    return;
+  }
   for (const p of g.preconditions) {
     if (statusOf(p) !== 'missing') continue; // met or provisionable now: running beats waiving
     if (p.decision === 'waived') {
       for (const id of p.cases) if (!blocked.has(id)) blocked.set(id, { id, precondition: p.id, reason: `precondition-waived:${p.id} by ${p.confirmedBy}` });
-    } else if (p.decision === 'skipped') skippedBy = skippedBy || p.confirmedBy;
-    else if (p.decision === 'provided') stillMissing.push(p.id);
+    } else if (p.decision === 'provided') stillMissing.push(p.id);
     else unanswered.push(p.id);
   }
   if (unanswered.length || stillMissing.length) {
     ask([unanswered.length ? `unanswered: ${unanswered.join(',')}` : '', stillMissing.length ? `still missing: ${stillMissing.join(',')}` : ''].filter(Boolean).join('; '));
-  }
-  if (skippedBy) {
-    say({ key, action: 'skip', reason: `precondition-skipped by ${skippedBy}`, runCases: [], blockedCases: [] });
-    return;
   }
   const order = g.plan.cases.map((c) => c.id);
   say({ key, action: 'run', reason: '', runCases: order.filter((id) => !blocked.has(id)), blockedCases: order.filter((id) => blocked.has(id)).map((id) => blocked.get(id)) });
