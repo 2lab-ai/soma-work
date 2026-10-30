@@ -612,9 +612,13 @@ export class ClaudeHandler implements TurnSteeringPort {
     channelId: string,
     threadTs?: string,
     model?: string,
-    options?: { taskId?: string },
   ): ConversationSession {
-    return this.sessionRegistry.createSession(ownerId, ownerName, channelId, threadTs, model, options);
+    return this.sessionRegistry.createSession(ownerId, ownerName, channelId, threadTs, model);
+  }
+
+  /** See SessionRegistry.adoptTaskId — move a task id onto a live session (#595). */
+  adoptTaskId(sessionKey: string, taskId: string): boolean {
+    return this.sessionRegistry.adoptTaskId(sessionKey, taskId);
   }
 
   setSessionTitle(channelId: string, threadTs: string | undefined, title: string): void {

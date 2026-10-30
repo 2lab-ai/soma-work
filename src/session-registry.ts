@@ -557,7 +557,8 @@ export class SessionRegistry {
    *   `/renew` (resetSessionContext), CONTINUE_SESSION, invalid-resume
    *   recovery (clearSessionId), error retry, model change, sleep/wake,
    *   restart (loadSessions), bot-thread migration (the new thread's session
-   *   inherits it via `createSession(..., { taskId })`) or an archive revive
+   *   takes it over via `adoptTaskId` only after the original is terminated;
+   *   a refused termination leaves it on the original) or an archive revive
    *   (restoreArchivedSession). At most one live session holds a task id: a
    *   duplicate met on load or revive gets a fresh id instead. A session
    *   saved before task ids existed gets one on its first load, written back
@@ -597,6 +598,26 @@ export class SessionRegistry {
     if (session.taskId && this.sessionsByTaskId.get(session.taskId) === session) {
       this.sessionsByTaskId.delete(session.taskId);
     }
+  }
+
+  /**
+   * Move a task id onto the live session at `sessionKey` — the same task now
+   * lives in that session (bot-thread migration, after the original is gone).
+   * Refuses (returns false) while another live session still holds the id, so
+   * a migration whose termination was refused never strands the original
+   * without its id. The session's own minted id is dropped from the index.
+   */
+  adoptTaskId(sessionKey: string, taskId: string): boolean {
+    const session = this.sessions.get(normalizeSessionKey(sessionKey));
+    if (!session || !taskId) return false;
+    const holder = this.sessionsByTaskId.get(taskId);
+    if (holder && holder !== session) return false;
+    if (session.taskId === taskId) return true;
+    this.unindexTask(session);
+    session.taskId = taskId;
+    this.sessionsByTaskId.set(taskId, session);
+    this.saveSessions();
+    return true;
   }
 
   /**
@@ -720,22 +741,9 @@ export class SessionRegistry {
     channelId: string,
     threadTs?: string,
     model?: string,
-    options?: {
-      /**
-       * Inherit this task id instead of minting one — the same task moving to
-       * a new session (bot-thread migration). The previous holder gives it up.
-       */
-      taskId?: string;
-    },
   ): ConversationSession {
     // Get user's default model if not provided
     const sessionModel = model || userSettingsStore.getUserDefaultModel(ownerId);
-
-    const inheritedTaskId = options?.taskId || undefined;
-    if (inheritedTaskId) {
-      const holder = this.sessionsByTaskId.get(inheritedTaskId);
-      if (holder) holder.taskId = undefined;
-    }
 
     const session: ConversationSession = {
       ownerId,
@@ -743,7 +751,7 @@ export class SessionRegistry {
       userId: ownerId, // Legacy field
       channelId,
       threadTs,
-      taskId: inheritedTaskId ?? randomUUID(),
+      taskId: randomUUID(),
       isActive: true,
       lastActivity: new Date(),
       model: sessionModel,

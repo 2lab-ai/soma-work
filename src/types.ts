@@ -497,6 +497,7 @@ export interface ConversationSession {
    * holds; never changes for the life of the task. Lifecycle contract and
    * lookup: `SessionRegistry.getSessionByTaskId`.
    */
+  // Only SessionRegistry assigns this (create / load / revive / adoptTaskId) — an assignment elsewhere breaks the task-id index.
   taskId?: string;
   // Bot activity state (working/waiting/idle)
   activityState?: ActivityState;
