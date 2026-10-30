@@ -39,8 +39,10 @@ function stripHoverBlocks(css: string): string {
 describe('agent inbox board — layout (§3.1)', () => {
   it('has the breadcrumb and the Board | List segmented control', () => {
     expect(TEMPLATE).toContain('Agent inbox');
-    expect(TEMPLATE).toContain('data-view="board"');
-    expect(TEMPLATE).toContain('data-view="list"');
+    expect(TEMPLATE).toContain('<ui-segmented class="view-seg" id="view-seg"></ui-segmented>');
+    expect(TEMPLATE).toContain(
+      "{ value: 'board', label: '보드', icon: 'board' }, { value: 'list', label: '목록', icon: 'list' }",
+    );
   });
 
   it('persists the view in localStorage and defaults to List below 640px', () => {
@@ -87,8 +89,8 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(board).toBeGreaterThan(detailAt);
     // Collapsed: the period control, 세션 · 토큰 · 비용 and the 자세히 toggle.
     const row = main.slice(strip, detailAt);
-    // Tone pass P2: the period control is the page's one segmented control (.seg), not a second style.
-    expect(row).toContain('class="period-bar seg"');
+    // D1 (B-02): the period control is @2lab.ai/ui <ui-segmented> — the same element as Board | List.
+    expect(row).toContain('<ui-segmented class="period-bar" id="period-seg" full></ui-segmented>');
     for (const id of ['stat-sessions', 'stat-tokens-wrap', 'stat-tokens', 'stat-tokens-tooltip', 'stat-cost']) {
       expect(row, id).toContain(`id="${id}"`);
     }
@@ -108,6 +110,23 @@ describe('agent inbox board — layout (§3.1)', () => {
     }
   });
 
+  it('D1 — the segmented controls are answered, not drawn: data in, ui-change answered', () => {
+    expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/segmented.js?v=${UI_LIB_VERSION}"></script>');
+    expect(fnBody('paintPeriodSeg')).toContain(
+      "seg.data = { label: '기간', value: currentPeriod, options: PERIOD_OPTIONS };",
+    );
+    expect(fnBody('setPeriod')).toContain('paintPeriodSeg();');
+    expect(TEMPLATE).toContain(
+      "var PERIOD_OPTIONS = [{ value: 'day', label: '오늘' }, { value: 'week', label: '지난 7일' }, { value: 'month', label: '지난 30일' }];",
+    );
+    expect(TEMPLATE).toContain("periodSeg.addEventListener('ui-change', function(e) { setPeriod(e.detail.value); });");
+    expect(TEMPLATE).toContain(
+      "viewSeg.addEventListener('ui-change', function(e) { setBoardView(e.detail.value, e); });",
+    );
+    // The inline segmented rules are gone (the element draws its own well, chip, 44px rows and reduced motion).
+    expect(TEMPLATE).not.toMatch(/\n\.seg \{|\.seg-btn/);
+  });
+
   it('the 자세히 choice persists in localStorage and starts collapsed (§3.1-2)', () => {
     expect(TEMPLATE).toContain("var STATS_DETAIL_KEY = 'soma-stats-detail';");
     expect(fnBody('toggleStatsDetail')).toContain('localStorage.setItem(STATS_DETAIL_KEY');
@@ -121,9 +140,12 @@ describe('agent inbox board — layout (§3.1)', () => {
     );
     expect(btn).toBeGreaterThan(0);
     // Tone pass P8: the group's name and its two buttons are Korean (보드 · 목록).
-    expect(head.indexOf('class="seg" role="group" aria-label="보드 보기"')).toBeGreaterThan(btn);
-    expect(head).toContain('<span>보드</span></button>');
-    expect(head).toContain('<span>목록</span></button>');
+    // D1 (D-02): Board | List is <ui-segmented>; the page hands it the group name and the two choices.
+    expect(head.indexOf('<ui-segmented class="view-seg" id="view-seg"></ui-segmented>')).toBeGreaterThan(btn);
+    expect(TEMPLATE).toContain(
+      "var VIEW_OPTIONS = [{ value: 'board', label: '보드', icon: 'board' }, { value: 'list', label: '목록', icon: 'list' }];",
+    );
+    expect(fnBody('setBoardView')).toContain("label: '보드 보기'");
     expect(TEMPLATE).toContain("var SHOW_ARCHIVES_KEY = 'soma-show-archives';");
     expect(TEMPLATE).toContain('var showArchives = readShowArchives();');
     const toggle = fnBody('renderArchivesToggle');
@@ -518,16 +540,15 @@ describe('tone pass P7 — surfaces and elevation', () => {
       expect(rule(sel), sel).toContain('border-radius: 12px;');
       expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow);');
     }
-    for (const sel of [
-      '.td-menu',
-      '.nt-dialog',
-      '.art-peek',
-      '.art-modal',
-      '#stat-tokens-tooltip',
-      '.bar .bar-tooltip',
-    ]) {
+    for (const sel of ['.nt-dialog', '.art-peek', '.art-modal']) {
       expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow-raised)');
     }
+    // D1 (B-04, B-08): the token breakdown and the bar values are @2lab.ai/ui <ui-tooltip> — the element draws
+    // its own surface (the breakdown its raised card variant); the page keeps no tooltip rule.
+    expect(TEMPLATE).toContain('<ui-tooltip id="stat-tokens-tooltip" variant="card" placement="bottom" disabled>');
+    expect(TEMPLATE).toContain(`return '<ui-tooltip text="' + escAttr(label + ': ' + values[i]) + '"><div class="bar"`);
+    expect(TEMPLATE).not.toContain('bar-tooltip');
+    expect(TEMPLATE).not.toContain('tooltip-open');
   });
 
   it('turns carry no colour rail; who spoke is a neutral 24px glyph tile with a hairline — the bot an SVG', () => {
@@ -570,16 +591,17 @@ describe('tone pass P8 — copy and glyphs', () => {
       expect(TEMPLATE, s).not.toContain(s);
     }
     // One chevron: the icon set's, drawn as a mask in currentColor, turned by aria-expanded.
-    expect(TEMPLATE).toMatch(
-      /\n\.chev, \.turn-raw summary\.turn-expand-btn::before \{[^}]*mask: var\(--chev\) center \/ contain no-repeat;/,
-    );
+    expect(TEMPLATE).toMatch(/\n\.chev \{[^}]*mask: var\(--chev\) center \/ contain no-repeat;/);
     expect(TEMPLATE).toContain('.chev.is-up, [aria-expanded="true"] > .chev { transform: rotate(180deg); }');
     expect(TEMPLATE).toContain(`<span class="wl-g-chev chev is-right" aria-hidden="true"></span>`);
     // The close buttons and the subtitle's regenerate are SVGs with a name.
+    // D1: the glyphs are @2lab.ai/ui's icon set, named in an icon slot the server fills (fillUiIcons).
     expect(TEMPLATE).toMatch(
-      /class="panel-close"[^>]*>\s*<svg viewBox="0 0 16 16"[^>]*><path d="M4 4l8 8M12 4l-8 8"\/><\/svg><\/button>/,
+      /class="ui-icon-btn is-bordered panel-close"[^>]*><i data-ui-icon="close"><\/i><\/button>/,
     );
-    expect(TEMPLATE).toMatch(/id="panel-title-sub-regen"[^>]*aria-label="부제 다시 만들기"[^>]*><svg /);
+    expect(TEMPLATE).toMatch(
+      /id="panel-title-sub-regen"[^>]*aria-label="부제 다시 만들기"[^>]*><i data-ui-icon="refresh"><\/i>/,
+    );
   });
 
   it('Korean chrome with "…": the panel, the lifecycle dialog and the board tools; the panel copy comes from STRINGS', () => {
@@ -594,7 +616,16 @@ describe('tone pass P8 — copy and glyphs', () => {
       expect(TEMPLATE, s).not.toContain(s);
     }
     expect(TEMPLATE).toContain('<h3 id="panel-title" tabindex="-1">작업 카드</h3>');
-    expect(TEMPLATE).toContain('<h3 id="lifecycle-title">세션 수명 주기</h3>');
+    // D1 (J-01): the lifecycle dialog is @2lab.ai/ui <ui-dialog>; its Korean title is the element's heading.
+    expect(TEMPLATE).toContain(
+      '<ui-dialog id="lifecycle-dialog" class="lifecycle-dialog" heading="세션 수명 주기" size="sm" lang="ko">',
+    );
+    // Its two buttons are the footer; 저장 still submits the form (form="lifecycle-form").
+    expect(TEMPLATE).toContain(
+      '<button type="submit" form="lifecycle-form" class="ui-btn is-primary lc-save" id="lifecycle-save">저장</button>',
+    );
+    expect(fnBody('openLifecycleDialog')).toContain('dlg.show();');
+    expect(fnBody('closeLifecycleDialog')).toContain('dlg.hide();');
     for (const s of [
       "'Retrying...'",
       'Generating summary...',
@@ -713,13 +744,7 @@ describe('agent inbox board — motion contract (§4)', () => {
   it('board hover effects live only inside (hover: hover) and (pointer: fine)', () => {
     expect(TEMPLATE).toContain('@media (hover: hover) and (pointer: fine) {');
     const outside = stripHoverBlocks(TEMPLATE);
-    for (const sel of [
-      '.card:hover',
-      '.card-face:hover',
-      '.seg-btn:hover',
-      '.btn-action:hover',
-      '.show-older-btn:hover',
-    ]) {
+    for (const sel of ['.card:hover', '.card-face:hover', '.show-older-btn:hover']) {
       expect(outside, sel).not.toContain(sel);
     }
   });
@@ -743,14 +768,17 @@ describe('agent inbox board — responsive (§5)', () => {
 
   it('every remaining control is 44px on narrow or touch screens (panel, topbar, period tabs)', () => {
     const block = TEMPLATE.match(/@media \(max-width: 639px\), \(pointer: coarse\) \{[\s\S]*?\n\}/)?.[0] ?? '';
-    expect(block).toContain('.panel-close { width: 44px; height: 44px; }');
-    expect(block).toContain('.period-btn { min-height: 44px; }');
+    // The panel's ✕ is the kit's icon button: 44px on touch / narrow screens is the kit's own rule.
+    expect(TEMPLATE).toMatch(/<button type="button" class="ui-icon-btn is-bordered panel-close"/);
+    // The period tabs are <ui-segmented>: 44px on touch / narrow screens is the element's own rule.
+    expect(TEMPLATE).not.toContain('.period-btn');
     expect(block).toContain('.stats-more { min-height: 44px; }');
     expect(block).toContain(
       '.topbar .nav a, .topbar .nav .user-select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }',
     );
     expect(block).toContain('#theme-toggle { min-block-size: 44px; position: relative; }');
-    expect(block).toContain('#panel-title-sub-regen { min-width: 44px; min-height: 44px; }');
+    // The subtitle's regenerate is the kit's small icon button (44px on touch / narrow: ui-kit.css).
+    expect(TEMPLATE).toContain('id="panel-title-sub-regen" class="ui-icon-btn is-sm"');
     // Must follow the #800 coarse blocks so it wins the cascade.
     expect(TEMPLATE.indexOf('@media (max-width: 639px), (pointer: coarse)')).toBeGreaterThan(
       TEMPLATE.indexOf('@media (max-width: 480px) and (pointer: coarse)'),

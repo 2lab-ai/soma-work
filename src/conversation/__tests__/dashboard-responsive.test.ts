@@ -289,7 +289,8 @@ describe('phones — nothing zooms, nothing hides behind the FAB, nothing runs o
     // After every render and every DONE day opened or closed (#562 review P3).
     expect(clientFn('renderBoard')).toContain('syncHasCards();');
     expect(clientFn('wireInbox')).toContain('syncHasCards();');
-    expect(phone).toContain('.td-menu { left: 12px; right: 12px; min-width: 0; max-width: none; }');
+    // D1 (A-07): the defaults menu is <ui-menu> — fixed, kept inside the viewport by the element on any width.
+    expect(TEMPLATE).not.toContain('.td-menu');
     expect(phone).toContain('.art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }');
   });
 });
@@ -506,31 +507,28 @@ describe('layout transition — review fixes (trinity code review R1)', () => {
         attrs[k] = v;
       },
     };
-    const seg = (view: string) => {
-      const a: Record<string, string> = { 'data-view': view, 'aria-pressed': String(view === 'board') };
-      return {
-        a,
-        getAttribute: (k: string) => a[k] ?? null,
-        setAttribute: (k: string, v: string) => {
-          a[k] = v;
-        },
-      };
-    };
-    const segs = [seg('board'), seg('list')];
+    // D1 (D-02): Board | List is <ui-segmented id="view-seg"> — the page hands it the value.
+    const seg: { data?: { value: string; label: string; options: { value: string }[] } } = {};
     const saved: string[] = [];
     let adopted = 0;
-    const { setBoardView } = loadWith<{ setBoardView(view: string, ev?: unknown): void }>(['setBoardView'], [], {
-      document: { querySelectorAll: () => segs, getElementById: (id: string) => (id === 'kanban' ? kb : null) },
-      localStorage: { setItem: (_k: string, v: string) => saved.push(v) },
-      adoptLayout: () => {
-        adopted++;
+    const { setBoardView } = loadWith<{ setBoardView(view: string, ev?: unknown): void }>(
+      ['setBoardView'],
+      ['VIEW_OPTIONS'],
+      {
+        document: { getElementById: (id: string) => (id === 'kanban' ? kb : id === 'view-seg' ? seg : null) },
+        localStorage: { setItem: (_k: string, v: string) => saved.push(v) },
+        adoptLayout: () => {
+          adopted++;
+        },
       },
-    });
+    );
     // The reader's switch (an event): saved, the element's view attribute (it FLIPs), adopted.
     setBoardView('list', {});
     expect(attrs.view).toBe('list');
     expect(saved).toEqual(['list']);
-    expect(segs.map((b) => b.a['aria-pressed'])).toEqual(['false', 'true']);
+    expect(seg.data?.value).toBe('list');
+    expect(seg.data?.label).toBe('보드 보기');
+    expect(seg.data?.options.map((o) => o.value)).toEqual(['board', 'list']);
     expect(adopted).toBe(1);
     // The default following the screen (no event): not saved, not adopted — the coordinator runs the only glide.
     setBoardView('board');
@@ -659,16 +657,15 @@ describe('views merged from #374 follow the same device contract', () => {
   it('the cron run drawer fills the visible viewport (not 100vh behind the Safari toolbar) and keeps clear of the insets', () => {
     // viewport-fit=cover makes env() insets real: a drawer pinned to the right edge
     // must pad for the landscape iPhone notch side and the home indicator.
-    const drawer = /^\.cron-drawer \{[^}]*\}/m.exec(RESP_TAIL)?.[0] ?? '';
-    expect(drawer).toContain('height: 100dvh');
-    expect(drawer).toContain('padding-right: env(safe-area-inset-right, 0px)');
-    // 100vw counts a classic scrollbar: a narrow window would push the drawer's left
-    // edge off screen (the device sweep caught -8px in WebKit). A fixed box's 100% is
-    // the viewport without the scrollbar.
-    expect(drawer).toContain('width: min(560px, 100%)');
-    expect(RESP_TAIL).toMatch(/^\.cron-drawer-head \{[^}]*padding-top: max\(16px, env\(safe-area-inset-top, 0px\)\)/m);
-    expect(RESP_TAIL).toMatch(
-      /^\.cron-drawer-body \{[^}]*padding-bottom: calc\(24px \+ env\(safe-area-inset-bottom, 0px\)\)/m,
+    // D1 (C-05): the drawer is @2lab.ai/ui <ui-drawer mode="sheet"> — a fixed native dialog (inset 0, so the
+    // visible viewport; its panel min(width, 100%) — never 100vw) with the bottom inset of its own.
+    expect(TEMPLATE).toContain(
+      '<ui-drawer class="cron-drawer" id="cron-drawer" mode="sheet" width="560" max-width="560" lang="ko">',
+    );
+    // The page adds the notch side and the top inset through the element's parts.
+    expect(RESP_TAIL).toContain('.cron-drawer::part(panel) { padding-right: env(safe-area-inset-right, 0px); }');
+    expect(RESP_TAIL).toContain(
+      '.cron-drawer::part(header) { padding-top: max(14px, env(safe-area-inset-top, 0px)); }',
     );
   });
 });
@@ -714,7 +711,8 @@ describe('merged views — trinity code review R4 follow-ups', () => {
   it('Escape with a docked panel and the cron drawer open closes the drawer only (the topmost)', () => {
     // SSOT 2026-10-29 T2: without the drawer, Escape closes the front detail card (closeDetailCard).
     expect(TEMPLATE).toContain(
-      "if (e.key === 'Escape' && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();",
+      // D1 (C-05): <ui-drawer> takes the key (preventDefault) before the page's listener; the panel leaves it be.
+      "if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();",
     );
   });
 
@@ -734,7 +732,10 @@ describe('merged views — trinity code review R4 follow-ups', () => {
     const resp = TEMPLATE.slice(TEMPLATE.indexOf('/* ═══ Device-responsive layout (SSOT 2026-10-24)'));
     const coarse = resp.slice(resp.indexOf('@media (pointer: coarse) {'));
     const block = coarse.slice(0, coarse.indexOf('\n}'));
-    expect(block).toContain('.cron-drawer-close { min-width: 44px; min-height: 44px; }');
+    // D1: the close button is the kit's icon button — 44px on touch is ui-kit.css's own rule.
+    expect(block).not.toContain('.cron-drawer-close');
+    // D1 (C-05): the close button is <ui-drawer>'s own — 44px on touch / narrow screens is the element's rule.
+    expect(TEMPLATE).not.toContain('id="cron-drawer-close"');
     // 지난 실행, the strip, the queue chips, the marks and the fold toggle: @2lab.ai/ui agent-queue
     // styles.ts, '@media (pointer: coarse)' — 44px.
     expect(block).not.toContain('.cron-history-btn');
