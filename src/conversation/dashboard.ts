@@ -3783,8 +3783,12 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 @media (hover: hover) and (pointer: fine) { .topbar .td-chip:hover { background: var(--td-well); color: var(--ib-text); } }
 .topbar .td-caret { width: 12px; height: 12px; flex: none; color: var(--ib-muted); transition: transform var(--dur-move) var(--ease-out); }
 .topbar .td-chip[aria-expanded="true"] .td-caret { transform: rotate(180deg); }
-.td-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 120; min-width: 260px; max-width: min(360px, 92vw); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--ib-shadow-raised); padding: 6px; }
-.td-menu[hidden] { display: none; }
+/* The menu pops from its trigger's corner (the library menu / model-picker popover): in from translateY(-4px)
+   scale(.96) with opacity 160ms + transform 220ms ease-out, out in 180ms; display is discrete, so after the
+   exit a closed menu takes no hits and no room. */
+.td-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 120; min-width: 260px; max-width: min(360px, 92vw); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--ib-shadow-raised); padding: 6px; transform-origin: top left; transition: opacity 160ms var(--ease-out), transform 220ms var(--ease-out), display 220ms allow-discrete; }
+.td-menu[hidden] { display: none; opacity: 0; transform: translateY(-4px) scale(0.96); pointer-events: none; transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out), display var(--dur-fade) allow-discrete; }
+@starting-style { .td-menu:not([hidden]) { opacity: 0; transform: translateY(-4px) scale(0.96); } }
 .td-menu .tdm-head { font-size: 11px; font-weight: 600; color: var(--text-tertiary); padding: 6px 8px 4px; }
 .td-menu .tdm-item { display: flex; width: 100%; align-items: baseline; justify-content: space-between; gap: 8px; text-align: left; font: inherit; font-size: 13px; color: var(--text); background: none; border: 0; border-radius: 6px; padding: 8px; min-height: 36px; cursor: pointer; }
 .td-menu .tdm-item[aria-checked="true"] { background: var(--surface-raised); font-weight: 600; }
@@ -4113,6 +4117,14 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* Session lifecycle dialog (admin) */
 .lifecycle-dialog { margin: auto; border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; background: var(--bg-card, var(--ib-col)); color: var(--ib-text); max-width: 420px; width: calc(100% - 32px); }
 .lifecycle-dialog::backdrop { background: var(--scrim); }
+/* Dialogs come and go the same way (P6): the box opacity + scale(.97) on --dur-expand, its scrim a 180ms fade;
+   closing, both leave in 180ms (.is-closing, dialogCloseSoftly) before close(). */
+.lifecycle-dialog[open] { animation: dlg-in var(--dur-expand) var(--ease-out); }
+.lifecycle-dialog[open]::backdrop, .art-modal[open]::backdrop { animation: scrim-in var(--dur-fade) var(--ease-out); }
+.lifecycle-dialog.is-closing, .art-modal.is-closing { opacity: 0; transform: scale(0.98); transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out); }
+.lifecycle-dialog.is-closing::backdrop, .art-modal.is-closing::backdrop { opacity: 0; transition: opacity var(--dur-fade) var(--ease-out); }
+@keyframes dlg-in { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
+@keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
 .lifecycle-dialog h3 { margin: 0 0 4px; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
 .lifecycle-dialog .lc-note { margin: 0 0 12px; font-size: 12px; color: var(--ib-muted); }
 .lifecycle-dialog label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 8px; font-size: 13px; margin-bottom: 10px; }
@@ -4255,32 +4267,41 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   position: relative;
   display: inline-block;
 }
+/* The tooltip pops like a menu (from its figure, centred) and leaves in 180ms. */
 #stat-tokens-tooltip {
   display: none;
   position: absolute;
   top: 100%;
   left: 50%;
-  transform: translateX(-50%);
-  margin-top: 4px;
+  transform: translateX(-50%) translateY(-4px) scale(0.96);
+  transform-origin: top center;
+  opacity: 0;
+  margin-top: 6px;
   background: var(--surface);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
+  box-shadow: var(--ib-shadow-raised);
   padding: 6px 10px;
   font-size: 0.78em;
   font-weight: 400;
   white-space: nowrap;
   z-index: 50;
   pointer-events: none;
+  transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out), display var(--dur-fade) allow-discrete;
 }
 #stat-tokens-wrap.tooltip-open #stat-tokens-tooltip,
-#stat-tokens-wrap:hover #stat-tokens-tooltip { display: block; }
+#stat-tokens-wrap:hover #stat-tokens-tooltip { display: block; opacity: 1; transform: translateX(-50%); transition: opacity 160ms var(--ease-out), transform 220ms var(--ease-out), display 220ms allow-discrete; }
+@starting-style {
+  #stat-tokens-wrap.tooltip-open #stat-tokens-tooltip,
+  #stat-tokens-wrap:hover #stat-tokens-tooltip { opacity: 0; transform: translateX(-50%) translateY(-4px) scale(0.96); }
+}
 @media (hover: none) {
   /* On touch devices :hover is sticky after a tap and never closes —
      gate visibility entirely on the explicit tooltip-open class
      toggled by the tap handler in updateTokenBreakdown(). */
-  #stat-tokens-wrap:hover #stat-tokens-tooltip { display: none; }
-  #stat-tokens-wrap.tooltip-open #stat-tokens-tooltip { display: block; }
+  #stat-tokens-wrap:hover #stat-tokens-tooltip { display: none; opacity: 0; }
+  #stat-tokens-wrap.tooltip-open #stat-tokens-tooltip { display: block; opacity: 1; transform: translateX(-50%); }
 }
 
 /* ── CONTEXT USAGE BAR ── */
@@ -5261,8 +5282,11 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   background: var(--scrim);
   z-index: 99;
   display: none;
+  opacity: 0;
+  transition: opacity var(--dur-fade) var(--ease-out), display var(--dur-fade) allow-discrete;
 }
-.slide-panel-overlay.open { display: block; }
+.slide-panel-overlay.open { display: block; opacity: 1; }
+@starting-style { .slide-panel-overlay.open { opacity: 0; } }
 .panel-header {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
@@ -5860,10 +5884,11 @@ body.nt-open .new-task-fab { display: none !important; }
   overflow: hidden;
   opacity: 0;
   transform: translateY(10px) scale(0.97);
-  transition: opacity var(--dur-expand) var(--ease-out), transform var(--dur-expand) var(--ease-out);
+  transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out);
 }
-.nt-dialog.is-shown { opacity: 1; transform: none; }
-.nt-dialog::backdrop { background: var(--scrim); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+.nt-dialog.is-shown { opacity: 1; transform: none; transition-duration: var(--dur-expand); }
+.nt-dialog::backdrop { background: var(--scrim); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); opacity: 0; transition: opacity var(--dur-fade) var(--ease-out); }
+.nt-dialog.is-shown::backdrop { opacity: 1; }
 .nt-form { display: flex; flex-direction: column; max-height: inherit; height: 100%; }
 .nt-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 4px; }
 .nt-head h2 { flex: 1; margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
@@ -6135,9 +6160,8 @@ body.nt-open .new-task-fab { display: none !important; }
 .art-peek-info { font-size: 11px; color: var(--text-tertiary); }
 .art-doc-loading { color: var(--text-tertiary); font-size: 12px; }
 .art-modal { width: min(1240px, 94vw); height: 90vh; max-width: none; max-height: none; margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); }
-.art-modal[open] { display: flex; flex-direction: column; animation: art-modal-in var(--dur-expand) var(--ease-out); }
+.art-modal[open] { display: flex; flex-direction: column; animation: dlg-in var(--dur-expand) var(--ease-out); }
 .art-modal::backdrop { background: var(--scrim); }
-@keyframes art-modal-in { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
 .art-modal-head { display: flex; align-items: center; gap: 12px; flex-shrink: 0; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--border); }
 .art-modal-kind { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; padding: 3px 9px; border-radius: 999px; background: var(--ib-pill); color: var(--text-secondary); font-size: 11px; font-weight: 700; }
 .art-modal-title { flex: 1; min-width: 0; }
@@ -6184,6 +6208,9 @@ body.nt-open .new-task-fab { display: none !important; }
 @media (prefers-reduced-motion: reduce) {
   .art-chip, .art-open, .art-play, .art-peek, .art-peek.open { transition: none; }
   .art-modal[open] { animation: none; }
+  /* Gentler, not zero: a dialog's scrim still fades (opacity only, ≤ 180ms). */
+  .lifecycle-dialog[open], .art-modal[open] { animation: none; }
+  .lifecycle-dialog[open]::backdrop, .art-modal[open]::backdrop { animation: scrim-in 120ms ease both !important; }
 }
 @media (hover: none) {
   .art-chip { height: 32px; }
@@ -6391,7 +6418,7 @@ ${pageTokenAliases()}
           </div>
         </div>
       </div>
-      <dialog id="lifecycle-dialog" class="lifecycle-dialog" aria-labelledby="lifecycle-title">
+      <dialog id="lifecycle-dialog" class="lifecycle-dialog" aria-labelledby="lifecycle-title" oncancel="event.preventDefault();closeLifecycleDialog()">
         <form method="dialog" onsubmit="saveLifecycle(event)" oninput="armLifecycleSave(null)">
           <h3 id="lifecycle-title">Session lifecycle</h3>
           <p class="lc-note"><span id="lifecycle-scope">이 인스턴스</span>에만 적용되고, 다음 정리 주기(최대 5분)부터 반영됩니다. 값을 줄이면 그 기준을 넘긴 세션이 바로 Sleeping이 되거나 종료됩니다 — 저장 전에 몇 개인지 알려 줍니다. Sleeping 전환이 12시간 이하이면 12시간 전 확인 알림은 보내지 않습니다.</p>
@@ -12405,6 +12432,7 @@ function openLifecycleDialog() {
     if (input) input.value = String(form[k]);
   }
   armLifecycleSave(null);
+  dialogKeep(dlg);
   setTextIfChanged(document.getElementById('lifecycle-scope'), SELF_INSTANCE_NAME ? '이 인스턴스(' + SELF_INSTANCE_NAME + ')' : '이 인스턴스');
   setLifecycleStatus(_lifecycle.degraded ? '저장된 정책 파일을 읽을 수 없어 Sleeping/종료 전환을 멈춘 상태입니다. 저장하면 다시 시작합니다.' : '', !!_lifecycle.degraded);
   if (typeof dlg.showModal === 'function') dlg.showModal();
@@ -12413,8 +12441,28 @@ function openLifecycleDialog() {
 function closeLifecycleDialog() {
   var dlg = document.getElementById('lifecycle-dialog');
   if (!dlg) return;
-  if (typeof dlg.close === 'function') dlg.close();
+  if (typeof dlg.close === 'function') dialogCloseSoftly(dlg);
   else dlg.removeAttribute('open');
+}
+// A dialog leaves the way it came (P6): its box and scrim fade out in 180ms (.is-closing), then close() —
+// at once under reduced motion. Opening it again meanwhile keeps it (dialogKeep).
+var DIALOG_EXIT_MS = 180;
+function dialogCloseSoftly(dlg) {
+  if (!dlg || !dlg.open) return;
+  if (dlg._closeT) return;
+  if (reduceMotion()) { dlg.close(); return; }
+  dlg.classList.add('is-closing');
+  dlg._closeT = setTimeout(function() {
+    dlg._closeT = 0;
+    dlg.classList.remove('is-closing');
+    if (dlg.open) dlg.close();
+  }, DIALOG_EXIT_MS);
+}
+function dialogKeep(dlg) {
+  if (!dlg || !dlg._closeT) return;
+  clearTimeout(dlg._closeT);
+  dlg._closeT = 0;
+  dlg.classList.remove('is-closing');
 }
 function setLifecycleStatus(text, isError) {
   var el = document.getElementById('lifecycle-status');
@@ -17638,6 +17686,7 @@ function openArtifactModal(cid, id, opener) {
   _artModal.idx = Math.max(0, list.findIndex(function(a) { return a.id === id; }));
   _artModal.opener = opener || null;
   renderArtModal(false);
+  dialogKeep(dlg);
   if (!artModalIsOpen()) {
     if (typeof dlg.showModal === 'function') dlg.showModal();
     else dlg.setAttribute('open', '');
@@ -17692,7 +17741,7 @@ function artModalStep(delta) {
 function closeArtifactModal() {
   var dlg = document.getElementById('art-modal');
   if (!dlg) return;
-  if (typeof dlg.close === 'function' && dlg.open) dlg.close();
+  if (typeof dlg.close === 'function' && dlg.open) dialogCloseSoftly(dlg);
   else { dlg.removeAttribute('open'); artModalClosed(); }
 }
 
@@ -17806,6 +17855,8 @@ function artHandleKey(e) {
   var dlg = document.getElementById('art-modal');
   if (dlg) {
     dlg.addEventListener('close', artModalClosed);
+    // Escape leaves the same way as the close button (the 180ms fade, then close()).
+    dlg.addEventListener('cancel', function(e) { e.preventDefault(); closeArtifactModal(); });
     // A click on the backdrop (the dialog element itself, outside its box) closes.
     dlg.addEventListener('click', function(e) { if (e.target === dlg) closeArtifactModal(); });
   }
@@ -18041,7 +18092,7 @@ function closeNewTask() {
   var reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   setTimeout(function () {
     if (dlg.open) dlg.close();
-  }, reduce ? 0 : 240);
+  }, reduce ? 0 : 180);
 }
 
 function ntOnClosed() {
