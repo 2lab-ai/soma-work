@@ -239,9 +239,12 @@ export function enqueueOrActivateGoal(
 
 /**
  * An ACTIVE goal stopped at its auto-continuation budget gets the budget back:
- * counter to 0 and the pending "keep going?" DM answered — what a real user
- * message does (`resetGoalContinuationOnUserMessage`). Returns whether it was
- * stopped there. A paused goal is left alone (pausing was explicit).
+ * counter to 0 and the pending "keep going?" DM answered. Narrower than
+ * `resetGoalContinuationOnUserMessage` on purpose: no epoch bump and no
+ * backoff clear — a goal stopped at the cap has no eval in flight and no
+ * backoff window (the eval that stopped it succeeded and cleared both).
+ * Returns whether it was stopped there. A paused goal is left alone
+ * (pausing was explicit).
  */
 function resumeGoalStoppedAtBudget(goal: SessionGoalState): boolean {
   if (goal.status !== 'active' || goal.continuationCount < goal.maxContinuations) return false;
