@@ -139,6 +139,19 @@ describe('MEMORY page ops accept the canonical page id', () => {
     expect(payload.page).toContain('layered reasoning');
   });
 
+  // The exact call from the production screenshot (2026-10-30): `text`, not
+  // `content`. Validate → run, the path every real call takes.
+  it('episodic_append stores an observation passed as `text` through the validated path', () => {
+    const validated = validateModelCommandRunArgs({
+      commandId: 'MEMORY',
+      params: { op: 'episodic_append', text: '2026-10-30: Z 지시 — 묻지 말고 진행', date: '2026-10-30' },
+    });
+    if (!validated.ok) throw new Error('unreachable');
+    expect(payloadOf(runModelCommand(validated.request, ctx())).ok).toBe(true);
+    const day = payloadOf(run({ op: 'episodic_get', date: '2026-10-30' })) as { episodic?: string };
+    expect(day.episodic).toContain('묻지 말고 진행');
+  });
+
   it('page_upsert creates a project→issue page from `id`', () => {
     const up = payloadOf(run({ op: 'page_upsert', id: 'project/soma-work/1234', current: 'spec' }));
     expect(up.ok).toBe(true);
