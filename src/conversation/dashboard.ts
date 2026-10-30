@@ -8834,7 +8834,7 @@ function renderBoard(board, partial) {
   // The board moved: the layout-shift cache measures it again once the
   // element's enter / move animations have settled (SSOT 2026-10-24).
   scheduleLayoutRefresh(MOTION.move + 40);
-  openDeepLinkedSession();
+  openDeepLinkedSession(partial);
 }
 
 // One card on an element this render: where it is, with what, and its data —
@@ -12907,7 +12907,7 @@ var DEEP_LINK_WINDOW_MS = 10000;
 var _deepLinkSession = (function() {
   try { return new URLSearchParams(location.search).get('session'); } catch (_e) { return null; }
 })();
-var _deepLinkDeadline = 0; // set by the first board render (openDeepLinkedSession)
+var _deepLinkDeadline = 0; // set by the first complete board render (openDeepLinkedSession)
 // Pure: which board key does a ?session= value point at? Exact key first, then
 // this instance's prefixed key, then the one card whose key ends in "::<ref>".
 // Ambiguous suffix matches (same thread on two siblings) resolve to nothing.
@@ -12934,15 +12934,17 @@ function resolveDeepLinkKey(ref, keys, selfInstance) {
   return best;
 }
 var _deepLinkWaiting = false; // waiting for <ui-agent-inbox> to be defined
-function openDeepLinkedSession() {
+// partial: this render is not the whole board (this instance's cards under a
+// failed load) — it may open the card, but does not start the window.
+function openDeepLinkedSession(partial) {
   if (!_deepLinkSession) return;
   // The window bounds the whole attempt: a card that first shows up on a
   // later poll (30 s) must not pop the panel open long after page load. It
-  // starts at the first board answer, not at page load (2026-10-30): a first
+  // starts at the first complete board, not at page load (2026-10-30): a first
   // board slower than the window (a slow phone link, a busy server) dropped
   // the link before any card existed — the page loaded, the session never opened.
-  if (!_deepLinkDeadline) _deepLinkDeadline = Date.now() + DEEP_LINK_WINDOW_MS;
-  if (Date.now() > _deepLinkDeadline) { _deepLinkSession = null; return; }
+  if (!_deepLinkDeadline && !partial) _deepLinkDeadline = Date.now() + DEEP_LINK_WINDOW_MS;
+  if (_deepLinkDeadline && Date.now() > _deepLinkDeadline) { _deepLinkSession = null; return; }
   var key = resolveDeepLinkKey(_deepLinkSession, Object.keys(_sessionCache), SELF_INSTANCE_NAME);
   if (!key) return;
   var host = _cardHost[key];
@@ -12975,7 +12977,7 @@ function openDeepLinkedSession() {
   if (typeof host.reveal !== 'function') {
     if (!_deepLinkWaiting && window.customElements) {
       _deepLinkWaiting = true;
-      customElements.whenDefined('ui-agent-inbox').then(function() { _deepLinkWaiting = false; openDeepLinkedSession(); });
+      customElements.whenDefined('ui-agent-inbox').then(function() { _deepLinkWaiting = false; openDeepLinkedSession(partial); });
     }
     return;
   }
