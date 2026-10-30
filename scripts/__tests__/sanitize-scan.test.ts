@@ -329,6 +329,35 @@ describe('sanitize-scan.sh — known leaks', () => {
     expectNewHit(prScan(), git('rev-parse', 'HEAD'));
   });
 
+  it('fails a commit whose author or committer carries the known text', () => {
+    publishDirtyMain();
+    listKnown(dirty);
+    writeFileSync(path.join(repo, 'g.txt'), 'ok\n');
+    git('add', 'g.txt');
+    git('-c', `user.name=${SECRET_TEXT}`, 'commit', '-q', '-m', 'ordinary message');
+    expectNewHit(prScan(), git('rev-parse', 'HEAD'));
+  });
+
+  it('never exempts an annotated tag, even one nested under another tag', () => {
+    publishDirtyMain();
+    listKnown(dirty);
+    git('tag', '-a', 'inner', '-m', `note ${SECRET_TEXT}`, dirty);
+    git('-c', 'advice.nestedTag=false', 'tag', '-a', 'outer', '-m', 'ok', 'inner');
+    git('tag', '-d', 'inner');
+    const r = scan('push');
+    expect(r.out).toContain('an annotated tag message is a hit');
+    expect(r.out).not.toMatch(/forbidden-token-\d/);
+    expect(r.status).toBe(1);
+  });
+
+  it("never lets git's own warnings print the matching text", () => {
+    // An invalid attribute name in a tracked .gitattributes makes `git show` warn, quoting the name.
+    publishDirtyMain();
+    listKnown(dirty);
+    const bad = commit('.gitattributes', `* ${SECRET_TEXT}!\n`, 'attributes');
+    expectNewHit(prScan(), bad);
+  });
+
   it('never exempts a path name, even one equal to the known text', () => {
     publishDirtyMain();
     listKnown(dirty);
