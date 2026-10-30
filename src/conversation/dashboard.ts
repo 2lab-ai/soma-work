@@ -3792,7 +3792,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .td-menu .tdm-head { font-size: 11px; font-weight: 600; color: var(--text-tertiary); padding: 6px 8px 4px; }
 .td-menu .tdm-item { display: flex; width: 100%; align-items: baseline; justify-content: space-between; gap: 8px; text-align: left; font: inherit; font-size: 13px; color: var(--text); background: none; border: 0; border-radius: 6px; padding: 8px; min-height: 36px; cursor: pointer; }
 .td-menu .tdm-item[aria-checked="true"] { background: var(--surface-raised); font-weight: 600; }
-.td-menu .tdm-item[aria-checked="true"]::after { content: '✓'; color: var(--accent); }
+.td-menu .tdm-item[aria-checked="true"]::after { content: ''; flex-shrink: 0; align-self: center; width: 14px; height: 14px; background: currentColor; -webkit-mask: var(--check) center / contain no-repeat; mask: var(--check) center / contain no-repeat; }
 .td-menu .tdm-item:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
 @media (hover: hover) and (pointer: fine) { .td-menu .tdm-item:hover { background: var(--surface-raised); } }
 .td-menu .tdm-sub { font-size: 11px; color: var(--text-tertiary); font-weight: 400; }
@@ -5470,6 +5470,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    it takes currentColor; .chev points down, .is-up / .is-right turn it, and a toggle's aria-expanded
    turns it open. */
 :root { --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E"); }
+:root { --check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E"); }
 .chev, .turn-raw summary.turn-expand-btn::before { display: inline-block; flex-shrink: 0; width: 12px; height: 12px; vertical-align: -2px; background: currentColor; -webkit-mask: var(--chev) center / contain no-repeat; mask: var(--chev) center / contain no-repeat; transition: transform var(--dur-press) var(--ease-out); }
 .chev.is-up, [aria-expanded="true"] > .chev { transform: rotate(180deg); }
 .chev.is-right { transform: rotate(-90deg); }
@@ -6707,6 +6708,9 @@ var STRINGS = {
   mcUnavailable: '복수 질문 데이터를 불러올 수 없습니다',
   mcLoadFailed: '복수 질문을 불러오지 못했습니다. 새로고침해 보세요.',
   mcChange: '변경',
+  mcCustomPlaceholder: '직접 입력…',
+  mcSubmitting: '제출 중…',
+  effortTitle: '추론 강도',
 };
 // #814 — name of the dashboard's *home* instance (the one that served this
 // HTML). Used by renderCard() to detect sibling cards and suppress action
@@ -11922,7 +11926,7 @@ function effortLabel(level) {
 function renderEffortPicker(s) {
   // The owner's control lives in the model menu (<ui-model-picker>); others read the level.
   var capped = s.effortEffective && s.effortEffective !== s.effort
-    ? ' title="이 모델은 ' + escAttr(effortLabel(s.effortEffective)) + '까지 실행합니다"' : ' title="Reasoning effort"';
+    ? ' title="이 모델은 ' + escAttr(effortLabel(s.effortEffective)) + '까지 실행합니다"' : ' title="' + STRINGS.effortTitle + '"';
   return '<span class="meta-effort"' + capped + '>' + esc(effortLabel(s.effort))
     + (s.effortEffective && s.effortEffective !== s.effort ? ' &rarr; ' + esc(effortLabel(s.effortEffective)) : '') + '</span>';
 }
@@ -13050,7 +13054,7 @@ function renderMultiChoicePanel(s) {
       html += '</div>';
       // Custom input
       html += '<div class="mc-custom-input">'
-        + '<input type="text" id="mc-custom-' + qi + '" placeholder="\\uC9C1\\uC811\\uC785\\uB825..." onclick="event.stopPropagation()" onkeydown="if(event.key===\\'Enter\\'){event.stopPropagation();submitMcCustom(\\'' + escJs(key) + '\\',' + qi + ')}">'
+        + '<input type="text" id="mc-custom-' + qi + '" placeholder="' + STRINGS.mcCustomPlaceholder + '" onclick="event.stopPropagation()" onkeydown="if(event.key===\\'Enter\\'){event.stopPropagation();submitMcCustom(\\'' + escJs(key) + '\\',' + qi + ')}">'
         + '<button onclick="event.stopPropagation();submitMcCustom(\\'' + escJs(key) + '\\',' + qi + ')">\\uC785\\uB825</button>'
         + '</div>';
     }
@@ -13177,7 +13181,7 @@ async function submitMultiChoice(key) {
 
   // Disable ALL interactive elements in the multi-choice form to prevent further clicks
   var btns = document.querySelectorAll('.mc-btn-submit');
-  btns.forEach(function(b) { b.disabled = true; b.textContent = '\\uC81C\\uCD9C \\uC911...'; });
+  btns.forEach(function(b) { b.disabled = true; b.textContent = STRINGS.mcSubmitting; });
   var mcForm = document.querySelector('.mc-form');
   if (mcForm) {
     mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = true; });
