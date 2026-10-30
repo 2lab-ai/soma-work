@@ -50,7 +50,7 @@ import { isLlmuxUp } from './auth/llmux-client';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
 import { scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
-import { config, runPreflightChecks, validateConfig } from './config';
+import { config, getIncidentTrustedSource, runPreflightChecks, validateConfig } from './config';
 import { loadConfig } from './config-loader';
 import {
   broadcastArtifactUpdate,
@@ -71,6 +71,7 @@ import {
   setDashboardEffortHandler,
   setDashboardFollowupHandler,
   setDashboardGoalHandler,
+  setDashboardLifecycleHandler,
   setDashboardModelHandler,
   setDashboardMultiChoiceAnswerHandler,
   setDashboardNewTaskProvider,
@@ -133,6 +134,7 @@ import { productionModelCatalogDeps } from './session/model-catalog-deps';
 import { switchSessionModel } from './session/model-switch';
 import { applyTodoList, creditTaskUsage, emptyTaskLedger, ledgerTasks } from './session/task-ledger';
 import { createMainCallReader, reconcileTaskCalls, type TranscriptCall } from './session/task-usage-reconcile';
+import { resolveArchivedResume } from './session-archive';
 import { canApplySummaryTitle } from './session-title-policy';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
@@ -770,6 +772,29 @@ async function start() {
     setDashboardTrashHandler(async (sessionKey: string) => {
       claudeHandler.getSessionRegistry().trashSession(sessionKey);
       logger.info('Dashboard: trashed session', { sessionKey });
+    });
+
+    // Connect dashboard: task star + revive (SSOT 2026-10-30). Star pins and
+    // keeps a session alive (and wakes a sleeping one); revive wakes a
+    // sleeping session or restores an archived one — only when its transcript
+    // and cwd prove the conversation can continue (resolveArchivedResume).
+    setDashboardLifecycleHandler({
+      star: (sessionKey, starred) => claudeHandler.getSessionRegistry().setStarred(sessionKey, starred),
+      revive: (sessionKey) => claudeHandler.getSessionRegistry().reviveSession(sessionKey),
+      restore: (archived) => {
+        const proof = resolveArchivedResume(archived, {
+          incidentChannelIds: getIncidentTrustedSource()?.channelIds,
+        });
+        if (!proof.ok) {
+          logger.warn('Dashboard: archived session not restorable', {
+            sessionKey: archived.sessionKey,
+            archivedAt: archived.archivedAt,
+            code: proof.code,
+          });
+          return proof;
+        }
+        return claudeHandler.getSessionRegistry().restoreArchivedSession(archived, proof.cwd);
+      },
     });
 
     // The composer's files go up one by one; a retry reuses what Slack already took (#488).

@@ -25,9 +25,9 @@ import { normalizeTmpPath } from './path-utils';
 import { loseRunningAgents, sanitizeAgentRegistry } from './session/agent-registry';
 import { sanitizeCronJob } from './session/cron-job';
 import { closeTaskList, sanitizeTaskLedger } from './session/task-ledger';
-import { getArchiveStore } from './session-archive';
+import { type ArchivedSession, getArchiveStore, type SessionLifecycleOutcome } from './session-archive';
 import { buildLegacySessionKey, buildWorkSessionKey, normalizeSessionKey } from './session-identity';
-import { getSessionLifecyclePolicy, isSessionLifecyclePolicyDegraded } from './session-lifecycle-policy';
+import { getSessionLifecyclePolicy, idleSinceMs, isSessionLifecyclePolicyDegraded } from './session-lifecycle-policy';
 import { DEFAULT_AUTO_HANDOFF_BUDGET } from './slack/handoff-budget';
 import {
   creditActiveGoalMs,
@@ -94,6 +94,9 @@ interface SerializedSession {
   /** SSOT 2026-10-23 — the cron job that created the session, and a placeholder-title mark. */
   cronJob?: SessionCronJob;
   titleProvisional?: boolean;
+  /** SSOT 2026-10-30 — the dashboard star (kept alive) and when it was last removed. */
+  starred?: boolean;
+  starClearedAt?: number;
   /**
    * Incident ownership survives restarts: dropping it would silently promote a
    * restricted session back to an ordinary one.
@@ -766,6 +769,191 @@ export class SessionRegistry {
     });
     this.saveSessions();
     return true;
+  }
+
+  // ── Dashboard star + revive (SSOT 2026-10-30) ──────────────────────
+
+  /**
+   * Star or unstar a live session. A starred session is pinned on top of the
+   * board and kept alive: the sweep and the restart loader never sleep or
+   * archive it (T3). Starring a sleeping session wakes it (T5). Unstarring
+   * starts a fresh grace period (`starClearedAt`, see idleSinceMs) so it does
+   * not sleep on the very next sweep. Either way the expiry-warning state is
+   * cleared — it belonged to a countdown that no longer applies.
+   *
+   * A session object already marked terminated (mid-expiry or mid-close, the
+   * Map entry not yet gone) refuses: the star would vanish with it.
+   */
+  setStarred(sessionKey: string, starred: boolean): SessionLifecycleOutcome {
+    const key = normalizeSessionKey(sessionKey);
+    const session = this.sessions.get(key);
+    if (!session) return { ok: false, code: 'not_found', message: '세션을 찾을 수 없어요' };
+    if (session.terminated) return { ok: false, code: 'terminated', message: '종료 중인 세션이에요' };
+    // Trashed = hidden from the board; a star pins it on top. The two exclude each other.
+    if (starred && session.trashed) {
+      return { ok: false, code: 'conflict', message: '휴지통에 있는 세션에는 별을 달 수 없어요' };
+    }
+
+    const revived = starred && session.state === 'SLEEPING';
+    if (revived) this.wakeSession(session);
+    if (starred) {
+      session.starred = true;
+    } else if (session.starred) {
+      session.starred = undefined;
+      session.starClearedAt = Date.now();
+    }
+    session.warningMessageTs = undefined;
+    session.lastWarningSentAt = undefined;
+    this.logger.info(starred ? 'Session starred' : 'Session unstarred', {
+      sessionKey: key,
+      sessionId: session.sessionId,
+      revived,
+    });
+    this.saveSessions();
+    return { ok: true, sessionKey: key, starred: session.starred === true, revived };
+  }
+
+  /**
+   * Revive a live session from the dashboard (T4.1): a sleeping one wakes, so
+   * its next message resumes the same SDK session; an awake one is left as it
+   * is (`revived: false`).
+   */
+  reviveSession(sessionKey: string): SessionLifecycleOutcome {
+    const key = normalizeSessionKey(sessionKey);
+    const session = this.sessions.get(key);
+    if (!session) return { ok: false, code: 'not_found', message: '세션을 찾을 수 없어요' };
+    if (session.terminated) return { ok: false, code: 'terminated', message: '종료 중인 세션이에요' };
+    const revived = session.state === 'SLEEPING';
+    if (revived) {
+      this.wakeSession(session);
+      this.logger.info('Session revived from the dashboard', { sessionKey: key, sessionId: session.sessionId });
+      this.saveSessions();
+    }
+    return { ok: true, sessionKey: key, starred: session.starred === true, revived };
+  }
+
+  /**
+   * Bring an archived session back into the registry so the conversation
+   * continues (T4.2): the same SDK session (`resume`), the cwd its transcript
+   * is filed under (`cwd`, proven by resolveArchivedResume), the same
+   * conversation record, and what the card showed (links, goal, tasks,
+   * agents, totals). The work directory's files are not restored — the
+   * directory is recreated empty by the next turn.
+   *
+   * The thread may already hold a session (a Slack message after the archive
+   * started one, a double click): the same conversation → its key is answered
+   * (woken if asleep); another conversation → conflict; another owner →
+   * forbidden; a terminated object → terminated. Nothing live is replaced.
+   * The lookup and the insert run with no await between them.
+   */
+  restoreArchivedSession(archived: ArchivedSession, cwd: string): SessionLifecycleOutcome {
+    const key = this.getSessionKey(archived.channelId, archived.threadTs);
+    const existing = this.sessions.get(key);
+    if (existing) {
+      if (existing.terminated) return { ok: false, code: 'terminated', message: '종료 중인 세션이에요' };
+      if (existing.ownerId !== archived.ownerId) {
+        return { ok: false, code: 'forbidden', message: '이 스레드에는 다른 사람의 세션이 살아 있어요' };
+      }
+      const same =
+        (!!archived.sessionId && existing.sessionId === archived.sessionId) ||
+        (!!archived.conversationId && existing.conversationId === archived.conversationId);
+      if (!same) {
+        return { ok: false, code: 'conflict', message: '이 스레드에는 이미 다른 대화가 진행 중이에요' };
+      }
+      return this.reviveSession(key);
+    }
+
+    const model = archived.model === undefined ? undefined : coerceToAvailableModel(archived.model);
+    const doneAt = finiteStamp(archived.doneAt);
+    // The restored goal is a new generation: an evaluation, retry or
+    // continuation started for the closed session snapshotted (goalId, epoch)
+    // of THIS goal — advancing the epoch makes the goal loop's guard discard
+    // it instead of acting on the old object. Its lease went with that object.
+    const goal = migrateLegacyGoal(archived.goal);
+    if (goal) {
+      goal.epoch = (goal.epoch ?? 0) + 1;
+      goal.pendingEval = undefined;
+    }
+    const session: ConversationSession = {
+      ownerId: archived.ownerId,
+      ownerName: archived.ownerName,
+      userId: archived.ownerId, // Legacy field
+      channelId: archived.channelId,
+      threadTs: archived.threadTs,
+      sessionId: archived.sessionId,
+      conversationId: archived.conversationId,
+      isActive: true,
+      // The revive is the user's own action: the idle clock starts now.
+      lastActivity: new Date(),
+      title: archived.title,
+      summaryTitle: archived.summaryTitle,
+      model,
+      logVerbosity: userSettingsStore.getUserLogVerbosityFlags(archived.ownerId),
+      effort: userSettingsStore.getUserDefaultEffort(archived.ownerId),
+      state: 'MAIN',
+      workflow: archived.workflow || 'default',
+      activityState: 'idle',
+      // Its work finished when the archive says it did (spec 13 §3.7).
+      activityStateChangedAt: doneAt,
+      links: archived.links,
+      linkHistory: archived.linkHistory,
+      instructions: Array.isArray(archived.instructions)
+        ? archived.instructions.map((i) => ({ ...i, status: i.status ?? 'active' }))
+        : [],
+      mergeStats: archived.mergeStats,
+      goal,
+      goalHistory: migrateLegacyGoalArray(archived.goalHistory),
+      taskLedger: sanitizeTaskLedger(archived.taskLedger),
+      agents: loseRunningAgents(sanitizeAgentRegistry(archived.agents), Date.now()),
+      taskUsage: restoreTaskUsage({ taskUsage: archived.taskUsage, sessionId: archived.sessionId }),
+      usage: restoreSessionUsage(archived.usage, model),
+      cronJob: sanitizeCronJob(archived.cronJob),
+      compactionCount: typeof archived.compactionCount === 'number' ? archived.compactionCount : 0,
+      activeAccumulatedMs: typeof archived.busyMs === 'number' ? archived.busyMs : 0,
+      sessionWorkingDir: cwd,
+      // Registered for cleanup like a fresh session's dir; the next turn recreates it.
+      sourceWorkingDirs: [cwd],
+      // Incident ownership comes back with it: the thread stays restricted.
+      incidentRequest: archived.incidentRequest,
+      incidentAttemptFinishedId: archived.incidentAttemptFinishedId,
+      // Handoff enforcement state as it was: the PR-issue precondition keeps
+      // applying, and a consumed budget stays consumed. An archive from
+      // before the budget was kept gets none (fail closed).
+      handoffContext: archived.handoffContext,
+      autoHandoffBudget: typeof archived.autoHandoffBudget === 'number' ? archived.autoHandoffBudget : 0,
+      compactEpoch: 0,
+      compactPostedByEpoch: {},
+      compactionRehydratedByEpoch: {},
+      preCompactUsagePct: null,
+      lastKnownUsagePct: null,
+      compactPreTokens: null,
+      compactPostTokens: null,
+      compactTrigger: null,
+      compactDurationMs: null,
+      compactStartingMessageTs: null,
+      compactStartedAtMs: null,
+      autoCompactPending: false,
+      pendingUserText: null,
+      pendingEventContext: null,
+    };
+    this.sessions.set(key, session);
+    this.logger.info('Archived session restored from the dashboard', {
+      sessionKey: key,
+      sessionId: session.sessionId,
+      archivedAt: archived.archivedAt,
+      archiveReason: archived.archiveReason,
+    });
+    this.saveSessions();
+    return { ok: true, sessionKey: key, starred: false, revived: true };
+  }
+
+  /** SLEEPING → MAIN, the way a Slack message wakes it (wakeFromSleep). */
+  private wakeSession(session: ConversationSession): void {
+    session.state = 'MAIN';
+    session.sleepStartedAt = undefined;
+    session.lastActivity = new Date();
+    session.warningMessageTs = undefined;
+    session.lastWarningSentAt = undefined;
   }
 
   /**
@@ -1763,6 +1951,10 @@ export class SessionRegistry {
     let slept = 0;
 
     for (const [key, session] of this.sessions.entries()) {
+      // A starred session is kept alive (SSOT 2026-10-30 T3): never put to
+      // sleep, never archived, and never warned that it is about to be.
+      if (session.starred === true) continue;
+
       // Stage 1: SLEEPING sessions - check if sleep duration exceeded (policy archiveAfterMs)
       if (session.state === 'SLEEPING') {
         const sleepAge = session.sleepStartedAt ? now - session.sleepStartedAt.getTime() : archiveAfterMs + 1; // Force expire if no sleepStartedAt
@@ -1807,8 +1999,9 @@ export class SessionRegistry {
       // removed) mid-run once a short policy is set.
       if (session.activityState === 'working') continue;
 
-      // Stage 2: Active sessions - check if idle past the policy limit → transition to Sleep
-      const sessionAge = now - session.lastActivity.getTime();
+      // Stage 2: Active sessions - check if idle past the policy limit → transition to Sleep.
+      // The idle clock starts at the later of the last input and an unstar (idleSinceMs).
+      const sessionAge = now - idleSinceMs(session);
       const timeUntilExpiry = sleepAfterMs - sessionAge;
 
       if (timeUntilExpiry <= 0) {
@@ -1953,7 +2146,9 @@ export class SessionRegistry {
           // The task's spend (and its subagents') must not vanish with a
           // `/new` that cleared the sessionId before the next SDK turn.
           session.taskUsage ||
-          session.agents?.agents.length
+          session.agents?.agents.length ||
+          // A star is a direct instruction to keep the session (SSOT 2026-10-30).
+          session.starred
         ) {
           this.ensureSessionLinkState(session);
           sessionsArray.push({
@@ -2061,6 +2256,8 @@ export class SessionRegistry {
             incidentRequest: session.incidentRequest,
             cronJob: session.cronJob,
             titleProvisional: session.titleProvisional || undefined,
+            starred: session.starred === true ? true : undefined,
+            starClearedAt: session.starClearedAt,
             incidentAttemptFinishedId: session.incidentAttemptFinishedId,
             // Session-scoped `/autocompact` token override (persisted verbatim).
             autoCompactTokens: session.autoCompactTokens,
@@ -2128,6 +2325,17 @@ export class SessionRegistry {
         activityStateChangedAt: finiteStamp(serialized.activityStateChangedAt),
         // Preserve handoff metadata for diagnostic parity when archiving.
         handoffContext: serialized.handoffContext,
+        // What a later revive needs (SSOT 2026-10-30 T4.2): the cwd the SDK
+        // filed the transcript under, incident ownership (fail closed), and
+        // the handoff budget (with handoffContext above).
+        sessionWorkingDir: serialized.sessionWorkingDir,
+        autoHandoffBudget: serialized.autoHandoffBudget,
+        incidentRequest:
+          typeof serialized.incidentRequest === 'object' && serialized.incidentRequest !== null
+            ? serialized.incidentRequest
+            : undefined,
+        incidentAttemptFinishedId:
+          typeof serialized.incidentAttemptFinishedId === 'string' ? serialized.incidentAttemptFinishedId : undefined,
       };
       getArchiveStore().archive(session, serialized.key, reason);
     } catch (err) {
@@ -2162,9 +2370,13 @@ export class SessionRegistry {
         // Set when an active session went idle past the policy limit while the
         // process was down: it loads asleep, as the sweep would leave it.
         let sleptOnLoad = false;
+        // A starred session is kept alive across restarts too (SSOT 2026-10-30 T3).
+        const starred = serialized.starred === true;
 
         // For SLEEPING sessions: check against the policy sleep time
-        if (applyLifecycle && serialized.state === 'SLEEPING') {
+        if (starred) {
+          // never slept or archived on load
+        } else if (applyLifecycle && serialized.state === 'SLEEPING') {
           const sleepAge = sleepStartedAt ? now - sleepStartedAt.getTime() : archiveAfterMs + 1;
           if (sleepAge >= archiveAfterMs) {
             // Archive expired session before discarding (#401)
@@ -2177,7 +2389,7 @@ export class SessionRegistry {
           // the same step the sweep takes when it notices — asleep from now, ended
           // only after archiveAfter more. Never ended outright on load, so a
           // restart cannot shorten the sleep a running process would have given.
-          const sessionAge = now - lastActivity.getTime();
+          const sessionAge = now - idleSinceMs({ lastActivity, starClearedAt: serialized.starClearedAt });
           // A session with an active goal is resumed after restart (resumeActiveGoals),
           // which runs turns without waking a sleeper — leave it awake for that.
           const hasActiveGoal = serialized.goal?.status === 'active';
@@ -2308,6 +2520,8 @@ export class SessionRegistry {
             typeof serialized.incidentAttemptFinishedId === 'string' ? serialized.incidentAttemptFinishedId : undefined,
           cronJob: sanitizeCronJob(serialized.cronJob),
           titleProvisional: serialized.titleProvisional === true ? true : undefined,
+          starred: starred ? true : undefined,
+          starClearedAt: finiteStamp(serialized.starClearedAt),
           // Merge code change stats
           mergeStats: serialized.mergeStats,
           // User SSOT instructions (restored from disk).
