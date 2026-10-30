@@ -1301,3 +1301,85 @@ describe('C7 — the work log (작업 로그): an instruction entry reads like t
     expect(a.wlEntryFactsHtml({ seq: 6, kind: 'narration', text: goalPrompt(2, 10) })).toBe('');
   });
 });
+
+// D1-GAPS G4-4: @2lab.ai/ui 0.5.0 <ui-disclosure> toggles only on a click whose target is inside its own head; a
+// click on slotted summary content (the System row's words, a card's instruction badge) did nothing. The page
+// toggles it with the element's toggle() — once, and never on top of a release that toggles by itself.
+describe('D1 — a click on a disclosure’s summary content opens it (G4-4)', () => {
+  const INIT = (() => {
+    const start = TEMPLATE.indexOf('(function initDisclosures() {');
+    const end = TEMPLATE.indexOf('\n})();', start);
+    if (start < 0 || end < 0) throw new Error('initDisclosures not found');
+    return cook(TEMPLATE.slice(start, end + 6));
+  })();
+  type Fn = (e: unknown) => void;
+  function setup() {
+    const bubble: Record<string, Fn[]> = {};
+    const capture: Record<string, Fn[]> = {};
+    const document = {
+      addEventListener: (type: string, fn: Fn, cap?: boolean) => {
+        const at = cap ? capture : bubble;
+        at[type] = [...(at[type] ?? []), fn];
+      },
+    };
+    const ioSysToggle = vi.fn();
+    const { dcSummaryHost } = load<{ dcSummaryHost(t: unknown): unknown }>(['dcSummaryHost'], []);
+    new Function('document', 'ioSysToggle', 'dcSummaryHost', INIT)(document, ioSysToggle, dcSummaryHost);
+    const host = {
+      tagName: 'UI-DISCLOSURE',
+      isConnected: true,
+      open: false,
+      classList: { contains: (c: string) => c === 'io-sys' },
+      getAttribute: () => 'conv-1',
+      closest: () => null,
+      // The element's public toggle(): its ui-toggle (heard on the document), then the change.
+      toggle: vi.fn(() => {
+        for (const fn of bubble['ui-toggle'] ?? []) fn({ target: host, detail: { open: !host.open } });
+        host.open = !host.open;
+      }),
+    };
+    const summary = { parentElement: host };
+    const words = { closest: (sel: string) => (sel === '[slot="summary"]' ? summary : null) };
+    const region = { closest: () => null };
+    /** One click: the document's capture listener, the element's own handler (selfToggles), the bubble listener. */
+    const click = (target: unknown, selfToggles: boolean) => {
+      for (const fn of capture.click ?? []) fn({ target });
+      if (selfToggles) host.toggle();
+      for (const fn of bubble.click ?? []) fn({ target });
+    };
+    return { host, words, region, click, ioSysToggle };
+  }
+
+  it('0.5.0: a click on the summary’s words opens it once, through toggle(); the card keeps the choice', () => {
+    const s = setup();
+    s.click(s.words, false);
+    expect(s.host.toggle).toHaveBeenCalledTimes(1);
+    expect(s.host.open).toBe(true);
+    expect(s.ioSysToggle).toHaveBeenCalledWith('conv-1', true);
+    s.click(s.words, false);
+    expect(s.host.open).toBe(false);
+  });
+
+  it('a release that toggles by itself is not toggled a second time', () => {
+    const s = setup();
+    s.click(s.words, true);
+    expect(s.host.toggle).toHaveBeenCalledTimes(1);
+    expect(s.host.open).toBe(true);
+  });
+
+  it('the head (the host, retargeted) and the region are left to the element', () => {
+    const s = setup();
+    s.click(s.host, true);
+    s.click(s.region, false);
+    expect(s.host.toggle).toHaveBeenCalledTimes(1);
+    expect(s.host.open).toBe(true);
+  });
+
+  it('only a ui-disclosure’s own summary slot counts', () => {
+    const { dcSummaryHost } = load<{ dcSummaryHost(t: unknown): unknown }>(['dcSummaryHost'], []);
+    const other = { tagName: 'DIV' };
+    expect(dcSummaryHost({ closest: () => ({ parentElement: other }) })).toBe(null);
+    expect(dcSummaryHost(null)).toBe(null);
+    expect(dcSummaryHost({})).toBe(null);
+  });
+});

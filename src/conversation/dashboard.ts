@@ -18135,10 +18135,28 @@ var _tapTip = null;
     if (p.open) { p.tip.hide(); _tapTip = null; } else { p.tip.show(); _tapTip = p.tip.open ? p.tip : null; }
   });
 })();
+// @2lab.ai/ui 0.5.0 toggles a <ui-disclosure> only when the click's target is inside its own head, and a click on
+// slotted summary content (a System row's words and badge, a card's instruction line) keeps the light-DOM span as
+// its target — so it did nothing (D1-GAPS G4-4). The page toggles it then, with the element's toggle() (its
+// cancelable ui-toggle, its motion) — unless the element already toggled itself in that click (a fixed release).
+// Pure: the disclosure whose slotted summary a click target sits in, or null.
+function dcSummaryHost(t) {
+  var s = t && t.closest ? t.closest('[slot="summary"]') : null;
+  var d = s ? s.parentElement : null;
+  return d && d.tagName === 'UI-DISCLOSURE' ? d : null;
+}
 (function initDisclosures() {
+  var pending = null; // the disclosure a click on its summary content is passing through
+  document.addEventListener('click', function(e) { pending = dcSummaryHost(e.target); }, true);
   document.addEventListener('ui-toggle', function(e) {
     var t = e.target;
+    if (t === pending) pending = null;
     if (t && t.classList && t.classList.contains('io-sys')) ioSysToggle(t.getAttribute('data-cid') || '', e.detail && e.detail.open);
+  });
+  document.addEventListener('click', function() {
+    var d = pending;
+    pending = null;
+    if (d && d.isConnected && typeof d.toggle === 'function') d.toggle();
   });
 })();
 // Spec 12 §4.3 — the panel's agent section: a path step drills into that node
