@@ -1383,6 +1383,28 @@ describe('MEMORY command — validator allow-list (regression: listed-but-uninvo
     expect((result.request.params as { content?: string }).content).toBe('2026-10-30: observed a thing');
   });
 
+  // The 2 remaining episodic_append failures (one call, retried verbatim) sent
+  // the observation as `body` next to a `title`. Same rule as `text`.
+  it('normalizes the `body` alias into `content` for episodic_append (title is ignored)', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'MEMORY',
+      params: { op: 'episodic_append', title: 'report', body: '2026-10-30: wrote the report' },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect((result.request.params as { content?: string }).content).toBe('2026-10-30: wrote the report');
+  });
+
+  it('prefers content, then text, then body', () => {
+    const pick = (params: Record<string, unknown>) => {
+      const r = validateModelCommandRunArgs({ commandId: 'MEMORY', params: { op: 'episodic_append', ...params } });
+      if (!r.ok) throw new Error('unreachable');
+      return (r.request.params as { content?: string }).content;
+    };
+    expect(pick({ content: 'c', text: 't', body: 'b' })).toBe('c');
+    expect(pick({ text: 't', body: 'b' })).toBe('t');
+  });
+
   it('keeps `content` when both `content` and `text` are given', () => {
     const result = validateModelCommandRunArgs({
       commandId: 'MEMORY',
@@ -1450,6 +1472,55 @@ describe('UPDATE_SESSION add — top-level `url` shorthand', () => {
     const result = validateModelCommandRunArgs({
       commandId: 'UPDATE_SESSION',
       params: { operations: [{ action: 'add', resourceType: 'pr' }] },
+    });
+    expect(result.ok).toBe(false);
+  });
+});
+
+// 1 production failure sent payload.type "user_choices" (the internal
+// normalized type name) with a plain user_choice body. The input schema only
+// allows user_choice / user_choice_group, so it failed with a ~2.7K-char
+// schema payload. The name alone cannot be aliased — `user_choices` is the
+// internal multi-question shape — so the body's shape decides.
+describe('ASK_USER_QUESTION payload.type "user_choices" — decided by shape', () => {
+  const choices = [
+    { id: '1', label: 'A', description: 'first' },
+    { id: '2', label: 'B', description: 'second' },
+  ];
+
+  it('treats a user_choice-shaped body (question + choices with labels) as user_choice', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'ASK_USER_QUESTION',
+      params: { payload: { type: 'user_choices', question: '[small] pick one', context: 'why', choices } },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    const q = (result.request.params as { question: { type: string; question?: string } }).question;
+    expect(q.type).toBe('user_choice');
+    expect(q.question).toBe('[small] pick one');
+  });
+
+  it('treats a group-shaped body (choices with question + options) as user_choice_group', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'ASK_USER_QUESTION',
+      params: {
+        payload: {
+          type: 'user_choices',
+          question: '[small] header',
+          choices: [{ question: 'Which?', options: choices }],
+        },
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    const q = (result.request.params as { question: { type: string } }).question;
+    expect(q.type).toBe('user_choices');
+  });
+
+  it('still rejects "user_choices" when the body matches neither shape', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'ASK_USER_QUESTION',
+      params: { payload: { type: 'user_choices', question: 'no choices here' } },
     });
     expect(result.ok).toBe(false);
   });
