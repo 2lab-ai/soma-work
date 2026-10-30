@@ -1828,7 +1828,14 @@ export function broadcastArtifactUpdate(artifact: SessionArtifact): void {
 function sessionToKanban(key: string, s: any): KanbanSession {
   const autoResume = deriveAutoResume(s, Date.now());
   const taskView = _getTasksFn ? _getTasksFn(key) : undefined;
-  const aggregate = computeThreadAggregate(s.channelId, s.threadTs, getAllSessions(), Date.now());
+  // A Slack-less task (#596) has no thread to share: its aggregate is its own,
+  // not that of every other task with no channel either.
+  const aggregate = computeThreadAggregate(
+    s.channelId,
+    s.threadTs,
+    s.slackless === true ? new Map([[key, s]]) : getAllSessions(),
+    Date.now(),
+  );
   const headline = displayTitle(s);
   const permissions = pendingPermissionsFor(s.channelId, s.threadTs);
   return {
@@ -2051,10 +2058,11 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
 /**
  * A session the board shows: one that has run an SDK session — or, after a
  * `/new` cleared that, one whose task has already spent (SSOT 2026-10-26 T3:
- * the task total outlives the reset, so the card does too).
+ * the task total outlives the reset, so the card does too) — or a Slack-less
+ * task, from its creation on, before it has run (#596).
  */
-function onBoard(s: { sessionId?: string; taskUsage?: unknown }): boolean {
-  return !!s.sessionId || !!s.taskUsage;
+function onBoard(s: { sessionId?: string; taskUsage?: unknown; slackless?: boolean }): boolean {
+  return !!s.sessionId || !!s.taskUsage || s.slackless === true;
 }
 
 function buildKanbanBoard(userId?: string): KanbanBoard {

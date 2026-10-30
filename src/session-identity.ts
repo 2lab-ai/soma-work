@@ -51,6 +51,17 @@ export function buildWorkSessionKey(channelId: string, threadTs?: string): strin
 }
 
 /**
+ * Registry key of a Slack-less task (#596): `task:<taskId>`. It sits beside
+ * the `work:<channel>:<thread>` keys and is built from the task id alone — no
+ * channel or thread is invented for it. Two segments, so it never parses as
+ * a Slack key, and `normalizeSessionKey` returns it unchanged.
+ */
+export function buildTaskSessionKey(taskId: string): string {
+  if (!taskId) throw new Error('buildTaskSessionKey: taskId is required');
+  return `task:${taskId}`;
+}
+
+/**
  * Legacy key format, kept ONLY for the persisted `SerializedSession.key`
  * field. The running system derives its map keys via `buildWorkSessionKey`
  * and ignores the persisted field — its sole consumer is a PRE-4d binary
