@@ -2353,7 +2353,7 @@ describe('stats: only the latest period / user selection paints (shipped loadSta
     const painted: string[] = [];
     const m = load<{ loadStats(): Promise<void>; select(p: string, u: string): void }>(
       ['statsJson', 'loadStats', 'markStatsLoading'],
-      ['_statsGen', 'STAT_IDS'],
+      ['_statsGen'],
       {
         fetch,
         // The loading bars (markStatsLoading) find no elements in this harness; the strip and the charts
@@ -2361,6 +2361,8 @@ describe('stats: only the latest period / user selection paints (shipped loadSta
         document: { getElementById: () => null },
         setStripFigure: () => {},
         paintStatsStrip: () => {},
+        paintStatCards: () => {},
+        _statCards: {},
         paintCharts: () => {},
         _strip: { sessions: { value: null }, tokens: { value: null }, cost: { value: null } },
         _chartDays: [],
