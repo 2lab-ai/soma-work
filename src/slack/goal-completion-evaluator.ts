@@ -240,7 +240,6 @@ export function applyGoalEvalSuccess(goal: import('../types').SessionGoal, now: 
   goal.lastEvalReason = undefined;
   // A completed goal resolves any pending cap-decision DM (S3 dedup guard).
   goal.capDmPendingAt = undefined;
-  goal.capReachedAt = undefined;
   goal.evalAttemptCount = (goal.evalAttemptCount ?? 0) + 1;
   goal.updatedAt = now;
 }
@@ -313,14 +312,9 @@ export function decideGoalEvalOutcome(
   // Cap check BEFORE incrementing: with maxContinuations=N the host
   // injects continuations until the counter reaches N, then pauses.
   if (goal.continuationCount >= goal.maxContinuations) {
-    // Parked: from now on the goal yields its slot to other goals (see
-    // `SessionGoal.capReachedAt`). Keep the FIRST stamp across repeat caps.
-    goal.capReachedAt = goal.capReachedAt ?? now;
     return { action: 'cap-paused' };
   }
 
-  // The loop drives the goal again — it is no longer parked.
-  goal.capReachedAt = undefined;
   goal.continuationCount = goal.continuationCount + 1;
   goal.lastContinuationAt = now;
   goal.updatedAt = now;

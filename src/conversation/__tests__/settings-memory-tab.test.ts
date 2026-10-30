@@ -54,7 +54,7 @@ describe('기억 tab shell', () => {
 
   it('개인 메모리 is the library element: its script from /dashboard/ui, inside the settings token bridge', async () => {
     const html = renderSettingsPage();
-    const { UI_LIB_FILE, UI_LIB_VERSION, uiLibDistDir } = await import('../ui-lib');
+    const { UI_LIB_FILE, UI_LIB_VERSION, uiLibDistDir, uiLibTokensCss, pageTokenAliases } = await import('../ui-lib');
     expect(html).toContain(`<script type="module" src="/dashboard/ui/memory-panel.js?v=${UI_LIB_VERSION}"></script>`);
     expect(UI_LIB_FILE.test('memory-panel.js')).toBe(true);
     expect(existsSync(join(uiLibDistDir() as string, 'memory-panel.js'))).toBe(true); // the pinned build ships it
@@ -85,10 +85,17 @@ describe('기억 tab shell', () => {
       'font',
     ]) {
       expect(bridge, t).toContain(`--ui-${t}: var(--${t});`);
-      expect(/:root \{[^}]*\}/.exec(css)![0], t).toContain(`--${t}:`);
+      // Tone pass P9: the page token is @2lab.ai/ui's (the ui-tokens sheet), aliased as on the dashboard —
+      // was a hex palette of the settings page's own.
+      expect(uiLibTokensCss(), t).toContain(`--ui-${t}:`);
+      expect(html, t).toContain(`--${t}: var(--ui-${t});`);
     }
-    // light: the settings page's darker amber for the warn band (was .mm's --mm-warn), and the status tones
-    expect(/\[data-theme="light"\] \{[^}]*\}/.exec(css)![0]).toMatch(/--yellow: #9a6700;[\s\S]*--st-wait: #c2780a;/);
+    expect(html).toContain(`<style id="ui-tokens">\n${uiLibTokensCss()}\n${pageTokenAliases()}\n</style>`);
+    // light: the warn band's amber and the status tones are the library's light palette, not a drifted copy
+    expect(uiLibTokensCss()).toMatch(
+      /:root, \[data-theme="light"\] \{[^}]*--ui-yellow: #[0-9a-f]{6};[^}]*--ui-st-wait: #[0-9a-f]{6};/,
+    );
+    expect(css).not.toMatch(/--(bg|surface|text|accent|yellow|st-wait): #/);
   });
 
   it('the inline 개인 메모리 renderer is gone: no chips, tray, cards or .mm-* styles of its own', () => {

@@ -53,7 +53,7 @@ const RENDER_FNS = [
   'setBusy',
   'renderCardGoal',
 ];
-const RENDER_VARS = ['GOAL_STATUS_LABELS', 'GOAL_VIA_LABELS', '_goalHistoryOpen', '_goalErrors', '_busy'];
+const RENDER_VARS = ['GOAL_STATUS_LABELS', 'GOAL_SVG', 'GOAL_VIA_LABELS', '_goalHistoryOpen', '_goalErrors', '_busy'];
 
 function card(overrides: Record<string, any> = {}) {
   return {

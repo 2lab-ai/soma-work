@@ -194,7 +194,7 @@ describe('a RUNNING card waiting out an automatic resume (cardOf + the open card
         'cardGoalLine',
         'renderCardBody',
       ],
-      ['RESUME_SVG', 'SESSION_ACTION_ARIA', 'GOAL_STATUS_LABELS', '_busy'],
+      ['RESUME_SVG', 'SESSION_ACTION_ARIA', 'GOAL_STATUS_LABELS', 'GOAL_SVG', '_busy'],
       {
         effortLabel: (e: string) => e,
         dhShow: () => false,

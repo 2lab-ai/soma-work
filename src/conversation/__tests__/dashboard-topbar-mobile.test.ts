@@ -15,8 +15,13 @@
  *   - ws-badge has role="status" + aria-label so screen readers still hear
  *     state when the badge collapses to a 10px dot below 640px;
  *   - user-pill prefix and admin-mode-label are wrapped in dedicated spans
- *     so CSS can hide the "Logged in as" prefix without losing the name and
- *     JS can rewrite ON/OFF without losing "Admin: ";
+ *     so CSS can hide the prefix (the account glyph) without losing the name and
+ *     JS can rewrite 켬/끔 without losing "관리자 ";
+ *
+ * Tone pass P4/P8 changed the contract on purpose: the chrome speaks Korean
+ * (STRINGS table, "…" not "..."), the nav and theme glyphs are 16-grid SVGs
+ * instead of emoji, and the status badge is a tone dot + a word driven by
+ * data-state instead of inline colours. The width rules are unchanged.
  *   - every control keeps its label on one line (nowrap, flex: none); the
  *     one-row nav never shrinks (so nothing paints into the account group);
  *   - the user select is a visible label (ellipsis) over a transparent native
@@ -39,24 +44,28 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
   describe('HTML structure', () => {
     it('ws-badge has role="status" and aria-label so dot-collapsed state is announced', () => {
       expect(DASHBOARD_TS).toContain(
-        '<span class="ws-badge" id="ws-status" role="status" aria-label="WebSocket: Connecting">',
+        '<span class="ws-badge" id="ws-status" role="status" aria-label="실시간 업데이트: 연결 중" data-state="connecting">연결 중…</span>',
       );
     });
 
     it('user-pill prefix is a dedicated span that CSS can hide at narrow viewports', () => {
-      expect(DASHBOARD_TS).toContain('<span class="user-pill-prefix">Logged in as </span>');
+      // The account glyph (person, or the shield for an admin viewer) plus a screen-reader-only phrase.
+      expect(DASHBOARD_TS).toMatch(
+        /<span class="user-pill-prefix"><svg class="ic-user"[^>]*>[\s\S]*?<\/svg><svg class="ic-admin"[^>]*>[\s\S]*?<\/svg><span class="ar-vh">로그인 계정 <\/span><\/span><b id="user-pill-name">/,
+      );
     });
 
-    it('Conversations is one full label (no short "Conv" variant)', () => {
-      expect(DASHBOARD_TS).toContain(
-        '<a href="/conversations"><span aria-hidden="true">&#x1F4DD;</span>Conversations</a>',
+    it('대화 (Conversations) is one full label (no short variant), an SVG glyph instead of an emoji', () => {
+      expect(DASHBOARD_TS).toMatch(
+        /<a href="\/conversations" title="[^"]+"><svg [^>]*aria-hidden="true">[\s\S]*?<\/svg>대화<\/a>/,
       );
+      expect(DASHBOARD_TS).not.toContain('&#x1F4DD;');
       expect(DASHBOARD_TS).not.toContain('nav-icon');
     });
 
     it('the user select is a visible label with the native select laid over it, full name in title', () => {
       expect(DASHBOARD_TS).toContain(
-        '<span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">All Users</span><select id="user-select" title="All Users" onchange="selectUser(this.value)">',
+        '<span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">모든 사용자</span><select id="user-select" title="모든 사용자" aria-label="보드에 보일 사용자" onchange="selectUser(this.value)">',
       );
     });
 
@@ -74,7 +83,7 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
 
     it('admin-mode-label is split into prefix + state spans', () => {
       expect(DASHBOARD_TS).toContain(
-        '<span id="admin-mode-label"><span class="admin-mode-prefix">Admin: </span><span class="admin-mode-state">OFF</span></span>',
+        '<span id="admin-mode-label"><span class="admin-mode-prefix">관리자 </span><span class="admin-mode-state">끔</span></span>',
       );
     });
   });
@@ -210,7 +219,7 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
   });
 
   describe('CSS — labels are never cut down', () => {
-    it('no rule hides the "Admin: " prefix or swaps Conversations for a short label', () => {
+    it('no rule hides the "관리자 " prefix or swaps 대화 for a short label', () => {
       expect(DASHBOARD_TS).not.toContain('.admin-mode-prefix { display: none; }');
       expect(DASHBOARD_TS).not.toContain('.nav-text { display: none; }');
     });
@@ -227,40 +236,55 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
   });
 
   describe('JS — admin-mode renderer writes to state span', () => {
-    it('_renderAdminModeButton queries .admin-mode-state and writes ON/OFF only', () => {
+    it('_renderAdminModeButton queries .admin-mode-state and writes 켬/끔 only', () => {
       // The function must update the state span (not the whole label) so
       // hiding the prefix at ≤480px doesn't blank the label entirely.
       expect(DASHBOARD_TS).toMatch(
-        /_renderAdminModeButton[\s\S]*?querySelector\('\.admin-mode-state'\)[\s\S]*?textContent\s*=\s*on\s*\?\s*'ON'\s*:\s*'OFF'/,
+        /_renderAdminModeButton[\s\S]*?querySelector\('\.admin-mode-state'\)[\s\S]*?textContent\s*=\s*on\s*\?\s*STRINGS\.on\s*:\s*STRINGS\.off/,
       );
+      expect(DASHBOARD_TS).toContain("  on: '켬',\n  off: '끔',");
     });
 
     it('_renderAdminModeButton has flat-textContent fallback when state span is absent', () => {
       // Guards legacy templates / unit-test setups that didn't render the
       // split spans yet.
       expect(DASHBOARD_TS).toMatch(
-        /_renderAdminModeButton[\s\S]*?else\s+lbl\.textContent\s*=\s*on\s*\?\s*'Admin: ON'\s*:\s*'Admin: OFF'/,
+        /_renderAdminModeButton[\s\S]*?else\s+lbl\.textContent\s*=\s*on\s*\?\s*STRINGS\.adminOn\s*:\s*STRINGS\.adminOff/,
       );
+      expect(DASHBOARD_TS).toContain("  adminOn: '관리자 켬',\n  adminOff: '관리자 끔',");
     });
   });
 
-  describe('JS — connectWs handlers maintain title + aria-label', () => {
-    it('onopen sets aria-label="WebSocket: Live"', () => {
-      expect(DASHBOARD_TS).toMatch(/ws\.onopen[\s\S]*?statusEl\.setAttribute\('aria-label',\s*'WebSocket: Live'\)/);
+  describe('JS — connectWs handlers maintain state, title + aria-label (STRINGS)', () => {
+    it('the words are Korean, sentence case, "…" not "..."', () => {
+      expect(DASHBOARD_TS).toContain("  wsLive: '실시간',\n  wsLiveLabel: '실시간 업데이트: 연결됨',");
+      expect(DASHBOARD_TS).toContain(
+        "  wsReconnecting: '다시 연결 중…',\n  wsReconnectingLabel: '실시간 업데이트: 다시 연결 중',",
+      );
+      expect(DASHBOARD_TS).not.toContain('Reconnecting...');
     });
 
-    it('onopen sets title="WebSocket: Live"', () => {
-      expect(DASHBOARD_TS).toMatch(/ws\.onopen[\s\S]*?statusEl\.title\s*=\s*'WebSocket: Live'/);
+    it('onopen sets data-state live and aria-label = 실시간 업데이트: 연결됨', () => {
+      expect(DASHBOARD_TS).toMatch(/ws\.onopen[\s\S]*?statusEl\.dataset\.state = 'live';/);
+      expect(DASHBOARD_TS).toMatch(/ws\.onopen[\s\S]*?statusEl\.setAttribute\('aria-label',\s*STRINGS\.wsLiveLabel\)/);
     });
 
-    it('onclose sets aria-label="WebSocket: Reconnecting"', () => {
+    it('onopen sets the title too', () => {
+      expect(DASHBOARD_TS).toMatch(/ws\.onopen[\s\S]*?statusEl\.title\s*=\s*STRINGS\.wsLiveLabel/);
+    });
+
+    it('onclose sets data-state reconnecting and aria-label = 실시간 업데이트: 다시 연결 중', () => {
+      expect(DASHBOARD_TS).toMatch(/ws\.onclose[\s\S]*?statusEl\.dataset\.state = 'reconnecting';/);
       expect(DASHBOARD_TS).toMatch(
-        /ws\.onclose[\s\S]*?statusEl\.setAttribute\('aria-label',\s*'WebSocket: Reconnecting'\)/,
+        /ws\.onclose[\s\S]*?statusEl\.setAttribute\('aria-label',\s*STRINGS\.wsReconnectingLabel\)/,
       );
     });
 
-    it('onclose sets title="WebSocket: Reconnecting"', () => {
-      expect(DASHBOARD_TS).toMatch(/ws\.onclose[\s\S]*?statusEl\.title\s*=\s*'WebSocket: Reconnecting'/);
+    it('onclose sets the title too; no inline colours (the tone is CSS, by data-state)', () => {
+      expect(DASHBOARD_TS).toMatch(/ws\.onclose[\s\S]*?statusEl\.title\s*=\s*STRINGS\.wsReconnectingLabel/);
+      expect(DASHBOARD_TS).not.toMatch(/statusEl\.style\./);
+      expect(DASHBOARD_TS).toContain('.ws-badge[data-state="live"] { --ws-tone: var(--st-done); }');
+      expect(DASHBOARD_TS).toContain('.ws-badge[data-state="reconnecting"] { --ws-tone: var(--st-wait); }');
     });
   });
 

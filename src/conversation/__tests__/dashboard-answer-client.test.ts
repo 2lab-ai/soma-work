@@ -204,7 +204,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
     await stopWebServer();
   });
 
-  it('T1 — "⭐ 추천대로 모두 선택" reaches the submit-recommended handler (no "❌ Bad Request")', async () => {
+  it('T1 — "추천대로 모두 선택" reaches the submit-recommended handler (no "❌ Bad Request")', async () => {
     const handler = vi.fn().mockResolvedValue(undefined);
     dashboard.setDashboardSubmitRecommendedHandler(handler);
 
@@ -247,7 +247,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
   // own (separate header object), so it must reach the handler too.
   it.each([
     {
-      name: '⭐ 추천대로 모두 선택',
+      name: '추천대로 모두 선택',
       run: () => client.submitAllRecommended(KEY),
       register: (h: any) => dashboard.setDashboardSubmitRecommendedHandler(h),
     },

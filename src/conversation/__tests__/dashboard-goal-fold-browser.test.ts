@@ -58,6 +58,7 @@ const FNS = [
 ];
 const VARS = [
   'GOAL_STATUS_LABELS',
+  'GOAL_SVG',
   'GOAL_VIA_LABELS',
   '_goalHistoryOpen',
   '_goalErrors',
@@ -122,6 +123,7 @@ interface Fold {
   fullLines: number;
   open: boolean;
   toggle: string | null;
+  chev: boolean;
   expanded: string | null;
   focusOnToggle: boolean;
 }
@@ -136,6 +138,7 @@ const MEASURE = `(() => {
     fullLines: Math.round(obj.scrollHeight / lh),
     open: !!obj.closest('.card-goal.is-open'),
     toggle: more && more.checkVisibility() ? more.textContent.trim() : null,
+    chev: !!more && !!more.querySelector('span.chev[aria-hidden="true"]'),
     expanded: more ? more.getAttribute('aria-expanded') : null,
     focusOnToggle: !!more && document.activeElement === more,
   };
@@ -194,11 +197,13 @@ describe('panel goal fold — in a real browser (Chromium)', () => {
     }
 
     expect(folded.lineHeight).toBeGreaterThan(0);
-    expect(folded).toMatchObject({ lines: 3, open: false, toggle: '펼치기 ▼', expanded: 'false' });
+    // Tone pass P8: the toggle's word plus the icon set's chevron (a CSS-drawn span that turns with
+    // aria-expanded) — was the text triangles 펼치기 ▼ / 접기 ▲.
+    expect(folded).toMatchObject({ lines: 3, open: false, toggle: '펼치기', chev: true, expanded: 'false' });
     expect(folded.fullLines).toBeGreaterThanOrEqual(8);
-    expect(opened).toMatchObject({ lines: folded.fullLines, open: true, toggle: '접기 ▲', expanded: 'true' });
+    expect(opened).toMatchObject({ lines: folded.fullLines, open: true, toggle: '접기', chev: true, expanded: 'true' });
     expect(opened.focusOnToggle).toBe(true);
-    expect(refolded).toMatchObject({ lines: 3, open: false, toggle: '펼치기 ▼', expanded: 'false' });
+    expect(refolded).toMatchObject({ lines: 3, open: false, toggle: '펼치기', chev: true, expanded: 'false' });
     expect(refolded.focusOnToggle).toBe(true);
   }, 60_000);
 
@@ -223,6 +228,6 @@ describe('panel goal fold — in a real browser (Chromium)', () => {
     expect(wide.fullLines).toBeLessThanOrEqual(3);
     expect(wide.toggle).toBeNull();
     expect(narrow.fullLines).toBeGreaterThan(3);
-    expect(narrow).toMatchObject({ lines: 3, toggle: '펼치기 ▼' });
+    expect(narrow).toMatchObject({ lines: 3, toggle: '펼치기' });
   }, 60_000);
 });

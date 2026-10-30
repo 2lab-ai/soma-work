@@ -122,7 +122,7 @@ import {
 } from './permission-prompts';
 import { getConversation, resummarizeTurn } from './recorder';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
-import { UI_LIB_FILE, UI_LIB_VERSION, uiLibDistDir } from './ui-lib';
+import { pageTokenAliases, UI_LIB_FILE, UI_LIB_VERSION, uiLibDistDir, uiLibTokensCss } from './ui-lib';
 import { getUserMediaStore } from './user-media';
 import type { WorkLogEntry } from './work-log';
 
@@ -3657,119 +3657,57 @@ function renderDashboardPage(userId?: string): string {
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
 </script>
 <style>
-/* ═══ BAUHAUS DESIGN SYSTEM v2 ═══ Geometric clarity. Structured planes. Disciplined typography. */
+/* ═══ @2lab.ai/ui language (ui.2lab.ai) ═══ Calm neutral planes, soft 6–16px rounding, medium weights,
+   colour only where it carries status, one ink primary per surface, short ease-out motion. */
 *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* Tokens: the ui-tokens sheet after this one (@2lab.ai/ui tokens.css + the dashboard aliases). */
 :root {
-  /* Surface hierarchy — 3 deliberate planes (neutral grays, Agent inbox .prd/10) */
-  --bg: #1c1c1f;
-  --surface: #232327;
-  --surface-raised: #2a2a2f;
-  --border: #34343a;
-  --border-focus: #4d9de0;
-  /* Typography */
-  --text: #ededf0;
-  --text-secondary: #a8a8b0;
-  --text-tertiary: #93939b;
-  /* Functional color — Bauhaus primary triad + accents */
-  --accent: #4d9de0;
-  --accent-hover: #3b82c4;
-  --green: #3ecf8e;
-  --yellow: #f6c90e;
-  --red: #f26b6b;
-  --purple: #a78bfa;
-  --orange: #f97316;
-  /* Geometry */
-  --radius: 2px;
-  /* Motion */
-  --ease: cubic-bezier(0.2,0.8,0.2,1);
-  --speed: 140ms;
-  /* Motion contract (.prd/10 §4 — zworkflow motion-design standard, verbatim) */
-  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
-  --dur-press: 160ms;
-  --dur-expand: 240ms;
-  --dur-move: 320ms;
-  --dur-fade: 180ms;
-  /* Agent inbox board — neutral planes: column one step darker than the page.
-     Text tokens (--ib-muted, --ib-text-2, --text-tertiary) clear 4.5:1 on every
-     surface they sit on (page, column, card, dimmed card, segment track). */
-  --ib-col: #18181b;
-  --ib-card: #242428;
-  --ib-card-dim: #1f1f23;
-  --ib-card-border: #34343a;
-  --ib-pill: #2f2f35;
-  --ib-text: #f2f2f3;
-  --ib-text-2: #b4b4bb;
-  --ib-muted: #93939b;
-  --ib-seg: #161619;
-  --ib-seg-on: #2e2e33;
-  --ib-spark: #7b9cf0;
-  --ib-shadow: 0 1px 2px rgba(0,0,0,0.35);
-  --ib-shadow-raised: 0 14px 32px rgba(0,0,0,0.5), 0 3px 8px rgba(0,0,0,0.35);
-  --st-wait: #f5a524;
-  --st-run: #6b93f2;
-  --st-done: #3fb968;
-  --st-fail: #f26b6b;
-  --st-fail-text: #f26b6b; /* red as 13px text: ≥ 4.5:1 on the card and the dimmed card */
+  /* Dashboard-only (no library counterpart). Motion is the contract's alone: --dur-press / -fade /
+     -expand / -move with --ease-out / --ease-in-out; colour and border changes are 150ms ease. */
+  /* Status tints — the library recipe (agent-inbox / context-window styles): a 14% wash of the status
+     into the surface, the word 70% of the status toward the ink. Every pair is ≥ 4.5:1 in light and
+     dark (numbers in the P5 commit). Derived here once so no rule below hard-codes a colour. */
+  --tint-wait-bg: color-mix(in srgb, var(--st-wait) 14%, var(--surface));
+  --tint-wait-soft: color-mix(in srgb, var(--st-wait) 8%, var(--surface));
+  --tint-wait-line: color-mix(in srgb, var(--st-wait) 40%, var(--border));
+  --tint-wait-fg: color-mix(in srgb, var(--st-wait) 70%, var(--text));
+  --tint-done-soft: color-mix(in srgb, var(--st-done) 8%, var(--surface));
+  --tint-done-line: color-mix(in srgb, var(--st-done) 40%, var(--border));
+  --tint-done-fg: color-mix(in srgb, var(--st-done) 70%, var(--text));
+  --tint-fail-bg: color-mix(in srgb, var(--st-fail) 14%, var(--surface));
+  --tint-fail-bg-2: color-mix(in srgb, var(--st-fail) 22%, var(--surface));
+  --tint-fail-line: color-mix(in srgb, var(--st-fail) 55%, var(--border));
+  --tint-fail-fg: color-mix(in srgb, var(--st-fail-text) 70%, var(--text));
+  --tint-accent-soft: color-mix(in srgb, var(--accent) 8%, var(--surface));
+  --tint-accent-fg: color-mix(in srgb, var(--accent) 70%, var(--text));
+  /* Scrim under overlays and dialogs (@2lab.ai/ui 0.5 --scrim; the installed 0.4.4 lacks it — once
+     it ships, the ui-tokens alias after this sheet takes over). */
+  --scrim: rgba(20, 20, 22, 0.32);
+  /* Over a picture or a page the theme does not paint: a fixed dark wash with white type, the white
+     page an HTML artifact renders on, and the letterbox behind a video. */
+  --media-scrim: rgba(0, 0, 0, 0.55);
+  --on-media: #fff;
+  --media-paper: #fff;
+  --media-black: #000;
 }
-
-/* ── LIGHT THEME — override surface & text planes ── */
-[data-theme="light"] {
-  --bg: #f7f7f7;
-  --surface: #ffffff;
-  --surface-raised: #f1f1f1;
-  --border: #e4e4e4;
-  --border-focus: #4d9de0;
-  --text: #18181a;
-  --text-secondary: #57575d;
-  --text-tertiary: #68686f;
-  --accent: #1f6dc2;
-  --accent-hover: #1a5ca6;
-  /* Functional colors — WCAG AA ≥4.5:1 on all light surfaces */
-  --green: #14783b;
-  --yellow: #a16207;
-  --red: #b91c1c;
-  --purple: #7c3aed;
-  --orange: #c2410c;
-  /* Agent inbox board */
-  --ib-col: #efefef;
-  --ib-card: #ffffff;
-  --ib-card-dim: #f8f8f8;
-  --ib-card-border: #e3e3e3;
-  --ib-pill: #e2e2e2;
-  --ib-text: #161616;
-  --ib-text-2: #555558;
-  --ib-muted: #65656b;
-  --ib-seg: #ebebeb;
-  --ib-seg-on: #ffffff;
-  --ib-spark: #5b7fe0;
-  --ib-shadow: 0 1px 2px rgba(0,0,0,0.06);
-  --ib-shadow-raised: 0 14px 30px rgba(0,0,0,0.14), 0 3px 8px rgba(0,0,0,0.08);
-  --st-wait: #c2780a;
-  --st-run: #2f63e0;
-  --st-done: #137a3e;
-  --st-fail: #d43a3a;
-  --st-fail-text: #c02f2f; /* #d43a3a is 4.4:1 on the dimmed card (#f8f8f8); this is 5.4:1 */
-}
-[data-theme="light"] ::selection { background: var(--accent); color: #fff; }
-[data-theme="light"] ::-webkit-scrollbar-thumb { background: #c8cdd5; border-color: var(--bg); }
-[data-theme="light"] .panel-overlay { background: rgba(0,0,0,0.25); }
+[data-theme="dark"] { --scrim: rgba(0, 0, 0, 0.56); }
+[data-theme="light"] ::selection { background: var(--accent); color: var(--surface); }
+[data-theme="light"] ::-webkit-scrollbar-thumb { background: color-mix(in srgb, var(--text-tertiary) 38%, var(--bg)); border-color: var(--bg); }
 
 html,body {
   min-height: 100%;
   background: var(--bg);
   color: var(--text);
-  font-family: Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  font-family: var(--font);
   font-size: 14px;
-  line-height: 1.4;
-  letter-spacing: 0.01em;
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
 }
 
 ::selection { background: var(--accent); color: var(--bg); }
 ::-webkit-scrollbar { width: 8px; }
 ::-webkit-scrollbar-track { background: var(--bg); }
-::-webkit-scrollbar-thumb { background: var(--border); border: 2px solid var(--bg); border-radius: var(--radius); }
+::-webkit-scrollbar-thumb { background: var(--border); border: 2px solid var(--bg); border-radius: 999px; }
 
 /* ── FOCUS — visible outline for keyboard nav ── */
 :focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
@@ -3781,7 +3719,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .app { display: flex; flex-direction: column; min-height: 100vh; padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
 
 /* ── TOPBAR — strict horizontal grid ──
-   One row from 1024px; below that the nav (user select · Conversations · admin
+   One row from 1024px; below that the nav (user select · 대화 · 설정 · 기억 · admin
    toggle) takes its own row under brand · status · account (BOARD RESPONSIVE).
    No control ever wraps or cuts its label: everything is nowrap and flex: none.
    Only user names are ever shortened, always with a visible ellipsis and the
@@ -3789,13 +3727,17 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    user's name when it is wider than its cap — 180px on the one-row bar (≥1024,
    even when the row has room), the whole nav row below 1024px. */
 .topbar {
-  background: var(--surface);
+  /* ui.2lab.ai's app bar: the page colour at 86% over what scrolls under it, blurred,
+     one hairline; opaque when the reader asks for less transparency (below). */
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  -webkit-backdrop-filter: blur(10px);
+  backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
   padding: 0 20px;
   display: flex;
   align-items: center;
   gap: 12px;
-  min-height: 48px;
+  min-height: 56px;
   min-width: 0;
   /* SSOT 2026-10-29 T3: the top bar is always on screen — it stays at the top
      while the board scrolls (the docked drawer sits under it: --topbar-b). Below
@@ -3806,18 +3748,26 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   z-index: 90;
 }
 .topbar h1 {
-  font-size: 14px;
-  font-weight: 800;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 15px;
+  font-weight: 650;
+  letter-spacing: -0.01em;
   white-space: nowrap;
   flex: none;
 }
+@media (prefers-reduced-transparency: reduce) {
+  .topbar { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+.topbar h1 .brand-mark { width: 22px; height: 22px; flex: none; }
+.brand-mark .bm-bg { fill: var(--text); }
+.brand-mark .bm-cell { fill: var(--surface); }
 /* One row (≥1024): the nav never shrinks below its controls (so none of them
    paints past it into the account group); the selected name is capped instead
    (.user-select max-inline-size), and the account group is what gives way — the
-   pill's name ends in an ellipsis. The cap keeps "Logged in as <realistic name>"
-   whole at 1024px even with "Reconnecting..." and touch padding. */
+   pill's name ends in an ellipsis. The cap keeps the pill's glyph and a realistic
+   name whole at 1024px even with "다시 연결 중…" and touch padding. */
 .topbar .nav { display: flex; gap: 6px; margin-left: auto; align-items: center; flex: none; }
 .topbar .topbar-account { display: flex; gap: 6px; align-items: center; min-width: 0; flex: 0 1 auto; }
 /* SSOT 2026-10-23 T6 — the owner's default model / effort, one click from the top. */
@@ -3825,19 +3775,24 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    clickable while a session panel is open — that is when "열린 세션에도 적용" exists. */
 .topbar .topbar-defaults { position: relative; z-index: 101; display: flex; gap: 6px; align-items: center; flex: none; }
 .topbar .topbar-defaults[hidden] { display: none; }
-.topbar .td-chip { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 12px; color: var(--text-secondary); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; min-height: 30px; cursor: pointer; white-space: nowrap; transition: border-color var(--dur-press) var(--ease-out), transform var(--dur-press) var(--ease-out); }
-.topbar .td-chip b { color: var(--text); font-weight: 700; }
-.topbar .td-chip[aria-expanded="true"] { border-color: var(--accent); }
+/* The defaults are triggers in the library model picker's trigger shape: a neutral well, 8px, a chevron. */
+.topbar .td-chip { --td-well: color-mix(in srgb, var(--ib-text) 6%, var(--ib-card)); display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 13px; font-weight: 500; color: var(--ib-text-2); background: var(--ib-seg); border: 1px solid var(--ib-card-border); border-radius: 8px; padding: 0 8px 0 10px; min-height: 30px; cursor: pointer; white-space: nowrap; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
+.topbar .td-chip b { color: var(--ib-text); font-weight: 500; }
+.topbar .td-chip[aria-expanded="true"] { background: var(--td-well); color: var(--ib-text); }
 .topbar .td-chip:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-.topbar .td-chip:active:not(:focus-visible) { transform: scale(0.97); }
-@media (hover: hover) and (pointer: fine) { .topbar .td-chip:hover { border-color: var(--accent); color: var(--text); } }
-.topbar .td-caret { font-size: 10px; color: var(--text-tertiary); }
-.td-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 120; min-width: 260px; max-width: min(360px, 92vw); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 14px 32px rgba(0,0,0,0.35); padding: 6px; }
-.td-menu[hidden] { display: none; }
-.td-menu .tdm-head { font-size: 11px; font-weight: 700; color: var(--text-tertiary); padding: 6px 8px 4px; }
+@media (hover: hover) and (pointer: fine) { .topbar .td-chip:hover { background: var(--td-well); color: var(--ib-text); } }
+.topbar .td-caret { width: 12px; height: 12px; flex: none; color: var(--ib-muted); transition: transform var(--dur-move) var(--ease-out); }
+.topbar .td-chip[aria-expanded="true"] .td-caret { transform: rotate(180deg); }
+/* The menu pops from its trigger's corner (the library menu / model-picker popover): in from translateY(-4px)
+   scale(.96) with opacity 160ms + transform 220ms ease-out, out in 180ms; display is discrete, so after the
+   exit a closed menu takes no hits and no room. */
+.td-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 120; min-width: 260px; max-width: min(360px, 92vw); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--ib-shadow-raised); padding: 6px; transform-origin: top left; transition: opacity 160ms var(--ease-out), transform 220ms var(--ease-out), display 220ms allow-discrete; }
+.td-menu[hidden] { display: none; opacity: 0; transform: translateY(-4px) scale(0.96); pointer-events: none; transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out), display var(--dur-fade) allow-discrete; }
+@starting-style { .td-menu:not([hidden]) { opacity: 0; transform: translateY(-4px) scale(0.96); } }
+.td-menu .tdm-head { font-size: 11px; font-weight: 600; color: var(--text-tertiary); padding: 6px 8px 4px; }
 .td-menu .tdm-item { display: flex; width: 100%; align-items: baseline; justify-content: space-between; gap: 8px; text-align: left; font: inherit; font-size: 13px; color: var(--text); background: none; border: 0; border-radius: 6px; padding: 8px; min-height: 36px; cursor: pointer; }
-.td-menu .tdm-item[aria-checked="true"] { background: var(--surface-raised); font-weight: 700; }
-.td-menu .tdm-item[aria-checked="true"]::after { content: '✓'; color: var(--accent); }
+.td-menu .tdm-item[aria-checked="true"] { background: var(--surface-raised); font-weight: 600; }
+.td-menu .tdm-item[aria-checked="true"]::after { content: ''; flex-shrink: 0; align-self: center; width: 14px; height: 14px; background: currentColor; -webkit-mask: var(--check) center / contain no-repeat; mask: var(--check) center / contain no-repeat; }
 .td-menu .tdm-item:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
 @media (hover: hover) and (pointer: fine) { .td-menu .tdm-item:hover { background: var(--surface-raised); } }
 .td-menu .tdm-sub { font-size: 11px; color: var(--text-tertiary); font-weight: 400; }
@@ -3845,23 +3800,26 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .td-menu .tdm-scope input { margin-top: 2px; }
 .topbar .td-status { font-size: 12px; color: var(--text-secondary); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar .td-status.is-error { color: var(--red); }
+/* Nav: the site's chip links — no box at rest, the --ib-pill chip on hover; the user
+   select is a trigger (a neutral well with a hairline) because it opens a list. */
 .topbar .nav a,
 .topbar .nav .user-select {
-  background: var(--surface-raised);
+  background: transparent;
   color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 6px 12px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  padding: 6px 10px;
   text-decoration: none;
-  font-size: 12px;
-  font-weight: 600;
+  font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
-  transition: border-color var(--speed) var(--ease), color var(--speed) var(--ease);
+  transition: background-color 150ms ease, color 150ms ease, border-color 150ms ease, transform var(--dur-press) var(--ease-out);
   min-height: 32px;
   white-space: nowrap;
   flex: none;
 }
-.topbar .nav a { display: inline-flex; align-items: center; gap: 4px; }
+.topbar .nav a { display: inline-flex; align-items: center; gap: 6px; }
+.topbar .nav a svg { width: 15px; height: 15px; flex: none; }
 /* User select: a visible label sized to the selected option, with the native
    <select> laid transparently over it (it still takes every click, tap and key).
    A native select cannot show an ellipsis in WebKit — it hard-cuts the text —
@@ -3875,6 +3833,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   flex: 0 1 auto;
   min-width: 0;
   max-inline-size: 180px;
+  background: var(--ib-seg);
+  border-color: var(--ib-card-border);
+  color: var(--ib-text);
   /* WebKit counts the ellipsized label's full text in this box's scrollable
      overflow and passes it up to the page (25px of sideways scroll at 320px
      with a long name selected); nothing in here is meant to extend past it. */
@@ -3908,26 +3869,28 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   font: inherit;
 }
 .topbar .user-select:has(select:focus-visible) { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-.topbar .nav a:hover,
-.topbar .nav .user-select:hover { border-color: var(--accent); color: var(--text); }
+@media (hover: hover) and (pointer: fine) {
+  .topbar .nav a:hover { background: var(--ib-pill); color: var(--text); }
+  .topbar .nav .user-select:hover { background: color-mix(in srgb, var(--ib-text) 6%, var(--ib-card)); }
+}
 
-/* ── USER PILL — "Logged in as <name>", links to the /login account page, rendered from /auth/me ── */
+/* ── USER PILL — the signed-in name, links to the /login account page, rendered from /auth/me ── */
 .topbar .user-pill {
   display: none; /* toggled by JS once /auth/me resolves */
   text-decoration: none;
   align-items: center;
   gap: 6px;
-  background: var(--surface-raised);
+  background: transparent;
   color: var(--text-secondary);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 600;
+  border-radius: 999px;
+  padding: 5px 12px 5px 8px;
+  font-size: 13px;
+  font-weight: 500;
   line-height: 1;
   min-height: 32px;
   cursor: pointer;
-  transition: border-color var(--speed) var(--ease);
+  transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
   white-space: nowrap;
   max-width: 260px;
   min-width: 0;
@@ -3935,9 +3898,13 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   overflow: hidden;
   text-overflow: ellipsis;
 }
+.topbar .user-pill-prefix { display: inline-flex; flex: none; color: var(--text-tertiary); }
+.topbar .user-pill-prefix svg { width: 15px; height: 15px; }
+.topbar .user-pill .ic-admin, .topbar .user-pill.is-admin .ic-user { display: none; }
+.topbar .user-pill.is-admin .ic-admin { display: block; }
 .topbar .user-pill b {
   color: var(--text);
-  font-weight: 700;
+  font-weight: 500;
   min-width: 0;
   max-width: 100%;
   overflow: hidden;
@@ -3945,86 +3912,78 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   white-space: nowrap;
   display: inline-block;
 }
-.topbar .user-pill.is-admin b::before { content: '★ '; color: var(--accent); }
-.topbar .user-pill:hover { border-color: var(--accent); color: var(--text); }
+@media (hover: hover) and (pointer: fine) { .topbar .user-pill:hover { background: var(--ib-pill); color: var(--text); } }
 .topbar .user-pill:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 
 /* ── ADMIN MODE TOGGLE — visible only for ADMIN_USERS (#716) ── */
 .topbar .admin-toggle {
-  background: var(--surface-raised);
+  background: transparent;
   color: var(--text-secondary);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
-  padding: 6px 12px;
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  cursor: pointer;
-  min-height: 32px;
-  white-space: nowrap;
-  flex: none;
-  align-items: center;
-  transition: border-color var(--speed) var(--ease), color var(--speed) var(--ease), background var(--speed) var(--ease);
-}
-.topbar .admin-toggle:hover { border-color: var(--accent); color: var(--text); }
-.topbar .admin-toggle[aria-pressed="true"] {
-  background: rgba(248, 81, 73, 0.18);
-  border-color: var(--red, #f85149);
-  color: var(--red, #f85149);
-}
-.topbar .admin-toggle[aria-pressed="true"]:hover { background: rgba(248, 81, 73, 0.28); }
-#theme-toggle {
-  background: var(--surface-raised);
-  border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 8px;
   padding: 6px 10px;
-  font-size: 16px;
-  line-height: 1;
+  font-size: 13px;
+  font-weight: 500;
   cursor: pointer;
   min-height: 32px;
-  display: flex;
-  flex: none;
-  align-items: center;
-  justify-content: center;
-  transition: border-color var(--speed) var(--ease), transform 0.2s var(--ease);
-}
-#theme-toggle::before { content: '\\1F319'; }
-[data-theme="light"] #theme-toggle::before { content: '\\2600\\FE0F'; }
-#theme-toggle:hover { border-color: var(--accent); transform: scale(1.1); }
-.ws-badge {
-  padding: 4px 12px;
-  border-radius: var(--radius);
-  font-size: 12px;
-  font-weight: 700;
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-  background: var(--surface-raised);
-  border: 1px solid var(--border);
   white-space: nowrap;
   flex: none;
+  align-items: center;
+  transition: border-color 150ms ease, color 150ms ease, background-color 150ms ease, transform var(--dur-press) var(--ease-out);
 }
+@media (hover: hover) and (pointer: fine) { .topbar .admin-toggle:hover { border-color: var(--ib-muted); color: var(--text); } }
+/* On = a write-anything mode: the fail tint, its word pulled toward the ink (≥ 4.5:1 both themes). */
+.topbar .admin-toggle[aria-pressed="true"] {
+  background: var(--tint-fail-bg);
+  border-color: var(--tint-fail-line);
+  color: var(--tint-fail-fg);
+}
+@media (hover: hover) and (pointer: fine) { .topbar .admin-toggle[aria-pressed="true"]:hover { background: var(--tint-fail-bg-2); color: var(--tint-fail-fg); } }
+/* The site's 34px icon button: the sun in the dark theme, the moon in the light one (the theme it switches to). */
+#theme-toggle {
+  display: inline-grid;
+  place-items: center;
+  inline-size: 34px;
+  block-size: 34px;
+  padding: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex: none;
+  transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
+}
+#theme-toggle svg { width: 16px; height: 16px; }
+#theme-toggle .ic-moon, [data-theme="light"] #theme-toggle .ic-sun { display: none; }
+[data-theme="light"] #theme-toggle .ic-moon { display: block; }
+@media (hover: hover) and (pointer: fine) { #theme-toggle:hover { background: var(--ib-pill); color: var(--text); } }
+/* Live updates: a tone dot and a word (library status: never colour alone). The tone moves with
+   the state in 300ms; the word is the tone mixed 70% toward the ink (≥ 4.5:1 on the bar). */
+.ws-badge {
+  --ws-tone: var(--text-tertiary);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 2px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 500;
+  color: color-mix(in srgb, var(--ws-tone) 70%, var(--text));
+  white-space: nowrap;
+  flex: none;
+  transition: color 300ms ease, background-color 300ms ease;
+}
+.ws-badge::before { content: ''; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ws-tone); transition: background-color 300ms ease; }
+.ws-badge[data-state="live"] { --ws-tone: var(--st-done); }
+.ws-badge[data-state="reconnecting"] { --ws-tone: var(--st-wait); }
 
 /* ── MAIN — stats strip, then the board; capped at 1280px and centred (.prd/10 §3.1-2, §5) ── */
 .main { flex: 1; padding: 20px; width: 100%; max-width: 1280px; margin: 0 auto; min-width: 0; }
 
-/* ── PERIOD SELECTOR — segmented control ── */
-.period-bar { display: inline-flex; gap: 0; border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden; }
-.period-btn {
-  background: var(--surface);
-  color: var(--text-secondary);
-  border: none;
-  border-right: 1px solid var(--border);
-  padding: 8px 16px;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  transition: background var(--speed) var(--ease), color var(--speed) var(--ease);
-  min-height: 32px;
-}
-.period-btn:last-child { border-right: none; }
-.period-btn:hover { background: var(--surface-raised); color: var(--text); }
-.period-btn.active { background: var(--accent); color: var(--bg); font-weight: 700; }
+/* ── PERIOD SELECTOR — the page's one segmented control (.seg / .seg-btn, below): the selected
+   period is the raised neutral chip, never an accent fill. .period-bar / .period-btn stay as hooks. ── */
+.period-btn { white-space: nowrap; }
 
 /* ── STATS STRIP — leads the page, above the board (.prd/10 §3.1-2) ──
    One row from 640px: period · 세션 · 토큰 · 비용 · 자세히. Below 640px the
@@ -4041,8 +4000,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .stats-strip .period-bar { grid-area: period; }
 .strip-nums { grid-area: nums; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; min-width: 0; }
 .strip-num { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
-.strip-num .label { font-size: 12px; font-weight: 600; color: var(--text-tertiary); }
-.strip-num .value { font-size: 15px; font-weight: 700; color: var(--text); font-variant-numeric: tabular-nums; }
+.strip-num .label { font-size: 12px; font-weight: 500; color: var(--text-tertiary); }
+.strip-num .value { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; color: var(--text); font-variant-numeric: tabular-nums; }
 .strip-num .no-data { color: var(--text-tertiary); }
 .stats-more {
   grid-area: more;
@@ -4052,20 +4011,39 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   background: var(--surface);
   color: var(--text-secondary);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 8px;
   padding: 8px 12px;
   min-height: 32px;
   font: inherit;
   font-size: 12px;
-  font-weight: 600;
+  font-weight: 500;
   white-space: nowrap;
   cursor: pointer;
-  transition: background var(--speed) var(--ease), color var(--speed) var(--ease);
+  transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
 }
 .stats-more svg { width: 12px; height: 12px; flex-shrink: 0; transition: transform var(--dur-expand) var(--ease-out); }
 .stats-more[aria-expanded="true"] { color: var(--text); }
 .stats-more[aria-expanded="true"] svg { transform: rotate(180deg); }
 .stats-detail { margin-top: 12px; }
+
+/* ── EXPAND / COLLAPSE (P6) — the library disclosure recipe for 자세히 (.stats), 세션 정보 (.panel-info), a
+   work-log task group (.wl-group) and the completed goals (.cg-hx): the region is the last row of its host's
+   grid and that row goes 0fr ↔ 1fr on --dur-expand (ease-out) with an opacity fade. Closed, the region is
+   [hidden] + inert but still painted at 0 rows, so it leaves the way it came (세션 정보, drawn only while
+   open, folds first: .xp-shut). It clips only while the row moves (.xp-moving, xpMove), so focus rings
+   inside are whole once it has settled. The panel's ResizeObserver re-measures the sections on every frame
+   of it (sizePanelSections). ── */
+.stats, .wl-group, .cg-hx, .panel-info { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; align-content: start; transition: grid-template-rows var(--dur-expand) var(--ease-out); }
+.cg-hx { grid-template-rows: 1fr; }
+.panel-info:has(> .pi-links) { grid-template-rows: auto auto 1fr; }
+.stats:has(> .stats-detail[hidden]), .wl-group:has(> .wl-group-body[hidden]), .panel-info.xp-shut { grid-template-rows: auto 0fr; }
+.panel-info.xp-shut:has(> .pi-links) { grid-template-rows: auto auto 0fr; }
+.cg-hx:has(> .cg-hx-in[hidden]), .cg-hx.xp-shut { grid-template-rows: 0fr; }
+.stats-detail, .wl-group-body, .cg-hx-in, .panel-info > .pi-body { min-height: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s; }
+.stats-detail[hidden], .cg-hx-in[hidden] { display: block; }
+.wl-group-body[hidden] { display: flex; }
+.stats-detail[hidden], .wl-group-body[hidden], .cg-hx-in[hidden], .cg-hx.xp-shut > .cg-hx-in, .panel-info.xp-shut > .pi-body { opacity: 0; visibility: hidden; overflow: hidden; margin-top: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s linear var(--dur-expand); }
+.xp-moving > .stats-detail, .xp-moving > .wl-group-body, .xp-moving > .cg-hx-in, .xp-moving > .pi-body { overflow: hidden; }
 .usage-cb-wrap { max-width: 440px; margin-bottom: 12px; }
 
 /* ── STATS GRID — the cards behind 자세히: 5 columns, 2 below 1100px ── */
@@ -4078,23 +4056,21 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .stat-card {
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 12px;
+  box-shadow: var(--ib-shadow);
   padding: 12px 16px;
-  transition: border-color var(--speed) var(--ease);
+  transition: border-color 150ms ease;
 }
-.stat-card:hover { border-color: var(--accent); }
 .stat-card .label {
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 500;
   color: var(--text-tertiary);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
   margin-bottom: 4px;
 }
 .stat-card .value {
   font-size: 22px;
-  font-weight: 800;
-  letter-spacing: -0.03em;
+  font-weight: 600;
+  letter-spacing: -0.02em;
   font-variant-numeric: tabular-nums;
 }
 /* Dim placeholder values */
@@ -4159,17 +4135,25 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .archives-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
 .archives-btn[aria-pressed="true"] { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
 /* Session lifecycle dialog (admin) */
-.lifecycle-dialog { margin: auto; border: 1px solid var(--border, rgba(127,127,127,0.3)); border-radius: 14px; padding: 18px 20px; background: var(--bg-card, var(--ib-col)); color: var(--ib-text); max-width: 420px; width: calc(100% - 32px); }
-.lifecycle-dialog::backdrop { background: rgba(0, 0, 0, 0.45); }
-.lifecycle-dialog h3 { margin: 0 0 4px; font-size: 15px; }
+.lifecycle-dialog { margin: auto; border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; background: var(--bg-card, var(--ib-col)); color: var(--ib-text); max-width: 420px; width: calc(100% - 32px); }
+.lifecycle-dialog::backdrop { background: var(--scrim); }
+/* Dialogs come and go the same way (P6): the box opacity + scale(.97) on --dur-expand, its scrim a 180ms fade;
+   closing, both leave in 180ms (.is-closing, dialogCloseSoftly) before close(). */
+.lifecycle-dialog[open] { animation: dlg-in var(--dur-expand) var(--ease-out); }
+.lifecycle-dialog[open]::backdrop, .art-modal[open]::backdrop { animation: scrim-in var(--dur-fade) var(--ease-out); }
+.lifecycle-dialog.is-closing, .art-modal.is-closing { opacity: 0; transform: scale(0.98); transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out); }
+.lifecycle-dialog.is-closing::backdrop, .art-modal.is-closing::backdrop { opacity: 0; transition: opacity var(--dur-fade) var(--ease-out); }
+@keyframes dlg-in { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
+@keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
+.lifecycle-dialog h3 { margin: 0 0 4px; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
 .lifecycle-dialog .lc-note { margin: 0 0 12px; font-size: 12px; color: var(--ib-muted); }
 .lifecycle-dialog label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 8px; font-size: 13px; margin-bottom: 10px; }
-.lifecycle-dialog label input { grid-column: 1 / -1; font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border, rgba(127,127,127,0.35)); background: var(--ib-seg); color: var(--ib-text); }
+.lifecycle-dialog label input { grid-column: 1 / -1; font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--ib-seg); color: var(--ib-text); }
 .lifecycle-dialog .lc-unit { color: var(--ib-muted); font-size: 12px; }
 .lifecycle-dialog .lc-status { min-height: 1.2em; margin: 4px 0 8px; font-size: 12px; color: var(--ib-muted); }
-.lifecycle-dialog .lc-status.is-error { color: #f85149; }
+.lifecycle-dialog .lc-status.is-error { color: var(--st-fail-text); }
 .lifecycle-dialog .lc-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.lifecycle-dialog .lc-save { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
+.lifecycle-dialog .lc-save { background: var(--ib-text); color: var(--ib-card); }
 
 /* The board: @2lab.ai/ui <ui-agent-inbox> (re-agent-inbox) — its columns, cards, day groups, skeletons
    and narrow / list layouts are the element's, drawn with the dashboard tokens through .ui-tok (#inbox).
@@ -4188,13 +4172,13 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .board-error { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 12px; padding: 12px 16px; border-radius: 12px; background: var(--ib-col); color: var(--ib-text-2); font-size: 13px; }
 .board-error[hidden] { display: none; }
 /* Stats values: a bar where the number will be. */
-.strip-num .is-loading, .stat-card .value.is-loading { display: inline-block; vertical-align: middle; width: 3.2em; height: 0.9em; border-radius: 4px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
+.strip-num .is-loading, .stat-card .value.is-loading { display: inline-block; vertical-align: middle; width: 3.2em; height: 0.9em; border-radius: 6px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
 .stat-card .value.is-loading { width: 64px; height: 22px; }
 .chart-row.is-loading { min-height: 132px; border-radius: 8px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
 /* Panel turns: rows shaped like a user / assistant turn. */
-.sk-turn { margin-bottom: 8px; padding: 8px 10px; border-radius: var(--radius); display: flex; gap: 10px; align-items: flex-start; border-left: 3px solid var(--ib-pill); }
+.sk-turn { margin-bottom: 8px; padding: 8px 10px; border-radius: 10px; display: flex; gap: 10px; align-items: flex-start; border-left: 3px solid var(--ib-pill); }
 .sk-turn.user { background: var(--surface-raised); }
-.sk-turn .sk-avatar { width: 32px; height: 32px; border-radius: 4px; flex-shrink: 0; }
+.sk-turn .sk-avatar { width: 32px; height: 32px; border-radius: 6px; flex-shrink: 0; }
 .sk-turn-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 8px; padding-top: 2px; }
 .sk-turn .sk-line { height: 10px; }
 .io-row.io-skel { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
@@ -4241,14 +4225,15 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-foot-bar + .cb-model-note { margin-top: 6px; }
 /* ── GOAL LINE — the goal on the open card, its home is the panel (spec 13) ── */
 .card-goal-line { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding: 6px 10px; border: 1px solid var(--ib-card-border); border-radius: 8px; background: var(--ib-card-dim); font-size: 12.5px; min-width: 0; }
-.card-goal-line .cgl-icon { flex-shrink: 0; }
+.card-goal-line .cgl-icon { flex-shrink: 0; display: inline-flex; color: var(--ib-muted); }
+.card-goal-line .cgl-icon svg, .card-goal .cg-label svg { width: 14px; height: 14px; }
 .card-goal-line .cgl-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ib-text); }
 .card-goal-line .cgl-text.is-muted { color: var(--ib-muted); }
 .card-goal-line .cg-status { flex-shrink: 0; font-weight: 600; }
 .card-goal-line .cg-status.cg-active { color: var(--st-run); } .card-goal-line .cg-status.cg-paused { color: var(--st-wait); } .card-goal-line .cg-status.cg-complete { color: var(--st-done); }
 .card-goal-line .cgl-n { flex-shrink: 0; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
 .cgl-go, .card-more-link { flex-shrink: 0; font: inherit; font-size: 12px; color: var(--accent); background: none; border: 0; padding: 4px 2px; min-height: 28px; cursor: pointer; white-space: nowrap; }
-.cgl-go:hover, .card-more-link:hover { text-decoration: underline; }
+@media (hover: hover) and (pointer: fine) { .cgl-go:hover, .card-more-link:hover { text-decoration: underline; } }
 .card-more-link { display: block; margin: 4px 0 0 auto; }
 .cb-ac { font-variant-numeric: tabular-nums; }
 .cb-model-note { margin-top: 4px; font-size: 12px; color: var(--ib-text-2); overflow-wrap: anywhere; }
@@ -4256,7 +4241,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* Model · effort beside the composer (spec 13). */
 .panel-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 0 0 8px; font-size: 13px; }
 .panel-controls:empty { display: none; }
-.panel-controls .pc-scope { font-size: 12px; font-weight: 700; color: var(--text-tertiary); }
+.panel-controls .pc-scope { font-size: 12px; font-weight: 600; color: var(--text-tertiary); }
 .panel-controls .cb-model-note { flex-basis: 100%; margin-top: 0; }
 /* The model · effort trigger and its menu: @2lab.ai/ui <ui-model-picker> (re-model-picker), drawn with
    the dashboard tokens through its .ui-tok wrapper, which takes no box of its own. Until the library has
@@ -4291,48 +4276,58 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   border-radius: 6px;
   font-size: 0.78em;
   font-weight: 600;
-  color: #fff;
-  letter-spacing: 0.02em;
+  /* The tone (--env-tone) is set inline from getEnvBadgeColor() because we hash
+     the instanceName at render time; the chip is its 14% tint and the word the
+     tone 70% toward the ink (≥ 4.5:1 in both themes for every palette tone). */
+  background: color-mix(in srgb, var(--env-tone, var(--ib-muted)) 14%, var(--ib-card));
+  color: color-mix(in srgb, var(--env-tone, var(--ib-muted)) 70%, var(--ib-text));
   vertical-align: baseline;
-  /* color is set inline via getEnvBadgeColor() because we hash the
-     instanceName at render time; the CSS just owns layout. */
 }
 /* Topbar tooltip — env-grouped token breakdown (#814) */
 #stat-tokens-wrap {
   position: relative;
   display: inline-block;
 }
+/* The tooltip pops like a menu (from its figure, centred) and leaves in 180ms. */
 #stat-tokens-tooltip {
   display: none;
   position: absolute;
   top: 100%;
   left: 50%;
-  transform: translateX(-50%);
-  margin-top: 4px;
-  background: var(--surface, #222);
-  color: var(--text, #eee);
-  border: 1px solid var(--border, rgba(255,255,255,0.1));
-  border-radius: 6px;
+  transform: translateX(-50%) translateY(-4px) scale(0.96);
+  transform-origin: top center;
+  opacity: 0;
+  margin-top: 6px;
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: var(--ib-shadow-raised);
   padding: 6px 10px;
   font-size: 0.78em;
   font-weight: 400;
   white-space: nowrap;
   z-index: 50;
   pointer-events: none;
+  transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out), display var(--dur-fade) allow-discrete;
 }
 #stat-tokens-wrap.tooltip-open #stat-tokens-tooltip,
-#stat-tokens-wrap:hover #stat-tokens-tooltip { display: block; }
+#stat-tokens-wrap:hover #stat-tokens-tooltip { display: block; opacity: 1; transform: translateX(-50%); transition: opacity 160ms var(--ease-out), transform 220ms var(--ease-out), display 220ms allow-discrete; }
+@starting-style {
+  #stat-tokens-wrap.tooltip-open #stat-tokens-tooltip,
+  #stat-tokens-wrap:hover #stat-tokens-tooltip { opacity: 0; transform: translateX(-50%) translateY(-4px) scale(0.96); }
+}
 @media (hover: none) {
   /* On touch devices :hover is sticky after a tap and never closes —
      gate visibility entirely on the explicit tooltip-open class
      toggled by the tap handler in updateTokenBreakdown(). */
-  #stat-tokens-wrap:hover #stat-tokens-tooltip { display: none; }
-  #stat-tokens-wrap.tooltip-open #stat-tokens-tooltip { display: block; }
+  #stat-tokens-wrap:hover #stat-tokens-tooltip { display: none; opacity: 0; }
+  #stat-tokens-wrap.tooltip-open #stat-tokens-tooltip { display: block; opacity: 1; transform: translateX(-50%); }
 }
 
 /* ── CONTEXT USAGE BAR ── */
 .card-body .context-bar { margin-top: 8px; height: 4px; background: var(--ib-pill); border-radius: 2px; overflow: hidden; }
-.card-body .context-bar-fill { width: 100%; height: 100%; border-radius: 2px; transform-origin: left center; transition: transform 0.3s var(--ease-out); background: var(--st-run); }
+.card-body .context-bar-fill { width: 100%; height: 100%; border-radius: 2px; transform-origin: left center; transition: transform var(--dur-move) var(--ease-out); background: var(--st-run); }
 .card-body .context-bar-fill.ctx-warn { background: var(--st-wait); }
 .card-body .context-bar-fill.ctx-danger { background: var(--st-fail); }
 
@@ -4355,21 +4350,21 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .tl-earlier-title { margin: 8px 0 4px; font-size: 11.5px; color: var(--ib-muted); }
 .tl-earlier .tl-item { color: var(--ib-muted); }
 .tl-toggle { margin-top: 6px; font: inherit; font-size: 12px; color: var(--ib-text-2); background: none; border: 1px solid var(--ib-card-border); border-radius: 6px; padding: 3px 10px; min-height: 28px; cursor: pointer; }
-.spin { display: inline-block; animation: spin 1.5s linear infinite; }
+.spin { display: inline-block; animation: spin 0.9s linear infinite; }
 @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
 /* ── INSTRUCTION / RESPONSE — latest pair, lazy-loaded on expand ── */
 .card-io { margin-top: 12px; display: grid; gap: 6px; }
 .io-row { border-radius: 8px; padding: 8px 10px; background: var(--ib-col); min-width: 0; }
-.io-label { font-size: 11px; font-weight: 600; letter-spacing: 0.04em; color: var(--ib-muted); margin-bottom: 3px; display: flex; gap: 6px; align-items: baseline; }
+.io-label { font-size: 11px; font-weight: 600; color: var(--ib-muted); margin-bottom: 3px; display: flex; gap: 6px; align-items: baseline; }
 .io-label .io-who { font-weight: 500; letter-spacing: 0; }
 .io-text { font-size: 13px; line-height: 1.45; color: var(--ib-text); white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden; }
 .io-text .io-title { font-weight: 600; }
 .io-text.is-muted, .io-muted { color: var(--ib-muted); }
 .card-io .io-sys > summary { list-style: none; display: flex; align-items: center; gap: 8px; min-height: 24px; min-width: 0; cursor: pointer; border-radius: 6px; font-size: 12.5px; color: var(--ib-text-2); }
 .card-io .io-sys > summary::-webkit-details-marker { display: none; }
-.card-io .io-sys > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.card-io .io-sys > summary:hover .sys-line { color: var(--ib-text); }
+.card-io .io-sys > summary:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+@media (hover: hover) and (pointer: fine) { .card-io .io-sys > summary:hover .sys-line { color: var(--ib-text); } }
 .card-io .sys-detail { margin: 6px 0 0; }
 .card-io .skill-badges { margin-top: 4px; }
 .io-cp { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 22px; font-size: 12.5px; color: var(--ib-text-2); }
@@ -4409,7 +4404,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   font-size: 12.5px;
 }
 .card-goal .cg-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-.card-goal .cg-label { font-weight: 600; color: var(--ib-text); }
+.card-goal .cg-label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--ib-text); }
+.card-goal .cg-label svg { color: var(--ib-muted); }
 .card-goal .cg-status {
   font-size: 11px;
   padding: 1px 7px;
@@ -4431,9 +4427,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   overflow: hidden;
 }
 .card-goal .cg-gap { margin-top: 3px; color: var(--ib-muted); overflow-wrap: anywhere; }
-.card-goal .cg-more { display: inline-flex; align-items: center; min-height: 24px; margin-top: 2px; padding: 0; font: inherit; font-size: 11.5px; color: var(--ib-text-2); background: none; border: 0; cursor: pointer; }
-.card-goal .cg-more:hover { color: var(--ib-text); text-decoration: underline; }
-.card-goal .cg-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+.card-goal .cg-more { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; margin-top: 2px; padding: 0; font: inherit; font-size: 11.5px; color: var(--ib-text-2); background: none; border: 0; cursor: pointer; }
+@media (hover: hover) and (pointer: fine) { .card-goal .cg-more:hover { color: var(--ib-text); text-decoration: underline; } }
+.card-goal .cg-more:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; border-radius: 6px; }
 .card-goal .cg-more[hidden] { display: none; }
 .card-goal .cg-empty { color: var(--ib-muted); }
 .card-goal .cg-row { display: flex; align-items: flex-start; gap: 6px; }
@@ -4442,7 +4438,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-goal .cg-queue { list-style: decimal; margin: 2px 0 0 18px; }
 .card-goal .cg-queue li { padding: 2px 0; }
 .card-goal .cg-q-text { overflow-wrap: anywhere; color: var(--ib-text); }
-.card-goal .cg-history-toggle { margin-left: auto; font: inherit; font-size: 11.5px; color: var(--ib-text-2); background: none; border: 1px solid var(--ib-card-border); border-radius: 6px; padding: 2px 8px; min-height: 26px; cursor: pointer; white-space: nowrap; }
+.card-goal .cg-history-toggle { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font: inherit; font-size: 11.5px; color: var(--ib-text-2); background: none; border: 1px solid var(--ib-card-border); border-radius: 6px; padding: 2px 8px; min-height: 26px; cursor: pointer; white-space: nowrap; }
 .card-goal .cg-progress + .cg-history-toggle { margin-left: 8px; }
 .card-goal .cg-history { list-style: none; margin: 4px 0 8px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .card-goal .cg-h-item { border-left: 2px solid var(--st-done); padding: 2px 0 2px 8px; }
@@ -4481,13 +4477,13 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-question {
   margin-top: 8px;
   padding: 8px;
-  background: rgba(246,201,14,0.06);
-  border: 1px solid rgba(246,201,14,0.2);
-  border-radius: 6px;
+  background: var(--tint-wait-soft);
+  border: 1px solid var(--tint-wait-line);
+  border-radius: 8px;
 }
 .card-question-text {
   font-size: 0.78em;
-  color: var(--yellow);
+  color: var(--tint-wait-fg);
   font-weight: 600;
   margin-bottom: 6px;
   display: flex;
@@ -4497,10 +4493,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .btn-choice {
   font-size: 0.72em;
   padding: 4px 10px;
-  border: 1px solid rgba(77,157,224,0.4);
-  border-radius: 4px;
-  background: rgba(77,157,224,0.08);
-  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
   cursor: pointer;
   transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
   font-family: inherit;
@@ -4510,32 +4506,27 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   opacity: 0.5;
   cursor: not-allowed;
 }
-.btn-choice-recommended {
-  /* WCAG AA: #2d8644 vs white = 4.56:1 (meets 4.5:1 for normal text) */
-  background: #2d8644;
-  color: white;
-  border: 2px solid #256f38;
-  font-weight: 600;
-}
-.btn-choice-recommended::before { content: "\\2B50 "; }
+/* The recommended choice: tagged, not coloured (library approval card) — the ink is the form's
+   one primary (추천대로 모두 선택 / 제출하기). */
+.btn-choice-recommended { border-color: var(--ib-muted); }
+.btn-choice-recommended::after { content: "추천"; display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px; background: var(--ib-pill); color: var(--text-secondary); font-size: 11px; font-weight: 600; line-height: 18px; vertical-align: 1px; }
 /* Hero "Submit All Recommended" — group-only, top of multi-choice panel */
 .btn-hero-recommended {
   display: block;
   width: 100%;
-  padding: 12px;
-  font-size: 1.05em;
-  background: #2d8644;
-  color: white;
-  border: 2px solid #256f38;
-  border-radius: 6px;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 14px;
+  background: var(--ib-text);
+  color: var(--ib-card);
+  border: 1px solid var(--ib-text);
+  border-radius: 8px;
   font-weight: 600;
   margin-bottom: 12px;
   cursor: pointer;
+  transition: opacity 150ms ease, transform var(--dur-press) var(--ease-out);
 }
-.btn-hero-recommended:hover:not(:disabled) {
-  background: #256f38;
-  border-color: #1f5c2e;
-}
+@media (hover: hover) and (pointer: fine) { .btn-hero-recommended:hover:not(:disabled) { opacity: 0.88; } }
 .btn-hero-recommended:disabled,
 .btn-hero-recommended[aria-disabled="true"] {
   opacity: 0.7;
@@ -4550,7 +4541,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   color: var(--accent);
   text-decoration: none;
 }
-.card-question-multi a:hover { text-decoration: underline; }
+@media (hover: hover) and (pointer: fine) { .card-question-multi a:hover { text-decoration: underline; } }
 /* The multi-question form inside an open card (renderMultiChoiceCard): its
    title, progress and 답변하기, in the card's own button language. The
    single-choice question and the permission prompts are <ui-approval-card>s,
@@ -4570,12 +4561,12 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-permission { padding: 0 16px 12px; border-bottom: 1px solid var(--border); }
 .panel-question {
   padding: 12px 16px;
-  background: rgba(246,201,14,0.06);
-  border-bottom: 1px solid rgba(246,201,14,0.15);
+  background: var(--tint-wait-soft);
+  border-bottom: 1px solid var(--tint-wait-line);
 }
 .panel-question-text {
   font-size: 0.88em;
-  color: var(--yellow);
+  color: var(--tint-wait-fg);
   font-weight: 600;
   margin-bottom: 8px;
 }
@@ -4597,7 +4588,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-needs-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px 8px; font-size: 13px; font-weight: 650; color: var(--text); }
 .panel-needs-head[hidden] { display: none; }
 .panel-needs-head:focus { outline: none; }
-.panel-needs-head:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.panel-needs-head:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
 .pn-count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: color-mix(in srgb, var(--st-wait) 24%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-wait) 55%, transparent); color: var(--text); font-size: 11px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; animation: pn-pop var(--dur-move) var(--ease-out) both; }
 @keyframes pn-pop { from { opacity: 0; transform: scale(0.6); } }
 .panel-question[data-ap="card"] { padding: 0 16px 12px; background: none; border-bottom: 1px solid var(--border); }
@@ -4616,8 +4607,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 .mc-header h4 {
   font-size: 13px;
-  font-weight: 700;
-  color: var(--yellow);
+  font-weight: 650;
+  color: var(--tint-wait-fg);
   margin-bottom: 4px;
 }
 .mc-header p {
@@ -4639,14 +4630,14 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   height: 8px;
   border-radius: 50%;
   background: var(--border);
-  transition: background var(--speed) var(--ease), box-shadow var(--speed) var(--ease);
+  transition: background-color 150ms ease, box-shadow 150ms ease;
 }
 .mc-progress-dot.filled {
-  background: var(--green);
+  background: var(--st-done);
 }
 .mc-progress-dot.active {
-  background: var(--yellow);
-  box-shadow: 0 0 0 2px rgba(246,201,14,0.3);
+  background: var(--st-wait);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--st-wait) 30%, transparent);
 }
 .mc-progress-text {
   margin-left: 6px;
@@ -4658,29 +4649,29 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   gap: 8px;
 }
 .mc-question {
-  background: rgba(246,201,14,0.04);
-  border: 1px solid rgba(246,201,14,0.15);
-  border-radius: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
   padding: 10px;
-  transition: border-color var(--speed) var(--ease), background var(--speed) var(--ease);
+  transition: border-color 150ms ease, background-color 150ms ease;
 }
 .mc-question.selected {
-  background: rgba(62,207,142,0.04);
-  border-color: rgba(62,207,142,0.25);
+  background: var(--tint-done-soft);
+  border-color: var(--tint-done-line);
 }
 .mc-question.active {
-  border-color: rgba(246,201,14,0.4);
-  background: rgba(246,201,14,0.08);
+  border-color: var(--tint-wait-line);
+  background: var(--tint-wait-soft);
 }
 .mc-q-header {
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text);
   margin-bottom: 6px;
   line-height: 1.4;
 }
 .mc-q-header .mc-q-num {
-  color: var(--yellow);
+  color: var(--tint-wait-fg);
   margin-right: 4px;
   font-variant-numeric: tabular-nums;
 }
@@ -4690,21 +4681,20 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   line-height: 1.5;
   margin-bottom: 8px;
   padding: 6px 8px;
-  background: rgba(255,255,255,0.02);
-  border-radius: 4px;
-  border-left: 2px solid var(--border);
+  background: var(--surface-raised);
+  border-radius: 6px;
 }
 .mc-q-context code {
-  background: rgba(255,255,255,0.06);
+  background: var(--ib-pill);
   padding: 1px 4px;
-  border-radius: 2px;
-  font-family: 'SF Mono','Fira Code',monospace;
+  border-radius: 6px;
+  font-family: var(--mono);
   font-size: 0.92em;
 }
 .mc-q-context strong { color: var(--text); }
 .mc-q-context em { font-style: italic; color: var(--text-secondary); }
 .mc-q-context a { color: var(--accent); text-decoration: none; }
-.mc-q-context a:hover { text-decoration: underline; }
+@media (hover: hover) and (pointer: fine) { .mc-q-context a:hover { text-decoration: underline; } }
 .mc-q-choices {
   display: flex;
   flex-direction: column;
@@ -4720,9 +4710,11 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   align-items: center;
   gap: 6px;
   font-size: 12px;
-  color: var(--green);
+  color: var(--tint-done-fg);
   font-weight: 600;
 }
+.mc-q-selected .mc-sel-mark { display: inline-flex; flex-shrink: 0; color: var(--st-done); }
+.mc-q-selected .mc-sel-mark svg { width: 14px; height: 14px; }
 .mc-q-selected .mc-sel-label {
   flex: 1;
   min-width: 0;
@@ -4733,18 +4725,20 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .mc-q-edit-btn {
   font-size: 11px;
   padding: 2px 8px;
-  border: 1px solid rgba(246,201,14,0.3);
-  border-radius: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
   background: transparent;
-  color: var(--yellow);
+  color: var(--text-secondary);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
   font-family: inherit;
   flex-shrink: 0;
 }
-.mc-q-edit-btn:hover {
-  border-color: var(--yellow);
-  background: rgba(246,201,14,0.08);
+@media (hover: hover) and (pointer: fine) {
+  .mc-q-edit-btn:hover {
+    border-color: var(--ib-muted);
+    color: var(--text);
+  }
 }
 .mc-actions {
   display: flex;
@@ -4754,33 +4748,33 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 .mc-btn-submit {
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
   padding: 8px 20px;
   border: none;
-  border-radius: var(--radius);
-  background: var(--accent);
-  color: var(--bg);
+  border-radius: 8px;
+  background: var(--ib-text);
+  color: var(--ib-card);
   cursor: pointer;
-  transition: background var(--speed) var(--ease);
+  transition: background-color 150ms ease, opacity 150ms ease, transform var(--dur-press) var(--ease-out);
   font-family: inherit;
   min-height: 34px;
 }
-.mc-btn-submit:hover { background: var(--accent-hover); }
+@media (hover: hover) and (pointer: fine) { .mc-btn-submit:hover:not(:disabled) { opacity: 0.88; } }
 .mc-btn-submit:disabled { background: var(--surface-raised); color: var(--text-tertiary); cursor: default; }
 .mc-btn-reset {
   font-size: 12px;
   font-weight: 600;
   padding: 8px 14px;
-  border: 1px solid rgba(239,68,68,0.3);
-  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  border-radius: 8px;
   background: transparent;
   color: var(--text-secondary);
   cursor: pointer;
-  transition: all var(--speed) var(--ease);
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
   font-family: inherit;
   min-height: 34px;
 }
-.mc-btn-reset:hover { border-color: var(--red); color: var(--red); background: rgba(239,68,68,0.08); }
+@media (hover: hover) and (pointer: fine) { .mc-btn-reset:hover { border-color: var(--ib-muted); color: var(--text); } }
 .mc-custom-input {
   width: 100%;
   margin-top: 4px;
@@ -4791,34 +4785,35 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   flex: 1;
   background: var(--surface-raised);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 8px;
   color: var(--text);
   font-size: 12px;
   padding: 4px 8px;
   outline: none;
   font-family: inherit;
   min-height: 28px;
-  transition: border-color var(--speed) var(--ease);
+  transition: border-color 150ms ease;
 }
-.mc-custom-input input:focus { border-color: var(--accent); }
+.mc-custom-input input:focus { border-color: var(--border-focus); }
 .mc-custom-input input::placeholder { color: var(--text-tertiary); }
 .mc-custom-input button {
   font-size: 11px;
   padding: 4px 10px;
-  border: 1px solid rgba(77,157,224,0.4);
-  border-radius: 4px;
-  background: rgba(77,157,224,0.08);
-  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
   cursor: pointer;
-  transition: all 0.15s;
+  transition: border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
   font-family: inherit;
   flex-shrink: 0;
   min-height: 28px;
 }
-.mc-custom-input button:hover {
-  border-color: var(--accent);
-  background: rgba(77,157,224,0.18);
-  color: var(--text);
+@media (hover: hover) and (pointer: fine) {
+  .mc-custom-input button:hover {
+    border-color: var(--ib-muted);
+    background: var(--surface-raised);
+  }
 }
 
 /* ── CHARTS — flat, geometric ── */
@@ -4827,13 +4822,14 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   flex: 1;
   background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 12px;
+  box-shadow: var(--ib-shadow);
   padding: 12px 16px;
 }
-.chart-container h4 { font-size: 12px; font-weight: 700; color: var(--text-tertiary); margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+.chart-container h4 { font-size: 12.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
 .bar-chart { display: flex; align-items: flex-end; gap: 2px; height: 80px; }
-.bar { background: var(--accent); border-radius: 1px 1px 0 0; min-width: 4px; flex: 1; transition: height 0.3s; position: relative; }
-.bar:hover { background: var(--purple); }
+.bar { background: var(--accent); border-radius: 3px 3px 0 0; min-width: 4px; flex: 1; transition: height var(--dur-move) var(--ease-out), opacity 150ms ease; position: relative; }
+@media (hover: hover) and (pointer: fine) { .bar:hover { opacity: 0.75; } }
 .bar .bar-tooltip {
   display: none;
   position: absolute;
@@ -4843,7 +4839,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   background: var(--surface);
   border: 1px solid var(--border);
   padding: 4px 8px;
-  border-radius: var(--radius);
+  border-radius: 8px;
+  box-shadow: var(--ib-shadow-raised);
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
@@ -4851,7 +4848,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 .bar:hover .bar-tooltip { display: block; }
 .bar-labels { display: flex; gap: 2px; margin-top: 4px; }
-.bar-labels span { flex: 1; text-align: center; font-size: 10px; color: var(--text-tertiary); font-weight: 600; }
+.bar-labels span { flex: 1; text-align: center; font-size: 10px; color: var(--text-tertiary); font-weight: 500; font-variant-numeric: tabular-nums; }
 
 /* ── SLIDE PANEL — flat, structured, resizable ── */
 /* SSOT 2026-10-24 — a full-screen sheet below 840px, docked beside the board from
@@ -4887,13 +4884,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   touch-action: none;
   z-index: 101;
   background: transparent;
-  transition: background 0.15s ease;
+  transition: background-color 150ms ease, opacity 150ms ease;
 }
-.panel-resize-handle:hover,
-.panel-resize-handle.active {
-  background: var(--accent);
-  opacity: 0.4;
-}
+.panel-resize-handle.active { background: var(--ib-muted); opacity: 0.35; }
+@media (hover: hover) and (pointer: fine) { .panel-resize-handle:hover { background: var(--ib-muted); opacity: 0.35; } }
 /* Panel tasks (.prd/10 §3.1-6) — pinned between the token badges and the
    scroll area: always shown (an empty line when there are none yet), with its
    own scroll so a long list never pushes the work log and turns away. */
@@ -4905,10 +4899,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .pa-crumb { min-width: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 6px; border: 0; border-radius: 6px; background: none; color: var(--text-secondary); font: inherit; cursor: pointer; }
 .pa-crumb:first-child { flex-shrink: 0; }
 .pa-crumb[aria-current="page"] { color: var(--text); font-weight: 600; cursor: default; }
-.pa-crumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pa-crumb:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .pa-sep { flex-shrink: 0; color: var(--text-tertiary); }
 .pa-focus { --ag-c: var(--text-tertiary); margin-top: 2px; border-radius: 6px; outline: none; }
-.pa-focus:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.pa-focus:focus-visible { box-shadow: 0 0 0 2px var(--border-focus); }
 .pa-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 14px; line-height: 1.35; }
 .pa-name .ag-type { font-weight: 650; }
 .pa-name .ag-id { font-size: 12px; }
@@ -4920,13 +4914,13 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .pa-dot { color: var(--text-tertiary); }
 .pa-desc { margin-top: 2px; font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pa-desc .pa-act { color: var(--text-tertiary); }
-.tasks-scope { text-transform: none; letter-spacing: 0; font-weight: 600; color: var(--text); }
-.wl-role { flex-shrink: 0; font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 4px; background: var(--ib-pill); color: var(--text); }
+.tasks-scope { font-weight: 600; color: var(--text); }
+.wl-role { flex-shrink: 0; font-size: 11px; font-weight: 700; padding: 0 6px; border-radius: 6px; background: var(--ib-pill); color: var(--text); }
 .wl-agent-io .wl-row { background: var(--ib-pill); }
 .wl-agent-link { display: block; margin: 0 0 4px 22px; padding: 2px 0; border: 0; background: none; color: var(--accent); font: inherit; font-size: 12px; cursor: pointer; }
-.wl-agent-link:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; border-radius: 4px; }
+.wl-agent-link:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; border-radius: 6px; }
 /* A child's block in its parent's log: the same node at row density. */
-.wl-child { --ag-c: var(--text-tertiary); font-family: Inter,ui-sans-serif,system-ui,sans-serif; line-height: 1.4; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; column-gap: 8px; row-gap: 2px; align-items: center; width: calc(100% - 22px); margin: 2px 0 6px 22px; padding: 7px 10px; border: 1px solid var(--ib-card-border); border-radius: 8px; background: var(--ib-card); color: var(--text); font-size: 12.5px; text-align: left; }
+.wl-child { --ag-c: var(--text-tertiary); font-family: var(--font); line-height: 1.45; display: grid; grid-template-columns: 16px minmax(0, 1fr) auto; column-gap: 8px; row-gap: 2px; align-items: center; width: calc(100% - 22px); margin: 2px 0 6px 22px; padding: 7px 10px; border: 1px solid var(--ib-card-border); border-radius: 8px; background: var(--ib-card); color: var(--text); font-size: 12.5px; text-align: left; }
 .wl-child.is-running { --ag-c: var(--st-run); border-color: color-mix(in srgb, var(--st-run) 35%, var(--ib-card-border)); }
 .wl-child.is-completed { --ag-c: var(--st-done); }
 .wl-child.is-failed { --ag-c: var(--st-fail); }
@@ -4988,7 +4982,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
-  transition: background var(--speed) var(--ease), color var(--speed) var(--ease);
+  transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
 }
 .panel-tab .pt-name { overflow: hidden; text-overflow: ellipsis; }
 .panel-tab .pt-type { font-weight: 500; color: var(--text-tertiary); }
@@ -5022,13 +5016,13 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   text-align: left;
   cursor: pointer;
 }
-.ps-sec-title { flex: none; font-size: 12px; font-weight: 700; letter-spacing: 0.04em; color: var(--text-secondary); }
+.ps-sec-title { flex: none; font-size: 12px; font-weight: 600; color: var(--text-secondary); }
 .ps-sec-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 .ps-sec-now { display: inline-flex; align-items: center; gap: 4px; color: var(--text); font-weight: 600; }
 .ps-sec-now .spinner { width: 10px; height: 10px; }
 .panel-sec-head .pi-chev { flex: none; width: 12px; height: 12px; transition: transform var(--dur-expand) var(--ease-out); }
 .panel-sec-head[aria-expanded="true"] .pi-chev { transform: rotate(180deg); }
-.panel-sec-head:hover .ps-sec-title { color: var(--text); }
+@media (hover: hover) and (pointer: fine) { .panel-sec-head:hover .ps-sec-title { color: var(--text); } }
 .panel-sec-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; border-radius: 6px; }
 .panel-tasks {
   padding: 4px 16px;
@@ -5040,9 +5034,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    scroll box (the reader's place is per tab), sized by sizePanelSections to the rest
    of the panel; the active one is the only one painted. */
 .panel-sections { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
-.psec-tab { flex: 1 1 0; min-width: 0; min-height: 38px; padding: 6px 8px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--text-secondary); font: inherit; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: color var(--speed) var(--ease), border-color var(--speed) var(--ease); }
-.psec-tab:hover { color: var(--text); }
-.psec-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.psec-tab { flex: 1 1 0; min-width: 0; min-height: 38px; padding: 6px 8px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--text-secondary); font: inherit; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: color 150ms ease, border-color 150ms ease, transform var(--dur-press) var(--ease-out); }
+@media (hover: hover) and (pointer: fine) { .psec-tab:hover { color: var(--text); } }
+.psec-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--text); }
 .psec-tab:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; border-radius: 6px; }
 /* SSOT 2026-10-29 T6: Chat · 작업 로그 on the left at their own width; 에이전트 트리 at the right end. */
 .panel-sections .psec-tab { flex: 0 1 auto; padding: 6px 12px; }
@@ -5053,13 +5047,13 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .psec[hidden] { display: none; }
 .psec:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
 .psec-older { display: block; margin: 10px auto 2px; padding: 5px 14px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
-.psec-older:hover { color: var(--text); border-color: var(--text-tertiary); }
-.psec-older:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+@media (hover: hover) and (pointer: fine) { .psec-older:hover { color: var(--text); border-color: var(--text-tertiary); } }
+.psec-older:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .psec-older[aria-busy="true"] { cursor: progress; font-style: italic; color: var(--text-tertiary); }
 .psec-start { margin: 12px 0 2px; text-align: center; font-size: 11.5px; color: var(--text-tertiary); }
 .psec-older[hidden], .psec-start[hidden], .psec-pill[hidden] { display: none; }
 .psec-empty { margin: 24px 16px; text-align: center; font-size: 12px; color: var(--text-tertiary); }
-.psec-pill { position: absolute; left: 50%; bottom: 12px; z-index: 4; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 4px 14px; border: 1px solid var(--accent); border-radius: 999px; background: var(--accent); color: #fff; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18); }
+.psec-pill { position: absolute; left: 50%; bottom: 12px; z-index: 4; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 4px 14px; border: 1px solid var(--ib-text); border-radius: 999px; background: var(--ib-text); color: var(--ib-card); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: var(--ib-shadow-raised); }
 .psec-pill:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .panel-tree { padding: 6px 16px 12px; }
 .panel-conv { padding: 0; }
@@ -5081,10 +5075,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  transition: background var(--speed) var(--ease), border-color var(--speed) var(--ease), color var(--speed) var(--ease);
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
 }
 .pdt-icon { width: 14px; height: 14px; flex: none; }
-.panel-detail-toggle[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.panel-detail-toggle[aria-pressed="true"] { background: var(--ib-pill); border-color: var(--ib-muted); color: var(--text); }
 .panel-detail-toggle:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 /* Minimal by default: the agent path, the subtree and the main agent's own
    header are for 자세히 — the tabs already say where the reader is. */
@@ -5095,10 +5089,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-tasks-empty { font-size: 12px; color: var(--text-tertiary); padding: 2px 0 4px; }
 .panel-tasks-header {
   font-size: 12px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--text-secondary);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
   margin-bottom: 6px;
   display: flex;
   align-items: center;
@@ -5108,8 +5100,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   font-weight: 600;
   color: var(--accent);
   font-size: 11px;
-  text-transform: none;
-  letter-spacing: 0;
 }
 .panel-task-item {
   display: flex;
@@ -5134,6 +5124,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   min-width: 50px;
 }
 .panel-tasks-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 11px;
   color: var(--accent);
   cursor: pointer;
@@ -5143,7 +5136,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   background: none;
   font-weight: 600;
 }
-.panel-tasks-toggle:hover { text-decoration: underline; }
+@media (hover: hover) and (pointer: fine) { .panel-tasks-toggle:hover { text-decoration: underline; } }
 .panel-tasks-toggle + .panel-tasks-earlier-toggle { margin-left: 14px; }
 /* ── PLAN — the panel's Tasks as a plan (re-agent-run D1–D7): a marker per step
    (check · spinner · empty ring) on one rail, the time on the right, a sticky
@@ -5161,7 +5154,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .pl-marker > svg { width: 10px; height: 10px; }
 .pl-step[data-step="skipped"] .task-text { color: var(--text-tertiary); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--text-tertiary) 60%, transparent); }
 .pl-step[data-step="dropped"] .task-text { color: var(--text-secondary); }
-.pl-fate { flex: none; margin-left: 6px; padding: 0 6px; border-radius: 4px; font-size: 10.5px; font-weight: 700; background: var(--ib-pill); color: var(--text-secondary); }
+.pl-fate { flex: none; margin-left: 6px; padding: 0 6px; border-radius: 6px; font-size: 10.5px; font-weight: 700; background: var(--ib-pill); color: var(--text-secondary); }
 .pl-step[data-step="dropped"] .pl-fate { color: var(--st-fail); background: color-mix(in srgb, var(--st-fail) 12%, transparent); }
 .pl-step[data-step="paused"] .pl-fate { color: var(--st-wait); background: color-mix(in srgb, var(--st-wait) 12%, transparent); }
 .pl-earlier-counts { font-weight: 500; color: var(--text-tertiary); }
@@ -5187,11 +5180,11 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .pl-step[data-step="active"] .pl-aside { color: var(--text); }
 /* ── TASK RUNS (SSOT 2026-10-29 T5) — the tasks that ran: a row is a button
    (title · start → end · tools · tokens · cost) opening its detail beneath. ── */
-.tr-head { display: flex; align-items: center; gap: 6px; margin: 6px 0 2px; font-size: 11px; font-weight: 700; letter-spacing: 0.02em; color: var(--text-tertiary); }
+.tr-head { display: flex; align-items: center; gap: 6px; margin: 6px 0 2px; font-size: 11px; font-weight: 600; color: var(--text-tertiary); }
 .tr-head + .pl-list { margin-bottom: 4px; }
 .tr-count { padding: 0 6px; border-radius: 99px; background: var(--ib-pill); color: var(--text-secondary); font-weight: 600; font-variant-numeric: tabular-nums; }
 .tr-row { display: block; width: 100%; margin: -3px -6px; padding: 3px 6px; border: 0; border-radius: 6px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
-.tr-row:hover { background: var(--ib-pill); }
+@media (hover: hover) and (pointer: fine) { .tr-row:hover { background: var(--ib-pill); } }
 .tr-row:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 0; }
 .tr-meta { display: block; margin-top: 1px; font-size: 11.5px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .tr-run.is-open .tr-row { background: var(--ib-pill); }
@@ -5203,7 +5196,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .tr-rev-at { color: var(--text-tertiary); font-variant-numeric: tabular-nums; margin-right: 4px; }
 .tr-total { display: flex; gap: 8px; align-items: baseline; margin: 6px 0 2px; padding-top: 6px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .tr-total + .tr-total { margin-top: 0; padding-top: 0; border-top: 0; }
-.tr-total-k { flex: none; font-weight: 700; color: var(--text-tertiary); }
+.tr-total-k { flex: none; font-weight: 600; color: var(--text-tertiary); }
 .pl-fold { padding: 2px 0 2px 28px; }
 .pl-earlier { opacity: 0.85; }
 /* Panel work log (.prd/10 §3.1-6, §3.3) — what the agent did, in order: the
@@ -5212,33 +5205,32 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .wl-empty { color: var(--text-tertiary); font-size: 12px; padding: 6px 0; }
 .wl-entry { color: var(--text); min-width: 0; }
 /* SSOT 2026-10-22 T10 — entries folded under the task they were made in. */
-.wl-group { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.wl-group { min-width: 0; }
 .wl-group-head { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px 6px; border-radius: 6px; background: var(--surface-raised); cursor: pointer; font-weight: 600; }
 .wl-group-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-.wl-group-head .wl-g-chev { flex-shrink: 0; display: inline-block; color: var(--text-tertiary); transition: transform var(--dur-press) var(--ease-out); }
-.wl-group-head[aria-expanded="true"] .wl-g-chev { transform: rotate(90deg); }
+.wl-group-head .wl-g-chev { color: var(--text-tertiary); }
+.wl-group-head[aria-expanded="true"] .wl-g-chev { transform: none; }
 .wl-group-head .wl-g-id { flex-shrink: 0; color: var(--text-tertiary); font-variant-numeric: tabular-nums; font-weight: 500; }
 .wl-group-head .wl-g-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wl-group-head .wl-g-count { flex-shrink: 0; background: var(--surface); border-radius: 6px; padding: 0 6px; font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .wl-group-head .wl-g-meta { flex-shrink: 0; font-size: 11px; font-weight: 500; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.wl-group-body { display: flex; flex-direction: column; gap: 4px; padding-left: 12px; border-left: 2px solid var(--border); margin-left: 6px; }
-.wl-group-body[hidden] { display: none; }
+.wl-group-body { display: flex; flex-direction: column; gap: 4px; padding-left: 12px; border-left: 2px solid var(--border); margin-left: 6px; margin-top: 4px; }
 .wl-head { display: flex; align-items: baseline; gap: 6px; font-size: 11px; color: var(--text-tertiary); }
-.wl-label { font-weight: 700; letter-spacing: 0.04em; }
+.wl-label { font-weight: 600; }
 .wl-head .wl-time { margin-left: auto; }
 .wl-time { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; flex-shrink: 0; }
 /* Each entry = a row (role=button: click, Enter or Space opens its raw output
    below it) + its detail block. */
-.wl-row { border-radius: 4px; cursor: pointer; min-width: 0; }
+.wl-row { border-radius: 6px; cursor: pointer; min-width: 0; }
 .wl-row:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .wl-row[aria-expanded="true"] { background: var(--surface-raised); }
 .wl-row > .wl-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .wl-line { display: flex; align-items: baseline; gap: 8px; }
 .wl-line > .wl-text { flex: 1; min-width: 0; }
 .wl-narration .wl-text { color: var(--text-secondary); }
-.wl-detail { margin: 4px 0 6px; min-width: 0; font-family: Inter,ui-sans-serif,system-ui,sans-serif; }
+.wl-detail { margin: 4px 0 6px; min-width: 0; font-family: var(--font); }
 .wl-detail-bar { display: flex; justify-content: flex-end; gap: 6px; margin-bottom: 4px; }
-.wl-detail-btn { font: inherit; font-size: 11px; font-weight: 600; color: var(--text-secondary); background: var(--surface); border: 1px solid var(--border); border-radius: 4px; padding: 3px 10px; min-height: 26px; cursor: pointer; }
+.wl-detail-btn { font: inherit; font-size: 11px; font-weight: 600; color: var(--text-secondary); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 3px 10px; min-height: 26px; cursor: pointer; }
 .wl-detail-msg { font-size: 12px; color: var(--text-tertiary); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .wl-detail-note { font-size: 11px; color: var(--yellow); margin-bottom: 4px; }
 .wl-raw {
@@ -5246,9 +5238,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   padding: 8px 10px;
   background: var(--bg);
   border: 1px solid var(--border);
-  border-radius: 6px;
+  border-radius: 8px;
   color: var(--text);
-  font-family: 'SF Mono','Fira Code',ui-monospace,monospace;
+  font-family: var(--mono);
   font-size: 11.5px;
   line-height: 1.5;
   white-space: pre-wrap;
@@ -5256,8 +5248,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   max-height: min(36vh, 320px);
   overflow: auto;
 }
-.wl-instruction { background: rgba(77,157,224,0.08); border-left: 2px solid var(--accent); border-radius: 4px; padding: 6px 8px; margin: 4px 0; }
-.wl-instruction .wl-label { color: var(--accent); }
+.wl-instruction { background: var(--tint-accent-soft); border-left: 2px solid var(--accent); border-radius: 6px; padding: 6px 8px; margin: 4px 0; }
+.wl-instruction .wl-label { color: var(--tint-accent-fg); }
 .wl-instruction.is-sys { background: transparent; border-left-color: var(--border); padding: 3px 8px; }
 .wl-instruction.is-sys .wl-head { align-items: center; gap: 8px; min-width: 0; font-size: 12px; }
 .wl-sys-line { flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text-secondary); }
@@ -5269,7 +5261,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .wl-error { border-left: 2px solid var(--red); padding: 4px 8px; }
 .wl-error .wl-label, .wl-error .wl-row > .wl-text { color: var(--red); }
 .wl-tool, .wl-tool_result {
-  font-family: 'SF Mono','Fira Code',ui-monospace,monospace;
+  font-family: var(--mono);
   font-size: 11.5px;
   color: var(--text-secondary);
   min-width: 0;
@@ -5302,23 +5294,27 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   --ui-st-fail-text: var(--st-fail-text); --ui-ease: var(--ease); --ui-ease-out: var(--ease-out);
   --ui-ease-in-out: var(--ease-in-out); --ui-dur-press: var(--dur-press); --ui-dur-expand: var(--dur-expand);
   --ui-dur-move: var(--dur-move); --ui-dur-fade: var(--dur-fade); --ui-radius: var(--radius);
+  --ui-font: var(--font); --ui-mono: var(--mono);
 }
 .wl-toolcall { display: grid; gap: 4px; min-width: 0; }
 .worklog-list ui-tool-call-card { display: block; min-width: 0; }
 .wl-card-fallback {
-  display: block; padding: 6px 10px; border: 1px solid var(--border); border-radius: var(--radius);
-  font-family: 'SF Mono','Fira Code',ui-monospace,monospace; font-size: 11.5px; color: var(--text-secondary);
+  display: block; padding: 6px 10px; border: 1px solid var(--border); border-radius: 8px;
+  font-family: var(--mono); font-size: 11.5px; color: var(--text-secondary);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .slide-panel-overlay {
   position: fixed;
   top: 0; left: 0;
   width: 100vw; height: 100vh;
-  background: rgba(0,0,0,0.5);
+  background: var(--scrim);
   z-index: 99;
   display: none;
+  opacity: 0;
+  transition: opacity var(--dur-fade) var(--ease-out), display var(--dur-fade) allow-discrete;
 }
-.slide-panel-overlay.open { display: block; }
+.slide-panel-overlay.open { display: block; opacity: 1; }
+@starting-style { .slide-panel-overlay.open { opacity: 0; } }
 .panel-header {
   padding: 12px 16px;
   border-bottom: 1px solid var(--border);
@@ -5329,7 +5325,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-header h3 {
   flex: 1;
   font-size: 13px;
-  font-weight: 700;
+  font-weight: 650;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -5338,16 +5334,16 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   width: 32px; height: 32px;
   background: var(--surface-raised);
   border: 1px solid var(--border);
-  border-radius: var(--radius);
+  border-radius: 10px;
   color: var(--text-secondary);
   font-size: 14px;
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all var(--speed) var(--ease);
+  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
 }
-.panel-close:hover { color: var(--text); border-color: var(--accent); }
+@media (hover: hover) and (pointer: fine) { .panel-close:hover { color: var(--text); border-color: var(--ib-muted); } }
 .panel-header { flex-wrap: wrap; row-gap: 8px; }
 /* ── DETAIL DECK (SSOT 2026-10-29 T2) — every open card's detail card; the ones
    waiting behind the front card show their top edges above it, and ‹ n / m ›
@@ -5358,22 +5354,17 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-deck-peek span:first-child { width: calc(100% - 48px); opacity: 0.75; }
 .panel-deck-peek span:last-child { width: calc(100% - 24px); }
 .slide-panel[data-deck="1"] .panel-deck-peek span:first-child { display: none; }
-.slide-panel:not([data-deck="0"]) .panel-header { border-top: 1px solid color-mix(in srgb, var(--text-tertiary) 45%, var(--border)); border-radius: 10px 10px 0 0; background: var(--surface); box-shadow: 0 -4px 10px -6px rgba(0, 0, 0, 0.25); }
-.panel-deck { display: inline-flex; align-items: center; gap: 2px; flex: none; height: 32px; padding: 0 2px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface-raised); }
+.slide-panel:not([data-deck="0"]) .panel-header { border-top: 1px solid color-mix(in srgb, var(--text-tertiary) 45%, var(--border)); border-radius: 10px 10px 0 0; background: var(--surface); box-shadow: 0 -4px 10px -6px var(--scrim); }
+.panel-deck { display: inline-flex; align-items: center; gap: 2px; flex: none; height: 32px; padding: 0 2px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); }
 .panel-deck[hidden] { display: none; }
-.panel-deck .pd-btn { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: calc(var(--radius) - 2px); background: transparent; color: var(--text-secondary); cursor: pointer; }
+.panel-deck .pd-btn { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); cursor: pointer; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
 .panel-deck .pd-btn svg { width: 14px; height: 14px; }
-.panel-deck .pd-btn:hover { color: var(--text); background: var(--ib-pill, var(--surface)); }
+@media (hover: hover) and (pointer: fine) { .panel-deck .pd-btn:hover { color: var(--text); background: var(--ib-pill, var(--surface)); } }
 .panel-deck .pd-btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .panel-deck .pd-pos { min-width: 34px; text-align: center; font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
-@keyframes deck-in-next { from { transform: translateX(18px); opacity: 0.35; } to { transform: none; opacity: 1; } }
-@keyframes deck-in-prev { from { transform: translateX(-18px); opacity: 0.35; } to { transform: none; opacity: 1; } }
-.slide-panel.deck-in-next .panel-header, .slide-panel.deck-in-next .panel-body { animation: deck-in-next var(--dur-move, 220ms) var(--ease-out); }
-.slide-panel.deck-in-prev .panel-header, .slide-panel.deck-in-prev .panel-body { animation: deck-in-prev var(--dur-move, 220ms) var(--ease-out); }
-@media (prefers-reduced-motion: reduce) {
-  .slide-panel.deck-in-next .panel-header, .slide-panel.deck-in-next .panel-body,
-  .slide-panel.deck-in-prev .panel-header, .slide-panel.deck-in-prev .panel-body { animation: none; }
-}
+/* The deck switch (renderDeckNav → deckSlide) is WAAPI, not keyframes: the header and body glide in from
+   the side the new front card came from, added onto whatever is still running — a quick second switch
+   retargets from where they are drawn instead of restarting. Under reduced motion there is no slide. */
 /* ── SESSION CHIP — the panel head (spec 13): status · active time · retry · Slack · the one action ── */
 .panel-status { flex-basis: 100%; min-width: 0; }
 .panel-status:empty { display: none; }
@@ -5381,7 +5372,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* re-agent-run D18: the chip is a pill tinted by its status (markup unchanged). */
 .ps-chip { --ag-c: var(--text-tertiary); display: inline-flex; align-items: center; gap: 5px; min-width: 0; height: 24px; padding: 0 10px 0 8px; border-radius: 99px; background: color-mix(in srgb, var(--ag-c) 13%, transparent); border: 0; white-space: nowrap; }
 .ps-chip.is-running { --ag-c: var(--st-run); } .ps-chip.is-waiting, .ps-chip.is-resuming { --ag-c: var(--st-wait); } .ps-chip.is-completed { --ag-c: var(--st-done); }
-.ps-label { font-size: 11px; font-weight: 700; color: var(--text-tertiary); letter-spacing: 0.02em; }
+.ps-label { font-size: 11px; font-weight: 600; color: var(--text-tertiary); }
 .ps-icon { display: inline-grid; place-items: center; width: 14px; height: 14px; color: var(--ag-c); }
 .ps-icon svg { width: 12px; height: 12px; } .ps-icon .spinner { width: 10px; height: 10px; }
 .ps-word { font-weight: 650; color: var(--ag-c); }
@@ -5391,25 +5382,27 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .ps-actions { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
 .ps-actions .btn-action { min-height: 30px; padding: 3px 12px; font-size: 12.5px; }
 .ps-slack { display: inline-flex; align-items: center; min-height: 30px; padding: 0 8px; border-radius: 8px; font-size: 12.5px; font-weight: 600; color: var(--accent); text-decoration: none; }
-.ps-slack:hover, .ps-slack:focus-visible { text-decoration: underline; }
+.ps-slack:focus-visible { text-decoration: underline; }
+@media (hover: hover) and (pointer: fine) { .ps-slack:hover { text-decoration: underline; } }
 .ps-resume { margin-top: 4px; font-size: 12px; color: var(--st-wait); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* ── 세션 정보 — one summary line + the links; opened, every number (spec 13) ── */
 .panel-info { padding: 6px 16px 8px; border-bottom: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); }
 .panel-info:empty { display: none; }
 .pi-head { display: flex; align-items: center; gap: 8px; width: 100%; min-height: 32px; padding: 2px 0; border: 0; background: none; font: inherit; color: inherit; text-align: left; cursor: pointer; }
-.pi-title { flex-shrink: 0; font-size: 11px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-tertiary); }
+.pi-title { flex-shrink: 0; font-size: 12px; font-weight: 600; color: var(--text-tertiary); }
 .pi-sum { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
 .pi-dot { margin: 0 5px; color: var(--text-tertiary); }
-.pi-chev { flex-shrink: 0; width: 14px; height: 14px; color: var(--text-tertiary); transition: transform var(--speed) var(--ease); }
+.pi-chev { flex-shrink: 0; width: 14px; height: 14px; color: var(--text-tertiary); transition: transform var(--dur-press) var(--ease-out); }
 .pi-head[aria-expanded="true"] .pi-chev { transform: rotate(180deg); }
-.pi-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.pi-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; border-radius: 6px; }
 .pi-links { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 2px; }
 .pi-links a { font-weight: 600; color: var(--accent); text-decoration: none; min-height: 24px; display: inline-flex; align-items: center; min-width: 0; overflow-wrap: anywhere; }
-.pi-links a:hover, .pi-links a:focus-visible { text-decoration: underline; }
+.pi-links a:focus-visible { text-decoration: underline; }
+@media (hover: hover) and (pointer: fine) { .pi-links a:hover { text-decoration: underline; } }
 .pi-body { margin-top: 8px; display: flex; flex-direction: column; gap: 8px; }
 .pi-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 6px 12px; margin: 0; }
 .pi-grid > div { min-width: 0; }
-.pi-grid dt { font-size: 11px; font-weight: 700; color: var(--text-tertiary); letter-spacing: 0.02em; }
+.pi-grid dt { font-size: 11px; font-weight: 500; color: var(--text-tertiary); }
 .pi-grid dd { margin: 1px 0 0; color: var(--text); font-weight: 600; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
 .pi-muted { color: var(--text-tertiary); font-weight: 400; }
 /* 세부 (re-agent-run D19): label left, value right. */
@@ -5436,33 +5429,33 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    (SSOT 2026-10-29, the card's line is the summary); 펼치기 shows all of it. */
 .panel-goal .card-goal .cg-objective { -webkit-line-clamp: 3; line-height: 1.45; }
 .panel-goal .card-goal.is-open .cg-objective { display: block; -webkit-line-clamp: unset; overflow: visible; }
-.panel-goal:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.panel-goal:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
 .panel-tasks-earlier { opacity: 0.85; }
 /* Scroll container: the common surface (large UIAskQ choices included), the
    agent tabs, Tasks and the section tabs scroll together; each section scrolls
    in its own box inside it, and .panel-command stays pinned below. */
 .panel-scroll { flex: 1 1 auto; overflow-y: auto; scroll-behavior: smooth; min-height: 0; }
 .panel-turns { padding: 10px 16px; }
-/* Slack-style turns */
-.turn { margin-bottom: 8px; padding: 8px 10px; border-radius: var(--radius); display: flex; gap: 10px; align-items: flex-start; }
-.turn.user { background: var(--surface-raised); border-left: 3px solid var(--accent); }
-.turn.assistant { background: transparent; border-left: 3px solid var(--purple); }
-.turn-avatar { width: 32px; height: 32px; border-radius: 4px; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 700; flex-shrink: 0; }
-.user-avatar { background: var(--accent); color: #fff; }
-.bot-avatar { background: var(--purple); font-size: 16px; }
+/* Slack-style turns — no colour rails (P7): the instruction sits on a raised tint, the answer on the
+   panel, and who spoke is a neutral 24px glyph tile with a hairline: the user's initial, the bot glyph. */
+.turn { margin-bottom: 8px; padding: 8px 10px; border-radius: 10px; display: flex; gap: 10px; align-items: flex-start; }
+.turn.user { background: var(--surface-raised); }
+.turn.assistant { background: transparent; }
+.turn-avatar { width: 24px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 600; flex-shrink: 0; background: var(--ib-pill); color: var(--text-secondary); box-shadow: inset 0 0 0 1px var(--border); }
+.turn-avatar svg { width: 14px; height: 14px; }
+.user-avatar { color: var(--text); }
 /* SSOT 2026-10-29 T7: the harness's turns — a neutral gear, never the user's colour or initial. */
-.sys-avatar { background: var(--surface-raised); color: var(--text-secondary); border: 1px solid var(--border); }
-.sys-avatar svg { width: 70%; height: 70%; }
-.turn-name.sys-name { color: var(--text-secondary); font-weight: 600; letter-spacing: 0.02em; }
+.sys-avatar { background: transparent; }
+.turn-name.sys-name { color: var(--text-secondary); font-weight: 600; }
 .io-label .io-who.is-sys { color: var(--text-tertiary); }
 .turn-body { flex: 1; min-width: 0; }
 .turn-header { font-size: 12px; color: var(--text-tertiary); margin-bottom: 4px; display: flex; gap: 8px; align-items: baseline; }
-.turn-name { font-weight: 700; color: var(--text-primary); font-size: 13px; text-transform: none; letter-spacing: 0; }
+.turn-name { font-weight: 600; color: var(--text); font-size: 13px; }
 .turn-time { font-size: 11px; color: var(--text-tertiary); }
-.turn-content { font-size: 13px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.turn-content { font-size: 13px; line-height: 1.55; white-space: pre-wrap; word-break: break-word; }
 .turn-instr { display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 12; overflow: hidden; cursor: pointer; }
 .turn-instr.is-full, .slide-panel.is-detail .turn-instr { display: block; -webkit-line-clamp: unset; overflow: visible; }
-.turn-summary-title { font-weight: 700; font-size: 13px; margin-bottom: 2px; }
+.turn-summary-title { font-weight: 600; font-size: 13px; margin-bottom: 2px; }
 .turn-summary-body { font-size: 12px; color: var(--text-secondary); line-height: 1.45; }
 /* An assistant turn (task view T1.4): the answer itself — @2lab.ai/ui
    <ui-ai-answer flat> in the token wrapper (.ui-tok), the turn being its card —
@@ -5473,13 +5466,21 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .turn-raw { margin-top: 6px; }
 .turn-raw summary.turn-expand-btn { cursor: pointer; color: var(--text-tertiary); font-size: 11px; padding: 2px 0; user-select: none; list-style: none; }
 .turn-raw summary.turn-expand-btn::-webkit-details-marker { display: none; }
-.turn-raw summary.turn-expand-btn::before { content: '\\25B6 '; font-size: 9px; }
-.turn-raw[open] summary.turn-expand-btn::before { content: '\\25BC '; }
-.turn-raw summary.turn-expand-btn:hover { color: var(--accent); }
+/* P8: the text triangles are the icon set's chevron (16 grid, 1.5 stroke, round caps), drawn as a mask so
+   it takes currentColor; .chev points down, .is-up / .is-right turn it, and a toggle's aria-expanded
+   turns it open. */
+:root { --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E"); }
+:root { --check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E"); }
+.chev, .turn-raw summary.turn-expand-btn::before { display: inline-block; flex-shrink: 0; width: 12px; height: 12px; vertical-align: -2px; background: currentColor; -webkit-mask: var(--chev) center / contain no-repeat; mask: var(--chev) center / contain no-repeat; transition: transform var(--dur-press) var(--ease-out); }
+.chev.is-up, [aria-expanded="true"] > .chev { transform: rotate(180deg); }
+.chev.is-right { transform: rotate(-90deg); }
+.turn-raw summary.turn-expand-btn::before { content: ''; width: 10px; height: 10px; margin-right: 4px; vertical-align: -1px; transform: rotate(-90deg); }
+.turn-raw[open] summary.turn-expand-btn::before { transform: none; }
+@media (hover: hover) and (pointer: fine) { .turn-raw summary.turn-expand-btn:hover { color: var(--text-secondary); } }
 .turn-raw-body { margin-top: 4px; padding: 8px 10px; border-radius: 8px; background: var(--surface-raised); font-size: 12px; color: var(--text-secondary); }
-.turn-raw-label { font-size: 10.5px; font-weight: 700; letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-tertiary); margin: 6px 0 2px; }
+.turn-raw-label { font-size: 11px; font-weight: 600; color: var(--text-tertiary); margin: 6px 0 2px; }
 .turn-raw-label:first-child { margin-top: 0; }
-.turn-raw-src { margin: 0; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--text-secondary); }
+.turn-raw-src { margin: 0; max-height: 360px; overflow: auto; white-space: pre-wrap; word-break: break-word; font: 11.5px/1.5 var(--mono); color: var(--text-secondary); }
 .turn-raw-src:empty::before { content: '답변이 열리면 원문이 여기에 표시됩니다'; color: var(--text-tertiary); font-family: inherit; }
 /* The answer's response time sits in the turn header (host; the element's own foot time is not used). */
 .turn-header .ans-took { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
@@ -5487,8 +5488,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* SSOT 2026-10-27 — a turn soma-work put there (compact, restart, retry, goal,
    cron, renew): one quiet line — who · when · badge · what it did — that opens
    (native disclosure) to its facts and the raw prompt. */
-.turn.is-sys { padding: 3px 10px; background: transparent; border-left-color: var(--border); }
-.turn.is-sys .turn-avatar { width: 20px; height: 20px; margin-top: 2px; font-size: 11px; border-radius: 3px; }
+.turn.is-sys { padding: 3px 10px; background: transparent; }
+.turn.is-sys .turn-avatar { width: 20px; height: 20px; margin-top: 2px; font-size: 11px; border-radius: 6px; }
 .sys-turn { container: sysrow / inline-size; }
 /* A narrow row drops what is said elsewhere, so elapsed / estimate stay whole:
    "압축 중" (the badge says it) at ≤ 420px — the default 440px drawer's row is
@@ -5497,14 +5498,14 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 @container sysrow (max-width: 420px) { .cp-verb { display: none; } }
 @container sysrow (max-width: 340px) { .sys-row-in .turn-name { display: none; } }
 @container sysrow (max-width: 280px) { .cp-pct { display: none; } }
-.sys-turn > summary { list-style: none; display: block; cursor: pointer; border-radius: var(--radius); }
+.sys-turn > summary { list-style: none; display: block; cursor: pointer; border-radius: 8px; }
 .sys-turn > summary::-webkit-details-marker { display: none; }
-.sys-turn > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sys-turn > summary:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .sys-row-in { display: flex; align-items: center; gap: 8px; min-height: 24px; min-width: 0; font-size: 12px; color: var(--text-tertiary); }
 .sys-row-in .turn-name { font-size: 12px; }
 .sys-row-in .turn-time { flex: none; white-space: nowrap; }
 .sys-row-in .turn-name { flex: none; max-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sys-turn > summary:hover .sys-line { color: var(--text-secondary); }
+@media (hover: hover) and (pointer: fine) { .sys-turn > summary:hover .sys-line { color: var(--text-secondary); } }
 .sys-badge { flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised); color: var(--text); font-size: 11.5px; font-weight: 600; line-height: 1; white-space: nowrap; }
 .sys-badge[data-kind="compact"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 .sys-badge[data-kind="restart"], .sys-badge[data-kind="retry"] { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 45%, transparent); }
@@ -5529,29 +5530,29 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .cp-pct { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; }
 .sys-chev { flex: none; margin-left: auto; width: 0; height: 0; border-left: 4px solid currentColor; border-top: 4px solid transparent; border-bottom: 4px solid transparent; opacity: 0.7; transition: transform var(--dur-press) var(--ease-out); }
 .sys-turn[open] .sys-chev, .io-sys[open] .sys-chev { transform: rotate(90deg); }
-.sys-detail { margin: 6px 0 4px; padding: 8px 10px; border-radius: var(--radius); background: var(--surface-raised); }
+.sys-detail { margin: 6px 0 4px; padding: 8px 10px; border-radius: 8px; background: var(--surface-raised); }
 .sys-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 12px; margin: 0 0 8px; font-size: 12px; }
 .sys-facts dt { color: var(--text-tertiary); }
 .sys-facts dd { margin: 0; color: var(--text); white-space: pre-wrap; word-break: break-word; }
 .sys-raw-h { margin-bottom: 4px; font-size: 11px; color: var(--text-tertiary); }
-.sys-raw, .skill-body { margin: 0; max-height: 320px; overflow: auto; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); color: var(--text-secondary); font: 11.5px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+.sys-raw, .skill-body { margin: 0; max-height: 320px; overflow: auto; padding: 8px; border: 1px solid var(--border); border-radius: 8px; background: var(--bg); color: var(--text-secondary); font: 11.5px/1.5 var(--mono); white-space: pre-wrap; word-break: break-word; }
 /* T5 — the skills an instruction invoked: badges (name · estimated tokens) under its words. */
 .skill-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .skill-badge { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; transition: background-color var(--dur-press) ease, border-color var(--dur-press) ease; }
-.skill-badge:hover { background: var(--bg); }
-.skill-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.skill-badge[aria-expanded="true"] { border-color: var(--accent); }
+@media (hover: hover) and (pointer: fine) { .skill-badge:hover { background: var(--ib-pill); } }
+.skill-badge:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.skill-badge[aria-expanded="true"] { background: var(--ib-pill); border-color: var(--ib-muted); }
 .skill-tok { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .skill-detail { margin-top: 6px; }
 .skill-detail-h { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; font-size: 12px; }
 @media (pointer: coarse) { .sys-row-in { min-height: 44px; } .turn.is-sys .turn-avatar { margin-top: 12px; } .skill-badge { min-height: 44px; } }
 /* Slack link on cards */
 .slack-link { color: var(--accent); text-decoration: none; font-size: 0.85em; margin-left: 4px; opacity: 0.7; }
-.slack-link:hover { text-decoration: underline; opacity: 1; }
+@media (hover: hover) and (pointer: fine) { .slack-link:hover { text-decoration: underline; opacity: 1; } }
 /* PR status badges */
-.card-body .card-links .pr-badge { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 10px; font-weight: 700; margin-left: 3px; text-transform: uppercase; letter-spacing: 0.03em; }
-.card-body .card-links .pr-open { background: rgba(96,165,250,0.15); color: var(--accent); }
-.card-body .card-links .pr-merged { background: rgba(167,139,250,0.15); color: var(--purple); }
+.card-body .card-links .pr-badge { display: inline-block; padding: 1px 5px; border-radius: 6px; font-size: 10px; font-weight: 700; margin-left: 3px; text-transform: uppercase; letter-spacing: 0.03em; }
+.card-body .card-links .pr-open { background: color-mix(in srgb, var(--accent) 14%, var(--ib-card)); color: color-mix(in srgb, var(--accent) 70%, var(--ib-text)); }
+.card-body .card-links .pr-merged { background: color-mix(in srgb, var(--purple) 14%, var(--ib-card)); color: color-mix(in srgb, var(--purple) 70%, var(--ib-text)); }
 
 /* ── COMMAND INPUT — flat ── */
 .panel-command {
@@ -5563,12 +5564,12 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* The composer is <ui-agent-steering> (batch 2): its field, Send, queue and key
    hints are the element's; these are the page's slotted tools and chips. A file
    dragged over the composer outlines it. */
-.pc-steer-wrap { display: block; min-width: 0; border-radius: var(--radius); }
+.pc-steer-wrap { display: block; min-width: 0; border-radius: 12px; }
 .panel-command.is-drag .pc-steer-wrap { outline: 2px dashed var(--accent); outline-offset: 2px; }
 .pc-tools { display: flex; align-items: center; gap: 2px; flex: none; }
-.pc-tool { display: inline-grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 8px; background: none; color: var(--text-secondary); cursor: pointer; }
+.pc-tool { display: inline-grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 8px; background: none; color: var(--text-secondary); cursor: pointer; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
 .pc-tool svg { width: 18px; height: 18px; }
-.pc-tool:hover { color: var(--text); background: var(--surface-raised); }
+@media (hover: hover) and (pointer: fine) { .pc-tool:hover { color: var(--text); background: var(--surface-raised); } }
 .pc-tool:disabled { opacity: 0.4; cursor: default; }
 .pc-tool:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .pc-tool-mic[aria-pressed="true"] { color: var(--st-fail); }
@@ -5580,7 +5581,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 
 /* ── PRESS — buttons and segments give 0.97 feedback (§4-5), pointer presses only:
    a keyboard-focused control matches :focus-visible, so Space/Enter never scale it (§4-9). ── */
-.btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .archives-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+/* PRESS — one rule for every button-like control: scale(.97) on --dur-press ease-out (each control's own
+   transition carries the transform), pointer presses only — never a keyboard press (:focus-visible). The
+   56px FAB presses to .95. */
+:is(.btn-action, .seg-btn, .archives-btn, .btn-choice, .btn-hero-recommended, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .new-task-btn, .stats-more, .panel-close, .panel-detail-toggle, .panel-tab, .psec-tab, .panel-deck .pd-btn, .pc-tool, .mc-btn-submit, .mc-btn-reset, .mc-q-edit-btn, .mc-custom-input button, .nt-close, .nt-tool, .nt-rec-btn, .nt-submit, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
@@ -5593,8 +5597,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .btn-action.btn-stop:hover:not(:disabled) { border-color: var(--st-fail); }
   .stats-more:hover { background: var(--surface-raised); color: var(--text); }
   .card-body .card-refs a:hover { text-decoration: underline; }
-  .btn-choice:hover:not(:disabled) { border-color: var(--accent); background: rgba(77,157,224,0.18); color: var(--text); }
-  .btn-choice-recommended:hover:not(:disabled) { background: #256f38; color: white; border-color: #256f38; }
+  .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--surface-raised); color: var(--text); }
   .card-body .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--ib-card); color: var(--ib-text); }
 }
 
@@ -5630,17 +5633,20 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
      second. The period tabs share the row's width and keep 44px height with
      narrower sides, so the row fits 320px with the coarse-pointer padding. */
   .stats-strip { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "period more" "nums nums"; gap: 8px 12px; }
-  .stats-strip .period-btn { flex: 1 1 auto; padding-left: 12px; padding-right: 12px; }
+  .stats-strip .period-bar { min-width: 0; }
+  .stats-strip .seg .period-btn { flex: 1 1 auto; justify-content: center; padding-left: 9px; padding-right: 9px; }
   /* Top bar: the status badge becomes a 10px dot (aria-label preserved for SR),
-     the "Logged in as" prefix goes, and the user select fills the nav row (which
+     the account glyph goes, and the user select fills the nav row (which
      wraps rather than overflow on very small screens). Labels stay whole. */
   .topbar { padding: 6px 12px; gap: 6px 8px; }
-  .topbar h1 { font-size: 12px; }
+  .topbar h1 { font-size: 14px; gap: 6px; }
+  .topbar h1 .brand-mark { width: 20px; height: 20px; }
   .topbar .ws-badge {
     display: inline-block;
     inline-size: 10px;
     block-size: 10px;
     padding: 0;
+    background: var(--ws-tone);
     border-radius: 50%;
     text-indent: 100%;
     white-space: nowrap;
@@ -5648,6 +5654,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
     flex-shrink: 0;
     min-width: 0;
   }
+  .topbar .ws-badge::before { display: none; }
   .topbar .nav .user-select { flex: 1 1 auto; }
   .topbar .user-pill { padding: 4px 10px; }
   .topbar .user-pill-prefix { display: none; }
@@ -5674,17 +5681,17 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .stats-grid { gap: 6px; margin-bottom: 12px; }
   .stat-card { padding: 8px 12px; }
   .stat-card .value { font-size: 18px; }
-  .stat-card .label { font-size: 10px; }
+  .stat-card .label { font-size: 11.5px; }
   .chart-row { flex-direction: column; }
 }
 @media (hover: hover) and (pointer: fine) {
-  .wl-child:hover { border-color: var(--border-focus); }
+  .wl-child:hover { border-color: var(--ib-muted); }
   .pa-crumb:not([aria-current="page"]):hover { background: var(--surface-raised); color: var(--text); }
   .wl-agent-link:not(.wl-child):hover { text-decoration: underline; }
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  .btn-action:active:not(:disabled):not(:focus-visible), .seg-btn:active:not(:focus-visible), .archives-btn:active:not(:focus-visible), .btn-choice:active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.btn-action, .seg-btn, .archives-btn, .btn-choice, .btn-hero-recommended, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .new-task-btn, .stats-more, .panel-close, .panel-detail-toggle, .panel-tab, .psec-tab, .panel-deck .pd-btn, .pc-tool, .mc-btn-submit, .mc-btn-reset, .mc-q-edit-btn, .mc-custom-input button, .nt-close, .nt-tool, .nt-rec-btn, .nt-submit, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   /* Loading skeletons hold still. */
@@ -5704,7 +5711,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .pc-tool { width: 44px; height: 44px; }
   .panel-close { width: 40px; height: 40px; }
   .topbar .nav a, .topbar .nav .user-select { min-height: 40px; padding: 8px 16px; }
-  .period-btn { min-height: 40px; padding: 12px 20px; }
+  .period-btn { min-height: 40px; }
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
 }
 /* ── #800: TOUCH x NARROW — restore tight padding so the coarse-pointer
@@ -5739,6 +5746,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .topbar .nav a, .topbar .nav .user-select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }
   #theme-toggle { min-block-size: 44px; position: relative; }
   #theme-toggle::after { content: ''; position: absolute; inset: 0 -6px; }
+  .topbar .td-chip { min-height: 44px; }
   .period-btn { min-height: 44px; }
   .stats-more { min-height: 44px; }
   .seg .seg-btn, .card-body .btn-action, .card-body .btn-choice { min-height: 44px; }
@@ -5782,7 +5790,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .capacity-host > ui-agent-queue, .cron-lane > ui-agent-queue { display: block; min-width: 0; }
 .cron-cards { display: flex; flex-direction: column; gap: 8px; position: relative; }
 .cron-cards:empty, .cron-cards:has(> .cron-inbox.is-empty) { display: none; }
-.cron-drawer-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.35); opacity: 0; pointer-events: none; transition: opacity var(--dur-fade) var(--ease-out); z-index: 190; }
+.cron-drawer-overlay { position: fixed; inset: 0; background: var(--scrim); opacity: 0; pointer-events: none; transition: opacity var(--dur-fade) var(--ease-out); z-index: 190; }
 .cron-drawer-overlay.open { opacity: 1; pointer-events: auto; }
 .cron-drawer {
   position: fixed;
@@ -5803,7 +5811,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .cron-drawer.open { transform: none; }
 .cron-drawer-head { display: flex; align-items: center; gap: 10px; padding: 16px 18px 10px; border-bottom: 1px solid var(--border); }
 .cron-drawer-head h3 { flex: 1; margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cron-drawer-close { min-width: 36px; min-height: 36px; border-radius: 8px; border: 1px solid var(--border); background: none; color: var(--text-secondary); font-size: 18px; cursor: pointer; }
+.cron-drawer-close { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; min-height: 36px; border-radius: 8px; border: 1px solid var(--border); background: none; color: var(--text-secondary); font-size: 18px; cursor: pointer; }
+/* P8: the close and regenerate glyphs are the icon set's (no ✕ / × / 🔄 characters). */
+.cron-drawer-close svg, .panel-close svg, .art-modal-close svg { width: 16px; height: 16px; }
+#panel-title-sub-regen svg { width: 12px; height: 12px; vertical-align: -2px; }
 .cron-drawer-close:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .cron-drawer-meta { padding: 10px 18px 4px; font-size: 13px; color: var(--text-secondary); }
 .cron-dmeta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
@@ -5830,61 +5841,34 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 
 /* ═══ New task (SSOT 2026-10-23) — entry button, floating button, composer ═══
-   PC: a gradient pill in the top bar (rotating sheen ring, one attention pulse,
-   N shortcut) opens a centered dialog. Phones: an extended floating button in
-   the thumb zone opens a full-screen sheet sized to the visual viewport, so
-   the toolbar stays above the keyboard. */
+   The page's call to action, calm (ui.2lab.ai's one ink primary): PC an ink pill in
+   the top bar with its N key hint opens a centered dialog; phones an ink extended
+   floating button in the thumb zone opens a full-screen sheet sized to the visual
+   viewport, so the toolbar stays above the keyboard. No sheen, pulse, glow, ring or
+   hover lift — it moves only when pressed (0.97) and when the FAB arrives. */
 .new-task-btn {
-  position: relative;
-  isolation: isolate;
-  overflow: hidden;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
+  gap: 6px;
   flex: none;
   height: 32px;
-  padding: 0 10px 0 8px;
-  border: 0;
+  padding: 0 6px 0 10px;
+  border: 1px solid var(--ib-text);
   border-radius: 999px;
-  background: transparent;
-  color: #fff;
+  background: var(--ib-text);
+  color: var(--ib-card);
   font: inherit;
   font-size: 13px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
+  font-weight: 600;
   white-space: nowrap;
   cursor: pointer;
-  box-shadow: 0 6px 18px -6px rgba(107, 147, 242, 0.75);
-  transition: transform var(--dur-press) var(--ease-out), filter var(--dur-press) var(--ease-out), box-shadow var(--dur-press) var(--ease-out);
-  animation: nt-pulse 2.4s var(--ease-out) 0.8s 2;
+  transition: opacity 150ms ease, transform var(--dur-press) var(--ease-out);
 }
-.new-task-btn::before {
-  content: '';
-  position: absolute;
-  z-index: -2;
-  left: -50%;
-  top: 50%;
-  width: 200%;
-  aspect-ratio: 1;
-  translate: 0 -50%;
-  background: conic-gradient(#6b93f2, #b28dff, #3ecf8e, #f6c90e, #6b93f2);
-  animation: nt-sheen 4.5s linear infinite;
-}
-.new-task-btn::after {
-  content: '';
-  position: absolute;
-  z-index: -1;
-  inset: 1.5px;
-  border-radius: inherit;
-  background: linear-gradient(135deg, #3f6fe0, #6d4fe0);
-}
-.new-task-btn:hover { transform: translateY(-1px); filter: brightness(1.08); box-shadow: 0 10px 24px -8px rgba(107, 147, 242, 0.9); }
-.new-task-btn:active:not(:focus-visible) { transform: scale(0.97); }
+@media (hover: hover) and (pointer: fine) { .new-task-btn:hover { opacity: 0.88; } }
 .new-task-btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-.nt-plus { display: inline-grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: rgba(255, 255, 255, 0.2); transition: transform var(--dur-move) var(--ease-out); }
-.nt-plus svg { width: 12px; height: 12px; }
-.new-task-btn:hover .nt-plus { transform: rotate(90deg); }
-.nt-kbd { font: inherit; font-size: 10px; font-weight: 700; line-height: 1; padding: 3px 5px; border-radius: 5px; background: rgba(255, 255, 255, 0.18); color: rgba(255, 255, 255, 0.9); }
+.nt-plus { display: inline-grid; place-items: center; width: 14px; height: 14px; }
+.nt-plus svg { width: 14px; height: 14px; }
+.nt-kbd { font: inherit; font-size: 10.5px; font-weight: 600; line-height: 1; min-width: 18px; padding: 3px 5px; border-radius: 6px; text-align: center; background: color-mix(in srgb, var(--ib-card) 16%, transparent); color: color-mix(in srgb, var(--ib-card) 82%, transparent); }
 
 .new-task-fab {
   position: fixed;
@@ -5897,19 +5881,18 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   height: 56px;
   padding: 0 20px 0 17px;
   border: 0;
-  border-radius: 28px;
-  background: linear-gradient(135deg, #3f6fe0, #6d4fe0);
-  color: #fff;
+  border-radius: 999px;
+  background: var(--ib-text);
+  color: var(--ib-card);
   font: inherit;
   font-size: 15px;
-  font-weight: 700;
+  font-weight: 600;
   cursor: pointer;
-  box-shadow: 0 12px 30px -10px rgba(79, 123, 232, 0.85), 0 2px 6px rgba(0, 0, 0, 0.35);
+  box-shadow: var(--ib-shadow-raised);
   transition: padding var(--dur-expand) var(--ease-out), gap var(--dur-expand) var(--ease-out), transform var(--dur-press) var(--ease-out);
-  animation: nt-fab-in 420ms var(--ease-out) both;
+  animation: nt-fab-in 240ms var(--ease-out) both;
   -webkit-tap-highlight-color: transparent;
 }
-.new-task-fab::after { content: ''; position: absolute; inset: 0; border-radius: inherit; pointer-events: none; animation: nt-ring 3.2s var(--ease-out) 1.2s infinite; }
 .new-task-fab:active:not(:focus-visible) { transform: scale(0.95); }
 .new-task-fab:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 3px; }
 .nt-fab-icon { width: 22px; height: 22px; flex: none; transition: transform var(--dur-move) var(--ease-out); }
@@ -5929,23 +5912,24 @@ body.nt-open .new-task-fab { display: none !important; }
   margin: auto;
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 18px;
+  border-radius: 16px;
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 32px 90px -24px rgba(0, 0, 0, 0.7), 0 0 0 1px rgba(255, 255, 255, 0.03);
+  box-shadow: var(--ib-shadow-raised);
   overflow: hidden;
   opacity: 0;
   transform: translateY(10px) scale(0.97);
-  transition: opacity var(--dur-expand) var(--ease-out), transform var(--dur-expand) var(--ease-out);
+  transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out);
 }
-.nt-dialog.is-shown { opacity: 1; transform: none; }
-.nt-dialog::backdrop { background: rgba(8, 8, 10, 0.55); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); }
+.nt-dialog.is-shown { opacity: 1; transform: none; transition-duration: var(--dur-expand); }
+.nt-dialog::backdrop { background: var(--scrim); -webkit-backdrop-filter: blur(3px); backdrop-filter: blur(3px); opacity: 0; transition: opacity var(--dur-fade) var(--ease-out); }
+.nt-dialog.is-shown::backdrop { opacity: 1; }
 .nt-form { display: flex; flex-direction: column; max-height: inherit; height: 100%; }
 .nt-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 4px; }
-.nt-head h2 { flex: 1; margin: 0; font-size: 16px; font-weight: 750; letter-spacing: -0.01em; }
-.nt-head-hint { font-size: 11px; color: var(--text-tertiary); border: 1px solid var(--border); border-radius: 5px; padding: 1px 6px; }
-.nt-close { display: inline-grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 9px; background: transparent; color: var(--text-secondary); cursor: pointer; }
-.nt-close:hover { background: var(--surface-raised); color: var(--text); }
+.nt-head h2 { flex: 1; margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
+.nt-head-hint { font-size: 11px; color: var(--text-tertiary); border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px; }
+.nt-close { display: inline-grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); cursor: pointer; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
+@media (hover: hover) and (pointer: fine) { .nt-close:hover { background: var(--surface-raised); color: var(--text); } }
 .nt-close svg { width: 16px; height: 16px; }
 .nt-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; padding: 10px 16px 14px; overscroll-behavior: contain; }
 .nt-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
@@ -5976,8 +5960,8 @@ body.nt-open .new-task-fab { display: none !important; }
   cursor: pointer;
 }
 .nt-chip select option { background: var(--surface); color: var(--text); }
-.nt-battery-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 6px; border: 0; border-radius: 7px; background: transparent; color: var(--text-tertiary); font: inherit; font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; cursor: pointer; }
-.nt-battery-btn:hover { background: var(--bg); }
+.nt-battery-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 6px; border: 0; border-radius: 8px; background: transparent; color: var(--text-tertiary); font: inherit; font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; cursor: pointer; }
+@media (hover: hover) and (pointer: fine) { .nt-battery-btn:hover { background: var(--ib-pill); } }
 .nt-battery { position: relative; display: inline-block; width: 24px; height: 12px; padding: 1px; border: 1.5px solid currentColor; border-radius: 3px; }
 .nt-battery::after { content: ''; position: absolute; right: -4px; top: 2.5px; width: 2px; height: 4px; border-radius: 0 1px 1px 0; background: currentColor; }
 .nt-battery-fill { display: block; width: 0; height: 100%; border-radius: 1px; background: currentColor; transition: width var(--dur-move) var(--ease-out); }
@@ -5991,19 +5975,17 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-toggles { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .nt-toggle { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px 0 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised); color: var(--text-secondary); font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; transition: background var(--dur-press) var(--ease-out), color var(--dur-press) var(--ease-out), border-color var(--dur-press) var(--ease-out); }
 .nt-switch { position: relative; flex: none; width: 26px; height: 16px; border-radius: 999px; background: var(--border); transition: background var(--dur-press) var(--ease-out); }
-.nt-switch::after { content: ''; position: absolute; left: 2px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); transition: transform var(--dur-press) var(--ease-out); }
-.nt-toggle[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+.nt-switch::after { content: ''; position: absolute; left: 2px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--ib-seg-on); box-shadow: var(--ib-shadow); transition: transform var(--dur-press) var(--ease-out); }
+.nt-toggle[aria-pressed="true"] { color: var(--text); border-color: var(--ib-muted); }
 .nt-toggle[aria-pressed="true"] .nt-switch { background: var(--accent); }
 .nt-toggle[aria-pressed="true"] .nt-switch::after { transform: translateX(10px); }
-#nt-autoz[aria-pressed="true"] { border-color: var(--purple); }
-#nt-autoz[aria-pressed="true"] .nt-switch { background: var(--purple); }
 .nt-toggle-note { font-size: 11px; font-weight: 500; color: var(--text-tertiary); }
 
 .nt-compose { position: relative; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); transition: border-color var(--dur-press) var(--ease-out), box-shadow var(--dur-press) var(--ease-out); }
-.nt-compose:focus-within { border-color: var(--border-focus); box-shadow: 0 0 0 3px rgba(77, 157, 224, 0.18); }
+.nt-compose:focus-within { border-color: var(--border-focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--border-focus) 18%, transparent); }
 .nt-prompt { display: block; width: 100%; min-height: 150px; max-height: 44vh; padding: 12px 14px; border: 0; outline: none; resize: none; background: transparent; color: var(--text); font: inherit; font-size: 14px; line-height: 1.55; }
 .nt-prompt::placeholder { color: var(--text-tertiary); }
-.nt-drop-hint { position: absolute; inset: 0; display: none; place-items: center; border-radius: inherit; background: rgba(77, 157, 224, 0.12); color: var(--accent); font-size: 13px; font-weight: 700; pointer-events: none; }
+.nt-drop-hint { position: absolute; inset: 0; display: none; place-items: center; border-radius: inherit; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--tint-accent-fg); font-size: 13px; font-weight: 600; pointer-events: none; }
 .nt-compose.is-drag { border-color: var(--accent); border-style: dashed; }
 .nt-compose.is-drag .nt-drop-hint { display: grid; }
 .nt-count { align-self: flex-end; padding: 0 10px 6px; font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
@@ -6011,53 +5993,45 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-attachments { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 4px; scroll-snap-type: x proximity; scrollbar-width: thin; }
 .nt-attachments:empty { display: none; }
 .nt-att { position: relative; flex: none; display: flex; align-items: center; gap: 8px; height: 58px; max-width: 230px; padding: 0 32px 0 6px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); scroll-snap-align: start; animation: nt-att-in 240ms var(--ease-out) both; }
-.nt-att-thumb { display: grid; place-items: center; flex: none; width: 44px; height: 44px; border-radius: 9px; background: var(--bg); color: var(--text-secondary); object-fit: cover; overflow: hidden; }
+.nt-att-thumb { display: grid; place-items: center; flex: none; width: 44px; height: 44px; border-radius: 8px; background: var(--bg); color: var(--text-secondary); object-fit: cover; overflow: hidden; }
 .nt-att-thumb svg { width: 20px; height: 20px; }
 .nt-att-text { display: flex; flex-direction: column; min-width: 0; }
 .nt-att-name { font-size: 12px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .nt-att-meta { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
-.nt-att-remove { position: absolute; top: 4px; right: 4px; display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 50%; background: rgba(0, 0, 0, 0.5); color: #fff; cursor: pointer; }
+.nt-att-remove { position: absolute; top: 4px; right: 4px; display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 50%; background: var(--media-scrim); color: var(--on-media); cursor: pointer; }
 .nt-att-remove svg { width: 10px; height: 10px; }
-.nt-att-play { display: grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 9px; background: var(--bg); color: var(--text); cursor: pointer; flex: none; }
+.nt-att-play { display: grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 8px; background: var(--bg); color: var(--text); cursor: pointer; flex: none; }
 .nt-att-play svg { width: 18px; height: 18px; }
 
-.nt-recorder { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 12px; border: 1px solid rgba(242, 107, 107, 0.45); border-radius: 12px; background: rgba(242, 107, 107, 0.1); font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
+.nt-recorder { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 12px; border: 1px solid var(--tint-fail-line); border-radius: 12px; background: var(--tint-fail-bg); font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
 .nt-recorder[hidden] { display: none; }
 .nt-rec-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--red); animation: nt-rec 1.2s ease-in-out infinite; }
 .nt-rec-meter { flex: 1; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
 .nt-rec-level { display: block; width: 0; height: 100%; border-radius: 3px; background: var(--red); transition: width 80ms linear; }
-.nt-rec-btn { height: 32px; padding: 0 12px; border: 1px solid var(--border); border-radius: 9px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; font-weight: 700; cursor: pointer; }
-.nt-rec-btn.is-primary { border-color: transparent; background: var(--red); color: #fff; }
-.nt-error { margin: 0; padding: 8px 10px; border-radius: 10px; background: rgba(242, 107, 107, 0.12); color: var(--red); font-size: 12.5px; }
+.nt-rec-btn { height: 32px; padding: 0 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; transition: transform var(--dur-press) var(--ease-out); }
+.nt-rec-btn.is-primary { border-color: transparent; background: var(--red); color: var(--surface); }
+.nt-error { margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--tint-fail-bg); color: var(--tint-fail-fg); font-size: 12.5px; }
 .nt-error[hidden] { display: none; }
 .nt-empty { margin: 0; color: var(--text-secondary); font-size: 12.5px; }
 
 .nt-toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 12px 12px 10px; border-top: 1px solid var(--border); background: var(--surface); }
 .nt-tools { display: flex; align-items: center; gap: 2px; }
-.nt-tool { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border: 0; border-radius: 10px; background: transparent; color: var(--text-secondary); cursor: pointer; transition: background var(--dur-press) var(--ease-out), color var(--dur-press) var(--ease-out), transform var(--dur-press) var(--ease-out); -webkit-tap-highlight-color: transparent; }
-.nt-tool:hover { background: var(--surface-raised); color: var(--text); }
-.nt-tool:active:not(:focus-visible) { transform: scale(0.92); }
+.nt-tool { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border: 0; border-radius: 10px; background: transparent; color: var(--text-secondary); cursor: pointer; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); -webkit-tap-highlight-color: transparent; }
+@media (hover: hover) and (pointer: fine) { .nt-tool:hover { background: var(--surface-raised); color: var(--text); } }
 .nt-tool svg { width: 20px; height: 20px; }
 .nt-tool-camera { display: none; }
-.nt-tool-mic[aria-pressed="true"] { background: rgba(242, 107, 107, 0.15); color: var(--red); }
+.nt-tool-mic[aria-pressed="true"] { background: var(--tint-fail-bg); color: var(--tint-fail-fg); }
 .nt-status { flex: 1; min-width: 0; overflow: hidden; color: var(--text-secondary); font-size: 12px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .nt-submit-hint { flex: none; font-size: 11px; color: var(--text-tertiary); }
-.nt-submit { display: inline-flex; align-items: center; gap: 6px; flex: none; height: 38px; padding: 0 16px; border: 0; border-radius: 11px; background: linear-gradient(135deg, #3f6fe0, #6d4fe0); color: #fff; font: inherit; font-size: 14px; font-weight: 750; cursor: pointer; box-shadow: 0 6px 16px -6px rgba(79, 123, 232, 0.8); transition: transform var(--dur-press) var(--ease-out), filter var(--dur-press) var(--ease-out), opacity var(--dur-press) var(--ease-out); }
+.nt-submit { display: inline-flex; align-items: center; gap: 6px; flex: none; height: 38px; padding: 0 16px; border: 1px solid var(--ib-text); border-radius: 10px; background: var(--ib-text); color: var(--ib-card); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; transition: transform var(--dur-press) var(--ease-out), opacity var(--dur-press) var(--ease-out); }
 .nt-submit svg { width: 16px; height: 16px; }
-.nt-submit:hover:not(:disabled) { filter: brightness(1.08); }
-.nt-submit:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
-.nt-submit:disabled { opacity: 0.45; cursor: not-allowed; box-shadow: none; }
+@media (hover: hover) and (pointer: fine) { .nt-submit:hover:not(:disabled) { opacity: 0.88; } }
+.nt-submit:disabled { opacity: 0.45; cursor: not-allowed; }
 .nt-submit.is-busy svg { animation: nt-spin 0.9s linear infinite; }
 
 
-@keyframes nt-sheen { to { rotate: 360deg; } }
-@keyframes nt-pulse {
-  0% { box-shadow: 0 0 0 0 rgba(123, 156, 240, 0.6), 0 6px 18px -6px rgba(107, 147, 242, 0.75); }
-  70% { box-shadow: 0 0 0 12px rgba(123, 156, 240, 0), 0 6px 18px -6px rgba(107, 147, 242, 0.75); }
-  100% { box-shadow: 0 0 0 0 rgba(123, 156, 240, 0), 0 6px 18px -6px rgba(107, 147, 242, 0.75); }
-}
-@keyframes nt-fab-in { from { opacity: 0; transform: translateY(16px) scale(0.6); } to { opacity: 1; transform: none; } }
-@keyframes nt-ring { 0% { box-shadow: 0 0 0 0 rgba(123, 156, 240, 0.5); } 60%, 100% { box-shadow: 0 0 0 16px rgba(123, 156, 240, 0); } }
+/* The FAB arrives: opacity + scale from 0.95 (never from nothing), 240ms ease-out — once. */
+@keyframes nt-fab-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: none; } }
 @keyframes nt-att-in { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: none; } }
 @keyframes nt-rec { 50% { opacity: 0.35; transform: scale(0.8); } }
 @keyframes nt-blink { 50% { opacity: 0.45; } }
@@ -6093,7 +6067,7 @@ body.nt-open .new-task-fab { display: none !important; }
   .nt-compose { flex: 1 1 auto; min-height: 140px; }
   .nt-prompt { flex: 1; max-height: none; }
   .nt-toolbar { padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)); }
-  .nt-submit { height: 44px; padding: 0 18px; border-radius: 13px; }
+  .nt-submit { height: 44px; padding: 0 18px; border-radius: 12px; }
   .nt-submit-hint, .nt-head-hint { display: none; }
 }
 @media (pointer: coarse) {
@@ -6107,8 +6081,8 @@ body.nt-open .new-task-fab { display: none !important; }
   .nt-kbd, .nt-submit-hint, .nt-head-hint { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
-  /* New task — no rotation, pulse, ring or slide; changes are instant. */
-  .new-task-btn, .new-task-btn::before, .new-task-fab, .new-task-fab::after, .nt-dialog, .nt-att,
+  /* New task — no arrival, slide or scale; changes are instant. */
+  .new-task-btn, .new-task-fab, .nt-dialog, .nt-att,
   .nt-rec-dot, .nt-battery-fill, .nt-plus, .nt-fab-label, .nt-fab-icon, .nt-submit svg { animation: none !important; transition: none !important; }
 }
 /* ── Session artifacts (SSOT 2026-10-23): face chips, strips, minimap, viewer ── */
@@ -6120,33 +6094,29 @@ body.nt-open .new-task-fab { display: none !important; }
 .art-k-markdown { --art-tint: var(--accent); }
 .art-k-pdf { --art-tint: var(--red); }
 .art-k-text, .art-k-file { --art-tint: var(--text-secondary); }
-.art-chip { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 150px; height: 24px; padding: 0 8px; border: 1px solid var(--ib-card-border); border-radius: 999px; background: var(--ib-pill); color: var(--ib-text); font: inherit; font-size: 11.5px; line-height: 1; cursor: zoom-in; transition: border-color var(--speed) var(--ease), background var(--speed) var(--ease), transform var(--dur-press) var(--ease-out); }
+.art-chip { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 150px; height: 24px; padding: 0 8px; border: 1px solid var(--ib-card-border); border-radius: 999px; background: var(--ib-pill); color: var(--ib-text); font: inherit; font-size: 11.5px; line-height: 1; cursor: zoom-in; transition: border-color 150ms ease, background-color 150ms ease, transform var(--dur-press) var(--ease-out); }
 .art-chip .art-glyph { color: var(--art-tint); }
 .art-chip:focus-visible { border-color: var(--art-tint, var(--accent)); background: var(--surface-raised); outline: none; }
-.art-chip:active:not(:focus-visible) { transform: scale(0.97); }
 .art-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-artifacts { margin-top: 12px; }
 .art-section-label { display: flex; align-items: center; gap: 6px; }
-.art-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.art-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--ib-pill); color: var(--text-secondary); font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .art-strip { display: flex; gap: 8px; overflow-x: auto; padding: 4px 2px 8px; scroll-snap-type: x proximity; scrollbar-width: thin; overscroll-behavior-x: contain; }
 .art-tile { position: relative; flex: 0 0 auto; width: 128px; scroll-snap-align: start; }
-.art-open { display: flex; flex-direction: column; width: 100%; padding: 0; overflow: hidden; border: 1px solid var(--ib-card-border); border-radius: 10px; background: var(--surface); color: var(--ib-text); font: inherit; text-align: left; cursor: zoom-in; transition: border-color var(--speed) var(--ease), box-shadow var(--speed) var(--ease), transform var(--dur-press) var(--ease-out); }
+.art-open { display: flex; flex-direction: column; width: 100%; padding: 0; overflow: hidden; border: 1px solid var(--ib-card-border); border-radius: 10px; background: var(--surface); color: var(--ib-text); font: inherit; text-align: left; cursor: zoom-in; transition: border-color 150ms ease, box-shadow 150ms ease, transform var(--dur-press) var(--ease-out); }
 .art-open:focus-visible { border-color: var(--art-tint, var(--accent)); box-shadow: var(--ib-shadow-raised); outline: none; }
-.art-open:active:not(:focus-visible) { transform: scale(0.97); }
 .art-thumb { position: relative; display: flex; align-items: center; justify-content: center; height: 76px; border-bottom: 1px solid var(--ib-card-border); background: var(--ib-col); color: var(--art-tint, var(--text-secondary)); }
 .art-thumb .art-glyph { width: 28px; height: 28px; }
 .art-thumb-img img { display: block; width: 100%; height: 100%; object-fit: cover; }
-.art-thumb-ext { position: absolute; left: 6px; bottom: 5px; padding: 1px 5px; border-radius: 4px; background: var(--surface-raised); color: var(--text-secondary); font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; }
+.art-thumb-ext { position: absolute; left: 6px; bottom: 5px; padding: 1px 5px; border-radius: 6px; background: var(--surface-raised); color: var(--text-secondary); font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; }
 .art-tile-name { padding: 6px 8px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 600; }
 .art-tile-meta { padding: 2px 8px 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; color: var(--ib-muted); }
 .art-tile.is-remote .art-thumb { opacity: 0.55; }
-.art-play { position: absolute; top: 46px; right: 6px; display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: none; border-radius: 50%; background: var(--purple); color: #fff; box-shadow: var(--ib-shadow); cursor: pointer; transition: transform var(--dur-press) var(--ease-out); }
+.art-play { position: absolute; top: 46px; right: 6px; display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: none; border-radius: 50%; background: var(--purple); color: var(--surface); box-shadow: var(--ib-shadow); cursor: pointer; transition: transform var(--dur-press) var(--ease-out); }
 .art-play svg { width: 14px; height: 14px; }
-.art-play:active:not(:focus-visible) { transform: scale(0.97); }
 @media (hover: hover) and (pointer: fine) {
-  .art-chip:hover { border-color: var(--art-tint, var(--accent)); background: var(--surface-raised); }
-  .art-open:hover { border-color: var(--art-tint, var(--accent)); box-shadow: var(--ib-shadow-raised); transform: translateY(-1px); }
-  .art-play:hover { transform: scale(1.06); }
+  .art-chip:hover { border-color: var(--ib-muted); background: var(--surface-raised); }
+  .art-open:hover { border-color: var(--ib-muted); }
 }
 .art-play .ic-pause, .art-play.is-playing .ic-play { display: none; }
 .art-play.is-playing .ic-pause { display: block; }
@@ -6163,17 +6133,16 @@ body.nt-open .new-task-fab { display: none !important; }
    44px targets on touch, no motion beyond the shared press scale. */
 .um-media { display: grid; gap: 6px; margin: 2px 0 6px; min-width: 0; }
 .um-grid { display: flex; flex-wrap: wrap; gap: 4px; }
-.um-tile { position: relative; flex: 0 0 auto; width: 80px; height: 80px; padding: 0; overflow: hidden; border: 1px solid var(--ib-card-border); border-radius: 8px; background: var(--ib-col); cursor: zoom-in; transition: border-color var(--speed) var(--ease), transform var(--dur-press) var(--ease-out); }
+.um-tile { position: relative; flex: 0 0 auto; width: 80px; height: 80px; padding: 0; overflow: hidden; border: 1px solid var(--ib-card-border); border-radius: 8px; background: var(--ib-col); cursor: zoom-in; transition: border-color 150ms ease, transform var(--dur-press) var(--ease-out); }
 .um-tile img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .um-single .um-tile { width: 280px; max-width: 100%; height: 200px; background: var(--bg); }
 .um-single .um-tile img { object-fit: contain; }
-.um-tile:focus-visible, .um-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.um-tile:active:not(:focus-visible), .um-open:active:not(:focus-visible) { transform: scale(0.97); }
-.um-more { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.55); color: #fff; font-size: 17px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.um-tile:focus-visible, .um-open:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.um-more { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: var(--media-scrim); color: var(--on-media); font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .um-tile.is-broken img { display: none; }
 .um-tile.is-broken::after { content: '미리보기 불가'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; padding: 4px; font-size: 10.5px; color: var(--ib-muted); text-align: center; }
 .um-files { display: flex; flex-wrap: wrap; gap: 6px; }
-.um-file { position: relative; display: flex; align-items: center; min-width: 0; width: 240px; max-width: 100%; height: 52px; border: 1px solid var(--ib-card-border); border-radius: 10px; background: var(--surface); transition: border-color var(--speed) var(--ease); }
+.um-file { position: relative; display: flex; align-items: center; min-width: 0; width: 240px; max-width: 100%; height: 52px; border: 1px solid var(--ib-card-border); border-radius: 10px; background: var(--surface); transition: border-color 150ms ease; }
 .um-open { display: flex; align-items: center; gap: 10px; flex: 1 1 auto; min-width: 0; height: 100%; padding: 0 10px; border: none; border-radius: 10px; background: none; color: var(--ib-text); font: inherit; text-align: left; cursor: zoom-in; transition: transform var(--dur-press) var(--ease-out); }
 .um-open .art-glyph { width: 26px; height: 26px; color: var(--art-tint, var(--text-secondary)); }
 .um-file-text { display: flex; flex-direction: column; min-width: 0; }
@@ -6191,13 +6160,13 @@ body.nt-open .new-task-fab { display: none !important; }
 .io-row .um-media { margin: 4px 0 6px; }
 .panel-user-media { margin-bottom: 6px; }
 .panel-um-head { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px; padding: 2px 0; border: none; background: none; color: var(--text); font: inherit; font-size: 12px; font-weight: 600; text-align: left; cursor: pointer; }
-.panel-um-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
-.panel-um-head .um-chevron { width: 14px; height: 14px; flex-shrink: 0; color: var(--text-tertiary); transition: transform var(--speed) var(--ease); }
+.panel-um-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; border-radius: 6px; }
+.panel-um-head .um-chevron { width: 14px; height: 14px; flex-shrink: 0; color: var(--text-tertiary); transition: transform var(--dur-press) var(--ease-out); }
 .panel-um-head[aria-expanded="true"] .um-chevron { transform: rotate(180deg); }
 .panel-um-body { padding: 4px 0 2px; }
 .panel-um-body .um-media { margin: 0; }
 @media (hover: hover) and (pointer: fine) {
-  .um-tile:hover, .um-file:hover { border-color: var(--art-tint, var(--accent)); }
+  .um-tile:hover, .um-file:hover { border-color: var(--ib-muted); }
 }
 @media (pointer: coarse) {
   .um-compact .um-tile { width: 44px; height: 44px; }
@@ -6207,13 +6176,13 @@ body.nt-open .new-task-fab { display: none !important; }
 @media (prefers-reduced-motion: reduce) {
   .um-tile, .um-open, .panel-um-head .um-chevron { transition: none; }
 }
-.art-peek { position: fixed; z-index: 1000; left: 0; top: 0; width: 360px; max-width: calc(100vw - 16px); overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); box-shadow: 0 18px 48px rgba(0, 0, 0, 0.45); opacity: 0; visibility: hidden; transform: translateY(4px) scale(0.98); transform-origin: top left; pointer-events: none; transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out), visibility 0s linear var(--dur-fade); }
+.art-peek { position: fixed; z-index: 1000; left: 0; top: 0; width: 360px; max-width: calc(100vw - 16px); overflow: hidden; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); box-shadow: var(--ib-shadow-raised); opacity: 0; visibility: hidden; transform: translateY(4px) scale(0.98); transform-origin: top left; pointer-events: none; transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out), visibility 0s linear var(--dur-fade); }
 .art-peek.open { opacity: 1; visibility: visible; transform: none; pointer-events: auto; transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out); }
 .art-peek-media { position: relative; display: flex; align-items: center; justify-content: center; height: 225px; overflow: hidden; background: var(--bg); cursor: zoom-in; color: var(--art-tint, var(--text-secondary)); }
 .art-peek-img, .art-peek-video { max-width: 100%; max-height: 100%; object-fit: contain; }
-.art-peek-frame { position: absolute; inset: 0; overflow: hidden; background: #fff; }
+.art-peek-frame { position: absolute; inset: 0; overflow: hidden; background: var(--media-paper); }
 .art-peek-frame iframe { width: 1280px; height: 800px; border: 0; transform: scale(0.28125); transform-origin: 0 0; pointer-events: none; }
-.art-peek-doc { align-self: stretch; width: 100%; padding: 10px 14px; overflow: hidden; color: var(--text); font-size: 11px; line-height: 1.5; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+.art-peek-doc { align-self: stretch; width: 100%; padding: 10px 14px; overflow: hidden; color: var(--text); font-size: 11px; line-height: 1.5; -webkit-mask-image: linear-gradient(var(--media-black) 70%, transparent); mask-image: linear-gradient(var(--media-black) 70%, transparent); }
 .art-peek-doc .md-doc h1, .art-peek-doc .md-doc h2, .art-peek-doc .md-doc h3 { font-size: 13px; margin: 4px 0; }
 .art-peek-audio { display: flex; flex-direction: column; align-items: center; gap: 16px; width: 100%; padding: 0 16px; }
 .art-peek-audio .art-glyph { width: 48px; height: 48px; }
@@ -6225,10 +6194,9 @@ body.nt-open .new-task-fab { display: none !important; }
 .art-peek-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; color: var(--text); }
 .art-peek-info { font-size: 11px; color: var(--text-tertiary); }
 .art-doc-loading { color: var(--text-tertiary); font-size: 12px; }
-.art-modal { width: min(1240px, 94vw); height: 90vh; max-width: none; max-height: none; margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 14px; background: var(--surface); color: var(--text); }
-.art-modal[open] { display: flex; flex-direction: column; animation: art-modal-in var(--dur-expand) var(--ease-out); }
-.art-modal::backdrop { background: rgba(0, 0, 0, 0.62); }
-@keyframes art-modal-in { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
+.art-modal { width: min(1240px, 94vw); height: 90vh; max-width: none; max-height: none; margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: var(--ib-shadow-raised); }
+.art-modal[open] { display: flex; flex-direction: column; animation: dlg-in var(--dur-expand) var(--ease-out); }
+.art-modal::backdrop { background: var(--scrim); }
 .art-modal-head { display: flex; align-items: center; gap: 12px; flex-shrink: 0; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--border); }
 .art-modal-kind { display: inline-flex; align-items: center; gap: 5px; flex-shrink: 0; padding: 3px 9px; border-radius: 999px; background: var(--ib-pill); color: var(--text-secondary); font-size: 11px; font-weight: 700; }
 .art-modal-title { flex: 1; min-width: 0; }
@@ -6244,8 +6212,8 @@ body.nt-open .new-task-fab { display: none !important; }
 .art-full-img { max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-in; }
 .art-full-imgwrap.is-zoomed { display: block; }
 .art-full-imgwrap.is-zoomed .art-full-img { max-width: none; max-height: none; cursor: zoom-out; }
-.art-full-frame { width: 100%; height: 100%; border: 0; background: #fff; }
-.art-full-video { max-width: 100%; max-height: 100%; background: #000; }
+.art-full-frame { width: 100%; height: 100%; border: 0; background: var(--media-paper); }
+.art-full-video { max-width: 100%; max-height: 100%; background: var(--media-black); }
 .art-full-audio { display: flex; flex-direction: column; align-items: center; gap: 18px; width: min(560px, 90%); color: var(--purple); }
 .art-full-audio .art-glyph { width: 72px; height: 72px; }
 .art-full-audio audio { width: 100%; }
@@ -6254,7 +6222,7 @@ body.nt-open .new-task-fab { display: none !important; }
 .art-full-meta-name { font-size: 15px; font-weight: 600; color: var(--text); word-break: break-all; }
 .art-full-meta-sub { font-size: 12px; color: var(--text-tertiary); }
 .art-full-doc { align-self: stretch; width: 100%; max-width: 880px; height: max-content; margin: 0 auto; padding: 28px 32px 56px; }
-.art-text { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12.5px/1.6 'SF Mono', 'Fira Code', monospace; }
+.art-text { margin: 0; white-space: pre-wrap; word-break: break-word; font: 12.5px/1.6 var(--mono); }
 .md-doc { font-size: 14px; line-height: 1.65; color: var(--text); word-break: break-word; }
 .md-doc h1, .md-doc h2, .md-doc h3, .md-doc h4, .md-doc h5, .md-doc h6 { margin: 1.3em 0 0.5em; line-height: 1.3; letter-spacing: -0.01em; }
 .md-doc h1 { font-size: 1.6em; } .md-doc h2 { font-size: 1.3em; } .md-doc h3 { font-size: 1.12em; } .md-doc h4, .md-doc h5, .md-doc h6 { font-size: 1em; }
@@ -6262,7 +6230,7 @@ body.nt-open .new-task-fab { display: none !important; }
 .md-doc p, .md-doc ul, .md-doc ol, .md-doc blockquote, .md-doc pre, .md-doc .md-table { margin: 0 0 0.9em; }
 .md-doc ul, .md-doc ol { padding-left: 1.4em; }
 .md-doc li + li { margin-top: 0.2em; }
-.md-doc code { padding: 0.1em 0.35em; border-radius: 4px; background: var(--ib-pill); font: 0.88em 'SF Mono', 'Fira Code', monospace; }
+.md-doc code { padding: 0.1em 0.35em; border-radius: 6px; background: var(--ib-pill); font: 0.88em var(--mono); }
 .md-doc pre { padding: 12px 14px; overflow: auto; border: 1px solid var(--border); border-radius: 8px; background: var(--ib-col); }
 .md-doc pre code { padding: 0; background: none; font-size: 12.5px; line-height: 1.55; }
 .md-doc blockquote { padding: 2px 0 2px 12px; border-left: 3px solid var(--border-focus); color: var(--text-secondary); }
@@ -6275,6 +6243,9 @@ body.nt-open .new-task-fab { display: none !important; }
 @media (prefers-reduced-motion: reduce) {
   .art-chip, .art-open, .art-play, .art-peek, .art-peek.open { transition: none; }
   .art-modal[open] { animation: none; }
+  /* Gentler, not zero: a dialog's scrim still fades (opacity only, ≤ 180ms). */
+  .lifecycle-dialog[open], .art-modal[open] { animation: none; }
+  .lifecycle-dialog[open]::backdrop, .art-modal[open]::backdrop { animation: scrim-in 120ms ease both !important; }
 }
 @media (hover: none) {
   .art-chip { height: 32px; }
@@ -6334,7 +6305,10 @@ body.nt-open .new-task-fab { display: none !important; }
      defaults menu spans the bar instead of running off the edge, and the
      artifact viewer takes the whole screen. */
   .inbox.has-cards { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
-  .topbar .topbar-defaults { position: static; }
+  /* The defaults chips take their own row under brand · status · account: sharing the brand row
+     they could leave the account group (basis 0) no width at all, its pill and theme toggle
+     painting over the chips. */
+  .topbar .topbar-defaults { position: static; order: 1; flex: 0 0 100%; }
   .td-menu { left: 12px; right: 12px; min-width: 0; max-width: none; }
   .art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
   .art-modal-head { flex-wrap: wrap; row-gap: 6px; }
@@ -6375,44 +6349,52 @@ body.nt-open .new-task-fab { display: none !important; }
   .art-strip-panel .art-play { position: static; flex: none; width: 32px; height: 32px; }
 }
 </style>
+<!-- Tokens — @2lab.ai/ui is the single source (P10): its tokens.css puts every --ui-* on :root and
+     [data-theme="light|dark"] (the light and dark palettes, geometry, type and motion), and the
+     dashboard's names are aliases of them, so the page and the library elements cannot drift. Never
+     alias on an element that also maps --ui-x: var(--x) (.ui-tok) — that is a cycle. -->
+<style id="ui-tokens">
+${uiLibTokensCss()}
+${pageTokenAliases()}
+</style>
 </head>
 <body>
 <div class="app">
   <div class="topbar">
-    <h1>&#x26A1; soma-work</h1>
-    <span class="ws-badge" id="ws-status" role="status" aria-label="WebSocket: Connecting">Connecting...</span>
+    <h1><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect class="bm-bg" width="32" height="32" rx="8"/><rect class="bm-cell" x="7" y="7" width="7" height="7" rx="1.5"/><rect class="bm-cell" x="18" y="7" width="7" height="7" rx="1.5" opacity=".55"/><rect class="bm-cell" x="7" y="18" width="7" height="7" rx="1.5" opacity=".55"/><rect class="bm-cell" x="18" y="18" width="7" height="7" rx="1.5" opacity=".25"/></svg>soma-work</h1>
+    <span class="ws-badge" id="ws-status" role="status" aria-label="실시간 업데이트: 연결 중" data-state="connecting">연결 중…</span>
     <div class="topbar-defaults" id="topbar-defaults" hidden>
-      <button type="button" class="td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" aria-controls="td-menu" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><span class="td-caret" aria-hidden="true">&#x25BE;</span></button>
-      <button type="button" class="td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" aria-controls="td-menu" title="새 세션의 기본 effort — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">Effort </span><b id="td-effort-value">…</b><span class="td-caret" aria-hidden="true">&#x25BE;</span></button>
+      <button type="button" class="td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" aria-controls="td-menu" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><svg class="td-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
+      <button type="button" class="td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" aria-controls="td-menu" title="새 세션의 기본 effort — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">Effort </span><b id="td-effort-value">…</b><svg class="td-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
       <div class="td-menu" id="td-menu" role="menu" hidden></div>
       <span class="td-status" id="td-status" role="status" aria-live="polite"></span>
     </div>
-    <button type="button" class="new-task-btn" id="new-task-btn" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><span class="nt-plus" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></span><span class="nt-btn-label">New task</span><kbd class="nt-kbd" aria-hidden="true">N</kbd></button>
+    <button type="button" class="new-task-btn" id="new-task-btn" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><span class="nt-plus" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></span><span class="nt-btn-label">새 작업</span><kbd class="nt-kbd" aria-hidden="true">N</kbd></button>
     <div class="nav">
-      <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">All Users</span><select id="user-select" title="All Users" onchange="selectUser(this.value)">
-        <option value="">All Users</option>
+      <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">모든 사용자</span><select id="user-select" title="모든 사용자" aria-label="보드에 보일 사용자" onchange="selectUser(this.value)">
+        <option value="">모든 사용자</option>
       </select></span>
-      <a href="/conversations"><span aria-hidden="true">&#x1F4DD;</span>Conversations</a>
-      <a href="/dashboard/settings" id="settings-link" title="개인 설정 — Slack 명령으로 바꾸던 설정을 여기서 확인하고 바꿉니다"><span aria-hidden="true">&#x2699;&#xFE0F;</span>설정</a>
-      <a href="/dashboard/settings#memory" id="memory-link" title="기억 — 에이전트가 기억하는 개인 메모리와 관찰 기록을 보고 고칩니다"><span aria-hidden="true">&#x1F9E0;</span>기억</a>
+      <a href="/conversations" title="대화 — 지난 대화를 모두 봅니다"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3.5h10a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H8.2L5 14v-2.5H3a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1z"/></svg>대화</a>
+      <a href="/dashboard/settings" id="settings-link" title="개인 설정 — Slack 명령으로 바꾸던 설정을 여기서 확인하고 바꿉니다"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 5h6.5M12.5 5h1M2.5 11h1M7 11h6.5"/><circle cx="10.75" cy="5" r="1.75"/><circle cx="5.25" cy="11" r="1.75"/></svg>설정</a>
+      <a href="/dashboard/settings#memory" id="memory-link" title="기억 — 에이전트가 기억하는 개인 메모리와 관찰 기록을 보고 고칩니다"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4.2C6.6 3.3 4.7 3 2.5 3.3v9.4c2.2-.3 4.1 0 5.5.9 1.4-.9 3.3-1.2 5.5-.9V3.3C11.3 3 9.4 3.3 8 4.2zM8 4.2v9.4"/></svg>기억</a>
       <button
         id="admin-mode-toggle"
         type="button"
         class="admin-toggle"
         style="display:none"
         aria-pressed="false"
-        title="Toggle admin write mode (#716)"
+        title="관리자 쓰기 모드 — 켜면 다른 사람의 세션도 바꿀 수 있습니다 (#716)"
         onclick="toggleAdminMode()"
-      ><span id="admin-mode-label"><span class="admin-mode-prefix">Admin: </span><span class="admin-mode-state">OFF</span></span></button>
+      ><span id="admin-mode-label"><span class="admin-mode-prefix">관리자 </span><span class="admin-mode-state">끔</span></span></button>
     </div>
     <div class="topbar-account">
       <a
         class="user-pill"
         id="user-pill"
         href="/login"
-        title="Account — switch account or sign out"
-      ><span class="user-pill-prefix">Logged in as </span><b id="user-pill-name">…</b></a>
-      <button id="theme-toggle" onclick="toggleTheme()" aria-label="Toggle theme"></button>
+        title="계정 — 다른 계정으로 전환하거나 로그아웃합니다"
+      ><span class="user-pill-prefix"><svg class="ic-user" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="5.5" r="2.5"/><path d="M3 13.5c.6-2.3 2.6-3.7 5-3.7s4.4 1.4 5 3.7"/></svg><svg class="ic-admin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2l4.8 1.9v3.5c0 2.9-2 5.1-4.8 6.2-2.8-1.1-4.8-3.3-4.8-6.2V4.1z"/><path d="M5.9 8.1l1.5 1.5 2.8-2.9"/></svg><span class="ar-vh">로그인 계정 </span></span><b id="user-pill-name">…</b></a>
+      <button id="theme-toggle" onclick="toggleTheme()" aria-label="테마 전환"><svg class="ic-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1"/></svg><svg class="ic-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"/></svg></button>
     </div>
   </div>
 
@@ -6420,12 +6402,12 @@ body.nt-open .new-task-fab { display: none !important; }
     <!-- Stats strip (.prd/10 §3.1-2) leads; the agent inbox board follows it.
          Collapsed by default: period · 세션 · 토큰 · 비용 + 자세히, which opens the
          other cards and the charts below the strip (kept in localStorage). -->
-    <section class="stats" id="stats" aria-label="Usage stats">
+    <section class="stats" id="stats" aria-label="사용량">
       <div class="stats-strip">
-        <div class="period-bar" role="group" aria-label="&#xAE30;&#xAC04;">
-          <button type="button" class="period-btn active" data-period="day" aria-pressed="true" onclick="setPeriod('day')">&#xC624;&#xB298;</button>
-          <button type="button" class="period-btn" data-period="week" aria-pressed="false" onclick="setPeriod('week')">&#xC9C0;&#xB09C; 7&#xC77C;</button>
-          <button type="button" class="period-btn" data-period="month" aria-pressed="false" onclick="setPeriod('month')">&#xC9C0;&#xB09C; 30&#xC77C;</button>
+        <div class="period-bar seg" role="group" aria-label="&#xAE30;&#xAC04;">
+          <button type="button" class="period-btn seg-btn active" data-period="day" aria-pressed="true" onclick="setPeriod('day')">&#xC624;&#xB298;</button>
+          <button type="button" class="period-btn seg-btn" data-period="week" aria-pressed="false" onclick="setPeriod('week')">&#xC9C0;&#xB09C; 7&#xC77C;</button>
+          <button type="button" class="period-btn seg-btn" data-period="month" aria-pressed="false" onclick="setPeriod('month')">&#xC9C0;&#xB09C; 30&#xC77C;</button>
         </div>
         <div class="strip-nums">
           <div class="strip-num"><span class="label">&#xC138;&#xC158;</span><span class="value is-loading" id="stat-sessions"></span></div>
@@ -6434,7 +6416,7 @@ body.nt-open .new-task-fab { display: none !important; }
         </div>
         <button type="button" class="stats-more" id="stats-more" aria-expanded="false" aria-controls="stats-detail" onclick="toggleStatsDetail()"><span>&#xC790;&#xC138;&#xD788;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
       </div>
-      <div class="stats-detail" id="stats-detail" hidden>
+      <div class="stats-detail" id="stats-detail" hidden inert>
         <div class="ui-tok usage-cb-wrap"><ui-compact-breakdown id="usage-cb" lang="ko"></ui-compact-breakdown></div>
         <div class="stats-grid" id="stats-grid">
           <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value is-loading" id="stat-turns"></div></div>
@@ -6460,20 +6442,20 @@ body.nt-open .new-task-fab { display: none !important; }
          wrapper (.ui-tok) hands them the dashboard tokens. -->
     <section class="inbox ui-tok" id="inbox" aria-label="Agent inbox">
       <div class="inbox-head">
-        <nav class="crumbs" aria-label="Breadcrumb"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
+        <nav class="crumbs" aria-label="위치"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
         <div class="inbox-tools">
           <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="3" rx="0.8"/><path d="M3 6v6.2c0 .5.4.8.8.8h8.4c.4 0 .8-.3.8-.8V6M6.5 8.6h3"/></svg><span id="archives-label">Archives</span></button>
           <button type="button" class="archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z"/></svg><span id="sleeping-label">Sleeping</span></button>
-          <button type="button" class="archives-btn" id="lifecycle-btn" style="display:none" title="Session lifecycle (admin)" onclick="openLifecycleDialog()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2 1.3"/></svg><span>Lifecycle</span></button>
-          <div class="seg" role="group" aria-label="Board layout">
-            <button type="button" class="seg-btn" data-view="board" aria-pressed="true" onclick="setBoardView('board', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="2.5" width="4.5" height="11" rx="1.2"/><rect x="9.5" y="2.5" width="4.5" height="7" rx="1.2"/></svg><span>Board</span></button>
-            <button type="button" class="seg-btn" data-view="list" aria-pressed="false" onclick="setBoardView('list', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg><span>List</span></button>
+          <button type="button" class="archives-btn" id="lifecycle-btn" style="display:none" title="세션 수명 주기 (관리자)" onclick="openLifecycleDialog()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2 1.3"/></svg><span>수명 주기</span></button>
+          <div class="seg" role="group" aria-label="보드 보기">
+            <button type="button" class="seg-btn" data-view="board" aria-pressed="true" onclick="setBoardView('board', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="2.5" width="4.5" height="11" rx="1.2"/><rect x="9.5" y="2.5" width="4.5" height="7" rx="1.2"/></svg><span>보드</span></button>
+            <button type="button" class="seg-btn" data-view="list" aria-pressed="false" onclick="setBoardView('list', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg><span>목록</span></button>
           </div>
         </div>
       </div>
-      <dialog id="lifecycle-dialog" class="lifecycle-dialog" aria-labelledby="lifecycle-title">
+      <dialog id="lifecycle-dialog" class="lifecycle-dialog" aria-labelledby="lifecycle-title" oncancel="event.preventDefault();closeLifecycleDialog()">
         <form method="dialog" onsubmit="saveLifecycle(event)" oninput="armLifecycleSave(null)">
-          <h3 id="lifecycle-title">Session lifecycle</h3>
+          <h3 id="lifecycle-title">세션 수명 주기</h3>
           <p class="lc-note"><span id="lifecycle-scope">이 인스턴스</span>에만 적용되고, 다음 정리 주기(최대 5분)부터 반영됩니다. 값을 줄이면 그 기준을 넘긴 세션이 바로 Sleeping이 되거나 종료됩니다 — 저장 전에 몇 개인지 알려 줍니다. Sleeping 전환이 12시간 이하이면 12시간 전 확인 알림은 보내지 않습니다.</p>
           <label>마지막 활동 후 Sleeping 전환 <span class="lc-unit">시간</span><input id="lc-sleepAfterHours" type="number" min="1" max="720" step="any" required></label>
           <label>Sleeping 후 Archive(종료) 전환 <span class="lc-unit">일</span><input id="lc-archiveAfterDays" type="number" min="0.05" max="365" step="any" required></label>
@@ -6507,13 +6489,13 @@ body.nt-open .new-task-fab { display: none !important; }
     <div class="cron-drawer-head">
       <span class="cron-badge" id="cron-drawer-badge" aria-hidden="true"></span>
       <h3 id="cron-drawer-title"></h3>
-      <button type="button" class="cron-drawer-close" id="cron-drawer-close" onclick="closeCronDrawer()" aria-label="&#xB2EB;&#xAE30;">&#xD7;</button>
+      <button type="button" class="cron-drawer-close" id="cron-drawer-close" onclick="closeCronDrawer()" aria-label="&#xB2EB;&#xAE30;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
     </div>
     <div class="cron-drawer-meta" id="cron-drawer-meta"></div>
     <div class="cron-drawer-body" id="cron-drawer-body"></div>
   </aside>
 
-  <!-- Slide Panel for Session Detail -->
+  <!-- Slide panel: the detail card -->
   <div class="slide-panel-overlay" id="panel-overlay" onclick="closeDetailCard()"></div>
   <div class="slide-panel" id="slide-panel" data-deck="0">
     <!-- Detail deck (SSOT 2026-10-29 T2): the edges of the open cards' other detail cards, waiting behind this one. -->
@@ -6521,10 +6503,10 @@ body.nt-open .new-task-fab { display: none !important; }
     <div class="panel-resize-handle" id="panel-resize-handle"></div>
     <div class="panel-header">
       <div style="flex:1;min-width:0">
-        <h3 id="panel-title" tabindex="-1">Session Detail</h3>
+        <h3 id="panel-title" tabindex="-1">작업 카드</h3>
         <div id="panel-title-sub" style="font-size:11px;color:var(--text-secondary);margin-top:2px;display:flex;align-items:center;gap:6px">
           <span id="panel-title-sub-text"></span>
-          <button id="panel-title-sub-regen" class="btn-action" style="font-size:10px;padding:1px 6px;display:none" onclick="event.stopPropagation();generateTitleSub(panelConvId, !!_panelTitleSub)">&#x1F504;</button>
+          <button id="panel-title-sub-regen" class="btn-action" style="font-size:10px;padding:1px 6px;display:none" aria-label="부제 다시 만들기" title="부제 다시 만들기" onclick="event.stopPropagation();generateTitleSub(panelConvId, !!_panelTitleSub)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.25 8a5.25 5.25 0 0 1-9.4 3.2M2.75 8a5.25 5.25 0 0 1 9.4-3.2M12.5 2v3h-3M3.5 14v-3h3"/></svg></button>
         </div>
       </div>
       <!-- Detail deck (SSOT 2026-10-29 T2): every open card has its detail card here; ‹ › go through them. -->
@@ -6535,7 +6517,7 @@ body.nt-open .new-task-fab { display: none !important; }
       </div>
       <!-- 자세히 (task view T1.6): the panel shows what matters by default; on, every detail of every section. Saved per device. -->
       <button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false" title="모든 세부 정보 보기" onclick="togglePanelDetail()"><svg class="pdt-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 4h10M3 8h10M3 12h6"/></svg><span class="pdt-label">자세히</span></button>
-      <button class="panel-close" aria-label="작업 카드 닫기" title="작업 카드 닫기 (카드도 접힘)" onclick="closeDetailCard()">&#x2715;</button>
+      <button class="panel-close" aria-label="작업 카드 닫기" title="작업 카드 닫기 (카드도 접힘)" onclick="closeDetailCard()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
       <!-- Session chip (spec 13): status · active time · retry · Slack · the session's one action. -->
       <div class="panel-status" id="panel-status"></div>
     </div>
@@ -6691,7 +6673,7 @@ body.nt-open .new-task-fab { display: none !important; }
       <a class="btn-action" id="art-modal-open" target="_blank" rel="noopener">새 탭</a>
       <a class="btn-action" id="art-modal-download">다운로드</a>
       <a class="btn-action" id="art-modal-slack" target="_blank" rel="noopener">Slack</a>
-      <button type="button" class="art-modal-close" aria-label="닫기" onclick="closeArtifactModal()">&#x2715;</button>
+      <button type="button" class="art-modal-close" aria-label="닫기" onclick="closeArtifactModal()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
     </div>
   </div>
   <div class="art-modal-body" id="art-modal-body"></div>
@@ -6699,6 +6681,38 @@ body.nt-open .new-task-fab { display: none !important; }
 
 <script>
 const INIT_USER = ${initUser};
+// The page chrome's words, in one place and one language (the library's STRINGS pattern, lang="ko"):
+// sentence case, "…" not "...", the library's short status vocabulary.
+var STRINGS = {
+  wsLive: '실시간',
+  wsLiveLabel: '실시간 업데이트: 연결됨',
+  wsReconnecting: '다시 연결 중…',
+  wsReconnectingLabel: '실시간 업데이트: 다시 연결 중',
+  on: '켬',
+  off: '끔',
+  adminOn: '관리자 켬',
+  adminOff: '관리자 끔',
+  viewerAdmin: '관리자',
+  themeToDark: '어두운 테마로 전환',
+  themeToLight: '밝은 테마로 전환',
+  // P8: the panel's turn summaries, subtitle and the legacy question form — Korean, "…", no emoji.
+  summaryFailed: '요약 실패',
+  summaryPending: '요약 만드는 중…',
+  retry: '다시 시도',
+  retrying: '다시 시도 중…',
+  queued: '요청함',
+  titlePending: '부제 만드는 중…',
+  titleFailed: '부제를 만들지 못했습니다',
+  titleCooldown: '부제를 만들지 못했습니다 — 1분 뒤 다시 시도하세요',
+  titleNoContent: '아직 부제를 붙일 대화가 없습니다',
+  error: '오류',
+  mcUnavailable: '복수 질문 데이터를 불러올 수 없습니다',
+  mcLoadFailed: '복수 질문을 불러오지 못했습니다. 새로고침해 보세요.',
+  mcChange: '변경',
+  mcCustomPlaceholder: '직접 입력…',
+  mcSubmitting: '제출 중…',
+  effortTitle: '추론 강도',
+};
 // #814 — name of the dashboard's *home* instance (the one that served this
 // HTML). Used by renderCard() to detect sibling cards and suppress action
 // buttons that would post to the wrong instance. null when single-instance
@@ -6759,7 +6773,7 @@ function getPreferredTheme() {
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
   var btn = document.getElementById('theme-toggle');
-  if (btn) btn.setAttribute('aria-label', theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme');
+  if (btn) btn.setAttribute('aria-label', theme === 'light' ? STRINGS.themeToDark : STRINGS.themeToLight);
 }
 function toggleTheme() {
   var current = document.documentElement.getAttribute('data-theme') || 'dark';
@@ -6886,7 +6900,7 @@ function isPermissionRequester(p) {
 function permissionSummary(s) {
   var list = s.pendingPermissions || [];
   if (!list.length) return '';
-  return '🔐 ' + (list[0].toolName || 'tool') + ' 실행 승인 필요' + (list.length > 1 ? ' 외 ' + (list.length - 1) + '건' : '');
+  return (list[0].toolName || 'tool') + ' 실행 승인 필요' + (list.length > 1 ? ' 외 ' + (list.length - 1) + '건' : '');
 }
 
 // Who may answer here, as the element's canAnswer: '' (yes) or why not. A
@@ -7414,8 +7428,8 @@ function renderPanelTasks(tasks, scopeLabel, earlier, outside) {
       var rows = '';
       if (runs.ran.length > TASK_RUNS_SHOWN) {
         rows += '<li class="pl-fold">' + (_panelTasksExpanded
-          ? '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()">&#x25B2; 최근 ' + TASK_RUNS_SHOWN + '개만 보기</button>'
-          : '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()">&#x25BC; 이전 실행 ' + hiddenRuns + '개 보기</button>') + '</li>';
+          ? '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()"><span class="chev is-up" aria-hidden="true"></span>최근 ' + TASK_RUNS_SHOWN + '개만 보기</button>'
+          : '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()"><span class="chev" aria-hidden="true"></span>이전 실행 ' + hiddenRuns + '개 보기</button>') + '</li>';
       }
       for (var r = hiddenRuns; r < runs.ran.length; r++) rows += renderTaskRun(runs.ran[r], !!changed[runs.ran[r].id]);
       body += '<div class="tr-head">실행된 태스크 <span class="tr-count">' + runs.ran.length + '</span></div>'
@@ -7630,7 +7644,7 @@ function taskSkippedHtml(skipped) {
   if (!skipped || !skipped.length) return '';
   var html = '<button type="button" class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="' + (_panelTasksEarlier ? 'true' : 'false') + '"'
     + ' onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()">'
-    + (_panelTasksEarlier ? '&#x25B2; ' : '&#x25BC; ') + '실행 전에 계획에서 빠짐 <span class="pl-earlier-counts">' + skipped.length + '</span></button>';
+    + '<span class="chev" aria-hidden="true"></span>실행 전에 계획에서 빠짐 <span class="pl-earlier-counts">' + skipped.length + '</span></button>';
   if (!_panelTasksEarlier) return html;
   return html + '<ol class="pl-list pl-earlier" aria-label="실행 전에 계획에서 빠진 태스크">' + skipped.map(function(t) { return renderPanelTaskItem(t); }).join('') + '</ol>';
 }
@@ -7697,11 +7711,11 @@ function renderPanelTaskItem(t, pop) {
 let _csrfToken = '';
 
 /*
- * Populate the "Logged in as <name>" pill in the topbar.
+ * Populate the signed-in user's pill in the topbar.
  *
  * Rendered from /auth/me for three session types:
  *   - OAuth JWT (Google/Microsoft/Slack SSO) — shows user.name.
- *   - bearer_cookie (admin viewer token) — shows "Admin" with a star marker.
+ *   - bearer_cookie (admin viewer token) — shows 관리자 with the admin shield glyph.
  *   - unauthenticated (/auth/me → 401) — pill stays hidden; auth middleware
  *     is about to redirect us to /login anyway.
  *
@@ -7718,7 +7732,7 @@ function _applyUserPill(data) {
   if (data && data.user && data.user.name) {
     label = data.user.name;
   } else if (data && data.isAdmin) {
-    label = 'Admin';
+    label = STRINGS.viewerAdmin;
     isAdmin = true;
   }
   if (!label) {
@@ -7779,12 +7793,12 @@ function _renderAdminModeButton() {
   const on = _isAdminModeOn();
   btn.setAttribute('aria-pressed', on ? 'true' : 'false');
   // Prefer split-span structure (prefix + state): only the ON/OFF state is
-  // rewritten, the "Admin: " prefix stays as rendered. Falls back to flat
+  // rewritten, the "관리자 " prefix stays as rendered. Falls back to flat
   // textContent if the spans haven't been rendered yet (e.g. legacy
   // template / unit test setup).
   const stateEl = lbl.querySelector('.admin-mode-state');
-  if (stateEl) stateEl.textContent = on ? 'ON' : 'OFF';
-  else lbl.textContent = on ? 'Admin: ON' : 'Admin: OFF';
+  if (stateEl) stateEl.textContent = on ? STRINGS.on : STRINGS.off;
+  else lbl.textContent = on ? STRINGS.adminOn : STRINGS.adminOff;
 }
 function toggleAdminMode() {
   _setAdminMode(!_isAdminModeOn());
@@ -8052,14 +8066,14 @@ function resolveRecommendedId(explicitId, options) {
 }
 async function resummarize(convId, turnId, btn) {
   btn.disabled = true;
-  btn.textContent = 'Retrying...';
+  btn.textContent = STRINGS.retrying;
   try {
     const res = await fetch('/api/dashboard/session/' + encodeURIComponent(convId) + '/resummarize/' + encodeURIComponent(turnId), { method: 'POST' });
     if (!res.ok) throw new Error('Failed');
-    btn.textContent = 'Queued \u2713';
+    btn.textContent = STRINGS.queued;
   } catch(e) {
     btn.disabled = false;
-    btn.textContent = '\uD83D\uDD04 Retry';
+    btn.textContent = STRINGS.retry;
   }
 }
 function timeAgo(iso) {
@@ -8220,6 +8234,45 @@ function setPeriod(period) {
   loadStats();
 }
 
+// ── Expand / collapse (P6, the library disclosure recipe — CSS "EXPAND / COLLAPSE") ──
+// xpMove: the host's region clips while its row moves, then not (focus rings stay whole).
+// xpEnter / xpLeave: a region drawn only while open (세션 정보) enters from 0 rows, and folds to 0
+// rows before it is dropped (done). Reduced motion: the sheet's global rule makes both instant.
+var XP_MS = 240;
+function xpMove(host) {
+  if (!host || !host.classList) return;
+  host.classList.add('xp-moving');
+  clearTimeout(host._xpMoveT);
+  host._xpMoveT = setTimeout(function() { host.classList.remove('xp-moving'); }, XP_MS + 40);
+}
+function xpEnter(host) {
+  if (!host || !host.classList) return;
+  host.classList.add('xp-shut');
+  void host.offsetHeight;
+  host.classList.remove('xp-shut');
+  xpMove(host);
+}
+function xpLeave(host, done) {
+  if (!host || !host.classList || reduceMotion()) { done(); return; }
+  host.classList.add('xp-shut');
+  xpMove(host);
+  clearTimeout(host._xpLeaveT);
+  host._xpLeaveT = setTimeout(function() {
+    host._xpLeaveT = 0;
+    done();
+    host.classList.remove('xp-shut');
+  }, XP_MS);
+}
+// A fold in progress is undone (the reader opened it again): true when there was one.
+function xpStay(host) {
+  if (!host || !host._xpLeaveT) return false;
+  clearTimeout(host._xpLeaveT);
+  host._xpLeaveT = 0;
+  host.classList.remove('xp-shut');
+  xpMove(host);
+  return true;
+}
+
 // ── Stats strip 자세히 (.prd/10 §3.1-2) — the other cards + charts, collapsed
 // unless the user opened them (localStorage['soma-stats-detail'] = 'open'). ──
 var STATS_DETAIL_KEY = 'soma-stats-detail';
@@ -8229,9 +8282,11 @@ function setStatsDetail(open) {
   if (!btn || !detail) return;
   btn.setAttribute('aria-expanded', open ? 'true' : 'false');
   detail.hidden = !open;
+  detail.inert = !open;
 }
 function toggleStatsDetail() {
   var open = document.getElementById('stats-more').getAttribute('aria-expanded') !== 'true';
+  xpMove(document.getElementById('stats'));
   setStatsDetail(open);
   try { localStorage.setItem(STATS_DETAIL_KEY, open ? 'open' : 'closed'); } catch (_e) {}
 }
@@ -8251,7 +8306,8 @@ let _sessionCache = Object.create(null);
 // instanceName mod 4. Two unrelated names hashing to the same slot is
 // noise we can live with on a 4-instance host (operators rarely run more
 // than 2-3 instances per box).
-var ENV_BADGE_PALETTE = ['#5DADE2', '#48C9B0', '#F4D03F', '#EC7063'];
+// Tones from the token palette (tinted in CSS: .env-badge) — not status colours, so no red / amber.
+var ENV_BADGE_PALETTE = ['var(--st-run)', 'var(--green)', 'var(--purple)', 'var(--orange)'];
 
 // _envIndex caches a deterministic palette-slot per instanceName so two
 // envs sharing a hash bucket fall back to a "first-come, first-coloured"
@@ -9948,7 +10004,7 @@ function agentConvHtml(a, io, prompt, answer) {
   } else {
     body = '<div class="turn-summary-body" style="color:var(--text-tertiary)">' + esc(a && a.summary ? a.summary : '작업 로그에 결과가 없습니다') + '</div>';
   }
-  html += '<div class="turn assistant"><div class="turn-avatar bot-avatar">&#x1F916;</div><div class="turn-body">'
+  html += '<div class="turn assistant"><div class="turn-avatar bot-avatar" aria-hidden="true">' + BOT_AVATAR_SVG + '</div><div class="turn-body">'
     + '<div class="turn-header"><span class="turn-name">' + esc(name) + '</span>'
     + '<span class="turn-time">' + esc(AGENT_STATUS_LABEL[st] || '') + '</span></div>'
     + body + '</div></div>';
@@ -10826,8 +10882,26 @@ function renderPanelInfo() {
   if (s) cwPaint(el.querySelector('ui-context-window'), s, now);
 }
 function togglePanelInfo() {
+  var el = document.getElementById('panel-info');
+  // Opened again while it folds: it stays.
+  if (xpStay(el)) {
+    var h = el.querySelector('.pi-head');
+    if (h) h.setAttribute('aria-expanded', 'true');
+    return;
+  }
+  // Closing: the body folds to 0 rows first, then the part is written without it.
+  if (_panelInfoOpen && el && el.querySelector('.pi-body')) {
+    var head = el.querySelector('.pi-head');
+    if (head) head.setAttribute('aria-expanded', 'false');
+    xpLeave(el, function() {
+      _panelInfoOpen = false;
+      renderPanelInfo();
+    });
+    return;
+  }
   _panelInfoOpen = !_panelInfoOpen;
   renderPanelInfo();
+  if (_panelInfoOpen) xpEnter(el);
 }
 
 // ── 컨텍스트 — @2lab.ai/ui <ui-context-window> (.prd/affectui/re-context-window.md D5–D20) ──
@@ -11539,7 +11613,7 @@ function cardGoalLine(s, col, canEdit) {
     var done = g ? toNum(g.completedCount) : 0;
     if (!editable && !queued && !done) return '';
     var what = queued ? '대기 중인 goal ' + queued + '개' : (done ? '완료된 goal ' + done + '개' : '현재 goal 없음');
-    return '<div class="card-goal-line"><span class="cgl-icon" aria-hidden="true">&#x1F3AF;</span>'
+    return '<div class="card-goal-line"><span class="cgl-icon" aria-hidden="true">' + GOAL_SVG + '</span>'
       + '<span class="cgl-text is-muted">' + what + '</span>'
       + '<button type="button" class="cgl-go"' + go + '>' + (editable ? 'goal 추가 &rarr;' : '보기 &rarr;') + '</button></div>';
   }
@@ -11548,7 +11622,7 @@ function cardGoalLine(s, col, canEdit) {
     bits += '<span class="cgl-n" title="자동 이어하기 횟수 / 상한">' + toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) + '</span>';
   }
   if (queued) bits += '<span class="cgl-n">대기 ' + queued + '</span>';
-  return '<div class="card-goal-line"><span class="cgl-icon" aria-hidden="true">&#x1F3AF;</span>'
+  return '<div class="card-goal-line"><span class="cgl-icon" aria-hidden="true">' + GOAL_SVG + '</span>'
     + '<span class="cgl-text" title="' + escAttr(cur.objective) + '">' + esc(cur.objective) + '</span>' + bits
     + '<button type="button" class="cgl-go"' + go + '>' + (editable ? '관리 &rarr;' : '보기 &rarr;') + '</button></div>';
 }
@@ -11596,7 +11670,7 @@ function renderCardBody(s, col) {
     var instName = s.environment.instanceName;
     var envColor = getEnvBadgeColor(instName);
     var envHostPort = (s.environment.host || '') + ':' + (s.environment.port || '');
-    envHtml = '<span class="env-badge" style="background:' + envColor + '" title="' + escAttr(instName + ' (' + envHostPort + ')') + '">' + esc(instName) + '</span>';
+    envHtml = '<span class="env-badge" style="--env-tone:' + envColor + '" title="' + escAttr(instName + ' (' + envHostPort + ')') + '">' + esc(instName) + '</span>';
   }
   // Short refs (PROJ-123 · PR-123), gated by ui.dashboardheader 'links'. The
   // titled links and the conversation are the panel's (세션 정보).
@@ -11853,7 +11927,7 @@ function effortLabel(level) {
 function renderEffortPicker(s) {
   // The owner's control lives in the model menu (<ui-model-picker>); others read the level.
   var capped = s.effortEffective && s.effortEffective !== s.effort
-    ? ' title="이 모델은 ' + escAttr(effortLabel(s.effortEffective)) + '까지 실행합니다"' : ' title="Reasoning effort"';
+    ? ' title="이 모델은 ' + escAttr(effortLabel(s.effortEffective)) + '까지 실행합니다"' : ' title="' + STRINGS.effortTitle + '"';
   return '<span class="meta-effort"' + capped + '>' + esc(effortLabel(s.effort))
     + (s.effortEffective && s.effortEffective !== s.effort ? ' &rarr; ' + esc(effortLabel(s.effortEffective)) : '') + '</span>';
 }
@@ -11946,6 +12020,8 @@ function repaintPanelControlsFor(key) {
 // goal. Every write names WHERE the goal was seen (current / queued), so a goal
 // that moved in the meantime is refused (409) instead of deleting the wrong one.
 var GOAL_STATUS_LABELS = { active: '진행 중', paused: '일시정지', complete: '완료' };
+// The goal mark (P7): the 2lab icon set's target glyph, not the bullseye emoji.
+var GOAL_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5.75"/><circle cx="8" cy="8" r="2.75"/><path d="M8 8h.01"/></svg>';
 var GOAL_VIA_LABELS = { user: '직접 완료', 'eval-model': '평가 모델 완료' };
 // SSOT 2026-10-22 T6 — completed goals open from the goal head, per card.
 var _goalHistoryOpen = Object.create(null); // card key → completed goals shown
@@ -11975,12 +12051,36 @@ function renderGoalHistory(history) {
   }).join('');
   return '<ol class="cg-history">' + items + '</ol>';
 }
-function toggleGoalHistory(key) {
+// The completed-goal regions of one card (its face and the panel's goal editor).
+function goalHxHosts(key) {
+  var all = document.querySelectorAll ? document.querySelectorAll('.cg-hx') : [];
+  var out = [];
+  for (var i = 0; i < all.length; i++) if (all[i].getAttribute('data-hx') === key) out.push(all[i]);
+  return out;
+}
+function toggleGoalHistory(key, folded) {
+  var hosts = goalHxHosts(key);
+  // Closing (P6): the open history folds to 0 rows first, then the card and the panel are drawn without it.
+  if (!folded && _goalHistoryOpen[key] && hosts.length && !reduceMotion()) {
+    if (hosts[0]._xpLeaveT) return;
+    for (var j = 0; j < hosts.length; j++) {
+      hosts[j].classList.add('xp-shut');
+      xpMove(hosts[j]);
+    }
+    hosts[0]._xpLeaveT = setTimeout(function() {
+      hosts[0]._xpLeaveT = 0;
+      toggleGoalHistory(key, true);
+    }, XP_MS);
+    return;
+  }
   if (_goalHistoryOpen[key]) delete _goalHistoryOpen[key];
   else _goalHistoryOpen[key] = true;
   refreshCard(key);
   // The goal editor's home is the panel (spec 13): its 완료된 goal toggle opens there.
   if (panelOpen && panelSessionKey === key) renderPanelGoal();
+  // After the (morphing) re-render: the history's row clips while it moves.
+  hosts = goalHxHosts(key);
+  for (var i = 0; i < hosts.length; i++) xpMove(hosts[i]);
 }
 var _goalErrors = Object.create(null); // card key -> last refused goal action (shown until the next success)
 
@@ -11995,7 +12095,7 @@ function renderCardGoal(s, col, canEdit, open) {
   var queue = (g && g.queue) || [];
   var cur = g && g.current;
   var html = '<div class="card-goal' + (open ? ' is-open' : '') + '">';
-  html += '<div class="cg-head"><span class="cg-label">&#x1F3AF; Goal</span>';
+  html += '<div class="cg-head"><span class="cg-label">' + GOAL_SVG + 'Goal</span>';
   if (cur) {
     html += '<span class="cg-status cg-' + escAttr(cur.status) + '">' + esc(GOAL_STATUS_LABELS[cur.status] || cur.status) + '</span>';
     if (cur.status === 'active' && toNum(cur.maxContinuations) > 0) {
@@ -12007,8 +12107,8 @@ function renderCardGoal(s, col, canEdit, open) {
   var historyOpen = doneCount > 0 && !!_goalHistoryOpen[s.key];
   if (doneCount > 0) {
     html += '<button type="button" class="cg-history-toggle" aria-expanded="' + (historyOpen ? 'true' : 'false') + '"'
-      + ' onclick="event.stopPropagation();toggleGoalHistory(\\'' + key + '\\')">완료된 goal ' + doneCount + '개 '
-      + (historyOpen ? '&#x25B2;' : '&#x25BC;') + '</button>';
+      + ' onclick="event.stopPropagation();toggleGoalHistory(\\'' + key + '\\')">완료된 goal ' + doneCount + '개'
+      + '<span class="chev" aria-hidden="true"></span></button>';
   }
   html += '</div>';
   if (cur) {
@@ -12020,7 +12120,7 @@ function renderCardGoal(s, col, canEdit, open) {
     // SSOT 2026-10-29 — folded to its first 3 lines until opened; reading, so never disabled.
     // syncGoalMore keeps the toggle to an objective that runs past those lines.
     html += '<button type="button" class="cg-more" aria-expanded="' + (open ? 'true' : 'false') + '" aria-controls="panel-goal-obj"'
-      + ' onclick="event.stopPropagation();togglePanelGoal()">' + (open ? '접기 &#x25B2;' : '펼치기 &#x25BC;') + '</button>';
+      + ' onclick="event.stopPropagation();togglePanelGoal()">' + (open ? '접기' : '펼치기') + '<span class="chev" aria-hidden="true"></span></button>';
     if (cur.status === 'active' && cur.lastEvalReason) {
       html += '<div class="cg-gap">남은 것: ' + esc(String(cur.lastEvalReason).slice(0, 300)) + '</div>';
     }
@@ -12037,8 +12137,12 @@ function renderCardGoal(s, col, canEdit, open) {
     }
     html += '</ol>';
   }
-  // The completed goals open under the current goal and its queue (T6).
-  if (historyOpen) html += '<div class="cg-queue-title">완료된 goal</div>' + renderGoalHistory(g.history);
+  // The completed goals open under the current goal and its queue (T6), in a region that unfolds in place
+  // (P6: its row 0fr → 1fr); closed it is empty, hidden and inert.
+  if (doneCount > 0) {
+    html += '<div class="cg-hx" data-hx="' + escAttr(s.key) + '"><div class="cg-hx-in"'
+      + (historyOpen ? '><div class="cg-queue-title">완료된 goal</div>' + renderGoalHistory(g.history) : ' hidden inert>') + '</div></div>';
+  }
   if (editable) {
     html += '<form class="cg-add" onsubmit="event.preventDefault();event.stopPropagation();addGoalFromCard(\\'' + key + '\\',this)">'
       + '<input class="cg-add-input" name="objective" maxlength="4000" autocomplete="off" aria-label="goal 추가"'
@@ -12159,7 +12263,7 @@ function setBoardView(view, ev) {
   if (ev) {
     try { localStorage.setItem('soma-board-view', view); } catch (_e) {}
   }
-  var segs = document.querySelectorAll('.seg-btn');
+  var segs = document.querySelectorAll('.seg-btn[data-view]');
   for (var i = 0; i < segs.length; i++) {
     var pressed = segs[i].getAttribute('data-view') === view ? 'true' : 'false';
     if (segs[i].getAttribute('aria-pressed') !== pressed) segs[i].setAttribute('aria-pressed', pressed);
@@ -12469,6 +12573,7 @@ function openLifecycleDialog() {
     if (input) input.value = String(form[k]);
   }
   armLifecycleSave(null);
+  dialogKeep(dlg);
   setTextIfChanged(document.getElementById('lifecycle-scope'), SELF_INSTANCE_NAME ? '이 인스턴스(' + SELF_INSTANCE_NAME + ')' : '이 인스턴스');
   setLifecycleStatus(_lifecycle.degraded ? '저장된 정책 파일을 읽을 수 없어 Sleeping/종료 전환을 멈춘 상태입니다. 저장하면 다시 시작합니다.' : '', !!_lifecycle.degraded);
   if (typeof dlg.showModal === 'function') dlg.showModal();
@@ -12477,8 +12582,28 @@ function openLifecycleDialog() {
 function closeLifecycleDialog() {
   var dlg = document.getElementById('lifecycle-dialog');
   if (!dlg) return;
-  if (typeof dlg.close === 'function') dlg.close();
+  if (typeof dlg.close === 'function') dialogCloseSoftly(dlg);
   else dlg.removeAttribute('open');
+}
+// A dialog leaves the way it came (P6): its box and scrim fade out in 180ms (.is-closing), then close() —
+// at once under reduced motion. Opening it again meanwhile keeps it (dialogKeep).
+var DIALOG_EXIT_MS = 180;
+function dialogCloseSoftly(dlg) {
+  if (!dlg || !dlg.open) return;
+  if (dlg._closeT) return;
+  if (reduceMotion()) { dlg.close(); return; }
+  dlg.classList.add('is-closing');
+  dlg._closeT = setTimeout(function() {
+    dlg._closeT = 0;
+    dlg.classList.remove('is-closing');
+    if (dlg.open) dlg.close();
+  }, DIALOG_EXIT_MS);
+}
+function dialogKeep(dlg) {
+  if (!dlg || !dlg._closeT) return;
+  clearTimeout(dlg._closeT);
+  dlg._closeT = 0;
+  dlg.classList.remove('is-closing');
 }
 function setLifecycleStatus(text, isError) {
   var el = document.getElementById('lifecycle-status');
@@ -12803,7 +12928,7 @@ function renderMultiChoiceCard(s, faceSummary) {
   var q = s.pendingQuestion;
   if (!q || !q.questions) {
     console.warn('renderMultiChoiceCard: missing questions data for session', s.key);
-    return '<div class="card-question"><div class="card-question-text" style="color:var(--text-secondary)">\\u26A0\\uFE0F Multi-choice data unavailable</div></div>';
+    return '<div class="card-question"><div class="card-question-text" style="color:var(--text-secondary)">' + STRINGS.mcUnavailable + '</div></div>';
   }
   var total = q.questions.length;
   var st = _mcState[s.key] || { selections: {}, activeQ: 0 };
@@ -12813,7 +12938,7 @@ function renderMultiChoiceCard(s, faceSummary) {
   }
   var progressText = answered + '/' + total + ' \\uC644\\uB8CC';
   return '<div class="card-question">'
-    + ((q.title || q.question) && (q.title || q.question) === faceSummary ? '' : '<div class="card-question-text">\\uD83D\\uDCCB ' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>')
+    + ((q.title || q.question) && (q.title || q.question) === faceSummary ? '' : '<div class="card-question-text">' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>')
     + '<div class="card-question-multi">' + total + '\\uAC1C \\uC9C8\\uBB38 \\u00B7 ' + progressText + '</div>'
     + '<div style="margin-top:6px"><button class="btn-choice' + (s.ownerId && s.ownerId === currentUserId && !isSiblingSession(s) ? ' btn-choice-primary' : '') + '" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\')" style="width:100%;text-align:center;font-weight:700">\\uB2F5\\uBCC0\\uD558\\uAE30</button></div>'
     + '</div>';
@@ -12826,7 +12951,7 @@ function renderMultiChoicePanel(s) {
   if (!q || !q.questions) {
     console.warn('renderMultiChoicePanel: missing questions data for session', s.key);
     container.style.display = '';
-    container.innerHTML = '<div class="mc-form"><p style="color:var(--red);padding:12px">\\u26A0\\uFE0F Multi-choice questions could not be loaded. Try refreshing.</p></div>';
+    container.innerHTML = '<div class="mc-form"><p style="color:var(--red);padding:12px">' + STRINGS.mcLoadFailed + '</p></div>';
     return;
   }
 
@@ -12863,10 +12988,10 @@ function renderMultiChoicePanel(s) {
   if (heroN > 0) {
     if (heroN === heroM) {
       html += '<button class="btn-hero-recommended" onclick="event.stopPropagation();submitAllRecommended(\\'' + escJs(key) + '\\')">'
-        + '\\u2B50 \\uCD94\\uCC9C\\uB300\\uB85C \\uBAA8\\uB450 \\uC120\\uD0DD</button>';
+        + '\\uCD94\\uCC9C\\uB300\\uB85C \\uBAA8\\uB450 \\uC120\\uD0DD</button>';
     } else {
       html += '<button class="btn-hero-recommended" disabled aria-disabled="true" aria-label="\\uCD94\\uCC9C\\uC774 ' + heroN + '/' + heroM + '\\uAC1C\\uB9CC \\uC788\\uC5B4 \\uC77C\\uAD04 \\uCC98\\uB9AC \\uBD88\\uAC00">'
-        + '\\uD83D\\uDD12 \\uCD94\\uCC9C \\uBD80\\uC871 (' + heroN + '/' + heroM + ')</button>';
+        + '\\uCD94\\uCC9C \\uBD80\\uC871 (' + heroN + '/' + heroM + ')</button>';
     }
   }
 
@@ -12901,9 +13026,9 @@ function renderMultiChoicePanel(s) {
     if (sel) {
       // Show selected answer with edit button
       html += '<div class="mc-q-selected">'
-        + '<span>\\u2705</span>'
+        + '<span class="mc-sel-mark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-6.5"/></svg></span>'
         + '<span class="mc-sel-label">' + esc(sel.label) + '</span>'
-        + '<button class="mc-q-edit-btn" onclick="event.stopPropagation();editMc(\\'' + escJs(key) + '\\',' + qi + ')">\\uD83D\\uDD04 \\uBCC0\\uACBD</button>'
+        + '<button class="mc-q-edit-btn" onclick="event.stopPropagation();editMc(\\'' + escJs(key) + '\\',' + qi + ')">' + STRINGS.mcChange + '</button>'
         + '</div>';
     } else {
       // Show choice buttons, recommended first
@@ -12930,7 +13055,7 @@ function renderMultiChoicePanel(s) {
       html += '</div>';
       // Custom input
       html += '<div class="mc-custom-input">'
-        + '<input type="text" id="mc-custom-' + qi + '" placeholder="\\uC9C1\\uC811\\uC785\\uB825..." onclick="event.stopPropagation()" onkeydown="if(event.key===\\'Enter\\'){event.stopPropagation();submitMcCustom(\\'' + escJs(key) + '\\',' + qi + ')}">'
+        + '<input type="text" id="mc-custom-' + qi + '" placeholder="' + STRINGS.mcCustomPlaceholder + '" onclick="event.stopPropagation()" onkeydown="if(event.key===\\'Enter\\'){event.stopPropagation();submitMcCustom(\\'' + escJs(key) + '\\',' + qi + ')}">'
         + '<button onclick="event.stopPropagation();submitMcCustom(\\'' + escJs(key) + '\\',' + qi + ')">\\uC785\\uB825</button>'
         + '</div>';
     }
@@ -13057,7 +13182,7 @@ async function submitMultiChoice(key) {
 
   // Disable ALL interactive elements in the multi-choice form to prevent further clicks
   var btns = document.querySelectorAll('.mc-btn-submit');
-  btns.forEach(function(b) { b.disabled = true; b.textContent = '\\uC81C\\uCD9C \\uC911...'; });
+  btns.forEach(function(b) { b.disabled = true; b.textContent = STRINGS.mcSubmitting; });
   var mcForm = document.querySelector('.mc-form');
   if (mcForm) {
     mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = true; });
@@ -13132,7 +13257,7 @@ async function submitAllRecommended(key) {
       var errData = {};
       try { errData = await res.json(); } catch(_) {}
       var errMsg = errData.error || ('Failed (status ' + res.status + ')');
-      dashToast({ title: '\\u274C ' + errMsg, tone: 'error' });
+      dashToast({ title: errMsg, tone: 'error' });
       if (heroBtn) { heroBtn.disabled = false; heroBtn.removeAttribute('aria-disabled'); }
     } else {
       // Success — clear local state; WebSocket will re-render.
@@ -13140,7 +13265,7 @@ async function submitAllRecommended(key) {
     }
   } catch (e) {
     console.error('submitAllRecommended error', e);
-    dashToast({ title: '\\u274C ' + e.message, tone: 'error' });
+    dashToast({ title: e.message, tone: 'error' });
     if (heroBtn) { heroBtn.disabled = false; heroBtn.removeAttribute('aria-disabled'); }
   }
 }
@@ -13184,6 +13309,7 @@ function markStatsLoading() {
   STAT_IDS.forEach(function(id) {
     var el = document.getElementById(id);
     if (!el) return;
+    stopStatRoll(el);
     el.textContent = '';
     el.classList.remove('no-data');
     el.classList.add('is-loading');
@@ -13193,21 +13319,48 @@ function markStatsLoading() {
 }
 
 // A failed load shows a dash rather than the previous period's number.
-function setStat(id, text) {
+// With a value and its format (the strip's 세션 · 토큰 · 비용 and the counted cards), the figure
+// rolls from the one it showed to the new one — the library's rolling figure, 620ms ease-out quart.
+// The first paint, a change from or to a dash and reduced motion jump; a new load stops a roll.
+var STAT_ROLL_MS = 620;
+function stopStatRoll(el) {
+  if (el._roll) { cancelAnimationFrame(el._roll); el._roll = 0; }
+}
+function setStat(id, text, value, fmt) {
   var el = document.getElementById(id);
   if (!el) return;
-  el.textContent = text;
+  stopStatRoll(el);
+  var from = el._shown;
+  el._shown = typeof value === 'number' && isFinite(value) ? value : undefined;
   el.classList.remove('is-loading');
   el.classList.toggle('no-data', text === '\\u2014');
+  if (!fmt || typeof from !== 'number' || el._shown === undefined || from === value || reduceMotion() || typeof requestAnimationFrame !== 'function') {
+    el.textContent = text;
+    return;
+  }
+  var t0 = 0;
+  var step = function(now) {
+    if (!t0) t0 = now;
+    var p = Math.min(1, (now - t0) / STAT_ROLL_MS);
+    var k = 1 - Math.pow(1 - p, 4);
+    var v = from + (value - from) * k;
+    el._shown = p < 1 ? v : value;
+    el.textContent = p < 1 ? fmt(v) : text;
+    el._roll = p < 1 ? requestAnimationFrame(step) : 0;
+  };
+  el.textContent = fmt(from);
+  el._roll = requestAnimationFrame(step);
 }
+function fmtCount(n) { return String(Math.round(n)); }
+function fmtUsd(n) { return '$' + toNum(n).toFixed(2); }
 
 function paintStats(data) {
   var t = data && data.totals;
   var dash = '\\u2014';
-  setStat('stat-sessions', t ? String(toNum(t.sessionsCreated)) : dash);
-  setStat('stat-turns', t ? String(toNum(t.turnsUsed)) : dash);
-  setStat('stat-prs', t ? String(toNum(t.prsCreated)) : dash);
-  setStat('stat-merged', t ? String(toNum(t.prsMerged)) : dash);
+  setStat('stat-sessions', t ? String(toNum(t.sessionsCreated)) : dash, t ? toNum(t.sessionsCreated) : null, fmtCount);
+  setStat('stat-turns', t ? String(toNum(t.turnsUsed)) : dash, t ? toNum(t.turnsUsed) : null, fmtCount);
+  setStat('stat-prs', t ? String(toNum(t.prsCreated)) : dash, t ? toNum(t.prsCreated) : null, fmtCount);
+  setStat('stat-merged', t ? String(toNum(t.prsMerged)) : dash, t ? toNum(t.prsMerged) : null, fmtCount);
   setStat('stat-commits-hidden', t ? String(toNum(t.commitsCreated)) : dash);
   setStat('stat-merge-lines', t ? '+' + toNum(t.mergeLinesAdded) + ' / -' + toNum(t.mergeLinesDeleted) : dash);
   var wfEntries = Object.entries((t && t.workflowCounts) || {}).sort(function(a, b) { return toNum(b[1]) - toNum(a[1]); });
@@ -13274,8 +13427,9 @@ function paintUsage(report) {
   _usageReport = report || null;
   paintUsageBreakdown();
   var t = report && report.totals;
-  setStat('stat-tokens', t ? formatTokens(toNum(t.totalInputTokens) + toNum(t.totalOutputTokens)) : '\\u2014');
-  setStat('stat-cost', t ? '$' + toNum(t.totalCostUsd).toFixed(2) : '\\u2014');
+  var tok = t ? toNum(t.totalInputTokens) + toNum(t.totalOutputTokens) : null;
+  setStat('stat-tokens', t ? formatTokens(tok) : '\\u2014', tok, formatTokens);
+  setStat('stat-cost', t ? '$' + toNum(t.totalCostUsd).toFixed(2) : '\\u2014', t ? toNum(t.totalCostUsd) : null, fmtUsd);
 }
 
 function renderCharts(days) {
@@ -13307,23 +13461,19 @@ function connectWs() {
   const statusEl = document.getElementById('ws-status');
 
   ws.onopen = function() {
-    statusEl.textContent = 'Live';
-    statusEl.title = 'WebSocket: Live';
-    statusEl.setAttribute('aria-label', 'WebSocket: Live');
-    statusEl.style.background = 'rgba(62,207,142,0.2)';
-    statusEl.style.borderColor = 'var(--green)';
-    statusEl.style.color = 'var(--green)';
+    statusEl.dataset.state = 'live';
+    statusEl.textContent = STRINGS.wsLive;
+    statusEl.title = STRINGS.wsLiveLabel;
+    statusEl.setAttribute('aria-label', STRINGS.wsLiveLabel);
     // Reconnect: recover the work-log entries broadcast while we were offline
     // (from the HTTP cursor; afterSeq=0 when the log was still empty).
     if (panelOpen && _wl) recoverWorkLog();
   };
   ws.onclose = function() {
-    statusEl.textContent = 'Reconnecting...';
-    statusEl.title = 'WebSocket: Reconnecting';
-    statusEl.setAttribute('aria-label', 'WebSocket: Reconnecting');
-    statusEl.style.background = '';
-    statusEl.style.borderColor = '';
-    statusEl.style.color = 'var(--yellow)';
+    statusEl.dataset.state = 'reconnecting';
+    statusEl.textContent = STRINGS.wsReconnecting;
+    statusEl.title = STRINGS.wsReconnectingLabel;
+    statusEl.setAttribute('aria-label', STRINGS.wsReconnectingLabel);
     setTimeout(connectWs, 3000);
   };
   ws.onerror = function() { ws.close(); };
@@ -14140,7 +14290,7 @@ function renderWorkLogGroupHead(grp, open, task) {
   var meta = task ? renderTaskMeta(task) : '';
   var title = (task && task.content) || grp.title || '';
   return '<div class="wl-group-head" role="button" tabindex="-1" aria-expanded="' + (open ? 'true' : 'false') + '">'
-    + '<span class="wl-g-chev" aria-hidden="true">&#x25B8;</span>'
+    + '<span class="wl-g-chev chev is-right" aria-hidden="true"></span>'
     + '<span class="wl-g-id">#' + esc(grp.taskId) + '</span>'
     + '<span class="wl-g-title">' + esc(title) + '</span>'
     + '<span class="wl-g-count">' + grp.entries.length + '</span>'
@@ -14154,7 +14304,7 @@ function renderWorkLogGroup(grp, open, task) {
     + renderWorkLogGroupHead(grp, open, task)
     + (open
       ? '<div class="wl-group-body" data-filled="1">' + grp.entries.map(renderWorkLogEntry).join('') + '</div>'
-      : '<div class="wl-group-body" hidden></div>')
+      : '<div class="wl-group-body" hidden inert></div>')
     + '</div>';
 }
 // Render a group's entries into its (empty) body; open details come back open.
@@ -14291,7 +14441,11 @@ function toggleWorkLogGroup(taskId) {
   (st.groupOpen || (st.groupOpen = Object.create(null)))[taskId] = open;
   if (open) wlFillGroupBody(st, grpEl, taskId);
   if (head) head.setAttribute('aria-expanded', open ? 'true' : 'false');
-  if (body) body.hidden = !open;
+  xpMove(grpEl);
+  if (body) {
+    body.hidden = !open;
+    body.inert = !open;
+  }
 }
 
 // Paint merged entries — only while 작업 로그 is the section shown (else the tab
@@ -15233,10 +15387,22 @@ function renderDeckNav(dir) {
     if (prev) prev.title = '이전: ' + nameOf(deckStep(_deck, panelSessionKey, -1));
     if (next) next.title = '다음: ' + nameOf(deckStep(_deck, panelSessionKey, 1));
   }
-  if (dir && !reduceMotion()) {
-    panel.classList.remove('deck-in-next', 'deck-in-prev');
-    void panel.offsetWidth;
-    panel.classList.add(dir > 0 ? 'deck-in-next' : 'deck-in-prev');
+  if (dir && !reduceMotion()) deckSlide(panel, dir);
+}
+// The deck switch (P6): the header and body glide 18px in from the side the new front card came from,
+// on --dur-move ease-out. The offset is composited ('add') onto any slide still running, so a quick
+// second switch carries on from where they are drawn; the fade restarts from the drawn opacity.
+var DECK_SLIDE_MS = 320;
+function deckSlide(panel, dir) {
+  var parts = panel.querySelectorAll ? panel.querySelectorAll('.panel-header, .panel-body') : [];
+  for (var i = 0; i < parts.length; i++) {
+    var el = parts[i];
+    if (typeof el.animate !== 'function') continue;
+    var from = el._deckFade && el._deckFade.playState === 'running' ? Number(getComputedStyle(el).opacity) : 0.35;
+    if (el._deckFade) el._deckFade.cancel();
+    el.animate([{ transform: 'translateX(' + (dir > 0 ? 18 : -18) + 'px)' }, { transform: 'translateX(0)' }],
+      { duration: DECK_SLIDE_MS, easing: 'cubic-bezier(0.23, 1, 0.32, 1)', composite: 'add' });
+    el._deckFade = el.animate([{ opacity: Math.min(from, 1) }, { opacity: 1 }], { duration: DECK_SLIDE_MS, easing: 'cubic-bezier(0.23, 1, 0.32, 1)' });
   }
 }
 // The landing target of this opening, for the keyboard: the answer form, the
@@ -15510,6 +15676,9 @@ function sysFactsHtml(facts) {
 // SSOT 2026-10-29 T7: a turn the harness sent (goal continuation, background
 // resume, cron, restart, auto-compact …) is not the user's — it reads as System,
 // with its own avatar, never the user's name and initial.
+// P7: the 2lab icon set's bot and target glyphs (16 grid, 1.5 stroke, round caps, currentColor) — the
+// answer tile and the goal mark, in place of the robot and bullseye emoji.
+var BOT_AVATAR_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.75" y="5" width="10.5" height="8.25" rx="2.5"/><path d="M8 5V3M8 2.25h.01M6 8.75v1M10 8.75v1"/></svg>';
 var SYS_AVATAR_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M3.6 12.4l1.1-1.1M11.3 4.7l1.1-1.1"/></svg>';
 function renderSysTurn(t, info, attrs, time, initial, now, notLast, mediaHtml) {
   var st = info.kind === 'compact' ? cpState(t, now, notLast) : null;
@@ -15724,9 +15893,9 @@ function renderTurn(t, _idx, _arr, convId) {
     if (t.summaryBody) {
       body = '<div class="turn-summary-body">' + esc(t.summaryBody) + '</div>';
     } else if (t.summarized) {
-      body = '<div class="turn-summary-body" style="color:var(--text-tertiary);font-style:italic">Summary failed <button class="btn-action" style="margin-left:8px;font-size:10px;padding:2px 8px" onclick="event.stopPropagation();resummarize(\\'' + escJs(convId || panelConvId) + '\\',\\'' + escJs(t.id) + '\\',this)">&#x1F504; Retry</button></div>';
+      body = '<div class="turn-summary-body" style="color:var(--text-tertiary);font-style:italic">' + STRINGS.summaryFailed + ' <button class="btn-action" style="margin-left:8px;font-size:10px;padding:2px 8px" onclick="event.stopPropagation();resummarize(\\'' + escJs(convId || panelConvId) + '\\',\\'' + escJs(t.id) + '\\',this)">' + STRINGS.retry + '</button></div>';
     } else {
-      body = '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">Generating summary...</div>';
+      body = '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">' + STRINGS.summaryPending + '</div>';
     }
     // AI answer (task view T1.4, re-ai-answer D1): the answer itself is the
     // turn — <ui-ai-answer flat>, loaded as it nears the view
@@ -15749,7 +15918,7 @@ function renderTurn(t, _idx, _arr, convId) {
     var artCached = cid ? _artCache[cid] : null;
     var turnArts = '<div class="turn-arts">' + (artCached && artCached.list ? renderTurnArtifacts(artCached.list, cid, artsStart, toNum(t.timestamp)) : '') + '</div>';
     return '<div class="turn assistant"' + turnIdAttr + '>'
-      + '<div class="turn-avatar bot-avatar">&#x1F916;</div>'
+      + '<div class="turn-avatar bot-avatar" aria-hidden="true">' + BOT_AVATAR_SVG + '</div>'
       + '<div class="turn-body">'
       + '<div class="turn-header"><span class="turn-name">' + esc(botNameOf(panelSessionKey ? _sessionCache[panelSessionKey] : null)) + '</span><span class="turn-time">' + time + '</span><span class="ans-took"></span></div>'
       + answer + turnArts + raw
@@ -16023,7 +16192,7 @@ function ansPendingShow(s, convId, lastRole) {
 }
 function ansPendingHtml() {
   return '<div class="turn assistant ans-pending" aria-busy="true">'
-    + '<div class="turn-avatar bot-avatar">&#x1F916;</div>'
+    + '<div class="turn-avatar bot-avatar" aria-hidden="true">' + BOT_AVATAR_SVG + '</div>'
     + '<div class="turn-body"><div class="turn-header"><span class="turn-name">' + esc(botNameOf(panelSessionKey ? _sessionCache[panelSessionKey] : null)) + '</span></div>'
     + '<div class="ui-tok">' + ansSlotHtml('응답 작성 중') + '</div>'
     + '</div></div>';
@@ -16078,9 +16247,9 @@ function titleSubView(status, data, canRegen, previous) {
     return { text: previous || READ_ONLY_MSG, titleSub: previous || '', regen: false };
   }
   var code = data && data.code;
-  var text = code === 'cooldown' ? 'Title generation failed — retry in a minute'
-    : code === 'no_content' ? 'No conversation to title yet'
-    : 'Title generation failed';
+  var text = code === 'cooldown' ? STRINGS.titleCooldown
+    : code === 'no_content' ? STRINGS.titleNoContent
+    : STRINGS.titleFailed;
   return { text: text, titleSub: previous || '', regen: true };
 }
 
@@ -16091,7 +16260,7 @@ async function generateTitleSub(convId, regenerate) {
   var textEl = document.getElementById('panel-title-sub-text');
   var btn = document.getElementById('panel-title-sub-regen');
   var previous = _panelTitleSub;
-  textEl.textContent = 'Generating title...';
+  textEl.textContent = STRINGS.titlePending;
   btn.style.display = 'none';
   try {
     // #771 — CSRF-protected POST: attach X-CSRF-Token; when the server says the
@@ -16120,7 +16289,7 @@ async function generateTitleSub(convId, regenerate) {
     btn.style.display = view.regen ? 'inline-block' : 'none';
   } catch(e) {
     if (gen !== _panelGen) return;
-    textEl.textContent = previous || 'Error';
+    textEl.textContent = previous || STRINGS.error;
     btn.style.display = !previous || panelTitleSubCanRegen() ? 'inline-block' : 'none';
   }
 }
@@ -16753,7 +16922,7 @@ function renderCronRunRow(run, g, nowMs) {
   var title = s && s.earlierInThread ? '같은 스레드의 이전 실행' : s && s.headline ? s.headline : gl.label;
   var bits = [];
   bits.push('<time datetime="' + escAttr(new Date(run.executedAt).toISOString()) + '">' + esc(cronRunWhen(run.executedAt, nowMs)) + '</time>');
-  bits.push(esc(run.triggeredBy ? '▶ 수동 실행 (' + run.triggeredBy + ')' : '예약 실행'));
+  bits.push(esc(run.triggeredBy ? '수동 실행 (' + run.triggeredBy + ')' : '예약 실행'));
   if (s && s.activeMs) bits.push(esc('소요 ' + capCountdown(s.activeMs / 1000)));
   if (s && typeof s.tokens === 'number' && s.tokens > 0) bits.push(esc(formatTokens(s.tokens) + ' tok'));
   if (s && typeof s.costUsd === 'number' && s.costUsd > 0) bits.push(esc('$' + s.costUsd.toFixed(2)));
@@ -17706,6 +17875,7 @@ function openArtifactModal(cid, id, opener) {
   _artModal.idx = Math.max(0, list.findIndex(function(a) { return a.id === id; }));
   _artModal.opener = opener || null;
   renderArtModal(false);
+  dialogKeep(dlg);
   if (!artModalIsOpen()) {
     if (typeof dlg.showModal === 'function') dlg.showModal();
     else dlg.setAttribute('open', '');
@@ -17760,7 +17930,7 @@ function artModalStep(delta) {
 function closeArtifactModal() {
   var dlg = document.getElementById('art-modal');
   if (!dlg) return;
-  if (typeof dlg.close === 'function' && dlg.open) dlg.close();
+  if (typeof dlg.close === 'function' && dlg.open) dialogCloseSoftly(dlg);
   else { dlg.removeAttribute('open'); artModalClosed(); }
 }
 
@@ -17874,6 +18044,8 @@ function artHandleKey(e) {
   var dlg = document.getElementById('art-modal');
   if (dlg) {
     dlg.addEventListener('close', artModalClosed);
+    // Escape leaves the same way as the close button (the 180ms fade, then close()).
+    dlg.addEventListener('cancel', function(e) { e.preventDefault(); closeArtifactModal(); });
     // A click on the backdrop (the dialog element itself, outside its box) closes.
     dlg.addEventListener('click', function(e) { if (e.target === dlg) closeArtifactModal(); });
   }
@@ -18109,7 +18281,7 @@ function closeNewTask() {
   var reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   setTimeout(function () {
     if (dlg.open) dlg.close();
-  }, reduce ? 0 : 240);
+  }, reduce ? 0 : 180);
 }
 
 function ntOnClosed() {

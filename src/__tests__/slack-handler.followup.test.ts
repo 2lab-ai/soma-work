@@ -5506,6 +5506,25 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(startWithContinuation).toHaveBeenCalledTimes(1);
     });
 
+    it('SSOT 2026-10-30: add while the current goal is stopped at 10/10 queues the new goal and runs the 10/10 goal again', async () => {
+      const settled = vi.fn();
+      handler.setGoalTurnSettledHandler(settled);
+      registrySession.goal = goalOf({ continuationCount: 10, capDmPendingAt: 5 });
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '다음 목표' });
+
+      expect(result).toMatchObject({ outcome: 'queued', position: 1 });
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', status: 'active', continuationCount: 0 });
+      expect(registrySession.goal.capDmPendingAt).toBeUndefined();
+      expect(registrySession.goalQueue?.[0]).toMatchObject({ objective: '다음 목표', status: 'queued' });
+      expect(settled).toHaveBeenCalledWith(SESSION_KEY);
+      expect(postSystemMessage).toHaveBeenLastCalledWith(
+        CHANNEL,
+        expect.stringContaining('runs again'),
+        expect.anything(),
+      );
+    });
+
     it('add that would have started but finds a goal in flight after the anchor is queued — and says so', async () => {
       postSystemMessage.mockImplementationOnce(async () => {
         registrySession.goal = goalOf({ goalId: 'g9', objective: '방금 시작된 goal' });
@@ -5609,60 +5628,6 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(registrySession.goal).toBeUndefined();
       await tick();
       expect(startWithContinuation).not.toHaveBeenCalled();
-    });
-
-    it('SSOT 2026-10-30 T1: add while the current goal is parked at 10/10 starts the new goal and moves the parked one back', async () => {
-      registrySession.goal = goalOf({ continuationCount: 10, capReachedAt: 5, capDmPendingAt: 5 });
-
-      const result = await handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '다음 목표' });
-
-      expect(result).toMatchObject({ outcome: 'started' });
-      expect(registrySession.goal).toMatchObject({ objective: '다음 목표', status: 'active' });
-      expect(registrySession.goalQueue).toEqual([
-        expect.objectContaining({ goalId: 'g1', status: 'queued', capReachedAt: 5 }),
-      ]);
-      expect(postSystemMessage).toHaveBeenLastCalledWith(
-        CHANNEL,
-        expect.stringContaining('back of the queue'),
-        expect.anything(),
-      );
-      await tick();
-      expect(startWithContinuation).toHaveBeenCalledTimes(1);
-    });
-
-    it('SSOT 2026-10-30 T1: delete current whose only waiting goal used its budget — it becomes current with no opening turn', async () => {
-      registrySession.goal = goalOf();
-      registrySession.goalQueue = [
-        goalOf({
-          goalId: 'g2',
-          objective: '예산 다 쓴 goal',
-          status: 'queued',
-          continuationCount: 10,
-          capReachedAt: 5,
-        }),
-      ];
-
-      const result = await handler.handleHostGoalAction(SESSION_KEY, {
-        action: 'delete',
-        goalId: 'g1',
-        expect: 'current',
-      });
-
-      expect(result).toMatchObject({ outcome: 'deleted', goalId: 'g1', promoted: { goalId: 'g2' } });
-      expect(registrySession.goal).toMatchObject({
-        goalId: 'g2',
-        status: 'active',
-        continuationCount: 10,
-        capReachedAt: 5,
-      });
-      expect(items()).toHaveLength(0);
-      await tick();
-      expect(startWithContinuation).not.toHaveBeenCalled();
-      expect(postSystemMessage).toHaveBeenCalledWith(
-        CHANNEL,
-        expect.stringContaining('already used'),
-        expect.anything(),
-      );
     });
 
     it('undoes the delete when the promoted goal cannot be admitted (503) — current goal and queue restored', async () => {

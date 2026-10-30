@@ -36,6 +36,12 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
+/** The page's chrome words (STRINGS — tone pass P8: Korean, "…", no emoji), as served. */
+const STRINGS_START = TEMPLATE.indexOf('var STRINGS = {');
+const STRINGS = new Function(
+  `${cook(TEMPLATE.slice(STRINGS_START, TEMPLATE.indexOf('\n};\n', STRINGS_START) + 3))}\nreturn STRINGS;`,
+)() as Record<string, string>;
+
 const LEVELS = ['low', 'medium', 'high', 'xhigh', 'max'];
 
 function jsonResponse(status: number, body: unknown) {
@@ -50,6 +56,7 @@ describe('card effort picker (T1)', () => {
   const { renderEffortPicker } = load<{ renderEffortPicker(s: Record<string, unknown>): string }>(
     ['esc', 'escAttr', 'effortLabel', 'renderEffortPicker'],
     ['EFFORT_LABELS'],
+    { STRINGS },
   );
 
   it('a non-owner sees the level as text, with the level the model really runs', () => {
@@ -58,7 +65,8 @@ describe('card effort picker (T1)', () => {
     expect(html).toContain('Max &rarr; High');
     expect(html).toContain('이 모델은 High까지 실행합니다');
     expect(renderEffortPicker({ key: 'k', effort: 'high' })).toBe(
-      '<span class="meta-effort" title="Reasoning effort">High</span>',
+      // Tone pass P8: the tooltip is Korean chrome (STRINGS.effortTitle) — was "Reasoning effort".
+      '<span class="meta-effort" title="추론 강도">High</span>',
     );
   });
 });

@@ -23,7 +23,7 @@
  */
 
 import { MEMORY_CLIENT_JS, MEMORY_TAB_CSS, MEMORY_TAB_HTML } from './settings-memory-tab';
-import { UI_LIB_VERSION } from './ui-lib';
+import { pageTokenAliases, UI_LIB_VERSION, uiLibTokensCss } from './ui-lib';
 
 export interface SettingsPageTab {
   id: string;
@@ -38,23 +38,22 @@ export const SETTINGS_TABS: SettingsPageTab[] = [
 
 export const SETTINGS_PAGE_CSS = String.raw`
 *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* Tone pass P9 — the settings page speaks the dashboard's language. Its colour, geometry, type and motion
+   tokens are the ui-tokens sheet after this one (@2lab.ai/ui tokens.css + the page aliases, the dashboard's
+   single source since P10): no palette of its own. Only what the library has no counterpart for is here. */
 :root {
-  --bg: #1c1c1f; --surface: #232327; --surface-raised: #2a2a2f; --border: #34343a; --border-focus: #4d9de0;
-  --text: #ededf0; --text-secondary: #a8a8b0; --text-tertiary: #93939b;
-  --accent: #4d9de0; --green: #3ecf8e; --yellow: #f6c90e; --red: #f26b6b;
-  --danger-bg: rgba(242,107,107,0.08);
-  --ease-out: cubic-bezier(0.23, 1, 0.32, 1); --dur-press: 160ms; --dur-fade: 180ms;
-  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans KR", sans-serif; --radius: 10px;
-  /* the dashboard's status and pill tones, for the @2lab.ai/ui elements (usage bar) */
-  --ib-pill: #2f2f35; --st-wait: #f5a524; --st-done: #3fb968; --st-fail: #f26b6b;
+  /* Status tints — the library recipe: a wash of the status into the surface, the word 70% of the status
+     toward the ink. Every text pair is ≥ 4.5:1 in light and dark (numbers in the P9 commit). */
+  --tint-done-fg: color-mix(in srgb, var(--st-done) 70%, var(--text));
+  --tint-fail-fg: color-mix(in srgb, var(--st-fail-text) 70%, var(--text));
+  --tint-fail-soft: color-mix(in srgb, var(--st-fail) 6%, var(--surface));
+  --tint-fail-line: color-mix(in srgb, var(--st-fail) 55%, var(--border));
+  /* Scrim under the confirm dialog (the dashboard's, until @2lab.ai/ui ships --scrim). */
+  --scrim: rgba(20, 20, 22, 0.32);
+  --topbar-h: 56px;
 }
-[data-theme="light"] {
-  --bg: #f7f7f7; --surface: #ffffff; --surface-raised: #f1f1f1; --border: #e4e4e4;
-  --text: #18181a; --text-secondary: #57575d; --text-tertiary: #68686f;
-  --accent: #1f6fb5; --green: #13795b; --yellow: #9a6700; --red: #c0392b; --danger-bg: rgba(192,57,43,0.06);
-  --ib-pill: #e2e2e2; --st-wait: #c2780a; --st-done: #137a3e; --st-fail: #d43a3a;
-}
-html, body { background: var(--bg); color: var(--text); font: 14px/1.5 var(--font); }
+[data-theme="dark"] { --scrim: rgba(0, 0, 0, 0.56); }
+html, body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 14px; line-height: 1.45; letter-spacing: 0; -webkit-font-smoothing: antialiased; }
 /* @2lab.ai/ui elements (the 기억 tab's <ui-memory-panel>) draw with these tokens: each --ui-* an element
    reads is set on its wrapper from the same-named page token. Not on the element itself — its shadow :host
    defines --border: var(--ui-border, …), so --ui-border: var(--border) there is a cycle. Inherited from the
@@ -66,92 +65,149 @@ html, body { background: var(--bg); color: var(--text); font: 14px/1.5 var(--fon
   --ui-green: var(--green); --ui-yellow: var(--yellow); --ui-red: var(--red); --ui-ib-pill: var(--ib-pill);
   --ui-st-wait: var(--st-wait); --ui-st-done: var(--st-done); --ui-st-fail: var(--st-fail);
   --ui-ease-out: var(--ease-out); --ui-dur-press: var(--dur-press); --ui-dur-fade: var(--dur-fade);
-  --ui-radius: var(--radius); --ui-font: var(--font);
+  --ui-radius: var(--radius); --ui-font: var(--font); --ui-mono: var(--mono);
 }
 a { color: var(--accent); }
-code { font-family: "SF Mono", "Fira Code", ui-monospace, monospace; font-size: 12px; }
-.topbar { display: flex; align-items: center; gap: 12px; min-height: 48px; padding: 0 20px; background: var(--surface); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-.topbar h1 { font-size: 14px; font-weight: 800; letter-spacing: 0.08em; text-transform: uppercase; white-space: nowrap; }
-.topbar .back { font-size: 13px; text-decoration: none; color: var(--text-secondary); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; }
-.tabs { display: flex; gap: 4px; margin-left: 8px; }
-.tabs a { font-size: 13px; text-decoration: none; color: var(--text-secondary); padding: 12px 10px; border-bottom: 2px solid transparent; }
-.tabs a[aria-current="page"] { color: var(--text); font-weight: 700; border-bottom-color: var(--accent); }
-.topbar .account { margin-left: auto; display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--text-secondary); }
-.topbar button.theme { font: inherit; background: var(--surface-raised); color: var(--text); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; cursor: pointer; }
+code { font-family: var(--mono); font-size: 12px; }
+/* ── App bar — ui.2lab.ai's, as on the dashboard (P4): the page colour at 86% over what scrolls under it,
+   blurred, one hairline; opaque when the reader asks for less transparency. Chip links (no box at rest,
+   the --ib-pill chip on hover and for the current tab), a neutral user pill, the 34px theme icon button. ── */
+.topbar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 12px; min-height: var(--topbar-h); padding: 0 20px; background: color-mix(in srgb, var(--bg) 86%, transparent); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+@media (prefers-reduced-transparency: reduce) {
+  .topbar { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
+}
+.topbar h1 { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; white-space: nowrap; flex: none; }
+.topbar h1 .brand-mark { width: 22px; height: 22px; flex: none; }
+.brand-mark .bm-bg { fill: var(--text); }
+.brand-mark .bm-cell { fill: var(--surface); }
+.topbar-nav { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tabs { display: flex; gap: 2px; }
+.topbar .back, .tabs a { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 6px 10px; border-radius: 8px; font-size: 13px; font-weight: 500; color: var(--text-secondary); text-decoration: none; white-space: nowrap; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
+.topbar .back svg { width: 15px; height: 15px; flex: none; }
+.tabs a[aria-current="page"] { background: var(--ib-pill); color: var(--text); }
+.topbar .account { margin-left: auto; display: flex; gap: 6px; align-items: center; min-width: 0; }
+.topbar .who { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 260px; min-height: 32px; padding: 5px 12px 5px 8px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; font-weight: 500; line-height: 1; color: var(--text); white-space: nowrap; }
+.topbar .who svg { width: 15px; height: 15px; flex: none; color: var(--text-tertiary); }
+.topbar .who #who { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.topbar .who:has(#who:empty) { display: none; }
+.topbar .theme { display: inline-grid; place-items: center; flex: none; width: 34px; height: 34px; padding: 0; background: var(--ib-card); border: 1px solid var(--ib-card-border); border-radius: 10px; color: var(--ib-text-2); cursor: pointer; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
+.topbar .theme svg { width: 16px; height: 16px; }
+.topbar .theme .ic-moon, [data-theme="light"] .topbar .theme .ic-sun { display: none; }
+[data-theme="light"] .topbar .theme .ic-moon { display: block; }
+.topbar .back:focus-visible, .tabs a:focus-visible, .topbar .theme:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .page { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; max-width: 1080px; margin: 0 auto; padding: 24px 20px 64px; }
 /* An author display beats the UA [hidden] rule — tabs are switched with the hidden attribute. */
 .page[hidden] { display: none; }
-.side { position: sticky; top: 16px; align-self: start; display: flex; flex-direction: column; gap: 12px; }
-.side input[type="search"] { width: 100%; font: inherit; color: var(--text); background: var(--surface); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+.side { position: sticky; top: calc(var(--topbar-h) + 16px); align-self: start; display: flex; flex-direction: column; gap: 12px; }
+.side input[type="search"] { width: 100%; font: inherit; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
 .side .only-modified { display: flex; gap: 6px; align-items: center; font-size: 12px; color: var(--text-secondary); }
+.side .only-modified input { accent-color: var(--ib-text); }
 .side nav { display: flex; flex-direction: column; gap: 2px; }
-.side nav a { font-size: 13px; text-decoration: none; color: var(--text-secondary); padding: 6px 10px; border-radius: 6px; }
-.side nav .navbtn { font: inherit; font-size: 13px; text-align: left; color: var(--text-secondary); background: none; border: 0; padding: 6px 10px; border-radius: 6px; cursor: pointer; }
+.side nav a { font-size: 13px; text-decoration: none; color: var(--text-secondary); padding: 6px 10px; border-radius: 8px; }
+.side nav .navbtn { font: inherit; font-size: 13px; text-align: left; color: var(--text-secondary); background: none; border: 0; padding: 6px 10px; border-radius: 8px; cursor: pointer; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
 .side nav .navbtn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .side nav a:focus-visible, .side input:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .intro { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
-.notice { font-size: 13px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); }
-.notice.is-error { border-color: var(--red); color: var(--red); }
-section.group { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; margin-bottom: 20px; }
-section.group.danger { border-color: var(--red); background: var(--danger-bg); }
+.notice { font-size: 13px; padding: 12px 14px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.notice.is-error { border-color: var(--tint-fail-line); background: var(--tint-fail-soft); color: var(--tint-fail-fg); }
+/* Groups are the library's 12px cards with the whisper shadow; a section link lands below the sticky bar. */
+section.group { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--ib-shadow); margin-bottom: 20px; scroll-margin-top: calc(var(--topbar-h) + 16px); }
+section.group.danger { border-color: var(--tint-fail-line); background: var(--tint-fail-soft); }
 section.group > header { padding: 14px 16px 10px; border-bottom: 1px solid var(--border); }
-section.group > header h2 { font-size: 15px; letter-spacing: -0.01em; }
+section.group > header h2 { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
 section.group > header p { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
 .row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1.1fr); gap: 8px 20px; padding: 14px 16px; border-top: 1px solid var(--border); }
 .row:first-of-type { border-top: 0; }
-.row.is-modified::before { content: ''; position: absolute; left: 0; top: 12px; bottom: 12px; width: 3px; border-radius: 2px; background: var(--accent); }
+.row.is-modified::before { content: ''; position: absolute; left: 0; top: 12px; bottom: 12px; width: 3px; border-radius: 999px; background: var(--accent); }
 .row[hidden] { display: none; }
-.row .meta label, .row .meta .label { font-weight: 700; font-size: 13px; }
+.row .meta label, .row .meta .label { font-weight: 600; font-size: 13px; }
 .row .meta p { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
 .row .meta .hint { font-size: 11px; color: var(--text-tertiary); margin-top: 6px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .row .control { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .row .control .line { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .row input[type="text"], .row input[type="number"], .row select { font: inherit; font-size: 13px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; min-height: 34px; min-width: 0; }
 .row input[type="text"] { flex: 1 1 220px; }
-.row input[type="number"] { width: 110px; }
+.row input[type="number"] { width: 110px; font-variant-numeric: tabular-nums; }
 .row select { max-width: 100%; }
-.btn { font: inherit; font-size: 12px; font-weight: 600; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; padding: 6px 12px; min-height: 34px; cursor: pointer; transition: transform var(--dur-press) var(--ease-out), border-color var(--dur-press) var(--ease-out); }
-.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+/* Buttons are the library kit's (.ui-btn): a hairline card button, the ink primary — the one decision of
+   its row or dialog — and the destructive confirm in the fail tone. One press rule: scale(.97). */
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; font: inherit; font-size: 13px; font-weight: 500; line-height: 1.2; color: var(--ib-text); background: var(--ib-card); border: 1px solid var(--ib-card-border); border-radius: 8px; padding: 6px 12px; min-height: 34px; white-space: nowrap; cursor: pointer; transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, opacity 150ms ease, transform var(--dur-press) var(--ease-out); }
+.btn.primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); }
 .btn.link { background: none; border: 0; padding: 0; min-height: 0; color: var(--accent); font-weight: 500; }
-.btn.danger { background: var(--red); border-color: var(--red); color: #fff; }
-.btn:active:not(:focus-visible) { transform: scale(0.97); }
+.btn.danger { background: var(--st-fail); border-color: var(--st-fail); color: var(--ib-card); }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+:is(.btn, .topbar .back, .tabs a, .topbar .theme, .side nav .navbtn, .chip button, .pages-list .pg):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 .btn:focus-visible, .row input:focus-visible, .row select:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-@media (hover: hover) and (pointer: fine) { .btn:hover { border-color: var(--accent); } }
-fieldset.seg { border: 0; display: inline-flex; flex-wrap: wrap; background: var(--surface-raised); border-radius: 8px; padding: 2px; gap: 2px; }
+/* The library segmented control: a recessed track, the selected option a raised chip. */
+fieldset.seg { border: 0; display: inline-flex; flex-wrap: wrap; background: var(--ib-seg); border-radius: 10px; padding: 3px; gap: 2px; }
 fieldset.seg legend { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 fieldset.seg label { position: relative; }
 fieldset.seg input { position: absolute; opacity: 0; inset: 0; cursor: pointer; }
-fieldset.seg span { display: inline-block; font-size: 12px; padding: 6px 10px; border-radius: 6px; color: var(--text-secondary); min-height: 30px; }
-fieldset.seg input:checked + span { background: var(--surface); color: var(--text); font-weight: 700; box-shadow: 0 1px 2px rgba(0,0,0,0.2); }
+fieldset.seg span { display: inline-flex; align-items: center; font-size: 12.5px; font-weight: 500; padding: 5px 10px; border-radius: 8px; color: var(--ib-text-2); min-height: 28px; transition: background-color 150ms ease, color 150ms ease; }
+fieldset.seg input:checked + span { background: var(--ib-seg-on); color: var(--ib-text); font-weight: 600; box-shadow: var(--ib-shadow); }
 fieldset.seg input:focus-visible + span { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .switch { display: inline-flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer; }
-.switch input { width: 36px; height: 20px; accent-color: var(--accent); cursor: pointer; }
+.switch input { width: 36px; height: 20px; accent-color: var(--ib-text); cursor: pointer; }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
-.chip { display: inline-flex; align-items: center; gap: 4px; font-size: 12px; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 999px; padding: 2px 4px 2px 10px; }
-.chip button { font: inherit; background: none; border: 0; color: var(--text-tertiary); cursor: pointer; padding: 2px 6px; border-radius: 999px; }
+.chip { display: inline-flex; align-items: center; gap: 2px; font-size: 12px; font-weight: 500; color: var(--ib-text); background: var(--ib-pill); border: 1px solid var(--ib-card-border); border-radius: 999px; padding: 2px 2px 2px 10px; }
+.chip button { display: inline-grid; place-items: center; width: 22px; height: 22px; font: inherit; background: none; border: 0; color: var(--ib-muted); cursor: pointer; padding: 0; border-radius: 999px; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
+.chip button svg { width: 12px; height: 12px; }
 .readonly { font-size: 13px; color: var(--text-secondary); display: flex; gap: 6px; align-items: center; }
 .lock { font-size: 12px; color: var(--text-tertiary); }
+.lock-glyph { display: inline-flex; color: var(--text-tertiary); }
+.lock-glyph svg { width: 14px; height: 14px; }
 .status { font-size: 12px; min-height: 18px; color: var(--text-secondary); }
-.status.is-ok { color: var(--green); }
-.status.is-error { color: var(--red); }
-dialog { border: 1px solid var(--border); border-radius: 12px; background: var(--surface); color: var(--text); padding: 20px; max-width: 420px; }
-dialog::backdrop { background: rgba(0,0,0,0.5); }
-dialog h3 { font-size: 15px; margin-bottom: 8px; }
+.status.is-ok { color: var(--tint-done-fg); }
+.status.is-error { color: var(--tint-fail-fg); }
+/* The confirm dialog (the dashboard's, P6/P7): a 16px raised card; it and its scrim fade in — the box
+   opacity + scale(.97) on --dur-expand, the scrim on --dur-fade — and leave in 180ms. CSS only: the
+   <form method="dialog"> closes it at once (returnValue as before), only the paint lingers. */
+dialog { margin: auto; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); padding: 20px; max-width: 420px; width: calc(100% - 32px); box-shadow: var(--ib-shadow-raised); opacity: 0; transform: scale(0.97); transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out), overlay var(--dur-fade) allow-discrete, display var(--dur-fade) allow-discrete; }
+dialog[open] { opacity: 1; transform: none; transition-duration: var(--dur-expand); }
+@starting-style { dialog[open] { opacity: 0; transform: scale(0.97); } }
+dialog::backdrop { background: var(--scrim); opacity: 0; transition: opacity var(--dur-fade) var(--ease-out), overlay var(--dur-fade) allow-discrete, display var(--dur-fade) allow-discrete; }
+dialog[open]::backdrop { opacity: 1; }
+@starting-style { dialog[open]::backdrop { opacity: 0; } }
+dialog h3 { font-size: 15px; font-weight: 650; letter-spacing: -0.01em; margin-bottom: 8px; }
 dialog p { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
 dialog .actions { display: flex; justify-content: flex-end; gap: 8px; }
+/* Hover is a fine-pointer affordance only, and it never moves anything: a neutral border or the pill. */
+@media (hover: hover) and (pointer: fine) {
+  .topbar .back:hover, .tabs a:hover, .topbar .theme:hover, .side nav .navbtn:hover { background: var(--ib-pill); color: var(--text); }
+  .btn:hover:not(:disabled) { border-color: var(--ib-muted); }
+  .btn.primary:hover:not(:disabled), .btn.danger:hover:not(:disabled) { opacity: 0.88; }
+  .btn.primary:hover:not(:disabled) { border-color: var(--ib-text); }
+  .btn.danger:hover:not(:disabled) { border-color: var(--st-fail); }
+  .btn.link:hover { text-decoration: underline; }
+  fieldset.seg input:not(:checked):hover + span { color: var(--text); }
+  .chip button:hover { background: var(--ib-card); color: var(--ib-text); }
+}
 @media (max-width: 760px) {
   .page { grid-template-columns: minmax(0, 1fr); }
   .side { position: static; }
   .side nav { flex-direction: row; overflow-x: auto; }
   .row { grid-template-columns: minmax(0, 1fr); }
 }
+/* Phones: brand and account on the first row, 대시보드 and the tabs on their own row under them. */
+@media (max-width: 640px) {
+  .topbar { padding: 0 12px; row-gap: 0; }
+  .topbar-nav { order: 3; flex-basis: 100%; padding-bottom: 8px; margin-left: -4px; }
+  .topbar h1, .topbar .account { min-height: 52px; }
+  section.group { scroll-margin-top: 112px; }
+}
 @media (pointer: coarse) {
   /* Touch screens (SSOT 2026-10-24): 16px text, so iOS does not zoom into a focused field.
      Every tab's fields — the memory tab's CSS comes after this sheet, hence !important. */
   .side input[type="search"], .row input[type="text"], .row input[type="number"], .row select { font-size: 16px; }
   input[type="text"], input[type="search"], input[type="number"], select, textarea { font-size: 16px !important; }
+  /* 44px targets, as on the dashboard's bar. */
+  .topbar .back, .tabs a { min-height: 44px; }
+  .topbar .theme { width: 44px; height: 44px; }
 }
-@media (prefers-reduced-motion: reduce) { .btn { transition: none; } }
+@media (prefers-reduced-motion: reduce) {
+  *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  :is(.btn, .topbar .back, .tabs a, .topbar .theme, .side nav .navbtn, .chip button, .pages-list .pg):active:not(:disabled):not(:focus-visible) { transform: none; }
+}
 `;
 
 export const SETTINGS_CLIENT_JS = String.raw`
@@ -245,7 +301,7 @@ function renderSelect(row) {
 function renderControl(row) {
   if (!row.editable) {
     return '<div class="readonly"><span>' + esc(valueText(row, row.value)) + '</span>'
-      + (row.lockedReason ? '<span class="lock" aria-hidden="true">&#x1F512;</span><span class="lock">' + esc(row.lockedReason) + '</span>' : '') + '</div>';
+      + (row.lockedReason ? '<span class="lock-glyph" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect x="3.25" y="7" width="9.5" height="6.75" rx="1.75"/><path d="M5.5 7V5.25a2.5 2.5 0 0 1 5 0V7"/></svg></span><span class="lock">' + esc(row.lockedReason) + '</span>' : '') + '</div>';
   }
   var k = escAttr(row.key);
   if (row.kind === 'choice') {
@@ -269,7 +325,7 @@ function renderControl(row) {
     var list = row.value || [];
     for (var i = 0; i < list.length; i++) {
       chips += '<span class="chip">' + esc(list[i]) + '<button type="button" aria-label="' + escAttr(list[i] + ' 빼기') + '" data-key="' + k + '" data-item="' + escAttr(list[i])
-        + '" onclick="removeListItem(this)">&#x2715;</button></span>';
+        + '" onclick="removeListItem(this)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button></span>';
     }
     var opts = '';
     var all = row.options || [];
@@ -528,13 +584,24 @@ export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS): str
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
 </script>
 <style>${SETTINGS_PAGE_CSS}${MEMORY_TAB_CSS}</style>
+<!-- Tokens — @2lab.ai/ui is the single source, as on the dashboard (P10, P9): its tokens.css puts every
+     --ui-* on :root and [data-theme="light|dark"], and the page's names are aliases of them. -->
+<style id="ui-tokens">
+${uiLibTokensCss()}
+${pageTokenAliases()}
+</style>
 </head>
 <body>
 <div class="topbar">
-  <h1>&#x26A1; soma-work</h1>
-  <a class="back" href="/dashboard">&larr; 대시보드</a>
-  <nav class="tabs" aria-label="설정 영역">${tabLinks}</nav>
-  <div class="account"><span id="who"></span><button type="button" class="theme" onclick="toggleTheme()" aria-label="테마 바꾸기">테마</button></div>
+  <h1><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect class="bm-bg" width="32" height="32" rx="8"/><rect class="bm-cell" x="7" y="7" width="7" height="7" rx="1.5"/><rect class="bm-cell" x="18" y="7" width="7" height="7" rx="1.5" opacity=".55"/><rect class="bm-cell" x="7" y="18" width="7" height="7" rx="1.5" opacity=".55"/><rect class="bm-cell" x="18" y="18" width="7" height="7" rx="1.5" opacity=".25"/></svg>soma-work</h1>
+  <div class="topbar-nav">
+    <a class="back" href="/dashboard"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 8H3M7.25 3.75L3 8l4.25 4.25"/></svg>대시보드</a>
+    <nav class="tabs" aria-label="설정 영역">${tabLinks}</nav>
+  </div>
+  <div class="account">
+    <span class="who"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="5.5" r="2.75"/><path d="M2.75 13.75a5.25 5.25 0 0 1 10.5 0"/></svg><span id="who"></span></span>
+    <button type="button" class="theme" onclick="toggleTheme()" aria-label="테마 바꾸기"><svg class="ic-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5V3M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.05 1.05M11.55 11.55l1.05 1.05M3.4 12.6l1.05-1.05M11.55 4.45l1.05-1.05"/></svg><svg class="ic-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"/></svg></button>
+  </div>
 </div>
 ${preferencesTab()}
 ${MEMORY_TAB_HTML}
