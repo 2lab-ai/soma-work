@@ -202,10 +202,11 @@ describe('D1 · task view T1.4 — the answer is the face (<ui-ai-answer flat>);
     expect(out).toContain(`<div class="turn-answer ui-tok" data-conv="conv-run" data-turn="t2">${SLOT_LOADING}</div>`);
     expect(out).toContain('<span class="ans-took"></span>');
     expect(out).toContain(
-      '<details class="turn-raw"><summary class="turn-expand-btn">Raw</summary><div class="turn-raw-body">' +
+      // D1 (K-06): Raw is @2lab.ai/ui <ui-disclosure> — the page hands it the summary and the region.
+      '<ui-disclosure class="turn-raw" summary="Raw" flush><div class="turn-raw-body">' +
         '<div class="turn-raw-label">요약</div><div class="turn-raw-summary"><div class="turn-summary-title">Picker bars</div>' +
         '<div class="turn-summary-body">Three bars per model.</div></div>' +
-        '<div class="turn-raw-label">원문</div><pre class="turn-raw-src"></pre></div></details>',
+        '<div class="turn-raw-label">원문</div><pre class="turn-raw-src"></pre></div></ui-disclosure>',
     );
     // The answer first, Raw at the turn's foot (after the turn's files).
     expect(out.indexOf('class="turn-answer')).toBeLessThan(out.indexOf('class="turn-arts"'));
@@ -1073,7 +1074,8 @@ describe('D14 — the answer survives its summary landing; an open Raw stays ope
   // updateTurnInPanel re-renders the turn (the new markup holds a fresh element);
   // attachRawToggleHandlers then paints the answer again from the cache, at once.
   const run = (rawWasOpen: boolean) => {
-    const rawEl = { open: false };
+    // An open Raw is opened again through its attribute (works before and after the element upgrades).
+    const rawEl = { open: false, setAttribute: (n: string) => n === 'open' && (rawEl.open = true) };
     const dom = answerDom();
     const newEl = { querySelector: (sel: string) => (sel === '.turn-raw' ? rawEl : null) };
     const existing = {
@@ -1149,7 +1151,9 @@ describe('a subagent’s 지시와 답변 — its answer on the same element', (
 
   it('a result: the element in the token wrapper, then Raw (요약 + 원문 as written); running: the element alone', () => {
     const out = html(done, { spawn: null, result }, `Done: ${PR} <b>`);
-    expect(out).toContain(`<div class="turn-answer ui-tok">${SLOT_LOADING}</div><details class="turn-raw">`);
+    expect(out).toContain(
+      `<div class="turn-answer ui-tok">${SLOT_LOADING}</div><ui-disclosure class="turn-raw" summary="Raw" flush>`,
+    );
     expect(out).toContain('<div class="turn-raw-label">요약</div><div>Tray reads MODEL_STATS.</div>');
     expect(out).toContain(`<pre class="turn-raw-src">Done: ${PR} &lt;b&gt;</pre>`);
     expect(out).not.toContain('ans-card');

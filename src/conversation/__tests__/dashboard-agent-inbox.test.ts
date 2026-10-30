@@ -587,7 +587,7 @@ describe('tone pass P8 — copy and glyphs', () => {
     }
     // One chevron: the icon set's, drawn as a mask in currentColor, turned by aria-expanded.
     expect(TEMPLATE).toMatch(
-      /\n\.chev, \.turn-raw summary\.turn-expand-btn::before \{[^}]*mask: var\(--chev\) center \/ contain no-repeat;/,
+      /\n\.chev \{[^}]*mask: var\(--chev\) center \/ contain no-repeat;/,
     );
     expect(TEMPLATE).toContain('.chev.is-up, [aria-expanded="true"] > .chev { transform: rotate(180deg); }');
     expect(TEMPLATE).toContain(`<span class="wl-g-chev chev is-right" aria-hidden="true"></span>`);

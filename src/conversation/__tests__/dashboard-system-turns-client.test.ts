@@ -284,7 +284,10 @@ describe('C2 — the one-line row', () => {
     expect(out).toContain(
       `<div class="turn-avatar sys-avatar" aria-hidden="true">${clientVarValue('SYS_AVATAR_SVG')}</div>`,
     );
-    expect(out).toContain('<details class="sys-turn"><summary class="sys-row"><span class="sys-row-in">');
+    // D1 (K-06): the row is @2lab.ai/ui <ui-disclosure> — the page hands it the summary row and the detail.
+    expect(out).toContain('<ui-disclosure class="sys-turn" flush><span slot="summary" class="sys-row-in">');
+    expect(out).toContain('</pre></div></ui-disclosure></div></div>');
+    expect(out).not.toContain('sys-chev');
     expect(out).toContain('<span class="turn-name sys-name" title="하네스가 보낸 입력 — Z의 세션">System</span>');
     expect(out).not.toContain('user-avatar');
     expect(out).not.toContain('<span class="turn-name">Z</span>');
@@ -378,7 +381,7 @@ describe('C2 — the one-line row', () => {
   it('an open row stays open when its turn re-renders (a /compact result landing)', () => {
     const src = clientFn('updateTurnInPanel');
     expect(src).toContain(".querySelector('.sys-turn[open]')");
-    expect(src).toContain('sysEl.open = true');
+    expect(src).toContain("sysEl.setAttribute('open', '')");
   });
 });
 
@@ -841,7 +844,7 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
     `${text}\n\n<invoked_skills>\n${skills.map(([k, c]) => `<${k}>\n${c}\n</${k}>`).join('\n')}\n</invoked_skills>`;
   type CardApi = {
     renderCardIo(s: unknown): string;
-    ioSysToggle(el: { open: boolean }, cid: string): void;
+    ioSysToggle(cid: string, open: boolean): void;
     ioSkillToggle(cid: string, i: number): void;
     fetchCardIo(cid: string): Promise<{ instruction: { turn: Record<string, unknown> }; response: unknown }>;
   };
@@ -900,7 +903,7 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
     // SSOT 2026-10-29 T7: the harness sent it — the 지시 is System's, not the user's name.
     expect(out).toContain('<div class="io-label">지시<span class="io-who is-sys">System</span></div>');
     expect(out).not.toContain('<span class="io-who">Z</span>');
-    expect(out).toContain(`<details class="io-sys" ontoggle="ioSysToggle(this,'${CID}')">`);
+    expect(out).toContain(`<ui-disclosure class="io-sys" data-cid="${CID}" flush><span slot="summary" class="io-sys-row">`);
     expect(out).toContain('<span class="ui-chip sys-badge" data-kind="goal">Goal #2/10</span>');
     expect(out).toContain('<span class="sys-line">직전 평가: No evidence: no files, diffs, or tests.</span>');
     expect(out).toContain('<dt>회차</dt><dd>2 / 10</dd>');
@@ -919,11 +922,15 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
 
   it('the row stays open across the card re-render (the morph drops attributes the markup lacks)', () => {
     const c = card(user(goalPrompt(2, 10), SYSTEM));
-    expect(c.html()).not.toContain('<details class="io-sys" open');
-    c.ioSysToggle({ open: true }, CID);
-    expect(c.html()).toContain(`<details class="io-sys" open ontoggle="ioSysToggle(this,'${CID}')">`);
-    c.ioSysToggle({ open: false }, CID);
-    expect(c.html()).not.toContain('<details class="io-sys" open');
+    expect(c.html()).not.toContain('<ui-disclosure class="io-sys" data-cid="' + CID + '" open');
+    c.ioSysToggle(CID, true);
+    expect(c.html()).toContain(`<ui-disclosure class="io-sys" data-cid="${CID}" open flush>`);
+    c.ioSysToggle(CID, false);
+    expect(c.html()).not.toContain('<ui-disclosure class="io-sys" data-cid="' + CID + '" open');
+    // The element's ui-toggle is answered once, on the document: the reader's choice by its card's conversation.
+    expect(TEMPLATE).toContain(
+      "if (t && t.classList && t.classList.contains('io-sys')) ioSysToggle(t.getAttribute('data-cid') || '', e.detail && e.detail.open);",
+    );
   });
 
   it('a person typed it: the words as before', () => {

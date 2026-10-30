@@ -655,13 +655,13 @@ describe('T1.4 · an assistant turn reads as its answer; Raw sits at the bottom'
       '<div class="turn-answer ui-tok" data-conv="conv-1" data-turn="t2"><ui-ai-answer flat lang="ko">',
     );
     const answer = html.indexOf('class="turn-answer');
-    const raw = html.indexOf('<details class="turn-raw"');
+    const raw = html.indexOf('<ui-disclosure class="turn-raw" summary="Raw"');
     expect(answer).toBeGreaterThan(-1);
     expect(raw).toBeGreaterThan(answer);
   });
 
   it('Raw holds the summary and the source — at the foot of the turn', () => {
-    const raw = html.slice(html.indexOf('<details class="turn-raw"'));
+    const raw = html.slice(html.indexOf('<ui-disclosure class="turn-raw" summary="Raw"'));
     expect(raw).toContain('Raw');
     expect(raw).toContain('요약 본문');
     expect(raw).toContain('turn-raw-src');
