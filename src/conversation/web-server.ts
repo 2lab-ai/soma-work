@@ -555,7 +555,12 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
           reply.status(404).send('Conversation not found');
           return;
         }
-        const html = renderConversationViewPage(record);
+        // The list beside it (M-08, the archive page); a list that fails to load leaves the conversation alone.
+        const conversations = await listConversations().catch((error) => {
+          logger.warn('Conversation list unavailable beside a conversation', error);
+          return undefined;
+        });
+        const html = renderConversationViewPage(record, conversations);
         reply.type('text/html; charset=utf-8').send(html);
       } catch (error) {
         logger.error('Error rendering conversation', error);
