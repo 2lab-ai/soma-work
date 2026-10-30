@@ -213,58 +213,82 @@ describe('tone pass P9 — the settings page speaks the dashboard language', () 
   });
 });
 
-describe('개인 설정 rows', () => {
-  const r = load<{ renderRow(row: any): string }>(RENDER, { _rowStatus: {} });
+describe('개인 설정 rows — <ui-setting-row> (M-02)', () => {
+  const r = load<{ renderRow(row: any): string; rowData(row: any): any }>([...RENDER, 'rowData'], {
+    _rowStatus: { defaultModel: { state: 'error', text: '저장하지 못했습니다: 없음' } },
+  });
 
-  it('a short choice is a native radio group that saves on change, with the Slack command beside it', () => {
+  it('a row is the element with its control in the slot; a short choice is a native radio group that saves on change', () => {
     const html = r.renderRow(row());
+    expect(html.startsWith('<ui-setting-row lang="ko" id="row-defaultEffort" data-key="defaultEffort">')).toBe(true);
+    expect(html.endsWith('</ui-setting-row>')).toBe(true);
     expect(html).toContain('<fieldset class="seg"><legend>기본 effort</legend>');
     expect(html.match(/type="radio"/g)).toHaveLength(5);
     expect(html).toContain('value="xhigh" checked');
     expect(html).toContain('onchange="onChoice(this)"');
-    expect(html).toContain('Slack: <code>effort &lt;level&gt;</code>');
-    expect(html).not.toContain('기본값으로');
+    // label, description, hints, default, reset and status are the element's data, not markup
+    expect(html).not.toMatch(/기본값|Slack:|class="(meta|hint|status)"/);
   });
 
-  it('a modified row is marked and offers a reset; a long list is a select with a custom entry', () => {
-    const html = r.renderRow(
+  it('rowData: label, description, the Slack command as a hint, the default, Modified with reset, the badge, the status', () => {
+    expect(r.rowData(row())).toEqual({
+      key: 'defaultEffort',
+      label: '기본 effort',
+      description: '새 세션의 추론 강도',
+      hints: [{ label: 'Slack:', code: 'effort <level>' }],
+      modified: false,
+      canReset: false,
+      status: null,
+      locked: null,
+      defaultText: 'XHIGH',
+    });
+    const mod = r.rowData(
       row({
         key: 'defaultModel',
         label: '기본 모델',
         value: 'grok[1m]',
-        defaultValue: 'claude-opus-5-5[1m]',
+        defaultValue: 'XHIGH'.toLowerCase(),
         modified: true,
-        allowCustom: true,
-      }),
-    );
-    expect(html).toContain('class="row is-modified"');
-    expect(html).toContain('onclick="resetRow(this.getAttribute(\'data-key\'))">기본값으로</button>');
-    expect(html).toContain('<select id="f-defaultModel"');
-    expect(html).toContain('id="c-defaultModel" data-key="defaultModel"');
-  });
-
-  it('an admin-only row for a non-admin is read-only with its reason, and no control', () => {
-    const html = r.renderRow(
-      row({
-        key: 'sandbox',
-        kind: 'toggle',
-        value: true,
-        defaultValue: true,
-        editable: false,
         adminOnly: true,
-        lockedReason: '관리자만 바꿀 수 있습니다.',
       }),
     );
-    expect(html).toContain('(관리자)');
-    expect(html).toContain('관리자만 바꿀 수 있습니다.');
-    expect(html).not.toContain('<input');
+    expect(mod).toMatchObject({ modified: true, canReset: true, badge: '관리자' });
+    expect(mod.status).toEqual({ state: 'error', text: '저장하지 못했습니다: 없음' });
+    // a list row is changed item by item: no reset to default
+    expect(r.rowData(row({ kind: 'list', value: ['a'], defaultValue: [], modified: true })).canReset).toBe(false);
   });
 
-  it('toggle, typed and list rows', () => {
-    expect(r.renderRow(row({ key: 'autoGoal', kind: 'toggle', value: false, options: undefined }))).toContain(
-      'role="switch"',
-    );
+  it('a long list is a kit select with a custom entry', () => {
+    const html = r.renderRow(row({ key: 'defaultModel', label: '기본 모델', value: 'grok[1m]', allowCustom: true }));
+    expect(html).toContain('<select class="ui-input" id="f-defaultModel"');
+    expect(html).toContain('<input type="text" class="ui-input" id="c-defaultModel" data-key="defaultModel"');
+  });
+
+  it('an admin-only row for a non-admin is locked: no control, the value and the reason are the row data', () => {
+    const locked = row({
+      key: 'sandbox',
+      kind: 'toggle',
+      value: true,
+      defaultValue: true,
+      editable: false,
+      adminOnly: true,
+      lockedReason: '관리자만 바꿀 수 있습니다.',
+      options: undefined,
+    });
+    expect(r.renderRow(locked)).toBe('<ui-setting-row lang="ko" id="row-sandbox" data-key="sandbox"></ui-setting-row>');
+    expect(r.rowData(locked)).toMatchObject({
+      badge: '관리자',
+      canReset: false,
+      locked: { reason: '관리자만 바꿀 수 있습니다.', value: '켬' },
+    });
+  });
+
+  it('toggle (kit switch, the row names it), typed (kit input) and list rows', () => {
+    const toggle = r.renderRow(row({ key: 'autoGoal', kind: 'toggle', value: false, options: undefined }));
+    expect(toggle).toContain('<label class="ui-switch"><input type="checkbox" role="switch" id="f-autoGoal"');
+    expect(toggle).toContain('<span aria-hidden="true">꺼짐</span>');
     const typed = r.renderRow(row({ key: 'email', kind: 'text', value: 'a@b.co', options: undefined }));
+    expect(typed).toContain('<input type="text" class="ui-input" id="f-email"');
     expect(typed).toContain('value="a@b.co"');
     expect(typed).toContain('>저장</button>');
     expect(typed).toContain('>지우기</button>');
@@ -282,17 +306,17 @@ describe('개인 설정 rows', () => {
       }),
     );
     expect(list).toContain('data-item="local:z"');
+    expect(list).toContain('<select class="ui-input" id="f-autoskills"');
     expect(list).toContain('<option value="local:autoz">');
     expect(list).not.toContain('<option value="local:z">');
   });
 
-  it('without admin acceptance every row is read-only with the reason (the server refuses writes)', () => {
+  it('without admin acceptance every row is locked with the reason (the server refuses writes)', () => {
     const { lockIfNotAccepted } = load<{ lockIfNotAccepted(d: any): any }>(['lockIfNotAccepted']);
     const snap = lockIfNotAccepted({ accepted: false, settings: [row(), row({ key: 'email', kind: 'text' })] });
     expect(snap.settings.every((s: any) => s.editable === false && s.lockedReason.includes('승인'))).toBe(true);
-    const html = r.renderRow(snap.settings[0]);
-    expect(html).not.toContain('<input');
-    expect(html).toContain('관리자 승인 전에는 바꿀 수 없습니다.');
+    expect(r.renderRow(snap.settings[0])).not.toContain('<input');
+    expect(r.rowData(snap.settings[0]).locked.reason).toBe('관리자 승인 전에는 바꿀 수 없습니다.');
     const ok = lockIfNotAccepted({ accepted: true, settings: [row()] });
     expect(ok.settings[0].editable).toBe(true);
   });
@@ -302,24 +326,64 @@ describe('개인 설정 rows', () => {
       row({ key: 'email', kind: 'text', value: '"><img src=x onerror=alert(1)>', options: undefined }),
     );
     expect(html).not.toContain('<img');
+    expect(r.renderRow(row({ key: '"><img src=x>' }))).not.toContain('<img');
   });
 });
 
-describe('filter', () => {
-  it('touches only the 개인 설정 tab — sections of other tabs have no setting rows (review P1)', () => {
-    const selectors: string[] = [];
-    const { applyFilter } = load<{ applyFilter(): void }>(['applyFilter'], {
-      document: {
-        getElementById: () => ({ value: '', checked: false }),
-        querySelectorAll: (sel: string) => {
-          selectors.push(sel);
-          return [];
-        },
-      },
+describe('side nav and filter — <ui-settings-nav> (M-03)', () => {
+  it('ui-filter runs the library applySettingsFilter on the 개인 설정 rows only, and the nav gets the counts back', () => {
+    const body = { id: 'pref-body' };
+    const nav: { data?: any } = {};
+    const applySettingsFilter = vi.fn(() => ({ shown: 0, total: 3, sections: { 'g-model': 0, 'g-permissions': 0 } }));
+    const api = load<{ applyFilter(): void; paintNav(r: any): void }>(['findRow', 'applyFilter', 'paintNav'], {
+      document: { getElementById: (id: string) => (id === 'pref-body' ? body : id === 'pref-nav' ? nav : null) },
+      applySettingsFilter,
+      _prefFilter: { query: 'zz', modifiedOnly: false },
+      _prefSections: [
+        { id: 'g-model', label: '모델', keys: ['defaultEffort', 'defaultModel'] },
+        { id: 'g-permissions', label: '권한', keys: ['permissionMode'] },
+      ],
+      _snapshot: { settings: [row(), row({ key: 'defaultModel', modified: true }), row({ key: 'permissionMode' })] },
     });
-    applyFilter();
-    expect(selectors).toHaveLength(2);
-    for (const sel of selectors) expect(sel.startsWith('[data-tab="preferences"] ')).toBe(true);
+    api.applyFilter();
+    expect(applySettingsFilter).toHaveBeenCalledWith(body, { query: 'zz', modifiedOnly: false });
+    expect(nav.data).toEqual({
+      sections: [
+        { id: 'g-model', label: '모델', modified: 1, count: 0 },
+        { id: 'g-permissions', label: '권한', modified: 0, count: 0 },
+      ],
+      query: 'zz',
+      modifiedOnly: false,
+      empty: true,
+      label: '개인 설정 섹션',
+      placeholder: '설정 검색 (이름 · 설명 · Slack 명령)',
+    });
+  });
+
+  it('before the library module has loaded, the nav is still painted (no counts) and nothing throws', () => {
+    const nav: { data?: any } = {};
+    const api = load<{ applyFilter(): void }>(['findRow', 'applyFilter', 'paintNav'], {
+      document: { getElementById: (id: string) => (id === 'pref-nav' ? nav : { id }) },
+      applySettingsFilter: undefined,
+      _prefFilter: { query: '', modifiedOnly: false },
+      _prefSections: [{ id: 'g-model', label: '모델', keys: [] }],
+      _snapshot: { settings: [] },
+    });
+    api.applyFilter();
+    expect(nav.data.sections).toEqual([{ id: 'g-model', label: '모델', modified: 0 }]);
+    expect(nav.data.empty).toBe(false);
+  });
+
+  it('the page markup: the nav with its notice slot, the kit loading notice, the filter module from /dashboard/ui', async () => {
+    const html = renderSettingsPage();
+    const { UI_LIB_VERSION } = await import('../ui-lib');
+    expect(html).toContain(
+      '<ui-settings-nav id="pref-nav" lang="ko"><div slot="notice" id="pref-notice" class="ui-notice" data-tone="wait" role="status" hidden></div></ui-settings-nav>',
+    );
+    expect(html).toContain('<div id="pref-body"><div class="ui-notice" role="status">불러오는 중…</div></div>');
+    expect(html).toContain(`import { applySettingsFilter } from '/dashboard/ui/settings-nav.js?v=${UI_LIB_VERSION}';`);
+    expect(html).toContain(`<script type="module" src="/dashboard/ui/setting-row.js?v=${UI_LIB_VERSION}"></script>`);
+    expect(html).not.toMatch(/id="pref-filter"|id="pref-modified"|class="row/);
   });
 });
 
@@ -338,6 +402,7 @@ describe('saving', () => {
       })),
       confirmDialog: vi.fn(async () => true),
       repaintRow: vi.fn(),
+      paintRowData: vi.fn(),
       ...over,
     };
     const fns = load<{ saveSetting(key: string, value: unknown): Promise<boolean> }>(
@@ -352,7 +417,8 @@ describe('saving', () => {
     expect(await saveSetting('defaultEffort', 'high')).toBe(true);
     expect(deps.apiWrite).toHaveBeenCalledWith('PATCH', '/api/settings/defaultEffort', { value: 'high' });
     expect(snapshot.settings[0].value).toBe('high');
-    expect(deps._rowStatus.defaultEffort).toEqual({ text: '저장됨 — HIGH', error: false });
+    expect(deps._rowStatus.defaultEffort).toEqual({ state: 'saved', text: '저장됨 — HIGH' });
+    expect(deps.paintRowData).toHaveBeenCalledWith('defaultEffort'); // the row says 저장 중… while the PATCH is out
     expect(deps.repaintRow).toHaveBeenCalledWith('defaultEffort');
   });
 
@@ -363,8 +429,8 @@ describe('saving', () => {
     expect(await saveSetting('defaultEffort', 'turbo')).toBe(false);
     expect(snapshot.settings[0].value).toBe('xhigh');
     expect(deps._rowStatus.defaultEffort).toEqual({
+      state: 'error',
       text: '저장하지 못했습니다: effort는 … 중 하나여야 합니다',
-      error: true,
     });
   });
 
