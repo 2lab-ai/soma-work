@@ -86,6 +86,13 @@ describe('SessionRegistry — turn calls by task key (#598 ④a)', () => {
     expect(task.title).toBe('Derived');
   });
 
+  it('updateSessionTitleByKey overwrites a task’s title', () => {
+    const reg = new SessionRegistry();
+    const task = reg.createTask(TASK_INPUT);
+    reg.updateSessionTitleByKey(`task:${task.taskId}`, 'Summarized');
+    expect(task.title).toBe('Summarized');
+  });
+
   it('addMergeStatsByKey adds a merged PR to a task', () => {
     const reg = new SessionRegistry();
     const task = reg.createTask(TASK_INPUT);
