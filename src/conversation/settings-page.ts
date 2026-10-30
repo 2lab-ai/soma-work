@@ -289,12 +289,12 @@ function renderSegmented(row) {
   for (var i = 0; i < opts.length; i++) {
     var o = opts[i];
     html += '<label title="' + escAttr(o.description || o.label) + '"><input type="radio" name="' + escAttr(name) + '" value="' + escAttr(o.value) + '"'
-      + (o.value === row.value ? ' checked' : '') + ' data-key="' + escAttr(row.key) + '" onchange="onChoice(this)"><span>' + esc(o.label) + '</span></label>';
+      + (o.value === row.value ? ' checked' : '') + ' data-key="' + escAttr(row.key) + '" data-ui-sound="select" onchange="onChoice(this)"><span>' + esc(o.label) + '</span></label>';
   }
   return html + '</fieldset>';
 }
 function renderSelect(row) {
-  var html = '<select id="f-' + escAttr(row.key) + '" data-key="' + escAttr(row.key) + '" onchange="onChoice(this)">';
+  var html = '<select id="f-' + escAttr(row.key) + '" data-key="' + escAttr(row.key) + '" data-ui-sound="select" onchange="onChoice(this)">';
   var opts = row.options || [];
   for (var i = 0; i < opts.length; i++) {
     var o = opts[i];
@@ -318,7 +318,7 @@ function renderControl(row) {
     return (row.options || []).length <= 5 && !row.allowCustom ? renderSegmented(row) : renderSelect(row);
   }
   if (row.kind === 'toggle') {
-    return '<label class="switch"><input type="checkbox" role="switch" id="f-' + k + '" data-key="' + k + '"' + (row.value ? ' checked' : '')
+    return '<label class="switch"><input type="checkbox" role="switch" data-ui-sound="toggle" id="f-' + k + '" data-key="' + k + '"' + (row.value ? ' checked' : '')
       + ' onchange="onToggle(this)"><span>' + (row.value ? '켜짐' : '꺼짐') + '</span></label>';
   }
   if (row.kind === 'text' || row.kind === 'number') {
@@ -326,7 +326,7 @@ function renderControl(row) {
     var bounds = row.kind === 'number' ? ' min="' + row.min + '" max="' + row.max + '" step="1"' : '';
     return '<div class="line"><input type="' + type + '" id="f-' + k + '" data-key="' + k + '" value="' + escAttr(row.value) + '"' + bounds
       + ' onkeydown="if(event.key===\'Enter\')saveTyped(this.getAttribute(\'data-key\'))">'
-      + '<button type="button" class="btn primary" data-key="' + k + '" onclick="saveTyped(this.getAttribute(\'data-key\'))">저장</button>'
+      + '<button type="button" class="btn primary" data-ui-sound data-key="' + k + '" onclick="saveTyped(this.getAttribute(\'data-key\'))">저장</button>'
       + (row.kind === 'text' && row.value ? '<button type="button" class="btn" data-key="' + k + '" onclick="clearTyped(this.getAttribute(\'data-key\'))">지우기</button>' : '')
       + '</div>';
   }
