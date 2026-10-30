@@ -152,6 +152,41 @@ describe('session archive — revive support (T4.2)', () => {
     ).toMatchObject({ ok: false, code: 'invalid_cwd' });
   });
 
+  it('the archive keeps the handoff context and the handoff budget', () => {
+    const store = new SessionArchiveStore(archiveDir);
+    const handoffContext = { handoffKind: 'plan-to-work', chainId: 'ch-1', hopBudget: 1 } as any;
+    const session = {
+      ownerId: 'U1',
+      channelId: 'C1',
+      threadTs: '800.001',
+      sessionId: SID,
+      isActive: true,
+      lastActivity: new Date(),
+      handoffContext,
+      autoHandoffBudget: 0,
+    } as unknown as ConversationSession;
+    store.archive(session, 'work:C1:800.001', 'terminated');
+    const [file] = fs.readdirSync(archiveDir);
+    const saved = JSON.parse(fs.readFileSync(path.join(archiveDir, file), 'utf-8')) as ArchivedSession;
+    expect(saved.handoffContext).toEqual(handoffContext);
+    expect(saved.autoHandoffBudget).toBe(0);
+  });
+
+  it('a handoff-workflow archive from before the handoff state was kept → refused; with the state → allowed', () => {
+    writeTranscript(configDir, `/private${CWD}`);
+    expect(
+      resolveArchivedResume(archivedRecord({ sessionWorkingDir: CWD, workflow: 'z-plan-to-work' as any }), {
+        configDir,
+      }),
+    ).toMatchObject({ ok: false, code: 'handoff_provenance' });
+    expect(
+      resolveArchivedResume(
+        archivedRecord({ sessionWorkingDir: CWD, workflow: 'z-epic-update' as any, autoHandoffBudget: 1 }),
+        { configDir },
+      ),
+    ).toEqual({ ok: true, cwd: CWD });
+  });
+
   it('an incident-channel archive without its incident ownership → refused; with it → allowed', () => {
     writeTranscript(configDir, `/private${CWD}`);
     const opts = { configDir, incidentChannelIds: ['C1'] };
