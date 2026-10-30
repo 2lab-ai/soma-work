@@ -2331,9 +2331,10 @@ describe("older agents keep the reader's tree row in place — several rows in v
 
 describe('panel Tasks always render, also with no tasks (shipped renderPanelTasks)', () => {
   // Task view T1.3: the Tasks section is a disclosure in the focused tab,
-  // folded by default (_panelTasksOpen); opened, the empty line shows.
+  // folded by default (_panelTasksOpen); opened, the plan element's empty state shows (D3 E-22).
   const tasksSection = (open: boolean) => {
     const container = fakeEl({ style: { display: 'none' } });
+    const planEl: { data?: unknown } = {};
     const { renderPanelTasks } = load<{ renderPanelTasks(t: unknown): void }>(
       [
         'esc',
@@ -2347,14 +2348,24 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
         'taskRunStart',
         'taskRunsOf',
         'planSummaryHtml',
-        'taskSkippedHtml',
         'taskTotalsHtml',
-        'renderPanelTaskItem',
+        'taskElData',
+        'taskRunsData',
+        'taskPlanData',
+        'taskRunsRestore',
         'renderPanelTasks',
       ],
-      ['TASK_FATE_LABEL', 'PI_CHEV_SVG', 'TASK_RUNS_SHOWN'],
+      ['TASK_FATE_LABEL', 'PI_CHEV_SVG', 'TASK_RUNS_SHOWN', 'TASK_RUN_STATUS'],
       {
-        document: { getElementById: (id: string) => (id === 'panel-tasks' ? container : null) },
+        document: {
+          getElementById: (id: string) =>
+            id === 'panel-tasks'
+              ? container
+              : id === 'panel-task-plan' && container.innerHTML.includes(id)
+                ? planEl
+                : null,
+        },
+        _panelTaskOpen: {},
         _panelTasksOpen: open,
         _panelTasksExpanded: false,
         _panelTasksEarlier: false,
@@ -2362,10 +2373,9 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
         morphInnerHtml: (el: { innerHTML: string }, html: string) => {
           el.innerHTML = html;
         },
-        updateTimersIn: () => {},
       },
     );
-    return { container, renderPanelTasks };
+    return { container, renderPanelTasks, planEl };
   };
   const CHEV = new Function(`${clientVar('PI_CHEV_SVG')}\nreturn PI_CHEV_SVG;`)() as string;
   const head = (expanded: boolean) =>
@@ -2374,10 +2384,10 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
     ` onclick="togglePanelTasks()"><span class="ps-sec-title">Tasks</span><span class="ps-sec-sum">목록 없음</span>${CHEV}</button>`;
   const LIVE = '<span class="ar-vh pl-live" role="status" aria-live="polite"></span>';
 
-  it('zero or missing tasks show the header (folded: 목록 없음) and, opened, an empty line', () => {
+  it("zero or missing tasks show the header (folded: 목록 없음) and, opened, the plan element's empty state", () => {
     expect(CHEV).toContain('<i data-ui-icon="chevron-down" class="pi-chev"></i>');
     for (const open of [false, true]) {
-      const { container, renderPanelTasks } = tasksSection(open);
+      const { container, renderPanelTasks, planEl } = tasksSection(open);
       for (const t of [[], undefined, null]) {
         container.innerHTML = '';
         (container as { _html?: string })._html = undefined; // a fresh block (the same data on a live block writes nothing)
@@ -2385,9 +2395,10 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
         expect(container.style.display).toBe('');
         expect(container.innerHTML).toBe(
           open
-            ? `${head(true)}<div class="panel-tasks-body" id="panel-tasks-body"><div class="panel-tasks-empty">아직 작업 목록이 없습니다</div></div>${LIVE}`
+            ? `${head(true)}<div class="panel-tasks-body ui-tok" id="panel-tasks-body"><ui-task-plan class="panel-task-plan" id="panel-task-plan" lang="ko"></ui-task-plan></div>${LIVE}`
             : `${head(false)}${LIVE}`,
         );
+        if (open) expect(planEl.data).toEqual({ title: '계획', steps: [] });
       }
     }
   });

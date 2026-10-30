@@ -3860,6 +3860,8 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/conversation.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/work-log.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/choice-form.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/task-runs.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/task-plan.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4719,7 +4721,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .slide-panel:not(.is-detail) .panel-agents.is-main { display: none !important; }
 .slide-panel:not(.is-detail) .panel-arts-hint { display: none; }
 .slide-panel:not(.is-detail) .panel-goal.is-empty { display: none !important; }
-.panel-tasks-empty { font-size: 12px; color: var(--text-tertiary); padding: 2px 0 4px; }
 .panel-tasks-header {
   font-size: 12px;
   font-weight: 600;
@@ -4728,33 +4729,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   display: flex;
   align-items: center;
   gap: 8px;
-}
-.panel-tasks-header .tasks-progress {
-  font-weight: 600;
-  color: var(--accent);
-  font-size: 11px;
-}
-.panel-task-item {
-  display: flex;
-  align-items: flex-start;
-  gap: 6px;
-  padding: 3px 0;
-  font-size: 12px;
-  line-height: 1.4;
-}
-.panel-task-item .task-icon { flex-shrink: 0; font-size: 12px; }
-.panel-task-item .task-text { flex: 1; min-width: 0; }
-.panel-task-item .task-id { flex-shrink: 0; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
-.panel-task-item.completed .task-text { color: var(--text-tertiary); opacity: 0.6; }
-.panel-task-item.in_progress .task-text { color: var(--text); font-weight: 600; }
-.panel-task-item.pending .task-text { color: var(--text-secondary); }
-.panel-task-item .task-time {
-  flex-shrink: 0;
-  font-size: 10px;
-  color: var(--text-tertiary);
-  font-variant-numeric: tabular-nums;
-  text-align: right;
-  min-width: 50px;
 }
 .panel-tasks-toggle {
   display: inline-flex;
@@ -4770,68 +4744,15 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   font-weight: 600;
 }
 @media (hover: hover) and (pointer: fine) { .panel-tasks-toggle:hover { text-decoration: underline; } }
-.panel-tasks-toggle + .panel-tasks-earlier-toggle { margin-left: 14px; }
-/* ── PLAN — the panel's Tasks as a plan (re-agent-run D1–D7): a marker per step
-   (check · spinner · empty ring) on one rail, the time on the right, a sticky
-   footer with the phase. The .panel-tasks box itself is unchanged. */
-.pl-list { position: relative; margin: 0; padding: 0; list-style: none; }
-.pl-step { position: relative; display: grid; grid-template-columns: 18px minmax(0, 1fr) auto; column-gap: 10px; align-items: start; padding: 5px 0; font-size: 12.5px; line-height: 18px; }
-.pl-marker { position: relative; z-index: 1; display: grid; place-items: center; width: 18px; height: 18px; border-radius: 50%; background: var(--surface); box-shadow: inset 0 0 0 1px var(--ib-card-border); color: var(--text-secondary); }
-.pl-step[data-step="done"] .pl-marker { background: var(--ib-pill); box-shadow: none; color: var(--text); }
-.pl-step[data-step="active"] .pl-marker { box-shadow: none; color: var(--st-run); }
-/* Task fates (task view T2): paused (it had started; the session stopped), and the
-   two ways a later plan dropped a task — stopped after it ran, never run. None spins. */
-.pl-step[data-step="paused"] .pl-marker { box-shadow: inset 0 0 0 1px var(--st-wait); color: var(--st-wait); }
-.pl-step[data-step="dropped"] .pl-marker { box-shadow: none; color: var(--st-fail); }
-.pl-step[data-step="skipped"] .pl-marker { box-shadow: inset 0 0 0 1px var(--ib-card-border); color: var(--text-tertiary); }
-.pl-marker > svg { width: 10px; height: 10px; }
-.pl-step[data-step="skipped"] .task-text { color: var(--text-tertiary); text-decoration: line-through; text-decoration-color: color-mix(in srgb, var(--text-tertiary) 60%, transparent); }
-.pl-step[data-step="dropped"] .task-text { color: var(--text-secondary); }
-.pl-fate { flex: none; margin-left: 6px; padding: 0 6px; border-radius: 6px; font-size: 10.5px; font-weight: 700; background: var(--ib-pill); color: var(--text-secondary); }
-.pl-step[data-step="dropped"] .pl-fate { color: var(--st-fail); background: color-mix(in srgb, var(--st-fail) 12%, transparent); }
-.pl-step[data-step="paused"] .pl-fate { color: var(--st-wait); background: color-mix(in srgb, var(--st-wait) 12%, transparent); }
-.pl-earlier-counts { font-weight: 500; color: var(--text-tertiary); }
-.pl-earlier-group { margin-top: 6px; }
-.pl-earlier-when { margin: 4px 0 2px; font-size: 11px; font-weight: 600; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
-.pl-marker svg { width: 10px; height: 10px; }
-.pl-marker .spinner { width: 11px; height: 11px; }
-.pl-step.pl-pop .pl-marker > * { animation: pl-pop var(--dur-move) var(--ease-out) both; }
-@keyframes pl-pop { from { opacity: 0; transform: scale(0.6); } }
-.pl-list > .pl-step:not(:last-child)::before { content: ""; position: absolute; left: 8.5px; top: 25px; bottom: -3px; width: 1px; background: var(--ib-card-border); }
-.pl-list > .pl-step:not(:last-child)::after { content: ""; position: absolute; left: 8.5px; top: 25px; bottom: -3px; width: 1px; background: var(--text-tertiary); transform: scaleY(0); transform-origin: top; transition: transform var(--dur-move) var(--ease-out); }
-.pl-list > .pl-step[data-step="done"]:not(:last-child)::after { transform: none; }
-.pl-earlier > .pl-step::before, .pl-earlier > .pl-step::after { content: none; }
-.pl-main { min-width: 0; }
-.pl-line { display: block; overflow-wrap: anywhere; }
-.pl-line .task-id { margin-right: 6px; color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
-.pl-step.completed .task-text { color: var(--text-secondary); opacity: 1; }
-.pl-step.in_progress .task-text { color: var(--text); font-weight: 600; }
-.pl-step.pending .task-text { color: var(--text-secondary); }
-.pl-chip { display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px; background: var(--ib-pill); color: var(--text-secondary); font-size: 11px; line-height: 16px; white-space: nowrap; font-variant-numeric: tabular-nums; vertical-align: 1px; }
-.pl-sub { display: block; margin-top: 1px; font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.pl-aside { min-height: 18px; font-size: 12px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; white-space: nowrap; }
-.pl-step[data-step="active"] .pl-aside { color: var(--text); }
-/* ── TASK RUNS (SSOT 2026-10-29 T5) — the tasks that ran: a row is a button
-   (title · start → end · tools · tokens · cost) opening its detail beneath. ── */
-.tr-head { display: flex; align-items: center; gap: 6px; margin: 6px 0 2px; font-size: 11px; font-weight: 600; color: var(--text-tertiary); }
-.tr-head + .pl-list { margin-bottom: 4px; }
-.tr-count { padding: 0 6px; border-radius: 99px; background: var(--ib-pill); color: var(--text-secondary); font-weight: 600; font-variant-numeric: tabular-nums; }
-.tr-row { display: block; width: 100%; margin: -3px -6px; padding: 3px 6px; border: 0; border-radius: 6px; background: none; color: inherit; font: inherit; text-align: left; cursor: pointer; }
-@media (hover: hover) and (pointer: fine) { .tr-row:hover { background: var(--ib-pill); } }
-.tr-row:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 0; }
-.tr-meta { display: block; margin-top: 1px; font-size: 11.5px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.tr-run.is-open .tr-row { background: var(--ib-pill); }
-.tr-detail { display: grid; grid-template-columns: max-content minmax(0, 1fr); column-gap: 12px; row-gap: 3px; margin: 6px 0 4px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); font-size: 12px; line-height: 17px; }
-.tr-detail dt { color: var(--text-tertiary); font-weight: 600; }
-.tr-detail dd { margin: 0; color: var(--text-secondary); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.tr-revs { margin: 0; padding-left: 16px; }
-.tr-revs li { margin: 1px 0; }
-.tr-rev-at { color: var(--text-tertiary); font-variant-numeric: tabular-nums; margin-right: 4px; }
+/* ── PLAN + RUNS (D3 E-22/E-23) — the open Tasks section: <ui-task-runs> (the tasks that ran) and
+   <ui-task-plan> (the plan left, the tasks dropped before they ran) draw themselves; the page keeps the
+   older-runs toggle and the sums under them. ── */
+.panel-tasks-body > ui-task-runs, .panel-tasks-body > ui-task-plan { display: block; min-width: 0; }
+.panel-tasks-body > ui-task-runs + ui-task-plan { margin-top: 10px; }
 .tr-total { display: flex; gap: 8px; align-items: baseline; margin: 6px 0 2px; padding-top: 6px; border-top: 1px solid var(--border); font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .tr-total + .tr-total { margin-top: 0; padding-top: 0; border-top: 0; }
 .tr-total-k { flex: none; font-weight: 600; color: var(--text-tertiary); }
-.pl-fold { padding: 2px 0 2px 28px; }
-.pl-earlier { opacity: 0.85; }
+.pl-fold { padding: 0 0 4px; }
 /* Panel work log (.prd/10 §3.1-6, §3.3) — what the agent did, in order: the
    작업 로그 section tab, scrolled by its section box (newest at the bottom). */
 /* SSOT 2026-10-22 T10 — entries folded under the task they were made in. */
@@ -4972,7 +4893,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-goal .card-goal .cg-objective { -webkit-line-clamp: 3; line-height: 1.45; }
 .panel-goal .card-goal.is-open .cg-objective { display: block; -webkit-line-clamp: unset; overflow: visible; }
 .panel-goal:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
-.panel-tasks-earlier { opacity: 0.85; }
 /* Scroll container: the common surface (large UIAskQ choices included), the
    agent tabs, Tasks and the section tabs scroll together; each section scrolls
    in its own box inside it, and .panel-command stays pinned below. */
@@ -6695,20 +6615,16 @@ function renderPanelTasks(tasks, scopeLabel, earlier, outside) {
   // Spec 12: a subagent's own tasks are labelled with that agent.
   var title = 'Tasks' + (scopeLabel ? ' <span class="tasks-scope">&middot; ' + esc(scopeLabel) + '</span>' : '');
 
-  // D7: what changed since the last render of this scope (none on its first).
-  // An empty list is a baseline as well: the next list's steps are new, not changed.
+  // D7: a step that completed since the last render of this scope is announced
+  // (none on its first). An empty list is a baseline as well.
   var scope = scopeLabel || '';
   var seen = container._planScope === scope ? container._planSeen : null;
   var now = Object.create(null);
-  var changed = Object.create(null);
   var said = [];
   for (var i = 0; i < list.length; i++) {
     var t = list[i];
     now[t.id] = t.status;
-    if (seen && seen[t.id] && seen[t.id] !== t.status) {
-      changed[t.id] = true;
-      if (t.status === 'completed') said.push(t.id + ' 완료: ' + t.content);
-    }
+    if (seen && seen[t.id] && seen[t.id] !== t.status && t.status === 'completed') said.push(t.id + ' 완료: ' + t.content);
   }
   container._planScope = scope;
   container._planSeen = now;
@@ -6721,46 +6637,51 @@ function renderPanelTasks(tasks, scopeLabel, earlier, outside) {
   var live = '<span class="ar-vh pl-live" role="status" aria-live="polite">' + esc(said.join('. ')) + '</span>';
   if (!_panelTasksOpen) { writePanelTasks(container, head + live); return; }
 
-  // SSOT 2026-10-29 T5: the tasks that actually ran, in the order they ran —
-  // each with its start, end, tool calls and tokens (a row opens its detail) —
-  // then what is left of the plan; tasks a new plan dropped before they ran fold
-  // under one toggle. The model rewrites its list as it goes: the ledger keeps a
-  // rewritten task as one task (its earlier texts in the detail).
+  // SSOT 2026-10-29 T5, D3 E-22/E-23: the tasks that actually ran, in the order
+  // they ran — @2lab.ai/ui <ui-task-runs>: a row per run (status, start, run
+  // time, tokens, tool calls) that opens its detail in place (start / end,
+  // tokens in / out / cache, the tool calls of the main agent and of its
+  // subagents, cost, the task's earlier texts) — past TASK_RUNS_SHOWN only the
+  // newest, the older behind one toggle; then what is left of the plan —
+  // <ui-task-plan>, the tasks a new plan dropped before they ran in its earlier
+  // fold, its empty state while there is no list — then the sums (the runs' and
+  // the work no task got). The model rewrites its list as it goes: the ledger
+  // keeps a rewritten task as one task (its earlier texts in the detail).
   var runs = taskRunsOf(list, prev);
+  var hiddenRuns = _panelTasksExpanded ? 0 : Math.max(0, runs.ran.length - TASK_RUNS_SHOWN);
   var body = '';
-  if (!runs.ran.length && !runs.plan.length) {
-    body = '<div class="panel-tasks-empty">아직 작업 목록이 없습니다</div>';
-  } else {
-    if (runs.ran.length) {
-      // Past TASK_RUNS_SHOWN the oldest runs fold behind one toggle at the top.
-      var hiddenRuns = _panelTasksExpanded ? 0 : Math.max(0, runs.ran.length - TASK_RUNS_SHOWN);
-      var rows = '';
-      if (runs.ran.length > TASK_RUNS_SHOWN) {
-        rows += '<li class="pl-fold">' + (_panelTasksExpanded
-          ? '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()"><span class="chev is-up" aria-hidden="true"></span>최근 ' + TASK_RUNS_SHOWN + '개만 보기</button>'
-          : '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()"><span class="chev" aria-hidden="true"></span>이전 실행 ' + hiddenRuns + '개 보기</button>') + '</li>';
-      }
-      for (var r = hiddenRuns; r < runs.ran.length; r++) rows += renderTaskRun(runs.ran[r], !!changed[runs.ran[r].id]);
-      body += '<div class="tr-head">실행된 태스크 <span class="tr-count">' + runs.ran.length + '</span></div>'
-        + '<ol class="pl-list tr-list" aria-label="실행된 태스크">' + rows + '</ol>';
-    }
-    if (runs.plan.length) {
-      body += '<div class="tr-head">남은 계획 <span class="tr-count">' + runs.plan.length + '</span></div>'
-        + '<ol class="pl-list tr-plan" aria-label="남은 계획">' + runs.plan.map(function(t) { return renderPanelTaskItem(t, !!changed[t.id]); }).join('') + '</ol>';
-    }
+  if (runs.ran.length > TASK_RUNS_SHOWN) {
+    body += '<div class="pl-fold">' + (_panelTasksExpanded
+      ? '<button type="button" class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()"><span class="chev is-up" aria-hidden="true"></span>최근 ' + TASK_RUNS_SHOWN + '개만 보기</button>'
+      : '<button type="button" class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()"><span class="chev" aria-hidden="true"></span>이전 실행 ' + hiddenRuns + '개 보기</button>') + '</div>';
   }
-  var html = head + '<div class="panel-tasks-body" id="panel-tasks-body">' + body + taskSkippedHtml(runs.skipped)
+  if (runs.ran.length) body += '<ui-task-runs class="panel-task-runs" id="panel-task-runs" lang="ko"></ui-task-runs>';
+  if (runs.plan.length || runs.skipped.length || !runs.ran.length) body += '<ui-task-plan class="panel-task-plan" id="panel-task-plan" lang="ko"></ui-task-plan>';
+  var html = head + '<div class="panel-tasks-body ui-tok" id="panel-tasks-body">' + body
     + (runs.ran.length || outside ? taskTotalsHtml(runs.ran, outside) : '') + '</div>' + live;
-  // The clocks are filled at once (the 1 Hz tick keeps them going).
-  if (writePanelTasks(container, html)) updateTimersIn(container);
+  writePanelTasks(container, html);
+  var runsEl = document.getElementById('panel-task-runs');
+  if (runsEl) {
+    taskElData(runsEl, { title: '실행된 태스크', runs: taskRunsData(runs.ran.slice(hiddenRuns)), totals: false });
+    taskRunsRestore(runsEl);
+  }
+  var planEl = document.getElementById('panel-task-plan');
+  if (planEl) taskElData(planEl, taskPlanData(runs));
   // Same data (a session push while a subagent is shown) writes nothing; a
-  // change is morphed, so the focused toggle or task row stays.
+  // change is morphed, so the focused toggle, a row and each element stay.
   function writePanelTasks(el, markup) {
     if (el._html === markup) return false;
     morphInnerHtml(el, markup);
     el._html = markup;
     return true;
   }
+}
+// An element's data, set only when it changed (an unchanged push re-renders nothing).
+function taskElData(el, d) {
+  var sig = JSON.stringify(d);
+  if (el._taskSig === sig) return;
+  el._taskSig = sig;
+  el.data = d;
 }
 function togglePanelTasks() {
   _panelTasksOpen = !_panelTasksOpen;
@@ -6808,9 +6729,6 @@ function taskFateOf(t) {
   // It ran (and went back to waiting): paused — its run and numbers stay (review R1).
   return toNum(t.startedAt) > 0 || toNum(t.firstStartedAt) > 0 ? 'paused' : 'pending';
 }
-var TASK_PAUSE_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5 4h2v8H5zM9 4h2v8H9z"/></svg>';
-var TASK_STOP_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M4.5 11.5l7-7"/></svg>';
-var TASK_SKIP_SVG = '<i data-ui-icon="minus"></i>';
 // The focused node's earlier task lists: the main agent's (s.earlierTasks) or
 // the focused subagent's own.
 function panelAgentEarlier() {
@@ -6863,100 +6781,94 @@ function taskRunEnd(t) {
 function taskTokTotal(tk) {
   return tk ? toNum(tk.input) + toNum(tk.output) + toNum(tk.cacheRead) + toNum(tk.cacheCreate) : 0;
 }
-// A clock time with seconds (the run's start and end).
-function formatTaskClock(ts) {
-  if (!ts) return '';
-  return new Date(ts).toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false });
+// A run as <ui-task-runs> takes it. Ids are the ledger's (T1 …), kept unique
+// across the lists (a repeated id gets its place as a suffix).
+var TASK_RUN_STATUS = { done: 'done', active: 'running', paused: 'paused', dropped: 'dropped' };
+function taskRunsData(ran) {
+  var used = Object.create(null);
+  return ran.map(function(t, i) {
+    var id = t.id ? String(t.id) : 'run' + i;
+    if (used[id]) id = id + '~' + i;
+    used[id] = true;
+    var r = { id: id, title: String(t.content || ''), status: TASK_RUN_STATUS[taskFateOf(t)] || 'paused' };
+    if (t.id) r.ref = '#' + t.id;
+    var start = taskRunStart(t);
+    var end = taskRunEnd(t);
+    if (start) r.startedAt = start;
+    if (end) r.endedAt = end;
+    // A count shared by tasks that ran together is fractional — a whole number on screen.
+    var main = Math.round(toNum(t.toolCalls));
+    var sub = Math.round(toNum(t.agentToolCalls));
+    var tools = [];
+    if (main) tools.push({ name: '메인', count: main });
+    if (sub) tools.push({ name: '서브에이전트', count: sub });
+    if (tools.length) r.tools = tools;
+    r.toolCalls = main + sub;
+    if (t.tokens) {
+      r.tokens = { input: toNum(t.tokens.input), output: toNum(t.tokens.output), cacheRead: toNum(t.tokens.cacheRead), cacheWrite: toNum(t.tokens.cacheCreate) };
+      r.costUsd = toNum(t.tokens.costUsd);
+    }
+    if (t.revisions && t.revisions.length) {
+      r.revisions = t.revisions.map(function(v) {
+        var o = { note: String(v.content || '') };
+        if (toNum(v.at)) o.at = toNum(v.at);
+        return o;
+      });
+    }
+    return r;
+  });
 }
-function formatTaskStamp(ts) {
-  if (!ts) return '';
-  var d = new Date(ts);
-  return (d.getMonth() + 1) + '/' + d.getDate() + ' ' + formatTaskClock(ts);
-}
-// A count that may be a share (tasks that ran together split their work): a whole number.
-function taskCount(n) { return Math.round(toNum(n)); }
-// The run's numbers in one line: tool calls (the subagents' apart), tokens, cost.
-function taskRunNumbers(t) {
-  var bits = [];
-  var approx = toNum(t.shared) > 1 ? '≈' : '';
-  bits.push('툴 ' + approx + taskCount(t.toolCalls) + (toNum(t.agentToolCalls) >= 0.5 ? ' (+서브 ' + approx + taskCount(t.agentToolCalls) + ')' : ''));
-  if (t.tokens) {
-    bits.push(approx + formatTokens(taskTokTotal(t.tokens)) + ' tok');
-    if (toNum(t.tokens.costUsd) >= 0.005) bits.push(approx + '$' + toNum(t.tokens.costUsd).toFixed(2));
-  } else bits.push('토큰 기록 없음');
-  return bits;
-}
-function toggleTaskRun(id) {
-  _panelTaskOpen[id] = !_panelTaskOpen[id];
-  repaintPanelTasks();
-}
-// One run: marker · #id title [fate] — start → end · tool calls · tokens · cost — duration.
-// The row is a button: it opens the run's detail under it.
-function renderTaskRun(t, pop) {
-  var st = taskFateOf(t);
-  var cls = st === 'done' ? 'completed' : st === 'active' ? 'in_progress' : st;
-  var marker = st === 'done' ? agentIconHtml('completed')
-    : st === 'active' ? agentIconHtml('running')
-    : st === 'paused' ? TASK_PAUSE_SVG
-    : TASK_STOP_SVG;
-  var start = taskRunStart(t);
-  var end = taskRunEnd(t);
-  var aside = st === 'active' && start ? '<span class="task-elapsed" data-since="' + start + '"></span>'
-    : start && end > start ? esc(formatDuration(end - start)) : '';
-  var when = (t.startEstimated ? '≈' : '') + formatTaskClock(start) + (end ? ' → ' + formatTaskClock(end) : st === 'active' ? ' → 진행 중' : '');
-  var fate = st === 'done' || st === 'active' ? '' : '<span class="pl-fate">' + TASK_FATE_LABEL[st] + '</span>';
-  var open = !!_panelTaskOpen[t.id];
-  var id = t.id ? String(t.id) : '';
-  return '<li class="panel-task-item pl-step tr-run ' + cls + (pop ? ' pl-pop' : '') + (open ? ' is-open' : '') + '" data-step="' + st + '"'
-    + (st === 'active' ? ' aria-current="step"' : '') + '>'
-    + '<span class="pl-marker" aria-hidden="true">' + marker + '</span>'
-    + '<span class="pl-main">'
-    + '<button type="button" class="tr-row" aria-expanded="' + (open ? 'true' : 'false') + '"'
-    + (id ? ' onclick="toggleTaskRun(\\'' + escJs(id) + '\\')"' : '') + '>'
-    + '<span class="pl-line">' + (id ? '<span class="task-id">#' + esc(id) + '</span>' : '')
-    + '<span class="task-text">' + esc(t.content) + '</span>' + fate + '</span>'
-    + '<span class="tr-meta">' + esc(when) + '<span class="pi-dot" aria-hidden="true">&middot;</span>' + esc(taskRunNumbers(t).join(' · ')) + '</span>'
-    + '<span class="ar-vh">, ' + TASK_FATE_LABEL[st] + '</span>'
-    + '</button>'
-    + (open ? taskRunDetailHtml(t, st) : '')
-    + '</span>'
-    + '<span class="pl-aside">' + aside + '</span>'
-    + '</li>';
-}
-// A run's detail: when it started and ended (and how that is known), the work
-// counted on it, its earlier texts and the tasks folded into it.
-function taskRunDetailHtml(t, st) {
-  var rows = [];
-  var start = taskRunStart(t);
-  var end = taskRunEnd(t);
-  rows.push(['시작', start ? formatTaskStamp(start) + (t.startEstimated ? ' (≈ 진행 중 표시 없이 완료 — 직전 목록 시각)' : '') : '—']);
-  rows.push(['종료', st === 'active' ? '진행 중' : st === 'paused' ? '멈춤 (세션이 멈춤)' : end ? formatTaskStamp(end) + (st === 'dropped' ? ' (새 계획으로 교체)' : '') : '—']);
-  if (start && end > start) rows.push(['소요', formatDuration(end - start)]);
-  rows.push(['도구', '메인 ' + taskCount(t.toolCalls) + '회' + (toNum(t.agentToolCalls) >= 0.5 ? ' · 서브에이전트 ' + taskCount(t.agentToolCalls) + '회' : '')]);
-  if (t.tokens) {
-    var tk = t.tokens;
-    rows.push(['토큰', formatTokens(taskTokTotal(tk)) + ' — 입력 ' + formatTokens(tk.input) + ' · 출력 ' + formatTokens(tk.output)
-      + ' · 캐시 읽기 ' + formatTokens(tk.cacheRead) + ' · 캐시 쓰기 ' + formatTokens(tk.cacheCreate)]);
-    rows.push(['비용', 'API 환산 $' + toNum(tk.costUsd).toFixed(2)]);
-  } else rows.push(['토큰', '기록 없음 (태스크별 집계 이전에 실행됨)']);
-  if (toNum(t.shared) > 1) rows.push(['분배', toNum(t.shared) + '개 태스크가 함께 진행 — 수치는 그 몫(1/' + toNum(t.shared) + ')']);
-  var html = '<dl class="tr-detail">' + rows.map(function(r) { return '<dt>' + esc(r[0]) + '</dt><dd>' + esc(r[1]) + '</dd>'; }).join('');
-  if (t.revisions && t.revisions.length) {
-    html += '<dt>문구 변경</dt><dd><ol class="tr-revs">' + t.revisions.map(function(r) {
-      return '<li><span class="tr-rev-at">' + esc(formatTaskClock(r.at)) + '</span> ' + esc(r.content) + '</li>';
-    }).join('') + '</ol></dd>';
+// What is left of the plan (the current list's tasks that never started) as
+// <ui-task-plan> steps; the tasks a new plan dropped before they ran are its
+// earlier fold (each one dropped). No list at all: the element's empty state.
+function taskPlanData(runs) {
+  var step = function(t, i) {
+    var s = { id: t.id ? String(t.id) : 'step' + i, label: String(t.content || ''), status: 'pending' };
+    if (t.id) s.ref = '#' + t.id;
+    return s;
+  };
+  var d = { title: runs.ran.length || runs.plan.length ? '남은 계획' : '계획', steps: runs.plan.map(step) };
+  if (runs.skipped.length) {
+    d.earlier = [{
+      id: 'skipped',
+      title: '실행 전에 계획에서 빠진 태스크',
+      steps: runs.skipped.map(function(t, i) {
+        var s = step(t, i);
+        s.id = 'skipped:' + s.id;
+        s.fate = 'dropped';
+        return s;
+      }),
+    }];
   }
-  return html + '</dl>';
+  return d;
 }
-// Tasks a new plan dropped before they ran: never work — one folded toggle.
-function taskSkippedHtml(skipped) {
-  if (!skipped || !skipped.length) return '';
-  var html = '<button type="button" class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="' + (_panelTasksEarlier ? 'true' : 'false') + '"'
-    + ' onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()">'
-    + '<span class="chev" aria-hidden="true"></span>실행 전에 계획에서 빠짐 <span class="pl-earlier-counts">' + skipped.length + '</span></button>';
-  if (!_panelTasksEarlier) return html;
-  return html + '<ol class="pl-list pl-earlier" aria-label="실행 전에 계획에서 빠진 태스크">' + skipped.map(function(t) { return renderPanelTaskItem(t); }).join('') + '</ol>';
+// The runs whose detail the reader opened stay open across a repaint that
+// re-creates the element (the section folded and opened, another agent's tab
+// and back is a new scope: selectPanelAgent clears them).
+function taskRunsRestore(el) {
+  if (!el || el._trRestored || typeof el.setOpen !== 'function') return;
+  el._trRestored = true;
+  for (var id in _panelTaskOpen) if (_panelTaskOpen[id]) el.setOpen(id, true);
 }
+// The elements' reports: a run's detail opened / closed (kept for the next
+// element), the dropped-before-running fold opened / closed.
+(function initPanelTasks() {
+  var host = document.getElementById('panel-tasks');
+  if (!host) return;
+  host.addEventListener('ui-toggle', function(e) {
+    var el = e.target;
+    if (!el || !e.detail) return;
+    if (el.tagName === 'UI-TASK-RUNS') {
+      if (e.detail.open) _panelTaskOpen[String(e.detail.id)] = true;
+      else delete _panelTaskOpen[String(e.detail.id)];
+    } else if (el.tagName === 'UI-TASK-PLAN' && e.detail.id === 'earlier-plans') {
+      _panelTasksEarlier = !!e.detail.open;
+    }
+  });
+  if (window.customElements && customElements.whenDefined) {
+    customElements.whenDefined('ui-task-runs').then(function() { taskRunsRestore(document.getElementById('panel-task-runs')); });
+  }
+})();
 // The foot: the runs' sums (tool calls, tokens, cost) and the work no task got.
 function taskTotalsHtml(ran, outside) {
   var tools = 0;
@@ -6981,42 +6893,6 @@ function taskTotalsHtml(ran, outside) {
   return html;
 }
 
-// One plan step (D1–D5): marker · #id title [툴 N회] (+ what it is doing now) ·
-// its time — the duration once done (or until it was stopped), a 1 Hz clock
-// while it runs (no clock in the markup, so equal data renders equal HTML).
-// pop = its state just changed.
-function renderPanelTaskItem(t, pop) {
-  var st = taskFateOf(t);
-  var cls = st === 'done' ? 'completed' : st === 'active' ? 'in_progress' : st;
-  var marker = st === 'done' ? agentIconHtml('completed')
-    : st === 'active' ? agentIconHtml('running')
-    : st === 'paused' ? TASK_PAUSE_SVG
-    : st === 'dropped' ? TASK_STOP_SVG
-    : st === 'skipped' ? TASK_SKIP_SVG : '';
-  // SSOT 2026-10-22 T7: tool calls made while the task ran.
-  var chip = st !== 'pending' && st !== 'skipped' && t.toolCalls !== undefined ? '<span class="pl-chip">툴 ' + Math.round(toNum(t.toolCalls)) + '회</span>' : '';
-  var sub = st === 'active' && t.activeForm && t.activeForm !== t.content ? '<span class="pl-sub">' + esc(t.activeForm) + '</span>' : '';
-  var fate = st === 'dropped' || st === 'skipped' || st === 'paused' ? '<span class="pl-fate">' + TASK_FATE_LABEL[st] + '</span>' : '';
-  var aside = '';
-  if (st === 'done' && t.startedAt && t.completedAt) aside = esc(formatDuration(t.completedAt - t.startedAt));
-  else if (st === 'active' && t.startedAt) aside = '<span class="task-elapsed" data-since="' + toNum(t.startedAt) + '"></span>';
-  else if (st === 'dropped' && t.startedAt && t.removedAt > t.startedAt) aside = esc(formatDuration(t.removedAt - t.startedAt));
-  var times = [];
-  if (t.startedAt) times.push(formatTaskTime(t.startedAt));
-  if (t.completedAt) times.push(formatTaskTime(t.completedAt));
-  else if (t.removedAt && (st === 'dropped' || st === 'skipped')) times.push(formatTaskTime(t.removedAt) + ' 계획에서 빠짐');
-  return '<li class="panel-task-item pl-step ' + cls + (pop ? ' pl-pop' : '') + '" data-step="' + st + '"'
-    + (st === 'active' ? ' aria-current="step"' : '')
-    + (times.length ? ' title="' + escAttr(times.join(' → ')) + '"' : '') + '>'
-    + '<span class="pl-marker" aria-hidden="true">' + marker + '</span>'
-    + '<span class="pl-main"><span class="pl-line">'
-    + (t.id ? '<span class="task-id">#' + esc(t.id) + '</span>' : '')
-    + '<span class="task-text">' + esc(t.content) + '</span>' + fate + chip + '</span>'
-    + sub
-    + '<span class="ar-vh">, ' + TASK_FATE_LABEL[st] + '</span></span>'
-    + '<span class="pl-aside">' + aside + '</span>'
-    + '</li>';
-}
 let _csrfToken = '';
 
 /*
