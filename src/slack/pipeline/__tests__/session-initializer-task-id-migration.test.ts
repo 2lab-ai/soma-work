@@ -114,4 +114,37 @@ describe('SessionInitializer — bot-thread migration keeps the task id (#595 T2
     expect(botSession.conversationId).toBe('conv-orig');
     expect(registry.getSessionByTaskId(taskId)).toBe(botSession);
   });
+
+  it('a refused termination leaves the task id on the original — the lookup never points at the unreturned bot session', async () => {
+    const original = registry.createSession('U123', 'Test User', 'C123', '900.001');
+    original.state = 'MAIN';
+    original.workflow = 'default';
+    original.title = 'Session';
+    const taskId = original.taskId!;
+
+    // The host refuses to delete the original (fail-closed deletion seam).
+    registry.setBeforeSessionDelete((key) => {
+      if (key === registry.getSessionKey('C123', '900.001')) throw new Error('durable state not settled');
+    });
+
+    await expect(
+      (sessionInitializer as any).createBotInitiatedThread(
+        original,
+        'C123',
+        '900.001',
+        'U123',
+        'Test User',
+        '/test/dir',
+        false,
+      ),
+    ).rejects.toThrow();
+
+    // The original is still live and still owns its task id.
+    expect(registry.getSession('C123', '900.001')).toBe(original);
+    expect(original.taskId).toBe(taskId);
+    expect(registry.getSessionByTaskId(taskId)).toBe(original);
+    // The half-made bot session does not carry the task id.
+    const bot = registry.getSession('C123', '900.002');
+    if (bot) expect(bot.taskId).not.toBe(taskId);
+  });
 });

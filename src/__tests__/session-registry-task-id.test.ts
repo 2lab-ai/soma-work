@@ -160,19 +160,25 @@ describe('SessionRegistry — task id across a context reset (T2)', () => {
     expect(reg.getSessionByTaskId(taskId)).toBe(session);
   });
 
-  it('T2.3 — an inherited task id moves to the new session; terminating the old one keeps the lookup', () => {
+  it('T2.3 — a task id moves to a new session only once the old holder is gone; the lookup follows it', () => {
     const reg = new SessionRegistry();
     const original = ranSession(reg, 'C1', '200.003');
     const taskId = original.taskId!;
+    const moved = reg.createSession('U1', 'User', 'C1', '200.004');
+    const movedKey = reg.getSessionKey('C1', '200.004');
 
-    const moved = reg.createSession('U1', 'User', 'C1', '200.004', undefined, { taskId });
-    expect(moved.taskId).toBe(taskId);
-    expect(reg.getSessionByTaskId(taskId)).toBe(moved);
-    // At most one live session carries a task id.
-    expect(original.taskId).toBeUndefined();
+    // Refused while the original still holds it — nothing changes.
+    expect(reg.adoptTaskId(movedKey, taskId)).toBe(false);
+    expect(original.taskId).toBe(taskId);
+    expect(reg.getSessionByTaskId(taskId)).toBe(original);
 
     reg.terminateSession(reg.getSessionKey('C1', '200.003'));
+    const mintedForMoved = moved.taskId!;
+    expect(reg.adoptTaskId(movedKey, taskId)).toBe(true);
+    expect(moved.taskId).toBe(taskId);
     expect(reg.getSessionByTaskId(taskId)).toBe(moved);
+    // The id the new session was born with is no longer indexed.
+    expect(reg.getSessionByTaskId(mintedForMoved)).toBeUndefined();
   });
 });
 
@@ -247,6 +253,13 @@ describe('SessionRegistry — task id across restart and revive (T3)', () => {
     const taskId = session.taskId!;
     expect(typeof taskId).toBe('string');
     expect(first.getSessionByTaskId(taskId)).toBe(session);
+
+    // The loader wrote the minted id back at once — before anything else saves.
+    const onDisk = JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8')) as Array<{ taskId?: string }>;
+    expect(onDisk[0].taskId).toBe(taskId);
+    const beforeBackfill = new SessionRegistry();
+    beforeBackfill.loadSessions();
+    expect(beforeBackfill.getSessionByTaskId(taskId)).toBe(beforeBackfill.getSession('C1', '300.002'));
 
     expect(await first.backfillConversationIds()).toBe(1);
     expect(session.conversationId).toBe('conv-legacy');
