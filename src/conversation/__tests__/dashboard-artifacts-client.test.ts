@@ -410,8 +410,9 @@ describe('T3 — full-size modal', () => {
     expect(TEMPLATE).toMatch(/<dialog id="art-modal"/);
     // The cron drawer over a docked panel takes Escape first too (SSOT 2026-10-24, trinity R4).
     // SSOT 2026-10-29 T2: what Escape closes is the front detail card (closeDetailCard folds its card too).
+    // D1: an element on top (menu, <ui-dialog>, <ui-drawer>) that took the Escape (defaultPrevented) keeps it.
     expect(TEMPLATE).toMatch(
-      /if \(e\.key === 'Escape' && panelOpen && !artModalIsOpen\(\) && !_cronDrawerKey\) closeDetailCard\(\);/,
+      /if \(e\.key === 'Escape' && !e\.defaultPrevented && panelOpen && !artModalIsOpen\(\) && !_cronDrawerKey\) closeDetailCard\(\);/,
     );
   });
 });
