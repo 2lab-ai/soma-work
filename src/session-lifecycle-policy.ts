@@ -188,11 +188,27 @@ export interface LifecycleSessionView {
   activityState?: string;
   lastActivity: Date | string;
   sleepStartedAt?: Date | string;
+  /** Starred on the dashboard: never slept or archived (SSOT 2026-10-30 T3). */
+  starred?: boolean;
+  /** When the star was last removed (epoch ms) — see {@link idleSinceMs}. */
+  starClearedAt?: number;
 }
 
 function ms(v: Date | string | undefined): number {
   if (v === undefined) return Number.NaN;
   return v instanceof Date ? v.getTime() : Date.parse(v);
+}
+
+/**
+ * Where a session's idle clock starts: its last user input, or — when later —
+ * the moment its star was removed. An unstarred session thereby gets a full
+ * sleep period instead of sleeping on the next sweep, and `lastActivity` (the
+ * board's "last instruction" time) is never rewritten to grant it.
+ */
+export function idleSinceMs(s: Pick<LifecycleSessionView, 'lastActivity' | 'starClearedAt'>): number {
+  const last = ms(s.lastActivity);
+  const cleared = typeof s.starClearedAt === 'number' && Number.isFinite(s.starClearedAt) ? s.starClearedAt : -Infinity;
+  return Number.isFinite(last) ? Math.max(last, cleared) : cleared;
 }
 
 /**
@@ -212,12 +228,13 @@ export function countLifecycleTransitions(
   let willArchive = 0;
   for (const s of sessions) {
     if (s.activityState === 'working') continue; // the sweep never sleeps a running turn
+    if (s.starred === true) continue; // nor a starred one (SSOT 2026-10-30 T3)
     if (s.state === 'SLEEPING') {
       const started = ms(s.sleepStartedAt);
       const age = Number.isFinite(started) ? now - started : Number.POSITIVE_INFINITY;
       if (age >= to.archiveAfterMs && age < from.archiveAfterMs) willArchive++;
     } else {
-      const idle = now - ms(s.lastActivity);
+      const idle = now - idleSinceMs(s);
       if (idle >= to.sleepAfterMs && idle < from.sleepAfterMs) willSleep++;
     }
   }

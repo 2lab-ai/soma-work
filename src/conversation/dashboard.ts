@@ -79,7 +79,7 @@ import {
   type TaskTokens,
   type TaskWork,
 } from '../session/task-ledger';
-import { type ArchivedSession, getArchiveStore } from '../session-archive';
+import { type ArchivedSession, getArchiveStore, type SessionLifecycleOutcome } from '../session-archive';
 import { buildWorkSessionKey, normalizeSessionKey } from '../session-identity';
 import {
   countLifecycleTransitions,
@@ -183,6 +183,12 @@ export interface KanbanSession {
   sessionState: string; // MAIN | SLEEPING
   terminated?: boolean;
   trashed?: boolean;
+  /**
+   * SSOT 2026-10-30 — starred by its owner: listed first in its column (a
+   * pinned group in DONE) and kept alive (never slept or archived). Live
+   * sessions only; an archive is never starred.
+   */
+  starred?: boolean;
   conversationId?: string;
   lastActivity: string; // ISO
   /** Links */
@@ -760,6 +766,70 @@ function resolveSelfActionKeyAndOwner(request: any, reply: any): { wireKey: stri
   return { wireKey, originalKey };
 }
 
+// ── Task star + revive targets (SSOT 2026-10-30) ───────────────────
+
+/**
+ * The local part of an archived card's key — `archived_<sessionKey>_<archivedAt>`
+ * (archivedToKanban) — split into the archive it names, or null for a live key.
+ * The session key may itself hold `_`; the timestamp is the last segment.
+ */
+function parseArchivedCardKey(localKey: string): { sessionKey: string; archivedAt: number } | null {
+  if (!localKey.startsWith('archived_')) return null;
+  const rest = localKey.slice('archived_'.length);
+  const sep = rest.lastIndexOf('_');
+  if (sep <= 0) return null;
+  const ts = rest.slice(sep + 1);
+  if (!/^[0-9]{1,16}$/.test(ts)) return null;
+  return { sessionKey: rest.slice(0, sep), archivedAt: Number(ts) };
+}
+
+const LIFECYCLE_REFUSAL_STATUS: Record<Extract<SessionLifecycleOutcome, { ok: false }>['code'], number> = {
+  not_found: 404,
+  forbidden: 403,
+  terminated: 409,
+  conflict: 409,
+  no_conversation: 422,
+  transcript_missing: 422,
+  invalid_cwd: 422,
+  incident_provenance: 422,
+  handoff_provenance: 422,
+};
+
+function sendLifecycleRefusal(reply: any, outcome: Extract<SessionLifecycleOutcome, { ok: false }>): void {
+  reply.status(LIFECYCLE_REFUSAL_STATUS[outcome.code] ?? 500).send({ error: outcome.message, code: outcome.code });
+}
+
+/**
+ * The session a star / revive targets. A live card: the cross-instance check
+ * and the session-owner gate every action takes. An archived card: the exact
+ * archive it names (404 when gone), gated by that archive's owner — the live
+ * map has no entry to read an owner from. Null = already answered.
+ */
+function resolveLifecycleTarget(
+  request: any,
+  reply: any,
+): { kind: 'live'; originalKey: string } | { kind: 'archived'; archived: ArchivedSession } | null {
+  const local = resolveSelfActionKey(request.params?.key ?? '', reply);
+  if (local === null) return null;
+  const card = parseArchivedCardKey(local);
+  if (!card) {
+    if (!requireSessionOwner(request, reply, local)) return null;
+    return { kind: 'live', originalKey: local };
+  }
+  const archived = getArchiveStore().load(card.sessionKey, card.archivedAt);
+  if (!archived) {
+    reply.status(404).send({ error: '보관된 세션을 찾을 수 없어요', code: 'not_found' });
+    return null;
+  }
+  if (!_hasWriteAccess(request, archived.ownerId)) {
+    reply.status(403).send({
+      error: 'Forbidden — write requires session ownership, or admin user with X-Admin-Mode: on header (#716)',
+    });
+    return null;
+  }
+  return { kind: 'archived', archived };
+}
+
 // ── Session data accessor ──────────────────────────────────────────
 
 type SessionAccessor = () => Map<string, any>;
@@ -1061,6 +1131,22 @@ export function setDashboardTrashHandler(fn: TrashHandler): void {
 }
 export function setDashboardCommandHandler(fn: CommandHandler): void {
   _commandHandlerFn = fn;
+}
+
+/**
+ * Task star + revive (SSOT 2026-10-30), wired to the session registry in
+ * src/index.ts: star / unstar a live session (starring a sleeping one wakes
+ * it), revive a live (sleeping) one, restore an archived one — the resume
+ * proof (transcript + cwd + incident provenance) is the host's.
+ */
+export interface DashboardLifecycleHandler {
+  star(sessionKey: string, starred: boolean): SessionLifecycleOutcome;
+  revive(sessionKey: string): SessionLifecycleOutcome;
+  restore(archived: ArchivedSession): SessionLifecycleOutcome;
+}
+let _lifecycleHandler: DashboardLifecycleHandler | null = null;
+export function setDashboardLifecycleHandler(handler: DashboardLifecycleHandler | null): void {
+  _lifecycleHandler = handler;
 }
 
 // ── Follow-up queue (dashboard batch 2 — <ui-agent-steering>) ──────
@@ -1768,6 +1854,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     sessionState: s.state || 'MAIN',
     terminated: s.terminated === true,
     trashed: s.trashed === true,
+    ...(s.starred === true ? { starred: true } : {}),
     conversationId: s.conversationId,
     lastActivity: s.lastActivity instanceof Date ? s.lastActivity.toISOString() : String(s.lastActivity),
     ...(permissions.length > 0 ? { pendingPermissions: permissions } : {}),
@@ -2061,8 +2148,9 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
     logger.warn('Failed to load archived sessions for dashboard — closed column may be incomplete', err);
   }
 
-  // Sort each column by lastActivity desc
+  // Sort each column: starred first (SSOT 2026-10-30 T2), then lastActivity desc
   const byActivity = (a: KanbanSession, b: KanbanSession) =>
+    Number(b.starred === true) - Number(a.starred === true) ||
     new Date(b.lastActivity).getTime() - new Date(a.lastActivity).getTime();
   board.working.sort(byActivity);
   board.waiting.sort(byActivity);
@@ -2933,6 +3021,12 @@ export async function registerDashboardRoutes(
       const resolved = resolveSelfActionKeyAndOwner(request, reply);
       if (!resolved) return;
       const { wireKey: key, originalKey } = resolved;
+      // A starred session is pinned on top of the board; hiding it would
+      // contradict the star (SSOT 2026-10-30). Unstar it first.
+      if (getAllSessions().get(normalizeSessionKey(originalKey))?.starred === true) {
+        reply.status(409).send({ error: '즐겨찾기한 세션은 휴지통으로 옮길 수 없어요 — 먼저 별을 해제하세요' });
+        return;
+      }
       try {
         if (_trashHandlerFn) {
           await _trashHandlerFn(originalKey);
@@ -2942,6 +3036,98 @@ export async function registerDashboardRoutes(
         reply.send({ ok: true });
       } catch (error) {
         logger.error('Error trashing session', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  // ── Task star + revive (SSOT 2026-10-30) ──
+  // Star: pinned on top + kept alive (starring a sleeping or archived card
+  // brings it back first — T5). Revive: a sleeping session wakes, an archived
+  // one is restored so the conversation continues (T4). Owner-only like Close;
+  // an archived card is gated by its archive's owner and names the exact
+  // archive it shows. The answer carries the live key, so the page can follow
+  // an archived card to the session it became.
+
+  server.post<{ Params: { key: string }; Body: { starred?: unknown } }>(
+    '/api/dashboard/session/:key/star',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const starred = request.body?.starred;
+      if (typeof starred !== 'boolean') {
+        reply.status(400).send({ error: 'starred must be a boolean' });
+        return;
+      }
+      if (!_lifecycleHandler) {
+        reply.status(501).send({ error: 'Lifecycle handler not configured' });
+        return;
+      }
+      const target = resolveLifecycleTarget(request, reply);
+      if (!target) return;
+      try {
+        let revived = false;
+        let outcome: SessionLifecycleOutcome;
+        if (target.kind === 'archived') {
+          if (!starred) {
+            reply.status(409).send({ error: '보관된 세션에는 별이 없어요', code: 'conflict' });
+            return;
+          }
+          const restored = _lifecycleHandler.restore(target.archived);
+          if (!restored.ok) {
+            sendLifecycleRefusal(reply, restored);
+            return;
+          }
+          revived = restored.revived;
+          outcome = _lifecycleHandler.star(restored.sessionKey, true);
+        } else {
+          outcome = _lifecycleHandler.star(target.originalKey, starred);
+        }
+        if (!outcome.ok) {
+          sendLifecycleRefusal(reply, outcome);
+          return;
+        }
+        broadcastSessionUpdate();
+        reply.send({
+          ok: true,
+          key: composeSessionKey(outcome.sessionKey),
+          starred: outcome.starred,
+          revived: revived || outcome.revived,
+        });
+      } catch (error) {
+        logger.error('Error starring session', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
+  server.post<{ Params: { key: string } }>(
+    '/api/dashboard/session/:key/revive',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      if (!_lifecycleHandler) {
+        reply.status(501).send({ error: 'Lifecycle handler not configured' });
+        return;
+      }
+      const target = resolveLifecycleTarget(request, reply);
+      if (!target) return;
+      try {
+        const outcome =
+          target.kind === 'archived'
+            ? _lifecycleHandler.restore(target.archived)
+            : _lifecycleHandler.revive(target.originalKey);
+        if (!outcome.ok) {
+          sendLifecycleRefusal(reply, outcome);
+          return;
+        }
+        broadcastSessionUpdate();
+        reply.send({
+          ok: true,
+          key: composeSessionKey(outcome.sessionKey),
+          starred: outcome.starred,
+          revived: outcome.revived,
+        });
+      } catch (error) {
+        logger.error('Error reviving session', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
     },
@@ -4393,6 +4579,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .btn-action.btn-primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); }
 .btn-action.btn-stop { color: var(--st-fail); }
 .btn-action.btn-trash { color: var(--ib-muted); }
+/* SSOT 2026-10-30 — ★ Star (pressed = amber) and 살리기 (the run tint). */
+.btn-action.btn-star.is-on { color: var(--st-wait); border-color: var(--st-wait); }
+.btn-action.btn-revive { color: var(--st-run); }
 
 /* ── GOAL LIST (work item, SSOT 2026-10-21 T2/T3) ── */
 .card-goal {
@@ -8507,11 +8696,15 @@ function doneDayLabel(key, now) {
   return d.toLocaleDateString('ko-KR', opts);
 }
 // Pure: [{ key, label, open, items }] — opened = the reader's choices.
+// SSOT 2026-10-30 T2: a starred card leaves its day for the pinned group
+// ('starred', ★ Starred), first and open until the reader folds it.
 function planDoneGroups(done, now, opened) {
   var byKey = Object.create(null);
   var keys = [];
+  var pinned = [];
   for (var i = 0; i < done.length; i++) {
     var t = doneTimeOf(done[i].s);
+    if (done[i].s && done[i].s.starred === true) { pinned.push({ item: done[i], t: t }); continue; }
     var k = dayKeyOf(t);
     if (!byKey[k]) { byKey[k] = []; keys.push(k); }
     byKey[k].push({ item: done[i], t: t });
@@ -8521,11 +8714,17 @@ function planDoneGroups(done, now, opened) {
   var y = new Date(now);
   y.setDate(y.getDate() - 1);
   var yesterday = dayKeyOf(y.getTime());
-  return keys.map(function(k) {
+  var groups = keys.map(function(k) {
     var list = byKey[k].slice().sort(function(a, b) { return b.t - a.t; });
     var open = opened && Object.prototype.hasOwnProperty.call(opened, k) ? !!opened[k] : (k === today || k === yesterday);
     return { key: k, label: doneDayLabel(k, now), open: open, items: list.map(function(x) { return x.item; }) };
   });
+  if (pinned.length) {
+    pinned.sort(function(a, b) { return b.t - a.t; });
+    var pinOpen = opened && Object.prototype.hasOwnProperty.call(opened, 'starred') ? !!opened.starred : true;
+    groups.unshift({ key: 'starred', label: '\\u2605 Starred', open: pinOpen, items: pinned.map(function(x) { return x.item; }) });
+  }
+  return groups;
 }
 var _lastBoardData = null;
 // A targeted card push (sessionUpdated) lands in the last board too, so a
@@ -9135,6 +9334,13 @@ function cardOf(s, col) {
   if (metrics.length) card.metrics = metrics;
   // A cron run leads with the CRON badge instead of the spark (SSOT 2026-10-23 T3).
   if (s.cronJob && s.cronJob.name) card.lead = { text: 'CRON', glyph: 'clock', title: '크론 잡: ' + s.cronJob.name };
+  // A starred card leads with ★ (SSOT 2026-10-30 T1.3); a starred cron run reads ★ CRON.
+  if (s.starred === true) {
+    var starTitle = '즐겨찾기 — 항상 맨 위, 자동 sleep·보관 안 함';
+    card.lead = card.lead
+      ? { text: '\\u2605 ' + card.lead.text, glyph: card.lead.glyph, title: starTitle + ' · ' + card.lead.title }
+      : { text: '\\u2605', title: starTitle };
+  }
   // Owner badge (§3.1-3): in the All Users view every card names its owner.
   var owner = currentUserId ? '' : s.ownerName || s.ownerId || '';
   if (owner) card.badge = { text: String(owner), hue: ownerBadgeHue(s.ownerId || owner), title: String(owner) };
@@ -11595,7 +11801,27 @@ function sessionActionHtml(s, col, where) {
   }
   var isOwner = !!s.ownerId && s.ownerId === currentUserId;
   var busy = isBusy(s.key, 'action');
-  return '<button class="btn-action btn-' + kind + '"' + (isOwner && !busy ? '' : ' disabled') + (busy ? ' aria-busy="true"' : '') + aria
+  // SSOT 2026-10-30: ★ Star (pinned on top, kept alive — starring a sleeping or
+  // archived card brings it back) and 살리기 on a sleeping or archived card (the
+  // conversation continues), before the state action. One write in flight per
+  // session for both ('life').
+  var lifeBusy = isBusy(s.key, 'life');
+  var starred = s.starred === true;
+  var closed = col === 'closed' || s.terminated === true || s.sessionState === 'SLEEPING';
+  var lifeOff = isOwner && !lifeBusy ? '' : ' disabled';
+  var starTip = !isOwner ? READ_ONLY_MSG
+    : starred ? '즐겨찾기 해제 — 다시 자동 sleep·보관 대상이 돼요'
+    : '즐겨찾기 — 항상 맨 위, 자동 sleep·보관 안 함' + (closed ? ' (지금 살려요)' : '');
+  var starBtn = '<button type="button" class="btn-action btn-star' + (starred ? ' is-on' : '') + '" aria-pressed="' + starred + '"' + lifeOff
+    + (lifeBusy ? ' aria-busy="true"' : '') + ' title="' + escAttr(starTip) + '"'
+    + ' onclick="event.stopPropagation();doStar(\\'' + escJs(s.key) + '\\',' + !starred + ')">'
+    + (starred ? '&#x2605; Starred' : '&#x2606; Star') + '</button>';
+  var reviveBtn = closed
+    ? '<button type="button" class="btn-action btn-revive"' + lifeOff + (lifeBusy ? ' aria-busy="true"' : '')
+      + ' title="' + escAttr(isOwner ? '대화를 이어갈 수 있게 세션을 살려요 (작업 폴더 파일은 복구되지 않아요)' : READ_ONLY_MSG) + '"'
+      + ' onclick="event.stopPropagation();doRevive(\\'' + escJs(s.key) + '\\')">살리기</button>'
+    : '';
+  return starBtn + reviveBtn + '<button class="btn-action btn-' + kind + '"' + (isOwner && !busy ? '' : ' disabled') + (busy ? ' aria-busy="true"' : '') + aria
     + (isOwner ? '' : ' title="' + escAttr(READ_ONLY_MSG) + '"')
     + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'' + kind + '\\')">' + label + '</button>';
 }
@@ -12917,6 +13143,75 @@ async function doAction(key, action) {
   refreshCard(key);
   if (panelOpen && panelSessionKey === key) renderPanelHead();
   loadSessions();
+}
+
+// ── Task star + revive (SSOT 2026-10-30) ──
+// ★ Star pins a session on top and keeps it alive (starring a sleeping or
+// archived card brings it back first); 살리기 wakes a sleeping card or restores
+// an archived one so its conversation continues. The answer names the live
+// key: an archived card comes back under another key, and the page follows it.
+function doStar(key, starred) {
+  return doLifeAction(key, '/star', { starred: !!starred },
+    starred ? '별을 달았어요 — 항상 맨 위, 자동 sleep·보관 안 함' : '별을 뗐어요', starred ? '별 달기' : '별 떼기');
+}
+function doRevive(key) {
+  return doLifeAction(key, '/revive', {}, '세션을 살렸어요 — 이어서 대화할 수 있어요', '살리기');
+}
+async function doLifeAction(key, path, payload, doneTitle, label) {
+  if (isBusy(key, 'life')) return; // one star / revive at a time, from either surface
+  setBusy(key, 'life', true);
+  refreshCard(key);
+  if (panelOpen && panelSessionKey === key) renderPanelHead();
+  var title = (_sessionCache[key] && _sessionCache[key].title) || '';
+  var body = null;
+  var retry = function() { doLifeAction(key, path, payload, doneTitle, label); };
+  try {
+    var url = '/api/dashboard/session/' + encodeURIComponent(key) + path;
+    var send = function() {
+      var headers = { 'Content-Type': 'application/json' };
+      if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
+      return fetch(url, { method: 'POST', headers: headers, body: JSON.stringify(payload) });
+    };
+    var res = await send();
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      res = await send();
+    }
+    var answer = await res.json().catch(function() { return null; });
+    if (res.ok && answer && answer.ok) {
+      body = answer;
+      // Its work directory was removed when it went to sleep: the conversation comes back, the files do not.
+      var note = answer.revived ? '작업 폴더 파일은 복구되지 않아요' : '';
+      dashToast({ title: doneTitle, description: [note, title].filter(Boolean).join(' · ') || undefined, tone: 'success' });
+    } else {
+      // A refusal (no transcript, another conversation in the thread…) says why; only a failure is retried.
+      dashToast(
+        { title: label + ' 실패', description: (answer && answer.error) || ('HTTP ' + res.status), tone: 'error', action: res.status >= 500 ? { id: 'retry' } : undefined },
+        res.status >= 500 ? retry : undefined,
+      );
+    }
+  } catch (e) {
+    console.error('Lifecycle action error', e);
+    dashToast({ title: label + ' 실패', description: '네트워크 오류', tone: 'error', action: { id: 'retry' } }, retry);
+  }
+  setBusy(key, 'life', false);
+  // An open card follows its session to the live key before the board paints it.
+  if (body && body.key && body.key !== key && _expanded.has(key)) {
+    _expanded.delete(key);
+    _expanded.add(body.key);
+  }
+  refreshCard(key);
+  if (panelOpen && panelSessionKey === key) renderPanelHead();
+  await loadSessions();
+  if (body && body.key) followSessionKey(key, body.key);
+}
+// An archived card that came back is a live session under another key: its
+// detail card follows it, and the archived key leaves the deck.
+function followSessionKey(oldKey, newKey) {
+  if (!newKey || newKey === oldKey || !_sessionCache[newKey]) return;
+  var showing = panelOpen && panelSessionKey === oldKey;
+  deckRemove(oldKey);
+  if (showing) openPanel(newKey, false);
 }
 
 // ── Multi-choice form state ──
@@ -16657,7 +16952,8 @@ function planCronLane(board, jobs, revealKey) {
   (jobs || []).forEach(function(j) { if (j && j.id) group('id:' + j.id, j.id, j.name).job = j; });
   ['working', 'waiting', 'idle', 'closed'].forEach(function(col) {
     (board[col] || []).forEach(function(s) {
-      if (!isCronCard(s)) { out[col].push(s); return; }
+      // A starred cron run stays on the board, on top (SSOT 2026-10-30 T2).
+      if (!isCronCard(s) || s.starred === true) { out[col].push(s); return; }
       var g = group(cronGroupKey(s), s.cronJob.id, s.cronJob.name);
       g.cards.push(s);
       g.colOf[s.key] = col;
