@@ -217,6 +217,22 @@ describe('a task runs in the directory its context validated (#613 R1, D6/T8)', 
     expect(options.cwd).toBe(ctx.workingDirectory);
   });
 
+  it('a task directory that does not exist yet is refused, not created — the run entry point makes it (#613 R3)', async () => {
+    const missing = `/tmp/${USER}/session_exec_ctx_not_made_yet`;
+    fs.rmSync(missing, { recursive: true, force: true });
+    const ctx = executionContextForTask({
+      ownerId: USER,
+      slackless: true,
+      taskId: TASK_ID,
+      channelId: '',
+      workingDirectory: missing,
+    } as ConversationSession);
+    await expect(buildStreamOptions({ queryEnv: {}, executionContext: ctx }, makeDeps())).rejects.toBeInstanceOf(
+      ExecutionContextMissingError,
+    );
+    expect(fs.existsSync(missing)).toBe(false);
+  });
+
   it('a task whose directory cannot be made is refused — never run in the server’s directory (#613 R2)', async () => {
     const blocked = `/tmp/${USER}/session_exec_ctx_blocked`;
     fs.rmSync(blocked, { recursive: true, force: true });
