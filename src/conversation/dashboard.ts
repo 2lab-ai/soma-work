@@ -3855,6 +3855,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/drawer.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/conversation.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/work-log.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/choice-form.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4574,48 +4575,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   align-items: center;
   gap: 4px;
 }
-.btn-choice {
-  font-size: 0.72em;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text);
-  cursor: pointer;
-  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-  font-family: inherit;
-  line-height: 1.3;
-}
-.btn-choice:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-}
-/* The recommended choice: tagged, not coloured (library approval card) — the ink is the form's
-   one primary (추천대로 모두 선택 / 제출하기). */
-.btn-choice-recommended { border-color: var(--ib-muted); }
-.btn-choice-recommended::after { content: "추천"; display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px; background: var(--ib-pill); color: var(--text-secondary); font-size: 11px; font-weight: 600; line-height: 18px; vertical-align: 1px; }
-/* Hero "Submit All Recommended" — group-only, top of multi-choice panel */
-.btn-hero-recommended {
-  display: block;
-  width: 100%;
-  padding: 10px 12px;
-  font: inherit;
-  font-size: 14px;
-  background: var(--ib-text);
-  color: var(--ib-card);
-  border: 1px solid var(--ib-text);
-  border-radius: 8px;
-  font-weight: 600;
-  margin-bottom: 12px;
-  cursor: pointer;
-  transition: opacity 150ms ease, transform var(--dur-press) var(--ease-out);
-}
-@media (hover: hover) and (pointer: fine) { .btn-hero-recommended:hover:not(:disabled) { opacity: 0.88; } }
-.btn-hero-recommended:disabled,
-.btn-hero-recommended[aria-disabled="true"] {
-  opacity: 0.7;
-  cursor: not-allowed;
-}
 .card-question-multi {
   font-size: 0.72em;
   color: var(--text-secondary);
@@ -4633,36 +4592,16 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-body .card-question { margin-top: 12px; padding: 10px 12px; background: var(--ib-col); border: 0; border-radius: 8px; }
 .card-body .card-question-text { font-size: 13px; color: var(--ib-text); margin-bottom: 8px; }
 .card-body .card-question-multi { font-size: 12px; color: var(--ib-muted); }
-.card-body .btn-choice { font-size: 13px; padding: 5px 12px; min-height: 32px; border-radius: 8px; border: 1px solid var(--ib-card-border); background: var(--ib-card); color: var(--ib-text); text-align: left; max-width: 100%; min-width: 0; overflow-wrap: anywhere; }
-/* D10: one primary per open card — the owner's 답변하기 on this instance is ink.
-   Doubled classes beat the shared card / hover rules later in the sheet. */
-.card-body .btn-choice.btn-choice-primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600; }
-@media (hover: hover) and (pointer: fine) {
-  .card-body .btn-choice.btn-choice-primary:hover:not(:disabled) { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); opacity: 0.88; }
-}
+/* D10: one primary per open card — the owner's 답변하기 on this instance is the kit's ink button. */
+.card-body .card-mc-go { width: 100%; margin-top: 8px; }
+.card-question-na { color: var(--text-secondary); }
 
 /* ── PANEL PENDING QUESTION ── */
 .panel-permission { padding: 0 16px 12px; border-bottom: 1px solid var(--border); }
-.panel-question {
-  padding: 12px 16px;
-  background: var(--tint-wait-soft);
-  border-bottom: 1px solid var(--tint-wait-line);
-}
-.panel-question-text {
-  font-size: 0.88em;
-  color: var(--tint-wait-fg);
-  font-weight: 600;
-  margin-bottom: 8px;
-}
-.panel-question-choices {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 6px;
-}
-.panel-question .btn-choice {
-  font-size: 0.82em;
-  padding: 6px 14px;
-}
+/* The question under 입력 필요: a <ui-approval-card> (data-ap="card") or the
+   <ui-choice-form> (data-ap="form") — each draws its own card. */
+.panel-question { padding: 0 16px 12px; border-bottom: 1px solid var(--border); }
+.panel-question .mc-failed { padding: 8px 0; color: var(--st-fail-text); font-size: 13px; }
 
 /* ── 입력 필요 (re-agent-run D8–D17) ──
    A head with the count; each prompt (and the single-choice question) is a
@@ -4675,201 +4614,11 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-needs-head:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
 .pn-count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: color-mix(in srgb, var(--st-wait) 24%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-wait) 55%, transparent); color: var(--text); font-size: 11px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; animation: pn-pop var(--dur-move) var(--ease-out) both; }
 @keyframes pn-pop { from { opacity: 0; transform: scale(0.6); } }
-.panel-question[data-ap="card"] { padding: 0 16px 12px; background: none; border-bottom: 1px solid var(--border); }
 /* One section: no rule between a prompt and the question card under it. */
 .panel-permission:has(+ .panel-question[data-ap="card"]:not([style*="none"])) { border-bottom: 0; }
 /* The <ui-approval-card> slots (batch 1): a gap between two prompts, and the open card's off what follows. */
 .ac-slot + .ac-slot { margin-top: 10px; }
 .card-body > .ac-slot { margin-bottom: 10px; }
-
-/* ── MULTI-CHOICE FORM (dashboard) ── */
-.mc-form {
-  padding: 12px;
-}
-.mc-header {
-  margin-bottom: 10px;
-}
-.mc-header h4 {
-  font-size: 13px;
-  font-weight: 650;
-  color: var(--tint-wait-fg);
-  margin-bottom: 4px;
-}
-.mc-header p {
-  font-size: 12px;
-  color: var(--text-secondary);
-  line-height: 1.4;
-}
-.mc-progress {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-bottom: 10px;
-  font-size: 11px;
-  color: var(--text-tertiary);
-  font-weight: 600;
-}
-.mc-progress-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--border);
-  transition: background-color 150ms ease, box-shadow 150ms ease;
-}
-.mc-progress-dot.filled {
-  background: var(--st-done);
-}
-.mc-progress-dot.active {
-  background: var(--st-wait);
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--st-wait) 30%, transparent);
-}
-.mc-progress-text {
-  margin-left: 6px;
-  font-variant-numeric: tabular-nums;
-}
-.mc-questions {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-}
-.mc-question {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 10px;
-  transition: border-color 150ms ease, background-color 150ms ease;
-}
-.mc-question.selected {
-  background: var(--tint-done-soft);
-  border-color: var(--tint-done-line);
-}
-.mc-question.active {
-  border-color: var(--tint-wait-line);
-  background: var(--tint-wait-soft);
-}
-.mc-q-header {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--text);
-  margin-bottom: 6px;
-  line-height: 1.4;
-}
-.mc-q-header .mc-q-num {
-  color: var(--tint-wait-fg);
-  margin-right: 4px;
-  font-variant-numeric: tabular-nums;
-}
-.mc-q-context {
-  font-size: 11px;
-  color: var(--text-secondary);
-  line-height: 1.5;
-  margin-bottom: 8px;
-  padding: 6px 8px;
-  background: var(--surface-raised);
-  border-radius: 6px;
-}
-.mc-q-context code {
-  background: var(--ib-pill);
-  padding: 1px 4px;
-  border-radius: 6px;
-  font-family: var(--mono);
-  font-size: 0.92em;
-}
-.mc-q-context strong { color: var(--text); }
-.mc-q-context em { font-style: italic; color: var(--text-secondary); }
-.mc-q-context a { color: var(--accent); text-decoration: none; }
-@media (hover: hover) and (pointer: fine) { .mc-q-context a:hover { text-decoration: underline; } }
-.mc-q-choices {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-.mc-q-choices .btn-choice {
-  text-align: left;
-  width: 100%;
-  display: block;
-}
-.mc-q-selected {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--tint-done-fg);
-  font-weight: 600;
-}
-.mc-q-selected .mc-sel-mark { display: inline-flex; flex-shrink: 0; color: var(--st-done); }
-.mc-q-selected .mc-sel-mark svg { width: 14px; height: 14px; }
-.mc-q-selected .mc-sel-label {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-.mc-q-edit-btn {
-  font-size: 11px;
-  padding: 2px 8px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-  font-family: inherit;
-  flex-shrink: 0;
-}
-@media (hover: hover) and (pointer: fine) {
-  .mc-q-edit-btn:hover {
-    border-color: var(--ib-muted);
-    color: var(--text);
-  }
-}
-.mc-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 12px;
-  justify-content: flex-end;
-}
-.mc-custom-input {
-  width: 100%;
-  margin-top: 4px;
-  display: flex;
-  gap: 4px;
-}
-.mc-custom-input input {
-  flex: 1;
-  background: var(--surface-raised);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  color: var(--text);
-  font-size: 12px;
-  padding: 4px 8px;
-  outline: none;
-  font-family: inherit;
-  min-height: 28px;
-  transition: border-color 150ms ease;
-}
-.mc-custom-input input:focus { border-color: var(--border-focus); }
-.mc-custom-input input::placeholder { color: var(--text-tertiary); }
-.mc-custom-input button {
-  font-size: 11px;
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-  color: var(--text);
-  cursor: pointer;
-  transition: border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-  font-family: inherit;
-  flex-shrink: 0;
-  min-height: 28px;
-}
-@media (hover: hover) and (pointer: fine) {
-  .mc-custom-input button:hover {
-    border-color: var(--ib-muted);
-    background: var(--surface-raised);
-  }
-}
 
 /* ── CHARTS — flat, geometric ── */
 .chart-row { display: flex; gap: 10px; margin-bottom: 16px; }
@@ -5449,15 +5198,13 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* PRESS — one rule for every button-like control: scale(.97) on --dur-press ease-out (each control's own
    transition carries the transform), pointer presses only — never a keyboard press (:focus-visible). The
    56px FAB presses to .95. */
-:is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+:is(.archives-btn, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
   .archives-btn:hover { color: var(--ib-text); }
   .stats-more:hover { background: var(--surface-raised); color: var(--text); }
   .card-body .card-refs a:hover { text-decoration: underline; }
-  .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--surface-raised); color: var(--text); }
-  .card-body .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--ib-card); color: var(--ib-text); }
 }
 
 /* ── BOARD RESPONSIVE (.prd/10 §5, SSOT 2026-10-24) ──
@@ -5521,8 +5268,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
      (320px) Show archives sits above Board | List instead of overflowing. */
   .inbox-tools { flex: 1 1 auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; row-gap: 8px; }
   .crumbs { font-size: 15px; gap: 7px; }
-  /* Selectors carry an extra class so they beat the later @media (pointer: coarse) 40px rules. */
-  .card-body .btn-choice { min-height: 44px; }
 }
 
 /* ── RESPONSIVE — Bauhaus grid adapts ── */
@@ -5543,7 +5288,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.archives-btn, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   /* Loading skeletons hold still. */
@@ -5595,13 +5340,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   #theme-toggle::after { content: ''; position: absolute; inset: 0 -6px; }
   .topbar .td-chip { min-height: 44px; }
   .stats-more { min-height: 44px; }
-  .card-body .btn-choice { min-height: 44px; }
   .inbox-head .archives-btn { min-height: 44px; }
   .card-body .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
   .pi-links a, .pi-head, .panel-tasks-toggle { min-height: 44px; }
   .ps-actions .ui-btn, .ps-slack, .cgl-go, .card-more-link, .tl-toggle { min-height: 44px; }
-  .panel-question .btn-choice, .mc-q-choices .btn-choice, .mc-q-edit-btn { min-height: 44px; }
-  .mc-custom-input input, .mc-custom-input button { min-height: 44px; }
 }
 
 /* ── CRON badge · lane · drawer (SSOT 2026-10-23 T3/T4/T5) ── */
@@ -6077,11 +5819,6 @@ body.nt-open .new-task-fab { display: none !important; }
 @media (max-height: 560px) {
   .slide-panel:not(.is-detail) #panel-title-sub { display: none !important; }
 }
-@media (pointer: coarse) {
-  /* Responsive (SSOT 2026-10-24) — 16px text: iOS does not zoom into a focused input. */
-  .mc-custom-input input { font-size: 16px; }
-  /* The merged cron drawer (#374): 44px touch targets (the lane's are <ui-agent-queue>'s own). */
-}
 @media (max-width: 639px) {
   /* Responsive (SSOT 2026-10-24) — phones: the last card clears the FAB (a board
      with cards only — an empty page must not turn scrollable), the
@@ -6474,9 +6211,7 @@ var STRINGS = {
   error: '오류',
   mcUnavailable: '복수 질문 데이터를 불러올 수 없습니다',
   mcLoadFailed: '복수 질문을 불러오지 못했습니다. 새로고침해 보세요.',
-  mcChange: '변경',
   mcCustomPlaceholder: '직접 입력…',
-  mcSubmitting: '제출 중…',
   effortTitle: '추론 강도',
 };
 // #814 — name of the dashboard's *home* instance (the one that served this
@@ -7791,21 +7526,6 @@ function esc(s) {
 function escAttr(s) {
   return esc(s).replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
-// Pending-question choice buttons carry their values as attribute-escaped data
-// attributes (read back through dataset by one delegated click handler), so a
-// model-written question or label with quotes, backslashes, < or newlines can
-// neither break nor extend the markup the way an inline JS string could.
-function choiceDataAttrs(key, id, label, question) {
-  return ' data-choice-key="' + escAttr(key) + '" data-choice-id="' + escAttr(id)
-    + '" data-choice-label="' + escAttr(label) + '" data-choice-question="' + escAttr(question) + '"';
-}
-// (The single-choice question is an approval card: its answer is ui-answer.)
-document.addEventListener('click', function(e) {
-  var btn = e.target && e.target.closest ? e.target.closest('button[data-choice-id][data-mc-index]') : null;
-  if (!btn || btn.disabled) return;
-  var d = btn.dataset;
-  selectMc(d.choiceKey, Number(d.mcIndex), d.choiceId, d.choiceLabel);
-});
 // Only http(s) URLs become links; anything else (javascript:, data:) is inert.
 function safeHref(u) {
   return /^https?:\\/\\//i.test(String(u || '')) ? escAttr(u) : '#';
@@ -12724,355 +12444,274 @@ function followSessionKey(oldKey, newKey) {
   if (showing) openPanel(newKey, false);
 }
 
-// ── Multi-choice form state ──
+// ── 여러 질문 — @2lab.ai/ui <ui-choice-form> (D3 E-15/E-16) ──
+// The panel's multi-question form (UIAskUserQuestion with several questions) is
+// the library element: numbered question cards (title, markdown context, the
+// choices with the recommended one first and tagged 추천, an own answer), the
+// progress dots, 추천대로 모두 제출, 초기화 and one ink 제출. A pick folds the card
+// into the answer (+ 변경) and moves to the next open question; digits pick.
+// The page keeps, per session (_mcState[key]): the working answers the element
+// reports (ui-change — they seed a redrawn form: the panel switching sessions
+// and back), and the send: sending → the element's submitting, a refusal →
+// its error line, success → its read-only summary until the push that clears
+// the question. Same routes: /answer-multi-choice (selections by question id;
+// an own answer is the 직접입력 choice with its text) and the one-click
+// /submit-recommended.
 var _mcState = Object.create(null);
+var MC_CUSTOM_ID = '\\uC9C1\\uC811\\uC785\\uB825';
+// The form's identity: a different question (or another session) starts clean.
+function mcFormId(s, q) {
+  return 'mc|' + s.key + '|' + JSON.stringify([q.title || q.question || '', (q.questions || []).map(function(x) { return [x.id, x.question]; })]);
+}
+// The session's form state, reset when its question is another one.
+function mcStateOf(s, q) {
+  var id = mcFormId(s, q);
+  var st = _mcState[s.key];
+  if (!st || st.id !== id) st = _mcState[s.key] = { id: id, answers: {} };
+  return st;
+}
+// pendingQuestion (user_choices) → the element's data. A choice reads as its
+// label (the recommended marker stripped) — the element numbers the choices
+// itself, in the order it shows them (the recommended one first), so the id's
+// "N. " would contradict its key badge; the recommendation is the explicit id,
+// else the legacy "(Recommended)" label — never the 직접입력 sentinel. Every
+// question takes an own answer, as before.
+function mcFormData(s, q) {
+  var st = mcStateOf(s, q);
+  var d = {
+    id: st.id,
+    title: String(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38'),
+    questions: (q.questions || []).map(function(item) {
+      var rec = resolveRecommendedId(item.recommendedChoiceId, item.choices);
+      if (rec === MC_CUSTOM_ID) rec = null;
+      var out = {
+        id: String(item.id),
+        title: String(item.question || ''),
+        choices: (item.choices || []).map(function(c) {
+          var o = { id: String(c.id), label: stripRecommendedMarker(c.label) };
+          if (c.description) o.description = String(c.description);
+          if (rec && c.id === rec) o.recommended = true;
+          return o;
+        }),
+        allowCustom: true,
+        customPlaceholder: STRINGS.mcCustomPlaceholder,
+      };
+      if (item.context) out.context = String(item.context);
+      return out;
+    }),
+    answers: st.answers,
+    // Several questions: 제출 sends (a pick never does).
+    submitOnPick: false,
+  };
+  if (q.description) d.description = String(q.description);
+  if (st.sending) d.submitting = true;
+  if (st.sent) d.submitted = true;
+  if (st.error) d.error = st.error;
+  return d;
+}
+// A push: the form state of every session that no longer asks that form goes
+// (answered, cleared, or another question in its place).
+function mcEvict() {
+  for (var key in _mcState) {
+    var s = _sessionCache[key];
+    var q = s && s.pendingQuestion;
+    if (!q || q.type !== 'user_choices' || !q.questions || _mcState[key].id !== mcFormId(s, q)) delete _mcState[key];
+  }
+}
+// The answers as the element reports them → the seed it is handed back.
+function mcAnswersIn(list) {
+  var out = {};
+  (list || []).forEach(function(a) {
+    if (!a || !a.questionId) return;
+    out[a.questionId] = a.choiceId !== undefined ? { choiceId: String(a.choiceId) } : { custom: String(a.custom || a.label || '') };
+  });
+  return out;
+}
+// The answers as the route takes them: by question id, the choice and its label
+// (the recommended marker stripped), an own answer as 직접입력 + its text.
+function mcSelectionsOf(s, list) {
+  var q = s && s.pendingQuestion;
+  var byQ = Object.create(null);
+  ((q && q.questions) || []).forEach(function(x) { byQ[x.id] = x; });
+  var out = {};
+  (list || []).forEach(function(a) {
+    if (!a || !a.questionId) return;
+    if (a.choiceId === undefined) {
+      out[a.questionId] = { choiceId: MC_CUSTOM_ID, label: String(a.custom || a.label || '') };
+      return;
+    }
+    var item = byQ[a.questionId];
+    var ch = item && (item.choices || []).find(function(c) { return String(c.id) === String(a.choiceId); });
+    out[a.questionId] = { choiceId: String(a.choiceId), label: ch ? stripRecommendedMarker(ch.label) : String(a.label || '') };
+  });
+  return out;
+}
 
 // faceSummary: the collapsed card's summary line — when it already reads the
-// form's title, the open card does not repeat it.
+// form's title, the open card does not repeat it. 답변하기 opens the panel on
+// the form (the card's one primary for its owner on this instance).
 function renderMultiChoiceCard(s, faceSummary) {
   var q = s.pendingQuestion;
   if (!q || !q.questions) {
     console.warn('renderMultiChoiceCard: missing questions data for session', s.key);
-    return '<div class="card-question"><div class="card-question-text" style="color:var(--text-secondary)">' + STRINGS.mcUnavailable + '</div></div>';
+    return '<div class="card-question"><div class="card-question-text card-question-na">' + STRINGS.mcUnavailable + '</div></div>';
   }
   var total = q.questions.length;
-  var st = _mcState[s.key] || { selections: {}, activeQ: 0 };
+  var st = _mcState[s.key];
+  var answers = st && st.id === mcFormId(s, q) ? st.answers : {};
   var answered = 0;
-  for (var i = 0; i < q.questions.length; i++) {
-    if (st.selections[q.questions[i].id]) answered++;
+  for (var i = 0; i < total; i++) {
+    if (answers[q.questions[i].id]) answered++;
   }
   var progressText = answered + '/' + total + ' \\uC644\\uB8CC';
+  var primary = s.ownerId && s.ownerId === currentUserId && !isSiblingSession(s);
   return '<div class="card-question">'
     + ((q.title || q.question) && (q.title || q.question) === faceSummary ? '' : '<div class="card-question-text">' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>')
     + '<div class="card-question-multi">' + total + '\\uAC1C \\uC9C8\\uBB38 \\u00B7 ' + progressText + '</div>'
-    + '<div style="margin-top:6px"><button class="btn-choice' + (s.ownerId && s.ownerId === currentUserId && !isSiblingSession(s) ? ' btn-choice-primary' : '') + '" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\')" style="width:100%;text-align:center;font-weight:700">\\uB2F5\\uBCC0\\uD558\\uAE30</button></div>'
+    + '<button type="button" class="ui-btn' + (primary ? ' is-primary' : '') + ' card-mc-go" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\')">\\uB2F5\\uBCC0\\uD558\\uAE30</button>'
     + '</div>';
 }
 
+// The form in the panel's 입력 필요: one <ui-choice-form> (created once per
+// question, handed data only when it changed — the element morphs in place, so
+// focus stays where it is).
 function renderMultiChoicePanel(s) {
   var container = document.getElementById('panel-question');
   if (!container) return;
   var q = s.pendingQuestion;
+  container.style.display = '';
   if (!q || !q.questions) {
     console.warn('renderMultiChoicePanel: missing questions data for session', s.key);
-    container.style.display = '';
-    container.innerHTML = '<div class="mc-form"><p style="color:var(--red);padding:12px">' + STRINGS.mcLoadFailed + '</p></div>';
+    container.innerHTML = '<p class="mc-failed" role="alert">' + STRINGS.mcLoadFailed + '</p>';
     return;
   }
-
-  container.style.display = '';
-  var key = s.key;
-  if (!_mcState[key]) { _mcState[key] = { selections: {}, activeQ: 0 }; }
-  var st = _mcState[key];
-  var total = q.questions.length;
-  var answered = 0;
-  for (var i = 0; i < total; i++) {
-    if (st.selections[q.questions[i].id]) answered++;
+  var el = container.firstElementChild;
+  if (!el || el.tagName !== 'UI-CHOICE-FORM') {
+    container.innerHTML = '';
+    el = document.createElement('ui-choice-form');
+    el.className = 'mc-form';
+    el.setAttribute('lang', 'ko');
+    container.appendChild(el);
   }
-
-  var html = '<div class="mc-form">';
-
-  // Header
-  html += '<div class="mc-header">';
-  html += '<h4>' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</h4>';
-  if (q.description) {
-    html += '<p>' + renderMdBasic(q.description) + '</p>';
+  el.setAttribute('data-mc-key', s.key);
+  var d = mcFormData(s, q);
+  var sig = JSON.stringify(d);
+  if (el._mcSig !== sig) {
+    el._mcSig = sig;
+    el.data = d;
   }
-  html += '</div>';
-
-  // Hero "Submit All Recommended" — group-only one-click. N=count of questions
-  // with a resolvable recommendation (excluding 직접입력 sentinel); M=total.
-  // States: N==M primary | 0<N<M blocked sentinel | N==0 omitted.
-  var heroM = total;
-  var heroN = 0;
-  for (var hi = 0; hi < total; hi++) {
-    var hq = q.questions[hi];
-    var rid = resolveRecommendedId(hq.recommendedChoiceId, hq.choices);
-    if (rid && rid !== '\\uC9C1\\uC811\\uC785\\uB825') heroN++;
-  }
-  if (heroN > 0) {
-    if (heroN === heroM) {
-      html += '<button class="btn-hero-recommended" onclick="event.stopPropagation();submitAllRecommended(\\'' + escJs(key) + '\\')">'
-        + '\\uCD94\\uCC9C\\uB300\\uB85C \\uBAA8\\uB450 \\uC120\\uD0DD</button>';
-    } else {
-      html += '<button class="btn-hero-recommended" disabled aria-disabled="true" aria-label="\\uCD94\\uCC9C\\uC774 ' + heroN + '/' + heroM + '\\uAC1C\\uB9CC \\uC788\\uC5B4 \\uC77C\\uAD04 \\uCC98\\uB9AC \\uBD88\\uAC00">'
-        + '\\uCD94\\uCC9C \\uBD80\\uC871 (' + heroN + '/' + heroM + ')</button>';
-    }
-  }
-
-  // Progress dots
-  html += '<div class="mc-progress">';
-  for (var d = 0; d < total; d++) {
-    var dotCls = 'mc-progress-dot';
-    if (st.selections[q.questions[d].id]) dotCls += ' filled';
-    else if (d === st.activeQ) dotCls += ' active';
-    html += '<span class="' + dotCls + '"></span>';
-  }
-  html += '<span class="mc-progress-text">' + answered + '/' + total + ' \\uC644\\uB8CC</span>';
-  html += '</div>';
-
-  // Questions
-  html += '<div class="mc-questions">';
-  for (var qi = 0; qi < total; qi++) {
-    var qItem = q.questions[qi];
-    var sel = st.selections[qItem.id];
-    var qCls = 'mc-question';
-    if (sel) qCls += ' selected';
-    if (qi === st.activeQ && !sel) qCls += ' active';
-
-    html += '<div class="' + qCls + '">';
-    html += '<div class="mc-q-header"><span class="mc-q-num">Q' + (qi + 1) + '.</span> ' + esc(qItem.question) + '</div>';
-
-    // Context (rich text)
-    if (qItem.context) {
-      html += '<div class="mc-q-context">' + renderMdBasic(qItem.context) + '</div>';
-    }
-
-    if (sel) {
-      // Show selected answer with edit button
-      html += '<div class="mc-q-selected">'
-        + '<span class="mc-sel-mark" aria-hidden="true"><i data-ui-icon="check"></i></span>'
-        + '<span class="mc-sel-label">' + esc(sel.label) + '</span>'
-        + '<button class="mc-q-edit-btn" onclick="event.stopPropagation();editMc(\\'' + escJs(key) + '\\',' + qi + ')">' + STRINGS.mcChange + '</button>'
-        + '</div>';
-    } else {
-      // Show choice buttons, recommended first
-      html += '<div class="mc-q-choices">';
-      var mcRecId = resolveRecommendedId(qItem.recommendedChoiceId, qItem.choices);
-      var orderedChoices = [];
-      if (mcRecId) {
-        var mcRec = qItem.choices.find(function(c) { return c.id === mcRecId; });
-        if (mcRec) orderedChoices.push(mcRec);
-        for (var oi = 0; oi < qItem.choices.length; oi++) {
-          if (qItem.choices[oi].id !== mcRecId) orderedChoices.push(qItem.choices[oi]);
-        }
-      } else {
-        orderedChoices = qItem.choices.slice();
-      }
-      for (var ci = 0; ci < orderedChoices.length; ci++) {
-        var ch = orderedChoices[ci];
-        var chLbl = stripRecommendedMarker(ch.label);
-        var desc = ch.description ? ' <span style="color:var(--text-tertiary);font-size:0.9em">&mdash; ' + esc(ch.description) + '</span>' : '';
-        var isRecBtn = mcRecId && ch.id === mcRecId;
-        html += '<button class="btn-choice' + (isRecBtn ? ' btn-choice-recommended' : '') + '"' + choiceDataAttrs(key, ch.id, chLbl, '') + ' data-mc-index="' + qi + '">'
-          + esc(ch.id) + '. ' + esc(chLbl) + desc + '</button>';
-      }
-      html += '</div>';
-      // Custom input
-      html += '<div class="mc-custom-input">'
-        + '<input type="text" id="mc-custom-' + qi + '" placeholder="' + STRINGS.mcCustomPlaceholder + '" onclick="event.stopPropagation()" onkeydown="if(event.key===\\'Enter\\'){event.stopPropagation();submitMcCustom(\\'' + escJs(key) + '\\',' + qi + ')}">'
-        + '<button onclick="event.stopPropagation();submitMcCustom(\\'' + escJs(key) + '\\',' + qi + ')">\\uC785\\uB825</button>'
-        + '</div>';
-    }
-
-    html += '</div>';
-  }
-  html += '</div>';
-
-  // Action buttons
-  var allAnswered = answered === total;
-  html += '<div class="mc-actions">';
-  html += '<button type="button" class="ui-btn" onclick="event.stopPropagation();resetMultiChoice(\\'' + escJs(key) + '\\')">\\uCD08\\uAE30\\uD654</button>';
-  html += '<button type="button" class="ui-btn is-primary mc-btn-submit" onclick="event.stopPropagation();submitMultiChoice(\\'' + escJs(key) + '\\')"' + (allAnswered ? '' : ' disabled') + '>\\uC81C\\uCD9C\\uD558\\uAE30 (' + answered + '/' + total + ')</button>';
-  html += '</div>';
-
-  html += '</div>';
-  container.innerHTML = html;
 }
-
-function renderMdBasic(text) {
-  if (!text) return '';
-  // Escape HTML first
-  var s = esc(text);
-  // Bold: **text**
-  s = s.replace(/\\*\\*(.+?)\\*\\*/g, '<strong>$1</strong>');
-  // Italic: *text*
-  s = s.replace(/\\*(.+?)\\*/g, '<em>$1</em>');
-  // Inline code: \`code\`
-  s = s.replace(/\`([^\`]+)\`/g, '<code>$1</code>');
-  // Links: [text](url) — only allow http(s) protocol; escAttr on URL to prevent attribute injection
-  s = s.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^)]+)\\)/g, function(_, text, url) {
-    return '<a href="' + escAttr(url) + '" target="_blank" rel="noopener">' + text + '</a>';
-  });
-  // Newlines
-  s = s.replace(/\\n/g, '<br>');
-  return s;
+// The form of session key, when the panel shows it.
+function mcFormEl(key) {
+  var c = document.getElementById('panel-question');
+  var el = c && c.firstElementChild;
+  return el && el.tagName === 'UI-CHOICE-FORM' && el.getAttribute('data-mc-key') === key ? el : null;
 }
-
-function selectMc(key, qIdx, choiceId, label) {
-  if (!_mcState[key]) _mcState[key] = { selections: {}, activeQ: 0 };
+// After a send changed the state: the form shows it — or, with the panel on
+// something else, a refusal is a toast.
+function mcSettle(key, err) {
   var s = _sessionCache[key];
-  if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) { console.warn('selectMc: stale session data', key); return; }
-  var qItem = s.pendingQuestion.questions[qIdx];
-  if (!qItem) { console.warn('selectMc: invalid question index', qIdx); return; }
-
-  _mcState[key].selections[qItem.id] = { choiceId: choiceId, label: label };
-
-  // Auto-advance to next unanswered question
-  var total = s.pendingQuestion.questions.length;
-  var nextQ = -1;
-  for (var i = 1; i <= total; i++) {
-    var idx = (qIdx + i) % total;
-    var qId = s.pendingQuestion.questions[idx].id;
-    if (!_mcState[key].selections[qId]) { nextQ = idx; break; }
-  }
-  if (nextQ >= 0) {
-    _mcState[key].activeQ = nextQ;
-  }
-
-  renderMultiChoicePanel(s);
+  if (s && mcFormEl(key)) renderMultiChoicePanel(s);
+  else if (err) dashToast({ title: '\\uC81C\\uCD9C \\uC2E4\\uD328: ' + err, tone: 'error' });
 }
 
-function editMc(key, qIdx) {
-  if (!_mcState[key]) return;
+// The element's answers: the working ones kept (ui-change), a send (ui-submit —
+// not cancelled: the element locks until the page hands it the outcome).
+document.addEventListener('ui-change', function(e) {
+  var el = e.target;
+  if (!el || el.tagName !== 'UI-CHOICE-FORM' || !e.detail) return;
+  var s = _sessionCache[el.getAttribute('data-mc-key')];
+  var q = s && s.pendingQuestion;
+  if (!q || !q.questions) return;
+  mcStateOf(s, q).answers = mcAnswersIn(e.detail.answers);
+  refreshCard(s.key);
+});
+document.addEventListener('ui-submit', function(e) {
+  var el = e.target;
+  if (!el || el.tagName !== 'UI-CHOICE-FORM' || !e.detail) return;
+  var key = el.getAttribute('data-mc-key');
   var s = _sessionCache[key];
-  if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) return;
-  var qItem = s.pendingQuestion.questions[qIdx];
-  if (!qItem) return;
-  delete _mcState[key].selections[qItem.id];
-  _mcState[key].activeQ = qIdx;
-  renderMultiChoicePanel(s);
-}
-
-function submitMcCustom(key, qIdx) {
-  var input = document.getElementById('mc-custom-' + qIdx);
-  if (!input) return;
-  var val = input.value.trim();
-  if (!val) { input.style.borderColor = 'var(--red)'; return; }
-  if (!_mcState[key]) _mcState[key] = { selections: {}, activeQ: 0 };
-  var s = _sessionCache[key];
-  if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) { console.warn('submitMcCustom: stale session data', key); return; }
-  var qItem = s.pendingQuestion.questions[qIdx];
-  if (!qItem) { console.warn('submitMcCustom: invalid question index', qIdx); return; }
-
-  _mcState[key].selections[qItem.id] = { choiceId: '\\uC9C1\\uC811\\uC785\\uB825', label: val };
-
-  // Auto-advance
-  var total = s.pendingQuestion.questions.length;
-  var nextQ = -1;
-  for (var i = 1; i <= total; i++) {
-    var idx = (qIdx + i) % total;
-    var qId = s.pendingQuestion.questions[idx].id;
-    if (!_mcState[key].selections[qId]) { nextQ = idx; break; }
+  var q = s && s.pendingQuestion;
+  if (!q || !q.questions) {
+    e.preventDefault();
+    return;
   }
-  if (nextQ >= 0) _mcState[key].activeQ = nextQ;
+  var list = e.detail.answers || [];
+  var st = mcStateOf(s, q);
+  st.answers = mcAnswersIn(list);
+  // 추천대로 모두 제출 where every answer is the recommended one: the server's
+  // one-click path (it derives the same answers). The person's own picks kept
+  // by the hero are a form submit.
+  var allRec = e.detail.source === 'recommended' && list.length === q.questions.length
+    && list.every(function(a) { return a.recommended === true; });
+  if (allRec) submitAllRecommended(key);
+  else submitMultiChoice(key, mcSelectionsOf(s, list));
+});
 
-  renderMultiChoicePanel(s);
+// The POST with the page's CSRF retry: one refresh and one retry after a 403
+// (a rotated token). A body-less POST sends no Content-Type (Fastify refuses a
+// JSON Content-Type with an empty body: 400). Resolves to the error text, or ''.
+async function mcPost(url, body) {
+  function headers() {
+    var h = body === undefined ? {} : { 'Content-Type': 'application/json' };
+    if (_csrfToken) h['X-CSRF-Token'] = _csrfToken;
+    return h;
+  }
+  try {
+    var init = { method: 'POST', headers: headers() };
+    if (body !== undefined) init.body = body;
+    var res = await fetch(url, init);
+    if (res.status === 403) {
+      await refreshCsrfToken();
+      init = { method: 'POST', headers: headers() };
+      if (body !== undefined) init.body = body;
+      res = await fetch(url, init);
+    }
+    if (res.ok) return '';
+    var errData = {};
+    try { errData = await res.json(); } catch (_) {}
+    return String(errData.error || ('Failed (status ' + res.status + ')'));
+  } catch (e) {
+    console.error('multi-choice answer error', e);
+    return '\\uB124\\uD2B8\\uC6CC\\uD06C \\uC624\\uB958: ' + (e && e.message ? e.message : e);
+  }
 }
-
-async function submitMultiChoice(key) {
+// One send of session key's form: sending while the request is out, then the
+// summary (the push clears the question) or the refusal on the form.
+async function mcSend(key, url, body) {
+  var s = _sessionCache[key];
+  var q = s && s.pendingQuestion;
+  var st = q && q.questions ? mcStateOf(s, q) : null;
+  if (st) {
+    if (st.sending || st.sent) return;
+    st.sending = true;
+    st.error = '';
+    mcSettle(key, '');
+  }
+  var err = await mcPost(url, body);
+  if (st && _mcState[key] === st) {
+    st.sending = false;
+    if (err) st.error = err;
+    else st.sent = true;
+  }
+  mcSettle(key, err);
+}
+// 제출: every selection (by question id) — the element's, else the ones kept.
+function submitMultiChoice(key, selections) {
   var s = _sessionCache[key];
   if (!s || !s.pendingQuestion || !s.pendingQuestion.questions) {
     console.warn('submitMultiChoice: session data unavailable', key);
     dashToast({ title: '\\uC138\\uC158 \\uB370\\uC774\\uD130\\uB97C \\uBD88\\uB7EC\\uC62C \\uC218 \\uC5C6\\uC2B5\\uB2C8\\uB2E4. \\uD398\\uC774\\uC9C0\\uB97C \\uC0C8\\uB85C\\uACE0\\uCE68\\uD574\\uC8FC\\uC138\\uC694.', tone: 'error' });
-    return;
+    return Promise.resolve();
   }
-  var st = _mcState[key];
-  if (!st) {
-    console.warn('submitMultiChoice: no selections state', key);
-    dashToast({ title: '\\uC120\\uD0DD \\uC0C1\\uD0DC\\uAC00 \\uC5C6\\uC2B5\\uB2C8\\uB2E4. \\uB2E4\\uC2DC \\uC120\\uD0DD\\uD574\\uC8FC\\uC138\\uC694.', tone: 'error' });
-    return;
-  }
-
-  // Validate all answered
-  var total = s.pendingQuestion.questions.length;
-  var answered = 0;
-  for (var i = 0; i < total; i++) {
-    if (st.selections[s.pendingQuestion.questions[i].id]) answered++;
-  }
-  if (answered < total) {
-    dashToast({ title: '\\uBAA8\\uB4E0 \\uC9C8\\uBB38\\uC5D0 \\uB2F5\\uBCC0\\uD574\\uC8FC\\uC138\\uC694. (' + answered + '/' + total + ')', tone: 'error' });
-    return;
-  }
-
-  // Disable ALL interactive elements in the multi-choice form to prevent further clicks
-  var btns = document.querySelectorAll('.mc-btn-submit');
-  btns.forEach(function(b) { b.disabled = true; b.textContent = STRINGS.mcSubmitting; });
-  var mcForm = document.querySelector('.mc-form');
-  if (mcForm) {
-    mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = true; });
-    mcForm.querySelectorAll('input').forEach(function(inp) { inp.disabled = true; });
-    mcForm.querySelectorAll('button').forEach(function(b) { b.disabled = true; });
-  }
-
-  try {
-    var mcHeaders = { 'Content-Type': 'application/json' };
-    if (_csrfToken) mcHeaders['X-CSRF-Token'] = _csrfToken;
-    var mcUrl = '/api/dashboard/session/' + encodeURIComponent(key) + '/answer-multi-choice';
-    var mcBody = JSON.stringify({ selections: st.selections });
-    var res = await fetch(mcUrl, { method: 'POST', headers: mcHeaders, body: mcBody });
-    if (res.status === 403) {
-      await refreshCsrfToken();
-      var mcRetryHeaders = { 'Content-Type': 'application/json' };
-      if (_csrfToken) mcRetryHeaders['X-CSRF-Token'] = _csrfToken;
-      res = await fetch(mcUrl, { method: 'POST', headers: mcRetryHeaders, body: mcBody });
-    }
-    if (!res.ok) {
-      var errData = {};
-      try { errData = await res.json(); } catch(_) {}
-      var errMsg = errData.error || 'Failed (status ' + res.status + ')';
-      dashToast({ title: '\\uC81C\\uCD9C \\uC2E4\\uD328: ' + errMsg, tone: 'error' });
-      btns.forEach(function(b) { b.disabled = false; b.textContent = '\\uC81C\\uCD9C\\uD558\\uAE30 (' + total + '/' + total + ')'; });
-      if (mcForm) {
-        mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
-        mcForm.querySelectorAll('input').forEach(function(inp) { inp.disabled = false; });
-        mcForm.querySelectorAll('button').forEach(function(b) { b.disabled = false; });
-      }
-    } else {
-      // Success — clear state; WebSocket will re-render
-      delete _mcState[key];
-    }
-  } catch (e) {
-    console.error('submitMultiChoice error', e);
-    dashToast({ title: '\\uB124\\uD2B8\\uC6CC\\uD06C \\uC624\\uB958: ' + e.message, tone: 'error' });
-    btns.forEach(function(b) { b.disabled = false; b.textContent = '\\uC81C\\uCD9C\\uD558\\uAE30 (' + total + '/' + total + ')'; });
-    if (mcForm) {
-      mcForm.querySelectorAll('.btn-choice').forEach(function(b) { b.disabled = false; });
-      mcForm.querySelectorAll('input').forEach(function(inp) { inp.disabled = false; });
-      mcForm.querySelectorAll('button').forEach(function(b) { b.disabled = false; });
-    }
-  }
+  var sel = selections || {};
+  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/answer-multi-choice';
+  return mcSend(key, url, JSON.stringify({ selections: sel }));
 }
-
-function resetMultiChoice(key) {
-  _mcState[key] = { selections: {}, activeQ: 0 };
-  var s = _sessionCache[key];
-  if (s) renderMultiChoicePanel(s);
-}
-
-// Hero "Submit All Recommended" — group-only one-click. Mirrors the CSRF retry
-// pattern used by submitMultiChoice. Server derives selections from session
-// state, so the request has no body — and therefore no Content-Type, like
-// doAction: Fastify refuses a JSON Content-Type with an empty body (400).
-async function submitAllRecommended(key) {
-  var heroBtn = document.querySelector('.btn-hero-recommended');
-  if (heroBtn) { heroBtn.disabled = true; heroBtn.setAttribute('aria-disabled', 'true'); }
-  var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/submit-recommended';
-  try {
-    var headers = {};
-    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
-    var res = await fetch(url, { method: 'POST', headers: headers });
-    if (res.status === 403) {
-      await refreshCsrfToken();
-      var retryHeaders = {};
-      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
-      res = await fetch(url, { method: 'POST', headers: retryHeaders });
-    }
-    if (!res.ok) {
-      var errData = {};
-      try { errData = await res.json(); } catch(_) {}
-      var errMsg = errData.error || ('Failed (status ' + res.status + ')');
-      dashToast({ title: errMsg, tone: 'error' });
-      if (heroBtn) { heroBtn.disabled = false; heroBtn.removeAttribute('aria-disabled'); }
-    } else {
-      // Success — clear local state; WebSocket will re-render.
-      delete _mcState[key];
-    }
-  } catch (e) {
-    console.error('submitAllRecommended error', e);
-    dashToast({ title: e.message, tone: 'error' });
-    if (heroBtn) { heroBtn.disabled = false; heroBtn.removeAttribute('aria-disabled'); }
-  }
+// 추천대로 모두 제출 (group-only one-click): the server derives the selections
+// from the session, so the request has no body.
+function submitAllRecommended(key) {
+  return mcSend(key, '/api/dashboard/session/' + encodeURIComponent(key) + '/submit-recommended', undefined);
 }
 
 // ── Stats ──
@@ -13303,11 +12942,9 @@ function connectWs() {
           // whichever node the panel shows (spec 12); the head chip, 세션 정보,
           // the goal and the model · effort follow the same push (spec 13).
           repaintPanelSession();
-          // If session no longer has pending multi-choice, clear mc state
-          if (!panelS.pendingQuestion || panelS.pendingQuestion.type !== 'user_choices') {
-            if (_mcState[panelSessionKey]) delete _mcState[panelSessionKey];
-          }
         }
+        // A form whose session no longer asks it: its answers and outcome go.
+        mcEvict();
       } else if (msg.type === 'task_update') {
         // Update cached session tasks and re-render
         if (_sessionCache[msg.sessionKey]) {

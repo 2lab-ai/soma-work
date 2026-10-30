@@ -1355,27 +1355,85 @@ describe('model-controlled values in card markup (shipped renderers)', () => {
   });
 });
 
-describe('pending-question choices carry their values in data attributes (shipped choiceDataAttrs)', () => {
-  const { choiceDataAttrs } = load<{ choiceDataAttrs(key: string, id: string, label: string, q: string): string }>(
-    ['esc', 'escAttr', 'choiceDataAttrs'],
-    [],
+// D3 E-15: the multi-question form is <ui-choice-form>. The questions reach it as data (never markup the page
+// builds), and its answers come back by question id to the route — a hostile key / id / label / question
+// round-trips exactly.
+describe('pending-question choices reach the form as data and come back exactly (shipped mcFormData / mcSelectionsOf)', () => {
+  type McSession = { key: string; pendingQuestion: { type: string; questions: unknown[] } };
+  type McData = {
+    id: string;
+    questions: Array<{
+      id: string;
+      title: string;
+      allowCustom: boolean;
+      choices: Array<{ id: string; label: string; recommended?: boolean }>;
+    }>;
+    submitOnPick: boolean;
+  };
+  const m = load<{
+    mcFormData(s: McSession, q: McSession['pendingQuestion']): McData;
+    mcSelectionsOf(s: McSession, list: unknown[]): Record<string, { choiceId: string; label: string }>;
+    mcAnswersIn(list: unknown[]): Record<string, unknown>;
+  }>(
+    [
+      'mcFormId',
+      'mcStateOf',
+      'mcFormData',
+      'mcSelectionsOf',
+      'mcAnswersIn',
+      'stripRecommendedMarker',
+      'resolveRecommendedId',
+    ],
+    ['_mcState', 'MC_CUSTOM_ID'],
+    { STRINGS: { mcCustomPlaceholder: '직접 입력…' } },
   );
+  const session = (v: string): McSession => ({
+    key: `C1:t1'\\${v}`,
+    pendingQuestion: {
+      type: 'user_choices',
+      questions: [
+        {
+          id: `q-${v}`,
+          question: `Q ${v}?`,
+          choices: [{ id: `id-${v}`, label: `label ${v} (Recommended)` }],
+          recommendedChoiceId: `id-${v}`,
+        },
+      ],
+    },
+  });
 
-  it('any key / id / label / question round-trips exactly and injects nothing', () => {
+  it('any key / id / label / question round-trips exactly (the recommended marker leaves the label, the flag stays; the element numbers the choices)', () => {
     for (const v of HOSTILE) {
-      const attrs = choiceDataAttrs(`C1:t1'\\${v}`, `id-${v}`, `label ${v}`, `Q ${v}?`);
-      // Only the four data attributes, each a plain double-quoted value.
-      const parsed = [...attrs.matchAll(/\s(data-[a-z-]+)="([^"]*)"/g)];
-      expect(attrs.replace(/\s(data-[a-z-]+)="[^"]*"/g, '')).toBe('');
-      expect(parsed.map((m) => m[1])).toEqual([
-        'data-choice-key',
-        'data-choice-id',
-        'data-choice-label',
-        'data-choice-question',
-      ]);
-      expect(parsed.map((m) => decodeAttr(m[2]))).toEqual([`C1:t1'\\${v}`, `id-${v}`, `label ${v}`, `Q ${v}?`]);
-      expect(attrs).not.toMatch(/[<>]/);
+      const s = session(v);
+      const d = m.mcFormData(s, s.pendingQuestion);
+      expect(d.questions[0]).toMatchObject({ id: `q-${v}`, title: `Q ${v}?`, allowCustom: true });
+      expect(d.questions[0].choices[0]).toEqual({ id: `id-${v}`, label: `label ${v}`, recommended: true });
+      expect(d.submitOnPick).toBe(false);
+      expect(m.mcSelectionsOf(s, [{ questionId: `q-${v}`, choiceId: `id-${v}`, label: 'shown' }])).toEqual({
+        [`q-${v}`]: { choiceId: `id-${v}`, label: `label ${v}` },
+      });
     }
+  });
+
+  it("an own answer is the 직접입력 choice with its text (the route's sentinel), and seeds the form back as custom", () => {
+    const s = session('x');
+    const list = [{ questionId: 'q-x', custom: 'my own', label: 'my own' }];
+    expect(m.mcSelectionsOf(s, list)).toEqual({ 'q-x': { choiceId: '직접입력', label: 'my own' } });
+    expect(m.mcAnswersIn(list)).toEqual({ 'q-x': { custom: 'my own' } });
+    expect(m.mcAnswersIn([{ questionId: 'q-x', choiceId: '2', label: '2. b' }])).toEqual({ 'q-x': { choiceId: '2' } });
+  });
+
+  it('the 직접입력 sentinel is never the recommended choice', () => {
+    const s: McSession = {
+      key: 'k',
+      pendingQuestion: {
+        type: 'user_choices',
+        questions: [
+          { id: 'q', question: 'Q', choices: [{ id: '직접입력', label: 'x' }], recommendedChoiceId: '직접입력' },
+        ],
+      },
+    };
+    expect(m.mcFormData(s, s.pendingQuestion).questions[0].choices[0].recommended).toBeUndefined();
   });
 
   it('no answerChoice / selectMc call is built as an inline JS string any more', () => {
@@ -3063,6 +3121,13 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     };
     const question = el('panel-question');
     question.style.display = 'none';
+    // D3 E-15: the form is a <ui-choice-form> the page creates in the box.
+    Object.assign(question, {
+      appendChild(node: unknown) {
+        question.children.push(node);
+        (question as Record<string, unknown>).firstElementChild = node;
+      },
+    });
     // openPanel's .then and .catch both end in a landing, so a harness gap (a new
     // dependency of openPanel that is not injected) would silently run the
     // failure path and still land. Make that loud: only a 'fail' run may end failed.
@@ -3129,10 +3194,12 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         'panelQuestionShown',
         'renderMultiChoicePanel',
         'renderMultiChoiceCard',
+        'mcFormData',
+        'mcStateOf',
         'esc',
         'escAttr',
         'escJs',
-        'choiceDataAttrs',
+        'mcFormId',
         'stripRecommendedMarker',
         'resolveRecommendedId',
         'psecForLanding',
@@ -3145,6 +3212,7 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
       [
         '_deck',
         '_mcState',
+        'MC_CUSTOM_ID',
         '_panelLand',
         '_panelLanded',
         '_panelLandAt',
@@ -3169,7 +3237,10 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
       {
         // affectUI batch 2b: openPanel gives each opening a fresh <ui-agent-steering>; this harness has no composer.
         pcFreshSteer: () => {},
-        document: { getElementById: el },
+        document: {
+          getElementById: el,
+          createElement: (tag: string) => Object.assign(fakeEl(), { tagName: tag.toUpperCase() }),
+        },
         fetch: fetchImpl,
         // The single-choice question's approval-card slot is written by a morph.
         morphInnerHtml: (e: { innerHTML: string }, h: string) => {
@@ -3227,7 +3298,6 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         loadWorkLog: () => {},
         // SSOT 2026-10-29 T2: the deck's ‹ n / m › and peeking edges (none in this harness).
         renderDeckNav: () => {},
-        renderMdBasic: String, // carries backticks, so it cannot be cooked; no question here has context
         timeAgo: () => '',
         safeHref: (u: string) => u,
         formatTokens: String,
@@ -3245,8 +3315,11 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
     /** Click the card's 답변하기 button: run its shipped onclick against the shipped openPanel. */
     const clickAnswer = () => {
       const html = m.renderMultiChoiceCard(cache[KEY], '');
-      // re-agent-inbox D10: the button is the card's primary (btn-choice btn-choice-primary).
-      const btn = /<button class="btn-choice[^"]*" onclick="([^"]+)"[^>]*>답변하기<\/button>/.exec(html);
+      // re-agent-inbox D10: the button is the card's primary — the kit's ink button (D3 E-16).
+      const btn =
+        /<button type="button" class="ui-btn is-primary card-mc-go" onclick="([^"]+)"[^>]*>답변하기<\/button>/.exec(
+          html,
+        );
       if (!btn) throw new Error('no 답변하기 button on the card');
       new Function('event', 'openPanel', btn[1])({ stopPropagation() {} }, m.openPanel);
     };
