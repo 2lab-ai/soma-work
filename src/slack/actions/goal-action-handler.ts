@@ -300,6 +300,8 @@ export class GoalActionHandler {
       }
       r.goal.continuationCount = 0;
       r.goal.capDmPendingAt = undefined;
+      // The owner chose to keep going: a fresh budget, no longer parked.
+      r.goal.capReachedAt = undefined;
       r.goal.status = 'active';
       r.goal.updatedAt = Date.now();
       this.persistCapDecision(r.session, r.goal);

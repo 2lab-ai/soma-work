@@ -5611,6 +5611,60 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(startWithContinuation).not.toHaveBeenCalled();
     });
 
+    it('SSOT 2026-10-30 T1: add while the current goal is parked at 10/10 starts the new goal and moves the parked one back', async () => {
+      registrySession.goal = goalOf({ continuationCount: 10, capReachedAt: 5, capDmPendingAt: 5 });
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '다음 목표' });
+
+      expect(result).toMatchObject({ outcome: 'started' });
+      expect(registrySession.goal).toMatchObject({ objective: '다음 목표', status: 'active' });
+      expect(registrySession.goalQueue).toEqual([
+        expect.objectContaining({ goalId: 'g1', status: 'queued', capReachedAt: 5 }),
+      ]);
+      expect(postSystemMessage).toHaveBeenLastCalledWith(
+        CHANNEL,
+        expect.stringContaining('back of the queue'),
+        expect.anything(),
+      );
+      await tick();
+      expect(startWithContinuation).toHaveBeenCalledTimes(1);
+    });
+
+    it('SSOT 2026-10-30 T1: delete current whose only waiting goal used its budget — it becomes current with no opening turn', async () => {
+      registrySession.goal = goalOf();
+      registrySession.goalQueue = [
+        goalOf({
+          goalId: 'g2',
+          objective: '예산 다 쓴 goal',
+          status: 'queued',
+          continuationCount: 10,
+          capReachedAt: 5,
+        }),
+      ];
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, {
+        action: 'delete',
+        goalId: 'g1',
+        expect: 'current',
+      });
+
+      expect(result).toMatchObject({ outcome: 'deleted', goalId: 'g1', promoted: { goalId: 'g2' } });
+      expect(registrySession.goal).toMatchObject({
+        goalId: 'g2',
+        status: 'active',
+        continuationCount: 10,
+        capReachedAt: 5,
+      });
+      expect(items()).toHaveLength(0);
+      await tick();
+      expect(startWithContinuation).not.toHaveBeenCalled();
+      expect(postSystemMessage).toHaveBeenCalledWith(
+        CHANNEL,
+        expect.stringContaining('already used'),
+        expect.anything(),
+      );
+    });
+
     it('undoes the delete when the promoted goal cannot be admitted (503) — current goal and queue restored', async () => {
       registrySession.goal = goalOf();
       registrySession.goalQueue = [goalOf({ goalId: 'g2', objective: '다음 목표', status: 'queued' })];
