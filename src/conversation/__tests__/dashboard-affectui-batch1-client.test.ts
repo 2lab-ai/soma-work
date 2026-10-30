@@ -381,7 +381,7 @@ describe('<ui-compact-breakdown> — where the usage goes: by model for everyone
       formatTokens: String,
     };
     const m = load<{ paintUsage(r: unknown): void; paintUsageBreakdown(): void }>(
-      ['toNum', 'usageBreakdownData', 'paintUsageBreakdown', 'paintUsage'],
+      ['toNum', 'fmtUsd', 'usageBreakdownData', 'paintUsageBreakdown', 'paintUsage'],
       ['_usageView', '_usageReport', 'USAGE_VIEWS'],
       env,
       [clientListener('ui-change')],
@@ -397,7 +397,7 @@ describe('<ui-compact-breakdown> — where the usage goes: by model for everyone
   });
 
   it('the page: the breakdown in the stats detail, in a token wrapper', () => {
-    const detail = PAGE.slice(PAGE.indexOf('<div class="stats-detail" id="stats-detail" hidden>'));
+    const detail = PAGE.slice(PAGE.indexOf('<div class="stats-detail" id="stats-detail" hidden inert>'));
     expect(
       detail.indexOf(
         '<div class="ui-tok usage-cb-wrap"><ui-compact-breakdown id="usage-cb" lang="ko"></ui-compact-breakdown></div>',

@@ -16,6 +16,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { pageTokenAliases, uiLibTokensCss } from '../ui-lib';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -311,7 +312,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
         'cardGoalLine',
         'renderCardBody',
       ],
-      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'SESSION_ACTION_ARIA', '_busy'],
+      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_SVG', 'SESSION_ACTION_ARIA', '_busy'],
       { ...STUBS, ...inject },
     ).renderCardBody(s, col);
 
@@ -1191,24 +1192,34 @@ describe('the detail deck — open cards and their detail cards move together (S
   it('renderDeckNav: ‹ n / m › only with two or more; the edges of up to two cards behind; gone sessions leave the deck', () => {
     const els: Record<string, Record<string, unknown>> = {};
     const attrs: Record<string, string> = {};
-    const classes: string[] = [];
+    // The deck switch is WAAPI (P6), not a keyframe class: each of the header and the body gets an
+    // additive translate (so a second switch retargets from where it is drawn) and an opacity fade.
+    const slides: Array<{ part: string; frames: Array<Record<string, unknown>>; opts: Record<string, unknown> }> = [];
+    const part = (name: string) => ({
+      animate: (frames: Array<Record<string, unknown>>, opts: Record<string, unknown>) => {
+        slides.push({ part: name, frames, opts });
+        return { playState: 'running', cancel: () => {} };
+      },
+    });
+    const parts = [part('header'), part('body')];
+    let selector = '';
     els['slide-panel'] = {
       setAttribute: (n: string, v: string) => {
         attrs[n] = v;
       },
-      classList: {
-        add: (c: string) => classes.push(c),
-        remove: () => {},
+      querySelectorAll: (sel: string) => {
+        selector = sel;
+        return parts;
       },
-      offsetWidth: 0,
     };
     for (const id of ['panel-deck', 'panel-deck-pos', 'panel-deck-prev', 'panel-deck-next']) els[id] = {};
     const rig = (deck: string[], front: string) =>
       load<{ renderDeckNav(dir: number): void; deckNow(): string[] }>(
-        ['renderDeckNav', 'deckStep'],
-        [],
+        ['renderDeckNav', 'deckStep', 'deckSlide'],
+        ['DECK_SLIDE_MS'],
         {
           document: { getElementById: (id: string) => els[id] ?? null },
+          getComputedStyle: () => ({ opacity: '0.6' }),
           reduceMotion: () => false,
           _sessionCache: {
             A: { displayHeadline: 'Alpha' },
@@ -1229,13 +1240,25 @@ describe('the detail deck — open cards and their detail cards move together (S
     expect(els['panel-deck-pos'].textContent).toBe('2 / 3');
     expect(els['panel-deck-prev'].title).toBe('이전: Alpha');
     expect(els['panel-deck-next'].title).toBe('다음: Gamma');
-    expect(classes).toEqual(['deck-in-next']);
+    expect(selector).toBe('.panel-header, .panel-body');
+    expect(slides.map((x) => x.part)).toEqual(['header', 'header', 'body', 'body']);
+    const [move, fade] = slides;
+    expect(move.frames).toEqual([{ transform: 'translateX(18px)' }, { transform: 'translateX(0)' }]);
+    expect(move.opts).toMatchObject({ duration: 320, composite: 'add', easing: 'cubic-bezier(0.23, 1, 0.32, 1)' });
+    expect(fade.frames).toEqual([{ opacity: 0.35 }, { opacity: 1 }]);
+    // A second switch the other way while the first still runs: it slides from the left, and the
+    // fade carries on from the opacity drawn now rather than restarting at 0.35.
+    r.renderDeckNav(-1);
+    expect(slides[4].frames[0]).toEqual({ transform: 'translateX(-18px)' });
+    expect(slides[5].frames).toEqual([{ opacity: 0.6 }, { opacity: 1 }]);
     // One card: no nav, no edges, no slide.
     const one = rig(['A'], 'A');
     one.renderDeckNav(0);
     expect(attrs['data-deck']).toBe('0');
     expect(els['panel-deck'].hidden).toBe(true);
-    expect(classes).toEqual(['deck-in-next']);
+    expect(slides).toHaveLength(8);
+    // No keyframe slide left in the CSS.
+    expect(TEMPLATE).not.toContain('@keyframes deck-in');
   });
 });
 
@@ -1361,7 +1384,7 @@ describe('a live goal update never rebinds a focused control to another goal (ex
         'isBusy',
         'renderCardGoal',
       ],
-      ['GOAL_STATUS_LABELS', 'GOAL_VIA_LABELS', '_goalHistoryOpen', '_goalErrors', '_busy'],
+      ['GOAL_STATUS_LABELS', 'GOAL_SVG', 'GOAL_VIA_LABELS', '_goalHistoryOpen', '_goalErrors', '_busy'],
     );
     const html = goal.renderCardGoal(card(), 'working', true);
     expect(html).toContain('data-mk="goal:g1"');
@@ -1892,7 +1915,10 @@ describe('collapsed face — the context level is a warning, the panel bar uses 
     // The page keeps the red text token (dark and light) and hands it to the element through the
     // token wrapper; the element's styles colour the danger metric with it and wrap its metrics row
     // ('draws face extras: … context level …' checks the level; the layout is its styles.ts).
-    expect(TEMPLATE.match(/--st-fail-text: #[0-9a-f]{6};/g)?.length).toBe(2); // dark and light
+    // Tone pass P10: the token is @2lab.ai/ui's (tokens.css, dark and light), aliased by the page.
+    expect(uiLibTokensCss()).toMatch(/\[data-theme="light"\] \{[^}]*--ui-st-fail-text: #[0-9a-f]{6};/);
+    expect(uiLibTokensCss()).toMatch(/\[data-theme="dark"\] \{[^}]*--ui-st-fail-text: #[0-9a-f]{6};/);
+    expect(pageTokenAliases()).toContain('--st-fail-text: var(--ui-st-fail-text);');
     expect(TEMPLATE).toMatch(/\.ui-tok \{[^}]*--ui-st-fail-text: var\(--st-fail-text\);/);
     expect(TEMPLATE).toContain('<section class="inbox ui-tok" id="inbox"');
   });

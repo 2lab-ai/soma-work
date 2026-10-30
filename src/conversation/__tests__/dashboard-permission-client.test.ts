@@ -301,7 +301,8 @@ describe('dashboard permission prompt → real server (shipped client code)', ()
     expect(slot).toContain(`<ui-approval-card lang="ko" data-ac-key="${key}" data-ac-kind="perm" data-ac-id="${id}">`);
     expect(slot).not.toContain('onclick=');
     expect(slot).not.toContain(SECRET);
-    expect(c.permissionSummary(card(id))).toBe('🔐 Bash 실행 승인 필요');
+    // Tone pass P8: no emoji in labels (was a 🔐 prefix).
+    expect(c.permissionSummary(card(id))).toBe('Bash 실행 승인 필요');
   });
 
   it('T1.2 — no matched rule, no disable-rule answer', async () => {

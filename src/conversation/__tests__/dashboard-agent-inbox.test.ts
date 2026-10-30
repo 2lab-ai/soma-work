@@ -13,6 +13,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { pageTokenAliases, uiLibTokensCss } from '../ui-lib';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 // Only the page template — server code above it must not satisfy (or trip)
@@ -78,14 +79,16 @@ describe('agent inbox board — layout (§3.1)', () => {
   it('the stats strip leads the page and the board follows it (§3.1-2)', () => {
     const main = TEMPLATE.slice(TEMPLATE.indexOf('<div class="main">'));
     const strip = main.indexOf('<section class="stats" id="stats"');
-    const detailAt = main.indexOf('<div class="stats-detail" id="stats-detail" hidden>');
+    // Tone pass P6: closed, 자세히's region is hidden and inert (it folds to 0 rows).
+    const detailAt = main.indexOf('<div class="stats-detail" id="stats-detail" hidden inert>');
     const board = main.indexOf('<section class="inbox ui-tok" id="inbox"');
     expect(strip).toBeGreaterThan(0);
     expect(detailAt).toBeGreaterThan(strip);
     expect(board).toBeGreaterThan(detailAt);
     // Collapsed: the period control, 세션 · 토큰 · 비용 and the 자세히 toggle.
     const row = main.slice(strip, detailAt);
-    expect(row).toContain('class="period-bar"');
+    // Tone pass P2: the period control is the page's one segmented control (.seg), not a second style.
+    expect(row).toContain('class="period-bar seg"');
     for (const id of ['stat-sessions', 'stat-tokens-wrap', 'stat-tokens', 'stat-tokens-tooltip', 'stat-cost']) {
       expect(row, id).toContain(`id="${id}"`);
     }
@@ -117,7 +120,10 @@ describe('agent inbox board — layout (§3.1)', () => {
       '<button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()">',
     );
     expect(btn).toBeGreaterThan(0);
-    expect(head.indexOf('class="seg" role="group" aria-label="Board layout"')).toBeGreaterThan(btn);
+    // Tone pass P8: the group's name and its two buttons are Korean (보드 · 목록).
+    expect(head.indexOf('class="seg" role="group" aria-label="보드 보기"')).toBeGreaterThan(btn);
+    expect(head).toContain('<span>보드</span></button>');
+    expect(head).toContain('<span>목록</span></button>');
     expect(TEMPLATE).toContain("var SHOW_ARCHIVES_KEY = 'soma-show-archives';");
     expect(TEMPLATE).toContain('var showArchives = readShowArchives();');
     const toggle = fnBody('renderArchivesToggle');
@@ -498,14 +504,145 @@ describe('agent inbox board — deep link (§3.1-8)', () => {
   });
 });
 
+// Tone pass P7 — surfaces and elevation: two levels of shadow (the library's --ib-shadow at rest,
+// --ib-shadow-raised for what floats), no colour rails on the turns, glyphs instead of emoji.
+describe('tone pass P7 — surfaces and elevation', () => {
+  const rule = (sel: string) => {
+    const at = TEMPLATE.indexOf(`\n${sel} {`);
+    expect(at, sel).toBeGreaterThan(0);
+    return TEMPLATE.slice(at, TEMPLATE.indexOf('}', at));
+  };
+
+  it('stat cards and charts are 12px cards on --ib-shadow; menus, dialogs, the peek, the viewer and tooltips are raised', () => {
+    for (const sel of ['.stat-card', '.chart-container']) {
+      expect(rule(sel), sel).toContain('border-radius: 12px;');
+      expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow);');
+    }
+    for (const sel of [
+      '.td-menu',
+      '.nt-dialog',
+      '.art-peek',
+      '.art-modal',
+      '#stat-tokens-tooltip',
+      '.bar .bar-tooltip',
+    ]) {
+      expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow-raised)');
+    }
+  });
+
+  it('turns carry no colour rail; who spoke is a neutral 24px glyph tile with a hairline — the bot an SVG', () => {
+    expect(TEMPLATE).not.toMatch(/\.turn\.(user|assistant|is-sys) \{[^}]*border-left/);
+    const tile = rule('.turn-avatar');
+    expect(tile).toContain('width: 24px; height: 24px;');
+    expect(tile).toContain('box-shadow: inset 0 0 0 1px var(--border);');
+    expect(tile).not.toMatch(/var\(--(accent|purple)\)/);
+    expect(TEMPLATE).not.toMatch(/\.(user|bot)-avatar \{[^}]*var\(--(accent|purple)\)/);
+    expect(TEMPLATE).not.toContain('&#x1F916;');
+    expect(
+      TEMPLATE.match(/<div class="turn-avatar bot-avatar" aria-hidden="true">' \+ BOT_AVATAR_SVG \+ '<\/div>/g),
+    ).toHaveLength(3);
+  });
+
+  it('the goal mark is the target glyph, not the bullseye emoji', () => {
+    expect(TEMPLATE).not.toContain('&#x1F3AF;');
+    expect(TEMPLATE.match(/<span class="cgl-icon" aria-hidden="true">' \+ GOAL_SVG \+ '<\/span>/g)).toHaveLength(2);
+    expect(TEMPLATE).toContain(`<span class="cg-label">' + GOAL_SVG + 'Goal</span>`);
+  });
+});
+
+// Tone pass P8 — copy: Korean chrome from one STRINGS table, "…" not "...", no emoji in labels; the
+// text triangles and the close / regenerate characters are the icon set's 16-grid stroke glyphs.
+describe('tone pass P8 — copy and glyphs', () => {
+  it('no emoji or text triangles in the chrome: close, regenerate, warnings, chevrons are glyphs', () => {
+    for (const s of [
+      '&#x1F504;',
+      '\\uD83D\\uDD04',
+      '&#x2715;',
+      '&#xD7;</button>',
+      '\\u274C',
+      '\\u26A0\\uFE0F',
+      '\\uD83D\\uDCCB',
+      '\\u2705',
+    ]) {
+      expect(TEMPLATE, s).not.toContain(s);
+    }
+    for (const s of ['&#x25B2;', '&#x25BC;', "'\\\\25B6 '", "'\\\\25BC '", '▶ 수동 실행', "'🔐 '"]) {
+      expect(TEMPLATE, s).not.toContain(s);
+    }
+    // One chevron: the icon set's, drawn as a mask in currentColor, turned by aria-expanded.
+    expect(TEMPLATE).toMatch(
+      /\n\.chev, \.turn-raw summary\.turn-expand-btn::before \{[^}]*mask: var\(--chev\) center \/ contain no-repeat;/,
+    );
+    expect(TEMPLATE).toContain('.chev.is-up, [aria-expanded="true"] > .chev { transform: rotate(180deg); }');
+    expect(TEMPLATE).toContain(`<span class="wl-g-chev chev is-right" aria-hidden="true"></span>`);
+    // The close buttons and the subtitle's regenerate are SVGs with a name.
+    expect(TEMPLATE).toMatch(
+      /class="panel-close"[^>]*>\s*<svg viewBox="0 0 16 16"[^>]*><path d="M4 4l8 8M12 4l-8 8"\/><\/svg><\/button>/,
+    );
+    expect(TEMPLATE).toMatch(/id="panel-title-sub-regen"[^>]*aria-label="부제 다시 만들기"[^>]*><svg /);
+  });
+
+  it('Korean chrome with "…": the panel, the lifecycle dialog and the board tools; the panel copy comes from STRINGS', () => {
+    for (const s of [
+      'Session Detail</h3>',
+      '>Session lifecycle<',
+      'title="Session lifecycle (admin)"',
+      'aria-label="Usage stats"',
+      'aria-label="Breadcrumb"',
+      '<span>Lifecycle</span>',
+    ]) {
+      expect(TEMPLATE, s).not.toContain(s);
+    }
+    expect(TEMPLATE).toContain('<h3 id="panel-title" tabindex="-1">작업 카드</h3>');
+    expect(TEMPLATE).toContain('<h3 id="lifecycle-title">세션 수명 주기</h3>');
+    for (const s of [
+      "'Retrying...'",
+      'Generating summary...',
+      "'Generating title...'",
+      "previous || 'Error'",
+      'Multi-choice data unavailable',
+      'Multi-choice questions could not be loaded',
+      'Title generation failed',
+    ]) {
+      expect(TEMPLATE, s).not.toContain(s);
+    }
+    const table = TEMPLATE.slice(
+      TEMPLATE.indexOf('var STRINGS = {'),
+      TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')),
+    );
+    for (const k of [
+      'summaryFailed',
+      'summaryPending',
+      'retry',
+      'retrying',
+      'titlePending',
+      'titleFailed',
+      'error',
+      'mcUnavailable',
+      'mcLoadFailed',
+    ]) {
+      expect(table, k).toMatch(new RegExp(`\\n  ${k}: '[^']+'`));
+    }
+    expect(table).not.toMatch(/\.\.\./);
+  });
+});
+
 describe('agent inbox board — motion contract (§4)', () => {
-  it('declares the motion tokens verbatim', () => {
-    expect(TEMPLATE).toContain('--ease-out: cubic-bezier(0.23, 1, 0.32, 1);');
-    expect(TEMPLATE).toContain('--ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);');
-    expect(TEMPLATE).toContain('--dur-press: 160ms;');
-    expect(TEMPLATE).toContain('--dur-expand: 240ms;');
-    expect(TEMPLATE).toContain('--dur-move: 320ms;');
-    expect(TEMPLATE).toContain('--dur-fade: 180ms;');
+  // P10 (tone pass): the tokens come from @2lab.ai/ui's tokens.css, emitted into the page, and the
+  // dashboard's names are aliases of the library's --ui-* — one source, the values verbatim.
+  it("declares the motion tokens verbatim (the library's tokens, aliased to the dashboard names)", () => {
+    expect(TEMPLATE).toContain('${uiLibTokensCss()}');
+    expect(TEMPLATE).toContain('${pageTokenAliases()}');
+    const tokens = uiLibTokensCss();
+    expect(tokens).toContain('--ui-ease-out: cubic-bezier(0.23, 1, 0.32, 1);');
+    expect(tokens).toContain('--ui-ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);');
+    expect(tokens).toContain('--ui-dur-press: 160ms;');
+    expect(tokens).toContain('--ui-dur-expand: 240ms;');
+    expect(tokens).toContain('--ui-dur-move: 320ms;');
+    expect(tokens).toContain('--ui-dur-fade: 180ms;');
+    const aliases = pageTokenAliases();
+    for (const n of ['ease-out', 'ease-in-out', 'dur-press', 'dur-expand', 'dur-move', 'dur-fade'])
+      expect(aliases).toContain(`--${n}: var(--ui-${n});`);
   });
 
   it('the open card grows in place (0fr → 1fr) in the element; the page keeps no expansion rules', () => {
@@ -521,10 +658,29 @@ describe('agent inbox board — motion contract (§4)', () => {
   it('presses scale to 0.97 — pointer presses only, never keyboard activation (§4-5, §4-9)', () => {
     const rules = TEMPLATE.match(/^[^\n{]*:active[^\n{]*\{[^}]*transform: scale\(0\.97\)[^}]*\}/gm) ?? [];
     expect(rules.length).toBeGreaterThan(0);
+    // Tone pass P6: one shared press rule lists its controls in :is(…) — split on top-level commas only,
+    // so each selector (the whole :is(…):active… one included) must still exclude keyboard presses.
+    const topLevel = (list: string) => {
+      const out: string[] = [];
+      let depth = 0;
+      let cur = '';
+      for (const ch of list) {
+        if (ch === '(') depth++;
+        if (ch === ')') depth--;
+        if (ch === ',' && depth === 0) {
+          out.push(cur);
+          cur = '';
+        } else cur += ch;
+      }
+      return [...out, cur];
+    };
     for (const rule of rules) {
-      const selectors = rule.slice(0, rule.indexOf('{')).split(',');
+      const selectors = topLevel(rule.slice(0, rule.indexOf('{')));
       for (const sel of selectors) expect(sel, sel).toContain(':not(:focus-visible)');
     }
+    expect(TEMPLATE).toMatch(
+      /:is\([^)]*\.stats-more[^)]*\):active:not\(:disabled\):not\(:focus-visible\) \{ transform: scale\(0\.97\); \}/,
+    );
   });
 
   it('reduced motion stops the spinner and shows a static working indicator (§4-8)', () => {
@@ -547,9 +703,11 @@ describe('agent inbox board — motion contract (§4)', () => {
     // affectUI batch 1: the card's single-choice question is a <ui-approval-card>, which lists the
     // recommended choice first, tagged and preselected (library: approval-card.test.ts "lists the
     // recommended choice first and preselected; Submit sends it"). The card's star / ink overrides went
-    // with the old buttons; the panel's multi-question form keeps the shared .btn-choice-recommended.
+    // with the old buttons; the panel's multi-question form keeps the shared .btn-choice-recommended —
+    // tone pass P2: tagged 추천 (a neutral tag, like the library's approval card), no star, no green.
     expect(TEMPLATE).not.toMatch(/\.card \.btn-choice-recommended|\.card \.btn-choice\.btn-choice-recommended/);
-    expect(TEMPLATE).toMatch(/\n\.btn-choice-recommended::before \{ content: "\\\\2B50 "; \}/);
+    expect(TEMPLATE).toMatch(/\n\.btn-choice-recommended::after \{ content: "추천";/);
+    expect(TEMPLATE).not.toContain('2B50');
   });
 
   it('board hover effects live only inside (hover: hover) and (pointer: fine)', () => {

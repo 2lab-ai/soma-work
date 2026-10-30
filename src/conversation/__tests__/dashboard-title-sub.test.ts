@@ -516,6 +516,10 @@ function cook(fragment: string): string {
   if (fragment.includes('`') || fragment.includes('${')) throw new Error('fragment is not a plain template slice');
   return new Function(`return \`${fragment}\`;`)() as string;
 }
+/** The page's chrome words (STRINGS — tone pass P8: Korean, "…", no emoji), as served. */
+const STRINGS = new Function(
+  `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
+)() as Record<string, string>;
 function clientFn(name: string): string {
   const start = TEMPLATE.indexOf(`\nfunction ${name}(`);
   if (start < 0) throw new Error(`client function ${name} not found`);
@@ -538,7 +542,7 @@ interface TitleSubClient {
 const FNS = ['titleSubCanRegen', 'titleSubEndpoint', 'isCsrfRejection', 'titleSubView'];
 function client(): TitleSubClient {
   const body = `${FNS.map(clientFn).join('\n')}\nreturn { ${FNS.join(', ')} };`;
-  return new Function('READ_ONLY_MSG', body)('읽기 전용 — 내 세션이 아닙니다') as TitleSubClient;
+  return new Function('READ_ONLY_MSG', 'STRINGS', body)('읽기 전용 — 내 세션이 아닙니다', STRINGS) as TitleSubClient;
 }
 
 describe('panel subtitle client (shipped code)', () => {
@@ -584,9 +588,10 @@ describe('panel subtitle client (shipped code)', () => {
   it('T2 — a failed fill shows the failure with 🔄 to retry the fill', () => {
     const c = client();
     const v = c.titleSubView(502, { code: 'generation_failed' }, false, '');
-    expect(v).toEqual({ text: 'Title generation failed', titleSub: '', regen: true });
+    // Tone pass P8: the words are Korean (STRINGS) — was "Title generation failed" / "… retry in a minute".
+    expect(v).toEqual({ text: '부제를 만들지 못했습니다', titleSub: '', regen: true });
     const cool = c.titleSubView(429, { code: 'cooldown', retryAfterMs: 42_000 }, false, '');
-    expect(cool.text).toMatch(/retry/i);
+    expect(cool.text).toBe('부제를 만들지 못했습니다 — 1분 뒤 다시 시도하세요');
     expect(cool.regen).toBe(true);
   });
 
@@ -595,14 +600,14 @@ describe('panel subtitle client (shipped code)', () => {
     const kept = c.titleSubView(403, { error: 'Forbidden' }, true, '예전 부제');
     expect(kept).toEqual({ text: '예전 부제', titleSub: '예전 부제', regen: false });
     const none = c.titleSubView(403, { error: 'Forbidden' }, false, '');
-    expect(none.text).not.toMatch(/Title generation failed/);
+    expect(none.text).not.toBe(STRINGS.titleFailed);
     expect(none.regen).toBe(false);
   });
 
   it('a CSRF rejection that survives the retry is a plain failure with 🔄, not "read-only"', () => {
     const c = client();
     const v = c.titleSubView(403, { code: 'csrf_failed' }, false, '');
-    expect(v).toEqual({ text: 'Title generation failed', titleSub: '', regen: true });
+    expect(v).toEqual({ text: STRINGS.titleFailed, titleSub: '', regen: true });
   });
 
   it('T2 — 🔄 is judged against the signed-in user, not the board filter (currentUserId)', () => {

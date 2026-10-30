@@ -13,6 +13,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { pageTokenAliases, uiLibTokensCss } from '../ui-lib';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -22,6 +23,10 @@ function cook(fragment: string): string {
   if (fragment.includes('`') || fragment.includes('${')) throw new Error('fragment is not a plain template slice');
   return new Function(`return \`${fragment}\`;`)() as string;
 }
+/** The page's chrome words (STRINGS — tone pass P8: Korean, "…", no emoji), as served. */
+const STRINGS = new Function(
+  `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
+)() as Record<string, string>;
 /** Source of a top-level client function, as served. */
 /** Every top-level declaration of NAME in the template (function / async function / var / let / const). */
 function declarationCount(name: string): number {
@@ -1497,6 +1502,7 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
         _viewerIsAdmin: false,
         _isAdminModeOn: () => false,
         READ_ONLY_MSG: '읽기 전용 — 내 세션이 아닙니다',
+        STRINGS,
       },
       // What openPanel / closePanel do to the panel identity (dashboard.ts: _panelGen++).
       ['function switchPanel() { _panelGen++; }'],
@@ -1509,7 +1515,7 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
     const h = harness();
     const a = h.io.generateTitleSub('conv-a'); // panel A: its title request is held
     await flush();
-    expect(h.textEl.textContent).toBe('Generating title...');
+    expect(h.textEl.textContent).toBe('부제 만드는 중…');
     h.io.switchPanel(); // open panel B
     h.answers['conv-b'] = () => h.ok('B subtitle');
     await h.io.generateTitleSub('conv-b');
@@ -1522,7 +1528,7 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
     expect(h.btn.style.display).toBe('marker');
   });
 
-  it("A's late failure does not write 'Error' into B's subtitle", async () => {
+  it("A's late failure does not write 오류 into B's subtitle", async () => {
     const h = harness();
     const a = h.io.generateTitleSub('conv-a');
     await flush();
@@ -1541,7 +1547,7 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
     h.io.switchPanel(); // the panel changes before the 403 lands
     await a;
     expect(h.posts).toHaveLength(1);
-    expect(h.textEl.textContent).toBe('Generating title...');
+    expect(h.textEl.textContent).toBe('부제 만드는 중…');
   });
 
   it('the current panel still gets its subtitle (and its stale-CSRF retry)', async () => {
@@ -1555,13 +1561,13 @@ describe('panel subtitle generation is bound to its panel opening (shipped gener
     expect(h.textEl.textContent).toBe('A subtitle');
   });
 
-  it('a permission 403 is not retried and is not shown as "Title generation failed"', async () => {
+  it('a permission 403 is not retried and is not shown as a generation failure', async () => {
     const h = harness();
     h.answers['conv-a'] = () => ({ status: 403, json: async () => ({ error: 'Forbidden — write requires …' }) });
     await h.io.generateTitleSub('conv-a');
     expect(h.posts).toHaveLength(1);
     expect(h.csrfRefreshes()).toBe(0);
-    expect(h.textEl.textContent).not.toBe('Title generation failed');
+    expect(h.textEl.textContent).not.toBe(STRINGS.titleFailed);
     expect(h.btn.style.display).toBe('none');
   });
 
@@ -2769,14 +2775,22 @@ describe('All Users: owner badge on every card (shipped assignOwnerHues + ownerB
 });
 
 describe('muted text contrast ≥ 4.5:1 on every surface it sits on (CSS tokens)', () => {
+  // Tone pass P10: the page's colours are @2lab.ai/ui's tokens.css (the dashboard names alias the
+  // library's --ui-*), so the pairs are checked on the values the page actually emits.
   function tokens(selector: RegExp): Record<string, string> {
-    const block = TEMPLATE.match(selector)?.[1] ?? '';
+    const block = uiLibTokensCss().match(selector)?.[1] ?? '';
     const out: Record<string, string> = {};
-    for (const m of block.matchAll(/--([a-z0-9-]+):\s*(#[0-9a-f]{6})\b/gi)) out[m[1]] = m[2];
+    for (const m of block.matchAll(/--ui-([a-z0-9-]+):\s*(#[0-9a-f]{6})\b/gi)) out[m[1]] = m[2];
     return out;
   }
-  const dark = tokens(/:root \{([^}]+)\}/);
-  const light = { ...dark, ...tokens(/\[data-theme="light"\] \{([^}]+)\}/) };
+  it('the page emits those tokens and aliases its names to them', () => {
+    expect(TEMPLATE).toContain('${uiLibTokensCss()}');
+    expect(TEMPLATE).toContain('${pageTokenAliases()}');
+    for (const n of ['ib-muted', 'ib-text-2', 'text-tertiary', 'text-secondary', 'st-fail', 'st-done', 'accent', 'red'])
+      expect(pageTokenAliases()).toContain(`--${n}: var(--ui-${n});`);
+  });
+  const dark = tokens(/\[data-theme="dark"\] \{([^}]+)\}/);
+  const light = tokens(/:root, \[data-theme="light"\] \{([^}]+)\}/);
   const lum = (hex: string) => {
     const [r, g, b] = [1, 3, 5].map((i) => {
       const c = Number.parseInt(hex.slice(i, i + 2), 16) / 255;
@@ -3220,6 +3234,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         safeHref: (u: string) => u,
         formatTokens: String,
         toNum: Number,
+        // Tone pass P8: the panel's chrome words come from the page's STRINGS table (as served).
+        STRINGS,
       },
       [
         'function section() { return _psec; }',
