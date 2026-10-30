@@ -831,10 +831,64 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
   it('setStat ends the loading bar for that value', () => {
     const d = fakeDocument(['stat-sessions']);
     d.byId['stat-sessions'].classes.add('is-loading');
-    const m = load<{ setStat(id: string, t: string): void }>(['setStat'], [], { document: d.document });
+    const m = load<{ setStat(id: string, t: string): void }>(['setStat', 'stopStatRoll'], [], { document: d.document });
     m.setStat('stat-sessions', '12');
     expect(d.byId['stat-sessions'].textContent).toBe('12');
     expect(d.byId['stat-sessions'].classes.has('is-loading')).toBe(false);
+  });
+
+  it('a strip figure rolls from the one it showed (620ms ease-out quart); first paint, dashes and reduced motion jump', () => {
+    const d = fakeDocument(['stat-sessions']);
+    const target = d.byId['stat-sessions'];
+    const frames: Array<(now: number) => void> = [];
+    const cancelled: number[] = [];
+    let reduce = false;
+    const m = load<{
+      setStat(id: string, t: string, v?: number | null, f?: (n: number) => string): void;
+      markStatsLoading(): void;
+      fmtCount(n: number): string;
+    }>(['setStat', 'stopStatRoll', 'fmtCount', 'markStatsLoading'], ['STAT_ROLL_MS', 'STAT_IDS'], {
+      document: d.document,
+      reduceMotion: () => reduce,
+      requestAnimationFrame: (cb: (now: number) => void) => frames.push(cb),
+      cancelAnimationFrame: (id: number) => cancelled.push(id),
+    });
+    const fmt = (n: number) => m.fmtCount(n);
+    const run = (now: number) => frames.splice(0).forEach((cb) => cb(now));
+    // First paint: no figure was shown, so it jumps.
+    m.setStat('stat-sessions', '10', 10, fmt);
+    expect(target.textContent).toBe('10');
+    expect(frames).toHaveLength(0);
+    // A change rolls: it starts on the old figure, is past halfway at a quarter of the time
+    // (ease-out quart: 1 - 0.75^4 ≈ 0.68), and lands on the served text.
+    m.setStat('stat-sessions', '110', 110, fmt);
+    expect(target.textContent).toBe('10');
+    run(1000);
+    run(1000 + 155);
+    expect(Number(target.textContent)).toBeGreaterThan(70);
+    expect(Number(target.textContent)).toBeLessThan(110);
+    run(1000 + 620);
+    expect(target.textContent).toBe('110');
+    expect(frames).toHaveLength(0);
+    // A new load stops a roll in flight: the bar shows, not a number drawn over it.
+    m.setStat('stat-sessions', '20', 20, fmt);
+    expect(frames).toHaveLength(1);
+    m.markStatsLoading();
+    expect(cancelled).toHaveLength(1);
+    expect(target.textContent).toBe('');
+    expect(target.classes.has('is-loading')).toBe(true);
+    // A dash jumps, and the figure after a dash jumps too.
+    frames.length = 0;
+    m.setStat('stat-sessions', '\u2014', null, fmt);
+    expect(target.textContent).toBe('\u2014');
+    m.setStat('stat-sessions', '30', 30, fmt);
+    expect(target.textContent).toBe('30');
+    expect(frames).toHaveLength(0);
+    // Reduced motion jumps.
+    reduce = true;
+    m.setStat('stat-sessions', '40', 40, fmt);
+    expect(target.textContent).toBe('40');
+    expect(frames).toHaveLength(0);
   });
 
   it('every stats load (first load, period, user) shows bars until its answer lands', () => {
@@ -852,7 +906,9 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
       'stat-workflows',
       'chart-row',
     ]);
-    const m = load<{ markStatsLoading(): void }>(['markStatsLoading'], ['STAT_IDS'], { document: d.document });
+    const m = load<{ markStatsLoading(): void }>(['markStatsLoading', 'stopStatRoll'], ['STAT_IDS'], {
+      document: d.document,
+    });
     m.markStatsLoading();
     for (const id of [...STAT_IDS, 'stat-workflows']) {
       expect(d.byId[id].classes.has('is-loading'), id).toBe(true);

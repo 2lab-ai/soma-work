@@ -54,7 +54,7 @@ import {
   shouldRunGoalIdleDriver,
 } from './goal-completion-evaluator';
 import { GOAL_CONTINUATION_TEXT_PREFIX } from './goal-continuation';
-import { advanceGoalQueue, formatGoalObjectiveForSlack, isGoalOutOfBudget, yieldParkedGoal } from './session-goal';
+import { advanceGoalQueue, formatGoalObjectiveForSlack } from './session-goal';
 import { announceSessionNotice, recordSessionNotice } from './session-notice';
 
 /** Default ceiling for a single completion eval before it is aborted. */
@@ -401,19 +401,6 @@ export class GoalLoopController {
         `✅ Goal completed (eval-model verdict).\n*Objective:* ${activeGoal.objective}\n*Eval reason:* ${verdict.reason}`,
       );
 
-      if (next && isGoalOutOfBudget(next)) {
-        // Only goals parked at their budget were waiting (a goal with budget
-        // left is always promoted first). Finishing the goal ahead is not the
-        // owner approving more turns for this one: it becomes current, still
-        // parked, and the owner decides — no continuation, no "Starting".
-        await this.parkAtCap(
-          sessionKey,
-          session,
-          next as SessionGoal,
-          next.lastEvalReason ?? 'auto-continuation budget already used',
-        );
-        return;
-      }
       if (next) {
         await this.postStatusNotice(session, `▶️ Starting next queued goal:\n*Objective:* ${next.objective}`);
         // Re-enter the ralph loop for the promoted goal — unless a real user
@@ -427,52 +414,70 @@ export class GoalLoopController {
       return;
     }
 
-    // At the cap the goal is now parked. If a goal that was never parked is
-    // waiting, the parked goal yields to it instead of freezing the queue
-    // behind a goal that will never complete on its own (SSOT 2026-10-30 T1).
-    // Mutated before the single save below, like the complete branch: one
-    // durable write holds either the parked goal or the promoted one.
-    const yielded = outcome.action === 'cap-paused' ? yieldParkedGoal(session) : undefined;
-
     // Non-complete (continue / cap): persist the loop-state mutations
-    // (`continuationCount`, `lastEvalReason`, `lastContinuationAt`, the parked
-    // marker, a yield) that this verdict applied. The complete branch above
-    // owns its own single post-advance save and returns before reaching here.
+    // (`continuationCount`, `lastEvalReason`, `lastContinuationAt`) that
+    // `decideGoalEvalOutcome` applied. The complete branch above owns its own
+    // single post-advance save and returns before reaching here.
     this.persist();
-
-    if (yielded) {
-      logger.info('Goal continuation cap reached — yielding to the next waiting goal', {
-        sessionKey,
-        maxContinuations: yielded.yielded.maxContinuations,
-        queued: session.goalQueue?.length ?? 0,
-      });
-      // Best effort: the promoted goal is already current and saved — a Slack
-      // failure here must not leave it current but never started.
-      try {
-        await this.postResultNotice(
-          session,
-          `⏭️ Goal auto-continuation reached its ${yielded.yielded.maxContinuations}-turn budget — moved it to the back of the queue.\n*Objective:* ${yielded.yielded.objective}\n▶️ Starting the next waiting goal:\n*Objective:* ${yielded.promoted.objective}`,
-        );
-      } catch (err: unknown) {
-        logger.warn('Goal yield notice failed — starting the next goal anyway', {
-          sessionKey,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      if (requestCoordinator.isRequestActive(sessionKey)) {
-        logger.info('Queued-goal continuation deferred — session became busy during eval', { sessionKey });
-        return;
-      }
-      this.injectContinuationTurn(sessionKey, session, yielded.promoted as SessionGoal);
-      return;
-    }
 
     const remaining = verdict.remaining.length
       ? verdict.remaining.map((r) => `• ${r}`).join('\n')
       : '_(no remaining items reported)_';
 
     if (outcome.action === 'cap-paused') {
-      await this.parkAtCap(sessionKey, session, activeGoal, verdict.reason);
+      logger.info('Goal continuation cap reached', {
+        sessionKey,
+        continuationCount: activeGoal.continuationCount,
+        maxContinuations: activeGoal.maxContinuations,
+      });
+      // S3: instead of silently pausing, DM the owner a "keep going?" decision
+      // with Continue/Cancel buttons. `capDmPendingAt` dedups so exactly one DM
+      // is sent per cap event (it's cleared on a Continue/Cancel answer or any
+      // real user message via resetGoalContinuationOnUserMessage).
+      const alreadyAsked = activeGoal.capDmPendingAt !== undefined;
+      if (this.deps.postOwnerDm && !alreadyAsked) {
+        const blocks = buildCapDecisionDmBlocks({
+          value: {
+            sessionKey,
+            goalId: activeGoal.goalId,
+            channel: session.channelId,
+            threadTs: session.threadTs,
+          },
+          objective: activeGoal.objective,
+          maxContinuations: activeGoal.maxContinuations,
+          reason: verdict.reason,
+          formatObjective: formatGoalObjectiveForSlack,
+        });
+        // Send the DM FIRST; only stamp the dedup guard on success so a failed
+        // send never leaves the goal flagged-but-undecided with no retry path
+        // (codex review #1). On failure, fall through to the in-thread notice;
+        // a later cap trigger can retry the DM since the flag was never set.
+        let dmSent = false;
+        try {
+          await this.deps.postOwnerDm(activeGoal.createdBy, '⏳ Goal 계속 진행할까요?', blocks);
+          dmSent = true;
+        } catch (err: unknown) {
+          logger.warn('Failed to DM goal owner the cap decision — falling back to thread notice', {
+            sessionKey,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+        if (dmSent) {
+          activeGoal.capDmPendingAt = this.now();
+          this.persist();
+          await this.postResultNotice(
+            session,
+            `⏸️ Goal auto-continuation reached its ${activeGoal.maxContinuations}-turn budget. Asked the owner via DM whether to keep going.`,
+          );
+          return;
+        }
+      }
+      // Fallback (no DM transport, already asked, or DM send failed): keep the
+      // original in-thread pause notice.
+      await this.postResultNotice(
+        session,
+        `⏹️ Goal auto-continuation paused after ${activeGoal.maxContinuations} turns.\n*Latest reason:* ${verdict.reason}\nSend a message in this thread to resume.`,
+      );
       return;
     }
 
@@ -490,83 +495,6 @@ export class GoalLoopController {
     }
 
     this.injectContinuationTurn(sessionKey, session, activeGoal);
-  }
-
-  /**
-   * Park the current goal at its budget: DM the owner a "keep going?"
-   * decision (once per cap event) or post the in-thread pause notice.
-   */
-  private async parkAtCap(
-    sessionKey: string,
-    session: ConversationSession,
-    activeGoal: SessionGoal,
-    reason: string,
-  ): Promise<void> {
-    const { logger } = this.deps;
-    logger.info('Goal continuation cap reached', {
-      sessionKey,
-      continuationCount: activeGoal.continuationCount,
-      maxContinuations: activeGoal.maxContinuations,
-    });
-    // S3: instead of silently pausing, DM the owner a "keep going?" decision
-    // with Continue/Cancel buttons. `capDmPendingAt` dedups so exactly one DM
-    // is sent per cap event (it's cleared on a Continue/Cancel answer or any
-    // real user message via resetGoalContinuationOnUserMessage).
-    const alreadyAsked = activeGoal.capDmPendingAt !== undefined;
-    if (this.deps.postOwnerDm && !alreadyAsked) {
-      const blocks = buildCapDecisionDmBlocks({
-        value: {
-          sessionKey,
-          goalId: activeGoal.goalId,
-          channel: session.channelId,
-          threadTs: session.threadTs,
-        },
-        objective: activeGoal.objective,
-        maxContinuations: activeGoal.maxContinuations,
-        reason: reason,
-        formatObjective: formatGoalObjectiveForSlack,
-      });
-      // Send the DM FIRST; only stamp the dedup guard on success so a failed
-      // send never leaves the goal flagged-but-undecided with no retry path
-      // (codex review #1). On failure, fall through to the in-thread notice;
-      // a later cap trigger can retry the DM since the flag was never set.
-      let dmSent = false;
-      try {
-        await this.deps.postOwnerDm(activeGoal.createdBy, '⏳ Goal 계속 진행할까요?', blocks);
-        dmSent = true;
-      } catch (err: unknown) {
-        logger.warn('Failed to DM goal owner the cap decision — falling back to thread notice', {
-          sessionKey,
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-      if (dmSent) {
-        activeGoal.capDmPendingAt = this.now();
-        this.persist();
-        await this.postResultNotice(
-          session,
-          `⏸️ Goal auto-continuation reached its ${activeGoal.maxContinuations}-turn budget. Asked the owner via DM whether to keep going.${this.waitingGoalsLine(session)}`,
-        );
-        return;
-      }
-    }
-    // Fallback (no DM transport, already asked, or DM send failed): keep the
-    // original in-thread pause notice.
-    await this.postResultNotice(
-      session,
-      `⏹️ Goal auto-continuation paused after ${activeGoal.maxContinuations} turns.\n*Latest reason:* ${reason}\nSend a message in this thread to resume.${this.waitingGoalsLine(session)}`,
-    );
-  }
-
-  /**
-   * Goals waiting behind a parked goal do not start on their own while the
-   * owner has not decided — say how to start them, so the queue is never
-   * silently frozen behind a stopped goal.
-   */
-  private waitingGoalsLine(session: ConversationSession): string {
-    const waiting = session.goalQueue?.length ?? 0;
-    if (waiting === 0) return '';
-    return `\n📋 ${waiting} goal${waiting === 1 ? '' : 's'} waiting behind it — a new goal starts right away; \`goal done\` or deleting this goal starts the next one.`;
   }
 
   /**

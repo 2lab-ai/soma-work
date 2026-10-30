@@ -18,11 +18,19 @@ import { describe, expect, it } from 'vitest';
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 
 describe('Dashboard multi-instance frontend (#814)', () => {
-  it('ships the 4-color env badge palette', () => {
-    expect(DASHBOARD_TS).toContain('#5DADE2');
-    expect(DASHBOARD_TS).toContain('#48C9B0');
-    expect(DASHBOARD_TS).toContain('#F4D03F');
-    expect(DASHBOARD_TS).toContain('#EC7063');
+  // Tone pass P5: the palette is four token tones (not hex), and the badge is a tint chip — the
+  // tone at 14% into the card, the word 70% toward the ink (≥ 4.5:1 in both themes; white on the
+  // old #F4D03F was 1.5:1).
+  it('ships the 4-tone env badge palette from tokens, drawn as a tint chip', () => {
+    expect(DASHBOARD_TS).toContain(
+      "var ENV_BADGE_PALETTE = ['var(--st-run)', 'var(--green)', 'var(--purple)', 'var(--orange)'];",
+    );
+    expect(DASHBOARD_TS).toContain(`style="--env-tone:' + envColor + '"`);
+    expect(DASHBOARD_TS).toContain(
+      'background: color-mix(in srgb, var(--env-tone, var(--ib-muted)) 14%, var(--ib-card));',
+    );
+    expect(DASHBOARD_TS).toContain('color: color-mix(in srgb, var(--env-tone, var(--ib-muted)) 70%, var(--ib-text));');
+    expect(DASHBOARD_TS).not.toContain('#F4D03F');
   });
 
   it('exposes getEnvBadgeColor for renderCardBody', () => {

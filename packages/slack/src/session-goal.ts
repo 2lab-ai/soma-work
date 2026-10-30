@@ -46,8 +46,6 @@ export interface SessionGoalState {
   maxContinuations: number;
   /** ms epoch of a pending cap-reached owner DM decision (S3 dedup guard). */
   capDmPendingAt?: number;
-  /** Parked at its auto-continuation budget — see `SessionGoal.capReachedAt` in `src/types.ts`. */
-  capReachedAt?: number;
   /**
    * The goal's opening turn was admitted but has not reached the model yet
    * (set by the host when it admits the opening, cleared right before the
@@ -184,105 +182,6 @@ function isGoalInFlight(goal: SessionGoalState | undefined): boolean {
 }
 
 /**
- * The current goal sits where the loop parked it at its auto-continuation
- * budget (10/10) and nothing has driven it since. Such a goal never completes
- * on its own, so it must not hold its slot against other goals.
- */
-export function isGoalParkedAtCap(goal: SessionGoalState | undefined): boolean {
-  return !!goal && goal.status === 'active' && goal.capReachedAt !== undefined;
-}
-
-/**
- * A parked goal (queued, or promoted back out of the queue) whose budget is
- * still used up: it must not get a turn until the owner decides (Continue, or
- * a real message that resets the counter). Callers that would start a
- * promoted goal — inject a continuation or admit an opening turn — tell the
- * owner instead ({@link formatOutOfBudgetGoalLine}).
- */
-export function isGoalOutOfBudget(goal: SessionGoalState | undefined): boolean {
-  return !!goal && goal.capReachedAt !== undefined && goal.continuationCount >= goal.maxContinuations;
-}
-
-/** The line a goal-start notice uses for a next goal that {@link isGoalOutOfBudget}. */
-export function formatOutOfBudgetGoalLine(goal: SessionGoalState): string {
-  return `⏸️ Next goal is back, but it already used its ${goal.maxContinuations}-turn auto-continuation budget: ${formatGoalObjectiveForSlack(goal.objective)}\n_Send a message in this thread to continue it._`;
-}
-
-/**
- * Take the goal that should run next out of the queue: the first goal that was
- * never parked at its budget, else the head. A parked goal waits behind every
- * goal that still has its budget.
- */
-function nextQueuedGoalIndex(session: GoalQueueSession): number {
-  const queue = session.goalQueue;
-  if (!queue || queue.length === 0) return -1;
-  const fresh = queue.findIndex((g) => g.capReachedAt === undefined);
-  return fresh >= 0 ? fresh : 0;
-}
-
-/** The goal a completion or delete-current would promote next — see {@link takeNextQueuedGoal}. */
-export function peekNextQueuedGoal(session: GoalQueueSession): SessionGoalState | undefined {
-  const index = nextQueuedGoalIndex(session);
-  return index < 0 ? undefined : session.goalQueue?.[index];
-}
-
-function takeNextQueuedGoal(session: GoalQueueSession): SessionGoalState | undefined {
-  const index = nextQueuedGoalIndex(session);
-  return index < 0 ? undefined : session.goalQueue?.splice(index, 1)[0];
-}
-
-/**
- * Install `next` (already taken out of the queue) as the active goal that
- * follows `finished`: `status='active'`, epoch strictly past `finished` (a
- * stale eval for the old goal can never apply), the eval lease and a stale
- * cap DM cleared.
- *
- * A goal that was never parked starts a fresh run: counter 0 and per-eval
- * scratch cleared. A goal parked at its budget comes back as it left — marker,
- * counter and last verdict kept. Finishing or deleting the goal ahead of it is
- * not the owner approving more turns for it (the counter only resets on a real
- * user message or the owner's Continue), so an exhausted one is not started
- * ({@link isGoalOutOfBudget}); the kept verdict lets the loop park it
- * again without a new eval call.
- *
- * The ONE promotion step shared by {@link advanceGoalQueue},
- * {@link deleteCurrentGoal} and {@link yieldParkedGoal}.
- */
-function promoteQueuedGoal(
-  session: GoalQueueSession,
-  next: SessionGoalState,
-  finished: SessionGoalState | undefined,
-): SessionGoalState {
-  next.status = 'active';
-  next.epoch = (finished?.epoch ?? 0) + 1;
-  next.updatedAt = Date.now();
-  next.pendingEval = undefined;
-  next.capDmPendingAt = undefined;
-  if (next.capReachedAt === undefined) {
-    next.continuationCount = 0;
-    next.lastEvalReason = undefined;
-    next.lastEvalSummaryHash = undefined;
-    next.lastAssistantTurnSummary = undefined;
-  }
-  applyGoalToSession(session, next);
-  return next;
-}
-
-/**
- * Move a parked current goal to the back of the queue. The marker stays (the
- * loop must never rotate back to it on its own); its pending cap DM is moot
- * now that it is no longer current, and any eval lease belonged to the slot.
- */
-function moveParkedGoalToQueueTail(session: GoalQueueSession, goal: SessionGoalState): void {
-  goal.status = 'queued';
-  goal.capDmPendingAt = undefined;
-  goal.pendingEval = undefined;
-  goal.updatedAt = Date.now();
-  session.goalQueue = session.goalQueue ?? [];
-  session.goalQueue.push(goal);
-}
-
-/**
  * Resolve a goal by `goalId` across the active goal, the pending queue, and
  * the completed history. Used by per-goal accounting so a turn's spend is
  * credited to the goal that owned the leg even after it has been advanced into
@@ -305,14 +204,13 @@ export function findGoalById(session: GoalQueueSession, goalId: string | undefin
  *
  *   - If a goal is already in flight (active/paused) → APPEND `objective` to
  *     `goalQueue` as a `queued` goal and return `{ activated: false }`. The
- *     current goal keeps running untouched; the caller posts a "queued"
- *     notice and does NOT start a continuation.
- *   - If the current goal is PARKED at its auto-continuation budget
- *     ({@link isGoalParkedAtCap}) → it would never complete and the new goal
- *     would wait forever behind it. Activate the new goal now and move the
- *     parked one to the back of the queue (marker kept). Returns
- *     `{ activated: true, goal, displaced }` so the caller can say where the
- *     parked goal went.
+ *     current goal keeps its slot; the caller posts a "queued" notice and does
+ *     NOT start a continuation for the queued goal.
+ *     If the current goal is active but stopped at its auto-continuation
+ *     budget (10/10, not complete), this request is the user weighing in — the
+ *     same as a chat message: its counter is reset so it runs again, and it is
+ *     returned as `resumedCurrent`. The caller re-drives the loop (a goal
+ *     command or dashboard add starts no turn whose end would do it).
  *   - Otherwise (no goal, or the current one is complete) → activate a fresh
  *     goal via {@link applyGoalToSession} and return `{ activated: true,
  *     goal }`. The caller starts the continuation for it.
@@ -325,52 +223,44 @@ export function enqueueOrActivateGoal(
   userId: string,
   /** Per-user auto-continuation cap default (S4) applied to the new goal. */
   maxContinuations?: number,
-): { activated: boolean; goal: SessionGoalState; position?: number; displaced?: SessionGoalState } {
+): { activated: boolean; goal: SessionGoalState; position?: number; resumedCurrent?: SessionGoalState } {
   const current = session.goal;
-  const parked = isGoalParkedAtCap(current);
-  if (isGoalInFlight(current) && !parked) {
+  if (isGoalInFlight(current)) {
     const queued = createQueuedSessionGoal(objective, userId, maxContinuations);
     session.goalQueue = session.goalQueue ?? [];
     session.goalQueue.push(queued);
-    return { activated: false, goal: queued, position: session.goalQueue.length };
+    const resumedCurrent = current && resumeGoalStoppedAtBudget(current) ? current : undefined;
+    return { activated: false, goal: queued, position: session.goalQueue.length, resumedCurrent };
   }
   const goal = createActiveSessionGoal(objective, userId, current, maxContinuations);
-  if (parked && current) {
-    moveParkedGoalToQueueTail(session, current);
-    applyGoalToSession(session, goal);
-    return { activated: true, goal, displaced: current };
-  }
   applyGoalToSession(session, goal);
   return { activated: true, goal };
 }
 
 /**
- * The current goal just reached its budget (`cap-paused`, parked). If a goal
- * that was never parked is waiting, the parked goal yields to it: that goal is
- * promoted to a fresh run and the parked goal moves to the back of the queue,
- * marker kept — so the loop never yields BACK to it on its own (A caps → B
- * runs → B caps with only parked A waiting → B parks and asks).
- *
- * Not while the owner has an unanswered "keep going?" DM for this goal: the
- * stop was put to the owner, and a re-evaluation (a restart, a duplicate
- * settle) is not their answer. This only holds back goals parked before this
- * rule existed — a goal the loop drives again always has the DM cleared — and
- * an explicit new goal request still displaces it.
- *
- * Returns `undefined` (nothing changed) when the current goal is not parked,
- * a decision is pending, or no never-parked goal is waiting; the caller then
- * parks as before. Persistence is the caller's job — one write after this.
+ * An ACTIVE goal stopped at its auto-continuation budget gets the budget back:
+ * counter to 0 and the pending "keep going?" DM answered. Narrower than
+ * `resetGoalContinuationOnUserMessage` on purpose: no epoch bump and no
+ * backoff clear — a goal stopped at the cap has no eval in flight and no
+ * backoff window (the eval that stopped it succeeded and cleared both).
+ * Returns whether it was stopped there. A paused goal is left alone
+ * (pausing was explicit).
  */
-export function yieldParkedGoal(
-  session: GoalQueueSession,
-): { promoted: SessionGoalState; yielded: SessionGoalState } | undefined {
-  const current = session.goal;
-  if (!current || !isGoalParkedAtCap(current)) return undefined;
-  if (current.capDmPendingAt !== undefined) return undefined;
-  if (!session.goalQueue?.some((g) => g.capReachedAt === undefined)) return undefined;
-  const next = takeNextQueuedGoal(session) as SessionGoalState;
-  moveParkedGoalToQueueTail(session, current);
-  return { promoted: promoteQueuedGoal(session, next, current), yielded: current };
+function resumeGoalStoppedAtBudget(goal: SessionGoalState): boolean {
+  if (goal.status !== 'active' || goal.continuationCount < goal.maxContinuations) return false;
+  goal.continuationCount = 0;
+  goal.capDmPendingAt = undefined;
+  goal.updatedAt = Date.now();
+  return true;
+}
+
+/**
+ * The line a "goal queued" notice adds when the request gave the current goal
+ * its budget back ({@link enqueueOrActivateGoal} `resumedCurrent`). Single
+ * source for every surface.
+ */
+export function formatResumedGoalLine(goal: SessionGoalState): string {
+  return `▶️ The current goal had used its ${goal.maxContinuations}-turn auto-continuation budget without finishing — it runs again now: ${formatGoalObjectiveForSlack(goal.objective)}`;
 }
 
 /**
@@ -380,10 +270,8 @@ export function yieldParkedGoal(
  *
  *   1. The current goal (already stamped complete by the caller, or cleared)
  *      is pushed to `goalHistory` (capped at {@link MAX_GOAL_HISTORY}).
- *   2. If `goalQueue` is non-empty, the next goal (the first one never parked
- *      at its budget, else the head — {@link takeNextQueuedGoal}) is promoted
- *      to `session.goal` via {@link promoteQueuedGoal}: `status='active'`,
- *      `continuationCount=0` (a parked goal keeps its counter and verdict),
+ *   2. If `goalQueue` is non-empty, its head is promoted to `session.goal`,
+ *      re-based to a fresh active run: `status='active'`, `continuationCount=0`,
  *      `epoch` rebased strictly past the just-finished goal (so a stale eval
  *      for the old goal can never apply), and all per-eval scratch
  *      (`pendingEval`, `lastEvalReason`, `lastEvalSummaryHash`,
@@ -416,7 +304,7 @@ export function advanceGoalQueue(
     }
   }
 
-  const next = takeNextQueuedGoal(session);
+  const next = session.goalQueue && session.goalQueue.length > 0 ? session.goalQueue.shift() : undefined;
   if (!next) {
     if (opts.clearCurrent) session.goal = undefined;
     else session.goal = finished; // keep the completed goal visible in status
@@ -425,7 +313,17 @@ export function advanceGoalQueue(
     return undefined;
   }
 
-  return promoteQueuedGoal(session, next, finished);
+  const now = Date.now();
+  next.status = 'active';
+  next.continuationCount = 0;
+  next.epoch = (finished?.epoch ?? 0) + 1;
+  next.updatedAt = now;
+  next.pendingEval = undefined;
+  next.lastEvalReason = undefined;
+  next.lastEvalSummaryHash = undefined;
+  next.lastAssistantTurnSummary = undefined;
+  applyGoalToSession(session, next);
+  return next;
 }
 
 /**
@@ -466,15 +364,26 @@ export function deleteGoalById(
  * resolves the id against the history first: after the last goal completes,
  * the same goal sits in both `session.goal` and `goalHistory`, and deleting by
  * id would only drop the history row. The next queued goal (if any) is
- * promoted ({@link promoteQueuedGoal}); the deleted goal is not archived (a
+ * promoted to a fresh active run; the deleted goal is not archived (a
  * deletion is not a completion). Persistence is the caller's job.
  */
 export function deleteCurrentGoal(session: GoalQueueSession): { deleted: boolean; promoted?: SessionGoalState } {
   const finished = session.goal;
   if (!finished) return { deleted: false };
-  const next = takeNextQueuedGoal(session);
+  const next = session.goalQueue && session.goalQueue.length > 0 ? session.goalQueue.shift() : undefined;
   if (next) {
-    return { deleted: true, promoted: promoteQueuedGoal(session, next, finished) };
+    const now = Date.now();
+    next.status = 'active';
+    next.continuationCount = 0;
+    next.epoch = (finished.epoch ?? 0) + 1;
+    next.updatedAt = now;
+    next.pendingEval = undefined;
+    next.lastEvalReason = undefined;
+    next.lastEvalSummaryHash = undefined;
+    next.lastAssistantTurnSummary = undefined;
+    next.capDmPendingAt = undefined;
+    applyGoalToSession(session, next);
+    return { deleted: true, promoted: next };
   }
   session.goal = undefined;
   session.goalLastTurnText = undefined;
@@ -543,16 +452,6 @@ export function restoreGoalState(session: GoalQueueSession, snapshot: GoalStateS
   // The cached prompt was built against the restored goal; keeping it is safe
   // because the snapshot is the same state the cache was built for.
   session.systemPrompt = snapshot.systemPrompt;
-}
-
-/**
- * The line every goal-start notice adds when the new goal took the slot of a
- * goal parked at its budget ({@link enqueueOrActivateGoal} `displaced`) — so
- * the user sees the old goal was moved, not dropped. Single source for every
- * surface (`goal <text>`, dashboard add, SET_GOAL).
- */
-export function formatDisplacedGoalLine(displaced: SessionGoalState): string {
-  return `⏭️ The previous goal had used its ${displaced.maxContinuations}-turn auto-continuation budget — moved it to the back of the queue: ${formatGoalObjectiveForSlack(displaced.objective)}`;
 }
 
 /**

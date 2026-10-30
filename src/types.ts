@@ -269,25 +269,6 @@ export interface SessionGoal {
    * real user message resets the loop. Undefined ⇒ no decision pending.
    */
   capDmPendingAt?: number;
-  /**
-   * ms epoch when the loop stopped this goal at its auto-continuation budget
-   * (the `cap-paused` verdict) — the last cap stop is not resolved yet. A
-   * parked current goal does not hold its slot against other goals: a new goal
-   * request starts in its place, and a waiting goal that was never parked takes
-   * over when it caps (unless the owner's "keep going?" DM is still
-   * unanswered). Either way the parked goal moves to the back of the queue with
-   * this marker, its counter and its last verdict kept; it is promoted only
-   * when no goal with budget left is waiting, and if its budget is still used
-   * up it is not started — the owner decides.
-   * Cleared when the loop drives it again (`continue` verdict — only after a
-   * real user message or the owner's Continue reset the counter), when it
-   * completes, and on the owner's Continue. Promotion does NOT clear it. A
-   * plain user message resets the counter but keeps the marker until that next
-   * verdict, so a goal set inside that very turn still starts at once. Pause
-   * leaves it: a paused goal is not active, so it is not parked, and resuming
-   * it parks it again.
-   */
-  capReachedAt?: number;
 
   /**
    * The goal's opening turn was admitted but has not reached the model yet
