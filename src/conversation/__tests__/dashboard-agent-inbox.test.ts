@@ -772,10 +772,12 @@ describe('agent inbox board — motion contract (§4)', () => {
     // affectUI batch 1: the card's single-choice question is a <ui-approval-card>, which lists the
     // recommended choice first, tagged and preselected (library: approval-card.test.ts "lists the
     // recommended choice first and preselected; Submit sends it"). The card's star / ink overrides went
-    // with the old buttons; the panel's multi-question form keeps the shared .btn-choice-recommended —
-    // tone pass P2: tagged 추천 (a neutral tag, like the library's approval card), no star, no green.
-    expect(TEMPLATE).not.toMatch(/\.card \.btn-choice-recommended|\.card \.btn-choice\.btn-choice-recommended/);
-    expect(TEMPLATE).toMatch(/\n\.btn-choice-recommended::after \{ content: "추천";/);
+    // with the old buttons; the panel's multi-question form is <ui-choice-form> (D3 E-15), which lists its
+    // recommended choice first and tags it 추천 itself — no star, no green, no page rule.
+    expect(TEMPLATE).not.toMatch(/\.btn-choice-recommended/);
+    expect(TEMPLATE).toContain(
+      '<script type="module" src="/dashboard/ui/choice-form.js?v=${UI_LIB_VERSION}"></script>',
+    );
     expect(TEMPLATE).not.toContain('2B50');
   });
 
