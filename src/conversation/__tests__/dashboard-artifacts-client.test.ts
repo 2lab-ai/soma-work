@@ -410,7 +410,9 @@ describe('T6 — right panel: pinned strip and per-answer attachments', () => {
 
   it('panel markup, turn hook and live push are wired', () => {
     expect(TEMPLATE).toContain('id="panel-artifacts"');
-    expect(clientFn('renderTurn')).toContain('renderTurnArtifacts(');
+    // D3: an answer's files are <ui-conversation>'s attachments-<turn id> slot, filled by the page (convSlots).
+    expect(clientFn('convTurnsOf')).toContain("slots.push({ name: 'attachments-' + id, kind: 'arts'");
+    expect(clientFn('convSlots')).toContain('renderTurnArtifacts(sl.list, cid, sl.start, sl.end)');
     expect(TEMPLATE).toMatch(/msg\.type === 'artifact_update'/);
   });
 });
