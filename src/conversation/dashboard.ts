@@ -7870,7 +7870,15 @@ function closeDefaultsMenu() {
     if (d.kind === 'radio' && _tdMenuKind) pickDefault(_tdMenuKind, d.value);
   });
   // Closed by the element (Esc, an outside press, focus leaving): the page forgets which chip it was.
-  menu.addEventListener('ui-open-change', function(e) { if (e.detail && !e.detail.open) _tdMenuKind = null; });
+  menu.addEventListener('ui-open-change', function(e) {
+    var open = !!(e.detail && e.detail.open);
+    if (!open) _tdMenuKind = null;
+    // The element marks only the chip it hangs from; the other chip keeps saying it is collapsed.
+    ['td-model', 'td-effort'].forEach(function(id) {
+      var chip = document.getElementById(id);
+      if (chip && (!open || chip.getAttribute('aria-expanded') !== 'true')) chip.setAttribute('aria-expanded', 'false');
+    });
+  });
 })();
 // Settings changed in Slack show up when the tab comes back.
 document.addEventListener('visibilitychange', function() { if (!document.hidden) loadMyDefaults(); });
@@ -13479,7 +13487,7 @@ function renderBarChart(title, days, valueFn, color) {
   const bars = days.map(function(d, i) {
     const h = Math.max(2, (values[i] / max) * 100);
     const label = d.date.slice(5);
-    return '<ui-tooltip text="' + escAttr(label + ': ' + values[i]) + '"><div class="bar" style="height:' + h + '%;background:' + color + '"></div></ui-tooltip>';
+    return '<ui-tooltip text="' + escAttr(label + ': ' + values[i]) + '"><div class="bar" tabindex="0" style="height:' + h + '%;background:' + color + '"></div></ui-tooltip>';
   }).join('');
   const labels = days.map(function(d) { return '<span>' + d.date.slice(8) + '</span>'; }).join('');
   return '<div class="chart-container"><h4>' + title + '</h4><div class="bar-chart">' + bars + '</div><div class="bar-labels">' + labels + '</div></div>';
@@ -17011,21 +17019,32 @@ function openCronDrawer(key) {
   var d = document.getElementById('cron-drawer');
   if (d && typeof d.show === 'function') d.show();
 }
-function closeCronDrawer() {
+// The sheet is a modal <dialog>: the page stays inert until its exit ends, so focus can land only after that.
+function cronDrawerShut(d) {
+  var dlg = d && d.shadowRoot ? d.shadowRoot.querySelector('dialog') : null;
+  return !dlg || !dlg.open;
+}
+// after() runs once focus is back (opening the run's panel records the lane control as its return target).
+function closeCronDrawer(after) {
   _cronDrawerKey = null;
   var d = document.getElementById('cron-drawer');
-  if (!d) return;
+  if (!d) { if (after) after(); return; }
   if (typeof d.hide === 'function') d.hide();
-  // Focus goes back now (before the element's exit ends) — to the control, or its twin a lane render put in its place.
   var back = _cronDrawerReturnFocus;
   _cronDrawerReturnFocus = null;
-  var to = back && back.el;
-  if (to && !to.isConnected && back.host && back.key && back.host.shadowRoot) {
-    var same = back.host.shadowRoot.querySelectorAll('[data-key]');
-    to = null;
-    for (var i = 0; i < same.length && !to; i++) if (same[i].getAttribute('data-key') === back.key) to = same[i];
-  }
-  if (to && to.isConnected && typeof to.focus === 'function') to.focus();
+  var since = Date.now();
+  (function land() {
+    if (!cronDrawerShut(d) && Date.now() - since < 1000) { requestAnimationFrame(land); return; }
+    // Back to the control that opened it, or its twin a lane render put in its place meanwhile.
+    var to = back && back.el;
+    if (to && !to.isConnected && back.host && back.key && back.host.shadowRoot) {
+      var same = back.host.shadowRoot.querySelectorAll('[data-key]');
+      to = null;
+      for (var i = 0; i < same.length && !to; i++) if (same[i].getAttribute('data-key') === back.key) to = same[i];
+    }
+    if (to && to.isConnected && typeof to.focus === 'function') to.focus();
+    if (after) after();
+  })();
 }
 // Escape, the scrim and ✕ arrive as the element's ui-close; the page closes it itself (closeCronDrawer) so focus
 // returns to the control that opened it even when the lane re-rendered that control meanwhile.
@@ -17037,7 +17056,7 @@ document.addEventListener('click', function(e) {
   var t = e.target && e.target.closest ? e.target : null;
   if (!t) return;
   var open = t.closest('[data-cron-open]');
-  if (open) { var k = open.getAttribute('data-cron-open'); closeCronDrawer(); openPanel(k); }
+  if (open) { var k = open.getAttribute('data-cron-open'); closeCronDrawer(function() { openPanel(k); }); }
 });
 // The lane's next-fire chip, a job's 지난 실행 or its run strip (<ui-agent-queue> ui-job-open):
 // the job's id is its group key.
