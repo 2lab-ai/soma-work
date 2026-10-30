@@ -67,7 +67,7 @@ export const MEMORY_TAB_CSS = String.raw`
 .navbtn { font: inherit; font-size: 13px; text-align: left; color: var(--text-secondary); background: none; border: 0; padding: 6px 10px; border-radius: 8px; cursor: pointer; }
 .navbtn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 /* 개인 메모리 — <ui-memory-panel> (@2lab.ai/ui) draws its own card: the section keeps only its heading. */
-#m-l1 { background: none; border: 0; }
+#m-l1 { background: none; border: 0; box-shadow: none; } /* no card of its own — not even the group whisper shadow (tone pass P9) */
 #m-l1 > header { padding: 0 2px 10px; border-bottom: 0; }
 #mem-l1-body:empty { display: none; }
 textarea { width: 100%; font: inherit; font-size: 13px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; padding: 8px; resize: vertical; }
