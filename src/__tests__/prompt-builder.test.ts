@@ -337,6 +337,11 @@ describe('PromptBuilder', () => {
       expect(step7).toMatch(
         /does not accept `decisions=`[^\n]*`zworkflow:deploy-qa`[^\n]*`env=<the profile skill the gate file names>`[^\n]*`decisions=<gate file>`/,
       );
+      // The direct path re-passes the env-skill admin gate and keeps the run's scope (keys=).
+      expect(step7).toMatch(
+        /first invoke `<plugin>:post-deploy --preflight repo=<owner\/repo> target=<branch>`[^\n]*continue only if it answers `applies` or `partial: …`/,
+      );
+      expect(step7).toMatch(/does not accept `decisions=`[^\n]*`keys=`/);
       // The precondition wait is the only wait; the preflight rule still never parks the deploy.
       const preflight = prompt.slice(
         prompt.indexOf('#### Post-Deploy QA Preflight'),
