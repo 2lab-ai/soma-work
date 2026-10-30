@@ -23,12 +23,14 @@
 # them. It never prints the matching text: the repository and its logs are public.
 #
 # Known leaks (scripts/sanitize-known-leaks.txt, #610): a commit that is already
-# published everywhere cannot be taken back by failing every later PR. Listed by
-# full id, its own additions — the text it added that matches, in its diff and its
-# commit object — are tolerated wherever they persist. Nothing else is: a
-# different hit, another commit adding the same text again (or repeating it in its
-# message), a branch or tag name, an annotated tag message. The list carries
-# commit ids only, never the text.
+# published cannot be taken back by failing every later PR. Listed by full id —
+# and only if it is already on the published base (the PR's base branch; main
+# before a push), so a change cannot list itself — its own additions are
+# tolerated wherever they persist: the matching text in its commit object and in
+# the added lines of its diff. Nothing else is: a different hit, another commit
+# (a merge's own resolution and a binary file included) adding the same text
+# again or repeating it in its message, any path name, a branch or tag name, an
+# annotated tag message. The list carries commit ids only, never the text.
 set -euo pipefail
 P="${SANITIZE_PATTERNS:-}"
 if [ -z "$P" ]; then echo "SANITIZE_PATTERNS env var required" >&2; exit 2; fi
@@ -43,14 +45,36 @@ fi
 
 git rev-parse --verify -q HEAD >/dev/null || { echo "sanitize-scan: no HEAD to scan" >&2; exit 2; }
 
-# What a commit adds: its commit object (message included) and the added side of
-# its diff, paths included. Never printed.
+# What a commit adds: its commit object (message included) and the added lines
+# of its diff — binary files as text; for a merge, the lines no parent had (its
+# own resolution). Not the `+++` path headers: a path is never known text.
+# Never printed.
 added_text() {
   local body patch
   body=$(git cat-file commit "$1") || return 1
-  patch=$(git show -U0 --format= --no-color --no-ext-diff --no-textconv "$1") || return 1
+  patch=$(git show -U0 --text --format= --no-color --no-ext-diff --no-textconv "$1") || return 1
   printf '%s\n' "$body"
-  printf '%s\n' "$patch" | sed -n 's/^+//p'
+  # Hunk lines always start with +, - or a space, so `diff ` opens a file header
+  # and `@@` closes it: header lines (paths included) are never content.
+  printf '%s\n' "$patch" | awk '/^diff / { h = 1; next } /^@@/ { h = 0; next } !h && /^[+]/ { print substr($0, 2) }'
+}
+
+# The commit a listed leak must already be in: the PR's base branch, main as it
+# was before this push, or HEAD for a local run. None (no base to check against)
+# exempts nothing.
+published_base() {
+  local before
+  if [ "$pr" = 1 ]; then
+    [ -n "${GITHUB_BASE_REF:-}" ] || return 1
+    git rev-parse --verify -q "refs/remotes/origin/${GITHUB_BASE_REF}^{commit}"
+  elif [ "${GITHUB_EVENT_NAME:-}" = push ]; then
+    [ -n "${GITHUB_EVENT_PATH:-}" ] || { git rev-parse --verify -q 'HEAD^{commit}'; return; }
+    before=$(awk 'match($0, /"before": *"[0-9a-f]+"/) { s = substr($0, RSTART, RLENGTH); sub(/.*: *"/, "", s); sub(/"$/, "", s); print s; exit }' "$GITHUB_EVENT_PATH") || return 1
+    [[ "$before" =~ ^[0-9a-f]{40}$ ]] || return 1
+    git rev-parse --verify -q "${before}^{commit}"
+  else
+    git rev-parse --verify -q 'HEAD^{commit}'
+  fi
 }
 
 # KNOWN: the matches listed commits added, one per line. An unreadable listed
@@ -60,7 +84,8 @@ trap 'rm -f "$KNOWN"' EXIT
 exempt=()
 list="$(git rev-parse --show-toplevel)/scripts/sanitize-known-leaks.txt"
 if [ -f "$list" ]; then
-  while read -r sha _; do
+  base=$(published_base) || base=''
+  while read -r sha _ || [ -n "${sha:-}" ]; do
     case "$sha" in '' | '#'*) continue ;; esac
     if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
       echo "sanitize-scan: $list: entries are full 40-hex commit ids — not a clean result" >&2
@@ -68,6 +93,10 @@ if [ -f "$list" ]; then
     fi
     if [ "$(git cat-file -t "$sha" 2>/dev/null)" != commit ]; then
       echo "sanitize-scan: known leak $sha is not a commit in this clone — nothing exempted for it" >&2
+      continue
+    fi
+    if [ -z "$base" ] || ! git merge-base --is-ancestor "$sha" "$base" 2>/dev/null; then
+      echo "sanitize-scan: known leak $sha is not on the published base — nothing exempted for it" >&2
       continue
     fi
     text=$(added_text "$sha") && { printf '%s\n' "$text" | grep -a -i -o -E "$P" >>"$KNOWN" || [ "$?" = 1 ]; } || {
@@ -130,13 +159,13 @@ count() {
 # A failing count exits its own subshell with 2: check each before reading it.
 r=$(count "$KNOWN" object_contents) || exit 2
 read -r a ka <<<"$r"
-r=$(count "$KNOWN" git rev-list --objects "${revs[@]}") || exit 2
-read -r b kb <<<"$r"
+r=$(count /dev/null git rev-list --objects "${revs[@]}") || exit 2
+read -r b _ <<<"$r"
 r=$(count /dev/null tag_contents) || exit 2
 read -r t _ <<<"$r"
 r=$(count /dev/null ref_names) || exit 2
 read -r c _ <<<"$r"
-known=$((ka + kb))
+known=$ka
 echo "sanitize-scan: objects=$a paths=$b tags=$t refs=$c known=$known"
 if [ "$a$b$t$c$known" = "00000" ]; then
   echo "sanitize-scan: clean"
@@ -152,7 +181,8 @@ redact() {
   done
 }
 # A commit is a hit when what it adds matches. A listed commit is a known leak;
-# a commit that only removes matching lines is the cleanup. Unreadable means hit.
+# a commit that only removes matching lines is the cleanup, and a clean merge
+# adds nothing of its own. Unreadable means hit.
 adds_hit() {
   local text n
   text=$(added_text "$1") || return 0
@@ -161,18 +191,23 @@ adds_hit() {
 }
 attributed=1
 shas=$({
-  git log "${revs[@]}" -i -G"$P" --format=%H 2>/dev/null &&
+  git log "${revs[@]}" -m --text -i -G"$P" --format=%H 2>/dev/null &&
     git log "${revs[@]}" -i -E --grep="$P" --format=%H 2>/dev/null
 } | sort -u) || attributed=0
 in_head=0
 hits=0
 for sha in $shas; do
+  # Ids only reach the log: anything else from git log is an attribution failure.
+  if ! [[ "$sha" =~ ^[0-9a-f]{40}$ ]]; then
+    attributed=0
+    continue
+  fi
   if is_exempt "$sha"; then
     echo "sanitize-scan: known leak $sha — exempted (scripts/sanitize-known-leaks.txt)" >&2
     continue
   fi
   if ! adds_hit "$sha"; then
-    echo "sanitize-scan: commit $sha only removes matching lines" >&2
+    echo "sanitize-scan: commit $sha adds no matching text of its own (a removal, or a merge of known text)" >&2
     continue
   fi
   hits=1
