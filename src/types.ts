@@ -476,6 +476,17 @@ export interface ConversationSession {
   terminated?: boolean;
   // Dashboard: session hidden from dashboard view but kept in conversation list
   trashed?: boolean;
+  /**
+   * Dashboard star (SSOT 2026-10-30): pinned on top of the board and kept
+   * alive — the lifecycle sweep never puts it to sleep or archives it.
+   */
+  starred?: boolean;
+  /**
+   * When the star was last removed (epoch ms). The idle clock counts from the
+   * later of this and `lastActivity`, so an unstarred session gets a full
+   * sleep period instead of sleeping on the next sweep.
+   */
+  starClearedAt?: number;
   // Sleep mode
   sleepStartedAt?: Date;
   // Conversation history recording ID
@@ -763,6 +774,13 @@ export interface ConversationSession {
   // breaks the compact → fail → compact loop. Cleared by a successful
   // compaction. See `pauseAutoCompactAfterFailure` in @soma/slack/compact-state.
   autoCompactSuppressedUntilMs?: number | null;
+  // Runtime-only (not serialized): when the running turn was stopped because
+  // it crossed the auto-compact threshold (stream-executor, abort reason
+  // `auto-compact`), and when the session was last stopped by a stop-class
+  // abort (user stop / close / shutdown, slack-handler `beforeAbort`). A stop
+  // after the auto-compact stop cancels the automatic continuation.
+  autoCompactStoppedAtMs?: number;
+  lastStopAtMs?: number;
   /**
    * Session-scoped auto-compact threshold in TOKENS, set by `/autocompact
    * <tokens>` and cleared by `/autocompact reset`. Wins over the model's
