@@ -1190,7 +1190,8 @@ describe('the detail deck — open cards and their detail cards move together (S
     expect(wire).not.toContain('panelSessionKey');
     // Escape (outside the viewer and the cron drawer) closes the front detail card, folding its card.
     expect(TEMPLATE).toContain(
-      "if (e.key === 'Escape' && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();",
+      // D1 (C-05): <ui-drawer> takes the key (preventDefault) before the page's listener; the panel leaves it be.
+      "if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();",
     );
     // A cron run opens its session's detail card on its default (Chat), not on the 작업 로그.
     expect(TEMPLATE).toContain('closeCronDrawer(); openPanel(k); }');
@@ -1540,7 +1541,7 @@ describe('the model menu closes on Escape before the panel does (executed)', () 
     const send = clientFn('sendCommand');
     expect(send).toContain('el.data = Object.assign({}, el.data, { disabled: true });');
     expect(send).toContain("if (cmdHost) cmdHost._mode = '';");
-    const esc = TEMPLATE.slice(TEMPLATE.indexOf("if (e.key === 'Escape' && panelOpen && !artModalIsOpen()"));
+    const esc = TEMPLATE.slice(TEMPLATE.indexOf("if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artModalIsOpen()"));
     expect(esc.slice(0, 200)).toContain('!artModalIsOpen() && !_cronDrawerKey');
   });
 });

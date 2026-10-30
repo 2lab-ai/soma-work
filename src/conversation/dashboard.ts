@@ -3852,6 +3852,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/tooltip.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/menu.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/dialog.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/drawer.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -5783,35 +5784,19 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .capacity-host > ui-agent-queue, .cron-lane > ui-agent-queue { display: block; min-width: 0; }
 .cron-cards { display: flex; flex-direction: column; gap: 8px; position: relative; }
 .cron-cards:empty, .cron-cards:has(> .cron-inbox.is-empty) { display: none; }
-.cron-drawer-overlay { position: fixed; inset: 0; background: var(--scrim); opacity: 0; pointer-events: none; transition: opacity var(--dur-fade) var(--ease-out); z-index: 190; }
-.cron-drawer-overlay.open { opacity: 1; pointer-events: auto; }
-.cron-drawer {
-  position: fixed;
-  top: 0;
-  right: 0;
-  height: 100vh;
-  width: min(560px, 100vw);
-  display: flex;
-  flex-direction: column;
-  background: var(--surface);
-  color: var(--text);
-  border-left: 1px solid var(--border);
-  box-shadow: var(--ib-shadow-raised);
-  transform: translateX(100%);
-  transition: transform var(--dur-move) var(--ease-out);
-  z-index: 191;
-}
-.cron-drawer.open { transform: none; }
-.cron-drawer-head { display: flex; align-items: center; gap: 10px; padding: 16px 18px 10px; border-bottom: 1px solid var(--border); }
-.cron-drawer-head h3 { flex: 1; margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* A cron job's runs (C-05) — @2lab.ai/ui <ui-drawer mode="sheet">: the element draws the sheet, its scrim, the
+   slide on the drawer curve, the close button (44px on touch), the focus trap and the bottom inset. The head
+   is the job's name after the CRON badge; the meta and the runs scroll together in the element's body. */
+.cron-drawer-headline { display: inline-flex; align-items: center; gap: 10px; min-width: 0; max-width: 100%; }
+.cron-drawer-headline #cron-drawer-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* P8: the close and regenerate glyphs are the icon set's (no ✕ / × / 🔄 characters). */
 #panel-title-sub-regen svg { width: 12px; height: 12px; vertical-align: -2px; }
-.cron-drawer-meta { padding: 10px 18px 4px; font-size: 13px; color: var(--text-secondary); }
+.cron-drawer-meta { padding: 0 0 4px; font-size: 13px; color: var(--text-secondary); }
 .cron-dmeta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
 .cron-dmeta dt { color: var(--text-tertiary); }
 .cron-dmeta dd { margin: 0; color: var(--text); }
 .cron-dnote { margin: 8px 0 0; font-size: 12px; color: var(--text-tertiary); }
-.cron-drawer-body { flex: 1; overflow-y: auto; padding: 6px 12px 24px; }
+.cron-drawer-body { padding: 6px 0 0; }
 .cron-runs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .cron-run { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 4px 10px; align-items: start; padding: 10px 6px; border-bottom: 1px solid var(--border); }
 .cr-glyph { font-size: 14px; line-height: 20px; text-align: center; color: var(--st-done); }
@@ -5825,9 +5810,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .cr-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .aq-left { font-variant-numeric: tabular-nums; } /* the drawer's 다음 실행 countdown (aqTime) */
 
-@media (prefers-reduced-motion: reduce) {
-  .cron-drawer, .cron-drawer-overlay { transition: none; }
-}
 
 /* ═══ New task (SSOT 2026-10-23) — entry button, floating button, composer ═══
    The page's call to action, calm (ui.2lab.ai's one ink primary): PC an ink pill in
@@ -6272,9 +6254,8 @@ body.nt-open .new-task-fab { display: none !important; }
    makes real (the notch side of a landscape iPhone, the home indicator). Its
    width is a share of the viewport without a classic scrollbar (100%), not
    100vw, so a narrow window never pushes its left edge off screen. */
-.cron-drawer { width: min(560px, 100%); height: 100vh; height: 100dvh; padding-right: env(safe-area-inset-right, 0px); }
-.cron-drawer-head { padding-top: max(16px, env(safe-area-inset-top, 0px)); }
-.cron-drawer-body { padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px)); }
+.cron-drawer::part(panel) { padding-right: env(safe-area-inset-right, 0px); }
+.cron-drawer::part(header) { padding-top: max(14px, env(safe-area-inset-top, 0px)); }
 /* Task view (T1.6): minimal — the artifacts are one row of name chips, like a
    short panel body below; 자세히 shows them as thumbnails. */
 .slide-panel:not(.is-detail) .panel-artifacts { display: flex; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
@@ -6430,16 +6411,11 @@ ${pageTokenAliases()}
   </div>
 
   <!-- A cron job's past runs (SSOT 2026-10-23 T5). -->
-  <div class="cron-drawer-overlay" id="cron-drawer-overlay" onclick="closeCronDrawer()"></div>
-  <aside class="cron-drawer" id="cron-drawer" role="dialog" aria-modal="true" aria-labelledby="cron-drawer-title" aria-hidden="true" inert>
-    <div class="cron-drawer-head">
-      <span class="cron-badge" id="cron-drawer-badge" aria-hidden="true"></span>
-      <h3 id="cron-drawer-title"></h3>
-      <button type="button" class="ui-icon-btn" id="cron-drawer-close" onclick="closeCronDrawer()" aria-label="&#xB2EB;&#xAE30;"><i data-ui-icon="close"></i></button>
-    </div>
+  <ui-drawer class="cron-drawer" id="cron-drawer" mode="sheet" width="560" max-width="560" lang="ko">
+    <span slot="header" class="cron-drawer-headline"><span class="cron-badge" id="cron-drawer-badge" aria-hidden="true"></span><span id="cron-drawer-title"></span></span>
     <div class="cron-drawer-meta" id="cron-drawer-meta"></div>
     <div class="cron-drawer-body" id="cron-drawer-body"></div>
-  </aside>
+  </ui-drawer>
 
   <!-- Slide panel: the detail card -->
   <div class="slide-panel-overlay" id="panel-overlay" onclick="closeDetailCard()"></div>
@@ -16404,8 +16380,9 @@ function closePanel() {
 
 document.addEventListener('keydown', function(e) {
   // Escape in the artifact viewer closes the viewer only (the dialog's own cancel).
-  // The cron drawer opens over a docked panel: Escape closes only that, the topmost.
-  if (e.key === 'Escape' && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();
+  // The cron drawer opens over a docked panel: Escape closes only that, the topmost. An element on top that
+  // took the key (the drawer, the defaults menu, a dialog: preventDefault) keeps it from the panel too.
+  if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();
 });
 
 // The panel's own scroll (bound once): a held section landing goes back under
@@ -17031,22 +17008,16 @@ function openCronDrawer(key) {
   _cronDrawerReturnFocus = { el: el, host: el !== host ? host : null, key: el && el.getAttribute ? el.getAttribute('data-key') : null };
   _cronDrawerKey = key;
   paintCronDrawer();
+  // <ui-drawer mode="sheet"> (C-05): show() opens it modal (focus moves in, the page behind is inert).
   var d = document.getElementById('cron-drawer');
-  d.classList.add('open');
-  d.removeAttribute('inert');
-  d.setAttribute('aria-hidden', 'false');
-  document.getElementById('cron-drawer-overlay').classList.add('open');
-  var close = document.getElementById('cron-drawer-close');
-  if (close) close.focus();
+  if (d && typeof d.show === 'function') d.show();
 }
 function closeCronDrawer() {
   _cronDrawerKey = null;
   var d = document.getElementById('cron-drawer');
   if (!d) return;
-  d.classList.remove('open');
-  d.setAttribute('inert', '');
-  d.setAttribute('aria-hidden', 'true');
-  document.getElementById('cron-drawer-overlay').classList.remove('open');
+  if (typeof d.hide === 'function') d.hide();
+  // Focus goes back now (before the element's exit ends) — to the control, or its twin a lane render put in its place.
   var back = _cronDrawerReturnFocus;
   _cronDrawerReturnFocus = null;
   var to = back && back.el;
@@ -17057,9 +17028,12 @@ function closeCronDrawer() {
   }
   if (to && to.isConnected && typeof to.focus === 'function') to.focus();
 }
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape' && _cronDrawerKey) closeCronDrawer();
-});
+// Escape, the scrim and ✕ arrive as the element's ui-close; the page closes it itself (closeCronDrawer) so focus
+// returns to the control that opened it even when the lane re-rendered that control meanwhile.
+(function initCronDrawer() {
+  var d = document.getElementById('cron-drawer');
+  if (d) d.addEventListener('ui-close', function(e) { e.preventDefault(); closeCronDrawer(); });
+})();
 document.addEventListener('click', function(e) {
   var t = e.target && e.target.closest ? e.target : null;
   if (!t) return;
