@@ -216,7 +216,7 @@ dialog .actions { display: flex; justify-content: flex-end; gap: 8px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.btn, .topbar .back, .tabs a, .topbar .theme, .side nav .navbtn, .chip button, .pages-list .pg):active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.btn, .topbar .back, .tabs a, .topbar .theme, .topbar .sound, .side nav .navbtn, .chip button, .pages-list .pg):active:not(:disabled):not(:focus-visible) { transform: none; }
 }
 `;
 

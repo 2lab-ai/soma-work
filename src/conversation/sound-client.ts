@@ -61,7 +61,7 @@ function somaSoundArm(m) {
   var fn = function () {
     if (_somaOn) {
       // Keep listening until audio runs: not every browser counts every one of these events as a gesture.
-      m.cuelume.unlockSound().then(function (ok) { if (ok) off(); });
+      Promise.resolve(m.cuelume.unlockSound()).then(function (ok) { if (ok) off(); }, function () {});
       return;
     }
     off();
