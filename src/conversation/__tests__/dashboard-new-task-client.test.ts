@@ -226,24 +226,29 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(data).toContain('d.maxLength = lim.maxPromptChars;');
     expect(data).toContain('d.maxFiles = lim.maxFiles;');
     expect(data).toContain('d.maxFileSize = lim.maxFileBytes;');
-    // It answers ui-submit (cancelled: the page posts, the composer keeps its text and files until the launch),
-    // ui-input (the draft) and ui-files (the server's total cap).
+    // The server's cap on all files together is the element's (0.10.0 maxTotalBytes: it rejects the file that
+    // crosses it and says so) — the page no longer takes the file back out on ui-files (D2-GAPS G5-3).
+    expect(data).toContain('d.maxTotalBytes = lim.maxTotalBytes;');
+    expect(script).not.toContain("composer.addEventListener('ui-files'");
+    expect(script).not.toContain('composer.removeFile(');
+    // It answers ui-submit (cancelled: the page posts, the composer keeps its text and files until the launch)
+    // and ui-input (the draft).
     expect(script).toContain(
       "composer.addEventListener('ui-submit', function (e) {\n    e.preventDefault();\n    submitNewTask(e.detail);",
     );
     expect(script).toContain('ntSaveDraft(v);');
-    expect(script).toContain('composer.removeFile(files.length - 1);');
     expect(clientFn('ntOnLaunched')).toContain(
       "if (composer && typeof composer.clear === 'function') composer.clear();",
     );
   });
 
-  it('T10 — 카메라 is a composer tool on touch screens; it opens the phone camera directly', () => {
-    expect(clientFn('ntComposerData')).toContain(
-      "tools: ntIsTouch() ? [{ id: 'camera', label: '카메라', showLabel: true }] : [],",
-    );
-    expect(script).toContain("if (e.detail && e.detail.id === 'camera') ntEl('nt-camera-input').click();");
-    expect(html).toMatch(/<input[^>]*id="nt-camera-input"[^>]*accept="image\/\*"[^>]*capture="environment"/);
+  it("T10 — 카메라 is the composer's own tool on touch screens; it opens the back camera directly", () => {
+    // 0.10.0 camera: 'environment' (shown on touch only) — the page's capture input and ui-tool answer are gone.
+    expect(clientFn('ntComposerData')).toContain("camera: 'environment',");
+    expect(clientFn('ntComposerData')).not.toContain('tools:');
+    expect(html).not.toContain('nt-camera-input');
+    expect(script).not.toContain('function ntAddCamera(');
+    expect(script).not.toContain("composer.addEventListener('ui-tool'");
   });
 
   it("T9 / T11 / PC — files, voice, drop and paste are the composer's: any file type, MediaRecorder, screenshots named", () => {
@@ -255,17 +260,23 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(script).not.toContain("prompt.addEventListener('paste'");
   });
 
-  it('⌘/Ctrl+Enter starts the task; a plain Enter is a new line (the element never sees it)', () => {
-    expect(script).toContain(
+  it("⌘/Ctrl+Enter starts the task; a plain Enter is a new line — the element's enter: 'newline', with its hint", () => {
+    expect(clientFn('ntComposerData')).toContain("enter: 'newline',");
+    expect(clientFn('ntComposerData')).toContain('hint: true,');
+    // The capture keydown that kept a plain Enter from the element (D2-GAPS G5-2) is gone.
+    expect(script).not.toMatch(/composer\.addEventListener\(\s*'keydown'/);
+    expect(script).not.toContain(
       "if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) e.stopPropagation();",
     );
-    expect(script).toMatch(/composer\.addEventListener\(\s*'keydown',[\s\S]{0,260}?true,\s*\);/);
   });
 
-  it('closing the sheet discards a recording in progress (the composer turns read-only for a moment)', () => {
+  it("closing the sheet discards a recording in progress and stops a preview — the element's cancelRecording / pause", () => {
     expect(clientFn('closeNewTask')).toContain('ntQuietComposer();');
     expect(clientFn('ntOnClosed')).toContain('ntQuietComposer();');
-    expect(clientFn('ntQuietComposer')).toContain('el.data = Object.assign({}, d, { disabled: true });');
+    const quiet = clientFn('ntQuietComposer');
+    expect(quiet).toContain('el.cancelRecording();');
+    expect(quiet).toContain('el.pause();');
+    expect(quiet).not.toContain('disabled: true');
   });
 
   it('loads its context and posts the task with the CSRF token', () => {
@@ -295,8 +306,9 @@ describe('T12 — PC and phone layouts are designed separately', () => {
   });
 
   it('the camera tool is offered on touch devices only (PC gets drop / paste instead)', () => {
+    // The element shows camera only on touch screens (coarse pointer); the page no longer decides.
     expect(css).not.toContain('.nt-tool-camera');
-    expect(clientFn('ntComposerData')).toContain('ntIsTouch() ?');
+    expect(clientFn('ntComposerData')).toContain("camera: 'environment',");
   });
 
   it('the whole page script still compiles', () => {
