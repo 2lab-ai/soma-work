@@ -331,7 +331,7 @@ describe('PromptBuilder', () => {
       expect(step7).toContain('asked the requester one question in this thread');
       expect(step7).toContain('not a failure: do not retry it');
       expect(step7).toMatch(
-        /When the requester answers in this thread[^\n]*`gate\.mjs" answer`[^\n]*`decisions=<gate file>`/,
+        /When the requester answers in this thread[^\n]*`gate\.mjs answer`[^\n]*`decisions=<gate file>`/,
       );
       // The precondition wait is the only wait; the preflight rule still never parks the deploy.
       const preflight = prompt.slice(
