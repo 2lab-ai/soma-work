@@ -121,6 +121,7 @@ import {
   stopPermissionPromptWatch,
 } from './permission-prompts';
 import { getConversation, resummarizeTurn } from './recorder';
+import { soundClientJs } from './sound-client';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
 import {
   fillUiIcons,
@@ -3857,6 +3858,8 @@ function renderDashboardPage(userId?: string): string {
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
 </script>
+<!-- Interface sound (@2lab.ai/ui/sound, sound-cuelume): off until the speaker beside the theme switch turns it on. -->
+<script data-sound>${soundClientJs(UI_LIB_VERSION)}</script>
 <!-- @2lab.ai/ui kit (ui-kit.css): the light-DOM button, icon button, chip, status, kbd … classes on the
      --ui-* tokens below. Before the page sheet, so a page rule that places a kit control wins. -->
 <style id="ui-kit">
@@ -4154,6 +4157,28 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 #theme-toggle .ic-moon, [data-theme="light"] #theme-toggle .ic-sun { display: none; }
 [data-theme="light"] #theme-toggle .ic-moon { display: block; }
 @media (hover: hover) and (pointer: fine) { #theme-toggle:hover { background: var(--ib-pill); color: var(--text); } }
+/* The speaker beside it (interface sound, off by default): the same 34px icon button; the glyph says the state —
+   sound-off while off, sound while on (data-sound on <html>, set in <head> before paint). */
+#sound-toggle {
+  display: inline-grid;
+  place-items: center;
+  inline-size: 34px;
+  block-size: 34px;
+  padding: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  color: var(--text-secondary);
+  cursor: pointer;
+  flex: none;
+  transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
+}
+#sound-toggle svg { width: 16px; height: 16px; }
+#sound-toggle .ic-sound, :root[data-sound="on"] #sound-toggle .ic-sound-off { display: none; }
+:root[data-sound="on"] #sound-toggle .ic-sound { display: block; }
+#sound-toggle:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+#sound-toggle:active:not(:focus-visible) { transform: scale(0.97); }
+@media (hover: hover) and (pointer: fine) { #sound-toggle:hover { background: var(--ib-pill); color: var(--text); } }
 /* Live updates: a tone dot and a word (library status: never colour alone). The tone moves with
    the state in 300ms; the word is the tone mixed 70% toward the ink (≥ 4.5:1 on the bar). */
 .ws-badge {
@@ -5663,6 +5688,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .topbar .user-pill-prefix { display: none; }
   .topbar .admin-toggle { padding: 4px 10px; }
   #theme-toggle { inline-size: 32px; block-size: 32px; padding: 0; flex-shrink: 0; }
+  #sound-toggle { inline-size: 32px; block-size: 32px; flex-shrink: 0; }
   .inbox-head { margin-bottom: 12px; flex-wrap: wrap; row-gap: 8px; }
   /* The tools take the row under the breadcrumb; on the narrowest screens
      (320px) Show archives sits above Board | List instead of overflowing. */
@@ -5743,6 +5769,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .topbar .nav a, .topbar .nav .user-select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }
   #theme-toggle { min-block-size: 44px; position: relative; }
   #theme-toggle::after { content: ''; position: absolute; inset: 0 -6px; }
+  #sound-toggle { min-block-size: 44px; position: relative; }
+  #sound-toggle::after { content: ''; position: absolute; inset: 0 -3px; }
   .topbar .td-chip { min-height: 44px; }
   .stats-more { min-height: 44px; }
   .card-body .btn-choice { min-height: 44px; }
@@ -6328,6 +6356,7 @@ ${pageTokenAliases()}
         href="/login"
         title="계정 — 다른 계정으로 전환하거나 로그아웃합니다"
       ><span class="user-pill-prefix"><i data-ui-icon="user" class="ic-user"></i><svg class="ic-admin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2l4.8 1.9v3.5c0 2.9-2 5.1-4.8 6.2-2.8-1.1-4.8-3.3-4.8-6.2V4.1z"/><path d="M5.9 8.1l1.5 1.5 2.8-2.9"/></svg><span class="ar-vh">로그인 계정 </span></span><b id="user-pill-name">…</b></a>
+      <button id="sound-toggle" type="button" onclick="toggleSound()" aria-pressed="false" aria-label="소리 켜기" title="인터페이스 소리"><i data-ui-icon="sound" class="ic-sound"></i><i data-ui-icon="sound-off" class="ic-sound-off"></i></button>
       <button id="theme-toggle" onclick="toggleTheme()" aria-label="테마 전환"><i data-ui-icon="sun" class="ic-sun"></i><i data-ui-icon="moon" class="ic-moon"></i></button>
     </div>
   </div>
