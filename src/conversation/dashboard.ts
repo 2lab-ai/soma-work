@@ -4427,7 +4427,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   overflow: hidden;
 }
 .card-goal .cg-gap { margin-top: 3px; color: var(--ib-muted); overflow-wrap: anywhere; }
-.card-goal .cg-more { display: inline-flex; align-items: center; min-height: 24px; margin-top: 2px; padding: 0; font: inherit; font-size: 11.5px; color: var(--ib-text-2); background: none; border: 0; cursor: pointer; }
+.card-goal .cg-more { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; margin-top: 2px; padding: 0; font: inherit; font-size: 11.5px; color: var(--ib-text-2); background: none; border: 0; cursor: pointer; }
 @media (hover: hover) and (pointer: fine) { .card-goal .cg-more:hover { color: var(--ib-text); text-decoration: underline; } }
 .card-goal .cg-more:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; border-radius: 6px; }
 .card-goal .cg-more[hidden] { display: none; }
@@ -4438,7 +4438,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-goal .cg-queue { list-style: decimal; margin: 2px 0 0 18px; }
 .card-goal .cg-queue li { padding: 2px 0; }
 .card-goal .cg-q-text { overflow-wrap: anywhere; color: var(--ib-text); }
-.card-goal .cg-history-toggle { margin-left: auto; font: inherit; font-size: 11.5px; color: var(--ib-text-2); background: none; border: 1px solid var(--ib-card-border); border-radius: 6px; padding: 2px 8px; min-height: 26px; cursor: pointer; white-space: nowrap; }
+.card-goal .cg-history-toggle { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font: inherit; font-size: 11.5px; color: var(--ib-text-2); background: none; border: 1px solid var(--ib-card-border); border-radius: 6px; padding: 2px 8px; min-height: 26px; cursor: pointer; white-space: nowrap; }
 .card-goal .cg-progress + .cg-history-toggle { margin-left: 8px; }
 .card-goal .cg-history { list-style: none; margin: 4px 0 8px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
 .card-goal .cg-h-item { border-left: 2px solid var(--st-done); padding: 2px 0 2px 8px; }
@@ -5122,6 +5122,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   min-width: 50px;
 }
 .panel-tasks-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
   font-size: 11px;
   color: var(--accent);
   cursor: pointer;
@@ -5203,8 +5206,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .wl-group { min-width: 0; }
 .wl-group-head { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px 6px; border-radius: 6px; background: var(--surface-raised); cursor: pointer; font-weight: 600; }
 .wl-group-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-.wl-group-head .wl-g-chev { flex-shrink: 0; display: inline-block; color: var(--text-tertiary); transition: transform var(--dur-press) var(--ease-out); }
-.wl-group-head[aria-expanded="true"] .wl-g-chev { transform: rotate(90deg); }
+.wl-group-head .wl-g-chev { color: var(--text-tertiary); }
+.wl-group-head[aria-expanded="true"] .wl-g-chev { transform: none; }
 .wl-group-head .wl-g-id { flex-shrink: 0; color: var(--text-tertiary); font-variant-numeric: tabular-nums; font-weight: 500; }
 .wl-group-head .wl-g-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wl-group-head .wl-g-count { flex-shrink: 0; background: var(--surface); border-radius: 6px; padding: 0 6px; font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
@@ -5461,8 +5464,15 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .turn-raw { margin-top: 6px; }
 .turn-raw summary.turn-expand-btn { cursor: pointer; color: var(--text-tertiary); font-size: 11px; padding: 2px 0; user-select: none; list-style: none; }
 .turn-raw summary.turn-expand-btn::-webkit-details-marker { display: none; }
-.turn-raw summary.turn-expand-btn::before { content: '\\25B6 '; font-size: 9px; }
-.turn-raw[open] summary.turn-expand-btn::before { content: '\\25BC '; }
+/* P8: the text triangles are the icon set's chevron (16 grid, 1.5 stroke, round caps), drawn as a mask so
+   it takes currentColor; .chev points down, .is-up / .is-right turn it, and a toggle's aria-expanded
+   turns it open. */
+:root { --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E"); }
+.chev, .turn-raw summary.turn-expand-btn::before { display: inline-block; flex-shrink: 0; width: 12px; height: 12px; vertical-align: -2px; background: currentColor; -webkit-mask: var(--chev) center / contain no-repeat; mask: var(--chev) center / contain no-repeat; transition: transform var(--dur-press) var(--ease-out); }
+.chev.is-up, [aria-expanded="true"] > .chev { transform: rotate(180deg); }
+.chev.is-right { transform: rotate(-90deg); }
+.turn-raw summary.turn-expand-btn::before { content: ''; width: 10px; height: 10px; margin-right: 4px; vertical-align: -1px; transform: rotate(-90deg); }
+.turn-raw[open] summary.turn-expand-btn::before { transform: none; }
 @media (hover: hover) and (pointer: fine) { .turn-raw summary.turn-expand-btn:hover { color: var(--text-secondary); } }
 .turn-raw-body { margin-top: 4px; padding: 8px 10px; border-radius: 8px; background: var(--surface-raised); font-size: 12px; color: var(--text-secondary); }
 .turn-raw-label { font-size: 11px; font-weight: 600; color: var(--text-tertiary); margin: 6px 0 2px; }
@@ -5797,7 +5807,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .cron-drawer.open { transform: none; }
 .cron-drawer-head { display: flex; align-items: center; gap: 10px; padding: 16px 18px 10px; border-bottom: 1px solid var(--border); }
 .cron-drawer-head h3 { flex: 1; margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cron-drawer-close { min-width: 36px; min-height: 36px; border-radius: 8px; border: 1px solid var(--border); background: none; color: var(--text-secondary); font-size: 18px; cursor: pointer; }
+.cron-drawer-close { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; min-height: 36px; border-radius: 8px; border: 1px solid var(--border); background: none; color: var(--text-secondary); font-size: 18px; cursor: pointer; }
+/* P8: the close and regenerate glyphs are the icon set's (no ✕ / × / 🔄 characters). */
+.cron-drawer-close svg, .panel-close svg, .art-modal-close svg { width: 16px; height: 16px; }
+#panel-title-sub-regen svg { width: 12px; height: 12px; vertical-align: -2px; }
 .cron-drawer-close:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .cron-drawer-meta { padding: 10px 18px 4px; font-size: 13px; color: var(--text-secondary); }
 .cron-dmeta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
@@ -6385,7 +6398,7 @@ ${pageTokenAliases()}
     <!-- Stats strip (.prd/10 §3.1-2) leads; the agent inbox board follows it.
          Collapsed by default: period · 세션 · 토큰 · 비용 + 자세히, which opens the
          other cards and the charts below the strip (kept in localStorage). -->
-    <section class="stats" id="stats" aria-label="Usage stats">
+    <section class="stats" id="stats" aria-label="사용량">
       <div class="stats-strip">
         <div class="period-bar seg" role="group" aria-label="&#xAE30;&#xAC04;">
           <button type="button" class="period-btn seg-btn active" data-period="day" aria-pressed="true" onclick="setPeriod('day')">&#xC624;&#xB298;</button>
@@ -6425,20 +6438,20 @@ ${pageTokenAliases()}
          wrapper (.ui-tok) hands them the dashboard tokens. -->
     <section class="inbox ui-tok" id="inbox" aria-label="Agent inbox">
       <div class="inbox-head">
-        <nav class="crumbs" aria-label="Breadcrumb"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
+        <nav class="crumbs" aria-label="위치"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
         <div class="inbox-tools">
           <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="3" rx="0.8"/><path d="M3 6v6.2c0 .5.4.8.8.8h8.4c.4 0 .8-.3.8-.8V6M6.5 8.6h3"/></svg><span id="archives-label">Archives</span></button>
           <button type="button" class="archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z"/></svg><span id="sleeping-label">Sleeping</span></button>
-          <button type="button" class="archives-btn" id="lifecycle-btn" style="display:none" title="Session lifecycle (admin)" onclick="openLifecycleDialog()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2 1.3"/></svg><span>Lifecycle</span></button>
-          <div class="seg" role="group" aria-label="Board layout">
-            <button type="button" class="seg-btn" data-view="board" aria-pressed="true" onclick="setBoardView('board', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="2.5" width="4.5" height="11" rx="1.2"/><rect x="9.5" y="2.5" width="4.5" height="7" rx="1.2"/></svg><span>Board</span></button>
-            <button type="button" class="seg-btn" data-view="list" aria-pressed="false" onclick="setBoardView('list', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg><span>List</span></button>
+          <button type="button" class="archives-btn" id="lifecycle-btn" style="display:none" title="세션 수명 주기 (관리자)" onclick="openLifecycleDialog()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2 1.3"/></svg><span>수명 주기</span></button>
+          <div class="seg" role="group" aria-label="보드 보기">
+            <button type="button" class="seg-btn" data-view="board" aria-pressed="true" onclick="setBoardView('board', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="2.5" width="4.5" height="11" rx="1.2"/><rect x="9.5" y="2.5" width="4.5" height="7" rx="1.2"/></svg><span>보드</span></button>
+            <button type="button" class="seg-btn" data-view="list" aria-pressed="false" onclick="setBoardView('list', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg><span>목록</span></button>
           </div>
         </div>
       </div>
       <dialog id="lifecycle-dialog" class="lifecycle-dialog" aria-labelledby="lifecycle-title" oncancel="event.preventDefault();closeLifecycleDialog()">
         <form method="dialog" onsubmit="saveLifecycle(event)" oninput="armLifecycleSave(null)">
-          <h3 id="lifecycle-title">Session lifecycle</h3>
+          <h3 id="lifecycle-title">세션 수명 주기</h3>
           <p class="lc-note"><span id="lifecycle-scope">이 인스턴스</span>에만 적용되고, 다음 정리 주기(최대 5분)부터 반영됩니다. 값을 줄이면 그 기준을 넘긴 세션이 바로 Sleeping이 되거나 종료됩니다 — 저장 전에 몇 개인지 알려 줍니다. Sleeping 전환이 12시간 이하이면 12시간 전 확인 알림은 보내지 않습니다.</p>
           <label>마지막 활동 후 Sleeping 전환 <span class="lc-unit">시간</span><input id="lc-sleepAfterHours" type="number" min="1" max="720" step="any" required></label>
           <label>Sleeping 후 Archive(종료) 전환 <span class="lc-unit">일</span><input id="lc-archiveAfterDays" type="number" min="0.05" max="365" step="any" required></label>
@@ -6472,13 +6485,13 @@ ${pageTokenAliases()}
     <div class="cron-drawer-head">
       <span class="cron-badge" id="cron-drawer-badge" aria-hidden="true"></span>
       <h3 id="cron-drawer-title"></h3>
-      <button type="button" class="cron-drawer-close" id="cron-drawer-close" onclick="closeCronDrawer()" aria-label="&#xB2EB;&#xAE30;">&#xD7;</button>
+      <button type="button" class="cron-drawer-close" id="cron-drawer-close" onclick="closeCronDrawer()" aria-label="&#xB2EB;&#xAE30;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
     </div>
     <div class="cron-drawer-meta" id="cron-drawer-meta"></div>
     <div class="cron-drawer-body" id="cron-drawer-body"></div>
   </aside>
 
-  <!-- Slide Panel for Session Detail -->
+  <!-- Slide panel: the detail card -->
   <div class="slide-panel-overlay" id="panel-overlay" onclick="closeDetailCard()"></div>
   <div class="slide-panel" id="slide-panel" data-deck="0">
     <!-- Detail deck (SSOT 2026-10-29 T2): the edges of the open cards' other detail cards, waiting behind this one. -->
@@ -6486,10 +6499,10 @@ ${pageTokenAliases()}
     <div class="panel-resize-handle" id="panel-resize-handle"></div>
     <div class="panel-header">
       <div style="flex:1;min-width:0">
-        <h3 id="panel-title" tabindex="-1">Session Detail</h3>
+        <h3 id="panel-title" tabindex="-1">작업 카드</h3>
         <div id="panel-title-sub" style="font-size:11px;color:var(--text-secondary);margin-top:2px;display:flex;align-items:center;gap:6px">
           <span id="panel-title-sub-text"></span>
-          <button id="panel-title-sub-regen" class="btn-action" style="font-size:10px;padding:1px 6px;display:none" onclick="event.stopPropagation();generateTitleSub(panelConvId, !!_panelTitleSub)">&#x1F504;</button>
+          <button id="panel-title-sub-regen" class="btn-action" style="font-size:10px;padding:1px 6px;display:none" aria-label="부제 다시 만들기" title="부제 다시 만들기" onclick="event.stopPropagation();generateTitleSub(panelConvId, !!_panelTitleSub)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.25 8a5.25 5.25 0 0 1-9.4 3.2M2.75 8a5.25 5.25 0 0 1 9.4-3.2M12.5 2v3h-3M3.5 14v-3h3"/></svg></button>
         </div>
       </div>
       <!-- Detail deck (SSOT 2026-10-29 T2): every open card has its detail card here; ‹ › go through them. -->
@@ -6500,7 +6513,7 @@ ${pageTokenAliases()}
       </div>
       <!-- 자세히 (task view T1.6): the panel shows what matters by default; on, every detail of every section. Saved per device. -->
       <button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false" title="모든 세부 정보 보기" onclick="togglePanelDetail()"><svg class="pdt-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 4h10M3 8h10M3 12h6"/></svg><span class="pdt-label">자세히</span></button>
-      <button class="panel-close" aria-label="작업 카드 닫기" title="작업 카드 닫기 (카드도 접힘)" onclick="closeDetailCard()">&#x2715;</button>
+      <button class="panel-close" aria-label="작업 카드 닫기" title="작업 카드 닫기 (카드도 접힘)" onclick="closeDetailCard()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
       <!-- Session chip (spec 13): status · active time · retry · Slack · the session's one action. -->
       <div class="panel-status" id="panel-status"></div>
     </div>
@@ -6656,7 +6669,7 @@ ${pageTokenAliases()}
       <a class="btn-action" id="art-modal-open" target="_blank" rel="noopener">새 탭</a>
       <a class="btn-action" id="art-modal-download">다운로드</a>
       <a class="btn-action" id="art-modal-slack" target="_blank" rel="noopener">Slack</a>
-      <button type="button" class="art-modal-close" aria-label="닫기" onclick="closeArtifactModal()">&#x2715;</button>
+      <button type="button" class="art-modal-close" aria-label="닫기" onclick="closeArtifactModal()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
     </div>
   </div>
   <div class="art-modal-body" id="art-modal-body"></div>
@@ -6678,6 +6691,20 @@ var STRINGS = {
   viewerAdmin: '관리자',
   themeToDark: '어두운 테마로 전환',
   themeToLight: '밝은 테마로 전환',
+  // P8: the panel's turn summaries, subtitle and the legacy question form — Korean, "…", no emoji.
+  summaryFailed: '요약 실패',
+  summaryPending: '요약 만드는 중…',
+  retry: '다시 시도',
+  retrying: '다시 시도 중…',
+  queued: '요청함',
+  titlePending: '부제 만드는 중…',
+  titleFailed: '부제를 만들지 못했습니다',
+  titleCooldown: '부제를 만들지 못했습니다 — 1분 뒤 다시 시도하세요',
+  titleNoContent: '아직 부제를 붙일 대화가 없습니다',
+  error: '오류',
+  mcUnavailable: '복수 질문 데이터를 불러올 수 없습니다',
+  mcLoadFailed: '복수 질문을 불러오지 못했습니다. 새로고침해 보세요.',
+  mcChange: '변경',
 };
 // #814 — name of the dashboard's *home* instance (the one that served this
 // HTML). Used by renderCard() to detect sibling cards and suppress action
@@ -6866,7 +6893,7 @@ function isPermissionRequester(p) {
 function permissionSummary(s) {
   var list = s.pendingPermissions || [];
   if (!list.length) return '';
-  return '🔐 ' + (list[0].toolName || 'tool') + ' 실행 승인 필요' + (list.length > 1 ? ' 외 ' + (list.length - 1) + '건' : '');
+  return (list[0].toolName || 'tool') + ' 실행 승인 필요' + (list.length > 1 ? ' 외 ' + (list.length - 1) + '건' : '');
 }
 
 // Who may answer here, as the element's canAnswer: '' (yes) or why not. A
@@ -7394,8 +7421,8 @@ function renderPanelTasks(tasks, scopeLabel, earlier, outside) {
       var rows = '';
       if (runs.ran.length > TASK_RUNS_SHOWN) {
         rows += '<li class="pl-fold">' + (_panelTasksExpanded
-          ? '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()">&#x25B2; 최근 ' + TASK_RUNS_SHOWN + '개만 보기</button>'
-          : '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()">&#x25BC; 이전 실행 ' + hiddenRuns + '개 보기</button>') + '</li>';
+          ? '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=false;repaintPanelTasks()"><span class="chev is-up" aria-hidden="true"></span>최근 ' + TASK_RUNS_SHOWN + '개만 보기</button>'
+          : '<button class="panel-tasks-toggle" onclick="_panelTasksExpanded=true;repaintPanelTasks()"><span class="chev" aria-hidden="true"></span>이전 실행 ' + hiddenRuns + '개 보기</button>') + '</li>';
       }
       for (var r = hiddenRuns; r < runs.ran.length; r++) rows += renderTaskRun(runs.ran[r], !!changed[runs.ran[r].id]);
       body += '<div class="tr-head">실행된 태스크 <span class="tr-count">' + runs.ran.length + '</span></div>'
@@ -7610,7 +7637,7 @@ function taskSkippedHtml(skipped) {
   if (!skipped || !skipped.length) return '';
   var html = '<button type="button" class="panel-tasks-toggle panel-tasks-earlier-toggle" aria-expanded="' + (_panelTasksEarlier ? 'true' : 'false') + '"'
     + ' onclick="_panelTasksEarlier=!_panelTasksEarlier;repaintPanelTasks()">'
-    + (_panelTasksEarlier ? '&#x25B2; ' : '&#x25BC; ') + '실행 전에 계획에서 빠짐 <span class="pl-earlier-counts">' + skipped.length + '</span></button>';
+    + '<span class="chev" aria-hidden="true"></span>실행 전에 계획에서 빠짐 <span class="pl-earlier-counts">' + skipped.length + '</span></button>';
   if (!_panelTasksEarlier) return html;
   return html + '<ol class="pl-list pl-earlier" aria-label="실행 전에 계획에서 빠진 태스크">' + skipped.map(function(t) { return renderPanelTaskItem(t); }).join('') + '</ol>';
 }
@@ -8032,14 +8059,14 @@ function resolveRecommendedId(explicitId, options) {
 }
 async function resummarize(convId, turnId, btn) {
   btn.disabled = true;
-  btn.textContent = 'Retrying...';
+  btn.textContent = STRINGS.retrying;
   try {
     const res = await fetch('/api/dashboard/session/' + encodeURIComponent(convId) + '/resummarize/' + encodeURIComponent(turnId), { method: 'POST' });
     if (!res.ok) throw new Error('Failed');
-    btn.textContent = 'Queued \u2713';
+    btn.textContent = STRINGS.queued;
   } catch(e) {
     btn.disabled = false;
-    btn.textContent = '\uD83D\uDD04 Retry';
+    btn.textContent = STRINGS.retry;
   }
 }
 function timeAgo(iso) {
@@ -12073,8 +12100,8 @@ function renderCardGoal(s, col, canEdit, open) {
   var historyOpen = doneCount > 0 && !!_goalHistoryOpen[s.key];
   if (doneCount > 0) {
     html += '<button type="button" class="cg-history-toggle" aria-expanded="' + (historyOpen ? 'true' : 'false') + '"'
-      + ' onclick="event.stopPropagation();toggleGoalHistory(\\'' + key + '\\')">완료된 goal ' + doneCount + '개 '
-      + (historyOpen ? '&#x25B2;' : '&#x25BC;') + '</button>';
+      + ' onclick="event.stopPropagation();toggleGoalHistory(\\'' + key + '\\')">완료된 goal ' + doneCount + '개'
+      + '<span class="chev" aria-hidden="true"></span></button>';
   }
   html += '</div>';
   if (cur) {
@@ -12086,7 +12113,7 @@ function renderCardGoal(s, col, canEdit, open) {
     // SSOT 2026-10-29 — folded to its first 3 lines until opened; reading, so never disabled.
     // syncGoalMore keeps the toggle to an objective that runs past those lines.
     html += '<button type="button" class="cg-more" aria-expanded="' + (open ? 'true' : 'false') + '" aria-controls="panel-goal-obj"'
-      + ' onclick="event.stopPropagation();togglePanelGoal()">' + (open ? '접기 &#x25B2;' : '펼치기 &#x25BC;') + '</button>';
+      + ' onclick="event.stopPropagation();togglePanelGoal()">' + (open ? '접기' : '펼치기') + '<span class="chev" aria-hidden="true"></span></button>';
     if (cur.status === 'active' && cur.lastEvalReason) {
       html += '<div class="cg-gap">남은 것: ' + esc(String(cur.lastEvalReason).slice(0, 300)) + '</div>';
     }
@@ -12894,7 +12921,7 @@ function renderMultiChoiceCard(s, faceSummary) {
   var q = s.pendingQuestion;
   if (!q || !q.questions) {
     console.warn('renderMultiChoiceCard: missing questions data for session', s.key);
-    return '<div class="card-question"><div class="card-question-text" style="color:var(--text-secondary)">\\u26A0\\uFE0F Multi-choice data unavailable</div></div>';
+    return '<div class="card-question"><div class="card-question-text" style="color:var(--text-secondary)">' + STRINGS.mcUnavailable + '</div></div>';
   }
   var total = q.questions.length;
   var st = _mcState[s.key] || { selections: {}, activeQ: 0 };
@@ -12904,7 +12931,7 @@ function renderMultiChoiceCard(s, faceSummary) {
   }
   var progressText = answered + '/' + total + ' \\uC644\\uB8CC';
   return '<div class="card-question">'
-    + ((q.title || q.question) && (q.title || q.question) === faceSummary ? '' : '<div class="card-question-text">\\uD83D\\uDCCB ' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>')
+    + ((q.title || q.question) && (q.title || q.question) === faceSummary ? '' : '<div class="card-question-text">' + esc(q.title || q.question || '\\uBCF5\\uC218 \\uC9C8\\uBB38') + '</div>')
     + '<div class="card-question-multi">' + total + '\\uAC1C \\uC9C8\\uBB38 \\u00B7 ' + progressText + '</div>'
     + '<div style="margin-top:6px"><button class="btn-choice' + (s.ownerId && s.ownerId === currentUserId && !isSiblingSession(s) ? ' btn-choice-primary' : '') + '" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\')" style="width:100%;text-align:center;font-weight:700">\\uB2F5\\uBCC0\\uD558\\uAE30</button></div>'
     + '</div>';
@@ -12917,7 +12944,7 @@ function renderMultiChoicePanel(s) {
   if (!q || !q.questions) {
     console.warn('renderMultiChoicePanel: missing questions data for session', s.key);
     container.style.display = '';
-    container.innerHTML = '<div class="mc-form"><p style="color:var(--red);padding:12px">\\u26A0\\uFE0F Multi-choice questions could not be loaded. Try refreshing.</p></div>';
+    container.innerHTML = '<div class="mc-form"><p style="color:var(--red);padding:12px">' + STRINGS.mcLoadFailed + '</p></div>';
     return;
   }
 
@@ -12994,7 +13021,7 @@ function renderMultiChoicePanel(s) {
       html += '<div class="mc-q-selected">'
         + '<span>\\u2705</span>'
         + '<span class="mc-sel-label">' + esc(sel.label) + '</span>'
-        + '<button class="mc-q-edit-btn" onclick="event.stopPropagation();editMc(\\'' + escJs(key) + '\\',' + qi + ')">\\uD83D\\uDD04 \\uBCC0\\uACBD</button>'
+        + '<button class="mc-q-edit-btn" onclick="event.stopPropagation();editMc(\\'' + escJs(key) + '\\',' + qi + ')">' + STRINGS.mcChange + '</button>'
         + '</div>';
     } else {
       // Show choice buttons, recommended first
@@ -13223,7 +13250,7 @@ async function submitAllRecommended(key) {
       var errData = {};
       try { errData = await res.json(); } catch(_) {}
       var errMsg = errData.error || ('Failed (status ' + res.status + ')');
-      dashToast({ title: '\\u274C ' + errMsg, tone: 'error' });
+      dashToast({ title: errMsg, tone: 'error' });
       if (heroBtn) { heroBtn.disabled = false; heroBtn.removeAttribute('aria-disabled'); }
     } else {
       // Success — clear local state; WebSocket will re-render.
@@ -13231,7 +13258,7 @@ async function submitAllRecommended(key) {
     }
   } catch (e) {
     console.error('submitAllRecommended error', e);
-    dashToast({ title: '\\u274C ' + e.message, tone: 'error' });
+    dashToast({ title: e.message, tone: 'error' });
     if (heroBtn) { heroBtn.disabled = false; heroBtn.removeAttribute('aria-disabled'); }
   }
 }
@@ -14256,7 +14283,7 @@ function renderWorkLogGroupHead(grp, open, task) {
   var meta = task ? renderTaskMeta(task) : '';
   var title = (task && task.content) || grp.title || '';
   return '<div class="wl-group-head" role="button" tabindex="-1" aria-expanded="' + (open ? 'true' : 'false') + '">'
-    + '<span class="wl-g-chev" aria-hidden="true">&#x25B8;</span>'
+    + '<span class="wl-g-chev chev is-right" aria-hidden="true"></span>'
     + '<span class="wl-g-id">#' + esc(grp.taskId) + '</span>'
     + '<span class="wl-g-title">' + esc(title) + '</span>'
     + '<span class="wl-g-count">' + grp.entries.length + '</span>'
@@ -15859,9 +15886,9 @@ function renderTurn(t, _idx, _arr, convId) {
     if (t.summaryBody) {
       body = '<div class="turn-summary-body">' + esc(t.summaryBody) + '</div>';
     } else if (t.summarized) {
-      body = '<div class="turn-summary-body" style="color:var(--text-tertiary);font-style:italic">Summary failed <button class="btn-action" style="margin-left:8px;font-size:10px;padding:2px 8px" onclick="event.stopPropagation();resummarize(\\'' + escJs(convId || panelConvId) + '\\',\\'' + escJs(t.id) + '\\',this)">&#x1F504; Retry</button></div>';
+      body = '<div class="turn-summary-body" style="color:var(--text-tertiary);font-style:italic">' + STRINGS.summaryFailed + ' <button class="btn-action" style="margin-left:8px;font-size:10px;padding:2px 8px" onclick="event.stopPropagation();resummarize(\\'' + escJs(convId || panelConvId) + '\\',\\'' + escJs(t.id) + '\\',this)">' + STRINGS.retry + '</button></div>';
     } else {
-      body = '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">Generating summary...</div>';
+      body = '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">' + STRINGS.summaryPending + '</div>';
     }
     // AI answer (task view T1.4, re-ai-answer D1): the answer itself is the
     // turn — <ui-ai-answer flat>, loaded as it nears the view
@@ -16213,9 +16240,9 @@ function titleSubView(status, data, canRegen, previous) {
     return { text: previous || READ_ONLY_MSG, titleSub: previous || '', regen: false };
   }
   var code = data && data.code;
-  var text = code === 'cooldown' ? 'Title generation failed — retry in a minute'
-    : code === 'no_content' ? 'No conversation to title yet'
-    : 'Title generation failed';
+  var text = code === 'cooldown' ? STRINGS.titleCooldown
+    : code === 'no_content' ? STRINGS.titleNoContent
+    : STRINGS.titleFailed;
   return { text: text, titleSub: previous || '', regen: true };
 }
 
@@ -16226,7 +16253,7 @@ async function generateTitleSub(convId, regenerate) {
   var textEl = document.getElementById('panel-title-sub-text');
   var btn = document.getElementById('panel-title-sub-regen');
   var previous = _panelTitleSub;
-  textEl.textContent = 'Generating title...';
+  textEl.textContent = STRINGS.titlePending;
   btn.style.display = 'none';
   try {
     // #771 — CSRF-protected POST: attach X-CSRF-Token; when the server says the
@@ -16255,7 +16282,7 @@ async function generateTitleSub(convId, regenerate) {
     btn.style.display = view.regen ? 'inline-block' : 'none';
   } catch(e) {
     if (gen !== _panelGen) return;
-    textEl.textContent = previous || 'Error';
+    textEl.textContent = previous || STRINGS.error;
     btn.style.display = !previous || panelTitleSubCanRegen() ? 'inline-block' : 'none';
   }
 }
@@ -16888,7 +16915,7 @@ function renderCronRunRow(run, g, nowMs) {
   var title = s && s.earlierInThread ? '같은 스레드의 이전 실행' : s && s.headline ? s.headline : gl.label;
   var bits = [];
   bits.push('<time datetime="' + escAttr(new Date(run.executedAt).toISOString()) + '">' + esc(cronRunWhen(run.executedAt, nowMs)) + '</time>');
-  bits.push(esc(run.triggeredBy ? '▶ 수동 실행 (' + run.triggeredBy + ')' : '예약 실행'));
+  bits.push(esc(run.triggeredBy ? '수동 실행 (' + run.triggeredBy + ')' : '예약 실행'));
   if (s && s.activeMs) bits.push(esc('소요 ' + capCountdown(s.activeMs / 1000)));
   if (s && typeof s.tokens === 'number' && s.tokens > 0) bits.push(esc(formatTokens(s.tokens) + ' tok'));
   if (s && typeof s.costUsd === 'number' && s.costUsd > 0) bits.push(esc('$' + s.costUsd.toFixed(2)));
