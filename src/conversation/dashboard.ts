@@ -4057,6 +4057,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
+  box-shadow: var(--ib-shadow);
   padding: 12px 16px;
   transition: border-color 150ms ease;
 }
@@ -4224,7 +4225,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-foot-bar + .cb-model-note { margin-top: 6px; }
 /* ── GOAL LINE — the goal on the open card, its home is the panel (spec 13) ── */
 .card-goal-line { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding: 6px 10px; border: 1px solid var(--ib-card-border); border-radius: 8px; background: var(--ib-card-dim); font-size: 12.5px; min-width: 0; }
-.card-goal-line .cgl-icon { flex-shrink: 0; }
+.card-goal-line .cgl-icon { flex-shrink: 0; display: inline-flex; color: var(--ib-muted); }
+.card-goal-line .cgl-icon svg, .card-goal .cg-label svg { width: 14px; height: 14px; }
 .card-goal-line .cgl-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ib-text); }
 .card-goal-line .cgl-text.is-muted { color: var(--ib-muted); }
 .card-goal-line .cg-status { flex-shrink: 0; font-weight: 600; }
@@ -4402,7 +4404,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   font-size: 12.5px;
 }
 .card-goal .cg-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-.card-goal .cg-label { font-weight: 600; color: var(--ib-text); }
+.card-goal .cg-label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--ib-text); }
+.card-goal .cg-label svg { color: var(--ib-muted); }
 .card-goal .cg-status {
   font-size: 11px;
   padding: 1px 7px;
@@ -4818,6 +4821,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 12px;
+  box-shadow: var(--ib-shadow);
   padding: 12px 16px;
 }
 .chart-container h4 { font-size: 12.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
@@ -4834,6 +4838,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   border: 1px solid var(--border);
   padding: 4px 8px;
   border-radius: 8px;
+  box-shadow: var(--ib-shadow-raised);
   font-size: 12px;
   font-weight: 600;
   white-space: nowrap;
@@ -5426,16 +5431,16 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    in its own box inside it, and .panel-command stays pinned below. */
 .panel-scroll { flex: 1 1 auto; overflow-y: auto; scroll-behavior: smooth; min-height: 0; }
 .panel-turns { padding: 10px 16px; }
-/* Slack-style turns */
+/* Slack-style turns — no colour rails (P7): the instruction sits on a raised tint, the answer on the
+   panel, and who spoke is a neutral 24px glyph tile with a hairline: the user's initial, the bot glyph. */
 .turn { margin-bottom: 8px; padding: 8px 10px; border-radius: 10px; display: flex; gap: 10px; align-items: flex-start; }
-.turn.user { background: var(--surface-raised); border-left: 3px solid var(--accent); }
-.turn.assistant { background: transparent; border-left: 3px solid var(--purple); }
-.turn-avatar { width: 32px; height: 32px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 14px; font-weight: 600; flex-shrink: 0; }
-.user-avatar { background: var(--accent); color: var(--surface); }
-.bot-avatar { background: var(--purple); font-size: 16px; }
+.turn.user { background: var(--surface-raised); }
+.turn.assistant { background: transparent; }
+.turn-avatar { width: 24px; height: 24px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 11.5px; font-weight: 600; flex-shrink: 0; background: var(--ib-pill); color: var(--text-secondary); box-shadow: inset 0 0 0 1px var(--border); }
+.turn-avatar svg { width: 14px; height: 14px; }
+.user-avatar { color: var(--text); }
 /* SSOT 2026-10-29 T7: the harness's turns — a neutral gear, never the user's colour or initial. */
-.sys-avatar { background: var(--surface-raised); color: var(--text-secondary); border: 1px solid var(--border); }
-.sys-avatar svg { width: 70%; height: 70%; }
+.sys-avatar { background: transparent; }
 .turn-name.sys-name { color: var(--text-secondary); font-weight: 600; }
 .io-label .io-who.is-sys { color: var(--text-tertiary); }
 .turn-body { flex: 1; min-width: 0; }
@@ -5470,7 +5475,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* SSOT 2026-10-27 — a turn soma-work put there (compact, restart, retry, goal,
    cron, renew): one quiet line — who · when · badge · what it did — that opens
    (native disclosure) to its facts and the raw prompt. */
-.turn.is-sys { padding: 3px 10px; background: transparent; border-left-color: var(--border); }
+.turn.is-sys { padding: 3px 10px; background: transparent; }
 .turn.is-sys .turn-avatar { width: 20px; height: 20px; margin-top: 2px; font-size: 11px; border-radius: 6px; }
 .sys-turn { container: sysrow / inline-size; }
 /* A narrow row drops what is said elsewhere, so elapsed / estimate stay whole:
@@ -6172,7 +6177,7 @@ body.nt-open .new-task-fab { display: none !important; }
 .art-peek-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12.5px; font-weight: 600; color: var(--text); }
 .art-peek-info { font-size: 11px; color: var(--text-tertiary); }
 .art-doc-loading { color: var(--text-tertiary); font-size: 12px; }
-.art-modal { width: min(1240px, 94vw); height: 90vh; max-width: none; max-height: none; margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); }
+.art-modal { width: min(1240px, 94vw); height: 90vh; max-width: none; max-height: none; margin: auto; padding: 0; overflow: hidden; border: 1px solid var(--border); border-radius: 16px; background: var(--surface); color: var(--text); box-shadow: var(--ib-shadow-raised); }
 .art-modal[open] { display: flex; flex-direction: column; animation: dlg-in var(--dur-expand) var(--ease-out); }
 .art-modal::backdrop { background: var(--scrim); }
 .art-modal-head { display: flex; align-items: center; gap: 12px; flex-shrink: 0; padding: 10px 12px 10px 16px; border-bottom: 1px solid var(--border); }
@@ -9965,7 +9970,7 @@ function agentConvHtml(a, io, prompt, answer) {
   } else {
     body = '<div class="turn-summary-body" style="color:var(--text-tertiary)">' + esc(a && a.summary ? a.summary : '작업 로그에 결과가 없습니다') + '</div>';
   }
-  html += '<div class="turn assistant"><div class="turn-avatar bot-avatar">&#x1F916;</div><div class="turn-body">'
+  html += '<div class="turn assistant"><div class="turn-avatar bot-avatar" aria-hidden="true">' + BOT_AVATAR_SVG + '</div><div class="turn-body">'
     + '<div class="turn-header"><span class="turn-name">' + esc(name) + '</span>'
     + '<span class="turn-time">' + esc(AGENT_STATUS_LABEL[st] || '') + '</span></div>'
     + body + '</div></div>';
@@ -11574,7 +11579,7 @@ function cardGoalLine(s, col, canEdit) {
     var done = g ? toNum(g.completedCount) : 0;
     if (!editable && !queued && !done) return '';
     var what = queued ? '대기 중인 goal ' + queued + '개' : (done ? '완료된 goal ' + done + '개' : '현재 goal 없음');
-    return '<div class="card-goal-line"><span class="cgl-icon" aria-hidden="true">&#x1F3AF;</span>'
+    return '<div class="card-goal-line"><span class="cgl-icon" aria-hidden="true">' + GOAL_SVG + '</span>'
       + '<span class="cgl-text is-muted">' + what + '</span>'
       + '<button type="button" class="cgl-go"' + go + '>' + (editable ? 'goal 추가 &rarr;' : '보기 &rarr;') + '</button></div>';
   }
@@ -11583,7 +11588,7 @@ function cardGoalLine(s, col, canEdit) {
     bits += '<span class="cgl-n" title="자동 이어하기 횟수 / 상한">' + toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) + '</span>';
   }
   if (queued) bits += '<span class="cgl-n">대기 ' + queued + '</span>';
-  return '<div class="card-goal-line"><span class="cgl-icon" aria-hidden="true">&#x1F3AF;</span>'
+  return '<div class="card-goal-line"><span class="cgl-icon" aria-hidden="true">' + GOAL_SVG + '</span>'
     + '<span class="cgl-text" title="' + escAttr(cur.objective) + '">' + esc(cur.objective) + '</span>' + bits
     + '<button type="button" class="cgl-go"' + go + '>' + (editable ? '관리 &rarr;' : '보기 &rarr;') + '</button></div>';
 }
@@ -11981,6 +11986,8 @@ function repaintPanelControlsFor(key) {
 // goal. Every write names WHERE the goal was seen (current / queued), so a goal
 // that moved in the meantime is refused (409) instead of deleting the wrong one.
 var GOAL_STATUS_LABELS = { active: '진행 중', paused: '일시정지', complete: '완료' };
+// The goal mark (P7): the 2lab icon set's target glyph, not the bullseye emoji.
+var GOAL_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5.75"/><circle cx="8" cy="8" r="2.75"/><path d="M8 8h.01"/></svg>';
 var GOAL_VIA_LABELS = { user: '직접 완료', 'eval-model': '평가 모델 완료' };
 // SSOT 2026-10-22 T6 — completed goals open from the goal head, per card.
 var _goalHistoryOpen = Object.create(null); // card key → completed goals shown
@@ -12054,7 +12061,7 @@ function renderCardGoal(s, col, canEdit, open) {
   var queue = (g && g.queue) || [];
   var cur = g && g.current;
   var html = '<div class="card-goal' + (open ? ' is-open' : '') + '">';
-  html += '<div class="cg-head"><span class="cg-label">&#x1F3AF; Goal</span>';
+  html += '<div class="cg-head"><span class="cg-label">' + GOAL_SVG + 'Goal</span>';
   if (cur) {
     html += '<span class="cg-status cg-' + escAttr(cur.status) + '">' + esc(GOAL_STATUS_LABELS[cur.status] || cur.status) + '</span>';
     if (cur.status === 'active' && toNum(cur.maxContinuations) > 0) {
@@ -15635,6 +15642,9 @@ function sysFactsHtml(facts) {
 // SSOT 2026-10-29 T7: a turn the harness sent (goal continuation, background
 // resume, cron, restart, auto-compact …) is not the user's — it reads as System,
 // with its own avatar, never the user's name and initial.
+// P7: the 2lab icon set's bot and target glyphs (16 grid, 1.5 stroke, round caps, currentColor) — the
+// answer tile and the goal mark, in place of the robot and bullseye emoji.
+var BOT_AVATAR_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.75" y="5" width="10.5" height="8.25" rx="2.5"/><path d="M8 5V3M8 2.25h.01M6 8.75v1M10 8.75v1"/></svg>';
 var SYS_AVATAR_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M3.6 12.4l1.1-1.1M11.3 4.7l1.1-1.1"/></svg>';
 function renderSysTurn(t, info, attrs, time, initial, now, notLast, mediaHtml) {
   var st = info.kind === 'compact' ? cpState(t, now, notLast) : null;
@@ -15874,7 +15884,7 @@ function renderTurn(t, _idx, _arr, convId) {
     var artCached = cid ? _artCache[cid] : null;
     var turnArts = '<div class="turn-arts">' + (artCached && artCached.list ? renderTurnArtifacts(artCached.list, cid, artsStart, toNum(t.timestamp)) : '') + '</div>';
     return '<div class="turn assistant"' + turnIdAttr + '>'
-      + '<div class="turn-avatar bot-avatar">&#x1F916;</div>'
+      + '<div class="turn-avatar bot-avatar" aria-hidden="true">' + BOT_AVATAR_SVG + '</div>'
       + '<div class="turn-body">'
       + '<div class="turn-header"><span class="turn-name">' + esc(botNameOf(panelSessionKey ? _sessionCache[panelSessionKey] : null)) + '</span><span class="turn-time">' + time + '</span><span class="ans-took"></span></div>'
       + answer + turnArts + raw
@@ -16148,7 +16158,7 @@ function ansPendingShow(s, convId, lastRole) {
 }
 function ansPendingHtml() {
   return '<div class="turn assistant ans-pending" aria-busy="true">'
-    + '<div class="turn-avatar bot-avatar">&#x1F916;</div>'
+    + '<div class="turn-avatar bot-avatar" aria-hidden="true">' + BOT_AVATAR_SVG + '</div>'
     + '<div class="turn-body"><div class="turn-header"><span class="turn-name">' + esc(botNameOf(panelSessionKey ? _sessionCache[panelSessionKey] : null)) + '</span></div>'
     + '<div class="ui-tok">' + ansSlotHtml('응답 작성 중') + '</div>'
     + '</div></div>';
