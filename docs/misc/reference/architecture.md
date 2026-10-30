@@ -144,6 +144,7 @@ updates inside its terminal-cleanup boundary, including setup failures.
 - 외부 MCP는 config.json 기반 프로비저닝, GitHub 인증 주입
 
 ### Security (`src/sandbox/`, `somalib/permission/`, `src/dangerous-command-filter.ts`)
+- 실행 문맥(#597, `src/agent-runtime/execution-context.ts`): 턴은 서버가 만든 `ExecutionContext`(사용자·관리자 여부·권한 모드·세션 키·태스크·작업 폴더) 아래에서만 돈다. 슬랙 턴은 슬랙 이벤트의 사용자로(`executionContextFromSlack`), 슬랙 없는 태스크는 저장된 태스크로(`executionContextForTask` — 작업 폴더는 소유자 `/tmp/<ownerId>/` 안이어야) 만든다. 문맥이 없으면 `ClaudeHandler.streamQuery`가 리스 전에 `ExecutionContextMissingError`로 거부하고(인시던트 시도는 자체 격리 옵션), `buildStreamOptions`는 문맥 없이는 도구 0개·SDK 기본 권한, `McpConfigBuilder`는 사용자 없이는 `NO_CONTEXT_PERMISSION_MODE`(`legacy`)·게이트 MCP 차단이다 — 예전 "슬랙 문맥 없음 → bypass, 정책 훅 없음"은 없다. 슬랙 없는 태스크도 같은 PreToolUse 정책 훅(`evaluateToolPolicy`)을 타고, 슬랙에서라면 사용자에게 물을 `classify → ask`는 승인 창구(#599)가 생길 때까지 deny다. 슬랙 전용 서버·권한 프롬프트·압축 훅·환경 스킬 어드민 요청은 슬랙 턴에만 붙는다.
 - 도메인 allowlist, 툴 권한 레벨(admin/elevated/user), dangerous command 감지
 - 쓰기 경계: SDK 샌드박스가 Bash(·`Monitor`) 쓰기를 작업 디렉터리 + `/tmp/{userId}`(`allowWrite`)로 묶고, 호출이 고른 로컬 경로에 쓰는 네이티브 도구(`NATIVE_WRITE_TOOLS`: `Write`/`Edit`/`NotebookEdit`, `Artifact`의 `out_dir` — 그 아래 저장 이름은 서버가 정하므로 action과 상관없이 거부, `EnterWorktree`·`Agent(isolation: worktree)`가 만드는 `.claude/worktrees/` — linked worktree면 메인 저장소 쪽도, 그리고 작업 디렉터리를 옮기는 `EnterWorktree` `path`·`Agent` `cwd` — 샌드박스가 현재 작업 디렉터리에 Bash 쓰기를 허용하므로)는
   `build-stream-options.ts` → `ToolPolicyContext.checkNativeWrite` → `evaluateToolPolicy` 3b단계가 같은 루트로 묶는다(비관리자, 샌드박스 ON일 때.

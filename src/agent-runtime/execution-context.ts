@@ -1,0 +1,107 @@
+/**
+ * The execution context a turn runs under (#597, .prd/17 D2 · D3 · D6).
+ *
+ * Permission decisions read this — the user, whether they are an admin, their
+ * permission mode, the session key and the working directory — and nothing the
+ * model or a request body supplies. The server builds it from what it already
+ * trusts: the Slack-signed event for a Slack turn, the saved task for a
+ * Slack-less one. A turn with no context is refused; it never falls back to
+ * `bypass` (the old `!slackContext → bypass` default in mcp-config-builder).
+ */
+
+import * as path from 'node:path';
+import { isAdminUser } from '../admin-utils';
+import { isSafePathSegment, normalizeTmpPath } from '../path-utils';
+import { buildTaskSessionKey } from '../session-identity';
+import type { ConversationSession } from '../types';
+import { userSettingsStore } from '../user-settings-store';
+import type { PermissionMode } from './policy/permission-mode';
+
+export type ExecutionOrigin = 'slack' | 'task';
+
+export interface ExecutionContext {
+  readonly origin: ExecutionOrigin;
+  readonly userId: string;
+  readonly isAdmin: boolean;
+  readonly permissionMode: PermissionMode;
+  /** The registry key: `work:<channel>:<thread>` (Slack) or `task:<taskId>`. */
+  readonly sessionKey: string;
+  readonly taskId?: string;
+  /** A task's is always set and validated; a Slack turn's is the one the pipeline chose. */
+  readonly workingDirectory?: string;
+}
+
+/** A Slack-less task's context: its id and its validated directory are always there. */
+export interface TaskExecutionContext extends ExecutionContext {
+  readonly origin: 'task';
+  readonly taskId: string;
+  readonly workingDirectory: string;
+}
+
+/** A turn was asked to run without a context the server can vouch for. */
+export class ExecutionContextMissingError extends Error {
+  readonly code = 'EXECUTION_CONTEXT_MISSING';
+  constructor(reason: string) {
+    super(`Turn refused: no execution context (${reason})`);
+    this.name = 'ExecutionContextMissingError';
+  }
+}
+
+function contextFor(origin: ExecutionOrigin, userId: string, sessionKey: string) {
+  return {
+    origin,
+    userId,
+    isAdmin: isAdminUser(userId),
+    permissionMode: userSettingsStore.getUserPermissionMode(userId),
+    sessionKey,
+  };
+}
+
+/**
+ * A Slack turn: the user is the one the Slack event carries. An empty user is
+ * refused — it is exactly the value that used to select `bypass`.
+ */
+export function executionContextFromSlack(input: {
+  user: string;
+  sessionKey: string;
+  workingDirectory?: string;
+}): ExecutionContext {
+  if (!input.user) throw new ExecutionContextMissingError('Slack turn with no user');
+  return Object.freeze({
+    ...contextFor('slack', input.user, input.sessionKey),
+    ...(input.workingDirectory ? { workingDirectory: input.workingDirectory } : {}),
+  });
+}
+
+/**
+ * A Slack-less task: the owner, the task key and the working directory all
+ * come from the saved task. The directory must be a task directory inside the
+ * owner's `/tmp/<ownerId>/` root (the root the sandbox mounts for writing and
+ * the cross-user check guards) — not a channel's repo, not another user's
+ * directory, not the root itself (D6).
+ */
+export function executionContextForTask(session: ConversationSession): TaskExecutionContext {
+  if (session.slackless !== true) throw new ExecutionContextMissingError('not a Slack-less task');
+  const ownerId = session.ownerId;
+  if (!ownerId || !isSafePathSegment(ownerId)) throw new ExecutionContextMissingError('task has no usable owner');
+  if (!session.taskId) throw new ExecutionContextMissingError('task has no id');
+  let sessionKey: string;
+  try {
+    sessionKey = buildTaskSessionKey(session.taskId);
+  } catch {
+    throw new ExecutionContextMissingError('task id is not a valid key');
+  }
+  const raw = session.workingDirectory;
+  if (!raw || !path.isAbsolute(raw)) throw new ExecutionContextMissingError('task has no absolute working directory');
+  const workingDirectory = normalizeTmpPath(path.resolve(raw));
+  const ownerRoot = `/tmp/${ownerId}`;
+  if (!workingDirectory.startsWith(`${ownerRoot}/`)) {
+    throw new ExecutionContextMissingError('task working directory is outside the owner’s /tmp root');
+  }
+  return Object.freeze({
+    ...contextFor('task', ownerId, sessionKey),
+    origin: 'task',
+    taskId: session.taskId,
+    workingDirectory,
+  });
+}

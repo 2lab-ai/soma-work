@@ -49,7 +49,7 @@ PreToolUse 훅 / MCP 권한서버 = 위 결정의 **집행자**일 뿐, 독자 �
 - MCP 권한서버 둘(`mcp-servers/permission` + `mcp-servers/mcp-tool-permission`) — 역할 통합 또는 명확 분리 문서화.
 - grant store 이중(`src/mcp-tool-grant-store.ts` ↔ `packages/process-shared/src/mcp-tool-grant-store.ts`), `click-classifier.ts` 이중(src ↔ @soma/slack) — 단일화.
 - classifier 타임아웃 미연결(`safety-classifier-factory.ts:74-78`) — fail-closed 무력화. abort 연결.
-- 모드 기본값이 `permission-mode`/`mcp-config-builder`/`bypass-topic`에 분산 — `permission-mode`로 단일화. (`off`→`auto` 의미역전, `false`→`auto` 무고지 강등도 여기서 정리.)
+- 모드 기본값이 `permission-mode`/`bypass-topic`에 분산 — `permission-mode`로 단일화. (`off`→`auto` 의미역전, `false`→`auto` 무고지 강등도 여기서 정리.) `mcp-config-builder`의 "사용자 없음 → bypass"는 #597에서 `permission-mode.ts`의 `NO_CONTEXT_PERMISSION_MODE`(`legacy`)로 옮겼다.
 - 타입드 `goal`/스킬 명령 등 일부 경로가 owner guard를 건너뜀 — 모든 mutation을 동일 guard 통과.
 
 ## 검증
