@@ -94,6 +94,7 @@
     "./task-turn/fail-closed-slack-api": "./dist/task-turn/fail-closed-slack-api.js",
     "./task-turn/task-say": "./dist/task-turn/task-say.js",
     "./turn-panel-port": "./dist/turn-panel-port.js",
+    "./task-turn/task-turn-outcome": "./dist/task-turn/task-turn-outcome.js",
     "./*": "./dist/*.js"
   },
   "typesVersions": {
@@ -352,6 +353,9 @@
       ],
       "turn-panel-port": [
         "dist/turn-panel-port.d.ts"
+      ],
+      "task-turn/task-turn-outcome": [
+        "dist/task-turn/task-turn-outcome.d.ts"
       ]
     }
   },
