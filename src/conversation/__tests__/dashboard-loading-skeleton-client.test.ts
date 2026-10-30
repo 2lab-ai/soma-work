@@ -940,14 +940,15 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
       { document: d.document, currentPeriod: 'day', paintCharts: () => {}, _chartDays: [] },
     );
     const sessions = () => writes.map((w) => w.find((x) => x.key === 'sessions'));
+    const last = <T>(list: T[]): T | undefined => list[list.length - 1];
     // First answer: one write, the value (the element jumps to it).
     m.landStripFigures({ sessions: 10 });
     expect(sessions()).toEqual([{ key: 'sessions', value: 10, loading: false }]);
     // A new load: the bar, with the last value kept under it.
     writes.length = 0;
     m.markStatsLoading();
-    expect(writes.at(-1)?.map((x) => x.loading)).toEqual([true, true, true]);
-    expect(sessions().at(-1)).toEqual({ key: 'sessions', value: 10, loading: true });
+    expect(last(writes)?.map((x: StripMetric) => x.loading)).toEqual([true, true, true]);
+    expect(last(sessions())).toEqual({ key: 'sessions', value: 10, loading: true });
     // Its answer: the old value first (the element jumps to it), then — once drawn — the new one (it rolls).
     writes.length = 0;
     m.landStripFigures({ sessions: 25 });
@@ -969,7 +970,7 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
     m.landStripFigures({ sessions: 6 });
     m.markStatsLoading();
     await Promise.resolve();
-    expect(sessions().at(-1)).toEqual({ key: 'sessions', value: 5, loading: true });
+    expect(last(sessions())).toEqual({ key: 'sessions', value: 5, loading: true });
   });
 
   it('every stats load (first load, period, user) shows bars until its answer lands', () => {
