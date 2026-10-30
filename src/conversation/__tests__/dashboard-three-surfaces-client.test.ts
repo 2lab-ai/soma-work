@@ -1194,7 +1194,7 @@ describe('the detail deck — open cards and their detail cards move together (S
       "if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();",
     );
     // A cron run opens its session's detail card on its default (Chat), not on the 작업 로그.
-    expect(TEMPLATE).toContain('closeCronDrawer(); openPanel(k); }');
+    expect(TEMPLATE).toContain('closeCronDrawer(function() { openPanel(k); }); }');
     expect(TEMPLATE).not.toContain('closeCronDrawer(); openPanel(k, true);');
   });
 
