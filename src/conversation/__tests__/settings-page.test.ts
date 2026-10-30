@@ -171,7 +171,9 @@ describe('tone pass P9 — the settings page speaks the dashboard language', () 
     expect(SETTINGS_CLIENT_JS).not.toMatch(/&#x1F512;|&#x2715;/);
     expect(css).not.toContain('.topbar h1');
     expect(css).toContain('ui-app-bar:not(:defined) { display: block; height: var(--topbar-h); }');
-    expect(css).toContain('.settings-tabs::part(list) { max-width: 1080px; margin: 0 auto; padding: 8px 20px 0; }');
+    expect(css).toContain(
+      '.settings-tabs::part(list) { box-sizing: border-box; width: 100%; max-width: 1080px; margin: 0 auto; padding: 8px 20px 0; }',
+    );
   });
 
   it('one ink primary; hover is neutral and fine-pointer only; one press rule', () => {

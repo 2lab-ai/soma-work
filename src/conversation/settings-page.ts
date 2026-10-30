@@ -81,7 +81,8 @@ code { font-family: var(--mono); font-size: 12px; }
 ui-app-bar:not(:defined) { display: block; height: var(--topbar-h); }
 ui-tabs:not(:defined) { display: block; }
 /* The tab list lines up with the page column under it. */
-.settings-tabs::part(list) { max-width: 1080px; margin: 0 auto; padding: 8px 20px 0; }
+/* (width: the tabs' column is a flex box, where auto margins alone would shrink the list to its tabs) */
+.settings-tabs::part(list) { box-sizing: border-box; width: 100%; max-width: 1080px; margin: 0 auto; padding: 8px 20px 0; }
 .page { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; max-width: 1080px; margin: 0 auto; padding: 24px 20px 64px; }
 /* An author display beats the UA [hidden] rule — tabs are switched with the hidden attribute. */
 .page[hidden] { display: none; }
@@ -105,7 +106,8 @@ ui-setting-row .line { display: flex; gap: 6px; align-items: center; flex-wrap: 
 ui-setting-row .line .ui-input[type="text"] { flex: 1 1 220px; }
 ui-setting-row .ui-input[type="number"] { width: 110px; }
 ui-setting-row > select.ui-input { max-width: 100%; }
-ui-setting-row > .chips + .line { margin-top: 6px; }
+/* The row's slot is a wrapping flex row: a field line and the chip list take a whole line of it. */
+ui-setting-row > :is(.line, .chips) { flex: 1 1 100%; }
 .side ui-settings-nav [slot="notice"][hidden] { display: none; }
 section.group { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; box-shadow: var(--ib-shadow); margin-bottom: 20px; scroll-margin-top: calc(var(--topbar-h) + 16px); }
 section.group.danger { border-color: var(--tint-fail-line); background: var(--tint-fail-soft); }
