@@ -164,7 +164,10 @@ function realDirectory(p: string): string {
 function lstatOrUndefined(p: string): fs.Stats | undefined {
   try {
     return fs.lstatSync(p);
-  } catch {
-    return undefined;
+  } catch (error) {
+    // Only "no such entry" means not created yet; a part that cannot be
+    // inspected (EACCES, EIO, ELOOP, ENOTDIR…) has no context (#613 R3).
+    if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return undefined;
+    throw new ExecutionContextMissingError('task working directory cannot be inspected');
   }
 }
