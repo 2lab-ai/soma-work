@@ -564,18 +564,25 @@ describe('tone pass P7 — surfaces and elevation', () => {
   };
 
   it('stat cards and charts are 12px cards on --ib-shadow; menus, dialogs, the peek, the viewer and tooltips are raised', () => {
-    for (const sel of ['.stat-card', '.chart-container']) {
+    for (const sel of ['.stat-card']) {
       expect(rule(sel), sel).toContain('border-radius: 12px;');
       expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow);');
     }
+    // D2 (B-08): the charts are @2lab.ai/ui <ui-bar-chart> — each element draws its own 12px card on
+    // --ib-shadow; the page only lays the two side by side.
+    expect(TEMPLATE).toContain(
+      '<div class="chart-row" id="chart-row"><ui-bar-chart id="chart-sessions" lang="ko"></ui-bar-chart><ui-bar-chart id="chart-merge" lang="ko"></ui-bar-chart></div>',
+    );
+    expect(TEMPLATE).not.toContain('.chart-container');
     for (const sel of ['.nt-dialog', '.art-peek', '.art-modal']) {
       expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow-raised)');
     }
-    // D1 (B-04, B-08): the token breakdown and the bar values are @2lab.ai/ui <ui-tooltip> — the element draws
-    // its own surface (the breakdown its raised card variant); the page keeps no tooltip rule.
-    // D2 (B-04): the token breakdown is <ui-stat-strip>'s card tooltip (data.metrics[].breakdown).
+    // D2 (B-04, B-08): the token breakdown is <ui-stat-strip>'s card tooltip (data.metrics[].breakdown) and the bar
+    // values are <ui-bar-chart>'s own tooltip — the elements draw their surfaces; the page keeps no tooltip rule
+    // and no <ui-tooltip> of its own.
     expect(TEMPLATE).toContain('if (_tokenBreakdown) tokens.breakdown = _tokenBreakdown;');
-    expect(TEMPLATE).toContain(`return '<ui-tooltip text="' + escAttr(label + ': ' + values[i]) + '"><div class="bar"`);
+    expect(TEMPLATE).not.toContain('<ui-tooltip');
+    expect(TEMPLATE).not.toMatch(/\.bar \{|\.bar-chart \{|\.bar-labels/);
     expect(TEMPLATE).not.toContain('bar-tooltip');
     expect(TEMPLATE).not.toContain('tooltip-open');
   });

@@ -812,6 +812,9 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
   const STAT_IDS = ['stat-turns', 'stat-prs', 'stat-merged', 'stat-merge-lines'];
   const STRIP_FNS = ['setStripFigure', 'landStripFigures', 'statsStripData', 'paintStatsStrip'];
   const STRIP_VARS = ['_strip', '_tokenBreakdown', '_statsDetailOpen', 'PERIOD_OPTIONS'];
+  // The two <ui-bar-chart>s (B-08): CHARTS spans lines, so it travels as extra source.
+  const CHART_FNS = ['toNum', 'chartDayTitle', 'chartData', 'paintCharts'];
+  const CHARTS_SRC = cook(`${between(TEMPLATE, 'var CHARTS = [', '\n];')}\n];`);
   type StripMetric = { key: string; value: number | null; loading: boolean };
   const figures = (strip: FakeEl) =>
     ((strip.data as unknown as { metrics: StripMetric[] }).metrics ?? []).map((x) => ({
@@ -866,6 +869,8 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
       {
         document: d.document,
         currentPeriod: 'day',
+        paintCharts: () => {},
+        _chartDays: [],
         reduceMotion: () => reduce,
         requestAnimationFrame: (cb: (now: number) => void) => frames.push(cb),
         cancelAnimationFrame: (id: number) => cancelled.push(id),
@@ -926,7 +931,7 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
     const m = load<{ markStatsLoading(): void; landStripFigures(v: Record<string, number | null>): void }>(
       ['markStatsLoading', 'stopStatRoll', ...STRIP_FNS],
       ['STAT_IDS', ...STRIP_VARS],
-      { document: d.document, currentPeriod: 'day' },
+      { document: d.document, currentPeriod: 'day', paintCharts: () => {}, _chartDays: [] },
     );
     const sessions = () => writes.map((w) => w.find((x) => x.key === 'sessions'));
     // First answer: one write, the value (the element jumps to it).
@@ -965,14 +970,12 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
     const body = clientFn('loadStats');
     expect(body).toContain('markStatsLoading();');
     expect(body.indexOf('markStatsLoading();')).toBeLessThan(body.indexOf('statsJson('));
-    const d = fakeDocument([...STAT_IDS, 'stat-workflows', 'chart-row', 'stats-strip']);
+    const d = fakeDocument([...STAT_IDS, 'stat-workflows', 'chart-sessions', 'chart-merge', 'stats-strip']);
     const m = load<{ markStatsLoading(): void }>(
-      ['markStatsLoading', 'stopStatRoll', ...STRIP_FNS],
-      ['STAT_IDS', ...STRIP_VARS],
-      {
-        document: d.document,
-        currentPeriod: 'week',
-      },
+      ['markStatsLoading', 'stopStatRoll', ...STRIP_FNS, ...CHART_FNS],
+      ['STAT_IDS', '_chartDays', ...STRIP_VARS],
+      { document: d.document, currentPeriod: 'week' },
+      [CHARTS_SRC],
     );
     m.markStatsLoading();
     for (const id of [...STAT_IDS, 'stat-workflows']) {
@@ -981,12 +984,46 @@ describe('[T2] stats strip — skeleton bars, started in parallel with the board
     }
     expect(figures(d.byId['stats-strip']).map((x) => x.loading)).toEqual([true, true, true]);
     expect((d.byId['stats-strip'].data as unknown as { period: { value: string } }).period.value).toBe('week');
+    // The charts: skeleton bars before the first answer (the element dims the last bars after it).
+    for (const id of ['chart-sessions', 'chart-merge']) {
+      expect(d.byId[id].data, id).toMatchObject({ loading: true, bars: [] });
+    }
   });
 
   it('paintStats ends the workflows and chart bars', () => {
     const body = clientFn('paintStats');
     expect(body).toMatch(/stat-workflows'\);[\s\S]*classList\.remove\('is-loading'\)/);
-    expect(body).toMatch(/chart-row[\s\S]*classList\.remove\('is-loading'\)/);
+    // D2 (B-08): each <ui-bar-chart> gets the days — label the day of the month, title 'M월 D일', the day's value —
+    // and loading: false; a failed load (null) says so in the plot.
+    expect(body).toContain('paintCharts(_chartDays, false);');
+    const d = fakeDocument(['chart-sessions', 'chart-merge']);
+    const m = load<{ paintCharts(days: unknown[] | null, loading: boolean): void }>(
+      CHART_FNS,
+      [],
+      { document: d.document },
+      [CHARTS_SRC],
+    );
+    const days = [
+      { date: '2026-10-05', sessionsCreated: 3, mergeLinesAdded: 10, mergeLinesDeleted: 4 },
+      { date: '2026-10-06', sessionsCreated: 0, mergeLinesAdded: 0, mergeLinesDeleted: 0 },
+    ];
+    m.paintCharts(days, false);
+    expect(d.byId['chart-sessions'].data).toEqual({
+      title: '세션',
+      unit: '세션',
+      bars: [
+        { key: '2026-10-05', label: '5', title: '10월 5일', value: 3 },
+        { key: '2026-10-06', label: '6', title: '10월 6일', value: 0 },
+      ],
+      empty: '이 기간에 데이터가 없습니다',
+      loading: false,
+    });
+    expect(d.byId['chart-merge'].data).toMatchObject({
+      title: '코드 변경 (머지)',
+      bars: [{ value: 14 }, { value: 0 }],
+    });
+    m.paintCharts(null, false);
+    expect(d.byId['chart-merge'].data).toMatchObject({ bars: [], empty: '통계를 불러오지 못했어요', loading: false });
   });
 
   it('stats no longer wait for the board: both start at init', () => {
