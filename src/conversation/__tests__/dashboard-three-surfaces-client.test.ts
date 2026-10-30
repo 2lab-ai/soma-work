@@ -739,7 +739,7 @@ describe('one live path for the whole panel', () => {
       'psec-log',
       'worklog-list',
       'psec-conv',
-      'panel-turns',
+      'panel-conv',
     ];
     const at = ids.map((id) => scroll.indexOf(`id="${id}"`));
     expect(at.every((i) => i > 0)).toBe(true);

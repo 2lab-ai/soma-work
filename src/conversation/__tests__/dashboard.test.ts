@@ -1153,14 +1153,15 @@ describe('Dashboard API', () => {
     // Count action closings — each doAction has 2 escaped quote pairs (key + action)
     const actionClosings = script.match(/\\',\\'/g);
     expect(actionClosings).not.toBeNull();
-    // 1 doAction builder + 1 resummarize + the intent of 전체 task (2), the goal line (2) and the
-    // artifacts link (2) — every argument of every builder closes in escaped quotes = 8.
+    // 1 doAction builder + the intent of 전체 task (2), the goal line (2) and the artifacts link (2) —
+    // every argument of every builder closes in escaped quotes = 7 (D3: the turn's resummarize button went
+    // with the inline turn renderer; 지시와 답변 is <ui-conversation> data).
     // The 4 answerChoice sites (card/panel × recommended/other) and the selectMc
     // site no longer build inline JS strings: their model-written question /
     // label / id travel in attribute-escaped data-choice-* attributes read by
     // one delegated click handler, because escJs() inside a double-quoted
     // onclick could not carry " or newlines safely (.prd/10 round-2 review).
-    expect(actionClosings!.length).toBe(8);
+    expect(actionClosings!.length).toBe(7);
     expect(script).not.toMatch(/answerChoice\(\\'/);
     expect(script).not.toMatch(/selectMc\(\\'/);
   });
