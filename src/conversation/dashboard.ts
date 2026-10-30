@@ -6716,9 +6716,9 @@ ${pageTokenAliases()}
     <span class="art-modal-kind" id="art-modal-kind"></span>
     <div class="art-modal-title"><div class="art-modal-name" id="art-modal-name"></div><div class="art-modal-meta" id="art-modal-meta"></div></div>
     <div class="art-modal-nav">
-      <button type="button" class="ui-icon-btn is-bordered" id="art-modal-prev" aria-label="이전 산출물" onclick="artModalStep(-1)">&#x2039;</button>
+      <button type="button" class="ui-icon-btn is-bordered" id="art-modal-prev" aria-label="이전 산출물" onclick="artModalStep(-1)"><i data-ui-icon="chevron-left"></i></button>
       <span class="art-modal-pos" id="art-modal-pos"></span>
-      <button type="button" class="ui-icon-btn is-bordered" id="art-modal-next" aria-label="다음 산출물" onclick="artModalStep(1)">&#x203A;</button>
+      <button type="button" class="ui-icon-btn is-bordered" id="art-modal-next" aria-label="다음 산출물" onclick="artModalStep(1)"><i data-ui-icon="chevron-right"></i></button>
     </div>
     <div class="art-modal-actions">
       <a class="ui-btn is-sm" id="art-modal-open" target="_blank" rel="noopener">새 탭</a>
