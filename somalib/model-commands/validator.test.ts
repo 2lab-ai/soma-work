@@ -1368,6 +1368,30 @@ describe('MEMORY command — validator allow-list (regression: listed-but-uninvo
     expect((result.request.params as { id?: string }).id).toBe('agent/build-system');
   });
 
+  // Production (30 days of dev transcripts): episodic_append failed 43 of 99
+  // calls with "content is required" — 41 of them passed the observation as
+  // `text`. The validator's allow-list rebuild dropped `text` silently, so the
+  // handler saw no content, the model paid for a ~1.6K-char help payload and a
+  // retry. `text` can only mean the observation here, so carry it through.
+  it('normalizes the `text` alias into `content` for episodic_append', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'MEMORY',
+      params: { op: 'episodic_append', text: '2026-10-30: observed a thing' },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    expect((result.request.params as { content?: string }).content).toBe('2026-10-30: observed a thing');
+  });
+
+  it('keeps `content` when both `content` and `text` are given', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'MEMORY',
+      params: { op: 'episodic_append', content: 'canonical', text: 'alias' },
+    });
+    if (!result.ok) throw new Error('unreachable');
+    expect((result.request.params as { content?: string }).content).toBe('canonical');
+  });
+
   it('normalizes the `path` alias into `id`', () => {
     const result = validateModelCommandRunArgs({
       commandId: 'MEMORY',
@@ -1376,5 +1400,57 @@ describe('MEMORY command — validator allow-list (regression: listed-but-uninvo
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('unreachable');
     expect((result.request.params as { id?: string }).id).toBe('project/soma-work/1234');
+  });
+});
+
+// The `list` schema advertises `url` on every UPDATE_SESSION operation, and
+// remove/set_active take it — but `add` only read `link.url`, so a model that
+// followed the advertised schema got "add operation requires link with url"
+// (3 production failures in 30 days).
+describe('UPDATE_SESSION add — top-level `url` shorthand', () => {
+  it('accepts `url` on an add operation as the link url', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        operations: [{ action: 'add', resourceType: 'pr', url: 'https://github.com/2lab-ai/soma-work/pull/404' }],
+      },
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('unreachable');
+    const op = (
+      result.request.params as { operations: Array<{ action: string; link?: { url: string; type: string } }> }
+    ).operations[0];
+    expect(op.action).toBe('add');
+    expect(op.link?.url).toBe('https://github.com/2lab-ai/soma-work/pull/404');
+    expect(op.link?.type).toBe('pr');
+  });
+
+  it('prefers `link` over the `url` shorthand when both are given', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: {
+        operations: [
+          {
+            action: 'add',
+            resourceType: 'issue',
+            url: 'https://x/shorthand',
+            link: { url: 'https://x/link', title: 'T' },
+          },
+        ],
+      },
+    });
+    if (!result.ok) throw new Error('unreachable');
+    const op = (result.request.params as { operations: Array<{ link?: { url: string; title?: string } }> })
+      .operations[0];
+    expect(op.link?.url).toBe('https://x/link');
+    expect(op.link?.title).toBe('T');
+  });
+
+  it('still rejects an add operation with neither `link` nor `url`', () => {
+    const result = validateModelCommandRunArgs({
+      commandId: 'UPDATE_SESSION',
+      params: { operations: [{ action: 'add', resourceType: 'pr' }] },
+    });
+    expect(result.ok).toBe(false);
   });
 });
