@@ -5354,9 +5354,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-deck .pd-pos { min-width: 34px; text-align: center; font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
 /* The deck switch (renderDeckNav → deckSlide) is WAAPI, not keyframes: the header and body glide in from
    the side the new front card came from, added onto whatever is still running — a quick second switch
-   retargets from where they are drawn instead of restarting. */
-@media (prefers-reduced-motion: reduce) {
-}
+   retargets from where they are drawn instead of restarting. Under reduced motion there is no slide. */
 /* ── SESSION CHIP — the panel head (spec 13): status · active time · retry · Slack · the one action ── */
 .panel-status { flex-basis: 100%; min-width: 0; }
 .panel-status:empty { display: none; }
@@ -13270,6 +13268,7 @@ function markStatsLoading() {
   STAT_IDS.forEach(function(id) {
     var el = document.getElementById(id);
     if (!el) return;
+    stopStatRoll(el);
     el.textContent = '';
     el.classList.remove('no-data');
     el.classList.add('is-loading');
@@ -13279,14 +13278,17 @@ function markStatsLoading() {
 }
 
 // A failed load shows a dash rather than the previous period's number.
-// With a value and its format (the strip's 세션 · 토큰 · 비용), the figure rolls from the one it
-// showed to the new one — the library's rolling figure, 620ms ease-out quart; the first paint, after a
-// dash and under reduced motion it jumps.
+// With a value and its format (the strip's 세션 · 토큰 · 비용 and the counted cards), the figure
+// rolls from the one it showed to the new one — the library's rolling figure, 620ms ease-out quart.
+// The first paint, a change from or to a dash and reduced motion jump; a new load stops a roll.
 var STAT_ROLL_MS = 620;
+function stopStatRoll(el) {
+  if (el._roll) { cancelAnimationFrame(el._roll); el._roll = 0; }
+}
 function setStat(id, text, value, fmt) {
   var el = document.getElementById(id);
   if (!el) return;
-  if (el._roll) { cancelAnimationFrame(el._roll); el._roll = 0; }
+  stopStatRoll(el);
   var from = el._shown;
   el._shown = typeof value === 'number' && isFinite(value) ? value : undefined;
   el.classList.remove('is-loading');
@@ -13315,9 +13317,9 @@ function paintStats(data) {
   var t = data && data.totals;
   var dash = '\\u2014';
   setStat('stat-sessions', t ? String(toNum(t.sessionsCreated)) : dash, t ? toNum(t.sessionsCreated) : null, fmtCount);
-  setStat('stat-turns', t ? String(toNum(t.turnsUsed)) : dash);
-  setStat('stat-prs', t ? String(toNum(t.prsCreated)) : dash);
-  setStat('stat-merged', t ? String(toNum(t.prsMerged)) : dash);
+  setStat('stat-turns', t ? String(toNum(t.turnsUsed)) : dash, t ? toNum(t.turnsUsed) : null, fmtCount);
+  setStat('stat-prs', t ? String(toNum(t.prsCreated)) : dash, t ? toNum(t.prsCreated) : null, fmtCount);
+  setStat('stat-merged', t ? String(toNum(t.prsMerged)) : dash, t ? toNum(t.prsMerged) : null, fmtCount);
   setStat('stat-commits-hidden', t ? String(toNum(t.commitsCreated)) : dash);
   setStat('stat-merge-lines', t ? '+' + toNum(t.mergeLinesAdded) + ' / -' + toNum(t.mergeLinesDeleted) : dash);
   var wfEntries = Object.entries((t && t.workflowCounts) || {}).sort(function(a, b) { return toNum(b[1]) - toNum(a[1]); });
