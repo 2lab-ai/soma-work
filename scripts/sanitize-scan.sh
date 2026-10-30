@@ -48,13 +48,19 @@ git rev-parse --verify -q HEAD >/dev/null || { echo "sanitize-scan: no HEAD to s
 # The added lines of a commit's diff — binary files as text; for a merge, the
 # lines no parent had (its own resolution). Hunk lines always start with +, - or
 # a space, so `diff ` opens a file header and `@@` closes it: header lines (paths
-# included) are never content. Never printed.
+# included) are never content. A merge's combined diff has one column per parent
+# (`@@@` for two): a line is the merge's own only when every column is `+` —
+# `+ ` or ` +` is a line one parent already had. Never printed.
 diff_added() {
   local patch
   # stderr dropped: git's warnings can quote file content (an invalid attribute
   # name in a .gitattributes, say), and the log is public.
   patch=$(git show -U0 --text --format= --no-color --no-ext-diff --no-textconv "$1" 2>/dev/null) || return 1
-  printf '%s\n' "$patch" | awk '/^diff / { h = 1; next } /^@@/ { h = 0; next } !h && /^[+]/ { print substr($0, 2) }'
+  printf '%s\n' "$patch" | awk '
+    BEGIN { n = 1 }
+    /^diff / { h = 1; next }
+    /^@@/ { h = 0; n = index($0, " ") - 2; next }
+    !h && match($0, /^[+]+/) && RLENGTH >= n { print substr($0, n + 1) }'
 }
 
 # What a commit adds: its whole commit object (headers and message) and its
@@ -67,15 +73,15 @@ added_text() {
 }
 
 # The commit a listed leak must already be in: the PR's base branch, main as it
-# was before this push, or HEAD for a local run. None (no base to check against)
-# exempts nothing.
+# was before this push (the event file's `before`), or HEAD for a local run.
+# None (no base to check against) exempts nothing.
 published_base() {
   local before
   if [ "$pr" = 1 ]; then
     [ -n "${GITHUB_BASE_REF:-}" ] || return 1
     git rev-parse --verify -q "refs/remotes/origin/${GITHUB_BASE_REF}^{commit}"
   elif [ "${GITHUB_EVENT_NAME:-}" = push ]; then
-    [ -n "${GITHUB_EVENT_PATH:-}" ] || { git rev-parse --verify -q 'HEAD^{commit}'; return; }
+    [ -n "${GITHUB_EVENT_PATH:-}" ] || return 1
     before=$(awk 'match($0, /"before": *"[0-9a-f]+"/) { s = substr($0, RSTART, RLENGTH); sub(/.*: *"/, "", s); sub(/"$/, "", s); print s; exit }' "$GITHUB_EVENT_PATH") || return 1
     [[ "$before" =~ ^[0-9a-f]{40}$ ]] || return 1
     git rev-parse --verify -q "${before}^{commit}"
@@ -146,9 +152,19 @@ other_contents() {
     ($2 == "commit" || $2 == "tree") && !($1 in x) { print $1 }' "$OBJS" | git cat-file --batch
 }
 
-# Annotated tags (their messages): never exempt.
+# Annotated tags (their messages), and the blobs and trees a tag points at
+# directly — not through a commit, so no commit adds them: never exempt.
 tag_contents() {
-  awk '$2 == "tag" { print $1 }' "$OBJS" | git cat-file --batch
+  local refs direct
+  awk '$2 == "tag" { print $1 }' "$OBJS" | git cat-file --batch || return 1
+  [ "$pr" = 0 ] || return 0
+  refs=$(git for-each-ref --format='%(objectname)^{}' refs/tags) || return 1
+  [ -n "$refs" ] || return 0
+  direct=$(printf '%s\n' "$refs" | git cat-file --batch-check='%(objectname) %(objecttype)' 2>/dev/null |
+    awk '$2 == "blob" || $2 == "tree" { print $1 }') || return 1
+  [ -n "$direct" ] || return 0
+  # shellcheck disable=SC2086 # object ids, one word each
+  git rev-list --objects $direct | cut -d' ' -f1 | git cat-file --batch
 }
 
 ref_names() {

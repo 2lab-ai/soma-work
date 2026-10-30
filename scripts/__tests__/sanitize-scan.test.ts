@@ -235,6 +235,14 @@ describe('sanitize-scan.sh — known leaks', () => {
     return scan('pull_request', { GITHUB_BASE_REF: 'main', ...extraEnv });
   }
 
+  // A push run as GitHub sets it up: the event file names main as it was before the push.
+  function pushScan(before: string) {
+    const event = path.join(repo, '.git', 'event.json');
+    const after = git('rev-parse', 'HEAD');
+    writeFileSync(event, JSON.stringify({ ref: 'refs/heads/main', before, after }, null, 2));
+    return scan('push', { GITHUB_EVENT_PATH: event });
+  }
+
   // Each failure below must fail with the listed commit exempted — not because nothing was.
   function expectNewHit(r: { status: number | null; out: string }, bad: string) {
     expect(r.out).toContain(`known leak ${dirty} — exempted`);
@@ -245,9 +253,9 @@ describe('sanitize-scan.sh — known leaks', () => {
   }
 
   it('passes push and PR scans once the published commit is listed, naming it as exempted', () => {
-    publishDirtyMain();
+    const next = publishDirtyMain();
     listKnown('# known leaks', `${dirty}  #610 already published`);
-    for (const r of [scan('push'), prScan()]) {
+    for (const r of [pushScan(next), prScan()]) {
       expect(r.out).toContain('sanitize-scan: clean');
       expect(r.out).toContain(`known leak ${dirty} — exempted`);
       expect(r.out).not.toMatch(/forbidden-token-\d/);
@@ -339,12 +347,13 @@ describe('sanitize-scan.sh — known leaks', () => {
   });
 
   it('never exempts an annotated tag, even one nested under another tag', () => {
-    publishDirtyMain();
+    const next = publishDirtyMain();
     listKnown(dirty);
     git('tag', '-a', 'inner', '-m', `note ${SECRET_TEXT}`, dirty);
     git('-c', 'advice.nestedTag=false', 'tag', '-a', 'outer', '-m', 'ok', 'inner');
     git('tag', '-d', 'inner');
-    const r = scan('push');
+    const r = pushScan(next);
+    expect(r.out).toContain(`known leak ${dirty} — exempted`);
     expect(r.out).toContain('an annotated tag message is a hit');
     expect(r.out).not.toMatch(/forbidden-token-\d/);
     expect(r.status).toBe(1);
@@ -379,16 +388,17 @@ describe('sanitize-scan.sh — known leaks', () => {
   });
 
   it('never exempts a branch name, a tag name or an annotated tag message', () => {
-    publishDirtyMain();
+    const next = publishDirtyMain();
     listKnown(dirty);
+    expect(pushScan(next).status).toBe(0);
     git('update-ref', `refs/remotes/origin/${SECRET_TEXT}`, dirty);
-    expect(scan('push').status).toBe(1);
+    expect(pushScan(next).status).toBe(1);
     git('update-ref', '-d', `refs/remotes/origin/${SECRET_TEXT}`);
     git('tag', SECRET_TEXT, dirty);
-    expect(scan('push').status).toBe(1);
+    expect(pushScan(next).status).toBe(1);
     git('tag', '-d', SECRET_TEXT);
     git('tag', '-a', 'v3', '-m', `note ${SECRET_TEXT}`, dirty);
-    const r = scan('push');
+    const r = pushScan(next);
     expect(r.status).toBe(1);
     expect(r.out).not.toMatch(/forbidden-token-\d/);
   });
@@ -409,13 +419,81 @@ describe('sanitize-scan.sh — known leaks', () => {
   it('on push, exempts only a commit main already had before the push', () => {
     const next = publishDirtyMain();
     listKnown(dirty);
-    const event = path.join(repo, '.git', 'event.json');
-    writeFileSync(event, JSON.stringify({ ref: 'refs/heads/main', before: clean, after: next }, null, 2));
-    const pushed = scan('push', { GITHUB_EVENT_PATH: event });
+    const pushed = pushScan(clean);
     expect(pushed.out).toContain('is not on the published base');
     expect(pushed.status).toBe(1);
-    writeFileSync(event, JSON.stringify({ ref: 'refs/heads/main', before: next, after: next }, null, 2));
-    expect(scan('push', { GITHUB_EVENT_PATH: event }).status).toBe(0);
+    expect(pushScan(next).status).toBe(0);
+    // A push run without its event file has no base: nothing exempted.
+    const bare = scan('push');
+    expect(bare.out).toContain('is not on the published base');
+    expect(bare.status).toBe(1);
+  });
+
+  it('fails a tag that points straight at a blob carrying the known text', () => {
+    const next = publishDirtyMain();
+    listKnown(dirty);
+    const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], {
+      cwd: repo,
+      input: `copy ${SECRET_TEXT}\n`,
+      encoding: 'utf8',
+    }).trim();
+    git('tag', 'loose', blob);
+    const r = pushScan(next);
+    expect(r.out).toContain(`known leak ${dirty} — exempted`);
+    expect(r.out).not.toMatch(/forbidden-token-\d/);
+    expect(r.status).toBe(1);
+  });
+
+  // A merge built from a chosen tree and parents: what a resolution leaves behind.
+  function mergeOf(files: Record<string, string>, ...parents: string[]): string {
+    git('checkout', '-q', '--detach', parents[0]);
+    for (const [file, content] of Object.entries(files)) {
+      writeFileSync(path.join(repo, file), content);
+      git('add', file);
+    }
+    const tree = git('write-tree');
+    const merge = git('commit-tree', tree, ...parents.flatMap((p) => ['-p', p]), '-m', 'merge');
+    git('checkout', '-q', '--detach', merge);
+    return merge;
+  }
+
+  it('fails a merge that creates the known text, even for a pattern anchored at the line start', () => {
+    // Line-start known text, published and listed.
+    git('checkout', '-q', '--detach', clean);
+    const leak = commit('k.txt', `${SECRET_TEXT}\n`, 'leak at line start');
+    git('update-ref', 'refs/remotes/origin/main', leak);
+    listKnown(leak);
+    const anchored = { SANITIZE_PATTERNS: '^forbidden-token-[0-9]+' };
+    git('checkout', '-q', '--detach', clean);
+    const side = commit('side.txt', 'side\n', 'side');
+    // The merge keeps main's file and its own resolution adds a new one starting with the known text:
+    // `++` in its combined diff. (Identical content under a new name would be a rename of main's file.)
+    const merge = mergeOf({ 'k.txt': `${SECRET_TEXT}\n`, 'evil.txt': `${SECRET_TEXT} again\n` }, side, leak);
+    const r = prScan(anchored);
+    expect(r.out).toContain(`known leak ${leak} — exempted`);
+    expect(r.out).toContain(`hit in commit ${merge}`);
+    expect(r.status).toBe(1);
+  });
+
+  it('passes a merge that keeps the known line from one parent while resolving the line next to it, in either parent order', () => {
+    git('checkout', '-q', '--detach', clean);
+    const base = commit('k.txt', 'one\ntwo\n', 'base');
+    const leak = commit('k.txt', `one\nfixture ${SECRET_TEXT}\ntwo\n`, 'leak');
+    git('update-ref', 'refs/remotes/origin/main', leak);
+    listKnown(leak);
+    git('checkout', '-q', '--detach', base);
+    const feature = commit('k.txt', 'one\nfeature line\ntwo\n', 'feature');
+    const resolved = { 'k.txt': `one\nfixture ${SECRET_TEXT}\nfeature line\ntwo\n` };
+    for (const parents of [
+      [feature, leak],
+      [leak, feature],
+    ]) {
+      const merge = mergeOf(resolved, ...parents);
+      git('update-ref', 'refs/remotes/origin/feature/x', merge);
+      const r = pushScan(leak);
+      expect(r.out, parents.join(' ')).toContain('sanitize-scan: clean');
+      expect(r.status, parents.join(' ')).toBe(0);
+    }
   });
 
   it('refuses an abbreviated or malformed entry instead of guessing', () => {
