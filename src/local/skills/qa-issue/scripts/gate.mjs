@@ -47,12 +47,25 @@ function readJson(p) {
   }
 }
 
-function flags(argv) {
+// Options each command accepts. An unknown option is refused before anything is read or written:
+// a misspelled restriction (`--id` for `--ids`) must never widen what a recorded answer covers.
+const OPTIONS = {
+  seal: [],
+  fingerprint: [],
+  merge: ['out', 'carry'],
+  answer: ['gate', 'key', 'decision', 'by', 'ref', 'ids'],
+  decide: ['gate', 'key', 'current'],
+};
+
+function flags(cmd, argv) {
   const out = { _: [] };
   for (let i = 0; i < argv.length; i++) {
     if (argv[i].startsWith('--')) {
+      const name = argv[i].slice(2);
+      if (!OPTIONS[cmd].includes(name)) die(1, `unknown option --${name} for ${cmd}`);
       if (i + 1 >= argv.length) die(1, `${argv[i]} needs a value`);
-      out[argv[i].slice(2)] = argv[++i];
+      if (name in out) die(1, `--${name} given twice`);
+      out[name] = argv[++i];
     } else out._.push(argv[i]);
   }
   return out;
@@ -85,7 +98,19 @@ function fingerprintOf(g) {
     plan: {
       touchesWrite: !!g.plan?.touchesWrite,
       coverage: g.plan?.coverage ?? null,
-      cases: (g.plan?.cases || []).map((c) => ({ id: c.id, assertion: norm(c.assertion), severity: c.severity ?? null, preconditions: sorted(c.preconditions) })),
+      // The whole execution definition of each case: what runs is what was disclosed.
+      cases: (g.plan?.cases || []).map((c) => ({
+        id: c.id,
+        type: c.type ?? null,
+        desc: norm(c.desc),
+        assertion: norm(c.assertion),
+        severity: c.severity ?? null,
+        steps: (c.steps || []).map(norm),
+        expected: norm(c.expected),
+        tolerance: c.tolerance ?? null,
+        accountRef: c.accountRef ?? null,
+        preconditions: sorted(c.preconditions),
+      })),
     },
     preconditions: (g.preconditions || []).map((p) => ({ id: p.id, kind: p.kind, need: norm(p.need), cases: sorted(p.cases) })),
   };
@@ -105,6 +130,7 @@ function validate(g) {
   const cases = g.plan?.cases;
   if (!Array.isArray(cases) || !cases.length) errs.push('plan.cases missing');
   const ids = new Set((cases || []).map((c) => c.id));
+  if (ids.size !== (cases || []).length) errs.push('duplicate case ids');
   for (const c of cases || []) {
     if (!c.id || !norm(c.assertion) || !c.severity) errs.push(`case ${c.id || '?'}: id, assertion and severity are required`);
     if (!Array.isArray(c.preconditions)) errs.push(`case ${c.id || '?'}: preconditions must be listed ([] when it needs nothing)`);
@@ -277,4 +303,4 @@ function decide(argv) {
 const [cmd, ...rest] = process.argv.slice(2);
 const commands = { seal, fingerprint, merge, answer, decide };
 if (!commands[cmd]) die(1, `usage: gate.mjs ${Object.keys(commands).join('|')} …`);
-commands[cmd](flags(rest));
+commands[cmd](flags(cmd, rest));

@@ -636,6 +636,53 @@ describe('gate.mjs answer + decide — run only on a recorded answer that still 
     expect(JSON.parse(readFileSync(out, 'utf8')).status).toBe('pending');
   });
 
+  it('rejects an unknown option instead of silently widening consent (--id is not --ids)', () => {
+    const g = planned('PROJ-48');
+    const run = runGate('d-typo', g);
+    const r = gate([
+      'answer',
+      '--gate',
+      run,
+      '--key',
+      'PROJ-48',
+      '--id',
+      'P1',
+      '--decision',
+      'waived',
+      '--by',
+      'U_REQ',
+      '--ref',
+      '2.6',
+    ]);
+    expect(r.status).toBe(1);
+    expect(r.stderr).toContain('unknown option --id');
+    const saved = JSON.parse(readFileSync(run, 'utf8'));
+    expect(saved.keys['PROJ-48'].preconditions.map((x: { decision: string | null }) => x.decision)).toEqual([
+      null,
+      null,
+    ]);
+  });
+
+  it('an edited case description or steps after sealing is never run under the old answer', () => {
+    const g = planned('PROJ-49');
+    const run = runGate('d-desc', g);
+    gate(['answer', '--gate', run, '--key', 'PROJ-49', '--decision', 'waived', '--by', 'U_REQ', '--ref', '2.7']);
+    const saved = JSON.parse(readFileSync(run, 'utf8'));
+    saved.keys['PROJ-49'].plan.cases[2].desc = 'delete every bet';
+    writeFileSync(run, JSON.stringify(saved));
+    const r = gate([
+      'decide',
+      '--gate',
+      run,
+      '--key',
+      'PROJ-49',
+      '--current',
+      current('d-desc', g, { P1: 'missing', P2: 'missing' }),
+    ]);
+    expect(r.status).toBe(3);
+    expect(String(r.out.reason)).toContain('gate edited after sealing');
+  });
+
   it('answer with nothing to answer for that key fails instead of reporting success', () => {
     const g = planned('PROJ-45');
     g.preconditions = g.preconditions.map((x) => ({ ...x, status: 'met' }));
