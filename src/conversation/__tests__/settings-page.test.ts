@@ -65,6 +65,45 @@ describe('settings page shell', () => {
   });
 });
 
+describe('tone pass P9 — the settings page speaks the dashboard language', () => {
+  const html = renderSettingsPage();
+  const css = /<style>([\s\S]*?)<\/style>/.exec(html)![1];
+  const rule = (sel: string) => {
+    const at = css.indexOf(`\n${sel} {`);
+    return at < 0 ? '' : css.slice(at + 1, css.indexOf('}', at) + 1);
+  };
+
+  it('the app bar is the dashboard one: brand mark and sentence case, chip links, SVG sun / moon, no emoji', () => {
+    expect(html).toContain('<h1><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">');
+    expect(html).toContain('</svg>soma-work</h1>');
+    expect(html).not.toContain('&#x26A1;');
+    expect(html).not.toMatch(/&larr;|&#x1F512;|&#x2715;/);
+    expect(SETTINGS_CLIENT_JS).not.toMatch(/&#x1F512;|&#x2715;/);
+    expect(html).toMatch(/<button type="button" class="theme"[^>]*><svg class="ic-sun"[^>]*>[\s\S]*?<svg class="ic-moon"/);
+    const h1 = rule('.topbar h1');
+    expect(h1).toContain('font-weight: 650;');
+    expect(h1).not.toContain('uppercase');
+    expect(rule('.topbar')).toContain('backdrop-filter: blur(10px);');
+    expect(css).toContain('.tabs a[aria-current="page"] { background: var(--ib-pill); color: var(--text); }');
+  });
+
+  it('one ink primary; hover is neutral and fine-pointer only; one press rule', () => {
+    expect(rule('.btn.primary')).toBe('.btn.primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); }');
+    expect(css).not.toMatch(/border-color: var\(--accent\)/);
+    const hover = css.slice(css.indexOf('@media (hover: hover) and (pointer: fine) {'));
+    expect(hover).toContain('.btn:hover:not(:disabled) { border-color: var(--ib-muted); }');
+    expect(css).toMatch(/:is\(\.btn, [^)]*\):active:not\(:disabled\):not\(:focus-visible\) \{ transform: scale\(0\.97\); \}/);
+    expect(css).not.toMatch(/font-weight: (700|800)/);
+  });
+
+  it('no hard-coded colour outside the token block; the dialog fades in and out with the scrim', () => {
+    const outside = css.slice(css.indexOf('html, body {'));
+    expect(outside).not.toMatch(/#[0-9a-f]{3,6}\b|rgba?\(/i);
+    expect(css).toContain('dialog::backdrop { background: var(--scrim);');
+    expect(css).toContain('@starting-style { dialog[open] { opacity: 0; transform: scale(0.97); } }');
+  });
+});
+
 describe('개인 설정 rows', () => {
   const r = load<{ renderRow(row: any): string }>(RENDER, { _rowStatus: {} });
 
