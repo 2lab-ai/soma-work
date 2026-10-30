@@ -237,6 +237,38 @@ describe('a task runs in the directory its context validated (#613 R1, D6/T8)', 
     }
   });
 
+  it('a task context with a Slack context — even the same user’s — is refused (#613 R2)', async () => {
+    const ctx = taskContext();
+    await expect(
+      buildStreamOptions({ queryEnv: {}, executionContext: ctx, slackContext }, makeDeps()),
+    ).rejects.toBeInstanceOf(ExecutionContextMissingError);
+  });
+
+  it('a task directory swapped for a link out of the root after the context was built is refused at build time (#613 R2)', async () => {
+    const swapped = `/tmp/${USER}/session_exec_ctx_swap`;
+    const outside = `/tmp/${OTHER}/exec_ctx_swap_target`;
+    fs.rmSync(swapped, { recursive: true, force: true });
+    fs.mkdirSync(swapped, { recursive: true });
+    fs.mkdirSync(outside, { recursive: true });
+    const ctx = executionContextForTask({
+      ownerId: USER,
+      slackless: true,
+      taskId: TASK_ID,
+      channelId: '',
+      workingDirectory: swapped,
+    } as ConversationSession);
+    fs.rmSync(swapped, { recursive: true, force: true });
+    fs.symlinkSync(outside, swapped);
+    try {
+      await expect(buildStreamOptions({ queryEnv: {}, executionContext: ctx }, makeDeps())).rejects.toBeInstanceOf(
+        ExecutionContextMissingError,
+      );
+    } finally {
+      fs.rmSync(swapped, { force: true });
+      fs.rmSync(`/tmp/${OTHER}`, { recursive: true, force: true });
+    }
+  });
+
   it('a context and a Slack event naming different users is refused', async () => {
     const ctx = taskContext();
     await expect(

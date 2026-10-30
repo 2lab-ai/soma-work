@@ -7,7 +7,8 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { queryMock, leaseMock, buildOptionsMock } = vi.hoisted(() => ({
+const { queryMock, leaseMock, buildOptionsMock, tenantMock } = vi.hoisted(() => ({
+  tenantMock: vi.fn(async (_user: string, _profile?: unknown) => null),
   queryMock: vi.fn(),
   leaseMock: vi.fn(async () => ({ heartbeat: async () => {}, release: async () => {} })),
   buildOptionsMock: vi.fn(async () => {
@@ -23,7 +24,7 @@ vi.mock('../credentials-manager', () => ({
 }));
 vi.mock('../credential-alert', () => ({ sendCredentialAlert: vi.fn(async () => {}) }));
 vi.mock('../token-manager', () => ({ getTokenManager: () => ({}) }));
-vi.mock('../auth/llmux-tenant-keys', () => ({ ensureTenantKey: vi.fn(async () => null) }));
+vi.mock('../auth/llmux-tenant-keys', () => ({ ensureTenantKey: tenantMock }));
 vi.mock('../auth/query-env-builder', () => ({ buildQueryEnv: () => ({ env: {} }) }));
 vi.mock('../agent-runtime/claude-code/build-stream-options', () => ({ buildStreamOptions: buildOptionsMock }));
 
@@ -54,6 +55,7 @@ describe('ClaudeHandler.streamQuery — the execution-context gate (#597)', () =
     queryMock.mockReset();
     leaseMock.mockClear();
     buildOptionsMock.mockClear();
+    tenantMock.mockClear();
   });
 
   it('T6 — no Slack user and no task context: refused before a slot lease, options or the SDK', async () => {
@@ -90,5 +92,51 @@ describe('ClaudeHandler.streamQuery — the execution-context gate (#597)', () =
     await expect(it.next()).rejects.toThrow('options-built');
     expect(buildOptionsMock).toHaveBeenCalledTimes(1);
     expect((buildOptionsMock.mock.calls[0] as unknown[])[0]).toMatchObject({ executionContext: taskContext });
+  });
+
+  describe('a task context is bound to the session it runs (#613 R2)', () => {
+    const taskSession = (over: Record<string, unknown> = {}) =>
+      ({
+        ownerId: 'U1',
+        userId: 'U1',
+        slackless: true,
+        taskId: taskContext.taskId,
+        channelId: '',
+        ...over,
+      }) as unknown as ConversationSession;
+    const run = (session: ConversationSession | undefined, sessionKey: string, slack?: SlackContext) =>
+      newHandler().streamQuery('hi', session, undefined, undefined, slack, sessionKey, taskContext);
+
+    it('a different session key is refused before a lease', async () => {
+      await expect(run(taskSession(), 'task:22222222-2222-4222-8222-222222222222').next()).rejects.toBeInstanceOf(
+        ExecutionContextMissingError,
+      );
+      expect(leaseMock).not.toHaveBeenCalled();
+    });
+
+    it('another task’s session is refused', async () => {
+      const other = taskSession({ taskId: '22222222-2222-4222-8222-222222222222' });
+      await expect(run(other, taskContext.sessionKey).next()).rejects.toBeInstanceOf(ExecutionContextMissingError);
+      expect(leaseMock).not.toHaveBeenCalled();
+    });
+
+    it('a session owned by someone else is refused', async () => {
+      await expect(run(taskSession({ ownerId: 'U2' }), taskContext.sessionKey).next()).rejects.toBeInstanceOf(
+        ExecutionContextMissingError,
+      );
+    });
+
+    it('a Slack context alongside a task context is refused — a task turn has no Slack thread', async () => {
+      const slack = { user: 'U1', channel: 'C1', threadTs: '1.1' } as SlackContext;
+      await expect(run(taskSession(), taskContext.sessionKey, slack).next()).rejects.toBeInstanceOf(
+        ExecutionContextMissingError,
+      );
+    });
+
+    it('the matching session passes, and the usage tenant is the task’s user', async () => {
+      const session = taskSession({ currentInitiatorId: 'U9' });
+      await expect(run(session, taskContext.sessionKey).next()).rejects.toThrow('options-built');
+      expect(tenantMock.mock.calls[0][0]).toBe('U1');
+    });
   });
 });

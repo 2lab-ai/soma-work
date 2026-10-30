@@ -49,7 +49,12 @@ import type { SessionRegistry } from '../../session-registry';
 import type { ConversationSession, WorkflowType } from '../../types';
 import { DEFAULT_THINKING_ENABLED, userSettingsStore } from '../../user-settings-store';
 import { createTrackedClaudeProcessSpawner } from '../claude-child-process-registry';
-import { type ExecutionContext, ExecutionContextMissingError, executionContextFromSlack } from '../execution-context';
+import {
+  type ExecutionContext,
+  ExecutionContextMissingError,
+  executionContextFromSlack,
+  revalidateTaskDirectory,
+} from '../execution-context';
 import { createNativeWriteCheck } from '../policy/native-write-boundary';
 import type { SafetyClassifier } from '../policy/safety-classifier';
 import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from '../policy/tool-policy';
@@ -193,6 +198,11 @@ export async function buildStreamOptions(
   const { queryEnv, session, abortController, slackContext } = input;
   const { logger } = deps;
 
+  // A task turn has no Slack thread (#613 R2): its skill scope, approval path and
+  // Slack-only servers must never come from one.
+  if (input.executionContext?.origin === 'task' && slackContext) {
+    throw new ExecutionContextMissingError('a task turn carries no Slack context');
+  }
   // A context and a Slack event that name different users cannot both be right.
   if (input.executionContext && slackContext?.user && input.executionContext.userId !== slackContext.user) {
     throw new ExecutionContextMissingError('the execution context and the Slack event name different users');
@@ -741,6 +751,8 @@ export async function buildStreamOptions(
       }
     }
     if (fs.existsSync(workingDirectory)) {
+      // Right before the SDK child gets it: a task's directory must still be where its context put it.
+      if (execCtx?.origin === 'task') revalidateTaskDirectory(execCtx);
       options.cwd = workingDirectory;
     } else if (execCtx?.origin === 'task') {
       // A task runs in its validated directory or not at all — never in the
