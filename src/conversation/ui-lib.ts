@@ -113,49 +113,84 @@ export type UiIconFn = (
   opts?: { size?: number; label?: string; class?: string; stroke?: number },
 ) => string;
 
-let uiIconsBody: string | null | undefined;
+interface UiIconTable {
+  glyphs: Map<string, string>;
+  aliases: Map<string, string>;
+}
+
+/** One `key: '…'` / `"key": '…'` / `key: "…"` entry of a flat object literal of string values. */
+const TABLE_ENTRY = /^\s*(?:"([a-z][a-z0-9-]*)"|([a-z][a-z0-9]*))\s*:\s*(?:'([^'\\]*)'|"([^"\\]*)"),?\s*$/;
+
+/** The entries of `const NAME = { … };` in `src`, or null when it is not a flat table of plain strings. */
+function readStringTable(src: string, name: string): Map<string, string> | null {
+  const head = src.indexOf(`const ${name} = {\n`);
+  if (head < 0) return null;
+  const from = head + `const ${name} = {\n`.length;
+  const close = src.indexOf('\n};', from);
+  if (close < 0) return null;
+  const table = new Map<string, string>();
+  for (const line of src.slice(from, close).split('\n')) {
+    if (!line.trim()) continue;
+    const m = TABLE_ENTRY.exec(line);
+    if (!m) return null;
+    table.set(m[1] ?? m[2], m[3] ?? m[4]);
+  }
+  return table;
+}
+
+let uiIconTable: UiIconTable | null | undefined;
 /**
- * The body of @2lab.ai/ui's icon set (`dist/icons.js`, the `./icons` export) without its `export { … }`
- * statement — a self-contained module (no imports) that defines `icon()` over the 16-grid glyph table.
- * Null (logged once) when the file is missing or is not that shape (an import, or markup that could
- * close the page's <script> once its SVG strings are filled in).
+ * The glyph table of @2lab.ai/ui's icon set (`dist/icons.js`, the `./icons` export), READ as data — the
+ * module is never run: `GLYPHS` (name → 16-grid SVG body) and `ICON_ALIASES` (name → name) are flat
+ * literals of plain strings. Null (logged once) when the file is missing or not that shape, or when a
+ * glyph carries markup that could close the page's <script> once filled into its string constants.
  */
-function uiIconsModuleBody(): string | null {
-  if (uiIconsBody === undefined) {
-    uiIconsBody = null;
+function uiIconsTable(): UiIconTable | null {
+  if (uiIconTable === undefined) {
+    uiIconTable = null;
     const dir = uiLibDistDir();
     if (dir) {
       try {
-        const src = readFileSync(join(dir, 'icons.js'), 'utf8').replace(/\n\/\/# sourceMappingURL=.*$/m, '');
-        const exp = src.lastIndexOf('\nexport {');
-        const body = exp >= 0 ? src.slice(0, exp) : '';
-        if (!body || /^\s*import[\s{*]/m.test(body) || /<\/script|<!--/i.test(body) || !/\bfunction icon\(/.test(body))
-          logger.error('@2lab.ai/ui icons.js is not the self-contained icon module — no icons');
-        else uiIconsBody = body.trim();
+        const src = readFileSync(join(dir, 'icons.js'), 'utf8');
+        const glyphs = readStringTable(src, 'GLYPHS');
+        const aliases = readStringTable(src, 'ICON_ALIASES') ?? new Map<string, string>();
+        const unsafe = glyphs && [...glyphs.values()].some((g) => /<\/?script|<!--|<\/?style/i.test(g));
+        if (!glyphs || glyphs.size === 0 || unsafe)
+          logger.error('@2lab.ai/ui icons.js does not carry a plain glyph table — no icons');
+        else uiIconTable = { glyphs, aliases };
       } catch (err) {
         logger.error('@2lab.ai/ui icons.js is missing — the pages have no icons', err);
       }
     }
   }
-  return uiIconsBody;
+  return uiIconTable;
 }
 
-let uiIconFn: UiIconFn | undefined;
-/** `icon()` of @2lab.ai/ui/icons, run on the server ('' without the package or for an unknown name). */
-export function uiIcon(name: string, opts?: Parameters<UiIconFn>[1]): string {
-  if (!uiIconFn) {
-    const body = uiIconsModuleBody();
-    let fn: UiIconFn = () => '';
-    if (body) {
-      try {
-        fn = new Function(`'use strict';\n${body}\nreturn icon;`)() as UiIconFn;
-      } catch (err) {
-        logger.error('@2lab.ai/ui icons.js did not evaluate — no icons', err);
-      }
-    }
-    uiIconFn = fn;
-  }
-  return uiIconFn(name, opts);
+const escIconText = (v: unknown) =>
+  String(v ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+
+/**
+ * `icon()` of @2lab.ai/ui/icons, drawn on the server from the library's glyph table ('' without the
+ * package or for an unknown name) — the same markup as the library's own `icon()` (pinned by a test that
+ * compares the two for every glyph).
+ */
+export function uiIcon(name: string, opts: Parameters<UiIconFn>[1] = {}): string {
+  const table = uiIconsTable();
+  if (!table) return '';
+  const key = table.glyphs.has(name) ? name : table.aliases.get(name);
+  const body = key === undefined ? undefined : table.glyphs.get(key);
+  if (key === undefined || body === undefined) return '';
+  const size = Number.isFinite(opts.size) && (opts.size as number) > 0 ? Number(opts.size) : 16;
+  const stroke = Number.isFinite(opts.stroke) && (opts.stroke as number) > 0 ? Number(opts.stroke) : 1.5;
+  const a11y = opts.label ? `role="img" aria-label="${escIconText(opts.label)}"` : 'aria-hidden="true"';
+  const cls = opts.class ? ` class="${escIconText(opts.class)}"` : '';
+  const title = opts.label ? `<title>${escIconText(opts.label)}</title>` : '';
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="${size}" height="${size}" fill="none" stroke="currentColor" stroke-width="${stroke}" stroke-linecap="round" stroke-linejoin="round" focusable="false" data-icon="${key}"${cls} ${a11y}>${title}${body}</svg>`;
 }
 
 /** `<i data-ui-icon="name"></i>` or `<i data-ui-icon="name" class="a b"></i>` — an icon slot in a page template. */
