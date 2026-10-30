@@ -1164,6 +1164,19 @@ export class ClaudeHandler implements TurnSteeringPort {
     if (!executionContext && !slackContext?.user) {
       throw new ExecutionContextMissingError('no Slack user and no task context');
     }
+    // A task's context is bound to the task it runs (#613 R2): the session and
+    // key handed in must be that task's, owned by the context's user, and a task
+    // turn carries no Slack thread — so permissions, cwd, prompt and usage can
+    // never come from two different tasks.
+    if (executionContext?.origin === 'task') {
+      if (slackContext) throw new ExecutionContextMissingError('a task turn carries no Slack context');
+      if (sessionKey && sessionKey !== executionContext.sessionKey) {
+        throw new ExecutionContextMissingError('session key differs from the task’s');
+      }
+      if (session && (session.taskId !== executionContext.taskId || session.ownerId !== executionContext.userId)) {
+        throw new ExecutionContextMissingError('session is not the task’s');
+      }
+    }
     yield* this.streamSdkQuery(
       prompt,
       session,
@@ -1236,7 +1249,11 @@ export class ClaudeHandler implements TurnSteeringPort {
       // unavailable / ccp mode) falls back to the shared key = legacy tenant.
       // The lease carries the daemon it belongs to, so an llmux switch during
       // issuance cannot pair this key with a different daemon's URL.
-      const tenantUserId = session?.currentInitiatorId || session?.userId || slackContext?.user;
+      // A task's usage is its owner's — the user its execution context names.
+      const tenantUserId =
+        executionContext?.origin === 'task'
+          ? executionContext.userId
+          : session?.currentInitiatorId || session?.userId || slackContext?.user;
       const llmuxTenant = tenantUserId ? await ensureTenantKey(tenantUserId, tenantKeyProfile(tenantUserId)) : null;
       const { env: queryEnv } = buildQueryEnv(lease, { llmuxTenant });
       const { options, getStderrBuffer } = await buildStreamOptions(

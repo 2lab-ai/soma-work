@@ -119,6 +119,21 @@ export function executionContextForTask(session: ConversationSession): TaskExecu
 }
 
 /**
+ * Re-check a task's directory right before the turn uses it (#613 R2): it must
+ * still resolve to the same place inside the owner's root. A directory swapped
+ * for a link out of the root after the context was built is refused.
+ */
+export function revalidateTaskDirectory(ctx: ExecutionContext): void {
+  if (ctx.origin !== 'task' || !ctx.workingDirectory) {
+    throw new ExecutionContextMissingError('not a task context with a directory');
+  }
+  const now = realDirectory(ctx.workingDirectory);
+  if (now !== ctx.workingDirectory || !now.startsWith(`/tmp/${ctx.userId}/`)) {
+    throw new ExecutionContextMissingError('task working directory moved since its context was built');
+  }
+}
+
+/**
  * The real location of `p` in its `/tmp` form: symlinks are resolved on the
  * deepest part that exists, and a part not created yet is appended as named.
  * Fail closed (#613 R2): a dangling link, a part that is a regular file, or a
