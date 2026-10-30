@@ -299,7 +299,7 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(toggle.indexOf('openPanel(key);')).toBeLessThan(toggle.indexOf('deckDrop(key);'));
     // SSOT 2026-10-29 T1: the actions (Stop · Close · Trash) + Slack are the body's first row.
     expect(body).toContain(
-      `const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col, 'card') + slackBtn + '</span></div>';`,
+      `const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col) + slackBtn + '</span></div>';`,
     );
     expect(body).toMatch(/return '<div class="card-body">'\s*\+ actionsHtml\s*\+ permissionHtml/);
     expect(TEMPLATE).toContain("var WL_EMPTY_MSG = '작업 로그 없음';");
