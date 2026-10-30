@@ -19,7 +19,7 @@
  * Client script: String.raw, no `${…}` and no backticks (ships byte for byte).
  */
 
-export const MEMORY_TAB_HTML = `<div data-tab="memory" class="page" hidden>
+export const MEMORY_TAB_HTML = `<div slot="memory" data-tab="memory" class="page" hidden>
   <aside class="side" aria-label="기억 섹션">
     <nav>
       <button type="button" class="navbtn" onclick="memJump('m-l1')">개인 메모리</button>

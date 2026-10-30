@@ -4,6 +4,8 @@
  * that reaches the browser unchanged) with stubbed fetch / DOM.
  */
 
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
 import { renderSettingsPage, SETTINGS_CLIENT_JS } from '../settings-page';
 
@@ -44,9 +46,99 @@ describe('settings page shell', () => {
     const html = renderSettingsPage();
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1]; // the page script (the library elements load as modules after it)
     expect(() => new Function(script)).not.toThrow();
-    expect(html).toContain('<a class="back" href="/dashboard">');
-    expect(html).toContain('<a href="#preferences">개인 설정</a>');
     expect(html).toContain('<dialog id="confirm"');
+  });
+
+  it('M-01: the shell is @2lab.ai/ui — <ui-app-bar> on top, <ui-tabs> over the slotted tab pages, both from /dashboard/ui', async () => {
+    const html = renderSettingsPage();
+    const { UI_LIB_VERSION, uiLibDistDir } = await import('../ui-lib');
+    expect(html).toContain('<header class="topbar" id="topbar">');
+    expect(html).toContain('<ui-app-bar id="app-bar" lang="ko"></ui-app-bar>');
+    expect(html).toContain('<ui-tabs id="settings-tabs" class="settings-tabs" panel-focus="none">');
+    expect(html).toContain('<div slot="preferences" data-tab="preferences" class="page">');
+    expect(html).toContain('<div slot="memory" data-tab="memory" class="page" hidden>');
+    for (const file of ['app-bar.js', 'tabs.js', 'memory-panel.js']) {
+      expect(html).toContain(`<script type="module" src="/dashboard/ui/${file}?v=${UI_LIB_VERSION}"></script>`);
+      expect(existsSync(join(uiLibDistDir() as string, file)), file).toBe(true);
+    }
+    // the tab list's data: an inert JSON script the page script reads (no < can close it)
+    const json = /<script type="application\/json" id="settings-tabs-data">([^<]*)<\/script>/.exec(html)![1];
+    expect(JSON.parse(json)).toEqual([
+      { id: 'preferences', label: '개인 설정', icon: 'gear' },
+      { id: 'memory', label: '기억', icon: 'brain' },
+    ]);
+    expect(renderSettingsPage([{ id: 'x', label: '</script><b>' }])).toContain('"label":"\\u003c/script>\\u003cb>"');
+    // the kit sheet comes before the page sheet, the tokens after it
+    expect(html.indexOf('<style id="ui-kit">')).toBeLessThan(html.indexOf('<style>'));
+    expect(html.indexOf('<style>')).toBeLessThan(html.indexOf('<style id="ui-tokens">'));
+    // the old hand-made bar is gone
+    expect(html).not.toMatch(/class="(back|theme|who|tabs|brand-mark)"/);
+  });
+
+  it('the app bar gets brand, links (설정 current), account and theme; ui-theme-change sets and stores the theme', () => {
+    const set = vi.fn();
+    const html = {
+      attr: 'dark',
+      getAttribute: () => html.attr,
+      setAttribute: (_n: string, v: string) => (html.attr = v),
+    };
+    const bar: { data?: Record<string, unknown> } = {};
+    const api = load<{ paintAppBar: () => void; setTheme: (t: string) => void; toggleTheme: () => void }>(
+      ['currentTheme', 'paintAppBar', 'setTheme', 'toggleTheme'],
+      {
+        document: { documentElement: html, getElementById: (id: string) => (id === 'app-bar' ? bar : null) },
+        localStorage: { setItem: set },
+        APP_BAR_NAV: [{ id: 'settings', label: '설정', href: '/dashboard/settings', current: true }],
+        _appBarAccount: { name: '민아', href: '/login', role: '관리자' },
+      },
+    );
+    api.paintAppBar();
+    expect(bar.data).toEqual({
+      brand: { label: 'soma-work', mark: true, href: '/dashboard' },
+      nav: [{ id: 'settings', label: '설정', href: '/dashboard/settings', current: true }],
+      navLabel: '주 메뉴',
+      theme: 'dark',
+      account: { name: '민아', href: '/login', role: '관리자' },
+    });
+    api.toggleTheme();
+    expect(html.attr).toBe('light');
+    expect(set).toHaveBeenCalledWith('soma-theme', 'light');
+    expect(bar.data?.theme).toBe('light');
+  });
+
+  it('the hash picks the tab: <ui-tabs> gets the tabs and the value, the other tab page keeps hidden, the tab hook runs once', () => {
+    const pages = [
+      { id: 'preferences', hidden: false, getAttribute: () => 'preferences' },
+      { id: 'memory', hidden: true, getAttribute: () => 'memory' },
+    ];
+    const tabsEl: { data?: Record<string, unknown> } = {};
+    const shown: string[] = [];
+    const api = load<{ showTab: (id: string) => void }>(['settingsTabs', 'showTab'], {
+      document: {
+        querySelectorAll: () => pages,
+        getElementById: (id: string) =>
+          id === 'settings-tabs'
+            ? tabsEl
+            : id === 'settings-tabs-data'
+              ? { textContent: '[{"id":"preferences","label":"개인 설정"},{"id":"memory","label":"기억"}]' }
+              : null,
+      },
+      onTabShown: (id: string) => shown.push(id),
+    });
+    api.showTab('memory');
+    expect(pages.map((p) => p.hidden)).toEqual([true, false]);
+    expect(tabsEl.data).toEqual({
+      tabs: [
+        { id: 'preferences', label: '개인 설정' },
+        { id: 'memory', label: '기억' },
+      ],
+      value: 'memory',
+      label: '설정 영역',
+    });
+    api.showTab('memory'); // the hashchange after a tab press: no second load
+    api.showTab('nope'); // an unknown hash falls back to 개인 설정
+    expect(tabsEl.data?.value).toBe('preferences');
+    expect(shown).toEqual(['memory', 'preferences']);
   });
 
   it('a hidden tab is really hidden: no author rule may give [hidden] tab pages a display (review P1)', () => {
@@ -73,20 +165,13 @@ describe('tone pass P9 — the settings page speaks the dashboard language', () 
     return at < 0 ? '' : css.slice(at + 1, css.indexOf('}', at) + 1);
   };
 
-  it('the app bar is the dashboard one: brand mark and sentence case, chip links, SVG sun / moon, no emoji', () => {
-    expect(html).toContain('<h1><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">');
-    expect(html).toContain('</svg>soma-work</h1>');
+  it('no emoji or hand-drawn glyph entities in the shell; the bar and its theme toggle are the element', () => {
     expect(html).not.toContain('&#x26A1;');
     expect(html).not.toMatch(/&larr;|&#x1F512;|&#x2715;/);
     expect(SETTINGS_CLIENT_JS).not.toMatch(/&#x1F512;|&#x2715;/);
-    expect(html).toMatch(
-      /<button type="button" class="theme"[^>]*><svg class="ic-sun"[^>]*>[\s\S]*?<svg class="ic-moon"/,
-    );
-    const h1 = rule('.topbar h1');
-    expect(h1).toContain('font-weight: 650;');
-    expect(h1).not.toContain('uppercase');
-    expect(rule('.topbar')).toContain('backdrop-filter: blur(10px);');
-    expect(css).toContain('.tabs a[aria-current="page"] { background: var(--ib-pill); color: var(--text); }');
+    expect(css).not.toContain('.topbar h1');
+    expect(css).toContain('ui-app-bar:not(:defined) { display: block; height: var(--topbar-h); }');
+    expect(css).toContain('.settings-tabs::part(list) { max-width: 1080px; margin: 0 auto; padding: 8px 20px 0; }');
   });
 
   it('one ink primary; hover is neutral and fine-pointer only; one press rule', () => {
