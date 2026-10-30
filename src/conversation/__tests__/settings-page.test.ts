@@ -20,7 +20,16 @@ function load<T>(fns: string[], inject: Record<string, unknown> = {}): T {
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
-const RENDER = ['esc', 'escAttr', 'valueText', 'renderSegmented', 'renderSelect', 'renderControl', 'renderRow'];
+const RENDER = [
+  'esc',
+  'escAttr',
+  'valueText',
+  'soundCue',
+  'renderSegmented',
+  'renderSelect',
+  'renderControl',
+  'renderRow',
+];
 
 function row(over: Record<string, unknown> = {}) {
   return {

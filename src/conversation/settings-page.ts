@@ -282,6 +282,11 @@ function valueText(row, value) {
 function sameValue(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
+// The interface-sound cue a row's control plays through bindSound. A setting that asks first (danger) stays
+// silent: its change fires before the confirm dialog, so a cancelled change would still have sounded.
+function soundCue(row, cue) {
+  return row && row.danger ? 'off' : cue;
+}
 function renderSegmented(row) {
   var name = 'seg-' + row.key;
   var html = '<fieldset class="seg"><legend>' + esc(row.label) + '</legend>';
@@ -289,12 +294,12 @@ function renderSegmented(row) {
   for (var i = 0; i < opts.length; i++) {
     var o = opts[i];
     html += '<label title="' + escAttr(o.description || o.label) + '"><input type="radio" name="' + escAttr(name) + '" value="' + escAttr(o.value) + '"'
-      + (o.value === row.value ? ' checked' : '') + ' data-key="' + escAttr(row.key) + '" data-ui-sound="select" onchange="onChoice(this)"><span>' + esc(o.label) + '</span></label>';
+      + (o.value === row.value ? ' checked' : '') + ' data-key="' + escAttr(row.key) + '" data-ui-sound="' + soundCue(row, 'select') + '" onchange="onChoice(this)"><span>' + esc(o.label) + '</span></label>';
   }
   return html + '</fieldset>';
 }
 function renderSelect(row) {
-  var html = '<select id="f-' + escAttr(row.key) + '" data-key="' + escAttr(row.key) + '" data-ui-sound="select" onchange="onChoice(this)">';
+  var html = '<select id="f-' + escAttr(row.key) + '" data-key="' + escAttr(row.key) + '" data-ui-sound="' + soundCue(row, 'select') + '" onchange="onChoice(this)">';
   var opts = row.options || [];
   for (var i = 0; i < opts.length; i++) {
     var o = opts[i];
@@ -318,7 +323,7 @@ function renderControl(row) {
     return (row.options || []).length <= 5 && !row.allowCustom ? renderSegmented(row) : renderSelect(row);
   }
   if (row.kind === 'toggle') {
-    return '<label class="switch"><input type="checkbox" role="switch" data-ui-sound="toggle" id="f-' + k + '" data-key="' + k + '"' + (row.value ? ' checked' : '')
+    return '<label class="switch"><input type="checkbox" role="switch" data-ui-sound="' + soundCue(row, 'toggle') + '" id="f-' + k + '" data-key="' + k + '"' + (row.value ? ' checked' : '')
       + ' onchange="onToggle(this)"><span>' + (row.value ? '켜짐' : '꺼짐') + '</span></label>';
   }
   if (row.kind === 'text' || row.kind === 'number') {
