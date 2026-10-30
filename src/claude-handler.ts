@@ -98,7 +98,12 @@ import {
 } from './dispatch-recovery';
 import { McpConfigBuilder, type SlackContext } from './mcp-config-builder';
 import { getAvailablePersonas, PromptBuilder } from './prompt-builder';
-import { type CrashRecoveredSession, SessionExpiryCallbacks, SessionRegistry } from './session-registry';
+import {
+  type CrashRecoveredSession,
+  type CreateTaskInput,
+  SessionExpiryCallbacks,
+  SessionRegistry,
+} from './session-registry';
 import { getTokenManager } from './token-manager';
 import { DEFAULT_SHOW_THINKING, type EffortLevel, userSettingsStore } from './user-settings-store';
 
@@ -614,6 +619,11 @@ export class ClaudeHandler implements TurnSteeringPort {
     model?: string,
   ): ConversationSession {
     return this.sessionRegistry.createSession(ownerId, ownerName, channelId, threadTs, model);
+  }
+
+  /** See SessionRegistry.createTask — a task with no Slack thread and no SDK session, saved before it returns (#596). */
+  createTask(input: CreateTaskInput): ConversationSession {
+    return this.sessionRegistry.createTask(input);
   }
 
   /** See SessionRegistry.adoptTaskId — move a task id onto a live session (#595). */

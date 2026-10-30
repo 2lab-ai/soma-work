@@ -27,7 +27,12 @@ import { loseRunningAgents, sanitizeAgentRegistry } from './session/agent-regist
 import { sanitizeCronJob } from './session/cron-job';
 import { closeTaskList, sanitizeTaskLedger } from './session/task-ledger';
 import { type ArchivedSession, getArchiveStore, type SessionLifecycleOutcome } from './session-archive';
-import { buildLegacySessionKey, buildWorkSessionKey, normalizeSessionKey } from './session-identity';
+import {
+  buildLegacySessionKey,
+  buildTaskSessionKey,
+  buildWorkSessionKey,
+  normalizeSessionKey,
+} from './session-identity';
 import { getSessionLifecyclePolicy, idleSinceMs, isSessionLifecyclePolicyDegraded } from './session-lifecycle-policy';
 import { DEFAULT_AUTO_HANDOFF_BUDGET } from './slack/handoff-budget';
 import {
@@ -181,6 +186,8 @@ interface SerializedSession {
   conversationId?: string;
   // Task id (#595) — absent in files written before it existed
   taskId?: string;
+  // Slack-less task (#596): keyed by taskId on load, not by channelId/threadTs
+  slackless?: boolean;
   // Merge code change stats
   mergeStats?: {
     totalLinesAdded: number;
@@ -248,6 +255,15 @@ interface SerializedSession {
    * round-trips unchanged.
    */
   autoCompactTokens?: number | null;
+}
+
+/** What `createTask` needs (#596). The working directory is stored as given — its caller validates it. */
+export interface CreateTaskInput {
+  ownerId: string;
+  ownerName: string;
+  workingDirectory: string;
+  title?: string;
+  model?: string;
 }
 
 /**
@@ -742,10 +758,62 @@ export class SessionRegistry {
     threadTs?: string,
     model?: string,
   ): ConversationSession {
+    const session = this.newSession(ownerId, ownerName, channelId, threadTs, model);
+
+    this.putSession(this.getSessionKey(channelId, threadTs), session);
+
+    // Metrics: emit session_created event (fire-and-forget)
+    getMetricsEmitter()
+      .emitSessionCreated(session)
+      .catch((err) => this.logger.debug('metrics emit failed', err));
+
+    return session;
+  }
+
+  /**
+   * Create a task with no Slack channel/thread and no SDK session (#596).
+   * It lives under `task:<taskId>` beside the Slack keys (`getSession(channel,
+   * threadTs)` never reaches it; `getSessionByTaskId` does), carries its own
+   * working directory, and is saved from creation on — never-run included.
+   *
+   * Returns only after sessions.json holds it. A failed save throws and
+   * removes it again, so a caller never gets a task that would vanish on
+   * restart (no false success).
+   */
+  createTask(input: CreateTaskInput): ConversationSession {
+    if (!input.ownerId) throw new Error('createTask: ownerId is required');
+    if (!input.workingDirectory) throw new Error('createTask: workingDirectory is required');
+    // No Slack binding: an empty channel and no thread, never invented ones.
+    const session = this.newSession(input.ownerId, input.ownerName, '', undefined, input.model);
+    session.slackless = true;
+    session.workingDirectory = input.workingDirectory;
+    if (input.title) session.title = input.title;
+
+    const key = buildTaskSessionKey(session.taskId);
+    this.putSession(key, session);
+    try {
+      this.writeSessionsFile(true);
+    } catch (error) {
+      this.removeSession(key);
+      this.logger.error('Task not created: saving it failed', { taskId: session.taskId });
+      throw error;
+    }
+    this.logger.info('Slack-less task created', { taskId: session.taskId, ownerId: session.ownerId });
+    return session;
+  }
+
+  /** A fresh session object with every default a new session starts with (not yet registered). */
+  private newSession(
+    ownerId: string,
+    ownerName: string,
+    channelId: string,
+    threadTs: string | undefined,
+    model: string | undefined,
+  ): ConversationSession & { taskId: string } {
     // Get user's default model if not provided
     const sessionModel = model || userSettingsStore.getUserDefaultModel(ownerId);
 
-    const session: ConversationSession = {
+    return {
       ownerId,
       ownerName,
       userId: ownerId, // Legacy field
@@ -779,15 +847,6 @@ export class SessionRegistry {
       pendingUserText: null,
       pendingEventContext: null,
     };
-
-    this.putSession(this.getSessionKey(channelId, threadTs), session);
-
-    // Metrics: emit session_created event (fire-and-forget)
-    getMetricsEmitter()
-      .emitSessionCreated(session)
-      .catch((err) => this.logger.debug('metrics emit failed', err));
-
-    return session;
   }
 
   /**
@@ -2054,6 +2113,9 @@ export class SessionRegistry {
       // A starred session is kept alive (SSOT 2026-10-30 T3): never put to
       // sleep, never archived, and never warned that it is about to be.
       if (session.starred === true) continue;
+      // The expiry callbacks are Slack thread notices: a Slack-less task (#596)
+      // has no thread, so it sleeps and ends without them.
+      const notices = session.slackless ? undefined : this.expiryCallbacks;
 
       // Stage 1: SLEEPING sessions - check if sleep duration exceeded (policy archiveAfterMs)
       if (session.state === 'SLEEPING') {
@@ -2075,9 +2137,9 @@ export class SessionRegistry {
           // As in terminateSession: in-flight callbacks holding this object
           // fence on the flag, and onExpiry below awaits before the delete.
           session.terminated = true;
-          if (this.expiryCallbacks) {
+          if (notices) {
             try {
-              await this.expiryCallbacks.onExpiry(session);
+              await notices.onExpiry(session);
             } catch (error) {
               this.logger.error('Failed to send sleep expiry message', error);
             }
@@ -2116,13 +2178,13 @@ export class SessionRegistry {
           .emitSessionSlept(session)
           .catch((err) => this.logger.debug('metrics emit failed', err));
 
-        if (this.expiryCallbacks) {
+        if (notices) {
           try {
             // `warningMessageTs` is still set here on purpose. onSleep edits that
             // existing "만료 예정" warning into the sleep notice instead of posting
             // a second message; clearing the field first made that branch
             // unreachable and left the stale warning sitting above the new one.
-            await this.expiryCallbacks.onSleep(session);
+            await notices.onSleep(session);
           } catch (error) {
             this.logger.error('Failed to send session sleep message', error);
           }
@@ -2138,7 +2200,7 @@ export class SessionRegistry {
       }
 
       // Stage 3: Active sessions with time remaining - check for warnings
-      if (this.expiryCallbacks) {
+      if (notices) {
         await this.checkAndSendWarning(key, session, timeUntilExpiry, sleepAfterMs);
       }
     }
@@ -2211,9 +2273,15 @@ export class SessionRegistry {
   }
 
   /**
-   * Save all sessions to file for persistence across restarts
+   * Save all sessions to file for persistence across restarts. A failure is
+   * logged, not thrown — a caller that must know (createTask) uses writeSessionsFile.
    */
   saveSessions(): void {
+    this.writeSessionsFile(false);
+  }
+
+  /** Write sessions.json now. `throwOnError`: rethrow a failed write after logging it. */
+  private writeSessionsFile(throwOnError: boolean): void {
     try {
       // Ensure data directory exists
       if (!fs.existsSync(DATA_DIR)) {
@@ -2248,7 +2316,10 @@ export class SessionRegistry {
           session.taskUsage ||
           session.agents?.agents.length ||
           // A star is a direct instruction to keep the session (SSOT 2026-10-30).
-          session.starred
+          session.starred ||
+          // A Slack-less task is saved from creation, never-run included (#596):
+          // createTask reported it created only because it was saved.
+          session.slackless
         ) {
           this.ensureSessionLinkState(session);
           sessionsArray.push({
@@ -2257,8 +2328,12 @@ export class SessionRegistry {
             // canonical key from channelId/threadTs; a pre-4d binary loads it
             // verbatim and derives legacy keys for lookup — so this exact
             // form is what keeps sessions.json loadable after an emergency
-            // rollback. See buildLegacySessionKey.
-            key: buildLegacySessionKey(session.channelId, session.threadTs),
+            // rollback. See buildLegacySessionKey. A Slack-less task has no
+            // channel/thread: its key is the task key (#596).
+            key:
+              session.slackless && session.taskId
+                ? buildTaskSessionKey(session.taskId)
+                : buildLegacySessionKey(session.channelId, session.threadTs),
             ownerId: session.ownerId,
             ownerName: session.ownerName,
             userId: session.userId, // Legacy field
@@ -2316,6 +2391,7 @@ export class SessionRegistry {
             // Conversation record ID
             conversationId: session.conversationId,
             taskId: session.taskId,
+            slackless: session.slackless === true ? true : undefined,
             // Merge code change stats
             mergeStats: session.mergeStats,
             // User SSOT instructions (persisted)
@@ -2370,6 +2446,7 @@ export class SessionRegistry {
       this.logger.info(`Saved ${sessionsArray.length} sessions to file`);
     } catch (error) {
       this.logger.error('Failed to save sessions', error);
+      if (throwOnError) throw error;
     }
   }
 
@@ -2475,6 +2552,8 @@ export class SessionRegistry {
         let sleptOnLoad = false;
         // A starred session is kept alive across restarts too (SSOT 2026-10-30 T3).
         const starred = serialized.starred === true;
+        // A Slack-less task (#596) has no channel/thread to derive its key from.
+        const slackless = serialized.slackless === true;
 
         // For SLEEPING sessions: check against the policy sleep time
         if (starred) {
@@ -2611,6 +2690,7 @@ export class SessionRegistry {
               : undefined,
           // Conversation record ID
           conversationId: serialized.conversationId,
+          slackless: slackless ? true : undefined,
           // Incident ownership is restored verbatim and never repaired: any
           // present value keeps the session restricted (fail closed).
           incidentRequest:
@@ -2737,7 +2817,12 @@ export class SessionRegistry {
         // (the enclosing catch spans the whole loop).
         let derivedKey: string;
         try {
-          derivedKey = this.getSessionKey(serialized.channelId, serialized.threadTs);
+          // A Slack-less task (#596) is keyed by its task id — only when the
+          // record says so: an unmarked record with no channel stays quarantined,
+          // and so does a Slack-less one with no task id.
+          derivedKey = slackless
+            ? buildTaskSessionKey(serialized.taskId ?? '')
+            : this.getSessionKey(serialized.channelId, serialized.threadTs);
         } catch (keyError) {
           this.logger.warn('Skipped session with underivable key on load', {
             key: serialized.key,
@@ -2749,6 +2834,8 @@ export class SessionRegistry {
         }
         const restored = this.restoredTaskId(serialized.taskId, this.sessions.get(derivedKey));
         session.taskId = restored.taskId;
+        // Its id was taken by another live session and re-minted: the task key follows the id.
+        if (slackless) derivedKey = buildTaskSessionKey(restored.taskId);
         if (restored.minted) mintedTaskIdCount++;
         this.putSession(derivedKey, session);
         loaded++;

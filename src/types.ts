@@ -384,8 +384,15 @@ export interface ConversationSession {
   ownerName?: string; // Display name of owner
   currentInitiatorId?: string; // User who triggered the current response
   currentInitiatorName?: string; // Display name of current initiator
+  // '' (and no threadTs) for a Slack-less task — see `slackless`.
   channelId: string;
   threadTs?: string;
+  /**
+   * A task with no Slack channel/thread (#596, `SessionRegistry.createTask`).
+   * Its registry key is `task:<taskId>`, not `work:<channel>:<thread>`, and it
+   * is saved and on the board from creation, before any SDK session.
+   */
+  slackless?: boolean;
   sessionId?: string;
   isActive: boolean;
   lastActivity: Date;
