@@ -2,7 +2,17 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as zlib from 'zlib';
-import { __closeMetricsDbs, __resetMetricsEnsureCache, MetricsEventStore, mergeJsonl } from '../event-store';
+import {
+  __closeMetricsDbs,
+  __resetMetricsEnsureCache,
+  MetricsEventStore,
+  mergeJsonl,
+  metricsSqliteAvailable,
+} from '../event-store';
+
+// node:sqlite needs Node >= 22.5; older runtimes keep the daily-JSONL store.
+const SQLITE = metricsSqliteAvailable();
+
 import type { MetricsEvent } from '../types';
 
 // Contract tests — Scenario 1: MetricsEventStore (JSONL Storage Layer)
@@ -46,7 +56,7 @@ describe('MetricsEventStore', () => {
   });
 
   // Trace: Scenario 1, Section 3a — append writes to the event's report-day partition
-  it('append_writesToCorrectDayPartition', async () => {
+  it.skipIf(!SQLITE)('append_writesToCorrectDayPartition', async () => {
     const event = makeEvent({ timestamp: new Date('2026-03-25T10:00:00Z').getTime() });
     await store.append(event);
 
@@ -94,7 +104,7 @@ describe('MetricsEventStore', () => {
 
   // #477 successor: day files are imported once; a range is one indexed query,
   // returned in date order.
-  it('readRange_returnsImportedDayFilesInDateOrder', async () => {
+  it.skipIf(!SQLITE)('readRange_returnsImportedDayFilesInDateOrder', async () => {
     fs.mkdirSync(TEST_METRICS_DIR, { recursive: true });
     const days = ['2026-03-20', '2026-03-21', '2026-03-22', '2026-03-23', '2026-03-24'];
     for (const [i, d] of days.entries()) {
@@ -110,7 +120,7 @@ describe('MetricsEventStore', () => {
     expect(spy).not.toHaveBeenCalled();
   });
 
-  it('readRange_reimportsAFileWhoseSizeChanged', async () => {
+  it.skipIf(!SQLITE)('readRange_reimportsAFileWhoseSizeChanged', async () => {
     fs.mkdirSync(TEST_METRICS_DIR, { recursive: true });
     const filePath = path.join(TEST_METRICS_DIR, 'metrics-events-2026-03-25.jsonl');
     fs.writeFileSync(filePath, `${JSON.stringify(makeEvent({ id: 'x1' }))}\n`);
@@ -125,7 +135,7 @@ describe('MetricsEventStore', () => {
     expect(events).toEqual([]);
   });
 
-  it('exportPastDays_backsUpDbOnlyDays_neverOverwrites', async () => {
+  it.skipIf(!SQLITE)('exportPastDays_backsUpDbOnlyDays_neverOverwrites', async () => {
     const archive = path.join(TEST_METRICS_DIR, 'archive');
     const decode = (file: string) =>
       zlib
@@ -146,17 +156,44 @@ describe('MetricsEventStore', () => {
     expect(await store.exportPastDays('2026-03-25')).toEqual([]);
   });
 
-  it('exportPastDays_skipsDaysBackedByTheirJsonlFile', async () => {
+  it.skipIf(!SQLITE)('exportPastDays_backsUpJsonlImportedDaysOnce_andUpdatesBySameCount', async () => {
     fs.mkdirSync(TEST_METRICS_DIR, { recursive: true });
     fs.writeFileSync(
       path.join(TEST_METRICS_DIR, 'metrics-events-2026-03-19.jsonl'),
       `${JSON.stringify(makeEvent({ id: 'j1', timestamp: new Date('2026-03-19T10:00:00Z').getTime() }))}\n`,
     );
+    expect(await store.exportPastDays('2026-03-25')).toEqual(['metrics-events-2026-03-19.jsonl.zst']);
     expect(await store.exportPastDays('2026-03-25')).toEqual([]);
+    // Same row count, changed content (an upsert of the same id): backed up
+    // again as a new generation (the append's own daily check may write it).
+    await store.append(
+      makeEvent({ id: 'j1', timestamp: new Date('2026-03-19T10:00:00Z').getTime(), userName: 'Renamed' }),
+    );
+    await store.exportPastDays('2026-03-25');
+    const gen1 = path.join(TEST_METRICS_DIR, 'archive', 'metrics-events-2026-03-19.1.jsonl.zst');
+    expect(JSON.parse(zlib.zstdDecompressSync(fs.readFileSync(gen1)).toString('utf-8').trim()).userName).toBe(
+      'Renamed',
+    );
+    expect(fs.existsSync(path.join(TEST_METRICS_DIR, 'archive', 'metrics-events-2026-03-19.jsonl.zst'))).toBe(true);
+  });
+
+  it.skipIf(!SQLITE)('import_keepsOtherEventsWhenOneCannotBeStored', async () => {
+    fs.mkdirSync(TEST_METRICS_DIR, { recursive: true });
+    const odd = JSON.stringify({ ...makeEvent({ id: 'odd' }), eventType: { nested: true } });
+    const ok = JSON.stringify(makeEvent({ id: 'ok' }));
+    fs.writeFileSync(path.join(TEST_METRICS_DIR, 'metrics-events-2026-03-25.jsonl'), `${odd}\n${ok}\n`);
+    const ids = (await store.readRange('2026-03-25', '2026-03-25')).map((e) => e.id).sort();
+    expect(ids).toEqual(['odd', 'ok']);
+  });
+
+  it.skipIf(SQLITE)('jsonlFallback_appendWritesTheDayFile', async () => {
+    await store.append(makeEvent());
+    const filePath = path.join(TEST_METRICS_DIR, 'metrics-events-2026-03-25.jsonl');
+    expect(JSON.parse(fs.readFileSync(filePath, 'utf-8').trim()).id).toBe('test-id-1');
   });
 
   // Trace: Scenario 1, Section 4 — file created on first write
-  it('append_databaseCreatedOnFirstWrite', async () => {
+  it.skipIf(!SQLITE)('append_databaseCreatedOnFirstWrite', async () => {
     const dbPath = path.join(TEST_METRICS_DIR, 'metrics.sqlite3');
     expect(fs.existsSync(dbPath)).toBe(false);
 

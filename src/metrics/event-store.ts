@@ -14,9 +14,13 @@
  * `{DATA_DIR}/metrics/archive/metrics-events-YYYY-MM-DD[.N].jsonl.zst`.
  * On first use per process, any legacy files at `{DATA_DIR}/metrics-events-*.jsonl`
  * are still auto-migrated into the subdir first (id-dedupe + deterministic sort merge).
+ *
+ * `node:sqlite` needs Node >= 22.5. On an older runtime the store keeps the
+ * daily-JSONL behaviour unchanged (append + per-day reads), so nothing breaks
+ * and the next start on a newer Node imports those files.
  */
 
-import { DatabaseSync } from 'node:sqlite';
+import type { DatabaseSync } from 'node:sqlite';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as zlib from 'zlib';
@@ -270,6 +274,45 @@ export function mergeJsonl(...contents: string[]): {
 // ─────────────────────────────────────────────────────────────────────────────
 
 const DB_FILE = 'metrics.sqlite3';
+
+type SqliteModule = typeof import('node:sqlite');
+let sqliteModule: SqliteModule | null | undefined;
+
+/** `node:sqlite` when the runtime has it (Node >= 22.5), else null. */
+function loadSqlite(): SqliteModule | null {
+  if (sqliteModule !== undefined) return sqliteModule;
+  try {
+    // biome-ignore lint/style/noCommonJs: optional builtin, absent before Node 22.5
+    sqliteModule = require('node:sqlite') as SqliteModule;
+  } catch {
+    sqliteModule = null;
+    logger.warn('[metrics] node:sqlite unavailable on this Node — keeping daily JSONL storage');
+  }
+  return sqliteModule;
+}
+
+/** True when metrics are stored in SQLite on this runtime. */
+export function metricsSqliteAvailable(): boolean {
+  return loadSqlite() !== null;
+}
+
+/**
+ * Day files read at once on the JSONL fallback (#477): bounded so a
+ * year-long range never holds hundreds of files open.
+ */
+const READ_CONCURRENCY = 8;
+
+/** Inclusive list of YYYY-MM-DD strings between start and end. */
+function generateDateRange(startDate: string, endDate: string): string[] {
+  const dates: string[] = [];
+  const current = new Date(`${startDate}T00:00:00Z`);
+  const end = new Date(`${endDate}T00:00:00Z`);
+  while (current <= end) {
+    dates.push(current.toISOString().slice(0, 10));
+    current.setUTCDate(current.getUTCDate() + 1);
+  }
+  return dates;
+}
 const DAY_FILE_PATTERN = /^metrics-events-(\d{4}-\d{2}-\d{2})\.jsonl$/;
 
 const SCHEMA_SQL = `
@@ -300,9 +343,17 @@ CREATE TABLE IF NOT EXISTS metrics_exports (
   file        TEXT PRIMARY KEY,
   day         TEXT NOT NULL,
   rows        INTEGER NOT NULL,
+  rev         INTEGER NOT NULL,
   exported_at INTEGER NOT NULL
 );
+CREATE TABLE IF NOT EXISTS metrics_day_rev (
+  day TEXT PRIMARY KEY,
+  rev INTEGER NOT NULL
+);
 `;
+
+/** Lines imported per transaction; the event loop runs between batches. */
+const IMPORT_BATCH = 500;
 
 const UPSERT_SQL = `INSERT INTO metrics_events (id, ts, day, event_type, json) VALUES (?, ?, ?, ?, ?)
   ON CONFLICT(id) DO UPDATE SET ts = excluded.ts, day = excluded.day,
@@ -323,13 +374,22 @@ export function __closeMetricsDbs(): void {
   dbs.clear();
 }
 
-function openDb(metricsDir: string): DatabaseSync {
+function openDb(metricsDir: string): DatabaseSync | null {
+  const sqlite = loadSqlite();
+  if (!sqlite) {
+    if (fs.existsSync(path.join(metricsDir, DB_FILE))) {
+      logger.error(
+        '[metrics] metrics.sqlite3 exists but this Node has no node:sqlite — reports will miss events stored in it; run Node >= 22.5',
+      );
+    }
+    return null;
+  }
   const key = path.resolve(metricsDir);
   const existing = dbs.get(key);
   if (existing) return existing;
   fs.mkdirSync(metricsDir, { recursive: true });
-  const db = new DatabaseSync(path.join(metricsDir, DB_FILE));
-  db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 5000;');
+  const db = new sqlite.DatabaseSync(path.join(metricsDir, DB_FILE));
+  db.exec('PRAGMA journal_mode = WAL; PRAGMA synchronous = FULL; PRAGMA busy_timeout = 250;');
   db.exec(SCHEMA_SQL);
   dbs.set(key, db);
   return db;
@@ -340,8 +400,38 @@ function isValidEvent(ev: unknown): ev is MetricsEvent {
   return !!e && typeof e.id === 'string' && !!e.id && typeof e.timestamp === 'number';
 }
 
+interface Stmts {
+  dayOf: ReturnType<DatabaseSync['prepare']>;
+  upsert: ReturnType<DatabaseSync['prepare']>;
+  bump: ReturnType<DatabaseSync['prepare']>;
+}
+const stmtCache = new WeakMap<DatabaseSync, Stmts>();
+
+function stmts(db: DatabaseSync): Stmts {
+  let st = stmtCache.get(db);
+  if (!st) {
+    st = {
+      dayOf: db.prepare('SELECT day FROM metrics_events WHERE id = ?'),
+      upsert: db.prepare(UPSERT_SQL),
+      bump: db.prepare(
+        'INSERT INTO metrics_day_rev (day, rev) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET rev = rev + 1',
+      ),
+    };
+    stmtCache.set(db, st);
+  }
+  return st;
+}
+
+/**
+ * Upsert one event and bump the revision of every day it touches (its day,
+ * and the day it moved away from), so a changed day is backed up again.
+ */
 function upsert(db: DatabaseSync, ev: MetricsEvent, day: string): void {
-  db.prepare(UPSERT_SQL).run(ev.id, ev.timestamp, day, ev.eventType ?? null, JSON.stringify(ev));
+  const st = stmts(db);
+  const prev = st.dayOf.get(ev.id) as { day: string } | undefined;
+  st.upsert.run(ev.id, ev.timestamp, day, typeof ev.eventType === 'string' ? ev.eventType : null, JSON.stringify(ev));
+  st.bump.run(day);
+  if (prev && prev.day !== day) st.bump.run(prev.day);
 }
 
 /**
@@ -351,7 +441,7 @@ function upsert(db: DatabaseSync, ev: MetricsEvent, day: string): void {
  * (exactly what the file-based reader returned); later lines win per id, like
  * the legacy merge. The files themselves are never touched.
  */
-async function syncJsonlFiles(db: DatabaseSync, metricsDir: string): Promise<void> {
+async function syncJsonlFilesNow(db: DatabaseSync, metricsDir: string): Promise<void> {
   let entries: fs.Dirent[];
   try {
     entries = await fs.promises.readdir(metricsDir, { withFileTypes: true });
@@ -364,6 +454,12 @@ async function syncJsonlFiles(db: DatabaseSync, metricsDir: string): Promise<voi
     .map((d) => d.name)
     .sort();
   const known = db.prepare('SELECT size FROM metrics_jsonl_imports WHERE file = ?');
+  const unparsed = db.prepare('INSERT OR IGNORE INTO metrics_unparsed (file, line_no, text) VALUES (?, ?, ?)');
+  const record = db.prepare(
+    `INSERT INTO metrics_jsonl_imports (file, size, lines, events, corrupt, imported_at) VALUES (?, ?, ?, ?, ?, ?)
+     ON CONFLICT(file) DO UPDATE SET size = excluded.size, lines = excluded.lines, events = excluded.events,
+       corrupt = excluded.corrupt, imported_at = excluded.imported_at`,
+  );
   for (const name of files) {
     const full = path.join(metricsDir, name);
     let size: number;
@@ -386,70 +482,102 @@ async function syncJsonlFiles(db: DatabaseSync, metricsDir: string): Promise<voi
     let events = 0;
     let corrupt = 0;
     let nonBlank = 0;
-    db.exec('BEGIN');
-    try {
-      const unparsed = db.prepare('INSERT OR IGNORE INTO metrics_unparsed (file, line_no, text) VALUES (?, ?, ?)');
-      for (let i = 0; i < lines.length; i++) {
-        const line = lines[i];
-        if (!line.trim()) continue;
-        nonBlank++;
-        let ev: unknown = null;
-        try {
-          ev = JSON.parse(line);
-        } catch {
-          ev = null;
+    // Batches: each is its own transaction and the event loop runs between
+    // them (never inside one — a live append must not join an import
+    // transaction). Upserts are idempotent, so a crash mid-file only means
+    // the file is imported again on the next start (its import row is
+    // written last).
+    for (let start = 0; start < lines.length; start += IMPORT_BATCH) {
+      db.exec('BEGIN');
+      try {
+        for (let i = start; i < Math.min(start + IMPORT_BATCH, lines.length); i++) {
+          const line = lines[i];
+          if (!line.trim()) continue;
+          nonBlank++;
+          let ev: unknown = null;
+          try {
+            ev = JSON.parse(line);
+          } catch {
+            ev = null;
+          }
+          if (!isValidEvent(ev)) {
+            corrupt++;
+            unparsed.run(name, i + 1, line);
+            continue;
+          }
+          try {
+            upsert(db, ev, day);
+            events++;
+          } catch (err) {
+            // One unbindable event must not hide the rest of the day.
+            corrupt++;
+            unparsed.run(name, i + 1, line);
+            logger.warn(`[metrics] ${name}:${i + 1} could not be stored — kept in metrics_unparsed`, err);
+          }
         }
-        if (!isValidEvent(ev)) {
-          corrupt++;
-          unparsed.run(name, i + 1, line);
-          continue;
-        }
-        upsert(db, ev, day);
-        events++;
+        db.exec('COMMIT');
+      } catch (err) {
+        db.exec('ROLLBACK');
+        logger.error(`[metrics] import of ${name} failed — file left as-is, retried next time`, err);
+        events = -1;
+        break;
       }
-      db.prepare(
-        `INSERT INTO metrics_jsonl_imports (file, size, lines, events, corrupt, imported_at) VALUES (?, ?, ?, ?, ?, ?)
-         ON CONFLICT(file) DO UPDATE SET size = excluded.size, lines = excluded.lines, events = excluded.events,
-           corrupt = excluded.corrupt, imported_at = excluded.imported_at`,
-      ).run(name, size, nonBlank, events, corrupt, Date.now());
-      db.exec('COMMIT');
-    } catch (err) {
-      db.exec('ROLLBACK');
-      logger.error(`[metrics] import of ${name} failed — file left as-is`, err);
-      continue;
+      await new Promise<void>((resolve) => setImmediate(resolve));
     }
+    if (events < 0) continue;
+    record.run(name, size, nonBlank, events, corrupt, Date.now());
     if (corrupt > 0) logger.warn(`[metrics] ${name}: ${corrupt} unparseable lines kept in metrics_unparsed`);
     logger.info(`[metrics] imported ${name}`, { events, corrupt });
   }
 }
 
+/** One day-file sync at a time per database; concurrent callers share it. */
+const syncInFlight = new WeakMap<DatabaseSync, Promise<void>>();
+
 /**
- * Export every past day whose rows are not yet backed up — no daily JSONL file
- * with the same event count and no earlier export with the same row count — to
- * `archive/metrics-events-DAY[.N].jsonl.zst`. Existing exports are never
- * overwritten (a changed day gets the next generation).
+ * Import the daily JSONL files into the database. A file is (re)imported only
+ * when its size differs from the last import, so a steady state costs one
+ * readdir + stat per file. Events keep the day of the file they came from
+ * (exactly what the file-based reader returned); later lines win per id, like
+ * the legacy merge. The files themselves are never touched.
+ */
+function syncJsonlFiles(db: DatabaseSync, metricsDir: string): Promise<void> {
+  const running = syncInFlight.get(db);
+  if (running) return running;
+  const p = syncJsonlFilesNow(db, metricsDir).finally(() => syncInFlight.delete(db));
+  syncInFlight.set(db, p);
+  return p;
+}
+
+/**
+ * Export every past day whose current revision has not been backed up yet to
+ * `archive/metrics-events-DAY[.N].jsonl.zst` — including days imported from
+ * their JSONL file, so the archive is one uniform backup. A day changes
+ * revision on every upsert that touches it (an update with the same row
+ * count included). Exports are never overwritten (a changed day gets the
+ * next generation) and are verified from the written file before publish.
  */
 function exportPastDays(db: DatabaseSync, metricsDir: string, today: string): string[] {
   const written: string[] = [];
-  const days = db
-    .prepare('SELECT day, count(*) AS n FROM metrics_events WHERE day < ? GROUP BY day ORDER BY day')
-    .all(today) as Array<{ day: string; n: number }>;
-  if (days.length === 0) return written;
+  if (typeof zlib.zstdCompressSync !== 'function') {
+    logger.warn('[metrics] zstd unavailable on this Node — past-day export skipped (rows stay in the database)');
+    return written;
+  }
   const archiveDir = path.join(metricsDir, 'archive');
-  for (const { day, n } of days) {
-    const rows = Number(n);
-    const jsonl = db
-      .prepare('SELECT events FROM metrics_jsonl_imports WHERE file = ?')
-      .get(`metrics-events-${day}.jsonl`) as { events: number } | undefined;
-    if (jsonl && Number(jsonl.events) === rows) continue;
-    const exported = db
-      .prepare('SELECT rows FROM metrics_exports WHERE day = ? ORDER BY exported_at DESC LIMIT 1')
-      .get(day) as { rows: number } | undefined;
-    if (exported && Number(exported.rows) === rows) continue;
+  cleanupArchiveTmp(archiveDir);
+  const days = db
+    .prepare(
+      `SELECT r.day AS day, r.rev AS rev FROM metrics_day_rev r
+        WHERE r.day < ? AND r.rev <> coalesce(
+          (SELECT e.rev FROM metrics_exports e WHERE e.day = r.day ORDER BY e.exported_at DESC, e.rowid DESC LIMIT 1), -1)
+        ORDER BY r.day`,
+    )
+    .all(today) as Array<{ day: string; rev: number }>;
+  for (const { day, rev } of days) {
     const events = db.prepare('SELECT json FROM metrics_events WHERE day = ? ORDER BY ts, seq').all(day) as Array<{
       json: string;
     }>;
-    const body = events.map((e) => e.json).join('\n') + '\n';
+    const body = events.length ? `${events.map((e) => e.json).join('\n')}\n` : '';
     fs.mkdirSync(archiveDir, { recursive: true });
     let gen = 0;
     let file = `metrics-events-${day}.jsonl.zst`;
@@ -459,23 +587,24 @@ function exportPastDays(db: DatabaseSync, metricsDir: string, today: string): st
     }
     const full = path.join(archiveDir, file);
     const tmp = `${full}.tmp-${process.pid}`;
-    const compressed = zlib.zstdCompressSync(Buffer.from(body, 'utf-8'));
-    // Verify before publishing: the export must decode to the same bytes.
-    if (zlib.zstdDecompressSync(compressed).toString('utf-8') !== body) {
-      throw new Error(`metrics export of ${day} did not round-trip`);
-    }
-    const fd = fs.openSync(tmp, 'w');
+    fs.writeFileSync(tmp, zlib.zstdCompressSync(Buffer.from(body, 'utf-8')));
+    const fd = fs.openSync(tmp, 'r+');
     try {
-      fs.writeSync(fd, compressed);
       fs.fsyncSync(fd);
     } finally {
       fs.closeSync(fd);
     }
+    // Verify the bytes on disk, not the buffer we meant to write.
+    if (zlib.zstdDecompressSync(fs.readFileSync(tmp)).toString('utf-8') !== body) {
+      fs.rmSync(tmp, { force: true });
+      throw new Error(`metrics export of ${day} did not round-trip`);
+    }
     fs.renameSync(tmp, full);
-    db.prepare('INSERT INTO metrics_exports (file, day, rows, exported_at) VALUES (?, ?, ?, ?)').run(
+    db.prepare('INSERT INTO metrics_exports (file, day, rows, rev, exported_at) VALUES (?, ?, ?, ?, ?)').run(
       file,
       day,
-      rows,
+      events.length,
+      rev,
       Date.now(),
     );
     written.push(file);
@@ -483,22 +612,59 @@ function exportPastDays(db: DatabaseSync, metricsDir: string, today: string): st
   return written;
 }
 
+/** Remove export temp files a crash left behind (older than STALE_TMP_AGE_MS). */
+function cleanupArchiveTmp(archiveDir: string): void {
+  let names: string[];
+  try {
+    names = fs.readdirSync(archiveDir);
+  } catch {
+    return;
+  }
+  const now = Date.now();
+  for (const name of names) {
+    if (!/\.jsonl\.zst\.tmp-\d+$/.test(name)) continue;
+    const full = path.join(archiveDir, name);
+    try {
+      if (now - fs.statSync(full).mtimeMs > STALE_TMP_AGE_MS) fs.rmSync(full, { force: true });
+    } catch {
+      /* ignore */
+    }
+  }
+}
+
 export class MetricsEventStore {
   private dataDir: string;
   private metricsDir: string;
   /** Report day of the last export check (once per day per process). */
   private exportCheckedDay: string | null = null;
+  /** JSONL fallback: per-file promise chain so concurrent appends never interleave. */
+  private writeQueues = new Map<string, Promise<void>>();
 
   constructor(dataDir?: string) {
     this.dataDir = dataDir || DATA_DIR;
     this.metricsDir = path.join(this.dataDir, 'metrics');
   }
 
-  private async db(): Promise<DatabaseSync> {
+  /** Whether this instance already synced the day files once. */
+  private synced = false;
+
+  /**
+   * The database (after migration + day-file import), or null on old Node.
+   * Reads always re-check the day files (cheap: stat per file); appends only
+   * on their first call, so the hot path does no directory scan.
+   */
+  private async db(forRead: boolean): Promise<DatabaseSync | null> {
     await ensureDirOnce(this.dataDir, this.metricsDir);
     const db = openDb(this.metricsDir);
-    await syncJsonlFiles(db, this.metricsDir);
+    if (db && (forRead || !this.synced)) {
+      await syncJsonlFiles(db, this.metricsDir);
+      this.synced = true;
+    }
     return db;
+  }
+
+  private getFilePath(dateStr: string): string {
+    return path.join(this.metricsDir, `metrics-events-${dateStr}.jsonl`);
   }
 
   /**
@@ -506,16 +672,28 @@ export class MetricsEventStore {
    * Fire-and-forget safe — errors are logged but not thrown.
    */
   async append(event: MetricsEvent): Promise<void> {
+    const day = timestampToDateStr(event.timestamp);
     try {
-      const db = await this.db();
-      const day = timestampToDateStr(event.timestamp);
-      upsert(db, event, day);
+      const db = await this.db(false);
+      if (!db) {
+        await this.appendJsonl(day, event);
+        return;
+      }
+      try {
+        upsert(db, event, day);
+      } catch (err) {
+        // SQLITE_BUSY/FULL/…: spill to the day file — the next sync sees its
+        // size change and imports it, so the event is not lost.
+        logger.warn('[metrics] database write failed — event spilled to the day file', err);
+        await this.appendJsonl(day, event);
+        return;
+      }
       logger.debug(`Appended event ${event.eventType} for ${day}`);
       const today = timestampToDateStr(Date.now());
       if (this.exportCheckedDay !== today) {
-        this.exportCheckedDay = today;
         try {
           exportPastDays(db, this.metricsDir, today);
+          this.exportCheckedDay = today; // a failed export is retried on the next append
         } catch (err) {
           logger.error('[metrics] past-day export failed — rows stay in the database', err);
         }
@@ -525,21 +703,37 @@ export class MetricsEventStore {
     }
   }
 
+  /** JSONL fallback append (Node without node:sqlite). */
+  private async appendJsonl(day: string, event: MetricsEvent): Promise<void> {
+    const filePath = this.getFilePath(day);
+    const line = `${JSON.stringify(event)}\n`;
+    const prev = this.writeQueues.get(filePath) || Promise.resolve();
+    const next = prev.then(() => fs.promises.appendFile(filePath, line, 'utf-8'));
+    this.writeQueues.set(
+      filePath,
+      next.catch(() => {}),
+    );
+    await next;
+  }
+
   /**
    * Back up past days that live only in the database (see `exportPastDays`).
-   * Returns the archive file names written.
+   * Returns the archive file names written ([] on the JSONL fallback — the
+   * day files are the backup there).
    */
   async exportPastDays(today: string = timestampToDateStr(Date.now())): Promise<string[]> {
-    const db = await this.db();
+    const db = await this.db(true);
+    if (!db) return [];
     return exportPastDays(db, this.metricsDir, today);
   }
 
   /**
-   * Read all events in a date range (inclusive) — one indexed query.
+   * Read all events in a date range (inclusive).
    * Returns events sorted by timestamp ascending (insertion order on ties).
    */
   async readRange(startDate: string, endDate: string): Promise<MetricsEvent[]> {
-    const db = await this.db();
+    const db = await this.db(true);
+    if (!db) return this.readRangeJsonl(startDate, endDate);
     const rows = db
       .prepare('SELECT json FROM metrics_events WHERE day BETWEEN ? AND ? ORDER BY ts, seq')
       .all(startDate, endDate) as Array<{ json: string }>;
@@ -553,5 +747,42 @@ export class MetricsEventStore {
     }
     logger.debug(`Read ${events.length} events from ${startDate} to ${endDate}`);
     return events;
+  }
+
+  /** JSONL fallback: one day's events in file order; a missing file is an empty day. */
+  private async readDay(dateStr: string): Promise<MetricsEvent[]> {
+    const filePath = this.getFilePath(dateStr);
+    const events: MetricsEvent[] = [];
+    try {
+      const content = await fs.promises.readFile(filePath, 'utf-8');
+      const lines = content.split('\n').filter((line) => line.trim().length > 0);
+      for (let i = 0; i < lines.length; i++) {
+        try {
+          events.push(JSON.parse(lines[i]) as MetricsEvent);
+        } catch {
+          logger.warn(`Skipped corrupted line in ${path.basename(filePath)}:${i + 1}`);
+        }
+      }
+    } catch (error: any) {
+      if (error.code !== 'ENOENT') logger.error(`Failed to read metrics file for ${dateStr}`, error);
+    }
+    return events;
+  }
+
+  /** JSONL fallback range read (bounded concurrency, date order, then by timestamp). */
+  private async readRangeJsonl(startDate: string, endDate: string): Promise<MetricsEvent[]> {
+    const dates = generateDateRange(startDate, endDate);
+    const perDay: MetricsEvent[][] = new Array(dates.length);
+    let next = 0;
+    const worker = async () => {
+      while (next < dates.length) {
+        const i = next++;
+        perDay[i] = await this.readDay(dates[i]);
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(READ_CONCURRENCY, dates.length) }, worker));
+    const allEvents = perDay.flat();
+    allEvents.sort((a, b) => a.timestamp - b.timestamp);
+    return allEvents;
   }
 }
