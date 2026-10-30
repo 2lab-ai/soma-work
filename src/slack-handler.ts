@@ -6371,6 +6371,8 @@ export class SlackHandler {
     for (const [sessionKey, session] of this.claudeHandler.getAllSessions()) {
       const dueAt = session.pendingRetryAt;
       if (dueAt === undefined) continue;
+      // A Slack-less task has no execution context yet (#597): never resumed (#612 R2).
+      if (session.slackless) continue;
       // Already armed in this process (e.g. a crash-recovery resume that failed
       // again and scheduled a fresh retry) — arming again would fire it twice.
       if (session.pendingRetryTimer) continue;

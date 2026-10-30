@@ -43,8 +43,16 @@ vi.mock('../viewer', () => ({
   renderConversationListPage: vi.fn().mockReturnValue('<html></html>'),
   renderConversationViewPage: vi.fn().mockReturnValue('<html></html>'),
 }));
+// A tiny in-memory archive: the board lists it, a revive loads from it.
+const archiveState = vi.hoisted(() => ({ items: [] as Array<Record<string, any>> }));
 vi.mock('../../session-archive', () => ({
-  getArchiveStore: () => ({ listRecent: () => [], exists: () => false, archive: () => {} }),
+  getArchiveStore: () => ({
+    listRecent: () => archiveState.items,
+    exists: () => false,
+    archive: () => {},
+    load: (sessionKey: string, archivedAt: number) =>
+      archiveState.items.find((a) => a.sessionKey === sessionKey && a.archivedAt === archivedAt) ?? null,
+  }),
 }));
 
 const TEST_DATA_DIR = path.join(process.env.TMPDIR ?? os.tmpdir(), 'soma-work-dashboard-slackless-task-test');
@@ -87,6 +95,7 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
   beforeEach(() => {
     if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true });
     fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+    archiveState.items = [];
   });
 
   async function board(): Promise<Board> {
@@ -156,8 +165,72 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
       payload: JSON.stringify({ message: 'hello' }),
     });
     expect(command.statusCode).toBe(409);
+    // No handler is wired in this test: without the guard these answer 501.
+    const model = await injectWebServer({
+      method: 'POST',
+      url: `/api/dashboard/session/${key}/model`,
+      headers,
+      payload: JSON.stringify({ model: 'opus' }),
+    });
+    expect(model.statusCode).toBe(409);
     const close = await injectWebServer({ method: 'POST', url: `/api/dashboard/session/${key}/close`, headers });
     expect(close.statusCode).not.toBe(409);
+  });
+
+  it('#612 R2 — an archived Slack-less card revives under its task key, still Slack-less, and still refuses a turn', async () => {
+    const dashboard = await import('../dashboard');
+    const reg = new SessionRegistry();
+    const taskId = '11111111-2222-4333-8444-555555555555';
+    const archivedAt = Date.now() - 60_000;
+    // A task that has run (sessionId set) and was closed: the revive reaches the registry restore.
+    archiveState.items = [
+      {
+        archivedAt,
+        archiveReason: 'user_close',
+        sessionKey: `task:${taskId}`,
+        taskId,
+        slackless: true,
+        sessionId: 'sdk-1',
+        ownerId: 'U1',
+        ownerName: 'Alice',
+        channelId: '',
+        title: 'Archived task',
+        lastActivity: new Date(archivedAt).toISOString(),
+      },
+    ];
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    dashboard.setDashboardLifecycleHandler({
+      star: (k: string, starred: boolean) => reg.setStarred(k, starred),
+      revive: (k: string) => reg.reviveSession(k),
+      restore: (archived: any) => reg.restoreArchivedSession(archived, '/work/U1/repo'),
+    });
+    try {
+      const b = await board();
+      const card = b.closed.find((c) => c.key.includes(`archived_task:${taskId}_`));
+      expect(card).toBeDefined();
+      const headers = { ...AUTH_HEADER, 'X-Admin-Mode': 'on', 'content-type': 'application/json' };
+
+      const revive = await injectWebServer({
+        method: 'POST',
+        url: `/api/dashboard/session/${encodeURIComponent(card!.key)}/revive`,
+        headers,
+        payload: '{}',
+      });
+      expect(revive.statusCode).toBe(200);
+      const back = reg.getSessionByKey(`task:${taskId}`);
+      expect(back?.slackless).toBe(true);
+      expect(back?.channelId).toBe('');
+
+      const command = await injectWebServer({
+        method: 'POST',
+        url: `/api/dashboard/session/${encodeURIComponent(`task:${taskId}`)}/command`,
+        headers,
+        payload: JSON.stringify({ message: 'hello' }),
+      });
+      expect(command.statusCode).toBe(409);
+    } finally {
+      dashboard.setDashboardLifecycleHandler(null);
+    }
   });
 
   it('a never-run Slack session is still off the board (the board filter change is for Slack-less tasks only)', async () => {
