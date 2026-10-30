@@ -3854,6 +3854,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/dialog.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/drawer.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/app-bar.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/stat-strip.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4080,68 +4081,34 @@ ui-app-bar[narrow] .nt-btn-label { display: none; }
 /* ── MAIN — stats strip, then the board; capped at 1280px and centred (.prd/10 §3.1-2, §5) ── */
 .main { flex: 1; padding: 20px; width: 100%; max-width: 1280px; margin: 0 auto; min-width: 0; }
 
-/* ── PERIOD SELECTOR — @2lab.ai/ui <ui-segmented> (B-02), the same control as Board | List (D-02):
-   the selected period is the raised neutral chip that slides; .period-bar places it. ── */
-
-/* ── STATS STRIP — leads the page, above the board (.prd/10 §3.1-2) ──
-   One row from 640px: period · 세션 · 토큰 · 비용 · 자세히. Below 640px the
-   period control and 자세히 share the first row and the numbers take the
-   second. 자세히 opens the other cards and the charts under the strip. */
+/* ── STATS STRIP — @2lab.ai/ui <ui-stat-strip> (B-01..B-05, B-09), above the board (.prd/10 §3.1-2) ──
+   The element lays out period · 세션 · 토큰 · 비용 · 자세히 (one line; narrow, the figures under the
+   period) and opens 자세히's region (0fr → 1fr, inert while closed) over its default slot: the cards
+   and the charts in .stats-detail. */
 .stats { margin-bottom: 18px; }
-.stats-strip {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-areas: "period nums more";
-  align-items: center;
-  gap: 10px 16px;
-}
-.stats-strip .period-bar { grid-area: period; }
-.strip-nums { grid-area: nums; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; min-width: 0; }
-.strip-num { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
-.strip-num .label { font-size: 12px; font-weight: 500; color: var(--text-tertiary); }
-.strip-num .value { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; color: var(--text); font-variant-numeric: tabular-nums; }
-.strip-num .no-data { color: var(--text-tertiary); }
-.stats-more {
-  grid-area: more;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--surface);
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 12px;
-  min-height: 32px;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-}
-.stats-more svg { width: 12px; height: 12px; flex-shrink: 0; transition: transform var(--dur-expand) var(--ease-out); }
-.stats-more[aria-expanded="true"] { color: var(--text); }
-.stats-more[aria-expanded="true"] svg { transform: rotate(180deg); }
-.stats-detail { margin-top: 12px; }
+ui-stat-strip { display: block; }
+ui-stat-strip:not(:defined) { min-height: 44px; }
+ui-stat-strip:not(:defined) > * { display: none; }
+.stats-detail { padding-top: 12px; }
 
-/* ── EXPAND / COLLAPSE (P6) — the library disclosure recipe for 자세히 (.stats), 세션 정보 (.panel-info), a
+/* ── EXPAND / COLLAPSE (P6) — the library disclosure recipe for 세션 정보 (.panel-info), a
    work-log task group (.wl-group) and the completed goals (.cg-hx): the region is the last row of its host's
    grid and that row goes 0fr ↔ 1fr on --dur-expand (ease-out) with an opacity fade. Closed, the region is
    [hidden] + inert but still painted at 0 rows, so it leaves the way it came (세션 정보, drawn only while
    open, folds first: .xp-shut). It clips only while the row moves (.xp-moving, xpMove), so focus rings
    inside are whole once it has settled. The panel's ResizeObserver re-measures the sections on every frame
    of it (sizePanelSections). ── */
-.stats, .wl-group, .cg-hx, .panel-info { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; align-content: start; transition: grid-template-rows var(--dur-expand) var(--ease-out); }
+.wl-group, .cg-hx, .panel-info { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; align-content: start; transition: grid-template-rows var(--dur-expand) var(--ease-out); }
 .cg-hx { grid-template-rows: 1fr; }
 .panel-info:has(> .pi-links) { grid-template-rows: auto auto 1fr; }
-.stats:has(> .stats-detail[hidden]), .wl-group:has(> .wl-group-body[hidden]), .panel-info.xp-shut { grid-template-rows: auto 0fr; }
+.wl-group:has(> .wl-group-body[hidden]), .panel-info.xp-shut { grid-template-rows: auto 0fr; }
 .panel-info.xp-shut:has(> .pi-links) { grid-template-rows: auto auto 0fr; }
 .cg-hx:has(> .cg-hx-in[hidden]), .cg-hx.xp-shut { grid-template-rows: 0fr; }
-.stats-detail, .wl-group-body, .cg-hx-in, .panel-info > .pi-body { min-height: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s; }
-.stats-detail[hidden], .cg-hx-in[hidden] { display: block; }
+.wl-group-body, .cg-hx-in, .panel-info > .pi-body { min-height: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s; }
+.cg-hx-in[hidden] { display: block; }
 .wl-group-body[hidden] { display: flex; }
-.stats-detail[hidden], .wl-group-body[hidden], .cg-hx-in[hidden], .cg-hx.xp-shut > .cg-hx-in, .panel-info.xp-shut > .pi-body { opacity: 0; visibility: hidden; overflow: hidden; margin-top: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s linear var(--dur-expand); }
-.xp-moving > .stats-detail, .xp-moving > .wl-group-body, .xp-moving > .cg-hx-in, .xp-moving > .pi-body { overflow: hidden; }
+.wl-group-body[hidden], .cg-hx-in[hidden], .cg-hx.xp-shut > .cg-hx-in, .panel-info.xp-shut > .pi-body { opacity: 0; visibility: hidden; overflow: hidden; margin-top: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s linear var(--dur-expand); }
+.xp-moving > .wl-group-body, .xp-moving > .cg-hx-in, .xp-moving > .pi-body { overflow: hidden; }
 .usage-cb-wrap { max-width: 440px; margin-bottom: 12px; }
 
 /* ── STATS GRID — the cards behind 자세히: 5 columns, 2 below 1100px ── */
@@ -4248,7 +4215,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .board-error { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 12px; padding: 12px 16px; border-radius: 12px; background: var(--ib-col); color: var(--ib-text-2); font-size: 13px; }
 .board-error[hidden] { display: none; }
 /* Stats values: a bar where the number will be. */
-.strip-num .is-loading, .stat-card .value.is-loading { display: inline-block; vertical-align: middle; width: 3.2em; height: 0.9em; border-radius: 6px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
+.stat-card .value.is-loading { display: inline-block; vertical-align: middle; width: 3.2em; height: 0.9em; border-radius: 6px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
 .stat-card .value.is-loading { width: 64px; height: 22px; }
 .chart-row.is-loading { min-height: 132px; border-radius: 8px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
 /* Panel turns: rows shaped like a user / assistant turn. */
@@ -4358,9 +4325,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   color: color-mix(in srgb, var(--env-tone, var(--ib-muted)) 70%, var(--ib-text));
   vertical-align: baseline;
 }
-/* Token breakdown (#814, B-04) — @2lab.ai/ui <ui-tooltip variant="card">: it pops below the figure after the hover
-   delay, at once on keyboard focus, and on this page a tap toggles it (initTooltipTap). */
-#stat-tokens-tooltip { vertical-align: baseline; }
 
 /* ── CONTEXT USAGE BAR ── */
 .card-body .context-bar { margin-top: 8px; height: 4px; background: var(--ib-pill); border-radius: 2px; overflow: hidden; }
@@ -5495,14 +5459,13 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* PRESS — one rule for every button-like control: scale(.97) on --dur-press ease-out (each control's own
    transition carries the transform), pointer presses only — never a keyboard press (:focus-visible). The
    56px FAB presses to .95. */
-:is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+:is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
   .archives-btn:hover { color: var(--ib-text); }
   .wl-row:hover { background: var(--surface-raised); }
   .wl-detail-btn:hover { color: var(--text); border-color: var(--text-tertiary); }
-  .stats-more:hover { background: var(--surface-raised); color: var(--text); }
   .card-body .card-refs a:hover { text-decoration: underline; }
   .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--surface-raised); color: var(--text); }
   .card-body .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--ib-card); color: var(--ib-text); }
@@ -5524,11 +5487,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .wl-child { grid-template-columns: 16px minmax(0, 1fr); }
   .wc-meta { grid-column: 2; grid-row: auto; flex-wrap: wrap; }
 
-  /* Stats strip: period control + 자세히 on the first row, the numbers on the
-     second. The period tabs share the row's width and keep 44px height with
-     narrower sides, so the row fits 320px with the coarse-pointer padding. */
-  .stats-strip { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "period more" "nums nums"; gap: 8px 12px; }
-  .stats-strip .period-bar { min-width: 0; }
   /* Top bar (the app bar narrows itself: the status dot, the account's initials, 메뉴):
      the row under it keeps the bar's 12px sides, and the user select fills what the
      chips leave of its line (it wraps rather than overflow). Labels stay whole. */
@@ -5564,7 +5522,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   /* Loading skeletons hold still. */
@@ -5598,7 +5556,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 @media (max-width: 639px), (pointer: coarse) {
   .topbar .user-select, .topbar .admin-toggle, .topbar .td-chip { min-height: 44px; }
-  .stats-more { min-height: 44px; }
   .card-body .btn-choice { min-height: 44px; }
   .inbox-head .archives-btn { min-height: 44px; }
   .card-body .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
@@ -6178,20 +6135,14 @@ ${pageTokenAliases()}
   </header>
 
   <div class="main">
-    <!-- Stats strip (.prd/10 §3.1-2) leads; the agent inbox board follows it.
-         Collapsed by default: period · 세션 · 토큰 · 비용 + 자세히, which opens the
-         other cards and the charts below the strip (kept in localStorage). -->
-    <section class="stats" id="stats" aria-label="사용량">
-      <div class="stats-strip">
-        <ui-segmented class="period-bar" id="period-seg" full></ui-segmented>
-        <div class="strip-nums">
-          <div class="strip-num"><span class="label">&#xC138;&#xC158;</span><span class="value is-loading" id="stat-sessions"></span></div>
-          <div class="strip-num"><span class="label">&#xD1A0;&#xD070;</span><span class="value" id="stat-tokens-wrap"><ui-tooltip id="stat-tokens-tooltip" variant="card" placement="bottom" disabled><span id="stat-tokens" class="is-loading"></span></ui-tooltip></span></div>
-          <div class="strip-num"><span class="label">&#xBE44;&#xC6A9;</span><span class="value is-loading" id="stat-cost"></span></div>
-        </div>
-        <button type="button" class="stats-more" id="stats-more" aria-expanded="false" aria-controls="stats-detail" onclick="toggleStatsDetail()"><span>&#xC790;&#xC138;&#xD788;</span><i data-ui-icon="chevron-down"></i></button>
-      </div>
-      <div class="stats-detail" id="stats-detail" hidden inert>
+    <!-- Stats strip (.prd/10 §3.1-2) leads; the agent inbox board follows it. It is @2lab.ai/ui
+         <ui-stat-strip id="stats-strip"> (B-01..B-05, B-09): period · 세션 · 토큰 · 비용 + 자세히 are its
+         data (paintStatsStrip) — the figures roll, a loading figure pulses, 토큰 carries the per-instance
+         breakdown as its tooltip. 자세히 opens the element's own region: the other cards and the charts
+         below (its default slot; the choice is kept in localStorage). -->
+    <section class="stats" id="stats">
+      <ui-stat-strip id="stats-strip" lang="ko">
+      <div class="stats-detail" id="stats-detail">
         <div class="ui-tok usage-cb-wrap"><ui-compact-breakdown id="usage-cb" lang="ko"></ui-compact-breakdown></div>
         <div class="stats-grid" id="stats-grid">
           <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value is-loading" id="stat-turns"></div></div>
@@ -6203,6 +6154,7 @@ ${pageTokenAliases()}
         <div style="display:none" id="stat-commits-hidden"></div>
         <div class="chart-row is-loading" id="chart-row"></div>
       </div>
+      </ui-stat-strip>
     </section>
 
     <!-- LLM capacity (SSOT 2026-10-23 T7/T9/T10), between the stats strip and the inbox:
@@ -8048,15 +8000,41 @@ function selectUser(userId) {
   loadCronJobs();
 }
 
-// ── Period ── <ui-segmented id="period-seg"> (B-02): the page hands it the choice and answers ui-change.
+// ── Stats strip — @2lab.ai/ui <ui-stat-strip id="stats-strip"> (B-01..B-05, B-09) ──
+// The page hands it the period, the three figures (null = no data "—"; loading = a pulsing bar where the
+// figure will be) and 자세히. The element rolls a changed figure (620ms ease-out quart; first paint and
+// reduced motion jump), shows 토큰's per-instance breakdown as the figure's tooltip (hover, focus, a press —
+// touch too) and opens 자세히's region over its default slot (.stats-detail). It sends ui-period (the page
+// loads that period) and ui-more (the page keeps the choice in localStorage['soma-stats-detail']).
 var PERIOD_OPTIONS = [{ value: 'day', label: '오늘' }, { value: 'week', label: '지난 7일' }, { value: 'month', label: '지난 30일' }];
-function paintPeriodSeg() {
-  var seg = document.getElementById('period-seg');
-  if (seg) seg.data = { label: '기간', value: currentPeriod, options: PERIOD_OPTIONS };
+var STATS_DETAIL_KEY = 'soma-stats-detail';
+var _strip = { sessions: { value: null, loading: true }, tokens: { value: null, loading: true }, cost: { value: null, loading: true } };
+var _tokenBreakdown = null; // { title, rows } while the board's sessions span two or more instances (#814)
+var _statsDetailOpen = false;
+function setStripFigure(key, value, loading) {
+  _strip[key] = { value: typeof value === 'number' && isFinite(value) ? value : null, loading: !!loading };
+}
+function statsStripData() {
+  var tokens = { key: 'tokens', label: '토큰', value: _strip.tokens.value, format: 'tokens', loading: _strip.tokens.loading };
+  if (_tokenBreakdown) tokens.breakdown = _tokenBreakdown;
+  return {
+    label: '사용량',
+    period: { label: '기간', value: currentPeriod, options: PERIOD_OPTIONS },
+    metrics: [
+      { key: 'sessions', label: '세션', value: _strip.sessions.value, format: 'int', loading: _strip.sessions.loading },
+      tokens,
+      { key: 'cost', label: '비용', value: _strip.cost.value, format: 'usd', loading: _strip.cost.loading },
+    ],
+    more: { label: '자세히', open: _statsDetailOpen },
+  };
+}
+function paintStatsStrip() {
+  var el = document.getElementById('stats-strip');
+  if (el) el.data = statsStripData();
 }
 function setPeriod(period) {
   currentPeriod = period;
-  paintPeriodSeg();
+  paintStatsStrip();
   loadStats();
 }
 
@@ -8098,29 +8076,6 @@ function xpStay(host) {
   xpMove(host);
   return true;
 }
-
-// ── Stats strip 자세히 (.prd/10 §3.1-2) — the other cards + charts, collapsed
-// unless the user opened them (localStorage['soma-stats-detail'] = 'open'). ──
-var STATS_DETAIL_KEY = 'soma-stats-detail';
-function setStatsDetail(open) {
-  var btn = document.getElementById('stats-more');
-  var detail = document.getElementById('stats-detail');
-  if (!btn || !detail) return;
-  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-  detail.hidden = !open;
-  detail.inert = !open;
-}
-function toggleStatsDetail() {
-  var open = document.getElementById('stats-more').getAttribute('aria-expanded') !== 'true';
-  xpMove(document.getElementById('stats'));
-  setStatsDetail(open);
-  try { localStorage.setItem(STATS_DETAIL_KEY, open ? 'open' : 'closed'); } catch (_e) {}
-}
-(function initStatsDetail() {
-  var saved = null;
-  try { saved = localStorage.getItem(STATS_DETAIL_KEY); } catch (_e) {}
-  setStatsDetail(saved === 'open');
-})();
 
 // ── Session cache ──
 // Keyed by session key — prototype-free so any key string is just a key.
@@ -13242,8 +13197,11 @@ function statsJson(url) {
   });
 }
 
-var STAT_IDS = ['stat-sessions', 'stat-tokens', 'stat-cost', 'stat-turns', 'stat-prs', 'stat-merged', 'stat-merge-lines', 'stat-workflows'];
+var STAT_IDS = ['stat-turns', 'stat-prs', 'stat-merged', 'stat-merge-lines', 'stat-workflows'];
 function markStatsLoading() {
+  // The strip keeps each figure's last value under its loading bar, so the next one rolls from it.
+  ['sessions', 'tokens', 'cost'].forEach(function(k) { setStripFigure(k, _strip[k].value, true); });
+  paintStatsStrip();
   STAT_IDS.forEach(function(id) {
     var el = document.getElementById(id);
     if (!el) return;
@@ -13257,8 +13215,9 @@ function markStatsLoading() {
 }
 
 // A failed load shows a dash rather than the previous period's number.
-// With a value and its format (the strip's 세션 · 토큰 · 비용 and the counted cards), the figure
-// rolls from the one it showed to the new one — the library's rolling figure, 620ms ease-out quart.
+// With a value and its format (the counted cards behind 자세히), the figure rolls from the one it
+// showed to the new one — the library's rolling figure, 620ms ease-out quart (the strip's own figures
+// roll in <ui-stat-strip>).
 // The first paint, a change from or to a dash and reduced motion jump; a new load stops a roll.
 var STAT_ROLL_MS = 620;
 function stopStatRoll(el) {
@@ -13290,12 +13249,12 @@ function setStat(id, text, value, fmt) {
   el._roll = requestAnimationFrame(step);
 }
 function fmtCount(n) { return String(Math.round(n)); }
-function fmtUsd(n) { return '$' + toNum(n).toFixed(2); }
 
 function paintStats(data) {
   var t = data && data.totals;
   var dash = '\\u2014';
-  setStat('stat-sessions', t ? String(toNum(t.sessionsCreated)) : dash, t ? toNum(t.sessionsCreated) : null, fmtCount);
+  setStripFigure('sessions', t ? toNum(t.sessionsCreated) : null, false);
+  paintStatsStrip();
   setStat('stat-turns', t ? String(toNum(t.turnsUsed)) : dash, t ? toNum(t.turnsUsed) : null, fmtCount);
   setStat('stat-prs', t ? String(toNum(t.prsCreated)) : dash, t ? toNum(t.prsCreated) : null, fmtCount);
   setStat('stat-merged', t ? String(toNum(t.prsMerged)) : dash, t ? toNum(t.prsMerged) : null, fmtCount);
@@ -13365,9 +13324,9 @@ function paintUsage(report) {
   _usageReport = report || null;
   paintUsageBreakdown();
   var t = report && report.totals;
-  var tok = t ? toNum(t.totalInputTokens) + toNum(t.totalOutputTokens) : null;
-  setStat('stat-tokens', t ? formatTokens(tok) : '\\u2014', tok, formatTokens);
-  setStat('stat-cost', t ? '$' + toNum(t.totalCostUsd).toFixed(2) : '\\u2014', t ? toNum(t.totalCostUsd) : null, fmtUsd);
+  setStripFigure('tokens', t ? toNum(t.totalInputTokens) + toNum(t.totalOutputTokens) : null, false);
+  setStripFigure('cost', t ? toNum(t.totalCostUsd) : null, false);
+  paintStatsStrip();
 }
 
 function renderCharts(days) {
@@ -13565,39 +13524,22 @@ function updateTokenBreakdown() {
     byEnv[envName].tokens += t;
   }
 
-  // Tooltip: only show when there's actually a breakdown (≥2 envs in
-  // the cache). For the single-instance / empty-env case we leave the
-  // tooltip dark so the topbar stays the same shape it was before #814.
-  // Runs on every board render (renderBoard) and stats load — it writes only
-  // what changed.
-  // <ui-tooltip id="stat-tokens-tooltip"> (B-04): the page hands it the text; the figure is its trigger, a tab stop
-  // only while there is something to describe.
-  var tip = document.getElementById('stat-tokens-tooltip');
-  var fig = document.getElementById('stat-tokens');
-  var wrap = document.getElementById('stat-tokens-wrap');
-  if (!tip || !fig || !wrap) return;
+  // Breakdown: only when there is one (≥2 envs in the cache). For the single-instance / empty-env case
+  // 토큰 stays a plain figure (no tooltip, no tab stop). It becomes <ui-stat-strip>'s breakdown on the
+  // 토큰 figure (B-04): a card tooltip with the title and a label · value list in the figure's format.
+  // Runs on every board render (renderBoard) and stats load — it repaints the strip only on a change.
   var envNames = Object.keys(byEnv).filter(function(n) { return n.length > 0; });
-  if (envNames.length < 2) {
-    if (tip.getAttribute('text')) tip.removeAttribute('text');
-    if (!tip.hasAttribute('disabled')) tip.setAttribute('disabled', '');
-    if (fig.hasAttribute('tabindex')) fig.removeAttribute('tabindex');
-    if (wrap.hasAttribute('data-has-breakdown')) wrap.removeAttribute('data-has-breakdown');
-    return;
+  var next = null;
+  if (envNames.length >= 2) {
+    // Stable order: sort so the same env always renders in the same position.
+    envNames.sort();
+    var rows = envNames.map(function(n) { return { label: n, value: byEnv[n].tokens }; });
+    rows.push({ label: '합계', value: totalTokens });
+    next = { title: '보드 세션 기준', rows: rows };
   }
-  // Stable order: sort so the same env always renders in the same position.
-  envNames.sort();
-  var parts = [];
-  for (var i = 0; i < envNames.length; i++) {
-    var n = envNames[i];
-    parts.push(n + ': ' + formatTokens(byEnv[n].tokens));
-  }
-  parts.push('Total: ' + formatTokens(totalTokens));
-  // Plain text: the element never parses it as HTML.
-  var text = '보드 세션 기준 · ' + parts.join(' · ');
-  if (tip.getAttribute('text') !== text) tip.setAttribute('text', text);
-  if (tip.hasAttribute('disabled')) tip.removeAttribute('disabled');
-  if (fig.getAttribute('tabindex') !== '0') fig.setAttribute('tabindex', '0');
-  if (!wrap.hasAttribute('data-has-breakdown')) wrap.setAttribute('data-has-breakdown', 'true');
+  if (JSON.stringify(next) === JSON.stringify(_tokenBreakdown)) return;
+  _tokenBreakdown = next;
+  paintStatsStrip();
 }
 
 // ── Panel work log (.prd/10 §3.1-7, §3.3) ──
@@ -18017,14 +17959,28 @@ function artHandleKey(e) {
   // The secondary sections' disclosure state, before the first board render.
   applySectionState();
 })();
-// The two <ui-segmented> controls (B-02 period, D-02 Board | List): a reader's choice arrives as
-// ui-change — the element has already moved its chip; the page follows through.
+// <ui-segmented id="view-seg"> (D-02 Board | List): a reader's choice arrives as ui-change — the element has
+// already moved its chip; the page follows through.
 (function initSegmented() {
   var viewSeg = document.getElementById('view-seg');
   if (viewSeg) viewSeg.addEventListener('ui-change', function(e) { setBoardView(e.detail.value, e); });
-  paintPeriodSeg();
-  var periodSeg = document.getElementById('period-seg');
-  if (periodSeg) periodSeg.addEventListener('ui-change', function(e) { setPeriod(e.detail.value); });
+})();
+// <ui-stat-strip id="stats-strip">: 자세히 starts as the reader left it; a period choice loads that period
+// (not cancelled — the strip has already moved its chip); 자세히 is remembered.
+(function initStatsStrip() {
+  var saved = null;
+  try { saved = localStorage.getItem(STATS_DETAIL_KEY); } catch (_e) {}
+  _statsDetailOpen = saved === 'open';
+  paintStatsStrip();
+  var el = document.getElementById('stats-strip');
+  if (!el) return;
+  el.addEventListener('ui-period', function(e) {
+    if (e.detail && e.detail.value) setPeriod(String(e.detail.value));
+  });
+  el.addEventListener('ui-more', function(e) {
+    _statsDetailOpen = !!(e.detail && e.detail.open);
+    try { localStorage.setItem(STATS_DETAIL_KEY, _statsDetailOpen ? 'open' : 'closed'); } catch (_e) {}
+  });
 })();
 // <ui-disclosure> (K-06): Raw, a system turn and a card's system instruction open and close by
 // themselves; the page only keeps a card's choice across its morph re-render (_ioOpen).
