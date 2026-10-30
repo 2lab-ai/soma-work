@@ -352,6 +352,77 @@ describe('SlackHandler — resume after an auto-compact stop (T3)', () => {
     expect(resumed()).toBe(true);
   });
 
+  /**
+   * A Stop the user pressed after the auto-compact stop is the last word: the
+   * automatic continuation must not start the work again. The Stop can land in
+   * the window between the stop and the boundary (here: before the turn's slot
+   * closes), with an empty queue — so a queue freeze alone cannot carry it.
+   */
+  const settleTicks = async () => {
+    for (let i = 0; i < 20; i++) await tick();
+  };
+
+  it('a user Stop after the auto-compact stop cancels the continuation (message path)', async () => {
+    const controller = new AbortController();
+    initialize.mockImplementationOnce(async () => ({
+      session: registrySession,
+      sessionKey: SESSION_KEY,
+      isNewSession: false,
+      userName: 'Owner',
+      workingDirectory: '/tmp/work',
+      abortController: controller,
+      halted: false,
+    }));
+    const gate = deferred<any>();
+    startWithContinuation.mockImplementationOnce(() => gate.promise);
+    const first = handler.handleMessage(message(), say());
+    await tick();
+    // The executor stops the turn (and records when) …
+    registrySession.autoCompactStoppedAtMs = Date.now() - 1;
+    controller.abort('auto-compact');
+    // … and the user presses Stop before the turn's slot closes. Empty queue:
+    // nothing to freeze, so only the recorded stop can carry it.
+    handlerAny.requestCoordinator.abortSession(SESSION_KEY, 'user-stop');
+    gate.resolve({ hasPendingChoice: false });
+    await first;
+    await settleTicks();
+    expect(resumed()).toBe(false);
+  });
+
+  it('Send now: a user Stop during the follow-through cancels the continuation', async () => {
+    registrySession.autoCompactStoppedAtMs = Date.now() - 1;
+    handlerAny.requestCoordinator.abortSession(SESSION_KEY, 'user-stop');
+    await runDrain({
+      sessionKey: SESSION_KEY,
+      runId: 9,
+      turnEpoch: 1,
+      kind: 'send-now',
+      itemId: `${SESSION_KEY}#1`,
+      outcome: { result: 'interrupted', reason: 'auto-compact' },
+      itemDisposition: 'uncertain',
+      canDrain: true,
+    });
+    await settleTicks();
+    expect(resumed()).toBe(false);
+  });
+
+  it('a Stop from BEFORE the auto-compact stop does not cancel it', async () => {
+    handlerAny.requestCoordinator.abortSession(SESSION_KEY, 'user-stop');
+    registrySession.autoCompactStoppedAtMs = Date.now() + 1;
+    await runDrain({
+      sessionKey: SESSION_KEY,
+      runId: 9,
+      turnEpoch: 1,
+      kind: 'send-now',
+      itemId: `${SESSION_KEY}#1`,
+      outcome: { result: 'interrupted', reason: 'auto-compact' },
+      itemDisposition: 'uncertain',
+      canDrain: true,
+    });
+    await until(resumed);
+    expect(resumed()).toBe(true);
+  });
+
   it('a user interrupt still parks the queue (unchanged)', async () => {
     await startTurnStoppedWith('user-interrupted', async () => {
       await handler.handleMessage(message({ ts: '222.555', text: '세번째 지시' }), say());

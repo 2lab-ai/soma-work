@@ -329,6 +329,9 @@ describe('a turn that crosses the trigger is stopped and continued after /compac
     // `slack-handler.auto-compact-resume.test.ts`) — never from inside this turn.
     expect(session.autoCompactPending).toBe(true);
     expect(deps.dispatchPendingUserMessage).not.toHaveBeenCalled();
+    // When it stopped — a user Stop after this moment cancels the automatic
+    // continuation (slack-handler `resumeAfterAutoCompactStop`).
+    expect(typeof session.autoCompactStoppedAtMs).toBe('number');
     // A quiet stop: the SDK session survives for the compaction to resume.
     expect(session.sessionId).toBe('sess_long_turn');
   });

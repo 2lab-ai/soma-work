@@ -440,7 +440,13 @@ export class SlackHandler {
     // all. The closure reads the queue as a runtime field: it is built later in
     // this constructor, and a stop cannot occur before then.
     this.requestCoordinator = new RequestCoordinator({
-      beforeAbort: (sessionKey, reason) => this.freezeFollowupOnStop(sessionKey, reason),
+      beforeAbort: (sessionKey, reason) => {
+        this.freezeFollowupOnStop(sessionKey, reason);
+        // After the freeze (a refused freeze refuses the stop): the stop is
+        // recorded even with an empty queue, where the freeze records nothing,
+        // so a pending auto-compact continuation can see it.
+        this.noteSessionStop(sessionKey);
+      },
     });
     this.toolTracker = new ToolTracker();
     this.reactionManager = new ReactionManager(this.slackApi);
@@ -5082,6 +5088,12 @@ export class SlackHandler {
     if (final && isAutoCompactStop(final.outcome)) this.resumeAfterAutoCompactStop(sessionKey);
   }
 
+  /** Record a stop-class abort on the session (`beforeAbort`). */
+  private noteSessionStop(sessionKey: string): void {
+    const session = this.claudeHandler?.getSessionByKey?.(sessionKey);
+    if (session) session.lastStopAtMs = Date.now();
+  }
+
   /** The host turn that resumes the work an `auto-compact` stop interrupted. */
   static readonly AUTO_COMPACT_CONTINUATION_TEXT =
     '[auto-compact] The context reached the auto-compact threshold mid-turn, so the turn was stopped and the conversation compacted. Continue the interrupted work from where it stopped.';
@@ -5099,6 +5111,14 @@ export class SlackHandler {
     if (!session || session.terminated) return;
     if ((session.goal as { status?: string } | undefined)?.status === 'active') return;
     if (this.followupDispatcher?.isBusy(sessionKey)) return;
+    // The user stopped the session after the auto-compact stop: theirs is the
+    // last word. No automatic continuation — the armed flag still compacts
+    // their next message first.
+    const stoppedAt = session.autoCompactStoppedAtMs;
+    if (session.lastStopAtMs !== undefined && stoppedAt !== undefined && session.lastStopAtMs >= stoppedAt) {
+      this.logger.info('Auto-compact stop: not resuming — the session was stopped after it', { sessionKey });
+      return;
+    }
     const user = session.ownerId;
     if (!session.channelId || !session.threadTs || !user) return;
     const event = {
