@@ -64,7 +64,7 @@ export const MEMORY_TAB_HTML = `<div data-tab="memory" class="page" hidden>
 </div>`;
 
 export const MEMORY_TAB_CSS = String.raw`
-.navbtn { font: inherit; font-size: 13px; text-align: left; color: var(--text-secondary); background: none; border: 0; padding: 6px 10px; border-radius: 6px; cursor: pointer; }
+.navbtn { font: inherit; font-size: 13px; text-align: left; color: var(--text-secondary); background: none; border: 0; padding: 6px 10px; border-radius: 8px; cursor: pointer; }
 .navbtn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 /* 개인 메모리 — <ui-memory-panel> (@2lab.ai/ui) draws its own card: the section keeps only its heading. */
 #m-l1 { background: none; border: 0; }
@@ -75,11 +75,13 @@ textarea:focus-visible { outline: 2px solid var(--border-focus); outline-offset:
 .pages-grid { display: grid; grid-template-columns: 240px minmax(0, 1fr); gap: 16px; padding: 16px; }
 .pages-list { display: flex; flex-direction: column; gap: 8px; }
 .pages-list input { font: inherit; font-size: 13px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
-.pages-list h4 { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); margin-top: 6px; }
-.pages-list .pg { display: block; width: 100%; text-align: left; font: inherit; font-size: 13px; color: var(--text); background: none; border: 0; border-radius: 6px; padding: 6px 8px; cursor: pointer; }
-.pages-list .pg[aria-current="true"] { background: var(--surface-raised); font-weight: 700; }
+.pages-list h4 { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-tertiary); margin-top: 6px; }
+/* Tone pass P9: the page list reads like the side nav — the --ib-pill chip on hover and for the open page. */
+.pages-list .pg { display: block; width: 100%; text-align: left; font: inherit; font-size: 13px; color: var(--text); background: none; border: 0; border-radius: 8px; padding: 6px 8px; cursor: pointer; transition: background-color 150ms ease, transform var(--dur-press) var(--ease-out); }
+.pages-list .pg[aria-current="true"] { background: var(--ib-pill); font-weight: 600; }
+@media (hover: hover) and (pointer: fine) { .pages-list .pg:hover { background: var(--ib-pill); } }
 .pages-detail .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
-.pages-detail .field label { font-size: 12px; font-weight: 700; }
+.pages-detail .field label { font-size: 12px; font-weight: 600; }
 .pages-detail .field input[type="text"] { font: inherit; font-size: 13px; color: var(--text); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
 .pages-detail .hist { display: flex; gap: 6px; margin-bottom: 4px; }
 .pages-detail .hist input { flex: 1; }

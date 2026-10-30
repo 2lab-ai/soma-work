@@ -36,6 +36,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { MEMORY_CLIENT_JS, MEMORY_TAB_CSS, MEMORY_TAB_HTML } from '../settings-memory-tab';
 import { SETTINGS_CLIENT_JS, SETTINGS_PAGE_CSS } from '../settings-page';
+import { pageTokenAliases, uiLibTokensCss } from '../ui-lib';
 
 const ALL_JS = `${MEMORY_CLIENT_JS}\n${SETTINGS_CLIENT_JS}`;
 
@@ -128,8 +129,11 @@ describe('D14 – D16 — CSS contract', () => {
     expect(MEMORY_TAB_CSS).not.toMatch(/\.mm\b|\.mm-|\.meter-line|\.counter|--mm-/);
     expect(MEMORY_TAB_CSS).toContain('#m-l1 { background: none; border: 0; }');
     expect(MEMORY_TAB_CSS).toContain('#m-l1 > header { padding: 0 2px 10px; border-bottom: 0; }');
-    // the light-theme amber the inline .mm used (#9a6700) is the settings page's light --yellow now
-    expect(SETTINGS_PAGE_CSS).toMatch(/\[data-theme="light"\] \{[^}]*--yellow: #9a6700;/);
+    // the light-theme amber the inline .mm used is the page's light --yellow — since tone pass P9 the
+    // library's own (@2lab.ai/ui tokens.css, aliased), no longer a settings-page hex (#9a6700)
+    expect(uiLibTokensCss()).toMatch(/:root, \[data-theme="light"\] \{[^}]*--ui-yellow: #[0-9a-f]{6};/);
+    expect(pageTokenAliases()).toContain('--yellow: var(--ui-yellow);');
+    expect(SETTINGS_PAGE_CSS).not.toMatch(/--yellow: #/);
     expect(SETTINGS_PAGE_CSS).toMatch(/\.ui-tok \{[^}]*--ui-yellow: var\(--yellow\);/);
     // pages and episodic still use the global textarea look
     expect(MEMORY_TAB_CSS).toContain('textarea { width: 100%; font: inherit; font-size: 13px;');
