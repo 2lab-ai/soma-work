@@ -26,7 +26,9 @@ describe('Dashboard multi-instance frontend (#814)', () => {
       "var ENV_BADGE_PALETTE = ['var(--st-run)', 'var(--green)', 'var(--purple)', 'var(--orange)'];",
     );
     expect(DASHBOARD_TS).toContain(`style="--env-tone:' + envColor + '"`);
-    expect(DASHBOARD_TS).toContain('background: color-mix(in srgb, var(--env-tone, var(--ib-muted)) 14%, var(--ib-card));');
+    expect(DASHBOARD_TS).toContain(
+      'background: color-mix(in srgb, var(--env-tone, var(--ib-muted)) 14%, var(--ib-card));',
+    );
     expect(DASHBOARD_TS).toContain('color: color-mix(in srgb, var(--env-tone, var(--ib-muted)) 70%, var(--ib-text));');
     expect(DASHBOARD_TS).not.toContain('#F4D03F');
   });
