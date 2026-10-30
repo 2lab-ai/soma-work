@@ -511,13 +511,17 @@ describe('layout transition — review fixes (trinity code review R1)', () => {
     const seg: { data?: { value: string; label: string; options: { value: string }[] } } = {};
     const saved: string[] = [];
     let adopted = 0;
-    const { setBoardView } = loadWith<{ setBoardView(view: string, ev?: unknown): void }>(['setBoardView'], ['VIEW_OPTIONS'], {
-      document: { getElementById: (id: string) => (id === 'kanban' ? kb : id === 'view-seg' ? seg : null) },
-      localStorage: { setItem: (_k: string, v: string) => saved.push(v) },
-      adoptLayout: () => {
-        adopted++;
+    const { setBoardView } = loadWith<{ setBoardView(view: string, ev?: unknown): void }>(
+      ['setBoardView'],
+      ['VIEW_OPTIONS'],
+      {
+        document: { getElementById: (id: string) => (id === 'kanban' ? kb : id === 'view-seg' ? seg : null) },
+        localStorage: { setItem: (_k: string, v: string) => saved.push(v) },
+        adoptLayout: () => {
+          adopted++;
+        },
       },
-    });
+    );
     // The reader's switch (an event): saved, the element's view attribute (it FLIPs), adopted.
     setBoardView('list', {});
     expect(attrs.view).toBe('list');
@@ -655,10 +659,14 @@ describe('views merged from #374 follow the same device contract', () => {
     // must pad for the landscape iPhone notch side and the home indicator.
     // D1 (C-05): the drawer is @2lab.ai/ui <ui-drawer mode="sheet"> — a fixed native dialog (inset 0, so the
     // visible viewport; its panel min(width, 100%) — never 100vw) with the bottom inset of its own.
-    expect(TEMPLATE).toContain('<ui-drawer class="cron-drawer" id="cron-drawer" mode="sheet" width="560" max-width="560" lang="ko">');
+    expect(TEMPLATE).toContain(
+      '<ui-drawer class="cron-drawer" id="cron-drawer" mode="sheet" width="560" max-width="560" lang="ko">',
+    );
     // The page adds the notch side and the top inset through the element's parts.
     expect(RESP_TAIL).toContain('.cron-drawer::part(panel) { padding-right: env(safe-area-inset-right, 0px); }');
-    expect(RESP_TAIL).toContain('.cron-drawer::part(header) { padding-top: max(14px, env(safe-area-inset-top, 0px)); }');
+    expect(RESP_TAIL).toContain(
+      '.cron-drawer::part(header) { padding-top: max(14px, env(safe-area-inset-top, 0px)); }',
+    );
   });
 });
 

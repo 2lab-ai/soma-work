@@ -874,7 +874,9 @@ describe('wiring — the lane’s job boxes, the paint, the fold, the drawer', (
     expect(clientFn('renderCronRunRow')).toContain('data-cron-open');
     expect(clientFn('paintCronDrawer')).toContain('cronGroupRuns(g)');
     // Escape, the scrim and ✕ are the element's ui-close, answered by the page's own close (focus return).
-    expect(TEMPLATE).toContain("if (d) d.addEventListener('ui-close', function(e) { e.preventDefault(); closeCronDrawer(); });");
+    expect(TEMPLATE).toContain(
+      "if (d) d.addEventListener('ui-close', function(e) { e.preventDefault(); closeCronDrawer(); });",
+    );
     const tick = clientFn('aqTick');
     expect(tick).toContain("getElementById('cron-drawer')");
     expect(tick).not.toContain("getElementById('capacity')");
