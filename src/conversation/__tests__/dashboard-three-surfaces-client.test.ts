@@ -184,7 +184,7 @@ const TREE_FNS = [
   'cardTaskRow',
   'atCardData',
 ];
-const TREE_VARS = ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'AT_ROOT', 'AT_STATUS', 'AT_ROOT_STATUS', '_anOpen'];
+const TREE_VARS = ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH', 'AT_ROOT', 'AT_STATUS', 'AT_ROOT_STATUS', '_anOpen'];
 type TreeNode = Record<string, unknown> & { id: string; status: string };
 type TreeData = { nodes: TreeNode[]; density: string; title: string; expanded: string[] };
 
@@ -542,7 +542,7 @@ describe('panel header — the session chip and its one action', () => {
         'sessionActionHtml',
         'panelHeadHtml',
       ],
-      ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'SESSION_ACTION_ARIA', 'SESSION_ACTION_TONE', '_busy'],
+      ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH', 'SESSION_ACTION_ARIA', 'SESSION_ACTION_TONE', '_busy'],
       {
         currentUserId: 'U1',
         SELF_INSTANCE_NAME: '',
@@ -1629,7 +1629,7 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
       ],
       [
         'AGENT_STATUS_LABEL',
-        'AGENT_STATUS_TONE',
+        'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH',
         'TASK_FATE_LABEL',
         'TASK_PAUSE_SVG',
         'TASK_STOP_SVG',
@@ -1793,7 +1793,7 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH', 'OWNER_BADGE_HUES'];
 const FACE_ENV = {
   dhShow: () => true,
   dhTruncate: () => null,

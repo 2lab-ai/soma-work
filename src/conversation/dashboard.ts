@@ -6121,7 +6121,7 @@ ${pageTokenAliases()}
       <div class="inbox-head">
         <nav class="crumbs" aria-label="위치"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
         <div class="inbox-tools">
-          <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="3" rx="0.8"/><path d="M3 6v6.2c0 .5.4.8.8.8h8.4c.4 0 .8-.3.8-.8V6M6.5 8.6h3"/></svg><span id="archives-label">보관함</span></button>
+          <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><i data-ui-icon="archive"></i><span id="archives-label">보관함</span></button>
           <button type="button" class="archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><i data-ui-icon="moon"></i><span id="sleeping-label">휴면</span></button>
           <button type="button" class="archives-btn" id="lifecycle-btn" style="display:none" title="세션 수명 주기 (관리자)" onclick="openLifecycleDialog()"><i data-ui-icon="clock"></i><span>수명 주기</span></button>
           <ui-segmented class="view-seg" id="view-seg"></ui-segmented>
@@ -7228,8 +7228,8 @@ function taskFateOf(t) {
   // It ran (and went back to waiting): paused — its run and numbers stay (review R1).
   return toNum(t.startedAt) > 0 || toNum(t.firstStartedAt) > 0 ? 'paused' : 'pending';
 }
-var TASK_PAUSE_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5 4h2v8H5zM9 4h2v8H9z"/></svg>';
-var TASK_STOP_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M4.5 11.5l7-7"/></svg>';
+var TASK_PAUSE_SVG = '<i data-ui-icon="pause"></i>';
+var TASK_STOP_SVG = '<i data-ui-icon="ban"></i>';
 var TASK_SKIP_SVG = '<i data-ui-icon="minus"></i>';
 // The focused node's earlier task lists: the main agent's (s.earlierTasks) or
 // the focused subagent's own.
@@ -8979,8 +8979,11 @@ function renderTimeline(s) {
 // A card is the main agent; s.agents are the subagents it (or another
 // subagent) started, in spawn order. Each has its own tasks and its own work
 // log (entries with its agentId). Status always shows as an icon AND a word.
-// The kit status (.ui-status) tone per agent status; the rest read as the muted dot.
-var AGENT_STATUS_TONE = { running: 'run', waiting: 'wait', resuming: 'wait', completed: 'done', failed: 'fail' };
+// The kit status (.ui-status) tone per agent status: stopped / unknown / sleeping / archived take the muted
+// hollow dot (idle tone); idle — alive, between turns — keeps the plain muted dot. Sleeping and archived
+// show their glyph in place of the dot (a leading svg in .ui-status), so the chip keeps the board's cue.
+var AGENT_STATUS_TONE = { running: 'run', waiting: 'wait', resuming: 'wait', completed: 'done', failed: 'fail', stopped: 'idle', unknown: 'idle', sleeping: 'idle', archived: 'idle' };
+var AGENT_STATUS_GLYPH = { sleeping: '<i data-ui-icon="moon"></i>', archived: '<i data-ui-icon="archive"></i>' };
 var AGENT_STATUS_LABEL = { running: '실행 중', completed: '완료', failed: '실패', stopped: '중단', unknown: '확인 불가', waiting: '입력 대기', idle: '대기', resuming: '재개 대기', sleeping: '휴면', archived: '보관' };
 var _anOpen = Object.create(null); // tree namespace|node id → a fold the user chose (absent = the default)
 var _panelAgent = ''; // the node the open panel shows ('' = the root, the main agent)
@@ -9010,10 +9013,10 @@ function agentIconHtml(st) {
   if (st === 'stopped') return '<i data-ui-icon="stop"></i>';
   if (st === 'waiting') return '<i data-ui-icon="clock"></i>';
   if (st === 'resuming') return '<i data-ui-icon="refresh"></i>';
-  if (st === 'idle') return '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="8" cy="8" r="3"/></svg>';
+  if (st === 'idle') return '<i data-ui-icon="dot"></i>';
   if (st === 'sleeping') return '<i data-ui-icon="moon"></i>';
-  if (st === 'archived') return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="3.5" width="11" height="3" rx="0.8"/><path d="M3.5 6.5v6h9v-6M6.5 9h3"/></svg>';
-  return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="8" cy="8" r="4.5" stroke-dasharray="2.2 2"/></svg>';
+  if (st === 'archived') return '<i data-ui-icon="archive"></i>';
+  return '<i data-ui-icon="circle-dashed"></i>';
 }
 // A node's time: the root's active time (live while it runs, by the 1 Hz
 // tick), a running subagent's elapsed, else its run time.
@@ -9485,7 +9488,7 @@ function renderAgentFocus(node, s) {
   // The root's status and active time are the session's — the head chip shows
   // them (spec 13); its accessible name still says them. A subagent keeps its own.
   if (!node.root) {
-    bits.push('<span class="ui-status pa-st"' + (AGENT_STATUS_TONE[st] ? ' data-tone="' + AGENT_STATUS_TONE[st] + '"' : '') + (st === 'running' ? ' data-live' : '') + '>' + esc(AGENT_STATUS_LABEL[st] || '') + '</span>');
+    bits.push('<span class="ui-status pa-st"' + (AGENT_STATUS_TONE[st] ? ' data-tone="' + AGENT_STATUS_TONE[st] + '"' : '') + (st === 'running' ? ' data-live' : '') + '>' + (AGENT_STATUS_GLYPH[st] || '') + esc(AGENT_STATUS_LABEL[st] || '') + '</span>');
     var time = agentTimeHtml(node);
     if (time) bits.push(time);
   }
@@ -10558,7 +10561,7 @@ function panelHeadHtml(s, col) {
     : '';
   return '<div class="ps-row">'
     + '<span class="ui-status is-pill ps-chip"' + (AGENT_STATUS_TONE[st] ? ' data-tone="' + AGENT_STATUS_TONE[st] + '"' : '') + (st === 'running' ? ' data-live' : '') + '>'
-    + '<span class="ps-label">세션</span><span class="ps-word" role="status">' + esc(AGENT_STATUS_LABEL[st] || '') + '</span></span>'
+    + (AGENT_STATUS_GLYPH[st] || '') + '<span class="ps-label">세션</span><span class="ps-word" role="status">' + esc(AGENT_STATUS_LABEL[st] || '') + '</span></span>'
     + timer
     + '<span class="ps-actions">' + slack + sessionActionHtml(s, col, 'panel') + '</span>'
     + '</div>'
@@ -17163,8 +17166,7 @@ function umTile(cid, a, pos, total, more, compact) {
   if (!a.stored) meta.push(a.unavailable === 'too_large' ? '50 MB 초과 · Slack에만 있음' : 'Slack에만 있음');
   var play = (a.kind === 'audio' && a.stored)
     ? '<button type="button" class="art-play um-play" data-art-play="1"' + attrs + ' aria-pressed="false" aria-label="' + escAttr(a.name + ' 재생/일시정지') + '" title="재생">'
-      + '<svg class="ic-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5v9l7.5-4.5z" fill="currentColor"/></svg>'
-      + '<svg class="ic-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 3.5h2.5v9H4.5zM9 3.5h2.5v9H9z" fill="currentColor"/></svg></button>'
+      + '<i data-ui-icon="play" class="ic-play"></i><i data-ui-icon="pause" class="ic-pause"></i></button>'
     : '';
   return '<div class="um-file art-k-' + escAttr(a.kind || 'file') + (a.stored ? '' : ' is-remote') + (compact ? ' um-file-compact' : '') + '">'
     + '<button type="button" class="um-open"' + attrs + ' aria-label="' + escAttr(label) + '" title="' + escAttr(a.name) + '">'
@@ -17320,8 +17322,7 @@ function artTile(cid, a, variant) {
   var on = a.kind === 'audio' && a.stored && artAudioPlaying(cid, a.id);
   var play = (a.kind === 'audio' && a.stored)
     ? '<button type="button" class="art-play' + (on ? ' is-playing' : '') + '" data-art-play="1"' + attrs + ' aria-pressed="' + (on ? 'true' : 'false') + '" aria-label="' + escAttr(a.name + ' 재생/일시정지') + '" title="재생">'
-      + '<svg class="ic-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5v9l7.5-4.5z" fill="currentColor"/></svg>'
-      + '<svg class="ic-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 3.5h2.5v9H4.5zM9 3.5h2.5v9H9z" fill="currentColor"/></svg></button>'
+      + '<i data-ui-icon="play" class="ic-play"></i><i data-ui-icon="pause" class="ic-pause"></i></button>'
     : '';
   return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, variant || 'tile') + play + '</div>';
 }
