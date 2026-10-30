@@ -103,7 +103,7 @@ if (stray.length) fail(`outcomes for keys with no row: ${stray.join(', ')} (add 
 // Preconditions: the caller's run-level list, overridden per key and id by each qa-issue JSON's own list.
 const preMap = new Map();
 const addPre = (key, p) => {
-  if (!p || typeof p !== 'object' || !key) return;
+  if (!p || typeof p !== 'object' || !key || p.id == null || p.id === '') fail('a precondition needs a key and an id');
   preMap.set(`${key}\u0000${p.id}`, { ...p, key });
 };
 for (const p of Array.isArray(input.preconditions) ? input.preconditions : []) addPre(p && p.key, p);

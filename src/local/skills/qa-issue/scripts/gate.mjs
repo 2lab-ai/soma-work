@@ -107,6 +107,7 @@ function validate(g) {
   const ids = new Set((cases || []).map((c) => c.id));
   for (const c of cases || []) {
     if (!c.id || !norm(c.assertion) || !c.severity) errs.push(`case ${c.id || '?'}: id, assertion and severity are required`);
+    if (!Array.isArray(c.preconditions)) errs.push(`case ${c.id || '?'}: preconditions must be listed ([] when it needs nothing)`);
   }
   const cov = g.plan?.coverage || {};
   for (const d of DIMS) {
@@ -124,9 +125,26 @@ function validate(g) {
     if (!STATUSES.includes(p.status)) errs.push(`precondition ${p.id}: status must be ${STATUSES.join('|')}`);
     if (!Array.isArray(p.cases) || !p.cases.length || !p.cases.every((id) => ids.has(id))) errs.push(`precondition ${p.id}: cases must name planned cases`);
   }
-  for (const c of cases || []) for (const pid of c.preconditions || []) if (!pids.has(pid)) errs.push(`case ${c.id}: unknown precondition ${pid}`);
+  const byId = new Map((g.preconditions || []).map((p) => [p.id, p]));
+  for (const c of cases || []) {
+    for (const pid of c.preconditions || []) {
+      if (!pids.has(pid)) errs.push(`case ${c.id}: unknown precondition ${pid}`);
+      else if (!(byId.get(pid).cases || []).includes(c.id)) errs.push(`case ${c.id} lists ${pid} but ${pid}.cases does not list ${c.id}`);
+    }
+  }
+  for (const p of g.preconditions || []) {
+    for (const id of p.cases || []) {
+      const c = (cases || []).find((x) => x.id === id);
+      if (c && !(c.preconditions || []).includes(p.id)) errs.push(`${p.id}.cases lists ${id} but case ${id} does not list ${p.id}`);
+    }
+  }
   return errs;
 }
+
+const runFingerprint = (keys) =>
+  createHash('sha256')
+    .update(canonical(Object.keys(keys).sort().map((k) => [k, keys[k].fingerprint])))
+    .digest('hex');
 
 const missingIds = (g) => (g.preconditions || []).filter((p) => p.status === 'missing').map((p) => p.id);
 
@@ -175,7 +193,7 @@ function merge(argv) {
     status: missing === 0 ? 'clear' : open.length ? 'pending' : 'answered',
     createdAt: new Date().toISOString(),
     keys,
-    fingerprint: createHash('sha256').update(canonical(Object.keys(keys).sort().map((k) => [k, keys[k].fingerprint]))).digest('hex'),
+    fingerprint: runFingerprint(keys),
   };
   writeFileSync(out, `${JSON.stringify(run, null, 2)}\n`);
   say({ gateId: run.gateId, fingerprint: run.fingerprint, keys: all.length, missing, open: open.length, ask: open.length > 0 });
@@ -200,7 +218,7 @@ function answer(argv) {
       n++;
     }
   }
-  if (wanted && n === 0) die(1, 'no missing precondition matched --ids');
+  if (n === 0) die(1, wanted ? 'no missing precondition matched --ids' : 'no missing precondition to answer for that key');
   const open = Object.values(run.keys).flatMap((g) => g.preconditions.filter((p) => p.status === 'missing' && !DECISIONS.includes(p.decision)));
   run.status = open.length ? 'pending' : 'answered';
   writeFileSync(gate, `${JSON.stringify(run, null, 2)}\n`);
@@ -218,12 +236,20 @@ function decide(argv) {
   };
   const g = run.keys?.[key];
   if (!g) ask('not in gate — newly discovered scope is never pre-consented');
+  // The plan that runs is the plan that was disclosed: a gate edited after sealing is never run.
+  if (g.fingerprint !== fingerprintOf(g) || run.fingerprint !== runFingerprint(run.keys)) ask(`gate edited after sealing: ${key}`);
+  // The current state must be complete; a missing field never skips a check.
+  if (!cur.env || typeof cur.env !== 'object' || !cur.inputs || typeof cur.inputs !== 'object' || !cur.statuses || typeof cur.statuses !== 'object') {
+    die(1, '--current needs env, inputs and statuses');
+  }
+  const unprobed = g.preconditions.filter((p) => !STATUSES.includes(cur.statuses[p.id])).map((p) => p.id);
+  if (unprobed.length) die(1, `--current statuses missing or invalid for: ${unprobed.join(',')}`);
   // Inputs changed since the answer → the disclosed plan no longer describes this run.
   const was = inputsView(g.env, g.inputs);
-  const now = inputsView(cur.env || g.env, cur.inputs || g.inputs);
+  const now = inputsView(cur.env, cur.inputs);
   const changed = Object.keys(was).filter((k) => canonical(was[k]) !== canonical(now[k]));
   if (changed.length) ask(`inputs changed: ${changed.join(',')}`);
-  const statusOf = (p) => (STATUSES.includes(cur.statuses?.[p.id]) ? cur.statuses[p.id] : p.status);
+  const statusOf = (p) => cur.statuses[p.id];
   const unanswered = [];
   const stillMissing = [];
   const blocked = new Map();

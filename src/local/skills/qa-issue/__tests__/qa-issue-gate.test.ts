@@ -174,6 +174,18 @@ describe('gate.mjs seal — the coverage matrix is complete before anything runs
     }
   });
 
+  it('refuses a case that does not list its preconditions (an empty list must be explicit)', () => {
+    const base = planned('PROJ-6');
+    const { preconditions: _omit, ...unlisted } = base.plan.cases[2];
+    const p = write('unlisted.json', {
+      ...base,
+      plan: { ...base.plan, cases: [base.plan.cases[0], base.plan.cases[1], unlisted] },
+    });
+    const r = gate(['seal', p]);
+    expect(r.status).toBe(4);
+    expect(r.stderr).toContain('case QA-3: preconditions must be listed');
+  });
+
   it('refuses a precondition of an unknown kind or one pointing at a case that is not planned', () => {
     const base = planned('PROJ-5');
     const badKind = write('kind.json', { ...base, preconditions: [{ ...base.preconditions[0], kind: 'vibes' }] });
@@ -535,5 +547,85 @@ describe('gate.mjs answer + decide — run only on a recorded answer that still 
     const run = runGate('d-who', planned('PROJ-40'));
     expect(gate(['answer', '--gate', run, '--key', 'PROJ-40', '--decision', 'waived']).status).toBe(1);
     expect(existsSync(run)).toBe(true);
+  });
+
+  // Review findings on PR #589 (trinity code-review gate).
+  it('a gate edited after sealing is never run under the old answer', () => {
+    const g = planned('PROJ-42');
+    const run = runGate('d-edit', g);
+    gate(['answer', '--gate', run, '--key', 'PROJ-42', '--decision', 'waived', '--by', 'U_REQ', '--ref', '2.1']);
+    const saved = JSON.parse(readFileSync(run, 'utf8'));
+    saved.keys['PROJ-42'].plan.cases[0].assertion = 'anything goes';
+    saved.keys['PROJ-42'].plan.cases.push({
+      id: 'QA-9',
+      type: 'edge',
+      severity: 'P1',
+      desc: 'added later',
+      assertion: 'x',
+      preconditions: [],
+    });
+    writeFileSync(run, JSON.stringify(saved));
+    const r = gate([
+      'decide',
+      '--gate',
+      run,
+      '--key',
+      'PROJ-42',
+      '--current',
+      current('d-edit', g, { P1: 'missing', P2: 'missing' }),
+    ]);
+    expect(r.status).toBe(3);
+    expect(r.out).toMatchObject({ action: 'ask', runCases: [] });
+    expect(String(r.out.reason)).toContain('gate edited after sealing');
+  });
+
+  it('a current file without env or inputs, or without a status for every precondition, is refused (never fail-open)', () => {
+    const g = planned('PROJ-43');
+    const run = runGate('d-partial', g);
+    gate(['answer', '--gate', run, '--key', 'PROJ-43', '--decision', 'waived', '--by', 'U_REQ', '--ref', '2.2']);
+    const onlyStatuses = write('d-partial-cur1.json', { statuses: { P1: 'missing', P2: 'missing' } });
+    const r1 = gate(['decide', '--gate', run, '--key', 'PROJ-43', '--current', onlyStatuses]);
+    expect(r1.status).toBe(1);
+    expect(r1.stderr).toContain('--current needs env, inputs and statuses');
+    const r2 = gate([
+      'decide',
+      '--gate',
+      run,
+      '--key',
+      'PROJ-43',
+      '--current',
+      current('d-partial', g, { P1: 'missing' }),
+    ]);
+    expect(r2.status).toBe(1);
+    expect(r2.stderr).toContain('statuses missing or invalid for: P2');
+  });
+
+  it('refuses a one-sided precondition mapping (a case that lists P1 must be in P1.cases, and back)', () => {
+    const g = planned('PROJ-44');
+    g.plan.cases[2].preconditions = ['P1'];
+    const p = write('asym.json', g);
+    const r = gate(['seal', p]);
+    expect(r.status).toBe(4);
+    expect(r.stderr).toContain('case QA-3 lists P1 but P1.cases does not list QA-3');
+  });
+
+  it('answer with nothing to answer for that key fails instead of reporting success', () => {
+    const g = planned('PROJ-45');
+    g.preconditions = g.preconditions.map((x) => ({ ...x, status: 'met' }));
+    const run = runGate('d-nothing', g);
+    const r = gate([
+      'answer',
+      '--gate',
+      run,
+      '--key',
+      'PROJ-45',
+      '--decision',
+      'waived',
+      '--by',
+      'U_REQ',
+      '--ref',
+      '2.3',
+    ]);
+    expect(r.status).toBe(1);
   });
 });

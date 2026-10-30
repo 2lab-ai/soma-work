@@ -374,6 +374,13 @@ describe('qa-report build.mjs — preconditions first', { timeout: 30_000 }, () 
     expect(runReport(readFileSync(out, 'utf8')).left).toContain('provided by U_REQ');
   });
 
+  it('refuses a precondition without a key or an id (missing stays visibly missing)', () => {
+    const noKey = { ...pre('PROJ-6', 'waived'), key: undefined };
+    const { run } = build({ issues: [passIssue('PROJ-6', true)], preconditions: [noKey] });
+    expect(run.status).toBe(1);
+    expect(run.stderr).toContain('a precondition needs a key and an id');
+  });
+
   it('refuses a precondition for a key that has no row', () => {
     const { run } = build({ issues: [passIssue('PROJ-5', true)], preconditions: [pre('PROJ-9', 'waived')] });
     expect(run.status).toBe(1);
