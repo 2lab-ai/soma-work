@@ -4025,6 +4025,25 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .stats-more[aria-expanded="true"] { color: var(--text); }
 .stats-more[aria-expanded="true"] svg { transform: rotate(180deg); }
 .stats-detail { margin-top: 12px; }
+
+/* ── EXPAND / COLLAPSE (P6) — the library disclosure recipe for 자세히 (.stats), 세션 정보 (.panel-info), a
+   work-log task group (.wl-group) and the completed goals (.cg-hx): the region is the last row of its host's
+   grid and that row goes 0fr ↔ 1fr on --dur-expand (ease-out) with an opacity fade. Closed, the region is
+   [hidden] + inert but still painted at 0 rows, so it leaves the way it came (세션 정보, drawn only while
+   open, folds first: .xp-shut). It clips only while the row moves (.xp-moving, xpMove), so focus rings
+   inside are whole once it has settled. The panel's ResizeObserver re-measures the sections on every frame
+   of it (sizePanelSections). ── */
+.stats, .wl-group, .cg-hx, .panel-info { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; align-content: start; transition: grid-template-rows var(--dur-expand) var(--ease-out); }
+.cg-hx { grid-template-rows: 1fr; }
+.panel-info:has(> .pi-links) { grid-template-rows: auto auto 1fr; }
+.stats:has(> .stats-detail[hidden]), .wl-group:has(> .wl-group-body[hidden]), .panel-info.xp-shut { grid-template-rows: auto 0fr; }
+.panel-info.xp-shut:has(> .pi-links) { grid-template-rows: auto auto 0fr; }
+.cg-hx:has(> .cg-hx-in[hidden]), .cg-hx.xp-shut { grid-template-rows: 0fr; }
+.stats-detail, .wl-group-body, .cg-hx-in, .panel-info > .pi-body { min-height: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s; }
+.stats-detail[hidden], .cg-hx-in[hidden] { display: block; }
+.wl-group-body[hidden] { display: flex; }
+.stats-detail[hidden], .wl-group-body[hidden], .cg-hx-in[hidden], .cg-hx.xp-shut > .cg-hx-in, .panel-info.xp-shut > .pi-body { opacity: 0; visibility: hidden; overflow: hidden; margin-top: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s linear var(--dur-expand); }
+.xp-moving > .stats-detail, .xp-moving > .wl-group-body, .xp-moving > .cg-hx-in, .xp-moving > .pi-body { overflow: hidden; }
 .usage-cb-wrap { max-width: 440px; margin-bottom: 12px; }
 
 /* ── STATS GRID — the cards behind 자세히: 5 columns, 2 below 1100px ── */
@@ -5176,7 +5195,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .wl-empty { color: var(--text-tertiary); font-size: 12px; padding: 6px 0; }
 .wl-entry { color: var(--text); min-width: 0; }
 /* SSOT 2026-10-22 T10 — entries folded under the task they were made in. */
-.wl-group { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.wl-group { min-width: 0; }
 .wl-group-head { display: flex; align-items: center; gap: 6px; min-width: 0; padding: 4px 6px; border-radius: 6px; background: var(--surface-raised); cursor: pointer; font-weight: 600; }
 .wl-group-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .wl-group-head .wl-g-chev { flex-shrink: 0; display: inline-block; color: var(--text-tertiary); transition: transform var(--dur-press) var(--ease-out); }
@@ -5185,8 +5204,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .wl-group-head .wl-g-title { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .wl-group-head .wl-g-count { flex-shrink: 0; background: var(--surface); border-radius: 6px; padding: 0 6px; font-size: 11px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .wl-group-head .wl-g-meta { flex-shrink: 0; font-size: 11px; font-weight: 500; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.wl-group-body { display: flex; flex-direction: column; gap: 4px; padding-left: 12px; border-left: 2px solid var(--border); margin-left: 6px; }
-.wl-group-body[hidden] { display: none; }
+.wl-group-body { display: flex; flex-direction: column; gap: 4px; padding-left: 12px; border-left: 2px solid var(--border); margin-left: 6px; margin-top: 4px; }
 .wl-head { display: flex; align-items: baseline; gap: 6px; font-size: 11px; color: var(--text-tertiary); }
 .wl-label { font-weight: 600; }
 .wl-head .wl-time { margin-left: auto; }
@@ -6381,7 +6399,7 @@ ${pageTokenAliases()}
         </div>
         <button type="button" class="stats-more" id="stats-more" aria-expanded="false" aria-controls="stats-detail" onclick="toggleStatsDetail()"><span>&#xC790;&#xC138;&#xD788;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
       </div>
-      <div class="stats-detail" id="stats-detail" hidden>
+      <div class="stats-detail" id="stats-detail" hidden inert>
         <div class="ui-tok usage-cb-wrap"><ui-compact-breakdown id="usage-cb" lang="ko"></ui-compact-breakdown></div>
         <div class="stats-grid" id="stats-grid">
           <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value is-loading" id="stat-turns"></div></div>
@@ -8182,6 +8200,45 @@ function setPeriod(period) {
   loadStats();
 }
 
+// ── Expand / collapse (P6, the library disclosure recipe — CSS "EXPAND / COLLAPSE") ──
+// xpMove: the host's region clips while its row moves, then not (focus rings stay whole).
+// xpEnter / xpLeave: a region drawn only while open (세션 정보) enters from 0 rows, and folds to 0
+// rows before it is dropped (done). Reduced motion: the sheet's global rule makes both instant.
+var XP_MS = 240;
+function xpMove(host) {
+  if (!host || !host.classList) return;
+  host.classList.add('xp-moving');
+  clearTimeout(host._xpMoveT);
+  host._xpMoveT = setTimeout(function() { host.classList.remove('xp-moving'); }, XP_MS + 40);
+}
+function xpEnter(host) {
+  if (!host || !host.classList) return;
+  host.classList.add('xp-shut');
+  void host.offsetHeight;
+  host.classList.remove('xp-shut');
+  xpMove(host);
+}
+function xpLeave(host, done) {
+  if (!host || !host.classList || reduceMotion()) { done(); return; }
+  host.classList.add('xp-shut');
+  xpMove(host);
+  clearTimeout(host._xpLeaveT);
+  host._xpLeaveT = setTimeout(function() {
+    host._xpLeaveT = 0;
+    done();
+    host.classList.remove('xp-shut');
+  }, XP_MS);
+}
+// A fold in progress is undone (the reader opened it again): true when there was one.
+function xpStay(host) {
+  if (!host || !host._xpLeaveT) return false;
+  clearTimeout(host._xpLeaveT);
+  host._xpLeaveT = 0;
+  host.classList.remove('xp-shut');
+  xpMove(host);
+  return true;
+}
+
 // ── Stats strip 자세히 (.prd/10 §3.1-2) — the other cards + charts, collapsed
 // unless the user opened them (localStorage['soma-stats-detail'] = 'open'). ──
 var STATS_DETAIL_KEY = 'soma-stats-detail';
@@ -8191,9 +8248,11 @@ function setStatsDetail(open) {
   if (!btn || !detail) return;
   btn.setAttribute('aria-expanded', open ? 'true' : 'false');
   detail.hidden = !open;
+  detail.inert = !open;
 }
 function toggleStatsDetail() {
   var open = document.getElementById('stats-more').getAttribute('aria-expanded') !== 'true';
+  xpMove(document.getElementById('stats'));
   setStatsDetail(open);
   try { localStorage.setItem(STATS_DETAIL_KEY, open ? 'open' : 'closed'); } catch (_e) {}
 }
@@ -10789,8 +10848,26 @@ function renderPanelInfo() {
   if (s) cwPaint(el.querySelector('ui-context-window'), s, now);
 }
 function togglePanelInfo() {
+  var el = document.getElementById('panel-info');
+  // Opened again while it folds: it stays.
+  if (xpStay(el)) {
+    var h = el.querySelector('.pi-head');
+    if (h) h.setAttribute('aria-expanded', 'true');
+    return;
+  }
+  // Closing: the body folds to 0 rows first, then the part is written without it.
+  if (_panelInfoOpen && el && el.querySelector('.pi-body')) {
+    var head = el.querySelector('.pi-head');
+    if (head) head.setAttribute('aria-expanded', 'false');
+    xpLeave(el, function() {
+      _panelInfoOpen = false;
+      renderPanelInfo();
+    });
+    return;
+  }
   _panelInfoOpen = !_panelInfoOpen;
   renderPanelInfo();
+  if (_panelInfoOpen) xpEnter(el);
 }
 
 // ── 컨텍스트 — @2lab.ai/ui <ui-context-window> (.prd/affectui/re-context-window.md D5–D20) ──
@@ -11938,12 +12015,36 @@ function renderGoalHistory(history) {
   }).join('');
   return '<ol class="cg-history">' + items + '</ol>';
 }
-function toggleGoalHistory(key) {
+// The completed-goal regions of one card (its face and the panel's goal editor).
+function goalHxHosts(key) {
+  var all = document.querySelectorAll ? document.querySelectorAll('.cg-hx') : [];
+  var out = [];
+  for (var i = 0; i < all.length; i++) if (all[i].getAttribute('data-hx') === key) out.push(all[i]);
+  return out;
+}
+function toggleGoalHistory(key, folded) {
+  var hosts = goalHxHosts(key);
+  // Closing (P6): the open history folds to 0 rows first, then the card and the panel are drawn without it.
+  if (!folded && _goalHistoryOpen[key] && hosts.length && !reduceMotion()) {
+    if (hosts[0]._xpLeaveT) return;
+    for (var j = 0; j < hosts.length; j++) {
+      hosts[j].classList.add('xp-shut');
+      xpMove(hosts[j]);
+    }
+    hosts[0]._xpLeaveT = setTimeout(function() {
+      hosts[0]._xpLeaveT = 0;
+      toggleGoalHistory(key, true);
+    }, XP_MS);
+    return;
+  }
   if (_goalHistoryOpen[key]) delete _goalHistoryOpen[key];
   else _goalHistoryOpen[key] = true;
   refreshCard(key);
   // The goal editor's home is the panel (spec 13): its 완료된 goal toggle opens there.
   if (panelOpen && panelSessionKey === key) renderPanelGoal();
+  // After the (morphing) re-render: the history's row clips while it moves.
+  hosts = goalHxHosts(key);
+  for (var i = 0; i < hosts.length; i++) xpMove(hosts[i]);
 }
 var _goalErrors = Object.create(null); // card key -> last refused goal action (shown until the next success)
 
@@ -12000,8 +12101,12 @@ function renderCardGoal(s, col, canEdit, open) {
     }
     html += '</ol>';
   }
-  // The completed goals open under the current goal and its queue (T6).
-  if (historyOpen) html += '<div class="cg-queue-title">완료된 goal</div>' + renderGoalHistory(g.history);
+  // The completed goals open under the current goal and its queue (T6), in a region that unfolds in place
+  // (P6: its row 0fr → 1fr); closed it is empty, hidden and inert.
+  if (doneCount > 0) {
+    html += '<div class="cg-hx" data-hx="' + escAttr(s.key) + '"><div class="cg-hx-in"'
+      + (historyOpen ? '><div class="cg-queue-title">완료된 goal</div>' + renderGoalHistory(g.history) : ' hidden inert>') + '</div></div>';
+  }
   if (editable) {
     html += '<form class="cg-add" onsubmit="event.preventDefault();event.stopPropagation();addGoalFromCard(\\'' + key + '\\',this)">'
       + '<input class="cg-add-input" name="objective" maxlength="4000" autocomplete="off" aria-label="goal 추가"'
@@ -14134,7 +14239,7 @@ function renderWorkLogGroup(grp, open, task) {
     + renderWorkLogGroupHead(grp, open, task)
     + (open
       ? '<div class="wl-group-body" data-filled="1">' + grp.entries.map(renderWorkLogEntry).join('') + '</div>'
-      : '<div class="wl-group-body" hidden></div>')
+      : '<div class="wl-group-body" hidden inert></div>')
     + '</div>';
 }
 // Render a group's entries into its (empty) body; open details come back open.
@@ -14271,7 +14376,11 @@ function toggleWorkLogGroup(taskId) {
   (st.groupOpen || (st.groupOpen = Object.create(null)))[taskId] = open;
   if (open) wlFillGroupBody(st, grpEl, taskId);
   if (head) head.setAttribute('aria-expanded', open ? 'true' : 'false');
-  if (body) body.hidden = !open;
+  xpMove(grpEl);
+  if (body) {
+    body.hidden = !open;
+    body.inert = !open;
+  }
 }
 
 // Paint merged entries — only while 작업 로그 is the section shown (else the tab
