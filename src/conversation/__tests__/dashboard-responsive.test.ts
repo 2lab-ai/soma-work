@@ -734,7 +734,9 @@ describe('merged views — trinity code review R4 follow-ups', () => {
     const resp = TEMPLATE.slice(TEMPLATE.indexOf('/* ═══ Device-responsive layout (SSOT 2026-10-24)'));
     const coarse = resp.slice(resp.indexOf('@media (pointer: coarse) {'));
     const block = coarse.slice(0, coarse.indexOf('\n}'));
-    expect(block).toContain('.cron-drawer-close { min-width: 44px; min-height: 44px; }');
+    // D1: the close button is the kit's icon button — 44px on touch is ui-kit.css's own rule.
+    expect(block).not.toContain('.cron-drawer-close');
+    expect(TEMPLATE).toContain('<button type="button" class="ui-icon-btn" id="cron-drawer-close"');
     // 지난 실행, the strip, the queue chips, the marks and the fold toggle: @2lab.ai/ui agent-queue
     // styles.ts, '@media (pointer: coarse)' — 44px.
     expect(block).not.toContain('.cron-history-btn');

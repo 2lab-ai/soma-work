@@ -81,7 +81,7 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'OWNER_BADGE_HUES'];
 type Face = { cardOf(s: unknown, col: string): Record<string, unknown>; cardTotalTokens(u: unknown): number };
 
 function workingCard(over: Record<string, unknown> = {}) {
@@ -364,7 +364,7 @@ describe('goals: completed goals open with their details (T6)', () => {
       'isBusy',
       'renderCardGoal',
     ],
-    ['GOAL_STATUS_LABELS', 'GOAL_SVG', '_goalErrors', 'GOAL_VIA_LABELS', '_busy'],
+    ['GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', '_goalErrors', 'GOAL_VIA_LABELS', '_busy'],
     { _goalHistoryOpen: open },
   );
   const card = (history: unknown[], over: Record<string, unknown> = {}) => ({

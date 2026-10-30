@@ -78,3 +78,102 @@ export function pageTokenAliases(tokensCss: string = uiLibTokensCss()): string {
   const names = [...new Set(Array.from(tokensCss.matchAll(/--ui-([a-z0-9-]+)\s*:/g), (m) => m[1]))];
   return `:root { ${names.map((n) => `--${n}: var(--ui-${n});`).join(' ')} }`;
 }
+
+let uiKit: string | undefined;
+/**
+ * @2lab.ai/ui's light-DOM classes (`dist/ui-kit.css`, the package's `./ui-kit.css` export): the
+ * button family (`.ui-btn` with one ink primary, `.ui-icon-btn`, `.ui-fab`), `.ui-chip`, the tone-dot
+ * `.ui-status`, `.ui-kbd`, `.ui-dl`, `.ui-skeleton`, `.ui-empty`, `.ui-status-line`, `.ui-avatar`,
+ * `.ui-sr-only`, `.ui-expand` / `.ui-chev` — every value read from the `--ui-*` tokens the page puts on
+ * :root (uiLibTokensCss). The pages inline it before their own sheet, so a page rule that places a kit
+ * button (margins, a row's width) wins at equal specificity. Empty (logged once) when missing or not
+ * plain CSS.
+ */
+export function uiLibKitCss(): string {
+  if (uiKit === undefined) {
+    uiKit = '';
+    const dir = uiLibDistDir();
+    if (dir) {
+      try {
+        const css = readFileSync(join(dir, 'ui-kit.css'), 'utf8');
+        if (/<\/?\s*style|<!--|<script/i.test(css))
+          logger.error('@2lab.ai/ui ui-kit.css is not plain CSS — not inlined');
+        else uiKit = css.trim();
+      } catch (err) {
+        logger.error('@2lab.ai/ui ui-kit.css is missing — the pages have no kit classes', err);
+      }
+    }
+  }
+  return uiKit;
+}
+
+/** `icon(name, opts)` of @2lab.ai/ui/icons: an SVG string, '' for an unknown name. */
+export type UiIconFn = (
+  name: string,
+  opts?: { size?: number; label?: string; class?: string; stroke?: number },
+) => string;
+
+let uiIconsBody: string | null | undefined;
+/**
+ * The body of @2lab.ai/ui's icon set (`dist/icons.js`, the `./icons` export) without its `export { … }`
+ * statement — a self-contained module (no imports) that defines `icon()` over the 16-grid glyph table.
+ * Null (logged once) when the file is missing or is not that shape (an import, or markup that could
+ * close the page's <script> once its SVG strings are filled in).
+ */
+function uiIconsModuleBody(): string | null {
+  if (uiIconsBody === undefined) {
+    uiIconsBody = null;
+    const dir = uiLibDistDir();
+    if (dir) {
+      try {
+        const src = readFileSync(join(dir, 'icons.js'), 'utf8').replace(/\n\/\/# sourceMappingURL=.*$/m, '');
+        const exp = src.lastIndexOf('\nexport {');
+        const body = exp >= 0 ? src.slice(0, exp) : '';
+        if (!body || /^\s*import[\s{*]/m.test(body) || /<\/script|<!--/i.test(body) || !/\bfunction icon\(/.test(body))
+          logger.error('@2lab.ai/ui icons.js is not the self-contained icon module — no icons');
+        else uiIconsBody = body.trim();
+      } catch (err) {
+        logger.error('@2lab.ai/ui icons.js is missing — the pages have no icons', err);
+      }
+    }
+  }
+  return uiIconsBody;
+}
+
+let uiIconFn: UiIconFn | undefined;
+/** `icon()` of @2lab.ai/ui/icons, run on the server ('' without the package or for an unknown name). */
+export function uiIcon(name: string, opts?: Parameters<UiIconFn>[1]): string {
+  if (!uiIconFn) {
+    const body = uiIconsModuleBody();
+    let fn: UiIconFn = () => '';
+    if (body) {
+      try {
+        fn = new Function(`'use strict';\n${body}\nreturn icon;`)() as UiIconFn;
+      } catch (err) {
+        logger.error('@2lab.ai/ui icons.js did not evaluate — no icons', err);
+      }
+    }
+    uiIconFn = fn;
+  }
+  return uiIconFn(name, opts);
+}
+
+/** `<i data-ui-icon="name"></i>` or `<i data-ui-icon="name" class="a b"></i>` — an icon slot in a page template. */
+const UI_ICON_SLOT = /<i data-ui-icon="([a-z][a-z0-9-]*)"(?: class="([A-Za-z0-9 _-]+)")?><\/i>/g;
+const missingIcons = new Set<string>();
+/**
+ * Fills every icon slot of a rendered page with @2lab.ai/ui's glyph (uiIcon) — in the markup and in
+ * the client script's string constants alike (the SVG has no quote, backslash or newline a
+ * single-quoted JS string could trip on). The page templates name glyphs instead of copying them, so
+ * the dashboard draws the library's set. An unknown name fills nothing and is logged once.
+ */
+export function fillUiIcons(html: string): string {
+  return html.replace(UI_ICON_SLOT, (_slot, name: string, cls?: string) => {
+    const svg = uiIcon(name, cls ? { class: cls } : undefined);
+    if (!svg && !missingIcons.has(name)) {
+      missingIcons.add(name);
+      logger.error(`@2lab.ai/ui has no icon "${name}" — the slot stays empty`);
+    }
+    return svg;
+  });
+}
