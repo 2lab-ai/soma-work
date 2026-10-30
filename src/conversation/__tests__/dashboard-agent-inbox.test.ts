@@ -535,7 +535,6 @@ describe('tone pass P7 — surfaces and elevation', () => {
       expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow);');
     }
     for (const sel of [
-      '.td-menu',
       '.nt-dialog',
       '.art-peek',
       '.art-modal',

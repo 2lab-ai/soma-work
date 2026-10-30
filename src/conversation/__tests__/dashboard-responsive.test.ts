@@ -289,7 +289,8 @@ describe('phones — nothing zooms, nothing hides behind the FAB, nothing runs o
     // After every render and every DONE day opened or closed (#562 review P3).
     expect(clientFn('renderBoard')).toContain('syncHasCards();');
     expect(clientFn('wireInbox')).toContain('syncHasCards();');
-    expect(phone).toContain('.td-menu { left: 12px; right: 12px; min-width: 0; max-width: none; }');
+    // D1 (A-07): the defaults menu is <ui-menu> — fixed, kept inside the viewport by the element on any width.
+    expect(TEMPLATE).not.toContain('.td-menu');
     expect(phone).toContain('.art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }');
   });
 });

@@ -3850,6 +3850,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/segmented.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/disclosure.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/tooltip.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/menu.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -3989,18 +3990,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* The menu pops from its trigger's corner (the library menu / model-picker popover): in from translateY(-4px)
    scale(.96) with opacity 160ms + transform 220ms ease-out, out in 180ms; display is discrete, so after the
    exit a closed menu takes no hits and no room. */
-.td-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 120; min-width: 260px; max-width: min(360px, 92vw); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--ib-shadow-raised); padding: 6px; transform-origin: top left; transition: opacity 160ms var(--ease-out), transform 220ms var(--ease-out), display 220ms allow-discrete; }
-.td-menu[hidden] { display: none; opacity: 0; transform: translateY(-4px) scale(0.96); pointer-events: none; transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out), display var(--dur-fade) allow-discrete; }
-@starting-style { .td-menu:not([hidden]) { opacity: 0; transform: translateY(-4px) scale(0.96); } }
-.td-menu .tdm-head { font-size: 11px; font-weight: 600; color: var(--text-tertiary); padding: 6px 8px 4px; }
-.td-menu .tdm-item { display: flex; width: 100%; align-items: baseline; justify-content: space-between; gap: 8px; text-align: left; font: inherit; font-size: 13px; color: var(--text); background: none; border: 0; border-radius: 6px; padding: 8px; min-height: 36px; cursor: pointer; }
-.td-menu .tdm-item[aria-checked="true"] { background: var(--surface-raised); font-weight: 600; }
-.td-menu .tdm-item[aria-checked="true"]::after { content: ''; flex-shrink: 0; align-self: center; width: 14px; height: 14px; background: currentColor; -webkit-mask: var(--check) center / contain no-repeat; mask: var(--check) center / contain no-repeat; }
-.td-menu .tdm-item:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
-@media (hover: hover) and (pointer: fine) { .td-menu .tdm-item:hover { background: var(--surface-raised); } }
-.td-menu .tdm-sub { font-size: 11px; color: var(--text-tertiary); font-weight: 400; }
-.td-menu .tdm-scope { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: var(--text-secondary); padding: 8px; border-top: 1px solid var(--border); margin-top: 4px; }
-.td-menu .tdm-scope input { margin-top: 2px; }
+/* The defaults menu is @2lab.ai/ui <ui-menu id="td-menu"> (A-07): it hangs from the chip that opened it. */
+#td-menu { position: absolute; }
 .topbar .td-status { font-size: 12px; color: var(--text-secondary); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar .td-status.is-error { color: var(--red); }
 /* Nav: the site's chip links — no box at rest, the --ib-pill chip on hover; the user
@@ -6276,7 +6267,6 @@ body.nt-open .new-task-fab { display: none !important; }
      they could leave the account group (basis 0) no width at all, its pill and theme toggle
      painting over the chips. */
   .topbar .topbar-defaults { position: static; order: 1; flex: 0 0 100%; }
-  .td-menu { left: 12px; right: 12px; min-width: 0; max-width: none; }
   .art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
   .art-modal-head { flex-wrap: wrap; row-gap: 6px; }
 }
@@ -6331,9 +6321,9 @@ ${pageTokenAliases()}
     <h1><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect class="bm-bg" width="32" height="32" rx="8"/><rect class="bm-cell" x="7" y="7" width="7" height="7" rx="1.5"/><rect class="bm-cell" x="18" y="7" width="7" height="7" rx="1.5" opacity=".55"/><rect class="bm-cell" x="7" y="18" width="7" height="7" rx="1.5" opacity=".55"/><rect class="bm-cell" x="18" y="18" width="7" height="7" rx="1.5" opacity=".25"/></svg>soma-work</h1>
     <span class="ws-badge" id="ws-status" role="status" aria-label="실시간 업데이트: 연결 중" data-state="connecting">연결 중…</span>
     <div class="topbar-defaults" id="topbar-defaults" hidden>
-      <button type="button" class="td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" aria-controls="td-menu" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
-      <button type="button" class="td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" aria-controls="td-menu" title="새 세션의 기본 effort — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">Effort </span><b id="td-effort-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
-      <div class="td-menu" id="td-menu" role="menu" hidden></div>
+      <button type="button" class="td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
+      <button type="button" class="td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 effort — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">Effort </span><b id="td-effort-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
+      <ui-menu id="td-menu" lang="ko"></ui-menu>
       <span class="td-status" id="td-status" role="status" aria-live="polite"></span>
     </div>
     <button type="button" class="ui-btn is-primary new-task-btn" id="new-task-btn" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><i data-ui-icon="plus"></i><span class="nt-btn-label">새 작업</span><kbd class="ui-kbd nt-kbd" aria-hidden="true">N</kbd></button>
@@ -7859,56 +7849,58 @@ function defaultsScopeSession() {
   if (!s || !s.ownerId || s.ownerId !== currentUserId || s.terminated || isSiblingSession(s)) return null;
   return s;
 }
-function renderDefaultsMenu(kind) {
+// <ui-menu id="td-menu"> (A-07): the page hands it the rows — a heading, the options as one radio group (the
+// current one checked) and, for the open session the owner may switch too, a checkbox "열린 세션에도 적용" that is
+// on each time the menu opens — and answers ui-select. The element hangs from the chip, moves focus to the checked
+// row, does the arrows / typeahead / Esc / outside press, and gives focus back to the chip.
+var TD_ALSO_SESSION = 'td-also-session';
+var _tdAlsoSession = true;
+function defaultsMenuData(kind) {
   var row = _myDefaults && (kind === 'model' ? _myDefaults.model : _myDefaults.effort);
-  if (!row) return '';
-  var html = '<div class="tdm-head">' + (kind === 'model' ? '새 세션 기본 모델' : '새 세션 기본 effort') + '</div>';
+  if (!row) return null;
+  var title = kind === 'model' ? '새 세션 기본 모델' : '새 세션 기본 effort';
+  var items = [{ kind: 'heading', label: title }];
   var opts = row.options || [];
   for (var i = 0; i < opts.length; i++) {
     var o = opts[i];
-    var on = o.value === row.value;
-    html += '<button type="button" role="menuitemradio" class="tdm-item" aria-checked="' + (on ? 'true' : 'false') + '"'
-      + ' data-td-kind="' + escAttr(kind) + '" data-td-value="' + escAttr(o.value) + '" onclick="pickDefaultFrom(this)">'
-      + '<span>' + esc(o.label) + (o.description && kind === 'model' ? ' <span class="tdm-sub">' + esc(o.description) + '</span>' : '') + '</span></button>';
+    var it = { kind: 'radio', value: String(o.value), label: String(o.label), checked: o.value === row.value };
+    if (o.description && kind === 'model') it.description = String(o.description);
+    items.push(it);
   }
   var s = defaultsScopeSession();
   if (s) {
-    html += '<label class="tdm-scope"><input type="checkbox" id="tdm-also-session" checked>'
-      + '<span>열린 세션에도 적용 &mdash; ' + esc(s.displayHeadline || s.title || s.key) + '</span></label>';
+    items.push({ kind: 'separator' });
+    items.push({ kind: 'checkbox', value: TD_ALSO_SESSION, label: '열린 세션에도 적용', description: String(s.displayHeadline || s.title || s.key), checked: _tdAlsoSession });
   }
-  return html;
+  return { label: title, items: items };
 }
 function openDefaultsMenu(kind, btn) {
   var menu = document.getElementById('td-menu');
-  if (!menu || !_myDefaults) return;
-  if (!menu.hidden && _tdMenuKind === kind) { closeDefaultsMenu(); return; }
+  if (!menu || !_myDefaults || typeof menu.show !== 'function') return;
+  if (menu.open && _tdMenuKind === kind) { closeDefaultsMenu(); return; }
+  _tdAlsoSession = true;
+  var d = defaultsMenuData(kind);
+  if (!d) return;
   _tdMenuKind = kind;
-  menu.innerHTML = renderDefaultsMenu(kind);
-  menu.style.left = btn ? btn.offsetLeft + 'px' : '0';
-  menu.hidden = false;
-  var chips = document.querySelectorAll('.td-chip');
-  for (var i = 0; i < chips.length; i++) chips[i].setAttribute('aria-expanded', chips[i] === btn ? 'true' : 'false');
-  var first = menu.querySelector('.tdm-item[aria-checked="true"]') || menu.querySelector('.tdm-item');
-  if (first) first.focus();
+  menu.data = d;
+  menu.show(btn);
 }
 function closeDefaultsMenu() {
   var menu = document.getElementById('td-menu');
-  if (menu) menu.hidden = true;
+  if (menu && menu.open) menu.hide();
   _tdMenuKind = null;
-  var chips = document.querySelectorAll('.td-chip');
-  for (var i = 0; i < chips.length; i++) chips[i].setAttribute('aria-expanded', 'false');
 }
-document.addEventListener('click', function(ev) {
-  var box = document.getElementById('topbar-defaults');
-  if (_tdMenuKind && box && !box.contains(ev.target)) closeDefaultsMenu();
-});
-document.addEventListener('keydown', function(ev) {
-  if (ev.key === 'Escape' && _tdMenuKind) {
-    var chip = document.getElementById(_tdMenuKind === 'model' ? 'td-model' : 'td-effort');
-    closeDefaultsMenu();
-    if (chip) chip.focus();
-  }
-});
+(function initDefaultsMenu() {
+  var menu = document.getElementById('td-menu');
+  if (!menu) return;
+  menu.addEventListener('ui-select', function(e) {
+    var d = e.detail || {};
+    if (d.kind === 'checkbox' && d.value === TD_ALSO_SESSION) { _tdAlsoSession = !!d.checked; return; }
+    if (d.kind === 'radio' && _tdMenuKind) pickDefault(_tdMenuKind, d.value);
+  });
+  // Closed by the element (Esc, an outside press, focus leaving): the page forgets which chip it was.
+  menu.addEventListener('ui-open-change', function(e) { if (e.detail && !e.detail.open) _tdMenuKind = null; });
+})();
 // Settings changed in Slack show up when the tab comes back.
 document.addEventListener('visibilitychange', function() { if (!document.hidden) loadMyDefaults(); });
 async function patchSetting(key, value) {
@@ -7934,13 +7926,8 @@ function setDefaultsStatus(text, isError) {
   el.title = text || '';
   el.classList.toggle('is-error', !!isError);
 }
-// Option values travel in attribute-escaped data-* (never inside inline JS).
-function pickDefaultFrom(el) {
-  return pickDefault(el.getAttribute('data-td-kind'), el.getAttribute('data-td-value'));
-}
 async function pickDefault(kind, value) {
-  var also = document.getElementById('tdm-also-session');
-  var session = also && also.checked ? defaultsScopeSession() : null;
+  var session = _tdAlsoSession ? defaultsScopeSession() : null;
   var skipSession = !!session && kind === 'model' && !sessionAcceptsModel(value);
   if (skipSession) session = null;
   closeDefaultsMenu();
