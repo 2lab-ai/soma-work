@@ -263,8 +263,8 @@ describe('dashboard account pill (T1 entry point)', () => {
   const DASHBOARD_TS = fs.readFileSync(path.join(__dirname, '..', 'dashboard.ts'), 'utf8');
 
   it('is a real link to the account page, not a hidden click-to-logout', () => {
-    const pill = DASHBOARD_TS.match(/<a\s[^>]*id="user-pill"[^>]*>/)?.[0] ?? '';
-    expect(pill).toContain('href="/login"');
+    // D2 (A-13): the pill is <ui-app-bar>'s account — a real <a href> to the account page.
+    expect(DASHBOARD_TS).toContain("_appBarAccount = label ? { name: label, href: '/login' } : null;");
     expect(DASHBOARD_TS).not.toContain('title="Click to logout"');
     expect(DASHBOARD_TS).not.toContain("location.href = '/auth/logout'");
     // A link is always clickable — no click-gating attribute left behind.
