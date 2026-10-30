@@ -6,10 +6,12 @@ import { validateGoalMaxContinuations } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
 import { buildGoalStatusBlocks } from '../goal-blocks';
 import { bumpGoalEpoch } from '../goal-continuation';
+import { resumeGoalLoop } from '../goal-loop-resume';
 import {
   advanceGoalQueue,
   enqueueOrActivateGoal,
   formatGoalObjectiveForSlack,
+  formatResumedGoalLine,
   restoreGoalState,
   snapshotGoalState,
 } from '../session-goal';
@@ -191,13 +193,20 @@ export class GoalHandler implements CommandHandler {
       // eval). The running goal owns the loop untouched until it completes and
       // advances the queue. Just persist the appended queue entry.
       this.deps.claudeHandler.saveSessions();
-      const queuedNotice = `📋 Goal queued at position ${result.position}: ${this.formatObjectiveForSlack(objective)}\n_It will start automatically when the current goal completes._`;
+      const resumedLine = result.resumedCurrent ? `\n${formatResumedGoalLine(result.resumedCurrent)}` : '';
+      const queuedNotice = `📋 Goal queued at position ${result.position}: ${this.formatObjectiveForSlack(objective)}\n_It will start automatically when the current goal completes._${resumedLine}`;
       if (ctx.admitOpening) {
         // The queue entry is already saved: a Slack failure must not turn a
         // done change into a crash (the host keeps the redelivery claim).
         await this.notifyBestEffort(ctx.channel, ctx.threadTs, queuedNotice);
       } else {
         await this.deps.slackApi.postSystemMessage(ctx.channel, queuedNotice, { threadTs: ctx.threadTs });
+      }
+      if (result.resumedCurrent) {
+        // The current goal was stopped at its budget and this command starts no
+        // turn whose end would drive the loop — kick it so the goal runs again.
+        this.deps.claudeHandler.broadcastSessionUpdate?.();
+        resumeGoalLoop(this.deps.claudeHandler.getSessionKey(ctx.channel, ctx.threadTs));
       }
       return { handled: true, goalQueued: true };
     }

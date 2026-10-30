@@ -5506,6 +5506,25 @@ describe('SlackHandler — follow-up queue host', () => {
       expect(startWithContinuation).toHaveBeenCalledTimes(1);
     });
 
+    it('SSOT 2026-10-30: add while the current goal is stopped at 10/10 queues the new goal and runs the 10/10 goal again', async () => {
+      const settled = vi.fn();
+      handler.setGoalTurnSettledHandler(settled);
+      registrySession.goal = goalOf({ continuationCount: 10, capDmPendingAt: 5 });
+
+      const result = await handler.handleHostGoalAction(SESSION_KEY, { action: 'add', objective: '다음 목표' });
+
+      expect(result).toMatchObject({ outcome: 'queued', position: 1 });
+      expect(registrySession.goal).toMatchObject({ goalId: 'g1', status: 'active', continuationCount: 0 });
+      expect(registrySession.goal.capDmPendingAt).toBeUndefined();
+      expect(registrySession.goalQueue?.[0]).toMatchObject({ objective: '다음 목표', status: 'queued' });
+      expect(settled).toHaveBeenCalledWith(SESSION_KEY);
+      expect(postSystemMessage).toHaveBeenLastCalledWith(
+        CHANNEL,
+        expect.stringContaining('runs again'),
+        expect.anything(),
+      );
+    });
+
     it('add that would have started but finds a goal in flight after the anchor is queued — and says so', async () => {
       postSystemMessage.mockImplementationOnce(async () => {
         registrySession.goal = goalOf({ goalId: 'g9', objective: '방금 시작된 goal' });

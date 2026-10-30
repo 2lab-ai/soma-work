@@ -204,8 +204,13 @@ export function findGoalById(session: GoalQueueSession, goalId: string | undefin
  *
  *   - If a goal is already in flight (active/paused) → APPEND `objective` to
  *     `goalQueue` as a `queued` goal and return `{ activated: false }`. The
- *     current goal keeps running untouched; the caller posts a "queued"
- *     notice and does NOT start a continuation.
+ *     current goal keeps its slot; the caller posts a "queued" notice and does
+ *     NOT start a continuation for the queued goal.
+ *     If the current goal is active but stopped at its auto-continuation
+ *     budget (10/10, not complete), this request is the user weighing in — the
+ *     same as a chat message: its counter is reset so it runs again, and it is
+ *     returned as `resumedCurrent`. The caller re-drives the loop (a goal
+ *     command or dashboard add starts no turn whose end would do it).
  *   - Otherwise (no goal, or the current one is complete) → activate a fresh
  *     goal via {@link applyGoalToSession} and return `{ activated: true,
  *     goal }`. The caller starts the continuation for it.
@@ -218,16 +223,41 @@ export function enqueueOrActivateGoal(
   userId: string,
   /** Per-user auto-continuation cap default (S4) applied to the new goal. */
   maxContinuations?: number,
-): { activated: boolean; goal: SessionGoalState; position?: number } {
-  if (isGoalInFlight(session.goal)) {
+): { activated: boolean; goal: SessionGoalState; position?: number; resumedCurrent?: SessionGoalState } {
+  const current = session.goal;
+  if (isGoalInFlight(current)) {
     const queued = createQueuedSessionGoal(objective, userId, maxContinuations);
     session.goalQueue = session.goalQueue ?? [];
     session.goalQueue.push(queued);
-    return { activated: false, goal: queued, position: session.goalQueue.length };
+    const resumedCurrent = current && resumeGoalStoppedAtBudget(current) ? current : undefined;
+    return { activated: false, goal: queued, position: session.goalQueue.length, resumedCurrent };
   }
-  const goal = createActiveSessionGoal(objective, userId, session.goal, maxContinuations);
+  const goal = createActiveSessionGoal(objective, userId, current, maxContinuations);
   applyGoalToSession(session, goal);
   return { activated: true, goal };
+}
+
+/**
+ * An ACTIVE goal stopped at its auto-continuation budget gets the budget back:
+ * counter to 0 and the pending "keep going?" DM answered — what a real user
+ * message does (`resetGoalContinuationOnUserMessage`). Returns whether it was
+ * stopped there. A paused goal is left alone (pausing was explicit).
+ */
+function resumeGoalStoppedAtBudget(goal: SessionGoalState): boolean {
+  if (goal.status !== 'active' || goal.continuationCount < goal.maxContinuations) return false;
+  goal.continuationCount = 0;
+  goal.capDmPendingAt = undefined;
+  goal.updatedAt = Date.now();
+  return true;
+}
+
+/**
+ * The line a "goal queued" notice adds when the request gave the current goal
+ * its budget back ({@link enqueueOrActivateGoal} `resumedCurrent`). Single
+ * source for every surface.
+ */
+export function formatResumedGoalLine(goal: SessionGoalState): string {
+  return `▶️ The current goal had used its ${goal.maxContinuations}-turn auto-continuation budget without finishing — it runs again now: ${formatGoalObjectiveForSlack(goal.objective)}`;
 }
 
 /**

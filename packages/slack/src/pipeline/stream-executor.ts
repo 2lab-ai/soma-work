@@ -50,6 +50,7 @@ import {
   enqueueOrActivateGoal,
   findGoalById,
   formatGoalObjectiveForSlack,
+  formatResumedGoalLine,
   type GoalQueueSession,
 } from '../session-goal';
 import {
@@ -5777,7 +5778,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             kind: 'notice',
             text: applied.activated
               ? `🎯 Goal set by model (user-requested): ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"`
-              : `📋 Goal queued by model at position ${applied.position}: ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"`,
+              : `📋 Goal queued by model at position ${applied.position}: ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"` +
+                (applied.resumedCurrent ? `\n${formatResumedGoalLine(applied.resumedCurrent)}` : ''),
           },
           session,
           context,

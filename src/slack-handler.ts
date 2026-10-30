@@ -105,6 +105,7 @@ import {
   deleteGoalById,
   enqueueOrActivateGoal,
   formatGoalObjectiveForSlack,
+  formatResumedGoalLine,
   restoreGoalState,
   snapshotGoalState,
 } from './slack/session-goal';
@@ -1886,7 +1887,8 @@ export class SlackHandler {
           } else {
             await this.slackApi.postSystemMessage(
               activeChannel,
-              `📋 Goal queued at position ${applied.position}: ${formatGoalObjectiveForSlack(setGoalObjective)}\n_It will start automatically when the current goal completes._`,
+              `📋 Goal queued at position ${applied.position}: ${formatGoalObjectiveForSlack(setGoalObjective)}\n_It will start automatically when the current goal completes._` +
+                (applied.resumedCurrent ? `\n${formatResumedGoalLine(applied.resumedCurrent)}` : ''),
               { threadTs: activeThreadTs },
             );
           }
@@ -6706,8 +6708,14 @@ export class SlackHandler {
         await this.postGoalNoticeBestEffort(
           channel,
           threadTs,
-          `📋 Queued at position ${position} — it starts automatically when the current goal completes.`,
+          `📋 Queued at position ${position} — it starts automatically when the current goal completes.` +
+            (result.resumedCurrent ? `\n${formatResumedGoalLine(result.resumedCurrent)}` : ''),
         );
+        if (result.resumedCurrent) {
+          // The current goal was stopped at its budget; the add gave it the
+          // budget back. No turn ends from a dashboard add, so drive the loop.
+          this.goalTurnSettledHandler?.(sessionKey);
+        }
         return { outcome: 'queued', goalId: result.goal.goalId, position };
       }
       this.persistHostGoalMutation(live);
