@@ -49,6 +49,7 @@ import type { RequestAbortReason, RequestCoordinator } from '../request-coordina
 import {
   enqueueOrActivateGoal,
   findGoalById,
+  formatDisplacedGoalLine,
   formatGoalObjectiveForSlack,
   type GoalQueueSession,
 } from '../session-goal';
@@ -5758,17 +5759,20 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
           objectivePreview: objective.slice(0, 120),
         });
         // Goal started/queued is a status notice: gated on STATUS_MESSAGE like
-        // goal-loop-controller's `postStatusNotice` (compact and up).
+        // goal-loop-controller's `postStatusNotice` (compact and up). Taking the
+        // slot of a goal parked at its budget moves that goal — a change to the
+        // user's goal list, so it is posted at every level.
         await this.reportModelCommandOutcome(
           {
             kind: 'notice',
             text: applied.activated
-              ? `🎯 Goal set by model (user-requested): ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"`
+              ? `🎯 Goal set by model (user-requested): ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"` +
+                (applied.displaced ? `\n${formatDisplacedGoalLine(applied.displaced)}` : '')
               : `📋 Goal queued by model at position ${applied.position}: ${formatGoalObjectiveForSlack(objective)}\n> "${evidence}"`,
           },
           session,
           context,
-          { flag: OutputFlag.STATUS_MESSAGE },
+          applied.displaced ? { alwaysPost: true } : { flag: OutputFlag.STATUS_MESSAGE },
         );
         continue;
       }
