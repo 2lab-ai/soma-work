@@ -78,6 +78,17 @@ export function selectCurrentContextTokens(usage: CurrentContextTokensInput): Cu
   };
 }
 
+/**
+ * Whether a token count can be a reading of a window's occupancy. One request
+ * never holds more than its context window, so a count above the window is a
+ * sum of calls — the billing aggregate, or on a resumed SDK session its whole
+ * running total (a dev deployment, 2026-10-30: 187,891,067 against 1M, shown as
+ * `187.9M/1M`) — not how full the window is.
+ */
+export function fitsContextWindow(tokens: number, contextWindow: number): boolean {
+  return tokens <= contextWindow;
+}
+
 /** The four live context-occupancy counters, as a mutable structural slice. */
 export interface MutableContextOccupancy {
   currentInputTokens: number;
@@ -521,6 +532,18 @@ export function sanitizeSessionUsage(
   if (!isCount(contextWindow) || contextWindow <= 0) return undefined;
   const out = { contextWindow, lastUpdated: isCount(r.lastUpdated) ? r.lastUpdated : 0 } as PersistedSessionUsage;
   for (const f of USAGE_COUNT_FIELDS) out[f] = r[f] as number;
+  // A saved occupancy above the window it was saved with is no reading
+  // (`fitsContextWindow`): drop it to "no reading yet" — the totals are kept.
+  // Only the saved window can judge it; a model-lookup fallback is a guess
+  // that may be the base 200k of a session running the 1M window.
+  const occupancy =
+    out.currentInputTokens + out.currentOutputTokens + out.currentCacheReadTokens + out.currentCacheCreateTokens;
+  if (contextWindow === saved && !fitsContextWindow(occupancy, contextWindow)) {
+    out.currentInputTokens = 0;
+    out.currentOutputTokens = 0;
+    out.currentCacheReadTokens = 0;
+    out.currentCacheCreateTokens = 0;
+  }
   const models = r.modelTotals;
   if (models && typeof models === 'object' && !Array.isArray(models)) {
     out.modelTotals = {};

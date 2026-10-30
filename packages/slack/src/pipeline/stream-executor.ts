@@ -57,6 +57,7 @@ import {
   addSessionSpend,
   applyPostCompactOccupancy,
   creditTaskSpend,
+  fitsContextWindow,
   selectCurrentContextTokens,
   settleFoldedLiveUsage,
   toTurnUsage,
@@ -5301,14 +5302,26 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // Only the shield THIS turn established suppresses THIS turn's sample. A
     // shield left by a different (e.g. superseded) turn must not swallow our
     // legitimate reading — that would freeze the display for an extra turn.
-    const sampleIsEmpty =
-      current.source === 'aggregate-fallback' &&
-      current.inputTokens + current.outputTokens + current.cacheReadTokens + current.cacheCreateTokens === 0;
+    const sampleTotal =
+      current.inputTokens + current.outputTokens + current.cacheReadTokens + current.cacheCreateTokens;
+    const sampleIsEmpty = current.source === 'aggregate-fallback' && sampleTotal === 0;
     // A turn that counted no spend (baseline seed, zero result) says nothing
     // about how full the window is — the last occupancy stands.
     if (sampleIsEmpty) {
       this.logger.debug('Keeping occupancy — this turn carried no usage sample', {
         conversationId: session.conversationId,
+      });
+    } else if (
+      current.source === 'aggregate-fallback' &&
+      !fitsContextWindow(sampleTotal, session.usage.contextWindow)
+    ) {
+      // No per-call reading (`Prompt is too long`, a turn cut off before its
+      // first call) and an aggregate larger than the window: a sum of calls,
+      // not an occupancy — the last occupancy stands.
+      this.logger.warn('Keeping occupancy — aggregate usage sample exceeds the context window', {
+        conversationId: session.conversationId,
+        aggregate: sampleTotal,
+        contextWindow: session.usage.contextWindow,
       });
     } else if (turnId !== undefined && session.postCompactOccupancyTurnId === turnId) {
       this.logger.debug("Keeping post-compact occupancy — ignoring this turn's pre-boundary usage sample", {
