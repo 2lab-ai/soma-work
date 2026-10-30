@@ -3745,10 +3745,10 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .topbar .topbar-defaults[hidden] { display: none; }
 .topbar .td-chip { display: inline-flex; align-items: center; gap: 4px; font: inherit; font-size: 12px; color: var(--text-secondary); background: var(--surface-raised); border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; min-height: 30px; cursor: pointer; white-space: nowrap; transition: border-color var(--dur-press) var(--ease-out), transform var(--dur-press) var(--ease-out); }
 .topbar .td-chip b { color: var(--text); font-weight: 600; }
-.topbar .td-chip[aria-expanded="true"] { border-color: var(--accent); }
+.topbar .td-chip[aria-expanded="true"] { border-color: var(--ib-muted); background: var(--ib-pill); color: var(--text); }
 .topbar .td-chip:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .topbar .td-chip:active:not(:focus-visible) { transform: scale(0.97); }
-@media (hover: hover) and (pointer: fine) { .topbar .td-chip:hover { border-color: var(--accent); color: var(--text); } }
+@media (hover: hover) and (pointer: fine) { .topbar .td-chip:hover { border-color: var(--ib-muted); color: var(--text); } }
 .topbar .td-caret { font-size: 10px; color: var(--text-tertiary); }
 .td-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 120; min-width: 260px; max-width: min(360px, 92vw); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 14px 32px rgba(0,0,0,0.35); padding: 6px; }
 .td-menu[hidden] { display: none; }
@@ -3827,7 +3827,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .topbar .user-select:has(select:focus-visible) { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .topbar .nav a:hover,
-.topbar .nav .user-select:hover { border-color: var(--accent); color: var(--text); }
+.topbar .nav .user-select:hover { border-color: var(--ib-muted); color: var(--text); }
 
 /* ── USER PILL — "Logged in as <name>", links to the /login account page, rendered from /auth/me ── */
 .topbar .user-pill {
@@ -3864,7 +3864,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   display: inline-block;
 }
 .topbar .user-pill.is-admin b::before { content: '★ '; color: var(--accent); }
-.topbar .user-pill:hover { border-color: var(--accent); color: var(--text); }
+.topbar .user-pill:hover { border-color: var(--ib-muted); color: var(--text); }
 .topbar .user-pill:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 
 /* ── ADMIN MODE TOGGLE — visible only for ADMIN_USERS (#716) ── */
@@ -3883,7 +3883,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   align-items: center;
   transition: border-color var(--speed) var(--ease), color var(--speed) var(--ease), background var(--speed) var(--ease);
 }
-.topbar .admin-toggle:hover { border-color: var(--accent); color: var(--text); }
+.topbar .admin-toggle:hover { border-color: var(--ib-muted); color: var(--text); }
 .topbar .admin-toggle[aria-pressed="true"] {
   background: rgba(248, 81, 73, 0.18);
   border-color: var(--red, #f85149);
@@ -3907,7 +3907,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 #theme-toggle::before { content: '\\1F319'; }
 [data-theme="light"] #theme-toggle::before { content: '\\2600\\FE0F'; }
-#theme-toggle:hover { border-color: var(--accent); transform: scale(1.1); }
+#theme-toggle:hover { border-color: var(--ib-muted); transform: scale(1.1); }
 .ws-badge {
   padding: 4px 12px;
   border-radius: 999px;
@@ -3922,24 +3922,9 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* ── MAIN — stats strip, then the board; capped at 1280px and centred (.prd/10 §3.1-2, §5) ── */
 .main { flex: 1; padding: 20px; width: 100%; max-width: 1280px; margin: 0 auto; min-width: 0; }
 
-/* ── PERIOD SELECTOR — segmented control ── */
-.period-bar { display: inline-flex; gap: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
-.period-btn {
-  background: var(--surface);
-  color: var(--text-secondary);
-  border: none;
-  border-right: 1px solid var(--border);
-  padding: 8px 16px;
-  cursor: pointer;
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  transition: background var(--speed) var(--ease), color var(--speed) var(--ease);
-  min-height: 32px;
-}
-.period-btn:last-child { border-right: none; }
-.period-btn:hover { background: var(--surface-raised); color: var(--text); }
-.period-btn.active { background: var(--accent); color: var(--bg); font-weight: 600; }
+/* ── PERIOD SELECTOR — the page's one segmented control (.seg / .seg-btn, below): the selected
+   period is the raised neutral chip, never an accent fill. .period-bar / .period-btn stay as hooks. ── */
+.period-btn { white-space: nowrap; }
 
 /* ── STATS STRIP — leads the page, above the board (.prd/10 §3.1-2) ──
    One row from 640px: period · 세션 · 토큰 · 비용 · 자세히. Below 640px the
@@ -3997,7 +3982,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   padding: 12px 16px;
   transition: border-color var(--speed) var(--ease);
 }
-.stat-card:hover { border-color: var(--accent); }
 .stat-card .label {
   font-size: 12px;
   font-weight: 500;
@@ -4082,7 +4066,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .lifecycle-dialog .lc-status { min-height: 1.2em; margin: 4px 0 8px; font-size: 12px; color: var(--ib-muted); }
 .lifecycle-dialog .lc-status.is-error { color: #f85149; }
 .lifecycle-dialog .lc-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.lifecycle-dialog .lc-save { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
+.lifecycle-dialog .lc-save { background: var(--ib-text); color: var(--ib-card); }
 
 /* The board: @2lab.ai/ui <ui-agent-inbox> (re-agent-inbox) — its columns, cards, day groups, skeletons
    and narrow / list layouts are the element's, drawn with the dashboard tokens through .ui-tok (#inbox).
@@ -4281,7 +4265,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .io-text.is-muted, .io-muted { color: var(--ib-muted); }
 .card-io .io-sys > summary { list-style: none; display: flex; align-items: center; gap: 8px; min-height: 24px; min-width: 0; cursor: pointer; border-radius: 6px; font-size: 12.5px; color: var(--ib-text-2); }
 .card-io .io-sys > summary::-webkit-details-marker { display: none; }
-.card-io .io-sys > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.card-io .io-sys > summary:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .card-io .io-sys > summary:hover .sys-line { color: var(--ib-text); }
 .card-io .sys-detail { margin: 6px 0 0; }
 .card-io .skill-badges { margin-top: 4px; }
@@ -4346,7 +4330,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-goal .cg-gap { margin-top: 3px; color: var(--ib-muted); overflow-wrap: anywhere; }
 .card-goal .cg-more { display: inline-flex; align-items: center; min-height: 24px; margin-top: 2px; padding: 0; font: inherit; font-size: 11.5px; color: var(--ib-text-2); background: none; border: 0; cursor: pointer; }
 .card-goal .cg-more:hover { color: var(--ib-text); text-decoration: underline; }
-.card-goal .cg-more:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.card-goal .cg-more:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; border-radius: 6px; }
 .card-goal .cg-more[hidden] { display: none; }
 .card-goal .cg-empty { color: var(--ib-muted); }
 .card-goal .cg-row { display: flex; align-items: flex-start; gap: 6px; }
@@ -4410,10 +4394,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .btn-choice {
   font-size: 0.72em;
   padding: 4px 10px;
-  border: 1px solid rgba(77,157,224,0.4);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: rgba(77,157,224,0.08);
-  color: var(--accent);
+  background: var(--surface);
+  color: var(--text);
   cursor: pointer;
   transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
   font-family: inherit;
@@ -4423,32 +4407,26 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   opacity: 0.5;
   cursor: not-allowed;
 }
-.btn-choice-recommended {
-  /* WCAG AA: #2d8644 vs white = 4.56:1 (meets 4.5:1 for normal text) */
-  background: #2d8644;
-  color: white;
-  border: 2px solid #256f38;
-  font-weight: 600;
-}
-.btn-choice-recommended::before { content: "\\2B50 "; }
+/* The recommended choice: tagged, not coloured (library approval card) — the ink is the form's
+   one primary (추천대로 모두 선택 / 제출하기). */
+.btn-choice-recommended { border-color: var(--ib-muted); }
+.btn-choice-recommended::after { content: "추천"; display: inline-block; margin-left: 6px; padding: 0 6px; border-radius: 6px; background: var(--ib-pill); color: var(--text-secondary); font-size: 11px; font-weight: 600; line-height: 18px; vertical-align: 1px; }
 /* Hero "Submit All Recommended" — group-only, top of multi-choice panel */
 .btn-hero-recommended {
   display: block;
   width: 100%;
-  padding: 12px;
-  font-size: 1.05em;
-  background: #2d8644;
-  color: white;
-  border: 2px solid #256f38;
-  border-radius: 6px;
+  padding: 10px 12px;
+  font: inherit;
+  font-size: 14px;
+  background: var(--ib-text);
+  color: var(--ib-card);
+  border: 1px solid var(--ib-text);
+  border-radius: 8px;
   font-weight: 600;
   margin-bottom: 12px;
   cursor: pointer;
 }
-.btn-hero-recommended:hover:not(:disabled) {
-  background: #256f38;
-  border-color: #1f5c2e;
-}
+.btn-hero-recommended:hover:not(:disabled) { opacity: 0.88; }
 .btn-hero-recommended:disabled,
 .btn-hero-recommended[aria-disabled="true"] {
   opacity: 0.7;
@@ -4510,7 +4488,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-needs-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px 8px; font-size: 13px; font-weight: 650; color: var(--text); }
 .panel-needs-head[hidden] { display: none; }
 .panel-needs-head:focus { outline: none; }
-.panel-needs-head:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.panel-needs-head:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
 .pn-count { display: inline-grid; place-items: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: color-mix(in srgb, var(--st-wait) 24%, transparent); box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-wait) 55%, transparent); color: var(--text); font-size: 11px; font-weight: 700; line-height: 1; font-variant-numeric: tabular-nums; animation: pn-pop var(--dur-move) var(--ease-out) both; }
 @keyframes pn-pop { from { opacity: 0; transform: scale(0.6); } }
 .panel-question[data-ap="card"] { padding: 0 16px 12px; background: none; border-bottom: 1px solid var(--border); }
@@ -4646,18 +4624,18 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .mc-q-edit-btn {
   font-size: 11px;
   padding: 2px 8px;
-  border: 1px solid rgba(246,201,14,0.3);
+  border: 1px solid var(--border);
   border-radius: 8px;
   background: transparent;
-  color: var(--yellow);
+  color: var(--text-secondary);
   cursor: pointer;
   transition: all 0.15s;
   font-family: inherit;
   flex-shrink: 0;
 }
 .mc-q-edit-btn:hover {
-  border-color: var(--yellow);
-  background: rgba(246,201,14,0.08);
+  border-color: var(--ib-muted);
+  color: var(--text);
 }
 .mc-actions {
   display: flex;
@@ -4671,20 +4649,20 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   padding: 8px 20px;
   border: none;
   border-radius: 8px;
-  background: var(--accent);
-  color: var(--bg);
+  background: var(--ib-text);
+  color: var(--ib-card);
   cursor: pointer;
   transition: background var(--speed) var(--ease);
   font-family: inherit;
   min-height: 34px;
 }
-.mc-btn-submit:hover { background: var(--accent-hover); }
+.mc-btn-submit:hover:not(:disabled) { opacity: 0.88; }
 .mc-btn-submit:disabled { background: var(--surface-raised); color: var(--text-tertiary); cursor: default; }
 .mc-btn-reset {
   font-size: 12px;
   font-weight: 600;
   padding: 8px 14px;
-  border: 1px solid rgba(239,68,68,0.3);
+  border: 1px solid var(--border);
   border-radius: 8px;
   background: transparent;
   color: var(--text-secondary);
@@ -4693,7 +4671,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   font-family: inherit;
   min-height: 34px;
 }
-.mc-btn-reset:hover { border-color: var(--red); color: var(--red); background: rgba(239,68,68,0.08); }
+.mc-btn-reset:hover { border-color: var(--ib-muted); color: var(--text); }
 .mc-custom-input {
   width: 100%;
   margin-top: 4px;
@@ -4713,15 +4691,15 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   min-height: 28px;
   transition: border-color var(--speed) var(--ease);
 }
-.mc-custom-input input:focus { border-color: var(--accent); }
+.mc-custom-input input:focus { border-color: var(--border-focus); }
 .mc-custom-input input::placeholder { color: var(--text-tertiary); }
 .mc-custom-input button {
   font-size: 11px;
   padding: 4px 10px;
-  border: 1px solid rgba(77,157,224,0.4);
+  border: 1px solid var(--border);
   border-radius: 8px;
-  background: rgba(77,157,224,0.08);
-  color: var(--accent);
+  background: var(--surface);
+  color: var(--text);
   cursor: pointer;
   transition: all 0.15s;
   font-family: inherit;
@@ -4729,9 +4707,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   min-height: 28px;
 }
 .mc-custom-input button:hover {
-  border-color: var(--accent);
-  background: rgba(77,157,224,0.18);
-  color: var(--text);
+  border-color: var(--ib-muted);
+  background: var(--surface-raised);
 }
 
 /* ── CHARTS — flat, geometric ── */
@@ -4746,7 +4723,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .chart-container h4 { font-size: 12.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
 .bar-chart { display: flex; align-items: flex-end; gap: 2px; height: 80px; }
 .bar { background: var(--accent); border-radius: 3px 3px 0 0; min-width: 4px; flex: 1; transition: height 0.3s; position: relative; }
-.bar:hover { background: var(--purple); }
+.bar:hover { opacity: 0.75; }
 .bar .bar-tooltip {
   display: none;
   position: absolute;
@@ -4804,8 +4781,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 .panel-resize-handle:hover,
 .panel-resize-handle.active {
-  background: var(--accent);
-  opacity: 0.4;
+  background: var(--ib-muted);
+  opacity: 0.35;
 }
 /* Panel tasks (.prd/10 §3.1-6) — pinned between the token badges and the
    scroll area: always shown (an empty line when there are none yet), with its
@@ -4818,10 +4795,10 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .pa-crumb { min-width: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 6px; border: 0; border-radius: 6px; background: none; color: var(--text-secondary); font: inherit; cursor: pointer; }
 .pa-crumb:first-child { flex-shrink: 0; }
 .pa-crumb[aria-current="page"] { color: var(--text); font-weight: 600; cursor: default; }
-.pa-crumb:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.pa-crumb:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .pa-sep { flex-shrink: 0; color: var(--text-tertiary); }
 .pa-focus { --ag-c: var(--text-tertiary); margin-top: 2px; border-radius: 6px; outline: none; }
-.pa-focus:focus-visible { box-shadow: 0 0 0 2px var(--accent); }
+.pa-focus:focus-visible { box-shadow: 0 0 0 2px var(--border-focus); }
 .pa-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 14px; line-height: 1.35; }
 .pa-name .ag-type { font-weight: 650; }
 .pa-name .ag-id { font-size: 12px; }
@@ -4955,7 +4932,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-sections { display: flex; gap: 2px; padding: 0 12px; border-bottom: 1px solid var(--border); background: var(--surface); }
 .psec-tab { flex: 1 1 0; min-width: 0; min-height: 38px; padding: 6px 8px; border: 0; border-bottom: 2px solid transparent; background: none; color: var(--text-secondary); font: inherit; font-size: 12.5px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; cursor: pointer; transition: color var(--speed) var(--ease), border-color var(--speed) var(--ease); }
 .psec-tab:hover { color: var(--text); }
-.psec-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--accent); }
+.psec-tab[aria-selected="true"] { color: var(--text); border-bottom-color: var(--text); }
 .psec-tab:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; border-radius: 6px; }
 /* SSOT 2026-10-29 T6: Chat · 작업 로그 on the left at their own width; 에이전트 트리 at the right end. */
 .panel-sections .psec-tab { flex: 0 1 auto; padding: 6px 12px; }
@@ -4967,12 +4944,12 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .psec:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
 .psec-older { display: block; margin: 10px auto 2px; padding: 5px 14px; border: 1px solid var(--border); border-radius: 999px; background: transparent; color: var(--text-secondary); font: inherit; font-size: 12px; cursor: pointer; }
 .psec-older:hover { color: var(--text); border-color: var(--text-tertiary); }
-.psec-older:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.psec-older:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .psec-older[aria-busy="true"] { cursor: progress; font-style: italic; color: var(--text-tertiary); }
 .psec-start { margin: 12px 0 2px; text-align: center; font-size: 11.5px; color: var(--text-tertiary); }
 .psec-older[hidden], .psec-start[hidden], .psec-pill[hidden] { display: none; }
 .psec-empty { margin: 24px 16px; text-align: center; font-size: 12px; color: var(--text-tertiary); }
-.psec-pill { position: absolute; left: 50%; bottom: 12px; z-index: 4; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 4px 14px; border: 1px solid var(--accent); border-radius: 999px; background: var(--accent); color: #fff; font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18); }
+.psec-pill { position: absolute; left: 50%; bottom: 12px; z-index: 4; transform: translateX(-50%); display: inline-flex; align-items: center; gap: 4px; min-height: 32px; padding: 4px 14px; border: 1px solid var(--ib-text); border-radius: 999px; background: var(--ib-text); color: var(--ib-card); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18); }
 .psec-pill:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .panel-tree { padding: 6px 16px 12px; }
 .panel-conv { padding: 0; }
@@ -4997,7 +4974,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   transition: background var(--speed) var(--ease), border-color var(--speed) var(--ease), color var(--speed) var(--ease);
 }
 .pdt-icon { width: 14px; height: 14px; flex: none; }
-.panel-detail-toggle[aria-pressed="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.panel-detail-toggle[aria-pressed="true"] { background: var(--ib-pill); border-color: var(--ib-muted); color: var(--text); }
 .panel-detail-toggle:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 /* Minimal by default: the agent path, the subtree and the main agent's own
    header are for 자세히 — the tabs already say where the reader is. */
@@ -5257,7 +5234,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   justify-content: center;
   transition: all var(--speed) var(--ease);
 }
-.panel-close:hover { color: var(--text); border-color: var(--accent); }
+.panel-close:hover { color: var(--text); border-color: var(--ib-muted); }
 .panel-header { flex-wrap: wrap; row-gap: 8px; }
 /* ── DETAIL DECK (SSOT 2026-10-29 T2) — every open card's detail card; the ones
    waiting behind the front card show their top edges above it, and ‹ n / m ›
@@ -5312,7 +5289,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .pi-dot { margin: 0 5px; color: var(--text-tertiary); }
 .pi-chev { flex-shrink: 0; width: 14px; height: 14px; color: var(--text-tertiary); transition: transform var(--speed) var(--ease); }
 .pi-head[aria-expanded="true"] .pi-chev { transform: rotate(180deg); }
-.pi-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.pi-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; border-radius: 6px; }
 .pi-links { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 2px; }
 .pi-links a { font-weight: 600; color: var(--accent); text-decoration: none; min-height: 24px; display: inline-flex; align-items: center; min-width: 0; overflow-wrap: anywhere; }
 .pi-links a:hover, .pi-links a:focus-visible { text-decoration: underline; }
@@ -5346,7 +5323,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    (SSOT 2026-10-29, the card's line is the summary); 펼치기 shows all of it. */
 .panel-goal .card-goal .cg-objective { -webkit-line-clamp: 3; line-height: 1.45; }
 .panel-goal .card-goal.is-open .cg-objective { display: block; -webkit-line-clamp: unset; overflow: visible; }
-.panel-goal:focus-visible { box-shadow: inset 0 0 0 2px var(--accent); }
+.panel-goal:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
 .panel-tasks-earlier { opacity: 0.85; }
 /* Scroll container: the common surface (large UIAskQ choices included), the
    agent tabs, Tasks and the section tabs scroll together; each section scrolls
@@ -5385,7 +5362,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .turn-raw summary.turn-expand-btn::-webkit-details-marker { display: none; }
 .turn-raw summary.turn-expand-btn::before { content: '\\25B6 '; font-size: 9px; }
 .turn-raw[open] summary.turn-expand-btn::before { content: '\\25BC '; }
-.turn-raw summary.turn-expand-btn:hover { color: var(--accent); }
+.turn-raw summary.turn-expand-btn:hover { color: var(--text-secondary); }
 .turn-raw-body { margin-top: 4px; padding: 8px 10px; border-radius: 8px; background: var(--surface-raised); font-size: 12px; color: var(--text-secondary); }
 .turn-raw-label { font-size: 11px; font-weight: 600; color: var(--text-tertiary); margin: 6px 0 2px; }
 .turn-raw-label:first-child { margin-top: 0; }
@@ -5409,7 +5386,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 @container sysrow (max-width: 280px) { .cp-pct { display: none; } }
 .sys-turn > summary { list-style: none; display: block; cursor: pointer; border-radius: 8px; }
 .sys-turn > summary::-webkit-details-marker { display: none; }
-.sys-turn > summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.sys-turn > summary:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .sys-row-in { display: flex; align-items: center; gap: 8px; min-height: 24px; min-width: 0; font-size: 12px; color: var(--text-tertiary); }
 .sys-row-in .turn-name { font-size: 12px; }
 .sys-row-in .turn-time { flex: none; white-space: nowrap; }
@@ -5448,9 +5425,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* T5 — the skills an instruction invoked: badges (name · estimated tokens) under its words. */
 .skill-badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 6px; }
 .skill-badge { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 9px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; cursor: pointer; transition: background-color var(--dur-press) ease, border-color var(--dur-press) ease; }
-.skill-badge:hover { background: var(--bg); }
-.skill-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.skill-badge[aria-expanded="true"] { border-color: var(--accent); }
+.skill-badge:hover { background: var(--ib-pill); }
+.skill-badge:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.skill-badge[aria-expanded="true"] { background: var(--ib-pill); border-color: var(--ib-muted); }
 .skill-tok { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .skill-detail { margin-top: 6px; }
 .skill-detail-h { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; font-size: 12px; }
@@ -5503,8 +5480,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .btn-action.btn-stop:hover:not(:disabled) { border-color: var(--st-fail); }
   .stats-more:hover { background: var(--surface-raised); color: var(--text); }
   .card-body .card-refs a:hover { text-decoration: underline; }
-  .btn-choice:hover:not(:disabled) { border-color: var(--accent); background: rgba(77,157,224,0.18); color: var(--text); }
-  .btn-choice-recommended:hover:not(:disabled) { background: #256f38; color: white; border-color: #256f38; }
+  .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--surface-raised); color: var(--text); }
   .card-body .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--ib-card); color: var(--ib-text); }
 }
 
@@ -5540,7 +5516,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
      second. The period tabs share the row's width and keep 44px height with
      narrower sides, so the row fits 320px with the coarse-pointer padding. */
   .stats-strip { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "period more" "nums nums"; gap: 8px 12px; }
-  .stats-strip .period-btn { flex: 1 1 auto; padding-left: 12px; padding-right: 12px; }
+  .stats-strip .period-bar { min-width: 0; }
+  .stats-strip .seg .period-btn { flex: 1 1 auto; justify-content: center; padding-left: 9px; padding-right: 9px; }
   /* Top bar: the status badge becomes a 10px dot (aria-label preserved for SR),
      the "Logged in as" prefix goes, and the user select fills the nav row (which
      wraps rather than overflow on very small screens). Labels stay whole. */
@@ -5589,7 +5566,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .chart-row { flex-direction: column; }
 }
 @media (hover: hover) and (pointer: fine) {
-  .wl-child:hover { border-color: var(--border-focus); }
+  .wl-child:hover { border-color: var(--ib-muted); }
   .pa-crumb:not([aria-current="page"]):hover { background: var(--surface-raised); color: var(--text); }
   .wl-agent-link:not(.wl-child):hover { text-decoration: underline; }
 }
@@ -5615,7 +5592,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .pc-tool { width: 44px; height: 44px; }
   .panel-close { width: 40px; height: 40px; }
   .topbar .nav a, .topbar .nav .user-select { min-height: 40px; padding: 8px 16px; }
-  .period-btn { min-height: 40px; padding: 12px 20px; }
+  .period-btn { min-height: 40px; }
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
 }
 /* ── #800: TOUCH x NARROW — restore tight padding so the coarse-pointer
@@ -5887,7 +5864,7 @@ body.nt-open .new-task-fab { display: none !important; }
 }
 .nt-chip select option { background: var(--surface); color: var(--text); }
 .nt-battery-btn { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 6px; border: 0; border-radius: 8px; background: transparent; color: var(--text-tertiary); font: inherit; font-size: 12px; font-weight: 650; font-variant-numeric: tabular-nums; cursor: pointer; }
-.nt-battery-btn:hover { background: var(--bg); }
+.nt-battery-btn:hover { background: var(--ib-pill); }
 .nt-battery { position: relative; display: inline-block; width: 24px; height: 12px; padding: 1px; border: 1.5px solid currentColor; border-radius: 3px; }
 .nt-battery::after { content: ''; position: absolute; right: -4px; top: 2.5px; width: 2px; height: 4px; border-radius: 0 1px 1px 0; background: currentColor; }
 .nt-battery-fill { display: block; width: 0; height: 100%; border-radius: 1px; background: currentColor; transition: width var(--dur-move) var(--ease-out); }
@@ -5902,11 +5879,9 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-toggle { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px 0 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised); color: var(--text-secondary); font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; transition: background var(--dur-press) var(--ease-out), color var(--dur-press) var(--ease-out), border-color var(--dur-press) var(--ease-out); }
 .nt-switch { position: relative; flex: none; width: 26px; height: 16px; border-radius: 999px; background: var(--border); transition: background var(--dur-press) var(--ease-out); }
 .nt-switch::after { content: ''; position: absolute; left: 2px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, 0.35); transition: transform var(--dur-press) var(--ease-out); }
-.nt-toggle[aria-pressed="true"] { color: var(--text); border-color: var(--accent); }
+.nt-toggle[aria-pressed="true"] { color: var(--text); border-color: var(--ib-muted); }
 .nt-toggle[aria-pressed="true"] .nt-switch { background: var(--accent); }
 .nt-toggle[aria-pressed="true"] .nt-switch::after { transform: translateX(10px); }
-#nt-autoz[aria-pressed="true"] { border-color: var(--purple); }
-#nt-autoz[aria-pressed="true"] .nt-switch { background: var(--purple); }
 .nt-toggle-note { font-size: 11px; font-weight: 500; color: var(--text-tertiary); }
 
 .nt-compose { position: relative; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); transition: border-color var(--dur-press) var(--ease-out), box-shadow var(--dur-press) var(--ease-out); }
@@ -6037,7 +6012,7 @@ body.nt-open .new-task-fab { display: none !important; }
 .art-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-artifacts { margin-top: 12px; }
 .art-section-label { display: flex; align-items: center; gap: 6px; }
-.art-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--accent); color: #fff; font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.art-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--ib-pill); color: var(--text-secondary); font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .art-strip { display: flex; gap: 8px; overflow-x: auto; padding: 4px 2px 8px; scroll-snap-type: x proximity; scrollbar-width: thin; overscroll-behavior-x: contain; }
 .art-tile { position: relative; flex: 0 0 auto; width: 128px; scroll-snap-align: start; }
 .art-open { display: flex; flex-direction: column; width: 100%; padding: 0; overflow: hidden; border: 1px solid var(--ib-card-border); border-radius: 10px; background: var(--surface); color: var(--ib-text); font: inherit; text-align: left; cursor: zoom-in; transition: border-color var(--speed) var(--ease), box-shadow var(--speed) var(--ease), transform var(--dur-press) var(--ease-out); }
@@ -6054,8 +6029,8 @@ body.nt-open .new-task-fab { display: none !important; }
 .art-play svg { width: 14px; height: 14px; }
 .art-play:active:not(:focus-visible) { transform: scale(0.97); }
 @media (hover: hover) and (pointer: fine) {
-  .art-chip:hover { border-color: var(--art-tint, var(--accent)); background: var(--surface-raised); }
-  .art-open:hover { border-color: var(--art-tint, var(--accent)); box-shadow: var(--ib-shadow-raised); transform: translateY(-1px); }
+  .art-chip:hover { border-color: var(--ib-muted); background: var(--surface-raised); }
+  .art-open:hover { border-color: var(--ib-muted); box-shadow: var(--ib-shadow-raised); transform: translateY(-1px); }
   .art-play:hover { transform: scale(1.06); }
 }
 .art-play .ic-pause, .art-play.is-playing .ic-play { display: none; }
@@ -6077,7 +6052,7 @@ body.nt-open .new-task-fab { display: none !important; }
 .um-tile img { display: block; width: 100%; height: 100%; object-fit: cover; }
 .um-single .um-tile { width: 280px; max-width: 100%; height: 200px; background: var(--bg); }
 .um-single .um-tile img { object-fit: contain; }
-.um-tile:focus-visible, .um-open:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.um-tile:focus-visible, .um-open:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
 .um-tile:active:not(:focus-visible), .um-open:active:not(:focus-visible) { transform: scale(0.97); }
 .um-more { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: rgba(0, 0, 0, 0.55); color: #fff; font-size: 17px; font-weight: 600; font-variant-numeric: tabular-nums; }
 .um-tile.is-broken img { display: none; }
@@ -6101,13 +6076,13 @@ body.nt-open .new-task-fab { display: none !important; }
 .io-row .um-media { margin: 4px 0 6px; }
 .panel-user-media { margin-bottom: 6px; }
 .panel-um-head { display: flex; align-items: center; gap: 6px; width: 100%; min-height: 32px; padding: 2px 0; border: none; background: none; color: var(--text); font: inherit; font-size: 12px; font-weight: 600; text-align: left; cursor: pointer; }
-.panel-um-head:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.panel-um-head:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; border-radius: 6px; }
 .panel-um-head .um-chevron { width: 14px; height: 14px; flex-shrink: 0; color: var(--text-tertiary); transition: transform var(--speed) var(--ease); }
 .panel-um-head[aria-expanded="true"] .um-chevron { transform: rotate(180deg); }
 .panel-um-body { padding: 4px 0 2px; }
 .panel-um-body .um-media { margin: 0; }
 @media (hover: hover) and (pointer: fine) {
-  .um-tile:hover, .um-file:hover { border-color: var(--art-tint, var(--accent)); }
+  .um-tile:hover, .um-file:hover { border-color: var(--ib-muted); }
 }
 @media (pointer: coarse) {
   .um-compact .um-tile { width: 44px; height: 44px; }
@@ -6244,7 +6219,10 @@ body.nt-open .new-task-fab { display: none !important; }
      defaults menu spans the bar instead of running off the edge, and the
      artifact viewer takes the whole screen. */
   .inbox.has-cards { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
-  .topbar .topbar-defaults { position: static; }
+  /* The defaults chips take their own row under brand · status · account: sharing the brand row
+     they could leave the account group (basis 0) no width at all, its pill and theme toggle
+     painting over the chips. */
+  .topbar .topbar-defaults { position: static; order: 1; flex: 0 0 100%; }
   .td-menu { left: 12px; right: 12px; min-width: 0; max-width: none; }
   .art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
   .art-modal-head { flex-wrap: wrap; row-gap: 6px; }
@@ -6340,10 +6318,10 @@ ${pageTokenAliases()}
          other cards and the charts below the strip (kept in localStorage). -->
     <section class="stats" id="stats" aria-label="Usage stats">
       <div class="stats-strip">
-        <div class="period-bar" role="group" aria-label="&#xAE30;&#xAC04;">
-          <button type="button" class="period-btn active" data-period="day" aria-pressed="true" onclick="setPeriod('day')">&#xC624;&#xB298;</button>
-          <button type="button" class="period-btn" data-period="week" aria-pressed="false" onclick="setPeriod('week')">&#xC9C0;&#xB09C; 7&#xC77C;</button>
-          <button type="button" class="period-btn" data-period="month" aria-pressed="false" onclick="setPeriod('month')">&#xC9C0;&#xB09C; 30&#xC77C;</button>
+        <div class="period-bar seg" role="group" aria-label="&#xAE30;&#xAC04;">
+          <button type="button" class="period-btn seg-btn active" data-period="day" aria-pressed="true" onclick="setPeriod('day')">&#xC624;&#xB298;</button>
+          <button type="button" class="period-btn seg-btn" data-period="week" aria-pressed="false" onclick="setPeriod('week')">&#xC9C0;&#xB09C; 7&#xC77C;</button>
+          <button type="button" class="period-btn seg-btn" data-period="month" aria-pressed="false" onclick="setPeriod('month')">&#xC9C0;&#xB09C; 30&#xC77C;</button>
         </div>
         <div class="strip-nums">
           <div class="strip-num"><span class="label">&#xC138;&#xC158;</span><span class="value is-loading" id="stat-sessions"></span></div>
@@ -12077,7 +12055,7 @@ function setBoardView(view, ev) {
   if (ev) {
     try { localStorage.setItem('soma-board-view', view); } catch (_e) {}
   }
-  var segs = document.querySelectorAll('.seg-btn');
+  var segs = document.querySelectorAll('.seg-btn[data-view]');
   for (var i = 0; i < segs.length; i++) {
     var pressed = segs[i].getAttribute('data-view') === view ? 'true' : 'false';
     if (segs[i].getAttribute('aria-pressed') !== pressed) segs[i].setAttribute('aria-pressed', pressed);
@@ -12781,10 +12759,10 @@ function renderMultiChoicePanel(s) {
   if (heroN > 0) {
     if (heroN === heroM) {
       html += '<button class="btn-hero-recommended" onclick="event.stopPropagation();submitAllRecommended(\\'' + escJs(key) + '\\')">'
-        + '\\u2B50 \\uCD94\\uCC9C\\uB300\\uB85C \\uBAA8\\uB450 \\uC120\\uD0DD</button>';
+        + '\\uCD94\\uCC9C\\uB300\\uB85C \\uBAA8\\uB450 \\uC120\\uD0DD</button>';
     } else {
       html += '<button class="btn-hero-recommended" disabled aria-disabled="true" aria-label="\\uCD94\\uCC9C\\uC774 ' + heroN + '/' + heroM + '\\uAC1C\\uB9CC \\uC788\\uC5B4 \\uC77C\\uAD04 \\uCC98\\uB9AC \\uBD88\\uAC00">'
-        + '\\uD83D\\uDD12 \\uCD94\\uCC9C \\uBD80\\uC871 (' + heroN + '/' + heroM + ')</button>';
+        + '\\uCD94\\uCC9C \\uBD80\\uC871 (' + heroN + '/' + heroM + ')</button>';
     }
   }
 

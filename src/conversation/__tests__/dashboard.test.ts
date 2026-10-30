@@ -1529,10 +1529,13 @@ describe('Dashboard API', () => {
       expect(script).toContain('X-CSRF-Token');
       // Active branch button class + onclick wiring
       expect(script).toContain('btn-hero-recommended');
-      // Active branch label (escaped Unicode for ⭐ 추천대로 모두 선택)
-      expect(script).toContain('\\u2B50');
-      // Blocked branch label sentinel (🔒 추천 부족)
-      expect(script).toContain('\\uD83D\\uDD12');
+      // Active branch label (escaped Unicode for 추천대로 모두 선택) — tone pass P2: no star (the
+      // hero is the form's ink primary; no emoji in labels)
+      expect(script).toContain('\\uCD94\\uCC9C\\uB300\\uB85C \\uBAA8\\uB450 \\uC120\\uD0DD');
+      expect(script).not.toContain('\\u2B50');
+      // Blocked branch label sentinel (추천 부족), no lock emoji
+      expect(script).toContain('\\uCD94\\uCC9C \\uBD80\\uC871');
+      expect(script).not.toContain('\\uD83D\\uDD12');
       // Skips 직접입력 sentinel when counting
       expect(script).toContain('\\uC9C1\\uC811\\uC785\\uB825');
       // CSS class definition is present in the page (style tag)

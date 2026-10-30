@@ -86,7 +86,8 @@ describe('agent inbox board — layout (§3.1)', () => {
     expect(board).toBeGreaterThan(detailAt);
     // Collapsed: the period control, 세션 · 토큰 · 비용 and the 자세히 toggle.
     const row = main.slice(strip, detailAt);
-    expect(row).toContain('class="period-bar"');
+    // Tone pass P2: the period control is the page's one segmented control (.seg), not a second style.
+    expect(row).toContain('class="period-bar seg"');
     for (const id of ['stat-sessions', 'stat-tokens-wrap', 'stat-tokens', 'stat-tokens-tooltip', 'stat-cost']) {
       expect(row, id).toContain(`id="${id}"`);
     }
@@ -556,9 +557,11 @@ describe('agent inbox board — motion contract (§4)', () => {
     // affectUI batch 1: the card's single-choice question is a <ui-approval-card>, which lists the
     // recommended choice first, tagged and preselected (library: approval-card.test.ts "lists the
     // recommended choice first and preselected; Submit sends it"). The card's star / ink overrides went
-    // with the old buttons; the panel's multi-question form keeps the shared .btn-choice-recommended.
+    // with the old buttons; the panel's multi-question form keeps the shared .btn-choice-recommended —
+    // tone pass P2: tagged 추천 (a neutral tag, like the library's approval card), no star, no green.
     expect(TEMPLATE).not.toMatch(/\.card \.btn-choice-recommended|\.card \.btn-choice\.btn-choice-recommended/);
-    expect(TEMPLATE).toMatch(/\n\.btn-choice-recommended::before \{ content: "\\\\2B50 "; \}/);
+    expect(TEMPLATE).toMatch(/\n\.btn-choice-recommended::after \{ content: "추천";/);
+    expect(TEMPLATE).not.toContain('2B50');
   });
 
   it('board hover effects live only inside (hover: hover) and (pointer: fine)', () => {
