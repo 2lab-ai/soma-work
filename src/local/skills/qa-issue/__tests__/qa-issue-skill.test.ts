@@ -124,6 +124,10 @@ describe('qa-issue §Precondition gate — confirm before QA, never after', () =
     expect(s).toContain('No wildcard');
   });
 
+  it('documents every case field the fingerprint binds (#591)', () => {
+    for (const f of ['`steps`', '`expected`', '`tolerance`', '`accountRef`']) expect(s, f).toContain(f);
+  });
+
   it('defines --plan as steps 1–3 that write a gate file and run nothing', () => {
     expect(s).toMatch(/`--plan`[^\n]*steps 1–3/);
     expect(s).toContain('`<runDir>/gate-<KEY>.json`');
