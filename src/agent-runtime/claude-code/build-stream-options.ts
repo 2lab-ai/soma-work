@@ -49,6 +49,7 @@ import type { SessionRegistry } from '../../session-registry';
 import type { ConversationSession, WorkflowType } from '../../types';
 import { DEFAULT_THINKING_ENABLED, userSettingsStore } from '../../user-settings-store';
 import { createTrackedClaudeProcessSpawner } from '../claude-child-process-registry';
+import { type ExecutionContext, executionContextFromSlack } from '../execution-context';
 import { createNativeWriteCheck } from '../policy/native-write-boundary';
 import type { SafetyClassifier } from '../policy/safety-classifier';
 import { evaluateToolPolicy, TOOL_POLICY_MATCHERS, type ToolPolicyContext } from '../policy/tool-policy';
@@ -93,7 +94,11 @@ export interface BuildStreamOptionsDeps {
     slackContext: SlackContext | undefined,
   ) => ModelCommandContext | undefined;
   mcpConfigBuilder: {
-    buildConfig(slackContext: SlackContext | undefined, ctx: ModelCommandContext | undefined): Promise<McpConfig>;
+    buildConfig(
+      slackContext: SlackContext | undefined,
+      ctx: ModelCommandContext | undefined,
+      executionContext?: ExecutionContext,
+    ): Promise<McpConfig>;
   };
   compactHookBuilder?: CompactHookBuilder;
   promptBuilder: {
@@ -158,6 +163,13 @@ export interface BuildStreamOptionsInput {
   abortController?: AbortController;
   workingDirectory?: string;
   slackContext?: SlackContext;
+  /**
+   * The context the turn runs under (#597). A Slack turn derives one from
+   * `slackContext`; a Slack-less task passes the one built from its saved
+   * record (`executionContextForTask`). With neither, the options carry no
+   * tools and no bypass.
+   */
+  executionContext?: ExecutionContext;
 }
 
 export interface BuildStreamOptionsResult {
@@ -219,30 +231,52 @@ export async function buildStreamOptions(
     env: queryEnv,
   };
 
-  // Get MCP configuration
-  const modelCommandContext = deps.buildModelCommandContext(session, slackContext);
-  const mcpConfig = await deps.mcpConfigBuilder.buildConfig(slackContext, modelCommandContext);
-  options.permissionMode = mcpConfig.permissionMode;
-  if (mcpConfig.allowDangerouslySkipPermissions) {
-    options.allowDangerouslySkipPermissions = true;
-  }
+  // The context this turn runs under (#597, .prd/17 D2). A Slack turn derives
+  // it from the Slack-signed event; a Slack-less task passes the one built from
+  // its saved record. No context → no tools and no bypass: the old
+  // `!slackContext → bypass` with no policy hook is gone (fail closed).
+  const execCtx: ExecutionContext | undefined =
+    input.executionContext ??
+    (slackContext?.user
+      ? executionContextFromSlack({
+          user: slackContext.user,
+          sessionKey: deps.sessionRegistry.getSessionKey(slackContext.channel, slackContext.threadTs),
+          workingDirectory,
+        })
+      : undefined);
+  const contextUser = execCtx?.userId;
 
-  if (mcpConfig.mcpServers) {
-    options.mcpServers = mcpConfig.mcpServers;
-  }
-  if (mcpConfig.allowedTools && mcpConfig.allowedTools.length > 0) {
-    options.allowedTools = mcpConfig.allowedTools;
-  }
-  if (mcpConfig.disallowedTools && mcpConfig.disallowedTools.length > 0) {
-    options.disallowedTools = mcpConfig.disallowedTools;
-  }
-  if (mcpConfig.permissionPromptToolName) {
-    options.permissionPromptToolName = mcpConfig.permissionPromptToolName;
-    // SDK MCP calls default to a 60s stream-close timeout. Slack approvals
-    // intentionally wait up to five minutes, so keep the SDK bridge open past
-    // the handler timeout while preserving an operator override.
-    if (slackContext && options.env && options.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT === undefined) {
-      options.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = '310000';
+  let mcpConfig: McpConfig | undefined;
+  if (!execCtx) {
+    logger.warn('No execution context — the turn runs with no tools and no bypass (#597)');
+    options.tools = [];
+    options.permissionMode = 'default';
+  } else {
+    // Get MCP configuration
+    const modelCommandContext = deps.buildModelCommandContext(session, slackContext);
+    mcpConfig = await deps.mcpConfigBuilder.buildConfig(slackContext, modelCommandContext, execCtx);
+    options.permissionMode = mcpConfig.permissionMode;
+    if (mcpConfig.allowDangerouslySkipPermissions) {
+      options.allowDangerouslySkipPermissions = true;
+    }
+
+    if (mcpConfig.mcpServers) {
+      options.mcpServers = mcpConfig.mcpServers;
+    }
+    if (mcpConfig.allowedTools && mcpConfig.allowedTools.length > 0) {
+      options.allowedTools = mcpConfig.allowedTools;
+    }
+    if (mcpConfig.disallowedTools && mcpConfig.disallowedTools.length > 0) {
+      options.disallowedTools = mcpConfig.disallowedTools;
+    }
+    if (mcpConfig.permissionPromptToolName) {
+      options.permissionPromptToolName = mcpConfig.permissionPromptToolName;
+      // SDK MCP calls default to a 60s stream-close timeout. Slack approvals
+      // intentionally wait up to five minutes, so keep the SDK bridge open past
+      // the handler timeout while preserving an operator override.
+      if (slackContext && options.env && options.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT === undefined) {
+        options.env.CLAUDE_CODE_STREAM_CLOSE_TIMEOUT = '310000';
+      }
     }
   }
 
@@ -250,17 +284,16 @@ export async function buildStreamOptions(
   // default) and `/tmp/{userId}` (`allowWrite`, mounted below). The policy hook
   // confines the native file tools of a non-admin to the same roots
   // (`native-write-boundary.ts`); with the sandbox off neither is confined.
-  const sandboxDisabled = slackContext?.user ? userSettingsStore.getUserSandboxDisabled(slackContext.user) : false;
+  const sandboxDisabled = contextUser ? userSettingsStore.getUserSandboxDisabled(contextUser) : false;
   const sandboxUserDir =
-    slackContext?.user && isSafePathSegment(slackContext.user)
-      ? normalizeTmpPath(path.join('/tmp', slackContext.user))
-      : undefined;
+    contextUser && isSafePathSegment(contextUser) ? normalizeTmpPath(path.join('/tmp', contextUser)) : undefined;
   const nativeWriteRoots: readonly string[] | undefined = sandboxDisabled
     ? undefined
     : [...(workingDirectory ? [workingDirectory] : []), ...(sandboxUserDir ? [sandboxUserDir] : [])];
 
-  // PreToolUse hooks
-  if (slackContext) {
+  // PreToolUse hooks — for every turn that has a context, Slack or not (D3).
+  if (execCtx && mcpConfig) {
+    const somaPermissionMode = mcpConfig.somaPermissionMode;
     // PreToolUse: a single unified policy hook (epic #1023 P5). All tool guards
     // — abort, ssh-ban, sensitive-path, cross-user, MCP grant, PR-issue
     // precondition, mode allow/classify — collapse into `evaluateToolPolicy`,
@@ -268,12 +301,16 @@ export async function buildStreamOptions(
     // SDK merge (deny from any guard wins over the bypass allow; a dangerous Bash
     // in auto mode goes to the safety classifier). Live state (abort signal, handoff
     // context) is resolved per call so mid-session aborts and handoff changes are honored.
-    const policyUser = slackContext.user;
-    const policyIsAdmin = isAdminUser(slackContext.user);
+    const policyUser = execCtx.userId;
+    const policyIsAdmin = execCtx.isAdmin;
     const cachedPermConfig = CONFIG_FILE ? loadMcpToolPermissions(CONFIG_FILE) : {};
     const gatedServerNames = getPermissionGatedServers(cachedPermConfig);
-    const hookSessionKey = deps.sessionRegistry.getSessionKey(slackContext.channel, slackContext.threadTs);
-    const envSkillScope = { channel: slackContext.channel, threadTs: slackContext.threadTs };
+    const hookSessionKey = execCtx.sessionKey;
+    // A Slack thread grant applies to its thread; a task's scope is its own key,
+    // which no Slack thread grant can match (the user's standing grants still apply).
+    const envSkillScope = slackContext
+      ? { channel: slackContext.channel, threadTs: slackContext.threadTs }
+      : { channel: execCtx.sessionKey };
     const envRegistry = deps.getEnvSkillRegistry?.();
 
     const policyHook = async (input: HookInput): Promise<HookJSONOutput> => {
@@ -285,10 +322,12 @@ export async function buildStreamOptions(
       const ctx: ToolPolicyContext = {
         user: policyUser,
         isAdmin: policyIsAdmin,
-        mode: mcpConfig.somaPermissionMode,
+        mode: somaPermissionMode,
         aborted: abortController?.signal.aborted ?? false,
         isDangerousRuleDisabled: (ruleId) => deps.sessionRegistry.isDangerousRuleDisabled(hookSessionKey, ruleId),
-        handoffContext: deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs)?.handoffContext,
+        handoffContext: slackContext
+          ? deps.sessionRegistry.getSession(slackContext.channel, slackContext.threadTs)?.handoffContext
+          : deps.sessionRegistry.getSessionByKey(execCtx.sessionKey)?.handoffContext,
         checkMcpToolPermission: (name) =>
           gatedServerNames.length > 0
             ? (deps.checkMcpToolPermission(name, policyUser, cachedPermConfig, gatedServerNames) ?? null)
@@ -310,9 +349,15 @@ export async function buildStreamOptions(
           // Enforce step 6b: ask the admins — only for a denial that names one skill (`plugin:skill`);
           // a read of other plugin files or an unnamed `Skill` call has no skill to grant. Never
           // awaited — the denial must reach the model now.
-          if (envSkillKey?.includes(':') && deps.onEnvSkillDenied) {
+          // A task has no thread to post the ask in: the denial stands, nobody is asked.
+          if (envSkillKey?.includes(':') && deps.onEnvSkillDenied && slackContext) {
             void deps
-              .onEnvSkillDenied({ requesterId: policyUser, skillKey: envSkillKey, ...envSkillScope })
+              .onEnvSkillDenied({
+                requesterId: policyUser,
+                skillKey: envSkillKey,
+                channel: slackContext.channel,
+                threadTs: slackContext.threadTs,
+              })
               .catch((err: unknown) =>
                 logger.warn('Environment skill permission request failed', {
                   user: policyUser,
@@ -359,6 +404,23 @@ export async function buildStreamOptions(
             });
             return { hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'allow' } };
           }
+          if (!slackContext) {
+            // The same escalation a Slack turn would ask the user about. A task has
+            // no approver until the dashboard approval lands (#599): deny, explicitly.
+            logger.warn('Escalation denied: a Slack-less task has no approver yet (#599)', {
+              tool: toolName,
+              user: policyUser,
+              rule: result.reason,
+            });
+            return {
+              hookSpecificOutput: {
+                hookEventName: 'PreToolUse',
+                permissionDecision: 'deny',
+                permissionDecisionReason:
+                  'This call needs approval, and a task without a Slack thread has no approver yet — it was not run.',
+              },
+            };
+          }
           logger.warn('Auto-mode classifier escalating to Slack permission UI', {
             tool: toolName,
             user: policyUser,
@@ -386,7 +448,7 @@ export async function buildStreamOptions(
     // the builder hasn't been wired (tests, non-Slack callers) this is a
     // no-op and compaction falls back to the stream-executor `compacting`
     // signal path.
-    if (deps.compactHookBuilder && session && slackContext.threadTs) {
+    if (deps.compactHookBuilder && session && slackContext?.threadTs) {
       const compactHooks = deps.compactHookBuilder({
         session,
         channel: slackContext.channel,
@@ -405,10 +467,10 @@ export async function buildStreamOptions(
   if (session?.model) {
     options.model = session.model;
     logger.debug('Using session model', { model: session.model });
-  } else if (slackContext?.user) {
-    const userModel = userSettingsStore.getUserDefaultModel(slackContext.user);
+  } else if (contextUser) {
+    const userModel = userSettingsStore.getUserDefaultModel(contextUser);
     options.model = userModel;
-    logger.debug('Using user default model', { model: userModel, user: slackContext.user });
+    logger.debug('Using user default model', { model: userModel, user: contextUser });
   }
 
   // Context-window env, driven by the canonical model profile
@@ -508,14 +570,12 @@ export async function buildStreamOptions(
   {
     const thinkingEnabled =
       session?.thinkingEnabled ??
-      (slackContext?.user ? userSettingsStore.getUserThinkingEnabled(slackContext.user) : DEFAULT_THINKING_ENABLED);
+      (contextUser ? userSettingsStore.getUserThinkingEnabled(contextUser) : DEFAULT_THINKING_ENABLED);
     if (!thinkingEnabled) {
       options.thinking = buildThinkingOption(false);
       logger.debug('Thinking disabled for session');
     } else {
-      const userShowThinking = slackContext?.user
-        ? userSettingsStore.getUserShowThinking(slackContext.user)
-        : undefined;
+      const userShowThinking = contextUser ? userSettingsStore.getUserShowThinking(contextUser) : undefined;
       const showSummary = resolveShowSummary(session?.showThinking, userShowThinking);
       options.thinking = buildThinkingOption(true, showSummary);
       logger.debug('Thinking adaptive', { display: showSummary ? 'summarized' : 'omitted' });
@@ -545,10 +605,10 @@ export async function buildStreamOptions(
     // to ~/.claude/plans — outside the write boundary of a non-admin. Keep
     // the plans inside the working directory (the SDK requires a path within
     // the project root).
-    if (slackContext?.user && !isAdminUser(slackContext.user)) {
+    if (contextUser && !isAdminUser(contextUser)) {
       options.settings = { plansDirectory: '.claude/plans' };
     }
-    const networkDisabled = slackContext?.user ? userSettingsStore.getUserNetworkDisabled(slackContext.user) : false;
+    const networkDisabled = contextUser ? userSettingsStore.getUserNetworkDisabled(contextUser) : false;
     if (!networkDisabled) {
       sandboxConfig.network = { allowedDomains: [...DEV_DOMAIN_ALLOWLIST] };
     }
@@ -562,10 +622,10 @@ export async function buildStreamOptions(
     // turn (`SessionRegistry.canInterrupt`), which would otherwise run them
     // under the grant. Domains only extend an active allowlist;
     // `networkDisabled` keeps every domain blocked.
-    if (session?.workflow === 'deploy' && session.ownerId && slackContext?.user) {
+    if (session?.workflow === 'deploy' && session.ownerId && contextUser) {
       const owner = session.ownerId;
       const grant = loadDeploySandboxGrant(CONFIG_FILE, logger);
-      if (grant?.users.includes(slackContext.user) && grant.users.includes(owner)) {
+      if (grant?.users.includes(contextUser) && grant.users.includes(owner)) {
         const added = extendSandboxWithGrant(sandboxConfig, grant, { network: !networkDisabled });
         if (added.paths + added.domains > 0) {
           // Counts only: the values are host topology.
@@ -576,9 +636,9 @@ export async function buildStreamOptions(
     // Environment plugins: a non-admin's Bash must not read them by any spelling (relative paths,
     // wildcards, symbolic links — what step 6b's text check cannot see). OS-enforced read deny
     // of their directories, unless the all-environment-skills grant opens them.
-    if (slackContext?.user && !isAdminUser(slackContext.user)) {
+    if (contextUser && !isAdminUser(contextUser)) {
       const envRegistry = deps.getEnvSkillRegistry?.();
-      const denyRead = envRegistry ? envSkillSandboxDenyRead(envRegistry, slackContext.user) : [];
+      const denyRead = envRegistry ? envSkillSandboxDenyRead(envRegistry, contextUser) : [];
       if (denyRead.length > 0) {
         sandboxConfig.filesystem = {
           ...(sandboxConfig.filesystem ?? {}),
@@ -588,12 +648,12 @@ export async function buildStreamOptions(
     }
     options.sandbox = sandboxConfig;
     logger.debug('Sandbox enabled', {
-      user: slackContext?.user,
+      user: contextUser,
       network: networkDisabled ? 'off' : 'on',
       domains: sandboxConfig.network?.allowedDomains?.length ?? 0,
     });
   } else {
-    logger.info('Sandbox disabled by admin setting', { user: slackContext?.user });
+    logger.info('Sandbox disabled by admin setting', { user: contextUser });
   }
 
   // Build system prompt with persona and workflow.
@@ -607,7 +667,7 @@ export async function buildStreamOptions(
   // regenerateInstructionsSummaryIfStale) clear `session.systemPrompt`
   // on change so the next turn lands on branch (c) and rebuilds.
   const workflow = session?.workflow || 'default';
-  const promptUserId = session?.ownerId || slackContext?.user;
+  const promptUserId = session?.ownerId || contextUser;
   const shouldRebuild = !session || !session.systemPrompt || session.compactionOccurred === true || !session.sessionId;
 
   let builtSystemPrompt: string | undefined;
@@ -670,8 +730,8 @@ export async function buildStreamOptions(
     // Expand SDK's allowed directory scope to user's root /tmp/{userId} directory.
     // Without this, sibling directories (e.g., /tmp/{userId}/soma-work_xxx/) trigger
     // permission prompts even in bypass mode, because SDK treats only cwd as allowed.
-    if (slackContext?.user && isSafePathSegment(slackContext.user)) {
-      const userRootDir = normalizeTmpPath(path.join('/tmp', slackContext.user));
+    if (contextUser && isSafePathSegment(contextUser)) {
+      const userRootDir = normalizeTmpPath(path.join('/tmp', contextUser));
       options.additionalDirectories = [...(options.additionalDirectories || []), userRootDir];
     }
   }

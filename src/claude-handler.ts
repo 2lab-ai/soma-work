@@ -17,6 +17,7 @@ import * as fs from 'fs';
 import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShotText } from './agent-runtime';
 import { liveAgentIds } from './agent-runtime/background-keepalive';
 import { buildStreamOptions, type EnvSkillDenial } from './agent-runtime/claude-code/build-stream-options';
+import { type ExecutionContext, ExecutionContextMissingError } from './agent-runtime/execution-context';
 import type { SafetyClassifier } from './agent-runtime/policy/safety-classifier';
 import { buildSafetyClassifier } from './agent-runtime/policy/safety-classifier-factory';
 import { readUuidList, STEER_SETTLEMENT_SUBTYPE } from './agent-runtime/steer-settlement';
@@ -1141,6 +1142,7 @@ export class ClaudeHandler implements TurnSteeringPort {
     workingDirectory?: string,
     slackContext?: SlackContext,
     sessionKey?: string,
+    executionContext?: ExecutionContext,
   ): AsyncGenerator<SDKMessage, void, unknown> {
     const incidentRequest = session?.incidentRequest;
     if (session && incidentRequest) {
@@ -1154,7 +1156,24 @@ export class ClaudeHandler implements TurnSteeringPort {
       );
       return;
     }
-    yield* this.streamSdkQuery(prompt, session, abortController, workingDirectory, slackContext, sessionKey);
+    // #597 (.prd/17 D2): a turn runs only under a context the server vouches
+    // for — the Slack event's user, or a Slack-less task's execution context.
+    // Refused here, before a slot lease or the SDK; never the old "no Slack
+    // context → bypass" options. (Incident attempts above run on their own
+    // isolated, deny-by-default options.)
+    if (!executionContext && !slackContext?.user) {
+      throw new ExecutionContextMissingError('no Slack user and no task context');
+    }
+    yield* this.streamSdkQuery(
+      prompt,
+      session,
+      abortController,
+      workingDirectory,
+      slackContext,
+      sessionKey,
+      undefined,
+      executionContext,
+    );
   }
 
   /**
@@ -1177,6 +1196,7 @@ export class ClaudeHandler implements TurnSteeringPort {
     slackContext?: SlackContext,
     sessionKey?: string,
     incident?: IncidentStreamWiring,
+    executionContext?: ExecutionContext,
   ): AsyncGenerator<SDKMessage, void, unknown> {
     // Acquire a lease on the active CCT slot. Held for the lifetime of the
     // Claude CLI streaming call, released in the outer finally below.
@@ -1220,7 +1240,7 @@ export class ClaudeHandler implements TurnSteeringPort {
       const llmuxTenant = tenantUserId ? await ensureTenantKey(tenantUserId, tenantKeyProfile(tenantUserId)) : null;
       const { env: queryEnv } = buildQueryEnv(lease, { llmuxTenant });
       const { options, getStderrBuffer } = await buildStreamOptions(
-        { queryEnv, session, abortController, workingDirectory, slackContext },
+        { queryEnv, session, abortController, workingDirectory, slackContext, executionContext },
         {
           logger: this.logger,
           getEffectivePluginPaths: () => this.getEffectivePluginPaths(),
@@ -2045,9 +2065,10 @@ export class ClaudeHandler implements TurnSteeringPort {
     workingDirectory?: string,
     slackContext?: SlackContext,
     sessionKey?: string,
+    executionContext?: ExecutionContext,
   ): AsyncIterable<AgentStreamEvent> {
     return runAgentStream(
-      this.streamQuery(prompt, session, abortController, workingDirectory, slackContext, sessionKey),
+      this.streamQuery(prompt, session, abortController, workingDirectory, slackContext, sessionKey, executionContext),
       { calculateTokenCost: hostPricing.calculateTokenCost, hostPriced: hostPricing.hostPriced },
     );
   }

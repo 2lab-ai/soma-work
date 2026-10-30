@@ -270,6 +270,7 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
   it('sandbox: network omitted when user disabled network', async () => {
     const spy = vi.spyOn(await import('../../user-settings-store'), 'userSettingsStore', 'get').mockReturnValue({
       getUserDefaultModel: () => 'm',
+      getUserPermissionMode: () => 'auto', // the execution context reads the mode (#597)
       getUserThinkingEnabled: () => true,
       getUserShowThinking: () => false,
       getUserSandboxDisabled: () => false,
@@ -529,6 +530,7 @@ describe('buildStreamOptions — option parity (epic #1023 P1)', () => {
     it('injects when the native-1M model comes from the user default (no session model)', async () => {
       const spy = vi.spyOn(await import('../../user-settings-store'), 'userSettingsStore', 'get').mockReturnValue({
         getUserDefaultModel: () => 'claude-fable-5',
+        getUserPermissionMode: () => 'auto', // the execution context reads the mode (#597)
         getUserThinkingEnabled: () => true,
         getUserShowThinking: () => false,
         getUserSandboxDisabled: () => false,
@@ -605,6 +607,7 @@ describe('sandbox: deploy-workflow grant (config.json#deploySandbox)', () => {
   async function mockUserSettings(settings: { sandboxDisabled?: boolean; networkDisabled?: boolean }) {
     return vi.spyOn(await import('../../user-settings-store'), 'userSettingsStore', 'get').mockReturnValue({
       getUserDefaultModel: () => 'm',
+      getUserPermissionMode: () => 'auto', // the execution context reads the mode (#597)
       getUserThinkingEnabled: () => true,
       getUserShowThinking: () => false,
       getUserSandboxDisabled: () => settings.sandboxDisabled === true,

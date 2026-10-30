@@ -29,6 +29,15 @@ const optedIn = process.env.SOMA_TEST_REAL_SDK === '1';
 
 const canRun = optedIn && !isNestedSession && !isCI;
 
+// A turn runs only under an execution context (#597). This suite is a non-Slack caller.
+const INTEGRATION_CONTEXT = Object.freeze({
+  origin: 'task' as const,
+  userId: 'U_INTEGRATION',
+  isAdmin: false,
+  permissionMode: 'bypass' as const,
+  sessionKey: 'task:integration',
+  workingDirectory: '/tmp',
+});
 const describeWithCredentials = canRun ? describe : describe.skip;
 
 if (optedIn && isNestedSession) {
@@ -92,7 +101,15 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
     const session = createMockSession({ model: 'claude-sonnet-4-20250514' });
     const abortController = new AbortController();
 
-    const stream = handler.streamQuery('Say "hello" and nothing else.', session, abortController, '/tmp');
+    const stream = handler.streamQuery(
+      'Say "hello" and nothing else.',
+      session,
+      abortController,
+      '/tmp',
+      undefined,
+      undefined,
+      INTEGRATION_CONTEXT,
+    );
 
     const result = await collectStream(stream);
     expect(result.errors).toHaveLength(0);
@@ -107,7 +124,15 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
     });
     const abortController = new AbortController();
 
-    const stream = handler.streamQuery('Say "effort-high-ok" and nothing else.', session, abortController, '/tmp');
+    const stream = handler.streamQuery(
+      'Say "effort-high-ok" and nothing else.',
+      session,
+      abortController,
+      '/tmp',
+      undefined,
+      undefined,
+      INTEGRATION_CONTEXT,
+    );
 
     const result = await collectStream(stream);
     expect(result.errors).toHaveLength(0);
@@ -121,7 +146,15 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
     });
     const abortController = new AbortController();
 
-    const stream = handler.streamQuery('Say "effort-low-ok" and nothing else.', session, abortController, '/tmp');
+    const stream = handler.streamQuery(
+      'Say "effort-low-ok" and nothing else.',
+      session,
+      abortController,
+      '/tmp',
+      undefined,
+      undefined,
+      INTEGRATION_CONTEXT,
+    );
 
     const result = await collectStream(stream);
     expect(result.errors).toHaveLength(0);
@@ -139,7 +172,15 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
 
     let crashed = false;
     try {
-      const stream = handler.streamQuery('Say "max-test" and nothing else.', session, abortController, '/tmp');
+      const stream = handler.streamQuery(
+        'Say "max-test" and nothing else.',
+        session,
+        abortController,
+        '/tmp',
+        undefined,
+        undefined,
+        INTEGRATION_CONTEXT,
+      );
       await collectStream(stream);
     } catch (error: any) {
       if (error.message?.includes('exited with code')) {
@@ -164,7 +205,15 @@ describeWithCredentials('ClaudeHandler Integration (real SDK)', () => {
     });
     const abortController = new AbortController();
 
-    const stream = handler.streamQuery('Say "opus-high-ok" and nothing else.', session, abortController, '/tmp');
+    const stream = handler.streamQuery(
+      'Say "opus-high-ok" and nothing else.',
+      session,
+      abortController,
+      '/tmp',
+      undefined,
+      undefined,
+      INTEGRATION_CONTEXT,
+    );
 
     const result = await collectStream(stream);
     expect(result.errors).toHaveLength(0);
