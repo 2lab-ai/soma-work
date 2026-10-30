@@ -627,7 +627,7 @@ describe('T1.2 · the agent tabs', () => {
 describe('T1.4 · an assistant turn reads as its answer; Raw sits at the bottom', () => {
   const env = load<{ renderTurn(t: unknown, i?: number, arr?: unknown[], convId?: string): string }>(
     ['esc', 'escAttr', 'escJs', 'toNum', 'decodeSlackEntities', 'ansSlotHtml', 'botNameOf', 'renderTurn'],
-    [],
+    ['BOT_AVATAR_SVG'],
     {
       // SSOT 2026-10-29 T8: the answer's name is the session's Slack bot (none resolved here: Assistant).
       BOT_NAME: null,

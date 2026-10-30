@@ -312,7 +312,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
         'cardGoalLine',
         'renderCardBody',
       ],
-      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'SESSION_ACTION_ARIA', '_busy'],
+      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_SVG', 'SESSION_ACTION_ARIA', '_busy'],
       { ...STUBS, ...inject },
     ).renderCardBody(s, col);
 
@@ -1384,7 +1384,7 @@ describe('a live goal update never rebinds a focused control to another goal (ex
         'isBusy',
         'renderCardGoal',
       ],
-      ['GOAL_STATUS_LABELS', 'GOAL_VIA_LABELS', '_goalHistoryOpen', '_goalErrors', '_busy'],
+      ['GOAL_STATUS_LABELS', 'GOAL_SVG', 'GOAL_VIA_LABELS', '_goalHistoryOpen', '_goalErrors', '_busy'],
     );
     const html = goal.renderCardGoal(card(), 'working', true);
     expect(html).toContain('data-mk="goal:g1"');
