@@ -9,6 +9,7 @@
  *      or reaches the next save (no false success).
  */
 import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
@@ -270,6 +271,44 @@ describe('SessionRegistry — Slack-less task save failure (T5)', () => {
   });
 });
 
+describe('SessionRegistry — a save that fails mid-write (#612 R4, astra P1)', () => {
+  beforeEach(() => {
+    if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true });
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+    __resetSessionLifecyclePolicyForTests(path.join(TEST_DATA_DIR, 'session-lifecycle.json'));
+  });
+  afterEach(() => {
+    __resetSessionLifecyclePolicyForTests();
+    if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true });
+  });
+
+  it('R8 — a failed create leaves the saved file exactly as it was, and the saved tasks come back', () => {
+    const reg = new SessionRegistry();
+    const first = reg.createTask(TASK_INPUT);
+    const before = fs.readFileSync(SESSIONS_FILE, 'utf8');
+
+    // The disk fills up halfway through the next write: a prefix lands, then ENOSPC.
+    const realWrite = fs.writeFileSync;
+    const spy = vi.spyOn(fs, 'writeFileSync').mockImplementation(((target: fs.PathOrFileDescriptor, data: unknown) => {
+      realWrite(target, String(data).slice(0, 20));
+      throw Object.assign(new Error('ENOSPC: no space left on device'), { code: 'ENOSPC' });
+    }) as typeof fs.writeFileSync);
+    syncBuiltinESMExports();
+    try {
+      expect(() => reg.createTask({ ...TASK_INPUT, title: 'second' })).toThrow(/ENOSPC/);
+    } finally {
+      spy.mockRestore();
+      syncBuiltinESMExports();
+    }
+
+    expect(fs.readFileSync(SESSIONS_FILE, 'utf8')).toBe(before);
+    expect(fs.readdirSync(TEST_DATA_DIR).filter((f) => f.includes('.tmp'))).toEqual([]);
+    const reader = new SessionRegistry();
+    expect(reader.loadSessions()).toBe(1);
+    expect(reader.getSessionByTaskId(first.taskId!)?.slackless).toBe(true);
+  });
+});
+
 describe('SessionRegistry — Slack-less task review fixes (#612 R1)', () => {
   beforeEach(() => {
     if (fs.existsSync(TEST_DATA_DIR)) fs.rmSync(TEST_DATA_DIR, { recursive: true });
@@ -338,6 +377,33 @@ describe('SessionRegistry — Slack-less task review fixes (#612 R1)', () => {
     expect(reg.getSessionByTaskId('11111111-1111-4111-8111-111111111111')).toBeDefined();
   });
 
+  it('R3b — a duplicate is judged by the id the record claims, even when the first claimant was given a fresh one (#612 R4, astra P2)', () => {
+    const X = '11111111-1111-4111-8111-111111111111';
+    const slackRecord = {
+      key: 'C1-1.1',
+      ownerId: 'U9',
+      ownerName: 'Slack',
+      userId: 'U9',
+      channelId: 'C1',
+      threadTs: '1.1',
+      sessionId: 'sdk-1',
+      taskId: X,
+      isActive: true,
+      lastActivity: new Date().toISOString(),
+      state: 'MAIN',
+      activityState: 'idle',
+    };
+    fs.writeFileSync(
+      SESSIONS_FILE,
+      JSON.stringify([slackRecord, slacklessRecord({ ownerId: 'U1' }), slacklessRecord({ ownerId: 'U2' })]),
+    );
+    const reg = new SessionRegistry();
+    expect(reg.loadSessions()).toBe(2);
+    expect(reg.getSessionByTaskId(X)?.channelId).toBe('C1'); // the Slack session keeps X
+    const tasks = [...reg.getAllSessions().values()].filter((s) => s.slackless);
+    expect(tasks.map((t) => t.ownerId)).toEqual(['U1']); // the second claimant of X is quarantined
+  });
+
   it('R4 — a Slack-less task is never queued for crash recovery (no Slack thread to resume or notify)', () => {
     fs.writeFileSync(SESSIONS_FILE, JSON.stringify([slacklessRecord({ activityState: 'working' })]));
     const reg = new SessionRegistry();
@@ -370,9 +436,11 @@ describe('SessionRegistry — Slack-less task review fixes (#612 R1)', () => {
     const archived = closeAndReadArchive(reg, task.taskId!);
     expect(reg.getSessionByKey(`task:${task.taskId}`)).toBeUndefined();
 
-    const outcome = reg.restoreArchivedSession(archived, '/work/U1/repo');
+    const outcome = reg.restoreArchivedSession(archived, '/work/U1/restored');
     expect(outcome).toMatchObject({ ok: true, sessionKey: `task:${task.taskId}` });
     const back = reg.getSessionByKey(`task:${task.taskId}`)!;
+    // Its working directory comes back too (#612 R4, astra P2): the proven directory its transcript ran in.
+    expect(back.workingDirectory).toBe('/work/U1/restored');
     expect(back.slackless).toBe(true); // the run guards (dashboard 409, goal resume skip) read this
     expect(back.taskId).toBe(task.taskId);
     expect(back.channelId).toBe('');

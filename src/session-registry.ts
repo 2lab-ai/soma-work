@@ -1066,6 +1066,8 @@ export class SessionRegistry {
       channelId: slackless ? '' : archived.channelId,
       threadTs: slackless ? undefined : archived.threadTs,
       slackless: slackless ? true : undefined,
+      // A task runs in its own directory: the one its transcript proves it ran in (#612 R4).
+      ...(slackless ? { workingDirectory: cwd } : {}),
       sessionId: archived.sessionId,
       conversationId: archived.conversationId,
       taskId: restoredTask.taskId,
@@ -2482,7 +2484,23 @@ export class SessionRegistry {
         }
       }
 
-      fs.writeFileSync(SESSIONS_FILE, JSON.stringify(sessionsArray, null, 2));
+      // Write a temp file beside it, then rename over it: a write that fails
+      // halfway (a full disk) leaves the saved sessions exactly as they were
+      // (#612 R4). No .bak and no fsync per save — this file is megabytes and
+      // saved on the event loop many times a minute; the shared atomicWriteJson
+      // reads, validates and copies the previous file on every call.
+      const tempFile = `${SESSIONS_FILE}.${process.pid}.${randomUUID()}.tmp`;
+      try {
+        fs.writeFileSync(tempFile, JSON.stringify(sessionsArray, null, 2));
+        fs.renameSync(tempFile, SESSIONS_FILE);
+      } catch (writeError) {
+        try {
+          fs.rmSync(tempFile, { force: true });
+        } catch {
+          // Leaving a temp file behind is better than hiding the write error.
+        }
+        throw writeError;
+      }
       this.logger.info(`Saved ${sessionsArray.length} sessions to file`);
     } catch (error) {
       this.logger.error('Failed to save sessions', error);
@@ -2888,7 +2906,10 @@ export class SessionRegistry {
         const restored = this.restoredTaskId(serialized.taskId, this.sessions.get(derivedKey));
         session.taskId = restored.taskId;
         // Its id was taken by another live session and re-minted: the task key follows the id.
+        // Both the id it claimed and the one it got are taken for the rest of this load, so a
+        // second record claiming the same id is a duplicate even after a re-mint (#612 R4).
         if (slackless) {
+          slacklessKeysThisLoad.add(derivedKey);
           derivedKey = buildTaskSessionKey(restored.taskId);
           slacklessKeysThisLoad.add(derivedKey);
         }
