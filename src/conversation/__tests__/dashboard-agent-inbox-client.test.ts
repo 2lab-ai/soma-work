@@ -3234,6 +3234,8 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         safeHref: (u: string) => u,
         formatTokens: String,
         toNum: Number,
+        // Tone pass P8: the panel's chrome words come from the page's STRINGS table (as served).
+        STRINGS,
       },
       [
         'function section() { return _psec; }',
