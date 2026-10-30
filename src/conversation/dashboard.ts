@@ -3848,6 +3848,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/model-picker.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/agent-queue.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/segmented.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/disclosure.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4542,10 +4543,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .io-text { font-size: 13px; line-height: 1.45; color: var(--ib-text); white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden; }
 .io-text .io-title { font-weight: 600; }
 .io-text.is-muted, .io-muted { color: var(--ib-muted); }
-.card-io .io-sys > summary { list-style: none; display: flex; align-items: center; gap: 8px; min-height: 24px; min-width: 0; cursor: pointer; border-radius: 6px; font-size: 12.5px; color: var(--ib-text-2); }
-.card-io .io-sys > summary::-webkit-details-marker { display: none; }
-.card-io .io-sys > summary:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-@media (hover: hover) and (pointer: fine) { .card-io .io-sys > summary:hover .sys-line { color: var(--ib-text); } }
+.card-io .io-sys::part(summary) { padding: 3px 6px; font-size: 12.5px; font-weight: 400; color: var(--ib-text-2); }
+.io-sys-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .card-io .sys-detail { margin: 6px 0 0; }
 .card-io .skill-badges { margin-top: 4px; }
 .io-cp { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 22px; font-size: 12.5px; color: var(--ib-text-2); }
@@ -5548,19 +5547,16 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .turn-answer { margin-top: 4px; }
 .ans-lite { font-size: 12px; color: var(--text-tertiary); }
 .turn-raw { margin-top: 6px; }
-.turn-raw summary.turn-expand-btn { cursor: pointer; color: var(--text-tertiary); font-size: 11px; padding: 2px 0; user-select: none; list-style: none; }
-.turn-raw summary.turn-expand-btn::-webkit-details-marker { display: none; }
+/* Raw — @2lab.ai/ui <ui-disclosure> (K-06): a quiet row; the element turns the chevron and grows the region. */
+.turn-raw::part(summary) { width: auto; padding: 2px 6px 2px 2px; font-size: 11.5px; font-weight: 500; color: var(--text-tertiary); }
 /* P8: the text triangles are the icon set's chevron (16 grid, 1.5 stroke, round caps), drawn as a mask so
    it takes currentColor; .chev points down, .is-up / .is-right turn it, and a toggle's aria-expanded
    turns it open. */
 :root { --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E"); }
 :root { --check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E"); }
-.chev, .turn-raw summary.turn-expand-btn::before { display: inline-block; flex-shrink: 0; width: 12px; height: 12px; vertical-align: -2px; background: currentColor; -webkit-mask: var(--chev) center / contain no-repeat; mask: var(--chev) center / contain no-repeat; transition: transform var(--dur-press) var(--ease-out); }
+.chev { display: inline-block; flex-shrink: 0; width: 12px; height: 12px; vertical-align: -2px; background: currentColor; -webkit-mask: var(--chev) center / contain no-repeat; mask: var(--chev) center / contain no-repeat; transition: transform var(--dur-press) var(--ease-out); }
 .chev.is-up, [aria-expanded="true"] > .chev { transform: rotate(180deg); }
 .chev.is-right { transform: rotate(-90deg); }
-.turn-raw summary.turn-expand-btn::before { content: ''; width: 10px; height: 10px; margin-right: 4px; vertical-align: -1px; transform: rotate(-90deg); }
-.turn-raw[open] summary.turn-expand-btn::before { transform: none; }
-@media (hover: hover) and (pointer: fine) { .turn-raw summary.turn-expand-btn:hover { color: var(--text-secondary); } }
 .turn-raw-body { margin-top: 4px; padding: 8px 10px; border-radius: 8px; background: var(--surface-raised); font-size: 12px; color: var(--text-secondary); }
 .turn-raw-label { font-size: 11px; font-weight: 600; color: var(--text-tertiary); margin: 6px 0 2px; }
 .turn-raw-label:first-child { margin-top: 0; }
@@ -5582,14 +5578,11 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 @container sysrow (max-width: 420px) { .cp-verb { display: none; } }
 @container sysrow (max-width: 340px) { .sys-row-in .turn-name { display: none; } }
 @container sysrow (max-width: 280px) { .cp-pct { display: none; } }
-.sys-turn > summary { list-style: none; display: block; cursor: pointer; border-radius: 8px; }
-.sys-turn > summary::-webkit-details-marker { display: none; }
-.sys-turn > summary:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.sys-turn::part(summary) { padding: 2px 6px; font-size: 12px; font-weight: 400; color: var(--text-tertiary); }
 .sys-row-in { display: flex; align-items: center; gap: 8px; min-height: 24px; min-width: 0; font-size: 12px; color: var(--text-tertiary); }
 .sys-row-in .turn-name { font-size: 12px; }
 .sys-row-in .turn-time { flex: none; white-space: nowrap; }
 .sys-row-in .turn-name { flex: none; max-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media (hover: hover) and (pointer: fine) { .sys-turn > summary:hover .sys-line { color: var(--text-secondary); } }
 /* The kit chip (.ui-chip) with its kind's colour on the word and the hairline. */
 .sys-badge { flex: none; }
 .sys-badge[data-kind="compact"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
@@ -5613,8 +5606,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .cp-bar.is-over > i { width: 100% !important; background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat; background-size: 40% 100%; animation: cp-over 1.4s linear infinite; }
 @keyframes cp-over { from { background-position: -40% 0; } to { background-position: 140% 0; } }
 .cp-pct { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; }
-.sys-chev { flex: none; margin-left: auto; width: 0; height: 0; border-left: 4px solid currentColor; border-top: 4px solid transparent; border-bottom: 4px solid transparent; opacity: 0.7; transition: transform var(--dur-press) var(--ease-out); }
-.sys-turn[open] .sys-chev, .io-sys[open] .sys-chev { transform: rotate(90deg); }
 .sys-detail { margin: 6px 0 4px; padding: 8px 10px; border-radius: 8px; background: var(--surface-raised); }
 .sys-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 12px; margin: 0 0 8px; font-size: 12px; }
 .sys-facts dt { color: var(--text-tertiary); }
@@ -5630,7 +5621,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .skill-tok { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .skill-detail { margin-top: 6px; }
 .skill-detail-h { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; font-size: 12px; }
-@media (pointer: coarse) { .sys-row-in { min-height: 44px; } .turn.is-sys .turn-avatar { margin-top: 12px; } .skill-badge { min-height: 44px; } }
+@media (pointer: coarse) { .turn.is-sys .turn-avatar { margin-top: 12px; } .skill-badge { min-height: 44px; } }
 /* Slack link on cards */
 .slack-link { color: var(--accent); text-decoration: none; font-size: 0.85em; margin-left: 4px; opacity: 0.7; }
 @media (hover: hover) and (pointer: fine) { .slack-link:hover { text-decoration: underline; opacity: 1; } }
@@ -5825,7 +5816,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .wl-detail-btn { min-height: 44px; }
   .worklog-list .wl-row { min-height: 44px; display: flex; flex-direction: column; justify-content: center; }
   .wl-tool > .wl-row, .wl-tool_result > .wl-row, .worklog-list .wl-row.wl-line { flex-direction: row; align-items: center; }
-  .turn-raw summary.turn-expand-btn { min-height: 44px; display: flex; align-items: center; }
   .panel-question .btn-choice, .mc-q-choices .btn-choice, .mc-q-edit-btn { min-height: 44px; }
   .mc-custom-input input, .mc-custom-input button { min-height: 44px; }
 }
@@ -10037,9 +10027,9 @@ function agentConvHtml(a, io, prompt, answer) {
     // its raw names the work-log entry (data-seq: 다시 시도 → agentConvRetry).
     var seq = io.result.rawBytes ? ' data-seq="' + Math.floor(Number(io.result.seq) || 0) + '"' : '';
     body = '<div class="turn-answer ui-tok"' + seq + '>' + ansSlotHtml('불러오는 중…') + '</div>';
-    body += '<details class="turn-raw"><summary class="turn-expand-btn">Raw</summary><div class="turn-raw-body">'
+    body += '<ui-disclosure class="turn-raw" summary="Raw" flush><div class="turn-raw-body">'
       + (a && a.summary ? '<div class="turn-raw-label">요약</div><div>' + esc(a.summary) + '</div>' : '')
-      + '<div class="turn-raw-label">원문</div><pre class="turn-raw-src">' + esc(answer || '') + '</pre></div></details>';
+      + '<div class="turn-raw-label">원문</div><pre class="turn-raw-src">' + esc(answer || '') + '</pre></div></ui-disclosure>';
   } else if (st === 'running') {
     body = '<div class="ui-tok">' + ansSlotHtml('응답 작성 중') + '</div>';
   } else {
@@ -11479,8 +11469,9 @@ var _ioOpen = Object.create(null);
 function ioOpenState(cid) {
   return _ioOpen[cid] || (_ioOpen[cid] = { sys: false, skill: -1 });
 }
-function ioSysToggle(el, cid) {
-  ioOpenState(cid).sys = !!el.open;
+// <ui-disclosure class="io-sys">'s ui-toggle (one listener on the document, initDisclosures): what the reader asked for.
+function ioSysToggle(cid, open) {
+  ioOpenState(cid).sys = !!open;
 }
 function ioSkillToggle(cid, i) {
   var st = ioOpenState(cid);
@@ -11515,10 +11506,10 @@ function ioInstructionHtml(cid, d, turn, info, cp, atts) {
   if (info) {
     var facts = cp ? info.facts.concat(cpFacts(cp)) : info.facts;
     var line = info.kind === 'compact' ? '컨텍스트 압축 (/compact)' : info.line;
-    return '<details class="io-sys"' + (ioOpenState(cid).sys ? ' open' : '') + ' ontoggle="ioSysToggle(this,\\'' + escJs(cid) + '\\')">'
-      + '<summary class="io-sys-row"><span class="ui-chip sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>'
-      + '<span class="sys-line">' + esc(line) + '</span><span class="sys-chev" aria-hidden="true"></span></summary>'
-      + '<div class="sys-detail">' + sysFactsHtml(facts) + '<div class="sys-raw-h">원본 프롬프트</div><pre class="sys-raw">' + esc(info.raw) + '</pre></div></details>';
+    return '<ui-disclosure class="io-sys" data-cid="' + escAttr(cid) + '"' + (ioOpenState(cid).sys ? ' open' : '') + ' flush>'
+      + '<span slot="summary" class="io-sys-row"><span class="ui-chip sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>'
+      + '<span class="sys-line">' + esc(line) + '</span></span>'
+      + '<div class="sys-detail">' + sysFactsHtml(facts) + '<div class="sys-raw-h">원본 프롬프트</div><pre class="sys-raw">' + esc(info.raw) + '</pre></div></ui-disclosure>';
   }
   var none = atts.length ? '<div class="io-text is-muted">첨부 ' + atts.length + '개</div>' : '<div class="io-text is-muted">기록된 지시 없음</div>';
   if (!turn) return d.instruction && d.instruction.text ? '<div class="io-text">' + esc(d.instruction.text) + '</div>' : none;
@@ -15821,11 +15812,11 @@ function renderSysTurn(t, info, attrs, time, initial, now, notLast, mediaHtml) {
   return '<div class="turn user is-sys" data-sys="' + info.kind + '"' + attrs
     + (live ? ' data-cp-live="1" data-cp-start="' + st.start + '" data-cp-est="' + st.est + '"' : '') + '>'
     + '<div class="turn-avatar sys-avatar" aria-hidden="true">' + SYS_AVATAR_SVG + '</div>'
-    + '<div class="turn-body"><details class="sys-turn"><summary class="sys-row"><span class="sys-row-in">'
+    + '<div class="turn-body"><ui-disclosure class="sys-turn" flush><span slot="summary" class="sys-row-in">'
     + '<span class="turn-name sys-name"' + (t.userName ? ' title="' + escAttr('하네스가 보낸 입력 — ' + t.userName + '의 세션') + '"' : '') + '>System</span><span class="turn-time">' + esc(time) + '</span>'
     + '<span class="ui-chip sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>' + line
-    + '<span class="sys-chev" aria-hidden="true"></span></span></summary><div class="sys-detail">' + (mediaHtml || '') + sysFactsHtml(facts)
-    + '<div class="sys-raw-h">원본 프롬프트</div><pre class="sys-raw">' + esc(info.raw) + '</pre></div></details></div></div>';
+    + '</span><div class="sys-detail">' + (mediaHtml || '') + sysFactsHtml(facts)
+    + '<div class="sys-raw-h">원본 프롬프트</div><pre class="sys-raw">' + esc(info.raw) + '</pre></div></ui-disclosure></div></div>';
 }
 function cpEnsureTicker() {
   if (_cpTimer || typeof setInterval !== 'function') return;
@@ -16039,9 +16030,9 @@ function renderTurn(t, _idx, _arr, convId) {
     var cid = convId || panelConvId;
     if (t.id && cid) {
       answer = '<div class="turn-answer ui-tok" data-conv="' + esc(cid) + '" data-turn="' + esc(t.id) + '">' + ansSlotHtml('불러오는 중…') + '</div>';
-      raw = '<details class="turn-raw"><summary class="turn-expand-btn">Raw</summary><div class="turn-raw-body">'
+      raw = '<ui-disclosure class="turn-raw" summary="Raw" flush><div class="turn-raw-body">'
         + '<div class="turn-raw-label">요약</div><div class="turn-raw-summary">' + title + body + '</div>'
-        + '<div class="turn-raw-label">원문</div><pre class="turn-raw-src"></pre></div></details>';
+        + '<div class="turn-raw-label">원문</div><pre class="turn-raw-src"></pre></div></ui-disclosure>';
     }
     // SSOT 2026-10-23 T6 — the files and markdown answer this turn produced, under
     // it. decoratePanelTurns() re-files them whenever turns or artifacts change.
@@ -16101,9 +16092,9 @@ function updateTurnInPanel(existingEl, turn) {
     var sysOpen = !!existingEl.querySelector('.sys-turn[open]');
     existingEl.replaceWith(newEl);
     var rawEl = rawOpen ? newEl.querySelector('.turn-raw') : null;
-    if (rawEl) rawEl.open = true;
+    if (rawEl) rawEl.setAttribute('open', '');
     var sysEl = sysOpen ? newEl.querySelector('.sys-turn') : null;
-    if (sysEl) sysEl.open = true;
+    if (sysEl) sysEl.setAttribute('open', '');
     attachRawToggleHandlers();
     decoratePanelTurns();
   } else {
@@ -18218,6 +18209,14 @@ function artHandleKey(e) {
   paintPeriodSeg();
   var periodSeg = document.getElementById('period-seg');
   if (periodSeg) periodSeg.addEventListener('ui-change', function(e) { setPeriod(e.detail.value); });
+})();
+// <ui-disclosure> (K-06): Raw, a system turn and a card's system instruction open and close by
+// themselves; the page only keeps a card's choice across its morph re-render (_ioOpen).
+(function initDisclosures() {
+  document.addEventListener('ui-toggle', function(e) {
+    var t = e.target;
+    if (t && t.classList && t.classList.contains('io-sys')) ioSysToggle(t.getAttribute('data-cid') || '', e.detail && e.detail.open);
+  });
 })();
 // Spec 12 §4.3 — the panel's agent section: a path step drills into that node
 // (a subtree row is <ui-agent-tree>'s ui-select).
