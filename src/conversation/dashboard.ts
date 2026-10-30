@@ -122,7 +122,7 @@ import {
 } from './permission-prompts';
 import { getConversation, resummarizeTurn } from './recorder';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
-import { UI_LIB_FILE, UI_LIB_VERSION, uiLibDistDir } from './ui-lib';
+import { pageTokenAliases, UI_LIB_FILE, UI_LIB_VERSION, uiLibDistDir, uiLibTokensCss } from './ui-lib';
 import { getUserMediaStore } from './user-media';
 import type { WorkLogEntry } from './work-log';
 
@@ -3660,102 +3660,10 @@ function renderDashboardPage(userId?: string): string {
 /* ═══ @2lab.ai/ui language (ui.2lab.ai) ═══ Calm neutral planes, soft 6–16px rounding, medium weights,
    colour only where it carries status, one ink primary per surface, short ease-out motion. */
 *,*::before,*::after { box-sizing: border-box; margin: 0; padding: 0; }
+/* Tokens: the ui-tokens sheet after this one (@2lab.ai/ui tokens.css + the dashboard aliases). */
 :root {
-  /* Surface hierarchy — 3 deliberate planes (neutral grays, Agent inbox .prd/10) */
-  --bg: #1c1c1f;
-  --surface: #232327;
-  --surface-raised: #2a2a2f;
-  --border: #34343a;
-  --border-focus: #4d9de0;
-  /* Typography */
-  --text: #ededf0;
-  --text-secondary: #a8a8b0;
-  --text-tertiary: #93939b;
-  /* Functional color — Bauhaus primary triad + accents */
-  --accent: #4d9de0;
-  --accent-hover: #3b82c4;
-  --green: #3ecf8e;
-  --yellow: #f6c90e;
-  --red: #f26b6b;
-  --purple: #a78bfa;
-  --orange: #f97316;
-  /* Geometry — the library's --radius (10px: menus, segments). The scale used below:
-     6 tiny chips and tiles · 8 buttons and inputs · 10 menus and segments · 12 cards ·
-     14 columns and sheets · 16 dialogs and screens · 999 pills. */
-  --radius: 10px;
-  /* Type — the library's stacks (Hangul faces included). */
-  --font: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", Pretendard, sans-serif;
-  --mono: 'SF Mono', 'Fira Code', ui-monospace, Menlo, monospace;
-  /* Motion */
-  --ease: cubic-bezier(0.2,0.8,0.2,1);
+  /* Dashboard-only (no library counterpart). */
   --speed: 140ms;
-  /* Motion contract (.prd/10 §4 — zworkflow motion-design standard, verbatim) */
-  --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-  --ease-in-out: cubic-bezier(0.77, 0, 0.175, 1);
-  --dur-press: 160ms;
-  --dur-expand: 240ms;
-  --dur-move: 320ms;
-  --dur-fade: 180ms;
-  /* Agent inbox board — neutral planes: column one step darker than the page.
-     Text tokens (--ib-muted, --ib-text-2, --text-tertiary) clear 4.5:1 on every
-     surface they sit on (page, column, card, dimmed card, segment track). */
-  --ib-col: #18181b;
-  --ib-card: #242428;
-  --ib-card-dim: #1f1f23;
-  --ib-card-border: #34343a;
-  --ib-pill: #2f2f35;
-  --ib-text: #f2f2f3;
-  --ib-text-2: #b4b4bb;
-  --ib-muted: #93939b;
-  --ib-seg: #161619;
-  --ib-seg-on: #2e2e33;
-  --ib-spark: #7b9cf0;
-  --ib-shadow: 0 1px 2px rgba(0,0,0,0.35);
-  --ib-shadow-raised: 0 14px 32px rgba(0,0,0,0.5), 0 3px 8px rgba(0,0,0,0.35);
-  --st-wait: #f5a524;
-  --st-run: #6b93f2;
-  --st-done: #3fb968;
-  --st-fail: #f26b6b;
-  --st-fail-text: #f26b6b; /* red as 13px text: ≥ 4.5:1 on the card and the dimmed card */
-}
-
-/* ── LIGHT THEME — override surface & text planes ── */
-[data-theme="light"] {
-  --bg: #f7f7f7;
-  --surface: #ffffff;
-  --surface-raised: #f1f1f1;
-  --border: #e4e4e4;
-  --border-focus: #4d9de0;
-  --text: #18181a;
-  --text-secondary: #57575d;
-  --text-tertiary: #68686f;
-  --accent: #1f6dc2;
-  --accent-hover: #1a5ca6;
-  /* Functional colors — WCAG AA ≥4.5:1 on all light surfaces */
-  --green: #14783b;
-  --yellow: #a16207;
-  --red: #b91c1c;
-  --purple: #7c3aed;
-  --orange: #c2410c;
-  /* Agent inbox board */
-  --ib-col: #efefef;
-  --ib-card: #ffffff;
-  --ib-card-dim: #f8f8f8;
-  --ib-card-border: #e3e3e3;
-  --ib-pill: #e2e2e2;
-  --ib-text: #161616;
-  --ib-text-2: #555558;
-  --ib-muted: #65656b;
-  --ib-seg: #ebebeb;
-  --ib-seg-on: #ffffff;
-  --ib-spark: #5b7fe0;
-  --ib-shadow: 0 1px 2px rgba(0,0,0,0.06);
-  --ib-shadow-raised: 0 14px 30px rgba(0,0,0,0.14), 0 3px 8px rgba(0,0,0,0.08);
-  --st-wait: #c2780a;
-  --st-run: #2f63e0;
-  --st-done: #137a3e;
-  --st-fail: #d43a3a;
-  --st-fail-text: #c02f2f; /* #d43a3a is 4.4:1 on the dimmed card (#f8f8f8); this is 5.4:1 */
 }
 [data-theme="light"] ::selection { background: var(--accent); color: #fff; }
 [data-theme="light"] ::-webkit-scrollbar-thumb { background: #c8cdd5; border-color: var(--bg); }
@@ -6376,6 +6284,14 @@ body.nt-open .new-task-fab { display: none !important; }
   .art-strip-panel .art-open { flex: 1 1 auto; min-width: 0; }
   .art-strip-panel .art-play { position: static; flex: none; width: 32px; height: 32px; }
 }
+</style>
+<!-- Tokens — @2lab.ai/ui is the single source (P10): its tokens.css puts every --ui-* on :root and
+     [data-theme="light|dark"] (the light and dark palettes, geometry, type and motion), and the
+     dashboard's names are aliases of them, so the page and the library elements cannot drift. Never
+     alias on an element that also maps --ui-x: var(--x) (.ui-tok) — that is a cycle. -->
+<style id="ui-tokens">
+${uiLibTokensCss()}
+${pageTokenAliases()}
 </style>
 </head>
 <body>

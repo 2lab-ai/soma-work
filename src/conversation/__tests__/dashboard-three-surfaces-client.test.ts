@@ -16,6 +16,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
+import { pageTokenAliases, uiLibTokensCss } from '../ui-lib';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -1892,7 +1893,10 @@ describe('collapsed face — the context level is a warning, the panel bar uses 
     // The page keeps the red text token (dark and light) and hands it to the element through the
     // token wrapper; the element's styles colour the danger metric with it and wrap its metrics row
     // ('draws face extras: … context level …' checks the level; the layout is its styles.ts).
-    expect(TEMPLATE.match(/--st-fail-text: #[0-9a-f]{6};/g)?.length).toBe(2); // dark and light
+    // Tone pass P10: the token is @2lab.ai/ui's (tokens.css, dark and light), aliased by the page.
+    expect(uiLibTokensCss()).toMatch(/\[data-theme="light"\] \{[^}]*--ui-st-fail-text: #[0-9a-f]{6};/);
+    expect(uiLibTokensCss()).toMatch(/\[data-theme="dark"\] \{[^}]*--ui-st-fail-text: #[0-9a-f]{6};/);
+    expect(pageTokenAliases()).toContain('--st-fail-text: var(--ui-st-fail-text);');
     expect(TEMPLATE).toMatch(/\.ui-tok \{[^}]*--ui-st-fail-text: var\(--st-fail-text\);/);
     expect(TEMPLATE).toContain('<section class="inbox ui-tok" id="inbox"');
   });
