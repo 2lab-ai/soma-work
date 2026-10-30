@@ -65,13 +65,11 @@ describe('D1–D9 — the board is the element; the page keeps no copy of its fa
 });
 
 describe('D10 — one ink primary per open card: the decision', () => {
-  const INK = 'background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); font-weight: 600;';
-
-  it('the multi-question 답변하기 is the card’s ink primary, hover included (own hover block)', () => {
-    expect(CSS).toContain(`.card-body .btn-choice.btn-choice-primary { ${INK} }`);
-    expect(CSS).toMatch(
-      /@media \(hover: hover\) and \(pointer: fine\) \{\n {2}\.card-body \.btn-choice\.btn-choice-primary:hover:not\(:disabled\) \{ background: var\(--ib-text\);/,
-    );
+  it('the multi-question 답변하기 is the kit’s ink button (D3 E-16): the page keeps only its place, no button look of its own', () => {
+    expect(CSS).toContain('.card-body .card-mc-go { width: 100%; margin-top: 8px; }');
+    expect(CSS).not.toMatch(/\.card-mc-go[^{]*\{[^}]*(background|border-color|color):/);
+    expect(TEMPLATE).toContain(`class="ui-btn' + (primary ? ' is-primary' : '') + ' card-mc-go"`);
+    expect(CSS).not.toMatch(/\.btn-choice\b/);
   });
 });
 
@@ -97,8 +95,9 @@ describe('D10 — the card’s prompts and question take their weight from the e
       /:has\(\.btn-perm/,
     ])
       expect(CSS, String(gone)).not.toMatch(gone);
-    // The panel's multi-question form still draws its recommended choice (renderMultiChoicePanel).
-    expect(CSS).toMatch(/\n\.btn-choice-recommended \{/);
+    // D3 E-15: the panel's multi-question form is <ui-choice-form> — it marks its recommended choice itself.
+    expect(CSS).not.toMatch(/\.btn-choice-recommended\b/);
+    expect(CSS).not.toMatch(/\.btn-hero-recommended\b/);
   });
 
   it('the open card draws approval-card slots, never the old buttons', () => {
