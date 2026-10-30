@@ -903,7 +903,9 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
     // SSOT 2026-10-29 T7: the harness sent it — the 지시 is System's, not the user's name.
     expect(out).toContain('<div class="io-label">지시<span class="io-who is-sys">System</span></div>');
     expect(out).not.toContain('<span class="io-who">Z</span>');
-    expect(out).toContain(`<ui-disclosure class="io-sys" data-cid="${CID}" flush><span slot="summary" class="io-sys-row">`);
+    expect(out).toContain(
+      `<ui-disclosure class="io-sys" data-cid="${CID}" flush><span slot="summary" class="io-sys-row">`,
+    );
     expect(out).toContain('<span class="ui-chip sys-badge" data-kind="goal">Goal #2/10</span>');
     expect(out).toContain('<span class="sys-line">직전 평가: No evidence: no files, diffs, or tests.</span>');
     expect(out).toContain('<dt>회차</dt><dd>2 / 10</dd>');

@@ -1541,7 +1541,9 @@ describe('the model menu closes on Escape before the panel does (executed)', () 
     const send = clientFn('sendCommand');
     expect(send).toContain('el.data = Object.assign({}, el.data, { disabled: true });');
     expect(send).toContain("if (cmdHost) cmdHost._mode = '';");
-    const esc = TEMPLATE.slice(TEMPLATE.indexOf("if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artModalIsOpen()"));
+    const esc = TEMPLATE.slice(
+      TEMPLATE.indexOf("if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artModalIsOpen()"),
+    );
     expect(esc.slice(0, 200)).toContain('!artModalIsOpen() && !_cronDrawerKey');
   });
 });

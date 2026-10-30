@@ -40,7 +40,9 @@ describe('agent inbox board — layout (§3.1)', () => {
   it('has the breadcrumb and the Board | List segmented control', () => {
     expect(TEMPLATE).toContain('Agent inbox');
     expect(TEMPLATE).toContain('<ui-segmented class="view-seg" id="view-seg"></ui-segmented>');
-    expect(TEMPLATE).toContain("{ value: 'board', label: '보드', icon: 'board' }, { value: 'list', label: '목록', icon: 'list' }");
+    expect(TEMPLATE).toContain(
+      "{ value: 'board', label: '보드', icon: 'board' }, { value: 'list', label: '목록', icon: 'list' }",
+    );
   });
 
   it('persists the view in localStorage and defaults to List below 640px', () => {
@@ -110,13 +112,17 @@ describe('agent inbox board — layout (§3.1)', () => {
 
   it('D1 — the segmented controls are answered, not drawn: data in, ui-change answered', () => {
     expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/segmented.js?v=${UI_LIB_VERSION}"></script>');
-    expect(fnBody('paintPeriodSeg')).toContain("seg.data = { label: '기간', value: currentPeriod, options: PERIOD_OPTIONS };");
+    expect(fnBody('paintPeriodSeg')).toContain(
+      "seg.data = { label: '기간', value: currentPeriod, options: PERIOD_OPTIONS };",
+    );
     expect(fnBody('setPeriod')).toContain('paintPeriodSeg();');
     expect(TEMPLATE).toContain(
       "var PERIOD_OPTIONS = [{ value: 'day', label: '오늘' }, { value: 'week', label: '지난 7일' }, { value: 'month', label: '지난 30일' }];",
     );
     expect(TEMPLATE).toContain("periodSeg.addEventListener('ui-change', function(e) { setPeriod(e.detail.value); });");
-    expect(TEMPLATE).toContain("viewSeg.addEventListener('ui-change', function(e) { setBoardView(e.detail.value, e); });");
+    expect(TEMPLATE).toContain(
+      "viewSeg.addEventListener('ui-change', function(e) { setBoardView(e.detail.value, e); });",
+    );
     // The inline segmented rules are gone (the element draws its own well, chip, 44px rows and reduced motion).
     expect(TEMPLATE).not.toMatch(/\n\.seg \{|\.seg-btn/);
   });
@@ -534,11 +540,7 @@ describe('tone pass P7 — surfaces and elevation', () => {
       expect(rule(sel), sel).toContain('border-radius: 12px;');
       expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow);');
     }
-    for (const sel of [
-      '.nt-dialog',
-      '.art-peek',
-      '.art-modal',
-    ]) {
+    for (const sel of ['.nt-dialog', '.art-peek', '.art-modal']) {
       expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow-raised)');
     }
     // D1 (B-04, B-08): the token breakdown and the bar values are @2lab.ai/ui <ui-tooltip> — the element draws
@@ -589,9 +591,7 @@ describe('tone pass P8 — copy and glyphs', () => {
       expect(TEMPLATE, s).not.toContain(s);
     }
     // One chevron: the icon set's, drawn as a mask in currentColor, turned by aria-expanded.
-    expect(TEMPLATE).toMatch(
-      /\n\.chev \{[^}]*mask: var\(--chev\) center \/ contain no-repeat;/,
-    );
+    expect(TEMPLATE).toMatch(/\n\.chev \{[^}]*mask: var\(--chev\) center \/ contain no-repeat;/);
     expect(TEMPLATE).toContain('.chev.is-up, [aria-expanded="true"] > .chev { transform: rotate(180deg); }');
     expect(TEMPLATE).toContain(`<span class="wl-g-chev chev is-right" aria-hidden="true"></span>`);
     // The close buttons and the subtitle's regenerate are SVGs with a name.

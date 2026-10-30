@@ -158,7 +158,9 @@ describe('top-bar default chips (T6)', () => {
       checked: true,
     });
     // The box is answered too (a checkbox row keeps the menu open), and it is on again each time the menu opens.
-    expect(TEMPLATE).toContain("if (d.kind === 'checkbox' && d.value === TD_ALSO_SESSION) { _tdAlsoSession = !!d.checked; return; }");
+    expect(TEMPLATE).toContain(
+      "if (d.kind === 'checkbox' && d.value === TD_ALSO_SESSION) { _tdAlsoSession = !!d.checked; return; }",
+    );
     expect(clientFn('openDefaultsMenu')).toContain('_tdAlsoSession = true;');
   });
 

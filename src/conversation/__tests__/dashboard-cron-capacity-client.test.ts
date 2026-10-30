@@ -347,7 +347,9 @@ describe('page wiring', () => {
 
   it('a drawer for a job’s past runs exists and closes on Escape', () => {
     expect(page).toContain('id="cron-drawer"');
-    expect(page).toContain("if (d) d.addEventListener('ui-close', function(e) { e.preventDefault(); closeCronDrawer(); });");
+    expect(page).toContain(
+      "if (d) d.addEventListener('ui-close', function(e) { e.preventDefault(); closeCronDrawer(); });",
+    );
   });
 
   it('polls capacity and cron on their own cadence and pauses when hidden', () => {
