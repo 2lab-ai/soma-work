@@ -3855,6 +3855,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/app-bar.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/stat-strip.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/bar-chart.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/file-card.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -5445,7 +5446,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* PRESS — one rule for every button-like control: scale(.97) on --dur-press ease-out (each control's own
    transition carries the transform), pointer presses only — never a keyboard press (:focus-visible). The
    56px FAB presses to .95. */
-:is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+:is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
@@ -5508,7 +5509,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   /* Loading skeletons hold still. */
@@ -5830,38 +5831,28 @@ body.nt-open .new-task-fab { display: none !important; }
 .art-k-markdown { --art-tint: var(--accent); }
 .art-k-pdf { --art-tint: var(--red); }
 .art-k-text, .art-k-file { --art-tint: var(--text-secondary); }
-.art-chip { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 150px; height: 24px; padding: 0 8px; border: 1px solid var(--ib-card-border); border-radius: 999px; background: var(--ib-pill); color: var(--ib-text); font: inherit; font-size: 11.5px; line-height: 1; cursor: zoom-in; transition: border-color 150ms ease, background-color 150ms ease, transform var(--dur-press) var(--ease-out); }
-.art-chip .art-glyph { color: var(--art-tint); }
-.art-chip:focus-visible { border-color: var(--art-tint, var(--accent)); background: var(--surface-raised); outline: none; }
-.art-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-artifacts { margin-top: 12px; }
 .art-section-label { display: flex; align-items: center; gap: 6px; }
 .art-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--ib-pill); color: var(--text-secondary); font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .art-strip { display: flex; gap: 8px; overflow-x: auto; padding: 4px 2px 8px; scroll-snap-type: x proximity; scrollbar-width: thin; overscroll-behavior-x: contain; }
-.art-tile { position: relative; flex: 0 0 auto; width: 128px; scroll-snap-align: start; }
-.art-open { display: flex; flex-direction: column; width: 100%; padding: 0; overflow: hidden; border: 1px solid var(--ib-card-border); border-radius: 10px; background: var(--surface); color: var(--ib-text); font: inherit; text-align: left; cursor: zoom-in; transition: border-color 150ms ease, box-shadow 150ms ease, transform var(--dur-press) var(--ease-out); }
-.art-open:focus-visible { border-color: var(--art-tint, var(--accent)); box-shadow: var(--ib-shadow-raised); outline: none; }
-.art-thumb { position: relative; display: flex; align-items: center; justify-content: center; height: 76px; border-bottom: 1px solid var(--ib-card-border); background: var(--ib-col); color: var(--art-tint, var(--text-secondary)); }
-.art-thumb .art-glyph { width: 28px; height: 28px; }
-.art-thumb-img img { display: block; width: 100%; height: 100%; object-fit: cover; }
-.art-thumb-ext { position: absolute; left: 6px; bottom: 5px; padding: 1px 5px; border-radius: 6px; background: var(--surface-raised); color: var(--text-secondary); font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; }
-.art-tile-name { padding: 6px 8px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 600; }
-.art-tile-meta { padding: 2px 8px 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; color: var(--ib-muted); }
-.art-tile.is-remote .art-thumb { opacity: 0.55; }
-.art-play { position: absolute; top: 46px; right: 6px; display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: none; border-radius: 50%; background: var(--purple); color: var(--surface); box-shadow: var(--ib-shadow); cursor: pointer; transition: transform var(--dur-press) var(--ease-out); }
+.art-tile { position: relative; flex: 0 0 auto; scroll-snap-align: start; --fc-tile-w: 128px; }
+/* A strip tile / an answer's chip is @2lab.ai/ui <ui-file-card> (D2 I-01..I-03): its kind wash and glyph, the
+   thumbnail, name and meta, its own hover, press and 44px chip on touch. The audio play button (T8) sits on the
+   thumbnail's lower right: 4px card inset + the 16:10 thumbnail of a (--fc-tile-w − 8px) wide box. */
+.art-tile > ui-file-card { display: block; }
+.art-play { position: absolute; right: 10px; top: calc(4px + (var(--fc-tile-w) - 8px) * 0.625 - 36px); display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: none; border-radius: 50%; background: var(--purple); color: var(--surface); box-shadow: var(--ib-shadow); cursor: pointer; transition: transform var(--dur-press) var(--ease-out); }
 .art-play svg { width: 14px; height: 14px; }
-@media (hover: hover) and (pointer: fine) {
-  .art-chip:hover { border-color: var(--ib-muted); background: var(--surface-raised); }
-  .art-open:hover { border-color: var(--ib-muted); }
-}
+/* A chip tile (the panel's minimal row, artPanelVariant): the play button inline after the chip. */
+.art-tile:has(> ui-file-card[variant="chip"]) { display: flex; align-items: center; gap: 6px; max-width: 240px; }
+.art-tile:has(> ui-file-card[variant="chip"]) > ui-file-card { min-width: 0; }
+.art-tile:has(> ui-file-card[variant="chip"]) .art-play { position: static; flex: none; width: 32px; height: 32px; }
 .art-play .ic-pause, .art-play.is-playing .ic-play { display: none; }
 .art-play.is-playing .ic-pause { display: block; }
 .art-play.is-playing { box-shadow: 0 0 0 4px color-mix(in srgb, var(--purple) 30%, transparent); }
 .panel-artifacts { padding: 10px 16px 4px; border-bottom: 1px solid var(--border); min-height: 44px; }
 .panel-arts-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 12px; font-weight: 600; color: var(--text); }
 .panel-arts-hint { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--text-tertiary); }
-.art-strip-panel .art-tile { width: 152px; }
-.art-strip-panel .art-thumb { height: 94px; }
+.art-strip-panel .art-tile { --fc-tile-w: 152px; }
 .turn-arts-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 /* ── User media (SSOT 2026-10-25): the files a user attached to an instruction ──
    Above the words, as chat apps show an attachment with its message. Fixed boxes
@@ -5975,15 +5966,14 @@ body.nt-open .new-task-fab { display: none !important; }
 .md-doc th, .md-doc td { padding: 6px 10px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
 .md-doc th { background: var(--ib-col); font-weight: 600; }
 @media (prefers-reduced-motion: reduce) {
-  .art-chip, .art-open, .art-play, .art-peek, .art-peek.open { transition: none; }
+  .art-play, .art-peek, .art-peek.open { transition: none; }
   .art-modal[open] { animation: none; }
   /* Gentler, not zero: a dialog's scrim still fades (opacity only, ≤ 180ms). */
   .art-modal[open] { animation: none; }
   .art-modal[open]::backdrop { animation: scrim-in 120ms ease both !important; }
 }
 @media (hover: none) {
-  .art-chip { height: 32px; }
-  .art-play { width: 40px; height: 40px; top: 40px; }
+  .art-play { width: 40px; height: 40px; top: calc(4px + (var(--fc-tile-w) - 8px) * 0.625 - 44px); }
 }
 
 /* ═══ Device-responsive layout (SSOT 2026-10-24) ═══
@@ -6049,16 +6039,12 @@ body.nt-open .new-task-fab { display: none !important; }
 .cron-drawer::part(panel) { padding-right: env(safe-area-inset-right, 0px); }
 .cron-drawer::part(header) { padding-top: max(14px, env(safe-area-inset-top, 0px)); }
 /* Task view (T1.6): minimal — the artifacts are one row of name chips, like a
-   short panel body below; 자세히 shows them as thumbnails. */
+   short panel body below; 자세히 shows them as thumbnails. The chips are the file cards' chip variant
+   (artPanelVariant); this row only lays them out. */
 .slide-panel:not(.is-detail) .panel-artifacts { display: flex; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
 .slide-panel:not(.is-detail) .panel-arts-head { flex: none; margin-bottom: 0; }
 .slide-panel:not(.is-detail) .panel-arts-hint { display: none; }
 .slide-panel:not(.is-detail) .art-strip-panel { flex: 1 1 auto; min-width: 0; padding-top: 2px; padding-bottom: 2px; }
-.slide-panel:not(.is-detail) .art-strip-panel .art-thumb, .slide-panel:not(.is-detail) .art-strip-panel .art-tile-meta { display: none; }
-.slide-panel:not(.is-detail) .art-strip-panel .art-tile-name { padding-bottom: 6px; }
-.slide-panel:not(.is-detail) .art-strip-panel .art-tile { display: flex; align-items: center; gap: 6px; width: auto; max-width: 200px; }
-.slide-panel:not(.is-detail) .art-strip-panel .art-open { flex: 1 1 auto; min-width: 0; }
-.slide-panel:not(.is-detail) .art-strip-panel .art-play { position: static; flex: none; width: 32px; height: 32px; }
 /* A short panel body (landscape phones, the unfolded Duo, a docked drawer under a
    tall top bar; below 560px R/2 cannot hold full thumbnails plus a couple of task
    rows): artifacts become name chips with the play button inline, so the
@@ -6068,12 +6054,6 @@ body.nt-open .new-task-fab { display: none !important; }
   .panel-arts-head { flex: none; margin-bottom: 0; }
   .panel-arts-hint { display: none; }
   .art-strip-panel { flex: 1 1 auto; min-width: 0; padding-top: 2px; padding-bottom: 2px; }
-  .art-strip-panel .art-thumb { display: none; }
-  .art-strip-panel .art-tile-meta { display: none; }
-  .art-strip-panel .art-tile-name { padding-bottom: 6px; }
-  .art-strip-panel .art-tile { display: flex; align-items: center; gap: 6px; width: auto; max-width: 200px; }
-  .art-strip-panel .art-open { flex: 1 1 auto; min-width: 0; }
-  .art-strip-panel .art-play { position: static; flex: none; width: 32px; height: 32px; }
 }
 </style>
 <!-- Tokens — @2lab.ai/ui is the single source (P10): its tokens.css puts every --ui-* on :root and
@@ -9626,6 +9606,7 @@ function applyPanelDetail() {
   if (panel) panel.classList.toggle('is-detail', _panelDetail);
   var btn = document.getElementById('panel-detail-toggle');
   if (btn) btn.setAttribute('aria-pressed', _panelDetail ? 'true' : 'false');
+  syncPanelArtVariant();
 }
 // The sections an opening starts with: every one open with 자세히 — except the goal,
 // which always opens folded (SSOT 2026-10-29) — else the defaults.
@@ -10439,7 +10420,7 @@ function loadOlderWorkLog() {
       if (body) pin.observe(body);
       if (box) pin.observe(box);
     });
-    var size = new ResizeObserver(function() { sizePanelSections(); });
+    var size = new ResizeObserver(function() { sizePanelSections(); syncPanelArtVariant(); });
     ['panel-scroll', 'panel-surface', 'panel-tabs', 'panel-agents', 'panel-tasks', 'panel-sections'].forEach(function(id) {
       var el = document.getElementById(id);
       if (el) size.observe(el);
@@ -17309,11 +17290,25 @@ function artMeta(a) {
   return parts.join(' · ');
 }
 
-// One chip: glyph + name. data-art-cid / data-art-id drive hover and click.
+// A file as @2lab.ai/ui <ui-file-card> (D2 I-01..I-03): the page renders the element keyed by data-art-cid /
+// data-art-id, with data-art-v (what it shows) so a re-render that changes the file re-hands it; initFileCards
+// gives it artFileItem. Its ui-open opens the page's viewer, its hover / focus the page's minimap.
+function artFileItem(cid, a) {
+  var item = { id: String(a.id), name: String(a.name || ''), kind: a.kind || 'file' };
+  if (toNum(a.size) > 0) item.size = toNum(a.size);
+  if (toNum(a.createdAt) > 0) item.time = toNum(a.createdAt);
+  if (a.stored) item.url = artUrl(cid, a.id);
+  else item.meta = 'Slack에만 있음';
+  return item;
+}
+function artCard(cid, a, variant) {
+  var v = [a.name, a.kind, toNum(a.size), toNum(a.createdAt), a.stored ? 1 : 0].join('|');
+  return '<ui-file-card class="art-card" variant="' + variant + '" lang="ko" data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id)
+    + '" data-art-v="' + escAttr(v) + '"></ui-file-card>';
+}
+// One chip (an answer turn's files).
 function artChip(cid, a) {
-  return '<button type="button" class="art-chip art-k-' + escAttr(a.kind || 'file') + '" data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id)
-    + '" aria-label="' + escAttr(artKindLabel(a) + ' ' + a.name + ' — 크게 보기') + '">'
-    + artGlyph(a.kind) + '<span class="art-chip-name">' + esc(a.name) + '</span></button>';
+  return artCard(cid, a, 'chip');
 }
 
 // Files newest first, then answers newest first: the html/png the user looks for
@@ -17326,24 +17321,14 @@ function artSortForDisplay(list) {
   return files.sort(newest).concat(answers.sort(newest));
 }
 
-function artThumb(cid, a) {
-  if (a.kind === 'image' && a.stored) {
-    return '<span class="art-thumb art-thumb-img"><img src="' + escAttr(artUrl(cid, a.id)) + '" alt="" loading="lazy" decoding="async"></span>';
-  }
-  var name = String(a.name || '');
-  var dot = name.lastIndexOf('.');
-  var ext = a.source === 'final_answer' ? 'MD' : (dot > 0 && name.length - dot <= 6 ? name.slice(dot + 1).toUpperCase() : artKindLabel(a));
-  return '<span class="art-thumb">' + artGlyph(a.kind) + '<span class="art-thumb-ext">' + esc(ext) + '</span></span>';
-}
-
 // Is this clip the one the shared inline player is playing right now?
 function artAudioPlaying(cid, id) {
   return !!(_artAudio.el && !_artAudio.el.paused && _artAudio.key === cid + '|' + id);
 }
 
-// A strip tile: open button (thumbnail, name, meta) + a play button for audio (T8).
-// The play state is part of the markup: a live card body is morphed to it on every push.
-function artTile(cid, a) {
+// A strip tile: the file card (thumbnail, name, meta) + a play button for audio (T8); variant 'chip' in the
+// panel's minimal row. The play state is part of the markup: a live card body is morphed to it on every push.
+function artTile(cid, a, variant) {
   var attrs = ' data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id) + '"';
   var on = a.kind === 'audio' && a.stored && artAudioPlaying(cid, a.id);
   var play = (a.kind === 'audio' && a.stored)
@@ -17351,12 +17336,7 @@ function artTile(cid, a) {
       + '<svg class="ic-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5v9l7.5-4.5z" fill="currentColor"/></svg>'
       + '<svg class="ic-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 3.5h2.5v9H4.5zM9 3.5h2.5v9H9z" fill="currentColor"/></svg></button>'
     : '';
-  return '<div class="art-tile art-k-' + escAttr(a.kind || 'file') + (a.stored ? '' : ' is-remote') + '">'
-    + '<button type="button" class="art-open"' + attrs + ' aria-label="' + escAttr(artKindLabel(a) + ' ' + a.name + ' — 크게 보기') + '">'
-    + artThumb(cid, a)
-    + '<span class="art-tile-name">' + esc(a.name) + '</span>'
-    + '<span class="art-tile-meta">' + esc(artMeta(a)) + '</span>'
-    + '</button>' + play + '</div>';
+  return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, variant || 'tile') + play + '</div>';
 }
 
 // The full list once fetched, else the card's summary (the newest few).
@@ -17384,12 +17364,12 @@ function renderCardArtifacts(s) {
 }
 
 // Panel (T6): pinned above the conversation, so it is in view wherever the reader is.
-function renderPanelArtifacts(list, cid) {
+function renderPanelArtifacts(list, cid, variant) {
   var sorted = artSortForDisplay(list);
   if (!sorted.length || !cid) return '';
   return '<div class="panel-arts-head"><span>산출물</span><span class="art-count">' + sorted.length + '</span>'
     + '<span class="panel-arts-hint">올리면 미리보기 · 누르면 크게</span></div>'
-    + '<div class="art-strip art-strip-panel">' + sorted.map(function(a) { return artTile(cid, a); }).join('') + '</div>';
+    + '<div class="art-strip art-strip-panel">' + sorted.map(function(a) { return artTile(cid, a, variant); }).join('') + '</div>';
 }
 
 // Did this artifact come from the turn that ran between startTs and endTs?
@@ -17645,10 +17625,24 @@ function renderPanelArtifactsSection() {
   var list = c && c.list ? c.list : ((s && s.artifacts && s.artifacts.recent) || []);
   // The user's files (지시 첨부) first, one collapsed line; then the model's 산출물.
   var umHtml = cid ? renderPanelUserMedia(_umList[cid] || [], cid, _umPanelOpen) : '';
-  var html = cid ? (umHtml ? '<div class="panel-user-media" id="panel-user-media">' + umHtml + '</div>' : '') + renderPanelArtifacts(list, cid) : '';
+  var html = cid ? (umHtml ? '<div class="panel-user-media" id="panel-user-media">' + umHtml + '</div>' : '') + renderPanelArtifacts(list, cid, artPanelVariant()) : '';
   el.innerHTML = html;
   el.style.display = html ? '' : 'none';
   decoratePanelTurns();
+}
+
+// The panel's strip is a row of name chips in the minimal view (자세히 off) or on a short panel body (≤ 560px:
+// landscape phones, a docked drawer under a tall top bar), else thumbnails — the file card's variant.
+var ART_PANEL_SHORT_PX = 560;
+function artPanelVariant() {
+  var body = document.querySelector('#slide-panel .panel-body');
+  var h = body ? body.clientHeight : 0;
+  return !_panelDetail || (h > 0 && h <= ART_PANEL_SHORT_PX) ? 'chip' : 'tile';
+}
+function syncPanelArtVariant() {
+  var v = artPanelVariant();
+  var cards = document.querySelectorAll('#panel-artifacts .art-strip-panel ui-file-card');
+  for (var i = 0; i < cards.length; i++) if (cards[i].getAttribute('variant') !== v) cards[i].setAttribute('variant', v);
 }
 
 // Files each answer produced, under that answer: walk the turns in order; an
@@ -17836,6 +17830,9 @@ function artModalClosed() {
   if (body) body.innerHTML = '';
   var opener = _artModal.opener;
   _artModal.opener = null;
+  // A file card is not focusable itself: focus goes back to its button.
+  var inner = opener && opener.shadowRoot ? opener.shadowRoot.querySelector('button') : null;
+  if (inner) opener = inner;
   if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus({ preventScroll: true });
 }
 
@@ -17883,6 +17880,37 @@ function artHandleKey(e) {
   }
 }
 
+// Every <ui-file-card data-art-id> a render puts in the document — the open card (morphed on every push), the
+// panel strip, an answer's row — gets its file once it is in, and again when its data-art-v changes.
+function fcHydrate(el) {
+  if (!el || !el.getAttribute) return;
+  var cid = el.getAttribute('data-art-cid') || '';
+  var a = artFind(cid, el.getAttribute('data-art-id') || '');
+  if (!a) return;
+  var d = artFileItem(cid, a);
+  var sig = JSON.stringify(d);
+  if (el._fcSig === sig) return;
+  el._fcSig = sig;
+  el.data = d;
+}
+function fcHydrateIn(node) {
+  if (!node || node.nodeType !== 1) return;
+  if (node.matches('ui-file-card[data-art-id]')) fcHydrate(node);
+  var inner = node.querySelectorAll('ui-file-card[data-art-id]');
+  for (var i = 0; i < inner.length; i++) fcHydrate(inner[i]);
+}
+(function initFileCards() {
+  if (typeof MutationObserver !== 'function') return;
+  new MutationObserver(function(list) {
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      if (m.type === 'attributes') fcHydrate(m.target);
+      else for (var j = 0; j < m.addedNodes.length; j++) fcHydrateIn(m.addedNodes[j]);
+    }
+  }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-art-v'] });
+  fcHydrateIn(document.body);
+})();
+
 (function initArtifactInteractions() {
   var canHover = !!(window.matchMedia && window.matchMedia('(hover: hover)').matches);
   var trigger = function(t) { return t && t.closest ? t.closest('[data-art-id]:not([data-art-play])') : null; };
@@ -17908,9 +17936,21 @@ function artHandleKey(e) {
     clearTimeout(_artPeek.openTimer);
     if (_artPeek.anchor) hideArtPeek(false);
   });
+  // A file card's button is in its shadow root: the event comes from the card, the focus ring is inside it.
+  var focusVisible = function(t) {
+    var inner = t.shadowRoot && t.shadowRoot.activeElement;
+    return (inner || t).matches(':focus-visible');
+  };
   document.addEventListener('focusin', function(e) {
     var t = trigger(e.target);
-    if (t && !t.closest('#art-modal') && t.matches(':focus-visible')) { clearTimeout(_artPeek.openTimer); showArtPeek(t); }
+    if (t && !t.closest('#art-modal') && focusVisible(t)) { clearTimeout(_artPeek.openTimer); showArtPeek(t); }
+  });
+  // <ui-file-card> asks to open its file (ui-open): the page's viewer, at it, over the conversation's files.
+  document.addEventListener('ui-open', function(e) {
+    var t = e.target;
+    if (!t || t.localName !== 'ui-file-card' || !t.hasAttribute('data-art-id')) return;
+    hideArtPeek(true);
+    openArtifactModal(t.getAttribute('data-art-cid'), t.getAttribute('data-art-id'), t);
   });
   document.addEventListener('focusout', function(e) {
     if (trigger(e.target)) hideArtPeek(false);
@@ -17919,6 +17959,7 @@ function artHandleKey(e) {
     var play = e.target.closest ? e.target.closest('[data-art-play]') : null;
     if (play) { e.preventDefault(); toggleArtAudio(play); return; }
     var t = trigger(e.target);
+    if (t && t.localName === 'ui-file-card') return; // its ui-open answers
     if (t && !t.closest('#art-modal')) {
       e.preventDefault();
       hideArtPeek(true);

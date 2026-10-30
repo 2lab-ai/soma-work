@@ -70,6 +70,8 @@ const BASE_FNS = [
   'artKindLabel',
   'artGlyph',
   'artMeta',
+  'artFileItem',
+  'artCard',
   'artChip',
 ];
 const BASE_VARS = ['ART_KIND_LABEL', 'ART_GLYPH', '_userMedia', 'CARD_ART_TILES'];
@@ -251,7 +253,7 @@ describe('T5 — collapsed card face: artifacts visible on the board itself', ()
 describe('T5 — expanded card: the 산출물 strip', () => {
   const body = (cache: Record<string, unknown> = {}) =>
     load<{ renderCardArtifacts(s: unknown): string }>(
-      [...BASE_FNS, 'artSortForDisplay', 'artThumb', 'artAudioPlaying', 'artTile', 'artListFor', 'renderCardArtifacts'],
+      [...BASE_FNS, 'artSortForDisplay', 'artAudioPlaying', 'artTile', 'artListFor', 'renderCardArtifacts'],
       BASE_VARS,
       { _artCache: cache, _artAudio: { el: null, key: null } },
     );
@@ -265,8 +267,28 @@ describe('T5 — expanded card: the 산출물 strip', () => {
     expect(out).toContain('4');
     const order = ['A3', 'A2', 'A1', 'A4'].map((id) => out.indexOf(`data-art-id="${id}"`));
     expect(order).toEqual([...order].sort((a, b) => a - b));
-    expect(out).toContain('<img');
-    expect(out).toContain('src="/api/dashboard/session/conv-1/artifacts/A2/content"');
+    // D2 (I-01..I-03): each tile is @2lab.ai/ui <ui-file-card>, keyed for the page's hydration; the element draws
+    // the thumbnail (an image's url), the kind's glyph and wash, the name and the meta.
+    expect(out).toContain(
+      '<ui-file-card class="art-card" variant="tile" lang="ko" data-art-cid="conv-1" data-art-id="A2"',
+    );
+    expect(out).not.toContain('<img');
+  });
+
+  it('D2 — the file a card is handed: name, kind, size, time; a stored file has its url (the thumbnail of an image)', () => {
+    const m = body();
+    const api = m as unknown as { artFileItem(cid: string, a: Art): Record<string, unknown> };
+    expect(api.artFileItem('conv-1', png)).toEqual({
+      id: 'A2',
+      name: 'chart.png',
+      kind: 'image',
+      size: 2048,
+      time: 1792733001000,
+      url: '/api/dashboard/session/conv-1/artifacts/A2/content',
+    });
+    // Only Slack has the bytes: no url (no thumbnail, no open / download), and the card says so.
+    expect(api.artFileItem('c', bigMov)).toMatchObject({ id: 'A5', meta: 'Slack에만 있음' });
+    expect(api.artFileItem('c', bigMov)).not.toHaveProperty('url');
   });
 
   it('T8 — an audio tile carries an inline play button; a file without bytes says it is on Slack', () => {
@@ -275,21 +297,14 @@ describe('T5 — expanded card: the 산출물 strip', () => {
       artifacts: { count: 2, recent: [] },
     });
     expect(out).toMatch(/data-art-play="1"[^>]*data-art-id="A3"|data-art-id="A3"[^>]*data-art-play="1"/);
-    expect(out).toContain('Slack');
+    // The remote file's tile is marked; its card's meta line says 'Slack에만 있음' (artFileItem).
+    expect(out).toContain('<div class="art-tile is-remote">');
   });
 
   it('T8 — a live re-render keeps a playing clip marked playing (the card body is morphed on every push)', () => {
     const playing = (key: string | null, paused: boolean) =>
       load<{ renderCardArtifacts(s: unknown): string }>(
-        [
-          ...BASE_FNS,
-          'artSortForDisplay',
-          'artThumb',
-          'artAudioPlaying',
-          'artTile',
-          'artListFor',
-          'renderCardArtifacts',
-        ],
+        [...BASE_FNS, 'artSortForDisplay', 'artAudioPlaying', 'artTile', 'artListFor', 'renderCardArtifacts'],
         BASE_VARS,
         { _artCache: { c: { state: 'ok', list: [wav] } }, _artAudio: { el: { paused }, key } },
       ).renderCardArtifacts({ conversationId: 'c', artifacts: { count: 1, recent: [] } });
@@ -307,6 +322,51 @@ describe('T5 — expanded card: the 산출물 strip', () => {
   });
 });
 
+describe('D2 — the tiles and chips are @2lab.ai/ui <ui-file-card>, answered by the page', () => {
+  it('fcHydrate hands a keyed card its file once per change; an unknown file is left alone', () => {
+    const files: Record<string, Art> = { A2: png };
+    const m = load<{ fcHydrate(el: unknown): void }>(
+      ['fcHydrate', 'artFileItem', 'artUrl', 'umGet', 'umUrl', 'toNum'],
+      ['_userMedia'],
+      { artFind: (_cid: string, id: string) => files[id] ?? null },
+    );
+    let sets = 0;
+    let data: unknown;
+    const el = {
+      getAttribute: (k: string) => ({ 'data-art-cid': 'c', 'data-art-id': 'A2' })[k] ?? null,
+      set data(v: unknown) {
+        sets++;
+        data = v;
+      },
+      get data() {
+        return data;
+      },
+    };
+    m.fcHydrate(el);
+    m.fcHydrate(el);
+    expect(sets).toBe(1);
+    expect(data).toMatchObject({ id: 'A2', kind: 'image', url: '/api/dashboard/session/c/artifacts/A2/content' });
+    files.A2 = { ...png, size: 4096 };
+    m.fcHydrate(el);
+    expect(sets).toBe(2);
+    const stray = { getAttribute: (k: string) => (k === 'data-art-id' ? 'nope' : 'c'), data: undefined };
+    m.fcHydrate(stray);
+    expect(stray.data).toBeUndefined();
+  });
+
+  it('every card in the document is hydrated (added, or its data-art-v changed); ui-open opens the viewer at it', () => {
+    expect(TEMPLATE).toContain("attributeFilter: ['data-art-v']");
+    expect(TEMPLATE).toContain("if (node.matches('ui-file-card[data-art-id]')) fcHydrate(node);");
+    expect(TEMPLATE).toContain("document.addEventListener('ui-open', function(e) {");
+    expect(TEMPLATE).toContain("openArtifactModal(t.getAttribute('data-art-cid'), t.getAttribute('data-art-id'), t);");
+    // Focus goes back to the card's button (the card itself takes no focus).
+    expect(TEMPLATE).toContain(
+      "var inner = opener && opener.shadowRoot ? opener.shadowRoot.querySelector('button') : null;",
+    );
+    expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/file-card.js?v=${UI_LIB_VERSION}"></script>');
+  });
+});
+
 describe('T6 — right panel: pinned strip and per-answer attachments', () => {
   const panel = () =>
     load<{
@@ -316,7 +376,6 @@ describe('T6 — right panel: pinned strip and per-answer attachments', () => {
       [
         ...BASE_FNS,
         'artSortForDisplay',
-        'artThumb',
         'artAudioPlaying',
         'artTile',
         'artInTurn',
