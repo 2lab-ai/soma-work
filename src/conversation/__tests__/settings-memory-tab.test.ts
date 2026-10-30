@@ -46,8 +46,7 @@ function block(over: Record<string, unknown> = {}) {
 describe('기억 tab shell', () => {
   it('the page carries the 기억 tab and the whole script still parses', () => {
     const html = renderSettingsPage();
-    expect(html).toContain('<a href="#memory">기억</a>');
-    expect(html).toContain('<div data-tab="memory" class="page" hidden>');
+    expect(html).toContain('<div slot="memory" data-tab="memory" class="page" hidden>');
     const script = /<script>([\s\S]*?)<\/script>/.exec(html)![1];
     expect(() => new Function(script)).not.toThrow();
   });

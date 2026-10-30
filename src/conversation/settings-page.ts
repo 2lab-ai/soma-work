@@ -23,17 +23,19 @@
  */
 
 import { MEMORY_CLIENT_JS, MEMORY_TAB_CSS, MEMORY_TAB_HTML } from './settings-memory-tab';
-import { pageTokenAliases, UI_LIB_VERSION, uiLibTokensCss } from './ui-lib';
+import { pageTokenAliases, UI_LIB_VERSION, uiLibKitCss, uiLibTokensCss } from './ui-lib';
 
 export interface SettingsPageTab {
   id: string;
   label: string;
+  /** A glyph of @2lab.ai/ui's icon set before the label. */
+  icon?: string;
 }
 
 /** Tabs that exist on this build. Later areas append here. */
 export const SETTINGS_TABS: SettingsPageTab[] = [
-  { id: 'preferences', label: '개인 설정' },
-  { id: 'memory', label: '기억' },
+  { id: 'preferences', label: '개인 설정', icon: 'gear' },
+  { id: 'memory', label: '기억', icon: 'brain' },
 ];
 
 export const SETTINGS_PAGE_CSS = String.raw`
@@ -69,32 +71,17 @@ html, body { background: var(--bg); color: var(--text); font-family: var(--font)
 }
 a { color: var(--accent); }
 code { font-family: var(--mono); font-size: 12px; }
-/* ── App bar — ui.2lab.ai's, as on the dashboard (P4): the page colour at 86% over what scrolls under it,
-   blurred, one hairline; opaque when the reader asks for less transparency. Chip links (no box at rest,
-   the --ib-pill chip on hover and for the current tab), a neutral user pill, the 34px theme icon button. ── */
-.topbar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; gap: 12px; min-height: var(--topbar-h); padding: 0 20px; background: color-mix(in srgb, var(--bg) 86%, transparent); -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px); border-bottom: 1px solid var(--border); flex-wrap: wrap; }
-@media (prefers-reduced-transparency: reduce) {
-  .topbar { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
-}
-.topbar h1 { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; white-space: nowrap; flex: none; }
-.topbar h1 .brand-mark { width: 22px; height: 22px; flex: none; }
-.brand-mark .bm-bg { fill: var(--text); }
-.brand-mark .bm-cell { fill: var(--surface); }
-.topbar-nav { display: flex; align-items: center; gap: 6px; min-width: 0; }
-.tabs { display: flex; gap: 2px; }
-.topbar .back, .tabs a { display: inline-flex; align-items: center; gap: 6px; min-height: 32px; padding: 6px 10px; border-radius: 8px; font-size: 13px; font-weight: 500; color: var(--text-secondary); text-decoration: none; white-space: nowrap; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
-.topbar .back svg { width: 15px; height: 15px; flex: none; }
-.tabs a[aria-current="page"] { background: var(--ib-pill); color: var(--text); }
-.topbar .account { margin-left: auto; display: flex; gap: 6px; align-items: center; min-width: 0; }
-.topbar .who { display: inline-flex; align-items: center; gap: 6px; min-width: 0; max-width: 260px; min-height: 32px; padding: 5px 12px 5px 8px; border: 1px solid var(--border); border-radius: 999px; font-size: 13px; font-weight: 500; line-height: 1; color: var(--text); white-space: nowrap; }
-.topbar .who svg { width: 15px; height: 15px; flex: none; color: var(--text-tertiary); }
-.topbar .who #who { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-.topbar .who:has(#who:empty) { display: none; }
-.topbar .theme { display: inline-grid; place-items: center; flex: none; width: 34px; height: 34px; padding: 0; background: var(--ib-card); border: 1px solid var(--ib-card-border); border-radius: 10px; color: var(--ib-text-2); cursor: pointer; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
-.topbar .theme svg { width: 16px; height: 16px; }
-.topbar .theme .ic-moon, [data-theme="light"] .topbar .theme .ic-sun { display: none; }
-[data-theme="light"] .topbar .theme .ic-moon { display: block; }
-.topbar .back:focus-visible, .tabs a:focus-visible, .topbar .theme:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
+/* ── App bar and tabs (M-01) — @2lab.ai/ui <ui-app-bar id="app-bar">, as on the dashboard: brand, the page
+   links (folded into 메뉴 when the bar is short of room), the signed-in account and the theme toggle are its
+   data (paintAppBar); translucent over the page, one hairline, opaque under reduced transparency — all the
+   element's own. Under it the tab list 개인 설정 · 기억 is <ui-tabs id="settings-tabs"> over the two tab pages
+   (each a slotted panel); the location hash still picks the tab, so /dashboard/settings#memory opens 기억. ── */
+.topbar { position: sticky; top: 0; z-index: 20; min-width: 0; }
+/* Until the elements are defined: the bar's height and none of the raw content. */
+ui-app-bar:not(:defined) { display: block; height: var(--topbar-h); }
+ui-tabs:not(:defined) { display: block; }
+/* The tab list lines up with the page column under it. */
+.settings-tabs::part(list) { max-width: 1080px; margin: 0 auto; padding: 8px 20px 0; }
 .page { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 24px; max-width: 1080px; margin: 0 auto; padding: 24px 20px 64px; }
 /* An author display beats the UA [hidden] rule — tabs are switched with the hidden attribute. */
 .page[hidden] { display: none; }
@@ -136,7 +123,7 @@ section.group > header p { font-size: 12px; color: var(--text-secondary); margin
 .btn.link { background: none; border: 0; padding: 0; min-height: 0; color: var(--accent); font-weight: 500; }
 .btn.danger { background: var(--st-fail); border-color: var(--st-fail); color: var(--ib-card); }
 .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-:is(.btn, .topbar .back, .tabs a, .topbar .theme, .side nav .navbtn, .chip button, .pages-list .pg):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+:is(.btn, .side nav .navbtn, .chip button, .pages-list .pg):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 .btn:focus-visible, .row input:focus-visible, .row select:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 /* The library segmented control: a recessed track, the selected option a raised chip. */
 fieldset.seg { border: 0; display: inline-flex; flex-wrap: wrap; background: var(--ib-seg); border-radius: 10px; padding: 3px; gap: 2px; }
@@ -173,7 +160,7 @@ dialog p { font-size: 13px; color: var(--text-secondary); margin-bottom: 16px; }
 dialog .actions { display: flex; justify-content: flex-end; gap: 8px; }
 /* Hover is a fine-pointer affordance only, and it never moves anything: a neutral border or the pill. */
 @media (hover: hover) and (pointer: fine) {
-  .topbar .back:hover, .tabs a:hover, .topbar .theme:hover, .side nav .navbtn:hover { background: var(--ib-pill); color: var(--text); }
+  .side nav .navbtn:hover { background: var(--ib-pill); color: var(--text); }
   .btn:hover:not(:disabled) { border-color: var(--ib-muted); }
   .btn.primary:hover:not(:disabled), .btn.danger:hover:not(:disabled) { opacity: 0.88; }
   .btn.primary:hover:not(:disabled) { border-color: var(--ib-text); }
@@ -188,25 +175,21 @@ dialog .actions { display: flex; justify-content: flex-end; gap: 8px; }
   .side nav { flex-direction: row; overflow-x: auto; }
   .row { grid-template-columns: minmax(0, 1fr); }
 }
-/* Phones: brand and account on the first row, 대시보드 and the tabs on their own row under them. */
+/* Phones: the bar is one 52px row (its links fold into 메뉴); the tab list keeps the page's narrower gutter. */
 @media (max-width: 640px) {
-  .topbar { padding: 0 12px; row-gap: 0; }
-  .topbar-nav { order: 3; flex-basis: 100%; padding-bottom: 8px; margin-left: -4px; }
-  .topbar h1, .topbar .account { min-height: 52px; }
-  section.group { scroll-margin-top: 112px; }
+  .settings-tabs::part(list) { padding: 4px 12px 0; }
 }
 @media (pointer: coarse) {
   /* Touch screens (SSOT 2026-10-24): 16px text, so iOS does not zoom into a focused field.
      Every tab's fields — the memory tab's CSS comes after this sheet, hence !important. */
   .side input[type="search"], .row input[type="text"], .row input[type="number"], .row select { font-size: 16px; }
   input[type="text"], input[type="search"], input[type="number"], select, textarea { font-size: 16px !important; }
-  /* 44px targets, as on the dashboard's bar. */
-  .topbar .back, .tabs a { min-height: 44px; }
-  .topbar .theme { width: 44px; height: 44px; }
+  /* 44px targets, as on the dashboard's bar (the bar's own controls size themselves). */
+  .settings-tabs::part(tab) { min-height: 44px; }
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.btn, .topbar .back, .tabs a, .topbar .theme, .side nav .navbtn, .chip button, .pages-list .pg):active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.btn, .side nav .navbtn, .chip button, .pages-list .pg):active:not(:disabled):not(:focus-visible) { transform: none; }
 }
 `;
 
@@ -230,8 +213,11 @@ async function refreshCsrfToken() {
     if (res.ok) {
       var data = await res.json();
       _csrfToken = data.csrfToken || '';
-      var who = document.getElementById('who');
-      if (who && data.user && data.user.name) who.textContent = data.user.name + (data.isAdmin ? ' · 관리자' : '');
+      if (data.user && data.user.name) {
+        _appBarAccount = { name: data.user.name, href: '/login' };
+        if (data.isAdmin) _appBarAccount.role = '관리자';
+        paintAppBar();
+      }
     }
   } catch (_e) {}
 }
@@ -514,7 +500,42 @@ function applyFilter() {
   for (var g = 0; g < groups.length; g++) groups[g].hidden = !groups[g].querySelector('.row:not([hidden])');
 }
 
-// ── Tabs + theme ──
+// ── App bar (M-01) — @2lab.ai/ui <ui-app-bar id="app-bar"> ──
+// The page hands the bar its data — brand, the page links, the signed-in account, the current theme — and
+// answers ui-theme-change (the page owns the theme and its storage). Links are real links: ui-navigate is
+// not cancelled.
+var APP_BAR_NAV = [
+  { id: 'dashboard', label: '대시보드', href: '/dashboard', icon: 'board' },
+  { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat' },
+  { id: 'settings', label: '설정', href: '/dashboard/settings', icon: 'gear', current: true },
+];
+var _appBarAccount = null; // { name, href, role? } once /auth/me answers
+function currentTheme() {
+  return document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
+}
+function paintAppBar() {
+  var bar = document.getElementById('app-bar');
+  if (!bar) return;
+  var data = { brand: { label: 'soma-work', mark: true, href: '/dashboard' }, nav: APP_BAR_NAV, navLabel: '주 메뉴', theme: currentTheme() };
+  if (_appBarAccount) data.account = _appBarAccount;
+  bar.data = data;
+}
+function setTheme(next) {
+  document.documentElement.setAttribute('data-theme', next);
+  try { localStorage.setItem('soma-theme', next); } catch (_e) {}
+  paintAppBar();
+}
+function toggleTheme() {
+  setTheme(currentTheme() === 'light' ? 'dark' : 'light');
+}
+
+// ── Tabs — @2lab.ai/ui <ui-tabs id="settings-tabs"> over the tab pages (each a slotted [data-tab] panel) ──
+// The hash picks the tab (links such as /dashboard/settings#memory); choosing a tab writes the hash. Until the
+// element is defined, the hidden attribute keeps the other tab page out of sight.
+function settingsTabs() {
+  var el = document.getElementById('settings-tabs-data');
+  try { return (el && JSON.parse(el.textContent || '[]')) || []; } catch (_e) { return []; }
+}
 function showTab(id) {
   var tabs = document.querySelectorAll('[data-tab]');
   var found = false;
@@ -524,20 +545,29 @@ function showTab(id) {
     var on = tabs[j].getAttribute('data-tab') === id;
     tabs[j].hidden = !on;
   }
-  var links = document.querySelectorAll('.tabs a');
-  for (var k = 0; k < links.length; k++) {
-    if (links[k].getAttribute('href') === '#' + id) links[k].setAttribute('aria-current', 'page');
-    else links[k].removeAttribute('aria-current');
-  }
-  if (typeof onTabShown === 'function') onTabShown(id);
+  var el = document.getElementById('settings-tabs');
+  if (el) el.data = { tabs: settingsTabs(), value: id, label: '설정 영역' };
+  var changed = showTab.current !== id;
+  showTab.current = id;
+  if (changed && typeof onTabShown === 'function') onTabShown(id);
 }
-function toggleTheme() {
-  var cur = document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark';
-  var next = cur === 'light' ? 'dark' : 'light';
-  document.documentElement.setAttribute('data-theme', next);
-  try { localStorage.setItem('soma-theme', next); } catch (_e) {}
+function initShell() {
+  var tabsEl = document.getElementById('settings-tabs');
+  if (tabsEl) tabsEl.addEventListener('ui-change', function (e) {
+    var v = e.detail && e.detail.value;
+    if (!v) return;
+    showTab(v);
+    if (location.hash.slice(1) !== v) location.hash = v;
+  });
+  var bar = document.getElementById('app-bar');
+  if (bar) bar.addEventListener('ui-theme-change', function (e) {
+    var t = e.detail && e.detail.theme;
+    if (t === 'light' || t === 'dark') setTheme(t);
+  });
+  paintAppBar();
 }
 window.addEventListener('hashchange', function () { showTab(location.hash.slice(1)); });
+initShell();
 // Settings changed in Slack show up when the tab comes back — rows being edited stay as typed.
 document.addEventListener('visibilitychange', function () {
   if (document.hidden || !_snapshot) return;
@@ -552,7 +582,7 @@ loadPreferences();
 
 /** Markup of the 개인 설정 tab. */
 function preferencesTab(): string {
-  return `<div data-tab="preferences" class="page">
+  return `<div slot="preferences" data-tab="preferences" class="page">
   <aside class="side" aria-label="개인 설정 섹션">
     <input type="search" id="pref-filter" placeholder="설정 검색 (이름 · 설명 · Slack 명령)" aria-label="설정 검색" oninput="applyFilter()">
     <label class="only-modified"><input type="checkbox" id="pref-modified" onchange="applyFilter()"> 기본값과 다른 것만</label>
@@ -573,7 +603,11 @@ function onTabShown(id) {
 `;
 
 export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS): string {
-  const tabLinks = tabs.map((t) => `<a href="#${t.id}">${t.label}</a>`).join('');
+  // The tab list's data, read by the page script (showTab): JSON with every < escaped, inert in a data script.
+  const tabsJson = JSON.stringify(tabs.map((t) => ({ id: t.id, label: t.label, icon: t.icon }))).replace(
+    /</g,
+    '\\u003c',
+  );
   return `<!DOCTYPE html>
 <html lang="ko">
 <head>
@@ -583,6 +617,11 @@ export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS): str
 <script data-fouc>
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
 </script>
+<!-- @2lab.ai/ui kit (ui-kit.css): the light-DOM classes (.ui-btn, .ui-input, .ui-switch, .ui-card, .ui-notice,
+     .ui-sr-only …) on the --ui-* tokens below. Before the page sheet, so a page rule that places a kit control wins. -->
+<style id="ui-kit">
+${uiLibKitCss()}
+</style>
 <style>${SETTINGS_PAGE_CSS}${MEMORY_TAB_CSS}</style>
 <!-- Tokens — @2lab.ai/ui is the single source, as on the dashboard (P10, P9): its tokens.css puts every
      --ui-* on :root and [data-theme="light|dark"], and the page's names are aliases of them. -->
@@ -592,19 +631,15 @@ ${pageTokenAliases()}
 </style>
 </head>
 <body>
-<div class="topbar">
-  <h1><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect class="bm-bg" width="32" height="32" rx="8"/><rect class="bm-cell" x="7" y="7" width="7" height="7" rx="1.5"/><rect class="bm-cell" x="18" y="7" width="7" height="7" rx="1.5" opacity=".55"/><rect class="bm-cell" x="7" y="18" width="7" height="7" rx="1.5" opacity=".55"/><rect class="bm-cell" x="18" y="18" width="7" height="7" rx="1.5" opacity=".25"/></svg>soma-work</h1>
-  <div class="topbar-nav">
-    <a class="back" href="/dashboard"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 8H3M7.25 3.75L3 8l4.25 4.25"/></svg>대시보드</a>
-    <nav class="tabs" aria-label="설정 영역">${tabLinks}</nav>
-  </div>
-  <div class="account">
-    <span class="who"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="5.5" r="2.75"/><path d="M2.75 13.75a5.25 5.25 0 0 1 10.5 0"/></svg><span id="who"></span></span>
-    <button type="button" class="theme" onclick="toggleTheme()" aria-label="테마 바꾸기"><svg class="ic-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="2.75"/><path d="M8 1.5V3M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1.05 1.05M11.55 11.55l1.05 1.05M3.4 12.6l1.05-1.05M11.55 4.45l1.05-1.05"/></svg><svg class="ic-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"/></svg></button>
-  </div>
-</div>
+<header class="topbar" id="topbar">
+  <h1 class="ui-sr-only">soma-work 설정</h1>
+  <ui-app-bar id="app-bar" lang="ko"></ui-app-bar>
+</header>
+<ui-tabs id="settings-tabs" class="settings-tabs" panel-focus="none">
 ${preferencesTab()}
 ${MEMORY_TAB_HTML}
+</ui-tabs>
+<script type="application/json" id="settings-tabs-data">${tabsJson}</script>
 <dialog id="confirm" aria-labelledby="confirm-title">
   <form method="dialog">
     <h3 id="confirm-title"></h3>
@@ -616,6 +651,8 @@ ${MEMORY_TAB_HTML}
   </form>
 </dialog>
 <script>${MEMORY_CLIENT_JS}${TAB_HOOKS_JS}${SETTINGS_CLIENT_JS}</script>
+<script type="module" src="/dashboard/ui/app-bar.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/tabs.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/memory-panel.js?v=${UI_LIB_VERSION}"></script>
 </body>
 </html>`;
