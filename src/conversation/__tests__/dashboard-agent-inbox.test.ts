@@ -616,7 +616,16 @@ describe('tone pass P8 — copy and glyphs', () => {
       expect(TEMPLATE, s).not.toContain(s);
     }
     expect(TEMPLATE).toContain('<h3 id="panel-title" tabindex="-1">작업 카드</h3>');
-    expect(TEMPLATE).toContain('<h3 id="lifecycle-title">세션 수명 주기</h3>');
+    // D1 (J-01): the lifecycle dialog is @2lab.ai/ui <ui-dialog>; its Korean title is the element's heading.
+    expect(TEMPLATE).toContain(
+      '<ui-dialog id="lifecycle-dialog" class="lifecycle-dialog" heading="세션 수명 주기" size="sm" lang="ko">',
+    );
+    // Its two buttons are the footer; 저장 still submits the form (form="lifecycle-form").
+    expect(TEMPLATE).toContain(
+      '<button type="submit" form="lifecycle-form" class="ui-btn is-primary lc-save" id="lifecycle-save">저장</button>',
+    );
+    expect(fnBody('openLifecycleDialog')).toContain('dlg.show();');
+    expect(fnBody('closeLifecycleDialog')).toContain('dlg.hide();');
     for (const s of [
       "'Retrying...'",
       'Generating summary...',
