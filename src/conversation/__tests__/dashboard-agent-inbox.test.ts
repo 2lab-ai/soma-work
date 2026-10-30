@@ -91,7 +91,7 @@ describe('agent inbox board — layout (§3.1)', () => {
     // (hidden and inert while closed, 0fr ↔ 1fr), and the page's detail is its default slot.
     const host = main.indexOf('<ui-stat-strip id="stats-strip" lang="ko">', strip);
     const detailAt = main.indexOf('<div class="stats-detail" id="stats-detail">', host);
-    const close = main.indexOf('</ui-stat-strip>', detailAt);
+    const close = main.indexOf('</ui-stat-strip>\n    </section>', detailAt);
     const board = main.indexOf('<section class="inbox ui-tok" id="inbox"');
     expect(strip).toBeGreaterThan(0);
     expect(host).toBeGreaterThan(strip);
@@ -108,19 +108,16 @@ describe('agent inbox board — layout (§3.1)', () => {
     ]) {
       expect(TEMPLATE, gone).not.toContain(gone);
     }
-    // Behind 자세히: the remaining cards and the charts, same ids as before.
+    // Behind 자세히: the remaining cards and the charts. The cards are a second <ui-stat-strip> in layout 'cards'
+    // (D4, B-07): 턴 · PR 생성 · PR 머지 are its figures, 머지 코드 and 워크플로우 the page's slotted spans.
     const detail = main.slice(detailAt, close);
-    for (const id of [
-      'stats-grid',
-      'stat-turns',
-      'stat-prs',
-      'stat-merged',
-      'stat-merge-lines',
-      'stat-workflows',
-      'chart-row',
-    ]) {
+    for (const id of ['stats-grid', 'stat-merge-lines', 'stat-workflows', 'chart-row']) {
       expect(detail, id).toContain(`id="${id}"`);
     }
+    expect(detail).toContain('<ui-stat-strip id="stats-grid" class="stats-grid" lang="ko">');
+    const cards = fnBody('statCardsData');
+    expect(cards).toContain("layout: 'cards',");
+    for (const label of ['턴 사용', 'PR 생성', 'PR 머지', '머지 코드', '워크플로우']) expect(cards, label).toContain(`label: '${label}'`);
   });
 
   it('D2 — the stats strip is answered, not drawn: period · figures · 자세히 in, ui-period / ui-more answered', () => {
@@ -131,13 +128,13 @@ describe('agent inbox board — layout (§3.1)', () => {
     const data = fnBody('statsStripData');
     expect(data).toContain("period: { label: '기간', value: currentPeriod, options: PERIOD_OPTIONS },");
     expect(data).toContain(
-      "{ key: 'sessions', label: '세션', value: _strip.sessions.value, format: 'int', loading: _strip.sessions.loading },",
+      "{ key: 'sessions', label: '세션', value: _strip.sessions.value, format: 'int', loading: _strip.sessions.loading, from: 'last' },",
     );
     expect(data).toContain(
-      "var tokens = { key: 'tokens', label: '토큰', value: _strip.tokens.value, format: 'tokens', loading: _strip.tokens.loading };",
+      "var tokens = { key: 'tokens', label: '토큰', value: _strip.tokens.value, format: 'tokens', loading: _strip.tokens.loading, from: 'last' };",
     );
     expect(data).toContain(
-      "{ key: 'cost', label: '비용', value: _strip.cost.value, format: 'usd', loading: _strip.cost.loading },",
+      "{ key: 'cost', label: '비용', value: _strip.cost.value, format: 'usd', loading: _strip.cost.loading, from: 'last' },",
     );
     expect(data).toContain("more: { label: '자세히', open: _statsDetailOpen },");
     expect(fnBody('paintStatsStrip')).toContain('if (el) el.data = statsStripData();');
@@ -571,10 +568,8 @@ describe('tone pass P7 — surfaces and elevation', () => {
   };
 
   it('stat cards and charts are 12px cards on --ib-shadow; menus, dialogs, the peek, the viewer and tooltips are raised', () => {
-    for (const sel of ['.stat-card']) {
-      expect(rule(sel), sel).toContain('border-radius: 12px;');
-      expect(rule(sel), sel).toContain('box-shadow: var(--ib-shadow);');
-    }
+    // D4 (B-07): the stat cards are <ui-stat-strip layout: 'cards'> tiles (12px, hairline + resting shadow).
+    expect(TEMPLATE).not.toContain('.stat-card');
     // D2 (B-08): the charts are @2lab.ai/ui <ui-bar-chart> — each element draws its own 12px card on
     // --ib-shadow; the page only lays the two side by side.
     expect(TEMPLATE).toContain(

@@ -4113,37 +4113,12 @@ ui-stat-strip:not(:defined) > * { display: none; }
 .xp-moving > .wl-group-body, .xp-moving > .cg-hx-in, .xp-moving > .pi-body { overflow: hidden; }
 .usage-cb-wrap { max-width: 440px; margin-bottom: 12px; }
 
-/* ── STATS GRID — the cards behind 자세히: 5 columns, 2 below 1100px ── */
-.stats-grid {
-  display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 8px;
-  margin-bottom: 16px;
-}
-.stat-card {
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: var(--ib-shadow);
-  padding: 12px 16px;
-  transition: border-color 150ms ease;
-}
-.stat-card .label {
-  font-size: 12px;
-  font-weight: 500;
-  color: var(--text-tertiary);
-  margin-bottom: 4px;
-}
-.stat-card .value {
-  font-size: 22px;
-  font-weight: 600;
-  letter-spacing: -0.02em;
-  font-variant-numeric: tabular-nums;
-}
-/* Dim placeholder values */
-.stat-card .value.no-data { color: var(--text-tertiary); opacity: 0.3; font-size: 18px; }
-.stat-card .delta { font-size: 12px; color: var(--green); margin-top: 2px; font-weight: 600; }
-.stat-card .delta.negative { color: var(--red); }
+/* ── STAT CARDS — the cards behind 자세히 (B-07): <ui-stat-strip id="stats-grid"> in layout 'cards' draws the
+   tiles (12px cards on the resting shadow, as many 140px+ columns as fit, 워크플로우 wide). The page only
+   writes the two slotted figures: 머지 코드 (+a / -d) and 워크플로우 (name: n, wrapping). ── */
+.stats-grid { display: block; margin-bottom: 16px; }
+.stat-wf { display: inline-flex; flex-wrap: wrap; gap: 2px 10px; font-size: 0.8em; }
+.stat-wf b { font-weight: 600; }
 
 /* ═══ AGENT INBOX BOARD (.prd/10 §3.1) ═══
    NEEDS YOU (waiting) · RUNNING (working) · DONE (idle, then closed) — the
@@ -4216,9 +4191,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .sk { background: var(--ib-pill); border-radius: 6px; animation: sk-pulse 1.6s ease-in-out infinite; }
 .board-error { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 12px; padding: 12px 16px; border-radius: 12px; background: var(--ib-col); color: var(--ib-text-2); font-size: 13px; }
 .board-error[hidden] { display: none; }
-/* Stats values: a bar where the number will be. */
-.stat-card .value.is-loading { display: inline-block; vertical-align: middle; width: 3.2em; height: 0.9em; border-radius: 6px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
-.stat-card .value.is-loading { width: 64px; height: 22px; }
 /* Panel turns: rows shaped like a user / assistant turn. */
 .sk-turn { margin-bottom: 8px; padding: 8px 10px; border-radius: 10px; display: flex; gap: 10px; align-items: flex-start; border-left: 3px solid var(--ib-pill); }
 .sk-turn.user { background: var(--surface-raised); }
@@ -5491,16 +5463,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 
 /* ── RESPONSIVE — Bauhaus grid adapts ── */
-@media (max-width: 1100px) {
-  .stats-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  /* Workflows — the widest value — takes the last row on its own. */
-  .stats-grid .stat-card:last-child { grid-column: 1 / -1; }
-}
 @media (max-width: 680px) {
-  .stats-grid { gap: 6px; margin-bottom: 12px; }
-  .stat-card { padding: 8px 12px; }
-  .stat-card .value { font-size: 18px; }
-  .stat-card .label { font-size: 11.5px; }
+  .stats-grid { margin-bottom: 12px; }
   .chart-row { flex-direction: column; }
 }
 @media (hover: hover) and (pointer: fine) {
@@ -6088,20 +6052,14 @@ ${pageTokenAliases()}
     <!-- Stats strip (.prd/10 §3.1-2) leads; the agent inbox board follows it. It is @2lab.ai/ui
          <ui-stat-strip id="stats-strip"> (B-01..B-05, B-09): period · 세션 · 토큰 · 비용 + 자세히 are its
          data (paintStatsStrip) — the figures roll, a loading figure pulses, 토큰 carries the per-instance
-         breakdown as its tooltip. 자세히 opens the element's own region: the other cards and the charts
-         below (its default slot; the choice is kept in localStorage). -->
+         breakdown as its tooltip. 자세히 opens the element's own region: the other cards (B-07, a second
+         <ui-stat-strip> in layout 'cards': 턴 · PR 생성 · PR 머지 roll, 머지 코드 and 워크플로우 are slotted
+         figures) and the charts below (its default slot; the choice is kept in localStorage). -->
     <section class="stats" id="stats">
       <ui-stat-strip id="stats-strip" lang="ko">
       <div class="stats-detail" id="stats-detail">
         <div class="ui-tok usage-cb-wrap"><ui-compact-breakdown id="usage-cb" lang="ko"></ui-compact-breakdown></div>
-        <div class="stats-grid" id="stats-grid">
-          <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value is-loading" id="stat-turns"></div></div>
-          <div class="stat-card"><div class="label">PR &#xC0DD;&#xC131;</div><div class="value is-loading" id="stat-prs"></div></div>
-          <div class="stat-card"><div class="label">PR &#xBA38;&#xC9C0;</div><div class="value is-loading" id="stat-merged"></div></div>
-          <div class="stat-card"><div class="label">&#xBA38;&#xC9C0; &#xCF54;&#xB4DC;</div><div class="value is-loading" id="stat-merge-lines"></div></div>
-          <div class="stat-card"><div class="label">&#xC6CC;&#xD06C;&#xD50C;&#xB85C;&#xC6B0;</div><div class="value is-loading" id="stat-workflows" style="font-size:0.85em"></div></div>
-        </div>
-        <div style="display:none" id="stat-commits-hidden"></div>
+        <ui-stat-strip id="stats-grid" class="stats-grid" lang="ko"><span id="stat-merge-lines"></span><span id="stat-workflows" class="stat-wf"></span></ui-stat-strip>
         <div class="chart-row" id="chart-row"><ui-bar-chart id="chart-sessions" lang="ko"></ui-bar-chart><ui-bar-chart id="chart-merge" lang="ko"></ui-bar-chart></div>
       </div>
       </ui-stat-strip>
@@ -7951,7 +7909,8 @@ function selectUser(userId) {
 // ── Stats strip — @2lab.ai/ui <ui-stat-strip id="stats-strip"> (B-01..B-05, B-09) ──
 // The page hands it the period, the three figures (null = no data "—"; loading = a pulsing bar where the
 // figure will be) and 자세히. The element rolls a changed figure (620ms ease-out quart; first paint and
-// reduced motion jump), shows 토큰's per-instance breakdown as the figure's tooltip (hover, focus, a press —
+// reduced motion jump) — from: 'last' keeps a figure's value under its loading bar, so a load's answer rolls
+// from the previous period's — shows 토큰's per-instance breakdown as the figure's tooltip (hover, focus, a press —
 // touch too) and opens 자세히's region over its default slot (.stats-detail). It sends ui-period (the page
 // loads that period) and ui-more (the page keeps the choice in localStorage['soma-stats-detail']).
 var PERIOD_OPTIONS = [{ value: 'day', label: '오늘' }, { value: 'week', label: '지난 7일' }, { value: 'month', label: '지난 30일' }];
@@ -7962,36 +7921,16 @@ var _statsDetailOpen = false;
 function setStripFigure(key, value, loading) {
   _strip[key] = { value: typeof value === 'number' && isFinite(value) ? value : null, loading: !!loading };
 }
-// A load's answer lands on the strip. <ui-stat-strip> forgets a figure under its loading bar, so the answer would
-// jump (D2-GAPS G2-1); as before the swap, a figure that had a value rolls from it: the strip gets that value back
-// first and, once it has drawn it (its render is a microtask), the new one.
-function landStripFigures(vals) {
-  var from = {};
-  Object.keys(vals).forEach(function(k) {
-    var was = _strip[k];
-    setStripFigure(k, vals[k], false);
-    if (was.loading && was.value !== null && _strip[k].value !== null && was.value !== _strip[k].value) from[k] = was.value;
-  });
-  var keys = Object.keys(from);
-  var to = {};
-  keys.forEach(function(k) { to[k] = _strip[k].value; _strip[k].value = from[k]; });
-  paintStatsStrip();
-  if (!keys.length) return;
-  queueMicrotask(function() {
-    keys.forEach(function(k) { if (!_strip[k].loading && _strip[k].value === from[k]) _strip[k].value = to[k]; });
-    paintStatsStrip();
-  });
-}
 function statsStripData() {
-  var tokens = { key: 'tokens', label: '토큰', value: _strip.tokens.value, format: 'tokens', loading: _strip.tokens.loading };
+  var tokens = { key: 'tokens', label: '토큰', value: _strip.tokens.value, format: 'tokens', loading: _strip.tokens.loading, from: 'last' };
   if (_tokenBreakdown) tokens.breakdown = _tokenBreakdown;
   return {
     label: '사용량',
     period: { label: '기간', value: currentPeriod, options: PERIOD_OPTIONS },
     metrics: [
-      { key: 'sessions', label: '세션', value: _strip.sessions.value, format: 'int', loading: _strip.sessions.loading },
+      { key: 'sessions', label: '세션', value: _strip.sessions.value, format: 'int', loading: _strip.sessions.loading, from: 'last' },
       tokens,
-      { key: 'cost', label: '비용', value: _strip.cost.value, format: 'usd', loading: _strip.cost.loading },
+      { key: 'cost', label: '비용', value: _strip.cost.value, format: 'usd', loading: _strip.cost.loading, from: 'last' },
     ],
     more: { label: '자세히', open: _statsDetailOpen },
   };
@@ -7999,6 +7938,36 @@ function statsStripData() {
 function paintStatsStrip() {
   var el = document.getElementById('stats-strip');
   if (el) el.data = statsStripData();
+}
+// The cards behind 자세히 (B-07) — <ui-stat-strip id="stats-grid"> in layout 'cards': 턴 사용 · PR 생성 · PR 머지
+// roll like the strip's figures (from: 'last'); 머지 코드 and 워크플로우 are free-form figures in its slots (the
+// page's #stat-merge-lines / #stat-workflows). A slotted figure without data leaves its slot, so the element
+// shows its own "—".
+var _statCards = { turns: null, prs: null, merged: null, loading: true };
+function statCardsData() {
+  var c = _statCards;
+  return {
+    layout: 'cards',
+    label: '세부 사용량',
+    metrics: [
+      { key: 'turns', label: '턴 사용', value: c.turns, format: 'int', loading: c.loading, from: 'last' },
+      { key: 'prs', label: 'PR 생성', value: c.prs, format: 'int', loading: c.loading, from: 'last' },
+      { key: 'merged', label: 'PR 머지', value: c.merged, format: 'int', loading: c.loading, from: 'last' },
+      { key: 'lines', label: '머지 코드', slot: 'lines', loading: c.loading },
+      { key: 'wf', label: '워크플로우', slot: 'wf', wide: true, loading: c.loading },
+    ],
+  };
+}
+function paintStatCards() {
+  var el = document.getElementById('stats-grid');
+  if (el) el.data = statCardsData();
+}
+function fillStatSlot(id, slot, html) {
+  var el = document.getElementById(id);
+  if (!el) return;
+  el.innerHTML = html;
+  if (html) el.setAttribute('slot', slot);
+  else el.removeAttribute('slot');
 }
 function setPeriod(period) {
   currentPeriod = period;
@@ -13174,76 +13143,30 @@ function statsJson(url) {
   });
 }
 
-var STAT_IDS = ['stat-turns', 'stat-prs', 'stat-merged', 'stat-merge-lines', 'stat-workflows'];
 function markStatsLoading() {
-  // The page keeps each strip figure's last value under its loading bar, so the answer rolls from it
-  // (landStripFigures).
+  // Each figure keeps its last value under its loading bar (from: 'last'), so the answer rolls from it.
   ['sessions', 'tokens', 'cost'].forEach(function(k) { setStripFigure(k, _strip[k].value, true); });
   paintStatsStrip();
-  STAT_IDS.forEach(function(id) {
-    var el = document.getElementById(id);
-    if (!el) return;
-    stopStatRoll(el);
-    el.textContent = '';
-    el.classList.remove('no-data');
-    el.classList.add('is-loading');
-  });
+  _statCards.loading = true;
+  paintStatCards();
   paintCharts(_chartDays, true);
 }
 
-// A failed load shows a dash rather than the previous period's number.
-// With a value and its format (the counted cards behind 자세히), the figure rolls from the one it
-// showed to the new one — the library's rolling figure, 620ms ease-out quart (the strip's own figures
-// roll in <ui-stat-strip>).
-// The first paint, a change from or to a dash and reduced motion jump; a new load stops a roll.
-var STAT_ROLL_MS = 620;
-function stopStatRoll(el) {
-  if (el._roll) { cancelAnimationFrame(el._roll); el._roll = 0; }
-}
-function setStat(id, text, value, fmt) {
-  var el = document.getElementById(id);
-  if (!el) return;
-  stopStatRoll(el);
-  var from = el._shown;
-  el._shown = typeof value === 'number' && isFinite(value) ? value : undefined;
-  el.classList.remove('is-loading');
-  el.classList.toggle('no-data', text === '\\u2014');
-  if (!fmt || typeof from !== 'number' || el._shown === undefined || from === value || reduceMotion() || typeof requestAnimationFrame !== 'function') {
-    el.textContent = text;
-    return;
-  }
-  var t0 = 0;
-  var step = function(now) {
-    if (!t0) t0 = now;
-    var p = Math.min(1, (now - t0) / STAT_ROLL_MS);
-    var k = 1 - Math.pow(1 - p, 4);
-    var v = from + (value - from) * k;
-    el._shown = p < 1 ? v : value;
-    el.textContent = p < 1 ? fmt(v) : text;
-    el._roll = p < 1 ? requestAnimationFrame(step) : 0;
-  };
-  el.textContent = fmt(from);
-  el._roll = requestAnimationFrame(step);
-}
-function fmtCount(n) { return String(Math.round(n)); }
-
+// A failed load (null) is a dash rather than the previous period's number.
 function paintStats(data) {
   var t = data && data.totals;
-  var dash = '\\u2014';
-  landStripFigures({ sessions: t ? toNum(t.sessionsCreated) : null });
-  setStat('stat-turns', t ? String(toNum(t.turnsUsed)) : dash, t ? toNum(t.turnsUsed) : null, fmtCount);
-  setStat('stat-prs', t ? String(toNum(t.prsCreated)) : dash, t ? toNum(t.prsCreated) : null, fmtCount);
-  setStat('stat-merged', t ? String(toNum(t.prsMerged)) : dash, t ? toNum(t.prsMerged) : null, fmtCount);
-  setStat('stat-commits-hidden', t ? String(toNum(t.commitsCreated)) : dash);
-  setStat('stat-merge-lines', t ? '+' + toNum(t.mergeLinesAdded) + ' / -' + toNum(t.mergeLinesDeleted) : dash);
+  setStripFigure('sessions', t ? toNum(t.sessionsCreated) : null, false);
+  paintStatsStrip();
+  _statCards = {
+    turns: t ? toNum(t.turnsUsed) : null,
+    prs: t ? toNum(t.prsCreated) : null,
+    merged: t ? toNum(t.prsMerged) : null,
+    loading: false,
+  };
+  fillStatSlot('stat-merge-lines', 'lines', t ? '+' + toNum(t.mergeLinesAdded) + ' / -' + toNum(t.mergeLinesDeleted) : '');
   var wfEntries = Object.entries((t && t.workflowCounts) || {}).sort(function(a, b) { return toNum(b[1]) - toNum(a[1]); });
-  var wfEl = document.getElementById('stat-workflows');
-  if (wfEl) {
-    wfEl.classList.remove('is-loading');
-    wfEl.innerHTML = wfEntries.length
-      ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + toNum(e[1]) + '</b></span>'; }).join('')
-      : '<span style="color:var(--text-secondary)">-</span>';
-  }
+  fillStatSlot('stat-workflows', 'wf', wfEntries.map(function(e) { return '<span>' + esc(e[0]) + ': <b>' + toNum(e[1]) + '</b></span>'; }).join(''));
+  paintStatCards();
   _chartDays = data ? (Array.isArray(data.days) ? data.days : []) : null;
   paintCharts(_chartDays, false);
 }
@@ -13298,10 +13221,9 @@ function paintUsage(report) {
   _usageReport = report || null;
   paintUsageBreakdown();
   var t = report && report.totals;
-  landStripFigures({
-    tokens: t ? toNum(t.totalInputTokens) + toNum(t.totalOutputTokens) : null,
-    cost: t ? toNum(t.totalCostUsd) : null,
-  });
+  setStripFigure('tokens', t ? toNum(t.totalInputTokens) + toNum(t.totalOutputTokens) : null, false);
+  setStripFigure('cost', t ? toNum(t.totalCostUsd) : null, false);
+  paintStatsStrip();
 }
 
 // ── Charts — @2lab.ai/ui <ui-bar-chart> (B-08) ──
@@ -18015,6 +17937,7 @@ function fcHydrateIn(node) {
   try { saved = localStorage.getItem(STATS_DETAIL_KEY); } catch (_e) {}
   _statsDetailOpen = saved === 'open';
   paintStatsStrip();
+  paintStatCards();
   var el = document.getElementById('stats-strip');
   if (!el) return;
   el.addEventListener('ui-period', function(e) {
