@@ -3849,12 +3849,12 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/agent-queue.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/segmented.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/disclosure.js?v=${UI_LIB_VERSION}"></script>
-<script type="module" src="/dashboard/ui/tooltip.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/menu.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/dialog.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/drawer.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/app-bar.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/stat-strip.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/bar-chart.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4217,7 +4217,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* Stats values: a bar where the number will be. */
 .stat-card .value.is-loading { display: inline-block; vertical-align: middle; width: 3.2em; height: 0.9em; border-radius: 6px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
 .stat-card .value.is-loading { width: 64px; height: 22px; }
-.chart-row.is-loading { min-height: 132px; border-radius: 8px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
 /* Panel turns: rows shaped like a user / assistant turn. */
 .sk-turn { margin-bottom: 8px; padding: 8px 10px; border-radius: 10px; display: flex; gap: 10px; align-items: flex-start; border-left: 3px solid var(--ib-pill); }
 .sk-turn.user { background: var(--surface-raised); }
@@ -4744,25 +4743,12 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   }
 }
 
-/* ── CHARTS — flat, geometric ── */
+/* ── CHARTS — @2lab.ai/ui <ui-bar-chart> (B-08): 세션 and 코드 변경 (머지) per day, side by side behind 자세히.
+   Each element is its own 12px card on the resting shadow, with dashed gridlines, a tooltip that follows the hot
+   bar (hover, keys, a tap holds it), skeleton bars while loading and its own empty line. ── */
 .chart-row { display: flex; gap: 10px; margin-bottom: 16px; }
-.chart-container {
-  flex: 1;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: var(--ib-shadow);
-  padding: 12px 16px;
-}
-.chart-container h4 { font-size: 12.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
-.bar-chart { display: flex; align-items: flex-end; gap: 2px; height: 80px; }
-.bar { background: var(--accent); border-radius: 3px 3px 0 0; min-width: 4px; flex: 1; transition: height var(--dur-move) var(--ease-out), opacity 150ms ease; }
-@media (hover: hover) and (pointer: fine) { .bar:hover { opacity: 0.75; } }
-/* Each bar is the trigger of its own <ui-tooltip> (B-08): the element takes the bar's flex share and full height. */
-.bar-chart > ui-tooltip { display: block; flex: 1; min-width: 4px; height: 100%; }
-.bar-chart > ui-tooltip::part(root) { height: 100%; align-items: flex-end; }
-.bar-labels { display: flex; gap: 2px; margin-top: 4px; }
-.bar-labels span { flex: 1; text-align: center; font-size: 10px; color: var(--text-tertiary); font-weight: 500; font-variant-numeric: tabular-nums; }
+.chart-row > ui-bar-chart { display: block; flex: 1; min-width: 0; }
+.chart-row > ui-bar-chart:not(:defined) { min-height: 214px; border-radius: 12px; background: var(--ib-pill); }
 
 /* ── SLIDE PANEL — flat, structured, resizable ── */
 /* SSOT 2026-10-24 — a full-screen sheet below 840px, docked beside the board from
@@ -6152,7 +6138,7 @@ ${pageTokenAliases()}
           <div class="stat-card"><div class="label">&#xC6CC;&#xD06C;&#xD50C;&#xB85C;&#xC6B0;</div><div class="value is-loading" id="stat-workflows" style="font-size:0.85em"></div></div>
         </div>
         <div style="display:none" id="stat-commits-hidden"></div>
-        <div class="chart-row is-loading" id="chart-row"></div>
+        <div class="chart-row" id="chart-row"><ui-bar-chart id="chart-sessions" lang="ko"></ui-bar-chart><ui-bar-chart id="chart-merge" lang="ko"></ui-bar-chart></div>
       </div>
       </ui-stat-strip>
     </section>
@@ -13231,8 +13217,7 @@ function markStatsLoading() {
     el.classList.remove('no-data');
     el.classList.add('is-loading');
   });
-  var chart = document.getElementById('chart-row');
-  if (chart) chart.classList.add('is-loading');
+  paintCharts(_chartDays, true);
 }
 
 // A failed load shows a dash rather than the previous period's number.
@@ -13288,10 +13273,8 @@ function paintStats(data) {
       ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + toNum(e[1]) + '</b></span>'; }).join('')
       : '<span style="color:var(--text-secondary)">-</span>';
   }
-  var chartEl = document.getElementById('chart-row');
-  if (chartEl) chartEl.classList.remove('is-loading');
-  if (data) renderCharts(Array.isArray(data.days) ? data.days : []);
-  else if (chartEl) chartEl.innerHTML = '';
+  _chartDays = data ? (Array.isArray(data.days) ? data.days : []) : null;
+  paintCharts(_chartDays, false);
 }
 
 // ── Where the usage goes — @2lab.ai/ui <ui-compact-breakdown> (affectUI review batch 1) ──
@@ -13350,26 +13333,36 @@ function paintUsage(report) {
   });
 }
 
-function renderCharts(days) {
-  const container = document.getElementById('chart-row');
-  if (!days.length) {
-    container.innerHTML = '<p style="color:var(--text-secondary)">No data for this period.</p>';
-    return;
-  }
-  container.innerHTML = renderBarChart('&#xC138;&#xC158;', days, function(d) { return d.sessionsCreated; }, 'var(--accent)')
-    + renderBarChart('&#xCF54;&#xB4DC; &#xBCC0;&#xACBD; (&#xBA38;&#xC9C0;)', days, function(d) { return d.mergeLinesAdded + d.mergeLinesDeleted; }, 'var(--green)');
+// ── Charts — @2lab.ai/ui <ui-bar-chart> (B-08) ──
+// The page hands each chart the period's days (stats.days: date 'YYYY-MM-DD' + the day's totals); the element
+// scales the axis, thins the x labels, says each bar ("10월 5일: 세션 12") and shows the value in its tooltip.
+// Loading keeps the last bars dimmed (skeleton bars before the first); a failed load says so in the plot.
+var _chartDays = []; // the last answer's days; null = the load failed
+var CHARTS = [
+  { id: 'chart-sessions', title: '세션', unit: '세션', value: function(d) { return toNum(d.sessionsCreated); } },
+  { id: 'chart-merge', title: '코드 변경 (머지)', unit: '변경 줄', value: function(d) { return toNum(d.mergeLinesAdded) + toNum(d.mergeLinesDeleted); } },
+];
+function chartDayTitle(date) {
+  var m = /^[0-9]{4}-([0-9]{2})-([0-9]{2})/.exec(date);
+  return m ? Number(m[1]) + '월 ' + Number(m[2]) + '일' : date;
 }
-
-function renderBarChart(title, days, valueFn, color) {
-  const values = days.map(valueFn);
-  const max = Math.max.apply(null, values.concat([1]));
-  const bars = days.map(function(d, i) {
-    const h = Math.max(2, (values[i] / max) * 100);
-    const label = d.date.slice(5);
-    return '<ui-tooltip text="' + escAttr(label + ': ' + values[i]) + '"><div class="bar" tabindex="0" style="height:' + h + '%;background:' + color + '"></div></ui-tooltip>';
-  }).join('');
-  const labels = days.map(function(d) { return '<span>' + d.date.slice(8) + '</span>'; }).join('');
-  return '<div class="chart-container"><h4>' + title + '</h4><div class="bar-chart">' + bars + '</div><div class="bar-labels">' + labels + '</div></div>';
+function chartData(c, days, loading) {
+  return {
+    title: c.title,
+    unit: c.unit,
+    bars: (days || []).map(function(d) {
+      var date = String(d.date || '');
+      return { key: date, label: String(Number(date.slice(8)) || date), title: chartDayTitle(date), value: c.value(d) };
+    }),
+    empty: days ? '이 기간에 데이터가 없습니다' : '통계를 불러오지 못했어요',
+    loading: !!loading,
+  };
+}
+function paintCharts(days, loading) {
+  CHARTS.forEach(function(c) {
+    var el = document.getElementById(c.id);
+    if (el) el.data = chartData(c, days, loading);
+  });
 }
 
 // ── WebSocket ──
@@ -18005,27 +17998,6 @@ function artHandleKey(e) {
 })();
 // <ui-disclosure> (K-06): Raw, a system turn and a card's system instruction open and close by
 // themselves; the page only keeps a card's choice across its morph re-render (_ioOpen).
-// <ui-tooltip> (B-08) never opens on touch — there is no hover to end it. The chart values exist nowhere else, so
-// on this page a tap on a tooltip's trigger toggles it (the element's show() / hide()); a tap anywhere else closes
-// it, as do the element's own Esc, focus-out and scroll-away rules. (The token breakdown, B-04, is
-// <ui-stat-strip>'s: its figure is a button whose press toggles the card — touch too.)
-var _tapTip = null;
-(function initTooltipTap() {
-  var pressed = null;
-  document.addEventListener('pointerdown', function(e) {
-    pressed = null;
-    if (e.pointerType !== 'touch') return;
-    var tip = e.target && e.target.closest ? e.target.closest('ui-tooltip') : null;
-    if (_tapTip && _tapTip !== tip) { _tapTip.hide(); _tapTip = null; }
-    if (tip) pressed = { tip: tip, open: _tapTip === tip };
-  }, true);
-  document.addEventListener('click', function(e) {
-    var p = pressed;
-    pressed = null;
-    if (!p || !p.tip.contains(e.target) || p.tip.hasAttribute('disabled')) return;
-    if (p.open) { p.tip.hide(); _tapTip = null; } else { p.tip.show(); _tapTip = p.tip.open ? p.tip : null; }
-  });
-})();
 // @2lab.ai/ui 0.5.0 toggles a <ui-disclosure> only when the click's target is inside its own head, and a click on
 // slotted summary content (a System row's words and badge, a card's instruction line) keeps the light-DOM span as
 // its target — so it did nothing (D1-GAPS G4-4). The page toggles it then, with the element's toggle() (its

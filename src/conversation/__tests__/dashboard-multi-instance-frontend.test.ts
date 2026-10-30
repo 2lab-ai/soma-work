@@ -56,12 +56,10 @@ describe('Dashboard multi-instance frontend (#814)', () => {
   });
 
   it('touch still reaches the breakdown: the strip figure is a button whose press toggles the card (D2 B-04)', () => {
-    // <ui-stat-strip> makes a figure with a breakdown a button; a press toggles its tooltip (touch too).
-    // The page's own tap rule stays for the chart values' tooltips.
-    expect(DASHBOARD_TS).toContain("if (e.pointerType !== 'touch') return;");
-    expect(DASHBOARD_TS).toContain(
-      'if (p.open) { p.tip.hide(); _tapTip = null; } else { p.tip.show(); _tapTip = p.tip.open ? p.tip : null; }',
-    );
+    // <ui-stat-strip> makes a figure with a breakdown a button; a press toggles its tooltip (touch too), and
+    // <ui-bar-chart> holds a tapped bar's tooltip itself — the page keeps no tap rule of its own.
+    expect(DASHBOARD_TS).not.toContain('initTooltipTap');
+    expect(DASHBOARD_TS).not.toContain('_tapTip');
   });
 
   it('updateTokenBreakdown suppresses the breakdown when fewer than 2 envs are present', () => {
