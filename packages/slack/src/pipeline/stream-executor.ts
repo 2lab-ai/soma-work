@@ -2191,6 +2191,9 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
                     kind: 'notice',
                     text: '🗜️ Auto-compact threshold reached mid-turn — stopping this turn to compact, then continuing',
                   });
+                  // When: a user Stop after this moment cancels the automatic
+                  // continuation (slack-handler `resumeAfterAutoCompactStop`).
+                  session.autoCompactStoppedAtMs = Date.now();
                   abortController.abort('auto-compact' satisfies RequestAbortReason);
                 },
               }).catch((err: unknown) => {
