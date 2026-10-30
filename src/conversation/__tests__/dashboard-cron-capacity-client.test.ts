@@ -86,7 +86,7 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'OWNER_BADGE_HUES'];
 
 function card(over: Record<string, unknown> = {}) {
   return {
@@ -347,7 +347,9 @@ describe('page wiring', () => {
 
   it('a drawer for a job’s past runs exists and closes on Escape', () => {
     expect(page).toContain('id="cron-drawer"');
-    expect(page).toMatch(/Escape[\s\S]{0,200}closeCronDrawer/);
+    expect(page).toContain(
+      "if (d) d.addEventListener('ui-close', function(e) { e.preventDefault(); closeCronDrawer(); });",
+    );
   });
 
   it('polls capacity and cron on their own cadence and pauses when hidden', () => {

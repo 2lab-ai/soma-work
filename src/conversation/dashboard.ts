@@ -122,7 +122,15 @@ import {
 } from './permission-prompts';
 import { getConversation, resummarizeTurn } from './recorder';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
-import { pageTokenAliases, UI_LIB_FILE, UI_LIB_VERSION, uiLibDistDir, uiLibTokensCss } from './ui-lib';
+import {
+  fillUiIcons,
+  pageTokenAliases,
+  UI_LIB_FILE,
+  UI_LIB_VERSION,
+  uiLibDistDir,
+  uiLibKitCss,
+  uiLibTokensCss,
+} from './ui-lib';
 import { getUserMediaStore } from './user-media';
 import type { WorkLogEntry } from './work-log';
 
@@ -3821,7 +3829,8 @@ function renderDashboardPage(userId?: string): string {
   const initEffortLevels = JSON.stringify(EFFORT_LEVELS);
   // T8: the bot's Slack name (escaped like the header config — it comes from Slack).
   const initBotName = JSON.stringify(_botDisplayName || null).replace(/</g, '\\u003c');
-  return `<!DOCTYPE html>
+  // Icon slots (<i data-ui-icon="…">) are filled from @2lab.ai/ui's icon set (fillUiIcons).
+  return fillUiIcons(`<!DOCTYPE html>
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
@@ -3838,10 +3847,21 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/compact-breakdown.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/model-picker.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/agent-queue.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/segmented.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/disclosure.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/tooltip.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/menu.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/dialog.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/drawer.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
 </script>
+<!-- @2lab.ai/ui kit (ui-kit.css): the light-DOM button, icon button, chip, status, kbd … classes on the
+     --ui-* tokens below. Before the page sheet, so a page rule that places a kit control wins. -->
+<style id="ui-kit">
+${uiLibKitCss()}
+</style>
 <style>
 /* ═══ @2lab.ai/ui language (ui.2lab.ai) ═══ Calm neutral planes, soft 6–16px rounding, medium weights,
    colour only where it carries status, one ink primary per surface, short ease-out motion. */
@@ -3972,18 +3992,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* The menu pops from its trigger's corner (the library menu / model-picker popover): in from translateY(-4px)
    scale(.96) with opacity 160ms + transform 220ms ease-out, out in 180ms; display is discrete, so after the
    exit a closed menu takes no hits and no room. */
-.td-menu { position: absolute; top: calc(100% + 6px); left: 0; z-index: 120; min-width: 260px; max-width: min(360px, 92vw); background: var(--surface); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--ib-shadow-raised); padding: 6px; transform-origin: top left; transition: opacity 160ms var(--ease-out), transform 220ms var(--ease-out), display 220ms allow-discrete; }
-.td-menu[hidden] { display: none; opacity: 0; transform: translateY(-4px) scale(0.96); pointer-events: none; transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out), display var(--dur-fade) allow-discrete; }
-@starting-style { .td-menu:not([hidden]) { opacity: 0; transform: translateY(-4px) scale(0.96); } }
-.td-menu .tdm-head { font-size: 11px; font-weight: 600; color: var(--text-tertiary); padding: 6px 8px 4px; }
-.td-menu .tdm-item { display: flex; width: 100%; align-items: baseline; justify-content: space-between; gap: 8px; text-align: left; font: inherit; font-size: 13px; color: var(--text); background: none; border: 0; border-radius: 6px; padding: 8px; min-height: 36px; cursor: pointer; }
-.td-menu .tdm-item[aria-checked="true"] { background: var(--surface-raised); font-weight: 600; }
-.td-menu .tdm-item[aria-checked="true"]::after { content: ''; flex-shrink: 0; align-self: center; width: 14px; height: 14px; background: currentColor; -webkit-mask: var(--check) center / contain no-repeat; mask: var(--check) center / contain no-repeat; }
-.td-menu .tdm-item:focus-visible { outline: 2px solid var(--border-focus); outline-offset: -2px; }
-@media (hover: hover) and (pointer: fine) { .td-menu .tdm-item:hover { background: var(--surface-raised); } }
-.td-menu .tdm-sub { font-size: 11px; color: var(--text-tertiary); font-weight: 400; }
-.td-menu .tdm-scope { display: flex; gap: 8px; align-items: flex-start; font-size: 12px; color: var(--text-secondary); padding: 8px; border-top: 1px solid var(--border); margin-top: 4px; }
-.td-menu .tdm-scope input { margin-top: 2px; }
+/* The defaults menu is @2lab.ai/ui <ui-menu id="td-menu"> (A-07): it hangs from the chip that opened it. */
+#td-menu { position: absolute; }
 .topbar .td-status { font-size: 12px; color: var(--text-secondary); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar .td-status.is-error { color: var(--red); }
 /* Nav: the site's chip links — no box at rest, the --ib-pill chip on hover; the user
@@ -4167,9 +4177,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 /* ── MAIN — stats strip, then the board; capped at 1280px and centred (.prd/10 §3.1-2, §5) ── */
 .main { flex: 1; padding: 20px; width: 100%; max-width: 1280px; margin: 0 auto; min-width: 0; }
 
-/* ── PERIOD SELECTOR — the page's one segmented control (.seg / .seg-btn, below): the selected
-   period is the raised neutral chip, never an accent fill. .period-bar / .period-btn stay as hooks. ── */
-.period-btn { white-space: nowrap; }
+/* ── PERIOD SELECTOR — @2lab.ai/ui <ui-segmented> (B-02), the same control as Board | List (D-02):
+   the selected period is the raised neutral chip that slides; .period-bar places it. ── */
 
 /* ── STATS STRIP — leads the page, above the board (.prd/10 §3.1-2) ──
    One row from 640px: period · 세션 · 토큰 · 비용 · 자세히. Below 640px the
@@ -4277,25 +4286,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .crumbs { display: flex; align-items: baseline; gap: 10px; font-size: 17px; line-height: 1.3; min-width: 0; white-space: nowrap; overflow: hidden; }
 .crumbs .crumb-root, .crumbs .crumb-sep { color: var(--ib-muted); }
 .crumbs .crumb-cur { color: var(--ib-text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
-.seg { display: inline-flex; padding: 3px; gap: 2px; background: var(--ib-seg); border-radius: 10px; flex-shrink: 0; }
-.seg-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: 0;
-  background: transparent;
-  color: var(--ib-muted);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 500;
-  padding: 6px 12px;
-  border-radius: 8px;
-  cursor: pointer;
-  min-height: 32px;
-  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease, transform var(--dur-press) var(--ease-out);
-}
-.seg-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
-.seg-btn[aria-pressed="true"] { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
+.view-seg { flex-shrink: 0; }
 /* Board header tools: Show archives, then Board | List. Below 640px the tools
    take their own row under the breadcrumb. */
 .inbox-tools { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
@@ -4320,18 +4311,15 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .archives-btn[hidden] { display: none; }
 .archives-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
 .archives-btn[aria-pressed="true"] { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
-/* Session lifecycle dialog (admin) */
-.lifecycle-dialog { margin: auto; border: 1px solid var(--border); border-radius: 16px; padding: 18px 20px; background: var(--bg-card, var(--ib-col)); color: var(--ib-text); max-width: 420px; width: calc(100% - 32px); }
-.lifecycle-dialog::backdrop { background: var(--scrim); }
-/* Dialogs come and go the same way (P6): the box opacity + scale(.97) on --dur-expand, its scrim a 180ms fade;
-   closing, both leave in 180ms (.is-closing, dialogCloseSoftly) before close(). */
-.lifecycle-dialog[open] { animation: dlg-in var(--dur-expand) var(--ease-out); }
-.lifecycle-dialog[open]::backdrop, .art-modal[open]::backdrop { animation: scrim-in var(--dur-fade) var(--ease-out); }
-.lifecycle-dialog.is-closing, .art-modal.is-closing { opacity: 0; transform: scale(0.98); transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out); }
-.lifecycle-dialog.is-closing::backdrop, .art-modal.is-closing::backdrop { opacity: 0; transition: opacity var(--dur-fade) var(--ease-out); }
+/* Session lifecycle dialog (admin, J-01) — @2lab.ai/ui <ui-dialog size="sm">: the element draws the panel, the
+   scrim, the enter / exit motion and the phone sheet; the page keeps only its form's rules.
+   The artifact viewer comes and goes the same way (P6): opacity + scale(.97) on --dur-expand, its scrim a 180ms
+   fade; closing, both leave in 180ms (.is-closing, dialogCloseSoftly) before close(). */
+.art-modal[open]::backdrop { animation: scrim-in var(--dur-fade) var(--ease-out); }
+.art-modal.is-closing { opacity: 0; transform: scale(0.98); transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out); }
+.art-modal.is-closing::backdrop { opacity: 0; transition: opacity var(--dur-fade) var(--ease-out); }
 @keyframes dlg-in { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: none; } }
 @keyframes scrim-in { from { opacity: 0; } to { opacity: 1; } }
-.lifecycle-dialog h3 { margin: 0 0 4px; font-size: 15px; font-weight: 650; letter-spacing: -0.01em; }
 .lifecycle-dialog .lc-note { margin: 0 0 12px; font-size: 12px; color: var(--ib-muted); }
 .lifecycle-dialog label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 8px; font-size: 13px; margin-bottom: 10px; }
 .lifecycle-dialog label input { grid-column: 1 / -1; font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--ib-seg); color: var(--ib-text); }
@@ -4339,7 +4327,6 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .lifecycle-dialog .lc-status { min-height: 1.2em; margin: 4px 0 8px; font-size: 12px; color: var(--ib-muted); }
 .lifecycle-dialog .lc-status.is-error { color: var(--st-fail-text); }
 .lifecycle-dialog .lc-actions { display: flex; justify-content: flex-end; gap: 8px; }
-.lifecycle-dialog .lc-save { background: var(--ib-text); color: var(--ib-card); }
 
 /* The board: @2lab.ai/ui <ui-agent-inbox> (re-agent-inbox) — its columns, cards, day groups, skeletons
    and narrow / list layouts are the element's, drawn with the dashboard tokens through .ui-tok (#inbox).
@@ -4415,8 +4402,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-goal-line .cgl-icon svg, .card-goal .cg-label svg { width: 14px; height: 14px; }
 .card-goal-line .cgl-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ib-text); }
 .card-goal-line .cgl-text.is-muted { color: var(--ib-muted); }
-.card-goal-line .cg-status { flex-shrink: 0; font-weight: 600; }
-.card-goal-line .cg-status.cg-active { color: var(--st-run); } .card-goal-line .cg-status.cg-paused { color: var(--st-wait); } .card-goal-line .cg-status.cg-complete { color: var(--st-done); }
+.card-goal-line .cg-status { flex-shrink: 0; }
 .card-goal-line .cgl-n { flex-shrink: 0; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
 .cgl-go, .card-more-link { flex-shrink: 0; font: inherit; font-size: 12px; color: var(--accent); background: none; border: 0; padding: 4px 2px; min-height: 28px; cursor: pointer; white-space: nowrap; }
 @media (hover: hover) and (pointer: fine) { .cgl-go:hover, .card-more-link:hover { text-decoration: underline; } }
@@ -4469,47 +4455,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   color: color-mix(in srgb, var(--env-tone, var(--ib-muted)) 70%, var(--ib-text));
   vertical-align: baseline;
 }
-/* Topbar tooltip — env-grouped token breakdown (#814) */
-#stat-tokens-wrap {
-  position: relative;
-  display: inline-block;
-}
-/* The tooltip pops like a menu (from its figure, centred) and leaves in 180ms. */
-#stat-tokens-tooltip {
-  display: none;
-  position: absolute;
-  top: 100%;
-  left: 50%;
-  transform: translateX(-50%) translateY(-4px) scale(0.96);
-  transform-origin: top center;
-  opacity: 0;
-  margin-top: 6px;
-  background: var(--surface);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  box-shadow: var(--ib-shadow-raised);
-  padding: 6px 10px;
-  font-size: 0.78em;
-  font-weight: 400;
-  white-space: nowrap;
-  z-index: 50;
-  pointer-events: none;
-  transition: opacity var(--dur-fade) var(--ease-out), transform var(--dur-fade) var(--ease-out), display var(--dur-fade) allow-discrete;
-}
-#stat-tokens-wrap.tooltip-open #stat-tokens-tooltip,
-#stat-tokens-wrap:hover #stat-tokens-tooltip { display: block; opacity: 1; transform: translateX(-50%); transition: opacity 160ms var(--ease-out), transform 220ms var(--ease-out), display 220ms allow-discrete; }
-@starting-style {
-  #stat-tokens-wrap.tooltip-open #stat-tokens-tooltip,
-  #stat-tokens-wrap:hover #stat-tokens-tooltip { opacity: 0; transform: translateX(-50%) translateY(-4px) scale(0.96); }
-}
-@media (hover: none) {
-  /* On touch devices :hover is sticky after a tap and never closes —
-     gate visibility entirely on the explicit tooltip-open class
-     toggled by the tap handler in updateTokenBreakdown(). */
-  #stat-tokens-wrap:hover #stat-tokens-tooltip { display: none; opacity: 0; }
-  #stat-tokens-wrap.tooltip-open #stat-tokens-tooltip { display: block; opacity: 1; transform: translateX(-50%); }
-}
+/* Token breakdown (#814, B-04) — @2lab.ai/ui <ui-tooltip variant="card">: it pops below the figure after the hover
+   delay, at once on keyboard focus, and on this page a tap toggles it (initTooltipTap). */
+#stat-tokens-tooltip { vertical-align: baseline; }
 
 /* ── CONTEXT USAGE BAR ── */
 .card-body .context-bar { margin-top: 8px; height: 4px; background: var(--ib-pill); border-radius: 2px; overflow: hidden; }
@@ -4547,41 +4495,17 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .io-text { font-size: 13px; line-height: 1.45; color: var(--ib-text); white-space: pre-wrap; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 6; overflow: hidden; }
 .io-text .io-title { font-weight: 600; }
 .io-text.is-muted, .io-muted { color: var(--ib-muted); }
-.card-io .io-sys > summary { list-style: none; display: flex; align-items: center; gap: 8px; min-height: 24px; min-width: 0; cursor: pointer; border-radius: 6px; font-size: 12.5px; color: var(--ib-text-2); }
-.card-io .io-sys > summary::-webkit-details-marker { display: none; }
-.card-io .io-sys > summary:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-@media (hover: hover) and (pointer: fine) { .card-io .io-sys > summary:hover .sys-line { color: var(--ib-text); } }
+.card-io .io-sys::part(summary) { padding: 3px 6px; font-size: 12.5px; font-weight: 400; color: var(--ib-text-2); }
+.io-sys-row { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .card-io .sys-detail { margin: 6px 0 0; }
 .card-io .skill-badges { margin-top: 4px; }
 .io-cp { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 22px; font-size: 12.5px; color: var(--ib-text-2); }
 
 /* ── ACTION BUTTONS — secondary outline + one solid primary (reference "Approve") ── */
 .card-actions { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 12px; justify-content: flex-end; }
-.btn-action {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  background: var(--ib-card);
-  border: 1px solid var(--ib-card-border);
-  border-radius: 8px;
-  color: var(--ib-text);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 500;
-  padding: 5px 12px;
-  cursor: pointer;
-  min-height: 32px;
-  text-decoration: none;
-  white-space: nowrap;
-  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-}
-.btn-action:disabled { opacity: 0.5; cursor: not-allowed; }
-.btn-action.btn-primary { background: var(--ib-text); border-color: var(--ib-text); color: var(--ib-card); }
-.btn-action.btn-stop { color: var(--st-fail); }
-.btn-action.btn-trash { color: var(--ib-muted); }
-/* SSOT 2026-10-30 — ★ Star (pressed = amber) and 살리기 (the run tint). */
-.btn-action.btn-star.is-on { color: var(--st-wait); border-color: var(--st-wait); }
-.btn-action.btn-revive { color: var(--st-run); }
+/* SSOT 2026-10-30 — ★ Star (pressed = amber) and 살리기 (the run tint), on the kit button. */
+.ui-btn[data-action="star"][aria-pressed="true"] { color: var(--st-wait); border-color: var(--st-wait); }
+.ui-btn[data-action="revive"] { color: var(--st-run); }
 
 /* ── GOAL LIST (work item, SSOT 2026-10-21 T2/T3) ── */
 .card-goal {
@@ -4595,16 +4519,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-goal .cg-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
 .card-goal .cg-label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--ib-text); }
 .card-goal .cg-label svg { color: var(--ib-muted); }
-.card-goal .cg-status {
-  font-size: 11px;
-  padding: 1px 7px;
-  border-radius: 999px;
-  border: 1px solid currentColor;
-  line-height: 1.5;
-}
-.card-goal .cg-status.cg-active { color: var(--st-run); }
-.card-goal .cg-status.cg-paused { color: var(--st-wait); }
-.card-goal .cg-status.cg-complete { color: var(--st-done); }
 .card-goal .cg-progress { margin-left: auto; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
 .card-goal .cg-objective {
   color: var(--ib-text);
@@ -4634,19 +4548,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-goal .cg-h-obj { color: var(--ib-text); overflow-wrap: anywhere; }
 .card-goal .cg-h-meta { margin-top: 2px; color: var(--ib-muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
 .card-goal .cg-h-reason { margin-top: 2px; color: var(--ib-text-2); font-size: 11.5px; overflow-wrap: anywhere; }
-.card-goal .cg-btn {
-  flex: none;
-  font: inherit;
-  font-size: 11.5px;
-  padding: 2px 8px;
-  border: 1px solid var(--ib-card-border);
-  border-radius: 6px;
-  background: var(--ib-card);
-  color: var(--ib-text);
-  cursor: pointer;
-}
-.card-goal .cg-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-.card-goal .cg-btn.cg-danger { color: var(--st-fail); }
 .card-goal .cg-add { display: flex; gap: 6px; margin-top: 8px; }
 .card-goal .cg-add-input {
   flex: 1;
@@ -4935,35 +4836,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   margin-top: 12px;
   justify-content: flex-end;
 }
-.mc-btn-submit {
-  font-size: 12px;
-  font-weight: 600;
-  padding: 8px 20px;
-  border: none;
-  border-radius: 8px;
-  background: var(--ib-text);
-  color: var(--ib-card);
-  cursor: pointer;
-  transition: background-color 150ms ease, opacity 150ms ease, transform var(--dur-press) var(--ease-out);
-  font-family: inherit;
-  min-height: 34px;
-}
-@media (hover: hover) and (pointer: fine) { .mc-btn-submit:hover:not(:disabled) { opacity: 0.88; } }
-.mc-btn-submit:disabled { background: var(--surface-raised); color: var(--text-tertiary); cursor: default; }
-.mc-btn-reset {
-  font-size: 12px;
-  font-weight: 600;
-  padding: 8px 14px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: transparent;
-  color: var(--text-secondary);
-  cursor: pointer;
-  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-  font-family: inherit;
-  min-height: 34px;
-}
-@media (hover: hover) and (pointer: fine) { .mc-btn-reset:hover { border-color: var(--ib-muted); color: var(--text); } }
 .mc-custom-input {
   width: 100%;
   margin-top: 4px;
@@ -5017,25 +4889,11 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 .chart-container h4 { font-size: 12.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
 .bar-chart { display: flex; align-items: flex-end; gap: 2px; height: 80px; }
-.bar { background: var(--accent); border-radius: 3px 3px 0 0; min-width: 4px; flex: 1; transition: height var(--dur-move) var(--ease-out), opacity 150ms ease; position: relative; }
+.bar { background: var(--accent); border-radius: 3px 3px 0 0; min-width: 4px; flex: 1; transition: height var(--dur-move) var(--ease-out), opacity 150ms ease; }
 @media (hover: hover) and (pointer: fine) { .bar:hover { opacity: 0.75; } }
-.bar .bar-tooltip {
-  display: none;
-  position: absolute;
-  bottom: 100%;
-  left: 50%;
-  transform: translateX(-50%);
-  background: var(--surface);
-  border: 1px solid var(--border);
-  padding: 4px 8px;
-  border-radius: 8px;
-  box-shadow: var(--ib-shadow-raised);
-  font-size: 12px;
-  font-weight: 600;
-  white-space: nowrap;
-  z-index: 10;
-}
-.bar:hover .bar-tooltip { display: block; }
+/* Each bar is the trigger of its own <ui-tooltip> (B-08): the element takes the bar's flex share and full height. */
+.bar-chart > ui-tooltip { display: block; flex: 1; min-width: 4px; height: 100%; }
+.bar-chart > ui-tooltip::part(root) { height: 100%; align-items: flex-end; }
 .bar-labels { display: flex; gap: 2px; margin-top: 4px; }
 .bar-labels span { flex: 1; text-align: center; font-size: 10px; color: var(--text-tertiary); font-weight: 500; font-variant-numeric: tabular-nums; }
 
@@ -5097,9 +4955,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .pa-name .ag-id { font-size: 12px; }
 .pa-tree { display: block; }
 .pa-sum { display: flex; flex-wrap: wrap; align-items: center; gap: 2px 7px; margin-top: 4px; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.pa-st { display: inline-flex; align-items: center; gap: 4px; font-weight: 600; }
-.pa-st svg, .pa-st .spinner { width: 12px; height: 12px; }
-.pa-st.is-running { color: var(--st-run); } .pa-st.is-completed { color: var(--st-done); } .pa-st.is-failed { color: var(--st-fail); } .pa-st.is-waiting, .pa-st.is-resuming { color: var(--st-wait); } .pa-st.is-stopped, .pa-st.is-unknown, .pa-st.is-idle, .pa-st.is-sleeping, .pa-st.is-archived { color: var(--text-tertiary); }
 .pa-dot { color: var(--text-tertiary); }
 .pa-desc { margin-top: 2px; font-size: 12px; color: var(--text-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pa-desc .pa-act { color: var(--text-tertiary); }
@@ -5519,20 +5374,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.panel-close {
-  width: 32px; height: 32px;
-  background: var(--surface-raised);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  color: var(--text-secondary);
-  font-size: 14px;
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-}
-@media (hover: hover) and (pointer: fine) { .panel-close:hover { color: var(--text); border-color: var(--ib-muted); } }
 .panel-header { flex-wrap: wrap; row-gap: 8px; }
 /* ── DETAIL DECK (SSOT 2026-10-29 T2) — every open card's detail card; the ones
    waiting behind the front card show their top edges above it, and ‹ n / m ›
@@ -5546,10 +5387,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .slide-panel:not([data-deck="0"]) .panel-header { border-top: 1px solid color-mix(in srgb, var(--text-tertiary) 45%, var(--border)); border-radius: 10px 10px 0 0; background: var(--surface); box-shadow: 0 -4px 10px -6px var(--scrim); }
 .panel-deck { display: inline-flex; align-items: center; gap: 2px; flex: none; height: 32px; padding: 0 2px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); }
 .panel-deck[hidden] { display: none; }
-.panel-deck .pd-btn { width: 28px; height: 28px; display: inline-flex; align-items: center; justify-content: center; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); cursor: pointer; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
-.panel-deck .pd-btn svg { width: 14px; height: 14px; }
-@media (hover: hover) and (pointer: fine) { .panel-deck .pd-btn:hover { color: var(--text); background: var(--ib-pill, var(--surface)); } }
-.panel-deck .pd-btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .panel-deck .pd-pos { min-width: 34px; text-align: center; font-size: 11.5px; font-variant-numeric: tabular-nums; color: var(--text-secondary); }
 /* The deck switch (renderDeckNav → deckSlide) is WAAPI, not keyframes: the header and body glide in from
    the side the new front card came from, added onto whatever is still running — a quick second switch
@@ -5558,18 +5395,13 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .panel-status { flex-basis: 100%; min-width: 0; }
 .panel-status:empty { display: none; }
 .ps-row { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12.5px; color: var(--text-secondary); }
-/* re-agent-run D18: the chip is a pill tinted by its status (markup unchanged). */
-.ps-chip { --ag-c: var(--text-tertiary); display: inline-flex; align-items: center; gap: 5px; min-width: 0; height: 24px; padding: 0 10px 0 8px; border-radius: 99px; background: color-mix(in srgb, var(--ag-c) 13%, transparent); border: 0; white-space: nowrap; }
-.ps-chip.is-running { --ag-c: var(--st-run); } .ps-chip.is-waiting, .ps-chip.is-resuming { --ag-c: var(--st-wait); } .ps-chip.is-completed { --ag-c: var(--st-done); }
+/* re-agent-run D18: the session's status is the kit's tinted status pill (.ui-status.is-pill). */
 .ps-label { font-size: 11px; font-weight: 600; color: var(--text-tertiary); }
-.ps-icon { display: inline-grid; place-items: center; width: 14px; height: 14px; color: var(--ag-c); }
-.ps-icon svg { width: 12px; height: 12px; } .ps-icon .spinner { width: 10px; height: 10px; }
-.ps-word { font-weight: 650; color: var(--ag-c); }
 .ps-time { display: inline-flex; align-items: center; gap: 5px; min-width: 0; overflow: hidden; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .ps-clock { flex: none; width: 13px; height: 13px; color: var(--text-tertiary); }
 .ps-dot { color: var(--text-tertiary); }
 .ps-actions { display: inline-flex; align-items: center; gap: 6px; margin-left: auto; flex-shrink: 0; }
-.ps-actions .btn-action { min-height: 30px; padding: 3px 12px; font-size: 12.5px; }
+.ps-actions .ui-btn { min-height: 30px; padding: 3px 12px; font-size: 12.5px; }
 .ps-slack { display: inline-flex; align-items: center; min-height: 30px; padding: 0 8px; border-radius: 8px; font-size: 12.5px; font-weight: 600; color: var(--accent); text-decoration: none; }
 .ps-slack:focus-visible { text-decoration: underline; }
 @media (hover: hover) and (pointer: fine) { .ps-slack:hover { text-decoration: underline; } }
@@ -5653,19 +5485,15 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .turn-answer { margin-top: 4px; }
 .ans-lite { font-size: 12px; color: var(--text-tertiary); }
 .turn-raw { margin-top: 6px; }
-.turn-raw summary.turn-expand-btn { cursor: pointer; color: var(--text-tertiary); font-size: 11px; padding: 2px 0; user-select: none; list-style: none; }
-.turn-raw summary.turn-expand-btn::-webkit-details-marker { display: none; }
+/* Raw — @2lab.ai/ui <ui-disclosure> (K-06): a quiet row; the element turns the chevron and grows the region. */
+.turn-raw::part(summary) { width: auto; padding: 2px 6px 2px 2px; font-size: 11.5px; font-weight: 500; color: var(--text-tertiary); }
 /* P8: the text triangles are the icon set's chevron (16 grid, 1.5 stroke, round caps), drawn as a mask so
    it takes currentColor; .chev points down, .is-up / .is-right turn it, and a toggle's aria-expanded
    turns it open. */
 :root { --chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M4 6l4 4 4-4'/%3E%3C/svg%3E"); }
-:root { --check: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M3.5 8.5l3 3 6-7'/%3E%3C/svg%3E"); }
-.chev, .turn-raw summary.turn-expand-btn::before { display: inline-block; flex-shrink: 0; width: 12px; height: 12px; vertical-align: -2px; background: currentColor; -webkit-mask: var(--chev) center / contain no-repeat; mask: var(--chev) center / contain no-repeat; transition: transform var(--dur-press) var(--ease-out); }
+.chev { display: inline-block; flex-shrink: 0; width: 12px; height: 12px; vertical-align: -2px; background: currentColor; -webkit-mask: var(--chev) center / contain no-repeat; mask: var(--chev) center / contain no-repeat; transition: transform var(--dur-press) var(--ease-out); }
 .chev.is-up, [aria-expanded="true"] > .chev { transform: rotate(180deg); }
 .chev.is-right { transform: rotate(-90deg); }
-.turn-raw summary.turn-expand-btn::before { content: ''; width: 10px; height: 10px; margin-right: 4px; vertical-align: -1px; transform: rotate(-90deg); }
-.turn-raw[open] summary.turn-expand-btn::before { transform: none; }
-@media (hover: hover) and (pointer: fine) { .turn-raw summary.turn-expand-btn:hover { color: var(--text-secondary); } }
 .turn-raw-body { margin-top: 4px; padding: 8px 10px; border-radius: 8px; background: var(--surface-raised); font-size: 12px; color: var(--text-secondary); }
 .turn-raw-label { font-size: 11px; font-weight: 600; color: var(--text-tertiary); margin: 6px 0 2px; }
 .turn-raw-label:first-child { margin-top: 0; }
@@ -5687,15 +5515,13 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 @container sysrow (max-width: 420px) { .cp-verb { display: none; } }
 @container sysrow (max-width: 340px) { .sys-row-in .turn-name { display: none; } }
 @container sysrow (max-width: 280px) { .cp-pct { display: none; } }
-.sys-turn > summary { list-style: none; display: block; cursor: pointer; border-radius: 8px; }
-.sys-turn > summary::-webkit-details-marker { display: none; }
-.sys-turn > summary:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+.sys-turn::part(summary) { padding: 2px 6px; font-size: 12px; font-weight: 400; color: var(--text-tertiary); }
 .sys-row-in { display: flex; align-items: center; gap: 8px; min-height: 24px; min-width: 0; font-size: 12px; color: var(--text-tertiary); }
 .sys-row-in .turn-name { font-size: 12px; }
 .sys-row-in .turn-time { flex: none; white-space: nowrap; }
 .sys-row-in .turn-name { flex: none; max-width: 6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-@media (hover: hover) and (pointer: fine) { .sys-turn > summary:hover .sys-line { color: var(--text-secondary); } }
-.sys-badge { flex: none; display: inline-flex; align-items: center; height: 20px; padding: 0 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised); color: var(--text); font-size: 11.5px; font-weight: 600; line-height: 1; white-space: nowrap; }
+/* The kit chip (.ui-chip) with its kind's colour on the word and the hairline. */
+.sys-badge { flex: none; }
 .sys-badge[data-kind="compact"] { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, transparent); }
 .sys-badge[data-kind="restart"], .sys-badge[data-kind="retry"] { color: var(--orange); border-color: color-mix(in srgb, var(--orange) 45%, transparent); }
 .sys-badge[data-kind="goal"] { color: var(--purple); border-color: color-mix(in srgb, var(--purple) 45%, transparent); }
@@ -5717,8 +5543,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .cp-bar.is-over > i { width: 100% !important; background: linear-gradient(90deg, transparent, var(--accent), transparent) no-repeat; background-size: 40% 100%; animation: cp-over 1.4s linear infinite; }
 @keyframes cp-over { from { background-position: -40% 0; } to { background-position: 140% 0; } }
 .cp-pct { flex: none; font-size: 11px; font-variant-numeric: tabular-nums; }
-.sys-chev { flex: none; margin-left: auto; width: 0; height: 0; border-left: 4px solid currentColor; border-top: 4px solid transparent; border-bottom: 4px solid transparent; opacity: 0.7; transition: transform var(--dur-press) var(--ease-out); }
-.sys-turn[open] .sys-chev, .io-sys[open] .sys-chev { transform: rotate(90deg); }
 .sys-detail { margin: 6px 0 4px; padding: 8px 10px; border-radius: 8px; background: var(--surface-raised); }
 .sys-facts { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 3px 12px; margin: 0 0 8px; font-size: 12px; }
 .sys-facts dt { color: var(--text-tertiary); }
@@ -5734,7 +5558,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .skill-tok { color: var(--text-tertiary); font-size: 11px; font-variant-numeric: tabular-nums; }
 .skill-detail { margin-top: 6px; }
 .skill-detail-h { display: flex; gap: 8px; align-items: baseline; margin-bottom: 4px; font-size: 12px; }
-@media (pointer: coarse) { .sys-row-in { min-height: 44px; } .turn.is-sys .turn-avatar { margin-top: 12px; } .skill-badge { min-height: 44px; } }
+@media (pointer: coarse) { .turn.is-sys .turn-avatar { margin-top: 12px; } .skill-badge { min-height: 44px; } }
 /* Slack link on cards */
 .slack-link { color: var(--accent); text-decoration: none; font-size: 0.85em; margin-left: 4px; opacity: 0.7; }
 @media (hover: hover) and (pointer: fine) { .slack-link:hover { text-decoration: underline; opacity: 1; } }
@@ -5756,11 +5580,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .pc-steer-wrap { display: block; min-width: 0; border-radius: 12px; }
 .panel-command.is-drag .pc-steer-wrap { outline: 2px dashed var(--accent); outline-offset: 2px; }
 .pc-tools { display: flex; align-items: center; gap: 2px; flex: none; }
-.pc-tool { display: inline-grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 8px; background: none; color: var(--text-secondary); cursor: pointer; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
-.pc-tool svg { width: 18px; height: 18px; }
-@media (hover: hover) and (pointer: fine) { .pc-tool:hover { color: var(--text); background: var(--surface-raised); } }
-.pc-tool:disabled { opacity: 0.4; cursor: default; }
-.pc-tool:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 .pc-tool-mic[aria-pressed="true"] { color: var(--st-fail); }
 .pc-attachments { display: flex; gap: 8px; overflow-x: auto; padding: 0 0 8px; }
 .pc-attachments:empty { display: none; }
@@ -5773,17 +5592,13 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* PRESS — one rule for every button-like control: scale(.97) on --dur-press ease-out (each control's own
    transition carries the transform), pointer presses only — never a keyboard press (:focus-visible). The
    56px FAB presses to .95. */
-:is(.btn-action, .seg-btn, .archives-btn, .btn-choice, .btn-hero-recommended, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .new-task-btn, .stats-more, .panel-close, .panel-detail-toggle, .panel-tab, .psec-tab, .panel-deck .pd-btn, .pc-tool, .mc-btn-submit, .mc-btn-reset, .mc-q-edit-btn, .mc-custom-input button, .nt-close, .nt-tool, .nt-rec-btn, .nt-submit, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+:is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
-  .seg-btn:hover { color: var(--ib-text); }
   .archives-btn:hover { color: var(--ib-text); }
   .wl-row:hover { background: var(--surface-raised); }
   .wl-detail-btn:hover { color: var(--text); border-color: var(--text-tertiary); }
-  .btn-action:hover:not(:disabled) { border-color: var(--ib-muted); }
-  .btn-action.btn-primary:hover:not(:disabled) { opacity: 0.88; }
-  .btn-action.btn-stop:hover:not(:disabled) { border-color: var(--st-fail); }
   .stats-more:hover { background: var(--surface-raised); color: var(--text); }
   .card-body .card-refs a:hover { text-decoration: underline; }
   .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--surface-raised); color: var(--text); }
@@ -5823,7 +5638,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
      narrower sides, so the row fits 320px with the coarse-pointer padding. */
   .stats-strip { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "period more" "nums nums"; gap: 8px 12px; }
   .stats-strip .period-bar { min-width: 0; }
-  .stats-strip .seg .period-btn { flex: 1 1 auto; justify-content: center; padding-left: 9px; padding-right: 9px; }
   /* Top bar: the status badge becomes a 10px dot (aria-label preserved for SR),
      the account glyph goes, and the user select fills the nav row (which
      wraps rather than overflow on very small screens). Labels stay whole. */
@@ -5855,9 +5669,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .inbox-tools { flex: 1 1 auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; row-gap: 8px; }
   .crumbs { font-size: 15px; gap: 7px; }
   /* Selectors carry an extra class so they beat the later @media (pointer: coarse) 40px rules. */
-  .seg .seg-btn { min-height: 44px; padding: 6px 14px; }
-  .card-body .btn-action, .card-body .btn-choice { min-height: 44px; }
-  .card-body .btn-action { padding: 8px 14px; }
+  .card-body .btn-choice { min-height: 44px; }
 }
 
 /* ── RESPONSIVE — Bauhaus grid adapts ── */
@@ -5880,7 +5692,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.btn-action, .seg-btn, .archives-btn, .btn-choice, .btn-hero-recommended, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .new-task-btn, .stats-more, .panel-close, .panel-detail-toggle, .panel-tab, .psec-tab, .panel-deck .pd-btn, .pc-tool, .mc-btn-submit, .mc-btn-reset, .mc-q-edit-btn, .mc-custom-input button, .nt-close, .nt-tool, .nt-rec-btn, .nt-submit, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   /* Loading skeletons hold still. */
@@ -5895,12 +5707,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 /* ── TOUCH — coarse pointer enlargement ── */
 @media (pointer: coarse) {
-  .btn-action { min-height: 40px; padding: 8px 12px; font-size: 12px; }
-  .pc-tool, .panel-tab, .psec-tab, .psec-older, .psec-pill, .panel-sec-head, .panel-detail-toggle { min-height: 44px; }
-  .pc-tool { width: 44px; height: 44px; }
-  .panel-close { width: 40px; height: 40px; }
+  .panel-tab, .psec-tab, .psec-older, .psec-pill, .panel-sec-head, .panel-detail-toggle { min-height: 44px; }
   .topbar .nav a, .topbar .nav .user-select { min-height: 40px; padding: 8px 16px; }
-  .period-btn { min-height: 40px; }
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
 }
 /* ── #800: TOUCH x NARROW — restore tight padding so the coarse-pointer
@@ -5936,20 +5744,16 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   #theme-toggle { min-block-size: 44px; position: relative; }
   #theme-toggle::after { content: ''; position: absolute; inset: 0 -6px; }
   .topbar .td-chip { min-height: 44px; }
-  .period-btn { min-height: 44px; }
   .stats-more { min-height: 44px; }
-  .seg .seg-btn, .card-body .btn-action, .card-body .btn-choice { min-height: 44px; }
+  .card-body .btn-choice { min-height: 44px; }
   .inbox-head .archives-btn { min-height: 44px; }
   .card-body .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
-  .panel-close { width: 44px; height: 44px; }
-  #panel-title-sub-regen { min-width: 44px; min-height: 44px; }
-  .pi-links a, .pi-head, .panel-tasks-toggle, .turn .btn-action { min-height: 44px; }
-  .ps-actions .btn-action, .ps-slack, .cgl-go, .card-more-link, .tl-toggle { min-height: 44px; }
+  .pi-links a, .pi-head, .panel-tasks-toggle { min-height: 44px; }
+  .ps-actions .ui-btn, .ps-slack, .cgl-go, .card-more-link, .tl-toggle { min-height: 44px; }
   .wl-detail-btn { min-height: 44px; }
   .worklog-list .wl-row { min-height: 44px; display: flex; flex-direction: column; justify-content: center; }
   .wl-tool > .wl-row, .wl-tool_result > .wl-row, .worklog-list .wl-row.wl-line { flex-direction: row; align-items: center; }
-  .turn-raw summary.turn-expand-btn { min-height: 44px; display: flex; align-items: center; }
-  .panel-question .btn-choice, .mc-q-choices .btn-choice, .mc-q-edit-btn, .mc-btn-submit, .mc-btn-reset { min-height: 44px; }
+  .panel-question .btn-choice, .mc-q-choices .btn-choice, .mc-q-edit-btn { min-height: 44px; }
   .mc-custom-input input, .mc-custom-input button { min-height: 44px; }
 }
 
@@ -5979,38 +5783,19 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .capacity-host > ui-agent-queue, .cron-lane > ui-agent-queue { display: block; min-width: 0; }
 .cron-cards { display: flex; flex-direction: column; gap: 8px; position: relative; }
 .cron-cards:empty, .cron-cards:has(> .cron-inbox.is-empty) { display: none; }
-.cron-drawer-overlay { position: fixed; inset: 0; background: var(--scrim); opacity: 0; pointer-events: none; transition: opacity var(--dur-fade) var(--ease-out); z-index: 190; }
-.cron-drawer-overlay.open { opacity: 1; pointer-events: auto; }
-.cron-drawer {
-  position: fixed;
-  top: 0;
-  right: 0;
-  height: 100vh;
-  width: min(560px, 100vw);
-  display: flex;
-  flex-direction: column;
-  background: var(--surface);
-  color: var(--text);
-  border-left: 1px solid var(--border);
-  box-shadow: var(--ib-shadow-raised);
-  transform: translateX(100%);
-  transition: transform var(--dur-move) var(--ease-out);
-  z-index: 191;
-}
-.cron-drawer.open { transform: none; }
-.cron-drawer-head { display: flex; align-items: center; gap: 10px; padding: 16px 18px 10px; border-bottom: 1px solid var(--border); }
-.cron-drawer-head h3 { flex: 1; margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -0.01em; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cron-drawer-close { display: inline-flex; align-items: center; justify-content: center; min-width: 36px; min-height: 36px; border-radius: 8px; border: 1px solid var(--border); background: none; color: var(--text-secondary); font-size: 18px; cursor: pointer; }
+/* A cron job's runs (C-05) — @2lab.ai/ui <ui-drawer mode="sheet">: the element draws the sheet, its scrim, the
+   slide on the drawer curve, the close button (44px on touch), the focus trap and the bottom inset. The head
+   is the job's name after the CRON badge; the meta and the runs scroll together in the element's body. */
+.cron-drawer-headline { display: inline-flex; align-items: center; gap: 10px; min-width: 0; max-width: 100%; }
+.cron-drawer-headline #cron-drawer-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* P8: the close and regenerate glyphs are the icon set's (no ✕ / × / 🔄 characters). */
-.cron-drawer-close svg, .panel-close svg, .art-modal-close svg { width: 16px; height: 16px; }
 #panel-title-sub-regen svg { width: 12px; height: 12px; vertical-align: -2px; }
-.cron-drawer-close:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-.cron-drawer-meta { padding: 10px 18px 4px; font-size: 13px; color: var(--text-secondary); }
+.cron-drawer-meta { padding: 0 0 4px; font-size: 13px; color: var(--text-secondary); }
 .cron-dmeta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
 .cron-dmeta dt { color: var(--text-tertiary); }
 .cron-dmeta dd { margin: 0; color: var(--text); }
 .cron-dnote { margin: 8px 0 0; font-size: 12px; color: var(--text-tertiary); }
-.cron-drawer-body { flex: 1; overflow-y: auto; padding: 6px 12px 24px; }
+.cron-drawer-body { padding: 6px 0 0; }
 .cron-runs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
 .cron-run { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 4px 10px; align-items: start; padding: 10px 6px; border-bottom: 1px solid var(--border); }
 .cr-glyph { font-size: 14px; line-height: 20px; text-align: center; color: var(--st-done); }
@@ -6022,12 +5807,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .cr-sub { font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .cr-err { font-size: 12px; color: var(--st-fail); margin-top: 2px; }
 .cr-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
-.cr-actions .btn-action { text-decoration: none; }
 .aq-left { font-variant-numeric: tabular-nums; } /* the drawer's 다음 실행 countdown (aqTime) */
 
-@media (prefers-reduced-motion: reduce) {
-  .cron-drawer, .cron-drawer-overlay { transition: none; }
-}
 
 /* ═══ New task (SSOT 2026-10-23) — entry button, floating button, composer ═══
    The page's call to action, calm (ui.2lab.ai's one ink primary): PC an ink pill in
@@ -6035,29 +5816,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    floating button in the thumb zone opens a full-screen sheet sized to the visual
    viewport, so the toolbar stays above the keyboard. No sheen, pulse, glow, ring or
    hover lift — it moves only when pressed (0.97) and when the FAB arrives. */
-.new-task-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
-  height: 32px;
-  padding: 0 6px 0 10px;
-  border: 1px solid var(--ib-text);
-  border-radius: 999px;
-  background: var(--ib-text);
-  color: var(--ib-card);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 600;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: opacity 150ms ease, transform var(--dur-press) var(--ease-out);
-}
-@media (hover: hover) and (pointer: fine) { .new-task-btn:hover { opacity: 0.88; } }
-.new-task-btn:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
-.nt-plus { display: inline-grid; place-items: center; width: 14px; height: 14px; }
-.nt-plus svg { width: 14px; height: 14px; }
-.nt-kbd { font: inherit; font-size: 10.5px; font-weight: 600; line-height: 1; min-width: 18px; padding: 3px 5px; border-radius: 6px; text-align: center; background: color-mix(in srgb, var(--ib-card) 16%, transparent); color: color-mix(in srgb, var(--ib-card) 82%, transparent); }
+/* The kit's ink primary (.ui-btn.is-primary); its N hint is a kit key tinted for the ink face. */
+.new-task-btn { flex: none; padding-right: 6px; }
+.new-task-btn .ui-kbd { background: color-mix(in srgb, var(--ib-card) 16%, transparent); box-shadow: none; color: color-mix(in srgb, var(--ib-card) 82%, transparent); }
 
 .new-task-fab {
   position: fixed;
@@ -6117,9 +5878,6 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-head { display: flex; align-items: center; gap: 10px; padding: 14px 16px 4px; }
 .nt-head h2 { flex: 1; margin: 0; font-size: 16px; font-weight: 650; letter-spacing: -0.01em; }
 .nt-head-hint { font-size: 11px; color: var(--text-tertiary); border: 1px solid var(--border); border-radius: 6px; padding: 1px 6px; }
-.nt-close { display: inline-grid; place-items: center; width: 32px; height: 32px; border: 0; border-radius: 8px; background: transparent; color: var(--text-secondary); cursor: pointer; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
-@media (hover: hover) and (pointer: fine) { .nt-close:hover { background: var(--surface-raised); color: var(--text); } }
-.nt-close svg { width: 16px; height: 16px; }
 .nt-body { flex: 1; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 12px; padding: 10px 16px 14px; overscroll-behavior: contain; }
 .nt-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
@@ -6205,17 +5963,11 @@ body.nt-open .new-task-fab { display: none !important; }
 
 .nt-toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 12px 12px 10px; border-top: 1px solid var(--border); background: var(--surface); }
 .nt-tools { display: flex; align-items: center; gap: 2px; }
-.nt-tool { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border: 0; border-radius: 10px; background: transparent; color: var(--text-secondary); cursor: pointer; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); -webkit-tap-highlight-color: transparent; }
-@media (hover: hover) and (pointer: fine) { .nt-tool:hover { background: var(--surface-raised); color: var(--text); } }
-.nt-tool svg { width: 20px; height: 20px; }
 .nt-tool-camera { display: none; }
 .nt-tool-mic[aria-pressed="true"] { background: var(--tint-fail-bg); color: var(--tint-fail-fg); }
 .nt-status { flex: 1; min-width: 0; overflow: hidden; color: var(--text-secondary); font-size: 12px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
 .nt-submit-hint { flex: none; font-size: 11px; color: var(--text-tertiary); }
-.nt-submit { display: inline-flex; align-items: center; gap: 6px; flex: none; height: 38px; padding: 0 16px; border: 1px solid var(--ib-text); border-radius: 10px; background: var(--ib-text); color: var(--ib-card); font: inherit; font-size: 14px; font-weight: 600; cursor: pointer; transition: transform var(--dur-press) var(--ease-out), opacity var(--dur-press) var(--ease-out); }
-.nt-submit svg { width: 16px; height: 16px; }
-@media (hover: hover) and (pointer: fine) { .nt-submit:hover:not(:disabled) { opacity: 0.88; } }
-.nt-submit:disabled { opacity: 0.45; cursor: not-allowed; }
+.nt-submit { flex: none; }
 .nt-submit.is-busy svg { animation: nt-spin 0.9s linear infinite; }
 
 
@@ -6256,23 +6008,21 @@ body.nt-open .new-task-fab { display: none !important; }
   .nt-compose { flex: 1 1 auto; min-height: 140px; }
   .nt-prompt { flex: 1; max-height: none; }
   .nt-toolbar { padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)); }
-  .nt-submit { height: 44px; padding: 0 18px; border-radius: 12px; }
   .nt-submit-hint, .nt-head-hint { display: none; }
 }
 @media (pointer: coarse) {
   /* New task — touch: 44px targets, 16px text (iOS does not zoom into it),
      and the camera button (capture="environment" opens the camera directly). */
-  .nt-tool, .nt-close, .nt-battery-btn, .nt-toggle, .nt-chip, .nt-rec-btn { min-height: 44px; min-width: 44px; }
-  .nt-tool { width: 44px; height: 44px; }
+  .nt-battery-btn, .nt-toggle, .nt-chip, .nt-rec-btn { min-height: 44px; min-width: 44px; }
   .nt-att-remove { width: 28px; height: 28px; }
   .nt-prompt, .nt-chip select { font-size: 16px; }
-  .nt-tool-camera { display: inline-flex; }
+  .nt-tool-camera { display: inline-grid; }
   .nt-kbd, .nt-submit-hint, .nt-head-hint { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   /* New task — no arrival, slide or scale; changes are instant. */
   .new-task-btn, .new-task-fab, .nt-dialog, .nt-att,
-  .nt-rec-dot, .nt-battery-fill, .nt-plus, .nt-fab-label, .nt-fab-icon, .nt-submit svg { animation: none !important; transition: none !important; }
+  .nt-rec-dot, .nt-battery-fill, .nt-fab-label, .nt-fab-icon, .nt-submit svg { animation: none !important; transition: none !important; }
 }
 /* ── Session artifacts (SSOT 2026-10-23): face chips, strips, minimap, viewer ── */
 .art-glyph { width: 14px; height: 14px; flex-shrink: 0; }
@@ -6393,9 +6143,7 @@ body.nt-open .new-task-fab { display: none !important; }
 .art-modal-meta { font-size: 11.5px; color: var(--text-tertiary); }
 .art-modal-nav, .art-modal-actions { display: flex; align-items: center; gap: 6px; flex-shrink: 0; }
 .art-modal-pos { min-width: 40px; font-size: 12px; color: var(--text-secondary); text-align: center; font-variant-numeric: tabular-nums; }
-.art-nav-btn, .art-modal-close { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; padding: 0; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-raised); color: var(--text); font-size: 16px; cursor: pointer; }
-.art-nav-btn:disabled { opacity: 0.35; cursor: default; }
-.art-modal-actions .btn-action[hidden] { display: none; }
+.art-modal-actions .ui-btn[hidden] { display: none; }
 .art-modal-body { position: relative; display: flex; flex: 1; min-height: 0; align-items: center; justify-content: center; overflow: auto; background: var(--bg); }
 .art-full-imgwrap { display: flex; align-items: center; justify-content: center; width: 100%; height: 100%; overflow: auto; }
 .art-full-img { max-width: 100%; max-height: 100%; object-fit: contain; cursor: zoom-in; }
@@ -6433,8 +6181,8 @@ body.nt-open .new-task-fab { display: none !important; }
   .art-chip, .art-open, .art-play, .art-peek, .art-peek.open { transition: none; }
   .art-modal[open] { animation: none; }
   /* Gentler, not zero: a dialog's scrim still fades (opacity only, ≤ 180ms). */
-  .lifecycle-dialog[open], .art-modal[open] { animation: none; }
-  .lifecycle-dialog[open]::backdrop, .art-modal[open]::backdrop { animation: scrim-in 120ms ease both !important; }
+  .art-modal[open] { animation: none; }
+  .art-modal[open]::backdrop { animation: scrim-in 120ms ease both !important; }
 }
 @media (hover: none) {
   .art-chip { height: 32px; }
@@ -6486,7 +6234,6 @@ body.nt-open .new-task-fab { display: none !important; }
   /* Responsive (SSOT 2026-10-24) — 16px text: iOS does not zoom into a focused input. */
   .mc-custom-input input { font-size: 16px; }
   /* The merged cron drawer (#374): 44px touch targets (the lane's are <ui-agent-queue>'s own). */
-  .cron-drawer-close { min-width: 44px; min-height: 44px; }
 }
 @media (max-width: 639px) {
   /* Responsive (SSOT 2026-10-24) — phones: the last card clears the FAB (a board
@@ -6498,7 +6245,6 @@ body.nt-open .new-task-fab { display: none !important; }
      they could leave the account group (basis 0) no width at all, its pill and theme toggle
      painting over the chips. */
   .topbar .topbar-defaults { position: static; order: 1; flex: 0 0 100%; }
-  .td-menu { left: 12px; right: 12px; min-width: 0; max-width: none; }
   .art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
   .art-modal-head { flex-wrap: wrap; row-gap: 6px; }
 }
@@ -6507,9 +6253,8 @@ body.nt-open .new-task-fab { display: none !important; }
    makes real (the notch side of a landscape iPhone, the home indicator). Its
    width is a share of the viewport without a classic scrollbar (100%), not
    100vw, so a narrow window never pushes its left edge off screen. */
-.cron-drawer { width: min(560px, 100%); height: 100vh; height: 100dvh; padding-right: env(safe-area-inset-right, 0px); }
-.cron-drawer-head { padding-top: max(16px, env(safe-area-inset-top, 0px)); }
-.cron-drawer-body { padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px)); }
+.cron-drawer::part(panel) { padding-right: env(safe-area-inset-right, 0px); }
+.cron-drawer::part(header) { padding-top: max(14px, env(safe-area-inset-top, 0px)); }
 /* Task view (T1.6): minimal — the artifacts are one row of name chips, like a
    short panel body below; 자세히 shows them as thumbnails. */
 .slide-panel:not(.is-detail) .panel-artifacts { display: flex; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
@@ -6553,19 +6298,19 @@ ${pageTokenAliases()}
     <h1><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect class="bm-bg" width="32" height="32" rx="8"/><rect class="bm-cell" x="7" y="7" width="7" height="7" rx="1.5"/><rect class="bm-cell" x="18" y="7" width="7" height="7" rx="1.5" opacity=".55"/><rect class="bm-cell" x="7" y="18" width="7" height="7" rx="1.5" opacity=".55"/><rect class="bm-cell" x="18" y="18" width="7" height="7" rx="1.5" opacity=".25"/></svg>soma-work</h1>
     <span class="ws-badge" id="ws-status" role="status" aria-label="실시간 업데이트: 연결 중" data-state="connecting">연결 중…</span>
     <div class="topbar-defaults" id="topbar-defaults" hidden>
-      <button type="button" class="td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" aria-controls="td-menu" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><svg class="td-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
-      <button type="button" class="td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" aria-controls="td-menu" title="새 세션의 기본 effort — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">Effort </span><b id="td-effort-value">…</b><svg class="td-caret" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4.5 6.5L8 10l3.5-3.5"/></svg></button>
-      <div class="td-menu" id="td-menu" role="menu" hidden></div>
+      <button type="button" class="td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
+      <button type="button" class="td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 effort — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">Effort </span><b id="td-effort-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
+      <ui-menu id="td-menu" lang="ko"></ui-menu>
       <span class="td-status" id="td-status" role="status" aria-live="polite"></span>
     </div>
-    <button type="button" class="new-task-btn" id="new-task-btn" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><span class="nt-plus" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M8 3.5v9M3.5 8h9"/></svg></span><span class="nt-btn-label">새 작업</span><kbd class="nt-kbd" aria-hidden="true">N</kbd></button>
+    <button type="button" class="ui-btn is-primary new-task-btn" id="new-task-btn" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><i data-ui-icon="plus"></i><span class="nt-btn-label">새 작업</span><kbd class="ui-kbd nt-kbd" aria-hidden="true">N</kbd></button>
     <div class="nav">
       <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">모든 사용자</span><select id="user-select" title="모든 사용자" aria-label="보드에 보일 사용자" onchange="selectUser(this.value)">
         <option value="">모든 사용자</option>
       </select></span>
-      <a href="/conversations" title="대화 — 지난 대화를 모두 봅니다"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3.5h10a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H8.2L5 14v-2.5H3a1 1 0 0 1-1-1v-6a1 1 0 0 1 1-1z"/></svg>대화</a>
-      <a href="/dashboard/settings" id="settings-link" title="개인 설정 — Slack 명령으로 바꾸던 설정을 여기서 확인하고 바꿉니다"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 5h6.5M12.5 5h1M2.5 11h1M7 11h6.5"/><circle cx="10.75" cy="5" r="1.75"/><circle cx="5.25" cy="11" r="1.75"/></svg>설정</a>
-      <a href="/dashboard/settings#memory" id="memory-link" title="기억 — 에이전트가 기억하는 개인 메모리와 관찰 기록을 보고 고칩니다"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4.2C6.6 3.3 4.7 3 2.5 3.3v9.4c2.2-.3 4.1 0 5.5.9 1.4-.9 3.3-1.2 5.5-.9V3.3C11.3 3 9.4 3.3 8 4.2zM8 4.2v9.4"/></svg>기억</a>
+      <a href="/conversations" title="대화 — 지난 대화를 모두 봅니다"><i data-ui-icon="chat"></i>대화</a>
+      <a href="/dashboard/settings" id="settings-link" title="개인 설정 — Slack 명령으로 바꾸던 설정을 여기서 확인하고 바꿉니다"><i data-ui-icon="gear"></i>설정</a>
+      <a href="/dashboard/settings#memory" id="memory-link" title="기억 — 에이전트가 기억하는 개인 메모리와 관찰 기록을 보고 고칩니다"><i data-ui-icon="brain"></i>기억</a>
       <button
         id="admin-mode-toggle"
         type="button"
@@ -6582,8 +6327,8 @@ ${pageTokenAliases()}
         id="user-pill"
         href="/login"
         title="계정 — 다른 계정으로 전환하거나 로그아웃합니다"
-      ><span class="user-pill-prefix"><svg class="ic-user" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="5.5" r="2.5"/><path d="M3 13.5c.6-2.3 2.6-3.7 5-3.7s4.4 1.4 5 3.7"/></svg><svg class="ic-admin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2l4.8 1.9v3.5c0 2.9-2 5.1-4.8 6.2-2.8-1.1-4.8-3.3-4.8-6.2V4.1z"/><path d="M5.9 8.1l1.5 1.5 2.8-2.9"/></svg><span class="ar-vh">로그인 계정 </span></span><b id="user-pill-name">…</b></a>
-      <button id="theme-toggle" onclick="toggleTheme()" aria-label="테마 전환"><svg class="ic-sun" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="3"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1"/></svg><svg class="ic-moon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 9.5A5.5 5.5 0 0 1 6.5 2.5a5.5 5.5 0 1 0 7 7z"/></svg></button>
+      ><span class="user-pill-prefix"><i data-ui-icon="user" class="ic-user"></i><svg class="ic-admin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2l4.8 1.9v3.5c0 2.9-2 5.1-4.8 6.2-2.8-1.1-4.8-3.3-4.8-6.2V4.1z"/><path d="M5.9 8.1l1.5 1.5 2.8-2.9"/></svg><span class="ar-vh">로그인 계정 </span></span><b id="user-pill-name">…</b></a>
+      <button id="theme-toggle" onclick="toggleTheme()" aria-label="테마 전환"><i data-ui-icon="sun" class="ic-sun"></i><i data-ui-icon="moon" class="ic-moon"></i></button>
     </div>
   </div>
 
@@ -6593,17 +6338,13 @@ ${pageTokenAliases()}
          other cards and the charts below the strip (kept in localStorage). -->
     <section class="stats" id="stats" aria-label="사용량">
       <div class="stats-strip">
-        <div class="period-bar seg" role="group" aria-label="&#xAE30;&#xAC04;">
-          <button type="button" class="period-btn seg-btn active" data-period="day" aria-pressed="true" onclick="setPeriod('day')">&#xC624;&#xB298;</button>
-          <button type="button" class="period-btn seg-btn" data-period="week" aria-pressed="false" onclick="setPeriod('week')">&#xC9C0;&#xB09C; 7&#xC77C;</button>
-          <button type="button" class="period-btn seg-btn" data-period="month" aria-pressed="false" onclick="setPeriod('month')">&#xC9C0;&#xB09C; 30&#xC77C;</button>
-        </div>
+        <ui-segmented class="period-bar" id="period-seg" full></ui-segmented>
         <div class="strip-nums">
           <div class="strip-num"><span class="label">&#xC138;&#xC158;</span><span class="value is-loading" id="stat-sessions"></span></div>
-          <div class="strip-num"><span class="label">&#xD1A0;&#xD070;</span><span class="value" id="stat-tokens-wrap"><span id="stat-tokens" class="is-loading"></span><span id="stat-tokens-tooltip" role="tooltip"></span></span></div>
+          <div class="strip-num"><span class="label">&#xD1A0;&#xD070;</span><span class="value" id="stat-tokens-wrap"><ui-tooltip id="stat-tokens-tooltip" variant="card" placement="bottom" disabled><span id="stat-tokens" class="is-loading"></span></ui-tooltip></span></div>
           <div class="strip-num"><span class="label">&#xBE44;&#xC6A9;</span><span class="value is-loading" id="stat-cost"></span></div>
         </div>
-        <button type="button" class="stats-more" id="stats-more" aria-expanded="false" aria-controls="stats-detail" onclick="toggleStatsDetail()"><span>&#xC790;&#xC138;&#xD788;</span><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg></button>
+        <button type="button" class="stats-more" id="stats-more" aria-expanded="false" aria-controls="stats-detail" onclick="toggleStatsDetail()"><span>&#xC790;&#xC138;&#xD788;</span><i data-ui-icon="chevron-down"></i></button>
       </div>
       <div class="stats-detail" id="stats-detail" hidden inert>
         <div class="ui-tok usage-cb-wrap"><ui-compact-breakdown id="usage-cb" lang="ko"></ui-compact-breakdown></div>
@@ -6634,28 +6375,24 @@ ${pageTokenAliases()}
         <nav class="crumbs" aria-label="위치"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
         <div class="inbox-tools">
           <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="3" rx="0.8"/><path d="M3 6v6.2c0 .5.4.8.8.8h8.4c.4 0 .8-.3.8-.8V6M6.5 8.6h3"/></svg><span id="archives-label">Archives</span></button>
-          <button type="button" class="archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z"/></svg><span id="sleeping-label">Sleeping</span></button>
-          <button type="button" class="archives-btn" id="lifecycle-btn" style="display:none" title="세션 수명 주기 (관리자)" onclick="openLifecycleDialog()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2 1.3"/></svg><span>수명 주기</span></button>
-          <div class="seg" role="group" aria-label="보드 보기">
-            <button type="button" class="seg-btn" data-view="board" aria-pressed="true" onclick="setBoardView('board', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="2.5" width="4.5" height="11" rx="1.2"/><rect x="9.5" y="2.5" width="4.5" height="7" rx="1.2"/></svg><span>보드</span></button>
-            <button type="button" class="seg-btn" data-view="list" aria-pressed="false" onclick="setBoardView('list', event)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M2.5 4h11M2.5 8h11M2.5 12h11"/></svg><span>목록</span></button>
-          </div>
+          <button type="button" class="archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><i data-ui-icon="moon"></i><span id="sleeping-label">Sleeping</span></button>
+          <button type="button" class="archives-btn" id="lifecycle-btn" style="display:none" title="세션 수명 주기 (관리자)" onclick="openLifecycleDialog()"><i data-ui-icon="clock"></i><span>수명 주기</span></button>
+          <ui-segmented class="view-seg" id="view-seg"></ui-segmented>
         </div>
       </div>
-      <dialog id="lifecycle-dialog" class="lifecycle-dialog" aria-labelledby="lifecycle-title" oncancel="event.preventDefault();closeLifecycleDialog()">
-        <form method="dialog" onsubmit="saveLifecycle(event)" oninput="armLifecycleSave(null)">
-          <h3 id="lifecycle-title">세션 수명 주기</h3>
+      <ui-dialog id="lifecycle-dialog" class="lifecycle-dialog" heading="세션 수명 주기" size="sm" lang="ko">
+        <form id="lifecycle-form" onsubmit="saveLifecycle(event)" oninput="armLifecycleSave(null)">
           <p class="lc-note"><span id="lifecycle-scope">이 인스턴스</span>에만 적용되고, 다음 정리 주기(최대 5분)부터 반영됩니다. 값을 줄이면 그 기준을 넘긴 세션이 바로 Sleeping이 되거나 종료됩니다 — 저장 전에 몇 개인지 알려 줍니다. Sleeping 전환이 12시간 이하이면 12시간 전 확인 알림은 보내지 않습니다.</p>
           <label>마지막 활동 후 Sleeping 전환 <span class="lc-unit">시간</span><input id="lc-sleepAfterHours" type="number" min="1" max="720" step="any" required></label>
           <label>Sleeping 후 Archive(종료) 전환 <span class="lc-unit">일</span><input id="lc-archiveAfterDays" type="number" min="0.05" max="365" step="any" required></label>
           <label>보드에 Archive 표시 기간 <span class="lc-unit">시간</span><input id="lc-boardArchiveWindowHours" type="number" min="0" max="8760" step="any" required></label>
           <p class="lc-status" id="lifecycle-status" role="status" aria-live="polite"></p>
-          <div class="lc-actions">
-            <button type="button" class="archives-btn" onclick="closeLifecycleDialog()">취소</button>
-            <button type="submit" class="archives-btn lc-save" id="lifecycle-save">저장</button>
-          </div>
         </form>
-      </dialog>
+        <div slot="footer" class="lc-actions">
+          <button type="button" class="ui-btn" onclick="closeLifecycleDialog()">취소</button>
+          <button type="submit" form="lifecycle-form" class="ui-btn is-primary lc-save" id="lifecycle-save">저장</button>
+        </div>
+      </ui-dialog>
       <!-- CRON lane (SSOT 2026-10-23 T4/T5): @2lab.ai/ui <ui-agent-queue> with the lane only —
            one tile per cron job, four numbers, the next-fire queue and 24 hours of runs
            (syncCronLane gives it its data); each job's latest run is its board card — a one-column
@@ -6673,16 +6410,11 @@ ${pageTokenAliases()}
   </div>
 
   <!-- A cron job's past runs (SSOT 2026-10-23 T5). -->
-  <div class="cron-drawer-overlay" id="cron-drawer-overlay" onclick="closeCronDrawer()"></div>
-  <aside class="cron-drawer" id="cron-drawer" role="dialog" aria-modal="true" aria-labelledby="cron-drawer-title" aria-hidden="true" inert>
-    <div class="cron-drawer-head">
-      <span class="cron-badge" id="cron-drawer-badge" aria-hidden="true"></span>
-      <h3 id="cron-drawer-title"></h3>
-      <button type="button" class="cron-drawer-close" id="cron-drawer-close" onclick="closeCronDrawer()" aria-label="&#xB2EB;&#xAE30;"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
-    </div>
+  <ui-drawer class="cron-drawer" id="cron-drawer" mode="sheet" width="560" max-width="560" lang="ko">
+    <span slot="header" class="cron-drawer-headline"><span class="cron-badge" id="cron-drawer-badge" aria-hidden="true"></span><span id="cron-drawer-title"></span></span>
     <div class="cron-drawer-meta" id="cron-drawer-meta"></div>
     <div class="cron-drawer-body" id="cron-drawer-body"></div>
-  </aside>
+  </ui-drawer>
 
   <!-- Slide panel: the detail card -->
   <div class="slide-panel-overlay" id="panel-overlay" onclick="closeDetailCard()"></div>
@@ -6695,18 +6427,18 @@ ${pageTokenAliases()}
         <h3 id="panel-title" tabindex="-1">작업 카드</h3>
         <div id="panel-title-sub" style="font-size:11px;color:var(--text-secondary);margin-top:2px;display:flex;align-items:center;gap:6px">
           <span id="panel-title-sub-text"></span>
-          <button id="panel-title-sub-regen" class="btn-action" style="font-size:10px;padding:1px 6px;display:none" aria-label="부제 다시 만들기" title="부제 다시 만들기" onclick="event.stopPropagation();generateTitleSub(panelConvId, !!_panelTitleSub)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.25 8a5.25 5.25 0 0 1-9.4 3.2M2.75 8a5.25 5.25 0 0 1 9.4-3.2M12.5 2v3h-3M3.5 14v-3h3"/></svg></button>
+          <button type="button" id="panel-title-sub-regen" class="ui-icon-btn is-sm" style="display:none" aria-label="부제 다시 만들기" title="부제 다시 만들기" onclick="event.stopPropagation();generateTitleSub(panelConvId, !!_panelTitleSub)"><i data-ui-icon="refresh"></i></button>
         </div>
       </div>
       <!-- Detail deck (SSOT 2026-10-29 T2): every open card has its detail card here; ‹ › go through them. -->
       <div class="panel-deck" id="panel-deck" role="group" aria-label="열린 작업 카드" hidden>
-        <button type="button" class="pd-btn" id="panel-deck-prev" aria-label="이전 작업 카드" onclick="deckGo(-1)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 3.5L5.5 8l4.5 4.5"/></svg></button>
+        <button type="button" class="ui-icon-btn is-sm" id="panel-deck-prev" aria-label="이전 작업 카드" onclick="deckGo(-1)"><i data-ui-icon="chevron-left"></i></button>
         <span class="pd-pos" id="panel-deck-pos" aria-live="polite"></span>
-        <button type="button" class="pd-btn" id="panel-deck-next" aria-label="다음 작업 카드" onclick="deckGo(1)"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3.5L10.5 8 6 12.5"/></svg></button>
+        <button type="button" class="ui-icon-btn is-sm" id="panel-deck-next" aria-label="다음 작업 카드" onclick="deckGo(1)"><i data-ui-icon="chevron-right"></i></button>
       </div>
       <!-- 자세히 (task view T1.6): the panel shows what matters by default; on, every detail of every section. Saved per device. -->
-      <button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false" title="모든 세부 정보 보기" onclick="togglePanelDetail()"><svg class="pdt-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M3 4h10M3 8h10M3 12h6"/></svg><span class="pdt-label">자세히</span></button>
-      <button class="panel-close" aria-label="작업 카드 닫기" title="작업 카드 닫기 (카드도 접힘)" onclick="closeDetailCard()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+      <button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false" title="모든 세부 정보 보기" onclick="togglePanelDetail()"><i data-ui-icon="list" class="pdt-icon"></i><span class="pdt-label">자세히</span></button>
+      <button type="button" class="ui-icon-btn is-bordered panel-close" aria-label="작업 카드 닫기" title="작업 카드 닫기 (카드도 접힘)" onclick="closeDetailCard()"><i data-ui-icon="close"></i></button>
       <!-- Session chip (spec 13): status · active time · retry · Slack · the session's one action. -->
       <div class="panel-status" id="panel-status"></div>
     </div>
@@ -6787,9 +6519,9 @@ ${pageTokenAliases()}
             <p class="pc-error" id="pc-error" role="alert" hidden></p>
           </div>
           <span slot="tools" class="pc-tools">
-            <button type="button" class="pc-tool" id="pc-attach" aria-label="파일 첨부" title="파일 첨부" onclick="document.getElementById('pc-file-input').click()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.5 9.5l-5.8 5.8a3.5 3.5 0 0 1-5-5l6.3-6.3a2.3 2.3 0 0 1 3.3 3.3l-6.2 6.2a1.1 1.1 0 0 1-1.6-1.6l5.6-5.6"/></svg></button>
-            <button type="button" class="pc-tool" id="pc-image" aria-label="이미지 첨부" title="이미지 첨부 (붙여넣기·끌어놓기도 됩니다)" onclick="document.getElementById('pc-image-input').click()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="14" height="12" rx="2"/><circle cx="7.5" cy="8.5" r="1.4"/><path d="M3.5 14l4-4 3 3 2-2 4 3.5"/></svg></button>
-            <button type="button" class="pc-tool pc-tool-mic" id="pc-mic" aria-label="음성 녹음" aria-pressed="false" title="음성 녹음" onclick="pcToggleRecording()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><rect x="7.5" y="2.5" width="5" height="9.5" rx="2.5"/><path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5"/></svg></button>
+            <button type="button" class="ui-icon-btn pc-tool" id="pc-attach" aria-label="파일 첨부" title="파일 첨부" onclick="document.getElementById('pc-file-input').click()"><i data-ui-icon="attach"></i></button>
+            <button type="button" class="ui-icon-btn pc-tool" id="pc-image" aria-label="이미지 첨부" title="이미지 첨부 (붙여넣기·끌어놓기도 됩니다)" onclick="document.getElementById('pc-image-input').click()"><i data-ui-icon="image"></i></button>
+            <button type="button" class="ui-icon-btn pc-tool pc-tool-mic" id="pc-mic" aria-label="음성 녹음" aria-pressed="false" title="음성 녹음" onclick="pcToggleRecording()"><i data-ui-icon="mic"></i></button>
             <input type="file" id="pc-file-input" multiple hidden onchange="pcAddFiles(this.files); this.value = ''">
             <input type="file" id="pc-image-input" accept="image/*" multiple hidden onchange="pcAddFiles(this.files); this.value = ''">
             <input type="file" id="pc-audio-input" accept="audio/*" capture hidden onchange="pcAddFiles(this.files); this.value = ''">
@@ -6801,11 +6533,11 @@ ${pageTokenAliases()}
 
   <!-- New task (SSOT 2026-10-23): floating button (phones, and PC once the top-bar
        button scrolls away), the composer dialog, and the launch toast. -->
-  <button type="button" class="new-task-fab" id="new-task-fab" aria-label="새 작업 시작" onclick="openNewTask()"><svg class="nt-fab-icon" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg><span class="nt-fab-label">새 작업</span></button>
+  <button type="button" class="new-task-fab" id="new-task-fab" aria-label="새 작업 시작" onclick="openNewTask()"><i data-ui-icon="plus" class="nt-fab-icon"></i><span class="nt-fab-label">새 작업</span></button>
   <dialog id="nt-dialog" class="nt-dialog" aria-labelledby="nt-title" onclose="ntOnClosed()">
     <form id="nt-form" class="nt-form" onsubmit="submitNewTask(event)" novalidate>
       <header class="nt-head">
-        <button type="button" class="nt-close" aria-label="닫기" onclick="closeNewTask()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+        <button type="button" class="ui-icon-btn nt-close" aria-label="닫기" onclick="closeNewTask()"><i data-ui-icon="close"></i></button>
         <h2 id="nt-title">새 작업</h2>
         <span class="nt-head-hint" aria-hidden="true">Esc</span>
       </header>
@@ -6833,16 +6565,16 @@ ${pageTokenAliases()}
       </div>
       <footer class="nt-toolbar">
         <div class="nt-tools">
-          <button type="button" class="nt-tool nt-tool-camera" id="nt-camera" aria-label="사진 찍기" title="사진 찍기" onclick="ntEl('nt-camera-input').click()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 6.5h3l1.5-2h6l1.5 2h3v9.5h-15z"/><circle cx="10" cy="11" r="3"/></svg></button>
-          <button type="button" class="nt-tool" id="nt-attach" aria-label="파일 첨부" title="파일 첨부" onclick="ntEl('nt-file-input').click()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15.5 9.5l-5.8 5.8a3.5 3.5 0 0 1-5-5l6.3-6.3a2.3 2.3 0 0 1 3.3 3.3l-6.2 6.2a1.1 1.1 0 0 1-1.6-1.6l5.6-5.6"/></svg></button>
-          <button type="button" class="nt-tool nt-tool-mic" id="nt-mic" aria-label="음성 녹음" aria-pressed="false" title="음성 녹음" onclick="ntToggleRecording()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><rect x="7.5" y="2.5" width="5" height="9.5" rx="2.5"/><path d="M4.5 9.5a5.5 5.5 0 0 0 11 0M10 15v2.5"/></svg></button>
+          <button type="button" class="ui-icon-btn nt-tool nt-tool-camera" id="nt-camera" aria-label="사진 찍기" title="사진 찍기" onclick="ntEl('nt-camera-input').click()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 6.5h3l1.5-2h6l1.5 2h3v9.5h-15z"/><circle cx="10" cy="11" r="3"/></svg></button>
+          <button type="button" class="ui-icon-btn nt-tool" id="nt-attach" aria-label="파일 첨부" title="파일 첨부" onclick="ntEl('nt-file-input').click()"><i data-ui-icon="attach"></i></button>
+          <button type="button" class="ui-icon-btn nt-tool nt-tool-mic" id="nt-mic" aria-label="음성 녹음" aria-pressed="false" title="음성 녹음" onclick="ntToggleRecording()"><i data-ui-icon="mic"></i></button>
           <input type="file" id="nt-camera-input" accept="image/*" capture="environment" hidden onchange="ntAddFiles(this.files, 'camera'); this.value = ''">
           <input type="file" id="nt-file-input" multiple hidden onchange="ntAddFiles(this.files, 'file'); this.value = ''">
           <input type="file" id="nt-audio-input" accept="audio/*" capture hidden onchange="ntAddFiles(this.files, 'voice'); this.value = ''">
         </div>
         <span class="nt-status" id="nt-status" role="status" aria-live="polite"></span>
         <span class="nt-submit-hint" id="nt-submit-hint" aria-hidden="true">⌘↵</span>
-        <button type="submit" class="nt-submit" id="nt-submit">작업 시작<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 8h9M8.5 4.5L12 8l-3.5 3.5"/></svg></button>
+        <button type="submit" class="ui-btn is-primary is-lg nt-submit" id="nt-submit">작업 시작<i data-ui-icon="arrow-right"></i></button>
       </footer>
     </form>
   </dialog>
@@ -6854,15 +6586,15 @@ ${pageTokenAliases()}
     <span class="art-modal-kind" id="art-modal-kind"></span>
     <div class="art-modal-title"><div class="art-modal-name" id="art-modal-name"></div><div class="art-modal-meta" id="art-modal-meta"></div></div>
     <div class="art-modal-nav">
-      <button type="button" class="art-nav-btn" id="art-modal-prev" aria-label="이전 산출물" onclick="artModalStep(-1)">&#x2039;</button>
+      <button type="button" class="ui-icon-btn is-bordered" id="art-modal-prev" aria-label="이전 산출물" onclick="artModalStep(-1)"><i data-ui-icon="chevron-left"></i></button>
       <span class="art-modal-pos" id="art-modal-pos"></span>
-      <button type="button" class="art-nav-btn" id="art-modal-next" aria-label="다음 산출물" onclick="artModalStep(1)">&#x203A;</button>
+      <button type="button" class="ui-icon-btn is-bordered" id="art-modal-next" aria-label="다음 산출물" onclick="artModalStep(1)"><i data-ui-icon="chevron-right"></i></button>
     </div>
     <div class="art-modal-actions">
-      <a class="btn-action" id="art-modal-open" target="_blank" rel="noopener">새 탭</a>
-      <a class="btn-action" id="art-modal-download">다운로드</a>
-      <a class="btn-action" id="art-modal-slack" target="_blank" rel="noopener">Slack</a>
-      <button type="button" class="art-modal-close" aria-label="닫기" onclick="closeArtifactModal()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg></button>
+      <a class="ui-btn is-sm" id="art-modal-open" target="_blank" rel="noopener">새 탭</a>
+      <a class="ui-btn is-sm" id="art-modal-download">다운로드</a>
+      <a class="ui-btn is-sm" id="art-modal-slack" target="_blank" rel="noopener">Slack</a>
+      <button type="button" class="ui-icon-btn" aria-label="닫기" onclick="closeArtifactModal()"><i data-ui-icon="close"></i></button>
     </div>
   </div>
   <div class="art-modal-body" id="art-modal-body"></div>
@@ -7690,7 +7422,7 @@ function taskFateOf(t) {
 }
 var TASK_PAUSE_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5 4h2v8H5zM9 4h2v8H9z"/></svg>';
 var TASK_STOP_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M4.5 11.5l7-7"/></svg>';
-var TASK_SKIP_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M4.5 8h7"/></svg>';
+var TASK_SKIP_SVG = '<i data-ui-icon="minus"></i>';
 // The focused node's earlier task lists: the main agent's (s.earlierTasks) or
 // the focused subagent's own.
 function panelAgentEarlier() {
@@ -8088,56 +7820,66 @@ function defaultsScopeSession() {
   if (!s || !s.ownerId || s.ownerId !== currentUserId || s.terminated || isSiblingSession(s)) return null;
   return s;
 }
-function renderDefaultsMenu(kind) {
+// <ui-menu id="td-menu"> (A-07): the page hands it the rows — a heading, the options as one radio group (the
+// current one checked) and, for the open session the owner may switch too, a checkbox "열린 세션에도 적용" that is
+// on each time the menu opens — and answers ui-select. The element hangs from the chip, moves focus to the checked
+// row, does the arrows / typeahead / Esc / outside press, and gives focus back to the chip.
+var TD_ALSO_SESSION = 'td-also-session';
+var _tdAlsoSession = true;
+function defaultsMenuData(kind) {
   var row = _myDefaults && (kind === 'model' ? _myDefaults.model : _myDefaults.effort);
-  if (!row) return '';
-  var html = '<div class="tdm-head">' + (kind === 'model' ? '새 세션 기본 모델' : '새 세션 기본 effort') + '</div>';
+  if (!row) return null;
+  var title = kind === 'model' ? '새 세션 기본 모델' : '새 세션 기본 effort';
+  var items = [{ kind: 'heading', label: title }];
   var opts = row.options || [];
   for (var i = 0; i < opts.length; i++) {
     var o = opts[i];
-    var on = o.value === row.value;
-    html += '<button type="button" role="menuitemradio" class="tdm-item" aria-checked="' + (on ? 'true' : 'false') + '"'
-      + ' data-td-kind="' + escAttr(kind) + '" data-td-value="' + escAttr(o.value) + '" onclick="pickDefaultFrom(this)">'
-      + '<span>' + esc(o.label) + (o.description && kind === 'model' ? ' <span class="tdm-sub">' + esc(o.description) + '</span>' : '') + '</span></button>';
+    var it = { kind: 'radio', value: String(o.value), label: String(o.label), checked: o.value === row.value };
+    if (o.description && kind === 'model') it.description = String(o.description);
+    items.push(it);
   }
   var s = defaultsScopeSession();
   if (s) {
-    html += '<label class="tdm-scope"><input type="checkbox" id="tdm-also-session" checked>'
-      + '<span>열린 세션에도 적용 &mdash; ' + esc(s.displayHeadline || s.title || s.key) + '</span></label>';
+    items.push({ kind: 'separator' });
+    items.push({ kind: 'checkbox', value: TD_ALSO_SESSION, label: '열린 세션에도 적용', description: String(s.displayHeadline || s.title || s.key), checked: _tdAlsoSession });
   }
-  return html;
+  return { label: title, items: items };
 }
 function openDefaultsMenu(kind, btn) {
   var menu = document.getElementById('td-menu');
-  if (!menu || !_myDefaults) return;
-  if (!menu.hidden && _tdMenuKind === kind) { closeDefaultsMenu(); return; }
+  if (!menu || !_myDefaults || typeof menu.show !== 'function') return;
+  if (menu.open && _tdMenuKind === kind) { closeDefaultsMenu(); return; }
+  _tdAlsoSession = true;
+  var d = defaultsMenuData(kind);
+  if (!d) return;
   _tdMenuKind = kind;
-  menu.innerHTML = renderDefaultsMenu(kind);
-  menu.style.left = btn ? btn.offsetLeft + 'px' : '0';
-  menu.hidden = false;
-  var chips = document.querySelectorAll('.td-chip');
-  for (var i = 0; i < chips.length; i++) chips[i].setAttribute('aria-expanded', chips[i] === btn ? 'true' : 'false');
-  var first = menu.querySelector('.tdm-item[aria-checked="true"]') || menu.querySelector('.tdm-item');
-  if (first) first.focus();
+  menu.data = d;
+  menu.show(btn);
 }
 function closeDefaultsMenu() {
   var menu = document.getElementById('td-menu');
-  if (menu) menu.hidden = true;
+  if (menu && menu.open) menu.hide();
   _tdMenuKind = null;
-  var chips = document.querySelectorAll('.td-chip');
-  for (var i = 0; i < chips.length; i++) chips[i].setAttribute('aria-expanded', 'false');
 }
-document.addEventListener('click', function(ev) {
-  var box = document.getElementById('topbar-defaults');
-  if (_tdMenuKind && box && !box.contains(ev.target)) closeDefaultsMenu();
-});
-document.addEventListener('keydown', function(ev) {
-  if (ev.key === 'Escape' && _tdMenuKind) {
-    var chip = document.getElementById(_tdMenuKind === 'model' ? 'td-model' : 'td-effort');
-    closeDefaultsMenu();
-    if (chip) chip.focus();
-  }
-});
+(function initDefaultsMenu() {
+  var menu = document.getElementById('td-menu');
+  if (!menu) return;
+  menu.addEventListener('ui-select', function(e) {
+    var d = e.detail || {};
+    if (d.kind === 'checkbox' && d.value === TD_ALSO_SESSION) { _tdAlsoSession = !!d.checked; return; }
+    if (d.kind === 'radio' && _tdMenuKind) pickDefault(_tdMenuKind, d.value);
+  });
+  // Closed by the element (Esc, an outside press, focus leaving): the page forgets which chip it was.
+  menu.addEventListener('ui-open-change', function(e) {
+    var open = !!(e.detail && e.detail.open);
+    if (!open) _tdMenuKind = null;
+    // The element marks only the chip it hangs from; the other chip keeps saying it is collapsed.
+    ['td-model', 'td-effort'].forEach(function(id) {
+      var chip = document.getElementById(id);
+      if (chip && (!open || chip.getAttribute('aria-expanded') !== 'true')) chip.setAttribute('aria-expanded', 'false');
+    });
+  });
+})();
 // Settings changed in Slack show up when the tab comes back.
 document.addEventListener('visibilitychange', function() { if (!document.hidden) loadMyDefaults(); });
 async function patchSetting(key, value) {
@@ -8163,13 +7905,8 @@ function setDefaultsStatus(text, isError) {
   el.title = text || '';
   el.classList.toggle('is-error', !!isError);
 }
-// Option values travel in attribute-escaped data-* (never inside inline JS).
-function pickDefaultFrom(el) {
-  return pickDefault(el.getAttribute('data-td-kind'), el.getAttribute('data-td-value'));
-}
 async function pickDefault(kind, value) {
-  var also = document.getElementById('tdm-also-session');
-  var session = also && also.checked ? defaultsScopeSession() : null;
+  var session = _tdAlsoSession ? defaultsScopeSession() : null;
   var skipSession = !!session && kind === 'model' && !sessionAcceptsModel(value);
   if (skipSession) session = null;
   closeDefaultsMenu();
@@ -8412,14 +8149,15 @@ function selectUser(userId) {
   loadCronJobs();
 }
 
-// ── Period ──
+// ── Period ── <ui-segmented id="period-seg"> (B-02): the page hands it the choice and answers ui-change.
+var PERIOD_OPTIONS = [{ value: 'day', label: '오늘' }, { value: 'week', label: '지난 7일' }, { value: 'month', label: '지난 30일' }];
+function paintPeriodSeg() {
+  var seg = document.getElementById('period-seg');
+  if (seg) seg.data = { label: '기간', value: currentPeriod, options: PERIOD_OPTIONS };
+}
 function setPeriod(period) {
   currentPeriod = period;
-  document.querySelectorAll('.period-btn').forEach(function(b) {
-    var on = b.dataset.period === period;
-    b.classList.toggle('active', on);
-    b.setAttribute('aria-pressed', on ? 'true' : 'false');
-  });
+  paintPeriodSeg();
   loadStats();
 }
 
@@ -9414,6 +9152,8 @@ function renderTimeline(s) {
 // A card is the main agent; s.agents are the subagents it (or another
 // subagent) started, in spawn order. Each has its own tasks and its own work
 // log (entries with its agentId). Status always shows as an icon AND a word.
+// The kit status (.ui-status) tone per agent status; the rest read as the muted dot.
+var AGENT_STATUS_TONE = { running: 'run', waiting: 'wait', resuming: 'wait', completed: 'done', failed: 'fail' };
 var AGENT_STATUS_LABEL = { running: '실행 중', completed: '완료', failed: '실패', stopped: '중단', unknown: '확인 불가', waiting: '입력 대기', idle: '대기', resuming: '재개 대기', sleeping: '휴면', archived: '보관' };
 var _anOpen = Object.create(null); // tree namespace|node id → a fold the user chose (absent = the default)
 var _panelAgent = ''; // the node the open panel shows ('' = the root, the main agent)
@@ -9438,13 +9178,13 @@ function agentCounts(agents) {
 // Status icon: shape + the word next to it; colour is a third cue, never the only one.
 function agentIconHtml(st) {
   if (st === 'running') return '<span class="spinner ag-spinner" aria-hidden="true"></span>';
-  if (st === 'completed') return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8.5l3 3 6-7"/></svg>';
-  if (st === 'failed') return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4.5 4.5l7 7M11.5 4.5l-7 7"/></svg>';
-  if (st === 'stopped') return '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><rect x="4.5" y="4.5" width="7" height="7" rx="1.2"/></svg>';
-  if (st === 'waiting') return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5.5"/><path d="M8 5v3.2l2 1.3"/></svg>';
-  if (st === 'resuming') return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 8a4.5 4.5 0 1 0 1.3-3.2"/><path d="M3.5 3v2.5H6"/></svg>';
+  if (st === 'completed') return '<i data-ui-icon="check"></i>';
+  if (st === 'failed') return '<i data-ui-icon="cross"></i>';
+  if (st === 'stopped') return '<i data-ui-icon="stop"></i>';
+  if (st === 'waiting') return '<i data-ui-icon="clock"></i>';
+  if (st === 'resuming') return '<i data-ui-icon="refresh"></i>';
   if (st === 'idle') return '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><circle cx="8" cy="8" r="3"/></svg>';
-  if (st === 'sleeping') return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M12 10.2A4.6 4.6 0 0 1 5.8 4a4.6 4.6 0 1 0 6.2 6.2z"/></svg>';
+  if (st === 'sleeping') return '<i data-ui-icon="moon"></i>';
   if (st === 'archived') return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.5" y="3.5" width="11" height="3" rx="0.8"/><path d="M3.5 6.5v6h9v-6M6.5 9h3"/></svg>';
   return '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><circle cx="8" cy="8" r="4.5" stroke-dasharray="2.2 2"/></svg>';
 }
@@ -9918,7 +9658,7 @@ function renderAgentFocus(node, s) {
   // The root's status and active time are the session's — the head chip shows
   // them (spec 13); its accessible name still says them. A subagent keeps its own.
   if (!node.root) {
-    bits.push('<span class="pa-st is-' + st + '">' + agentIconHtml(st) + esc(AGENT_STATUS_LABEL[st] || '') + '</span>');
+    bits.push('<span class="ui-status pa-st"' + (AGENT_STATUS_TONE[st] ? ' data-tone="' + AGENT_STATUS_TONE[st] + '"' : '') + (st === 'running' ? ' data-live' : '') + '>' + esc(AGENT_STATUS_LABEL[st] || '') + '</span>');
     var time = agentTimeHtml(node);
     if (time) bits.push(time);
   }
@@ -10202,9 +9942,9 @@ function agentConvHtml(a, io, prompt, answer) {
     // its raw names the work-log entry (data-seq: 다시 시도 → agentConvRetry).
     var seq = io.result.rawBytes ? ' data-seq="' + Math.floor(Number(io.result.seq) || 0) + '"' : '';
     body = '<div class="turn-answer ui-tok"' + seq + '>' + ansSlotHtml('불러오는 중…') + '</div>';
-    body += '<details class="turn-raw"><summary class="turn-expand-btn">Raw</summary><div class="turn-raw-body">'
+    body += '<ui-disclosure class="turn-raw" summary="Raw" flush><div class="turn-raw-body">'
       + (a && a.summary ? '<div class="turn-raw-label">요약</div><div>' + esc(a.summary) + '</div>' : '')
-      + '<div class="turn-raw-label">원문</div><pre class="turn-raw-src">' + esc(answer || '') + '</pre></div></details>';
+      + '<div class="turn-raw-label">원문</div><pre class="turn-raw-src">' + esc(answer || '') + '</pre></div></ui-disclosure>';
   } else if (st === 'running') {
     body = '<div class="ui-tok">' + ansSlotHtml('응답 작성 중') + '</div>';
   } else {
@@ -10978,7 +10718,7 @@ function panelHeadHtml(s, col) {
   var timer = '';
   if (leg) {
     timer = '<span class="ps-time" title="이번 턴 시작 · 경과">'
-      + '<svg class="ps-clock" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 5v3.2l2 1.3"/></svg>'
+      + '<i data-ui-icon="clock" class="ps-clock"></i>'
       + '시작 ' + esc(formatTaskTime(leg)) + '<span class="ps-dot" aria-hidden="true">&middot;</span>'
       + '<span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="0"></span></span>';
   } else if (acc) {
@@ -10989,8 +10729,8 @@ function panelHeadHtml(s, col) {
     ? '<a class="ps-slack" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener" aria-label="Slack 스레드 열기" title="Slack 스레드">Slack</a>'
     : '';
   return '<div class="ps-row">'
-    + '<span class="ps-chip is-' + st + '"><span class="ps-label">세션</span><span class="ps-icon">' + agentIconHtml(st) + '</span>'
-    + '<span class="ps-word" role="status">' + esc(AGENT_STATUS_LABEL[st] || '') + '</span></span>'
+    + '<span class="ui-status is-pill ps-chip"' + (AGENT_STATUS_TONE[st] ? ' data-tone="' + AGENT_STATUS_TONE[st] + '"' : '') + (st === 'running' ? ' data-live' : '') + '>'
+    + '<span class="ps-label">세션</span><span class="ps-word" role="status">' + esc(AGENT_STATUS_LABEL[st] || '') + '</span></span>'
     + timer
     + '<span class="ps-actions">' + slack + sessionActionHtml(s, col, 'panel') + '</span>'
     + '</div>'
@@ -11008,7 +10748,7 @@ function renderPanelHead() {
 // view under it; opened, every number of the session. The panel is the
 // complete record: the card header's dhShow gates do not apply here.
 var _panelInfoOpen = false;
-var PI_CHEV_SVG = '<svg class="pi-chev" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>';
+var PI_CHEV_SVG = '<i data-ui-icon="chevron-down" class="pi-chev"></i>';
 function panelInfoHtml(s, open, col) {
   var u = s.tokenUsage || null;
   var ctx = u ? toNum(u.contextUsagePercent) : 0;
@@ -11644,8 +11384,9 @@ var _ioOpen = Object.create(null);
 function ioOpenState(cid) {
   return _ioOpen[cid] || (_ioOpen[cid] = { sys: false, skill: -1 });
 }
-function ioSysToggle(el, cid) {
-  ioOpenState(cid).sys = !!el.open;
+// <ui-disclosure class="io-sys">'s ui-toggle (one listener on the document, initDisclosures): what the reader asked for.
+function ioSysToggle(cid, open) {
+  ioOpenState(cid).sys = !!open;
 }
 function ioSkillToggle(cid, i) {
   var st = ioOpenState(cid);
@@ -11680,10 +11421,10 @@ function ioInstructionHtml(cid, d, turn, info, cp, atts) {
   if (info) {
     var facts = cp ? info.facts.concat(cpFacts(cp)) : info.facts;
     var line = info.kind === 'compact' ? '컨텍스트 압축 (/compact)' : info.line;
-    return '<details class="io-sys"' + (ioOpenState(cid).sys ? ' open' : '') + ' ontoggle="ioSysToggle(this,\\'' + escJs(cid) + '\\')">'
-      + '<summary class="io-sys-row"><span class="sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>'
-      + '<span class="sys-line">' + esc(line) + '</span><span class="sys-chev" aria-hidden="true"></span></summary>'
-      + '<div class="sys-detail">' + sysFactsHtml(facts) + '<div class="sys-raw-h">원본 프롬프트</div><pre class="sys-raw">' + esc(info.raw) + '</pre></div></details>';
+    return '<ui-disclosure class="io-sys" data-cid="' + escAttr(cid) + '"' + (ioOpenState(cid).sys ? ' open' : '') + ' flush>'
+      + '<span slot="summary" class="io-sys-row"><span class="ui-chip sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>'
+      + '<span class="sys-line">' + esc(line) + '</span></span>'
+      + '<div class="sys-detail">' + sysFactsHtml(facts) + '<div class="sys-raw-h">원본 프롬프트</div><pre class="sys-raw">' + esc(info.raw) + '</pre></div></ui-disclosure>';
   }
   var none = atts.length ? '<div class="io-text is-muted">첨부 ' + atts.length + '개</div>' : '<div class="io-text is-muted">기록된 지시 없음</div>';
   if (!turn) return d.instruction && d.instruction.text ? '<div class="io-text">' + esc(d.instruction.text) + '</div>' : none;
@@ -11769,7 +11510,7 @@ function invalidateCardIo(cid) {
 // buttons. Every field the old card face showed is still gated by dhShow().
 // The open card's resume row: when / which attempt, and the full error line
 // the collapsed face clamps to two lines.
-var RESUME_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 4.6V8l2.3 1.5"/></svg>';
+var RESUME_SVG = '<i data-ui-icon="clock"></i>';
 function renderCardResume(s, col) {
   var r = pendingAutoResume(s, col);
   if (!r) return '';
@@ -11787,6 +11528,8 @@ function renderCardResume(s, col) {
 // a write in flight renders busy on both surfaces. In the panel the button is
 // named for what it does to the session, never confused with closing the panel.
 var SESSION_ACTION_ARIA = { stop: '세션 중지', close: '세션 종료', trash: '세션 휴지통으로' };
+// The kit button per action: Stop reads as the danger tone, Trash as a quiet one.
+var SESSION_ACTION_TONE = { stop: ' is-danger', close: '', trash: ' is-quiet' };
 function sessionActionHtml(s, col, where) {
   var running = col === 'working' && !pendingAutoResume(s, col);
   var kind = running ? 'stop' : (col === 'closed' && s.terminated ? 'trash' : 'close');
@@ -11795,7 +11538,7 @@ function sessionActionHtml(s, col, where) {
   var aria = where === 'panel' ? ' aria-label="' + label + ' — ' + SESSION_ACTION_ARIA[kind] + '"' : '';
   var env = s.environment;
   if (SELF_INSTANCE_NAME && env && env.instanceName && env.instanceName !== SELF_INSTANCE_NAME) {
-    return '<button class="btn-action btn-' + kind + '" disabled' + aria
+    return '<button class="ui-btn' + SESSION_ACTION_TONE[kind] + '" data-action="' + kind + '" disabled' + aria
       + ' title="' + escAttr('Open ' + env.instanceName + ' (' + (env.host || '') + ':' + (env.port || '') + ') to act on this session') + '">'
       + label + ' \u2192 ' + esc(env.instanceName) + '</button>';
   }
@@ -11812,16 +11555,16 @@ function sessionActionHtml(s, col, where) {
   var starTip = !isOwner ? READ_ONLY_MSG
     : starred ? '즐겨찾기 해제 — 다시 자동 sleep·보관 대상이 돼요'
     : '즐겨찾기 — 항상 맨 위, 자동 sleep·보관 안 함' + (closed ? ' (지금 살려요)' : '');
-  var starBtn = '<button type="button" class="btn-action btn-star' + (starred ? ' is-on' : '') + '" aria-pressed="' + starred + '"' + lifeOff
+  var starBtn = '<button type="button" class="ui-btn" data-action="star" aria-pressed="' + starred + '"' + lifeOff
     + (lifeBusy ? ' aria-busy="true"' : '') + ' title="' + escAttr(starTip) + '"'
     + ' onclick="event.stopPropagation();doStar(\\'' + escJs(s.key) + '\\',' + !starred + ')">'
     + (starred ? '&#x2605; Starred' : '&#x2606; Star') + '</button>';
   var reviveBtn = closed
-    ? '<button type="button" class="btn-action btn-revive"' + lifeOff + (lifeBusy ? ' aria-busy="true"' : '')
+    ? '<button type="button" class="ui-btn" data-action="revive"' + lifeOff + (lifeBusy ? ' aria-busy="true"' : '')
       + ' title="' + escAttr(isOwner ? '대화를 이어갈 수 있게 세션을 살려요 (작업 폴더 파일은 복구되지 않아요)' : READ_ONLY_MSG) + '"'
       + ' onclick="event.stopPropagation();doRevive(\\'' + escJs(s.key) + '\\')">살리기</button>'
     : '';
-  return starBtn + reviveBtn + '<button class="btn-action btn-' + kind + '"' + (isOwner && !busy ? '' : ' disabled') + (busy ? ' aria-busy="true"' : '') + aria
+  return starBtn + reviveBtn + '<button class="ui-btn' + SESSION_ACTION_TONE[kind] + '" data-action="' + kind + '"' + (isOwner && !busy ? '' : ' disabled') + (busy ? ' aria-busy="true"' : '') + aria
     + (isOwner ? '' : ' title="' + escAttr(READ_ONLY_MSG) + '"')
     + ' onclick="event.stopPropagation();doAction(\\'' + escJs(s.key) + '\\',\\'' + kind + '\\')">' + label + '</button>';
 }
@@ -11843,7 +11586,7 @@ function cardGoalLine(s, col, canEdit) {
       + '<span class="cgl-text is-muted">' + what + '</span>'
       + '<button type="button" class="cgl-go"' + go + '>' + (editable ? 'goal 추가 &rarr;' : '보기 &rarr;') + '</button></div>';
   }
-  var bits = '<span class="cg-status cg-' + escAttr(cur.status) + '">' + esc(GOAL_STATUS_LABELS[cur.status] || cur.status) + '</span>';
+  var bits = '<span class="ui-status cg-status"' + (GOAL_STATUS_TONE[cur.status] ? ' data-tone="' + GOAL_STATUS_TONE[cur.status] + '"' : '') + '>' + esc(GOAL_STATUS_LABELS[cur.status] || cur.status) + '</span>';
   if (cur.status === 'active' && toNum(cur.maxContinuations) > 0) {
     bits += '<span class="cgl-n" title="자동 이어하기 횟수 / 상한">' + toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) + '</span>';
   }
@@ -11947,7 +11690,7 @@ function renderCardBody(s, col) {
   // card, never under a long body. There is no 작업 로그 button: an open card's
   // detail is always beside the board (the detail deck, openPanel).
   const slackBtn = (dhShow('links') && s.slackThreadUrl)
-    ? '<a class="btn-action" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>'
+    ? '<a class="ui-btn" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>'
     : '';
   const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col, 'card') + slackBtn + '</span></div>';
   const footHtml = modelHtml ? '<div class="card-foot-bar">' + modelHtml + '</div>' + modelNote : modelNote;
@@ -12246,8 +11989,9 @@ function repaintPanelControlsFor(key) {
 // goal. Every write names WHERE the goal was seen (current / queued), so a goal
 // that moved in the meantime is refused (409) instead of deleting the wrong one.
 var GOAL_STATUS_LABELS = { active: '진행 중', paused: '일시정지', complete: '완료' };
+var GOAL_STATUS_TONE = { active: 'run', paused: 'wait', complete: 'done' };
 // The goal mark (P7): the 2lab icon set's target glyph, not the bullseye emoji.
-var GOAL_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="5.75"/><circle cx="8" cy="8" r="2.75"/><path d="M8 8h.01"/></svg>';
+var GOAL_SVG = '<i data-ui-icon="target"></i>';
 var GOAL_VIA_LABELS = { user: '직접 완료', 'eval-model': '평가 모델 완료' };
 // SSOT 2026-10-22 T6 — completed goals open from the goal head, per card.
 var _goalHistoryOpen = Object.create(null); // card key → completed goals shown
@@ -12323,7 +12067,7 @@ function renderCardGoal(s, col, canEdit, open) {
   var html = '<div class="card-goal' + (open ? ' is-open' : '') + '">';
   html += '<div class="cg-head"><span class="cg-label">' + GOAL_SVG + 'Goal</span>';
   if (cur) {
-    html += '<span class="cg-status cg-' + escAttr(cur.status) + '">' + esc(GOAL_STATUS_LABELS[cur.status] || cur.status) + '</span>';
+    html += '<span class="ui-status is-pill cg-status"' + (GOAL_STATUS_TONE[cur.status] ? ' data-tone="' + GOAL_STATUS_TONE[cur.status] + '"' : '') + '>' + esc(GOAL_STATUS_LABELS[cur.status] || cur.status) + '</span>';
     if (cur.status === 'active' && toNum(cur.maxContinuations) > 0) {
       html += '<span class="cg-progress" title="자동 이어하기 횟수 / 상한">' + toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) + '</span>';
     }
@@ -12340,7 +12084,7 @@ function renderCardGoal(s, col, canEdit, open) {
   if (cur) {
     var dropLabel = queue.length ? '현재 goal 삭제 · 다음 시작' : '현재 goal 삭제';
     html += '<div class="cg-row" data-mk="' + escAttr('goal:' + cur.goalId) + '"><div class="cg-objective" id="panel-goal-obj" title="' + escAttr(cur.objective) + '">' + esc(cur.objective) + '</div>'
-      + '<button type="button" class="cg-btn cg-danger"' + dis
+      + '<button type="button" class="ui-btn is-sm is-danger"' + dis
       + ' onclick="event.stopPropagation();goalAction(\\'' + key + '\\',{action:\\'delete\\',goalId:\\'' + escJs(cur.goalId) + '\\',expect:\\'current\\'},this)">'
       + dropLabel + '</button></div>';
     // SSOT 2026-10-29 — folded to its first 3 lines until opened; reading, so never disabled.
@@ -12358,7 +12102,7 @@ function renderCardGoal(s, col, canEdit, open) {
     for (var i = 0; i < queue.length; i++) {
       var q = queue[i];
       html += '<li data-mk="' + escAttr('queued:' + q.goalId) + '"><div class="cg-row"><span class="cg-q-text">' + esc(q.objective) + '</span>'
-        + '<button type="button" class="cg-btn cg-danger" title="대기 goal 삭제" aria-label="대기 goal 삭제"' + dis
+        + '<button type="button" class="ui-btn is-sm is-danger" title="대기 goal 삭제" aria-label="대기 goal 삭제"' + dis
         + ' onclick="event.stopPropagation();goalAction(\\'' + key + '\\',{action:\\'delete\\',goalId:\\'' + escJs(q.goalId) + '\\',expect:\\'queued\\'},this)">삭제</button></div></li>';
     }
     html += '</ol>';
@@ -12374,7 +12118,7 @@ function renderCardGoal(s, col, canEdit, open) {
       + '<input class="cg-add-input" name="objective" maxlength="4000" autocomplete="off" aria-label="goal 추가"'
       + ' placeholder="' + (cur && cur.status !== 'complete' ? 'goal 추가 (현재 goal 다음에 시작)' : 'goal 추가 (바로 시작)') + '"'
       + ' onblur="goalInputBlur(\\'' + key + '\\')">'
-      + '<button type="submit" class="cg-btn">추가</button></form>';
+      + '<button type="submit" class="ui-btn is-sm">추가</button></form>';
   }
   if (_goalErrors[s.key]) html += '<div class="cg-error" role="alert">' + esc(_goalErrors[s.key]) + '</div>';
   return html + '</div>';
@@ -12484,16 +12228,15 @@ async function addGoalFromCard(key, form) {
 // Board ↔ List (§3.1-2, §4-4): the element re-lays out the very same cards and
 // glides each card and column head from its old place (translate only). The
 // choice is remembered only when the reader makes it.
+// <ui-segmented id="view-seg"> (D-02): Board | List with the icon set's glyphs.
+var VIEW_OPTIONS = [{ value: 'board', label: '보드', icon: 'board' }, { value: 'list', label: '목록', icon: 'list' }];
 function setBoardView(view, ev) {
   if (view !== 'board' && view !== 'list') return;
   if (ev) {
     try { localStorage.setItem('soma-board-view', view); } catch (_e) {}
   }
-  var segs = document.querySelectorAll('.seg-btn[data-view]');
-  for (var i = 0; i < segs.length; i++) {
-    var pressed = segs[i].getAttribute('data-view') === view ? 'true' : 'false';
-    if (segs[i].getAttribute('aria-pressed') !== pressed) segs[i].setAttribute('aria-pressed', pressed);
-  }
+  var seg = document.getElementById('view-seg');
+  if (seg && (!seg.data || seg.data.value !== view)) seg.data = { label: '보드 보기', value: view, options: VIEW_OPTIONS };
   var kb = document.getElementById('kanban');
   if (!kb || kb.getAttribute('view') === view) return;
   kb.setAttribute('view', view);
@@ -12799,17 +12542,18 @@ function openLifecycleDialog() {
     if (input) input.value = String(form[k]);
   }
   armLifecycleSave(null);
-  dialogKeep(dlg);
   setTextIfChanged(document.getElementById('lifecycle-scope'), SELF_INSTANCE_NAME ? '이 인스턴스(' + SELF_INSTANCE_NAME + ')' : '이 인스턴스');
   setLifecycleStatus(_lifecycle.degraded ? '저장된 정책 파일을 읽을 수 없어 Sleeping/종료 전환을 멈춘 상태입니다. 저장하면 다시 시작합니다.' : '', !!_lifecycle.degraded);
-  if (typeof dlg.showModal === 'function') dlg.showModal();
-  else dlg.setAttribute('open', '');
+  // <ui-dialog> (J-01): show() opens it modal at once (focus trap, Esc / scrim / ✕ close it, focus goes back to the
+  // opener); the first field takes focus as the native dialog gave it.
+  if (typeof dlg.show !== 'function') return;
+  dlg.show();
+  var first = document.getElementById('lc-sleepAfterHours');
+  if (first) first.focus();
 }
 function closeLifecycleDialog() {
   var dlg = document.getElementById('lifecycle-dialog');
-  if (!dlg) return;
-  if (typeof dlg.close === 'function') dialogCloseSoftly(dlg);
-  else dlg.removeAttribute('open');
+  if (dlg && typeof dlg.hide === 'function') dlg.hide();
 }
 // A dialog leaves the way it came (P6): its box and scrim fade out in 180ms (.is-closing), then close() —
 // at once under reduced motion. Opening it again meanwhile keeps it (dialogKeep).
@@ -13321,7 +13065,7 @@ function renderMultiChoicePanel(s) {
     if (sel) {
       // Show selected answer with edit button
       html += '<div class="mc-q-selected">'
-        + '<span class="mc-sel-mark" aria-hidden="true"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 8.5l3 3 6-6.5"/></svg></span>'
+        + '<span class="mc-sel-mark" aria-hidden="true"><i data-ui-icon="check"></i></span>'
         + '<span class="mc-sel-label">' + esc(sel.label) + '</span>'
         + '<button class="mc-q-edit-btn" onclick="event.stopPropagation();editMc(\\'' + escJs(key) + '\\',' + qi + ')">' + STRINGS.mcChange + '</button>'
         + '</div>';
@@ -13362,8 +13106,8 @@ function renderMultiChoicePanel(s) {
   // Action buttons
   var allAnswered = answered === total;
   html += '<div class="mc-actions">';
-  html += '<button class="mc-btn-reset" onclick="event.stopPropagation();resetMultiChoice(\\'' + escJs(key) + '\\')">\\uCD08\\uAE30\\uD654</button>';
-  html += '<button class="mc-btn-submit" onclick="event.stopPropagation();submitMultiChoice(\\'' + escJs(key) + '\\')"' + (allAnswered ? '' : ' disabled') + '>\\uC81C\\uCD9C\\uD558\\uAE30 (' + answered + '/' + total + ')</button>';
+  html += '<button type="button" class="ui-btn" onclick="event.stopPropagation();resetMultiChoice(\\'' + escJs(key) + '\\')">\\uCD08\\uAE30\\uD654</button>';
+  html += '<button type="button" class="ui-btn is-primary mc-btn-submit" onclick="event.stopPropagation();submitMultiChoice(\\'' + escJs(key) + '\\')"' + (allAnswered ? '' : ' disabled') + '>\\uC81C\\uCD9C\\uD558\\uAE30 (' + answered + '/' + total + ')</button>';
   html += '</div>';
 
   html += '</div>';
@@ -13743,7 +13487,7 @@ function renderBarChart(title, days, valueFn, color) {
   const bars = days.map(function(d, i) {
     const h = Math.max(2, (values[i] / max) * 100);
     const label = d.date.slice(5);
-    return '<div class="bar" style="height:' + h + '%;background:' + color + '"><div class="bar-tooltip">' + label + ': ' + values[i] + '</div></div>';
+    return '<ui-tooltip text="' + escAttr(label + ': ' + values[i]) + '"><div class="bar" tabindex="0" style="height:' + h + '%;background:' + color + '"></div></ui-tooltip>';
   }).join('');
   const labels = days.map(function(d) { return '<span>' + d.date.slice(8) + '</span>'; }).join('');
   return '<div class="chart-container"><h4>' + title + '</h4><div class="bar-chart">' + bars + '</div><div class="bar-labels">' + labels + '</div></div>';
@@ -13931,13 +13675,17 @@ function updateTokenBreakdown() {
   // tooltip dark so the topbar stays the same shape it was before #814.
   // Runs on every board render (renderBoard) and stats load — it writes only
   // what changed.
+  // <ui-tooltip id="stat-tokens-tooltip"> (B-04): the page hands it the text; the figure is its trigger, a tab stop
+  // only while there is something to describe.
   var tip = document.getElementById('stat-tokens-tooltip');
+  var fig = document.getElementById('stat-tokens');
   var wrap = document.getElementById('stat-tokens-wrap');
-  if (!tip || !wrap) return;
+  if (!tip || !fig || !wrap) return;
   var envNames = Object.keys(byEnv).filter(function(n) { return n.length > 0; });
   if (envNames.length < 2) {
-    if (tip._html !== '') { tip.textContent = ''; tip._html = ''; }
-    if (wrap.classList.contains('tooltip-open')) wrap.classList.remove('tooltip-open');
+    if (tip.getAttribute('text')) tip.removeAttribute('text');
+    if (!tip.hasAttribute('disabled')) tip.setAttribute('disabled', '');
+    if (fig.hasAttribute('tabindex')) fig.removeAttribute('tabindex');
     if (wrap.hasAttribute('data-has-breakdown')) wrap.removeAttribute('data-has-breakdown');
     return;
   }
@@ -13946,23 +13694,15 @@ function updateTokenBreakdown() {
   var parts = [];
   for (var i = 0; i < envNames.length; i++) {
     var n = envNames[i];
-    parts.push(esc(n) + ': ' + formatTokens(byEnv[n].tokens));
+    parts.push(n + ': ' + formatTokens(byEnv[n].tokens));
   }
   parts.push('Total: ' + formatTokens(totalTokens));
-  var html = '보드 세션 기준 &middot; ' + parts.join(' &middot; ');
-  if (tip._html !== html) { tip.innerHTML = html; tip._html = html; }
+  // Plain text: the element never parses it as HTML.
+  var text = '보드 세션 기준 · ' + parts.join(' · ');
+  if (tip.getAttribute('text') !== text) tip.setAttribute('text', text);
+  if (tip.hasAttribute('disabled')) tip.removeAttribute('disabled');
+  if (fig.getAttribute('tabindex') !== '0') fig.setAttribute('tabindex', '0');
   if (!wrap.hasAttribute('data-has-breakdown')) wrap.setAttribute('data-has-breakdown', 'true');
-  // Mobile (no-hover) tap-toggle wiring — attach once.
-  if (!wrap.hasAttribute('data-tap-bound')) {
-    wrap.setAttribute('data-tap-bound', 'true');
-    wrap.addEventListener('click', function() {
-      // Only toggle on touch-likely devices; on hover-capable devices the
-      // CSS :hover rule already handles it and a click adds noise.
-      if (window.matchMedia('(hover: none)').matches) {
-        wrap.classList.toggle('tooltip-open');
-      }
-    });
-  }
 }
 
 // ── Panel work log (.prd/10 §3.1-7, §3.3) ──
@@ -15108,7 +14848,7 @@ function renderWorkLogEntry(e) {
     var info = sysTurnInfo(wlInstructionTurn(e, text));
     if (info) {
       return '<div class="wl-entry wl-instruction is-sys"' + seqAttr + '>' + rowOpen()
-        + '<div class="wl-head"><span class="sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>'
+        + '<div class="wl-head"><span class="ui-chip sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>'
         + '<span class="wl-sys-line">' + esc(info.kind === 'compact' ? '컨텍스트 압축 (/compact)' : info.line) + '</span>' + timeHtml + '</div>'
         + '</div>' + detailHtml + '</div>';
     }
@@ -15973,8 +15713,8 @@ function sysFactsHtml(facts) {
 // with its own avatar, never the user's name and initial.
 // P7: the 2lab icon set's bot and target glyphs (16 grid, 1.5 stroke, round caps, currentColor) — the
 // answer tile and the goal mark, in place of the robot and bullseye emoji.
-var BOT_AVATAR_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2.75" y="5" width="10.5" height="8.25" rx="2.5"/><path d="M8 5V3M8 2.25h.01M6 8.75v1M10 8.75v1"/></svg>';
-var SYS_AVATAR_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v1.6M8 12.6v1.6M1.8 8h1.6M12.6 8h1.6M3.6 3.6l1.1 1.1M11.3 11.3l1.1 1.1M3.6 12.4l1.1-1.1M11.3 4.7l1.1-1.1"/></svg>';
+var BOT_AVATAR_SVG = '<i data-ui-icon="bot"></i>';
+var SYS_AVATAR_SVG = '<i data-ui-icon="gear"></i>';
 function renderSysTurn(t, info, attrs, time, initial, now, notLast, mediaHtml) {
   var st = info.kind === 'compact' ? cpState(t, now, notLast) : null;
   var live = st && st.phase === 'live';
@@ -15984,11 +15724,11 @@ function renderSysTurn(t, info, attrs, time, initial, now, notLast, mediaHtml) {
   return '<div class="turn user is-sys" data-sys="' + info.kind + '"' + attrs
     + (live ? ' data-cp-live="1" data-cp-start="' + st.start + '" data-cp-est="' + st.est + '"' : '') + '>'
     + '<div class="turn-avatar sys-avatar" aria-hidden="true">' + SYS_AVATAR_SVG + '</div>'
-    + '<div class="turn-body"><details class="sys-turn"><summary class="sys-row"><span class="sys-row-in">'
+    + '<div class="turn-body"><ui-disclosure class="sys-turn" flush><span slot="summary" class="sys-row-in">'
     + '<span class="turn-name sys-name"' + (t.userName ? ' title="' + escAttr('하네스가 보낸 입력 — ' + t.userName + '의 세션') + '"' : '') + '>System</span><span class="turn-time">' + esc(time) + '</span>'
-    + '<span class="sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>' + line
-    + '<span class="sys-chev" aria-hidden="true"></span></span></summary><div class="sys-detail">' + (mediaHtml || '') + sysFactsHtml(facts)
-    + '<div class="sys-raw-h">원본 프롬프트</div><pre class="sys-raw">' + esc(info.raw) + '</pre></div></details></div></div>';
+    + '<span class="ui-chip sys-badge" data-kind="' + info.kind + '">' + esc(info.label) + '</span>' + line
+    + '</span><div class="sys-detail">' + (mediaHtml || '') + sysFactsHtml(facts)
+    + '<div class="sys-raw-h">원본 프롬프트</div><pre class="sys-raw">' + esc(info.raw) + '</pre></div></ui-disclosure></div></div>';
 }
 function cpEnsureTicker() {
   if (_cpTimer || typeof setInterval !== 'function') return;
@@ -16188,7 +15928,7 @@ function renderTurn(t, _idx, _arr, convId) {
     if (t.summaryBody) {
       body = '<div class="turn-summary-body">' + esc(t.summaryBody) + '</div>';
     } else if (t.summarized) {
-      body = '<div class="turn-summary-body" style="color:var(--text-tertiary);font-style:italic">' + STRINGS.summaryFailed + ' <button class="btn-action" style="margin-left:8px;font-size:10px;padding:2px 8px" onclick="event.stopPropagation();resummarize(\\'' + escJs(convId || panelConvId) + '\\',\\'' + escJs(t.id) + '\\',this)">' + STRINGS.retry + '</button></div>';
+      body = '<div class="turn-summary-body" style="color:var(--text-tertiary);font-style:italic">' + STRINGS.summaryFailed + ' <button type="button" class="ui-btn is-sm" style="margin-left:8px" onclick="event.stopPropagation();resummarize(\\'' + escJs(convId || panelConvId) + '\\',\\'' + escJs(t.id) + '\\',this)">' + STRINGS.retry + '</button></div>';
     } else {
       body = '<div class="turn-summary-body" style="color:var(--text-secondary);font-style:italic">' + STRINGS.summaryPending + '</div>';
     }
@@ -16202,9 +15942,9 @@ function renderTurn(t, _idx, _arr, convId) {
     var cid = convId || panelConvId;
     if (t.id && cid) {
       answer = '<div class="turn-answer ui-tok" data-conv="' + esc(cid) + '" data-turn="' + esc(t.id) + '">' + ansSlotHtml('불러오는 중…') + '</div>';
-      raw = '<details class="turn-raw"><summary class="turn-expand-btn">Raw</summary><div class="turn-raw-body">'
+      raw = '<ui-disclosure class="turn-raw" summary="Raw" flush><div class="turn-raw-body">'
         + '<div class="turn-raw-label">요약</div><div class="turn-raw-summary">' + title + body + '</div>'
-        + '<div class="turn-raw-label">원문</div><pre class="turn-raw-src"></pre></div></details>';
+        + '<div class="turn-raw-label">원문</div><pre class="turn-raw-src"></pre></div></ui-disclosure>';
     }
     // SSOT 2026-10-23 T6 — the files and markdown answer this turn produced, under
     // it. decoratePanelTurns() re-files them whenever turns or artifacts change.
@@ -16264,9 +16004,9 @@ function updateTurnInPanel(existingEl, turn) {
     var sysOpen = !!existingEl.querySelector('.sys-turn[open]');
     existingEl.replaceWith(newEl);
     var rawEl = rawOpen ? newEl.querySelector('.turn-raw') : null;
-    if (rawEl) rawEl.open = true;
+    if (rawEl) rawEl.setAttribute('open', '');
     var sysEl = sysOpen ? newEl.querySelector('.sys-turn') : null;
-    if (sysEl) sysEl.open = true;
+    if (sysEl) sysEl.setAttribute('open', '');
     attachRawToggleHandlers();
     decoratePanelTurns();
   } else {
@@ -16647,8 +16387,9 @@ function closePanel() {
 
 document.addEventListener('keydown', function(e) {
   // Escape in the artifact viewer closes the viewer only (the dialog's own cancel).
-  // The cron drawer opens over a docked panel: Escape closes only that, the topmost.
-  if (e.key === 'Escape' && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();
+  // The cron drawer opens over a docked panel: Escape closes only that, the topmost. An element on top that
+  // took the key (the drawer, the defaults menu, a dialog: preventDefault) keeps it from the panel too.
+  if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();
 });
 
 // The panel's own scroll (bound once): a held section landing goes back under
@@ -16916,7 +16657,7 @@ document.addEventListener('ui-collapse', function(e) {
 // numbers, the next-fire queue and 24 hours of runs. Each job's latest run is its board
 // card, in the job's slot (slot="job:<group key>"). "지난 실행" opens a drawer with
 // every kept run of the job.
-var CLOCK_SVG = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 4.8V8l2.2 1.4"/></svg>';
+var CLOCK_SVG = '<i data-ui-icon="clock"></i>';
 var _cronJobs = [];          // GET /api/dashboard/cron — this instance's jobs
 var _cronJobsRev = 0;        // bumped by every jobs fetch (laneSig)
 var _cronPlan = null;        // last planCronLane() result
@@ -17224,9 +16965,9 @@ function renderCronRunRow(run, g, nowMs) {
   if (s && typeof s.costUsd === 'number' && s.costUsd > 0) bits.push(esc('$' + s.costUsd.toFixed(2)));
   if (!s && run.status === 'success' && run.executionPath !== 'dm' && run.executionPath !== 'thread_reply') bits.push(esc('세션 연결 없음'));
   var actions = [];
-  if (s && s.boardKey && _sessionCache[s.boardKey]) actions.push('<button type="button" class="btn-action" data-cron-open="' + escAttr(s.boardKey) + '">작업 로그</button>');
-  if (s && s.conversationId) actions.push('<a class="btn-action" href="/conversations/' + encodeURIComponent(s.conversationId) + '" target="_blank" rel="noopener">대화 기록</a>');
-  if (s && s.slackThreadUrl) actions.push('<a class="btn-action" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>');
+  if (s && s.boardKey && _sessionCache[s.boardKey]) actions.push('<button type="button" class="ui-btn is-sm" data-cron-open="' + escAttr(s.boardKey) + '">작업 로그</button>');
+  if (s && s.conversationId) actions.push('<a class="ui-btn is-sm" href="/conversations/' + encodeURIComponent(s.conversationId) + '" target="_blank" rel="noopener">대화 기록</a>');
+  if (s && s.slackThreadUrl) actions.push('<a class="ui-btn is-sm" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>');
   return '<li class="cron-run is-' + gl.cls + '">'
     + '<span class="cr-glyph" title="' + escAttr(gl.label) + '">' + gl.glyph + '</span>'
     + '<div class="cr-main"><div class="cr-title">' + esc(title) + '</div>'
@@ -17274,40 +17015,48 @@ function openCronDrawer(key) {
   _cronDrawerReturnFocus = { el: el, host: el !== host ? host : null, key: el && el.getAttribute ? el.getAttribute('data-key') : null };
   _cronDrawerKey = key;
   paintCronDrawer();
+  // <ui-drawer mode="sheet"> (C-05): show() opens it modal (focus moves in, the page behind is inert).
   var d = document.getElementById('cron-drawer');
-  d.classList.add('open');
-  d.removeAttribute('inert');
-  d.setAttribute('aria-hidden', 'false');
-  document.getElementById('cron-drawer-overlay').classList.add('open');
-  var close = document.getElementById('cron-drawer-close');
-  if (close) close.focus();
+  if (d && typeof d.show === 'function') d.show();
 }
-function closeCronDrawer() {
+// The sheet is a modal <dialog>: the page stays inert until its exit ends, so focus can land only after that.
+function cronDrawerShut(d) {
+  var dlg = d && d.shadowRoot ? d.shadowRoot.querySelector('dialog') : null;
+  return !dlg || !dlg.open;
+}
+// after() runs once focus is back (opening the run's panel records the lane control as its return target).
+function closeCronDrawer(after) {
   _cronDrawerKey = null;
   var d = document.getElementById('cron-drawer');
-  if (!d) return;
-  d.classList.remove('open');
-  d.setAttribute('inert', '');
-  d.setAttribute('aria-hidden', 'true');
-  document.getElementById('cron-drawer-overlay').classList.remove('open');
+  if (!d) { if (after) after(); return; }
+  if (typeof d.hide === 'function') d.hide();
   var back = _cronDrawerReturnFocus;
   _cronDrawerReturnFocus = null;
-  var to = back && back.el;
-  if (to && !to.isConnected && back.host && back.key && back.host.shadowRoot) {
-    var same = back.host.shadowRoot.querySelectorAll('[data-key]');
-    to = null;
-    for (var i = 0; i < same.length && !to; i++) if (same[i].getAttribute('data-key') === back.key) to = same[i];
-  }
-  if (to && to.isConnected && typeof to.focus === 'function') to.focus();
+  var since = Date.now();
+  (function land() {
+    if (!cronDrawerShut(d) && Date.now() - since < 1000) { requestAnimationFrame(land); return; }
+    // Back to the control that opened it, or its twin a lane render put in its place meanwhile.
+    var to = back && back.el;
+    if (to && !to.isConnected && back.host && back.key && back.host.shadowRoot) {
+      var same = back.host.shadowRoot.querySelectorAll('[data-key]');
+      to = null;
+      for (var i = 0; i < same.length && !to; i++) if (same[i].getAttribute('data-key') === back.key) to = same[i];
+    }
+    if (to && to.isConnected && typeof to.focus === 'function') to.focus();
+    if (after) after();
+  })();
 }
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape' && _cronDrawerKey) closeCronDrawer();
-});
+// Escape, the scrim and ✕ arrive as the element's ui-close; the page closes it itself (closeCronDrawer) so focus
+// returns to the control that opened it even when the lane re-rendered that control meanwhile.
+(function initCronDrawer() {
+  var d = document.getElementById('cron-drawer');
+  if (d) d.addEventListener('ui-close', function(e) { e.preventDefault(); closeCronDrawer(); });
+})();
 document.addEventListener('click', function(e) {
   var t = e.target && e.target.closest ? e.target : null;
   if (!t) return;
   var open = t.closest('[data-cron-open]');
-  if (open) { var k = open.getAttribute('data-cron-open'); closeCronDrawer(); openPanel(k); }
+  if (open) { var k = open.getAttribute('data-cron-open'); closeCronDrawer(function() { openPanel(k); }); }
 });
 // The lane's next-fire chip, a job's 지난 실행 or its run strip (<ui-agent-queue> ui-job-open):
 // the job's id is its group key.
@@ -17507,7 +17256,7 @@ async function loadCapacity() {
 // Every render function here is pure; the DOM work sits in the functions after
 // renderArtModalBody and in initArtifactInteractions.
 var ART_KIND_LABEL = { image: '이미지', audio: '오디오', video: '비디오', html: 'HTML', markdown: '답변', pdf: 'PDF', text: '텍스트', file: '파일' };
-var ART_GLYPH = { image: '<rect x="2" y="3" width="12" height="10" rx="1.5"/><circle cx="6" cy="6.5" r="1.2"/><path d="M14 11l-3.5-3.5L4 13"/>', audio: '<path d="M2.5 7.5v1M5 5.5v5M7.5 3v10M10 5v6M12.5 6.5v3"/>', video: '<rect x="2" y="4" width="9" height="8" rx="1.5"/><path d="M11 7l3-2v6l-3-2z"/>', html: '<path d="M5.5 5L2.5 8l3 3M10.5 5l3 3-3 3M9 3.5l-2 9"/>', markdown: '<path d="M4 2h5l3 3v9H4z"/><path d="M6 8h4M6 10.5h4M6 5.5h1.5"/>', pdf: '<path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3M6 10h4"/>', text: '<path d="M3 4h10M3 7h10M3 10h7M3 13h5"/>', file: '<path d="M4 2h5l3 3v9H4z"/><path d="M9 2v3h3"/>' };
+var ART_GLYPH = { image: '<i data-ui-icon="file-image" class="art-glyph"></i>', audio: '<i data-ui-icon="file-audio" class="art-glyph"></i>', video: '<i data-ui-icon="file-video" class="art-glyph"></i>', html: '<i data-ui-icon="file-code" class="art-glyph"></i>', markdown: '<i data-ui-icon="file-text" class="art-glyph"></i>', pdf: '<i data-ui-icon="file-text" class="art-glyph"></i>', text: '<i data-ui-icon="file-text" class="art-glyph"></i>', file: '<i data-ui-icon="file" class="art-glyph"></i>' };
 var ART_PEEK_DELAY_MS = 350; // hover intent before the minimap opens (300–500 ms keeps a sweep across chips quiet)
 var ART_PEEK_CLOSE_MS = 200; // grace to move the pointer into the minimap (WCAG 1.4.13: hoverable)
 var _artCache = Object.create(null); // conversationId → { state: 'loading'|'ok'|'error', list, promise }
@@ -17643,10 +17392,10 @@ function umMissingReason(a) {
 function renderPanelUserMedia(list, cid, open) {
   if (!cid || !list || !list.length) return '';
   var head = '<button type="button" class="panel-um-head" aria-expanded="' + (open ? 'true' : 'false') + '" aria-controls="panel-um-body" onclick="togglePanelUserMedia()">'
-    + '<svg class="art-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13.5 7.5l-5.4 5.4a3.2 3.2 0 0 1-4.5-4.5l5.6-5.6a2.1 2.1 0 0 1 3 3L6.6 11.4a1.1 1.1 0 0 1-1.5-1.5L10.2 4.8"/></svg>'
+    + '<i data-ui-icon="attach" class="art-glyph"></i>'
     + '<span>지시 첨부</span><span class="art-count">' + list.length + '</span>'
     + '<span class="panel-arts-hint">유저가 지시와 함께 보낸 파일</span>'
-    + '<svg class="um-chevron" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>'
+    + '<i data-ui-icon="chevron-down" class="um-chevron"></i>'
     + '</button>';
   return head + (open ? '<div class="panel-um-body" id="panel-um-body">' + renderUserMedia(cid, list, { compact: true }) + '</div>' : '');
 }
@@ -17696,7 +17445,7 @@ function artKindLabel(a) {
 }
 
 function artGlyph(kind) {
-  return '<svg class="art-glyph" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' + (ART_GLYPH[kind] || ART_GLYPH.file) + '</svg>';
+  return ART_GLYPH[kind] || ART_GLYPH.file;
 }
 
 // "HTML · 47 KB · 14:23" — and says so when only Slack has the bytes.
@@ -17838,7 +17587,7 @@ function renderArtModalBody(cid, a) {
   var url = escAttr(artUrl(cid, a.id));
   var title = escAttr(a.name);
   if (!a.stored) {
-    var link = /^https:\\/\\//i.test(String(a.permalink || '')) ? '<a class="btn-action btn-primary" href="' + escAttr(a.permalink) + '" target="_blank" rel="noopener">Slack에서 열기</a>' : '';
+    var link = /^https:\\/\\//i.test(String(a.permalink || '')) ? '<a class="ui-btn is-primary" href="' + escAttr(a.permalink) + '" target="_blank" rel="noopener">Slack에서 열기</a>' : '';
     return '<div class="art-full-meta">' + artGlyph(a.kind) + '<div class="art-full-meta-name">' + esc(a.name) + '</div>'
       + '<div class="art-full-meta-sub">' + esc(artMeta(a)) + '</div>'
       + '<p>' + (a.source === 'user_upload' ? umMissingReason(a) : '이 파일은 대시보드에 사본이 없습니다 (100 MB 초과이거나 업로드 전에 지워졌습니다).') + '</p>' + link + '</div>';
@@ -17854,7 +17603,7 @@ function renderArtModalBody(cid, a) {
   }
   return '<div class="art-full-meta">' + artGlyph(a.kind) + '<div class="art-full-meta-name">' + esc(a.name) + '</div>'
     + '<div class="art-full-meta-sub">' + esc(artMeta(a)) + '</div>'
-    + '<a class="btn-action btn-primary" href="' + escAttr(artUrl(cid, a.id, true)) + '">다운로드</a></div>';
+    + '<a class="ui-btn is-primary" href="' + escAttr(artUrl(cid, a.id, true)) + '">다운로드</a></div>';
 }
 
 // Inline marks on one line: escape first, then code spans, links (http(s) only),
@@ -18373,6 +18122,61 @@ function artHandleKey(e) {
   // The secondary sections' disclosure state, before the first board render.
   applySectionState();
 })();
+// The two <ui-segmented> controls (B-02 period, D-02 Board | List): a reader's choice arrives as
+// ui-change — the element has already moved its chip; the page follows through.
+(function initSegmented() {
+  var viewSeg = document.getElementById('view-seg');
+  if (viewSeg) viewSeg.addEventListener('ui-change', function(e) { setBoardView(e.detail.value, e); });
+  paintPeriodSeg();
+  var periodSeg = document.getElementById('period-seg');
+  if (periodSeg) periodSeg.addEventListener('ui-change', function(e) { setPeriod(e.detail.value); });
+})();
+// <ui-disclosure> (K-06): Raw, a system turn and a card's system instruction open and close by
+// themselves; the page only keeps a card's choice across its morph re-render (_ioOpen).
+// <ui-tooltip> (B-04, B-08) never opens on touch — there is no hover to end it. The breakdown and the chart values
+// exist nowhere else, so on this page a tap on a tooltip's trigger toggles it (the element's show() / hide()); a tap
+// anywhere else closes it, as do the element's own Esc, focus-out and scroll-away rules.
+var _tapTip = null;
+(function initTooltipTap() {
+  var pressed = null;
+  document.addEventListener('pointerdown', function(e) {
+    pressed = null;
+    if (e.pointerType !== 'touch') return;
+    var tip = e.target && e.target.closest ? e.target.closest('ui-tooltip') : null;
+    if (_tapTip && _tapTip !== tip) { _tapTip.hide(); _tapTip = null; }
+    if (tip) pressed = { tip: tip, open: _tapTip === tip };
+  }, true);
+  document.addEventListener('click', function(e) {
+    var p = pressed;
+    pressed = null;
+    if (!p || !p.tip.contains(e.target) || p.tip.hasAttribute('disabled')) return;
+    if (p.open) { p.tip.hide(); _tapTip = null; } else { p.tip.show(); _tapTip = p.tip.open ? p.tip : null; }
+  });
+})();
+// @2lab.ai/ui 0.5.0 toggles a <ui-disclosure> only when the click's target is inside its own head, and a click on
+// slotted summary content (a System row's words and badge, a card's instruction line) keeps the light-DOM span as
+// its target — so it did nothing (D1-GAPS G4-4). The page toggles it then, with the element's toggle() (its
+// cancelable ui-toggle, its motion) — unless the element already toggled itself in that click (a fixed release).
+// Pure: the disclosure whose slotted summary a click target sits in, or null.
+function dcSummaryHost(t) {
+  var s = t && t.closest ? t.closest('[slot="summary"]') : null;
+  var d = s ? s.parentElement : null;
+  return d && d.tagName === 'UI-DISCLOSURE' ? d : null;
+}
+(function initDisclosures() {
+  var pending = null; // the disclosure a click on its summary content is passing through
+  document.addEventListener('click', function(e) { pending = dcSummaryHost(e.target); }, true);
+  document.addEventListener('ui-toggle', function(e) {
+    var t = e.target;
+    if (t === pending) pending = null;
+    if (t && t.classList && t.classList.contains('io-sys')) ioSysToggle(t.getAttribute('data-cid') || '', e.detail && e.detail.open);
+  });
+  document.addEventListener('click', function() {
+    var d = pending;
+    pending = null;
+    if (d && d.isConnected && typeof d.toggle === 'function') d.toggle();
+  });
+})();
 // Spec 12 §4.3 — the panel's agent section: a path step drills into that node
 // (a subtree row is <ui-agent-tree>'s ui-select).
 (function initPanelAgentInteractions() {
@@ -18397,8 +18201,8 @@ function artHandleKey(e) {
 // WebSocket like any other session.
 var NT_DRAFT_KEY = 'soma-nt-draft';
 var NT_MAX_RECORD_SEC = 600;
-var NT_ICON_X = '<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 4l8 8M12 4l-8 8"/></svg>';
-var NT_ICON_FILE = '<svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M5 2.5h6.5L15 6v11.5H5z"/><path d="M11.5 2.5V6H15"/></svg>';
+var NT_ICON_X = '<i data-ui-icon="close"></i>';
+var NT_ICON_FILE = '<i data-ui-icon="file"></i>';
 var NT_ICON_PLAY = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5 3.5v9l7.5-4.5z"/></svg>';
 var NT_ICON_PAUSE = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.5 3.5h2.5v9H4.5zM9 3.5h2.5v9H9z"/></svg>';
 var _ntCtx = null;
@@ -19629,5 +19433,5 @@ document.addEventListener('visibilitychange', function() {
 })();
 </script>
 </body>
-</html>`;
+</html>`);
 }

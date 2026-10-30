@@ -147,3 +147,54 @@ describe('deploy-qa preflight and reduced mode', () => {
     expect(md).toMatch(/slack-mcp `send_file` \/ `send_media`\) is a valid `report` method/);
   });
 });
+
+/**
+ * Precondition gate across the whole run (2026-10-30 stage0 qa=max: 49 of 69
+ * non-pass cases were preconditions found only while running). deploy-qa plans
+ * every key first, asks the requester one question, and runs nothing before the
+ * answer — holding no lock while it waits.
+ */
+describe('deploy-qa precondition gate (step 5.5)', () => {
+  const md = read('deploy-qa');
+  const steps = md.slice(md.indexOf('## Steps'), md.indexOf('## Final report'));
+  const gate = steps.slice(steps.indexOf('5.5. **Precondition gate.**'), steps.indexOf('6. **Move to QA.**'));
+
+  it('sits between admission and the first tracker write', () => {
+    expect(steps.indexOf('5. **Admission.**')).toBeGreaterThan(-1);
+    expect(steps.indexOf('5.5. **Precondition gate.**')).toBeGreaterThan(steps.indexOf('5. **Admission.**'));
+    expect(steps.indexOf('6. **Move to QA.**')).toBeGreaterThan(steps.indexOf('5.5. **Precondition gate.**'));
+  });
+
+  it('plans every target key with qa-issue --plan and merges one run gate', () => {
+    expect(gate).toMatch(/`\$local:qa-issue <KEY> qa=max env=<profile skill> --plan[^`]*`/);
+    expect(gate).toContain('`<lockDir>/gates/<owner/repo with / → ->-<after7>-<startTime>.json`');
+    expect(gate).toContain('gate.mjs" merge');
+    expect(gate).toContain('one question for the whole run');
+  });
+
+  it('releases the lock before asking and ends waiting, not failed', () => {
+    expect(gate).toContain('release the lock only if it is mine, then ask');
+    expect(gate).toContain('`deployed, QA incomplete: waiting for precondition confirmation`');
+    expect(gate).toContain('No case runs and no tracker write happens before the answer');
+    expect(gate).toContain('creates no scheduler, cron job, or listener');
+  });
+
+  it('resumes only with decisions= and re-asks for anything unanswered or changed', () => {
+    const args = md.slice(md.indexOf('## Args'), md.indexOf('## Profile'));
+    expect(args).toContain('`decisions=<gate file>`');
+    expect(gate).toContain('gate.mjs" decide');
+    expect(gate).toContain('--carry');
+    expect(md).toMatch(
+      /`\$local:qa-issue <KEY> qa=max env=<profile skill> transition=done mergeShas=[^`]*decisions=<gate file>[^`]*`/,
+    );
+  });
+
+  it('maps a skipped key to deferred and lists the gate first in the report input', () => {
+    expect(md).toContain('`deferred`, reason `precondition-skipped by <who>`');
+    expect(steps).toContain('`preconditions`');
+  });
+
+  it('preflight checks the bundled gate script', () => {
+    expect(md).toContain('`…/qa-issue/scripts/gate.mjs`');
+  });
+});
