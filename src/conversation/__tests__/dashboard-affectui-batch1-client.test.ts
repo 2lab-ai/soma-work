@@ -381,7 +381,7 @@ describe('<ui-compact-breakdown> — where the usage goes: by model for everyone
       formatTokens: String,
     };
     const m = load<{ paintUsage(r: unknown): void; paintUsageBreakdown(): void }>(
-      ['toNum', 'usageBreakdownData', 'paintUsageBreakdown', 'paintUsage'],
+      ['toNum', 'fmtUsd', 'usageBreakdownData', 'paintUsageBreakdown', 'paintUsage'],
       ['_usageView', '_usageReport', 'USAGE_VIEWS'],
       env,
       [clientListener('ui-change')],
