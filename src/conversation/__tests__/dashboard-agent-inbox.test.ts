@@ -441,7 +441,7 @@ describe('agent inbox board — deep link (§3.1-8)', () => {
     const deadline = body.indexOf('Date.now() > _deepLinkDeadline');
     expect(deadline).toBeGreaterThan(-1);
     expect(deadline).toBeLessThan(body.indexOf('resolveDeepLinkKey('));
-    expect(fnBody('renderBoard')).toContain('openDeepLinkedSession()');
+    expect(fnBody('renderBoard')).toContain('openDeepLinkedSession(partial)');
   });
 
   // Execute the shipped client function itself. It must stay free of
