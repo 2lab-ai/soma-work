@@ -213,6 +213,13 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
       'function ntRenderFiles(',
       'function ntToggleRecording(',
       'function ntAutosize(',
+      // D4 E-30: the panel composer is a <ui-composer> too — the helpers the two shared went with it.
+      'function ntPickRecorderMime(',
+      'function ntExtForMime(',
+      'function ntFormatBytes(',
+      'function ntFormatDuration(',
+      'function ntStamp(',
+      'function ntKindOf(',
     ]) {
       expect(script, gone).not.toContain(gone);
     }
@@ -417,31 +424,6 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
   });
 });
 
-describe('voice recording helpers — T11', () => {
-  const { ntPickRecorderMime, ntExtForMime } = load<{
-    ntPickRecorderMime(isSupported: (t: string) => boolean): string;
-    ntExtForMime(m: string): string;
-  }>(['ntPickRecorderMime', 'ntExtForMime']);
-
-  it('iOS Safari records AAC in MP4; Chrome / Android record Opus in WebM', () => {
-    expect(ntPickRecorderMime((t) => t === 'audio/mp4')).toBe('audio/mp4');
-    expect(ntPickRecorderMime((t) => t.startsWith('audio/webm'))).toBe('audio/webm;codecs=opus');
-    expect(ntPickRecorderMime(() => false)).toBe('');
-  });
-
-  it('names the file after its container', () => {
-    expect(ntExtForMime('audio/mp4')).toBe('m4a');
-    expect(ntExtForMime('audio/webm;codecs=opus')).toBe('webm');
-    expect(ntExtForMime('audio/ogg;codecs=opus')).toBe('ogg');
-    expect(ntExtForMime('application/x-unknown')).toBe('bin');
-  });
-});
-
-describe('ntFormatBytes', () => {
-  const { ntFormatBytes } = load<{ ntFormatBytes(n: number): string }>(['ntFormatBytes']);
-  it('formats sizes for the attachment chips', () => {
-    expect(ntFormatBytes(512)).toBe('512 B');
-    expect(ntFormatBytes(2048)).toBe('2 KB');
-    expect(ntFormatBytes(3.5 * 1024 * 1024)).toBe('3.5 MB');
-  });
-});
+// T11 voice recording (the recorder's MIME pick — MP4/AAC first for iOS Safari, then Ogg, WebM last — the note's
+// name after its container, the chip sizes) is <ui-composer>'s: library composer.test.ts 'composerRecorderMime: MP4
+// first, then Ogg, then WebM; a throwing check means no' and 'Done files a voice-….m4a note'.

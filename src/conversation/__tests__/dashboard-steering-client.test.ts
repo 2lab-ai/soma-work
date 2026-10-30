@@ -64,7 +64,7 @@ const item = (over: Record<string, unknown> = {}) => ({
 });
 
 describe('steeringData — the session payload as the element’s data', () => {
-  const data = load<{ steeringData(s: unknown, mode: string, files: number): Record<string, any> }>(
+  const data = load<{ steeringData(s: unknown, mode: string): Record<string, any> }>(
     ['steeringData'],
     ['STEER_STATE'],
   ).steeringData;
@@ -89,7 +89,7 @@ describe('steeringData — the session payload as the element’s data', () => {
         items: [...states.map((st, i) => item({ id: `k#${i}`, state: st })), item({ id: '' })],
       },
     };
-    expect(data(s, 'open', 0).items.map((it: { id: string; state: string }) => [it.id, it.state])).toEqual([
+    expect(data(s, 'open').items.map((it: { id: string; state: string }) => [it.id, it.state])).toEqual([
       ['k#0', 'queued'],
       ['k#1', 'queued'], // paused: Send now runs it
       ['k#2', 'steered'],
@@ -112,7 +112,7 @@ describe('steeringData — the session payload as the element’s data', () => {
         ],
       },
     };
-    expect(data(s, 'open', 0).items).toEqual([
+    expect(data(s, 'open').items).toEqual([
       { id: `${KEY}#1`, text: 'also check the logs', state: 'queued', canEdit: true, at: 1_700_000_000_000 },
       {
         id: 'k#2',
@@ -127,13 +127,14 @@ describe('steeringData — the session payload as the element’s data', () => {
     ]);
   });
 
-  it('running while a turn works (and not ended); canAct for the owner only; disabled once ended; the held files', () => {
+  it('running while a turn works (and not ended); canAct for the owner only; disabled once ended; no held files', () => {
     const s = { activityState: 'working' };
-    expect(data(s, 'open', 2)).toEqual({ running: true, canAct: true, disabled: false, items: [], attachments: 2 });
-    expect(data({ activityState: 'idle' }, 'open', 0)).toMatchObject({ running: false });
+    // D4 E-30: the files of the next note are the slotted <ui-composer>'s — the page holds none (no attachments).
+    expect(data(s, 'open')).toEqual({ running: true, canAct: true, disabled: false, items: [] });
+    expect(data({ activityState: 'idle' }, 'open')).toMatchObject({ running: false });
     // Someone else's session: the queue shows, nothing can be done (the element: read-only placeholder, no buttons).
-    expect(data(s, 'readonly', 0)).toMatchObject({ canAct: false, disabled: false });
-    expect(data(s, 'closed', 0)).toMatchObject({ running: false, canAct: true, disabled: true });
+    expect(data(s, 'readonly')).toMatchObject({ canAct: false, disabled: false });
+    expect(data(s, 'closed')).toMatchObject({ running: false, canAct: true, disabled: true });
   });
 });
 
@@ -147,14 +148,27 @@ describe('pcInit — the element’s events reach the page’s handlers on #pane
     };
     const acts: unknown[][] = [];
     const submits: unknown[] = [];
-    load<{ pcInit(): void }>(['pcInit'], [], {
-      document: { getElementById: (id: string) => (id === 'panel-command' ? host : null) },
+    // The slotted composer gets the panel's limits; a cancelled note forgets the files kept for its Retry.
+    const composer: { data: Record<string, unknown> } = { data: { lang: 'ko' } };
+    const noteFiles: Record<string, unknown> = { 'k#2': ['a.png'], 'k#9': ['b.png'] };
+    load<{ pcInit(): void }>(['pcComposerData', 'pcComposerSetup', 'pcInit'], ['PC_LIMITS'], {
+      document: {
+        getElementById: (id: string) => (id === 'panel-command' ? host : id === 'pc-composer' ? composer : null),
+      },
       steerAct: (...a: unknown[]) => acts.push(a),
       pcOnSubmit: (e: unknown) => submits.push(e),
-      pcAddFiles: () => {},
-      pcAddBlob: () => {},
-      ntStamp: () => '',
+      _pcNoteFiles: noteFiles,
     }).pcInit();
+    expect(composer.data).toEqual({
+      lang: 'ko',
+      maxFiles: 10,
+      maxFileSize: 20971520,
+      maxTotalBytes: 31457280,
+      minRows: 1,
+      maxRows: 8,
+    });
+    // No paste / drag / drop of the page's own: the composer takes them.
+    expect(Object.keys(listeners).sort()).toEqual(['ui-cancel', 'ui-edit', 'ui-promote', 'ui-submit']);
     listeners['ui-promote']({ detail: { id: 'k#1' } });
     listeners['ui-cancel']({ detail: { id: 'k#2' } });
     listeners['ui-edit']({ detail: { id: 'k#3', text: '고친 내용' } });
@@ -164,6 +178,7 @@ describe('pcInit — the element’s events reach the page’s handlers on #pane
       ['cancel', 'k#2'],
       ['edit', 'k#3', '고친 내용'],
     ]);
+    expect(noteFiles).toEqual({ 'k#9': ['b.png'] });
     const e = { detail: { text: 'go', mode: 'queue', ref: 'r1' } };
     listeners['ui-submit'](e);
     expect(submits).toEqual([e]);
@@ -180,8 +195,9 @@ describe('pcInit — the element’s events reach the page’s handlers on #pane
         _pcSending: env.sending,
         sendCommand: (...a: unknown[]) => sent.push(a),
       }).pcOnSubmit;
-    const ev = () => ({
-      detail: { text: 'go on', mode: 'steer', ref: 'r1' },
+    const file = { name: 'shot.png' };
+    const ev = (files?: unknown[]) => ({
+      detail: { text: 'go on', mode: 'steer', ref: 'r1', ...(files ? { files } : {}) },
       prevented: false,
       preventDefault() {
         this.prevented = true;
@@ -189,8 +205,13 @@ describe('pcInit — the element’s events reach the page’s handlers on #pane
     });
     const a = ev();
     make()(a);
-    expect(sent).toEqual([['go on', 'r1']]);
+    expect(sent).toEqual([['go on', 'r1', []]]);
     expect(a.prevented).toBe(false);
+    // The slotted composer's files ride along (D4 E-30).
+    const f = ev([file]);
+    make()(f);
+    expect(sent[1]).toEqual(['go on', 'r1', [file]]);
+    sent.length = 1;
     host._mode = 'closed';
     const b = ev();
     make()(b);
@@ -305,15 +326,31 @@ describe('steerAct — Send now / Cancel / Edit → the queue route; a refusal r
 });
 
 describe('the page loads <ui-agent-steering> from the dashboard origin', () => {
-  it('a module script next to the batch-1 elements; the composer is the element, with the page’s tools slotted', () => {
+  it('a module script next to the batch-1 elements; the field is a <ui-composer slot="composer"> (D4 E-30)', () => {
     expect(HEAD).toContain('<script type="module" src="/dashboard/ui/agent-steering.js?v=${UI_LIB_VERSION}"></script>');
+    expect(HEAD).toContain('<script type="module" src="/dashboard/ui/composer.js?v=${UI_LIB_VERSION}"></script>');
     const page = TEMPLATE.slice(TEMPLATE.indexOf('<div class="panel-command" id="panel-command">'));
-    const steer = page.slice(page.indexOf('<ui-agent-steering'), page.indexOf('</ui-agent-steering>'));
-    expect(steer).toContain('<ui-agent-steering id="cmd-steer" lang="ko">');
-    expect(steer).toContain('<div slot="attachments" class="pc-top">');
-    expect(steer).toContain('<span slot="tools" class="pc-tools">');
-    for (const id of ['pc-attach', 'pc-image', 'pc-mic', 'pc-attachments', 'pc-recorder'])
-      expect(steer).toContain(`id="${id}"`);
+    const steer = page.slice(page.indexOf('<ui-agent-steering id='), page.indexOf('</ui-agent-steering>'));
+    expect(steer).toBe(
+      '<ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"></ui-composer>',
+    );
+    // The page's own tools, chips, recorder and error line are gone with their code.
+    for (const id of ['pc-attach', 'pc-image', 'pc-mic', 'pc-attachments', 'pc-recorder', 'pc-error', 'pc-file-input'])
+      expect(TEMPLATE, id).not.toContain(`id="${id}"`);
+    for (const gone of [
+      'pcAddFiles',
+      'pcAddBlob',
+      'pcRemoveFile',
+      'pcRenderFiles',
+      'pcToggleRecording',
+      'pcStopRecording',
+      'pcFinishRecording',
+      'pcHeldFiles',
+      'pcSetError',
+      'ntPickRecorderMime',
+      'ntStamp',
+    ])
+      expect(declarationCount(gone), gone).toBe(0);
   });
 
   it('the installed @2lab.ai/ui carries agent-steering.js and its chunks (flat names the route serves)', () => {

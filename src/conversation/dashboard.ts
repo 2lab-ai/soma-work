@@ -5401,17 +5401,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   background: var(--surface);
   flex-shrink: 0;
 }
-/* The composer is <ui-agent-steering> (batch 2): its field, Send, queue and key
-   hints are the element's; these are the page's slotted tools and chips. A file
-   dragged over the composer outlines it. */
+/* The composer is <ui-agent-steering> (batch 2) with a <ui-composer slot="composer"> as its field (E-30): the
+   field, tools, chips, recorder, drop outline, Send, queue and key hints are the elements'. */
 .pc-steer-wrap { display: block; min-width: 0; border-radius: 12px; }
-.panel-command.is-drag .pc-steer-wrap { outline: 2px dashed var(--accent); outline-offset: 2px; }
-.pc-tools { display: flex; align-items: center; gap: 2px; flex: none; }
-.pc-tool-mic[aria-pressed="true"] { color: var(--st-fail); }
-.pc-attachments { display: flex; gap: 8px; overflow-x: auto; padding: 0 0 8px; }
-.pc-attachments:empty { display: none; }
-.pc-recorder { margin: 0 0 8px; }
-.pc-error { margin: 0 0 6px; font-size: 12px; color: var(--st-fail); }
 
 
 /* ── PRESS — buttons and segments give 0.97 feedback (§4-5), pointer presses only:
@@ -5419,7 +5411,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* PRESS — one rule for every button-like control: scale(.97) on --dur-press ease-out (each control's own
    transition carries the transform), pointer presses only — never a keyboard press (:focus-visible). The
    56px FAB presses to .95. */
-:is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+:is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
@@ -5474,7 +5466,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   /* Loading skeletons hold still. */
@@ -5692,24 +5684,6 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-toggle-note { font-size: 11px; font-weight: 500; color: var(--text-tertiary); }
 
 
-.nt-att { position: relative; flex: none; display: flex; align-items: center; gap: 8px; height: 58px; max-width: 230px; padding: 0 32px 0 6px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); scroll-snap-align: start; animation: nt-att-in 240ms var(--ease-out) both; }
-.nt-att-thumb { display: grid; place-items: center; flex: none; width: 44px; height: 44px; border-radius: 8px; background: var(--bg); color: var(--text-secondary); object-fit: cover; overflow: hidden; }
-.nt-att-thumb svg { width: 20px; height: 20px; }
-.nt-att-text { display: flex; flex-direction: column; min-width: 0; }
-.nt-att-name { font-size: 12px; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.nt-att-meta { font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
-.nt-att-remove { position: absolute; top: 4px; right: 4px; display: grid; place-items: center; width: 22px; height: 22px; border: 0; border-radius: 50%; background: var(--media-scrim); color: var(--on-media); cursor: pointer; }
-.nt-att-remove svg { width: 10px; height: 10px; }
-.nt-att-play { display: grid; place-items: center; width: 44px; height: 44px; border: 0; border-radius: 8px; background: var(--bg); color: var(--text); cursor: pointer; flex: none; }
-.nt-att-play svg { width: 18px; height: 18px; }
-
-.nt-recorder { display: flex; align-items: center; gap: 10px; padding: 8px 8px 8px 12px; border: 1px solid var(--tint-fail-line); border-radius: 12px; background: var(--tint-fail-bg); font-size: 13px; font-weight: 650; font-variant-numeric: tabular-nums; }
-.nt-recorder[hidden] { display: none; }
-.nt-rec-dot { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--red); animation: nt-rec 1.2s ease-in-out infinite; }
-.nt-rec-meter { flex: 1; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; }
-.nt-rec-level { display: block; width: 0; height: 100%; border-radius: 3px; background: var(--red); transition: width 80ms linear; }
-.nt-rec-btn { height: 32px; padding: 0 12px; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text); font: inherit; font-size: 12px; font-weight: 600; cursor: pointer; transition: transform var(--dur-press) var(--ease-out); }
-.nt-rec-btn.is-primary { border-color: transparent; background: var(--red); color: var(--surface); }
 .nt-error { margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--tint-fail-bg); color: var(--tint-fail-fg); font-size: 12.5px; }
 .nt-error[hidden] { display: none; }
 .nt-empty { margin: 0; color: var(--text-secondary); font-size: 12.5px; }
@@ -5722,8 +5696,6 @@ body.nt-open .new-task-fab { display: none !important; }
 
 /* The FAB arrives: opacity + scale from 0.95 (never from nothing), 240ms ease-out — once. */
 @keyframes nt-fab-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: none; } }
-@keyframes nt-att-in { from { opacity: 0; transform: scale(0.9); } to { opacity: 1; transform: none; } }
-@keyframes nt-rec { 50% { opacity: 0.35; transform: scale(0.8); } }
 @keyframes nt-blink { 50% { opacity: 0.45; } }
 @keyframes nt-spin { to { rotate: 360deg; } }
 
@@ -5758,17 +5730,16 @@ body.nt-open .new-task-fab { display: none !important; }
   .nt-submit-hint, .nt-head-hint { display: none; }
 }
 @media (pointer: coarse) {
-  /* New task — touch: 44px targets, 16px text (iOS does not zoom into it),
-     and the camera button (capture="environment" opens the camera directly). */
-  .nt-battery-btn, .nt-toggle, .nt-chip, .nt-rec-btn { min-height: 44px; min-width: 44px; }
-  .nt-att-remove { width: 28px; height: 28px; }
+  /* New task — touch: 44px targets, 16px text (iOS does not zoom into it). The composer's own tools, chips and
+     camera are 44px on touch by its rules. */
+  .nt-battery-btn, .nt-toggle, .nt-chip { min-height: 44px; min-width: 44px; }
   .nt-chip select { font-size: 16px; }
   .nt-kbd, .nt-submit-hint, .nt-head-hint { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   /* New task — no arrival, slide or scale; changes are instant. */
-  .new-task-btn, .new-task-fab, .nt-dialog, .nt-att,
-  .nt-rec-dot, .nt-battery-fill, .nt-fab-label, .nt-fab-icon { animation: none !important; transition: none !important; }
+  .new-task-btn, .new-task-fab, .nt-dialog,
+  .nt-battery-fill, .nt-fab-label, .nt-fab-icon { animation: none !important; transition: none !important; }
 }
 /* ── Session artifacts (SSOT 2026-10-23): face chips, strips, minimap, viewer ── */
 .art-glyph { width: 14px; height: 14px; flex-shrink: 0; }
@@ -6213,25 +6184,13 @@ ${pageTokenAliases()}
     <div class="panel-command" id="panel-command">
       <!-- Model · effort beside the composer (spec 13): their own container — the input is never morphed. -->
       <div class="panel-controls" id="panel-controls" aria-label="이 세션의 모델과 effort"></div>
-      <!-- The composer and the session's follow-up queue — @2lab.ai/ui <ui-agent-steering> (dashboard batch 2):
-           multiline; images by paste, drop or picker; files; voice. Its slots hold this page's tools and file chips.
-           The token wrapper (.ui-tok) hands it the dashboard tokens; renderPanelComposer gives it its data. -->
+      <!-- The composer and the session's follow-up queue — @2lab.ai/ui <ui-agent-steering> (dashboard batch 2) with
+           a <ui-composer slot="composer"> as its field (E-30, 0.10.0): multiline; files, images (paste, drop, picker)
+           and voice, their chips, the limits and the error line are the composer's; Enter queues, ⌘/Ctrl+Enter
+           steers. The token wrapper (.ui-tok) hands them the dashboard tokens; renderPanelComposer gives the
+           steering its data, pcComposerData the composer its limits. -->
       <div class="ui-tok pc-steer-wrap">
-        <ui-agent-steering id="cmd-steer" lang="ko">
-          <div slot="attachments" class="pc-top">
-            <div class="pc-attachments" id="pc-attachments" aria-live="polite" aria-label="첨부 파일"></div>
-            <div class="nt-recorder pc-recorder" id="pc-recorder" role="status" aria-label="녹음 중" hidden><span class="nt-rec-dot" aria-hidden="true"></span><span id="pc-rec-time">0:00</span><span class="nt-rec-meter" aria-hidden="true"><span class="nt-rec-level" id="pc-rec-level"></span></span><button type="button" class="nt-rec-btn" onclick="pcStopRecording(false)">취소</button><button type="button" class="nt-rec-btn is-primary" onclick="pcStopRecording(true)">완료</button></div>
-            <p class="pc-error" id="pc-error" role="alert" hidden></p>
-          </div>
-          <span slot="tools" class="pc-tools">
-            <button type="button" class="ui-icon-btn pc-tool" id="pc-attach" aria-label="파일 첨부" title="파일 첨부" onclick="document.getElementById('pc-file-input').click()"><i data-ui-icon="attach"></i></button>
-            <button type="button" class="ui-icon-btn pc-tool" id="pc-image" aria-label="이미지 첨부" title="이미지 첨부 (붙여넣기·끌어놓기도 됩니다)" onclick="document.getElementById('pc-image-input').click()"><i data-ui-icon="image"></i></button>
-            <button type="button" class="ui-icon-btn pc-tool pc-tool-mic" id="pc-mic" aria-label="음성 녹음" aria-pressed="false" title="음성 녹음" onclick="pcToggleRecording()"><i data-ui-icon="mic"></i></button>
-            <input type="file" id="pc-file-input" multiple hidden onchange="pcAddFiles(this.files); this.value = ''">
-            <input type="file" id="pc-image-input" accept="image/*" multiple hidden onchange="pcAddFiles(this.files); this.value = ''">
-            <input type="file" id="pc-audio-input" accept="audio/*" capture hidden onchange="pcAddFiles(this.files); this.value = ''">
-          </span>
-        </ui-agent-steering>
+        <ui-agent-steering id="cmd-steer" lang="ko"><ui-composer id="pc-composer" slot="composer" lang="ko"></ui-composer></ui-agent-steering>
       </div>
     </div>
   </div>
@@ -10446,8 +10405,9 @@ function writePanelPart(el, html) {
 // Close can end the session it shows). Non-owner takes precedence over closed
 // (read-only: the queue shows, nothing can be done — like Stop); fail closed on a
 // missing ownerId. The element keeps the text being typed (an IME composition
-// too) across every update, so its data is written whenever it changed; a change
-// of mode also switches the page's own tools and drops its files.
+// too) across every update, so its data is written whenever it changed. It turns
+// its slotted composer off with its field (tools too, a recording discarded); a
+// change of mode away from open also drops the composer's files.
 function renderPanelComposer(s, force) {
   var host = document.getElementById('panel-command');
   var el = document.getElementById('cmd-steer');
@@ -10455,14 +10415,9 @@ function renderPanelComposer(s, force) {
   var mode = pcModeOf(s);
   if (force || host._mode !== mode) {
     host._mode = mode;
-    // Task view T1.5: the composer's tools follow the field.
-    ['pc-attach', 'pc-image', 'pc-mic'].forEach(function(id) {
-      var tool = document.getElementById(id);
-      if (tool) tool.disabled = mode !== 'open';
-    });
     if (mode !== 'open') pcReset();
   }
-  var data = steeringData(s, mode, pcHeldFiles());
+  var data = steeringData(s, mode);
   var sig = JSON.stringify(data);
   if (!force && el._sig === sig) return;
   el._sig = sig;
@@ -10479,9 +10434,9 @@ function pcModeOf(s) {
 var STEER_STATE = { queued: 'queued', paused: 'queued', steered: 'steered', reserved: 'sending', claimed: 'sending', dispatched: 'sending', failed: 'failed', uncertain: 'failed' };
 // The element's data from the session payload (KanbanSession.followups): running
 // while a turn works (Enter then queues for the next step), canAct for the owner
-// only, Edit only where the server offers it, and the files this page holds for
-// the next message (a recording counts — the send files it first).
-function steeringData(s, mode, files) {
+// only, Edit only where the server offers it. The files of the next message are
+// the slotted composer's (a note leaves with them).
+function steeringData(s, mode) {
   var list = (s.followups && s.followups.items) || [];
   var items = [];
   for (var i = 0; i < list.length; i++) {
@@ -10495,7 +10450,7 @@ function steeringData(s, mode, files) {
     if (f.files && f.files.length) it.files = f.files.map(String);
     items.push(it);
   }
-  return { running: mode !== 'closed' && s.activityState === 'working', canAct: mode !== 'readonly', disabled: mode === 'closed', items: items, attachments: files || 0 };
+  return { running: mode !== 'closed' && s.activityState === 'working', canAct: mode !== 'readonly', disabled: mode === 'closed', items: items };
 }
 // The note the element names (its host id) as the payload has it: the generation
 // an action on it carries. A local row (a send that failed) is not in the queue.
@@ -14929,15 +14884,15 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // Spec 12 §4.3: the agent whose tasks and work log the panel shows ('' = main).
   _panelAgent = agentId ? String(agentId) : '';
 
-  // A card switch starts the composer clean: a fresh <ui-agent-steering> (the
-  // old one's text, notes in flight and failed sends were that session's) and no
-  // files. A send still in flight completes in the background without touching
-  // this card. Re-landing on the session already open (관리 →, 전체 task →, a tree
-  // item) keeps the message being typed and a send in flight (spec 13).
+  // A card switch starts the composer clean: a fresh <ui-agent-steering> with a
+  // fresh composer (the old one's text, files, notes in flight and failed sends
+  // were that session's). A send still in flight completes in the background
+  // without touching this card. Re-landing on the session already open (관리 →,
+  // 전체 task →, a tree item) keeps the message being typed and a send in flight
+  // (spec 13).
   var sameSession = panelOpen && panelSessionKey === sessionKey;
   if (!sameSession) {
     pcFreshSteer();
-    pcReset();
     // Another session's task ids (T1 …) are other tasks: no run's detail carries over.
     _panelTaskOpen = Object.create(null);
   }
@@ -16172,14 +16127,17 @@ let _lastSentContent = '';
 let _lastSentTime = 0;
 
 // A note from the composer — Enter, ⌘/Ctrl+Enter, Send, or Retry on a failed one
-// (<ui-agent-steering> ui-submit: text, ref) — to the session's command route, the
-// one path a dashboard instruction takes: while a turn runs the server queues it
-// (and steers it into that turn when it can — the host decides, so ⌘/Ctrl+Enter
-// goes the same way), idle it starts the next turn. The element shows the note at
-// once (running: as a row until the queue lists it); idle, the turn shows in the
-// transcript. A send that cannot go out puts the text back; one the server refuses
-// is marked failed on its row (Retry) and said in a toast.
-async function sendCommand(text, ref) {
+// (<ui-agent-steering> ui-submit: text, ref, and the slotted composer's files) — to
+// the session's command route, the one path a dashboard instruction takes: while a
+// turn runs the server queues it (and steers it into that turn when it can — the
+// host decides, so ⌘/Ctrl+Enter goes the same way), idle it starts the next turn.
+// The element shows the note at once (running: as a row until the queue lists it);
+// idle, the turn shows in the transcript. A voice note being recorded is filed by
+// the composer before the note leaves (#488). A send that cannot go out puts the
+// text and files back; one the server refuses is marked failed on its row (Retry,
+// which re-emits the ref without files: they are kept by ref) and said in a toast.
+var _pcNoteFiles = Object.create(null); // a note's ref → its File list, until it went out
+async function sendCommand(text, ref, files) {
   var el = document.getElementById('cmd-steer');
   if (!panelSessionKey || !el) return;
   // Capture the session this send belongs to — before any wait: an instruction
@@ -16187,38 +16145,24 @@ async function sendCommand(text, ref) {
   const sendingSessionKey = panelSessionKey;
   var running = !!(el.data && el.data.running);
   var msg = String(text || '').trim();
-  var files;
+  var list = files && files.length ? Array.prototype.slice.call(files) : (ref && _pcNoteFiles[ref]) || [];
+  if (ref && list.length) _pcNoteFiles[ref] = list;
+  var attachments;
   _pcSending = true;
   try {
-    // Task view T1.5: a recording in progress is the user's last words — filed first.
-    // A recording running now, or stopped but not filed yet (a send that timed out before).
-    var filing = _pcRec ? pcStopRecording(true) : _pcFiling;
-    if (filing) {
-      var filed = await Promise.race([
-        filing.then(function() { return true; }),
-        new Promise(function(resolve) { setTimeout(function() { resolve(false); }, 3000); }),
-      ]);
-      // #488: never send without the voice note the user just recorded — it is
-      // filed as a chip when the recorder catches up; the text stays for a resend.
-      if (!filed) {
-        pcSetError('음성 녹음을 아직 마무리하는 중입니다 — 잠시 후 다시 보내 주세요');
-        pcGiveBack(el, ref, msg, sendingSessionKey);
-        return;
-      }
-    }
-    files = _pcFiles.slice();
-    if (!pcCanSend(msg, files)) { pcGiveBack(el, ref, msg, sendingSessionKey); return; }
-    // Every file read in full (a failed read removes its chip and says so).
+    if (!pcCanSend(msg, list)) { pcGiveBack(el, ref, msg, sendingSessionKey); return; }
+    // Every file read in full (base64, as the command route takes them).
     try {
-      await Promise.all(files.map(function(f) { return f.ready; }));
-    } catch (_e) {
+      attachments = await Promise.all(list.map(ntReadFile));
+    } catch (readErr) {
+      dashToast({ title: '파일을 읽지 못했어요', description: String((readErr && readErr.message) || '').slice(5), tone: 'error' });
       pcGiveBack(el, ref, msg, sendingSessionKey);
       return;
     }
   } finally {
     _pcSending = false;
   }
-  // The card changed while the files were read: this instruction was for the other one (its files went with pcReset).
+  // The card changed while the files were read: this instruction was for the other one.
   if (panelSessionKey !== sendingSessionKey) return;
 
   // Optimistic, idle only: the turn this starts shows in the transcript at once
@@ -16226,7 +16170,7 @@ async function sendCommand(text, ref) {
   // while a turn runs shows in the queue instead.
   var optimisticId = '';
   if (!running) {
-    const shown = msg + (files.length ? (msg ? '\\n' : '') + '📎 ' + files.map(function(f) { return f.name; }).join(', ') : '');
+    const shown = msg + (list.length ? (msg ? '\\n' : '') + '📎 ' + list.map(function(f) { return f.name; }).join(', ') : '');
     _lastSentContent = msg;
     _lastSentTime = Date.now();
     optimisticId = 'optimistic-' + Date.now();
@@ -16244,7 +16188,7 @@ async function sendCommand(text, ref) {
   var why = '';
   try {
     const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(sendingSessionKey) + '/command';
-    const res = await acPost(cmdUrl, JSON.stringify(pcCommandBody(msg, files)));
+    const res = await acPost(cmdUrl, JSON.stringify(pcCommandBody(msg, attachments)));
     if (!res.ok) {
       var data = {};
       try { data = await res.json(); } catch (_e) {}
@@ -16253,6 +16197,8 @@ async function sendCommand(text, ref) {
   } catch (e) {
     why = (e && e.message) || '네트워크 오류';
   }
+  // Sent: its files went with it. Failed: they stay kept by ref for the Retry.
+  if (!why && ref) delete _pcNoteFiles[ref];
   // Only the card that sent it changes: a late answer never touches the card opened meanwhile.
   if (panelSessionKey !== sendingSessionKey) return;
   // The session left the board meanwhile (archived, a folded day): fail closed. The next live
@@ -16263,11 +16209,7 @@ async function sendCommand(text, ref) {
     el._sig = '';
     el.data = Object.assign({}, el.data, { disabled: true });
   }
-  if (!why) {
-    // Sent: the files went with it. Failed: they stay attached for the retry.
-    files.forEach(function(f) { pcRemoveFile(f.id); });
-    return;
-  }
+  if (!why) return;
   // Not sent: the note's row says so with Retry (the element's), and the
   // optimistic turn leaves the transcript — found by its own id, not by being the
   // list's last child (the 응답 작성 중 row may follow it, re-ai-answer D12).
@@ -16278,12 +16220,16 @@ async function sendCommand(text, ref) {
   if (ref) el.setItemState(ref, 'failed', why.trim());
   dashToast({ title: '메시지를 보내지 못했어요', description: why.trim(), tone: 'error' });
 }
-// A note that did not go out at all (a recording still being filed, a file that
-// could not be read): its row goes and its text returns to the field — unless the
-// user has typed something new there, or moved to another card.
+// A note that did not go out at all (a file that could not be read): its row goes
+// and its text and files return to the composer — unless the user has typed or
+// attached something new there, or moved to another card.
 function pcGiveBack(el, ref, msg, key) {
-  if (ref) el.setItemState(ref, 'cancelled');
-  if (msg && panelSessionKey === key && !el.value) el.value = msg;
+  var files = (ref && _pcNoteFiles[ref]) || [];
+  if (ref) { delete _pcNoteFiles[ref]; el.setItemState(ref, 'cancelled'); }
+  if (panelSessionKey !== key) return;
+  if (msg && !el.value) el.value = msg;
+  var c = document.getElementById('pc-composer');
+  if (files.length && c && typeof c.addFiles === 'function' && !c.files.length) c.addFiles(files);
 }
 
 // Send now (Retry on a failed note), Cancel and Edit on a queued note → the
@@ -17996,9 +17942,6 @@ function dcSummaryHost(t) {
 // The task then runs in the chosen Slack channel; its card arrives over the
 // WebSocket like any other session.
 var NT_DRAFT_KEY = 'soma-nt-draft';
-var NT_MAX_RECORD_SEC = 600;
-var NT_ICON_X = '<i data-ui-icon="close"></i>';
-var NT_ICON_FILE = '<i data-ui-icon="file"></i>';
 var _ntCtx = null;
 var _ntState = null;
 var _ntBusy = false;
@@ -18051,47 +17994,6 @@ function ntBuildPayload(state, attachments, requestId) {
 function ntCanSubmit(state, attachments) {
   if (!state || !state.channelId) return false;
   return String(state.prompt || '').trim().length > 0 || (attachments || []).length > 0;
-}
-
-function ntPickRecorderMime(isSupported) {
-  // MP4/AAC first (Safari, Chrome, Edge), then Ogg/Opus (Firefox). WebM last:
-  // a .webm file reads as video and would skip transcription.
-  var candidates = ['audio/mp4', 'audio/ogg;codecs=opus', 'audio/webm;codecs=opus', 'audio/webm'];
-  for (var i = 0; i < candidates.length; i++) {
-    try {
-      if (isSupported(candidates[i])) return candidates[i];
-    } catch (e) {}
-  }
-  return '';
-}
-
-function ntExtForMime(m) {
-  var t = String(m || '').toLowerCase();
-  if (t.indexOf('audio/mp4') === 0 || t.indexOf('audio/aac') === 0 || t.indexOf('audio/x-m4a') === 0) return 'm4a';
-  if (t.indexOf('ogg') >= 0) return 'ogg';
-  if (t.indexOf('webm') >= 0) return 'webm';
-  if (t.indexOf('mpeg') >= 0) return 'mp3';
-  if (t.indexOf('wav') >= 0) return 'wav';
-  return 'bin';
-}
-
-function ntFormatBytes(n) {
-  if (n < 1024) return n + ' B';
-  if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB';
-  return Math.round((n / 1024 / 1024) * 10) / 10 + ' MB';
-}
-
-function ntFormatDuration(sec) {
-  var s = Math.max(0, Math.floor(sec));
-  var r = s % 60;
-  return Math.floor(s / 60) + ':' + (r < 10 ? '0' : '') + r;
-}
-
-function ntStamp(d) {
-  var p = function (n) {
-    return (n < 10 ? '0' : '') + n;
-  };
-  return d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) + '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
 }
 
 function ntEl(id) {
@@ -18351,14 +18253,6 @@ function ntToggle(which) {
       navigator.vibrate(8);
     } catch (e) {}
   }
-}
-
-function ntKindOf(mime) {
-  var t = String(mime || '');
-  if (t.indexOf('image/') === 0) return 'image';
-  if (t.indexOf('audio/') === 0) return 'audio';
-  if (t.indexOf('video/') === 0) return 'video';
-  return 'file';
 }
 
 // The composer's files as the request's attachments (base64, as the server takes them).
@@ -18640,23 +18534,19 @@ loadUsers();
 loadSessions();
 loadStats();
 connectWs();
-// ── Steering composer (task view T1.5; dashboard batch 2) ──
-// The panel's composer is <ui-agent-steering>: a multiline instruction to the
-// session above its follow-up queue. The element owns the field — Enter, Shift+
-// Enter, ⌘/Ctrl+Enter, an IME composition (한글) that never sends, a phone's Enter
-// as a line break, the field's growth — and the queue's rows; this page owns what
-// goes in its slots: images (pasted, dropped or picked), files and voice notes.
-// The files ride in the command body as base64 (pcCommandBody) under the new-task
-// limits; the server puts them in the session's Slack thread like files the user
-// attached there. The pure helpers of the new-task composer are shared (ntKindOf,
-// ntStamp, ntFormatBytes, ntFormatDuration, ntPickRecorderMime, ntExtForMime).
+// ── Steering composer (task view T1.5; dashboard batch 2; E-30 0.10.0) ──
+// The panel's composer is <ui-agent-steering> with a <ui-composer slot="composer">
+// as its field: a multiline instruction to the session above its follow-up queue.
+// The steering owns the queue, the modes (Enter queues, ⌘/Ctrl+Enter steers) and
+// the composer's words and state; the composer owns the field — an IME composition
+// (한글) that never sends, a phone's Enter as a line break, its growth — and the
+// files: images (pasted, dropped or picked), files and voice notes, their chips,
+// the new-task limits and its error line. A note leaves as the steering's ui-submit
+// with the composer's File objects; the page reads them as base64 into the command
+// body (pcCommandBody), and the server puts them in the session's Slack thread like
+// files the user attached there.
 var PC_LIMITS = { maxFiles: 10, maxFileBytes: 20971520, maxTotalBytes: 31457280 };
-var _pcFiles = [];
-var _pcSeq = 0;
-var _pcRec = null;
-var _pcRecGen = 0; // bumped by pcReset: a recording (or a pending mic permission) from before belongs to no one
-var _pcFiling = null; // a stopped recording not filed yet (its done promise) — every send waits on it (#488)
-var _pcSending = false; // one send at a time, from the first wait on
+var _pcSending = false; // one send at a time, while its files are read
 function pcCanSend(message, files) {
   return String(message || '').trim().length > 0 || (files || []).length > 0;
 }
@@ -18668,242 +18558,55 @@ function pcCommandBody(message, files) {
     attachments: list.map(function(f) { return { name: f.name, mimetype: f.mimetype, data: f.data }; }),
   };
 }
-// What this page holds for the next message: its files, and a recording still
-// running (the send files it first) — the element lets a note with no text go then.
-function pcHeldFiles() {
-  return (_pcFiles ? _pcFiles.length : 0) + (_pcRec ? 1 : 0);
+// The composer's own data: the limits (the steering sets its placeholder, name and
+// off state, and turns its hint off — the steering's key hints stay below it).
+function pcComposerData() {
+  return { maxFiles: PC_LIMITS.maxFiles, maxFileSize: PC_LIMITS.maxFileBytes, maxTotalBytes: PC_LIMITS.maxTotalBytes, minRows: 1, maxRows: 8 };
 }
-// The held files changed: the element's data follows (attachments).
-function pcSyncSteer() {
-  var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
-  if (s) renderPanelComposer(s);
+function pcComposerSetup(c) {
+  if (c) c.data = Object.assign({}, c.data || {}, pcComposerData());
 }
 // A fresh element for another session: what the old one showed — the text being
-// typed, notes in flight, a failed send's Retry — was the other session's. The
-// page's slotted tools and chips move across; the listeners sit on #panel-command.
+// typed, its files, notes in flight, a failed send's Retry — was the other
+// session's. The listeners sit on #panel-command.
 function pcFreshSteer() {
   var old = document.getElementById('cmd-steer');
   if (!old) return;
   var el = document.createElement('ui-agent-steering');
   el.id = 'cmd-steer';
   el.setAttribute('lang', 'ko');
-  while (old.firstChild) el.appendChild(old.firstChild);
+  var c = document.createElement('ui-composer');
+  c.id = 'pc-composer';
+  c.slot = 'composer';
+  c.setAttribute('lang', 'ko');
+  pcComposerSetup(c);
+  el.appendChild(c);
   old.replaceWith(el);
+  _pcNoteFiles = Object.create(null);
 }
-function pcSetError(text) {
-  var el = document.getElementById('pc-error');
-  if (!el) return;
-  el.textContent = text || '';
-  el.hidden = !text;
-}
-function pcAddFiles(list) {
-  Array.prototype.slice.call(list || []).forEach(function(f) {
-    pcAddBlob(f, f.name || 'file', f.type || 'application/octet-stream');
-  });
-}
-function pcAddBlob(blob, name, mimetype, extra) {
-  if (_pcFiles.length >= PC_LIMITS.maxFiles) { pcSetError('첨부는 최대 ' + PC_LIMITS.maxFiles + '개까지 가능합니다'); return; }
-  if (!blob.size) { pcSetError(name + ' — 빈 파일은 첨부할 수 없습니다'); return; }
-  if (blob.size > PC_LIMITS.maxFileBytes) { pcSetError(name + ' — 파일 하나는 ' + ntFormatBytes(PC_LIMITS.maxFileBytes) + '까지 첨부할 수 있습니다'); return; }
-  var total = _pcFiles.reduce(function(sum, f) { return sum + f.size; }, 0);
-  if (total + blob.size > PC_LIMITS.maxTotalBytes) { pcSetError('첨부는 모두 합쳐 ' + ntFormatBytes(PC_LIMITS.maxTotalBytes) + '까지입니다'); return; }
-  pcSetError('');
-  var entry = { id: ++_pcSeq, name: name, mimetype: mimetype, size: blob.size, kind: ntKindOf(mimetype), data: null, url: null, duration: extra && extra.duration ? extra.duration : 0 };
-  if (entry.kind === 'image' || entry.kind === 'audio') {
-    try { entry.url = URL.createObjectURL(blob); } catch (_e) {}
-  }
-  entry.ready = new Promise(function(resolve, reject) {
-    var reader = new FileReader();
-    reader.onload = function() {
-      var str = String(reader.result || '');
-      var comma = str.indexOf(',');
-      entry.data = comma >= 0 ? str.slice(comma + 1) : '';
-      resolve();
-    };
-    reader.onerror = function() { reject(new Error(name)); };
-    reader.readAsDataURL(blob);
-  });
-  entry.ready.catch(function() {
-    pcRemoveFile(entry.id);
-    pcSetError(name + ' — 파일을 읽지 못했습니다');
-  });
-  _pcFiles.push(entry);
-  pcRenderFiles();
-}
-function pcRemoveFile(id) {
-  _pcFiles = _pcFiles.filter(function(f) {
-    if (f.id === id && f.url) { try { URL.revokeObjectURL(f.url); } catch (_e) {} }
-    return f.id !== id;
-  });
-  pcRenderFiles();
-}
-// The chips of the new-task composer (.nt-att), with this composer's remove.
-function pcRenderFiles() {
-  var box = document.getElementById('pc-attachments');
-  if (!box) return;
-  box.innerHTML = _pcFiles.map(function(f) {
-    var thumb = f.kind === 'image' && f.url
-      ? '<img class="nt-att-thumb" src="' + escAttr(f.url) + '" alt="">'
-      : '<span class="nt-att-thumb" aria-hidden="true">' + NT_ICON_FILE + '</span>';
-    var meta = (f.duration ? ntFormatDuration(f.duration) + ' · ' : '') + ntFormatBytes(f.size);
-    return '<div class="nt-att" data-id="' + f.id + '">' + thumb
-      + '<span class="nt-att-text"><span class="nt-att-name" title="' + escAttr(f.name) + '">' + esc(f.name) + '</span>'
-      + '<span class="nt-att-meta">' + esc(meta) + '</span></span>'
-      + '<button type="button" class="nt-att-remove" aria-label="' + escAttr(f.name) + ' 삭제" onclick="pcRemoveFile(' + f.id + ')">' + NT_ICON_X + '</button></div>';
-  }).join('');
-  box.scrollLeft = box.scrollWidth;
-  pcSyncSteer();
-}
-// Every file and any recording go with the session they were added for.
+// The panel closed, or its session is no longer open to this viewer: no recording
+// (discarded) and no files go on; the text stays in the field.
 function pcReset() {
-  _pcRecGen++;
-  _pcFiling = null;
-  if (_pcRec) pcStopRecording(false);
-  _pcFiles.forEach(function(f) { if (f.url) { try { URL.revokeObjectURL(f.url); } catch (_e) {} } });
-  _pcFiles = [];
-  pcRenderFiles();
-  pcSetError('');
+  var c = document.getElementById('pc-composer');
+  if (!c || typeof c.cancelRecording !== 'function') return;
+  c.cancelRecording();
+  if (typeof c.pause === 'function') c.pause();
+  for (var i = (c.files || []).length - 1; i >= 0; i--) c.removeFile(i);
 }
-// A recording belongs to the session it was started for (gen + key): a mic
-// permission granted, or a recorder that stops, after the panel closed or moved
-// to another card attaches nothing and releases the mic.
-function pcRecCurrent(gen, key) {
-  return gen === _pcRecGen && key === panelSessionKey && !!panelOpen;
-}
-async function pcToggleRecording() {
-  if (_pcRec) { pcStopRecording(true); return; }
-  var canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
-  if (!canRecord) { document.getElementById('pc-audio-input').click(); return; }
-  var gen = _pcRecGen;
-  var key = panelSessionKey;
-  var stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (e) {
-    if (!pcRecCurrent(gen, key)) return;
-    pcSetError('마이크를 쓸 수 없습니다 (' + (e && e.name ? e.name : '권한 거부') + ') — 기기 녹음기로 녹음해 첨부해 주세요');
-    document.getElementById('pc-audio-input').click();
-    return;
-  }
-  if (!pcRecCurrent(gen, key) || _pcRec) {
-    stream.getTracks().forEach(function(t) { t.stop(); });
-    return;
-  }
-  var mime = ntPickRecorderMime(function(t) { return MediaRecorder.isTypeSupported(t); });
-  var recorder;
-  try { recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream); } catch (_e) { recorder = new MediaRecorder(stream); }
-  var state = { recorder: recorder, stream: stream, chunks: [], started: Date.now(), mime: recorder.mimeType || mime || 'audio/mp4', keep: true, finished: false, timer: 0, raf: 0, audioCtx: null, gen: gen, key: key };
-  state.done = new Promise(function(resolve) { state.resolve = resolve; });
-  _pcRec = state;
-  recorder.ondataavailable = function(ev) { if (ev.data && ev.data.size) state.chunks.push(ev.data); };
-  recorder.onstop = function() { pcFinishRecording(state); };
-  recorder.start(1000);
-  try {
-    var AC = window.AudioContext || window.webkitAudioContext;
-    state.audioCtx = new AC();
-    var analyser = state.audioCtx.createAnalyser();
-    analyser.fftSize = 512;
-    state.audioCtx.createMediaStreamSource(stream).connect(analyser);
-    var buf = new Uint8Array(analyser.fftSize);
-    var tick = function() {
-      if (_pcRec !== state) return;
-      analyser.getByteTimeDomainData(buf);
-      var peak = 0;
-      for (var i = 0; i < buf.length; i++) { var v = Math.abs(buf[i] - 128); if (v > peak) peak = v; }
-      document.getElementById('pc-rec-level').style.width = Math.min(100, Math.round((peak / 128) * 160)) + '%';
-      state.raf = requestAnimationFrame(tick);
-    };
-    tick();
-  } catch (_e) {}
-  document.getElementById('pc-recorder').hidden = false;
-  document.getElementById('pc-rec-time').textContent = '0:00';
-  var mic = document.getElementById('pc-mic');
-  mic.setAttribute('aria-pressed', 'true');
-  mic.setAttribute('aria-label', '녹음 완료');
-  pcSyncSteer();
-  state.timer = setInterval(function() {
-    var sec = Math.floor((Date.now() - state.started) / 1000);
-    document.getElementById('pc-rec-time').textContent = ntFormatDuration(sec);
-    if (sec >= NT_MAX_RECORD_SEC) pcStopRecording(true);
-  }, 250);
-}
-// Resolves once the recording is filed (or dropped) — the send waits on it.
-function pcStopRecording(keep) {
-  var state = _pcRec;
-  if (!state) return Promise.resolve();
-  _pcRec = null;
-  state.keep = keep;
-  state.stoppedAt = Date.now();
-  clearInterval(state.timer);
-  cancelAnimationFrame(state.raf);
-  try {
-    if (state.recorder.state !== 'inactive') state.recorder.stop();
-    else pcFinishRecording(state);
-  } catch (_e) { pcFinishRecording(state); }
-  state.stream.getTracks().forEach(function(t) { t.stop(); });
-  if (state.audioCtx) { try { state.audioCtx.close(); } catch (_e) {} }
-  document.getElementById('pc-recorder').hidden = true;
-  var mic = document.getElementById('pc-mic');
-  mic.setAttribute('aria-pressed', 'false');
-  mic.setAttribute('aria-label', '음성 녹음');
-  pcSyncSteer();
-  // Kept and not filed yet: a send right now (or after a timed-out one) waits on
-  // it. A dropped one (a reset, a cancel) leaves nothing to wait on.
-  if (keep) {
-    _pcFiling = state.done;
-    state.done.then(function() { if (_pcFiling === state.done) _pcFiling = null; });
-  }
-  return state.done;
-}
-function pcFinishRecording(state) {
-  if (state.finished) return;
-  state.finished = true;
-  // Kept, and still this card's: the panel did not close or move on meanwhile.
-  if (state.keep && state.chunks.length && pcRecCurrent(state.gen, state.key)) {
-    var type = String(state.mime).split(';')[0] || 'audio/mp4';
-    var blob = new Blob(state.chunks, { type: type });
-    var sec = Math.max(1, Math.round(((state.stoppedAt || Date.now()) - state.started) / 1000));
-    pcAddBlob(blob, 'voice-' + ntStamp(new Date()) + '.' + ntExtForMime(type), type, { duration: sec });
-  }
-  if (state.resolve) state.resolve();
-}
-// Paste an image (a screenshot) into the field; drop files on the composer. The
-// element's events reach #panel-command (they bubble and are composed), so they
-// keep working when pcFreshSteer swaps the element.
+// The element's events reach #panel-command (they bubble and are composed), so they
+// keep working when pcFreshSteer swaps the element. The composer takes paste and
+// drop itself.
 function pcInit() {
   var host = document.getElementById('panel-command');
   if (!host) return;
-  var open = function() { return host._mode === 'open'; };
-  host.addEventListener('paste', function(e) {
-    var files = e.clipboardData && e.clipboardData.files ? Array.prototype.slice.call(e.clipboardData.files) : [];
-    if (!files.length || !open()) return;
-    if (!e.clipboardData.getData('text/plain')) e.preventDefault();
-    files.forEach(function(f) {
-      var type = f.type || 'application/octet-stream';
-      var generic = !f.name || f.name === 'image.png' || f.name === 'image.jpeg';
-      pcAddBlob(f, generic ? 'screenshot-' + ntStamp(new Date()) + '.' + (type.split('/')[1] || 'png') : f.name, type);
-    });
-  });
-  var hasFiles = function(e) {
-    return !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0) && open();
-  };
-  host.addEventListener('dragover', function(e) {
-    if (!hasFiles(e)) return;
-    e.preventDefault();
-    host.classList.add('is-drag');
-  });
-  host.addEventListener('dragleave', function(e) {
-    if (!e.relatedTarget || !host.contains(e.relatedTarget)) host.classList.remove('is-drag');
-  });
-  host.addEventListener('drop', function(e) {
-    host.classList.remove('is-drag');
-    if (!hasFiles(e) || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
-    e.preventDefault();
-    pcAddFiles(e.dataTransfer.files);
-  });
+  pcComposerSetup(document.getElementById('pc-composer'));
   host.addEventListener('ui-submit', pcOnSubmit);
   host.addEventListener('ui-promote', function(e) { if (e.detail) steerAct('promote', String(e.detail.id)); });
-  host.addEventListener('ui-cancel', function(e) { if (e.detail) steerAct('cancel', String(e.detail.id)); });
+  host.addEventListener('ui-cancel', function(e) {
+    if (!e.detail) return;
+    delete _pcNoteFiles[String(e.detail.id)];
+    steerAct('cancel', String(e.detail.id));
+  });
   host.addEventListener('ui-edit', function(e) { if (e.detail) steerAct('edit', String(e.detail.id), String(e.detail.text || '')); });
 }
 // ui-submit: a send already reading its files (or a card with no open composer)
@@ -18915,7 +18618,7 @@ function pcOnSubmit(e) {
     e.preventDefault();
     return;
   }
-  sendCommand(d.text || '', d.ref || '');
+  sendCommand(d.text || '', d.ref || '', d.files || []);
 }
 ntInit();
 pcInit();

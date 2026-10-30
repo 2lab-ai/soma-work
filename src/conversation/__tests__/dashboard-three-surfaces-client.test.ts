@@ -184,7 +184,15 @@ const TREE_FNS = [
   'cardTaskRow',
   'atCardData',
 ];
-const TREE_VARS = ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH', 'AT_ROOT', 'AT_STATUS', 'AT_ROOT_STATUS', '_anOpen'];
+const TREE_VARS = [
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'AT_ROOT',
+  'AT_STATUS',
+  'AT_ROOT_STATUS',
+  '_anOpen',
+];
 type TreeNode = Record<string, unknown> & { id: string; status: string };
 type TreeData = { nodes: TreeNode[]; density: string; title: string; expanded: string[] };
 
@@ -542,7 +550,14 @@ describe('panel header — the session chip and its one action', () => {
         'sessionActionHtml',
         'panelHeadHtml',
       ],
-      ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH', 'SESSION_ACTION_ARIA', 'SESSION_ACTION_TONE', '_busy'],
+      [
+        'AGENT_STATUS_LABEL',
+        'AGENT_STATUS_TONE',
+        'AGENT_STATUS_GLYPH',
+        'SESSION_ACTION_ARIA',
+        'SESSION_ACTION_TONE',
+        '_busy',
+      ],
       {
         currentUserId: 'U1',
         SELF_INSTANCE_NAME: '',
@@ -1456,8 +1471,8 @@ describe('focus inside the goal section after its goal left (executed)', () => {
     m.renderPanelGoal();
     expect(doc.activeElement).toBe(el);
     expect(classes.has('is-empty')).toBe(false); // the session has a current goal
-    // A card switch starts the composer clean: a fresh <ui-agent-steering> and no files.
-    expect(clientFn('openPanel')).toMatch(/if \(!sameSession\) \{\s*pcFreshSteer\(\);\s*pcReset\(\);/);
+    // A card switch starts the composer clean: a fresh <ui-agent-steering> with a fresh composer (no text, no files).
+    expect(clientFn('openPanel')).toMatch(/if \(!sameSession\) \{\s*pcFreshSteer\(\);\s*\/\//);
   });
 });
 
@@ -1474,37 +1489,27 @@ describe('the composer follows the session live (executed)', () => {
       set: (d: Record<string, unknown>) => writes.push(d),
     });
     const host: Record<string, unknown> = {};
-    // Task view T1.5: the composer's tools (attach, image, voice) follow the field.
-    const tools = { 'pc-attach': { disabled: false }, 'pc-image': { disabled: false }, 'pc-mic': { disabled: false } };
-    const els: Record<string, unknown> = { 'panel-command': host, 'cmd-steer': el, ...tools };
+    // D4 E-30: the field, tools and files are the slotted <ui-composer>'s — the steering turns it off with its own
+    // field (library: agent-steering.test.ts 'read-only or ended: the composer is off with the steering’s words').
+    const els: Record<string, unknown> = { 'panel-command': host, 'cmd-steer': el };
     let resets = 0;
-    let held = 0;
     const m = load<{ renderPanelComposer(s: unknown, force?: boolean): void }>(
       ['renderPanelComposer', 'pcModeOf', 'steeringData'],
       ['STEER_STATE'],
       {
         document: { getElementById: (id: string) => els[id] ?? null },
         currentUserId: 'U1',
-        pcHeldFiles: () => held,
         pcReset: () => {
           resets++;
         },
       },
     );
-    const toolsDisabled = () => Object.values(tools).map((t) => t.disabled);
     const last = () => writes[writes.length - 1];
     m.renderPanelComposer({ ownerId: 'U1', activityState: 'working' }, true);
-    expect(last()).toEqual({ running: true, canAct: true, disabled: false, items: [], attachments: 0 });
-    expect(toolsDisabled()).toEqual([false, false, false]);
+    expect(last()).toEqual({ running: true, canAct: true, disabled: false, items: [] });
     expect(resets).toBe(0);
-    // A file chip added: the element learns the page holds one (an empty note may then go).
-    held = 1;
-    m.renderPanelComposer({ ownerId: 'U1', activityState: 'working' });
-    expect(last()?.attachments).toBe(1);
-    held = 0;
     m.renderPanelComposer({ ownerId: 'U1', terminated: true });
     expect(last()).toMatchObject({ running: false, disabled: true, canAct: true });
-    expect(toolsDisabled()).toEqual([true, true, true]);
     expect(resets).toBe(1); // the files and any recording were for the open session
     // The same state again writes nothing (the field's text and an IME composition are the element's).
     const n = writes.length;
@@ -1516,7 +1521,6 @@ describe('the composer follows the session live (executed)', () => {
     // Someone else's session: read-only — the queue shows, nothing can be done (like Stop).
     m.renderPanelComposer({ ownerId: 'U2', activityState: 'working' });
     expect(last()).toMatchObject({ canAct: false, disabled: false });
-    expect(toolsDisabled()).toEqual([true, true, true]);
     m.renderPanelComposer({ activityState: 'working' }); // no ownerId: fail closed
     expect(last()).toMatchObject({ canAct: false });
     expect(clientFn('repaintPanelSession')).toContain('renderPanelComposer(s);');
@@ -1629,7 +1633,8 @@ describe('panel Tasks — the whole ledger, earlier lists included', () => {
       ],
       [
         'AGENT_STATUS_LABEL',
-        'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH',
+        'AGENT_STATUS_TONE',
+        'AGENT_STATUS_GLYPH',
         'TASK_FATE_LABEL',
         'TASK_PAUSE_SVG',
         'TASK_STOP_SVG',
@@ -1793,7 +1798,14 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = [
+  'PR_STATE_LABEL',
+  'PR_STATE_TONE',
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'OWNER_BADGE_HUES',
+];
 const FACE_ENV = {
   dhShow: () => true,
   dhTruncate: () => null,
