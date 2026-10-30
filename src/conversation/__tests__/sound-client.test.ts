@@ -59,10 +59,11 @@ function fakePage(saved: string | null) {
     'document',
     'localStorage',
     '__load',
-    `${js.replace('import(url)', '__load(url)')}\nreturn { toggleSound, somaSetSound };`,
+    `${js.replace('import(url)', '__load(url)')}\nreturn { toggleSound, somaSetSound, somaSoundWarm };`,
   )(document, localStorage, load) as {
     toggleSound(): Promise<boolean>;
     somaSetSound(on: boolean, fromClick: boolean): Promise<boolean>;
+    somaSoundWarm(): void;
   };
   return {
     api,
@@ -89,11 +90,13 @@ describe('the page script (soundClientJs)', () => {
     expect(p.button.attrs).toMatchObject({ 'aria-pressed': 'false', 'aria-label': '소리 켜기' });
   });
 
-  it('a saved "on" loads the library (versioned URLs), binds the page and turns sound on — no unlock without a click', async () => {
+  it('a saved "on" loads the library, binds the page and turns sound on — no unlock without a click', async () => {
     const p = fakePage('on');
     expect(p.rootAttrs['data-sound']).toBe('on');
     await tick();
-    expect(p.imported).toEqual(['/dashboard/ui/sound.js?v=9.9.9', '/dashboard/ui/sound-cuelume.js?v=9.9.9']);
+    // sound.js unversioned: the same module the elements import as ./sound.js (one cue queue on the page);
+    // the player versioned like the elements' entry files.
+    expect(p.imported).toEqual(['/dashboard/ui/sound.js', '/dashboard/ui/sound-cuelume.js?v=9.9.9']);
     expect(p.lib.sound.bindSound).toHaveBeenCalledTimes(1);
     expect(p.lib.sound.setSound).toHaveBeenCalledWith({ player: p.lib.cuelume.cuelumeSound, enabled: true });
     expect(p.lib.cuelume.unlockSound).not.toHaveBeenCalled();
@@ -124,12 +127,53 @@ describe('the page script (soundClientJs)', () => {
     expect(p.imported).toEqual([]);
   });
 
-  it('a library that fails to load never throws: the choice is kept, sound stays silent', async () => {
+  it('warmed by the speaker (hover, focus, press), the click unlocks audio and plays its cue in the same task', async () => {
+    const p = fakePage(null);
+    p.api.somaSoundWarm();
+    await tick();
+    expect(p.imported).toHaveLength(2);
+    // Warming loads and binds, but never turns sound on.
+    expect(p.lib.sound.setSound).not.toHaveBeenCalled();
+    expect(p.rootAttrs['data-sound']).toBe('off');
+    // No await between the click and the unlock: some browsers start audio only inside the gesture.
+    const done = p.api.toggleSound();
+    expect(p.lib.cuelume.unlockSound).toHaveBeenCalledTimes(1);
+    expect(p.lib.sound.setSound).toHaveBeenCalledWith({ player: p.lib.cuelume.cuelumeSound, enabled: true });
+    expect(p.lib.sound.playSound).toHaveBeenCalledWith('toggle', { direction: 'forward' });
+    await expect(done).resolves.toBe(true);
+    p.api.somaSoundWarm();
+    await tick();
+    expect(p.imported).toHaveLength(2);
+  });
+
+  it('turned off while still loading: the load lands on the latest choice (silent, no unlock)', async () => {
+    const p = fakePage(null);
+    const on = p.api.somaSetSound(true, true);
+    const off = p.api.somaSetSound(false, true);
+    await expect(on).resolves.toBe(false);
+    await expect(off).resolves.toBe(false);
+    expect(p.lib.sound.setSound).toHaveBeenLastCalledWith({ enabled: false });
+    expect(p.lib.cuelume.unlockSound).not.toHaveBeenCalled();
+  });
+
+  it('a library that fails to load never throws; a click that could not turn sound on says off and keeps off', async () => {
     const p = fakePage(null);
     p.setFail();
     await expect(p.api.toggleSound()).resolves.toBe(false);
-    expect(p.store.get(SOUND_STORAGE_KEY)).toBe('on');
+    expect(p.store.get(SOUND_STORAGE_KEY)).toBe('off');
+    expect(p.rootAttrs['data-sound']).toBe('off');
+    for (const fn of p.ready) fn();
+    expect(p.button.attrs['aria-pressed']).toBe('false');
     expect(p.lib.sound.setSound).not.toHaveBeenCalled();
+  });
+
+  it('a saved "on" that fails to load at page load shows off but keeps the choice (the next page tries again)', async () => {
+    const p = fakePage(null);
+    p.store.set(SOUND_STORAGE_KEY, 'on');
+    p.setFail();
+    await expect(p.api.somaSetSound(true, false)).resolves.toBe(false);
+    expect(p.rootAttrs['data-sound']).toBe('off');
+    expect(p.store.get(SOUND_STORAGE_KEY)).toBe('on');
   });
 
   it('reaches the browser byte for byte: no backtick or ${…} in it', () => {
@@ -137,6 +181,7 @@ describe('the page script (soundClientJs)', () => {
     expect(js).not.toContain('`');
     expect(js).not.toMatch(/\$\{/);
     expect(js).toContain(`/dashboard/ui/sound-cuelume.js?v=${UI_LIB_VERSION}`);
+    expect(js).toContain("'/dashboard/ui/sound.js'");
   });
 });
 
@@ -144,6 +189,10 @@ describe('the speaker button', () => {
   it('is a labelled icon toggle with both glyphs from @2lab.ai/ui (sound, sound-off)', () => {
     const html = soundToggleHtml();
     expect(html).toMatch(/^<button type="button" id="sound-toggle"[^>]*onclick="toggleSound\(\)"/);
+    // The player starts loading on the way to the click (hover, focus, press), so the click can unlock audio itself.
+    expect(html).toContain('onpointerenter="somaSoundWarm()"');
+    expect(html).toContain('onfocus="somaSoundWarm()"');
+    expect(html).toContain('onpointerdown="somaSoundWarm()"');
     expect(html).toContain('aria-pressed="false"');
     expect(html).toContain('aria-label="소리 켜기"');
     expect(html).toMatch(/<svg [^>]*data-icon="sound" class="ic-sound"/);
@@ -177,7 +226,7 @@ describe('the dashboard', () => {
     expect(speaker).toBeGreaterThan(0);
     expect(theme).toBeGreaterThan(speaker);
     expect(bar).toContain(
-      '<button id="sound-toggle" type="button" onclick="toggleSound()" aria-pressed="false" aria-label="소리 켜기" title="인터페이스 소리"><i data-ui-icon="sound" class="ic-sound"></i><i data-ui-icon="sound-off" class="ic-sound-off"></i></button>',
+      '<button id="sound-toggle" type="button" onclick="toggleSound()" onpointerenter="somaSoundWarm()" onfocus="somaSoundWarm()" onpointerdown="somaSoundWarm()" aria-pressed="false" aria-label="소리 켜기" title="인터페이스 소리"><i data-ui-icon="sound" class="ic-sound"></i><i data-ui-icon="sound-off" class="ic-sound-off"></i></button>',
     );
   });
 
