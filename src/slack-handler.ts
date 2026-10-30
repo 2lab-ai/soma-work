@@ -889,8 +889,12 @@ export class SlackHandler {
       refresh: (sessionKey) => this.refreshFollowupSurface(sessionKey),
       // The host owns the drain loop; the action module never re-enters the
       // dispatcher itself.
-      runDrain: (sessionKey) =>
+      runDrain: (sessionKey, settled) =>
         this.runFollowupDrainLoop(sessionKey).then((last) => {
+          // The other boundary a dispatcher run settles into (`Send now`,
+          // Resume, Retry): an auto-compact stop — the click's own run, or the
+          // drain's last — hands its work on here exactly as in `drainFollowups`.
+          this.resumeIfAutoCompactStop(sessionKey, last ?? settled);
           // A human-driven drain (Resume / Retry) is a boundary too: release
           // the §3.6 deferral it may just have cleared instead of waiting for
           // a turn end that a deferred loop would never produce.
@@ -5065,8 +5069,17 @@ export class SlackHandler {
     await this.sweepSteerBucketsIfIdle(sessionKey);
     const last = report.canDrain ? await this.runFollowupDrainLoop(sessionKey) : undefined;
     const final = last ?? report;
-    if (isAutoCompactStop(final.outcome)) this.resumeAfterAutoCompactStop(sessionKey);
+    this.resumeIfAutoCompactStop(sessionKey, final);
     this.releaseDeferredGoalDriver(sessionKey, final);
+  }
+
+  /**
+   * At a drain boundary: if the last run settled there was stopped by
+   * `auto-compact`, resume its work. Every boundary a dispatcher run settles
+   * into calls this — `drainFollowups` and the action controls' `runDrain`.
+   */
+  private resumeIfAutoCompactStop(sessionKey: string, final: RunReport | undefined): void {
+    if (final && isAutoCompactStop(final.outcome)) this.resumeAfterAutoCompactStop(sessionKey);
   }
 
   /** The host turn that resumes the work an `auto-compact` stop interrupted. */
