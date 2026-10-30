@@ -76,6 +76,16 @@ describe('SessionRegistry — turn calls by task key (#598 ④a)', () => {
     expect(issueEvents[0][3]).toBe(`task:${task.taskId}`);
   });
 
+  it('setSessionTitleByKey fills a task’s missing title, and — like the channel/thread form — keeps a set one', () => {
+    const reg = new SessionRegistry();
+    const task = reg.createTask(TASK_INPUT);
+    reg.setSessionTitleByKey(`task:${task.taskId}`, 'Derived');
+    expect(task.title).toBe('T');
+    task.title = undefined;
+    reg.setSessionTitleByKey(`task:${task.taskId}`, 'Derived');
+    expect(task.title).toBe('Derived');
+  });
+
   it('addMergeStatsByKey adds a merged PR to a task', () => {
     const reg = new SessionRegistry();
     const task = reg.createTask(TASK_INPUT);
@@ -84,12 +94,20 @@ describe('SessionRegistry — turn calls by task key (#598 ④a)', () => {
     expect(task.mergeStats?.totalLinesAdded).toBe(10);
   });
 
-  it('addSourceWorkingDirByKey registers a directory for a task', () => {
+  it('addSourceWorkingDirByKey registers a directory for a task — and not for an unknown key', () => {
     const reg = new SessionRegistry();
     const task = reg.createTask(TASK_INPUT);
-    const dir = fs.mkdtempSync(path.join(TEST_DATA_DIR, 'src-'));
-    // Only directories the registry accepts (per-user /tmp roots) register; the call must not throw either way.
-    expect(() => reg.addSourceWorkingDirByKey(`task:${task.taskId}`, dir)).not.toThrow();
+    // The registry accepts only directories below /tmp (not the OS temp dir on macOS).
+    const root = fs.mkdtempSync('/tmp/soma-task-keys-');
+    try {
+      const dir = path.join(root, 'repo');
+      fs.mkdirSync(dir);
+      expect(reg.addSourceWorkingDirByKey('task:22222222-2222-4222-8222-222222222222', dir)).toBe(false);
+      expect(reg.addSourceWorkingDirByKey(`task:${task.taskId}`, dir)).toBe(true);
+      expect(task.sourceWorkingDirs).toEqual([dir]);
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
   });
 
   it('the channel/thread forms are unchanged for a Slack session', () => {

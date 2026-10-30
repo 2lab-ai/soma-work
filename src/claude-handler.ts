@@ -758,6 +758,10 @@ export class ClaudeHandler implements TurnSteeringPort {
     this.sessionRegistry.setSessionLinksByKey(sessionKey, links);
   }
 
+  setSessionTitleByKey(sessionKey: string, title: string): void {
+    this.sessionRegistry.setSessionTitleByKey(sessionKey, title);
+  }
+
   addSourceWorkingDirByKey(sessionKey: string, dirPath: string): boolean {
     return this.sessionRegistry.addSourceWorkingDirByKey(sessionKey, dirPath);
   }

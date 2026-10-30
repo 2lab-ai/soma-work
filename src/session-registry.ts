@@ -1282,7 +1282,15 @@ export class SessionRegistry {
    * Only sets if title is not already present.
    */
   setSessionTitle(channelId: string, threadTs: string | undefined, title: string): void {
-    const session = this.getSession(channelId, threadTs);
+    this.setSessionTitleOn(this.getSession(channelId, threadTs), title);
+  }
+
+  /** The same by session key (#598 ④a). */
+  setSessionTitleByKey(sessionKey: string, title: string): void {
+    this.setSessionTitleOn(this.getSessionByKey(sessionKey), title);
+  }
+
+  private setSessionTitleOn(session: ConversationSession | undefined, title: string): void {
     const clean = sanitizeSessionTitle(title);
     // A provisional title (a cron job name, SSOT 2026-10-23 T2) is a
     // placeholder — the first real title replaces it.
