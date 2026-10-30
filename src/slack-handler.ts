@@ -104,7 +104,11 @@ import {
   deleteCurrentGoal,
   deleteGoalById,
   enqueueOrActivateGoal,
+  formatDisplacedGoalLine,
   formatGoalObjectiveForSlack,
+  formatOutOfBudgetGoalLine,
+  isGoalOutOfBudget,
+  peekNextQueuedGoal,
   restoreGoalState,
   snapshotGoalState,
 } from './slack/session-goal';
@@ -1880,13 +1884,14 @@ export class SlackHandler {
           if (applied.activated) {
             await this.slackApi.postSystemMessage(
               activeChannel,
-              `🎯 Goal set: ${formatGoalObjectiveForSlack(setGoalObjective)}\n_Continuing with goal context._`,
+              `🎯 Goal set: ${formatGoalObjectiveForSlack(setGoalObjective)}\n_Continuing with goal context._` +
+                (applied.displaced ? `\n${formatDisplacedGoalLine(applied.displaced)}` : ''),
               { threadTs: activeThreadTs },
             );
           } else {
             await this.slackApi.postSystemMessage(
               activeChannel,
-              `📋 Goal queued at position ${applied.position}: ${formatGoalObjectiveForSlack(setGoalObjective)}\n_It will start automatically when the current goal completes._`,
+              `📋 Goal queued at position ${applied.position}: ${formatGoalObjectiveForSlack(setGoalObjective)}\n_It will start automatically when the current goal completes or uses up its auto-continuation budget._`,
               { threadTs: activeThreadTs },
             );
           }
@@ -6706,7 +6711,7 @@ export class SlackHandler {
         await this.postGoalNoticeBestEffort(
           channel,
           threadTs,
-          `📋 Queued at position ${position} — it starts automatically when the current goal completes.`,
+          `📋 Queued at position ${position} — it starts automatically when the current goal completes or uses up its auto-continuation budget.`,
         );
         return { outcome: 'queued', goalId: result.goal.goalId, position };
       }
@@ -6725,6 +6730,11 @@ export class SlackHandler {
           `⚠️ 위 goal은 설정되지 않았습니다 — 첫 턴을 예약하지 못했습니다 (${admission.failed}).`,
         );
         throw new HostGoalActionError(503, `Goal was not started — ${admission.failed}`);
+      }
+      if (result.displaced) {
+        // The new goal took the slot of a goal parked at its budget — the
+        // anchor promised neither outcome, so say where the parked goal went.
+        await this.postGoalNoticeBestEffort(channel, threadTs, formatDisplacedGoalLine(result.displaced));
       }
       return { outcome: 'started', goalId: result.goal.goalId, opening: admission };
     }
@@ -6746,15 +6756,22 @@ export class SlackHandler {
     }
 
     const current = session.goal as NonNullable<ConversationSession['goal']>;
-    const next = session.goalQueue?.[0];
-    if (next) this.assertGoalOpeningAuthor(sessionKey, next.createdBy || actor, channel, threadTs);
+    // The goal `deleteCurrentGoal` will promote (a goal parked at its budget
+    // waits behind every goal that still has one) — named in the anchor below.
+    const next = peekNextQueuedGoal(session);
+    // A next goal parked with its budget used up gets no opening turn (only
+    // goals parked at their budget are waiting) — nothing to author-check.
+    const nextOutOfBudget = isGoalOutOfBudget(next);
+    if (next && !nextOutOfBudget) this.assertGoalOpeningAuthor(sessionKey, next.createdBy || actor, channel, threadTs);
     const anchorTs = await this.postGoalAnchor(
       channel,
       threadTs,
       `🗑️ Current goal deleted: ${formatGoalObjectiveForSlack(current.objective)}` +
-        (next
-          ? `\n▶️ Next goal: ${formatGoalObjectiveForSlack(next.objective)}\n_Its first turn starts now, or right after the current turn._`
-          : ''),
+        (next && nextOutOfBudget
+          ? `\n${formatOutOfBudgetGoalLine(next)}`
+          : next
+            ? `\n▶️ Next goal: ${formatGoalObjectiveForSlack(next.objective)}\n_Its first turn starts now, or right after the current turn._`
+            : ''),
     );
 
     // ── synchronous from here ──
@@ -6779,6 +6796,17 @@ export class SlackHandler {
       return { outcome: 'deleted', goalId };
     }
     const promoted = deleted.promoted;
+    if (isGoalOutOfBudget(promoted)) {
+      // Deleting the goal ahead is not the owner approving more turns for a
+      // goal that already used its budget: it becomes current, still parked,
+      // with no opening turn — a message in the thread continues it.
+      this.persistHostGoalMutation(live);
+      if (!nextOutOfBudget) {
+        // The anchor promised a start (the queue changed during the await).
+        await this.postGoalNoticeBestEffort(channel, threadTs, formatOutOfBudgetGoalLine(promoted));
+      }
+      return { outcome: 'deleted', goalId, promoted: { goalId: promoted.goalId, objective: promoted.objective } };
+    }
     // The queue may have changed during the anchor await: check the goal that
     // ACTUALLY got promoted, not the one checked before posting.
     try {
