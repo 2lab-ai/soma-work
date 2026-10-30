@@ -26,6 +26,7 @@ import {
   buildInstructionSupersededBlocks,
 } from '../instruction-confirm-blocks';
 import {
+  adoptLiveOccupancy,
   clearLiveUsage,
   foldLiveUsage,
   type LiveUsageCall,
@@ -756,6 +757,8 @@ const KNOWN_ABORT_REASONS: ReadonlySet<RequestAbortReason> = new Set([
   // because the session died out-of-band; the user has no other signal.
   // Trace: docs/current/plans/turn-end-surface-guarantee/exhaustive-paths.md §B-1.
   'ghost-session',
+  // auto-compact — the turn crossed the auto-compact threshold (quiet).
+  'auto-compact',
 ]);
 
 /**
@@ -810,7 +813,12 @@ const QUIET_ABORT_REASONS: ReadonlySet<CoercedAbortReason> = new Set<CoercedAbor
   'session-close',
   'shutdown',
   'user-interrupted',
+  'auto-compact',
 ]);
+
+/** The host turn that resumes the work an `auto-compact` stop interrupted (replayed after the compaction). */
+const AUTO_COMPACT_CONTINUATION_TEXT =
+  '[auto-compact] The context reached the auto-compact threshold mid-turn, so the turn was stopped and the conversation compacted. Continue the interrupted work from where it stopped.';
 
 function coerceAbortReason(raw: unknown): CoercedAbortReason {
   if (typeof raw === 'string' && KNOWN_ABORT_REASONS.has(raw as RequestAbortReason)) {
@@ -1399,6 +1407,8 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
     // compacted. Declared outside the try so `finally` can see all three.
     let compactBoundarySeen = false;
     let compactFailureHandled = false;
+    // This turn was stopped because it crossed the auto-compact threshold.
+    let interruptedForCompact = false;
     let compactFailureText: string | undefined;
 
     try {
@@ -2127,6 +2137,52 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
             streamExecutorProviders.notifyLiveUsage(sessionKey, call);
           } catch (err) {
             this.logger.debug('notifyLiveUsage failed', { error: (err as Error)?.message ?? String(err) });
+          }
+          // The main agent's call is the context it holds now: make it the
+          // occupancy and check the auto-compact threshold at once. The turn-end
+          // check alone missed a goal turn that crossed 750k and ran 90 more
+          // minutes until a restart killed it — no end, no check (a dev deployment
+          // 2026-10-30). Not during a `/compact` turn (its summarization call
+          // reads the whole pre-compact transcript) and not while the one-shot
+          // post-compaction skip is armed (the turn-end check consumes it).
+          // A `/compact` turn's occupancy is the boundary's `post_tokens`.
+          if (!call.sidechain && !session.compactTurnActive) {
+            this.ensureSessionUsage(session);
+            adoptLiveOccupancy(session);
+            if (!session.autoCompactPending && !session.skipThresholdCheckOnce) {
+              void checkAndSchedulePendingCompact({
+                session,
+                userId: user,
+                channel,
+                threadTs,
+                userSettings: userSettingsStore,
+                slackApi: this.deps.slackApi,
+                logger: this.logger,
+                workLog: emitWorkLog,
+                // Armed mid-turn: save at once, before the announcement's await,
+                // so a restart before the turn ends still finds the occupancy
+                // over the threshold (the restore re-arms from it). Then stop
+                // the turn: it cannot compact itself, and left running it can
+                // use up the whole gap to the hard limit (+249k in one turn
+                // against a 227k gap, 2026-10-30). The `finally` hands the work
+                // on through a continuation the armed flag turns into `/compact`.
+                onArmed: () => {
+                  this.deps.claudeHandler.getSessionRegistry().persistAndBroadcast?.(sessionKey);
+                  if (abortController.signal.aborted) return;
+                  interruptedForCompact = true;
+                  emitWorkLog({
+                    kind: 'notice',
+                    text: '🗜️ Auto-compact threshold reached mid-turn — stopping this turn to compact, then continuing',
+                  });
+                  abortController.abort('auto-compact' satisfies RequestAbortReason);
+                },
+              }).catch((err: unknown) => {
+                this.logger.warn('stream-executor: mid-turn compact threshold check failed', {
+                  turnId,
+                  error: (err as Error)?.message ?? String(err),
+                });
+              });
+            }
           }
         },
         onUsageUpdate: async (usage: UsageData) => {
@@ -3397,6 +3453,17 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
       // the queue at ITS stream end. No message is lost, order is preserved.
       // Runs on every exit path (success, error, abort); skipped only when
       // the session was explicitly terminated mid-turn.
+      if (interruptedForCompact && !session.terminated) {
+        try {
+          this.continueAfterAutoCompactStop(session, sessionKey, channel, threadTs, user);
+        } catch (err) {
+          // Never let the hand-off break the rest of this `finally`.
+          this.logger.warn('Auto-compact stop: continuation hand-off failed — the next message will compact', {
+            sessionKey,
+            error: (err as Error)?.message ?? String(err),
+          });
+        }
+      }
       const queue = session.compactPendingDispatches;
       if (queue && queue.length > 0 && !session.terminated) {
         if (this.deps.requestCoordinator.isRequestActive(sessionKey)) {
@@ -5193,6 +5260,42 @@ Read 가능한 파일(텍스트, 코드, PDF, 이미지 등)이 첨부된 메시
    * hardcoded 200k default. This correctly handles Opus 4.6 (1M),
    * Sonnet 4.6 (1M), and any future model sizes.
    */
+  /**
+   * Hand on the work of a turn stopped by `auto-compact`. The armed flag turns
+   * the next message into `/compact` and replays that message after the
+   * compaction, so the continuation is a host turn sent through the normal
+   * pipeline. A goal session gets its continuation from the goal loop (the
+   * same interception applies) — a second one here would race it. A newer
+   * turn already running is intercepted the same way, so nothing is sent.
+   */
+  private continueAfterAutoCompactStop(
+    session: ConversationSession,
+    sessionKey: string,
+    channel: string,
+    threadTs: string,
+    user: string,
+  ): void {
+    if ((session.goal as { status?: string } | undefined)?.status === 'active') return;
+    if (this.deps.requestCoordinator.isRequestActive(sessionKey)) return;
+    const dispatch = this.deps.dispatchPendingUserMessage;
+    if (!dispatch) {
+      this.logger.warn('Auto-compact stop: no dispatchPendingUserMessage dep — the next message will compact', {
+        sessionKey,
+      });
+      return;
+    }
+    this.logger.info('Auto-compact stop: dispatching the continuation (compacts first)', { sessionKey });
+    void dispatch(
+      { channel, threadTs, user, ts: `${Date.now() / 1000}`, hostTurn: true },
+      AUTO_COMPACT_CONTINUATION_TEXT,
+    ).catch((err: unknown) => {
+      this.logger.warn('Auto-compact stop: continuation dispatch failed — the next message will compact', {
+        sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    });
+  }
+
   /**
    * Lazily create `session.usage` and return it. Two callers need the same
    * zero-state: the per-turn usage update, and the compact boundary — a

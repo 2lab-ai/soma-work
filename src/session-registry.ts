@@ -23,6 +23,7 @@ import { hostPricing } from './metrics/host-pricing-catalog';
 import { resolveContextWindow } from './metrics/model-registry';
 import { normalizeTmpPath } from './path-utils';
 import { loseRunningAgents, sanitizeAgentRegistry } from './session/agent-registry';
+import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
 import { sanitizeCronJob } from './session/cron-job';
 import { closeTaskList, sanitizeTaskLedger } from './session/task-ledger';
 import { type ArchivedSession, getArchiveStore, type SessionLifecycleOutcome } from './session-archive';
@@ -2553,8 +2554,8 @@ export class SessionRegistry {
           // Cached completed-summary (may be stale — block builder validates via hash).
           instructionsCompletedSummary: serialized.instructionsCompletedSummary,
           // The context fill, its window and the session totals, as saved (sanitized).
-          // Nothing re-arms auto-compact here: `autoCompactPending` is reset
-          // below and the threshold is only checked at a turn's end.
+          // `autoCompactPending` is reset below and re-armed from this occupancy
+          // after the record is built (`restoredOverAutoCompact`).
           usage: restoreSessionUsage(serialized.usage, model),
           // Repriced: llmux models moved from the SDK's default rate to the host table (`metrics/host-pricing.ts`).
           sdkUsageBaseline: repriceBaseline(sanitizeSdkUsageBaseline(serialized.sdkUsageBaseline), hostPricing),
@@ -2611,6 +2612,19 @@ export class SessionRegistry {
           this.logger.info('Auto fallback compact: restored original model on session reload', {
             key: serialized.key,
             restoredModel: session.model,
+          });
+        }
+        // The pending flag is not saved, and automatic compaction has one
+        // authority — the threshold check. A restored occupancy at or over the
+        // threshold re-arms it, so the session's next turn (a goal resume
+        // included) compacts first instead of resuming the full transcript
+        // (a dev deployment 2026-10-30: three restarts resumed one goal at 528k, 701k
+        // and 950k with nothing scheduled; at 975k the API refused it).
+        if (restoredOverAutoCompact(session)) {
+          session.autoCompactPending = true;
+          this.logger.info('Auto-compact re-armed on reload — restored occupancy is over the threshold', {
+            key: serialized.key,
+            model: session.model,
           });
         }
         // Orphan sweep: if process crashed while a turn was active, fold the elapsed
@@ -2743,6 +2757,23 @@ export class SessionRegistry {
       this.logger.info(`Backfilled ${count} session conversationIds`);
     }
     return count;
+  }
+}
+
+/**
+ * Whether a loaded session's saved occupancy is at or over its auto-compact
+ * threshold. Only a session with an SDK session to resume — a reset one starts
+ * empty — and never on a guess: no usage, no reading.
+ */
+function restoredOverAutoCompact(session: ConversationSession): boolean {
+  const u = session.usage;
+  if (!session.sessionId || !u) return false;
+  const used = u.currentInputTokens + u.currentOutputTokens + u.currentCacheReadTokens + u.currentCacheCreateTokens;
+  if (!(used > 0)) return false;
+  try {
+    return used >= resolveEffectiveAutoCompact(session, session.ownerId, userSettingsStore).tokens;
+  } catch {
+    return false;
   }
 }
 
