@@ -5425,6 +5425,9 @@ body[data-view-mode="minimal"] .panel-tasks { max-height: 34cqh; overflow-y: aut
 .epic-lane[hidden] { display: none; }
 .epic-plan { display: block; margin-bottom: 8px; }
 .epic-plan[hidden] { display: none; }
+/* The bar and the count sit together at the end of the head (the bar takes the auto margin when there is one). */
+.epic-head .epic-bar { margin-left: auto; }
+.epic-head .epic-bar ~ .epic-progress { margin-left: 0; }
 .epic-bar { position: relative; width: 72px; height: 6px; border-radius: 3px; background: var(--border); overflow: hidden; flex: none; }
 .epic-bar-fill { position: absolute; inset: 0 auto 0 0; background: var(--st-done); border-radius: 3px; }
 .capacity-host[hidden], .cron-lane[hidden] { display: none; }
@@ -8790,6 +8793,8 @@ function cardOf(s, col) {
   if (metrics.length) card.metrics = metrics;
   // A cron run leads with the CRON badge instead of the spark (SSOT 2026-10-23 T3).
   if (s.cronJob && s.cronJob.name) card.lead = { text: 'CRON', glyph: 'clock', title: '크론 잡: ' + s.cronJob.name };
+  // A child of an epic (E4 ⑨b) leads with its plan node, the ref its epic's plan tree shows.
+  if (s.parentTaskId && s.planNodeId && !card.lead) card.lead = { text: '#' + String(s.planNodeId), glyph: 'tasks', title: '에픽의 노드 ' + String(s.planNodeId) };
   // An epic (E4 ⑨a) leads with EPIC and says its state; its progress is accepted nodes of all.
   if (s.kind === 'epic' && s.epic) {
     var epicLabel = EPIC_STATE_LABEL[epicStateOf(s.epic.state)];
@@ -16299,7 +16304,8 @@ function epicLaneHeadHtml(s) {
   html += '<span class="ui-chip is-toned is-sm epic-state" data-state="' + escAttr(state) + '" style="--ui-tone:' + EPIC_STATE_TONE[state] + '">' + esc(EPIC_STATE_LABEL[state]) + '</span>';
   if (toNum(p.total) > 0) {
     html += epicProgressHtml(p);
-    html += '<span class="epic-progress" title="받아들인 노드 / 전체 노드">' + toNum(p.accepted) + '/' + toNum(p.total) + '</span>';
+    var shown = Math.max(0, Math.min(toNum(p.accepted), toNum(p.total)));
+    html += '<span class="epic-progress" title="받아들인 노드 / 전체 노드">' + shown + '/' + toNum(p.total) + '</span>';
   }
   return html;
 }
@@ -16309,7 +16315,8 @@ function epicLaneHeadHtml(s) {
 function epicPlanStep(n) {
   // Own keys only: a prototype key ('constructor', …) is no status the page knows.
   var known = typeof n.status === 'string' && Object.prototype.hasOwnProperty.call(EPIC_NODE_STEP, n.status);
-  var step = { id: String(n.id), label: String(n.title || n.id), status: n.accepted ? 'done' : known ? EPIC_NODE_STEP[n.status] : 'pending' };
+  // The ref is the node id, the same one a child's card leads with: the tree and the cards meet there.
+  var step = { id: String(n.id), label: String(n.title || n.id), ref: '#' + String(n.id), status: n.accepted ? 'done' : known ? EPIC_NODE_STEP[n.status] : 'pending' };
   if (!n.accepted && known && Object.prototype.hasOwnProperty.call(EPIC_NODE_NOTE, n.status)) step.note = EPIC_NODE_NOTE[n.status];
   return step;
 }
@@ -16336,9 +16343,9 @@ function epicPlanData(s) {
 function epicProgressHtml(p) {
   var total = toNum(p && p.total);
   if (total <= 0) return '';
-  var accepted = Math.min(toNum(p.accepted), total);
+  var accepted = Math.max(0, Math.min(toNum(p.accepted), total));
   var pct = Math.round((accepted / total) * 100);
-  return '<span class="epic-bar" role="progressbar" aria-label="받아들인 노드" aria-valuemin="0" aria-valuemax="' + total + '" aria-valuenow="' + accepted + '"><span class="epic-bar-fill" style="width:' + pct + '%"></span></span>';
+  return '<span class="epic-bar" role="progressbar" aria-label="받아들인 노드" aria-valuemin="0" aria-valuemax="' + total + '" aria-valuenow="' + accepted + '" aria-valuetext="' + accepted + '/' + total + '"><span class="epic-bar-fill" style="width:' + pct + '%"></span></span>';
 }
 // One persistent box per epic group in #epic-lane: its head and its card box.
 function syncEpicLane(groups) {
@@ -17671,6 +17678,8 @@ function ntReconcile(state, ctx) {
     return f.name === state.folder;
   });
   if (!hasFolder) state.folder = '';
+  // E4 ⑨b — an epic only while it is offered: a dashboard task with the user's flag (grok, fable #707 R1).
+  if (!ctx.epicTasks || state.destination !== 'task') state.kind = '';
 }
 
 function ntRender() {

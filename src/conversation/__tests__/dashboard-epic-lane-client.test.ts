@@ -129,6 +129,11 @@ describe('L1–L3 — the lane’s plan, a child’s column, a group’s head', 
     expect(html).toContain('--ui-tone:var(--st-wait)');
     expect(html).toContain('>입력 필요</span>');
     expect(html).toContain('>1/3</span>');
+    expect(
+      m.epicLaneHeadHtml(
+        epicCard('task:e', 'idle', [], { epic: { state: 'idle', progress: { accepted: 7, total: 3 } } }),
+      ),
+    ).toContain('>3/3</span>');
     // A prototype key is no state the page knows (fable #706 R1 P3).
     expect(m.epicLaneHeadHtml({ key: 'k', kind: 'epic', epic: { state: 'constructor' } })).toContain(
       'data-state="idle"',
@@ -444,7 +449,7 @@ describe('L9–L11 (⑨b) — the plan tree and the progress bar', () => {
       ['lost-sub', 'pending', undefined],
     ]);
     expect(data.steps[0].steps).toEqual([
-      { id: 'login-test', label: 'T login-test', status: 'paused', note: '판정 대기' },
+      { id: 'login-test', label: 'T login-test', ref: '#login-test', status: 'paused', note: '판정 대기' },
     ]);
     expect(data.steps[0].label).toBe('T login');
     expect(m.epicPlanData({ epic: { state: 'idle' } })).toEqual({ steps: [] });
@@ -452,6 +457,7 @@ describe('L9–L11 (⑨b) — the plan tree and the progress bar', () => {
     expect(m.epicPlanData({ epic: { nodes: [node('x', 'constructor')] } }).steps[0]).toEqual({
       id: 'x',
       label: 'T x',
+      ref: '#x',
       status: 'pending',
     });
   });
@@ -464,6 +470,10 @@ describe('L9–L11 (⑨b) — the plan tree and the progress bar', () => {
     expect(m.epicProgressHtml({ accepted: 0, total: 0 })).toBe('');
     expect(m.epicProgressHtml(undefined)).toBe('');
     expect(m.epicProgressHtml({ accepted: 9, total: 3 })).toContain('style="width:100%"');
+    // Never below empty either; the text a screen reader speaks (grok, fable #707 R1).
+    expect(m.epicProgressHtml({ accepted: -3, total: 4 })).toContain('aria-valuenow="0" aria-valuetext="0/4"');
+    expect(m.epicProgressHtml({ accepted: -3, total: 4 })).toContain('style="width:0%"');
+    expect(html).toContain('aria-valuetext="1/4"');
   });
 
   it('L11 — the group box holds the plan between its head and its cards; no plan, hidden; the data set only when it changed', () => {
@@ -477,7 +487,7 @@ describe('L9–L11 (⑨b) — the plan tree and the progress bar', () => {
     expect(plan.tag).toBe('ui-task-plan');
     expect(plan.attrs).toMatchObject({ lang: 'ko', flush: '', foot: 'none' });
     expect(plan.hidden).toBe(false);
-    expect(plan.data).toEqual({ steps: [{ id: 'login', label: 'T login', status: 'running' }] });
+    expect(plan.data).toEqual({ steps: [{ id: 'login', label: 'T login', ref: '#login', status: 'running' }] });
     expect(box._head?.innerHTML).toContain('role="progressbar"');
     const first = plan.data;
     h.m.renderEpicLane({ working: [withPlan] });
@@ -553,6 +563,14 @@ describe('L7 — the epic’s own card', () => {
     expect(done.lead.title).toBe('에픽 — 완료');
     expect(done.statusText).not.toBe('완료');
     expect(cardOf({ ...base, ...epicCard('task:e', 'constructor', []) }, 'idle').lead.title).toBe('에픽 — 대기');
+    // A child leads with its node, the ref its epic's plan tree shows (fable #707 R1).
+    expect(
+      cardOf({ ...base, key: 'task:c', title: 'C', parentTaskId: 'e', planNodeId: 'login' }, 'working').lead,
+    ).toEqual({
+      text: '#login',
+      glyph: 'tasks',
+      title: '에픽의 노드 login',
+    });
     const plain = cardOf({ ...base, key: 'task:p', title: 'P' }, 'idle');
     expect(plain.lead).toBeUndefined();
     const noPlan = cardOf(
@@ -590,6 +608,8 @@ describe('L8 — the page wires the lane', () => {
     expect(DASHBOARD_TS).toContain('.epic-lane { display: flex;');
     // An author display beats the UA [hidden] rule: the empty lane must be hidden by its own rule.
     expect(DASHBOARD_TS).toContain('.epic-lane[hidden] { display: none; }');
+    // The bar and the count sit together at the end of the head.
+    expect(DASHBOARD_TS).toContain('.epic-head .epic-bar { margin-left: auto; }');
     expect(fn('boardHosts')).toContain("document.querySelectorAll('ui-agent-inbox.epic-inbox')");
   });
   it('an epic’s children are in no column the client builds (the server already took them out)', () => {
