@@ -60,6 +60,7 @@ function harness(over: Partial<TaskNoticeDelivererDeps> = {}, session = task()) 
     readFinal: vi.fn(async () => ({ text: 'All done: **3 files** changed.', clipped: false })),
     cardUrl: vi.fn(() => 'https://dash.example/dashboard/U1?session=task%3Atask-1111'),
     getTask: vi.fn((taskId: string) => (taskId === TASK_ID ? { session, sessionKey: KEY } : undefined)),
+    isApprovalOpen: vi.fn(() => false),
     maxAttempts: 3,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     ...over,
@@ -512,8 +513,24 @@ describe('task notice deliverer — approvals (E2 ⑥, D9 · D13)', () => {
     const before = harness({ isApprovalOpen: () => true }, task({ activityState: 'working' }));
     before.deliverer.approval(REQ_EVENT);
     await before.deliverer.deliver();
-    // A second request was registered but not yet posted when the process died.
-    before.deliverer.approval({ ...REQ_EVENT, approvalId: 'approval_2' });
+    // A second request was registered but not yet posted when the process died:
+    // its row is on the ledger, and no pass of the dead process runs any more (fable #669 P3-1).
+    before.ledger.register({
+      id: `${TASK_ID}:t1:approval:approval_2`,
+      taskId: TASK_ID,
+      kind: 'approval',
+      channel: ORIGIN.channel,
+      threadTs: ORIGIN.threadTs,
+      intent: {
+        approval: 'request',
+        approvalId: 'approval_2',
+        toolName: 'Bash',
+        turnId: 't1',
+        ownerId: 'U1',
+        sessionKey: KEY,
+      },
+    });
+    before.deliverer.stop();
     // Restart reconciliation's interrupted notice for that turn.
     const reconciled = task({
       notices: [
@@ -543,6 +560,36 @@ describe('task notice deliverer — approvals (E2 ⑥, D9 · D13)', () => {
     expect(posts).toHaveLength(1);
     expect(posts[0]).toContain('승인 대기 중 중단');
     expect(before.ledger.get(`${TASK_ID}:t1:approval:approval_2`)?.state).toBe('superseded');
+    expect(before.posts).toHaveLength(1);
+  });
+
+  it('a graceful restart (the wait aborted by shutdown) still reads “승인 대기 중 중단” (fable #669 P2-1)', async () => {
+    const h = harness({ isApprovalOpen: () => true }, task({ activityState: 'working' }));
+    h.deliverer.approval(REQ_EVENT);
+    await h.deliverer.deliver();
+    // SIGTERM: the SDK aborts the hook's signal, the approver resolves `aborted`.
+    h.deliverer.approval({ ...REQ_EVENT, type: 'resolved', resolution: 'aborted' });
+    h.session.notices = [
+      {
+        id: `${TASK_ID}:c1:interrupted`,
+        kind: 'interrupted',
+        chainId: 'c1',
+        turnId: 't1',
+        outcome: 'interrupted',
+        reason: 'r',
+        at: 3,
+      },
+    ];
+    h.deliverer.enqueue(h.session, KEY);
+    await h.deliverer.deliver();
+    expect(h.posts.slice(-1)[0]?.text).toContain('승인 대기 중 중단');
+  });
+
+  it('an approval asked is posted with no other event to start a pass (fable #669 P3-2)', async () => {
+    const h = harness({ isApprovalOpen: () => true }, task({ activityState: 'working' }));
+    h.deliverer.approval(REQ_EVENT);
+    await vi.waitFor(() => expect(h.posts).toHaveLength(1));
+    expect(h.posts[0].text).toContain('Bash');
   });
 
   it('an approval another turn left open does not make this turn’s interruption “waiting”', async () => {
