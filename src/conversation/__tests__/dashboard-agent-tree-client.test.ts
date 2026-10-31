@@ -644,6 +644,7 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
         morphInnerHtml: (_el: unknown, html: string) => markup.push(html),
         updateTimersIn: () => {},
         acHydrate: () => {},
+        cardTaskPlanHydrate: () => {},
         mpHydrate: () => {},
         atHydrate: (_b: unknown, p: { tree: TreeData | null; treeSig: string }) => hydrated.push(p),
       },
@@ -876,6 +877,7 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
         else if (!root.tree) root.tree = paintedTree();
       },
       acHydrate: () => {},
+      cardTaskPlanHydrate: () => {},
       // #546: the body's <ui-model-picker> slots take their data on the same paint (none in this harness).
       mpHydrate: () => {},
       updateTimersIn: () => {},

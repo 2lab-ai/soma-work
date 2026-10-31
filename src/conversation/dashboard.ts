@@ -4773,23 +4773,11 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   vertical-align: baseline;
 }
 
-/* ── TASK TIMELINE — dot + step + time; only the current step's dot is solid ── */
-.tl-wrap { margin-top: 10px; }
-.tl { list-style: none; margin: 0; padding: 0; }
-.tl-item { position: relative; display: flex; gap: 10px; padding: 0 0 8px 16px; line-height: 1.4; color: var(--ib-text-2); }
-.tl-item::before { content: ''; position: absolute; left: 2px; top: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--ib-muted); opacity: 0.55; }
-.tl-item::after { content: ''; position: absolute; left: 4.5px; top: 15px; bottom: 1px; width: 1px; background: var(--ib-card-border); }
-.tl-item:last-child { padding-bottom: 0; }
-.tl-item:last-child::after { display: none; }
-.tl-item.is-current { color: var(--ib-text); }
-.tl-item.is-current::before { background: var(--ib-text); opacity: 1; }
-.tl-item.is-pending { color: var(--ib-muted); }
-.tl-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.tl-time { flex-shrink: 0; color: var(--ib-muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
-.tl-more { font-size: 12px; color: var(--ib-muted); padding: 0 0 6px 16px; }
-.tl-id { flex-shrink: 0; color: var(--ib-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-.tl-tools { white-space: nowrap; }
-.tl-toggle { margin-top: 6px; font: inherit; font-size: 12px; color: var(--ib-text-2); background: none; border: 1px solid var(--ib-card-border); border-radius: 6px; padding: 3px 10px; min-height: 28px; cursor: pointer; }
+/* ── TASK WINDOW — @2lab.ai/ui <ui-task-plan max foot="none"> (D8b D-12): the card's few rows of the plan, flush
+   (no box of its own inside the card), and its "+N개 더 · 전체 task N개 →" line; the page's link when the window
+   hides nothing but earlier lists ran. ── */
+.card-task-plan { display: block; min-width: 0; margin-top: 10px; }
+.card-task-plan + .card-more-link { margin-top: 2px; }
 
 /* ── INSTRUCTION / RESPONSE — latest pair, lazy-loaded on expand ── */
 .card-io { margin-top: 12px; display: grid; gap: 6px; }
@@ -5257,7 +5245,7 @@ ui-drawer:not(:defined) { display: none; }
      area is the kit's own rule. */
   .card-body .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
   .pi-links a, .panel-tasks-toggle { min-height: 44px; }
-  .cgl-go, .card-more-link, .tl-toggle { min-height: 44px; }
+  .cgl-go, .card-more-link { min-height: 44px; }
 }
 
 /* ── CRON lane · drawer (SSOT 2026-10-23 T3/T4/T5); the drawer head's CRON badge is a kit chip with the clock glyph
@@ -8286,10 +8274,11 @@ function paintCardBody(key) {
     morphInnerHtml(b.el, html);
     b.html = html;
   }
-  // The body's approval cards and model picker take their data where it
-  // changed (also while an open menu holds the body still), the agent tree its
-  // own (every agent's status, time and spend; the folds).
+  // The body's approval cards, task window and model picker take their data
+  // where it changed (also while an open menu holds the body still), the agent
+  // tree its own (every agent's status, time and spend; the folds).
   acHydrate(b.el);
+  cardTaskPlanHydrate(b.el);
   mpHydrate(b.el);
   var tree = atCardData(s, col);
   atHydrate(b.el, { tree: tree, treeSig: tree ? JSON.stringify(tree) : '' });
@@ -8577,70 +8566,89 @@ function cardOf(s, col) {
   return card;
 }
 
-// Task window on the open card (§3.1-4, spec 13): list order, the in-progress
-// step is the solid dot. Every task shows its id (SSOT 2026-10-22 T8); a
-// completed task its elapsed time and the tool calls made while it ran, the
-// running one its live time and calls so far (T7). Over the dhMax('tasks')
-// budget the earliest completed steps fold away first. The whole ledger —
-// every task of the list and the earlier lists — is the panel's:
-// 전체 task N개 → opens it (spec 13, the card is a window, not a second list).
-// (D7 D-12: the panel's plan is <ui-task-plan>; this window stays the page's — the element draws the whole plan
-// with its phase foot and its own done-steps fold, and has no row cap: research/D7-GAPS.md.)
-function renderTaskMeta(t) {
+// Task window on the open card (§3.1-4, spec 13) — @2lab.ai/ui <ui-task-plan> in window mode (0.14.1, D8b
+// D-12): at most dhMax('tasks') rows of the current list in list order (the element's taskWindow rule: the
+// earliest completed leave first, then the latest pending; the running one never), no phase foot (the face
+// already says the phase and the time), and one "+N개 더 · 전체 task N개 →" line in the page's words whose press
+// (ui-more) opens the panel's Tasks — the whole ledger, every task of the list and the earlier lists (the card
+// is a window, not a second list). Every step carries its id (SSOT 2026-10-22 T8), its times and its tool
+// calls (T7); the element draws the duration, the running step's live clock and the 툴 N회 chip.
+var CARD_TASK_ROWS = 5;
+// A task's fate (taskFateOf) as the element's step status. Task view T2: a task a later plan dropped is
+// dropped, never running — no clock.
+var CARD_TASK_STATUS = { done: 'done', active: 'running', paused: 'paused', pending: 'pending', dropped: 'dropped', skipped: 'skipped' };
+function cardTaskStep(t, i) {
   // Task timestamps come from the ledger: numbers only.
-  var started = Number(t.startedAt) || 0;
-  var completed = Number(t.completedAt) || 0;
-  var removed = Number(t.removedAt) || 0;
-  // Task view T2: a task a later plan dropped says so — never a running clock.
   var fate = taskFateOf(t);
-  var parts = [];
-  if (fate === 'done' && started && completed) parts.push(formatDuration(completed - started) || '0초');
-  else if (fate === 'active' && started) parts.push(elapsedHtml(started));
-  else if (fate === 'dropped' || fate === 'skipped' || fate === 'paused') {
-    parts.push(TASK_FATE_LABEL[fate] + (fate === 'dropped' && started && removed > started ? ' ' + formatDuration(removed - started) : ''));
-  }
+  var started = Number(t.startedAt) || 0;
+  var ended = fate === 'done' ? Number(t.completedAt) || 0 : fate === 'dropped' ? Number(t.removedAt) || 0 : 0;
+  var step = { id: t.id ? String(t.id) : 'step' + i, label: String(t.content || ''), status: CARD_TASK_STATUS[fate] || 'pending' };
+  if (t.id) step.ref = '#' + String(t.id);
+  if (started && fate !== 'pending' && fate !== 'skipped') step.startedAt = started;
+  if (started && ended > started) step.endedAt = ended;
   // SSOT 2026-10-29 T5: a count shared by tasks that ran together is fractional — a whole number on screen.
-  if (fate !== 'pending' && fate !== 'skipped') parts.push('<span class="tl-tools" title="툴 호출 수">툴 ' + Math.round(toNum(t.toolCalls)) + '회</span>');
-  return parts.join(' &middot; ');
+  if (fate !== 'pending' && fate !== 'skipped') step.toolCalls = Math.round(toNum(t.toolCalls));
+  return step;
 }
-function renderTimelineItem(t) {
-  var cls = t.status === 'in_progress' ? ' is-current' : (t.status === 'completed' ? ' is-done' : ' is-pending');
-  var meta = renderTaskMeta(t);
-  return '<li class="tl-item' + cls + '">'
-    + (t.id ? '<span class="tl-id">#' + esc(t.id) + '</span>' : '')
-    + '<span class="tl-text">' + esc(t.content) + '</span>'
-    + (meta ? '<span class="tl-time">' + meta + '</span>' : '') + '</li>';
+// How many steps the window leaves out: beyond the budget every step but a running one can leave (the
+// element drops the earliest done first, then the latest pending), so the count is exact.
+function cardTaskHidden(steps, max) {
+  var running = 0;
+  for (var i = 0; i < steps.length; i++) if (steps[i].status === 'running') running++;
+  return Math.max(0, steps.length - Math.max(max, running));
 }
-function renderTimeline(s) {
-  if (!dhShow('tasks')) return '';
-  var tasks = s.tasks || [];
+// Task view T2: steps a new plan dropped before they ran were never work — the count (and the panel it
+// opens) does not grow with them.
+function cardTasksRan(s) {
   var earlier = s.earlierTasks || [];
-  // Task view T2: steps a new plan dropped before they ran were never work —
-  // the count (and the panel it opens) does not grow with them.
   var ran = 0;
   for (var e = 0; e < earlier.length; e++) if (taskFateOf(earlier[e]) !== 'skipped') ran++;
+  return ran;
+}
+function cardTaskPlanData(s) {
+  var tasks = s.tasks || [];
+  var ran = cardTasksRan(s);
+  var steps = tasks.map(cardTaskStep);
+  var hidden = cardTaskHidden(steps, dhMax('tasks', CARD_TASK_ROWS)) + ran;
+  var d = { title: '', steps: steps };
+  if (hidden) d.more = '+' + hidden + '개 더 · 전체 task ' + (tasks.length + ran) + '개 →';
+  return d;
+}
+// The window itself: the element (its data in cardTaskPlanHydrate, where it changed) — and, when the window
+// hides nothing of the current list but earlier lists ran, the page's own 전체 task N개 → (the element draws
+// its line only for the rows it left out; with no current list at all it would draw its empty state instead).
+function renderCardTasks(s) {
+  if (!dhShow('tasks')) return '';
+  var tasks = s.tasks || [];
+  var ran = cardTasksRan(s);
   if (tasks.length === 0 && ran === 0) return '';
-  var max = dhMax('tasks', 5);
-  var folded = 0;
-  var tail = 0;
-  var shown = [];
-  var drop = Math.max(0, tasks.length - max);
-  for (var i = 0; i < tasks.length; i++) {
-    if (drop > 0 && tasks[i].status === 'completed') { drop--; folded++; continue; }
-    shown.push(tasks[i]);
-  }
-  if (shown.length > max) { tail = shown.length - max; shown = shown.slice(0, max); }
-  var hidden = folded + tail + ran;
-  var html = '<div class="tl-wrap">';
-  if (folded > 0) html += '<div class="tl-more">+' + folded + ' 완료</div>';
-  if (shown.length) html += '<ul class="tl">' + shown.map(renderTimelineItem).join('') + '</ul>';
-  if (tail > 0) html += '<div class="tl-more">+' + tail + '개 더</div>';
-  if (hidden > 0) {
-    html += '<button type="button" class="tl-toggle" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',\\'tasks\\',\\'\\',event.detail===0)">'
+  var max = dhMax('tasks', CARD_TASK_ROWS);
+  var html = tasks.length
+    ? '<ui-task-plan class="card-task-plan" lang="ko" flush max="' + max + '" foot="none" data-tp-key="' + escAttr(s.key) + '"></ui-task-plan>'
+    : '';
+  if (ran > 0 && cardTaskHidden(tasks.map(cardTaskStep), max) === 0) {
+    html += '<button type="button" class="card-more-link" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',\\'tasks\\',\\'\\',event.detail===0)">'
       + '전체 task ' + (tasks.length + ran) + '개 &rarr;</button>';
   }
-  return html + '</div>';
+  return html;
 }
+// Set every card window's data under root — only what changed (a push that changes nothing on a card does
+// not re-render it). Data set before the element is defined is picked up when it upgrades.
+function cardTaskPlanHydrate(root) {
+  if (!root || !root.querySelectorAll) return;
+  var els = root.querySelectorAll('ui-task-plan[data-tp-key]');
+  for (var i = 0; i < els.length; i++) {
+    var s = _sessionCache[els[i].getAttribute('data-tp-key') || ''];
+    if (s) taskElData(els[i], cardTaskPlanData(s));
+  }
+}
+// The window's "+N개 더 · 전체 task N개 →" (ui-more): the panel's Tasks, the same landing as the page's link —
+// by keyboard (_atKeyed) focus lands in the panel.
+document.addEventListener('ui-more', function(e) {
+  var el = e.target;
+  if (!el || el.localName !== 'ui-task-plan' || !el.hasAttribute('data-tp-key')) return;
+  openPanel(el.getAttribute('data-tp-key') || '', 'tasks', '', _atKeyed);
+});
 
 // ── Agent tree (spec 12 §4, .prd/12-dashboard-agent-tree-spec.md) ──
 // A card is the main agent; s.agents are the subagents it (or another
@@ -10915,7 +10923,7 @@ function renderCardBody(s, col) {
   const ioHtml = isSiblingSession(s) ? '' : renderCardIo(s);
   // Artifacts live on this instance's disk: a sibling instance's card links nowhere here.
   const artsHtml = isSiblingSession(s) ? '' : renderCardArtifacts(s);
-  const tasksHtml = renderTimeline(s);
+  const tasksHtml = renderCardTasks(s);
   const agentsHtml = renderAgentTree(s, col);
   let middle;
   if (col === 'working') middle = tasksHtml + agentsHtml + ioHtml;
@@ -13402,7 +13410,7 @@ function wlEntryOf(st, e) {
 // Pure: a task group's ledger meta — the element's quiet line under the head's
 // title (D3-GAPS G2-2, 0.12.0 WorkGroup.meta): how the task ended (its time
 // when done, the fate word else — a running one says so, no live clock in a
-// head), and 툴 N회 once it ran. The words are the task list's (renderTaskMeta).
+// head), and 툴 N회 once it ran. The words are the task ledger's (TASK_FATE_LABEL).
 function wlTaskMeta(t) {
   var started = Number(t.startedAt) || 0;
   var completed = Number(t.completedAt) || 0;

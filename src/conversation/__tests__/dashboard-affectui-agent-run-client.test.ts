@@ -1111,6 +1111,7 @@ describe('after an answer (D15)', () => {
       acPermissionsHtml: (s: { pendingPermissions: Array<{ approvalId: string }> }) =>
         s.pendingPermissions.map((p) => `<${p.approvalId}>`).join(''),
       acHydrate: () => {},
+      cardTaskPlanHydrate: () => {},
       morphInnerHtml: () => {},
       apSafeFocus: () => {},
       apAnnounce: (t: string) => said.push(t),
@@ -1282,6 +1283,7 @@ describe('live repaint never rebinds an answer to another request (D14, review R
       acPermissionsHtml: (s: { pendingPermissions: Array<{ approvalId: string }> }) =>
         s.pendingPermissions.map((p) => p.approvalId).join(','),
       acHydrate: () => {},
+      cardTaskPlanHydrate: () => {},
       morphInnerHtml: (el: Node, _html: string) => morph.domMorphChildren(el, new Node('DIV', {}, next)),
       apAnnounce: () => {},
       renderPanelNeedsHead: () => {},
@@ -1373,6 +1375,7 @@ describe('a question rewritten in place is another card (review R2 P1)', () => {
       document,
       acQuestionHtml: () => `<${next.getAttribute('data-mk')}>`,
       acHydrate: () => {},
+      cardTaskPlanHydrate: () => {},
       morphInnerHtml: (el: Node) => morph.domMorphChildren(el, new Node('DIV', {}, [next])),
       renderMultiChoicePanel: () => {},
       renderPanelNeedsHead: () => {},
