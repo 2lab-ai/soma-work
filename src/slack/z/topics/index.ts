@@ -21,6 +21,7 @@ import { createModelTopicBinding } from './model-topic';
 import { createNotifyTopicBinding } from './notify-topic';
 import { createPersonaTopicBinding } from './persona-topic';
 import { createSandboxTopicBinding } from './sandbox-topic';
+import { createTaskEntryTopicBinding } from './taskentry-topic';
 import { createThemeTopicBinding } from './theme-topic';
 import { createUsageTopicBinding } from './usage-topic';
 import { createVerbosityTopicBinding } from './verbosity-topic';
@@ -43,6 +44,7 @@ export function registerAllTopics(registry: ZTopicRegistry): void {
   registry.register(createNotifyTopicBinding());
   registry.register(createPersonaTopicBinding());
   registry.register(createSandboxTopicBinding());
+  registry.register(createTaskEntryTopicBinding());
   registry.register(createThemeTopicBinding());
   registry.register(createUsageTopicBinding());
   registry.register(createVerbosityTopicBinding());

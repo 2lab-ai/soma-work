@@ -101,6 +101,12 @@ Upload images (JPG/PNG/GIF/WebP), text, or code files directly in Slack. 50MB li
 
 The dashboard's **New task** button (top bar on desktop, `N` shortcut; floating button on phones) opens a composer: model (with a shared-pool quota battery), effort, Slack channel, per-task `autogoal` and `autoz` toggles, the instruction, and attachments — files, pasted screenshots, the phone camera and voice notes. The task starts as your own message on a new thread in the chosen channel, so its progress is visible in Slack. The channel list is the repo-mapped channels you are a member of; it defaults to the channel you last gave a command in. Turning `autoz` on appends `$autoz` to the instruction.
 
+### 🗂️ A Slack instruction as a dashboard task
+
+Turn it on with `/z taskentry on` (per user, off by default). A plain instruction to the bot in a channel then becomes a dashboard task. The thread gets the card link, then only what matters: the result, questions that need you, approval requests and failures. You follow and steer the work on the card. In that thread nothing else runs: another mention gets one notice with the card link.
+
+When it does not apply, the Slack session path runs as before: DMs, files, commands, `!`/`%`, and threads that already have a Slack session. When the dashboard is not running, you are told and the work runs as a Slack session. Wiring: [architecture](./docs/misc/reference/architecture.md) (E2 ⑧).
+
 ### 🖼️ Dashboard Artifacts
 
 Every file the model sends to Slack (HTML reports, PNG, WAV/voice, video, PDF, text) and every markdown final answer shows up in the web dashboard: as chips on the session card, a thumbnail strip in the opened card, and a strip in the session panel's common surface with each answer's own files under it. Hover for a minimap preview, click for a full-size viewer (HTML runs sandboxed; audio plays straight from the card). Uploads made before the feature are backfilled from the session's work log.
@@ -233,6 +239,7 @@ Grammar: `/z <topic> [verb] [args...]`. See `docs/current/spec/01-slack-integrat
 | `/z cwd [set <path>]` | Show / set working directory |
 | `/z mcp [list\|reload]` | List MCP servers / reload config |
 | `/z bypass [set on\|off]` | Toggle permission bypass |
+| `/z taskentry [set on\|off]` | A plain channel instruction becomes a dashboard task (per user, off by default; naked `taskentry on\|off` also accepted) |
 | `/z persona [set <name>\|list]` | Switch persona |
 | `/z model [set <name>\|list]` | Switch model (sonnet, opus, haiku) |
 | `/z verbosity [set <level>]` | Set output verbosity (`minimal` · `compact` · `detail` · `verbose`). The default is `minimal`: the thread shows the task list (the main agent's — a subagent's own list lives on its dashboard entry), questions/approvals, the final answer and errors; the model's running narration, tool calls, compaction notices and skill banners (`$skill` and autoskill included) go to the dashboard work log |

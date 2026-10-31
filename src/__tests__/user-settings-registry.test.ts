@@ -57,6 +57,10 @@ function memoryStore(): SettingsStoreLike & { data: Record<string, any> } {
       return { from, to: r };
     },
     getUserPermissionMode: (id) => u(id).mode ?? 'auto',
+    getUserSlackTaskEntry: (id) => !!u(id).slackTaskEntry,
+    setUserSlackTaskEntry: (id, v) => {
+      u(id).slackTaskEntry = v;
+    },
     getUserSandboxDisabled: (id) => !!u(id).sandboxOff,
     getUserNetworkDisabled: (id) => !!u(id).networkOff,
   };
@@ -153,6 +157,7 @@ describe('settings registry — read', () => {
       'email',
       'rating',
       'workingDirectory',
+      'slackTaskEntry',
       'permissionMode',
       'sandbox',
       'sandboxNetwork',
@@ -257,6 +262,17 @@ describe('settings registry — write', () => {
     expect(apply.sandbox).toHaveBeenCalledWith({ userId: 'U_ADMIN', value: 'off' });
     await registry.write('U1', 'sandboxNetwork', false);
     expect(apply.sandbox).toHaveBeenCalledWith({ userId: 'U1', value: 'network_off' });
+  });
+
+  it('slackTaskEntry (E2 ⑧): off by default, a toggle in account, written through the store setter', async () => {
+    const { registry, store } = setup();
+    const row = registry.read('U1').settings.find((s) => s.key === 'slackTaskEntry')!;
+    expect(row).toMatchObject({ kind: 'toggle', group: 'account', value: false, modified: false, editable: true });
+    expect(row.slackCommand).toBe('taskentry on|off');
+    const v = await registry.write('U1', 'slackTaskEntry', true);
+    expect(store.data.U1.slackTaskEntry).toBe(true);
+    expect(v).toMatchObject({ value: true, modified: true });
+    await refused(registry.write('U1', 'slackTaskEntry', 'on'), 400);
   });
 
   it('read-only and unknown keys are refused; wrong value types are 400', async () => {

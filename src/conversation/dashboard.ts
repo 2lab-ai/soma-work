@@ -2879,6 +2879,14 @@ export function createLiveUpdateThrottle(send: (key: string) => void, intervalMs
 export const scheduleLiveSessionUpdate = createLiveUpdateThrottle((key) => broadcastSingleSessionUpdate(key), 1000);
 
 /** Broadcast session action feedback to all connected WebSocket clients */
+/**
+ * A close the registry refused: something the session still owes could not be
+ * handed over — a task's instruction-thread notices (E2 ⑤, D6) or parked
+ * follow-ups whose store failed. Cause-neutral (fable #672 P2-1); shown on the card.
+ */
+export const CLOSE_REFUSED_TEXT =
+  '남은 처리(슬랙 스레드 알림이나 대기 중인 후속 메시지)를 넘기지 못해 닫지 않았어요 — 잠시 뒤 다시 시도하거나 관리자에게 알려 주세요.';
+
 function broadcastSessionAction(sessionKey: string, action: 'stop' | 'close' | 'trash'): void {
   if (wsClients.size === 0) return;
   try {
@@ -3396,6 +3404,12 @@ export async function registerDashboardRoutes(
         broadcastSessionUpdate();
         reply.send({ ok: true });
       } catch (error) {
+        // The registry kept the task (E2 ⑤, D6): say why, not a bare 500 (fable #668 P3-4).
+        if ((error as Error)?.name === 'SessionDeleteRefusedError') {
+          logger.warn('Close refused — the session is kept', { key, error: (error as Error).message });
+          reply.status(409).send({ error: CLOSE_REFUSED_TEXT });
+          return;
+        }
         logger.error('Error closing session', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
@@ -12009,8 +12023,13 @@ async function doAction(key, action) {
     if (res.ok) dashToast({ title: DA_DONE[action] || '완료했어요', description: title || undefined, tone: 'success' });
     else {
       console.error('Action failed', action, key);
+      // A refusal (409) carries its reason: show it instead of the bare status.
+      var reason = '';
+      if (res.status === 409) {
+        try { var failed = await res.json(); reason = (failed && typeof failed.error === 'string') ? failed.error : ''; } catch (_) {}
+      }
       dashToast(
-        { title: (DA_LABEL[action] || action) + ' 실패', description: 'HTTP ' + res.status + (title ? ' · ' + title : ''), tone: 'error', action: { id: 'retry' } },
+        { title: (DA_LABEL[action] || action) + ' 실패', description: (reason || 'HTTP ' + res.status) + (title ? ' · ' + title : ''), tone: 'error', action: { id: 'retry' } },
         function() { doAction(key, action); },
       );
     }
