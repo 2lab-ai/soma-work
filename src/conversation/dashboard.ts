@@ -1401,6 +1401,15 @@ export function stopDashboardPermissionWatch(): void {
 
 // ── Admin approvals (#620) — the admins' Slack DM requests, as approval cards ──
 
+/**
+ * Who may see the admin approvals: a Slack-signed-in admin. A viewer token or
+ * a deployment without auth reads as `isAdmin` elsewhere, but carries no
+ * identity — the requests (who asked, where, which skill) are not shown there.
+ */
+function isSlackAdmin(auth: { mode?: string; userId?: string; isAdmin?: boolean } | undefined): boolean {
+  return !!auth && auth.mode === 'oauth_jwt' && !!auth.userId && auth.isAdmin === true && isAdminUser(auth.userId);
+}
+
 /** The snapshot as admin viewers receive it: ids carry this instance's prefix (#814), like card keys. */
 export function adminApprovalsForWire(
   snapshot: AdminApprovalSnapshot = adminApprovalSnapshot(),
@@ -1417,7 +1426,7 @@ export function broadcastAdminApprovals(): void {
   try {
     const payload = JSON.stringify({ type: 'admin_approvals', snapshot: adminApprovalsForWire() });
     for (const client of wsClients) {
-      if (!client.isAdmin) continue;
+      if (!client.slackAdmin) continue;
       try {
         client.send(payload);
       } catch {
@@ -2401,7 +2410,14 @@ function getDateRangeFrom(date: string, period: 'day' | 'week' | 'month'): { sta
 
 // ── WebSocket broadcast ────────────────────────────────────────────
 
-type WsClient = { send: (data: string) => void; close: () => void; userId?: string; isAdmin?: boolean };
+type WsClient = {
+  send: (data: string) => void;
+  close: () => void;
+  userId?: string;
+  isAdmin?: boolean;
+  /** A Slack-signed-in admin (ADMIN_USERS) — the only audience of admin approvals (#620). */
+  slackAdmin?: boolean;
+};
 const wsClients = new Set<WsClient>();
 
 /** Broadcast session state update to all connected WebSocket clients */
@@ -3429,9 +3445,10 @@ export async function registerDashboardRoutes(
   // ── Admin approvals (#620): read for admins, answer for admins in admin mode ──
 
   server.get('/api/dashboard/admin-approvals', { preHandler: [authMiddleware] }, async (request, reply) => {
-    const auth = (request as { authContext?: { isAdmin?: boolean } }).authContext;
-    if (!auth?.isAdmin) {
-      reply.status(403).send({ error: 'Admins only' });
+    if (
+      !isSlackAdmin((request as { authContext?: { mode?: string; userId?: string; isAdmin?: boolean } }).authContext)
+    ) {
+      reply.status(403).send({ error: 'Slack 계정으로 로그인한 관리자만 볼 수 있습니다' });
       return;
     }
     reply.header('Cache-Control', 'no-store').send(adminApprovalsForWire());
@@ -3491,6 +3508,10 @@ export async function registerDashboardRoutes(
         }
         if (result.reason === 'invalid') {
           reply.status(400).send({ error: '이 요청에 없는 선택지입니다' });
+          return;
+        }
+        if (result.reason === 'forbidden') {
+          reply.status(403).send({ error: '관리자만 응답할 수 있습니다' });
           return;
         }
         reply.status(404).send({ error: '만료되었거나 더 이상 없는 요청입니다' });
@@ -4019,6 +4040,7 @@ export async function registerDashboardRoutes(
         close: () => socket.close(),
         userId: authContext?.userId,
         isAdmin: authContext?.isAdmin,
+        slackAdmin: isSlackAdmin(authContext),
       };
       wsClients.add(client);
       logger.debug('WebSocket client connected', { total: wsClients.size });
@@ -7632,10 +7654,18 @@ async function answerAdminApproval(id, choiceId) {
   try {
     var res = await acPost('/api/dashboard/admin-approvals/answer', JSON.stringify({ id: id, choiceId: choiceId }));
     if (res.ok) {
-      st = a.card === 'question'
-        ? { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() }
-        : { status: 'resolved', outcome: choiceId === 'deny' ? 'denied' : 'approved', at: Date.now() };
-      dashToast({ title: '응답을 보냈어요', description: adminApprovalTitle(a) + ' — 관리자들의 Slack DM도 같은 결과로 바뀝니다', tone: 'success' });
+      var done = {};
+      try { done = await res.json(); } catch (_e) {}
+      // The server's outcome is the truth: a grant can end as a denial (the skill left the host).
+      var deniedInstead = done && done.outcome === 'denied' && !/deny/.test(choiceId);
+      st = deniedInstead
+        ? { status: 'resolved', outcome: 'denied', at: Date.now() }
+        : a.card === 'question'
+          ? { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() }
+          : { status: 'resolved', outcome: choiceId === 'deny' ? 'denied' : 'approved', at: Date.now() };
+      dashToast(deniedInstead
+        ? { title: '거부로 처리됐어요', description: adminApprovalTitle(a) + ' — 서버가 요청을 거부했습니다', tone: 'warning' }
+        : { title: '응답을 보냈어요', description: adminApprovalTitle(a) + ' — 관리자들의 Slack DM도 같은 결과로 바뀝니다', tone: 'success' });
     } else if (res.status === 409) {
       var data = {};
       try { data = await res.json(); } catch (_e) {}

@@ -84,7 +84,7 @@ export function envSkillAdminApprovalAdapter(handler: Decider): AdminApprovalAda
             result.reason === 'already_answered'
               ? 'already_answered'
               : result.reason === 'not_admin'
-                ? 'invalid'
+                ? 'forbidden'
                 : 'not_found',
         };
       }

@@ -70,7 +70,11 @@ export interface AdminApprovalSnapshot {
 
 export type AdminApprovalAnswer =
   | { ok: true; outcome: 'approved' | 'denied' }
-  | { ok: false; reason: 'not_found' | 'already_answered' | 'invalid'; resolution?: AdminApprovalResolution };
+  | {
+      ok: false;
+      reason: 'not_found' | 'already_answered' | 'invalid' | 'forbidden';
+      resolution?: AdminApprovalResolution;
+    };
 
 export interface AdminApprovalAdapter {
   kind: AdminApprovalKind;

@@ -23,6 +23,7 @@ import { ENV_SKILL_GRANT_OWNER, hasThreadGrant } from '../../user-skill-grants-s
 import { EnvSkillPermissionActionHandler } from '../actions/env-skill-permission-action-handler';
 import { envSkillAdminApprovalAdapter } from '../env-skill-admin-approval';
 import { VALUE_KIND_ENV_SKILL_DENY, VALUE_KIND_ENV_SKILL_ONCE } from '../env-skill-permission-blocks';
+import { requestEnvSkillPermission } from '../env-skill-permission-request';
 
 function makeRequest(thread: string) {
   const req = createPermissionRequest({
@@ -126,12 +127,50 @@ describe('environment-skill requests as admin approvals (#620)', () => {
   it('a non-admin, an unknown choice, or a missing request is refused', async () => {
     const id = makeRequest(`t-${Math.random()}`);
     const adapter = envSkillAdminApprovalAdapter(handler);
-    expect(await adapter.answer(id, VALUE_KIND_ENV_SKILL_ONCE, 'U1')).toEqual({ ok: false, reason: 'invalid' });
+    expect(await adapter.answer(id, VALUE_KIND_ENV_SKILL_ONCE, 'U1')).toEqual({ ok: false, reason: 'forbidden' });
     expect(await adapter.answer(id, 'env_skill_bogus', 'UADMIN1')).toEqual({ ok: false, reason: 'invalid' });
     expect(await adapter.answer('missing', VALUE_KIND_ENV_SKILL_ONCE, 'UADMIN1')).toEqual({
       ok: false,
       reason: 'not_found',
     });
     expect(adapter.pending(Date.now()).some((a) => a.id === `env_skill:${id}`)).toBe(true);
+  });
+
+  it('answered on the dashboard while the DMs were still going out: the late DMs are closed, not left live', async () => {
+    const adapter = envSkillAdminApprovalAdapter(handler);
+    const thread = `t-${Math.random()}`;
+    let answered: unknown;
+    const api = {
+      openDmChannel: vi.fn(async (admin: string) => `D-${admin}`),
+      postMessage: vi.fn(async (channel: string) => {
+        // The request is listed on the dashboard from the moment it is created;
+        // an admin answers it there before the second DM has even been posted.
+        if (channel === 'D-UADMIN2' && !answered) {
+          const card = adapter.pending(Date.now()).find((a) => a.place?.threadTs === thread);
+          answered = await adapter.answer(card!.id.slice('env_skill:'.length), VALUE_KIND_ENV_SKILL_DENY, 'UADMIN1');
+        }
+        return { ts: `ts-${channel}`, channel };
+      }),
+      updateMessage: vi.fn(async () => undefined),
+    };
+    const { delivered } = await requestEnvSkillPermission({
+      slackApi: api as any,
+      requesterId: 'U1',
+      skillKey: 'acme-env:post-deploy',
+      channel: 'C1',
+      threadTs: thread,
+      originalText: 'continue the deploy',
+      admins: ['UADMIN1', 'UADMIN2'],
+    });
+    expect(delivered).toBe('dm');
+    expect(answered).toEqual({ ok: true, outcome: 'denied' });
+    // Both DMs — posted before and after the answer — end without buttons, saying who answered where.
+    const closed = api.updateMessage.mock.calls as unknown as Array<[string, string, string, any[]]>;
+    expect(closed.map((c) => c[0]).sort()).toEqual(['D-UADMIN1', 'D-UADMIN2']);
+    for (const c of closed) {
+      expect(c[2]).toContain('대시보드');
+      expect(c[2]).toContain('거부');
+      expect(JSON.stringify(c[3])).not.toContain('"actions"');
+    }
   });
 });
