@@ -141,15 +141,29 @@ describe('McpToolGrantStore', () => {
     }
   });
 
-  it('setGrant returns what it replaced; restoreGrant puts it back', () => {
+  it('setGrant returns what it replaced; restoreGrant puts it back — and removes the level when nothing was there', () => {
     const first = new Date(Date.now() + 86400000).toISOString();
     const second = new Date(Date.now() + 2 * 86400000).toISOString();
-    expect(store.setGrant('U_A', 'github', 'write', first, 'U_ADMIN1')).toBeNull();
-    const replaced = store.setGrant('U_A', 'github', 'write', second, 'U_ADMIN2');
-    expect(replaced?.expiresAt).toBe(first);
-    store.restoreGrant('U_A', 'github', 'write', replaced);
+    const a = store.setGrant('U_A', 'github', 'write', first, 'U_ADMIN1');
+    expect(a.replaced).toBeNull();
+    const b = store.setGrant('U_A', 'github', 'write', second, 'U_ADMIN2');
+    expect(b.replaced?.expiresAt).toBe(first);
+    expect(store.restoreGrant('U_A', 'github', 'write', b)).toBe(true);
     expect(new McpToolGrantStore(dir).getActiveGrant('U_A', 'github')?.write?.expiresAt).toBe(first);
-    store.restoreGrant('U_A', 'github', 'write', null);
+    const c = store.setGrant('U_C', 'github', 'read', first, 'U_ADMIN1');
+    expect(store.restoreGrant('U_C', 'github', 'read', c)).toBe(true);
+    const disk = JSON.parse(fs.readFileSync(path.join(dir, 'mcp-tool-grants.json'), 'utf-8'));
+    expect('read' in (disk.U_C?.github ?? {})).toBe(false);
+  });
+
+  it('restoreGrant never undoes a revoke (or another grant) that landed after the write', () => {
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
+    const earlier = store.setGrant('U_A', 'github', 'write', expiresAt, 'U_ADMIN0');
+    const change = store.setGrant('U_A', 'github', 'write', expiresAt, 'U_ADMIN1');
+    expect(earlier.written).toEqual(change.replaced);
+    // Another admin revokes meanwhile (in the MCP child).
+    new McpToolGrantStore(dir).revokeGrant('U_A', 'github', 'all');
+    expect(store.restoreGrant('U_A', 'github', 'write', change)).toBe(false);
     expect(new McpToolGrantStore(dir).getActiveGrant('U_A', 'github')).toBeNull();
   });
 
