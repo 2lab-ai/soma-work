@@ -22,7 +22,16 @@ function load<T>(fns: string[], inject: Record<string, unknown> = {}): T {
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
-const RENDER = ['esc', 'escAttr', 'valueText', 'renderSegmented', 'renderSelect', 'renderControl', 'renderRow'];
+const RENDER = [
+  'esc',
+  'escAttr',
+  'valueText',
+  'soundCue',
+  'renderSegmented',
+  'renderSelect',
+  'renderControl',
+  'renderRow',
+];
 
 function row(over: Record<string, unknown> = {}) {
   return {
@@ -75,7 +84,7 @@ describe('settings page shell', () => {
     expect(html).not.toMatch(/class="(back|theme|who|tabs|brand-mark)"/);
   });
 
-  it('the app bar gets brand, links (설정 current), account and theme; ui-theme-change sets and stores the theme', () => {
+  it('the app bar gets brand, links (설정 current), account, theme and the sound choice; ui-theme-change sets and stores the theme', () => {
     const set = vi.fn();
     const html = {
       attr: 'dark',
@@ -83,10 +92,11 @@ describe('settings page shell', () => {
       setAttribute: (_n: string, v: string) => (html.attr = v),
     };
     const bar: { data?: Record<string, unknown> } = {};
+    const document = { documentElement: html, getElementById: (id: string) => (id === 'app-bar' ? bar : null) };
     const api = load<{ paintAppBar: () => void; setTheme: (t: string) => void; toggleTheme: () => void }>(
       ['currentTheme', 'paintAppBar', 'setTheme', 'toggleTheme'],
       {
-        document: { documentElement: html, getElementById: (id: string) => (id === 'app-bar' ? bar : null) },
+        document,
         localStorage: { setItem: set },
         APP_BAR_NAV: [{ id: 'settings', label: '설정', href: '/dashboard/settings', current: true }],
         _appBarAccount: { name: '민아', href: '/login', role: '관리자' },
@@ -98,12 +108,23 @@ describe('settings page shell', () => {
       nav: [{ id: 'settings', label: '설정', href: '/dashboard/settings', current: true }],
       navLabel: '주 메뉴',
       theme: 'dark',
+      // The speaker (interface sound, #614) is the bar's own: without the head's sound script, off.
+      sound: false,
       account: { name: '민아', href: '/login', role: '관리자' },
     });
     api.toggleTheme();
     expect(html.attr).toBe('light');
     expect(set).toHaveBeenCalledWith('soma-theme', 'light');
     expect(bar.data?.theme).toBe('light');
+    // The head script's choice (_somaOn, read from soma-sound before paint) is handed to the bar: pressed while on.
+    const withSound = load<{ paintAppBar: () => void }>(['currentTheme', 'paintAppBar'], {
+      document,
+      APP_BAR_NAV: [],
+      _appBarAccount: null,
+      _somaOn: true,
+    });
+    withSound.paintAppBar();
+    expect(bar.data?.sound).toBe(true);
   });
 
   it('the hash picks the tab: <ui-tabs> gets the tabs and the value, the other tab page keeps hidden, the tab hook runs once', () => {
@@ -274,7 +295,10 @@ describe('개인 설정 rows — <ui-setting-row> (M-02)', () => {
 
   it('toggle (kit switch, the row names it), typed (kit input) and list rows', () => {
     const toggle = r.renderRow(row({ key: 'autoGoal', kind: 'toggle', value: false, options: undefined }));
-    expect(toggle).toContain('<label class="ui-switch"><input type="checkbox" role="switch" id="f-autoGoal"');
+    // data-ui-sound="toggle": the switch sounds through bindSound (#614); a danger row's would be "off".
+    expect(toggle).toContain(
+      '<label class="ui-switch"><input type="checkbox" role="switch" data-ui-sound="toggle" id="f-autoGoal"',
+    );
     expect(toggle).toContain('<span aria-hidden="true">꺼짐</span>');
     const typed = r.renderRow(row({ key: 'email', kind: 'text', value: 'a@b.co', options: undefined }));
     expect(typed).toContain('<input type="text" class="ui-input" id="f-email"');

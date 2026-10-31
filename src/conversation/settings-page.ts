@@ -23,6 +23,7 @@
  */
 
 import { MEMORY_CLIENT_JS, MEMORY_TAB_CSS, MEMORY_TAB_HTML } from './settings-memory-tab';
+import { soundClientJs } from './sound-client';
 import { pageTokenAliases, UI_LIB_VERSION, uiLibKitCss, uiLibTokensCss } from './ui-lib';
 
 export interface SettingsPageTab {
@@ -72,8 +73,9 @@ html, body { background: var(--bg); color: var(--text); font-family: var(--font)
 a { color: var(--accent); }
 code { font-family: var(--mono); font-size: 12px; }
 /* ── App bar and tabs (M-01) — @2lab.ai/ui <ui-app-bar id="app-bar">, as on the dashboard: brand, the page
-   links (folded into 메뉴 when the bar is short of room), the signed-in account and the theme toggle are its
-   data (paintAppBar); translucent over the page, one hairline, opaque under reduced transparency — all the
+   links (folded into 메뉴 when the bar is short of room), the signed-in account, the speaker (interface sound,
+   its ui-sound-change answered by the head's sound script) and the theme toggle are its data (paintAppBar);
+   translucent over the page, one hairline, opaque under reduced transparency — all the
    element's own. Under it the tab list 개인 설정 · 기억 is <ui-tabs id="settings-tabs"> over the two tab pages
    (each a slotted panel); the location hash still picks the tab, so /dashboard/settings#memory opens 기억. ── */
 .topbar { position: sticky; top: 0; z-index: 20; min-width: 0; }
@@ -252,6 +254,11 @@ function valueText(row, value) {
 function sameValue(a, b) {
   return JSON.stringify(a) === JSON.stringify(b);
 }
+// The interface-sound cue a row's control plays through bindSound. A setting that asks first (danger) stays
+// silent: its change fires before the confirm dialog, so a cancelled change would still have sounded.
+function soundCue(row, cue) {
+  return row && row.danger ? 'off' : cue;
+}
 function renderSegmented(row) {
   var name = 'seg-' + row.key;
   var html = '<fieldset class="seg"><legend>' + esc(row.label) + '</legend>';
@@ -259,12 +266,12 @@ function renderSegmented(row) {
   for (var i = 0; i < opts.length; i++) {
     var o = opts[i];
     html += '<label title="' + escAttr(o.description || o.label) + '"><input type="radio" name="' + escAttr(name) + '" value="' + escAttr(o.value) + '"'
-      + (o.value === row.value ? ' checked' : '') + ' data-key="' + escAttr(row.key) + '" onchange="onChoice(this)"><span>' + esc(o.label) + '</span></label>';
+      + (o.value === row.value ? ' checked' : '') + ' data-key="' + escAttr(row.key) + '" data-ui-sound="' + soundCue(row, 'select') + '" onchange="onChoice(this)"><span>' + esc(o.label) + '</span></label>';
   }
   return html + '</fieldset>';
 }
 function renderSelect(row) {
-  var html = '<select class="ui-input" id="f-' + escAttr(row.key) + '" data-key="' + escAttr(row.key) + '" onchange="onChoice(this)">';
+  var html = '<select class="ui-input" id="f-' + escAttr(row.key) + '" data-key="' + escAttr(row.key) + '" data-ui-sound="' + soundCue(row, 'select') + '" onchange="onChoice(this)">';
   var opts = row.options || [];
   for (var i = 0; i < opts.length; i++) {
     var o = opts[i];
@@ -287,7 +294,7 @@ function renderControl(row) {
   }
   if (row.kind === 'toggle') {
     // The state word is aria-hidden: the row names the switch, role="switch" reads on / off.
-    return '<label class="ui-switch"><input type="checkbox" role="switch" id="f-' + k + '" data-key="' + k + '"' + (row.value ? ' checked' : '')
+    return '<label class="ui-switch"><input type="checkbox" role="switch" data-ui-sound="' + soundCue(row, 'toggle') + '" id="f-' + k + '" data-key="' + k + '"' + (row.value ? ' checked' : '')
       + ' onchange="onToggle(this)"><span aria-hidden="true">' + (row.value ? '켜짐' : '꺼짐') + '</span></label>';
   }
   if (row.kind === 'text' || row.kind === 'number') {
@@ -295,7 +302,7 @@ function renderControl(row) {
     var bounds = row.kind === 'number' ? ' min="' + row.min + '" max="' + row.max + '" step="1"' : '';
     return '<div class="line"><input type="' + type + '" class="ui-input" id="f-' + k + '" data-key="' + k + '" value="' + escAttr(row.value) + '"' + bounds
       + ' onkeydown="if(event.key===\'Enter\')saveTyped(this.getAttribute(\'data-key\'))">'
-      + '<button type="button" class="btn primary" data-key="' + k + '" onclick="saveTyped(this.getAttribute(\'data-key\'))">저장</button>'
+      + '<button type="button" class="btn primary" data-ui-sound data-key="' + k + '" onclick="saveTyped(this.getAttribute(\'data-key\'))">저장</button>'
       + (row.kind === 'text' && row.value ? '<button type="button" class="btn" data-key="' + k + '" onclick="clearTyped(this.getAttribute(\'data-key\'))">지우기</button>' : '')
       + '</div>';
   }
@@ -547,9 +554,11 @@ function initPreferences() {
 }
 
 // ── App bar (M-01) — @2lab.ai/ui <ui-app-bar id="app-bar"> ──
-// The page hands the bar its data — brand, the page links, the signed-in account, the current theme — and
-// answers ui-theme-change (the page owns the theme and its storage). Links are real links: ui-navigate is
-// not cancelled.
+// The page hands the bar its data — brand, the page links, the signed-in account, the current theme and the
+// sound choice — and answers ui-theme-change (the page owns the theme and its storage). The speaker is the
+// bar's own: its ui-sound-change is answered by the head's sound script (somaSoundBindBar, bound to #app-bar
+// at DOMContentLoaded), which keeps the choice and re-hands the bar its state. Links are real links:
+// ui-navigate is not cancelled.
 var APP_BAR_NAV = [
   { id: 'dashboard', label: '대시보드', href: '/dashboard', icon: 'board' },
   { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat' },
@@ -562,7 +571,14 @@ function currentTheme() {
 function paintAppBar() {
   var bar = document.getElementById('app-bar');
   if (!bar) return;
-  var data = { brand: { label: 'soma-work', mark: true, href: '/dashboard' }, nav: APP_BAR_NAV, navLabel: '주 메뉴', theme: currentTheme() };
+  var data = {
+    brand: { label: 'soma-work', mark: true, href: '/dashboard' },
+    nav: APP_BAR_NAV,
+    navLabel: '주 메뉴',
+    theme: currentTheme(),
+    // The speaker before the theme toggle (interface sound, #614): the head script's choice (_somaOn).
+    sound: typeof _somaOn !== 'undefined' && !!_somaOn,
+  };
   if (_appBarAccount) data.account = _appBarAccount;
   bar.data = data;
 }
@@ -662,6 +678,9 @@ export function renderSettingsPage(tabs: SettingsPageTab[] = SETTINGS_TABS): str
 <script data-fouc>
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
 </script>
+<!-- Interface sound (@2lab.ai/ui/sound, sound-cuelume): off until the app bar's speaker turns it on; the script
+     binds the bar's ui-sound-change (somaSoundBindBar) and the page's own data-ui-sound controls (bindSound). -->
+<script data-sound>${soundClientJs(UI_LIB_VERSION)}</script>
 <!-- @2lab.ai/ui kit (ui-kit.css): the light-DOM classes (.ui-btn, .ui-input, .ui-switch, .ui-card, .ui-notice,
      .ui-sr-only …) on the --ui-* tokens below. Before the page sheet, so a page rule that places a kit control wins. -->
 <style id="ui-kit">

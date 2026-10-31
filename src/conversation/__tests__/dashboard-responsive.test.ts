@@ -238,8 +238,16 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
     // 560px: below it, full thumbnails would push the conversation out of a short body.
     const compact = cssBlock('@container pbody (max-height: 560px) {');
     expect(compact).not.toBe('');
-    expect(compact).toContain('.art-strip-panel .art-thumb { display: none; }');
-    expect(compact).toContain('.art-strip-panel .art-play { position: static;');
+    // The row is laid out here; the chips are the file cards' chip variant (D2), chosen by the panel body's height.
+    expect(compact).toContain('.art-strip-panel { flex: 1 1 auto;');
+    expect(DASHBOARD_TS).toContain('var ART_PANEL_SHORT_PX = 560;');
+    expect(DASHBOARD_TS).toContain("return !_panelDetail || (h > 0 && h <= ART_PANEL_SHORT_PX) ? 'chip' : 'tile';");
+    expect(DASHBOARD_TS).toContain(
+      'var size = new ResizeObserver(function() { sizePanelSections(); syncPanelArtVariant(); });',
+    );
+    expect(DASHBOARD_TS).toContain(
+      '.art-tile:has(> ui-file-card[variant="chip"]) .art-play { position: static; flex: none; width: 32px; height: 32px; }',
+    );
     expect(rule('.art-strip')).toContain('overflow-x: auto');
   });
 });
@@ -260,7 +268,7 @@ describe('board columns follow the inbox width, not the viewport', () => {
   });
 
   it('no viewport media query decides the board columns any more', () => {
-    expect(cssBlock('@media (max-width: 1023px) {')).not.toContain('.kanban');
+    expect(cssBlock('@media (max-width: 1199px) {')).not.toContain('.kanban');
     expect(cssBlock('@media (max-width: 639px) {')).not.toContain('.kanban[data-view="board"] { grid-template-columns');
   });
 });
