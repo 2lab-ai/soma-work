@@ -179,7 +179,7 @@ function sessionToArchive(
     kind: session.kind,
     parentTaskId: session.parentTaskId,
     planNodeId: session.planNodeId,
-    childTaskIds: session.childTaskIds,
+    childTaskIds: session.childTaskIds ? [...session.childTaskIds] : undefined,
 
     ownerId: session.ownerId,
     ownerName: session.ownerName,
