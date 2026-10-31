@@ -264,9 +264,9 @@ describe('the face extras the board keeps (cardOf → lead, badge, metrics, titl
     expect(c.tokens).toBe(31_700);
     expect(c.costUsd).toBe(1.25);
     expect((c.titles as Card).tokens).toBe(
-      '총 토큰 (task 합계: 메인 + 서브에이전트 7개) — 입력 1.0K · 출력 200 · 캐시 읽기 30.0K · 캐시 쓰기 500',
+      '총 토큰 (작업 합계: 메인 + 서브에이전트 7개) — 입력 1.0K · 출력 200 · 캐시 읽기 30.0K · 캐시 쓰기 500',
     );
-    expect((c.titles as Card).cost).toBe('API 환산 비용 (task 합계: 메인 + 서브에이전트 7개)');
+    expect((c.titles as Card).cost).toBe('API 환산 비용 (작업 합계: 메인 + 서브에이전트 7개)');
     // No task row once the session is done; the steps metric stays.
     expect(cardOf(s, 'idle').task).toBeUndefined();
     expect(cardOf(s, 'idle').steps).toEqual({ done: 1, total: 2 });
@@ -573,6 +573,7 @@ function bodyHarness() {
     },
     updateTimersIn: () => {},
     acHydrate: () => {},
+    cardTaskPlanHydrate: () => {},
     mpHydrate: () => {},
     atCardData: () => null,
     atHydrate: () => {},
@@ -823,7 +824,7 @@ describe('D10 — one primary button per open card', () => {
     renderCardIo: () => '[IO]',
     renderCardArtifacts: () => '[ARTS]',
     renderAgentTree: () => '[AGENTS]',
-    renderTimeline: () => '[TASKS]',
+    renderCardTasks: () => '[TASKS]',
     renderMultiChoiceCard: () => '[MC]',
     renderModelNote: () => '',
     renderModelPicker: () => '[MODEL]',
@@ -848,6 +849,7 @@ describe('D10 — one primary button per open card', () => {
         'cardCurrentTask',
         'renderCardResume',
         'taskOutcomeHtml',
+        'taskNoticeFailHtml',
         'isBusy',
         'sessionActionsOf',
         'sessionActionHtml',
@@ -1013,7 +1015,7 @@ describe('D10 — the open card renders one approval card per prompt; only what 
     renderCardIo: () => '',
     renderCardArtifacts: () => '',
     renderAgentTree: () => '',
-    renderTimeline: () => '',
+    renderCardTasks: () => '',
     renderMultiChoiceCard: () => '',
     renderModelNote: () => '',
     renderModelPicker: () => '',
@@ -1040,6 +1042,7 @@ describe('D10 — the open card renders one approval card per prompt; only what 
         'cardCurrentTask',
         'renderCardResume',
         'taskOutcomeHtml',
+        'taskNoticeFailHtml',
         'isBusy',
         'sessionActionsOf',
         'sessionActionHtml',

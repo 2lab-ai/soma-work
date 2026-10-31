@@ -384,6 +384,58 @@ export interface SessionIncidentRequest {
   readonly summary: string;
 }
 
+/**
+ * E2 ① — where a Slack-less task's instruction came from: the channel, the
+ * thread's root (`thread_ts ?? ts`), the instruction message itself (a
+ * redelivered event is recognised by it) and, when not the main bot, the
+ * agent instance that received it.
+ */
+export interface OriginThread {
+  channel: string;
+  threadTs: string;
+  messageTs: string;
+  agent?: string;
+}
+
+/** E2 ③ — what a notice to the instruction thread is about. */
+export type TaskNoticeKind = 'link' | 'result' | 'question' | 'failure' | 'interrupted';
+
+/**
+ * E2 ③ — one notice owed to a task's instruction thread. Its id is
+ * deterministic (`<taskId>:<chain or turn>:<kind>[:<askId>]`), so producing
+ * it twice is one notice.
+ */
+export interface TaskNoticeIntent {
+  id: string;
+  kind: TaskNoticeKind;
+  chainId?: string;
+  turnId?: string;
+  askId?: string;
+  outcome?: TaskTurnOutcomeRecord['outcome'];
+  reason?: string;
+  at: number;
+}
+
+/** E2 ③ — how a turn's outcome commit relates to its chain. */
+export interface TaskChainSettle {
+  chainId: string;
+  /** False only for a completed `/compact` hop the chain re-runs after. */
+  ends: boolean;
+  /**
+   * The notice this end owes, when not the outcome's own — a completed
+   * `/compact` hop with nothing to re-run is a failure, never a result.
+   */
+  notice?: { kind: TaskNoticeKind; reason: string };
+}
+
+/** E2 ② — a Slack-instructed task's channel context (see `ConversationSession.inputContext`). */
+export interface TaskInputContext {
+  channelName?: string;
+  channelDescription?: string;
+  repos?: string[];
+  confluenceUrl?: string;
+}
+
 export interface ConversationSession {
   ownerId: string; // User who started the session
   ownerName?: string; // Display name of owner
@@ -398,6 +450,32 @@ export interface ConversationSession {
    * is saved and on the board from creation, before any SDK session.
    */
   slackless?: boolean;
+  /**
+   * E2 ① — the Slack thread a Slack-less task was instructed from. Only a
+   * Slack-less task carries it; it is NOT a Slack binding (`channelId` /
+   * `threadTs` stay empty) and not `sourceThread` (a migrated session's
+   * back-pointer). One live task per instruction thread.
+   */
+  originThread?: OriginThread;
+  /**
+   * E2 ② — the channel a Slack-instructed task was created in, snapshotted at
+   * creation: what a Slack session there gets in its system prompt (channel
+   * description, repos, wiki). Prompt text only — never a Slack context.
+   */
+  inputContext?: TaskInputContext;
+  /**
+   * E2 ③ — the chain a Slack-less task is running (its id), saved by the
+   * chain's first turn start and kept across `/compact` hops; cleared by the
+   * chain's last outcome commit or by restart reconciliation. A task still
+   * holding one after a restart lost its chain: it is reconciled `interrupted`.
+   */
+  openChain?: string;
+  /**
+   * E2 ③ — notices owed to the task's instruction thread, written in the same
+   * strict save as the state they describe (only a task with `originThread`).
+   * Delivery state lives in the notification ledger, not here.
+   */
+  notices?: TaskNoticeIntent[];
   sessionId?: string;
   isActive: boolean;
   lastActivity: Date;

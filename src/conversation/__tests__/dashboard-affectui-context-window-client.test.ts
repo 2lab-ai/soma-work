@@ -332,7 +332,7 @@ describe('D12 — 지금 압축: owner-gated (canCompact), confirmed by the elem
     expect(data({ ownerId: 'U2' }).canCompact).toBe(READ_ONLY);
     expect(data({ ownerId: undefined }).canCompact).toBe(READ_ONLY);
     expect(data({ environment: { instanceName: 'other', host: 'h', port: 1 } }).canCompact).toBe(
-      'Open other (h:1) to act on this session',
+      '이 세션은 other (h:1)에서 열어 조작하세요',
     );
     expect(data({ pendingModel: 'fable[1m]' }).canCompact).toBe('모델 전환이 압축을 기다리는 중');
     expect(data({ compactPending: true }).canCompact).toBe('다음 입력 때 자동 압축됩니다');
@@ -801,12 +801,12 @@ describe('D16 — the face ctx metric and the summary line use the same level an
   });
 
   it('point unknown: the window bands and the old words, unchanged', () => {
-    expect(ctx(65)).toEqual(['warn', 'Context window used']);
-    expect(ctx(90)).toEqual(['danger', 'Context window used — 80% 넘게 찼다']);
+    expect(ctx(65)).toEqual(['warn', '컨텍스트 윈도우 사용량']);
+    expect(ctx(90)).toEqual(['danger', '컨텍스트 윈도우 사용량 — 80% 넘게 찼다']);
     // PR review R1 (P3): the "over 80%" words follow the number, not the level (a scheduled compact is danger at 50%).
     expect(ctx(50, undefined, { compactPending: true, autoCompactTokens: 0 })).toEqual([
       'danger',
-      'Context window used',
+      '컨텍스트 윈도우 사용량',
     ]);
   });
 
@@ -832,7 +832,7 @@ describe('D16 — the face ctx metric and the summary line use the same level an
       { ...ENV, formatNmSSs: (n: number) => `${n}ms`, cardTotalTokens: () => 1, safeHref: (u: string) => u },
     ).panelInfoHtml;
     const over = sess({ tokenUsage: { totalInputTokens: 1, contextUsagePercent: 104.6 }, lastActivity: NOW });
-    expect(info(over, false)).toContain('>ctx 100%</span>');
+    expect(info(over, false)).toContain('>컨텍스트 100%</span>');
     expect(info(over, true)).toContain('<ui-context-window lang="ko"');
   });
 
@@ -858,7 +858,7 @@ describe('D16 — the face ctx metric and the summary line use the same level an
       tokenUsage: { totalInputTokens: 1, contextUsagePercent: 62 },
       lastActivity: NOW,
     });
-    expect(info(s, false)).toContain('<span class="pi-cs ctx-warn">ctx 62%</span>');
+    expect(info(s, false)).toContain('<span class="pi-cs ctx-warn">컨텍스트 62%</span>');
     const open = info(s, true);
     const body = open.slice(open.indexOf('class="pi-body"'));
     expect(body.indexOf('<div class="ui-tok cw-slot"')).toBeGreaterThan(0);

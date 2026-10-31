@@ -204,7 +204,7 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
     );
     expect(at('<section class="panel-tabpanel" id="panel-tabpanel">')).toBeGreaterThan(at('id="panel-tabs"'));
     expect(
-      at('<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>'),
+      at('<div class="panel-tasks" id="panel-tasks" role="region" aria-label="작업" tabindex="-1"></div>'),
     ).toBeGreaterThan(at('id="panel-tabpanel"'));
     expect(at('id="panel-conv"')).toBeGreaterThan(at('id="panel-tasks"'));
     expect(at('<div class="panel-command" id="panel-command">')).toBeGreaterThan(at('id="panel-conv"'));

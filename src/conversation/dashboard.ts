@@ -424,6 +424,11 @@ export interface KanbanSession {
     recordFailure?: string;
     at: number;
   };
+  /**
+   * E2 ⑤ — notices this task owed its instruction thread that could not be
+   * posted (attempts spent). Absent when there are none, and for Slack sessions.
+   */
+  noticeFailures?: Array<{ kind: string; error: string }>;
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
@@ -1362,6 +1367,22 @@ const FOLLOWUP_SHOWN_FAILED = 5;
 /** A reason that only repeats the state (`steered`) says nothing the state does not. */
 const FOLLOWUP_STATE_ECHO = new Set<string>(['steered', 'consumed']);
 
+/** E2 ⑤ — a task card's undelivered thread notices (the notice deliverer, when wired). */
+let _taskNoticeFailures: ((sessionKey: string) => Array<{ kind: string; error: string }>) | null = null;
+export function setTaskNoticeFailureProvider(
+  provider: ((sessionKey: string) => Array<{ kind: string; error: string }>) | null,
+): void {
+  _taskNoticeFailures = provider;
+}
+function noticeFailuresOf(sessionKey: string): { noticeFailures?: Array<{ kind: string; error: string }> } {
+  try {
+    const failures = _taskNoticeFailures?.(sessionKey) ?? [];
+    return failures.length > 0 ? { noticeFailures: failures } : {};
+  } catch {
+    return {};
+  }
+}
+
 /** The session payload's queue: what the panel lists, oldest first (the queue's arrival order). */
 export function followupsOf(sessionKey: string, ownerId: string | undefined): DashboardFollowups | undefined {
   const view = _followupHandler?.view(sessionKey);
@@ -2240,7 +2261,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     artifacts: cardArtifacts(s.conversationId),
     userMedia: cardUserMedia(s.conversationId),
     followups: followupsOf(key, s.ownerId),
-    ...(s.slackless === true ? { slackless: true as const } : {}),
+    ...(s.slackless === true ? { slackless: true as const, ...noticeFailuresOf(key) } : {}),
     ...(s.slackless === true && s.lastTurnOutcome
       ? {
           lastTurnOutcome: {
@@ -4431,7 +4452,7 @@ function renderDashboardPage(userId?: string): string {
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>soma-work Dashboard</title>
+<title>soma-work 대시보드</title>
 <script type="module" src="/dashboard/ui/tool-call-card.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/ai-answer.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/agent-tree.js?v=${UI_LIB_VERSION}"></script>
@@ -4449,6 +4470,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/dialog.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/drawer.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/app-bar.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/breadcrumbs.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/stat-strip.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/bar-chart.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/file-card.js?v=${UI_LIB_VERSION}"></script>
@@ -4537,6 +4559,8 @@ html,body {
   line-height: 1.45;
   -webkit-font-smoothing: antialiased;
 }
+/* Korean breaks between words (D8): every block of the page — the kit gives it to its own classes only. */
+html:lang(ko) body { word-break: keep-all; overflow-wrap: anywhere; }
 
 ::selection { background: var(--accent); color: var(--bg); }
 ::-webkit-scrollbar { width: 8px; }
@@ -4646,9 +4670,9 @@ ui-stat-strip:not(:defined) > * { display: none; }
    drawer narrows it, so the column layout follows its width, not the viewport. */
 .inbox { margin-bottom: 28px; container: inbox / inline-size; }
 .inbox-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 16px; min-width: 0; }
-.crumbs { display: flex; align-items: baseline; gap: 10px; font-size: 17px; line-height: 1.3; min-width: 0; white-space: nowrap; overflow: hidden; }
-.crumbs .crumb-root, .crumbs .crumb-sep { color: var(--ib-muted); }
-.crumbs .crumb-cur { color: var(--ib-text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+/* The trail (soma-work › 에이전트 인박스) is @2lab.ai/ui <ui-breadcrumbs> (D8b A-16): it draws the crumbs, the
+   separators and the current page; it takes the row's room and gives way to the tools. */
+ui-breadcrumbs.crumbs { flex: 1 1 auto; min-width: 0; }
 .view-seg { flex-shrink: 0; }
 /* Board header tools: Show archives, then Board | List. Below 640px the tools
    take their own row under the breadcrumb. */
@@ -4756,38 +4780,15 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-body .card-refs a:focus-visible { text-decoration: underline; }
 .card-body .card-refs .ref-sep { color: var(--ib-muted); opacity: 0.6; }
 
-/* ── ENV BADGE — multi-instance origin tag (#814) ── */
-.card-body .card-refs .env-badge {
-  display: inline-block;
-  padding: 1px 6px;
-  border-radius: 6px;
-  font-size: 0.78em;
-  font-weight: 600;
-  /* The tone (--env-tone) is set inline from getEnvBadgeColor() because we hash
-     the instanceName at render time; the chip is its 14% tint and the word the
-     tone 70% toward the ink (≥ 4.5:1 in both themes for every palette tone). */
-  background: color-mix(in srgb, var(--env-tone, var(--ib-muted)) 14%, var(--ib-card));
-  color: color-mix(in srgb, var(--env-tone, var(--ib-muted)) 70%, var(--ib-text));
-  vertical-align: baseline;
-}
+/* ── ENV BADGE — multi-instance origin tag (#814): the kit's toned chip (.ui-chip.is-toned.is-sm, D8b D-15) — its
+   --ui-tone set inline from getEnvBadgeColor() (ENV_BADGE_PALETTE); the kit draws the 14% tint, the word 70%
+   toward the ink and the 28% border. ── */
 
-/* ── TASK TIMELINE — dot + step + time; only the current step's dot is solid ── */
-.tl-wrap { margin-top: 10px; }
-.tl { list-style: none; margin: 0; padding: 0; }
-.tl-item { position: relative; display: flex; gap: 10px; padding: 0 0 8px 16px; line-height: 1.4; color: var(--ib-text-2); }
-.tl-item::before { content: ''; position: absolute; left: 2px; top: 6px; width: 6px; height: 6px; border-radius: 50%; background: var(--ib-muted); opacity: 0.55; }
-.tl-item::after { content: ''; position: absolute; left: 4.5px; top: 15px; bottom: 1px; width: 1px; background: var(--ib-card-border); }
-.tl-item:last-child { padding-bottom: 0; }
-.tl-item:last-child::after { display: none; }
-.tl-item.is-current { color: var(--ib-text); }
-.tl-item.is-current::before { background: var(--ib-text); opacity: 1; }
-.tl-item.is-pending { color: var(--ib-muted); }
-.tl-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
-.tl-time { flex-shrink: 0; color: var(--ib-muted); font-size: 12.5px; font-variant-numeric: tabular-nums; }
-.tl-more { font-size: 12px; color: var(--ib-muted); padding: 0 0 6px 16px; }
-.tl-id { flex-shrink: 0; color: var(--ib-muted); font-size: 12px; font-variant-numeric: tabular-nums; }
-.tl-tools { white-space: nowrap; }
-.tl-toggle { margin-top: 6px; font: inherit; font-size: 12px; color: var(--ib-text-2); background: none; border: 1px solid var(--ib-card-border); border-radius: 6px; padding: 3px 10px; min-height: 28px; cursor: pointer; }
+/* ── TASK WINDOW — @2lab.ai/ui <ui-task-plan max foot="none"> (D8b D-12): the card's few rows of the plan, flush
+   (no box of its own inside the card), and its "+N개 더 · 전체 작업 N개 →" line; the page's link when the window
+   hides nothing but earlier lists ran. ── */
+.card-task-plan { display: block; min-width: 0; margin-top: 10px; }
+.card-task-plan + .card-more-link { margin-top: 2px; }
 
 /* ── INSTRUCTION / RESPONSE — latest pair, lazy-loaded on expand ── */
 .card-io { margin-top: 12px; display: grid; gap: 6px; }
@@ -4897,12 +4898,12 @@ ui-drawer:not(:defined) { display: none; }
    path to the focused node, its header (the root's too), its subtree. */
 .panel-agents { flex: none; padding: 6px 16px 8px; border-bottom: 1px solid var(--border); }
 .pa-bar { display: flex; align-items: center; gap: 8px; min-height: 32px; min-width: 0; }
-.pa-path { display: flex; align-items: center; gap: 2px; flex: 1 1 auto; min-width: 0; overflow: hidden; font-size: 13px; }
-.pa-crumb { min-width: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 4px 6px; border: 0; border-radius: 6px; background: none; color: var(--text-secondary); font: inherit; cursor: pointer; }
-.pa-crumb:first-child { flex-shrink: 0; }
-.pa-crumb[aria-current="page"] { color: var(--text); font-weight: 600; cursor: default; }
-.pa-crumb:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-.pa-sep { flex-shrink: 0; color: var(--text-tertiary); }
+/* The path (메인 › A1 Explore › A3 general-purpose) is @2lab.ai/ui <ui-breadcrumbs size="sm"> (D8b E-20): a button per
+   step (ui-select → selectPanelAgent), the focused node the current page, the middle folded behind "…" when the row
+   is narrow; the focused node's status chip (.ui-status.pa-st) sits in its end slot. The chip the header draws is
+   for the minimal view, where the path is hidden (T1.6): with 자세히 the path's chip says it once. */
+ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
+.slide-panel.is-detail .pa-focus .pa-st { display: none; }
 .pa-focus { --ag-c: var(--text-tertiary); margin-top: 2px; border-radius: 6px; outline: none; }
 .pa-focus:focus-visible { box-shadow: 0 0 0 2px var(--border-focus); }
 .pa-name { display: flex; align-items: baseline; gap: 6px; min-width: 0; font-size: 14px; line-height: 1.35; }
@@ -5195,10 +5196,6 @@ ui-drawer:not(:defined) { display: none; }
   .topbar .td-prefix, .topbar .td-status { display: none; }
   .main { padding: 14px 12px; }
   .ag-tree { padding: 8px 8px 4px; }
-  .pa-crumb { min-height: 44px; }
-  /* The path shrinks to "‹ parent › here". */
-  .pa-crumb.is-far, .pa-sep.is-far { display: none; }
-  .pa-crumb.is-up::before { content: '\\2039\\00a0'; }
   /* Panel head with the deck shown: <ui-deck-nav>'s 44px targets left the title ~85px, so 자세히 is its
      icon alone (the word stays its accessible name) and the title gets the word's width back. */
   .slide-panel:not([data-deck="0"]) .panel-detail-toggle { width: 44px; padding: 0; justify-content: center; }
@@ -5212,16 +5209,12 @@ ui-drawer:not(:defined) { display: none; }
   /* The tools take the row under the breadcrumb; on the narrowest screens
      (320px) Show archives sits above Board | List instead of overflowing. */
   .inbox-tools { flex: 1 1 auto; min-width: 0; flex-wrap: wrap; justify-content: flex-end; row-gap: 8px; }
-  .crumbs { font-size: 15px; gap: 7px; }
 }
 
 /* ── RESPONSIVE — Bauhaus grid adapts ── */
 @media (max-width: 680px) {
   .stats-grid { margin-bottom: 12px; }
   .chart-row { flex-direction: column; }
-}
-@media (hover: hover) and (pointer: fine) {
-  .pa-crumb:not([aria-current="page"]):hover { background: var(--surface-raised); color: var(--text); }
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
@@ -5255,7 +5248,7 @@ ui-drawer:not(:defined) { display: none; }
      area is the kit's own rule. */
   .card-body .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
   .pi-links a, .panel-tasks-toggle { min-height: 44px; }
-  .cgl-go, .card-more-link, .tl-toggle { min-height: 44px; }
+  .cgl-go, .card-more-link { min-height: 44px; }
 }
 
 /* ── CRON lane · drawer (SSOT 2026-10-23 T3/T4/T5); the drawer head's CRON badge is a kit chip with the clock glyph
@@ -5281,7 +5274,6 @@ ui-drawer:not(:defined) { display: none; }
    are kit rows (.ui-row in the run's tone, D7 C-08) and no run yet the kit's empty state (.ui-empty, D7 C-09). */
 .cron-drawer-meta { padding: 0 0 4px; }
 .cron-drawer-body { padding: 6px 0 0; }
-.aq-left { font-variant-numeric: tabular-nums; } /* the drawer's 다음 실행 countdown (aqTime) */
 
 
 /* ═══ New task (SSOT 2026-10-23) — entry button, floating button, composer ═══
@@ -5507,7 +5499,7 @@ ${pageTokenAliases()}
     <div class="topbar-scope" id="topbar-scope" slot="toolbar">
     <div class="topbar-defaults" id="topbar-defaults" hidden>
       <button type="button" class="ui-chip td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
-      <button type="button" class="ui-chip td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 effort — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">Effort </span><b id="td-effort-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
+      <button type="button" class="ui-chip td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 추론 강도 — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">추론 </span><b id="td-effort-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
       <ui-menu id="td-menu" lang="ko"></ui-menu>
       <span class="ui-status-line td-status" id="td-status" role="status" aria-live="polite"></span>
     </div>
@@ -5565,9 +5557,9 @@ ${pageTokenAliases()}
     <!-- Agent inbox (.prd/10 §3.1) — the board, right under the stats strip. -->
     <!-- The board and the CRON lane's cards are @2lab.ai/ui <ui-agent-inbox> elements: the token
          wrapper (.ui-tok) hands them the dashboard tokens. -->
-    <section class="inbox ui-tok" id="inbox" aria-label="Agent inbox">
+    <section class="inbox ui-tok" id="inbox" aria-label="에이전트 인박스">
       <div class="inbox-head">
-        <nav class="crumbs" aria-label="위치"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
+        <ui-breadcrumbs class="crumbs" id="inbox-trail" lang="ko"></ui-breadcrumbs>
         <div class="inbox-tools">
           <button type="button" class="ui-chip archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><i data-ui-icon="archive"></i><span id="archives-label">보관함</span></button>
           <button type="button" class="ui-chip archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><i data-ui-icon="moon"></i><span id="sleeping-label">휴면</span></button>
@@ -5652,7 +5644,7 @@ ${pageTokenAliases()}
         <!-- 세션 정보 (spec 13): one summary line + the links, the complete numbers on demand (or with 자세히) — live. -->
         <div class="panel-info" id="panel-info"></div>
         <!-- Goal (spec 13): the editor's home — current, queue, add / delete, completed goals. -->
-        <div class="panel-goal" id="panel-goal" role="region" tabindex="-1" aria-label="Goal" style="display:none"></div>
+        <div class="panel-goal" id="panel-goal" role="region" tabindex="-1" aria-label="목표" style="display:none"></div>
         <!-- 입력 필요 (re-agent-run D8–D17): a head with the count (kit section head + count, D3 E-13), approval cards for the
              permission prompts and the question; one polite status line says arrivals and
              answers (the cards themselves are not a live region — their expiry clock ticks). -->
@@ -5672,7 +5664,7 @@ ${pageTokenAliases()}
         <!-- The focused agent (.prd/12 §4.3): its header; with 자세히, its path. -->
         <div class="panel-agents" id="panel-agents" style="display:none"></div>
         <!-- Tasks (task view T1.3): folded to one line by default. -->
-        <div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>
+        <div class="panel-tasks" id="panel-tasks" role="region" aria-label="작업" tabindex="-1"></div>
         <!-- Section tabs (SSOT 2026-10-29, D4 E-24): @2lab.ai/ui <ui-tabs> over the section boxes, each slotted as its
              tab's panel (slot="<id>"); only the active section holds nodes (psecClear); each opens on its newest items
              and pages back as the reader scrolls up (a top control is the keyboard path), in its own scroll box
@@ -5710,7 +5702,7 @@ ${pageTokenAliases()}
     <!-- Command row is always visible: read-only for a viewer who is not the owner, off once the session ended. -->
     <div class="panel-command" id="panel-command">
       <!-- Model · effort beside the composer (spec 13): their own container — the input is never morphed. -->
-      <div class="panel-controls" id="panel-controls" aria-label="이 세션의 모델과 effort"></div>
+      <div class="panel-controls" id="panel-controls" aria-label="이 세션의 모델과 추론 강도"></div>
       <!-- The composer and the session's follow-up queue — @2lab.ai/ui <ui-agent-steering> (dashboard batch 2) with
            a <ui-composer slot="composer"> as its field (E-30, 0.10.0): multiline; files, images (paste, drop, picker)
            and voice, their chips, the limits and the error line are the composer's; Enter queues, ⌘/Ctrl+Enter
@@ -5740,7 +5732,7 @@ ${pageTokenAliases()}
           <!-- Kit select chips (.ui-select-chip, D7 H-02): the word, then the native select sized to its option; the model's
                remaining usage beside it is @2lab.ai/ui <ui-meter shape="battery"> (H-03) in a button that opens the usage line. -->
           <label class="ui-select-chip"><span>모델</span><select id="nt-model" onchange="ntOnModelChange()"></select></label><button type="button" class="nt-battery-btn" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><ui-meter id="nt-battery" shape="battery" low="0.2" high="0.5" label="모델 잔여량" lang="ko"></ui-meter></button>
-          <label class="ui-select-chip nt-chip-effort"><span>effort</span><select id="nt-effort" onchange="ntOnEffortChange()"></select></label>
+          <label class="ui-select-chip nt-chip-effort"><span>추론</span><select id="nt-effort" onchange="ntOnEffortChange()"></select></label>
           <label class="ui-select-chip nt-chip-folder" id="nt-folder-chip" hidden><span>폴더</span><select id="nt-folder" onchange="ntOnFolderChange()"></select></label>
           <label class="ui-select-chip nt-chip-channel"><span>채널</span><select id="nt-channel" onchange="ntOnChannelChange()"></select></label>
         </div>
@@ -5812,6 +5804,8 @@ var STRINGS = {
   statusArchived: '보관됨',
   archives: '보관함',
   sleeping: '휴면',
+  // #814: why a sibling instance's session cannot be acted on here (the actions' lock, 지금 압축's reason).
+  siblingLock: function(env) { return '이 세션은 ' + env.instanceName + ' (' + (env.host || '') + ':' + (env.port || '') + ')에서 열어 조작하세요'; },
 };
 // #814 — name of the dashboard's *home* instance (the one that served this
 // HTML). Used by renderCard() to detect sibling cards and suppress action
@@ -5972,14 +5966,18 @@ function syncPanelWidth() {
 }
 
 // ── Panel tasks rendering ──
+// D8: a settled span (a task's, a compaction's, a goal's time) in the very words <ui-elapsed lang="ko"> says for
+// a live one — @2lab.ai/ui fmtSpan(ms, 'ko'): 42초 · 9분 22초 · 2시간 15분 (two-digit seconds and minutes past the
+// first unit). Mirrored here because the page's script is plain and the element's helpers are a module;
+// dashboard-ko-time-words.test.ts pins the two together. '' for nothing — callers put their own 0초 there.
 function formatDuration(ms) {
-  if (!ms || ms <= 0) return '';
-  var sec = Math.floor(ms / 1000);
-  if (sec < 60) return sec + 's';
-  var min = Math.floor(sec / 60);
-  if (min < 60) return min + 'm ' + (sec % 60) + 's';
-  var hr = Math.floor(min / 60);
-  return hr + 'h ' + (min % 60) + 'm';
+  if (!(ms > 0)) return '';
+  var s = Math.floor(Number(ms) / 1000);
+  if (s < 60) return s + '초';
+  var m = Math.floor(s / 60);
+  if (m < 60) return m + '분 ' + (s % 60 < 10 ? '0' : '') + (s % 60) + '초';
+  var h = Math.floor(m / 60);
+  return h + '시간 ' + (m % 60 < 10 ? '0' : '') + (m % 60) + '분';
 }
 
 function formatTaskTime(ts) {
@@ -6154,17 +6152,17 @@ var GOAL_DECISION_CHOICES = [{ id: 'continue', label: '✅ 계속' }, { id: 'can
 var GOAL_DECISION_SENT = { continue: '계속 진행을 보냈어요', cancel: '취소를 보냈어요' };
 function acGoalDecisionLock(s, d) {
   if (isSiblingSession(s)) return AC_SIBLING;
-  return d.ownerId && d.ownerId === _viewerUserId ? '' : 'goal 소유자만 응답할 수 있습니다';
+  return d.ownerId && d.ownerId === _viewerUserId ? '' : '목표 소유자만 응답할 수 있습니다';
 }
 function acGoalDecisionData(s, d) {
   var n = toNum(d.maxContinuations);
-  var context = ['Objective: ' + String(d.objective || '')];
-  if (d.reason) context.push('Latest reason: ' + String(d.reason));
+  var context = ['목표: ' + String(d.objective || '')];
+  if (d.reason) context.push('직전 사유: ' + String(d.reason));
   var data = {
     kind: 'question',
     id: String(d.decisionId),
-    label: 'Goal 자동 진행 ' + n + '/' + n,
-    question: '⏳ Goal auto-continuation reached its ' + n + '-turn budget.\\n계속 진행할까요?',
+    label: '목표 자동 진행 ' + n + '/' + n,
+    question: '목표 자동 진행이 ' + n + '회 한도에 닿았습니다.\\n계속 진행할까요?',
     description: context.join('\\n'),
     choices: GOAL_DECISION_CHOICES.map(function(c) { return { id: c.id, label: c.label }; }),
     allowOther: false,
@@ -6180,7 +6178,7 @@ function acGoalDecisionData(s, d) {
 function acGoalDecisionHtml(s) {
   var d = s && s.pendingGoalDecision;
   if (!d || !d.decisionId) return '';
-  return acSlotHtml(s.key, 'goal', 'g|' + d.decisionId, String(d.decisionId), 'Goal 계속 진행할까요? — 응답 대기');
+  return acSlotHtml(s.key, 'goal', 'g|' + d.decisionId, String(d.decisionId), '목표 계속 진행할까요? — 응답 대기');
 }
 // A collapsed card paints no approval card (placeCard), but the requester's
 // input is still fetched as the card's would be (acPermissionData), so opening
@@ -6307,7 +6305,7 @@ function renderPanelPermission(s) {
   var gd = s && s.pendingGoalDecision;
   if (gd && gd.decisionId) {
     ids['g|' + gd.decisionId] = true;
-    if (seen && !seen['g|' + gd.decisionId]) said.push('Goal 계속 진행할까요?');
+    if (seen && !seen['g|' + gd.decisionId]) said.push('목표 계속 진행할까요?');
   }
   container._seenKey = key;
   container._seen = ids;
@@ -6846,7 +6844,7 @@ function renderPanelTasks(tasks, scopeLabel, earlier, outside) {
   var list = tasks || [];
   var prev = earlier || [];
   // Spec 12: a subagent's own tasks are labelled with that agent.
-  var title = 'Tasks' + (scopeLabel ? ' <span class="tasks-scope">&middot; ' + esc(scopeLabel) + '</span>' : '');
+  var title = '작업' + (scopeLabel ? ' <span class="tasks-scope">&middot; ' + esc(scopeLabel) + '</span>' : '');
 
   // D7: a step that completed since the last render of this scope is announced
   // (none on its first). An empty list is a baseline as well.
@@ -7149,7 +7147,7 @@ function taskOutsideText(outside) {
   if (!outside || !(toNum(outside.toolCalls) || toNum(outside.agentToolCalls) || taskTokTotal(outside.tokens))) return '';
   return '툴 ' + Math.round(toNum(outside.toolCalls))
     + (toNum(outside.agentToolCalls) >= 0.5 ? ' (+서브 ' + Math.round(toNum(outside.agentToolCalls)) + ')' : '')
-    + ' · ' + formatTokens(taskTokTotal(outside.tokens)) + ' tok';
+    + ' · ' + formatTokens(taskTokTotal(outside.tokens)) + ' 토큰';
 }
 // … as a row under the element's totals (extraTotals), or null.
 function taskOutsideNote(outside) {
@@ -7361,7 +7359,7 @@ var _tdAlsoSession = true;
 function defaultsMenuData(kind) {
   var row = _myDefaults && (kind === 'model' ? _myDefaults.model : _myDefaults.effort);
   if (!row) return null;
-  var title = kind === 'model' ? '새 세션 기본 모델' : '새 세션 기본 effort';
+  var title = kind === 'model' ? '새 세션 기본 모델' : '새 세션 기본 추론 강도';
   var items = [{ kind: 'heading', label: title }];
   var opts = row.options || [];
   for (var i = 0; i < opts.length; i++) {
@@ -7449,7 +7447,7 @@ async function pickDefault(kind, value) {
   if (!r.ok) { setDefaultsStatus('저장하지 못했습니다: ' + r.error, true); return; }
   _myDefaults[kind] = r.setting;
   renderDefaultsChips();
-  var msg = '기본 ' + (kind === 'model' ? '모델' : 'effort') + ' → ' + optionLabel(r.setting, r.setting.value) + ' (새 세션부터)';
+  var msg = '기본 ' + (kind === 'model' ? '모델' : '추론 강도') + ' → ' + optionLabel(r.setting, r.setting.value) + ' (새 세션부터)';
   if (skipSession) msg += ' · 이 모델은 세션 전환 목록에 없어 열린 세션은 그대로';
   if (session && isBusy(session.key, kind)) {
     // The session is already switching (from its card or panel): one switch at a time.
@@ -7540,10 +7538,10 @@ function spendTotal(sp) {
   if (!sp) return 0;
   return toNum(sp.inputTokens) + toNum(sp.outputTokens) + toNum(sp.cacheReadTokens) + toNum(sp.cacheCreateTokens);
 }
-// "<tokens> tok · $<cost>" (API-equivalent). ≈ when part of it was priced at
+// "<tokens> 토큰 · $<cost>" (API-equivalent). ≈ when part of it was priced at
 // the fallback rate — a model the price table does not know.
 function spendText(tokens, cost, estimate) {
-  return formatTokens(tokens) + ' tok · ' + (estimate ? '≈' : '') + '$' + toNum(cost).toFixed(2);
+  return formatTokens(tokens) + ' 토큰 · ' + (estimate ? '≈' : '') + '$' + toNum(cost).toFixed(2);
 }
 // A subagent's own spend as its row and header show it. Calls that reported
 // no usage at all (a provider that zeroes it) read as unreported, not as $0.
@@ -7567,25 +7565,32 @@ function spendTitle(sp) {
   if (sp.unpricedModels && sp.unpricedModels.length) t += ' · 단가표에 없는 모델(' + sp.unpricedModels.join(', ') + ')은 기본 단가로 추정';
   return t;
 }
-// Dashboard v2.1 — \`Nm SSs\` for a settled total (the thread's Σ, a closed 활성 시간). Mirrors
-// packages/common/src/format/duration.ts; the same words <ui-elapsed> says for a span past a minute.
+// A settled total that is never empty (the thread's Σ, a closed 활성 시간): formatDuration's words, 0초 for nothing
+// — fmtSpan(ms, 'ko') for every value.
 function formatNmSSs(ms) {
-  if (!ms || ms < 0 || isNaN(ms)) return '0m 00s';
-  var totalSec = Math.floor(ms / 1000);
-  var m = Math.floor(totalSec / 60);
-  var s = totalSec % 60;
-  return m + 'm ' + (s < 10 ? '0' + s : s) + 's';
+  return formatDuration(ms) || '0초';
+}
+// How long ago, settled — fmtSince(ms, 'ko'): 방금 · 5분 전 · 3시간 전 · 2일 전 (dashboard-ko-time-words.test.ts pins it).
+function formatSince(ms) {
+  var s = Math.max(0, Math.floor((Number(ms) || 0) / 1000));
+  if (s < 45) return '방금';
+  var m = Math.floor(s / 60);
+  if (m < 60) return Math.max(1, m) + '분 전';
+  var h = Math.floor(m / 60);
+  if (h < 48) return h + '시간 전';
+  return Math.floor(h / 24) + '일 전';
 }
 // Every live time on the page is @2lab.ai/ui <ui-elapsed> (D7 K-03): the root's active time (a leg under way:
 // since = the leg's start less what ran before it), a running task's or subagent's elapsed (since), the session's
-// last activity (format="ago"). The element ticks them on its own shared whole-second timer, changes the text in
-// place and stops by itself; a morph keeps it (its attributes are the data, never Date.now() — a clock in the
-// markup would make every poll look like a change). The words are the page's own short form (1m 05s · 6m ago),
-// beside formatDuration / formatNmSSs; a closed total is plain text. (The card faces' clocks are <ui-agent-inbox>'s
-// own tick; an approval card's expiry <ui-approval-card>'s.) The page's 1 Hz tick keeps one job: the cron
-// drawer's 다음 실행 countdown (aqTick — its "곧 … 후" words are the page's).
+// last activity (format="ago") and — D8b — the cron drawer's 다음 실행 countdown (format="countdown", its 후 / 곧
+// words the element's: cronCountdownHtml). The element ticks them on its own shared whole-second timer, changes
+// the text in place and stops by itself; a morph keeps it (its attributes are the data, never Date.now() — a
+// clock in the markup would make every poll look like a change). It reads its own lang (not the page's), so every
+// one is written lang="ko" (D8): 1분 05초 · 6분 전 — the words formatNmSSs / formatSince say for a settled time.
+// (The card faces' clocks are <ui-agent-inbox>'s own tick; an approval card's expiry <ui-approval-card>'s.) The
+// page keeps no tick of its own.
 function elapsedHtml(sinceMs, title) {
-  return '<ui-elapsed since="' + Math.round(Number(sinceMs) || 0) + '"' + (title ? ' title="' + escAttr(title) + '"' : '') + '></ui-elapsed>';
+  return '<ui-elapsed since="' + Math.round(Number(sinceMs) || 0) + '" lang="ko"' + (title ? ' title="' + escAttr(title) + '"' : '') + '></ui-elapsed>';
 }
 function activeTimeHtml(legStartedMs, accumulatedMs, title) {
   var leg = Number(legStartedMs) || 0;
@@ -7594,11 +7599,8 @@ function activeTimeHtml(legStartedMs, accumulatedMs, title) {
   return '<span' + (title ? ' title="' + escAttr(title) + '"' : '') + '>' + formatNmSSs(acc) + '</span>';
 }
 function agoHtml(atMs) {
-  return '<ui-elapsed since="' + Math.round(Number(atMs) || 0) + '" format="ago"></ui-elapsed>';
+  return '<ui-elapsed since="' + Math.round(Number(atMs) || 0) + '" format="ago" lang="ko"></ui-elapsed>';
 }
-function updateTimers() { aqTick(); }
-var _timerTick = setInterval(updateTimers, 1000);
-
 // ── User list ──
 async function loadUsers() {
   try {
@@ -7629,6 +7631,7 @@ function selectUser(userId) {
   syncUserSelectTitle();
   currentUserId = userId;
   history.replaceState(null, '', userId ? '/dashboard/' + userId : '/dashboard');
+  paintTrail();
   loadSessions();
   loadStats();
   loadCronJobs();
@@ -7718,7 +7721,7 @@ let _sessionCache = Object.create(null);
 // instanceName mod 4. Two unrelated names hashing to the same slot is
 // noise we can live with on a 4-instance host (operators rarely run more
 // than 2-3 instances per box).
-// Tones from the token palette (tinted in CSS: .env-badge) — not status colours, so no red / amber.
+// Tones from the token palette (the kit's .ui-chip.is-toned tints them) — not status colours, so no red / amber.
 var ENV_BADGE_PALETTE = ['var(--st-run)', 'var(--green)', 'var(--purple)', 'var(--orange)'];
 
 // _envIndex caches a deterministic palette-slot per instanceName so two
@@ -7914,7 +7917,7 @@ function doneDayLabel(key, now) {
 }
 // Pure: [{ key, label, open, items }] — opened = the reader's choices.
 // SSOT 2026-10-30 T2: a starred card leaves its day for the pinned group
-// ('starred', ★ Starred), first and open until the reader folds it.
+// ('starred', ★ 즐겨찾기), first and open until the reader folds it.
 function planDoneGroups(done, now, opened) {
   var byKey = Object.create(null);
   var keys = [];
@@ -7939,7 +7942,7 @@ function planDoneGroups(done, now, opened) {
   if (pinned.length) {
     pinned.sort(function(a, b) { return b.t - a.t; });
     var pinOpen = opened && Object.prototype.hasOwnProperty.call(opened, 'starred') ? !!opened.starred : true;
-    groups.unshift({ key: 'starred', label: '\\u2605 Starred', open: pinOpen, items: pinned.map(function(x) { return x.item; }) });
+    groups.unshift({ key: 'starred', label: '\\u2605 즐겨찾기', open: pinOpen, items: pinned.map(function(x) { return x.item; }) });
   }
   return groups;
 }
@@ -8272,10 +8275,11 @@ function paintCardBody(key) {
     morphInnerHtml(b.el, html);
     b.html = html;
   }
-  // The body's approval cards and model picker take their data where it
-  // changed (also while an open menu holds the body still), the agent tree its
-  // own (every agent's status, time and spend; the folds).
+  // The body's approval cards, task window and model picker take their data
+  // where it changed (also while an open menu holds the body still), the agent
+  // tree its own (every agent's status, time and spend; the folds).
   acHydrate(b.el);
+  cardTaskPlanHydrate(b.el);
   mpHydrate(b.el);
   var tree = atCardData(s, col);
   atHydrate(b.el, { tree: tree, treeSig: tree ? JSON.stringify(tree) : '' });
@@ -8300,7 +8304,7 @@ function refreshCard(key) {
 function cardSummary(s, col, headline) {
   var current = cardCurrentTask(s);
   if (col !== 'closed' && s.pendingPermissions && s.pendingPermissions.length) return permissionSummary(s);
-  if (col !== 'closed' && s.pendingGoalDecision) return 'Goal 계속 진행할까요? — 응답 대기';
+  if (col !== 'closed' && s.pendingGoalDecision) return '목표 계속 진행할까요? — 응답 대기';
   var q = s.pendingQuestion;
   if (col === 'waiting' && q && (q.question || q.title)) return q.question || q.title;
   // Waiting out a retry: the error behind it is what this card is "doing".
@@ -8329,9 +8333,9 @@ function pendingAutoResume(s, col) {
 // attempt. Absolute clock time (no countdown), so equal data renders equal HTML.
 function autoResumeLabel(r) {
   if (!r) return '';
-  if (r.kind === 'goal-eval') return 'Goal 완료 판정 중';
+  if (r.kind === 'goal-eval') return '목표 완료 판정 중';
   var at = Number(r.at) || 0;
-  var what = r.kind === 'goal-eval-retry' ? 'Goal 판정 재시도' : '자동 재개';
+  var what = r.kind === 'goal-eval-retry' ? '목표 판정 재시도' : '자동 재개';
   var text = (at ? formatTaskTime(at) + ' ' : '') + what;
   var attempt = Number(r.attempt) || 0;
   var max = Number(r.maxAttempts) || 0;
@@ -8434,7 +8438,7 @@ function cardPrMetric(s) {
 // auto-compact point when it is known.
 function cardCtxTitle(s, pct) {
   var auto = toNum(s.autoCompactTokens), used = toNum(s.contextTokens);
-  if (!(auto > 0 && used > 0)) return 'Context window used' + (toNum(pct) > 80 ? ' — 80% 넘게 찼다' : '');
+  if (!(auto > 0 && used > 0)) return '컨텍스트 윈도우 사용량' + (toNum(pct) > 80 ? ' — 80% 넘게 찼다' : '');
   var short = function(n) { return formatTokens(n).replace(/[.]0(?=[KMBT]$)/, ''); };
   return '컨텍스트 ' + ctxPercent(pct) + '% · ' + (s.compactPending ? '다음 입력 때 자동 압축'
     : used >= auto ? '자동 압축 지점을 넘음'
@@ -8509,7 +8513,7 @@ function cardOf(s, col) {
   var u = s.tokenUsage;
   if (u) {
     var sub = s.subagentSpend;
-    var who = 'task 합계: 메인 + 서브에이전트' + (sub && toNum(sub.agents) > 0 ? ' ' + toNum(sub.agents) + '개' : '');
+    var who = '작업 합계: 메인 + 서브에이전트' + (sub && toNum(sub.agents) > 0 ? ' ' + toNum(sub.agents) + '개' : '');
     var part = toNum(u.partialSince) > 0 ? ' · 부분 합계 (' + new Date(toNum(u.partialSince)).toLocaleString() + ' 이후 집계)' : '';
     if (dhShow('tokens')) {
       card.tokens = cardTotalTokens(u);
@@ -8563,70 +8567,89 @@ function cardOf(s, col) {
   return card;
 }
 
-// Task window on the open card (§3.1-4, spec 13): list order, the in-progress
-// step is the solid dot. Every task shows its id (SSOT 2026-10-22 T8); a
-// completed task its elapsed time and the tool calls made while it ran, the
-// running one its live time and calls so far (T7). Over the dhMax('tasks')
-// budget the earliest completed steps fold away first. The whole ledger —
-// every task of the list and the earlier lists — is the panel's:
-// 전체 task N개 → opens it (spec 13, the card is a window, not a second list).
-// (D7 D-12: the panel's plan is <ui-task-plan>; this window stays the page's — the element draws the whole plan
-// with its phase foot and its own done-steps fold, and has no row cap: research/D7-GAPS.md.)
-function renderTaskMeta(t) {
+// Task window on the open card (§3.1-4, spec 13) — @2lab.ai/ui <ui-task-plan> in window mode (0.14.1, D8b
+// D-12): at most dhMax('tasks') rows of the current list in list order (the element's taskWindow rule: the
+// earliest completed leave first, then the latest pending; the running one never), no phase foot (the face
+// already says the phase and the time), and one "+N개 더 · 전체 작업 N개 →" line in the page's words whose press
+// (ui-more) opens the panel's Tasks — the whole ledger, every task of the list and the earlier lists (the card
+// is a window, not a second list). Every step carries its id (SSOT 2026-10-22 T8), its times and its tool
+// calls (T7); the element draws the duration, the running step's live clock and the 툴 N회 chip.
+var CARD_TASK_ROWS = 5;
+// A task's fate (taskFateOf) as the element's step status. Task view T2: a task a later plan dropped is
+// dropped, never running — no clock.
+var CARD_TASK_STATUS = { done: 'done', active: 'running', paused: 'paused', pending: 'pending', dropped: 'dropped', skipped: 'skipped' };
+function cardTaskStep(t, i) {
   // Task timestamps come from the ledger: numbers only.
-  var started = Number(t.startedAt) || 0;
-  var completed = Number(t.completedAt) || 0;
-  var removed = Number(t.removedAt) || 0;
-  // Task view T2: a task a later plan dropped says so — never a running clock.
   var fate = taskFateOf(t);
-  var parts = [];
-  if (fate === 'done' && started && completed) parts.push(formatDuration(completed - started) || '0s');
-  else if (fate === 'active' && started) parts.push(elapsedHtml(started));
-  else if (fate === 'dropped' || fate === 'skipped' || fate === 'paused') {
-    parts.push(TASK_FATE_LABEL[fate] + (fate === 'dropped' && started && removed > started ? ' ' + formatDuration(removed - started) : ''));
-  }
+  var started = Number(t.startedAt) || 0;
+  var ended = fate === 'done' ? Number(t.completedAt) || 0 : fate === 'dropped' ? Number(t.removedAt) || 0 : 0;
+  var step = { id: t.id ? String(t.id) : 'step' + i, label: String(t.content || ''), status: CARD_TASK_STATUS[fate] || 'pending' };
+  if (t.id) step.ref = '#' + String(t.id);
+  if (started && fate !== 'pending' && fate !== 'skipped') step.startedAt = started;
+  if (started && ended > started) step.endedAt = ended;
   // SSOT 2026-10-29 T5: a count shared by tasks that ran together is fractional — a whole number on screen.
-  if (fate !== 'pending' && fate !== 'skipped') parts.push('<span class="tl-tools" title="툴 호출 수">툴 ' + Math.round(toNum(t.toolCalls)) + '회</span>');
-  return parts.join(' &middot; ');
+  if (fate !== 'pending' && fate !== 'skipped') step.toolCalls = Math.round(toNum(t.toolCalls));
+  return step;
 }
-function renderTimelineItem(t) {
-  var cls = t.status === 'in_progress' ? ' is-current' : (t.status === 'completed' ? ' is-done' : ' is-pending');
-  var meta = renderTaskMeta(t);
-  return '<li class="tl-item' + cls + '">'
-    + (t.id ? '<span class="tl-id">#' + esc(t.id) + '</span>' : '')
-    + '<span class="tl-text">' + esc(t.content) + '</span>'
-    + (meta ? '<span class="tl-time">' + meta + '</span>' : '') + '</li>';
+// How many steps the window leaves out: beyond the budget every step but a running one can leave (the
+// element drops the earliest done first, then the latest pending), so the count is exact.
+function cardTaskHidden(steps, max) {
+  var running = 0;
+  for (var i = 0; i < steps.length; i++) if (steps[i].status === 'running') running++;
+  return Math.max(0, steps.length - Math.max(max, running));
 }
-function renderTimeline(s) {
-  if (!dhShow('tasks')) return '';
-  var tasks = s.tasks || [];
+// Task view T2: steps a new plan dropped before they ran were never work — the count (and the panel it
+// opens) does not grow with them.
+function cardTasksRan(s) {
   var earlier = s.earlierTasks || [];
-  // Task view T2: steps a new plan dropped before they ran were never work —
-  // the count (and the panel it opens) does not grow with them.
   var ran = 0;
   for (var e = 0; e < earlier.length; e++) if (taskFateOf(earlier[e]) !== 'skipped') ran++;
-  if (tasks.length === 0 && ran === 0) return '';
-  var max = dhMax('tasks', 5);
-  var folded = 0;
-  var tail = 0;
-  var shown = [];
-  var drop = Math.max(0, tasks.length - max);
-  for (var i = 0; i < tasks.length; i++) {
-    if (drop > 0 && tasks[i].status === 'completed') { drop--; folded++; continue; }
-    shown.push(tasks[i]);
-  }
-  if (shown.length > max) { tail = shown.length - max; shown = shown.slice(0, max); }
-  var hidden = folded + tail + ran;
-  var html = '<div class="tl-wrap">';
-  if (folded > 0) html += '<div class="tl-more">+' + folded + ' completed</div>';
-  if (shown.length) html += '<ul class="tl">' + shown.map(renderTimelineItem).join('') + '</ul>';
-  if (tail > 0) html += '<div class="tl-more">+' + tail + ' more</div>';
-  if (hidden > 0) {
-    html += '<button type="button" class="tl-toggle" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',\\'tasks\\',\\'\\',event.detail===0)">'
-      + '전체 task ' + (tasks.length + ran) + '개 &rarr;</button>';
-  }
-  return html + '</div>';
+  return ran;
 }
+function cardTaskPlanData(s) {
+  var tasks = s.tasks || [];
+  var ran = cardTasksRan(s);
+  var steps = tasks.map(cardTaskStep);
+  var hidden = cardTaskHidden(steps, dhMax('tasks', CARD_TASK_ROWS)) + ran;
+  var d = { title: '', steps: steps };
+  if (hidden) d.more = '+' + hidden + '개 더 · 전체 작업 ' + (tasks.length + ran) + '개 →';
+  return d;
+}
+// The window itself: the element (its data in cardTaskPlanHydrate, where it changed) — and, when the window
+// hides nothing of the current list but earlier lists ran, the page's own 전체 작업 N개 → (the element draws
+// its line only for the rows it left out; with no current list at all it would draw its empty state instead).
+function renderCardTasks(s) {
+  if (!dhShow('tasks')) return '';
+  var tasks = s.tasks || [];
+  var ran = cardTasksRan(s);
+  if (tasks.length === 0 && ran === 0) return '';
+  var max = dhMax('tasks', CARD_TASK_ROWS);
+  var html = tasks.length
+    ? '<ui-task-plan class="card-task-plan" lang="ko" flush max="' + max + '" foot="none" data-tp-key="' + escAttr(s.key) + '"></ui-task-plan>'
+    : '';
+  if (ran > 0 && cardTaskHidden(tasks.map(cardTaskStep), max) === 0) {
+    html += '<button type="button" class="card-more-link" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',\\'tasks\\',\\'\\',event.detail===0)">'
+      + '전체 작업 ' + (tasks.length + ran) + '개 &rarr;</button>';
+  }
+  return html;
+}
+// Set every card window's data under root — only what changed (a push that changes nothing on a card does
+// not re-render it). Data set before the element is defined is picked up when it upgrades.
+function cardTaskPlanHydrate(root) {
+  if (!root || !root.querySelectorAll) return;
+  var els = root.querySelectorAll('ui-task-plan[data-tp-key]');
+  for (var i = 0; i < els.length; i++) {
+    var s = _sessionCache[els[i].getAttribute('data-tp-key') || ''];
+    if (s) taskElData(els[i], cardTaskPlanData(s));
+  }
+}
+// The window's "+N개 더 · 전체 작업 N개 →" (ui-more): the panel's Tasks, the same landing as the page's link —
+// by keyboard (_atKeyed) focus lands in the panel.
+document.addEventListener('ui-more', function(e) {
+  var el = e.target;
+  if (!el || el.localName !== 'ui-task-plan' || !el.hasAttribute('data-tp-key')) return;
+  openPanel(el.getAttribute('data-tp-key') || '', 'tasks', '', _atKeyed);
+});
 
 // ── Agent tree (spec 12 §4, .prd/12-dashboard-agent-tree-spec.md) ──
 // A card is the main agent; s.agents are the subagents it (or another
@@ -8684,7 +8707,7 @@ function agentTimeHtml(a) {
   var started = Number(a.startedAt) || 0;
   if (agentStatusOf(a) === 'running') return started ? elapsedHtml(started) : '';
   var ms = toNum(a.durationMs) || (Number(a.endedAt) && started ? Number(a.endedAt) - started : 0);
-  return ms > 0 ? (formatDuration(ms) || '0s') : '';
+  return ms > 0 ? (formatDuration(ms) || '0초') : '';
 }
 // The line under a node: its task in progress, else the SDK's summary, else its last tool.
 function agentActivity(a) {
@@ -8830,13 +8853,12 @@ function agentNodeAria(node, desc) {
 // Spec 12: bring a live node in line with freshly rendered markup, keeping
 // every node whose place did not change — so focus, a list's scroll and a
 // running spinner's animation survive a live update. Children pair up in
-// order; an agent's path crumb pairs only with the crumb of the same agent.
+// order; a keyed row pairs only with the row of the same record.
 function domKeyOf(n) {
   if (n.nodeType !== 1) return '#' + n.nodeType;
-  var k = n.getAttribute('data-agent-select');
-  // data-mk: any row that stands for one record (a goal) pairs only with that record's row,
+  // data-mk: any row that stands for one record (a goal, an agent) pairs only with that record's row,
   // so a focused control is never rebound to the record that took its place.
-  if (k === null) k = n.getAttribute('data-mk');
+  var k = n.getAttribute('data-mk');
   if (k !== null) return n.tagName + '|@' + k;
   // Unkeyed: tag + id + the base class (the first token — state classes come
   // after it), so a section inserted before others does not shift them onto
@@ -9134,6 +9156,11 @@ function sessionColOf(key) {
 // Spend (SSOT 2026-10-26 T2/T3): the root's is the task total — main agent and
 // every subagent — with the subagents' share beside it (both summed by the
 // server); a subagent's is its own API calls. Nothing is summed here.
+// A node's status as the kit chip (.ui-status, tone + glyph + word — never colour alone); attrs adds to it
+// (the path's slot="end").
+function agentStatusChipHtml(st, attrs) {
+  return '<span' + (attrs || '') + ' class="ui-status pa-st"' + (AGENT_STATUS_TONE[st] ? ' data-tone="' + AGENT_STATUS_TONE[st] + '"' : '') + (st === 'running' ? ' data-live' : '') + '>' + (AGENT_STATUS_GLYPH[st] || '') + esc(AGENT_STATUS_LABEL[st] || '') + '</span>';
+}
 function renderAgentFocus(node, s) {
   var st = node.status;
   var desc = anDesc(node);
@@ -9141,7 +9168,7 @@ function renderAgentFocus(node, s) {
   // The root's status and active time are the session's — the head chip shows
   // them (spec 13); its accessible name still says them. A subagent keeps its own.
   if (!node.root) {
-    bits.push('<span class="ui-status pa-st"' + (AGENT_STATUS_TONE[st] ? ' data-tone="' + AGENT_STATUS_TONE[st] + '"' : '') + (st === 'running' ? ' data-live' : '') + '>' + (AGENT_STATUS_GLYPH[st] || '') + esc(AGENT_STATUS_LABEL[st] || '') + '</span>');
+    bits.push(agentStatusChipHtml(st, ''));
     var time = agentTimeHtml(node);
     if (time) bits.push(time);
   }
@@ -9149,7 +9176,7 @@ function renderAgentFocus(node, s) {
   if (node.root) {
     var tu = s && s.tokenUsage;
     var tk = cardTotalTokens(tu);
-    if (tk > 0) bits.push('<span title="메인 + 서브에이전트 전체 — API 환산 비용">task 합계 ' + spendText(tk, tu.totalCostUsd, false) + '</span>');
+    if (tk > 0) bits.push('<span title="메인 + 서브에이전트 전체 — API 환산 비용">작업 합계 ' + spendText(tk, tu.totalCostUsd, false) + '</span>');
     var sub = s && s.subagentSpend;
     if (sub && toNum(sub.agents) > 0) {
       bits.push('<span title="서브에이전트들 자신의 API 호출 합">서브 ' + toNum(sub.agents) + '개 ' + spendText(spendTotal(sub), sub.costUsd, sub.unpriced || sub.estimated) + '</span>');
@@ -9166,6 +9193,15 @@ function renderAgentFocus(node, s) {
     + '<div class="pa-sum">' + bits.join('<span class="pa-dot" aria-hidden="true">&middot;</span>') + '</div>'
     + (line || act ? '<div class="pa-desc">' + esc(line) + (line && act ? ' — ' : '') + (act ? '<span class="pa-act">' + esc(act) + '</span>' : '') + '</div>' : '')
     + '</div>';
+}
+// Pure: the agent path as <ui-breadcrumbs> takes it — the focused node's chain from the root, a step per node
+// (its id: '' is the main agent) and the focused node last, the current page; an agent the tree does not know
+// (log only) is the last crumb by its id.
+function panelPathData(chain, node, agentId) {
+  var items = [];
+  for (var c = 0; c < chain.length; c++) items.push({ id: String(chain[c].id || ''), label: agentNodeName(chain[c]) });
+  if (!node) items.push({ label: '에이전트 ' + String(agentId || '').slice(-6) });
+  return { label: '에이전트 경로', items: items };
 }
 // The panel's agent section (§4.3), a drill-down over the same tree: the path
 // (the focused node's chain from the root) and the focused node's header. Its
@@ -9191,27 +9227,22 @@ function renderPanelAgents() {
     chain.unshift(cur);
     cur = cur.root ? null : root.byId[cur.parentId];
   }
-  var path = '';
-  for (var c = 0; c < chain.length; c++) {
-    var far = c < chain.length - 2;
-    var isCur = !!node && c === chain.length - 1;
-    // On a phone only "‹ parent › here" shows: a step's separator goes with the step before it.
-    path += (c ? '<span class="pa-sep' + (c - 1 < chain.length - 2 ? ' is-far' : '') + '" aria-hidden="true">&rsaquo;</span>' : '')
-      + '<button type="button" class="pa-crumb' + (far ? ' is-far' : c === chain.length - 2 ? ' is-up' : '') + '"'
-      + (isCur ? ' aria-current="page"' : '') + ' data-agent-select="' + escAttr(chain[c].id) + '">' + esc(agentNodeName(chain[c])) + '</button>';
-  }
-  if (!node) path += '<span class="pa-sep" aria-hidden="true">&rsaquo;</span><span class="pa-crumb" aria-current="page">에이전트 ' + esc(String(_panelAgent).slice(-6)) + '</span>';
-  // The path shows where the focused node sits; the root has nothing above it.
-  var html = chain.length > 1 || !node ? '<div class="pa-bar"><nav class="pa-path" aria-label="에이전트 경로">' + path + '</nav></div>' : '';
+  // The path shows where the focused node sits; the root has nothing above it. Its crumbs are the element's
+  // data (panelPathData, set below); the focused node's status chip rides in its end slot.
+  var html = chain.length > 1 || !node
+    ? '<div class="pa-bar"><ui-breadcrumbs class="pa-path" size="sm" lang="ko">' + (node && !node.root ? agentStatusChipHtml(node.status, ' slot="end"') : '') + '</ui-breadcrumbs></div>'
+    : '';
   if (node) html += renderAgentFocus(node, s);
-  else html += '<div class="pa-focus is-unknown"><div class="pa-sum">카드 목록 밖의 에이전트 — 작업 로그만 있어요</div></div>';
+  else html += '<div class="pa-focus is-unknown" tabindex="-1"><div class="pa-sum">카드 목록 밖의 에이전트 — 작업 로그만 있어요</div></div>';
   // A live update (sessionUpdated, a board push) with the same markup writes
-  // nothing; a changed section is morphed, so a focused crumb stays.
+  // nothing; a changed section is morphed, so the path element (its fold, a focused crumb) stays.
   if (html !== _panelAgentsHtml || el.style.display !== '') {
     el.style.display = '';
     morphInnerHtml(el, html);
     _panelAgentsHtml = html;
   }
+  var path = el.querySelector('ui-breadcrumbs.pa-path');
+  if (path) taskElData(path, panelPathData(chain, node, _panelAgent));
 }
 // Everything in the panel that follows the focused node, after any live
 // update — whichever node it is (no main-only or subagent-only gate). Each part
@@ -9290,7 +9321,7 @@ function panelTabsData(s, active, mainSt) {
     return t;
   };
   var model = s && s.model ? String(s.model).replace(/^claude-/, '') : '';
-  var tabs = [tab(PT_MAIN, st0, 'Main', model, true)];
+  var tabs = [tab(PT_MAIN, st0, '메인', model, true)];
   var list = ((s && s.agents) || []).slice().sort(function(a, b) { return toNum(a.n) - toNum(b.n); });
   for (var i = 0; i < list.length; i++) {
     var a = list[i];
@@ -9379,7 +9410,7 @@ function agentConvRawOf(seq) {
     // #488: it is also tried again on a later render (a poll, a log page) — after
     // a pause, so a failing load never spins.
     if (r && r.status === 'error') {
-      var failure = _agentConvFailed[key] = { error: String(r.error || 'Error') };
+      var failure = _agentConvFailed[key] = { error: String(r.error || STRINGS.error) };
       setTimeout(function() {
         if (gen !== _panelGen || _agentConvFailed[key] !== failure) return;
         delete _agentConvFailed[key];
@@ -9520,7 +9551,7 @@ function psecForLanding(land) {
 // The section strip's tabs (D4 E-24): Chat · 작업 로그 at the start, 에이전트 트리 at the
 // far end (TabItem.end) with the tree glyph; each one's panel is the box slotted by its id.
 var PSEC_TABS = [
-  { id: 'conv', label: 'Chat', title: '지시와 답변' },
+  { id: 'conv', label: '대화', title: '지시와 답변' },
   { id: 'log', label: '작업 로그' },
   { id: 'tree', label: '에이전트 트리', icon: 'tree', end: true },
 ];
@@ -9928,7 +9959,7 @@ function steerItemOf(s, id) {
 var PS_BAR_STATUS = { running: 'running', waiting: 'waiting', resuming: 'waiting', idle: 'idle', sleeping: 'idle', archived: 'idle' };
 // The bar's buttons named for what they do to the session (D3-GAPS G6-1, 0.12.0 ariaLabel): Close is never
 // taken for the panel's ✕ (작업 카드 닫기). Star carries its pressed state and its tooltip; Trash the quiet tone.
-var SESSION_ACTION_ARIA = { stop: 'Stop — 세션 중지', close: 'Close — 세션 종료', trash: 'Trash — 세션 휴지통으로' };
+var SESSION_ACTION_ARIA = { stop: '중지 — 세션 중지', close: '닫기 — 세션 종료', trash: '휴지통 — 세션 휴지통으로' };
 function panelHeadData(s, col) {
   var st = rootStatusOf(s, col);
   var bar = PS_BAR_STATUS[st] || 'idle';
@@ -10001,16 +10032,16 @@ function panelInfoHtml(s, open, col, keep) {
   var sum = [];
   if (s.ownerName) sum.push(esc(s.ownerName));
   if (s.workflow) sum.push(esc(s.workflow));
-  if (u) sum.push(formatTokens(cardTotalTokens(u)) + ' tok', '$' + toNum(u.totalCostUsd).toFixed(2));
+  if (u) sum.push(formatTokens(cardTotalTokens(u)) + ' 토큰', '$' + toNum(u.totalCostUsd).toFixed(2));
   if (ctx > 0) {
     var ctxCls = ctxLevel(ctx, s.contextTokens, s.autoCompactTokens, s.compactPending);
-    sum.push('<span class="pi-cs' + (ctxCls ? ' ' + ctxCls : '') + '">ctx ' + ctxPercent(ctx) + '%</span>');
+    sum.push('<span class="pi-cs' + (ctxCls ? ' ' + ctxCls : '') + '">컨텍스트 ' + ctxPercent(ctx) + '%</span>');
   }
   sum.push(agoHtml(new Date(s.lastActivity).getTime() || 0));
   var html = '<ui-disclosure class="pi-dc" flush' + (open ? ' open' : '') + '>'
     + '<span slot="summary" class="pi-head"><span class="pi-title">세션 정보</span><span class="pi-sum">' + sum.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</span></span>';
   var links = [];
-  if (s.issueUrl) links.push('<a href="' + safeHref(s.issueUrl) + '" target="_blank" rel="noopener">' + esc(s.issueLabel || s.issueShortRef || 'Issue') + (s.issueTitle ? ' &mdash; ' + esc(String(s.issueTitle).slice(0, 60)) : '') + '</a>');
+  if (s.issueUrl) links.push('<a href="' + safeHref(s.issueUrl) + '" target="_blank" rel="noopener">' + esc(s.issueLabel || s.issueShortRef || '이슈') + (s.issueTitle ? ' &mdash; ' + esc(String(s.issueTitle).slice(0, 60)) : '') + '</a>');
   if (s.prUrl) links.push('<a href="' + safeHref(s.prUrl) + '" target="_blank" rel="noopener">' + esc(s.prLabel || s.prShortRef || 'PR') + (s.prTitle ? ' &mdash; ' + esc(String(s.prTitle).slice(0, 60)) : '') + '</a>');
   if (s.conversationId) links.push('<a href="/conversations/' + escAttr(s.conversationId) + '" target="_blank" rel="noopener">전체 대화</a>');
   // The links stay in view under the summary while the record is folded: the element's links slot (D3-GAPS G6-2, 0.12.0).
@@ -10112,7 +10143,7 @@ function cwCanCompact(s) {
   // A task turn refuses commands (D8): "compact now" would run as an instruction (#600 ⑥).
   if (s.slackless) return '대시보드 작업에서는 아직 지원하지 않아요';
   var env = s.environment;
-  if (isSiblingSession(s)) return 'Open ' + env.instanceName + ' (' + (env.host || '') + ':' + (env.port || '') + ') to act on this session';
+  if (isSiblingSession(s)) return STRINGS.siblingLock(env);
   if (!s.ownerId || s.ownerId !== currentUserId) return READ_ONLY_MSG;
   if (s.pendingModel) return '모델 전환이 압축을 기다리는 중';
   if (s.compactPending) return '다음 입력 때 자동 압축됩니다';
@@ -10387,8 +10418,7 @@ function selectPanelAgent(agentId) {
   var after = document.activeElement;
   if (focusInPanel && (!after || after === document.body || !document.body.contains(after))) {
     // The chosen node's header — the same landing as Enter on a card item.
-    var here = document.querySelector('#panel-agents .pa-focus')
-      || document.querySelector('#panel-agents .pa-crumb[aria-current="page"]');
+    var here = document.querySelector('#panel-agents .pa-focus');
     if (here && here.focus) here.focus();
   }
 }
@@ -10567,7 +10597,7 @@ function renderCardIo(s) {
   var turn = d.instruction && d.instruction.turn ? d.instruction.turn : null;
   var info = turn ? sysTurnInfo(turn) : null;
   // SSOT 2026-10-29 T7: the harness sent it — System, not the user's name.
-  if (info) who = '<span class="io-who is-sys">System</span>';
+  if (info) who = '<span class="io-who is-sys">시스템</span>';
   var replyHtml = d.response && (d.response.title || d.response.body)
     ? '<div class="io-text">'
       + (d.response.title ? '<span class="io-title">' + esc(d.response.title) + '</span>' + (d.response.body ? '\\n' : '') : '')
@@ -10631,7 +10661,7 @@ function ioSkillsHtml(cid, skills) {
     var on = open === i;
     badges += '<button type="button" class="skill-badge" aria-expanded="' + (on ? 'true' : 'false') + '" aria-controls="' + id + '" onclick="ioSkillToggle(\\'' + escJs(cid) + '\\',' + i + ')"'
       + ' title="토큰 수는 추정치 — 영문 4자 또는 그 밖의 글자 1자를 1토큰으로 셈">'
-      + '<span class="skill-name">' + esc(skills[i].name) + '</span><span class="skill-tok">≈' + formatTokens(skills[i].tokens) + ' tokens</span></button>';
+      + '<span class="skill-name">' + esc(skills[i].name) + '</span><span class="skill-tok">≈' + formatTokens(skills[i].tokens) + ' 토큰</span></button>';
     if (on) pane = '<div class="skill-detail" id="' + id + '">' + skillPaneHtml(skills[i]) + '</div>';
   }
   return '<div class="skill-badges" role="group" aria-label="활성화된 스킬 ' + skills.length + '개">' + badges + '</div>' + pane;
@@ -10752,18 +10782,17 @@ function renderCardResume(s, col) {
 function sessionActionsOf(s, col) {
   var running = col === 'working' && !pendingAutoResume(s, col);
   var kind = running ? 'stop' : (col === 'closed' && s.terminated ? 'trash' : 'close');
-  var label = kind === 'stop' ? 'Stop' : (kind === 'trash' ? 'Trash' : 'Close');
+  var label = kind === 'stop' ? '중지' : (kind === 'trash' ? '휴지통' : '닫기');
   var env = s.environment;
   if (SELF_INSTANCE_NAME && env && env.instanceName && env.instanceName !== SELF_INSTANCE_NAME) {
-    return [{ id: kind, label: label + ' \\u2192 ' + env.instanceName, busy: false, sibling: true,
-      lock: 'Open ' + env.instanceName + ' (' + (env.host || '') + ':' + (env.port || '') + ') to act on this session' }];
+    return [{ id: kind, label: label + ' \\u2192 ' + env.instanceName, busy: false, sibling: true, lock: STRINGS.siblingLock(env) }];
   }
   var isOwner = !!s.ownerId && s.ownerId === currentUserId;
   var lock = isOwner ? '' : READ_ONLY_MSG;
   var lifeBusy = isBusy(s.key, 'life');
   var starred = s.starred === true;
   var closed = col === 'closed' || s.terminated === true || s.sessionState === 'SLEEPING';
-  var out = [{ id: 'star', label: starred ? '\\u2605 Starred' : '\\u2606 Star', pressed: starred, lock: lock, busy: lifeBusy,
+  var out = [{ id: 'star', label: starred ? '\\u2605 즐겨찾기' : '\\u2606 즐겨찾기', pressed: starred, lock: lock, busy: lifeBusy,
     tip: !isOwner ? READ_ONLY_MSG
       : starred ? '즐겨찾기 해제 — 다시 자동 sleep·보관 대상이 돼요'
       : '즐겨찾기 — 항상 맨 위, 자동 sleep·보관 안 함' + (closed ? ' (지금 살려요)' : '') }];
@@ -10862,7 +10891,7 @@ function renderCardBody(s, col) {
     var instName = s.environment.instanceName;
     var envColor = getEnvBadgeColor(instName);
     var envHostPort = (s.environment.host || '') + ':' + (s.environment.port || '');
-    envHtml = '<span class="env-badge" style="--env-tone:' + envColor + '" title="' + escAttr(instName + ' (' + envHostPort + ')') + '">' + esc(instName) + '</span>';
+    envHtml = '<span class="ui-chip is-toned is-sm" style="--ui-tone:' + envColor + '" title="' + escAttr(instName + ' (' + envHostPort + ')') + '">' + esc(instName) + '</span>';
   }
   // Short refs (PROJ-123 · PR-123), gated by ui.dashboardheader 'links'. The
   // titled links and the conversation are the panel's (세션 정보).
@@ -10902,7 +10931,7 @@ function renderCardBody(s, col) {
   const ioHtml = isSiblingSession(s) ? '' : renderCardIo(s);
   // Artifacts live on this instance's disk: a sibling instance's card links nowhere here.
   const artsHtml = isSiblingSession(s) ? '' : renderCardArtifacts(s);
-  const tasksHtml = renderTimeline(s);
+  const tasksHtml = renderCardTasks(s);
   const agentsHtml = renderAgentTree(s, col);
   let middle;
   if (col === 'working') middle = tasksHtml + agentsHtml + ioHtml;
@@ -10924,6 +10953,7 @@ function renderCardBody(s, col) {
     + permissionHtml
     + renderCardResume(s, col)
     + taskOutcomeHtml(s)
+    + taskNoticeFailHtml(s)
     + questionHtml
     + middle
     + cardGoalLine(s, col, isOwner && !isSibling)
@@ -10943,6 +10973,19 @@ function taskOutcomeHtml(s) {
     + '<span class="cto-label">마지막 턴 · ' + esc(TASK_OUTCOME_LABEL[kind] || kind) + '</span>'
     + (o.reason ? '<span class="cto-reason">' + esc(o.reason) + '</span>' : '')
     + (o.recordFailure ? '<span class="cto-warn" role="alert">기록하지 못함 · ' + esc(o.recordFailure) + '</span>' : '')
+    + '</div>';
+}
+
+// E2 ⑤ — a notice the task owed its Slack instruction thread that could not be
+// posted: the card says which and why (the thread will not get it).
+var TASK_NOTICE_LABEL = { link: '카드 링크', result: '결과', question: '질문', approval: '승인 요청', failure: '실패 알림', interrupted: '중단 알림' };
+function taskNoticeFailHtml(s) {
+  var f = s && s.slackless && s.noticeFailures;
+  if (!f || !f.length) return '';
+  return '<div class="card-task-outcome" data-outcome="notice-failed">'
+    + f.map(function (n) {
+      return '<span class="cto-warn" role="alert">슬랙 스레드에 못 보냄 · ' + esc(TASK_NOTICE_LABEL[n.kind] || n.kind) + ' · ' + esc(n.error) + '</span>';
+    }).join('')
     + '</div>';
 }
 
@@ -11102,9 +11145,9 @@ async function postModelSwitch(key, nickname) {
 function modelSwitchNote(r) {
   if (!r.ok) return { text: r.error, error: true };
   var res = r.result || {};
-  if (res.status === 'compacting') return { text: '컨텍스트가 ' + res.nickname + '의 autocompact ' + formatTokens(res.autoCompactTokens) + '보다 커서 지금 모델로 compact한 뒤 전환합니다', error: false };
+  if (res.status === 'compacting') return { text: '컨텍스트가 ' + res.nickname + '의 자동 압축 지점 ' + formatTokens(res.autoCompactTokens) + '보다 커서 지금 모델로 압축한 뒤 전환합니다', error: false };
   if (res.status === 'unchanged') return { text: '이미 ' + res.nickname + '입니다', error: false };
-  return { text: res.nickname + '(으)로 전환 · autocompact ' + formatTokens(res.autoCompactTokens), error: false };
+  return { text: res.nickname + '(으)로 전환 · 자동 압축 ' + formatTokens(res.autoCompactTokens), error: false };
 }
 async function changeModel(key, nickname) {
   if (!nickname) return;
@@ -11128,7 +11171,7 @@ async function changeModel(key, nickname) {
 // The owner picks one of the five levels; the session runs it from the next
 // turn (the %effort scope — the owner's default stays). When the session's
 // model caps the level, the note says what actually runs.
-var EFFORT_LABELS = { low: 'Low', medium: 'Medium', high: 'High', xhigh: 'Extra high', max: 'Max' };
+var EFFORT_LABELS = { low: '낮음', medium: '보통', high: '높음', xhigh: '매우 높음', max: '최대' };
 function effortLabel(level) {
   return EFFORT_LABELS[level] || String(level || '');
 }
@@ -11159,9 +11202,9 @@ async function postEffortSwitch(key, effort) {
 function effortSwitchNote(r) {
   if (!r.ok) return { text: r.error, error: true };
   var res = r.result || {};
-  if (res.status === 'unchanged') return { text: '이미 effort ' + effortLabel(res.effort) + '입니다', error: false };
+  if (res.status === 'unchanged') return { text: '이미 추론 강도 ' + effortLabel(res.effort) + '입니다', error: false };
   var capped = res.effective && res.effective !== res.effort ? ' (이 모델은 ' + effortLabel(res.effective) + '까지 실행)' : '';
-  return { text: 'effort ' + effortLabel(res.effort) + ' · 다음 턴부터 적용' + capped, error: false };
+  return { text: '추론 강도 ' + effortLabel(res.effort) + ' · 다음 턴부터 적용' + capped, error: false };
 }
 async function changeEffort(key, effort) {
   if (!effort) return;
@@ -11246,7 +11289,7 @@ var _goalBusy = Object.create(null); // session key → { op: 'add' | 'delete', 
 function goalPastItem(h) {
   var meta = [];
   if (toNum(h.activeMsUsed) > 0) meta.push('소요 ' + formatDuration(toNum(h.activeMsUsed)));
-  if (h.tokens !== undefined) meta.push(formatTokens(h.tokens) + ' tok');
+  if (h.tokens !== undefined) meta.push(formatTokens(h.tokens) + ' 토큰');
   if (h.costUsd !== undefined) meta.push('$' + toNum(h.costUsd).toFixed(2));
   if (toNum(h.continuationCount) > 0) meta.push('이어하기 ' + toNum(h.continuationCount) + '회');
   if (h.completedVia) meta.push(Object.prototype.hasOwnProperty.call(GOAL_VIA_LABELS, h.completedVia) ? GOAL_VIA_LABELS[h.completedVia] : String(h.completedVia));
@@ -12413,7 +12456,7 @@ function paintStats(data) {
   };
   fillStatSlot('stat-merge-lines', 'lines', t ? '+' + toNum(t.mergeLinesAdded) + ' / -' + toNum(t.mergeLinesDeleted) : '');
   var wfEntries = Object.entries((t && t.workflowCounts) || {}).sort(function(a, b) { return toNum(b[1]) - toNum(a[1]); });
-  fillStatSlot('stat-workflows', 'wf', wfEntries.map(function(e) { return '<span>' + esc(e[0]) + ': <b>' + toNum(e[1]) + '</b></span>'; }).join(''));
+  fillStatSlot('stat-workflows', 'wf', wfEntries.map(function(e) { return '<span>' + esc(e[0] === 'default' ? '기본' : e[0]) + ': <b>' + toNum(e[1]) + '</b></span>'; }).join(''));
   paintStatCards();
   _chartDays = data ? (Array.isArray(data.days) ? data.days : []) : null;
   paintCharts(_chartDays, false);
@@ -12751,7 +12794,7 @@ function connectWs() {
           renderPanelPermission(msg.session);
           renderPanelQuestion(msg.session); // the form shows the ask its actions answer (#637 R2)
           var pt2 = document.getElementById('panel-title');
-          if (pt2) pt2.textContent = msg.session.displayHeadline || msg.session.summaryTitle || msg.session.title || 'Untitled';
+          if (pt2) pt2.textContent = msg.session.displayHeadline || msg.session.summaryTitle || msg.session.title || '제목 없음';
           // Spec 12: the agent tree moved (spawn, status, tool count, a node's tasks);
           // spec 13: the live numbers (tokens, cost, timer) move with every push.
           repaintPanelSession();
@@ -13125,7 +13168,7 @@ function wlRawLoad(state, seq, fetchJson) {
     if (status === 403) return { status: 'denied' };
     if (status === 503 && err.code === 'unavailable') return { status: 'damaged' };
     if (cache[seq] === p) delete cache[seq];
-    return { status: 'error', error: String((err && (err.message || err.name)) || 'Error') };
+    return { status: 'error', error: String((err && (err.message || err.name)) || STRINGS.error) };
   });
   cache[seq] = p;
   return p;
@@ -13389,7 +13432,7 @@ function wlEntryOf(st, e) {
 // Pure: a task group's ledger meta — the element's quiet line under the head's
 // title (D3-GAPS G2-2, 0.12.0 WorkGroup.meta): how the task ended (its time
 // when done, the fate word else — a running one says so, no live clock in a
-// head), and 툴 N회 once it ran. The words are the task list's (renderTaskMeta).
+// head), and 툴 N회 once it ran. The words are the task ledger's (TASK_FATE_LABEL).
 function wlTaskMeta(t) {
   var started = Number(t.startedAt) || 0;
   var completed = Number(t.completedAt) || 0;
@@ -13397,7 +13440,7 @@ function wlTaskMeta(t) {
   var fate = taskFateOf(t);
   var parts = [];
   if (fate === 'done') {
-    var took = started && completed ? formatDuration(completed - started) || '0s' : '';
+    var took = started && completed ? formatDuration(completed - started) || '0초' : '';
     parts.push(took ? took + ' 만에 완료' : TASK_FATE_LABEL.done);
   } else if (fate === 'active' || fate === 'paused' || fate === 'dropped' || fate === 'skipped') {
     parts.push(TASK_FATE_LABEL[fate] + (fate === 'dropped' && started && removed > started ? ' ' + formatDuration(removed - started) : ''));
@@ -14076,7 +14119,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // #762 — single source of truth for headline. displayHeadline carries the
   // server-resolved priority chain; older WS messages without it still get a
   // sensible fallback.
-  document.getElementById('panel-title').textContent = s.displayHeadline || s.summaryTitle || s.title || 'Untitled';
+  document.getElementById('panel-title').textContent = s.displayHeadline || s.summaryTitle || s.title || '제목 없음';
 
   // TitleSub
   var titleSubTextEl = document.getElementById('panel-title-sub-text');
@@ -14462,7 +14505,7 @@ function sysTurnInfo(t) {
     var gf = [];
     if (n) gf.push(['회차', n[1] + ' / ' + n[2]]);
     if (reason) gf.push(['직전 평가에서 남은 일', reason]);
-    return { kind: 'goal', label: n ? 'Goal #' + n[1] + '/' + n[2] : 'Goal', line: reason ? '직전 평가: ' + sysOneLine(reason, 90) : 'Goal 자동 계속', raw: raw, facts: gf };
+    return { kind: 'goal', label: n ? '목표 #' + n[1] + '/' + n[2] : '목표', line: reason ? '직전 평가: ' + sysOneLine(reason, 90) : '목표 자동 계속', raw: raw, facts: gf };
   }
   // The host prompt that keeps a turn going while background work still runs
   // (packages/slack/src/pipeline/background-wait.ts buildBackgroundWaitPrompt).
@@ -14539,7 +14582,7 @@ function cpFacts(st) {
   }
   if (st.phase === 'done' && toNum(c.durationMs) > 0) f.push(['걸린 시간', formatDuration(c.durationMs)]);
   f.push(['예상 시간', formatDuration(st.est) + (st.estKnown ? ' (직전 압축 기준)' : ' (기본값)')]);
-  if (c.trigger) f.push(['SDK trigger', c.trigger]);
+  if (c.trigger) f.push(['SDK 트리거', c.trigger]);
   if (c.endedAt) f.push(['끝난 시각', new Date(toNum(c.endedAt)).toLocaleString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })]);
   return f;
 }
@@ -14654,7 +14697,7 @@ function skillBadgesHtml(key, skills) {
     _skillBodies[id] = skills[i];
     badges += '<button type="button" class="skill-badge" aria-expanded="false" aria-controls="' + id + '" data-skill="' + id + '" onclick="skillToggle(this)"'
       + ' title="토큰 수는 추정치 — 영문 4자 또는 그 밖의 글자 1자를 1토큰으로 셈">'
-      + '<span class="skill-name">' + esc(skills[i].name) + '</span><span class="skill-tok">≈' + formatTokens(skills[i].tokens) + ' tokens</span></button>';
+      + '<span class="skill-name">' + esc(skills[i].name) + '</span><span class="skill-tok">≈' + formatTokens(skills[i].tokens) + ' 토큰</span></button>';
     panes += '<div class="skill-detail" id="' + id + '" hidden></div>';
   }
   return '<div class="skill-badges" role="group" aria-label="활성화된 스킬 ' + skills.length + '개">' + badges + '</div>' + panes;
@@ -14678,14 +14721,14 @@ function skillToggle(btn) {
   btn.setAttribute('aria-expanded', 'true');
 }
 function skillPaneHtml(sk) {
-  return '<div class="skill-detail-h"><span class="skill-name">' + esc(sk.name) + '</span><span class="skill-tok">≈' + formatTokens(sk.tokens) + ' tokens (추정)</span></div>'
+  return '<div class="skill-detail-h"><span class="skill-name">' + esc(sk.name) + '</span><span class="skill-tok">≈' + formatTokens(sk.tokens) + ' 토큰 (추정)</span></div>'
     + '<pre class="skill-body">' + esc(sk.body) + '</pre>';
 }
 
 // SSOT 2026-10-29 T8: the answers' name — the Slack bot that runs the session
 // (its card's botName — a sibling instance's own bot), else this instance's.
 function botNameOf(s) {
-  return (s && s.botName) || BOT_NAME || 'Assistant';
+  return (s && s.botName) || BOT_NAME || '어시스턴트';
 }
 // ── 지시와 답변 — @2lab.ai/ui <ui-conversation> (D3: G-01..G-13, E-25) ──
 // The section's turns are the library element's: the instruction (clamped,
@@ -14729,9 +14772,11 @@ function convSummaryOf(t, c) {
 // Pure: a turn soma-work put there (sysTurnInfo) as the element's system turn —
 // its badge (kind + label), one line, the facts and the raw prompt. A /compact
 // still running (the latest turn of a working session, younger than a
-// compaction can run) carries its progress; once done, its numbers.
+// compaction can run) carries its progress; once done, its numbers. No name:
+// a turn's own name wins over the element's words, so the element says its
+// own 시스템 (lang="ko") — D8.
 function convSysTurn(t, info, id, at, c, notLast) {
-  var x = { id: id, role: 'system', name: 'System', kind: info.kind === 'bgwork' ? 'background' : info.kind, label: info.label, text: info.line };
+  var x = { id: id, role: 'system', kind: info.kind === 'bgwork' ? 'background' : info.kind, label: info.label, text: info.line };
   if (at) x.at = at;
   var facts = info.facts;
   if (info.kind === 'compact') {
@@ -14771,7 +14816,7 @@ function convTurnsOf(list, c) {
       if (sys) u = convSysTurn(t, sys, id, at, c, i < list.length - 1);
       else {
         var said = splitInvokedSkills(decodeSlackEntities(t.rawContent || ''));
-        u = { id: id, role: 'user', name: String(t.userName || 'User'), text: said.text };
+        u = { id: id, role: 'user', name: String(t.userName || '사용자'), text: said.text };
         if (at) u.at = at;
         if (said.skills.length) u.skills = said.skills.map(function(sk) { return { name: sk.name, tokens: sk.tokens, text: sk.body }; });
       }
@@ -15065,7 +15110,7 @@ function convLoadAnswer(cid, id) {
       if (_ansInflight[key] !== req) return;
       delete _ansInflight[key];
       if (req.gen !== _panelGen) return;
-      _ansFailed[key] = String((err && (err.message || err.name)) || 'Error');
+      _ansFailed[key] = String((err && (err.message || err.name)) || STRINGS.error);
       convPaintSoon();
     });
 }
@@ -15367,7 +15412,7 @@ async function sendCommand(text, ref, files) {
       id: optimisticId,
       role: 'user',
       timestamp: Date.now(),
-      userName: 'You',
+      userName: '나',
       rawContent: shown,
       origin: { by: 'user' },
       _optimistic: true,
@@ -15667,7 +15712,7 @@ function cronScheduleLabel(expr, nextRunAt) {
   return raw;
 }
 function cronAgo(ms, nowMs) {
-  return capCountdown((nowMs - ms) / 1000) + ' 전';
+  return formatSince(nowMs - ms);
 }
 function cronRunWhen(ms, nowMs) {
   return capClockLabel(ms / 1000, nowMs) + ' · ' + cronAgo(ms, nowMs);
@@ -15850,8 +15895,8 @@ function renderCronRunRow(run, g, nowMs) {
   var bits = [];
   bits.push('<time datetime="' + escAttr(new Date(run.executedAt).toISOString()) + '">' + esc(cronRunWhen(run.executedAt, nowMs)) + '</time>');
   bits.push(esc(run.triggeredBy ? '수동 실행 (' + run.triggeredBy + ')' : '예약 실행'));
-  if (s && s.activeMs) bits.push(esc('소요 ' + capCountdown(s.activeMs / 1000)));
-  if (s && typeof s.tokens === 'number' && s.tokens > 0) bits.push(esc(formatTokens(s.tokens) + ' tok'));
+  if (s && s.activeMs) bits.push(esc('소요 ' + formatNmSSs(s.activeMs)));
+  if (s && typeof s.tokens === 'number' && s.tokens > 0) bits.push(esc(formatTokens(s.tokens) + ' 토큰'));
   if (s && typeof s.costUsd === 'number' && s.costUsd > 0) bits.push(esc('$' + s.costUsd.toFixed(2)));
   if (!s && run.status === 'success' && run.executionPath !== 'dm' && run.executionPath !== 'thread_reply') bits.push(esc('세션 연결 없음'));
   var actions = [];
@@ -15876,7 +15921,7 @@ function renderCronDrawerMeta(g, nowMs) {
   // The kit's fact list (.ui-dl). Values are markup (escaped here): 다음 실행 counts down live like the tile (#444 review R1).
   var rows = [
     ['스케줄', esc(cronScheduleLabel(j.expression, j.nextRunAt) + ' · ' + j.expression + ' (UTC)')],
-    ['다음 실행', j.nextRunAt ? esc(capClockLabel(j.nextRunAt / 1000, nowMs)) + ' (' + aqTime(j.nextRunAt, nowMs, ' 후') + ')' : '8일 안에 없음'],
+    ['다음 실행', j.nextRunAt ? esc(capClockLabel(j.nextRunAt / 1000, nowMs)) + ' (' + cronCountdownHtml(j.nextRunAt) + ')' : '8일 안에 없음'],
     ['실행 방식', esc((j.mode === 'fastlane' ? '항상 새 스레드' : '세션이 쉬면 주입, 없으면 새 스레드') + ' · 출력 ' + j.target + ' · 모델 ' + j.model)],
     ['실행 기록', esc('잡마다 최근 ' + (j.historyCap || 20) + '회까지 보관')],
   ];
@@ -15944,6 +15989,10 @@ function closeCronDrawer(after) {
 (function initCronDrawer() {
   var d = document.getElementById('cron-drawer');
   if (d) d.addEventListener('ui-close', function(e) { e.preventDefault(); closeCronDrawer(); });
+  // The 다음 실행 countdown reached zero: the job is due — fetch the jobs, so the facts and the lane say the next one.
+  // ui-end is said once, by the element that counted down to zero; one drawn with an until already past reads 곧
+  // and never ticks (it is not on the timer), so a repaint after the fetch asks nothing more.
+  if (d) d.addEventListener('ui-end', function(e) { if (e.target && e.target.localName === 'ui-elapsed') loadCronJobs(); });
 })();
 document.addEventListener('click', function(e) {
   var t = e.target && e.target.closest ? e.target : null;
@@ -15970,45 +16019,15 @@ async function loadCronJobs() {
   } catch (e) { console.error('Failed to load cron jobs', e); }
 }
 
-// ── The drawer's live countdowns (the Agent Queue grammar, #444 D3) ──
-// <ui-agent-queue> ticks its own; the drawer's 다음 실행 rides the page's 1 Hz tick.
-// Time left, floored (spec 12 T9): 1일 5시간 · 1시간 20분 · 24분 · 42초 · 곧 (D3).
-function aqLeft(atMs, nowMs) {
-  var s = Math.floor((Number(atMs) - Number(nowMs)) / 1000);
-  if (!(s > 0)) return '곧';
-  if (s < 60) return s + '초';
-  var m = Math.floor(s / 60);
-  var h = Math.floor(m / 60);
-  if (h >= 24) return Math.floor(h / 24) + '일 ' + (h % 24) + '시간';
-  if (h) return h + '시간 ' + (m % 60) + '분';
-  return m + '분';
-}
-// Time left with what follows it: ' 후 복귀' reads "24분 후 복귀", and at zero "곧 복귀" — never
-// "곧 후" (PR review R1). sfx starts with ' 후' when it says "after".
-function aqLeftSfx(atMs, nowMs, sfx) {
-  var t = aqLeft(atMs, nowMs);
-  var tail = String(sfx || '');
-  return t === '곧' ? t + tail.replace(/^ 후/, '') : t + tail;
-}
-// A countdown aqTick keeps live, its suffix inside it (data-aq-sfx); role=timer is never read
-// out on each tick.
-function aqTime(atMs, nowMs, sfx) {
+// ── The drawer's live countdown (the Agent Queue grammar, #444 D3) ──
+// <ui-agent-queue> ticks its own; the drawer's 다음 실행 is @2lab.ai/ui ui-elapsed in its countdown format (D8b
+// K-03): the loose form, floored (spec 12 T9: 1일 5시간 · 1시간 20분 · 24분 · 42초 — precision="minute"), "후" after
+// it and "곧" from the moment it would read 0초 — never "곧 후" (PR review R1: at-zero leaves "after" off). It
+// ticks on the library's shared timer and says ui-end once at zero (the drawer reloads the jobs then).
+function cronCountdownHtml(atMs) {
   var at = Math.round(Number(atMs));
   if (!isFinite(at)) return '';
-  return '<time class="aq-left" role="timer" datetime="' + new Date(at).toISOString() + '" data-aq-at="' + at + '"' + (sfx ? ' data-aq-sfx="' + escAttr(sfx) + '"' : '') + '>' + aqLeftSfx(at, nowMs, sfx) + '</time>';
-}
-// The drawer's countdowns ride the shared 1 Hz tick (updateTimers → aqTick).
-function aqTickIn(root, nowMs) {
-  if (!root) return;
-  var els = root.querySelectorAll('[data-aq-at]');
-  for (var i = 0; i < els.length; i++) {
-    var t = aqLeftSfx(Number(els[i].getAttribute('data-aq-at')) || 0, nowMs, els[i].getAttribute('data-aq-sfx') || '');
-    if (els[i].textContent !== t) els[i].textContent = t;
-  }
-}
-function aqTick() {
-  if (document.hidden) return;
-  aqTickIn(document.getElementById('cron-drawer'), Date.now());
+  return '<ui-elapsed until="' + at + '" format="countdown" precision="minute" after="후" at-zero="곧" lang="ko"></ui-elapsed>';
 }
 
 // ── LLM capacity v2 (2026-10-25) and its accounts as workers (#444 D8–D14) — @2lab.ai/ui
@@ -16020,16 +16039,6 @@ function aqTick() {
 var CAP_TIERS = { 'claude-max-5x': { short: 'x5', label: 'Max x5' }, 'claude-max-20x': { short: 'x20', label: 'Max x20' }, 'chatgpt-pro-200': { short: '$200', label: 'Pro ($200)' }, 'chatgpt-pro-500': { short: '$500', label: 'Pro ($500)' } };
 var _capacityView = null;
 
-// Floor to the minute and keep the minutes: 3h59m never reads "3h".
-function capCountdown(secs) {
-  var s = Math.max(0, Math.floor(Number(secs) || 0));
-  if (s < 60) return '<1m';
-  var m = Math.floor(s / 60);
-  if (m < 60) return m + 'm';
-  var h = Math.floor(m / 60);
-  if (h < 24) return h + 'h ' + (m % 60) + 'm';
-  return Math.floor(h / 24) + 'd ' + (h % 24) + 'h';
-}
 function capClockLabel(atSec, nowMs) {
   var d = new Date(atSec * 1000);
   var n = new Date(nowMs);
@@ -16831,18 +16840,26 @@ function fcHydrateIn(node) {
     else if (t.classList.contains('panel-um-dc') && _umPanelOpen === 'folding') { _umPanelOpen = false; renderPanelArtifactsSection(); }
   });
 })();
-// Spec 12 §4.3 — the panel's agent section: a path step drills into that node
-// (a subtree row is <ui-agent-tree>'s ui-select).
+// Spec 12 §4.3 — the panel's agent section: a path step (<ui-breadcrumbs>' ui-select, its id the node's; '' the
+// main agent) drills into that node (a subtree row is <ui-agent-tree>'s ui-select).
 (function initPanelAgentInteractions() {
   var bar = document.getElementById('panel-agents');
   if (!bar) return;
-  bar.addEventListener('click', function(e) {
-    var pick = e.target.closest('.pa-crumb[data-agent-select]');
-    if (pick && bar.contains(pick) && pick.getAttribute('aria-current') !== 'page') {
-      selectPanelAgent(pick.getAttribute('data-agent-select') || '');
-    }
+  bar.addEventListener('ui-select', function(e) {
+    var el = e.target;
+    if (!el || el.localName !== 'ui-breadcrumbs' || !e.detail) return;
+    selectPanelAgent(String(e.detail.id || ''));
   });
 })();
+// The page trail over the inbox (A-16): the product's root — this board for the user shown (the reader's scope, as
+// the URL says it; selectUser paints it again) — and this page.
+function paintTrail() {
+  var el = document.getElementById('inbox-trail');
+  if (!el) return;
+  var home = currentUserId ? '/dashboard/' + encodeURIComponent(currentUserId) : '/dashboard';
+  taskElData(el, { items: [{ label: 'soma-work', href: home }, { label: '에이전트 인박스' }] });
+}
+paintTrail();
 
 // ── New task (SSOT 2026-10-23) ──
 // The composer behind the New task button / floating button. It loads what
@@ -17074,7 +17091,7 @@ function ntRender() {
     .join('');
   ntEl('nt-effort').innerHTML = _ntCtx.efforts
     .map(function (e) {
-      return '<option value="' + escAttr(e) + '"' + (e === _ntState.effort ? ' selected' : '') + '>' + esc(e) + '</option>';
+      return '<option value="' + escAttr(e) + '"' + (e === _ntState.effort ? ' selected' : '') + '>' + esc(effortLabel(e)) + '</option>';
     })
     .join('');
   // #600 ⑥ — where the task goes: offered when the context lists task folders.
