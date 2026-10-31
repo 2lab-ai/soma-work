@@ -75,6 +75,13 @@ export interface TaskNoticeDeliverer {
    * Never throws — a notice is never worth an approval.
    */
   approval(event: TaskApprovalEvent): void;
+  /**
+   * E2 ⑧ (D6's fourth producer, D11) — a task made from a Slack instruction
+   * whose first turn could not start: the thread is owed one "not started"
+   * notice (after its link). No outcome save to ride on, so it goes to the
+   * ledger directly. Throws if the ledger cannot be written.
+   */
+  notStarted(session: ConversationSession, sessionKey: string, reason: string): void;
   /** Shutdown: no new pass and no retry from now on. */
   stop(): void;
 }
@@ -187,6 +194,20 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
         error: (error as Error)?.message,
       });
     }
+  }
+
+  function notStarted(session: ConversationSession, sessionKey: string, reason: string): void {
+    const origin = session.originThread;
+    if (session.slackless !== true || !origin || !session.taskId) return;
+    deps.ledger.register({
+      id: `${session.taskId}:create:failure`,
+      taskId: session.taskId,
+      kind: 'failure',
+      channel: origin.channel,
+      threadTs: origin.threadTs,
+      intent: { ...intentOf({ id: '', kind: 'failure', reason, at: Date.now() }, session, sessionKey), notStarted: true },
+    });
+    void deliver();
   }
 
   function deliver(options?: { retryFailed?: boolean }): Promise<void> {
@@ -366,6 +387,14 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
               ),
             };
       default:
+        if (entry.intent.notStarted) {
+          return {
+            text: withLink(
+              `:warning: 작업을 만들었지만 시작하지 못했어요 — 카드에서 다시 지시해 주세요. (${entry.intent.reason ?? '이유 없음'})`,
+              url,
+            ),
+          };
+        }
         return {
           text: withLink(
             entry.intent.outcome === 'cancelled'
@@ -433,7 +462,7 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
     retry = null;
   }
 
-  return { enqueue, handoff, approval, deliver, failures, stop };
+  return { enqueue, handoff, approval, notStarted, deliver, failures, stop };
 }
 
 /**

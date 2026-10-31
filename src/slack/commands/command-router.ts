@@ -40,6 +40,7 @@ import { SessionCommandHandler } from './session-command-handler';
 import { SessionHandler } from './session-handler';
 import { SkillForceHandler } from './skill-force-handler';
 import { SkillsHandler } from './skills-handler';
+import { TaskEntryHandler } from './taskentry-handler';
 import { UITestHandler } from './ui-test-handler';
 import { UsageHandler } from './usage-handler';
 import { UserSkillsListHandler } from './user-skills-list-handler';
@@ -117,6 +118,8 @@ setCommandRouterProviders({
         new VerbosityHandler(deps as any),
         new EffortHandler(deps as any),
         new NotifyHandler(),
+        // E2 ⑧ — `taskentry on|off`: Slack instructions → dashboard tasks (per user).
+        new TaskEntryHandler(),
         new WebhookHandler(),
         new RestoreHandler(),
         newHandler,

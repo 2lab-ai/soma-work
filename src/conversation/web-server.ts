@@ -492,6 +492,16 @@ export function getConversationUrl(conversationId: string): string {
  * viewer failed to start or has stopped — or when there is no owner or key.
  * @public — injected once in src/index.ts (`setThreadHeaderProviders`).
  */
+/**
+ * E2 ⑧ (.prd/18 D12) — the dashboard is listening (so `getDashboardSessionUrl`
+ * hands out card links). The Slack entry asks this before making a task: with no
+ * dashboard there is no surface to answer, approve or stop, so it stays on the
+ * Slack session path.
+ */
+export function isDashboardListening(): boolean {
+  return listening;
+}
+
 export function getDashboardSessionUrl(ownerId: string, sessionKey: string): string | undefined {
   if (!listening || !ownerId || !sessionKey) return undefined;
   const base = getViewerBaseUrl().replace(/\/+$/, '');
