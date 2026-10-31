@@ -5982,7 +5982,9 @@ export class SlackHandler {
       adminUserIds,
     );
 
-    if (notified > 0) {
+    if (notified === 'alreadyApproved') {
+      await say({ text: '✅ 이 메시지의 삭제는 이미 어드민이 승인했습니다.' });
+    } else if (notified > 0) {
       await say({ text: '📨 어드민에게 삭제 요청을 보냈습니다. 승인 후 삭제됩니다.' });
       this.logger.info('DM cleanup approval sent to admins', {
         requesterId: event.user,

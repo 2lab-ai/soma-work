@@ -20,6 +20,7 @@ import {
   openAdminRequest,
   reopenAdminRequest,
   setAdminRequestPrompts,
+  settleAdminRequest,
 } from '../admin-request-store';
 import { getAdminUsers, isAdminUser } from '../admin-utils';
 import { Logger } from '../logger';
@@ -111,17 +112,19 @@ export function botDeletePromptBlocks(target: BotDeleteTarget, requestId: string
 
 /**
  * Ask every admin, by DM, to approve deleting a bot message; record the
- * request and where each prompt landed. Returns how many admins were reached.
+ * request and where each prompt landed. Returns how many admins were reached,
+ * or `alreadyApproved` when a delete of this message was already approved
+ * (done or in flight) — nobody is asked again.
  */
 export async function requestBotDelete(
   slackApi: BotDeleteSlackApi,
   target: BotDeleteTarget & { preview?: string },
   admins: Iterable<string> = getAdminUsers(),
-): Promise<number> {
+): Promise<number | 'alreadyApproved'> {
   const list = [...admins];
   if (list.length === 0) return 0;
   const requestId = botDeleteRequestId(target.targetChannel, target.targetTs);
-  openAdminRequest({
+  const round = openAdminRequest({
     kind: 'bot_delete',
     requestId,
     requesterId: target.requesterId,
@@ -131,7 +134,10 @@ export async function requestBotDelete(
       ...(target.preview ? { preview: target.preview.slice(0, 300) } : {}),
     },
     ttlMs: BOT_DELETE_REQUEST_TTL_MS,
+    // An approved delete (done, or still in flight) is not asked again: a second answer could contradict it.
+    keepAnswered: (r) => r.resolution?.outcome === 'approved',
   });
+  if (round.handled) return 'alreadyApproved';
   notifyAdminApprovalsChanged();
   const blocks = botDeletePromptBlocks(target, requestId);
   const prompts: AdminRequestPrompt[] = [];
@@ -145,8 +151,11 @@ export async function requestBotDelete(
     }
   }
   const req = setAdminRequestPrompts('bot_delete', requestId, prompts);
-  // Answered on the dashboard while the DMs were going out: these copies were not reachable then.
-  if (req?.handled && req.resolution) await rewritePrompts(slackApi, prompts, outcomeText(req.resolution));
+  // Decided while the DMs were going out: these copies were not reachable then. (A delete still in
+  // flight is not a decision yet — its answer rewrites every recorded copy once it settles.)
+  if (req?.handled && req.resolution && req.resolution.settled !== false) {
+    await rewritePrompts(slackApi, prompts, outcomeText(req.resolution));
+  }
   return prompts.length;
 }
 
@@ -187,12 +196,14 @@ export async function decideBotDelete(args: {
         targetTs: existing.data.targetTs,
       }
     : (args.legacy as BotDeleteTarget);
+  // An approval is a claim until the delete succeeds; a rejection is the decision at once.
   const resolution = {
     by: actor,
     choiceId: decision,
     outcome: decision === 'approve' ? ('approved' as const) : ('denied' as const),
     via,
     at: now,
+    ...(decision === 'approve' ? { settled: false } : {}),
   };
   const marked = markAdminRequest(
     'bot_delete',
@@ -215,17 +226,19 @@ export async function decideBotDelete(args: {
       await slackApi.deleteMessage(target.targetChannel, target.targetTs);
     } catch (error) {
       if (!isMessageGone(error)) {
-        reopenAdminRequest('bot_delete', requestId);
+        reopenAdminRequest('bot_delete', requestId, resolution);
         logger.warn('Failed to delete message after admin approval', { requestId, error });
         return { ok: false, reason: 'failed', message: '⚠️ 메시지 삭제에 실패했습니다. 다시 시도할 수 있습니다.' };
       }
     }
+    settleAdminRequest('bot_delete', requestId, resolution);
   }
   const text = outcomeText(resolution);
   logger.info('Bot message delete request answered', { requestId, outcome: resolution.outcome, by: actor, via });
   notifyAdminApprovalsChanged();
   const effects = (async () => {
-    await rewritePrompts(slackApi, marked.prompts, text);
+    // Every copy on record now — including any recorded while the delete was running.
+    await rewritePrompts(slackApi, getAdminRequest('bot_delete', requestId)?.prompts ?? marked.prompts, text);
     try {
       const dm = await slackApi.openDmChannel(target.requesterId);
       await slackApi.postMessage(
@@ -278,7 +291,7 @@ export function botDeleteAdminApprovalAdapter(slackApi: BotDeleteSlackApi): Admi
       const out: AdminApprovalResolution[] = [];
       for (const req of listAdminRequests('bot_delete')) {
         const r = req.resolution;
-        if (!req.handled || !r || r.at < since) continue;
+        if (!req.handled || !r || r.settled === false || r.at < since) continue;
         out.push({
           id: `bot_delete:${req.requestId}`,
           outcome: r.outcome,

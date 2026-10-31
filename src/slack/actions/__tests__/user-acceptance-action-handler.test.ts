@@ -9,6 +9,7 @@ vi.mock('../../../user-settings-store', () => ({
     acceptUser: vi.fn(),
     removeUserSettings: vi.fn(),
     getUserSettings: vi.fn(),
+    settlePendingUser: vi.fn(),
   },
 }));
 
@@ -41,6 +42,7 @@ describe('UserAcceptanceActionHandler', () => {
     vi.mocked(isAdminUser).mockReturnValue(true);
     // Each case starts with no recorded round (the request store is a file under DATA_DIR).
     fs.rmSync(path.join(DATA_DIR, 'admin-requests.json'), { force: true });
+    fs.rmSync(path.join(DATA_DIR, 'admin-requests.json.bak'), { force: true });
     // The user is still pending (#622: only a pending user can be accepted or denied).
     vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({ userId: 'U_NEW', accepted: false } as any);
   });
@@ -55,7 +57,7 @@ describe('UserAcceptanceActionHandler', () => {
       const body = makeBody('accept_user', 'U_NEW');
       await handler.handleAccept(body, mockRespond);
 
-      expect(userSettingsStore.acceptUser).toHaveBeenCalledWith('U_NEW', 'U_ADMIN');
+      expect(userSettingsStore.settlePendingUser).toHaveBeenCalledWith('U_NEW', 'U_ADMIN', true);
     });
 
     it('updates admin DM', async () => {
@@ -86,7 +88,7 @@ describe('UserAcceptanceActionHandler', () => {
       const body = makeBody('accept_user', 'U_NEW', 'U_NON_ADMIN');
       await handler.handleAccept(body, mockRespond);
 
-      expect(userSettingsStore.acceptUser).not.toHaveBeenCalled();
+      expect(userSettingsStore.settlePendingUser).not.toHaveBeenCalled();
     });
 
     it('is idempotent for already-accepted user', async () => {
@@ -104,7 +106,7 @@ describe('UserAcceptanceActionHandler', () => {
 
       // Already accepted: told so, nothing changes again (#622 — one answer per request).
       expect(mockRespond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
-      expect(userSettingsStore.acceptUser).not.toHaveBeenCalled();
+      expect(userSettingsStore.settlePendingUser).not.toHaveBeenCalled();
     });
   });
 
@@ -114,7 +116,7 @@ describe('UserAcceptanceActionHandler', () => {
       const body = makeBody('deny_user', 'U_NEW');
       await handler.handleDeny(body, mockRespond);
 
-      expect(userSettingsStore.removeUserSettings).toHaveBeenCalledWith('U_NEW');
+      expect(userSettingsStore.settlePendingUser).toHaveBeenCalledWith('U_NEW', 'U_ADMIN', false);
     });
 
     it('updates admin DM', async () => {
@@ -144,7 +146,7 @@ describe('UserAcceptanceActionHandler', () => {
       const body = makeBody('deny_user', 'U_NEW', 'U_NON_ADMIN');
       await handler.handleDeny(body, mockRespond);
 
-      expect(userSettingsStore.removeUserSettings).not.toHaveBeenCalled();
+      expect(userSettingsStore.settlePendingUser).not.toHaveBeenCalled();
     });
   });
 });

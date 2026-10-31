@@ -10,8 +10,7 @@
  * synchronous: a check-and-mark in one process cannot interleave.
  */
 
-import { atomicWriteJson } from '@soma/common/atomic-json';
-import * as fs from 'fs';
+import { atomicWriteJson, readJsonWithBackup } from '@soma/common/atomic-json';
 import * as path from 'path';
 import { DATA_DIR } from './env-paths';
 import { Logger } from './logger';
@@ -32,6 +31,11 @@ export interface AdminRequestResolution {
   outcome: 'approved' | 'denied';
   via: 'slack' | 'dashboard';
   at: number;
+  /**
+   * `false` while the answer's side effect is still running (a bot-message
+   * delete): the request is claimed, not yet decided. Absent = settled.
+   */
+  settled?: boolean;
 }
 
 export interface AdminRequest {
@@ -50,6 +54,19 @@ export interface AdminRequest {
 /** A handled request stays this long (the dashboard's resolved row, a late click's "already answered"). */
 const HANDLED_KEEP_MS = 24 * 60 * 60 * 1000;
 
+/** A claim whose side effect never settled (the process died mid-delete) lapses after this. */
+const CLAIM_LAPSE_MS = 2 * 60 * 1000;
+
+/** The request as it stands at `now`: a lapsed, never-settled claim is unanswered again. */
+function current(req: AdminRequest | undefined, now: number): AdminRequest | null {
+  if (!req || req.expiresAt <= now) return null;
+  if (req.handled && req.resolution?.settled === false && now - req.resolution.at > CLAIM_LAPSE_MS) {
+    const { resolution: _lapsed, ...rest } = req;
+    return { ...rest, handled: false };
+  }
+  return req;
+}
+
 function storeFile(): string {
   return path.join(DATA_DIR, 'admin-requests.json');
 }
@@ -58,16 +75,25 @@ function keyOf(kind: AdminRequestKind, requestId: string): string {
   return `${kind}:${requestId}`;
 }
 
-function loadAll(): Record<string, AdminRequest> {
-  const file = storeFile();
-  if (!fs.existsSync(file)) return {};
-  try {
-    const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as Record<string, AdminRequest>;
-    return parsed && typeof parsed === 'object' ? parsed : {};
-  } catch (error) {
-    logger.warn('admin-requests.json unreadable — starting empty', error);
-    return {};
+function validateAll(raw: unknown): Record<string, AdminRequest> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw new Error('not an object');
+  const out: Record<string, AdminRequest> = {};
+  for (const [key, r] of Object.entries(raw as Record<string, AdminRequest>)) {
+    if (r && typeof r.requestId === 'string' && typeof r.kind === 'string' && Array.isArray(r.prompts)) out[key] = r;
   }
+  return out;
+}
+
+/**
+ * The store as it is now. A damaged live file falls back to its `.bak`; when
+ * neither is usable this throws — forgetting which requests were answered
+ * would let a stale button act again.
+ */
+function loadAll(): Record<string, AdminRequest> {
+  return (
+    readJsonWithBackup(storeFile(), validateAll, { warn: (message) => logger.warn(message) }) ??
+    ({} as Record<string, AdminRequest>)
+  );
 }
 
 function saveAll(all: Record<string, AdminRequest>): void {
@@ -92,13 +118,30 @@ export interface OpenAdminRequestInput {
   data?: Record<string, string>;
   ttlMs: number;
   now?: number;
+  /** An answered round this returns true for is kept, not replaced (e.g. an approved delete). */
+  keepAnswered?: (round: AdminRequest) => boolean;
 }
 
-/** Start a round for this key: no prompts yet, unanswered. Replaces an earlier round of the same key. */
+/**
+ * Start a round for this key. An unanswered round of the same key is kept (its
+ * DM copies stay on record and are rewritten with the answer); an answered one
+ * is replaced by a fresh round (a denied user who asks again) unless
+ * `keepAnswered` keeps it — the caller then sees `handled` and asks no one.
+ */
 export function openAdminRequest(input: OpenAdminRequestInput): AdminRequest {
   const now = input.now ?? Date.now();
   const all = loadAll();
   pruneInto(all, now);
+  const key = keyOf(input.kind, input.requestId);
+  const open = current(all[key], now);
+  if (open?.handled && input.keepAnswered?.(open)) return open;
+  if (open && !open.handled) {
+    open.data = { ...open.data, ...(input.data ?? {}) };
+    open.expiresAt = Math.max(open.expiresAt, now + input.ttlMs);
+    all[key] = open;
+    saveAll(all);
+    return open;
+  }
   const req: AdminRequest = {
     kind: input.kind,
     requestId: input.requestId,
@@ -119,19 +162,22 @@ export function getAdminRequest(
   requestId: string,
   now: number = Date.now(),
 ): AdminRequest | null {
-  const req = loadAll()[keyOf(kind, requestId)];
-  return req && req.expiresAt > now ? req : null;
+  return current(loadAll()[keyOf(kind, requestId)], now);
 }
 
 /** Live requests of one kind (answered ones included until they age out). */
 export function listAdminRequests(kind: AdminRequestKind, now: number = Date.now()): AdminRequest[] {
-  return Object.values(loadAll()).filter((r) => r.kind === kind && r.expiresAt > now);
+  return Object.values(loadAll())
+    .filter((r) => r.kind === kind)
+    .map((r) => current(r, now))
+    .filter((r): r is AdminRequest => r !== null);
 }
 
 /**
- * Record where the prompts landed. Returns the request as stored — when it is
- * already handled (answered while the DMs were going out), the caller closes
- * these prompts itself: the answer could not reach them.
+ * Record where (more) prompts landed — added to the copies already on record.
+ * Returns the request as stored — when it is already handled (answered while
+ * the DMs were going out), the caller closes these prompts itself: the answer
+ * could not reach them.
  */
 export function setAdminRequestPrompts(
   kind: AdminRequestKind,
@@ -141,7 +187,8 @@ export function setAdminRequestPrompts(
   const all = loadAll();
   const req = all[keyOf(kind, requestId)];
   if (!req) return null;
-  req.prompts = [...prompts];
+  const known = new Set(req.prompts.map((p) => `${p.channel}/${p.ts}`));
+  req.prompts = [...req.prompts, ...prompts.filter((p) => !known.has(`${p.channel}/${p.ts}`))];
   saveAll(all);
   return req;
 }
@@ -160,8 +207,7 @@ export function markAdminRequest(
 ): AdminRequest | null {
   const all = loadAll();
   const key = keyOf(kind, requestId);
-  let req = all[key];
-  if (req && req.expiresAt <= resolution.at) req = undefined as unknown as AdminRequest;
+  let req = current(all[key], resolution.at) ?? undefined;
   if (!req) {
     if (!create) return null;
     req = {
@@ -184,12 +230,41 @@ export function markAdminRequest(
   return req;
 }
 
-/** Undo {@link markAdminRequest} — only when the answer's side effect failed and nothing happened. */
-export function reopenAdminRequest(kind: AdminRequestKind, requestId: string): void {
+/**
+ * The claimed answer's side effect succeeded: it is now the decision. Only if
+ * that answer is still the one on record. Returns the settled request.
+ */
+export function settleAdminRequest(
+  kind: AdminRequestKind,
+  requestId: string,
+  answered: AdminRequestResolution,
+): AdminRequest | null {
   const all = loadAll();
   const req = all[keyOf(kind, requestId)];
-  if (!req) return;
+  const r = req?.resolution;
+  if (!req || !req.handled || !r || r.at !== answered.at || r.by !== answered.by || r.via !== answered.via) return null;
+  delete r.settled;
+  saveAll(all);
+  return req;
+}
+
+/**
+ * Undo {@link markAdminRequest} — only when the answer's side effect failed and
+ * nothing happened, and only if that answer is still the one on record (a
+ * later round, or its answer, is never erased). Returns whether it reopened.
+ */
+export function reopenAdminRequest(
+  kind: AdminRequestKind,
+  requestId: string,
+  answered: AdminRequestResolution,
+): boolean {
+  const all = loadAll();
+  const req = all[keyOf(kind, requestId)];
+  const r = req?.resolution;
+  if (!req || !req.handled || !r || r.at !== answered.at || r.by !== answered.by || r.via !== answered.via)
+    return false;
   req.handled = false;
   delete req.resolution;
   saveAll(all);
+  return true;
 }
