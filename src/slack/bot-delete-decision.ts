@@ -190,6 +190,22 @@ function deleteFailure(error: unknown): 'gone' | 'stillThere' | 'unknown' {
   return TRANSIENT_SLACK_ERRORS.has(code) ? 'unknown' : 'stillThere';
 }
 
+/** Slack located the message and refused to delete it: positive evidence that it still exists. */
+const MESSAGE_EXISTS_REFUSALS = new Set(['cant_delete_message', 'compliance_exports_prevent_deletion']);
+
+/**
+ * What a failed REDO of an earlier approval proves. The earlier attempt may
+ * have deleted the message; a refusal of this retry (no auth, no access, no
+ * channel) says nothing about that. Only Slack finding the message and
+ * refusing it proves it is still there.
+ */
+function redoFailure(error: unknown): 'gone' | 'stillThere' | 'unknown' {
+  const proved = deleteFailure(error);
+  if (proved !== 'stillThere') return proved;
+  const code = (error as { data?: { error?: unknown } })?.data?.error;
+  return typeof code === 'string' && MESSAGE_EXISTS_REFUSALS.has(code) ? 'stillThere' : 'unknown';
+}
+
 /**
  * The answer. Marked before the delete runs, so a second answer is refused at
  * once; a delete that fails (other than "already gone") reopens the request.
@@ -340,7 +356,7 @@ export async function finishOrphanedDelete(
   try {
     await slackApi.deleteMessage(targetChannel, targetTs);
   } catch (error) {
-    const proved = deleteFailure(error);
+    const proved = redoFailure(error);
     if (proved === 'stillThere') {
       reopenAdminRequest('bot_delete', req.requestId, original);
       logger.warn('Orphaned bot-message delete was refused — the message is there; the request is open again', {

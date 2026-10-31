@@ -342,7 +342,8 @@ describe('bot-message delete requests as one decision (#623)', () => {
   it('an approval a dead process left whose delete cannot be redone: the request opens, the next answer decides', async () => {
     await requestBotDelete(api, TARGET);
     leaveOrphan();
-    api.deleteMessage.mockRejectedValueOnce(Object.assign(new Error('x'), { data: { error: 'channel_not_found' } }));
+    // Slack found the message and refused to delete it: it is still there.
+    api.deleteMessage.mockRejectedValueOnce(Object.assign(new Error('x'), { data: { error: 'cant_delete_message' } }));
     expect(
       await decideBotDelete({ requestId: ID, decision: 'reject', actor: 'UADMIN2', via: 'slack', slackApi: api }),
     ).toMatchObject({
@@ -417,6 +418,19 @@ describe('bot-message delete requests as one decision (#623)', () => {
     });
     const held = (await botDeleteAdminApprovalAdapter(api).resolved(0)).find((r) => r.id === `bot_delete:${ID}`);
     expect(held).toBeUndefined(); // still an unsettled approval, not a decision
+    expect(api.postMessage).not.toHaveBeenCalledWith('D-U1', expect.stringContaining('거절'));
+  });
+
+  it('an orphan whose redo is refused for this retry only (no auth, no access): still claimed — it may have been deleted', async () => {
+    await requestBotDelete(api, TARGET);
+    leaveOrphan();
+    for (const code of ['invalid_auth', 'missing_scope', 'channel_not_found', 'not_in_channel']) {
+      api.deleteMessage.mockRejectedValueOnce(Object.assign(new Error(code), { data: { error: code } }));
+      expect(
+        await decideBotDelete({ requestId: ID, decision: 'reject', actor: 'UADMIN2', via: 'slack', slackApi: api }),
+      ).toMatchObject({ ok: false, reason: 'busy' });
+    }
+    expect((await botDeleteAdminApprovalAdapter(api).resolved(0)).some((r) => r.id === `bot_delete:${ID}`)).toBe(false);
     expect(api.postMessage).not.toHaveBeenCalledWith('D-U1', expect.stringContaining('거절'));
   });
 
