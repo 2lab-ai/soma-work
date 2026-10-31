@@ -163,29 +163,31 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
     });
   });
 
-  describe('CSS — @media (max-width: 1023px): the nav takes its own row', () => {
-    const block1023 = DASHBOARD_TS.match(/@media \(max-width: 1023px\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  describe('CSS — @media (max-width: 1199px): the nav takes its own row', () => {
+    // One row from 1200px: at 1024 the admin bar (defaults chips, admin toggle, status, user select, account,
+    // the sound speaker and the theme toggle) no longer fits on one row.
+    const blockTwoRow = DASHBOARD_TS.match(/@media \(max-width: 1199px\) \{[\s\S]*?\n\}/)?.[0] ?? '';
 
     it('block exists', () => {
-      expect(block1023).not.toBe('');
+      expect(blockTwoRow).not.toBe('');
     });
 
     it('the top bar wraps into rows instead of crushing its controls', () => {
-      expect(block1023).toMatch(/\.topbar\s*\{[^}]*flex-wrap:\s*wrap/);
+      expect(blockTwoRow).toMatch(/\.topbar\s*\{[^}]*flex-wrap:\s*wrap/);
     });
 
     it('the nav is a full-width second row that wraps rather than overflow', () => {
-      expect(block1023).toContain(
+      expect(blockTwoRow).toContain(
         '.topbar .nav { order: 1; flex: 1 0 100%; margin-left: 0; flex-wrap: wrap; min-width: 0; }',
       );
     });
 
     it('a selected name can use the whole nav row', () => {
-      expect(block1023).toContain('.topbar .nav .user-select { max-inline-size: 100%; }');
+      expect(blockTwoRow).toContain('.topbar .nav .user-select { max-inline-size: 100%; }');
     });
 
     it('the account group has basis 0, so a long name never pushes it onto a row of its own', () => {
-      expect(block1023).toContain('.topbar .topbar-account { flex: 1 1 0; justify-content: flex-end; }');
+      expect(blockTwoRow).toContain('.topbar .topbar-account { flex: 1 1 0; justify-content: flex-end; }');
     });
   });
 
@@ -226,7 +228,8 @@ describe('dashboard topbar mobile overflow fix (#800)', () => {
       expect(DASHBOARD_TS).not.toMatch(/\.topbar\s+h1\s*\{[^}]*text-overflow/);
     });
 
-    it('the old 680px / 480px top-bar overrides are gone (one set of breakpoints: 1023 / 639)', () => {
+    it('the old 680px / 480px top-bar overrides are gone (one set of breakpoints: 1199 / 639)', () => {
+      expect(DASHBOARD_TS).not.toContain('@media (max-width: 1023px) {');
       const block680 = DASHBOARD_TS.match(/@media \(max-width: 680px\) \{[\s\S]*?\n\}/)?.[0] ?? '';
       expect(block680).not.toContain('.topbar');
       expect(DASHBOARD_TS).not.toContain('@media (max-width: 480px) {');
