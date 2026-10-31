@@ -93,6 +93,14 @@ export interface TaskTurnController {
    * `start`. A refusal at any point leaves the question open.
    */
   answer(request: TaskAnswerRequest): Promise<TaskCommandResponse>;
+  /**
+   * A dry run of the owner-level admission a start would meet (shutdown, the
+   * owner's running task, the start window): null when it may start, else the
+   * refusal. Takes nothing — #600 ⑥ asks before it creates a task. With the
+   * first instruction, it also refuses a command the start would refuse (#640 R1),
+   * so a task is never created that its own first instruction cannot start.
+   */
+  canStart(ownerId: string, text?: string): TaskCommandResponse | null;
   /** Abort the task's chain with `session-close` and wait (bounded) for it to end. */
   close(sessionKey: string): Promise<void>;
   /** Shutdown: refuse new starts (503). Running chains end through the coordinator's `shutdown` abort. */
@@ -105,12 +113,18 @@ export interface TaskTurnController {
 const COMPACT = '/compact';
 /**
  * A slash command's shape (`/model x`, `/compact`) — not a path (`/work/x`) or
- * a fraction (`2/3`). Every command is refused on a task in A0 (D8), `/compact`
+ * a fraction (`2/3`); a plugin's namespaced command (`/plugin:skill`) included
+ * (#640 R2). Every command is refused on a task in A0 (D8), `/compact`
  * included: a task turn has no signal that proves a manual compaction happened
  * (#634 R1). Automatic and fallback compaction still run.
  */
-const SLASH_COMMAND = /^\/[A-Za-z][\w-]*(?:\s|$)/;
+const SLASH_COMMAND = /^\/[A-Za-z][\w-]*(?::[\w-]+)*(?:\s|$)/;
 const SESSION_COMMAND = /^%[A-Za-z]/;
+const COMMAND_REFUSED = 'commands are not supported on a dashboard task yet — send an instruction';
+/** An instruction (trimmed) a task start refuses as a command: `/word` or `%word`. */
+function isCommand(text: string): boolean {
+  return SLASH_COMMAND.test(text) || SESSION_COMMAND.test(text);
+}
 const CONTINUATION_REFUSED = 'continuation not supported on a dashboard task yet';
 const BUDGET_SPENT = 're-entry limit reached';
 
@@ -133,6 +147,20 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
   let accepting = true;
 
   const refuse = (status: number, error: string): TaskCommandResponse => ({ status, body: { error } });
+
+  /** The owner-level part of admission (D9): no side effect. */
+  function ownerAdmission(ownerId: string, t: number): TaskCommandResponse | null {
+    if (ownerChain.has(ownerId)) return refuse(429, 'one dashboard task runs at a time — wait for it to finish');
+    const recent = (starts.get(ownerId) ?? []).filter((at) => t - at < windowMs);
+    if (recent.length >= maxStarts) return refuse(429, 'too many dashboard task starts — try again shortly');
+    return null;
+  }
+
+  function canStart(ownerId: string, text?: string): TaskCommandResponse | null {
+    if (!accepting) return refuse(503, 'the service is shutting down — try again shortly');
+    if (text !== undefined && isCommand(text.trim())) return refuse(400, COMMAND_REFUSED);
+    return ownerAdmission(ownerId, now());
+  }
 
   function admit(
     request: TaskCommandRequest,
@@ -165,11 +193,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
           ),
         };
       }
-    } else if (SLASH_COMMAND.test(text) || SESSION_COMMAND.test(text)) {
-      return {
-        ok: false,
-        response: refuse(400, 'commands are not supported on a dashboard task yet — send an instruction'),
-      };
+    } else if (isCommand(text)) {
+      return { ok: false, response: refuse(400, COMMAND_REFUSED) };
     }
     let ctx: ExecutionContext;
     try {
@@ -181,15 +206,10 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       return { ok: false, response: refuse(409, 'a turn is already running on this task') };
     }
     const ownerId = ctx.userId;
-    if (ownerChain.has(ownerId)) {
-      return { ok: false, response: refuse(429, 'one dashboard task runs at a time — wait for it to finish') };
-    }
     const t = now();
+    const ownerRefusal = ownerAdmission(ownerId, t);
+    if (ownerRefusal) return { ok: false, response: ownerRefusal };
     const recent = (starts.get(ownerId) ?? []).filter((at) => t - at < windowMs);
-    if (recent.length >= maxStarts) {
-      starts.set(ownerId, recent);
-      return { ok: false, response: refuse(429, 'too many dashboard task starts — try again shortly') };
-    }
     recent.push(t);
     starts.set(ownerId, recent);
     return { ok: true, session, ctx, ownerId, startedAt: t };
@@ -488,6 +508,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
   return {
     start,
     answer,
+    canStart,
     close,
     stopAccepting: () => {
       accepting = false;
