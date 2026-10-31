@@ -171,7 +171,7 @@ describe('createSlackTaskEntry.run (E2 ⑧)', () => {
 
   it('another task of the owner runs (429) or the service is stopping (503): refused before anything is made', async () => {
     for (const [status, words] of [
-      [429, 'one dashboard task runs at a time'],
+      [429, '다른 대시보드 작업이 진행 중이라'],
       [503, '재시작 중이라'],
     ] as const) {
       const h = harness({
@@ -211,6 +211,48 @@ describe('createSlackTaskEntry.run (E2 ⑧)', () => {
       text: expect.stringContaining('작업을 만들지 못했어요'),
       thread_ts: '1700.000100',
     });
+    // D14: the store error (it can carry a path) is logged, never posted.
+    expect((h.say.mock.calls[0] as any[])[0].text).not.toContain('sessions.json');
+    expect(h.deps.logger.error).toHaveBeenCalledWith(
+      expect.any(String),
+      expect.objectContaining({ error: 'sessions.json not writable' }),
+    );
+  });
+
+  it('the launcher refuses after the dry run (fable #671 P3-3): 429/503 told, safe; anything else a fixed warning, error', async () => {
+    for (const [status, words] of [
+      [429, '다른 대시보드 작업이 진행 중이라'],
+      [503, '재시작 중이라'],
+    ] as const) {
+      const h = harness({ launch: vi.fn(async () => ({ status, body: { error: 'raced' } })) });
+      expect(await h.entry.run({ event: h.event, say: h.say, allow: ALLOW })).toEqual({ result: 'safe' });
+      expect(h.say).toHaveBeenCalledWith({ text: expect.stringContaining(words), thread_ts: '1700.000100' });
+      expect(h.deps.reactions.add).not.toHaveBeenCalled();
+    }
+    for (const status of [409, 422, 500]) {
+      const h = harness({
+        launch: vi.fn(async () => ({ status, body: { error: 'your /tmp directory is not a plain folder' } })),
+      });
+      const out = await h.entry.run({ event: h.event, say: h.say, allow: ALLOW });
+      expect(out).toEqual({ result: 'error', reason: expect.stringContaining('not a plain folder') });
+      expect(h.deps.reactions.add).toHaveBeenCalledWith('C1', '1700.000100', 'warning');
+      expect((h.say.mock.calls[0] as any[])[0].text).toContain('작업을 만들지 못했어요');
+      expect((h.say.mock.calls[0] as any[])[0].text).not.toContain('/tmp');
+      expect(h.deps.reactions.remove).toHaveBeenCalledWith('C1', '1700.000100', 'eyes');
+    }
+  });
+
+  it('made but not started, and the task is already gone: no notice, a warning in the log', async () => {
+    const h = harness({
+      launch: vi.fn(async () => ({ status: 200, body: { sessionKey: KEY, status: 'not-started', reason: 'raced' } })),
+      getTaskByKey: vi.fn(() => undefined),
+    });
+    expect(await h.entry.run({ event: h.event, say: h.say, allow: ALLOW })).toEqual({ result: 'safe' });
+    expect(h.deps.notStarted).not.toHaveBeenCalled();
+    expect(h.deps.logger.warn).toHaveBeenCalledWith(
+      expect.stringContaining('not started'),
+      expect.objectContaining({ sessionKey: KEY }),
+    );
   });
 
   it('the same mention delivered twice at once: the second finds its own task — silent, safe', async () => {
