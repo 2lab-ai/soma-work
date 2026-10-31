@@ -69,6 +69,8 @@ export interface ArchivedSession {
   /** E4 ② — an epic's plan and events (validated on revive). */
   plan?: EpicPlan;
   epicEvents?: EpicEvent[];
+  /** E4 ⑦ — a child closed by its epic's close. */
+  closedBy?: { by: 'parent'; at: number };
 
   // Owner
   ownerId: string;
@@ -187,6 +189,7 @@ function sessionToArchive(
     childTaskIds: session.childTaskIds ? [...session.childTaskIds] : undefined,
     plan: session.plan,
     epicEvents: session.epicEvents,
+    closedBy: session.closedBy,
 
     ownerId: session.ownerId,
     ownerName: session.ownerName,

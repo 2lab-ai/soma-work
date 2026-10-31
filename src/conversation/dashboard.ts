@@ -419,6 +419,8 @@ export interface KanbanSession {
   /** E4 ① — a child task's epic (task id) and plan node. Absent otherwise. */
   parentTaskId?: string;
   planNodeId?: string;
+  /** E4 ⑦ — a child its epic's close cancelled (the outcome stays `cancelled`). Absent otherwise. */
+  closedBy?: { by: 'parent'; at: number };
   /**
    * #598 ④c — a Slack-less task's last turn outcome (D10): what the last turn
    * ended as, why, and whether recording it failed. Absent for Slack sessions.
@@ -2266,7 +2268,9 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     followups: followupsOf(key, s.ownerId),
     ...(s.slackless === true ? { slackless: true as const, ...noticeFailuresOf(key) } : {}),
     ...(s.slackless === true && s.kind === 'epic' ? { kind: 'epic' as const } : {}),
-    ...(s.slackless === true && s.parentTaskId ? { parentTaskId: s.parentTaskId, planNodeId: s.planNodeId } : {}),
+    ...(s.slackless === true && s.parentTaskId
+      ? { parentTaskId: s.parentTaskId, planNodeId: s.planNodeId, ...(s.closedBy ? { closedBy: s.closedBy } : {}) }
+      : {}),
     ...(s.slackless === true && s.lastTurnOutcome
       ? {
           lastTurnOutcome: {

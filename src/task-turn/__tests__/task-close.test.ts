@@ -7,17 +7,25 @@ import { describe, expect, it, vi } from 'vitest';
 import { SessionDeleteRefusedError } from '../../session-registry';
 import { createDashboardCloseHandler } from '../task-close';
 
-function rig(session: any, ledgerUnreadable: boolean) {
+function rig(session: any, ledgerUnreadable: boolean, children: any[] = [], running: string[] = []) {
   const order: string[] = [];
   const deps = {
     getSession: vi.fn(() => session),
-    closeTask: vi.fn(async () => {
-      order.push('closeTask');
+    closeTask: vi.fn(async (key: string) => {
+      order.push(key === undefined ? 'closeTask' : `closeTask:${key}`);
     }),
     terminate: vi.fn(() => {
       order.push('terminate');
     }),
     ledgerUnreadable: () => ledgerUnreadable,
+    getChildTasks: vi.fn(() => children),
+    isRunning: vi.fn((key: string) => running.includes(key)),
+    markClosedByParent: vi.fn((key: string) => {
+      order.push(`mark:${key}`);
+    }),
+    recordChildClosed: vi.fn((key: string) => {
+      order.push(`closed-event:${key}`);
+    }),
     logger: { info: vi.fn(), warn: vi.fn() },
   };
   return { close: createDashboardCloseHandler(deps), deps, order };
@@ -46,18 +54,92 @@ describe('dashboard close of a task', () => {
   it('no ledger but the task owes nothing: closes as usual', async () => {
     const r = rig(owingNothing, true);
     await r.close('task:t2');
-    expect(r.order).toEqual(['closeTask', 'terminate']);
+    expect(r.order).toEqual([expect.stringMatching(/^closeTask:/), 'terminate']);
   });
 
   it('with a ledger: the chain is cancelled and committed, then the task is terminated', async () => {
     const r = rig(owing, false);
     await r.close('task:t1');
-    expect(r.order).toEqual(['closeTask', 'terminate']);
+    expect(r.order).toEqual([expect.stringMatching(/^closeTask:/), 'terminate']);
   });
 
   it('a Slack session: no task close, just terminated', async () => {
     const r = rig({ slackless: false, channelId: 'C1', threadTs: '1.1' }, true);
     await r.close('C1:1.1');
     expect(r.order).toEqual(['terminate']);
+  });
+});
+
+describe('E4 ⑦ — closing an epic or a child (D10 b · c)', () => {
+  const epic = { slackless: true, taskId: 'e1', kind: 'epic' };
+  const kids = [
+    { slackless: true, taskId: 'c1', parentTaskId: 'e1' },
+    { slackless: true, taskId: 'c2', parentTaskId: 'e1' },
+    { slackless: true, taskId: 'c3', parentTaskId: 'e1' },
+  ];
+
+  it('an epic: each running child is marked closed by its parent, then all are cancelled, then the epic', async () => {
+    const r = rig(epic, false, kids, ['task:c1', 'task:c3']);
+    await r.close('task:e1');
+    expect(r.order).toEqual([
+      'mark:task:c1',
+      'mark:task:c3',
+      'closeTask:task:c1',
+      'closeTask:task:c3',
+      'closeTask:task:e1',
+      'terminate',
+    ]);
+    // A child not running is left alone, and no child is terminated (its card stays).
+    expect(r.deps.closeTask).not.toHaveBeenCalledWith('task:c2');
+    expect(r.deps.terminate).toHaveBeenCalledTimes(1);
+  });
+
+  it('the children are cancelled at once, not one after another', async () => {
+    const r = rig(epic, false, kids, ['task:c1', 'task:c2']);
+    let open = 0;
+    let most = 0;
+    r.deps.closeTask.mockImplementation(async (key: string) => {
+      open++;
+      most = Math.max(most, open);
+      await new Promise((res) => setTimeout(res, 5));
+      open--;
+      r.order.push(`closeTask:${key}`);
+    });
+    await r.close('task:e1');
+    expect(most).toBe(2);
+  });
+
+  it('a mark that cannot be saved is logged; the child is still cancelled and the epic closed', async () => {
+    const r = rig(epic, false, kids, ['task:c1']);
+    r.deps.markClosedByParent.mockImplementation(() => {
+      throw new Error('ENOSPC');
+    });
+    await r.close('task:e1');
+    expect(r.deps.closeTask).toHaveBeenCalledWith('task:c1');
+    expect(r.deps.terminate).toHaveBeenCalled();
+    expect(r.deps.logger.warn).toHaveBeenCalledWith(expect.stringContaining('closed by its parent'), expect.anything());
+  });
+
+  it('a child: its epic records the close first, then it closes; a failed record is logged, the close goes on', async () => {
+    const r = rig(kids[0], false);
+    await r.close('task:c1');
+    expect(r.order).toEqual(['closed-event:task:c1', 'closeTask:task:c1', 'terminate']);
+    expect(r.deps.markClosedByParent).not.toHaveBeenCalled();
+
+    const f = rig(kids[0], false);
+    f.deps.recordChildClosed.mockImplementation(() => {
+      throw new Error('ENOSPC');
+    });
+    await f.close('task:c1');
+    expect(f.deps.terminate).toHaveBeenCalled();
+    expect(f.deps.logger.warn).toHaveBeenCalledWith(expect.stringContaining('could not record'), expect.anything());
+  });
+
+  it('an ordinary task touches neither rule', async () => {
+    const r = rig({ slackless: true, taskId: 't9' }, false, kids, ['task:c1']);
+    await r.close('task:t9');
+    expect(r.deps.getChildTasks).not.toHaveBeenCalled();
+    expect(r.deps.recordChildClosed).not.toHaveBeenCalled();
+    expect(r.order).toEqual(['closeTask:task:t9', 'terminate']);
   });
 });
