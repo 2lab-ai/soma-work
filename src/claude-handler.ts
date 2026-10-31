@@ -16,7 +16,11 @@ import { adoptSdkSessionId } from '@soma/slack/session-usage-math';
 import * as fs from 'fs';
 import { type AgentRunOptions, type AgentStreamEvent, runAgentStream, runOneShotText } from './agent-runtime';
 import { liveAgentIds } from './agent-runtime/background-keepalive';
-import { buildStreamOptions, type EnvSkillDenial } from './agent-runtime/claude-code/build-stream-options';
+import {
+  buildStreamOptions,
+  type EnvSkillDenial,
+  type TaskApprover,
+} from './agent-runtime/claude-code/build-stream-options';
 import { type ExecutionContext, ExecutionContextMissingError } from './agent-runtime/execution-context';
 import type { SafetyClassifier } from './agent-runtime/policy/safety-classifier';
 import { buildSafetyClassifier } from './agent-runtime/policy/safety-classifier-factory';
@@ -58,6 +62,7 @@ import {
 } from './metrics/model-registry';
 import { BUNDLED_PLUGINS_DIR } from './plugin/bundled';
 import type { SdkPluginPath } from './plugin/types';
+import { createTaskApprover } from './task-turn/task-approver';
 import type {
   ActivityState,
   ConversationSession,
@@ -81,6 +86,7 @@ import {
   textIndicatesUsageLimit,
 } from '@soma/common/rate-limit';
 import type { ModelCommandContext } from 'somalib/model-commands/types';
+import { sharedStore } from 'somalib/permission/shared-store';
 import { getBgKeepaliveMaxMs } from './config';
 import { sendCredentialAlert } from './credential-alert';
 import {
@@ -778,6 +784,11 @@ export class ClaudeHandler implements TurnSteeringPort {
     this.sessionRegistry.saveSessions();
   }
 
+  /** {@link SessionRegistry.saveSessionsOrThrow}: a failed write throws. */
+  saveSessionsOrThrow(): void {
+    this.sessionRegistry.saveSessionsOrThrow();
+  }
+
   loadSessions(): number {
     return this.sessionRegistry.loadSessions();
   }
@@ -794,6 +805,23 @@ export class ClaudeHandler implements TurnSteeringPort {
 
   /** Lazily-built auto-mode safety classifier (guardian). */
   private safetyClassifierCache?: SafetyClassifier;
+
+  /** Lazily-built dashboard approver of a Slack-less task's escalations (#599 ⑤). */
+  private taskApproverCache?: TaskApprover;
+
+  /**
+   * The approver writes the prompt to the shared approval store bound to the
+   * task and the turn it is running, and waits for its owner's dashboard answer.
+   */
+  private getTaskApprover(): TaskApprover {
+    if (!this.taskApproverCache) {
+      this.taskApproverCache = createTaskApprover({
+        store: sharedStore,
+        getActiveTurnId: (sessionKey) => this.sessionRegistry.getSessionByKey(sessionKey)?.activeTaskTurnId,
+      });
+    }
+    return this.taskApproverCache;
+  }
 
   /**
    * Build (once) the auto-mode safety classifier, backed by the SAME one-shot
@@ -1298,6 +1326,8 @@ export class ClaudeHandler implements TurnSteeringPort {
           getEnvSkillRegistry: () => envSkillRegistry(this.mcpManager.getPluginManager()),
           onEnvSkillDenied: this.envSkillPermissionRequester,
           safetyClassifier: this.getSafetyClassifier(),
+          // Consulted only by a Slack-less task's escalation (#599 ⑤).
+          taskApprover: this.getTaskApprover(),
           // Consulted only on the incident branch of the builder; passing them
           // unconditionally would be harmless, but keeping them absent makes the
           // ordinary path provably unchanged.

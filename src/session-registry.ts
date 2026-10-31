@@ -24,6 +24,7 @@ import { hostPricing } from './metrics/host-pricing-catalog';
 import { resolveContextWindow } from './metrics/model-registry';
 import { normalizeTmpPath } from './path-utils';
 import { loseRunningAgents, sanitizeAgentRegistry } from './session/agent-registry';
+import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
 import { sanitizeCronJob } from './session/cron-job';
 import { closeTaskList, sanitizeTaskLedger } from './session/task-ledger';
 import { type ArchivedSession, getArchiveStore, type SessionLifecycleOutcome } from './session-archive';
@@ -106,6 +107,8 @@ interface SerializedSession {
   starClearedAt?: number;
   /** #598 ④b — a Slack-less task's latest turn outcome; validated on load. */
   lastTurnOutcome?: unknown;
+  /** #598 ④c — the turn a Slack-less task was running when saved. */
+  activeTaskTurnId?: unknown;
   /**
    * Incident ownership survives restarts: dropping it would silently promote a
    * restricted session back to an ordinary one.
@@ -530,37 +533,67 @@ export class SessionRegistry {
   /**
    * #598 ④b — commit a Slack-less task turn's outcome and its end activity in
    * one strict save. Both are set in memory, written through
-   * `writeSessionsFile(true)`; a failed write restores both and rethrows (the
+   * `saveSessionsOrThrow()`; a failed write restores both and rethrows (the
    * caller sees it, nothing is broadcast, no idle hook runs). Only after the
    * write landed: the dashboard is told, and on a move to `idle` the idle
    * callbacks and the post-drain hook run — so they read the new outcome, and a
    * restart finds the same outcome and activity the dashboard showed.
    */
   public commitTaskTurnOutcome(sessionKey: string, outcome: TaskTurnOutcomeRecord, activity: 'waiting' | 'idle'): void {
+    this.applyTaskTurnOutcome('commitTaskTurnOutcome', sessionKey, outcome, activity, true);
+  }
+
+  /**
+   * #598 ④c — every strict save of a turn's outcome failed (the runner retried
+   * the save only). Apply it in memory: the dashboard shows the turn ended and
+   * its `recordFailure`, idle hooks run. Disk still holds `working` and the
+   * turn id, so a restart records the turn `interrupted` — the outcome was
+   * never durable. Any later successful save writes the held outcome.
+   */
+  public holdUnsavedTaskTurnOutcome(
+    sessionKey: string,
+    outcome: TaskTurnOutcomeRecord,
+    activity: 'waiting' | 'idle',
+  ): void {
+    this.applyTaskTurnOutcome('holdUnsavedTaskTurnOutcome', sessionKey, outcome, activity, false);
+  }
+
+  private applyTaskTurnOutcome(
+    caller: string,
+    sessionKey: string,
+    outcome: TaskTurnOutcomeRecord,
+    activity: 'waiting' | 'idle',
+    durable: boolean,
+  ): void {
     const key = normalizeSessionKey(sessionKey);
     const session = this.getSessionByKey(key);
-    if (!session) throw new Error(`commitTaskTurnOutcome: session not found (${key})`);
+    if (!session) throw new Error(`${caller}: session not found (${key})`);
     const previous = {
       outcome: session.lastTurnOutcome,
       activity: session.activityState,
       changedAt: session.activityStateChangedAt,
+      activeTurnId: session.activeTaskTurnId,
     };
     const changed = session.activityState !== activity;
     session.lastTurnOutcome = outcome;
     session.activityState = activity;
+    session.activeTaskTurnId = undefined;
     if (changed) session.activityStateChangedAt = Date.now();
-    try {
-      this.writeSessionsFile(true);
-    } catch (error) {
-      session.lastTurnOutcome = previous.outcome;
-      session.activityState = previous.activity;
-      session.activityStateChangedAt = previous.changedAt;
-      throw error;
+    if (durable) {
+      try {
+        this.saveSessionsOrThrow();
+      } catch (error) {
+        session.lastTurnOutcome = previous.outcome;
+        session.activityState = previous.activity;
+        session.activityStateChangedAt = previous.changedAt;
+        session.activeTaskTurnId = previous.activeTurnId;
+        throw error;
+      }
     }
     try {
       this.onActivityStateChangeCallback?.();
     } catch (err) {
-      this.logger.warn('commitTaskTurnOutcome: broadcast callback raised', {
+      this.logger.warn(`${caller}: broadcast callback raised`, {
         sessionKey: key,
         error: (err as Error)?.message ?? String(err),
       });
@@ -568,6 +601,57 @@ export class SessionRegistry {
     if (activity === 'idle' && changed) {
       this.drainOnIdleCallbacks(key);
       this.fireOnIdleAfterDrainHook(key);
+    }
+  }
+
+  /**
+   * #598 ④c — a Slack-less task's turn starts: `working` and the turn's id are
+   * saved strictly, so a process that dies before the outcome's commit leaves
+   * the lost turn on disk for restart reconciliation (design 598c §6). A failed
+   * write restores both and throws — the turn does not run.
+   */
+  public beginTaskTurn(sessionKey: string, turnId: string): void {
+    const key = normalizeSessionKey(sessionKey);
+    const session = this.getSessionByKey(key);
+    if (!session) throw new Error(`beginTaskTurn: session not found (${key})`);
+    if (session.slackless !== true) throw new Error(`beginTaskTurn: ${key} is not a Slack-less task`);
+    const previous = {
+      activity: session.activityState,
+      changedAt: session.activityStateChangedAt,
+      activeTurnId: session.activeTaskTurnId,
+      state: session.state,
+      sleepStartedAt: session.sleepStartedAt,
+      lastActivity: session.lastActivity,
+      warningMessageTs: session.warningMessageTs,
+      lastWarningSentAt: session.lastWarningSentAt,
+    };
+    // An instruction wakes a sleeping task, as a Slack message wakes its thread,
+    // so the inactivity sweep cannot archive it mid-turn (#634 R1).
+    if (session.state === 'SLEEPING') this.wakeSession(session);
+    else session.lastActivity = new Date();
+    if (session.activityState !== 'working') session.activityStateChangedAt = Date.now();
+    session.activityState = 'working';
+    session.activeTaskTurnId = turnId;
+    try {
+      this.saveSessionsOrThrow();
+    } catch (error) {
+      session.activityState = previous.activity;
+      session.activityStateChangedAt = previous.changedAt;
+      session.activeTaskTurnId = previous.activeTurnId;
+      session.state = previous.state;
+      session.sleepStartedAt = previous.sleepStartedAt;
+      session.lastActivity = previous.lastActivity;
+      session.warningMessageTs = previous.warningMessageTs;
+      session.lastWarningSentAt = previous.lastWarningSentAt;
+      throw error;
+    }
+    try {
+      this.onActivityStateChangeCallback?.();
+    } catch (err) {
+      this.logger.warn('beginTaskTurn: broadcast callback raised', {
+        sessionKey: key,
+        error: (err as Error)?.message ?? String(err),
+      });
     }
   }
 
@@ -845,7 +929,7 @@ export class SessionRegistry {
     const key = buildTaskSessionKey(session.taskId);
     this.putSession(key, session);
     try {
-      this.writeSessionsFile(true);
+      this.saveSessionsOrThrow();
     } catch (error) {
       this.removeSession(key);
       this.logger.error('Task not created: saving it failed', { taskId: session.taskId });
@@ -1147,8 +1231,11 @@ export class SessionRegistry {
       compactionCount: typeof archived.compactionCount === 'number' ? archived.compactionCount : 0,
       activeAccumulatedMs: typeof archived.busyMs === 'number' ? archived.busyMs : 0,
       sessionWorkingDir: cwd,
-      // Registered for cleanup like a fresh session's dir; the next turn recreates it.
-      sourceWorkingDirs: [cwd],
+      // A Slack session's own folder is registered for cleanup like a fresh
+      // session's dir; the next turn recreates it. A dashboard task's folder is
+      // the owner's (it may be one they named, #600 ⑥): never the registry's to
+      // delete (#640 R3).
+      sourceWorkingDirs: slackless ? [] : [cwd],
       // Incident ownership comes back with it: the thread stays restricted.
       incidentRequest: archived.incidentRequest,
       incidentAttemptFinishedId: archived.incidentAttemptFinishedId,
@@ -2150,6 +2237,15 @@ export class SessionRegistry {
       this.logger.warn('Resolved path escapes /tmp/', { dirPath, resolvedPath });
       return false;
     }
+    // A dashboard task's own folder is the owner's — cleaning it on close would
+    // delete their work (#640 R3). It sits directly in the owner's root, so no
+    // valid source dir holds it. A clone inside it is registered as on Slack.
+    if (session.slackless && session.workingDirectory) {
+      if (normalizeTmpPath(path.resolve(session.workingDirectory)) === resolvedPath) {
+        this.logger.warn('Rejected a task folder as a source working dir', { key, dirPath: resolvedPath });
+        return false;
+      }
+    }
 
     session.sourceWorkingDirs ??= [];
     const MAX_SOURCE_WORKING_DIRS = 50;
@@ -2418,15 +2514,33 @@ export class SessionRegistry {
 
   /**
    * Save all sessions to file for persistence across restarts. A failure is
-   * logged, not thrown — a caller that must know (createTask) uses writeSessionsFile.
+   * logged, not thrown — a caller that must know uses saveSessionsOrThrow.
    */
   saveSessions(): void {
-    this.writeSessionsFile(false);
+    try {
+      this.writeSessionsFile();
+    } catch (error) {
+      this.logger.error('Failed to save sessions', error);
+    }
   }
 
-  /** Write sessions.json now. `throwOnError`: rethrow a failed write after logging it. */
-  private writeSessionsFile(throwOnError: boolean): void {
+  /**
+   * The same write, but a failure throws — for a caller that must not confirm
+   * a decision whose state did not reach disk (the goal cap decision, a task's
+   * creation and its turn's start / outcome — #596, #634).
+   */
+  saveSessionsOrThrow(): void {
     try {
+      this.writeSessionsFile();
+    } catch (error) {
+      this.logger.error('Failed to save sessions', error);
+      throw error;
+    }
+  }
+
+  /** Write sessions.json now; a failed write throws. */
+  private writeSessionsFile(): void {
+    {
       // Ensure data directory exists
       if (!fs.existsSync(DATA_DIR)) {
         fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -2592,6 +2706,7 @@ export class SessionRegistry {
             starred: session.starred === true ? true : undefined,
             starClearedAt: session.starClearedAt,
             lastTurnOutcome: session.lastTurnOutcome,
+            activeTaskTurnId: session.activeTaskTurnId,
             incidentAttemptFinishedId: session.incidentAttemptFinishedId,
             // Session-scoped `/autocompact` token override (persisted verbatim).
             autoCompactTokens: session.autoCompactTokens,
@@ -2630,9 +2745,6 @@ export class SessionRegistry {
         throw writeError;
       }
       this.logger.info(`Saved ${sessionsArray.length} sessions to file`);
-    } catch (error) {
-      this.logger.error('Failed to save sessions', error);
-      if (throwOnError) throw error;
     }
   }
 
@@ -2756,6 +2868,7 @@ export class SessionRegistry {
       const applyLifecycle = !isSessionLifecyclePolicyDegraded();
       let sleptOnLoadCount = 0;
       let mintedTaskIdCount = 0;
+      let reconciledTaskTurnCount = 0;
       // Task keys taken by a Slack-less record earlier in THIS load pass (a reload of the
       // same registry is not a duplicate; a second record with one task id in one file is).
       const slacklessKeysThisLoad = new Set<string>();
@@ -2923,6 +3036,10 @@ export class SessionRegistry {
           starred: starred ? true : undefined,
           starClearedAt: finiteStamp(serialized.starClearedAt),
           lastTurnOutcome: sanitizeTaskTurnOutcome(serialized.lastTurnOutcome),
+          activeTaskTurnId:
+            typeof serialized.activeTaskTurnId === 'string' && serialized.activeTaskTurnId
+              ? serialized.activeTaskTurnId
+              : undefined,
           // Merge code change stats
           mergeStats: serialized.mergeStats,
           // User SSOT instructions (restored from disk).
@@ -2954,8 +3071,8 @@ export class SessionRegistry {
           // Cached completed-summary (may be stale — block builder validates via hash).
           instructionsCompletedSummary: serialized.instructionsCompletedSummary,
           // The context fill, its window and the session totals, as saved (sanitized).
-          // Nothing re-arms auto-compact here: `autoCompactPending` is reset
-          // below and the threshold is only checked at a turn's end.
+          // `autoCompactPending` is reset below and re-armed from this occupancy
+          // after the record is built (`restoredOverAutoCompact`).
           usage: restoreSessionUsage(serialized.usage, model),
           // Repriced: llmux models moved from the SDK's default rate to the host table (`metrics/host-pricing.ts`).
           sdkUsageBaseline: repriceBaseline(sanitizeSdkUsageBaseline(serialized.sdkUsageBaseline), hostPricing),
@@ -3012,6 +3129,19 @@ export class SessionRegistry {
           this.logger.info('Auto fallback compact: restored original model on session reload', {
             key: serialized.key,
             restoredModel: session.model,
+          });
+        }
+        // The pending flag is not saved, and automatic compaction has one
+        // authority — the threshold check. A restored occupancy at or over the
+        // threshold re-arms it, so the session's next turn (a goal resume
+        // included) compacts first instead of resuming the full transcript
+        // (a dev deployment 2026-10-30: three restarts resumed one goal at 528k, 701k
+        // and 950k with nothing scheduled; at 975k the API refused it).
+        if (restoredOverAutoCompact(session)) {
+          session.autoCompactPending = true;
+          this.logger.info('Auto-compact re-armed on reload — restored occupancy is over the threshold', {
+            key: serialized.key,
+            model: session.model,
           });
         }
         // Orphan sweep: if process crashed while a turn was active, fold the elapsed
@@ -3091,8 +3221,23 @@ export class SessionRegistry {
         // A session that went to sleep while the process was down is not resumed:
         // it still gets the restart notice it was promised (symmetry), never an auto-resume.
         if (slackless) {
-          // No Slack thread to resume or notify — a Slack-less task never enters
-          // crash recovery until it can run (#597/#598, #612 review).
+          // No Slack thread to resume or notify. A task saved `working` lost its
+          // turn with the process: record that turn `interrupted` and never re-run
+          // it (#598 ④c, D10). A `waiting` task keeps its question.
+          if (serialized.activityState === 'working') {
+            const now = Date.now();
+            session.lastTurnOutcome = {
+              turnId: session.activeTaskTurnId ?? `restart:${now}`,
+              outcome: 'interrupted',
+              category: 'Exception',
+              reason: 'process ended before the outcome was recorded',
+              at: now,
+            };
+            session.activityState = 'idle';
+            session.activityStateChangedAt = now;
+            session.activeTaskTurnId = undefined;
+            reconciledTaskTurnCount++;
+          }
         } else if (serialized.shutdownNotificationSent) {
           this._crashRecoveredSessions.push({
             channelId: serialized.channelId,
@@ -3131,7 +3276,10 @@ export class SessionRegistry {
       if (mintedTaskIdCount > 0) {
         this.logger.info(`Assigned task ids to ${mintedTaskIdCount} loaded session(s)`);
       }
-      if (sleptOnLoadCount > 0 || mintedTaskIdCount > 0) {
+      if (reconciledTaskTurnCount > 0) {
+        this.logger.warn(`Recorded ${reconciledTaskTurnCount} lost task turn(s) as interrupted on load`);
+      }
+      if (sleptOnLoadCount > 0 || mintedTaskIdCount > 0 || reconciledTaskTurnCount > 0) {
         this.saveSessions();
       }
 
@@ -3179,6 +3327,23 @@ export class SessionRegistry {
       this.logger.info(`Backfilled ${count} session conversationIds`);
     }
     return count;
+  }
+}
+
+/**
+ * Whether a loaded session's saved occupancy is at or over its auto-compact
+ * threshold. Only a session with an SDK session to resume — a reset one starts
+ * empty — and never on a guess: no usage, no reading.
+ */
+function restoredOverAutoCompact(session: ConversationSession): boolean {
+  const u = session.usage;
+  if (!session.sessionId || !u) return false;
+  const used = u.currentInputTokens + u.currentOutputTokens + u.currentCacheReadTokens + u.currentCacheCreateTokens;
+  if (!(used > 0)) return false;
+  try {
+    return used >= resolveEffectiveAutoCompact(session, session.ownerId, userSettingsStore).tokens;
+  } catch {
+    return false;
   }
 }
 

@@ -101,21 +101,31 @@ export function executionContextForTask(session: ConversationSession): TaskExecu
   } catch {
     throw new ExecutionContextMissingError('task id is not a valid key');
   }
-  const raw = session.workingDirectory;
-  if (!raw || !path.isAbsolute(raw)) throw new ExecutionContextMissingError('task has no absolute working directory');
-  // Judged by where it really is: a symlink inside the owner's root that leads
-  // out of it does not pass (#613 R1).
-  const workingDirectory = realDirectory(path.resolve(raw));
-  const ownerRoot = `/tmp/${ownerId}`;
-  if (!workingDirectory.startsWith(`${ownerRoot}/`)) {
-    throw new ExecutionContextMissingError('task working directory is outside the owner’s /tmp root');
-  }
+  const workingDirectory = taskDirectoryFor(ownerId, session.workingDirectory);
   return Object.freeze({
     ...contextFor('task', ownerId, sessionKey),
     origin: 'task',
     taskId: session.taskId,
     workingDirectory,
   }) as TaskExecutionContext;
+}
+
+/**
+ * Where a task of `ownerId` may work: the real location of `raw`, which must be
+ * absolute and strictly inside the owner's `/tmp/<ownerId>/` root (D6). Shared
+ * by the turn's context and by task creation (#600 ⑥), so a folder that could
+ * not run is refused before a task is made with it.
+ */
+export function taskDirectoryFor(ownerId: string, raw: string | undefined): string {
+  if (!ownerId || !isSafePathSegment(ownerId)) throw new ExecutionContextMissingError('task has no usable owner');
+  if (!raw || !path.isAbsolute(raw)) throw new ExecutionContextMissingError('task has no absolute working directory');
+  // Judged by where it really is: a symlink inside the owner's root that leads
+  // out of it does not pass (#613 R1).
+  const workingDirectory = realDirectory(path.resolve(raw));
+  if (!workingDirectory.startsWith(`/tmp/${ownerId}/`)) {
+    throw new ExecutionContextMissingError('task working directory is outside the owner’s /tmp root');
+  }
+  return workingDirectory;
 }
 
 /**

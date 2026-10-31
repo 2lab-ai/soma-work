@@ -324,6 +324,32 @@ describe('PromptBuilder', () => {
       );
     });
 
+    it('deploy workflow step 7 treats a precondition wait as a normal end and resumes only on the answer', () => {
+      const prompt = builder.loadWorkflowPrompt('deploy')!;
+      const step7 = prompt.slice(prompt.indexOf('### 7) Post-Deploy QA'));
+      expect(step7).toContain('`deployed, QA incomplete: waiting for precondition confirmation`');
+      expect(step7).toContain('asked the requester one question in this thread');
+      expect(step7).toContain('not a failure: do not retry it');
+      expect(step7).toMatch(
+        /When the requester answers in this thread[^\n]*`gate\.mjs answer`[^\n]*`decisions=<gate file>`/,
+      );
+      // The resume never depends on the environment wrapper accepting `decisions=` (#591).
+      expect(step7).toMatch(
+        /does not accept `decisions=`[^\n]*`zworkflow:deploy-qa`[^\n]*`env=<the profile skill the gate file names>`[^\n]*`decisions=<gate file>`/,
+      );
+      // The direct path re-passes the env-skill admin gate and keeps the run's scope (keys=).
+      expect(step7).toMatch(
+        /first invoke `<plugin>:post-deploy --preflight repo=<owner\/repo> target=<branch>`[^\n]*continue only if it answers `applies` or `partial: …`/,
+      );
+      expect(step7).toMatch(/does not accept `decisions=`[^\n]*`keys=`/);
+      // The precondition wait is the only wait; the preflight rule still never parks the deploy.
+      const preflight = prompt.slice(
+        prompt.indexOf('#### Post-Deploy QA Preflight'),
+        prompt.indexOf('### 7) Post-Deploy QA'),
+      );
+      expect(preflight).toContain('Never wait for the requester because of a preflight answer');
+    });
+
     it('should fallback to default for unknown workflow', () => {
       const prompt = builder.loadWorkflowPrompt('nonexistent-workflow' as any);
 

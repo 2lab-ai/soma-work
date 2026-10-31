@@ -116,6 +116,42 @@ describe('checkAndSchedulePendingCompact (#617 AC3)', () => {
     expect(session.lastKnownUsagePct).toBe(80);
   });
 
+  // ssot-task: T3 — a mid-turn arm must be saved before the announcement's
+  // await: a restart in that window would otherwise lose the decision.
+  it('onArmed runs once, synchronously at the flag, before the Slack post settles', async () => {
+    session.usage = makeUsage(160_000, 200_000);
+    let postSettled = false;
+    slackApi.postSystemMessage.mockImplementation(
+      () => new Promise<void>((r) => setTimeout(() => ((postSettled = true), r()), 20)),
+    );
+    const seen: Array<{ pending: boolean | undefined; postSettled: boolean }> = [];
+    await checkAndSchedulePendingCompact({
+      session,
+      userId: 'U1',
+      channel: 'C1',
+      threadTs: 'T1',
+      userSettings: userSettings as unknown as UserSettingsStore,
+      slackApi: slackApi as unknown as SlackApiHelper,
+      onArmed: () => seen.push({ pending: session.autoCompactPending, postSettled }),
+    });
+    expect(seen).toEqual([{ pending: true, postSettled: false }]);
+  });
+
+  it('onArmed does not run below the threshold', async () => {
+    session.usage = makeUsage(158_000, 200_000);
+    const onArmed = vi.fn();
+    await checkAndSchedulePendingCompact({
+      session,
+      userId: 'U1',
+      channel: 'C1',
+      threadTs: 'T1',
+      userSettings: userSettings as unknown as UserSettingsStore,
+      slackApi: slackApi as unknown as SlackApiHelper,
+      onArmed,
+    });
+    expect(onArmed).not.toHaveBeenCalled();
+  });
+
   // Spec 10 §3.2-4: the auto-compact announcement is a compaction notice —
   // below `compact` it goes to the work log only; the flag is set regardless.
   it('minimal: at threshold → flag set, NO Slack post, one work-log notice', async () => {

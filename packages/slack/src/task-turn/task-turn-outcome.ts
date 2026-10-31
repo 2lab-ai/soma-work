@@ -45,7 +45,8 @@ export interface TaskTurnOutcome {
   recordFailure?: string;
 }
 
-const NO_TERMINAL_ABORTS = new Set(['supersede', 'user-interrupted', 'shutdown']);
+/** Abort reasons that end a turn with no terminal outcome — the next turn or restart owns the task. */
+export const NO_TERMINAL_ABORTS: ReadonlySet<string> = new Set(['supersede', 'user-interrupted', 'shutdown']);
 
 function decide(s: TaskTurnTerminalSignals): TaskTurnOutcome | null {
   if (s.fallbackCompact) return null;

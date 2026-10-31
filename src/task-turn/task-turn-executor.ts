@@ -48,15 +48,12 @@ export interface TaskTurnExecutorHost {
   appendSessionWorkLog: SessionWorkLogAppender;
   createConversation(session: ConversationSession): Promise<string>;
   receiptDrainTimeoutMs?: number;
-  /**
-   * Set by the caller that re-enters continuations and fallback compactions
-   * (④c). Unset, such a turn is committed as `interrupted` (design §9).
-   */
-  supportsReentry?: boolean;
 }
 
 export interface TaskTurnExecutor {
   runTaskTurn(input: RunTaskTurnInput): Promise<RunTaskTurnResult>;
+  /** End a pending non-terminal turn that will not be resumed (#634 R1). */
+  abandonTurn: ReturnType<typeof createTaskTurnRunner>['abandonTurn'];
   /** Every Slack call a task turn attempted — must stay empty (T9). */
   slackCalls: RecordedSlackCall[];
 }
@@ -142,9 +139,8 @@ export function createTaskTurnExecutor(host: TaskTurnExecutorHost): TaskTurnExec
     execute: (params) => executor.execute(params as never),
     createConversation: host.createConversation,
     receipts,
-    supportsReentry: host.supportsReentry,
     logger,
   });
 
-  return { runTaskTurn: runner.runTaskTurn, slackCalls: failClosed.calls };
+  return { runTaskTurn: runner.runTaskTurn, abandonTurn: runner.abandonTurn, slackCalls: failClosed.calls };
 }
