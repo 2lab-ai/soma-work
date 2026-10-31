@@ -715,7 +715,8 @@ describe('work-log entries are <ui-work-log> data (the element escapes them); th
     });
     expect(made).toHaveLength(1);
     expect(made[0].tag).toBe('ui-tool-call-card');
-    expect(made[0].attrs).toEqual({ lang: 'ko', slot: 'tool-7', 'data-key': '7', 'data-stop': '1' });
+    // No data-stop: the log sets the card's head-tabindex itself (one tab stop across rows and cards — D3-GAPS G2-3).
+    expect(made[0].attrs).toEqual({ lang: 'ko', slot: 'tool-7', 'data-key': '7' });
     expect(made[0].innerHTML).toBe(
       '<span class="wl-card-fallback"><span class="wl-tool-name">&lt;img src=x&gt;</span> &quot;&gt;&lt;script&gt;</span>',
     );
@@ -2127,11 +2128,11 @@ describe('work-log rows open their raw output in place (shipped initWorkLog list
   });
 });
 describe('work-log rows rove inside <ui-work-log> (one tab stop, arrows); the page keeps no roving code of its own', () => {
-  it('the page’s roving helpers are gone; each slotted card is its own stop (D3-GAPS G2-3)', () => {
+  it('the page’s roving helpers are gone; the slotted cards rove with the rows (D3-GAPS G2-3 closed by 0.12.0)', () => {
     for (const gone of ['wlRovingIndex', 'wlNavRows', 'wlMarkStop', 'wlEnsureTabStop', 'wlSetTabStop', 'WL_STOP_SEL']) {
       expect(TEMPLATE, gone).not.toMatch(new RegExp(`^(?:function|var) ${gone}\\b`, 'm'));
     }
-    expect(clientFn('wlCardSlots')).toContain("c.setAttribute('data-stop', '1');");
+    expect(clientFn('wlCardSlots')).not.toContain('data-stop');
   });
 });
 describe('작업 로그 is a section tab: painted only while shown; <ui-work-log> follows the newest and counts the rest (shipped paintWorkLog, wlLogData; SSOT 2026-10-29)', () => {
@@ -2209,13 +2210,14 @@ describe('작업 로그 is a section tab: painted only while shown; <ui-work-log
     ];
     const st: Record<string, unknown> = { entries, loaded: true, latestOk: true, olderPending: true };
     const m = load<{ wlLogData(st: unknown): Record<string, unknown> & { groups: Record<string, unknown>[] } }>(
-      ['wlGroupOf', 'wlGroupOpen', 'wlRunTitle', 'wlGroupsOf', 'wlLogData'],
-      ['WL_RUN_TITLE', 'WL_EMPTY_MSG', 'WL_FORBIDDEN_MSG'],
+      ['wlGroupOf', 'wlGroupOpen', 'wlGroupsOf', 'wlLogData'],
+      ['WL_EMPTY_MSG', 'WL_FORBIDDEN_MSG'],
       {
         _panelAgent: '',
         wlScopeEntries: (list: unknown[]) => list,
         wlVisible: (_st: unknown, list: unknown[]) => list,
         wlLegacyMixed: () => false,
+        wlTaskMeta: () => ['3m 만에 완료', { label: '툴', value: '4회' }],
         wlTaskInfo: (id: string) => (id === 'T2' ? { content: '고치기 (ledger)' } : null),
         wlEntryOf: (_st: unknown, e: { seq: number; kind: string; text: string }) => ({
           id: String(e.seq),
@@ -2226,11 +2228,15 @@ describe('작업 로그 is a section tab: painted only while shown; <ui-work-log
     );
     const d = m.wlLogData(st);
     expect(d).toMatchObject({ label: '작업 로그', startText: '작업 로그의 시작', hasMore: true, loading: false });
-    expect(d.groups.map((g) => [g.id, g.ref, g.title, g.open, g.count, (g.entries as unknown[]).length])).toEqual([
-      ['run:1', '', '지시 · 첫 지시', true, 1, 1],
-      ['task:T1', '#T1', '읽기', false, 2, 0],
-      ['run:4', '', '응답', true, 1, 1],
-      ['task:T2', '#T2', '고치기 (ledger)', true, 2, 2],
+    // Runs outside a task are headless groups (no head to title or fold; always in line); a task the ledger knows
+    // carries its meta line (D3-GAPS G2-2).
+    expect(
+      d.groups.map((g) => [g.id, g.ref, g.title, g.open, g.count, g.headless, g.meta, (g.entries as unknown[]).length]),
+    ).toEqual([
+      ['run:1', undefined, undefined, undefined, undefined, true, undefined, 1],
+      ['task:T1', '#T1', '읽기', false, 2, undefined, undefined, 0],
+      ['run:4', undefined, undefined, undefined, undefined, true, undefined, 1],
+      ['task:T2', '#T2', '고치기 (ledger)', true, 2, undefined, ['3m 만에 완료', { label: '툴', value: '4회' }], 2],
     ]);
     // The reader's choice (ui-toggle) sticks.
     (st.groupOpen as Record<string, boolean>)['task:T1'] = true;
