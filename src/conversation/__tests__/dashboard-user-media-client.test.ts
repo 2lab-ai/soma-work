@@ -46,7 +46,12 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
+/** The page's chrome words (STRINGS), as served: the board's Korean words live there (D2 group 6). */
+const PAGE_STRINGS = new Function(
+  `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
+)();
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+  inject = { STRINGS: PAGE_STRINGS, ...inject };
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
@@ -135,12 +140,14 @@ describe('C1 — panel user turn: the instruction with its files', () => {
     expect(out).toMatch(/data-art-id="D"[^>]*aria-label="[^"]*외 2개/);
   });
 
-  it('renderTurn puts the files before the instruction text, and a files-only turn has no empty text block', () => {
-    const src = clientFn('renderTurn');
-    const userBranch = src.slice(src.indexOf("if (t.role === 'user')"), src.indexOf('} else {'));
-    expect(userBranch).toContain('renderUserMedia(');
-    expect(userBranch.indexOf('renderUserMedia(')).toBeLessThan(userBranch.indexOf('turn-content'));
-    expect(userBranch).toContain('umRegister(');
+  it('a turn’s files go in <ui-conversation>’s media slot (shown above the words); registered for the viewer', () => {
+    // D3: the element draws slot media-<id> above the instruction; a files-only turn has no text.
+    const turns = clientFn('convTurnsOf');
+    expect(turns).toContain("slots.push({ name: 'media-' + id, kind: 'media', list: atts, turn: t });");
+    expect(turns).toContain('u.media = true;');
+    const slots = clientFn('convSlots');
+    expect(slots).toContain('umRegister(cid, sl.list, sl.turn);');
+    expect(slots).toContain('renderUserMedia(cid, sl.list)');
   });
 });
 
@@ -199,7 +206,7 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'OWNER_BADGE_HUES'];
 
 describe('C3 — card face: a paperclip count only', () => {
   const { cardOf } = load<{ cardOf(s: unknown, col: string): Record<string, unknown> }>(CARD_OF_FNS, CARD_OF_VARS, {

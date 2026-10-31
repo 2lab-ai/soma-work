@@ -185,8 +185,8 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
     expect(
       at('<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>'),
     ).toBeGreaterThan(at('id="panel-tabpanel"'));
-    expect(at('id="panel-turns"')).toBeGreaterThan(at('id="panel-tasks"'));
-    expect(at('<div class="panel-command" id="panel-command">')).toBeGreaterThan(at('id="panel-turns"'));
+    expect(at('id="panel-conv"')).toBeGreaterThan(at('id="panel-tasks"'));
+    expect(at('<div class="panel-command" id="panel-command">')).toBeGreaterThan(at('id="panel-conv"'));
     // One scroll area in the body.
     expect(panel.slice(0, at('id="panel-command"')).split('class="panel-scroll"').length - 1).toBe(1);
   });
@@ -238,8 +238,16 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
     // 560px: below it, full thumbnails would push the conversation out of a short body.
     const compact = cssBlock('@container pbody (max-height: 560px) {');
     expect(compact).not.toBe('');
-    expect(compact).toContain('.art-strip-panel .art-thumb { display: none; }');
-    expect(compact).toContain('.art-strip-panel .art-play { position: static;');
+    // The row is laid out here; the chips are the file cards' chip variant (D2), chosen by the panel body's height.
+    expect(compact).toContain('.art-strip-panel { flex: 1 1 auto;');
+    expect(DASHBOARD_TS).toContain('var ART_PANEL_SHORT_PX = 560;');
+    expect(DASHBOARD_TS).toContain("return !_panelDetail || (h > 0 && h <= ART_PANEL_SHORT_PX) ? 'chip' : 'tile';");
+    expect(DASHBOARD_TS).toContain(
+      'var size = new ResizeObserver(function() { sizePanelSections(); syncPanelArtVariant(); });',
+    );
+    expect(DASHBOARD_TS).toContain(
+      '.art-tile:has(> ui-file-card[variant="chip"]) .art-play { position: static; flex: none; width: 32px; height: 32px; }',
+    );
     expect(rule('.art-strip')).toContain('overflow-x: auto');
   });
 });
@@ -260,7 +268,7 @@ describe('board columns follow the inbox width, not the viewport', () => {
   });
 
   it('no viewport media query decides the board columns any more', () => {
-    expect(cssBlock('@media (max-width: 1023px) {')).not.toContain('.kanban');
+    expect(cssBlock('@media (max-width: 1199px) {')).not.toContain('.kanban');
     expect(cssBlock('@media (max-width: 639px) {')).not.toContain('.kanban[data-view="board"] { grid-template-columns');
   });
 });
@@ -269,11 +277,12 @@ describe('phones — nothing zooms, nothing hides behind the FAB, nothing runs o
   it('text inputs in the drawer are 16px on touch screens (iOS does not zoom into them)', () => {
     // The composer is @2lab.ai/ui <ui-agent-steering> (dashboard batch 2): its field and its edit box are 16px on a
     // coarse pointer in the element's own styles (@2lab.ai/ui src/components/agent-steering/styles.ts,
-    // `@media (pointer: coarse) { … .as-input, .as-edit { font-size: 16px; } }`). The page's own inputs stay here.
+    // `@media (pointer: coarse) { … .as-input, .as-edit { font-size: 16px; } }`). The multi-question form's own
+    // answer box is <ui-choice-form>'s (D3 E-15): 44px and 16px under `(pointer: coarse), (max-width: 639px)` in
+    // the element (@2lab.ai/ui src/components/choice-form/styles.ts, `.cf-input { height: 44px; font-size: 16px; }`).
     expect(TEMPLATE).toContain('<ui-agent-steering id="cmd-steer" lang="ko">');
-    expect(TEMPLATE).toMatch(
-      /@media \(pointer: coarse\) \{\n {2}\/\* Responsive[^@]*\.mc-custom-input input \{ font-size: 16px; \}/,
-    );
+    expect(clientFn('renderMultiChoicePanel')).toContain("document.createElement('ui-choice-form')");
+    expect(TEMPLATE).not.toContain('mc-custom-input');
   });
 
   it('below 640px the page clears the FAB, the defaults menu spans the bar, the artifact viewer is full screen', () => {
@@ -289,7 +298,8 @@ describe('phones — nothing zooms, nothing hides behind the FAB, nothing runs o
     // After every render and every DONE day opened or closed (#562 review P3).
     expect(clientFn('renderBoard')).toContain('syncHasCards();');
     expect(clientFn('wireInbox')).toContain('syncHasCards();');
-    expect(phone).toContain('.td-menu { left: 12px; right: 12px; min-width: 0; max-width: none; }');
+    // D1 (A-07): the defaults menu is <ui-menu> — fixed, kept inside the viewport by the element on any width.
+    expect(TEMPLATE).not.toContain('.td-menu');
     expect(phone).toContain('.art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }');
   });
 });
@@ -506,31 +516,28 @@ describe('layout transition — review fixes (trinity code review R1)', () => {
         attrs[k] = v;
       },
     };
-    const seg = (view: string) => {
-      const a: Record<string, string> = { 'data-view': view, 'aria-pressed': String(view === 'board') };
-      return {
-        a,
-        getAttribute: (k: string) => a[k] ?? null,
-        setAttribute: (k: string, v: string) => {
-          a[k] = v;
-        },
-      };
-    };
-    const segs = [seg('board'), seg('list')];
+    // D1 (D-02): Board | List is <ui-segmented id="view-seg"> — the page hands it the value.
+    const seg: { data?: { value: string; label: string; options: { value: string }[] } } = {};
     const saved: string[] = [];
     let adopted = 0;
-    const { setBoardView } = loadWith<{ setBoardView(view: string, ev?: unknown): void }>(['setBoardView'], [], {
-      document: { querySelectorAll: () => segs, getElementById: (id: string) => (id === 'kanban' ? kb : null) },
-      localStorage: { setItem: (_k: string, v: string) => saved.push(v) },
-      adoptLayout: () => {
-        adopted++;
+    const { setBoardView } = loadWith<{ setBoardView(view: string, ev?: unknown): void }>(
+      ['setBoardView'],
+      ['VIEW_OPTIONS'],
+      {
+        document: { getElementById: (id: string) => (id === 'kanban' ? kb : id === 'view-seg' ? seg : null) },
+        localStorage: { setItem: (_k: string, v: string) => saved.push(v) },
+        adoptLayout: () => {
+          adopted++;
+        },
       },
-    });
+    );
     // The reader's switch (an event): saved, the element's view attribute (it FLIPs), adopted.
     setBoardView('list', {});
     expect(attrs.view).toBe('list');
     expect(saved).toEqual(['list']);
-    expect(segs.map((b) => b.a['aria-pressed'])).toEqual(['false', 'true']);
+    expect(seg.data?.value).toBe('list');
+    expect(seg.data?.label).toBe('보드 보기');
+    expect(seg.data?.options.map((o) => o.value)).toEqual(['board', 'list']);
     expect(adopted).toBe(1);
     // The default following the screen (no event): not saved, not adopted — the coordinator runs the only glide.
     setBoardView('board');
@@ -659,16 +666,15 @@ describe('views merged from #374 follow the same device contract', () => {
   it('the cron run drawer fills the visible viewport (not 100vh behind the Safari toolbar) and keeps clear of the insets', () => {
     // viewport-fit=cover makes env() insets real: a drawer pinned to the right edge
     // must pad for the landscape iPhone notch side and the home indicator.
-    const drawer = /^\.cron-drawer \{[^}]*\}/m.exec(RESP_TAIL)?.[0] ?? '';
-    expect(drawer).toContain('height: 100dvh');
-    expect(drawer).toContain('padding-right: env(safe-area-inset-right, 0px)');
-    // 100vw counts a classic scrollbar: a narrow window would push the drawer's left
-    // edge off screen (the device sweep caught -8px in WebKit). A fixed box's 100% is
-    // the viewport without the scrollbar.
-    expect(drawer).toContain('width: min(560px, 100%)');
-    expect(RESP_TAIL).toMatch(/^\.cron-drawer-head \{[^}]*padding-top: max\(16px, env\(safe-area-inset-top, 0px\)\)/m);
-    expect(RESP_TAIL).toMatch(
-      /^\.cron-drawer-body \{[^}]*padding-bottom: calc\(24px \+ env\(safe-area-inset-bottom, 0px\)\)/m,
+    // D1 (C-05): the drawer is @2lab.ai/ui <ui-drawer mode="sheet"> — a fixed native dialog (inset 0, so the
+    // visible viewport; its panel min(width, 100%) — never 100vw) with the bottom inset of its own.
+    expect(TEMPLATE).toContain(
+      '<ui-drawer class="cron-drawer" id="cron-drawer" mode="sheet" width="560" max-width="560" lang="ko">',
+    );
+    // The page adds the notch side and the top inset through the element's parts.
+    expect(RESP_TAIL).toContain('.cron-drawer::part(panel) { padding-right: env(safe-area-inset-right, 0px); }');
+    expect(RESP_TAIL).toContain(
+      '.cron-drawer::part(header) { padding-top: max(14px, env(safe-area-inset-top, 0px)); }',
     );
   });
 });
@@ -684,11 +690,14 @@ describe('settings page — reached from the dashboard top bar', () => {
   const SETTINGS_TS = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
 
   it('its text inputs and selects are 16px on touch screens (iOS does not zoom into them)', () => {
+    // The rows are <ui-setting-row> (M-02) with the page's kit `.ui-input` controls slotted in light DOM, so the
+    // page's own coarse-pointer rule still reaches every field (the kit's ui-kit.css sets no font size there).
     const coarse = SETTINGS_TS.slice(SETTINGS_TS.indexOf('@media (pointer: coarse) {'));
     expect(SETTINGS_TS).toContain('@media (pointer: coarse) {');
-    expect(coarse.slice(0, coarse.indexOf('\n}'))).toMatch(
-      /\.row input\[type="text"\], \.row input\[type="number"\], \.row select \{ font-size: 16px; \}/,
-    );
+    expect(coarse.slice(0, coarse.indexOf('\n}'))).toContain('  .ui-input { font-size: 16px; }');
+    expect(SETTINGS_TS).toContain('<input type="\' + type + \'" class="ui-input" id="f-'); // text / number fields
+    expect(SETTINGS_TS).toContain('<input type="text" class="ui-input" id="c-'); // the custom-value field of a choice
+    expect(SETTINGS_TS).toContain('<select class="ui-input" id="f-');
   });
 });
 
@@ -714,7 +723,8 @@ describe('merged views — trinity code review R4 follow-ups', () => {
   it('Escape with a docked panel and the cron drawer open closes the drawer only (the topmost)', () => {
     // SSOT 2026-10-29 T2: without the drawer, Escape closes the front detail card (closeDetailCard).
     expect(TEMPLATE).toContain(
-      "if (e.key === 'Escape' && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();",
+      // D1 (C-05): <ui-drawer> takes the key (preventDefault) before the page's listener; the panel leaves it be.
+      "if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();",
     );
   });
 
@@ -734,16 +744,26 @@ describe('merged views — trinity code review R4 follow-ups', () => {
     const resp = TEMPLATE.slice(TEMPLATE.indexOf('/* ═══ Device-responsive layout (SSOT 2026-10-24)'));
     const coarse = resp.slice(resp.indexOf('@media (pointer: coarse) {'));
     const block = coarse.slice(0, coarse.indexOf('\n}'));
-    expect(block).toContain('.cron-drawer-close { min-width: 44px; min-height: 44px; }');
+    // D1: the close button is the kit's icon button — 44px on touch is ui-kit.css's own rule.
+    expect(block).not.toContain('.cron-drawer-close');
+    // D1 (C-05): the close button is <ui-drawer>'s own — 44px on touch / narrow screens is the element's rule.
+    expect(TEMPLATE).not.toContain('id="cron-drawer-close"');
     // 지난 실행, the strip, the queue chips, the marks and the fold toggle: @2lab.ai/ui agent-queue
     // styles.ts, '@media (pointer: coarse)' — 44px.
     expect(block).not.toContain('.cron-history-btn');
   });
 
-  it('the settings search field is 16px on touch screens too', () => {
+  it('the settings search field is 16px on touch screens too', async () => {
+    // The search field is <ui-settings-nav>'s own (M-03), in its shadow root: the element's styles make it 16px
+    // on a coarse pointer (@2lab.ai/ui src/components/settings-nav/styles.ts, `.sn-q`). The page draws no field.
     const settings = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
-    const coarse = settings.slice(settings.indexOf('@media (pointer: coarse) {'));
-    expect(coarse.slice(0, coarse.indexOf('\n}'))).toContain('.side input[type="search"]');
+    expect(settings).toContain('<ui-settings-nav id="pref-nav" lang="ko">');
+    expect(settings).not.toContain('input type="search"');
+    const { uiLibDistDir } = await import('../ui-lib');
+    const dir = uiLibDistDir();
+    expect(dir).toBeTruthy();
+    const nav = readFileSync(join(dir as string, 'settings-nav.js'), 'utf-8');
+    expect(nav).toMatch(/@media \(pointer: coarse\) \{\n\s*\.sn-q \{ font-size: 16px; \}/);
   });
 });
 

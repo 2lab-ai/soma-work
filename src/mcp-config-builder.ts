@@ -693,6 +693,8 @@ export class McpConfigBuilder {
         SLACK_BOT_TOKEN: process.env.SLACK_BOT_TOKEN || '',
         SLACK_CONTEXT: JSON.stringify(slackContext),
         SOMA_CONFIG_FILE: CONFIG_FILE,
+        // One grants file: the child resolves DATA_DIR from SOMA_DATA_DIR, like cron and model-command.
+        SOMA_DATA_DIR: DATA_DIR,
       },
     };
   }

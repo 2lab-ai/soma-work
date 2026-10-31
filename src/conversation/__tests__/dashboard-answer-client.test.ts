@@ -87,7 +87,7 @@ const AUTH_HEADER = { Authorization: 'Bearer test-token' };
 
 interface AnswerClient {
   submitAllRecommended(key: string): Promise<void>;
-  submitMultiChoice(key: string): Promise<void>;
+  submitMultiChoice(key: string, selections: Record<string, { choiceId: string; label: string }>): Promise<void>;
   answerChoice(key: string, qid: string, choiceId: string): Promise<unknown>;
   acQuestionId(q: unknown): string;
 }
@@ -103,6 +103,10 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
   /** When set, the next request is refused 403 as csrfMiddleware does after a JWT rotation. */
   let staleCsrfOnce: boolean;
   let csrfRefreshes: number;
+  let mcState: Record<string, { sending?: boolean; sent?: boolean; error?: string }>;
+  let formPaints: number;
+  let formShown: boolean;
+  const SELECTIONS = { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } };
 
   beforeEach(async () => {
     vi.resetModules();
@@ -149,10 +153,19 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
     // affectUI batch 1: the single-choice answer comes from <ui-approval-card> (answerChoice(key, qid, choiceId));
     // failures are error toasts (dashToast), not alert().
     sessionCache = { [KEY]: { key: KEY, pendingQuestion: twoQuestions } };
+    mcState = {};
+    formPaints = 0;
+    formShown = true;
     client = load<AnswerClient>(
       [
         'submitAllRecommended',
         'submitMultiChoice',
+        'mcPost',
+        'mcSend',
+        'mcStateOf',
+        'mcFormId',
+        'mcFormEl',
+        'mcSettle',
         'answerChoice',
         'acDrop',
         'acQuestionId',
@@ -170,7 +183,15 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
         },
         _acState: {},
         acRepaint: () => {},
-        document: { querySelector: () => fakeNode(), querySelectorAll: () => [] },
+        document: {
+          querySelector: () => fakeNode(),
+          querySelectorAll: () => [],
+          // The panel's 입력 필요 holding this session's <ui-choice-form> (or not, formShown false).
+          getElementById: (id: string) =>
+            id === 'panel-question' && formShown
+              ? { firstElementChild: { tagName: 'UI-CHOICE-FORM', getAttribute: () => KEY } }
+              : null,
+        },
         setTimeout: () => 0,
         console: { error() {}, warn() {} },
         _csrfToken: 'csrf-1',
@@ -178,11 +199,9 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
           csrfRefreshes++;
         },
         _sessionCache: sessionCache,
-        _mcState: {
-          [KEY]: {
-            selections: { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } },
-            activeQ: 0,
-          },
+        _mcState: mcState,
+        renderMultiChoicePanel: () => {
+          formPaints++;
         },
       },
     );
@@ -204,6 +223,43 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
     await stopWebServer();
   });
 
+  // D3 E-15: the form is <ui-choice-form>; the page hands it the send's outcome.
+  it("a send is the form's submitting state, then its summary (sent) — the push clears the question", async () => {
+    dashboard.setDashboardMultiChoiceAnswerHandler(vi.fn().mockResolvedValue(undefined));
+    const run = client.submitMultiChoice(KEY, SELECTIONS);
+    expect(mcState[KEY]).toMatchObject({ sending: true });
+    await run;
+    expect(mcState[KEY]).toMatchObject({ sending: false, sent: true });
+    expect(mcState[KEY].error).toBeFalsy();
+    expect(formPaints).toBe(2);
+    expect(alerts).toEqual([]);
+  });
+
+  it("a refusal is the form's error line (it stays usable); with the form off screen it is a toast", async () => {
+    dashboard.setDashboardMultiChoiceAnswerHandler(
+      vi.fn().mockRejectedValue(new Error('Session is not waiting for a choice')),
+    );
+    await client.submitMultiChoice(KEY, SELECTIONS);
+    expect(mcState[KEY]).toMatchObject({ sending: false });
+    expect(mcState[KEY].sent).toBeFalsy();
+    expect(mcState[KEY].error).toBeTruthy();
+    expect(alerts).toEqual([]);
+
+    formShown = false;
+    mcState[KEY].error = '';
+    await client.submitMultiChoice(KEY, SELECTIONS);
+    expect(alerts.length).toBe(1);
+  });
+
+  it('a second send while one is out (or after it landed) sends nothing', async () => {
+    dashboard.setDashboardSubmitRecommendedHandler(vi.fn().mockResolvedValue(undefined));
+    const a = client.submitAllRecommended(KEY);
+    const b = client.submitAllRecommended(KEY);
+    await Promise.all([a, b]);
+    await client.submitAllRecommended(KEY);
+    expect(requests.filter((r) => r.url.endsWith('/submit-recommended'))).toHaveLength(1);
+  });
+
   it('T1 — "추천대로 모두 선택" reaches the submit-recommended handler (no "❌ Bad Request")', async () => {
     const handler = vi.fn().mockResolvedValue(undefined);
     dashboard.setDashboardSubmitRecommendedHandler(handler);
@@ -223,7 +279,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
     const handler = vi.fn().mockResolvedValue(undefined);
     dashboard.setDashboardMultiChoiceAnswerHandler(handler);
 
-    await client.submitMultiChoice(KEY);
+    await client.submitMultiChoice(KEY, SELECTIONS);
 
     expect(alerts).toEqual([]);
     expect(handler).toHaveBeenCalledWith(KEY, {
@@ -253,7 +309,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
     },
     {
       name: '제출하기',
-      run: () => client.submitMultiChoice(KEY),
+      run: () => client.submitMultiChoice(KEY, SELECTIONS),
       register: (h: any) => dashboard.setDashboardMultiChoiceAnswerHandler(h),
     },
     {
