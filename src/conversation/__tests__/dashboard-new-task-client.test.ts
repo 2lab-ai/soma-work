@@ -335,16 +335,41 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
   });
 
   it("closing the sheet discards a recording in progress and stops a preview — the element's cancelRecording / pause", () => {
-    // The page's close (hide()) and the person's both end in the element's ui-closed → ntOnClosed (the FAB back, the
-    // composer quiet) — closeNewTask itself only asks the element.
+    // The page's close (hide()) and the person's both end in the element's ui-closed → ntOnClosed (the composer
+    // quiet) — closeNewTask itself only asks the element.
     expect(clientFn('closeNewTask')).not.toContain('ntOnClosed();');
     expect(clientFn('closeNewTask')).toContain("if (!dlg || !dlg.open || typeof dlg.hide !== 'function') return;");
-    expect(clientFn('ntOnClosed')).toContain("document.body.classList.remove('nt-open');");
+    expect(clientFn('ntShowFab')).toContain("document.body.classList.remove('nt-open');");
+    expect(clientFn('ntOnClosed')).toContain('ntShowFab();');
     expect(clientFn('ntOnClosed')).toContain('ntQuietComposer();');
     const quiet = clientFn('ntQuietComposer');
     expect(quiet).toContain('el.cancelRecording();');
     expect(quiet).toContain('el.pause();');
     expect(quiet).not.toContain('disabled: true');
+  });
+
+  it('the FAB is back as the close begins — the element gives focus back before ui-closed, to a FAB it can focus', () => {
+    // A FAB still display:none (body.nt-open) when the element focuses back drops focus on the body (phone Esc).
+    const classes = new Set(['nt-open']);
+    const seen: string[] = [];
+    const dlg = { open: true, hide: () => seen.push(classes.has('nt-open') ? 'hidden-fab' : 'fab-back') };
+    const g = globalThis as any;
+    const saved = g.document;
+    g.document = {
+      getElementById: (id: string) => (id === 'nt-dialog' ? dlg : null),
+      body: { classList: { remove: (c: string) => classes.delete(c), add: (c: string) => classes.add(c) } },
+    };
+    try {
+      load<{ closeNewTask: () => void }>(['ntEl', 'ntShowFab', 'closeNewTask']).closeNewTask();
+    } finally {
+      g.document = saved;
+    }
+    expect(seen).toEqual(['fab-back']);
+    // The person's Esc / scrim / ✕: ui-close (cancelable) — the FAB comes back once no listener turned it down.
+    const init = clientFn('ntInit');
+    expect(init).toMatch(
+      /addEventListener\('ui-close', function \(e\) \{[\s\S]*?if \(!e\.defaultPrevented\) ntShowFab\(\);/,
+    );
   });
 
   it('loads its context and posts the task with the CSRF token', () => {

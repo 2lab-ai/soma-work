@@ -1632,18 +1632,28 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     expect(ids.length).toBeLessThanOrEqual(1 + 20 + 15 + 5);
     expect(r.host._hidden).toBe(60 - (ids.length - 1));
     expect(r.out.scroller).toEqual([{ ...SCROLLER_TEXT, hasMore: true }]); // the scroller's older row / scroll-up ask
-    // The scroller asked (ui-load-older → showMoreTree): 20 more; the step is data only on the same element; the
-    // scroller holds the reader's row itself; a frame later it hears the page landed and that more still wait.
+    // The scroller asked (ui-load-older → showMoreTree) from its scroll handler, having queued the frame that takes
+    // the reader's place (D6b review P1): the tree must not grow before that capture. Here the scroller's capture
+    // frame is queued first, as in the element; the page's growth waits for the next frame, after it.
+    const order: string[] = [];
+    r.out.frames.push(() => order.push('capture'));
     const before = ids.length;
     expect(r.m.showMoreTree()).toBe(true);
+    expect((r.out.data?.nodes ?? []).length).toBe(before); // nothing grew in the ask itself
+    expect(r.host._growing).toBe(true);
+    expect(r.m.showMoreTree()).toBe(false); // one step at a time
+    expect(r.out.frames).toHaveLength(2);
+    r.out.frames[0](); // the scroller's capture
+    r.out.frames[1](); // then the page's growth: 20 more, data only on the same element
+    order.push('grow');
+    expect(order).toEqual(['capture', 'grow']);
     const more = (r.out.data?.nodes ?? []).map((n) => n.id);
     for (let n = 21; n <= 60; n++) expect(more).toContain(`g${n}`);
     expect(more.length).toBeGreaterThan(before);
     expect(r.out.upserts).toBe(1);
-    expect(r.host._growing).toBe(true);
-    expect(r.m.showMoreTree()).toBe(false); // one step at a time
-    expect(r.out.frames).toHaveLength(1);
-    r.out.frames[0]();
+    expect(r.out.prepends).toEqual([]); // the 'more still wait' word comes a frame after the growth
+    expect(r.out.frames).toHaveLength(3);
+    r.out.frames[2]();
     expect(r.host._growing).toBe(false);
     // 40 newest + the leads that connect them = every one of the 60: nothing waits above any more.
     expect(r.host._hidden).toBe(0);
