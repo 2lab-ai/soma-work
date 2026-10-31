@@ -143,7 +143,7 @@ export interface AnswerGoalCapDecisionArgs {
   actor: string | undefined;
   decision: GoalCapDecision;
   surface: GoalCapDecisionSurface;
-  /** Persist the sessions (synchronous). */
+  /** Persist the sessions (synchronous). Throws when they did not reach disk — the answer is then refused. */
   save: () => void;
   now?: number;
 }
@@ -185,6 +185,16 @@ export function answerGoalCapDecision(args: AnswerGoalCapDecisionArgs): GoalCapD
       return { ok: false, reason: 'unavailable' };
     }
   }
+  const before = {
+    capDmPendingAt: goal.capDmPendingAt,
+    capDecisionId: goal.capDecisionId,
+    capDmRef: goal.capDmRef,
+    continuationCount: goal.continuationCount,
+    status: goal.status,
+    updatedAt: goal.updatedAt,
+    epoch: goal.epoch,
+    systemPrompt: session.systemPrompt,
+  };
   endDecision(goal);
   if (decision === 'continue') {
     goal.continuationCount = 0;
@@ -198,7 +208,26 @@ export function answerGoalCapDecision(args: AnswerGoalCapDecisionArgs): GoalCapD
   // `<session-goal>` block.
   goal.epoch = (goal.epoch ?? 0) + 1;
   session.systemPrompt = undefined;
-  args.save();
+  try {
+    args.save();
+  } catch (error) {
+    // The decision did not reach disk: undo it in memory and withdraw its DM
+    // rewrite, so neither surface reports an answer the restart would forget.
+    goal.capDmPendingAt = before.capDmPendingAt;
+    goal.capDecisionId = before.capDecisionId;
+    goal.capDmRef = before.capDmRef;
+    goal.continuationCount = before.continuationCount;
+    goal.status = before.status;
+    goal.updatedAt = before.updatedAt;
+    goal.epoch = before.epoch;
+    session.systemPrompt = before.systemPrompt;
+    if (rewrite) withdrawDmSync(rewrite);
+    logger.error('Goal cap decision refused — the sessions could not be saved', {
+      sessionKey,
+      error: error instanceof Error ? error.message : String(error),
+    });
+    return { ok: false, reason: 'unavailable' };
+  }
 
   // Every answer rewrites the round's DM through the journal — a Slack click
   // also replaces its own message (respond), but that reply can fail.
@@ -304,6 +333,15 @@ function journalDmSync(ref: GoalCapDmRef, text: string, decisionId: string | und
     throw error;
   }
   return entry;
+}
+
+/** Take back a journalled rewrite whose decision was refused (best effort: the restart drops it anyway). */
+function withdrawDmSync(entry: GoalCapDmSync): void {
+  const list = loadRewrites();
+  const at = list.indexOf(entry);
+  if (at < 0) return;
+  list.splice(at, 1);
+  saveRewritesQuietly();
 }
 
 /**

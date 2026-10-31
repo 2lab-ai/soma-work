@@ -1572,7 +1572,7 @@ async function start() {
           actor: actorUserId,
           decision: answer.decision,
           surface: 'dashboard',
-          save: () => registry.saveSessions(),
+          save: () => registry.saveSessionsOrThrow(),
         }),
       );
       // DM rewrites the previous process could not deliver.

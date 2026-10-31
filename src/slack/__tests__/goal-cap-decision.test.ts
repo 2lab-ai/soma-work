@@ -541,3 +541,47 @@ describe('journal before the session (review gate round 2 P1)', () => {
     expect(pendingGoalCapDmRewrites()).toEqual([]);
   });
 });
+
+describe('a session save that fails refuses the answer (review gate round 3 P1)', () => {
+  it('the decision is undone in memory, the DM rewrite withdrawn, nothing resumes or reaches Slack', async () => {
+    const g = pendingGoal();
+    const s = session(g);
+    const round = g.capDecisionId;
+    const result = answerGoalCapDecision({
+      session: s,
+      sessionKey: KEY,
+      goalId: 'goal-1',
+      decisionId: round,
+      actor: 'U-owner',
+      decision: 'continue',
+      surface: 'dashboard',
+      save: () => {
+        throw Object.assign(new Error('EACCES: sessions.json'), { code: 'EACCES' });
+      },
+    });
+    expect(result).toEqual({ ok: false, reason: 'unavailable' });
+    expect(g.capDmPendingAt).toBe(1000);
+    expect(g.capDecisionId).toBe(round);
+    expect(g.capDmRef).toEqual(DM);
+    expect(g.continuationCount).toBe(10);
+    expect(g.epoch).toBe(3);
+    expect(s.systemPrompt).toBe('cached');
+    expect(resume).not.toHaveBeenCalled();
+    expect(broadcasts).toBe(0);
+    await flush();
+    expect(updates).toEqual([]);
+    expect(rewritesOnDisk()).toEqual([]);
+    // The round is still answerable once the disk recovers.
+    const retry = answerGoalCapDecision({
+      session: s,
+      sessionKey: KEY,
+      goalId: 'goal-1',
+      decisionId: round,
+      actor: 'U-owner',
+      decision: 'continue',
+      surface: 'dashboard',
+      save: () => {},
+    });
+    expect(retry.ok).toBe(true);
+  });
+});

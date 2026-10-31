@@ -266,7 +266,7 @@ export class GoalActionHandler {
         actor: body.user?.id,
         decision,
         surface: 'slack',
-        save: () => this.ctx.claudeHandler.saveSessions(),
+        save: () => this.ctx.claudeHandler.saveSessionsOrThrow(),
       });
       if (result.ok) {
         await respond({ replace_original: true, text: goalCapDecisionResolvedText(decision, 'slack') });
