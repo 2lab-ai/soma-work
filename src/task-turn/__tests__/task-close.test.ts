@@ -104,6 +104,21 @@ describe('E4 ⑦ — closing an epic or a child (D10 b · c)', () => {
     expect(r.deps.terminate).toHaveBeenCalledTimes(1);
   });
 
+  it('the chain is read in the same synchronous pass as isRunning: a chain that ends on the next microtask is still named (fable #711 R1 P3-1)', async () => {
+    const r = rig(epic, false, kids, ['task:c1']);
+    const running = ['task:c1'];
+    // The chain ends right after the running check — on the next microtask, before any await could land.
+    r.deps.isRunning.mockImplementation((key: string) => {
+      queueMicrotask(() => {
+        running.length = 0;
+      });
+      return running.includes(key);
+    });
+    r.deps.runningChain.mockImplementation((key: string) => (running.includes(key) ? `chain-of-${key}` : undefined));
+    await r.close('task:e1');
+    expect(r.deps.markClosedByParent.mock.calls).toEqual([['task:c1', 'chain-of-task:c1']]);
+  });
+
   it('the children are cancelled at once, not one after another', async () => {
     const r = rig(epic, false, kids, ['task:c1', 'task:c2']);
     let open = 0;
