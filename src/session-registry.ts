@@ -42,10 +42,19 @@ import {
   migrateLegacyGoalArray,
   stampActiveLegGoalOwner,
 } from './slack/session-goal-lifecycle';
+import {
+  applyPlanWrite,
+  EPIC_NODE_ID,
+  type PlanWriteInput,
+  sanitizeEpicEvents,
+  sanitizeEpicPlan,
+} from './task-turn/epic-plan';
 import type {
   ActionPanelState,
   ActivityState,
   ConversationSession,
+  EpicEvent,
+  EpicPlan,
   HandoffContext,
   OriginThread,
   SessionCronJob,
@@ -208,6 +217,8 @@ interface SerializedSession {
   parentTaskId?: unknown;
   planNodeId?: unknown;
   childTaskIds?: unknown;
+  plan?: unknown;
+  epicEvents?: unknown;
   /** E2 ③ — the open chain and owed notices of a Slack-less task; validated on load. */
   openChain?: unknown;
   notices?: unknown;
@@ -298,15 +309,17 @@ export interface CreateTaskInput {
   planNodeId?: string;
 }
 
-/** E4 ① — a plan node id: a short slug, unique within its epic. */
-export const PLAN_NODE_ID = /^[a-z0-9][a-z0-9-]{0,63}$/;
+/** E4 ① — a plan node id: a short slug, unique within its epic (one rule with the plan's, E4 ②). */
+export const PLAN_NODE_ID = EPIC_NODE_ID;
 
-/** E4 ① — the epic relation fields as stored on a record. */
+/** E4 ① ② — the epic relation fields as stored on a record (plan and events on an epic only). */
 export interface EpicRelation {
   kind?: 'epic';
   parentTaskId?: string;
   planNodeId?: string;
   childTaskIds?: string[];
+  plan?: EpicPlan;
+  epicEvents?: EpicEvent[];
 }
 
 /**
@@ -327,7 +340,14 @@ export function sanitizeEpicRelation(value: Record<string, unknown>, slackless: 
   if (value.kind !== 'epic') return {};
   const children = Array.isArray(value.childTaskIds) ? value.childTaskIds.filter(nonEmpty) : [];
   const childTaskIds = [...new Set(children)];
-  return { kind: 'epic', ...(childTaskIds.length > 0 ? { childTaskIds } : {}) };
+  const plan = sanitizeEpicPlan(value.plan);
+  const epicEvents = sanitizeEpicEvents(value.epicEvents);
+  return {
+    kind: 'epic',
+    ...(childTaskIds.length > 0 ? { childTaskIds } : {}),
+    ...(plan ? { plan } : {}),
+    ...(epicEvents ? { epicEvents } : {}),
+  };
 }
 
 /** E2 ① — `createTask` refused: a live task already holds this instruction thread. */
@@ -1005,6 +1025,8 @@ export class SessionRegistry {
       session.parentTaskId = undefined;
       session.planNodeId = undefined;
       session.childTaskIds = undefined;
+      session.plan = undefined;
+      session.epicEvents = undefined;
     } else if (session.parentTaskId) {
       let siblings = this.childrenByParent.get(session.parentTaskId);
       if (!siblings) {
@@ -1058,6 +1080,31 @@ export class SessionRegistry {
   }
 
   /**
+   * E4 ② (.prd/19 D2) — replace an epic's plan through `applyPlanWrite` and
+   * save it strictly. A refused write (`EpicPlanError`) or a failed save
+   * leaves the plan as it was. Returns the plan now saved.
+   */
+  setEpicPlan(taskId: string, input: PlanWriteInput, by: 'epic' | 'owner'): EpicPlan {
+    const epic = this.sessionsByTaskId.get(taskId);
+    if (!epic || epic.slackless !== true || epic.kind !== 'epic')
+      throw new Error(`setEpicPlan: ${taskId} is not a live epic`);
+    const children = this.getChildTasks(taskId).map((c) => ({
+      planNodeId: c.planNodeId,
+      active: c.activityState === 'working' || c.activityState === 'waiting',
+    }));
+    const next = applyPlanWrite(epic.plan, input, { now: Date.now(), by, children });
+    const previous = epic.plan;
+    epic.plan = next;
+    try {
+      this.saveSessionsOrThrow();
+    } catch (error) {
+      epic.plan = previous;
+      throw error;
+    }
+    return next;
+  }
+
+  /**
    * E4 ① — load gave a Slack-less task a new id because a Slack session held
    * the one it claimed. The relation follows the new id: a re-minted epic's
    * children point at it, and a re-minted child is named by its new id in its
@@ -1095,7 +1142,7 @@ export class SessionRegistry {
     for (const { session: child, claimed } of reminted) {
       if (!child.taskId || !child.parentTaskId) continue;
       const live = this.sessionsByTaskId.get(child.parentTaskId);
-      const epic: { childTaskIds?: unknown; taskId?: unknown } | undefined =
+      const epic: { childTaskIds?: unknown; taskId?: unknown; plan?: unknown; epicEvents?: unknown } | undefined =
         live && live.slackless === true && live.kind === 'epic'
           ? live
           : archiving.find((r) => r.taskId === child.parentTaskId && r.kind === 'epic');
@@ -1105,6 +1152,25 @@ export class SessionRegistry {
       // Renamed in place; appended if the list lacks it (a damaged list heals here only for a
       // re-minted child — elsewhere the list is append-only through createTask).
       epic.childTaskIds = list.includes(claimed) ? list.map((id) => (id === claimed ? taskId : id)) : [...list, taskId];
+      // E4 ② — and so does the plan node it was made for. Only `spawned` changes: the plan is
+      // otherwise left as it was (an archiving record's raw plan is sanitized when archived).
+      const plan = epic.plan as { nodes?: unknown } | undefined;
+      if (plan && typeof plan === 'object' && Array.isArray(plan.nodes)) {
+        epic.plan = {
+          ...plan,
+          nodes: plan.nodes.map((n: { spawned?: unknown }) =>
+            n && typeof n === 'object' && Array.isArray(n.spawned) && n.spawned.includes(claimed)
+              ? { ...n, spawned: n.spawned.map((id) => (id === claimed ? taskId : id)) }
+              : n,
+          ),
+        };
+      }
+      // Its events name it by id too.
+      if (Array.isArray(epic.epicEvents)) {
+        epic.epicEvents = epic.epicEvents.map((e: { childTaskId?: unknown }) =>
+          e && typeof e === 'object' && e.childTaskId === claimed ? { ...e, childTaskId: taskId } : e,
+        );
+      }
       moved++;
       this.logger.warn("Child task id re-minted on load; its epic's list names the new id", {
         claimed,
@@ -1323,13 +1389,28 @@ export class SessionRegistry {
     const key = buildTaskSessionKey(session.taskId);
     // E4 ① — the parent counts the child in the same save that creates it.
     const parentChildren = parent?.childTaskIds;
-    if (parent) parent.childTaskIds = [...(parentChildren ?? []), session.taskId];
+    const parentPlan = parent?.plan;
+    if (parent) {
+      parent.childTaskIds = [...(parentChildren ?? []), session.taskId];
+      // E4 ② — the node records the child it was made for (it can no longer be removed).
+      if (parentPlan?.nodes.some((n) => n.id === input.planNodeId)) {
+        parent.plan = {
+          ...parentPlan,
+          nodes: parentPlan.nodes.map((n) =>
+            n.id === input.planNodeId ? { ...n, spawned: [...(n.spawned ?? []), session.taskId] } : n,
+          ),
+        };
+      }
+    }
     this.putSession(key, session);
     try {
       this.saveSessionsOrThrow();
     } catch (error) {
       this.removeSession(key);
-      if (parent) parent.childTaskIds = parentChildren;
+      if (parent) {
+        parent.childTaskIds = parentChildren;
+        parent.plan = parentPlan;
+      }
       this.logger.error('Task not created: saving it failed', { taskId: session.taskId });
       throw error;
     }
@@ -3103,6 +3184,8 @@ export class SessionRegistry {
             parentTaskId: session.parentTaskId,
             planNodeId: session.planNodeId,
             childTaskIds: session.childTaskIds,
+            plan: session.plan,
+            epicEvents: session.epicEvents,
             // Merge code change stats
             mergeStats: session.mergeStats,
             // User SSOT instructions (persisted)
