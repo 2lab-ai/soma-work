@@ -162,6 +162,19 @@ export function createSlackSteerUploader(client: WebClient, opts?: SteerUploader
  * task resolves its model with this (#640 R2).
  */
 export function offeredNewTaskModels(userId: string): Array<{ nickname: string; model: string }> {
+  const { representativeModels, userDefaultModel, userDefaultModelLabel } = newTaskModelInputs(userId);
+  return newTaskModelOptions(representativeModels, userDefaultModel, userDefaultModelLabel).options.map((m) => ({
+    nickname: m.nickname,
+    model: m.model,
+  }));
+}
+
+/** The dialog's model inputs — one source for the context and the task launcher (#640 R3). */
+function newTaskModelInputs(userId: string): {
+  representativeModels: Array<{ nickname: string; model: string; label: string }>;
+  userDefaultModel: string;
+  userDefaultModelLabel: string;
+} {
   let representativeModels: Array<{ nickname: string; model: string; label: string }> = [];
   try {
     representativeModels = listRepresentativeModels(productionModelCatalogDeps(), userId);
@@ -169,11 +182,11 @@ export function offeredNewTaskModels(userId: string): Array<{ nickname: string; 
     logger.warn('New task: representative models unavailable', { error: String(error) });
   }
   const userDefaultModel = userSettingsStore.getUserDefaultModel(userId);
-  return newTaskModelOptions(
+  return {
     representativeModels,
     userDefaultModel,
-    userSettingsStore.getModelDisplayName(userDefaultModel),
-  ).options.map((m) => ({ nickname: m.nickname, model: m.model }));
+    userDefaultModelLabel: userSettingsStore.getModelDisplayName(userDefaultModel),
+  };
 }
 
 export function createNewTaskProvider(deps: NewTaskProviderDeps): DashboardNewTaskProvider {
@@ -195,17 +208,11 @@ export function createNewTaskProvider(deps: NewTaskProviderDeps): DashboardNewTa
       } catch (error) {
         logger.warn('New task: usage unavailable — battery unknown', { error: String(error) });
       }
-      let representativeModels: Array<{ nickname: string; model: string; label: string }> = [];
-      try {
-        representativeModels = listRepresentativeModels(productionModelCatalogDeps(), userId);
-      } catch (error) {
-        logger.warn('New task: representative models unavailable', { error: String(error) });
-      }
-      const userDefaultModel = userSettingsStore.getUserDefaultModel(userId);
+      const { representativeModels, userDefaultModel, userDefaultModelLabel } = newTaskModelInputs(userId);
       return buildNewTaskContext({
         representativeModels,
         userDefaultModel,
-        userDefaultModelLabel: userSettingsStore.getModelDisplayName(userDefaultModel),
+        userDefaultModelLabel,
         userDefaultEffort: userSettingsStore.getUserDefaultEffort(userId),
         efforts: EFFORT_LEVELS,
         autogoalDefault: userSettingsStore.getUserAutoGoalEnabled(userId),

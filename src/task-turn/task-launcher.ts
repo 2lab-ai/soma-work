@@ -43,11 +43,11 @@ export interface TaskLauncherDeps {
    */
   listModels?(ownerId: string): Array<{ nickname: string; model: string }>;
   /**
-   * The session whose cleanup would remove `dir` (a real `/tmp/...` path) or a
-   * part of it, if any — wired to `cleanupOwnerOf` over the live sessions. A
-   * named folder another session removes when it ends or sleeps is refused (#640 R2).
+   * The live sessions' cleanup lists (`sourceWorkingDirs`, removed when a
+   * session ends or sleeps). A named folder one of them would remove is
+   * refused and not listed (#640 R2); read once per list or launch (#640 R3).
    */
-  cleanupOwnerOf?(dir: string): string | undefined;
+  cleanupSessions?(): Iterable<{ key: string; sourceWorkingDirs?: string[] }>;
 }
 
 export interface TaskLauncher {
@@ -121,8 +121,10 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
 
   return {
     // Not offered: a folder another session's cleanup would remove (#640 R2).
-    folders: (ownerId: string) =>
-      listTaskFolders(ownerId).filter((f) => !deps.cleanupOwnerOf?.(path.join('/tmp', ownerId, f.name))),
+    folders: (ownerId: string) => {
+      const sessions = [...(deps.cleanupSessions?.() ?? [])];
+      return listTaskFolders(ownerId).filter((f) => !cleanupOwnerOf(path.join('/tmp', ownerId, f.name), sessions));
+    },
     async launch(request: TaskLaunchRequest): Promise<TaskCommandResponse> {
       const { ownerId } = request;
       const refused = deps.controller.canStart(ownerId, request.prompt);
@@ -162,7 +164,7 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
       }
       // A named folder another session removes when it ends or sleeps would take
       // the task's work with it (#640 R2). A fresh folder is new: nobody owns it.
-      if (request.folder !== undefined && deps.cleanupOwnerOf?.(workingDirectory)) {
+      if (request.folder !== undefined && cleanupOwnerOf(workingDirectory, deps.cleanupSessions?.() ?? [])) {
         return launchRefusal(
           409,
           `the folder ${request.folder} belongs to another session, which removes it when it ends — pick another folder or a new one`,
