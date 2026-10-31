@@ -216,6 +216,18 @@ describe('T3 — the chrome is Korean', () => {
     expect(TEMPLATE).not.toMatch(/'Goal (#|자동|계속|완료|판정)|'Goal'/);
     expect(TEMPLATE).toContain('<title>soma-work 대시보드</title>');
   });
+  it('effort reads 추론 강도 everywhere a person sees it; the New task levels are the Korean words, not the ids (R-D8 P2)', () => {
+    expect(TEMPLATE).toContain('aria-label="이 세션의 모델과 추론 강도"');
+    expect(TEMPLATE).toContain("var title = kind === 'model' ? '새 세션 기본 모델' : '새 세션 기본 추론 강도';");
+    expect(TEMPLATE).toContain(
+      "return { text: '이미 추론 강도 ' + effortLabel(res.effort) + '입니다', error: false };",
+    );
+    // The <select>'s option text is what the sweep cannot see: the level's word (낮음 … 최대), its id the value.
+    expect(TEMPLATE).toContain(
+      "return '<option value=\"' + escAttr(e) + '\"' + (e === _ntState.effort ? ' selected' : '') + '>' + esc(effortLabel(e)) + '</option>';",
+    );
+    expect(TEMPLATE).not.toMatch(/'[^'\n]*[가-힣][^'\n]*\beffort\b[^'\n]*'/);
+  });
   it('the system turn carries no page name — the element says 시스템 under lang="ko"; the open card says 시스템', () => {
     expect(clientFn('convSysTurn')).toContain("var x = { id: id, role: 'system', kind:");
     expect(clientFn('convSysTurn')).not.toContain("name: 'System'");

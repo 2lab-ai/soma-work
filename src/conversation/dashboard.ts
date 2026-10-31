@@ -5681,7 +5681,7 @@ ${pageTokenAliases()}
     <!-- Command row is always visible: read-only for a viewer who is not the owner, off once the session ended. -->
     <div class="panel-command" id="panel-command">
       <!-- Model · effort beside the composer (spec 13): their own container — the input is never morphed. -->
-      <div class="panel-controls" id="panel-controls" aria-label="이 세션의 모델과 effort"></div>
+      <div class="panel-controls" id="panel-controls" aria-label="이 세션의 모델과 추론 강도"></div>
       <!-- The composer and the session's follow-up queue — @2lab.ai/ui <ui-agent-steering> (dashboard batch 2) with
            a <ui-composer slot="composer"> as its field (E-30, 0.10.0): multiline; files, images (paste, drop, picker)
            and voice, their chips, the limits and the error line are the composer's; Enter queues, ⌘/Ctrl+Enter
@@ -7338,7 +7338,7 @@ var _tdAlsoSession = true;
 function defaultsMenuData(kind) {
   var row = _myDefaults && (kind === 'model' ? _myDefaults.model : _myDefaults.effort);
   if (!row) return null;
-  var title = kind === 'model' ? '새 세션 기본 모델' : '새 세션 기본 effort';
+  var title = kind === 'model' ? '새 세션 기본 모델' : '새 세션 기본 추론 강도';
   var items = [{ kind: 'heading', label: title }];
   var opts = row.options || [];
   for (var i = 0; i < opts.length; i++) {
@@ -11166,7 +11166,7 @@ async function postEffortSwitch(key, effort) {
 function effortSwitchNote(r) {
   if (!r.ok) return { text: r.error, error: true };
   var res = r.result || {};
-  if (res.status === 'unchanged') return { text: '이미 effort ' + effortLabel(res.effort) + '입니다', error: false };
+  if (res.status === 'unchanged') return { text: '이미 추론 강도 ' + effortLabel(res.effort) + '입니다', error: false };
   var capped = res.effective && res.effective !== res.effort ? ' (이 모델은 ' + effortLabel(res.effective) + '까지 실행)' : '';
   return { text: '추론 강도 ' + effortLabel(res.effort) + ' · 다음 턴부터 적용' + capped, error: false };
 }
@@ -17056,7 +17056,7 @@ function ntRender() {
     .join('');
   ntEl('nt-effort').innerHTML = _ntCtx.efforts
     .map(function (e) {
-      return '<option value="' + escAttr(e) + '"' + (e === _ntState.effort ? ' selected' : '') + '>' + esc(e) + '</option>';
+      return '<option value="' + escAttr(e) + '"' + (e === _ntState.effort ? ' selected' : '') + '>' + esc(effortLabel(e)) + '</option>';
     })
     .join('');
   // #600 ⑥ — where the task goes: offered when the context lists task folders.
