@@ -13,12 +13,14 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { pageTokenAliases, uiLibTokensCss } from '../ui-lib';
+import { pageTokenAliases, uiLibKitCss, uiLibTokensCss } from '../ui-lib';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 // Only the page template — server code above it must not satisfy (or trip)
 // these assertions by accident.
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
+// The kit (ui-kit.css) the page inlines: the chips' press, hover and 44px targets are its rules.
+const KIT = uiLibKitCss();
 
 /** Body of a top-level client function: from its declaration to the first `\n}\n`. */
 function fnBody(name: string): string {
@@ -167,9 +169,12 @@ describe('agent inbox board — layout (§3.1)', () => {
 
   it('Show archives sits in the board header next to Board | List, hidden until there are archives (§3.1-1)', () => {
     const head = TEMPLATE.slice(TEMPLATE.indexOf('<div class="inbox-head">'), TEMPLATE.indexOf('<div class="kanban"'));
+    // D7 (D-03): the board tools are kit chips (.ui-chip[aria-pressed]); the page keeps only [hidden].
     const btn = head.indexOf(
-      '<button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()">',
+      '<button type="button" class="ui-chip archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()">',
     );
+    expect(TEMPLATE).toContain('.archives-btn[hidden] { display: none; }');
+    expect(TEMPLATE).not.toMatch(/^\.archives-btn \{/m);
     expect(btn).toBeGreaterThan(0);
     // Tone pass P8: the group's name and its two buttons are Korean (보드 · 목록).
     // D1 (D-02): Board | List is <ui-segmented>; the page hands it the group name and the two choices.
@@ -752,8 +757,12 @@ describe('agent inbox board — motion contract (§4)', () => {
       const selectors = topLevel(rule.slice(0, rule.indexOf('{')));
       for (const sel of selectors) expect(sel, sel).toContain(':not(:focus-visible)');
     }
-    expect(TEMPLATE).toMatch(
-      /:is\([^)]*\.panel-detail-toggle[^)]*\):active:not\(:disabled\):not\(:focus-visible\) \{ transform: scale\(0\.97\); \}/,
+    // D7: the chips (defaults, admin, 보관함 · 휴면, 자세히) are kit chips — the press is ui-kit.css's
+    // (button.ui-chip:active:not(:focus-visible) → scale(.97)); the page keeps the rule for its own tiles only.
+    expect(TEMPLATE).toContain('.um-tile:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }');
+    expect(TEMPLATE).not.toMatch(/:is\([^)]*\.panel-detail-toggle[^)]*\):active/);
+    expect(KIT).toMatch(
+      /:is\(\.ui-btn, \.ui-icon-btn, button\.ui-chip, a\.ui-chip\):active:not\(:disabled\):not\(\[aria-disabled="true"\]\):not\(:focus-visible\) \{ transform: scale\(0\.97\); \}/,
     );
   });
 
@@ -821,7 +830,11 @@ describe('agent inbox board — responsive (§5)', () => {
     expect(block).not.toContain('.stats-more');
     // The app bar's links, account and theme toggle are 44px on coarse pointers by the element's own rule;
     // the page's controls in its actions are the page's.
-    expect(block).toContain('.topbar .user-select, .topbar .admin-toggle, .topbar .td-chip { min-height: 44px; }');
+    expect(block).toContain('.topbar .user-select { min-height: 44px; }');
+    // D7: the bar's chips, 보관함 · 휴면 and 자세히 are kit chips — 44px on touch / narrow is ui-kit.css's rule.
+    expect(block).not.toContain('.admin-toggle');
+    expect(block).not.toContain('.archives-btn');
+    expect(KIT).toContain(":is(button.ui-chip, a.ui-chip)::after { content: ''; position: absolute; inset: -10px 0; }");
     expect(block).not.toContain('#theme-toggle');
     // The subtitle's regenerate is the kit's small icon button (44px on touch / narrow: ui-kit.css).
     expect(TEMPLATE).toContain('id="panel-title-sub-regen" class="ui-icon-btn is-sm"');

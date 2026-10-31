@@ -128,9 +128,10 @@ describe('a RUNNING card waiting out an automatic resume (cardOf + the open card
 
     expect(card.cardSummary(s, 'working', 'headline')).toBe(`오류: ${RATE_LIMIT}`);
     const row = resumeRow.renderCardResume(s, 'working');
-    expect(row).toContain('class="card-resume"');
-    expect(row).toContain(`${atText} 자동 재개 · 시도 1/3`);
-    expect(row).toContain(RATE_LIMIT);
+    // D7 (D-10): the kit's notice in the wait tone — the clock glyph, the when in <strong>, the reason under it.
+    expect(row).toMatch(/^<div class="ui-notice card-resume" data-tone="wait"><i data-ui-icon="clock"><\/i><div>/);
+    expect(row).toContain(`<strong>${atText} 자동 재개 · 시도 1/3</strong>`);
+    expect(row).toContain(`<div>${RATE_LIMIT}</div>`);
   });
 
   it('a goal completion check re-run after a dispatch failure', () => {
@@ -152,7 +153,7 @@ describe('a RUNNING card waiting out an automatic resume (cardOf + the open card
     expect(card.autoResumeLabel(s.autoResume)).toBe('Goal 완료 판정 중');
     expect(card.cardOf(s, 'working')).toMatchObject({ status: 'waiting', statusText: 'Goal 완료 판정 중' });
     expect(card.cardSummary(s, 'working', 'headline')).not.toContain('오류');
-    expect(resumeRow.renderCardResume(s, 'working')).not.toContain('cr-reason');
+    expect(resumeRow.renderCardResume(s, 'working')).toMatch(/<strong>Goal 완료 판정 중<\/strong><\/div><\/div>$/);
   });
 
   it('a turn that is actually running wins over an armed retry: running, current task, no resume row', () => {
@@ -244,11 +245,11 @@ describe('a RUNNING card waiting out an automatic resume (cardOf + the open card
     const waitingHtml = body.renderCardBody(waiting, 'working');
     expect(waitingHtml).toContain('data-action="close"');
     expect(waitingHtml).not.toContain('data-action="stop"');
-    expect(waitingHtml).toContain('class="card-resume"');
+    expect(waitingHtml).toContain('class="ui-notice card-resume" data-tone="wait"');
 
     const runningHtml = body.renderCardBody({ ...waiting, activityState: 'working' }, 'working');
     expect(runningHtml).toContain('data-action="stop"');
-    expect(runningHtml).not.toContain('class="card-resume"');
+    expect(runningHtml).not.toContain('card-resume');
   });
 
   it('an open panel re-renders its tasks on every board push (a finished turn stops spinning)', () => {

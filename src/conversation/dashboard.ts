@@ -4305,21 +4305,19 @@ ui-app-bar[narrow] .nt-btn-label { display: none; }
    clickable while a session panel is open — that is when "열린 세션에도 적용" exists. */
 .topbar .topbar-defaults { position: relative; z-index: 101; display: flex; gap: 6px; align-items: center; flex: none; }
 .topbar .topbar-defaults[hidden] { display: none; }
-/* The defaults are triggers in the library model picker's trigger shape: a neutral well, 8px, a chevron. */
-.topbar .td-chip { --td-well: color-mix(in srgb, var(--ib-text) 6%, var(--ib-card)); display: inline-flex; align-items: center; gap: 5px; font: inherit; font-size: 13px; font-weight: 500; color: var(--ib-text-2); background: var(--ib-seg); border: 1px solid var(--ib-card-border); border-radius: 8px; padding: 0 8px 0 10px; min-height: 30px; cursor: pointer; white-space: nowrap; transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out); }
-.topbar .td-chip b { color: var(--ib-text); font-weight: 500; }
-.topbar .td-chip[aria-expanded="true"] { background: var(--td-well); color: var(--ib-text); }
-.topbar .td-chip:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
-@media (hover: hover) and (pointer: fine) { .topbar .td-chip:hover { background: var(--td-well); color: var(--ib-text); } }
-.topbar .td-caret { width: 12px; height: 12px; flex: none; color: var(--ib-muted); transition: transform var(--dur-move) var(--ease-out); }
+/* The defaults are kit chips (.ui-chip, D7 A-06) that open the library menu (A-07): the word before the value is
+   quiet; while the menu is open the chip wears the kit's "on" look and its chevron is turned. */
+.topbar .td-prefix { color: var(--ib-muted); }
+.topbar .td-chip[aria-expanded="true"] { background: var(--ib-seg-on); box-shadow: var(--ib-shadow); }
+.topbar .td-caret { transition: transform var(--dur-move) var(--ease-out); }
 .topbar .td-chip[aria-expanded="true"] .td-caret { transform: rotate(180deg); }
 /* The menu pops from its trigger's corner (the library menu / model-picker popover): in from translateY(-4px)
    scale(.96) with opacity 160ms + transform 220ms ease-out, out in 180ms; display is discrete, so after the
    exit a closed menu takes no hits and no room. */
 /* The defaults menu is @2lab.ai/ui <ui-menu id="td-menu"> (A-07): it hangs from the chip that opened it. */
 #td-menu { position: absolute; }
-.topbar .td-status { font-size: 12px; color: var(--text-secondary); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.topbar .td-status.is-error { color: var(--red); }
+/* The save line is the kit's status line (.ui-status-line, data-tone="fail" for a refused write), capped in the bar. */
+.topbar .td-status { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* The user select is a trigger (a neutral well with a hairline) because it opens a list. */
 .topbar .user-select {
   background: transparent;
@@ -4389,35 +4387,13 @@ ui-app-bar[narrow] .nt-btn-label { display: none; }
   .topbar .user-select:hover { background: color-mix(in srgb, var(--ib-text) 6%, var(--ib-card)); }
 }
 
-/* ── ADMIN MODE TOGGLE — visible only for ADMIN_USERS (#716) ── */
-.topbar .admin-toggle {
-  background: transparent;
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 6px 10px;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-  min-height: 32px;
-  white-space: nowrap;
-  flex: none;
-  align-items: center;
-  transition: border-color 150ms ease, color 150ms ease, background-color 150ms ease, transform var(--dur-press) var(--ease-out);
-}
-@media (hover: hover) and (pointer: fine) { .topbar .admin-toggle:hover { border-color: var(--ib-muted); color: var(--text); } }
-/* On = a write-anything mode: the fail tint, its word pulled toward the ink (≥ 4.5:1 both themes). */
-.topbar .admin-toggle[aria-pressed="true"] {
-  background: var(--tint-fail-bg);
-  border-color: var(--tint-fail-line);
-  color: var(--tint-fail-fg);
-}
-@media (hover: hover) and (pointer: fine) { .topbar .admin-toggle[aria-pressed="true"]:hover { background: var(--tint-fail-bg-2); color: var(--tint-fail-fg); } }
-/* Admin approvals (#620): the admins' Slack DM requests, counted in the top bar, answered in a sheet. */
-.topbar .admin-inbox-btn { gap: 6px; }
-.topbar .admin-inbox-btn svg { width: 14px; height: 14px; }
-.topbar .admin-inbox-btn .aib-count { min-width: 18px; padding: 0 5px; border-radius: 9px; font-size: 11px; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; background: var(--ib-card-dim); color: var(--ib-muted); }
-.topbar .admin-inbox-btn.has-pending .aib-count { background: var(--st-wait, var(--orange)); color: #fff; }
+/* ── ADMIN MODE TOGGLE — visible only for ADMIN_USERS (#716): a kit chip (.ui-chip[aria-pressed], D7 A-12). On = a
+   write-anything mode, so the chip takes the fail tint instead of the kit's neutral "on" (colour where it carries
+   status), its word pulled toward the ink (≥ 4.5:1 both themes). ── */
+.topbar .admin-toggle { flex: none; }
+.topbar .admin-toggle[aria-pressed="true"] { background: var(--tint-fail-bg); border-color: var(--tint-fail-line); color: var(--tint-fail-fg); }
+/* Admin approvals (#620): the admins' Slack DM requests, counted in the top bar (a kit chip with a kit count badge,
+   the wait tone while any wait), answered in a sheet. */
 .admin-inbox-head { font-weight: 600; outline: none; }
 .admin-inbox-body { display: flex; flex-direction: column; gap: 12px; padding: 6px 0 16px; }
 .admin-inbox-empty { color: var(--text-secondary); font-size: 13px; padding: 12px 0; }
@@ -4457,8 +4433,6 @@ ui-stat-strip:not(:defined) > * { display: none; }
 /* The inbox is the size container for the board columns (SSOT 2026-10-24): a docked
    drawer narrows it, so the column layout follows its width, not the viewport. */
 .inbox { margin-bottom: 28px; container: inbox / inline-size; }
-/* Visually hidden text (screen readers only). */
-.ib-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .inbox-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin: 4px 0 16px; min-width: 0; }
 .crumbs { display: flex; align-items: baseline; gap: 10px; font-size: 17px; line-height: 1.3; min-width: 0; white-space: nowrap; overflow: hidden; }
 .crumbs .crumb-root, .crumbs .crumb-sep { color: var(--ib-muted); }
@@ -4467,35 +4441,16 @@ ui-stat-strip:not(:defined) > * { display: none; }
 /* Board header tools: Show archives, then Board | List. Below 640px the tools
    take their own row under the breadcrumb. */
 .inbox-tools { display: flex; align-items: center; gap: 8px; flex-shrink: 0; margin-left: auto; }
-.archives-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  border: 0;
-  background: var(--ib-seg);
-  color: var(--ib-muted);
-  font: inherit;
-  font-size: 13px;
-  font-weight: 500;
-  padding: 6px 12px;
-  border-radius: 10px;
-  min-height: 38px;
-  white-space: nowrap;
-  cursor: pointer;
-  font-variant-numeric: tabular-nums;
-  transition: background-color 150ms ease, color 150ms ease, box-shadow 150ms ease, transform var(--dur-press) var(--ease-out);
-}
+/* 보관함 · 휴면 · 수명 주기 are kit chips (.ui-chip[aria-pressed], D7 D-03); a chip the board has no use for yet stays out. */
 .archives-btn[hidden] { display: none; }
-.archives-btn svg { width: 15px; height: 15px; flex-shrink: 0; }
-.archives-btn[aria-pressed="true"] { background: var(--ib-seg-on); color: var(--ib-text); box-shadow: var(--ib-shadow); }
 /* Session lifecycle dialog (admin, J-01) — @2lab.ai/ui <ui-dialog size="sm">: the element draws the panel, the
    scrim, the enter / exit motion and the phone sheet; the page keeps only its form's rules. */
 .lifecycle-dialog .lc-note { margin: 0 0 12px; font-size: 12px; color: var(--ib-muted); }
 .lifecycle-dialog label { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 4px 8px; font-size: 13px; margin-bottom: 10px; }
 .lifecycle-dialog label input { grid-column: 1 / -1; font: inherit; padding: 6px 8px; border-radius: 8px; border: 1px solid var(--border); background: var(--ib-seg); color: var(--ib-text); }
 .lifecycle-dialog .lc-unit { color: var(--ib-muted); font-size: 12px; }
-.lifecycle-dialog .lc-status { min-height: 1.2em; margin: 4px 0 8px; font-size: 12px; color: var(--ib-muted); }
-.lifecycle-dialog .lc-status.is-error { color: var(--st-fail-text); }
+/* The save line is the kit's status line (.ui-status-line; data-tone="fail" when a save is refused). */
+.lifecycle-dialog .lc-status { margin: 4px 0 8px; }
 .lifecycle-dialog .lc-actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* The board: @2lab.ai/ui <ui-agent-inbox> (re-agent-inbox) — its columns, cards, day groups, skeletons
@@ -4504,19 +4459,15 @@ ui-stat-strip:not(:defined) > * { display: none; }
 ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0; }
 .col-spark { color: var(--ib-spark); display: inline-flex; flex-shrink: 0; }
 .col-spark svg { width: 14px; height: 14px; }
-.col-empty { text-align: center; color: var(--ib-muted); font-size: 13px; padding: 14px 8px 18px; }
 
-/* ── Loading skeletons — the shape of what is coming, never a false "0 · Nothing
-   here". The board shows them until its first answer (data-load="loading"); the
-   stats values and the panel turns until theirs. Opacity pulse only (compositor),
-   staggered per card; still under reduced motion. ── */
-@keyframes sk-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
-.sk { background: var(--ib-pill); border-radius: 6px; animation: sk-pulse 1.6s ease-in-out infinite; }
-.board-error { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 12px; padding: 12px 16px; border-radius: 12px; background: var(--ib-col); color: var(--ib-text-2); font-size: 13px; }
+/* ── Loading skeletons — the shape of what is coming, never a false "0 · Nothing here". The board shows the
+   element's until its first answer (data-load="loading"); the open card's 지시 / 응답 lines are the kit's
+   .ui-skeleton (the opacity pulse, the second row staggered with --i, still under reduced motion). ── */
+/* A first board load that fails: the kit's fail notice (.ui-notice, D7 D-06) with its 다시 시도 before the board. */
+.board-error { align-items: center; margin: 0 0 12px; }
+.board-error > span { flex: 1 1 auto; }
 .board-error[hidden] { display: none; }
 .io-row.io-skel { display: flex; flex-direction: column; gap: 8px; padding: 10px; }
-.io-skel .sk-line { height: 10px; }
-.io-skel + .io-skel .sk { animation-delay: 120ms; }
 
 /* The working ring (the agent tree's running icons, the panel). */
 .spinner { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--ib-pill); border-top-color: var(--st-run); border-right-color: var(--st-run); display: inline-block; animation: spin 0.9s linear infinite; }
@@ -4537,13 +4488,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .ag-model { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ib-text-2); }
 .ag-st { color: var(--ag-c); font-weight: 600; }
 .ag-more { margin: 4px 2px 0; font-size: 12px; color: var(--ib-muted); }
-/* Armed automatic resume (turn retry / goal re-check): the open card's resume
-   row takes the "waiting" hue, not the run hue. */
-.card-resume svg { color: var(--st-wait); }
-.card-resume { display: flex; gap: 8px; align-items: flex-start; margin: 0 0 10px; padding: 8px 10px; border-radius: 8px; background: var(--ib-pill); font-size: 12.5px; line-height: 1.45; color: var(--ib-text-2); }
-.card-resume svg { width: 13px; height: 13px; flex-shrink: 0; margin-top: 2px; }
-.card-resume .cr-when { font-weight: 600; color: var(--ib-text); }
-.card-resume .cr-reason { overflow-wrap: anywhere; }
+/* Armed automatic resume (turn retry / goal re-check): the open card's resume row is the kit's notice in the
+   "waiting" tone (.ui-notice[data-tone="wait"], D7 D-10), not the run hue. */
+.card-resume { margin: 0 0 10px; }
 
 .card-body { margin: 0 14px; padding: 12px 0 14px; border-top: 1px solid var(--ib-card-border); font-size: 13px; color: var(--ib-text-2); }
 /* ── CONTROL STRIP — the open card's last row (spec 13): model · effort switch · the state action · Slack · 작업 로그 ── */
@@ -4566,8 +4513,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 @media (hover: hover) and (pointer: fine) { .cgl-go:hover, .card-more-link:hover { text-decoration: underline; } }
 .card-more-link { display: block; margin: 4px 0 0 auto; }
 .cb-ac { font-variant-numeric: tabular-nums; }
-.cb-model-note { margin-top: 4px; font-size: 12px; color: var(--ib-text-2); overflow-wrap: anywhere; }
-.cb-model-note.is-error { color: var(--st-fail); }
+/* The note under the model is the kit's status line (.ui-status-line, data-tone="fail" for a refused switch; D7 A-08). */
+.cb-model-note { margin-top: 4px; }
 /* Model · effort beside the composer (spec 13). */
 .panel-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 8px; padding: 0 0 8px; font-size: 13px; }
 .panel-controls:empty { display: none; }
@@ -4711,8 +4658,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* ── 입력 필요 (re-agent-run D8–D17) ──
    A head with the count; each prompt (and the single-choice question) is a
    <ui-approval-card> in its slot (.ac-slot) — the card's own look is the
-   library's. No new tokens. */
-.ar-vh { position: absolute; width: 1px; height: 1px; margin: -1px; padding: 0; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
+   library's. No new tokens. The live lines for screen readers are the kit's .ui-sr-only (D7 A-18). */
 /* D3 E-13: the head is the kit's section head (.ui-section-head) with its count badge (.ui-count, wait tone,
    the arrival pop on [data-pop]); the page adds its padding and keeps the focus ring inside the scroll box. */
 .panel-needs-head { padding: 12px 16px 8px; }
@@ -4825,28 +4771,8 @@ ui-drawer:not(:defined) { display: none; }
 .psec-el > ui-conversation, .psec-el > ui-work-log, .psec-el > ui-log-scroller { padding: 4px 8px 0; }
 .cv-arts-slot .turn-arts-row { margin-top: 2px; }
 .psec[hidden] { display: none; }
-/* 자세히 (T1.6) — a button that behaves like a toggle (HIG Toggles: outside a list,
-   not a switch; the background tells the state); the panel's class gates the
-   detail-only parts. */
-.panel-detail-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  min-height: 32px;
-  padding: 0 11px 0 9px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  background: transparent;
-  color: var(--text-secondary);
-  font: inherit;
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-}
-.pdt-icon { width: 14px; height: 14px; flex: none; }
-.panel-detail-toggle[aria-pressed="true"] { background: var(--ib-pill); border-color: var(--ib-muted); color: var(--text); }
-.panel-detail-toggle:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; }
+/* 자세히 (T1.6) — a button that behaves like a toggle (HIG Toggles: outside a list, not a switch; the background
+   tells the state): the kit chip (.ui-chip[aria-pressed], D7 E-06). The panel's class gates the detail-only parts. */
 /* Minimal by default: the agent path, the subtree and the main agent's own
    header are for 자세히 — the tabs already say where the reader is. */
 .slide-panel:not(.is-detail) .pa-bar,
@@ -5062,11 +4988,10 @@ ui-drawer:not(:defined) { display: none; }
 /* PRESS — one rule for every button-like control: scale(.97) on --dur-press ease-out (each control's own
    transition carries the transform), pointer presses only — never a keyboard press (:focus-visible). The
    56px FAB presses to .95. */
-:is(.archives-btn, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .um-tile):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+.um-tile:active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
-  .archives-btn:hover { color: var(--ib-text); }
   .card-body .card-refs a:hover { text-decoration: underline; }
 }
 
@@ -5092,7 +5017,6 @@ ui-drawer:not(:defined) { display: none; }
      toolbar row keeps 12px sides): the user select fills what the chips leave of its line
      (it wraps rather than overflow). Labels stay whole. */
   ui-app-bar[toolbar-row] .user-select { flex: 1 1 auto; }
-  .topbar .admin-toggle { padding: 4px 10px; }
   .inbox-head { margin-bottom: 12px; flex-wrap: wrap; row-gap: 8px; }
   /* The tools take the row under the breadcrumb; on the narrowest screens
      (320px) Show archives sits above Board | List instead of overflowing. */
@@ -5110,11 +5034,11 @@ ui-drawer:not(:defined) { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.archives-btn, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .um-tile):active:not(:disabled):not(:focus-visible) { transform: none; }
+  .um-tile:active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
-  /* Loading skeletons hold still. */
-  .sk, .is-loading { animation: none !important; }
+  /* Loading skeletons hold still (the kit's .ui-skeleton stills itself). */
+  .is-loading { animation: none !important; }
   .spinner { border-color: var(--st-run); background: radial-gradient(circle, var(--st-run) 0 2px, transparent 2.5px); }
 }
 @media (prefers-reduced-motion: reduce) {
@@ -5124,7 +5048,6 @@ ui-drawer:not(:defined) { display: none; }
 }
 /* ── TOUCH — coarse pointer enlargement ── */
 @media (pointer: coarse) {
-  .panel-detail-toggle { min-height: 44px; }
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
 }
 /* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens (heights only). ── */
@@ -5142,30 +5065,15 @@ ui-drawer:not(:defined) { display: none; }
   .panel-command .pc-steer-wrap { flex-basis: 100%; }
 }
 @media (max-width: 639px), (pointer: coarse) {
-  .topbar .user-select, .topbar .admin-toggle, .topbar .td-chip { min-height: 44px; }
-  .inbox-head .archives-btn { min-height: 44px; }
+  /* The bar's chips (defaults, admin), 보관함 · 휴면 and 자세히 are kit chips: their 44px hit area is the kit's own rule. */
+  .topbar .user-select { min-height: 44px; }
   .card-body .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
   .pi-links a, .panel-tasks-toggle { min-height: 44px; }
   .cgl-go, .card-more-link, .tl-toggle { min-height: 44px; }
 }
 
-/* ── CRON badge · lane · drawer (SSOT 2026-10-23 T3/T4/T5) ── */
-.cron-badge {
-  flex-shrink: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 1px 7px 1px 5px;
-  border-radius: 999px;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  line-height: 1.5;
-  color: var(--st-color, var(--ib-text-2));
-  background: color-mix(in srgb, var(--st-color, var(--ib-muted)) 14%, transparent);
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--st-color, var(--ib-muted)) 45%, transparent);
-}
-.cron-badge svg { width: 12px; height: 12px; }
+/* ── CRON lane · drawer (SSOT 2026-10-23 T3/T4/T5); the drawer head's CRON badge is a kit chip with the clock glyph
+   (.ui-chip, D7 C-06), the board cards' is the element's. ── */
 /* LLM 가용량 and the CRON lane: @2lab.ai/ui <ui-agent-queue> (re-agent-queue), one each,
    drawn with the dashboard tokens through their .ui-tok wrappers. The lane's job cards
    are board cards in each job's box (.cron-cards, slot="job:<group key>"), light DOM. */
@@ -5179,26 +5087,14 @@ ui-drawer:not(:defined) { display: none; }
    slide on the drawer curve, the close button (44px on touch), the focus trap and the bottom inset. The head
    is the job's name after the CRON badge; the meta and the runs scroll together in the element's body. */
 .cron-drawer-headline { display: inline-flex; align-items: center; gap: 10px; min-width: 0; max-width: 100%; }
+.cron-drawer-headline > .ui-chip { flex: none; }
 .cron-drawer-headline #cron-drawer-title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 /* P8: the close and regenerate glyphs are the icon set's (no ✕ / × / 🔄 characters). */
 #panel-title-sub-regen svg { width: 12px; height: 12px; vertical-align: -2px; }
-.cron-drawer-meta { padding: 0 0 4px; font-size: 13px; color: var(--text-secondary); }
-.cron-dmeta { display: grid; grid-template-columns: max-content 1fr; gap: 4px 12px; margin: 0; }
-.cron-dmeta dt { color: var(--text-tertiary); }
-.cron-dmeta dd { margin: 0; color: var(--text); }
-.cron-dnote { margin: 8px 0 0; font-size: 12px; color: var(--text-tertiary); }
+/* The job's facts are the kit's fact list (.ui-dl, D7 C-07 / K-05), a job this instance lacks a kit notice; the runs
+   are kit rows (.ui-row in the run's tone, D7 C-08) and no run yet the kit's empty state (.ui-empty, D7 C-09). */
+.cron-drawer-meta { padding: 0 0 4px; }
 .cron-drawer-body { padding: 6px 0 0; }
-.cron-runs { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
-.cron-run { display: grid; grid-template-columns: 24px minmax(0, 1fr) auto; gap: 4px 10px; align-items: start; padding: 10px 6px; border-bottom: 1px solid var(--border); }
-.cr-glyph { font-size: 14px; line-height: 20px; text-align: center; color: var(--st-done); }
-.cron-run.is-fail .cr-glyph { color: var(--st-fail); }
-.cron-run.is-run .cr-glyph { color: var(--st-run); }
-.cron-run.is-wait .cr-glyph { color: var(--st-wait); }
-.cron-run.is-none .cr-glyph { color: var(--text-tertiary); }
-.cr-title { font-weight: 600; font-size: 14px; line-height: 20px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.cr-sub { font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
-.cr-err { font-size: 12px; color: var(--st-fail); margin-top: 2px; }
-.cr-actions { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
 .aq-left { font-variant-numeric: tabular-nums; } /* the drawer's 다음 실행 countdown (aqTime) */
 
 
@@ -5255,7 +5151,6 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-dialog::part(body) { padding: 0; }
 .nt-form { display: flex; flex-direction: column; color: var(--text); font-size: 13px; line-height: 1.45; }
 .nt-body { display: flex; flex-direction: column; gap: 12px; padding: 4px 20px 16px; }
-.nt-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 
 .nt-config { display: flex; flex-wrap: wrap; gap: 8px; }
 .nt-chip { display: inline-flex; align-items: center; gap: 4px; height: 36px; padding: 0 4px 0 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface-raised); flex: none; max-width: 100%; }
@@ -5295,24 +5190,17 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-batt-unknown { color: var(--text-tertiary); }
 .nt-usage { margin: -4px 0 0; padding: 8px 10px; border-radius: 10px; background: var(--bg); color: var(--text-secondary); font-size: 12px; line-height: 1.5; }
 
-.nt-toggles { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-.nt-toggle { display: inline-flex; align-items: center; gap: 8px; height: 32px; padding: 0 12px 0 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--surface-raised); color: var(--text-secondary); font: inherit; font-size: 13px; font-weight: 650; cursor: pointer; transition: background var(--dur-press) var(--ease-out), color var(--dur-press) var(--ease-out), border-color var(--dur-press) var(--ease-out); }
-.nt-switch { position: relative; flex: none; width: 26px; height: 16px; border-radius: 999px; background: var(--border); transition: background var(--dur-press) var(--ease-out); }
-.nt-switch::after { content: ''; position: absolute; left: 2px; top: 2px; width: 12px; height: 12px; border-radius: 50%; background: var(--ib-seg-on); box-shadow: var(--ib-shadow); transition: transform var(--dur-press) var(--ease-out); }
-.nt-toggle[aria-pressed="true"] { color: var(--text); border-color: var(--ib-muted); }
-.nt-toggle[aria-pressed="true"] .nt-switch { background: var(--accent); }
-.nt-toggle[aria-pressed="true"] .nt-switch::after { transform: translateX(10px); }
+/* autogoal · autoz are kit switches (.ui-switch, D7 H-04), the note beside them the page's. */
+.nt-toggles { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
 .nt-toggle-note { font-size: 11px; font-weight: 500; color: var(--text-tertiary); }
 
-
-.nt-error { margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--tint-fail-bg); color: var(--tint-fail-fg); font-size: 12.5px; }
-.nt-error[hidden] { display: none; }
+/* The error and the upload status are kit status lines (.ui-status-line, D7 H-08 / A-08): the error in the fail tone. */
 .nt-empty { margin: 0; color: var(--text-secondary); font-size: 12.5px; }
 
 .nt-composer { display: block; }
 .nt-foot { display: flex; align-items: center; gap: 8px; min-height: 18px; margin: 0; }
-.nt-status { flex: 1; min-width: 0; overflow: hidden; color: var(--text-secondary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
-.nt-submit-hint { flex: none; font-size: 11px; color: var(--text-tertiary); }
+.nt-status { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nt-submit-hint { flex: none; margin-left: auto; font-size: 11px; color: var(--text-tertiary); }
 
 
 /* The FAB arrives: opacity + scale from 0.95 (never from nothing), 240ms ease-out — once. */
@@ -5335,7 +5223,7 @@ body.nt-open .new-task-fab { display: none !important; }
 @media (pointer: coarse) {
   /* New task — touch: 44px targets, 16px text (iOS does not zoom into it). The composer's own tools, chips and
      camera are 44px on touch by its rules. */
-  .nt-battery-btn, .nt-toggle, .nt-chip { min-height: 44px; min-width: 44px; }
+  .nt-battery-btn, .nt-chip { min-height: 44px; min-width: 44px; }
   .nt-chip select { font-size: 16px; }
   .nt-kbd, .nt-submit-hint { display: none; }
 }
@@ -5514,10 +5402,10 @@ ${pageTokenAliases()}
     <ui-app-bar id="app-bar" lang="ko">
     <div class="topbar-scope" id="topbar-scope" slot="toolbar">
     <div class="topbar-defaults" id="topbar-defaults" hidden>
-      <button type="button" class="td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
-      <button type="button" class="td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 effort — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">Effort </span><b id="td-effort-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
+      <button type="button" class="ui-chip td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
+      <button type="button" class="ui-chip td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 effort — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">Effort </span><b id="td-effort-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
       <ui-menu id="td-menu" lang="ko"></ui-menu>
-      <span class="td-status" id="td-status" role="status" aria-live="polite"></span>
+      <span class="ui-status-line td-status" id="td-status" role="status" aria-live="polite"></span>
     </div>
     <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">모든 사용자</span><select id="user-select" title="모든 사용자" aria-label="보드에 보일 사용자" onchange="selectUser(this.value)">
       <option value="">모든 사용자</option>
@@ -5525,17 +5413,17 @@ ${pageTokenAliases()}
     <button
       id="admin-inbox-btn"
       type="button"
-      class="admin-toggle admin-inbox-btn"
+      class="ui-chip admin-toggle admin-inbox-btn"
       style="display:none"
       aria-haspopup="dialog"
       aria-label="관리자 승인 0건 대기"
       title="관리자 승인 — Slack DM으로 오는 승인 요청을 여기서도 보고 답합니다"
       onclick="openAdminInbox()"
-    ><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2l4.8 1.9v3.5c0 2.9-2 5.1-4.8 6.2-2.8-1.1-4.8-3.3-4.8-6.2V4.1z"/><path d="M5.9 8.1l1.5 1.5 2.8-2.9"/></svg><span>승인</span><span class="aib-count" id="admin-inbox-count" aria-hidden="true">0</span></button>
+    ><i data-ui-icon="shield"></i><span>승인</span><span class="ui-count" id="admin-inbox-count" aria-hidden="true">0</span></button>
     <button
       id="admin-mode-toggle"
       type="button"
-      class="admin-toggle"
+      class="ui-chip admin-toggle"
       style="display:none"
       aria-pressed="false"
       title="관리자 쓰기 모드 — 켜면 다른 사람의 세션도 바꿀 수 있습니다 (#716)"
@@ -5577,9 +5465,9 @@ ${pageTokenAliases()}
       <div class="inbox-head">
         <nav class="crumbs" aria-label="위치"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
         <div class="inbox-tools">
-          <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><i data-ui-icon="archive"></i><span id="archives-label">보관함</span></button>
-          <button type="button" class="archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><i data-ui-icon="moon"></i><span id="sleeping-label">휴면</span></button>
-          <button type="button" class="archives-btn" id="lifecycle-btn" style="display:none" title="세션 수명 주기 (관리자)" onclick="openLifecycleDialog()"><i data-ui-icon="clock"></i><span>수명 주기</span></button>
+          <button type="button" class="ui-chip archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><i data-ui-icon="archive"></i><span id="archives-label">보관함</span></button>
+          <button type="button" class="ui-chip archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><i data-ui-icon="moon"></i><span id="sleeping-label">휴면</span></button>
+          <button type="button" class="ui-chip archives-btn" id="lifecycle-btn" style="display:none" title="세션 수명 주기 (관리자)" onclick="openLifecycleDialog()"><i data-ui-icon="clock"></i><span>수명 주기</span></button>
           <ui-segmented class="view-seg" id="view-seg"></ui-segmented>
         </div>
       </div>
@@ -5589,7 +5477,7 @@ ${pageTokenAliases()}
           <label>마지막 활동 후 휴면 전환 <span class="lc-unit">시간</span><input id="lc-sleepAfterHours" type="number" min="1" max="720" step="any" required></label>
           <label>휴면 후 보관(종료) 전환 <span class="lc-unit">일</span><input id="lc-archiveAfterDays" type="number" min="0.05" max="365" step="any" required></label>
           <label>보드에 보관함 표시 기간 <span class="lc-unit">시간</span><input id="lc-boardArchiveWindowHours" type="number" min="0" max="8760" step="any" required></label>
-          <p class="lc-status" id="lifecycle-status" role="status" aria-live="polite"></p>
+          <p class="ui-status-line lc-status" id="lifecycle-status" role="status" aria-live="polite"></p>
         </form>
         <div slot="footer" class="lc-actions">
           <button type="button" class="ui-btn" onclick="closeLifecycleDialog()">취소</button>
@@ -5604,7 +5492,7 @@ ${pageTokenAliases()}
       <!-- Until the first board answer the columns show skeleton cards, not
            "0 · Nothing here" (a false empty board). A first load that fails says so
            here and offers a retry; the 30 s poll keeps retrying on its own. -->
-      <div class="board-error" id="board-error" role="alert" hidden><span>보드를 불러오지 못했습니다.</span><button type="button" class="archives-btn" onclick="retryBoardLoad()">다시 시도</button></div>
+      <div class="ui-notice board-error" id="board-error" data-tone="fail" role="alert" hidden><i data-ui-icon="alert"></i><span>보드를 불러오지 못했습니다.</span><button type="button" class="ui-btn is-sm" onclick="retryBoardLoad()">다시 시도</button></div>
       <!-- The board (re-agent-inbox): NEEDS YOU · RUNNING · DONE (by finish day) — renderBoard gives it its
            data; each open card's body is a light-DOM child in the card's slot (slot="body:<key>"). It says how
            many need you and how many run, politely (D6). -->
@@ -5614,7 +5502,7 @@ ${pageTokenAliases()}
 
   <!-- A cron job's past runs (SSOT 2026-10-23 T5). -->
   <ui-drawer class="cron-drawer" id="cron-drawer" mode="sheet" width="560" max-width="560" lang="ko">
-    <span slot="header" class="cron-drawer-headline"><span class="cron-badge" id="cron-drawer-badge" aria-hidden="true"></span><span id="cron-drawer-title"></span></span>
+    <span slot="header" class="cron-drawer-headline"><span class="ui-chip" id="cron-drawer-badge" aria-hidden="true"></span><span id="cron-drawer-title"></span></span>
     <div class="cron-drawer-meta" id="cron-drawer-meta"></div>
     <div class="cron-drawer-body" id="cron-drawer-body"></div>
   </ui-drawer>
@@ -5624,7 +5512,7 @@ ${pageTokenAliases()}
     <span slot="header" class="admin-inbox-head" id="admin-inbox-head" tabindex="-1">관리자 승인</span>
     <div class="admin-inbox-body" id="admin-inbox-body"></div>
   </ui-drawer>
-  <p class="ar-vh" id="admin-inbox-status" role="status" aria-live="polite"></p>
+  <p class="ui-sr-only" id="admin-inbox-status" role="status" aria-live="polite"></p>
 
   <!-- Slide panel: the detail card — @2lab.ai/ui <ui-drawer> (D4 E-01, E-02): a modal sheet over its own scrim below
        840px, docked beside the board from 840px (dock-at), switched in place while open; resizable from its inner edge
@@ -5645,7 +5533,7 @@ ${pageTokenAliases()}
       <!-- Detail deck (SSOT 2026-10-29 T2, D3 E-05): every open card has its detail card here; <ui-deck-nav>'s ‹ n / m › (and ←/→ on it) go through them, round the end. -->
       <ui-deck-nav class="panel-deck" id="panel-deck" lang="ko" wrap hidden></ui-deck-nav>
       <!-- 자세히 (task view T1.6): the panel shows what matters by default; on, every detail of every section. Saved per device. -->
-      <button type="button" class="panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false" title="모든 세부 정보 보기" onclick="togglePanelDetail()"><i data-ui-icon="list" class="pdt-icon"></i><span class="pdt-label">자세히</span></button>
+      <button type="button" class="ui-chip panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false" title="모든 세부 정보 보기" onclick="togglePanelDetail()"><i data-ui-icon="list"></i><span class="pdt-label">자세히</span></button>
       <button type="button" class="ui-icon-btn is-bordered panel-close" aria-label="작업 카드 닫기" title="작업 카드 닫기 (카드도 접힘)" onclick="closeDetailCard()"><i data-ui-icon="close"></i></button>
       <!-- Session head (spec 13, D3 E-08): <ui-status-bar> — status · this turn's time · Slack · the session's actions; an armed resume in its slot. -->
       <ui-status-bar class="panel-status" id="panel-status" lang="ko"></ui-status-bar>
@@ -5667,7 +5555,7 @@ ${pageTokenAliases()}
         <div class="ui-section-head panel-needs-head" id="panel-needs-head" tabindex="-1" hidden><h4>입력 필요</h4><span class="ui-count" id="panel-needs-count" data-tone="wait" data-pop></span></div>
         <div class="panel-permission" id="panel-permission" style="display:none"></div>
         <div class="panel-question" id="panel-question" style="display:none"></div>
-        <p class="ar-vh" id="panel-needs-status" role="status" aria-live="polite"></p>
+        <p class="ui-sr-only" id="panel-needs-status" role="status" aria-live="polite"></p>
         <!-- 산출물 (SSOT 2026-10-23 T6): what the task produced, and the files the user attached. -->
         <div class="panel-artifacts" id="panel-artifacts" style="display:none"></div>
       </section>
@@ -5747,8 +5635,8 @@ ${pageTokenAliases()}
         </div>
         <p class="nt-usage" id="nt-usage" hidden></p>
         <div class="nt-toggles" role="group" aria-label="자동 진행">
-          <button type="button" class="nt-toggle" id="nt-autogoal" aria-pressed="false" title="이 작업의 첫 지시에만 적용 — 처음 값은 내 autogoal 설정, 설정 자체는 바뀌지 않습니다" onclick="ntToggle('autogoal')"><span class="nt-switch" aria-hidden="true"></span><span>autogoal</span></button>
-          <button type="button" class="nt-toggle" id="nt-autoz" aria-pressed="false" title="켜면 지시 끝에 $autoz를 붙여 autoz 스킬이 끝까지 자동으로 진행합니다" onclick="ntToggle('autoz')"><span class="nt-switch" aria-hidden="true"></span><span>autoz</span></button>
+          <label class="ui-switch" title="이 작업의 첫 지시에만 적용 — 처음 값은 내 autogoal 설정, 설정 자체는 바뀌지 않습니다"><input type="checkbox" role="switch" id="nt-autogoal" onchange="ntToggle('autogoal')"><span>autogoal</span></label>
+          <label class="ui-switch" title="켜면 지시 끝에 $autoz를 붙여 autoz 스킬이 끝까지 자동으로 진행합니다"><input type="checkbox" role="switch" id="nt-autoz" onchange="ntToggle('autoz')"><span>autoz</span></label>
           <span class="nt-toggle-note">이 작업에만 적용 · 설정은 그대로</span>
         </div>
         <!-- The instruction, its files and the voice note — @2lab.ai/ui <ui-composer> (D2 H-05..H-09): the field grows
@@ -5756,8 +5644,8 @@ ${pageTokenAliases()}
              ⌘/Ctrl+Enter sends; a plain Enter is a new line (enter: 'newline'); the files are capped each and
              together (maxTotalBytes). The page answers ui-submit (it posts) and ui-input (the draft). -->
         <ui-composer id="nt-composer" class="nt-composer" lang="ko"></ui-composer>
-        <p class="nt-error" id="nt-error" role="alert" hidden></p>
-        <p class="nt-foot"><span class="nt-status" id="nt-status" role="status" aria-live="polite"></span><span class="nt-submit-hint" aria-hidden="true">⌘↵</span></p>
+        <p class="ui-status-line nt-error" id="nt-error" data-tone="fail" role="alert" hidden></p>
+        <p class="nt-foot"><span class="ui-status-line nt-status" id="nt-status" role="status" aria-live="polite"></span><span class="nt-submit-hint" aria-hidden="true">⌘↵</span></p>
       </div>
     </form>
   </dialog>
@@ -6618,7 +6506,8 @@ function paintAdminInboxButton() {
   var n = _adminApprovals.pending.length;
   var c = document.getElementById('admin-inbox-count');
   if (c && c.textContent !== String(n)) c.textContent = String(n);
-  btn.classList.toggle('has-pending', n > 0);
+  // The kit count badge takes the wait tone while any request waits.
+  if (c) { if (n > 0) c.setAttribute('data-tone', 'wait'); else c.removeAttribute('data-tone'); }
   btn.setAttribute('aria-label', '관리자 승인 ' + n + '건 대기');
 }
 function adminInboxAnnounce(msg) {
@@ -6861,7 +6750,7 @@ function renderPanelTasks(tasks, scopeLabel, earlier, outside) {
     + '<span slot="summary" class="panel-tasks-header">'
     + '<span class="ps-sec-title">' + title + '</span>'
     + '<span class="ps-sec-sum">' + planSummaryHtml(list, prev) + '</span></span>';
-  var live = '<span class="ar-vh pl-live" role="status" aria-live="polite">' + esc(said.join('. ')) + '</span>';
+  var live = '<span class="ui-sr-only pl-live" role="status" aria-live="polite">' + esc(said.join('. ')) + '</span>';
   if (!open && _panelTasksOpen !== 'folding') { writePanelTasks(container, head + '</ui-disclosure>' + live); return; }
 
   // SSOT 2026-10-29 T5, D3 E-22/E-23: the tasks that actually ran, in the order
@@ -7427,7 +7316,7 @@ function setDefaultsStatus(text, isError) {
   if (!el) return;
   el.textContent = text || '';
   el.title = text || '';
-  el.classList.toggle('is-error', !!isError);
+  if (isError) el.setAttribute('data-tone', 'fail'); else el.removeAttribute('data-tone');
 }
 async function pickDefault(kind, value) {
   var session = _tdAlsoSession ? defaultsScopeSession() : null;
@@ -10539,10 +10428,10 @@ function renderCardIo(s) {
   var c = _ioCache[s.conversationId];
   if (!c || !c.data) {
     if (c && c.state === 'error') return '<div class="card-io"><div class="io-row"><div class="io-text is-muted">지시/응답을 불러오지 못했습니다</div></div></div>';
-    // In flight: the shape of 지시 and 응답, the words for screen readers only.
-    return '<div class="card-io" aria-busy="true"><div class="io-row io-skel" aria-hidden="true"><div class="sk sk-line" style="width:44%"></div><div class="sk sk-line" style="width:86%"></div></div>'
-      + '<div class="io-row io-skel" aria-hidden="true"><div class="sk sk-line" style="width:36%"></div><div class="sk sk-line" style="width:72%"></div></div>'
-      + '<span class="ib-sr">지시/응답 불러오는 중…</span></div>';
+    // In flight: the shape of 지시 and 응답 (kit skeleton lines, the second row a beat later), the words for screen readers only.
+    return '<div class="card-io" aria-busy="true"><div class="io-row io-skel" aria-hidden="true"><div class="ui-skeleton is-line" style="width:44%"></div><div class="ui-skeleton is-line" style="width:86%"></div></div>'
+      + '<div class="io-row io-skel" aria-hidden="true"><div class="ui-skeleton is-line" style="width:36%;--i:1"></div><div class="ui-skeleton is-line" style="width:72%;--i:1"></div></div>'
+      + '<span class="ui-sr-only">지시/응답 불러오는 중…</span></div>';
   }
   var d = c.data;
   var who = d.instruction && d.instruction.who ? '<span class="io-who">' + esc(d.instruction.who) + '</span>' : '';
@@ -10720,9 +10609,9 @@ var RESUME_SVG = '<i data-ui-icon="clock"></i>';
 function renderCardResume(s, col) {
   var r = pendingAutoResume(s, col);
   if (!r) return '';
-  return '<div class="card-resume">' + RESUME_SVG + '<div>'
-    + '<div class="cr-when">' + esc(autoResumeLabel(r)) + '</div>'
-    + (r.reason ? '<div class="cr-reason">' + esc(r.reason) + '</div>' : '')
+  return '<div class="ui-notice card-resume" data-tone="wait">' + RESUME_SVG + '<div>'
+    + '<strong>' + esc(autoResumeLabel(r)) + '</strong>'
+    + (r.reason ? '<div>' + esc(r.reason) + '</div>' : '')
     + '</div></div>';
 }
 
@@ -11048,11 +10937,11 @@ document.addEventListener('ui-open-change', mpOnOpenChange);
 // waiting switch and a refused write under its own trigger (busy.model, error).
 function renderModelNote(s, picker) {
   if (s.pendingModel) {
-    return picker ? '' : '<div class="cb-model-note" role="status">compact 후 ' + esc(s.pendingModel) + '(으)로 전환합니다…</div>';
+    return picker ? '' : '<div class="ui-status-line cb-model-note" role="status">compact 후 ' + esc(s.pendingModel) + '(으)로 전환합니다…</div>';
   }
   var n = _modelNotes[s.key];
   if (!n || (picker && n.error)) return '';
-  return '<div class="cb-model-note' + (n.error ? ' is-error' : '') + '"' + (n.error ? ' role="alert"' : ' role="status"') + '>' + esc(n.text) + '</div>';
+  return '<div class="ui-status-line cb-model-note"' + (n.error ? ' data-tone="fail" role="alert"' : ' role="status"') + '>' + esc(n.text) + '</div>';
 }
 async function postModelSwitch(key, nickname) {
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/model';
@@ -11642,7 +11531,7 @@ function setLifecycleStatus(text, isError) {
   var el = document.getElementById('lifecycle-status');
   if (!el) return;
   el.textContent = text;
-  el.classList.toggle('is-error', !!isError);
+  if (isError) el.setAttribute('data-tone', 'fail'); else el.removeAttribute('data-tone');
 }
 var LIFECYCLE_LABELS = {
   sleepAfterHours: '휴면 전환', archiveAfterDays: '보관 전환', boardArchiveWindowHours: '보관함 표시 기간',
@@ -15426,20 +15315,23 @@ function planCronLane(board, jobs, revealKey) {
 function pad2(n) {
   return (n < 10 ? '0' : '') + n;
 }
-// Every run state has its own glyph — colour is never the only signal (T5).
+// Every run state has its own glyph — colour is never the only signal (T5): the icon set's check / cross / dot /
+// alert / dashed circle (the row's leading glyph), in the kit row's tone (done / fail / run / wait, none for an
+// entry that is not a run of its own). The slots are literals so the page fills them with the library's glyphs.
+var CRON_RUN_GLYPHS = { check: '<i data-ui-icon="check"></i>', cross: '<i data-ui-icon="cross"></i>', dot: '<i data-ui-icon="dot"></i>', alert: '<i data-ui-icon="alert"></i>', 'circle-dashed': '<i data-ui-icon="circle-dashed"></i>' };
 function cronRunGlyph(run) {
   // A queue entry is an event, not a state: the drain that follows is not
   // recorded, and the thread's current activity is not this entry's run.
-  if (run && run.status === 'queued') return { cls: 'none', glyph: '◌', label: '대기열에 넣음 (세션 사용 중 — 이후 실행 결과는 기록 없음)' };
+  if (run && run.status === 'queued') return { tone: '', glyph: 'circle-dashed', label: '대기열에 넣음 (세션 사용 중 — 이후 실행 결과는 기록 없음)' };
   // A recorded failure stands even if the thread still reads as busy.
-  if (run && run.status === 'failed') return { cls: 'fail', glyph: '✗', label: '실패' };
+  if (run && run.status === 'failed') return { tone: 'fail', glyph: 'cross', label: '실패' };
   var s = run && run.session;
-  if (s && s.live && s.activityState === 'waiting') return { cls: 'wait', glyph: '▲', label: '응답 필요' };
-  if (s && s.live && s.activityState === 'working') return { cls: 'run', glyph: '●', label: '실행 중' };
-  if (run && run.status === 'unrecorded') return { cls: 'none', glyph: '◌', label: '실행 기록 없음 (보드 카드만 있음)' };
-  if (run && run.executionPath === 'dm') return { cls: 'none', glyph: '◌', label: 'DM 전송 (세션 없음)' };
-  if (run && run.executionPath === 'thread_reply') return { cls: 'none', glyph: '◌', label: '스레드 답글 (세션 없음)' };
-  return { cls: 'ok', glyph: '✓', label: '성공' };
+  if (s && s.live && s.activityState === 'waiting') return { tone: 'wait', glyph: 'alert', label: '응답 필요' };
+  if (s && s.live && s.activityState === 'working') return { tone: 'run', glyph: 'dot', label: '실행 중' };
+  if (run && run.status === 'unrecorded') return { tone: '', glyph: 'circle-dashed', label: '실행 기록 없음 (보드 카드만 있음)' };
+  if (run && run.executionPath === 'dm') return { tone: '', glyph: 'circle-dashed', label: 'DM 전송 (세션 없음)' };
+  if (run && run.executionPath === 'thread_reply') return { tone: '', glyph: 'circle-dashed', label: '스레드 답글 (세션 없음)' };
+  return { tone: 'done', glyph: 'check', label: '성공' };
 }
 // Schedule in words for the common shapes; anything else stays the raw (UTC)
 // expression. Clock times read in the viewer's zone, from the next fire.
@@ -15503,14 +15395,14 @@ function cronGroupRuns(g) {
   return runs;
 }
 // ── The lane as the element's data (re-agent-queue; @2lab.ai/ui <ui-agent-queue>) ──
-// A run as the element reads it, by the strip's rule (cronRunGlyph): ✓ ok · ● running ·
-// ▲ waiting · ✗ failed · ◌ unknown (a queue entry, a card with no record, a DM or a thread
+// A run as the element reads it, by the strip's rule (cronRunGlyph, its tone): done → ok · run → running ·
+// wait → waiting · fail → failed · no tone → unknown (a queue entry, a card with no record, a DM or a thread
 // reply), the glyph's words as its label. A card with no record yet is not one of the
 // job's kept records (recorded: false), so it never counts toward historyCap.
-var CRON_AQ_STATUS = { ok: 'ok', run: 'running', wait: 'waiting', fail: 'failed', none: 'unknown' };
+var CRON_AQ_STATUS = { done: 'ok', run: 'running', wait: 'waiting', fail: 'failed' };
 function cronRunAsAq(r) {
   var gl = cronRunGlyph(r);
-  var out = { at: r.executedAt, status: CRON_AQ_STATUS[gl.cls] || 'unknown', label: gl.label };
+  var out = { at: r.executedAt, status: CRON_AQ_STATUS[gl.tone] || 'unknown', label: gl.label };
   if (r.error) out.error = String(r.error);
   if (r.status === 'unrecorded') out.recorded = false;
   return out;
@@ -15662,26 +15554,29 @@ function renderCronRunRow(run, g, nowMs) {
   if (s && s.boardKey && _sessionCache[s.boardKey]) actions.push('<button type="button" class="ui-btn is-sm" data-cron-open="' + escAttr(s.boardKey) + '">작업 로그</button>');
   if (s && s.conversationId) actions.push('<a class="ui-btn is-sm" href="/conversations/' + encodeURIComponent(s.conversationId) + '" target="_blank" rel="noopener">대화 기록</a>');
   if (s && s.slackThreadUrl) actions.push('<a class="ui-btn is-sm" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>');
-  return '<li class="cron-run is-' + gl.cls + '">'
-    + '<span class="cr-glyph" title="' + escAttr(gl.label) + '">' + gl.glyph + '</span>'
-    + '<div class="cr-main"><div class="cr-title">' + esc(title) + '</div>'
-    + '<div class="cr-sub">' + bits.join('<span aria-hidden="true"> · </span>') + '</div>'
-    + (run.error ? '<div class="cr-err">' + esc(run.error) + '</div>' : '')
+  // A kit row (.ui-row): the state's glyph in its tone, the title, the facts, an error as a fail status line,
+  // the actions at the end. The state's word rides along for screen readers when the title is not it.
+  return '<li class="ui-row"' + (gl.tone ? ' data-tone="' + gl.tone + '"' : '') + '>'
+    + CRON_RUN_GLYPHS[gl.glyph]
+    + '<div><strong>' + esc(title) + '</strong>'
+    + (title === gl.label ? '' : '<span class="ui-sr-only">' + esc(gl.label) + '</span>')
+    + '<small>' + bits.join('<span aria-hidden="true"> · </span>') + '</small>'
+    + (run.error ? '<span class="ui-status-line" data-tone="fail">' + esc(run.error) + '</span>' : '')
     + '</div>'
-    + (actions.length ? '<div class="cr-actions">' + actions.join('') + '</div>' : '')
+    + (actions.length ? '<div class="is-end">' + actions.join('') + '</div>' : '')
     + '</li>';
 }
 function renderCronDrawerMeta(g, nowMs) {
   var j = g.job;
-  if (!j) return '<p class="cron-dmeta">이 인스턴스에 없는 잡입니다 — 삭제됐거나 다른 인스턴스의 잡이라 스케줄·실행 기록이 없습니다. 보드에 있는 실행만 보입니다.</p>';
-  // Values are markup (escaped here): 다음 실행 counts down live like the tile (#444 review R1).
+  if (!j) return '<p class="ui-notice">이 인스턴스에 없는 잡입니다 — 삭제됐거나 다른 인스턴스의 잡이라 스케줄·실행 기록이 없습니다. 보드에 있는 실행만 보입니다.</p>';
+  // The kit's fact list (.ui-dl). Values are markup (escaped here): 다음 실행 counts down live like the tile (#444 review R1).
   var rows = [
     ['스케줄', esc(cronScheduleLabel(j.expression, j.nextRunAt) + ' · ' + j.expression + ' (UTC)')],
     ['다음 실행', j.nextRunAt ? esc(capClockLabel(j.nextRunAt / 1000, nowMs)) + ' (' + aqTime(j.nextRunAt, nowMs, ' 후') + ')' : '8일 안에 없음'],
     ['실행 방식', esc((j.mode === 'fastlane' ? '항상 새 스레드' : '세션이 쉬면 주입, 없으면 새 스레드') + ' · 출력 ' + j.target + ' · 모델 ' + j.model)],
+    ['실행 기록', esc('잡마다 최근 ' + (j.historyCap || 20) + '회까지 보관')],
   ];
-  return '<dl class="cron-dmeta">' + rows.map(function(r) { return '<dt>' + esc(r[0]) + '</dt><dd>' + r[1] + '</dd>'; }).join('') + '</dl>'
-    + '<p class="cron-dnote">실행 기록은 잡마다 최근 ' + (j.historyCap || 20) + '회까지 보관됩니다.</p>';
+  return '<dl class="ui-dl">' + rows.map(function(r) { return '<div><dt>' + esc(r[0]) + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
 }
 function paintCronDrawer() {
   if (!_cronDrawerKey) return;
@@ -15692,11 +15587,11 @@ function paintCronDrawer() {
   var now = Date.now();
   var runs = cronGroupRuns(g);
   document.getElementById('cron-drawer-title').textContent = g.name;
-  document.getElementById('cron-drawer-badge').innerHTML = CLOCK_SVG + '<span class="cron-badge-text">CRON</span>';
+  document.getElementById('cron-drawer-badge').innerHTML = CLOCK_SVG + 'CRON';
   document.getElementById('cron-drawer-meta').innerHTML = renderCronDrawerMeta(g, now);
   document.getElementById('cron-drawer-body').innerHTML = runs.length
-    ? '<ol class="cron-runs">' + runs.map(function(r) { return renderCronRunRow(r, g, now); }).join('') + '</ol>'
-    : '<p class="col-empty">아직 실행 기록이 없습니다</p>';
+    ? '<ol>' + runs.map(function(r) { return renderCronRunRow(r, g, now); }).join('') + '</ol>'
+    : '<p class="ui-empty">아직 실행 기록이 없습니다</p>';
 }
 // The control that opened the drawer, to return to on close: a press inside an element's
 // shadow root (the lane's 지난 실행, strip or next-fire chip) is that control — and its
@@ -16840,8 +16735,8 @@ function ntRender() {
         : '작업을 올릴 수 있는 채널이 없습니다 — repo가 연결된 Slack 채널에 참여해 주세요',
     );
   }
-  ntEl('nt-autogoal').setAttribute('aria-pressed', _ntState.autogoal ? 'true' : 'false');
-  ntEl('nt-autoz').setAttribute('aria-pressed', _ntState.autoz ? 'true' : 'false');
+  ntEl('nt-autogoal').checked = !!_ntState.autogoal;
+  ntEl('nt-autoz').checked = !!_ntState.autoz;
   ntRenderBattery();
   paintNtComposer();
 }
@@ -16930,10 +16825,11 @@ function ntOnChannelChange() {
   _ntState.channelId = ntEl('nt-channel').value || null;
 }
 
+// The kit switch flipped itself; the draft follows it.
 function ntToggle(which) {
   if (!_ntState) return;
-  _ntState[which] = !_ntState[which];
-  ntEl('nt-' + which).setAttribute('aria-pressed', _ntState[which] ? 'true' : 'false');
+  var sw = ntEl('nt-' + which);
+  _ntState[which] = !!(sw && sw.checked);
   if (navigator.vibrate) {
     try {
       navigator.vibrate(8);

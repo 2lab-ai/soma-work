@@ -189,7 +189,7 @@ describe('top-bar default chips (T6)', () => {
     }));
     const postEffortSwitch = vi.fn(async () => ({ ok: true, result: { status: 'switched', effort: 'low' } }));
     const postModelSwitch = vi.fn();
-    const status: any = { textContent: '', classList: { toggle: vi.fn() } };
+    const status: any = { textContent: '', setAttribute: vi.fn(), removeAttribute: vi.fn() };
     const document = { getElementById: () => status };
     const myDefaults: any = defaults();
     const env = {
@@ -229,7 +229,7 @@ describe('top-bar default chips (T6)', () => {
   });
 
   it('a refused save says why and leaves the session alone', async () => {
-    const status: any = { textContent: '', classList: { toggle: vi.fn() } };
+    const status: any = { textContent: '', setAttribute: vi.fn(), removeAttribute: vi.fn() };
     const postEffortSwitch = vi.fn();
     const { pickDefault } = load<{ pickDefault(kind: string, value: string): Promise<void> }>(
       ['setDefaultsStatus', 'pickDefault'],
