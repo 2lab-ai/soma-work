@@ -4764,7 +4764,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    toward the ink and the 28% border. ── */
 
 /* ── TASK WINDOW — @2lab.ai/ui <ui-task-plan max foot="none"> (D8b D-12): the card's few rows of the plan, flush
-   (no box of its own inside the card), and its "+N개 더 · 전체 task N개 →" line; the page's link when the window
+   (no box of its own inside the card), and its "+N개 더 · 전체 작업 N개 →" line; the page's link when the window
    hides nothing but earlier lists ran. ── */
 .card-task-plan { display: block; min-width: 0; margin-top: 10px; }
 .card-task-plan + .card-more-link { margin-top: 2px; }
@@ -7610,6 +7610,7 @@ function selectUser(userId) {
   syncUserSelectTitle();
   currentUserId = userId;
   history.replaceState(null, '', userId ? '/dashboard/' + userId : '/dashboard');
+  paintTrail();
   loadSessions();
   loadStats();
   loadCronJobs();
@@ -8491,7 +8492,7 @@ function cardOf(s, col) {
   var u = s.tokenUsage;
   if (u) {
     var sub = s.subagentSpend;
-    var who = 'task 합계: 메인 + 서브에이전트' + (sub && toNum(sub.agents) > 0 ? ' ' + toNum(sub.agents) + '개' : '');
+    var who = '작업 합계: 메인 + 서브에이전트' + (sub && toNum(sub.agents) > 0 ? ' ' + toNum(sub.agents) + '개' : '');
     var part = toNum(u.partialSince) > 0 ? ' · 부분 합계 (' + new Date(toNum(u.partialSince)).toLocaleString() + ' 이후 집계)' : '';
     if (dhShow('tokens')) {
       card.tokens = cardTotalTokens(u);
@@ -8548,7 +8549,7 @@ function cardOf(s, col) {
 // Task window on the open card (§3.1-4, spec 13) — @2lab.ai/ui <ui-task-plan> in window mode (0.14.1, D8b
 // D-12): at most dhMax('tasks') rows of the current list in list order (the element's taskWindow rule: the
 // earliest completed leave first, then the latest pending; the running one never), no phase foot (the face
-// already says the phase and the time), and one "+N개 더 · 전체 task N개 →" line in the page's words whose press
+// already says the phase and the time), and one "+N개 더 · 전체 작업 N개 →" line in the page's words whose press
 // (ui-more) opens the panel's Tasks — the whole ledger, every task of the list and the earlier lists (the card
 // is a window, not a second list). Every step carries its id (SSOT 2026-10-22 T8), its times and its tool
 // calls (T7); the element draws the duration, the running step's live clock and the 툴 N회 chip.
@@ -8590,11 +8591,11 @@ function cardTaskPlanData(s) {
   var steps = tasks.map(cardTaskStep);
   var hidden = cardTaskHidden(steps, dhMax('tasks', CARD_TASK_ROWS)) + ran;
   var d = { title: '', steps: steps };
-  if (hidden) d.more = '+' + hidden + '개 더 · 전체 task ' + (tasks.length + ran) + '개 →';
+  if (hidden) d.more = '+' + hidden + '개 더 · 전체 작업 ' + (tasks.length + ran) + '개 →';
   return d;
 }
 // The window itself: the element (its data in cardTaskPlanHydrate, where it changed) — and, when the window
-// hides nothing of the current list but earlier lists ran, the page's own 전체 task N개 → (the element draws
+// hides nothing of the current list but earlier lists ran, the page's own 전체 작업 N개 → (the element draws
 // its line only for the rows it left out; with no current list at all it would draw its empty state instead).
 function renderCardTasks(s) {
   if (!dhShow('tasks')) return '';
@@ -8607,7 +8608,7 @@ function renderCardTasks(s) {
     : '';
   if (ran > 0 && cardTaskHidden(tasks.map(cardTaskStep), max) === 0) {
     html += '<button type="button" class="card-more-link" onclick="event.stopPropagation();openPanel(\\'' + escJs(s.key) + '\\',\\'tasks\\',\\'\\',event.detail===0)">'
-      + '전체 task ' + (tasks.length + ran) + '개 &rarr;</button>';
+      + '전체 작업 ' + (tasks.length + ran) + '개 &rarr;</button>';
   }
   return html;
 }
@@ -8621,7 +8622,7 @@ function cardTaskPlanHydrate(root) {
     if (s) taskElData(els[i], cardTaskPlanData(s));
   }
 }
-// The window's "+N개 더 · 전체 task N개 →" (ui-more): the panel's Tasks, the same landing as the page's link —
+// The window's "+N개 더 · 전체 작업 N개 →" (ui-more): the panel's Tasks, the same landing as the page's link —
 // by keyboard (_atKeyed) focus lands in the panel.
 document.addEventListener('ui-more', function(e) {
   var el = e.target;
@@ -9154,7 +9155,7 @@ function renderAgentFocus(node, s) {
   if (node.root) {
     var tu = s && s.tokenUsage;
     var tk = cardTotalTokens(tu);
-    if (tk > 0) bits.push('<span title="메인 + 서브에이전트 전체 — API 환산 비용">task 합계 ' + spendText(tk, tu.totalCostUsd, false) + '</span>');
+    if (tk > 0) bits.push('<span title="메인 + 서브에이전트 전체 — API 환산 비용">작업 합계 ' + spendText(tk, tu.totalCostUsd, false) + '</span>');
     var sub = s && s.subagentSpend;
     if (sub && toNum(sub.agents) > 0) {
       bits.push('<span title="서브에이전트들 자신의 API 호출 합">서브 ' + toNum(sub.agents) + '개 ' + spendText(spendTotal(sub), sub.costUsd, sub.unpriced || sub.estimated) + '</span>');
@@ -15948,20 +15949,15 @@ function closeCronDrawer(after) {
     if (after) after();
   })();
 }
-var _cronDueReloaded = 0; // the 다음 실행 (epoch ms) whose zero already reloaded the jobs
 // Escape, the scrim and ✕ arrive as the element's ui-close; the page closes it itself (closeCronDrawer) so focus
 // returns to the control that opened it even when the lane re-rendered that control meanwhile.
 (function initCronDrawer() {
   var d = document.getElementById('cron-drawer');
   if (d) d.addEventListener('ui-close', function(e) { e.preventDefault(); closeCronDrawer(); });
-  // The 다음 실행 countdown reached zero: the job is due — fetch the jobs once for that due time, so the facts and the
-  // lane say the next one (a due time the server still reports after the fetch repaints as 곧 and asks no more).
-  if (d) d.addEventListener('ui-end', function(e) {
-    var at = e.detail ? Number(e.detail.until) : 0;
-    if (!e.target || e.target.localName !== 'ui-elapsed' || !(at > 0) || at === _cronDueReloaded) return;
-    _cronDueReloaded = at;
-    loadCronJobs();
-  });
+  // The 다음 실행 countdown reached zero: the job is due — fetch the jobs, so the facts and the lane say the next one.
+  // ui-end is said once, by the element that counted down to zero; one drawn with an until already past reads 곧
+  // and never ticks (it is not on the timer), so a repaint after the fetch asks nothing more.
+  if (d) d.addEventListener('ui-end', function(e) { if (e.target && e.target.localName === 'ui-elapsed') loadCronJobs(); });
 })();
 document.addEventListener('click', function(e) {
   var t = e.target && e.target.closest ? e.target : null;
@@ -16820,11 +16816,15 @@ function fcHydrateIn(node) {
     selectPanelAgent(String(e.detail.id || ''));
   });
 })();
-// The page trail over the inbox (A-16): the product's root (the dashboard) and this page.
-(function initTrail() {
+// The page trail over the inbox (A-16): the product's root — this board for the user shown (the reader's scope, as
+// the URL says it; selectUser paints it again) — and this page.
+function paintTrail() {
   var el = document.getElementById('inbox-trail');
-  if (el) el.data = { items: [{ label: 'soma-work', href: '/dashboard' }, { label: '에이전트 인박스' }] };
-})();
+  if (!el) return;
+  var home = currentUserId ? '/dashboard/' + encodeURIComponent(currentUserId) : '/dashboard';
+  taskElData(el, { items: [{ label: 'soma-work', href: home }, { label: '에이전트 인박스' }] });
+}
+paintTrail();
 
 // ── New task (SSOT 2026-10-23) ──
 // The composer behind the New task button / floating button. It loads what

@@ -205,9 +205,14 @@ describe('T3 — the chrome is Korean', () => {
     expect(TEMPLATE).toContain('<section class="inbox ui-tok" id="inbox" aria-label="에이전트 인박스">');
     // D8b A-16: the trail is <ui-breadcrumbs lang="ko">; its crumbs are the page's data.
     expect(TEMPLATE).toContain('<ui-breadcrumbs class="crumbs" id="inbox-trail" lang="ko"></ui-breadcrumbs>');
+    // The root crumb keeps the reader's user scope (R-D8 P3): /dashboard/<userId> as the URL says it, painted again on a user switch.
     expect(TEMPLATE).toContain(
-      "el.data = { items: [{ label: 'soma-work', href: '/dashboard' }, { label: '에이전트 인박스' }] };",
+      "var home = currentUserId ? '/dashboard/' + encodeURIComponent(currentUserId) : '/dashboard';",
     );
+    expect(TEMPLATE).toContain(
+      "taskElData(el, { items: [{ label: 'soma-work', href: home }, { label: '에이전트 인박스' }] });",
+    );
+    expect(clientFn('selectUser')).toContain('paintTrail();');
     expect(TEMPLATE).not.toContain('crumb-cur');
     expect(TEMPLATE).toContain('aria-label="작업" tabindex="-1"></div>');
     expect(TEMPLATE).toContain('aria-label="목표" style="display:none"></div>');
