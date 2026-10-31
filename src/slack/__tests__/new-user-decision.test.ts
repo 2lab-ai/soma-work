@@ -18,6 +18,7 @@ import { userSettingsStore } from '../../user-settings-store';
 import { UserAcceptanceActionHandler } from '../actions/user-acceptance-action-handler';
 import {
   closeNewUserRequest,
+  createPendingUserRequest,
   decideNewUser,
   newUserAdminApprovalAdapter,
   notifyAdminsNewUser,
@@ -217,6 +218,7 @@ describe('new-user access requests as one decision (#622)', () => {
     await notifyAdminsNewUser(api, id, 'Kim');
     const first = buttonValue(api, -1);
     // The earlier round stays unanswered on record (its answer was never recorded), and the user asks anew.
+    createPendingUserRequest(id, 'Kim');
     await notifyAdminsNewUser(api, id, 'Kim');
     const second = buttonValue(api, -1);
     expect(JSON.parse(second).round).toBeGreaterThan(JSON.parse(first).round);
@@ -225,6 +227,29 @@ describe('new-user access requests as one decision (#622)', () => {
     await handler.handleAccept({ user: { id: 'UADMIN1' }, actions: [{ value: first }] }, stale);
     expect(stale).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
     expect(userSettingsStore.getUserSettings(id)?.accepted).toBe(false);
+  });
+
+  it("the pending record and its round are created together: an earlier round's button is stale before any DM goes out", async () => {
+    const id = `UNEWX${Date.now()}`;
+    createPendingUserRequest(id, 'Kim');
+    await notifyAdminsNewUser(api, id, 'Kim');
+    const first = buttonValue(api, -1);
+    // The user is denied but that answer is never recorded; they ask again.
+    userSettingsStore.removeUserSettings(id);
+    await new Promise((r) => setTimeout(r, 2));
+    createPendingUserRequest(id, 'Kim');
+    // Before any new DM: the earlier round's button cannot decide the new ask.
+    const stale = vi.fn(async () => undefined);
+    await new UserAcceptanceActionHandler({ slackApi: api }).handleAccept(
+      { user: { id: 'UADMIN1' }, actions: [{ value: first }] },
+      stale,
+    );
+    expect(stale).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
+    expect(userSettingsStore.getUserSettings(id)?.accepted).toBe(false);
+    // The notification then uses that same round.
+    await notifyAdminsNewUser(api, id, 'Kim');
+    const card = await cardOf(api, id);
+    expect(JSON.parse(buttonValue(api, -1)).round).toBe(Number(requestIdOf(card).split('~')[1]));
   });
 
   it('the decision cannot be saved: nothing is recorded, the user stays pending, a retry works', async () => {

@@ -106,8 +106,27 @@ async function rewritePrompts(
 }
 
 /**
+ * A new user asks: create the pending record and open its round in one
+ * synchronous step, before anything awaits — so from the moment the user is
+ * pending, only this round's buttons and card can decide them.
+ */
+export function createPendingUserRequest(userId: string, userName: string): void {
+  userSettingsStore.createPendingUser(userId, userName);
+  openAdminRequest({
+    kind: 'new_user',
+    requestId: userId,
+    requesterId: userId,
+    data: { userName },
+    ttlMs: NEW_USER_REQUEST_TTL_MS,
+    fresh: true,
+  });
+  notifyAdminApprovalsChanged();
+}
+
+/**
  * Ask every admin, by DM, to accept a new user, and record where each prompt
- * landed. Returns how many admins were reached.
+ * landed (on the round {@link createPendingUserRequest} opened; one is opened
+ * here if none is). Returns how many admins were reached.
  */
 export async function notifyAdminsNewUser(
   slackApi: NewUserSlackApi,
@@ -126,8 +145,6 @@ export async function notifyAdminsNewUser(
     requesterId: userId,
     data: { userName },
     ttlMs: NEW_USER_REQUEST_TTL_MS,
-    // A new pending record is a new ask: a new round, so no earlier round's button can decide it.
-    fresh: true,
   });
   notifyAdminApprovalsChanged();
   const blocks = newUserPromptBlocks(userId, userName, round.createdAt);

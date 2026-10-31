@@ -54,28 +54,31 @@ export interface AdminRequest {
 /** A handled request stays this long (the dashboard's resolved row, a late click's "already answered"). */
 const HANDLED_KEEP_MS = 24 * 60 * 60 * 1000;
 
-/** A claim whose side effect never settled (the process died mid-delete) lapses after this. */
-const CLAIM_LAPSE_MS = 2 * 60 * 1000;
-
 /**
  * Claims whose side effect is running in this process right now. Every answer
- * runs in the main process, so a claim held here never lapses while it runs;
- * one left over from a process that died is not in this set.
+ * runs in the main process, so a claim held here is being carried out; an
+ * unsettled claim NOT in this set was left by a process that died — its side
+ * effect may or may not have happened, so it is an orphan to reconcile (redo
+ * the side effect), never an unanswered request.
  */
 const liveClaims = new Set<string>();
 
-/** The request as it stands at `now`: a lapsed, never-settled claim (its process died) is unanswered again. */
+/** Whether this process is carrying out the claim on this request right now. */
+export function isClaimLive(kind: AdminRequestKind, requestId: string): boolean {
+  return liveClaims.has(keyOf(kind, requestId));
+}
+
+/** Take over an orphaned claim (a dead process's) to carry it out here. False if it is live already. */
+export function adoptOrphanedClaim(kind: AdminRequestKind, requestId: string): boolean {
+  const key = keyOf(kind, requestId);
+  if (liveClaims.has(key)) return false;
+  liveClaims.add(key);
+  return true;
+}
+
+/** The request as it stands at `now` (expired → null). */
 function current(req: AdminRequest | undefined, now: number): AdminRequest | null {
   if (!req || req.expiresAt <= now) return null;
-  if (
-    req.handled &&
-    req.resolution?.settled === false &&
-    !liveClaims.has(keyOf(req.kind, req.requestId)) &&
-    now - req.resolution.at > CLAIM_LAPSE_MS
-  ) {
-    const { resolution: _lapsed, ...rest } = req;
-    return { ...rest, handled: false };
-  }
   return req;
 }
 
@@ -190,6 +193,13 @@ export function listAdminRequests(kind: AdminRequestKind, now: number = Date.now
     .filter((r) => r.kind === kind)
     .map((r) => current(r, now))
     .filter((r): r is AdminRequest => r !== null);
+}
+
+/** Unsettled claims nobody in this process is carrying out (left by a process that died). */
+export function listOrphanedClaims(kind: AdminRequestKind, now: number = Date.now()): AdminRequest[] {
+  return listAdminRequests(kind, now).filter(
+    (r) => r.handled && r.resolution?.settled === false && !liveClaims.has(keyOf(kind, r.requestId)),
+  );
 }
 
 /**

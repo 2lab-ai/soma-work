@@ -58,7 +58,7 @@ const notify = vi.hoisted(() =>
     throw new Error('admin-requests.json unreadable');
   }),
 );
-vi.mock('../../new-user-decision', () => ({ notifyAdminsNewUser: notify }));
+vi.mock('../../new-user-decision', () => ({ notifyAdminsNewUser: notify, createPendingUserRequest: vi.fn() }));
 
 import * as channelRegistry from '../../../channel-registry';
 import { SessionInitializer } from '../session-initializer';
