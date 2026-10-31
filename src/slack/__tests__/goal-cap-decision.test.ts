@@ -5,7 +5,10 @@
  * 둘다 수락 처리"); a round that ends without an answer retires its DM.
  */
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DATA_DIR } from '../../env-paths';
 import type { ConversationSession, SessionGoal } from '../../types';
 
 vi.mock('../goal-loop-resume', () => ({ resumeGoalLoop: vi.fn() }));
@@ -17,7 +20,9 @@ import {
   GOAL_CAP_DECISION_SUPERSEDED_TEXT,
   goalCapDecisionResolvedText,
   openGoalCapDecision,
+  pendingGoalCapDmRewrites,
   recordGoalCapDm,
+  reloadGoalCapDmRewrites,
   retireGoalCapDecision,
   setGoalCapDecisionSurfaces,
 } from '../goal-cap-decision';
@@ -59,11 +64,20 @@ let updates: Array<{ ref: { channel: string; ts: string }; text: string }>;
 let broadcasts: number;
 let failNextUpdates: number;
 
+/** The DM-rewrite store on disk, read fresh (what the next process would load). */
+function rewritesOnDisk(): Array<{ channel: string; ts: string; text: string }> {
+  const file = path.join(DATA_DIR, 'goal-cap-dm-sync.json');
+  return fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf-8')) : [];
+}
+
 beforeEach(() => {
   resume.mockClear();
   updates = [];
   broadcasts = 0;
   failNextUpdates = 0;
+  fs.rmSync(path.join(DATA_DIR, 'goal-cap-dm-sync.json'), { force: true });
+  fs.rmSync(path.join(DATA_DIR, 'goal-cap-dm-sync.json.bak'), { force: true });
+  reloadGoalCapDmRewrites();
   setGoalCapDecisionSurfaces({
     updateDm: async (ref, text) => {
       if (failNextUpdates > 0) {
@@ -130,7 +144,7 @@ describe('answerGoalCapDecision — one answer path for both surfaces', () => {
     await flush();
     expect(updates).toEqual([{ ref: DM, text: goalCapDecisionResolvedText('continue', 'dashboard') }]);
     expect(updates[0].text).toContain('대시보드에서 응답');
-    expect(g.capDmSync).toBeUndefined();
+    expect(pendingGoalCapDmRewrites()).toEqual([]);
   });
 
   it('a dashboard Cancel pauses the goal and rewrites the DM without buttons (T2)', async () => {
@@ -152,7 +166,7 @@ describe('answerGoalCapDecision — one answer path for both surfaces', () => {
     expect(updates[0].text).toContain('중단');
   });
 
-  it('a Slack answer leaves the DM to its own respond() and pushes the board so the card resolves (T2)', async () => {
+  it('a Slack answer also queues a durable DM rewrite (its respond() can fail) and pushes the board (T2)', async () => {
     const g = pendingGoal();
     const result = answerGoalCapDecision({
       session: session(g),
@@ -167,7 +181,7 @@ describe('answerGoalCapDecision — one answer path for both surfaces', () => {
     expect(result.ok).toBe(true);
     expect(broadcasts).toBe(1);
     await flush();
-    expect(updates).toEqual([]);
+    expect(updates).toEqual([{ ref: DM, text: goalCapDecisionResolvedText('continue', 'slack') }]);
   });
 
   it('answers at most once across surfaces: the second answer is stale and changes nothing (T2)', () => {
@@ -247,7 +261,7 @@ describe('answerGoalCapDecision — one answer path for both surfaces', () => {
     ).toEqual({ ok: false, reason: 'invalid' });
   });
 
-  it('a DM sent before round ids existed is answered only while its round never recorded a ref', () => {
+  it('a button from before round ids existed answers only a round that has no id', () => {
     const legacy = goal({ capDmPendingAt: 1000 });
     const ok = answerGoalCapDecision({
       session: session(legacy),
@@ -259,9 +273,12 @@ describe('answerGoalCapDecision — one answer path for both surfaces', () => {
       save: vi.fn(),
     });
     expect(ok.ok).toBe(true);
-    const current = pendingGoal();
+    // A new round whose DM has not landed yet (no ref) still refuses an id-less button (review gate P1).
+    const fresh = goal();
+    openGoalCapDecision(fresh, 2000);
+    expect(fresh.capDmRef).toBeUndefined();
     const stale = answerGoalCapDecision({
-      session: session(current),
+      session: session(fresh),
       sessionKey: KEY,
       goalId: 'goal-1',
       actor: 'U-owner',
@@ -270,6 +287,7 @@ describe('answerGoalCapDecision — one answer path for both surfaces', () => {
       save: vi.fn(),
     });
     expect(stale).toEqual({ ok: false, reason: 'stale' });
+    expect(fresh.continuationCount).toBe(10);
   });
 
   it('the decision is persisted before the loop is kicked (a crash after the save is recovered by the restart resume)', () => {
@@ -295,11 +313,10 @@ describe('answerGoalCapDecision — one answer path for both surfaces', () => {
 });
 
 describe('DM sync — rewrites survive failures and restarts', () => {
-  it('a failed rewrite is kept on the goal and retried until it lands', async () => {
+  it('a failed rewrite stays in the store and is retried until it lands', async () => {
     vi.useFakeTimers();
     const g = pendingGoal();
     failNextUpdates = 1;
-    const save = vi.fn();
     answerGoalCapDecision({
       session: session(g),
       sessionKey: KEY,
@@ -308,25 +325,31 @@ describe('DM sync — rewrites survive failures and restarts', () => {
       actor: 'U-owner',
       decision: 'continue',
       surface: 'dashboard',
-      save,
+      save: vi.fn(),
     });
     await vi.advanceTimersByTimeAsync(0);
-    // The decision stands; the rewrite waits.
+    // The decision stands; the rewrite waits, on disk.
     expect(g.capDmPendingAt).toBeUndefined();
-    expect(g.capDmSync).toMatchObject({ ...DM });
+    expect(rewritesOnDisk()).toEqual([expect.objectContaining(DM)]);
     await vi.advanceTimersByTimeAsync(2_000);
     expect(updates).toHaveLength(1);
-    expect(g.capDmSync).toBeUndefined();
+    expect(rewritesOnDisk()).toEqual([]);
   });
 
   it('after a restart, a rewrite the previous process could not deliver is sent again', async () => {
-    const g = goal({ capDmSync: { ...DM, text: GOAL_CAP_DECISION_SUPERSEDED_TEXT } });
-    const save = vi.fn();
-    expect(flushGoalCapDmSync([{ goal: g }, { goal: undefined }], save)).toBe(1);
-    await flush();
+    vi.useFakeTimers();
+    const g = pendingGoal();
+    failNextUpdates = 10;
+    retireGoalCapDecision(g);
+    await vi.advanceTimersByTimeAsync(2_000 + 15_000 + 60_000);
+    expect(updates).toEqual([]);
+    // "Restart": a fresh process loads the store and flushes it.
+    reloadGoalCapDmRewrites();
+    failNextUpdates = 0;
+    expect(flushGoalCapDmSync()).toBe(1);
+    await vi.advanceTimersByTimeAsync(0);
     expect(updates).toEqual([{ ref: DM, text: GOAL_CAP_DECISION_SUPERSEDED_TEXT }]);
-    expect(g.capDmSync).toBeUndefined();
-    expect(save).toHaveBeenCalled();
+    expect(rewritesOnDisk()).toEqual([]);
   });
 });
 
@@ -357,5 +380,61 @@ describe('dmRefOf', () => {
     expect(dmRefOf({ channel: 'D1', ts: '1.2', echoedMessage: false })).toEqual({ channel: 'D1', ts: '1.2' });
     expect(dmRefOf(undefined)).toBeUndefined();
     expect(dmRefOf({ ts: '1.2' })).toBeUndefined();
+  });
+});
+
+describe('DM sync durability (review gate P1)', () => {
+  it('a retirement writes its rewrite to the store before the first attempt can fail', async () => {
+    const g = pendingGoal();
+    failNextUpdates = 10;
+    retireGoalCapDecision(g);
+    // Synchronously on disk — a crash right now still leaves it for the next process.
+    expect(rewritesOnDisk()).toEqual([{ ...DM, text: GOAL_CAP_DECISION_SUPERSEDED_TEXT }]);
+  });
+
+  it('a late DM (answered on the dashboard while the post was in flight) is on disk too', () => {
+    const g = goal();
+    openGoalCapDecision(g, 1000);
+    const round = g.capDecisionId as string;
+    retireGoalCapDecision(g);
+    failNextUpdates = 10;
+    expect(recordGoalCapDm(g, round, DM)).toBe('late');
+    expect(rewritesOnDisk()).toEqual([{ ...DM, text: GOAL_CAP_DECISION_SUPERSEDED_TEXT }]);
+  });
+
+  it("a newer round's rewrite never overwrites an older DM's pending rewrite — both reach Slack", async () => {
+    vi.useFakeTimers();
+    const g = pendingGoal();
+    failNextUpdates = 10;
+    answerGoalCapDecision({
+      session: session(g),
+      sessionKey: KEY,
+      goalId: 'goal-1',
+      decisionId: g.capDecisionId,
+      actor: 'U-owner',
+      decision: 'continue',
+      surface: 'dashboard',
+      save: vi.fn(),
+    });
+    openGoalCapDecision(g, 9000);
+    const DM2 = { channel: 'D-owner', ts: '1700000999.000200' };
+    recordGoalCapDm(g, g.capDecisionId as string, DM2);
+    retireGoalCapDecision(g);
+    expect(rewritesOnDisk().map((e) => e.ts)).toEqual([DM.ts, DM2.ts]);
+    failNextUpdates = 0;
+    reloadGoalCapDmRewrites();
+    flushGoalCapDmSync();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(updates.map((u) => u.ref.ts).sort()).toEqual([DM.ts, DM2.ts].sort());
+    expect(rewritesOnDisk()).toEqual([]);
+  });
+
+  it('a pending rewrite survives the goal being deleted from the session', () => {
+    const s = { goal: pendingGoal() } as { goal?: SessionGoal };
+    failNextUpdates = 10;
+    retireGoalCapDecision(s.goal);
+    s.goal = undefined; // the goal is gone (deleted / archived)
+    reloadGoalCapDmRewrites();
+    expect(pendingGoalCapDmRewrites()).toEqual([expect.objectContaining(DM)]);
   });
 });

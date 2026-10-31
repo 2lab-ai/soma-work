@@ -10,10 +10,13 @@
  *     the DM buttons and the card, and checked on every answer, so a button
  *     left over from an earlier round can never answer a later one;
  *   - `capDmRef`       — where the DM landed, stored only after the post
- *     succeeded (no ref ⇒ the DM is retried on the next cap trigger);
- *   - `capDmSync`      — a DM rewrite that has not reached Slack yet; retried
- *     in the background and again after a restart
- *     ({@link flushGoalCapDmSync}).
+ *     succeeded (no ref ⇒ the DM is retried on the next cap trigger).
+ *
+ * DM rewrites (resolved / superseded) that have not reached Slack yet live in
+ * their own store, `DATA_DIR/goal-cap-dm-sync.json`: one entry per DM, apart
+ * from the goal, so they survive the goal completing or being deleted. An
+ * entry is written before its first attempt, retried in the background and
+ * again after a restart ({@link flushGoalCapDmSync}).
  *
  * Exactly once: Slack buttons and the dashboard route run in the same daemon
  * process against the same in-memory session, so {@link answerGoalCapDecision}
@@ -24,6 +27,9 @@
  */
 
 import { randomUUID } from 'node:crypto';
+import * as path from 'node:path';
+import { atomicWriteJson, readJsonWithBackup } from '@soma/common/atomic-json';
+import { DATA_DIR } from '../env-paths';
 import { Logger } from '../logger';
 import type { ConversationSession, SessionGoal } from '../types';
 import { resumeGoalLoop } from './goal-loop-resume';
@@ -36,6 +42,11 @@ export type GoalCapDecisionSurface = 'slack' | 'dashboard';
 export interface GoalCapDmRef {
   channel: string;
   ts: string;
+}
+
+/** A DM rewrite waiting to reach Slack. */
+export interface GoalCapDmSync extends GoalCapDmRef {
+  text: string;
 }
 
 /** The host side effects a decision needs. Wired once in `index.ts`. */
@@ -101,7 +112,7 @@ export function recordGoalCapDm(goal: SessionGoal, decisionId: string, ref: Goal
     goal.capDmRef = ref;
     return 'recorded';
   }
-  queueDmSync(goal, ref, GOAL_CAP_DECISION_SUPERSEDED_TEXT);
+  queueDmSync(ref, GOAL_CAP_DECISION_SUPERSEDED_TEXT);
   return 'late';
 }
 
@@ -145,8 +156,9 @@ export function answerGoalCapDecision(args: AnswerGoalCapDecisionArgs): GoalCapD
   if (goal.createdBy !== actor) return { ok: false, reason: 'not_owner' };
   if (!isGoalCapDecisionPending(goal)) return { ok: false, reason: 'stale' };
   if (decisionId === undefined) {
-    // A button from before round ids existed: its round never recorded a DM ref.
-    if (goal.capDmRef) return { ok: false, reason: 'stale' };
+    // A button from before round ids existed answers only a round that has no id
+    // (opened by that older build); every newer round requires its own id.
+    if (goal.capDecisionId) return { ok: false, reason: 'stale' };
   } else if (decisionId !== goal.capDecisionId) {
     return { ok: false, reason: 'stale' };
   }
@@ -166,12 +178,12 @@ export function answerGoalCapDecision(args: AnswerGoalCapDecisionArgs): GoalCapD
   // `<session-goal>` block.
   goal.epoch = (goal.epoch ?? 0) + 1;
   session.systemPrompt = undefined;
-  // The Slack click rewrites its own message (respond); every other answer rewrites the DM here.
-  if (ref && surface !== 'slack') goal.capDmSync = { ...ref, text: goalCapDecisionResolvedText(decision, surface) };
   args.save();
 
+  // Every answer rewrites the round's DM through the durable queue — a Slack
+  // click also replaces its own message (respond), but that reply can fail.
+  if (ref) queueDmSync(ref, goalCapDecisionResolvedText(decision, surface));
   if (decision === 'continue') resumeGoalLoop(sessionKey);
-  if (goal.capDmSync) runDmSync(goal, args.save);
   surfaces.broadcast?.();
   return { ok: true, decision, goal };
 }
@@ -186,7 +198,7 @@ export function retireGoalCapDecision(goal: SessionGoal | undefined): void {
   const wasPending = goal.capDmPendingAt !== undefined;
   const ref = goal.capDmRef;
   endDecision(goal);
-  if (ref) queueDmSync(goal, ref, GOAL_CAP_DECISION_SUPERSEDED_TEXT);
+  if (ref) queueDmSync(ref, GOAL_CAP_DECISION_SUPERSEDED_TEXT);
   // Deferred: the caller is mid-mutation and persists right after.
   if (wasPending && surfaces.broadcast) queueMicrotask(() => surfaces.broadcast?.());
 }
@@ -197,53 +209,103 @@ function endDecision(goal: SessionGoal): void {
   goal.capDmRef = undefined;
 }
 
-function queueDmSync(goal: SessionGoal, ref: GoalCapDmRef, text: string): void {
-  goal.capDmSync = { ...ref, text };
-  runDmSync(goal);
+// ── DM rewrite queue: its own store, apart from the goal's lifecycle ──
+
+let rewrites: GoalCapDmSync[] | undefined;
+
+function storeFile(): string {
+  return path.join(DATA_DIR, 'goal-cap-dm-sync.json');
+}
+
+function validateRewrites(raw: unknown): GoalCapDmSync[] {
+  if (!Array.isArray(raw)) throw new Error('not an array');
+  return raw.filter(
+    (e): e is GoalCapDmSync =>
+      !!e && typeof e.channel === 'string' && typeof e.ts === 'string' && typeof e.text === 'string',
+  );
+}
+
+function loadRewrites(): GoalCapDmSync[] {
+  if (rewrites) return rewrites;
+  try {
+    rewrites = readJsonWithBackup(storeFile(), validateRewrites) ?? [];
+  } catch (error) {
+    logger.warn('Goal cap DM rewrite store unreadable — starting empty', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+    rewrites = [];
+  }
+  return rewrites;
+}
+
+function saveRewrites(): void {
+  try {
+    atomicWriteJson(storeFile(), loadRewrites());
+  } catch (error) {
+    logger.warn('Goal cap DM rewrite store write failed', {
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
+}
+
+/** The DM rewrites still waiting to reach Slack (oldest first). */
+export function pendingGoalCapDmRewrites(): GoalCapDmSync[] {
+  return [...loadRewrites()];
+}
+
+/** Drop the in-memory queue so the next read loads the store again (what a restart does). */
+export function reloadGoalCapDmRewrites(): void {
+  rewrites = undefined;
+}
+
+/**
+ * Queue a DM rewrite: one entry per DM (a newer rewrite replaces only the same
+ * DM's), written to the store before the first attempt, then sent.
+ */
+function queueDmSync(ref: GoalCapDmRef, text: string): void {
+  const entry: GoalCapDmSync = { channel: ref.channel, ts: ref.ts, text };
+  const list = loadRewrites();
+  const at = list.findIndex((e) => e.channel === ref.channel && e.ts === ref.ts);
+  if (at >= 0) list[at] = entry;
+  else list.push(entry);
+  saveRewrites();
+  runDmSync(entry);
 }
 
 /** Retry delays after a failed DM rewrite; once they run out the rewrite waits for the next restart. */
 const DM_SYNC_RETRY_MS = [2_000, 15_000, 60_000];
 
-function runDmSync(goal: SessionGoal, save?: () => void, attempt = 0): void {
-  const pending = goal.capDmSync;
+function runDmSync(entry: GoalCapDmSync, attempt = 0): void {
   const update = surfaces.updateDm;
-  if (!pending || !update) return;
-  update({ channel: pending.channel, ts: pending.ts }, pending.text).then(
+  if (!update) return;
+  update({ channel: entry.channel, ts: entry.ts }, entry.text).then(
     () => {
-      // A newer rewrite may have replaced this one meanwhile — it runs on its own.
-      if (goal.capDmSync === pending) {
-        goal.capDmSync = undefined;
-        save?.();
-      }
+      // A newer rewrite of the same DM may have replaced this one meanwhile — it runs on its own.
+      const list = loadRewrites();
+      const at = list.indexOf(entry);
+      if (at < 0) return;
+      list.splice(at, 1);
+      saveRewrites();
     },
     (error: unknown) => {
-      if (goal.capDmSync !== pending) return;
+      if (!loadRewrites().includes(entry)) return;
       const delay = DM_SYNC_RETRY_MS[attempt];
       if (delay === undefined) {
         logger.warn('Goal cap DM rewrite failed — kept for the next restart', {
-          channel: pending.channel,
+          channel: entry.channel,
           error: error instanceof Error ? error.message : String(error),
         });
         return;
       }
-      const timer = setTimeout(() => runDmSync(goal, save, attempt + 1), delay);
+      const timer = setTimeout(() => runDmSync(entry, attempt + 1), delay);
       timer.unref?.();
     },
   );
 }
 
-/**
- * After a restart: rewrite every DM whose rewrite did not reach Slack before
- * the process stopped. `save` persists the cleared markers.
- */
-export function flushGoalCapDmSync(sessions: Iterable<{ goal?: SessionGoal }>, save: () => void): number {
-  let started = 0;
-  for (const session of sessions) {
-    if (session.goal?.capDmSync) {
-      runDmSync(session.goal, save);
-      started++;
-    }
-  }
-  return started;
+/** After a restart: send every DM rewrite the previous process could not deliver. */
+export function flushGoalCapDmSync(): number {
+  const list = loadRewrites();
+  for (const entry of [...list]) runDmSync(entry);
+  return list.length;
 }
