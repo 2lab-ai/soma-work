@@ -58,7 +58,8 @@ const notify = vi.hoisted(() =>
     throw new Error('admin-requests.json unreadable');
   }),
 );
-vi.mock('../../new-user-decision', () => ({ notifyAdminsNewUser: notify, createPendingUserRequest: vi.fn() }));
+const create = vi.hoisted(() => vi.fn());
+vi.mock('../../new-user-decision', () => ({ notifyAdminsNewUser: notify, createPendingUserRequest: create }));
 
 import * as channelRegistry from '../../../channel-registry';
 import { SessionInitializer } from '../session-initializer';
@@ -200,6 +201,18 @@ describe('SessionInitializer - new-user gate teardown', () => {
       '/test/dir',
     );
     expect(notify).toHaveBeenCalled();
+    expect(mockClaudeHandler.terminateSession).toHaveBeenCalledWith('C123:thread123');
+    expect((result as any).halted).toBe(true);
+  });
+
+  it('the pending request itself could not be created: the session is still closed', async () => {
+    create.mockImplementationOnce(() => {
+      throw new Error('admin-requests.json unwritable');
+    });
+    const result = await sessionInitializer.initialize(
+      { user: 'U123', channel: 'C123', thread_ts: undefined, ts: 'thread123', text: 'hello' } as any,
+      '/test/dir',
+    );
     expect(mockClaudeHandler.terminateSession).toHaveBeenCalledWith('C123:thread123');
     expect((result as any).halted).toBe(true);
   });

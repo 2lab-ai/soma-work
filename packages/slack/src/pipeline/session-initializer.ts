@@ -465,8 +465,8 @@ export class SessionInitializer {
       if (!userSettings) {
         // New user: create pending record + notify admins
         this.logger.info('New user detected, creating pending record', { sessionKey, user, userName });
-        providers.createPendingUser(user, userName);
         try {
+          providers.createPendingUser(user, userName);
           await this.deps.slackApi.postMessage(channel, '⏳ 승인 대기 중입니다. 관리자에게 요청이 전달되었습니다.', {
             threadTs,
           });

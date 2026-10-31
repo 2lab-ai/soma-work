@@ -252,6 +252,18 @@ describe('new-user access requests as one decision (#622)', () => {
     expect(JSON.parse(buttonValue(api, -1)).round).toBe(Number(requestIdOf(card).split('~')[1]));
   });
 
+  it('the round cannot be written: no pending user is created (never a pending user under an earlier round)', async () => {
+    const id = `UNEWY${Date.now()}`;
+    const file = path.join(DATA_DIR, 'admin-requests.json');
+    fs.mkdirSync(file, { recursive: true }); // the store cannot be read or written
+    try {
+      expect(() => createPendingUserRequest(id, 'Kim')).toThrow();
+      expect(userSettingsStore.getUserSettings(id)).toBeUndefined();
+    } finally {
+      fs.rmSync(file, { recursive: true, force: true });
+    }
+  });
+
   it('the decision cannot be saved: nothing is recorded, the user stays pending, a retry works', async () => {
     const id = newUser();
     await notifyAdminsNewUser(api, id, 'Kim');

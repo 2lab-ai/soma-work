@@ -76,6 +76,14 @@ export function adoptOrphanedClaim(kind: AdminRequestKind, requestId: string): b
   return true;
 }
 
+/**
+ * Stop carrying out a claim here without deciding it: its side effect's
+ * outcome is unknown, so it stays claimed (an orphan) for a redo.
+ */
+export function releaseLiveClaim(kind: AdminRequestKind, requestId: string): void {
+  liveClaims.delete(keyOf(kind, requestId));
+}
+
 /** The request as it stands at `now` (expired → null). */
 function current(req: AdminRequest | undefined, now: number): AdminRequest | null {
   if (!req || req.expiresAt <= now) return null;
