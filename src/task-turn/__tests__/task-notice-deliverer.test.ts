@@ -835,3 +835,138 @@ describe('task notice deliverer — coverage from the reviews (fable #668)', () 
     expect(owesInstructionThread(task({ slackless: false, notices: [result] }))).toBe(false);
   });
 });
+
+describe('task notice deliverer — hardening (E2 ⑨, fable #668 P3)', () => {
+  it('a final read that fails once is read again: the thread gets the answer, not "unreadable"', async () => {
+    const readFinal = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('EIO'))
+      .mockResolvedValue({ text: 'All done: **3 files** changed.', clipped: false });
+    const h = harness({ readFinal });
+    h.session.notices = [result];
+    h.deliverer.enqueue(h.session, KEY);
+    await h.deliverer.deliver();
+    expect(readFinal).toHaveBeenCalledTimes(2);
+    expect(h.posts).toHaveLength(1);
+    expect(h.posts[0].text).toContain('All done');
+    expect(h.posts[0].text).not.toContain('결과를 읽지 못했어요');
+  });
+
+  it('stop() resolves only after the post under way has its mark saved', async () => {
+    const h = harness();
+    h.session.notices = [link, result];
+    h.deliverer.enqueue(h.session, KEY);
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    (h.deps.post as any).mockImplementationOnce(async () => {
+      await gate;
+      return { ts: '1700000099.000001' };
+    });
+    void h.deliverer.deliver();
+    await vi.waitFor(() => expect(h.deps.post).toHaveBeenCalledTimes(1));
+    let stopped = false;
+    const stopping = h.deliverer.stop().then(() => {
+      stopped = true;
+    });
+    await Promise.resolve();
+    expect(stopped).toBe(false);
+    release();
+    await stopping;
+    expect(h.ledger.get(link.id)).toMatchObject({ state: 'posted', messageTs: '1700000099.000001' });
+    // The pass ended after that post: the result waits for the next process.
+    expect(h.ledger.get(result.id)?.state).toBe('pending');
+  });
+
+  it('stop() with no pass under way resolves at once', async () => {
+    const h = harness();
+    await expect(h.deliverer.stop()).resolves.toBeUndefined();
+  });
+
+  it('a claim that keeps failing is tried maxAttempts times, then left alone and shown on the card; the boot pass tries again', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness({ maxAttempts: 2, retryDelayMs: 1_000 });
+      h.session.notices = [result];
+      h.deliverer.enqueue(h.session, KEY);
+      const claim = h.ledger.claim.bind(h.ledger);
+      const spy = vi.spyOn(h.ledger, 'claim').mockImplementation(() => {
+        throw new Error('ENOSPC');
+      });
+      await h.deliverer.deliver();
+      expect(h.deliverer.failures(KEY)).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(spy).toHaveBeenCalledTimes(2);
+      // Spent: no timer, no more claims in this process, on the card.
+      expect(vi.getTimerCount()).toBe(0);
+      expect(h.deliverer.failures(KEY)).toEqual([{ kind: 'result', error: 'ENOSPC' }]);
+      await h.deliverer.deliver();
+      expect(spy).toHaveBeenCalledTimes(2);
+      // The disk is back; the boot pass (retryFailed) tries again and it goes out.
+      spy.mockImplementation(claim);
+      await h.deliverer.deliver({ retryFailed: true });
+      expect(h.ledger.get(result.id)?.state).toBe('posted');
+      expect(h.deliverer.failures(KEY)).toEqual([]);
+      await h.deliverer.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('a claim that fails once and then works leaves nothing on the card', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness({ maxAttempts: 2, retryDelayMs: 1_000 });
+      h.session.notices = [result];
+      h.deliverer.enqueue(h.session, KEY);
+      const claim = h.ledger.claim.bind(h.ledger);
+      vi.spyOn(h.ledger, 'claim')
+        .mockImplementationOnce(() => {
+          throw new Error('EIO');
+        })
+        .mockImplementation(claim);
+      await h.deliverer.deliver();
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(h.ledger.get(result.id)?.state).toBe('posted');
+      expect(h.deliverer.failures(KEY)).toEqual([]);
+      await h.deliverer.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe('task notice deliverer — claim failures count in a row (E2 ⑨)', () => {
+  it('a claim that worked in between resets the count: two failures apart do not spend the notice', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness({ maxAttempts: 3, retryDelayMs: 1_000 });
+      h.session.notices = [result];
+      h.deliverer.enqueue(h.session, KEY);
+      const claim = h.ledger.claim.bind(h.ledger);
+      const fail = () => {
+        throw new Error('EIO');
+      };
+      vi.spyOn(h.ledger, 'claim')
+        .mockImplementationOnce(fail) // claim fails (1)
+        .mockImplementationOnce(fail) // claim fails (2)
+        .mockImplementationOnce(claim) // claim works; the post fails below
+        .mockImplementationOnce(fail) // claim fails — 1 in a row, not 3
+        .mockImplementation(claim);
+      (h.deps.post as any).mockImplementationOnce(async () => {
+        throw new Error('ratelimited');
+      });
+      await h.deliverer.deliver();
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(h.deliverer.failures(KEY)).toEqual([]);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(h.ledger.get(result.id)?.state).toBe('posted');
+      await h.deliverer.stop();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});

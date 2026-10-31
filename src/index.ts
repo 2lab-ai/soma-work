@@ -148,6 +148,7 @@ import { applyTodoList, creditTaskUsage, emptyTaskLedger, ledgerTasks } from './
 import { createMainCallReader, reconcileTaskCalls, type TranscriptCall } from './session/task-usage-reconcile';
 import { resolveArchivedResume } from './session-archive';
 import { buildTaskSessionKey } from './session-identity';
+import { SessionDeleteRefusedError } from './session-registry';
 import { applySummaryTitle } from './session-title-policy';
 import {
   answerGoalCapDecision,
@@ -796,12 +797,25 @@ async function start() {
     // #598 ④c — the caller of Slack-less tasks' turns, built below once the
     // work-log appender exists; Close and shutdown reach it through here.
     let taskTurnController: TaskTurnController | undefined;
+    /** E2 ⑤ — the notice ledger could not be read: tasks that owe their thread are kept (D6). */
+    let taskNoticeLedgerUnreadable = false;
 
     // Connect dashboard: close handler (terminate session)
     setDashboardCloseHandler(async (sessionKey: string) => {
       // A task's running chain ends `cancelled` (session-close) and commits its
       // outcome before the task is archived and removed (598c v2 a2).
-      if (claudeHandler.getSessionRegistry().getSessionByKey(sessionKey)?.slackless === true) {
+      const closing = claudeHandler.getSessionRegistry().getSessionByKey(sessionKey);
+      if (closing?.slackless === true) {
+        // Refused before its chain is cancelled: with no ledger the deletion
+        // would be refused anyway, and the work must not stop for nothing
+        // (fable #668 P3-4).
+        if (taskNoticeLedgerUnreadable && owesInstructionThread(closing)) {
+          throw new SessionDeleteRefusedError(
+            sessionKey,
+            'terminated',
+            new Error('task notice ledger unreadable — kept until its notices can be handed over'),
+          );
+        }
         await taskTurnController?.close(sessionKey);
       }
       claudeHandler.terminateSession(sessionKey);
@@ -1253,6 +1267,7 @@ async function start() {
         });
         // Fail closed (D6): a task that still owes its thread is not deleted while
         // there is no ledger to hand that to (fable #668 P2-1).
+        taskNoticeLedgerUnreadable = true;
         slackHandler.setTaskNoticeHandoff((sessionKey, session) => {
           if (owesInstructionThread(session)) {
             throw new Error(`task notice ledger unreadable — ${sessionKey} kept until its notices can be handed over`);
@@ -1883,8 +1898,20 @@ async function start() {
         logger.info('GitHub App auto-refresh stopped');
       }
 
-      // E2 ⑤ — no new task notice pass or retry once shutting down (grok #668 P3).
-      taskNoticeDeliverer?.stop();
+      // E2 ⑤ — no new task notice pass or retry once shutting down (grok #668 P3);
+      // wait, bounded, for a post under way so its mark is saved — a post cut
+      // by the exit is sent again at boot (fable #668 P3-3).
+      if (taskNoticeDeliverer) {
+        let stopTimer: NodeJS.Timeout | undefined;
+        const ended = await Promise.race([
+          taskNoticeDeliverer.stop().then(() => true),
+          new Promise<false>((resolve) => {
+            stopTimer = setTimeout(() => resolve(false), 3000);
+          }),
+        ]);
+        clearTimeout(stopTimer);
+        if (!ended) logger.warn('Task notice post still under way at shutdown — it may be sent again at boot');
+      }
 
       // Stop conversation viewer
       try {
