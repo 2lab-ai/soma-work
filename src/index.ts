@@ -822,9 +822,9 @@ async function start() {
         // E4 ⑦ (D10 b · c) — an epic's close cancels its running children first; a child's close is its epic's event.
         getChildTasks: (parentTaskId) => claudeHandler.getSessionRegistry().getChildTasks(parentTaskId),
         isRunning: (key) => taskTurnController?.isRunning(key) ?? false,
-        // The chain the close cancels names the mark (E4 ⑦, grok #709 R1).
-        markClosedByParent: (key) =>
-          claudeHandler.getSessionRegistry().markClosedByParent(key, Date.now(), taskTurnController?.runningChain(key)),
+        runningChain: (key) => taskTurnController?.runningChain(key),
+        markClosedByParent: (key, chain) =>
+          claudeHandler.getSessionRegistry().markClosedByParent(key, Date.now(), chain),
         recordChildClosed: (key) => claudeHandler.getSessionRegistry().recordEpicChildClosed(key),
         markClosing: (key, closing) => claudeHandler.getSessionRegistry().markClosing(key, closing),
         logger,
