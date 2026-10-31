@@ -725,29 +725,25 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
   });
 });
 
-describe('panel goal — the full editor moved here, its draft safe across live updates', () => {
-  it('renders the shared goal component (current, queue, history, add) into #panel-goal with the card gates', () => {
+describe("panel goal — the editor is <ui-goal-card> here (D6b E-12), its draft the element's across live updates", () => {
+  it('hands the element the goal data with the card gates (the owner of a live session edits; others read)', () => {
     const src = clientFn('renderPanelGoal');
     expect(src).toContain("document.getElementById('panel-goal')");
-    expect(src).toContain('renderCardGoal(s, col, canEdit, _panelGoalOpen)');
-    expect(src).toContain('isEditingGoal(el)');
-    expect(src).toContain('captureGoalDraft(el)');
-    expect(src).toContain('restoreGoalDraft(el, draft)');
-    expect(src).toMatch(/canEdit = isOwner && !isSiblingSession\(s\)/);
+    expect(src).toContain("document.createElement('ui-goal-card')");
+    expect(src).toContain('goalCardData(s, canEdit)');
+    expect(src).toMatch(/canEdit = isOwner && live && !isSiblingSession\(s\)/);
+    // The element morphs in place, so the page keeps no draft of its own (dashboard-goal-client.test.ts has the rest).
+    expect(src).not.toContain('captureGoalDraft');
   });
 
-  it('goal writes re-render the panel goal (not only the card) and read the live form from it', () => {
-    expect(clientFn('setGoalError')).toContain('renderPanelGoal()');
-    // The 완료된 goal toggle lives in the panel now: its choice (the disclosure's ui-toggle) must repaint the panel's
-    // goal — on the way open, and again once the fold settled (D4 K-06).
-    expect(clientFn('goalHistoryToggle')).toContain('renderPanelGoal()');
-    expect(clientFn('goalHistoryFolded')).toContain('renderPanelGoal()');
-    // After the await, only this session's form — never another session's draft.
-    expect(clientFn('addGoalFromCard')).toContain(
-      "panelSessionKey === key ? document.getElementById('panel-goal') : null",
-    );
-    expect(clientFn('addGoalFromCard')).toContain("document.getElementById('panel-goal')");
-    expect(clientFn('goalInputBlur')).toContain('renderPanelGoal()');
+  it("goal writes repaint the panel goal (the element shows busy, then the outcome); the completed goals fold is the element's", () => {
+    expect(clientFn('goalAction')).toContain('repaintPanelGoalFor(key)');
+    expect(clientFn('setGoalError')).toContain('repaintPanelGoalFor(key)');
+    expect(clientFn('repaintPanelGoalFor')).toContain('renderPanelGoal()');
+    // The add's draft is cleared only on this session's live card — never another session's.
+    expect(clientFn('addGoal')).toContain("card.getAttribute('data-goal-key') === key");
+    expect(TEMPLATE).not.toContain('goalHistoryToggle');
+    expect(TEMPLATE).not.toContain('cg-hx');
   });
 });
 
@@ -1402,44 +1398,30 @@ describe('the detail deck — open cards and their detail cards move together (S
   });
 });
 
-describe('a goal add in flight is busy until its form is settled (executed)', () => {
-  it('busy while sent; the latch releases only after the sent text left the form — no double send', async () => {
+describe('a goal add in flight is busy until it is settled (executed)', () => {
+  it('busy while sent (the element spins its Add); a second add in flight is refused — no double send; the draft goes once it went through', async () => {
     let release: (v: { ok: boolean; error: string }) => void = () => {};
     const posts: string[] = [];
-    const input = {
-      value: 'ship it',
-      blurred: false,
-      blur() {
-        this.blurred = true;
+    const card = { isConnected: true, getAttribute: () => 'k', draft: 'ship it' };
+    const m = load<{
+      addGoal(k: string, o: string, c: unknown): Promise<void>;
+      isBusy(k: string, op: string): boolean;
+    }>(['isBusy', 'setBusy', 'goalAction', 'addGoal'], ['_busy', '_goalBusy'], {
+      postGoalAction: (_k: string, p: { objective: string }) => {
+        posts.push(p.objective);
+        return new Promise((r) => (release = r));
       },
-      form: null as unknown,
-    };
-    const btn = { disabled: false };
-    const form = { querySelector: (sel: string) => (sel === '.cg-add-input' ? input : btn) };
-    input.form = form;
-    const host = { querySelector: () => input };
-    const m = load<{ addGoalFromCard(k: string, f: unknown): Promise<void>; isBusy(k: string, op: string): boolean }>(
-      ['isBusy', 'setBusy', 'addGoalFromCard'],
-      ['_busy', '_goalAdding'],
-      {
-        document: { getElementById: (id: string) => (id === 'panel-goal' ? host : null) },
-        postGoalAction: (_k: string, p: { objective: string }) => {
-          posts.push(p.objective);
-          return new Promise((r) => (release = r));
-        },
-        setGoalError: () => {},
-        loadSessions: () => {},
-        panelSessionKey: 'k',
-      },
-    );
-    const sent = m.addGoalFromCard('k', form);
+      setGoalError: () => {},
+      repaintPanelGoalFor: () => {},
+      loadSessions: () => {},
+    });
+    const sent = m.addGoal('k', 'ship it', card);
     expect(m.isBusy('k', 'goal')).toBe(true);
-    await m.addGoalFromCard('k', form); // a second Enter while the first is in flight
+    await m.addGoal('k', 'ship it', card); // a second Enter while the first is in flight
     expect(posts).toEqual(['ship it']);
     release({ ok: true, error: '' });
     await sent;
-    expect(input.value).toBe('');
-    expect(input.blurred).toBe(true);
+    expect(card.draft).toBe('');
     expect(m.isBusy('k', 'goal')).toBe(false);
   });
 });
@@ -1477,23 +1459,20 @@ describe('one write in flight per session and operation, whichever surface asks 
   it('a goal add while a goal delete is pending is refused — add and delete share the goal lock', async () => {
     let release: (v: { ok: boolean; error: string }) => void = () => {};
     const posts: string[] = [];
-    const input = { value: 'next goal', blur() {}, form: null as unknown };
-    const form = { querySelector: (sel: string) => (sel === '.cg-add-input' ? input : { disabled: false }) };
     const m = load<{
-      goalAction(k: string, p: unknown, b: unknown): Promise<void>;
-      addGoalFromCard(k: string, f: unknown): Promise<void>;
-    }>(['isBusy', 'setBusy', 'goalAction', 'addGoalFromCard'], ['_busy', '_goalAdding'], {
-      document: { getElementById: () => null },
+      goalAction(k: string, p: unknown, id?: string): Promise<boolean>;
+      addGoal(k: string, o: string, c: unknown): Promise<void>;
+    }>(['isBusy', 'setBusy', 'goalAction', 'addGoal'], ['_busy', '_goalBusy'], {
       postGoalAction: (_k: string, p: { action: string }) => {
         posts.push(p.action);
         return new Promise((r) => (release = r));
       },
       setGoalError: () => {},
+      repaintPanelGoalFor: () => {},
       loadSessions: () => {},
-      panelSessionKey: 'k',
     });
-    const del = m.goalAction('k', { action: 'delete', goalId: 'g1', expect: 'current' }, null);
-    await m.addGoalFromCard('k', form);
+    const del = m.goalAction('k', { action: 'delete', goalId: 'g1', expect: 'current' });
+    await m.addGoal('k', 'next goal', null);
     expect(posts).toEqual(['delete']);
     release({ ok: true, error: '' });
     await del;
@@ -1511,77 +1490,26 @@ describe('a live goal update never rebinds a focused control to another goal (ex
     });
     expect(m.domKeyOf(el({ 'data-mk': 'queued:q1' }))).not.toBe(m.domKeyOf(el({ 'data-mk': 'queued:q2' })));
     expect(m.domKeyOf(el({ 'data-mk': 'queued:q1' }))).toBe(m.domKeyOf(el({ 'data-mk': 'queued:q1' })));
-    const goal = load<{ renderCardGoal(s: unknown, col: string, canEdit: boolean): string }>(
-      [
-        'esc',
-        'escAttr',
-        'escJs',
-        'toNum',
-        'formatTokens',
-        'formatDuration',
-        'formatGoalTime',
-        'renderGoalHistory',
-        'isBusy',
-        'renderCardGoal',
-      ],
-      [
-        'GOAL_STATUS_LABELS',
-        'GOAL_STATUS_TONE',
-        'GOAL_SVG',
-        'GOAL_VIA_LABELS',
-        '_goalHistoryOpen',
-        '_goalErrors',
-        '_busy',
-      ],
+    // The goal rows are <ui-goal-card>'s own (keyed by goal id inside the element, D6b): the page hands ids as strings.
+    const goal = load<{
+      goalCardData(s: unknown, canEdit: boolean): { current: { id: string }; queue: Array<{ id: string }> };
+    }>(
+      ['toNum', 'formatTokens', 'formatDuration', 'goalPastItem', 'goalCardData'],
+      ['GOAL_VIA_LABELS', 'GOAL_OBJECTIVE_MAX', 'GOAL_ACTIONS', '_goalErrors', '_goalBusy'],
     );
-    const html = goal.renderCardGoal(card(), 'working', true);
-    expect(html).toContain('data-mk="goal:g1"');
-    expect(html).toContain('<li data-mk="queued:g2">');
+    const d = goal.goalCardData(card(), true);
+    expect(d.current.id).toBe('g1');
+    expect(d.queue.map((q) => q.id)).toEqual(card().goal.queue.map((q: { goalId: string }) => String(q.goalId)));
   });
 });
 
-describe('focus inside the goal section after its goal left (executed)', () => {
-  it("a focused control whose goal left lands focus on the section — never on another goal's control", () => {
-    const btn = { id: 'del-q1' };
-    let inside = new Set<unknown>([btn]);
-    const doc: Record<string, unknown> = { activeElement: btn, body: {} };
-    const classes = new Set<string>(['is-empty']);
-    const el = {
-      style: { display: '' },
-      _html: 'old',
-      _key: 'k',
-      // Task view T1.6: a session without a goal marks the section empty (자세히 shows it).
-      classList: { toggle: (c: string, on: boolean) => (on ? classes.add(c) : classes.delete(c)) },
-      contains: (n: unknown) => inside.has(n),
-      focus: () => {
-        doc.activeElement = el;
-      },
-      querySelector: () => null,
-    };
-    (doc as { getElementById: (id: string) => unknown }).getElementById = (id: string) =>
-      id === 'panel-goal' ? el : null;
-    const m = load<{ renderPanelGoal(): void }>(
-      ['isEditingGoal', 'captureGoalDraft', 'restoreGoalDraft', 'renderPanelGoal'],
-      [],
-      {
-        document: doc,
-        panelSessionKey: 'k',
-        _sessionCache: { k: card() },
-        sessionColOf: () => 'working',
-        currentUserId: 'U1',
-        isSiblingSession: () => false,
-        renderCardGoal: () => 'new',
-        _panelGoalOpen: false, // SSOT 2026-10-29: the objective's fold
-        syncGoalMore: () => {},
-        morphInnerHtml: () => {
-          inside = new Set(); // Q1's row (and its focused Delete) is gone
-          doc.activeElement = doc.body;
-        },
-      },
-    );
-    m.renderPanelGoal();
-    expect(doc.activeElement).toBe(el);
-    expect(classes.has('is-empty')).toBe(false); // the session has a current goal
+describe('the goal section after its goal left', () => {
+  it("is the element's to settle (focus lands on the card, never on another goal's control): the page keeps no focus bookkeeping there", () => {
+    const src = clientFn('renderPanelGoal');
+    expect(src).not.toContain('activeElement');
+    expect(src).not.toContain('.focus(');
+    // Task view T1.6: a session without a goal marks the section empty (자세히 shows it).
+    expect(src).toContain("el.classList.toggle('is-empty'");
     // A card switch starts the composer clean: a fresh <ui-agent-steering> with a fresh composer (no text, no files).
     expect(clientFn('openPanel')).toMatch(/if \(!sameSession\) \{\s*pcFreshSteer\(\);\s*\/\//);
   });
@@ -1847,7 +1775,7 @@ describe('interaction state survives live renders on both surfaces', () => {
     expect(clientFn('doAction')).toContain("setBusy(key, 'action', true)");
     expect(clientFn('mpData')).toContain("isBusy(s.key, 'model')");
     expect(clientFn('mpData')).toContain("isBusy(s.key, 'effort')");
-    expect(clientFn('renderCardGoal')).toContain("isBusy(s.key, 'goal')");
+    expect(clientFn('goalAction')).toContain("isBusy(key, 'goal')");
     expect(clientFn('sessionActionsOf')).toContain("isBusy(s.key, 'action')");
   });
 

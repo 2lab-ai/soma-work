@@ -358,23 +358,24 @@ describe('panel task runs carry id, times and tool calls (T7/T8)', () => {
   });
 });
 
-describe('goals: completed goals open with their details (T6)', () => {
-  const open: Record<string, boolean> = {};
-  const m = load<{ renderCardGoal(s: unknown, col: string, canEdit: boolean): string }>(
-    [
-      'esc',
-      'escAttr',
-      'escJs',
-      'toNum',
-      'formatTokens',
-      'formatDuration',
-      'formatGoalTime',
-      'renderGoalHistory',
-      'isBusy',
-      'renderCardGoal',
-    ],
-    ['GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', '_goalErrors', 'GOAL_VIA_LABELS', '_busy'],
-    { _goalHistoryOpen: open },
+describe('goals: completed goals with their details (T6) — what the page hands <ui-goal-card>', () => {
+  const m = load<{
+    goalCardData(
+      s: unknown,
+      canEdit: boolean,
+    ): {
+      history: Array<{
+        id: string;
+        objective: string;
+        status: string;
+        endedAt?: number;
+        meta?: string[];
+        note?: string;
+      }>;
+    };
+  }>(
+    ['toNum', 'formatTokens', 'formatDuration', 'goalPastItem', 'goalCardData'],
+    ['GOAL_VIA_LABELS', 'GOAL_OBJECTIVE_MAX', 'GOAL_ACTIONS', '_goalErrors', '_goalBusy'],
   );
   const card = (history: unknown[], over: Record<string, unknown> = {}) => ({
     key: 'inst::C1:t1',
@@ -403,39 +404,28 @@ describe('goals: completed goals open with their details (T6)', () => {
     { goalId: 'g1', objective: '<b>첫</b>', completedVia: 'user', completionReason: 'user' },
   ];
 
-  it('closed: the head offers the completed goals with their count; no details yet', () => {
-    const html = m.renderCardGoal(card(H), 'working', true);
-    expect(html).toContain('aria-expanded="false"');
-    expect(html).toContain('완료된 goal 2개');
-    expect(html).not.toContain('두번째 끝난 goal');
+  it('every completed goal with when it closed, time spent, tokens, cost, continuations, how and why — the element folds them under 지난 목표', () => {
+    const { history } = m.goalCardData(card(H), true);
+    expect(history).toEqual([
+      {
+        id: 'g2',
+        objective: '두번째 끝난 goal',
+        status: 'complete',
+        endedAt: Date.parse('2026-10-21T01:12:00Z'),
+        meta: ['소요 10m 0s', '1.5M tok', '$3.40', '이어하기 4회', '평가 모델 완료'],
+        note: '모든 요건에 증거가 있다',
+      },
+      // Newest first, as the server sends them; the text goes as written (the element escapes it).
+      { id: 'g1', objective: '<b>첫</b>', status: 'complete', meta: ['직접 완료'] },
+    ]);
   });
 
-  it('open: every completed goal with when it closed, time spent, tokens, cost, continuations, how and why', () => {
-    open['inst::C1:t1'] = true;
-    const html = m.renderCardGoal(card(H), 'working', true);
-    expect(html).toContain('aria-expanded="true"');
-    expect(html).toContain('두번째 끝난 goal');
-    expect(html).toContain('10m 0s');
-    expect(html).toContain('1.5M tok');
-    expect(html).toContain('$3.40');
-    expect(html).toContain('이어하기 4회');
-    expect(html).toContain('평가 모델 완료');
-    expect(html).toContain('모든 요건에 증거가 있다');
-    expect(html).toContain('직접 완료');
-    // Newest first, as the server sends them.
-    expect(html.indexOf('두번째 끝난 goal')).toBeLessThan(html.indexOf('&lt;b&gt;첫&lt;/b&gt;'));
-    expect(html).not.toContain('<b>첫');
-    delete open['inst::C1:t1'];
+  it('a read-only viewer gets the history too (the element shows it without controls)', () => {
+    expect(m.goalCardData(card(H), false).history).toHaveLength(2);
   });
 
-  it('a read-only viewer and a closed card can open the history too', () => {
-    open['inst::C1:t1'] = true;
-    expect(m.renderCardGoal(card(H), 'closed', false)).toContain('두번째 끝난 goal');
-    delete open['inst::C1:t1'];
-  });
-
-  it('no completed goals: no history control', () => {
-    expect(m.renderCardGoal(card([]), 'working', true)).not.toContain('cg-history');
+  it('no completed goals: an empty history (the element draws no fold)', () => {
+    expect(m.goalCardData(card([]), true).history).toEqual([]);
   });
 });
 
