@@ -240,12 +240,14 @@ describe('live times are <ui-elapsed> (D7 K-03)', () => {
       elapsedHtml(since: number, title?: string): string;
       activeTimeHtml(leg: number, acc: number, title?: string): string;
       agoHtml(at: number): string;
-    }>(['esc', 'escAttr', 'toNum', 'formatNmSSs', 'elapsedHtml', 'activeTimeHtml', 'agoHtml'], []);
-    expect(h.elapsedHtml(61000, '활성 시간')).toBe('<ui-elapsed since="61000" title="활성 시간"></ui-elapsed>');
-    expect(h.agoHtml(1700000000000)).toBe('<ui-elapsed since="1700000000000" format="ago"></ui-elapsed>');
+    }>(['esc', 'escAttr', 'toNum', 'formatDuration', 'formatNmSSs', 'elapsedHtml', 'activeTimeHtml', 'agoHtml'], []);
+    expect(h.elapsedHtml(61000, '활성 시간')).toBe(
+      '<ui-elapsed since="61000" lang="ko" title="활성 시간"></ui-elapsed>',
+    );
+    expect(h.agoHtml(1700000000000)).toBe('<ui-elapsed since="1700000000000" format="ago" lang="ko"></ui-elapsed>');
     // A leg under way: since = its start less what ran before it; closed: the settled total in the page's words.
-    expect(h.activeTimeHtml(1700000000000, 65000)).toBe('<ui-elapsed since="1699999935000"></ui-elapsed>');
-    expect(h.activeTimeHtml(0, 65000, '활성 시간')).toBe('<span title="활성 시간">1m 05s</span>');
+    expect(h.activeTimeHtml(1700000000000, 65000)).toBe('<ui-elapsed since="1699999935000" lang="ko"></ui-elapsed>');
+    expect(h.activeTimeHtml(0, 65000, '활성 시간')).toBe('<span title="활성 시간">1분 05초</span>');
     expect(h.elapsedHtml(Number.NaN)).not.toContain('NaN');
   });
 });
@@ -272,10 +274,10 @@ describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
   it('each task shows its id; a completed task its elapsed time and tool calls', () => {
     const html = tl.renderTimeline(workingCard());
     expect(html).toContain('<span class="tl-id">#T1</span>');
-    expect(html).toContain('1m 0s');
+    expect(html).toContain('1분 00초');
     expect(html).toContain('툴 7회');
     // D7 K-03: the running task's live time is <ui-elapsed> (its own tick), never a page clock.
-    expect(html).toContain('<ui-elapsed since="61000"></ui-elapsed>');
+    expect(html).toContain('<ui-elapsed since="61000" lang="ko"></ui-elapsed>');
     expect(html).toContain('툴 3회');
     // A pending task has neither time nor tool calls.
     expect(html).toMatch(/#T3<\/span><span class="tl-text">Ship it<\/span><\/li>/);
@@ -469,7 +471,7 @@ describe('goals: completed goals with their details (T6) — what the page hands
         objective: '두번째 끝난 goal',
         status: 'complete',
         endedAt: Date.parse('2026-10-21T01:12:00Z'),
-        meta: ['소요 10m 0s', '1.5M tok', '$3.40', '이어하기 4회', '평가 모델 완료'],
+        meta: ['소요 10분 00초', '1.5M 토큰', '$3.40', '이어하기 4회', '평가 모델 완료'],
         note: '모든 요건에 증거가 있다',
       },
       // Newest first, as the server sends them; the text goes as written (the element escapes it).
@@ -998,13 +1000,13 @@ describe('model switch on the open card (T4/T5)', () => {
     expect(
       m.modelSwitchNote({ ok: true, result: { status: 'switched', nickname: 'grok[1m]', autoCompactTokens: 450_000 } })
         .text,
-    ).toBe('grok[1m](으)로 전환 · autocompact 450.0K');
+    ).toBe('grok[1m](으)로 전환 · 자동 압축 450.0K');
     expect(
       m.modelSwitchNote({
         ok: true,
         result: { status: 'compacting', nickname: 'grok[1m]', autoCompactTokens: 450_000 },
       }).text,
-    ).toContain('compact한 뒤 전환');
+    ).toContain('압축한 뒤 전환');
     expect(m.modelSwitchNote({ ok: false, error: '먼저 compact' })).toEqual({ text: '먼저 compact', error: true });
   });
 });

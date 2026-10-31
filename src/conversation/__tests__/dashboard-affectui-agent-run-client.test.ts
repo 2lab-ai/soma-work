@@ -232,7 +232,7 @@ describe('plan — the Tasks section of the tab: the tasks that ran, in the orde
     expect(html).toContain(
       '<ui-disclosure class="panel-tasks-dc" flush><span slot="summary" class="panel-tasks-header">',
     );
-    expect(html).toContain('<span class="ps-sec-title">Tasks</span>');
+    expect(html).toContain('<span class="ps-sec-title">작업</span>');
     // The run in progress (its activeForm), how many ran and completed, what is left of the plan.
     expect(text(html)).toContain('Rendering the bars·실행 2 · 완료 1·남은 1');
     expect(html).not.toContain('panel-tasks-body');
@@ -589,14 +589,14 @@ describe('the run list folds past TASK_RUNS_SHOWN; replaced and skipped tasks; t
     // Shares add up to whole calls (2.5 + 2.5); 0.4 subagent calls are none. The plan left counts nothing.
     expect(p.runsEl.data?.totals).toEqual({ runs: 2, tools: 5, tokens: 5000, costUsd: 0.15000000000000002 });
     // Work outside every task, tokens alone are enough to show it — a row under the totals.
-    expect(p.runsEl.data?.extraTotals).toEqual([{ label: '태스크 밖', value: '툴 0 · 2.0K tok' }]);
+    expect(p.runsEl.data?.extraTotals).toEqual([{ label: '태스크 밖', value: '툴 0 · 2.0K 토큰' }]);
     expect(p.runsEl.data?.hidden).toBeUndefined();
     // No page row while runs exist.
     expect(p.el.innerHTML).not.toContain('tr-total');
     // The subagents' calls count with the main agent's (the rows count a run's calls so): 8 + 11 + 7.
     p.render([TASKS[0], { ...TASKS[1], agentToolCalls: 7 }], '', [], { toolCalls: 4, agentToolCalls: 2 });
     expect(p.runsEl.data?.totals).toEqual({ runs: 2, tools: 26 });
-    expect(p.runsEl.data?.extraTotals).toEqual([{ label: '태스크 밖', value: '툴 4 (+서브 2) · 0 tok' }]);
+    expect(p.runsEl.data?.extraTotals).toEqual([{ label: '태스크 밖', value: '툴 4 (+서브 2) · 0 토큰' }]);
     // Nothing outside the tasks: no extra row.
     p.render(TASKS, '', [], null);
     expect(p.runsEl.data?.extraTotals).toBeUndefined();
@@ -604,7 +604,7 @@ describe('the run list folds past TASK_RUNS_SHOWN; replaced and skipped tasks; t
     p.render([TASKS[2]], '', [], { toolCalls: 9 });
     expect(p.el.innerHTML).not.toContain('ui-task-runs');
     expect(p.el.innerHTML).toContain(
-      '<div class="tr-total tr-outside"><span class="tr-total-k">태스크 밖</span>툴 9 · 0 tok</div>',
+      '<div class="tr-total tr-outside"><span class="tr-total-k">태스크 밖</span>툴 9 · 0 토큰</div>',
     );
     p.render([TASKS[2]], '', [], null);
     expect(p.el.innerHTML).not.toContain('tr-total');
@@ -1326,7 +1326,7 @@ describe('a question rewritten in place is another card (review R2 P1)', () => {
     question: 'Run the migration?',
     choices: [
       { id: '1', label: label1, ...(desc1 ? { description: desc1 } : {}) },
-      { id: '2', label: 'Stop' },
+      { id: '2', label: '중지' },
     ],
     recommendedChoiceId: '1',
   });
@@ -1721,8 +1721,8 @@ describe('panel head (D18) — <ui-status-bar>', () => {
     expect(d.activeMs).toBeUndefined();
     expect(d.actions).toContainEqual({
       id: 'stop',
-      label: 'Stop',
-      ariaLabel: 'Stop — 세션 중지',
+      label: '중지',
+      ariaLabel: '중지 — 세션 중지',
       tone: 'danger',
       icon: 'stop',
     });
@@ -1756,6 +1756,7 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
         'esc',
         'escAttr',
         'toNum',
+        'formatDuration',
         'formatNmSSs',
         'elapsedHtml',
         'activeTimeHtml',
@@ -1776,7 +1777,7 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
     expect(row(html, '도구 호출')).toBe('<span title="메인 7 · 서브에이전트 7">14</span>');
     expect(row(html, '비용')).toBe('$12.40');
     // D7 K-03: the live time is <ui-elapsed> — since = the leg's start less what ran before it (no page clock).
-    expect(row(html, '활성 시간')).toBe(`<ui-elapsed since="${T0 - 65000}"></ui-elapsed>`);
+    expect(row(html, '활성 시간')).toBe(`<ui-elapsed since="${T0 - 65000}" lang="ko"></ui-elapsed>`);
     expect(row(html, '워크플로')).toBe('zwork');
     expect(text(row(html, '환경') ?? '')).toBe('mac-mini h:1');
   });
@@ -1784,7 +1785,7 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
   it('more subagents than the card carries: a lower bound; an idle session: no live leg; no record: no count', () => {
     expect(row(details(CARD({ agentsTotal: 5 })), '도구 호출')).toContain('>14+</span>');
     // A closed total is settled text in the page's words (formatNmSSs), not a ticking element.
-    expect(row(details(CARD({ activityState: 'idle' })), '활성 시간')).toBe('<span>1m 05s</span>');
+    expect(row(details(CARD({ activityState: 'idle' })), '활성 시간')).toBe('<span>1분 05초</span>');
     expect(row(details(CARD({ agentRoot: undefined, agents: undefined })), '도구 호출')).toBeUndefined();
     // The head's status (rootStatusOf): a waiting session's leg counts, as on the chip.
     expect(row(details(CARD({ activityState: 'waiting' })), '활성 시간')).toContain(

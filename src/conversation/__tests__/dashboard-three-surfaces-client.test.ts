@@ -589,7 +589,7 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
     expect(d.activeMs).toBeUndefined();
     expect(d.link).toEqual({ id: 'slack', href: 'https://slack/x', label: 'Slack' });
     const stop = d.actions.find((a) => a.id === 'stop');
-    expect(stop).toMatchObject({ label: 'Stop', tone: 'danger', icon: 'stop' });
+    expect(stop).toMatchObject({ label: '중지', tone: 'danger', icon: 'stop' });
     expect(stop?.disabled).toBeUndefined();
     expect(d.actions.map((a) => a.id)).toEqual(['star', 'stop']);
   });
@@ -638,8 +638,8 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
       SELF_INSTANCE_NAME: 'me',
     });
     expect(sib.actions).toHaveLength(1);
-    expect(sib.actions[0].label).toBe('Stop \u2192 other');
-    expect(sib.actions[0].disabled).toBe('Open other (h:1) to act on this session');
+    expect(sib.actions[0].label).toBe('중지 \u2192 other');
+    expect(sib.actions[0].disabled).toBe('이 세션은 other (h:1)에서 열어 조작하세요');
     expect(sib.actions[0].tone).toBeUndefined();
   });
 
@@ -652,21 +652,21 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
     const d = head(card({ activityState: 'idle', starred: true }), 'idle');
     expect(d.actions.find((a) => a.id === 'star')).toEqual({
       id: 'star',
-      label: '\u2605 Starred',
+      label: '\u2605 즐겨찾기',
       pressed: true,
       title: '즐겨찾기 해제 — 다시 자동 sleep·보관 대상이 돼요',
     });
     expect(d.actions.find((a) => a.id === 'close')).toEqual({
       id: 'close',
-      label: 'Close',
-      ariaLabel: 'Close — 세션 종료',
+      label: '닫기',
+      ariaLabel: '닫기 — 세션 종료',
     });
-    expect(head(card(), 'working').actions.find((a) => a.id === 'stop')?.ariaLabel).toBe('Stop — 세션 중지');
+    expect(head(card(), 'working').actions.find((a) => a.id === 'stop')?.ariaLabel).toBe('중지 — 세션 중지');
     const closed = head(card({ activityState: 'idle', terminated: true }), 'closed');
     expect(closed.actions.find((a) => a.id === 'trash')).toEqual({
       id: 'trash',
-      label: 'Trash',
-      ariaLabel: 'Trash — 세션 휴지통으로',
+      label: '휴지통',
+      ariaLabel: '휴지통 — 세션 휴지통으로',
       tone: 'quiet',
     });
     expect(closed.actions.find((a) => a.id === 'star')).toMatchObject({
@@ -733,7 +733,7 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
     const html = info(card(), false);
     expect(html).toContain('<ui-disclosure class="pi-dc" flush>');
     const sum = html.slice(html.indexOf('class="pi-sum"'), html.indexOf('</ui-disclosure>'));
-    for (const want of ['Zhuge', 'zwork', '9591000 tok', '$12.40', 'ctx 31%', 'format="ago"'])
+    for (const want of ['Zhuge', 'zwork', '9591000 토큰', '$12.40', '컨텍스트 31%', 'format="ago"'])
       expect(sum, want).toContain(want);
     expect(html).toContain('PROJ-1 &mdash; Dashboard surfaces');
     expect(html).toContain('PR #12 &mdash; Split the surfaces');
@@ -2085,11 +2085,11 @@ describe('collapsed face — the context level is a warning, the panel bar uses 
     expect(face.ctxLevel(61)).toBe('ctx-warn');
     expect(face.ctxLevel(81)).toBe('ctx-danger');
     expect(face.ctxLevel('x')).toBe('');
-    expect(ctx(12)).toMatchObject({ contextPct: 12, contextLevel: '', titles: { context: 'Context window used' } });
-    expect(ctx(65)).toMatchObject({ contextLevel: 'warn', titles: { context: 'Context window used' } });
+    expect(ctx(12)).toMatchObject({ contextPct: 12, contextLevel: '', titles: { context: '컨텍스트 윈도우 사용량' } });
+    expect(ctx(65)).toMatchObject({ contextLevel: 'warn', titles: { context: '컨텍스트 윈도우 사용량' } });
     expect(ctx(90)).toMatchObject({
       contextLevel: 'danger',
-      titles: { context: 'Context window used — 80% 넘게 찼다' },
+      titles: { context: '컨텍스트 윈도우 사용량 — 80% 넘게 찼다' },
     });
   });
 
