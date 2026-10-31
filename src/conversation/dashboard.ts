@@ -3596,8 +3596,15 @@ export async function registerDashboardRoutes(
         const ownerName = (request as { authContext?: { name?: string } }).authContext?.name || userId;
         try {
           const result = await _newTaskGate.run(userId, parsed.value.requestId, async () => {
-            const { requestId: _rid, ...rest } = parsed.value;
-            const outcome = await launcher.launch({ ownerId: userId, ownerName, ...rest });
+            const { requestId: _rid, model: nickname, ...rest } = parsed.value;
+            // The model is one the dialog offers, by nickname — never an id from the body (#640 R1).
+            let model: string | undefined;
+            if (nickname !== undefined) {
+              const offered = _newTaskProvider ? (await _newTaskProvider.context(userId)).models : [];
+              model = offered.find((m) => m.nickname === nickname)?.model;
+              if (!model) throw new NewTaskError(400, 'model must be one of the models the dialog offers');
+            }
+            const outcome = await launcher.launch({ ownerId: userId, ownerName, ...rest, ...(model ? { model } : {}) });
             // A refusal is not remembered by the gate, so the same request may be retried.
             if (outcome.status >= 400) {
               throw new NewTaskError(outcome.status, String(outcome.body.error ?? 'refused'));
@@ -6431,6 +6438,8 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-rec-btn.is-primary { border-color: transparent; background: var(--red); color: var(--surface); }
 .nt-error { margin: 0; padding: 8px 10px; border-radius: 10px; background: var(--tint-fail-bg); color: var(--tint-fail-fg); font-size: 12.5px; }
 .nt-error[hidden] { display: none; }
+/* #640 R1: chips and rows set display, which beats the hidden attribute's UA style. */
+.nt-dialog [hidden] { display: none !important; }
 .nt-empty { margin: 0; color: var(--text-secondary); font-size: 12.5px; }
 
 .nt-toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 12px 12px 10px; border-top: 1px solid var(--border); background: var(--surface); }
@@ -18751,15 +18760,13 @@ function ntDefaultState(ctx, draft) {
   };
 }
 
-function ntBuildPayload(state, attachments, requestId, models) {
+function ntBuildPayload(state, attachments, requestId) {
   if (state.destination === 'task') {
     // A dashboard task (#600 ⑥): no channel, no autogoal / autoz, no attachments (D8);
-    // the chosen model's id, and the folder by name ('' = a new folder).
-    var picked = (models || []).find(function (m) {
-      return m.nickname === state.model;
-    });
+    // the chosen model's nickname (the server resolves it against the models it
+    // offers, #640 R1), and the folder by name ('' = a new folder).
     var body = { requestId: requestId, destination: 'task', prompt: state.prompt };
-    if (picked) body.model = picked.model;
+    if (state.model) body.model = state.model;
     if (state.folder) body.folder = state.folder;
     return body;
   }
@@ -18778,7 +18785,10 @@ function ntBuildPayload(state, attachments, requestId, models) {
 }
 
 function ntCanSubmit(state, attachments) {
-  if (state && state.destination === 'task') return String(state.prompt || '').trim().length > 0;
+  if (state && state.destination === 'task') {
+    // A task takes no attachments yet (D8): files attached before switching are not dropped silently (#640 R1).
+    return String(state.prompt || '').trim().length > 0 && (attachments || []).length === 0;
+  }
   if (!state || !state.channelId) return false;
   return String(state.prompt || '').trim().length > 0 || (attachments || []).length > 0;
 }
@@ -18937,16 +18947,26 @@ async function ntLoadContext() {
 }
 
 function ntReconcileState() {
+  ntReconcile(_ntState, _ntCtx);
+}
+
+function ntReconcile(state, ctx) {
   // A choice that is no longer offered falls back to the default.
-  var hasModel = _ntCtx.models.some(function (m) {
-    return m.nickname === _ntState.model;
+  var hasModel = ctx.models.some(function (m) {
+    return m.nickname === state.model;
   });
-  if (!hasModel) _ntState.model = _ntCtx.defaultModel;
-  if (_ntCtx.efforts.indexOf(_ntState.effort) < 0) _ntState.effort = _ntCtx.defaultEffort;
-  var hasChannel = _ntCtx.channels.some(function (c) {
-    return c.id === _ntState.channelId;
+  if (!hasModel) state.model = ctx.defaultModel;
+  if (ctx.efforts.indexOf(state.effort) < 0) state.effort = ctx.defaultEffort;
+  var hasChannel = ctx.channels.some(function (c) {
+    return c.id === state.channelId;
   });
-  if (!hasChannel) _ntState.channelId = _ntCtx.defaultChannelId || null;
+  if (!hasChannel) state.channelId = ctx.defaultChannelId || null;
+  // A dashboard task, or a folder, that is no longer offered (#640 R1).
+  if (!ctx.taskFolders) state.destination = 'slack';
+  var hasFolder = (ctx.taskFolders || []).some(function (f) {
+    return f.name === state.folder;
+  });
+  if (!hasFolder) state.folder = '';
 }
 
 function ntRender() {
@@ -19393,7 +19413,9 @@ async function submitNewTask(ev) {
   if (!ntCanSubmit(_ntState, _ntFiles)) {
     ntSetError(
       _ntState.destination === 'task'
-        ? '작업 지시를 써 주세요 (대시보드 작업은 아직 첨부를 받지 않아요)'
+        ? _ntFiles.length
+          ? '대시보드 작업은 아직 첨부를 받지 않아요 — 첨부를 빼거나 Slack 채널로 보내 주세요'
+          : '작업 지시를 써 주세요'
         : _ntState.channelId
           ? '작업 지시를 쓰거나 파일을 첨부해 주세요'
           : '작업을 올릴 채널을 골라 주세요',
@@ -19412,7 +19434,7 @@ async function submitNewTask(ev) {
         return f.ready;
       }),
     );
-    var body = JSON.stringify(ntBuildPayload(_ntState, _ntFiles, _ntRequestId, _ntCtx.models));
+    var body = JSON.stringify(ntBuildPayload(_ntState, _ntFiles, _ntRequestId));
     ntSetStatus('작업을 올리는 중…');
     var res = await ntPostTask(body);
     // Only a stale CSRF token is worth one retry (not "no Slack identity").
@@ -19477,13 +19499,13 @@ function ntOnLaunched(data) {
     }
   });
   _ntFiles = [];
-  var lastDestination = _ntState && _ntState.destination;
-  _ntState = ntDefaultState(_ntCtx, null);
-  _ntState.channelId = data.channel || _ntState.channelId;
-  if (lastDestination === 'task' && _ntCtx.taskFolders) _ntState.destination = 'task';
-  try {
-    localStorage.removeItem(NT_DRAFT_KEY);
-  } catch (e) {}
+  _ntState = ntStateAfterLaunch(_ntState, data, _ntCtx);
+  // A task that did not start keeps its instruction — in the dialog and its draft (#640 R1).
+  if (data.status !== 'not-started') {
+    try {
+      localStorage.removeItem(NT_DRAFT_KEY);
+    } catch (e) {}
+  }
   ntSetStatus('');
   ntRender();
   closeNewTask();
@@ -19498,6 +19520,21 @@ function ntOnLaunched(data) {
   if (typeof loadSessions === 'function') setTimeout(loadSessions, 800);
 }
 
+// What the dialog holds after a launch: a started task starts the next one clean
+// (the channel just used stays selected, a dashboard task stays a dashboard task);
+// a task created but not started keeps its instruction, folder and model (#640 R1).
+function ntStateAfterLaunch(prev, data, ctx) {
+  var next = ntDefaultState(ctx, null);
+  next.channelId = data.channel || next.channelId;
+  if (prev && prev.destination === 'task' && ctx.taskFolders) next.destination = 'task';
+  if (prev && data.status === 'not-started') {
+    next.prompt = prev.prompt;
+    next.folder = prev.folder;
+    next.model = prev.model;
+  }
+  return next;
+}
+
 // The launch toast: a Slack launch names its channel and links its thread; a
 // dashboard task (#600 ⑥, no channel) opens its card, and one that was created
 // but not started says why.
@@ -19506,7 +19543,7 @@ function ntLaunchToast(data, channelName) {
     if (data.status === 'not-started') {
       return {
         title: '작업을 만들었지만 아직 시작하지 못했어요',
-        description: String(data.reason || ''),
+        description: String(data.reason || '') + ' — 지시는 새 작업 창에 남겨 두었어요',
         tone: 'warning',
         action: { id: 'open', label: '카드 열기' },
         duration: 12000,

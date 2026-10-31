@@ -57,6 +57,7 @@ const MAX_LISTED_FOLDERS = 50;
 export function listTaskFolders(ownerId: string, limit = MAX_LISTED_FOLDERS): Array<{ name: string; mtimeMs: number }> {
   if (!ownerId || !isSafePathSegment(ownerId)) return [];
   const root = path.join('/tmp', ownerId);
+  if (ownerRootState(ownerId) !== 'ok') return [];
   let entries: fs.Dirent[];
   try {
     entries = fs.readdirSync(root, { withFileTypes: true });
@@ -91,10 +92,16 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
     folders: (ownerId: string) => listTaskFolders(ownerId),
     async launch(request: TaskLaunchRequest): Promise<TaskCommandResponse> {
       const { ownerId } = request;
-      const refused = deps.controller.canStart(ownerId);
+      const refused = deps.controller.canStart(ownerId, request.prompt);
       if (refused) return refused;
+      // The owner's root itself must be a plain folder: a root that is a link
+      // would list, create and name inside whatever it leads to (#640 R1).
+      const root = ownerRootState(ownerId);
+      if (root === 'unsafe')
+        return launchRefusal(422, 'your /tmp directory is not a plain folder — a task cannot use it');
 
       let folder: string;
+      let fresh: string | undefined;
       if (request.folder !== undefined) {
         if (!FOLDER_NAME.test(request.folder)) {
           return launchRefusal(422, 'the folder must be the name of a folder in your /tmp directory');
@@ -103,7 +110,7 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
         if (!isExistingTaskFolder(folder))
           return launchRefusal(422, `no folder named ${request.folder} in your /tmp directory`);
       } else {
-        const fresh = deps.createFreshDirectory(ownerId);
+        fresh = deps.createFreshDirectory(ownerId);
         if (!fresh) return launchRefusal(500, 'a folder for the task could not be created');
         folder = fresh;
       }
@@ -111,16 +118,24 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
       try {
         workingDirectory = taskDirectoryFor(ownerId, folder);
       } catch (error) {
+        removeUnusedFolder(fresh);
         return launchRefusal(422, `the task cannot work in that folder: ${(error as Error).message}`);
       }
 
-      const task = deps.createTask({
-        ownerId,
-        ownerName: request.ownerName,
-        workingDirectory,
-        title: taskTitleOf(request.prompt),
-        ...(request.model ? { model: request.model } : {}),
-      });
+      let task: { taskId?: string };
+      try {
+        task = deps.createTask({
+          ownerId,
+          ownerName: request.ownerName,
+          workingDirectory,
+          title: taskTitleOf(request.prompt),
+          ...(request.model ? { model: request.model } : {}),
+        });
+      } catch (error) {
+        // A fresh folder no task was made for is not left behind (#640 R1). A named one is the owner's.
+        removeUnusedFolder(fresh);
+        throw error;
+      }
       if (!task.taskId) throw new Error('createTask returned a task without an id');
       const sessionKey = buildTaskSessionKey(task.taskId);
 
@@ -132,6 +147,38 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
       };
     },
   };
+}
+
+/**
+ * The owner's `/tmp/<owner>` root: `ok` — a real directory (not a link) that
+ * really is `/tmp/<owner>`; `missing` — not there yet (a fresh folder creates
+ * it); `unsafe` — anything else (a link, a file, a root that resolves elsewhere).
+ */
+function ownerRootState(ownerId: string): 'ok' | 'missing' | 'unsafe' {
+  if (!ownerId || !isSafePathSegment(ownerId)) return 'unsafe';
+  const root = path.join('/tmp', ownerId);
+  let st: fs.Stats;
+  try {
+    st = fs.lstatSync(root);
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === 'ENOENT' ? 'missing' : 'unsafe';
+  }
+  if (!st.isDirectory()) return 'unsafe'; // lstat: a link is not a directory
+  try {
+    return fs.realpathSync(root) === path.join(fs.realpathSync('/tmp'), ownerId) ? 'ok' : 'unsafe';
+  } catch {
+    return 'unsafe';
+  }
+}
+
+/** Remove a fresh folder made for a task that was then not made — only while it is still empty. */
+function removeUnusedFolder(dir: string | undefined): void {
+  if (!dir) return;
+  try {
+    fs.rmdirSync(dir);
+  } catch {
+    // not empty, or gone: leave it
+  }
 }
 
 /** An existing directory that is not itself a link (a link is judged by `taskDirectoryFor`'s real path). */
