@@ -32,7 +32,9 @@ describe('uiIcon — the library glyph table, read as data', () => {
   it('every icon slot the dashboard names is in the installed set — the D1 inline glyphs included (D4 g1)', () => {
     const src = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf8');
     const names = new Set(Array.from(src.matchAll(/data-ui-icon="([a-z][a-z0-9-]*)"/g), (m) => m[1]));
-    for (const n of ['pause', 'archive', 'ban', 'dot', 'circle-dashed', 'moon', 'play']) expect(names).toContain(n);
+    // D4 g5: the tiles' play / pause toggle is <ui-file-card playable>'s own — the page no longer names `play`.
+    for (const n of ['pause', 'archive', 'ban', 'dot', 'circle-dashed', 'moon']) expect(names).toContain(n);
+    expect(names).not.toContain('play');
     for (const n of names) expect(uiIcon(n), n).not.toBe('');
   });
 });
