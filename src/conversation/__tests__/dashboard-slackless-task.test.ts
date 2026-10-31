@@ -606,13 +606,17 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
       ...extra,
     });
     archiveState.items = [
-      archived('11111111-2222-4333-8444-555555555555', { parentTaskId: 'e-1', planNodeId: 'login' }),
+      archived('11111111-2222-4333-8444-555555555555', {
+        parentTaskId: 'e-1',
+        planNodeId: 'login',
+        closedBy: { by: 'parent', at: 7 },
+      }),
       archived('21111111-2222-4333-8444-555555555555', { kind: 'epic' }),
     ];
     setDashboardSessionAccessor(() => reg.getAllSessions());
     const b = await board();
     const [c, e] = archiveState.items.map((a) => (b.closed as any[]).find((x) => x.key.includes(a.taskId)));
-    expect(c).toMatchObject({ parentTaskId: 'e-1', planNodeId: 'login' });
+    expect(c).toMatchObject({ parentTaskId: 'e-1', planNodeId: 'login', closedBy: { by: 'parent', at: 7 } });
     expect(c.kind).toBeUndefined();
     expect(e).toMatchObject({ kind: 'epic' });
     expect(e.parentTaskId).toBeUndefined();
