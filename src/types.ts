@@ -464,6 +464,26 @@ export interface ConversationSession {
    */
   inputContext?: TaskInputContext;
   /**
+   * E4 ① (.prd/19 D1) — `'epic'` on an epic task; absent on every other
+   * session. Set by the host at creation only and never changed. A child is
+   * never an epic (depth 1).
+   */
+  kind?: 'epic';
+  /** E4 ① — a child task's epic (its task id). Slack-less tasks only. */
+  parentTaskId?: string;
+  /** E4 ① — the plan node a child task was made for (a short slug). Set with `parentTaskId`. */
+  planNodeId?: string;
+  /**
+   * E4 ① — an epic's children, by task id, in creation order. Append-only:
+   * written in the same strict save that creates the child, never shortened,
+   * so a closed or archived child still counts toward the cap.
+   */
+  childTaskIds?: string[];
+  /** E4 ② (.prd/19 D2) — an epic's plan tree; written only through `applyPlanWrite`. */
+  plan?: EpicPlan;
+  /** E4 ② (.prd/19 D6) — what the epic's children owe it, at most 100; no child text. */
+  epicEvents?: EpicEvent[];
+  /**
    * E2 ③ — the chain a Slack-less task is running (its id), saved by the
    * chain's first turn start and kept across `/compact` hops; cleared by the
    * chain's last outcome commit or by restart reconciliation. A task still
@@ -1120,6 +1140,51 @@ export interface UserChoiceGroup {
 }
 
 /** #598 ④b — one terminal turn's outcome, as stored on the session. */
+/** E4 ② — a node of an epic's plan tree (.prd/19 D2). */
+export interface EpicPlanNode {
+  /** A short slug, unique within the epic, never reused for another node. */
+  id: string;
+  title: string;
+  kind: 'issue' | 'sub';
+  /** A sub's issue (absent on an issue). */
+  parent?: string;
+  body?: string;
+  /** The epic's verdict on the node (D5); `by` leaves room for an owner verdict later. */
+  accepted?: { by: 'epic' | 'owner'; at: number };
+  /** The child tasks made for this node, by id — the host's record, never the writer's. */
+  spawned?: string[];
+}
+
+/** E4 ② — an epic's plan (.prd/19 D2, D10 a). */
+export interface EpicPlan {
+  nodes: EpicPlanNode[];
+  done?: { by: 'epic' | 'owner'; at: number };
+  /** Node ids a write removed: never used again for another node (D2). Host-kept. */
+  retired?: string[];
+}
+
+/**
+ * E4 ② — what a child owes its epic (.prd/19 D6): a chain end (its outcome),
+ * an approval request (`needs-input`, with `approvalId`; closed by
+ * `resolvedAt`) or a close. Never any text the child produced.
+ */
+export interface EpicEvent {
+  /** Deterministic: the child's task id + its chain id (or approval id). */
+  id: string;
+  childTaskId: string;
+  planNodeId: string;
+  outcome: TaskTurnOutcomeRecord['outcome'] | 'needs-input' | 'closed';
+  chainId?: string;
+  turnId?: string;
+  approvalId?: string;
+  at: number;
+  state: 'pending' | 'delivered';
+  /** The parent chain that consumed it (D7) — reset to pending if that chain is reconciled interrupted. */
+  consumedBy?: string;
+  /** An approval request that was answered. */
+  resolvedAt?: number;
+}
+
 export interface TaskTurnOutcomeRecord {
   turnId: string;
   outcome: 'completed' | 'failed' | 'cancelled' | 'waiting' | 'interrupted';

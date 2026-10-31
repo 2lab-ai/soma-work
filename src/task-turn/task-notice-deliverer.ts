@@ -82,13 +82,27 @@ export interface TaskNoticeDeliverer {
    * ledger directly. Throws if the ledger cannot be written.
    */
   notStarted(session: ConversationSession, sessionKey: string, reason: string): void;
-  /** Shutdown: no new pass and no retry from now on. */
-  stop(): void;
+  /**
+   * Shutdown: no new pass and no retry from now on. Resolves when a pass under
+   * way has ended (after its current post), so the caller can wait for it
+   * before exiting — a post cut by the exit would be sent again at boot.
+   */
+  stop(): Promise<void>;
 }
 
 const NO_FINAL = '답변 기록 없음 — 카드에서 확인';
 const FINAL_UNREADABLE = '결과를 읽지 못했어요 — 카드에서 확인';
 const MORE_ON_CARD = '…(이하 카드에서)';
+/** A `close` of a notice no longer wanted (answered, replaced) that could not be saved. */
+class NoticeCloseError extends Error {
+  constructor(cause: unknown) {
+    super((cause as Error)?.message ?? String(cause));
+    this.name = 'NoticeCloseError';
+  }
+}
+
+/** A notice whose ledger write kept failing before any post: what its card shows. */
+const UNRECORDED = 'notice_not_recorded';
 /** Slack's per-message block cap, kept with room for the link context. */
 const MAX_BLOCKS = 48;
 
@@ -100,6 +114,16 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
   let retry: ReturnType<typeof setTimeout> | null = null;
   let retryFailedNext = false;
   let stopped = false;
+  /**
+   * Notices whose claim (a ledger write) kept failing before any post: counted
+   * here, since the ledger cannot record it. At `maxAttempts` they are left
+   * alone like a `failed` entry — shown on the card, tried again by the next
+   * `retryFailed` pass (boot) — instead of a retry every 30 s forever.
+   */
+  const unclaimable = new Map<
+    string,
+    { count: number; error: string; sessionKey?: string; kind: TaskNotificationLedgerEntry['kind']; closing: boolean }
+  >();
   /**
    * Posted, but the mark could not be saved: still `unknown` on disk. Not
    * posted again in this process (a full disk would re-post on every pass);
@@ -241,6 +265,7 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
   async function pass(): Promise<void> {
     const retryFailed = retryFailedNext;
     retryFailedNext = false;
+    if (retryFailed) unclaimable.clear();
     const owed = deps.ledger.owed();
     // Tasks whose link is still to be posted: their other notices wait (one scan per pass).
     const linkPending = new Set(owed.filter((e) => isOwedLink(e)).map((e) => e.taskId));
@@ -248,13 +273,27 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
       if (stopped) return;
       if (markLost.has(entry.id)) continue;
       if (entry.state === 'failed' && !retryFailed) continue;
+      if ((unclaimable.get(entry.id)?.count ?? 0) >= maxAttempts) continue;
       if (entry.kind !== 'link' && linkPending.has(entry.taskId)) continue;
       try {
         await deliverOne(entry);
       } catch (error) {
-        // Before the claim (a write that failed): still owed, tried again later.
-        deps.logger.error('Task notice not delivered', { id: entry.id, error: (error as Error)?.message });
-        scheduleRetry();
+        // Before the claim (a write that failed): still owed. Tried again
+        // later, up to `maxAttempts` in this process (fable #668 P3-5).
+        const message = (error as Error)?.message ?? String(error);
+        const count = (unclaimable.get(entry.id)?.count ?? 0) + 1;
+        // The card gets a code, not the write error (it can carry a path — grok #672 P3-3).
+        unclaimable.set(entry.id, {
+          count,
+          error: UNRECORDED,
+          sessionKey: entry.intent.sessionKey,
+          kind: entry.kind,
+          // A close (answered or replaced) that could not be saved is not a
+          // notice the thread missed: never on the card (fable #672 P3-2).
+          closing: error instanceof NoticeCloseError,
+        });
+        deps.logger.error('Task notice not delivered', { id: entry.id, attempt: count, error: message });
+        if (count < maxAttempts) scheduleRetry();
       }
       if (entry.kind === 'link') {
         const now = deps.ledger.get(entry.id);
@@ -262,7 +301,10 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
       }
     }
     // A post that failed with attempts left is retried by a later pass.
-    if (deps.ledger.owed().some((e) => e.state === 'pending' && e.attempts > 0)) scheduleRetry();
+    // Spent claim failures are left alone until the boot pass: no timer for them (fable #672 P3-1).
+    const retryable = (e: TaskNotificationLedgerEntry) =>
+      e.state === 'pending' && e.attempts > 0 && (unclaimable.get(e.id)?.count ?? 0) < maxAttempts;
+    if (deps.ledger.owed().some(retryable)) scheduleRetry();
   }
 
   function scheduleRetry(): void {
@@ -299,11 +341,16 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
     const current = deps.ledger.get(entry.id) ?? entry;
     const verdict = stillWanted(current);
     if (verdict !== 'send') {
-      deps.ledger.close(entry.id, verdict);
+      try {
+        deps.ledger.close(entry.id, verdict);
+      } catch (error) {
+        throw new NoticeCloseError(error);
+      }
       settle(entry);
       return;
     }
     deps.ledger.claim(entry.id);
+    unclaimable.delete(entry.id);
     let ts: string | undefined;
     try {
       ts = (await deps.post({ channel: entry.channel, threadTs: entry.threadTs }, message)).ts;
@@ -415,12 +462,14 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
   ): Promise<{ text: string; blocks?: unknown[] }> {
     const { conversationId, turnId } = entry.intent;
     let final: { text: string; clipped: boolean } | undefined;
-    try {
-      final = conversationId && turnId ? await deps.readFinal(conversationId, turnId) : undefined;
-    } catch (error) {
-      // The result is still owed: post that it ended, and where to read it.
-      deps.logger.warn('Task result final not readable', { id: entry.id, error: (error as Error)?.message });
-      return { text: withLink(FINAL_UNREADABLE, url) };
+    if (conversationId && turnId) {
+      try {
+        final = await readFinalTwice(conversationId, turnId);
+      } catch (error) {
+        // The result is still owed: post that it ended, and where to read it.
+        deps.logger.warn('Task result final not readable', { id: entry.id, error: (error as Error)?.message });
+        return { text: withLink(FINAL_UNREADABLE, url) };
+      }
     }
     if (!final || final.text.trim() === '') return { text: withLink(NO_FINAL, url) };
     const { blocks, fallbackText, overflow } = markdownToBlocks(final.text);
@@ -431,6 +480,18 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
     const tail = [cut ? MORE_ON_CARD : '', url ? `<${url}|카드에서 전체 보기>` : ''].filter(Boolean).join(' ');
     const context = tail ? [{ type: 'context', elements: [{ type: 'mrkdwn', text: tail }] }] : [];
     return { text: fallbackText, blocks: [...kept, ...context] };
+  }
+
+  /** One more read after a failed one: a transient error must not replace the answer for good (fable #668 P3-1). */
+  async function readFinalTwice(
+    conversationId: string,
+    turnId: string,
+  ): Promise<{ text: string; clipped: boolean } | undefined> {
+    try {
+      return await deps.readFinal(conversationId, turnId);
+    } catch {
+      return await deps.readFinal(conversationId, turnId);
+    }
   }
 
   /** The tool of an approval this turn was still waiting on (asked, never resolved) — D13. */
@@ -451,18 +512,25 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
   }
 
   function failures(sessionKey: string): Array<{ kind: TaskNotificationLedgerEntry['kind']; error: string }> {
-    return deps.ledger
+    const failed = deps.ledger
       .list()
       .filter((e) => e.state === 'failed' && e.intent.sessionKey === sessionKey)
       .map((e) => ({ kind: e.kind, error: e.error ?? 'unknown error' }));
+    for (const u of unclaimable.values()) {
+      if (u.count >= maxAttempts && !u.closing && u.sessionKey === sessionKey) {
+        failed.push({ kind: u.kind, error: u.error });
+      }
+    }
+    return failed;
   }
 
-  /** Shutdown: no new pass, no retry; a pass under way ends after its current post. */
-  function stop(): void {
+  /** Shutdown: no new pass, no retry; a pass under way ends after its current post — the returned promise. */
+  function stop(): Promise<void> {
     stopped = true;
     retryFailedNext = false;
     if (retry) clearTimeout(retry);
     retry = null;
+    return running ?? Promise.resolve();
   }
 
   return { enqueue, handoff, approval, notStarted, deliver, failures, stop };
