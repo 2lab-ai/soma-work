@@ -43,9 +43,22 @@ export interface PermissionRequest {
   originalText?: string;
   /** Environment-skill requests: the admin prompts posted for this request (one per admin DM). */
   prompts?: PromptRef[];
+  /** How the request was answered (set with `handled`): who, which choice, from where. */
+  resolution?: RequestResolution;
   createdAt: number;
   expiresAt: number;
   handled: boolean;
+}
+
+/** How a handled request was answered. */
+export interface RequestResolution {
+  /** Slack user id of whoever answered. */
+  by: string;
+  /** The button / choice the answer picked. */
+  choiceId: string;
+  outcome: 'approved' | 'denied';
+  via: 'slack' | 'dashboard';
+  at: number;
 }
 
 /** Where one permission prompt was posted. */
@@ -167,13 +180,20 @@ export function getPermissionRequest(requestId: string): PermissionRequest | nul
   return req;
 }
 
-/** Mark a request handled (replay guard). No-op if missing. */
-export function markRequestHandled(requestId: string): void {
+/** Mark a request handled (replay guard), with how it was answered when known. No-op if missing. */
+export function markRequestHandled(requestId: string, resolution?: RequestResolution): void {
   const all = loadAll();
   const req = all[requestId];
   if (!req) return;
   req.handled = true;
+  if (resolution) req.resolution = resolution;
   saveAll(all);
+}
+
+/** Every live request (handled ones included) — read only, for the dashboard's admin approvals. */
+export function listPermissionRequests(): PermissionRequest[] {
+  const now = Date.now();
+  return Object.values(loadAll()).filter((req) => isLive(req, now));
 }
 
 /** Record where the prompts of a request were posted (environment-skill admin DMs). No-op if missing. */

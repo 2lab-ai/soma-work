@@ -1,9 +1,11 @@
 import { setActionHandlersProviders } from '@soma/slack/actions';
+import { registerAdminApprovalAdapter } from '../../admin-approvals';
 import { isAdminUser } from '../../admin-utils';
 import { getTokenManager } from '../../token-manager';
 import { registerAuthActions } from '../auth/actions';
 import { registerCctActions } from '../cct/actions';
 import { defaultTabCache } from '../commands/usage-carousel-cache';
+import { envSkillAdminApprovalAdapter } from '../env-skill-admin-approval';
 import { buildDefaultTopicRegistry } from '../z/topics';
 import { ActionPanelActionHandler } from './action-panel-action-handler';
 import { AutoskillActionHandler } from './autoskill-action-handler';
@@ -77,6 +79,14 @@ setActionHandlersProviders({
       choiceHandler,
     );
 
+    const envSkillPermissionHandler = new EnvSkillPermissionActionHandler({
+      slackApi: ctx.slackApi as any,
+      messageHandler: ctx.messageHandler as any,
+      mcpManager: ctx.mcpManager,
+    });
+    // The dashboard's admin approvals answer environment-skill requests through the same decision (#620).
+    registerAdminApprovalAdapter(envSkillAdminApprovalAdapter(envSkillPermissionHandler));
+
     const zTopicRegistry = buildDefaultTopicRegistry();
 
     return {
@@ -134,11 +144,7 @@ setActionHandlersProviders({
         claudeHandler: ctx.claudeHandler,
         messageHandler: ctx.messageHandler as any,
       }),
-      envSkillPermissionHandler: new EnvSkillPermissionActionHandler({
-        slackApi: ctx.slackApi as any,
-        messageHandler: ctx.messageHandler as any,
-        mcpManager: ctx.mcpManager,
-      }),
+      envSkillPermissionHandler,
       userSkillEditSubmitHandler: new UserSkillEditViewSubmissionHandler({
         slackApi: ctx.slackApi as any,
       }),
