@@ -1597,8 +1597,9 @@ describe('expiry clock (D16)', () => {
     expect(d.createdAt).toBe(T0);
     const none = cards().acPermissionData(SESSION(), PERM({ expiresAt: 0, createdAt: undefined }));
     expect('expiresAt' in none || 'createdAt' in none).toBe(false);
-    // The page's 1 Hz tick no longer draws an expiry of its own.
-    expect(clientFn('updateTimers')).not.toContain('ap-expires');
+    // The page draws no expiry of its own (and has no 1 Hz tick at all since D8b).
+    expect(TEMPLATE).not.toContain('ap-expires');
+    expect(TEMPLATE).not.toContain('function updateTimers');
   });
 });
 
