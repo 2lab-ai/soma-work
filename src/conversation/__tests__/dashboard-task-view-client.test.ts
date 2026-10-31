@@ -1107,9 +1107,11 @@ describe('T1.3 / SSOT 2026-10-29 · 지시와 답변 opens on its latest turns; 
   });
 
   it('minimal shows the artifacts as one row of name chips; 자세히 keeps the thumbnails', () => {
-    expect(CSS).toContain(
-      '.slide-panel:not(.is-detail) .art-strip-panel .art-thumb, .slide-panel:not(.is-detail) .art-strip-panel .art-tile-meta { display: none; }',
-    );
+    // D2: the chips are the file cards' chip variant — minimal (자세히 off) is chips, 자세히 thumbnails; 자세히
+    // re-chooses it (applyPanelDetail → syncPanelArtVariant). This row only lays them out.
+    expect(TEMPLATE).toContain("return !_panelDetail || (h > 0 && h <= ART_PANEL_SHORT_PX) ? 'chip' : 'tile';");
+    expect(TEMPLATE).toMatch(/function applyPanelDetail\(\) \{[\s\S]*?syncPanelArtVariant\(\);\n\}/);
+    expect(TEMPLATE).toContain('renderPanelArtifacts(list, cid, artPanelVariant())');
     expect(CSS).toContain('.slide-panel:not(.is-detail) .panel-artifacts { display: flex;');
   });
 
