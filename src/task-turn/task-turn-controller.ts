@@ -20,6 +20,7 @@
  * reach it between hops too. Each hop gets its own controller, linked to the
  * chain's; the executor's CAS removal of a hop controller leaves the chain's.
  */
+import { randomUUID } from 'node:crypto';
 import type { ExecutionContext } from '../agent-runtime/execution-context';
 import type { ConversationSession, TaskTurnOutcomeRecord } from '../types';
 import { buildTaskAnswerText, type TaskAnswer } from './task-answer';
@@ -48,6 +49,7 @@ export interface TaskTurnControllerDeps {
       sessionKey: string,
       turnId: string,
       decided: Omit<TaskTurnOutcomeRecord, 'turnId' | 'at'>,
+      chainId?: string,
     ): Promise<RunTaskTurnResult>;
   };
   getSession(sessionKey: string): ConversationSession | undefined;
@@ -127,6 +129,8 @@ function isCommand(text: string): boolean {
 }
 const CONTINUATION_REFUSED = 'continuation not supported on a dashboard task yet';
 const BUDGET_SPENT = 're-entry limit reached';
+/** E2 ③ — the end of a chain whose `/compact` hop completed with no instruction re-run. */
+const COMPACT_NOT_RERUN = 'compacted, but the instruction was not re-run (압축 뒤 재실행 못 함)';
 
 interface Chain {
   ownerId: string;
@@ -143,7 +147,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
   const ownerChain = new Map<string, string>();
   const starts = new Map<string, number[]>();
   /** Turns a shutdown abort left `working` (restart reconciliation's to record — unless the shutdown is refused). */
-  const shutdownStranded = new Map<string, string>();
+  const shutdownStranded = new Map<string, { turnId: string; chainId: string }>();
   let accepting = true;
 
   const refuse = (status: number, error: string): TaskCommandResponse => ({ status, body: { error } });
@@ -245,7 +249,10 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       markStarted = () => resolve('started');
     });
     const progress = { committedBeforeStart: false };
-    const done = runChain(sessionKey, session, ctx, request.text.trim(), abort, markStarted, progress);
+    // E2 ③ — every hop of this chain carries its id; the chain is open from
+    // its first saved start until its last outcome (or reconciliation).
+    const chainId = randomUUID();
+    const done = runChain(sessionKey, session, ctx, request.text.trim(), abort, markStarted, progress, chainId);
     const chain: Chain = { ownerId, abort, done };
     chains.set(sessionKey, chain);
     ownerChain.set(ownerId, sessionKey);
@@ -279,6 +286,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     chainAbort: AbortController,
     markStarted: () => void,
     progress: { committedBeforeStart: boolean },
+    chainId: string,
   ): Promise<void> {
     let text = instruction;
     let compactHop = false;
@@ -292,7 +300,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       const turnId = pendingTurnId;
       pendingTurnId = null;
       try {
-        await deps.runner.abandonTurn(sessionKey, turnId, decided);
+        await deps.runner.abandonTurn(sessionKey, turnId, decided, chainId);
       } catch (error) {
         deps.logger.error('A pending task turn could not be ended', {
           sessionKey,
@@ -308,7 +316,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
           // `working`. A shutdown leaves it for restart reconciliation.
           const reason = chainAbort.signal.reason;
           if (reason !== 'shutdown') await endPending(abandonOutcome(reason));
-          else if (pendingTurnId) strand(sessionKey, pendingTurnId);
+          else if (pendingTurnId) strand(sessionKey, pendingTurnId, chainId);
           return;
         }
         const last = dispatch === maxDispatches;
@@ -327,6 +335,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
             return;
           }
         }
+        /** This hop is a `/compact` whose completion re-runs the stashed instruction — one predicate for the settle and the re-run. */
+        const continues = compactHop && replay !== null && !last;
         const hop = new AbortController();
         const forward = () => hop.abort(chainAbort.signal.reason);
         chainAbort.signal.addEventListener('abort', forward, { once: true });
@@ -350,6 +360,14 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
               ...(last ? { fallbackCompact: BUDGET_SPENT } : {}),
             } satisfies Partial<Record<TaskTurnNonTerminal, string>>,
             ...(compactHop ? { compactHop: true } : {}),
+            // A completed `/compact` hop continues the chain only when there is
+            // an instruction to re-run and budget left (`continues`, below); with
+            // nothing to re-run it ends the chain as a failure, never a result.
+            chain: {
+              id: chainId,
+              continuesIfCompleted: continues,
+              ...(compactHop && !continues ? { completedFailsWith: COMPACT_NOT_RERUN } : {}),
+            },
             onStarted: () => {
               hopStarted = true;
               // The new hop's saved start took the task from the pending turn.
@@ -365,7 +383,10 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
         if (result.outcome) {
           // A compaction that the boundary proved, with budget left: run the
           // instruction it was stashed for. Nothing else is ever re-run (D10).
-          if (compactHop && replay && result.outcome.outcome === 'completed' && !last) {
+          if (continues && replay !== null && result.outcome.outcome === 'completed') {
+            // The completed compaction owns the task until the re-run's start is
+            // saved: a re-run that cannot start ends it, and the chain, here (fable #666).
+            pendingTurnId = result.turnId;
             text = replay;
             replay = null;
             compactHop = false;
@@ -374,11 +395,12 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
           }
           return;
         }
-        if (!result.fenced && result.nonTerminal === 'shutdown') strand(sessionKey, result.turnId);
+        if (!result.fenced && result.nonTerminal === 'shutdown') strand(sessionKey, result.turnId, chainId);
         if (result.fenced || result.nonTerminal !== 'fallbackCompact') return;
         pendingTurnId = result.turnId;
         // The stash is nulled at the compaction boundary: take it now.
-        replay = session.fallbackCompactPendingUserText ?? null;
+        // An empty stash is nothing to re-run (fable #666 P2).
+        replay = session.fallbackCompactPendingUserText || null;
         text = COMPACT;
         compactHop = true;
         isUserInput = false;
@@ -402,24 +424,29 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
    * re-opened) — even if this turn finished unwinding only after that — it is
    * ended here, since the process stays up (astra #634).
    */
-  function strand(sessionKey: string, turnId: string): void {
+  function strand(sessionKey: string, turnId: string, chainId: string): void {
     if (!accepting) {
-      shutdownStranded.set(sessionKey, turnId);
+      shutdownStranded.set(sessionKey, { turnId, chainId });
       return;
     }
-    endStranded(sessionKey, turnId);
+    endStranded(sessionKey, turnId, chainId);
   }
 
   /** Endings of stranded turns still saving — Close waits for them (astra #634 R2). */
   const endings = new Map<string, Promise<void>>();
 
-  function endStranded(sessionKey: string, turnId: string): void {
+  function endStranded(sessionKey: string, turnId: string, chainId: string): void {
     const ending = deps.runner
-      .abandonTurn(sessionKey, turnId, {
-        outcome: 'interrupted',
-        category: 'Exception',
-        reason: 'service shutdown was cancelled',
-      })
+      .abandonTurn(
+        sessionKey,
+        turnId,
+        {
+          outcome: 'interrupted',
+          category: 'Exception',
+          reason: 'service shutdown was cancelled',
+        },
+        chainId,
+      )
       .then(
         () => undefined,
         (error) =>
@@ -517,9 +544,9 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       accepting = true;
       // The shutdown was refused and the process stays up: nobody will reconcile
       // the turns its abort left `working` — end them now (#634 R1).
-      for (const [sessionKey, turnId] of shutdownStranded) {
+      for (const [sessionKey, { turnId, chainId }] of shutdownStranded) {
         shutdownStranded.delete(sessionKey);
-        endStranded(sessionKey, turnId);
+        endStranded(sessionKey, turnId, chainId);
       }
     },
     isRunning: (sessionKey) => chains.has(sessionKey),
