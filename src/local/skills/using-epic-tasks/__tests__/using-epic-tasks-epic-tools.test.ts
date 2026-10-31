@@ -143,7 +143,10 @@ describe('using-epic-tasks — the dashboard epic task loop (E4 ⑩a, D13)', () 
     expect(steps[4]).toContain('질문에 답을 기다리는 자식에게는 그 지시가 답이 된다');
     expect(steps[4]).toContain('턴이 돌고 있는 자식은 busy로 거절');
     expect(steps[5]).toContain('자식이 일하는 중(working)이거나 질문에 답을 기다리는 중(waiting)이면 거절된다');
+    expect(steps[5]).toContain('기다리는 자식에게는 이 깨우기에서 먼저 `instruct_child`로 답한다');
     expect(steps[2]).toContain('자식의 도구 승인은 깨우지 않는다');
+    expect(steps[2]).toContain('재시작으로 끊김');
+    expect(flat(body)).toContain('에픽의 자식은 자기 노드만 맡는다 — 노드가 Case A보다 크면 드라이브를 시작하지 말고');
     const stop = flat(body.slice(body.indexOf('**멈출 때**')));
     expect(stop).toContain('`too-many-children`');
     expect(stop).toContain('비용 상한에 걸리면 자식 시작과 에픽의 깨우기가 함께 멈춘다');
