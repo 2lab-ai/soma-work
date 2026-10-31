@@ -15989,7 +15989,7 @@ async function loadCronJobs() {
 }
 
 // ── The drawer's live countdown (the Agent Queue grammar, #444 D3) ──
-// <ui-agent-queue> ticks its own; the drawer's 다음 실행 is @2lab.ai/ui <ui-elapsed format="countdown"> (D8b
+// <ui-agent-queue> ticks its own; the drawer's 다음 실행 is @2lab.ai/ui ui-elapsed in its countdown format (D8b
 // K-03): the loose form, floored (spec 12 T9: 1일 5시간 · 1시간 20분 · 24분 · 42초 — precision="minute"), "후" after
 // it and "곧" from the moment it would read 0초 — never "곧 후" (PR review R1: at-zero leaves "after" off). It
 // ticks on the library's shared timer and says ui-end once at zero (the drawer reloads the jobs then).

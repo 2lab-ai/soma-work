@@ -838,9 +838,11 @@ describe('agent inbox board — responsive (§5)', () => {
     expect(TEMPLATE).toContain('.inbox { margin-bottom: 28px; container: inbox / inline-size; }');
   });
 
-  it('<640px raises tap targets to 44px', () => {
-    const block = TEMPLATE.match(/@media \(max-width: 639px\) \{[\s\S]*?\n\}/)?.[0] ?? '';
+  it('narrow or touch screens raise the page’s remaining tap targets to 44px (the elements’ crumbs and buttons carry their own rule)', () => {
+    const block = TEMPLATE.match(/@media \(max-width: 639px\), \(pointer: coarse\) \{[\s\S]*?\n\}/)?.[0] ?? '';
     expect(block).toContain('min-height: 44px');
+    // D8b: the panel's path crumbs are <ui-breadcrumbs>' (44px on coarse pointers is the element's rule) — no page rule.
+    expect(TEMPLATE).not.toContain('.pa-crumb');
   });
 
   it('every remaining control is 44px on narrow or touch screens (panel, topbar, period tabs)', () => {
