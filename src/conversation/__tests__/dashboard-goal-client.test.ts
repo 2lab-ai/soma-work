@@ -268,6 +268,7 @@ describe('the panel goal — one <ui-goal-card> per session, data only when it c
         sessionColOf: () => opts.col ?? 'working',
         currentUserId: opts.user ?? 'U1',
         isSiblingSession: () => !!opts.sibling,
+        _panelGen: 1,
       },
     );
     return { m, host, writes, classes, made: () => made, child: () => child };
@@ -297,6 +298,20 @@ describe('the panel goal — one <ui-goal-card> per session, data only when it c
     expect(r.made()).toBe(1);
     expect(r.writes).toHaveLength(2);
     expect(r.writes[1].queue).toEqual([]);
+  });
+
+  it('a new opening of the same session: a fresh element (its past goals folded again), the unsent draft carried over (D6b review P2)', () => {
+    const r = rig({ 'self::C1:t1': owned() });
+    r.m.renderPanelGoal();
+    const first = r.child();
+    first.draft = '배포 후 다시 확인';
+    r.m.renderPanelGoal(); // a repaint within the opening keeps the element (and its fold)
+    expect(r.made()).toBe(1);
+    r.m.__set('_panelGen', 2); // closed and opened again
+    r.m.renderPanelGoal();
+    expect(r.made()).toBe(2);
+    expect(r.child()).not.toBe(first);
+    expect(r.child().draft).toBe('배포 후 다시 확인');
   });
 
   it('another session: a fresh element (its draft never carries over)', () => {
