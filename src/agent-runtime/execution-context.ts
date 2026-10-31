@@ -46,6 +46,9 @@ export interface TaskExecutionContext extends ExecutionContext {
   readonly origin: 'task';
   readonly taskId: string;
   readonly workingDirectory: string;
+  /** E4 ④a (.prd/19 D3) — from the saved task: an epic, or a child's epic. The epic server attaches on these. */
+  readonly kind?: 'epic';
+  readonly parentTaskId?: string;
 }
 
 /** A turn was asked to run without a context the server can vouch for. */
@@ -107,6 +110,9 @@ export function executionContextForTask(session: ConversationSession): TaskExecu
     origin: 'task',
     taskId: session.taskId,
     workingDirectory,
+    // E4 ④a — the epic relation as saved (only a Slack-less record carries it).
+    ...(session.kind === 'epic' ? { kind: 'epic' as const } : {}),
+    ...(session.parentTaskId ? { parentTaskId: session.parentTaskId } : {}),
   }) as TaskExecutionContext;
 }
 

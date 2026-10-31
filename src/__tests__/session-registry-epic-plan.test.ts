@@ -128,6 +128,10 @@ describe('SessionRegistry — an epic plan and its events (E4 ②)', () => {
     for (const target of [plain.taskId!, child.taskId!, '99999999-9999-4999-8999-999999999999']) {
       expect(() => reg.setEpicPlan(target, TWO, 'epic'), target).toThrow(/not a live epic/);
     }
+    // A closing epic takes no new plan.
+    epic.terminated = true;
+    expect(() => reg.setEpicPlan(epic.taskId!, { nodes: [] }, 'epic')).toThrow(/not a live epic/);
+    epic.terminated = undefined;
     expect(epic.plan).toBe(first);
     expect(plain.plan).toBeUndefined();
     expect(child.plan).toBeUndefined();

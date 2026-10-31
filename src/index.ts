@@ -171,6 +171,7 @@ import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
 import { archivedCostUsd, epicTreeCostUsd } from './task-turn/epic-cost';
+import { setEpicHost } from './task-turn/epic-server';
 import { createDashboardCloseHandler } from './task-turn/task-close';
 import { createTaskLauncher } from './task-turn/task-launcher';
 import {
@@ -1210,6 +1211,18 @@ async function start() {
       epicCostLimitUsd: (ownerId) => userSettingsStore.getUserEpicCostLimitUsd(ownerId),
     });
     taskTurnController = taskController;
+    // E4 ④a (.prd/19 D3) — the host the epic's tools call: registry reads, the plan writer,
+    // a child's last final from its work log. Set here, not imported there (no cycle).
+    setEpicHost({
+      getTask: (taskId) => claudeHandler.getSessionRegistry().getSessionByTaskId(taskId),
+      getChildTasks: (parentTaskId) => claudeHandler.getSessionRegistry().getChildTasks(parentTaskId),
+      setEpicPlan: (taskId, input, by) => claudeHandler.getSessionRegistry().setEpicPlan(taskId, input, by),
+      readChildFinal: async (child) => {
+        const turnId = child.lastTurnOutcome?.turnId;
+        if (!child.conversationId || !turnId) return undefined;
+        return readTurnFinal(readWorkLog, child.conversationId, turnId);
+      },
+    });
     setDashboardTaskCommandHandler((sessionKey, message, attachments, actorUserId) =>
       taskController.start({ sessionKey, text: message, attachments, actorUserId }),
     );

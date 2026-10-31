@@ -44,6 +44,15 @@ describe('executionContextForTask (#597)', () => {
     });
   });
 
+  it('E4 ④a — carries the saved epic relation: an epic, or a child’s epic; an ordinary task neither', () => {
+    expect(executionContextForTask(task({ kind: 'epic' }))).toMatchObject({ kind: 'epic' });
+    const child = executionContextForTask(task({ parentTaskId: 'e1', planNodeId: 'n1' }));
+    expect(child.parentTaskId).toBe('e1');
+    expect(child.kind).toBeUndefined();
+    const plain = executionContextForTask(task());
+    expect('kind' in plain || 'parentTaskId' in plain).toBe(false);
+  });
+
   it('is frozen — nothing downstream can swap the user or the directory', () => {
     const ctx = executionContextForTask(task());
     expect(Object.isFrozen(ctx)).toBe(true);
