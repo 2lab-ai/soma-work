@@ -40,6 +40,10 @@ export type TaskNotificationLedgerIntent = Partial<Omit<TaskNoticeIntent, 'id' |
   approvalId?: string;
   toolName?: string;
   expiresAt?: number;
+  /** E2 ⑥ — an approval notice: the request, or its expiry. */
+  approval?: 'request' | 'expired';
+  /** E2 ⑥ — how the approval ended, noted on its request once known. */
+  resolution?: string;
   /** E2 ⑤ — what rendering needs after the task may be gone: its conversation, owner and key. */
   conversationId?: string;
   ownerId?: string;
@@ -207,6 +211,15 @@ export class TaskNotificationLedger {
   /** Every entry, in no particular order. */
   list(): TaskNotificationLedgerEntry[] {
     return [...this.entries.values()];
+  }
+
+  /** Add to an entry's intent in whatever state it is (E2 ⑥: an approval's resolution), saved. */
+  annotate(id: string, fields: Partial<TaskNotificationLedgerIntent>): TaskNotificationLedgerEntry {
+    const current = this.entries.get(id);
+    if (!current) throw new LedgerTransitionError(id, 'missing', 'annotated');
+    const next = { ...current, intent: { ...current.intent, ...fields }, updatedAt: this.now() };
+    this.commit(id, next);
+    return next;
   }
 
   /** No longer worth sending (answered, expired, replaced). */

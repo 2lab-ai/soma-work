@@ -40,6 +40,7 @@ describe('task notice deliverer — a final that does not convert (E2 ⑤)', () 
       readFinal: vi.fn(async () => ({ text: '| broken | table', clipped: false })),
       cardUrl: () => 'https://dash.example/card',
       getTask: () => ({ session, sessionKey: 'task:task-1' }),
+      isApprovalOpen: () => false,
       logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() },
     });
     deliverer.enqueue(session, 'task:task-1');
