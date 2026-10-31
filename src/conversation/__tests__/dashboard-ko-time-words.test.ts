@@ -203,7 +203,12 @@ describe('T3 — the chrome is Korean', () => {
     expect(TEMPLATE).toContain("{ id: 'conv', label: '대화', title: '지시와 답변' },");
     expect(TEMPLATE).toContain("var title = '작업' + (scopeLabel ?");
     expect(TEMPLATE).toContain('<section class="inbox ui-tok" id="inbox" aria-label="에이전트 인박스">');
-    expect(TEMPLATE).toContain('<span class="crumb-cur" aria-current="page">에이전트 인박스</span>');
+    // D8b A-16: the trail is <ui-breadcrumbs lang="ko">; its crumbs are the page's data.
+    expect(TEMPLATE).toContain('<ui-breadcrumbs class="crumbs" id="inbox-trail" lang="ko"></ui-breadcrumbs>');
+    expect(TEMPLATE).toContain(
+      "el.data = { items: [{ label: 'soma-work', href: '/dashboard' }, { label: '에이전트 인박스' }] };",
+    );
+    expect(TEMPLATE).not.toContain('crumb-cur');
     expect(TEMPLATE).toContain('aria-label="작업" tabindex="-1"></div>');
     expect(TEMPLATE).toContain('aria-label="목표" style="display:none"></div>');
     expect(TEMPLATE).toContain("label: n ? '목표 #' + n[1] + '/' + n[2] : '목표'");
