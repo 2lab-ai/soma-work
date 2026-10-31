@@ -230,6 +230,35 @@ describe('SessionRegistry — a child reports to its epic (E4 ⑤)', () => {
     expect(reg.getSessionByTaskId('epic-1')!.epicEvents).toHaveLength(1);
   });
 
+  it('V4c — an epic archived in the same load carries its child’s interrupted event into its archive (grok #701 R1)', () => {
+    fs.mkdirSync(TEST_DATA_DIR, { recursive: true });
+    fs.writeFileSync(
+      SESSIONS_FILE,
+      JSON.stringify([
+        slacklessRecord('child-1', {
+          parentTaskId: 'epic-1',
+          planNodeId: 'login',
+          activityState: 'working',
+          activeTaskTurnId: 'turn-9',
+          openChain: 'chain-9',
+        }),
+        // Asleep past the archive age: archived on load.
+        slacklessRecord('epic-1', { kind: 'epic', childTaskIds: ['child-1'], state: 'SLEEPING' }),
+      ]),
+    );
+    const reg = new SessionRegistry();
+    reg.loadSessions();
+    expect(reg.getSessionByTaskId('epic-1')).toBeUndefined();
+    const dir = path.join(TEST_DATA_DIR, 'archives');
+    const archived = fs
+      .readdirSync(dir)
+      .map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')))
+      .find((a) => a.taskId === 'epic-1');
+    expect(archived.epicEvents).toEqual([
+      expect.objectContaining({ id: 'child-1:chain-9', outcome: 'interrupted', state: 'pending' }),
+    ]);
+  });
+
   it('V5 — an approval is needs-input of the open chain; its answer or the chain end closes it; a failed save does not throw', () => {
     const { reg, epic, child, childKey } = family();
     reg.beginTaskTurn(childKey, 't1', 'chain-1');
