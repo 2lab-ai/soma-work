@@ -138,6 +138,15 @@ export interface ActionHandlerDelegates {
     handleApprove(body: any, respond: RespondFn): Promise<void>;
     handleDeny(body: any, respond: RespondFn): Promise<void>;
   };
+  /**
+   * Admin 승인 / 거절 on a bot-message delete request (#623) — the decision the
+   * dashboard's admin approvals share. Optional for older delegate providers,
+   * which keep the inline handlers below.
+   */
+  botDeleteHandler?: {
+    handleApprove(body: any, respond: RespondFn): Promise<void>;
+    handleReject(body: any, respond: RespondFn): Promise<void>;
+  };
   pluginUpdateHandler: {
     handleIgnore(body: any, respond: RespondFn): Promise<void>;
     handleForceUpdate(body: any, respond: RespondFn): Promise<void>;
@@ -464,12 +473,16 @@ export class ActionHandlers {
 
     app.action('dm_delete_approve', async ({ ack, body, respond }) => {
       await ack();
-      await this.handleDmDeleteApprove(body, respond as RespondFn);
+      if (this.delegates.botDeleteHandler)
+        await this.delegates.botDeleteHandler.handleApprove(body, respond as RespondFn);
+      else await this.handleDmDeleteApprove(body, respond as RespondFn);
     });
 
     app.action('dm_delete_reject', async ({ ack, body, respond }) => {
       await ack();
-      await this.handleDmDeleteReject(body, respond as RespondFn);
+      if (this.delegates.botDeleteHandler)
+        await this.delegates.botDeleteHandler.handleReject(body, respond as RespondFn);
+      else await this.handleDmDeleteReject(body, respond as RespondFn);
     });
 
     app.action('dm_delete_thread_confirm', async ({ ack, body, respond }) => {

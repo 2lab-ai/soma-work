@@ -287,14 +287,32 @@ export function scheduleLinkDerivedTitleRefresh(
   tag: string,
 ): void {
   const sessionKey = claudeHandler.getSessionKey(channelId, threadTs);
-  stampLinkTitlesAndDeriveSessionTitle(adaptHandler(claudeHandler as ClaudeHandler), {
-    channelId,
-    threadTs,
-    sessionKey,
-  }).catch((err) => {
+  refreshInBackground(adaptHandler(claudeHandler as ClaudeHandler), { channelId, threadTs, sessionKey }, tag);
+}
+
+/**
+ * The same for a Slack-less task (#598 ④a): it has no channel/thread to build
+ * a Slack key from, so every read and write goes by its `task:<taskId>` key.
+ */
+export function scheduleLinkDerivedTitleRefreshByKey(
+  claudeHandler: Pick<ClaudeHandler, 'getSessionByKey' | 'setSessionLinksByKey' | 'setSessionTitleByKey'>,
+  sessionKey: string,
+  tag: string,
+): void {
+  const handler: LinkDerivedTitleHandler = {
+    getSession: () => claudeHandler.getSessionByKey(sessionKey),
+    setSessionLink: (_channelId, _threadTs, link) =>
+      claudeHandler.setSessionLinksByKey(sessionKey, { [link.type]: link }),
+    setSessionTitle: (_channelId, _threadTs, title) => claudeHandler.setSessionTitleByKey(sessionKey, title),
+  };
+  refreshInBackground(handler, { channelId: '', threadTs: undefined, sessionKey }, tag);
+}
+
+function refreshInBackground(handler: LinkDerivedTitleHandler, address: SessionAddress, tag: string): void {
+  stampLinkTitlesAndDeriveSessionTitle(handler, address).catch((err) => {
     logger.warn('Link-derived title refresh failed', {
       tag,
-      sessionKey,
+      sessionKey: address.sessionKey,
       error: (err as Error).message,
     });
   });

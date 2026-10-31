@@ -141,6 +141,57 @@ export function liveOccupancyCall(
   return top;
 }
 
+type OccupancyHolder = LiveUsageHolder & {
+  usage?: {
+    currentInputTokens?: number;
+    currentOutputTokens?: number;
+    currentCacheReadTokens?: number;
+    currentCacheCreateTokens?: number;
+  };
+};
+
+function writeOccupancy(u: NonNullable<OccupancyHolder['usage']>, top: LiveUsageTotals): void {
+  u.currentInputTokens = count(top.inputTokens);
+  u.currentOutputTokens = count(top.outputTokens);
+  u.currentCacheReadTokens = count(top.cacheReadTokens);
+  u.currentCacheCreateTokens = count(top.cacheCreateTokens);
+}
+
+/**
+ * Make the running turn's context the session's occupancy as its calls land:
+ * its largest main-agent call (`liveOccupancyCall`). Automatic compaction is
+ * decided from this occupancy, so it must not wait for the turn's end — a turn
+ * can run for hours, and one killed by a restart never ends (a dev deployment
+ * 2026-10-30: three restarts killed one goal's turns at 528k, 701k and 950k;
+ * no check ever ran). It REPLACES what was stored: the stored figure can be
+ * stale (a compaction without `post_tokens` leaves the pre-compact one), and a
+ * stale high would arm — and stop — the turn on its first small call.
+ * Returns whether the turn had a reading.
+ */
+export function adoptLiveOccupancy(session: OccupancyHolder): boolean {
+  const top = liveOccupancyCall(session);
+  if (!session.usage || !top) return false;
+  writeOccupancy(session.usage, top);
+  return true;
+}
+
+/**
+ * At a turn's end without its result (`foldLiveUsage`): the context the turn
+ * reached becomes the occupancy only when larger, so a later switch still sees
+ * how full it is.
+ */
+function raiseLiveOccupancy(session: OccupancyHolder): void {
+  const u = session.usage;
+  const top = liveOccupancyCall(session);
+  if (!u || !top) return;
+  const current =
+    count(u.currentInputTokens) +
+    count(u.currentOutputTokens) +
+    count(u.currentCacheReadTokens) +
+    count(u.currentCacheCreateTokens);
+  if (callTotal(top) > current) writeOccupancy(u, top);
+}
+
 /**
  * A turn that ended without its result usage (stopped, transport lost) still
  * spent its reported calls: add them to the committed totals — priced by
@@ -179,11 +230,6 @@ export function foldLiveUsage(
     return false;
   }
   const t = sumLiveUsage(session.liveUsage);
-  // The context the turn reached: its largest call (after its compact
-  // boundary, when it had one). It becomes the current occupancy when larger,
-  // so a later switch still sees how full it is.
-  const top = liveOccupancyCall(session);
-  const topTotal = top ? callTotal(top) : 0;
   const any = t.inputTokens + t.outputTokens + t.cacheReadTokens + t.cacheCreateTokens > 0;
   if (any && session.usage) {
     session.usage.totalInputTokens += t.inputTokens;
@@ -221,18 +267,10 @@ export function foldLiveUsage(
       { ...t, costUsd: cost },
       typeof session.sessionId === 'string' && session.sessionId ? session.sessionId : undefined,
     );
-    const u = session.usage;
-    const current =
-      count(u.currentInputTokens) +
-      count(u.currentOutputTokens) +
-      count(u.currentCacheReadTokens) +
-      count(u.currentCacheCreateTokens);
-    if (top && topTotal > current) {
-      u.currentInputTokens = count(top.inputTokens);
-      u.currentOutputTokens = count(top.outputTokens);
-      u.currentCacheReadTokens = count(top.cacheReadTokens);
-      u.currentCacheCreateTokens = count(top.cacheCreateTokens);
-    }
+    // The context the turn reached (its largest call, after its compact
+    // boundary when it had one) becomes the occupancy when larger, so a later
+    // switch still sees how full it is.
+    raiseLiveOccupancy(session);
   }
   clearLiveUsage(session, turnId);
   return any && !!session.usage;
