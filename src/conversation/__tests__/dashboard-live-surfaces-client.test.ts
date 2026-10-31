@@ -297,60 +297,57 @@ describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
   });
 });
 
-describe('panel task rows carry id, elapsed time and tool calls (T7/T8)', () => {
-  const { renderPanelTaskItem } = load<{ renderPanelTaskItem(t: unknown): string }>(
-    [
-      'esc',
-      'escAttr',
-      'toNum',
-      'formatDuration',
-      'formatTaskTime',
-      'agentIconHtml',
-      'taskFateOf',
-      'renderPanelTaskItem',
-    ],
-    ['TASK_FATE_LABEL', 'TASK_PAUSE_SVG', 'TASK_STOP_SVG', 'TASK_SKIP_SVG'],
+// D3 E-22/E-23: a panel task is a <ui-task-runs> run (or a <ui-task-plan> step); the page hands it the id,
+// the times and the tool calls — the element draws the duration, the chip and the status word.
+describe('panel task runs carry id, times and tool calls (T7/T8)', () => {
+  const { taskRunsData, taskPlanData, taskRunsOf } = load<{
+    taskRunsData(ran: unknown[]): Array<Record<string, any>>;
+    taskPlanData(runs: unknown): Record<string, any>;
+    taskRunsOf(current: unknown[], earlier?: unknown[]): unknown;
+  }>(
+    ['toNum', 'taskFateOf', 'taskIdNum', 'taskRunStart', 'taskRunEnd', 'taskRunsOf', 'taskRunsData', 'taskPlanData'],
+    ['TASK_RUN_STATUS'],
   );
-  it('completed: id, duration and tool count', () => {
-    const html = renderPanelTaskItem({
+  it('completed: id, start and end, tool count', () => {
+    const [run] = taskRunsData([
+      { id: 'T4', content: 'Build', status: 'completed', startedAt: 5, completedAt: 9, toolCalls: 12 },
+    ]);
+    expect(run).toMatchObject({
       id: 'T4',
-      content: 'Build',
-      status: 'completed',
-      startedAt: 0,
-      completedAt: 0,
+      ref: '#T4',
+      title: 'Build',
+      status: 'done',
+      startedAt: 5,
+      endedAt: 9,
       toolCalls: 12,
     });
-    expect(html).toContain('<span class="task-id">#T4</span>');
-    expect(html).toContain('툴 12회');
   });
   it('task view T2: a step a later plan dropped after it ran keeps its tools and time; one that never ran has neither', () => {
-    const dropped = renderPanelTaskItem({
-      id: 'T5',
-      content: 'Stopped',
-      status: 'in_progress',
-      dropped: 'started',
-      startedAt: 1000,
-      removedAt: 61_000,
-      toolCalls: 6,
-    });
-    expect(dropped).toContain('data-step="dropped"');
-    // SSOT 2026-10-29 T5: a task a new plan replaced after it ran reads 교체됨 (was 중단) —
-    // its work stays on it, it was not stopped.
-    expect(dropped).toContain('<span class="pl-fate">교체됨</span><span class="pl-chip">툴 6회</span>');
-    expect(dropped).not.toContain('중단');
-    expect(dropped).toContain('<span class="pl-aside">1m 0s</span>');
-    expect(dropped).not.toContain('aria-current');
-    const skipped = renderPanelTaskItem({
-      id: 'T6',
-      content: 'Never ran',
-      status: 'pending',
-      dropped: 'unstarted',
-      toolCalls: 0,
-    });
-    expect(skipped).toContain('data-step="skipped"');
-    expect(skipped).toContain('<span class="pl-fate">실행 안 됨</span>');
-    expect(skipped).not.toContain('pl-chip');
-    expect(skipped).toContain('<span class="ar-vh">, 실행 안 됨</span>');
+    const [dropped] = taskRunsData([
+      {
+        id: 'T5',
+        content: 'Stopped',
+        status: 'in_progress',
+        dropped: 'started',
+        startedAt: 1000,
+        removedAt: 61_000,
+        toolCalls: 6,
+      },
+    ]);
+    // SSOT 2026-10-29 T5: a task a new plan replaced after it ran is dropped (교체됨), its work stays on it —
+    // never running, its time from its start to when it left.
+    expect(dropped).toMatchObject({ status: 'dropped', startedAt: 1000, endedAt: 61_000, toolCalls: 6 });
+    const runs = taskRunsOf(
+      [],
+      [{ id: 'T6', content: 'Never ran', status: 'pending', dropped: 'unstarted', toolCalls: 0 }],
+    );
+    const plan = taskPlanData(runs);
+    expect(plan.steps).toEqual([]);
+    expect(plan.earlier[0].steps).toEqual([
+      { id: 'skipped:T6', ref: '#T6', label: 'Never ran', status: 'pending', fate: 'dropped' },
+    ]);
+    // A plan step carries no tool count (nothing ran).
+    expect('toolCalls' in plan.earlier[0].steps[0]).toBe(false);
   });
 });
 
@@ -711,28 +708,21 @@ describe('work log: the latest window on opening, older pages as the reader scro
   });
 });
 
-describe('work log folds under the task each entry was made in (T10)', () => {
-  const m = load<{
-    wlBuildRows(entries: unknown[]): Array<{ entry?: any; group?: any }>;
-    renderWorkLogGroup(group: unknown, open: boolean, task: unknown): string;
-  }>(
-    [
-      'esc',
-      'escAttr',
-      'toNum',
-      'formatDuration',
-      'decodeSlackEntities',
-      'taskFateOf',
-      'renderTaskMeta',
-      'wlToolSummary',
-      'renderWorkLogEntry',
-      'wlGroupOf',
-      'wlBuildRows',
-      'renderWorkLogGroupHead',
-      'renderWorkLogGroup',
-    ],
-    ['WL_LABELS', 'TASK_FATE_LABEL'],
-  );
+describe('work log folds under the task each entry was made in (T10; <ui-work-log> groups)', () => {
+  type Group = { id: string; ref: string; title: string; open: boolean; count: number; entries: Array<{ id: string }> };
+  const groupsOf = (entries: unknown[], tasks: Record<string, unknown> = {}, st: Record<string, unknown> = {}) =>
+    load<{ wlGroupsOf(st: unknown, entries: unknown[]): Group[] }>(
+      ['wlGroupOf', 'wlGroupOpen', 'wlRunTitle', 'wlGroupsOf'],
+      ['WL_RUN_TITLE'],
+      {
+        wlTaskInfo: (id: string) => tasks[id] ?? null,
+        wlEntryOf: (_st: unknown, e: { seq: number; kind: string; text: string }) => ({
+          id: String(e.seq),
+          kind: e.kind,
+          text: e.text,
+        }),
+      },
+    ).wlGroupsOf({ entries, ...st }, entries);
   const E = (seq: number, taskId?: string, taskTitle?: string, kind = 'tool') => ({
     seq,
     ts: 0,
@@ -741,56 +731,49 @@ describe('work log folds under the task each entry was made in (T10)', () => {
     ...(taskId ? { taskId, taskTitle } : {}),
   });
 
-  it('entries of one task gather under it, at its first entry; entries outside any task stay in line', () => {
-    const rows = m.wlBuildRows([
-      E(1, undefined, undefined, 'instruction'),
-      E(2, 'T1', 'Explore'),
-      E(3, 'T1', 'Explore'),
-      E(4, 'T2', 'Build'),
-      E(5, undefined, undefined, 'final'),
-      E(6, 'T1', 'Explore again'),
+  it('entries of one task gather under it, at its first entry; entries outside any task are runs in line', () => {
+    const g = groupsOf(
+      [
+        E(1, undefined, undefined, 'instruction'),
+        E(2, 'T1', 'Explore'),
+        E(3, 'T1', 'Explore'),
+        E(4, 'T2', 'Build'),
+        E(5, undefined, undefined, 'final'),
+        E(6, 'T1', 'Explore again'),
+      ],
+      {},
+      { groupOpen: { 'task:T1': true } },
+    );
+    expect(g.map((x) => `${x.id}:${x.entries.map((e) => e.id).join(',')}`)).toEqual([
+      'run:1:1',
+      'task:T1:2,3,6',
+      'task:T2:',
+      'run:5:5',
     ]);
-    expect(
-      rows.map((r) =>
-        r.entry ? r.entry.seq : `${r.group.taskId}:${r.group.entries.map((e: any) => e.seq).join(',')}`,
-      ),
-    ).toEqual([1, 'T1:2,3,6', 'T2:4', 5]);
-    // The group is titled by its latest entry.
-    expect(rows[1].group.title).toBe('Explore again');
+    // The group is titled by its latest entry (no ledger task); the newest task is open at first sight.
+    expect(g[1]).toMatchObject({ ref: '#T1', title: 'Explore again', count: 3, open: true });
+    expect(g[2]).toMatchObject({ ref: '#T2', title: 'Build', count: 1, open: false });
   });
 
-  it('a group renders as a header button (id, title, count, task time / tools) over its entries', () => {
-    const html = m.renderWorkLogGroup(
-      { taskId: 'T1', title: 'Explore', entries: [E(2, 'T1', 'Explore'), E(3, 'T1', 'Explore')] },
-      false,
-      { id: 'T1', content: 'Explore', status: 'completed', startedAt: 1000, completedAt: 61_000, toolCalls: 2 },
-    );
-    expect(html).toContain('<div class="wl-group" data-task-id="T1">');
-    expect(html).toContain('role="button"');
-    expect(html).toContain('aria-expanded="false"');
-    expect(html).toContain('#T1');
-    expect(html).toContain('<span class="wl-g-count">2</span>');
-    expect(html).toContain('1m 0s');
-    expect(html).toContain('툴 2회');
-    // A closed group holds no entry nodes until it is opened (review P1: DOM size).
-    // Tone pass P6: a closed group's body is hidden and inert (it folds to 0 rows instead of vanishing).
-    expect(html).toContain('<div class="wl-group-body" hidden inert></div>');
-    expect(html).not.toContain('data-seq="2"');
-    const open = m.renderWorkLogGroup(
-      { taskId: 'T1', title: 'Explore', entries: [E(2, 'T1', 'Explore'), E(3, 'T1', 'Explore')] },
-      true,
-      null,
-    );
-    expect(open).toContain('data-seq="2"');
-    expect(open).toContain('data-seq="3"');
-    expect(m.renderWorkLogGroup({ taskId: 'T1', title: 'x', entries: [] }, true, null)).toContain(
-      '<div class="wl-group-body" data-filled="1">',
-    );
+  it('a group head: #id, the ledger’s title, the count; a folded group holds no entries until it is opened (DOM size)', () => {
+    const tasks = { T1: { id: 'T1', content: 'Explore (ledger)', status: 'completed', toolCalls: 2 } };
+    const closed = groupsOf([E(2, 'T1', 'Explore'), E(3, 'T1', 'Explore'), E(4, 'T2', 'Build')], tasks);
+    expect(closed[0]).toEqual({
+      id: 'task:T1',
+      at: 0,
+      ref: '#T1',
+      title: 'Explore (ledger)',
+      open: false,
+      count: 2,
+      entries: [],
+    });
+    const open = groupsOf([E(2, 'T1', 'Explore'), E(3, 'T1', 'Explore')], tasks, { groupOpen: { 'task:T1': true } });
+    expect(open[0].entries.map((e) => e.id)).toEqual(['2', '3']);
   });
 
-  it('escapes task ids and titles', () => {
-    const html = m.renderWorkLogGroup({ taskId: '"><img src=x>', title: '<script>', entries: [] }, true, null);
-    expect(html).not.toMatch(/<img|<script/);
+  it('task ids and titles are data (the element escapes them)', () => {
+    const g = groupsOf([E(2, '"><img src=x>', '<script>')]);
+    expect(g[0]).toMatchObject({ id: 'task:"><img src=x>', ref: '#"><img src=x>', title: '<script>' });
   });
 });
 

@@ -185,8 +185,8 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
     expect(
       at('<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>'),
     ).toBeGreaterThan(at('id="panel-tabpanel"'));
-    expect(at('id="panel-turns"')).toBeGreaterThan(at('id="panel-tasks"'));
-    expect(at('<div class="panel-command" id="panel-command">')).toBeGreaterThan(at('id="panel-turns"'));
+    expect(at('id="panel-conv"')).toBeGreaterThan(at('id="panel-tasks"'));
+    expect(at('<div class="panel-command" id="panel-command">')).toBeGreaterThan(at('id="panel-conv"'));
     // One scroll area in the body.
     expect(panel.slice(0, at('id="panel-command"')).split('class="panel-scroll"').length - 1).toBe(1);
   });
@@ -277,11 +277,12 @@ describe('phones — nothing zooms, nothing hides behind the FAB, nothing runs o
   it('text inputs in the drawer are 16px on touch screens (iOS does not zoom into them)', () => {
     // The composer is @2lab.ai/ui <ui-agent-steering> (dashboard batch 2): its field and its edit box are 16px on a
     // coarse pointer in the element's own styles (@2lab.ai/ui src/components/agent-steering/styles.ts,
-    // `@media (pointer: coarse) { … .as-input, .as-edit { font-size: 16px; } }`). The page's own inputs stay here.
+    // `@media (pointer: coarse) { … .as-input, .as-edit { font-size: 16px; } }`). The multi-question form's own
+    // answer box is <ui-choice-form>'s (D3 E-15): 44px and 16px under `(pointer: coarse), (max-width: 639px)` in
+    // the element (@2lab.ai/ui src/components/choice-form/styles.ts, `.cf-input { height: 44px; font-size: 16px; }`).
     expect(TEMPLATE).toContain('<ui-agent-steering id="cmd-steer" lang="ko">');
-    expect(TEMPLATE).toMatch(
-      /@media \(pointer: coarse\) \{\n {2}\/\* Responsive[^@]*\.mc-custom-input input \{ font-size: 16px; \}/,
-    );
+    expect(clientFn('renderMultiChoicePanel')).toContain("document.createElement('ui-choice-form')");
+    expect(TEMPLATE).not.toContain('mc-custom-input');
   });
 
   it('below 640px the page clears the FAB, the defaults menu spans the bar, the artifact viewer is full screen', () => {
