@@ -2379,7 +2379,11 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
     // E4 ⑧ — a closed epic or child keeps its relation: it stays in CLOSED, tagged (D1, D10 b).
     ...(archived.slackless === true && archived.kind === 'epic' ? { kind: 'epic' as const } : {}),
     ...(archived.slackless === true && archived.parentTaskId
-      ? { parentTaskId: archived.parentTaskId, planNodeId: archived.planNodeId }
+      ? {
+          parentTaskId: archived.parentTaskId,
+          planNodeId: archived.planNodeId,
+          ...(archived.closedBy ? { closedBy: archived.closedBy } : {}),
+        }
       : {}),
     conversationId: archived.conversationId,
     lastActivity: archived.lastActivity,
