@@ -26,10 +26,12 @@ import {
   type McpToolPermissionConfig,
 } from '@soma/process-shared/mcp-tool-permission-config.js';
 import {
+  MCP_GRANT_KIND,
   type PendingApproval,
   type PermissionResponse,
   sharedStore,
 } from '@soma/process-shared/permission/shared-store.js';
+import { closeLatePrompts } from './close-late-prompts.js';
 
 interface SlackContext {
   channel: string;
@@ -214,6 +216,7 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
 
     // Store pending request
     const pending: PendingApproval = {
+      kind: MCP_GRANT_KIND,
       tool_name: 'request_permission',
       input: { server, level, duration, estimatedExpiry },
       channel: this.slackContext.channel,
@@ -226,16 +229,29 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
 
     // DM each admin — track delivery count to fail fast if none reached
     let deliveredCount = 0;
+    const prompts: Array<{ channel: string; ts: string }> = [];
     for (const adminId of adminUsers) {
       try {
-        await this.slack.chat.postMessage({
+        const posted = await this.slack.chat.postMessage({
           channel: adminId,
           text: `Permission request from <@${userId}> for ${server} (${level})`,
           blocks,
         });
         deliveredCount++;
+        if (typeof posted?.channel === 'string' && typeof posted?.ts === 'string') {
+          prompts.push({ channel: posted.channel, ts: posted.ts });
+        }
       } catch (error) {
         this.logger.warn('Failed to DM admin for permission request', { adminId, error });
+      }
+    }
+    // Where every admin's copy landed: an answer from any surface (a Slack
+    // button, the dashboard) rewrites all of them.
+    if (prompts.length > 0) {
+      try {
+        await sharedStore.storePendingApproval(requestId, { ...pending, prompts });
+      } catch (error) {
+        this.logger.warn('Failed to record admin prompt locations', { requestId, error });
       }
     }
 
@@ -261,6 +277,9 @@ class McpToolPermissionMCPServer extends BaseMcpServer {
 
     // Wait for admin response
     const response = await sharedStore.waitForPermissionResponse(requestId, 5 * 60 * 1000);
+    await closeLatePrompts(this.slack, prompts, response, (error) =>
+      this.logger.warn('Failed to close a late admin prompt', { requestId, error }),
+    );
 
     if (response.behavior === 'allow') {
       // Parse the grant info from updatedInput if available
