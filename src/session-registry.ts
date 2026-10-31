@@ -511,6 +511,8 @@ export class SessionRegistry {
   private logger = new Logger('SessionRegistry');
   private expiryCallbacks?: SessionExpiryCallbacks;
   private beforeSessionDelete?: BeforeSessionDeleteCallback;
+  /** E2 ⑤ — told after a save that added notices a task owes its instruction thread. */
+  private taskNoticeListener?: (session: ConversationSession, sessionKey: string) => void;
   private _crashRecoveredSessions: CrashRecoveredSession[] = [];
 
   /**
@@ -584,6 +586,41 @@ export class SessionRegistry {
    */
   setBeforeSessionDelete(callback: BeforeSessionDeleteCallback): void {
     this.beforeSessionDelete = callback;
+  }
+
+  /**
+   * E2 ⑤ — the notice deliverer's listener: called after a strict save that
+   * added notices to a task with an instruction thread (its creation, its
+   * chain's end). Never for an outcome held in memory: those notices wait for
+   * a save, or for restart reconciliation.
+   */
+  setTaskNoticeListener(listener: (session: ConversationSession, sessionKey: string) => void): void {
+    this.taskNoticeListener = listener;
+  }
+
+  private fireTaskNotices(sessionKey: string, session: ConversationSession): void {
+    if (!this.taskNoticeListener) return;
+    try {
+      this.taskNoticeListener(session, sessionKey);
+    } catch (error) {
+      // The notices are saved: the boot scan or the next save's listener delivers them.
+      this.logger.warn('Task notice listener raised', {
+        sessionKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * E2 ⑤ — a notice reached its thread (or was closed): drop its intent from
+   * the live task record. Not saved here; the next save carries it. A crash
+   * first re-registers it, and the ledger, which has it posted, sends nothing.
+   */
+  pruneTaskNotice(taskId: string, noticeId: string): void {
+    const session = this.sessionsByTaskId.get(taskId);
+    if (!session?.notices) return;
+    const kept = session.notices.filter((n) => n.id !== noticeId);
+    session.notices = kept.length > 0 ? kept : undefined;
   }
 
   /**
@@ -718,6 +755,7 @@ export class SessionRegistry {
     if (changed) session.activityStateChangedAt = Date.now();
     // E2 ③ — the chain's last outcome closes it and owes the thread a notice,
     // in this same write; a hop the chain re-runs after keeps it open, silent.
+    const noticesBefore = session.notices;
     if (settle?.ends) {
       session.openChain = undefined;
       const kind = settle.notice?.kind ?? noticeKindFor(outcome.outcome);
@@ -750,6 +788,7 @@ export class SessionRegistry {
         session.notices = previous.notices;
         throw error;
       }
+      if (session.notices !== noticesBefore) this.fireTaskNotices(key, session);
     }
     try {
       this.onActivityStateChangeCallback?.();
@@ -1134,7 +1173,11 @@ export class SessionRegistry {
     session.slackless = true;
     session.workingDirectory = input.workingDirectory;
     if (input.title) session.title = input.title;
-    if (originThread) session.originThread = originThread;
+    if (originThread) {
+      session.originThread = originThread;
+      // The thread is owed the card's link, in this first strict save (D6).
+      this.addTaskNotice(session, { id: `${session.taskId}:create:link`, kind: 'link', at: Date.now() });
+    }
     const inputContext = sanitizeTaskInputContext(input.inputContext);
     if (inputContext) session.inputContext = inputContext;
     // A caller passed a context and nothing usable was left: the task runs
@@ -1155,6 +1198,7 @@ export class SessionRegistry {
       throw error;
     }
     this.logger.info('Slack-less task created', { taskId: session.taskId, ownerId: session.ownerId });
+    if (session.notices) this.fireTaskNotices(key, session);
     return session;
   }
 
