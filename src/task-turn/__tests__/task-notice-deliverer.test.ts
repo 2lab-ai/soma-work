@@ -900,7 +900,12 @@ describe('task notice deliverer — hardening (E2 ⑨, fable #668 P3)', () => {
       expect(spy).toHaveBeenCalledTimes(2);
       // Spent: no timer, no more claims in this process, on the card.
       expect(vi.getTimerCount()).toBe(0);
-      expect(h.deliverer.failures(KEY)).toEqual([{ kind: 'result', error: 'ENOSPC' }]);
+      // A code on the card; the write error (it can carry a path) only in the log.
+      expect(h.deliverer.failures(KEY)).toEqual([{ kind: 'result', error: 'notice_not_recorded' }]);
+      expect(h.deps.logger.error).toHaveBeenCalledWith(
+        'Task notice not delivered',
+        expect.objectContaining({ error: 'ENOSPC' }),
+      );
       await h.deliverer.deliver();
       expect(spy).toHaveBeenCalledTimes(2);
       // The disk is back; the boot pass (retryFailed) tries again and it goes out.
