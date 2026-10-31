@@ -1,16 +1,17 @@
 /**
  * Interface sound on the dashboard and the settings page — @2lab.ai/ui/sound (the policy every element follows) and
  * @2lab.ai/ui/sound-cuelume (Cuelume's cues, synthesized with Web Audio). Off until the person turns it on with the
- * speaker beside the theme switch; the choice belongs to this browser (localStorage `soma-sound`, like `soma-theme`).
+ * speaker beside the theme switch — <ui-app-bar id="app-bar">'s own on both pages (its ui-sound-change is answered
+ * here, somaSoundBindBar); the choice belongs to this browser (localStorage `soma-sound`, like `soma-theme`).
  * Nothing loads for a page that never turned sound on until the person heads for the speaker (hover, focus, press):
  * then the player loads, so the click itself unlocks audio and plays its cue in the same task — some browsers start
  * audio only inside the gesture. The elements sound their own interactions; `bindSound` covers the page's own
  * controls marked `data-ui-sound`.
  *
  * The script is a String.raw literal with no backticks and no `${…}`, so it reaches the browser byte for byte and
- * the tests run it as shipped. It goes in <head>: `data-sound` on <html> picks the speaker's glyph before paint.
+ * the tests run it as shipped. It goes in <head>: `data-sound` on <html> says the state before paint, and the bar's
+ * first data (paintAppBar's `sound`) reads the choice from here (`_somaOn`).
  */
-import { uiIcon } from './ui-lib';
 
 /** This browser's choice: 'on' | 'off' (absent = off). */
 export const SOUND_STORAGE_KEY = 'soma-sound';
@@ -29,7 +30,8 @@ function somaSoundShow(on) {
   document.documentElement.setAttribute('data-sound', on ? 'on' : 'off');
   var b = document.getElementById('sound-toggle');
   if (b) b.setAttribute('aria-pressed', on ? 'true' : 'false');
-  // The dashboard's <ui-app-bar> draws its own speaker from data.sound (pressed while on).
+  // The page's <ui-app-bar> (the dashboard's and the settings page's) draws its own speaker from data.sound
+  // (pressed while on).
   var bar = document.getElementById('app-bar');
   if (bar && bar.data && bar.data.sound !== on) bar.data = Object.assign({}, bar.data, { sound: on });
 }
@@ -144,12 +146,4 @@ document.addEventListener('DOMContentLoaded', function () {
 /** The page script, its module URLs pinned to the installed @2lab.ai/ui version (cache-busting, like the elements). */
 export function soundClientJs(uiVersion: string): string {
   return SOUND_CLIENT_JS.split('__UI_V__').join(encodeURIComponent(uiVersion));
-}
-
-/**
- * The speaker (server-drawn glyphs from @2lab.ai/ui's icon set): `sound` while on, `sound-off` while off — CSS picks
- * one by `data-sound` on <html>. For the settings page; the dashboard writes the same button with icon slots.
- */
-export function soundToggleHtml(): string {
-  return `<button type="button" id="sound-toggle" class="sound" onclick="toggleSound()" onpointerenter="somaSoundWarm()" onfocus="somaSoundWarm()" onpointerdown="somaSoundWarm()" aria-pressed="false" aria-label="인터페이스 소리" title="인터페이스 소리">${uiIcon('sound', { class: 'ic-sound' })}${uiIcon('sound-off', { class: 'ic-sound-off' })}</button>`;
 }

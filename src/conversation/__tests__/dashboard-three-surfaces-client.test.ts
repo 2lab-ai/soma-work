@@ -287,6 +287,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
     renderTimeline: () => '[TASKS]',
     // affectUI batch 1: the prompts and the single-choice question are <ui-approval-card> slots.
     acPermissionsHtml: () => '',
+    acGoalDecisionHtml: () => '',
     acQuestionHtml: () => '[Q]',
     renderMultiChoiceCard: () => '[MC]',
     renderModelNote: () => '',
