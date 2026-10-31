@@ -11,7 +11,7 @@
 
 **Reference:**
 - Spec: `.prd/19-epic-session-e4-spec.md`.
-- Wiring: `docs/misc/reference/architecture.md` (E4 ①–⑩).
+- Wiring: `docs/misc/reference/architecture.md` (E4 ①–⑨).
 - Epic #677. Measurement issue #688.
 
 ## 1. What runs where
@@ -22,11 +22,11 @@
   - `spawn_child` makes one child per node, at most 7 per epic;
   - `child_status` reads the tree and the children;
   - `instruct_child` gives a child its next instruction or an answer.
-- **Children** are Slack-less tasks with `parentTaskId` and `planNodeId`. At most 3 run at once per epic tree. A tree is limited to 30 starts per 10 minutes and has a cost limit (`epicCostLimitUsd`, default $50). These limits live in `src/task-turn/task-turn-controller.ts`.
+- **Children** are Slack-less tasks with `parentTaskId` and `planNodeId`. At most 3 run at once per epic tree. A tree is limited to 30 starts per 10 minutes and has a cost limit (`epicCostLimitUsd`, default $50). The 3, the 30 and the $50 live in `src/task-turn/task-turn-controller.ts`. The 7 is `EPIC_CHILD_MAX` in `src/task-turn/epic-server.ts`.
 - **Waking** (`src/task-turn/epic-wake.ts`): when a child's chain ends, the epic gets an event. An idle epic that is not done then gets one host turn whose text is `Epic wake: N events — <node>:<word>, …`. That turn's start consumes the events. A restart puts the events that an unfinished epic turn consumed back to pending, and the boot scan wakes the epic again.
 - **Closing** (`src/task-turn/task-close.ts`): closing an epic marks each running child "closed by its parent", cancels them all, then closes the epic. The mark names the chain it cancelled. Closing a child records a `closed` event on its epic. A close never wakes the epic.
 - **The board:** the EPIC lane draws each epic with:
-  - its state chip;
+  - its state chip: 입력 필요 (it or a child waits on its owner), 자식 실행 중 (it or a child works), 완료 (done, with nothing waiting or working), 대기 (none of these);
   - its progress (accepted nodes of all nodes);
   - its plan tree;
   - its children's cards.
@@ -63,10 +63,10 @@ The user sends `/z epictasks off`, or turns off **에픽 작업 (실험)** in th
 Stop the service first. The store keeps settings in memory and writes them back.
 
 ```bash
+cd /opt/soma-work/<env>
 sudo ./scripts/service.sh stop
-cd /opt/soma-work/<env>/data
-cp user-settings.json user-settings.json.pre-epictasks-off
-node -e 'const f="user-settings.json";const s=JSON.parse(require("fs").readFileSync(f));for(const u of Object.values(s))delete u.epicTasks;require("fs").writeFileSync(f+".tmp",JSON.stringify(s,null,2));require("fs").renameSync(f+".tmp",f)'
+cp data/user-settings.json data/user-settings.json.pre-epictasks-off
+node -e 'const f="data/user-settings.json";const s=JSON.parse(require("fs").readFileSync(f));for(const u of Object.values(s))delete u.epicTasks;require("fs").writeFileSync(f+".tmp",JSON.stringify(s,null,2));require("fs").renameSync(f+".tmp",f)'
 sudo ./scripts/service.sh start
 ```
 
@@ -85,16 +85,16 @@ Close every live epic on its card first. Then revert the E4 merges, newest first
 
 1. Send `/z epictasks on` to the dev bot, or turn on **에픽 작업 (실험)** in the dashboard settings.
 2. On the dev dashboard, go to **새 작업** → **대시보드 작업** and turn on the **에픽** chip. Give an instruction that splits into three parts, for example: `README 초안의 설치·사용·라이선스 세 섹션을 각각 다른 파일로 써줘`.
-   - **Check:** the EPIC lane shows the epic, a plan tree with 3 nodes, progress 0/3, and the children's cards as they are made.
-3. Wait for one child to finish while another still runs. Then restart dev (`sudo ./scripts/service.sh restart`).
+   - **Check:** until its first child is made, the epic card sits in its column. From then on the EPIC lane shows the epic, a plan tree with 3 nodes, progress 0/3, and the children's cards as they are made.
+3. Wait for one child to finish while another still runs. Then restart dev (`sudo /opt/soma-work/dev/scripts/service.sh restart`).
    - **Check:** after the restart, the epic, its children and their events are still there. The epic wakes once for what the restart cut.
 4. Let it run until every node is accepted.
-   - **Check:** progress reaches 3/3 and the epic's state is done.
+   - **Check:** progress reaches 3/3, and the state chip reads 완료 once no child works or waits.
 
 **Measurements** (read-only, on the dev host):
 
 ```bash
-node scripts/e4-epic-measure.mjs /opt/soma-work/dev/data /opt/soma-work/dev/logs
+node scripts/e4-epic-measure.mjs /opt/soma-work/dev/data /opt/soma-work/dev/logs --since <ISO time before step 2>
 ```
 
 For each epic, it prints:
@@ -104,15 +104,20 @@ For each epic, it prints:
 - the chains that consumed them;
 - each wake turn and what it woke for.
 
-Add `--json` for the raw report.
+Add `--json` for the raw report. `--since` limits which logs it reads. It always reads the live `stdout.log` and `stderr.log`, plus every rotated file (plain, or gzipped like `20261101-0900-01-stdout.log.gz`) modified since that time. Without `--since`, it reads the last 24 hours. It prints the files it read.
 
 **Targets (each must be 0):**
 - `wrongStarts`: a live child off its epic's plan, or a child of another owner.
-- `duplicateChildren`: a node that spawned more than one child, or two live children on one node.
+- `duplicateChildren`: two live children on one node, or a node that spawned again while its child was still live and open. Spawning again after the child closed is allowed (D9 a) and is not counted.
 - `missedWakes`: pending chain ends on a live, idle epic that is not done.
-- `extraWakeTurns`: wake turns beyond the chains that consumed events. A restart that cut an epic turn adds one released wake, so this number must match the restarts that cut an epic turn, not be 0.
-- `slackCalls`: task turns that tried to call Slack (T9).
+  - A restart's released wake that has not run again yet is not counted here; the report lists it as "released, waiting to wake". The boot scan runs it within seconds, so measure after the epic is done.
+  - Read this counter together with the `wake not started` count. An epic refused with 429 (the tree window, the slots or the cost limit) keeps its events pending by design until a new event wakes it.
+- `extraWakeTurns`: wake turns that no consuming chain matches. Each committed wake names exactly the events its chain consumed, so the script matches turns to chains by those events.
+  - Only a restart that cut an epic turn holding events adds a released wake. The number must match those restarts, not be 0.
+  - In step 3 the restart most likely cuts a child's turn, so expect 0 there.
+  - An instruction you give the epic also consumes its pending events. The report shows these as "owner instructions, no wake turn". They cannot hide an extra wake.
+- `slackCalls`: lines saying a task turn tried to call Slack (T9). The line is logged at most once per process, so read it as "did any task turn call Slack".
 
 **Not a target:** "nothing pending". A child that ends after its epic wrote done leaves its event pending, and a done epic is never woken.
 
-**Also worth a look:** the tree window (30 starts per 10 minutes) and the cost limit ($50) were set as guesses (spec §6). Note whether either was hit (`Epic wake not started` with 429).
+**Also worth a look:** the tree window (30 starts per 10 minutes) and the cost limit ($50) were set as guesses (spec §6). Note whether either was hit: search the logs for `Epic wake not started`. Its meta has the status. 429 is a limit, 500 a start that did not happen, and 503 a shutdown.
