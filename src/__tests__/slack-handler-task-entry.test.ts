@@ -3,6 +3,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../slack/autoskill-fire', () => ({
   buildAutoskillFire: vi.fn(() => null),
 }));
+vi.mock('../admin-utils', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../admin-utils')>()),
+  isAdminUser: (id: string) => id === 'UADMIN',
+}));
 
 import { SlackHandler } from '../slack-handler';
 import { userSettingsStore } from '../user-settings-store';
@@ -41,6 +45,7 @@ describe('SlackHandler — the Slack task entry', () => {
 
     const registrySession: any = { ownerId: 'U123', channelId: 'C123', threadTs: '111.222', sessionId: undefined };
     claudeHandler = {
+      getSessionKey: vi.fn((c: string, t: string) => `${c}:${t}`),
       getSession: vi.fn().mockReturnValue(undefined),
       getSessionByKey: vi.fn().mockReturnValue(registrySession),
       saveSessions: vi.fn(),
@@ -148,6 +153,71 @@ describe('SlackHandler — the Slack task entry', () => {
     vi.spyOn(userSettingsStore, 'getModelDisplayName').mockReturnValue('Fable' as any);
     await handler.handleMessage(plain({ text: '%nogoal do the thing' }), vi.fn().mockResolvedValue({ ts: 'm' }));
     expect(entry.run.mock.calls[0][0].allow).toMatchObject({ inlineNoGoal: true, inlineDirective: true });
+    await handler.handleMessage(
+      plain({ ts: '111.333', text: '%model fable do the thing' }),
+      vi.fn().mockResolvedValue({ ts: 'm' }),
+    );
+    expect(entry.run.mock.calls[1][0].allow).toMatchObject({ inlineModel: true, inlineDirective: true });
+  });
+
+  it.each([
+    ['a goal-prefixed first message', { setGoalObjective: '버그 고쳐줘' }, 'setGoalObjective'],
+    ['a forced workflow', { forceWorkflow: 'jira-planning' }, 'forceWorkflow'],
+    [
+      'a deferred forced skill',
+      {
+        deferredSkillFire: {
+          keys: ['local:z'],
+          invokedBlock: '<invoked_skills/>',
+          banner: { text: 'z', color: '#000' },
+        },
+      },
+      'deferredSkillFire',
+    ],
+  ])('%s is passed as not-a-task (grok #671 P1-1)', async (_label, route, field) => {
+    entry.run.mockResolvedValue(undefined);
+    routeCommand.mockResolvedValue({ handled: false, ...route });
+    await handler.handleMessage(plain({ text: 'goal 버그 고쳐줘' }), vi.fn().mockResolvedValue({ ts: 'm' }));
+    expect(entry.run.mock.calls[0][0].allow[field]).toBe(true);
+  });
+
+  it('a `!` steer, files and a DM are passed as such', async () => {
+    entry.run.mockResolvedValue(undefined);
+    await handler.handleMessage(plain({ text: '!다른 거 해줘' }), vi.fn().mockResolvedValue({ ts: 'm' }));
+    expect(entry.run.mock.calls[0][0].allow.steer).toBe(true);
+
+    handlerAny.inputProcessor.processFiles.mockResolvedValue({ files: [{ name: 'a.png' }], shouldContinue: true });
+    await handler.handleMessage(
+      plain({ ts: '111.444', files: [{ id: 'F1' }] }),
+      vi.fn().mockResolvedValue({ ts: 'm' }),
+    );
+    expect(entry.run.mock.calls[1][0].allow.fileCount).toBe(1);
+
+    handlerAny.inputProcessor.processFiles.mockResolvedValue({ files: [], shouldContinue: true });
+    await handler.handleMessage(
+      plain({ user: 'UADMIN', channel: 'D123', ts: '111.555', channel_type: 'im' }),
+      vi.fn().mockResolvedValue({ ts: 'm' }),
+    );
+    expect(entry.run.mock.calls[2][0].allow.dm).toBe(true);
+  });
+
+  it('a live task’s instruction thread: a message that drained from the queue is answered by the guard — nothing runs (grok #671 P1-2)', async () => {
+    entry.guard.mockResolvedValue(true);
+    const say = vi.fn().mockResolvedValue({ ts: 'm' });
+    const out = await handlerAny.processMessage(plain({ ts: '111.333', thread_ts: '111.222', text: '!멈춰' }), say, {
+      turnEpoch: 0,
+      workingDirectory: '/tmp',
+      slotKey: 'C123:111.222',
+    });
+    expect(out).toEqual({ result: 'safe' });
+    expect(entry.guard).toHaveBeenCalledWith(
+      { channel: 'C123', ts: '111.333', thread_ts: '111.222', files: undefined },
+      say,
+    );
+    expect(routeCommand).not.toHaveBeenCalled();
+    expect(entry.run).not.toHaveBeenCalled();
+    expect(handlerAny.slackApi.addReaction).not.toHaveBeenCalled();
+    expect(initialize).not.toHaveBeenCalled();
   });
 
   it('a fully handled command never reaches the entry', async () => {

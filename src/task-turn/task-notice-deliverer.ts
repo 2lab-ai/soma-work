@@ -205,7 +205,10 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
       kind: 'failure',
       channel: origin.channel,
       threadTs: origin.threadTs,
-      intent: { ...intentOf({ id: '', kind: 'failure', reason, at: Date.now() }, session, sessionKey), notStarted: true },
+      intent: {
+        ...intentOf({ id: '', kind: 'failure', reason, at: Date.now() }, session, sessionKey),
+        notStarted: true,
+      },
     });
     void deliver();
   }

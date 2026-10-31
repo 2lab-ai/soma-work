@@ -1452,6 +1452,17 @@ export class SlackHandler {
       return { result: 'safe' };
     }
 
+    // E2 ⑧ (.prd/18 D2 (2)) — a live task's instruction thread runs nothing,
+    // whatever path the message took here: the router guards the live event,
+    // but a message queued before the task existed (a `!`, `%`, a command, a
+    // second mention) drains through here (grok #671 P1-2).
+    if (
+      this.taskEntry &&
+      (await this.taskEntry.guard({ channel, ts, thread_ts, files: (event as { files?: unknown[] }).files }, say))
+    ) {
+      return { result: 'safe' };
+    }
+
     // Immediately acknowledge the message with eyes emoji
     await this.slackApi.addReaction(channel, ts, 'eyes');
 
