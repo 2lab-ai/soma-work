@@ -2279,7 +2279,11 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     ...(s.slackless === true ? { slackless: true as const, ...noticeFailuresOf(key) } : {}),
     ...(s.slackless === true && s.kind === 'epic' ? { kind: 'epic' as const, epic: epicBundle(s) } : {}),
     ...(s.slackless === true && s.parentTaskId
-      ? { parentTaskId: s.parentTaskId, planNodeId: s.planNodeId, ...(s.closedBy ? { closedBy: s.closedBy } : {}) }
+      ? {
+          parentTaskId: s.parentTaskId,
+          planNodeId: s.planNodeId,
+          ...(s.closedBy ? { closedBy: { by: s.closedBy.by, at: s.closedBy.at } } : {}),
+        }
       : {}),
     ...(s.slackless === true && s.lastTurnOutcome
       ? {
@@ -2384,7 +2388,7 @@ function archivedToKanban(archived: ArchivedSession): KanbanSession {
       ? {
           parentTaskId: archived.parentTaskId,
           planNodeId: archived.planNodeId,
-          ...(archived.closedBy ? { closedBy: archived.closedBy } : {}),
+          ...(archived.closedBy ? { closedBy: { by: archived.closedBy.by, at: archived.closedBy.at } } : {}),
         }
       : {}),
     conversationId: archived.conversationId,
@@ -2535,7 +2539,13 @@ function epicBundle(epic: ConversationSession): NonNullable<KanbanSession['epic'
 /** E4 ⑧ — the epic whose bundle carries this child's card, if any. */
 function bundlingEpicOf(child: ConversationSession): [string, ConversationSession] | undefined {
   if (child.slackless !== true || !child.parentTaskId || child.trashed === true || child.terminated) return undefined;
-  const key = buildTaskSessionKey(child.parentTaskId);
+  let key: string;
+  try {
+    key = buildTaskSessionKey(child.parentTaskId);
+  } catch {
+    // A forged parent id (one with a key separator) names no epic: the child pushes its own card (fable #704 R2 P3-3).
+    return undefined;
+  }
   const epic = getAllSessions().get(key);
   if (
     !epic ||
@@ -16353,10 +16363,10 @@ function syncEpicLane(groups) {
   if (!lane) return;
   lane.hidden = groups.length === 0;
   var keep = Object.create(null);
+  for (var k = 0; k < groups.length; k++) keep[groups[k].key] = true;
   var prevBox = null;
   for (var i = 0; i < groups.length; i++) {
     var g = groups[i];
-    keep[g.key] = true;
     var box = _epicGroupEls[g.key];
     if (!box) {
       box = document.createElement('div');
@@ -16391,6 +16401,8 @@ function syncEpicLane(groups) {
     // In order, moving a box only when it is not already in its place: a DOM move disconnects the
     // box's subtree (its inbox, the open bodies, focus, scroll) — fable #706 R1 P1.
     var place = prevBox ? prevBox.nextSibling : lane.firstChild;
+    // A box still fading out (its group left) is no place: skip it, so the boxes after it stay put (fable #706 R2 P3).
+    while (place && place !== box && !epicLaneKeeps(place, keep)) place = place.nextSibling;
     if (box !== place) lane.insertBefore(box, place || null);
     prevBox = box;
   }
@@ -16400,6 +16412,11 @@ function syncEpicLane(groups) {
     delete _epicGroupEls[key];
     setTimeout(function(node) { return function() { if (node.parentNode) node.parentNode.removeChild(node); }; }(old), MOTION.fade + 40);
   }
+}
+// A lane node that is a kept group's own box (not a box fading out, not text).
+function epicLaneKeeps(node, keep) {
+  var key = node.getAttribute ? node.getAttribute('data-epic') : null;
+  return !!key && keep[key] === true && _epicGroupEls[key] === node;
 }
 // Each group's children in its own <ui-agent-inbox view="list"> with one bare column.
 function paintEpicLaneCards(groups) {

@@ -149,6 +149,8 @@ export interface TaskTurnController {
   /** A refused shutdown (the bot stays up): accept starts again (#634 R1). */
   resumeAccepting(): void;
   isRunning(sessionKey: string): boolean;
+  /** E4 ⑦ — the id of the task's running chain (its hops carry it), or none. */
+  runningChain(sessionKey: string): string | undefined;
 }
 
 const COMPACT = '/compact';
@@ -173,6 +175,8 @@ const COMPACT_NOT_RERUN = 'compacted, but the instruction was not re-run (압축
 
 interface Chain {
   ownerId: string;
+  /** E2 ③ — the id every hop of this chain carries. */
+  id: string;
   abort: AbortController;
   done: Promise<void>;
   /** E4 ③ — the epic tree it runs in (its root's key), or none for an ordinary task. */
@@ -414,7 +418,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       chainId,
       consume,
     );
-    const chain: Chain = { ownerId, abort, done, ...(tree !== undefined ? { tree } : {}) };
+    const chain: Chain = { ownerId, id: chainId, abort, done, ...(tree !== undefined ? { tree } : {}) };
     chains.set(sessionKey, chain);
     if (tree === undefined) {
       ownerChain.set(ownerId, sessionKey);
@@ -730,6 +734,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       }
     },
     isRunning: (sessionKey) => chains.has(sessionKey),
+    runningChain: (sessionKey) => chains.get(sessionKey)?.id,
   };
 }
 

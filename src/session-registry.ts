@@ -58,6 +58,7 @@ import {
 import type {
   ActionPanelState,
   ActivityState,
+  ClosedByParent,
   ConversationSession,
   EpicEvent,
   EpicPlan,
@@ -328,7 +329,7 @@ export interface EpicRelation {
   childTaskIds?: string[];
   plan?: EpicPlan;
   epicEvents?: EpicEvent[];
-  closedBy?: { by: 'parent'; at: number };
+  closedBy?: ClosedByParent;
 }
 
 /**
@@ -344,10 +345,14 @@ export function sanitizeEpicRelation(value: Record<string, unknown>, slackless: 
   const nonEmpty = (x: unknown): x is string => typeof x === 'string' && x.trim() !== '' && x !== value.taskId;
   // A child: a parent and a well-formed node, nothing else.
   if (nonEmpty(value.parentTaskId) && typeof value.planNodeId === 'string' && PLAN_NODE_ID.test(value.planNodeId)) {
-    const closed = value.closedBy as { by?: unknown; at?: unknown } | undefined;
-    const closedBy =
+    const closed = value.closedBy as { by?: unknown; at?: unknown; chain?: unknown } | undefined;
+    const closedBy: ClosedByParent | undefined =
       closed && closed.by === 'parent' && typeof closed.at === 'number' && Number.isFinite(closed.at)
-        ? { by: 'parent' as const, at: closed.at }
+        ? {
+            by: 'parent' as const,
+            at: closed.at,
+            ...(typeof closed.chain === 'string' && closed.chain !== '' ? { chain: closed.chain } : {}),
+          }
         : undefined;
     return { parentTaskId: value.parentTaskId, planNodeId: value.planNodeId, ...(closedBy ? { closedBy } : {}) };
   }
@@ -948,16 +953,17 @@ export class SessionRegistry {
   /**
    * E4 ⑦ (D10 b) — its epic is closing while this child runs: say so on the
    * child (`closedBy: parent`), saved strictly now, before its chain is
-   * cancelled (session-close — the outcome stays `cancelled`). A failed save is
-   * put back and rethrown.
+   * cancelled (session-close — the outcome stays `cancelled`). `chain` is the
+   * chain the close cancels (the controller's id). A failed save is put back
+   * and rethrown.
    */
-  markClosedByParent(sessionKey: string, at: number = Date.now()): void {
+  markClosedByParent(sessionKey: string, at: number = Date.now(), chain?: string): void {
     const child = this.getSessionByKey(normalizeSessionKey(sessionKey));
     if (!child || child.slackless !== true || !child.parentTaskId) {
       throw new Error(`markClosedByParent: ${sessionKey} is not a child task`);
     }
     const before = child.closedBy;
-    child.closedBy = { by: 'parent', at };
+    child.closedBy = { by: 'parent', at, ...(chain ? { chain } : {}) };
     try {
       this.saveSessionsOrThrow();
     } catch (error) {
@@ -1020,7 +1026,9 @@ export class SessionRegistry {
     if (!child.parentTaskId || !child.planNodeId || !child.taskId) return undefined;
     const epic = this.sessionsByTaskId.get(child.parentTaskId);
     if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated || epic.closing) {
-      this.logger.warn('Epic event dropped — the epic is gone or closing', {
+      // A closing epic drops its children's events by design (D6 d); a gone one is worth a warning.
+      const closing = epic?.closing === true && !epic.terminated;
+      this.logger[closing ? 'info' : 'warn'](`Epic event dropped — the epic is ${closing ? 'closing' : 'gone'}`, {
         childTaskId: child.taskId,
         parentTaskId: child.parentTaskId,
         what,
@@ -1128,9 +1136,14 @@ export class SessionRegistry {
       epicEvents: session.epicEvents,
       closedBy: session.closedBy,
     };
-    // E4 ⑦ — a new chain on a child its parent's close cancelled: no longer "closed by its parent"
-    // (a `/compact` hop of the chain being closed keeps the mark).
-    if (!chainId || chainId !== session.openChain) session.closedBy = undefined;
+    // E4 ⑦ — another chain on a child its parent's close cancelled: no longer "closed by its parent".
+    // A `/compact` hop of the chain being closed keeps the mark, and so does the first hop of the
+    // chain the mark names — a close that lands before that hop is saved (fable #703 R2 P3-1). The
+    // chain is the witness, not a clock: a chain may end in the very millisecond of the close (grok #709 R1).
+    const mark = session.closedBy;
+    if (mark && (!chainId || chainId !== session.openChain) && (mark.chain === undefined || mark.chain !== chainId)) {
+      session.closedBy = undefined;
+    }
     // E2 ③ — the chain is open from its first start until its last commit.
     if (chainId) session.openChain = chainId;
     // E4 ⑥ (D7) — the events this chain was started for are consumed in this same save.
@@ -1333,7 +1346,7 @@ export class SessionRegistry {
   setEpicPlan(taskId: string, input: PlanWriteInput, by: 'epic' | 'owner'): EpicPlan {
     const epic = this.sessionsByTaskId.get(taskId);
     // A closing epic (flagged while its close is awaited) takes no new plan (grok #697 R1).
-    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated)
+    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated || epic.closing)
       throw new Error(`setEpicPlan: ${taskId} is not a live epic`);
     const children = this.getChildTasks(taskId).map((c) => ({
       planNodeId: c.planNodeId,

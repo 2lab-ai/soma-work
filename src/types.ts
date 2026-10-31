@@ -436,6 +436,18 @@ export interface TaskInputContext {
   confluenceUrl?: string;
 }
 
+/**
+ * E4 ⑦ (D10 b) — a child's "closed by its parent" mark. `chain` is the chain the
+ * close cancelled (the controller's id, also when the close lands before that
+ * chain's first hop is saved): another chain starting ends the mark. A mark with
+ * no chain (an older record) ends with any new chain.
+ */
+export interface ClosedByParent {
+  by: 'parent';
+  at: number;
+  chain?: string;
+}
+
 export interface ConversationSession {
   ownerId: string; // User who started the session
   ownerName?: string; // Display name of owner
@@ -478,7 +490,7 @@ export interface ConversationSession {
    * saved before its chain was cancelled. The outcome stays `cancelled`; the
    * card reads this to say its parent closed it.
    */
-  closedBy?: { by: 'parent'; at: number };
+  closedBy?: ClosedByParent;
   /**
    * E4 ⑦ — in memory only, never saved: the dashboard close of this task is
    * under way. An epic being closed takes no wake, no event, no tool call and
