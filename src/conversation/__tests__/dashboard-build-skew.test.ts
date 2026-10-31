@@ -168,6 +168,8 @@ describe('dashboard build skew — T2: a tab on another build reloads', () => {
       'nt-composer': opts.ntComposer ?? { value: '', files: [] },
       'nt-dialog': { open: !!opts.ntOpen },
     };
+    // The new task's composer lives in its dialog: a field there, closed unless the dialog is open.
+    const ntField = { value: els['nt-composer'].value, closest: () => els['nt-dialog'] };
     const store = new Map<string, string>();
     const env = {
       reloads: 0,
@@ -175,7 +177,11 @@ describe('dashboard build skew — T2: a tab on another build reloads', () => {
       toastActions: [] as Array<() => void>,
       document: {
         getElementById: (id: string) => els[id] ?? null,
-        ...root({ fields: opts.fields, dialogs: opts.dialogs, elements: opts.elements }),
+        ...root({
+          fields: [...(opts.fields ?? []), ntField],
+          dialogs: [els['nt-dialog'], ...(opts.dialogs ?? [])],
+          elements: opts.elements,
+        }),
       },
       location: {
         reload: () => {
@@ -191,11 +197,17 @@ describe('dashboard build skew — T2: a tab on another build reloads', () => {
     return env;
   }
 
-  function api(env: ReturnType<typeof fakeEnv>, pageBuild = 'build-A'): Api {
+  function api(
+    env: ReturnType<typeof fakeEnv>,
+    pageBuild = 'build-A',
+    page: { _pcSending?: boolean; _mcState?: Record<string, unknown> } = {},
+  ): Api {
     return load<Api>(
-      ['buildSkewed', 'hasUnsentInput', 'filledField', 'buildReload', 'onServerBuild'],
+      ['buildSkewed', 'hasUnsentInput', 'inClosedDialog', 'filledField', 'buildReload', 'onServerBuild'],
       {
         PAGE_BUILD: pageBuild,
+        _pcSending: page._pcSending ?? false,
+        _mcState: page._mcState ?? {},
         document: env.document,
         location: env.location,
         sessionStorage: env.sessionStorage,
@@ -261,7 +273,7 @@ describe('dashboard build skew — T2: a tab on another build reloads', () => {
     const cases = [
       fakeEnv({ composer: { value: '머지 완료 됐어?', files: [] } }),
       fakeEnv({ composer: { value: '  ', files: [{ name: 'a.png' }] } }),
-      fakeEnv({ ntComposer: { value: 'new task', files: [] } }),
+      fakeEnv({ ntComposer: { value: 'new task', files: [] }, ntOpen: true }),
       fakeEnv({ ntOpen: true }),
       fakeEnv({ fields: [{ value: '' }, { value: 'goal draft' }] }),
       // The admin lifecycle dialog (number fields) — any open dialog holds it (review P3, grok · fable).
@@ -282,10 +294,34 @@ describe('dashboard build skew — T2: a tab on another build reloads', () => {
     }
   });
 
+  it('a note on its way out, or a multi-question form with picked answers not yet submitted, holds the reload', () => {
+    expect(api(fakeEnv(), 'build-A', { _pcSending: true }).hasUnsentInput()).toBe(true);
+    const picked = { k1: { id: 'mc|k1', answers: { q1: { choiceId: '1' } } } };
+    expect(api(fakeEnv(), 'build-A', { _mcState: picked }).hasUnsentInput()).toBe(true);
+    // Submitted, or nothing picked yet: nothing to lose.
+    const sent = { k1: { id: 'mc|k1', answers: { q1: { choiceId: '1' } }, sent: true } };
+    expect(api(fakeEnv(), 'build-A', { _mcState: sent }).hasUnsentInput()).toBe(false);
+    expect(api(fakeEnv(), 'build-A', { _mcState: { k1: { id: 'mc|k1', answers: {} } } }).hasUnsentInput()).toBe(false);
+  });
+
   it('an empty page has nothing unsent', () => {
     expect(api(fakeEnv()).hasUnsentInput()).toBe(false);
     expect(api(fakeEnv({ fields: [{ value: '  ' }] })).hasUnsentInput()).toBe(false);
     expect(api(fakeEnv({ dialogs: [{ open: false }] })).hasUnsentInput()).toBe(false);
+    // A closed dialog keeps its fields filled: the lifecycle form holds the saved policy after 닫기, the new task
+    // keeps its draft (saved in localStorage) — neither holds the reload (review round 2, fable P2/P3).
+    const closed = { open: false };
+    expect(api(fakeEnv({ fields: [{ value: '24', closest: () => closed }], dialogs: [closed] })).hasUnsentInput()).toBe(
+      false,
+    );
+    expect(api(fakeEnv({ ntComposer: { value: 'saved draft', files: [] } })).hasUnsentInput()).toBe(false);
+    expect(
+      api(
+        fakeEnv({
+          elements: [{ closest: () => closed, shadowRoot: root({ fields: [{ value: 'in a closed dialog' }] }) }],
+        }),
+      ).hasUnsentInput(),
+    ).toBe(false);
     expect(api(fakeEnv({ elements: [{ shadowRoot: { querySelectorAll: () => [] } }] })).hasUnsentInput()).toBe(false);
   });
 });

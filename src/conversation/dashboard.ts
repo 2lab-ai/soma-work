@@ -12851,27 +12851,38 @@ var _buildSkewToast = ''; // the server build the 새 버전 toast was shown for
 function buildSkewed(serverBuild) {
   return !!PAGE_BUILD && !!serverBuild && String(serverBuild) !== PAGE_BUILD;
 }
-// What a reload would throw away: the panel's and the new task's composers (text or files), an open dialog (new
-// task, lifecycle …), any filled field — in the page or in an element's open shadow root (a typed choice-form
-// answer before Enter, a queued note being edited in the steering).
+// What a reload would throw away: the panel composer (text or files), an open dialog (new task, lifecycle …), a
+// filled field — in the page or in an element's open shadow root (a choice form's typed answer before Enter, a
+// queued note being edited). A closed dialog's fields are not unsent: the lifecycle form keeps the saved policy
+// there, the new task keeps its draft in localStorage (review round 2, fable P2/P3).
 function hasUnsentInput() {
-  var ids = ['pc-composer', 'nt-composer'];
-  for (var i = 0; i < ids.length; i++) {
-    var c = document.getElementById(ids[i]);
-    if (c && (String(c.value || '').trim() || (c.files && c.files.length))) return true;
+  // A note on its way out (its files being read, its POST in flight) …
+  if (_pcSending) return true;
+  // … a multi-question form with answers picked but not yet submitted (kept per session, across panel switches) …
+  for (var mk in _mcState) {
+    var mst = _mcState[mk];
+    if (mst && mst.answers && Object.keys(mst.answers).length && !mst.sent) return true;
   }
-  var dlg = document.getElementById('nt-dialog');
-  if (dlg && dlg.open) return true;
+  var c = document.getElementById('pc-composer');
+  if (c && (String(c.value || '').trim() || (c.files && c.files.length))) return true;
   var dialogs = document.querySelectorAll('ui-dialog, dialog');
   for (var d = 0; d < dialogs.length; d++) if (dialogs[d].open) return true;
   return filledField(document, 0);
 }
+function inClosedDialog(el) {
+  var d = el && el.closest ? el.closest('ui-dialog, dialog') : null;
+  return !!(d && !d.open);
+}
 function filledField(root, depth) {
   var fields = root.querySelectorAll('input[type="text"], input[type="number"], input:not([type]), textarea');
-  for (var j = 0; j < fields.length; j++) if (String(fields[j].value || '').trim()) return true;
+  for (var j = 0; j < fields.length; j++) {
+    if (!inClosedDialog(fields[j]) && String(fields[j].value || '').trim()) return true;
+  }
   if (depth > 4) return false;
   var all = root.querySelectorAll('*');
-  for (var k = 0; k < all.length; k++) if (all[k].shadowRoot && filledField(all[k].shadowRoot, depth + 1)) return true;
+  for (var k = 0; k < all.length; k++) {
+    if (all[k].shadowRoot && !inClosedDialog(all[k]) && filledField(all[k].shadowRoot, depth + 1)) return true;
+  }
   return false;
 }
 // Reload for this server build unless this tab already reloaded for it lately (the last 3 builds — two builds
