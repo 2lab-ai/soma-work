@@ -1,0 +1,6 @@
+# Known leaks for the Sanitize Gate (scripts/sanitize-scan.sh): commits already published to main,
+# the deploy branches and release tags, which a later PR cannot take back. What such a commit added is
+# tolerated wherever it persists; any other hit still fails, including another commit adding the same
+# text again. One full 40-hex commit id per line, then the issue that recorded the owner's decision.
+# Ids only — never the matching text. The leaked value itself still has to be revoked or rotated.
+9d7422e1aa403efd75ad6766988ac8df69dad3ef  #610 (#586)

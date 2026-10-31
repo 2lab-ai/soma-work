@@ -62,6 +62,10 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
+/** The page's chrome words (STRINGS), as served: the board's Korean words live there (D2 group 6). */
+const PAGE_STRINGS = new Function(
+  `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
+)();
 /** A multi-line `var NAME = [ … ];` (clientVar only matches one line). */
 function clientArrayVar(name: string): string {
   const start = TEMPLATE.indexOf(`\nvar ${name} = [`);
@@ -70,6 +74,7 @@ function clientArrayVar(name: string): string {
   return cook(TEMPLATE.slice(start + 1, end + 4));
 }
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+  inject = { STRINGS: PAGE_STRINGS, ...inject };
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
@@ -102,7 +107,14 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = [
+  'PR_STATE_LABEL',
+  'PR_STATE_TONE',
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'OWNER_BADGE_HUES',
+];
 const CARD_ENV = {
   dhShow: () => true,
   dhTruncate: () => null,
@@ -144,17 +156,17 @@ describe('D1 — the status the element tints: run · wait · done · rest (the 
       since: T0,
     });
     const idle = cardOf(faceCard({ activeAccumulatedMs: 0 }), 'idle');
-    expect(idle).toMatchObject({ status: 'done', statusText: 'Idle' });
+    expect(idle).toMatchObject({ status: 'done', statusText: '대기' });
     expect(idle.since).toBeUndefined(); // only the exact finish stamp, never lastActivity
   });
 
   it('closed → the rest tone, Sleeping or Archived', () => {
     expect(cardOf(faceCard({ sessionState: 'SLEEPING', finishedAt: T0 }), 'closed')).toMatchObject({
       status: 'idle',
-      statusText: 'Sleeping',
+      statusText: '휴면',
       since: T0,
     });
-    expect(cardOf(faceCard({ terminated: true }), 'closed')).toMatchObject({ status: 'idle', statusText: 'Archived' });
+    expect(cardOf(faceCard({ terminated: true }), 'closed')).toMatchObject({ status: 'idle', statusText: '보관됨' });
   });
 
   it('an armed automatic resume in RUNNING waits: the wait tone, its label, no clock; the reason leads the summary', () => {
@@ -300,36 +312,32 @@ describe('the face extras the board keeps (cardOf → lead, badge, metrics, titl
   });
 });
 
-describe('the board’s wording (data.strings over lang="en")', () => {
+describe('the board’s wording (lang="ko" + data.strings, D2 group 6)', () => {
   const src = TEMPLATE.slice(TEMPLATE.indexOf('var BOARD_STRINGS = {'));
   const strings = new Function(
-    'timeAgo',
-    'formatNmSSs',
     'ART_KIND_LABEL',
+    'toNum',
     `${cook(src.slice(0, src.indexOf('\n};\n') + 4))}\nreturn BOARD_STRINGS;`,
-  )(
-    () => '6m ago',
-    (ms: number) => `${Math.floor(ms / 60000)}m ${String(Math.floor(ms / 1000) % 60).padStart(2, '0')}s`,
-    { image: '이미지' },
-  );
-  it('Korean sub-agents, file chips and announcement; the board’s clock and age; no "<title>: <word>." lead', () => {
-    expect(strings.agents).toBe('서브에이전트');
-    expect(strings.agentsRunning(2)).toBe('실행 2');
-    expect(strings.agentsFailed(1)).toBe('실패 1');
-    expect(strings.arts).toBe('모델이 만든 산출물');
+  )({ image: '이미지' }, (v: unknown) => (Number.isFinite(Number(v)) ? Number(v) : 0));
+  it('the element’s Korean table (status words, sub-agents, announcement, age, clock); the page’s file chips and no lead', () => {
+    // Both boards (the kanban and every CRON lane) speak Korean: the element's own words.
+    expect(TEMPLATE).toContain('<ui-agent-inbox id="kanban" class="kanban" view="board" lang="ko"></ui-agent-inbox>');
+    expect(TEMPLATE).toContain("el.setAttribute('lang', 'ko');");
+    // What the ko table already says is not repeated; the English age (timeAgo) is gone.
+    // The clock too: the ko table's duration is Korean since 0.10.0 (D2-GAPS G6-1 — the page's fmtRunKo is gone).
+    for (const k of ['agents', 'agentsRunning', 'agentsFailed', 'arts', 'announce', 'ago', 'status', 'duration']) {
+      expect(strings[k], k).toBeUndefined();
+    }
     expect(strings.artOpen('a.png', 'image')).toBe('이미지 a.png — 크게 보기');
     expect(strings.artOpen('x.bin', 'file')).toBe('파일 x.bin — 크게 보기');
-    expect(strings.announce(3, 8)).toBe('응답이 필요한 세션 3개, 실행 중 8개');
-    expect(strings.changed('Deploy', 'Running')).toBe('');
-    expect(strings.duration(187_000)).toBe('3m 07s');
-    expect(strings.ago(T0)).toBe('6m ago');
-    // English status words stay the element's own (Waiting for you, Running, Done in …).
-    expect(strings.status).toBeUndefined();
+    expect(strings.changed('Deploy', '실행 중')).toBe('');
+    expect(TEMPLATE).not.toContain('function fmtRunKo(');
   });
 });
 
 // load() returns only the named functions: the state seam is a shipped-scope function compiled in the same body.
 function loadWithState<T>(fns: string[], vars: string[], inject: Record<string, unknown>, seam: string): T {
+  inject = { STRINGS: PAGE_STRINGS, ...inject };
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${seam}\nreturn { ${[...fns, /^function (\w+)/.exec(seam)?.[1]].join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
@@ -438,9 +446,9 @@ describe('renderBoard → the board element: NEEDS YOU · RUNNING · DONE by fin
     h.m.renderBoard(board(), false);
     const plan = h.kanban._ibPlan as Plan;
     expect(plan.cols.map((c) => [c.id, c.label, c.keys])).toEqual([
-      ['waiting', 'NEEDS YOU', ['w1']],
-      ['working', 'RUNNING', ['r1', 'r2']],
-      ['done', 'DONE', []],
+      ['waiting', '응답 필요', ['w1']],
+      ['working', '실행 중', ['r1', 'r2']],
+      ['done', '완료', []],
     ]);
     const cols = h.kanban.data?.columns ?? [];
     expect((cols[0].cards as Card[]).map((c) => [c.id, c.status])).toEqual([['w1', 'waiting']]);
@@ -454,7 +462,7 @@ describe('renderBoard → the board element: NEEDS YOU · RUNNING · DONE by fin
       groups: Array<{ id: string; label: string; open: boolean; cards: Card[] }>;
     };
     expect(done.groups.map((g) => [g.label, g.open, g.cards.map((c) => c.id)])).toEqual([
-      ['Today', true, ['d-today', 'z']],
+      ['오늘', true, ['d-today', 'z']],
       [expect.any(String), false, ['d-old']],
     ]);
     const st = h.m.state();
@@ -647,7 +655,7 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
         cols: [
           {
             id: 'done',
-            label: 'DONE',
+            label: '완료',
             keys: [],
             groups: [{ id: '2026-10-20', label: '10월 20일 (화)', open: false, keys: ['d1'] }],
           },
@@ -699,7 +707,7 @@ describe('the element’s events (wireInbox): open / close, a DONE day, a file c
       cardOf: (s: { key: string }, col: string) => ({ id: s.key, title: s.key, status: col }),
       cardBodyShown: () => false,
       acPrefetch: () => {},
-      openArtifactModal: (...a: unknown[]) => calls.modal.push(a),
+      openArtifactViewer: (...a: unknown[]) => calls.modal.push(a),
       openPanel: (...a: unknown[]) => calls.order.push(`openPanel(${a.join(',')})`),
       deckDrop: (...a: unknown[]) => calls.order.push(`deckDrop(${a.join(',')})`),
     };
@@ -842,17 +850,20 @@ describe('D10 — one primary button per open card', () => {
         'cardSummary',
         'cardCurrentTask',
         'renderCardResume',
+        'taskOutcomeHtml',
         'isBusy',
+        'sessionActionsOf',
         'sessionActionHtml',
         'cardGoalLine',
         // affectUI batch 1: the prompts and the single-choice question are <ui-approval-card> slots.
         'acSlotHtml',
         'acQuestionId',
         'acPermissionsHtml',
+        'acGoalDecisionHtml',
         'acQuestionHtml',
         'renderCardBody',
       ],
-      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_SVG', 'SESSION_ACTION_ARIA', '_busy'],
+      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_STATUS_TONE', 'GOAL_SVG', 'SESSION_ACTION_TONE', '_busy'],
       { ...STUBS, ...inject },
     ).renderCardBody(s, col);
   const card = (over: Record<string, unknown> = {}) => ({
@@ -887,8 +898,8 @@ describe('D10 — one primary button per open card', () => {
     }
     // The state action itself sits in that first row (a running card offers Stop).
     const running = body(card({ activityState: 'working' }), 'working');
-    expect(running.indexOf('btn-stop')).toBeGreaterThan(0);
-    expect(running.indexOf('btn-stop')).toBeLessThan(running.indexOf('</div>'));
+    expect(running.indexOf('data-action="stop"')).toBeGreaterThan(0);
+    expect(running.indexOf('data-action="stop"')).toBeLessThan(running.indexOf('</div>'));
   });
 
   it('my question or my permission prompt: the decision is the only call to action — no 작업 로그 beside it (SSOT 2026-10-29 T2)', () => {
@@ -965,22 +976,23 @@ describe('D10 — one primary button per open card', () => {
   it("the multi-question 답변하기 is the primary in the owner's card only (fable P2), never on a sibling instance (astra P1)", () => {
     let sibling = false;
     const { renderMultiChoiceCard } = load<{ renderMultiChoiceCard(s: unknown, f: string): string }>(
-      ['esc', 'escJs', 'renderMultiChoiceCard'],
+      ['esc', 'escJs', 'renderMultiChoiceCard', 'mcFormId'],
       [],
       { _mcState: {}, console, currentUserId: 'U1', isSiblingSession: () => sibling },
     );
     const q = { type: 'user_choices', title: 'Pick', questions: [{ id: 'q1' }] };
+    // D3 E-16: the kit's button — ink (is-primary) for the owner on this instance, the plain kit button otherwise.
     expect(renderMultiChoiceCard({ key: 'k', ownerId: 'U1', pendingQuestion: q }, '')).toContain(
-      '<button class="btn-choice btn-choice-primary"',
+      '<button type="button" class="ui-btn is-primary card-mc-go"',
     );
     for (const ownerId of ['U2', undefined]) {
       expect(renderMultiChoiceCard({ key: 'k', ownerId, pendingQuestion: q }, ''), String(ownerId)).toContain(
-        '<button class="btn-choice" onclick=',
+        '<button type="button" class="ui-btn card-mc-go" onclick=',
       );
     }
     sibling = true;
     expect(renderMultiChoiceCard({ key: 'k', ownerId: 'U1', pendingQuestion: q }, '')).toContain(
-      '<button class="btn-choice" onclick=',
+      '<button type="button" class="ui-btn card-mc-go" onclick=',
     );
   });
 });
@@ -1030,7 +1042,9 @@ describe('D10 — the open card renders one approval card per prompt; only what 
         'cardSummary',
         'cardCurrentTask',
         'renderCardResume',
+        'taskOutcomeHtml',
         'isBusy',
+        'sessionActionsOf',
         'sessionActionHtml',
         'cardGoalLine',
         'isPermissionRequester',
@@ -1038,10 +1052,19 @@ describe('D10 — the open card renders one approval card per prompt; only what 
         'acSlotHtml',
         'acQuestionId',
         'acPermissionsHtml',
+        'acGoalDecisionHtml',
         'acQuestionHtml',
         'renderCardBody',
       ],
-      ['RESUME_SVG', 'GOAL_STATUS_LABELS', 'GOAL_SVG', 'SESSION_ACTION_ARIA', '_busy', 'AC_SIBLING'],
+      [
+        'RESUME_SVG',
+        'GOAL_STATUS_LABELS',
+        'GOAL_STATUS_TONE',
+        'GOAL_SVG',
+        'SESSION_ACTION_TONE',
+        '_busy',
+        'AC_SIBLING',
+      ],
       { ...STUBS, currentUserId: viewer, isSiblingSession: () => sibling },
     );
   }
