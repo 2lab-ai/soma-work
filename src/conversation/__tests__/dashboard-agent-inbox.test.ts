@@ -40,7 +40,7 @@ function stripHoverBlocks(css: string): string {
 
 describe('agent inbox board — layout (§3.1)', () => {
   it('has the breadcrumb and the Board | List segmented control', () => {
-    expect(TEMPLATE).toContain('Agent inbox');
+    expect(TEMPLATE).toContain('에이전트 인박스');
     expect(TEMPLATE).toContain('<ui-segmented class="view-seg" id="view-seg"></ui-segmented>');
     expect(TEMPLATE).toContain(
       "{ value: 'board', label: '보드', icon: 'board' }, { value: 'list', label: '목록', icon: 'list' }",
@@ -375,7 +375,7 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     const tabs = panel.indexOf('<ui-tabs class="panel-tabs" id="panel-tabs" shared-panel panel-focus="none">');
     const tabpanel = panel.indexOf('<section class="panel-tabpanel" id="panel-tabpanel">');
     const tasks = panel.indexOf(
-      '<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>',
+      '<div class="panel-tasks" id="panel-tasks" role="region" aria-label="작업" tabindex="-1"></div>',
     );
     const sections = panel.indexOf('<ui-tabs class="panel-sections" id="panel-sections" panel-focus="none">');
     const worklog = panel.indexOf('<div class="psec psec-el ui-tok" id="psec-log" slot="log">');

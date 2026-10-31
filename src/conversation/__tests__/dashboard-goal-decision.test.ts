@@ -245,14 +245,14 @@ describe('dashboard goal cap decision — board, route, shipped client (T1/T2)',
     });
     const dmText: string = dm[0].text.text;
     expect(dmText).toContain('reached its 10-turn budget');
-    expect(d.question).toContain('reached its 10-turn budget');
+    expect(d.question).toContain('10회 한도에 닿았습니다');
     expect(d.question).toContain('계속 진행할까요?');
     expect(dmText).toContain('계속 진행할까요?');
     expect(d.description).toContain('대시보드 승인 카드');
     expect(d.description).toContain('테스트가 아직 없다');
     const dmLabels = dm[1].elements.map((e: any) => e.text.text);
     expect(d.choices.map((x: any) => x.label)).toEqual(dmLabels);
-    expect(d.label).toBe('Goal 자동 진행 10/10');
+    expect(d.label).toBe('목표 자동 진행 10/10');
     // The slot is bound by attributes (no inline handler).
     expect(client.acGoalDecisionHtml(c)).toContain(`data-ac-kind="goal" data-ac-id="${live.goal.capDecisionId}"`);
     // Another viewer reads it locked.
@@ -260,7 +260,7 @@ describe('dashboard goal cap decision — board, route, shipped client (T1/T2)',
       c,
       c.pendingGoalDecision,
     );
-    expect(other.canAnswer).toBe('goal 소유자만 응답할 수 있습니다');
+    expect(other.canAnswer).toBe('목표 소유자만 응답할 수 있습니다');
   });
 
   it('T2 — answered on the dashboard: the goal continues, the DM is rewritten, the card leaves the board', async () => {

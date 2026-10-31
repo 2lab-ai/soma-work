@@ -514,7 +514,7 @@ describe('D11 — one write per session and operation, by value', () => {
     release({ ok: true, result: { status: 'switched', nickname: 'sonnet[1m]', autoCompactTokens: 750000 } });
     await first;
     expect(m.isBusy('k', 'model')).toBe(false);
-    expect(notes.k).toEqual({ text: 'sonnet[1m](으)로 전환 · autocompact 750000', error: false });
+    expect(notes.k).toEqual({ text: 'sonnet[1m](으)로 전환 · 자동 압축 750000', error: false });
   });
 
   it('an effort change the server accepted is the session’s level at once (the open menu does not wait for the poll)', async () => {

@@ -144,16 +144,16 @@ describe('a RUNNING card waiting out an automatic resume (cardOf + the open card
     });
     expect(card.cardOf(s, 'working')).toMatchObject({
       status: 'waiting',
-      statusText: `${atText} Goal 판정 재시도 · 시도 2/3`,
+      statusText: `${atText} 목표 판정 재시도 · 시도 2/3`,
     });
   });
 
   it('a goal completion check running now has no clock and no error line', () => {
     const s = resuming({ kind: 'goal-eval' });
-    expect(card.autoResumeLabel(s.autoResume)).toBe('Goal 완료 판정 중');
-    expect(card.cardOf(s, 'working')).toMatchObject({ status: 'waiting', statusText: 'Goal 완료 판정 중' });
+    expect(card.autoResumeLabel(s.autoResume)).toBe('목표 완료 판정 중');
+    expect(card.cardOf(s, 'working')).toMatchObject({ status: 'waiting', statusText: '목표 완료 판정 중' });
     expect(card.cardSummary(s, 'working', 'headline')).not.toContain('오류');
-    expect(resumeRow.renderCardResume(s, 'working')).toMatch(/<strong>Goal 완료 판정 중<\/strong><\/div><\/div>$/);
+    expect(resumeRow.renderCardResume(s, 'working')).toMatch(/<strong>목표 완료 판정 중<\/strong><\/div><\/div>$/);
   });
 
   it('a turn that is actually running wins over an armed retry: running, current task, no resume row', () => {

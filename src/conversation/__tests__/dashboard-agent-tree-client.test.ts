@@ -1499,7 +1499,7 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     expect(out.html).toContain('<span class="ag-type">메인</span>');
     expect(out.html).toContain('대기');
     expect(out.html).toContain('툴 2');
-    expect(out.html).toContain('task 합계 1200 tok · $0.00');
+    expect(out.html).toContain('task 합계 1200 토큰 · $0.00');
     expect(out.html).not.toContain('세션 Σ');
     // Nothing below it: no subtree element.
     expect(out.html).not.toContain('ui-agent-tree');
@@ -1521,7 +1521,7 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     expect(out.html).toContain('class="pa-focus is-failed"');
     expect(out.html).toContain('실패');
     expect(out.html).toContain('툴 3');
-    expect(out.html).toContain('41s');
+    expect(out.html).toContain('41초');
   });
 
   it('the 에이전트 트리 tab is a rich <ui-agent-tree>: the main agent at its root, every agent below it, the focused one selected', () => {
@@ -1708,8 +1708,8 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     const agents = [{ ...AGENTS[0], tokens: 134, spend: SPEND }, AGENTS[1], AGENTS[2]];
     const { m, out } = panel('toolu_explore', card({ agents }));
     m.renderPanelAgents();
-    expect(head(out.html)).toContain('10000 tok · $1.23');
-    expect(out.html).not.toContain('134 tok');
+    expect(head(out.html)).toContain('10000 토큰 · $1.23');
+    expect(out.html).not.toContain('134 토큰');
   });
 
   it('every subagent node in the panel tree carries its own spend; the header says when it is an estimate (≈)', () => {
@@ -1722,7 +1722,7 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     // The element shows the amount; ≈ and the per-kind breakdown are the focused node's header.
     const focused = panel('toolu_lib', card({ agents: [AGENTS[0], AGENTS[1], lib] }));
     focused.m.renderPanelAgents();
-    expect(head(focused.out.html)).toContain('10000 tok · ≈$0.50');
+    expect(head(focused.out.html)).toContain('10000 토큰 · ≈$0.50');
     expect(head(focused.out.html)).toContain('grok-4.7-build');
   });
 
@@ -1730,7 +1730,7 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     const est = { ...AGENTS[2], spend: { ...SPEND, costUsd: 0.5, estimatedCalls: 3 } };
     const { m, out } = panel('toolu_lib', card({ agents: [AGENTS[0], AGENTS[1], est] }));
     m.renderPanelAgents();
-    expect(head(out.html)).toContain('10000 tok · ≈$0.50');
+    expect(head(out.html)).toContain('10000 토큰 · ≈$0.50');
     expect(head(out.html)).toContain('usage가 기록되지 않은 호출 3회는 앞뒤 호출로 추정');
   });
 
@@ -1763,7 +1763,7 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     });
     const { m, out } = panel('', s);
     m.renderPanelAgents();
-    expect(out.html).toContain('서브 3개 1000 tok · ≈$0.75');
+    expect(out.html).toContain('서브 3개 1000 토큰 · ≈$0.75');
   });
 
   it('the root header is the task total — main and every subagent — with the subagents’ share beside it', () => {
@@ -1786,8 +1786,8 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     });
     const { m, out } = panel('', s);
     m.renderPanelAgents();
-    expect(out.html).toContain('task 합계 10000 tok · $3.50');
-    expect(out.html).toContain('서브 3개 1000 tok · $0.75');
+    expect(out.html).toContain('task 합계 10000 토큰 · $3.50');
+    expect(out.html).toContain('서브 3개 1000 토큰 · $0.75');
   });
 
   it('the current crumb is styled by the attribute it carries (review r1 fable)', () => {
@@ -2265,13 +2265,15 @@ describe('task total on the face and in 세션 정보 (SSOT T3)', () => {
     );
     const open = f.panelInfoHtml({ tokenUsage: u, subagentSpend: sub, lastActivity: new Date().toISOString() }, true);
     expect(open).toContain('<dt>누적 입력</dt><dd>1000</dd>');
-    expect(open).toContain('<dt>서브에이전트</dt><dd>2개 · 1000 tok · $0.75</dd>');
+    expect(open).toContain('<dt>서브에이전트</dt><dd>2개 · 1000 토큰 · $0.75</dd>');
     expect(open).not.toContain('집계 시작');
     const partial = f.panelInfoHtml(
       { tokenUsage: { ...u, partialSince: 1_700_000_000_000 }, lastActivity: new Date().toISOString() },
       true,
     );
     expect(partial).toContain('<dt>집계 시작</dt>');
-    expect(partial).toContain('<ui-elapsed since="1700000000000" format="ago"></ui-elapsed> (그 전 지출 미포함)');
+    expect(partial).toContain(
+      '<ui-elapsed since="1700000000000" format="ago" lang="ko"></ui-elapsed> (그 전 지출 미포함)',
+    );
   });
 });

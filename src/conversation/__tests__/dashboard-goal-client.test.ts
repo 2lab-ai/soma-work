@@ -182,7 +182,7 @@ describe('goal card data — the completed goals with their details (T6)', () =>
       objective: '끝난 goal',
       status: 'complete',
       endedAt: 1_700_000_000_000,
-      meta: ['소요 10m 0s', '1.5M tok', '$3.40', '이어하기 4회', '평가 모델 완료'],
+      meta: ['소요 10분 00초', '1.5M 토큰', '$3.40', '이어하기 4회', '평가 모델 완료'],
       note: '모든 요건에 증거가 있다',
     });
   });
