@@ -47,6 +47,7 @@ import type {
   ActivityState,
   ConversationSession,
   HandoffContext,
+  OriginThread,
   SessionCronJob,
   SessionGoal,
   SessionIncidentRequest,
@@ -60,6 +61,10 @@ import type {
   SessionResourceUpdateRequest,
   SessionResourceUpdateResult,
   SessionState,
+  TaskChainSettle,
+  TaskInputContext,
+  TaskNoticeIntent,
+  TaskNoticeKind,
   TaskTurnOutcomeRecord,
   WorkflowType,
 } from './types';
@@ -194,6 +199,13 @@ interface SerializedSession {
   taskId?: string;
   // Slack-less task (#596): keyed by taskId on load, not by channelId/threadTs
   slackless?: boolean;
+  /** E2 ① — a Slack-less task's instruction thread; validated on load. */
+  originThread?: unknown;
+  /** E2 ② — a Slack-instructed task's channel context; validated on load. */
+  inputContext?: unknown;
+  /** E2 ③ — the open chain and owed notices of a Slack-less task; validated on load. */
+  openChain?: unknown;
+  notices?: unknown;
   // Merge code change stats
   mergeStats?: {
     totalLinesAdded: number;
@@ -270,6 +282,108 @@ export interface CreateTaskInput {
   workingDirectory: string;
   title?: string;
   model?: string;
+  /** E2 ① — the Slack thread the task was instructed from; saved with the task's first strict save. */
+  originThread?: OriginThread;
+  /** E2 ② — the channel's description, repos and wiki at creation; copied, not referenced. */
+  inputContext?: TaskInputContext;
+}
+
+/** E2 ① — `createTask` refused: a live task already holds this instruction thread. */
+export class OriginThreadTakenError extends Error {
+  readonly holderTaskId: string | undefined;
+  constructor(origin: OriginThread, holderTaskId: string | undefined) {
+    super(`A live task already holds the instruction thread ${origin.channel}:${origin.threadTs}`);
+    this.name = 'OriginThreadTakenError';
+    this.holderTaskId = holderTaskId;
+  }
+}
+
+/**
+ * E2 ① — a stored instruction thread, or undefined: non-empty string channel,
+ * thread and message, and an optional non-empty string agent. Nothing else is
+ * kept, so a record never carries more than this shape.
+ */
+export function sanitizeOriginThread(value: unknown): OriginThread | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const v = value as Record<string, unknown>;
+  const nonEmpty = (x: unknown): x is string => typeof x === 'string' && x !== '';
+  if (!nonEmpty(v.channel) || !nonEmpty(v.threadTs) || !nonEmpty(v.messageTs)) return undefined;
+  if (v.agent !== undefined && !nonEmpty(v.agent)) return undefined;
+  return {
+    channel: v.channel,
+    threadTs: v.threadTs,
+    messageTs: v.messageTs,
+    ...(v.agent !== undefined ? { agent: v.agent as string } : {}),
+  };
+}
+
+/**
+ * E2 ② — a stored task input context, or undefined: only its non-empty string
+ * fields and the non-empty strings of `repos` are kept (a fresh copy); nothing
+ * left means none.
+ */
+export function sanitizeTaskInputContext(value: unknown): TaskInputContext | undefined {
+  if (typeof value !== 'object' || value === null) return undefined;
+  const v = value as Record<string, unknown>;
+  const out: TaskInputContext = {};
+  for (const field of ['channelName', 'channelDescription', 'confluenceUrl'] as const) {
+    const x = v[field];
+    if (typeof x === 'string' && x !== '') out[field] = x;
+  }
+  if (Array.isArray(v.repos)) {
+    const repos = v.repos.filter((r): r is string => typeof r === 'string' && r !== '');
+    if (repos.length > 0) out.repos = repos;
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+const NOTICE_KINDS: readonly TaskNoticeKind[] = ['link', 'result', 'question', 'failure', 'interrupted'];
+const NOTICE_OUTCOMES: readonly TaskTurnOutcomeRecord['outcome'][] = [
+  'completed',
+  'failed',
+  'cancelled',
+  'waiting',
+  'interrupted',
+];
+
+/** E2 ③ — stored notice intents: well-formed entries only; none left means none. */
+export function sanitizeTaskNotices(value: unknown): TaskNoticeIntent[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: TaskNoticeIntent[] = [];
+  for (const raw of value) {
+    if (typeof raw !== 'object' || raw === null) continue;
+    const v = raw as Record<string, unknown>;
+    if (typeof v.id !== 'string' || v.id === '') continue;
+    if (!NOTICE_KINDS.includes(v.kind as TaskNoticeKind)) continue;
+    if (typeof v.at !== 'number' || !Number.isFinite(v.at)) continue;
+    const intent: TaskNoticeIntent = { id: v.id, kind: v.kind as TaskNoticeKind, at: v.at };
+    for (const field of ['chainId', 'turnId', 'askId', 'reason'] as const) {
+      if (typeof v[field] === 'string' && v[field] !== '') intent[field] = v[field] as string;
+    }
+    if (NOTICE_OUTCOMES.includes(v.outcome as TaskTurnOutcomeRecord['outcome'])) {
+      intent.outcome = v.outcome as TaskTurnOutcomeRecord['outcome'];
+    }
+    out.push(intent);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/** E2 ③ — the notice a chain's last outcome owes the instruction thread. */
+function noticeKindFor(outcome: TaskTurnOutcomeRecord['outcome']): TaskNoticeKind {
+  switch (outcome) {
+    case 'completed':
+      return 'result';
+    case 'waiting':
+      return 'question';
+    case 'interrupted':
+      return 'interrupted';
+    default:
+      return 'failure';
+  }
+}
+
+function originThreadKey(origin: OriginThread): string {
+  return `${origin.channel}:${origin.threadTs}`;
 }
 
 /**
@@ -392,9 +506,13 @@ export class SessionRegistry {
    * disagree. See `getSessionByTaskId` for the id lifecycle contract.
    */
   private sessionsByTaskId: Map<string, ConversationSession> = new Map();
+  /** E2 ① — live Slack-less tasks by instruction thread (`channel:threadTs`); rebuilt from the records on load. */
+  private tasksByOriginThread: Map<string, ConversationSession> = new Map();
   private logger = new Logger('SessionRegistry');
   private expiryCallbacks?: SessionExpiryCallbacks;
   private beforeSessionDelete?: BeforeSessionDeleteCallback;
+  /** E2 ⑤ — told after a save that added notices a task owes its instruction thread. */
+  private taskNoticeListener?: (session: ConversationSession, sessionKey: string) => void;
   private _crashRecoveredSessions: CrashRecoveredSession[] = [];
 
   /**
@@ -471,6 +589,41 @@ export class SessionRegistry {
   }
 
   /**
+   * E2 ⑤ — the notice deliverer's listener: called after a strict save that
+   * added notices to a task with an instruction thread (its creation, its
+   * chain's end). Never for an outcome held in memory: those notices wait for
+   * a save, or for restart reconciliation.
+   */
+  setTaskNoticeListener(listener: (session: ConversationSession, sessionKey: string) => void): void {
+    this.taskNoticeListener = listener;
+  }
+
+  private fireTaskNotices(sessionKey: string, session: ConversationSession): void {
+    if (!this.taskNoticeListener) return;
+    try {
+      this.taskNoticeListener(session, sessionKey);
+    } catch (error) {
+      // The notices are saved: the boot scan or the next save's listener delivers them.
+      this.logger.warn('Task notice listener raised', {
+        sessionKey,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    }
+  }
+
+  /**
+   * E2 ⑤ — a notice reached its thread (or was closed): drop its intent from
+   * the live task record. Not saved here; the next save carries it. A crash
+   * first re-registers it, and the ledger, which has it posted, sends nothing.
+   */
+  pruneTaskNotice(taskId: string, noticeId: string): void {
+    const session = this.sessionsByTaskId.get(taskId);
+    if (!session?.notices) return;
+    const kept = session.notices.filter((n) => n.id !== noticeId);
+    session.notices = kept.length > 0 ? kept : undefined;
+  }
+
+  /**
    * Run the deletion observer. Throws `SessionDeleteRefusedError` when the
    * observer refused (threw), in which case the caller MUST leave the session
    * untouched — the host's durable state for this session could not be settled,
@@ -539,8 +692,13 @@ export class SessionRegistry {
    * callbacks and the post-drain hook run — so they read the new outcome, and a
    * restart finds the same outcome and activity the dashboard showed.
    */
-  public commitTaskTurnOutcome(sessionKey: string, outcome: TaskTurnOutcomeRecord, activity: 'waiting' | 'idle'): void {
-    this.applyTaskTurnOutcome('commitTaskTurnOutcome', sessionKey, outcome, activity, true);
+  public commitTaskTurnOutcome(
+    sessionKey: string,
+    outcome: TaskTurnOutcomeRecord,
+    activity: 'waiting' | 'idle',
+    settle?: TaskChainSettle,
+  ): void {
+    this.applyTaskTurnOutcome('commitTaskTurnOutcome', sessionKey, outcome, activity, true, settle);
   }
 
   /**
@@ -554,8 +712,21 @@ export class SessionRegistry {
     sessionKey: string,
     outcome: TaskTurnOutcomeRecord,
     activity: 'waiting' | 'idle',
+    settle?: TaskChainSettle,
   ): void {
-    this.applyTaskTurnOutcome('holdUnsavedTaskTurnOutcome', sessionKey, outcome, activity, false);
+    this.applyTaskTurnOutcome('holdUnsavedTaskTurnOutcome', sessionKey, outcome, activity, false, settle);
+  }
+
+  /**
+   * E2 ③ — add a notice intent to a task with an instruction thread (no-op
+   * otherwise, or when its id is already there). Not saved here: the caller's
+   * strict save carries it with the state it describes.
+   */
+  private addTaskNotice(session: ConversationSession, intent: TaskNoticeIntent): void {
+    if (session.slackless !== true || !session.originThread) return;
+    const notices = session.notices ?? [];
+    if (notices.some((n) => n.id === intent.id)) return;
+    session.notices = [...notices, intent];
   }
 
   private applyTaskTurnOutcome(
@@ -564,6 +735,7 @@ export class SessionRegistry {
     outcome: TaskTurnOutcomeRecord,
     activity: 'waiting' | 'idle',
     durable: boolean,
+    settle?: TaskChainSettle,
   ): void {
     const key = normalizeSessionKey(sessionKey);
     const session = this.getSessionByKey(key);
@@ -573,12 +745,37 @@ export class SessionRegistry {
       activity: session.activityState,
       changedAt: session.activityStateChangedAt,
       activeTurnId: session.activeTaskTurnId,
+      openChain: session.openChain,
+      notices: session.notices,
     };
     const changed = session.activityState !== activity;
     session.lastTurnOutcome = outcome;
     session.activityState = activity;
     session.activeTaskTurnId = undefined;
     if (changed) session.activityStateChangedAt = Date.now();
+    // E2 ③ — the chain's last outcome closes it and owes the thread a notice,
+    // in this same write; a hop the chain re-runs after keeps it open, silent.
+    const noticesBefore = session.notices;
+    if (settle?.ends) {
+      session.openChain = undefined;
+      const kind = settle.notice?.kind ?? noticeKindFor(outcome.outcome);
+      const reason = settle.notice?.reason ?? outcome.reason;
+      const askId =
+        kind === 'question'
+          ? (session.actionPanel?.pendingQuestion as { askId?: unknown } | undefined)?.askId
+          : undefined;
+      const ask = typeof askId === 'string' && askId !== '' ? askId : undefined;
+      this.addTaskNotice(session, {
+        id: `${session.taskId}:${settle.chainId}:${kind}${ask ? `:${ask}` : ''}`,
+        kind,
+        chainId: settle.chainId,
+        turnId: outcome.turnId,
+        ...(ask ? { askId: ask } : {}),
+        outcome: outcome.outcome,
+        ...(reason ? { reason } : {}),
+        at: outcome.at,
+      });
+    }
     if (durable) {
       try {
         this.saveSessionsOrThrow();
@@ -587,8 +784,11 @@ export class SessionRegistry {
         session.activityState = previous.activity;
         session.activityStateChangedAt = previous.changedAt;
         session.activeTaskTurnId = previous.activeTurnId;
+        session.openChain = previous.openChain;
+        session.notices = previous.notices;
         throw error;
       }
+      if (session.notices !== noticesBefore) this.fireTaskNotices(key, session);
     }
     try {
       this.onActivityStateChangeCallback?.();
@@ -610,7 +810,7 @@ export class SessionRegistry {
    * the lost turn on disk for restart reconciliation (design 598c §6). A failed
    * write restores both and throws — the turn does not run.
    */
-  public beginTaskTurn(sessionKey: string, turnId: string): void {
+  public beginTaskTurn(sessionKey: string, turnId: string, chainId?: string): void {
     const key = normalizeSessionKey(sessionKey);
     const session = this.getSessionByKey(key);
     if (!session) throw new Error(`beginTaskTurn: session not found (${key})`);
@@ -624,7 +824,10 @@ export class SessionRegistry {
       lastActivity: session.lastActivity,
       warningMessageTs: session.warningMessageTs,
       lastWarningSentAt: session.lastWarningSentAt,
+      openChain: session.openChain,
     };
+    // E2 ③ — the chain is open from its first start until its last commit.
+    if (chainId) session.openChain = chainId;
     // An instruction wakes a sleeping task, as a Slack message wakes its thread,
     // so the inactivity sweep cannot archive it mid-turn (#634 R1).
     if (session.state === 'SLEEPING') this.wakeSession(session);
@@ -643,6 +846,7 @@ export class SessionRegistry {
       session.lastActivity = previous.lastActivity;
       session.warningMessageTs = previous.warningMessageTs;
       session.lastWarningSentAt = previous.lastWarningSentAt;
+      session.openChain = previous.openChain;
       throw error;
     }
     try {
@@ -729,12 +933,44 @@ export class SessionRegistry {
     return this.sessionsByTaskId.get(taskId);
   }
 
-  /** Insert under `key`; a different session already there loses its task-id entry. */
+  /**
+   * E2 ① — the live Slack-less task instructed from this Slack thread (its
+   * root `thread_ts`), if any. An archived task is not found: one live task
+   * per instruction thread. A sleeping task is live — it still holds its
+   * thread until it is archived.
+   */
+  getTaskByOriginThread(channel: string, threadTs: string): ConversationSession | undefined {
+    return this.tasksByOriginThread.get(`${channel}:${threadTs}`);
+  }
+
+  /**
+   * Insert under `key`; a different session already there loses its task-id
+   * entry. A Slack-less task's instruction thread is indexed while it is free;
+   * one another live task holds is dropped from this session (the holder keeps it).
+   */
   private putSession(key: string, session: ConversationSession): void {
     const previous = this.sessions.get(key);
     if (previous && previous !== session) this.unindexTask(previous);
     this.sessions.set(key, session);
     if (session.taskId) this.sessionsByTaskId.set(session.taskId, session);
+    // E2 ② — only a Slack-less task carries an input context.
+    if (session.inputContext && session.slackless !== true) session.inputContext = undefined;
+    if (session.originThread) {
+      const originKey = originThreadKey(session.originThread);
+      const holder = this.tasksByOriginThread.get(originKey);
+      if (session.slackless !== true) {
+        session.originThread = undefined;
+      } else if (holder && holder !== session) {
+        this.logger.warn('Instruction thread already held by a live task; dropped from this one', {
+          taskId: session.taskId,
+          holderTaskId: holder.taskId,
+          originThread: originKey,
+        });
+        session.originThread = undefined;
+      } else {
+        this.tasksByOriginThread.set(originKey, session);
+      }
+    }
   }
 
   private removeSession(key: string): void {
@@ -743,10 +979,14 @@ export class SessionRegistry {
     if (session) this.unindexTask(session);
   }
 
-  /** Drop the task-id entry only while it still names this session — an inheritor keeps its own. */
+  /** Drop the task-id and instruction-thread entries only while they still name this session — an inheritor keeps its own. */
   private unindexTask(session: ConversationSession): void {
     if (session.taskId && this.sessionsByTaskId.get(session.taskId) === session) {
       this.sessionsByTaskId.delete(session.taskId);
+    }
+    if (session.originThread) {
+      const originKey = originThreadKey(session.originThread);
+      if (this.tasksByOriginThread.get(originKey) === session) this.tasksByOriginThread.delete(originKey);
     }
   }
 
@@ -920,11 +1160,33 @@ export class SessionRegistry {
   createTask(input: CreateTaskInput): ConversationSession {
     if (!input.ownerId) throw new Error('createTask: ownerId is required');
     if (!input.workingDirectory) throw new Error('createTask: workingDirectory is required');
+    let originThread: OriginThread | undefined;
+    if (input.originThread !== undefined) {
+      originThread = sanitizeOriginThread(input.originThread);
+      if (!originThread) throw new Error('createTask: originThread needs a channel, a thread and a message');
+      // One live task per instruction thread (E2 ①) — refused before anything is saved.
+      const holder = this.tasksByOriginThread.get(originThreadKey(originThread));
+      if (holder) throw new OriginThreadTakenError(originThread, holder.taskId);
+    }
     // No Slack binding: an empty channel and no thread, never invented ones.
     const session = this.newSession(input.ownerId, input.ownerName, '', undefined, input.model);
     session.slackless = true;
     session.workingDirectory = input.workingDirectory;
     if (input.title) session.title = input.title;
+    if (originThread) {
+      session.originThread = originThread;
+      // The thread is owed the card's link, in this first strict save (D6).
+      this.addTaskNotice(session, { id: `${session.taskId}:create:link`, kind: 'link', at: Date.now() });
+    }
+    const inputContext = sanitizeTaskInputContext(input.inputContext);
+    if (inputContext) session.inputContext = inputContext;
+    // A caller passed a context and nothing usable was left: the task runs
+    // without its channel's repos — say so rather than drop it silently.
+    else if (input.inputContext !== undefined) {
+      this.logger.warn('createTask: the input context had no usable field; the task has none', {
+        taskId: session.taskId,
+      });
+    }
 
     const key = buildTaskSessionKey(session.taskId);
     this.putSession(key, session);
@@ -936,6 +1198,7 @@ export class SessionRegistry {
       throw error;
     }
     this.logger.info('Slack-less task created', { taskId: session.taskId, ownerId: session.ownerId });
+    if (session.notices) this.fireTaskNotices(key, session);
     return session;
   }
 
@@ -1197,6 +1460,9 @@ export class SessionRegistry {
       channelId: slackless ? '' : archived.channelId,
       threadTs: slackless ? undefined : archived.threadTs,
       slackless: slackless ? true : undefined,
+      // E2 ① — back while it is free; `putSession` drops it if a live task holds the thread now.
+      originThread: sanitizeOriginThread(archived.originThread),
+      inputContext: sanitizeTaskInputContext(archived.inputContext),
       // A task runs in its own directory: the one its transcript proves it ran in (#612 R4).
       ...(slackless ? { workingDirectory: cwd } : {}),
       sessionId: archived.sessionId,
@@ -2662,6 +2928,10 @@ export class SessionRegistry {
             conversationId: session.conversationId,
             taskId: session.taskId,
             slackless: session.slackless === true ? true : undefined,
+            originThread: session.originThread,
+            inputContext: session.inputContext,
+            openChain: session.openChain,
+            notices: session.notices,
             // Merge code change stats
             mergeStats: session.mergeStats,
             // User SSOT instructions (persisted)
@@ -2798,6 +3068,8 @@ export class SessionRegistry {
         channelId: serialized.channelId,
         threadTs: serialized.threadTs,
         slackless: serialized.slackless === true ? true : undefined,
+        originThread: sanitizeOriginThread(serialized.originThread),
+        inputContext: sanitizeTaskInputContext(serialized.inputContext),
         lastTurnOutcome: sanitizeTaskTurnOutcome(serialized.lastTurnOutcome),
         sessionId: serialized.sessionId,
         isActive: false,
@@ -3021,6 +3293,14 @@ export class SessionRegistry {
           // Conversation record ID
           conversationId: serialized.conversationId,
           slackless: slackless ? true : undefined,
+          // E2 ① — a malformed instruction thread is dropped; `putSession` drops one on a Slack session.
+          originThread: sanitizeOriginThread(serialized.originThread),
+          inputContext: sanitizeTaskInputContext(serialized.inputContext),
+          openChain:
+            slackless && typeof serialized.openChain === 'string' && serialized.openChain !== ''
+              ? serialized.openChain
+              : undefined,
+          notices: slackless ? sanitizeTaskNotices(serialized.notices) : undefined,
           // Incident ownership is restored verbatim and never repaired: any
           // present value keeps the session restricted (fail closed).
           incidentRequest:
@@ -3224,15 +3504,32 @@ export class SessionRegistry {
           // No Slack thread to resume or notify. A task saved `working` lost its
           // turn with the process: record that turn `interrupted` and never re-run
           // it (#598 ④c, D10). A `waiting` task keeps its question.
-          if (serialized.activityState === 'working') {
+          // E2 ③ — so did a chain still open: a `/compact` hop committed
+          // `completed` and the process died before the re-run's start. A task
+          // saved `waiting` keeps its question even then (grok #666).
+          if (serialized.activityState === 'working' || (session.openChain && serialized.activityState !== 'waiting')) {
             const now = Date.now();
+            const turnId = session.activeTaskTurnId ?? `restart:${now}`;
             session.lastTurnOutcome = {
-              turnId: session.activeTaskTurnId ?? `restart:${now}`,
+              turnId,
               outcome: 'interrupted',
               category: 'Exception',
               reason: 'process ended before the outcome was recorded',
               at: now,
             };
+            // One notice per lost chain, keyed by the chain (or the turn), so a
+            // reconciliation repeated after an unsaved load adds nothing.
+            const chainId = session.openChain;
+            this.addTaskNotice(session, {
+              id: `${session.taskId}:${chainId ?? turnId}:interrupted`,
+              kind: 'interrupted',
+              ...(chainId ? { chainId } : {}),
+              turnId,
+              outcome: 'interrupted',
+              reason: 'process ended before the outcome was recorded',
+              at: now,
+            });
+            session.openChain = undefined;
             session.activityState = 'idle';
             session.activityStateChangedAt = now;
             session.activeTaskTurnId = undefined;
