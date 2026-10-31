@@ -15,7 +15,24 @@ interface FakeButton {
   attrs: Record<string, string>;
   setAttribute(k: string, v: string): void;
 }
-function fakePage(saved: string | null) {
+interface FakeBar {
+  data?: Record<string, unknown>;
+  on: Map<string, Array<(e: unknown) => void>>;
+  addEventListener(type: string, fn: (e: unknown) => void): void;
+  fire(type: string, e: unknown): void;
+}
+function fakeBar(): FakeBar {
+  return {
+    on: new Map(),
+    addEventListener(type, fn) {
+      this.on.set(type, [...(this.on.get(type) ?? []), fn]);
+    },
+    fire(type, e) {
+      for (const fn of this.on.get(type) ?? []) fn(e);
+    },
+  };
+}
+function fakePage(saved: string | null, bar?: FakeBar) {
   const store = new Map<string, string>();
   if (saved !== null) store.set(SOUND_STORAGE_KEY, saved);
   const rootAttrs: Record<string, string> = {};
@@ -33,7 +50,7 @@ function fakePage(saved: string | null) {
         rootAttrs[k] = v;
       },
     },
-    getElementById: (id: string) => (id === 'sound-toggle' ? button : null),
+    getElementById: (id: string) => (id === 'sound-toggle' ? button : id === 'app-bar' ? (bar ?? null) : null),
     addEventListener: (type: string, fn: () => void) => {
       if (type === 'DOMContentLoaded') ready.push(fn);
       else listeners.set(type, [...(listeners.get(type) ?? []), fn]);
@@ -180,6 +197,40 @@ describe('the page script (soundClientJs)', () => {
     expect(p.imported).toHaveLength(2);
   });
 
+  it("<ui-app-bar>'s speaker: warmed on the way to it, its ui-sound-change unlocks in the click's task; the bar sounds the cue", async () => {
+    const bar = fakeBar();
+    bar.data = { brand: { label: 'soma-work' }, sound: false };
+    const p = fakePage(null, bar);
+    for (const fn of p.ready) fn();
+    // Bound once, at DOMContentLoaded.
+    expect(bar.on.get('ui-sound-change')).toHaveLength(1);
+    for (const fn of p.ready) fn();
+    expect(bar.on.get('ui-sound-change')).toHaveLength(1);
+    // Crossing the bar elsewhere loads nothing; heading for the speaker (first target inside .ab-sound) warms.
+    const at = (speaker: boolean) => ({
+      composedPath: () => [{ closest: (sel: string) => (speaker && sel === '.ab-sound' ? {} : null) }],
+    });
+    bar.fire('pointerover', at(false));
+    await tick();
+    expect(p.imported).toEqual([]);
+    bar.fire('focusin', at(true));
+    await tick();
+    expect(p.imported).toHaveLength(2);
+    bar.fire('ui-sound-change', { detail: { sound: true } });
+    expect(p.lib.cuelume.unlockSound).toHaveBeenCalledTimes(1);
+    expect(p.lib.sound.setSound).toHaveBeenCalledWith({ player: p.lib.cuelume.cuelumeSound, enabled: true });
+    // The bar plays its own toggle cue once its listeners ran: the page adds none.
+    expect(p.lib.sound.playSound).not.toHaveBeenCalled();
+    expect(p.store.get(SOUND_STORAGE_KEY)).toBe('on');
+    expect(p.rootAttrs['data-sound']).toBe('on');
+    // The bar is handed the state, keeping the rest of its data.
+    expect(bar.data).toEqual({ brand: { label: 'soma-work' }, sound: true });
+    bar.fire('ui-sound-change', { detail: { sound: false } });
+    expect(p.lib.sound.setSound).toHaveBeenLastCalledWith({ enabled: false });
+    expect(bar.data).toEqual({ brand: { label: 'soma-work' }, sound: false });
+    expect(p.store.get(SOUND_STORAGE_KEY)).toBe('off');
+  });
+
   it('turned off while still loading: the load lands on the latest choice (silent, no unlock)', async () => {
     const p = fakePage(null);
     const on = p.api.somaSetSound(true, true);
@@ -309,27 +360,16 @@ describe('the dashboard', () => {
   const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
   const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
   const HEAD = TEMPLATE.slice(0, TEMPLATE.indexOf('</head>'));
-  const bar = TEMPLATE.match(/<div class="topbar-account">[\s\S]*?\n {4}<\/div>\n/)?.[0] ?? '';
 
-  it('puts the speaker in the account group, right before the theme toggle', () => {
-    const speaker = bar.indexOf('id="sound-toggle"');
-    const theme = bar.indexOf('id="theme-toggle"');
-    expect(speaker).toBeGreaterThan(0);
-    expect(theme).toBeGreaterThan(speaker);
-    expect(bar).toContain(
-      '<button id="sound-toggle" type="button" onclick="toggleSound()" onpointerenter="somaSoundWarm()" onfocus="somaSoundWarm()" onpointerdown="somaSoundWarm()" aria-pressed="false" aria-label="인터페이스 소리" title="인터페이스 소리"><i data-ui-icon="sound" class="ic-sound"></i><i data-ui-icon="sound-off" class="ic-sound-off"></i></button>',
-    );
+  it("the speaker is <ui-app-bar>'s own (before its theme toggle): the page hands it the choice, no button of its own", () => {
+    expect(TEMPLATE).not.toContain('id="sound-toggle"');
+    expect(TEMPLATE).not.toContain('#sound-toggle');
+    const paint = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function paintAppBar()'));
+    expect(paint.slice(0, paint.indexOf('\n}\n'))).toContain("sound: typeof _somaOn !== 'undefined' && !!_somaOn,");
   });
 
-  it('runs the sound script in <head>, so the speaker shows the saved state before paint', () => {
+  it('runs the sound script in <head>, so the bar gets the saved state with its first data', () => {
     expect(HEAD).toContain('<script data-sound>${soundClientJs(UI_LIB_VERSION)}</script>');
-  });
-
-  it('shows the glyph for the state: off by default, on under data-sound="on"', () => {
-    expect(TEMPLATE).toContain(
-      '#sound-toggle .ic-sound, :root[data-sound="on"] #sound-toggle .ic-sound-off { display: none; }',
-    );
-    expect(TEMPLATE).toContain(':root[data-sound="on"] #sound-toggle .ic-sound { display: block; }');
   });
 });
 

@@ -60,6 +60,7 @@ function clientVar(name: string): string {
  * reach shipped vars) and returned next to the shipped ones.
  */
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, seams: string[] = []): T {
+  inject = { STRINGS: STRINGS, ...inject };
   const names = Object.keys(inject);
   const seamNames = seams.map((src) => /^function (\w+)/.exec(src)?.[1] ?? '');
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\n${seams.join('\n')}\nreturn { ${[...fns, ...seamNames].join(', ')} };`;
@@ -1399,7 +1400,7 @@ describe('numbers in panel / topbar markup (shipped toNum + formatTokens)', () =
   });
 });
 
-describe('top-bar user names keep their full text in title (shipped syncUserSelectLabel + _applyUserPill)', () => {
+describe('top-bar user names keep their full text (shipped syncUserSelectLabel + _applyUserPill)', () => {
   const LONG = '가나다라마바사아자차카타파하가나다라마바사아자차카타파하가나다라';
   /** Just enough DOM for the two functions: a select with options, the label, the pill. */
   function dom() {
@@ -1449,14 +1450,16 @@ describe('top-bar user names keep their full text in title (shipped syncUserSele
     expect(clientFn('loadUsers')).toMatch(/\n {2}syncUserSelectLabel\(\);\n\}$/);
   });
 
-  it('the pill name carries the full name in title (it may end in an ellipsis)', () => {
+  it('the account pill gets the full name (the app bar ellipsizes it and names the pill with it in full)', () => {
     const d = dom();
-    const { _applyUserPill } = load<{ _applyUserPill(data: unknown): void }>(['_applyUserPill'], [], {
-      document: d.document,
-    });
-    _applyUserPill({ user: { name: LONG } });
-    expect(d.nameEl.textContent).toBe(LONG);
-    expect(d.nameEl.title).toBe(LONG);
+    const m = load<{ _applyUserPill(data: unknown): void; account(): unknown }>(
+      ['_applyUserPill'],
+      ['_appBarAccount'],
+      { document: d.document, paintAppBar: () => {} },
+      ['function account() { return _appBarAccount; }'],
+    );
+    m._applyUserPill({ user: { name: LONG } });
+    expect(m.account()).toEqual({ name: LONG, href: '/login' });
   });
 });
 
@@ -2353,8 +2356,14 @@ describe('stats: only the latest period / user selection paints (shipped loadSta
       ['_statsGen', 'STAT_IDS'],
       {
         fetch,
-        // The loading bars (markStatsLoading) find no elements in this harness.
+        // The loading bars (markStatsLoading) find no elements in this harness; the strip and the charts
+        // (<ui-stat-strip>, <ui-bar-chart>, D2) are painted elsewhere.
         document: { getElementById: () => null },
+        setStripFigure: () => {},
+        paintStatsStrip: () => {},
+        paintCharts: () => {},
+        _strip: { sessions: { value: null }, tokens: { value: null }, cost: { value: null } },
+        _chartDays: [],
         currentPeriod: 'day',
         currentUserId: '',
         paintStats: (d: { tag?: string } | null) => painted.push(`stats:${d ? d.tag : 'dash'}`),
