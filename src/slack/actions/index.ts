@@ -3,7 +3,7 @@ import { registerAdminApprovalAdapter } from '../../admin-approvals';
 import { isAdminUser } from '../../admin-utils';
 import { getTokenManager } from '../../token-manager';
 import { registerAuthActions } from '../auth/actions';
-import { botDeleteAdminApprovalAdapter } from '../bot-delete-decision';
+import { botDeleteAdminApprovalAdapter, reconcileBotDeletes } from '../bot-delete-decision';
 import { registerCctActions } from '../cct/actions';
 import { defaultTabCache } from '../commands/usage-carousel-cache';
 import { envSkillAdminApprovalAdapter } from '../env-skill-admin-approval';
@@ -97,6 +97,8 @@ setActionHandlersProviders({
     // New users and bot-message deletes: one decision for the DM buttons and the dashboard (#622, #623).
     registerAdminApprovalAdapter(newUserAdminApprovalAdapter(ctx.slackApi as any));
     registerAdminApprovalAdapter(botDeleteAdminApprovalAdapter(ctx.slackApi as any));
+    // Approvals a previous process died while carrying out: finish them (redo the delete) first.
+    void reconcileBotDeletes(ctx.slackApi as any).catch(() => undefined);
 
     const zTopicRegistry = buildDefaultTopicRegistry();
 

@@ -13,7 +13,7 @@ import { getDispatchService } from '../../dispatch-service';
 import { userSettingsStore } from '../../user-settings-store';
 import { buildChannelRouteBlocks } from '../actions/channel-route-action-handler';
 import { DispatchAbortError } from '../dispatch-abort';
-import { notifyAdminsNewUser } from '../new-user-decision';
+import { createPendingUserRequest, notifyAdminsNewUser } from '../new-user-decision';
 
 setSessionInitializerProviders({
   expectedHandoffKind: (workflow) => expectedHandoffKind(workflow as any),
@@ -38,7 +38,8 @@ setSessionInitializerProviders({
   scheduleLinkDerivedTitleRefresh,
   getDispatchService,
   getUserSettings: (userId) => userSettingsStore.getUserSettings(userId),
-  createPendingUser: (userId, userName) => userSettingsStore.createPendingUser(userId, userName),
+  // The pending record and its approval round together, before the gate awaits anything (#622).
+  createPendingUser: (userId, userName) => createPendingUserRequest(userId, userName),
   // Records where each admin DM landed, so the dashboard card and every copy stay in sync (#622).
   notifyAdminsNewUser: (slackApi, userId, userName) => notifyAdminsNewUser(slackApi, userId, userName),
   getUserSessionTheme: (userId) => userSettingsStore.getUserSessionTheme(userId),

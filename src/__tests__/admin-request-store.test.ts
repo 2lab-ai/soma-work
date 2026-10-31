@@ -7,7 +7,10 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { beforeEach, describe, expect, it } from 'vitest';
 import {
+  adoptOrphanedClaim,
   getAdminRequest,
+  isClaimLive,
+  listOrphanedClaims,
   markAdminRequest,
   openAdminRequest,
   reopenAdminRequest,
@@ -62,19 +65,21 @@ describe('admin request store (#622, #623)', () => {
     expect(getAdminRequest('bot_delete', 'C1/3.3')?.handled).toBe(false);
   });
 
-  it('a claim this process holds never lapses; one left on disk by a process that died does', () => {
+  it('a claim this process holds is live; one left on disk by a process that died is an orphan — still answered, never lapsed', () => {
     openAdminRequest({ kind: 'bot_delete', requestId: 'C1/7.7', requesterId: 'U1', ttlMs: TTL });
     const claim = { ...answer('UADMIN1', Date.now() - 10 * 60 * 1000), settled: false };
     expect(markAdminRequest('bot_delete', 'C1/7.7', claim)).not.toBeNull();
-    // Still being carried out here: held.
-    expect(getAdminRequest('bot_delete', 'C1/7.7')?.handled).toBe(true);
-    expect(markAdminRequest('bot_delete', 'C1/7.7', answer('UADMIN2'))).toBeNull();
-    // The same claim on disk with nobody carrying it out (another process that died): lapsed.
+    expect(isClaimLive('bot_delete', 'C1/7.7')).toBe(true);
+    expect(listOrphanedClaims('bot_delete').some((r) => r.requestId === 'C1/7.7')).toBe(false);
+    // The same claim on disk with nobody carrying it out (a process that died): an orphan.
     const all = JSON.parse(fs.readFileSync(FILE, 'utf-8'));
     all['bot_delete:C9/9.9'] = { ...all['bot_delete:C1/7.7'], requestId: 'C9/9.9' };
     fs.writeFileSync(FILE, JSON.stringify(all));
-    expect(getAdminRequest('bot_delete', 'C9/9.9')?.handled).toBe(false);
-    expect(markAdminRequest('bot_delete', 'C9/9.9', answer('UADMIN2'))).not.toBeNull();
+    expect(getAdminRequest('bot_delete', 'C9/9.9')?.handled).toBe(true);
+    expect(markAdminRequest('bot_delete', 'C9/9.9', answer('UADMIN2'))).toBeNull();
+    expect(listOrphanedClaims('bot_delete').map((r) => r.requestId)).toContain('C9/9.9');
+    expect(adoptOrphanedClaim('bot_delete', 'C9/9.9')).toBe(true);
+    expect(adoptOrphanedClaim('bot_delete', 'C9/9.9')).toBe(false);
   });
 
   it('a fresh round always gets a new, later round id — even over an unanswered round', () => {

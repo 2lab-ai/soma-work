@@ -19,6 +19,7 @@ import {
   botDeleteAdminApprovalAdapter,
   botDeleteRequestId,
   decideBotDelete,
+  reconcileBotDeletes,
   requestBotDelete,
 } from '../bot-delete-decision';
 
@@ -301,9 +302,8 @@ describe('bot-message delete requests as one decision (#623)', () => {
     expect(api.postMessage).not.toHaveBeenCalledWith('D-U1', expect.stringContaining('거절'));
   });
 
-  it('a claim left by a process that died lapses: the request is answerable again', async () => {
-    await requestBotDelete(api, TARGET);
-    // What a dead process leaves: an unsettled claim on disk, nobody carrying it out.
+  function leaveOrphan() {
+    // What a process that died mid-delete leaves: an unsettled approval on disk, nobody carrying it out.
     const file = path.join(DATA_DIR, 'admin-requests.json');
     const all = JSON.parse(fs.readFileSync(file, 'utf-8'));
     all[`bot_delete:${ID}`].handled = true;
@@ -316,15 +316,52 @@ describe('bot-message delete requests as one decision (#623)', () => {
       settled: false,
     };
     fs.writeFileSync(file, JSON.stringify(all));
+  }
+
+  it('an approval a dead process left: the next answer first redoes the delete — done, so it stands', async () => {
+    await requestBotDelete(api, TARGET);
+    leaveOrphan();
+    // The delete had in fact gone through before the crash.
+    api.deleteMessage.mockRejectedValueOnce(Object.assign(new Error('gone'), { data: { error: 'message_not_found' } }));
     expect(
-      (await botDeleteAdminApprovalAdapter(api).pending(Date.now())).some((c) => c.id === `bot_delete:${ID}`),
-    ).toBe(true);
+      await decideBotDelete({ requestId: ID, decision: 'reject', actor: 'UADMIN2', via: 'slack', slackApi: api }),
+    ).toMatchObject({
+      ok: false,
+      reason: 'already_answered',
+    });
+    expect(api.deleteMessage).toHaveBeenCalledWith('C1', '171.1');
+    const adapter = botDeleteAdminApprovalAdapter(api);
+    expect((await adapter.resolved(0)).find((r) => r.id === `bot_delete:${ID}`)).toMatchObject({
+      outcome: 'approved',
+      by: 'UADMIN1',
+    });
+    expect(api.updateMessage.mock.calls.every((c) => String(c[2]).includes('삭제되었습니다'))).toBe(true);
+    expect(api.postMessage).not.toHaveBeenCalledWith('D-U1', expect.stringContaining('거절'));
+  });
+
+  it('an approval a dead process left whose delete cannot be redone: the request opens, the next answer decides', async () => {
+    await requestBotDelete(api, TARGET);
+    leaveOrphan();
+    api.deleteMessage.mockRejectedValueOnce(Object.assign(new Error('x'), { data: { error: 'channel_not_found' } }));
     expect(
       await decideBotDelete({ requestId: ID, decision: 'reject', actor: 'UADMIN2', via: 'slack', slackApi: api }),
     ).toMatchObject({
       ok: true,
       outcome: 'denied',
     });
+  });
+
+  it('at startup every orphaned approval is finished', async () => {
+    await requestBotDelete(api, TARGET);
+    leaveOrphan();
+    expect(await reconcileBotDeletes(api)).toBe(1);
+    expect(api.deleteMessage).toHaveBeenCalledTimes(1);
+    expect(
+      (await botDeleteAdminApprovalAdapter(api).resolved(0)).find((r) => r.id === `bot_delete:${ID}`),
+    ).toMatchObject({
+      outcome: 'approved',
+    });
+    expect(await reconcileBotDeletes(api)).toBe(0);
   });
 
   it('refused: a non-admin, an unknown choice, a missing request', async () => {

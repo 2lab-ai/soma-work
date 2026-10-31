@@ -13,9 +13,13 @@
 import type { AdminApproval, AdminApprovalAdapter, AdminApprovalResolution } from '../admin-approvals';
 import { notifyAdminApprovalsChanged } from '../admin-approvals';
 import {
+  type AdminRequest,
   type AdminRequestPrompt,
+  adoptOrphanedClaim,
   getAdminRequest,
+  isClaimLive,
   listAdminRequests,
+  listOrphanedClaims,
   markAdminRequest,
   openAdminRequest,
   reopenAdminRequest,
@@ -177,6 +181,8 @@ export async function decideBotDelete(args: {
   via: 'slack' | 'dashboard';
   slackApi: BotDeleteSlackApi;
   now?: number;
+  /** Internal: the orphaned approval on this request was just reopened (retry once). */
+  afterOrphan?: boolean;
 }): Promise<BotDeleteAnswer> {
   const { decision, actor, via, slackApi } = args;
   if (!actor || !isAdminUser(actor)) {
@@ -214,7 +220,20 @@ export async function decideBotDelete(args: {
       : { requesterId: target.requesterId, data: { targetChannel: target.targetChannel, targetTs: target.targetTs } },
   );
   if (!marked) {
-    const r = getAdminRequest('bot_delete', requestId, now)?.resolution;
+    const held = getAdminRequest('bot_delete', requestId, now);
+    const r = held?.resolution;
+    if (held && r?.settled === false && !isClaimLive('bot_delete', requestId)) {
+      // An approval a process that died was carrying out: its delete may or may not have happened.
+      // Finish it first (redo the delete) — only if that fails is the request open to this answer.
+      const finished = await finishOrphanedDelete(slackApi, held);
+      if (finished === 'reopened' && !args.afterOrphan) return decideBotDelete({ ...args, afterOrphan: true });
+      const settled = getAdminRequest('bot_delete', requestId)?.resolution;
+      return {
+        ok: false,
+        reason: finished === 'busy' ? 'busy' : 'already_answered',
+        message: settled ? `⚠️ 이미 처리된 요청입니다 — ${outcomeText(settled)}` : '⚠️ 이미 처리된 요청입니다.',
+      };
+    }
     if (r?.settled === false) {
       // Another admin's approval is still deleting: not a decision yet — answer again shortly.
       return {
@@ -268,6 +287,60 @@ export async function decideBotDelete(args: {
     }
   })();
   return { ok: true, outcome: resolution.outcome, text, effects };
+}
+
+/**
+ * Carry out an approval a process that died left unsettled: redo the delete
+ * (a message already gone counts as deleted). Done → the original approval
+ * becomes the decision and every DM copy says so; failed → the request is open
+ * again. `busy` if this process is already carrying it out.
+ */
+export async function finishOrphanedDelete(
+  slackApi: BotDeleteSlackApi,
+  req: AdminRequest,
+): Promise<'settled' | 'reopened' | 'busy'> {
+  const original = req.resolution;
+  if (!original || original.settled !== false) return 'settled';
+  if (!adoptOrphanedClaim('bot_delete', req.requestId)) return 'busy';
+  const { targetChannel, targetTs } = req.data;
+  try {
+    await slackApi.deleteMessage(targetChannel, targetTs);
+  } catch (error) {
+    if (!isMessageGone(error)) {
+      reopenAdminRequest('bot_delete', req.requestId, original);
+      logger.warn('Orphaned bot-message delete could not be redone — the request is open again', {
+        requestId: req.requestId,
+        error,
+      });
+      notifyAdminApprovalsChanged();
+      return 'reopened';
+    }
+  }
+  const settled = settleAdminRequest('bot_delete', req.requestId, original);
+  logger.info('Orphaned bot-message delete finished', { requestId: req.requestId, by: original.by });
+  notifyAdminApprovalsChanged();
+  const text = outcomeText(original);
+  await rewritePrompts(slackApi, settled?.prompts ?? req.prompts, text);
+  try {
+    const dm = await slackApi.openDmChannel(req.requesterId);
+    await slackApi.postMessage(dm, '✅ 어드민이 삭제 요청을 승인했습니다. 메시지가 삭제되었습니다.');
+  } catch {
+    // Best-effort notification only.
+  }
+  return 'settled';
+}
+
+/** At startup: finish every approval a process that died left unsettled. */
+export async function reconcileBotDeletes(slackApi: BotDeleteSlackApi): Promise<number> {
+  let finished = 0;
+  for (const req of listOrphanedClaims('bot_delete')) {
+    try {
+      if ((await finishOrphanedDelete(slackApi, req)) === 'settled') finished++;
+    } catch (error) {
+      logger.warn('Reconciling an orphaned bot-message delete failed', { requestId: req.requestId, error });
+    }
+  }
+  return finished;
 }
 
 export function botDeleteApproval(
