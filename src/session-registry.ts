@@ -44,8 +44,10 @@ import {
 } from './slack/session-goal-lifecycle';
 import {
   applyPlanWrite,
+  consumeEpicEvents,
   EPIC_NODE_ID,
   type PlanWriteInput,
+  releaseEpicEvents,
   resolveEpicApprovals,
   sanitizeEpicEvents,
   sanitizeEpicPlan,
@@ -605,15 +607,12 @@ export class SessionRegistry {
   private onIdleCallbacks: Map<string, Array<() => void>> = new Map();
 
   /**
-   * Optional hook fired after `drainOnIdleCallbacks` resolves for a
-   * session that just transitioned to idle. Used by the ralph-loop
-   * (auto-continuation) driver to decide whether to inject the next
-   * synthetic continuation turn. Mirrors codex `goals.rs:1270`
-   * (`maybe_continue_goal_if_idle_runtime`) — a thin host hook that the
-   * goal subsystem owns, deliberately kept out of cron-scheduler state.
-   *
-   * Wired up in `src/index.ts` next to the existing cron-scheduler
-   * setup so messageInjector / dependencies are colocated.
+   * Optional single-slot hook fired after `drainOnIdleCallbacks` for a session
+   * that just transitioned to idle — synchronously, inside that session's own
+   * commit. No production caller holds it: E4 ⑥ wakes an epic from the task
+   * controller's `onChainEnd` instead, after the chain is released (a wake from
+   * here would meet the epic's still-running chain — fable #702 R1).
+   * Kept out of cron-scheduler state (`registerOnIdle`).
    */
   private onIdleAfterDrainHook?: (sessionKey: string) => void;
 
@@ -622,6 +621,14 @@ export class SessionRegistry {
    */
   setOnIdleAfterDrainHook(hook: ((sessionKey: string) => void) | undefined): void {
     this.onIdleAfterDrainHook = hook;
+  }
+
+  /** E4 ⑥ — told the epic's session key when a child's chain end was just added to it (saved or held). */
+  private epicEventListener?: (epicSessionKey: string) => void;
+
+  /** E4 ⑥ — install the listener that wakes an epic after an event (D7). */
+  setEpicEventListener(listener: ((epicSessionKey: string) => void) | undefined): void {
+    this.epicEventListener = listener;
   }
 
   /**
@@ -883,6 +890,17 @@ export class SessionRegistry {
       }
       if (session.notices !== noticesBefore) this.fireTaskNotices(key, session);
     }
+    // E4 ⑥ — saved or held, the epic may wake for it (D7); the listener defers the wake.
+    if (epicChange?.epic.taskId) {
+      try {
+        this.epicEventListener?.(buildTaskSessionKey(epicChange.epic.taskId));
+      } catch (err) {
+        this.logger.warn(`${caller}: epic event listener raised`, {
+          sessionKey: key,
+          error: (err as Error)?.message ?? String(err),
+        });
+      }
+    }
     try {
       this.onActivityStateChangeCallback?.();
     } catch (err) {
@@ -993,7 +1011,7 @@ export class SessionRegistry {
    * the lost turn on disk for restart reconciliation (design 598c §6). A failed
    * write restores both and throws — the turn does not run.
    */
-  public beginTaskTurn(sessionKey: string, turnId: string, chainId?: string): void {
+  public beginTaskTurn(sessionKey: string, turnId: string, chainId?: string, consume?: readonly string[]): void {
     const key = normalizeSessionKey(sessionKey);
     const session = this.getSessionByKey(key);
     if (!session) throw new Error(`beginTaskTurn: session not found (${key})`);
@@ -1008,9 +1026,12 @@ export class SessionRegistry {
       warningMessageTs: session.warningMessageTs,
       lastWarningSentAt: session.lastWarningSentAt,
       openChain: session.openChain,
+      epicEvents: session.epicEvents,
     };
     // E2 ③ — the chain is open from its first start until its last commit.
     if (chainId) session.openChain = chainId;
+    // E4 ⑥ (D7) — the events this chain was started for are consumed in this same save.
+    if (chainId && consume?.length) session.epicEvents = consumeEpicEvents(session.epicEvents, consume, chainId);
     // An instruction wakes a sleeping task, as a Slack message wakes its thread,
     // so the inactivity sweep cannot archive it mid-turn (#634 R1).
     if (session.state === 'SLEEPING') this.wakeSession(session);
@@ -1030,6 +1051,7 @@ export class SessionRegistry {
       session.warningMessageTs = previous.warningMessageTs;
       session.lastWarningSentAt = previous.lastWarningSentAt;
       session.openChain = previous.openChain;
+      session.epicEvents = previous.epicEvents;
       throw error;
     }
     try {
@@ -3925,6 +3947,8 @@ export class SessionRegistry {
             // One notice per lost chain, keyed by the chain (or the turn), so a
             // reconciliation repeated after an unsaved load adds nothing.
             const chainId = session.openChain;
+            // E4 ⑥ (D7) — an epic's lost wake: the events it consumed are pending again, to wake once more.
+            if (chainId && session.kind === 'epic') session.epicEvents = releaseEpicEvents(session.epicEvents, chainId);
             this.addTaskNotice(session, {
               id: `${session.taskId}:${chainId ?? turnId}:interrupted`,
               kind: 'interrupted',

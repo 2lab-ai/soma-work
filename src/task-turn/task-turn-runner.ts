@@ -49,7 +49,7 @@ export interface TaskTurnRunnerDeps {
   registry: {
     getSessionByKey(sessionKey: string): ConversationSession | undefined;
     /** `working` + the turn id in one strict save; restores and throws on failure (598c §6). */
-    beginTaskTurn(sessionKey: string, turnId: string, chainId?: string): void;
+    beginTaskTurn(sessionKey: string, turnId: string, chainId?: string, consume?: readonly string[]): void;
     /** Outcome + end activity in one strict save; restores both and throws on failure. */
     commitTaskTurnOutcome(
       sessionKey: string,
@@ -113,6 +113,8 @@ export interface RunTaskTurnInput {
    * outcome that `completedFailsWith` a reason ends the chain as a failure.
    */
   chain?: TaskTurnChain;
+  /** E4 ⑥ — an epic's pending events this hop's saved start consumes (the chain's first hop only). */
+  consume?: readonly string[];
 }
 
 /** E2 ③ — a hop's place in its chain (see `RunTaskTurnInput.chain`). */
@@ -252,7 +254,9 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
     // Saved before anything runs: a process that dies mid-turn leaves this turn
     // on disk for restart reconciliation. A failed save runs nothing.
     try {
-      deps.registry.beginTaskTurn(sessionKey, turnId, input.chain?.id);
+      // An epic's start consumes its events in this save (E4 ⑥); a start with none passes nothing.
+      if (input.consume?.length) deps.registry.beginTaskTurn(sessionKey, turnId, input.chain?.id, input.consume);
+      else deps.registry.beginTaskTurn(sessionKey, turnId, input.chain?.id);
     } catch (error) {
       // Nothing ran: the turn that owned the task still does (#634 R1), so its
       // caller can still end it.

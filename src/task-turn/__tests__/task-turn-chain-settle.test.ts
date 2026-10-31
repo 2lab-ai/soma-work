@@ -117,6 +117,12 @@ describe('task turn runner — chain settle (E2 ③b)', () => {
     expect(h.registry.holdUnsavedTaskTurnOutcome.mock.calls[0][3]).toEqual({ chainId: 'c1', ends: true });
   });
 
+  it('E4 ⑥ — an epic start’s events go to the turn’s saved start, with its chain', async () => {
+    const h = runnerHarness();
+    await h.runner.runTaskTurn({ ...h.input, chain: { id: 'c1', continuesIfCompleted: false }, consume: ['e1', 'e2'] });
+    expect(h.registry.beginTaskTurn).toHaveBeenCalledWith(KEY, expect.any(String), 'c1', ['e1', 'e2']);
+  });
+
   it('a turn with no chain (an old caller) settles nothing', async () => {
     const h = runnerHarness();
     await h.runner.runTaskTurn(h.input);

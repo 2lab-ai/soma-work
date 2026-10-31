@@ -24,6 +24,7 @@ import { randomUUID } from 'node:crypto';
 import type { ExecutionContext } from '../agent-runtime/execution-context';
 import { buildTaskSessionKey } from '../session-identity';
 import type { ConversationSession, TaskTurnOutcomeRecord } from '../types';
+import { wakeableEpicEvents } from './epic-plan';
 import { buildTaskAnswerText, type TaskAnswer } from './task-answer';
 import type { RunTaskTurnInput, RunTaskTurnResult, TaskTurnNonTerminal } from './task-turn-runner';
 
@@ -105,6 +106,14 @@ export interface TaskTurnControllerDeps {
    */
   closeWaitMs?: number;
   now?: () => number;
+  /**
+   * E4 ⑥ — told each chain's end, however it ended (an outcome, a throw),
+   * after the task is free again — an epic woken for events that came while it
+   * ran (grok #702 R1). `started`: some hop's start was saved. A chain that
+   * never started is not a cause to wake again (that would loop on a start
+   * that keeps failing — fable #702 R2). Never throws into the chain.
+   */
+  onChainEnd?: (sessionKey: string, info: { started: boolean }) => void;
 }
 
 /** #599 ⑤ — a dashboard answer to the task's open question, bound to its `askId`. */
@@ -377,14 +386,30 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     const abort = new AbortController();
     deps.coordinator.setController(sessionKey, abort);
     let markStarted!: () => void;
+    let chainStarted = false;
     const started = new Promise<'started'>((resolve) => {
-      markStarted = () => resolve('started');
+      markStarted = () => {
+        chainStarted = true;
+        resolve('started');
+      };
     });
     const progress = { committedBeforeStart: false };
     // E2 ③ — every hop of this chain carries its id; the chain is open from
     // its first saved start until its last outcome (or reconciliation).
     const chainId = randomUUID();
-    const done = runChain(sessionKey, session, ctx, request.text.trim(), abort, markStarted, progress, chainId);
+    // E4 ⑥ (D7, D9 e) — any start of an epic (a wake, or the owner's own word) takes its pending events.
+    const consume = session.kind === 'epic' ? wakeableEpicEvents(session.epicEvents).map((e) => e.id) : [];
+    const done = runChain(
+      sessionKey,
+      session,
+      ctx,
+      request.text.trim(),
+      abort,
+      markStarted,
+      progress,
+      chainId,
+      consume,
+    );
     const chain: Chain = { ownerId, abort, done, ...(tree !== undefined ? { tree } : {}) };
     chains.set(sessionKey, chain);
     if (tree === undefined) {
@@ -402,6 +427,11 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       deps.coordinator.removeController(sessionKey, abort);
       if (chains.get(sessionKey) === chain) chains.delete(sessionKey);
       releaseSlot(chain, sessionKey);
+      try {
+        deps.onChainEnd?.(sessionKey, { started: chainStarted });
+      } catch (error) {
+        deps.logger.warn('onChainEnd raised', { sessionKey, error: (error as Error)?.message });
+      }
     });
 
     const first = await Promise.race([started, finished.then(() => 'ended' as const)]);
@@ -430,6 +460,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     markStarted: () => void,
     progress: { committedBeforeStart: boolean },
     chainId: string,
+    consume: readonly string[] = [],
   ): Promise<void> {
     let text = instruction;
     let compactHop = false;
@@ -503,6 +534,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
               ...(last ? { fallbackCompact: BUDGET_SPENT } : {}),
             } satisfies Partial<Record<TaskTurnNonTerminal, string>>,
             ...(compactHop ? { compactHop: true } : {}),
+            // The first hop's saved start consumes the epic's events (E4 ⑥).
+            ...(dispatch === 1 && consume.length ? { consume } : {}),
             // A completed `/compact` hop continues the chain only when there is
             // an instruction to re-run and budget left (`continues`, below); with
             // nothing to re-run it ends the chain as a failure, never a result.
