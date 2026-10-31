@@ -170,6 +170,60 @@ const providers: Required<SessionInitializerProviders> = {
   getDefaultUpdateChannel: () => undefined,
 };
 
+/** E2 ⑦ — what the gate tells a new user (the pending record was made and the admins asked). */
+export const NEW_USER_PENDING_TEXT = '⏳ 승인 대기 중입니다. 관리자에게 요청이 전달되었습니다.';
+/** E2 ⑦ — what the gate tells a user whose request is still pending. */
+export const USER_STILL_PENDING_TEXT = '⏳ 아직 승인 대기 중입니다. 관리자의 승인을 기다려주세요.';
+
+export interface NewUserGateDeps {
+  getUserSettings(userId: string): { accepted?: boolean } | null | undefined;
+  createPendingUser(userId: string, userName: string): void;
+  notifyAdmins(userId: string, userName: string): Promise<unknown>;
+  postMessage(channel: string, text: string, options: { threadTs?: string }): Promise<unknown>;
+  logger: {
+    info(msg: string, meta?: unknown): void;
+    debug(msg: string, meta?: unknown): void;
+    error(msg: string, meta?: unknown): void;
+  };
+}
+
+/**
+ * E2 ⑦ — the new-user approval gate, before anything is made for the user
+ * (.prd/18 D2 (4)): the Slack session path runs it on a new session, and the
+ * task entry (⑧) runs it before a folder or a task exists.
+ *
+ * - `pass`: an accepted user.
+ * - `new`: no record yet — a pending record is made, the user told to wait,
+ *   the admins asked. A failure in there is logged, never thrown: the user is
+ *   halted either way.
+ * - `pending`: the request is still open — the user is told to wait again. A
+ *   post that fails throws.
+ */
+export async function runNewUserGate(
+  deps: NewUserGateDeps,
+  at: { user: string; userName: string; channel: string; threadTs?: string; sessionKey?: string },
+): Promise<'pass' | 'new' | 'pending'> {
+  const { user, userName, channel, threadTs, sessionKey } = at;
+  const settings = deps.getUserSettings(user);
+  if (!settings) {
+    deps.logger.info('New user detected, creating pending record', { sessionKey, user, userName });
+    try {
+      deps.createPendingUser(user, userName);
+      await deps.postMessage(channel, NEW_USER_PENDING_TEXT, { threadTs });
+      await deps.notifyAdmins(user, userName);
+    } catch (error) {
+      deps.logger.error('New user gate: notifying failed — the session is closed anyway', { user, error });
+    }
+    return 'new';
+  }
+  if (!settings.accepted) {
+    deps.logger.debug('Pending user re-message blocked', { sessionKey, user });
+    await deps.postMessage(channel, USER_STILL_PENDING_TEXT, { threadTs });
+    return 'pending';
+  }
+  return 'pass';
+}
+
 export function setSessionInitializerProviders(next: SessionInitializerProviders): void {
   if (next.expectedHandoffKind) providers.expectedHandoffKind = next.expectedHandoffKind;
   if (next.isZHandoffWorkflow) providers.isZHandoffWorkflow = next.isZHandoffWorkflow;
@@ -460,40 +514,22 @@ export class SessionInitializer {
         this.logger.error('Failed to create conversation record (non-critical)', error);
       }
 
-      // User acceptance gate + first-time detection
-      const userSettings = providers.getUserSettings(user);
-      if (!userSettings) {
-        // New user: create pending record + notify admins
-        this.logger.info('New user detected, creating pending record', { sessionKey, user, userName });
-        try {
-          providers.createPendingUser(user, userName);
-          await this.deps.slackApi.postMessage(channel, '⏳ 승인 대기 중입니다. 관리자에게 요청이 전달되었습니다.', {
-            threadTs,
-          });
-          await this.notifyAdminsNewUser(user, userName);
-        } catch (error) {
-          this.logger.error('New user gate: notifying failed — the session is closed anyway', { user, error });
-        } finally {
-          // Terminate the just-created session so the next message also hits the gate — always:
-          // a session left behind would skip the new-session-only acceptance check.
-          this.deps.claudeHandler.terminateSession(sessionKey);
-        }
-        return {
-          session,
-          sessionKey,
-          isNewSession,
-          userName,
-          workingDirectory,
-          abortController: new AbortController(),
-          halted: true,
-        };
-      }
-      if (!userSettings.accepted) {
-        // Existing pending user re-messaging
-        this.logger.debug('Pending user re-message blocked', { sessionKey, user });
-        await this.deps.slackApi.postMessage(channel, '⏳ 아직 승인 대기 중입니다. 관리자의 승인을 기다려주세요.', {
-          threadTs,
-        });
+      // User acceptance gate + first-time detection (E2 ⑦: `runNewUserGate`).
+      // Either halt closes the just-created session, so the next message also
+      // hits the gate (a session left behind would skip this new-session-only
+      // check). A new user's halt never throws; a pending user's failed post
+      // does, and leaves the session as it was.
+      const gate = await runNewUserGate(
+        {
+          getUserSettings: (u) => providers.getUserSettings(u),
+          createPendingUser: (u, n) => providers.createPendingUser(u, n),
+          notifyAdmins: (u, n) => this.notifyAdminsNewUser(u, n),
+          postMessage: (c, text, options) => this.deps.slackApi.postMessage(c, text, options),
+          logger: this.logger,
+        },
+        { user, userName, channel, threadTs, sessionKey },
+      );
+      if (gate !== 'pass') {
         this.deps.claudeHandler.terminateSession(sessionKey);
         return {
           session,
