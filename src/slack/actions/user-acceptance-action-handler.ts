@@ -26,14 +26,29 @@ export class UserAcceptanceActionHandler {
   }
 
   private async handle(body: any, respond: RespondFn, decision: NewUserDecision): Promise<void> {
-    const targetUser = body.actions?.[0]?.value;
+    const raw: unknown = body.actions?.[0]?.value;
     const adminUser = body.user?.id;
+    // A button names its round ({userId, round}); one from before rounds carries only the user id.
+    let targetUser: string | undefined;
+    let round: number | undefined;
+    if (typeof raw === 'string' && raw.startsWith('{')) {
+      try {
+        const v = JSON.parse(raw) as { userId?: unknown; round?: unknown };
+        if (typeof v.userId === 'string') targetUser = v.userId;
+        if (typeof v.round === 'number') round = v.round;
+      } catch {
+        /* malformed — refused below */
+      }
+    } else if (typeof raw === 'string') {
+      targetUser = raw;
+    }
     if (!targetUser || !adminUser) {
       this.logger.warn(`Invalid ${decision} payload`, { targetUser, adminUser });
       return;
     }
     const result = decideNewUser({
       userId: targetUser,
+      ...(round !== undefined ? { round } : {}),
       decision,
       actor: adminUser,
       via: 'slack',

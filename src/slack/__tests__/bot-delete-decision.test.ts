@@ -48,6 +48,7 @@ describe('bot-message delete requests as one decision (#623)', () => {
 
   beforeEach(() => {
     fs.rmSync(path.join(DATA_DIR, 'admin-requests.json'), { force: true });
+    fs.rmSync(path.join(DATA_DIR, 'admin-requests.json.bak'), { force: true });
     api = slackApi();
   });
 
@@ -136,6 +137,132 @@ describe('bot-message delete requests as one decision (#623)', () => {
     });
     await requestBotDelete(api, TARGET);
     expect(api.updateMessage.mock.calls.map((c) => c[0])).toEqual(expect.arrayContaining(['D-UADMIN1', 'D-UADMIN2']));
+  });
+
+  it('an approved delete — done or still in flight — is not asked again (no contradicting second round)', async () => {
+    await requestBotDelete(api, TARGET);
+    let finish: () => void = () => {};
+    api.deleteMessage.mockImplementationOnce(
+      () =>
+        new Promise<undefined>((r) => {
+          finish = () => r(undefined);
+        }),
+    );
+    const inFlight = decideBotDelete({
+      requestId: ID,
+      decision: 'approve',
+      actor: 'UADMIN1',
+      via: 'dashboard',
+      slackApi: api,
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    const posted = api.postMessage.mock.calls.length;
+    expect(await requestBotDelete(api, TARGET)).toBe('alreadyApproved');
+    expect(api.postMessage.mock.calls.length).toBe(posted);
+    expect(
+      await decideBotDelete({ requestId: ID, decision: 'reject', actor: 'UADMIN2', via: 'slack', slackApi: api }),
+    ).toMatchObject({
+      ok: false,
+      reason: 'already_answered',
+    });
+    finish();
+    expect(await inFlight).toMatchObject({ ok: true, outcome: 'approved' });
+  });
+
+  it('a slow delete that fails reopens only its own answer, never a later one', async () => {
+    await requestBotDelete(api, TARGET);
+    let fail: () => void = () => {};
+    api.deleteMessage.mockImplementationOnce(
+      () =>
+        new Promise((_r, reject) => {
+          fail = () => reject(Object.assign(new Error('timeout'), { data: { error: 'timeout' } }));
+        }),
+    );
+    const first = decideBotDelete({
+      requestId: ID,
+      decision: 'approve',
+      actor: 'UADMIN1',
+      via: 'dashboard',
+      slackApi: api,
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    fail();
+    expect(await first).toMatchObject({ ok: false, reason: 'failed' });
+    // Reopened (its own answer): a later answer acts once, and stays.
+    expect(
+      await decideBotDelete({ requestId: ID, decision: 'reject', actor: 'UADMIN2', via: 'slack', slackApi: api }),
+    ).toMatchObject({
+      ok: true,
+      outcome: 'denied',
+    });
+    expect(
+      await decideBotDelete({ requestId: ID, decision: 'approve', actor: 'UADMIN1', via: 'slack', slackApi: api }),
+    ).toMatchObject({
+      ok: false,
+      reason: 'already_answered',
+    });
+  });
+
+  it('a delete in flight is not a decision yet: late DMs keep their buttons; on success every recorded copy says deleted', async () => {
+    let finish: (ok: boolean) => void = () => {};
+    api.deleteMessage.mockImplementation(
+      () =>
+        new Promise<undefined>((resolve, reject) => {
+          finish = (ok) =>
+            ok ? resolve(undefined) : reject(Object.assign(new Error('x'), { data: { error: 'timeout' } }));
+        }),
+    );
+    // The first admin DM goes out; then the dashboard approves while the second is still being posted.
+    let inFlight: Promise<any> | undefined;
+    api.postMessage.mockImplementation(async (channel: string) => {
+      if (channel === 'D-UADMIN2' && !inFlight) {
+        inFlight = decideBotDelete({
+          requestId: ID,
+          decision: 'approve',
+          actor: 'UADMIN1',
+          via: 'dashboard',
+          slackApi: api,
+        });
+        await new Promise((r) => setTimeout(r, 5));
+      }
+      return { ts: `ts-${channel}`, channel };
+    });
+    await requestBotDelete(api, TARGET);
+    // Not decided yet: nothing announced "deleted", the card is neither pending nor resolved.
+    expect(api.updateMessage).not.toHaveBeenCalled();
+    const adapter = botDeleteAdminApprovalAdapter(api);
+    expect((await adapter.resolved(0)).some((r) => r.id === `bot_delete:${ID}`)).toBe(false);
+    finish(true);
+    expect(await inFlight).toMatchObject({ ok: true, outcome: 'approved' });
+    await vi.waitFor(() =>
+      expect(api.updateMessage.mock.calls.map((c) => c[0]).sort()).toEqual(['D-UADMIN1', 'D-UADMIN2']),
+    );
+    expect((await adapter.resolved(0)).find((r) => r.id === `bot_delete:${ID}`)).toMatchObject({ outcome: 'approved' });
+  });
+
+  it('a delete in flight that fails: nothing was announced, the request is answerable again', async () => {
+    await requestBotDelete(api, TARGET);
+    let fail: () => void = () => {};
+    api.deleteMessage.mockImplementationOnce(
+      () =>
+        new Promise((_r, reject) => {
+          fail = () => reject(Object.assign(new Error('x'), { data: { error: 'timeout' } }));
+        }),
+    );
+    const first = decideBotDelete({
+      requestId: ID,
+      decision: 'approve',
+      actor: 'UADMIN1',
+      via: 'dashboard',
+      slackApi: api,
+    });
+    await new Promise((r) => setTimeout(r, 5));
+    fail();
+    expect(await first).toMatchObject({ ok: false, reason: 'failed' });
+    expect(api.updateMessage).not.toHaveBeenCalled();
+    expect(
+      (await botDeleteAdminApprovalAdapter(api).pending(Date.now())).some((c) => c.id === `bot_delete:${ID}`),
+    ).toBe(true);
   });
 
   it('refused: a non-admin, an unknown choice, a missing request', async () => {

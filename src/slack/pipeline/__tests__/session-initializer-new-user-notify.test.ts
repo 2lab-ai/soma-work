@@ -20,6 +20,7 @@ import { SessionInitializer } from '../session-initializer';
 describe('new-user gate → admin notification (#622)', () => {
   it('posts one DM per admin through the initializer’s Slack API and records the round with every prompt', async () => {
     fs.rmSync(path.join(DATA_DIR, 'admin-requests.json'), { force: true });
+    fs.rmSync(path.join(DATA_DIR, 'admin-requests.json.bak'), { force: true });
     const slackApi = {
       postMessage: vi.fn(async (channel: string) => ({ ts: `ts-${channel}`, channel: `D-${channel}` })),
       updateMessage: vi.fn(async () => undefined),

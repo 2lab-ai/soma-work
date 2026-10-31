@@ -466,12 +466,18 @@ export class SessionInitializer {
         // New user: create pending record + notify admins
         this.logger.info('New user detected, creating pending record', { sessionKey, user, userName });
         providers.createPendingUser(user, userName);
-        await this.deps.slackApi.postMessage(channel, '⏳ 승인 대기 중입니다. 관리자에게 요청이 전달되었습니다.', {
-          threadTs,
-        });
-        await this.notifyAdminsNewUser(user, userName);
-        // Terminate the just-created session so next message also triggers gate
-        this.deps.claudeHandler.terminateSession(sessionKey);
+        try {
+          await this.deps.slackApi.postMessage(channel, '⏳ 승인 대기 중입니다. 관리자에게 요청이 전달되었습니다.', {
+            threadTs,
+          });
+          await this.notifyAdminsNewUser(user, userName);
+        } catch (error) {
+          this.logger.error('New user gate: notifying failed — the session is closed anyway', { user, error });
+        } finally {
+          // Terminate the just-created session so the next message also hits the gate — always:
+          // a session left behind would skip the new-session-only acceptance check.
+          this.deps.claudeHandler.terminateSession(sessionKey);
+        }
         return {
           session,
           sessionKey,
