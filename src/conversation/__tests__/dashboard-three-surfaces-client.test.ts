@@ -387,7 +387,9 @@ describe('expanded body — face + delta, sections keyed on state', () => {
       }),
       'working',
     );
-    expect(resume.indexOf('class="card-resume"')).toBeLessThan(resume.indexOf('[TASKS]'));
+    const resumeAt = resume.indexOf('class="ui-notice card-resume" data-tone="wait"');
+    expect(resumeAt).toBeGreaterThan(-1);
+    expect(resumeAt).toBeLessThan(resume.indexOf('[TASKS]'));
     expect(resume).toContain('data-action="close"');
     expect(resume).not.toContain('data-action="stop"');
   });

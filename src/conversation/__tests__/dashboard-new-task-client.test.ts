@@ -204,11 +204,20 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(html).toMatch(/id="nt-battery"[^>]*role="img"/);
   });
 
-  it('row 2: autogoal and autoz toggles; autoz starts off; autogoal says it is for this task only', () => {
-    expect(html).toMatch(/<button[^>]*id="nt-autogoal"[^>]*aria-pressed=/);
-    expect(html).toMatch(/<button[^>]*id="nt-autoz"[^>]*aria-pressed="false"/);
-    // Per task, the opening instruction; the user's setting itself is untouched.
-    expect(html).toMatch(/id="nt-autogoal"[^>]*title="[^"]*이 작업의 첫 지시에만[^"]*설정 자체는 바뀌지 않습니다/);
+  it('row 2: autogoal and autoz toggles are kit switches; autoz starts off; autogoal says it is for this task only', () => {
+    // D7 (H-04): <label class="ui-switch"><input type="checkbox" role="switch"> — the kit draws the knob; the page
+    // reads the switch (ntToggle) and sets it from the draft (checked) when the dialog opens.
+    expect(html).toMatch(
+      /<label class="ui-switch" title="[^"]*이 작업의 첫 지시에만[^"]*설정 자체는 바뀌지 않습니다"><input type="checkbox" role="switch" id="nt-autogoal" onchange="ntToggle\('autogoal'\)"><span>autogoal<\/span><\/label>/,
+    );
+    expect(html).toMatch(
+      /<label class="ui-switch" title="[^"]+"><input type="checkbox" role="switch" id="nt-autoz" onchange="ntToggle\('autoz'\)"><span>autoz<\/span><\/label>/,
+    );
+    expect(html).not.toMatch(/id="nt-autoz"[^>]*checked/);
+    expect(css).not.toContain('.nt-switch');
+    expect(css).not.toMatch(/^\.nt-toggle \{/m);
+    expect(clientFn('ntToggle')).toContain('_ntState[which] = !!(sw && sw.checked);');
+    expect(script).toContain("ntEl('nt-autogoal').checked = !!_ntState.autogoal;");
   });
 
   it('D2 (H-05..H-09) — the instruction, files, voice and 작업 시작 are one @2lab.ai/ui <ui-composer>', () => {

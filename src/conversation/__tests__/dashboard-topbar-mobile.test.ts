@@ -318,7 +318,14 @@ describe('the scope group is the bar’s toolbar — the bar places it', () => {
 describe('touch targets and overflow', () => {
   it("the page's own top-bar controls are 44px on narrow or touch screens (the bar's are the element's)", () => {
     const block = TEMPLATE.match(/@media \(max-width: 639px\), \(pointer: coarse\) \{[\s\S]*?\n\}/)?.[0] ?? '';
-    expect(block).toContain('.topbar .user-select, .topbar .admin-toggle, .topbar .td-chip { min-height: 44px; }');
+    expect(block).toContain('.topbar .user-select { min-height: 44px; }');
+    // D7 (A-06, A-12): the defaults and admin chips are kit chips — their 44px hit area is the kit's own rule.
+    expect(TEMPLATE).toMatch(/<button type="button" class="ui-chip td-chip" id="td-model"/);
+    expect(TEMPLATE).toMatch(/<button type="button" class="ui-chip td-chip" id="td-effort"/);
+    expect(TEMPLATE).toMatch(/class="ui-chip admin-toggle admin-inbox-btn"/);
+    expect(TEMPLATE).toMatch(/class="ui-chip admin-toggle"\n/);
+    expect(block).not.toContain('.admin-toggle');
+    expect(block).not.toContain('.td-chip');
   });
 
   it('does NOT add html, body { overflow-x: hidden } — width is fitted directly', () => {

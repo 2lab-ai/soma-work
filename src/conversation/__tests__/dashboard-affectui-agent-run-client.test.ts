@@ -238,7 +238,7 @@ describe('plan — the Tasks section of the tab: the tasks that ran, in the orde
     expect(html).not.toContain('panel-tasks-body');
     expect(html).not.toContain('ui-task-');
     // The live region is written folded as well (D7 keeps announcing).
-    expect(html).toContain('<span class="ar-vh pl-live" role="status" aria-live="polite"></span>');
+    expect(html).toContain('<span class="ui-sr-only pl-live" role="status" aria-live="polite"></span>');
     // Nothing ran yet, all ran, a list a new plan dropped before it ran.
     const idle = plan({ open: false });
     idle.render([TASKS[2]]);
@@ -628,7 +628,7 @@ describe('the run list folds past TASK_RUNS_SHOWN; replaced and skipped tasks; t
 
 describe('plan announcements (D7)', () => {
   const live = (html: string) =>
-    /<span class="ar-vh pl-live" role="status" aria-live="polite">([^<]*)<\/span>/.exec(html)?.[1];
+    /<span class="ui-sr-only pl-live" role="status" aria-live="polite">([^<]*)<\/span>/.exec(html)?.[1];
 
   it('the first render is silent; a step that completes is announced once', () => {
     const p = plan();
@@ -794,7 +794,7 @@ describe('needs-input header (D8/D9)', () => {
     expect(PAGE).toContain(
       '<h4>입력 필요</h4><span class="ui-count" id="panel-needs-count" data-tone="wait" data-pop></span>',
     );
-    expect(PAGE).toContain('<p class="ar-vh" id="panel-needs-status" role="status" aria-live="polite"></p>');
+    expect(PAGE).toContain('<p class="ui-sr-only" id="panel-needs-status" role="status" aria-live="polite"></p>');
     expect(PAGE).toContain('<div class="panel-permission" id="panel-permission" style="display:none"></div>');
   });
 
@@ -1942,7 +1942,9 @@ describe('template hygiene', () => {
       expect(TEMPLATE, gone).not.toMatch(new RegExp(`\\b${gone}\\(`));
     }
     // SSOT 2026-10-29 T5: the task runs' CSS (.tr-*) too.
-    const ours = CSS.split('\n').filter((l) => /^\s*\.(pl|ap|pn|ac|tr)-|^\s*\.pi-details|^\s*\.ar-vh/.test(l));
+    // D7 (A-18): the visually-hidden live lines are the kit's .ui-sr-only — no .ar-vh rule.
+    expect(CSS).not.toContain('.ar-vh');
+    const ours = CSS.split('\n').filter((l) => /^\s*\.(pl|ap|pn|ac|tr)-|^\s*\.pi-details/.test(l));
     // D3: only the sums (.tr-total*) are the page's now.
     expect(ours.filter((l) => /^\s*\.tr-/.test(l)).every((l) => /^\s*\.tr-total/.test(l))).toBe(true);
     // D3 E-10 / E-13: 세부 is the kit's .ui-dl and the count the kit's .ui-count — no .pi-details / .pn-* rules.

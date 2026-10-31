@@ -2341,7 +2341,7 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
   // D4 K-06: the head is <ui-disclosure>'s row (the title and the summary slotted in); the body is its region.
   const head = (expanded: boolean) =>
     `<ui-disclosure class="panel-tasks-dc" flush${expanded ? ' open' : ''}><span slot="summary" class="panel-tasks-header"><span class="ps-sec-title">Tasks</span><span class="ps-sec-sum">목록 없음</span></span>`;
-  const LIVE = '<span class="ar-vh pl-live" role="status" aria-live="polite"></span>';
+  const LIVE = '<span class="ui-sr-only pl-live" role="status" aria-live="polite"></span>';
 
   it("zero or missing tasks show the header (folded: 목록 없음) and, opened, the plan element's empty state", () => {
     for (const open of [false, true]) {
