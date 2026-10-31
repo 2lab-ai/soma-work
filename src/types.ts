@@ -1159,6 +1159,8 @@ export interface EpicPlanNode {
 export interface EpicPlan {
   nodes: EpicPlanNode[];
   done?: { by: 'epic' | 'owner'; at: number };
+  /** Node ids a write removed: never used again for another node (D2). Host-kept. */
+  retired?: string[];
 }
 
 /**

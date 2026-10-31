@@ -132,6 +132,14 @@ describe('SessionRegistry — an epic plan and its events (E4 ②)', () => {
     expect(plain.plan).toBeUndefined();
     expect(child.plan).toBeUndefined();
     expect(fs.readFileSync(SESSIONS_FILE, 'utf8')).toBe(before);
+
+    // A removed id is retired: bringing it back is refused, and nothing changes.
+    const dropped = reg.setEpicPlan(epic.taskId!, { nodes: [TWO.nodes[0]] }, 'epic');
+    expect(dropped.retired).toEqual(['login-test']);
+    const beforeReuse = fs.readFileSync(SESSIONS_FILE, 'utf8');
+    expect(() => reg.setEpicPlan(epic.taskId!, TWO, 'epic')).toThrow(expect.objectContaining({ code: 'id-reused' }));
+    expect(epic.plan).toBe(dropped);
+    expect(fs.readFileSync(SESSIONS_FILE, 'utf8')).toBe(beforeReuse);
   });
 
   it('P3 — a failed save puts the previous plan back', () => {
