@@ -607,6 +607,26 @@ describe('task notice deliverer — coverage from the reviews (fable #668)', () 
     expect(owed).not.toHaveBeenCalled();
   });
 
+  it('stop() during the last post of a pass: no retry timer is armed after it (grok #668 R2)', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness({ retryDelayMs: 1_000 });
+      h.session.notices = [result];
+      h.deliverer.enqueue(h.session, KEY);
+      (h.deps.post as any).mockImplementationOnce(async () => {
+        h.deliverer.stop();
+        throw new Error('ratelimited');
+      });
+      await h.deliverer.deliver();
+      expect(h.ledger.get(result.id)?.state).toBe('pending');
+      expect(vi.getTimerCount()).toBe(0);
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(h.deps.post).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('what a task still owes its thread, with no ledger to hand it to (deletion must be refused)', () => {
     expect(owesInstructionThread(task({ notices: [result] }))).toBe(true);
     expect(owesInstructionThread(task({ openChain: 'c1' }))).toBe(true);
