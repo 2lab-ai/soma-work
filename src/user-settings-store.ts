@@ -452,6 +452,12 @@ export interface UserSettings {
    */
   slackTaskEntry?: boolean;
   /**
+   * E4 ③ (.prd/19 D9 e) — the most one epic tree may spend (USD) before the
+   * host stops starting its children and waking it; the owner's own
+   * instructions still run. Undefined ⇒ {@link DEFAULT_EPIC_COST_LIMIT_USD}.
+   */
+  epicCostLimitUsd?: number;
+  /**
    * Per-user default for a new goal's auto-continuation cap
    * (`SessionGoal.maxContinuations`). Set via `goal max <N>` / `set goal <N>`.
    * Undefined ⇒ `DEFAULT_GOAL_MAX_CONTINUATIONS` (10). Bounded
@@ -489,6 +495,18 @@ export function validateGoalMaxContinuations(value: unknown): number {
     throw new Error('goal max must be an integer');
   }
   return Math.min(GOAL_MAX_CONTINUATIONS_MAX, Math.max(GOAL_MAX_CONTINUATIONS_MIN, value));
+}
+
+// E4 ③ (.prd/19 D9 e): one epic tree's cost limit, USD.
+export const DEFAULT_EPIC_COST_LIMIT_USD = 50;
+export const EPIC_COST_LIMIT_MAX_USD = 10_000;
+
+/** Validate an epic cost limit: a positive finite number of dollars, at most the max. Throws a user-facing `Error`. */
+export function validateEpicCostLimitUsd(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0) {
+    throw new Error('epic cost limit must be a positive number of dollars');
+  }
+  return Math.min(EPIC_COST_LIMIT_MAX_USD, value);
 }
 
 // Compaction Tracking (#617): threshold bounds + default.
@@ -1004,6 +1022,23 @@ export class UserSettingsStore {
   setUserSlackTaskEntry(userId: string, enabled: boolean): void {
     this.patchUserSettings(userId, { slackTaskEntry: enabled });
     logger.info('Set user Slack task entry', { userId, enabled });
+  }
+
+  /** E4 ③ — one epic tree's cost limit (USD); a stored value that is not a valid limit reads as the default. */
+  getUserEpicCostLimitUsd(userId: string): number {
+    const stored = this.settings[userId]?.epicCostLimitUsd;
+    try {
+      return stored === undefined ? DEFAULT_EPIC_COST_LIMIT_USD : validateEpicCostLimitUsd(stored);
+    } catch {
+      return DEFAULT_EPIC_COST_LIMIT_USD;
+    }
+  }
+
+  /** E4 ③ — set one epic tree's cost limit (validated, saved atomically). */
+  setUserEpicCostLimitUsd(userId: string, value: number): void {
+    const limit = validateEpicCostLimitUsd(value);
+    this.patchUserSettings(userId, { epicCostLimitUsd: limit });
+    logger.info('Set user epic cost limit', { userId, limit });
   }
 
   /**

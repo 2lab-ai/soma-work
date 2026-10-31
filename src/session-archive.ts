@@ -346,6 +346,23 @@ export class SessionArchiveStore {
   }
 
   /**
+   * E4 ③ — the newest archive of a session key, or null (unreadable or not
+   * this key's). A task keeps its key across revives, so this is its last
+   * close; an epic's cost cap reads a closed child's spend from it.
+   */
+  latest(sessionKey: string): ArchivedSession | null {
+    const file = this.findLatestArchive(sessionKey);
+    if (!file) return null;
+    try {
+      const archived = JSON.parse(fs.readFileSync(file, 'utf-8')) as ArchivedSession;
+      return archived?.sessionKey === sessionKey ? archived : null;
+    } catch (err) {
+      logger.warn('Failed to read archive file', { sessionKey, error: err });
+      return null;
+    }
+  }
+
+  /**
    * Internal: read and filter archive files with optional mtime pre-filtering.
    */
   private listWithFilter(predicate: (archived: ArchivedSession) => boolean, mtimeCutoffMs?: number): ArchivedSession[] {

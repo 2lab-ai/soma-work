@@ -22,6 +22,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import type { ExecutionContext } from '../agent-runtime/execution-context';
+import { buildTaskSessionKey } from '../session-identity';
 import type { ConversationSession, TaskTurnOutcomeRecord } from '../types';
 import { buildTaskAnswerText, type TaskAnswer } from './task-answer';
 import type { RunTaskTurnInput, RunTaskTurnResult, TaskTurnNonTerminal } from './task-turn-runner';
@@ -32,6 +33,26 @@ export interface TaskCommandRequest {
   attachments?: readonly unknown[];
   /** The signed-in user sending it; the turn runs as the owner, so only the owner may (#637 R2). */
   actorUserId: string;
+  /**
+   * E4 ③ — who starts it. `owner` (the default): the owner's own instruction
+   * or answer. `host`: the host on the owner's behalf — spawning or
+   * instructing a child, waking an epic — which an epic tree over its cost
+   * limit refuses (D9 e). Host code sets it; no HTTP route forwards it.
+   */
+  initiator?: 'owner' | 'host';
+  /** E4 ③ — the launcher's first start of a task it just made: a new epic counts against A0's window, not its tree's. */
+  newTask?: boolean;
+}
+
+/**
+ * E4 ③ — the epic tree a start belongs to (.prd/19 §2.1): its root (the
+ * epic's session key; none for an epic not made yet) and whether this start
+ * is the root's or a child's. `canStart` takes it; a start reads it from the task.
+ */
+export interface TreeStart {
+  root?: string;
+  role: 'root' | 'child';
+  initiator?: 'owner' | 'host';
 }
 
 export interface TaskCommandResponse {
@@ -69,6 +90,14 @@ export interface TaskTurnControllerDeps {
   /** D9 window: starts per owner per window. Default 10 per 10 minutes. */
   maxStartsPerWindow?: number;
   windowMs?: number;
+  /** E4 ③ (D9 c) — children of one epic running at once. Default 3. */
+  maxTreeChildren?: number;
+  /** E4 ③ (D9 d) — starts per epic tree per window (`windowMs`). Default 30. */
+  maxTreeStartsPerWindow?: number;
+  /** E4 ③ (D9 e) — the tree's spend so far: the epic and all its children, live calls included. */
+  treeCostUsd?(rootKey: string): number;
+  /** E4 ③ (D9 e) — the owner's limit for one tree (`epicCostLimitUsd`). Default 50. */
+  epicCostLimitUsd?(ownerId: string): number;
   /**
    * How long close() waits for a chain to end. Default 60 s — longer than the
    * runner's save retries (1 + 5 + 30 s) plus the receipt drain, so a closed
@@ -101,8 +130,9 @@ export interface TaskTurnController {
    * refusal. Takes nothing — #600 ⑥ asks before it creates a task. With the
    * first instruction, it also refuses a command the start would refuse (#640 R1),
    * so a task is never created that its own first instruction cannot start.
+   * With a tree (E4 ③), it is the tree's admission instead of A0's slot.
    */
-  canStart(ownerId: string, text?: string): TaskCommandResponse | null;
+  canStart(ownerId: string, text?: string, tree?: TreeStart): TaskCommandResponse | null;
   /** Abort the task's chain with `session-close` and wait (bounded) for it to end. */
   close(sessionKey: string): Promise<void>;
   /** Shutdown: refuse new starts (503). Running chains end through the coordinator's `shutdown` abort. */
@@ -136,16 +166,43 @@ interface Chain {
   ownerId: string;
   abort: AbortController;
   done: Promise<void>;
+  /** E4 ③ — the epic tree it runs in (its root's key), or none for an ordinary task. */
+  tree?: string;
 }
+
+/** E4 ③ — the epic tree of a task: the epic itself, or its parent's. An ordinary task has none. */
+function treeOf(session: ConversationSession, sessionKey: string): (TreeStart & { root: string }) | undefined {
+  if (session.slackless !== true) return undefined;
+  if (session.kind === 'epic') return { root: sessionKey, role: 'root' };
+  if (session.parentTaskId) {
+    try {
+      return { root: buildTaskSessionKey(session.parentTaskId), role: 'child' };
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
+}
+
+const DEFAULT_EPIC_COST_LIMIT_USD = 50;
 
 export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurnController {
   const maxDispatches = deps.maxDispatches ?? 3;
   const maxStarts = deps.maxStartsPerWindow ?? 10;
   const windowMs = deps.windowMs ?? 10 * 60_000;
   const now = deps.now ?? Date.now;
+  const maxTreeChildren = deps.maxTreeChildren ?? 3;
+  const maxTreeStarts = deps.maxTreeStartsPerWindow ?? 30;
   const chains = new Map<string, Chain>();
   const ownerChain = new Map<string, string>();
   const starts = new Map<string, number[]>();
+  /**
+   * E4 ③ (D9 c) — beside A0's slot: the one epic tree an owner runs, with its
+   * running members (root and children) by the chain that holds each.
+   */
+  const ownerTree = new Map<string, { root: string; running: Map<string, Chain> }>();
+  /** E4 ③ (D9 d) — starts per tree (by root key) in the window. */
+  const treeStarts = new Map<string, number[]>();
   /** Turns a shutdown abort left `working` (restart reconciliation's to record — unless the shutdown is refused). */
   const shutdownStranded = new Map<string, { turnId: string; chainId: string }>();
   let accepting = true;
@@ -160,17 +217,71 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     return null;
   }
 
-  function canStart(ownerId: string, text?: string): TaskCommandResponse | null {
+  /**
+   * E4 ③ — the tree's admission (§2.1), instead of A0's slot: one tree per
+   * owner, at most `maxTreeChildren` children running, a host start refused
+   * over the cost limit, and the tree's own window (a new epic's first start
+   * is A0's window). No side effect.
+   */
+  function treeAdmission(ownerId: string, tree: TreeStart, t: number, newTask: boolean): TaskCommandResponse | null {
+    const held = ownerTree.get(ownerId);
+    if (held && held.root !== tree.root) return refuse(429, 'one epic runs at a time — wait for its tree to finish');
+    if (tree.role === 'child' && held) {
+      let children = 0;
+      for (const key of held.running.keys()) if (key !== held.root) children++;
+      if (children >= maxTreeChildren) {
+        return refuse(429, `at most ${maxTreeChildren} children of an epic run at once — wait for one to finish`);
+      }
+    }
+    if (tree.initiator === 'host' && tree.root !== undefined && deps.treeCostUsd) {
+      const limit = deps.epicCostLimitUsd?.(ownerId) ?? DEFAULT_EPIC_COST_LIMIT_USD;
+      if (deps.treeCostUsd(tree.root) >= limit) {
+        return refuse(429, `this epic reached its cost limit ($${limit}) — an instruction from its owner still runs`);
+      }
+    }
+    if (tree.root === undefined || (newTask && tree.role === 'root')) {
+      const recent = (starts.get(ownerId) ?? []).filter((at) => t - at < windowMs);
+      if (recent.length >= maxStarts) return refuse(429, 'too many dashboard task starts — try again shortly');
+      return null;
+    }
+    const recent = (treeStarts.get(tree.root) ?? []).filter((at) => t - at < windowMs);
+    if (recent.length >= maxTreeStarts) return refuse(429, 'too many starts in this epic — try again shortly');
+    return null;
+  }
+
+  function canStart(ownerId: string, text?: string, tree?: TreeStart): TaskCommandResponse | null {
     if (!accepting) return refuse(503, 'the service is shutting down — try again shortly');
     if (text !== undefined && isCommand(text.trim())) return refuse(400, COMMAND_REFUSED);
-    return ownerAdmission(ownerId, now());
+    return tree ? treeAdmission(ownerId, tree, now(), tree.root === undefined) : ownerAdmission(ownerId, now());
+  }
+
+  /** E4 ③ — free a tree member's place only while this chain holds it; the tree goes when it is empty. */
+  function releaseTree(chain: Chain, sessionKey: string): void {
+    const held = ownerTree.get(chain.ownerId);
+    if (!held || held.running.get(sessionKey) !== chain) return;
+    held.running.delete(sessionKey);
+    if (held.running.size === 0) ownerTree.delete(chain.ownerId);
+  }
+
+  /** Release the slot a chain holds: A0's for an ordinary task, its tree member's for an epic or child. */
+  function releaseSlot(chain: Chain, sessionKey: string): void {
+    if (chain.tree !== undefined) releaseTree(chain, sessionKey);
+    else if (ownerChain.get(chain.ownerId) === sessionKey) ownerChain.delete(chain.ownerId);
   }
 
   function admit(
     request: TaskCommandRequest,
     opts: { answer?: boolean } = {},
   ):
-    | { ok: true; session: ConversationSession; ctx: ExecutionContext; ownerId: string; startedAt: number }
+    | {
+        ok: true;
+        session: ConversationSession;
+        ctx: ExecutionContext;
+        ownerId: string;
+        startedAt: number;
+        tree?: string;
+        window: number[];
+      }
     | { ok: false; response: TaskCommandResponse } {
     if (!accepting) return { ok: false, response: refuse(503, 'the service is shutting down — try again shortly') };
     const session = deps.getSession(request.sessionKey);
@@ -211,12 +322,19 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     }
     const ownerId = ctx.userId;
     const t = now();
-    const ownerRefusal = ownerAdmission(ownerId, t);
-    if (ownerRefusal) return { ok: false, response: ownerRefusal };
-    const recent = (starts.get(ownerId) ?? []).filter((at) => t - at < windowMs);
+    const tree = treeOf(session, request.sessionKey);
+    const newTask = request.newTask === true;
+    const refusal = tree
+      ? treeAdmission(ownerId, { ...tree, initiator: request.initiator }, t, newTask)
+      : ownerAdmission(ownerId, t);
+    if (refusal) return { ok: false, response: refusal };
+    // The window this start counts in: A0's per owner, or the tree's (a new epic's first start is A0's).
+    const [windows, windowKey] =
+      tree && !(newTask && tree.role === 'root') ? [treeStarts, tree.root] : [starts, ownerId];
+    const recent = (windows.get(windowKey) ?? []).filter((at) => t - at < windowMs);
     recent.push(t);
-    starts.set(ownerId, recent);
-    return { ok: true, session, ctx, ownerId, startedAt: t };
+    windows.set(windowKey, recent);
+    return { ok: true, session, ctx, ownerId, startedAt: t, tree: tree?.root, window: recent };
   }
 
   function start(request: TaskCommandRequest): Promise<TaskCommandResponse> {
@@ -226,7 +344,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
   async function startChain(request: TaskCommandRequest, opts: { answer?: boolean }): Promise<TaskCommandResponse> {
     const admitted = admit(request, opts);
     if (!admitted.ok) return admitted.response;
-    const { session, ctx, ownerId, startedAt } = admitted;
+    const { session, ctx, ownerId, startedAt, tree, window } = admitted;
     const { sessionKey } = request;
 
     // A new instruction supersedes an open question, as a new Slack message
@@ -253,21 +371,30 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     // its first saved start until its last outcome (or reconciliation).
     const chainId = randomUUID();
     const done = runChain(sessionKey, session, ctx, request.text.trim(), abort, markStarted, progress, chainId);
-    const chain: Chain = { ownerId, abort, done };
+    const chain: Chain = { ownerId, abort, done, ...(tree !== undefined ? { tree } : {}) };
     chains.set(sessionKey, chain);
-    ownerChain.set(ownerId, sessionKey);
+    if (tree === undefined) {
+      ownerChain.set(ownerId, sessionKey);
+    } else {
+      // E4 ③ — the tree's slot: made by its first running member, kept while any runs.
+      let held = ownerTree.get(ownerId);
+      if (!held) {
+        held = { root: tree, running: new Map() };
+        ownerTree.set(ownerId, held);
+      }
+      held.running.set(sessionKey, chain);
+    }
     const finished = done.finally(() => {
       deps.coordinator.removeController(sessionKey, abort);
       if (chains.get(sessionKey) === chain) chains.delete(sessionKey);
-      if (ownerChain.get(ownerId) === sessionKey) ownerChain.delete(ownerId);
+      releaseSlot(chain, sessionKey);
     });
 
     const first = await Promise.race([started, finished.then(() => 'ended' as const)]);
     if (first === 'started') return { status: 202, body: { ok: true }, done: finished };
-    // Not started: this start does not count against the owner's window (#634 R1).
-    const window = starts.get(ownerId);
-    const at = window?.lastIndexOf(startedAt) ?? -1;
-    if (window && at >= 0) window.splice(at, 1);
+    // Not started: this start does not count against its window (#634 R1) — A0's or the tree's.
+    const at = window.lastIndexOf(startedAt);
+    if (at >= 0) window.splice(at, 1);
     // A chain that already committed an outcome (conversation not created) saved the
     // cleared panel with it: putting the question back in memory would diverge from disk.
     if (panel && openQuestion && !progress.committedBeforeStart) {
@@ -509,7 +636,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
           // owner out for good (astra #634). Its late results are fenced by the
           // removed session.
           if (chains.get(sessionKey) === chain) chains.delete(sessionKey);
-          if (ownerChain.get(chain.ownerId) === sessionKey) ownerChain.delete(chain.ownerId);
+          releaseSlot(chain, sessionKey);
           deps.coordinator.removeController(sessionKey, chain.abort);
           resolve();
         }, waitMs);

@@ -52,7 +52,7 @@ import { config } from '../config';
 import { displayTitle } from '../format/display-title';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
-import { calculateTokenCost, findModelPricing } from '../metrics/model-registry';
+import { findModelPricing } from '../metrics/model-registry';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import type { MetricsEvent } from '../metrics/types';
 import { clampEffortToModel, modelCatalog } from '../model-catalog';
@@ -104,6 +104,7 @@ import {
 import { GOAL_EVAL_DISPATCH_MAX_RETRIES } from '../slack/goal-completion-evaluator';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from '../slack/goal-host-actions';
 import { getSurfaceLines } from '../slack/surface-config';
+import { sessionCostUsd } from '../task-turn/epic-cost';
 import type { TaskAnswer } from '../task-turn/task-answer';
 import { buildThreadPermalink } from '../turn-notifier';
 import { coerceEffort, EFFORT_LEVELS, type EffortLevel, userSettingsStore } from '../user-settings-store';
@@ -1989,26 +1990,21 @@ function tokenUsageOf(s: any): KanbanSession['tokenUsage'] {
         output: task.outputTokens || 0,
         cacheRead: task.cacheReadTokens || 0,
         cacheCreate: task.cacheCreateTokens || 0,
-        cost: task.costUsd || 0,
       }
     : {
         input: u.totalInputTokens || 0,
         output: u.totalOutputTokens || 0,
         cacheRead: u.totalCacheReadTokens || 0,
         cacheCreate: u.totalCacheCreateTokens || 0,
-        cost: u.totalCostUsd || 0,
       };
-  const liveCost =
-    liveTokens > 0
-      ? calculateTokenCost(s.model, live.inputTokens, live.outputTokens, live.cacheReadTokens, live.cacheCreateTokens)
-      : 0;
   return {
     ...(task?.partialSince ? { partialSince: task.partialSince } : {}),
     totalInputTokens: base.input + live.inputTokens,
     totalOutputTokens: base.output + live.outputTokens,
     totalCacheReadTokens: base.cacheRead + live.cacheReadTokens,
     totalCacheCreateTokens: base.cacheCreate + live.cacheCreateTokens,
-    totalCostUsd: base.cost + liveCost,
+    // E4 ③ — one spend formula, shared with the epic tree's cost cap.
+    totalCostUsd: sessionCostUsd(s),
     contextUsagePercent: u.contextWindow
       ? (((u.currentInputTokens || 0) +
           (u.currentCacheReadTokens || 0) +
