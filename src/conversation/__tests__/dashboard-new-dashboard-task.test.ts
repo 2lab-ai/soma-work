@@ -37,6 +37,17 @@ vi.mock('../viewer', () => ({
 vi.mock('../../session-archive', () => ({
   getArchiveStore: () => ({ listRecent: () => [] }),
 }));
+vi.mock('../../admin-utils', () => ({ isAdminUser: (id: string) => id === 'U_ADMIN' }));
+
+/** The models the new-task context offers (#640 R1: a task's model is one of these, by nickname). */
+const OFFERED = {
+  models: [
+    { nickname: 'opus', model: 'claude-opus-5-5[1m]', label: 'Opus' },
+    { nickname: 'fable', model: 'claude-fable-1', label: 'Fable' },
+  ],
+  efforts: [],
+  channels: [],
+};
 
 describe('Dashboard — new task as a Slack-less dashboard task (#600 ⑥)', () => {
   let injectWebServer: any;
@@ -52,7 +63,7 @@ describe('Dashboard — new task as a Slack-less dashboard task (#600 ⑥)', () 
     injectWebServer = webServer.injectWebServer;
     stopWebServer = webServer.stopWebServer;
     dashboard = await import('../dashboard');
-    slackProvider = { context: vi.fn(), start: vi.fn() };
+    slackProvider = { context: vi.fn(async () => OFFERED), start: vi.fn() };
     dashboard.setDashboardNewTaskProvider(slackProvider);
     launcher = vi.fn(async () => ({ status: 200, body: { sessionKey: 'task:abc', status: 'running' } }));
     folders = vi.fn(() => [{ name: 'repo-a', mtimeMs: 2 }]);
@@ -93,7 +104,7 @@ describe('Dashboard — new task as a Slack-less dashboard task (#600 ⑥)', () 
     ...over,
   });
 
-  it('starts a dashboard task for the signed-in user — no channel, no Slack provider', async () => {
+  it('starts a dashboard task for the signed-in user — no channel, nothing posted to Slack', async () => {
     const res = await post(await signIn(), task({ folder: 'repo-a', model: 'opus' }));
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body)).toEqual({ ok: true, sessionKey: 'task:abc', status: 'running' });
@@ -102,10 +113,47 @@ describe('Dashboard — new task as a Slack-less dashboard task (#600 ⑥)', () 
       ownerName: 'Plain Name',
       prompt: 'Fix the flaky test',
       folder: 'repo-a',
-      model: 'opus',
+      model: 'claude-opus-5-5[1m]', // the offered model the nickname names (#640 R1)
     });
-    expect(slackProvider.context).not.toHaveBeenCalled();
     expect(slackProvider.start).not.toHaveBeenCalled();
+  });
+
+  // #640 R1 (fable P2): the model is one the dialog offers, named by nickname —
+  // never an arbitrary id string from the body.
+  it.each([
+    ['a raw model id', 'claude-opus-5-5[1m]'],
+    ['a model the dialog does not offer', 'haiku'],
+  ])('400 for %s — nothing launched', async (_label, model) => {
+    const res = await post(await signIn(), task({ model }));
+    expect(res.statusCode).toBe(400);
+    expect(JSON.parse(res.body).error).toMatch(/model/);
+    expect(launcher).not.toHaveBeenCalled();
+  });
+
+  it('no model: the task takes the default — the context is not needed', async () => {
+    const res = await post(await signIn(), task());
+    expect(res.statusCode).toBe(200);
+    expect(launcher.mock.calls[0][0]).not.toHaveProperty('model');
+    expect(slackProvider.context).not.toHaveBeenCalled();
+  });
+
+  // #640 R1: the task's owner is the signed-in user — admin mode and body fields do not retarget it.
+  it('an admin in admin mode starts a task as themselves — a body owner is ignored', async () => {
+    const admin = await signIn('U_ADMIN');
+    const res = await injectWebServer({
+      method: 'POST',
+      url: '/api/dashboard/new-task',
+      headers: {
+        cookie: admin.cookie,
+        'x-csrf-token': admin.csrf,
+        'content-type': 'application/json',
+        'x-admin-mode': 'on',
+      },
+      payload: task({ ownerId: 'U_OTHER', userId: 'U_OTHER', owner: 'U_OTHER' }),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(launcher).toHaveBeenCalledTimes(1);
+    expect(launcher.mock.calls[0][0]).toMatchObject({ ownerId: 'U_ADMIN' });
   });
 
   it('the launcher’s refusal is the reply (nothing reported as started)', async () => {
@@ -158,6 +206,28 @@ describe('Dashboard — new task as a Slack-less dashboard task (#600 ⑥)', () 
     expect(res.statusCode).toBe(200);
     expect(JSON.parse(res.body).context.taskFolders).toEqual([{ name: 'repo-a' }]);
     expect(folders).toHaveBeenCalledWith('U_PLAIN');
+  });
+
+  // #640 R1: through the real launcher, a folder is a name in the signed-in user's own root —
+  // a path, a parent step or another user's root is refused before anything is created.
+  it.each([
+    ['an absolute path', '/etc'],
+    ['a parent step into another root', '../U_OTHER'],
+    ['a nested path', 'repo-a/sub'],
+  ])('the real launcher refuses %s as the folder (422), nothing created or started', async (_label, folder) => {
+    const { createTaskLauncher } = await import('../../task-turn/task-launcher');
+    const createTask = vi.fn(() => ({ taskId: 'never' }));
+    const controller = { canStart: vi.fn(() => null), start: vi.fn() };
+    const real = createTaskLauncher({
+      controller: controller as never,
+      createTask,
+      createFreshDirectory: () => undefined,
+    });
+    dashboard.setDashboardTaskLauncher(real);
+    const res = await post(await signIn(), task({ folder }));
+    expect(res.statusCode).toBe(422);
+    expect(createTask).not.toHaveBeenCalled();
+    expect(controller.start).not.toHaveBeenCalled();
   });
 
   it('501 when no task launcher is wired', async () => {

@@ -250,7 +250,7 @@ describe('ntOnLaunched — a launched task is a toast with 카드 열기 and the
   function launch() {
     const toasts: Array<[Toast, (() => void) | undefined]> = [];
     const opened: unknown[] = [];
-    const m = load<{ ntOnLaunched(d: unknown): void }>(['ntOnLaunched', 'ntLaunchToast'], [], {
+    const m = load<{ ntOnLaunched(d: unknown): void }>(['ntOnLaunched', 'ntLaunchToast', 'ntStateAfterLaunch'], [], {
       dashToast: (t: Toast, fn?: () => void) => toasts.push([t, fn]),
       ntOpenLaunched: (d: unknown) => opened.push(d),
       _ntRequestId: '',
