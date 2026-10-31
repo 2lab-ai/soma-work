@@ -98,72 +98,92 @@ describe('viewport and safe areas', () => {
   });
 });
 
-describe('drawer — a sheet below 840px, docked beside the board from 840px', () => {
-  it('is hidden by a transform, never by a right offset, and follows the visual viewport', () => {
-    const panel = rule('.slide-panel');
-    expect(panel).toContain('transform: translateX(100%)');
-    expect(panel).toContain('right: 0');
-    expect(panel).toContain('height: var(--pv-h, 100dvh)');
-    expect(panel).toContain('top: var(--pv-t, 0px)');
+describe('drawer — <ui-drawer> (D4 E-01, E-02): the element’s sheet below 840px, docked beside the board from 840px', () => {
+  const HOST =
+    '<ui-drawer class="slide-panel" id="slide-panel" data-deck="0" dock-at="840" width="440" min-width="320" resizable hide-close label="작업 카드" lang="ko">';
+
+  it('is the element: sheet / dock at 840px (dock-at), resizable, the page’s own head in its slot, no page scrim or geometry', () => {
+    expect(TEMPLATE).toContain(HOST);
+    expect(TEMPLATE).not.toContain('slide-panel-overlay');
+    expect(TEMPLATE).not.toContain('panel-resize-handle');
+    // The page sets no box of its own on the host — no fixed position, transform or --pv-* viewport vars: the
+    // dock's top under the sticky bar and its layer are the element's custom properties.
+    expect(rule('.slide-panel')).toBe('.slide-panel { --ui-drawer-top: var(--topbar-b, 0px); --ui-drawer-z: 100; }');
+    expect(TEMPLATE).not.toContain('--pv-h');
+    expect(TEMPLATE).not.toContain('translateX(100%)');
     expect(TEMPLATE).not.toContain('right: -440px');
-    expect(rule('.slide-panel.open')).toContain('transform: none');
+    // Its body is the page's column — header → body (the one scroll area) → composer — none of the element's padding.
+    expect(rule('.slide-panel::part(body)')).toContain(
+      'display: flex; flex-direction: column; min-height: 0; padding: 0; overflow: hidden;',
+    );
+    expect(TEMPLATE).toContain('ui-drawer:not(:defined) { display: none; }');
   });
 
-  it('below 840px it is a full-width sheet: no resize handle, chips stay under it, the FAB hides while it is open', () => {
+  it('below 840px it is the element’s full-width modal sheet: no resize handle, the FAB hides while it is open', () => {
     const sheet = cssBlock(SHEET);
     expect(sheet).not.toBe('');
-    expect(sheet).toContain('.slide-panel { width: 100%; }');
-    expect(sheet).toContain('.panel-resize-handle { display: none; }');
-    expect(sheet).toContain('.topbar .topbar-defaults { z-index: auto; }');
-    expect(sheet).toContain('.slide-panel.open ~ .new-task-fab { display: none !important; }');
+    expect(sheet).toContain('.slide-panel::part(panel) { width: 100%; }');
+    expect(sheet).toContain('.slide-panel::part(handle) { display: none; }');
+    expect(sheet).toContain('.slide-panel[open] ~ .new-task-fab { display: none !important; }');
     expect(sheet).toContain('padding-top: max(12px, env(safe-area-inset-top, 0px))');
+    // The home indicator is the element's panel padding; the chips sit under the modal sheet by the top layer.
+    expect(sheet).not.toContain('safe-area-inset-bottom');
+    expect(sheet).not.toContain('.topbar .topbar-defaults');
   });
 
-  it('from 840px it docks: width from the saved preference capped at half the screen, no dim, under the top bar', () => {
+  it('from 840px it docks: the saved width (the element’s width attribute) capped at half the screen, no dim, under the top bar', () => {
     const docked = cssBlock(DOCKED);
     expect(docked).not.toBe('');
-    expect(docked).toContain(':root { --panel-w: min(var(--panel-w-pref, 440px), 50vw); }');
-    expect(docked).toContain(
-      '.slide-panel { width: var(--panel-w); top: calc(var(--pv-t, 0px) + var(--topbar-b, 0px));',
-    );
-    expect(docked).toContain('.slide-panel-overlay.open { display: none; }');
+    expect(docked).not.toContain('--panel-w-pref');
+    expect(docked).not.toContain('.slide-panel {');
+    expect(docked).not.toContain('slide-panel-overlay');
+    const sync = clientFn('syncPanelWidth');
+    expect(sync).toContain('Math.max(320, Math.round(window.innerWidth / 2))');
+    expect(sync).toContain("panel.setAttribute('max-width', String(half))");
+    expect(sync).toContain("document.documentElement.style.setProperty('--panel-w', w + 'px')");
   });
 
   it('a docked drawer narrows the page instead of covering it, and the 1280px page stays centred in what is left', () => {
     const docked = cssBlock(DOCKED);
-    expect(docked).toContain('.app:has(> .slide-panel.open) > .main {');
-    expect(docked).toContain('max-width: min(1280px, calc(100% - var(--panel-w)));');
-    expect(docked).toContain('margin-left: max(0px, calc((100% - var(--panel-w) - 1280px) / 2));');
+    expect(docked).toContain('.app:has(> .slide-panel[open]) > .main {');
+    expect(docked).toContain('max-width: min(1280px, calc(100% - var(--panel-w, 440px)));');
+    expect(docked).toContain('margin-left: max(0px, calc((100% - var(--panel-w, 440px) - 1280px) / 2));');
   });
 
   it('the FAB keeps its own show/hide rule when docked and moves clear of the drawer; the composer still hides it everywhere', () => {
-    expect(cssBlock(DOCKED)).toContain('.slide-panel.open ~ .new-task-fab { right: calc(var(--panel-w) + 16px); }');
+    expect(cssBlock(DOCKED)).toContain(
+      '.slide-panel[open] ~ .new-task-fab { right: calc(var(--panel-w, 440px) + 16px); }',
+    );
     // The modal-era rule (hide the FAB whenever the panel is open) lives only in the sheet block now.
-    expect(TEMPLATE).not.toMatch(/^\.slide-panel\.open ~ \.new-task-fab/m);
+    expect(TEMPLATE).not.toMatch(/^\.slide-panel\[open\] ~ \.new-task-fab/m);
     expect(TEMPLATE).toContain('body.nt-open .new-task-fab { display: none !important; }');
   });
 
-  it('the saved width is a preference only: JS never writes the drawer width or right offset', () => {
+  it('the saved width is a preference only: the element resizes itself (ui-resize); JS never writes the drawer width or right offset', () => {
     const resize = iife('initPanelResize');
     expect(resize).not.toBe('');
-    expect(resize).toContain("'--panel-w-pref'");
+    expect(resize).toContain("panel.setAttribute('width', String(saved))");
+    expect(resize).toContain("panel.addEventListener('ui-resize'");
+    expect(resize).toContain('localStorage.setItem(STORAGE_KEY, String(w))');
     expect(resize).not.toContain('panel.style.right');
     expect(resize).not.toContain('panel.style.width');
+    expect(resize).not.toContain('pointerdown');
     expect(resize).not.toContain('MutationObserver');
   });
 
-  it('only a layout shift animates the drawer width (WAAPI from the coordinator); window drags never lag behind', () => {
-    // A CSS width transition would trail every desktop window drag; a class toggled
-    // in a resize handler lands after the browser has already styled the new size.
+  it('the sheet ↔ dock morph while open is the element’s: the coordinator animates nothing of the drawer', () => {
     expect(rule('.slide-panel')).not.toContain('width var(');
     expect(TEMPLATE).not.toContain('.is-layout-shift .slide-panel');
-    expect(clientFn('runLayoutCheck')).toContain("panel.animate([{ width: fromW + 'px' }, { width: toW + 'px' }]");
+    const body = clientFn('runLayoutCheck');
+    expect(body).not.toContain('panel.animate(');
+    expect(body).not.toContain('_wflip');
+    expect(TEMPLATE).not.toContain('_layoutPanelW');
   });
 });
 
 describe("panel body — one scroll area: the task surface, the sticky agent tabs, the focused agent's tab", () => {
   // SSOT 2026-10-29 T2: the panel carries the detail deck's depth (data-deck) from the start.
-  const panel = TEMPLATE.slice(TEMPLATE.indexOf('<div class="slide-panel" id="slide-panel" data-deck="0">'));
+  const panel = TEMPLATE.slice(TEMPLATE.indexOf('<ui-drawer class="slide-panel" id="slide-panel" data-deck="0"'));
   const at = (s: string) => panel.indexOf(s);
 
   it('header (자세히) → body (scroll: surface → tabs → tabpanel) → composer', () => {
@@ -178,15 +198,16 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
     expect(at('<div class="panel-scroll" id="panel-scroll">')).toBeGreaterThan(at('id="panel-body"'));
     expect(at('<section class="panel-surface" id="panel-surface"')).toBeGreaterThan(at('id="panel-scroll"'));
     expect(at('id="panel-artifacts"')).toBeGreaterThan(at('id="panel-surface"'));
-    expect(at('<div class="panel-tabs" id="panel-tabs" role="tablist"')).toBeGreaterThan(at('id="panel-artifacts"'));
-    expect(at('<section class="panel-tabpanel" id="panel-tabpanel" role="tabpanel"')).toBeGreaterThan(
-      at('id="panel-tabs"'),
+    // D4 E-19: the agent strip is <ui-tabs shared-panel>; its one panel is the section slotted into it.
+    expect(at('<ui-tabs class="panel-tabs" id="panel-tabs" shared-panel panel-focus="none">')).toBeGreaterThan(
+      at('id="panel-artifacts"'),
     );
+    expect(at('<section class="panel-tabpanel" id="panel-tabpanel">')).toBeGreaterThan(at('id="panel-tabs"'));
     expect(
       at('<div class="panel-tasks" id="panel-tasks" role="region" aria-label="Tasks" tabindex="-1"></div>'),
     ).toBeGreaterThan(at('id="panel-tabpanel"'));
-    expect(at('id="panel-turns"')).toBeGreaterThan(at('id="panel-tasks"'));
-    expect(at('<div class="panel-command" id="panel-command">')).toBeGreaterThan(at('id="panel-turns"'));
+    expect(at('id="panel-conv"')).toBeGreaterThan(at('id="panel-tasks"'));
+    expect(at('<div class="panel-command" id="panel-command">')).toBeGreaterThan(at('id="panel-conv"'));
     // One scroll area in the body.
     expect(panel.slice(0, at('id="panel-command"')).split('class="panel-scroll"').length - 1).toBe(1);
   });
@@ -218,8 +239,8 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
     expect(scroll).toContain('overflow-y: auto');
     expect(scroll).toContain('min-height: 0');
     expect(scroll).not.toContain('grid-row');
-    // The agent tabs stay at the top of the scroll area while the conversation scrolls.
-    const tabs = rule('.panel-tabs');
+    // The agent tabs stay at the top of the scroll area while the conversation scrolls (D4 E-19: <ui-tabs>' list part).
+    const tabs = rule('.panel-tabs::part(list)');
     expect(tabs).toContain('position: sticky');
     expect(tabs).toContain('top: 0');
   });
@@ -238,8 +259,16 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
     // 560px: below it, full thumbnails would push the conversation out of a short body.
     const compact = cssBlock('@container pbody (max-height: 560px) {');
     expect(compact).not.toBe('');
-    expect(compact).toContain('.art-strip-panel .art-thumb { display: none; }');
-    expect(compact).toContain('.art-strip-panel .art-play { position: static;');
+    // The row is laid out here; the chips are the file cards' chip variant (D2), chosen by the panel body's height.
+    expect(compact).toContain('.art-strip-panel { flex: 1 1 auto;');
+    expect(DASHBOARD_TS).toContain('var ART_PANEL_SHORT_PX = 560;');
+    expect(DASHBOARD_TS).toContain("return !_panelDetail || (h > 0 && h <= ART_PANEL_SHORT_PX) ? 'chip' : 'tile';");
+    expect(DASHBOARD_TS).toContain(
+      'var size = new ResizeObserver(function() { sizePanelSections(); syncPanelArtVariant(); });',
+    );
+    // D4 (T8): the play toggle is the card's own (playable) — the chip wrapper only bounds the width.
+    expect(DASHBOARD_TS).toContain('.art-tile:has(> ui-file-card[variant="chip"]) { max-width: 240px; }');
+    expect(DASHBOARD_TS).not.toMatch(/\.art-play\b/);
     expect(rule('.art-strip')).toContain('overflow-x: auto');
   });
 });
@@ -260,7 +289,7 @@ describe('board columns follow the inbox width, not the viewport', () => {
   });
 
   it('no viewport media query decides the board columns any more', () => {
-    expect(cssBlock('@media (max-width: 1023px) {')).not.toContain('.kanban');
+    expect(cssBlock('@media (max-width: 1199px) {')).not.toContain('.kanban');
     expect(cssBlock('@media (max-width: 639px) {')).not.toContain('.kanban[data-view="board"] { grid-template-columns');
   });
 });
@@ -269,14 +298,15 @@ describe('phones — nothing zooms, nothing hides behind the FAB, nothing runs o
   it('text inputs in the drawer are 16px on touch screens (iOS does not zoom into them)', () => {
     // The composer is @2lab.ai/ui <ui-agent-steering> (dashboard batch 2): its field and its edit box are 16px on a
     // coarse pointer in the element's own styles (@2lab.ai/ui src/components/agent-steering/styles.ts,
-    // `@media (pointer: coarse) { … .as-input, .as-edit { font-size: 16px; } }`). The page's own inputs stay here.
+    // `@media (pointer: coarse) { … .as-input, .as-edit { font-size: 16px; } }`). The multi-question form's own
+    // answer box is <ui-choice-form>'s (D3 E-15): 44px and 16px under `(pointer: coarse), (max-width: 639px)` in
+    // the element (@2lab.ai/ui src/components/choice-form/styles.ts, `.cf-input { height: 44px; font-size: 16px; }`).
     expect(TEMPLATE).toContain('<ui-agent-steering id="cmd-steer" lang="ko">');
-    expect(TEMPLATE).toMatch(
-      /@media \(pointer: coarse\) \{\n {2}\/\* Responsive[^@]*\.mc-custom-input input \{ font-size: 16px; \}/,
-    );
+    expect(clientFn('renderMultiChoicePanel')).toContain("document.createElement('ui-choice-form')");
+    expect(TEMPLATE).not.toContain('mc-custom-input');
   });
 
-  it('below 640px the page clears the FAB, the defaults menu spans the bar, the artifact viewer is full screen', () => {
+  it("below 640px the page clears the FAB, the defaults menu spans the bar, the artifact viewer is the element's sheet", () => {
     const phone = cssBlock(PHONE);
     expect(phone).not.toBe('');
     // Only a board with cards gets the clearance: an empty page must not turn scrollable. The cards
@@ -289,8 +319,11 @@ describe('phones — nothing zooms, nothing hides behind the FAB, nothing runs o
     // After every render and every DONE day opened or closed (#562 review P3).
     expect(clientFn('renderBoard')).toContain('syncHasCards();');
     expect(clientFn('wireInbox')).toContain('syncHasCards();');
-    expect(phone).toContain('.td-menu { left: 12px; right: 12px; min-width: 0; max-width: none; }');
-    expect(phone).toContain('.art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }');
+    // D1 (A-07): the defaults menu is <ui-menu> — fixed, kept inside the viewport by the element on any width.
+    expect(TEMPLATE).not.toContain('.td-menu');
+    // D4 (I-06): the viewer is <ui-artifact-viewer>'s own <ui-dialog> — its phone sheet, no page rule.
+    expect(phone).not.toContain('.art-modal');
+    expect(TEMPLATE).not.toMatch(/\.art-modal\b/);
   });
 });
 
@@ -409,7 +442,6 @@ function coordinator(o: {
       _layoutSnap: o.snap ?? [],
       MOTION: { move: 320, fade: 160, easeOut: 'ease-out' },
       panelOpen: false,
-      _layoutPanelW: 0,
       restorePanelAnchor: (a: unknown) => calls.restore.push(a),
       refreshLayoutCache: () => {},
       setTimeout: () => {
@@ -485,10 +517,13 @@ describe('layout transition — one coordinator', () => {
     expect(init).toContain("document.getElementById('inbox')");
     const open = clientFn('openPanel');
     expect(open.indexOf('layoutBeforeChange()')).toBeGreaterThan(-1);
-    expect(open.indexOf('layoutBeforeChange()')).toBeLessThan(open.indexOf(".classList.add('open')"));
+    // D4 E-01: the drawer opens with show() / closes with hide() — right after the "before" of the shift is taken.
+    expect(open.indexOf('layoutBeforeChange()')).toBeLessThan(open.indexOf('panel.show();'));
     const close = clientFn('closePanel');
     expect(close.indexOf('layoutBeforeChange()')).toBeGreaterThan(-1);
-    expect(close.indexOf('layoutBeforeChange()')).toBeLessThan(close.indexOf(".classList.remove('open')"));
+    // (D4 review: hide() only on a defined drawer — the call is the guarded one.)
+    expect(close.indexOf('layoutBeforeChange()')).toBeLessThan(close.indexOf('drawerEl.hide();'));
+    expect(close.indexOf('drawerEl.hide();')).toBeGreaterThan(-1);
   });
 
   it('the default view at load comes from the same helper (List below 640px)', () => {
@@ -506,31 +541,28 @@ describe('layout transition — review fixes (trinity code review R1)', () => {
         attrs[k] = v;
       },
     };
-    const seg = (view: string) => {
-      const a: Record<string, string> = { 'data-view': view, 'aria-pressed': String(view === 'board') };
-      return {
-        a,
-        getAttribute: (k: string) => a[k] ?? null,
-        setAttribute: (k: string, v: string) => {
-          a[k] = v;
-        },
-      };
-    };
-    const segs = [seg('board'), seg('list')];
+    // D1 (D-02): Board | List is <ui-segmented id="view-seg"> — the page hands it the value.
+    const seg: { data?: { value: string; label: string; options: { value: string }[] } } = {};
     const saved: string[] = [];
     let adopted = 0;
-    const { setBoardView } = loadWith<{ setBoardView(view: string, ev?: unknown): void }>(['setBoardView'], [], {
-      document: { querySelectorAll: () => segs, getElementById: (id: string) => (id === 'kanban' ? kb : null) },
-      localStorage: { setItem: (_k: string, v: string) => saved.push(v) },
-      adoptLayout: () => {
-        adopted++;
+    const { setBoardView } = loadWith<{ setBoardView(view: string, ev?: unknown): void }>(
+      ['setBoardView'],
+      ['VIEW_OPTIONS'],
+      {
+        document: { getElementById: (id: string) => (id === 'kanban' ? kb : id === 'view-seg' ? seg : null) },
+        localStorage: { setItem: (_k: string, v: string) => saved.push(v) },
+        adoptLayout: () => {
+          adopted++;
+        },
       },
-    });
+    );
     // The reader's switch (an event): saved, the element's view attribute (it FLIPs), adopted.
     setBoardView('list', {});
     expect(attrs.view).toBe('list');
     expect(saved).toEqual(['list']);
-    expect(segs.map((b) => b.a['aria-pressed'])).toEqual(['false', 'true']);
+    expect(seg.data?.value).toBe('list');
+    expect(seg.data?.label).toBe('보드 보기');
+    expect(seg.data?.options.map((o) => o.value)).toEqual(['board', 'list']);
     expect(adopted).toBe(1);
     // The default following the screen (no event): not saved, not adopted — the coordinator runs the only glide.
     setBoardView('board');
@@ -578,7 +610,6 @@ describe('layout transition — review fixes (trinity code review R1)', () => {
         _lastScroll: null,
         _layoutModeKey: '',
         _panelAnchor: null,
-        _layoutPanelW: 0,
       },
       'function state() { return { snap: _layoutSnap, scroll: _layoutScroll, last: _lastScroll, key: _layoutModeKey, anchor: _panelAnchor }; }',
     );
@@ -595,10 +626,13 @@ describe('layout transition — review fixes (trinity code review R1)', () => {
     });
   });
 
-  it('the drawer width animates only on a sheet ↔ dock change (or its retarget), never under a handle drag (trinity R2, fable)', () => {
+  it('the drawer’s box on a sheet ↔ dock change is the element’s morph (D4 E-01): the coordinator neither animates nor measures it', () => {
     const body = clientFn('runLayoutCheck');
-    expect(body).toContain('prevPanel !== mode.panel');
-    expect(body).toContain("panel.classList.contains('resizing')");
+    expect(body).not.toContain('panel.animate(');
+    expect(body).not.toContain('prevPanel');
+    expect(clientFn('measureLayout')).not.toContain('slide-panel');
+    // What it still reads of the drawer: open or not, from the element's open attribute.
+    expect(clientFn('currentLayoutMode')).toContain("!!(panel && panel.hasAttribute('open'))");
   });
 
   it('runs at most once per frame (window resize, ResizeObserver and timers share one frame stamp)', () => {
@@ -614,12 +648,13 @@ describe('layout transition — review fixes (trinity code review R1)', () => {
 });
 
 describe('drawer follows the visual viewport (keyboard) and sits under the top bar when docked', () => {
-  it('syncPanelViewport writes --pv-h / --pv-t from visualViewport, on resize and scroll', () => {
-    const body = clientFn('syncPanelViewport');
-    expect(body).toContain("'--pv-h'");
-    expect(body).toContain("'--pv-t'");
-    expect(TEMPLATE).toContain("window.visualViewport.addEventListener('resize', syncPanelViewport)");
-    expect(TEMPLATE).toContain("window.visualViewport.addEventListener('scroll', syncPanelViewport)");
+  it('the visual viewport is the element’s (D4 E-01: no viewport="layout"); the page keeps no --pv-* code', () => {
+    expect(TEMPLATE).not.toContain('syncPanelViewport');
+    expect(TEMPLATE).not.toContain('--pv-t');
+    const at = TEMPLATE.indexOf('<ui-drawer class="slide-panel"');
+    const host = TEMPLATE.slice(at, TEMPLATE.indexOf('>', at) + 1);
+    expect(host).not.toContain('viewport=');
+    expect(host).not.toContain('mode=');
   });
 
   it('syncTopbarBottom writes --topbar-b (0 once the bar has scrolled away)', () => {
@@ -647,7 +682,7 @@ describe('drawer follows the visual viewport (keyboard) and sits under the top b
     expect(TEMPLATE).not.toMatch(
       /\.slide-panel \{ top: var\(--pv-t, 0px\); height: var\(--pv-h, 100dvh\); z-index: 102; \}/,
     );
-    expect(cssBlock(DOCKED)).toContain('top: calc(var(--pv-t, 0px) + var(--topbar-b, 0px));');
+    expect(rule('.slide-panel')).toContain('--ui-drawer-top: var(--topbar-b, 0px)');
     // Docked, the bar stays above the drawer beside it too (its menus open over the drawer's head).
     expect(cssBlock(DOCKED)).toContain('.topbar { z-index: 101; }');
   });
@@ -659,16 +694,15 @@ describe('views merged from #374 follow the same device contract', () => {
   it('the cron run drawer fills the visible viewport (not 100vh behind the Safari toolbar) and keeps clear of the insets', () => {
     // viewport-fit=cover makes env() insets real: a drawer pinned to the right edge
     // must pad for the landscape iPhone notch side and the home indicator.
-    const drawer = /^\.cron-drawer \{[^}]*\}/m.exec(RESP_TAIL)?.[0] ?? '';
-    expect(drawer).toContain('height: 100dvh');
-    expect(drawer).toContain('padding-right: env(safe-area-inset-right, 0px)');
-    // 100vw counts a classic scrollbar: a narrow window would push the drawer's left
-    // edge off screen (the device sweep caught -8px in WebKit). A fixed box's 100% is
-    // the viewport without the scrollbar.
-    expect(drawer).toContain('width: min(560px, 100%)');
-    expect(RESP_TAIL).toMatch(/^\.cron-drawer-head \{[^}]*padding-top: max\(16px, env\(safe-area-inset-top, 0px\)\)/m);
-    expect(RESP_TAIL).toMatch(
-      /^\.cron-drawer-body \{[^}]*padding-bottom: calc\(24px \+ env\(safe-area-inset-bottom, 0px\)\)/m,
+    // D1 (C-05): the drawer is @2lab.ai/ui <ui-drawer mode="sheet"> — a fixed native dialog (inset 0, so the
+    // visible viewport; its panel min(width, 100%) — never 100vw) with the bottom inset of its own.
+    expect(TEMPLATE).toContain(
+      '<ui-drawer class="cron-drawer" id="cron-drawer" mode="sheet" width="560" max-width="560" lang="ko">',
+    );
+    // The page adds the notch side and the top inset through the element's parts.
+    expect(RESP_TAIL).toContain('.cron-drawer::part(panel) { padding-right: env(safe-area-inset-right, 0px); }');
+    expect(RESP_TAIL).toContain(
+      '.cron-drawer::part(header) { padding-top: max(14px, env(safe-area-inset-top, 0px)); }',
     );
   });
 });
@@ -684,11 +718,14 @@ describe('settings page — reached from the dashboard top bar', () => {
   const SETTINGS_TS = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
 
   it('its text inputs and selects are 16px on touch screens (iOS does not zoom into them)', () => {
+    // The rows are <ui-setting-row> (M-02) with the page's kit `.ui-input` controls slotted in light DOM, so the
+    // page's own coarse-pointer rule still reaches every field (the kit's ui-kit.css sets no font size there).
     const coarse = SETTINGS_TS.slice(SETTINGS_TS.indexOf('@media (pointer: coarse) {'));
     expect(SETTINGS_TS).toContain('@media (pointer: coarse) {');
-    expect(coarse.slice(0, coarse.indexOf('\n}'))).toMatch(
-      /\.row input\[type="text"\], \.row input\[type="number"\], \.row select \{ font-size: 16px; \}/,
-    );
+    expect(coarse.slice(0, coarse.indexOf('\n}'))).toContain('  .ui-input { font-size: 16px; }');
+    expect(SETTINGS_TS).toContain('<input type="\' + type + \'" class="ui-input" id="f-'); // text / number fields
+    expect(SETTINGS_TS).toContain('<input type="text" class="ui-input" id="c-'); // the custom-value field of a choice
+    expect(SETTINGS_TS).toContain('<select class="ui-input" id="f-');
   });
 });
 
@@ -714,7 +751,8 @@ describe('merged views — trinity code review R4 follow-ups', () => {
   it('Escape with a docked panel and the cron drawer open closes the drawer only (the topmost)', () => {
     // SSOT 2026-10-29 T2: without the drawer, Escape closes the front detail card (closeDetailCard).
     expect(TEMPLATE).toContain(
-      "if (e.key === 'Escape' && panelOpen && !artModalIsOpen() && !_cronDrawerKey) closeDetailCard();",
+      // D1 (C-05): <ui-drawer> takes the key (preventDefault) before the page's listener; the panel leaves it be.
+      "if (e.key === 'Escape' && !e.defaultPrevented && panelOpen && !artViewerIsOpen() && !_cronDrawerKey) closeDetailCard();",
     );
   });
 
@@ -734,16 +772,26 @@ describe('merged views — trinity code review R4 follow-ups', () => {
     const resp = TEMPLATE.slice(TEMPLATE.indexOf('/* ═══ Device-responsive layout (SSOT 2026-10-24)'));
     const coarse = resp.slice(resp.indexOf('@media (pointer: coarse) {'));
     const block = coarse.slice(0, coarse.indexOf('\n}'));
-    expect(block).toContain('.cron-drawer-close { min-width: 44px; min-height: 44px; }');
+    // D1: the close button is the kit's icon button — 44px on touch is ui-kit.css's own rule.
+    expect(block).not.toContain('.cron-drawer-close');
+    // D1 (C-05): the close button is <ui-drawer>'s own — 44px on touch / narrow screens is the element's rule.
+    expect(TEMPLATE).not.toContain('id="cron-drawer-close"');
     // 지난 실행, the strip, the queue chips, the marks and the fold toggle: @2lab.ai/ui agent-queue
     // styles.ts, '@media (pointer: coarse)' — 44px.
     expect(block).not.toContain('.cron-history-btn');
   });
 
-  it('the settings search field is 16px on touch screens too', () => {
+  it('the settings search field is 16px on touch screens too', async () => {
+    // The search field is <ui-settings-nav>'s own (M-03), in its shadow root: the element's styles make it 16px
+    // on a coarse pointer (@2lab.ai/ui src/components/settings-nav/styles.ts, `.sn-q`). The page draws no field.
     const settings = readFileSync(join(__dirname, '..', 'settings-page.ts'), 'utf-8');
-    const coarse = settings.slice(settings.indexOf('@media (pointer: coarse) {'));
-    expect(coarse.slice(0, coarse.indexOf('\n}'))).toContain('.side input[type="search"]');
+    expect(settings).toContain('<ui-settings-nav id="pref-nav" lang="ko">');
+    expect(settings).not.toContain('input type="search"');
+    const { uiLibDistDir } = await import('../ui-lib');
+    const dir = uiLibDistDir();
+    expect(dir).toBeTruthy();
+    const nav = readFileSync(join(dir as string, 'settings-nav.js'), 'utf-8');
+    expect(nav).toMatch(/@media \(pointer: coarse\) \{\n\s*\.sn-q \{ font-size: 16px; \}/);
   });
 });
 

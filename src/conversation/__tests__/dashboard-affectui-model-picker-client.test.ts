@@ -59,7 +59,7 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
-const STYLE = TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>'));
+const STYLE = TEMPLATE.slice(TEMPLATE.indexOf('<style>'), TEMPLATE.indexOf('</style>', TEMPLATE.indexOf('<style>')));
 const HEAD = TEMPLATE.slice(0, TEMPLATE.indexOf('<style>'));
 
 const MODELS = [
@@ -636,7 +636,7 @@ describe('the page loads the element; the inline menu is gone', () => {
 
   it('the slot takes no box and hands the element the dashboard tokens', () => {
     expect(STYLE).toContain('.mp-slot { display: contents; }');
-    expect(STYLE).toMatch(/\.wl-toolcall, \.ui-tok \{[^}]*--ui-ib-seg: var\(--ib-seg\)/);
+    expect(STYLE).toMatch(/\.ui-tok \{[^}]*--ui-ib-seg: var\(--ib-seg\)/);
   });
 
   it('no inline menu: its renderer, state, body host, styles and folds are gone', () => {

@@ -42,10 +42,15 @@ function clientVar(name: string): string {
   return cook(m[1]);
 }
 /** A top-level `document.addEventListener('<ev>', function(e) { … });` of the page script. */
-function clientListener(ev: string): string {
-  const at = TEMPLATE.indexOf(`\ndocument.addEventListener('${ev}', function(e) {`);
-  if (at < 0) throw new Error(`listener ${ev} not found`);
-  return cook(TEMPLATE.slice(at + 1, TEMPLATE.indexOf('\n});', at) + 4));
+// The page's document-level listener for ev — the one whose body names `needle` when the page has several
+// (D3 group 3 added <ui-choice-form>'s ui-change listener above the usage breakdown's).
+function clientListener(ev: string, needle = ''): string {
+  const head = `\ndocument.addEventListener('${ev}', function(e) {`;
+  for (let at = TEMPLATE.indexOf(head); at >= 0; at = TEMPLATE.indexOf(head, at + 1)) {
+    const src = TEMPLATE.slice(at + 1, TEMPLATE.indexOf('\n});', at) + 4);
+    if (src.includes(needle)) return cook(src);
+  }
+  throw new Error(`listener ${ev} (${needle}) not found`);
 }
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}, extra: string[] = []): T {
   const names = Object.keys(inject);
@@ -250,13 +255,15 @@ describe('ntOnLaunched — a launched task is a toast with 카드 열기 and the
   function launch() {
     const toasts: Array<[Toast, (() => void) | undefined]> = [];
     const opened: unknown[] = [];
+    const cleared: number[] = [];
     const m = load<{ ntOnLaunched(d: unknown): void }>(['ntOnLaunched', 'ntLaunchToast', 'ntStateAfterLaunch'], [], {
       dashToast: (t: Toast, fn?: () => void) => toasts.push([t, fn]),
       ntOpenLaunched: (d: unknown) => opened.push(d),
       _ntRequestId: '',
       ntNewRequestId: () => 'r2',
-      _ntFiles: [],
-      URL: { revokeObjectURL() {} },
+      // D2: the next task starts clean — <ui-composer id="nt-composer"> is cleared (text, files, recording).
+      ntEl: (id: string) => (id === 'nt-composer' ? { clear: () => cleared.push(1) } : null),
+      _ntValue: null,
       _ntState: {},
       ntDefaultState: () => ({}),
       _ntCtx: { channels: [{ id: 'C1', name: 'dev' }] },
@@ -268,7 +275,7 @@ describe('ntOnLaunched — a launched task is a toast with 카드 열기 and the
       loadSessions: () => {},
       setTimeout: () => 0,
     });
-    return { run: m.ntOnLaunched, toasts, opened };
+    return { run: m.ntOnLaunched, toasts, opened, cleared };
   }
 
   it('running vs queued, the channel name, the card action, the link only when there is one, 12 s on screen', () => {
@@ -277,6 +284,7 @@ describe('ntOnLaunched — a launched task is a toast with 카드 열기 and the
     const second = { status: 'queued', channel: 'C9', sessionKey: 'k2' };
     l.run(first);
     l.run(second);
+    expect(l.cleared).toHaveLength(2);
     expect(l.toasts.map((t) => t[0])).toEqual([
       {
         title: '작업을 시작했어요',
@@ -298,6 +306,18 @@ describe('ntOnLaunched — a launched task is a toast with 카드 열기 and the
     l.toasts[0][1]?.();
     expect(l.opened).toEqual([first]);
     expect(clientFn('ntOpenLaunched')).toContain('var key = launch && launch.sessionKey;');
+  });
+
+  // #640 R1 (astra P2): a dashboard task created but not started keeps its instruction —
+  // the composer is not cleared (its text) and the toast says so.
+  it('a dashboard task that did not start keeps the composer and says why', () => {
+    const l = launch();
+    l.run({ sessionKey: 'task:x', status: 'not-started', reason: 'busy' });
+    expect(l.cleared).toHaveLength(0);
+    expect(l.toasts[0][0]).toMatchObject({ title: '작업을 만들었지만 아직 시작하지 못했어요', tone: 'warning' });
+    l.run({ sessionKey: 'task:y', status: 'running' });
+    expect(l.cleared).toHaveLength(1);
+    expect(l.toasts[1][0]).toMatchObject({ title: '대시보드 작업을 시작했어요' });
   });
 });
 
@@ -377,14 +397,15 @@ describe('<ui-compact-breakdown> — where the usage goes: by model for everyone
         addEventListener: (ev: string, fn: Listener) => (listeners[ev] = fn),
       },
       _viewerIsAdmin: false,
-      setStat: () => {},
+      setStripFigure: () => {}, // 토큰 · 비용 go to <ui-stat-strip> (D2)
+      paintStatsStrip: () => {},
       formatTokens: String,
     };
     const m = load<{ paintUsage(r: unknown): void; paintUsageBreakdown(): void }>(
-      ['toNum', 'fmtUsd', 'usageBreakdownData', 'paintUsageBreakdown', 'paintUsage'],
+      ['toNum', 'usageBreakdownData', 'paintUsageBreakdown', 'paintUsage'],
       ['_usageView', '_usageReport', 'USAGE_VIEWS'],
       env,
-      [clientListener('ui-change')],
+      [clientListener('ui-change', 'usage-cb')],
     );
     m.paintUsage(REPORT);
     m.paintUsage(REPORT);
@@ -397,7 +418,7 @@ describe('<ui-compact-breakdown> — where the usage goes: by model for everyone
   });
 
   it('the page: the breakdown in the stats detail, in a token wrapper', () => {
-    const detail = PAGE.slice(PAGE.indexOf('<div class="stats-detail" id="stats-detail" hidden inert>'));
+    const detail = PAGE.slice(PAGE.indexOf('<div class="stats-detail" id="stats-detail">'));
     expect(
       detail.indexOf(
         '<div class="ui-tok usage-cb-wrap"><ui-compact-breakdown id="usage-cb" lang="ko"></ui-compact-breakdown></div>',

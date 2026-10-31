@@ -77,6 +77,7 @@ vi.mock('../../session-archive', () => ({
 
 let html = '';
 let css = '';
+let kit = '';
 let script = '';
 
 beforeAll(async () => {
@@ -90,6 +91,7 @@ beforeAll(async () => {
   expect(res.statusCode).toBe(200);
   html = res.body;
   css = html.match(/<style>([\s\S]*?)<\/style>/)![1];
+  kit = html.match(/<style id="ui-kit">([\s\S]*?)<\/style>/)![1];
   script = html.match(/<script>([\s\S]*?)<\/script>/)![1];
   (globalThis as any).__stopNewTaskServer = webServer.stopWebServer;
 }, 180_000);
@@ -111,11 +113,10 @@ function mediaBlock(prelude: string): string {
 }
 
 describe('T1 — the New task entry is always in reach, calm', () => {
-  it('PC: a primary button sits in the top bar, before the nav, with an N shortcut', () => {
-    const topbar = html.slice(html.indexOf('<div class="topbar">'), html.indexOf('<div class="nav">'));
-    expect(topbar).toContain('id="new-task-btn"');
-    expect(topbar).toMatch(/<button[^>]*id="new-task-btn"[^>]*aria-keyshortcuts="n"/);
-    expect(topbar).toMatch(/id="new-task-btn"[^>]*onclick="openNewTask\(\)"/);
+  it('PC: a primary button sits in the app bar (its actions slot, before the status) with an N shortcut', () => {
+    const bar = html.slice(html.indexOf('<ui-app-bar id="app-bar"'), html.indexOf('</ui-app-bar>'));
+    expect(bar).toMatch(/<button[^>]*id="new-task-btn" slot="actions"[^>]*aria-keyshortcuts="n"/);
+    expect(bar).toMatch(/id="new-task-btn"[^>]*onclick="openNewTask\(\)"/);
   });
 
   it('phones: a floating action button, clear of the home indicator', () => {
@@ -144,15 +145,22 @@ describe('T1 — the New task entry is always in reach, calm', () => {
       expect(css, String(gone)).not.toMatch(gone);
     expect(css).not.toMatch(/\.new-task-btn\s*\{[^}]*animation:/);
     expect(css).not.toMatch(/\.new-task-btn:hover\s*\{[^}]*transform/);
-    expect(css).toMatch(/\.new-task-btn\s*\{[^}]*background: var\(--ib-text\);[^}]*color: var\(--ib-card\);/);
+    // D1: the top-bar entry is the kit's ink primary (.ui-btn.is-primary, ui-kit.css) with a kit key for N.
+    expect(html).toMatch(/<button type="button" class="ui-btn is-primary new-task-btn" id="new-task-btn"/);
+    expect(kit).toMatch(
+      /\.ui-btn\.is-primary \{ background: var\(--ui-ib-text\); border-color: var\(--ui-ib-text\); color: var\(--ui-ib-card\); \}/,
+    );
     expect(css).toMatch(
       /\.new-task-fab\s*\{[^}]*background: var\(--ib-text\);[^}]*animation: nt-fab-in 240ms var\(--ease-out\) both;/,
     );
     expect(css).toContain(
       '@keyframes nt-fab-in { from { opacity: 0; transform: scale(0.95); } to { opacity: 1; transform: none; } }',
     );
-    expect(css).toMatch(/\.nt-submit\s*\{[^}]*background: var\(--ib-text\);/);
-    expect(html).toMatch(/id="new-task-btn"[^>]*>[\s\S]*?<kbd class="nt-kbd" aria-hidden="true">N<\/kbd><\/button>/);
+    // D2: 작업 시작 is <ui-composer>'s send button (its ink primary, data.submitLabel).
+    expect(script).toContain("submitLabel: '작업 시작',");
+    expect(html).toMatch(
+      /id="new-task-btn"[^>]*>[\s\S]*?<kbd class="ui-kbd nt-kbd" aria-hidden="true">N<\/kbd><\/button>/,
+    );
     const reduced = mediaBlock('@media (prefers-reduced-motion: reduce) {\n  /* New task');
     expect(reduced).toMatch(/\.new-task-btn/);
     expect(reduced).toMatch(/\.new-task-fab/);
@@ -166,9 +174,25 @@ describe('T1 — the New task entry is always in reach, calm', () => {
 });
 
 describe('T3–T11 — the composer, in the order of the sketch', () => {
-  it('is one native dialog with a form', () => {
-    expect(html).toMatch(/<dialog[^>]*id="nt-dialog"[^>]*class="nt-dialog"/);
+  it('is one @2lab.ai/ui <ui-dialog> (D4 H-01) with the form kept whole inside; the page keeps no dialog of its own', () => {
+    expect(html).toContain('<ui-dialog id="nt-dialog" class="nt-dialog" heading="새 작업" size="lg" lang="ko">');
     expect(html).toMatch(/<form[^>]*id="nt-form"/);
+    // The form is the dialog's body: the element draws the heading and ✕, so the page's head row is gone.
+    expect(html).not.toMatch(/<dialog[^>]*id="nt-dialog"/);
+    expect(html).not.toContain('class="nt-head"');
+    expect(html).not.toContain('nt-head-hint');
+    // show() / hide() open and close it; Esc, the scrim and ✕ arrive as ui-close; no native showModal, no soft-close
+    // timer, no is-shown class of the page's.
+    const open = clientFn('openNewTask');
+    expect(open).toContain('dlg.show();');
+    expect(open).not.toContain('showModal');
+    expect(clientFn('closeNewTask')).toContain('dlg.hide();');
+    expect(script).toContain("dlg.addEventListener('ui-close', function () {");
+    for (const gone of ['is-shown', "dlg.addEventListener('cancel'", 'ntSyncViewport', '--nt-vvh', '--nt-vvt']) {
+      expect(script, gone).not.toContain(gone);
+    }
+    // N does nothing while a <ui-dialog> is up.
+    expect(clientFn('ntIsTypingTarget')).toContain("document.querySelector('dialog[open], ui-dialog[open]')");
   });
 
   it('row 1: model (with the battery), effort and channel selectors', () => {
@@ -203,46 +227,103 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(html).toMatch(/id="nt-autogoal"[^>]*title="[^"]*이 작업의 첫 지시에만[^"]*설정 자체는 바뀌지 않습니다/);
   });
 
-  it('the instruction textarea, then the attachment list', () => {
-    expect(html).toMatch(/<textarea[^>]*id="nt-prompt"/);
-    expect(html.indexOf('id="nt-prompt"')).toBeLessThan(html.indexOf('id="nt-attachments"'));
-    expect(html).toMatch(/id="nt-attachments"[^>]*aria-live="polite"/);
+  it('D2 (H-05..H-09) — the instruction, files, voice and 작업 시작 are one @2lab.ai/ui <ui-composer>', () => {
+    expect(html).toContain('<script type="module" src="/dashboard/ui/composer.js?v=');
+    expect(html).toContain('<ui-composer id="nt-composer" class="nt-composer" lang="ko"></ui-composer>');
+    // After the toggles; the page's error line and the upload status follow it.
+    const at = html.indexOf('id="nt-composer"');
+    expect(html.indexOf('class="nt-toggles"')).toBeLessThan(at);
+    expect(at).toBeLessThan(html.indexOf('id="nt-error"'));
+    expect(at).toBeLessThan(html.indexOf('id="nt-status"'));
+    // The inline field, chips, recorder and toolbar are gone.
+    for (const gone of [
+      'id="nt-prompt"',
+      'id="nt-attachments"',
+      'id="nt-recorder"',
+      'class="nt-toolbar"',
+      'id="nt-submit"',
+    ]) {
+      expect(html, gone).not.toContain(gone);
+    }
+    for (const gone of [
+      'function ntAddBlob(',
+      'function ntRenderFiles(',
+      'function ntToggleRecording(',
+      'function ntAutosize(',
+      // D4 E-30: the panel composer is a <ui-composer> too — the helpers the two shared went with it.
+      'function ntPickRecorderMime(',
+      'function ntExtForMime(',
+      'function ntFormatBytes(',
+      'function ntFormatDuration(',
+      'function ntStamp(',
+      'function ntKindOf(',
+    ]) {
+      expect(script, gone).not.toContain(gone);
+    }
   });
 
-  it('toolbar: camera, file and voice on the left, 작업 시작 on the right', () => {
-    const bar = html.slice(html.indexOf('class="nt-toolbar"'));
-    const idx = ['id="nt-camera"', 'id="nt-attach"', 'id="nt-mic"', 'id="nt-submit"'].map((id) => bar.indexOf(id));
-    expect(idx.every((i) => i >= 0)).toBe(true);
-    expect([...idx].sort((a, b) => a - b)).toEqual(idx);
-    expect(bar).toMatch(/id="nt-submit"[^>]*>[^<]*작업 시작/);
+  it('the composer gets its data from the page: label, placeholder, the draft, 작업 시작, the context limits', () => {
+    const data = clientFn('ntComposerData');
+    expect(data).toContain("label: '작업 지시',");
+    expect(data).toContain('value: _ntValue,');
+    expect(data).toContain('busy: _ntBusy,');
+    expect(data).toContain('d.maxLength = lim.maxPromptChars;');
+    expect(data).toContain('d.maxFiles = lim.maxFiles;');
+    expect(data).toContain('d.maxFileSize = lim.maxFileBytes;');
+    // The server's cap on all files together is the element's (0.10.0 maxTotalBytes: it rejects the file that
+    // crosses it and says so) — the page no longer takes the file back out on ui-files (D2-GAPS G5-3).
+    expect(data).toContain('d.maxTotalBytes = lim.maxTotalBytes;');
+    // (Its one ui-files listener only says why a dashboard task cannot start — #640 R2 — it takes nothing out.)
+    expect(script.match(/composer\.addEventListener\('ui-files'/g) ?? []).toHaveLength(1);
+    expect(script).not.toContain('composer.removeFile(');
+    // It answers ui-submit (cancelled: the page posts, the composer keeps its text and files until the launch)
+    // and ui-input (the draft).
+    expect(script).toContain(
+      "composer.addEventListener('ui-submit', function (e) {\n    e.preventDefault();\n    submitNewTask(e.detail);",
+    );
+    expect(script).toContain('ntSaveDraft(v);');
+    expect(clientFn('ntOnLaunched')).toContain(
+      "if (composer && typeof composer.clear === 'function') composer.clear();",
+    );
   });
 
-  it('T10 — the camera input opens the phone camera directly', () => {
-    expect(html).toMatch(/<input[^>]*id="nt-camera-input"[^>]*accept="image\/\*"[^>]*capture="environment"/);
+  it("T10 — 카메라 is the composer's own tool on touch screens; it opens the back camera directly", () => {
+    // 0.10.0 camera: 'environment' (shown on touch only) — the page's capture input and ui-tool answer are gone.
+    expect(clientFn('ntComposerData')).toContain("camera: 'environment',");
+    expect(clientFn('ntComposerData')).not.toContain('tools:');
+    expect(html).not.toContain('nt-camera-input');
+    expect(script).not.toContain('function ntAddCamera(');
+    expect(script).not.toContain("composer.addEventListener('ui-tool'");
   });
 
-  it('T9 — the file input is a plain multi-file picker', () => {
-    const input = html.match(/<input[^>]*id="nt-file-input"[^>]*>/)![0];
-    expect(input).toContain('multiple');
-    expect(input).not.toContain('capture');
-    expect(input).not.toContain('accept=');
+  it("T9 / T11 / PC — files, voice, drop and paste are the composer's: any file type, MediaRecorder, screenshots named", () => {
+    // No accept list (any file); the image picker is off (the attach tool takes images too).
+    expect(clientFn('ntComposerData')).not.toContain('accept:');
+    expect(clientFn('ntComposerData')).toContain('image: false,');
+    // The dialog keeps no drop / paste handler of its own: the composer takes them (and names screenshots).
+    expect(script).not.toContain('dlg.ondrop');
+    expect(script).not.toContain("prompt.addEventListener('paste'");
   });
 
-  it('T11 — voice: MediaRecorder first, the native recorder input as a fallback', () => {
-    expect(html).toMatch(/<input[^>]*id="nt-audio-input"[^>]*accept="audio\/\*"[^>]*capture/);
-    expect(script).toContain('MediaRecorder');
-    expect(script).toContain('getUserMedia');
+  it("⌘/Ctrl+Enter starts the task; a plain Enter is a new line — the element's enter: 'newline', with its hint", () => {
+    expect(clientFn('ntComposerData')).toContain("enter: 'newline',");
+    expect(clientFn('ntComposerData')).toContain('hint: true,');
+    // The capture keydown that kept a plain Enter from the element (D2-GAPS G5-2) is gone.
+    expect(script).not.toMatch(/composer\.addEventListener\(\s*'keydown'/);
+    expect(script).not.toContain(
+      "if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) e.stopPropagation();",
+    );
   });
 
-  it('PC: drag-and-drop and pasted screenshots attach too', () => {
-    expect(script).toMatch(/addEventListener\('paste'/);
-    // A property handler, not addEventListener('drop'): the board's own
-    // contract (cards are not draggable, §3.1-5) forbids that literal.
-    expect(script).toMatch(/dlg\.ondrop = function/);
-  });
-
-  it('⌘/Ctrl+Enter starts the task', () => {
-    expect(script).toMatch(/metaKey \|\| e\.ctrlKey|ctrlKey \|\| e\.metaKey/);
+  it("closing the sheet discards a recording in progress and stops a preview — the element's cancelRecording / pause", () => {
+    // The page's close and the element's ui-close both pass through ntOnClosed (the FAB back, the composer quiet).
+    expect(clientFn('closeNewTask')).toContain('ntOnClosed();');
+    expect(clientFn('ntOnClosed')).toContain("document.body.classList.remove('nt-open');");
+    expect(clientFn('ntOnClosed')).toContain('ntQuietComposer();');
+    const quiet = clientFn('ntQuietComposer');
+    expect(quiet).toContain('el.cancelRecording();');
+    expect(quiet).toContain('el.pause();');
+    expect(quiet).not.toContain('disabled: true');
   });
 
   it('loads its context and posts the task with the CSRF token', () => {
@@ -253,27 +334,35 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
 });
 
 describe('T12 — PC and phone layouts are designed separately', () => {
-  it('PC: a centered dialog of bounded width', () => {
-    expect(css).toMatch(/\.nt-dialog\s*\{[^}]*width:\s*min\(720px/);
+  it('PC: a centered dialog of bounded width — the element\'s size="lg" (720px); the page keeps no box rule', () => {
+    expect(html).toMatch(/<ui-dialog id="nt-dialog"[^>]* size="lg"/);
+    expect(css).not.toMatch(/\.nt-dialog\s*\{/);
+    expect(css).not.toMatch(/\.nt-dialog::backdrop/);
+    // The form pads itself; the element's body padding is off so the two do not add up.
+    expect(css).toContain('.nt-dialog::part(body) { padding: 0; }');
   });
 
-  it('phones: a full-screen sheet that follows the visual viewport (keyboard) and the safe areas', () => {
+  it("phones: the element's bottom sheet follows the visual viewport (keyboard); the page keeps the form clear of the safe area", () => {
     const phone = mediaBlock('@media (max-width: 639px) {\n  /* New task');
-    expect(phone).toMatch(/\.nt-dialog\s*\{[^}]*height:\s*var\(--nt-vvh,\s*100dvh\)/);
+    // sheet="auto" and viewport="visual" are the element's defaults: nothing on the page pins the box or writes
+    // --nt-vvh / --nt-vvt any more.
+    expect(html).not.toMatch(/<ui-dialog id="nt-dialog"[^>]*(sheet="never"|viewport="layout")/);
+    expect(phone).not.toContain('.nt-dialog');
     expect(phone).toMatch(/env\(safe-area-inset-bottom/);
-    expect(script).toContain('visualViewport');
+    expect(script).not.toContain('ntSyncViewport');
   });
 
   it('touch: 44px targets and 16px text in the instruction field (no iOS zoom)', () => {
     const coarse = mediaBlock('@media (pointer: coarse) {\n  /* New task');
-    expect(coarse).toMatch(/\.nt-tool[^{]*\{[^}]*min-(height|width):\s*44px/);
-    expect(coarse).toMatch(/\.nt-prompt[^{]*\{[^}]*font-size:\s*16px/);
+    // The composer's tools, send, chips and field are 44px / 16px on touch by its own rules; the page's selects too.
+    expect(coarse).toMatch(/\.nt-chip select[^{]*\{[^}]*font-size:\s*16px/);
+    expect(coarse).not.toContain('.nt-prompt');
   });
 
-  it('the camera button is shown on touch devices only (PC gets drop / paste instead)', () => {
-    expect(css).toMatch(/\.nt-tool-camera\s*\{[^}]*display:\s*none/);
-    const coarse = mediaBlock('@media (pointer: coarse) {\n  /* New task');
-    expect(coarse).toMatch(/\.nt-tool-camera\s*\{[^}]*display:\s*inline-flex/);
+  it('the camera tool is offered on touch devices only (PC gets drop / paste instead)', () => {
+    // The element shows camera only on touch screens (coarse pointer); the page no longer decides.
+    expect(css).not.toContain('.nt-tool-camera');
+    expect(clientFn('ntComposerData')).toContain("camera: 'environment',");
   });
 
   it('the whole page script still compiles', () => {
@@ -470,11 +559,12 @@ describe('ntBlockedHint (#640 R2)', () => {
     expect(ntBlockedHint({ destination: 'task' }, [])).toBe('');
     expect(ntBlockedHint({ destination: 'slack' }, [{ name: 'a.png' }])).toBe('');
   });
-  it('is shown on switching to a dashboard task and refreshed when a file is removed', () => {
-    expect(clientFn('ntSetDestination')).toContain('ntSetError(ntBlockedHint(_ntState, _ntFiles));');
-    expect(clientFn('ntRemoveFile')).toContain('ntSetError(ntBlockedHint(_ntState, _ntFiles));');
-    // …and when a file is added in task mode (a paste or a drop), fable #640 R3.
-    expect(clientFn('ntAddBlob')).toContain('ntSetError(ntBlockedHint(_ntState, _ntFiles));');
+  it('is shown on switching to a dashboard task, and whenever the composer’s files change in task mode', () => {
+    expect(clientFn('ntSetDestination')).toContain('ntSetError(ntBlockedHint(_ntState, ntComposerFiles()));');
+    // <ui-composer> reports every file added (picker, paste, drop) or removed as ui-files (fable #640 R3).
+    const init = clientFn('ntInit');
+    expect(init).toContain("composer.addEventListener('ui-files', function (e) {");
+    expect(init).toContain('ntSetError(ntBlockedHint(_ntState, (e.detail && e.detail.files) || ntComposerFiles()));');
   });
 });
 
@@ -484,7 +574,7 @@ describe('ntBlockedHint (#640 R2)', () => {
 describe('submitNewTask — the submitted state is the one sent (#640 R2)', () => {
   it('switching to a dashboard task while the files are read does not drop them', async () => {
     let release!: () => void;
-    const ready = new Promise<void>((r) => {
+    const reading = new Promise<void>((r) => {
       release = r;
     });
     const state = {
@@ -499,21 +589,23 @@ describe('submitNewTask — the submitted state is the one sent (#640 R2)', () =
     };
     const posted: string[] = [];
     const launched: unknown[][] = [];
-    const el = { classList: { add() {}, remove() {} }, disabled: false, value: '사진 봐줘' };
-    const { submitNewTask } = loadWith<{ submitNewTask(): Promise<void> }>(
+    const file = { name: 'a.png', type: 'image/png' };
+    const { submitNewTask } = loadWith<{ submitNewTask(detail: unknown): Promise<void> }>(
       ['submitNewTask', 'ntCanSubmit', 'ntBlockedHint', 'ntBuildPayload'],
       {
         _ntBusy: false,
         _ntCtx: {},
         _ntState: state,
-        _ntRec: null,
-        _ntFiles: [{ name: 'a.png', mimetype: 'image/png', data: 'AA', ready }],
         _ntRequestId: 'req-0123456789',
-        ntEl: () => el,
+        ntEl: () => ({ files: [file], value: '' }),
         ntSetError: () => {},
         ntSetStatus: () => {},
-        ntUpdateSubmit: () => {},
-        ntStopRecording: () => {},
+        paintNtComposer: () => {},
+        // The composer's File read as base64 — held until the test releases it.
+        ntReadFile: async (f: { name: string; type: string }) => {
+          await reading;
+          return { name: f.name, mimetype: f.type, data: 'AA' };
+        },
         refreshCsrfToken: async () => {},
         ntPostTask: async (b: string) => {
           posted.push(b);
@@ -522,7 +614,7 @@ describe('submitNewTask — the submitted state is the one sent (#640 R2)', () =
         ntOnLaunched: (...args: unknown[]) => launched.push(args),
       },
     );
-    const run = submitNewTask();
+    const run = submitNewTask({ text: '사진 봐줘', files: [file] });
     state.destination = 'task'; // the user switches while the files are read
     release();
     await run;
@@ -531,6 +623,35 @@ describe('submitNewTask — the submitted state is the one sent (#640 R2)', () =
     expect(body.destination).toBeUndefined();
     // What follows the launch reads the submitted state, too.
     expect(launched[0][1]).toMatchObject({ destination: 'slack', prompt: '사진 봐줘' });
+  });
+});
+
+// #600 ⑥ / #640 R2 — the dialog's <ui-composer> on a dashboard task: no attach /
+// voice / camera tools, and a pasted or dropped file is refused by its type.
+describe('ntComposerData — a dashboard task takes no files (#640 R2)', () => {
+  const data = (destination: string) =>
+    loadWith<{ ntComposerData(): Record<string, unknown> }>(['ntComposerData', 'ntReadDraft'], {
+      _ntValue: '',
+      _ntBusy: false,
+      _ntCtx: null,
+      _ntState: { destination },
+      NT_NO_FILES: 'application/x-soma-no-attachments',
+      NT_DRAFT_KEY: 'k',
+      localStorage: { getItem: () => null },
+    }).ntComposerData();
+  it('task: the tools are off and every file type is refused', () => {
+    expect(data('task')).toMatchObject({
+      attach: false,
+      voice: false,
+      camera: false,
+      accept: 'application/x-soma-no-attachments',
+    });
+  });
+  it('Slack: the element’s defaults (no file keys of the page’s own)', () => {
+    const d = data('slack');
+    expect(d).not.toHaveProperty('accept');
+    expect(d).not.toHaveProperty('attach');
+    expect(d).toMatchObject({ camera: 'environment', image: false });
   });
 });
 
@@ -600,31 +721,6 @@ describe('ntReconcile / ntStateAfterLaunch (#640 R1)', () => {
   });
 });
 
-describe('voice recording helpers — T11', () => {
-  const { ntPickRecorderMime, ntExtForMime } = load<{
-    ntPickRecorderMime(isSupported: (t: string) => boolean): string;
-    ntExtForMime(m: string): string;
-  }>(['ntPickRecorderMime', 'ntExtForMime']);
-
-  it('iOS Safari records AAC in MP4; Chrome / Android record Opus in WebM', () => {
-    expect(ntPickRecorderMime((t) => t === 'audio/mp4')).toBe('audio/mp4');
-    expect(ntPickRecorderMime((t) => t.startsWith('audio/webm'))).toBe('audio/webm;codecs=opus');
-    expect(ntPickRecorderMime(() => false)).toBe('');
-  });
-
-  it('names the file after its container', () => {
-    expect(ntExtForMime('audio/mp4')).toBe('m4a');
-    expect(ntExtForMime('audio/webm;codecs=opus')).toBe('webm');
-    expect(ntExtForMime('audio/ogg;codecs=opus')).toBe('ogg');
-    expect(ntExtForMime('application/x-unknown')).toBe('bin');
-  });
-});
-
-describe('ntFormatBytes', () => {
-  const { ntFormatBytes } = load<{ ntFormatBytes(n: number): string }>(['ntFormatBytes']);
-  it('formats sizes for the attachment chips', () => {
-    expect(ntFormatBytes(512)).toBe('512 B');
-    expect(ntFormatBytes(2048)).toBe('2 KB');
-    expect(ntFormatBytes(3.5 * 1024 * 1024)).toBe('3.5 MB');
-  });
-});
+// T11 voice recording (the recorder's MIME pick — MP4/AAC first for iOS Safari, then Ogg, WebM last — the note's
+// name after its container, the chip sizes) is <ui-composer>'s: library composer.test.ts 'composerRecorderMime: MP4
+// first, then Ogg, then WebM; a throwing check means no' and 'Done files a voice-….m4a note'.
