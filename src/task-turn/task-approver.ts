@@ -47,6 +47,26 @@ export type TaskApprovalEvent = {
   expiresAt?: number;
 } & ({ type: 'requested' } | { type: 'resolved'; resolution: TaskApprovalResolution });
 
+/**
+ * E4 ⑤ — the approver has one listener; this tells every hearer in turn (the
+ * thread's notices, the child's epic). A hearer that throws does not keep the
+ * next from hearing, and changes no approval.
+ */
+export function composeTaskApprovalListeners(
+  ...hearers: Array<((event: TaskApprovalEvent) => void) | undefined>
+): (event: TaskApprovalEvent) => void {
+  const list = hearers.filter((h): h is (event: TaskApprovalEvent) => void => h !== undefined);
+  return (event) => {
+    for (const hear of list) {
+      try {
+        hear(event);
+      } catch {
+        // Each hearer logs its own failures; the next one still hears.
+      }
+    }
+  };
+}
+
 export interface TaskApproverWithState extends TaskApprover {
   /** The approval was asked and has not ended yet. */
   isOpen(approvalId: string): boolean;

@@ -46,8 +46,10 @@ import {
   applyPlanWrite,
   EPIC_NODE_ID,
   type PlanWriteInput,
+  resolveEpicApprovals,
   sanitizeEpicEvents,
   sanitizeEpicPlan,
+  withEpicEvent,
 } from './task-turn/epic-plan';
 import type {
   ActionPanelState,
@@ -560,6 +562,23 @@ function finiteStamp(v: unknown): number | undefined {
   return typeof v === 'number' && Number.isFinite(v) ? v : undefined;
 }
 
+/** E4 ⑤ (D6) — a child's chain end as its epic's event: ids and the outcome enum only, never its text. */
+function chainEndEvent(
+  child: ConversationSession,
+  end: { key: string; chainId?: string; outcome: EpicEvent['outcome']; turnId: string; at: number },
+): EpicEvent {
+  return {
+    id: `${child.taskId}:${end.key}`,
+    childTaskId: child.taskId as string,
+    planNodeId: child.planNodeId as string,
+    outcome: end.outcome,
+    ...(end.chainId ? { chainId: end.chainId } : {}),
+    turnId: end.turnId,
+    at: end.at,
+    state: 'pending',
+  };
+}
+
 export class SessionRegistry {
   private sessions: Map<string, ConversationSession> = new Map();
   /**
@@ -820,8 +839,17 @@ export class SessionRegistry {
     // E2 ③ — the chain's last outcome closes it and owes the thread a notice,
     // in this same write; a hop the chain re-runs after keeps it open, silent.
     const noticesBefore = session.notices;
+    let epicChange: { epic: ConversationSession; before: EpicEvent[] | undefined } | undefined;
     if (settle?.ends) {
       session.openChain = undefined;
+      // E4 ⑤ (D6) — and owes its epic an event, in this same change: saved, put back or held with it.
+      epicChange = this.addChainEndEvent(session, {
+        key: settle.chainId,
+        chainId: settle.chainId,
+        outcome: settle.notice?.kind === 'failure' ? 'failed' : outcome.outcome,
+        turnId: outcome.turnId,
+        at: outcome.at,
+      });
       const kind = settle.notice?.kind ?? noticeKindFor(outcome.outcome);
       const reason = settle.notice?.reason ?? outcome.reason;
       const askId =
@@ -850,6 +878,7 @@ export class SessionRegistry {
         session.activeTaskTurnId = previous.activeTurnId;
         session.openChain = previous.openChain;
         session.notices = previous.notices;
+        if (epicChange) epicChange.epic.epicEvents = epicChange.before;
         throw error;
       }
       if (session.notices !== noticesBefore) this.fireTaskNotices(key, session);
@@ -865,6 +894,96 @@ export class SessionRegistry {
     if (activity === 'idle' && changed) {
       this.drainOnIdleCallbacks(key);
       this.fireOnIdleAfterDrainHook(key);
+    }
+  }
+
+  /**
+   * E4 ⑤ (D6) — the live epic a child reports to. A child whose epic is gone
+   * or closing reports to no one: the event is dropped and logged.
+   */
+  private epicToReport(child: ConversationSession, what: string): ConversationSession | undefined {
+    if (!child.parentTaskId || !child.planNodeId || !child.taskId) return undefined;
+    const epic = this.sessionsByTaskId.get(child.parentTaskId);
+    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated) {
+      this.logger.warn('Epic event dropped — the epic is gone or closing', {
+        childTaskId: child.taskId,
+        parentTaskId: child.parentTaskId,
+        what,
+      });
+      return undefined;
+    }
+    return epic;
+  }
+
+  /**
+   * E4 ⑤ (D6) — a child's chain ended: one event on its epic (id: the child's
+   * task id + the chain's id, or the lost turn's), and the approvals that chain
+   * asked are closed. Not saved here — the caller's save carries it with the
+   * child's outcome; returns what to put back if that save fails.
+   */
+  private addChainEndEvent(
+    child: ConversationSession,
+    end: { key: string; chainId?: string; outcome: EpicEvent['outcome']; turnId: string; at: number },
+  ): { epic: ConversationSession; before: EpicEvent[] | undefined } | undefined {
+    const epic = this.epicToReport(child, 'chain end');
+    if (!epic) return undefined;
+    const before = epic.epicEvents;
+    const childTaskId = child.taskId as string;
+    const closed = end.chainId
+      ? resolveEpicApprovals(before, (e) => e.childTaskId === childTaskId && e.chainId === end.chainId, end.at)
+      : before;
+    epic.epicEvents = withEpicEvent(closed, chainEndEvent(child, end));
+    return { epic, before };
+  }
+
+  /**
+   * E4 ⑤ (D6 c) — a child's approval request is a `needs-input` event on its
+   * epic (id: the child's task id + the approval id); its answer closes it.
+   * Saved strictly; a failed save is put back and logged — the approval goes
+   * on either way. It never wakes the epic: only the progress shows it.
+   */
+  recordEpicApproval(
+    event: { type: 'requested' | 'resolved'; approvalId: string; sessionKey: string; turnId?: string },
+    at: number = Date.now(),
+  ): void {
+    const child = this.getSessionByKey(normalizeSessionKey(event.sessionKey));
+    if (!child?.parentTaskId) return;
+    const epic = this.epicToReport(child, `approval ${event.type}`);
+    if (!epic) return;
+    const before = epic.epicEvents;
+    const id = `${child.taskId}:${event.approvalId}`;
+    epic.epicEvents =
+      event.type === 'requested'
+        ? withEpicEvent(before, {
+            id,
+            childTaskId: child.taskId as string,
+            planNodeId: child.planNodeId as string,
+            outcome: 'needs-input',
+            approvalId: event.approvalId,
+            ...(child.openChain ? { chainId: child.openChain } : {}),
+            ...(event.turnId ? { turnId: event.turnId } : {}),
+            at,
+            state: 'pending',
+          })
+        : resolveEpicApprovals(before, (e) => e.id === id, at);
+    if (epic.epicEvents === before) return;
+    try {
+      this.saveSessionsOrThrow();
+    } catch (error) {
+      epic.epicEvents = before;
+      this.logger.warn('Epic approval event not saved — put back; the approval goes on', {
+        childTaskId: child.taskId,
+        approvalId: event.approvalId,
+        error: (error as Error)?.message ?? String(error),
+      });
+      return;
+    }
+    try {
+      this.onActivityStateChangeCallback?.();
+    } catch (err) {
+      this.logger.warn('recordEpicApproval: broadcast callback raised', {
+        error: (err as Error)?.message ?? String(err),
+      });
     }
   }
 
@@ -1168,8 +1287,17 @@ export class SessionRegistry {
       }
       // Its events name it by id too.
       if (Array.isArray(epic.epicEvents)) {
-        epic.epicEvents = epic.epicEvents.map((e: { childTaskId?: unknown }) =>
-          e && typeof e === 'object' && e.childTaskId === claimed ? { ...e, childTaskId: taskId } : e,
+        epic.epicEvents = epic.epicEvents.map((e: { childTaskId?: unknown; id?: unknown }) =>
+          e && typeof e === 'object' && e.childTaskId === claimed
+            ? {
+                ...e,
+                childTaskId: taskId,
+                // The id keeps its `<child>:<…>` shape (fable #701 R1).
+                ...(typeof e.id === 'string' && e.id.startsWith(`${claimed}:`)
+                  ? { id: `${taskId}${e.id.slice(claimed.length)}` }
+                  : {}),
+              }
+            : e,
         );
       }
       moved++;
@@ -3399,6 +3527,14 @@ export class SessionRegistry {
       const remintedSlackless: Array<{ session: ConversationSession; claimed: string }> = [];
       const archivedRelatives: Array<{ serialized: SerializedSession; lastActivity: Date }> = [];
       let reconciledTaskTurnCount = 0;
+      /** E4 ⑤ — children whose lost turn was recorded here: their epics hear it after the loop. */
+      const reconciledChildren: Array<{
+        session: ConversationSession;
+        key: string;
+        chainId?: string;
+        turnId: string;
+        at: number;
+      }> = [];
       // Task keys taken by a Slack-less record earlier in THIS load pass (a reload of the
       // same registry is not a duplicate; a second record with one task id in one file is).
       const slacklessKeysThisLoad = new Set<string>();
@@ -3798,6 +3934,15 @@ export class SessionRegistry {
               reason: 'process ended before the outcome was recorded',
               at: now,
             });
+            if (session.parentTaskId) {
+              reconciledChildren.push({
+                session,
+                key: chainId ?? turnId,
+                ...(chainId ? { chainId } : {}),
+                turnId,
+                at: now,
+              });
+            }
             session.openChain = undefined;
             session.activityState = 'idle';
             session.activityStateChangedAt = now;
@@ -3842,6 +3987,25 @@ export class SessionRegistry {
         remintedSlackless,
         archivedRelatives.map((a) => a.serialized),
       );
+      // E4 ⑤ (D6 a) — a second pass, after every record is in and relinked: a child
+      // can come before its epic in the file. The write-back below saves the events;
+      // an epic archived in this same load carries its event into the archive (grok #701 R1).
+      for (const { session, ...end } of reconciledChildren) {
+        const archiving = archivedRelatives.find(
+          (a) =>
+            a.serialized.slackless === true &&
+            a.serialized.kind === 'epic' &&
+            a.serialized.taskId === session.parentTaskId,
+        );
+        if (archiving && session.taskId && session.planNodeId) {
+          archiving.serialized.epicEvents = withEpicEvent(
+            sanitizeEpicEvents(archiving.serialized.epicEvents),
+            chainEndEvent(session, { ...end, outcome: 'interrupted' }),
+          );
+          continue;
+        }
+        this.addChainEndEvent(session, { ...end, outcome: 'interrupted' });
+      }
       for (const { serialized, lastActivity } of archivedRelatives) {
         this.archiveSerializedOnLoad(serialized, lastActivity, 'sleep_expired');
       }
