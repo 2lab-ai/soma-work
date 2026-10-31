@@ -166,7 +166,14 @@ const CARD_OF_FNS = [
   'isSiblingSession',
   'cardOf',
 ];
-const CARD_OF_VARS = ['PR_STATE_LABEL', 'PR_STATE_TONE', 'AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'AGENT_STATUS_GLYPH', 'OWNER_BADGE_HUES'];
+const CARD_OF_VARS = [
+  'PR_STATE_LABEL',
+  'PR_STATE_TONE',
+  'AGENT_STATUS_LABEL',
+  'AGENT_STATUS_TONE',
+  'AGENT_STATUS_GLYPH',
+  'OWNER_BADGE_HUES',
+];
 
 describe('T5 — collapsed card face: artifacts visible on the board itself', () => {
   const { cardOf } = load<{ cardOf(s: unknown, col: string): Record<string, unknown> }>(CARD_OF_FNS, CARD_OF_VARS, {
@@ -305,9 +312,16 @@ describe('T5 — expanded card: the 산출물 strip', () => {
       artifacts: { count: 2, recent: [] },
     });
     // D4 (I-01 / T8): the element's `playable` — the page keeps no play button, no shared <audio>, no marking.
-    expect(out).toMatch(/<ui-file-card class="art-card" variant="tile" playable lang="ko" data-art-cid="c" data-art-id="A3"/);
+    expect(out).toMatch(
+      /<ui-file-card class="art-card" variant="tile" playable lang="ko" data-art-cid="c" data-art-id="A3"/,
+    );
     expect(out).not.toContain('data-art-play');
-    for (const gone of ['function toggleArtAudio(', 'function artAudioMark(', 'function artAudioPlaying(', 'var _artAudio']) {
+    for (const gone of [
+      'function toggleArtAudio(',
+      'function artAudioMark(',
+      'function artAudioPlaying(',
+      'var _artAudio',
+    ]) {
       expect(TEMPLATE, gone).not.toContain(gone);
     }
     expect(TEMPLATE).not.toMatch(/\.art-play\b/);
@@ -442,13 +456,20 @@ describe('T2 — hover peek: @2lab.ai/ui <ui-hovercard>, one card for every tile
 
   it('resolves the trigger to its file: a keyed card / tile, or a face chip by its data-key through the session', () => {
     const files: Record<string, Art> = { A1: html, A2: png };
-    const { artPeekTarget } = load<{ artPeekTarget(t: unknown): { cid: string; a: Art } | null }>(['artPeekTarget'], [], {
-      artFind: (cid: string, id: string) => (cid === 'conv-1' ? (files[id] ?? null) : null),
-      _sessionCache: { 'inst::work:C1:1.2': { conversationId: 'conv-1' } },
-    });
+    const { artPeekTarget } = load<{ artPeekTarget(t: unknown): { cid: string; a: Art } | null }>(
+      ['artPeekTarget'],
+      [],
+      {
+        artFind: (cid: string, id: string) => (cid === 'conv-1' ? (files[id] ?? null) : null),
+        _sessionCache: { 'inst::work:C1:1.2': { conversationId: 'conv-1' } },
+      },
+    );
     expect(artPeekTarget(fakeEl({ 'data-art-cid': 'conv-1', 'data-art-id': 'A2' }))).toEqual({ cid: 'conv-1', a: png });
     // The inbox's chip: data-art is the file, data-key "art:<session key>:<file>" names the session (keys carry ':').
-    expect(artPeekTarget(fakeEl({ 'data-art': 'A1', 'data-key': 'art:inst::work:C1:1.2:A1' }))).toEqual({ cid: 'conv-1', a: html });
+    expect(artPeekTarget(fakeEl({ 'data-art': 'A1', 'data-key': 'art:inst::work:C1:1.2:A1' }))).toEqual({
+      cid: 'conv-1',
+      a: html,
+    });
     expect(artPeekTarget(fakeEl({ 'data-art': 'A1', 'data-key': 'art:unknown:A1' }))).toBeNull();
     expect(artPeekTarget(fakeEl({ 'data-art-cid': 'conv-1', 'data-art-id': 'nope' }))).toBeNull();
     expect(artPeekTarget(null)).toBeNull();
@@ -504,7 +525,7 @@ describe('T2 — hover peek: @2lab.ai/ui <ui-hovercard>, one card for every tile
   });
 });
 
-describe("T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles=\"none\"> over the page's own cards (D4 I-06 / I-07)", () => {
+describe('T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles="none"> over the page\'s own cards (D4 I-06 / I-07)', () => {
   const api = (docs: Record<string, string> = {}) =>
     load<{
       artViewItem(cid: string, a: Art): Record<string, unknown>;
@@ -541,17 +562,23 @@ describe("T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles=\"none\"> ove
     });
     expect(api().artViewItem('c', answer)).toMatchObject({ id: 'A4', kind: 'markdown', kindLabel: '답변' });
     expect(api().artViewItem('c', answer)).not.toHaveProperty('text');
-    expect(api({ 'c|A4': '# 결과\n\n배포 완료' }).artViewItem('c', answer)).toMatchObject({ text: '# 결과\n\n배포 완료' });
+    expect(api({ 'c|A4': '# 결과\n\n배포 완료' }).artViewItem('c', answer)).toMatchObject({
+      text: '# 결과\n\n배포 완료',
+    });
   });
 
   it('a file only Slack has: no url, why, and the Slack permalink as the viewer action (https only)', () => {
     const item = api().artViewItem('c', bigMov);
     expect(item).not.toHaveProperty('url');
     expect(item.meta).toContain('사본이 없습니다');
-    expect(item.actions).toEqual([{ id: 'slack', label: 'Slack에서 열기', href: 'https://example.slack.com/files/U/F5/huge.mov' }]);
+    expect(item.actions).toEqual([
+      { id: 'slack', label: 'Slack에서 열기', href: 'https://example.slack.com/files/U/F5/huge.mov' },
+    ]);
     expect(api().artViewItem('c', { ...bigMov, permalink: 'javascript:alert(1)' })).not.toHaveProperty('actions');
     // A stored file with a permalink gets the action beside the element's 새 탭 / 다운로드.
-    expect(api().artViewItem('c', { ...png, permalink: 'https://example.slack.com/files/U/F2/chart.png' }).actions).toHaveLength(1);
+    expect(
+      api().artViewItem('c', { ...png, permalink: 'https://example.slack.com/files/U/F2/chart.png' }).actions,
+    ).toHaveLength(1);
   });
 
   it("the page's own body (slot=\"preview\"): the model's html runs its scripts — never same-origin; a pdf opens inline; the rest is the element's", () => {
@@ -559,8 +586,11 @@ describe("T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles=\"none\"> ove
     expect(out).toMatch(/<iframe[^>]*sandbox="allow-scripts"/);
     expect(out).not.toContain('allow-same-origin');
     expect(api().artViewerPreview('c', { ...html, source: 'user_upload' })).toBe('');
-    expect(api().artViewerPreview('c', { id: 'P', name: 'a.pdf', kind: 'pdf', stored: true })).toMatch(/<iframe class="art-full-frame" src="\/api\/dashboard\/session\/c\/artifacts\/P\/content"/);
-    for (const a of [png, wav, answer, bigMov, { ...bigMov, stored: true }]) expect(api().artViewerPreview('c', a)).toBe('');
+    expect(api().artViewerPreview('c', { id: 'P', name: 'a.pdf', kind: 'pdf', stored: true })).toMatch(
+      /<iframe class="art-full-frame" src="\/api\/dashboard\/session\/c\/artifacts\/P\/content"/,
+    );
+    for (const a of [png, wav, answer, bigMov, { ...bigMov, stored: true }])
+      expect(api().artViewerPreview('c', a)).toBe('');
     // Swapped on ui-view; a document without its text is fetched and the list handed back.
     const sync = clientFn('syncArtViewer');
     expect(sync).toContain('artViewerSlot(v, cid, a);');
@@ -569,10 +599,16 @@ describe("T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles=\"none\"> ove
     expect(clientFn('artDocText')).toContain('t.length > 2000000');
   });
 
-  it("the slot child: put in for a file the page draws, swapped for another, taken out for one the element draws (or none)", () => {
-    const kids: Array<{ slot: string; className: string; attrs: Record<string, string>; innerHTML: string; removed: boolean }> = [];
+  it('the slot child: put in for a file the page draws, swapped for another, taken out for one the element draws (or none)', () => {
+    const kids: Array<{
+      slot: string;
+      className: string;
+      attrs: Record<string, string>;
+      innerHTML: string;
+      removed: boolean;
+    }> = [];
     const viewer = {
-      querySelector: (sel: string) => (sel === '[slot="preview"]' ? kids.find((k) => !k.removed) ?? null : null),
+      querySelector: (sel: string) => (sel === '[slot="preview"]' ? (kids.find((k) => !k.removed) ?? null) : null),
       appendChild: (k: (typeof kids)[number]) => kids.push(k),
     };
     const fakeDocument = {
@@ -605,7 +641,9 @@ describe("T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles=\"none\"> ove
     expect(kids).toHaveLength(1);
     expect(kids[0].attrs).toMatchObject({ slot: 'preview', 'data-art-for': 'c|A1' });
     expect(kids[0].className).toBe('art-viewer-preview');
-    expect(kids[0].innerHTML).toMatch(/<iframe class="art-full-frame" sandbox="allow-scripts" src="\/api\/dashboard\/session\/c\/artifacts\/A1\/content"/);
+    expect(kids[0].innerHTML).toMatch(
+      /<iframe class="art-full-frame" sandbox="allow-scripts" src="\/api\/dashboard\/session\/c\/artifacts\/A1\/content"/,
+    );
     // The same file again: nothing is rewritten (the frame keeps its page).
     const before = kids[0].innerHTML;
     kids[0].innerHTML = `${before}<!--kept-->`;
@@ -637,15 +675,24 @@ describe("T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles=\"none\"> ove
     };
     const run = (cache: Record<string, unknown>, id: string, opener: unknown = { focus() {} }) => {
       const m = load<{ openArtifactViewer(cid: string, id: string, opener: unknown): void }>(
-        [...BASE_FNS, 'umSiblings', 'umMissingReason', 'artSortForDisplay', 'artViewItem', 'artViewerItems', 'openArtifactViewer'],
+        [
+          ...BASE_FNS,
+          'umSiblings',
+          'umMissingReason',
+          'artSortForDisplay',
+          'artViewItem',
+          'artViewerItems',
+          'openArtifactViewer',
+        ],
         [...BASE_VARS, '_artDocCache', '_artViewer'],
         {
           artViewerEl: () => viewer,
           _artCache: cache,
-          artFind: (_cid: string, fid: string) => ({ A1: html, A2: png, A9: { ...wav, id: 'A9' } }[fid] ?? null),
+          artFind: (_cid: string, fid: string) => ({ A1: html, A2: png, A9: { ...wav, id: 'A9' } })[fid] ?? null,
           ensureArtifacts: (cid: string) => fetched.push(cid),
           pauseArtCards: () => paused.push(1),
-          artViewerSlot: (v: unknown, cid: string, a: { id: string } | undefined) => order.push(`slot ${v === viewer ? cid : '?'}|${a ? a.id : '-'}`),
+          artViewerSlot: (v: unknown, cid: string, a: { id: string } | undefined) =>
+            order.push(`slot ${v === viewer ? cid : '?'}|${a ? a.id : '-'}`),
         },
       );
       m.openArtifactViewer('c', id, opener);
@@ -683,7 +730,9 @@ describe("T3 — the viewer: @2lab.ai/ui <ui-artifact-viewer tiles=\"none\"> ove
     );
     expect(clientFn('artViewerIsOpen')).toContain("typeof v.index === 'number' && v.index >= 0");
     // N (the New task key) does nothing while the viewer is up.
-    expect(clientFn('ntIsTypingTarget')).toContain("document.querySelector('dialog[open], ui-dialog[open]') || artViewerIsOpen()");
+    expect(clientFn('ntIsTypingTarget')).toContain(
+      "document.querySelector('dialog[open], ui-dialog[open]') || artViewerIsOpen()",
+    );
   });
 });
 
