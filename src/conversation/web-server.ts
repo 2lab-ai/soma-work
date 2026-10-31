@@ -21,7 +21,9 @@ import { registerArtifactRoutes } from './artifact-routes';
 import {
   registerDashboardRoutes,
   setSelfInstanceEnv,
+  startDashboardAdminApprovalWatch,
   startDashboardPermissionWatch,
+  stopDashboardAdminApprovalWatch,
   stopDashboardPermissionWatch,
 } from './dashboard';
 import { removeHeartbeat, startHeartbeatLoop } from './instance-registry';
@@ -776,6 +778,7 @@ export async function startWebServer(options: StartWebServerOptions = {}): Promi
 
       // Permission prompts waiting in the shared store → cards (SSOT 2026-10-24).
       startDashboardPermissionWatch();
+      startDashboardAdminApprovalWatch();
 
       return;
     } catch (error) {
@@ -798,6 +801,7 @@ export async function stopWebServer(): Promise<void> {
   listening = false;
   stopPublicUrlCheck();
   stopDashboardPermissionWatch();
+  stopDashboardAdminApprovalWatch();
   if (server) {
     // Flush hook state before closing
     try {

@@ -197,7 +197,7 @@ describe('paintAppBar — the data the page hands the bar', () => {
     const m = load<{ _applyUserPill(d: unknown): void; paintAppBar(): void; account(): unknown }>(
       ['_applyUserPill', 'paintAppBar'],
       ['APP_BAR_NAV', 'APP_BAR_TOOLBAR_AT', '_appBarStatus', '_appBarAccount'],
-      { document: h.document, STRINGS, localStorage: { removeItem() {} } },
+      { document: h.document, STRINGS, localStorage: { removeItem() {} }, adminInboxLoad: () => {} },
       ['function account() { return _appBarAccount; }'],
     );
     m._applyUserPill({ user: { name: LONG } });
@@ -229,6 +229,7 @@ describe('paintAppBar — the data the page hands the bar', () => {
         _wl: null,
         setTimeout: () => 0,
         paintAppBar: () => painted.push(1),
+        adminInboxLoad: () => {},
       },
       ['function status() { return _appBarStatus; }'],
     );
