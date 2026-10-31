@@ -186,15 +186,18 @@ describe("panel body — one scroll area: the task surface, the sticky agent tab
   const panel = TEMPLATE.slice(TEMPLATE.indexOf('<ui-drawer class="slide-panel" id="slide-panel" data-deck="0"'));
   const at = (s: string) => panel.indexOf(s);
 
-  it('header (자세히) → body (scroll: surface → tabs → tabpanel) → composer', () => {
+  it('header → body (scroll: surface → tabs → tabpanel) → composer', () => {
     expect(panel).not.toBe('');
     expect(at('<div class="panel-header">')).toBeGreaterThan(0);
-    // SSOT 2026-10-29 T2: the peeking edges of the deck sit above the head; ‹ n / m › in the head before 자세히.
+    // SSOT 2026-10-29 T2: the peeking edges of the deck sit above the head; ‹ n / m › in the head before ✕.
+    // (The head's 자세히 chip is gone — the top bar's view mode is the switch, SSOT 2026-11-01.)
     expect(at('id="panel-deck-peek"')).toBeLessThan(at('<div class="panel-header">'));
     expect(at('id="panel-deck"')).toBeGreaterThan(at('<div class="panel-header">'));
-    expect(at('id="panel-deck"')).toBeLessThan(at('id="panel-detail-toggle"'));
-    expect(at('id="panel-detail-toggle"')).toBeGreaterThan(at('<div class="panel-header">'));
-    expect(at('<div class="panel-body" id="panel-body">')).toBeGreaterThan(at('id="panel-detail-toggle"'));
+    expect(at('id="panel-deck"')).toBeLessThan(at('class="ui-icon-btn is-bordered panel-close"'));
+    expect(at('id="panel-detail-toggle"')).toBe(-1);
+    expect(at('<div class="panel-body" id="panel-body">')).toBeGreaterThan(
+      at('class="ui-icon-btn is-bordered panel-close"'),
+    );
     expect(at('<div class="panel-scroll" id="panel-scroll">')).toBeGreaterThan(at('id="panel-body"'));
     expect(at('<section class="panel-surface" id="panel-surface"')).toBeGreaterThan(at('id="panel-scroll"'));
     expect(at('id="panel-artifacts"')).toBeGreaterThan(at('id="panel-surface"'));

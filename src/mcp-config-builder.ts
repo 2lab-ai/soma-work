@@ -32,6 +32,7 @@ import {
   type PermissionLevel,
 } from './mcp-tool-permission-config';
 import { isSafePathSegment, normalizeTmpPath } from './path-utils';
+import { attachesEpicServer, buildEpicServer, EPIC_SERVER } from './task-turn/epic-server';
 import { userSettingsStore } from './user-settings-store';
 
 /** Native SDK tools that require terminal interaction — disallowed in Slack context */
@@ -200,6 +201,12 @@ export class McpConfigBuilder {
       internalServers['mcp-tool-permission'] = this.buildMcpToolPermissionServer(slackContext);
     }
 
+    // E4 ④a (.prd/19 D3) — the epic's host tools, on an epic's own task turn only (never a
+    // child's: depth 1). Allowed below, so a `legacy` task turn (no prompt server) can use them.
+    if (attachesEpicServer(executionContext)) {
+      internalServers[EPIC_SERVER] = buildEpicServer(executionContext);
+    }
+
     // Always add permission prompt server when in Slack context
     // Even bypass users need the MCP server for dangerous command approval via Slack UI
     if (slackContext) {
@@ -260,6 +267,7 @@ export class McpConfigBuilder {
     // whether any MCP server happened to be registered (the retired `llm`
     // server used to make that condition unconditionally true).
     config.allowedTools = this.buildAllowedTools(slackContext, userBypass, contextUser, !!executionContext);
+    if (internalServers[EPIC_SERVER]) config.allowedTools.push(`mcp__${EPIC_SERVER}`);
 
     this.logger.debug('Added MCP configuration', {
       serverCount: Object.keys(config.mcpServers ?? {}).length,

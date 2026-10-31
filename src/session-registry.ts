@@ -1086,7 +1086,8 @@ export class SessionRegistry {
    */
   setEpicPlan(taskId: string, input: PlanWriteInput, by: 'epic' | 'owner'): EpicPlan {
     const epic = this.sessionsByTaskId.get(taskId);
-    if (!epic || epic.slackless !== true || epic.kind !== 'epic')
+    // A closing epic (flagged while its close is awaited) takes no new plan (grok #697 R1).
+    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated)
       throw new Error(`setEpicPlan: ${taskId} is not a live epic`);
     const children = this.getChildTasks(taskId).map((c) => ({
       planNodeId: c.planNodeId,

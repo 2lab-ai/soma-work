@@ -299,7 +299,9 @@ describe('agent inbox board — expanded card (§3.1-4)', () => {
     expect(body).toContain(
       `const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col) + slackBtn + '</span></div>';`,
     );
-    expect(body).toMatch(/return '<div class="card-body">'\s*\+ actionsHtml\s*\+ permissionHtml/);
+    // The actions lead what needs the user (needsHtml); the full body (어드밴스드) follows it with the rest.
+    expect(body).toMatch(/const needsHtml = actionsHtml\s*\+ permissionHtml/);
+    expect(body).toMatch(/return '<div class="card-body">'\s*\+ needsHtml\s*\+ middle/);
     expect(TEMPLATE).toContain("var WL_EMPTY_MSG = '작업 로그 없음';");
     // SSOT 2026-10-29: no conversation → no work-log state; the 작업 로그 tab reads 작업 로그 없음.
     expect(fnBody('resetWorkLog')).toContain('_wl = convId ? wlNewState(convId) : null;');
@@ -427,13 +429,14 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     const body = fnBody('openPanel');
     const reset = body.indexOf('resetWorkLog(panelConvId);');
     expect(reset).toBeGreaterThan(-1);
-    expect(body.indexOf('_psec = psecForLanding(_panelLand);')).toBeGreaterThan(-1);
+    // View mode (SSOT 2026-11-01): 어드밴스드 lands on the section the opening names; 미니멀 on the chat.
+    expect(body.indexOf('_psec = psecForMode(_panelLand);')).toBeGreaterThan(-1);
+    expect(fnBody('psecForMode')).toContain("return isAdvanced() ? psecForLanding(land) : 'conv';");
     expect(body.indexOf('selectPanelSection(_psec);')).toBeGreaterThan(reset);
     expect(fnBody('psecForLanding')).toContain("land === 'worklog' ? 'log'");
     expect(TEMPLATE).toMatch(/^var _panelDetail = false;/m);
-    expect(fnBody('panelDetailFrom')).toContain("return saved === '1';");
-    // 자세히 no longer opens the work log: it is a tab of its own.
-    expect(fnBody('togglePanelDetail')).not.toMatch(/worklog|WorkLog/);
+    // 자세히 is the view mode now; switching it opens no work log: that is a tab of its own.
+    expect(fnBody('toggleViewMode')).not.toMatch(/worklog|WorkLog/);
     // A batch is painted only while 작업 로그 is shown; else the tab paints from the state when opened.
     expect(fnBody('paintWorkLog')).toContain("if (_psec !== 'log') {");
     expect(fnBody('paintSection')).toContain("else if (sec === 'log') wlPaint();");

@@ -4753,6 +4753,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-task-outcome[data-outcome="failed"] .cto-label, .card-task-outcome[data-outcome="interrupted"] .cto-label { color: var(--red); }
 .card-task-outcome .cto-warn { color: var(--red); font-weight: 600; }
 .card-actions-bar .card-actions { margin: 0; }
+/* An open card with nothing under its actions (미니멀, SSOT 2026-11-01): no divider over an empty body. */
+.card-actions-bar:last-child { margin-bottom: 0; padding-bottom: 0; border-bottom: 0; }
 .cfb-model { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; min-width: 0; color: var(--ib-muted); font-size: 13px; }
 .card-foot-bar + .cb-model-note { margin-top: 6px; }
 /* ── GOAL LINE — the goal on the open card, its home is the panel (spec 13) ── */
@@ -4990,8 +4992,8 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
 .psec-el > ui-conversation, .psec-el > ui-work-log, .psec-el > ui-log-scroller { padding: 4px 8px 0; }
 .cv-arts-slot .turn-arts-row { margin-top: 2px; }
 .psec[hidden] { display: none; }
-/* 자세히 (T1.6) — a button that behaves like a toggle (HIG Toggles: outside a list, not a switch; the background
-   tells the state): the kit chip (.ui-chip[aria-pressed], D7 E-06). The panel's class gates the detail-only parts. */
+/* 자세히 (T1.6) is the view mode now (SSOT 2026-11-01): 어드밴스드 puts .is-detail on the panel, which gates the
+   detail-only parts; 미니멀 leaves it off. */
 /* Minimal by default: the agent path, the subtree and the main agent's own
    header are for 자세히 — the tabs already say where the reader is. */
 .slide-panel:not(.is-detail) .pa-bar,
@@ -5081,6 +5083,31 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
   white-space: nowrap;
 }
 .panel-header { flex-wrap: wrap; row-gap: 8px; }
+/* ── VIEW MODE (SSOT 2026-11-01) — 미니멀, the default: the board, and in a detail card the task list and the
+   chat. The page's extras (stats, capacity, the CRON lane, the defaults, the board's user picker on the viewer's
+   own board) step aside — admin write mode stays: answering an admin approval needs it; the detail card's top keeps its header (title · status · Slack · Stop) and what needs the user
+   (approvals, the question), and gives the rest to the task list and the chat. Hidden here, never removed:
+   어드밴스드 (body[data-view-mode="advanced"]) shows all of it again. ── */
+body[data-view-mode="minimal"] #stats,
+body[data-view-mode="minimal"] #capacity,
+body[data-view-mode="minimal"] #cron-lane,
+body[data-view-mode="minimal"] #topbar-defaults,
+body[data-view-mode="minimal"][data-board-mine] #user-select,
+body[data-view-mode="minimal"] #lifecycle-btn { display: none !important; }
+body[data-view-mode="minimal"] #panel-title-sub,
+body[data-view-mode="minimal"] #panel-info,
+body[data-view-mode="minimal"] #panel-goal,
+body[data-view-mode="minimal"] #panel-artifacts,
+body[data-view-mode="minimal"] #panel-agents,
+body[data-view-mode="minimal"] #panel-controls { display: none !important; }
+/* One agent (the main one) and one section (the chat): no tab strips. */
+body[data-view-mode="minimal"] .panel-tabs::part(list),
+body[data-view-mode="minimal"] .panel-sections::part(list) { display: none; }
+/* The task list: the whole current list, up to a third of the body, then it scrolls in its own box. */
+body[data-view-mode="minimal"] .panel-tasks { max-height: 34cqh; overflow-y: auto; overscroll-behavior: contain; padding: 8px 16px 6px; }
+.ptl-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+.panel-tasks > ui-task-plan.panel-task-list { display: block; min-width: 0; }
+
 /* ── DETAIL DECK (SSOT 2026-10-29 T2) — every open card's detail card; the ones
    waiting behind the front card show their top edges above it (<ui-deck-nav peek="only">
    above the header, full width — D3 G6-3, 0.12.0), and ‹ n / m › in the top right go
@@ -5215,10 +5242,9 @@ ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }
   .topbar .td-prefix, .topbar .td-status { display: none; }
   .main { padding: 14px 12px; }
   .ag-tree { padding: 8px 8px 4px; }
-  /* Panel head with the deck shown: <ui-deck-nav>'s 44px targets left the title ~85px, so 자세히 is its
-     icon alone (the word stays its accessible name) and the title gets the word's width back. */
-  .slide-panel:not([data-deck="0"]) .panel-detail-toggle { width: 44px; padding: 0; justify-content: center; }
-  .slide-panel:not([data-deck="0"]) .pdt-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  /* The view-mode toggle on a phone: its icon alone (the word stays its accessible name). */
+  .view-mode-toggle { width: 44px; padding: 0; justify-content: center; }
+  .view-mode-toggle .vm-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 
   /* Top bar (the app bar narrows itself: the status dot, the account's initials, 메뉴; its
      toolbar row keeps 12px sides): the user select fills what the chips leave of its line
@@ -5506,7 +5532,7 @@ ${uiLibTokensCss()}
 ${pageTokenAliases()}
 </style>
 </head>
-<body>
+<body data-view-mode="minimal">
 <div class="app">
   <!-- The top bar is @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14): brand (the page's h1), the 대화 · 설정 ·
        기억 links with their titles (folded into 메뉴 when the bar is short of room), the live-update status, the
@@ -5546,6 +5572,10 @@ ${pageTokenAliases()}
     ><span id="admin-mode-label"><span class="admin-mode-prefix">관리자 </span><span class="admin-mode-state">끔</span></span></button>
     </div>
     <button type="button" class="ui-btn is-primary new-task-btn" id="new-task-btn" slot="actions" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><i data-ui-icon="plus"></i><span class="nt-btn-label">새 작업</span><kbd class="ui-kbd nt-kbd" aria-hidden="true">N</kbd></button>
+    <!-- View mode (SSOT 2026-11-01): 미니멀 by default; this toggle turns 어드밴스드 on — everything the page has.
+         A button that behaves like a toggle (HIG Toggles: the background tells the state, aria-pressed), saved per
+         user (the dashboardMode setting). -->
+    <button type="button" class="ui-chip view-mode-toggle" id="view-mode-toggle" slot="actions" aria-pressed="false" title="어드밴스드 모드 — 켜면 통계, 토큰, 에이전트 트리, 작업 로그까지 모두 보여 줍니다" onclick="toggleViewMode()"><i data-ui-icon="list"></i><span class="vm-label">어드밴스드</span></button>
     </ui-app-bar>
   </header>
 
@@ -5647,8 +5677,6 @@ ${pageTokenAliases()}
       </div>
       <!-- Detail deck (SSOT 2026-10-29 T2, D3 E-05): every open card has its detail card here; <ui-deck-nav>'s ‹ n / m › (and ←/→ on it) go through them, round the end. -->
       <ui-deck-nav class="panel-deck" id="panel-deck" lang="ko" wrap hidden></ui-deck-nav>
-      <!-- 자세히 (task view T1.6): the panel shows what matters by default; on, every detail of every section. Saved per device. -->
-      <button type="button" class="ui-chip panel-detail-toggle" id="panel-detail-toggle" aria-pressed="false" title="모든 세부 정보 보기" onclick="togglePanelDetail()"><i data-ui-icon="list"></i><span class="pdt-label">자세히</span></button>
       <button type="button" class="ui-icon-btn is-bordered panel-close" aria-label="작업 카드 닫기" title="작업 카드 닫기 (카드도 접힘)" onclick="closeDetailCard()"><i data-ui-icon="close"></i></button>
       <!-- Session head (spec 13, D3 E-08): <ui-status-bar> — status · this turn's time · Slack · the session's actions; an armed resume in its slot. -->
       <ui-status-bar class="panel-status" id="panel-status" lang="ko"></ui-status-bar>
@@ -6995,7 +7023,41 @@ function panelAgentEarlier() {
   return (a && a.earlierTasks) || [];
 }
 function repaintPanelTasks() {
+  if (!isAdvanced()) { renderPanelTaskList(panelAgentTasks()); return; }
   renderPanelTasks(panelAgentTasks(), panelAgentLabel(), panelAgentEarlier(), panelAgentOutside());
+}
+// 미니멀's task list (SSOT 2026-11-01): the current list as one checklist (<ui-task-plan>: each task's state, its
+// time; the element folds the earliest completed steps past three behind one line) under a head that says how far
+// it is — no runs table, no earlier plans, no tool counts.
+function renderPanelTaskList(tasks) {
+  var container = document.getElementById('panel-tasks');
+  if (!container) return;
+  var list = tasks || [];
+  // No list yet: no row at all — the chat gets the space.
+  container.style.display = list.length ? '' : 'none';
+  var done = 0;
+  for (var i = 0; i < list.length; i++) if (list[i] && list[i].status === 'completed') done++;
+  var html = list.length
+    ? '<div class="panel-tasks-header ptl-head"><span class="ps-sec-title">작업 목록</span>'
+      + '<span class="ps-sec-sum">' + done + ' / ' + list.length + ' 완료</span></div>'
+      + '<ui-task-plan class="panel-task-list" id="panel-task-list" lang="ko" flush foot="none"></ui-task-plan>'
+    : '';
+  if (container._html !== html) {
+    morphInnerHtml(container, html);
+    container._html = html;
+  }
+  var el = document.getElementById('panel-task-list');
+  if (el) taskElData(el, panelTaskListData(list));
+}
+function panelTaskListData(tasks) {
+  return {
+    title: '',
+    steps: (tasks || []).map(function(t, i) {
+      var step = cardTaskStep(t, i);
+      delete step.toolCalls;
+      return step;
+    }),
+  };
 }
 // Work no task of the main agent got (a subagent's tab has none of its own).
 function panelAgentOutside() {
@@ -7215,6 +7277,7 @@ function _applyUserPill(data) {
   _viewerIsAdmin = isAdminCapable;
   if (typeof paintUsageBreakdown === 'function') paintUsageBreakdown(); // the by-user view is an admin's
   _viewerUserId = (data && data.user && data.user.slackUserId) || '';
+  syncBoardScope();
   const lifecycleBtn = document.getElementById('lifecycle-btn');
   if (lifecycleBtn) lifecycleBtn.style.display = isAdminCapable ? 'inline-flex' : 'none';
   // Admin approvals (#620): a Slack-signed-in admin only (a viewer token names nobody — the
@@ -7327,9 +7390,24 @@ async function loadMyDefaults() {
   var box = document.getElementById('topbar-defaults');
   if (!box) return;
   try {
+    var seq = _viewModeSeq;
     var res = await fetch('/api/settings');
     if (!res.ok) { box.hidden = true; return; }
     var data = await res.json();
+    // The user's view mode (SSOT 2026-11-01): the server's row wins over the device's copy. Saved only for a
+    // user the server accepts (the registry refuses the others' writes).
+    var vm = viewModeOfSettings(data);
+    if (vm !== null) {
+      _viewModeOnServer = !(data && data.accepted === false);
+      if (_viewModeChosen) {
+        // The reader switched before the server was known: keep their choice and save it now.
+        _viewModeChosen = false;
+        if (_viewModeOnServer && vm !== _viewMode) saveViewMode();
+      } else if (seq === _viewModeSeq && !_viewModeSaving && vm !== _viewMode) {
+        // An answer asked for before a switch, or landing while a save runs, may predate the save: not applied.
+        setViewMode(vm);
+      }
+    }
     // Without admin acceptance the server refuses every settings write.
     if (data && data.accepted === false) { box.hidden = true; return; }
     var rows = (data && data.settings) || [];
@@ -7646,9 +7724,16 @@ function syncUserSelectTitle() {
   select.title = opt ? opt.textContent : '';
 }
 
+// 미니멀 hides the board's user picker only on the viewer's own board. Anywhere else — All Users (/dashboard),
+// another user's board — the owner's controls (approve, answer, Stop, the composer) wait until the reader picks
+// themselves, so the picker stays.
+function syncBoardScope() {
+  document.body.toggleAttribute('data-board-mine', !!currentUserId && currentUserId === _viewerUserId);
+}
 function selectUser(userId) {
   syncUserSelectTitle();
   currentUserId = userId;
+  syncBoardScope();
   history.replaceState(null, '', userId ? '/dashboard/' + userId : '/dashboard');
   paintTrail();
   loadSessions();
@@ -8003,7 +8088,7 @@ function renderBoard(board, partial) {
   _lastBoardData = board;
   // Cron runs leave the columns for the CRON lane, one group per job (SSOT
   // 2026-10-23 T4); the lane sections exist before their elements are filled.
-  var cronPlan = planCronLane(board, _cronJobs, _cronRevealKey);
+  var cronPlan = planCronLane(board, _cronJobs, _cronRevealKey, !isAdvanced());
   _cronPlan = cronPlan;
   syncCronLane(cronPlan);
   var rest = cronPlan.board;
@@ -8082,7 +8167,7 @@ function placeCard(s, col, host, drawn) {
   _cardHost[s.key] = host;
   _cardCol[s.key] = col;
   if (drawn) {
-    _cardData[s.key] = cardOf(s, col);
+    _cardData[s.key] = viewCardOf(s, col);
     _cardDrawn[s.key] = true;
     // A collapsed card paints no approval card, but the requester's input is
     // fetched as the card's would be (acPermissionData), so opening it shows it at once.
@@ -8289,7 +8374,7 @@ function paintCardBody(key) {
   }
   if (b.el.parentNode !== host) host.appendChild(b.el);
   var col = _cardCol[key];
-  var html = renderCardBody(s, col);
+  var html = renderCardBody(s, col, !isAdvanced());
   if (b.html !== html && !isPickingModel(b.el)) {
     morphInnerHtml(b.el, html);
     b.html = html;
@@ -8310,7 +8395,7 @@ function refreshCard(key) {
   var s = _sessionCache[key];
   if (!host || !s) return;
   if (_cardDrawn[key]) {
-    var c = cardOf(s, _cardCol[key] || 'idle');
+    var c = viewCardOf(s, _cardCol[key] || 'idle');
     if (JSON.stringify(c) !== JSON.stringify(_cardData[key])) {
       _cardData[key] = c;
       inboxPaint(host);
@@ -8584,6 +8669,23 @@ function cardOf(s, col) {
   var owner = currentUserId ? '' : s.ownerName || s.ownerId || '';
   if (owner) card.badge = { text: String(owner), hue: ownerBadgeHue(s.ownerId || owner), title: String(owner) };
   return card;
+}
+
+// View mode (SSOT 2026-11-01): a minimal face keeps what a glance needs — the title, the status and its time,
+// the task in progress, what the session asks (summary), the lead (★ · CRON) and the owner in the All Users view.
+// Tokens, cost, sub-agents, artifacts, steps, context, media and the PR are 어드밴스드's.
+var MINIMAL_CARD_KEYS = ['id', 'title', 'status', 'statusText', 'bodyMode', 'summary', 'since', 'elapsedMs', 'task', 'lead', 'badge'];
+function minimalCard(card) {
+  var out = {};
+  for (var i = 0; i < MINIMAL_CARD_KEYS.length; i++) {
+    var k = MINIMAL_CARD_KEYS[i];
+    if (card && Object.prototype.hasOwnProperty.call(card, k) && card[k] !== undefined) out[k] = card[k];
+  }
+  return out;
+}
+function viewCardOf(s, col) {
+  var c = cardOf(s, col);
+  return isAdvanced() ? c : minimalCard(c);
 }
 
 // Task window on the open card (§3.1-4, spec 13) — @2lab.ai/ui <ui-task-plan> in window mode (0.14.1, D8b
@@ -9278,41 +9380,106 @@ function repaintPanelScope() {
   wlPaint();
   renderAgentConv();
 }
-// ── Task view (SSOT 2026-10-27) — 자세히, agent tabs, 지시와 답변 ──
-// 자세히 (T1.6): the panel shows what matters by default — one line of 세션 정보,
-// what needs the user, the artifacts, the tabs, the section tabs; Tasks folded.
-// On, every detail opens: the full 세션 정보, the plan with every completed step
-// and the earlier plans, the agent's path. The choice is saved per device.
-var PANEL_DETAIL_KEY = 'soma-panel-detail';
+// ── View mode (SSOT 2026-11-01) — 미니멀 / 어드밴스드, per user ──
+// 미니멀, the default: the board with cards that say what matters (minimalCard),
+// an open card with its actions and what it asks, and a detail card that is the
+// task list and the chat. 어드밴스드: everything — the old 자세히 on (every
+// section of the detail card open, the agent tabs, the work log, the tree).
+// The choice is the user's dashboardMode setting (PATCH /api/settings, like the
+// default model); the device keeps a copy for the first paint and for a viewer
+// without a Slack user (no settings row).
+var VIEW_MODE_KEY = 'soma-view-mode';
+var _viewMode = 'minimal';
+var _viewModeOnServer = false; // the settings answered with this user's dashboardMode row
+var _viewModeChosen = false; // the reader toggled before the settings answered: their choice wins and is saved then
+var _viewModeSaving = false; // a save is in flight (one at a time; a switch meanwhile is saved after it)
+var _viewModeResave = false; // the reader switched while a save was in flight
+var _viewModeSeq = 0; // switches so far: a settings answer asked for before a switch is not applied
+function viewModeFrom(v) {
+  return v === 'advanced' ? 'advanced' : 'minimal';
+}
+function isAdvanced() {
+  return _viewMode === 'advanced';
+}
+function readViewMode() {
+  try { return viewModeFrom(localStorage.getItem(VIEW_MODE_KEY)); } catch (_e) { return 'minimal'; }
+}
+// Pure: the user's mode in a /api/settings snapshot, or null when it has no row.
+function viewModeOfSettings(snapshot) {
+  var rows = (snapshot && snapshot.settings) || [];
+  for (var i = 0; i < rows.length; i++) if (rows[i] && rows[i].key === 'dashboardMode') return viewModeFrom(rows[i].value);
+  return null;
+}
+function applyViewMode() {
+  document.body.setAttribute('data-view-mode', _viewMode);
+  var btn = document.getElementById('view-mode-toggle');
+  if (btn) btn.setAttribute('aria-pressed', _viewMode === 'advanced' ? 'true' : 'false');
+  _panelDetail = _viewMode === 'advanced';
+  applyPanelDetail();
+}
+function setViewMode(mode) {
+  var next = viewModeFrom(mode);
+  var changed = next !== _viewMode;
+  _viewMode = next;
+  try { localStorage.setItem(VIEW_MODE_KEY, next); } catch (_e) {}
+  applyViewMode();
+  if (changed) rerenderForViewMode();
+}
+// The top bar's toggle: the page first, then the user's setting (a failed save
+// keeps the page's choice; the next settings load tells the truth).
+async function toggleViewMode() {
+  var next = isAdvanced() ? 'minimal' : 'advanced';
+  _viewModeSeq++;
+  setViewMode(next);
+  if (!_viewModeOnServer) { _viewModeChosen = true; return; }
+  await saveViewMode();
+}
+// Saves the page's current mode — one write at a time, so the last switch is the one saved.
+async function saveViewMode() {
+  if (_viewModeSaving) { _viewModeResave = true; return; }
+  _viewModeSaving = true;
+  var why = '';
+  try {
+    do {
+      _viewModeResave = false;
+      var r = await patchSetting('dashboardMode', _viewMode);
+      if (!r.ok) { why = r.error || 'HTTP'; break; }
+    } while (_viewModeResave);
+  } catch (e) { why = String((e && e.message) || e); }
+  finally { _viewModeSaving = false; }
+  if (why) dashToast({ title: '화면 모드를 저장하지 못했어요', description: '이 기기에서만 바뀌었습니다 — ' + why, tone: 'error' });
+}
+// What a switch redraws: the cards (their face and open bodies) and the open
+// detail card. Minimal shows one agent (the main one) and one section (the chat).
+function rerenderForViewMode() {
+  renderBoardForLayout();
+  resetPanelSections();
+  if (!panelSessionKey) return;
+  if (!isAdvanced()) {
+    if (_panelAgent) selectPanelAgent('');
+    if (_psec !== 'conv') selectPanelSection('conv');
+  }
+  repaintPanelSession();
+  repaintPanelTasks();
+  sizePanelSections();
+}
+// ── Task view (SSOT 2026-10-27) — agent tabs, 지시와 답변 ──
+// The panel shows what matters in 미니멀; 어드밴스드 (the old 자세히, T1.6) opens
+// every detail: the full 세션 정보, the plan with every completed step and the
+// earlier plans, the agent's path.
 var _panelDetail = false;
-function panelDetailFrom(saved) {
-  return saved === '1';
-}
-function readPanelDetail() {
-  try { return panelDetailFrom(localStorage.getItem(PANEL_DETAIL_KEY)); } catch (_e) { return false; }
-}
 function applyPanelDetail() {
   var panel = document.getElementById('slide-panel');
   if (panel) panel.classList.toggle('is-detail', _panelDetail);
-  var btn = document.getElementById('panel-detail-toggle');
-  if (btn) btn.setAttribute('aria-pressed', _panelDetail ? 'true' : 'false');
   syncPanelArtVariant();
 }
-// The sections an opening starts with: every one open with 자세히 — except the goal,
+// The sections an opening starts with: every one open in 어드밴스드 — except the goal,
 // which always opens folded (SSOT 2026-10-29) — else the defaults.
 function resetPanelSections() {
   _panelInfoOpen = _panelDetail;
   _panelTasksOpen = _panelDetail || _panelLand === 'tasks';
   _panelTasksExpanded = _panelTasksOpen;
   _panelTasksEarlier = _panelDetail;
-}
-function togglePanelDetail() {
-  _panelDetail = !_panelDetail;
-  try { localStorage.setItem(PANEL_DETAIL_KEY, _panelDetail ? '1' : '0'); } catch (_e) {}
-  applyPanelDetail();
-  resetPanelSections();
-  if (!panelSessionKey) return;
-  repaintPanelSession();
 }
 
 // Agent tabs (T1.2, D4 E-19): @2lab.ai/ui <ui-tabs shared-panel> — Main first,
@@ -9566,6 +9733,10 @@ var _treeMaxN = null; // the newest spawn number the tree showed (null: not pain
 // item → 에이전트 트리, else (답변하기, a blocker, a card) → 지시와 답변.
 function psecForLanding(land) {
   return land === 'worklog' ? 'log' : land === 'agent' ? 'tree' : 'conv';
+}
+// 미니멀 (SSOT 2026-11-01) has one section, the chat: every landing opens it.
+function psecForMode(land) {
+  return isAdvanced() ? psecForLanding(land) : 'conv';
 }
 // The section strip's tabs (D4 E-24): Chat · 작업 로그 at the start, 에이전트 트리 at the
 // far end (TabItem.end) with the tree glyph; each one's panel is the box slotted by its id.
@@ -10881,7 +11052,9 @@ function cardGoalLine(s, col, canEdit) {
 //   Slack, 작업 로그.
 // The complete record — meta, every number, titled links, the goal editor, the
 // whole task ledger, the rich agent tree — is the panel's.
-function renderCardBody(s, col) {
+// minimal (SSOT 2026-11-01): the actions and what needs the user only — the task window, the agent tree, the
+// io, the artifacts, the goal line, the refs and model · effort are the detail card's and 어드밴스드's.
+function renderCardBody(s, col, minimal) {
   // Owner gating — server-side requireSessionOwner is the authoritative guard;
   // this is UX only. Fail closed: if ownerId is missing (legacy record) the
   // viewer is not treated as owner so the server-side reject is expected.
@@ -10947,6 +11120,22 @@ function renderCardBody(s, col) {
   // The goal's cap decision sits with them: the same card as the owner's DM.
   const permissionHtml = col === 'closed' ? '' : acPermissionsHtml(s) + acGoalDecisionHtml(s);
 
+  // SSOT 2026-10-29 T1/T2: the session's actions (Stop · Close · Trash) and
+  // Slack sit right under the face — one reach from the click that opened the
+  // card, never under a long body. There is no 작업 로그 button: an open card's
+  // detail is always beside the board (the detail deck, openPanel).
+  const slackBtn = (dhShow('links') && s.slackThreadUrl)
+    ? '<a class="ui-btn" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>'
+    : '';
+  const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col) + slackBtn + '</span></div>';
+  const needsHtml = actionsHtml
+    + permissionHtml
+    + renderCardResume(s, col)
+    + taskOutcomeHtml(s)
+    + taskNoticeFailHtml(s)
+    + questionHtml;
+  if (minimal) return '<div class="card-body">' + needsHtml + '</div>';
+
   const ioHtml = isSiblingSession(s) ? '' : renderCardIo(s);
   // Artifacts live on this instance's disk: a sibling instance's card links nowhere here.
   const artsHtml = isSiblingSession(s) ? '' : renderCardArtifacts(s);
@@ -10957,23 +11146,10 @@ function renderCardBody(s, col) {
   else if (col === 'waiting') middle = ioHtml + artsHtml + tasksHtml + agentsHtml;
   else middle = ioHtml + artsHtml + agentsHtml;
 
-  // SSOT 2026-10-29 T1/T2: the session's actions (Stop · Close · Trash) and
-  // Slack sit right under the face — one reach from the click that opened the
-  // card, never under a long body. There is no 작업 로그 button: an open card's
-  // detail is always beside the board (the detail deck, openPanel).
-  const slackBtn = (dhShow('links') && s.slackThreadUrl)
-    ? '<a class="ui-btn" href="' + safeHref(s.slackThreadUrl) + '" target="_blank" rel="noopener">Slack</a>'
-    : '';
-  const actionsHtml = '<div class="card-actions-bar"><span class="card-actions">' + sessionActionHtml(s, col) + slackBtn + '</span></div>';
   const footHtml = modelHtml ? '<div class="card-foot-bar">' + modelHtml + '</div>' + modelNote : modelNote;
 
   return '<div class="card-body">'
-    + actionsHtml
-    + permissionHtml
-    + renderCardResume(s, col)
-    + taskOutcomeHtml(s)
-    + taskNoticeFailHtml(s)
-    + questionHtml
+    + needsHtml
     + middle
     + cardGoalLine(s, col, isOwner && !isSibling)
     + refsHtml
@@ -14088,7 +14264,7 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   _panelLandAt = null;
   _panelHold = false;
   // The section tab of this opening (the reader's choice then holds until it closes).
-  _psec = psecForLanding(_panelLand);
+  _psec = psecForMode(_panelLand);
   _treeWindow = AT_PANEL_WINDOW;
   _treeMaxN = null;
   // The control that opened it gets focus back on close (not a control inside the panel).
@@ -14096,6 +14272,9 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   if (opener && opener !== document.body && !(opener.closest && opener.closest('#slide-panel'))) _panelReturnFocus = document.activeElement;
   // Spec 12 §4.3: the agent whose tasks and work log the panel shows ('' = main).
   _panelAgent = agentId ? String(agentId) : '';
+  // 미니멀 (SSOT 2026-11-01) shows one agent, the main one — it has no tab strip to lead back from another (a deep
+  // link or a tree that named a subagent opens the session on the main agent's chat).
+  if (!isAdvanced()) _panelAgent = '';
 
   // A card switch starts the composer clean: a fresh <ui-agent-steering> with a
   // fresh composer (the old one's text, files, notes in flight and failed sends
@@ -15635,7 +15814,9 @@ function cronCardTime(s) {
 // this instance has a group even with no card on the board; a card whose job is
 // not here (a sibling instance) groups by its stamp, without schedule data. A
 // job waiting on the user leads the lane, then running ones, then the newest.
-function planCronLane(board, jobs, revealKey) {
+// liveOnBoard (미니멀, SSOT 2026-11-01): the lane is hidden, so a cron run that waits on the user or runs now stays
+// on the board, where its question, approval and Stop are — never out of reach.
+function planCronLane(board, jobs, revealKey, liveOnBoard) {
   var out = { working: [], waiting: [], idle: [], closed: [] };
   var groups = Object.create(null);
   var order = [];
@@ -15651,6 +15832,7 @@ function planCronLane(board, jobs, revealKey) {
     (board[col] || []).forEach(function(s) {
       // A starred cron run stays on the board, on top (SSOT 2026-10-30 T2).
       if (!isCronCard(s) || s.starred === true) { out[col].push(s); return; }
+      if (liveOnBoard && (col === 'waiting' || col === 'working')) { out[col].push(s); return; }
       var g = group(cronGroupKey(s), s.cronJob.id, s.cronJob.name);
       g.cards.push(s);
       g.colOf[s.key] = col;
@@ -17747,9 +17929,10 @@ function pcOnSubmit(e) {
 }
 ntInit();
 pcInit();
-// Task view: 자세히 as this device saved it; the agent tabs answer clicks and arrows.
-_panelDetail = readPanelDetail();
-applyPanelDetail();
+// View mode: the device's copy first (the user's setting answers in loadMyDefaults); the agent tabs answer clicks and arrows.
+_viewMode = readViewMode();
+applyViewMode();
+syncBoardScope();
 bindPanelTabs();
 setInterval(loadSessions, 30000);
 // CRON lane jobs and the llmux capacity view poll on their own cadence (the
