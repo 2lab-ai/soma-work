@@ -203,6 +203,7 @@ describe('a RUNNING card waiting out an automatic resume (cardOf + the open card
         'cardSummary',
         'renderCardResume',
         'taskOutcomeHtml',
+        'taskNoticeFailHtml',
         'isBusy',
         'sessionActionsOf',
         'sessionActionHtml',

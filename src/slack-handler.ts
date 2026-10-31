@@ -260,6 +260,7 @@ export class SlackHandler {
   // guarded so those paths keep their exact pre-queue behavior.
   private followupStore?: FollowupQueueStorePort;
   private followupQueue?: FollowupQueue;
+  private taskNoticeHandoff?: (sessionKey: string, session: ConversationSession) => void;
   private followupDispatcher?: FollowupDispatcher;
   /**
    * Why the queue could not be loaded. Set = DEGRADED: the queue refuses to
@@ -950,7 +951,9 @@ export class SlackHandler {
       | { setBeforeSessionDelete?: (cb: (key: string, session: ConversationSession, reason: string) => void) => void }
       | undefined;
     if (typeof registry?.setBeforeSessionDelete !== 'function') {
-      this.logger.warn('Follow-up cancellation on session delete NOT wired — registry seam unavailable');
+      this.logger.warn(
+        'Follow-up cancellation and task notice handoff on session delete NOT wired — registry seam unavailable',
+      );
       return;
     }
 
@@ -958,6 +961,9 @@ export class SlackHandler {
       // May throw (the queue store cannot save) — the registry then refuses
       // the deletion and keeps the session.
       this.cancelFollowupsOfDeletedSession(sessionKey, session, reason);
+      // E2 ⑤ — a task's notices still owed to its instruction thread go to the
+      // notice ledger; a write that fails throws, and the deletion is refused.
+      this.taskNoticeHandoff?.(sessionKey, session);
       // The background-task lifecycle tracker is process-wide and keyed by
       // session; this seam is the one teardown point both deletion paths share,
       // so it is where the session's live tasks and settled tombstones go.
@@ -2617,6 +2623,15 @@ export class SlackHandler {
    * the key of every session whose queue changed — an item's state, text or
    * generation, the turn generation, the freeze — after the write is committed.
    */
+  /**
+   * E2 ⑤ — the notice deliverer's handoff, run by the session-delete seam after
+   * the follow-up cancel and before the background drain (.prd/18 D6). It
+   * throws when the ledger cannot be written; the registry then keeps the session.
+   */
+  setTaskNoticeHandoff(fn: ((sessionKey: string, session: ConversationSession) => void) | undefined): void {
+    this.taskNoticeHandoff = fn;
+  }
+
   setFollowupChangeListener(fn: ((sessionKey: string) => void) | undefined): void {
     this.followupChangeListener = fn;
   }

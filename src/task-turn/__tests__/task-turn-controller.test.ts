@@ -268,7 +268,12 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
     await r.done;
     expect(h.runTaskTurn).toHaveBeenCalledTimes(1);
     // The pending fallback turn is ended — cancelled — not left working on the 1M model (#634 R1).
-    expect(h.abandonTurn).toHaveBeenCalledWith(KEY, 'a', expect.objectContaining({ outcome: 'cancelled' }));
+    expect(h.abandonTurn).toHaveBeenCalledWith(
+      KEY,
+      'a',
+      expect.objectContaining({ outcome: 'cancelled' }),
+      expect.any(String), // the chain it ends (E2 ③)
+    );
   });
 
   it('a later hop whose start is not saved ends the pending fallback turn interrupted (#634 R1)', async () => {
@@ -289,6 +294,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
       KEY,
       'a',
       expect.objectContaining({ outcome: 'interrupted', reason: 'turn start not saved: ENOSPC' }),
+      expect.any(String), // the chain it ends (E2 ③)
     );
   });
 
@@ -503,6 +509,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
       KEY,
       'a',
       expect.objectContaining({ outcome: 'interrupted', reason: 'task cannot run: owner lost access' }),
+      expect.any(String), // the chain it ends (E2 ③)
     );
   });
 
@@ -523,6 +530,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
       KEY,
       'a',
       expect.objectContaining({ outcome: 'interrupted', reason: 'service shutdown was cancelled' }),
+      h.runTaskTurn.mock.calls[0][0].chain?.id, // the chain it ends (E2 ③)
     );
   });
 
@@ -549,6 +557,7 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
       KEY,
       'a',
       expect.objectContaining({ outcome: 'interrupted', reason: 'service shutdown was cancelled' }),
+      h.runTaskTurn.mock.calls[0][0].chain?.id, // the chain it ends (E2 ③)
     );
   });
 
