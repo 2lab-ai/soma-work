@@ -101,6 +101,20 @@ describe('createTaskLauncher (#600 ⑥)', () => {
     expect(h.controller.canStart).toHaveBeenCalledWith(OWNER, REQ.prompt);
   });
 
+  it('a Slack instruction’s task carries its instruction thread and channel context (E2 ⑧)', async () => {
+    const h = harness();
+    const originThread = { channel: 'C1', threadTs: '1700.000100', messageTs: '1700.000100' };
+    const inputContext = { channelName: 'dev', channelDescription: 'repo: 2lab-ai/x', repos: ['2lab-ai/x'] };
+    const r = await h.launcher.launch({ ...REQ, originThread, inputContext });
+    expect(r.status).toBe(200);
+    expect(h.created[0]).toMatchObject({ originThread, inputContext });
+    // A dashboard launch carries neither.
+    const plain = harness();
+    await plain.launcher.launch(REQ);
+    expect(plain.created[0]).not.toHaveProperty('originThread');
+    expect(plain.created[0]).not.toHaveProperty('inputContext');
+  });
+
   it('a named folder must be an existing directory directly inside the owner’s /tmp root', async () => {
     const h = harness();
     const r = await h.launcher.launch({ ...REQ, folder: EXISTING, model: 'opus' });

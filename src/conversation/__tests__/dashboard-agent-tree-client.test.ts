@@ -134,6 +134,8 @@ const AGENT_VARS = [
 
 type Agent = Record<string, unknown>;
 type Node = Record<string, any> & { id: string; children: Node[] };
+/** The agent path as <ui-breadcrumbs> takes it (BreadcrumbsData). */
+type PathData = { label: string; items: Array<{ id?: string; label: string }> };
 /** One node as <ui-agent-tree> takes it (AgentTreeNode). */
 type TNode = {
   id: string;
@@ -644,6 +646,7 @@ describe('the open card’s tree is <ui-agent-tree> (affectUI review batch 2) �
         morphInnerHtml: (_el: unknown, html: string) => markup.push(html),
         updateTimersIn: () => {},
         acHydrate: () => {},
+        cardTaskPlanHydrate: () => {},
         mpHydrate: () => {},
         atHydrate: (_b: unknown, p: { tree: TreeData | null; treeSig: string }) => hydrated.push(p),
       },
@@ -876,6 +879,7 @@ describe('a collapsed card builds no body — the agent tree is painted only whi
         else if (!root.tree) root.tree = paintedTree();
       },
       acHydrate: () => {},
+      cardTaskPlanHydrate: () => {},
       // #546: the body's <ui-model-picker> slots take their data on the same paint (none in this harness).
       mpHydrate: () => {},
       updateTimersIn: () => {},
@@ -1305,6 +1309,9 @@ describe('panel scope (§4.3)', () => {
 describe('panel — the path · the focused node, and the 에이전트 트리 tab over the same node type', () => {
   const PANEL_FNS = [
     ...NODE_FNS,
+    'agentStatusChipHtml',
+    'panelPathData',
+    'taskElData',
     'renderAgentFocus',
     'panelLogOnlyAgents',
     'sessionColOf',
@@ -1319,13 +1326,20 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
   function panel(focus: string, s: Record<string, unknown>, extra: Record<string, unknown> = {}) {
     // Task view T1.6: #panel-agents carries is-main while the Main tab is focused.
     const classes = new Set<string>();
-    const out = { html: '', writes: 0, sets: 0, data: null as TreeData | null };
+    const out = { html: '', writes: 0, sets: 0, data: null as TreeData | null, path: null as PathData | null };
     // The subtree's element: the data it was given, how often.
     const tree: Record<string, unknown> = {};
     Object.defineProperty(tree, 'data', {
       set(v: TreeData) {
         out.sets++;
         out.data = v;
+      },
+    });
+    // The path element (<ui-breadcrumbs class="pa-path">): the trail it was handed.
+    const pathEl: Record<string, unknown> = {};
+    Object.defineProperty(pathEl, 'data', {
+      set(v: PathData) {
+        out.path = v;
       },
     });
     const el = {
@@ -1338,7 +1352,12 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
           else classes.delete(c);
         },
       },
-      querySelector: (sel: string) => (sel === 'ui-agent-tree' && out.html.includes('<ui-agent-tree') ? tree : null),
+      querySelector: (sel: string) =>
+        sel === 'ui-agent-tree' && out.html.includes('<ui-agent-tree')
+          ? tree
+          : sel === 'ui-breadcrumbs.pa-path' && out.html.includes('<ui-breadcrumbs class="pa-path"')
+            ? pathEl
+            : null,
     };
     const m = load<{ renderPanelAgents(): void }>(
       PANEL_FNS,
@@ -1499,7 +1518,7 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     expect(out.html).toContain('<span class="ag-type">메인</span>');
     expect(out.html).toContain('대기');
     expect(out.html).toContain('툴 2');
-    expect(out.html).toContain('task 합계 1200 tok · $0.00');
+    expect(out.html).toContain('작업 합계 1200 토큰 · $0.00');
     expect(out.html).not.toContain('세션 Σ');
     // Nothing below it: no subtree element.
     expect(out.html).not.toContain('ui-agent-tree');
@@ -1508,20 +1527,58 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     expect(out.html).not.toContain('pa-path');
   });
 
-  it('the path is generated from the chain of the focused node — the root crumb is its label, not a hard-coded button', () => {
+  it('the path is <ui-breadcrumbs size="sm"> fed the chain of the focused node — the root crumb is its label, the focused node the current page, its status chip in the end slot (D8b E-20)', () => {
     const { m, el, out } = panel('toolu_nested', card());
     m.renderPanelAgents();
     // A subagent's tab: its own header is not the main agent's detail.
     expect(el.classes.has('is-main')).toBe(false);
-    const path = out.html.slice(out.html.indexOf('<nav class="pa-path"'), out.html.indexOf('</nav>'));
-    expect(path.indexOf('data-agent-select="">메인</button>')).toBeGreaterThan(0);
-    expect(path.indexOf('data-agent-select="toolu_explore">A1 Explore</button>')).toBeGreaterThan(path.indexOf('메인'));
-    expect(path).toContain('aria-current="page" data-agent-select="toolu_nested">A3 general-purpose</button>');
-    // The focused subagent's header: the same slots the root's has.
+    expect(out.html).toContain(
+      '<div class="pa-bar"><ui-breadcrumbs class="pa-path" size="sm" lang="ko"><span slot="end" class="ui-status pa-st" data-tone="fail">실패</span></ui-breadcrumbs></div>',
+    );
+    expect(out.path).toEqual({
+      label: '에이전트 경로',
+      items: [
+        { id: '', label: '메인' },
+        { id: 'toolu_explore', label: 'A1 Explore' },
+        { id: 'toolu_nested', label: 'A3 general-purpose' },
+      ],
+    });
+    // The focused subagent's header: the same slots the root's has (its own chip is for the minimal view).
     expect(out.html).toContain('class="pa-focus is-failed"');
-    expect(out.html).toContain('실패');
+    expect(out.html).toContain('<span class="ui-status pa-st" data-tone="fail">실패</span>');
     expect(out.html).toContain('툴 3');
-    expect(out.html).toContain('41s');
+    expect(out.html).toContain('41초');
+    // The same data again writes nothing new to the element (taskElData's signature).
+    out.path = null;
+    m.renderPanelAgents();
+    expect(out.path).toBeNull();
+    // The page loads the element; a step chosen (ui-select, its id the node's — '' the main agent) is the page's
+    // agent switch; no click handler of the page's own on crumbs.
+    expect(TEMPLATE).toContain(
+      '<script type="module" src="/dashboard/ui/breadcrumbs.js?v=${UI_LIB_VERSION}"></script>',
+    );
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelAgentInteractions() {'));
+    const body = init.slice(0, init.indexOf('\n})();'));
+    expect(body).toContain("bar.addEventListener('ui-select', function(e) {");
+    expect(body).toContain("if (!el || el.localName !== 'ui-breadcrumbs' || !e.detail) return;");
+    expect(body).toContain("selectPanelAgent(String(e.detail.id || ''));");
+    expect(TEMPLATE).not.toContain('.pa-crumb');
+    expect(TEMPLATE).not.toContain('data-agent-select');
+  });
+
+  it('an agent the tree does not know (log only) is the last crumb by its id; the path folds in the element, not in page CSS', () => {
+    const { m, out } = panel('toolu_zzz999', card());
+    m.renderPanelAgents();
+    expect(out.path).toEqual({
+      label: '에이전트 경로',
+      items: [{ id: '', label: '메인' }, { label: '에이전트 zzz999' }],
+    });
+    // No chip: nothing is known of it; the unknown header is the keyboard landing (tabindex).
+    expect(out.html).toContain('<ui-breadcrumbs class="pa-path" size="sm" lang="ko"></ui-breadcrumbs>');
+    expect(out.html).toContain('<div class="pa-focus is-unknown" tabindex="-1">');
+    // The phone's "‹ parent › here" rule is the element's "…" fold now.
+    expect(TEMPLATE).not.toContain('is-far');
+    expect(TEMPLATE).not.toContain('.pa-sep');
   });
 
   it('the 에이전트 트리 tab is a rich <ui-agent-tree>: the main agent at its root, every agent below it, the focused one selected', () => {
@@ -1708,8 +1765,8 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     const agents = [{ ...AGENTS[0], tokens: 134, spend: SPEND }, AGENTS[1], AGENTS[2]];
     const { m, out } = panel('toolu_explore', card({ agents }));
     m.renderPanelAgents();
-    expect(head(out.html)).toContain('10000 tok · $1.23');
-    expect(out.html).not.toContain('134 tok');
+    expect(head(out.html)).toContain('10000 토큰 · $1.23');
+    expect(out.html).not.toContain('134 토큰');
   });
 
   it('every subagent node in the panel tree carries its own spend; the header says when it is an estimate (≈)', () => {
@@ -1722,7 +1779,7 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     // The element shows the amount; ≈ and the per-kind breakdown are the focused node's header.
     const focused = panel('toolu_lib', card({ agents: [AGENTS[0], AGENTS[1], lib] }));
     focused.m.renderPanelAgents();
-    expect(head(focused.out.html)).toContain('10000 tok · ≈$0.50');
+    expect(head(focused.out.html)).toContain('10000 토큰 · ≈$0.50');
     expect(head(focused.out.html)).toContain('grok-4.7-build');
   });
 
@@ -1730,7 +1787,7 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     const est = { ...AGENTS[2], spend: { ...SPEND, costUsd: 0.5, estimatedCalls: 3 } };
     const { m, out } = panel('toolu_lib', card({ agents: [AGENTS[0], AGENTS[1], est] }));
     m.renderPanelAgents();
-    expect(head(out.html)).toContain('10000 tok · ≈$0.50');
+    expect(head(out.html)).toContain('10000 토큰 · ≈$0.50');
     expect(head(out.html)).toContain('usage가 기록되지 않은 호출 3회는 앞뒤 호출로 추정');
   });
 
@@ -1763,7 +1820,7 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     });
     const { m, out } = panel('', s);
     m.renderPanelAgents();
-    expect(out.html).toContain('서브 3개 1000 tok · ≈$0.75');
+    expect(out.html).toContain('서브 3개 1000 토큰 · ≈$0.75');
   });
 
   it('the root header is the task total — main and every subagent — with the subagents’ share beside it', () => {
@@ -1786,14 +1843,14 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     });
     const { m, out } = panel('', s);
     m.renderPanelAgents();
-    expect(out.html).toContain('task 합계 10000 tok · $3.50');
-    expect(out.html).toContain('서브 3개 1000 tok · $0.75');
+    expect(out.html).toContain('작업 합계 10000 토큰 · $3.50');
+    expect(out.html).toContain('서브 3개 1000 토큰 · $0.75');
   });
 
-  it('the current crumb is styled by the attribute it carries (review r1 fable)', () => {
-    expect(TEMPLATE).toContain('.pa-crumb[aria-current="page"] {');
-    expect(TEMPLATE).toContain('.pa-crumb:not([aria-current="page"]):hover');
-    expect(TEMPLATE).not.toContain('.pa-crumb[aria-current="true"]');
+  it("the path element takes the bar's room; with 자세히 the path's chip says the status once (the header's is the minimal view's)", () => {
+    expect(TEMPLATE).toContain('ui-breadcrumbs.pa-path { flex: 1 1 auto; min-width: 0; }');
+    expect(TEMPLATE).toContain('.slide-panel.is-detail .pa-focus .pa-st { display: none; }');
+    expect(TEMPLATE).toMatch(/\.slide-panel:not\(\.is-detail\) \.pa-bar/);
     // The header counts every node below; the subtree's bar counts its agents — different words.
     expect(fnBody('renderAgentFocus')).toContain("'하위 전체 ' + desc.n");
   });
@@ -1995,13 +2052,9 @@ describe('live morph (review B r2) — a live update keeps the nodes that did no
   });
 
   it('attributes the fresh markup drops are removed (aria-current, hidden)', () => {
-    const live = h(
-      'div',
-      { id: 'pa-list', hidden: '' },
-      h('button', { 'data-agent-select': 'x', 'aria-current': 'true' }, 'x'),
-    );
+    const live = h('div', { id: 'pa-list', hidden: '' }, h('button', { 'data-mk': 'x', 'aria-current': 'true' }, 'x'));
     const btn = live.kids[0];
-    morph.domMorph(live, h('div', { id: 'pa-list' }, h('button', { 'data-agent-select': 'x' }, 'x')));
+    morph.domMorph(live, h('div', { id: 'pa-list' }, h('button', { 'data-mk': 'x' }, 'x')));
     expect(live.hasAttribute('hidden')).toBe(false);
     expect(live.kids[0]).toBe(btn);
     expect(btn.hasAttribute('aria-current')).toBe(false);
@@ -2115,7 +2168,7 @@ describe('keyboard (review B r2) — 서브에이전트 열기 is a stop on the 
   it('choosing an agent by keyboard leaves focus on the agent now shown, not on <body> (review B r3)', () => {
     const body = fnBody('selectPanelAgent');
     expect(body).toContain("before.closest('#slide-panel')");
-    expect(body).toContain('#panel-agents .pa-crumb[aria-current="page"]');
+    expect(body).toContain("document.querySelector('#panel-agents .pa-focus')");
   });
   it('the panel Tasks block writes nothing for the same data and morphs a change — folded or open (review B r3 astra)', () => {
     // Task view T1.3: the Tasks section is folded by default (the head alone);
@@ -2242,8 +2295,8 @@ describe('task total on the face and in 세션 정보 (SSOT T3)', () => {
     const whole = face.cardOf({ key: 'k', tokenUsage: u, subagentSpend: sub }, 'working');
     expect(whole.tokens).toBe(10_000);
     expect(whole.costUsd).toBe(3.5);
-    expect(whole.titles?.tokens).toContain('(task 합계: 메인 + 서브에이전트 2개)');
-    expect(whole.titles?.cost).toBe('API 환산 비용 (task 합계: 메인 + 서브에이전트 2개)');
+    expect(whole.titles?.tokens).toContain('(작업 합계: 메인 + 서브에이전트 2개)');
+    expect(whole.titles?.cost).toBe('API 환산 비용 (작업 합계: 메인 + 서브에이전트 2개)');
     expect(whole.titles?.tokens).not.toContain('부분 합계');
     const partial = face.cardOf({ key: 'k', tokenUsage: { ...u, partialSince: 1_700_000_000_000 } }, 'working');
     expect(partial.titles?.tokens).toContain('부분 합계');
@@ -2265,13 +2318,15 @@ describe('task total on the face and in 세션 정보 (SSOT T3)', () => {
     );
     const open = f.panelInfoHtml({ tokenUsage: u, subagentSpend: sub, lastActivity: new Date().toISOString() }, true);
     expect(open).toContain('<dt>누적 입력</dt><dd>1000</dd>');
-    expect(open).toContain('<dt>서브에이전트</dt><dd>2개 · 1000 tok · $0.75</dd>');
+    expect(open).toContain('<dt>서브에이전트</dt><dd>2개 · 1000 토큰 · $0.75</dd>');
     expect(open).not.toContain('집계 시작');
     const partial = f.panelInfoHtml(
       { tokenUsage: { ...u, partialSince: 1_700_000_000_000 }, lastActivity: new Date().toISOString() },
       true,
     );
     expect(partial).toContain('<dt>집계 시작</dt>');
-    expect(partial).toContain('<ui-elapsed since="1700000000000" format="ago"></ui-elapsed> (그 전 지출 미포함)');
+    expect(partial).toContain(
+      '<ui-elapsed since="1700000000000" format="ago" lang="ko"></ui-elapsed> (그 전 지출 미포함)',
+    );
   });
 });
