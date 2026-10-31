@@ -18,19 +18,28 @@ import { describe, expect, it } from 'vitest';
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 
 describe('Dashboard multi-instance frontend (#814)', () => {
-  // Tone pass P5: the palette is four token tones (not hex), and the badge is a tint chip — the
-  // tone at 14% into the card, the word 70% toward the ink (≥ 4.5:1 in both themes; white on the
-  // old #F4D03F was 1.5:1).
-  it('ships the 4-tone env badge palette from tokens, drawn as a tint chip', () => {
+  // Tone pass P5 / D8b D-15: the palette is four token tones (not hex), and the badge is the kit's toned chip
+  // (@2lab.ai/ui 0.15.0 .ui-chip.is-toned.is-sm) — the tone at 14% into the card, the word 70% toward the ink
+  // (≥ 4.5:1 in both themes; white on the old #F4D03F was 1.5:1), the border 28% — drawn by the kit, not the page.
+  it('ships the 4-tone env badge palette from tokens, drawn as the kit’s toned chip', () => {
     expect(DASHBOARD_TS).toContain(
       "var ENV_BADGE_PALETTE = ['var(--st-run)', 'var(--green)', 'var(--purple)', 'var(--orange)'];",
     );
-    expect(DASHBOARD_TS).toContain(`style="--env-tone:' + envColor + '"`);
     expect(DASHBOARD_TS).toContain(
-      'background: color-mix(in srgb, var(--env-tone, var(--ib-muted)) 14%, var(--ib-card));',
+      `envHtml = '<span class="ui-chip is-toned is-sm" style="--ui-tone:' + envColor + '" title="' + escAttr(instName + ' (' + envHostPort + ')') + '">' + esc(instName) + '</span>';`,
     );
-    expect(DASHBOARD_TS).toContain('color: color-mix(in srgb, var(--env-tone, var(--ib-muted)) 70%, var(--ib-text));');
+    // The page's own chip rule is gone; the kit the page inlines (ui-lib.ts uiLibKitCss) has the toned chip.
+    for (const gone of ['.env-badge', '--env-tone', 'color-mix(in srgb, var(--env-tone'])
+      expect(DASHBOARD_TS, gone).not.toContain(gone);
     expect(DASHBOARD_TS).not.toContain('#F4D03F');
+    const kit = readFileSync(
+      join(__dirname, '..', '..', '..', 'node_modules', '@2lab.ai', 'ui', 'dist', 'ui-kit.css'),
+      'utf-8',
+    );
+    expect(kit).toContain('.ui-chip.is-toned {');
+    expect(kit).toContain('background: color-mix(in srgb, var(--ui-tone, var(--ui-ib-muted)) 14%, var(--ui-ib-card));');
+    expect(kit).toContain('color: color-mix(in srgb, var(--ui-tone, var(--ui-ib-muted)) 70%, var(--ui-ib-text));');
+    expect(kit).toMatch(/\.ui-chip\.is-sm \{[^}]*height: 20px/);
   });
 
   it('exposes getEnvBadgeColor for renderCardBody', () => {
@@ -69,10 +78,11 @@ describe('Dashboard multi-instance frontend (#814)', () => {
     expect(DASHBOARD_TS).toContain('if (envNames.length >= 2) {');
   });
 
-  it('CSS `.env-badge` rule is present in the inline style block', () => {
-    // The open card's body is the page's (a light-DOM slot of <ui-agent-inbox>): its
-    // rules are scoped by .card-body, not by the old inline .card.
-    expect(DASHBOARD_TS).toContain('.card-body .card-refs .env-badge');
+  it('no CSS rule of the page’s own for the badge — the open card’s body (a light-DOM slot of <ui-agent-inbox>) takes the kit’s classes', () => {
+    expect(DASHBOARD_TS).not.toContain('.card-body .card-refs .env-badge');
+    expect(DASHBOARD_TS).toContain(
+      "/* ── ENV BADGE — multi-instance origin tag (#814): the kit's toned chip (.ui-chip.is-toned.is-sm, D8b D-15)",
+    );
   });
 
   // PR #815 review #1 — sibling cards must not invite action clicks.

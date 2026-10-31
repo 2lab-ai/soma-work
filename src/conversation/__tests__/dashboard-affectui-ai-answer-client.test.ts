@@ -349,7 +349,7 @@ describe('the section’s data and the element’s requests (convPaint, convRetr
     expect(paint({ _sessionCache: { k: SESSION } }).assistantName).toBe('Soma (Dev)');
     expect(
       paint({ _sessionCache: { k: SESSION, other: { botName: 'Other Bot' } }, BOT_NAME: null }).assistantName,
-    ).toBe('Assistant');
+    ).toBe('어시스턴트');
   });
 
   it('D12 — the writing row: the session works and the latest turn is the instruction (the element keeps it last)', () => {

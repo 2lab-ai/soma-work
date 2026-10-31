@@ -292,7 +292,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
     renderCardIo: () => '[IO]',
     renderCardArtifacts: () => '[ARTS]',
     renderAgentTree: () => '[AGENTS]',
-    renderTimeline: () => '[TASKS]',
+    renderCardTasks: () => '[TASKS]',
     // affectUI batch 1: the prompts and the single-choice question are <ui-approval-card> slots.
     acPermissionsHtml: () => '',
     acGoalDecisionHtml: () => '',
@@ -322,6 +322,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
         'cardCurrentTask',
         'renderCardResume',
         'taskOutcomeHtml',
+        'taskNoticeFailHtml',
         'isBusy',
         'sessionActionsOf',
         'sessionActionHtml',
@@ -484,34 +485,36 @@ describe('expanded body — face + delta, sections keyed on state', () => {
 });
 
 describe('task window on the card — the full ledger is the panel', () => {
-  const tl = (s: Record<string, unknown>) =>
-    load<{ renderTimeline(s: unknown): string }>(
-      [
-        'esc',
-        'escAttr',
-        'escJs',
-        'toNum',
-        'formatDuration',
-        'taskFateOf',
-        'elapsedHtml',
-        'renderTaskMeta',
-        'renderTimelineItem',
-        'renderTimeline',
-      ],
-      ['TASK_FATE_LABEL'],
-      {
-        dhShow: () => true,
-        dhMax: (_k: string, d: number) => d,
-      },
-    ).renderTimeline(s);
+  const tw = load<{
+    renderCardTasks(s: unknown): string;
+    cardTaskPlanData(s: unknown): { steps: Array<Record<string, unknown>>; more?: string };
+  }>(
+    [
+      'esc',
+      'escAttr',
+      'escJs',
+      'toNum',
+      'taskFateOf',
+      'cardTaskStep',
+      'cardTaskHidden',
+      'cardTasksRan',
+      'cardTaskPlanData',
+      'renderCardTasks',
+    ],
+    ['CARD_TASK_ROWS', 'CARD_TASK_STATUS'],
+    {
+      dhShow: () => true,
+      dhMax: (_k: string, d: number) => d,
+    },
+  );
 
-  it('shows the window and opens the panel Tasks for everything else (earlier lists included)', () => {
+  it('shows the window (D8b D-12: <ui-task-plan max>) and opens the panel Tasks for everything else (earlier lists included)', () => {
     const tasks = Array.from({ length: 9 }, (_, i) => ({
       id: `T${i + 1}`,
       content: `t${i + 1}`,
       status: i < 6 ? 'completed' : i === 6 ? 'in_progress' : 'pending',
     }));
-    const html = tl({
+    const s = {
       key: 'k1',
       tasks,
       earlierTasks: [
@@ -519,14 +522,22 @@ describe('task window on the card — the full ledger is the panel', () => {
         // Task view T2: a step a new plan dropped before it ran was never work — not counted.
         { id: 'Tx', content: 'never ran', status: 'pending', dropped: 'unstarted' },
       ],
-    });
-    expect(html.match(/class="tl-item/g)).toHaveLength(5);
-    expect(html).toContain("openPanel('k1','tasks',");
-    expect(html).toContain('전체 task 10개 &rarr;');
+    };
+    const html = tw.renderCardTasks(s);
+    expect(html).toBe(
+      '<ui-task-plan class="card-task-plan" lang="ko" flush max="5" foot="none" data-tp-key="k1"></ui-task-plan>',
+    );
+    const d = tw.cardTaskPlanData(s);
+    expect(d.steps).toHaveLength(9);
+    expect(d.steps[6]).toMatchObject({ status: 'running' });
+    // Five rows of nine: four leave the window; the earlier run is in the panel too.
+    expect(d.more).toBe('+5개 더 · 전체 작업 10개 →');
     expect(html).not.toContain('toggleCardTasks');
     expect(html).not.toContain('tl-earlier');
     // Only skipped earlier steps and no current list: nothing to open.
-    expect(tl({ key: 'k1', tasks: [], earlierTasks: [{ id: 'Tx', content: 'x', dropped: 'unstarted' }] })).toBe('');
+    expect(
+      tw.renderCardTasks({ key: 'k1', tasks: [], earlierTasks: [{ id: 'Tx', content: 'x', dropped: 'unstarted' }] }),
+    ).toBe('');
   });
 });
 
@@ -589,7 +600,7 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
     expect(d.activeMs).toBeUndefined();
     expect(d.link).toEqual({ id: 'slack', href: 'https://slack/x', label: 'Slack' });
     const stop = d.actions.find((a) => a.id === 'stop');
-    expect(stop).toMatchObject({ label: 'Stop', tone: 'danger', icon: 'stop' });
+    expect(stop).toMatchObject({ label: '중지', tone: 'danger', icon: 'stop' });
     expect(stop?.disabled).toBeUndefined();
     expect(d.actions.map((a) => a.id)).toEqual(['star', 'stop']);
   });
@@ -638,8 +649,8 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
       SELF_INSTANCE_NAME: 'me',
     });
     expect(sib.actions).toHaveLength(1);
-    expect(sib.actions[0].label).toBe('Stop \u2192 other');
-    expect(sib.actions[0].disabled).toBe('Open other (h:1) to act on this session');
+    expect(sib.actions[0].label).toBe('중지 \u2192 other');
+    expect(sib.actions[0].disabled).toBe('이 세션은 other (h:1)에서 열어 조작하세요');
     expect(sib.actions[0].tone).toBeUndefined();
   });
 
@@ -652,21 +663,21 @@ describe('panel header — <ui-status-bar>: the session status, its time and its
     const d = head(card({ activityState: 'idle', starred: true }), 'idle');
     expect(d.actions.find((a) => a.id === 'star')).toEqual({
       id: 'star',
-      label: '\u2605 Starred',
+      label: '\u2605 즐겨찾기',
       pressed: true,
       title: '즐겨찾기 해제 — 다시 자동 sleep·보관 대상이 돼요',
     });
     expect(d.actions.find((a) => a.id === 'close')).toEqual({
       id: 'close',
-      label: 'Close',
-      ariaLabel: 'Close — 세션 종료',
+      label: '닫기',
+      ariaLabel: '닫기 — 세션 종료',
     });
-    expect(head(card(), 'working').actions.find((a) => a.id === 'stop')?.ariaLabel).toBe('Stop — 세션 중지');
+    expect(head(card(), 'working').actions.find((a) => a.id === 'stop')?.ariaLabel).toBe('중지 — 세션 중지');
     const closed = head(card({ activityState: 'idle', terminated: true }), 'closed');
     expect(closed.actions.find((a) => a.id === 'trash')).toEqual({
       id: 'trash',
-      label: 'Trash',
-      ariaLabel: 'Trash — 세션 휴지통으로',
+      label: '휴지통',
+      ariaLabel: '휴지통 — 세션 휴지통으로',
       tone: 'quiet',
     });
     expect(closed.actions.find((a) => a.id === 'star')).toMatchObject({
@@ -733,7 +744,7 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
     const html = info(card(), false);
     expect(html).toContain('<ui-disclosure class="pi-dc" flush>');
     const sum = html.slice(html.indexOf('class="pi-sum"'), html.indexOf('</ui-disclosure>'));
-    for (const want of ['Zhuge', 'zwork', '9591000 tok', '$12.40', 'ctx 31%', 'format="ago"'])
+    for (const want of ['Zhuge', 'zwork', '9591000 토큰', '$12.40', '컨텍스트 31%', 'format="ago"'])
       expect(sum, want).toContain(want);
     expect(html).toContain('PROJ-1 &mdash; Dashboard surfaces');
     expect(html).toContain('PR #12 &mdash; Split the surfaces');
@@ -941,7 +952,7 @@ describe('landing follows the opening intent (executed)', () => {
     expect(r.scroll.scrollTop).toBe(420);
   });
 
-  it('전체 task → puts the (unfolded) Tasks section at the top of the scroll area, under the sticky agent tabs, once', () => {
+  it('전체 작업 → puts the (unfolded) Tasks section at the top of the scroll area, under the sticky agent tabs, once', () => {
     // Task view: Tasks are no longer pinned outside the scroll area — they sit in the
     // focused agent's tab, so a tasks opening lands like 관리 → / 상세 does.
     const r = rig('tasks', { tabs: 40 });
@@ -2085,11 +2096,11 @@ describe('collapsed face — the context level is a warning, the panel bar uses 
     expect(face.ctxLevel(61)).toBe('ctx-warn');
     expect(face.ctxLevel(81)).toBe('ctx-danger');
     expect(face.ctxLevel('x')).toBe('');
-    expect(ctx(12)).toMatchObject({ contextPct: 12, contextLevel: '', titles: { context: 'Context window used' } });
-    expect(ctx(65)).toMatchObject({ contextLevel: 'warn', titles: { context: 'Context window used' } });
+    expect(ctx(12)).toMatchObject({ contextPct: 12, contextLevel: '', titles: { context: '컨텍스트 윈도우 사용량' } });
+    expect(ctx(65)).toMatchObject({ contextLevel: 'warn', titles: { context: '컨텍스트 윈도우 사용량' } });
     expect(ctx(90)).toMatchObject({
       contextLevel: 'danger',
-      titles: { context: 'Context window used — 80% 넘게 찼다' },
+      titles: { context: '컨텍스트 윈도우 사용량 — 80% 넘게 찼다' },
     });
   });
 

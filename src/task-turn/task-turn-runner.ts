@@ -29,7 +29,7 @@ import {
 } from '@soma/slack/task-turn/task-turn-outcome';
 import { TaskTurnRefusedError } from '@soma/slack/task-turn/task-turn-refused';
 import type { ExecutionContext } from '../agent-runtime/execution-context';
-import type { ConversationSession, TaskTurnOutcomeRecord } from '../types';
+import type { ConversationSession, TaskChainSettle, TaskTurnOutcomeRecord } from '../types';
 
 /** The slice of `ExecuteResult` the runner reads. */
 export interface TaskExecuteResult {
@@ -49,15 +49,25 @@ export interface TaskTurnRunnerDeps {
   registry: {
     getSessionByKey(sessionKey: string): ConversationSession | undefined;
     /** `working` + the turn id in one strict save; restores and throws on failure (598c §6). */
-    beginTaskTurn(sessionKey: string, turnId: string): void;
+    beginTaskTurn(sessionKey: string, turnId: string, chainId?: string): void;
     /** Outcome + end activity in one strict save; restores both and throws on failure. */
-    commitTaskTurnOutcome(sessionKey: string, outcome: TaskTurnOutcomeRecord, activity: 'waiting' | 'idle'): void;
+    commitTaskTurnOutcome(
+      sessionKey: string,
+      outcome: TaskTurnOutcomeRecord,
+      activity: 'waiting' | 'idle',
+      settle?: TaskChainSettle,
+    ): void;
     /**
      * The outcome could not be saved after every retry: apply it in memory
      * only (the dashboard shows the truth; disk still says `working`, so a
      * restart records the turn `interrupted`). Never re-runs anything.
      */
-    holdUnsavedTaskTurnOutcome(sessionKey: string, outcome: TaskTurnOutcomeRecord, activity: 'waiting' | 'idle'): void;
+    holdUnsavedTaskTurnOutcome(
+      sessionKey: string,
+      outcome: TaskTurnOutcomeRecord,
+      activity: 'waiting' | 'idle',
+      settle?: TaskChainSettle,
+    ): void;
   };
   /** The task executor's `execute` (built by `createTaskTurnExecutor`). */
   execute(params: Record<string, unknown>): Promise<TaskExecuteResult>;
@@ -96,6 +106,30 @@ export interface RunTaskTurnInput {
   compactHop?: boolean;
   /** Called once the turn's start is saved, before the model runs (the caller's acceptance point). */
   onStarted?: () => void;
+  /**
+   * E2 ③ — the chain this turn is a hop of (absent for a caller with no
+   * chain). Its start opens the chain; its commit ends it, unless a
+   * `completed` outcome continues it (`continuesIfCompleted`). A completed
+   * outcome that `completedFailsWith` a reason ends the chain as a failure.
+   */
+  chain?: TaskTurnChain;
+}
+
+/** E2 ③ — a hop's place in its chain (see `RunTaskTurnInput.chain`). */
+export interface TaskTurnChain {
+  id: string;
+  continuesIfCompleted: boolean;
+  completedFailsWith?: string;
+}
+
+/** E2 ③ — how a hop's outcome settles its chain. */
+function settleFor(chain: TaskTurnChain, outcome: TaskTurnOutcomeRecord['outcome']): TaskChainSettle {
+  const completed = outcome === 'completed';
+  if (completed && chain.continuesIfCompleted) return { chainId: chain.id, ends: false };
+  if (completed && chain.completedFailsWith) {
+    return { chainId: chain.id, ends: true, notice: { kind: 'failure', reason: chain.completedFailsWith } };
+  }
+  return { chainId: chain.id, ends: true };
 }
 
 const NOT_RESUMED_REASONS: Record<TaskTurnNonTerminal, string> = {
@@ -137,6 +171,7 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
     session: ConversationSession,
     turnId: string,
     decided: Omit<TaskTurnOutcomeRecord, 'turnId' | 'at'>,
+    chain?: TaskTurnChain,
   ): Promise<RunTaskTurnResult> {
     if (activeTurn.get(sessionKey) !== turnId) {
       deps.logger.info('Task turn outcome fenced out by a newer turn', {
@@ -148,6 +183,7 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
     }
     const record: TaskTurnOutcomeRecord = { ...decided, turnId, at: Date.now() };
     const activity = record.outcome === 'waiting' ? 'waiting' : 'idle';
+    const settle = chain ? settleFor(chain, record.outcome) : undefined;
     const delays = deps.commitRetryDelaysMs ?? [1_000, 5_000, 30_000];
     let lastError: unknown;
     for (let attempt = 0; attempt <= delays.length; attempt++) {
@@ -159,7 +195,7 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
       try {
         // One strict save of the outcome and the end activity (the registry
         // restores both on failure); idle hooks run after it, seeing the outcome.
-        deps.registry.commitTaskTurnOutcome(sessionKey, record, activity);
+        deps.registry.commitTaskTurnOutcome(sessionKey, record, activity, settle);
         return { turnId, outcome: record };
       } catch (error) {
         lastError = error;
@@ -176,7 +212,7 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
       recordFailure: `outcome not saved: ${(lastError as Error)?.message ?? String(lastError)}`,
     };
     deps.logger.error('Task turn outcome held in memory — every save failed', { sessionKey, turnId });
-    deps.registry.holdUnsavedTaskTurnOutcome(sessionKey, held, activity);
+    deps.registry.holdUnsavedTaskTurnOutcome(sessionKey, held, activity, settle);
     return { turnId, outcome: held, unsaved: true };
   }
 
@@ -213,7 +249,7 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
     // Saved before anything runs: a process that dies mid-turn leaves this turn
     // on disk for restart reconciliation. A failed save runs nothing.
     try {
-      deps.registry.beginTaskTurn(sessionKey, turnId);
+      deps.registry.beginTaskTurn(sessionKey, turnId, input.chain?.id);
     } catch (error) {
       // Nothing ran: the turn that owned the task still does (#634 R1), so its
       // caller can still end it.
@@ -259,12 +295,13 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
           ? `refused: ${error.code}`
           : `turn threw: ${(error as Error)?.message ?? String(error)}`;
       try {
-        await commit(sessionKey, session, turnId, {
-          outcome: 'failed',
-          category: 'Exception',
-          reason,
-          ...(recordFailure ? { recordFailure } : {}),
-        });
+        await commit(
+          sessionKey,
+          session,
+          turnId,
+          { outcome: 'failed', category: 'Exception', reason, ...(recordFailure ? { recordFailure } : {}) },
+          input.chain,
+        );
       } catch (commitError) {
         deps.logger.error('A thrown task turn could not be recorded', {
           sessionKey,
@@ -301,14 +338,20 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
         // Nobody will resume it: commit it as interrupted rather than leave it working.
         if (nonTerminal === 'fallbackCompact') disarmFallbackCompact(session);
         pendingRecordFailures.delete(sessionKey);
-        return commit(sessionKey, session, turnId, {
-          outcome: 'interrupted',
-          category: 'Exception',
-          reason: nonTerminal
-            ? (input.notResumedReasons?.[nonTerminal] ?? NOT_RESUMED_REASONS[nonTerminal])
-            : 'turn ended without an outcome',
-          ...(failure ? { recordFailure: failure } : {}),
-        });
+        return commit(
+          sessionKey,
+          session,
+          turnId,
+          {
+            outcome: 'interrupted',
+            category: 'Exception',
+            reason: nonTerminal
+              ? (input.notResumedReasons?.[nonTerminal] ?? NOT_RESUMED_REASONS[nonTerminal])
+              : 'turn ended without an outcome',
+            ...(failure ? { recordFailure: failure } : {}),
+          },
+          input.chain,
+        );
       }
       // Keep the first failure: a later one must not replace it (#626 R1).
       if (recordFailure && !pendingRecordFailures.has(sessionKey)) pendingRecordFailures.set(sessionKey, recordFailure);
@@ -320,7 +363,7 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
       };
     }
     pendingRecordFailures.delete(sessionKey);
-    return commit(sessionKey, session, turnId, decided);
+    return commit(sessionKey, session, turnId, decided, input.chain);
   }
 
   /**
@@ -333,13 +376,16 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
     sessionKey: string,
     turnId: string,
     decided: Omit<TaskTurnOutcomeRecord, 'turnId' | 'at'>,
+    chainId?: string,
   ): Promise<RunTaskTurnResult> {
     const session = deps.registry.getSessionByKey(sessionKey);
     if (!session || activeTurn.get(sessionKey) !== turnId) return { turnId, outcome: null, fenced: true };
     disarmFallbackCompact(session);
     const carried = pendingRecordFailures.get(sessionKey);
     pendingRecordFailures.delete(sessionKey);
-    return commit(sessionKey, session, turnId, { ...decided, ...(carried ? { recordFailure: carried } : {}) });
+    // An abandoned turn ends its chain (E2 ③).
+    const chain = chainId ? { id: chainId, continuesIfCompleted: false } : undefined;
+    return commit(sessionKey, session, turnId, { ...decided, ...(carried ? { recordFailure: carried } : {}) }, chain);
   }
 
   return { runTaskTurn, abandonTurn };

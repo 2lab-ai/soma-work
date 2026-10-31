@@ -81,7 +81,7 @@ describe('T2 · a dropped task never reads as running or waiting', () => {
     taskRunsData(ran: Task[]): Array<Record<string, any>>;
     taskPlanData(runs: unknown): Record<string, any>;
     taskRunsOf(current: Task[], earlier: Task[]): unknown;
-    renderTaskMeta(t: Task): string;
+    cardTaskStep(t: Task, i: number): Record<string, unknown>;
   }>(
     [
       ...BASE_FNS,
@@ -92,10 +92,9 @@ describe('T2 · a dropped task never reads as running or waiting', () => {
       'taskRunsOf',
       'taskRunsData',
       'taskPlanData',
-      'elapsedHtml',
-      'renderTaskMeta',
+      'cardTaskStep',
     ],
-    BASE_VARS,
+    [...BASE_VARS, 'CARD_TASK_STATUS'],
   );
 
   it('names every fate: done · running · paused · waiting · replaced (dropped after it ran) · not run (dropped before)', () => {
@@ -138,17 +137,19 @@ describe('T2 · a dropped task never reads as running or waiting', () => {
     expect('endedAt' in run).toBe(false);
   });
 
-  it('the work-log group head of a replaced task carries no live clock and reads 교체됨 (SSOT 2026-10-29 T5)', () => {
-    const meta = plan.renderTaskMeta({
-      status: 'in_progress',
+  it('a task a later plan replaced is a dropped step on the card: its run time, never a running clock (SSOT 2026-10-29 T5)', () => {
+    const step = plan.cardTaskStep(
+      { status: 'in_progress', startedAt: T0, removedAt: T0 + 5000, toolCalls: 1, dropped: 'started' } as Task,
+      0,
+    );
+    expect(step).toEqual({
+      id: 'step0',
+      label: '',
+      status: 'dropped',
       startedAt: T0,
-      removedAt: T0 + 5000,
+      endedAt: T0 + 5000,
       toolCalls: 1,
-      dropped: 'started',
     });
-    expect(meta).not.toContain('<ui-elapsed');
-    expect(meta).toContain('교체됨 5s');
-    expect(meta).not.toContain('중단');
   });
 });
 
@@ -445,7 +446,7 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
     env.renderPanelTasks(current, '', earlier, outside);
     // 5 + 4 + 1 + 2 tools + T8's 3 subagent calls; tokens 1.5K + 3.5K, $0.05 + $0.10 (the runs that recorded them).
     expect(runsEl.data?.totals).toEqual({ runs: 4, tools: 15, tokens: 5000, costUsd: 0.15000000000000002 });
-    expect(runsEl.data?.extraTotals).toEqual([{ label: '태스크 밖', value: '툴 3 (+서브 1) · 1.0K tok' }]);
+    expect(runsEl.data?.extraTotals).toEqual([{ label: '태스크 밖', value: '툴 3 (+서브 1) · 1.0K 토큰' }]);
     expect(el.innerHTML).not.toContain('tr-total');
     // Nothing outside the tasks: no 태스크 밖 row.
     env.renderPanelTasks(current, '', earlier, { toolCalls: 0, tokens: {} });
@@ -460,7 +461,7 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
     // Nothing ran yet: no runs element; work outside any task is the page's one line (nothing to sit under).
     env.renderPanelTasks([{ id: 'T1', content: 'a', status: 'pending' }], '', [], outside);
     expect(el.innerHTML).toContain(
-      '<div class="tr-total tr-outside"><span class="tr-total-k">태스크 밖</span>툴 3 (+서브 1) · 1.0K tok</div>',
+      '<div class="tr-total tr-outside"><span class="tr-total-k">태스크 밖</span>툴 3 (+서브 1) · 1.0K 토큰</div>',
     );
     env.renderPanelTasks([{ id: 'T1', content: 'a', status: 'pending' }], '', []);
     expect(el.innerHTML).not.toContain('tr-total');
@@ -537,7 +538,7 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
       TEMPLATE.indexOf('\nvar PSEC_TABS = ['),
       TEMPLATE.indexOf('\n];', TEMPLATE.indexOf('\nvar PSEC_TABS = [')),
     );
-    expect(tabs).toContain("{ id: 'conv', label: 'Chat', title: '지시와 답변' },");
+    expect(tabs).toContain("{ id: 'conv', label: '대화', title: '지시와 답변' },");
     expect(tabs).toContain("{ id: 'log', label: '작업 로그' },");
     expect(tabs).toContain("{ id: 'tree', label: '에이전트 트리', icon: 'tree', end: true },");
     expect(tabs.indexOf("id: 'log'")).toBeGreaterThan(tabs.indexOf("id: 'conv'"));
@@ -570,7 +571,7 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
   it('T1.2 · the tab list sticks while the conversation scrolls, Main sticks at its left (the element’s pinned tab)', () => {
     expect(CSS).toMatch(/\.panel-tabs::part\(list\) \{[^}]*position: sticky;[^}]*top: 0;/);
     expect(CSS).not.toMatch(/\.panel-tab\.is-main/);
-    expect(clientFn('panelTabsData')).toContain("var tabs = [tab(PT_MAIN, st0, 'Main', model, true)];");
+    expect(clientFn('panelTabsData')).toContain("var tabs = [tab(PT_MAIN, st0, '메인', model, true)];");
   });
 
   it('T1.6 · minimal by default: the agent path only with 자세히; the subtree is the 에이전트 트리 tab', () => {
@@ -607,7 +608,7 @@ describe('T1.2 · the agent tabs', () => {
     const d = env.panelTabsData(s, '');
     expect(d.label).toBe('에이전트');
     expect(d.tabs.map((t) => t.id)).toEqual(['main', 'a:toolu_a', 'a:toolu_b']);
-    expect(d.tabs.map((t) => t.label)).toEqual(['Main', 'A1', 'A2']);
+    expect(d.tabs.map((t) => t.label)).toEqual(['메인', 'A1', 'A2']);
     expect(d.tabs.map((t) => t.meta)).toEqual(['opus-5-5', 'Explore', 'Plan']);
     expect(d.tabs.map((t) => !!t.pinned)).toEqual([true, false, false]);
     // The status is the tone dot; its word stays in the title.
@@ -629,7 +630,7 @@ describe('T1.2 · the agent tabs', () => {
     const d = env.panelTabsData({ model: 'x' }, '');
     expect(d.tabs.map((t) => t.id)).toEqual(['main']);
     expect(d.value).toBe('main');
-    expect(d.tabs[0]).toMatchObject({ meta: 'x', tone: 'rest', pinned: true, title: 'Main x — 대기' });
+    expect(d.tabs[0]).toMatchObject({ meta: 'x', tone: 'rest', pinned: true, title: '메인 x — 대기' });
     const none = env.panelTabsData(null, '');
     expect(none.tabs.map((t) => t.id)).toEqual(['main']);
     expect(none.tabs[0].meta).toBeUndefined();

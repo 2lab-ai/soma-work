@@ -3969,6 +3969,56 @@ describe('SlackHandler — follow-up queue host', () => {
     });
 
     /**
+     * E2 ⑤ — the same seam hands a task's owed thread notices to the notice
+     * ledger (.prd/18 D6): after the follow-up cancel, before the background
+     * drain, so a handoff that cannot be written refuses the deletion with the
+     * session's tasks still tracked.
+     */
+    it('hands a deleted task’s notices over between the follow-up cancel and the drain', async () => {
+      let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
+      claudeHandler.getSessionRegistry = () => ({
+        setBeforeSessionDelete: (cb: any) => {
+          beforeDelete = cb;
+        },
+      });
+      const { spawned, spawnedAny } = spawnHandler({ client: {}, assistant: vi.fn() } as any);
+      const order: string[] = [];
+      const queue = spawnedAny.getFollowupQueue();
+      vi.spyOn(queue, 'list').mockImplementation(() => {
+        order.push('cancel');
+        return [];
+      });
+      const handoff = vi.fn(() => void order.push('handoff'));
+      spawned.setTaskNoticeHandoff(handoff);
+      const tracker = spawnedAny.toolEventProcessor;
+      vi.spyOn(tracker, 'clearBackgroundResume').mockImplementation(() => void order.push('drain'));
+
+      beforeDelete?.(SESSION_KEY, registrySession, 'terminated');
+      expect(handoff).toHaveBeenCalledWith(SESSION_KEY, registrySession);
+      expect(order).toEqual(['cancel', 'handoff', 'drain']);
+    });
+
+    it('a handoff the ledger cannot write refuses the deletion, background tasks still tracked', async () => {
+      let beforeDelete: ((key: string, session: any, reason: string) => void) | undefined;
+      claudeHandler.getSessionRegistry = () => ({
+        setBeforeSessionDelete: (cb: any) => {
+          beforeDelete = cb;
+        },
+      });
+      const { spawned, spawnedAny } = spawnHandler({ client: {}, assistant: vi.fn() } as any);
+      const tracker = spawnedAny.toolEventProcessor;
+      tracker.handleAgentTaskLifecycle(
+        { type: 'agent_task_lifecycle', phase: 'started', taskId: 'bg-live' },
+        SESSION_KEY,
+      );
+      spawned.setTaskNoticeHandoff(() => {
+        throw new Error('ledger EROFS');
+      });
+      expect(() => beforeDelete?.(SESSION_KEY, registrySession, 'terminated')).toThrow('ledger EROFS');
+      expect(tracker.getLiveBackgroundWork(SESSION_KEY).count).toBe(1);
+    });
+
+    /**
      * MF1 — a stop parks every pending row. `paused` and `queued` share a
      * surface (§2.1: `Send now` is the parked row's Resume), so what this pins
      * is that the stop does not strip the message of its controls.

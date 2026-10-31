@@ -151,6 +151,54 @@ describe('ClaudeHandler.streamQuery — the execution-context gate (#597)', () =
     }
   });
 
+  // E2 ⑥ — the same approver tells the notice deliverer what each approval did.
+  it('the task approver’s events reach the listener, and an approval being asked is open', async () => {
+    const { sharedStore } = await import('somalib/permission/shared-store');
+    const stored = vi.spyOn(sharedStore, 'storePendingApproval').mockResolvedValue(undefined as never);
+    let answer!: (r: { behavior: 'allow' }) => void;
+    const waited = vi
+      .spyOn(sharedStore, 'waitForPermissionResponse')
+      .mockImplementation(() => new Promise((r) => (answer = r as typeof answer)));
+    try {
+      const handler = newHandler();
+      vi.spyOn(handler.getSessionRegistry(), 'getSessionByKey').mockImplementation((key: string) =>
+        key === taskContext.sessionKey ? ({ activeTaskTurnId: 'turn-9' } as any) : undefined,
+      );
+      const events: Array<{ type: string; approvalId: string }> = [];
+      handler.setTaskApprovalListener((e) => void events.push(e));
+      const session = { ownerId: 'U1', userId: 'U1', slackless: true, taskId: taskContext.taskId, channelId: '' };
+      const it = handler.streamQuery(
+        'hi',
+        session as unknown as ConversationSession,
+        undefined,
+        taskContext.workingDirectory,
+        undefined,
+        taskContext.sessionKey,
+        taskContext,
+      );
+      await expect(it.next()).rejects.toThrow('options-built');
+      const deps = (buildOptionsMock.mock.calls.slice(-1)[0] as unknown[])[1] as {
+        taskApprover: { request(r: unknown): Promise<unknown> };
+      };
+      const pending = deps.taskApprover.request({
+        sessionKey: taskContext.sessionKey,
+        userId: 'U1',
+        toolName: 'Bash',
+        toolInput: { command: 'ls' },
+        ruleIds: [],
+      });
+      await vi.waitFor(() => expect(events.map((e) => e.type)).toEqual(['requested']));
+      expect(handler.isTaskApprovalOpen(events[0].approvalId)).toBe(true);
+      answer({ behavior: 'allow' });
+      await pending;
+      expect(events.map((e) => e.type)).toEqual(['requested', 'resolved']);
+      expect(handler.isTaskApprovalOpen(events[0].approvalId)).toBe(false);
+    } finally {
+      stored.mockRestore();
+      waited.mockRestore();
+    }
+  });
+
   describe('a task context is bound to the session it runs (#613 R2)', () => {
     const taskSession = (over: Record<string, unknown> = {}) =>
       ({
