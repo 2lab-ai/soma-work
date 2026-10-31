@@ -62,12 +62,33 @@ describe('admin request store (#622, #623)', () => {
     expect(getAdminRequest('bot_delete', 'C1/3.3')?.handled).toBe(false);
   });
 
-  it('a claim whose side effect never settled (the process died) lapses: the request is answerable again', () => {
+  it('a claim this process holds never lapses; one left on disk by a process that died does', () => {
     openAdminRequest({ kind: 'bot_delete', requestId: 'C1/7.7', requesterId: 'U1', ttlMs: TTL });
     const claim = { ...answer('UADMIN1', Date.now() - 10 * 60 * 1000), settled: false };
     expect(markAdminRequest('bot_delete', 'C1/7.7', claim)).not.toBeNull();
-    expect(getAdminRequest('bot_delete', 'C1/7.7')?.handled).toBe(false);
-    expect(markAdminRequest('bot_delete', 'C1/7.7', answer('UADMIN2'))).not.toBeNull();
+    // Still being carried out here: held.
+    expect(getAdminRequest('bot_delete', 'C1/7.7')?.handled).toBe(true);
+    expect(markAdminRequest('bot_delete', 'C1/7.7', answer('UADMIN2'))).toBeNull();
+    // The same claim on disk with nobody carrying it out (another process that died): lapsed.
+    const all = JSON.parse(fs.readFileSync(FILE, 'utf-8'));
+    all['bot_delete:C9/9.9'] = { ...all['bot_delete:C1/7.7'], requestId: 'C9/9.9' };
+    fs.writeFileSync(FILE, JSON.stringify(all));
+    expect(getAdminRequest('bot_delete', 'C9/9.9')?.handled).toBe(false);
+    expect(markAdminRequest('bot_delete', 'C9/9.9', answer('UADMIN2'))).not.toBeNull();
+  });
+
+  it('a fresh round always gets a new, later round id — even over an unanswered round', () => {
+    const a = openAdminRequest({ kind: 'new_user', requestId: 'U8', requesterId: 'U8', ttlMs: TTL, now: 1_000 });
+    const b = openAdminRequest({
+      kind: 'new_user',
+      requestId: 'U8',
+      requesterId: 'U8',
+      ttlMs: TTL,
+      now: 1_000,
+      fresh: true,
+    });
+    expect(b.createdAt).toBeGreaterThan(a.createdAt);
+    expect(b.handled).toBe(false);
   });
 
   it('a fresh claim holds; settling makes it the decision (only the answer on record settles)', () => {

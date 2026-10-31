@@ -57,10 +57,22 @@ const HANDLED_KEEP_MS = 24 * 60 * 60 * 1000;
 /** A claim whose side effect never settled (the process died mid-delete) lapses after this. */
 const CLAIM_LAPSE_MS = 2 * 60 * 1000;
 
-/** The request as it stands at `now`: a lapsed, never-settled claim is unanswered again. */
+/**
+ * Claims whose side effect is running in this process right now. Every answer
+ * runs in the main process, so a claim held here never lapses while it runs;
+ * one left over from a process that died is not in this set.
+ */
+const liveClaims = new Set<string>();
+
+/** The request as it stands at `now`: a lapsed, never-settled claim (its process died) is unanswered again. */
 function current(req: AdminRequest | undefined, now: number): AdminRequest | null {
   if (!req || req.expiresAt <= now) return null;
-  if (req.handled && req.resolution?.settled === false && now - req.resolution.at > CLAIM_LAPSE_MS) {
+  if (
+    req.handled &&
+    req.resolution?.settled === false &&
+    !liveClaims.has(keyOf(req.kind, req.requestId)) &&
+    now - req.resolution.at > CLAIM_LAPSE_MS
+  ) {
     const { resolution: _lapsed, ...rest } = req;
     return { ...rest, handled: false };
   }
@@ -120,6 +132,12 @@ export interface OpenAdminRequestInput {
   now?: number;
   /** An answered round this returns true for is kept, not replaced (e.g. an approved delete). */
   keepAnswered?: (round: AdminRequest) => boolean;
+  /**
+   * Always start a new round, even over an unanswered one (a new user's fresh
+   * ask: an earlier round's buttons must not decide it). Its `createdAt` is
+   * strictly later than the round it replaces.
+   */
+  fresh?: boolean;
 }
 
 /**
@@ -135,7 +153,7 @@ export function openAdminRequest(input: OpenAdminRequestInput): AdminRequest {
   const key = keyOf(input.kind, input.requestId);
   const open = current(all[key], now);
   if (open?.handled && input.keepAnswered?.(open)) return open;
-  if (open && !open.handled) {
+  if (open && !open.handled && !input.fresh) {
     open.data = { ...open.data, ...(input.data ?? {}) };
     open.expiresAt = Math.max(open.expiresAt, now + input.ttlMs);
     all[key] = open;
@@ -149,10 +167,11 @@ export function openAdminRequest(input: OpenAdminRequestInput): AdminRequest {
     data: { ...(input.data ?? {}) },
     prompts: [],
     handled: false,
-    createdAt: now,
+    // Strictly after any earlier round of this key: a round id is never reused.
+    createdAt: Math.max(now, (all[key]?.createdAt ?? 0) + 1),
     expiresAt: now + input.ttlMs,
   };
-  all[keyOf(input.kind, input.requestId)] = req;
+  all[key] = req;
   saveAll(all);
   return req;
 }
@@ -224,6 +243,7 @@ export function markAdminRequest(
   if (req.handled) return null;
   req.handled = true;
   req.resolution = resolution;
+  if (resolution.settled === false) liveClaims.add(key);
   req.expiresAt = Math.max(req.expiresAt, resolution.at + HANDLED_KEEP_MS);
   all[key] = req;
   saveAll(all);
@@ -242,6 +262,7 @@ export function settleAdminRequest(
   const all = loadAll();
   const req = all[keyOf(kind, requestId)];
   const r = req?.resolution;
+  liveClaims.delete(keyOf(kind, requestId));
   if (!req || !req.handled || !r || r.at !== answered.at || r.by !== answered.by || r.via !== answered.via) return null;
   delete r.settled;
   saveAll(all);
@@ -261,6 +282,7 @@ export function reopenAdminRequest(
   const all = loadAll();
   const req = all[keyOf(kind, requestId)];
   const r = req?.resolution;
+  liveClaims.delete(keyOf(kind, requestId));
   if (!req || !req.handled || !r || r.at !== answered.at || r.by !== answered.by || r.via !== answered.via)
     return false;
   req.handled = false;

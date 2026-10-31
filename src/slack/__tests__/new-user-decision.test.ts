@@ -212,6 +212,21 @@ describe('new-user access requests as one decision (#622)', () => {
     expect(userSettingsStore.getUserSettings(id)?.accepted).toBe(true);
   });
 
+  it("a new ask always opens a new round: an unanswered earlier round's button cannot decide it", async () => {
+    const id = newUser();
+    await notifyAdminsNewUser(api, id, 'Kim');
+    const first = buttonValue(api, -1);
+    // The earlier round stays unanswered on record (its answer was never recorded), and the user asks anew.
+    await notifyAdminsNewUser(api, id, 'Kim');
+    const second = buttonValue(api, -1);
+    expect(JSON.parse(second).round).toBeGreaterThan(JSON.parse(first).round);
+    const stale = vi.fn(async () => undefined);
+    const handler = new UserAcceptanceActionHandler({ slackApi: api });
+    await handler.handleAccept({ user: { id: 'UADMIN1' }, actions: [{ value: first }] }, stale);
+    expect(stale).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
+    expect(userSettingsStore.getUserSettings(id)?.accepted).toBe(false);
+  });
+
   it('the decision cannot be saved: nothing is recorded, the user stays pending, a retry works', async () => {
     const id = newUser();
     await notifyAdminsNewUser(api, id, 'Kim');
