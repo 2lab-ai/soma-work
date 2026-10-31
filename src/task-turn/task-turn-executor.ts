@@ -24,8 +24,8 @@ import type { McpCallTracker } from '../mcp-call-tracker';
 import {
   AssistantStatusManager,
   ContextWindowManager,
-  McpHealthMonitor,
-  McpStatusDisplay,
+  type McpHealthMonitor,
+  type McpStatusDisplay,
   ReactionManager,
   type RequestCoordinator,
   StatusReporter,
@@ -48,15 +48,12 @@ export interface TaskTurnExecutorHost {
   appendSessionWorkLog: SessionWorkLogAppender;
   createConversation(session: ConversationSession): Promise<string>;
   receiptDrainTimeoutMs?: number;
-  /**
-   * Set by the caller that re-enters continuations and fallback compactions
-   * (④c). Unset, such a turn is committed as `interrupted` (design §9).
-   */
-  supportsReentry?: boolean;
 }
 
 export interface TaskTurnExecutor {
   runTaskTurn(input: RunTaskTurnInput): Promise<RunTaskTurnResult>;
+  /** End a pending non-terminal turn that will not be resumed (#634 R1). */
+  abandonTurn: ReturnType<typeof createTaskTurnRunner>['abandonTurn'];
   /** Every Slack call a task turn attempted — must stay empty (T9). */
   slackCalls: RecordedSlackCall[];
 }
@@ -84,8 +81,18 @@ export function createTaskTurnExecutor(host: TaskTurnExecutorHost): TaskTurnExec
   const toolTracker = new ToolTracker();
   const reactionManager = new ReactionManager(slackApi);
   const assistantStatusManager = new AssistantStatusManager(slackApi);
-  const mcpStatusDisplay = new McpStatusDisplay(slackApi, host.mcpCallTracker);
-  const mcpHealthMonitor = new McpHealthMonitor(slackApi, { reloadConfiguration: () => undefined });
+  // MCP progress and health alerts are Slack posts (a status message in the
+  // thread, an ops alert to the channel). A task's tool calls already reach the
+  // dashboard as `tool` / `tool_result` work-log entries, so neither is built
+  // for a task (#598 ④b2) — at the most verbose setting the status display
+  // would otherwise post.
+  const mcpStatusDisplay = {
+    registerCall: () => {},
+    completeCall: () => {},
+    flushSession: async () => {},
+    cleanupSession: () => {},
+  } as unknown as McpStatusDisplay;
+  const mcpHealthMonitor = { recordResult: async () => {} } as unknown as McpHealthMonitor;
   const todoDisplayManager = new TodoDisplayManager(slackApi, host.todoManager, reactionManager);
   // The todo ledger reaches the dashboard through the manager itself; the plan
   // render has no Slack surface on a task.
@@ -132,9 +139,8 @@ export function createTaskTurnExecutor(host: TaskTurnExecutorHost): TaskTurnExec
     execute: (params) => executor.execute(params as never),
     createConversation: host.createConversation,
     receipts,
-    supportsReentry: host.supportsReentry,
     logger,
   });
 
-  return { runTaskTurn: runner.runTaskTurn, slackCalls: failClosed.calls };
+  return { runTaskTurn: runner.runTaskTurn, abandonTurn: runner.abandonTurn, slackCalls: failClosed.calls };
 }

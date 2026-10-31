@@ -101,6 +101,56 @@ describe('ClaudeHandler.streamQuery — the execution-context gate (#597)', () =
     expect((buildOptionsMock.mock.calls[0] as unknown[])[0]).toMatchObject({ executionContext: taskContext });
   });
 
+  // #599 ⑤b — the host hands the option builder the dashboard approver: an
+  // escalation of a task turn is written to the shared approval store bound
+  // to that task and the turn it is running, raised for the task's owner.
+  it('a task turn’s options get the dashboard approver, bound to the task and its running turn', async () => {
+    const { sharedStore } = await import('somalib/permission/shared-store');
+    const stored = vi.spyOn(sharedStore, 'storePendingApproval').mockRejectedValueOnce(new Error('stored'));
+    try {
+      const handler = newHandler();
+      vi.spyOn(handler.getSessionRegistry(), 'getSessionByKey').mockImplementation((key: string) =>
+        key === taskContext.sessionKey ? ({ activeTaskTurnId: 'turn-9' } as any) : undefined,
+      );
+      const session = { ownerId: 'U1', userId: 'U1', slackless: true, taskId: taskContext.taskId, channelId: '' };
+      const it = handler.streamQuery(
+        'hi',
+        session as unknown as ConversationSession,
+        undefined,
+        taskContext.workingDirectory,
+        undefined,
+        taskContext.sessionKey,
+        taskContext,
+      );
+      await expect(it.next()).rejects.toThrow('options-built');
+      const deps = (buildOptionsMock.mock.calls[0] as unknown[])[1] as {
+        taskApprover?: { request(r: unknown): Promise<unknown> };
+      };
+      expect(deps.taskApprover).toBeDefined();
+      await expect(
+        deps.taskApprover!.request({
+          sessionKey: taskContext.sessionKey,
+          userId: 'U1',
+          toolName: 'Bash',
+          toolInput: { command: 'rm -rf /' },
+          ruleIds: [],
+        }),
+      ).rejects.toThrow('stored');
+      expect(stored).toHaveBeenCalledWith(
+        expect.stringMatching(/^approval_[A-Za-z0-9_]+$/),
+        expect.objectContaining({
+          kind: 'tool_permission',
+          task_key: taskContext.sessionKey,
+          turn_id: 'turn-9',
+          user: 'U1',
+          tool_name: 'Bash',
+        }),
+      );
+    } finally {
+      stored.mockRestore();
+    }
+  });
+
   describe('a task context is bound to the session it runs (#613 R2)', () => {
     const taskSession = (over: Record<string, unknown> = {}) =>
       ({
