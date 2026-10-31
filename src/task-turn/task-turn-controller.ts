@@ -96,9 +96,11 @@ export interface TaskTurnController {
   /**
    * A dry run of the owner-level admission a start would meet (shutdown, the
    * owner's running task, the start window): null when it may start, else the
-   * refusal. Takes nothing — #600 ⑥ asks before it creates a task.
+   * refusal. Takes nothing — #600 ⑥ asks before it creates a task. With the
+   * first instruction, it also refuses a command the start would refuse (#640 R1),
+   * so a task is never created that its own first instruction cannot start.
    */
-  canStart(ownerId: string): TaskCommandResponse | null;
+  canStart(ownerId: string, text?: string): TaskCommandResponse | null;
   /** Abort the task's chain with `session-close` and wait (bounded) for it to end. */
   close(sessionKey: string): Promise<void>;
   /** Shutdown: refuse new starts (503). Running chains end through the coordinator's `shutdown` abort. */
@@ -117,6 +119,11 @@ const COMPACT = '/compact';
  */
 const SLASH_COMMAND = /^\/[A-Za-z][\w-]*(?:\s|$)/;
 const SESSION_COMMAND = /^%[A-Za-z]/;
+const COMMAND_REFUSED = 'commands are not supported on a dashboard task yet — send an instruction';
+/** An instruction (trimmed) a task start refuses as a command: `/word` or `%word`. */
+function isCommand(text: string): boolean {
+  return SLASH_COMMAND.test(text) || SESSION_COMMAND.test(text);
+}
 const CONTINUATION_REFUSED = 'continuation not supported on a dashboard task yet';
 const BUDGET_SPENT = 're-entry limit reached';
 
@@ -148,8 +155,9 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     return null;
   }
 
-  function canStart(ownerId: string): TaskCommandResponse | null {
+  function canStart(ownerId: string, text?: string): TaskCommandResponse | null {
     if (!accepting) return refuse(503, 'the service is shutting down — try again shortly');
+    if (text !== undefined && isCommand(text.trim())) return refuse(400, COMMAND_REFUSED);
     return ownerAdmission(ownerId, now());
   }
 
@@ -184,11 +192,8 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
           ),
         };
       }
-    } else if (SLASH_COMMAND.test(text) || SESSION_COMMAND.test(text)) {
-      return {
-        ok: false,
-        response: refuse(400, 'commands are not supported on a dashboard task yet — send an instruction'),
-      };
+    } else if (isCommand(text)) {
+      return { ok: false, response: refuse(400, COMMAND_REFUSED) };
     }
     let ctx: ExecutionContext;
     try {

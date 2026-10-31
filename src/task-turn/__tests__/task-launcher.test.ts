@@ -35,7 +35,7 @@ function harness(over: { canStart?: unknown; startStatus?: number } = {}) {
   const calls: string[] = [];
   const created: Array<Record<string, unknown>> = [];
   const controller = {
-    canStart: vi.fn((ownerId: string) => {
+    canStart: vi.fn((ownerId: string, _text?: string) => {
       calls.push(`canStart:${ownerId}`);
       return (over.canStart ?? null) as { status: number; body: { error: string } } | null;
     }),
@@ -83,6 +83,8 @@ describe('createTaskLauncher (#600 ⑥)', () => {
       text: REQ.prompt,
       actorUserId: OWNER,
     });
+    // #640 R1: the dry run sees the instruction, so a command is refused before a task exists.
+    expect(h.controller.canStart).toHaveBeenCalledWith(OWNER, REQ.prompt);
   });
 
   it('a named folder must be an existing directory directly inside the owner’s /tmp root', async () => {
@@ -127,17 +129,110 @@ describe('createTaskLauncher (#600 ⑥)', () => {
     });
   });
 
-  it('a task that cannot be saved fails the launch (nothing started)', async () => {
+  // #640 R1 (fable P3): a fresh folder made for a task that is then not made is not left behind.
+  it('a task that cannot be saved fails the launch: nothing started, and its fresh folder removed', async () => {
+    const h = harness();
+    const fresh = path.join(ROOT, `${RUN}_fresh_unsaved`);
+    const launcher = createTaskLauncher({
+      controller: h.controller,
+      createTask: () => {
+        throw new Error('ENOSPC');
+      },
+      createFreshDirectory: () => {
+        fs.mkdirSync(fresh, { recursive: true });
+        return fresh;
+      },
+    });
+    await expect(launcher.launch(REQ)).rejects.toThrow('ENOSPC');
+    expect(h.controller.start).not.toHaveBeenCalled();
+    expect(fs.existsSync(fresh)).toBe(false);
+  });
+
+  it('a fresh folder the containment check refuses is removed, and nothing is created', async () => {
+    const h = harness();
+    const outsideFresh = path.join(OUTSIDE, 'session_fresh');
+    const launcher = createTaskLauncher({
+      controller: h.controller,
+      createTask: () => {
+        throw new Error('must not be called');
+      },
+      createFreshDirectory: () => {
+        fs.mkdirSync(outsideFresh, { recursive: true });
+        return outsideFresh;
+      },
+    });
+    const r = await launcher.launch(REQ);
+    expect(r.status).toBe(422);
+    expect(fs.existsSync(outsideFresh)).toBe(false);
+    expect(h.controller.start).not.toHaveBeenCalled();
+  });
+
+  it('a named folder is never removed when the task cannot be saved', async () => {
     const h = harness();
     const launcher = createTaskLauncher({
       controller: h.controller,
       createTask: () => {
         throw new Error('ENOSPC');
       },
-      createFreshDirectory: () => path.join(ROOT, EXISTING),
+      createFreshDirectory: () => undefined,
     });
-    await expect(launcher.launch(REQ)).rejects.toThrow('ENOSPC');
+    await expect(launcher.launch({ ...REQ, folder: EXISTING })).rejects.toThrow('ENOSPC');
+    expect(fs.existsSync(path.join(ROOT, EXISTING))).toBe(true);
+  });
+});
+
+// #640 R1 (astra P1): an owner root `/tmp/<owner>` that is itself a link (to
+// another user's root, say) is not listed, not created in, and not named into.
+describe('an owner root that is a link (#640 R1)', () => {
+  const LINKED = `U0T600LNK${process.pid}`;
+  const LINKED_ROOT = path.join('/tmp', LINKED);
+  const NEW_OWNER = `U0T600NEW${process.pid}`;
+  beforeAll(() => {
+    fs.mkdirSync(path.join(OUTSIDE, 'their_repo'), { recursive: true });
+    fs.rmSync(LINKED_ROOT, { recursive: true, force: true });
+    fs.symlinkSync(OUTSIDE, LINKED_ROOT);
+  });
+  afterAll(() => {
+    fs.rmSync(LINKED_ROOT, { force: true });
+    fs.rmSync(path.join('/tmp', NEW_OWNER), { recursive: true, force: true });
+  });
+
+  it('lists nothing — the folders behind the link are someone else’s', () => {
+    expect(fs.readdirSync(LINKED_ROOT)).toContain('their_repo'); // the link does lead somewhere
+    expect(listTaskFolders(LINKED)).toEqual([]);
+  });
+
+  it('refuses a fresh folder before creating one, and refuses a named folder', async () => {
+    const h = harness();
+    const fresh = await h.launcher.launch({ ...REQ, ownerId: LINKED });
+    expect(fresh.status).toBe(422);
+    expect(h.calls).not.toContain('fresh');
+    const named = await h.launcher.launch({ ...REQ, ownerId: LINKED, folder: 'their_repo' });
+    expect(named.status).toBe(422);
+    expect(h.calls).not.toContain('createTask');
     expect(h.controller.start).not.toHaveBeenCalled();
+  });
+
+  it('a root that is a file is refused before a fresh folder is made', async () => {
+    const fileOwner = `U0T600FILE${process.pid}`;
+    const fileRoot = path.join('/tmp', fileOwner);
+    fs.writeFileSync(fileRoot, 'not a folder');
+    try {
+      const h = harness();
+      const r = await h.launcher.launch({ ...REQ, ownerId: fileOwner });
+      expect(r.status).toBe(422);
+      expect(h.calls).not.toContain('fresh');
+      expect(listTaskFolders(fileOwner)).toEqual([]);
+    } finally {
+      fs.rmSync(fileRoot, { force: true });
+    }
+  });
+
+  it('an owner with no root yet still gets a fresh folder (created as a real directory)', async () => {
+    const h = harness();
+    const r = await h.launcher.launch({ ...REQ, ownerId: NEW_OWNER });
+    expect(h.calls).toContain('fresh');
+    expect(r.status).toBe(200);
   });
 });
 

@@ -311,6 +311,7 @@ export interface DashboardTaskSubmission {
   prompt: string;
   /** An existing folder's name in the user's `/tmp/<user>/`; the launcher validates it. */
   folder?: string;
+  /** The nickname of a model the dialog offers; the route resolves it (#640 R1). */
   model?: string;
 }
 

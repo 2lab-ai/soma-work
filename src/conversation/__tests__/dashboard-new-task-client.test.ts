@@ -184,6 +184,12 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(script).toContain("'.nt-toggles:not(.nt-dest)'");
   });
 
+  // #640 R1 (astra P2): the dialog's chips and rows set `display`, which beats the
+  // `hidden` attribute's UA style — a hidden row must actually be hidden.
+  it('#640 R1 — anything hidden inside the dialog is not displayed, whatever its class sets', () => {
+    expect(html).toContain('.nt-dialog [hidden] { display: none !important; }');
+  });
+
   it('row 2: autogoal and autoz toggles; autoz starts off; autogoal says it is for this task only', () => {
     expect(html).toMatch(/<button[^>]*id="nt-autogoal"[^>]*aria-pressed=/);
     expect(html).toMatch(/<button[^>]*id="nt-autoz"[^>]*aria-pressed="false"/);
@@ -313,7 +319,7 @@ describe('ntBatteryView — T3 the battery', () => {
 describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
   const fns = load<{
     ntDefaultState(ctx: any, draft: any): any;
-    ntBuildPayload(state: any, attachments: any[], requestId: string, models?: any[]): any;
+    ntBuildPayload(state: any, attachments: any[], requestId: string): any;
     ntCanSubmit(state: any, attachments: any[]): boolean;
     ntLaunchToast(data: any, channelName: string | null): any;
   }>(['ntDefaultState', 'ntBuildPayload', 'ntCanSubmit', 'ntLaunchToast']);
@@ -374,31 +380,36 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
 
   // #600 ⑥ — "대시보드 작업" (dashboard task): no channel, no Slack thread.
   describe('a dashboard task (#600 ⑥)', () => {
-    const models = [{ nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]' }];
     const task = () => ({ ...fns.ntDefaultState(ctx, null), destination: 'task', prompt: '고쳐줘', channelId: null });
 
-    it('builds the task body: destination, prompt, the chosen model’s id, the folder name — never attachments', () => {
+    it('builds the task body: destination, prompt, the chosen model’s nickname, the folder name — never attachments', () => {
       expect(
-        fns.ntBuildPayload({ ...task(), folder: 'repo-a' }, [{ name: 'a.png', data: 'AA' }], 'req-0123456789', models),
+        fns.ntBuildPayload({ ...task(), folder: 'repo-a' }, [{ name: 'a.png', data: 'AA' }], 'req-0123456789'),
       ).toEqual({
         requestId: 'req-0123456789',
         destination: 'task',
         prompt: '고쳐줘',
-        model: 'claude-opus-5-5[1m]',
+        model: 'opus[1m]', // the server resolves the nickname against the models it offers (#640 R1)
         folder: 'repo-a',
       });
       // A new folder (the default) sends no folder.
-      expect(fns.ntBuildPayload(task(), [], 'req-0123456789', models)).toEqual({
+      expect(fns.ntBuildPayload(task(), [], 'req-0123456789')).toEqual({
         requestId: 'req-0123456789',
         destination: 'task',
         prompt: '고쳐줘',
-        model: 'claude-opus-5-5[1m]',
+        model: 'opus[1m]',
       });
     });
 
     it('needs no channel, but needs an instruction (a task takes no attachments)', () => {
       expect(fns.ntCanSubmit(task(), [])).toBe(true);
       expect(fns.ntCanSubmit({ ...task(), prompt: ' ' }, [{ name: 'a' }])).toBe(false);
+    });
+
+    // #640 R1 (fable, astra P2): files attached before switching to a dashboard
+    // task are not silently dropped — the task cannot start until they are removed.
+    it('cannot start while files are attached — they would be dropped', () => {
+      expect(fns.ntCanSubmit(task(), [{ name: 'a.png' }])).toBe(false);
     });
 
     it('the launch toast opens the task card — no channel, no Slack link; a task that did not start says why', () => {
@@ -416,7 +427,7 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
         ),
       ).toMatchObject({
         title: '작업을 만들었지만 아직 시작하지 못했어요',
-        description: 'one dashboard task runs at a time',
+        description: 'one dashboard task runs at a time — 지시는 새 작업 창에 남겨 두었어요',
         tone: 'warning',
         action: { id: 'open', label: '카드 열기' },
       });
@@ -437,6 +448,73 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
         link: { label: 'Slack에서 보기', href: 'https://slack.example/p1' },
       });
     });
+  });
+});
+
+// #640 R1 — what the dialog keeps across a refresh of its context, and after a launch.
+describe('ntReconcile / ntStateAfterLaunch (#640 R1)', () => {
+  const fns = load<{
+    ntDefaultState(ctx: any, draft: any): any;
+    ntReconcile(state: any, ctx: any): void;
+    ntStateAfterLaunch(prev: any, data: any, ctx: any): any;
+  }>(['ntDefaultState', 'ntReconcile', 'ntStateAfterLaunch']);
+  const ctx = (over: Record<string, unknown> = {}) => ({
+    models: [{ nickname: 'opus[1m]', model: 'claude-opus-5-5[1m]' }],
+    efforts: ['xhigh'],
+    channels: [{ id: 'C_ALPHA', name: 'alpha' }],
+    defaultModel: 'opus[1m]',
+    defaultEffort: 'xhigh',
+    defaultChannelId: 'C_ALPHA',
+    autogoalDefault: true,
+    taskFolders: [{ name: 'repo-a' }],
+    ...over,
+  });
+  const taskState = (over: Record<string, unknown> = {}) => ({
+    ...fns.ntDefaultState(ctx(), null),
+    destination: 'task',
+    folder: 'repo-a',
+    prompt: '고쳐줘',
+    ...over,
+  });
+
+  it('a folder no longer offered falls back to a new folder', () => {
+    const s = taskState({ folder: 'gone' });
+    fns.ntReconcile(s, ctx());
+    expect(s.folder).toBe('');
+    const kept = taskState();
+    fns.ntReconcile(kept, ctx());
+    expect(kept.folder).toBe('repo-a');
+  });
+
+  it('a dashboard task no longer offered (no task folders in the context) falls back to Slack', () => {
+    const s = taskState();
+    fns.ntReconcile(s, ctx({ taskFolders: undefined }));
+    expect(s.destination).toBe('slack');
+    expect(s.folder).toBe('');
+  });
+
+  it('still reconciles the model, effort and channel as before', () => {
+    const s = { ...fns.ntDefaultState(ctx(), null), model: 'x', effort: 'y', channelId: 'C_GONE' };
+    fns.ntReconcile(s, ctx());
+    expect(s).toMatchObject({ model: 'opus[1m]', effort: 'xhigh', channelId: 'C_ALPHA' });
+  });
+
+  it('after a started task the next one starts clean, still a dashboard task', () => {
+    const next = fns.ntStateAfterLaunch(taskState(), { sessionKey: 'task:x', status: 'running' }, ctx());
+    expect(next).toMatchObject({ destination: 'task', prompt: '', folder: '' });
+  });
+
+  // #640 R1 (astra P2): a task created but not started keeps its instruction — it was never run.
+  it('after a task that did not start, the instruction, folder and model are kept', () => {
+    const prev = taskState({ model: 'opus[1m]' });
+    const next = fns.ntStateAfterLaunch(prev, { sessionKey: 'task:x', status: 'not-started', reason: 'busy' }, ctx());
+    expect(next).toMatchObject({ destination: 'task', prompt: '고쳐줘', folder: 'repo-a', model: 'opus[1m]' });
+  });
+
+  it('a Slack launch keeps the channel it used', () => {
+    const prev = { ...fns.ntDefaultState(ctx(), null), prompt: 'go', channelId: 'C_ALPHA' };
+    const next = fns.ntStateAfterLaunch(prev, { channel: 'C_BETA', status: 'running' }, ctx());
+    expect(next).toMatchObject({ destination: 'slack', channelId: 'C_BETA', prompt: '' });
   });
 });
 

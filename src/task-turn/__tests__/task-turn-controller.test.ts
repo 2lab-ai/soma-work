@@ -642,6 +642,26 @@ describe('TaskTurnController.canStart — a dry run of admission (#600 ⑥)', ()
     h.controller.stopAccepting();
     expect(h.controller.canStart('UOWNER')).toMatchObject({ status: 503 });
   });
+
+  // #640 R1 (fable, astra): a first instruction the start would refuse as a
+  // command is refused before a task exists — never a card that cannot start.
+  it.each([
+    ['/compact'],
+    ['/model opus'],
+    ['%model'],
+  ])('refuses a command-shaped first instruction (%s) with the start’s own 400', (text) => {
+    const h = harness();
+    expect(h.controller.canStart('UOWNER', text)).toEqual({
+      status: 400,
+      body: { error: 'commands are not supported on a dashboard task yet — send an instruction' },
+    });
+  });
+
+  it('lets an instruction that only mentions a path or a slash through', () => {
+    const h = harness();
+    expect(h.controller.canStart('UOWNER', 'clean /tmp/build and explain 2/3 of it')).toBeNull();
+    expect(h.controller.canStart('UOWNER', '  fix the flaky test')).toBeNull();
+  });
 });
 
 describe('TaskTurnController.answer — a dashboard answer to a task’s question (#599 ⑤)', () => {
