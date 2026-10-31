@@ -166,7 +166,11 @@ import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
 import { createTaskLauncher } from './task-turn/task-launcher';
-import { createTaskNoticeDeliverer, type TaskNoticeDeliverer } from './task-turn/task-notice-deliverer';
+import {
+  createTaskNoticeDeliverer,
+  owesInstructionThread,
+  type TaskNoticeDeliverer,
+} from './task-turn/task-notice-deliverer';
 import { TASK_NOTIFICATION_LEDGER_FILENAME, TaskNotificationLedger } from './task-turn/task-notification-ledger';
 import { createTaskTurnController, type TaskTurnController } from './task-turn/task-turn-controller';
 import { createTaskTurnExecutor } from './task-turn/task-turn-executor';
@@ -1244,6 +1248,13 @@ async function start() {
         logger.error('Task notice ledger unreadable — task thread notices stay on their tasks, undelivered', {
           error: (error as Error)?.message,
         });
+        // Fail closed (D6): a task that still owes its thread is not deleted while
+        // there is no ledger to hand that to (fable #668 P2-1).
+        slackHandler.setTaskNoticeHandoff((sessionKey, session) => {
+          if (owesInstructionThread(session)) {
+            throw new Error(`task notice ledger unreadable — ${sessionKey} kept until its notices can be handed over`);
+          }
+        });
       }
     }
     const workLogProviders: StreamExecutorProviders & {
@@ -1868,6 +1879,9 @@ async function start() {
         githubAuth.stopAutoRefresh();
         logger.info('GitHub App auto-refresh stopped');
       }
+
+      // E2 ⑤ — no new task notice pass or retry once shutting down (grok #668 P3).
+      taskNoticeDeliverer?.stop();
 
       // Stop conversation viewer
       try {
