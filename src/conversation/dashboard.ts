@@ -7467,7 +7467,7 @@ var _adminInboxReturn = null;
 var ADMIN_KIND_LABEL = { env_skill: '환경 스킬', mcp_grant: 'MCP 권한', new_user: '새 사용자', bot_delete: '메시지 삭제' };
 
 function adminInboxLoad() {
-  if (!_viewerIsAdmin) return;
+  if (!_viewerIsAdmin || !_viewerUserId) return;
   fetch('/api/dashboard/admin-approvals')
     .then(function(res) { return res.ok ? res.json() : null; })
     .then(function(snap) { if (snap) applyAdminApprovals(snap); })
@@ -8100,10 +8100,12 @@ function _applyUserPill(data) {
   _viewerUserId = (data && data.user && data.user.slackUserId) || '';
   const lifecycleBtn = document.getElementById('lifecycle-btn');
   if (lifecycleBtn) lifecycleBtn.style.display = isAdminCapable ? 'inline-flex' : 'none';
-  // Admin approvals (#620): the button stays visible at zero so the bar does not shift.
+  // Admin approvals (#620): a Slack-signed-in admin only (a viewer token names nobody — the
+  // server refuses it the requests). The button stays visible at zero so the bar does not shift.
+  const seesApprovals = isAdminCapable && !!_viewerUserId;
   const inboxBtn = document.getElementById('admin-inbox-btn');
-  if (inboxBtn) inboxBtn.style.display = isAdminCapable ? 'inline-flex' : 'none';
-  if (isAdminCapable) adminInboxLoad();
+  if (inboxBtn) inboxBtn.style.display = seesApprovals ? 'inline-flex' : 'none';
+  if (seesApprovals) adminInboxLoad();
   const toggle = document.getElementById('admin-mode-toggle');
   if (toggle) {
     if (isAdminCapable) {
@@ -13979,7 +13981,7 @@ function connectWs() {
     // (from the HTTP cursor; afterSeq=0 when the log was still empty).
     if (panelOpen && _wl) recoverWorkLog();
     // Admin approvals that arrived or ended while we were offline.
-    if (_viewerIsAdmin) adminInboxLoad();
+    if (_viewerIsAdmin && _viewerUserId) adminInboxLoad();
   };
   ws.onclose = function() {
     _appBarStatus = { tone: 'wait', label: STRINGS.wsReconnecting, live: true };
