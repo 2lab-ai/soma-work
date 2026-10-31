@@ -332,6 +332,27 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     });
   });
 
+  it('E2 ⑤ — a task’s card carries the thread notices that could not be posted; none, no field', async () => {
+    const dashboard = await import('../dashboard');
+    const reg = new SessionRegistry();
+    const failing = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
+    const fine = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/b', title: 'B' });
+    dashboard.setTaskNoticeFailureProvider((key) =>
+      key === `task:${failing.taskId}` ? [{ kind: 'result', error: 'channel_not_found' }] : [],
+    );
+    try {
+      setDashboardSessionAccessor(() => reg.getAllSessions());
+      const b = await board();
+      const cards = [...b.working, ...b.waiting, ...b.idle] as any[];
+      expect(cards.find((c) => c.key === `task:${failing.taskId}`)?.noticeFailures).toEqual([
+        { kind: 'result', error: 'channel_not_found' },
+      ]);
+      expect(cards.find((c) => c.key === `task:${fine.taskId}`)).not.toHaveProperty('noticeFailures');
+    } finally {
+      dashboard.setTaskNoticeFailureProvider(null);
+    }
+  });
+
   // #600 ⑥ — the client gates task-only UI on a field, not on the key's shape.
   it('#600 ⑥ — a task’s card says it is Slack-less; a Slack session’s card does not', async () => {
     const reg = new SessionRegistry();
