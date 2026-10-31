@@ -59,6 +59,7 @@ import type {
   SessionResourceUpdateRequest,
   SessionResourceUpdateResult,
   SessionState,
+  TaskTurnOutcomeRecord,
   WorkflowType,
 } from './types';
 import { coerceToAvailableModel, type EffortLevel, userSettingsStore } from './user-settings-store';
@@ -103,6 +104,8 @@ interface SerializedSession {
   /** SSOT 2026-10-30 — the dashboard star (kept alive) and when it was last removed. */
   starred?: boolean;
   starClearedAt?: number;
+  /** #598 ④b — a Slack-less task's latest turn outcome; validated on load. */
+  lastTurnOutcome?: unknown;
   /**
    * Incident ownership survives restarts: dropping it would silently promote a
    * restricted session back to an ordinary one.
@@ -524,6 +527,26 @@ export class SessionRegistry {
    * `sessionKey` parameter is currently advisory (for logging / future
    * targeted broadcasts). The underlying broadcast API is global today.
    */
+  /**
+   * #598 ④b — save now and fail loudly: the write goes through
+   * `writeSessionsFile(true)` and a failure is rethrown, then (only after the
+   * write landed) the dashboard is told. The task runner commits a turn's
+   * outcome through this; `persistAndBroadcast` logs a failed write and carries
+   * on, which would show an outcome that a restart then loses.
+   */
+  public persistSessionStrict(sessionKey: string): void {
+    if (!this.getSessionByKey(sessionKey)) throw new Error(`persistSessionStrict: session not found (${sessionKey})`);
+    this.writeSessionsFile(true);
+    try {
+      this.onActivityStateChangeCallback?.();
+    } catch (err) {
+      this.logger.warn('persistSessionStrict: broadcast callback raised', {
+        sessionKey,
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+  }
+
   public persistAndBroadcast(sessionKey: string): void {
     this.saveSessions();
     try {
@@ -2544,6 +2567,7 @@ export class SessionRegistry {
             titleProvisional: session.titleProvisional || undefined,
             starred: session.starred === true ? true : undefined,
             starClearedAt: session.starClearedAt,
+            lastTurnOutcome: session.lastTurnOutcome,
             incidentAttemptFinishedId: session.incidentAttemptFinishedId,
             // Session-scoped `/autocompact` token override (persisted verbatim).
             autoCompactTokens: session.autoCompactTokens,
@@ -2638,6 +2662,7 @@ export class SessionRegistry {
         channelId: serialized.channelId,
         threadTs: serialized.threadTs,
         slackless: serialized.slackless === true ? true : undefined,
+        lastTurnOutcome: sanitizeTaskTurnOutcome(serialized.lastTurnOutcome),
         sessionId: serialized.sessionId,
         isActive: false,
         lastActivity,
@@ -2873,6 +2898,7 @@ export class SessionRegistry {
           titleProvisional: serialized.titleProvisional === true ? true : undefined,
           starred: starred ? true : undefined,
           starClearedAt: finiteStamp(serialized.starClearedAt),
+          lastTurnOutcome: sanitizeTaskTurnOutcome(serialized.lastTurnOutcome),
           // Merge code change stats
           mergeStats: serialized.mergeStats,
           // User SSOT instructions (restored from disk).
@@ -3137,6 +3163,28 @@ export class SessionRegistry {
  * not > 0 is re-sized from the session model; with no model the usage is
  * dropped rather than given a guessed window.
  */
+const TASK_TURN_OUTCOMES = new Set(['completed', 'failed', 'cancelled', 'waiting', 'interrupted']);
+const TURN_CATEGORIES = new Set(['UIUserAskQuestion', 'WorkflowComplete', 'Exception', 'Stalled']);
+
+/** #598 ④b — a saved turn outcome is kept only when every field has its shape. */
+function sanitizeTaskTurnOutcome(raw: unknown): TaskTurnOutcomeRecord | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.turnId !== 'string' || !r.turnId) return undefined;
+  if (typeof r.outcome !== 'string' || !TASK_TURN_OUTCOMES.has(r.outcome)) return undefined;
+  if (typeof r.category !== 'string' || !TURN_CATEGORIES.has(r.category)) return undefined;
+  if (typeof r.at !== 'number' || !Number.isFinite(r.at)) return undefined;
+  return {
+    turnId: r.turnId,
+    outcome: r.outcome as TaskTurnOutcomeRecord['outcome'],
+    category: r.category as TaskTurnOutcomeRecord['category'],
+    at: r.at,
+    ...(typeof r.reason === 'string' ? { reason: r.reason } : {}),
+    ...(r.retryable === true ? { retryable: true } : {}),
+    ...(typeof r.recordFailure === 'string' ? { recordFailure: r.recordFailure } : {}),
+  };
+}
+
 function restoreSessionUsage(raw: unknown, model: string | undefined): ConversationSession['usage'] {
   return sanitizeSessionUsage(raw, model ? resolveContextWindow(model) : undefined);
 }

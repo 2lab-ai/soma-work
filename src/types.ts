@@ -494,6 +494,13 @@ export interface ConversationSession {
    * sleep period instead of sleeping on the next sweep.
    */
   starClearedAt?: number;
+  /**
+   * #598 ④b — the latest turn's outcome of a Slack-less task (D10), written once
+   * per terminal turn by the task runner's strict commit. Current activity wins
+   * over it on the dashboard: `working` shows running, `waiting` shows waiting,
+   * `idle` reads this.
+   */
+  lastTurnOutcome?: TaskTurnOutcomeRecord;
   // Sleep mode
   sleepStartedAt?: Date;
   // Conversation history recording ID
@@ -1013,4 +1020,15 @@ export interface UserChoiceGroup {
   question: string; // Group title/context
   choices: UserChoice[]; // Array of individual choices
   context?: string; // Why these decisions are needed
+}
+
+/** #598 ④b — one terminal turn's outcome, as stored on the session. */
+export interface TaskTurnOutcomeRecord {
+  turnId: string;
+  outcome: 'completed' | 'failed' | 'cancelled' | 'waiting' | 'interrupted';
+  category: 'UIUserAskQuestion' | 'WorkflowComplete' | 'Exception' | 'Stalled';
+  reason?: string;
+  retryable?: boolean;
+  recordFailure?: string;
+  at: number;
 }
