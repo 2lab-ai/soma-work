@@ -902,17 +902,39 @@ describe('wiring — the lane’s job boxes, the paint, the fold, the drawer', (
     expect(after).toHaveBeenCalledTimes(1);
   });
 
-  it('D20 — the drawer stays the page’s: rows per run, Escape closes it, its countdown rides the page tick', () => {
+  it('D20 — the drawer stays the page’s: rows per run, Escape closes it; its 다음 실행 countdown is <ui-elapsed format="countdown"> with the page’s words (D8b K-03)', () => {
     expect(clientFn('renderCronRunRow')).toContain('data-cron-open');
     expect(clientFn('paintCronDrawer')).toContain('cronGroupRuns(g)');
     // Escape, the scrim and ✕ are the element's ui-close, answered by the page's own close (focus return).
     expect(TEMPLATE).toContain(
       "if (d) d.addEventListener('ui-close', function(e) { e.preventDefault(); closeCronDrawer(); });",
     );
-    const tick = clientFn('aqTick');
-    expect(tick).toContain("getElementById('cron-drawer')");
-    expect(tick).not.toContain("getElementById('capacity')");
-    expect(clientFn('renderCronDrawerMeta')).toContain('aqTime(j.nextRunAt');
+    // The countdown: the loose minute form (24분 · 1시간 20분), "후" after it, "곧" at zero — never "곧 후" (review R1);
+    // the element ticks it on the library's timer, so the page has no tick of its own; at zero the jobs reload.
+    expect(clientFn('renderCronDrawerMeta')).toContain("' (' + cronCountdownHtml(j.nextRunAt) + ')'");
+    const countdown = new Function(`${clientFn('cronCountdownHtml')}\nreturn cronCountdownHtml;`)() as (
+      at: unknown,
+    ) => string;
+    expect(countdown(1_700_000_000_000)).toBe(
+      '<ui-elapsed until="1700000000000" format="countdown" precision="minute" after="후" at-zero="곧" lang="ko"></ui-elapsed>',
+    );
+    expect(countdown('1700000000000.4')).toContain('until="1700000000000"');
+    expect(countdown('x')).toBe('');
+    expect(countdown(undefined)).toBe('');
+    expect(TEMPLATE).toContain(
+      "if (d) d.addEventListener('ui-end', function(e) { if (e.target && e.target.localName === 'ui-elapsed') loadCronJobs(); });",
+    );
+    expect(TEMPLATE).not.toContain('_cronDueReloaded');
+    for (const gone of [
+      'aqTick',
+      'aqTime',
+      'aqLeft',
+      'aq-left',
+      'data-aq-at',
+      'function updateTimers',
+      'setInterval(updateTimers',
+    ])
+      expect(TEMPLATE, gone).not.toContain(gone);
   });
 });
 

@@ -233,10 +233,10 @@ describe('C1 — what soma-work injected, by its own wording', () => {
   it('goal continuation — Goal #n/m and the evaluator gap, from the real prompt builder', () => {
     const { sysTurnInfo } = api();
     const plain = sysTurnInfo(user(goalPrompt(2, 10), SYSTEM));
-    expect(plain).toMatchObject({ kind: 'goal', label: 'Goal #2/10', line: 'Goal 자동 계속' });
+    expect(plain).toMatchObject({ kind: 'goal', label: '목표 #2/10', line: '목표 자동 계속' });
     const gap = 'The work summary contains no evidence at all: <files> missing';
     const withGap = sysTurnInfo(user(goalPrompt(3, 10, gap)));
-    expect(withGap).toMatchObject({ kind: 'goal', label: 'Goal #3/10' });
+    expect(withGap).toMatchObject({ kind: 'goal', label: '목표 #3/10' });
     expect(withGap?.line).toBe(`직전 평가: ${gap}`);
     expect(withGap?.facts).toEqual([
       ['회차', '3 / 10'],
@@ -291,7 +291,7 @@ describe('C2 — the one-line row (<ui-conversation> system turn)', () => {
     const raw = `${goalPrompt(2, 10, 'needs <evidence> & tests')}`;
     const t = api().one(user(raw, SYSTEM));
     // SSOT 2026-10-29 T7: the harness sent it — System (the element draws its gear avatar).
-    expect(t).toMatchObject({ id: 'u1', role: 'system', name: 'System', kind: 'goal', label: 'Goal #2/10' });
+    expect(t).toMatchObject({ id: 'u1', role: 'system', kind: 'goal', label: '목표 #2/10' });
     expect(t.text).toBe('직전 평가: needs <evidence> & tests');
     expect(t.facts).toContainEqual(['회차', '2 / 10']);
     expect(String(t.raw)).toMatch(/^\[goal-continuation\] Continue working/);
@@ -309,13 +309,13 @@ describe('C2 — the one-line row (<ui-conversation> system turn)', () => {
     ]) {
       const x = one(t);
       expect(x.role).toBe('system');
-      expect(x.name).toBe('System');
+      expect(x.name).toBeUndefined();
       expect(JSON.stringify(x)).not.toContain('"name":"Z"');
     }
-    expect(one(user(RESTART_PROMPT, { ...SYSTEM, userName: undefined })).name).toBe('System');
+    expect(one(user(RESTART_PROMPT, { ...SYSTEM, userName: undefined })).name).toBeUndefined();
     const mine = one(user('배포까지 진행', PERSON));
     expect(mine).toEqual({ id: 'u1', role: 'user', name: 'Z', at: expect.any(Number), text: '배포까지 진행' });
-    expect(one(user('익명', { ...PERSON, userName: undefined })).name).toBe('User');
+    expect(one(user('익명', { ...PERSON, userName: undefined })).name).toBe('사용자');
   });
 
   it('files on a one-line turn (the message the auto-compact intercepted): the media slot of its open detail (G1-2, 0.12.0)', () => {
@@ -389,7 +389,7 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
     expect(x).toMatchObject({ role: 'system', kind: 'compact', label: '자동 압축' });
     expect(x.progress).toEqual({ startedAt: start, estimateMs: 150_000, verb: '압축 중…' });
     expect(x.facts).toContainEqual(['상태', '진행 중']);
-    expect(x.facts).toContainEqual(['예상 시간', '2m 30s (기본값)']);
+    expect(x.facts).toContainEqual(['예상 시간', '2분 30초 (기본값)']);
   });
 
   it('the estimate is the conversation’s previous compaction when the turn carries one', () => {
@@ -397,7 +397,7 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
       user('/compact', { ...SYSTEM, timestamp: Date.now() - 45_000, compact: { estimateMs: 90_000 } }),
     );
     expect(x.progress).toMatchObject({ estimateMs: 90_000 });
-    expect(x.facts).toContainEqual(['예상 시간', '1m 30s (직전 압축 기준)']);
+    expect(x.facts).toContainEqual(['예상 시간', '1분 30초 (직전 압축 기준)']);
   });
 
   it('past the estimate it is still running (the element draws the over-run sweep, no false percentage)', () => {
@@ -425,15 +425,15 @@ describe('C3 — /compact: progress while it runs, its numbers once done', () =>
     expect(x).toMatchObject({
       kind: 'compact',
       label: '자동 압축',
-      text: '자동 압축 처리 · 182.3K → 31.0K 토큰 · 2m 14s',
+      text: '자동 압축 처리 · 182.3K → 31.0K 토큰 · 2분 14초',
     });
     expect(x.facts).toEqual(
       expect.arrayContaining([
         ['상태', '완료'],
         ['압축 전 → 후', '182,340 → 31,020 토큰 (−83%)'],
-        ['걸린 시간', '2m 14s'],
-        ['예상 시간', '2m 0s (직전 압축 기준)'],
-        ['SDK trigger', 'manual'],
+        ['걸린 시간', '2분 14초'],
+        ['예상 시간', '2분 00초 (직전 압축 기준)'],
+        ['SDK 트리거', 'manual'],
         ['실행', 'soma-work — 컨텍스트가 자동 압축 지점을 넘어 /compact 실행'],
       ]),
     );
@@ -662,14 +662,14 @@ describe('C4 — the skills an instruction invoked, as badges', () => {
     expect(btns[0].attrs['aria-expanded']).toBe('true');
     expect(panes['skd-u9-0'].hidden).toBe(false);
     expect(panes['skd-u9-0'].innerHTML).toContain('<span class="skill-name">local:using-ssot</span>');
-    expect(panes['skd-u9-0'].innerHTML).toContain('≈524 tokens (추정)');
+    expect(panes['skd-u9-0'].innerHTML).toContain('≈524 토큰 (추정)');
     expect(panes['skd-u9-0'].innerHTML).toContain('<pre class="skill-body">&lt;b&gt;raw&lt;/b&gt; &amp; body</pre>');
 
     a.skillToggle(btns[1]); // one at a time
     expect(btns[0].attrs['aria-expanded']).toBe('false');
     expect(panes['skd-u9-0'].hidden).toBe(true);
     expect(panes['skd-u9-1'].hidden).toBe(false);
-    expect(panes['skd-u9-1'].innerHTML).toContain('≈1.2K tokens (추정)');
+    expect(panes['skd-u9-1'].innerHTML).toContain('≈1.2K 토큰 (추정)');
 
     a.skillToggle(btns[1]); // and closes
     expect(btns[1].attrs['aria-expanded']).toBe('false');
@@ -785,12 +785,12 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
     const c = card(user(goalPrompt(2, 10, 'No evidence: no files, diffs, or tests.'), SYSTEM));
     const out = c.html();
     // SSOT 2026-10-29 T7: the harness sent it — the 지시 is System's, not the user's name.
-    expect(out).toContain('<div class="io-label">지시<span class="io-who is-sys">System</span></div>');
+    expect(out).toContain('<div class="io-label">지시<span class="io-who is-sys">시스템</span></div>');
     expect(out).not.toContain('<span class="io-who">Z</span>');
     expect(out).toContain(
       `<ui-disclosure class="io-sys" data-cid="${CID}" flush><span slot="summary" class="io-sys-row">`,
     );
-    expect(out).toContain('<span class="ui-chip sys-badge" data-kind="goal">Goal #2/10</span>');
+    expect(out).toContain('<span class="ui-chip sys-badge" data-kind="goal">목표 #2/10</span>');
     expect(out).toContain('<span class="sys-line">직전 평가: No evidence: no files, diffs, or tests.</span>');
     expect(out).toContain('<dt>회차</dt><dd>2 / 10</dd>');
     expect(out).toContain('<pre class="sys-raw">[goal-continuation] Continue working');
@@ -826,7 +826,7 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
     // SSOT 2026-10-29 T7: a person's 지시 keeps their name (System is only the harness's).
     expect(out).toContain('<div class="io-label">지시<span class="io-who">Z</span></div>');
     expect(out).not.toContain('is-sys');
-    expect(out).not.toContain('System');
+    expect(out).not.toContain('시스템');
   });
 
   it('skills: the user’s words, then one badge per skill — parsed from the whole turn, not the 500-character cut', () => {
@@ -847,7 +847,7 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
     expect(out).toContain('<div class="skill-badges" role="group" aria-label="활성화된 스킬 2개">');
     expect(out).toMatch(
       new RegExp(
-        `<button type="button" class="skill-badge" aria-expanded="false" aria-controls="ios-${CID}-0" onclick="ioSkillToggle\\('${CID}',0\\)"[^>]*><span class="skill-name">local:using-ssot</span><span class="skill-tok">≈\\d+ tokens</span></button>`,
+        `<button type="button" class="skill-badge" aria-expanded="false" aria-controls="ios-${CID}-0" onclick="ioSkillToggle\\('${CID}',0\\)"[^>]*><span class="skill-name">local:using-ssot</span><span class="skill-tok">≈\\d+ 토큰</span></button>`,
       ),
     );
     expect(out).not.toContain('skill-body');
@@ -912,7 +912,7 @@ describe('C6 — the inbox card: 지시 / 응답', () => {
     );
     const out = c.html();
     expect(out).toContain(
-      '<div class="io-cp"><span class="cp-slot"><span class="sys-line">자동 압축 처리 · 182.3K → 31.0K 토큰 · 2m 14s</span></span></div>',
+      '<div class="io-cp"><span class="cp-slot"><span class="sys-line">자동 압축 처리 · 182.3K → 31.0K 토큰 · 2분 14초</span></span></div>',
     );
     expect(out).not.toContain('data-cp-live');
     expect(out).toContain('<dt>압축 전 → 후</dt><dd>182,340 → 31,020 토큰 (−83%)</dd>');
@@ -1029,7 +1029,7 @@ describe('C7 — the work log (작업 로그, <ui-work-log>): an instruction ent
       id: '5',
       at: 1_792_900_000_000,
       kind: 'system',
-      system: { kind: 'goal', label: 'Goal #2/10' },
+      system: { kind: 'goal', label: '목표 #2/10' },
       text: '직전 평가: No evidence: no files, diffs, or tests.',
       hasRaw: true,
     });
@@ -1037,7 +1037,7 @@ describe('C7 — the work log (작업 로그, <ui-work-log>): an instruction ent
 
   it('entries written before origins were kept are read from their text (goal, background resume, restart)', () => {
     const a = wl();
-    expect(a.wlEntryOf(ST, entry(goalPrompt(3, 10))).system).toEqual({ kind: 'goal', label: 'Goal #3/10' });
+    expect(a.wlEntryOf(ST, entry(goalPrompt(3, 10))).system).toEqual({ kind: 'goal', label: '목표 #3/10' });
     expect(
       a.wlEntryOf(ST, entry(buildBackgroundWaitPrompt({ count: 1, labels: ['local_bash'] } as never, 1, 6))).system,
     ).toEqual({ kind: 'background', label: '백그라운드 재개 #1/6' });

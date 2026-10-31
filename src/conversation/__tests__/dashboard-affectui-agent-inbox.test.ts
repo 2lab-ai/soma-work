@@ -31,7 +31,7 @@ function block(css: string, head: string): string {
 // a second copy of them.
 describe('D1–D9 — the board is the element; the page keeps no copy of its face', () => {
   it('the board element sits in the inbox under the token wrapper, its module loaded', () => {
-    expect(TEMPLATE).toContain('<section class="inbox ui-tok" id="inbox" aria-label="Agent inbox">');
+    expect(TEMPLATE).toContain('<section class="inbox ui-tok" id="inbox" aria-label="에이전트 인박스">');
     expect(TEMPLATE).toContain('<ui-agent-inbox id="kanban" class="kanban" view="board" lang="ko"></ui-agent-inbox>');
     expect(TEMPLATE).toContain(
       '<script type="module" src="/dashboard/ui/agent-inbox.js?v=${UI_LIB_VERSION}"></script>',
