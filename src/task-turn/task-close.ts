@@ -32,7 +32,9 @@ export interface DashboardCloseDeps {
   /** E4 ⑦ — an epic's live children; whether a task's chain runs; the two records a close writes. */
   getChildTasks(parentTaskId: string): ConversationSession[];
   isRunning(sessionKey: string): boolean;
-  markClosedByParent(sessionKey: string): void;
+  /** E4 ⑦ — the id of a task's running chain (the controller's), which the mark names. */
+  runningChain(sessionKey: string): string | undefined;
+  markClosedByParent(sessionKey: string, chain: string | undefined): void;
   recordChildClosed(sessionKey: string): void;
   /** E4 ⑦ — the in-memory "being closed" mark: set before anything stops, cleared if the close fails. */
   markClosing(sessionKey: string, closing: boolean): void;
@@ -74,9 +76,11 @@ export function createDashboardCloseHandler(deps: DashboardCloseDeps): (sessionK
         .getChildTasks(task.taskId)
         .flatMap((c) => (c.taskId ? [buildTaskSessionKey(c.taskId)] : []))
         .filter((key) => deps.isRunning(key));
+      // Read in the same synchronous pass as isRunning: the mark names the chain this close cancels
+      // (grok #709 R1), which may not have saved its first hop yet.
       for (const key of running) {
         try {
-          deps.markClosedByParent(key);
+          deps.markClosedByParent(key, deps.runningChain(key));
         } catch (error) {
           // Not saved: the child still stops (its outcome is cancelled); only the "closed by
           // its parent" mark is missing — the close the owner asked for goes on.

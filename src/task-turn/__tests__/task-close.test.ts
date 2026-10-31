@@ -20,7 +20,8 @@ function rig(session: any, ledgerUnreadable: boolean, children: any[] = [], runn
     ledgerUnreadable: () => ledgerUnreadable,
     getChildTasks: vi.fn(() => children),
     isRunning: vi.fn((key: string) => running.includes(key)),
-    markClosedByParent: vi.fn((key: string) => {
+    runningChain: vi.fn((key: string) => (running.includes(key) ? `chain-of-${key}` : undefined)),
+    markClosedByParent: vi.fn((key: string, _chain: string | undefined) => {
       order.push(`mark:${key}`);
     }),
     recordChildClosed: vi.fn((key: string) => {
@@ -92,6 +93,11 @@ describe('E4 ⑦ — closing an epic or a child (D10 b · c)', () => {
       'closeTask:task:c3',
       'closeTask:task:e1',
       'terminate',
+    ]);
+    // Each mark names the chain the close cancels (grok #709 R1, fable #709 R2 P3-2).
+    expect(r.deps.markClosedByParent.mock.calls).toEqual([
+      ['task:c1', 'chain-of-task:c1'],
+      ['task:c3', 'chain-of-task:c3'],
     ]);
     // A child not running is left alone, and no child is terminated (its card stays).
     expect(r.deps.closeTask).not.toHaveBeenCalledWith('task:c2');
