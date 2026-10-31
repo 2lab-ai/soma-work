@@ -3386,7 +3386,18 @@ describe('답변하기 opens the panel on the open question (shipped renderMulti
         throw new Error('openPanel took its failure path on a successful load: the harness is missing a dependency');
       return msg;
     };
-    return { m, scroll, question, cache, drawer, clickAnswer, formInView, settled, release: () => release(), bottom: max };
+    return {
+      m,
+      scroll,
+      question,
+      cache,
+      drawer,
+      clickAnswer,
+      formInView,
+      settled,
+      release: () => release(),
+      bottom: max,
+    };
   }
 
   it('lands on the answer form, not on the newest turns, and stays there while the panel settles', async () => {

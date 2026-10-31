@@ -1047,7 +1047,9 @@ describe('T1.3 / SSOT 2026-10-29 · 지시와 답변 opens on its latest turns; 
     // the chip row wraps and that row takes the whole width, in the minimal view and on a short body alike
     // (else the disclosure is squeezed beside the chips, its label one character per line).
     expect(CSS).toContain('.slide-panel:not(.is-detail) .panel-artifacts { display: flex; flex-wrap: wrap;');
-    expect(CSS).toMatch(/@container pbody \(max-height: 560px\) \{\n  \.panel-artifacts \{ display: flex; flex-wrap: wrap;/);
+    expect(CSS).toMatch(
+      /@container pbody \(max-height: 560px\) \{\n  \.panel-artifacts \{ display: flex; flex-wrap: wrap;/,
+    );
     expect(CSS).toMatch(/^\.panel-user-media \{ flex: 1 1 100%; margin-bottom: 6px; \}/m);
   });
 
