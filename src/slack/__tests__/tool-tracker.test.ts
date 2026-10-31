@@ -213,4 +213,20 @@ describe('ToolTracker', () => {
       expect(second).toHaveBeenCalledTimes(1);
     });
   });
+
+  it('#629 R1 — a keyless schedule does not cancel or drop a session’s own cleanup', () => {
+    vi.useFakeTimers();
+    try {
+      const tracker = new ToolTracker();
+      const sessionCb = vi.fn();
+      const globalCb = vi.fn();
+      tracker.scheduleCleanup(1000, sessionCb, 'task:a');
+      tracker.scheduleCleanup(1000, globalCb);
+      vi.advanceTimersByTime(1000);
+      expect(sessionCb).toHaveBeenCalledTimes(1);
+      expect(globalCb).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
