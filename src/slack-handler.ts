@@ -83,6 +83,7 @@ import {
 } from './slack/actions/followup-actions';
 import { createAssistantContainer } from './slack/assistant-container';
 import { buildAutoskillFire } from './slack/autoskill-fire';
+import { requestBotDelete } from './slack/bot-delete-decision';
 import { CommandParser } from './slack/command-parser';
 import type { GoalOpeningAdmission } from './slack/commands/types';
 import { CompletionMessageTracker } from './slack/completion-message-tracker';
@@ -131,14 +132,6 @@ interface SlackPermalinkTarget {
    * thread permalink. Present when the link points at a message inside a
    * thread (reply or root). Undefined for plain top-level channel messages.
    */
-  threadTs?: string;
-}
-
-interface DmDeleteActionValue {
-  requesterId: string;
-  targetChannel: string;
-  targetTs: string;
-  /** Root ts when the target lives inside a thread (reply or root). */
   threadTs?: string;
 }
 
@@ -5858,7 +5851,8 @@ export class SlackHandler {
     }
 
     // Non-admin users: send delete request to admins for approval
-    await this.sendAdminDeleteApproval(event, target, say);
+    const preview = typeof targetMessage.text === 'string' ? targetMessage.text : undefined;
+    await this.sendAdminDeleteApproval(event, target, say, preview);
     return true;
   }
 
@@ -5962,7 +5956,12 @@ export class SlackHandler {
    * Send a delete approval request to admin users via DM.
    * Non-admin users cannot delete bot messages directly.
    */
-  private async sendAdminDeleteApproval(event: MessageEvent, target: SlackPermalinkTarget, say: any): Promise<void> {
+  private async sendAdminDeleteApproval(
+    event: MessageEvent,
+    target: SlackPermalinkTarget,
+    say: any,
+    preview?: string,
+  ): Promise<void> {
     const adminUserIds = getAdminUsers();
     if (adminUserIds.size === 0) {
       this.logger.warn('No admin users configured for DM delete approval');
@@ -5970,55 +5969,22 @@ export class SlackHandler {
       return;
     }
 
-    const value: DmDeleteActionValue = {
-      requesterId: event.user,
-      targetChannel: target.channelId,
-      targetTs: target.messageTs,
-    };
+    // The request is recorded with where each admin's DM landed, so a dashboard answer (#623)
+    // and a click both rewrite every copy, and only one of them acts.
+    const notified = await requestBotDelete(
+      this.slackApi,
+      {
+        requesterId: event.user,
+        targetChannel: target.channelId,
+        targetTs: target.messageTs,
+        ...(preview ? { preview } : {}),
+      },
+      adminUserIds,
+    );
 
-    const permalink = `https://slack.com/archives/${target.channelId}/p${target.messageTs.replace('.', '')}`;
-
-    // Notify each admin
-    let notified = 0;
-    for (const adminId of adminUserIds) {
-      try {
-        const adminDmChannel = await this.slackApi.openDmChannel(adminId);
-        await this.slackApi.postMessage(adminDmChannel, '봇 메시지 삭제 요청', {
-          blocks: [
-            {
-              type: 'section',
-              text: {
-                type: 'mrkdwn',
-                text: `<@${event.user}>님이 봇 메시지 삭제를 요청했습니다.\n<${permalink}|메시지 보기>`,
-              },
-            },
-            {
-              type: 'actions',
-              elements: [
-                {
-                  type: 'button',
-                  action_id: 'dm_delete_reject',
-                  text: { type: 'plain_text', text: '거절', emoji: true },
-                  value: JSON.stringify(value),
-                },
-                {
-                  type: 'button',
-                  action_id: 'dm_delete_approve',
-                  text: { type: 'plain_text', text: '승인', emoji: true },
-                  style: 'danger',
-                  value: JSON.stringify(value),
-                },
-              ],
-            },
-          ],
-        });
-        notified++;
-      } catch (error) {
-        this.logger.warn('Failed to send delete approval request to admin', { adminId, error });
-      }
-    }
-
-    if (notified > 0) {
+    if (notified === 'alreadyApproved') {
+      await say({ text: '✅ 이 메시지의 삭제는 이미 어드민이 승인했습니다.' });
+    } else if (notified > 0) {
       await say({ text: '📨 어드민에게 삭제 요청을 보냈습니다. 승인 후 삭제됩니다.' });
       this.logger.info('DM cleanup approval sent to admins', {
         requesterId: event.user,

@@ -167,7 +167,7 @@ function plan(opts: { expanded?: boolean; open?: boolean; taskOpen?: Record<stri
       'taskRunsRestore',
       'renderPanelTasks',
     ],
-    ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'TASK_FATE_LABEL', 'PI_CHEV_SVG', 'TASK_RUNS_SHOWN', 'TASK_RUN_STATUS'],
+    ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'TASK_FATE_LABEL', 'TASK_RUNS_SHOWN', 'TASK_RUN_STATUS'],
     {
       document: {
         getElementById: (id: string) =>
@@ -221,8 +221,9 @@ describe('plan — the Tasks section of the tab: the tasks that ran, in the orde
     const p = plan({ open: false });
     p.render(TASKS);
     const html = p.el.innerHTML;
+    // D4 K-06: the head is <ui-disclosure>'s row — the title and the summary slotted in; closed, its region is empty.
     expect(html).toContain(
-      '<button type="button" class="panel-sec-head panel-tasks-header" aria-expanded="false" onclick="togglePanelTasks()">',
+      '<ui-disclosure class="panel-tasks-dc" flush><span slot="summary" class="panel-tasks-header">',
     );
     expect(html).toContain('<span class="ps-sec-title">Tasks</span>');
     // The run in progress (its activeForm), how many ran and completed, what is left of the plan.
@@ -240,7 +241,7 @@ describe('plan — the Tasks section of the tab: the tasks that ran, in the orde
     const open = plan();
     open.render(TASKS);
     expect(open.el.innerHTML).toContain(
-      'aria-expanded="true" aria-controls="panel-tasks-body" onclick="togglePanelTasks()">',
+      '<ui-disclosure class="panel-tasks-dc" flush open><span slot="summary" class="panel-tasks-header">',
     );
     // The elements sit in the token wrapper (they read the dashboard tokens resolved).
     expect(open.el.innerHTML).toContain(
@@ -572,7 +573,9 @@ describe('the run list folds past TASK_RUNS_SHOWN; replaced and skipped tasks; t
     );
     // The foot closes the body, after the runs and the plan (the element's own totals are off: it sees only the newest).
     expect(html.indexOf('class="tr-total"')).toBeGreaterThan(html.indexOf('</ui-task-plan>'));
-    expect(html.indexOf('class="tr-total"')).toBeLessThan(html.indexOf('</div><span class="ar-vh pl-live"'));
+    expect(html.indexOf('class="tr-total"')).toBeLessThan(
+      html.indexOf('</div></ui-disclosure><span class="ar-vh pl-live"'),
+    );
     p.render([TASKS[0], { ...TASKS[1], agentToolCalls: 7 }], '', [], { toolCalls: 4, agentToolCalls: 2 });
     expect(p.el.innerHTML).toContain('<span class="tr-total-k">합계</span>툴 19 (+서브 7)</div>');
     expect(p.el.innerHTML).toContain('<span class="tr-total-k">태스크 밖</span>툴 4 (+서브 2)');
@@ -940,7 +943,7 @@ describe('approval keyboard (D14) — the element’s own', () => {
       panelOpen: true,
       panelSessionKey: KEY,
       _panelControlsOpen: false,
-      artModalIsOpen: () => false,
+      artViewerIsOpen: () => false,
       _cronDrawerKey: null,
       _deck: deck,
       _sessionCache: { [KEY]: {} },
@@ -1696,6 +1699,14 @@ describe('panel head (D18) — <ui-status-bar>', () => {
     expect(CSS).not.toMatch(/\.ps-icon \{/);
     expect(PAGE).toContain('<ui-status-bar class="panel-status" id="panel-status" lang="ko"></ui-status-bar>');
   });
+
+  it('D4 g1: sleeping and archived are the bar’s idle state with the page’s word (the element draws the tone and glyph)', () => {
+    expect(head(CARD({ activityState: 'idle' }), 'closed')).toMatchObject({ status: 'idle', words: { idle: '휴면' } });
+    expect(head(CARD({ activityState: 'idle', terminated: true }), 'closed')).toMatchObject({
+      status: 'idle',
+      words: { idle: '보관' },
+    });
+  });
 });
 
 describe('세부 — Details inside 세션 정보 (D19)', () => {
@@ -1730,7 +1741,9 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
     // The head's status (rootStatusOf): a waiting session's leg counts, as on the chip.
     expect(row(details(CARD({ activityState: 'waiting' })), '활성 시간')).toContain(`data-leg-started="${T0}"`);
     expect(clientFn('panelDetailsHtml')).toContain('var st = rootStatusOf(s, col);');
-    expect(clientFn('renderPanelInfo')).toContain('panelInfoHtml(s, _panelInfoOpen, sessionColOf(panelSessionKey))');
+    expect(clientFn('renderPanelInfo')).toContain(
+      "panelInfoHtml(s, _panelInfoOpen === true, sessionColOf(panelSessionKey), _panelInfoOpen === 'folding')",
+    );
   });
 
   it('panelInfoHtml: the open body is context block → 세부 → token grid → thread; the grid keeps only token kinds', () => {
@@ -1746,7 +1759,7 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
         'panelDetailsHtml',
         'panelInfoHtml',
       ],
-      ['PI_CHEV_SVG'],
+      [],
       {
         formatTokens: (n: number) => `${n}`,
         formatNmSSs: (n: number) => `${n}ms`,

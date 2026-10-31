@@ -7,6 +7,7 @@ import { redactAnthropicSecrets } from '../../logger';
 import { getTokenManager } from '../../token-manager';
 import { userSettingsStore } from '../../user-settings-store';
 import { CommandParser } from '../command-parser';
+import { closeNewUserRequest, type NewUserSlackApi } from '../new-user-decision';
 import type { CommandContext, CommandHandler, CommandResult } from './types';
 
 /**
@@ -231,6 +232,8 @@ export class AdminHandler implements CommandHandler {
 
   private async handleAccept(ctx: CommandContext, targetUser: string): Promise<CommandResult> {
     userSettingsStore.acceptUser(targetUser, ctx.user);
+    // An open new-user request ends too: its DM buttons and dashboard card (#622).
+    await closeNewUserRequest(targetUser, 'accept', ctx.user, this.promptUpdater());
     await ctx.say({
       text: `✅ <@${targetUser}> 승인 완료`,
       thread_ts: ctx.threadTs,
@@ -240,11 +243,20 @@ export class AdminHandler implements CommandHandler {
 
   private async handleDeny(ctx: CommandContext, targetUser: string): Promise<CommandResult> {
     userSettingsStore.removeUserSettings(targetUser);
+    await closeNewUserRequest(targetUser, 'deny', ctx.user, this.promptUpdater());
     await ctx.say({
       text: `❌ <@${targetUser}> 거부됨`,
       thread_ts: ctx.threadTs,
     });
     return { handled: true };
+  }
+
+  /** The Slack API's `updateMessage`, when the router wired one (it does in production). */
+  private promptUpdater(): Pick<NewUserSlackApi, 'updateMessage'> | undefined {
+    const api = this.deps.slackApi as { updateMessage?: NewUserSlackApi['updateMessage'] } | undefined;
+    return typeof api?.updateMessage === 'function'
+      ? { updateMessage: (channel, ts, text, blocks) => api.updateMessage!(channel, ts, text, blocks) }
+      : undefined;
   }
 
   private async handleUsers(ctx: CommandContext): Promise<CommandResult> {

@@ -168,9 +168,25 @@ describe('T1 — the New task entry is always in reach, calm', () => {
 });
 
 describe('T3–T11 — the composer, in the order of the sketch', () => {
-  it('is one native dialog with a form', () => {
-    expect(html).toMatch(/<dialog[^>]*id="nt-dialog"[^>]*class="nt-dialog"/);
+  it('is one @2lab.ai/ui <ui-dialog> (D4 H-01) with the form kept whole inside; the page keeps no dialog of its own', () => {
+    expect(html).toContain('<ui-dialog id="nt-dialog" class="nt-dialog" heading="새 작업" size="lg" lang="ko">');
     expect(html).toMatch(/<form[^>]*id="nt-form"/);
+    // The form is the dialog's body: the element draws the heading and ✕, so the page's head row is gone.
+    expect(html).not.toMatch(/<dialog[^>]*id="nt-dialog"/);
+    expect(html).not.toContain('class="nt-head"');
+    expect(html).not.toContain('nt-head-hint');
+    // show() / hide() open and close it; Esc, the scrim and ✕ arrive as ui-close; no native showModal, no soft-close
+    // timer, no is-shown class of the page's.
+    const open = clientFn('openNewTask');
+    expect(open).toContain('dlg.show();');
+    expect(open).not.toContain('showModal');
+    expect(clientFn('closeNewTask')).toContain('dlg.hide();');
+    expect(script).toContain("dlg.addEventListener('ui-close', function () {");
+    for (const gone of ['is-shown', "dlg.addEventListener('cancel'", 'ntSyncViewport', '--nt-vvh', '--nt-vvt']) {
+      expect(script, gone).not.toContain(gone);
+    }
+    // N does nothing while a <ui-dialog> is up.
+    expect(clientFn('ntIsTypingTarget')).toContain("document.querySelector('dialog[open], ui-dialog[open]')");
   });
 
   it('row 1: model (with the battery), effort and channel selectors', () => {
@@ -213,6 +229,13 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
       'function ntRenderFiles(',
       'function ntToggleRecording(',
       'function ntAutosize(',
+      // D4 E-30: the panel composer is a <ui-composer> too — the helpers the two shared went with it.
+      'function ntPickRecorderMime(',
+      'function ntExtForMime(',
+      'function ntFormatBytes(',
+      'function ntFormatDuration(',
+      'function ntStamp(',
+      'function ntKindOf(',
     ]) {
       expect(script, gone).not.toContain(gone);
     }
@@ -226,24 +249,29 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(data).toContain('d.maxLength = lim.maxPromptChars;');
     expect(data).toContain('d.maxFiles = lim.maxFiles;');
     expect(data).toContain('d.maxFileSize = lim.maxFileBytes;');
-    // It answers ui-submit (cancelled: the page posts, the composer keeps its text and files until the launch),
-    // ui-input (the draft) and ui-files (the server's total cap).
+    // The server's cap on all files together is the element's (0.10.0 maxTotalBytes: it rejects the file that
+    // crosses it and says so) — the page no longer takes the file back out on ui-files (D2-GAPS G5-3).
+    expect(data).toContain('d.maxTotalBytes = lim.maxTotalBytes;');
+    expect(script).not.toContain("composer.addEventListener('ui-files'");
+    expect(script).not.toContain('composer.removeFile(');
+    // It answers ui-submit (cancelled: the page posts, the composer keeps its text and files until the launch)
+    // and ui-input (the draft).
     expect(script).toContain(
       "composer.addEventListener('ui-submit', function (e) {\n    e.preventDefault();\n    submitNewTask(e.detail);",
     );
     expect(script).toContain('ntSaveDraft(v);');
-    expect(script).toContain('composer.removeFile(files.length - 1);');
     expect(clientFn('ntOnLaunched')).toContain(
       "if (composer && typeof composer.clear === 'function') composer.clear();",
     );
   });
 
-  it('T10 — 카메라 is a composer tool on touch screens; it opens the phone camera directly', () => {
-    expect(clientFn('ntComposerData')).toContain(
-      "tools: ntIsTouch() ? [{ id: 'camera', label: '카메라', showLabel: true }] : [],",
-    );
-    expect(script).toContain("if (e.detail && e.detail.id === 'camera') ntEl('nt-camera-input').click();");
-    expect(html).toMatch(/<input[^>]*id="nt-camera-input"[^>]*accept="image\/\*"[^>]*capture="environment"/);
+  it("T10 — 카메라 is the composer's own tool on touch screens; it opens the back camera directly", () => {
+    // 0.10.0 camera: 'environment' (shown on touch only) — the page's capture input and ui-tool answer are gone.
+    expect(clientFn('ntComposerData')).toContain("camera: 'environment',");
+    expect(clientFn('ntComposerData')).not.toContain('tools:');
+    expect(html).not.toContain('nt-camera-input');
+    expect(script).not.toContain('function ntAddCamera(');
+    expect(script).not.toContain("composer.addEventListener('ui-tool'");
   });
 
   it("T9 / T11 / PC — files, voice, drop and paste are the composer's: any file type, MediaRecorder, screenshots named", () => {
@@ -255,17 +283,25 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(script).not.toContain("prompt.addEventListener('paste'");
   });
 
-  it('⌘/Ctrl+Enter starts the task; a plain Enter is a new line (the element never sees it)', () => {
-    expect(script).toContain(
+  it("⌘/Ctrl+Enter starts the task; a plain Enter is a new line — the element's enter: 'newline', with its hint", () => {
+    expect(clientFn('ntComposerData')).toContain("enter: 'newline',");
+    expect(clientFn('ntComposerData')).toContain('hint: true,');
+    // The capture keydown that kept a plain Enter from the element (D2-GAPS G5-2) is gone.
+    expect(script).not.toMatch(/composer\.addEventListener\(\s*'keydown'/);
+    expect(script).not.toContain(
       "if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) e.stopPropagation();",
     );
-    expect(script).toMatch(/composer\.addEventListener\(\s*'keydown',[\s\S]{0,260}?true,\s*\);/);
   });
 
-  it('closing the sheet discards a recording in progress (the composer turns read-only for a moment)', () => {
-    expect(clientFn('closeNewTask')).toContain('ntQuietComposer();');
+  it("closing the sheet discards a recording in progress and stops a preview — the element's cancelRecording / pause", () => {
+    // The page's close and the element's ui-close both pass through ntOnClosed (the FAB back, the composer quiet).
+    expect(clientFn('closeNewTask')).toContain('ntOnClosed();');
+    expect(clientFn('ntOnClosed')).toContain("document.body.classList.remove('nt-open');");
     expect(clientFn('ntOnClosed')).toContain('ntQuietComposer();');
-    expect(clientFn('ntQuietComposer')).toContain('el.data = Object.assign({}, d, { disabled: true });');
+    const quiet = clientFn('ntQuietComposer');
+    expect(quiet).toContain('el.cancelRecording();');
+    expect(quiet).toContain('el.pause();');
+    expect(quiet).not.toContain('disabled: true');
   });
 
   it('loads its context and posts the task with the CSRF token', () => {
@@ -276,15 +312,22 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
 });
 
 describe('T12 — PC and phone layouts are designed separately', () => {
-  it('PC: a centered dialog of bounded width', () => {
-    expect(css).toMatch(/\.nt-dialog\s*\{[^}]*width:\s*min\(720px/);
+  it('PC: a centered dialog of bounded width — the element\'s size="lg" (720px); the page keeps no box rule', () => {
+    expect(html).toMatch(/<ui-dialog id="nt-dialog"[^>]* size="lg"/);
+    expect(css).not.toMatch(/\.nt-dialog\s*\{/);
+    expect(css).not.toMatch(/\.nt-dialog::backdrop/);
+    // The form pads itself; the element's body padding is off so the two do not add up.
+    expect(css).toContain('.nt-dialog::part(body) { padding: 0; }');
   });
 
-  it('phones: a full-screen sheet that follows the visual viewport (keyboard) and the safe areas', () => {
+  it("phones: the element's bottom sheet follows the visual viewport (keyboard); the page keeps the form clear of the safe area", () => {
     const phone = mediaBlock('@media (max-width: 639px) {\n  /* New task');
-    expect(phone).toMatch(/\.nt-dialog\s*\{[^}]*height:\s*var\(--nt-vvh,\s*100dvh\)/);
+    // sheet="auto" and viewport="visual" are the element's defaults: nothing on the page pins the box or writes
+    // --nt-vvh / --nt-vvt any more.
+    expect(html).not.toMatch(/<ui-dialog id="nt-dialog"[^>]*(sheet="never"|viewport="layout")/);
+    expect(phone).not.toContain('.nt-dialog');
     expect(phone).toMatch(/env\(safe-area-inset-bottom/);
-    expect(script).toContain('visualViewport');
+    expect(script).not.toContain('ntSyncViewport');
   });
 
   it('touch: 44px targets and 16px text in the instruction field (no iOS zoom)', () => {
@@ -295,8 +338,9 @@ describe('T12 — PC and phone layouts are designed separately', () => {
   });
 
   it('the camera tool is offered on touch devices only (PC gets drop / paste instead)', () => {
+    // The element shows camera only on touch screens (coarse pointer); the page no longer decides.
     expect(css).not.toContain('.nt-tool-camera');
-    expect(clientFn('ntComposerData')).toContain('ntIsTouch() ?');
+    expect(clientFn('ntComposerData')).toContain("camera: 'environment',");
   });
 
   it('the whole page script still compiles', () => {
@@ -405,31 +449,6 @@ describe('ntDefaultState / ntBuildPayload / ntCanSubmit — T4–T9', () => {
   });
 });
 
-describe('voice recording helpers — T11', () => {
-  const { ntPickRecorderMime, ntExtForMime } = load<{
-    ntPickRecorderMime(isSupported: (t: string) => boolean): string;
-    ntExtForMime(m: string): string;
-  }>(['ntPickRecorderMime', 'ntExtForMime']);
-
-  it('iOS Safari records AAC in MP4; Chrome / Android record Opus in WebM', () => {
-    expect(ntPickRecorderMime((t) => t === 'audio/mp4')).toBe('audio/mp4');
-    expect(ntPickRecorderMime((t) => t.startsWith('audio/webm'))).toBe('audio/webm;codecs=opus');
-    expect(ntPickRecorderMime(() => false)).toBe('');
-  });
-
-  it('names the file after its container', () => {
-    expect(ntExtForMime('audio/mp4')).toBe('m4a');
-    expect(ntExtForMime('audio/webm;codecs=opus')).toBe('webm');
-    expect(ntExtForMime('audio/ogg;codecs=opus')).toBe('ogg');
-    expect(ntExtForMime('application/x-unknown')).toBe('bin');
-  });
-});
-
-describe('ntFormatBytes', () => {
-  const { ntFormatBytes } = load<{ ntFormatBytes(n: number): string }>(['ntFormatBytes']);
-  it('formats sizes for the attachment chips', () => {
-    expect(ntFormatBytes(512)).toBe('512 B');
-    expect(ntFormatBytes(2048)).toBe('2 KB');
-    expect(ntFormatBytes(3.5 * 1024 * 1024)).toBe('3.5 MB');
-  });
-});
+// T11 voice recording (the recorder's MIME pick — MP4/AAC first for iOS Safari, then Ogg, WebM last — the note's
+// name after its container, the chip sizes) is <ui-composer>'s: library composer.test.ts 'composerRecorderMime: MP4
+// first, then Ogg, then WebM; a throwing check means no' and 'Done files a voice-….m4a note'.

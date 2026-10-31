@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { fillUiIcons, uiIcon } from '../ui-lib';
 
@@ -25,5 +27,16 @@ describe('uiIcon — the library glyph table, read as data', () => {
     expect(uiIcon('no-such-glyph')).toBe('');
     expect(fillUiIcons('<i data-ui-icon="no-such-glyph"></i>')).toBe('');
     expect(fillUiIcons('<i data-ui-icon="close" class="x"></i>')).toContain('data-icon="close" class="x"');
+  });
+
+  it('every icon slot the dashboard names is in the installed set — the D1 inline glyphs included (D4 g1)', () => {
+    const src = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf8');
+    const names = new Set(Array.from(src.matchAll(/data-ui-icon="([a-z][a-z0-9-]*)"/g), (m) => m[1]));
+    // D4 g5: the tiles' play / pause toggle is <ui-file-card playable>'s own — the page no longer names `play`;
+    // D3 moved the task rows' pause / ban / minus (<ui-task-plan>), the avatars' bot / gear (<ui-conversation>) and
+    // the deck's chevrons (<ui-deck-nav>) into the elements, so the page names none of those either.
+    for (const n of ['archive', 'dot', 'circle-dashed', 'moon']) expect(names).toContain(n);
+    for (const n of ['play', 'pause', 'ban', 'bot', 'gear']) expect(names).not.toContain(n);
+    for (const n of names) expect(uiIcon(n), n).not.toBe('');
   });
 });

@@ -1439,6 +1439,35 @@ export class UserSettingsStore {
   }
 
   /**
+   * Accept or remove a pending user — on disk, or not at all. A write that
+   * fails restores the record and throws, so an admin's answer is reported only
+   * once it is persisted (#622).
+   */
+  settlePendingUser(userId: string, adminUserId: string, accept: boolean): void {
+    const before = this.settings[userId];
+    if (!before) throw new Error(`No pending user ${userId}`);
+    const snapshot: UserSettings = JSON.parse(JSON.stringify(before));
+    if (accept) {
+      Object.assign(before, {
+        accepted: true,
+        acceptedBy: adminUserId,
+        acceptedAt: new Date().toISOString(),
+        lastUpdated: new Date().toISOString(),
+      });
+    } else {
+      delete this.settings[userId];
+    }
+    try {
+      atomicWriteJson(this.settingsFile, this.settings);
+    } catch (error) {
+      this.settings[userId] = snapshot;
+      throw error;
+    }
+    fireSettingsInvalidate(userId);
+    logger.info(accept ? 'User accepted' : 'Removed user settings', { userId, by: adminUserId });
+  }
+
+  /**
    * Check if a user is accepted.
    */
   isUserAccepted(userId: string): boolean {
