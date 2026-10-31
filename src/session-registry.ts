@@ -1230,8 +1230,11 @@ export class SessionRegistry {
       compactionCount: typeof archived.compactionCount === 'number' ? archived.compactionCount : 0,
       activeAccumulatedMs: typeof archived.busyMs === 'number' ? archived.busyMs : 0,
       sessionWorkingDir: cwd,
-      // Registered for cleanup like a fresh session's dir; the next turn recreates it.
-      sourceWorkingDirs: [cwd],
+      // A Slack session's own folder is registered for cleanup like a fresh
+      // session's dir; the next turn recreates it. A dashboard task's folder is
+      // the owner's (it may be one they named, #600 ⑥): never the registry's to
+      // delete (#640 R3).
+      sourceWorkingDirs: slackless ? [] : [cwd],
       // Incident ownership comes back with it: the thread stays restricted.
       incidentRequest: archived.incidentRequest,
       incidentAttemptFinishedId: archived.incidentAttemptFinishedId,
@@ -2232,6 +2235,15 @@ export class SessionRegistry {
     if (!this.isValidSourceWorkingDirPath(resolvedPath)) {
       this.logger.warn('Resolved path escapes /tmp/', { dirPath, resolvedPath });
       return false;
+    }
+    // A dashboard task's own folder is the owner's — cleaning it on close would
+    // delete their work (#640 R3). It sits directly in the owner's root, so no
+    // valid source dir holds it. A clone inside it is registered as on Slack.
+    if (session.slackless && session.workingDirectory) {
+      if (normalizeTmpPath(path.resolve(session.workingDirectory)) === resolvedPath) {
+        this.logger.warn('Rejected a task folder as a source working dir', { key, dirPath: resolvedPath });
+        return false;
+      }
     }
 
     session.sourceWorkingDirs ??= [];
