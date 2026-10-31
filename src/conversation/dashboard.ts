@@ -36,6 +36,15 @@ import { sumLiveUsage } from '@soma/slack/live-usage';
 import { livePendingModelSwitch } from '@soma/slack/model-switch';
 import type { FastifyInstance } from 'fastify';
 import type { CronExecutionRecord, CronJob } from 'somalib/cron/cron-storage';
+import {
+  type AdminApprovalSnapshot,
+  adminApprovalSnapshot,
+  answerAdminApproval,
+  onAdminApprovalsChanged,
+  startAdminApprovalWatch,
+  stopAdminApprovalWatch,
+} from '../admin-approvals';
+import { isAdminUser } from '../admin-utils';
 import type { LlmuxStatus } from '../auth/llmux-client';
 import type { LlmuxTierId } from '../auth/llmux-tiers';
 import { config } from '../config';
@@ -112,6 +121,7 @@ import {
   parseNewTaskSubmission,
 } from './new-task';
 import type { NewTaskLaunchResult } from './new-task-launcher';
+import { verifyDashboardTokenRaw } from './oauth';
 import {
   type DashboardPermissionRequest,
   pendingPermissionsFor,
@@ -1390,6 +1400,77 @@ export function stopDashboardPermissionWatch(): void {
   stopPermissionPromptWatch();
 }
 
+// ── Admin approvals (#620) — the admins' Slack DM requests, as approval cards ──
+
+/**
+ * Who may see the admin approvals: a Slack-signed-in admin. A viewer token or
+ * a deployment without auth reads as `isAdmin` elsewhere, but carries no
+ * identity — the requests (who asked, where, which skill) are not shown there.
+ */
+function isSlackAdmin(auth: { mode?: string; userId?: string; isAdmin?: boolean } | undefined): boolean {
+  return !!auth && auth.mode === 'oauth_jwt' && !!auth.userId && auth.isAdmin === true && isAdminUser(auth.userId);
+}
+
+/**
+ * When a dashboard socket's sign-in stops being valid: a session JWT's expiry,
+ * or its absolute lifetime if that comes first. Viewer-token and no-auth
+ * sockets carry no expiring credential (`undefined`).
+ */
+export function wsAuthDeadline(mode: string | undefined, cookieHeader: string | undefined): number | undefined {
+  if (mode !== 'oauth_jwt') return undefined;
+  const m = (cookieHeader || '').match(/soma_dash_token=([^;]+)/);
+  const payload = m ? verifyDashboardTokenRaw(decodeURIComponent(m[1])) : null;
+  if (!payload) return Date.now();
+  const originalIat = (payload as { originalIat?: number }).originalIat || payload.iat || 0;
+  const absoluteEnd = (originalIat + Math.max(config.oauth.jwtExpiresIn * 4, 30 * 86400)) * 1000;
+  return Math.min(payload.exp * 1000, absoluteEnd);
+}
+
+/** The snapshot as admin viewers receive it: ids carry this instance's prefix (#814), like card keys. */
+export function adminApprovalsForWire(
+  snapshot: AdminApprovalSnapshot = adminApprovalSnapshot(),
+): AdminApprovalSnapshot {
+  return {
+    pending: snapshot.pending.map((a) => ({ ...a, id: composeSessionKey(a.id) })),
+    resolved: snapshot.resolved.map((r) => ({ ...r, id: composeSessionKey(r.id) })),
+  };
+}
+
+/** Push the admin approvals to admin viewers only — never on the shared board. */
+export function broadcastAdminApprovals(): void {
+  if (wsClients.size === 0) return;
+  try {
+    const payload = JSON.stringify({ type: 'admin_approvals', snapshot: adminApprovalsForWire() });
+    const now = Date.now();
+    for (const client of wsClients) {
+      // A socket outliving its sign-in gets nothing (the expiry timer closes it; this is the backstop).
+      if (!client.slackAdmin || (client.authUntil !== undefined && client.authUntil <= now)) continue;
+      try {
+        client.send(payload);
+      } catch {
+        wsClients.delete(client);
+      }
+    }
+  } catch (error) {
+    logger.error('Failed to broadcast admin approvals', error);
+  }
+}
+
+let _adminApprovalUnsub: (() => void) | null = null;
+
+/** Follow the admin approval stores while the web server listens; push admins on a change. */
+export function startDashboardAdminApprovalWatch(): void {
+  stopDashboardAdminApprovalWatch();
+  _adminApprovalUnsub = onAdminApprovalsChanged(() => broadcastAdminApprovals());
+  startAdminApprovalWatch();
+}
+
+export function stopDashboardAdminApprovalWatch(): void {
+  stopAdminApprovalWatch();
+  _adminApprovalUnsub?.();
+  _adminApprovalUnsub = null;
+}
+
 // Hero "Submit All Recommended" handler (group-only). The dashboard does not
 // pass selections — the implementation derives them from session.pendingQuestion
 // recommendations. Returns rejected promise on validation failure for
@@ -2347,7 +2428,16 @@ function getDateRangeFrom(date: string, period: 'day' | 'week' | 'month'): { sta
 
 // ── WebSocket broadcast ────────────────────────────────────────────
 
-type WsClient = { send: (data: string) => void; close: () => void; userId?: string; isAdmin?: boolean };
+type WsClient = {
+  send: (data: string) => void;
+  close: () => void;
+  userId?: string;
+  isAdmin?: boolean;
+  /** A Slack-signed-in admin (ADMIN_USERS) — the only audience of admin approvals (#620). */
+  slackAdmin?: boolean;
+  /** Epoch ms the connection's sign-in stops being valid (JWT expiry / absolute lifetime). */
+  authUntil?: number;
+};
 const wsClients = new Set<WsClient>();
 
 /** Broadcast session state update to all connected WebSocket clients */
@@ -3372,6 +3462,87 @@ export async function registerDashboardRoutes(
     },
   );
 
+  // ── Admin approvals (#620): read for admins, answer for admins in admin mode ──
+
+  server.get('/api/dashboard/admin-approvals', { preHandler: [authMiddleware] }, async (request, reply) => {
+    if (
+      !isSlackAdmin((request as { authContext?: { mode?: string; userId?: string; isAdmin?: boolean } }).authContext)
+    ) {
+      reply.status(403).send({ error: 'Slack 계정으로 로그인한 관리자만 볼 수 있습니다' });
+      return;
+    }
+    reply.header('Cache-Control', 'no-store').send(adminApprovalsForWire());
+  });
+
+  server.post<{ Body: { id?: unknown; choiceId?: unknown } }>(
+    '/api/dashboard/admin-approvals/answer',
+    { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
+    async (request, reply) => {
+      const { id, choiceId } = request.body || {};
+      if (
+        typeof id !== 'string' ||
+        !id ||
+        id.length > 300 ||
+        typeof choiceId !== 'string' ||
+        !choiceId ||
+        choiceId.length > 64
+      ) {
+        reply.status(400).send({ error: 'id and choiceId are required' });
+        return;
+      }
+      // An admin approval is answered by a signed-in admin (a Slack identity —
+      // the DM rewrites name who answered) with admin mode on. A bearer token
+      // carries no identity, and the owner shortcut of _hasWriteAccess does not apply.
+      const auth = (request as { authContext?: { mode?: string; userId?: string; isAdmin?: boolean } }).authContext;
+      const actor = auth?.userId;
+      const modeHeader = request.headers?.['x-admin-mode'];
+      const adminModeOn = Array.isArray(modeHeader) ? modeHeader[0] === 'on' : modeHeader === 'on';
+      // The same gate as the reads (GET, WebSocket): one definition, so the two cannot drift.
+      if (!actor || !isSlackAdmin(auth)) {
+        reply.status(403).send({ error: 'Slack 계정으로 로그인한 관리자만 응답할 수 있습니다' });
+        return;
+      }
+      if (!adminModeOn) {
+        reply.status(403).send({ error: '관리자 모드를 켜야 응답할 수 있습니다' });
+        return;
+      }
+      const localId = stripSelfInstancePrefix(id);
+      if (localId === null) {
+        reply.status(409).send({ error: '다른 인스턴스의 요청입니다 — 그 인스턴스의 대시보드에서 응답하세요', id });
+        return;
+      }
+      try {
+        const result = await answerAdminApproval(localId, choiceId, actor);
+        // Every admin viewer sees the outcome at once (the store watch would see it within a second).
+        broadcastAdminApprovals();
+        if (result.ok) {
+          logger.info('Admin approval answered from the dashboard', { id: localId, choiceId, actor });
+          reply.send({ ok: true, outcome: result.outcome });
+          return;
+        }
+        if (result.reason === 'already_answered') {
+          reply.status(409).send({
+            error: '이미 다른 곳에서 응답한 요청입니다',
+            ...(result.resolution ? { resolution: { ...result.resolution, id } } : {}),
+          });
+          return;
+        }
+        if (result.reason === 'invalid') {
+          reply.status(400).send({ error: '이 요청에 없는 선택지입니다' });
+          return;
+        }
+        if (result.reason === 'forbidden') {
+          reply.status(403).send({ error: '관리자만 응답할 수 있습니다' });
+          return;
+        }
+        reply.status(404).send({ error: '만료되었거나 더 이상 없는 요청입니다' });
+      } catch (error) {
+        logger.error('Error answering an admin approval from the dashboard', error);
+        reply.status(500).send({ error: 'Internal Server Error' });
+      }
+    },
+  );
+
   // ── Goal cap decision (the owner-DM "Goal 계속 진행할까요?", as an approval card) ──
 
   server.post<{ Params: { key: string }; Body: { goalId?: unknown; decisionId?: unknown; decision?: unknown } }>(
@@ -3885,13 +4056,33 @@ export async function registerDashboardRoutes(
         return;
       }
       const authContext = request?.authContext;
+      const authUntil = wsAuthDeadline(authContext?.mode, request?.headers?.cookie);
       const client: WsClient = {
         send: (data: string) => socket.send(data),
         close: () => socket.close(),
         userId: authContext?.userId,
         isAdmin: authContext?.isAdmin,
+        slackAdmin: isSlackAdmin(authContext),
+        ...(authUntil !== undefined ? { authUntil } : {}),
       };
       wsClients.add(client);
+      // The sign-in this socket was opened with ends: close it. The page reconnects with its
+      // current (rotated) cookie, or stops receiving if it no longer has a valid one.
+      let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+      if (authUntil !== undefined) {
+        expiryTimer = setTimeout(
+          () => {
+            wsClients.delete(client);
+            try {
+              socket.close(4401, 'Sign-in expired');
+            } catch {
+              /* already closed */
+            }
+          },
+          Math.min(Math.max(authUntil - Date.now(), 0), 2_147_000_000),
+        );
+        expiryTimer.unref?.();
+      }
       logger.debug('WebSocket client connected', { total: wsClients.size });
 
       // Send initial state
@@ -3903,6 +4094,7 @@ export async function registerDashboardRoutes(
       }
 
       socket.on('close', () => {
+        if (expiryTimer) clearTimeout(expiryTimer);
         wsClients.delete(client);
         logger.debug('WebSocket client disconnected', { total: wsClients.size });
       });
@@ -4209,6 +4401,14 @@ ui-app-bar[narrow] .nt-btn-label { display: none; }
   color: var(--tint-fail-fg);
 }
 @media (hover: hover) and (pointer: fine) { .topbar .admin-toggle[aria-pressed="true"]:hover { background: var(--tint-fail-bg-2); color: var(--tint-fail-fg); } }
+/* Admin approvals (#620): the admins' Slack DM requests, counted in the top bar, answered in a sheet. */
+.topbar .admin-inbox-btn { gap: 6px; }
+.topbar .admin-inbox-btn svg { width: 14px; height: 14px; }
+.topbar .admin-inbox-btn .aib-count { min-width: 18px; padding: 0 5px; border-radius: 9px; font-size: 11px; line-height: 18px; text-align: center; font-variant-numeric: tabular-nums; background: var(--ib-card-dim); color: var(--ib-muted); }
+.topbar .admin-inbox-btn.has-pending .aib-count { background: var(--st-wait, var(--orange)); color: #fff; }
+.admin-inbox-head { font-weight: 600; outline: none; }
+.admin-inbox-body { display: flex; flex-direction: column; gap: 12px; padding: 6px 0 16px; }
+.admin-inbox-empty { color: var(--text-secondary); font-size: 13px; padding: 12px 0; }
 /* ── MAIN — stats strip, then the board; capped at 1280px and centred (.prd/10 §3.1-2, §5) ── */
 .main { flex: 1; padding: 20px; width: 100%; max-width: 1280px; margin: 0 auto; min-width: 0; }
 
@@ -5689,6 +5889,16 @@ ${pageTokenAliases()}
       <option value="">모든 사용자</option>
     </select></span>
     <button
+      id="admin-inbox-btn"
+      type="button"
+      class="admin-toggle admin-inbox-btn"
+      style="display:none"
+      aria-haspopup="dialog"
+      aria-label="관리자 승인 0건 대기"
+      title="관리자 승인 — Slack DM으로 오는 승인 요청을 여기서도 보고 답합니다"
+      onclick="openAdminInbox()"
+    ><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2l4.8 1.9v3.5c0 2.9-2 5.1-4.8 6.2-2.8-1.1-4.8-3.3-4.8-6.2V4.1z"/><path d="M5.9 8.1l1.5 1.5 2.8-2.9"/></svg><span>승인</span><span class="aib-count" id="admin-inbox-count" aria-hidden="true">0</span></button>
+    <button
       id="admin-mode-toggle"
       type="button"
       class="admin-toggle"
@@ -5781,6 +5991,13 @@ ${pageTokenAliases()}
     <div class="cron-drawer-meta" id="cron-drawer-meta"></div>
     <div class="cron-drawer-body" id="cron-drawer-body"></div>
   </ui-drawer>
+
+  <!-- Admin approvals (#620): the requests the admins get by Slack DM, answerable here too. -->
+  <ui-drawer class="cron-drawer" id="admin-inbox-drawer" mode="sheet" width="480" max-width="480" lang="ko">
+    <span slot="header" class="admin-inbox-head" id="admin-inbox-head" tabindex="-1">관리자 승인</span>
+    <div class="admin-inbox-body" id="admin-inbox-body"></div>
+  </ui-drawer>
+  <p class="ar-vh" id="admin-inbox-status" role="status" aria-live="polite"></p>
 
   <!-- Slide panel: the detail card -->
   <div class="slide-panel-overlay" id="panel-overlay" onclick="closeDetailCard()"></div>
@@ -6413,6 +6630,7 @@ function acPrefetch(s, col) {
 
 // What one slot's element shows now, from the session it belongs to.
 function acDataFor(el) {
+  if (el.getAttribute('data-ac-kind') === 'admin') return adminApprovalData(el.getAttribute('data-ac-id'));
   var s = _sessionCache[el.getAttribute('data-ac-key')];
   if (!s) return null;
   if (el.getAttribute('data-ac-kind') === 'question') {
@@ -6456,8 +6674,10 @@ function acRepaint(key) {
 // The answers leave the element as composed events, retargeted to it here.
 document.addEventListener('ui-decide', function(e) {
   var el = e.target;
-  if (!el || !el.getAttribute || !e.detail || el.getAttribute('data-ac-kind') !== 'perm') return;
-  answerPermission(el.getAttribute('data-ac-key'), String(e.detail.id), String(e.detail.decision));
+  if (!el || !el.getAttribute || !e.detail) return;
+  var kind = el.getAttribute('data-ac-kind');
+  if (kind === 'perm') answerPermission(el.getAttribute('data-ac-key'), String(e.detail.id), String(e.detail.decision));
+  else if (kind === 'admin') answerAdminApproval(String(e.detail.id), String(e.detail.decision));
 });
 document.addEventListener('ui-answer', function(e) {
   var el = e.target;
@@ -6466,6 +6686,7 @@ document.addEventListener('ui-answer', function(e) {
   var choice = e.detail.choiceId === undefined ? '' : String(e.detail.choiceId);
   if (kind === 'question') answerChoice(el.getAttribute('data-ac-key'), String(e.detail.id), choice);
   else if (kind === 'goal') answerGoalDecision(el.getAttribute('data-ac-key'), String(e.detail.id), choice);
+  else if (kind === 'admin') answerAdminApproval(String(e.detail.id), choice);
 });
 
 // The pending question in the panel: the single-choice question is an
@@ -6759,6 +6980,250 @@ async function answerGoalDecision(key, decisionId, choiceId) {
   acRepaint(key);
   return st;
 }
+
+// ── Admin approvals (#620) — @2lab.ai/ui <ui-approval-card> in a sheet ──
+// The requests that reach the admins by Slack DM (an environment skill run, an
+// MCP tool grant, a new user, a bot-message delete), for admins signed in here:
+// a count in the top bar, a toast when one arrives, the cards in a sheet. An
+// answer here runs the same decision as the Slack button (every admin's DM is
+// rewritten); a Slack answer takes the card away. Admin viewers get them over the
+// WebSocket (admin_approvals) and from GET /api/dashboard/admin-approvals on load
+// and on every reconnect.
+var _adminApprovals = { pending: [], resolved: [] };
+var _adminKnown = null; // pending ids seen so far — the first load is the baseline (no toast)
+var _adminLast = Object.create(null); // id → the last record seen, for the row it becomes
+var _adminKeep = Object.create(null); // ids that ended while the sheet is open — shown until it closes
+var _adminState = Object.create(null); // id → this page's answer (sending · error · resolved)
+var _adminInboxOpen = false;
+var _adminPushSeq = 0; // WebSocket snapshots seen — a GET that started before a push is older than it
+var _adminInboxReturn = null;
+var ADMIN_KIND_LABEL = { env_skill: '환경 스킬', mcp_grant: 'MCP 권한', new_user: '새 사용자', bot_delete: '메시지 삭제' };
+
+function adminInboxLoad() {
+  if (!_viewerIsAdmin || !_viewerUserId) return;
+  var seq = _adminPushSeq;
+  fetch('/api/dashboard/admin-approvals')
+    .then(function(res) { return res.ok ? res.json() : null; })
+    // A push that landed while this GET was in flight is newer: the GET's snapshot is dropped.
+    .then(function(snap) { if (snap && seq === _adminPushSeq) applyAdminApprovals(snap); })
+    .catch(function() {});
+}
+// A name for a Slack user id: the owner name a board card carries, else the id.
+function adminUserName(id) {
+  if (!id) return '';
+  for (var k in _sessionCache) {
+    var s = _sessionCache[k];
+    if (s && s.ownerId === id && s.ownerName && s.ownerName !== id) return s.ownerName;
+  }
+  return id;
+}
+function adminApprovalTitle(a) {
+  return (ADMIN_KIND_LABEL[a.kind] || '승인') + ' — ' + String(a.title || '');
+}
+function applyAdminApprovals(snap) {
+  var pending = (snap && snap.pending) || [];
+  var resolved = (snap && snap.resolved) || [];
+  var ids = Object.create(null);
+  var arrivals = [];
+  for (var i = 0; i < pending.length; i++) {
+    var a = pending[i];
+    ids[a.id] = true;
+    if (_adminKnown && !_adminKnown[a.id]) arrivals.push(a);
+    _adminLast[a.id] = a;
+  }
+  if (_adminInboxOpen && _adminKnown) {
+    for (var gone in _adminKnown) if (!ids[gone] && _adminLast[gone]) _adminKeep[gone] = true;
+  }
+  _adminKnown = ids;
+  _adminApprovals = { pending: pending, resolved: resolved };
+  for (var sid in _adminState) if (!ids[sid] && !_adminKeep[sid]) delete _adminState[sid];
+  paintAdminInboxButton();
+  if (_adminInboxOpen) paintAdminInbox();
+  if (!arrivals.length) return;
+  if (_adminInboxOpen) {
+    adminInboxAnnounce('새 승인 요청 — ' + adminApprovalTitle(arrivals[0]));
+    return;
+  }
+  var first = arrivals[0];
+  dashToast({
+    title: '관리자 승인 요청' + (arrivals.length > 1 ? ' ' + arrivals.length + '건' : ''),
+    description: adminApprovalTitle(first) + ' · ' + adminUserName(first.requesterId),
+    action: { id: 'open' },
+  }, function() { openAdminInbox(first.id); });
+}
+function paintAdminInboxButton() {
+  var btn = document.getElementById('admin-inbox-btn');
+  if (!btn) return;
+  var n = _adminApprovals.pending.length;
+  var c = document.getElementById('admin-inbox-count');
+  if (c && c.textContent !== String(n)) c.textContent = String(n);
+  btn.classList.toggle('has-pending', n > 0);
+  btn.setAttribute('aria-label', '관리자 승인 ' + n + '건 대기');
+}
+function adminInboxAnnounce(msg) {
+  var el = document.getElementById('admin-inbox-status');
+  if (el) el.textContent = msg;
+}
+// Who may answer here: a Slack-signed-in admin with admin mode on (the server checks again).
+function adminApprovalLock() {
+  if (!_viewerUserId) return 'Slack 계정으로 로그인한 관리자만 응답할 수 있습니다';
+  if (!_isAdminModeOn()) return '관리자 모드를 켜면 응답할 수 있습니다';
+  return '';
+}
+function adminResolutionOf(id) {
+  var list = _adminApprovals.resolved || [];
+  for (var i = 0; i < list.length; i++) if (list[i].id === id) return list[i];
+  return null;
+}
+// The resolved row of a request that ended elsewhere: the real outcome and who answered, when known.
+function adminResolvedState(a, r) {
+  if (!r) return { status: 'resolved', outcome: 'elsewhere' };
+  var st = { status: 'resolved', at: toNum(r.at) || Date.now() };
+  if (a.card === 'question') {
+    // The stored outcome is the truth: a grant choice that ended as a denial (the skill left the host) shows denied.
+    if (r.outcome === 'denied' && !(r.choiceId && /deny/.test(String(r.choiceId)))) st.outcome = 'denied';
+    else {
+      st.outcome = 'answered';
+      if (r.choiceId) st.choiceId = String(r.choiceId);
+    }
+  } else st.outcome = r.outcome === 'denied' ? 'denied' : 'approved';
+  if (r.by) st.by = adminUserName(r.by) + (r.via === 'dashboard' ? ' · 대시보드' : r.via === 'slack' ? ' · Slack' : '');
+  return st;
+}
+// One request → the card's data.
+function adminApprovalData(id) {
+  var a = _adminLast[id];
+  if (!a) return null;
+  var d = {
+    id: String(a.id),
+    label: (ADMIN_KIND_LABEL[a.kind] || '승인') + ' · ' + adminUserName(a.requesterId) + ' 요청',
+  };
+  var created = toNum(a.createdAt);
+  if (created > 0) d.createdAt = created;
+  var until = toNum(a.expiresAt);
+  if (until > 0) d.expiresAt = until;
+  if (a.card === 'question') {
+    d.kind = 'question';
+    d.question = String(a.title || '');
+    var place = a.place && a.place.channel ? '요청 위치: #' + a.place.channel + (a.place.threadTs ? ' 스레드 ' + a.place.threadTs : '') : '';
+    var desc = [a.description || '', place].filter(Boolean).join('\\n');
+    if (desc) d.description = desc;
+    d.choices = (a.choices || []).map(function(c) { return { id: String(c.id), label: String(c.label) }; });
+    d.allowOther = false;
+    if (a.recommendedId) d.recommendedId = String(a.recommendedId);
+  } else {
+    d.kind = 'permission';
+    d.tool = String(a.tool || 'approval');
+    d.title = String(a.title || '');
+    if (a.description) d.description = String(a.description);
+    if (a.rows) d.input = a.rows;
+    if (a.risk) d.risk = a.risk;
+    d.canExplain = false;
+    d.canDisableRule = false;
+  }
+  var lock = adminApprovalLock();
+  if (lock) d.canAnswer = lock;
+  var st = _adminState[id];
+  var open = !!(_adminKnown && _adminKnown[id]);
+  if (!open) d.state = st && st.status === 'resolved' ? st : adminResolvedState(a, adminResolutionOf(id));
+  else if (st) d.state = st;
+  return d;
+}
+function paintAdminInbox() {
+  var body = document.getElementById('admin-inbox-body');
+  if (!body) return;
+  var ids = _adminApprovals.pending.map(function(a) { return a.id; });
+  for (var k in _adminKeep) if (ids.indexOf(k) < 0) ids.push(k);
+  var html = ids.length
+    ? ids.map(function(id) {
+        var a = _adminLast[id];
+        return acSlotHtml('admin', 'admin', 'a|' + id, id, adminApprovalTitle(a) + ' — 응답 대기');
+      }).join('')
+    : '<p class="admin-inbox-empty">대기 중인 승인 요청이 없습니다.</p>';
+  var ae = document.activeElement;
+  var had = !!(ae && body.contains(ae));
+  if (body._html !== html) {
+    morphInnerHtml(body, html);
+    body._html = html;
+  }
+  acHydrate(body);
+  if (had && !body.contains(document.activeElement)) {
+    var head = document.getElementById('admin-inbox-head');
+    if (head && head.focus) head.focus({ preventScroll: true });
+  }
+}
+function openAdminInbox(focusId) {
+  _adminInboxReturn = document.activeElement;
+  _adminInboxOpen = true;
+  _adminKeep = Object.create(null);
+  paintAdminInbox();
+  var d = document.getElementById('admin-inbox-drawer');
+  if (d && typeof d.show === 'function') d.show();
+  adminInboxLoad();
+  requestAnimationFrame(function() {
+    var body = document.getElementById('admin-inbox-body');
+    var els = body ? body.querySelectorAll('ui-approval-card[data-ac-id]') : [];
+    var to = null;
+    for (var i = 0; i < els.length && !to; i++) if (focusId && els[i].getAttribute('data-ac-id') === focusId) to = els[i];
+    to = to || acFirstOpen(body);
+    if (to && to.focus) to.focus({ preventScroll: true });
+  });
+}
+function closeAdminInbox() {
+  _adminInboxOpen = false;
+  _adminKeep = Object.create(null);
+  var d = document.getElementById('admin-inbox-drawer');
+  if (d && typeof d.hide === 'function') d.hide();
+  var back = _adminInboxReturn;
+  _adminInboxReturn = null;
+  var btn = document.getElementById('admin-inbox-btn');
+  var to = back && back.isConnected ? back : btn;
+  if (to && to.focus) setTimeout(function() { to.focus({ preventScroll: true }); }, 0);
+}
+// One answer per request: in flight, then the row; a refusal stays on the card
+// (answered elsewhere → its real outcome, no Retry).
+async function answerAdminApproval(id, choiceId) {
+  var a = _adminLast[id];
+  if (!a) return null;
+  var cur = _adminState[id];
+  if (cur && (cur.status === 'sending' || cur.status === 'resolved')) return cur;
+  _adminState[id] = a.card === 'question' ? { status: 'sending', choiceId: choiceId } : { status: 'sending', decision: choiceId };
+  paintAdminInbox();
+  var st;
+  try {
+    var res = await acPost('/api/dashboard/admin-approvals/answer', JSON.stringify({ id: id, choiceId: choiceId }));
+    if (res.ok) {
+      var done = {};
+      try { done = await res.json(); } catch (_e) {}
+      // The server's outcome is the truth: a grant can end as a denial (the skill left the host).
+      var deniedInstead = done && done.outcome === 'denied' && !/deny/.test(choiceId);
+      st = deniedInstead
+        ? { status: 'resolved', outcome: 'denied', at: Date.now() }
+        : a.card === 'question'
+          ? { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() }
+          : { status: 'resolved', outcome: choiceId === 'deny' ? 'denied' : 'approved', at: Date.now() };
+      dashToast(deniedInstead
+        ? { title: '거부로 처리됐어요', description: adminApprovalTitle(a) + ' — 서버가 요청을 거부했습니다', tone: 'warning' }
+        : { title: '응답을 보냈어요', description: adminApprovalTitle(a) + ' — 관리자들의 Slack DM도 같은 결과로 바뀝니다', tone: 'success' });
+    } else if (res.status === 409) {
+      var data = {};
+      try { data = await res.json(); } catch (_e) {}
+      st = adminResolvedState(a, data && data.resolution);
+    } else st = await acRefusal(res);
+  } catch (e) {
+    console.error('Admin approval answer error', e);
+    st = { status: 'error', message: '네트워크 오류 — 다시 시도하세요', retry: true };
+  }
+  _adminState[id] = st;
+  if (st.status === 'resolved' && _adminInboxOpen) _adminKeep[id] = true;
+  paintAdminInbox();
+  adminInboxLoad();
+  return st;
+}
+(function initAdminInbox() {
+  var d = document.getElementById('admin-inbox-drawer');
+  if (d) d.addEventListener('ui-close', function(e) { e.preventDefault(); closeAdminInbox(); });
+})();
 
 // The single-choice answer, from the card or the panel (the same element): the
 // choice travels with its label and the question, as the route wants. Same
@@ -7130,6 +7595,12 @@ function _applyUserPill(data) {
   _viewerUserId = (data && data.user && data.user.slackUserId) || '';
   const lifecycleBtn = document.getElementById('lifecycle-btn');
   if (lifecycleBtn) lifecycleBtn.style.display = isAdminCapable ? 'inline-flex' : 'none';
+  // Admin approvals (#620): a Slack-signed-in admin only (a viewer token names nobody — the
+  // server refuses it the requests). The button stays visible at zero so the bar does not shift.
+  const seesApprovals = isAdminCapable && !!_viewerUserId;
+  const inboxBtn = document.getElementById('admin-inbox-btn');
+  if (inboxBtn) inboxBtn.style.display = seesApprovals ? 'inline-flex' : 'none';
+  if (seesApprovals) adminInboxLoad();
   const toggle = document.getElementById('admin-mode-toggle');
   if (toggle) {
     if (isAdminCapable) {
@@ -7178,6 +7649,8 @@ function _renderAdminModeButton() {
 function toggleAdminMode() {
   _setAdminMode(!_isAdminModeOn());
   _renderAdminModeButton();
+  // The admin approval cards lock and unlock with admin mode.
+  if (_adminInboxOpen) paintAdminInbox();
 }
 
 // #716: monkey-patch fetch ONCE at boot so every state-mutating request
@@ -12866,6 +13339,8 @@ function connectWs() {
     // Reconnect: recover the work-log entries broadcast while we were offline
     // (from the HTTP cursor; afterSeq=0 when the log was still empty).
     if (panelOpen && _wl) recoverWorkLog();
+    // Admin approvals that arrived or ended while we were offline.
+    if (_viewerIsAdmin && _viewerUserId) adminInboxLoad();
   };
   ws.onclose = function() {
     _appBarStatus = { tone: 'wait', label: STRINGS.wsReconnecting, live: true };
@@ -12876,6 +13351,11 @@ function connectWs() {
   ws.onmessage = function(ev) {
     try {
       const msg = JSON.parse(ev.data);
+      if (msg.type === 'admin_approvals') {
+        _adminPushSeq++;
+        applyAdminApprovals(msg.snapshot);
+        return;
+      }
       if (msg.type === 'session_update') {
         if (currentUserId) {
           msg.board.working = (msg.board.working || []).filter(function(s) { return s.ownerId === currentUserId; });
