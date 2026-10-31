@@ -197,10 +197,11 @@ export function listPermissionRequests(): PermissionRequest[] {
 }
 
 /** Record where the prompts of a request were posted (environment-skill admin DMs). No-op if missing. */
-export function setRequestPrompts(requestId: string, prompts: PromptRef[]): void {
+export function setRequestPrompts(requestId: string, prompts: PromptRef[]): PermissionRequest | null {
   const all = loadAll();
   const req = all[requestId];
-  if (!req) return;
+  if (!req) return null;
   req.prompts = prompts;
   saveAll(all);
+  return req;
 }

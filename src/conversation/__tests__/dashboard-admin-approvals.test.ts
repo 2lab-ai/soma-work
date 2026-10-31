@@ -210,6 +210,13 @@ describe('dashboard admin approvals (#620)', () => {
       headers: { cookie: user.cookie },
     });
     expect(denied.statusCode).toBe(403);
+    // A viewer token is "admin" for the board, but names nobody: the requests stay hidden.
+    const bearer = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/admin-approvals',
+      headers: { authorization: 'Bearer test-token' },
+    });
+    expect(bearer.statusCode).toBe(403);
   });
 
   it('T5 — an admin in admin mode answers through the registry (the Slack button path)', async () => {
@@ -229,6 +236,12 @@ describe('dashboard admin approvals (#620)', () => {
     expect(answer).not.toHaveBeenCalled();
   });
 
+  it('an adapter that refuses the actor is a 403, not a bad request', async () => {
+    answer.mockImplementationOnce(async () => ({ ok: false, reason: 'forbidden' }));
+    const admin = await signIn('UADMIN');
+    expect((await post(admin, { id: 'env_skill:req-1', choiceId: 'env_skill_once' })).statusCode).toBe(403);
+  });
+
   it('T5 — answered in Slack first: 409 with who answered and how', async () => {
     answer.mockImplementationOnce(async () => ({ ok: false, reason: 'already_answered' }));
     resolved = [
@@ -240,12 +253,20 @@ describe('dashboard admin approvals (#620)', () => {
     expect(JSON.parse(res.body).resolution).toMatchObject({ outcome: 'denied', by: 'UOTHER', via: 'slack' });
   });
 
-  it('T4 — the WebSocket pushes the requests to admin viewers only, live on a change', async () => {
+  it('T4 — the WebSocket pushes the requests to Slack-signed-in admins only, live on a change', async () => {
     const adminMsgs: any[] = [];
     const userMsgs: any[] = [];
+    const bearerMsgs: any[] = [];
+    const admin = await signIn('UADMIN');
+    sockets.push(
+      await injectWebServerWS('/ws/dashboard', { headers: { cookie: admin.cookie } }, (s: any) =>
+        s.on('message', (d: any) => adminMsgs.push(JSON.parse(d.toString()))),
+      ),
+    );
+    // A viewer token reads as admin elsewhere, but carries no identity.
     sockets.push(
       await injectWebServerWS('/ws/dashboard', { headers: { authorization: 'Bearer test-token' } }, (s: any) =>
-        s.on('message', (d: any) => adminMsgs.push(JSON.parse(d.toString()))),
+        s.on('message', (d: any) => bearerMsgs.push(JSON.parse(d.toString()))),
       ),
     );
     const user = await signIn('U2');
@@ -259,7 +280,6 @@ describe('dashboard admin approvals (#620)', () => {
     const pushed = adminMsgs.find((m) => m.type === 'admin_approvals');
     expect(pushed.snapshot.pending.map((a: any) => a.id)).toEqual(['env_skill:req-1']);
     // An answer (here or in Slack — the store watch) pushes again.
-    const admin = await signIn('UADMIN');
     await post(admin, { id: 'env_skill:req-1', choiceId: 'env_skill_once' });
     await vi.waitFor(() => {
       const all = adminMsgs.filter((m) => m.type === 'admin_approvals');
@@ -268,6 +288,7 @@ describe('dashboard admin approvals (#620)', () => {
       expect(last.snapshot.resolved[0]).toMatchObject({ id: 'env_skill:req-1', via: 'dashboard' });
     });
     expect(userMsgs.some((m) => m.type === 'admin_approvals')).toBe(false);
+    expect(bearerMsgs.some((m) => m.type === 'admin_approvals')).toBe(false);
   });
 
   describe('shipped client', () => {
@@ -378,6 +399,18 @@ describe('dashboard admin approvals (#620)', () => {
         choiceId: 'env_skill_deny',
         by: '박지은 · Slack',
       });
+    });
+
+    it('the server outcome wins: a grant the server turned into a denial shows as denied', async () => {
+      const { c, toasts } = client({
+        fetch: async () => ({ ok: true, status: 200, json: async () => ({ ok: true, outcome: 'denied' }) }),
+      });
+      c.applyAdminApprovals({ pending: [ENV_REQUEST], resolved: [] });
+      expect(await c.answerAdminApproval('env_skill:req-1', 'env_skill_once')).toMatchObject({
+        status: 'resolved',
+        outcome: 'denied',
+      });
+      expect(toasts[0].t).toMatchObject({ title: '거부로 처리됐어요', tone: 'warning' });
     });
   });
 });

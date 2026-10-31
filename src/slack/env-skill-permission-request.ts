@@ -16,6 +16,7 @@ import { Logger } from '../logger';
 import {
   createPermissionRequest,
   markRequestHandled,
+  type PermissionRequest,
   type PromptRef,
   setRequestPrompts,
 } from '../skill-permission-request-store';
@@ -32,6 +33,8 @@ export interface EnvSkillPermissionSlackApi {
     text: string,
     options?: { threadTs?: string; blocks?: any[] },
   ): Promise<{ ts?: string; channel?: string }>;
+  /** Rewrite a prompt that went out after its request was already answered (#620). */
+  updateMessage?(channel: string, ts: string, text: string, blocks?: any[]): Promise<unknown>;
 }
 
 export interface RequestEnvSkillPermissionInput {
@@ -113,6 +116,31 @@ export async function requestEnvSkillPermission(
   return { requestId: req.requestId, delivered };
 }
 
+/**
+ * The prompts went out while an admin answered on the dashboard (the request
+ * was listed there before its DMs landed): the answer could not reach them, so
+ * they are rewritten here instead of keeping live buttons.
+ */
+async function closeIfAlreadyAnswered(
+  slackApi: EnvSkillPermissionSlackApi,
+  req: PermissionRequest | null,
+  prompts: PromptRef[],
+): Promise<void> {
+  if (!req?.handled || !slackApi.updateMessage) return;
+  const r = req.resolution;
+  const text = r
+    ? `${r.outcome === 'approved' ? '✅' : '🚫'} <@${r.by}>님이 ${r.via === 'dashboard' ? '대시보드' : 'Slack'}에서 이 환경 스킬 요청을 이미 ${r.outcome === 'approved' ? '허용' : '거부'}했습니다.`
+    : '⚠️ 이미 처리된 환경 스킬 권한 요청입니다.';
+  const blocks = [{ type: 'section', text: { type: 'mrkdwn', text } }];
+  for (const p of prompts) {
+    await slackApi
+      .updateMessage(p.channel, p.ts, text, blocks)
+      .catch((err: unknown) =>
+        logger.warn('env-skill permission: late prompt close failed', { err: (err as Error)?.message ?? String(err) }),
+      );
+  }
+}
+
 async function deliver(input: RequestEnvSkillPermissionInput, requestId: string): Promise<EnvSkillPermissionDelivery> {
   const { slackApi, requesterId, skillKey, channel, threadTs } = input;
   const admins = [...(input.admins ?? getAdminUsers())];
@@ -138,14 +166,17 @@ async function deliver(input: RequestEnvSkillPermissionInput, requestId: string)
     }
   }
   if (prompts.length > 0) {
-    setRequestPrompts(requestId, prompts);
+    await closeIfAlreadyAnswered(slackApi, setRequestPrompts(requestId, prompts), prompts);
     return 'dm';
   }
 
   try {
     const mentions = admins.map((a) => `<@${a}>`).join(' ');
     const posted = await slackApi.postMessage(channel, `${mentions} ${msg.text}`, { threadTs, blocks: msg.blocks });
-    if (posted.ts) setRequestPrompts(requestId, [{ channel: posted.channel ?? channel, ts: posted.ts }]);
+    if (posted.ts) {
+      const ref = [{ channel: posted.channel ?? channel, ts: posted.ts }];
+      await closeIfAlreadyAnswered(slackApi, setRequestPrompts(requestId, ref), ref);
+    }
     return 'fallback';
   } catch (error) {
     logger.warn('env-skill permission thread fallback failed', {
