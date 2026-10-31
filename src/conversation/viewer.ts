@@ -63,6 +63,8 @@ export const VIEWER_CSS = String.raw`
 *,*::before,*::after { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body { display: flex; flex-direction: column; height: 100dvh; background: var(--ui-bg); color: var(--ui-ib-text); font-family: var(--ui-font); font-size: 14px; line-height: 1.45; -webkit-font-smoothing: antialiased; }
+/* Korean breaks between words (D8): the title, the time line, every block — the kit gives it to its own classes only. */
+html:lang(ko) body { word-break: keep-all; overflow-wrap: anywhere; }
 /* The bar: <ui-app-bar> draws itself (translucent, one hairline); until it is defined, its height and nothing else. */
 .vw-top { position: sticky; top: 0; z-index: 20; flex: none; min-width: 0; }
 ui-app-bar:not(:defined) { display: block; height: 56px; }
