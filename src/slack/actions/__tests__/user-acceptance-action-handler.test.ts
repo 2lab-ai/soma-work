@@ -12,7 +12,10 @@ vi.mock('../../../user-settings-store', () => ({
   },
 }));
 
+import * as fs from 'node:fs';
+import * as path from 'node:path';
 import { isAdminUser } from '../../../admin-utils';
+import { DATA_DIR } from '../../../env-paths';
 import { userSettingsStore } from '../../../user-settings-store';
 import { UserAcceptanceActionHandler } from '../user-acceptance-action-handler';
 
@@ -31,10 +34,15 @@ describe('UserAcceptanceActionHandler', () => {
   beforeEach(() => {
     mockSlackApi = {
       postMessage: vi.fn().mockResolvedValue({}),
+      updateMessage: vi.fn().mockResolvedValue(undefined),
     };
     handler = new UserAcceptanceActionHandler({ slackApi: mockSlackApi });
     mockRespond = vi.fn().mockResolvedValue(undefined);
     vi.mocked(isAdminUser).mockReturnValue(true);
+    // Each case starts with no recorded round (the request store is a file under DATA_DIR).
+    fs.rmSync(path.join(DATA_DIR, 'admin-requests.json'), { force: true });
+    // The user is still pending (#622: only a pending user can be accepted or denied).
+    vi.mocked(userSettingsStore.getUserSettings).mockReturnValue({ userId: 'U_NEW', accepted: false } as any);
   });
 
   afterEach(() => {
@@ -94,8 +102,9 @@ describe('UserAcceptanceActionHandler', () => {
       const body = makeBody('accept_user', 'U_NEW');
       await handler.handleAccept(body, mockRespond);
 
-      // Should still work (idempotent)
-      expect(mockRespond).toHaveBeenCalled();
+      // Already accepted: told so, nothing changes again (#622 — one answer per request).
+      expect(mockRespond).toHaveBeenCalledWith(expect.objectContaining({ response_type: 'ephemeral' }));
+      expect(userSettingsStore.acceptUser).not.toHaveBeenCalled();
     });
   });
 

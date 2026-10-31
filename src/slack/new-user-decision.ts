@@ -1,0 +1,299 @@
+/**
+ * A new user's access request (#622) as ONE decision with two surfaces — the
+ * admins' DM Accept / Deny buttons and the dashboard's admin approvals.
+ *
+ * The user's settings are the truth: a request is pending while the user's
+ * record says `accepted: false`. {@link decideNewUser} is synchronous from the
+ * check to the store write, so of two answers (two admins, Slack and the
+ * dashboard) exactly one takes effect; the other reads "already answered".
+ * Where each admin's DM landed and who answered are kept in the admin request
+ * store, so every copy is rewritten with the outcome.
+ */
+
+import type { AdminApproval, AdminApprovalAdapter, AdminApprovalResolution } from '../admin-approvals';
+import { notifyAdminApprovalsChanged } from '../admin-approvals';
+import {
+  type AdminRequest,
+  type AdminRequestPrompt,
+  getAdminRequest,
+  listAdminRequests,
+  markAdminRequest,
+  openAdminRequest,
+  setAdminRequestPrompts,
+} from '../admin-request-store';
+import { getAdminUsers, isAdminUser } from '../admin-utils';
+import { Logger } from '../logger';
+import { userSettingsStore } from '../user-settings-store';
+
+const logger = new Logger('NewUserDecision');
+
+/** A pending user can wait a long time; the round's record lives as long. */
+const NEW_USER_REQUEST_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+export type NewUserDecision = 'accept' | 'deny';
+
+export interface NewUserSlackApi {
+  postMessage(
+    channel: string,
+    text: string,
+    options?: { blocks?: any[]; threadTs?: string },
+  ): Promise<{ ts?: string; channel?: string }>;
+  updateMessage(channel: string, ts: string, text: string, blocks?: any[]): Promise<unknown>;
+}
+
+export type NewUserAnswer =
+  | { ok: true; outcome: 'approved' | 'denied'; text: string; effects: Promise<void> }
+  | { ok: false; reason: 'not_found' | 'not_admin' | 'already_answered'; message: string };
+
+export function newUserPromptBlocks(userId: string, userName: string): any[] {
+  return [
+    {
+      type: 'section',
+      text: {
+        type: 'mrkdwn',
+        text: `🆕 *New User Request*\n<@${userId}>${userName ? ` (${userName})` : ''} wants to use the bot`,
+      },
+    },
+    {
+      type: 'actions',
+      block_id: 'user_acceptance',
+      elements: [
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Accept' },
+          action_id: 'accept_user',
+          value: userId,
+          style: 'primary',
+        },
+        {
+          type: 'button',
+          text: { type: 'plain_text', text: 'Deny' },
+          action_id: 'deny_user',
+          value: userId,
+          style: 'danger',
+        },
+      ],
+    },
+  ];
+}
+
+function outcomeText(
+  userId: string,
+  r: { outcome: 'approved' | 'denied'; by: string; via: 'slack' | 'dashboard' },
+): string {
+  const where = r.via === 'dashboard' ? ' (대시보드에서 응답)' : '';
+  return r.outcome === 'approved'
+    ? `✅ <@${userId}> accepted by <@${r.by}>${where}`
+    : `❌ <@${userId}> denied by <@${r.by}>${where}`;
+}
+
+async function rewritePrompts(
+  slackApi: Pick<NewUserSlackApi, 'updateMessage'> | undefined,
+  prompts: AdminRequestPrompt[],
+  text: string,
+): Promise<void> {
+  if (!slackApi) return;
+  const blocks = [{ type: 'section', text: { type: 'mrkdwn', text } }];
+  for (const p of prompts) {
+    try {
+      await slackApi.updateMessage(p.channel, p.ts, text, blocks);
+    } catch (error) {
+      logger.warn('new user: admin prompt rewrite failed', { error: (error as Error)?.message ?? String(error) });
+    }
+  }
+}
+
+/**
+ * Ask every admin, by DM, to accept a new user, and record where each prompt
+ * landed. Returns how many admins were reached.
+ */
+export async function notifyAdminsNewUser(
+  slackApi: NewUserSlackApi,
+  userId: string,
+  userName: string,
+  admins: Iterable<string> = getAdminUsers(),
+): Promise<number> {
+  const list = [...admins];
+  if (list.length === 0) {
+    logger.warn('No admin users configured, cannot notify about new user', { userId });
+    return 0;
+  }
+  openAdminRequest({
+    kind: 'new_user',
+    requestId: userId,
+    requesterId: userId,
+    data: { userName },
+    ttlMs: NEW_USER_REQUEST_TTL_MS,
+  });
+  notifyAdminApprovalsChanged();
+  const blocks = newUserPromptBlocks(userId, userName);
+  const prompts: AdminRequestPrompt[] = [];
+  for (const adminId of list) {
+    try {
+      const posted = await slackApi.postMessage(adminId, `New user access request from <@${userId}>`, { blocks });
+      if (posted?.ts) prompts.push({ channel: posted.channel ?? adminId, ts: posted.ts });
+    } catch (error) {
+      logger.error('Failed to send admin notification', { adminId, userId, error });
+    }
+  }
+  const req = setAdminRequestPrompts('new_user', userId, prompts);
+  // Answered on the dashboard while the DMs were going out: these copies were not reachable then.
+  if (req?.handled && req.resolution) await rewritePrompts(slackApi, prompts, outcomeText(userId, req.resolution));
+  return prompts.length;
+}
+
+/** The answer — synchronous from the check to the write; the DM rewrites and the user's notice follow in `effects`. */
+export function decideNewUser(args: {
+  userId: string;
+  decision: NewUserDecision;
+  actor: string | undefined;
+  via: 'slack' | 'dashboard';
+  slackApi?: NewUserSlackApi;
+  now?: number;
+}): NewUserAnswer {
+  const { userId, decision, actor, via, slackApi } = args;
+  if (!actor || !isAdminUser(actor)) {
+    return { ok: false, reason: 'not_admin', message: '⛔ Admin only action' };
+  }
+  const now = args.now ?? Date.now();
+  const settings = userSettingsStore.getUserSettings(userId);
+  const round = getAdminRequest('new_user', userId, now);
+  if (!settings || settings.accepted) {
+    const r = round?.resolution;
+    if (r)
+      return {
+        ok: false,
+        reason: 'already_answered',
+        message: `⚠️ ${outcomeText(userId, r)} — 이미 처리된 요청입니다.`,
+      };
+    if (settings?.accepted) {
+      return { ok: false, reason: 'already_answered', message: `⚠️ <@${userId}> 님은 이미 승인된 사용자입니다.` };
+    }
+    return { ok: false, reason: 'not_found', message: '⚠️ 더 이상 대기 중인 사용자 요청이 아닙니다.' };
+  }
+  const resolution = {
+    by: actor,
+    choiceId: decision,
+    outcome: decision === 'accept' ? ('approved' as const) : ('denied' as const),
+    via,
+    at: now,
+  };
+  const marked = markAdminRequest('new_user', userId, resolution, {
+    requesterId: userId,
+    data: { userName: settings.slackName ?? '' },
+  });
+  if (!marked) {
+    return { ok: false, reason: 'already_answered', message: '⚠️ 이미 다른 어드민이 처리한 요청입니다.' };
+  }
+  if (decision === 'accept') userSettingsStore.acceptUser(userId, actor);
+  else userSettingsStore.removeUserSettings(userId);
+  const text = outcomeText(userId, resolution);
+  logger.info('New user request answered', { userId, outcome: resolution.outcome, by: actor, via });
+  notifyAdminApprovalsChanged();
+
+  const effects = (async () => {
+    await rewritePrompts(slackApi, marked.prompts, text);
+    try {
+      await slackApi?.postMessage(
+        userId,
+        decision === 'accept'
+          ? '✅ 사용이 승인되었습니다! 메시지를 보내서 시작하세요.'
+          : '❌ 사용 요청이 거부되었습니다. 관리자에게 문의하세요.',
+        {},
+      );
+    } catch (error) {
+      logger.error('Failed to notify the user of the decision', { userId, error });
+    }
+  })();
+  return { ok: true, outcome: resolution.outcome, text, effects };
+}
+
+/**
+ * The `admin accept|deny @user` command changed the user directly: end the
+ * open round too, so the DM buttons and the dashboard card do not stay live.
+ */
+export async function closeNewUserRequest(
+  userId: string,
+  decision: NewUserDecision,
+  actor: string,
+  slackApi?: Pick<NewUserSlackApi, 'updateMessage'>,
+): Promise<void> {
+  const round = getAdminRequest('new_user', userId);
+  if (!round || round.handled) return;
+  const resolution = {
+    by: actor,
+    choiceId: decision,
+    outcome: decision === 'accept' ? ('approved' as const) : ('denied' as const),
+    via: 'slack' as const,
+    at: Date.now(),
+  };
+  const marked = markAdminRequest('new_user', userId, resolution);
+  if (!marked) return;
+  notifyAdminApprovalsChanged();
+  await rewritePrompts(slackApi, marked.prompts, outcomeText(userId, resolution));
+}
+
+/** One pending user as the approval card shows it — the DM's words and Accept / Deny. */
+export function newUserApproval(userId: string, userName: string, createdAt: number): AdminApproval {
+  return {
+    id: `new_user:${userId}`,
+    kind: 'new_user',
+    card: 'permission',
+    title: '새 사용자 접근 요청',
+    description: `${userName || userId} 님이 봇 사용을 요청했습니다. 승인하면 바로 사용할 수 있고, 거부하면 요청이 지워집니다.`,
+    tool: 'new_user',
+    rows: { 사용자: userId, ...(userName ? { 이름: userName } : {}) },
+    risk: 'low',
+    requesterId: userId,
+    createdAt,
+  };
+}
+
+function roundCreatedAt(round: AdminRequest | null, lastUpdated: string | undefined): number {
+  if (round) return round.createdAt;
+  const t = lastUpdated ? Date.parse(lastUpdated) : Number.NaN;
+  return Number.isFinite(t) ? t : 0;
+}
+
+export function newUserAdminApprovalAdapter(slackApi: NewUserSlackApi): AdminApprovalAdapter {
+  return {
+    kind: 'new_user',
+    pending(now) {
+      return userSettingsStore
+        .getAllUsers()
+        .filter((u) => u.accepted === false)
+        .map((u) => {
+          const round = getAdminRequest('new_user', u.userId, now);
+          return newUserApproval(
+            u.userId,
+            u.slackName ?? round?.data.userName ?? '',
+            roundCreatedAt(round, u.lastUpdated),
+          );
+        });
+    },
+    resolved(since) {
+      const out: AdminApprovalResolution[] = [];
+      for (const req of listAdminRequests('new_user')) {
+        const r = req.resolution;
+        if (!req.handled || !r || r.at < since) continue;
+        out.push({
+          id: `new_user:${req.requestId}`,
+          outcome: r.outcome,
+          choiceId: r.choiceId,
+          by: r.by,
+          via: r.via,
+          at: r.at,
+        });
+      }
+      return out;
+    },
+    async answer(requestId, choiceId, actor) {
+      const decision = choiceId === 'approve' ? 'accept' : choiceId === 'deny' ? 'deny' : null;
+      if (!decision) return { ok: false, reason: 'invalid' };
+      const result = decideNewUser({ userId: requestId, decision, actor, via: 'dashboard', slackApi });
+      if (!result.ok) return { ok: false, reason: result.reason === 'not_admin' ? 'forbidden' : result.reason };
+      result.effects.catch((error: unknown) => logger.warn('new user dashboard answer: follow-up failed', error));
+      return { ok: true, outcome: result.outcome };
+    },
+  };
+}
