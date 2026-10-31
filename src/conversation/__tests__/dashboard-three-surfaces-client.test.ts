@@ -851,10 +851,13 @@ describe('landing follows the opening intent (executed)', () => {
       },
     });
     const tasks = section('panel-tasks', !opts.tasksHidden);
+    // D4 E-19: the agent strip is <ui-tabs>' sticky list; its height is the shared panel's top against the host's.
+    const tabsAt = (y: number) => ({ getBoundingClientRect: (): Rect => ({ top: y, bottom: y, height: 0 }) });
     const els: Record<string, unknown> = {
       'panel-scroll': scroll,
       'panel-tasks': tasks,
-      'panel-tabs': opts.tabs === undefined ? null : { offsetHeight: opts.tabs },
+      'panel-tabs': opts.tabs === undefined ? null : tabsAt(500),
+      'panel-tabpanel': opts.tabs === undefined ? null : tabsAt(500 + opts.tabs),
       'panel-goal': section('panel-goal'),
       'panel-agents': section('panel-agents'),
       'panel-sections': section('panel-sections'),
@@ -869,7 +872,7 @@ describe('landing follows the opening intent (executed)', () => {
       'panel-question': section('panel-question', !!opts.question),
     };
     const m = load<{ landPanel(): void; state(): { landed: boolean } }>(
-      ['psecLandingTop', 'landPanel'],
+      ['psecLandingTop', 'panelTabsHeight', 'landPanel'],
       ['_panelOnQuestion'],
       { document: { getElementById: (id: string) => els[id] ?? null } },
       [

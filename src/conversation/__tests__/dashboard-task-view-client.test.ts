@@ -508,59 +508,54 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
     expect(at('id="panel-tabs"')).toBeGreaterThan(at('id="panel-artifacts"'));
   });
 
-  it('T1.2/T1.3 · the tab list, then one tab panel: Tasks, then the section tabs Chat · 작업 로그 · 에이전트 트리 (SSOT 2026-10-29 T6)', () => {
-    expect(panel).toMatch(/<div class="panel-tabs" id="panel-tabs" role="tablist" aria-label="에이전트"/);
+  it('T1.2/T1.3 · the tab list, then one tab panel: Tasks, then the section tabs Chat · 작업 로그 · 에이전트 트리 (SSOT 2026-10-29 T6; D4 E-19 / E-24: both <ui-tabs>)', () => {
+    // The agent strip: <ui-tabs shared-panel> — one panel every tab controls (the section slotted into it), no
+    // tab stop of its own (panel-focus="none"); the tabs come from the data (panelTabsData).
+    expect(panel).toContain('<ui-tabs class="panel-tabs" id="panel-tabs" shared-panel panel-focus="none">');
     const tabpanel = at('id="panel-tabpanel"');
-    expect(panel).toMatch(/<section class="panel-tabpanel" id="panel-tabpanel" role="tabpanel"/);
+    expect(panel).toContain('<section class="panel-tabpanel" id="panel-tabpanel">');
     expect(tabpanel).toBeGreaterThan(at('id="panel-tabs"'));
     expect(at('id="panel-tasks"')).toBeGreaterThan(tabpanel);
-    expect(panel).toMatch(
-      /<div class="panel-sections" id="panel-sections" role="tablist" aria-label="섹션" aria-orientation="horizontal">/,
-    );
+    // The section strip: <ui-tabs> over the boxes slotted by tab id; the boxes are the tab stops (panel-focus="none").
+    expect(panel).toContain('<ui-tabs class="panel-sections" id="panel-sections" panel-focus="none">');
     expect(at('id="panel-sections"')).toBeGreaterThan(at('id="panel-tasks"'));
-    // The tabs in order, each controlling its own tab panel (its own scroll box). SSOT 2026-10-29 T6:
-    // Chat (지시와 답변) first, then 작업 로그, and 에이전트 트리 at the strip's right end.
-    expect(at('id="psec-tab-conv"')).toBeGreaterThan(at('id="panel-sections"'));
-    expect(at('id="psec-tab-log"')).toBeGreaterThan(at('id="psec-tab-conv"'));
-    expect(at('id="psec-tab-tree"')).toBeGreaterThan(at('id="psec-tab-log"'));
-    expect(panel).toContain('title="지시와 답변">Chat</button>');
-    expect(panel).toContain('class="psec-tab psec-tab-tree" role="tab" id="psec-tab-tree"');
-    for (const sec of ['tree', 'log', 'conv']) {
-      expect(panel).toMatch(
-        new RegExp(`id="psec-tab-${sec}" data-sec="${sec}" aria-selected="(true|false)" aria-controls="psec-${sec}"`),
-      );
-    }
-    expect(panel).toMatch(
-      /<div class="psec" id="psec-tree" role="tabpanel" aria-labelledby="psec-tab-tree" tabindex="0"/,
+    // The tabs in order (the strip's data), each controlling its own tab panel (its own scroll box). SSOT 2026-10-29
+    // T6: Chat (지시와 답변) first, then 작업 로그, and 에이전트 트리 at the strip's far end (TabItem.end, the tree glyph).
+    const tabs = TEMPLATE.slice(
+      TEMPLATE.indexOf('\nvar PSEC_TABS = ['),
+      TEMPLATE.indexOf('\n];', TEMPLATE.indexOf('\nvar PSEC_TABS = [')),
     );
+    expect(tabs).toContain("{ id: 'conv', label: 'Chat', title: '지시와 답변' },");
+    expect(tabs).toContain("{ id: 'log', label: '작업 로그' },");
+    expect(tabs).toContain("{ id: 'tree', label: '에이전트 트리', icon: 'tree', end: true },");
+    expect(tabs.indexOf("id: 'log'")).toBeGreaterThan(tabs.indexOf("id: 'conv'"));
+    expect(tabs.indexOf("id: 'tree'")).toBeGreaterThan(tabs.indexOf("id: 'log'"));
+    expect(clientFn('renderPanelSections')).toContain("el.data = { label: '섹션', value: _psec, tabs: PSEC_TABS };");
+    expect(panel).toMatch(/<div class="psec" id="psec-tree" slot="tree" tabindex="0">/);
     // D3: 작업 로그 is <ui-work-log>'s own scroll box (its viewport is the tab stop).
-    expect(panel).toContain(
-      '<div class="psec psec-el ui-tok" id="psec-log" role="tabpanel" aria-labelledby="psec-tab-log" hidden>',
-    );
+    expect(panel).toContain('<div class="psec psec-el ui-tok" id="psec-log" slot="log">');
     // D3 E-25: 지시와 답변's box is <ui-conversation>'s own scroller (its viewport is the one tab stop).
-    expect(panel).toContain(
-      '<div class="psec psec-el ui-tok" id="psec-conv" role="tabpanel" aria-labelledby="psec-tab-conv">',
-    );
+    expect(panel).toContain('<div class="psec psec-el ui-tok" id="psec-conv" slot="conv">');
     expect(at('id="psec-tree"')).toBeGreaterThan(at('id="panel-sections-body"'));
     expect(at('id="worklog-list"')).toBeGreaterThan(at('id="psec-log"'));
     expect(at('id="panel-conv"')).toBeGreaterThan(at('id="psec-conv"'));
     expect(panel).not.toContain('id="panel-turns"');
-    // Chat (지시와 답변) is the default tab: selected, the one tab stop, its panel the one shown.
-    expect(panel).toContain(
-      'id="psec-tab-conv" data-sec="conv" aria-selected="true" aria-controls="psec-conv" tabindex="0"',
-    );
-    expect(panel).toContain(
-      'id="psec-tab-log" data-sec="log" aria-selected="false" aria-controls="psec-log" tabindex="-1"',
-    );
-    expect(panel).toMatch(/id="psec-log" role="tabpanel"[^>]* hidden>/);
-    expect(panel).toMatch(/id="psec-conv" role="tabpanel"[^>]*>\s*<ui-conversation /);
+    // Chat (지시와 답변) is the default tab (the element selects it, shows its panel and hides the others).
+    expect(TEMPLATE).toMatch(/^var _psec = 'conv';/m);
+    expect(panel).toMatch(/id="psec-conv" slot="conv">\s*<ui-conversation /);
+    // The page draws no tab of its own any more; the strip's choice arrives as ui-change.
+    expect(panel).not.toMatch(/role="tab"|role="tablist"|role="tabpanel"|class="psec-tab/);
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelSections() {'));
+    expect(init.slice(0, init.indexOf('\n})();'))).toContain("strip.addEventListener('ui-change', function(e) {");
+    expect(TEMPLATE).not.toMatch(/function psecKeyTarget\(|function panelTabsKey\(/);
     // No disclosure heads for these sections any more.
     expect(panel).not.toMatch(/id="(conv|worklog)-toggle"/);
   });
 
-  it('T1.2 · the tab list sticks while the conversation scrolls, Main sticks at its left', () => {
-    expect(CSS).toMatch(/\.panel-tabs \{[^}]*position: sticky;[^}]*top: 0;/);
-    expect(CSS).toMatch(/\.panel-tab\.is-main \{[^}]*position: sticky;[^}]*left: 0;/);
+  it('T1.2 · the tab list sticks while the conversation scrolls, Main sticks at its left (the element’s pinned tab)', () => {
+    expect(CSS).toMatch(/\.panel-tabs::part\(list\) \{[^}]*position: sticky;[^}]*top: 0;/);
+    expect(CSS).not.toMatch(/\.panel-tab\.is-main/);
+    expect(clientFn('panelTabsData')).toContain("var tabs = [tab(PT_MAIN, st0, 'Main', model, true)];");
   });
 
   it('T1.6 · minimal by default: the agent path only with 자세히; the subtree is the 에이전트 트리 tab', () => {
@@ -572,10 +567,17 @@ describe('T1 · the panel: a common surface, agent tabs, three sections per tab'
   });
 });
 
+// D4 E-19: the strip is <ui-tabs shared-panel>; the page hands it the tabs as data (TabItem: label, meta, tone,
+// pinned, title) and reads its choice back from ui-change (panelTabAgent).
 describe('T1.2 · the agent tabs', () => {
-  const env = load<{ panelTabsHtml(s: unknown, active: string): string }>(
-    [...BASE_FNS, 'agentStatusOf', 'agentName', 'panelTabsHtml'],
-    BASE_VARS,
+  type Tab = { id: string; label: string; meta?: string; tone: string; pinned?: boolean; title: string };
+  const env = load<{
+    panelTabsData(s: unknown, active: string, mainSt?: string): { label: string; value: string; tabs: Tab[] };
+    panelTabId(agentId: string): string;
+    panelTabAgent(tabId: unknown): string;
+  }>(
+    [...BASE_FNS, 'agentStatusOf', 'agentName', 'panelTabId', 'panelTabAgent', 'panelTabsData'],
+    [...BASE_VARS, 'PT_MAIN', 'AGENT_TAB_TONE'],
   );
   const s = {
     model: 'claude-opus-5-5',
@@ -586,29 +588,52 @@ describe('T1.2 · the agent tabs', () => {
     ],
   };
 
-  it('Main is always the first tab, the subagents follow in spawn order', () => {
-    const html = env.panelTabsHtml(s, '');
-    const ids = [...html.matchAll(/data-agent-tab="([^"]*)"/g)].map((m) => m[1]);
-    expect(ids).toEqual(['', 'toolu_a', 'toolu_b']);
-    expect(html).toMatch(/class="panel-tab is-main[^"]*"[^>]*role="tab"/);
-    expect(html).toContain('Main');
-    expect(html).toContain('A1');
-    expect(html).toContain('Explore');
+  it('Main is always the first tab, pinned; the subagents follow in spawn order with the type as the muted label', () => {
+    const d = env.panelTabsData(s, '');
+    expect(d.label).toBe('에이전트');
+    expect(d.tabs.map((t) => t.id)).toEqual(['main', 'a:toolu_a', 'a:toolu_b']);
+    expect(d.tabs.map((t) => t.label)).toEqual(['Main', 'A1', 'A2']);
+    expect(d.tabs.map((t) => t.meta)).toEqual(['opus-5-5', 'Explore', 'Plan']);
+    expect(d.tabs.map((t) => !!t.pinned)).toEqual([true, false, false]);
+    // The status is the tone dot; its word stays in the title.
+    expect(d.tabs.map((t) => t.tone)).toEqual(['run', 'run', 'done']);
+    expect(d.tabs[1].title).toBe('A1 Explore — 실행 중');
+    expect(d.tabs[2].title).toBe('A2 Plan — 완료');
   });
 
-  it('one tab is selected and holds the tab stop', () => {
-    const html = env.panelTabsHtml(s, 'toolu_b');
-    expect(html.match(/aria-selected="true"/g)?.length).toBe(1);
-    expect(html.match(/tabindex="0"/g)?.length).toBe(1);
-    expect(html).toMatch(
-      /data-agent-tab="toolu_b"[^>]*aria-selected="true"|aria-selected="true"[^>]*data-agent-tab="toolu_b"/,
-    );
+  it('one tab is selected: the value names it; the choice comes back as the agent id', () => {
+    expect(env.panelTabsData(s, 'toolu_b').value).toBe('a:toolu_b');
+    expect(env.panelTabsData(s, '').value).toBe('main');
+    expect(env.panelTabAgent('a:toolu_b')).toBe('toolu_b');
+    expect(env.panelTabAgent('main')).toBe('');
+    expect(env.panelTabAgent(undefined)).toBe('');
+    expect(env.panelTabId('')).toBe('main');
   });
 
-  it('a session with no subagent still shows Main', () => {
-    const html = env.panelTabsHtml({ model: 'x' }, '');
-    expect(html).toContain('data-agent-tab=""');
-    expect(html).toContain('aria-selected="true"');
+  it('a session with no subagent still shows Main — and so does no session at all (the panel stays slotted)', () => {
+    const d = env.panelTabsData({ model: 'x' }, '');
+    expect(d.tabs.map((t) => t.id)).toEqual(['main']);
+    expect(d.value).toBe('main');
+    expect(d.tabs[0]).toMatchObject({ meta: 'x', tone: 'rest', pinned: true, title: 'Main x — 대기' });
+    const none = env.panelTabsData(null, '');
+    expect(none.tabs.map((t) => t.id)).toEqual(['main']);
+    expect(none.tabs[0].meta).toBeUndefined();
+    // A stopped or failed agent reads as fail; a waiting one as wait; the rest as rest.
+    const states = {
+      agents: [
+        { id: 'x', n: 1, status: 'stopped' },
+        { id: 'y', n: 2, status: 'waiting' },
+        { id: 'z', n: 3, status: 'unknown' },
+      ],
+    };
+    expect(env.panelTabsData(states, '', 'idle').tabs.map((t) => t.tone)).toEqual(['rest', 'fail', 'wait', 'rest']);
+  });
+
+  it('the strip is handed its data once per change, and its choice is selectPanelAgent', () => {
+    expect(clientFn('renderPanelTabs')).toContain('if (el._sig === sig) return;');
+    expect(clientFn('renderPanelTabs')).toContain('el.data = d;');
+    expect(clientFn('bindPanelTabs')).toContain("el.addEventListener('ui-change', function(e) {");
+    expect(clientFn('bindPanelTabs')).toContain('selectPanelAgent(panelTabAgent(e.detail && e.detail.value));');
   });
 });
 
@@ -916,13 +941,18 @@ describe('T1.1 / T1.6 · an opening lands with the section tabs in view: the top
       'panel-permission': hidden,
       'panel-question': hidden,
       'panel-needs-head': { hidden: true, offsetHeight: 0 },
-      'panel-sections': at(boxBottom - 300, 40),
-      'panel-sections-body': at(boxBottom - 260, 260),
-      'panel-tabs': { offsetHeight: 44 },
+      // D4 E-24: the strip is <ui-tabs> (its host's top is the strip's); the wrapper ends where the box ends.
+      'panel-sections': at(boxBottom - 300, 300),
+      'panel-sections-body': at(boxBottom - 300, 300),
+      // D4 E-19: the agent strip is <ui-tabs>' sticky list — 44px between its host's top and its shared panel's.
+      'panel-tabs': at(boxBottom - 400, 400),
+      'panel-tabpanel': at(boxBottom - 356, 356),
     };
-    const m = load<{ landPanel(): void; __set(n: string, v: unknown): void }>(['psecLandingTop', 'landPanel'], [], {
-      document: { getElementById: (id: string) => els[id] ?? null },
-    });
+    const m = load<{ landPanel(): void; __set(n: string, v: unknown): void }>(
+      ['psecLandingTop', 'panelTabsHeight', 'landPanel'],
+      [],
+      { document: { getElementById: (id: string) => els[id] ?? null } },
+    );
     m.__set('_panelLand', intent);
     m.__set('_panelLanded', false);
     m.__set('_panelLandAt', null);

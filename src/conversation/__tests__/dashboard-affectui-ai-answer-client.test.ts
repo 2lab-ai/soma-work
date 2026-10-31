@@ -807,9 +807,8 @@ describe('the page loads the element; the inline renderer is gone', () => {
   it('D3 — 지시와 답변 is <ui-conversation> (conversation.js, served; it nests ui-ai-answer) in the token wrapper', () => {
     expect(HEAD).toContain(`<script type="module" src="/dashboard/ui/conversation.js?v=\${UI_LIB_VERSION}"></script>`);
     expect(existsSync(join(uiLibDistDir() as string, 'conversation.js'))).toBe(true);
-    expect(TEMPLATE).toContain(
-      '<div class="psec psec-el ui-tok" id="psec-conv" role="tabpanel" aria-labelledby="psec-tab-conv">',
-    );
+    // D4 E-24: the box is the Chat tab's panel of <ui-tabs> (slotted by the tab's id).
+    expect(TEMPLATE).toContain('<div class="psec psec-el ui-tok" id="psec-conv" slot="conv">');
     expect(TEMPLATE).toContain('<ui-conversation class="panel-conv" id="panel-conv" lang="ko"></ui-conversation>');
     expect(CSS).toMatch(/\.ui-tok \{[^}]*--ui-surface-raised: var\(--surface-raised\)/);
   });
