@@ -284,6 +284,21 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
     await r.done;
   });
 
+  it('a start that is not saved leaves the open question where it was (the 500 means nothing happened)', async () => {
+    const h = harness({}, [
+      async () => {
+        throw new Error('ENOSPC');
+      },
+    ]);
+    const question = { question: 'Q?', askId: 'ask-1' };
+    h.sessions.get(KEY).actionPanel = { waitingForChoice: true, pendingQuestion: question };
+    const r = await h.controller.start({ sessionKey: KEY, text: 'do X' });
+    expect(r.status).toBe(500);
+    const panel = h.sessions.get(KEY).actionPanel;
+    expect(panel.waitingForChoice).toBe(true);
+    expect(panel.pendingQuestion).toBe(question);
+  });
+
   it('a new instruction supersedes an open question (as a new Slack message does)', async () => {
     const h = harness();
     h.sessions.get(KEY).actionPanel = { waitingForChoice: true, pendingQuestion: { question: 'Q?' } };

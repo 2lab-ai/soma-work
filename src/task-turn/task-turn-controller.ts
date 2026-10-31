@@ -144,11 +144,16 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     const { sessionKey } = request;
 
     // A new instruction supersedes an open question, as a new Slack message
-    // does; the turn's saved start persists the cleared panel.
-    if (session.actionPanel) {
-      session.actionPanel.pendingQuestion = undefined;
-      session.actionPanel.pendingChoice = undefined;
-      session.actionPanel.waitingForChoice = false;
+    // does; the turn's saved start persists the cleared panel. A start that is
+    // not saved puts it back — the 500 means nothing happened (grok #634 R1).
+    const panel = session.actionPanel;
+    const openQuestion = panel
+      ? { pendingQuestion: panel.pendingQuestion, pendingChoice: panel.pendingChoice, waiting: panel.waitingForChoice }
+      : undefined;
+    if (panel) {
+      panel.pendingQuestion = undefined;
+      panel.pendingChoice = undefined;
+      panel.waitingForChoice = false;
     }
 
     const abort = new AbortController();
@@ -169,6 +174,11 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
 
     const first = await Promise.race([started, finished.then(() => 'ended' as const)]);
     if (first === 'started') return { status: 202, body: { ok: true }, done: finished };
+    if (panel && openQuestion) {
+      panel.pendingQuestion = openQuestion.pendingQuestion;
+      panel.pendingChoice = openQuestion.pendingChoice;
+      panel.waitingForChoice = openQuestion.waiting;
+    }
     return refuse(500, 'the task turn could not start');
   }
 
