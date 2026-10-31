@@ -89,13 +89,13 @@ import {
   startWebServer,
   stopWebServer,
 } from './conversation';
-import { captureArtifactFromWorkLog } from './conversation/artifact-capture';
 import { getArtifactStore } from './conversation/artifacts';
 import type { NewTaskAttachment } from './conversation/new-task';
 import { createNewTaskProvider, createSlackSteerUploader } from './conversation/new-task-provider';
 import { setSettingsRegistry } from './conversation/settings-routes';
 import { createSlackDirectoryLookup } from './conversation/slack-directory-lookup';
-import { appendWorkLog, flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
+import { createSessionWorkLogAppender } from './conversation/session-work-log';
+import { flushWorkLog, setOnWorkLogAppendedCallback, type WorkLogInput } from './conversation/work-log';
 import { CronScheduler, type SyntheticMessageEvent, setActiveCronScheduler } from './cron-scheduler';
 import { forceMigrateOpus1m } from './deploy/force-migrate-opus-1m';
 import { GPT_5_6_UPSTREAM_SLUG, syncLlmuxCodexModel } from './deploy/llmux-codex-model-sync';
@@ -126,7 +126,7 @@ import { BUNDLED_PLUGINS } from './plugin/bundled';
 import { PluginManager } from './plugin/plugin-manager';
 import { getVersionInfo, notifyRelease } from './release-notifier';
 import { clearDaemonReady, clearStaleDaemonReady, publishDaemonReadiness } from './service-readiness';
-import { applyAgentEvent, stampWorkLogAgent } from './session/agent-registry';
+import { applyAgentEvent } from './session/agent-registry';
 import { backfillAgentSpend, createAgentSpendReader } from './session/agent-spend';
 import { resolveEffectiveAutoCompact } from './session/autocompact-policy';
 import { switchSessionEffort } from './session/effort-switch';
@@ -1119,6 +1119,11 @@ async function start() {
         if (changed) scheduleLiveSessionUpdate(sessionKey);
       });
     };
+    const appendSessionWorkLog = createSessionWorkLogAppender({
+      getAllSessions: () => claudeHandler.getAllSessions(),
+      scheduleLiveSessionUpdate,
+      refreshAgentSpend,
+    });
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
       recordAgentEvent: (sessionKey: string, event: AgentTreeEvent) => void;
@@ -1156,31 +1161,11 @@ async function start() {
       },
       priceLiveUsage: (model, t) =>
         calculateTokenCost(model, t.inputTokens, t.outputTokens, t.cacheReadTokens, t.cacheCreateTokens),
+      // The pipeline (agent stamp, card push, artifact capture, append) is shared
+      // with a Slack-less task's writer, which keeps the promise (#598 ④b).
+      // Slack turns' recording stays best-effort: the promise is swallowed.
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => {
-        // SSOT 2026-10-22 T7/T10: the entry carries the task in progress (the
-        // dashboard folds the log under it) and a tool call counts on that task.
-        // Spec 12: the task — and the tool count — of the agent that made the
-        // entry: a subagent's own ledger, the session's for the main agent.
-        let owner: ConversationSession | undefined;
-        let ownerKey: string | undefined;
-        for (const [key, session] of claudeHandler.getAllSessions()) {
-          if (session.conversationId === conversationId) {
-            owner = session;
-            ownerKey = key;
-            break;
-          }
-        }
-        const stamped = stampWorkLogAgent(owner ?? {}, entry, Date.now());
-        // A node's tool count grew — a subagent's, or the main agent's (the
-        // registry root): push the card (throttled, ≤ 1/s per session).
-        if (entry.kind === 'tool' && ownerKey) scheduleLiveSessionUpdate(ownerKey);
-        // A subagent is working: its spend may have grown (throttled read).
-        if (entry.agentId && owner && ownerKey) refreshAgentSpend(ownerKey, owner, false);
-        // SSOT 2026-10-23 T1/T7: files the model sends to Slack and its markdown
-        // answers become dashboard artifacts. Before the store sees it, while
-        // `entry` still has the whole final text (the work log caps it).
-        void captureArtifactFromWorkLog(conversationId, entry);
-        appendWorkLog(conversationId, stamped).catch(() => {});
+        appendSessionWorkLog(conversationId, entry).catch(() => {});
       },
       // Spec 12 — the session's agent tree: fold the event into its registry
       // and push the card when something changed (throttled, ≤ 1/s per session).
