@@ -603,4 +603,27 @@ describe('createTaskTurnRunner (#598 ④b1)', () => {
       });
     });
   });
+
+  it('a compact hop that throws disarms the fallback before committing failed (astra #634)', async () => {
+    const h = harness({
+      execute: vi.fn(async () => {
+        throw new Error('compact crashed');
+      }),
+    });
+    Object.assign(h.session, {
+      model: 'opus[1m]',
+      fallbackCompactActive: true,
+      fallbackCompactOriginalModel: 'sonnet',
+      fallbackCompactPendingUserText: 'original instruction',
+    });
+    await expect(h.runner.runTaskTurn({ ...h.input, text: '/compact', compactHop: true })).rejects.toThrow(
+      'compact crashed',
+    );
+    expect(h.session).toMatchObject({
+      model: 'sonnet',
+      fallbackCompactActive: false,
+      fallbackCompactPendingUserText: null,
+    });
+    expect(h.session.lastTurnOutcome?.outcome).toBe('failed');
+  });
 });

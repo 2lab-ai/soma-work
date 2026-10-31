@@ -248,6 +248,9 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
         // A newer turn owns the task: this one records nothing (#626 R2).
         throw error;
       }
+      // A thrown turn ends the chain: an armed fallback (a compact hop that
+      // threw before its boundary) is disarmed, not left for the next turn (astra #634).
+      disarmFallbackCompact(session);
       // The first recording failure wins — an earlier hop's carried one included.
       const recordFailure = pendingRecordFailures.get(sessionKey) ?? drained;
       pendingRecordFailures.delete(sessionKey);

@@ -292,6 +292,8 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
     const h = harness({}, [
       async (input) => {
         input.onStarted?.();
+        // Production order: admission closes before clearAll's shutdown abort.
+        h.controller.stopAccepting();
         h.coordinator.abortSession(KEY, 'shutdown');
         return { turnId: 'a', outcome: null, nonTerminal: 'fallbackCompact' };
       },
@@ -501,11 +503,16 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
   });
 
   it('a refused shutdown (resumeAccepting) ends the turns a shutdown abort left working (#634 R1)', async () => {
-    const h = harness({}, [{ turnId: 'a', outcome: null, nonTerminal: 'shutdown' }]);
+    const h = harness({}, [
+      async (input) => {
+        input.onStarted?.();
+        h.controller.stopAccepting(); // shutdown began; clearAll aborted this turn
+        return { turnId: 'a', outcome: null, nonTerminal: 'shutdown' };
+      },
+    ]);
     const r = await h.controller.start({ sessionKey: KEY, text: 'go' });
     await r.done;
     expect(h.abandonTurn).not.toHaveBeenCalled();
-    h.controller.stopAccepting();
     h.controller.resumeAccepting();
     await Promise.resolve();
     expect(h.abandonTurn).toHaveBeenCalledWith(
@@ -513,5 +520,46 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
       'a',
       expect.objectContaining({ outcome: 'interrupted', reason: 'service shutdown was cancelled' }),
     );
+  });
+
+  it('a shutdown refused before the aborted turn finishes unwinding still ends that turn (production order, astra #634)', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const h = harness({}, [
+      async (input) => {
+        input.onStarted?.();
+        await gate;
+        return { turnId: 'a', outcome: null, nonTerminal: 'shutdown' };
+      },
+    ]);
+    const r = await h.controller.start({ sessionKey: KEY, text: 'go' });
+    // index.ts order: stopAccepting → clearAll (aborts) → refused → resumeAccepting, all before the turn unwinds.
+    h.controller.stopAccepting();
+    h.coordinator.abortSession(KEY, 'shutdown');
+    h.controller.resumeAccepting();
+    release();
+    await r.done;
+    expect(h.abandonTurn).toHaveBeenCalledWith(
+      KEY,
+      'a',
+      expect.objectContaining({ outcome: 'interrupted', reason: 'service shutdown was cancelled' }),
+    );
+  });
+
+  it('a Close that times out releases the owner’s slot — the closed task’s hung chain does not lock the owner out (astra #634)', async () => {
+    const h = harness({ closeWaitMs: 5 }, [
+      async (input) => {
+        input.onStarted?.();
+        return new Promise<RunTaskTurnResult>(() => {}); // never settles
+      },
+    ]);
+    const r = await h.controller.start({ sessionKey: KEY, text: 'hang' });
+    expect(r.status).toBe(202);
+    await h.controller.close(KEY);
+    expect(h.controller.isRunning(KEY)).toBe(false);
+    const next = await h.controller.start({ sessionKey: KEY2, text: 'other task' });
+    expect(next.status).toBe(202);
   });
 });
