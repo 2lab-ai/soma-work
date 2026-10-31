@@ -27,6 +27,7 @@
  *                                              incl. `work_log` entries (owner/admin scoped)
  */
 
+import { statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { constants as zlibConstants } from 'node:zlib';
@@ -906,10 +907,23 @@ export function resolveDashboardBuildId(
   return built ? `${commit}@${built}` : commit;
 }
 
+/**
+ * Without dist/version.json (the release track, a local run) the build is this module's file as built — its
+ * mtime — so a restart of the same code (a crash loop under launchd) never reloads every open tab; only when
+ * that cannot be read is it the process.
+ */
+function codeBuildFallback(): string {
+  try {
+    return `file-${Math.trunc(statSync(__filename).mtimeMs).toString(36)}`;
+  } catch {
+    return `proc-${process.pid}-${Date.now().toString(36)}`;
+  }
+}
+
 let _dashboardBuildId: string | undefined;
 /** This server's build — read once: the code a running process serves never changes under it. */
 export function dashboardBuildId(): string {
-  _dashboardBuildId ??= resolveDashboardBuildId(getVersionInfo(), `proc-${process.pid}-${Date.now().toString(36)}`);
+  _dashboardBuildId ??= resolveDashboardBuildId(getVersionInfo(), codeBuildFallback());
   return _dashboardBuildId;
 }
 
@@ -12267,7 +12281,7 @@ async function loadSessions() {
     if (entry && _sessionsInflight === entry) _sessionsInflight = null; // answered: the next ask is a new request
     if (!res.ok) throw new Error('HTTP ' + res.status);
     // The board's build (build skew): the poll is the only word from a server whose socket never connects.
-    onServerBuild(res.headers && res.headers.get ? res.headers.get('x-dashboard-build') : '');
+    if (onServerBuild(res.headers && res.headers.get ? res.headers.get('x-dashboard-build') : '')) return;
     const data = await res.json();
     if (forUser !== currentUserId) return;
     _heldWsBoard = null;
@@ -12837,8 +12851,9 @@ var _buildSkewToast = ''; // the server build the 새 버전 toast was shown for
 function buildSkewed(serverBuild) {
   return !!PAGE_BUILD && !!serverBuild && String(serverBuild) !== PAGE_BUILD;
 }
-// What a reload would throw away: the panel's and the new task's composers (text or files), the open new-task
-// dialog, any filled text field (a goal being written or edited, a typed answer).
+// What a reload would throw away: the panel's and the new task's composers (text or files), an open dialog (new
+// task, lifecycle …), any filled field — in the page or in an element's open shadow root (a typed choice-form
+// answer before Enter, a queued note being edited in the steering).
 function hasUnsentInput() {
   var ids = ['pc-composer', 'nt-composer'];
   for (var i = 0; i < ids.length; i++) {
@@ -12847,27 +12862,40 @@ function hasUnsentInput() {
   }
   var dlg = document.getElementById('nt-dialog');
   if (dlg && dlg.open) return true;
-  var fields = document.querySelectorAll('input[type="text"], input:not([type]), textarea');
+  var dialogs = document.querySelectorAll('ui-dialog, dialog');
+  for (var d = 0; d < dialogs.length; d++) if (dialogs[d].open) return true;
+  return filledField(document, 0);
+}
+function filledField(root, depth) {
+  var fields = root.querySelectorAll('input[type="text"], input[type="number"], input:not([type]), textarea');
   for (var j = 0; j < fields.length; j++) if (String(fields[j].value || '').trim()) return true;
+  if (depth > 4) return false;
+  var all = root.querySelectorAll('*');
+  for (var k = 0; k < all.length; k++) if (all[k].shadowRoot && filledField(all[k].shadowRoot, depth + 1)) return true;
   return false;
 }
-// Reload for this server build unless this tab already did; false when it did, or cannot remember that it did.
+// Reload for this server build unless this tab already reloaded for it lately (the last 3 builds — two builds
+// answering in turn behind one origin stop after two reloads); false when it did, or cannot remember.
 function buildReload(serverBuild) {
   var b = String(serverBuild);
   try {
-    if (sessionStorage.getItem('soma-dash-build-reload') === b) return false;
-    sessionStorage.setItem('soma-dash-build-reload', b);
+    var seen = JSON.parse(sessionStorage.getItem('soma-dash-build-reload') || '[]');
+    if (!Array.isArray(seen)) seen = [];
+    if (seen.indexOf(b) >= 0) return false;
+    seen.push(b);
+    sessionStorage.setItem('soma-dash-build-reload', JSON.stringify(seen.slice(-3)));
   } catch (e) {
     return false;
   }
   location.reload();
   return true;
 }
+// true when the tab is reloading (the caller stops: this script must not draw the new build's data).
 function onServerBuild(serverBuild) {
-  if (!buildSkewed(serverBuild)) return;
+  if (!buildSkewed(serverBuild)) return false;
   var b = String(serverBuild);
-  if (!hasUnsentInput() && buildReload(b)) return;
-  if (_buildSkewToast === b) return;
+  if (!hasUnsentInput() && buildReload(b)) return true;
+  if (_buildSkewToast === b) return false;
   _buildSkewToast = b;
   dashToast(
     {
@@ -12880,6 +12908,7 @@ function onServerBuild(serverBuild) {
     },
     function() { location.reload(); },
   );
+  return false;
 }
 
 // ── WebSocket ──
