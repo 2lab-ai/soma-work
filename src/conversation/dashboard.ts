@@ -27,6 +27,7 @@
  *                                              incl. `work_log` entries (owner/admin scoped)
  */
 
+import { statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { constants as zlibConstants } from 'node:zlib';
@@ -63,6 +64,7 @@ import {
   type PermissionPromptTarget,
   promptBelongsToThread,
 } from '../permission-prompt-response';
+import { getVersionInfo } from '../release-notifier';
 import {
   type AgentRegistry,
   type AgentSpend,
@@ -927,6 +929,45 @@ export function setDashboardSessionAccessor(fn: SessionAccessor): void {
 function getAllSessions(): Map<string, any> {
   if (!_getSessionsFn) return new Map();
   return _getSessionsFn();
+}
+
+// ── Build identity (build skew, 2026-10-31) ────────────────────────
+// A dashboard tab outlives the server that served it: after a deploy its
+// socket reconnects and its poll goes on, so the new server's data meets the
+// old page script. On a dev deployment a goal's 10/10 decision arrived as a waiting card
+// (#624) on a tab opened before that build — "Waiting for you", no choices.
+// The page, the socket's hello and every board poll name this build; a tab on
+// another build reloads (client onServerBuild).
+
+/** A deployed build is its commit and build time (dist/version.json); without one, the caller's per-process id. */
+export function resolveDashboardBuildId(
+  info: { commitHash?: string; buildTime?: string } | null | undefined,
+  fallback: string,
+): string {
+  const commit = typeof info?.commitHash === 'string' ? info.commitHash.trim() : '';
+  if (!commit) return fallback;
+  const built = typeof info?.buildTime === 'string' ? info.buildTime.trim() : '';
+  return built ? `${commit}@${built}` : commit;
+}
+
+/**
+ * Without dist/version.json (the release track, a local run) the build is this module's file as built — its
+ * mtime — so a restart of the same code (a crash loop under launchd) never reloads every open tab; only when
+ * that cannot be read is it the process.
+ */
+function codeBuildFallback(): string {
+  try {
+    return `file-${Math.trunc(statSync(__filename).mtimeMs).toString(36)}`;
+  } catch {
+    return `proc-${process.pid}-${Date.now().toString(36)}`;
+  }
+}
+
+let _dashboardBuildId: string | undefined;
+/** This server's build — read once: the code a running process serves never changes under it. */
+export function dashboardBuildId(): string {
+  _dashboardBuildId ??= resolveDashboardBuildId(getVersionInfo(), codeBuildFallback());
+  return _dashboardBuildId;
 }
 
 // ── CRON lane + capacity sources (SSOT 2026-10-23) ─────────────────
@@ -2862,6 +2903,8 @@ export async function registerDashboardRoutes(
     '/api/dashboard/sessions',
     { preHandler: [authMiddleware], compress: FIRST_LOAD_COMPRESSION },
     async (request, reply) => {
+      // The build this board comes from: a tab on another build reloads (build skew).
+      reply.header('x-dashboard-build', dashboardBuildId());
       const userId = request.query.userId || undefined;
       const selfOnly = request.query.selfOnly === 'true';
       const board = buildKanbanBoard(userId);
@@ -4322,8 +4365,9 @@ export async function registerDashboardRoutes(
       }
       logger.debug('WebSocket client connected', { total: wsClients.size });
 
-      // Send initial state
+      // Send initial state — the build first (hello): a tab on another build reloads before it reads the board.
       try {
+        socket.send(JSON.stringify({ type: 'hello', build: dashboardBuildId() }));
         const board = buildKanbanBoard();
         socket.send(JSON.stringify({ type: 'session_update', board }));
       } catch {
@@ -4352,11 +4396,14 @@ function withPickerPrice<T extends { model: string }>(m: T): T | (T & { price: {
 }
 
 function renderDashboardPage(userId?: string): string {
-  const initUser = userId ? JSON.stringify(userId) : 'null';
+  // `<` escaped like every other injected constant: the userId is the URL's, a `</script>` in it must stay data.
+  const initUser = userId ? JSON.stringify(userId).replace(/</g, '\\u003c') : 'null';
   // #814 — inject the local instance's name so the frontend can identify
   // sibling cards (`environment.instanceName !== SELF_INSTANCE_NAME`) and
   // hide actions that would silently 4xx if dispatched to the wrong port.
   const initSelfInstance = _selfInstanceEnv ? JSON.stringify(_selfInstanceEnv.instanceName) : 'null';
+  // Build skew — the build this page's script comes from (onServerBuild compares every hello and poll with it).
+  const initBuild = JSON.stringify(dashboardBuildId()).replace(/</g, '\\u003c');
   // ui.dashboardheader — normalized card-header composition (config.json#ui
   // via @soma/slack/surface-config; docs/ui-surfaces.md). `<` is escaped so
   // an operator-supplied label cannot break out of the <script> block.
@@ -6009,6 +6056,9 @@ ${pageTokenAliases()}
 
 <script>
 const INIT_USER = ${initUser};
+// The build this script came from (dashboardBuildId): a socket hello or a board poll naming another build means
+// the server was redeployed under this tab — onServerBuild reloads it (build skew).
+const PAGE_BUILD = ${initBuild};
 // The page chrome's words, in one place and one language (the library's STRINGS pattern, lang="ko"):
 // sentence case, "…" not "...", the library's short status vocabulary.
 var STRINGS = {
@@ -12167,6 +12217,8 @@ async function loadSessions() {
     clearTimeout(timer);
     if (entry && _sessionsInflight === entry) _sessionsInflight = null; // answered: the next ask is a new request
     if (!res.ok) throw new Error('HTTP ' + res.status);
+    // The board's build (build skew): the poll is the only word from a server whose socket never connects.
+    if (onServerBuild(res.headers && res.headers.get ? res.headers.get('x-dashboard-build') : '')) return;
     const data = await res.json();
     if (forUser !== currentUserId) return;
     _heldWsBoard = null;
@@ -12761,6 +12813,121 @@ function paintCharts(days, loading) {
   });
 }
 
+// ── Build skew (2026-10-31) ──
+// A tab outlives the server that served it: after a deploy its socket reconnects and its poll goes on, so the new
+// server's data meets this page's old script — on a dev deployment a goal's 10/10 decision arrived as a waiting card this
+// script's predecessor could not draw ("Waiting for you", no choices). The socket's hello and every board poll name
+// the server's build (dashboardBuildId); on another build the tab reloads, or — holding something unsent — says a
+// new version is out and reloads when asked. Once per server build: a page still skewed after its reload (a proxy
+// that served the old page again) asks instead of looping.
+var _buildSkewToast = ''; // the server build the 새 버전 toast was shown for
+var _recording = []; // composers recording a voice note now (ui-record start … stop / cancel / error)
+document.addEventListener('ui-record', function(e) {
+  var i = _recording.indexOf(e.target);
+  if (e.detail && e.detail.state === 'start') {
+    if (i < 0) _recording.push(e.target);
+  } else if (i >= 0) {
+    _recording.splice(i, 1);
+  }
+});
+function buildSkewed(serverBuild) {
+  return !!PAGE_BUILD && !!serverBuild && String(serverBuild) !== PAGE_BUILD;
+}
+// What a reload would throw away: the panel composer (text or files), an open dialog (new task, lifecycle …), a
+// filled field — in the page or in an element's open shadow root (a choice form's typed answer before Enter, a
+// queued note being edited). A closed dialog's fields are not unsent: the lifecycle form keeps the saved policy
+// there, the new task keeps its draft in localStorage (review round 2, fable P2/P3).
+function hasUnsentInput() {
+  // A note on its way out — its files being read (_pcSending), its POST not answered yet (_pcInFlight) …
+  if (_pcSending || _pcInFlight > 0) return true;
+  // … a voice note being recorded, a note whose send failed (its row offers Retry; the text is only there) …
+  // (a composer swapped out mid-recording is cancelled after it left the page — its event never reaches us)
+  _recording = _recording.filter(function(el) { return el && el.isConnected !== false; });
+  if (_recording.length) return true;
+  for (var fr in _pcFailed) return true;
+  // … a new task being launched (its dialog may already be closed), an answer on its way (an approval card sending) …
+  if (_ntBusy) return true;
+  for (var ak in _acState) {
+    for (var aid in _acState[ak]) if (_acState[ak][aid] && _acState[ak][aid].status === 'sending') return true;
+  }
+  // … a multi-question form with answers picked but not yet submitted (kept per session, across panel switches) …
+  for (var mk in _mcState) {
+    var mst = _mcState[mk];
+    if (mst && mst.answers && Object.keys(mst.answers).length && !mst.sent) return true;
+  }
+  var c = document.getElementById('pc-composer');
+  if (c && (String(c.value || '').trim() || (c.files && c.files.length))) return true;
+  // The new task's draft keeps its text (when localStorage took it), not its files: with the dialog closed, its
+  // files count, and so does text the saved draft does not hold.
+  var nt = document.getElementById('nt-composer');
+  if (nt && nt.files && nt.files.length) return true;
+  var ntText = nt ? String(nt.value || '').trim() : '';
+  if (ntText && ntText !== ntSavedPrompt()) return true;
+  var dialogs = document.querySelectorAll('ui-dialog, dialog');
+  for (var d = 0; d < dialogs.length; d++) if (dialogs[d].open) return true;
+  return filledField(document, 0);
+}
+function ntSavedPrompt() {
+  try {
+    var d = JSON.parse(localStorage.getItem(NT_DRAFT_KEY) || 'null');
+    return d && typeof d.prompt === 'string' ? d.prompt.trim() : '';
+  } catch (e) {
+    return '';
+  }
+}
+function inClosedDialog(el) {
+  var d = el && el.closest ? el.closest('ui-dialog, dialog') : null;
+  return !!(d && !d.open);
+}
+function filledField(root, depth) {
+  var fields = root.querySelectorAll('input[type="text"], input[type="number"], input:not([type]), textarea');
+  for (var j = 0; j < fields.length; j++) {
+    if (!inClosedDialog(fields[j]) && String(fields[j].value || '').trim()) return true;
+  }
+  if (depth > 4) return false;
+  var all = root.querySelectorAll('*');
+  for (var k = 0; k < all.length; k++) {
+    if (all[k].shadowRoot && !inClosedDialog(all[k]) && filledField(all[k].shadowRoot, depth + 1)) return true;
+  }
+  return false;
+}
+// Reload for this server build unless this tab already reloaded for it lately (the last 3 builds — two builds
+// answering in turn behind one origin stop after two reloads); false when it did, or cannot remember.
+function buildReload(serverBuild) {
+  var b = String(serverBuild);
+  try {
+    var seen = JSON.parse(sessionStorage.getItem('soma-dash-build-reload') || '[]');
+    if (!Array.isArray(seen)) seen = [];
+    if (seen.indexOf(b) >= 0) return false;
+    seen.push(b);
+    sessionStorage.setItem('soma-dash-build-reload', JSON.stringify(seen.slice(-3)));
+  } catch (e) {
+    return false;
+  }
+  location.reload();
+  return true;
+}
+// true when the tab is reloading (the caller stops: this script must not draw the new build's data).
+function onServerBuild(serverBuild) {
+  if (!buildSkewed(serverBuild)) return false;
+  var b = String(serverBuild);
+  if (!hasUnsentInput() && buildReload(b)) return true;
+  if (_buildSkewToast === b) return false;
+  _buildSkewToast = b;
+  dashToast(
+    {
+      id: 'build-skew',
+      title: '대시보드 새 버전이 나왔어요',
+      description: '새로고침해야 최신 화면과 응답 선택지가 보여요. 쓰던 내용을 보낸 뒤 새로고침하세요.',
+      tone: 'warning',
+      duration: 0,
+      action: { id: 'reload', label: '새로고침' },
+    },
+    function() { location.reload(); },
+  );
+  return false;
+}
+
 // ── WebSocket ──
 function connectWs() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -12785,6 +12952,11 @@ function connectWs() {
   ws.onmessage = function(ev) {
     try {
       const msg = JSON.parse(ev.data);
+      // The server's build, first on every connection (build skew).
+      if (msg.type === 'hello') {
+        onServerBuild(msg.build);
+        return;
+      }
       if (msg.type === 'admin_approvals') {
         _adminPushSeq++;
         applyAdminApprovals(msg.snapshot);
@@ -15510,6 +15682,7 @@ async function sendCommand(text, ref, files) {
   }
 
   var why = '';
+  _pcInFlight++; // until the server answered: a reload now would drop a note the composer no longer holds
   try {
     const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(sendingSessionKey) + '/command';
     const res = await acPost(cmdUrl, JSON.stringify(pcCommandBody(msg, attachments)));
@@ -15520,9 +15693,14 @@ async function sendCommand(text, ref, files) {
     }
   } catch (e) {
     why = (e && e.message) || '네트워크 오류';
+  } finally {
+    _pcInFlight--;
   }
   // Sent: its files went with it. Failed: they stay kept by ref for the Retry.
-  if (!why && ref) delete _pcNoteFiles[ref];
+  if (!why && ref) {
+    delete _pcNoteFiles[ref];
+    delete _pcFailed[ref];
+  }
   // Only the card that sent it changes: a late answer never touches the card opened meanwhile.
   if (panelSessionKey !== sendingSessionKey) return;
   // The session left the board meanwhile (archived, a folded day): fail closed. The next live
@@ -15541,7 +15719,10 @@ async function sendCommand(text, ref, files) {
   // optimistic turn leaves the transcript — found by its own id, not by being the
   // list's last child (the 응답 작성 중 row may follow it, re-ai-answer D12).
   if (optimisticId) dropTurnFromPanel(optimisticId);
-  if (ref) el.setItemState(ref, 'failed', why.trim());
+  if (ref) {
+    el.setItemState(ref, 'failed', why.trim());
+    _pcFailed[ref] = true;
+  }
   dashToast({ title: '메시지를 보내지 못했어요', description: why.trim(), tone: 'error' });
 }
 // A note that did not go out at all (a file that could not be read): its row goes
@@ -15549,7 +15730,7 @@ async function sendCommand(text, ref, files) {
 // attached something new there, or moved to another card.
 function pcGiveBack(el, ref, msg, key) {
   var files = (ref && _pcNoteFiles[ref]) || [];
-  if (ref) { delete _pcNoteFiles[ref]; el.setItemState(ref, 'cancelled'); }
+  if (ref) { delete _pcNoteFiles[ref]; delete _pcFailed[ref]; el.setItemState(ref, 'cancelled'); }
   if (panelSessionKey !== key) return;
   if (msg && !el.value) el.value = msg;
   var c = document.getElementById('pc-composer');
@@ -17698,6 +17879,8 @@ connectWs();
 // files the user attached there.
 var PC_LIMITS = { maxFiles: 10, maxFileBytes: 20971520, maxTotalBytes: 31457280 };
 var _pcSending = false; // one send at a time, while its files are read
+var _pcInFlight = 0; // notes whose POST has not been answered yet (build skew: they hold a reload)
+var _pcFailed = Object.create(null); // refs of notes whose send failed — their row (Retry) holds the only copy
 function pcCanSend(message, files) {
   return String(message || '').trim().length > 0 || (files || []).length > 0;
 }
@@ -17752,6 +17935,7 @@ function pcFreshSteer() {
   pcComposerSetup(c);
   el.appendChild(c);
   old.replaceWith(el);
+  _pcFailed = Object.create(null);
   _pcNoteFiles = Object.create(null);
 }
 // The panel closed, or its session is no longer open to this viewer: no recording
@@ -17776,6 +17960,7 @@ function pcInit() {
   host.addEventListener('ui-cancel', function(e) {
     if (!e.detail) return;
     delete _pcNoteFiles[String(e.detail.id)];
+    delete _pcFailed[String(e.detail.id)];
     steerAct('cancel', String(e.detail.id));
   });
   host.addEventListener('ui-edit', function(e) { if (e.detail) steerAct('edit', String(e.detail.id), String(e.detail.text || '')); });
