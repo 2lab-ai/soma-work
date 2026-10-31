@@ -1595,7 +1595,7 @@ describe('expiry clock (D16)', () => {
     const none = cards().acPermissionData(SESSION(), PERM({ expiresAt: 0, createdAt: undefined }));
     expect('expiresAt' in none || 'createdAt' in none).toBe(false);
     // The page's 1 Hz tick no longer draws an expiry of its own.
-    expect(clientFn('updateTimersIn')).not.toContain('ap-expires');
+    expect(clientFn('updateTimers')).not.toContain('ap-expires');
   });
 });
 
@@ -1752,7 +1752,7 @@ describe('panel head (D18) — <ui-status-bar>', () => {
 describe('세부 — Details inside 세션 정보 (D19)', () => {
   const details = (s: Record<string, unknown>) =>
     load<{ panelDetailsHtml(s: unknown): string }>(
-      ['esc', 'toNum', 'pendingAutoResume', 'rootStatusOf', 'panelDetailsHtml'],
+      ['esc', 'escAttr', 'toNum', 'formatNmSSs', 'elapsedHtml', 'activeTimeHtml', 'pendingAutoResume', 'rootStatusOf', 'panelDetailsHtml'],
       [],
     ).panelDetailsHtml(s);
   const row = (html: string, label: string) => new RegExp(`<div><dt>${label}</dt><dd>(.*?)</dd></div>`).exec(html)?.[1];
@@ -1765,21 +1765,19 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
     expect(row(html, '시작한 사람')).toBe('Zhuge');
     expect(row(html, '도구 호출')).toBe('<span title="메인 7 · 서브에이전트 7">14</span>');
     expect(row(html, '비용')).toBe('$12.40');
-    expect(row(html, '활성 시간')).toBe(
-      `<span class="card-timer-live" data-leg-started="${T0}" data-accumulated="65000"></span>`,
-    );
+    // D7 K-03: the live time is <ui-elapsed> — since = the leg's start less what ran before it (no page clock).
+    expect(row(html, '활성 시간')).toBe(`<ui-elapsed since="${T0 - 65000}"></ui-elapsed>`);
     expect(row(html, '워크플로')).toBe('zwork');
     expect(text(row(html, '환경') ?? '')).toBe('mac-mini h:1');
   });
 
   it('more subagents than the card carries: a lower bound; an idle session: no live leg; no record: no count', () => {
     expect(row(details(CARD({ agentsTotal: 5 })), '도구 호출')).toContain('>14+</span>');
-    expect(row(details(CARD({ activityState: 'idle' })), '활성 시간')).toContain(
-      'data-leg-started="0" data-accumulated="65000"',
-    );
+    // A closed total is settled text in the page's words (formatNmSSs), not a ticking element.
+    expect(row(details(CARD({ activityState: 'idle' })), '활성 시간')).toBe('<span>1m 05s</span>');
     expect(row(details(CARD({ agentRoot: undefined, agents: undefined })), '도구 호출')).toBeUndefined();
     // The head's status (rootStatusOf): a waiting session's leg counts, as on the chip.
-    expect(row(details(CARD({ activityState: 'waiting' })), '활성 시간')).toContain(`data-leg-started="${T0}"`);
+    expect(row(details(CARD({ activityState: 'waiting' })), '활성 시간')).toContain(`<ui-elapsed since="${T0 - 65000}"`);
     expect(clientFn('panelDetailsHtml')).toContain('var st = rootStatusOf(s, col);');
     expect(clientFn('renderPanelInfo')).toContain(
       "panelInfoHtml(s, _panelInfoOpen === true, sessionColOf(panelSessionKey), _panelInfoOpen === 'folding')",
@@ -1796,6 +1794,9 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
         'ctxPercent',
         'pendingAutoResume',
         'rootStatusOf',
+        'elapsedHtml',
+        'activeTimeHtml',
+        'agoHtml',
         'panelDetailsHtml',
         'panelInfoHtml',
       ],

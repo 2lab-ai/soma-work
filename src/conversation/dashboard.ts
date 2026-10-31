@@ -4202,6 +4202,7 @@ window.uiPeek = { html: peekHtml, kind: fileItemKind };
 <script type="module" src="/dashboard/ui/tabs.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/goal-card.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/log-scroller.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/elapsed.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -7388,13 +7389,6 @@ function resolveRecommendedId(explicitId, options) {
   var legacy = (options || []).find(function(o) { return /\\(Recommended(?:\\s*·\\s*\\d+\\/\\d+)?\\)\\s*$/i.test(o.label || ''); });
   return legacy ? legacy.id : null;
 }
-function timeAgo(iso) {
-  const ms = Date.now() - new Date(iso).getTime();
-  if (ms < 60000) return 'just now';
-  if (ms < 3600000) return Math.floor(ms / 60000) + 'm ago';
-  if (ms < 86400000) return Math.floor(ms / 3600000) + 'h ago';
-  return Math.floor(ms / 86400000) + 'd ago';
-}
 // A finite number or 0 — numeric fields pass through this before they reach markup.
 function toNum(v) {
   var n = Number(v);
@@ -7455,7 +7449,8 @@ function spendTitle(sp) {
   if (sp.unpricedModels && sp.unpricedModels.length) t += ' · 단가표에 없는 모델(' + sp.unpricedModels.join(', ') + ')은 기본 단가로 추정';
   return t;
 }
-// Dashboard v2.1 — \`Nm SSs\` for the 1s live tick. Mirrors packages/common/src/format/duration.ts.
+// Dashboard v2.1 — \`Nm SSs\` for a settled total (the thread's Σ, a closed 활성 시간). Mirrors
+// packages/common/src/format/duration.ts; the same words <ui-elapsed> says for a span past a minute.
 function formatNmSSs(ms) {
   if (!ms || ms < 0 || isNaN(ms)) return '0m 00s';
   var totalSec = Math.floor(ms / 1000);
@@ -7463,38 +7458,27 @@ function formatNmSSs(ms) {
   var s = totalSec % 60;
   return m + 'm ' + (s < 10 ? '0' + s : s) + 's';
 }
-// 1-Hz tick: fill every time-dependent text from its data-* attrs.
-// Runs unconditionally of WS state — WS feeds new data-* values, tick reads them.
-// Body HTML never embeds Date.now(): the body is rewritten when its string
-// changes, so a clock in the markup would make every poll look like a change.
-// (The card faces' clocks are <ui-agent-inbox>'s own tick.)
-//   .card-timer-live  data-leg-started / data-accumulated (the agent tree's root)
-//   .rel-time         data-ts  → "6m ago"
-//   .task-elapsed     data-since → running task duration
-// (An approval card's expiry is <ui-approval-card>'s own countdown.)
-function updateTimersIn(root) {
-  var now = Date.now();
-  var els = root.querySelectorAll('.card-timer-live');
-  for (var i = 0; i < els.length; i++) {
-    var el = els[i];
-    var started = Number(el.dataset.legStarted) || 0;
-    var accumulated = Number(el.dataset.accumulated) || 0;
-    var elapsed = (started ? now - started : 0) + accumulated;
-    var t = formatNmSSs(elapsed);
-    if (el.textContent !== t) el.textContent = t;
-  }
-  var rel = root.querySelectorAll('.rel-time');
-  for (var j = 0; j < rel.length; j++) {
-    var r = timeAgo(Number(rel[j].dataset.ts) || 0);
-    if (rel[j].textContent !== r) rel[j].textContent = r;
-  }
-  var run = root.querySelectorAll('.task-elapsed');
-  for (var k = 0; k < run.length; k++) {
-    var d = formatDuration(now - (Number(run[k].dataset.since) || now)) || '0s';
-    if (run[k].textContent !== d) run[k].textContent = d;
-  }
+// Every live time on the page is @2lab.ai/ui <ui-elapsed> (D7 K-03): the root's active time (a leg under way:
+// since = the leg's start less what ran before it), a running task's or subagent's elapsed (since), the session's
+// last activity (format="ago"). The element ticks them on its own shared whole-second timer, changes the text in
+// place and stops by itself; a morph keeps it (its attributes are the data, never Date.now() — a clock in the
+// markup would make every poll look like a change). The words are the page's own short form (1m 05s · 6m ago),
+// beside formatDuration / formatNmSSs; a closed total is plain text. (The card faces' clocks are <ui-agent-inbox>'s
+// own tick; an approval card's expiry <ui-approval-card>'s.) The page's 1 Hz tick keeps one job: the cron
+// drawer's 다음 실행 countdown (aqTick — its "곧 … 후" words are the page's).
+function elapsedHtml(sinceMs, title) {
+  return '<ui-elapsed since="' + Math.round(Number(sinceMs) || 0) + '"' + (title ? ' title="' + escAttr(title) + '"' : '') + '></ui-elapsed>';
 }
-function updateTimers() { updateTimersIn(document); aqTick(); }
+function activeTimeHtml(legStartedMs, accumulatedMs, title) {
+  var leg = Number(legStartedMs) || 0;
+  var acc = toNum(accumulatedMs);
+  if (leg) return elapsedHtml(leg - acc, title);
+  return '<span' + (title ? ' title="' + escAttr(title) + '"' : '') + '>' + formatNmSSs(acc) + '</span>';
+}
+function agoHtml(atMs) {
+  return '<ui-elapsed since="' + Math.round(Number(atMs) || 0) + '" format="ago"></ui-elapsed>';
+}
+function updateTimers() { aqTick(); }
 var _timerTick = setInterval(updateTimers, 1000);
 
 // ── User list ──
@@ -8172,7 +8156,6 @@ function paintCardBody(key) {
   if (b.html !== html && !isPickingModel(b.el)) {
     morphInnerHtml(b.el, html);
     b.html = html;
-    updateTimersIn(b.el);
   }
   // The body's approval cards and model picker take their data where it
   // changed (also while an open menu holds the body still), the agent tree its
@@ -8472,6 +8455,8 @@ function cardOf(s, col) {
 // budget the earliest completed steps fold away first. The whole ledger —
 // every task of the list and the earlier lists — is the panel's:
 // 전체 task N개 → opens it (spec 13, the card is a window, not a second list).
+// (D7 D-12: the panel's plan is <ui-task-plan>; this window stays the page's — the element draws the whole plan
+// with its phase foot and its own done-steps fold, and has no row cap: research/D7-GAPS.md.)
 function renderTaskMeta(t) {
   // Task timestamps come from the ledger: numbers only.
   var started = Number(t.startedAt) || 0;
@@ -8481,7 +8466,7 @@ function renderTaskMeta(t) {
   var fate = taskFateOf(t);
   var parts = [];
   if (fate === 'done' && started && completed) parts.push(formatDuration(completed - started) || '0s');
-  else if (fate === 'active' && started) parts.push('<span class="task-elapsed" data-since="' + started + '"></span>');
+  else if (fate === 'active' && started) parts.push(elapsedHtml(started));
   else if (fate === 'dropped' || fate === 'skipped' || fate === 'paused') {
     parts.push(TASK_FATE_LABEL[fate] + (fate === 'dropped' && started && removed > started ? ' ' + formatDuration(removed - started) : ''));
   }
@@ -8571,18 +8556,18 @@ function agentIconHtml(st) {
   if (st === 'archived') return '<i data-ui-icon="archive"></i>';
   return '<i data-ui-icon="circle-dashed"></i>';
 }
-// A node's time: the root's active time (live while it runs, by the 1 Hz
-// tick), a running subagent's elapsed, else its run time.
+// A node's time: the root's active time (live while it runs — <ui-elapsed>), a running subagent's elapsed, else
+// its run time.
 function agentTimeHtml(a) {
   if (a && a.root) {
     var acc = toNum(a.activeMs);
     // An open leg runs on while the turn waits for a permission (the card reads waiting).
     var leg = a.status === 'running' || a.status === 'waiting' ? (Number(a.legStartedAt) || 0) : 0;
     if (!acc && !leg) return '';
-    return '<span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="' + acc + '" title="활성 시간"></span>';
+    return activeTimeHtml(leg, acc, '활성 시간');
   }
   var started = Number(a.startedAt) || 0;
-  if (agentStatusOf(a) === 'running') return started ? '<span class="task-elapsed" data-since="' + started + '"></span>' : '';
+  if (agentStatusOf(a) === 'running') return started ? elapsedHtml(started) : '';
   var ms = toNum(a.durationMs) || (Number(a.endedAt) && started ? Number(a.endedAt) - started : 0);
   return ms > 0 ? (formatDuration(ms) || '0s') : '';
 }
@@ -9111,7 +9096,6 @@ function renderPanelAgents() {
     el.style.display = '';
     morphInnerHtml(el, html);
     _panelAgentsHtml = html;
-    updateTimersIn(el);
   }
 }
 // Everything in the panel that follows the focused node, after any live
@@ -9733,12 +9717,11 @@ function restorePanelLiveAnchor(a) {
   if (Math.abs(d) >= 1) scrollEl.scrollTo({ top: scrollEl.scrollTop + d, behavior: 'instant' });
 }
 // Write one panel part: nothing when unchanged, a morph otherwise (focus and
-// nodes stay), the 1 Hz clocks filled at once.
+// nodes stay; a live time is <ui-elapsed>'s own).
 function writePanelPart(el, html) {
   if (el._html === html) return false;
   morphInnerHtml(el, html);
   el._html = html;
-  updateTimersIn(el);
   return true;
 }
 
@@ -9890,7 +9873,7 @@ function panelInfoHtml(s, open, col, keep) {
     var ctxCls = ctxLevel(ctx, s.contextTokens, s.autoCompactTokens, s.compactPending);
     sum.push('<span class="pi-cs' + (ctxCls ? ' ' + ctxCls : '') + '">ctx ' + ctxPercent(ctx) + '%</span>');
   }
-  sum.push('<span class="rel-time" data-ts="' + (new Date(s.lastActivity).getTime() || 0) + '"></span>');
+  sum.push(agoHtml(new Date(s.lastActivity).getTime() || 0));
   var html = '<ui-disclosure class="pi-dc" flush' + (open ? ' open' : '') + '>'
     + '<span slot="summary" class="pi-head"><span class="pi-title">세션 정보</span><span class="pi-sum">' + sum.join('<span class="pi-dot" aria-hidden="true">&middot;</span>') + '</span></span>';
   var links = [];
@@ -9911,7 +9894,7 @@ function panelInfoHtml(s, open, col, keep) {
     // the subagents' share, and since when a partial total counts.
     var sub = s.subagentSpend;
     if (sub && toNum(sub.agents) > 0) rows.push(['서브에이전트', toNum(sub.agents) + '개 · ' + spendText(spendTotal(sub), sub.costUsd, sub.unpriced || sub.estimated)]);
-    if (toNum(u.partialSince) > 0) rows.push(['집계 시작', '<span class="rel-time" data-ts="' + toNum(u.partialSince) + '"></span> (그 전 지출 미포함)']);
+    if (toNum(u.partialSince) > 0) rows.push(['집계 시작', agoHtml(toNum(u.partialSince)) + ' (그 전 지출 미포함)']);
   }
   // Open body order (re-agent-run D19 · re-context-window D5): the context block (cwSlotHtml, prepended on return) → 세부 → token grid → thread.
   var body = panelDetailsHtml(s, col) + '<dl class="ui-dl pi-grid">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
@@ -9944,7 +9927,7 @@ function panelDetailsHtml(s, col) {
   // The same status as the head chip (rootStatusOf): a turn in flight adds its live leg.
   var st = rootStatusOf(s, col);
   var leg = st === 'running' || st === 'waiting' ? (Number(s.activeLegStartedAtMs) || 0) : 0;
-  if (acc || leg) rows.push(['활성 시간', '<span class="card-timer-live" data-leg-started="' + leg + '" data-accumulated="' + acc + '"></span>']);
+  if (acc || leg) rows.push(['활성 시간', activeTimeHtml(leg, acc)]);
   if (s.workflow) rows.push(['워크플로', esc(s.workflow)]);
   if (s.environment && s.environment.instanceName) rows.push(['환경', esc(s.environment.instanceName) + ' <span class="pi-muted">' + esc((s.environment.host || '') + ':' + (s.environment.port || '')) + '</span>']);
   return '<dl class="ui-dl pi-details">' + rows.map(function(r) { return '<div><dt>' + r[0] + '</dt><dd>' + r[1] + '</dd></div>'; }).join('') + '</dl>';
