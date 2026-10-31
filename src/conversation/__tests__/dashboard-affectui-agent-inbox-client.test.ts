@@ -567,10 +567,7 @@ function bodyHarness() {
     _cardBodies: Object.create(null) as Record<string, { el: FakeEl; html: string | null }>,
     document: { createElement: fakeEl },
     renderCardBody: (s: { key: string }, col: string) => `<div class="card-body">${s.key}|${col}</div>`,
-    isEditingGoal: () => false,
     isPickingModel: () => false,
-    captureGoalDraft: () => null,
-    restoreGoalDraft: () => {},
     morphInnerHtml: (el: FakeEl, html: string) => {
       el.innerHTML = html;
     },

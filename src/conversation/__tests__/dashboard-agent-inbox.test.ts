@@ -244,9 +244,7 @@ describe('agent inbox board — keyed cards (§3.1-6)', () => {
   it('a single card is repainted only when its card data changed; its body only when its markup changed', () => {
     const refresh = fnBody('refreshCard');
     expect(refresh).toContain('if (JSON.stringify(c) !== JSON.stringify(_cardData[key])) {');
-    expect(fnBody('paintCardBody')).toContain(
-      'if (b.html !== html && !isEditingGoal(b.el) && !isPickingModel(b.el)) {',
-    );
+    expect(fnBody('paintCardBody')).toContain('if (b.html !== html && !isPickingModel(b.el)) {');
     expect(fnBody('paintCardBody')).toContain('morphInnerHtml(b.el, html);');
   });
 
@@ -603,7 +601,8 @@ describe('tone pass P7 — surfaces and elevation', () => {
   it('the goal mark is the target glyph, not the bullseye emoji', () => {
     expect(TEMPLATE).not.toContain('&#x1F3AF;');
     expect(TEMPLATE.match(/<span class="cgl-icon" aria-hidden="true">' \+ GOAL_SVG \+ '<\/span>/g)).toHaveLength(2);
-    expect(TEMPLATE).toContain(`<span class="cg-label">' + GOAL_SVG + 'Goal</span>`);
+    // The editor's own mark is <ui-goal-card>'s (the same target glyph from the icon set, D6b).
+    expect(TEMPLATE).not.toContain('cg-label');
   });
 });
 

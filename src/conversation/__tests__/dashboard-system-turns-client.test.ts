@@ -1153,8 +1153,6 @@ describe('D4 — the page keeps a disclosure’s choice and paints its region ar
     const state = new Function(
       'document',
       'ioSysToggle',
-      'goalHistoryToggle',
-      'goalHistoryFolded',
       'renderPanelInfo',
       'repaintPanelTasks',
       'renderPanelArtifactsSection',
@@ -1162,8 +1160,6 @@ describe('D4 — the page keeps a disclosure’s choice and paints its region ar
     )(
       document,
       (cid: string, open: boolean) => calls.push(`io ${cid} ${open}`),
-      (key: string, open: boolean) => calls.push(`goal ${key} ${open}`),
-      (key: string) => calls.push(`goal-folded ${key}`),
       () => calls.push('info'),
       () => calls.push('tasks'),
       () => calls.push('arts'),
@@ -1185,12 +1181,13 @@ describe('D4 — the page keeps a disclosure’s choice and paints its region ar
     expect(TEMPLATE).not.toContain('function dcSummaryHost(');
   });
 
-  it('a card’s system instruction keeps its choice; the completed goals keep theirs and hear the fold settle', () => {
+  it('a card’s system instruction keeps its choice; the completed goals fold inside <ui-goal-card> (D6b) — no page choice', () => {
     const s = setup();
     s.fire('ui-toggle', s.el('io-sys', { 'data-cid': 'conv-1' }), true);
     s.fire('ui-toggle', s.el('cg-hx', { 'data-hx': 'k1' }), false);
     s.fire('ui-toggled', s.el('cg-hx', { 'data-hx': 'k1' }), false);
-    expect(s.calls).toEqual(['io conv-1 true', 'goal k1 false', 'goal-folded k1']);
+    expect(s.calls).toEqual(['io conv-1 true']);
+    expect(INIT).not.toContain('cg-hx');
   });
 
   it('세션 정보 / Tasks / 지시 첨부: painted on the way open, kept as folding through the close, dropped once settled', () => {

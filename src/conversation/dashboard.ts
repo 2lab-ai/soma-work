@@ -4184,6 +4184,7 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/status-bar.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/deck-nav.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/tabs.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/goal-card.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
@@ -4416,13 +4417,12 @@ ui-stat-strip:not(:defined) { min-height: 44px; }
 ui-stat-strip:not(:defined) > * { display: none; }
 .stats-detail { padding-top: 12px; }
 
-/* ── EXPAND / COLLAPSE (P6, D4 K-06) — @2lab.ai/ui <ui-disclosure> for 세션 정보 (.pi-dc), Tasks (.panel-tasks-dc),
-   지시 첨부 (.panel-um-dc) and the completed goals (.cg-hx, trigger="external": the goal head's own button opens
-   it): the summary row (or the external trigger's aria), the region's 0fr ↔ 1fr grow with its fade, inert while
-   closed, the keyboard and the settle notice (ui-toggled — the page drops a closed region's nodes then) are the
+/* ── EXPAND / COLLAPSE (P6, D4 K-06) — @2lab.ai/ui <ui-disclosure> for 세션 정보 (.pi-dc), Tasks (.panel-tasks-dc)
+   and 지시 첨부 (.panel-um-dc): the summary row, the region's 0fr ↔ 1fr grow with its fade, inert while closed,
+   the keyboard and the settle notice (ui-toggled — the page drops a closed region's nodes then) are the
    element's. flush: the page's own padding under the row. In the panel the row's press surface bleeds 8px past
-   the text so the words line up with the rows around it. ── */
-.pi-dc, .panel-tasks-dc, .panel-um-dc, .cg-hx { display: block; }
+   the text so the words line up with the rows around it. (The completed goals fold inside <ui-goal-card>, D6b.) ── */
+.pi-dc, .panel-tasks-dc, .panel-um-dc { display: block; }
 .pi-dc::part(summary), .panel-tasks-dc::part(summary), .panel-um-dc::part(summary) { width: calc(100% + 16px); margin: 0 -8px; }
 .usage-cb-wrap { max-width: 440px; margin-bottom: 12px; }
 
@@ -4540,7 +4540,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* ── GOAL LINE — the goal on the open card, its home is the panel (spec 13) ── */
 .card-goal-line { display: flex; align-items: center; gap: 6px; margin-top: 10px; padding: 6px 10px; border: 1px solid var(--ib-card-border); border-radius: 8px; background: var(--ib-card-dim); font-size: 12.5px; min-width: 0; }
 .card-goal-line .cgl-icon { flex-shrink: 0; display: inline-flex; color: var(--ib-muted); }
-.card-goal-line .cgl-icon svg, .card-goal .cg-label svg { width: 14px; height: 14px; }
+.card-goal-line .cgl-icon svg { width: 14px; height: 14px; }
 .card-goal-line .cgl-text { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--ib-text); }
 .card-goal-line .cgl-text.is-muted { color: var(--ib-muted); }
 .card-goal-line .cg-status { flex-shrink: 0; }
@@ -4645,62 +4645,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* SSOT 2026-10-30 — ★ Star (pressed = amber) and 살리기 (the run tint), on the kit button. */
 .ui-btn[data-action="star"][aria-pressed="true"] { color: var(--st-wait); border-color: var(--st-wait); }
 .ui-btn[data-action="revive"] { color: var(--st-run); }
-
-/* ── GOAL LIST (work item, SSOT 2026-10-21 T2/T3) ── */
-.card-goal {
-  margin-top: 8px;
-  padding: 8px 10px;
-  border: 1px solid var(--ib-card-border);
-  border-radius: 8px;
-  background: var(--ib-card-dim);
-  font-size: 12.5px;
-}
-.card-goal .cg-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
-.card-goal .cg-label { display: inline-flex; align-items: center; gap: 6px; font-weight: 600; color: var(--ib-text); }
-.card-goal .cg-label svg { color: var(--ib-muted); }
-.card-goal .cg-progress { margin-left: auto; color: var(--ib-muted); font-variant-numeric: tabular-nums; }
-.card-goal .cg-objective {
-  color: var(--ib-text);
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  display: -webkit-box;
-  -webkit-line-clamp: 4;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.card-goal .cg-gap { margin-top: 3px; color: var(--ib-muted); overflow-wrap: anywhere; }
-.card-goal .cg-more { display: inline-flex; align-items: center; gap: 4px; min-height: 24px; margin-top: 2px; padding: 0; font: inherit; font-size: 11.5px; color: var(--ib-text-2); background: none; border: 0; cursor: pointer; }
-@media (hover: hover) and (pointer: fine) { .card-goal .cg-more:hover { color: var(--ib-text); text-decoration: underline; } }
-.card-goal .cg-more:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 2px; border-radius: 6px; }
-.card-goal .cg-more[hidden] { display: none; }
-.card-goal .cg-empty { color: var(--ib-muted); }
-.card-goal .cg-row { display: flex; align-items: flex-start; gap: 6px; }
-.card-goal .cg-row > :first-child { flex: 1; min-width: 0; }
-.card-goal .cg-queue-title { margin-top: 8px; color: var(--ib-muted); font-size: 11.5px; }
-.card-goal .cg-queue { list-style: decimal; margin: 2px 0 0 18px; }
-.card-goal .cg-queue li { padding: 2px 0; }
-.card-goal .cg-q-text { overflow-wrap: anywhere; color: var(--ib-text); }
-.card-goal .cg-history-toggle { display: inline-flex; align-items: center; gap: 4px; margin-left: auto; font: inherit; font-size: 11.5px; color: var(--ib-text-2); background: none; border: 1px solid var(--ib-card-border); border-radius: 6px; padding: 2px 8px; min-height: 26px; cursor: pointer; white-space: nowrap; }
-.card-goal .cg-progress + .cg-history-toggle { margin-left: 8px; }
-.card-goal .cg-history { list-style: none; margin: 4px 0 8px; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.card-goal .cg-h-item { border-left: 2px solid var(--st-done); padding: 2px 0 2px 8px; }
-.card-goal .cg-h-obj { color: var(--ib-text); overflow-wrap: anywhere; }
-.card-goal .cg-h-meta { margin-top: 2px; color: var(--ib-muted); font-size: 11.5px; font-variant-numeric: tabular-nums; }
-.card-goal .cg-h-reason { margin-top: 2px; color: var(--ib-text-2); font-size: 11.5px; overflow-wrap: anywhere; }
-.card-goal .cg-add { display: flex; gap: 6px; margin-top: 8px; }
-.card-goal .cg-add-input {
-  flex: 1;
-  min-width: 0;
-  font: inherit;
-  font-size: 12.5px;
-  padding: 4px 8px;
-  border: 1px solid var(--ib-card-border);
-  border-radius: 6px;
-  background: var(--ib-card);
-  color: var(--ib-text);
-}
-.card-goal .cg-add-input:focus { outline: none; border-color: var(--border-focus); }
-.card-goal .cg-error { margin-top: 6px; color: var(--st-fail); overflow-wrap: anywhere; }
 
 /* ── PENDING QUESTION (dashboard choice buttons) ── */
 .card-question {
@@ -5044,13 +4988,10 @@ ui-drawer:not(:defined) { display: none; }
    in its token wrapper, first in 세션 정보's open body, at the panel's 560px measure. ── */
 .cw-slot > ui-context-window { display: block; max-width: 560px; }
 .cw-fallback { font-size: 12.5px; color: var(--text-tertiary); }
-/* ── GOAL — the editor's home (spec 13) ── */
+/* ── GOAL — the editor's home (spec 13): @2lab.ai/ui <ui-goal-card> (E-12, D6b). The objective opens folded to
+   its first 3 lines on every opening (SSOT 2026-10-29) — the element's fold, 펼치기 / 접기 its own. ── */
 .panel-goal { padding: 8px 16px; border-bottom: 1px solid var(--border); outline: none; }
-.panel-goal .card-goal { margin-top: 0; }
-/* The goal's home opens the objective folded to its first 3 lines on every opening
-   (SSOT 2026-10-29, the card's line is the summary); 펼치기 shows all of it. */
-.panel-goal .card-goal .cg-objective { -webkit-line-clamp: 3; line-height: 1.45; }
-.panel-goal .card-goal.is-open .cg-objective { display: block; -webkit-line-clamp: unset; overflow: visible; }
+.panel-goal > ui-goal-card { display: block; }
 .panel-goal:focus-visible { box-shadow: inset 0 0 0 2px var(--border-focus); }
 /* Scroll container: the common surface (large UIAskQ choices included), the
    agent tabs, Tasks and the section tabs scroll together; each section scrolls
@@ -8308,10 +8249,8 @@ function paintCardBody(key) {
   if (b.el.parentNode !== host) host.appendChild(b.el);
   var col = _cardCol[key];
   var html = renderCardBody(s, col);
-  if (b.html !== html && !isEditingGoal(b.el) && !isPickingModel(b.el)) {
-    var goalDraft = captureGoalDraft(b.el);
+  if (b.html !== html && !isPickingModel(b.el)) {
     morphInnerHtml(b.el, html);
-    restoreGoalDraft(b.el, goalDraft);
     b.html = html;
     updateTimersIn(b.el);
   }
@@ -8902,7 +8841,7 @@ function domMorph(a, b) {
   domMorphChildren(a, b);
   // What a user changed in a control is live state, not an attribute: follow
   // the fresh markup (a rejected model pick shows the session's model again).
-  // A control in use is never morphed (isEditingGoal / isPickingModel).
+  // A control in use is never morphed (isPickingModel).
   var tag = a.tagName;
   if (tag === 'SELECT') {
     if (a.selectedIndex !== b.selectedIndex) a.selectedIndex = b.selectedIndex;
@@ -9294,7 +9233,6 @@ function applyPanelDetail() {
 // which always opens folded (SSOT 2026-10-29) — else the defaults.
 function resetPanelSections() {
   _panelInfoOpen = _panelDetail;
-  _panelGoalOpen = false; // SSOT 2026-10-29: the goal opens folded — 자세히 and a goal landing too
   _panelTasksOpen = _panelDetail || _panelLand === 'tasks';
   _panelTasksExpanded = _panelTasksOpen;
   _panelTasksEarlier = _panelDetail;
@@ -10537,64 +10475,50 @@ document.addEventListener('ui-compact', function(e) {
 // SSOT 2026-10-29 — "Goal 도 디폴트로 collapsed": the goal's objective opens
 // folded to its first 3 lines on every opening (resetPanelSections — 자세히 and
 // a goal landing included); 펼치기 · 접기 toggles it for this opening.
-var _panelGoalOpen = false;
-var GOAL_FOLD_LINES = 3; // the CSS clamp of .panel-goal .card-goal .cg-objective
-function togglePanelGoal() {
-  _panelGoalOpen = !_panelGoalOpen;
-  renderPanelGoal();
-}
-// The toggle shows only where the fold cuts something: the objective runs past
-// its 3 lines (scrollHeight is the whole text, folded or open). An unknown line
-// height keeps it, so the text can always be opened.
-function syncGoalMore(root) {
-  var obj = root.querySelector('.cg-objective');
-  var more = root.querySelector('.cg-more');
-  if (!obj || !more) return;
-  var lh = parseFloat(getComputedStyle(obj).lineHeight);
-  more.hidden = lh > 0 && obj.scrollHeight <= lh * GOAL_FOLD_LINES + 1;
-}
-
-// The goal's home (spec 13, moved from the card): the shared goal component —
-// current, queue, add / delete, the completed goals (T6) — with the card's
-// gates. Typing survives every live render: while its input has focus nothing
-// is written, and an unfocused draft is carried into the new markup.
+// The goal's home (spec 13): <ui-goal-card lang="ko"> in #panel-goal — one per session, made when the panel
+// turns to that session (another session's draft never carries over; the same session reopened keeps an
+// unsent one), handed data only when it changed (the element morphs in place: typing, focus and its folds
+// survive a live render; the objective opens folded to 3 lines on every opening — a new goal id starts folded).
 function renderPanelGoal() {
   var el = document.getElementById('panel-goal');
   if (!el) return;
   var s = panelSessionKey ? _sessionCache[panelSessionKey] : null;
   var col = s ? sessionColOf(panelSessionKey) : '';
   var isOwner = !!(s && s.ownerId) && s.ownerId === currentUserId;
-  var canEdit = isOwner && !isSiblingSession(s);
-  var html = s ? renderCardGoal(s, col, canEdit, _panelGoalOpen) : '';
-  if (!html) {
+  var live = !!s && col !== 'closed' && !s.terminated;
+  var canEdit = isOwner && live && !isSiblingSession(s);
+  var g = s ? s.goal : null;
+  // Read-only viewers and closed sessions only see a goal list that exists.
+  if (!s || !(g || canEdit)) {
     el.style.display = 'none';
-    if (el._html) el.innerHTML = '';
-    el._html = '';
+    if (el._key) { el.innerHTML = ''; el._key = null; }
     return;
   }
   el.style.display = '';
-  el._key = panelSessionKey;
   // Task view T1.6: a session with no goal keeps the empty editor for 자세히.
-  var g = s.goal;
   el.classList.toggle('is-empty', !(g && (g.current || (g.queue && g.queue.length) || (g.history && g.history.length))));
-  if (el._html === html || isEditingGoal(el)) return;
-  var draft = captureGoalDraft(el);
-  var a = document.activeElement;
-  var hadFocus = !!(a && a !== el && el.contains(a));
-  // A morph keyed by goal id (data-mk): a focused goal button keeps its node
-  // and focus while its goal is there, and is never rebound to another goal.
-  morphInnerHtml(el, html);
-  el._html = html;
-  restoreGoalDraft(el, draft);
-  // The fold toggle follows the text's height: now, and whenever the section resizes (panel width, first layout).
-  syncGoalMore(el);
-  if (!el._goalRo && typeof ResizeObserver === 'function') {
-    el._goalRo = new ResizeObserver(function() { syncGoalMore(el); });
-    el._goalRo.observe(el);
+  var card = el.firstElementChild;
+  if (!card || card.tagName !== 'UI-GOAL-CARD' || el._key !== panelSessionKey) {
+    el.innerHTML = '';
+    card = document.createElement('ui-goal-card');
+    card.setAttribute('lang', 'ko');
+    card.setAttribute('data-goal-key', panelSessionKey);
+    el.appendChild(card);
+    el._key = panelSessionKey;
   }
-  // Its goal left (deleted, started, finished): focus lands on the section, never on another goal's control.
-  var now = document.activeElement;
-  if (hadFocus && (!now || now === document.body || !el.contains(now)) && el.focus) el.focus({ preventScroll: true });
+  var d = goalCardData(s, canEdit);
+  var sig = JSON.stringify(d);
+  if (card._gcSig !== sig) {
+    card._gcSig = sig;
+    card.data = d;
+  }
+}
+// The goal landing (관리 → / goal 추가 →): the element's add box when it has one, else its group — read through
+// the open shadow root by element / role, as uiTabsFocus does (the card has no focus API of its own).
+function goalCardFocusTarget() {
+  var card = document.querySelector('#panel-goal > ui-goal-card');
+  var root = card && card.shadowRoot;
+  return root ? (root.querySelector('textarea') || root.querySelector('[role="group"]')) : null;
 }
 
 // Switch the panel's scope: its Tasks and section tabs follow the chosen agent
@@ -11442,160 +11366,68 @@ function renderPanelControls(s) {
 function repaintPanelControlsFor(key) {
   if (panelOpen && panelSessionKey === key && _sessionCache[key]) renderPanelControls(_sessionCache[key]);
 }
-// ── Goal list on the work item (SSOT 2026-10-21 T2/T3) ──
-// The card shows the current goal, its state and the goals queued behind it,
-// and lets the owner add a goal, delete the current goal (the next queued one
-// starts — never \`goal clear\`, which also drops the queue) or delete a queued
-// goal. Every write names WHERE the goal was seen (current / queued), so a goal
-// that moved in the meantime is refused (409) instead of deleting the wrong one.
+// ── Goal (E-12): @2lab.ai/ui <ui-goal-card> — the goal's home (spec 13) ──
+// The board card's line (cardGoalLine) reads the status words; the editor is the element in #panel-goal
+// (renderPanelGoal): the current goal (status chip, the objective folded to 3 lines with 펼치기 / 접기, the
+// 이어하기 budget, the evaluator's 남은 것), the queue, the past goals in its own fold (T6), the add box and the
+// error alert are the element's — as are the second press on Delete, the typed draft across every data write
+// (it morphs in place) and the focus that lands on the card when its goal left. The page keeps the data
+// (goalCardData), the one goal write in flight per session (_goalBusy → busy / busyId) and the routes. Every
+// write names WHERE the goal was seen (current / queued), so a goal that moved in the meantime is refused
+// (409) instead of deleting the wrong one — never goal clear, which also drops the queue. actions is
+// ['delete']: POST /session/:key/goal takes add and delete only (the host layer has no complete / pause,
+// D3 G4-1), so the card never offers them.
 var GOAL_STATUS_LABELS = { active: '진행 중', paused: '일시정지', complete: '완료' };
 var GOAL_STATUS_TONE = { active: 'run', paused: 'wait', complete: 'done' };
 // The goal mark (P7): the 2lab icon set's target glyph, not the bullseye emoji.
 var GOAL_SVG = '<i data-ui-icon="target"></i>';
 var GOAL_VIA_LABELS = { user: '직접 완료', 'eval-model': '평가 모델 완료' };
-// SSOT 2026-10-22 T6 — completed goals open from the goal head, per card.
-var _goalHistoryOpen = Object.create(null); // card key → completed goals shown
-function formatGoalTime(ms) {
-  var n = Number(ms) || 0;
-  if (!n) return '';
-  return new Date(n).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: false });
+var GOAL_OBJECTIVE_MAX = 4000; // the route's cap on an objective
+var GOAL_ACTIONS = ['delete']; // what the goal route answers besides add
+var _goalErrors = Object.create(null); // session key → last refused goal action (shown until the next success)
+var _goalBusy = Object.create(null); // session key → { op: 'add' | 'delete', id } while that write is out
+// One past goal for the element: time spent · tokens · cost · continuation turns · how it closed on its meta
+// line, the evaluator's reason as its note (when it ended is the element's, from endedAt).
+function goalPastItem(h) {
+  var meta = [];
+  if (toNum(h.activeMsUsed) > 0) meta.push('소요 ' + formatDuration(toNum(h.activeMsUsed)));
+  if (h.tokens !== undefined) meta.push(formatTokens(h.tokens) + ' tok');
+  if (h.costUsd !== undefined) meta.push('$' + toNum(h.costUsd).toFixed(2));
+  if (toNum(h.continuationCount) > 0) meta.push('이어하기 ' + toNum(h.continuationCount) + '회');
+  if (h.completedVia) meta.push(Object.prototype.hasOwnProperty.call(GOAL_VIA_LABELS, h.completedVia) ? GOAL_VIA_LABELS[h.completedVia] : String(h.completedVia));
+  var item = { id: String(h.goalId), objective: String(h.objective || ''), status: 'complete' };
+  if (toNum(h.completedAt) > 0) item.endedAt = toNum(h.completedAt);
+  if (meta.length) item.meta = meta;
+  if (h.completionReason && h.completionReason !== 'user') item.note = String(h.completionReason);
+  return item;
 }
-// One completed goal: objective, then when it closed · time spent · tokens ·
-// cost · continuation turns · how it closed, then the evaluator's reason.
-function renderGoalHistory(history) {
-  var items = (history || []).map(function(h) {
-    var meta = [];
-    var at = formatGoalTime(h.completedAt);
-    if (at) meta.push('완료 ' + at);
-    if (toNum(h.activeMsUsed) > 0) meta.push('소요 ' + formatDuration(toNum(h.activeMsUsed)));
-    if (h.tokens !== undefined) meta.push(formatTokens(h.tokens) + ' tok');
-    if (h.costUsd !== undefined) meta.push('$' + toNum(h.costUsd).toFixed(2));
-    if (toNum(h.continuationCount) > 0) meta.push('이어하기 ' + toNum(h.continuationCount) + '회');
-    if (h.completedVia) meta.push(esc(Object.prototype.hasOwnProperty.call(GOAL_VIA_LABELS, h.completedVia) ? GOAL_VIA_LABELS[h.completedVia] : h.completedVia));
-    var reason = h.completionReason && h.completionReason !== 'user' ? h.completionReason : '';
-    return '<li class="cg-h-item">'
-      + '<div class="cg-h-obj">' + esc(h.objective) + '</div>'
-      + (meta.length ? '<div class="cg-h-meta">' + meta.join(' &middot; ') + '</div>' : '')
-      + (reason ? '<div class="cg-h-reason">' + esc(reason) + '</div>' : '')
-      + '</li>';
-  }).join('');
-  return '<ol class="cg-history">' + items + '</ol>';
-}
-// The completed goals' choice (T6, D4 K-06): <ui-disclosure class="cg-hx" trigger="external"> under the goal's
-// queue, opened by the head row's 완료된 goal N개 button (for=); the element's ui-toggle keeps the choice here
-// (initDisclosures), and the panel's goal editor — the goal's home (spec 13) — paints the list on the way open
-// and drops it once the region has folded (ui-toggled).
-function goalHistoryToggle(key, open) {
-  if (open) _goalHistoryOpen[key] = true;
-  else if (_goalHistoryOpen[key]) _goalHistoryOpen[key] = 'folding';
-  if (panelOpen && panelSessionKey === key) renderPanelGoal();
-}
-function goalHistoryFolded(key) {
-  if (_goalHistoryOpen[key] !== 'folding') return;
-  delete _goalHistoryOpen[key];
-  if (panelOpen && panelSessionKey === key) renderPanelGoal();
-}
-var _goalErrors = Object.create(null); // card key -> last refused goal action (shown until the next success)
-
-function renderCardGoal(s, col, canEdit, open) {
+// The element's data for session s. canEdit: the owner on a live session (a read-only viewer and a closed
+// session see the list, no controls); busy / error are this page's write state.
+function goalCardData(s, canEdit) {
   var g = s.goal || null;
-  var live = col !== 'closed' && !s.terminated;
-  // Read-only viewers and closed sessions only see a goal list that exists.
-  if (!g && !(canEdit && live)) return '';
-  var editable = canEdit && live;
-  var dis = editable && !isBusy(s.key, 'goal') ? '' : ' disabled';
-  var key = escJs(s.key);
-  var queue = (g && g.queue) || [];
   var cur = g && g.current;
-  var html = '<div class="card-goal' + (open ? ' is-open' : '') + '">';
-  html += '<div class="cg-head"><span class="cg-label">' + GOAL_SVG + 'Goal</span>';
+  var d = { canEdit: !!canEdit, actions: GOAL_ACTIONS, maxLength: GOAL_OBJECTIVE_MAX, current: null, queue: [], history: [] };
   if (cur) {
-    html += '<span class="ui-status is-pill cg-status"' + (GOAL_STATUS_TONE[cur.status] ? ' data-tone="' + GOAL_STATUS_TONE[cur.status] + '"' : '') + '>' + esc(GOAL_STATUS_LABELS[cur.status] || cur.status) + '</span>';
-    if (cur.status === 'active' && toNum(cur.maxContinuations) > 0) {
-      html += '<span class="cg-progress" title="자동 이어하기 횟수 / 상한">' + toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) + '</span>';
+    d.current = { id: String(cur.goalId), objective: String(cur.objective || ''), status: cur.status };
+    if (cur.status === 'active') {
+      // The auto-continue count is a budget, not progress: the quiet meta line, never the bar.
+      if (toNum(cur.maxContinuations) > 0) d.current.meta = [{ label: '이어하기', value: toNum(cur.continuationCount) + '/' + toNum(cur.maxContinuations) }];
+      if (cur.lastEvalReason) d.current.note = '남은 것: ' + String(cur.lastEvalReason).slice(0, 300);
     }
   }
-  // T6: the completed goals open from the head (any viewer, any column) — the external trigger of the
-  // <ui-disclosure> under the queue (D4 K-06); the element keeps its aria-expanded / aria-controls current.
-  var doneCount = g ? toNum(g.completedCount) : 0;
-  var historyOpen = doneCount > 0 && _goalHistoryOpen[s.key] === true;
-  var historyPainted = historyOpen || (doneCount > 0 && _goalHistoryOpen[s.key] === 'folding');
-  if (doneCount > 0) {
-    html += '<button type="button" class="cg-history-toggle" id="cg-history-toggle" aria-expanded="' + (historyOpen ? 'true' : 'false') + '">완료된 goal ' + doneCount + '개'
-      + '<span class="chev" aria-hidden="true"></span></button>';
+  d.queue = ((g && g.queue) || []).map(function(q) { return { id: String(q.goalId), objective: String(q.objective || '') }; });
+  d.history = ((g && g.history) || []).map(goalPastItem);
+  var busy = _goalBusy[s.key];
+  if (busy) {
+    d.busy = busy.op;
+    if (busy.id) d.busyId = busy.id;
   }
-  html += '</div>';
-  if (cur) {
-    var dropLabel = queue.length ? '현재 goal 삭제 · 다음 시작' : '현재 goal 삭제';
-    html += '<div class="cg-row" data-mk="' + escAttr('goal:' + cur.goalId) + '"><div class="cg-objective" id="panel-goal-obj" title="' + escAttr(cur.objective) + '">' + esc(cur.objective) + '</div>'
-      + '<button type="button" class="ui-btn is-sm is-danger"' + dis
-      + ' onclick="event.stopPropagation();goalAction(\\'' + key + '\\',{action:\\'delete\\',goalId:\\'' + escJs(cur.goalId) + '\\',expect:\\'current\\'},this)">'
-      + dropLabel + '</button></div>';
-    // SSOT 2026-10-29 — folded to its first 3 lines until opened; reading, so never disabled.
-    // syncGoalMore keeps the toggle to an objective that runs past those lines.
-    html += '<button type="button" class="cg-more" aria-expanded="' + (open ? 'true' : 'false') + '" aria-controls="panel-goal-obj"'
-      + ' onclick="event.stopPropagation();togglePanelGoal()">' + (open ? '접기' : '펼치기') + '<span class="chev" aria-hidden="true"></span></button>';
-    if (cur.status === 'active' && cur.lastEvalReason) {
-      html += '<div class="cg-gap">남은 것: ' + esc(String(cur.lastEvalReason).slice(0, 300)) + '</div>';
-    }
-  } else {
-    html += '<div class="cg-empty">현재 goal 없음</div>';
-  }
-  if (queue.length) {
-    html += '<div class="cg-queue-title">대기 중인 goal ' + queue.length + '개</div><ol class="cg-queue">';
-    for (var i = 0; i < queue.length; i++) {
-      var q = queue[i];
-      html += '<li data-mk="' + escAttr('queued:' + q.goalId) + '"><div class="cg-row"><span class="cg-q-text">' + esc(q.objective) + '</span>'
-        + '<button type="button" class="ui-btn is-sm is-danger" title="대기 goal 삭제" aria-label="대기 goal 삭제"' + dis
-        + ' onclick="event.stopPropagation();goalAction(\\'' + key + '\\',{action:\\'delete\\',goalId:\\'' + escJs(q.goalId) + '\\',expect:\\'queued\\'},this)">삭제</button></div></li>';
-    }
-    html += '</ol>';
-  }
-  // The completed goals open under the current goal and its queue (T6) in <ui-disclosure>'s region (its grow in
-  // place, inert while closed); the list is painted while open and through the fold, else the region is empty. Its
-  // id is the page's (the trigger's aria-controls): the morph keys an unkeyed node by tag + id + class, and an id
-  // the element gave itself would make every repaint a new element (no fold, no ui-toggled).
-  if (doneCount > 0) {
-    html += '<ui-disclosure class="cg-hx" id="cg-history" trigger="external" for="cg-history-toggle" data-hx="' + escAttr(s.key) + '"' + (historyOpen ? ' open' : '') + '>'
-      + (historyPainted ? '<div class="cg-queue-title">완료된 goal</div>' + renderGoalHistory(g.history) : '') + '</ui-disclosure>';
-  }
-  if (editable) {
-    html += '<form class="cg-add" onsubmit="event.preventDefault();event.stopPropagation();addGoalFromCard(\\'' + key + '\\',this)">'
-      + '<input class="cg-add-input" name="objective" maxlength="4000" autocomplete="off" aria-label="goal 추가"'
-      + ' placeholder="' + (cur && cur.status !== 'complete' ? 'goal 추가 (현재 goal 다음에 시작)' : 'goal 추가 (바로 시작)') + '"'
-      + ' onblur="goalInputBlur(\\'' + key + '\\')">'
-      + '<button type="submit" class="ui-btn is-sm">추가</button></form>';
-  }
-  if (_goalErrors[s.key]) html += '<div class="cg-error" role="alert">' + esc(_goalErrors[s.key]) + '</div>';
-  return html + '</div>';
-}
-
-// The goal input survives the card's live re-render: while it has focus the
-// body is not replaced at all (typing and IME composition stay intact), and an
-// unfocused draft is carried into the new body.
-function isEditingGoal(root) {
-  var a = document.activeElement;
-  return !!(a && a.classList && a.classList.contains('cg-add-input') && root.contains(a));
+  if (_goalErrors[s.key]) d.error = _goalErrors[s.key];
+  return d;
 }
 // An open model menu holds its anchor's card still: the trigger is where the menu hangs (re-model-picker D12).
 function isPickingModel(root) {
   return !!(root && root.querySelector && root.querySelector('ui-model-picker[open]'));
-}
-function captureGoalDraft(root) {
-  var input = root.querySelector('.cg-add-input');
-  return input && input.value ? input.value : '';
-}
-function restoreGoalDraft(root, value) {
-  if (!value) return;
-  var input = root.querySelector('.cg-add-input');
-  if (input && !input.value) input.value = value;
-}
-function goalInputBlur(key) {
-  // Let a click on 추가 land before the deferred re-render replaces the form.
-  setTimeout(function() {
-    var host = document.getElementById('panel-goal');
-    if (host && panelSessionKey === key && !isEditingGoal(host)) renderPanelGoal();
-  }, 200);
 }
 
 async function postGoalAction(key, payload) {
@@ -11617,54 +11449,51 @@ async function postGoalAction(key, payload) {
 function setGoalError(key, message) {
   if (message) _goalErrors[key] = message;
   else delete _goalErrors[key];
-  refreshCard(key);
+  repaintPanelGoalFor(key);
+}
+function repaintPanelGoalFor(key) {
   if (panelOpen && panelSessionKey === key) renderPanelGoal();
 }
-async function goalAction(key, payload, btn) {
-  if (isBusy(key, 'goal')) return; // one goal write at a time per session
-  if (btn) btn.disabled = true;
+// One goal write at a time per session (spec 13 §3.5: an add never overlaps a delete), shown on the element's
+// button (busy; busyId for a queued goal's remove) until the outcome lands. Resolves to whether it went through.
+async function goalAction(key, payload, busyId) {
+  if (isBusy(key, 'goal')) return false;
   setBusy(key, 'goal', true);
+  _goalBusy[key] = { op: payload.action, id: busyId || '' };
+  repaintPanelGoalFor(key);
   var r;
   try { r = await postGoalAction(key, payload); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
   setBusy(key, 'goal', false);
+  delete _goalBusy[key];
   setGoalError(key, r.ok ? '' : r.error);
-  if (!r.ok && btn) btn.disabled = false;
   loadSessions();
+  return r.ok;
 }
-// One add in flight per card. The input is NOT disabled while it is sent:
-// keeping its focus is what keeps a live re-render from replacing the form
-// (and resurrecting the sent text as a fresh, submittable draft).
-var _goalAdding = Object.create(null);
-async function addGoalFromCard(key, form) {
-  // One goal write at a time per session: an add never overlaps a delete (spec 13 §3.5).
-  if (_goalAdding[key] || isBusy(key, 'goal')) return;
-  var input = form.querySelector('.cg-add-input');
-  var objective = input ? input.value.trim() : '';
+// ui-add is prevented, so the element keeps the words in its box: they are cleared only once the add went
+// through (a refusal leaves them to fix), and only on this session's live card (never another session's draft).
+async function addGoal(key, objective, card) {
+  objective = String(objective || '').trim();
   if (!objective) return;
-  _goalAdding[key] = true;
-  setBusy(key, 'goal', true);
-  var btn = form.querySelector('button');
-  if (btn) btn.disabled = true;
-  var r;
-  try { r = await postGoalAction(key, { action: 'add', objective: objective }); } catch (e) { r = { ok: false, error: String(e && e.message || e) }; }
-  // The form on screen may have been re-rendered meanwhile — act on the live one,
-  // and only while the panel still shows this session (another session's draft is never touched).
-  var host = panelSessionKey === key ? document.getElementById('panel-goal') : null;
-  var live = (host && host.querySelector('.cg-add-input')) || input;
-  var liveBtn = live.form ? live.form.querySelector('button') : btn;
-  if (liveBtn) liveBtn.disabled = false;
-  if (btn && btn !== liveBtn) btn.disabled = false;
-  if (r.ok) {
-    if (live.value.trim() === objective) live.value = '';
-    live.blur();
-  }
-  // Released only once the sent text is gone from the form: a live render in
-  // between cannot re-arm a submit that would send the same goal twice.
-  delete _goalAdding[key];
-  setBusy(key, 'goal', false);
-  setGoalError(key, r.ok ? '' : r.error);
-  loadSessions();
+  var ok = await goalAction(key, { action: 'add', objective: objective });
+  if (ok && card && card.isConnected && card.getAttribute('data-goal-key') === key && card.draft.trim() === objective) card.draft = '';
 }
+// The element's events: a confirmed Delete (the current goal, or a queued one — its own remove spins), an Add.
+document.addEventListener('ui-delete', function(e) {
+  var el = e.target;
+  if (!el || el.tagName !== 'UI-GOAL-CARD' || !e.detail) return;
+  var key = el.getAttribute('data-goal-key');
+  if (!key || !_sessionCache[key]) { e.preventDefault(); return; }
+  var id = String(e.detail.id || '');
+  goalAction(key, { action: 'delete', goalId: id, expect: e.detail.queued ? 'queued' : 'current' }, e.detail.queued ? id : '');
+});
+document.addEventListener('ui-add', function(e) {
+  var el = e.target;
+  if (!el || el.tagName !== 'UI-GOAL-CARD' || !e.detail) return;
+  e.preventDefault();
+  var key = el.getAttribute('data-goal-key');
+  if (!key || !_sessionCache[key]) return;
+  addGoal(key, e.detail.objective, el);
+});
 
 // Card click / Enter / Space = expand / collapse in place (§3.1-4), Esc inside
 // an open card closes it — the element's (ui-toggle; keyboard without the
@@ -14218,10 +14047,6 @@ function openPanel(sessionKey, focusWorkLog, agentId, byKey) {
   // scope — go through the same live path as every update (spec 13).
   // A tasks opening (전체 task N개 →) unfolds the plan with every step and the earlier plans.
   if (_panelLand === 'tasks') { _panelTasksOpen = true; _panelTasksExpanded = true; _panelTasksEarlier = true; }
-  // Another session's goal form (and its draft) never carries into this one;
-  // reopening the same session keeps an unsent draft.
-  var goalEl = document.getElementById('panel-goal');
-  if (goalEl && goalEl._key !== sessionKey) { goalEl.innerHTML = ''; goalEl._html = ''; }
   // An opening's first plan and 입력 필요 renders are the baseline: nothing in
   // them is announced (re-agent-run D7, D15).
   var tasksEl = document.getElementById('panel-tasks');
@@ -14378,7 +14203,7 @@ function deckSlide(panel, dir) {
 // else the heading.
 function focusPanelLanding() {
   var t = null;
-  if (_panelLand === 'goal') t = document.querySelector('#panel-goal .cg-add-input') || document.getElementById('panel-goal');
+  if (_panelLand === 'goal') t = goalCardFocusTarget() || document.getElementById('panel-goal');
   else if (_panelLand === 'agent') t = document.querySelector('#panel-agents .pa-focus');
   else if (_panelLand === 'tasks') t = document.getElementById('panel-tasks');
   // The 작업 로그 tab is <ui-tabs>' own (D4 E-24): its selected tab — the one this opening chose — takes focus.
@@ -16937,10 +16762,9 @@ function fcHydrateIn(node) {
   });
 })();
 // <ui-disclosure> (K-06): Raw, a system turn and a card's system instruction (D1), and — D4 — 세션 정보, Tasks,
-// 지시 첨부 and the completed goals open and close by themselves (the row or the external trigger, Enter / Space,
-// the grow and the fold, inert while closed; a click on the slotted summary's words counts since 0.8.0). The page
-// keeps each choice (_ioOpen, _panelInfoOpen, _panelTasksOpen, _umPanelOpen, _goalHistoryOpen) from the element's
-// cancelable ui-toggle; a region it paints only while open is painted on the way open (so the element grows
+// 지시 첨부 open and close by themselves (the row, Enter / Space, the grow and the fold, inert while closed; a
+// click on the slotted summary's words counts since 0.8.0). The page keeps each choice (_ioOpen, _panelInfoOpen,
+// _panelTasksOpen, _umPanelOpen) from the element's cancelable ui-toggle; a region it paints only while open is painted on the way open (so the element grows
 // around it) and, as 'folding', kept through the fold until the element's ui-toggled says the region has settled —
 // then its nodes go.
 (function initDisclosures() {
@@ -16949,7 +16773,6 @@ function fcHydrateIn(node) {
     if (!t || !t.classList || t.tagName !== 'UI-DISCLOSURE') return;
     var open = !!(e.detail && e.detail.open);
     if (t.classList.contains('io-sys')) ioSysToggle(t.getAttribute('data-cid') || '', open);
-    else if (t.classList.contains('cg-hx')) goalHistoryToggle(t.getAttribute('data-hx') || '', open);
     else if (t.classList.contains('pi-dc')) { _panelInfoOpen = open || 'folding'; if (open) renderPanelInfo(); }
     else if (t.classList.contains('panel-tasks-dc')) { _panelTasksOpen = open || 'folding'; if (open) repaintPanelTasks(); }
     else if (t.classList.contains('panel-um-dc')) { _umPanelOpen = open || 'folding'; if (open) renderPanelArtifactsSection(); }
@@ -16957,8 +16780,7 @@ function fcHydrateIn(node) {
   document.addEventListener('ui-toggled', function(e) {
     var t = e.target;
     if (!t || !t.classList || t.tagName !== 'UI-DISCLOSURE' || (e.detail && e.detail.open)) return;
-    if (t.classList.contains('cg-hx')) goalHistoryFolded(t.getAttribute('data-hx') || '');
-    else if (t.classList.contains('pi-dc') && _panelInfoOpen === 'folding') { _panelInfoOpen = false; renderPanelInfo(); }
+    if (t.classList.contains('pi-dc') && _panelInfoOpen === 'folding') { _panelInfoOpen = false; renderPanelInfo(); }
     else if (t.classList.contains('panel-tasks-dc') && _panelTasksOpen === 'folding') { _panelTasksOpen = false; repaintPanelTasks(); }
     else if (t.classList.contains('panel-um-dc') && _umPanelOpen === 'folding') { _umPanelOpen = false; renderPanelArtifactsSection(); }
   });
