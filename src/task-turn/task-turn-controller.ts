@@ -22,6 +22,7 @@
  */
 import type { ExecutionContext } from '../agent-runtime/execution-context';
 import type { ConversationSession, TaskTurnOutcomeRecord } from '../types';
+import { buildTaskAnswerText, type TaskAnswer } from './task-answer';
 import type { RunTaskTurnInput, RunTaskTurnResult, TaskTurnNonTerminal } from './task-turn-runner';
 
 export interface TaskCommandRequest {
@@ -73,8 +74,21 @@ export interface TaskTurnControllerDeps {
   now?: () => number;
 }
 
+/** #599 ⑤ — a dashboard answer to the task's open question, bound to its `askId`. */
+export interface TaskAnswerRequest {
+  sessionKey: string;
+  askId: string;
+  answer: TaskAnswer;
+}
+
 export interface TaskTurnController {
   start(request: TaskCommandRequest): Promise<TaskCommandResponse>;
+  /**
+   * Answer the task's open question (#599 ⑤): bound to its `askId`, one answer
+   * per question, run as the next instruction through the same admission as
+   * `start`. A refusal at any point leaves the question open.
+   */
+  answer(request: TaskAnswerRequest): Promise<TaskCommandResponse>;
   /** Abort the task's chain with `session-close` and wait (bounded) for it to end. */
   close(sessionKey: string): Promise<void>;
   /** Shutdown: refuse new starts (503). Running chains end through the coordinator's `shutdown` abort. */
@@ -374,6 +388,23 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     endings.set(sessionKey, ending);
   }
 
+  async function answer(request: TaskAnswerRequest): Promise<TaskCommandResponse> {
+    const session = deps.getSession(request.sessionKey);
+    if (!session || session.slackless !== true) return refuse(409, 'not a dashboard task');
+    const question = session.actionPanel?.pendingQuestion as { askId?: string } | undefined;
+    if (session.activityState !== 'waiting' || !question) {
+      return refuse(409, 'the task is not waiting for an answer');
+    }
+    if (question.askId !== request.askId) return refuse(409, 'the question has changed — reload');
+    const built = buildTaskAnswerText(question, request.answer);
+    if (!built.ok) return refuse(built.status, built.error);
+    // One answer per question (D4): `start` admits and clears the question
+    // synchronously — before its first await — so a concurrent second answer
+    // finds no open question. A refused or unsaved start leaves (or puts back)
+    // the question, so the answer can be sent again.
+    return start({ sessionKey: request.sessionKey, text: built.text });
+  }
+
   async function close(sessionKey: string): Promise<void> {
     const chain = chains.get(sessionKey);
     const waitMs = deps.closeWaitMs ?? 60_000;
@@ -421,6 +452,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
 
   return {
     start,
+    answer,
     close,
     stopAccepting: () => {
       accepting = false;

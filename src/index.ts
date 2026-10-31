@@ -81,6 +81,7 @@ import {
   setDashboardStopHandler,
   setDashboardSubmitRecommendedHandler,
   setDashboardTaskAccessor,
+  setDashboardTaskAnswerHandler,
   setDashboardTaskCommandHandler,
   setDashboardTrashHandler,
   setOAuthDirectoryLookup,
@@ -1164,6 +1165,8 @@ async function start() {
     setDashboardTaskCommandHandler((sessionKey, message, attachments) =>
       taskController.start({ sessionKey, text: message, attachments }),
     );
+    // #599 ⑤ — an answer to a task's open question runs as its next instruction.
+    setDashboardTaskAnswerHandler((sessionKey, askId, answer) => taskController.answer({ sessionKey, askId, answer }));
     const workLogProviders: StreamExecutorProviders & {
       appendWorkLog: (conversationId: string, entry: WorkLogInput) => void;
       recordAgentEvent: (sessionKey: string, event: AgentTreeEvent) => void;

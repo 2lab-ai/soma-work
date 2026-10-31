@@ -92,6 +92,7 @@ import {
 import { GOAL_EVAL_DISPATCH_MAX_RETRIES } from '../slack/goal-completion-evaluator';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from '../slack/goal-host-actions';
 import { getSurfaceLines } from '../slack/surface-config';
+import type { TaskAnswer } from '../task-turn/task-answer';
 import { buildThreadPermalink } from '../turn-notifier';
 import { coerceEffort, EFFORT_LEVELS, type EffortLevel, userSettingsStore } from '../user-settings-store';
 import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggregate } from './aggregator';
@@ -393,6 +394,8 @@ export interface KanbanSession {
   /** Pending user choice question (present when activityState === 'waiting' and a question was asked) */
   pendingQuestion?: {
     type: 'user_choice' | 'user_choices';
+    /** #599 ⑤ — a Slack-less task's question id, sent back with the answer. */
+    askId?: string;
     question: string;
     choices?: Array<{ id: string; label: string; description?: string }>;
     /** ID of the recommended choice (single-choice) */
@@ -1336,6 +1339,45 @@ export function setDashboardEffortHandler(fn: EffortSwitchHandler): void {
 
 type ChoiceAnswerHandler = (sessionKey: string, choiceId: string, label: string, question: string) => Promise<void>;
 let _choiceAnswerHandlerFn: ChoiceAnswerHandler | null = null;
+/**
+ * #599 ⑤ — a Slack-less task's answer, bound to the question's `askId`; the
+ * task turn controller answers with the route's status and body.
+ */
+type TaskAnswerHandler = (
+  sessionKey: string,
+  askId: string,
+  answer: TaskAnswer,
+) => Promise<{ status: number; body: Record<string, unknown> }>;
+let _taskAnswerHandlerFn: TaskAnswerHandler | null = null;
+export function setDashboardTaskAnswerHandler(fn: TaskAnswerHandler | null): void {
+  _taskAnswerHandlerFn = fn;
+}
+
+/**
+ * #599 ⑤ — on a Slack-less task, an answer route hands the answer to the task
+ * answer handler (askId required) and returns true; on a Slack session it
+ * returns false and the route goes on as before.
+ */
+async function routeTaskAnswer(request: any, reply: any, sessionKey: string, answer: TaskAnswer): Promise<boolean> {
+  if (_getSessionsFn?.()?.get(sessionKey)?.slackless !== true) return false;
+  const askId = (request.body as { askId?: unknown } | undefined)?.askId;
+  if (typeof askId !== 'string' || !askId || askId.length > 200) {
+    reply.status(400).send({ error: 'askId is required to answer a dashboard task' });
+    return true;
+  }
+  if (!_taskAnswerHandlerFn) {
+    reply.status(501).send({ error: 'Task answer handler not configured' });
+    return true;
+  }
+  try {
+    const outcome = await _taskAnswerHandlerFn(sessionKey, askId, answer);
+    reply.status(outcome.status).send(outcome.body);
+  } catch (error) {
+    logger.error('Error answering a dashboard task', error);
+    reply.status(500).send({ error: 'Internal Server Error' });
+  }
+  return true;
+}
 
 export function setDashboardChoiceAnswerHandler(fn: ChoiceAnswerHandler): void {
   _choiceAnswerHandlerFn = fn;
@@ -1975,6 +2017,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
             ...(s.actionPanel.pendingQuestion.recommendedChoiceId
               ? { recommendedChoiceId: s.actionPanel.pendingQuestion.recommendedChoiceId }
               : {}),
+            ...taskAskId(s),
           }
         : s.actionPanel.pendingQuestion.type === 'user_choices'
           ? {
@@ -1994,10 +2037,19 @@ function sessionToKanban(key: string, s: any): KanbanSession {
                 context: q.context,
                 ...(q.recommendedChoiceId ? { recommendedChoiceId: q.recommendedChoiceId } : {}),
               })),
+              ...taskAskId(s),
             }
           : undefined // Unknown question type — skip
       : undefined,
   };
+}
+
+/** #599 ⑤ — a Slack-less task's question carries its `askId`; the panel echoes it with the answer. */
+function taskAskId(s: { slackless?: boolean; actionPanel?: { pendingQuestion?: { askId?: unknown } } }): {
+  askId?: string;
+} {
+  const askId = s.actionPanel?.pendingQuestion?.askId;
+  return s.slackless === true && typeof askId === 'string' && askId ? { askId } : {};
 }
 
 /** The task ledger an archive kept (T7/T8), as the card carries it. */
@@ -3519,9 +3571,10 @@ export async function registerDashboardRoutes(
         reply.status(400).send({ error: 'Field length exceeded' });
         return;
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
       if (!resolved) return;
       const { originalKey } = resolved;
+      if (await routeTaskAnswer(request, reply, originalKey, { kind: 'single', choiceId })) return;
       try {
         if (_choiceAnswerHandlerFn) {
           await _choiceAnswerHandlerFn(originalKey, choiceId, label, question);
@@ -3589,9 +3642,10 @@ export async function registerDashboardRoutes(
           return;
         }
       }
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
       if (!resolved) return;
       const { originalKey } = resolved;
+      if (await routeTaskAnswer(request, reply, originalKey, { kind: 'multi', selections })) return;
       try {
         if (_multiChoiceAnswerHandlerFn) {
           await _multiChoiceAnswerHandlerFn(originalKey, selections);
@@ -3741,9 +3795,10 @@ export async function registerDashboardRoutes(
     '/api/dashboard/session/:key/submit-recommended',
     { preHandler: [authMiddleware, ...(csrfMiddleware ? [csrfMiddleware] : [])] },
     async (request, reply) => {
-      const resolved = resolveSelfActionKeyAndOwner(request, reply);
+      const resolved = resolveSelfActionKeyAndOwner(request, reply, { allowSlackless: true });
       if (!resolved) return;
       const { originalKey } = resolved;
+      if (await routeTaskAnswer(request, reply, originalKey, { kind: 'recommended' })) return;
       try {
         if (!_submitRecommendedHandlerFn) {
           reply.status(501).send({ error: 'Submit-recommended handler not configured' });
@@ -7611,7 +7666,10 @@ async function answerChoice(key, qid, choiceId) {
   var label = stripRecommendedMarker(c.label);
   var st;
   try {
-    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/answer-choice', JSON.stringify({ choiceId: choiceId, label: label, question: q.question }));
+    var acBody = { choiceId: choiceId, label: label, question: q.question };
+    // #599 — a dashboard task's question names itself; the answer carries its id back.
+    if (q.askId) acBody.askId = q.askId;
+    var res = await acPost('/api/dashboard/session/' + encodeURIComponent(key) + '/answer-choice', JSON.stringify(acBody));
     if (res.ok) {
       st = { status: 'resolved', outcome: 'answered', choiceId: choiceId, at: Date.now() };
       dashToast({ title: '답을 보냈어요', description: label, tone: 'success' });
@@ -13561,7 +13619,9 @@ async function submitMultiChoice(key) {
     var mcHeaders = { 'Content-Type': 'application/json' };
     if (_csrfToken) mcHeaders['X-CSRF-Token'] = _csrfToken;
     var mcUrl = '/api/dashboard/session/' + encodeURIComponent(key) + '/answer-multi-choice';
-    var mcBody = JSON.stringify({ selections: st.selections });
+    var mcPayload = { selections: st.selections };
+    if (s.pendingQuestion.askId) mcPayload.askId = s.pendingQuestion.askId;
+    var mcBody = JSON.stringify(mcPayload);
     var res = await fetch(mcUrl, { method: 'POST', headers: mcHeaders, body: mcBody });
     if (res.status === 403) {
       await refreshCsrfToken();
@@ -13610,15 +13670,22 @@ async function submitAllRecommended(key) {
   var heroBtn = document.querySelector('.btn-hero-recommended');
   if (heroBtn) { heroBtn.disabled = true; heroBtn.setAttribute('aria-disabled', 'true'); }
   var url = '/api/dashboard/session/' + encodeURIComponent(key) + '/submit-recommended';
+  // #599 — a dashboard task's question names itself: send its id (as JSON). A Slack
+  // session's request stays body-less, with no Content-Type (Fastify refuses an empty JSON body).
+  var srs = _sessionCache[key];
+  var srAskId = srs && srs.pendingQuestion && srs.pendingQuestion.askId;
+  var srBody = srAskId ? JSON.stringify({ askId: srAskId }) : undefined;
+  function srInit() {
+    var h = {};
+    if (_csrfToken) h['X-CSRF-Token'] = _csrfToken;
+    if (srBody) h['Content-Type'] = 'application/json';
+    return srBody ? { method: 'POST', headers: h, body: srBody } : { method: 'POST', headers: h };
+  }
   try {
-    var headers = {};
-    if (_csrfToken) headers['X-CSRF-Token'] = _csrfToken;
-    var res = await fetch(url, { method: 'POST', headers: headers });
+    var res = await fetch(url, srInit());
     if (res.status === 403) {
       await refreshCsrfToken();
-      var retryHeaders = {};
-      if (_csrfToken) retryHeaders['X-CSRF-Token'] = _csrfToken;
-      res = await fetch(url, { method: 'POST', headers: retryHeaders });
+      res = await fetch(url, srInit());
     }
     if (!res.ok) {
       var errData = {};

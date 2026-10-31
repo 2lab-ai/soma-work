@@ -103,6 +103,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
   /** When set, the next request is refused 403 as csrfMiddleware does after a JWT rotation. */
   let staleCsrfOnce: boolean;
   let csrfRefreshes: number;
+  let mcState: Record<string, { selections: Record<string, { choiceId: string; label: string }>; activeQ: number }>;
 
   beforeEach(async () => {
     vi.resetModules();
@@ -149,6 +150,12 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
     // affectUI batch 1: the single-choice answer comes from <ui-approval-card> (answerChoice(key, qid, choiceId));
     // failures are error toasts (dashToast), not alert().
     sessionCache = { [KEY]: { key: KEY, pendingQuestion: twoQuestions } };
+    mcState = {
+      [KEY]: {
+        selections: { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } },
+        activeQ: 0,
+      },
+    };
     client = load<AnswerClient>(
       [
         'submitAllRecommended',
@@ -178,12 +185,7 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
           csrfRefreshes++;
         },
         _sessionCache: sessionCache,
-        _mcState: {
-          [KEY]: {
-            selections: { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } },
-            activeQ: 0,
-          },
-        },
+        _mcState: mcState,
       },
     );
   });
@@ -229,6 +231,58 @@ describe('dashboard answer buttons → real server (shipped client code)', () =>
     expect(handler).toHaveBeenCalledWith(KEY, {
       q1: { choiceId: '1', label: 'a' },
       q2: { choiceId: '1', label: 'b' },
+    });
+  });
+
+  describe('#599 ⑤ — on a dashboard task the answer carries the question’s askId to the task handler', () => {
+    const TASK = 'task:11111111-2222-4333-8444-555555555555';
+    let taskHandler: ReturnType<typeof vi.fn>;
+    beforeEach(() => {
+      dashboard.setDashboardSessionAccessor(
+        () =>
+          new Map([
+            [KEY, { ownerId: 'U1', activityState: 'waiting' }],
+            [TASK, { ownerId: 'U1', activityState: 'waiting', slackless: true }],
+          ]) as any,
+      );
+      taskHandler = vi.fn().mockResolvedValue({ status: 202, body: { ok: true } });
+      dashboard.setDashboardTaskAnswerHandler(taskHandler as any);
+    });
+    afterEach(() => dashboard.setDashboardTaskAnswerHandler(null));
+
+    it('a single choice', async () => {
+      const q = { ...single, askId: 'ask-7' };
+      sessionCache[TASK] = { key: TASK, pendingQuestion: q };
+      const st = await client.answerChoice(TASK, client.acQuestionId(q), '2');
+      expect(taskHandler).toHaveBeenCalledWith(TASK, 'ask-7', { kind: 'single', choiceId: '2' });
+      expect(st).toMatchObject({ status: 'resolved', outcome: 'answered' });
+    });
+
+    it('a multi-choice form', async () => {
+      sessionCache[TASK] = {
+        key: TASK,
+        pendingQuestion: { ...(sessionCache[KEY].pendingQuestion as object), askId: 'ask-8' },
+      };
+      mcState[TASK] = {
+        selections: { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } },
+        activeQ: 0,
+      };
+      await client.submitMultiChoice(TASK);
+      expect(taskHandler).toHaveBeenCalledWith(TASK, 'ask-8', {
+        kind: 'multi',
+        selections: { q1: { choiceId: '1', label: 'a' }, q2: { choiceId: '1', label: 'b' } },
+      });
+      expect(alerts).toEqual([]);
+    });
+
+    it('“submit all recommended”', async () => {
+      sessionCache[TASK] = {
+        key: TASK,
+        pendingQuestion: { ...(sessionCache[KEY].pendingQuestion as object), askId: 'ask-9' },
+      };
+      await client.submitAllRecommended(TASK);
+      expect(taskHandler).toHaveBeenCalledWith(TASK, 'ask-9', { kind: 'recommended' });
+      expect(alerts).toEqual([]);
     });
   });
 

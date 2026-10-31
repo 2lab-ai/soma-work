@@ -593,3 +593,124 @@ describe('TaskTurnController — acceptance and the chain (598c §3–§5, v2)',
     expect(order).toEqual(['abandoned', 'closed']);
   });
 });
+
+describe('TaskTurnController.answer — a dashboard answer to a task’s question (#599 ⑤)', () => {
+  const QUESTION = {
+    type: 'user_choice',
+    question: 'Which DB?',
+    choices: [
+      { id: 'pg', label: 'Postgres' },
+      { id: 'my', label: 'MySQL' },
+    ],
+    askId: 'ask-1',
+    turnId: 't-ask',
+  };
+  const waiting = (h: ReturnType<typeof harness>, key = KEY) => {
+    const s = h.sessions.get(key);
+    s.activityState = 'waiting';
+    s.actionPanel = { waitingForChoice: true, pendingQuestion: { ...QUESTION } };
+    return s;
+  };
+
+  it('runs the answer as the next instruction — the Slack text, user input — and clears the question', async () => {
+    const h = harness();
+    waiting(h);
+    const r = await h.controller.answer({
+      sessionKey: KEY,
+      askId: 'ask-1',
+      answer: { kind: 'single', choiceId: 'pg' },
+    });
+    expect(r.status).toBe(202);
+    await r.done;
+    expect(h.inputs[0]).toMatchObject({ text: 'pg' });
+    expect(h.inputs[0].params?.isUserInput).toBe(true);
+    expect(h.sessions.get(KEY).actionPanel.pendingQuestion).toBeUndefined();
+  });
+
+  it('an answer for another question (stale askId) is 409 and changes nothing', async () => {
+    const h = harness();
+    waiting(h);
+    const r = await h.controller.answer({
+      sessionKey: KEY,
+      askId: 'ask-0',
+      answer: { kind: 'single', choiceId: 'pg' },
+    });
+    expect(r).toMatchObject({ status: 409, body: { error: 'the question has changed — reload' } });
+    expect(h.runTaskTurn).not.toHaveBeenCalled();
+    expect(h.sessions.get(KEY).actionPanel.pendingQuestion.askId).toBe('ask-1');
+  });
+
+  it('a task that is not waiting takes no answer', async () => {
+    const h = harness();
+    const s = waiting(h);
+    s.activityState = 'idle';
+    expect(
+      (await h.controller.answer({ sessionKey: KEY, askId: 'ask-1', answer: { kind: 'single', choiceId: 'pg' } }))
+        .status,
+    ).toBe(409);
+    expect(h.runTaskTurn).not.toHaveBeenCalled();
+  });
+
+  it('a choice that was not offered is 422 and the question stays', async () => {
+    const h = harness();
+    waiting(h);
+    const r = await h.controller.answer({
+      sessionKey: KEY,
+      askId: 'ask-1',
+      answer: { kind: 'single', choiceId: 'oracle' },
+    });
+    expect(r.status).toBe(422);
+    expect(h.runTaskTurn).not.toHaveBeenCalled();
+    expect(h.sessions.get(KEY).actionPanel).toMatchObject({
+      waitingForChoice: true,
+      pendingQuestion: { askId: 'ask-1' },
+    });
+  });
+
+  it('one answer only: a concurrent second answer to the same question is refused', async () => {
+    const h = harness();
+    waiting(h);
+    const a = h.controller.answer({ sessionKey: KEY, askId: 'ask-1', answer: { kind: 'single', choiceId: 'pg' } });
+    const b = h.controller.answer({ sessionKey: KEY, askId: 'ask-1', answer: { kind: 'single', choiceId: 'my' } });
+    const [ra, rb] = await Promise.all([a, b]);
+    expect([ra.status, rb.status].sort()).toEqual([202, 409]);
+    await ra.done;
+    await rb.done;
+    expect(h.runTaskTurn).toHaveBeenCalledTimes(1);
+  });
+
+  it('an answer refused at admission (the owner’s other task runs) keeps the question, and can be sent again later', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => {
+      release = r;
+    });
+    const h = harness({}, [
+      async (input) => {
+        input.onStarted?.();
+        await gate;
+        return completed('other');
+      },
+    ]);
+    const other = await h.controller.start({ sessionKey: KEY2, text: 'other work' });
+    waiting(h);
+    const refused = await h.controller.answer({
+      sessionKey: KEY,
+      askId: 'ask-1',
+      answer: { kind: 'single', choiceId: 'pg' },
+    });
+    expect(refused.status).toBe(429);
+    expect(h.sessions.get(KEY).actionPanel).toMatchObject({
+      waitingForChoice: true,
+      pendingQuestion: { askId: 'ask-1' },
+    });
+    release();
+    await other.done;
+    const again = await h.controller.answer({
+      sessionKey: KEY,
+      askId: 'ask-1',
+      answer: { kind: 'single', choiceId: 'pg' },
+    });
+    expect(again.status).toBe(202);
+    await again.done;
+  });
+});
