@@ -93,6 +93,12 @@ export interface TaskTurnController {
    * `start`. A refusal at any point leaves the question open.
    */
   answer(request: TaskAnswerRequest): Promise<TaskCommandResponse>;
+  /**
+   * A dry run of the owner-level admission a start would meet (shutdown, the
+   * owner's running task, the start window): null when it may start, else the
+   * refusal. Takes nothing — #600 ⑥ asks before it creates a task.
+   */
+  canStart(ownerId: string): TaskCommandResponse | null;
   /** Abort the task's chain with `session-close` and wait (bounded) for it to end. */
   close(sessionKey: string): Promise<void>;
   /** Shutdown: refuse new starts (503). Running chains end through the coordinator's `shutdown` abort. */
@@ -133,6 +139,19 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
   let accepting = true;
 
   const refuse = (status: number, error: string): TaskCommandResponse => ({ status, body: { error } });
+
+  /** The owner-level part of admission (D9): no side effect. */
+  function ownerAdmission(ownerId: string, t: number): TaskCommandResponse | null {
+    if (ownerChain.has(ownerId)) return refuse(429, 'one dashboard task runs at a time — wait for it to finish');
+    const recent = (starts.get(ownerId) ?? []).filter((at) => t - at < windowMs);
+    if (recent.length >= maxStarts) return refuse(429, 'too many dashboard task starts — try again shortly');
+    return null;
+  }
+
+  function canStart(ownerId: string): TaskCommandResponse | null {
+    if (!accepting) return refuse(503, 'the service is shutting down — try again shortly');
+    return ownerAdmission(ownerId, now());
+  }
 
   function admit(
     request: TaskCommandRequest,
@@ -181,15 +200,10 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       return { ok: false, response: refuse(409, 'a turn is already running on this task') };
     }
     const ownerId = ctx.userId;
-    if (ownerChain.has(ownerId)) {
-      return { ok: false, response: refuse(429, 'one dashboard task runs at a time — wait for it to finish') };
-    }
     const t = now();
+    const ownerRefusal = ownerAdmission(ownerId, t);
+    if (ownerRefusal) return { ok: false, response: ownerRefusal };
     const recent = (starts.get(ownerId) ?? []).filter((at) => t - at < windowMs);
-    if (recent.length >= maxStarts) {
-      starts.set(ownerId, recent);
-      return { ok: false, response: refuse(429, 'too many dashboard task starts — try again shortly') };
-    }
     recent.push(t);
     starts.set(ownerId, recent);
     return { ok: true, session, ctx, ownerId, startedAt: t };
@@ -488,6 +502,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
   return {
     start,
     answer,
+    canStart,
     close,
     stopAccepting: () => {
       accepting = false;
