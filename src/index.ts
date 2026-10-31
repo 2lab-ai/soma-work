@@ -1211,8 +1211,11 @@ async function start() {
         });
       },
       epicCostLimitUsd: (ownerId) => userSettingsStore.getUserEpicCostLimitUsd(ownerId),
-      // E4 ⑥ — however a chain ended, an epic left with pending events may wake (grok #702 R1).
-      onChainEnd: (key) => epicWaker.wake(key),
+      // E4 ⑥ — once a chain that started has ended, an epic left with pending events may wake
+      // (grok #702 R1); one that never started is the waker's own retry to make (fable #702 R2).
+      onChainEnd: (key, { started }) => {
+        if (started) epicWaker.wake(key);
+      },
     });
     taskTurnController = taskController;
     // E4 ④a (.prd/19 D3) — the host the epic's tools call: registry reads, the plan writer,
@@ -1227,15 +1230,15 @@ async function start() {
         return readTurnFinal(readWorkLog, child.conversationId, turnId);
       },
     });
-    // E4 ⑥ (.prd/19 D7) — an epic with pending events wakes when it is idle: when its
-    // chain ends (the post-drain idle hook), right after an event, and at boot (below).
-    // Never the cron path.
+    // E4 ⑥ (.prd/19 D7) — an epic with pending events wakes when it is idle: when a chain
+    // of its ends (the controller's onChainEnd, above — the post-drain idle hook fires inside
+    // the epic's own commit, before its chain is released, so it is not used), right after
+    // an event, and at boot (below). Never the cron path.
     const epicWaker = createEpicWaker({
       getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
       controller: taskController,
       logger: new Logger('EpicWaker'),
     });
-    claudeHandler.getSessionRegistry().setOnIdleAfterDrainHook((key) => epicWaker.wake(key));
     claudeHandler.getSessionRegistry().setEpicEventListener((key) => epicWaker.wake(key));
     setDashboardTaskCommandHandler((sessionKey, message, attachments, actorUserId) =>
       taskController.start({ sessionKey, text: message, attachments, actorUserId }),

@@ -8,10 +8,11 @@
  * pending, and a wake chain reconciled `interrupted` on restart puts them back.
  *
  * Callers (index.ts): the controller's chain end (`onChainEnd`, after the task
- * is free), the post-drain idle hook, the registry's event listener (an event
+ * is free, for a chain that started), the registry's event listener (an event
  * was just added), and a boot scan after the web server is up. A wake runs off
  * the commit path (`queueMicrotask`). A start refused for now (429 — the tree's
- * window, slot or cost cap; 503 — shutting down) arms one timed retry per
+ * window, slot or cost cap; 500 — its start did not happen; 503 — shutting
+ * down) arms one timed retry per
  * epic, so a window that later frees does not leave the events waiting for
  * the next event (fable #702 R1 P2). Only one: a refusal of that retry arms
  * nothing more until a wake is admitted or nothing waits (grok #702 R2) — a
@@ -82,7 +83,7 @@ export function createEpicWaker(deps: EpicWakerDeps): EpicWaker {
       status: started.status,
       error: started.body.error,
     });
-    if (started.status === 429 || started.status === 503) retryLater(sessionKey);
+    if (started.status === 429 || started.status === 500 || started.status === 503) retryLater(sessionKey);
   }
 
   function wake(sessionKey: string): void {

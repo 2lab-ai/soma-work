@@ -1,5 +1,8 @@
 /**
- * E4 ⑥ — end to end: real registry + real controller, wired as index.ts does (the idle hook, the event listener, onChainEnd); a runner that uses the registry like the real one. An event that came while the epic worked wakes it once its chain has ended — the idle hook alone fires inside the epic’s own commit, before the chain is released (fable #702 R1 P0).
+ * E4 ⑥ — end to end: real registry + real controller, wired as index.ts does
+ * (the event listener; onChainEnd for a chain that started); a runner that uses
+ * the registry like the real one. An event that came while the epic worked
+ * wakes it once its chain has ended (fable #702 R1 P0).
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -84,10 +87,11 @@ describe('E4 ⑥ — the wake loop end to end (fable #702 R1 P0)', () => {
       buildExecutionContext: (s: any) => ({ origin: 'task', userId: s.ownerId, workingDirectory: '/w' }) as any,
       logger,
       treeCostUsd: () => 0,
-      onChainEnd: (k) => waker.wake(k),
+      onChainEnd: (k, { started }) => {
+        if (started) waker.wake(k);
+      },
     });
     waker = createEpicWaker({ getSession: (k) => reg.getSessionByKey(k), controller, logger });
-    reg.setOnIdleAfterDrainHook((k) => waker.wake(k));
     reg.setEpicEventListener((k) => waker.wake(k));
 
     const r = await controller.start({ sessionKey: epicKey, text: 'plan it', actorUserId: 'U1' });

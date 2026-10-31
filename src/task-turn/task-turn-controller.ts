@@ -107,11 +107,13 @@ export interface TaskTurnControllerDeps {
   closeWaitMs?: number;
   now?: () => number;
   /**
-   * E4 ⑥ — told each chain's end, however it ended (an outcome, a start that
-   * was never saved, a throw), after the task is free again: an epic woken for
-   * events that came while it ran (grok #702 R1). Never throws into the chain.
+   * E4 ⑥ — told each chain's end, however it ended (an outcome, a throw),
+   * after the task is free again — an epic woken for events that came while it
+   * ran (grok #702 R1). `started`: some hop's start was saved. A chain that
+   * never started is not a cause to wake again (that would loop on a start
+   * that keeps failing — fable #702 R2). Never throws into the chain.
    */
-  onChainEnd?: (sessionKey: string) => void;
+  onChainEnd?: (sessionKey: string, info: { started: boolean }) => void;
 }
 
 /** #599 ⑤ — a dashboard answer to the task's open question, bound to its `askId`. */
@@ -384,8 +386,12 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     const abort = new AbortController();
     deps.coordinator.setController(sessionKey, abort);
     let markStarted!: () => void;
+    let chainStarted = false;
     const started = new Promise<'started'>((resolve) => {
-      markStarted = () => resolve('started');
+      markStarted = () => {
+        chainStarted = true;
+        resolve('started');
+      };
     });
     const progress = { committedBeforeStart: false };
     // E2 ③ — every hop of this chain carries its id; the chain is open from
@@ -422,7 +428,7 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
       if (chains.get(sessionKey) === chain) chains.delete(sessionKey);
       releaseSlot(chain, sessionKey);
       try {
-        deps.onChainEnd?.(sessionKey);
+        deps.onChainEnd?.(sessionKey, { started: chainStarted });
       } catch (error) {
         deps.logger.warn('onChainEnd raised', { sessionKey, error: (error as Error)?.message });
       }
