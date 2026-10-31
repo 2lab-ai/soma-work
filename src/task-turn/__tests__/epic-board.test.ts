@@ -101,6 +101,26 @@ describe('epicBoardView (E4 ⑧)', () => {
     expect(epicBoardView(epic(), [working], { activityOf: () => undefined }).state).toBe('running');
   });
 
+  it('a running node whose child the board shows waiting is needs-input, like the epic (fable #704 R2 P3-1)', () => {
+    const working = child('c1', 'login', { activityState: 'working' });
+    const other = child('c2', 'docs', { activityState: 'working' });
+    const shown = (c: any) => (c.taskId === 'c1' ? 'waiting' : undefined);
+    const v = epicBoardView(epic(), [working, other], { activityOf: shown });
+    expect(v.state).toBe('needs-input');
+    expect(v.nodes.map((n) => [n.id, n.status])).toEqual([
+      ['login', 'needs-input'],
+      ['login-test', 'none'],
+      ['docs', 'running'],
+    ]);
+    expect(v.progress.byStatus).toEqual({ 'needs-input': 1, none: 1, running: 1 });
+    // Shown working (an armed resume) does not make an idle node running.
+    const idle = child('c3', 'docs');
+    expect(epicBoardView(epic(), [idle], { activityOf: () => 'working' }).nodes[2].status).not.toBe('running');
+    // Only a running node changes: a finished node keeps its chain's result whatever the board shows.
+    const done = child('c4', 'docs', { lastTurnOutcome: { turnId: 't1', outcome: 'completed', at: 1 } });
+    expect(epicBoardView(epic(), [done], { activityOf: () => 'waiting' }).nodes[2].status).toBe('finished');
+  });
+
   it('a running child outranks done', () => {
     const done = { plan: { nodes: [{ id: 'login', title: 'L', kind: 'issue' }], done: { by: 'epic', at: 1 } } };
     expect(epicBoardView(epic(done), [child('c1', 'login', { activityState: 'working' })]).state).toBe('running');

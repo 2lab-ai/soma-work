@@ -583,6 +583,13 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
       dashboard.broadcastSingleSessionUpdate(`task:${child.taskId}`);
       await vi.waitFor(() => expect(pushed()).toHaveLength(3));
       expect(pushed()[2].key).toBe(`task:${child.taskId}`);
+
+      // A forged parent id (a key separator in it) names no epic: the child still pushes its own card.
+      epic.trashed = false;
+      child.parentTaskId = 'forged:id';
+      dashboard.broadcastSingleSessionUpdate(`task:${child.taskId}`);
+      await vi.waitFor(() => expect(pushed()).toHaveLength(4));
+      expect(pushed()[3].key).toBe(`task:${child.taskId}`);
     } finally {
       ws.terminate();
     }

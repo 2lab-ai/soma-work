@@ -14,7 +14,8 @@
  *
  * A child's activity is what the board shows for it (`activityOf`): a turn
  * blocked on a permission prompt reads `waiting`, an idle child with an armed
- * automatic resume reads `working` — its record's otherwise.
+ * automatic resume reads `working` — its record's otherwise. A running node
+ * whose child reads `waiting` there is `needs-input` too.
  */
 import type { ConversationSession, EpicPlanNode } from '../types';
 import { type EpicNodeStatus, epicNodeStatus, isEpicDone } from './epic-plan';
@@ -53,12 +54,19 @@ export function epicBoardView(
   const children = liveChildren.filter((c) => c.parentTaskId === epic.taskId && c.ownerId === epic.ownerId);
   const activity = (c: ConversationSession) => options.activityOf?.(c) ?? c.activityState;
   const events = epic.epicEvents ?? [];
+  // A running node whose child the board shows waiting (a permission prompt with no approval
+  // event on the epic) reads needs-input, as the epic's state does (fable #704 R2 P3-1).
+  const statusOf = (n: EpicPlanNode): EpicNodeStatus => {
+    const status = epicNodeStatus(n, children, events);
+    const prompted = children.some((c) => c.planNodeId === n.id && activity(c) === 'waiting');
+    return status === 'running' && prompted ? 'needs-input' : status;
+  };
   const nodes: EpicBoardNode[] = (epic.plan?.nodes ?? []).map((n) => ({
     id: n.id,
     title: n.title,
     kind: n.kind,
     ...(n.parent ? { parent: n.parent } : {}),
-    status: epicNodeStatus(n, children, events),
+    status: statusOf(n),
     accepted: n.accepted !== undefined,
     childTaskIds: children.filter((c) => c.planNodeId === n.id && c.taskId).map((c) => c.taskId as string),
   }));
