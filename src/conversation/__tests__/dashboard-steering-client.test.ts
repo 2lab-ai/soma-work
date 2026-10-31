@@ -158,6 +158,7 @@ describe('pcInit — the element’s events reach the page’s handlers on #pane
       steerAct: (...a: unknown[]) => acts.push(a),
       pcOnSubmit: (e: unknown) => submits.push(e),
       _pcNoteFiles: noteFiles,
+      _pcFailed: {},
     }).pcInit();
     expect(composer.data).toEqual({
       lang: 'ko',

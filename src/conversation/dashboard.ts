@@ -4169,7 +4169,8 @@ function withPickerPrice<T extends { model: string }>(m: T): T | (T & { price: {
 }
 
 function renderDashboardPage(userId?: string): string {
-  const initUser = userId ? JSON.stringify(userId) : 'null';
+  // `<` escaped like every other injected constant: the userId is the URL's, a `</script>` in it must stay data.
+  const initUser = userId ? JSON.stringify(userId).replace(/</g, '\\u003c') : 'null';
   // #814 — inject the local instance's name so the frontend can identify
   // sibling cards (`environment.instanceName !== SELF_INSTANCE_NAME`) and
   // hide actions that would silently 4xx if dispatched to the wrong port.
@@ -12848,6 +12849,15 @@ function paintCharts(days, loading) {
 // new version is out and reloads when asked. Once per server build: a page still skewed after its reload (a proxy
 // that served the old page again) asks instead of looping.
 var _buildSkewToast = ''; // the server build the 새 버전 toast was shown for
+var _recording = []; // composers recording a voice note now (ui-record start … stop / cancel / error)
+document.addEventListener('ui-record', function(e) {
+  var i = _recording.indexOf(e.target);
+  if (e.detail && e.detail.state === 'start') {
+    if (i < 0) _recording.push(e.target);
+  } else if (i >= 0) {
+    _recording.splice(i, 1);
+  }
+});
 function buildSkewed(serverBuild) {
   return !!PAGE_BUILD && !!serverBuild && String(serverBuild) !== PAGE_BUILD;
 }
@@ -12856,8 +12866,18 @@ function buildSkewed(serverBuild) {
 // queued note being edited). A closed dialog's fields are not unsent: the lifecycle form keeps the saved policy
 // there, the new task keeps its draft in localStorage (review round 2, fable P2/P3).
 function hasUnsentInput() {
-  // A note on its way out (its files being read, its POST in flight) …
-  if (_pcSending) return true;
+  // A note on its way out — its files being read (_pcSending), its POST not answered yet (_pcInFlight) …
+  if (_pcSending || _pcInFlight > 0) return true;
+  // … a voice note being recorded, a note whose send failed (its row offers Retry; the text is only there) …
+  // (a composer swapped out mid-recording is cancelled after it left the page — its event never reaches us)
+  _recording = _recording.filter(function(el) { return el && el.isConnected !== false; });
+  if (_recording.length) return true;
+  for (var fr in _pcFailed) return true;
+  // … a new task being launched (its dialog may already be closed), an answer on its way (an approval card sending) …
+  if (_ntBusy) return true;
+  for (var ak in _acState) {
+    for (var aid in _acState[ak]) if (_acState[ak][aid] && _acState[ak][aid].status === 'sending') return true;
+  }
   // … a multi-question form with answers picked but not yet submitted (kept per session, across panel switches) …
   for (var mk in _mcState) {
     var mst = _mcState[mk];
@@ -12865,9 +12885,23 @@ function hasUnsentInput() {
   }
   var c = document.getElementById('pc-composer');
   if (c && (String(c.value || '').trim() || (c.files && c.files.length))) return true;
+  // The new task's draft keeps its text (when localStorage took it), not its files: with the dialog closed, its
+  // files count, and so does text the saved draft does not hold.
+  var nt = document.getElementById('nt-composer');
+  if (nt && nt.files && nt.files.length) return true;
+  var ntText = nt ? String(nt.value || '').trim() : '';
+  if (ntText && ntText !== ntSavedPrompt()) return true;
   var dialogs = document.querySelectorAll('ui-dialog, dialog');
   for (var d = 0; d < dialogs.length; d++) if (dialogs[d].open) return true;
   return filledField(document, 0);
+}
+function ntSavedPrompt() {
+  try {
+    var d = JSON.parse(localStorage.getItem(NT_DRAFT_KEY) || 'null');
+    return d && typeof d.prompt === 'string' ? d.prompt.trim() : '';
+  } catch (e) {
+    return '';
+  }
 }
 function inClosedDialog(el) {
   var d = el && el.closest ? el.closest('ui-dialog, dialog') : null;
@@ -15647,6 +15681,7 @@ async function sendCommand(text, ref, files) {
   }
 
   var why = '';
+  _pcInFlight++; // until the server answered: a reload now would drop a note the composer no longer holds
   try {
     const cmdUrl = '/api/dashboard/session/' + encodeURIComponent(sendingSessionKey) + '/command';
     const res = await acPost(cmdUrl, JSON.stringify(pcCommandBody(msg, attachments)));
@@ -15657,9 +15692,14 @@ async function sendCommand(text, ref, files) {
     }
   } catch (e) {
     why = (e && e.message) || '네트워크 오류';
+  } finally {
+    _pcInFlight--;
   }
   // Sent: its files went with it. Failed: they stay kept by ref for the Retry.
-  if (!why && ref) delete _pcNoteFiles[ref];
+  if (!why && ref) {
+    delete _pcNoteFiles[ref];
+    delete _pcFailed[ref];
+  }
   // Only the card that sent it changes: a late answer never touches the card opened meanwhile.
   if (panelSessionKey !== sendingSessionKey) return;
   // The session left the board meanwhile (archived, a folded day): fail closed. The next live
@@ -15675,7 +15715,10 @@ async function sendCommand(text, ref, files) {
   // optimistic turn leaves the transcript — found by its own id, not by being the
   // list's last child (the 응답 작성 중 row may follow it, re-ai-answer D12).
   if (optimisticId) dropTurnFromPanel(optimisticId);
-  if (ref) el.setItemState(ref, 'failed', why.trim());
+  if (ref) {
+    el.setItemState(ref, 'failed', why.trim());
+    _pcFailed[ref] = true;
+  }
   dashToast({ title: '메시지를 보내지 못했어요', description: why.trim(), tone: 'error' });
 }
 // A note that did not go out at all (a file that could not be read): its row goes
@@ -15683,7 +15726,7 @@ async function sendCommand(text, ref, files) {
 // attached something new there, or moved to another card.
 function pcGiveBack(el, ref, msg, key) {
   var files = (ref && _pcNoteFiles[ref]) || [];
-  if (ref) { delete _pcNoteFiles[ref]; el.setItemState(ref, 'cancelled'); }
+  if (ref) { delete _pcNoteFiles[ref]; delete _pcFailed[ref]; el.setItemState(ref, 'cancelled'); }
   if (panelSessionKey !== key) return;
   if (msg && !el.value) el.value = msg;
   var c = document.getElementById('pc-composer');
@@ -17725,6 +17768,8 @@ connectWs();
 // files the user attached there.
 var PC_LIMITS = { maxFiles: 10, maxFileBytes: 20971520, maxTotalBytes: 31457280 };
 var _pcSending = false; // one send at a time, while its files are read
+var _pcInFlight = 0; // notes whose POST has not been answered yet (build skew: they hold a reload)
+var _pcFailed = Object.create(null); // refs of notes whose send failed — their row (Retry) holds the only copy
 function pcCanSend(message, files) {
   return String(message || '').trim().length > 0 || (files || []).length > 0;
 }
@@ -17760,6 +17805,7 @@ function pcFreshSteer() {
   pcComposerSetup(c);
   el.appendChild(c);
   old.replaceWith(el);
+  _pcFailed = Object.create(null);
   _pcNoteFiles = Object.create(null);
 }
 // The panel closed, or its session is no longer open to this viewer: no recording
@@ -17783,6 +17829,7 @@ function pcInit() {
   host.addEventListener('ui-cancel', function(e) {
     if (!e.detail) return;
     delete _pcNoteFiles[String(e.detail.id)];
+    delete _pcFailed[String(e.detail.id)];
     steerAct('cancel', String(e.detail.id));
   });
   host.addEventListener('ui-edit', function(e) { if (e.detail) steerAct('edit', String(e.detail.id), String(e.detail.text || '')); });
