@@ -69,7 +69,10 @@ function harness(
     },
     listModels: () => MODELS,
     cleanupSessions: over.cleanupSessions,
-    ...(over.epicTasks !== undefined ? { epicTasksEnabled: () => over.epicTasks === true } : {}),
+    // The flag is the owner's own: any other id reads as off (fable #699 R1 P3-2).
+    ...(over.epicTasks !== undefined
+      ? { epicTasksEnabled: (ownerId: string) => ownerId === OWNER && over.epicTasks === true }
+      : {}),
   });
   return { launcher, controller, calls, created };
 }
