@@ -921,9 +921,13 @@ describe('wiring — the lane’s job boxes, the paint, the fold, the drawer', (
     expect(countdown('1700000000000.4')).toContain('until="1700000000000"');
     expect(countdown('x')).toBe('');
     expect(countdown(undefined)).toBe('');
-    expect(TEMPLATE).toContain(
-      "if (d) d.addEventListener('ui-end', function(e) { if (e.target && e.target.localName === 'ui-elapsed') loadCronJobs(); });",
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initCronDrawer() {'));
+    const onEnd = init.slice(init.indexOf("d.addEventListener('ui-end'"), init.indexOf('\n})();'));
+    expect(onEnd).toContain(
+      "if (!e.target || e.target.localName !== 'ui-elapsed' || !(at > 0) || at === _cronDueReloaded) return;",
     );
+    expect(onEnd).toContain('_cronDueReloaded = at;\n    loadCronJobs();');
+    expect(TEMPLATE).toContain('var _cronDueReloaded = 0;');
     for (const gone of [
       'aqTick',
       'aqTime',

@@ -15948,13 +15948,20 @@ function closeCronDrawer(after) {
     if (after) after();
   })();
 }
+var _cronDueReloaded = 0; // the 다음 실행 (epoch ms) whose zero already reloaded the jobs
 // Escape, the scrim and ✕ arrive as the element's ui-close; the page closes it itself (closeCronDrawer) so focus
 // returns to the control that opened it even when the lane re-rendered that control meanwhile.
 (function initCronDrawer() {
   var d = document.getElementById('cron-drawer');
   if (d) d.addEventListener('ui-close', function(e) { e.preventDefault(); closeCronDrawer(); });
-  // The 다음 실행 countdown reached zero: the job is due — fetch the jobs, so the facts and the lane say the next one.
-  if (d) d.addEventListener('ui-end', function(e) { if (e.target && e.target.localName === 'ui-elapsed') loadCronJobs(); });
+  // The 다음 실행 countdown reached zero: the job is due — fetch the jobs once for that due time, so the facts and the
+  // lane say the next one (a due time the server still reports after the fetch repaints as 곧 and asks no more).
+  if (d) d.addEventListener('ui-end', function(e) {
+    var at = e.detail ? Number(e.detail.until) : 0;
+    if (!e.target || e.target.localName !== 'ui-elapsed' || !(at > 0) || at === _cronDueReloaded) return;
+    _cronDueReloaded = at;
+    loadCronJobs();
+  });
 })();
 document.addEventListener('click', function(e) {
   var t = e.target && e.target.closest ? e.target : null;
