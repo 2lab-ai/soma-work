@@ -229,4 +229,24 @@ describe('ToolTracker', () => {
       vi.useRealTimers();
     }
   });
+
+  it('#629 R2 — a keyless cleanup that fires first neither cancels a later session cleanup nor drops its tools', () => {
+    vi.useFakeTimers();
+    try {
+      const tracker = new ToolTracker();
+      tracker.trackToolUse('tu-s', 'Read', 'task:a');
+      tracker.trackToolUse('tu-global', 'Read');
+      const sessionCb = vi.fn();
+      tracker.scheduleCleanup(40, sessionCb, 'task:a');
+      tracker.scheduleCleanup(5, () => {});
+      vi.advanceTimersByTime(5);
+      expect(tracker.getToolName('tu-s')).toBe('Read'); // the session's tool use survives the global sweep
+      expect(tracker.getToolName('tu-global')).toBeUndefined();
+      vi.advanceTimersByTime(35);
+      expect(sessionCb).toHaveBeenCalledTimes(1);
+      expect(tracker.getToolName('tu-s')).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
