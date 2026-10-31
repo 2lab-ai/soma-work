@@ -22,6 +22,8 @@ import type { TaskLedger } from './session/task-ledger';
 import type {
   ActivityState,
   ConversationSession,
+  EpicEvent,
+  EpicPlan,
   HandoffContext,
   OriginThread,
   SessionCronJob,
@@ -64,6 +66,9 @@ export interface ArchivedSession {
   parentTaskId?: string;
   planNodeId?: string;
   childTaskIds?: string[];
+  /** E4 ② — an epic's plan and events (validated on revive). */
+  plan?: EpicPlan;
+  epicEvents?: EpicEvent[];
 
   // Owner
   ownerId: string;
@@ -180,6 +185,8 @@ function sessionToArchive(
     parentTaskId: session.parentTaskId,
     planNodeId: session.planNodeId,
     childTaskIds: session.childTaskIds ? [...session.childTaskIds] : undefined,
+    plan: session.plan,
+    epicEvents: session.epicEvents,
 
     ownerId: session.ownerId,
     ownerName: session.ownerName,
