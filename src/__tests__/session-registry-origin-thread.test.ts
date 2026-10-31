@@ -148,9 +148,15 @@ describe('SessionRegistry — a task’s instruction thread (E2 ①)', () => {
     const task = reg.createTask({ ...TASK_INPUT, originThread: ORIGIN });
     const before = fs.readFileSync(SESSIONS_FILE, 'utf8');
 
-    expect(() =>
-      reg.createTask({ ...TASK_INPUT, originThread: { ...ORIGIN, messageTs: '1700000000.000200' } }),
-    ).toThrow(OriginThreadTakenError);
+    let refused: unknown;
+    try {
+      reg.createTask({ ...TASK_INPUT, originThread: { ...ORIGIN, messageTs: '1700000000.000200' } });
+    } catch (error) {
+      refused = error;
+    }
+    expect(refused).toBeInstanceOf(OriginThreadTakenError);
+    // The entry (⑧) answers with the holder's card: the error names it.
+    expect((refused as OriginThreadTakenError).holderTaskId).toBe(task.taskId);
     expect([...reg.getAllSessions().keys()]).toEqual([`task:${task.taskId}`]);
     expect(fs.readFileSync(SESSIONS_FILE, 'utf8')).toBe(before);
     expect(reg.getTaskByOriginThread(ORIGIN.channel, ORIGIN.threadTs)).toBe(task);
@@ -201,14 +207,40 @@ describe('SessionRegistry — a task’s instruction thread (E2 ①)', () => {
     expect(saved?.originThread).toBeUndefined();
   });
 
-  it('O5c — closing a task frees its thread only while the index still names it', () => {
+  it('O5c — loading the same records twice moves each thread to the new object (the old one gives it up first)', () => {
+    const first = new SessionRegistry();
+    const task = first.createTask({ ...TASK_INPUT, originThread: ORIGIN });
+
     const reg = new SessionRegistry();
-    const task = reg.createTask({ ...TASK_INPUT, originThread: ORIGIN });
-    reg.terminateSession(`task:${task.taskId}`);
-    const next = reg.createTask({ ...TASK_INPUT, originThread: ORIGIN });
-    // A second close of the first (already gone) never removes the second's entry.
-    reg.terminateSession(`task:${task.taskId}`);
-    expect(reg.getTaskByOriginThread(ORIGIN.channel, ORIGIN.threadTs)).toBe(next);
+    expect(reg.loadSessions()).toBe(1);
+    const a = reg.getTaskByOriginThread(ORIGIN.channel, ORIGIN.threadTs);
+    expect(reg.loadSessions()).toBe(1);
+    const b = reg.getTaskByOriginThread(ORIGIN.channel, ORIGIN.threadTs);
+    expect(b).toBeDefined();
+    expect(b).not.toBe(a);
+    expect(b).toBe(reg.getSessionByKey(`task:${task.taskId}`));
+    expect(b?.originThread).toEqual(ORIGIN);
+  });
+
+  it('O5d — a task archived on load (asleep past the archive window) keeps its thread in the archive, and a revive gets it back', () => {
+    const taskId = '66666666-6666-4666-8666-666666666666';
+    const long = new Date(Date.now() - 400 * 24 * 60 * 60 * 1000).toISOString();
+    fs.writeFileSync(
+      SESSIONS_FILE,
+      JSON.stringify([
+        slacklessRecord(taskId, { originThread: ORIGIN, state: 'SLEEPING', sleepStartedAt: long, lastActivity: long }),
+      ]),
+    );
+    const reg = new SessionRegistry();
+    expect(reg.loadSessions()).toBe(0);
+    expect(reg.getTaskByOriginThread(ORIGIN.channel, ORIGIN.threadTs)).toBeUndefined();
+
+    const dir = path.join(TEST_DATA_DIR, 'archives');
+    const file = fs.readdirSync(dir).find((f) => f.endsWith('.json'))!;
+    const archived = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf8'));
+    expect(archived.originThread).toEqual(ORIGIN);
+    expect(reg.restoreArchivedSession(archived, '/work/U1/session_1')).toMatchObject({ ok: true });
+    expect(reg.getTaskByOriginThread(ORIGIN.channel, ORIGIN.threadTs)?.taskId).toBe(taskId);
   });
 
   it('O6 — load: the first record claiming a thread keeps it; the second keeps its task without the thread', () => {
