@@ -157,6 +157,7 @@ describe('pcInit — the element’s events reach the page’s handlers on #pane
       },
       steerAct: (...a: unknown[]) => acts.push(a),
       pcOnSubmit: (e: unknown) => submits.push(e),
+      pcOnReject: () => {},
       _pcNoteFiles: noteFiles,
     }).pcInit();
     expect(composer.data).toEqual({
@@ -168,7 +169,8 @@ describe('pcInit — the element’s events reach the page’s handlers on #pane
       maxRows: 8,
     });
     // No paste / drag / drop of the page's own: the composer takes them.
-    expect(Object.keys(listeners).sort()).toEqual(['ui-cancel', 'ui-edit', 'ui-promote', 'ui-submit']);
+    // (ui-reject: a file a task card refuses says why — merge review P3.)
+    expect(Object.keys(listeners).sort()).toEqual(['ui-cancel', 'ui-edit', 'ui-promote', 'ui-reject', 'ui-submit']);
     listeners['ui-promote']({ detail: { id: 'k#1' } });
     listeners['ui-cancel']({ detail: { id: 'k#2' } });
     listeners['ui-edit']({ detail: { id: 'k#3', text: '고친 내용' } });
