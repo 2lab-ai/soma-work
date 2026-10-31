@@ -89,6 +89,21 @@ export function clearMcpGrantResolutions(): void {
   resolutions.clear();
 }
 
+const grantQueues = new Map<string, Promise<unknown>>();
+
+/** Run `task` after every earlier task of the same key has settled. */
+async function serializedPerGrant<T>(key: string, task: () => Promise<T>): Promise<T> {
+  const before = grantQueues.get(key) ?? Promise.resolve();
+  const run = before.then(task, task);
+  const tail = run.catch(() => undefined);
+  grantQueues.set(key, tail);
+  try {
+    return await run;
+  } finally {
+    if (grantQueues.get(key) === tail) grantQueues.delete(key);
+  }
+}
+
 export async function decideMcpGrant(args: DecideMcpGrantArgs): Promise<McpGrantAnswer> {
   const { requestId, decision, actor, via } = args;
   const pending = await sharedStore.getPendingApproval(requestId);
@@ -149,33 +164,38 @@ export async function decideMcpGrant(args: DecideMcpGrantArgs): Promise<McpGrant
   // The grant first, then the answer the child waits on: the child only ever reads "allow" for a
   // grant already on disk. A grant that cannot be written grants nothing and gives the claim back;
   // an answer that cannot be written takes the grant back and gives the claim back.
-  let change: { replaced: GrantEntry | null; written: GrantEntry } | null = null;
-  try {
-    if (decision === 'approve') change = mcpToolGrantStore.setGrant(userId, server, level, expiresAt, actor);
-  } catch (error) {
-    await sharedStore.releasePermissionClaim(requestId);
-    throw error;
-  }
-  try {
-    await sharedStore.storePermissionResponse(requestId, response);
-  } catch (error) {
-    if (change) {
-      try {
-        // Only if our entry is still there: a revoke that landed meanwhile stays.
-        mcpToolGrantStore.restoreGrant(userId, server, level, change);
-      } catch (restoreError) {
-        // The grant stands and cannot be taken back: keep the claim, so no other answer can
-        // contradict it (the child times out). An admin did approve this grant.
-        logger.error('MCP grant: the answer was not delivered and the grant could not be taken back', {
-          requestId,
-          restoreError,
-        });
-        throw error;
-      }
+  // One answer at a time per grant (user, server, level): every grant is answered in this process,
+  // so overlapping answers for the same grant never interleave their write → answer → rollback.
+  await serializedPerGrant(`${userId}\u0000${server}\u0000${level}`, async () => {
+    let change: { replaced: GrantEntry | null; written: GrantEntry } | null = null;
+    try {
+      if (decision === 'approve') change = mcpToolGrantStore.setGrant(userId, server, level, expiresAt, actor);
+    } catch (error) {
+      await sharedStore.releasePermissionClaim(requestId);
+      throw error;
     }
-    await sharedStore.releasePermissionClaim(requestId);
-    throw error;
-  }
+    try {
+      await sharedStore.storePermissionResponse(requestId, response);
+    } catch (error) {
+      if (change) {
+        try {
+          // Only if our entry is still there (restore returns false otherwise): a revoke that landed
+          // meanwhile stays — and the request is answerable again, as nothing of ours stands.
+          mcpToolGrantStore.restoreGrant(userId, server, level, change);
+        } catch (restoreError) {
+          // The grant stands and cannot be taken back: keep the claim, so no other answer can
+          // contradict it (the child times out). An admin did approve this grant.
+          logger.error('MCP grant: the answer was not delivered and the grant could not be taken back', {
+            requestId,
+            restoreError,
+          });
+          throw error;
+        }
+      }
+      await sharedStore.releasePermissionClaim(requestId);
+      throw error;
+    }
+  });
 
   const outcome = decision === 'approve' ? 'approved' : 'denied';
   remember(requestId, { id: `mcp_grant:${requestId}`, outcome, choiceId: decision, by: actor, via, at: now });

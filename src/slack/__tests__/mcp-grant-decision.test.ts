@@ -244,6 +244,36 @@ describe('MCP grant requests as one decision, Slack + dashboard (#621)', () => {
     ).toMatchObject({ ok: false, reason: 'already_answered' });
   });
 
+  it('two answers for the same grant, both undeliverable: neither leaves a grant behind (#621)', async () => {
+    // The real grant store this time: the order of write → answer → rollback is what matters.
+    const actual = await vi.importActual<typeof import('../../mcp-tool-grant-store')>('../../mcp-tool-grant-store');
+    const real = new actual.McpToolGrantStore(DATA_DIR);
+    h.setGrant.mockImplementation((...a: any[]) => (real.setGrant as any)(...a));
+    h.restoreGrant.mockImplementation((...a: any[]) => (real.restoreGrant as any)(...a));
+    const a = await makeRequest();
+    const b = await makeRequest();
+    const spy = vi.spyOn(sharedStore, 'storePermissionResponse').mockImplementation(async () => {
+      await new Promise((r) => setTimeout(r, 20));
+      throw new Error('responses dir unavailable');
+    });
+    const results = await Promise.allSettled([
+      decideMcpGrant({ requestId: a, decision: 'approve', actor: 'UADMIN1', via: 'dashboard', updateDm }),
+      decideMcpGrant({ requestId: b, decision: 'approve', actor: 'UADMIN2', via: 'slack', updateDm }),
+    ]);
+    spy.mockRestore();
+    expect(results.map((r) => r.status)).toEqual(['rejected', 'rejected']);
+    expect(new actual.McpToolGrantStore(DATA_DIR).hasActiveGrant('U1', 'server-tools', 'write')).toBe(false);
+    // Both are answerable again; a denial now leaves no grant either.
+    for (const id of [a, b]) {
+      expect(
+        await decideMcpGrant({ requestId: id, decision: 'deny', actor: 'UADMIN1', via: 'slack', updateDm }),
+      ).toMatchObject({
+        ok: true,
+      });
+    }
+    expect(new actual.McpToolGrantStore(DATA_DIR).hasActiveGrant('U1', 'server-tools', 'write')).toBe(false);
+  });
+
   it('the MCP child timed out between the read and the claim: not found, nothing granted', async () => {
     const id = await makeRequest();
     const claim = sharedStore.claimPermissionResponse.bind(sharedStore);
