@@ -333,6 +333,33 @@ describe('dashboard admin approvals (#620)', () => {
     expect(bearerMsgs.some((m) => m.type === 'admin_approvals')).toBe(false);
   });
 
+  it('two pushes racing: a slower, older snapshot never lands after a newer one', async () => {
+    const msgs: any[] = [];
+    const admin = await signIn('UADMIN');
+    sockets.push(
+      await injectWebServerWS('/ws/dashboard', { headers: { cookie: admin.cookie } }, (s: any) =>
+        s.on('message', (d: any) => msgs.push(JSON.parse(d.toString()))),
+      ),
+    );
+    let calls = 0;
+    registry.clearAdminApprovalAdapters();
+    registry.registerAdminApprovalAdapter({
+      kind: 'env_skill',
+      // The first (older) read is slow and still sees the request; the second (newer) sees it answered.
+      pending: () =>
+        ++calls === 1 ? new Promise((r) => setTimeout(() => r([ENV_REQUEST as any]), 80)) : Promise.resolve([]),
+      resolved: () => [],
+      answer: answer as any,
+    });
+    const older = dashboard.broadcastAdminApprovals();
+    const newer = dashboard.broadcastAdminApprovals();
+    await Promise.all([older, newer]);
+    await new Promise((r) => setTimeout(r, 30));
+    const pushed = msgs.filter((m) => m.type === 'admin_approvals');
+    expect(pushed.length).toBeGreaterThan(0);
+    expect(pushed[pushed.length - 1].snapshot.pending).toEqual([]);
+  });
+
   describe('shipped client', () => {
     function client(over: Record<string, unknown> = {}) {
       const toasts: any[] = [];

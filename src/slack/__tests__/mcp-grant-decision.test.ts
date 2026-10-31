@@ -24,6 +24,7 @@ vi.mock('../../mcp-tool-grant-store', async (importOriginal) => {
   return { ...actual, mcpToolGrantStore: { setGrant: h.setGrant } };
 });
 
+import { DATA_DIR } from '../../env-paths';
 import { McpToolPermissionActionHandler } from '../actions/mcp-tool-permission-action-handler';
 import { clearMcpGrantResolutions, decideMcpGrant, mcpGrantAdminApprovalAdapter } from '../mcp-grant-decision';
 
@@ -35,6 +36,7 @@ async function makeRequest(over: Partial<PendingApproval> = {}): Promise<string>
   const now = Date.now();
   await sharedStore.storePendingApproval(id, {
     kind: MCP_GRANT_KIND,
+    owner: DATA_DIR,
     tool_name: 'request_permission',
     input: { server: 'server-tools', level: 'write', duration: '24h', estimatedExpiry: 'tomorrow' },
     channel: 'C1',
@@ -100,7 +102,9 @@ describe('MCP grant requests as one decision, Slack + dashboard (#621)', () => {
     expect(h.setGrant).toHaveBeenCalledTimes(1);
     expect(h.setGrant.mock.calls[0].slice(0, 3)).toEqual(['U1', 'server-tools', 'write']);
     const response = await responseOf(id);
-    expect(response).toMatchObject({ behavior: 'allow', promptsRewritten: ['1.1', '2.2'] });
+    expect(response).toMatchObject({ behavior: 'allow' });
+    // Answered: off the pending list even before the child reads the response and cleans up.
+    expect((await adapter.pending(Date.now())).some((c) => c.id === `mcp_grant:${id}`)).toBe(false);
     expect(response.promptText).toContain('대시보드에서 응답');
     expect(updateDm.mock.calls.map((c) => c[0].channel)).toEqual(['D1', 'D2']);
     for (const c of updateDm.mock.calls) expect(c[1]).toContain('Permission granted by <@UADMIN1>');
@@ -109,6 +113,25 @@ describe('MCP grant requests as one decision, Slack + dashboard (#621)', () => {
       by: 'UADMIN1',
       via: 'dashboard',
     });
+  });
+
+  it('another instance on the host (shared temp store): its requests are neither listed nor answerable here', async () => {
+    const foreign = await makeRequest({ owner: '/opt/soma-work/prod/data' });
+    const unstamped = await makeRequest({ owner: undefined });
+    const adapter = mcpGrantAdminApprovalAdapter(updateDm);
+    const listed = (await adapter.pending(Date.now())).map((c) => c.id);
+    expect(listed).not.toContain(`mcp_grant:${foreign}`);
+    expect(listed).not.toContain(`mcp_grant:${unstamped}`);
+    expect(await adapter.answer(foreign, 'approve', 'UADMIN1')).toEqual({ ok: false, reason: 'not_found' });
+    expect(await adapter.answer(unstamped, 'approve', 'UADMIN1')).toEqual({ ok: false, reason: 'not_found' });
+    expect(h.setGrant).not.toHaveBeenCalled();
+    // A Slack click reaches only the instance that posted it: a record from a child older than the stamp still works.
+    expect(
+      await decideMcpGrant({ requestId: unstamped, decision: 'deny', actor: 'UADMIN1', via: 'slack', updateDm }),
+    ).toMatchObject({ ok: true, outcome: 'denied' });
+    expect(
+      await decideMcpGrant({ requestId: foreign, decision: 'deny', actor: 'UADMIN1', via: 'slack', updateDm }),
+    ).toMatchObject({ ok: false, reason: 'not_found' });
   });
 
   it('a Slack click first: the button payload cannot change the grant, and the dashboard answer is already answered', async () => {
@@ -144,7 +167,9 @@ describe('MCP grant requests as one decision, Slack + dashboard (#621)', () => {
     ]);
     expect(results.filter((r) => r.ok)).toHaveLength(1);
     expect(results.filter((r) => !r.ok && r.reason === 'already_answered')).toHaveLength(1);
-    expect(h.setGrant.mock.calls.length).toBeLessThanOrEqual(1);
+    const winner = results.find((r) => r.ok) as { ok: true; outcome: string };
+    expect(h.setGrant).toHaveBeenCalledTimes(winner.outcome === 'approved' ? 1 : 0);
+    expect((await responseOf(id)).behavior).toBe(winner.outcome === 'approved' ? 'allow' : 'deny');
   });
 
   it('refused: a non-admin, an unknown choice, a missing or expired request — nothing granted', async () => {
@@ -160,6 +185,22 @@ describe('MCP grant requests as one decision, Slack + dashboard (#621)', () => {
     expect(await adapter.answer(expired, 'approve', 'UADMIN1')).toEqual({ ok: false, reason: 'not_found' });
     expect(h.setGrant).not.toHaveBeenCalled();
     expect((await adapter.pending(Date.now())).some((c) => c.id === `mcp_grant:${id}`)).toBe(true);
+  });
+
+  it('the response cannot be written: nothing granted, the claim goes back for another answer', async () => {
+    const id = await makeRequest();
+    const spy = vi.spyOn(sharedStore, 'storePermissionResponse').mockRejectedValueOnce(new Error('ENOSPC'));
+    await expect(
+      decideMcpGrant({ requestId: id, decision: 'approve', actor: 'UADMIN1', via: 'dashboard', updateDm }),
+    ).rejects.toThrow('ENOSPC');
+    expect(h.setGrant).not.toHaveBeenCalled();
+    spy.mockRestore();
+    expect(
+      await decideMcpGrant({ requestId: id, decision: 'deny', actor: 'UADMIN2', via: 'slack', updateDm }),
+    ).toMatchObject({
+      ok: true,
+      outcome: 'denied',
+    });
   });
 
   it('the MCP child timed out between the read and the claim: not found, nothing granted', async () => {
@@ -178,6 +219,8 @@ describe('MCP grant requests as one decision, Slack + dashboard (#621)', () => {
     });
     expect(r).toMatchObject({ ok: false, reason: 'not_found' });
     expect(h.setGrant).not.toHaveBeenCalled();
+    // The claim is given back: nothing else can answer it, and a retry reads "expired", not "already handled".
+    expect(await sharedStore.claimPermissionResponse(id)).toBe(true);
     spy.mockRestore();
   });
 });

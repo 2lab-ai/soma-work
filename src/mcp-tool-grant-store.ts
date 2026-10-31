@@ -111,6 +111,22 @@ export class McpToolGrantStore {
     }
   }
 
+  /**
+   * Read the file as it is now, right before a write. Two processes (the main
+   * process and the MCP child) write this file, each from the map it loaded at
+   * start; without this, one's write would drop the other's grants. An
+   * unreadable file keeps the cached state rather than writing over it as empty.
+   */
+  private readLatest(): void {
+    try {
+      if (!fs.existsSync(this.grantsFile)) return;
+      this.grants = JSON.parse(fs.readFileSync(this.grantsFile, 'utf-8'));
+      this.lastMtimeMs = fs.statSync(this.grantsFile).mtimeMs;
+    } catch (error) {
+      logger.warn('Could not read grants before writing — keeping cached state', error);
+    }
+  }
+
   private saveGrants(): void {
     // Snapshot pre-mutation state for safe rollback (avoids loadGrants wiping to {} on disk failure)
     const preMutationGrants = JSON.parse(JSON.stringify(this.grants));
@@ -131,6 +147,7 @@ export class McpToolGrantStore {
    * Set a grant for a user on a specific server at a permission level.
    */
   setGrant(userId: string, serverName: string, level: PermissionLevel, expiresAt: string, grantedBy: string): void {
+    this.readLatest();
     if (!this.grants[userId]) {
       this.grants[userId] = {};
     }
@@ -207,6 +224,7 @@ export class McpToolGrantStore {
    * @param level - "read", "write", or "all"
    */
   revokeGrant(userId: string, serverName: string, level: PermissionLevel | 'all'): void {
+    this.readLatest();
     const serverGrants = this.grants[userId]?.[serverName];
     if (!serverGrants) return;
 

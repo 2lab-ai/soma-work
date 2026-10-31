@@ -112,6 +112,20 @@ describe('McpToolGrantStore', () => {
   });
 
   // ── S4: atomic write (file survives reload) ──
+  it("two processes writing the same file: a write never drops the other one's grant (#621)", () => {
+    // The MCP child and the main process each hold a store over one file; each loaded it at start.
+    const other = new McpToolGrantStore(dir);
+    const expiresAt = new Date(Date.now() + 86400000).toISOString();
+    store.setGrant('U_B', 'server-tools', 'read', expiresAt, 'U_ADMIN');
+    other.setGrant('U_A', 'github', 'write', expiresAt, 'U_ADMIN');
+    const disk = JSON.parse(fs.readFileSync(path.join(dir, 'mcp-tool-grants.json'), 'utf-8'));
+    expect(Object.keys(disk).sort()).toEqual(['U_A', 'U_B']);
+    store.revokeGrant('U_A', 'github', 'all');
+    const after = JSON.parse(fs.readFileSync(path.join(dir, 'mcp-tool-grants.json'), 'utf-8'));
+    expect(after.U_B?.['server-tools']?.read).toBeDefined();
+    expect(after.U_A?.github).toBeUndefined();
+  });
+
   it('grants survive store reload from disk', () => {
     const expiresAt = new Date(Date.now() + 86400000).toISOString();
     store.setGrant('U_USER', 'server-tools', 'write', expiresAt, 'U_ADMIN');

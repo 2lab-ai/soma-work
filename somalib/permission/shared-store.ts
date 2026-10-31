@@ -9,14 +9,8 @@ export interface PermissionResponse {
   behavior: 'allow' | 'deny';
   updatedInput?: any;
   message?: string;
-  /** MCP grant answers: the outcome line every admin DM copy is rewritten to. */
+  /** MCP grant answers: the outcome line every admin DM copy is rewritten to (by the answer, and again by the child). */
   promptText?: string;
-  /**
-   * MCP grant answers: the `ts` of the DM copies the answering process
-   * rewrites. A copy the waiting MCP child posted after the answer read the
-   * request is not in this list — the child rewrites it with `promptText`.
-   */
-  promptsRewritten?: string[];
 }
 
 /**
@@ -59,6 +53,13 @@ export interface PendingApproval {
   rule_ids?: string[];
   /** MCP grant requests: where each admin's DM prompt landed, so any answer can rewrite every copy. */
   prompts?: Array<{ channel: string; ts: string }>;
+  /**
+   * MCP grant requests: the data directory of the instance whose child wrote
+   * the record. The store sits in the OS temp directory, which co-hosted
+   * instances (dev and prod on one host) share; a dashboard lists and answers
+   * only its own instance's requests.
+   */
+  owner?: string;
 }
 
 /** How long an answer claim is kept after it was made. */
@@ -190,6 +191,14 @@ class SharedStore {
     }
     void this.sweepClaims();
     return true;
+  }
+
+  /** Whether an answer has claimed this approval (it is being, or has been, answered). */
+  async isPermissionClaimed(approvalId: string): Promise<boolean> {
+    return fs.promises
+      .access(path.join(this.claimDir, `${approvalId}.json`))
+      .then(() => true)
+      .catch(() => false);
   }
 
   /** Give a claim back — only when the answer that took it failed before its response was stored. */
