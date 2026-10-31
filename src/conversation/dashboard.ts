@@ -3473,11 +3473,12 @@ export async function registerDashboardRoutes(
       // An admin approval is answered by a signed-in admin (a Slack identity —
       // the DM rewrites name who answered) with admin mode on. A bearer token
       // carries no identity, and the owner shortcut of _hasWriteAccess does not apply.
-      const auth = (request as { authContext?: { userId?: string; isAdmin?: boolean } }).authContext;
+      const auth = (request as { authContext?: { mode?: string; userId?: string; isAdmin?: boolean } }).authContext;
       const actor = auth?.userId;
       const modeHeader = request.headers?.['x-admin-mode'];
       const adminModeOn = Array.isArray(modeHeader) ? modeHeader[0] === 'on' : modeHeader === 'on';
-      if (!actor || !auth?.isAdmin || !isAdminUser(actor)) {
+      // The same gate as the reads (GET, WebSocket): one definition, so the two cannot drift.
+      if (!actor || !isSlackAdmin(auth)) {
         reply.status(403).send({ error: 'Slack 계정으로 로그인한 관리자만 응답할 수 있습니다' });
         return;
       }

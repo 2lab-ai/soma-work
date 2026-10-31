@@ -237,6 +237,13 @@ describe('dashboard admin approvals (#620)', () => {
     expect(answer).not.toHaveBeenCalled();
   });
 
+  it('reads and answers share one gate — a Slack-signed-in ADMIN_USERS admin (isSlackAdmin)', () => {
+    const route = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf("'/api/dashboard/admin-approvals/answer'"));
+    expect(route.slice(0, route.indexOf('stripSelfInstancePrefix'))).toContain('!isSlackAdmin(auth)');
+    const read = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf("server.get('/api/dashboard/admin-approvals'"));
+    expect(read.slice(0, 400)).toContain('isSlackAdmin(');
+  });
+
   it('an adapter that refuses the actor is a 403, not a bad request', async () => {
     answer.mockImplementationOnce(async () => ({ ok: false, reason: 'forbidden' }));
     const admin = await signIn('UADMIN');
