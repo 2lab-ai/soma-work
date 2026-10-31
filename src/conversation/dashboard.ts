@@ -5415,6 +5415,8 @@ body[data-view-mode="minimal"] .panel-tasks { max-height: 34cqh; overflow-y: aut
 .epic-head .epic-title { font-weight: 600; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .epic-head .epic-progress { margin-left: auto; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
 .epic-cards { display: flex; flex-direction: column; gap: 8px; position: relative; }
+/* The lane sets display, which beats the UA [hidden] rule: hide it explicitly (grok #706 R1). */
+.epic-lane[hidden] { display: none; }
 .capacity-host[hidden], .cron-lane[hidden] { display: none; }
 .capacity-host > ui-agent-queue, .cron-lane > ui-agent-queue { display: block; min-width: 0; }
 .cron-cards { display: flex; flex-direction: column; gap: 8px; position: relative; }
@@ -8188,6 +8190,10 @@ function renderBoard(board, partial) {
     var arr = board[col0] || [];
     for (var i0 = 0; i0 < arr.length; i0++) {
       _sessionCache[arr[i0].key] = arr[i0];
+      // E4 ⑨a — an epic's children are in no column: cached here too, before the answer
+      // states are evicted and the env / owner indexes read the cache (fable #706 R1 P1).
+      var kids = arr[i0].epic && Array.isArray(arr[i0].epic.children) ? arr[i0].epic.children : [];
+      for (var k0 = 0; k0 < kids.length; k0++) if (kids[k0] && kids[k0].key) _sessionCache[kids[k0].key] = kids[k0];
     }
   }
   // Answer states of requests the board no longer holds (a session gone, a prompt or question it no longer asks).
@@ -8775,7 +8781,7 @@ function cardOf(s, col) {
   if (s.cronJob && s.cronJob.name) card.lead = { text: 'CRON', glyph: 'clock', title: '크론 잡: ' + s.cronJob.name };
   // An epic (E4 ⑨a) leads with EPIC and says its state; its progress is accepted nodes of all.
   if (s.kind === 'epic' && s.epic) {
-    var epicLabel = EPIC_STATE_LABEL[s.epic.state] || EPIC_STATE_LABEL.idle;
+    var epicLabel = EPIC_STATE_LABEL[epicStateOf(s.epic.state)];
     card.lead = { text: 'EPIC', glyph: 'tasks', title: '에픽 — ' + epicLabel };
     if (s.epic.state === 'running' || s.epic.state === 'needs-input') card.statusText = epicLabel;
     var ep = s.epic.progress || {};
@@ -16253,11 +16259,14 @@ function planEpicLane(board) {
     }
   });
   function rank(g) {
-    var r = EPIC_STATE_RANK[g.epic.epic.state];
-    return typeof r === 'number' ? r : 4;
+    return EPIC_STATE_RANK[epicStateOf(g.epic.epic.state)];
   }
   groups.sort(function(a, b) { return rank(a) - rank(b); });
   return groups;
+}
+// An epic's state as one the page knows ('idle' otherwise — never a prototype key).
+function epicStateOf(state) {
+  return typeof state === 'string' && Object.prototype.hasOwnProperty.call(EPIC_STATE_LABEL, state) ? state : 'idle';
 }
 // The column a child's card reads as: its own activity (the server already shows a
 // permission prompt as waiting), a sleeping child as closed.
@@ -16270,7 +16279,7 @@ function epicChildCol(c) {
 // A group's head: the epic's title, its state chip and its progress (accepted of all nodes).
 function epicLaneHeadHtml(s) {
   var e = s.epic || {};
-  var state = EPIC_STATE_LABEL[e.state] ? e.state : 'idle';
+  var state = epicStateOf(e.state);
   var p = e.progress || {};
   var title = s.displayHeadline || s.summaryTitle || s.title || '에픽';
   var html = '<span class="epic-title">' + esc(title) + '</span>';
@@ -16286,6 +16295,7 @@ function syncEpicLane(groups) {
   if (!lane) return;
   lane.hidden = groups.length === 0;
   var keep = Object.create(null);
+  var prevBox = null;
   for (var i = 0; i < groups.length; i++) {
     var g = groups[i];
     keep[g.key] = true;
@@ -16309,8 +16319,11 @@ function syncEpicLane(groups) {
       box._head.innerHTML = headHtml;
       box._headHtml = headHtml;
     }
-    // In order: append moves an existing box to the end.
-    lane.appendChild(box);
+    // In order, moving a box only when it is not already in its place: a DOM move disconnects the
+    // box's subtree (its inbox, the open bodies, focus, scroll) — fable #706 R1 P1.
+    var place = prevBox ? prevBox.nextSibling : lane.firstChild;
+    if (box !== place) lane.insertBefore(box, place || null);
+    prevBox = box;
   }
   for (var key in _epicGroupEls) {
     if (keep[key]) continue;
@@ -16367,12 +16380,35 @@ function epicChildOf(s, key) {
 // A single-session push of an epic (its bundle; a child's push arrives as its epic's
 // card): the lane is redrawn from the patched board and each drawn child card refreshed.
 function applyEpicPush(s) {
-  if (!s || !s.epic || !_lastBoardData) return;
-  renderEpicLane(_lastBoardData);
+  if (!s || !s.epic) return;
   var children = Array.isArray(s.epic.children) ? s.epic.children : [];
-  for (var i = 0; i < children.length; i++) {
-    var c = children[i];
-    if (c && c.key && _cardHost[c.key]) refreshCard(c.key);
+  // Cached first: a panel open on a child reads it even before a board is drawn.
+  for (var i = 0; i < children.length; i++) if (children[i] && children[i].key) _sessionCache[children[i].key] = children[i];
+  if (!_lastBoardData) return;
+  var before = [];
+  for (var key in _cardHost) if (_cardHost[key] && _cardHost[key].className === 'epic-inbox') before.push(key);
+  var groups = renderEpicLane(_lastBoardData);
+  var now = Object.create(null);
+  for (var g = 0; g < groups.length; g++) for (var j = 0; j < groups[g].children.length; j++) now[groups[g].children[j].key] = true;
+  // A child that left every group (closed, moved out of the bundle): released as the full render
+  // releases a card that left every element (fable #706 R1 P2).
+  var released = false;
+  for (var b = 0; b < before.length; b++) {
+    var gone = before[b];
+    if (now[gone]) continue;
+    var goneS = _sessionCache[gone];
+    delete _cardHost[gone];
+    delete _cardCol[gone];
+    delete _cardData[gone];
+    delete _cardDrawn[gone];
+    _expanded.delete(gone);
+    releaseCardIoTimer(goneS ? goneS.conversationId : null);
+    released = true;
+  }
+  if (released) syncCardBodies();
+  for (var c = 0; c < children.length; c++) {
+    var ch = children[c];
+    if (ch && ch.key && _cardHost[ch.key]) refreshCard(ch.key);
   }
 }
 

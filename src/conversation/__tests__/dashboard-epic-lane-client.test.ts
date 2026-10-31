@@ -23,7 +23,7 @@
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { describe, expect, it, vi } from 'vitest';
+import { describe, expect, it } from 'vitest';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -76,7 +76,7 @@ describe('L1–L3 — the lane’s plan, a child’s column, a group’s head', 
     planEpicLane(board: unknown): Array<{ key: string; children: Array<{ key: string }> }>;
     epicChildCol(c: unknown): string;
     epicLaneHeadHtml(s: unknown): string;
-  }>([...ESC, 'planEpicLane', 'epicChildCol', 'epicLaneHeadHtml'], LANE_VARS);
+  }>([...ESC, 'epicStateOf', 'planEpicLane', 'epicChildCol', 'epicLaneHeadHtml'], LANE_VARS);
 
   it('L1 — one group per epic with children, from any column, waiting first; nothing else', () => {
     const board = {
@@ -115,6 +115,10 @@ describe('L1–L3 — the lane’s plan, a child’s column, a group’s head', 
     expect(html).toContain('--ui-tone:var(--st-wait)');
     expect(html).toContain('>입력 필요</span>');
     expect(html).toContain('>1/3</span>');
+    // A prototype key is no state the page knows (fable #706 R1 P3).
+    expect(m.epicLaneHeadHtml({ key: 'k', kind: 'epic', epic: { state: 'constructor' } })).toContain(
+      'data-state="idle"',
+    );
     const odd = m.epicLaneHeadHtml({ key: 'k', kind: 'epic', epic: { state: 'bogus', progress: { total: 0 } } });
     expect(odd).toContain('data-state="idle"');
     expect(odd).toContain('>대기</span>');
@@ -137,7 +141,12 @@ type FakeEl = {
   setAttribute(k: string, v: string): void;
   appendChild(c: FakeEl): FakeEl;
   removeChild(c: FakeEl): FakeEl;
+  insertBefore(c: FakeEl, ref: FakeEl | null): FakeEl;
+  readonly firstChild: FakeEl | null;
+  readonly nextSibling: FakeEl | null;
 };
+/** DOM moves (append / insert) — each one disconnects the moved subtree in a browser. */
+const moves = { count: 0 };
 function el(tag: string): FakeEl {
   const e: FakeEl = {
     tag,
@@ -150,10 +159,26 @@ function el(tag: string): FakeEl {
       e.attrs[k] = v;
     },
     appendChild(c) {
+      moves.count++;
       if (c.parentNode) c.parentNode.removeChild(c);
       e.children.push(c);
       c.parentNode = e;
       return c;
+    },
+    insertBefore(c, ref) {
+      if (!ref) return e.appendChild(c);
+      moves.count++;
+      if (c.parentNode) c.parentNode.removeChild(c);
+      e.children.splice(e.children.indexOf(ref), 0, c);
+      c.parentNode = e;
+      return c;
+    },
+    get firstChild() {
+      return e.children[0] ?? null;
+    },
+    get nextSibling() {
+      const p = e.parentNode;
+      return p ? (p.children[p.children.indexOf(e) + 1] ?? null) : null;
     },
     removeChild(c) {
       e.children = e.children.filter((x) => x !== c);
@@ -171,10 +196,16 @@ function laneHarness() {
   const painted: FakeEl[] = [];
   const wired: FakeEl[] = [];
   const refreshed: string[] = [];
+  const released: unknown[] = [];
+  const bodies = { synced: 0 };
   const timers: Array<() => void> = [];
   const state = {
     _sessionCache: Object.create(null) as Record<string, unknown>,
-    _cardHost: Object.create(null) as Record<string, unknown>,
+    _cardHost: Object.create(null) as Record<string, any>,
+    _cardCol: Object.create(null) as Record<string, unknown>,
+    _cardData: Object.create(null) as Record<string, unknown>,
+    _cardDrawn: Object.create(null) as Record<string, unknown>,
+    _expanded: new Set<string>(),
   };
   const m = load<{
     syncEpicLane(groups: unknown[]): void;
@@ -187,6 +218,7 @@ function laneHarness() {
   }>(
     [
       ...ESC,
+      'epicStateOf',
       'planEpicLane',
       'epicChildCol',
       'epicLaneHeadHtml',
@@ -205,7 +237,18 @@ function laneHarness() {
       MOTION: { fade: 160 },
       setTimeout: (fn: () => void) => timers.push(fn),
       wireInbox: (x: FakeEl) => wired.push(x),
-      placeCard: (s: { key: string }, col: string) => placed.push([s.key, col]),
+      placeCard: (s: { key: string }, col: string, host: unknown) => {
+        placed.push([s.key, col]);
+        state._cardHost[s.key] = host;
+      },
+      releaseCardIoTimer: (cid: unknown) => released.push(cid),
+      syncCardBodies: () => {
+        bodies.synced++;
+      },
+      _cardCol: state._cardCol,
+      _cardData: state._cardData,
+      _cardDrawn: state._cardDrawn,
+      _expanded: state._expanded,
       inboxPaint: (x: FakeEl) => painted.push(x),
       refreshCard: (k: string) => refreshed.push(k),
       get _sessionCache() {
@@ -218,7 +261,7 @@ function laneHarness() {
     },
     'function setBoard(b) { _lastBoardData = b; }',
   );
-  return { m, lane, placed, painted, wired, refreshed, timers, state };
+  return { m, lane, placed, painted, wired, refreshed, released, bodies, timers, state };
 }
 
 describe('L4–L6 — the lane’s boxes, its cards, the cache and the push', () => {
@@ -251,11 +294,24 @@ describe('L4–L6 — the lane’s boxes, its cards, the cache and the push', ()
     ]);
     expect(h.painted).toHaveLength(2);
 
-    // The same groups again: the boxes and the inboxes are kept; the head is rewritten only when it changed.
+    // The same groups again: the boxes and the inboxes are kept, and nothing moves in the DOM
+    // (a move disconnects the box's subtree — fable #706 R1 P1).
+    moves.count = 0;
     h.m.renderEpicLane(board);
+    expect(moves.count).toBe(0);
     expect(h.lane.children[0]).toBe(box);
     expect(box._inbox).toBe(inbox);
     expect(h.wired).toHaveLength(2);
+    // The order changes (b now waits): one move, and the lane reads b, a.
+    const flipped = {
+      waiting: [epicCard('task:b', 'needs-input', [child('task:b1', { activityState: 'waiting' })])],
+      working: [epicCard('task:a', 'running', [child('task:a1', { activityState: 'working' }), child('task:a2')])],
+    };
+    moves.count = 0;
+    h.m.renderEpicLane(flipped);
+    expect(moves.count).toBe(1);
+    expect(h.lane.children.map((b) => b.attrs['data-epic'])).toEqual(['task:b', 'task:a']);
+    h.m.renderEpicLane(board);
 
     // One group goes: its box fades out (a timer), then leaves the lane.
     h.m.renderEpicLane({ working: board.working });
@@ -280,18 +336,33 @@ describe('L4–L6 — the lane’s boxes, its cards, the cache and the push', ()
     const h = laneHarness();
     const fresh = child('task:c1', { activityState: 'working' });
     const pushed = epicCard('task:e', 'running', [fresh, child('task:c2')]);
-    // Nothing yet drawn, no board: a no-op.
+    // No board yet: nothing drawn, but the children are cached (a panel open on one reads it).
     h.m.applyEpicPush(pushed);
     expect(h.painted).toHaveLength(0);
+    expect(h.state._sessionCache['task:c2']).toMatchObject({ key: 'task:c2' });
     h.m.setBoard({ working: [pushed] });
     h.state._cardHost['task:c1'] = {};
     h.m.applyEpicPush(pushed);
     expect(h.painted).toHaveLength(1);
-    expect(h.refreshed).toEqual(['task:c1']);
+    // Both children are drawn in the lane now (placeCard), so both refresh.
+    expect(h.refreshed).toEqual(['task:c1', 'task:c2']);
     expect(h.state._sessionCache['task:c1']).toBe(fresh);
     // A push of a plain card does nothing here.
     h.m.applyEpicPush({ key: 'task:p' });
     expect(h.painted).toHaveLength(1);
+    // c2 leaves the bundle (closed): its card is released, its body synced away; c1 stays.
+    h.state._expanded.add('task:c2');
+    const without = epicCard('task:e', 'running', [fresh]);
+    h.m.setBoard({ working: [without] });
+    h.m.applyEpicPush(without);
+    expect(h.state._cardHost['task:c2']).toBeUndefined();
+    expect(h.state._expanded.has('task:c2')).toBe(false);
+    expect(h.released).toHaveLength(1);
+    expect(h.bodies.synced).toBe(1);
+    expect(h.state._cardHost['task:c1']).toBeDefined();
+    // Nothing left: no release, no body sync.
+    h.m.applyEpicPush(without);
+    expect(h.bodies.synced).toBe(1);
     expect(h.m.epicChildOf(pushed, 'task:c2')).toMatchObject({ key: 'task:c2' });
     expect(h.m.epicChildOf(pushed, 'task:none')).toBeNull();
     expect(h.m.epicChildOf({ key: 'task:p' }, 'task:c2')).toBeNull();
@@ -330,19 +401,24 @@ const CARD_OF_VARS = [
   'OWNER_BADGE_HUES',
   'EPIC_STATE_LABEL',
 ];
+const CARD_OF_EXTRA = ['epicStateOf'];
 const PAGE_STRINGS = new Function(
   `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
 )();
 
 describe('L7 — the epic’s own card', () => {
-  const { cardOf } = load<{ cardOf(s: unknown, col: string): Record<string, any> }>(CARD_OF_FNS, CARD_OF_VARS, {
-    STRINGS: PAGE_STRINGS,
-    dhShow: () => true,
-    dhTruncate: () => null,
-    currentUserId: 'U1',
-    _ownerIndex: null,
-    SELF_INSTANCE_NAME: 'inst',
-  });
+  const { cardOf } = load<{ cardOf(s: unknown, col: string): Record<string, any> }>(
+    [...CARD_OF_EXTRA, ...CARD_OF_FNS],
+    CARD_OF_VARS,
+    {
+      STRINGS: PAGE_STRINGS,
+      dhShow: () => true,
+      dhTruncate: () => null,
+      currentUserId: 'U1',
+      _ownerIndex: null,
+      SELF_INSTANCE_NAME: 'inst',
+    },
+  );
   const base = { ownerId: 'U1', ownerName: 'Z', activityState: 'idle', lastActivity: '2026-10-25T10:00:00.000Z' };
 
   it('leads with EPIC, says running / needs-input, and shows its progress as steps', () => {
@@ -356,6 +432,7 @@ describe('L7 — the epic’s own card', () => {
     const done = cardOf({ ...base, ...epicCard('task:e', 'done', []) }, 'idle');
     expect(done.lead.title).toBe('에픽 — 완료');
     expect(done.statusText).not.toBe('완료');
+    expect(cardOf({ ...base, ...epicCard('task:e', 'constructor', []) }, 'idle').lead.title).toBe('에픽 — 대기');
     const plain = cardOf({ ...base, key: 'task:p', title: 'P' }, 'idle');
     expect(plain.lead).toBeUndefined();
     const noPlan = cardOf(
@@ -368,6 +445,14 @@ describe('L7 — the epic’s own card', () => {
 
 describe('L8 — the page wires the lane', () => {
   const fn = (name: string) => clientFn(name);
+  it('renderBoard caches the children in its first walk, before the answer states are evicted (fable #706 R1 P1)', () => {
+    const rb = fn('renderBoard');
+    const kids = rb.indexOf('_sessionCache[kids[k0].key] = kids[k0];');
+    expect(kids).toBeGreaterThan(-1);
+    expect(kids).toBeLessThan(rb.indexOf('for (var ak in _acState) acEvict(ak, _sessionCache[ak]);'));
+    expect(kids).toBeLessThan(rb.indexOf('_envIndex = _buildEnvIndex();'));
+  });
+
   it('renderBoard draws the lane after the CRON lane; the push applies it and follows a child’s panel', () => {
     const rb = fn('renderBoard');
     expect(rb.indexOf('renderEpicLane(board);')).toBeGreaterThan(
@@ -383,10 +468,11 @@ describe('L8 — the page wires the lane', () => {
     expect(TEMPLATE).toContain('<div class="epic-lane ui-tok" id="epic-lane" aria-label="에픽" hidden></div>');
     expect(DASHBOARD_TS).toContain('ui-agent-inbox.epic-inbox { display: block; min-width: 0; }');
     expect(DASHBOARD_TS).toContain('.epic-lane { display: flex;');
+    // An author display beats the UA [hidden] rule: the empty lane must be hidden by its own rule.
+    expect(DASHBOARD_TS).toContain('.epic-lane[hidden] { display: none; }');
     expect(fn('boardHosts')).toContain("document.querySelectorAll('ui-agent-inbox.epic-inbox')");
   });
   it('an epic’s children are in no column the client builds (the server already took them out)', () => {
-    vi.fn();
     expect(fn('planEpicLane')).not.toContain('board.working.push');
   });
 });
