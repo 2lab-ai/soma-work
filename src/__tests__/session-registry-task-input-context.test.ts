@@ -21,6 +21,7 @@ const { TEST_DATA_DIR, emitter } = vi.hoisted(() => {
 vi.mock('../env-paths', () => ({ DATA_DIR: TEST_DATA_DIR }));
 vi.mock('../metrics/event-emitter', () => ({ getMetricsEmitter: () => emitter }));
 
+import { Logger } from '../logger';
 import { __resetSessionLifecyclePolicyForTests } from '../session-lifecycle-policy';
 import { SessionRegistry } from '../session-registry';
 
@@ -82,6 +83,21 @@ describe('SessionRegistry — a task’s input context (E2 ②)', () => {
     const task = reg.createTask(TASK_INPUT);
     expect(task.inputContext).toBeUndefined();
     expect(JSON.parse(fs.readFileSync(SESSIONS_FILE, 'utf8'))[0].inputContext).toBeUndefined();
+  });
+
+  it('a context with nothing usable is not stored, and the create says so', () => {
+    const warn = vi.spyOn(Logger.prototype, 'warn');
+    try {
+      const reg = new SessionRegistry();
+      const task = reg.createTask({ ...TASK_INPUT, inputContext: { repos: [''], channelDescription: '' } as any });
+      expect(task.inputContext).toBeUndefined();
+      expect(warn).toHaveBeenCalledWith(expect.stringMatching(/input context had no usable field/), expect.anything());
+      warn.mockClear();
+      reg.createTask(TASK_INPUT);
+      expect(warn).not.toHaveBeenCalledWith(expect.stringMatching(/input context/), expect.anything());
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('survives archive and revive', () => {
