@@ -170,6 +170,7 @@ import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
+import { ensureChildFolder } from './task-turn/epic-child-folder';
 import { archivedCostUsd, epicTreeCostUsd } from './task-turn/epic-cost';
 import { setEpicHost } from './task-turn/epic-server';
 import { createDashboardCloseHandler } from './task-turn/task-close';
@@ -1222,6 +1223,11 @@ async function start() {
         if (!child.conversationId || !turnId) return undefined;
         return readTurnFinal(readWorkLog, child.conversationId, turnId);
       },
+      // E4 ④b — making and starting children (D4 · D8 · D9).
+      createTask: (input) => claudeHandler.createTask(input),
+      createFreshDirectory: (ownerId) => new WorkingDirectoryManager().createSessionBaseDir(ownerId),
+      ensureDirectory: ensureChildFolder,
+      controller: taskController,
     });
     setDashboardTaskCommandHandler((sessionKey, message, attachments, actorUserId) =>
       taskController.start({ sessionKey, text: message, attachments, actorUserId }),
