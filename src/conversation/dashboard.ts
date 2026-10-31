@@ -104,9 +104,11 @@ import {
 import { GOAL_EVAL_DISPATCH_MAX_RETRIES } from '../slack/goal-completion-evaluator';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from '../slack/goal-host-actions';
 import { getSurfaceLines } from '../slack/surface-config';
+import { type EpicBoardView, epicBoardView } from '../task-turn/epic-board';
 import { sessionCostUsd } from '../task-turn/epic-cost';
 import type { TaskAnswer } from '../task-turn/task-answer';
 import { buildThreadPermalink } from '../turn-notifier';
+import type { ConversationSession } from '../types';
 import { coerceEffort, EFFORT_LEVELS, type EffortLevel, userSettingsStore } from '../user-settings-store';
 import { fetchSiblingBoards, type InstanceEnvironment, mergeBoards, shouldAggregate } from './aggregator';
 import { backfillArtifactsFromWorkLog } from './artifact-capture';
@@ -416,6 +418,12 @@ export interface KanbanSession {
   slackless?: true;
   /** E4 ① (.prd/19 D1) — an epic task. Absent otherwise. */
   kind?: 'epic';
+  /**
+   * E4 ⑧ (D11) — an epic's bundle: its state (its column follows it — the epic
+   * itself is idle while its children work), progress, plan tree, and the cards
+   * of its live children, which are in no column of their own. Epics only.
+   */
+  epic?: EpicBoardView & { children: KanbanSession[] };
   /** E4 ① — a child task's epic (task id) and plan node. Absent otherwise. */
   parentTaskId?: string;
   planNodeId?: string;
@@ -2267,7 +2275,9 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     userMedia: cardUserMedia(s.conversationId),
     followups: followupsOf(key, s.ownerId),
     ...(s.slackless === true ? { slackless: true as const, ...noticeFailuresOf(key) } : {}),
-    ...(s.slackless === true && s.kind === 'epic' ? { kind: 'epic' as const } : {}),
+    ...(s.slackless === true && s.kind === 'epic'
+      ? { kind: 'epic' as const, epic: { ...epicBoardView(s, liveChildrenOf(s)), children: [] } }
+      : {}),
     ...(s.slackless === true && s.parentTaskId
       ? { parentTaskId: s.parentTaskId, planNodeId: s.planNodeId, ...(s.closedBy ? { closedBy: s.closedBy } : {}) }
       : {}),
@@ -2443,9 +2453,53 @@ function onBoard(s: { sessionId?: string; taskUsage?: unknown; slackless?: boole
   return !!s.sessionId || !!s.taskUsage || s.slackless === true;
 }
 
+/** A card's column. An epic's follows its `epicState` while a child works or waits (E4 ⑧, D11). */
+function placeOnBoard(board: KanbanBoard, kanban: KanbanSession, session: { state?: string }): void {
+  if (kanban.epic?.state === 'running') {
+    board.working.push(kanban);
+    return;
+  }
+  if (kanban.epic?.state === 'needs-input') {
+    board.waiting.push(kanban);
+    return;
+  }
+  // Closed: SLEEPING state (terminated sessions are handled via archive below)
+  if (session.state === 'SLEEPING') {
+    board.closed.push(kanban);
+    return;
+  }
+  switch (kanban.activityState) {
+    case 'working':
+      board.working.push(kanban);
+      break;
+    case 'waiting':
+      board.waiting.push(kanban);
+      break;
+    default:
+      // Idle but with an armed automatic resume (turn retry, goal
+      // re-check) is unfinished work — RUNNING, not DONE.
+      if (kanban.autoResume) board.working.push(kanban);
+      else board.idle.push(kanban);
+      break;
+  }
+}
+
+/** E4 ⑧ — an epic's live children (Slack-less tasks under it). */
+function liveChildrenOf(epic: { taskId?: string }): ConversationSession[] {
+  if (!epic.taskId) return [];
+  const out: ConversationSession[] = [];
+  for (const [, s] of getAllSessions()) {
+    if (s.slackless === true && s.parentTaskId === epic.taskId && !s.terminated) out.push(s);
+  }
+  return out;
+}
+
 function buildKanbanBoard(userId?: string): KanbanBoard {
   const sessions = getAllSessions();
   const board: KanbanBoard = { working: [], waiting: [], idle: [], closed: [] };
+  // E4 ⑧ (D11) — a child whose epic is on this board is in that epic's bundle, not a column.
+  const epicCards = new Map<string, KanbanSession>();
+  const childCards: Array<{ parentTaskId: string; kanban: KanbanSession; session: ConversationSession }> = [];
 
   for (const [key, session] of sessions.entries()) {
     if (!onBoard(session)) continue;
@@ -2453,26 +2507,18 @@ function buildKanbanBoard(userId?: string): KanbanBoard {
     if (session.trashed === true) continue;
 
     const kanban = sessionToKanban(key, session);
-
-    // Closed: SLEEPING state (terminated sessions are handled via archive below)
-    if (session.state === 'SLEEPING') {
-      board.closed.push(kanban);
-    } else {
-      switch (kanban.activityState) {
-        case 'working':
-          board.working.push(kanban);
-          break;
-        case 'waiting':
-          board.waiting.push(kanban);
-          break;
-        default:
-          // Idle but with an armed automatic resume (turn retry, goal
-          // re-check) is unfinished work — RUNNING, not DONE.
-          if (kanban.autoResume) board.working.push(kanban);
-          else board.idle.push(kanban);
-          break;
-      }
+    if (kanban.epic && session.taskId) epicCards.set(session.taskId, kanban);
+    if (session.slackless === true && session.parentTaskId) {
+      childCards.push({ parentTaskId: session.parentTaskId, kanban, session });
+      continue;
     }
+    placeOnBoard(board, kanban, session);
+  }
+  for (const { parentTaskId, kanban, session } of childCards) {
+    const epic = epicCards.get(parentTaskId)?.epic;
+    // An epic not on this board (trashed, another owner's view): the child keeps its own column.
+    if (epic) epic.children.push(kanban);
+    else placeOnBoard(board, kanban, session);
   }
 
   // Add recently archived sessions to closed column (#401)

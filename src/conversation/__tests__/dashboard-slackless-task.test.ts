@@ -383,18 +383,96 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     const cardOf = (id?: string) => all.find((c) => c.key === `task:${id}`);
     expect(cardOf(epic.taskId)).toMatchObject({ kind: 'epic' });
     expect(cardOf(epic.taskId).parentTaskId).toBeUndefined();
-    expect(cardOf(child.taskId)).toMatchObject({ parentTaskId: epic.taskId, planNodeId: 'node-a' });
-    expect(cardOf(child.taskId).kind).toBeUndefined();
+    // E4 ⑧ — the child's card is in its epic's bundle, not a column.
+    expect(cardOf(child.taskId)).toBeUndefined();
+    const childCard = cardOf(epic.taskId).epic.children.find((c: any) => c.key === `task:${child.taskId}`);
+    expect(childCard).toMatchObject({ parentTaskId: epic.taskId, planNodeId: 'node-a' });
+    expect(childCard.kind).toBeUndefined();
     expect(cardOf(plain.taskId).kind).toBeUndefined();
     expect(cardOf(plain.taskId).parentTaskId).toBeUndefined();
+    expect(cardOf(plain.taskId).epic).toBeUndefined();
     // E4 ⑦ — a child its epic's close cancelled says so; none, no field.
-    expect(cardOf(child.taskId).closedBy).toBeUndefined();
+    expect(childCard.closedBy).toBeUndefined();
     child.closedBy = { by: 'parent', at: 7 };
-    const again = await board();
-    const after = [...again.working, ...again.waiting, ...again.idle].find(
-      (c: any) => c.key === `task:${child.taskId}`,
+    const again = [...(await board()).idle] as any[];
+    const after = again
+      .find((c) => c.key === `task:${epic.taskId}`)
+      .epic.children.find((c: any) => c.key === `task:${child.taskId}`);
+    expect(after.closedBy).toEqual({ by: 'parent', at: 7 });
+  });
+
+  it('E4 ⑧ — an epic’s bundle: its state moves its column, its progress and plan tree, its children out of the columns', async () => {
+    const reg = new SessionRegistry();
+    const epic = reg.createTask({
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      workingDirectory: '/work/U1/e',
+      title: 'E',
+      kind: 'epic',
+    });
+    reg.setEpicPlan(
+      epic.taskId!,
+      {
+        nodes: [
+          { id: 'login', title: 'Fix login', kind: 'issue' },
+          { id: 'docs', title: 'Docs', kind: 'issue', accepted: true },
+        ],
+      },
+      'epic',
     );
-    expect((after as any).closedBy).toEqual({ by: 'parent', at: 7 });
+    const c1 = reg.createTask({
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      workingDirectory: '/work/U1/c1',
+      title: 'C1',
+      parentTaskId: epic.taskId,
+      planNodeId: 'login',
+    });
+    const c2 = reg.createTask({
+      ownerId: 'U1',
+      ownerName: 'Alice',
+      workingDirectory: '/work/U1/c2',
+      title: 'C2',
+      parentTaskId: epic.taskId,
+      planNodeId: 'docs',
+    });
+    c1.activityState = 'working';
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+
+    let b = await board();
+    const keys = (col: any[]) => col.map((c) => c.key);
+    // The epic itself is idle, but a child works: its card is RUNNING.
+    expect(keys(b.working)).toEqual([`task:${epic.taskId}`]);
+    for (const col of [b.working, b.waiting, b.idle, b.closed]) {
+      expect(keys(col)).not.toContain(`task:${c1.taskId}`);
+      expect(keys(col)).not.toContain(`task:${c2.taskId}`);
+    }
+    const e = (b.working[0] as any).epic;
+    expect(e.state).toBe('running');
+    expect(e.progress).toEqual({ accepted: 1, total: 2, byStatus: { running: 1, none: 1 } });
+    expect(e.nodes.map((n: any) => [n.id, n.status, n.accepted, n.childTaskIds])).toEqual([
+      ['login', 'running', false, [c1.taskId]],
+      ['docs', 'none', true, [c2.taskId]],
+    ]);
+    expect(e.children.map((c: any) => c.key).sort()).toEqual([`task:${c1.taskId}`, `task:${c2.taskId}`].sort());
+
+    // A child waits on its owner: the epic's card is in WAITING.
+    c1.activityState = 'idle';
+    c2.activityState = 'waiting';
+    b = await board();
+    expect(keys(b.waiting)).toEqual([`task:${epic.taskId}`]);
+    expect((b.waiting[0] as any).epic.state).toBe('needs-input');
+
+    // Nothing at work: the epic's own column (idle).
+    c2.activityState = 'idle';
+    b = await board();
+    expect(keys(b.idle)).toContain(`task:${epic.taskId}`);
+    expect((b.idle.find((c) => c.key === `task:${epic.taskId}`) as any).epic.state).toBe('idle');
+
+    // An epic not on the board (trashed): its children keep their own columns.
+    epic.trashed = true;
+    b = await board();
+    expect(keys(b.idle)).toEqual(expect.arrayContaining([`task:${c1.taskId}`, `task:${c2.taskId}`]));
   });
 
   it('E2 ⑤ — a task’s card carries the thread notices that could not be posted; none, no field', async () => {
