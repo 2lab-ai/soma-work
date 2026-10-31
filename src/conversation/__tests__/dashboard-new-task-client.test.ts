@@ -331,7 +331,9 @@ describe('T3–T11 — the composer, in the order of the sketch', () => {
     expect(seen).toEqual(['fab-back']);
     // The person's Esc / scrim / ✕: ui-close (cancelable) — the FAB comes back once no listener turned it down.
     const init = clientFn('ntInit');
-    expect(init).toMatch(/addEventListener\('ui-close', function \(e\) \{[\s\S]*?if \(!e\.defaultPrevented\) ntShowFab\(\);/);
+    expect(init).toMatch(
+      /addEventListener\('ui-close', function \(e\) \{[\s\S]*?if \(!e\.defaultPrevented\) ntShowFab\(\);/,
+    );
   });
 
   it('loads its context and posts the task with the CSRF token', () => {
