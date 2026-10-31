@@ -192,6 +192,33 @@ describe('dashboard — a Slack-less task is on the board (T4)', () => {
     expect(close.statusCode).not.toBe(409);
   });
 
+  it('E2 ⑨ — a close the registry refuses (the task still owes its thread) answers 409 with the reason, not 500', async () => {
+    const dashboard = await import('../dashboard');
+    const { SessionDeleteRefusedError } = await import('../../session-registry');
+    const reg = new SessionRegistry();
+    const task = reg.createTask({ ownerId: 'U1', ownerName: 'Alice', workingDirectory: '/work/U1/a', title: 'A' });
+    setDashboardSessionAccessor(() => reg.getAllSessions());
+    const key = encodeURIComponent(`task:${task.taskId}`);
+    // No body: drop the JSON content type, or the server refuses the empty body (400).
+    const { 'content-type': _json, ...headers } = await signIn('U1');
+    dashboard.setDashboardCloseHandler(async (sessionKey: string) => {
+      throw new SessionDeleteRefusedError(sessionKey, 'terminated', new Error('task notice ledger unreadable'));
+    });
+    try {
+      const refused = await injectWebServer({ method: 'POST', url: `/api/dashboard/session/${key}/close`, headers });
+      expect(refused.statusCode).toBe(409);
+      expect(JSON.parse(refused.body).error).toBe(dashboard.CLOSE_REFUSED_TEXT);
+      // Any other failure is still a 500.
+      dashboard.setDashboardCloseHandler(async () => {
+        throw new Error('boom');
+      });
+      const failed = await injectWebServer({ method: 'POST', url: `/api/dashboard/session/${key}/close`, headers });
+      expect(failed.statusCode).toBe(500);
+    } finally {
+      dashboard.setDashboardCloseHandler(undefined as any);
+    }
+  });
+
   it('#612 R2 — an archived Slack-less card revives under its task key, still Slack-less, and still refuses a turn', async () => {
     const dashboard = await import('../dashboard');
     const reg = new SessionRegistry();
