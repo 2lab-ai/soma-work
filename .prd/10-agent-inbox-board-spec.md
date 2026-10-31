@@ -163,6 +163,13 @@ task list와 유저가 꼭 알아야 할 것만 남고, 모델의 실시간 작�
    살아 있는 카드가 늘 이긴다. 숨은 아카이브(나이 무관)를 가리키면 그 카드 하나만 이 페이지 로드 동안 보이게 하고(저장된 `Archives` 선택은
    바꾸지 않는다) 같은 순서로 연다. 유저가 `Archives`를 누르면 그 예외는 끝난다. 7일 지난 `Sleeping` 카드는 전처럼 `Show older` 묶음을
    펼친다.
+8. 빌드 스큐 (2026-10-31): 탭은 서버보다 오래 산다. 서버는 빌드 하나(`dashboardBuildId` — `dist/version.json`의 커밋과 빌드 시각,
+   없으면 프로세스마다 새 값)를 페이지(`PAGE_BUILD`), 소켓 연결의 첫 메시지(`{ type: 'hello', build }`), 모든 보드 폴링 응답 헤더
+   (`x-dashboard-build`)에 싣는다. 탭(`onServerBuild`)은 다른 빌드를 들으면 바로 새로고침한다. 보내지 않은 입력(패널·새 작업
+   작성기의 글이나 파일, 열린 새 작업 대화 상자, 채워진 텍스트 필드)이 있으면 새로고침하지 않고 `대시보드 새 버전이 나왔어요` 토스트
+   (`새로고침` 버튼, 저절로 닫히지 않음)를 빌드마다 한 번 띄운다. 새로고침은 서버 빌드마다 한 번이다(`sessionStorage`) — 새로고침한
+   뒤에도 빌드가 다르면(프록시가 옛 페이지를 다시 준 경우) 토스트로 바꾼다. 계기: 배포 전에 연 탭이 새 서버의 goal 10/10 결정
+   (`pendingGoalDecision`)을 그리지 못해 `Waiting for you`만 보이고 선택지가 없었다.
 
 ### 3.2 Slack (minimal)
 1. **3a 1회 이관** (`src/deploy/migrate-all-users-minimal-once.ts`): 부팅 시 1회(마커 `.all-users-log-minimal-once-2026-10-16.json`,

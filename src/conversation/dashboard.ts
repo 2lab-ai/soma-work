@@ -62,6 +62,7 @@ import {
   type PermissionPromptAnswer,
   promptBelongsToThread,
 } from '../permission-prompt-response';
+import { getVersionInfo } from '../release-notifier';
 import {
   type AgentRegistry,
   type AgentSpend,
@@ -884,6 +885,32 @@ export function setDashboardSessionAccessor(fn: SessionAccessor): void {
 function getAllSessions(): Map<string, any> {
   if (!_getSessionsFn) return new Map();
   return _getSessionsFn();
+}
+
+// ── Build identity (build skew, 2026-10-31) ────────────────────────
+// A dashboard tab outlives the server that served it: after a deploy its
+// socket reconnects and its poll goes on, so the new server's data meets the
+// old page script. On a dev deployment a goal's 10/10 decision arrived as a waiting card
+// (#624) on a tab opened before that build — "Waiting for you", no choices.
+// The page, the socket's hello and every board poll name this build; a tab on
+// another build reloads (client onServerBuild).
+
+/** A deployed build is its commit and build time (dist/version.json); without one, the caller's per-process id. */
+export function resolveDashboardBuildId(
+  info: { commitHash?: string; buildTime?: string } | null | undefined,
+  fallback: string,
+): string {
+  const commit = typeof info?.commitHash === 'string' ? info.commitHash.trim() : '';
+  if (!commit) return fallback;
+  const built = typeof info?.buildTime === 'string' ? info.buildTime.trim() : '';
+  return built ? `${commit}@${built}` : commit;
+}
+
+let _dashboardBuildId: string | undefined;
+/** This server's build — read once: the code a running process serves never changes under it. */
+export function dashboardBuildId(): string {
+  _dashboardBuildId ??= resolveDashboardBuildId(getVersionInfo(), `proc-${process.pid}-${Date.now().toString(36)}`);
+  return _dashboardBuildId;
 }
 
 // ── CRON lane + capacity sources (SSOT 2026-10-23) ─────────────────
@@ -2704,6 +2731,8 @@ export async function registerDashboardRoutes(
     '/api/dashboard/sessions',
     { preHandler: [authMiddleware], compress: FIRST_LOAD_COMPRESSION },
     async (request, reply) => {
+      // The build this board comes from: a tab on another build reloads (build skew).
+      reply.header('x-dashboard-build', dashboardBuildId());
       const userId = request.query.userId || undefined;
       const selfOnly = request.query.selfOnly === 'true';
       const board = buildKanbanBoard(userId);
@@ -4095,8 +4124,9 @@ export async function registerDashboardRoutes(
       }
       logger.debug('WebSocket client connected', { total: wsClients.size });
 
-      // Send initial state
+      // Send initial state — the build first (hello): a tab on another build reloads before it reads the board.
       try {
+        socket.send(JSON.stringify({ type: 'hello', build: dashboardBuildId() }));
         const board = buildKanbanBoard();
         socket.send(JSON.stringify({ type: 'session_update', board }));
       } catch {
@@ -4130,6 +4160,8 @@ function renderDashboardPage(userId?: string): string {
   // sibling cards (`environment.instanceName !== SELF_INSTANCE_NAME`) and
   // hide actions that would silently 4xx if dispatched to the wrong port.
   const initSelfInstance = _selfInstanceEnv ? JSON.stringify(_selfInstanceEnv.instanceName) : 'null';
+  // Build skew — the build this page's script comes from (onServerBuild compares every hello and poll with it).
+  const initBuild = JSON.stringify(dashboardBuildId()).replace(/</g, '\\u003c');
   // ui.dashboardheader — normalized card-header composition (config.json#ui
   // via @soma/slack/surface-config; docs/ui-surfaces.md). `<` is escaped so
   // an operator-supplied label cannot break out of the <script> block.
@@ -5840,6 +5872,9 @@ ${pageTokenAliases()}
 
 <script>
 const INIT_USER = ${initUser};
+// The build this script came from (dashboardBuildId): a socket hello or a board poll naming another build means
+// the server was redeployed under this tab — onServerBuild reloads it (build skew).
+const PAGE_BUILD = ${initBuild};
 // The page chrome's words, in one place and one language (the library's STRINGS pattern, lang="ko"):
 // sentence case, "…" not "...", the library's short status vocabulary.
 var STRINGS = {
@@ -12231,6 +12266,8 @@ async function loadSessions() {
     clearTimeout(timer);
     if (entry && _sessionsInflight === entry) _sessionsInflight = null; // answered: the next ask is a new request
     if (!res.ok) throw new Error('HTTP ' + res.status);
+    // The board's build (build skew): the poll is the only word from a server whose socket never connects.
+    onServerBuild(res.headers && res.headers.get ? res.headers.get('x-dashboard-build') : '');
     const data = await res.json();
     if (forUser !== currentUserId) return;
     _heldWsBoard = null;
@@ -12789,6 +12826,62 @@ function paintCharts(days, loading) {
   });
 }
 
+// ── Build skew (2026-10-31) ──
+// A tab outlives the server that served it: after a deploy its socket reconnects and its poll goes on, so the new
+// server's data meets this page's old script — on a dev deployment a goal's 10/10 decision arrived as a waiting card this
+// script's predecessor could not draw ("Waiting for you", no choices). The socket's hello and every board poll name
+// the server's build (dashboardBuildId); on another build the tab reloads, or — holding something unsent — says a
+// new version is out and reloads when asked. Once per server build: a page still skewed after its reload (a proxy
+// that served the old page again) asks instead of looping.
+var _buildSkewToast = ''; // the server build the 새 버전 toast was shown for
+function buildSkewed(serverBuild) {
+  return !!PAGE_BUILD && !!serverBuild && String(serverBuild) !== PAGE_BUILD;
+}
+// What a reload would throw away: the panel's and the new task's composers (text or files), the open new-task
+// dialog, any filled text field (a goal being written or edited, a typed answer).
+function hasUnsentInput() {
+  var ids = ['pc-composer', 'nt-composer'];
+  for (var i = 0; i < ids.length; i++) {
+    var c = document.getElementById(ids[i]);
+    if (c && (String(c.value || '').trim() || (c.files && c.files.length))) return true;
+  }
+  var dlg = document.getElementById('nt-dialog');
+  if (dlg && dlg.open) return true;
+  var fields = document.querySelectorAll('input[type="text"], input:not([type]), textarea');
+  for (var j = 0; j < fields.length; j++) if (String(fields[j].value || '').trim()) return true;
+  return false;
+}
+// Reload for this server build unless this tab already did; false when it did, or cannot remember that it did.
+function buildReload(serverBuild) {
+  var b = String(serverBuild);
+  try {
+    if (sessionStorage.getItem('soma-dash-build-reload') === b) return false;
+    sessionStorage.setItem('soma-dash-build-reload', b);
+  } catch (e) {
+    return false;
+  }
+  location.reload();
+  return true;
+}
+function onServerBuild(serverBuild) {
+  if (!buildSkewed(serverBuild)) return;
+  var b = String(serverBuild);
+  if (!hasUnsentInput() && buildReload(b)) return;
+  if (_buildSkewToast === b) return;
+  _buildSkewToast = b;
+  dashToast(
+    {
+      id: 'build-skew',
+      title: '대시보드 새 버전이 나왔어요',
+      description: '새로고침해야 최신 화면과 응답 선택지가 보여요. 쓰던 내용을 보낸 뒤 새로고침하세요.',
+      tone: 'warning',
+      duration: 0,
+      action: { id: 'reload', label: '새로고침' },
+    },
+    function() { location.reload(); },
+  );
+}
+
 // ── WebSocket ──
 function connectWs() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -12813,6 +12906,11 @@ function connectWs() {
   ws.onmessage = function(ev) {
     try {
       const msg = JSON.parse(ev.data);
+      // The server's build, first on every connection (build skew).
+      if (msg.type === 'hello') {
+        onServerBuild(msg.build);
+        return;
+      }
       if (msg.type === 'admin_approvals') {
         _adminPushSeq++;
         applyAdminApprovals(msg.snapshot);
