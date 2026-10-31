@@ -202,29 +202,35 @@ describe('T4/T5 — planCronLane', () => {
 
 describe('T5 — run glyphs and schedule label', () => {
   const fns = load<{
-    cronRunGlyph: (run: any) => { cls: string; glyph: string; label: string };
+    cronRunGlyph: (run: any) => { tone: string; glyph: string; label: string };
     cronScheduleLabel: (expr: string, nextRunAt: number | null) => string;
   }>(['pad2', 'cronRunGlyph', 'cronScheduleLabel'], []);
 
+  // D7 (C-08): the glyph is one of the icon set's (check / cross / dot / alert / circle-dashed — a literal slot
+  // the page fills with the library's SVG), the tone the kit row's (done / run / wait / fail; none for an entry
+  // that is not a run of its own).
   it('every run state has its own glyph — colour is never the only signal', () => {
     expect(fns.cronRunGlyph({ status: 'success', session: { activityState: 'idle' } })).toMatchObject({
-      glyph: '✓',
-      cls: 'ok',
+      glyph: 'check',
+      tone: 'done',
     });
-    expect(fns.cronRunGlyph({ status: 'failed' })).toMatchObject({ glyph: '✗', cls: 'fail' });
+    expect(fns.cronRunGlyph({ status: 'failed' })).toMatchObject({ glyph: 'cross', tone: 'fail' });
     expect(fns.cronRunGlyph({ status: 'success', session: { activityState: 'working', live: true } })).toMatchObject({
-      glyph: '●',
-      cls: 'run',
+      glyph: 'dot',
+      tone: 'run',
     });
     expect(fns.cronRunGlyph({ status: 'success', session: { activityState: 'waiting', live: true } })).toMatchObject({
-      glyph: '▲',
-      cls: 'wait',
+      glyph: 'alert',
+      tone: 'wait',
     });
-    expect(fns.cronRunGlyph({ status: 'success', executionPath: 'dm' })).toMatchObject({ glyph: '◌', cls: 'none' });
+    expect(fns.cronRunGlyph({ status: 'success', executionPath: 'dm' })).toMatchObject({
+      glyph: 'circle-dashed',
+      tone: '',
+    });
     // A board card no history record backs is never shown as a success.
     expect(fns.cronRunGlyph({ status: 'unrecorded', session: { activityState: 'idle', live: true } })).toMatchObject({
-      glyph: '◌',
-      cls: 'none',
+      glyph: 'circle-dashed',
+      tone: '',
     });
     // Queued wins over the thread's live state: the entry has not run yet.
     expect(
@@ -233,11 +239,16 @@ describe('T5 — run glyphs and schedule label', () => {
         executionPath: 'busy_queue',
         session: { activityState: 'working', live: true },
       }),
-    ).toMatchObject({ glyph: '◌', cls: 'none' });
+    ).toMatchObject({ glyph: 'circle-dashed', tone: '' });
     expect(fns.cronRunGlyph({ status: 'queued', executionPath: 'busy_queue' })).toMatchObject({
-      glyph: '◌',
-      cls: 'none',
+      glyph: 'circle-dashed',
+      tone: '',
     });
+    // Every glyph the rule names has a literal slot the page fills with the library's SVG (fillUiIcons).
+    const slots = clientVar('CRON_RUN_GLYPHS');
+    for (const g of ['check', 'cross', 'dot', 'alert', 'circle-dashed'])
+      expect(slots).toContain(`'<i data-ui-icon="${g}"></i>'`);
+    expect(clientFn('renderCronRunRow')).toContain('CRON_RUN_GLYPHS[gl.glyph]');
   });
 
   it('humanizes the common schedules and falls back to the raw expression', () => {

@@ -38,9 +38,10 @@ function reg(
   return ledger.register({ id, taskId, kind, ...TARGET, intent: { outcome: 'completed', reason: 'done' } });
 }
 
-/** A ledger read from its file, as the host opens it. */
+/** A ledger read from its file, as the host opens it — on a clock that always moves (orders by creation, fable #667 P3-a). */
+let tick = 0;
 function open(): TaskNotificationLedger {
-  const ledger = new TaskNotificationLedger(file);
+  const ledger = new TaskNotificationLedger(file, () => 1_700_000_000_000 + ++tick);
   ledger.load();
   return ledger;
 }
