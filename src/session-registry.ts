@@ -896,7 +896,8 @@ export class SessionRegistry {
   /**
    * E2 ① — the live Slack-less task instructed from this Slack thread (its
    * root `thread_ts`), if any. An archived task is not found: one live task
-   * per instruction thread.
+   * per instruction thread. A sleeping task is live — it still holds its
+   * thread until it is archived.
    */
   getTaskByOriginThread(channel: string, threadTs: string): ConversationSession | undefined {
     return this.tasksByOriginThread.get(`${channel}:${threadTs}`);
@@ -938,13 +939,15 @@ export class SessionRegistry {
     if (session) this.unindexTask(session);
   }
 
-  /** Drop the task-id entry only while it still names this session (an inheritor keeps its own), and its instruction thread. */
+  /** Drop the task-id and instruction-thread entries only while they still name this session — an inheritor keeps its own. */
   private unindexTask(session: ConversationSession): void {
     if (session.taskId && this.sessionsByTaskId.get(session.taskId) === session) {
       this.sessionsByTaskId.delete(session.taskId);
     }
-    // Only the holder carries its thread — `putSession` dropped it from any other.
-    if (session.originThread) this.tasksByOriginThread.delete(originThreadKey(session.originThread));
+    if (session.originThread) {
+      const originKey = originThreadKey(session.originThread);
+      if (this.tasksByOriginThread.get(originKey) === session) this.tasksByOriginThread.delete(originKey);
+    }
   }
 
   /**
@@ -1133,6 +1136,13 @@ export class SessionRegistry {
     if (originThread) session.originThread = originThread;
     const inputContext = sanitizeTaskInputContext(input.inputContext);
     if (inputContext) session.inputContext = inputContext;
+    // A caller passed a context and nothing usable was left: the task runs
+    // without its channel's repos — say so rather than drop it silently.
+    else if (input.inputContext !== undefined) {
+      this.logger.warn('createTask: the input context had no usable field; the task has none', {
+        taskId: session.taskId,
+      });
+    }
 
     const key = buildTaskSessionKey(session.taskId);
     this.putSession(key, session);

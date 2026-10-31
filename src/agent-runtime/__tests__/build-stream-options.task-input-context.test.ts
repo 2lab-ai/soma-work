@@ -113,6 +113,18 @@ describe('buildStreamOptions — a Slack-instructed task’s input context (E2 �
     );
   });
 
+  it('the start log reports the context the prompt was built from — the task’s snapshot on a task turn', async () => {
+    const session = taskSession({ inputContext: { channelDescription: DESCRIPTION, repos: REPOS } });
+    const ctx = executionContextForTask(session);
+    const deps = makeDeps();
+    await buildStreamOptions(
+      { queryEnv: {}, workingDirectory: ctx.workingDirectory, executionContext: ctx, session },
+      deps,
+    );
+    const start = (deps.logger.info as any).mock.calls.find((c: unknown[]) => String(c[0]).includes('STARTING QUERY'));
+    expect(start?.[1]).toMatchObject({ hasChannelDescription: true, repos: REPOS });
+  });
+
   it('a task with no input context (a dashboard task) gets the prompt it gets today', async () => {
     expect(await taskPrompt(taskSession())).toBe('PROMPT');
   });
