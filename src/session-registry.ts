@@ -61,7 +61,10 @@ import type {
   SessionResourceUpdateRequest,
   SessionResourceUpdateResult,
   SessionState,
+  TaskChainSettle,
   TaskInputContext,
+  TaskNoticeIntent,
+  TaskNoticeKind,
   TaskTurnOutcomeRecord,
   WorkflowType,
 } from './types';
@@ -200,6 +203,9 @@ interface SerializedSession {
   originThread?: unknown;
   /** E2 ② — a Slack-instructed task's channel context; validated on load. */
   inputContext?: unknown;
+  /** E2 ③ — the open chain and owed notices of a Slack-less task; validated on load. */
+  openChain?: unknown;
+  notices?: unknown;
   // Merge code change stats
   mergeStats?: {
     totalLinesAdded: number;
@@ -329,6 +335,51 @@ export function sanitizeTaskInputContext(value: unknown): TaskInputContext | und
     if (repos.length > 0) out.repos = repos;
   }
   return Object.keys(out).length > 0 ? out : undefined;
+}
+
+const NOTICE_KINDS: readonly TaskNoticeKind[] = ['link', 'result', 'question', 'failure', 'interrupted'];
+const NOTICE_OUTCOMES: readonly TaskTurnOutcomeRecord['outcome'][] = [
+  'completed',
+  'failed',
+  'cancelled',
+  'waiting',
+  'interrupted',
+];
+
+/** E2 ③ — stored notice intents: well-formed entries only; none left means none. */
+export function sanitizeTaskNotices(value: unknown): TaskNoticeIntent[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const out: TaskNoticeIntent[] = [];
+  for (const raw of value) {
+    if (typeof raw !== 'object' || raw === null) continue;
+    const v = raw as Record<string, unknown>;
+    if (typeof v.id !== 'string' || v.id === '') continue;
+    if (!NOTICE_KINDS.includes(v.kind as TaskNoticeKind)) continue;
+    if (typeof v.at !== 'number' || !Number.isFinite(v.at)) continue;
+    const intent: TaskNoticeIntent = { id: v.id, kind: v.kind as TaskNoticeKind, at: v.at };
+    for (const field of ['chainId', 'turnId', 'askId', 'reason'] as const) {
+      if (typeof v[field] === 'string' && v[field] !== '') intent[field] = v[field] as string;
+    }
+    if (NOTICE_OUTCOMES.includes(v.outcome as TaskTurnOutcomeRecord['outcome'])) {
+      intent.outcome = v.outcome as TaskTurnOutcomeRecord['outcome'];
+    }
+    out.push(intent);
+  }
+  return out.length > 0 ? out : undefined;
+}
+
+/** E2 ③ — the notice a chain's last outcome owes the instruction thread. */
+function noticeKindFor(outcome: TaskTurnOutcomeRecord['outcome']): TaskNoticeKind {
+  switch (outcome) {
+    case 'completed':
+      return 'result';
+    case 'waiting':
+      return 'question';
+    case 'interrupted':
+      return 'interrupted';
+    default:
+      return 'failure';
+  }
 }
 
 function originThreadKey(origin: OriginThread): string {
@@ -604,8 +655,13 @@ export class SessionRegistry {
    * callbacks and the post-drain hook run — so they read the new outcome, and a
    * restart finds the same outcome and activity the dashboard showed.
    */
-  public commitTaskTurnOutcome(sessionKey: string, outcome: TaskTurnOutcomeRecord, activity: 'waiting' | 'idle'): void {
-    this.applyTaskTurnOutcome('commitTaskTurnOutcome', sessionKey, outcome, activity, true);
+  public commitTaskTurnOutcome(
+    sessionKey: string,
+    outcome: TaskTurnOutcomeRecord,
+    activity: 'waiting' | 'idle',
+    settle?: TaskChainSettle,
+  ): void {
+    this.applyTaskTurnOutcome('commitTaskTurnOutcome', sessionKey, outcome, activity, true, settle);
   }
 
   /**
@@ -619,8 +675,21 @@ export class SessionRegistry {
     sessionKey: string,
     outcome: TaskTurnOutcomeRecord,
     activity: 'waiting' | 'idle',
+    settle?: TaskChainSettle,
   ): void {
-    this.applyTaskTurnOutcome('holdUnsavedTaskTurnOutcome', sessionKey, outcome, activity, false);
+    this.applyTaskTurnOutcome('holdUnsavedTaskTurnOutcome', sessionKey, outcome, activity, false, settle);
+  }
+
+  /**
+   * E2 ③ — add a notice intent to a task with an instruction thread (no-op
+   * otherwise, or when its id is already there). Not saved here: the caller's
+   * strict save carries it with the state it describes.
+   */
+  private addTaskNotice(session: ConversationSession, intent: TaskNoticeIntent): void {
+    if (session.slackless !== true || !session.originThread) return;
+    const notices = session.notices ?? [];
+    if (notices.some((n) => n.id === intent.id)) return;
+    session.notices = [...notices, intent];
   }
 
   private applyTaskTurnOutcome(
@@ -629,6 +698,7 @@ export class SessionRegistry {
     outcome: TaskTurnOutcomeRecord,
     activity: 'waiting' | 'idle',
     durable: boolean,
+    settle?: TaskChainSettle,
   ): void {
     const key = normalizeSessionKey(sessionKey);
     const session = this.getSessionByKey(key);
@@ -638,12 +708,35 @@ export class SessionRegistry {
       activity: session.activityState,
       changedAt: session.activityStateChangedAt,
       activeTurnId: session.activeTaskTurnId,
+      openChain: session.openChain,
+      notices: session.notices,
     };
     const changed = session.activityState !== activity;
     session.lastTurnOutcome = outcome;
     session.activityState = activity;
     session.activeTaskTurnId = undefined;
     if (changed) session.activityStateChangedAt = Date.now();
+    // E2 ③ — the chain's last outcome closes it and owes the thread a notice,
+    // in this same write; a hop the chain re-runs after keeps it open, silent.
+    if (settle?.ends) {
+      session.openChain = undefined;
+      const kind = noticeKindFor(outcome.outcome);
+      const askId =
+        kind === 'question'
+          ? (session.actionPanel?.pendingQuestion as { askId?: unknown } | undefined)?.askId
+          : undefined;
+      const ask = typeof askId === 'string' && askId !== '' ? askId : undefined;
+      this.addTaskNotice(session, {
+        id: `${session.taskId}:${settle.chainId}:${kind}${ask ? `:${ask}` : ''}`,
+        kind,
+        chainId: settle.chainId,
+        turnId: outcome.turnId,
+        ...(ask ? { askId: ask } : {}),
+        outcome: outcome.outcome,
+        ...(outcome.reason ? { reason: outcome.reason } : {}),
+        at: outcome.at,
+      });
+    }
     if (durable) {
       try {
         this.saveSessionsOrThrow();
@@ -652,6 +745,8 @@ export class SessionRegistry {
         session.activityState = previous.activity;
         session.activityStateChangedAt = previous.changedAt;
         session.activeTaskTurnId = previous.activeTurnId;
+        session.openChain = previous.openChain;
+        session.notices = previous.notices;
         throw error;
       }
     }
@@ -675,7 +770,7 @@ export class SessionRegistry {
    * the lost turn on disk for restart reconciliation (design 598c §6). A failed
    * write restores both and throws — the turn does not run.
    */
-  public beginTaskTurn(sessionKey: string, turnId: string): void {
+  public beginTaskTurn(sessionKey: string, turnId: string, chainId?: string): void {
     const key = normalizeSessionKey(sessionKey);
     const session = this.getSessionByKey(key);
     if (!session) throw new Error(`beginTaskTurn: session not found (${key})`);
@@ -689,7 +784,10 @@ export class SessionRegistry {
       lastActivity: session.lastActivity,
       warningMessageTs: session.warningMessageTs,
       lastWarningSentAt: session.lastWarningSentAt,
+      openChain: session.openChain,
     };
+    // E2 ③ — the chain is open from its first start until its last commit.
+    if (chainId) session.openChain = chainId;
     // An instruction wakes a sleeping task, as a Slack message wakes its thread,
     // so the inactivity sweep cannot archive it mid-turn (#634 R1).
     if (session.state === 'SLEEPING') this.wakeSession(session);
@@ -708,6 +806,7 @@ export class SessionRegistry {
       session.lastActivity = previous.lastActivity;
       session.warningMessageTs = previous.warningMessageTs;
       session.lastWarningSentAt = previous.lastWarningSentAt;
+      session.openChain = previous.openChain;
       throw error;
     }
     try {
@@ -2776,6 +2875,8 @@ export class SessionRegistry {
             slackless: session.slackless === true ? true : undefined,
             originThread: session.originThread,
             inputContext: session.inputContext,
+            openChain: session.openChain,
+            notices: session.notices,
             // Merge code change stats
             mergeStats: session.mergeStats,
             // User SSOT instructions (persisted)
@@ -3140,6 +3241,11 @@ export class SessionRegistry {
           // E2 ① — a malformed instruction thread is dropped; `putSession` drops one on a Slack session.
           originThread: sanitizeOriginThread(serialized.originThread),
           inputContext: sanitizeTaskInputContext(serialized.inputContext),
+          openChain:
+            slackless && typeof serialized.openChain === 'string' && serialized.openChain !== ''
+              ? serialized.openChain
+              : undefined,
+          notices: slackless ? sanitizeTaskNotices(serialized.notices) : undefined,
           // Incident ownership is restored verbatim and never repaired: any
           // present value keeps the session restricted (fail closed).
           incidentRequest:
@@ -3343,15 +3449,31 @@ export class SessionRegistry {
           // No Slack thread to resume or notify. A task saved `working` lost its
           // turn with the process: record that turn `interrupted` and never re-run
           // it (#598 ④c, D10). A `waiting` task keeps its question.
-          if (serialized.activityState === 'working') {
+          // E2 ③ — so did a chain still open: a `/compact` hop committed
+          // `completed` and the process died before the re-run's start.
+          if (serialized.activityState === 'working' || session.openChain) {
             const now = Date.now();
+            const turnId = session.activeTaskTurnId ?? `restart:${now}`;
             session.lastTurnOutcome = {
-              turnId: session.activeTaskTurnId ?? `restart:${now}`,
+              turnId,
               outcome: 'interrupted',
               category: 'Exception',
               reason: 'process ended before the outcome was recorded',
               at: now,
             };
+            // One notice per lost chain, keyed by the chain (or the turn), so a
+            // reconciliation repeated after an unsaved load adds nothing.
+            const chainId = session.openChain;
+            this.addTaskNotice(session, {
+              id: `${session.taskId}:${chainId ?? turnId}:interrupted`,
+              kind: 'interrupted',
+              ...(chainId ? { chainId } : {}),
+              turnId,
+              outcome: 'interrupted',
+              reason: 'process ended before the outcome was recorded',
+              at: now,
+            });
+            session.openChain = undefined;
             session.activityState = 'idle';
             session.activityStateChangedAt = now;
             session.activeTaskTurnId = undefined;
