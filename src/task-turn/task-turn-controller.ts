@@ -349,27 +349,42 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     endStranded(sessionKey, turnId);
   }
 
+  /** Endings of stranded turns still saving — Close waits for them (astra #634 R2). */
+  const endings = new Map<string, Promise<void>>();
+
   function endStranded(sessionKey: string, turnId: string): void {
-    void deps.runner
+    const ending = deps.runner
       .abandonTurn(sessionKey, turnId, {
         outcome: 'interrupted',
         category: 'Exception',
         reason: 'service shutdown was cancelled',
       })
-      .catch((error) =>
-        deps.logger.error('A turn stranded by a cancelled shutdown could not be ended', {
-          sessionKey,
-          turnId,
-          error: (error as Error)?.message,
-        }),
-      );
+      .then(
+        () => undefined,
+        (error) =>
+          deps.logger.error('A turn stranded by a cancelled shutdown could not be ended', {
+            sessionKey,
+            turnId,
+            error: (error as Error)?.message,
+          }),
+      )
+      .finally(() => {
+        if (endings.get(sessionKey) === ending) endings.delete(sessionKey);
+      });
+    endings.set(sessionKey, ending);
   }
 
   async function close(sessionKey: string): Promise<void> {
     const chain = chains.get(sessionKey);
-    if (!chain) return;
-    chain.abort.abort('session-close');
     const waitMs = deps.closeWaitMs ?? 60_000;
+    if (!chain) {
+      // No chain, but a stranded turn's outcome may still be saving: the task
+      // is removed only after it lands (or the bound passes).
+      const ending = endings.get(sessionKey);
+      if (ending) await boundedWait(ending, waitMs, sessionKey);
+      return;
+    }
+    chain.abort.abort('session-close');
     let timer: ReturnType<typeof setTimeout> | undefined;
     await Promise.race([
       chain.done,
@@ -383,6 +398,20 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
           if (chains.get(sessionKey) === chain) chains.delete(sessionKey);
           if (ownerChain.get(chain.ownerId) === sessionKey) ownerChain.delete(chain.ownerId);
           deps.coordinator.removeController(sessionKey, chain.abort);
+          resolve();
+        }, waitMs);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+  }
+
+  async function boundedWait(work: Promise<void>, waitMs: number, sessionKey: string): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    await Promise.race([
+      work,
+      new Promise<void>((resolve) => {
+        timer = setTimeout(() => {
+          deps.logger.warn('A stranded turn was still saving at close — closing anyway', { sessionKey });
           resolve();
         }, waitMs);
       }),
