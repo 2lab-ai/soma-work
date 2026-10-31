@@ -301,10 +301,16 @@ export interface EventRouterDeps {
 /**
  * E2 ⑦ — a mention that may become a dashboard task (.prd/18 D2 (1)): a plain
  * instruction with words, as the user wrote it. Not a candidate: a synthetic
- * event, a DM, a file mention, a `/` command (the `/z` surface included), a
- * `%` directive, a `!` steer, `new <text>`. The incident ingress and the
- * file_share path never reach the marking. The host re-checks its own
- * allow-list before acting on it (⑧).
+ * event, a DM, a mention whose `app_mention` payload carries files, a `/`
+ * command (the `/z` surface included), a `%` directive, a `!` steer,
+ * `new <text>`. The incident ingress and the file_share path never reach the
+ * marking.
+ *
+ * A hint, not a verdict: Slack often sends a mention with attachments as an
+ * `app_mention` WITHOUT `files` (the files come later on `file_share`), so
+ * such a mention can be a candidate here; naked commands (`persona …`,
+ * `$skill`) are candidates too. The host re-checks its own allow-list — files,
+ * handled commands, a forced skill — before acting on it (⑧).
  */
 export function isTaskEntryCandidate(
   event: { channel?: string; channel_type?: string; synthetic?: boolean; files?: unknown[] },
@@ -783,8 +789,11 @@ export class EventRouter {
         : (event as MessageEvent).routeContext;
       // E2 ⑦ — decided on the original mention's words (before any rewrite):
       // a plain instruction may become a dashboard task (⑧ reads it).
+      // No bot id: the mention could not be stripped, so the words are a guess — no marker.
       const routeContext =
-        routedViaZ.continueWithPrompt === undefined && isTaskEntryCandidate(event as MessageEvent, text)
+        botId !== undefined &&
+        routedViaZ.continueWithPrompt === undefined &&
+        isTaskEntryCandidate(event as MessageEvent, text)
           ? { ...baseRouteContext, taskEntryCandidate: true }
           : baseRouteContext;
 

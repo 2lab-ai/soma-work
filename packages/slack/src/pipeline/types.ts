@@ -161,6 +161,8 @@ export interface MessageEvent {
      * E2 ⑦ — set by the router on an original app_mention whose words are a
      * plain instruction (`isTaskEntryCandidate`): such a mention may become a
      * dashboard task (⑧). Absent everywhere else. Survives the follow-up queue.
+     * A hint about the words at mention time: a queued item's text or files
+     * may change later, and the host re-checks both when it acts.
      */
     taskEntryCandidate?: boolean;
   };
