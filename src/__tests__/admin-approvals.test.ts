@@ -24,7 +24,7 @@ function approval(kind: AdminApproval['kind'], requestId: string, createdAt: num
 afterEach(() => clearAdminApprovalAdapters());
 
 describe('admin approvals registry (#620)', () => {
-  it('merges every kind, newest first, and asks each adapter for the resolutions of the window', () => {
+  it('merges every kind, newest first, and asks each adapter for the resolutions of the window', async () => {
     const since: number[] = [];
     registerAdminApprovalAdapter({
       kind: 'env_skill',
@@ -41,13 +41,13 @@ describe('admin approvals registry (#620)', () => {
       resolved: () => [],
       answer: async () => ({ ok: true, outcome: 'approved' }),
     });
-    const snap = adminApprovalSnapshot(10_000_000);
+    const snap = await adminApprovalSnapshot(10_000_000);
     expect(snap.pending.map((a) => a.id)).toEqual(['new_user:b', 'env_skill:a']);
     expect(snap.resolved.map((r) => r.id)).toEqual(['env_skill:z']);
     expect(since).toEqual([10_000_000 - RESOLVED_WINDOW_MS]);
   });
 
-  it('an adapter that throws is skipped, the rest still list', () => {
+  it('an adapter that throws is skipped, the rest still list', async () => {
     registerAdminApprovalAdapter({
       kind: 'mcp_grant',
       pending: () => {
@@ -62,7 +62,46 @@ describe('admin approvals registry (#620)', () => {
       resolved: () => [],
       answer: async () => ({ ok: true, outcome: 'denied' }),
     });
-    expect(adminApprovalSnapshot().pending.map((a) => a.id)).toEqual(['bot_delete:c']);
+    expect((await adminApprovalSnapshot()).pending.map((a) => a.id)).toEqual(['bot_delete:c']);
+  });
+
+  it('an adapter that reads asynchronously (a file store) is awaited; one that rejects is skipped', async () => {
+    registerAdminApprovalAdapter({
+      kind: 'mcp_grant',
+      pending: async () => [approval('mcp_grant', 'm', 200)],
+      resolved: async () => [{ id: 'mcp_grant:old', outcome: 'denied', at: 9 }],
+      answer: async () => ({ ok: true, outcome: 'approved' }),
+    });
+    registerAdminApprovalAdapter({
+      kind: 'new_user',
+      pending: async () => {
+        throw new Error('store unreadable');
+      },
+      resolved: () => [],
+      answer: async () => ({ ok: true, outcome: 'approved' }),
+    });
+    registerAdminApprovalAdapter({
+      kind: 'env_skill',
+      pending: () => [approval('env_skill', 'e', 100)],
+      resolved: () => [],
+      answer: async () => ({ ok: true, outcome: 'approved' }),
+    });
+    const snap = await adminApprovalSnapshot(1_000);
+    expect(snap.pending.map((a) => a.id)).toEqual(['mcp_grant:m', 'env_skill:e']);
+    expect(snap.resolved.map((r) => r.id)).toEqual(['mcp_grant:old']);
+  });
+
+  it('a lost race on an async adapter still carries the winning resolution', async () => {
+    registerAdminApprovalAdapter({
+      kind: 'mcp_grant',
+      pending: async () => [],
+      resolved: async () => [{ id: 'mcp_grant:r', outcome: 'approved', by: 'UOTHER', via: 'slack', at: 5 }],
+      answer: async () => ({ ok: false, reason: 'already_answered' }),
+    });
+    expect(await answerAdminApproval('mcp_grant:r', 'deny', 'UADMIN')).toMatchObject({
+      reason: 'already_answered',
+      resolution: { by: 'UOTHER', via: 'slack' },
+    });
   });
 
   it('routes an answer to its kind and signals the change', async () => {

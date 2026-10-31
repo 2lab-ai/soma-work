@@ -373,6 +373,37 @@ describe('dashboard admin approvals (#620)', () => {
       expect(d.canAnswer).toBeUndefined();
     });
 
+    it('an MCP grant request is a permission card: the tool, the DM rows, the risk', () => {
+      const { c } = client();
+      c.applyAdminApprovals({
+        pending: [
+          {
+            id: 'mcp_grant:req-2',
+            kind: 'mcp_grant',
+            card: 'permission',
+            title: 'MCP 도구 권한 요청',
+            description: 'server-tools 서버 쓰기 권한을 24h 동안 요청합니다.',
+            tool: 'mcp__server-tools',
+            rows: { 요청자: 'U1', 서버: 'server-tools', 권한: '쓰기 (write)', 기간: '24h' },
+            risk: 'medium',
+            requesterId: 'U1',
+            createdAt: 1_700_000_000_000,
+          },
+        ],
+        resolved: [],
+      });
+      expect(c.adminApprovalData('mcp_grant:req-2')).toMatchObject({
+        kind: 'permission',
+        tool: 'mcp__server-tools',
+        title: 'MCP 도구 권한 요청',
+        input: { 서버: 'server-tools', 권한: '쓰기 (write)' },
+        risk: 'medium',
+        canExplain: false,
+        canDisableRule: false,
+        label: 'MCP 권한 · 김민수 요청',
+      });
+    });
+
     it('locked until admin mode is on, and for an admin without a Slack identity', () => {
       const off = client({ _isAdminModeOn: () => false }).c;
       off.applyAdminApprovals({ pending: [ENV_REQUEST], resolved: [] });

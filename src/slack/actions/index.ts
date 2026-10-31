@@ -6,6 +6,7 @@ import { registerAuthActions } from '../auth/actions';
 import { registerCctActions } from '../cct/actions';
 import { defaultTabCache } from '../commands/usage-carousel-cache';
 import { envSkillAdminApprovalAdapter } from '../env-skill-admin-approval';
+import { mcpGrantAdminApprovalAdapter } from '../mcp-grant-decision';
 import { buildDefaultTopicRegistry } from '../z/topics';
 import { ActionPanelActionHandler } from './action-panel-action-handler';
 import { AutoskillActionHandler } from './autoskill-action-handler';
@@ -86,6 +87,10 @@ setActionHandlersProviders({
     });
     // The dashboard's admin approvals answer environment-skill requests through the same decision (#620).
     registerAdminApprovalAdapter(envSkillAdminApprovalAdapter(envSkillPermissionHandler));
+    // MCP tool access requests: one decision for the DM buttons and the dashboard (#621).
+    const updateMcpGrantDm = async (ref: { channel: string; ts: string }, text: string) =>
+      ctx.slackApi.updateMessage(ref.channel, ref.ts, text, [{ type: 'section', text: { type: 'mrkdwn', text } }]);
+    registerAdminApprovalAdapter(mcpGrantAdminApprovalAdapter(updateMcpGrantDm));
 
     const zTopicRegistry = buildDefaultTopicRegistry();
 
@@ -157,7 +162,7 @@ setActionHandlersProviders({
       usageCardHandler: new UsageCardActionHandler({
         tabCache: defaultTabCache,
       }),
-      mcpToolPermissionHandler: new McpToolPermissionActionHandler(),
+      mcpToolPermissionHandler: new McpToolPermissionActionHandler({ updateDm: updateMcpGrantDm }),
       pluginUpdateHandler: new PluginUpdateActionHandler({
         mcpManager: ctx.mcpManager,
       }),

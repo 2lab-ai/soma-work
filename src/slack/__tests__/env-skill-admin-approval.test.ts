@@ -53,11 +53,11 @@ describe('environment-skill requests as admin approvals (#620)', () => {
     handler = new EnvSkillPermissionActionHandler({ slackApi: slackApi as any, messageHandler: messageHandler as any });
   });
 
-  it('a pending request is a question card with the DM choices, the narrowest grant recommended', () => {
+  it('a pending request is a question card with the DM choices, the narrowest grant recommended', async () => {
     const id = makeRequest(`t-${Math.random()}`);
-    const card = envSkillAdminApprovalAdapter(handler)
-      .pending(Date.now())
-      .find((a) => a.id === `env_skill:${id}`);
+    const card = (await envSkillAdminApprovalAdapter(handler).pending(Date.now())).find(
+      (a) => a.id === `env_skill:${id}`,
+    );
     expect(card).toMatchObject({
       kind: 'env_skill',
       card: 'question',
@@ -84,7 +84,7 @@ describe('environment-skill requests as admin approvals (#620)', () => {
     expect(
       hasThreadGrant(ENV_SKILL_GRANT_OWNER, 'acme-env:post-deploy', 'U1', { channel: 'C1', threadTs: thread }),
     ).toBe(true);
-    expect(adapter.pending(Date.now()).some((a) => a.id === `env_skill:${id}`)).toBe(false);
+    expect((await adapter.pending(Date.now())).some((a) => a.id === `env_skill:${id}`)).toBe(false);
     await vi.waitFor(() => expect(messageHandler).toHaveBeenCalled());
     // Both admins' DMs — not only one — say what happened and where.
     const rewritten = slackApi.updateMessage.mock.calls.map((c) => [c[0], c[1], c[2]]);
@@ -93,7 +93,7 @@ describe('environment-skill requests as admin approvals (#620)', () => {
     expect(slackApi.postMessage).toHaveBeenCalledWith('C1', expect.stringContaining('허용했습니다'), {
       threadTs: thread,
     });
-    expect(adapter.resolved(0).find((r) => r.id === `env_skill:${id}`)).toMatchObject({
+    expect((await adapter.resolved(0)).find((r) => r.id === `env_skill:${id}`)).toMatchObject({
       outcome: 'approved',
       by: 'UADMIN1',
       via: 'dashboard',
@@ -112,7 +112,7 @@ describe('environment-skill requests as admin approvals (#620)', () => {
       respond,
     );
     const adapter = envSkillAdminApprovalAdapter(handler);
-    expect(adapter.resolved(0).find((r) => r.id === `env_skill:${id}`)).toMatchObject({
+    expect((await adapter.resolved(0)).find((r) => r.id === `env_skill:${id}`)).toMatchObject({
       outcome: 'denied',
       by: 'UADMIN2',
       via: 'slack',
@@ -133,7 +133,7 @@ describe('environment-skill requests as admin approvals (#620)', () => {
       ok: false,
       reason: 'not_found',
     });
-    expect(adapter.pending(Date.now()).some((a) => a.id === `env_skill:${id}`)).toBe(true);
+    expect((await adapter.pending(Date.now())).some((a) => a.id === `env_skill:${id}`)).toBe(true);
   });
 
   it('answered on the dashboard while the DMs were still going out: the late DMs are closed, not left live', async () => {
@@ -146,7 +146,7 @@ describe('environment-skill requests as admin approvals (#620)', () => {
         // The request is listed on the dashboard from the moment it is created;
         // an admin answers it there before the second DM has even been posted.
         if (channel === 'D-UADMIN2' && !answered) {
-          const card = adapter.pending(Date.now()).find((a) => a.place?.threadTs === thread);
+          const card = (await adapter.pending(Date.now())).find((a) => a.place?.threadTs === thread);
           answered = await adapter.answer(card!.id.slice('env_skill:'.length), VALUE_KIND_ENV_SKILL_DENY, 'UADMIN1');
         }
         return { ts: `ts-${channel}`, channel };

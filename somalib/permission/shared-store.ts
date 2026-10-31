@@ -9,6 +9,14 @@ export interface PermissionResponse {
   behavior: 'allow' | 'deny';
   updatedInput?: any;
   message?: string;
+  /** MCP grant answers: the outcome line every admin DM copy is rewritten to. */
+  promptText?: string;
+  /**
+   * MCP grant answers: the `ts` of the DM copies the answering process
+   * rewrites. A copy the waiting MCP child posted after the answer read the
+   * request is not in this list — the child rewrites it with `promptText`.
+   */
+  promptsRewritten?: string[];
 }
 
 /**
@@ -22,9 +30,16 @@ export interface PermissionResponse {
  */
 export const PERMISSION_PROMPT_KIND = 'tool_permission' as const;
 
+/**
+ * Marker mcp-tool-permission stamps on its admin-approved grant requests
+ * (`tool_name: 'request_permission'`). Older records carry no kind; readers
+ * treat a kind-less `request_permission` record the same way.
+ */
+export const MCP_GRANT_KIND = 'mcp_grant' as const;
+
 export interface PendingApproval {
-  /** {@link PERMISSION_PROMPT_KIND} on permission prompts; absent on other writers' records. */
-  kind?: typeof PERMISSION_PROMPT_KIND;
+  /** {@link PERMISSION_PROMPT_KIND} on permission prompts, {@link MCP_GRANT_KIND} on MCP grant requests. */
+  kind?: typeof PERMISSION_PROMPT_KIND | typeof MCP_GRANT_KIND;
   tool_name: string;
   input: any;
   channel?: string;
@@ -42,6 +57,8 @@ export interface PendingApproval {
    * session". Absent for non-Bash tools and non-dangerous commands.
    */
   rule_ids?: string[];
+  /** MCP grant requests: where each admin's DM prompt landed, so any answer can rewrite every copy. */
+  prompts?: Array<{ channel: string; ts: string }>;
 }
 
 /** How long an answer claim is kept after it was made. */
