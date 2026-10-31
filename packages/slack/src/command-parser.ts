@@ -1312,6 +1312,8 @@ export class CommandParser {
     // Notification
     'notify',
     'webhook',
+    // Slack instructions → dashboard tasks (E2 ⑧)
+    'taskentry',
     // Report
     'report',
     // Skills
@@ -1437,6 +1439,10 @@ export class CommandParser {
       '• `link issue <url>` - Attach issue link to current session',
       '• `link pr <url>` - Attach PR link to current session',
       '• `link doc <url>` - Attach doc link to current session',
+      '',
+      '*Dashboard Tasks:*',
+      '• `taskentry` - Show whether your channel instructions become dashboard tasks',
+      '• `taskentry on|off` - Turn it on/off (per user, off by default)',
       '',
       '*MCP Servers:*',
       '• `mcp` or `/mcp` - Show MCP server status',

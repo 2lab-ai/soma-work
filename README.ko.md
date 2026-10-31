@@ -101,6 +101,12 @@ Slack 네이티브 버튼/폼 UX로 권한 승인, 선택지, 세션 관리를 �
 
 대시보드의 **New task** 버튼(PC는 상단 바·`N` 단축키, 휴대폰은 플로팅 버튼)으로 작성 창을 엽니다. 모델(공유 풀 잔여량 배터리 표시), effort, Slack 채널, 작업 단위 `autogoal`·`autoz` 토글, 지시문, 첨부(파일·붙여넣은 스크린샷·휴대폰 카메라·음성 녹음)를 정하면, 고른 채널의 새 스레드에 내 메시지로 작업이 시작되어 진행이 Slack에 그대로 보입니다. 채널 목록은 내가 속한 repo 매핑 채널이고, 기본값은 마지막으로 명령을 내린 채널입니다. `autoz`를 켜면 지시 끝에 `$autoz`가 붙습니다.
 
+### 🗂️ 슬랙 지시를 대시보드 작업으로
+
+`/z taskentry on`으로 켭니다(유저 단위, 기본 꺼짐). 그러면 채널에서 봇에게 보낸 평범한 지시가 대시보드 작업이 됩니다. 스레드에는 카드 링크가 먼저 오고, 그 뒤로는 결과, 답이 필요한 질문, 승인 요청, 실패만 옵니다. 진행은 카드에서 보고 지시합니다. 그 스레드에서는 다른 실행이 열리지 않고, 다시 멘션하면 카드 링크 안내 1건이 옵니다.
+
+DM, 파일, 명령, `!`·`%`, 이미 슬랙 세션이 있는 스레드는 지금처럼 슬랙 세션으로 진행합니다. 대시보드가 꺼져 있으면 그렇다고 알리고 슬랙 세션으로 진행합니다. 연결 구조: [architecture](./docs/misc/reference/architecture.md) (E2 ⑧).
+
 ### 🖼️ 대시보드 산출물
 
 모델이 Slack으로 보낸 파일(HTML 리포트, PNG, WAV·음성, 영상, PDF, 텍스트)과 마크다운 최종 답변이 웹 대시보드에 모두 보인다: 세션 카드의 칩, 펼친 카드의 썸네일 스트립, 세션 패널 공통 서피스의 스트립과 답변마다 그 턴의 파일. 마우스를 올리면 미니맵 미리보기, 누르면 풀사이즈 뷰어(HTML은 샌드박스에서 실행, 오디오는 카드에서 바로 재생). 기능 도입 전 업로드는 세션 작업 로그에서 백필한다.
@@ -208,7 +214,7 @@ app-token 프롬프트는 금지된 자격증명 경로라 삭제됨), `scripts/
 | `$<skill>` / `$<plugin>:<skill>` | **강제 스킬 발동** (`SKILL.md` 로드, `compact` 이상에서 RPG 배너 출력 — `minimal`에서는 게시하지 않음; 세션에 대화가 있으면 대시보드 작업 로그에 기록) | 메시지 단위 | `$z`, `$stv:new-task` |
 | naked text | bare 명령 또는 채팅 / 워크플로우 디스패치 | n/a | `sessions`, `new`, `fix PR 123` |
 
-주요 `/z` 명령: `help` · `cwd` · `mcp` · `bypass` · `persona` · `model` · `verbosity` · `session` · `new`/`renew` · `close` · `restore` · `context`/`compact` · `link` · `onboarding` · `admin` · `cct` · `auth` · `marketplace` · `plugin` · `skill` · `report`
+주요 `/z` 명령: `help` · `cwd` · `mcp` · `bypass` · `taskentry` · `persona` · `model` · `verbosity` · `session` · `new`/`renew` · `close` · `restore` · `context`/`compact` · `link` · `onboarding` · `admin` · `cct` · `auth` · `marketplace` · `plugin` · `skill` · `report`
 
 - 출력 수준(`/z verbosity`, 세션 한정 `%verbosity`): `minimal` · `compact` · `detail` · `verbose`. 기본값은 `minimal`이다 — 스레드에는 task list(메인 에이전트의 것 — 서브에이전트의 목록은 대시보드의 그 서브에이전트 항목에 있다), 질문/승인, 최종 답변, 오류만 남고, 모델의 실시간 작업 설명·도구 호출·압축 공지·스킬 발동 배너(`$skill`·autoskill 포함)는 대시보드 작업 로그로 간다.
 

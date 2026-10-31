@@ -41,6 +41,7 @@ import { App, LogLevel, SocketModeReceiver } from '@slack/bolt';
 import type { WebClient } from '@slack/web-api';
 import type { AgentTreeEvent } from '@soma/slack/agent-tree';
 import type { LiveUsageCall } from '@soma/slack/live-usage';
+import { runNewUserGate } from '@soma/slack/pipeline/session-initializer';
 import * as path from 'path';
 import { CronStorage } from 'somalib/cron/cron-storage';
 import { initA2tService, shutdownA2tService } from './a2t/a2t-service';
@@ -49,7 +50,8 @@ import { executionContextForTask } from './agent-runtime/execution-context';
 import { initAuthRuntimeDefault } from './auth/auth-runtime';
 import { isLlmuxUp } from './auth/llmux-client';
 import { setQueryEnvAdditional } from './auth/query-env-builder';
-import { scanChannels } from './channel-registry';
+import { getChannelDescription } from './channel-description-cache';
+import { getChannel, scanChannels } from './channel-registry';
 import { ClaudeHandler } from './claude-handler';
 import { config, getIncidentTrustedSource, runPreflightChecks, validateConfig } from './config';
 import { loadConfig } from './config-loader';
@@ -62,6 +64,7 @@ import {
   broadcastWorkLog,
   getDashboardSessionUrl,
   initRecorder,
+  isDashboardListening,
   matchSlackUsersByEmail,
   scheduleLiveSessionUpdate,
   setDashboardBotName,
@@ -157,9 +160,11 @@ import {
 } from './slack/goal-cap-decision';
 import { GoalLoopController } from './slack/goal-loop-controller';
 import { setGoalLoopResumeHandler, setHostGoalActionHandler } from './slack/goal-loop-resume';
+import { createPendingUserRequest, notifyAdminsNewUser } from './slack/new-user-decision';
 import { type StreamExecutorProviders, setStreamExecutorProviders } from './slack/pipeline/stream-executor';
 import { setGoalCapDecisionRetirer } from './slack/session-goal';
 import { setUiSurfacesConfig } from './slack/surface-config';
+import { createSlackTaskEntry } from './slack/task-entry';
 import { setThreadHeaderProviders } from './slack/thread-header-builder';
 import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
@@ -1247,6 +1252,49 @@ async function start() {
         // E2 ⑥ — a task approval asked is told to the thread at once; an expiry once.
         claudeHandler.setTaskApprovalListener((event) => deliverer.approval(event));
         taskNoticeDeliverer = deliverer;
+        // E2 ⑧ — a plain instruction from a user who turned it on becomes a
+        // dashboard task (.prd/18 D1 · D2 · D11 · D12). Only with a deliverer:
+        // without one the thread would never get its link or results.
+        const slackApi = slackHandler.getSlackApi();
+        slackHandler.setTaskEntry(
+          createSlackTaskEntry({
+            isEnabled: (userId) => userSettingsStore.getUserSlackTaskEntry(userId),
+            isDashboardListening,
+            newUserGate: (at) =>
+              runNewUserGate(
+                {
+                  getUserSettings: (u) => userSettingsStore.getUserSettings(u),
+                  createPendingUser: (u, n) => createPendingUserRequest(u, n),
+                  notifyAdmins: (u, n) => notifyAdminsNewUser(slackApi, u, n),
+                  postMessage: (c, text, options) => slackApi.postMessage(c, text, options),
+                  logger: new Logger('TaskEntryGate'),
+                },
+                at,
+              ),
+            getUserName: (userId) => slackApi.getUserName(userId),
+            canStart: (ownerId, text) => taskController.canStart(ownerId, text),
+            launch: (request) => taskLauncher.launch(request),
+            getTaskByKey: (sessionKey) => registry.getSessionByKey(sessionKey),
+            getTaskByOriginThread: (channel, threadTs) => registry.getTaskByOriginThread(channel, threadTs),
+            notStarted: (session, sessionKey, reason) => deliverer.notStarted(session, sessionKey, reason),
+            cardUrl: (ownerId, sessionKey) => getDashboardSessionUrl(ownerId, sessionKey),
+            inputContext: async (channel) => {
+              const info = getChannel(channel);
+              const channelDescription = await getChannelDescription(slackApi.getClient(), channel);
+              return {
+                ...(info?.name ? { channelName: info.name } : {}),
+                ...(channelDescription ? { channelDescription } : {}),
+                ...(info?.repos?.length ? { repos: info.repos } : {}),
+                ...(info?.confluenceUrl ? { confluenceUrl: info.confluenceUrl } : {}),
+              };
+            },
+            reactions: {
+              remove: (channel, ts, name) => slackApi.removeReaction(channel, ts, name),
+              add: (channel, ts, name) => slackApi.addReaction(channel, ts, name),
+            },
+            logger: new Logger('SlackTaskEntry'),
+          }),
+        );
       } catch (error) {
         logger.error('Task notice ledger unreadable — task thread notices stay on their tasks, undelivered', {
           error: (error as Error)?.message,

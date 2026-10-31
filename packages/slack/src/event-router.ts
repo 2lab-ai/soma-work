@@ -293,6 +293,17 @@ export interface EventRouterDeps {
    * today's behavior, which is to drop the event.
    */
   isFollowupControlReaction?: (name: string) => boolean;
+  /**
+   * E2 ⑧ (.prd/18 D2 (2)) — the host's instruction-thread guard. Asked before
+   * a mention (after any `/z` command ZRouter finished on the spot) or a
+   * mentioned file upload could open a Slack run. True: the host answered it
+   * (a card-link notice, or silence for a redelivery) and nothing runs. Absent
+   * or false: today's behavior.
+   */
+  guardInstructionThread?: (
+    event: { channel: string; ts: string; thread_ts?: string; user?: string; files?: unknown[] },
+    say: SayFn,
+  ) => Promise<boolean>;
 }
 
 /**
@@ -775,6 +786,11 @@ export class EventRouter {
         strippedText: text,
       });
       if (routedViaZ.terminal) {
+        return;
+      }
+      // E2 ⑧ — a live task's instruction thread: anything that would run here
+      // (an instruction, `!`, `%`, a `/z` continuation) is answered by the host.
+      if (await this.deps.guardInstructionThread?.(event as MessageEvent, say)) {
         return;
       }
       let nextText = text;
@@ -1316,6 +1332,8 @@ export class EventRouter {
     const text: string = messageEvent.text || '';
     const botId = await this.deps.slackApi.getBotUserId();
     if (botId && text.includes(`<@${botId}>`)) {
+      // E2 ⑧ — not a new Slack session in a live task's instruction thread.
+      if (await this.deps.guardInstructionThread?.(messageEvent, say)) return;
       this.logger.info('Handling file upload with bot mention as new session initiation', {
         channel,
         user: messageEvent.user,
