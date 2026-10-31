@@ -52,7 +52,7 @@ import { config } from '../config';
 import { displayTitle } from '../format/display-title';
 import { Logger } from '../logger';
 import { MetricsEventStore } from '../metrics/event-store';
-import { calculateTokenCost, findModelPricing } from '../metrics/model-registry';
+import { findModelPricing } from '../metrics/model-registry';
 import { ReportAggregator } from '../metrics/report-aggregator';
 import type { MetricsEvent } from '../metrics/types';
 import { clampEffortToModel, modelCatalog } from '../model-catalog';
@@ -104,6 +104,7 @@ import {
 import { GOAL_EVAL_DISPATCH_MAX_RETRIES } from '../slack/goal-completion-evaluator';
 import { type HostGoalAction, HostGoalActionError, type HostGoalActionResult } from '../slack/goal-host-actions';
 import { getSurfaceLines } from '../slack/surface-config';
+import { sessionCostUsd } from '../task-turn/epic-cost';
 import type { TaskAnswer } from '../task-turn/task-answer';
 import { buildThreadPermalink } from '../turn-notifier';
 import { coerceEffort, EFFORT_LEVELS, type EffortLevel, userSettingsStore } from '../user-settings-store';
@@ -413,6 +414,11 @@ export interface KanbanSession {
   pendingGoalDecision?: KanbanGoalDecision;
   /** #600 ⑥ — a Slack-less dashboard task (the client gates task-only UI on it). Absent for Slack sessions. */
   slackless?: true;
+  /** E4 ① (.prd/19 D1) — an epic task. Absent otherwise. */
+  kind?: 'epic';
+  /** E4 ① — a child task's epic (task id) and plan node. Absent otherwise. */
+  parentTaskId?: string;
+  planNodeId?: string;
   /**
    * #598 ④c — a Slack-less task's last turn outcome (D10): what the last turn
    * ended as, why, and whether recording it failed. Absent for Slack sessions.
@@ -1984,26 +1990,21 @@ function tokenUsageOf(s: any): KanbanSession['tokenUsage'] {
         output: task.outputTokens || 0,
         cacheRead: task.cacheReadTokens || 0,
         cacheCreate: task.cacheCreateTokens || 0,
-        cost: task.costUsd || 0,
       }
     : {
         input: u.totalInputTokens || 0,
         output: u.totalOutputTokens || 0,
         cacheRead: u.totalCacheReadTokens || 0,
         cacheCreate: u.totalCacheCreateTokens || 0,
-        cost: u.totalCostUsd || 0,
       };
-  const liveCost =
-    liveTokens > 0
-      ? calculateTokenCost(s.model, live.inputTokens, live.outputTokens, live.cacheReadTokens, live.cacheCreateTokens)
-      : 0;
   return {
     ...(task?.partialSince ? { partialSince: task.partialSince } : {}),
     totalInputTokens: base.input + live.inputTokens,
     totalOutputTokens: base.output + live.outputTokens,
     totalCacheReadTokens: base.cacheRead + live.cacheReadTokens,
     totalCacheCreateTokens: base.cacheCreate + live.cacheCreateTokens,
-    totalCostUsd: base.cost + liveCost,
+    // E4 ③ — one spend formula, shared with the epic tree's cost cap.
+    totalCostUsd: sessionCostUsd(s),
     contextUsagePercent: u.contextWindow
       ? (((u.currentInputTokens || 0) +
           (u.currentCacheReadTokens || 0) +
@@ -2262,6 +2263,8 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     userMedia: cardUserMedia(s.conversationId),
     followups: followupsOf(key, s.ownerId),
     ...(s.slackless === true ? { slackless: true as const, ...noticeFailuresOf(key) } : {}),
+    ...(s.slackless === true && s.kind === 'epic' ? { kind: 'epic' as const } : {}),
+    ...(s.slackless === true && s.parentTaskId ? { parentTaskId: s.parentTaskId, planNodeId: s.planNodeId } : {}),
     ...(s.slackless === true && s.lastTurnOutcome
       ? {
           lastTurnOutcome: {
@@ -2879,6 +2882,14 @@ export function createLiveUpdateThrottle(send: (key: string) => void, intervalMs
 export const scheduleLiveSessionUpdate = createLiveUpdateThrottle((key) => broadcastSingleSessionUpdate(key), 1000);
 
 /** Broadcast session action feedback to all connected WebSocket clients */
+/**
+ * A close the registry refused: something the session still owes could not be
+ * handed over — a task's instruction-thread notices (E2 ⑤, D6) or parked
+ * follow-ups whose store failed. Cause-neutral (fable #672 P2-1); shown on the card.
+ */
+export const CLOSE_REFUSED_TEXT =
+  '남은 처리(슬랙 스레드 알림이나 대기 중인 후속 메시지)를 넘기지 못해 닫지 않았어요 — 잠시 뒤 다시 시도하거나 관리자에게 알려 주세요.';
+
 function broadcastSessionAction(sessionKey: string, action: 'stop' | 'close' | 'trash'): void {
   if (wsClients.size === 0) return;
   try {
@@ -3396,6 +3407,12 @@ export async function registerDashboardRoutes(
         broadcastSessionUpdate();
         reply.send({ ok: true });
       } catch (error) {
+        // The registry kept the task (E2 ⑤, D6): say why, not a bare 500 (fable #668 P3-4).
+        if ((error as Error)?.name === 'SessionDeleteRefusedError') {
+          logger.warn('Close refused — the session is kept', { key, error: (error as Error).message });
+          reply.status(409).send({ error: CLOSE_REFUSED_TEXT });
+          return;
+        }
         logger.error('Error closing session', error);
         reply.status(500).send({ error: 'Internal Server Error' });
       }
@@ -12185,8 +12202,13 @@ async function doAction(key, action) {
     if (res.ok) dashToast({ title: DA_DONE[action] || '완료했어요', description: title || undefined, tone: 'success' });
     else {
       console.error('Action failed', action, key);
+      // A refusal (409) carries its reason: show it instead of the bare status.
+      var reason = '';
+      if (res.status === 409) {
+        try { var failed = await res.json(); reason = (failed && typeof failed.error === 'string') ? failed.error : ''; } catch (_) {}
+      }
       dashToast(
-        { title: (DA_LABEL[action] || action) + ' 실패', description: 'HTTP ' + res.status + (title ? ' · ' + title : ''), tone: 'error', action: { id: 'retry' } },
+        { title: (DA_LABEL[action] || action) + ' 실패', description: (reason || 'HTTP ' + res.status) + (title ? ' · ' + title : ''), tone: 'error', action: { id: 'retry' } },
         function() { doAction(key, action); },
       );
     }

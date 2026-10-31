@@ -240,6 +240,9 @@ export const SLACK_SETTER_COVERAGE: Readonly<Record<string, SettingKey | { exclu
   clearUserCompactThreshold: {
     excluded: 'deprecated: `compact-threshold` only clears it and moves the value onto the session',
   },
+  setUserEpicCostLimitUsd: {
+    excluded: 'E4 ③ — read by the epic cost cap; shown and edited with the epic lane (E4 ⑨), no Slack command yet',
+  },
   acceptUser: { excluded: 'admin action on another user (accept / deny), not a personal setting' },
   settlePendingUser: { excluded: 'admin decision on a pending sign-up (accept / deny), not a personal setting' },
   removeUserSettings: { excluded: 'admin action on another user (deny), not a personal setting' },

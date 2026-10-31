@@ -149,7 +149,7 @@ import { productionModelCatalogDeps } from './session/model-catalog-deps';
 import { switchSessionModel } from './session/model-switch';
 import { applyTodoList, creditTaskUsage, emptyTaskLedger, ledgerTasks } from './session/task-ledger';
 import { createMainCallReader, reconcileTaskCalls, type TranscriptCall } from './session/task-usage-reconcile';
-import { resolveArchivedResume } from './session-archive';
+import { getArchiveStore, resolveArchivedResume } from './session-archive';
 import { buildTaskSessionKey } from './session-identity';
 import { applySummaryTitle } from './session-title-policy';
 import {
@@ -170,6 +170,8 @@ import { SlackHandler } from './slack-handler';
 import { signingSecretOption } from './slack-signing-secret';
 import { type SocketWatchdogUnhealthyReason, startSlackSocketWatchdog } from './slack-socket-watchdog';
 import { notifyStartup } from './startup-notifier';
+import { archivedCostUsd, epicTreeCostUsd } from './task-turn/epic-cost';
+import { createDashboardCloseHandler } from './task-turn/task-close';
 import { createTaskLauncher } from './task-turn/task-launcher';
 import {
   createTaskNoticeDeliverer,
@@ -801,17 +803,21 @@ async function start() {
     // #598 ④c — the caller of Slack-less tasks' turns, built below once the
     // work-log appender exists; Close and shutdown reach it through here.
     let taskTurnController: TaskTurnController | undefined;
+    /** E2 ⑤ — the notice ledger could not be read: tasks that owe their thread are kept (D6). */
+    let taskNoticeLedgerUnreadable = false;
 
-    // Connect dashboard: close handler (terminate session)
-    setDashboardCloseHandler(async (sessionKey: string) => {
-      // A task's running chain ends `cancelled` (session-close) and commits its
-      // outcome before the task is archived and removed (598c v2 a2).
-      if (claudeHandler.getSessionRegistry().getSessionByKey(sessionKey)?.slackless === true) {
-        await taskTurnController?.close(sessionKey);
-      }
-      claudeHandler.terminateSession(sessionKey);
-      logger.info('Dashboard: closed session', { sessionKey });
-    });
+    // Connect dashboard: close handler (terminate session). A task's running
+    // chain is cancelled and committed first; with no notice ledger a task that
+    // owes its thread is refused before that (E2 ⑨).
+    setDashboardCloseHandler(
+      createDashboardCloseHandler({
+        getSession: (key) => claudeHandler.getSessionRegistry().getSessionByKey(key),
+        closeTask: async (key) => taskTurnController?.close(key),
+        terminate: (key) => claudeHandler.terminateSession(key),
+        ledgerUnreadable: () => taskNoticeLedgerUnreadable,
+        logger,
+      }),
+    );
 
     // Connect dashboard: trash handler (hide session from dashboard)
     setDashboardTrashHandler(async (sessionKey: string) => {
@@ -1189,6 +1195,19 @@ async function start() {
       coordinator: slackHandler.getRequestCoordinator(),
       buildExecutionContext: executionContextForTask,
       logger: new Logger('TaskTurnController'),
+      // E4 ③ (D9 e) — an epic tree's spend: the epic, its live children, and the
+      // closed ones from their latest archive; the owner's limit.
+      treeCostUsd: (rootKey) => {
+        const registry = claudeHandler.getSessionRegistry();
+        const epic = registry.getSessionByKey(rootKey);
+        // No epic to price (gone, or never one): a host start in its name is not admitted.
+        if (!epic) return Number.POSITIVE_INFINITY;
+        return epicTreeCostUsd(epic, {
+          live: (taskId) => registry.getSessionByTaskId(taskId),
+          archived: (taskId) => archivedCostUsd(getArchiveStore().latest(buildTaskSessionKey(taskId))),
+        });
+      },
+      epicCostLimitUsd: (ownerId) => userSettingsStore.getUserEpicCostLimitUsd(ownerId),
     });
     taskTurnController = taskController;
     setDashboardTaskCommandHandler((sessionKey, message, attachments, actorUserId) =>
@@ -1301,6 +1320,7 @@ async function start() {
         });
         // Fail closed (D6): a task that still owes its thread is not deleted while
         // there is no ledger to hand that to (fable #668 P2-1).
+        taskNoticeLedgerUnreadable = true;
         slackHandler.setTaskNoticeHandoff((sessionKey, session) => {
           if (owesInstructionThread(session)) {
             throw new Error(`task notice ledger unreadable — ${sessionKey} kept until its notices can be handed over`);
@@ -1931,8 +1951,21 @@ async function start() {
         logger.info('GitHub App auto-refresh stopped');
       }
 
-      // E2 ⑤ — no new task notice pass or retry once shutting down (grok #668 P3).
-      taskNoticeDeliverer?.stop();
+      // E2 ⑤ — no new task notice pass or retry once shutting down (grok #668 P3);
+      // wait, bounded, for a post under way so its mark is saved — a post cut
+      // by the exit is sent again at boot (fable #668 P3-3).
+      if (taskNoticeDeliverer) {
+        let stopTimer: NodeJS.Timeout | undefined;
+        const ended = await Promise.race([
+          taskNoticeDeliverer.stop().then(() => true),
+          new Promise<false>((resolve) => {
+            stopTimer = setTimeout(() => resolve(false), 3000);
+            stopTimer.unref?.();
+          }),
+        ]);
+        clearTimeout(stopTimer);
+        if (!ended) logger.warn('Task notice post still under way at shutdown — it may be sent again at boot');
+      }
 
       // Stop conversation viewer
       try {

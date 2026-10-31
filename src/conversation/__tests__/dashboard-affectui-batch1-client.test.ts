@@ -199,7 +199,7 @@ describe('<ui-toaster> — one page stack for what an action did', () => {
 });
 
 describe('doAction — Stop / Close / Trash say how they went (they failed silently before)', () => {
-  function rig(res: { ok: boolean; status: number } | Error) {
+  function rig(res: { ok: boolean; status: number; json?: () => Promise<unknown> } | Error) {
     const toasts: Array<[Toast, ((a: string) => void) | undefined]> = [];
     const calls: string[] = [];
     const fetchImpl = async (url: string) => {
@@ -248,6 +248,23 @@ describe('doAction — Stop / Close / Trash say how they went (they failed silen
     const n = rig(new Error('offline'));
     await n.run('close');
     expect(n.toasts[0][0]).toMatchObject({ title: '닫기 실패', description: '네트워크 오류', tone: 'error' });
+  });
+
+  it('a refusal with a reason (409): the toast says why instead of the bare status (E2 ⑨)', async () => {
+    const reason =
+      '슬랙 스레드에 보낼 알림을 넘기지 못해 닫지 않았어요 — 잠시 뒤 다시 시도하거나 관리자에게 알려 주세요.';
+    const r = rig({ ok: false, status: 409, json: async () => ({ error: reason }) });
+    await r.run('close');
+    expect(r.toasts[0][0]).toEqual({
+      title: '닫기 실패',
+      description: `${reason} · 배포 작업`,
+      tone: 'error',
+      action: { id: 'retry' },
+    });
+    // A 409 without a readable reason keeps the status.
+    const bare = rig({ ok: false, status: 409, json: async () => Promise.reject(new Error('not json')) });
+    await bare.run('close');
+    expect(bare.toasts[0][0]).toMatchObject({ description: 'HTTP 409 · 배포 작업' });
   });
 });
 
