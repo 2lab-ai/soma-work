@@ -111,6 +111,19 @@ describe('Dashboard — new task as a Slack-less dashboard task (#600 ⑥)', () 
     expect(slackProvider.start).not.toHaveBeenCalled();
   });
 
+  it('E4 ④a-2 — kind: epic reaches the launcher (which checks the flag); any other kind is 400', async () => {
+    const res = await post(await signIn(), task({ kind: 'epic' }));
+    expect(res.statusCode).toBe(200);
+    expect(launcher.mock.calls[0][0]).toMatchObject({ kind: 'epic' });
+    launcher.mockClear();
+    const bad = await post(await signIn(), task({ kind: 'story', requestId: 'req-task-0123457' }));
+    expect(bad.statusCode).toBe(400);
+    expect(launcher).not.toHaveBeenCalled();
+    // No kind: none is passed.
+    await post(await signIn(), task({ requestId: 'req-task-0123458' }));
+    expect(launcher.mock.calls[0][0]).not.toHaveProperty('kind');
+  });
+
   it('no model: the task takes the default', async () => {
     const res = await post(await signIn(), task());
     expect(res.statusCode).toBe(200);
