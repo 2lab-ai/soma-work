@@ -350,3 +350,24 @@ export function capEpicEvents(events: EpicEvent[]): EpicEvent[] {
   }
   return kept.filter((e) => !drop.has(e.id));
 }
+
+/**
+ * E4 ⑤ (D6) — the events with this one added, once: its id is deterministic
+ * (a re-recorded end, or a restart's reconciliation of a held one, is the same
+ * event), then held to the cap.
+ */
+export function withEpicEvent(events: EpicEvent[] | undefined, event: EpicEvent): EpicEvent[] {
+  const list = events ?? [];
+  if (list.some((e) => e.id === event.id)) return list;
+  return capEpicEvents([...list, event]);
+}
+
+/** E4 ⑤ (D6) — the events with the open approval events `match` picks closed at `at`. */
+export function resolveEpicApprovals(
+  events: EpicEvent[] | undefined,
+  match: (e: EpicEvent) => boolean,
+  at: number,
+): EpicEvent[] | undefined {
+  if (!events?.some((e) => e.outcome === 'needs-input' && !e.resolvedAt && match(e))) return events;
+  return events.map((e) => (e.outcome === 'needs-input' && !e.resolvedAt && match(e) ? { ...e, resolvedAt: at } : e));
+}

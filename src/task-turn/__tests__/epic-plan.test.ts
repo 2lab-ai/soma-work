@@ -11,8 +11,10 @@ import {
   EpicPlanError,
   epicNodeStatus,
   isEpicDone,
+  resolveEpicApprovals,
   sanitizeEpicEvents,
   sanitizeEpicPlan,
+  withEpicEvent,
 } from '../epic-plan';
 
 const NOW = 1_800_000_000_000;
@@ -318,5 +320,34 @@ describe('sanitizeEpicPlan / sanitizeEpicEvents (load)', () => {
     )!;
     expect(crowded).toHaveLength(EPIC_EVENTS_MAX);
     expect(crowded.some((e) => e.id === 'e0')).toBe(false);
+  });
+});
+
+describe('withEpicEvent / resolveEpicApprovals (E4 ⑤, D6)', () => {
+  const ev = (id: string, extra: Record<string, unknown> = {}) =>
+    ({ id, childTaskId: 'c1', planNodeId: 'n', outcome: 'completed', at: 1, state: 'pending', ...extra }) as any;
+
+  it('adds an event once (same id is the same event) and holds the cap', () => {
+    const one = withEpicEvent(undefined, ev('a'));
+    expect(one.map((e) => e.id)).toEqual(['a']);
+    expect(withEpicEvent(one, ev('a', { at: 9 }))).toBe(one);
+    const full = Array.from({ length: EPIC_EVENTS_MAX }, (_, i) => ev(`d${i}`, { state: 'delivered', at: i }));
+    const next = withEpicEvent(full, ev('new', { at: 1_000 }));
+    expect(next).toHaveLength(EPIC_EVENTS_MAX);
+    expect(next.some((e) => e.id === 'new')).toBe(true);
+    expect(next.some((e) => e.id === 'd0')).toBe(false);
+  });
+
+  it('closes only the open approvals it matches; unchanged events are the same array', () => {
+    const events = [
+      ev('ap1', { outcome: 'needs-input', approvalId: 'ap1', chainId: 'x' }),
+      ev('ap2', { outcome: 'needs-input', approvalId: 'ap2', chainId: 'y' }),
+      ev('ap3', { outcome: 'needs-input', approvalId: 'ap3', chainId: 'x', resolvedAt: 5 }),
+      ev('end', { chainId: 'x' }),
+    ];
+    const closed = resolveEpicApprovals(events, (e) => e.chainId === 'x', 7)!;
+    expect(closed.map((e) => e.resolvedAt)).toEqual([7, undefined, 5, undefined]);
+    expect(resolveEpicApprovals(events, (e) => e.chainId === 'z', 7)).toBe(events);
+    expect(resolveEpicApprovals(undefined, () => true, 7)).toBeUndefined();
   });
 });

@@ -237,11 +237,14 @@ export function createTaskTurnRunner(deps: TaskTurnRunnerDeps) {
         session.conversationId ??= await creating;
       } catch (error) {
         deps.logger.error('Task conversation not created', { sessionKey, error: (error as Error)?.message });
-        return commit(sessionKey, session, turnId, {
-          outcome: 'failed',
-          category: 'Exception',
-          reason: 'record: conversation not created',
-        });
+        // The chain ends here, as a failure: its thread's notice and its epic's event (E4 ⑤, D6 b).
+        return commit(
+          sessionKey,
+          session,
+          turnId,
+          { outcome: 'failed', category: 'Exception', reason: 'record: conversation not created' },
+          input.chain,
+        );
       }
     }
 
