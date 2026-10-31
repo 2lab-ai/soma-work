@@ -483,7 +483,10 @@ describe('T2 · a subagent tab shows its own earlier plans too', () => {
 // ── T1 — the panel layout ──
 describe('T1 · the panel: a common surface, agent tabs, three sections per tab', () => {
   // The panel's open tag carries the detail deck's depth now (SSOT 2026-10-29 T2: data-deck).
-  const panel = PAGE.slice(PAGE.indexOf('<div class="slide-panel" id="slide-panel"'), PAGE.indexOf('<!-- New task'));
+  const panel = PAGE.slice(
+    PAGE.indexOf('<ui-drawer class="slide-panel" id="slide-panel"'),
+    PAGE.indexOf('<!-- New task'),
+  );
   const at = (needle: string) => {
     const i = panel.indexOf(needle);
     if (i < 0) throw new Error(`missing ${needle}`);

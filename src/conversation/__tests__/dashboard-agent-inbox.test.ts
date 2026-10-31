@@ -363,7 +363,7 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
 
   it('Tasks sit in the focused tab after the agent tabs, inside the one scroll area — no pinned block (task view T1)', () => {
     // SSOT 2026-10-29 T2: the panel carries the deck's depth (data-deck) from the start.
-    const panelAt = TEMPLATE.indexOf('<div class="slide-panel" id="slide-panel" data-deck="0">');
+    const panelAt = TEMPLATE.indexOf('<ui-drawer class="slide-panel" id="slide-panel" data-deck="0"');
     expect(panelAt).toBeGreaterThan(0);
     const panel = TEMPLATE.slice(panelAt);
     const header = panel.indexOf('<div class="panel-header">');
@@ -400,10 +400,11 @@ describe('agent inbox board — work log panel (§3.1-7, §3.3)', () => {
     expect(TEMPLATE).toMatch(/\n\.panel-body \{[^}]*display: flex;[^}]*flex-direction: column;/);
     // The agent tabs stay in view while the tab scrolls (D4 E-19: the element's list part sticks).
     expect(TEMPLATE).toMatch(/\n\.panel-tabs::part\(list\) \{[^}]*position: sticky;[^}]*top: 0;/);
-    // Folded to one line by default (_panelTasksOpen), opened with 자세히 or a tasks landing.
+    // Folded to one line by default (_panelTasksOpen), opened with 자세히 or a tasks landing; the head is a
+    // <ui-disclosure> (D4 K-06) whose region is empty while closed (and painted through its fold: 'folding').
     expect(TEMPLATE).toMatch(/^var _panelTasksOpen = false;/m);
     expect(fnBody('renderPanelTasks')).toContain(
-      'if (!_panelTasksOpen) { writePanelTasks(container, head + live); return; }',
+      "if (!open && _panelTasksOpen !== 'folding') { writePanelTasks(container, head + '</ui-disclosure>' + live); return; }",
     );
     // The panel's own anchor: the question, Tasks (now in the scroll area) and the section tabs —
     // the turns and log rows are their section box's (psecViewAnchor).

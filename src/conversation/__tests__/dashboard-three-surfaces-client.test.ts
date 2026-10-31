@@ -949,7 +949,7 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
   it('Escape / × from inside the panel → the opener; gone or inert → the open card’s 작업 로그, else the heading; focus elsewhere → untouched', () => {
     const run = (o: { inPanel: boolean; present: boolean; inert?: boolean; cardOpen?: boolean }) => {
       const focused: string[] = [];
-      const panel = { classList: { remove() {} } };
+      const panel = { hide() {} };
       // focus() moves document.activeElement, except into an inert (folded) card.
       const el = (name: string, inert = false) => {
         const node: Record<string, unknown> = {
@@ -964,7 +964,7 @@ describe('focus goes back to whatever opened the panel (executed)', () => {
       };
       const heading = el('heading');
       const doc: Record<string, unknown> = {
-        getElementById: (id: string) => (id === 'slide-panel' || id === 'panel-overlay' ? panel : null),
+        getElementById: (id: string) => (id === 'slide-panel' ? panel : null),
         querySelector: (sel: string) => (sel === '.board-title, h1, h2' ? heading : null),
       };
       const opener = el('opener', !!o.inert);
@@ -1826,8 +1826,11 @@ describe('interaction state survives live renders on both surfaces', () => {
       /class="ui-icon-btn is-bordered panel-close"[^>]*aria-label="작업 카드 닫기"[^>]*onclick="closeDetailCard\(\)"/,
     );
     expect(header).not.toContain('onclick="closePanel()"');
-    // The overlay (the sheet's backdrop) does the same.
-    expect(PAGE).toContain('<div class="slide-panel-overlay" id="panel-overlay" onclick="closeDetailCard()"></div>');
+    // The drawer's scrim and Esc (its cancelable ui-close, D4 E-02) do the same.
+    expect(TEMPLATE).toContain(
+      "d.addEventListener('ui-close', function(e) { e.preventDefault(); closeDetailCard(); })",
+    );
+    expect(PAGE).not.toContain('slide-panel-overlay');
   });
 });
 
