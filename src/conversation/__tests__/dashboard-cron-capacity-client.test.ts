@@ -339,7 +339,7 @@ describe('page wiring', () => {
   it('the CRON lane sits inside the inbox, above the board element', () => {
     const inbox = page.indexOf('<section class="inbox ui-tok" id="inbox"');
     const lane = page.indexOf('<div class="cron-lane ui-tok" id="cron-lane" hidden><ui-agent-queue id="cron-aq"');
-    const kanban = page.indexOf('<ui-agent-inbox id="kanban" class="kanban" view="board">');
+    const kanban = page.indexOf('<ui-agent-inbox id="kanban" class="kanban" view="board" lang="ko">');
     expect(inbox).toBeGreaterThan(-1);
     expect(lane).toBeGreaterThan(inbox);
     expect(kanban).toBeGreaterThan(lane);

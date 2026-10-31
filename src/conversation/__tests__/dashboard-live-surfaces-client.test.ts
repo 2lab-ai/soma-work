@@ -41,7 +41,12 @@ function clientVar(name: string): string {
   if (!m) throw new Error(`client var ${name} not found`);
   return cook(m[1]);
 }
+/** The page's chrome words (STRINGS), as served: the board's Korean words live there (D2 group 6). */
+const PAGE_STRINGS = new Function(
+  `${cook(TEMPLATE.slice(TEMPLATE.indexOf('var STRINGS = {'), TEMPLATE.indexOf('\n};\n', TEMPLATE.indexOf('var STRINGS = {')) + 3))}\nreturn STRINGS;`,
+)();
 function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> = {}): T {
+  inject = { STRINGS: PAGE_STRINGS, ...inject };
   const names = Object.keys(inject);
   const body = `${vars.map(clientVar).join('\n')}\n${fns.map(clientFn).join('\n')}\nreturn { ${fns.join(', ')} };`;
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
@@ -817,7 +822,7 @@ describe('DONE grouped by the day the work finished (T11/T12)', () => {
   it('groups by finish day — Today, 어제, then each earlier day — newest first, cards newest first', () => {
     const g = m.planDoneGroups(done, NOW, {});
     expect(g.map((x) => [x.label, x.items.map((i) => i.s.key)])).toEqual([
-      ['Today', ['today-late', 'today-early']],
+      ['오늘', ['today-late', 'today-early']],
       ['어제', ['yesterday']],
       [expect.stringContaining('10월 20일'), ['older-1b', 'older-1']],
       [expect.stringContaining('10월 19일'), ['older-2']],

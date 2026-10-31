@@ -121,6 +121,7 @@ import {
   stopPermissionPromptWatch,
 } from './permission-prompts';
 import { getConversation, resummarizeTurn } from './recorder';
+import { soundClientJs } from './sound-client';
 import { ensureTitleSub, regenerateTitleSub, type TitleSubResult } from './title-sub';
 import {
   fillUiIcons,
@@ -3849,14 +3850,20 @@ function renderDashboardPage(userId?: string): string {
 <script type="module" src="/dashboard/ui/agent-queue.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/segmented.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/disclosure.js?v=${UI_LIB_VERSION}"></script>
-<script type="module" src="/dashboard/ui/tooltip.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/menu.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/dialog.js?v=${UI_LIB_VERSION}"></script>
 <script type="module" src="/dashboard/ui/drawer.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/app-bar.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/stat-strip.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/bar-chart.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/file-card.js?v=${UI_LIB_VERSION}"></script>
+<script type="module" src="/dashboard/ui/composer.js?v=${UI_LIB_VERSION}"></script>
 <script data-fouc>
 // FOUC prevention — apply theme before CSS paints
 (function(){var t=localStorage.getItem('soma-theme');if(!t){t=window.matchMedia&&window.matchMedia('(prefers-color-scheme:light)').matches?'light':'dark'}document.documentElement.setAttribute('data-theme',t)})();
 </script>
+<!-- Interface sound (@2lab.ai/ui/sound, sound-cuelume): off until the speaker beside the theme switch turns it on. -->
+<script data-sound>${soundClientJs(UI_LIB_VERSION)}</script>
 <!-- @2lab.ai/ui kit (ui-kit.css): the light-DOM button, icon button, chip, status, kbd … classes on the
      --ui-* tokens below. Before the page sheet, so a page rule that places a kit control wins. -->
 <style id="ui-kit">
@@ -3924,58 +3931,45 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
    the iPhone Duo cover). */
 .app { display: flex; flex-direction: column; min-height: 100vh; padding-left: env(safe-area-inset-left, 0px); padding-right: env(safe-area-inset-right, 0px); }
 
-/* ── TOPBAR — strict horizontal grid ──
-   One row from 1024px; below that the nav (user select · 대화 · 설정 · 기억 · admin
-   toggle) takes its own row under brand · status · account (BOARD RESPONSIVE).
-   No control ever wraps or cuts its label: everything is nowrap and flex: none.
-   Only user names are ever shortened, always with a visible ellipsis and the
-   full name in title: the pill's name when its row is full, and the selected
-   user's name when it is wider than its cap — 180px on the one-row bar (≥1024,
-   even when the row has room), the whole nav row below 1024px. */
+/* ── TOPBAR — @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14) ──
+   The bar is the library's: 56px (52 on phones), translucent over the page, one hairline;
+   brand · 대화 · 설정 · 기억 · actions · status · account · speaker · theme, the links folded into 메뉴
+   whenever the bar is short of room. The header around it stays at the top while the board
+   scrolls (SSOT 2026-10-29 T3; the docked drawer sits under it: --topbar-b). The page's own
+   controls are the bar's actions — the scope group (default model / effort, the board's user,
+   admin write mode) and 새 작업. Below 1280px the scope group takes the row under the bar
+   (#topbar-sub, placeTopbarScope) and wraps there instead of crowding the one-row bar. No
+   control cuts its label; only the selected user's name ends in an ellipsis (full name in title). */
 .topbar {
-  /* ui.2lab.ai's app bar: the page colour at 86% over what scrolls under it, blurred,
-     one hairline; opaque when the reader asks for less transparency (below). */
-  background: color-mix(in srgb, var(--bg) 86%, transparent);
-  -webkit-backdrop-filter: blur(10px);
-  backdrop-filter: blur(10px);
-  border-bottom: 1px solid var(--border);
-  padding: 0 20px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  min-height: 56px;
-  min-width: 0;
-  /* SSOT 2026-10-29 T3: the top bar is always on screen — it stays at the top
-     while the board scrolls (the docked drawer sits under it: --topbar-b). Below
-     840px the sheet covers it (90 < the panel's 100); docked, it sits above the
-     panel (see the 840px block) so its menus stay clickable over the drawer. */
   position: sticky;
   top: 0;
   z-index: 90;
+  min-width: 0;
 }
-.topbar h1 {
-  display: inline-flex;
+/* Until the element is defined: its height, none of the raw controls. */
+ui-app-bar:not(:defined) { display: block; height: 56px; }
+ui-app-bar:not(:defined) > * { visibility: hidden; }
+/* The row under the bar: the bar's own surface (86% page colour over a blur, one hairline). */
+.topbar-sub {
+  display: flex;
   align-items: center;
-  gap: 8px;
-  font-size: 15px;
-  font-weight: 650;
-  letter-spacing: -0.01em;
-  white-space: nowrap;
-  flex: none;
+  min-width: 0;
+  padding: 8px 20px;
+  background: color-mix(in srgb, var(--bg) 86%, transparent);
+  -webkit-backdrop-filter: saturate(1.4) blur(10px);
+  backdrop-filter: saturate(1.4) blur(10px);
+  border-bottom: 1px solid var(--border);
 }
+.topbar-sub[hidden] { display: none; }
 @media (prefers-reduced-transparency: reduce) {
-  .topbar { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
+  .topbar-sub { background: var(--bg); -webkit-backdrop-filter: none; backdrop-filter: none; }
 }
-.topbar h1 .brand-mark { width: 22px; height: 22px; flex: none; }
-.brand-mark .bm-bg { fill: var(--text); }
-.brand-mark .bm-cell { fill: var(--surface); }
-/* One row (≥1024): the nav never shrinks below its controls (so none of them
-   paints past it into the account group); the selected name is capped instead
-   (.user-select max-inline-size), and the account group is what gives way — the
-   pill's name ends in an ellipsis. The cap keeps the pill's glyph and a realistic
-   name whole at 1024px even with "다시 연결 중…" and touch padding. */
-.topbar .nav { display: flex; gap: 6px; margin-left: auto; align-items: center; flex: none; }
-.topbar .topbar-account { display: flex; gap: 6px; align-items: center; min-width: 0; flex: 0 1 auto; }
+.topbar-scope { display: flex; align-items: center; gap: 6px; min-width: 0; flex: none; }
+.topbar-sub .topbar-scope { flex: 1 1 auto; flex-wrap: wrap; }
+/* The row under the bar is the user select's cap: only a name wider than it ends in an ellipsis. */
+.topbar-sub .user-select { max-inline-size: 100%; }
+/* 새 작업 in the bar: the ink kit button; its word steps aside on a narrow bar (the + and title stay). */
+ui-app-bar[narrow] .nt-btn-label { display: none; }
 /* SSOT 2026-10-23 T6 — the owner's default model / effort, one click from the top. */
 /* Above the full-screen panel overlay (99) and the panel (100): the chips stay
    clickable while a session panel is open — that is when "열린 세션에도 적용" exists. */
@@ -3996,10 +3990,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 #td-menu { position: absolute; }
 .topbar .td-status { font-size: 12px; color: var(--text-secondary); max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .topbar .td-status.is-error { color: var(--red); }
-/* Nav: the site's chip links — no box at rest, the --ib-pill chip on hover; the user
-   select is a trigger (a neutral well with a hairline) because it opens a list. */
-.topbar .nav a,
-.topbar .nav .user-select {
+/* The user select is a trigger (a neutral well with a hairline) because it opens a list. */
+.topbar .user-select {
   background: transparent;
   color: var(--text-secondary);
   border: 1px solid transparent;
@@ -4014,13 +4006,11 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   white-space: nowrap;
   flex: none;
 }
-.topbar .nav a { display: inline-flex; align-items: center; gap: 6px; }
-.topbar .nav a svg { width: 15px; height: 15px; flex: none; }
 /* User select: a visible label sized to the selected option, with the native
    <select> laid transparently over it (it still takes every click, tap and key).
    A native select cannot show an ellipsis in WebKit — it hard-cuts the text —
    so the label carries the ellipsis and the select carries the full name in title. */
-.topbar .nav .user-select {
+.topbar .user-select {
   position: relative;
   display: inline-flex;
   align-items: center;
@@ -4066,50 +4056,8 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 }
 .topbar .user-select:has(select:focus-visible) { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 @media (hover: hover) and (pointer: fine) {
-  .topbar .nav a:hover { background: var(--ib-pill); color: var(--text); }
-  .topbar .nav .user-select:hover { background: color-mix(in srgb, var(--ib-text) 6%, var(--ib-card)); }
+  .topbar .user-select:hover { background: color-mix(in srgb, var(--ib-text) 6%, var(--ib-card)); }
 }
-
-/* ── USER PILL — the signed-in name, links to the /login account page, rendered from /auth/me ── */
-.topbar .user-pill {
-  display: none; /* toggled by JS once /auth/me resolves */
-  text-decoration: none;
-  align-items: center;
-  gap: 6px;
-  background: transparent;
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 5px 12px 5px 8px;
-  font-size: 13px;
-  font-weight: 500;
-  line-height: 1;
-  min-height: 32px;
-  cursor: pointer;
-  transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-  white-space: nowrap;
-  max-width: 260px;
-  min-width: 0;
-  flex: 0 1 auto;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.topbar .user-pill-prefix { display: inline-flex; flex: none; color: var(--text-tertiary); }
-.topbar .user-pill-prefix svg { width: 15px; height: 15px; }
-.topbar .user-pill .ic-admin, .topbar .user-pill.is-admin .ic-user { display: none; }
-.topbar .user-pill.is-admin .ic-admin { display: block; }
-.topbar .user-pill b {
-  color: var(--text);
-  font-weight: 500;
-  min-width: 0;
-  max-width: 100%;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  display: inline-block;
-}
-@media (hover: hover) and (pointer: fine) { .topbar .user-pill:hover { background: var(--ib-pill); color: var(--text); } }
-.topbar .user-pill:focus-visible { outline: 2px solid var(--border-focus); outline-offset: 1px; }
 
 /* ── ADMIN MODE TOGGLE — visible only for ADMIN_USERS (#716) ── */
 .topbar .admin-toggle {
@@ -4135,110 +4083,37 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   color: var(--tint-fail-fg);
 }
 @media (hover: hover) and (pointer: fine) { .topbar .admin-toggle[aria-pressed="true"]:hover { background: var(--tint-fail-bg-2); color: var(--tint-fail-fg); } }
-/* The site's 34px icon button: the sun in the dark theme, the moon in the light one (the theme it switches to). */
-#theme-toggle {
-  display: inline-grid;
-  place-items: center;
-  inline-size: 34px;
-  block-size: 34px;
-  padding: 0;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  color: var(--text-secondary);
-  cursor: pointer;
-  flex: none;
-  transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-}
-#theme-toggle svg { width: 16px; height: 16px; }
-#theme-toggle .ic-moon, [data-theme="light"] #theme-toggle .ic-sun { display: none; }
-[data-theme="light"] #theme-toggle .ic-moon { display: block; }
-@media (hover: hover) and (pointer: fine) { #theme-toggle:hover { background: var(--ib-pill); color: var(--text); } }
-/* Live updates: a tone dot and a word (library status: never colour alone). The tone moves with
-   the state in 300ms; the word is the tone mixed 70% toward the ink (≥ 4.5:1 on the bar). */
-.ws-badge {
-  --ws-tone: var(--text-tertiary);
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 4px 2px;
-  border-radius: 999px;
-  font-size: 12.5px;
-  font-weight: 500;
-  color: color-mix(in srgb, var(--ws-tone) 70%, var(--text));
-  white-space: nowrap;
-  flex: none;
-  transition: color 300ms ease, background-color 300ms ease;
-}
-.ws-badge::before { content: ''; flex: none; width: 7px; height: 7px; border-radius: 50%; background: var(--ws-tone); transition: background-color 300ms ease; }
-.ws-badge[data-state="live"] { --ws-tone: var(--st-done); }
-.ws-badge[data-state="reconnecting"] { --ws-tone: var(--st-wait); }
-
 /* ── MAIN — stats strip, then the board; capped at 1280px and centred (.prd/10 §3.1-2, §5) ── */
 .main { flex: 1; padding: 20px; width: 100%; max-width: 1280px; margin: 0 auto; min-width: 0; }
 
-/* ── PERIOD SELECTOR — @2lab.ai/ui <ui-segmented> (B-02), the same control as Board | List (D-02):
-   the selected period is the raised neutral chip that slides; .period-bar places it. ── */
-
-/* ── STATS STRIP — leads the page, above the board (.prd/10 §3.1-2) ──
-   One row from 640px: period · 세션 · 토큰 · 비용 · 자세히. Below 640px the
-   period control and 자세히 share the first row and the numbers take the
-   second. 자세히 opens the other cards and the charts under the strip. */
+/* ── STATS STRIP — @2lab.ai/ui <ui-stat-strip> (B-01..B-05, B-09), above the board (.prd/10 §3.1-2) ──
+   The element lays out period · 세션 · 토큰 · 비용 · 자세히 (one line; narrow, the figures under the
+   period) and opens 자세히's region (0fr → 1fr, inert while closed) over its default slot: the cards
+   and the charts in .stats-detail. */
 .stats { margin-bottom: 18px; }
-.stats-strip {
-  display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  grid-template-areas: "period nums more";
-  align-items: center;
-  gap: 10px 16px;
-}
-.stats-strip .period-bar { grid-area: period; }
-.strip-nums { grid-area: nums; display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 16px; min-width: 0; }
-.strip-num { display: inline-flex; align-items: baseline; gap: 6px; white-space: nowrap; }
-.strip-num .label { font-size: 12px; font-weight: 500; color: var(--text-tertiary); }
-.strip-num .value { font-size: 15px; font-weight: 600; letter-spacing: -0.01em; color: var(--text); font-variant-numeric: tabular-nums; }
-.strip-num .no-data { color: var(--text-tertiary); }
-.stats-more {
-  grid-area: more;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  background: var(--surface);
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 8px 12px;
-  min-height: 32px;
-  font: inherit;
-  font-size: 12px;
-  font-weight: 500;
-  white-space: nowrap;
-  cursor: pointer;
-  transition: background-color 150ms ease, color 150ms ease, transform var(--dur-press) var(--ease-out);
-}
-.stats-more svg { width: 12px; height: 12px; flex-shrink: 0; transition: transform var(--dur-expand) var(--ease-out); }
-.stats-more[aria-expanded="true"] { color: var(--text); }
-.stats-more[aria-expanded="true"] svg { transform: rotate(180deg); }
-.stats-detail { margin-top: 12px; }
+ui-stat-strip { display: block; }
+ui-stat-strip:not(:defined) { min-height: 44px; }
+ui-stat-strip:not(:defined) > * { display: none; }
+.stats-detail { padding-top: 12px; }
 
-/* ── EXPAND / COLLAPSE (P6) — the library disclosure recipe for 자세히 (.stats), 세션 정보 (.panel-info), a
+/* ── EXPAND / COLLAPSE (P6) — the library disclosure recipe for 세션 정보 (.panel-info), a
    work-log task group (.wl-group) and the completed goals (.cg-hx): the region is the last row of its host's
    grid and that row goes 0fr ↔ 1fr on --dur-expand (ease-out) with an opacity fade. Closed, the region is
    [hidden] + inert but still painted at 0 rows, so it leaves the way it came (세션 정보, drawn only while
    open, folds first: .xp-shut). It clips only while the row moves (.xp-moving, xpMove), so focus rings
    inside are whole once it has settled. The panel's ResizeObserver re-measures the sections on every frame
    of it (sizePanelSections). ── */
-.stats, .wl-group, .cg-hx, .panel-info { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; align-content: start; transition: grid-template-rows var(--dur-expand) var(--ease-out); }
+.wl-group, .cg-hx, .panel-info { display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto 1fr; align-content: start; transition: grid-template-rows var(--dur-expand) var(--ease-out); }
 .cg-hx { grid-template-rows: 1fr; }
 .panel-info:has(> .pi-links) { grid-template-rows: auto auto 1fr; }
-.stats:has(> .stats-detail[hidden]), .wl-group:has(> .wl-group-body[hidden]), .panel-info.xp-shut { grid-template-rows: auto 0fr; }
+.wl-group:has(> .wl-group-body[hidden]), .panel-info.xp-shut { grid-template-rows: auto 0fr; }
 .panel-info.xp-shut:has(> .pi-links) { grid-template-rows: auto auto 0fr; }
 .cg-hx:has(> .cg-hx-in[hidden]), .cg-hx.xp-shut { grid-template-rows: 0fr; }
-.stats-detail, .wl-group-body, .cg-hx-in, .panel-info > .pi-body { min-height: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s; }
-.stats-detail[hidden], .cg-hx-in[hidden] { display: block; }
+.wl-group-body, .cg-hx-in, .panel-info > .pi-body { min-height: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s; }
+.cg-hx-in[hidden] { display: block; }
 .wl-group-body[hidden] { display: flex; }
-.stats-detail[hidden], .wl-group-body[hidden], .cg-hx-in[hidden], .cg-hx.xp-shut > .cg-hx-in, .panel-info.xp-shut > .pi-body { opacity: 0; visibility: hidden; overflow: hidden; margin-top: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s linear var(--dur-expand); }
-.xp-moving > .stats-detail, .xp-moving > .wl-group-body, .xp-moving > .cg-hx-in, .xp-moving > .pi-body { overflow: hidden; }
+.wl-group-body[hidden], .cg-hx-in[hidden], .cg-hx.xp-shut > .cg-hx-in, .panel-info.xp-shut > .pi-body { opacity: 0; visibility: hidden; overflow: hidden; margin-top: 0; transition: opacity var(--dur-expand) var(--ease-out), margin-top var(--dur-expand) var(--ease-out), visibility 0s linear var(--dur-expand); }
+.xp-moving > .wl-group-body, .xp-moving > .cg-hx-in, .xp-moving > .pi-body { overflow: hidden; }
 .usage-cb-wrap { max-width: 440px; margin-bottom: 12px; }
 
 /* ── STATS GRID — the cards behind 자세히: 5 columns, 2 below 1100px ── */
@@ -4345,9 +4220,8 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .board-error { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 8px 12px; margin: 0 0 12px; padding: 12px 16px; border-radius: 12px; background: var(--ib-col); color: var(--ib-text-2); font-size: 13px; }
 .board-error[hidden] { display: none; }
 /* Stats values: a bar where the number will be. */
-.strip-num .is-loading, .stat-card .value.is-loading { display: inline-block; vertical-align: middle; width: 3.2em; height: 0.9em; border-radius: 6px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
+.stat-card .value.is-loading { display: inline-block; vertical-align: middle; width: 3.2em; height: 0.9em; border-radius: 6px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
 .stat-card .value.is-loading { width: 64px; height: 22px; }
-.chart-row.is-loading { min-height: 132px; border-radius: 8px; background: var(--ib-pill); animation: sk-pulse 1.6s ease-in-out infinite; }
 /* Panel turns: rows shaped like a user / assistant turn. */
 .sk-turn { margin-bottom: 8px; padding: 8px 10px; border-radius: 10px; display: flex; gap: 10px; align-items: flex-start; border-left: 3px solid var(--ib-pill); }
 .sk-turn.user { background: var(--surface-raised); }
@@ -4455,9 +4329,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   color: color-mix(in srgb, var(--env-tone, var(--ib-muted)) 70%, var(--ib-text));
   vertical-align: baseline;
 }
-/* Token breakdown (#814, B-04) — @2lab.ai/ui <ui-tooltip variant="card">: it pops below the figure after the hover
-   delay, at once on keyboard focus, and on this page a tap toggles it (initTooltipTap). */
-#stat-tokens-tooltip { vertical-align: baseline; }
 
 /* ── CONTEXT USAGE BAR ── */
 .card-body .context-bar { margin-top: 8px; height: 4px; background: var(--ib-pill); border-radius: 2px; overflow: hidden; }
@@ -4877,25 +4748,12 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   }
 }
 
-/* ── CHARTS — flat, geometric ── */
+/* ── CHARTS — @2lab.ai/ui <ui-bar-chart> (B-08): 세션 and 코드 변경 (머지) per day, side by side behind 자세히.
+   Each element is its own 12px card on the resting shadow, with dashed gridlines, a tooltip that follows the hot
+   bar (hover, keys, a tap holds it), skeleton bars while loading and its own empty line. ── */
 .chart-row { display: flex; gap: 10px; margin-bottom: 16px; }
-.chart-container {
-  flex: 1;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  box-shadow: var(--ib-shadow);
-  padding: 12px 16px;
-}
-.chart-container h4 { font-size: 12.5px; font-weight: 600; color: var(--text-secondary); margin-bottom: 8px; }
-.bar-chart { display: flex; align-items: flex-end; gap: 2px; height: 80px; }
-.bar { background: var(--accent); border-radius: 3px 3px 0 0; min-width: 4px; flex: 1; transition: height var(--dur-move) var(--ease-out), opacity 150ms ease; }
-@media (hover: hover) and (pointer: fine) { .bar:hover { opacity: 0.75; } }
-/* Each bar is the trigger of its own <ui-tooltip> (B-08): the element takes the bar's flex share and full height. */
-.bar-chart > ui-tooltip { display: block; flex: 1; min-width: 4px; height: 100%; }
-.bar-chart > ui-tooltip::part(root) { height: 100%; align-items: flex-end; }
-.bar-labels { display: flex; gap: 2px; margin-top: 4px; }
-.bar-labels span { flex: 1; text-align: center; font-size: 10px; color: var(--text-tertiary); font-weight: 500; font-variant-numeric: tabular-nums; }
+.chart-row > ui-bar-chart { display: block; flex: 1; min-width: 0; }
+.chart-row > ui-bar-chart:not(:defined) { min-height: 214px; border-radius: 12px; background: var(--ib-pill); }
 
 /* ── SLIDE PANEL — flat, structured, resizable ── */
 /* SSOT 2026-10-24 — a full-screen sheet below 840px, docked beside the board from
@@ -5592,14 +5450,13 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* PRESS — one rule for every button-like control: scale(.97) on --dur-press ease-out (each control's own
    transition carries the transform), pointer presses only — never a keyboard press (:focus-visible). The
    56px FAB presses to .95. */
-:is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
+:is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: scale(0.97); }
 
 /* ── HOVER — pointer devices only; colour/border, never movement (§4-6) ── */
 @media (hover: hover) and (pointer: fine) {
   .archives-btn:hover { color: var(--ib-text); }
   .wl-row:hover { background: var(--surface-raised); }
   .wl-detail-btn:hover { color: var(--text); border-color: var(--text-tertiary); }
-  .stats-more:hover { background: var(--surface-raised); color: var(--text); }
   .card-body .card-refs a:hover { text-decoration: underline; }
   .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--surface-raised); color: var(--text); }
   .card-body .btn-choice:hover:not(:disabled) { border-color: var(--ib-muted); background: var(--ib-card); color: var(--ib-text); }
@@ -5610,18 +5467,6 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
    that always fit · <840 the three columns scroll sideways inside the board (the
    page itself never scrolls horizontally). <640 viewport: List by default, 44px
    taps. A docked drawer narrows the inbox, so this is not a viewport query. */
-@media (max-width: 1023px) {
-  /* Top bar: brand · status · account on the first row, the nav on its own row below, full labels. */
-  .topbar { flex-wrap: wrap; padding: 8px 20px; row-gap: 8px; }
-  /* Basis 0: the account group never pushes itself onto a row of its own — a
-     long name ends in an ellipsis inside the pill instead. */
-  .topbar .topbar-account { flex: 1 1 0; justify-content: flex-end; }
-  .topbar .nav { order: 1; flex: 1 0 100%; margin-left: 0; flex-wrap: wrap; min-width: 0; }
-  /* The nav row is full width: a selected name can use all of it (the other
-     controls move to the next line first); only a name wider than the row ends
-     in an ellipsis. */
-  .topbar .nav .user-select { max-inline-size: 100%; }
-}
 @media (max-width: 639px) {
   .topbar .td-prefix, .topbar .td-status { display: none; }
   .main { padding: 14px 12px; }
@@ -5633,36 +5478,12 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .wl-child { grid-template-columns: 16px minmax(0, 1fr); }
   .wc-meta { grid-column: 2; grid-row: auto; flex-wrap: wrap; }
 
-  /* Stats strip: period control + 자세히 on the first row, the numbers on the
-     second. The period tabs share the row's width and keep 44px height with
-     narrower sides, so the row fits 320px with the coarse-pointer padding. */
-  .stats-strip { grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "period more" "nums nums"; gap: 8px 12px; }
-  .stats-strip .period-bar { min-width: 0; }
-  /* Top bar: the status badge becomes a 10px dot (aria-label preserved for SR),
-     the account glyph goes, and the user select fills the nav row (which
-     wraps rather than overflow on very small screens). Labels stay whole. */
-  .topbar { padding: 6px 12px; gap: 6px 8px; }
-  .topbar h1 { font-size: 14px; gap: 6px; }
-  .topbar h1 .brand-mark { width: 20px; height: 20px; }
-  .topbar .ws-badge {
-    display: inline-block;
-    inline-size: 10px;
-    block-size: 10px;
-    padding: 0;
-    background: var(--ws-tone);
-    border-radius: 50%;
-    text-indent: 100%;
-    white-space: nowrap;
-    overflow: hidden;
-    flex-shrink: 0;
-    min-width: 0;
-  }
-  .topbar .ws-badge::before { display: none; }
-  .topbar .nav .user-select { flex: 1 1 auto; }
-  .topbar .user-pill { padding: 4px 10px; }
-  .topbar .user-pill-prefix { display: none; }
+  /* Top bar (the app bar narrows itself: the status dot, the account's initials, 메뉴):
+     the row under it keeps the bar's 12px sides, and the user select fills what the
+     chips leave of its line (it wraps rather than overflow). Labels stay whole. */
+  .topbar-sub { padding: 8px 12px; }
+  .topbar-sub .user-select { flex: 1 1 auto; }
   .topbar .admin-toggle { padding: 4px 10px; }
-  #theme-toggle { inline-size: 32px; block-size: 32px; padding: 0; flex-shrink: 0; }
   .inbox-head { margin-bottom: 12px; flex-wrap: wrap; row-gap: 8px; }
   /* The tools take the row under the breadcrumb; on the narrowest screens
      (320px) Show archives sits above Board | List instead of overflowing. */
@@ -5692,7 +5513,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 }
 @media (prefers-reduced-motion: reduce) {
   *,*::before,*::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
-  :is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .nav a, .topbar .td-chip, .topbar .user-pill, .topbar .admin-toggle, #theme-toggle, .stats-more, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-chip, .art-open, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
+  :is(.archives-btn, .btn-choice, .btn-hero-recommended, .topbar .td-chip, .topbar .admin-toggle, .panel-detail-toggle, .panel-tab, .psec-tab, .mc-q-edit-btn, .mc-custom-input button, .nt-rec-btn, .art-play, .um-tile, .um-open):active:not(:disabled):not(:focus-visible) { transform: none; }
   /* Static working indicator: a full ring with a centre dot instead of a spin. */
   .spinner, .spin { animation: none !important; }
   /* Loading skeletons hold still. */
@@ -5708,24 +5529,9 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 /* ── TOUCH — coarse pointer enlargement ── */
 @media (pointer: coarse) {
   .panel-tab, .psec-tab, .psec-older, .psec-pill, .panel-sec-head, .panel-detail-toggle { min-height: 44px; }
-  .topbar .nav a, .topbar .nav .user-select { min-height: 40px; padding: 8px 16px; }
   .show-older-btn { min-height: 40px; padding: 8px 16px; }
 }
-/* ── #800: TOUCH x NARROW — restore tight padding so the coarse-pointer
-   tap-target (16px horizontal) does not push the topbar past mobile
-   widths. min-height stays at 40px for touch-target accessibility
-   (WCAG 2.5.5); only the inline padding shrinks. These blocks must
-   stay AFTER @media (pointer: coarse) in source order so the more
-   specific (combined) query wins the cascade. ── */
-@media (max-width: 680px) and (pointer: coarse) {
-  .topbar .nav a, .topbar .nav .user-select { padding: 4px 8px; }
-}
-@media (max-width: 480px) and (pointer: coarse) {
-  .topbar .nav a, .topbar .nav .user-select { padding: 4px 6px; }
-}
-/* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens.
-   Heights only, so the #800 topbar width fit is untouched; the theme toggle keeps
-   its 32px square (pinned by #800) and gets a 44px-wide hit slop instead. ── */
+/* ── 44px TARGETS — every remaining control on narrow (<640px) or touch screens (heights only). ── */
 /* The composer's model · effort trigger shares the input's line on a narrow or a
    short screen (a phone sideways), so the reading area keeps its room; its menu opens above. */
 @media (max-width: 639px), (max-height: 560px) {
@@ -5740,11 +5546,7 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
   .panel-command .pc-steer-wrap { flex-basis: 100%; }
 }
 @media (max-width: 639px), (pointer: coarse) {
-  .topbar .nav a, .topbar .nav .user-select, .topbar .user-pill, .topbar .admin-toggle { min-height: 44px; }
-  #theme-toggle { min-block-size: 44px; position: relative; }
-  #theme-toggle::after { content: ''; position: absolute; inset: 0 -6px; }
-  .topbar .td-chip { min-height: 44px; }
-  .stats-more { min-height: 44px; }
+  .topbar .user-select, .topbar .admin-toggle, .topbar .td-chip { min-height: 44px; }
   .card-body .btn-choice { min-height: 44px; }
   .inbox-head .archives-btn { min-height: 44px; }
   .card-body .card-refs a { display: inline-flex; align-items: center; min-height: 44px; }
@@ -5928,17 +5730,7 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-toggle[aria-pressed="true"] .nt-switch::after { transform: translateX(10px); }
 .nt-toggle-note { font-size: 11px; font-weight: 500; color: var(--text-tertiary); }
 
-.nt-compose { position: relative; display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 14px; background: var(--bg); transition: border-color var(--dur-press) var(--ease-out), box-shadow var(--dur-press) var(--ease-out); }
-.nt-compose:focus-within { border-color: var(--border-focus); box-shadow: 0 0 0 3px color-mix(in srgb, var(--border-focus) 18%, transparent); }
-.nt-prompt { display: block; width: 100%; min-height: 150px; max-height: 44vh; padding: 12px 14px; border: 0; outline: none; resize: none; background: transparent; color: var(--text); font: inherit; font-size: 14px; line-height: 1.55; }
-.nt-prompt::placeholder { color: var(--text-tertiary); }
-.nt-drop-hint { position: absolute; inset: 0; display: none; place-items: center; border-radius: inherit; background: color-mix(in srgb, var(--accent) 12%, transparent); color: var(--tint-accent-fg); font-size: 13px; font-weight: 600; pointer-events: none; }
-.nt-compose.is-drag { border-color: var(--accent); border-style: dashed; }
-.nt-compose.is-drag .nt-drop-hint { display: grid; }
-.nt-count { align-self: flex-end; padding: 0 10px 6px; font-size: 11px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
 
-.nt-attachments { display: flex; gap: 8px; overflow-x: auto; padding: 2px 2px 4px; scroll-snap-type: x proximity; scrollbar-width: thin; }
-.nt-attachments:empty { display: none; }
 .nt-att { position: relative; flex: none; display: flex; align-items: center; gap: 8px; height: 58px; max-width: 230px; padding: 0 32px 0 6px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface-raised); scroll-snap-align: start; animation: nt-att-in 240ms var(--ease-out) both; }
 .nt-att-thumb { display: grid; place-items: center; flex: none; width: 44px; height: 44px; border-radius: 8px; background: var(--bg); color: var(--text-secondary); object-fit: cover; overflow: hidden; }
 .nt-att-thumb svg { width: 20px; height: 20px; }
@@ -5961,14 +5753,10 @@ body.nt-open .new-task-fab { display: none !important; }
 .nt-error[hidden] { display: none; }
 .nt-empty { margin: 0; color: var(--text-secondary); font-size: 12.5px; }
 
-.nt-toolbar { display: flex; align-items: center; gap: 8px; padding: 10px 12px 12px 10px; border-top: 1px solid var(--border); background: var(--surface); }
-.nt-tools { display: flex; align-items: center; gap: 2px; }
-.nt-tool-camera { display: none; }
-.nt-tool-mic[aria-pressed="true"] { background: var(--tint-fail-bg); color: var(--tint-fail-fg); }
-.nt-status { flex: 1; min-width: 0; overflow: hidden; color: var(--text-secondary); font-size: 12px; text-align: right; text-overflow: ellipsis; white-space: nowrap; }
+.nt-composer { display: block; }
+.nt-foot { display: flex; align-items: center; gap: 8px; min-height: 18px; margin: 0; }
+.nt-status { flex: 1; min-width: 0; overflow: hidden; color: var(--text-secondary); font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .nt-submit-hint { flex: none; font-size: 11px; color: var(--text-tertiary); }
-.nt-submit { flex: none; }
-.nt-submit.is-busy svg { animation: nt-spin 0.9s linear infinite; }
 
 
 /* The FAB arrives: opacity + scale from 0.95 (never from nothing), 240ms ease-out — once. */
@@ -6005,9 +5793,7 @@ body.nt-open .new-task-fab { display: none !important; }
   .nt-config { flex-wrap: nowrap; overflow-x: auto; margin: 0 -14px; padding: 0 14px 2px; scrollbar-width: none; }
   .nt-config::-webkit-scrollbar { display: none; }
   .nt-chip select { max-width: 150px; }
-  .nt-compose { flex: 1 1 auto; min-height: 140px; }
-  .nt-prompt { flex: 1; max-height: none; }
-  .nt-toolbar { padding: 8px 10px calc(8px + env(safe-area-inset-bottom, 0px)); }
+  .nt-body { padding-bottom: calc(10px + env(safe-area-inset-bottom, 0px)); }
   .nt-submit-hint, .nt-head-hint { display: none; }
 }
 @media (pointer: coarse) {
@@ -6015,14 +5801,13 @@ body.nt-open .new-task-fab { display: none !important; }
      and the camera button (capture="environment" opens the camera directly). */
   .nt-battery-btn, .nt-toggle, .nt-chip, .nt-rec-btn { min-height: 44px; min-width: 44px; }
   .nt-att-remove { width: 28px; height: 28px; }
-  .nt-prompt, .nt-chip select { font-size: 16px; }
-  .nt-tool-camera { display: inline-grid; }
+  .nt-chip select { font-size: 16px; }
   .nt-kbd, .nt-submit-hint, .nt-head-hint { display: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   /* New task — no arrival, slide or scale; changes are instant. */
   .new-task-btn, .new-task-fab, .nt-dialog, .nt-att,
-  .nt-rec-dot, .nt-battery-fill, .nt-fab-label, .nt-fab-icon, .nt-submit svg { animation: none !important; transition: none !important; }
+  .nt-rec-dot, .nt-battery-fill, .nt-fab-label, .nt-fab-icon { animation: none !important; transition: none !important; }
 }
 /* ── Session artifacts (SSOT 2026-10-23): face chips, strips, minimap, viewer ── */
 .art-glyph { width: 14px; height: 14px; flex-shrink: 0; }
@@ -6033,38 +5818,28 @@ body.nt-open .new-task-fab { display: none !important; }
 .art-k-markdown { --art-tint: var(--accent); }
 .art-k-pdf { --art-tint: var(--red); }
 .art-k-text, .art-k-file { --art-tint: var(--text-secondary); }
-.art-chip { display: inline-flex; align-items: center; gap: 5px; min-width: 0; max-width: 150px; height: 24px; padding: 0 8px; border: 1px solid var(--ib-card-border); border-radius: 999px; background: var(--ib-pill); color: var(--ib-text); font: inherit; font-size: 11.5px; line-height: 1; cursor: zoom-in; transition: border-color 150ms ease, background-color 150ms ease, transform var(--dur-press) var(--ease-out); }
-.art-chip .art-glyph { color: var(--art-tint); }
-.art-chip:focus-visible { border-color: var(--art-tint, var(--accent)); background: var(--surface-raised); outline: none; }
-.art-chip-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .card-artifacts { margin-top: 12px; }
 .art-section-label { display: flex; align-items: center; gap: 6px; }
 .art-count { display: inline-flex; align-items: center; justify-content: center; min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; background: var(--ib-pill); color: var(--text-secondary); font-size: 10.5px; font-weight: 700; font-variant-numeric: tabular-nums; }
 .art-strip { display: flex; gap: 8px; overflow-x: auto; padding: 4px 2px 8px; scroll-snap-type: x proximity; scrollbar-width: thin; overscroll-behavior-x: contain; }
-.art-tile { position: relative; flex: 0 0 auto; width: 128px; scroll-snap-align: start; }
-.art-open { display: flex; flex-direction: column; width: 100%; padding: 0; overflow: hidden; border: 1px solid var(--ib-card-border); border-radius: 10px; background: var(--surface); color: var(--ib-text); font: inherit; text-align: left; cursor: zoom-in; transition: border-color 150ms ease, box-shadow 150ms ease, transform var(--dur-press) var(--ease-out); }
-.art-open:focus-visible { border-color: var(--art-tint, var(--accent)); box-shadow: var(--ib-shadow-raised); outline: none; }
-.art-thumb { position: relative; display: flex; align-items: center; justify-content: center; height: 76px; border-bottom: 1px solid var(--ib-card-border); background: var(--ib-col); color: var(--art-tint, var(--text-secondary)); }
-.art-thumb .art-glyph { width: 28px; height: 28px; }
-.art-thumb-img img { display: block; width: 100%; height: 100%; object-fit: cover; }
-.art-thumb-ext { position: absolute; left: 6px; bottom: 5px; padding: 1px 5px; border-radius: 6px; background: var(--surface-raised); color: var(--text-secondary); font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; }
-.art-tile-name { padding: 6px 8px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11.5px; font-weight: 600; }
-.art-tile-meta { padding: 2px 8px 7px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10.5px; color: var(--ib-muted); }
-.art-tile.is-remote .art-thumb { opacity: 0.55; }
-.art-play { position: absolute; top: 46px; right: 6px; display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: none; border-radius: 50%; background: var(--purple); color: var(--surface); box-shadow: var(--ib-shadow); cursor: pointer; transition: transform var(--dur-press) var(--ease-out); }
+.art-tile { position: relative; flex: 0 0 auto; scroll-snap-align: start; --fc-tile-w: 128px; }
+/* A strip tile / an answer's chip is @2lab.ai/ui <ui-file-card> (D2 I-01..I-03): its kind wash and glyph, the
+   thumbnail, name and meta, its own hover, press and 44px chip on touch. The audio play button (T8) sits on the
+   thumbnail's lower right: 4px card inset + the 16:10 thumbnail of a (--fc-tile-w − 8px) wide box. */
+.art-tile > ui-file-card { display: block; }
+.art-play { position: absolute; right: 10px; top: calc(4px + (var(--fc-tile-w) - 8px) * 0.625 - 36px); display: flex; align-items: center; justify-content: center; width: 30px; height: 30px; padding: 0; border: none; border-radius: 50%; background: var(--purple); color: var(--surface); box-shadow: var(--ib-shadow); cursor: pointer; transition: transform var(--dur-press) var(--ease-out); }
 .art-play svg { width: 14px; height: 14px; }
-@media (hover: hover) and (pointer: fine) {
-  .art-chip:hover { border-color: var(--ib-muted); background: var(--surface-raised); }
-  .art-open:hover { border-color: var(--ib-muted); }
-}
+/* A chip tile (the panel's minimal row, artPanelVariant): the play button inline after the chip. */
+.art-tile:has(> ui-file-card[variant="chip"]) { display: flex; align-items: center; gap: 6px; max-width: 240px; }
+.art-tile:has(> ui-file-card[variant="chip"]) > ui-file-card { min-width: 0; }
+.art-tile:has(> ui-file-card[variant="chip"]) .art-play { position: static; flex: none; width: 32px; height: 32px; }
 .art-play .ic-pause, .art-play.is-playing .ic-play { display: none; }
 .art-play.is-playing .ic-pause { display: block; }
 .art-play.is-playing { box-shadow: 0 0 0 4px color-mix(in srgb, var(--purple) 30%, transparent); }
 .panel-artifacts { padding: 10px 16px 4px; border-bottom: 1px solid var(--border); min-height: 44px; }
 .panel-arts-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; font-size: 12px; font-weight: 600; color: var(--text); }
 .panel-arts-hint { margin-left: auto; font-size: 11px; font-weight: 400; color: var(--text-tertiary); }
-.art-strip-panel .art-tile { width: 152px; }
-.art-strip-panel .art-thumb { height: 94px; }
+.art-strip-panel .art-tile { --fc-tile-w: 152px; }
 .turn-arts-row { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
 /* ── User media (SSOT 2026-10-25): the files a user attached to an instruction ──
    Above the words, as chat apps show an attachment with its message. Fixed boxes
@@ -6178,15 +5953,14 @@ body.nt-open .new-task-fab { display: none !important; }
 .md-doc th, .md-doc td { padding: 6px 10px; border: 1px solid var(--border); text-align: left; vertical-align: top; }
 .md-doc th { background: var(--ib-col); font-weight: 600; }
 @media (prefers-reduced-motion: reduce) {
-  .art-chip, .art-open, .art-play, .art-peek, .art-peek.open { transition: none; }
+  .art-play, .art-peek, .art-peek.open { transition: none; }
   .art-modal[open] { animation: none; }
   /* Gentler, not zero: a dialog's scrim still fades (opacity only, ≤ 180ms). */
   .art-modal[open] { animation: none; }
   .art-modal[open]::backdrop { animation: scrim-in 120ms ease both !important; }
 }
 @media (hover: none) {
-  .art-chip { height: 32px; }
-  .art-play { width: 40px; height: 40px; top: 40px; }
+  .art-play { width: 40px; height: 40px; top: calc(4px + (var(--fc-tile-w) - 8px) * 0.625 - 44px); }
 }
 
 /* ═══ Device-responsive layout (SSOT 2026-10-24) ═══
@@ -6241,10 +6015,6 @@ body.nt-open .new-task-fab { display: none !important; }
      defaults menu spans the bar instead of running off the edge, and the
      artifact viewer takes the whole screen. */
   .inbox.has-cards { padding-bottom: calc(60px + env(safe-area-inset-bottom, 0px)); }
-  /* The defaults chips take their own row under brand · status · account: sharing the brand row
-     they could leave the account group (basis 0) no width at all, its pill and theme toggle
-     painting over the chips. */
-  .topbar .topbar-defaults { position: static; order: 1; flex: 0 0 100%; }
   .art-modal { width: 100vw; height: 100dvh; border: 0; border-radius: 0; }
   .art-modal-head { flex-wrap: wrap; row-gap: 6px; }
 }
@@ -6256,16 +6026,12 @@ body.nt-open .new-task-fab { display: none !important; }
 .cron-drawer::part(panel) { padding-right: env(safe-area-inset-right, 0px); }
 .cron-drawer::part(header) { padding-top: max(14px, env(safe-area-inset-top, 0px)); }
 /* Task view (T1.6): minimal — the artifacts are one row of name chips, like a
-   short panel body below; 자세히 shows them as thumbnails. */
+   short panel body below; 자세히 shows them as thumbnails. The chips are the file cards' chip variant
+   (artPanelVariant); this row only lays them out. */
 .slide-panel:not(.is-detail) .panel-artifacts { display: flex; align-items: center; gap: 10px; padding-top: 6px; padding-bottom: 6px; }
 .slide-panel:not(.is-detail) .panel-arts-head { flex: none; margin-bottom: 0; }
 .slide-panel:not(.is-detail) .panel-arts-hint { display: none; }
 .slide-panel:not(.is-detail) .art-strip-panel { flex: 1 1 auto; min-width: 0; padding-top: 2px; padding-bottom: 2px; }
-.slide-panel:not(.is-detail) .art-strip-panel .art-thumb, .slide-panel:not(.is-detail) .art-strip-panel .art-tile-meta { display: none; }
-.slide-panel:not(.is-detail) .art-strip-panel .art-tile-name { padding-bottom: 6px; }
-.slide-panel:not(.is-detail) .art-strip-panel .art-tile { display: flex; align-items: center; gap: 6px; width: auto; max-width: 200px; }
-.slide-panel:not(.is-detail) .art-strip-panel .art-open { flex: 1 1 auto; min-width: 0; }
-.slide-panel:not(.is-detail) .art-strip-panel .art-play { position: static; flex: none; width: 32px; height: 32px; }
 /* A short panel body (landscape phones, the unfolded Duo, a docked drawer under a
    tall top bar; below 560px R/2 cannot hold full thumbnails plus a couple of task
    rows): artifacts become name chips with the play button inline, so the
@@ -6275,12 +6041,6 @@ body.nt-open .new-task-fab { display: none !important; }
   .panel-arts-head { flex: none; margin-bottom: 0; }
   .panel-arts-hint { display: none; }
   .art-strip-panel { flex: 1 1 auto; min-width: 0; padding-top: 2px; padding-bottom: 2px; }
-  .art-strip-panel .art-thumb { display: none; }
-  .art-strip-panel .art-tile-meta { display: none; }
-  .art-strip-panel .art-tile-name { padding-bottom: 6px; }
-  .art-strip-panel .art-tile { display: flex; align-items: center; gap: 6px; width: auto; max-width: 200px; }
-  .art-strip-panel .art-open { flex: 1 1 auto; min-width: 0; }
-  .art-strip-panel .art-play { position: static; flex: none; width: 32px; height: 32px; }
 }
 </style>
 <!-- Tokens — @2lab.ai/ui is the single source (P10): its tokens.css puts every --ui-* on :root and
@@ -6294,59 +6054,48 @@ ${pageTokenAliases()}
 </head>
 <body>
 <div class="app">
-  <div class="topbar">
-    <h1><svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true"><rect class="bm-bg" width="32" height="32" rx="8"/><rect class="bm-cell" x="7" y="7" width="7" height="7" rx="1.5"/><rect class="bm-cell" x="18" y="7" width="7" height="7" rx="1.5" opacity=".55"/><rect class="bm-cell" x="7" y="18" width="7" height="7" rx="1.5" opacity=".55"/><rect class="bm-cell" x="18" y="18" width="7" height="7" rx="1.5" opacity=".25"/></svg>soma-work</h1>
-    <span class="ws-badge" id="ws-status" role="status" aria-label="실시간 업데이트: 연결 중" data-state="connecting">연결 중…</span>
+  <!-- The top bar is @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14): brand, the 대화 · 설정 · 기억 links
+       (folded into 메뉴 when the bar is short of room), the live-update status, the signed-in account and the
+       theme toggle are its data (paintAppBar); the page's own controls are its actions — the scope group
+       (default model / effort, the board's user, admin write mode) and 새 작업. Below TOPBAR_SCOPE_MIN the
+       scope group leaves the bar for the row under it (#topbar-sub, placeTopbarScope): the bar is one row. -->
+  <header class="topbar" id="topbar">
+    <h1 class="ar-vh">soma-work</h1>
+    <ui-app-bar id="app-bar" lang="ko">
+    <div class="topbar-scope" id="topbar-scope" slot="actions">
     <div class="topbar-defaults" id="topbar-defaults" hidden>
       <button type="button" class="td-chip" id="td-model" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 모델 — 클릭해서 변경" onclick="openDefaultsMenu('model', this)"><span class="td-prefix">모델 </span><b id="td-model-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
       <button type="button" class="td-chip" id="td-effort" aria-haspopup="menu" aria-expanded="false" title="새 세션의 기본 effort — 클릭해서 변경" onclick="openDefaultsMenu('effort', this)"><span class="td-prefix">Effort </span><b id="td-effort-value">…</b><i data-ui-icon="chevron-down" class="td-caret"></i></button>
       <ui-menu id="td-menu" lang="ko"></ui-menu>
       <span class="td-status" id="td-status" role="status" aria-live="polite"></span>
     </div>
-    <button type="button" class="ui-btn is-primary new-task-btn" id="new-task-btn" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><i data-ui-icon="plus"></i><span class="nt-btn-label">새 작업</span><kbd class="ui-kbd nt-kbd" aria-hidden="true">N</kbd></button>
-    <div class="nav">
-      <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">모든 사용자</span><select id="user-select" title="모든 사용자" aria-label="보드에 보일 사용자" onchange="selectUser(this.value)">
-        <option value="">모든 사용자</option>
-      </select></span>
-      <a href="/conversations" title="대화 — 지난 대화를 모두 봅니다"><i data-ui-icon="chat"></i>대화</a>
-      <a href="/dashboard/settings" id="settings-link" title="개인 설정 — Slack 명령으로 바꾸던 설정을 여기서 확인하고 바꿉니다"><i data-ui-icon="gear"></i>설정</a>
-      <a href="/dashboard/settings#memory" id="memory-link" title="기억 — 에이전트가 기억하는 개인 메모리와 관찰 기록을 보고 고칩니다"><i data-ui-icon="brain"></i>기억</a>
-      <button
-        id="admin-mode-toggle"
-        type="button"
-        class="admin-toggle"
-        style="display:none"
-        aria-pressed="false"
-        title="관리자 쓰기 모드 — 켜면 다른 사람의 세션도 바꿀 수 있습니다 (#716)"
-        onclick="toggleAdminMode()"
-      ><span id="admin-mode-label"><span class="admin-mode-prefix">관리자 </span><span class="admin-mode-state">끔</span></span></button>
+    <span class="user-select"><span class="user-select-label" id="user-select-label" aria-hidden="true">모든 사용자</span><select id="user-select" title="모든 사용자" aria-label="보드에 보일 사용자" onchange="selectUser(this.value)">
+      <option value="">모든 사용자</option>
+    </select></span>
+    <button
+      id="admin-mode-toggle"
+      type="button"
+      class="admin-toggle"
+      style="display:none"
+      aria-pressed="false"
+      title="관리자 쓰기 모드 — 켜면 다른 사람의 세션도 바꿀 수 있습니다 (#716)"
+      onclick="toggleAdminMode()"
+    ><span id="admin-mode-label"><span class="admin-mode-prefix">관리자 </span><span class="admin-mode-state">끔</span></span></button>
     </div>
-    <div class="topbar-account">
-      <a
-        class="user-pill"
-        id="user-pill"
-        href="/login"
-        title="계정 — 다른 계정으로 전환하거나 로그아웃합니다"
-      ><span class="user-pill-prefix"><i data-ui-icon="user" class="ic-user"></i><svg class="ic-admin" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 2.2l4.8 1.9v3.5c0 2.9-2 5.1-4.8 6.2-2.8-1.1-4.8-3.3-4.8-6.2V4.1z"/><path d="M5.9 8.1l1.5 1.5 2.8-2.9"/></svg><span class="ar-vh">로그인 계정 </span></span><b id="user-pill-name">…</b></a>
-      <button id="theme-toggle" onclick="toggleTheme()" aria-label="테마 전환"><i data-ui-icon="sun" class="ic-sun"></i><i data-ui-icon="moon" class="ic-moon"></i></button>
-    </div>
-  </div>
+    <button type="button" class="ui-btn is-primary new-task-btn" id="new-task-btn" slot="actions" aria-keyshortcuts="n" title="새 작업 (N)" onclick="openNewTask()"><i data-ui-icon="plus"></i><span class="nt-btn-label">새 작업</span><kbd class="ui-kbd nt-kbd" aria-hidden="true">N</kbd></button>
+    </ui-app-bar>
+    <div class="topbar-sub" id="topbar-sub" hidden></div>
+  </header>
 
   <div class="main">
-    <!-- Stats strip (.prd/10 §3.1-2) leads; the agent inbox board follows it.
-         Collapsed by default: period · 세션 · 토큰 · 비용 + 자세히, which opens the
-         other cards and the charts below the strip (kept in localStorage). -->
-    <section class="stats" id="stats" aria-label="사용량">
-      <div class="stats-strip">
-        <ui-segmented class="period-bar" id="period-seg" full></ui-segmented>
-        <div class="strip-nums">
-          <div class="strip-num"><span class="label">&#xC138;&#xC158;</span><span class="value is-loading" id="stat-sessions"></span></div>
-          <div class="strip-num"><span class="label">&#xD1A0;&#xD070;</span><span class="value" id="stat-tokens-wrap"><ui-tooltip id="stat-tokens-tooltip" variant="card" placement="bottom" disabled><span id="stat-tokens" class="is-loading"></span></ui-tooltip></span></div>
-          <div class="strip-num"><span class="label">&#xBE44;&#xC6A9;</span><span class="value is-loading" id="stat-cost"></span></div>
-        </div>
-        <button type="button" class="stats-more" id="stats-more" aria-expanded="false" aria-controls="stats-detail" onclick="toggleStatsDetail()"><span>&#xC790;&#xC138;&#xD788;</span><i data-ui-icon="chevron-down"></i></button>
-      </div>
-      <div class="stats-detail" id="stats-detail" hidden inert>
+    <!-- Stats strip (.prd/10 §3.1-2) leads; the agent inbox board follows it. It is @2lab.ai/ui
+         <ui-stat-strip id="stats-strip"> (B-01..B-05, B-09): period · 세션 · 토큰 · 비용 + 자세히 are its
+         data (paintStatsStrip) — the figures roll, a loading figure pulses, 토큰 carries the per-instance
+         breakdown as its tooltip. 자세히 opens the element's own region: the other cards and the charts
+         below (its default slot; the choice is kept in localStorage). -->
+    <section class="stats" id="stats">
+      <ui-stat-strip id="stats-strip" lang="ko">
+      <div class="stats-detail" id="stats-detail">
         <div class="ui-tok usage-cb-wrap"><ui-compact-breakdown id="usage-cb" lang="ko"></ui-compact-breakdown></div>
         <div class="stats-grid" id="stats-grid">
           <div class="stat-card"><div class="label">&#xD134; &#xC0AC;&#xC6A9;</div><div class="value is-loading" id="stat-turns"></div></div>
@@ -6356,8 +6105,9 @@ ${pageTokenAliases()}
           <div class="stat-card"><div class="label">&#xC6CC;&#xD06C;&#xD50C;&#xB85C;&#xC6B0;</div><div class="value is-loading" id="stat-workflows" style="font-size:0.85em"></div></div>
         </div>
         <div style="display:none" id="stat-commits-hidden"></div>
-        <div class="chart-row is-loading" id="chart-row"></div>
+        <div class="chart-row" id="chart-row"><ui-bar-chart id="chart-sessions" lang="ko"></ui-bar-chart><ui-bar-chart id="chart-merge" lang="ko"></ui-bar-chart></div>
       </div>
+      </ui-stat-strip>
     </section>
 
     <!-- LLM capacity (SSOT 2026-10-23 T7/T9/T10), between the stats strip and the inbox:
@@ -6374,18 +6124,18 @@ ${pageTokenAliases()}
       <div class="inbox-head">
         <nav class="crumbs" aria-label="위치"><span class="crumb-root">soma-work</span><span class="crumb-sep" aria-hidden="true">/</span><span class="crumb-cur" aria-current="page">Agent inbox</span></nav>
         <div class="inbox-tools">
-          <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="3" rx="0.8"/><path d="M3 6v6.2c0 .5.4.8.8.8h8.4c.4 0 .8-.3.8-.8V6M6.5 8.6h3"/></svg><span id="archives-label">Archives</span></button>
-          <button type="button" class="archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><i data-ui-icon="moon"></i><span id="sleeping-label">Sleeping</span></button>
+          <button type="button" class="archives-btn" id="archives-toggle" aria-pressed="false" hidden onclick="toggleArchives()"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="12" height="3" rx="0.8"/><path d="M3 6v6.2c0 .5.4.8.8.8h8.4c.4 0 .8-.3.8-.8V6M6.5 8.6h3"/></svg><span id="archives-label">보관함</span></button>
+          <button type="button" class="archives-btn" id="sleeping-toggle" aria-pressed="true" hidden onclick="toggleSleeping()"><i data-ui-icon="moon"></i><span id="sleeping-label">휴면</span></button>
           <button type="button" class="archives-btn" id="lifecycle-btn" style="display:none" title="세션 수명 주기 (관리자)" onclick="openLifecycleDialog()"><i data-ui-icon="clock"></i><span>수명 주기</span></button>
           <ui-segmented class="view-seg" id="view-seg"></ui-segmented>
         </div>
       </div>
       <ui-dialog id="lifecycle-dialog" class="lifecycle-dialog" heading="세션 수명 주기" size="sm" lang="ko">
         <form id="lifecycle-form" onsubmit="saveLifecycle(event)" oninput="armLifecycleSave(null)">
-          <p class="lc-note"><span id="lifecycle-scope">이 인스턴스</span>에만 적용되고, 다음 정리 주기(최대 5분)부터 반영됩니다. 값을 줄이면 그 기준을 넘긴 세션이 바로 Sleeping이 되거나 종료됩니다 — 저장 전에 몇 개인지 알려 줍니다. Sleeping 전환이 12시간 이하이면 12시간 전 확인 알림은 보내지 않습니다.</p>
-          <label>마지막 활동 후 Sleeping 전환 <span class="lc-unit">시간</span><input id="lc-sleepAfterHours" type="number" min="1" max="720" step="any" required></label>
-          <label>Sleeping 후 Archive(종료) 전환 <span class="lc-unit">일</span><input id="lc-archiveAfterDays" type="number" min="0.05" max="365" step="any" required></label>
-          <label>보드에 Archive 표시 기간 <span class="lc-unit">시간</span><input id="lc-boardArchiveWindowHours" type="number" min="0" max="8760" step="any" required></label>
+          <p class="lc-note"><span id="lifecycle-scope">이 인스턴스</span>에만 적용되고, 다음 정리 주기(최대 5분)부터 반영됩니다. 값을 줄이면 그 기준을 넘긴 세션이 바로 휴면이 되거나 종료됩니다 — 저장 전에 몇 개인지 알려 줍니다. 휴면 전환이 12시간 이하이면 12시간 전 확인 알림은 보내지 않습니다.</p>
+          <label>마지막 활동 후 휴면 전환 <span class="lc-unit">시간</span><input id="lc-sleepAfterHours" type="number" min="1" max="720" step="any" required></label>
+          <label>휴면 후 보관(종료) 전환 <span class="lc-unit">일</span><input id="lc-archiveAfterDays" type="number" min="0.05" max="365" step="any" required></label>
+          <label>보드에 보관함 표시 기간 <span class="lc-unit">시간</span><input id="lc-boardArchiveWindowHours" type="number" min="0" max="8760" step="any" required></label>
           <p class="lc-status" id="lifecycle-status" role="status" aria-live="polite"></p>
         </form>
         <div slot="footer" class="lc-actions">
@@ -6405,7 +6155,7 @@ ${pageTokenAliases()}
       <!-- The board (re-agent-inbox): NEEDS YOU · RUNNING · DONE (by finish day) — renderBoard gives it its
            data; each open card's body is a light-DOM child in the card's slot (slot="body:<key>"). It says how
            many need you and how many run, politely (D6). -->
-      <ui-agent-inbox id="kanban" class="kanban" view="board"></ui-agent-inbox>
+      <ui-agent-inbox id="kanban" class="kanban" view="board" lang="ko"></ui-agent-inbox>
     </section>
   </div>
 
@@ -6535,7 +6285,7 @@ ${pageTokenAliases()}
        button scrolls away), the composer dialog, and the launch toast. -->
   <button type="button" class="new-task-fab" id="new-task-fab" aria-label="새 작업 시작" onclick="openNewTask()"><i data-ui-icon="plus" class="nt-fab-icon"></i><span class="nt-fab-label">새 작업</span></button>
   <dialog id="nt-dialog" class="nt-dialog" aria-labelledby="nt-title" onclose="ntOnClosed()">
-    <form id="nt-form" class="nt-form" onsubmit="submitNewTask(event)" novalidate>
+    <form id="nt-form" class="nt-form" onsubmit="event.preventDefault()" novalidate>
       <header class="nt-head">
         <button type="button" class="ui-icon-btn nt-close" aria-label="닫기" onclick="closeNewTask()"><i data-ui-icon="close"></i></button>
         <h2 id="nt-title">새 작업</h2>
@@ -6553,29 +6303,15 @@ ${pageTokenAliases()}
           <button type="button" class="nt-toggle" id="nt-autoz" aria-pressed="false" title="켜면 지시 끝에 $autoz를 붙여 autoz 스킬이 끝까지 자동으로 진행합니다" onclick="ntToggle('autoz')"><span class="nt-switch" aria-hidden="true"></span><span>autoz</span></button>
           <span class="nt-toggle-note">이 작업에만 적용 · 설정은 그대로</span>
         </div>
-        <div class="nt-compose" id="nt-compose">
-          <label class="nt-sr" for="nt-prompt">작업 지시</label>
-          <textarea id="nt-prompt" class="nt-prompt" rows="6" placeholder="무엇을 할까요? 예) soma-work 대시보드 개선해줘" oninput="ntOnInput()"></textarea>
-          <span class="nt-count" id="nt-count" aria-hidden="true"></span>
-          <div class="nt-drop-hint" aria-hidden="true">여기에 놓으면 첨부됩니다</div>
-        </div>
-        <div class="nt-attachments" id="nt-attachments" aria-live="polite" aria-label="첨부 파일"></div>
-        <div class="nt-recorder" id="nt-recorder" role="status" aria-label="녹음 중" hidden><span class="nt-rec-dot" aria-hidden="true"></span><span id="nt-rec-time">0:00</span><span class="nt-rec-meter" aria-hidden="true"><span class="nt-rec-level" id="nt-rec-level"></span></span><button type="button" class="nt-rec-btn" onclick="ntStopRecording(false)">취소</button><button type="button" class="nt-rec-btn is-primary" onclick="ntStopRecording(true)">완료</button></div>
+        <!-- The instruction, its files and the voice note — @2lab.ai/ui <ui-composer> (D2 H-05..H-09): the field grows
+             with its text, drop / paste / attach / record, chips with thumbnails and play, 작업 시작. ⌘/Ctrl+Enter
+             sends; a plain Enter is a new line (ntInit). The page answers ui-submit (it posts), ui-input (the draft),
+             ui-files (the total size), ui-tool (카메라 on touch: the native camera input below). -->
+        <ui-composer id="nt-composer" class="nt-composer" lang="ko"></ui-composer>
+        <input type="file" id="nt-camera-input" accept="image/*" capture="environment" hidden onchange="ntAddCamera(this.files); this.value = ''">
         <p class="nt-error" id="nt-error" role="alert" hidden></p>
+        <p class="nt-foot"><span class="nt-status" id="nt-status" role="status" aria-live="polite"></span><span class="nt-submit-hint" aria-hidden="true">⌘↵</span></p>
       </div>
-      <footer class="nt-toolbar">
-        <div class="nt-tools">
-          <button type="button" class="ui-icon-btn nt-tool nt-tool-camera" id="nt-camera" aria-label="사진 찍기" title="사진 찍기" onclick="ntEl('nt-camera-input').click()"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 6.5h3l1.5-2h6l1.5 2h3v9.5h-15z"/><circle cx="10" cy="11" r="3"/></svg></button>
-          <button type="button" class="ui-icon-btn nt-tool" id="nt-attach" aria-label="파일 첨부" title="파일 첨부" onclick="ntEl('nt-file-input').click()"><i data-ui-icon="attach"></i></button>
-          <button type="button" class="ui-icon-btn nt-tool nt-tool-mic" id="nt-mic" aria-label="음성 녹음" aria-pressed="false" title="음성 녹음" onclick="ntToggleRecording()"><i data-ui-icon="mic"></i></button>
-          <input type="file" id="nt-camera-input" accept="image/*" capture="environment" hidden onchange="ntAddFiles(this.files, 'camera'); this.value = ''">
-          <input type="file" id="nt-file-input" multiple hidden onchange="ntAddFiles(this.files, 'file'); this.value = ''">
-          <input type="file" id="nt-audio-input" accept="audio/*" capture hidden onchange="ntAddFiles(this.files, 'voice'); this.value = ''">
-        </div>
-        <span class="nt-status" id="nt-status" role="status" aria-live="polite"></span>
-        <span class="nt-submit-hint" id="nt-submit-hint" aria-hidden="true">⌘↵</span>
-        <button type="submit" class="ui-btn is-primary is-lg nt-submit" id="nt-submit">작업 시작<i data-ui-icon="arrow-right"></i></button>
-      </footer>
     </form>
   </dialog>
 </div>
@@ -6605,17 +6341,15 @@ const INIT_USER = ${initUser};
 // The page chrome's words, in one place and one language (the library's STRINGS pattern, lang="ko"):
 // sentence case, "…" not "...", the library's short status vocabulary.
 var STRINGS = {
-  wsLive: '실시간',
-  wsLiveLabel: '실시간 업데이트: 연결됨',
+  // The live-update status in the app bar (a tone dot and these words; narrow, the dot alone).
+  wsConnecting: '연결 중…',
+  wsLive: '실시간 연결됨',
   wsReconnecting: '다시 연결 중…',
-  wsReconnectingLabel: '실시간 업데이트: 다시 연결 중',
   on: '켬',
   off: '끔',
   adminOn: '관리자 켬',
   adminOff: '관리자 끔',
   viewerAdmin: '관리자',
-  themeToDark: '어두운 테마로 전환',
-  themeToLight: '밝은 테마로 전환',
   // P8: the panel's turn summaries, subtitle and the legacy question form — Korean, "…", no emoji.
   summaryFailed: '요약 실패',
   summaryPending: '요약 만드는 중…',
@@ -6633,6 +6367,18 @@ var STRINGS = {
   mcCustomPlaceholder: '직접 입력…',
   mcSubmitting: '제출 중…',
   effortTitle: '추론 강도',
+  // The board (D2 group 6) in the language of <ui-agent-inbox lang="ko">, whose own words (입력 대기 · 비어 있음 ·
+  // 완료 · …) match: the column heads, the finish-day heads, the status words the page sets, the two toggles.
+  boardNeeds: '응답 필요',
+  boardRunning: '실행 중',
+  boardDone: '완료',
+  today: '오늘',
+  yesterday: '어제',
+  statusIdle: '대기',
+  statusSleeping: '휴면',
+  statusArchived: '보관됨',
+  archives: '보관함',
+  sleeping: '휴면',
 };
 // #814 — name of the dashboard's *home* instance (the one that served this
 // HTML). Used by renderCard() to detect sibling cards and suppress action
@@ -6685,7 +6431,36 @@ let _panelTitleSub = ''; // the subtitle the open panel shows ('' = none yet)
 let _viewerIsAdmin = false; // /auth/me says ADMIN_USERS (or viewer token); UX only, the server re-checks
 let _viewerUserId = ''; // the signed-in user (/auth/me) — not currentUserId, which is the board filter
 
-// ── Theme toggle — sun/moon ──
+// ── Top bar — @2lab.ai/ui <ui-app-bar id="app-bar"> (A-03..A-14) ──
+// The page hands the bar its data — brand, the three page links, the live-update status, the signed-in
+// account, the current theme and the sound choice — and answers its events: ui-theme-change (the page
+// owns the theme and its storage), ui-sound-change (the head's sound script, somaSoundBindBar),
+// ui-navigate / ui-account (not cancelled: the links are real links). The bar draws and
+// folds them; the page's own controls ride in its actions slot (placeTopbarScope).
+var APP_BAR_NAV = [
+  { id: 'conversations', label: '대화', href: '/conversations', icon: 'chat' },
+  { id: 'settings', label: '설정', href: '/dashboard/settings', icon: 'gear' },
+  { id: 'memory', label: '기억', href: '/dashboard/settings#memory', icon: 'brain' },
+];
+var _appBarStatus = { tone: 'run', label: STRINGS.wsConnecting, live: true };
+var _appBarAccount = null; // { name, href, role? } once /auth/me resolves; null = no pill
+function paintAppBar() {
+  var bar = document.getElementById('app-bar');
+  if (!bar) return;
+  var data = {
+    brand: { label: 'soma-work', mark: true },
+    nav: APP_BAR_NAV,
+    navLabel: '주 메뉴',
+    status: _appBarStatus,
+    theme: document.documentElement.getAttribute('data-theme') === 'light' ? 'light' : 'dark',
+    // The speaker before the theme toggle (interface sound, #614): the head script's choice; its
+    // ui-sound-change is answered there (somaSoundBindBar), which also re-hands the bar its state.
+    sound: typeof _somaOn !== 'undefined' && !!_somaOn,
+  };
+  if (_appBarAccount) data.account = _appBarAccount;
+  bar.data = data;
+}
+// ── Theme — the bar's sun / moon; stored only while it differs from the OS ──
 function getPreferredTheme() {
   var saved = localStorage.getItem('soma-theme');
   if (saved) return saved;
@@ -6693,12 +6468,9 @@ function getPreferredTheme() {
 }
 function applyTheme(theme) {
   document.documentElement.setAttribute('data-theme', theme);
-  var btn = document.getElementById('theme-toggle');
-  if (btn) btn.setAttribute('aria-label', theme === 'light' ? STRINGS.themeToDark : STRINGS.themeToLight);
+  paintAppBar();
 }
-function toggleTheme() {
-  var current = document.documentElement.getAttribute('data-theme') || 'dark';
-  var next = current === 'dark' ? 'light' : 'dark';
+function setTheme(next) {
   var osTheme = window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
   if (next === osTheme) {
     localStorage.removeItem('soma-theme');
@@ -6707,7 +6479,11 @@ function toggleTheme() {
   }
   applyTheme(next);
 }
-// Sync icon on load
+function toggleTheme() {
+  var current = document.documentElement.getAttribute('data-theme') || 'dark';
+  setTheme(current === 'dark' ? 'light' : 'dark');
+}
+// Sync the bar on load
 applyTheme(getPreferredTheme());
 // Listen for OS theme changes (if user hasn't manually chosen)
 window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', function(e) {
@@ -6715,6 +6491,45 @@ window.matchMedia('(prefers-color-scheme: light)').addEventListener('change', fu
     applyTheme(e.matches ? 'light' : 'dark');
   }
 });
+(function initAppBar() {
+  var bar = document.getElementById('app-bar');
+  if (!bar) return;
+  bar.addEventListener('ui-theme-change', function(e) {
+    var t = e.detail && e.detail.theme;
+    if (t === 'light' || t === 'dark') setTheme(t);
+  });
+})();
+// The scope group (default model / effort · the board's user · admin write mode) rides in the bar's
+// actions on a wide screen; below TOPBAR_SCOPE_MIN it takes the row under the bar, where it may wrap —
+// the bar is one 56px row and folds only its own links. Moved as a whole, so its state goes with it.
+var TOPBAR_SCOPE_MIN = 1280;
+function placeTopbarScope() {
+  var bar = document.getElementById('app-bar');
+  var sub = document.getElementById('topbar-sub');
+  var scope = document.getElementById('topbar-scope');
+  if (!bar || !sub || !scope) return;
+  var wide = !window.matchMedia || window.matchMedia('(min-width: ' + TOPBAR_SCOPE_MIN + 'px)').matches;
+  if (wide) {
+    if (scope.parentElement !== bar) {
+      closeDefaultsMenu();
+      scope.slot = 'actions';
+      bar.insertBefore(scope, document.getElementById('new-task-btn'));
+    }
+    sub.hidden = true;
+  } else {
+    if (scope.parentElement !== sub) {
+      closeDefaultsMenu();
+      scope.removeAttribute('slot');
+      sub.appendChild(scope);
+    }
+    sub.hidden = false;
+  }
+}
+placeTopbarScope();
+if (window.matchMedia) {
+  var _topbarScopeMq = window.matchMedia('(min-width: ' + TOPBAR_SCOPE_MIN + 'px)');
+  if (_topbarScopeMq.addEventListener) _topbarScopeMq.addEventListener('change', placeTopbarScope);
+}
 
 // ── Panel resize — drag the left edge of the docked drawer (SSOT 2026-10-24) ──
 // The drag stores a width preference (--panel-w-pref, localStorage); CSS decides
@@ -7632,12 +7447,12 @@ function renderPanelTaskItem(t, pop) {
 let _csrfToken = '';
 
 /*
- * Populate the signed-in user's pill in the topbar.
+ * The signed-in account in the app bar (data.account of <ui-app-bar id="app-bar">).
  *
  * Rendered from /auth/me for three session types:
  *   - OAuth JWT (Google/Microsoft/Slack SSO) — shows user.name.
- *   - bearer_cookie (admin viewer token) — shows 관리자 with the admin shield glyph.
- *   - unauthenticated (/auth/me → 401) — pill stays hidden; auth middleware
+ *   - bearer_cookie (admin viewer token) — shows 관리자.
+ *   - unauthenticated (/auth/me → 401) — no account pill; auth middleware
  *     is about to redirect us to /login anyway.
  *
  * The pill is a link to /login, which for a signed-in browser is the account
@@ -7645,25 +7460,16 @@ let _csrfToken = '';
  * out (GET /auth/logout).
  */
 function _applyUserPill(data) {
-  const pill = document.getElementById('user-pill');
-  const nameEl = document.getElementById('user-pill-name');
-  if (!pill || !nameEl) return;
   let label = '';
-  let isAdmin = false;
   if (data && data.user && data.user.name) {
     label = data.user.name;
   } else if (data && data.isAdmin) {
     label = STRINGS.viewerAdmin;
-    isAdmin = true;
   }
-  if (!label) {
-    pill.style.display = 'none';
-    return;
-  }
-  nameEl.textContent = label;
-  nameEl.title = label; // the name may end in an ellipsis
-  pill.style.display = 'inline-flex';
-  pill.classList.toggle('is-admin', isAdmin);
+  // The app bar's account pill: initials, the name (ellipsis past 160px), a link to the account page.
+  _appBarAccount = label ? { name: label, href: '/login' } : null;
+  paintAppBar();
+  if (!label) return;
 
   // #716: admin-mode toggle visibility. Only ADMIN_USERS members see
   // the button; clicking it stores soma_admin_mode in localStorage and
@@ -8149,15 +7955,61 @@ function selectUser(userId) {
   loadCronJobs();
 }
 
-// ── Period ── <ui-segmented id="period-seg"> (B-02): the page hands it the choice and answers ui-change.
+// ── Stats strip — @2lab.ai/ui <ui-stat-strip id="stats-strip"> (B-01..B-05, B-09) ──
+// The page hands it the period, the three figures (null = no data "—"; loading = a pulsing bar where the
+// figure will be) and 자세히. The element rolls a changed figure (620ms ease-out quart; first paint and
+// reduced motion jump), shows 토큰's per-instance breakdown as the figure's tooltip (hover, focus, a press —
+// touch too) and opens 자세히's region over its default slot (.stats-detail). It sends ui-period (the page
+// loads that period) and ui-more (the page keeps the choice in localStorage['soma-stats-detail']).
 var PERIOD_OPTIONS = [{ value: 'day', label: '오늘' }, { value: 'week', label: '지난 7일' }, { value: 'month', label: '지난 30일' }];
-function paintPeriodSeg() {
-  var seg = document.getElementById('period-seg');
-  if (seg) seg.data = { label: '기간', value: currentPeriod, options: PERIOD_OPTIONS };
+var STATS_DETAIL_KEY = 'soma-stats-detail';
+var _strip = { sessions: { value: null, loading: true }, tokens: { value: null, loading: true }, cost: { value: null, loading: true } };
+var _tokenBreakdown = null; // { title, rows } while the board's sessions span two or more instances (#814)
+var _statsDetailOpen = false;
+function setStripFigure(key, value, loading) {
+  _strip[key] = { value: typeof value === 'number' && isFinite(value) ? value : null, loading: !!loading };
+}
+// A load's answer lands on the strip. <ui-stat-strip> forgets a figure under its loading bar, so the answer would
+// jump (D2-GAPS G2-1); as before the swap, a figure that had a value rolls from it: the strip gets that value back
+// first and, once it has drawn it (its render is a microtask), the new one.
+function landStripFigures(vals) {
+  var from = {};
+  Object.keys(vals).forEach(function(k) {
+    var was = _strip[k];
+    setStripFigure(k, vals[k], false);
+    if (was.loading && was.value !== null && _strip[k].value !== null && was.value !== _strip[k].value) from[k] = was.value;
+  });
+  var keys = Object.keys(from);
+  var to = {};
+  keys.forEach(function(k) { to[k] = _strip[k].value; _strip[k].value = from[k]; });
+  paintStatsStrip();
+  if (!keys.length) return;
+  queueMicrotask(function() {
+    keys.forEach(function(k) { if (!_strip[k].loading && _strip[k].value === from[k]) _strip[k].value = to[k]; });
+    paintStatsStrip();
+  });
+}
+function statsStripData() {
+  var tokens = { key: 'tokens', label: '토큰', value: _strip.tokens.value, format: 'tokens', loading: _strip.tokens.loading };
+  if (_tokenBreakdown) tokens.breakdown = _tokenBreakdown;
+  return {
+    label: '사용량',
+    period: { label: '기간', value: currentPeriod, options: PERIOD_OPTIONS },
+    metrics: [
+      { key: 'sessions', label: '세션', value: _strip.sessions.value, format: 'int', loading: _strip.sessions.loading },
+      tokens,
+      { key: 'cost', label: '비용', value: _strip.cost.value, format: 'usd', loading: _strip.cost.loading },
+    ],
+    more: { label: '자세히', open: _statsDetailOpen },
+  };
+}
+function paintStatsStrip() {
+  var el = document.getElementById('stats-strip');
+  if (el) el.data = statsStripData();
 }
 function setPeriod(period) {
   currentPeriod = period;
-  paintPeriodSeg();
+  paintStatsStrip();
   loadStats();
 }
 
@@ -8199,29 +8051,6 @@ function xpStay(host) {
   xpMove(host);
   return true;
 }
-
-// ── Stats strip 자세히 (.prd/10 §3.1-2) — the other cards + charts, collapsed
-// unless the user opened them (localStorage['soma-stats-detail'] = 'open'). ──
-var STATS_DETAIL_KEY = 'soma-stats-detail';
-function setStatsDetail(open) {
-  var btn = document.getElementById('stats-more');
-  var detail = document.getElementById('stats-detail');
-  if (!btn || !detail) return;
-  btn.setAttribute('aria-expanded', open ? 'true' : 'false');
-  detail.hidden = !open;
-  detail.inert = !open;
-}
-function toggleStatsDetail() {
-  var open = document.getElementById('stats-more').getAttribute('aria-expanded') !== 'true';
-  xpMove(document.getElementById('stats'));
-  setStatsDetail(open);
-  try { localStorage.setItem(STATS_DETAIL_KEY, open ? 'open' : 'closed'); } catch (_e) {}
-}
-(function initStatsDetail() {
-  var saved = null;
-  try { saved = localStorage.getItem(STATS_DETAIL_KEY); } catch (_e) {}
-  setStatsDetail(saved === 'open');
-})();
 
 // ── Session cache ──
 // Keyed by session key — prototype-free so any key string is just a key.
@@ -8323,7 +8152,7 @@ function _envCount() {
 // takes a light-DOM div holding renderCardBody's markup — approval cards, the
 // question, the agent tree, the goal line, model · effort, Stop / Close, 작업 로그
 // and every gate (D10). A collapsed card builds no body (#548).
-var BOARD_LABELS = { waiting: 'NEEDS YOU', working: 'RUNNING', done: 'DONE' };
+var BOARD_LABELS = { waiting: STRINGS.boardNeeds, working: STRINGS.boardRunning, done: STRINGS.boardDone };
 var _expanded = new Set();           // keys whose card is open
 var _cardClosing = Object.create(null); // key → timer: a closed card keeps its body until its collapse has run
 var _boardRenders = 0;
@@ -8336,20 +8165,24 @@ var _cardData = Object.create(null);  // session key → the card the element wa
 var _cardDrawn = Object.create(null); // session key → true when drawn (not in a closed DONE day)
 var _cardBodies = Object.create(null); // session key → { el, html } — its light-DOM body while open or closing
 
-// The board's wording (data.strings over lang="en"): English status words,
-// Korean sub-agents, tooltips and announcement — as before the element.
+// The board's wording: <ui-agent-inbox lang="ko">'s table (status words, sub-agents, the announcement, the
+// relative time), with the page's differences on top (data.strings).
 var BOARD_STRINGS = {
-  agents: '서브에이전트',
-  agentsRunning: function(n) { return '실행 ' + n; },
-  agentsFailed: function(n) { return '실패 ' + n; },
-  arts: '모델이 만든 산출물',
   artOpen: function(name, kind) { return (ART_KIND_LABEL[kind] || '파일') + ' ' + name + ' — 크게 보기'; },
-  announce: function(w, r) { return '응답이 필요한 세션 ' + w + '개, 실행 중 ' + r + '개'; },
   // The sentence is the counts only, never "<title>: <word>." first.
   changed: function() { return ''; },
-  ago: function(at) { return timeAgo(at); },
-  duration: function(ms) { return formatNmSSs(ms); },
+  // A run's clock in Korean (the table's is 7m 12s).
+  duration: function(ms) { return fmtRunKo(ms); },
 };
+// 12초 · 7분 05초 · 2시간 3분 — a running card's clock.
+function fmtRunKo(ms) {
+  var sec = Math.max(0, Math.floor(toNum(ms) / 1000));
+  if (sec < 60) return sec + '초';
+  var m = Math.floor(sec / 60);
+  var r = sec % 60;
+  if (m < 60) return m + '분 ' + (r < 10 ? '0' + r : r) + '초';
+  return Math.floor(m / 60) + '시간 ' + (m % 60) + '분';
+}
 
 // Motion tokens come from the CSS custom properties so CSS transitions and
 // WAAPI share one source of truth (§4 table).
@@ -8423,10 +8256,10 @@ function dayKeyOf(ms) {
   return d.getFullYear() + '-' + (m < 10 ? '0' + m : m) + '-' + (day < 10 ? '0' + day : day);
 }
 function doneDayLabel(key, now) {
-  if (key === dayKeyOf(now)) return 'Today';
+  if (key === dayKeyOf(now)) return STRINGS.today;
   var y = new Date(now);
   y.setDate(y.getDate() - 1);
-  if (key === dayKeyOf(y.getTime())) return '어제';
+  if (key === dayKeyOf(y.getTime())) return STRINGS.yesterday;
   var parts = key.split('-');
   var d = new Date(Number(parts[0]), Number(parts[1]) - 1, Number(parts[2]));
   var opts = { month: 'long', day: 'numeric', weekday: 'short' };
@@ -8628,6 +8461,7 @@ function paintCronLaneCards(slots) {
       el = document.createElement('ui-agent-inbox');
       el.className = 'cron-inbox';
       el.setAttribute('view', 'list');
+      el.setAttribute('lang', 'ko');
       wireInbox(el);
       box._inbox = el;
     }
@@ -9004,11 +8838,11 @@ function cardOf(s, col) {
     if (acc) card.elapsedMs = acc;
   } else if (col === 'closed') {
     card.status = 'idle';
-    card.statusText = s.terminated ? 'Archived' : 'Sleeping';
+    card.statusText = s.terminated ? STRINGS.statusArchived : STRINGS.statusSleeping;
   } else if (acc) {
     card.elapsedMs = acc;
   } else {
-    card.statusText = 'Idle';
+    card.statusText = STRINGS.statusIdle;
   }
   // Recency (spec 13 §3.7): a finished card since its work finished — only the
   // exact stamp, never lastActivity.
@@ -9766,6 +9600,7 @@ function applyPanelDetail() {
   if (panel) panel.classList.toggle('is-detail', _panelDetail);
   var btn = document.getElementById('panel-detail-toggle');
   if (btn) btn.setAttribute('aria-pressed', _panelDetail ? 'true' : 'false');
+  syncPanelArtVariant();
 }
 // The sections an opening starts with: every one open with 자세히 — except the goal,
 // which always opens folded (SSOT 2026-10-29) — else the defaults.
@@ -10579,7 +10414,7 @@ function loadOlderWorkLog() {
       if (body) pin.observe(body);
       if (box) pin.observe(box);
     });
-    var size = new ResizeObserver(function() { sizePanelSections(); });
+    var size = new ResizeObserver(function() { sizePanelSections(); syncPanelArtVariant(); });
     ['panel-scroll', 'panel-surface', 'panel-tabs', 'panel-agents', 'panel-tasks', 'panel-sections'].forEach(function(id) {
       var el = document.getElementById(id);
       if (el) size.observe(el);
@@ -12467,7 +12302,7 @@ function renderArchivesToggle(archivedCount) {
   if (btn.hidden !== hide) btn.hidden = hide;
   var pressed = showArchives ? 'true' : 'false';
   if (btn.getAttribute('aria-pressed') !== pressed) btn.setAttribute('aria-pressed', pressed);
-  setTextIfChanged(label, 'Archives (' + archivedCount + ')');
+  setTextIfChanged(label, STRINGS.archives + ' (' + archivedCount + ')');
 }
 
 // ── Sleeping — the same on / off toggle for sleeping (closed, not archived)
@@ -12492,7 +12327,7 @@ function renderSleepingToggle(sleepingCount) {
   if (btn.hidden !== hide) btn.hidden = hide;
   var pressed = showSleeping ? 'true' : 'false';
   if (btn.getAttribute('aria-pressed') !== pressed) btn.setAttribute('aria-pressed', pressed);
-  setTextIfChanged(label, 'Sleeping (' + sleepingCount + ')');
+  setTextIfChanged(label, STRINGS.sleeping + ' (' + sleepingCount + ')');
 }
 
 // ── Session lifecycle policy (sleep / archive / board windows). The board
@@ -12543,7 +12378,7 @@ function openLifecycleDialog() {
   }
   armLifecycleSave(null);
   setTextIfChanged(document.getElementById('lifecycle-scope'), SELF_INSTANCE_NAME ? '이 인스턴스(' + SELF_INSTANCE_NAME + ')' : '이 인스턴스');
-  setLifecycleStatus(_lifecycle.degraded ? '저장된 정책 파일을 읽을 수 없어 Sleeping/종료 전환을 멈춘 상태입니다. 저장하면 다시 시작합니다.' : '', !!_lifecycle.degraded);
+  setLifecycleStatus(_lifecycle.degraded ? '저장된 정책 파일을 읽을 수 없어 휴면/종료 전환을 멈춘 상태입니다. 저장하면 다시 시작합니다.' : '', !!_lifecycle.degraded);
   // <ui-dialog> (J-01): show() opens it modal at once (focus trap, Esc / scrim / ✕ close it, focus goes back to the
   // opener); the first field takes focus as the native dialog gave it.
   if (typeof dlg.show !== 'function') return;
@@ -12582,8 +12417,8 @@ function setLifecycleStatus(text, isError) {
   el.classList.toggle('is-error', !!isError);
 }
 var LIFECYCLE_LABELS = {
-  sleepAfterHours: 'Sleeping 전환', archiveAfterDays: 'Archive 전환', boardArchiveWindowHours: 'Archive 표시 기간',
-  sleepAfterMs: 'Sleeping 전환', archiveAfterMs: 'Archive 전환', boardArchiveWindowMs: 'Archive 표시 기간',
+  sleepAfterHours: '휴면 전환', archiveAfterDays: '보관 전환', boardArchiveWindowHours: '보관함 표시 기간',
+  sleepAfterMs: '휴면 전환', archiveAfterMs: '보관 전환', boardArchiveWindowMs: '보관함 표시 기간',
 };
 async function saveLifecycle(ev) {
   if (ev) ev.preventDefault();
@@ -12623,8 +12458,8 @@ async function saveLifecycle(ev) {
     var data = await res.json().catch(function() { return {}; });
     if (res.status === 409 && data && data.needsConfirm) {
       armLifecycleSave(body);
-      setLifecycleStatus('이 값으로 저장하면 다음 정리 주기에 ' + (data.willSleep || 0) + '개 세션이 Sleeping으로, '
-        + (data.willArchive || 0) + '개 세션이 종료(Archive)됩니다. 종료는 되돌릴 수 없습니다. 그래도 저장하려면 한 번 더 누르세요.', true);
+      setLifecycleStatus('이 값으로 저장하면 다음 정리 주기에 ' + (data.willSleep || 0) + '개 세션이 휴면으로, '
+        + (data.willArchive || 0) + '개 세션이 종료(보관)됩니다. 종료는 되돌릴 수 없습니다. 그래도 저장하려면 한 번 더 누르세요.', true);
       return;
     }
     armLifecycleSave(null);
@@ -13343,8 +13178,12 @@ function statsJson(url) {
   });
 }
 
-var STAT_IDS = ['stat-sessions', 'stat-tokens', 'stat-cost', 'stat-turns', 'stat-prs', 'stat-merged', 'stat-merge-lines', 'stat-workflows'];
+var STAT_IDS = ['stat-turns', 'stat-prs', 'stat-merged', 'stat-merge-lines', 'stat-workflows'];
 function markStatsLoading() {
+  // The page keeps each strip figure's last value under its loading bar, so the answer rolls from it
+  // (landStripFigures).
+  ['sessions', 'tokens', 'cost'].forEach(function(k) { setStripFigure(k, _strip[k].value, true); });
+  paintStatsStrip();
   STAT_IDS.forEach(function(id) {
     var el = document.getElementById(id);
     if (!el) return;
@@ -13353,13 +13192,13 @@ function markStatsLoading() {
     el.classList.remove('no-data');
     el.classList.add('is-loading');
   });
-  var chart = document.getElementById('chart-row');
-  if (chart) chart.classList.add('is-loading');
+  paintCharts(_chartDays, true);
 }
 
 // A failed load shows a dash rather than the previous period's number.
-// With a value and its format (the strip's 세션 · 토큰 · 비용 and the counted cards), the figure
-// rolls from the one it showed to the new one — the library's rolling figure, 620ms ease-out quart.
+// With a value and its format (the counted cards behind 자세히), the figure rolls from the one it
+// showed to the new one — the library's rolling figure, 620ms ease-out quart (the strip's own figures
+// roll in <ui-stat-strip>).
 // The first paint, a change from or to a dash and reduced motion jump; a new load stops a roll.
 var STAT_ROLL_MS = 620;
 function stopStatRoll(el) {
@@ -13391,12 +13230,11 @@ function setStat(id, text, value, fmt) {
   el._roll = requestAnimationFrame(step);
 }
 function fmtCount(n) { return String(Math.round(n)); }
-function fmtUsd(n) { return '$' + toNum(n).toFixed(2); }
 
 function paintStats(data) {
   var t = data && data.totals;
   var dash = '\\u2014';
-  setStat('stat-sessions', t ? String(toNum(t.sessionsCreated)) : dash, t ? toNum(t.sessionsCreated) : null, fmtCount);
+  landStripFigures({ sessions: t ? toNum(t.sessionsCreated) : null });
   setStat('stat-turns', t ? String(toNum(t.turnsUsed)) : dash, t ? toNum(t.turnsUsed) : null, fmtCount);
   setStat('stat-prs', t ? String(toNum(t.prsCreated)) : dash, t ? toNum(t.prsCreated) : null, fmtCount);
   setStat('stat-merged', t ? String(toNum(t.prsMerged)) : dash, t ? toNum(t.prsMerged) : null, fmtCount);
@@ -13410,10 +13248,8 @@ function paintStats(data) {
       ? wfEntries.map(function(e) { return '<span style="display:inline-block;margin-right:8px;font-size:0.85em">' + esc(e[0]) + ': <b>' + toNum(e[1]) + '</b></span>'; }).join('')
       : '<span style="color:var(--text-secondary)">-</span>';
   }
-  var chartEl = document.getElementById('chart-row');
-  if (chartEl) chartEl.classList.remove('is-loading');
-  if (data) renderCharts(Array.isArray(data.days) ? data.days : []);
-  else if (chartEl) chartEl.innerHTML = '';
+  _chartDays = data ? (Array.isArray(data.days) ? data.days : []) : null;
+  paintCharts(_chartDays, false);
 }
 
 // ── Where the usage goes — @2lab.ai/ui <ui-compact-breakdown> (affectUI review batch 1) ──
@@ -13466,53 +13302,60 @@ function paintUsage(report) {
   _usageReport = report || null;
   paintUsageBreakdown();
   var t = report && report.totals;
-  var tok = t ? toNum(t.totalInputTokens) + toNum(t.totalOutputTokens) : null;
-  setStat('stat-tokens', t ? formatTokens(tok) : '\\u2014', tok, formatTokens);
-  setStat('stat-cost', t ? '$' + toNum(t.totalCostUsd).toFixed(2) : '\\u2014', t ? toNum(t.totalCostUsd) : null, fmtUsd);
+  landStripFigures({
+    tokens: t ? toNum(t.totalInputTokens) + toNum(t.totalOutputTokens) : null,
+    cost: t ? toNum(t.totalCostUsd) : null,
+  });
 }
 
-function renderCharts(days) {
-  const container = document.getElementById('chart-row');
-  if (!days.length) {
-    container.innerHTML = '<p style="color:var(--text-secondary)">No data for this period.</p>';
-    return;
-  }
-  container.innerHTML = renderBarChart('&#xC138;&#xC158;', days, function(d) { return d.sessionsCreated; }, 'var(--accent)')
-    + renderBarChart('&#xCF54;&#xB4DC; &#xBCC0;&#xACBD; (&#xBA38;&#xC9C0;)', days, function(d) { return d.mergeLinesAdded + d.mergeLinesDeleted; }, 'var(--green)');
+// ── Charts — @2lab.ai/ui <ui-bar-chart> (B-08) ──
+// The page hands each chart the period's days (stats.days: date 'YYYY-MM-DD' + the day's totals); the element
+// scales the axis, thins the x labels, says each bar ("10월 5일: 세션 12") and shows the value in its tooltip.
+// Loading keeps the last bars dimmed (skeleton bars before the first); a failed load says so in the plot.
+var _chartDays = []; // the last answer's days; null = the load failed
+var CHARTS = [
+  { id: 'chart-sessions', title: '세션', unit: '세션', value: function(d) { return toNum(d.sessionsCreated); } },
+  { id: 'chart-merge', title: '코드 변경 (머지)', unit: '변경 줄', value: function(d) { return toNum(d.mergeLinesAdded) + toNum(d.mergeLinesDeleted); } },
+];
+function chartDayTitle(date) {
+  var m = /^[0-9]{4}-([0-9]{2})-([0-9]{2})/.exec(date);
+  return m ? Number(m[1]) + '월 ' + Number(m[2]) + '일' : date;
 }
-
-function renderBarChart(title, days, valueFn, color) {
-  const values = days.map(valueFn);
-  const max = Math.max.apply(null, values.concat([1]));
-  const bars = days.map(function(d, i) {
-    const h = Math.max(2, (values[i] / max) * 100);
-    const label = d.date.slice(5);
-    return '<ui-tooltip text="' + escAttr(label + ': ' + values[i]) + '"><div class="bar" tabindex="0" style="height:' + h + '%;background:' + color + '"></div></ui-tooltip>';
-  }).join('');
-  const labels = days.map(function(d) { return '<span>' + d.date.slice(8) + '</span>'; }).join('');
-  return '<div class="chart-container"><h4>' + title + '</h4><div class="bar-chart">' + bars + '</div><div class="bar-labels">' + labels + '</div></div>';
+function chartData(c, days, loading) {
+  return {
+    title: c.title,
+    unit: c.unit,
+    bars: (days || []).map(function(d) {
+      var date = String(d.date || '');
+      return { key: date, label: String(Number(date.slice(8)) || date), title: chartDayTitle(date), value: c.value(d) };
+    }),
+    empty: days ? '이 기간에 데이터가 없습니다' : '통계를 불러오지 못했어요',
+    loading: !!loading,
+  };
+}
+function paintCharts(days, loading) {
+  CHARTS.forEach(function(c) {
+    var el = document.getElementById(c.id);
+    if (el) el.data = chartData(c, days, loading);
+  });
 }
 
 // ── WebSocket ──
 function connectWs() {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   ws = new WebSocket(proto + '//' + location.host + '/ws/dashboard');
-  const statusEl = document.getElementById('ws-status');
 
+  // The app bar's status (role=status, polite): a tone dot and a word; the dot pulses while live.
   ws.onopen = function() {
-    statusEl.dataset.state = 'live';
-    statusEl.textContent = STRINGS.wsLive;
-    statusEl.title = STRINGS.wsLiveLabel;
-    statusEl.setAttribute('aria-label', STRINGS.wsLiveLabel);
+    _appBarStatus = { tone: 'done', label: STRINGS.wsLive, live: true };
+    paintAppBar();
     // Reconnect: recover the work-log entries broadcast while we were offline
     // (from the HTTP cursor; afterSeq=0 when the log was still empty).
     if (panelOpen && _wl) recoverWorkLog();
   };
   ws.onclose = function() {
-    statusEl.dataset.state = 'reconnecting';
-    statusEl.textContent = STRINGS.wsReconnecting;
-    statusEl.title = STRINGS.wsReconnectingLabel;
-    statusEl.setAttribute('aria-label', STRINGS.wsReconnectingLabel);
+    _appBarStatus = { tone: 'wait', label: STRINGS.wsReconnecting, live: true };
+    paintAppBar();
     setTimeout(connectWs, 3000);
   };
   ws.onerror = function() { ws.close(); };
@@ -13670,39 +13513,22 @@ function updateTokenBreakdown() {
     byEnv[envName].tokens += t;
   }
 
-  // Tooltip: only show when there's actually a breakdown (≥2 envs in
-  // the cache). For the single-instance / empty-env case we leave the
-  // tooltip dark so the topbar stays the same shape it was before #814.
-  // Runs on every board render (renderBoard) and stats load — it writes only
-  // what changed.
-  // <ui-tooltip id="stat-tokens-tooltip"> (B-04): the page hands it the text; the figure is its trigger, a tab stop
-  // only while there is something to describe.
-  var tip = document.getElementById('stat-tokens-tooltip');
-  var fig = document.getElementById('stat-tokens');
-  var wrap = document.getElementById('stat-tokens-wrap');
-  if (!tip || !fig || !wrap) return;
+  // Breakdown: only when there is one (≥2 envs in the cache). For the single-instance / empty-env case
+  // 토큰 stays a plain figure (no tooltip, no tab stop). It becomes <ui-stat-strip>'s breakdown on the
+  // 토큰 figure (B-04): a card tooltip with the title and a label · value list in the figure's format.
+  // Runs on every board render (renderBoard) and stats load — it repaints the strip only on a change.
   var envNames = Object.keys(byEnv).filter(function(n) { return n.length > 0; });
-  if (envNames.length < 2) {
-    if (tip.getAttribute('text')) tip.removeAttribute('text');
-    if (!tip.hasAttribute('disabled')) tip.setAttribute('disabled', '');
-    if (fig.hasAttribute('tabindex')) fig.removeAttribute('tabindex');
-    if (wrap.hasAttribute('data-has-breakdown')) wrap.removeAttribute('data-has-breakdown');
-    return;
+  var next = null;
+  if (envNames.length >= 2) {
+    // Stable order: sort so the same env always renders in the same position.
+    envNames.sort();
+    var rows = envNames.map(function(n) { return { label: n, value: byEnv[n].tokens }; });
+    rows.push({ label: '합계', value: totalTokens });
+    next = { title: '보드 세션 기준', rows: rows };
   }
-  // Stable order: sort so the same env always renders in the same position.
-  envNames.sort();
-  var parts = [];
-  for (var i = 0; i < envNames.length; i++) {
-    var n = envNames[i];
-    parts.push(n + ': ' + formatTokens(byEnv[n].tokens));
-  }
-  parts.push('Total: ' + formatTokens(totalTokens));
-  // Plain text: the element never parses it as HTML.
-  var text = '보드 세션 기준 · ' + parts.join(' · ');
-  if (tip.getAttribute('text') !== text) tip.setAttribute('text', text);
-  if (tip.hasAttribute('disabled')) tip.removeAttribute('disabled');
-  if (fig.getAttribute('tabindex') !== '0') fig.setAttribute('tabindex', '0');
-  if (!wrap.hasAttribute('data-has-breakdown')) wrap.setAttribute('data-has-breakdown', 'true');
+  if (JSON.stringify(next) === JSON.stringify(_tokenBreakdown)) return;
+  _tokenBreakdown = next;
+  paintStatsStrip();
 }
 
 // ── Panel work log (.prd/10 §3.1-7, §3.3) ──
@@ -17458,11 +17284,25 @@ function artMeta(a) {
   return parts.join(' · ');
 }
 
-// One chip: glyph + name. data-art-cid / data-art-id drive hover and click.
+// A file as @2lab.ai/ui <ui-file-card> (D2 I-01..I-03): the page renders the element keyed by data-art-cid /
+// data-art-id, with data-art-v (what it shows) so a re-render that changes the file re-hands it; initFileCards
+// gives it artFileItem. Its ui-open opens the page's viewer, its hover / focus the page's minimap.
+function artFileItem(cid, a) {
+  var item = { id: String(a.id), name: String(a.name || ''), kind: a.kind || 'file' };
+  if (toNum(a.size) > 0) item.size = toNum(a.size);
+  if (toNum(a.createdAt) > 0) item.time = toNum(a.createdAt);
+  if (a.stored) item.url = artUrl(cid, a.id);
+  else item.meta = 'Slack에만 있음';
+  return item;
+}
+function artCard(cid, a, variant) {
+  var v = [a.name, a.kind, toNum(a.size), toNum(a.createdAt), a.stored ? 1 : 0].join('|');
+  return '<ui-file-card class="art-card" variant="' + variant + '" lang="ko" data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id)
+    + '" data-art-v="' + escAttr(v) + '"></ui-file-card>';
+}
+// One chip (an answer turn's files).
 function artChip(cid, a) {
-  return '<button type="button" class="art-chip art-k-' + escAttr(a.kind || 'file') + '" data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id)
-    + '" aria-label="' + escAttr(artKindLabel(a) + ' ' + a.name + ' — 크게 보기') + '">'
-    + artGlyph(a.kind) + '<span class="art-chip-name">' + esc(a.name) + '</span></button>';
+  return artCard(cid, a, 'chip');
 }
 
 // Files newest first, then answers newest first: the html/png the user looks for
@@ -17475,24 +17315,14 @@ function artSortForDisplay(list) {
   return files.sort(newest).concat(answers.sort(newest));
 }
 
-function artThumb(cid, a) {
-  if (a.kind === 'image' && a.stored) {
-    return '<span class="art-thumb art-thumb-img"><img src="' + escAttr(artUrl(cid, a.id)) + '" alt="" loading="lazy" decoding="async"></span>';
-  }
-  var name = String(a.name || '');
-  var dot = name.lastIndexOf('.');
-  var ext = a.source === 'final_answer' ? 'MD' : (dot > 0 && name.length - dot <= 6 ? name.slice(dot + 1).toUpperCase() : artKindLabel(a));
-  return '<span class="art-thumb">' + artGlyph(a.kind) + '<span class="art-thumb-ext">' + esc(ext) + '</span></span>';
-}
-
 // Is this clip the one the shared inline player is playing right now?
 function artAudioPlaying(cid, id) {
   return !!(_artAudio.el && !_artAudio.el.paused && _artAudio.key === cid + '|' + id);
 }
 
-// A strip tile: open button (thumbnail, name, meta) + a play button for audio (T8).
-// The play state is part of the markup: a live card body is morphed to it on every push.
-function artTile(cid, a) {
+// A strip tile: the file card (thumbnail, name, meta) + a play button for audio (T8); variant 'chip' in the
+// panel's minimal row. The play state is part of the markup: a live card body is morphed to it on every push.
+function artTile(cid, a, variant) {
   var attrs = ' data-art-cid="' + escAttr(cid) + '" data-art-id="' + escAttr(a.id) + '"';
   var on = a.kind === 'audio' && a.stored && artAudioPlaying(cid, a.id);
   var play = (a.kind === 'audio' && a.stored)
@@ -17500,12 +17330,7 @@ function artTile(cid, a) {
       + '<svg class="ic-play" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 3.5v9l7.5-4.5z" fill="currentColor"/></svg>'
       + '<svg class="ic-pause" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 3.5h2.5v9H4.5zM9 3.5h2.5v9H9z" fill="currentColor"/></svg></button>'
     : '';
-  return '<div class="art-tile art-k-' + escAttr(a.kind || 'file') + (a.stored ? '' : ' is-remote') + '">'
-    + '<button type="button" class="art-open"' + attrs + ' aria-label="' + escAttr(artKindLabel(a) + ' ' + a.name + ' — 크게 보기') + '">'
-    + artThumb(cid, a)
-    + '<span class="art-tile-name">' + esc(a.name) + '</span>'
-    + '<span class="art-tile-meta">' + esc(artMeta(a)) + '</span>'
-    + '</button>' + play + '</div>';
+  return '<div class="art-tile' + (a.stored ? '' : ' is-remote') + '">' + artCard(cid, a, variant || 'tile') + play + '</div>';
 }
 
 // The full list once fetched, else the card's summary (the newest few).
@@ -17533,12 +17358,12 @@ function renderCardArtifacts(s) {
 }
 
 // Panel (T6): pinned above the conversation, so it is in view wherever the reader is.
-function renderPanelArtifacts(list, cid) {
+function renderPanelArtifacts(list, cid, variant) {
   var sorted = artSortForDisplay(list);
   if (!sorted.length || !cid) return '';
   return '<div class="panel-arts-head"><span>산출물</span><span class="art-count">' + sorted.length + '</span>'
     + '<span class="panel-arts-hint">올리면 미리보기 · 누르면 크게</span></div>'
-    + '<div class="art-strip art-strip-panel">' + sorted.map(function(a) { return artTile(cid, a); }).join('') + '</div>';
+    + '<div class="art-strip art-strip-panel">' + sorted.map(function(a) { return artTile(cid, a, variant); }).join('') + '</div>';
 }
 
 // Did this artifact come from the turn that ran between startTs and endTs?
@@ -17794,10 +17619,24 @@ function renderPanelArtifactsSection() {
   var list = c && c.list ? c.list : ((s && s.artifacts && s.artifacts.recent) || []);
   // The user's files (지시 첨부) first, one collapsed line; then the model's 산출물.
   var umHtml = cid ? renderPanelUserMedia(_umList[cid] || [], cid, _umPanelOpen) : '';
-  var html = cid ? (umHtml ? '<div class="panel-user-media" id="panel-user-media">' + umHtml + '</div>' : '') + renderPanelArtifacts(list, cid) : '';
+  var html = cid ? (umHtml ? '<div class="panel-user-media" id="panel-user-media">' + umHtml + '</div>' : '') + renderPanelArtifacts(list, cid, artPanelVariant()) : '';
   el.innerHTML = html;
   el.style.display = html ? '' : 'none';
   decoratePanelTurns();
+}
+
+// The panel's strip is a row of name chips in the minimal view (자세히 off) or on a short panel body (≤ 560px:
+// landscape phones, a docked drawer under a tall top bar), else thumbnails — the file card's variant.
+var ART_PANEL_SHORT_PX = 560;
+function artPanelVariant() {
+  var body = document.querySelector('#slide-panel .panel-body');
+  var h = body ? body.clientHeight : 0;
+  return !_panelDetail || (h > 0 && h <= ART_PANEL_SHORT_PX) ? 'chip' : 'tile';
+}
+function syncPanelArtVariant() {
+  var v = artPanelVariant();
+  var cards = document.querySelectorAll('#panel-artifacts .art-strip-panel ui-file-card');
+  for (var i = 0; i < cards.length; i++) if (cards[i].getAttribute('variant') !== v) cards[i].setAttribute('variant', v);
 }
 
 // Files each answer produced, under that answer: walk the turns in order; an
@@ -17985,6 +17824,9 @@ function artModalClosed() {
   if (body) body.innerHTML = '';
   var opener = _artModal.opener;
   _artModal.opener = null;
+  // A file card is not focusable itself: focus goes back to its button.
+  var inner = opener && opener.shadowRoot ? opener.shadowRoot.querySelector('button') : null;
+  if (inner) opener = inner;
   if (opener && opener.isConnected && typeof opener.focus === 'function') opener.focus({ preventScroll: true });
 }
 
@@ -18032,6 +17874,37 @@ function artHandleKey(e) {
   }
 }
 
+// Every <ui-file-card data-art-id> a render puts in the document — the open card (morphed on every push), the
+// panel strip, an answer's row — gets its file once it is in, and again when its data-art-v changes.
+function fcHydrate(el) {
+  if (!el || !el.getAttribute) return;
+  var cid = el.getAttribute('data-art-cid') || '';
+  var a = artFind(cid, el.getAttribute('data-art-id') || '');
+  if (!a) return;
+  var d = artFileItem(cid, a);
+  var sig = JSON.stringify(d);
+  if (el._fcSig === sig) return;
+  el._fcSig = sig;
+  el.data = d;
+}
+function fcHydrateIn(node) {
+  if (!node || node.nodeType !== 1) return;
+  if (node.matches('ui-file-card[data-art-id]')) fcHydrate(node);
+  var inner = node.querySelectorAll('ui-file-card[data-art-id]');
+  for (var i = 0; i < inner.length; i++) fcHydrate(inner[i]);
+}
+(function initFileCards() {
+  if (typeof MutationObserver !== 'function') return;
+  new MutationObserver(function(list) {
+    for (var i = 0; i < list.length; i++) {
+      var m = list[i];
+      if (m.type === 'attributes') fcHydrate(m.target);
+      else for (var j = 0; j < m.addedNodes.length; j++) fcHydrateIn(m.addedNodes[j]);
+    }
+  }).observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-art-v'] });
+  fcHydrateIn(document.body);
+})();
+
 (function initArtifactInteractions() {
   var canHover = !!(window.matchMedia && window.matchMedia('(hover: hover)').matches);
   var trigger = function(t) { return t && t.closest ? t.closest('[data-art-id]:not([data-art-play])') : null; };
@@ -18057,9 +17930,21 @@ function artHandleKey(e) {
     clearTimeout(_artPeek.openTimer);
     if (_artPeek.anchor) hideArtPeek(false);
   });
+  // A file card's button is in its shadow root: the event comes from the card, the focus ring is inside it.
+  var focusVisible = function(t) {
+    var inner = t.shadowRoot && t.shadowRoot.activeElement;
+    return (inner || t).matches(':focus-visible');
+  };
   document.addEventListener('focusin', function(e) {
     var t = trigger(e.target);
-    if (t && !t.closest('#art-modal') && t.matches(':focus-visible')) { clearTimeout(_artPeek.openTimer); showArtPeek(t); }
+    if (t && !t.closest('#art-modal') && focusVisible(t)) { clearTimeout(_artPeek.openTimer); showArtPeek(t); }
+  });
+  // <ui-file-card> asks to open its file (ui-open): the page's viewer, at it, over the conversation's files.
+  document.addEventListener('ui-open', function(e) {
+    var t = e.target;
+    if (!t || t.localName !== 'ui-file-card' || !t.hasAttribute('data-art-id')) return;
+    hideArtPeek(true);
+    openArtifactModal(t.getAttribute('data-art-cid'), t.getAttribute('data-art-id'), t);
   });
   document.addEventListener('focusout', function(e) {
     if (trigger(e.target)) hideArtPeek(false);
@@ -18068,6 +17953,7 @@ function artHandleKey(e) {
     var play = e.target.closest ? e.target.closest('[data-art-play]') : null;
     if (play) { e.preventDefault(); toggleArtAudio(play); return; }
     var t = trigger(e.target);
+    if (t && t.localName === 'ui-file-card') return; // its ui-open answers
     if (t && !t.closest('#art-modal')) {
       e.preventDefault();
       hideArtPeek(true);
@@ -18122,37 +18008,31 @@ function artHandleKey(e) {
   // The secondary sections' disclosure state, before the first board render.
   applySectionState();
 })();
-// The two <ui-segmented> controls (B-02 period, D-02 Board | List): a reader's choice arrives as
-// ui-change — the element has already moved its chip; the page follows through.
+// <ui-segmented id="view-seg"> (D-02 Board | List): a reader's choice arrives as ui-change — the element has
+// already moved its chip; the page follows through.
 (function initSegmented() {
   var viewSeg = document.getElementById('view-seg');
   if (viewSeg) viewSeg.addEventListener('ui-change', function(e) { setBoardView(e.detail.value, e); });
-  paintPeriodSeg();
-  var periodSeg = document.getElementById('period-seg');
-  if (periodSeg) periodSeg.addEventListener('ui-change', function(e) { setPeriod(e.detail.value); });
+})();
+// <ui-stat-strip id="stats-strip">: 자세히 starts as the reader left it; a period choice loads that period
+// (not cancelled — the strip has already moved its chip); 자세히 is remembered.
+(function initStatsStrip() {
+  var saved = null;
+  try { saved = localStorage.getItem(STATS_DETAIL_KEY); } catch (_e) {}
+  _statsDetailOpen = saved === 'open';
+  paintStatsStrip();
+  var el = document.getElementById('stats-strip');
+  if (!el) return;
+  el.addEventListener('ui-period', function(e) {
+    if (e.detail && e.detail.value) setPeriod(String(e.detail.value));
+  });
+  el.addEventListener('ui-more', function(e) {
+    _statsDetailOpen = !!(e.detail && e.detail.open);
+    try { localStorage.setItem(STATS_DETAIL_KEY, _statsDetailOpen ? 'open' : 'closed'); } catch (_e) {}
+  });
 })();
 // <ui-disclosure> (K-06): Raw, a system turn and a card's system instruction open and close by
 // themselves; the page only keeps a card's choice across its morph re-render (_ioOpen).
-// <ui-tooltip> (B-04, B-08) never opens on touch — there is no hover to end it. The breakdown and the chart values
-// exist nowhere else, so on this page a tap on a tooltip's trigger toggles it (the element's show() / hide()); a tap
-// anywhere else closes it, as do the element's own Esc, focus-out and scroll-away rules.
-var _tapTip = null;
-(function initTooltipTap() {
-  var pressed = null;
-  document.addEventListener('pointerdown', function(e) {
-    pressed = null;
-    if (e.pointerType !== 'touch') return;
-    var tip = e.target && e.target.closest ? e.target.closest('ui-tooltip') : null;
-    if (_tapTip && _tapTip !== tip) { _tapTip.hide(); _tapTip = null; }
-    if (tip) pressed = { tip: tip, open: _tapTip === tip };
-  }, true);
-  document.addEventListener('click', function(e) {
-    var p = pressed;
-    pressed = null;
-    if (!p || !p.tip.contains(e.target) || p.tip.hasAttribute('disabled')) return;
-    if (p.open) { p.tip.hide(); _tapTip = null; } else { p.tip.show(); _tapTip = p.tip.open ? p.tip : null; }
-  });
-})();
 // @2lab.ai/ui 0.5.0 toggles a <ui-disclosure> only when the click's target is inside its own head, and a click on
 // slotted summary content (a System row's words and badge, a card's instruction line) keeps the light-DOM span as
 // its target — so it did nothing (D1-GAPS G4-4). The page toggles it then, with the element's toggle() (its
@@ -18203,17 +18083,13 @@ var NT_DRAFT_KEY = 'soma-nt-draft';
 var NT_MAX_RECORD_SEC = 600;
 var NT_ICON_X = '<i data-ui-icon="close"></i>';
 var NT_ICON_FILE = '<i data-ui-icon="file"></i>';
-var NT_ICON_PLAY = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5 3.5v9l7.5-4.5z"/></svg>';
-var NT_ICON_PAUSE = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4.5 3.5h2.5v9H4.5zM9 3.5h2.5v9H9z"/></svg>';
 var _ntCtx = null;
 var _ntState = null;
-var _ntFiles = [];
-var _ntSeq = 0;
 var _ntBusy = false;
 var _ntRequestId = null;
-var _ntRec = null;
-var _ntAudio = null;
-var _ntPlayingId = 0;
+// The text handed to <ui-composer> (a saved draft at first, '' after a launch): it applies a value only when it
+// differs from the last one, so a repaint while someone types never resets the field.
+var _ntValue = null;
 
 function ntBatteryView(b) {
   if (!b || typeof b.level !== 'number') {
@@ -18330,9 +18206,9 @@ function ntReadDraft() {
   }
 }
 
-function ntSaveDraft() {
+function ntSaveDraft(text) {
   try {
-    if (_ntState && _ntState.prompt) localStorage.setItem(NT_DRAFT_KEY, JSON.stringify({ prompt: _ntState.prompt }));
+    if (text) localStorage.setItem(NT_DRAFT_KEY, JSON.stringify({ prompt: text }));
     else localStorage.removeItem(NT_DRAFT_KEY);
   } catch (e) {}
 }
@@ -18362,11 +18238,11 @@ async function openNewTask() {
   });
   if (!_ntRequestId) _ntRequestId = ntNewRequestId();
   if (_ntState) ntRender();
-  else ntEl('nt-submit').disabled = true;
+  else paintNtComposer();
   if (!ntIsTouch()) {
     setTimeout(function () {
-      var p = ntEl('nt-prompt');
-      if (p && dlg.open) p.focus();
+      var c = ntEl('nt-composer');
+      if (c && dlg.open) c.focus();
     }, 60);
   }
   ntSetStatus(_ntCtx ? '' : '불러오는 중…');
@@ -18376,7 +18252,7 @@ async function openNewTask() {
 function closeNewTask() {
   var dlg = ntEl('nt-dialog');
   if (!dlg || !dlg.open) return;
-  if (_ntRec) ntStopRecording(false);
+  ntQuietComposer();
   dlg.classList.remove('is-shown');
   var reduce = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
   setTimeout(function () {
@@ -18386,8 +18262,7 @@ function closeNewTask() {
 
 function ntOnClosed() {
   document.body.classList.remove('nt-open');
-  if (_ntRec) ntStopRecording(false);
-  if (_ntAudio) _ntAudio.pause();
+  ntQuietComposer();
   var dlg = ntEl('nt-dialog');
   if (dlg) dlg.classList.remove('is-shown');
 }
@@ -18463,13 +18338,47 @@ function ntRender() {
   }
   ntEl('nt-autogoal').setAttribute('aria-pressed', _ntState.autogoal ? 'true' : 'false');
   ntEl('nt-autoz').setAttribute('aria-pressed', _ntState.autoz ? 'true' : 'false');
-  var p = ntEl('nt-prompt');
-  if (p.value !== _ntState.prompt) p.value = _ntState.prompt;
   ntRenderBattery();
-  ntRenderFiles();
-  ntRenderCount();
-  ntAutosize();
-  ntUpdateSubmit();
+  paintNtComposer();
+}
+
+// <ui-composer id="nt-composer">: the instruction field, attachments, voice and 작업 시작. The limits come from the
+// context (before it: the element's defaults); 카메라 is a tool on touch screens only (PC has drop and paste).
+function ntComposerData() {
+  if (_ntValue === null) {
+    var draft = ntReadDraft();
+    _ntValue = draft && typeof draft.prompt === 'string' ? draft.prompt : '';
+  }
+  var d = {
+    label: '작업 지시',
+    placeholder: '무엇을 할까요? 예) soma-work 대시보드 개선해줘',
+    value: _ntValue,
+    image: false,
+    submitLabel: '작업 시작',
+    busy: _ntBusy,
+    minRows: 6,
+    maxRows: 14,
+    tools: ntIsTouch() ? [{ id: 'camera', label: '카메라', showLabel: true }] : [],
+  };
+  var lim = _ntCtx && _ntCtx.limits;
+  if (lim) {
+    d.maxLength = lim.maxPromptChars;
+    d.maxFiles = lim.maxFiles;
+    d.maxFileSize = lim.maxFileBytes;
+  }
+  return d;
+}
+function paintNtComposer() {
+  var el = ntEl('nt-composer');
+  if (el) el.data = ntComposerData();
+}
+// Closing the sheet discards a recording in progress: the composer drops it when it turns read-only.
+function ntQuietComposer() {
+  var el = ntEl('nt-composer');
+  if (!el || !el.data) return;
+  var d = el.data;
+  el.data = Object.assign({}, d, { disabled: true });
+  el.data = d;
 }
 
 function ntRenderBattery() {
@@ -18510,7 +18419,6 @@ function ntOnEffortChange() {
 
 function ntOnChannelChange() {
   _ntState.channelId = ntEl('nt-channel').value || null;
-  ntUpdateSubmit();
 }
 
 function ntToggle(which) {
@@ -18524,34 +18432,6 @@ function ntToggle(which) {
   }
 }
 
-function ntOnInput() {
-  if (!_ntState) return;
-  _ntState.prompt = ntEl('nt-prompt').value;
-  ntSaveDraft();
-  ntAutosize();
-  ntRenderCount();
-  ntUpdateSubmit();
-}
-
-function ntRenderCount() {
-  var max = _ntCtx ? _ntCtx.limits.maxPromptChars : 12000;
-  var len = (_ntState && _ntState.prompt ? _ntState.prompt : '').length;
-  var el = ntEl('nt-count');
-  el.textContent = len > max * 0.8 ? len + ' / ' + max : '';
-}
-
-function ntAutosize() {
-  var p = ntEl('nt-prompt');
-  if (!p || (window.matchMedia && window.matchMedia('(max-width: 639px)').matches)) return;
-  p.style.height = 'auto';
-  p.style.height = Math.min(p.scrollHeight + 2, Math.round(window.innerHeight * 0.44)) + 'px';
-}
-
-function ntUpdateSubmit() {
-  var b = ntEl('nt-submit');
-  if (b) b.disabled = _ntBusy || !ntCanSubmit(_ntState, _ntFiles);
-}
-
 function ntKindOf(mime) {
   var t = String(mime || '');
   if (t.indexOf('image/') === 0) return 'image';
@@ -18560,292 +18440,59 @@ function ntKindOf(mime) {
   return 'file';
 }
 
-function ntAddFiles(list, source) {
-  Array.prototype.slice.call(list || []).forEach(function (f) {
-    var type = f.type || 'application/octet-stream';
-    var name = f.name || 'file';
-    if (source === 'camera' && ntKindOf(type) === 'image') {
-      var ext = (name.split('.').pop() || 'jpg').toLowerCase();
-      name = 'photo-' + ntStamp(new Date()) + '.' + ext;
-    }
-    ntAddBlob(f, name, type, source);
+// 카메라 (touch): the native camera input; a photo is named for when it was taken, then handed to the composer.
+function ntAddCamera(list) {
+  var el = ntEl('nt-composer');
+  if (!el || !list || !list.length) return;
+  var files = Array.prototype.slice.call(list).map(function (f) {
+    var type = f.type || 'image/jpeg';
+    if (ntKindOf(type) !== 'image') return f;
+    var ext = (String(f.name || '').split('.').pop() || 'jpg').toLowerCase();
+    return new File([f], 'photo-' + ntStamp(new Date()) + '.' + ext, { type: type, lastModified: f.lastModified });
   });
+  el.addFiles(files);
 }
 
-function ntAddBlob(blob, name, mimetype, source, extra) {
-  var limits = _ntCtx ? _ntCtx.limits : { maxFiles: 10, maxFileBytes: 20971520, maxTotalBytes: 31457280 };
-  if (_ntFiles.length >= limits.maxFiles) {
-    ntSetError('첨부는 최대 ' + limits.maxFiles + '개까지 가능합니다');
-    return;
-  }
-  if (!blob.size) {
-    ntSetError(name + ' — 빈 파일은 첨부할 수 없습니다');
-    return;
-  }
-  if (blob.size > limits.maxFileBytes) {
-    ntSetError(name + ' — 파일 하나는 ' + ntFormatBytes(limits.maxFileBytes) + '까지 첨부할 수 있습니다');
-    return;
-  }
-  var total = _ntFiles.reduce(function (sum, f) {
-    return sum + f.size;
-  }, 0);
-  if (total + blob.size > limits.maxTotalBytes) {
-    ntSetError('첨부는 모두 합쳐 ' + ntFormatBytes(limits.maxTotalBytes) + '까지입니다');
-    return;
-  }
-  ntSetError('');
-  var entry = {
-    id: ++_ntSeq,
-    name: name,
-    mimetype: mimetype,
-    size: blob.size,
-    kind: ntKindOf(mimetype),
-    data: null,
-    url: null,
-    duration: extra && extra.duration ? extra.duration : 0,
-    source: source,
-  };
-  if (entry.kind === 'image' || entry.kind === 'audio') {
-    try {
-      entry.url = URL.createObjectURL(blob);
-    } catch (e) {}
-  }
-  entry.ready = new Promise(function (resolve, reject) {
+// The composer's files as the request's attachments (base64, as the server takes them).
+function ntReadFile(f) {
+  return new Promise(function (resolve, reject) {
     var reader = new FileReader();
     reader.onload = function () {
       var s = String(reader.result || '');
       var comma = s.indexOf(',');
-      entry.data = comma >= 0 ? s.slice(comma + 1) : '';
-      resolve();
+      resolve({ name: f.name || 'file', mimetype: f.type || 'application/octet-stream', data: comma >= 0 ? s.slice(comma + 1) : '' });
     };
     reader.onerror = function () {
-      reject(new Error(name));
+      reject(new Error('read:' + (f.name || 'file')));
     };
-    reader.readAsDataURL(blob);
+    reader.readAsDataURL(f);
   });
-  entry.ready.catch(function () {
-    ntRemoveFile(entry.id);
-    ntSetError(name + ' — 파일을 읽지 못했습니다');
-  });
-  _ntFiles.push(entry);
-  ntRenderFiles();
-  ntUpdateSubmit();
-  var box = ntEl('nt-attachments');
-  if (box) box.scrollLeft = box.scrollWidth;
 }
 
-function ntRemoveFile(id) {
-  _ntFiles = _ntFiles.filter(function (f) {
-    if (f.id === id && f.url) {
-      try {
-        URL.revokeObjectURL(f.url);
-      } catch (e) {}
-    }
-    return f.id !== id;
-  });
-  if (_ntPlayingId === id && _ntAudio) _ntAudio.pause();
-  ntRenderFiles();
-  ntUpdateSubmit();
-}
-
-function ntRenderFiles() {
-  var box = ntEl('nt-attachments');
-  if (!box) return;
-  box.innerHTML = _ntFiles
-    .map(function (f) {
-      var thumb;
-      if (f.kind === 'image' && f.url) {
-        thumb = '<img class="nt-att-thumb" src="' + escAttr(f.url) + '" alt="">';
-      } else if (f.kind === 'audio' && f.url) {
-        var playing = _ntPlayingId === f.id;
-        thumb = '<button type="button" class="nt-att-play" aria-label="' + escAttr(f.name) + (playing ? ' 정지' : ' 재생') + '" onclick="ntPlay(' + f.id + ')">' + (playing ? NT_ICON_PAUSE : NT_ICON_PLAY) + '</button>';
-      } else {
-        thumb = '<span class="nt-att-thumb" aria-hidden="true">' + NT_ICON_FILE + '</span>';
-      }
-      var meta = (f.duration ? ntFormatDuration(f.duration) + ' · ' : '') + ntFormatBytes(f.size);
-      return (
-        '<div class="nt-att" data-id="' + f.id + '">' + thumb +
-        '<span class="nt-att-text"><span class="nt-att-name" title="' + escAttr(f.name) + '">' + esc(f.name) + '</span>' +
-        '<span class="nt-att-meta">' + esc(meta) + '</span></span>' +
-        '<button type="button" class="nt-att-remove" aria-label="' + escAttr(f.name) + ' 삭제" onclick="ntRemoveFile(' + f.id + ')">' + NT_ICON_X + '</button></div>'
-      );
-    })
-    .join('');
-}
-
-function ntPlay(id) {
-  var f = _ntFiles.find(function (x) {
-    return x.id === id;
-  });
-  if (!f || !f.url) return;
-  if (!_ntAudio) {
-    _ntAudio = new Audio();
-    _ntAudio.onended = _ntAudio.onpause = function () {
-      _ntPlayingId = 0;
-      ntRenderFiles();
-    };
-  }
-  if (_ntPlayingId === id) {
-    _ntAudio.pause();
-    return;
-  }
-  _ntAudio.src = f.url;
-  _ntPlayingId = id;
-  _ntAudio.play().catch(function () {
-    _ntPlayingId = 0;
-  });
-  ntRenderFiles();
-}
-
-async function ntToggleRecording() {
-  if (_ntRec) {
-    ntStopRecording(true);
-    return;
-  }
-  var canRecord = !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia && window.MediaRecorder);
-  if (!canRecord) {
-    ntEl('nt-audio-input').click();
-    return;
-  }
-  var stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  } catch (e) {
-    ntSetError('마이크를 쓸 수 없습니다 (' + (e && e.name ? e.name : '권한 거부') + ') — 기기 녹음기로 녹음해 첨부해 주세요');
-    ntEl('nt-audio-input').click();
-    return;
-  }
-  var mime = ntPickRecorderMime(function (t) {
-    return MediaRecorder.isTypeSupported(t);
-  });
-  var recorder;
-  try {
-    recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
-  } catch (e) {
-    recorder = new MediaRecorder(stream);
-  }
-  var state = {
-    recorder: recorder,
-    stream: stream,
-    chunks: [],
-    started: Date.now(),
-    mime: recorder.mimeType || mime || 'audio/mp4',
-    keep: true,
-    finished: false,
-    timer: 0,
-    raf: 0,
-    audioCtx: null,
-  };
-  _ntRec = state;
-  recorder.ondataavailable = function (ev) {
-    if (ev.data && ev.data.size) state.chunks.push(ev.data);
-  };
-  recorder.onstop = function () {
-    ntFinishRecording(state);
-  };
-  recorder.start(1000);
-  try {
-    var AC = window.AudioContext || window.webkitAudioContext;
-    state.audioCtx = new AC();
-    var analyser = state.audioCtx.createAnalyser();
-    analyser.fftSize = 512;
-    state.audioCtx.createMediaStreamSource(stream).connect(analyser);
-    var buf = new Uint8Array(analyser.fftSize);
-    var tick = function () {
-      if (_ntRec !== state) return;
-      analyser.getByteTimeDomainData(buf);
-      var peak = 0;
-      for (var i = 0; i < buf.length; i++) {
-        var v = Math.abs(buf[i] - 128);
-        if (v > peak) peak = v;
-      }
-      ntEl('nt-rec-level').style.width = Math.min(100, Math.round((peak / 128) * 160)) + '%';
-      state.raf = requestAnimationFrame(tick);
-    };
-    tick();
-  } catch (e) {}
-  ntEl('nt-recorder').hidden = false;
-  ntEl('nt-rec-time').textContent = '0:00';
-  var mic = ntEl('nt-mic');
-  mic.setAttribute('aria-pressed', 'true');
-  mic.setAttribute('aria-label', '녹음 완료');
-  state.timer = setInterval(function () {
-    var sec = Math.floor((Date.now() - state.started) / 1000);
-    ntEl('nt-rec-time').textContent = ntFormatDuration(sec);
-    if (sec >= NT_MAX_RECORD_SEC) ntStopRecording(true);
-  }, 250);
-  if (navigator.vibrate) {
-    try {
-      navigator.vibrate(12);
-    } catch (e) {}
-  }
-}
-
-function ntStopRecording(keep) {
-  var state = _ntRec;
-  if (!state) return;
-  _ntRec = null;
-  state.keep = keep;
-  state.stoppedAt = Date.now();
-  clearInterval(state.timer);
-  cancelAnimationFrame(state.raf);
-  try {
-    if (state.recorder.state !== 'inactive') state.recorder.stop();
-    else ntFinishRecording(state);
-  } catch (e) {
-    ntFinishRecording(state);
-  }
-  state.stream.getTracks().forEach(function (t) {
-    t.stop();
-  });
-  if (state.audioCtx) {
-    try {
-      state.audioCtx.close();
-    } catch (e) {}
-  }
-  ntEl('nt-recorder').hidden = true;
-  var mic = ntEl('nt-mic');
-  mic.setAttribute('aria-pressed', 'false');
-  mic.setAttribute('aria-label', '음성 녹음');
-}
-
-function ntFinishRecording(state) {
-  if (state.finished) return;
-  state.finished = true;
-  if (!state.keep || !state.chunks.length) return;
-  var type = String(state.mime).split(';')[0] || 'audio/mp4';
-  var blob = new Blob(state.chunks, { type: type });
-  var sec = Math.max(1, Math.round(((state.stoppedAt || Date.now()) - state.started) / 1000));
-  ntAddBlob(blob, 'voice-' + ntStamp(new Date()) + '.' + ntExtForMime(type), type, 'voice', { duration: sec });
-}
-
-async function submitNewTask(ev) {
-  if (ev) ev.preventDefault();
-  if (_ntBusy || !_ntCtx || !_ntState) return;
-  if (_ntRec) {
-    ntStopRecording(true);
-    await new Promise(function (resolve) {
-      setTimeout(resolve, 300);
-    });
-  }
-  _ntState.prompt = ntEl('nt-prompt').value;
-  if (!ntCanSubmit(_ntState, _ntFiles)) {
+// ui-submit (cancelled: the page sends, and the composer keeps the text and files until the task is launched).
+async function submitNewTask(detail) {
+  var el = ntEl('nt-composer');
+  if (_ntBusy || !_ntCtx || !_ntState || !el) return;
+  var files = (detail && detail.files) || el.files || [];
+  _ntState.prompt = detail ? String(detail.text || '') : el.value;
+  if (!ntCanSubmit(_ntState, files)) {
     ntSetError(_ntState.channelId ? '작업 지시를 쓰거나 파일을 첨부해 주세요' : '작업을 올릴 채널을 골라 주세요');
     return;
   }
   _ntBusy = true;
   ntSetError('');
-  var btn = ntEl('nt-submit');
-  btn.classList.add('is-busy');
-  ntUpdateSubmit();
+  paintNtComposer();
   try {
-    if (_ntFiles.length) ntSetStatus('첨부 준비 중…');
-    await Promise.all(
-      _ntFiles.map(function (f) {
-        return f.ready;
-      }),
-    );
-    var body = JSON.stringify(ntBuildPayload(_ntState, _ntFiles, _ntRequestId));
+    if (files.length) ntSetStatus('첨부 준비 중…');
+    var attachments;
+    try {
+      attachments = await Promise.all(files.map(ntReadFile));
+    } catch (readErr) {
+      ntSetStatus('');
+      ntSetError(String(readErr.message || '').slice(5) + ' — 파일을 읽지 못했습니다');
+      return;
+    }
+    var body = JSON.stringify(ntBuildPayload(_ntState, attachments, _ntRequestId));
     ntSetStatus('작업을 올리는 중…');
     var res = await ntPostTask(body);
     // Only a stale CSRF token is worth one retry (not "no Slack identity").
@@ -18865,8 +18512,7 @@ async function submitNewTask(ev) {
     ntSetError('작업을 시작하지 못했습니다 — 네트워크를 확인하고 다시 눌러 주세요 (같은 요청은 두 번 실행되지 않습니다)');
   } finally {
     _ntBusy = false;
-    btn.classList.remove('is-busy');
-    ntUpdateSubmit();
+    paintNtComposer();
   }
 }
 
@@ -18902,14 +18548,9 @@ function ntOnLaunched(data) {
   // The next task starts clean: a new idempotency key, no text, no files;
   // the channel just used stays selected.
   _ntRequestId = ntNewRequestId();
-  _ntFiles.forEach(function (f) {
-    if (f.url) {
-      try {
-        URL.revokeObjectURL(f.url);
-      } catch (e) {}
-    }
-  });
-  _ntFiles = [];
+  var composer = ntEl('nt-composer');
+  if (composer && typeof composer.clear === 'function') composer.clear();
+  _ntValue = '';
   _ntState = ntDefaultState(_ntCtx, null);
   _ntState.channelId = data.channel || _ntState.channelId;
   try {
@@ -18972,49 +18613,41 @@ function ntInit() {
   dlg.addEventListener('click', function (e) {
     if (e.target === dlg) closeNewTask();
   });
-  // PC: drop files anywhere on the composer; paste screenshots into the text.
-  // (File drop into the composer only — board cards stay non-draggable, §3.1-5.)
-  var compose = ntEl('nt-compose');
-  var hasFiles = function (e) {
-    return !!(e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types || [], 'Files') >= 0);
-  };
-  dlg.ondragenter = function (e) {
-    if (!hasFiles(e)) return;
-    e.preventDefault();
-    compose.classList.add('is-drag');
-  };
-  dlg.ondragover = function (e) {
-    if (!hasFiles(e)) return;
-    e.preventDefault();
-    compose.classList.add('is-drag');
-  };
-  dlg.ondragleave = function (e) {
-    if (!e.relatedTarget || !dlg.contains(e.relatedTarget)) compose.classList.remove('is-drag');
-  };
-  dlg.ondrop = function (e) {
-    compose.classList.remove('is-drag');
-    if (!e.dataTransfer || !e.dataTransfer.files || !e.dataTransfer.files.length) return;
-    e.preventDefault();
-    ntAddFiles(e.dataTransfer.files, 'dragged');
-  };
-  var prompt = ntEl('nt-prompt');
-  prompt.addEventListener('paste', function (e) {
-    var files = e.clipboardData && e.clipboardData.files ? Array.prototype.slice.call(e.clipboardData.files) : [];
-    if (!files.length) return;
-    if (!e.clipboardData.getData('text/plain')) e.preventDefault();
-    files.forEach(function (f) {
-      var type = f.type || 'application/octet-stream';
-      var generic = !f.name || f.name === 'image.png' || f.name === 'image.jpeg';
-      var name = generic ? 'screenshot-' + ntStamp(new Date()) + '.' + (type.split('/')[1] || 'png') : f.name;
-      ntAddBlob(f, name, type, 'paste');
-    });
+  // <ui-composer id="nt-composer"> (D2 H-05..H-09): it takes drops and pasted screenshots itself (named
+  // screenshot-…), records the voice note, and sends on ⌘/Ctrl+Enter.
+  var composer = ntEl('nt-composer');
+  // A plain Enter is a new line here (a long instruction; ⌘/Ctrl+Enter starts the task): the event stops at the
+  // element before its own Enter-sends rule, and the field still takes the line break.
+  composer.addEventListener(
+    'keydown',
+    function (e) {
+      if (e.key === 'Enter' && !e.metaKey && !e.ctrlKey && !e.shiftKey && !e.altKey) e.stopPropagation();
+    },
+    true,
+  );
+  composer.addEventListener('ui-input', function (e) {
+    var v = e.detail ? String(e.detail.value || '') : '';
+    if (_ntState) _ntState.prompt = v;
+    ntSaveDraft(v);
   });
-  prompt.addEventListener('keydown', function (e) {
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-      e.preventDefault();
-      submitNewTask();
+  // The server also caps the files together: the one that crosses it goes back out, with the reason.
+  composer.addEventListener('ui-files', function (e) {
+    var files = (e.detail && e.detail.files) || [];
+    var max = _ntCtx ? _ntCtx.limits.maxTotalBytes : 0;
+    var total = files.reduce(function (sum, f) { return sum + (f.size || 0); }, 0);
+    if (max && total > max && files.length) {
+      composer.removeFile(files.length - 1);
+      ntSetError('첨부는 모두 합쳐 ' + ntFormatBytes(max) + '까지입니다');
     }
   });
+  composer.addEventListener('ui-submit', function (e) {
+    e.preventDefault();
+    submitNewTask(e.detail);
+  });
+  composer.addEventListener('ui-tool', function (e) {
+    if (e.detail && e.detail.id === 'camera') ntEl('nt-camera-input').click();
+  });
+  paintNtComposer();
   // N opens the composer from anywhere outside a text field.
   document.addEventListener('keydown', function (e) {
     var key = String(e.key || '').toLowerCase();
