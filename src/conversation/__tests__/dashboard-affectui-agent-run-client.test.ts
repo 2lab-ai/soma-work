@@ -238,7 +238,7 @@ describe('plan — the Tasks section of the tab: the tasks that ran, in the orde
     expect(html).not.toContain('panel-tasks-body');
     expect(html).not.toContain('ui-task-');
     // The live region is written folded as well (D7 keeps announcing).
-    expect(html).toContain('<span class="ar-vh pl-live" role="status" aria-live="polite"></span>');
+    expect(html).toContain('<span class="ui-sr-only pl-live" role="status" aria-live="polite"></span>');
     // Nothing ran yet, all ran, a list a new plan dropped before it ran.
     const idle = plan({ open: false });
     idle.render([TASKS[2]]);
@@ -260,7 +260,7 @@ describe('plan — the Tasks section of the tab: the tasks that ran, in the orde
     expect(open.runsEl.data).toMatchObject({ title: '실행된 태스크', totals: { runs: 2 } });
     expect(open.planEl.data).toMatchObject({ title: '남은 계획' });
     expect(open.el.innerHTML).toContain(
-      '<span class="ps-sec-now"><span class="spinner ag-spinner" aria-hidden="true"></span>Rendering the bars</span>',
+      '<span class="ps-sec-now"><span class="ui-spinner is-sm" aria-hidden="true"></span>Rendering the bars</span>',
     );
   });
 
@@ -628,7 +628,7 @@ describe('the run list folds past TASK_RUNS_SHOWN; replaced and skipped tasks; t
 
 describe('plan announcements (D7)', () => {
   const live = (html: string) =>
-    /<span class="ar-vh pl-live" role="status" aria-live="polite">([^<]*)<\/span>/.exec(html)?.[1];
+    /<span class="ui-sr-only pl-live" role="status" aria-live="polite">([^<]*)<\/span>/.exec(html)?.[1];
 
   it('the first render is silent; a step that completes is announced once', () => {
     const p = plan();
@@ -794,7 +794,7 @@ describe('needs-input header (D8/D9)', () => {
     expect(PAGE).toContain(
       '<h4>입력 필요</h4><span class="ui-count" id="panel-needs-count" data-tone="wait" data-pop></span>',
     );
-    expect(PAGE).toContain('<p class="ar-vh" id="panel-needs-status" role="status" aria-live="polite"></p>');
+    expect(PAGE).toContain('<p class="ui-sr-only" id="panel-needs-status" role="status" aria-live="polite"></p>');
     expect(PAGE).toContain('<div class="panel-permission" id="panel-permission" style="display:none"></div>');
   });
 
@@ -1595,7 +1595,7 @@ describe('expiry clock (D16)', () => {
     const none = cards().acPermissionData(SESSION(), PERM({ expiresAt: 0, createdAt: undefined }));
     expect('expiresAt' in none || 'createdAt' in none).toBe(false);
     // The page's 1 Hz tick no longer draws an expiry of its own.
-    expect(clientFn('updateTimersIn')).not.toContain('ap-expires');
+    expect(clientFn('updateTimers')).not.toContain('ap-expires');
   });
 });
 
@@ -1752,7 +1752,17 @@ describe('panel head (D18) — <ui-status-bar>', () => {
 describe('세부 — Details inside 세션 정보 (D19)', () => {
   const details = (s: Record<string, unknown>) =>
     load<{ panelDetailsHtml(s: unknown): string }>(
-      ['esc', 'toNum', 'pendingAutoResume', 'rootStatusOf', 'panelDetailsHtml'],
+      [
+        'esc',
+        'escAttr',
+        'toNum',
+        'formatNmSSs',
+        'elapsedHtml',
+        'activeTimeHtml',
+        'pendingAutoResume',
+        'rootStatusOf',
+        'panelDetailsHtml',
+      ],
       [],
     ).panelDetailsHtml(s);
   const row = (html: string, label: string) => new RegExp(`<div><dt>${label}</dt><dd>(.*?)</dd></div>`).exec(html)?.[1];
@@ -1765,21 +1775,21 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
     expect(row(html, '시작한 사람')).toBe('Zhuge');
     expect(row(html, '도구 호출')).toBe('<span title="메인 7 · 서브에이전트 7">14</span>');
     expect(row(html, '비용')).toBe('$12.40');
-    expect(row(html, '활성 시간')).toBe(
-      `<span class="card-timer-live" data-leg-started="${T0}" data-accumulated="65000"></span>`,
-    );
+    // D7 K-03: the live time is <ui-elapsed> — since = the leg's start less what ran before it (no page clock).
+    expect(row(html, '활성 시간')).toBe(`<ui-elapsed since="${T0 - 65000}"></ui-elapsed>`);
     expect(row(html, '워크플로')).toBe('zwork');
     expect(text(row(html, '환경') ?? '')).toBe('mac-mini h:1');
   });
 
   it('more subagents than the card carries: a lower bound; an idle session: no live leg; no record: no count', () => {
     expect(row(details(CARD({ agentsTotal: 5 })), '도구 호출')).toContain('>14+</span>');
-    expect(row(details(CARD({ activityState: 'idle' })), '활성 시간')).toContain(
-      'data-leg-started="0" data-accumulated="65000"',
-    );
+    // A closed total is settled text in the page's words (formatNmSSs), not a ticking element.
+    expect(row(details(CARD({ activityState: 'idle' })), '활성 시간')).toBe('<span>1m 05s</span>');
     expect(row(details(CARD({ agentRoot: undefined, agents: undefined })), '도구 호출')).toBeUndefined();
     // The head's status (rootStatusOf): a waiting session's leg counts, as on the chip.
-    expect(row(details(CARD({ activityState: 'waiting' })), '활성 시간')).toContain(`data-leg-started="${T0}"`);
+    expect(row(details(CARD({ activityState: 'waiting' })), '활성 시간')).toContain(
+      `<ui-elapsed since="${T0 - 65000}"`,
+    );
     expect(clientFn('panelDetailsHtml')).toContain('var st = rootStatusOf(s, col);');
     expect(clientFn('renderPanelInfo')).toContain(
       "panelInfoHtml(s, _panelInfoOpen === true, sessionColOf(panelSessionKey), _panelInfoOpen === 'folding')",
@@ -1796,6 +1806,9 @@ describe('세부 — Details inside 세션 정보 (D19)', () => {
         'ctxPercent',
         'pendingAutoResume',
         'rootStatusOf',
+        'elapsedHtml',
+        'activeTimeHtml',
+        'agoHtml',
         'panelDetailsHtml',
         'panelInfoHtml',
       ],
@@ -1942,7 +1955,9 @@ describe('template hygiene', () => {
       expect(TEMPLATE, gone).not.toMatch(new RegExp(`\\b${gone}\\(`));
     }
     // SSOT 2026-10-29 T5: the task runs' CSS (.tr-*) too.
-    const ours = CSS.split('\n').filter((l) => /^\s*\.(pl|ap|pn|ac|tr)-|^\s*\.pi-details|^\s*\.ar-vh/.test(l));
+    // D7 (A-18): the visually-hidden live lines are the kit's .ui-sr-only — no .ar-vh rule.
+    expect(CSS).not.toContain('.ar-vh');
+    const ours = CSS.split('\n').filter((l) => /^\s*\.(pl|ap|pn|ac|tr)-|^\s*\.pi-details/.test(l));
     // D3: only the sums (.tr-total*) are the page's now.
     expect(ours.filter((l) => /^\s*\.tr-/.test(l)).every((l) => /^\s*\.tr-total/.test(l))).toBe(true);
     // D3 E-10 / E-13: 세부 is the kit's .ui-dl and the count the kit's .ui-count — no .pi-details / .pn-* rules.

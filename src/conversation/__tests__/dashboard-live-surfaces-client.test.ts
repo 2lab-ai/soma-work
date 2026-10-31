@@ -223,10 +223,48 @@ describe('collapsed card: the task in progress (T3)', () => {
 // with reduced motion) — the library's 'renders the face: task, sub-agents, tokens · cost, …' owns the usage
 // row; the count-up itself has no library test yet.
 
+describe('live times are <ui-elapsed> (D7 K-03)', () => {
+  it('the page loads @2lab.ai/ui/elapsed; its own tick keeps only the cron countdown — no clock loop, no Date.now() in markup', () => {
+    expect(TEMPLATE).toContain('<script type="module" src="/dashboard/ui/elapsed.js?v=${UI_LIB_VERSION}"></script>');
+    expect(TEMPLATE).toContain('function updateTimers() { aqTick(); }');
+    for (const gone of [
+      'updateTimersIn',
+      'card-timer-live',
+      'rel-time',
+      'task-elapsed',
+      'data-leg-started',
+      'function timeAgo',
+    ])
+      expect(TEMPLATE, gone).not.toContain(gone);
+    const h = load<{
+      elapsedHtml(since: number, title?: string): string;
+      activeTimeHtml(leg: number, acc: number, title?: string): string;
+      agoHtml(at: number): string;
+    }>(['esc', 'escAttr', 'toNum', 'formatNmSSs', 'elapsedHtml', 'activeTimeHtml', 'agoHtml'], []);
+    expect(h.elapsedHtml(61000, '활성 시간')).toBe('<ui-elapsed since="61000" title="활성 시간"></ui-elapsed>');
+    expect(h.agoHtml(1700000000000)).toBe('<ui-elapsed since="1700000000000" format="ago"></ui-elapsed>');
+    // A leg under way: since = its start less what ran before it; closed: the settled total in the page's words.
+    expect(h.activeTimeHtml(1700000000000, 65000)).toBe('<ui-elapsed since="1699999935000"></ui-elapsed>');
+    expect(h.activeTimeHtml(0, 65000, '활성 시간')).toBe('<span title="활성 시간">1m 05s</span>');
+    expect(h.elapsedHtml(Number.NaN)).not.toContain('NaN');
+  });
+});
+
 describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
   // Task view T2: the meta and the 전체 task count read each task's fate.
   const tl = load<{ renderTimeline(s: unknown): string }>(
-    ['esc', 'escJs', 'toNum', 'formatDuration', 'taskFateOf', 'renderTaskMeta', 'renderTimelineItem', 'renderTimeline'],
+    [
+      'esc',
+      'escAttr',
+      'escJs',
+      'toNum',
+      'formatDuration',
+      'taskFateOf',
+      'elapsedHtml',
+      'renderTaskMeta',
+      'renderTimelineItem',
+      'renderTimeline',
+    ],
     ['TASK_FATE_LABEL'],
     { ...SHOW_ALL },
   );
@@ -236,7 +274,8 @@ describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
     expect(html).toContain('<span class="tl-id">#T1</span>');
     expect(html).toContain('1m 0s');
     expect(html).toContain('툴 7회');
-    expect(html).toContain('<span class="task-elapsed" data-since="61000"></span>');
+    // D7 K-03: the running task's live time is <ui-elapsed> (its own tick), never a page clock.
+    expect(html).toContain('<ui-elapsed since="61000"></ui-elapsed>');
     expect(html).toContain('툴 3회');
     // A pending task has neither time nor tool calls.
     expect(html).toMatch(/#T3<\/span><span class="tl-text">Ship it<\/span><\/li>/);
@@ -299,7 +338,7 @@ describe('task timeline: ids, elapsed time and tool calls (T7/T8)', () => {
     expect(html).toContain(
       '<span class="tl-time">멈춤 &middot; <span class="tl-tools" title="툴 호출 수">툴 4회</span></span>',
     );
-    expect(html).not.toContain('task-elapsed');
+    expect(html).not.toContain('<ui-elapsed');
     expect(html).toMatch(/#T2<\/span><span class="tl-text">Next<\/span><\/li>/);
   });
 });
