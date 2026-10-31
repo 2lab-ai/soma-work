@@ -16,7 +16,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { taskDirectoryFor } from '../agent-runtime/execution-context';
-import { isSafePathSegment } from '../path-utils';
+import { isSafePathSegment, normalizeTmpPath } from '../path-utils';
 import { buildTaskSessionKey } from '../session-identity';
 import type { CreateTaskInput } from '../session-registry';
 import type { TaskCommandResponse, TaskTurnController } from './task-turn-controller';
@@ -42,6 +42,12 @@ export interface TaskLauncherDeps {
    * model is one of their nicknames, resolved here (#640 R1/R2). Absent → no model is accepted.
    */
   listModels?(ownerId: string): Array<{ nickname: string; model: string }>;
+  /**
+   * The session whose cleanup would remove `dir` (a real `/tmp/...` path) or a
+   * part of it, if any — wired to `cleanupOwnerOf` over the live sessions. A
+   * named folder another session removes when it ends or sleeps is refused (#640 R2).
+   */
+  cleanupOwnerOf?(dir: string): string | undefined;
 }
 
 export interface TaskLauncher {
@@ -82,6 +88,25 @@ export function listTaskFolders(ownerId: string, limit = MAX_LISTED_FOLDERS): Ar
   return folders.sort((a, b) => b.mtimeMs - a.mtimeMs).slice(0, limit);
 }
 
+/**
+ * The session whose cleanup (`sourceWorkingDirs`, removed when it ends or
+ * sleeps) would remove `dir`, a part of it, or a folder holding it — compared
+ * as `/tmp` paths. Undefined when nobody does (#640 R2).
+ */
+export function cleanupOwnerOf(
+  dir: string,
+  sessions: Iterable<{ key: string; sourceWorkingDirs?: string[] }>,
+): string | undefined {
+  const target = normalizeTmpPath(path.resolve(dir));
+  for (const { key, sourceWorkingDirs } of sessions) {
+    for (const raw of sourceWorkingDirs ?? []) {
+      const owned = normalizeTmpPath(path.resolve(raw));
+      if (owned === target || owned.startsWith(`${target}/`) || target.startsWith(`${owned}/`)) return key;
+    }
+  }
+  return undefined;
+}
+
 /** The card's first title: the prompt's first non-empty line, cut at 80 characters. */
 export function taskTitleOf(prompt: string): string {
   const line = prompt
@@ -95,7 +120,9 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
   const launchRefusal = (status: number, error: string): TaskCommandResponse => ({ status, body: { error } });
 
   return {
-    folders: (ownerId: string) => listTaskFolders(ownerId),
+    // Not offered: a folder another session's cleanup would remove (#640 R2).
+    folders: (ownerId: string) =>
+      listTaskFolders(ownerId).filter((f) => !deps.cleanupOwnerOf?.(path.join('/tmp', ownerId, f.name))),
     async launch(request: TaskLaunchRequest): Promise<TaskCommandResponse> {
       const { ownerId } = request;
       const refused = deps.controller.canStart(ownerId, request.prompt);
@@ -132,6 +159,14 @@ export function createTaskLauncher(deps: TaskLauncherDeps): TaskLauncher {
       } catch (error) {
         removeUnusedFolder(fresh);
         return launchRefusal(422, `the task cannot work in that folder: ${(error as Error).message}`);
+      }
+      // A named folder another session removes when it ends or sleeps would take
+      // the task's work with it (#640 R2). A fresh folder is new: nobody owns it.
+      if (request.folder !== undefined && deps.cleanupOwnerOf?.(workingDirectory)) {
+        return launchRefusal(
+          409,
+          `the folder ${request.folder} belongs to another session, which removes it when it ends — pick another folder or a new one`,
+        );
       }
 
       let task: { taskId?: string };
