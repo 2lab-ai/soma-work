@@ -9,7 +9,7 @@ describe('production settings registry', () => {
     const registry = productionSettingsRegistry();
     userSettingsStore.ensureUserExists('UREGPROD1', 'Prod One');
     const snap = registry.read('UREGPROD1');
-    expect(snap.settings).toHaveLength(17);
+    expect(snap.settings).toHaveLength(18);
     expect(snap.settings.find((s) => s.key === 'persona')!.options!.map((o) => o.value)).toContain('default');
 
     const row = await registry.write('UREGPROD1', 'defaultEffort', 'low');
