@@ -62,7 +62,7 @@ import {
 } from './metrics/model-registry';
 import { BUNDLED_PLUGINS_DIR } from './plugin/bundled';
 import type { SdkPluginPath } from './plugin/types';
-import { createTaskApprover } from './task-turn/task-approver';
+import { createTaskApprover, type TaskApprovalEvent, type TaskApproverWithState } from './task-turn/task-approver';
 import type {
   ActivityState,
   ConversationSession,
@@ -807,17 +807,30 @@ export class ClaudeHandler implements TurnSteeringPort {
   private safetyClassifierCache?: SafetyClassifier;
 
   /** Lazily-built dashboard approver of a Slack-less task's escalations (#599 ⑤). */
-  private taskApproverCache?: TaskApprover;
+  private taskApproverCache?: TaskApproverWithState;
+  /** E2 ⑥ — told when a task's approval is asked and how it ended (the notice deliverer). */
+  private taskApprovalListener?: (event: TaskApprovalEvent) => void;
+
+  /** E2 ⑥ — the notice deliverer hears each task approval's request and resolution. */
+  setTaskApprovalListener(listener: ((event: TaskApprovalEvent) => void) | undefined): void {
+    this.taskApprovalListener = listener;
+  }
+
+  /** E2 ⑥ — the task approval is still being asked in this process. */
+  isTaskApprovalOpen(approvalId: string): boolean {
+    return this.getTaskApprover().isOpen(approvalId);
+  }
 
   /**
    * The approver writes the prompt to the shared approval store bound to the
    * task and the turn it is running, and waits for its owner's dashboard answer.
    */
-  private getTaskApprover(): TaskApprover {
+  private getTaskApprover(): TaskApproverWithState {
     if (!this.taskApproverCache) {
       this.taskApproverCache = createTaskApprover({
         store: sharedStore,
         getActiveTurnId: (sessionKey) => this.sessionRegistry.getSessionByKey(sessionKey)?.activeTaskTurnId,
+        onEvent: (event) => this.taskApprovalListener?.(event),
       });
     }
     return this.taskApproverCache;

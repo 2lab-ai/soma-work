@@ -1,5 +1,6 @@
 import { markdownToBlocks } from '@soma/slack/formatters/markdown-to-blocks';
 import type { ConversationSession, TaskNoticeIntent } from '../types';
+import type { TaskApprovalEvent } from './task-approver';
 import type { TaskNotificationLedger, TaskNotificationLedgerEntry } from './task-notification-ledger';
 
 /**
@@ -24,8 +25,10 @@ import type { TaskNotificationLedger, TaskNotificationLedgerEntry } from './task
 export interface TaskNoticeDelivererDeps {
   ledger: Pick<
     TaskNotificationLedger,
-    'register' | 'claim' | 'markPosted' | 'markFailed' | 'close' | 'owed' | 'get' | 'list'
+    'register' | 'claim' | 'markPosted' | 'markFailed' | 'close' | 'owed' | 'get' | 'annotate' | 'list'
   >;
+  /** E2 ⑥ — the approval is still being asked (the approver's own state). */
+  isApprovalOpen?(approvalId: string): boolean;
   /** Post one message in the instruction thread. */
   post(
     target: { channel: string; threadTs: string },
@@ -66,6 +69,12 @@ export interface TaskNoticeDeliverer {
   deliver(options?: { retryFailed?: boolean }): Promise<void>;
   /** Notices of this task card that could not be delivered (spent attempts). */
   failures(sessionKey: string): Array<{ kind: TaskNotificationLedgerEntry['kind']; error: string }>;
+  /**
+   * E2 ⑥ — an approval's lifecycle (D9): a request is owed to the thread at
+   * once; its resolution is noted on it; an expiry owes one "not run" notice.
+   * Never throws — a notice is never worth an approval.
+   */
+  approval(event: TaskApprovalEvent): void;
   /** Shutdown: no new pass and no retry from now on. */
   stop(): void;
 }
@@ -134,6 +143,48 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
         channel: origin.channel,
         threadTs: origin.threadTs,
         intent: intentOf(notice, session, sessionKey),
+      });
+    }
+  }
+
+  function approval(event: TaskApprovalEvent): void {
+    try {
+      const taskId = event.sessionKey.startsWith('task:') ? event.sessionKey.slice('task:'.length) : '';
+      const live = taskId ? deps.getTask(taskId) : undefined;
+      const session = live?.session;
+      const origin = session?.originThread;
+      if (!live || !session || session.slackless !== true || !origin) return;
+      const turn = event.turnId ?? 'turn';
+      const requestId = `${taskId}:${turn}:approval:${event.approvalId}`;
+      const base = {
+        approvalId: event.approvalId,
+        toolName: event.toolName,
+        ...(event.turnId ? { turnId: event.turnId } : {}),
+        ...(event.expiresAt !== undefined ? { expiresAt: event.expiresAt } : {}),
+        ...(session.conversationId ? { conversationId: session.conversationId } : {}),
+        ownerId: session.ownerId,
+        sessionKey: live.sessionKey,
+        at: Date.now(),
+      };
+      const target = { taskId, kind: 'approval' as const, channel: origin.channel, threadTs: origin.threadTs };
+      if (event.type === 'requested') {
+        deps.ledger.register({ ...target, id: requestId, intent: { ...base, approval: 'request' } });
+      } else {
+        if (deps.ledger.get(requestId)) deps.ledger.annotate(requestId, { resolution: event.resolution });
+        // Only an expiry is told: the owner's deny and a window never opened are not (D9).
+        if (event.resolution === 'expired') {
+          deps.ledger.register({
+            ...target,
+            id: `${taskId}:${turn}:approval-expired:${event.approvalId}`,
+            intent: { ...base, approval: 'expired', resolution: 'expired' },
+          });
+        }
+      }
+      void deliver();
+    } catch (error) {
+      deps.logger.error('Task approval notice not recorded — the approval goes on', {
+        approvalId: event.approvalId,
+        error: (error as Error)?.message,
       });
     }
   }
@@ -217,15 +268,17 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
   }
 
   async function deliverOne(entry: TaskNotificationLedgerEntry): Promise<void> {
-    if (entry.kind === 'question') {
-      const verdict = questionStillOpen(entry);
-      if (verdict !== 'open') {
-        deps.ledger.close(entry.id, verdict);
-        settle(entry);
-        return;
-      }
-    }
     const message = await render(entry);
+    // Checked after rendering (which may wait on the work log), right before
+    // the claim, against the entry as it is now: an answer that landed
+    // meanwhile closes it instead of sending it.
+    const current = deps.ledger.get(entry.id) ?? entry;
+    const verdict = stillWanted(current);
+    if (verdict !== 'send') {
+      deps.ledger.close(entry.id, verdict);
+      settle(entry);
+      return;
+    }
     deps.ledger.claim(entry.id);
     let ts: string | undefined;
     try {
@@ -247,6 +300,20 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
       return;
     }
     settle(entry);
+  }
+
+  /** A question or an approval request is sent only while it is still being asked. */
+  function stillWanted(entry: TaskNotificationLedgerEntry): 'send' | 'resolved' | 'superseded' {
+    if (entry.kind === 'question') {
+      const verdict = questionStillOpen(entry);
+      return verdict === 'open' ? 'send' : verdict;
+    }
+    if (entry.kind === 'approval' && entry.intent.approval === 'request') {
+      // Answered → resolved; no longer asked (a restart) → superseded.
+      if (entry.intent.resolution) return 'resolved';
+      return deps.isApprovalOpen?.(entry.intent.approvalId ?? '') === true ? 'send' : 'superseded';
+    }
+    return 'send';
   }
 
   function questionStillOpen(entry: TaskNotificationLedgerEntry): 'open' | 'resolved' | 'superseded' {
@@ -273,10 +340,31 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
         return renderResult(entry, url);
       case 'question':
         return { text: `:raising_hand: 답이 필요해요 — 카드에서 답해 주세요. ${url ?? ''}`.trim() };
-      case 'interrupted':
+      case 'interrupted': {
+        const waited = approvalLeftWaiting(entry);
         return {
-          text: withLink(`:double_vertical_bar: 작업이 중단됐어요: ${entry.intent.reason ?? '이유 없음'}`, url),
+          text: withLink(
+            waited
+              ? `:double_vertical_bar: 승인 대기 중 중단됐어요 (\`${waited}\` 승인을 기다리던 중): ${entry.intent.reason ?? '이유 없음'}`
+              : `:double_vertical_bar: 작업이 중단됐어요: ${entry.intent.reason ?? '이유 없음'}`,
+            url,
+          ),
         };
+      }
+      case 'approval':
+        return entry.intent.approval === 'expired'
+          ? {
+              text: withLink(
+                `:hourglass: 승인이 만료되어 \`${entry.intent.toolName ?? '도구'}\`는 실행하지 않았어요. 작업은 계속됩니다.`,
+                url,
+              ),
+            }
+          : {
+              text: withLink(
+                `:lock: 승인이 필요해요 — \`${entry.intent.toolName ?? '도구'}\`${deadline(entry.intent.expiresAt)} 카드에서 답해 주세요.`,
+                url,
+              ),
+            };
       default:
         return {
           text: withLink(
@@ -313,6 +401,23 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
     return { text: fallbackText, blocks: [...kept, ...context] };
   }
 
+  /** The tool of an approval this turn was still waiting on (asked, never resolved) — D13. */
+  function approvalLeftWaiting(entry: TaskNotificationLedgerEntry): string | undefined {
+    const turnId = entry.intent.turnId;
+    if (!turnId) return undefined;
+    const waiting = deps.ledger
+      .list()
+      .find(
+        (e) =>
+          e.taskId === entry.taskId &&
+          e.kind === 'approval' &&
+          e.intent.approval === 'request' &&
+          e.intent.turnId === turnId &&
+          !e.intent.resolution,
+      );
+    return waiting ? (waiting.intent.toolName ?? '도구') : undefined;
+  }
+
   function failures(sessionKey: string): Array<{ kind: TaskNotificationLedgerEntry['kind']; error: string }> {
     return deps.ledger
       .list()
@@ -328,7 +433,7 @@ export function createTaskNoticeDeliverer(deps: TaskNoticeDelivererDeps): TaskNo
     retry = null;
   }
 
-  return { enqueue, handoff, deliver, failures, stop };
+  return { enqueue, handoff, approval, deliver, failures, stop };
 }
 
 /**
@@ -353,6 +458,13 @@ function intentOf(notice: TaskNoticeIntent, session: ConversationSession, sessio
     ownerId: session.ownerId,
     sessionKey,
   };
+}
+
+/** ` — <time>까지` in the reader's own time zone (Slack date token), or nothing. */
+function deadline(expiresAt: number | undefined): string {
+  if (expiresAt === undefined) return ',';
+  const sec = Math.floor(expiresAt / 1000);
+  return ` · <!date^${sec}^{time}|${new Date(expiresAt).toISOString()}>까지`;
 }
 
 function withLink(text: string, url: string | undefined): string {

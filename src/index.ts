@@ -1232,6 +1232,7 @@ async function start() {
             return session ? { session, sessionKey: buildTaskSessionKey(taskId) } : undefined;
           },
           settled: (taskId, noticeId) => registry.pruneTaskNotice(taskId, noticeId),
+          isApprovalOpen: (approvalId) => claudeHandler.isTaskApprovalOpen(approvalId),
           logger: new Logger('TaskNoticeDeliverer'),
         });
         registry.setTaskNoticeListener((session, sessionKey) => {
@@ -1243,6 +1244,8 @@ async function start() {
           void deliverer.deliver();
         });
         setTaskNoticeFailureProvider((sessionKey) => deliverer.failures(sessionKey));
+        // E2 ⑥ — a task approval asked is told to the thread at once; an expiry once.
+        claudeHandler.setTaskApprovalListener((event) => deliverer.approval(event));
         taskNoticeDeliverer = deliverer;
       } catch (error) {
         logger.error('Task notice ledger unreadable — task thread notices stay on their tasks, undelivered', {
