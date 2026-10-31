@@ -5,6 +5,8 @@ Status: 구현 · Date: 2026-10-27 · 기준 main `8332695b`
 [`11-dashboard-live-surfaces-spec.md`](11-dashboard-live-surfaces-spec.md) T7/T8(task ledger),
 [`12-dashboard-agent-tree-spec.md`](12-dashboard-agent-tree-spec.md) §4.3(패널의 에이전트)
 
+> T1.6(자세히 칩)은 [`19-dashboard-view-mode-spec.md`](19-dashboard-view-mode-spec.md)가 대체한다 — 상단바의 유저별 화면 모드(미니멀 · 어드밴스드).
+>
 > 이 문서가 대체하는 것: 13 §3의 "Tasks·Artifacts 고정 + 스크롤 영역이 본문의 절반 이상" 배치, 답변의 "요약이 얼굴, 답변 전문은 펼쳐야"(re-ai-answer D1), 11 T7의 "목록 밖으로 밀려난 **완료** task"라는 서술(실제로는 미완료 task도 밀려났고, 그 상태가 그대로 남았다).
 
 ## 0. 한 줄 정의
