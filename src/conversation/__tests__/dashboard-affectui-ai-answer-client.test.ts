@@ -433,6 +433,68 @@ describe('the section’s data and the element’s requests (convPaint, convRetr
       'if (optimisticId) dropTurnFromPanel(optimisticId);',
     );
   });
+
+  // D4 E-30: the note's files are the composer's File objects (ui-submit detail.files). They go as base64; a failed
+  // send keeps them by its ref, so the row's Retry — which re-emits the ref without files — sends them again; a sent
+  // note forgets them. A file that cannot be read gives the text and files back to the composer.
+  it("a note's files go as base64; a failed send keeps them for the row's Retry; an unreadable one is given back", async () => {
+    const steer = { data: { running: true }, value: '', setItemState: vi.fn() };
+    const composer = { files: [] as unknown[], addFiles: vi.fn() };
+    const bodies: string[] = [];
+    const statuses = [500, 200];
+    const noteFiles: Record<string, unknown[]> = {};
+    const toast = vi.fn();
+    const file = { name: 'shot.png', type: 'image/png' };
+    let unreadable = false;
+    const api = load<{ sendCommand(text: string, ref: string, files?: unknown[]): Promise<void> }>(
+      ['esc', 'escJs', 'pcCanSend', 'pcCommandBody', 'acPost', 'pcGiveBack', 'sendCommand'],
+      [],
+      {
+        document: {
+          getElementById: (id: string) => (id === 'cmd-steer' ? steer : id === 'pc-composer' ? composer : null),
+          querySelector: () => null,
+        },
+        appendTurnToPanel: () => {},
+        dropTurnFromPanel: () => false,
+        fetch: (_url: string, init: { body: string }) => {
+          bodies.push(init.body);
+          const status = statuses.shift() ?? 200;
+          return Promise.resolve({ ok: status < 400, status, json: () => Promise.resolve({}) });
+        },
+        refreshCsrfToken: () => Promise.resolve(),
+        dashToast: toast,
+        panelSessionKey: 'k',
+        _sessionCache: { k: { activityState: 'working' } },
+        _csrfToken: '',
+        _lastSentContent: '',
+        _lastSentTime: 0,
+        _pcSending: false,
+        _pcNoteFiles: noteFiles,
+        ntReadFile: (f: { name: string; type: string }) =>
+          unreadable
+            ? Promise.reject(new Error(`read:${f.name}`))
+            : Promise.resolve({ name: f.name, mimetype: f.type, data: 'QUJD' }),
+      },
+    );
+    await api.sendCommand('look', 'as-1', [file]);
+    const sent = { message: 'look', attachments: [{ name: 'shot.png', mimetype: 'image/png', data: 'QUJD' }] };
+    expect(JSON.parse(bodies[0])).toEqual(sent);
+    expect(steer.setItemState).toHaveBeenCalledWith('as-1', 'failed', '(HTTP 500)');
+    expect(noteFiles).toEqual({ 'as-1': [file] });
+    // Retry: the same ref, no files — the kept ones go; sent, they are forgotten.
+    await api.sendCommand('look', 'as-1');
+    expect(JSON.parse(bodies[1])).toEqual(sent);
+    expect(noteFiles).toEqual({});
+    // A file that cannot be read: nothing is posted, the row goes, text and file return to the composer.
+    unreadable = true;
+    await api.sendCommand('again', 'as-2', [file]);
+    expect(bodies).toHaveLength(2);
+    expect(steer.setItemState).toHaveBeenCalledWith('as-2', 'cancelled');
+    expect(steer.value).toBe('again');
+    expect(composer.addFiles).toHaveBeenCalledWith([file]);
+    expect(toast).toHaveBeenLastCalledWith({ title: '파일을 읽지 못했어요', description: 'shot.png', tone: 'error' });
+    expect(noteFiles).toEqual({});
+  });
 });
 
 describe('D11 — response time = this answer − the instruction before it (the element’s head chip)', () => {
@@ -745,9 +807,8 @@ describe('the page loads the element; the inline renderer is gone', () => {
   it('D3 — 지시와 답변 is <ui-conversation> (conversation.js, served; it nests ui-ai-answer) in the token wrapper', () => {
     expect(HEAD).toContain(`<script type="module" src="/dashboard/ui/conversation.js?v=\${UI_LIB_VERSION}"></script>`);
     expect(existsSync(join(uiLibDistDir() as string, 'conversation.js'))).toBe(true);
-    expect(TEMPLATE).toContain(
-      '<div class="psec psec-el ui-tok" id="psec-conv" role="tabpanel" aria-labelledby="psec-tab-conv">',
-    );
+    // D4 E-24: the box is the Chat tab's panel of <ui-tabs> (slotted by the tab's id).
+    expect(TEMPLATE).toContain('<div class="psec psec-el ui-tok" id="psec-conv" slot="conv">');
     expect(TEMPLATE).toContain('<ui-conversation class="panel-conv" id="panel-conv" lang="ko"></ui-conversation>');
     expect(CSS).toMatch(/\.ui-tok \{[^}]*--ui-surface-raised: var\(--surface-raised\)/);
   });
