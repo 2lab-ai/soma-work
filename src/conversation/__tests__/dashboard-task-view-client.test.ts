@@ -350,7 +350,7 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
     env.renderPanelTasks(current, '', earlier);
     expect(el.innerHTML).toContain('<ui-disclosure class="panel-tasks-dc" flush>');
     expect(el.innerHTML).toContain(
-      '<span class="ps-sec-now"><span class="spinner ag-spinner" aria-hidden="true"></span>ledger 수정 중</span>',
+      '<span class="ps-sec-now"><span class="ui-spinner is-sm" aria-hidden="true"></span>ledger 수정 중</span>',
     );
     // Four ran (two completed), one is left of the plan, two were dropped before they ran.
     expect(text(el.innerHTML)).toContain('ledger 수정 중·실행 4 · 완료 2·남은 1·빠짐 2');

@@ -260,7 +260,7 @@ describe('plan — the Tasks section of the tab: the tasks that ran, in the orde
     expect(open.runsEl.data).toMatchObject({ title: '실행된 태스크', totals: { runs: 2 } });
     expect(open.planEl.data).toMatchObject({ title: '남은 계획' });
     expect(open.el.innerHTML).toContain(
-      '<span class="ps-sec-now"><span class="spinner ag-spinner" aria-hidden="true"></span>Rendering the bars</span>',
+      '<span class="ps-sec-now"><span class="ui-spinner is-sm" aria-hidden="true"></span>Rendering the bars</span>',
     );
   });
 
