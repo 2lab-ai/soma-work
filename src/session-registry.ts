@@ -1037,6 +1037,13 @@ export class SessionRegistry {
     if (originThread) session.originThread = originThread;
     const inputContext = sanitizeTaskInputContext(input.inputContext);
     if (inputContext) session.inputContext = inputContext;
+    // A caller passed a context and nothing usable was left: the task runs
+    // without its channel's repos — say so rather than drop it silently.
+    else if (input.inputContext !== undefined) {
+      this.logger.warn('createTask: the input context had no usable field; the task has none', {
+        taskId: session.taskId,
+      });
+    }
 
     const key = buildTaskSessionKey(session.taskId);
     this.putSession(key, session);
