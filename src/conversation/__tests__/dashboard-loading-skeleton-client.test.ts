@@ -238,6 +238,7 @@ function boardFlow(cardOf?: (s: { key: string }, col: string) => unknown, over: 
       syncCronLane: () => {},
       cronLaneSlots: () => [],
       paintCronLaneCards: () => {},
+      renderEpicLane: () => {},
       showArchives: false,
       showSleeping: true,
       _revealedKey: null,
