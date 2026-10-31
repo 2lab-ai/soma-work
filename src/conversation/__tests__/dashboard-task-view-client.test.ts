@@ -68,7 +68,7 @@ const CSS = cook(
 
 const T0 = 1_700_000_000_000;
 const BASE_FNS = ['esc', 'escAttr', 'toNum', 'formatDuration', 'formatTaskTime', 'agentIconHtml'];
-const BASE_VARS = ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'TASK_FATE_LABEL', 'TASK_RUN_STATUS', 'PI_CHEV_SVG'];
+const BASE_VARS = ['AGENT_STATUS_LABEL', 'AGENT_STATUS_TONE', 'TASK_FATE_LABEL', 'TASK_RUN_STATUS'];
 
 type Task = Record<string, unknown>;
 const text = (html: string) => html.replace(/<[^>]+>/g, '').replace(/&middot;/g, '·');
@@ -343,7 +343,7 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
   it('folds by default: one head — the running step, 실행 N · 완료 d, 남은 p, 빠짐 s — no elements', () => {
     env.__set('_panelTasksOpen', false);
     env.renderPanelTasks(current, '', earlier);
-    expect(el.innerHTML).toContain('aria-expanded="false"');
+    expect(el.innerHTML).toContain('<ui-disclosure class="panel-tasks-dc" flush>');
     expect(el.innerHTML).toContain(
       '<span class="ps-sec-now"><span class="spinner ag-spinner" aria-hidden="true"></span>ledger 수정 중</span>',
     );
@@ -361,7 +361,7 @@ describe('SSOT 2026-10-29 T5 · the panel Tasks section: what ran, the plan left
     open();
     env.renderPanelTasks(current, '', earlier);
     const html = el.innerHTML;
-    expect(html).toContain('aria-expanded="true"');
+    expect(html).toContain('<ui-disclosure class="panel-tasks-dc" flush open>');
     expect(runsEl.data).toMatchObject({ title: '실행된 태스크', totals: false });
     expect(runIds()).toEqual(['T1', 'T2', 'T8', 'T5']);
     expect(planEl.data?.title).toBe('남은 계획');

@@ -96,13 +96,9 @@ function clickTargets(html: string): any[][] {
       .replace(/&quot;/g, '"')
       .replace(/&#39;/g, "'")
       .replace(/&amp;/g, '&');
-    // The completed-goals toggle (T6) and the objective's fold only open — not goal actions.
-    new Function('event', 'goalAction', 'toggleGoalHistory', 'togglePanelGoal', js)(
-      event,
-      goalAction,
-      () => {},
-      () => {},
-    );
+    // The objective's fold only opens — not a goal action (the completed goals open through their <ui-disclosure>'s
+    // external trigger, D4 K-06: no inline handler).
+    new Function('event', 'goalAction', 'togglePanelGoal', js)(event, goalAction, () => {});
   }
   return calls;
 }

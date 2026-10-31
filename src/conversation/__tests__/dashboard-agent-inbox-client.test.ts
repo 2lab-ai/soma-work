@@ -2364,7 +2364,7 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
         'taskRunsRestore',
         'renderPanelTasks',
       ],
-      ['TASK_FATE_LABEL', 'PI_CHEV_SVG', 'TASK_RUNS_SHOWN', 'TASK_RUN_STATUS'],
+      ['TASK_FATE_LABEL', 'TASK_RUNS_SHOWN', 'TASK_RUN_STATUS'],
       {
         document: {
           getElementById: (id: string) =>
@@ -2386,15 +2386,12 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
     );
     return { container, renderPanelTasks, planEl };
   };
-  const CHEV = new Function(`${clientVar('PI_CHEV_SVG')}\nreturn PI_CHEV_SVG;`)() as string;
+  // D4 K-06: the head is <ui-disclosure>'s row (the title and the summary slotted in); the body is its region.
   const head = (expanded: boolean) =>
-    `<button type="button" class="panel-sec-head panel-tasks-header" aria-expanded="${expanded}"` +
-    (expanded ? ' aria-controls="panel-tasks-body"' : '') +
-    ` onclick="togglePanelTasks()"><span class="ps-sec-title">Tasks</span><span class="ps-sec-sum">목록 없음</span>${CHEV}</button>`;
+    `<ui-disclosure class="panel-tasks-dc" flush${expanded ? ' open' : ''}><span slot="summary" class="panel-tasks-header"><span class="ps-sec-title">Tasks</span><span class="ps-sec-sum">목록 없음</span></span>`;
   const LIVE = '<span class="ar-vh pl-live" role="status" aria-live="polite"></span>';
 
   it("zero or missing tasks show the header (folded: 목록 없음) and, opened, the plan element's empty state", () => {
-    expect(CHEV).toContain('<i data-ui-icon="chevron-down" class="pi-chev"></i>');
     for (const open of [false, true]) {
       const { container, renderPanelTasks, planEl } = tasksSection(open);
       for (const t of [[], undefined, null]) {
@@ -2404,8 +2401,8 @@ describe('panel Tasks always render, also with no tasks (shipped renderPanelTask
         expect(container.style.display).toBe('');
         expect(container.innerHTML).toBe(
           open
-            ? `${head(true)}<div class="panel-tasks-body ui-tok" id="panel-tasks-body"><ui-task-plan class="panel-task-plan" id="panel-task-plan" lang="ko"></ui-task-plan></div>${LIVE}`
-            : `${head(false)}${LIVE}`,
+            ? `${head(true)}<div class="panel-tasks-body ui-tok" id="panel-tasks-body"><ui-task-plan class="panel-task-plan" id="panel-task-plan" lang="ko"></ui-task-plan></div></ui-disclosure>${LIVE}`
+            : `${head(false)}</ui-disclosure>${LIVE}`,
         );
         if (open) expect(planEl.data).toEqual({ title: '계획', steps: [] });
       }
