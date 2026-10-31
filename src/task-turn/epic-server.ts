@@ -73,7 +73,7 @@ const refuse = (code: string, error: string): ToolResult => ({ ...reply({ ok: fa
 function liveEpic(taskId: string): { host: EpicHost; epic: ConversationSession } | ToolResult {
   if (!host) return refuse('not-ready', 'the epic tools are not ready yet — try again');
   const epic = host.getTask(taskId);
-  if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated) {
+  if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated || epic.closing) {
     return refuse('not-an-epic', 'this task is no longer a live epic');
   }
   return { host, epic };

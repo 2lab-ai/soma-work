@@ -46,6 +46,8 @@ import {
   applyPlanWrite,
   consumeEpicEvents,
   EPIC_NODE_ID,
+  exemptEpicTreeTaskIds,
+  isEpicDone,
   type PlanWriteInput,
   releaseEpicEvents,
   resolveEpicApprovals,
@@ -223,6 +225,8 @@ interface SerializedSession {
   childTaskIds?: unknown;
   plan?: unknown;
   epicEvents?: unknown;
+  /** E4 ⑦ — a child closed by its epic's close; validated on load. */
+  closedBy?: unknown;
   /** E2 ③ — the open chain and owed notices of a Slack-less task; validated on load. */
   openChain?: unknown;
   notices?: unknown;
@@ -324,6 +328,7 @@ export interface EpicRelation {
   childTaskIds?: string[];
   plan?: EpicPlan;
   epicEvents?: EpicEvent[];
+  closedBy?: { by: 'parent'; at: number };
 }
 
 /**
@@ -339,7 +344,12 @@ export function sanitizeEpicRelation(value: Record<string, unknown>, slackless: 
   const nonEmpty = (x: unknown): x is string => typeof x === 'string' && x.trim() !== '' && x !== value.taskId;
   // A child: a parent and a well-formed node, nothing else.
   if (nonEmpty(value.parentTaskId) && typeof value.planNodeId === 'string' && PLAN_NODE_ID.test(value.planNodeId)) {
-    return { parentTaskId: value.parentTaskId, planNodeId: value.planNodeId };
+    const closed = value.closedBy as { by?: unknown; at?: unknown } | undefined;
+    const closedBy =
+      closed && closed.by === 'parent' && typeof closed.at === 'number' && Number.isFinite(closed.at)
+        ? { by: 'parent' as const, at: closed.at }
+        : undefined;
+    return { parentTaskId: value.parentTaskId, planNodeId: value.planNodeId, ...(closedBy ? { closedBy } : {}) };
   }
   if (value.kind !== 'epic') return {};
   const children = Array.isArray(value.childTaskIds) ? value.childTaskIds.filter(nonEmpty) : [];
@@ -916,13 +926,100 @@ export class SessionRegistry {
   }
 
   /**
+   * E4 ⑦ (D10 a) — a live epic not done yet, or with a child running or
+   * waiting, keeps itself and its children from being archived while asleep.
+   * After `done` (and once the epic is closed) the tree follows the normal clock.
+   */
+  private epicTreeExempt(session: ConversationSession): boolean {
+    if (session.slackless !== true) return false;
+    const epic =
+      session.kind === 'epic'
+        ? session
+        : session.parentTaskId
+          ? this.sessionsByTaskId.get(session.parentTaskId)
+          : undefined;
+    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated || epic.closing || !epic.taskId) {
+      return false;
+    }
+    if (!isEpicDone(epic.plan)) return true;
+    return this.getChildTasks(epic.taskId).some((c) => c.activityState === 'working' || c.activityState === 'waiting');
+  }
+
+  /**
+   * E4 ⑦ (D10 b) — its epic is closing while this child runs: say so on the
+   * child (`closedBy: parent`), saved strictly now, before its chain is
+   * cancelled (session-close — the outcome stays `cancelled`). A failed save is
+   * put back and rethrown.
+   */
+  markClosedByParent(sessionKey: string, at: number = Date.now()): void {
+    const child = this.getSessionByKey(normalizeSessionKey(sessionKey));
+    if (!child || child.slackless !== true || !child.parentTaskId) {
+      throw new Error(`markClosedByParent: ${sessionKey} is not a child task`);
+    }
+    const before = child.closedBy;
+    child.closedBy = { by: 'parent', at };
+    try {
+      this.saveSessionsOrThrow();
+    } catch (error) {
+      child.closedBy = before;
+      throw error;
+    }
+    try {
+      this.onActivityStateChangeCallback?.();
+    } catch (err) {
+      this.logger.warn('markClosedByParent: broadcast callback raised', {
+        error: (err as Error)?.message ?? String(err),
+      });
+    }
+  }
+
+  /**
+   * E4 ⑦ — the dashboard close of this task starts (`true`) or did not go
+   * through (`false`): an in-memory mark, never saved (fable #703 R1).
+   */
+  markClosing(sessionKey: string, closing: boolean): void {
+    const session = this.getSessionByKey(normalizeSessionKey(sessionKey));
+    if (!session) return;
+    session.closing = closing ? true : undefined;
+  }
+
+  /**
+   * E4 ⑦ (D10 c) — a child is being closed: a `closed` event on its epic (id
+   * `<child>:closed`), saved strictly. It never wakes the epic — delivered from
+   * the start, so the cap drops it before a pending chain end. A failed save is
+   * put back and rethrown; no live epic, nothing to record.
+   */
+  recordEpicChildClosed(sessionKey: string, at: number = Date.now()): void {
+    const child = this.getSessionByKey(normalizeSessionKey(sessionKey));
+    if (!child?.parentTaskId) return;
+    const epic = this.epicToReport(child, 'close');
+    if (!epic) return;
+    const before = epic.epicEvents;
+    epic.epicEvents = withEpicEvent(before, {
+      id: `${child.taskId}:closed`,
+      childTaskId: child.taskId as string,
+      planNodeId: child.planNodeId as string,
+      outcome: 'closed',
+      at,
+      state: 'delivered',
+    });
+    if (epic.epicEvents === before) return;
+    try {
+      this.saveSessionsOrThrow();
+    } catch (error) {
+      epic.epicEvents = before;
+      throw error;
+    }
+  }
+
+  /**
    * E4 ⑤ (D6) — the live epic a child reports to. A child whose epic is gone
    * or closing reports to no one: the event is dropped and logged.
    */
   private epicToReport(child: ConversationSession, what: string): ConversationSession | undefined {
     if (!child.parentTaskId || !child.planNodeId || !child.taskId) return undefined;
     const epic = this.sessionsByTaskId.get(child.parentTaskId);
-    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated) {
+    if (!epic || epic.slackless !== true || epic.kind !== 'epic' || epic.terminated || epic.closing) {
       this.logger.warn('Epic event dropped — the epic is gone or closing', {
         childTaskId: child.taskId,
         parentTaskId: child.parentTaskId,
@@ -950,7 +1047,9 @@ export class SessionRegistry {
     const closed = end.chainId
       ? resolveEpicApprovals(before, (e) => e.childTaskId === childTaskId && e.chainId === end.chainId, end.at)
       : before;
-    epic.epicEvents = withEpicEvent(closed, chainEndEvent(child, end));
+    // A child its owner is closing owes no wake: its end is recorded, delivered (fable #703 R1).
+    const event = chainEndEvent(child, end);
+    epic.epicEvents = withEpicEvent(closed, child.closing ? { ...event, state: 'delivered' } : event);
     return { epic, before };
   }
 
@@ -1027,7 +1126,11 @@ export class SessionRegistry {
       lastWarningSentAt: session.lastWarningSentAt,
       openChain: session.openChain,
       epicEvents: session.epicEvents,
+      closedBy: session.closedBy,
     };
+    // E4 ⑦ — a new chain on a child its parent's close cancelled: no longer "closed by its parent"
+    // (a `/compact` hop of the chain being closed keeps the mark).
+    if (!chainId || chainId !== session.openChain) session.closedBy = undefined;
     // E2 ③ — the chain is open from its first start until its last commit.
     if (chainId) session.openChain = chainId;
     // E4 ⑥ (D7) — the events this chain was started for are consumed in this same save.
@@ -1052,6 +1155,7 @@ export class SessionRegistry {
       session.lastWarningSentAt = previous.lastWarningSentAt;
       session.openChain = previous.openChain;
       session.epicEvents = previous.epicEvents;
+      session.closedBy = previous.closedBy;
       throw error;
     }
     try {
@@ -1168,6 +1272,7 @@ export class SessionRegistry {
       session.childTaskIds = undefined;
       session.plan = undefined;
       session.epicEvents = undefined;
+      session.closedBy = undefined;
     } else if (session.parentTaskId) {
       let siblings = this.childrenByParent.get(session.parentTaskId);
       if (!siblings) {
@@ -3026,7 +3131,8 @@ export class SessionRegistry {
       if (session.state === 'SLEEPING') {
         const sleepAge = session.sleepStartedAt ? now - session.sleepStartedAt.getTime() : archiveAfterMs + 1; // Force expire if no sleepStartedAt
 
-        if (sleepAge >= archiveAfterMs) {
+        // E4 ⑦ (D10 a) — an epic tree not done (or with a child at work) sleeps but is not archived.
+        if (sleepAge >= archiveAfterMs && !this.epicTreeExempt(session)) {
           // Same seam as terminateSession, before notification and deletion.
           // A refusal is per-session here: the sweep keeps that session and
           // moves on, so one host failure cannot stall everyone else's expiry.
@@ -3337,6 +3443,7 @@ export class SessionRegistry {
             childTaskIds: session.childTaskIds,
             plan: session.plan,
             epicEvents: session.epicEvents,
+            closedBy: session.closedBy,
             // Merge code change stats
             mergeStats: session.mergeStats,
             // User SSOT instructions (persisted)
@@ -3548,6 +3655,8 @@ export class SessionRegistry {
       let mintedTaskIdCount = 0;
       const remintedSlackless: Array<{ session: ConversationSession; claimed: string }> = [];
       const archivedRelatives: Array<{ serialized: SerializedSession; lastActivity: Date }> = [];
+      /** E4 ⑦ (D10 a) — epic trees kept from the load-time archive (decided over the whole file). */
+      const epicTreeExempt = exemptEpicTreeTaskIds(Array.isArray(sessionsArray) ? sessionsArray : []);
       let reconciledTaskTurnCount = 0;
       /** E4 ⑤ — children whose lost turn was recorded here: their epics hear it after the loop. */
       const reconciledChildren: Array<{
@@ -3578,7 +3687,9 @@ export class SessionRegistry {
           // never slept or archived on load
         } else if (applyLifecycle && serialized.state === 'SLEEPING') {
           const sleepAge = sleepStartedAt ? now - sleepStartedAt.getTime() : archiveAfterMs + 1;
-          if (sleepAge >= archiveAfterMs) {
+          // E4 ⑦ (D10 a) — nor on load: an epic tree not done (or with a child at work) stays.
+          const treeExempt = typeof serialized.taskId === 'string' && epicTreeExempt.has(serialized.taskId);
+          if (sleepAge >= archiveAfterMs && !treeExempt) {
             // Archive expired session before discarding (#401)
             // E4 ① — an epic or child is archived after the relink below, so a
             // re-minted relative's new id reaches its archive too.

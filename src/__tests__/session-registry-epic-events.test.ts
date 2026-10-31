@@ -235,15 +235,15 @@ describe('SessionRegistry — a child reports to its epic (E4 ⑤)', () => {
     fs.writeFileSync(
       SESSIONS_FILE,
       JSON.stringify([
-        slacklessRecord('child-1', {
-          parentTaskId: 'epic-1',
-          planNodeId: 'login',
-          activityState: 'working',
-          activeTaskTurnId: 'turn-9',
-          openChain: 'chain-9',
+        // Lost between a compact hop's commit and its re-run: idle with its chain open.
+        slacklessRecord('child-1', { parentTaskId: 'epic-1', planNodeId: 'login', openChain: 'chain-9' }),
+        // Asleep past the archive age and done (E4 ⑦ keeps a tree not done, or with a child at work): archived on load.
+        slacklessRecord('epic-1', {
+          kind: 'epic',
+          childTaskIds: ['child-1'],
+          state: 'SLEEPING',
+          plan: { nodes: [{ id: 'login', title: 'L', kind: 'issue' }], done: { by: 'epic', at: 1 } },
         }),
-        // Asleep past the archive age: archived on load.
-        slacklessRecord('epic-1', { kind: 'epic', childTaskIds: ['child-1'], state: 'SLEEPING' }),
       ]),
     );
     const reg = new SessionRegistry();

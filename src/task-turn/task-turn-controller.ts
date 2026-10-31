@@ -332,12 +332,16 @@ export function createTaskTurnController(deps: TaskTurnControllerDeps): TaskTurn
     } catch (error) {
       return { ok: false, response: refuse(409, `task cannot run: ${(error as Error)?.message ?? String(error)}`) };
     }
+    // E4 ⑦ — a task being closed, or a child of an epic being closed, starts nothing (fable #703 R1).
+    const tree = treeOf(session, request.sessionKey);
+    if (session.closing || (tree && tree.root !== request.sessionKey && deps.getSession(tree.root)?.closing)) {
+      return { ok: false, response: refuse(409, 'the task is being closed') };
+    }
     if (chains.has(request.sessionKey)) {
       return { ok: false, response: refuse(409, 'a turn is already running on this task') };
     }
     const ownerId = ctx.userId;
     const t = now();
-    const tree = treeOf(session, request.sessionKey);
     const newTask = request.newTask === true;
     const refusal = tree
       ? treeAdmission(ownerId, { ...tree, initiator: request.initiator }, t, newTask)

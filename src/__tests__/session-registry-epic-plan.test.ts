@@ -347,7 +347,11 @@ describe('SessionRegistry — an epic plan and its events (E4 ②)', () => {
   it("P9b — an epic archived in the same load gets its re-minted child's new id in the archived plan", () => {
     const epicId = '11111111-1111-4111-8111-111111111111';
     const childId = '22222222-2222-4222-8222-222222222222';
-    const plan = { nodes: [{ id: 'login', title: 'Fix login', kind: 'issue', spawned: [childId] }] };
+    // Done (E4 ⑦): a tree not done is kept from the load-time archive.
+    const plan = {
+      nodes: [{ id: 'login', title: 'Fix login', kind: 'issue', spawned: [childId] }],
+      done: { by: 'epic', at: 1 },
+    };
     fs.writeFileSync(
       SESSIONS_FILE,
       JSON.stringify([

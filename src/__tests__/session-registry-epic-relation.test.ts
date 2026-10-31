@@ -316,7 +316,13 @@ describe('SessionRegistry — epic and child tasks (E4 ①)', () => {
     fs.writeFileSync(
       SESSIONS_FILE,
       JSON.stringify([
-        slacklessRecord(epicId, { kind: 'epic', childTaskIds: [childId], state: 'SLEEPING' }),
+        // Done (E4 ⑦): a tree not done is kept from the load-time archive.
+        slacklessRecord(epicId, {
+          kind: 'epic',
+          childTaskIds: [childId],
+          state: 'SLEEPING',
+          plan: { nodes: [{ id: 'node-a', title: 'A', kind: 'issue' }], done: { by: 'epic', at: 1 } },
+        }),
         slacklessRecord(childId, { parentTaskId: epicId, planNodeId: 'node-a', state: 'SLEEPING' }),
       ]),
     );
@@ -352,10 +358,20 @@ describe('SessionRegistry — epic and child tasks (E4 ①)', () => {
         slack('1.1', childId),
         slack('2.2', epic2Id),
         // (a) the epic is archived on load; its live child is re-minted.
-        slacklessRecord(epicId, { kind: 'epic', childTaskIds: [childId], state: 'SLEEPING' }),
+        // Done (E4 ⑦): a tree not done is kept from the load-time archive.
+        slacklessRecord(epicId, {
+          kind: 'epic',
+          childTaskIds: [childId],
+          state: 'SLEEPING',
+          plan: { nodes: [{ id: 'node-a', title: 'A', kind: 'issue' }], done: { by: 'epic', at: 1 } },
+        }),
         slacklessRecord(childId, { parentTaskId: epicId, planNodeId: 'node-a' }),
         // (b) the epic is re-minted; its child is archived on load.
-        slacklessRecord(epic2Id, { kind: 'epic', childTaskIds: [child2Id] }),
+        slacklessRecord(epic2Id, {
+          kind: 'epic',
+          childTaskIds: [child2Id],
+          plan: { nodes: [{ id: 'node-b', title: 'B', kind: 'issue' }], done: { by: 'epic', at: 1 } },
+        }),
         slacklessRecord(child2Id, { parentTaskId: epic2Id, planNodeId: 'node-b', state: 'SLEEPING' }),
       ]),
     );
