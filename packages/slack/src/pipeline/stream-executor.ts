@@ -76,11 +76,10 @@ import {
 } from '../stream-processor';
 import type { SummaryService } from '../summary-service';
 import type { SummaryTimer } from '../summary-timer';
-import type { TurnAddress, TurnContext, TurnEndReason } from '../thread-panel';
-import type { TurnPanelPort } from '../turn-panel-port';
 import { NO_POST_SLACK } from '../task-turn/no-post-slack';
 import { createTaskSay, type TaskTurnBinding, type TaskWorkLogWrite } from '../task-turn/task-say';
 import type { TaskTurnTerminalSignals } from '../task-turn/task-turn-outcome';
+import type { TurnAddress, TurnContext, TurnEndReason } from '../thread-panel';
 import type { TodoDisplayManager } from '../todo-display-manager';
 import type { ToolEventProcessor } from '../tool-event-processor';
 import type { ToolTracker } from '../tool-tracker';
@@ -92,6 +91,7 @@ import {
   type TurnNotifier,
   type TurnNotifierNotifyOpts,
 } from '../turn-notifier';
+import type { TurnPanelPort } from '../turn-panel-port';
 import type { UserChoice, UserChoices } from '../user-choice-extractor';
 import { UserChoiceHandler } from '../user-choice-handler';
 import type { TurnAttachment } from '../user-media';
