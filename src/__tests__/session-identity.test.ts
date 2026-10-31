@@ -16,6 +16,7 @@ vi.mock('../env-paths', () => ({
 
 import {
   buildLegacySessionKey,
+  buildTaskSessionKey,
   buildWorkSessionKey,
   DIRECT_THREAD_ID,
   normalizeSessionKey,
@@ -68,6 +69,31 @@ describe('normalizeSessionKey', () => {
     expect(normalizeSessionKey('-leading')).toBe('-leading');
     expect(normalizeSessionKey('trailing-')).toBe('trailing-');
     expect(normalizeSessionKey('')).toBe('');
+  });
+});
+
+describe('buildTaskSessionKey (#596, #612 R2)', () => {
+  it('builds task:<taskId> for a UUID', () => {
+    expect(buildTaskSessionKey('11111111-2222-4333-8444-555555555555')).toBe(
+      'task:11111111-2222-4333-8444-555555555555',
+    );
+  });
+
+  it.each([
+    ['a colon', 'a:b'],
+    ['a slash', 'a/b'],
+    ['a backslash', 'a\\b'],
+    ['a space', 'a b'],
+    ['a tab', 'a\tb'],
+    ['empty', ''],
+  ])('refuses an id with %s', (_label, taskId) => {
+    expect(() => buildTaskSessionKey(taskId)).toThrow();
+  });
+
+  it('a task key passes normalizeSessionKey unchanged', () => {
+    expect(normalizeSessionKey('task:11111111-2222-4333-8444-555555555555')).toBe(
+      'task:11111111-2222-4333-8444-555555555555',
+    );
   });
 });
 
