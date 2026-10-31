@@ -131,6 +131,13 @@ describe('createTaskLauncher (#600 ⑥)', () => {
     expect(plain.controller.canStart).toHaveBeenCalledWith(OWNER, REQ.prompt);
   });
 
+  it('E4 ⑨b — epicTasks answers the owner’s flag for the composer; no reader or another id is off', () => {
+    expect(harness({ epicTasks: true }).launcher.epicTasks?.(OWNER)).toBe(true);
+    expect(harness({ epicTasks: true }).launcher.epicTasks?.('U_OTHER')).toBe(false);
+    expect(harness({ epicTasks: false }).launcher.epicTasks?.(OWNER)).toBe(false);
+    expect(harness().launcher.epicTasks?.(OWNER)).toBe(false);
+  });
+
   it('E4 ④a-2 — the tree refusal of a new epic is returned and nothing is made', async () => {
     const busy = { status: 429, body: { error: 'one epic runs at a time — wait for its tree to finish' } };
     const h = harness({ epicTasks: true, canStart: busy });

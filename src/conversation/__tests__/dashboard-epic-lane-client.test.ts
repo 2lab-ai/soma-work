@@ -52,7 +52,7 @@ function load<T>(fns: string[], vars: string[], inject: Record<string, unknown> 
   return new Function(...names, body)(...names.map((n) => inject[n])) as T;
 }
 
-const LANE_VARS = ['EPIC_STATE_LABEL', 'EPIC_STATE_TONE', 'EPIC_STATE_RANK'];
+const LANE_VARS = ['EPIC_STATE_LABEL', 'EPIC_STATE_TONE', 'EPIC_STATE_RANK', 'EPIC_NODE_STEP', 'EPIC_NODE_NOTE'];
 const ESC = ['esc', 'escAttr', 'toNum'];
 
 const child = (key: string, over: Record<string, unknown> = {}) => ({
@@ -76,7 +76,21 @@ describe('L1–L3 — the lane’s plan, a child’s column, a group’s head', 
     planEpicLane(board: unknown): Array<{ key: string; children: Array<{ key: string }> }>;
     epicChildCol(c: unknown): string;
     epicLaneHeadHtml(s: unknown): string;
-  }>([...ESC, 'epicStateOf', 'planEpicLane', 'epicChildCol', 'epicLaneHeadHtml'], LANE_VARS);
+    epicPlanData(s: unknown): { steps: Array<Record<string, any>> };
+    epicProgressHtml(p: unknown): string;
+  }>(
+    [
+      ...ESC,
+      'epicStateOf',
+      'planEpicLane',
+      'epicChildCol',
+      'epicProgressHtml',
+      'epicLaneHeadHtml',
+      'epicPlanStep',
+      'epicPlanData',
+    ],
+    LANE_VARS,
+  );
 
   it('L1 — one group per epic with children, from any column, waiting first; nothing else', () => {
     const board = {
@@ -115,6 +129,11 @@ describe('L1–L3 — the lane’s plan, a child’s column, a group’s head', 
     expect(html).toContain('--ui-tone:var(--st-wait)');
     expect(html).toContain('>입력 필요</span>');
     expect(html).toContain('>1/3</span>');
+    expect(
+      m.epicLaneHeadHtml(
+        epicCard('task:e', 'idle', [], { epic: { state: 'idle', progress: { accepted: 7, total: 3 } } }),
+      ),
+    ).toContain('>3/3</span>');
     // A prototype key is no state the page knows (fable #706 R1 P3).
     expect(m.epicLaneHeadHtml({ key: 'k', kind: 'epic', epic: { state: 'constructor' } })).toContain(
       'data-state="idle"',
@@ -136,7 +155,9 @@ type FakeEl = {
   parentNode: FakeEl | null;
   _ibPlan?: { cols: Array<{ id: string; bare?: boolean; keys: string[] }>; load: string; announce: unknown };
   _head?: FakeEl;
+  _plan?: FakeEl;
   _cards?: FakeEl;
+  data?: unknown;
   _inbox?: FakeEl;
   setAttribute(k: string, v: string): void;
   appendChild(c: FakeEl): FakeEl;
@@ -219,9 +240,13 @@ function laneHarness() {
     [
       ...ESC,
       'epicStateOf',
+      'taskElData',
       'planEpicLane',
       'epicChildCol',
+      'epicProgressHtml',
       'epicLaneHeadHtml',
+      'epicPlanStep',
+      'epicPlanData',
       'syncEpicLane',
       'paintEpicLaneCards',
       'renderEpicLane',
@@ -379,6 +404,101 @@ describe('L4–L6 — the lane’s boxes, its cards, the cache and the push', ()
   });
 });
 
+describe('L9–L11 (⑨b) — the plan tree and the progress bar', () => {
+  const m = load<{
+    epicPlanData(s: unknown): { steps: Array<Record<string, any>> };
+    epicProgressHtml(p: unknown): string;
+  }>([...ESC, 'epicPlanStep', 'epicPlanData', 'epicProgressHtml'], LANE_VARS);
+  const node = (id: string, status: string, over: Record<string, unknown> = {}) => ({
+    id,
+    title: `T ${id}`,
+    kind: 'issue',
+    status,
+    accepted: false,
+    childTaskIds: [],
+    ...over,
+  });
+
+  it('L9 — issues are steps, subs nest under their issue; accepted is done; each status as a step with a short note', () => {
+    const data = m.epicPlanData({
+      epic: {
+        nodes: [
+          node('login', 'running'),
+          node('login-test', 'finished', { kind: 'sub', parent: 'login' }),
+          node('docs', 'finished', { accepted: true }),
+          node('api', 'needs-input'),
+          node('ops', 'failed'),
+          node('old', 'cancelled'),
+          node('net', 'interrupted'),
+          node('gone', 'closed'),
+          node('next', 'none'),
+          node('lost-sub', 'none', { kind: 'sub', parent: 'missing' }),
+        ],
+      },
+    });
+    expect(data.steps.map((st) => [st.id, st.status, st.note])).toEqual([
+      ['login', 'running', undefined],
+      ['docs', 'done', undefined],
+      ['api', 'paused', '입력 필요'],
+      ['ops', 'failed', undefined],
+      ['old', 'dropped', undefined],
+      ['net', 'paused', '끊김'],
+      ['gone', 'skipped', '닫힘'],
+      ['next', 'pending', undefined],
+      // A sub whose issue is gone still shows, at the top.
+      ['lost-sub', 'pending', undefined],
+    ]);
+    expect(data.steps[0].steps).toEqual([
+      { id: 'login-test', label: 'T login-test', ref: '#login-test', status: 'paused', note: '판정 대기' },
+    ]);
+    expect(data.steps[0].label).toBe('T login');
+    expect(m.epicPlanData({ epic: { state: 'idle' } })).toEqual({ steps: [] });
+    expect(m.epicPlanData({ epic: { nodes: [node('x', 'bogus')] } }).steps[0].status).toBe('pending');
+    expect(m.epicPlanData({ epic: { nodes: [node('x', 'constructor')] } }).steps[0]).toEqual({
+      id: 'x',
+      label: 'T x',
+      ref: '#x',
+      status: 'pending',
+    });
+  });
+
+  it('L10 — the bar: accepted of all, read by a screen reader; none for an empty plan; never past full', () => {
+    const html = m.epicProgressHtml({ accepted: 1, total: 4 });
+    expect(html).toContain('role="progressbar"');
+    expect(html).toContain('aria-valuemax="4" aria-valuenow="1"');
+    expect(html).toContain('style="width:25%"');
+    expect(m.epicProgressHtml({ accepted: 0, total: 0 })).toBe('');
+    expect(m.epicProgressHtml(undefined)).toBe('');
+    expect(m.epicProgressHtml({ accepted: 9, total: 3 })).toContain('style="width:100%"');
+    // Never below empty either; the text a screen reader speaks (grok, fable #707 R1).
+    expect(m.epicProgressHtml({ accepted: -3, total: 4 })).toContain('aria-valuenow="0" aria-valuetext="0/4"');
+    expect(m.epicProgressHtml({ accepted: -3, total: 4 })).toContain('style="width:0%"');
+    expect(html).toContain('aria-valuetext="1/4"');
+  });
+
+  it('L11 — the group box holds the plan between its head and its cards; no plan, hidden; the data set only when it changed', () => {
+    const h = laneHarness();
+    const withPlan = epicCard('task:e', 'running', [child('task:c1')]);
+    (withPlan.epic as any).nodes = [node('login', 'running')];
+    h.m.renderEpicLane({ working: [withPlan] });
+    const box = h.lane.children[0];
+    expect(box.children.map((c) => c.className)).toEqual(['epic-head', 'epic-plan', 'cards epic-cards']);
+    const plan = box._plan as FakeEl;
+    expect(plan.tag).toBe('ui-task-plan');
+    expect(plan.attrs).toMatchObject({ lang: 'ko', flush: '', foot: 'none' });
+    expect(plan.hidden).toBe(false);
+    expect(plan.data).toEqual({ steps: [{ id: 'login', label: 'T login', ref: '#login', status: 'running' }] });
+    expect(box._head?.innerHTML).toContain('role="progressbar"');
+    const first = plan.data;
+    h.m.renderEpicLane({ working: [withPlan] });
+    expect(plan.data).toBe(first);
+    h.m.renderEpicLane({ working: [epicCard('task:e', 'running', [child('task:c1')])] });
+    expect(plan.hidden).toBe(true);
+    // display: block beats the UA [hidden] rule: the plan's own rule hides it.
+    expect(DASHBOARD_TS).toContain('.epic-plan[hidden] { display: none; }');
+  });
+});
+
 const CARD_OF_FNS = [
   'toNum',
   'formatTokens',
@@ -443,6 +563,14 @@ describe('L7 — the epic’s own card', () => {
     expect(done.lead.title).toBe('에픽 — 완료');
     expect(done.statusText).not.toBe('완료');
     expect(cardOf({ ...base, ...epicCard('task:e', 'constructor', []) }, 'idle').lead.title).toBe('에픽 — 대기');
+    // A child leads with its node, the ref its epic's plan tree shows (fable #707 R1).
+    expect(
+      cardOf({ ...base, key: 'task:c', title: 'C', parentTaskId: 'e', planNodeId: 'login' }, 'working').lead,
+    ).toEqual({
+      text: '#login',
+      glyph: 'tasks',
+      title: '에픽의 노드 login',
+    });
     const plain = cardOf({ ...base, key: 'task:p', title: 'P' }, 'idle');
     expect(plain.lead).toBeUndefined();
     const noPlan = cardOf(
@@ -480,6 +608,8 @@ describe('L8 — the page wires the lane', () => {
     expect(DASHBOARD_TS).toContain('.epic-lane { display: flex;');
     // An author display beats the UA [hidden] rule: the empty lane must be hidden by its own rule.
     expect(DASHBOARD_TS).toContain('.epic-lane[hidden] { display: none; }');
+    // The bar and the count sit together at the end of the head.
+    expect(DASHBOARD_TS).toContain('.epic-head .epic-bar { margin-left: auto; }');
     expect(fn('boardHosts')).toContain("document.querySelectorAll('ui-agent-inbox.epic-inbox')");
   });
   it('an epic’s children are in no column the client builds (the server already took them out)', () => {
