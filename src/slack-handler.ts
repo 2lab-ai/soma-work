@@ -115,6 +115,7 @@ import {
 import { announceSessionNotice } from './slack/session-notice';
 import { SummaryService } from './slack/summary-service';
 import { SummaryTimer } from './slack/summary-timer';
+import type { SlackTaskEntry } from './slack/task-entry';
 import { normalizeZInvocation, stripZPrefix } from './slack/z/normalize';
 import { DmZRespond } from './slack/z/respond';
 import { isDmAllowedForNonAdmin } from './slack/z/whitelist';
@@ -261,6 +262,8 @@ export class SlackHandler {
   private followupStore?: FollowupQueueStorePort;
   private followupQueue?: FollowupQueue;
   private taskNoticeHandoff?: (sessionKey: string, session: ConversationSession) => void;
+  /** E2 ⑧ — the Slack entry: a plain instruction becomes a dashboard task (wired once the deliverer is up). */
+  private taskEntry?: SlackTaskEntry;
   private followupDispatcher?: FollowupDispatcher;
   /**
    * Why the queue could not be loaded. Set = DEGRADED: the queue refuses to
@@ -666,6 +669,9 @@ export class SlackHandler {
       // the buttons go through.
       onReactionAdded: (reaction) => this.handleFollowupReactionControl(reaction),
       isFollowupControlReaction: (name) => this.followupReactions().isControlReaction(name),
+      // E2 ⑧ — a live task's instruction thread: answered here, nothing runs (D2 (2)).
+      guardInstructionThread: (event, say) =>
+        this.taskEntry ? this.taskEntry.guard(event, say) : Promise.resolve(false),
     };
     this.eventRouter = new EventRouter(app, eventRouterDeps, this.handleMessage.bind(this));
 
@@ -1446,6 +1452,17 @@ export class SlackHandler {
       return { result: 'safe' };
     }
 
+    // E2 ⑧ (.prd/18 D2 (2)) — a live task's instruction thread runs nothing,
+    // whatever path the message took here: the router guards the live event,
+    // but a message queued before the task existed (a `!`, `%`, a command, a
+    // second mention) drains through here (grok #671 P1-2).
+    if (
+      this.taskEntry &&
+      (await this.taskEntry.guard({ channel, ts, thread_ts, files: (event as { files?: unknown[] }).files }, say))
+    ) {
+      return { result: 'safe' };
+    }
+
     // Immediately acknowledge the message with eyes emoji
     await this.slackApi.addReaction(channel, ts, 'eyes');
 
@@ -1684,6 +1701,34 @@ export class SlackHandler {
       await this.slackApi.removeReaction(channel, ts, 'eyes');
       await this.sendDmNonAdminRejection(event, 'unhandled-after-route');
       return { result: 'blocked', reason: 'dm rejected after routing' };
+    }
+
+    // E2 ⑧ (.prd/18 D2 (3)) — a plain instruction from a user who turned it on
+    // becomes a dashboard task, before the working folder or the thinking
+    // status: the host's own allow-list over the router's hint.
+    if (this.taskEntry) {
+      const entered = await this.taskEntry.run({
+        event: { user: event.user, channel, ts, thread_ts, text: event.text },
+        say,
+        allow: {
+          candidate: (event.routeContext as { taskEntryCandidate?: boolean } | undefined)?.taskEntryCandidate === true,
+          dm: channel.startsWith('D'),
+          hasSession: !!preRouteSession,
+          verbatim: verbatimPrompt || routedObjective === true,
+          goalOpening: event.routeContext?.goalOpeningId !== undefined,
+          steer: !verbatimPrompt && trimmedText.startsWith('!'),
+          inlineDirective: !!event.inlineDirectiveRawText,
+          handled: !!handled,
+          continueWithPrompt: continueWithPrompt !== undefined,
+          deferredSkillFire: !!deferredSkillFire,
+          forceWorkflow: !!forceWorkflow,
+          setGoalObjective: setGoalObjective !== undefined,
+          inlineModel: inlineModel !== undefined,
+          inlineNoGoal,
+          fileCount: processedFiles.length,
+        },
+      });
+      if (entered) return entered;
     }
 
     // If command returned a follow-up prompt (e.g., /new <prompt>), use that instead.
@@ -2630,6 +2675,11 @@ export class SlackHandler {
    */
   setTaskNoticeHandoff(fn: ((sessionKey: string, session: ConversationSession) => void) | undefined): void {
     this.taskNoticeHandoff = fn;
+  }
+
+  /** E2 ⑧ — wire the Slack entry (index.ts, once the notice deliverer is up: the card link is its post). */
+  setTaskEntry(entry: SlackTaskEntry | undefined): void {
+    this.taskEntry = entry;
   }
 
   setFollowupChangeListener(fn: ((sessionKey: string) => void) | undefined): void {

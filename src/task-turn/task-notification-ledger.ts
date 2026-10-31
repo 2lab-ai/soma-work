@@ -44,6 +44,8 @@ export type TaskNotificationLedgerIntent = Partial<Omit<TaskNoticeIntent, 'id' |
   approval?: 'request' | 'expired';
   /** E2 ⑥ — how the approval ended, noted on its request once known. */
   resolution?: string;
+  /** E2 ⑧ — the task was made from a Slack instruction but its first turn could not start. */
+  notStarted?: true;
   /** E2 ⑤ — what rendering needs after the task may be gone: its conversation, owner and key. */
   conversationId?: string;
   ownerId?: string;

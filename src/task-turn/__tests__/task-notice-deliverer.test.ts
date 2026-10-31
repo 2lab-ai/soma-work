@@ -1031,3 +1031,31 @@ describe('task notice deliverer — spent claim failures (fable #672)', () => {
     }
   });
 });
+
+describe('task notice deliverer — created but not started (E2 ⑧, D6 · D11)', () => {
+  it('owes the thread one “not started” notice, after its link, with the card link', async () => {
+    const h = harness();
+    h.session.notices = [link];
+    h.deliverer.enqueue(h.session, KEY);
+    h.deliverer.notStarted(h.session, KEY, 'one dashboard task runs at a time — wait for it to finish');
+    await vi.waitFor(() => expect(h.posts).toHaveLength(2));
+    expect(h.posts[0].text).toContain('대시보드 작업으로 시작했어요');
+    expect(h.posts[1].text).toContain('시작하지 못했어요');
+    expect(h.posts[1].text).toContain('one dashboard task runs at a time');
+    expect(h.posts[1].text).toContain('https://dash.example/');
+    expect(h.ledger.get(`${TASK_ID}:create:failure`)).toMatchObject({ kind: 'failure', state: 'posted' });
+  });
+
+  it('twice for the same task is one notice; a ledger failure is thrown to the caller', () => {
+    const h = harness();
+    h.deliverer.notStarted(h.session, KEY, 'r');
+    h.deliverer.notStarted(h.session, KEY, 'r');
+    expect(h.ledger.owed().filter((e) => e.kind === 'failure')).toHaveLength(1);
+    const broken = harness();
+    vi.spyOn(broken.ledger, 'register').mockImplementation(() => {
+      throw new Error('EROFS');
+    });
+    expect(() => broken.deliverer.notStarted(broken.session, KEY, 'r')).toThrow('EROFS');
+    h.deliverer.stop();
+  });
+});

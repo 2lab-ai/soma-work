@@ -62,11 +62,11 @@ describe('card effort picker (T1)', () => {
   it('a non-owner sees the level as text, with the level the model really runs', () => {
     const html = renderEffortPicker({ key: 'k', effort: 'max', effortEffective: 'high' });
     expect(html).not.toContain('<select');
-    expect(html).toContain('Max &rarr; High');
-    expect(html).toContain('이 모델은 High까지 실행합니다');
+    expect(html).toContain('최대 &rarr; 높음');
+    expect(html).toContain('이 모델은 높음까지 실행합니다');
     expect(renderEffortPicker({ key: 'k', effort: 'high' })).toBe(
       // Tone pass P8: the tooltip is Korean chrome (STRINGS.effortTitle) — was "Reasoning effort".
-      '<span class="meta-effort" title="추론 강도">High</span>',
+      '<span class="meta-effort" title="추론 강도">높음</span>',
     );
   });
 });
@@ -103,7 +103,7 @@ describe('postEffortSwitch / effortSwitchNote (T1)', () => {
       ['EFFORT_LABELS'],
     );
     expect(effortSwitchNote({ ok: true, result: { status: 'switched', effort: 'max', effective: 'high' } })).toEqual({
-      text: 'effort Max · 다음 턴부터 적용 (이 모델은 High까지 실행)',
+      text: '추론 강도 최대 · 다음 턴부터 적용 (이 모델은 높음까지 실행)',
       error: false,
     });
     expect(effortSwitchNote({ ok: false, error: '종료된 세션' })).toEqual({ text: '종료된 세션', error: true });
@@ -221,7 +221,7 @@ describe('top-bar default chips (T6)', () => {
     expect(postEffortSwitch).toHaveBeenCalledWith('self::C1:t1', 'low');
     expect(postModelSwitch).not.toHaveBeenCalled();
     expect(myDefaults.effort.value).toBe('low');
-    expect(status.textContent).toBe('기본 effort → LOW (새 세션부터) · 열린 세션에도 적용');
+    expect(status.textContent).toBe('기본 추론 강도 → LOW (새 세션부터) · 열린 세션에도 적용');
 
     postEffortSwitch.mockClear();
     await withBox(false)('effort', 'high');

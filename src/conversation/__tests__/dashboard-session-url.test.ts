@@ -143,3 +143,18 @@ describe('getDashboardSessionUrl', () => {
     expect(web.getDashboardSessionUrl('U1', '')).toBeUndefined();
   });
 });
+
+describe('isDashboardListening (E2 ⑧, D12)', () => {
+  it('is false before start, true while listening, false after stop', async () => {
+    expect(web.isDashboardListening()).toBe(false);
+    await web.startWebServer();
+    expect(web.isDashboardListening()).toBe(true);
+    await web.stopWebServer();
+    expect(web.isDashboardListening()).toBe(false);
+  });
+
+  it('is false for a listener-less start', async () => {
+    await web.startWebServer({ listen: false });
+    expect(web.isDashboardListening()).toBe(false);
+  });
+});

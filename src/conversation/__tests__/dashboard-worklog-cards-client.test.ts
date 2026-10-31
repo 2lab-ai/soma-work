@@ -382,7 +382,7 @@ describe('a task group’s meta line (shipped wlTaskMeta; D3-GAPS G2-2 — the e
   );
   it('done: its time and 툴 N회; running / paused / replaced: the fate word (no live clock in a head); pending: nothing', () => {
     expect(m.wlTaskMeta({ status: 'completed', startedAt: 1000, completedAt: 181000, toolCalls: 3.4 })).toEqual([
-      '3m 0s 만에 완료',
+      '3분 00초 만에 완료',
       { label: '툴', value: '3회' },
     ]);
     expect(m.wlTaskMeta({ status: 'completed', toolCalls: 0 })).toEqual(['완료', { label: '툴', value: '0회' }]);
@@ -395,7 +395,7 @@ describe('a task group’s meta line (shipped wlTaskMeta; D3-GAPS G2-2 — the e
       { label: '툴', value: '1회' },
     ]);
     expect(m.wlTaskMeta({ dropped: 'started', startedAt: 1000, removedAt: 61000, toolCalls: 5 })).toEqual([
-      '교체됨 1m 0s',
+      '교체됨 1분 00초',
       { label: '툴', value: '5회' },
     ]);
     expect(m.wlTaskMeta({ status: 'pending' })).toEqual([]);
