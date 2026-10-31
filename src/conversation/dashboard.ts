@@ -387,6 +387,8 @@ export interface KanbanSession {
    * #598 ④c — a Slack-less task's last turn outcome (D10): what the last turn
    * ended as, why, and whether recording it failed. Absent for Slack sessions.
    */
+  /** #600 ⑥ — a Slack-less dashboard task (the client gates task-only UI on it). Absent for Slack sessions. */
+  slackless?: true;
   lastTurnOutcome?: {
     outcome: 'completed' | 'failed' | 'cancelled' | 'waiting' | 'interrupted';
     category: string;
@@ -1473,17 +1475,21 @@ export function setDashboardNewTaskProvider(provider: DashboardNewTaskProvider |
   _newTaskProvider = provider;
 }
 
-/** #600 ⑥ — makes and starts a Slack-less dashboard task (`createTaskLauncher`). */
-type DashboardTaskLauncher = (request: {
-  ownerId: string;
-  ownerName: string;
-  prompt: string;
-  folder?: string;
-  model?: string;
-}) => Promise<{ status: number; body: Record<string, unknown> }>;
-let _taskLauncherFn: DashboardTaskLauncher | null = null;
-export function setDashboardTaskLauncher(fn: DashboardTaskLauncher | null): void {
-  _taskLauncherFn = fn;
+/** #600 ⑥ — makes and starts a Slack-less dashboard task (`createTaskLauncher`), and lists its folders. */
+interface DashboardTaskLauncher {
+  launch(request: {
+    ownerId: string;
+    ownerName: string;
+    prompt: string;
+    folder?: string;
+    model?: string;
+  }): Promise<{ status: number; body: Record<string, unknown> }>;
+  /** The folders a user may name for a task (`listTaskFolders`). */
+  folders(ownerId: string): Array<{ name: string }>;
+}
+let _taskLauncher: DashboardTaskLauncher | null = null;
+export function setDashboardTaskLauncher(launcher: DashboardTaskLauncher | null): void {
+  _taskLauncher = launcher;
 }
 
 /** The signed-in Slack user a task runs as — never a body field, never the admin-mode target. */
@@ -2036,6 +2042,7 @@ function sessionToKanban(key: string, s: any): KanbanSession {
     artifacts: cardArtifacts(s.conversationId),
     userMedia: cardUserMedia(s.conversationId),
     followups: followupsOf(key, s.ownerId),
+    ...(s.slackless === true ? { slackless: true as const } : {}),
     ...(s.slackless === true && s.lastTurnOutcome
       ? {
           lastTurnOutcome: {
@@ -3549,7 +3556,10 @@ export async function registerDashboardRoutes(
       return;
     }
     try {
-      reply.send({ context: await _newTaskProvider.context(userId) });
+      const context = await _newTaskProvider.context(userId);
+      // #600 ⑥ — with dashboard tasks wired, the folders a task may name (names only).
+      const taskFolders = _taskLauncher?.folders(userId).map((f) => ({ name: f.name }));
+      reply.send({ context: taskFolders ? { ...context, taskFolders } : context });
     } catch (error) {
       logger.error('Error building the new-task context', error);
       reply.status(500).send({ error: 'Internal Server Error' });
@@ -3573,8 +3583,8 @@ export async function registerDashboardRoutes(
       const requestId = (request.body as { requestId?: unknown } | null)?.requestId;
       // #600 ⑥ — a Slack-less dashboard task: no channel, no Slack provider.
       if ((request.body as { destination?: unknown } | null)?.destination === 'task') {
-        const launch = _taskLauncherFn;
-        if (!launch) {
+        const launcher = _taskLauncher;
+        if (!launcher) {
           reply.status(501).send({ error: 'Dashboard tasks are not configured' });
           return;
         }
@@ -3587,7 +3597,7 @@ export async function registerDashboardRoutes(
         try {
           const result = await _newTaskGate.run(userId, parsed.value.requestId, async () => {
             const { requestId: _rid, ...rest } = parsed.value;
-            const outcome = await launch({ ownerId: userId, ownerName, ...rest });
+            const outcome = await launcher.launch({ ownerId: userId, ownerName, ...rest });
             // A refusal is not remembered by the gate, so the same request may be retried.
             if (outcome.status >= 400) {
               throw new NewTaskError(outcome.status, String(outcome.body.error ?? 'refused'));
@@ -4621,6 +4631,11 @@ ui-agent-inbox.kanban, ui-agent-inbox.cron-inbox { display: block; min-width: 0;
 .card-foot-bar .card-actions { margin: 0 0 0 auto; }
 /* SSOT 2026-10-29 T1: the open card's actions (Stop · Close · Slack) — first row under the face. */
 .card-actions-bar { display: flex; justify-content: flex-end; margin: 0 0 10px; padding-bottom: 10px; border-bottom: 1px dashed var(--ib-card-border); }
+/* #600 ⑥ — a dashboard task's last turn on its card */
+.card-task-outcome { display: flex; flex-wrap: wrap; gap: 4px 8px; margin: 0 0 8px; font-size: 12px; color: var(--text-secondary); }
+.card-task-outcome .cto-label { font-weight: 600; }
+.card-task-outcome[data-outcome="failed"] .cto-label, .card-task-outcome[data-outcome="interrupted"] .cto-label { color: var(--red); }
+.card-task-outcome .cto-warn { color: var(--red); font-weight: 600; }
 .card-actions-bar .card-actions { margin: 0; }
 .cfb-model { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 6px; min-width: 0; color: var(--ib-muted); font-size: 13px; }
 .card-foot-bar + .cb-model-note { margin-top: 6px; }
@@ -7025,9 +7040,14 @@ ${pageTokenAliases()}
         <span class="nt-head-hint" aria-hidden="true">Esc</span>
       </header>
       <div class="nt-body" id="nt-body">
+        <div class="nt-toggles nt-dest" id="nt-dest" role="group" aria-label="어디서 할까요" hidden>
+          <button type="button" class="nt-toggle" id="nt-dest-slack" aria-pressed="true" onclick="ntSetDestination('slack')"><span>Slack 채널</span></button>
+          <button type="button" class="nt-toggle" id="nt-dest-task" aria-pressed="false" title="슬랙 스레드 없이 대시보드에서만 진행하는 작업" onclick="ntSetDestination('task')"><span>대시보드 작업</span></button>
+        </div>
         <div class="nt-config" role="group" aria-label="작업 설정">
           <div class="nt-chip nt-chip-model"><label for="nt-model">모델</label><select id="nt-model" onchange="ntOnModelChange()"></select><button type="button" class="nt-battery-btn nt-batt-unknown" id="nt-battery-btn" aria-expanded="false" aria-controls="nt-usage" onclick="ntToggleUsage()"><span class="nt-battery" id="nt-battery" role="img" aria-label="잔여량 미확인"><span class="nt-battery-fill" id="nt-battery-fill"></span></span><span class="nt-battery-pct" id="nt-battery-pct">?</span></button></div>
-          <div class="nt-chip"><label for="nt-effort">effort</label><select id="nt-effort" onchange="ntOnEffortChange()"></select></div>
+          <div class="nt-chip nt-chip-effort"><label for="nt-effort">effort</label><select id="nt-effort" onchange="ntOnEffortChange()"></select></div>
+          <div class="nt-chip nt-chip-folder" id="nt-folder-chip" hidden><label for="nt-folder">폴더</label><select id="nt-folder" onchange="ntOnFolderChange()"></select></div>
           <div class="nt-chip nt-chip-channel"><label for="nt-channel">채널</label><select id="nt-channel" onchange="ntOnChannelChange()"></select></div>
         </div>
         <p class="nt-usage" id="nt-usage" hidden></p>
@@ -11139,7 +11159,7 @@ function renderPanelComposer(s, force) {
     // Task view T1.5: the composer's tools follow the field.
     ['pc-attach', 'pc-image', 'pc-mic'].forEach(function(id) {
       var tool = document.getElementById(id);
-      if (tool) tool.disabled = mode !== 'open';
+      if (tool) tool.disabled = !pcToolsOpen(s, mode);
     });
     if (mode !== 'open') pcReset();
   }
@@ -11148,6 +11168,11 @@ function renderPanelComposer(s, force) {
   if (!force && el._sig === sig) return;
   el._sig = sig;
   el.data = data;
+}
+// The composer's attach / image / mic: an open session's — but not a dashboard
+// task's, which takes no attachments yet (D8, #600 ⑥).
+function pcToolsOpen(s, mode) {
+  return mode === 'open' && !(s && s.slackless);
 }
 function pcModeOf(s) {
   var isOwnerPanel = !!s.ownerId && s.ownerId === currentUserId;
@@ -11364,6 +11389,8 @@ function cwPhase(s, now) {
 // Closed is the composer's rule: terminated or sleeping (a press would wake it).
 function cwCanCompact(s) {
   if (!s || s.terminated || s.sessionState === 'SLEEPING') return '종료된 세션';
+  // A task turn refuses commands (D8): "compact now" would run as an instruction (#600 ⑥).
+  if (s.slackless) return '대시보드 작업에서는 아직 지원하지 않아요';
   var env = s.environment;
   if (isSiblingSession(s)) return 'Open ' + env.instanceName + ' (' + (env.host || '') + ':' + (env.port || '') + ') to act on this session';
   if (!s.ownerId || s.ownerId !== currentUserId) return READ_ONLY_MSG;
@@ -12176,11 +12203,26 @@ function renderCardBody(s, col) {
     + actionsHtml
     + permissionHtml
     + renderCardResume(s, col)
+    + taskOutcomeHtml(s)
     + questionHtml
     + middle
     + cardGoalLine(s, col, isOwner && !isSibling)
     + refsHtml
     + footHtml
+    + '</div>';
+}
+
+// #600 ⑥ — a dashboard task's last turn as its card says it: how it ended, why,
+// and a recording failure (the outcome was not saved).
+var TASK_OUTCOME_LABEL = { completed: '완료', failed: '실패', cancelled: '중지됨', interrupted: '중단됨', waiting: '입력 대기' };
+function taskOutcomeHtml(s) {
+  var o = s && s.slackless && s.lastTurnOutcome;
+  if (!o) return '';
+  var kind = String(o.outcome || '');
+  return '<div class="card-task-outcome" data-outcome="' + escAttr(kind) + '">'
+    + '<span class="cto-label">마지막 턴 · ' + esc(TASK_OUTCOME_LABEL[kind] || kind) + '</span>'
+    + (o.reason ? '<span class="cto-reason">' + esc(o.reason) + '</span>' : '')
+    + (o.recordFailure ? '<span class="cto-warn" role="alert">기록하지 못함 · ' + esc(o.recordFailure) + '</span>' : '')
     + '</div>';
 }
 
@@ -18703,10 +18745,24 @@ function ntDefaultState(ctx, draft) {
     autogoal: !!ctx.autogoalDefault,
     autoz: false,
     prompt: draft && typeof draft.prompt === 'string' ? draft.prompt : '',
+    // #600 ⑥ — 'task': a Slack-less dashboard task (no channel); folder '' = a new folder.
+    destination: 'slack',
+    folder: '',
   };
 }
 
-function ntBuildPayload(state, attachments, requestId) {
+function ntBuildPayload(state, attachments, requestId, models) {
+  if (state.destination === 'task') {
+    // A dashboard task (#600 ⑥): no channel, no autogoal / autoz, no attachments (D8);
+    // the chosen model's id, and the folder by name ('' = a new folder).
+    var picked = (models || []).find(function (m) {
+      return m.nickname === state.model;
+    });
+    var body = { requestId: requestId, destination: 'task', prompt: state.prompt };
+    if (picked) body.model = picked.model;
+    if (state.folder) body.folder = state.folder;
+    return body;
+  }
   return {
     requestId: requestId,
     prompt: state.prompt,
@@ -18722,6 +18778,7 @@ function ntBuildPayload(state, attachments, requestId) {
 }
 
 function ntCanSubmit(state, attachments) {
+  if (state && state.destination === 'task') return String(state.prompt || '').trim().length > 0;
   if (!state || !state.channelId) return false;
   return String(state.prompt || '').trim().length > 0 || (attachments || []).length > 0;
 }
@@ -18905,8 +18962,34 @@ function ntRender() {
       return '<option value="' + escAttr(e) + '"' + (e === _ntState.effort ? ' selected' : '') + '>' + esc(e) + '</option>';
     })
     .join('');
+  var isTask = _ntState.destination === 'task';
+  var dest = ntEl('nt-dest');
+  if (dest) dest.hidden = !_ntCtx.taskFolders;
+  var dSlack = ntEl('nt-dest-slack');
+  var dTask = ntEl('nt-dest-task');
+  if (dSlack) dSlack.setAttribute('aria-pressed', isTask ? 'false' : 'true');
+  if (dTask) dTask.setAttribute('aria-pressed', isTask ? 'true' : 'false');
+  var folderChip = ntEl('nt-folder-chip');
+  if (folderChip) folderChip.hidden = !isTask;
+  var folderSel = ntEl('nt-folder');
+  if (folderSel && isTask) {
+    folderSel.innerHTML =
+      '<option value="">새 폴더</option>' +
+      (_ntCtx.taskFolders || [])
+        .map(function (f) {
+          return '<option value="' + escAttr(f.name) + '"' + (f.name === _ntState.folder ? ' selected' : '') + '>' + esc(f.name) + '</option>';
+        })
+        .join('');
+  }
+  // The destination row is an .nt-toggles too: hide the autogoal / autoz row, not it.
+  ['.nt-chip-channel', '.nt-chip-effort', '.nt-toggles:not(.nt-dest)', '.nt-tools'].forEach(function (sel) {
+    var el = document.querySelector(sel);
+    if (el) el.hidden = isTask;
+  });
   var channel = ntEl('nt-channel');
-  if (_ntCtx.channels.length) {
+  if (isTask) {
+    // A dashboard task has no channel: no channel list, no channel error.
+  } else if (_ntCtx.channels.length) {
     channel.innerHTML = _ntCtx.channels
       .map(function (c) {
         var repos = (c.repos || []).map(function (r) {
@@ -18971,6 +19054,19 @@ function ntOnModelChange() {
 
 function ntOnEffortChange() {
   _ntState.effort = ntEl('nt-effort').value;
+}
+
+// #600 ⑥ — where the task goes: a Slack channel, or a dashboard task in a folder.
+function ntSetDestination(dest) {
+  if (!_ntState || !_ntCtx) return;
+  _ntState.destination = dest === 'task' && _ntCtx.taskFolders ? 'task' : 'slack';
+  ntSetError('');
+  ntRender();
+}
+
+function ntOnFolderChange() {
+  _ntState.folder = ntEl('nt-folder').value || '';
+  ntUpdateSubmit();
 }
 
 function ntOnChannelChange() {
@@ -19295,7 +19391,13 @@ async function submitNewTask(ev) {
   }
   _ntState.prompt = ntEl('nt-prompt').value;
   if (!ntCanSubmit(_ntState, _ntFiles)) {
-    ntSetError(_ntState.channelId ? '작업 지시를 쓰거나 파일을 첨부해 주세요' : '작업을 올릴 채널을 골라 주세요');
+    ntSetError(
+      _ntState.destination === 'task'
+        ? '작업 지시를 써 주세요 (대시보드 작업은 아직 첨부를 받지 않아요)'
+        : _ntState.channelId
+          ? '작업 지시를 쓰거나 파일을 첨부해 주세요'
+          : '작업을 올릴 채널을 골라 주세요',
+    );
     return;
   }
   _ntBusy = true;
@@ -19310,7 +19412,7 @@ async function submitNewTask(ev) {
         return f.ready;
       }),
     );
-    var body = JSON.stringify(ntBuildPayload(_ntState, _ntFiles, _ntRequestId));
+    var body = JSON.stringify(ntBuildPayload(_ntState, _ntFiles, _ntRequestId, _ntCtx.models));
     ntSetStatus('작업을 올리는 중…');
     var res = await ntPostTask(body);
     // Only a stale CSRF token is worth one retry (not "no Slack identity").
@@ -19347,7 +19449,7 @@ function ntPostTask(body) {
       }
     };
     xhr.upload.onload = function () {
-      ntSetStatus('Slack에 작업을 올리는 중…');
+      ntSetStatus(_ntState && _ntState.destination === 'task' ? '작업을 만드는 중…' : 'Slack에 작업을 올리는 중…');
     };
     xhr.onload = function () {
       var data = null;
@@ -19375,29 +19477,58 @@ function ntOnLaunched(data) {
     }
   });
   _ntFiles = [];
+  var lastDestination = _ntState && _ntState.destination;
   _ntState = ntDefaultState(_ntCtx, null);
   _ntState.channelId = data.channel || _ntState.channelId;
+  if (lastDestination === 'task' && _ntCtx.taskFolders) _ntState.destination = 'task';
   try {
     localStorage.removeItem(NT_DRAFT_KEY);
   } catch (e) {}
   ntSetStatus('');
   ntRender();
   closeNewTask();
-  var channel = _ntCtx.channels.find(function (c) {
-    return c.id === data.channel;
-  });
+  var channel = data.channel
+    ? _ntCtx.channels.find(function (c) {
+        return c.id === data.channel;
+      })
+    : null;
   // A toast on the page's <ui-toaster>: 카드 열기 opens this launch's card
   // (not a later launch's), Slack에서 보기 its thread.
+  dashToast(ntLaunchToast(data, channel ? channel.name : null), function () { ntOpenLaunched(data); });
+  if (typeof loadSessions === 'function') setTimeout(loadSessions, 800);
+}
+
+// The launch toast: a Slack launch names its channel and links its thread; a
+// dashboard task (#600 ⑥, no channel) opens its card, and one that was created
+// but not started says why.
+function ntLaunchToast(data, channelName) {
+  if (!data.channel) {
+    if (data.status === 'not-started') {
+      return {
+        title: '작업을 만들었지만 아직 시작하지 못했어요',
+        description: String(data.reason || ''),
+        tone: 'warning',
+        action: { id: 'open', label: '카드 열기' },
+        duration: 12000,
+      };
+    }
+    return {
+      title: '대시보드 작업을 시작했어요',
+      description: '카드에서 진행을 볼 수 있어요',
+      tone: 'success',
+      action: { id: 'open', label: '카드 열기' },
+      duration: 12000,
+    };
+  }
   var toast = {
     title: data.status === 'running' ? '작업을 시작했어요' : '작업을 접수했어요',
-    description: '#' + (channel ? channel.name : data.channel),
+    description: '#' + (channelName || data.channel),
     tone: 'success',
     action: { id: 'open', label: '카드 열기' },
     duration: 12000,
   };
   if (data.permalink) toast.link = { label: 'Slack에서 보기', href: String(data.permalink) };
-  dashToast(toast, function () { ntOpenLaunched(data); });
-  if (typeof loadSessions === 'function') setTimeout(loadSessions, 800);
+  return toast;
 }
 
 async function ntOpenLaunched(launch) {

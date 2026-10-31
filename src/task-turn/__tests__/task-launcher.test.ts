@@ -8,7 +8,7 @@ import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { ExecutionContextMissingError, taskDirectoryFor } from '../../agent-runtime/execution-context';
-import { createTaskLauncher, taskTitleOf } from '../task-launcher';
+import { createTaskLauncher, listTaskFolders, taskTitleOf } from '../task-launcher';
 
 const OWNER = 'U0T600OWNER';
 const ROOT = `/tmp/${OWNER}`;
@@ -138,6 +138,30 @@ describe('createTaskLauncher (#600 ⑥)', () => {
     });
     await expect(launcher.launch(REQ)).rejects.toThrow('ENOSPC');
     expect(h.controller.start).not.toHaveBeenCalled();
+  });
+});
+
+describe('listTaskFolders (#600 ⑥)', () => {
+  it('lists the real folders directly in the owner’s root, newest first — no files, links or hidden folders', () => {
+    const hidden = path.join(ROOT, `.${RUN}_hidden`);
+    fs.mkdirSync(hidden, { recursive: true });
+    try {
+      const names = listTaskFolders(OWNER).map((f) => f.name);
+      expect(names).toContain(EXISTING);
+      expect(names).not.toContain(`${RUN}_file`);
+      expect(names).not.toContain(`${RUN}_link`);
+      expect(names).not.toContain(`.${RUN}_hidden`);
+      const mtimes = listTaskFolders(OWNER).map((f) => f.mtimeMs);
+      expect([...mtimes].sort((a, b) => b - a)).toEqual(mtimes);
+    } finally {
+      fs.rmSync(hidden, { recursive: true, force: true });
+    }
+  });
+
+  it('is capped, and empty for an owner with no root or an unsafe id', () => {
+    expect(listTaskFolders(OWNER, 1)).toHaveLength(1);
+    expect(listTaskFolders('U0T600NOROOT_' + RUN)).toEqual([]);
+    expect(listTaskFolders('../etc')).toEqual([]);
   });
 });
 

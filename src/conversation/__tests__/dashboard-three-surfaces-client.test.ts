@@ -307,6 +307,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
         'cardSummary',
         'cardCurrentTask',
         'renderCardResume',
+        'taskOutcomeHtml',
         'isBusy',
         'sessionActionHtml',
         'cardGoalLine',
@@ -1458,7 +1459,7 @@ describe('the composer follows the session live (executed)', () => {
     let resets = 0;
     let held = 0;
     const m = load<{ renderPanelComposer(s: unknown, force?: boolean): void }>(
-      ['renderPanelComposer', 'pcModeOf', 'steeringData'],
+      ['renderPanelComposer', 'pcModeOf', 'pcToolsOpen', 'steeringData'],
       ['STEER_STATE'],
       {
         document: { getElementById: (id: string) => els[id] ?? null },

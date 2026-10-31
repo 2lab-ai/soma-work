@@ -43,6 +43,7 @@ describe('Dashboard — new task as a Slack-less dashboard task (#600 ⑥)', () 
   let stopWebServer: any;
   let dashboard: any;
   let launcher: ReturnType<typeof vi.fn>;
+  let folders: ReturnType<typeof vi.fn>;
   let slackProvider: { context: ReturnType<typeof vi.fn>; start: ReturnType<typeof vi.fn> };
 
   beforeEach(async () => {
@@ -54,7 +55,8 @@ describe('Dashboard — new task as a Slack-less dashboard task (#600 ⑥)', () 
     slackProvider = { context: vi.fn(), start: vi.fn() };
     dashboard.setDashboardNewTaskProvider(slackProvider);
     launcher = vi.fn(async () => ({ status: 200, body: { sessionKey: 'task:abc', status: 'running' } }));
-    dashboard.setDashboardTaskLauncher(launcher);
+    folders = vi.fn(() => [{ name: 'repo-a', mtimeMs: 2 }]);
+    dashboard.setDashboardTaskLauncher({ launch: launcher, folders });
     await webServer.startWebServer({ listen: false });
   }, 30_000);
 
@@ -143,6 +145,19 @@ describe('Dashboard — new task as a Slack-less dashboard task (#600 ⑥)', () 
     const b = await post(auth, task());
     expect(JSON.parse(b.body)).toEqual(JSON.parse(a.body));
     expect(launcher).toHaveBeenCalledTimes(1);
+  });
+
+  it('the new-task context offers the signed-in user’s task folders (names only)', async () => {
+    slackProvider.context.mockResolvedValue({ models: [], efforts: [], channels: [] });
+    const auth = await signIn();
+    const res = await injectWebServer({
+      method: 'GET',
+      url: '/api/dashboard/new-task/context',
+      headers: { cookie: auth.cookie },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(JSON.parse(res.body).context.taskFolders).toEqual([{ name: 'repo-a' }]);
+    expect(folders).toHaveBeenCalledWith('U_PLAIN');
   });
 
   it('501 when no task launcher is wired', async () => {
