@@ -2251,90 +2251,19 @@ describe('작업 로그 is a section tab: painted only while shown; <ui-work-log
   });
 });
 
-describe("older agents keep the reader's tree row in place — several rows in view are kept, the first still shown wins (shipped psecViewAnchor / psecRestoreAnchor; 에이전트 트리, the page's own box — D3-GAPS G1-1)", () => {
-  // A box at viewport y=100, 300px tall; tree rows at content offsets (y), 40px each, in <ui-agent-tree>'s shadow root.
-  type Item = {
-    id: string;
-    y: number;
-    shown: boolean;
-    inDom: boolean;
-    firstElementChild: unknown;
-    getAttribute(n: string): string | null;
-  };
-  function world(ids: string[]) {
-    const items: Item[] = [];
-    const box = {
-      scrollTop: 0,
-      clientHeight: 300,
-      _lastTop: 0,
-      getBoundingClientRect: () => ({ top: 100 }),
-      querySelector: (sel: string) => (sel === 'ui-agent-tree' ? tree : null),
-    };
-    const root = {
-      querySelectorAll: (sel: string) => (sel === '[role="treeitem"][data-id]' ? items.filter((i) => i.inDom) : []),
-      querySelector: (sel: string) => {
-        const m = /^\[role="treeitem"\]\[data-id="([^"]*)"\]$/.exec(sel);
-        return m ? (items.find((i) => i.inDom && i.id === m[1]) ?? null) : null;
-      },
-    };
-    const tree = { shadowRoot: root };
-    ids.forEach((id, n) => {
-      const it: Item = {
-        id,
-        y: n * 40,
-        shown: true,
-        inDom: true,
-        firstElementChild: null,
-        getAttribute: (k) => (k === 'data-id' ? it.id : null),
-      };
-      it.firstElementChild = {
-        getBoundingClientRect: () => {
-          const top = 100 + it.y - box.scrollTop;
-          return it.shown ? { top, bottom: top + 40, height: 40 } : { top: 0, bottom: 0, height: 0 };
-        },
-        getClientRects: () => (it.shown ? [{}] : []),
-      };
-      items.push(it);
-    });
-    const m = load<{
-      psecViewAnchor(b: unknown): unknown[] | null;
-      psecRestoreAnchor(b: unknown, a: unknown): boolean;
-    }>(['psecSetTop', 'psecTreeRoot', 'psecViewAnchor', 'psecAnchorEl', 'psecRestoreAnchor'], ['PSEC_ANCHOR_MAX']);
-    return { m, box, items };
-  }
-  const sel = (id: string) => `[role="treeitem"][data-id="${id}"]`;
-
-  it('the rows in view, top first (those wholly below the top edge before the one it cuts), at most six; a row above the box is not one', () => {
-    const w = world(['a0', 'a1', 'a2', 'a3', 'a4', 'a5', 'a6', 'a7', 'a8']);
-    w.box.scrollTop = 20; // a0 is half above the top: the edge cuts it — it comes last
-    expect(w.m.psecViewAnchor(w.box)).toEqual([
-      { sel: sel('a1'), at: 20 },
-      { sel: sel('a2'), at: 60 },
-      { sel: sel('a3'), at: 100 },
-      { sel: sel('a4'), at: 140 },
-      { sel: sel('a5'), at: 180 },
-      { sel: sel('a6'), at: 220 },
-    ]);
-    const tall = world(['a0']);
-    tall.box.scrollTop = 20;
-    expect(tall.m.psecViewAnchor(tall.box)).toEqual([{ sel: sel('a0'), at: -20 }]);
-  });
-
-  it('older agents went in above and the top row is gone: the next row keeps the place', () => {
-    const w = world(['a0', 'a1', 'a2', 'a3']);
-    const a = w.m.psecViewAnchor(w.box);
-    for (const it of w.items) it.y += 500;
-    w.items[0].inDom = false;
-    expect(w.m.psecRestoreAnchor(w.box, a)).toBe(true);
-    expect(w.box.scrollTop).toBe(500);
-  });
-
-  it('nothing left at all: the caller falls back to the distance from the bottom', () => {
-    const gone = world(['a0']);
-    const b = gone.m.psecViewAnchor(gone.box);
-    gone.items[0].inDom = false;
-    expect(gone.m.psecRestoreAnchor(gone.box, b)).toBe(false);
-    expect(gone.m.psecRestoreAnchor(gone.box, null)).toBe(false);
+describe("older agents keep the reader's tree row in place — <ui-log-scroller>'s own (D3-GAPS G1-1 closed by 0.12.0; shipped paintTreeTab / showMoreTree)", () => {
+  it('the tree is the scroller’s one item (its rows carry data-anchor in its shadow root); a page lands with prependItems, a live arrival is noteUnread', () => {
+    const paint = clientFn('paintTreeTab');
+    expect(paint).toContain("host.upsertItem('tree', tree, { animate: false })");
+    expect(paint).toContain("tree.setAttribute('data-item', 'tree');");
+    expect(paint).toContain('host.noteUnread(newer)');
+    expect(paint).toContain('treeScrollerData(host, win.hidden > 0);');
+    const more = clientFn('showMoreTree');
+    expect(more).toContain('host.prependItems([], { hasMore: host._hidden > 0 })');
+    expect(more).toContain('_treeWindow += AT_PANEL_WINDOW;');
+    for (const gone of ['psecViewAnchor', 'psecRestoreAnchor', 'psecTreeRoot', 'PSEC_ANCHOR_MAX', 'psecHoldPlace']) {
+      expect(TEMPLATE, gone).not.toContain(gone);
+    }
   });
 });
 
@@ -2526,11 +2455,10 @@ describe('stats: only the latest period / user selection paints (shipped loadSta
   });
 });
 
-describe('panel landing and older-page loading (shipped psecLandingTop + psecPageDue + psecMaybeFill; SSOT 2026-10-29)', () => {
+describe('panel landing (shipped psecLandingTop; SSOT 2026-10-29) — the older pages are each element’s own (ui-load-older)', () => {
   const m = load<{
     psecLandingTop(secTop: number, boxBottom: number, view: number, under: number): number;
-    psecPageDue(scrollTop: number, scrollHeight: number, clientHeight: number, armed: boolean): boolean;
-  }>(['psecLandingTop', 'psecPageDue'], []);
+  }>(['psecLandingTop'], []);
 
   it('작업 로그 / ?session= land at the top when the section box ends in view, else on the section tabs under the agent tabs', () => {
     expect(m.psecLandingTop(80, 560, 600, 44)).toBe(0); // no question: the tabs and the box fit
@@ -2538,39 +2466,10 @@ describe('panel landing and older-page loading (shipped psecLandingTop + psecPag
     expect(m.psecLandingTop(520, 1100, 600, 44)).toBe(476); // a tall question: bring the tabs up
   });
 
-  it('the top of the section within one box height of the view is the load-older zone — for a reader who scrolled up', () => {
-    expect(m.psecPageDue(0, 5000, 600, true)).toBe(true);
-    expect(m.psecPageDue(600, 5000, 600, true)).toBe(true);
-    expect(m.psecPageDue(601, 5000, 600, true)).toBe(false);
-    expect(m.psecPageDue(4400, 5000, 600, true)).toBe(false); // far below: reading newer items
-  });
-
-  it('a landing never loads; the reader moving up arms it; a page that leaves the top in the zone brings the next', () => {
-    // Landed at the newest of a long box: not armed, nothing due — even at the top.
-    expect(m.psecPageDue(4400, 5000, 600, false)).toBe(false);
-    expect(m.psecPageDue(0, 5000, 600, false)).toBe(false);
-    // The reader scrolls up into the zone (armed): one page.
-    expect(m.psecPageDue(200, 5000, 600, true)).toBe(true);
-    // The page went in above (place kept: +2000px) — out of the zone: no more.
-    expect(m.psecPageDue(2200, 7000, 600, true)).toBe(false);
-    // A short page left the top in the zone: the next one is due.
-    expect(m.psecPageDue(500, 5300, 600, true)).toBe(true);
-    // A box too short to scroll fills page by page, armed or not.
-    expect(m.psecPageDue(0, 400, 600, false)).toBe(true);
-  });
-
-  it('one page at a time: the wiring loads through psecMaybeFill, which asks only while the section says older', () => {
-    const fill = TEMPLATE.slice(
-      TEMPLATE.indexOf('\nfunction psecMaybeFill('),
-      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction psecMaybeFill(')),
-    );
-    expect(fill).toContain('psecPageDue(box.scrollTop, box.scrollHeight, box.clientHeight, box._armed)');
-    expect(fill).toContain("if (psecOlderState(sec) === 'older') psecLoadOlder(sec);");
-    const load1 = TEMPLATE.slice(
-      TEMPLATE.indexOf('\nfunction psecLoadOlder('),
-      TEMPLATE.indexOf('\n}\n', TEMPLATE.indexOf('\nfunction psecLoadOlder(')),
-    );
-    expect(load1).toContain("if (sec !== _psec || psecOlderState(sec) !== 'older') return;");
+  it('the page keeps no page-due rule or sentinel of its own (the scroller asks: ui-load-older → loadMorePanelTurns / loadOlderWorkLog / showMoreTree)', () => {
+    for (const gone of ['psecPageDue', 'psecMaybeFill', 'psecLoadOlder', 'psecOlderState', 'psecFillSoon']) {
+      expect(TEMPLATE, gone).not.toContain(gone);
+    }
   });
 });
 

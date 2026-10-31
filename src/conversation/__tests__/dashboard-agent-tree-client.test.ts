@@ -1373,39 +1373,79 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     'atRootReason',
     'atNode',
     'atTreeData',
-    'atSlotHtml',
     'atPaint',
     'atWindowOf',
-    'writePanelPart',
+    'treeScrollerData',
     'paintTreeTab',
     'showMoreTree',
   ];
+  // The tab's box is <ui-log-scroller> (D6b, D3-GAPS G1-1): the one <ui-agent-tree> is its item (upsertItem), the
+  // scroller's data says whether older agents wait (hasMore) and what an empty tree reads; a live arrival is
+  // noteUnread; an older page lands with prependItems([], { hasMore }).
+  const SCROLLER_TEXT = {
+    label: '에이전트 트리',
+    startText: '에이전트 트리의 시작',
+    emptyText: '이 세션에는 하위 에이전트가 없습니다',
+  };
   function treeTab(focus: string, s: Record<string, unknown>, extra: Record<string, unknown> = {}) {
     const out = {
-      html: '',
-      writes: 0,
       sets: 0,
       data: null as TreeData | null,
-      appended: [] as unknown[][],
-      kept: [] as number[],
-      filled: 0,
+      upserts: 0,
+      cleared: 0,
+      scroller: [] as unknown[],
+      prepends: [] as unknown[],
+      unread: [] as number[],
+      frames: [] as Array<() => void>,
     };
-    const tree: Record<string, unknown> = {};
+    const attrs: Record<string, string> = {};
+    const tree: Record<string, unknown> = {
+      attrs,
+      setAttribute: (n: string, v: string) => {
+        attrs[n] = v;
+      },
+      getAttribute: (n: string) => attrs[n] ?? null,
+    };
     Object.defineProperty(tree, 'data', {
       set(v: TreeData) {
         out.sets++;
         out.data = v;
       },
     });
+    let item: unknown = null;
     const host: Record<string, unknown> = {
-      querySelector: (sel: string) => (sel === 'ui-agent-tree' && out.html.includes('<ui-agent-tree') ? tree : null),
+      querySelector: (sel: string) => (sel === 'ui-agent-tree' ? item : null),
+      upsertItem: (key: string, node: unknown) => {
+        out.upserts++;
+        if (key !== 'tree') throw new Error(key);
+        item = node;
+      },
+      clearItems: () => {
+        out.cleared++;
+        item = null;
+      },
+      prependItems: (nodes: unknown[], opts: unknown) => out.prepends.push([nodes, opts]),
+      noteUnread: (n: number) => out.unread.push(n),
     };
-    const box = { scrollHeight: 2000, scrollTop: 400, clientHeight: 500 };
-    const m = load<{ paintTreeTab(): void; showMoreTree(): void }>(
+    Object.defineProperty(host, 'data', {
+      set(v: unknown) {
+        out.scroller.push(v);
+      },
+    });
+    const m = load<{ paintTreeTab(): void; showMoreTree(): boolean }>(
       TAB_FNS,
       AGENT_VARS.filter((v) => !(v in extra)),
       {
-        document: { getElementById: (id: string) => (id === 'panel-tree' ? host : null), activeElement: null },
+        document: {
+          getElementById: (id: string) => (id === 'panel-tree' ? host : null),
+          activeElement: null,
+          createElement: (tag: string) => {
+            if (tag !== 'ui-agent-tree') throw new Error(tag);
+            return tree;
+          },
+        },
+        requestAnimationFrame: (f: () => void) => out.frames.push(f),
+        TREE_SCROLLER: SCROLLER_TEXT,
         panelSessionKey: 'k',
         _sessionCache: { k: s },
         _lastBoardData: { working: [s] },
@@ -1415,25 +1455,10 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
         _treeWindow: 20,
         _treeMaxN: null,
         AT_PANEL_WINDOW: 20,
-        psecBox: () => box,
-        psecAtBottom: () => true,
-        psecSyncControls: () => {},
-        psecOnAppended: (n: number, pinned: boolean) => out.appended.push([n, pinned]),
-        psecViewAnchor: () => null,
-        psecHoldPlace: (_b: unknown, _a: unknown, fromBottom: number) => out.kept.push(fromBottom),
-        psecAfterRender: (_el: unknown, fn: () => void) => fn(),
-        psecMaybeFill: () => {
-          out.filled++;
-        },
-        updateTimersIn: () => {},
-        morphInnerHtml: (_el: unknown, h: string) => {
-          out.writes++;
-          out.html = h;
-        },
         ...extra,
       },
     );
-    return { m, host, box, out };
+    return { m, host, tree, out };
   }
   const chain = (): Agent[] => [
     { id: 'a', n: 1, type: 'Explore', status: 'running', startedAt: T0, toolCalls: 1 },
@@ -1507,11 +1532,14 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
       status: 'completed',
       startedAt: T0 + i,
     }));
-    const { m, host, out } = treeTab('toolu_explore', card({ agents: [...AGENTS, ...kids] }));
+    const { m, host, tree, out } = treeTab('toolu_explore', card({ agents: [...AGENTS, ...kids] }));
     m.paintTreeTab();
-    expect(out.html).toBe(
-      '<div class="pa-tree ui-tok"><ui-agent-tree lang="ko" data-at-ns="p|k"><span class="at-fallback">에이전트 트리</span></ui-agent-tree></div>',
-    );
+    // The element itself is the scroller's item (its rows carry data-anchor in its shadow root — the scroller reads them).
+    expect(out.upserts).toBe(1);
+    expect(tree.attrs).toEqual({ lang: 'ko', 'data-item': 'tree', 'data-at-ns': 'p|k' });
+    expect(tree.className).toBe('pa-tree');
+    expect(tree.innerHTML).toBe('<span class="at-fallback">에이전트 트리</span>');
+    expect(out.scroller).toEqual([{ ...SCROLLER_TEXT, hasMore: false }]);
     // The element's bar is the tree's head (its title, counts and branch cost).
     expect(out.data).toMatchObject({ density: 'rich', title: '에이전트 트리', selectedId: 'toolu_explore' });
     const ids = out.data?.nodes.map((n) => n.id) ?? [];
@@ -1526,16 +1554,18 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     const main = treeTab('', card());
     main.m.paintTreeTab();
     expect(main.out.data?.selectedId).toBe(':main');
-    // A session without subagents: a line, no element.
+    // A session without subagents: no item — the scroller's own empty state reads the words.
     const none = treeTab('', card({ agents: undefined, agentsTotal: undefined }));
     none.m.paintTreeTab();
-    expect(none.out.html).toBe('<p class="psec-empty">이 세션에는 하위 에이전트가 없습니다</p>');
+    expect(none.out.upserts).toBe(0);
+    expect(none.out.scroller).toEqual([{ ...SCROLLER_TEXT, hasMore: false }]);
     expect(none.host._tree).toBeNull();
     expect(none.out.sets).toBe(0);
     // Another section shown: the tab paints nothing (it is painted from its data when opened).
     const away = treeTab('', card(), { _psec: 'conv' });
     away.m.paintTreeTab();
-    expect(away.out.writes).toBe(0);
+    expect(away.out.upserts).toBe(0);
+    expect(away.out.scroller).toEqual([]);
   });
 
   it('every branch is open by default — and a node the user folded stays folded, whichever agent is focused', () => {
@@ -1593,7 +1623,7 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
       return { id: `g${n}`, n, parentId, type: 'Explore', status: 'completed', startedAt: T0 + n };
     });
     const s = card({ agents });
-    const r = treeTab('', s, { psecAtBottom: () => false });
+    const r = treeTab('', s);
     r.m.paintTreeTab();
     const ids = (r.out.data?.nodes ?? []).map((n) => n.id);
     // The newest 20 (g41…g60) and what connects them to the root: ≤ 25 tree nodes.
@@ -1601,43 +1631,55 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     expect(ids).not.toContain('g40');
     expect(ids.length).toBeLessThanOrEqual(1 + 20 + 15 + 5);
     expect(r.host._hidden).toBe(60 - (ids.length - 1));
-    // Scroll up: 20 more, the reader's row held in place once the element rendered (else the distance from the bottom).
+    expect(r.out.scroller).toEqual([{ ...SCROLLER_TEXT, hasMore: true }]); // the scroller's older row / scroll-up ask
+    // The scroller asked (ui-load-older → showMoreTree): 20 more; the step is data only on the same element; the
+    // scroller holds the reader's row itself; a frame later it hears the page landed and that more still wait.
     const before = ids.length;
-    r.m.showMoreTree();
+    expect(r.m.showMoreTree()).toBe(true);
     const more = (r.out.data?.nodes ?? []).map((n) => n.id);
     for (let n = 21; n <= 60; n++) expect(more).toContain(`g${n}`);
     expect(more.length).toBeGreaterThan(before);
-    expect(r.out.kept).toEqual([2000 - 400]);
-    expect(r.out.filled).toBe(1);
+    expect(r.out.upserts).toBe(1);
+    expect(r.host._growing).toBe(true);
+    expect(r.m.showMoreTree()).toBe(false); // one step at a time
+    expect(r.out.frames).toHaveLength(1);
+    r.out.frames[0]();
     expect(r.host._growing).toBe(false);
-    // The reader is still at the top (the root and branches stay there): the next step waits for them to scroll up again.
-    expect((r.box as Record<string, unknown>)._armed).toBe(false);
-    // The markup is the same element: the step is data only.
-    expect(r.out.writes).toBe(1);
-    // A new agent while the reader reads higher: their place stays and the pill counts it.
+    // 40 newest + the leads that connect them = every one of the 60: nothing waits above any more.
+    expect(r.host._hidden).toBe(0);
+    expect(r.out.prepends).toEqual([[[], { hasMore: false }]]);
+    // A new agent while the reader reads higher: the scroller's pill counts it (a pinned reader follows it).
     agents.push({ id: 'g61', n: 61, parentId: 'g60', type: 'Plan', status: 'running', startedAt: T0 + 61 });
     r.m.paintTreeTab();
-    expect(r.out.appended).toEqual([[1, false]]);
+    expect(r.out.unread).toEqual([1]);
+    // Nothing left above: a further ask is refused (the scroller shows no older row).
+    r.host._hidden = 0;
+    expect(r.m.showMoreTree()).toBe(false);
   });
 
-  // #542 review P3: the library's UiElement has no updateComplete — the step waits one frame, nothing else.
-  it('psecAfterRender waits one frame after the tree renders (the element has no updateComplete)', async () => {
-    const frames: Array<() => void> = [];
-    const { psecAfterRender } = load<{ psecAfterRender(el: unknown, fn: () => void): void }>(['psecAfterRender'], [], {
-      requestAnimationFrame: (f: () => void) => frames.push(f),
-    });
-    let ran = 0;
-    // Even an element that offered a promise is not waited on: one frame is the contract.
-    psecAfterRender({ updateComplete: Promise.resolve() }, () => ran++);
-    await Promise.resolve();
-    expect(ran).toBe(0);
-    expect(frames).toHaveLength(1);
-    frames[0]();
-    expect(ran).toBe(1);
-    psecAfterRender(null, () => ran++);
-    frames[1]();
-    expect(ran).toBe(2);
-    expect(clientFn('psecAfterRender')).not.toContain('updateComplete');
+  it('the tree box is <ui-log-scroller> (D6b): its ui-load-older asks for the older agents; the page keeps no scroll box, anchor or pill of its own', () => {
+    const init = TEMPLATE.slice(TEMPLATE.indexOf('(function initPanelSections() {'));
+    const body = init.slice(0, init.indexOf('\n})();'));
+    expect(body).toContain("tree.addEventListener('ui-load-older', function(e) {");
+    expect(body).toContain('if (!showMoreTree()) e.preventDefault();');
+    expect(TEMPLATE).toMatch(/<ui-log-scroller class="panel-tree" id="panel-tree" lang="ko"><\/ui-log-scroller>/);
+    // The page uses the scroller on its own (not only inside <ui-conversation>): its module is loaded by name.
+    const HEAD = TEMPLATE.slice(0, TEMPLATE.indexOf('<style>'));
+    expect(HEAD).toContain(`<script type="module" src="/dashboard/ui/log-scroller.js?v=\${UI_LIB_VERSION}"></script>`);
+    for (const gone of [
+      'psecViewAnchor',
+      'psecRestoreAnchor',
+      'psecPageDue',
+      'psecMaybeFill',
+      'psecAfterRender',
+      'psecOnAppended',
+      'psec-pill',
+      'psec-older',
+      'psec-empty',
+      '_psecPin',
+    ]) {
+      expect(TEMPLATE, gone).not.toContain(gone);
+    }
   });
 
   // RED (SSOT T2/T3) — what a subagent spent (its own API calls: tokens and
@@ -1755,8 +1797,9 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     const t = treeTab('toolu_explore', card());
     t.m.paintTreeTab();
     t.m.paintTreeTab();
-    expect(t.out.writes).toBe(1);
+    expect(t.out.upserts).toBe(1);
     expect(t.out.sets).toBe(1);
+    expect(t.out.scroller).toHaveLength(1);
   });
 
   it('a live change to the tree is data only: the markup stays, the element is given the new nodes', () => {
@@ -1765,11 +1808,11 @@ describe('panel — the path · the focused node, and the 에이전트 트리 ta
     m.paintTreeTab();
     (s.agents as Agent[])[1] = { ...AGENTS[1], status: 'completed', toolCalls: 9 };
     m.paintTreeTab();
-    expect(out.writes).toBe(1);
+    expect(out.upserts).toBe(1);
     expect(out.sets).toBe(2);
     expect(out.data?.nodes.find((n) => n.id === 'toolu_nested')).toMatchObject({ status: 'done', toolCalls: 9 });
     // No new agent: nothing is counted on the pill.
-    expect(out.appended).toEqual([]);
+    expect(out.unread).toEqual([]);
   });
 
   it('live updates repaint the focused node whatever it is — no main-only or subagent-only gate', () => {
