@@ -344,7 +344,7 @@ describe('expanded body — face + delta, sections keyed on state', () => {
       'card-merge',
       'class="card-meta"',
       'meta-owner',
-      'rel-time',
+      '<ui-elapsed',
       'card-subtitle',
       '대화 기록',
     ]) {
@@ -388,7 +388,9 @@ describe('expanded body — face + delta, sections keyed on state', () => {
       }),
       'working',
     );
-    expect(resume.indexOf('class="card-resume"')).toBeLessThan(resume.indexOf('[TASKS]'));
+    const resumeAt = resume.indexOf('class="ui-notice card-resume" data-tone="wait"');
+    expect(resumeAt).toBeGreaterThan(-1);
+    expect(resumeAt).toBeLessThan(resume.indexOf('[TASKS]'));
     expect(resume).toContain('data-action="close"');
     expect(resume).not.toContain('data-action="stop"');
   });
@@ -491,6 +493,7 @@ describe('task window on the card — the full ledger is the panel', () => {
         'toNum',
         'formatDuration',
         'taskFateOf',
+        'elapsedHtml',
         'renderTaskMeta',
         'renderTimelineItem',
         'renderTimeline',
@@ -711,6 +714,9 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
         'cwSlotHtml',
         'pendingAutoResume',
         'rootStatusOf',
+        'elapsedHtml',
+        'activeTimeHtml',
+        'agoHtml',
         'panelDetailsHtml',
         'panelInfoHtml',
       ],
@@ -727,7 +733,7 @@ describe('세션 정보 — the complete numbers, live, behind one summary line'
     const html = info(card(), false);
     expect(html).toContain('<ui-disclosure class="pi-dc" flush>');
     const sum = html.slice(html.indexOf('class="pi-sum"'), html.indexOf('</ui-disclosure>'));
-    for (const want of ['Zhuge', 'zwork', '9591000 tok', '$12.40', 'ctx 31%', 'class="rel-time"'])
+    for (const want of ['Zhuge', 'zwork', '9591000 tok', '$12.40', 'ctx 31%', 'format="ago"'])
       expect(sum, want).toContain(want);
     expect(html).toContain('PROJ-1 &mdash; Dashboard surfaces');
     expect(html).toContain('PR #12 &mdash; Split the surfaces');

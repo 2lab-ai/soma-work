@@ -131,9 +131,10 @@ describe('D14 – D16 — CSS contract', () => {
     expect(pageTokenAliases()).toContain('--yellow: var(--ui-yellow);');
     expect(SETTINGS_PAGE_CSS).not.toMatch(/--yellow: #/);
     expect(SETTINGS_PAGE_CSS).toMatch(/\.ui-tok \{[^}]*--ui-yellow: var\(--yellow\);/);
-    // the tab's own text boxes (raw markdown, the recovery box) are the kit's .ui-input — no textarea rule of its own
+    // D7 (M-05): the tab draws no text box of its own any more — the whole markdown is the element's source mode,
+    // its drafts the element's; no textarea rule, no textarea markup.
     expect(MEMORY_TAB_CSS).not.toMatch(/(^|\n)textarea \{/);
-    expect(MEMORY_CLIENT_JS).toContain('<textarea class="ui-input is-block" readonly');
+    expect(MEMORY_CLIENT_JS).not.toMatch(/<textarea/);
     // memory classes never borrow the model picker's mp-* (#442)
     expect(MEMORY_TAB_CSS + MEMORY_TAB_HTML + MEMORY_CLIENT_JS).not.toMatch(/\bmp-|class="mp"|ui-mp/);
   });

@@ -27,6 +27,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi } from 'vitest';
+import { uiLibKitCss } from '../ui-lib';
 
 const DASHBOARD_TS = readFileSync(join(__dirname, '..', 'dashboard.ts'), 'utf-8');
 const TEMPLATE = DASHBOARD_TS.slice(DASHBOARD_TS.indexOf('function renderDashboardPage('));
@@ -282,11 +283,14 @@ describe('[T2] board — skeleton until the first board paints', () => {
   // Deleted: 'no false empty state: no "0" count and no "Nothing here" before data' — library 'load: loading draws skeletons with no counts or empty hints; failed keeps cards and makes no claims'.
 
   it('a board-wide error with 다시 시도 exists, hidden until a first load fails', () => {
-    const err = between(PAGE, '<div class="board-error" id="board-error"', '</div>');
+    // D7 (D-06): the kit's fail notice (.ui-notice[data-tone="fail"]) with a kit button for 다시 시도.
+    const err = between(PAGE, '<div class="ui-notice board-error" id="board-error"', '</div>');
+    expect(err).toContain('data-tone="fail"');
     expect(err).toContain('role="alert"');
     expect(err).toContain('hidden');
-    expect(err).toContain('onclick="retryBoardLoad()"');
-    expect(err).toContain('다시 시도');
+    expect(err).toContain('<button type="button" class="ui-btn is-sm" onclick="retryBoardLoad()">다시 시도</button>');
+    expect(CSS).toContain('.board-error[hidden] { display: none; }');
+    expect(CSS).not.toMatch(/\.board-error \{[^}]*background/);
     // Inside the inbox, right before the board element.
     expect(PAGE.indexOf('id="board-error"')).toBeGreaterThan(PAGE.indexOf('<section class="inbox ui-tok" id="inbox"'));
     expect(PAGE.indexOf('id="board-error"')).toBeLessThan(PAGE.indexOf('<ui-agent-inbox id="kanban"'));
@@ -1102,8 +1106,12 @@ describe('[T3] expanded card — 지시/응답 skeleton instead of a "불러오�
     const html = m.renderCardIo({ conversationId: 'c1' });
     expect(html).toContain('<div class="card-io" aria-busy="true">');
     expect(html).toContain('class="io-row io-skel" aria-hidden="true"');
-    expect((html.match(/class="sk sk-line"/g) ?? []).length).toBeGreaterThanOrEqual(2);
-    expect(html).toContain('<span class="ib-sr">지시/응답 불러오는 중…</span>');
+    // D7 (K-02, A-18): the lines are the kit's skeleton (.ui-skeleton.is-line, the second row staggered with --i),
+    // the words the kit's visually-hidden class.
+    expect((html.match(/class="ui-skeleton is-line"/g) ?? []).length).toBe(4);
+    expect((html.match(/--i:1/g) ?? []).length).toBe(2);
+    expect(html).not.toContain('class="sk ');
+    expect(html).toContain('<span class="ui-sr-only">지시/응답 불러오는 중…</span>');
     expect(html).not.toContain('io-text is-muted">지시/응답 불러오는 중');
   });
 
@@ -1118,16 +1126,27 @@ describe('[T3] expanded card — 지시/응답 skeleton instead of a "불러오�
 });
 
 describe('[T3] skeleton motion and accessibility', () => {
-  it('the pulse is compositor-only (opacity) and staggered', () => {
-    const kf = between(CSS, '@keyframes sk-pulse', '}\n');
+  // D7 (K-02): the pulse is the kit's (.ui-skeleton in ui-kit.css: opacity only, --i staggers, still under reduced
+  // motion); the page keeps no skeleton rule or keyframe of its own.
+  const KIT = uiLibKitCss();
+
+  it('the pulse is compositor-only (opacity) and staggered — the kit’s', () => {
+    expect(CSS).not.toContain('@keyframes sk-pulse');
+    expect(CSS).not.toMatch(/^\.sk \{/m);
+    expect(CSS).not.toContain('.sk-line');
+    const kf = between(KIT, '@keyframes ui-sk-pulse', '}\n');
     expect(kf).toContain('opacity');
     expect(kf).not.toMatch(/background|width|height|transform/);
-    expect(CSS).toMatch(/\.sk \{[^}]*animation: sk-pulse/);
+    expect(KIT).toMatch(
+      /\.ui-skeleton \{[^}]*animation: ui-sk-pulse 1\.6s ease-in-out infinite; animation-delay: calc\(var\(--i, 0\) \* 120ms\);/,
+    );
   });
 
-  it('reduced motion: a still skeleton', () => {
+  it('reduced motion: a still skeleton — the kit’s rule', () => {
     const blocks = CSS.match(/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\n\}/g) ?? [];
-    expect(blocks.some((b) => /\.sk\b[^{]*\{[^}]*animation: none !important/.test(b))).toBe(true);
+    expect(blocks.some((b) => /\.sk\b/.test(b))).toBe(false);
+    const kitReduced = KIT.match(/@media \(prefers-reduced-motion: reduce\) \{[\s\S]*?\n\}/g) ?? [];
+    expect(kitReduced.some((b) => /\.ui-skeleton[^{]*\{ animation: none; \}/.test(b))).toBe(true);
   });
 
   // Deleted: 'skeletons show only while the board is loading, and only in columns with no cards yet' — library 'load: loading draws skeletons with no counts or empty hints; failed keeps cards and makes no claims'.
